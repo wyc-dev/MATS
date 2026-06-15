@@ -325,8 +325,8 @@ export class TradePatternClassifier {
 
       const warnings: string[] = [];
       if (total < CONFIG.minSimilarForReport) warnings.push(`Only ${total} similar ${side.toUpperCase()} entries — low confidence`);
-      if (winRate < 0.3 && total >= CONFIG.minSimilarForReport) warnings.push(`⚠️ Low win rate (${(winRate * 100).toFixed(0)}%) for similar ${side.toUpperCase()} entries`);
-      if (winRate > 0.8 && total >= CONFIG.minSimilarForReport) warnings.push(`⭐ High win rate (${(winRate * 100).toFixed(0)}%) for similar ${side.toUpperCase()} entries`);
+      if (winRate < 0.5 && total >= CONFIG.minSimilarForReport) warnings.push(`⚠️ Low win rate (${(winRate * 100).toFixed(0)}%) for similar ${side.toUpperCase()} entries — STRONG bias against this trade`);
+      if (winRate > 0.8 && total >= CONFIG.minSimilarForReport) warnings.push(`⭐ High win rate (${(winRate * 100).toFixed(0)}%) for similar ${side.toUpperCase()} entries — favorable setup`);
 
       const result: EntryQueryResult = {
         totalMatches: total, wins, losses, winRate,
@@ -419,7 +419,7 @@ export class TradePatternClassifier {
 
       const warnings: string[] = [];
       if (total < CONFIG.minSimilarForReport) warnings.push(`Only ${total} similar transitions — low confidence`);
-      if (winRate < 0.3 && total >= CONFIG.minSimilarForReport) warnings.push(`⚠️ Low win rate (${(winRate * 100).toFixed(0)}%) for similar transitions — consider closing`);
+      if (winRate < 0.5 && total >= CONFIG.minSimilarForReport) warnings.push(`⚠️ Low win rate (${(winRate * 100).toFixed(0)}%) for similar transitions — consider closing`);
       if (winRate > 0.8 && total >= CONFIG.minSimilarForReport) warnings.push(`⭐ High win rate (${(winRate * 100).toFixed(0)}%) for similar transitions — strong hold signal`);
 
       const result: PositionQueryResult = {
