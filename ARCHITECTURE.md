@@ -262,7 +262,7 @@
 │   │   ├── paper-engine.ts       # Paper Trading 引擎 (220 行, v1.9.4)
 │   │   │   ├── 訂單生命週期      # pending → filled/rejected
 │   │   │   ├── 成交模擬          # 市價單即時成交（槓桿傳遞至 portfolio）
-│   │   │   ├── 風險閘門          # 交易前風險檢查（含 cumulative exposure 10% 限制）
+│   │   │   ├── 風險閘門          # 交易前風險檢查（含 cumulative margin 20% 限制，基於 margin 而非 notional）
 │   │   │   ├── 倉位調整          # 風險評估後自動調倉
 │   │   │   └── 投資組合摘要      # 格式化輸出
 │   │   │
@@ -956,6 +956,7 @@ quantity = riskAmount / (entryPrice × priceRisk)
 | 止盈 | 5% | 每筆交易固定止盈（未經槓桿放大） |
 | 移動止損 | 1.5% | 獲利後啟動 |
 | 否決閾值 | 85% | 風險評分低於此值觸發否決 |
+| **累計 Margin 上限** | **20%** | **所有持倉 margin 總和 ≤ 20% balance（基於 margin 而非 notional，防止槓桿名義值觸發錯誤縮倉）** |
 
 ---
 
@@ -973,7 +974,7 @@ Decision (from HACP, includes leverage 1-10x, clamped by Market Agent)
        │ ✓
        ▼
 ┌───────────────────────┐
-│ 2. Risk Check          │ ← 倉位大小 + 波動率 + cumulative exposure
+│ 2. Risk Check          │ ← 倉位大小 + 波動率 + cumulative margin (margin-based, 20% max)
 └──────┬────────────────┘
        │ ✓ (or adjusted)
        ▼
@@ -2881,7 +2882,7 @@ flowchart LR
 | **🎯 Leverage 2-10x** | ✅ 1.7.0 | **Meta-agent 按風險/信心設定槓桿 · PnL × leverage** |
 | **📊 Order Book Imbalance** | ✅ 1.7.0 | **Futures depth20 stream · 即時不平衡度** |
 | **⚡ Binance Futures WS** | ✅ 1.7.0 | **Perp mark price · fstream.binance.com** |
-| **🔒 Cumulative Position Cap** | ✅ 1.7.0 | **總持倉價值 ≤ 10% balance** |
+| **🔒 Cumulative Position Cap** | ✅ 1.7.0 | **累計持倉 margin ≤ 20% balance（margin-based，非 notional）** |
 
 ### npm Scripts
 
@@ -3194,7 +3195,7 @@ if (finalDecision.action === 'hold' && this.totalCycles % 3 === 0 && !patternLow
 │  │         + REST polling (30s fallback, HL rate-limiter: 8 tokens/3s)    │
 │  ├─ 決策: 300s cycle [Multi-Symbol: 每個 Agent 評估 N+1 交易對]            │
 │  ├─ 倉位: Market Agent 設定 positionSizePct + leverage (UI slider 控制)          │
-│  │        累計持倉價值 ≤ 10% balance                                       │
+│  │        累計持倉 margin ≤ 20% balance（margin-based check）                                 │
 │  ├─ P0 執行品質模組 (v2.0.2):                                            │
 │  │   ├─ cost-model.ts        → HL 交易成本 (taker 0.04%, funding)         │
 │  │   ├─ execution-tracker.ts → 滑點/費用記錄                              │
