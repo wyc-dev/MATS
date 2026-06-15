@@ -110,26 +110,29 @@ export class PaperTradingEngine {
     }
 
     // ── Cumulative position value check ──
-    // Total position value (all open positions × current price × leverage)
-    // must not exceed 10% of balance. This prevents over-leveraging.
+    // Only check UNLEVERAGED position value (margin at risk) against balance.
+    // Leveraged notional can legitimately exceed balance — that's the point of
+    // leverage. E.g., 10% position at 10x = 100% notional, which is fine.
+    // This check prevents total MARGIN across all positions from exceeding
+    // a reasonable % of balance (not the leveraged notional).
     const portfolio = this.portfolio.getPortfolio();
-    let totalExposure = 0;
+    let totalMarginExposure = 0;
     for (const [, pos] of portfolio.positions) {
-      totalExposure += pos.quantity * pos.currentPrice * (pos.leverage ?? 1);
+      totalMarginExposure += pos.quantity * pos.averageEntryPrice; // margin, not notional
     }
-    const newExposure = quantity * price * (decision.leverage ?? 1);
-    const totalAfter = totalExposure + newExposure;
-    const maxExposure = portfolio.balance * 0.10; // 10% of balance
+    const newMargin = quantity * price; // margin for the new position
+    const totalMarginAfter = totalMarginExposure + newMargin;
+    const maxMargin = portfolio.balance * 0.20; // 20% of balance max total margin
 
-    if (totalAfter > maxExposure) {
+    if (totalMarginAfter > maxMargin) {
       // Try to scale down the new position to fit within limit
-      const allowedNewExposure = Math.max(0, maxExposure - totalExposure);
-      if (allowedNewExposure > 0) {
-        const scaledQuantity = allowedNewExposure / (price * (decision.leverage ?? 1));
-        log.info(`Position scaled down: ${quantity.toFixed(6)} → ${scaledQuantity.toFixed(6)} (cumulative exposure ${((totalAfter / portfolio.balance) * 100).toFixed(1)}% > 10%)`);
+      const allowedNewMargin = Math.max(0, maxMargin - totalMarginExposure);
+      if (allowedNewMargin > 0) {
+        const scaledQuantity = allowedNewMargin / price;
+        log.info(`Position scaled down: ${quantity.toFixed(6)} → ${scaledQuantity.toFixed(6)} (cumulative margin ${((totalMarginAfter / portfolio.balance) * 100).toFixed(1)}% > 20%)`);
         return [await this.executeOrder(decision, scaledQuantity, price)];
       } else {
-        const err = `Cumulative position value $${totalAfter.toFixed(2)} exceeds 10% of balance $${portfolio.balance.toFixed(2)}. Cannot open new position.`;
+        const err = `Cumulative margin $${totalMarginAfter.toFixed(2)} exceeds 20% of balance $${portfolio.balance.toFixed(2)}. Cannot open new position.`;
         log.warn(err);
         return [{ order: this.createRejectedOrder(decision, err), error: err }];
       }
