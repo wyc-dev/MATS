@@ -1,7 +1,7 @@
 # {MATS} — Multi-Agent Trading System
 
 > **A self-evolving, multi-agent quantitative trading framework powered by the Hyper-Accelerated Cognition Protocol (HACP).**  
-> Institutional-grade paper trading simulation across Binance and Hyperliquid markets.
+> Institutional-grade paper trading simulation across Hyperliquid markets.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -85,9 +85,6 @@ cp .env.example .env
 At minimum, set the following in `.env`:
 
 ```env
-# ─── Binance API Key (free, read-only) ───
-BINANCE_API_KEY=your_binance_api_key_here
-
 # ─── Ollama (local LLM) ───
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud
@@ -104,9 +101,8 @@ npm start
 
 On first launch, the system will:
 1. Auto-detect the LLM provider (Ollama → NVIDIA NIM fallback)
-2. Connect to Binance WebSocket for real-time market data
-3. Start the HACP decision cycle (every 60 seconds by default)
-4. Serve the Web UI at `http://localhost:3456`
+2. Start the HACP decision cycle (every 60 seconds by default)
+3. Serve the Web UI at `http://localhost:3456`
 
 ### 7. Access the Dashboard
 
