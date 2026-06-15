@@ -750,8 +750,8 @@ class AMACRFSystem {
         if (p.positions.size === 0) {
           // Use Market Agent constraints for exploration trade sizing
           const maConfig = this.marketAgent.getConfig();
-          const exploreSize = Math.min(maConfig.positionSizePct, 0.05); // cap exploration at 5%
-          const exploreLev = Math.min(maConfig.leverage, 3); // cap exploration at 3x
+          const exploreSize = maConfig.positionSizePct;
+          const exploreLev = maConfig.leverage;
           const direction = combinedState.change24h >= 0 ? 'buy' : 'sell';
           finalDecision = {
             action: direction,
