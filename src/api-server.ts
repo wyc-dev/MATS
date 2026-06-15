@@ -121,6 +121,8 @@ export class APIServer {
   private onMarketAgentSetExchange: ((exchange: ExchangeType) => void) | null = null;
   private onMarketAgentSetAssetType: ((assetType: HyperliquidAssetType) => void) | null = null;
   private onMarketAgentFetchPairs: (() => void) | null = null;
+  private onMarketAgentSetPositionSize: ((pct: number) => void) | null = null;
+  private onMarketAgentSetLeverage: ((lev: number) => void) | null = null;
   private onCandlesRequest: ((symbol: string, interval: string, limit: number) => Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>>) | null = null;
   private onResetTradeHistory: (() => void) | null = null;
 
@@ -182,6 +184,16 @@ export class APIServer {
   /** Register a callback for fetching top pairs */
   setMarketAgentFetchPairsHandler(cb: () => void): void {
     this.onMarketAgentFetchPairs = cb;
+  }
+
+  /** Register a callback for setting position size */
+  setMarketAgentSetPositionSizeHandler(cb: (pct: number) => void): void {
+    this.onMarketAgentSetPositionSize = cb;
+  }
+
+  /** Register a callback for setting leverage */
+  setMarketAgentSetLeverageHandler(cb: (lev: number) => void): void {
+    this.onMarketAgentSetLeverage = cb;
   }
 
   /** Register a callback for fetching candle data */
@@ -482,6 +494,44 @@ export class APIServer {
               res.writeHead(400, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ success: false, message: 'Invalid asset type.' }));
             }
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // POST: set position size (0.01-0.20 = 1%-20%)
+      if (pathname === '/api/market-agent/position-size' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { pct } = JSON.parse(body) as { pct: number };
+            const clamped = Math.max(0.01, Math.min(0.20, pct));
+            if (this.onMarketAgentSetPositionSize) this.onMarketAgentSetPositionSize(clamped);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, message: `Position size set to ${(clamped * 100).toFixed(1)}%` }));
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // POST: set leverage (1-10)
+      if (pathname === '/api/market-agent/leverage' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { leverage } = JSON.parse(body) as { leverage: number };
+            const clamped = Math.max(1, Math.min(10, Math.round(leverage)));
+            if (this.onMarketAgentSetLeverage) this.onMarketAgentSetLeverage(clamped);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, message: `Leverage set to ${clamped}x` }));
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));

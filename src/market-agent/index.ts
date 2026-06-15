@@ -24,6 +24,8 @@ const DEFAULT_CONFIG: MarketAgentConfig = {
   exchange: 'hyperliquid',
   selectedSymbol: '',
   hyperliquidAssetType: 'crypto_perps',
+  positionSizePct: 0.10,
+  leverage: 10,
   updatedAt: Date.now(),
 };
 
@@ -148,6 +150,22 @@ export class MarketAgent {
     if (this.onSymbolChange) {
       this.onSymbolChange(symbol);
     }
+  }
+
+  setPositionSizePct(pct: number): void {
+    const clamped = Math.max(0.01, Math.min(0.20, pct));
+    if (Math.abs(this.config.positionSizePct - clamped) < 0.001) return;
+    this.config.positionSizePct = clamped;
+    this.config.updatedAt = Date.now();
+    log.info(`Position size changed: ${(clamped * 100).toFixed(1)}%`);
+  }
+
+  setLeverage(lev: number): void {
+    const clamped = Math.max(1, Math.min(10, Math.round(lev)));
+    if (this.config.leverage === clamped) return;
+    this.config.leverage = clamped;
+    this.config.updatedAt = Date.now();
+    log.info(`Leverage changed: ${clamped}x`);
   }
 
   /** Register callback for symbol changes */
