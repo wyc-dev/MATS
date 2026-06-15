@@ -744,8 +744,11 @@ class AMACRFSystem {
       // 3.5 Exploration trade: if consensus is HOLD but we haven't traded in 3+ cycles,
       // force a tiny exploratory position to generate evolution data.
       // This fires even after Risk Auditor veto — the system NEEDS trade data to evolve.
+      // BUT: if pattern classifier shows <30% win rate for this direction, skip.
       let finalDecision = result.consensus.decision;
-      if (finalDecision.action === 'hold' && this.totalCycles > 2 && this.totalCycles % 3 === 0) {
+      const patternLowWinRateExploration = finalDecision.action === 'hold' && this.lastPatternContext
+        && (this.lastPatternContext.includes('⚠️ Low win rate') || this.lastPatternContext.includes('🔴'));
+      if (finalDecision.action === 'hold' && this.totalCycles > 2 && this.totalCycles % 3 === 0 && !patternLowWinRateExploration) {
         const p = this.portfolio.getPortfolio();
         if (p.positions.size === 0) {
           // Use Market Agent constraints for exploration trade sizing
@@ -791,6 +794,25 @@ class AMACRFSystem {
             perPositionCloseReports.push({ order: {} as any, trade });
             log.info(`  → Closed ${posSymbol}: PnL $${trade.pnl.toFixed(2)}`);
           }
+        }
+      }
+
+      // ── P0: Pattern Classifier Hard Circuit Breaker ──
+      // If pattern data from the previous cycle shows < 50% win rate for this
+      // decision direction, override to HOLD — agents saw the warning but ignored it.
+      if (finalDecision.action !== 'hold' && this.lastPatternContext) {
+        const direction = finalDecision.action === 'buy' ? 'BUY' : 'SELL';
+        if (this.lastPatternContext.includes('⚠️ Low win rate') &&
+            this.lastPatternContext.includes(`${direction} ENTRY PATTERN INSIGHTS`)) {
+          log.warn(`🛑 Pattern classifier circuit breaker: ${direction} has low historical win rate — overriding to HOLD`);
+          finalDecision = {
+            action: 'hold',
+            symbol: finalDecision.symbol,
+            positionSizePct: 0,
+            leverage: 1,
+            rationale: `[PATTERN BLOCKED] ${direction} has low win rate historically in current conditions. ${finalDecision.rationale}`,
+            urgency: 'immediate',
+          };
         }
       }
 
