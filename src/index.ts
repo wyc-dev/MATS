@@ -755,7 +755,10 @@ class AMACRFSystem {
           const maConfig = this.marketAgent.getConfig();
           const exploreSize = maConfig.positionSizePct;
           const exploreLev = maConfig.leverage;
-          const direction = combinedState.change24h >= 0 ? 'buy' : 'sell';
+          // Short-term direction: alternate buy/sell every other exploration
+          // to generate balanced evolution data. 24h change is meaningless
+          // for scalping — we need both directions to learn.
+          const direction = (this.totalCycles % 6 === 0) ? 'sell' : 'buy';
           finalDecision = {
             action: direction,
             symbol: activeSymbolUpper,
