@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.2-dev  
+> **版本**: 2.0.3-dev  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~17,200+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -294,7 +294,7 @@
 │   │   │   ├── updateConvergence()  # M-step: 比對 insight vs 價格方向
 │   │   │   └── buildConvergenceAuditContext() # Skeptics 跨 cycle 審計
 │   │   │
-│   │   ├── trade-pattern-classifier.ts # 🧬 Trade Pattern Classifier (v2.0.2)
+│   │   ├── trade-pattern-classifier.ts # 🧬 Trade Pattern Classifier (v2.0.3 — Circuit Breaker)
 │   │   │   ├── snapshotContext()       # Trade open → 記錄 entry context
 │   │   │   ├── backfillOutcome()       # Trade close → 補上 exit context
 │   │   │   ├── queryEntry()            # 冇持倉 → 查 entry pattern win rate
@@ -2165,6 +2165,38 @@ Best similar transition (82% match):
 | Query cache | ~10 entries | TTL 300s, >1% price move bust |
 | Persistence | atomic write | `data/evolution/trade-patterns.json` |
 
+### Pattern Classifier Hard Circuit Breaker（v2.0.3）
+
+Pattern Classifier 不僅 inject context 俾 Agent，還作為**硬性 Circuit Breaker**：
+
+```
+Cycle N: Trade close → backfillOutcome() → 記錄 win/loss
+       → queryEntry() → winRate = 33%
+       → formatEntryContext() → inject warning into marketDesc for next cycle
+       
+Cycle N+1: Agents see "⚠️ Low win rate (33%) for similar BUY entries — STRONG bias"
+         → HACP debate (agents MAY ignore warning)
+         → Phase 4.5 (Market Agent constraints)
+         → Pattern Classifier Circuit Breaker:
+             if finalDecision.action === 'buy' AND patternContext contains:
+               "⚠️ Low win rate" + "BUY ENTRY PATTERN INSIGHTS"
+             → override to HOLD
+             rationale: "[PATTERN BLOCKED] BUY has low win rate historically..."
+```
+
+**Circuit Breaker 規則：**
+
+| 條件 | 閾值 | 行為 |
+|:------|:----:|:------|
+| Entry query match count | ≥ 3 | 有足夠歷史數據做判斷 |
+| Entry win rate | < 50% | ⚠️ Warning + **強制 Override to HOLD** |
+| Entry win rate | ≥ 50% | ✅ 允許交易（由 Agents 決定） |
+| 方向匹配 | `finalDecision.action` vs pattern direction | 只 block 同方向 BUY/SELL |
+
+**兩個路徑都受 Circuit Breaker 約束：**
+1. **HACP 共識交易** — Phase 4.5 之後檢查
+2. **Exploration trade** — 如果 pattern 顯示低勝率，跳過（唔開 exploration）
+
 ### 錯誤處理
 
 ```typescript
@@ -3130,35 +3162,32 @@ SystemGuard.check() 本身拋錯 → log.critical → { blocked: false } (fail o
 
 ### Exploration Trade 機制
 
-每 3 個決策週期，若 consensus 為 HOLD 且無持倉，系統強制開一個微型倉位以產生 evolution 數據。倉位大小和槓桿直接使用 Market Agent 的設定值：
+每 3 個決策週期，若 consensus 為 HOLD 且無持倉，系統強制開一個微型倉位以產生 evolution 數據。倉位大小和槓桿直接使用 Market Agent 的設定值。
+
+**⚠️ Pattern Classifier Check**（v2.0.3）：如果 Pattern Classifier 顯示該方向歷史勝率低於 50%，則跳過 exploration trade：
 
 ```typescript
-if (finalDecision.action === 'hold' && this.totalCycles % 3 === 0) {
+const patternLowWinRate = finalDecision.action === 'hold' && this.lastPatternContext
+  && (this.lastPatternContext.includes('⚠️ Low win rate') || this.lastPatternContext.includes('🔴'));
+
+if (finalDecision.action === 'hold' && this.totalCycles % 3 === 0 && !patternLowWinRate) {
+  // 只有 pattern 顯示 OK 先開 exploration trade
   if (p.positions.size === 0) {
     const maConfig = this.marketAgent.getConfig();
-    const exploreSize = maConfig.positionSizePct;  // 使用 Market Agent 設定值
-    const exploreLev = maConfig.leverage;           // 使用 Market Agent 設定值
-    finalDecision = {
-      action: direction,
-      symbol: 'BTCUSDT',
-      positionSizePct: exploreSize,
-      stopLossPct: 0.01,        // 1% 止損
-      takeProfitPct: 0.02,      // 2% 目標
-      leverage: exploreLev,
-      rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev)`,
-      urgency: 'immediate',
-    };
+    const exploreSize = maConfig.positionSizePct;
+    const exploreLev = maConfig.leverage;
+    ...
   }
 }
 ```
 
-**目的**：Evolution 系統需要真實交易數據來計算 fitness 和突變。如果永遠 HOLD，fitness 永遠為 0，永不演化。
+**目的**：Evolution 系統需要真實交易數據來計算 fitness 和突變。如果永遠 HOLD，fitness 永遠為 0，永不演化。但如果 pattern 顯示低勝率，exploration trade 只會浪費手續費，所以跳過。
 
-### 系統架構圖更新（v2.0.2）
+### 系統架構圖更新（v2.0.3）
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│                         MATS v2.0.2                                     │
+│                         MATS v2.0.3                                     │
 │                                                                           │
 │  ├─ LLM: Ollama (deepseek-v4-flash:cloud) [think:false]                   │
 │  ├─ 數據: Hyperliquid WS (l2Book + trades + activeAssetCtx)                │
@@ -3179,7 +3208,7 @@ if (finalDecision.action === 'hold' && this.totalCycles % 3 === 0) {
 │  │   ├─ M-step background → convergence 追蹤 (EMA)                       │
 │  │   ├─ Skeptics 跨 cycle 審計 → convergence < 30% 警報                  │
 │  │   └─ 分層記憶: hot(12) + warm(288) + cold(48 epochs → ~48天)         │
-│  ├─ P0 Trade Pattern Classifier (v2.0.2):                                │
+│  ├─ P0 Trade Pattern Classifier (v2.0.3 — Circuit Breaker <50%):                                │
 │  │   ├─ trade-pattern-classifier.ts → supervised pattern database         │
 │  │   ├─ queryEntry() → 「呢個 entry setup 之前贏幾多次？」               │
 │  │   ├─ queryPosition() → 「呢個 entry→current transition 贏幾多次？」   │
