@@ -1,0 +1,63 @@
+# ─── Dependencies ───
+node_modules/
+ui/node_modules/
+
+# ─── Build output ───
+dist/
+ui/dist/
+
+# ─── Environment & Secrets ───
+.env
+.env.local
+.env.production
+*.key
+*.pem
+*.p12
+
+# ─── OS files ───
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# ─── IDE / Editor ───
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# ─── Internal documents (not for public release) ───
+HANDOFF.md
+IMPLEMENTATION-COMPLETE.md
+SKILL.md
+docs/A2A-INTEGRATION-GUIDE.md
+docs/A2A-QUICK-REF.md
+docs/loop-engineering-blueprint.md
+
+# ─── Logs ───
+logs/
+*.log
+*.log.*
+
+# ─── Loop Engineering (self-learning & self-healing system) ───
+scripts/loop-engineering-memory.md
+scripts/loop-engineering.sh
+scripts/loop-engineering-deep.sh
+scripts/*.log
+
+# ─── Runtime data (generated state, trade history, backtest results) ───
+data/evolution/
+!data/evolution/.gitkeep
+data/*.backup.json
+
+# ─── Temp files ───
+*.tmp
+*.temp
+.cache/
+
+# ─── TypeScript ───
+*.tsbuildinfo
+
+# ─── Docker ───
+.docker/

@@ -1,0 +1,149 @@
+// ─── Configuration Management ───
+// Validated, typed configuration with env overrides and sensible defaults
+
+import { z } from 'zod';
+import { config as dotenvConfig } from 'dotenv';
+
+dotenvConfig();
+
+const envSchema = z.object({
+  // Binance
+  BINANCE_API_KEY: z.string().min(1),
+  BINANCE_WS_URL: z.string().url().default('wss://stream.binance.com:9443/ws'),
+  BINANCE_FUTURES_WS_URL: z.string().url().default('wss://fstream.binance.com/ws'),
+  BINANCE_REST_URL: z.string().url().default('https://api.binance.com'),
+  BINANCE_FUTURES_REST_URL: z.string().url().default('https://fapi.binance.com'),
+  // Note: BTCUSDT on fstream.binance.com IS the perpetual contract (永續合約).
+
+  // NVIDIA NIM
+  NIM_API_KEY: z.string().optional(),
+  NIM_BASE_URL: z.string().url().default('https://integrate.api.nvidia.com/v1'),
+  NIM_MODEL_DEFAULT: z.string().default('meta/llama-3.3-70b-instruct'),
+  NIM_MODEL_FAST: z.string().default('nvidia/llama-3.1-nemotron-8b-instruct'),
+  NIM_MODEL_STRONG: z.string().default('deepseek-ai/deepseek-r1'),
+
+  // Ollama Backup
+  OLLAMA_BASE_URL: z.string().url().default('http://localhost:11434'),
+  OLLAMA_MODEL_DEFAULT: z.string().default('kimi-k2.6:cloud'),  // Sub-agents default; meta-agent uses deepseek-v4-flash:cloud
+
+  // Paper Trading
+  PAPER_INITIAL_BALANCE: z.coerce.number().positive().default(1000),
+  PAPER_MAX_POSITION_SIZE_PCT: z.coerce.number().min(0).max(1).default(0.20),
+  PAPER_MAX_DRAWDOWN_PCT: z.coerce.number().min(0).max(1).default(0.20),
+  PAPER_DAILY_LOSS_LIMIT_PCT: z.coerce.number().min(0).max(1).default(0.05),
+
+  // Risk
+  RISK_MAX_LEVERAGE: z.coerce.number().positive().default(1),
+  RISK_STOP_LOSS_PCT: z.coerce.number().min(0).default(0.02),
+  RISK_TAKE_PROFIT_PCT: z.coerce.number().min(0).default(0.05),
+  RISK_TRAILING_STOP_PCT: z.coerce.number().min(0).default(0.015),
+  RISK_VETO_THRESHOLD: z.coerce.number().min(0).max(1).default(0.85),
+
+  // HACP
+  HACP_PARALLEL_THINKING_TIMEOUT_MS: z.coerce.number().positive().default(15000),
+  HACP_MAX_DEBATE_ROUNDS: z.coerce.number().int().positive().default(3),
+  HACP_CONSENSUS_THRESHOLD: z.coerce.number().min(0).max(1).default(0.60),
+  HACP_TOTAL_TIMEOUT_MS: z.coerce.number().positive().default(120000),
+  HACP_STAGGER_DELAY_MS: z.coerce.number().positive().default(4000),
+
+  // Real Trading — Binance
+  BINANCE_SECRET_KEY: z.string().optional().default(''),
+  BINANCE_USE_FUTURES: z.coerce.boolean().default(true),
+
+  // Real Trading — Hyperliquid
+  HYPERLIQUID_WALLET_ADDRESS: z.string().optional().default(''),
+  HYPERLIQUID_PRIVATE_KEY: z.string().optional().default(''),
+
+  // System
+  LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  HEARTBEAT_INTERVAL_MS: z.coerce.number().positive().default(30000),
+  DECISION_INTERVAL_MS: z.coerce.number().positive().default(60000),
+  NIM_CALL_TIMEOUT_MS: z.coerce.number().positive().default(120000),
+  API_PORT: z.coerce.number().positive().default(3456),
+
+  // Sigmoid·GA
+  GA_POPULATION_SIZE: z.coerce.number().int().positive().default(20),
+  GA_MUTATION_RATE: z.coerce.number().min(0).max(1).default(0.15),
+  GA_CROSSOVER_RATE: z.coerce.number().min(0).max(1).default(0.70),
+});
+
+function parseEnv() {
+  const result = envSchema.safeParse(process.env);
+  if (!result.success) {
+    console.error('❌ Configuration validation failed:');
+    for (const issue of result.error.issues) {
+      console.error(`  - ${issue.path.join('.')}: ${issue.message}`);
+    }
+    process.exit(1);
+  }
+  return result.data;
+}
+
+const raw = parseEnv();
+
+export const config = {
+  binance: {
+    apiKey: raw.BINANCE_API_KEY,
+    wsUrl: raw.BINANCE_WS_URL,
+    futuresWsUrl: raw.BINANCE_FUTURES_WS_URL,
+    restUrl: raw.BINANCE_REST_URL,
+    futuresRestUrl: raw.BINANCE_FUTURES_REST_URL,
+  },
+  nim: {
+    apiKey: raw.NIM_API_KEY,
+    baseUrl: raw.NIM_BASE_URL,
+    models: {
+      default: raw.NIM_MODEL_DEFAULT,
+      fast: raw.NIM_MODEL_FAST,
+      strong: raw.NIM_MODEL_STRONG,
+    },
+    timeoutMs: raw.NIM_CALL_TIMEOUT_MS,
+  },
+  ollama: {
+    baseUrl: raw.OLLAMA_BASE_URL,
+    modelDefault: raw.OLLAMA_MODEL_DEFAULT,
+  },
+  paper: {
+    initialBalance: raw.PAPER_INITIAL_BALANCE,
+    maxPositionSizePct: raw.PAPER_MAX_POSITION_SIZE_PCT,
+    maxDrawdownPct: raw.PAPER_MAX_DRAWDOWN_PCT,
+    dailyLossLimitPct: raw.PAPER_DAILY_LOSS_LIMIT_PCT,
+  },
+  risk: {
+    maxLeverage: raw.RISK_MAX_LEVERAGE,
+    stopLossPct: raw.RISK_STOP_LOSS_PCT,
+    takeProfitPct: raw.RISK_TAKE_PROFIT_PCT,
+    trailingStopPct: raw.RISK_TRAILING_STOP_PCT,
+    vetoThreshold: raw.RISK_VETO_THRESHOLD,
+  },
+  hacp: {
+    parallelThinkingTimeoutMs: raw.HACP_PARALLEL_THINKING_TIMEOUT_MS,
+    maxDebateRounds: raw.HACP_MAX_DEBATE_ROUNDS,
+    consensusThreshold: raw.HACP_CONSENSUS_THRESHOLD,
+    totalTimeoutMs: raw.HACP_TOTAL_TIMEOUT_MS,
+    staggerDelayMs: raw.HACP_STAGGER_DELAY_MS,
+  },
+  realTrading: {
+    binanceSecretKey: raw.BINANCE_SECRET_KEY,
+    binanceUseFutures: raw.BINANCE_USE_FUTURES,
+    hyperliquidWalletAddress: raw.HYPERLIQUID_WALLET_ADDRESS,
+    hyperliquidPrivateKey: raw.HYPERLIQUID_PRIVATE_KEY,
+  },
+  system: {
+    logLevel: raw.LOG_LEVEL,
+    nodeEnv: raw.NODE_ENV,
+    heartbeatIntervalMs: raw.HEARTBEAT_INTERVAL_MS,
+    decisionIntervalMs: raw.DECISION_INTERVAL_MS,
+    apiPort: raw.API_PORT,
+    isProduction: raw.NODE_ENV === 'production',
+    isDevelopment: raw.NODE_ENV === 'development',
+  },
+  ga: {
+    populationSize: raw.GA_POPULATION_SIZE,
+    mutationRate: raw.GA_MUTATION_RATE,
+    crossoverRate: raw.GA_CROSSOVER_RATE,
+  },
+} as const;
+
+export type AppConfig = typeof config;

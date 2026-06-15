@@ -1,0 +1,1072 @@
+// ─── Hyper-Accelerated Cognition Protocol (HACP) ───
+// The core intelligence engine — parallel thinking, structured debate, fast consensus
+
+import { v4 as uuidv4 } from 'uuid';
+import { createLogger } from '../observability/logger.ts';
+import { getActiveProvider } from '../llm/index.ts';
+import { config } from '../config/index.ts';
+import { parseA2ASignal, formatA2ASignal } from './a2a-utils.ts';
+import { normalizeDecision, MAX_POSITION_PCT } from '../trading/decision-utils.ts';
+import type {
+  AgentThought,
+  ConsensusResult,
+  DebateRound,
+  DebateStatement,
+  MarketState,
+  TradingDecision,
+  Vote,
+  CycleProgress,
+  AgentProgress,
+  AgentRole,
+  PositionAdjustment,
+  PositionContext,
+  CycleSummary,
+} from '../types/index.ts';
+import type { BaseAgent } from '../agents/base-agent.ts';
+import type { IndependentRiskAuditor, SkepticsAgent, SkepticsReview } from '../agents/agents.ts';
+import { buildConvergenceAuditContext } from '../evolution/cycle-summary.ts';
+
+const log = createLogger({ phase: 'hacp' });
+
+// clampPositionSize() replaced by centralized normalizeDecision() in src/trading/decision-utils.ts
+
+export interface HACPResult {
+  consensus: ConsensusResult;
+  allThoughts: AgentThought[];
+  debateRounds: DebateRound[];
+  durationMs: number;
+  /** Position adjustments (TP/SL) for existing positions, if any */
+  positionAdjustments?: PositionAdjustment[];
+  /** E-step: Meta-Agent's distilled summary for EM loop (if built) */
+  cycleSummary?: CycleSummary;
+}
+
+export type HACPProgressCallback = (progress: CycleProgress) => void;
+
+export class HACPEngine {
+  private readonly metaAgent: BaseAgent;
+  private readonly riskAuditor: IndependentRiskAuditor;
+  private readonly skeptics: SkepticsAgent;
+  private readonly subAgents: BaseAgent[];
+  private readonly maxRounds: number;
+  private consensusThreshold: number;
+  private readonly totalTimeoutMs: number;
+  private onProgress: HACPProgressCallback | null = null;
+  /** Dynamic threshold tracking */
+  private cyclesWithoutTrade = 0;
+  private consecutiveLosses = 0;
+
+  constructor(
+    metaAgent: BaseAgent,
+    riskAuditor: IndependentRiskAuditor,
+    skepticsAgent: SkepticsAgent,
+    subAgents: BaseAgent[]
+  ) {
+    this.metaAgent = metaAgent;
+    this.riskAuditor = riskAuditor;
+    this.skeptics = skepticsAgent;
+    this.subAgents = subAgents;
+    this.maxRounds = config.hacp.maxDebateRounds;
+    this.consensusThreshold = config.hacp.consensusThreshold;
+    this.totalTimeoutMs = config.hacp.totalTimeoutMs;
+  }
+
+  /** Register a callback for real-time progress updates */
+  setProgressCallback(cb: HACPProgressCallback): void {
+    this.onProgress = cb;
+  }
+
+  private emitProgress(phase: CycleProgress['phase'], agentProgress: AgentProgress[], round?: number): void {
+    if (this.onProgress) {
+      this.onProgress({
+        phase,
+        round,
+        totalRounds: this.maxRounds,
+        agentProgress,
+        startTime: Date.now(),
+      });
+    }
+  }
+
+  private makeAgentProgressList(): AgentProgress[] {
+    const allAgents: { role: AgentRole; name: string }[] = [
+      ...this.subAgents.map(a => ({ role: a.identity.role, name: a.identity.name })),
+      { role: 'skeptics', name: 'Skeptics' },
+      { role: this.metaAgent.identity.role, name: this.metaAgent.identity.name },
+      { role: this.riskAuditor.identity.role, name: this.riskAuditor.identity.name },
+    ];
+    return allAgents.map(a => ({
+      agentRole: a.role,
+      status: 'waiting' as const,
+    }));
+  }
+
+  /**
+   * Get current dynamic consensus threshold value
+   */
+  getCurrentThreshold(): number {
+    return this.consensusThreshold;
+  }
+
+  /**
+   * Dynamically adjust consensus threshold based on market conditions:
+   * - No trade for a while → lower threshold to encourage action
+   * - Consecutive losses → raise threshold to be more conservative
+   * - High vol regime → lower threshold (opportunity)
+   * - Chaotic regime → raise threshold (caution)
+   *
+   * Called externally from MATSSystem.runDecisionCycle() after each cycle,
+   * where we have full context (regime, trade outcome).
+   */
+  adjustThreshold(currentRegime?: string, hadRealTrade?: boolean, wasProfitable?: boolean): void {
+    const initial = config.hacp.consensusThreshold;
+
+    // Track cycles without a real trade
+    if (!hadRealTrade) {
+      this.cyclesWithoutTrade++;
+    } else {
+      this.cyclesWithoutTrade = 0;
+      if (wasProfitable) {
+        this.consecutiveLosses = 0;
+      } else {
+        this.consecutiveLosses++;
+      }
+    }
+
+    let adj = 0;
+
+    // No trade decay: lower threshold slowly to encourage taking shots
+    if (this.cyclesWithoutTrade > 0) {
+      adj -= Math.min(this.cyclesWithoutTrade * 0.02, 0.25);
+    }
+
+    // Consecutive losses: raise threshold
+    if (this.consecutiveLosses >= 2) {
+      adj += Math.min(this.consecutiveLosses * 0.05, 0.15);
+    }
+
+    // Regime-aware
+    if (currentRegime === 'high_volatility' || currentRegime === 'breakout') {
+      adj -= 0.05; // Opportunity! lower barrier
+    } else if (currentRegime === 'chaotic' || currentRegime === 'unknown') {
+      adj += 0.10; // Danger! raise barrier
+    }
+
+    const newThreshold = Math.max(0.40, Math.min(0.85, initial + adj));
+    if (Math.abs(newThreshold - this.consensusThreshold) > 0.005) {
+      log.info(`Consensus threshold: ${(this.consensusThreshold * 100).toFixed(0)}% → ${(newThreshold * 100).toFixed(0)}% (idle=${this.cyclesWithoutTrade}, lossStreak=${this.consecutiveLosses}, regime=${currentRegime ?? '?'})`);
+    }
+    this.consensusThreshold = newThreshold;
+  }
+
+  async executeDecisionCycle(
+    marketStateDesc: string,
+    portfolioDesc: string,
+    /** Current open positions for TP/SL adjustment */
+    currentPositions?: Array<{ id: string; symbol: string; side: string; entryPrice: number; currentPrice: number; stopLoss?: number; takeProfit?: number; leverage?: number; quantity?: number; exchange?: string }>,
+    /** Previous cycle summary chain — injected into Meta-Agent context for EM continuity */
+    emContext?: string,
+    /** Cycle summaries for Skeptics convergence audit */
+    recentSummaries?: CycleSummary[],
+  ): Promise<HACPResult> {
+    const startTime = performance.now();
+    const allThoughts: AgentThought[] = [];
+    const debateRounds: DebateRound[] = [];
+    const deadline = Date.now() + this.totalTimeoutMs;
+
+    // Convert positions → PositionContext[]
+    const posCtx: PositionContext[] = (currentPositions ?? []).map(p => {
+      const qty = p.quantity ?? 0;
+      const lev = p.leverage ?? 1;
+      let pnl: number;
+      let pnlPct: number;
+      if (p.side === 'buy') {
+        pnl = (p.currentPrice - p.entryPrice) * qty * lev;
+        pnlPct = p.entryPrice > 0 ? ((p.currentPrice - p.entryPrice) / p.entryPrice) * lev : 0;
+      } else {
+        pnl = (p.entryPrice - p.currentPrice) * qty * lev;
+        pnlPct = p.entryPrice > 0 ? ((p.entryPrice - p.currentPrice) / p.entryPrice) * lev : 0;
+      }
+      return {
+        id: p.id,
+        symbol: p.symbol,
+        side: (p.side as 'buy' | 'sell'),
+        quantity: qty,
+        averageEntryPrice: p.entryPrice,
+        currentPrice: p.currentPrice,
+        unrealizedPnl: pnl,
+        unrealizedPnlPct: pnlPct,
+        stopLossPrice: p.stopLoss,
+        takeProfitPrice: p.takeProfit,
+        leverage: lev,
+        exchange: p.exchange ?? 'hyperliquid',
+      };
+    });
+
+    log.info('🚀 HACP cycle started', {
+      agents: this.subAgents.length + 2,
+      maxRounds: this.maxRounds,
+      deadline: new Date(deadline).toISOString(),
+      positions: posCtx.length,
+    });
+
+    // Emit initial progress
+    this.emitProgress('thinking', this.makeAgentProgressList());
+
+    // ═══════════════════════════════════════════════════
+    // PHASE 1: Parallel Thinking (all agents think simultaneously)
+    // ═══════════════════════════════════════════════════
+
+    log.info('Phase 1: Parallel Thinking — all agents analyzing market...');
+
+    // Staggered calls to avoid overloading Ollama
+    const staggerDelayMs = config.hacp.staggerDelayMs;
+
+    const thinkingPromises = this.subAgents.map(async (agent, idx) => {
+      if (idx > 0) {
+        const delay = idx * staggerDelayMs;
+        log.debug(`Staggered call: ${agent.identity.name} will start in ${delay}ms`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+
+      // Emit: this agent is now thinking
+      const progress = this.makeAgentProgressList();
+      const progIdx = progress.findIndex(p => p.agentRole === agent.identity.role);
+      if (progIdx >= 0) {
+        progress[progIdx]!.status = 'thinking';
+        progress[progIdx]!.startedAt = Date.now();
+      }
+      this.emitProgress('thinking', progress);
+
+      const result = await agent.think(marketStateDesc, portfolioDesc, posCtx);
+
+      // Emit: this agent finished thinking
+      const progress2 = this.makeAgentProgressList();
+      const progIdx2 = progress2.findIndex(p => p.agentRole === agent.identity.role);
+      if (progIdx2 >= 0) {
+        progress2[progIdx2]!.status = 'done';
+        progress2[progIdx2]!.thought = result.thought;
+        progress2[progIdx2]!.confidence = result.confidence;
+        progress2[progIdx2]!.decision = result.metadata?.['decision'] as TradingDecision | undefined;
+        progress2[progIdx2]!.latencyMs = result.metadata?.['latency'] as number | undefined;
+        progress2[progIdx2]!.completedAt = Date.now();
+      }
+      this.emitProgress('thinking', progress2);
+
+      return result;
+    });
+
+    const agentResults = await Promise.all(thinkingPromises);
+    allThoughts.push(...agentResults);
+
+    // ── Risk Auditor Phase 1 assessment ──
+    log.info('Risk Auditor providing preliminary Phase 1 assessment...');
+    const riskProg = this.makeAgentProgressList();
+    const rIdx = riskProg.findIndex(p => p.agentRole === 'independent_risk_auditor');
+    if (rIdx >= 0) { riskProg[rIdx]!.status = 'thinking'; riskProg[rIdx]!.startedAt = Date.now(); }
+    this.emitProgress('thinking', riskProg);
+    const riskThought = await this.riskAuditor.think(marketStateDesc, portfolioDesc, posCtx);
+    const riskProg2 = this.makeAgentProgressList();
+    const rIdx2 = riskProg2.findIndex(p => p.agentRole === 'independent_risk_auditor');
+    if (rIdx2 >= 0) { riskProg2[rIdx2]!.status = 'done'; riskProg2[rIdx2]!.thought = riskThought.thought; riskProg2[rIdx2]!.confidence = riskThought.confidence; riskProg2[rIdx2]!.decision = riskThought.metadata?.['decision'] as TradingDecision | undefined; riskProg2[rIdx2]!.completedAt = Date.now(); }
+    this.emitProgress('thinking', riskProg2);
+    allThoughts.push(riskThought);
+
+    log.info(`Phase 1 complete — ${allThoughts.length} thoughts generated.`, {
+      confidences: allThoughts.map((t) => `${t.agentRole.slice(0, 12)}:${t.confidence.toFixed(2)}`),
+    });
+
+    // ═══════════════════════════════════════════════════
+    // PHASE 1.5: Skeptics Review — challenges 5 sub-agents
+    // (Meta-Agent has NOT thought yet — it will receive Skeptics' findings)
+    // ═══════════════════════════════════════════════════
+
+    log.info('🤔 Skeptics reviewing agent decisions for logical consistency...');
+    let skepticsOverridden = false;
+    let skepticsReviews: SkepticsReview[] = [];
+    try {
+      const emitProg = this.makeAgentProgressList();
+      const skIdx = emitProg.findIndex(p => p.agentRole === 'skeptics');
+      if (skIdx >= 0) emitProg[skIdx]!.status = 'thinking';
+      this.emitProgress('auditing', emitProg);
+
+      // Build convergence audit context for Skeptics (EM cross-cycle check)
+      const convergenceCtx = recentSummaries && recentSummaries.length >= 2
+        ? buildConvergenceAuditContext(recentSummaries, ['up', 'down', 'flat'])  // simplified: just patterns
+        : '';
+      const skepticsContext = convergenceCtx
+        ? `${marketStateDesc}\n${convergenceCtx}`
+        : marketStateDesc;
+      skepticsReviews = await this.skeptics.review(allThoughts, skepticsContext, portfolioDesc, marketStateDesc);
+
+      // Build skeptics own thought summary
+      const approvedCount = skepticsReviews.filter(r => r.approved).length;
+      const modifiedCount = skepticsReviews.filter(r => !r.approved).length;
+      const skepticsThoughtText = skepticsReviews.length > 0
+        ? `Reviewed ${skepticsReviews.length} agents: ${approvedCount} approved, ${modifiedCount} modified. ${modifiedCount > 0 ? skepticsReviews.filter(r => !r.approved).map(r => `[${r.agentRole}] ${r.skepticismRationale.slice(0, 120)}`).join(' | ') : 'No logical inconsistencies detected.'}`
+        : 'Skeptics review completed — no agents to review.';
+
+      // Push skeptics thought into allThoughts
+      const skepticsThought: AgentThought = {
+        agentId: uuidv4(),
+        agentRole: 'skeptics',
+        thought: skepticsThoughtText,
+        confidence: modifiedCount === 0 ? 1.0 : 0.6,
+        timestamp: Date.now(),
+        metadata: {
+          decision: { action: 'hold', symbol: 'UNKNOWN', positionSizePct: 0, leverage: 1, rationale: 'Skeptics do not trade; they audit.', urgency: 'patient' } as TradingDecision,
+          skepticsReviews,
+          latency: Math.round(performance.now() - startTime),
+        },
+      };
+      allThoughts.push(skepticsThought);
+
+      // Emit done progress for skeptics
+      const skProgDone = this.makeAgentProgressList();
+      const skDoneIdx = skProgDone.findIndex(p => p.agentRole === 'skeptics');
+      if (skDoneIdx >= 0) {
+        skProgDone[skDoneIdx]!.status = 'done';
+        skProgDone[skDoneIdx]!.thought = skepticsThoughtText;
+        skProgDone[skDoneIdx]!.confidence = modifiedCount === 0 ? 1.0 : 0.6;
+        skProgDone[skDoneIdx]!.completedAt = Date.now();
+      }
+      this.emitProgress('auditing', skProgDone);
+
+      // Apply skeptics modifications to allThoughts
+      for (const review of skepticsReviews) {
+        if (!review.approved && review.modifiedDecision) {
+          skepticsOverridden = true;
+          const targetIdx = allThoughts.findIndex(t => t.agentRole === review.agentRole);
+          if (targetIdx >= 0) {
+            const orig = allThoughts[targetIdx]!;
+            allThoughts[targetIdx] = {
+              ...orig,
+              thought: `[Skeptics Modified] ${orig.thought}`,
+              confidence: review.modifiedConfidence ?? orig.confidence * 0.8,
+              metadata: {
+                ...orig.metadata,
+                multiSymbolDecision: review.modifiedDecision,
+                decision: {
+                  action: review.modifiedDecision.marketTicker.action,
+                  symbol: review.modifiedDecision.marketTicker.symbol,
+                  positionSizePct: review.modifiedDecision.marketTicker.positionSizePct,
+                  leverage: review.modifiedDecision.marketTicker.leverage,
+                  rationale: `[Skeptics] ${review.modifiedDecision.marketTicker.rationale}`,
+                  urgency: 'patient',
+                } as TradingDecision,
+              },
+            };
+            log.warn(`⚠️ Skeptics modified ${review.agentRole}: ${review.skepticismRationale.slice(0, 120)}`);
+          }
+        }
+      }
+
+      if (skepticsOverridden) {
+        log.warn(`🚩 Skeptics overrode ${skepticsReviews.filter(r => !r.approved).length} agent(s)`);
+      } else {
+        log.info('✅ All agents approved by Skeptics.');
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn(`Skeptics review failed: ${msg}. Continuing without modifications.`);
+    }
+
+    // Build a skeptics context string for Meta-Agent
+    const skepticsContextStr = skepticsReviews.length > 0
+      ? `\n\n=== Skeptics Review Results ===\n${skepticsReviews.map(r =>
+          `[${r.agentRole}] ${r.approved ? '✅ APPROVED' : '⚠️ MODIFIED'}: ${r.skepticismRationale}`
+        ).join('\n')}`
+      : '';
+
+    // ═══════════════════════════════════════════════════
+    // PHASE 1.75: Meta-Agent thinks AFTER Skeptics review
+    // (receives both original agent thoughts + Skeptics modifications)
+    // ═══════════════════════════════════════════════════
+
+    log.info('Meta-Agent thinking with broader context (incl. Skeptics review)...');
+    const metaProgress = this.makeAgentProgressList();
+    const metaIdx = metaProgress.findIndex(p => p.agentRole === 'meta_agent');
+    if (metaIdx >= 0) { metaProgress[metaIdx]!.status = 'thinking'; metaProgress[metaIdx]!.startedAt = Date.now(); }
+    this.emitProgress('thinking', metaProgress);
+
+    // Build enhanced market context that includes skeptics findings + EM chain
+    const enhancedMetaContext = `${marketStateDesc}${skepticsContextStr}${emContext ? `\n${emContext}` : ''}`;
+    const metaThought = await this.metaAgent.think(enhancedMetaContext, portfolioDesc, posCtx);
+
+    const metaProg2 = this.makeAgentProgressList();
+    const metaIdx2 = metaProg2.findIndex(p => p.agentRole === 'meta_agent');
+    if (metaIdx2 >= 0) { metaProg2[metaIdx2]!.status = 'done'; metaProg2[metaIdx2]!.thought = metaThought.thought; metaProg2[metaIdx2]!.confidence = metaThought.confidence; metaProg2[metaIdx2]!.decision = metaThought.metadata?.['decision'] as TradingDecision | undefined; metaProg2[metaIdx2]!.completedAt = Date.now(); }
+    this.emitProgress('thinking', metaProg2);
+    allThoughts.push(metaThought);
+
+    // Attach skeptics review data to meta-thought's metadata for downstream use
+    if (skepticsReviews.length > 0) {
+      allThoughts[allThoughts.length - 1] = {
+        ...allThoughts[allThoughts.length - 1]!,
+        metadata: {
+          ...allThoughts[allThoughts.length - 1]!.metadata,
+          skepticsReviews,
+          skepticsOverridden,
+        },
+      };
+    }
+
+    // Check if we have enough information for immediate consensus
+    const allHold = allThoughts.every((t) => {
+      const decision = t.metadata?.['decision'] as TradingDecision | undefined;
+      return decision?.action === 'hold';
+    });
+
+    const highConviction = allThoughts.filter((t) => t.confidence > 0.7).length;
+    const strongDisagreement = allThoughts.some((t) => t.confidence < 0.2);
+
+    // Skip debate if all agents agree on HOLD with high conviction
+    // Now includes all 5 agents (3 sub-agents + meta-agent + risk auditor)
+    if (allHold && highConviction >= allThoughts.length - 1) {
+      log.info('Skipping debate: unanimous HOLD with high conviction.');
+      const consensus = this.buildConsensus(allThoughts, [], true, false);
+      const adjustments = await this.adjustPositions(marketStateDesc, currentPositions);
+      return {
+        consensus,
+        allThoughts,
+        debateRounds: [],
+        durationMs: Math.round(performance.now() - startTime),
+        positionAdjustments: adjustments,
+      };
+    }
+
+    // ═══════════════════════════════════════════════════
+    // PHASE 2: Structured Rapid Debate (up to 3 rounds)
+    // ═══════════════════════════════════════════════════
+
+    let currentContext = this.buildDebateContext(allThoughts);
+    let consensusReached = false;
+    let finalConsensus: ConsensusResult | null = null;
+
+    for (let round = 1; round <= this.maxRounds; round++) {
+      if (Date.now() > deadline) {
+        log.warn(`HACP deadline exceeded at round ${round}. Forcing consensus.`);
+        break;
+      }
+
+      log.info(`Phase 2 — Debate Round ${round}/${this.maxRounds}`);
+
+      const roundStatements: DebateStatement[] = [];
+
+      // Track A2A token savings
+      let a2aParsedCount = 0;
+
+      // Round 1: Arguments (strongest point)
+      // Round 2: Attack/Reinforce
+      // Round 3: Synthesis
+
+      let phase: 'argument' | 'attack' | 'synthesis';
+
+      if (round === 1) {
+        phase = 'argument';
+      } else if (round < this.maxRounds) {
+        phase = 'attack';
+      } else {
+        phase = 'synthesis';
+      }
+
+      // In parallel, each agent generates their statement
+      const statementPromises = this.subAgents.map(async (agent, idx) => {
+        const targetThought = phase === 'attack'
+          ? this.findWeakestThought(idx, allThoughts)
+          : undefined;
+
+        // Emit: agent debating
+        const debateProg = this.makeAgentProgressList();
+        const dIdx = debateProg.findIndex(p => p.agentRole === agent.identity.role);
+        if (dIdx >= 0) {
+          debateProg[dIdx]!.status = 'thinking';
+          debateProg[dIdx]!.startedAt = Date.now();
+        }
+        this.emitProgress('debating', debateProg, round);
+
+        try {
+          const result = await agent.generateDebateStatement(
+            phase,
+            currentContext,
+            targetThought
+          );
+
+          // Emit: agent done debating
+          const debateProg2 = this.makeAgentProgressList();
+          const dIdx2 = debateProg2.findIndex(p => p.agentRole === agent.identity.role);
+          if (dIdx2 >= 0) {
+            debateProg2[dIdx2]!.status = 'done';
+            debateProg2[dIdx2]!.thought = result.content;
+            debateProg2[dIdx2]!.confidence = result.confidence;
+            debateProg2[dIdx2]!.completedAt = Date.now();
+          }
+          this.emitProgress('debating', debateProg2, round);
+
+          return {
+            agentId: agent.identity.id,
+            agentRole: agent.identity.role,
+            content: result.content,
+            targetAgentId: targetThought?.agentId,
+            confidence: result.confidence,
+            type: phase === 'argument'
+              ? 'argument' as const
+              : phase === 'attack'
+                ? 'attack' as const
+                : 'synthesis' as const,
+          };
+        } catch {
+          return {
+            agentId: agent.identity.id,
+            agentRole: agent.identity.role,
+            content: `[${agent.identity.name}] Round ${round} input unavailable.`,
+            confidence: 0.2,
+            type: phase === 'argument'
+              ? 'argument' as const
+              : phase === 'attack'
+                ? 'attack' as const
+                : 'synthesis' as const,
+          } as DebateStatement;
+        }
+      });
+
+      const statements = await Promise.all(statementPromises);
+      roundStatements.push(...statements);
+
+      // Attempt A2A parsing on each statement for structured insights
+      for (const stmt of roundStatements) {
+        const a2a = parseA2ASignal(stmt.content);
+        if (a2a) {
+          a2aParsedCount++;
+          log.debug(`A2A signal [${a2a.type}]: ${formatA2ASignal(a2a)}`);
+        }
+      }
+
+      if (a2aParsedCount > 0) {
+        log.info(`A2A: ${a2aParsedCount}/${roundStatements.length} statements parsed as structured signals`);
+      }
+
+      const debateRound: DebateRound = {
+        roundNumber: round,
+        phase,
+        statements: roundStatements,
+        timestamp: Date.now(),
+      };
+      debateRounds.push(debateRound);
+
+      // After Round 1 (argument): if all agents agree on same action, skip attack/synthesis
+      if (round === 1) {
+        const actions = allThoughts
+          .filter(t => t.agentRole !== 'meta_agent' && t.agentRole !== 'market_agent' && t.agentRole !== 'skeptics' && t.agentRole !== 'independent_risk_auditor')
+          .map(t => {
+            const d = t.metadata?.['decision'] as TradingDecision | undefined;
+            return d?.action ?? 'hold';
+          });
+        const uniqueActions = new Set(actions);
+        if (uniqueActions.size === 1 && actions.length >= 3) {
+          log.info(`Unanimous action "${actions[0]}" after Round 1 — skipping attack/synthesis rounds (saved ${this.maxRounds - 1} rounds)`);
+          const voteResults = await this.runConsensusVote(allThoughts);
+          consensusReached = true;
+          finalConsensus = this.buildConsensus(allThoughts, debateRounds, true, false, voteResults);
+          break;
+        }
+      }
+
+      // Check for consensus after each round
+      if (round >= 2) {
+        const voteResults = await this.runConsensusVote(allThoughts);
+        const weightedScore = this.calcWeightedConsensus(voteResults);
+
+        if (weightedScore >= this.consensusThreshold) {
+          log.info(`Consensus reached at round ${round} (weighted: ${weightedScore.toFixed(3)})`);
+          consensusReached = true;
+          finalConsensus = this.buildConsensus(
+            allThoughts,
+            debateRounds,
+            true,
+            false,
+            voteResults
+          );
+          break;
+        }
+
+        if (strongDisagreement && round >= 2) {
+          // Check if debate is polarizing — may need meta-agent arbitration
+          const polarizing = this.detectPolarization(voteResults);
+          if (polarizing) {
+            log.info('Debate polarizing — invoking meta-agent arbitration.');
+            finalConsensus = await this.metaAgentArbitration(
+              allThoughts,
+              debateRounds,
+              voteResults
+            );
+            consensusReached = true;
+            break;
+          }
+        }
+      }
+
+      // Update context for next round
+      currentContext += `\n\n--- Round ${round} Results ---\n`;
+      for (const st of roundStatements) {
+        currentContext += `[${st.agentRole}] (${st.confidence.toFixed(2)}): ${st.content}\n`;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════
+    // PHASE 3: Consensus & Conclusion Lock
+    // ═══════════════════════════════════════════════════
+
+    // Emit voting phase
+    this.emitProgress('voting', this.makeAgentProgressList());
+
+    if (!finalConsensus) {
+      if (!consensusReached) {
+        log.info('No consensus reached — meta-agent performing final arbitration.');
+        finalConsensus = await this.metaAgentArbitration(
+          allThoughts,
+          debateRounds,
+          null
+        );
+      } else {
+        finalConsensus = this.buildConsensus(allThoughts, debateRounds, true, false);
+      }
+    }
+
+    // ═══════════════════════════════════════════════════
+    // PHASE 4: Risk Auditor Final Veto Check
+    // ═══════════════════════════════════════════════════
+
+    // Emit audit phase
+    const auditProg = this.makeAgentProgressList();
+    const auditIdx = auditProg.findIndex(p => p.agentRole === 'independent_risk_auditor');
+    if (auditIdx >= 0) {
+      auditProg[auditIdx]!.status = 'thinking';
+      auditProg[auditIdx]!.startedAt = Date.now();
+    }
+    this.emitProgress('auditing', auditProg);
+
+    const riskAudit = await this.riskAuditorAudit(finalConsensus.decision);
+
+    // Emit audit done
+    const auditProg2 = this.makeAgentProgressList();
+    const auditIdx2 = auditProg2.findIndex(p => p.agentRole === 'independent_risk_auditor');
+    if (auditIdx2 >= 0) {
+      auditProg2[auditIdx2]!.status = 'done';
+      auditProg2[auditIdx2]!.completedAt = Date.now();
+      auditProg2[auditIdx2]!.thought = riskAudit.veto ? `VETO: ${riskAudit.reason}` : 'Approved — no concerns.';
+    }
+    this.emitProgress('auditing', auditProg2);
+    if (riskAudit.veto) {
+      log.warn('🚨 Independent Risk Auditor VETOED the decision!');
+      finalConsensus.decision = {
+        action: 'hold',
+        symbol: finalConsensus.decision.symbol,
+        positionSizePct: 0,
+        leverage: 1,
+        rationale: `Risk Auditor VETO: ${riskAudit.reason}. Capital preservation override.`,
+        urgency: 'immediate',
+      };
+      finalConsensus.metaAgentOverridden = true;
+      finalConsensus.confidence = 0.0;
+    }
+
+    // ═══════════════════════════════════════════════════
+    // PHASE 5: Meta-Agent Position Adjustment (TP/SL)
+    // ═══════════════════════════════════════════════════
+
+    let positionAdjustments: PositionAdjustment[] | undefined;
+    if (currentPositions && currentPositions.length > 0) {
+      positionAdjustments = await this.adjustPositions(marketStateDesc, currentPositions);
+      if (positionAdjustments.length > 0) {
+        log.info(`📐 Position adjustments: ${positionAdjustments.length} positions updated`);
+      }
+    }
+
+    const durationMs = Math.round(performance.now() - startTime);
+    log.info('✅ HACP cycle complete', {
+      decision: finalConsensus.decision.action.toUpperCase(),
+      confidence: finalConsensus.confidence.toFixed(2),
+      roundsUsed: debateRounds.length,
+      durationMs,
+      vetoed: riskAudit.veto,
+      adjustments: positionAdjustments?.length ?? 0,
+    });
+
+    return {
+      consensus: finalConsensus,
+      allThoughts,
+      debateRounds,
+      durationMs,
+      positionAdjustments,
+    };
+  }
+
+  /**
+   * Meta-agent reviews open positions and suggests TP/SL adjustments
+   * based on current market conditions.
+   * Only adjusts positions whose symbol matches the primary trading symbol
+   * (avoids cross-symbol mispricing, e.g. using xyz:CL context for BTC).
+   */
+  private async adjustPositions(
+    marketStateDesc: string,
+    positions?: Array<{ id: string; symbol: string; side: string; entryPrice: number; currentPrice: number; stopLoss?: number; takeProfit?: number; leverage?: number }>
+  ): Promise<PositionAdjustment[]> {
+    if (!positions || positions.length === 0) return [];
+
+    const adjustments: PositionAdjustment[] = [];
+
+    // Extract the primary trading symbol from the market description
+    const primaryMatch = marketStateDesc.match(/Selected Symbol:\s*(\S+)/i)
+      ?? marketStateDesc.match(/Symbol:\s*(\S+)/i);
+    const primarySymbol = primaryMatch?.[1]?.toLowerCase();
+
+    for (const pos of positions) {
+      // Only adjust positions that match the primary trading symbol
+      // to avoid applying the wrong market context to a different instrument
+      if (primarySymbol && pos.symbol.toLowerCase() !== primarySymbol) {
+        log.debug(`Skipping adjustment for ${pos.symbol} — not the primary symbol ${primarySymbol}`);
+        continue;
+      }
+      try {
+        const lev = pos.leverage ?? 1;
+        const isLong = pos.side === 'buy';
+        const unrealizedPnlPct = ((pos.currentPrice - pos.entryPrice) / pos.entryPrice) * (isLong ? 1 : -1);
+        const provider = getActiveProvider();
+        const response = await provider.chat({
+          messages: [
+            {
+              role: 'system',
+              content: `You are the Meta-Agent adjusting position parameters.
+
+Current market:
+${marketStateDesc}
+
+Position: ${pos.side.toUpperCase()} ${pos.symbol}
+Entry: $${pos.entryPrice.toFixed(2)}
+Current: $${pos.currentPrice.toFixed(2)}
+Leverage: ${lev}x
+Current SL: ${pos.stopLoss ? `$${pos.stopLoss.toFixed(2)}` : 'NONE'}
+Current TP: ${pos.takeProfit ? `$${pos.takeProfit.toFixed(2)}` : 'NONE'}
+Unrealized PnL: ${(unrealizedPnlPct * 100).toFixed(2)}%
+
+CRITICAL RULES — FOLLOW EXACTLY:
+
+1. SL for LONG (buy): can ONLY move UP (increase). NEVER move SL down.
+   SL for SHORT (sell): can ONLY move DOWN (decrease). NEVER move SL up.
+   If price moved in our favor, trail SL closer to lock profit.
+   If price moved against us, LEAVE SL UNCHANGED — do not widen.
+
+2. TP: if unrealized PnL is POSITIVE, tighten TP toward current price to lock profit.
+   If unrealized PnL is NEGATIVE, leave TP unchanged or widen slightly.
+   TP must always be on the PROFIT side of entry (above entry for long, below for short).
+
+3. NEVER set SL further from current price than it already is.
+   NEVER set TP further from current price than it already is.
+
+4. SL distance from current price: 1-2% max (with ${lev}x leverage = ${lev * 1}-${lev * 2}% loss).
+   TP distance from current price: at least 2x SL distance.
+
+Output ONLY valid JSON:
+{"adjust":true,"newStopLoss":65000,"newTakeProfit":75000,"rationale":"..."}`,
+            },
+            {
+              role: 'user',
+              content: 'Review this position and suggest TP/SL adjustments following the rules exactly.',
+            },
+          ],
+          temperature: 0.2,
+          model: this.metaAgent.resolveModel(),
+        });
+
+        const jsonStr = (() => {
+          const trimmed = response.content.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+          const start = trimmed.indexOf('{');
+          const end = trimmed.lastIndexOf('}');
+          if (start !== -1 && end > start) return trimmed.slice(start, end + 1);
+          return trimmed;
+        })();
+        const parsed = JSON.parse(jsonStr) as {
+          adjust: boolean;
+          newStopLoss?: number;
+          newTakeProfit?: number;
+          rationale: string;
+        };
+
+        if (parsed.adjust && (parsed.newStopLoss || parsed.newTakeProfit)) {
+          // ── Hard safety layer: enforce SL direction rules ──
+          let finalSL = parsed.newStopLoss;
+          let finalTP = parsed.newTakeProfit;
+
+          // SL for long: can only go UP (increase). Clamp to [oldSL or entry, +inf)
+          if (isLong && finalSL !== undefined) {
+            const oldSL = pos.stopLoss ?? (pos.entryPrice * 0.95);
+            const minSL = Math.max(oldSL, pos.entryPrice * 0.95); // never below 95% of entry
+            if (finalSL < minSL) finalSL = minSL; // enforce no widening
+            // Also ensure SL is not above current price (would be pointless)
+            if (finalSL > pos.currentPrice) finalSL = pos.currentPrice * 0.98;
+          }
+
+          // SL for short: can only go DOWN (decrease). Clamp to (-inf, oldSL or entry]
+          if (!isLong && finalSL !== undefined) {
+            const oldSL = pos.stopLoss ?? (pos.entryPrice * 1.05);
+            const maxSL = Math.min(oldSL, pos.entryPrice * 1.05); // never above 105% of entry
+            if (finalSL > maxSL) finalSL = maxSL; // enforce no widening
+            if (finalSL < pos.currentPrice) finalSL = pos.currentPrice * 1.02;
+          }
+
+          // TP: if positive PnL, tighten toward price. Never widen.
+          if (unrealizedPnlPct > 0 && finalTP !== undefined) {
+            const oldTP = pos.takeProfit;
+            if (isLong) {
+              if (oldTP !== undefined && finalTP > oldTP) finalTP = oldTP; // never widen
+              if (finalTP < pos.currentPrice * 1.005) finalTP = pos.currentPrice * 1.005; // min 0.5% above
+            } else {
+              if (oldTP !== undefined && finalTP < oldTP) finalTP = oldTP; // never widen
+              if (finalTP > pos.currentPrice * 0.995) finalTP = pos.currentPrice * 0.995; // max 0.5% below
+            }
+          }
+
+          adjustments.push({
+            positionId: pos.id,
+            symbol: pos.symbol,
+            newStopLoss: finalSL,
+            newTakeProfit: finalTP,
+            rationale: parsed.rationale,
+            confidence: 0.7,
+          });
+          log.info(`📐 Position ${pos.id.slice(0, 8)} adjusted: SL=${finalSL?.toFixed(2) ?? 'unchanged'} TP=${finalTP?.toFixed(2) ?? 'unchanged'}`);
+        }
+      } catch (err) {
+        log.warn(`Position adjustment failed for ${pos.id.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    return adjustments;
+  }
+
+  private buildDebateContext(thoughts: AgentThought[]): string {
+    let ctx = '=== Agent Thoughts Summary ===\n';
+    for (const t of thoughts) {
+      const decision = (t.metadata?.['decision'] as TradingDecision) ?? { action: 'hold', symbol: 'UNKNOWN' };
+      ctx += `\n[${t.agentRole}] (conf: ${t.confidence.toFixed(2)}, decision: ${decision.action.toUpperCase()}, size: ${((decision.positionSizePct ?? 0) * 100).toFixed(1)}%)`;
+      ctx += `\n  ${t.thought.slice(0, 150)}...\n`;
+    }
+    return ctx;
+  }
+
+  private findWeakestThought(
+    currentIdx: number,
+    thoughts: AgentThought[]
+  ): AgentThought | undefined {
+    const others = thoughts.filter((_, i) => i !== currentIdx);
+    // Pick the one with lowest confidence
+    others.sort((a, b) => a.confidence - b.confidence);
+    return others[0];
+  }
+
+  private detectPolarization(votes: Vote[]): boolean {
+    const confidences = votes.map((v) => v.confidence);
+    const avg = confidences.reduce((a, b) => a + b, 0) / confidences.length;
+    const variance = confidences.reduce((sum, c) => sum + Math.pow(c - avg, 2), 0) / confidences.length;
+    return variance > 0.15; // High variance = polarized
+  }
+
+  private async runConsensusVote(
+    thoughts: AgentThought[]
+  ): Promise<Vote[]> {
+    const votes: Vote[] = [];
+
+    for (const agent of [...this.subAgents, this.metaAgent]) {
+      const agentThought = thoughts.find((t) => t.agentId === agent.identity.id);
+      const decision = (agentThought?.metadata?.['decision'] as TradingDecision) ?? {
+        action: 'hold',
+        symbol: 'UNKNOWN',
+        positionSizePct: 0,
+        rationale: 'Vote fallback.',
+        urgency: 'patient',
+      };
+
+      const voteResult = await agent.vote([decision]);
+      votes.push({
+        agentId: agent.identity.id,
+        agentRole: agent.identity.role,
+        weight: agent.identity.weight,
+        decision: voteResult.decision,
+        confidence: voteResult.confidence,
+      });
+    }
+
+    return votes;
+  }
+
+  private calcWeightedConsensus(votes: Vote[]): number {
+    // Weighted score: sum(weight * confidence * decisionValue) / sum(weight)
+    // decisionValue: buy=1, hold=0, sell=-1
+    let totalWeight = 0;
+    let weightedSum = 0;
+
+    for (const vote of votes) {
+      const decisionValue = vote.decision.action === 'buy' ? 1
+        : vote.decision.action === 'sell' ? -1
+        : 0;
+      const agreementScore = vote.confidence * decisionValue;
+      weightedSum += vote.weight * Math.abs(agreementScore);
+      totalWeight += vote.weight;
+    }
+
+    return totalWeight > 0 ? weightedSum / totalWeight : 0;
+  }
+
+  private buildConsensus(
+    thoughts: AgentThought[],
+    rounds: DebateRound[],
+    reached: boolean,
+    deadlock: boolean,
+    existingVotes?: Vote[]
+  ): ConsensusResult {
+    // Aggregate decisions from thoughts
+    const decisions = thoughts
+      .map((t) => ({
+        action: ((t.metadata?.['decision'] as TradingDecision)?.action ?? 'hold') as 'buy' | 'sell' | 'hold',
+        agentId: t.agentId,
+        agentRole: t.agentRole,
+        confidence: t.confidence,
+      }));
+
+    // Default to HOLD if uncertain
+    const buyCount = decisions.filter((d) => d.action === 'buy').length;
+    const sellCount = decisions.filter((d) => d.action === 'sell').length;
+    const holdCount = decisions.filter((d) => d.action === 'hold').length;
+
+    const majorityAction: 'buy' | 'sell' | 'hold' =
+      buyCount > sellCount && buyCount > holdCount ? 'buy'
+        : sellCount > buyCount && sellCount > holdCount ? 'sell'
+        : 'hold';
+
+    const avgConfidence = decisions.reduce((s, d) => s + d.confidence, 0) / decisions.length;
+
+    return {
+      decision: normalizeDecision({
+        action: majorityAction,
+        symbol: 'BTCUSDT',
+        positionSizePct: majorityAction === 'hold' ? 0 : 0.05,
+        leverage: (() => {
+          // Use leverage from the highest-confidence agent in the majority
+          const majorityDecisions = decisions.filter(d => d.action === majorityAction);
+          if (majorityDecisions.length === 0) return 1;
+          const best = majorityDecisions.reduce((a, b) => a.confidence > b.confidence ? a : b);
+          const agentThought = thoughts.find(t => t.agentId === best.agentId);
+          const agentDecision = agentThought?.metadata?.['decision'] as TradingDecision | undefined;
+          return agentDecision?.leverage ?? 1;
+        })(),
+        rationale: `Majority decision: ${majorityAction.toUpperCase()} (${buyCount}B/${sellCount}S/${holdCount}H). Avg confidence: ${avgConfidence.toFixed(2)}. Rounds: ${rounds.length}.`,
+        urgency: 'soon',
+      }),
+      confidence: avgConfidence,
+      reasoning: this.buildReasoning(thoughts, rounds),
+      votes: existingVotes ?? [],
+      roundsUsed: rounds.length,
+      deadlockResolved: deadlock,
+      metaAgentOverridden: false,
+      timestamp: Date.now(),
+    };
+  }
+
+  private async metaAgentArbitration(
+    thoughts: AgentThought[],
+    rounds: DebateRound[],
+    votes: Vote[] | null
+  ): Promise<ConsensusResult> {
+    // Meta-agent makes final decision
+    log.info('Meta-Agent performing final arbitration...');
+
+    const context = this.buildDebateContext(thoughts);
+    const metaDecision = await this.metaAgent.think(
+      `Meta-Agent Arbitration Required.\n\n${context}`,
+      'Final arbitration context.'
+    );
+
+    const decision = normalizeDecision((metaDecision.metadata?.['decision'] as TradingDecision | undefined) ?? undefined);
+
+    const result: ConsensusResult = {
+      decision,
+      confidence: metaDecision.confidence,
+      reasoning: `Meta-Agent Final Arbitration:\n${metaDecision.thought}\n\nDebate Summary: ${rounds.length} rounds conducted.`,
+      votes: votes ?? [],
+      roundsUsed: rounds.length,
+      deadlockResolved: true,
+      metaAgentOverridden: true,
+      timestamp: Date.now(),
+    };
+
+    log.info(`Meta-Agent arbitration complete: ${decision.action.toUpperCase()} (conf: ${metaDecision.confidence.toFixed(2)})`);
+    return result;
+  }
+
+  private async riskAuditorAudit(
+    decision: TradingDecision
+  ): Promise<{ veto: boolean; reason: string; adjustedPrice?: number }> {
+    try {
+      // Independent risk audit via LLM
+      const provider = getActiveProvider();
+      const response = await provider.chat({
+        messages: [
+          {
+            role: 'system',
+            content: this.riskAuditor.getSystemPrompt(),
+          },
+          {
+            role: 'user',
+            content: `Audit this trading decision:\n${JSON.stringify(decision, null, 2)}\n\nRespond: {"veto":false,"reason":"","adjustedPositionSize":null}`,
+          },
+        ],
+        temperature: 0.05,
+        model: this.riskAuditor.resolveModel(),
+      });
+
+      const parsed = JSON.parse(response.content) as {
+        veto: boolean;
+        reason: string;
+        adjustedPositionSize?: number;
+      };
+
+      // Hard overrides: enforce absolute risk limits (aligned with clamp)
+      if (decision.positionSizePct > MAX_POSITION_PCT) {
+        return {
+          veto: true,
+          reason: `Position size ${(decision.positionSizePct * 100).toFixed(1)}% exceeds hard limit of ${(MAX_POSITION_PCT * 100).toFixed(1)}%. VETO.`,
+        };
+      }
+
+      return {
+        veto: parsed.veto ?? false,
+        reason: parsed.reason ?? 'No concerns.',
+      };
+    } catch {
+      // On error, be conservative
+      return {
+        veto: decision.positionSizePct > 0.05,
+        reason: 'Risk audit LLM unavailable. Conservative veto for any position > 5%.',
+      };
+    }
+  }
+
+  private buildReasoning(
+    thoughts: AgentThought[],
+    rounds: DebateRound[]
+  ): string {
+    let reasoning = `HACP Decision Cycle\n`;
+    reasoning += `Agents: ${thoughts.length}\n`;
+    reasoning += `Debate Rounds: ${rounds.length}\n\n`;
+
+    reasoning += '=== Agent Positions ===\n';
+    for (const t of thoughts) {
+      const d = (t.metadata?.['decision'] as TradingDecision) ?? { action: 'hold', symbol: 'UNKNOWN' };
+      reasoning += `[${t.agentRole}] ${d.action.toUpperCase()} (${(t.confidence * 100).toFixed(0)}%)\n`;
+      reasoning += `  ${t.thought.slice(0, 100)}...\n`;
+    }
+
+    return reasoning;
+  }
+}

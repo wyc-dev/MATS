@@ -1,0 +1,521 @@
+// ─── Portfolio Tracker ───
+// Tracks portfolio state, positions, P&L, drawdown calculations
+
+import { v4 as uuidv4 } from 'uuid';
+import { createLogger } from '../observability/logger.ts';
+import { config } from '../config/index.ts';
+import { loadPortfolio, type PortfolioSnapshot } from '../evolution/persistence.ts';
+import type {
+  Portfolio,
+  Position,
+  Order,
+  TradeRecord,
+  OrderSide,
+  Ticker,
+} from '../types/index.ts';
+
+const log = createLogger({ phase: 'portfolio' });
+
+/** Callback fired when a position is closed (SL/TP, reconciliation, or explicit close) */
+export type OnPositionClosed = (trade: TradeRecord) => void;
+/** Callback fired when a position is opened */
+export type OnPositionOpened = (trade: TradeRecord) => void;
+
+export class PortfolioTracker {
+  private portfolio: Portfolio;
+  /** Callback so PaperTradingEngine can capture trades from SL/TP closes */
+  private onPositionClosedCb: OnPositionClosed | null = null;
+  /** Callback so PaperTradingEngine can capture open trades */
+  private onPositionOpenedCb: OnPositionOpened | null = null;
+  /** Restored trades from disk (loaded in constructor) */
+  readonly restoredTrades: TradeRecord[] = [];
+
+  constructor() {
+    const initialBalance = config.paper.initialBalance;
+
+    // Try to restore portfolio from disk
+    const saved = loadPortfolio();
+    if (saved) {
+      this.portfolio = {
+        balance: saved.balance,
+        initialBalance: saved.initialBalance,
+        totalEquity: saved.totalEquity,
+        positions: new Map(),
+        totalPnl: saved.totalPnl,
+        totalPnlPct: saved.totalPnlPct,
+        maxDrawdown: saved.maxDrawdown,
+        maxDrawdownPct: saved.maxDrawdownPct,
+        peakEquity: saved.peakEquity,
+        dailyPnl: saved.dailyPnl,
+        dailyLossLimit: saved.dailyLossLimit,
+        tradeCount: saved.tradeCount,
+        winCount: saved.winCount,
+        lossCount: saved.lossCount,
+        lastUpdated: saved.lastUpdated,
+      };
+
+      // Restore positions
+      for (const p of saved.positions ?? []) {
+        this.portfolio.positions.set(p.symbol.toLowerCase(), {
+          id: p.id,
+          symbol: p.symbol.toLowerCase(),
+          side: p.side,
+          quantity: p.quantity,
+          averageEntryPrice: p.averageEntryPrice,
+          currentPrice: p.currentPrice,
+          unrealizedPnl: p.unrealizedPnl,
+          unrealizedPnlPct: p.unrealizedPnlPct,
+          realizedPnl: p.realizedPnl,
+          stopLossPrice: p.stopLossPrice,
+          takeProfitPrice: p.takeProfitPrice,
+          leverage: p.leverage ?? 1,
+          openedAt: p.openedAt,
+          updatedAt: p.updatedAt,
+          agentId: p.agentId,
+          exchange: p.exchange,
+        });
+      }
+
+      // Restore trades
+      this.restoredTrades = (saved.trades ?? []).map(t => ({
+        id: t.id,
+        symbol: t.symbol,
+        side: t.side as 'buy' | 'sell',
+        entryPrice: t.entryPrice,
+        exitPrice: t.exitPrice,
+        quantity: t.quantity,
+        leverage: t.leverage,
+        investment: t.investment,
+        pnl: t.pnl,
+        pnlPct: t.pnlPct,
+        openedAt: t.openedAt,
+        closedAt: t.closedAt,
+        agentId: t.agentId ?? '',
+        status: (t as any).status ?? 'closed',
+      }));
+
+      log.info(`Portfolio restored: balance=${saved.balance.toFixed(2)}, ${saved.positions?.length ?? 0} positions, ${saved.tradeCount} trades`);
+    } else {
+      this.portfolio = {
+        balance: initialBalance,
+        initialBalance: initialBalance,
+        totalEquity: initialBalance,
+        positions: new Map(),
+        totalPnl: 0,
+        totalPnlPct: 0,
+        maxDrawdown: 0,
+        maxDrawdownPct: 0,
+        peakEquity: initialBalance,
+        dailyPnl: 0,
+        dailyLossLimit: initialBalance * config.paper.dailyLossLimitPct,
+        tradeCount: 0,
+        winCount: 0,
+        lossCount: 0,
+        lastUpdated: Date.now(),
+      };
+    }
+  }
+
+  /** Register a callback for position closes (used by PaperTradingEngine to capture SL/TP trades) */
+  setOnPositionClosed(cb: OnPositionClosed): void {
+    this.onPositionClosedCb = cb;
+  }
+
+  /** Register a callback for position opens (used by PaperTradingEngine to capture open trades) */
+  setOnPositionOpened(cb: OnPositionOpened): void {
+    this.onPositionOpenedCb = cb;
+  }
+
+  /** Get restored trades from disk (for PaperTradingEngine to consume) */
+  getRestoredTrades(): readonly import('../types/index.ts').TradeRecord[] {
+    return this.restoredTrades;
+  }
+
+  getPortfolio(): Readonly<Portfolio> {
+    return this.portfolio;
+  }
+
+  /** Get portfolio data for persistence (serializable format) */
+  getPortfolioSnapshot(): import('../evolution/persistence.ts').PortfolioSnapshot {
+    const positions = Array.from(this.portfolio.positions.values()).map(p => ({
+      id: p.id,
+      symbol: p.symbol,
+      side: p.side as 'buy' | 'sell',
+      quantity: p.quantity,
+      averageEntryPrice: p.averageEntryPrice,
+      currentPrice: p.currentPrice,
+      unrealizedPnl: p.unrealizedPnl,
+      unrealizedPnlPct: p.unrealizedPnlPct,
+      realizedPnl: p.realizedPnl,
+      stopLossPrice: p.stopLossPrice,
+      takeProfitPrice: p.takeProfitPrice,
+      leverage: p.leverage,
+      openedAt: p.openedAt,
+      updatedAt: p.updatedAt,
+      agentId: p.agentId,
+      exchange: p.exchange,
+    }));
+
+    return {
+      version: 1,
+      balance: this.portfolio.balance,
+      initialBalance: this.portfolio.initialBalance,
+      totalEquity: this.portfolio.totalEquity,
+      totalPnl: this.portfolio.totalPnl,
+      totalPnlPct: this.portfolio.totalPnlPct,
+      maxDrawdown: this.portfolio.maxDrawdown,
+      maxDrawdownPct: this.portfolio.maxDrawdownPct,
+      peakEquity: this.portfolio.peakEquity,
+      dailyPnl: this.portfolio.dailyPnl,
+      dailyLossLimit: this.portfolio.dailyLossLimit,
+      tradeCount: this.portfolio.tradeCount,
+      winCount: this.portfolio.winCount,
+      lossCount: this.portfolio.lossCount,
+      lastUpdated: this.portfolio.lastUpdated,
+      positions,
+    };
+  }
+
+  getEquity(): number {
+    return this.portfolio.totalEquity;
+  }
+
+  hasPosition(symbol: string): boolean {
+    return this.portfolio.positions.has(symbol.toLowerCase());
+  }
+
+  getPosition(symbol: string): Position | undefined {
+    return this.portfolio.positions.get(symbol.toLowerCase());
+  }
+
+  /** Get all open symbols for reconciliation checks */
+  getOpenSymbols(): string[] {
+    return Array.from(this.portfolio.positions.keys());
+  }
+
+  getPositionCount(): number {
+    return this.portfolio.positions.size;
+  }
+
+  canTrade(): { allowed: boolean; reason?: string } {
+    if (this.portfolio.maxDrawdownPct >= config.paper.maxDrawdownPct) {
+      return {
+        allowed: false,
+        reason: `Max drawdown ${(this.portfolio.maxDrawdownPct * 100).toFixed(1)}% exceeded. Trading halted.`,
+      };
+    }
+
+    const dailyLossPct = Math.abs(this.portfolio.dailyPnl) / this.portfolio.totalEquity;
+    if (dailyLossPct >= config.paper.dailyLossLimitPct) {
+      return {
+        allowed: false,
+        reason: `Daily loss limit ${(dailyLossPct * 100).toFixed(1)}% reached. No more trades today.`,
+      };
+    }
+
+    return { allowed: true };
+  }
+
+  openPosition(order: Order, entryPrice: number, leverage = 1): Position {
+    const symbol = order.symbol.toLowerCase();
+    const quantity = order.filledQuantity > 0 ? order.filledQuantity : order.quantity;
+    const cost = quantity * entryPrice;
+
+    // Deduct margin from balance.
+    this.portfolio.balance -= cost;
+
+    // Infer exchange from symbol format
+    let exchange: string | undefined;
+    if (symbol.includes(':')) {
+      exchange = 'hyperliquid';
+    } else if (symbol.endsWith('usdt') || symbol.endsWith('usd')) {
+      exchange = 'binance';
+    }
+
+    const position: Position = {
+      id: uuidv4(),
+      symbol,
+      side: order.side,
+      quantity,
+      averageEntryPrice: entryPrice,
+      currentPrice: entryPrice,
+      unrealizedPnl: 0,
+      unrealizedPnlPct: 0,
+      realizedPnl: 0,
+      leverage,
+      openedAt: Date.now(),
+      updatedAt: Date.now(),
+      agentId: order.agentId,
+      exchange,
+    };
+
+    // Set stop-loss and take-profit
+    if (order.side === 'buy') {
+      position.stopLossPrice = entryPrice * (1 - config.risk.stopLossPct);
+      position.takeProfitPrice = entryPrice * (1 + config.risk.takeProfitPct);
+    } else {
+      position.stopLossPrice = entryPrice * (1 + config.risk.stopLossPct);
+      position.takeProfitPrice = entryPrice * (1 - config.risk.takeProfitPct);
+    }
+
+    this.portfolio.positions.set(symbol, position);
+    this.portfolio.lastUpdated = Date.now();
+    this.recalculateEquity();
+
+    // Record open trade
+    const openTrade: TradeRecord = {
+      id: uuidv4(),
+      symbol,
+      side: order.side,
+      entryPrice,
+      exitPrice: entryPrice,
+      quantity,
+      leverage,
+      investment: cost,
+      pnl: 0,
+      pnlPct: 0,
+      openedAt: position.openedAt,
+      closedAt: position.openedAt,
+      agentId: order.agentId,
+      status: 'open',
+    };
+    if (this.onPositionOpenedCb) {
+      this.onPositionOpenedCb(openTrade);
+    }
+
+    log.info(`Position opened: ${order.side.toUpperCase()} ${quantity.toFixed(6)} ${symbol} @ ${entryPrice}`, {
+      cost: cost.toFixed(2),
+      balance: this.portfolio.balance.toFixed(2),
+    });
+
+    return position;
+  }
+
+  updatePosition(symbol: string, currentPrice: number): void {
+    const pos = this.portfolio.positions.get(symbol);
+    if (!pos) return;
+
+    pos.currentPrice = currentPrice;
+    pos.updatedAt = Date.now();
+
+    if (pos.side === 'buy') {
+      pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity * (pos.leverage ?? 1);
+      pos.unrealizedPnlPct = ((currentPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1);
+    } else {
+      pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity * (pos.leverage ?? 1);
+      pos.unrealizedPnlPct = ((pos.averageEntryPrice - currentPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1);
+    }
+
+    // Recalculate total equity so it reflects latest unrealized PnL
+    this.recalculateEquity();
+
+    // Check stop-loss / take-profit
+    this.checkPositionExits(pos);
+  }
+
+  /**
+   * Update a position's price and PnL WITHOUT triggering SL/TP checks.
+   * Used when syncing exchange positions — the exchange handles SL/TP
+   * natively, and we must not auto-close the mirror prematurely.
+   */
+  softUpdatePosition(symbol: string, currentPrice: number): void {
+    const pos = this.portfolio.positions.get(symbol);
+    if (!pos) return;
+
+    pos.currentPrice = currentPrice;
+    pos.updatedAt = Date.now();
+
+    if (pos.side === 'buy') {
+      pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity * (pos.leverage ?? 1);
+      pos.unrealizedPnlPct = ((currentPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1);
+    } else {
+      pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity * (pos.leverage ?? 1);
+      pos.unrealizedPnlPct = ((pos.averageEntryPrice - currentPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1);
+    }
+
+    this.recalculateEquity();
+  }
+
+  /**
+   * Adjust stop-loss and/or take-profit for an existing position.
+   * Called by meta-agent during HACP cycle for dynamic TP/SL management.
+   * This is the extension point for real trading — same interface.
+   */
+  adjustPosition(positionId: string, newStopLoss?: number, newTakeProfit?: number): boolean {
+    for (const [, pos] of this.portfolio.positions) {
+      if (pos.id === positionId) {
+        if (newStopLoss !== undefined) {
+          pos.stopLossPrice = newStopLoss;
+        }
+        if (newTakeProfit !== undefined) {
+          pos.takeProfitPrice = newTakeProfit;
+        }
+        pos.updatedAt = Date.now();
+        log.info(`Position ${positionId.slice(0, 8)} adjusted: SL=${pos.stopLossPrice?.toFixed(2) ?? '-'} TP=${pos.takeProfitPrice?.toFixed(2) ?? '-'}`);
+        return true;
+      }
+    }
+    log.warn(`adjustPosition: position ${positionId.slice(0, 8)} not found`);
+    return false;
+  }
+
+  /**
+   * Reconcile the local portfolio against externally-known open positions.
+   *
+   * Detects positions that exist in the local tracker but have been manually
+   * closed (paper-trade) or are no longer on the exchange (real-trade).
+   * Uses the exchange/manager's getOpenPositionSymbols() to know what SHOULD be open.
+   *
+   * For each phantom position detected: closes it at the current mark price
+   * to preserve system P&L integrity, then logs the reconciliation.
+   *
+   * @param getExternalOpenSymbols A callback that returns symbols open on-exchange
+   * @returns Array of symbols that were reconciled (closed locally)
+   */
+  reconcilePositions(externalOpenSymbols: string[]): string[] {
+    const reconciled: string[] = [];
+    const externalSet = new Set(externalOpenSymbols.map(s => s.toLowerCase()));
+
+    for (const localSymbol of this.portfolio.positions.keys()) {
+      if (!externalSet.has(localSymbol)) {
+        // This position exists locally but NOT externally → manually closed
+        const pos = this.portfolio.positions.get(localSymbol)!;
+        log.warn(`🔍 Reconciliation: ${localSymbol} not found externally. Closing local mirror @ $${pos.currentPrice.toFixed(2)}`);
+        const trade = this.closePosition(localSymbol, pos.currentPrice);
+        if (trade) {
+          reconciled.push(localSymbol);
+          log.info(`  → Reconciled ${localSymbol}: PnL $${trade.pnl.toFixed(2)}`);
+        }
+      }
+    }
+    return reconciled;
+  }
+
+  closePosition(symbol: string, exitPrice: number): TradeRecord | null {
+    const pos = this.portfolio.positions.get(symbol);
+    if (!pos) return null;
+
+    const lev = pos.leverage ?? 1;
+    let realizedPnl: number;
+    let cashReturned: number;
+    // Margin capital at risk = entryPrice * quantity
+    const margin = pos.averageEntryPrice * pos.quantity;
+    if (pos.side === 'buy') {
+      // Leveraged P&L = (exit - entry) * quantity * leverage
+      realizedPnl = (exitPrice - pos.averageEntryPrice) * pos.quantity * lev;
+      cashReturned = margin + realizedPnl;
+      this.portfolio.balance += cashReturned;
+    } else {
+      // Short: profit when exit < entry
+      realizedPnl = (pos.averageEntryPrice - exitPrice) * pos.quantity * lev;
+      cashReturned = margin + realizedPnl;
+      this.portfolio.balance += cashReturned;
+    }
+
+    // Track P&L as a percentage of margin used (return on capital at risk)
+    const marginUsed = margin;
+
+    const trade: TradeRecord = {
+      id: uuidv4(),
+      symbol: pos.symbol,
+      side: pos.side,
+      entryPrice: pos.averageEntryPrice,
+      exitPrice,
+      quantity: pos.quantity,
+      leverage: lev,
+      investment: margin,
+      pnl: realizedPnl,
+      pnlPct: marginUsed > 0 ? realizedPnl / marginUsed : 0,
+      openedAt: pos.openedAt,
+      closedAt: Date.now(),
+      agentId: pos.agentId,
+      status: 'closed',
+    };
+
+    // Update portfolio stats
+    this.portfolio.positions.delete(symbol);
+    this.portfolio.totalPnl += realizedPnl;
+    this.portfolio.totalPnlPct = this.portfolio.totalPnl / this.portfolio.initialBalance;
+
+    if (realizedPnl >= 0) {
+      this.portfolio.winCount++;
+    } else {
+      this.portfolio.lossCount++;
+    }
+    this.portfolio.tradeCount = this.portfolio.winCount + this.portfolio.lossCount;
+
+    this.portfolio.dailyPnl += realizedPnl;
+    this.recalculateEquity();
+    log.info(`Position closed: ${pos.side.toUpperCase()} ${pos.symbol} PnL: ${realizedPnl.toFixed(2)}`);
+
+    // Notify subscriber (PaperTradingEngine) so the trade is captured in its trades[]
+    if (this.onPositionClosedCb) {
+      this.onPositionClosedCb(trade);
+    }
+
+    return trade;
+  }
+
+  getAllTrades(): TradeRecord[] {
+    // In a real system, store trades in a DB. For now, return empty.
+    return [];
+  }
+
+  private checkPositionExits(pos: Position): void {
+    if (pos.side === 'buy') {
+      if (pos.stopLossPrice && pos.currentPrice <= pos.stopLossPrice) {
+        log.warn(`Stop-loss triggered for ${pos.symbol} @ ${pos.currentPrice}`);
+        this.closePosition(pos.symbol, pos.currentPrice);
+        return;
+      }
+      if (pos.takeProfitPrice && pos.currentPrice >= pos.takeProfitPrice) {
+        log.info(`Take-profit triggered for ${pos.symbol} @ ${pos.currentPrice}`);
+        this.closePosition(pos.symbol, pos.currentPrice);
+        return;
+      }
+    } else {
+      if (pos.stopLossPrice && pos.currentPrice >= pos.stopLossPrice) {
+        log.warn(`Stop-loss triggered for ${pos.symbol} @ ${pos.currentPrice}`);
+        this.closePosition(pos.symbol, pos.currentPrice);
+        return;
+      }
+      if (pos.takeProfitPrice && pos.currentPrice <= pos.takeProfitPrice) {
+        log.info(`Take-profit triggered for ${pos.symbol} @ ${pos.currentPrice}`);
+        this.closePosition(pos.symbol, pos.currentPrice);
+        return;
+      }
+    }
+  }
+
+  private recalculateEquity(): void {
+    let unrealizedSum = 0;
+    let lockedMargin = 0;
+    for (const pos of this.portfolio.positions.values()) {
+      unrealizedSum += pos.unrealizedPnl;
+      lockedMargin += pos.averageEntryPrice * pos.quantity;
+    }
+
+    // totalEquity = available balance + unrealized PnL + locked margin on open positions
+    // (margin was deducted from balance at open but is still owned — it's collateral)
+    this.portfolio.totalEquity = this.portfolio.balance + unrealizedSum + lockedMargin;
+
+    // Update peak equity and drawdown
+    if (this.portfolio.totalEquity > this.portfolio.peakEquity) {
+      this.portfolio.peakEquity = this.portfolio.totalEquity;
+    }
+
+    const currentDrawdown = this.portfolio.peakEquity - this.portfolio.totalEquity;
+    const currentDrawdownPct = currentDrawdown / this.portfolio.peakEquity;
+
+    if (currentDrawdown > this.portfolio.maxDrawdown) {
+      this.portfolio.maxDrawdown = currentDrawdown;
+      this.portfolio.maxDrawdownPct = currentDrawdownPct;
+    }
+
+    this.portfolio.lastUpdated = Date.now();
+  }
+
+  resetDailyPnl(): void {
+    this.portfolio.dailyPnl = 0;
+  }
+}

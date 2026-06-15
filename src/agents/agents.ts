@@ -1,0 +1,1866 @@
+// ─── Agent 1: Fractal Momentum Sentinel ───
+// High temperature, aggressive, momentum-chasing. Detects fractal patterns & trend acceleration.
+
+import { BaseAgent } from './base-agent.ts';
+import type { TradingDecision } from '../types/index.ts';
+import { normalizeDecision } from '../trading/decision-utils.ts';
+import { createLogger } from '../observability/logger.ts';
+
+export class FractalMomentumSentinel extends BaseAgent {
+  constructor() {
+    super({
+      role: 'fractal_momentum_sentinel',
+      name: 'Fractal Momentum Sentinel',
+      temperature: 0.85,
+      weight: 0.25,
+      modelPreference: 'fast',
+      personality:
+        'You are a fractal mathematician turned trader. You see self-similar patterns across timeframes. '
+        + 'You are aggressive but disciplined — you only strike when multiple timeframe align. '
+        + 'You are the early signal detector, the first to spot trend acceleration. '
+        + 'You are contrarian at extremes, trend-follower in the middle. '
+        + 'You respect momentum but know when it exhausts.',
+    });
+  }
+
+  override getSystemPrompt(): string {
+    return `You are Fractal Momentum Sentinel — momentum/fractal pattern detector.
+
+You evaluate ALL trading pairs every cycle:
+1. MARKET TICKER (${this.marketSymbol}) — should we open a new trade?
+2. Each OPEN POSITION — should we hold, adjust SL/TP, or close?
+
+=== MARKET TICKER RULES ===
+- Low vol sideways → small mean-reversion (2-3%)
+- Trending → follow with 3-5%, up to 8% if strong trend
+- High vol → reduce size 50%, still trade if setup exists
+- Chaotic → HOLD
+- Never force a trade, but actively scan
+- Leverage 2-5x based on confidence
+
+=== OPEN POSITION RULES ===
+For each open position, evaluate:
+- Is the fractal structure still intact? If broken → close
+- Trend continuation? → hold, trail SL up
+- Trend reversal? → close immediately
+- Price near TP? → tighten SL to lock profit, consider closing
+- Price near SL? → let it run unless structure invalidated
+- Profit > 5%? → consider partial or full close to lock gains
+- Loss > 3%? → evaluate if thesis is still valid; if not, close
+- Adjust SL/TP to follow fractal structure levels
+
+Output ONLY valid JSON with the format specified in the user message.`;
+  }
+
+  /** override parseResponse to use base class multi-symbol parser */
+  protected override parseResponse(content: string): {
+    thought: string;
+    confidence: number;
+    decision: TradingDecision;
+  } {
+    return super.parseResponse(content);
+  }
+}
+
+// ─── Agent 2: On-Chain Whisperer ───
+// Medium temperature, analytical. Reads on-chain data with asset-category awareness.
+// - Crypto assets → fetches live blockchain data (mempool, exchange flows, whale tx)
+// - TradFi assets (indices, stocks, FX, commodities) → fetches macro flow data (ETF flows, futures positioning, DXY)
+// - Unknown assets → web_search fallback to discover how to fetch on-chain data
+
+const ocwLog = createLogger({ agent: 'onchain_whisperer', phase: 'data-fetch' });
+
+// ── Token → Blockchain lookup for on-chain data ──
+
+interface TokenChainInfo {
+  baseAsset: string;
+  chain: string;
+  coingeckoId: string;
+}
+
+const KNOWN_CRYPTO: Record<string, TokenChainInfo> = {
+  BTC:       { baseAsset: 'BTC',       chain: 'bitcoin',    coingeckoId: 'bitcoin' },
+  XBT:       { baseAsset: 'XBT',       chain: 'bitcoin',    coingeckoId: 'bitcoin' },
+  ETH:       { baseAsset: 'ETH',       chain: 'ethereum',   coingeckoId: 'ethereum' },
+  SOL:       { baseAsset: 'SOL',       chain: 'solana',     coingeckoId: 'solana' },
+  BNB:       { baseAsset: 'BNB',       chain: 'bsc',        coingeckoId: 'binancecoin' },
+  XRP:       { baseAsset: 'XRP',       chain: 'ripple',     coingeckoId: 'ripple' },
+  ADA:       { baseAsset: 'ADA',       chain: 'cardano',    coingeckoId: 'cardano' },
+  DOGE:      { baseAsset: 'DOGE',      chain: 'dogecoin',   coingeckoId: 'dogecoin' },
+  DOT:       { baseAsset: 'DOT',       chain: 'polkadot',   coingeckoId: 'polkadot' },
+  AVAX:      { baseAsset: 'AVAX',      chain: 'avalanche',  coingeckoId: 'avalanche-2' },
+  MATIC:     { baseAsset: 'MATIC',     chain: 'polygon',    coingeckoId: 'matic-network' },
+  POL:       { baseAsset: 'POL',       chain: 'polygon',    coingeckoId: 'polygon-ecosystem-token' },
+  LINK:      { baseAsset: 'LINK',      chain: 'ethereum',   coingeckoId: 'chainlink' },
+  UNI:       { baseAsset: 'UNI',       chain: 'ethereum',   coingeckoId: 'uniswap' },
+  ATOM:      { baseAsset: 'ATOM',      chain: 'cosmos',     coingeckoId: 'cosmos' },
+  ARB:       { baseAsset: 'ARB',       chain: 'arbitrum',   coingeckoId: 'arbitrum' },
+  OP:        { baseAsset: 'OP',        chain: 'optimism',   coingeckoId: 'optimism' },
+  SUI:       { baseAsset: 'SUI',       chain: 'sui',        coingeckoId: 'sui' },
+  NEAR:      { baseAsset: 'NEAR',      chain: 'near',       coingeckoId: 'near' },
+  APT:       { baseAsset: 'APT',       chain: 'aptos',      coingeckoId: 'aptos' },
+  INJ:       { baseAsset: 'INJ',       chain: 'injective',  coingeckoId: 'injective-protocol' },
+  SEI:       { baseAsset: 'SEI',       chain: 'sei',        coingeckoId: 'sei-network' },
+  TIA:       { baseAsset: 'TIA',       chain: 'celestia',   coingeckoId: 'celestia' },
+  FTM:       { baseAsset: 'FTM',       chain: 'fantom',     coingeckoId: 'fantom' },
+  S:          { baseAsset: 'S',         chain: 'sonic',      coingeckoId: 'sonic-svm' },
+  TRUMP:     { baseAsset: 'TRUMP',     chain: 'solana',     coingeckoId: 'official-trump' },
+  MELANIA:   { baseAsset: 'MELANIA',   chain: 'solana',     coingeckoId: 'melania-meme' },
+};
+
+// Normalise symbol: strip exchange prefix (xyz:, flx:, etc.), USDT/USD suffix
+function normalizeBaseAsset(symbol: string): string {
+  const colonIdx = symbol.indexOf(':');
+  const stripped = colonIdx >= 0 ? symbol.slice(colonIdx + 1) : symbol;
+  return stripped.toUpperCase().replace(/USDT$/, '').replace(/USD$/, '').replace(/PERP$/, '');
+}
+
+// ── Category detection from market context ──
+
+type AssetCategory = 'crypto' | 'indices' | 'stocks' | 'commodities' | 'fx' | 'preipo' | 'unknown';
+
+function detectAssetCategory(symbol: string, marketContext: string): AssetCategory {
+  const upper = symbol.toUpperCase();
+
+  // Check for known crypto base assets
+  const base = normalizeBaseAsset(symbol);
+  if (KNOWN_CRYPTO[base]) return 'crypto';
+
+  // Known crypto perps on HL
+  if (!symbol.includes(':') && KNOWN_CRYPTO[base]) return 'crypto';
+
+  // Check context for explicit Asset Filter
+  if (/asset\s*filter:\s*indices/i.test(marketContext)) return 'indices';
+  if (/asset\s*filter:\s*stocks/i.test(marketContext)) return 'stocks';
+  if (/asset\s*filter:\s*commodities/i.test(marketContext)) return 'commodities';
+  if (/asset\s*filter:\s*fx/i.test(marketContext)) return 'fx';
+  if (/asset\s*filter:\s*tradfi/i.test(marketContext)) return 'stocks';
+  if (/asset\s*filter:\s*crypto/i.test(marketContext)) return 'crypto';
+
+  // Heuristic: colon prefix usually means TradFi (xyz:SP500, flx:NVDA, km:MU)
+  if (symbol.includes(':')) {
+    const knownTradFi = ['SP500', 'SPX', 'NDX', 'DJI', 'VIX', 'NVDA', 'AAPL', 'MSFT', 'GOOGL',
+      'AMZN', 'META', 'TSLA', 'QQQ', 'SPY', 'DXY', 'EUR', 'GBP', 'JPY', 'XAU', 'XAG', 'OIL',
+      'BTC', 'ETH', 'SOL'];
+    for (const tf of knownTradFi) {
+      if (upper.includes(tf)) {
+        // If it matches a known crypto name too, check more carefully
+        if (KNOWN_CRYPTO[tf]) continue;
+        if (['SP500', 'SPX', 'NDX', 'DJI', 'VIX', 'DXY'].includes(tf)) return 'indices';
+        if (['NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'QQQ', 'SPY'].includes(tf)) return 'stocks';
+        if (['XAU', 'XAG', 'OIL', 'COPPER'].includes(tf)) return 'commodities';
+        if (['EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD', 'CNH', 'HKD', 'SGD'].includes(tf)) return 'fx';
+      }
+    }
+    // Default: colon-prefixed but not in known list → check perpCategories via symbol name
+    // Symbols with uppercase letters and : are likely TradFi
+    return 'stocks';
+  }
+
+  // Default: assume crypto for non-colon assets on crypto exchanges
+  return 'crypto';
+}
+
+// ── Web search fallback (DuckDuckGo Lite HTML + Instant Answer hybrid) ──
+
+/** Browser UA header for HTML scraping endpoints */
+const WEB_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
+
+async function webSearch(query: string, maxRetries = 2): Promise<string> {
+  // Strategy 1: DuckDuckGo HTML search (works with browser UA)
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}&ia=web`;
+      const res = await fetch(url, { headers: { 'User-Agent': WEB_UA }, signal: AbortSignal.timeout(8_000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const html = await res.text();
+      // Extract result link text (format: <a class="result__a" href="...">TEXT</a>)
+      const links: string[] = [];
+      const linkRegex = /class="result__a"[^>]*>([^<]*)</g;
+      let m: RegExpExecArray | null;
+      while ((m = linkRegex.exec(html)) !== null) {
+        const t = m[1]!.replace(/&amp;/g, '&').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim();
+        if (t.length > 5) links.push(t);
+      }
+      if (links.length >= 2) return links.slice(0, 5).join(' | ');
+      // Fallback: snippets
+      const snippets: string[] = [];
+      const snippetRegex = /class="result__snippet"[^>]*>([^<]*)</g;
+      while ((m = snippetRegex.exec(html)) !== null) {
+        const s = m[1]!.replace(/&amp;/g, '&').replace(/&#x27;/g, "'").trim();
+        if (s.length > 10) snippets.push(s);
+      }
+      if (snippets.length >= 2) return snippets.slice(0, 3).join(' | ');
+    } catch {
+      // Retry or fall through
+    }
+  }
+
+  // Strategy 2: DuckDuckGo Instant Answer API (good for definitions/facts)
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json() as {
+        AbstractText?: string; Answer?: string; Definition?: string;
+        RelatedTopics?: Array<{ Text?: string; FirstURL?: string; Result?: string }>;
+      };
+      const parts: string[] = [];
+      if (data.Answer) parts.push(`Answer: ${data.Answer}`);
+      if (data.AbstractText) parts.push(`Summary: ${data.AbstractText.slice(0, 300)}`);
+      if (data.Definition) parts.push(`Definition: ${data.Definition}`);
+      if (parts.length === 0 && data.RelatedTopics?.length) {
+        parts.push(`Related: ${data.RelatedTopics.slice(0, 3).map(t => t.Text ?? '').join(' | ')}`);
+      }
+      if (parts.length > 0) return parts.join('\n');
+    } catch {
+      // Try next attempt
+    }
+  }
+
+  // Strategy 3: Google News RSS as final fallback
+  try {
+    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+    const rssRes = await fetch(rssUrl, { signal: AbortSignal.timeout(6_000) });
+    if (rssRes.ok) {
+      const xml = await rssRes.text();
+      const titles: string[] = [];
+      const titleRegex = /<item>[\s\S]*?<title[^>]*><!\[CDATA\[([^\]]*)\]\]><\/title>|<item>[\s\S]*?<title[^>]*>([^<]*)<\/title>/g;
+      let tm: RegExpExecArray | null;
+      while ((tm = titleRegex.exec(xml)) !== null) {
+        const t = (tm[1] ?? tm[2] ?? '').replace(/&amp;/g, '&').trim();
+        if (t && !t.includes('Google News') && t.length > 10) titles.push(t);
+      }
+      if (titles.length >= 2) return titles.slice(0, 5).join(' | ');
+    }
+  } catch { /* final */ }
+
+  return `[Web Search] Found no direct results for "${query}".`;
+}
+
+// ── On-chain data fetchers ──
+
+/** Fetch BTC on-chain data from mempool.space */
+async function fetchBTCOnChain(): Promise<string> {
+  try {
+    // Hashrate — use 1wk endpoint (pool/1w returns "pool does not exist" for many)
+    const lines: string[] = ['--- BTC On-Chain (mempool.space) ---'];
+    try {
+      const hrRes = await fetch('https://mempool.space/api/v1/mining/hashrate/1w', { signal: AbortSignal.timeout(6_000) });
+      if (hrRes.ok) {
+        const hrData = await hrRes.json() as { hashrates?: Array<{ avgHashrate: number }> };
+        if (hrData.hashrates?.length) {
+          const latestHr = hrData.hashrates[hrData.hashrates.length - 1]!.avgHashrate;
+          lines.push(`Hashrate (1w avg): ${(latestHr / 1e18).toFixed(2)} EH/s`);
+        }
+      }
+    } catch { /* non-critical */ }
+
+    // Latest block info
+    try {
+      const blockRes = await fetch('https://mempool.space/api/blocks/tip/height', { signal: AbortSignal.timeout(4_000) });
+      if (blockRes.ok) {
+        const height = await blockRes.text();
+        lines.push(`Block Height: ${height}`);
+      }
+    } catch { /* non-critical */ }
+
+    // Fee estimates
+    try {
+      const feeRes = await fetch('https://mempool.space/api/v1/fees/recommended', { signal: AbortSignal.timeout(4_000) });
+      if (feeRes.ok) {
+        const fees = await feeRes.json() as { fastestFee?: number; halfHourFee?: number; hourFee?: number; minimumFee?: number };
+        if (fees.fastestFee !== undefined) lines.push(`Fees (fast/30m/1h): ${fees.fastestFee}/${fees.halfHourFee ?? '?'}/${fees.hourFee ?? '?'} sat/vB`);
+      }
+    } catch { /* non-critical */ }
+
+    return lines.join('\n');
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return `BTC on-chain unavailable: ${msg}`;
+  }
+}
+
+/** Fetch ETH on-chain data via CoinGecko (Etherscan free tier rate-limits without API key) */
+async function fetchETHOnChain(): Promise<string> {
+  // Use CoinGecko ETH data instead — more reliable than free-tier Etherscan
+  try {
+    const res = await fetch(
+      'https://api.coingecko.com/api/v3/coins/ethereum?localization=false&tickers=true&community_data=false&developer_data=false',
+      { signal: AbortSignal.timeout(8_000) }
+    );
+    if (!res.ok) throw new Error(`CoinGecko HTTP ${res.status}`);
+    const data = await res.json() as {
+      market_data?: {
+        current_price?: { usd?: number };
+        price_change_percentage_24h?: number;
+        total_volume?: { usd?: number };
+        market_cap?: { usd?: number };
+        circulating_supply?: number;
+        total_supply?: number;
+      };
+    };
+    const lines: string[] = ['--- ETH On-Chain (CoinGecko) ---'];
+    const md = data.market_data;
+    if (!md) return 'ETH on-chain data unavailable.';
+    if (md.current_price?.usd) lines.push(`ETH/USD: $${md.current_price.usd.toFixed(2)}`);
+    if (md.price_change_percentage_24h !== undefined) lines.push(`24h Change: ${md.price_change_percentage_24h >= 0 ? '+' : ''}${md.price_change_percentage_24h.toFixed(2)}%`);
+    if (md.market_cap?.usd) lines.push(`Market Cap: $${(md.market_cap.usd / 1e9).toFixed(2)}B`);
+    if (md.circulating_supply) lines.push(`Circ Supply: ${(md.circulating_supply / 1e6).toFixed(1)}M`);
+    if (md.total_volume?.usd) lines.push(`24h Volume: $${(md.total_volume.usd / 1e6).toFixed(2)}M`);
+    return lines.join('\n');
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return `ETH on-chain unavailable: ${msg}`;
+  }
+}
+
+/** Fetch generic crypto on-chain data via CoinGecko (exchange flow proxy) */
+async function fetchCoinGeckoMarketData(coingeckoId: string): Promise<string> {
+  try {
+    const res = await fetch(
+      `https://api.coingecko.com/api/v3/coins/${coingeckoId}?localization=false&tickers=true&community_data=false&developer_data=false`,
+      { signal: AbortSignal.timeout(8_000) }
+    );
+    if (!res.ok) throw new Error(`CoinGecko HTTP ${res.status}`);
+
+    const data = await res.json() as {
+      market_data?: {
+        current_price?: { usd?: number };
+        price_change_percentage_24h?: number;
+        total_volume?: { usd?: number };
+        market_cap?: { usd?: number };
+        circulating_supply?: number;
+        total_supply?: number;
+        max_supply?: number | null;
+        price_change_percentage_24h_in_currency?: { usd?: number };
+        ath?: { usd?: number };
+        ath_date?: { usd?: string };
+      };
+      tickers?: Array<{
+        market?: { name?: string };
+        volume?: number;
+        trade_url?: string;
+        base?: string;
+        target?: string;
+        converted_volume?: { usd?: number };
+      }>;
+    };
+
+    const lines: string[] = [`--- ${coingeckoId} On-Chain (CoinGecko) ---`];
+    const md = data.market_data;
+    if (!md) return `${coingeckoId}: no market data available.`;
+
+    if (md.current_price?.usd) lines.push(`Price: $${md.current_price.usd.toFixed(4)}`);
+    if (md.price_change_percentage_24h !== undefined) {
+      const chg = md.price_change_percentage_24h;
+      lines.push(`24h Change: ${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`);
+    }
+    if (md.total_volume?.usd) lines.push(`24h Volume: $${(md.total_volume.usd / 1e6).toFixed(2)}M`);
+    if (md.market_cap?.usd) lines.push(`Market Cap: $${(md.market_cap.usd / 1e9).toFixed(2)}B`);
+    if (md.circulating_supply) {
+      const cs = md.circulating_supply;
+      const total = md.total_supply ?? 0;
+      lines.push(`Circ Supply: ${(cs / 1e6).toFixed(1)}M${total > 0 ? ` / ${(total / 1e6).toFixed(1)}M (${((cs / total) * 100).toFixed(1)}%)` : ''}`);
+    }
+    if (md.ath?.usd && md.ath_date?.usd) {
+      const athDate = new Date(md.ath_date.usd).toISOString().slice(0, 10);
+      lines.push(`ATH: $${md.ath.usd.toFixed(2)} (${athDate})`);
+    }
+
+    // Top CEX exchange tickers as flow proxy
+    const cexTickers = (data.tickers ?? [])
+      .filter(t => t.market?.name && ['Binance', 'Coinbase', 'Kraken', 'OKX', 'Bybit', 'Bitfinex', 'HTX'].includes(t.market.name))
+      .slice(0, 4);
+    if (cexTickers.length > 0) {
+      lines.push(`CEX Flow: ${cexTickers.map(t => `${t.market!.name}=$${(t.converted_volume?.usd ?? 0) / 1e6}M`).join(', ')}`);
+    }
+
+    return lines.join('\n');
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return `${coingeckoId} on-chain unavailable: ${msg}`;
+  }
+}
+
+/** Fetch macro flow data for TradFi assets (ETF flows, futures positioning, DXY) */
+async function fetchTradFiFlowData(symbol: string, category: AssetCategory): Promise<string> {
+  const base = normalizeBaseAsset(symbol);
+  const lines: string[] = [`--- ${base} Macro Flow Data ---`];
+
+  try {
+    if (category === 'indices') {
+      // Try to fetch index-specific macro info
+      if (base.includes('SP') || base.includes('NDX') || base.includes('DJI')) {
+        const searchResult = await webSearch(`${base} futures positioning COT report latest`);
+        lines.push(`Futures Positioning: ${searchResult.slice(0, 200)}`);
+      }
+      // DXY correlation
+      try {
+        const dxyRes = await fetch('https://api.exchangerate-api.com/v4/latest/USD', { signal: AbortSignal.timeout(5_000) });
+        if (dxyRes.ok) {
+          const dxy = await dxyRes.json() as { rates?: Record<string, number> };
+          if (dxy.rates) {
+            const dxyProxy = 1 / (dxy.rates['EUR'] ?? 1);
+            lines.push(`DXY Proxy: ${dxyProxy.toFixed(4)} (inverse EUR/USD)`);
+          }
+        }
+      } catch { /* non-critical */ }
+    } else if (category === 'stocks') {
+      // Stock-specific: try to find ETF flow / sector data
+      const searchResult = await webSearch(`${base} stock ETF flows institutional positioning latest`);
+      lines.push(`ETF/Flow: ${searchResult.slice(0, 200)}`);
+    } else if (category === 'commodities') {
+      if (base === 'XAU' || base === 'GOLD') {
+        try {
+          const cgRes = await fetch('https://api.coingecko.com/api/v3/coins/the-gold-token?localization=false&community_data=false&developer_data=false', { signal: AbortSignal.timeout(6_000) });
+          if (cgRes.ok) {
+            const cg = await cgRes.json() as { market_data?: { current_price?: { usd?: number }; price_change_percentage_24h?: number } };
+            if (cg.market_data?.current_price?.usd) lines.push(`Gold (CG): $${cg.market_data.current_price.usd.toFixed(2)}${cg.market_data.price_change_percentage_24h !== undefined ? ` (${cg.market_data.price_change_percentage_24h >= 0 ? '+' : ''}${cg.market_data.price_change_percentage_24h.toFixed(2)}%)` : ''}`);
+          } else {
+            // Fallback: Google News RSS gold price
+            const searchResult = await webSearch(`gold price XAU USD today`);
+            if (searchResult.length > 8) lines.push(`Gold: ${searchResult.slice(0, 150)}`);
+          }
+        } catch { /* non-critical */ }
+      } else if (base === 'XAG' || base === 'SILVER') {
+        try {
+          const cgRes = await fetch('https://api.coingecko.com/api/v3/coins/silver-token?localization=false&community_data=false&developer_data=false', { signal: AbortSignal.timeout(6_000) });
+          if (cgRes.ok) {
+            const cg = await cgRes.json() as { market_data?: { current_price?: { usd?: number }; price_change_percentage_24h?: number } };
+            if (cg.market_data?.current_price?.usd) lines.push(`Silver (CG): $${cg.market_data.current_price.usd.toFixed(3)}${cg.market_data.price_change_percentage_24h !== undefined ? ` (${cg.market_data.price_change_percentage_24h >= 0 ? '+' : ''}${cg.market_data.price_change_percentage_24h.toFixed(2)}%)` : ''}`);
+          } else {
+            const searchResult = await webSearch(`silver price XAG USD today`);
+            if (searchResult.length > 8) lines.push(`Silver: ${searchResult.slice(0, 150)}`);
+          }
+        } catch { /* non-critical */ }
+      } else if (base === 'OIL' || base.includes('OIL') || base.includes('CRUDE')) {
+        const searchResult = await webSearch(`crude oil WTI Brent price supply demand latest`);
+        lines.push(`Oil: ${searchResult.slice(0, 200)}`);
+      } else {
+        const searchResult = await webSearch(`${base} commodity price supply demand latest`);
+        lines.push(`Commodity: ${searchResult.slice(0, 200)}`);
+      }
+    } else if (category === 'fx') {
+      try {
+        const fxRes = await fetch(`https://api.exchangerate-api.com/v4/latest/USD`, { signal: AbortSignal.timeout(5_000) });
+        if (fxRes.ok) {
+          const fx = await fxRes.json() as { rates?: Record<string, number> };
+          if (fx.rates) {
+            const pairs = ['EUR', 'GBP', 'JPY', 'CNH', 'AUD', 'CAD', 'CHF', 'HKD', 'SGD', 'NZD'];
+            const relevant = pairs.filter(p => base.includes(p) || p.includes(base));
+            if (relevant.length > 0) {
+              lines.push(`FX Rates: ${relevant.map(p => `${p}=${fx.rates![p]?.toFixed(4) ?? 'N/A'}`).join(', ')}`);
+            } else {
+              lines.push(`USD Index: EUR=${fx.rates['EUR']?.toFixed(4)}, GBP=${fx.rates['GBP']?.toFixed(4)}, JPY=${fx.rates['JPY']?.toFixed(2)}, CNY=${fx.rates['CNY']?.toFixed(4)}`);
+            }
+          }
+        }
+      } catch { /* non-critical */ }
+    } else if (category === 'preipo') {
+      const searchResult = await webSearch(`${base} pre-IPO valuation latest news`);
+      lines.push(`Pre-IPO: ${searchResult.slice(0, 200)}`);
+    }
+
+    return lines.length > 1 ? lines.join('\n') : `${base}: no specific macro data source identified.`;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return `${base} macro data unavailable: ${msg}`;
+  }
+}
+
+/** Main orchestrator: fetch on-chain or flow data based on asset category */
+async function fetchOnChainData(symbol: string, marketContext: string): Promise<string> {
+  const category = detectAssetCategory(symbol, marketContext);
+  const base = normalizeBaseAsset(symbol);
+  const lines: string[] = [];
+  lines.push(`[On-Chain] Asset: ${symbol} | Category: ${category} | Base: ${base}`);
+
+  if (category === 'crypto') {
+    const known = KNOWN_CRYPTO[base] ?? KNOWN_CRYPTO[symbol.toUpperCase().replace(/USDT$/, '')];
+    if (known) {
+      ocwLog.info(`Fetching on-chain data for ${base} (${known.chain})`);
+      if (known.chain === 'bitcoin') {
+        const btcData = await fetchBTCOnChain();
+        lines.push(btcData);
+      } else if (known.chain === 'ethereum' && known.baseAsset === 'ETH') {
+        const ethData = await fetchETHOnChain();
+        lines.push(ethData);
+      }
+      // For ALL crypto: fetch CoinGecko market data (exchange flows, volume, supply metrics)
+      const cgData = await fetchCoinGeckoMarketData(known.coingeckoId);
+      lines.push(cgData);
+    } else {
+      // Unknown crypto token — try web search to find how to get on-chain data
+      ocwLog.info(`Unknown crypto token ${base}, trying web search for on-chain sources...`);
+      const searchResult = await webSearch(`${base} token cryptocurrency on-chain data blockchain explorer`);
+      lines.push(`[Web Search] ${searchResult}`);
+    }
+  } else {
+    // TradFi asset — fetch macro/flow data
+    ocwLog.info(`Fetching macro flow data for ${base} (${category})`);
+    const flowData = await fetchTradFiFlowData(symbol, category);
+    lines.push(flowData);
+  }
+
+  return lines.join('\n');
+}
+
+/** Cache on-chain data for 5 minutes */
+interface CacheEntry {
+  data: string;
+  timestamp: number;
+}
+
+const onChainCache = new Map<string, CacheEntry>();
+/** Inflight fetch lock — prevents 5 agents from fetching the same on-chain data simultaneously */
+const onChainInflight = new Map<string, Promise<string>>();
+
+async function getOnChainData(symbol: string, marketContext: string): Promise<string> {
+  const cacheKey = `${symbol.toUpperCase()}|${detectAssetCategory(symbol, marketContext)}`;
+  const now = Date.now();
+  const cached = onChainCache.get(cacheKey);
+  if (cached && now - cached.timestamp < 300_000) { // 5 min cache
+    ocwLog.debug(`On-chain data cache HIT for ${cacheKey}`);
+    return cached.data;
+  }
+  // Inflight lock: if another agent is already fetching this key, wait for it
+  const inflight = onChainInflight.get(cacheKey);
+  if (inflight) {
+    ocwLog.debug(`On-chain data inflight WAIT for ${cacheKey}`);
+    return inflight;
+  }
+  const fetchPromise = fetchOnChainData(symbol, marketContext).then(data => {
+    onChainCache.set(cacheKey, { data, timestamp: Date.now() });
+    onChainInflight.delete(cacheKey);
+    return data;
+  }).catch(err => {
+    onChainInflight.delete(cacheKey);
+    throw err;
+  });
+  onChainInflight.set(cacheKey, fetchPromise);
+  return fetchPromise;
+}
+
+// ── Revised OnChainWhisperer Agent ──
+
+export class OnChainWhisperer extends BaseAgent {
+  constructor() {
+    super({
+      role: 'onchain_whisperer',
+      name: 'On-Chain Whisperer',
+      temperature: 0.5,
+      weight: 0.25,
+      modelPreference: 'default',
+      personality:
+        'You are an elite on-chain analyst who reads blockchain data and macro flows with surgical precision. '
+        + 'For CRYPTO assets, you fetch live on-chain metrics — exchange inflows/outflows, whale transactions, '
+        + 'supply dynamics, fee markets, and miner/validator behavior. '
+        + 'For TradFi assets (indices, stocks, FX, commodities), you fetch macro flow data — ETF flows, '
+        + 'futures positioning, DXY correlation, and intermarket flows. '
+        + 'You are analytical, data-driven, and skeptical of hype. '
+        + 'When no direct on-chain data source exists, you use web search to discover how to obtain it. '
+        + 'You know that on-chain and flow data often precede price action by hours to days.',
+    });
+  }
+
+  override getSystemPrompt(): string {
+    return `You are On-Chain Whisperer — asset-category-aware on-chain & macro flow analyst.
+
+You receive LIVE on-chain / macro flow data injected into your context.
+You evaluate ALL trading pairs: the market ticker AND each open position.
+
+=== MARKET TICKER (${this.marketSymbol}) ===
+Analyse the injected on-chain/macro data to decide buy/sell/hold.
+
+=== OPEN POSITIONS ===
+For each open position, use on-chain/macro signals to decide:
+- CRYPTO position: exchange flow divergence from position direction? Whale activity suggesting reversal?
+- TradFi position: DXY/DXY breaking against position? ETF flow reversal? COT extreme?
+- If on-chain/macro data contradicts position direction → suggest close or tighten SL
+- If on-chain/macro data confirms position → hold, possibly widen TP
+- If data is mixed/unclear → hold with current settings
+
+=== CRYPTO SIGNALS ===
+- Exchange outflow spike + price holding → accumulation → BULLISH
+- Exchange inflow spike + price fading → distribution → BEARISH
+- Whale cluster selling + volume spike → BEARISH
+- Supply contraction + rising price → BULLISH trend continuation
+- Fee spikes + price at highs → possible top exhaustion → CAUTIOUS
+
+=== TRADFI SIGNALS ===
+- DXY up = risk-assets down (bearish equities/commodities)
+- DXY down = risk-on (bullish)
+- ETF inflows = institutional accumulation → BULLISH
+- ETF outflows = distribution → BEARISH
+- Futures positioning at extreme → contrarian signal
+
+=== POSITION-SPECIFIC RULES ===
+- On-chain/flow data confirms position → HOLD, consider trailing SL
+- On-chain/flow data contradicts position → CLOSE or tighten SL aggressively
+- No clear signal → HOLD with current SL/TP
+- If you recommend closing, set closePosition:true with appropriate closeUrgency`;
+  }
+
+  /** Override think() for multi-symbol: fetch on-chain data for ALL relevant symbols */
+  override async think(marketState: string, portfolioSnapshot: string, positions?: import('../types/index.ts').PositionContext[]): Promise<import('../types/index.ts').AgentThought> {
+    // Collect ALL symbols that need on-chain data
+    const allSymbols = new Set<string>();
+    // Market ticker
+    const symMatch = marketState.match(/Selected Symbol:\s*(\S+)/i) ?? marketState.match(/Symbol:\s*(\S+)/i);
+    const marketSymbol = symMatch?.[1] ?? 'BTCUSDT';
+    allSymbols.add(marketSymbol);
+    // Position symbols
+    if (positions) {
+      for (const p of positions) allSymbols.add(p.symbol);
+    }
+
+    ocwLog.info(`Fetching on-chain data for ${allSymbols.size} symbol(s): ${Array.from(allSymbols).join(', ')}`);
+    const onChainParts: string[] = [];
+    for (const sym of allSymbols) {
+      try {
+        const data = await getOnChainData(sym, marketState);
+        onChainParts.push(data);
+      } catch (err: unknown) {
+        ocwLog.warn(`On-chain fetch failed for ${sym}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    const enhancedContext = `${marketState}\n\n=== On-Chain / Macro Flow Data ===\n${onChainParts.join('\n\n')}`;
+    ocwLog.debug(`On-chain context appended (${enhancedContext.length} chars, ${allSymbols.size} symbols)`);
+
+    return super.think(enhancedContext, portfolioSnapshot, positions);
+  }
+}
+
+// ─── Agent 3: Regime Risk Guardian ───
+// Low temperature, conservative. Monitors volatility regimes, macro context, and structural risk.
+// Now includes Fear & Greed Index from alternative.me for sentiment-based regime classification.
+
+async function fetchFearGreedIndex(): Promise<{ value: number; classification: string }> {
+  try {
+    const res = await fetch('https://api.alternative.me/fng/?limit=1');
+    if (!res.ok) return { value: 50, classification: 'neutral' };
+    const data = await res.json() as { data: Array<{ value: string; value_classification: string }> };
+    if (data?.data?.[0]) {
+      return {
+        value: parseInt(data.data[0].value, 10),
+        classification: data.data[0].value_classification.toLowerCase(),
+      };
+    }
+  } catch { /* silent fallback */ }
+  return { value: 50, classification: 'neutral' };
+}
+
+// Cache F&G for 1 hour to avoid rate limiting
+let cachedFng: { value: number; classification: string; timestamp: number } | null = null;
+
+/** Get the last cached Fear & Greed value (0-100). Returns 50 if never fetched. */
+export function getLastFearGreedValue(): number {
+  return cachedFng?.value ?? 50;
+}
+
+async function getFearGreedIndex(): Promise<{ value: number; classification: string }> {
+  const now = Date.now();
+  if (cachedFng && now - cachedFng.timestamp < 3_600_000) {
+    return { value: cachedFng.value, classification: cachedFng.classification };
+  }
+  const result = await fetchFearGreedIndex();
+  cachedFng = { ...result, timestamp: now };
+  return result;
+}
+// Low temperature, conservative. Monitors volatility regimes, macro context, and structural risk.
+
+export class RegimeRiskGuardian extends BaseAgent {
+  constructor() {
+    super({
+      role: 'regime_risk_guardian',
+      name: 'Regime Risk Guardian',
+      temperature: 0.25,
+      weight: 0.25,
+      modelPreference: 'default',
+      maxTokens: 2048,
+      personality:
+        'You are the regime detection specialist. You classify market states as trending, ranging, volatile, or chaotic. '
+        + 'You are conservative — you prefer to be wrong on the side of safety. '
+        + 'You adjust position sizing based on regime confidence. '
+        + 'You are aware of macro context, volatility regimes, and structural market shifts. '
+        + 'You protect capital by reducing exposure in uncertain regimes.',
+    });
+  }
+
+  override getSystemPrompt(): string {
+    return `You are Regime Risk Guardian — regime classification & risk-adjusted sizing.
+
+You evaluate ALL trading pairs under the current market regime.
+
+=== PATTERN DATA ===
+If the context contains "=== TRADE PATTERN INSIGHTS ===" or "=== POSITION PATTERN INSIGHTS ===":
+  - Use historical win rate as your PRIMARY reference
+  - Example: "Low_vol sideways: 100% HOLD historically, 0% edge for directional sizing"
+  - Regime rules are BASELINE; pattern data OVERRIDES when statistically significant
+
+=== CONCISE REASONING ===
+- Use ROUND numbers: "~$65K-$66K range" not "$65,688 47.5bps below $66K"
+- Max 3 sentences per assessment
+- If regime is clear + pattern data confirms → short HOLD is fine
+
+=== MARKET TICKER (${this.marketSymbol}) ===
+- Vol < 0.5% + sideways → small mean-reversion (2-3%)
+- Vol 0.5-2% + clear trend → normal size (4-5%), up to 8% if strong
+- Vol > 3% → reduce size 50%, still trade if setup exists
+- Chaotic → HOLD
+- Leverage 2-8x: low vol=higher lev, high vol=lower lev
+
+=== OPEN POSITIONS ===
+For each position, evaluate under current regime:
+- Trend continuation (regime supports position) → HOLD, consider trailing SL
+- Regime shift against position (e.g. trending_bear while long) → CLOSE position
+- Regime uncertain/changing → tighten SL, reduce risk, consider partial close
+- High vol regime → widen SL to avoid premature stop-out but reduce size
+- Low vol regime → tighten SL, normal sizing
+
+=== FEAR & GREED INDEX ===
+- 0-25 (Extreme Fear) → BEARISH bias, reduce ALL position sizes
+- 25-45 (Fear) → slightly BEARISH, cautious sizing
+- 45-55 (Neutral) → no sentiment bias, follow technicals
+- 55-75 (Greed) → slightly BULLISH, normal sizing
+- 75-100 (Extreme Greed) → BULLISH but watch for top, take profits on positions
+
+=== POSITION-SPECIFIC RULES ===
+- Regime aligned with position → HOLD, keep or widen TP
+- Regime opposite to position → CLOSE, set closeUrgency based on conviction
+- Regime neutral/mixed → tight SL, keep position but reduce exposure`;
+  }
+
+  /** Override think() to inject Fear & Greed index */
+  override async think(marketState: string, portfolioSnapshot: string, positions?: import('../types/index.ts').PositionContext[]): Promise<import('../types/index.ts').AgentThought> {
+    const fng = await getFearGreedIndex();
+    const enhancedContext = `${marketState}\n\nFear & Greed Index: ${fng.value}/100 (${fng.classification})`;
+    return super.think(enhancedContext, portfolioSnapshot, positions);
+  }
+}
+
+// ─── Agent 5: News Reporter ───
+// Category-aware news sentiment analyst.
+// For CRYPTO assets → fetches crypto-specific news (newsdata.io crypto feed, regulation, hacks, etf)
+// For TradFi assets (indices, stocks, FX, commodities) → fetches macro/financial news (Fed, CPI, GDP, earnings)
+// If no news available for the category, agent defaults to NEUTRAL / HOLD.
+// Falls back to web search if primary news source fails.
+
+const nrLog = createLogger({ agent: 'news_reporter', phase: 'data-fetch' });
+
+// ── RSS News Fetchers (zero-dependency, no API key) ──
+
+/** Parse RSS XML text into article titles/descriptions */
+function parseRssTitles(xml: string, skipFilters: string[] = []): Array<{ title: string; pubDate?: string }> {
+  const articles: Array<{ title: string; pubDate?: string }> = [];
+  // Extract items/entries
+  const items = xml.split(/<item>|<entry>/g).slice(1);
+  for (const item of items) {
+    const titleMatch = item.match(/<title[^>]*><!\[CDATA\[([^\]]*)\]\]><\/title>/) ?? item.match(/<title[^>]*>([^<]*)<\/title>/);
+    const dateMatch = item.match(/<pubDate[^>]*>([^<]*)<\/pubDate>/) ?? item.match(/<published[^>]*>([^<]*)<\/published>/) ?? item.match(/<updated[^>]*>([^<]*)<\/updated>/);
+    const title = titleMatch?.[1]?.replace(/<!\[CDATA\[([^\]]*)\]\]>/, '$1').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').trim() ?? '';
+    if (!title || title.length < 10) continue;
+    const skip = skipFilters.some(f => title.includes(f) || f.includes(title));
+    if (skip) continue;
+    const pubDate = dateMatch?.[1] ? new Date(dateMatch[1]).toISOString().slice(0, 10) : undefined;
+    articles.push({ title: title.slice(0, 150), pubDate });
+  }
+  return articles.slice(0, 5);
+}
+
+/** Fetch from Google News RSS (best free source — 100 articles per query) */
+async function fetchGoogleNewsRSS(query: string, skipFilters: string[] = ['Google News']): Promise<Array<{ title: string; pubDate?: string }> | null> {
+  try {
+    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+    if (!res.ok) return null;
+    const xml = await res.text();
+    return parseRssTitles(xml, skipFilters);
+  } catch { return null; }
+}
+
+/** Fetch from CNBC RSS (financial news) */
+async function fetchCNBCRSS(): Promise<Array<{ title: string; pubDate?: string }> | null> {
+  try {
+    const res = await fetch('https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114', { signal: AbortSignal.timeout(6_000) });
+    if (!res.ok) return null;
+    return parseRssTitles(await res.text(), ['US Top News and Analysis']);
+  } catch { return null; }
+}
+
+/** Fetch from Bing News RSS */
+async function fetchBingNewsRSS(query: string): Promise<Array<{ title: string; pubDate?: string }> | null> {
+  try {
+    const url = `https://www.bing.com/news/search?q=${encodeURIComponent(query)}&format=rss`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(6_000) });
+    if (!res.ok) return null;
+    return parseRssTitles(await res.text(), ['news search', 'Bing']);
+  } catch { return null; }
+}
+
+/** Fetch from CoinDesk RSS (crypto-specific) */
+async function fetchCoinDeskRSS(): Promise<Array<{ title: string; pubDate?: string }> | null> {
+  try {
+    const res = await fetch('https://www.coindesk.com/arc/outboundfeeds/rss/', { signal: AbortSignal.timeout(6_000) });
+    if (!res.ok) return null;
+    const xml = await res.text();
+    const articles = parseRssTitles(xml, ['CoinDesk:', 'Bitcoin, Ethereum, Crypto News']);
+    return articles;
+  } catch { return null; }
+}
+
+/** Fetch from The Block RSS (crypto-specific) */
+async function fetchTheBlockRSS(): Promise<Array<{ title: string; pubDate?: string }> | null> {
+  try {
+    const res = await fetch('https://www.theblock.co/rss.xml', { signal: AbortSignal.timeout(6_000) });
+    if (!res.ok) return null;
+    return parseRssTitles(await res.text(), ['The Block |']);
+  } catch { return null; }
+}
+
+// ── Category detection (reuse same logic as On-Chain Whisperer) ──
+
+type NewsAssetCategory = 'crypto' | 'tradfi_indices' | 'tradfi_stocks' | 'tradfi_commodities' | 'tradfi_fx' | 'tradfi_other' | 'unknown';
+
+function detectNewsCategory(symbol: string, marketContext: string): NewsAssetCategory {
+  const upper = symbol.toUpperCase();
+  const colonIdx = symbol.indexOf(':');
+  const stripped = colonIdx >= 0 ? (symbol.split(':')[1]?.toUpperCase() ?? upper).replace(/USDT$/, '').replace(/USD$/, '').replace(/PERP$/, '') : upper.replace(/USDT$/, '').replace(/USD$/, '').replace(/PERP$/, '');
+
+  // Check context for explicit Asset Filter first
+  if (/asset\s*filter:\s*indices/i.test(marketContext)) return 'tradfi_indices';
+  if (/asset\s*filter:\s*stocks/i.test(marketContext)) return 'tradfi_stocks';
+  if (/asset\s*filter:\s*commodities/i.test(marketContext)) return 'tradfi_commodities';
+  if (/asset\s*filter:\s*fx/i.test(marketContext)) return 'tradfi_fx';
+  if (/asset\s*filter:\s*tradfi/i.test(marketContext)) return 'tradfi_other';
+  if (/asset\s*filter:\s*crypto_perps/i.test(marketContext)) return 'crypto';
+
+  // Colon-prefixed → likely TradFi
+  if (symbol.includes(':')) {
+    const knownIndices = ['SP500', 'SPX', 'NDX', 'DJI', 'VIX', 'RUT', 'FTSE', 'NKY', 'ASX', 'HSI', 'STOXX', 'NIFTY', 'DAX', 'CAC'];
+    const knownStocks = ['NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'QQQ', 'SPY', 'VTI', 'IWM', 'PLTR', 'MSTR', 'COIN'];
+    const knownCommodities = ['XAU', 'XAG', 'OIL', 'COPPER', 'NATURAL_GAS', 'GOLD', 'SILVER', 'PLATINUM', 'PALLADIUM', 'WHEAT', 'CORN', 'NG'];
+    const knownFX = ['EUR', 'GBP', 'JPY', 'CNH', 'AUD', 'CAD', 'CHF', 'NZD', 'HKD', 'SGD', 'NOK', 'SEK', 'MXN', 'ZAR', 'TRY'];
+    for (const x of knownIndices) if (stripped.includes(x)) return 'tradfi_indices';
+    for (const x of knownStocks) if (stripped.includes(x)) return 'tradfi_stocks';
+    for (const x of knownCommodities) if (stripped.includes(x)) return 'tradfi_commodities';
+    for (const x of knownFX) if (stripped.includes(x)) return 'tradfi_fx';
+    return 'tradfi_other';
+  }
+  return 'crypto';
+}
+
+// ── Macro-level query terms (broader than ticker-specific) ──
+
+interface NewsQueryStrategy {
+  /** Primary: ticker/asset-specific keyword for targeted search */
+  tickerQuery: (symbol: string, base: string) => string;
+  /** Macro: broad economic/financial queries relevant to this asset category */
+  macroQueries: string[];
+  /** World/geopolitical queries */
+  worldQueries: string[];
+  /** Sector queries (industry-level) */
+  sectorQueries: string[];
+}
+
+const NEWS_STRATEGIES: Record<NewsAssetCategory, NewsQueryStrategy> = {
+  crypto: {
+    tickerQuery: (_, base) => `${base} cryptocurrency bitcoin regulation market`,
+    macroQueries: [
+      'federal reserve interest rate inflation economy monetary policy',
+      'cryptocurrency regulation SEC ETF bitcoin institutional adoption',
+      'stablecoin regulation crypto market liquidity digital assets',
+    ],
+    worldQueries: [
+      'geopolitics trade war tariffs global economy risk',
+      'US dollar DXY treasury yield liquidity financial markets',
+    ],
+    sectorQueries: [
+      'DeFi blockchain layer 2 crypto technology development',
+      'bitcoin mining hashrate crypto exchange trading volume',
+    ],
+  },
+  tradfi_indices: {
+    tickerQuery: (_, base) => `${base} S&P 500 stock market index today`,
+    macroQueries: [
+      'federal reserve interest rates FOMC monetary policy inflation CPI',
+      'US economy GDP employment NFP jobs data manufacturing services PMI',
+      'treasury yield curve 2year 10year inversion recession bond market',
+      'corporate earnings season profit outlook forward guidance',
+    ],
+    worldQueries: [
+      'geopolitical risk trade war tariff global supply chain disruption',
+      'US China trade relations Ukraine Russia Middle East oil energy',
+      'global economic outlook IMF World Bank growth forecast recession',
+    ],
+    sectorQueries: [
+      'technology sector AI semiconductor stock market leadership',
+      'energy sector oil price commodity supercycle inflation hedge',
+      'financial sector bank lending credit conditions interest rate impact',
+      'healthcare sector biotech pharmaceutical regulatory policy',
+    ],
+  },
+  tradfi_stocks: {
+    tickerQuery: (_, base) => `${base} stock earnings analyst rating market`,
+    macroQueries: [
+      'stock market today sector rotation earnings season',
+      'federal reserve interest rate impact equity valuation',
+      'inflation consumer spending retail sales economic data',
+    ],
+    worldQueries: [
+      'geopolitics trade policy tariff impact stock market',
+      'global economic growth risk appetite equity flows',
+    ],
+    sectorQueries: [
+      'technology AI cloud computing software sector outlook',
+      'consumer discretionary retail e-commerce spending trends',
+      'industrial manufacturing supply chain automation robotics',
+    ],
+  },
+  tradfi_commodities: {
+    tickerQuery: (_, base) => `${base} commodity price supply demand`,
+    macroQueries: [
+      'commodities supercycle gold oil copper price inflation hedge',
+      'Federal Reserve interest rate dollar index commodity impact',
+      'supply chain raw materials shortage inventory build draw',
+    ],
+    worldQueries: [
+      'OPEC oil production supply cut energy price geopolitical risk',
+      'trade war tariff commodity export import restriction sanctions',
+      'weather climate El Nino agricultural commodity crop yield',
+    ],
+    sectorQueries: [
+      'precious metals gold silver platinum central bank reserve',
+      'energy transition critical minerals lithium copper rare earth',
+      'industrial metals steel aluminum construction demand China',
+    ],
+  },
+  tradfi_fx: {
+    tickerQuery: (_, base) => `${base} forex exchange rate outlook`,
+    macroQueries: [
+      'Federal Reserve interest rate dollar index DXY monetary policy',
+      'central bank policy ECB BOJ BOE rate differential carry trade',
+      'inflation differential purchasing power parity currency valuation',
+    ],
+    worldQueries: [
+      'geopolitical risk safe haven currency flight to quality',
+      'trade balance current account capital flows emerging market',
+      'global reserve currency status de-dollarization BRICS',
+    ],
+    sectorQueries: [
+      'EUR USD forex pair outlook technical analysis positioning',
+      'JPY USD yen carry trade unwind BOJ policy normalization',
+      'GBP USD sterling Brexit economic recovery UK outlook',
+    ],
+  },
+  tradfi_other: {
+    tickerQuery: (_, base) => `${base} financial market today`,
+    macroQueries: [
+      'global financial markets economic outlook today',
+      'central bank policy liquidity risk appetite investor sentiment',
+    ],
+    worldQueries: [
+      'geopolitics global risk trade policy economic uncertainty',
+    ],
+    sectorQueries: [
+      'cross-asset correlation equities bonds commodities currencies',
+    ],
+  },
+  unknown: {
+    tickerQuery: (_, base) => `${base} financial market today`,
+    macroQueries: [
+      'global financial markets economic outlook today',
+      'central bank policy liquidity risk appetite investor sentiment',
+    ],
+    worldQueries: [
+      'geopolitics global risk trade policy economic uncertainty',
+    ],
+    sectorQueries: [
+      'cross-asset correlation equities bonds commodities currencies',
+    ],
+  },
+};
+
+// ── Helper: format articles for injection ──
+
+function formatNewsArticles(
+  source: string,
+  articles: Array<{ title: string; pubDate?: string }>,
+  maxItems = 5,
+): string {
+  if (articles.length === 0) return '';
+  return articles.slice(0, maxItems).map((a, i) =>
+    `[${i + 1}] ${a.pubDate ? `[${a.pubDate}] ` : ''}${a.title}`
+  ).join('\n');
+}
+
+/** Format multiple RSS source results into a labelled block */
+function formatMultiSourceResults(results: Array<{ label: string; articles: Array<{ title: string; pubDate?: string }> }>): string {
+  return results
+    .filter(r => r.articles.length > 0)
+    .map(r => `--- ${r.label} ---\n${r.articles.slice(0, 4).map((a, i) =>
+      `[${i + 1}] ${a.pubDate ? `[${a.pubDate}] ` : ''}${a.title}`
+    ).join('\n')}`)
+    .join('\n\n');
+}
+
+// ── News API Keys ──
+
+const NEWS_API_KEY = 'pub_b330a34800274f45a6ab35467f1a5670';
+
+// ── Crypto News Fetcher ──
+
+async function fetchCryptoNewsFromAPI(): Promise<string> {
+  try {
+    const res = await fetch(
+      `https://newsdata.io/api/1/crypto?apikey=${NEWS_API_KEY}&excludefield=sentiment,sentiment_stats,ai_tag,content`,
+      { signal: AbortSignal.timeout(10_000) }
+    );
+    if (!res.ok) {
+      nrLog.warn(`Crypto news API returned ${res.status}`);
+      return 'NEWS_UNAVAILABLE';
+    }
+    const data = await res.json() as { status?: string; results?: Array<{ title: string; description?: string; source_id?: string; link?: string; pubDate?: string; category?: string[] }> };
+    if (!data?.results || data.results.length === 0) return 'NO_NEWS';
+    return data.results.slice(0, 8).map((article, i) =>
+      `[${i + 1}] [${article.pubDate?.slice(0, 10) ?? 'recent'}] ${article.title}${article.description ? ` — ${article.description.slice(0, 150)}` : ''}`
+    ).join('\n');
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    nrLog.warn(`Crypto news fetch failed: ${msg}`);
+    return 'NEWS_UNAVAILABLE';
+  }
+}
+
+// ── TradFi / Macro News Dispatcher ──
+
+async function fetchTradFiNews(category: NewsAssetCategory, symbol: string): Promise<string> {
+  const base = symbol.includes(':') ? symbol.split(':')[1]?.toUpperCase() ?? symbol : symbol.replace(/USDT$/, '').replace(/USD$/, '');
+  const strategy = NEWS_STRATEGIES[category] ?? NEWS_STRATEGIES.unknown;
+  const results: Array<{ label: string; articles: Array<{ title: string; pubDate?: string }> }> = [];
+
+  // ── TIER 0: NewsData.io API (try ticker-specific, then broader) ──
+  // Map category to valid newsdata.io categories (no 'economic' — not supported by free tier)
+  let newsdataCat: string;
+  switch (category) {
+    case 'tradfi_indices':    newsdataCat = 'business,top'; break;
+    case 'tradfi_stocks':     newsdataCat = 'business,technology'; break;
+    case 'tradfi_commodities': newsdataCat = 'business,environment,top'; break;
+    case 'tradfi_fx':         newsdataCat = 'business,politics,top'; break;
+    default:                  newsdataCat = 'business'; break;
+  }
+
+  async function tryNewsData(query: string): Promise<Array<{ title: string; pubDate?: string }> | null> {
+    try {
+      const res = await fetch(
+        `https://newsdata.io/api/1/news?apikey=${NEWS_API_KEY}&category=${newsdataCat}&q=${encodeURIComponent(query)}&language=en&size=6&excludefield=sentiment,sentiment_stats,ai_tag,content`,
+        { signal: AbortSignal.timeout(10_000) }
+      );
+      if (!res.ok) return null;
+      const data = await res.json() as { results?: Array<{ title: string; description?: string; pubDate?: string }> };
+      if (!data?.results?.length) return null;
+      return data.results.slice(0, 6).map(a => ({
+        title: `${a.title}${a.description ? ` — ${a.description.slice(0, 120)}` : ''}`,
+        pubDate: a.pubDate?.slice(0, 10),
+      }));
+    } catch { return null; }
+  }
+
+  // Try ticker-specific → macro → world → pure category
+  const newsDataQueries = [
+    { label: `${base}`, query: strategy.tickerQuery(symbol, base) },
+    { label: 'Macro', query: strategy.macroQueries[0] ?? '' },
+    { label: 'World', query: strategy.worldQueries[0] ?? '' },
+  ];
+  for (const q of newsDataQueries) {
+    if (!q.query) continue;
+    const articles = await tryNewsData(q.query);
+    if (articles && articles.length > 0) {
+      results.push({ label: `NewsData.io: ${q.label}`, articles });
+      break; // First successful NewsData.io result is enough
+    }
+  }
+
+  // ── TIER 1: Google News RSS (macro-level queries — casts wide net) ──
+  // Multiple macro queries in parallel
+  const macroPromises = strategy.macroQueries.slice(0, 3).map(q =>
+    fetchGoogleNewsRSS(q).then(articles => ({ label: `Google: ${q.slice(0, 40)}...`, articles: articles ?? [] }))
+  );
+  const worldPromises = strategy.worldQueries.slice(0, 2).map(q =>
+    fetchGoogleNewsRSS(q).then(articles => ({ label: `Google: ${q.slice(0, 40)}...`, articles: articles ?? [] }))
+  );
+  const sectorPromises = strategy.sectorQueries.slice(0, 2).map(q =>
+    fetchGoogleNewsRSS(q).then(articles => ({ label: `Google: ${q.slice(0, 40)}...`, articles: articles ?? [] }))
+  );
+
+  const [macroResults, worldResults, sectorResults] = await Promise.all([
+    Promise.all(macroPromises),
+    Promise.all(worldPromises),
+    Promise.all(sectorPromises),
+  ]);
+
+  // Take best 2 macro, best 1 world, best 1 sector
+  const allGoogleResults = [
+    ...macroResults.filter(r => r.articles.length >= 2).slice(0, 2),
+    ...worldResults.filter(r => r.articles.length >= 2).slice(0, 1),
+    ...sectorResults.filter(r => r.articles.length >= 2).slice(0, 1),
+  ];
+  results.push(...allGoogleResults);
+
+  // ── TIER 2: CNBC + Bing RSS (supplementary) ──
+  if (results.length < 3) {
+    const [cnbcArticles, bingArticles] = await Promise.all([
+      fetchCNBCRSS(),
+      fetchBingNewsRSS(strategy.macroQueries[0] ?? 'financial market'),
+    ]);
+    if (cnbcArticles && cnbcArticles.length >= 2) {
+      results.push({ label: 'CNBC', articles: cnbcArticles.slice(0, 3) });
+    }
+    if (bingArticles && bingArticles.length >= 2) {
+      results.push({ label: 'Bing News', articles: bingArticles.slice(0, 3) });
+    }
+  }
+
+  // ── TIER 3: Web search fallback (last resort) ──
+  if (results.length === 0) {
+    nrLog.info(`All news sources returned nothing for ${base}, web search fallback`);
+    const broadQuery = strategy.macroQueries[0] ?? 'financial market today';
+    const searchResult = await webSearch(broadQuery);
+    if (searchResult.length > 10 && !searchResult.includes('Found no direct results')) {
+      return `[Web Search] ${searchResult.slice(0, 400)}`;
+    }
+    return `[No News] No ${category.replace('tradfi_', '')} news found. Agent should remain NEUTRAL.`;
+  }
+
+  return formatMultiSourceResults(results);
+}
+
+// ── Crypto News with Political/Economic Context ──
+
+async function fetchCategoryAwareCryptoNews(symbol: string): Promise<string> {
+  const base = symbol.includes(':') ? symbol.split(':')[1]?.toUpperCase() ?? symbol : symbol.replace(/USDT$/, '').replace(/USD$/, '');
+  const strategy = NEWS_STRATEGIES.crypto;
+  const results: Array<{ label: string; articles: Array<{ title: string; pubDate?: string }> }> = [];
+
+  // TIER 0: NewsData.io crypto feed
+  const apiNews = await fetchCryptoNewsFromAPI();
+  if (apiNews !== 'NEWS_UNAVAILABLE' && apiNews !== 'NO_NEWS') {
+    results.push({ label: `NewsData.io: ${base}`, articles: apiNews.split('\n').map(line => {
+      const m = line.match(/^\[\d+\]\s*(\[[^\]]+\])?\s*(.+)/);
+      return { title: m?.[2] ?? line, pubDate: m?.[1]?.replace(/[\[\]]/g, '') };
+    }).filter(a => a.title.length > 5) });
+  }
+
+  // TIER 1: CoinDesk + The Block RSS (crypto-native)
+  const [coindeskArticles, theblockArticles] = await Promise.all([
+    fetchCoinDeskRSS(),
+    fetchTheBlockRSS(),
+  ]);
+  if (coindeskArticles && coindeskArticles.length >= 2) {
+    results.push({ label: 'CoinDesk', articles: coindeskArticles.slice(0, 4) });
+  }
+  if (theblockArticles && theblockArticles.length >= 2) {
+    results.push({ label: 'The Block', articles: theblockArticles.slice(0, 4) });
+  }
+
+  // TIER 2: Google News RSS — crypto regulation + macro context
+  const macroQuery = 'federal reserve interest rates cryptocurrency regulation institutional adoption monetary policy';
+  const politicalQuery = 'cryptocurrency regulation SEC Bitcoin ETF government policy digital assets';
+  const [macroArticles, politicalArticles] = await Promise.all([
+    fetchGoogleNewsRSS(macroQuery),
+    fetchGoogleNewsRSS(politicalQuery),
+    fetchGoogleNewsRSS(strategy.worldQueries[0] ?? 'global economy geopolitical risk financial markets'),
+  ]);
+  if (politicalArticles && politicalArticles.length >= 2) {
+    results.push({ label: 'Google: Regulation/Politics', articles: politicalArticles.slice(0, 4) });
+  }
+  if (macroArticles && macroArticles.length >= 2) {
+    results.push({ label: 'Google: Macro', articles: macroArticles.slice(0, 4) });
+  }
+
+  // TIER 3: Web search fallback
+  if (results.length === 0) {
+    nrLog.info(`All crypto news sources returned nothing, web search fallback`);
+    const searchResult = await webSearch(`${base} cryptocurrency news latest`);
+    if (searchResult.length > 10 && !searchResult.includes('Found no direct results')) {
+      return `[Web Search] ${searchResult.slice(0, 400)}`;
+    }
+    return '[No News] No crypto news found. Agent should remain NEUTRAL.';
+  }
+
+  return formatMultiSourceResults(results);
+}
+
+// ── Main news dispatcher ──
+
+async function fetchNews(symbol: string, marketContext: string): Promise<string> {
+  const category = detectNewsCategory(symbol, marketContext);
+  const lines: string[] = [`[News Reporter] Asset: ${symbol} | Category: ${category}`];
+
+  if (category === 'crypto') {
+    nrLog.info(`Fetching category-aware crypto news for ${symbol}`);
+    const newsBody = await fetchCategoryAwareCryptoNews(symbol);
+    lines.push(newsBody);
+  } else {
+    nrLog.info(`Fetching TradFi macro news for ${symbol} (${category})`);
+    const newsBody = await fetchTradFiNews(category, symbol);
+    lines.push(newsBody);
+  }
+
+  return lines.join('\n');
+}
+
+// ── Cache (5 min for news) ──
+
+interface NewsCacheEntry {
+  data: string;
+  timestamp: number;
+}
+
+const newsCache = new Map<string, NewsCacheEntry>();
+const newsInflight = new Map<string, Promise<string>>();
+
+async function getNews(symbol: string, marketContext: string): Promise<string> {
+  const cacheKey = `${symbol.toUpperCase()}|${detectNewsCategory(symbol, marketContext)}`;
+  const now = Date.now();
+  const cached = newsCache.get(cacheKey);
+  if (cached && now - cached.timestamp < 300_000) {
+    nrLog.debug(`News cache HIT for ${cacheKey}`);
+    return cached.data;
+  }
+  // Inflight lock: prevent duplicate fetches when 5 agents expire cache simultaneously
+  const inflight = newsInflight.get(cacheKey);
+  if (inflight) {
+    nrLog.debug(`News inflight WAIT for ${cacheKey}`);
+    return inflight;
+  }
+  nrLog.info(`Fetching fresh news for ${cacheKey}`);
+  const fetchPromise = fetchNews(symbol, marketContext).then(data => {
+    newsCache.set(cacheKey, { data, timestamp: Date.now() });
+    newsInflight.delete(cacheKey);
+    return data;
+  }).catch(err => {
+    newsInflight.delete(cacheKey);
+    throw err;
+  });
+  newsInflight.set(cacheKey, fetchPromise);
+  return fetchPromise;
+}
+
+// ── Revised NewsReporter Agent ──
+
+export class NewsReporter extends BaseAgent {
+  constructor() {
+    super({
+      role: 'news_reporter',
+      name: 'News Reporter',
+      temperature: 0.4,
+      weight: 0.20,
+      modelPreference: 'default',
+      personality:
+        'You are an elite multi-asset news analyst. For CRYPTO assets, you track regulatory developments, '
+        + 'ETF flows, exchange hacks, institutional adoption, and protocol changes. '
+        + 'For TradFi assets (indices, stocks, FX, commodities), you track Fed policy, economic data '
+        + '(CPI, GDP, NFP), earnings reports, geopolitics, and intermarket dynamics. '
+        + 'You distinguish between genuine catalysts and noise. '
+        + 'When no news is available, you default to NEUTRAL — you do NOT manufacture signals.',
+    });
+  }
+
+  override getSystemPrompt(): string {
+    return `You are News Reporter — category-aware multi-asset news sentiment analyst.
+
+You receive LIVE news headlines injected into your context.
+You evaluate ALL trading pairs against the news landscape.
+
+=== PATTERN DATA ===
+If the context contains "=== TRADE PATTERN INSIGHTS ===" or "=== POSITION PATTERN INSIGHTS ===":
+  - Use historical win rate to calibrate your confidence
+  - Example: "Positive news in low_vol → 30% win rate historically, not enough to override regime"
+  - News is a TACTICAL signal; pattern data is STRATEGIC
+
+=== CONCISE REASONING ===
+- Use ROUND numbers: "~2-week high" not "2-week high at $65,688"
+- Max 3 sentences per assessment
+- If news is positive but pattern data says low win rate → acknowledge both, defer to pattern data
+
+=== MARKET TICKER (${this.marketSymbol}) ===
+Check injected news for this asset's category. Decide buy/sell/hold.
+
+=== OPEN POSITIONS ===
+For each open position, check news relevant to ITS category:
+- Position in a crypto asset → check crypto news for this specific token
+- Position in a TradFi asset → check macro/sector/world news
+
+=== NEWS→POSITION DECISION RULES ===
+For each position:
+- News supports position direction → HOLD, keep current SL/TP
+- News contradicts position direction → CONSIDER CLOSE, tighten SL
+- Major negative catalyst for the exact asset → CLOSE immediately
+- Minor negative → tighten SL, watch closely
+- Major positive catalyst → consider increasing (via market ticker decision)
+- No relevant news → HOLD with current settings, no change
+
+=== NEUTRAL DEFAULT ===
+If the injected context says "No recent news" or "NO_NEWS":
+→ You MUST stay NEUTRAL. Do not create a signal.
+→ Confidence should be LOW (0.1-0.3).`;
+  }
+
+  /** Override think() to inject category-aware news for ALL relevant symbols */
+  override async think(marketState: string, portfolioSnapshot: string, positions?: import('../types/index.ts').PositionContext[]): Promise<import('../types/index.ts').AgentThought> {
+    // Collect ALL unique symbols
+    const allSymbols = new Set<string>();
+    const symMatch = marketState.match(/Selected Symbol:\s*(\S+)/i) ?? marketState.match(/Symbol:\s*(\S+)/i);
+    allSymbols.add(symMatch?.[1] ?? 'BTCUSDT');
+    if (positions) {
+      for (const p of positions) allSymbols.add(p.symbol);
+    }
+
+    nrLog.info(`Fetching news for ${allSymbols.size} symbol(s)`);
+    const newsParts: string[] = [];
+    for (const sym of allSymbols) {
+      try {
+        const newsText = await getNews(sym, marketState);
+        newsParts.push(`=== ${sym} News ===\n${newsText}`);
+      } catch (err: unknown) {
+        nrLog.warn(`News fetch failed for ${sym}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    const enhancedContext = `${marketState}\n\n=== Live News Feed ===\n${newsParts.join('\n\n')}\n\nNOTE: If news is unavailable or empty, remain NEUTRAL — do NOT invent signals.`;
+    return super.think(enhancedContext, portfolioSnapshot, positions);
+  }
+}
+
+// ─── Agent 4: Independent Risk Auditor ───
+// Very low temperature, VETO POWER. Independent oversight, zero tolerance for catastrophic risk.
+
+export class IndependentRiskAuditor extends BaseAgent {
+  private vetoCount = 0;
+  private totalAudits = 0;
+
+  constructor() {
+    super({
+      role: 'independent_risk_auditor',
+      name: 'Independent Risk Auditor',
+      temperature: 0.1,
+      weight: 0.25,
+      modelPreference: 'default',
+      personality:
+        'You are the final gatekeeper. You have ABSOLUTE VETO POWER over all trading decisions. '
+        + 'You are the most conservative agent in the system. Your only job is to prevent catastrophic loss. '
+        + 'You are paranoid, skeptical, and assume every trade is a trap until proven otherwise. '
+        + 'You scrutinize position sizing, stop losses, and overall risk exposure. '
+        + 'You do not care about profits — you only care about survival.',
+    });
+  }
+
+  getVetoRate(): number {
+    return this.totalAudits > 0 ? this.vetoCount / this.totalAudits : 0;
+  }
+
+  override getSystemPrompt(): string {
+    const sym = this.marketSymbol;
+    return `You are Independent Risk Auditor — FINAL GATEKEEPER with absolute veto power.
+
+You evaluate ALL trading pairs for risk. Each pair can be VETOED independently.
+
+=== MARKET TICKER (${sym}) ===
+VETO IF:
+- Position > 20% of portfolio
+- Stop loss > 2% portfolio loss
+- Drawdown > 20%
+- Daily loss > 5%
+- Regime chaotic/unknown
+- No stop loss
+
+=== OPEN POSITIONS ===
+For each open position, evaluate:
+- Is the position still safe to hold? If risk limits breached → recommend CLOSE with closePosition:true
+- Is the SL adequate for current volatility? If too tight → suggest moving SL further
+- Is the TP realistic? If market moved, suggest adjusting
+- Does combined exposure across ALL positions exceed safe limits? → Flag multiple positions for close
+
+=== PER-POSITION RISK RULES ===
+- Unrealized loss > 5% on a single position → CLOSE (loss too large)
+- Unrealized loss > 3% + no SL → CLOSE (unprotected downside)
+- Position with SL that would cause > 2% portfolio loss → adjust SL tighter
+- Drawdown > 15% → close ALL positions
+- Daily loss > 4% → close ALL positions, halt new trading
+
+You are NOT here to block all trades. Ensure they are SAFE. System needs to trade to evolve.`;
+  }
+
+  override async vote(
+    decisions: TradingDecision[]
+  ): Promise<{ decision: TradingDecision; confidence: number }> {
+    this.totalAudits++;
+
+    // Find the most conservative decision
+    const hold = decisions.find((d) => d.action === 'hold');
+    const sell = decisions.find((d) => d.action === 'sell');
+    const buy = decisions.find((d) => d.action === 'buy');
+
+    // Risk auditor prefers: hold > sell > buy
+    if (hold) return { decision: normalizeDecision(hold), confidence: 0.9 };
+    if (sell) return { decision: normalizeDecision(sell), confidence: 0.7 };
+    if (buy) return { decision: normalizeDecision(buy), confidence: 0.5 };
+
+    return {
+      decision: normalizeDecision({
+        action: 'hold',
+        positionSizePct: 0,
+        rationale: 'Risk Auditor: No valid decisions to evaluate.',
+      }),
+      confidence: 1.0,
+    };
+  }
+
+  protected override parseResponse(content: string): {
+    thought: string;
+    confidence: number;
+    decision: TradingDecision;
+  } {
+    this.totalAudits++;
+    try {
+      const jsonStr = this.extractJSON(content);
+      const parsed = JSON.parse(jsonStr);
+
+      // Check for veto
+      if (parsed.veto === true) {
+        this.vetoCount++;
+        this.logger.warn(`🚨 RISK VETO: ${parsed.vetoReason ?? 'No reason given'}`);
+      }
+
+      return {
+        thought: parsed.thought ?? content.slice(0, 200),
+        confidence: parsed.confidence ?? 0.5,
+        decision: normalizeDecision(parsed.decision),
+      };
+    } catch {
+      this.vetoCount++;
+      return {
+        thought: `PARSE FAILURE: ${content.slice(0, 200)}. VETOING by default.`,
+        confidence: 0.0,
+        decision: normalizeDecision(undefined),
+      };
+    }
+  }
+}
+
+// ─── Agent 6: Skeptics ───
+// Post-thinking reviewer. Challenges every sub-agent's reasoning and data usage.
+// Default model: deepseek-v4-flash:cloud (fast, for minimal latency overhead).
+// Meta-Agent and Market Agent are NOT reviewed.
+// If a decision is deemed flawed, Skeptics outputs a corrected version.
+
+import { getActiveProvider } from '../llm/index.ts';
+import { normalizeMultiSymbolDecision } from '../trading/decision-utils.ts';
+import type { MultiSymbolDecision, AgentThought, PerSymbolDecision } from '../types/index.ts';
+
+const skepLog = createLogger({ agent: 'skeptics', phase: 'review' });
+
+export interface SkepticsReview {
+  agentRole: import('../types/index.ts').AgentRole;
+  originalThought: string;
+  originalConfidence: number;
+  originalDecision: MultiSymbolDecision;
+  approved: boolean;
+  modifiedDecision?: MultiSymbolDecision;
+  modifiedConfidence?: number;
+  skepticismRationale: string;
+}
+
+export class SkepticsAgent {
+  readonly identity: import('../types/index.ts').AgentIdentity;
+  private readonly logger: ReturnType<typeof createLogger>;
+  private readonly model: string;
+  /** Set by review() — holds all thoughts for cross-referencing */
+  private _otherThoughts: import('../types/index.ts').AgentThought[] = [];
+
+  constructor() {
+    this.identity = {
+      id: 'skeptics-static',
+      role: 'skeptics' as import('../types/index.ts').AgentRole,
+      name: 'Skeptics',
+      temperature: 0.3,
+      weight: 0.0,
+      modelPreference: 'fast',
+    };
+    this.logger = skepLog;
+    this.model = 'deepseek-v4-flash:cloud';
+  }
+
+  /** Review all agent thoughts, returning per-agent skepticism results */
+  async review(
+    allThoughts: AgentThought[],
+    marketStateDesc: string,
+    portfolioDesc: string,
+    /** Optional evolution/agent-performance context for informed scrutiny */
+    evolutionContext?: string,
+  ): Promise<SkepticsReview[]> {
+    this._otherThoughts = allThoughts; // store for cross-referencing
+    const reviews: SkepticsReview[] = [];
+
+    // ── Extract HARD CONSTRAINT overrides from evolution context ──
+    // These are the NON-NEGOTIABLE limits emitted by getContextForAgent().
+    // If present, they override the LLM-level review with code-level enforcement.
+    let hardMaxLeverage = 10;
+    let hardMaxPositionSize = 0.20;
+    let hardMinConfidence = 0.30;
+    try {
+      if (marketStateDesc) {
+        const maxLevMatch = marketStateDesc.match(/maxLeverage=(\d+)x/);
+        if (maxLevMatch) hardMaxLeverage = parseInt(maxLevMatch[1]!) || 10;
+        const maxPosMatch = marketStateDesc.match(/maxPositionSize=([\d.]+)/);
+        if (maxPosMatch) hardMaxPositionSize = parseFloat(maxPosMatch[1]!) || 0.20;
+        const minConfMatch = marketStateDesc.match(/minConfidenceForTrade=([\d.]+)/);
+        if (minConfMatch) hardMinConfidence = parseFloat(minConfMatch[1]!) || 0.30;
+      }
+    } catch { /* use defaults */ }
+
+    // Only review these 5 agents (NOT meta_agent, NOT market_agent)
+    const reviewableRoles = new Set<string>([
+      'fractal_momentum_sentinel',
+      'onchain_whisperer',
+      'regime_risk_guardian',
+      'news_reporter',
+      'independent_risk_auditor',
+    ]);
+
+    const targetThoughts = allThoughts.filter(t => reviewableRoles.has(t.agentRole));
+
+    if (targetThoughts.length === 0) {
+      this.logger.info('No reviewable agent thoughts found.');
+      return reviews;
+    }
+
+    this.logger.info(`Reviewing ${targetThoughts.length} agent thought(s)...`);
+
+    for (const thought of targetThoughts) {
+      const roleName = thought.agentRole;
+      const multiDec = thought.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined;
+      const singleDec = thought.metadata?.['decision'] as any;
+      // Extract per-agent track record from evolution context if available
+      let agentTrackRecord = '';
+      if (evolutionContext) {
+        const match = evolutionContext.match(new RegExp(`\\[${roleName}\\]\\s[^\\n]+(?:\\n[^\\[]+)*`));
+        if (match) agentTrackRecord = match[0];
+      }
+
+      if (!multiDec && !singleDec) {
+        // No decision to review — skip
+        reviews.push({
+          agentRole: roleName,
+          originalThought: thought.thought ?? '',
+          originalConfidence: thought.confidence,
+          originalDecision: {
+            marketTicker: { symbol: '?', action: 'hold', positionSizePct: 0, leverage: 1, closePosition: false, rationale: 'No decision data.' },
+            positions: [],
+          },
+          approved: true,
+          skepticismRationale: 'No decision found to review — auto-approved.',
+        });
+        continue;
+      }
+
+      // If we only have a single legacy decision, wrap it
+      const origDecision: MultiSymbolDecision = multiDec ?? {
+        marketTicker: {
+          symbol: singleDec?.symbol ?? '?',
+          action: singleDec?.action ?? 'hold',
+          positionSizePct: singleDec?.positionSizePct ?? 0,
+          leverage: singleDec?.leverage ?? 1,
+          closePosition: false,
+          rationale: singleDec?.rationale ?? '',
+        },
+        positions: [],
+      };
+
+      try {
+        const provider = getActiveProvider();
+        const prompt = this.buildSkepticsPrompt(thought, origDecision, marketStateDesc, agentTrackRecord);
+        const response = await provider.chat({
+          messages: [
+            {
+              role: 'system',
+              content: `You are Skeptics — the system's merciless LOGIC, PSYCHOLOGY & CONSTRAINT AUDITOR.
+
+Your ONLY job: read an agent's analysis and their decision, then determine if the decision is:
+A) LOGICALLY CONSISTENT with the data
+B) FREE from behavioral biases
+C) WITHIN the evolution engine's HARD CONSTRAINTS
+
+Look for the "=== EVOLUTION HARD CONSTRAINTS ===" section in the market context.
+These are NON-NEGOTIABLE limits. Any agent that violates them MUST be rejected:
+- maxLeverage: the agent's proposed leverage cannot exceed this
+- maxPositionSize: the agent's position size% cannot exceed this
+- minConfidenceForTrade: the agent's confidence must be at least this to propose a trade
+
+If the agent violates a hard constraint, set approved: false and override the offending field.
+The code layer ALSO enforces these, so you and the code are aligned — but you catch subtle cases the code might miss (e.g. an agent that technically respects limits but takes multiple simultaneous positions that collectively exceed them).
+
+You are NOT a trader. You are an AUDITOR. You check for:
+
+=== LOGIC CHECKS ===
+1. Does the decision follow from the data? If data says BEARISH but agent says BUY, flag it.
+2. Did the agent misinterpret the data (e.g. confusing supply/demand direction)?
+3. Did the agent omit obvious risks visible in the provided data?
+4. Is the position sizing reasonable given the confidence expressed?
+5. CROSS-REFERENCE: Does this agent's conclusion conflict with another agent's observation of the SAME market?
+6. CONSENSUS CHECK: If most other agents say one thing and this one disagrees, is the disagreement justified?
+
+=== MARKET PSYCHOLOGY CHECKS (NEW) ===
+Humans design LLMs. LLMs inherit human biases. You catch them:
+
+1. **Recency bias**: Did the agent overweight the last 3 candles vs the 100-candle trend?
+   "The last 3 bars dipped but the 200-bar MA is still rising" — don't flip bearish on noise.
+2. **Confirmation bias**: Did the agent cite only data that supports their conclusion while ignoring counter-evidence visible in the same context?
+3. **Overconfidence after wins / loss aversion after losses**: An agent pumping 85% confidence after 3 consecutive wins is likely overconfident. An agent dropping to 30% after a loss is loss-aversion, not rationality.
+4. **Anchoring**: Is the agent anchored to a specific price level (ATH, entry price, round number) rather than reacting to current market structure?
+5. **Narrative attachment**: Is the agent telling a story ("BTC is digital gold, institutions are coming") instead of reading the actual tape? Stories are seductive but often wrong.
+6. **Herd mentality / consensus drift**: Is this agent agreeing with others just because everyone else agrees? True conviction has specific, non-generic reasoning.
+7. **False precision / false confidence**: Is the agent confidently predicting a price target to 2 decimal places? Markets don't work that way. High precision with volatile assets = false confidence.
+8. **Loss denial**: Open position is down 8% (leveraged) but the agent says "hold, it'll come back" without structural evidence. That's hope, not analysis.
+9. **Narrative-vs-data divergence**: The agent's STORY says one thing, but the RAW DATA they cited says another. You catch this contradiction.
+10. **Dopamine-chasing**: Agent recommending BUY after a +5% candle, or SELL after a -3% candle, without structural context. Price movement alone is not a strategy.
+
+Meta-Agent and Market Agent are NOT reviewed. You only review the 5 sub-agents.
+
+If the decision is sound AND bias-free → approved: true
+If the decision has logical flaws OR shows behavioral bias → approved: false + provide corrected decision
+If the agent says "no clear signal" or biases toward caution → likely correct, approve
+
+Be concise. Output ONLY valid JSON.`,
+            },
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+          temperature: 0.3,
+          model: this.model,
+          timeoutMs: 60_000,
+        });
+
+        const jsonStr = this.extractSkepticsJSON(response.content);
+        const parsed = JSON.parse(jsonStr) as {
+          approved: boolean;
+          skepticismRationale: string;
+          modifiedMarketTicker?: Partial<PerSymbolDecision>;
+          modifiedPositions?: Array<Partial<PerSymbolDecision>>;
+          modifiedConfidence?: number;
+        };
+
+        let modifiedDecision: MultiSymbolDecision | undefined;
+        let modifiedConfidence: number | undefined;
+
+        // ── HARD CONSTRAINT ENFORCEMENT (code-level, overrides LLM) ──
+        // These constraints are DERIVED from evolution engine's best strategy.
+        // The LLM might miss them; the code never does.
+        const marketTicker = origDecision.marketTicker;
+        let hardBlocked = false;
+        let hardRationale = '';
+
+        // Check leverage
+        if ((marketTicker.leverage ?? 1) > hardMaxLeverage) {
+          hardBlocked = true;
+          hardRationale += `Leverage ${marketTicker.leverage}x exceeds hard limit of ${hardMaxLeverage}x. `;
+        }
+        // Check position size
+        if ((marketTicker.positionSizePct ?? 0) > hardMaxPositionSize) {
+          hardBlocked = true;
+          hardRationale += `Position size ${(marketTicker.positionSizePct! * 100).toFixed(1)}% exceeds hard limit of ${(hardMaxPositionSize * 100).toFixed(1)}%. `;
+        }
+        // Check confidence
+        if ((marketTicker.action === 'buy' || marketTicker.action === 'sell') && thought.confidence < hardMinConfidence) {
+          hardBlocked = true;
+          hardRationale += `Confidence ${(thought.confidence * 100).toFixed(0)}% below minimum ${(hardMinConfidence * 100).toFixed(0)}% for trade entry. `;
+        }
+
+        if (hardBlocked) {
+          // Force-close the position / reduce to safe levels
+          modifiedDecision = {
+            marketTicker: {
+              ...origDecision.marketTicker,
+              action: 'hold',
+              positionSizePct: 0,
+              leverage: 1,
+              rationale: `[HARD CONSTRAINT] ${hardRationale}Original: ${origDecision.marketTicker.rationale}`,
+            },
+            positions: origDecision.positions.map(p => ({
+              ...p,
+              action: 'hold' as const,
+              closePosition: false,
+              rationale: p.rationale,
+            })),
+          };
+          modifiedConfidence = 0.1;
+          this.logger.warn(`🚫 Hard constraint blocked ${roleName}: ${hardRationale}`);
+        }
+
+        if (!parsed.approved && !hardBlocked) {
+          // Build modified decision
+          const posSymbols = (origDecision.positions ?? []).map(p => p.symbol);
+          const modMarket = parsed.modifiedMarketTicker
+            ? {
+                ...origDecision.marketTicker,
+                action: (parsed.modifiedMarketTicker.action as 'buy' | 'sell' | 'hold') ?? origDecision.marketTicker.action,
+                positionSizePct: parsed.modifiedMarketTicker.positionSizePct ?? origDecision.marketTicker.positionSizePct,
+                leverage: parsed.modifiedMarketTicker.leverage ?? origDecision.marketTicker.leverage,
+                closePosition: parsed.modifiedMarketTicker.closePosition ?? origDecision.marketTicker.closePosition,
+                rationale: parsed.modifiedMarketTicker.rationale ?? origDecision.marketTicker.rationale,
+              }
+            : origDecision.marketTicker;
+
+          const modPositions: PerSymbolDecision[] = posSymbols.map((sym, i) => {
+            const orig = origDecision.positions[i]!;
+            const found = (parsed.modifiedPositions ?? []).find((p: any) => p?.symbol?.toUpperCase() === sym.toUpperCase());
+            return found
+              ? {
+                  ...orig,
+                  action: 'hold' as const,
+                  closePosition: found.closePosition === true,
+                  closeUrgency: (found.closeUrgency === 'immediate' || found.closeUrgency === 'soon' || found.closeUrgency === 'patient') ? found.closeUrgency : undefined,
+                  suggestedStopLoss: typeof found.suggestedStopLoss === 'number' ? found.suggestedStopLoss : orig.suggestedStopLoss,
+                  suggestedTakeProfit: typeof found.suggestedTakeProfit === 'number' ? found.suggestedTakeProfit : orig.suggestedTakeProfit,
+                  rationale: found.rationale ?? orig.rationale,
+                }
+              : orig;
+          });
+
+          modifiedDecision = { marketTicker: modMarket, positions: modPositions };
+          modifiedConfidence = parsed.modifiedConfidence;
+        }
+
+        const finalApproved = hardBlocked ? false : parsed.approved;
+        const finalRationale = hardBlocked
+          ? `[HARD CONSTRAINT] ${hardRationale}`
+          : parsed.skepticismRationale ?? 'No rationale provided.';
+
+        const review: SkepticsReview = {
+          agentRole: roleName,
+          originalThought: thought.thought ?? '',
+          originalConfidence: thought.confidence,
+          originalDecision: origDecision,
+          approved: finalApproved,
+          modifiedDecision,
+          modifiedConfidence,
+          skepticismRationale: finalRationale,
+        };
+
+        reviews.push(review);
+
+        if (hardBlocked) {
+          this.logger.warn(`🚫 Hard constraint blocked ${roleName}: ${hardRationale}`);
+        } else {
+          this.logger.info(`Review [${roleName}]: ${parsed.approved ? '✅ APPROVED' : '⚠️ MODIFIED'} — ${parsed.skepticismRationale?.slice(0, 80) ?? ''}`);
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Review failed for ${roleName}: ${msg}. Auto-approving.`);
+        reviews.push({
+          agentRole: roleName,
+          originalThought: thought.thought ?? '',
+          originalConfidence: thought.confidence,
+          originalDecision: origDecision,
+          approved: true,
+          skepticismRationale: `Skeptics review error: ${msg}. Decision auto-approved.`,
+        });
+      }
+    }
+
+    return reviews;
+  }
+
+  private buildSkepticsPrompt(
+    thought: AgentThought,
+    decision: MultiSymbolDecision,
+    marketContext: string,
+    agentTrackRecord: string,
+  ): string {
+    // Re-extract hard constraints from the market context for display
+    let hcMaxLev = 10, hcMaxPos = 0.20, hcMinConf = 0.30;
+    try {
+      const ml = marketContext.match(/maxLeverage=(\d+)x/);
+      if (ml) hcMaxLev = parseInt(ml[1]!);
+      const mp = marketContext.match(/maxPositionSize=([\d.]+)/);
+      if (mp) hcMaxPos = parseFloat(mp[1]!);
+      const mc = marketContext.match(/minConfidenceForTrade=([\d.]+)/);
+      if (mc) hcMinConf = parseFloat(mc[1]!);
+    } catch { /* use defaults */ }
+
+    // Build summaries of OTHER agents for cross-reference
+    const otherAgentsSummary = this._otherThoughts && this._otherThoughts.length > 0
+      ? `\nOTHER AGENTS' CONCLUSIONS (for cross-reference):\n${this._otherThoughts
+          .filter(t => t.agentRole !== thought.agentRole)
+          .map(t => `  [${t.agentRole}] confidence=${t.confidence.toFixed(2)}: ${(t.thought ?? '').slice(0, 200)}`)
+          .join('\n')}`
+      : '';
+
+    // This agent's historical track record (from evolution)
+    const historyNote = agentTrackRecord
+      ? `\nTHIS AGENT'S RECENT TRACK RECORD:\n${agentTrackRecord}`
+      : '';
+
+    return `Agent Role: ${thought.agentRole}
+Agent Confidence: ${thought.confidence.toFixed(2)}
+Agent Thought: ${thought.thought}
+
+Agent Decision (JSON):
+${JSON.stringify(decision, null, 2)}
+
+Evolution Hard Constraints:
+  maxLeverage=${hcMaxLev}x
+  maxPositionSize=${(hcMaxPos * 100).toFixed(1)}%
+  minConfidenceForTrade=${(hcMinConf * 100).toFixed(0)}%
+
+Market Context (abridged):
+${marketContext.slice(0, 1200)}${otherAgentsSummary}${historyNote}
+
+TASK: Review this agent's decision for logical consistency AND behavioral biases.
+
+=== LOGIC CHECKS ===
+- Does the decision follow from the data they cited?
+- Did they misinterpret or omit anything?
+- Is position sizing proportional to confidence?
+- Cross-reference: do OTHER agents see the same market differently? If so, whose data is stronger?
+- Track record: if this agent has a POOR track record in similar regimes, apply extra scrutiny
+
+=== PSYCHOLOGY CHECKS ===
+- **Recency bias**: Overweighting the last few candles vs the broader trend?
+- **Confirmation bias**: Citing only supporting evidence, ignoring what doesn't fit?
+- **Overconfidence**: Agent had 3 wins in a row and is now at 90% confidence? Suspect. 
+  Conversely, after a loss, dropping to 30% when data still supports the thesis? Loss aversion.
+- **Anchoring**: Tied to a specific price level (ATH, entry, round number) instead of current structure?
+- **Narrative attachment**: Telling a story instead of reading the tape? Stories seduce. Data don't lie.
+- **Herd drift**: Generic reasoning that sounds like everyone else? Real conviction is specific.
+- **False precision**: Confidently predicting price to 2 decimals? Markets aren't that precise.
+- **Loss denial**: Position is deeply negative but agent says "hold, it'll come back" without structural evidence? That's hope.
+- **Narrative-vs-data**: The STORY says bullish but the RAW NUMBERS they cited say bearish? You catch the contradiction.
+- **Dopamine-chasing**: Recommending BUY just because price went up 5%? Price action alone is not a thesis.
+
+Output ONLY valid JSON:
+{
+  "approved": true/false,
+  "skepticismRationale": "1-2 sentence explanation. Mention which bias or logic flaw was found.",
+  "modifiedMarketTicker": { ... },  // only if !approved
+  "modifiedPositions": [ ... ],     // only if !approved
+  "modifiedConfidence": 0.0-1.0     // only if !approved
+}`;
+  }
+
+  private extractSkepticsJSON(text: string): string {
+    const trimmed = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    const start = trimmed.indexOf('{');
+    const end = trimmed.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+      return trimmed.slice(start, end + 1);
+    }
+    return trimmed;
+  }
+}

@@ -1,0 +1,612 @@
+// ─── AMACRF API Server ───
+// Lightweight HTTP server exposing system state via REST + SSE for the React UI
+
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createLogger } from './observability/logger.ts';
+import { getAllAgentModels, getAvailableModels, setAgentModel, resetAgentModel, type AgentModelConfig, type ModelDefinition } from './agents/agent-models.ts';
+import type { AgentThought, ConsensusResult, DebateRound, Portfolio, MarketState, AgentStatus, CycleProgress, MarketAgentConfig, TopVolumePair, TradeMode, ExchangeType, HyperliquidAssetType } from './types/index.ts';
+import type { BacktestResult, BacktestProgress } from './backtest/index.ts';
+
+const log = createLogger({ phase: 'api' });
+
+export interface SystemSnapshot {
+  cycles: number;
+  balance: number;
+  equity: number;
+  totalPnl: number;
+  totalPnlPct: number;
+  drawdownPct: number;
+  positions: number;
+  wsConnected: boolean;
+  tradeCount: number;
+  winCount: number;
+  lossCount: number;
+  currentPrice: number;
+  regime: string;
+  trend: string;
+  volatility: number;
+  cycleInProgress: boolean;
+  lastCycleDuration: number;
+}
+
+export interface APIData {
+  status: SystemSnapshot;
+  agentThoughts: AgentThought[];
+  agentStatuses: AgentStatus[];
+  consensus: ConsensusResult | null;
+  debateRounds: DebateRound[];
+  portfolio: Portfolio | null;
+  marketState: MarketState | null;
+  agentModels?: { available: ModelDefinition[]; assignments: AgentModelConfig[] };
+  cycleProgress?: CycleProgress | null;
+  hacpThreshold?: number;
+  evolution?: Record<string, unknown>;
+  backtest?: BacktestResult | null;
+  backtestProgress?: BacktestProgress | null;
+  tradeHistory?: Array<{
+    cycleNumber: number;
+    decision: { action: string; positionSizePct: number; stopLossPct?: number; takeProfitPct?: number };
+    entryPrice: number;
+    exitPrice?: number;
+    regime: string;
+    type: string;
+    timestamp: number;
+  }>;
+  /** Trade records with leverage (both open and closed) */
+  tradeRecords?: Array<{
+    id: string; symbol: string; side: string;
+    entryPrice: number; exitPrice: number; quantity: number;
+    leverage: number; investment: number;
+    pnl: number; pnlPct: number;
+    openedAt: number; closedAt: number;
+    status: 'open' | 'closed';
+  }>;
+  marketAgent?: {
+    config: MarketAgentConfig;
+    topPairs: TopVolumePair[];
+  };
+  executionStats?: {
+    totalTrades: number;
+    totalNotional: number;
+    avgSlippageBps: number;
+    maxSlippageBps: number;
+    totalFees: number;
+    tradeCount: number;
+  };
+  correlationSummary?: string;
+  srContext?: {
+    formatted: string;
+    regime: string;
+    zoneCount: number;
+    strongZones: number;
+    nearestSupport: number | null;
+    nearestResistance: number | null;
+    distanceToSupportBps: number;
+    distanceToResistanceBps: number;
+    degradedReason: string | null;
+  };
+  emState?: {
+    summaryCount: number;
+    convergenceAccuracy: number;
+    convergenceChecks: number;
+    latestInsight: string | null;
+    latestSignal: string | null;
+  };
+  patternStats?: {
+    totalPatterns: number;
+    closedTrades: number;
+    wins: number;
+    losses: number;
+    cacheEntries: number;
+  };
+}
+
+type SSECallback = (data: APIData) => void;
+
+export class APIServer {
+  private server: http.Server | null = null;
+  private port: number;
+  private sseClients: Set<http.ServerResponse> = new Set();
+  private data: APIData | null = null;
+  private uiDir: string;
+  private onShutdown: (() => void) | null = null;
+  private onTriggerCycle: (() => void) | null = null;
+  private onBacktest: ((params: { years: number; symbol: string; interval: string; maxCandles: number; model?: string; reverse?: boolean }) => void) | null = null;
+  private onBacktestPause: (() => void) | null = null;
+  private onBacktestResume: (() => void) | null = null;
+  private onBacktestStop: (() => void) | null = null;
+  private onMarketAgentSetTradeMode: ((mode: TradeMode) => void) | null = null;
+  private onMarketAgentSetExchange: ((exchange: ExchangeType) => void) | null = null;
+  private onMarketAgentSetAssetType: ((assetType: HyperliquidAssetType) => void) | null = null;
+  private onMarketAgentFetchPairs: (() => void) | null = null;
+  private onCandlesRequest: ((symbol: string, interval: string, limit: number) => Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>>) | null = null;
+  private onResetTradeHistory: (() => void) | null = null;
+
+  constructor(port = 3456) {
+    this.port = port;
+    const possiblePaths = [
+      path.resolve(import.meta.dirname ?? process.cwd(), '../ui/dist'),
+      path.resolve(process.cwd(), 'ui/dist'),
+      path.resolve(process.cwd(), '../ui/dist'),
+    ];
+    this.uiDir = possiblePaths.find(p => fs.existsSync(p)) ?? possiblePaths[0]!;
+  }
+
+  /** Register a callback for graceful shutdown */
+  setShutdownHandler(cb: () => void): void {
+    this.onShutdown = cb;
+  }
+
+  /** Register a callback for triggering an immediate cycle */
+  setTriggerCycleHandler(cb: () => void): void {
+    this.onTriggerCycle = cb;
+  }
+
+  /** Register a callback for running a backtest */
+  setBacktestHandler(cb: (params: { years: number; symbol: string; interval: string; maxCandles: number; model?: string; reverse?: boolean }) => void): void {
+    this.onBacktest = cb;
+  }
+
+  /** Register a callback for pausing the running backtest */
+  setBacktestPauseHandler(cb: () => void): void {
+    this.onBacktestPause = cb;
+  }
+
+  /** Register a callback for resuming the paused backtest */
+  setBacktestResumeHandler(cb: () => void): void {
+    this.onBacktestResume = cb;
+  }
+
+  /** Register a callback for stopping/cancelling the running backtest */
+  setBacktestStopHandler(cb: () => void): void {
+    this.onBacktestStop = cb;
+  }
+
+  /** Register a callback for setting trade mode */
+  setMarketAgentSetTradeModeHandler(cb: (mode: TradeMode) => void): void {
+    this.onMarketAgentSetTradeMode = cb;
+  }
+
+  /** Register a callback for setting exchange */
+  setMarketAgentSetExchangeHandler(cb: (exchange: ExchangeType) => void): void {
+    this.onMarketAgentSetExchange = cb;
+  }
+
+  /** Register a callback for setting Hyperliquid asset type */
+  setMarketAgentSetAssetTypeHandler(cb: (assetType: HyperliquidAssetType) => void): void {
+    this.onMarketAgentSetAssetType = cb;
+  }
+
+  /** Register a callback for fetching top pairs */
+  setMarketAgentFetchPairsHandler(cb: () => void): void {
+    this.onMarketAgentFetchPairs = cb;
+  }
+
+  /** Register a callback for fetching candle data */
+  setCandlesRequestHandler(cb: (symbol: string, interval: string, limit: number) => Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>>): void {
+    this.onCandlesRequest = cb;
+  }
+
+  /** Register a callback for resetting trade history */
+  setResetTradeHistoryHandler(cb: () => void): void {
+    this.onResetTradeHistory = cb;
+  }
+
+  /** Update the latest system data and broadcast to SSE clients */
+  update(data: APIData): void {
+    this.data = data;
+    this.broadcastSSE(data);
+  }
+
+  private broadcastSSE(data: APIData): void {
+    const payload = `data: ${JSON.stringify(data)}\n\n`;
+    for (const client of this.sseClients) {
+      try {
+        client.write(payload);
+      } catch {
+        this.sseClients.delete(client);
+      }
+    }
+  }
+
+  start(): void {
+    this.server = http.createServer(async (req, res) => {
+      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+      const pathname = url.pathname;
+
+      // CORS headers
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      // ── API Routes ──
+
+      // SSE endpoint for real-time updates
+      if (pathname === '/api/events') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+
+        // Send initial data if available
+        if (this.data) {
+          res.write(`data: ${JSON.stringify(this.data)}\n\n`);
+        }
+
+        this.sseClients.add(res);
+        log.info(`SSE client connected (total: ${this.sseClients.size})`);
+
+        req.on('close', () => {
+          this.sseClients.delete(res);
+          log.info(`SSE client disconnected (total: ${this.sseClients.size})`);
+        });
+        return;
+      }
+
+      // REST: system status
+      if (pathname === '/api/status') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(this.data?.status ?? {}));
+        return;
+      }
+
+      // REST: agent thoughts
+      if (pathname === '/api/agents') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          thoughts: this.data?.agentThoughts ?? [],
+          statuses: this.data?.agentStatuses ?? [],
+        }));
+        return;
+      }
+
+      // REST: portfolio
+      if (pathname === '/api/portfolio') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(this.data?.portfolio ?? {}));
+        return;
+      }
+
+      // REST: latest cycle
+      if (pathname === '/api/cycle') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          consensus: this.data?.consensus,
+          debateRounds: this.data?.debateRounds,
+        }));
+        return;
+      }
+
+      // REST: market state
+      if (pathname === '/api/market') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(this.data?.marketState ?? {}));
+        return;
+      }
+
+      // REST: agent model config
+      if (pathname === '/api/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          available: getAvailableModels(),
+          assignments: getAllAgentModels(),
+        }));
+        return;
+      }
+
+      // POST: update agent model
+      if (pathname === '/api/models/assign' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { role, model } = JSON.parse(body) as { role: string; model: string };
+            const success = setAgentModel(role as any, model);
+            res.writeHead(success ? 200 : 400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              success,
+              assignments: getAllAgentModels(),
+              message: success ? `Model updated for ${role}` : 'Invalid role or model ID',
+            }));
+          } catch (e) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // POST: reset agent model to default
+      if (pathname === '/api/models/reset' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { role } = JSON.parse(body) as { role: string };
+            resetAgentModel(role as any);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              success: true,
+              assignments: getAllAgentModels(),
+            }));
+          } catch (e) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // POST: trigger immediate decision cycle
+      if (pathname === '/api/cycle/trigger' && req.method === 'POST') {
+        if (this.onTriggerCycle) {
+          this.onTriggerCycle();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: 'Cycle triggered' }));
+        } else {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'Cycle handler not available' }));
+        }
+        return;
+      }
+
+      // POST: trigger backtest
+      if (pathname === '/api/backtest' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const params = JSON.parse(body) as { years?: number; symbol?: string; interval?: string; maxCandles?: number; model?: string; reverse?: boolean };
+            const years = Math.min(12, Math.max(1, params.years ?? 3)) as 1 | 3 | 5 | 7 | 10 | 12;
+            const symbol = (params.symbol ?? 'BTCUSDT').toUpperCase();
+            const interval = (params.interval ?? '1d') as '5m' | '1h' | '1d' | '1w';
+            const maxCandles = Math.min(5000, params.maxCandles ?? 1000);
+            const model = params.model;
+            const reverse = params.reverse ?? false;
+
+            // Fire and forget — backtest runs async
+            log.info(`Backtest requested: ${years}yr ${symbol} ${interval} (max ${maxCandles} candles)${model ? ` model=${model}` : ''}${reverse ? ' REVERSE' : ''}`);
+
+            res.writeHead(202, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              success: true,
+              message: `Backtest started: ${years}yr ${symbol} ${interval}${reverse ? ' (reverse)' : ''}`,
+              params: { years, symbol, interval, maxCandles, model, reverse },
+            }));
+
+            // Run backtest asynchronously
+            if (this.onBacktest) {
+              this.onBacktest({ years, symbol, interval, maxCandles, model, reverse });
+            }
+          } catch (e) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // POST: pause backtest
+      if (pathname === '/api/backtest/pause' && req.method === 'POST') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: 'Backtest pause requested' }));
+        if (this.onBacktestPause) this.onBacktestPause();
+        return;
+      }
+
+      // POST: resume backtest
+      if (pathname === '/api/backtest/resume' && req.method === 'POST') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: 'Backtest resume requested' }));
+        if (this.onBacktestResume) this.onBacktestResume();
+        return;
+      }
+
+      // POST: stop/cancel backtest
+      if (pathname === '/api/backtest/stop' && req.method === 'POST') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: 'Backtest stop requested' }));
+        if (this.onBacktestStop) this.onBacktestStop();
+        return;
+      }
+
+      // POST: reset trade history (keeps strategies + generation)
+      if (pathname === '/api/evolution/reset-trade-history' && req.method === 'POST') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: 'Trade history reset requested' }));
+        if (this.onResetTradeHistory) this.onResetTradeHistory();
+        return;
+      }
+
+      // ── Market Agent API Routes ──
+
+      // GET: market agent state
+      if (pathname === '/api/market-agent') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(this.data?.marketAgent ?? {}));
+        return;
+      }
+
+      // POST: set trade mode (paper/real)
+      if (pathname === '/api/market-agent/trade-mode' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { mode } = JSON.parse(body) as { mode: string };
+            if (mode === 'paper' || mode === 'real') {
+              if (this.onMarketAgentSetTradeMode) this.onMarketAgentSetTradeMode(mode);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: true, message: `Trade mode set to ${mode}` }));
+            } else {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'Invalid trade mode. Use "paper" or "real".' }));
+            }
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // POST: exchange change (DEPRECATED — exchange is now fixed to hyperliquid)
+      if (pathname === '/api/market-agent/exchange' && req.method === 'POST') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: 'Exchange fixed to hyperliquid. Ignoring request.' }));
+        return;
+      }
+
+      // POST: set hyperliquid asset type
+      if (pathname === '/api/market-agent/asset-type' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { assetType } = JSON.parse(body) as { assetType: string };
+            const validTypes = ['crypto_perps', 'tradfi', 'indices', 'stocks', 'commodities', 'fx'];
+            if (validTypes.includes(assetType)) {
+              if (this.onMarketAgentSetAssetType) this.onMarketAgentSetAssetType(assetType as HyperliquidAssetType);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: true, message: `Asset type set to ${assetType}` }));
+            } else {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'Invalid asset type.' }));
+            }
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // POST: refresh top pairs
+      if (pathname === '/api/market-agent/refresh' && req.method === 'POST') {
+        if (this.onMarketAgentFetchPairs) this.onMarketAgentFetchPairs();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: 'Refreshing top pairs...' }));
+        return;
+      }
+
+      // GET: candle data for chart
+      if (pathname === '/api/candles' && req.method === 'GET') {
+        const symbol = url.searchParams.get('symbol') ?? '';
+        const interval = url.searchParams.get('interval') ?? '1h';
+        const limit = parseInt(url.searchParams.get('limit') ?? '168', 10);
+        if (!symbol) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'Missing symbol parameter' }));
+          return;
+        }
+        if (this.onCandlesRequest) {
+          try {
+            const candles = await this.onCandlesRequest(symbol, interval, limit);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, candles }));
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: err instanceof Error ? err.message : String(err) }));
+          }
+        } else {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'Candles handler not available' }));
+        }
+        return;
+      }
+
+      // POST: graceful shutdown
+      if (pathname === '/api/shutdown' && req.method === 'POST') {
+        log.warn('🚨 Shutdown requested via API');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: 'Shutting down...' }));
+        // Delay slightly so the response can be sent before process exits
+        setTimeout(() => {
+          if (this.onShutdown) this.onShutdown();
+          process.exit(0);
+        }, 100);
+        return;
+      }
+
+      // ── Serve UI static files ──
+      // Try to serve the built React app
+      if (fs.existsSync(this.uiDir)) {
+        let filePath = path.join(this.uiDir, pathname === '/' ? 'index.html' : pathname);
+
+        if (!fs.existsSync(filePath)) {
+          filePath = path.join(this.uiDir, 'index.html');
+        }
+
+        const ext = path.extname(filePath);
+        const mimeTypes: Record<string, string> = {
+          '.html': 'text/html',
+          '.js': 'application/javascript',
+          '.css': 'text/css',
+          '.json': 'application/json',
+          '.png': 'image/png',
+          '.jpg': 'image/jpg',
+          '.svg': 'image/svg+xml',
+          '.ico': 'image/x-icon',
+        };
+
+        try {
+          const content = fs.readFileSync(filePath);
+          res.writeHead(200, { 'Content-Type': mimeTypes[ext] ?? 'application/octet-stream' });
+          res.end(content);
+        } catch {
+          res.writeHead(404);
+          res.end('Not found');
+        }
+      } else {
+        // No UI build found — return API info
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: 'AMACRF API Server',
+          version: '1.0.0',
+          endpoints: {
+            '/api/status': 'System status snapshot',
+            '/api/agents': 'Agent thoughts and statuses',
+            '/api/portfolio': 'Portfolio state',
+            '/api/cycle': 'Latest HACP cycle result',
+            '/api/market': 'Current market state',
+            '/api/events': 'SSE real-time event stream',
+          },
+          ui: 'Build the UI with: cd ui && npm run build',
+        }));
+      }
+    });
+
+    this.server.listen(this.port, () => {
+      log.info(`🌐 API Server running on http://localhost:${this.port}`);
+      log.info(`   SSE: http://localhost:${this.port}/api/events`);
+      if (fs.existsSync(this.uiDir)) {
+        log.info(`   UI: http://localhost:${this.port}`);
+      }
+    });
+  }
+
+  stop(): Promise<void> {
+    return new Promise((resolve) => {
+      // Close all SSE clients
+      for (const client of this.sseClients) {
+        try { client.end(); } catch { /* ignore */ }
+      }
+      this.sseClients.clear();
+
+      if (this.server) {
+        this.server.close(() => resolve());
+      } else {
+        resolve();
+      }
+    });
+  }
+}

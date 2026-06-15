@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  amacrf:
+    build: .
+    container_name: amacrf
+    ports:
+      - "3456:3456"
+    environment:
+      - NODE_ENV=production
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - LOG_LEVEL=info
+      - DECISION_INTERVAL_MS=300000
+    volumes:
+      # Mount evolution data for persistence across restarts
+      - ./data:/app/data
+      # Mount .env for live config
+      - ./.env:/app/.env:ro
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3456/api/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
