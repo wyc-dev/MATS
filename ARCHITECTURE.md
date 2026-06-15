@@ -1551,7 +1551,7 @@ Backtest Run
 每個 Decision Cycle:
   → Agent think (含 evolution context + trade history summary + backtest knowledge)
   → HACP debate/vote
-  → 如果 consensus HOLD + cycle % 3 == 0 → 1% exploration trade
+  → 如果 consensus HOLD + cycle % 3 == 0 → exploration trade（Pattern Classifier 決定 BUY/SELL 方向）
   → Execute decision (real or exploration)
   → tradeHistory.record(decision, price, regime)
   → tradeHistory.updateLastExit(price)  ← 補回上個 cycle 的 exit
@@ -2934,7 +2934,7 @@ flowchart LR
 | **🧬 Evolution Loop** | ✅ | **每個 cycle 自動演化 + 累積 Trade History** |
 | **🧬 Trade History Ledger** | ✅ | **Append-only 交易記錄 · 累積 Sharpe/Sortino** |
 | **🧬 Profit-Seeking Prompts** | ✅ | **5 個 Agent 全面改寫為盈利導向** |
-| **🧬 Exploration Trade** | ✅ | **每 3 cycle 自動 1% 微型倉位探索** |
+| **🧬 Exploration Trade** | ✅ | **每 3 cycle 自動探索（Pattern Classifier 決定 BUY/SELL 方向）** |
 | **🧬 Evolution UI Panel** | ✅ | **Debate tab 即時顯示演化指標 + 策略列表** |
 | **🔒 Position Size Clamp** | ✅ | **20% 硬上限，三層一致 (HACP / Risk Auditor / Risk Engine)** |
 | **📱 Mobile Optimization** | ✅ | **Header 精簡 · Cycle badge 手機隱藏** |
@@ -3163,16 +3163,26 @@ SystemGuard.check() 本身拋錯 → log.critical → { blocked: false } (fail o
 
 ### Exploration Trade 機制
 
-每 3 個決策週期，若 consensus 為 HOLD 且無持倉，系統強制開一個微型倉位以產生 evolution 數據。倉位大小和槓桿直接使用 Market Agent 的設定值。
+每 3 個決策週期，若 consensus 為 HOLD 且無持倉，系統強制開一個微型倉位以產生 evolution 數據。
 
-**⚠️ Pattern Classifier Check**（v2.0.3）：如果 Pattern Classifier 顯示該方向歷史勝率低於 50%，則跳過 exploration trade：
+**方向由 Pattern Classifier 即時決定**（v2.0.3）：以當前 market context 同時 query `queryEntry('buy')` 和 `queryEntry('sell')`，比較歷史勝率，揀高嗰邊：
 
 ```typescript
-const patternLowWinRate = finalDecision.action === 'hold' && this.lastPatternContext
-  && (this.lastPatternContext.includes('⚠️ Low win rate') || this.lastPatternContext.includes('🔴'));
+if (this.patternClassifier) {
+  const buyResult = this.patternClassifier.queryEntry(patternCtx, symbol, 'buy', price);
+  const sellResult = this.patternClassifier.queryEntry(patternCtx, symbol, 'sell', price);
+  const buyWr = buyResult.totalMatches >= 3 ? buyResult.winRate : 0;
+  const sellWr = sellResult.totalMatches >= 3 ? sellResult.winRate : 0;
+  if (buyWr > 0 || sellWr > 0) {
+    direction = sellWr > buyWr ? 'sell' : 'buy';
+  }
+}
+```
 
-if (finalDecision.action === 'hold' && this.totalCycles % 3 === 0 && !patternLowWinRate) {
-  // 只有 pattern 顯示 OK 先開 exploration trade
+- ❌ 已移除 `combinedState.change24h >= 0 ? 'buy' : 'sell'`（24h price change 對短炒無意義）
+- ✅ Pattern Classifier BUY vs SELL win rate 比較
+- ✅ 兩邊 match < 3 時 fallback 到 buy（極少發生）
+- ✅ 每次 exploration 根據當時 pattern 決定方向
   if (p.positions.size === 0) {
     const maConfig = this.marketAgent.getConfig();
     const exploreSize = maConfig.positionSizePct;
