@@ -690,18 +690,20 @@ export class HACPEngine {
     // ═══════════════════════════════════════════════════
 
     if (marketAgentConstraints && !riskAudit.veto) {
-      const maxSize = marketAgentConstraints.positionSizePct;
-      const maxLev = marketAgentConstraints.leverage;
+      const targetSize = marketAgentConstraints.positionSizePct;
+      const targetLev = marketAgentConstraints.leverage;
       const origSize = finalConsensus.decision.positionSizePct;
       const origLev = finalConsensus.decision.leverage ?? 1;
 
-      if (finalConsensus.decision.positionSizePct > maxSize) {
-        finalConsensus.decision.positionSizePct = maxSize;
-        log.warn(`Market Agent constraint: position size clamped ${(origSize * 100).toFixed(1)}% → ${(maxSize * 100).toFixed(1)}%`);
+      // Override position size to Market Agent's target (not just clamp)
+      if (finalConsensus.decision.positionSizePct !== targetSize) {
+        finalConsensus.decision.positionSizePct = targetSize;
+        log.warn(`Market Agent constraint: position size overridden ${(origSize * 100).toFixed(1)}% → ${(targetSize * 100).toFixed(1)}%`);
       }
-      if ((finalConsensus.decision.leverage ?? 1) > maxLev) {
-        finalConsensus.decision.leverage = maxLev;
-        log.warn(`Market Agent constraint: leverage clamped ${origLev}x → ${maxLev}x`);
+      // Override leverage to Market Agent's target
+      if ((finalConsensus.decision.leverage ?? 1) !== targetLev) {
+        finalConsensus.decision.leverage = targetLev;
+        log.warn(`Market Agent constraint: leverage overridden ${origLev}x → ${targetLev}x`);
       }
     }
 
@@ -984,16 +986,8 @@ Output ONLY valid JSON:
       decision: normalizeDecision({
         action: majorityAction,
         symbol: 'BTCUSDT',
-        positionSizePct: majorityAction === 'hold' ? 0 : 0.05,
-        leverage: (() => {
-          // Use leverage from the highest-confidence agent in the majority
-          const majorityDecisions = decisions.filter(d => d.action === majorityAction);
-          if (majorityDecisions.length === 0) return 1;
-          const best = majorityDecisions.reduce((a, b) => a.confidence > b.confidence ? a : b);
-          const agentThought = thoughts.find(t => t.agentId === best.agentId);
-          const agentDecision = agentThought?.metadata?.['decision'] as TradingDecision | undefined;
-          return agentDecision?.leverage ?? 1;
-        })(),
+        positionSizePct: majorityAction === 'hold' ? 0 : 0.10, // will be overridden by Market Agent Phase 4.5
+        leverage: 10, // will be overridden by Market Agent Phase 4.5
         rationale: `Majority decision: ${majorityAction.toUpperCase()} (${buyCount}B/${sellCount}S/${holdCount}H). Avg confidence: ${avgConfidence.toFixed(2)}. Rounds: ${rounds.length}.`,
         urgency: 'soon',
       }),
