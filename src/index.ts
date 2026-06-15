@@ -744,27 +744,55 @@ class AMACRFSystem {
       // 3.5 Exploration trade: if consensus is HOLD but we haven't traded in 3+ cycles,
       // force a tiny exploratory position to generate evolution data.
       // This fires even after Risk Auditor veto — the system NEEDS trade data to evolve.
-      // BUT: if pattern classifier shows <30% win rate for this direction, skip.
+      // Direction is determined by Pattern Classifier: query BUY vs SELL win rates
+      // for current market conditions and pick the higher one.
       let finalDecision = result.consensus.decision;
-      const patternLowWinRateExploration = finalDecision.action === 'hold' && this.lastPatternContext
-        && (this.lastPatternContext.includes('⚠️ Low win rate') || this.lastPatternContext.includes('🔴'));
-      if (finalDecision.action === 'hold' && this.totalCycles > 2 && this.totalCycles % 3 === 0 && !patternLowWinRateExploration) {
+      if (finalDecision.action === 'hold' && this.totalCycles > 2 && this.totalCycles % 3 === 0) {
         const p = this.portfolio.getPortfolio();
         if (p.positions.size === 0) {
-          // Use Market Agent constraints for exploration trade sizing
           const maConfig = this.marketAgent.getConfig();
           const exploreSize = maConfig.positionSizePct;
           const exploreLev = maConfig.leverage;
-          const direction = combinedState.change24h >= 0 ? 'buy' : 'sell';
+
+          // Use Pattern Classifier to pick direction — compare BUY vs SELL win rates
+          let direction = 'buy';
+          try {
+            const patternCtx = {
+              regime: combinedState.regime,
+              regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
+              volatility: combinedState.volatility ?? 0,
+              trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
+              srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+              obImbalance: combinedState.orderBookImbalance ?? 0,
+              fundingRate: 0,
+              volumeRatio: 1,
+              signalAgreement: 0.5,
+              positionSizePct: exploreSize,
+              leverage: exploreLev,
+            };
+            if (this.patternClassifier) {
+              const buyResult = this.patternClassifier.queryEntry(patternCtx, combinedState.primarySymbol, 'buy', combinedState.price);
+              const sellResult = this.patternClassifier.queryEntry(patternCtx, combinedState.primarySymbol, 'sell', combinedState.price);
+              const buyWr = buyResult.totalMatches >= 3 ? buyResult.winRate : 0;
+              const sellWr = sellResult.totalMatches >= 3 ? sellResult.winRate : 0;
+              if (buyWr > 0 || sellWr > 0) {
+                direction = sellWr > buyWr ? 'sell' : 'buy';
+                log.info(`🧪 Pattern-guided exploration: BUY WR=${(buyWr*100).toFixed(0)}% SELL WR=${(sellWr*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+              }
+            }
+          } catch (err) {
+            log.warn(`Pattern direction check failed, defaulting buy: ${err instanceof Error ? err.message : String(err)}`);
+          }
+
           finalDecision = {
-            action: direction,
+            action: direction as 'buy' | 'sell',
             symbol: activeSymbolUpper,
             positionSizePct: exploreSize,
             entryPrice: combinedState.price,
-            stopLossPct: 0.01, // 1% stop
-            takeProfitPct: 0.02, // 2% target
+            stopLossPct: 0.01,
+            takeProfitPct: 0.02,
             leverage: exploreLev,
-            rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — system needs trade data for evolution. Low risk, tight stop.`,
+            rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — pattern-guided direction.`,
             urgency: 'immediate',
           };
           log.info(`🧪 Exploration trade triggered: ${direction.toUpperCase()} ${(exploreSize * 100).toFixed(1)}% ${activeSymbolUpper} @ ${exploreLev}x (cycle #${this.totalCycles})`);
