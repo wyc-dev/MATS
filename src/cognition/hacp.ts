@@ -168,11 +168,25 @@ export class HACPEngine {
     emContext?: string,
     /** Cycle summaries for Skeptics convergence audit */
     recentSummaries?: CycleSummary[],
+    /** Market Agent constraints: position size fraction and leverage */
+    marketAgentConstraints?: { positionSizePct: number; leverage: number },
   ): Promise<HACPResult> {
     const startTime = performance.now();
     const allThoughts: AgentThought[] = [];
     const debateRounds: DebateRound[] = [];
     const deadline = Date.now() + this.totalTimeoutMs;
+
+    // Inject Market Agent constraints into the market description
+    let constrainedMarketDesc = marketStateDesc;
+    if (marketAgentConstraints) {
+      const sizePct = (marketAgentConstraints.positionSizePct * 100).toFixed(1);
+      constrainedMarketDesc += `\n\n=== MARKET AGENT HARD CONSTRAINTS ===\n`;
+      constrainedMarketDesc += `These are NON-NEGOTIABLE limits set by the Market Agent. You MUST respect them.\n`;
+      constrainedMarketDesc += `Max Position Size: ${sizePct}% of portfolio equity (${marketAgentConstraints.positionSizePct * 100}% hard cap)\n`;
+      constrainedMarketDesc += `Max Leverage: ${marketAgentConstraints.leverage}x\n`;
+      constrainedMarketDesc += `If your proposed trade exceeds these limits, REDUCE to fit within them.\n`;
+      constrainedMarketDesc += `If you cannot make a profitable trade within these limits, choose HOLD.\n`;
+    }
 
     // Convert positions → PositionContext[]
     const posCtx: PositionContext[] = (currentPositions ?? []).map(p => {
@@ -425,7 +439,7 @@ export class HACPEngine {
     if (allHold && highConviction >= allThoughts.length - 1) {
       log.info('Skipping debate: unanimous HOLD with high conviction.');
       const consensus = this.buildConsensus(allThoughts, [], true, false);
-      const adjustments = await this.adjustPositions(marketStateDesc, currentPositions);
+      const adjustments = await this.adjustPositions(constrainedMarketDesc, currentPositions);
       return {
         consensus,
         allThoughts,
@@ -672,12 +686,32 @@ export class HACPEngine {
     }
 
     // ═══════════════════════════════════════════════════
+    // PHASE 4.5: Enforce Market Agent Hard Constraints
+    // ═══════════════════════════════════════════════════
+
+    if (marketAgentConstraints && !riskAudit.veto) {
+      const maxSize = marketAgentConstraints.positionSizePct;
+      const maxLev = marketAgentConstraints.leverage;
+      const origSize = finalConsensus.decision.positionSizePct;
+      const origLev = finalConsensus.decision.leverage ?? 1;
+
+      if (finalConsensus.decision.positionSizePct > maxSize) {
+        finalConsensus.decision.positionSizePct = maxSize;
+        log.warn(`Market Agent constraint: position size clamped ${(origSize * 100).toFixed(1)}% → ${(maxSize * 100).toFixed(1)}%`);
+      }
+      if ((finalConsensus.decision.leverage ?? 1) > maxLev) {
+        finalConsensus.decision.leverage = maxLev;
+        log.warn(`Market Agent constraint: leverage clamped ${origLev}x → ${maxLev}x`);
+      }
+    }
+
+    // ═══════════════════════════════════════════════════
     // PHASE 5: Meta-Agent Position Adjustment (TP/SL)
     // ═══════════════════════════════════════════════════
 
     let positionAdjustments: PositionAdjustment[] | undefined;
     if (currentPositions && currentPositions.length > 0) {
-      positionAdjustments = await this.adjustPositions(marketStateDesc, currentPositions);
+      positionAdjustments = await this.adjustPositions(constrainedMarketDesc, currentPositions);
       if (positionAdjustments.length > 0) {
         log.info(`📐 Position adjustments: ${positionAdjustments.length} positions updated`);
       }
@@ -1044,10 +1078,10 @@ Output ONLY valid JSON:
         reason: parsed.reason ?? 'No concerns.',
       };
     } catch {
-      // On error, be conservative
+      // On error, be conservative but respect Market Agent limits
       return {
-        veto: decision.positionSizePct > 0.05,
-        reason: 'Risk audit LLM unavailable. Conservative veto for any position > 5%.',
+        veto: decision.positionSizePct > MAX_POSITION_PCT,
+        reason: 'Risk audit LLM unavailable. Conservative veto only if position exceeds absolute max (20%).',
       };
     }
   }

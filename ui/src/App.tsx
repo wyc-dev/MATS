@@ -208,13 +208,17 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [selectedAssetType, setSelectedAssetType] = useState(config?.hyperliquidAssetType ?? 'crypto_perps')
   const [statusMsg, setStatusMsg] = useState('')
   const [statusVisible, setStatusVisible] = useState(false)
+  const [positionSizePct, setPositionSizePct] = useState(config?.positionSizePct ?? 0.10)
+  const [leverage, setLeverage] = useState(config?.leverage ?? 10)
 
   useEffect(() => {
     if (config) {
       setSelectedTradeMode(config.tradeMode)
       if (config.hyperliquidAssetType) setSelectedAssetType(config.hyperliquidAssetType)
+      setPositionSizePct(config.positionSizePct)
+      setLeverage(config.leverage)
     }
-  }, [config?.tradeMode, config?.hyperliquidAssetType])
+  }, [config?.tradeMode, config?.hyperliquidAssetType, config?.positionSizePct, config?.leverage])
 
   const showStatus = (msg: string) => {
     setStatusMsg(msg)
@@ -286,6 +290,50 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               <option value="fx">FX / Forex</option>
               <option value="tradfi">All TradFi</option>
             </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Position Size & Leverage Controls */}
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', marginBottom: 4 }}>
+            Position Size: <strong>{(positionSizePct * 100).toFixed(0)}%</strong>
+          </div>
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+            <input
+              type="range" min="1" max="20" value={Math.round(positionSizePct * 100)}
+              onChange={async (e) => {
+                const pct = parseInt(e.target.value) / 100
+                setPositionSizePct(pct)
+                try {
+                  const res = await fetch(`${API_BASE}/market-agent/position-size`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pct }) })
+                  if ((await res.json()).success) showStatus(`✓ ${(pct * 100).toFixed(0)}%`)
+                } catch { showStatus('✗ Failed') }
+              }}
+              style={{ flex: 1, height: 4, accentColor: 'var(--accent)' }}
+            />
+            <span style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', minWidth: 20, textAlign: 'right' }}>{Math.round(positionSizePct * 100)}%</span>
+          </div>
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', marginBottom: 4 }}>
+            Leverage: <strong>{leverage}x</strong>
+          </div>
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+            <input
+              type="range" min="1" max="10" value={leverage}
+              onChange={async (e) => {
+                const lev = parseInt(e.target.value)
+                setLeverage(lev)
+                try {
+                  const res = await fetch(`${API_BASE}/market-agent/leverage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ leverage: lev }) })
+                  if ((await res.json()).success) showStatus(`✓ ${lev}x`)
+                } catch { showStatus('✗ Failed') }
+              }}
+              style={{ flex: 1, height: 4, accentColor: 'var(--accent)' }}
+            />
+            <span style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', minWidth: 20, textAlign: 'right' }}>{leverage}x</span>
           </div>
         </div>
       </div>

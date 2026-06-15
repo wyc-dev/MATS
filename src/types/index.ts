@@ -548,6 +548,10 @@ export interface MarketAgentConfig {
   hyperliquidAssetType?: HyperliquidAssetType;
   /** The actively selected trading symbol */
   selectedSymbol: string;
+  /** Position size as fraction of equity (0.01 = 1%, 0.20 = 20%) */
+  positionSizePct: number;
+  /** Leverage multiplier (1-10) */
+  leverage: number;
   /** Timestamp of last config change */
   updatedAt: number;
 }

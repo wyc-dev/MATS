@@ -925,7 +925,7 @@ quantity = riskAmount / (entryPrice × priceRisk)
 | 最大倉位 | 20% | 單筆交易佔總權益上限（hard clamp） |
 | 最大回撤 | 20% | 超過此值停止所有交易 |
 | 日虧損限制 | 5% | 超過此值當日禁止新交易 |
-| 最大槓桿 | 10x | meta-agent 根據風險/信心設定 (2-10x) |
+| 最大槓桿 | 10x (Market Agent 設定) | meta-agent 根據風險/信心設定 (1-10x，受 Market Agent 限制) | |
 | 止損 | 2% | 每筆交易固定止損（未經槓桿放大） |
 | 止盈 | 5% | 每筆交易固定止盈（未經槓桿放大） |
 | 移動止損 | 1.5% | 獲利後啟動 |
@@ -938,7 +938,7 @@ quantity = riskAmount / (entryPrice × priceRisk)
 ### 交易生命週期
 
 ```
-Decision (from HACP, includes leverage 2-10x)
+Decision (from HACP, includes leverage 1-10x, clamped by Market Agent)
     │
     ▼
 ┌───────────────────────┐
@@ -2723,12 +2723,12 @@ scripts/loop-engineering-memory.md
 │   ⚠️  Trade rate <10% — agents are too conservative
 │   │   Win Rate: 64.23% | Sharpe: 0.00
 │   📋 Current Risk Config:
-│   │   RISK_MAX_LEVERAGE=1.0 (for scalping: 3-5x recommended)
+│   │   RISK_MAX_LEVERAGE=10.0 (configured via Market Agent UI slider)
 │   │   RISK_STOP_LOSS_PCT=0.02 (for scalping: 0.5-1% recommended)
 │   📊 Evolution: Gen 1156 | 12 strategies (A:5 R:7 E:0)
 │   │   Best Params: momentumWindow=16 | riskAversion=0.35
 │   │                 signalThreshold=0.48 | volatilityThreshold=0.15
-│   🔴 CRITICAL: RISK_MAX_LEVERAGE=1.0 neutralizes scalping
+│   � Market Agent: positionSizePct=10% leverage=10x (configurable via UI sliders)
 │   🟡 No Hyperliquid WebSocket — HL trading has 5-10s data latency
 │   🟡 No structured technical indicators — agents lack RSI/MACD/Bollinger
 ```
@@ -3135,7 +3135,7 @@ if (finalDecision.action === 'hold' && this.totalCycles % 3 === 0) {
 │  ├─ 數據: Hyperliquid WS (l2Book + trades + activeAssetCtx)                │
 │  │         + REST polling (30s fallback, HL rate-limiter: 8 tokens/3s)    │
 │  ├─ 決策: 300s cycle [Multi-Symbol: 每個 Agent 評估 N+1 交易對]            │
-│  ├─ 倉位: Meta-Agent 動態 TP/SL + trailing + 2-10x leverage              │
+│  ├─ 倉位: Market Agent 設定 positionSizePct + leverage (UI slider 控制)          │
 │  │        累計持倉價值 ≤ 10% balance                                       │
 │  ├─ P0 執行品質模組 (v2.0.2):                                            │
 │  │   ├─ cost-model.ts        → HL 交易成本 (taker 0.04%, funding)         │

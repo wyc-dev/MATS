@@ -138,6 +138,8 @@ export interface MarketAgentConfig {
   exchange: 'binance' | 'hyperliquid';
   hyperliquidAssetType?: 'crypto_perps' | 'tradfi' | 'indices' | 'stocks' | 'commodities' | 'fx';
   selectedSymbol: string;
+  positionSizePct: number;
+  leverage: number;
   updatedAt: number;
 }
 

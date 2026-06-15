@@ -291,6 +291,16 @@ class AMACRFSystem {
         log.info('Market Agent: refresh top pairs');
         void this.marketAgent.fetchTopPairs().then(() => this.pushToAPI());
       });
+      this.apiServer.setMarketAgentSetPositionSizeHandler((pct) => {
+        log.info(`Market Agent: position size → ${(pct * 100).toFixed(1)}%`);
+        this.marketAgent.setPositionSizePct(pct);
+        this.pushToAPI();
+      });
+      this.apiServer.setMarketAgentSetLeverageHandler((lev) => {
+        log.info(`Market Agent: leverage → ${lev}x`);
+        this.marketAgent.setLeverage(lev);
+        this.pushToAPI();
+      });
 
       // Wire up candle data proxy — routes through backend to avoid CORS + 429
       // Global HL rate-limit queue to prevent 429 across all backend HL calls
@@ -717,6 +727,10 @@ class AMACRFSystem {
         currentPositions.length > 0 ? currentPositions : undefined,
         emContext,
         this.emManager?.getLast(10) ?? [],
+        {
+          positionSizePct: this.marketAgent.getConfig().positionSizePct,
+          leverage: this.marketAgent.getConfig().leverage,
+        },
       );
 
       // 3.1 Apply position adjustments (TP/SL) from meta-agent
@@ -734,20 +748,23 @@ class AMACRFSystem {
       if (finalDecision.action === 'hold' && this.totalCycles > 2 && this.totalCycles % 3 === 0) {
         const p = this.portfolio.getPortfolio();
         if (p.positions.size === 0) {
-          // Tiny exploratory long: 1% position, tight stop
+          // Use Market Agent constraints for exploration trade sizing
+          const maConfig = this.marketAgent.getConfig();
+          const exploreSize = Math.min(maConfig.positionSizePct, 0.05); // cap exploration at 5%
+          const exploreLev = Math.min(maConfig.leverage, 3); // cap exploration at 3x
           const direction = combinedState.change24h >= 0 ? 'buy' : 'sell';
           finalDecision = {
             action: direction,
             symbol: activeSymbolUpper,
-            positionSizePct: 0.01, // 1% — minimal risk
+            positionSizePct: exploreSize,
             entryPrice: combinedState.price,
             stopLossPct: 0.01, // 1% stop
             takeProfitPct: 0.02, // 2% target
-            leverage: 2, // 2x for small exploratory trade
-            rationale: `Exploratory ${direction} (1% size, 2x lev) on ${activeSymbolUpper} — system needs trade data for evolution. Low risk, tight stop.`,
+            leverage: exploreLev,
+            rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — system needs trade data for evolution. Low risk, tight stop.`,
             urgency: 'immediate',
           };
-          log.info(`🧪 Exploration trade triggered: ${direction.toUpperCase()} 1% ${activeSymbolUpper} (cycle #${this.totalCycles})`);
+          log.info(`🧪 Exploration trade triggered: ${direction.toUpperCase()} ${(exploreSize * 100).toFixed(1)}% ${activeSymbolUpper} @ ${exploreLev}x (cycle #${this.totalCycles})`);
         }
       }
 

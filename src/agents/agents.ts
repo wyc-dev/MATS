@@ -1371,12 +1371,16 @@ You evaluate ALL trading pairs for risk. Each pair can be VETOED independently.
 
 === MARKET TICKER (${sym}) ===
 VETO IF:
-- Position > 20% of portfolio
-- Stop loss > 2% portfolio loss
-- Drawdown > 20%
-- Daily loss > 5%
+- No stop loss set
 - Regime chaotic/unknown
-- No stop loss
+- No available price data
+
+DO NOT veto based on:
+- Position size (the Market Agent has already set this limit)
+- Leverage (the Market Agent has already set this limit)
+- These are NOT your concern — the Market Agent handles sizing and leverage.
+
+Your ONLY job is catastrophic risk prevention: missing SL, chaotic regime, no price data.
 
 === OPEN POSITIONS ===
 For each open position, evaluate:
