@@ -1,15 +1,12 @@
 # {MATS} — Multi-Agent Trading System
 
 > **A self-evolving, multi-agent quantitative trading framework powered by the Hyper-Accelerated Cognition Protocol (HACP).**  
-> Institutional-grade paper trading simulation across Hyperliquid markets.
+> Institutional-grade paper trading simulation across Hyperliquid perpetual markets.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Code Style](https://img.shields.io/badge/code_style-prettier-ff69b4.svg)](https://prettier.io/)
-
----
-
+[![Version](https://img.shields.io/badge/version-2.0.5--dev-blueviolet)](ARCHITECTURE.md)
 ## Table of Contents
 
 - [Quick Start (Ollama)](#quick-start-ollama)
@@ -29,7 +26,6 @@
 
 - **Node.js 22+**
 - **Ollama** (local LLM runtime — free, no API key required)
-- **Binance API Key** (free tier, read-only permissions sufficient)
 
 ### 1. Install Ollama
 
@@ -90,12 +86,7 @@ OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud
 ```
 
-> **Note:** `BINANCE_API_KEY` requires only read permissions for WebSocket market data — no trading permissions needed.  
-> The system defaults to **Paper Trading mode** and will never use real funds.
-
-### 6. Launch the System
-
-```bash
+The system defaults to **Paper Trading mode** and will never use real funds.
 npm start
 ```
 
@@ -139,11 +130,11 @@ A structured multi-LLM debate protocol that replaces traditional single-model in
 
 ```
 Phase 0:   Market Agent auto-selects trading pair + position reconciliation
-Phase 1:   5 agents think in parallel (Promise.all with 15s timeout)
-Phase 1.5: Skeptics logic audit (cross-reference, consistency check)
+Phase 1:   5 agents think in parallel (staggered, with 15s timeout)
+Phase 1.5: Skeptics logic audit + EM convergence cross-cycle check
 Phase 1.75: Meta-Agent final arbitration (incorporates Skeptics findings)
 Phase 2:   Structured rapid debate (1-3 rounds, configurable)
-Phase 3:   Weighted voting consensus (60% threshold)
+Phase 3:   Weighted voting consensus (60% threshold, dynamic adjustment)
 Phase 4:   Risk Auditor final veto (absolute, non-overridable)
 Phase 5:   Meta-Agent dynamic TP/SL adjustment
 ```
@@ -153,14 +144,47 @@ Phase 5:   Meta-Agent dynamic TP/SL adjustment
 - **Deterministic fallback**: If LLM is unavailable, risk engine enforces conservative defaults
 - **Total cycle budget**: 120s hard timeout, forced HOLD on expiry
 
-### 🧬 Self-Evolution System
+### 🧬 EM Self-Evolution System (Dual-Layer)
 
-MATS continuously **evaluates, retires, mutates, and evolves** its own trading strategies:
+MATS has **two EM layers** that discover what makes trades profitable:
 
-- **Dual Memory System**: Short-term (100 entries) + long-term (1,000 entries) with automatic consolidation
-- **Survival Fitness Function**: Capital preservation (35%) + return generation (20%) + consistency (15%) + risk management (15%) + adaptability (10%) + decision quality (5%)
-- **Evolutionary Pressure Engine**: ±10% mutation per generation, automatic retirement below 0.2 fitness
-- **Agent Outcome Tracking**: Per-agent, per-symbol historical performance records injected into agent context
+**Layer 1 — EM Cycle Chain** (`cycle-summary.ts`):
+- Meta-Agent distills each cycle into a structured `CycleSummary` (E-step)
+- Previous summaries feed into next cycle's agent context (M-step)
+- Skeptics cross-check insight vs actual price (convergence audit)
+- Tiered memory: hot(12) + warm(288) + cold(48 epochs, ~48 days)
+
+**Layer 2 — GMM EM Clustering** (`em-clustering.ts`):
+- True Gaussian Mixture Model via Expectation-Maximisation
+- Discovers latent clusters in feature space (11 dimensions)
+- Each cluster has a weighted win rate — answers "what kind of trade tends to win?"
+- BIC model selection (auto K=2..6), auto-refit every 50 trades
+- Soft assignment query → cluster-weighted win rate for any new context
+
+**Evolutionary Pressure Engine:**
+- Survival Fitness: capital preservation 35% + return 20% + consistency 15% + risk 15% + adaptability 10% + quality 5%
+- ±10% mutation per generation, automatic retirement below 0.2 fitness
+- Agent Outcome Tracking: per-agent, per-symbol track record
+
+### 🧬 Trade Pattern Classifier
+
+A supervised KNN pattern database that answers "in current conditions, has this setup won before?":
+
+- **Two query modes**: `queryEntry()` for new positions, `queryPosition()` for held positions
+- **13D feature space**: volatility, trendStrength, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, fundingRateAccel, volumeRatio, positionSizePct, sentimentConviction + regime (categorical)
+- **Wilson score**: 95% confidence lower bound — prevents overfitting on small samples
+- **BUY/SELL shared pool**: outcome inverted for opposite side (BUY loss = SELL win)
+- **Noise filter**: |PnL| < 0.5% skipped (fee-level noise)
+- **Direction priority chain**: KNN → GMM EM → Sentiment → Funding → OB → Regime
+
+### 🧠 Sigmoid·GA Sentiment Engine
+
+A genetic algorithm that evolves sigmoid-based sentiment functions to model market emotion:
+
+- 5 signal channels: Whale Presence, Institutional Flow, Microstructure Tension, Momentum Bias, Fear/Greed Echo
+- GA population of 20 chromosomes, evolved every HACP cycle
+- Fitness: Sharpe × 0.5 + WinRate × 0.3 + Drawdown × 0.2
+- Raw inputs: order book, volume acceleration, funding rate delta + acceleration, spread, price acceleration, large trades, F&G index, volatility regime
 
 ### 🛡️ Capital Preservation First
 
@@ -210,14 +234,14 @@ The provider factory auto-detects availability: NIM → Ollama → Error.
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │   Layer 3: Execution (TypeScript Runtime)                     │
-│   • Binance WebSocket real-time data feed (24/7)             │
-│   • Hyperliquid REST (9 perpetual DEXs)                      │
-│   • Risk engine (millisecond latency, no LLM dependency)     │
-│   • Paper trading engine (leverage-aware P&L simulation)      │
-│   • Real Trading Manager (exchange orders + local mirror)     │
-│   • Position tracking & stop-loss/take-profit                 │
-│   • Data pipeline & persistence                               │
-│   • Observability & health checks                            │
+   │   • Hyperliquid WebSocket + REST (9 perpetual DEXs)        │
+   │   • Market Agent auto-selects trading pair                  │
+   │   • Risk engine (millisecond latency, no LLM dependency)    │
+   │   • Paper trading engine (leverage-aware P&L simulation)    │
+   │   • Real Trading Manager (exchange orders + local mirror)   │
+   │   • Position tracking & stop-loss/take-profit               │
+   │   • Data pipeline & persistence                             │
+   │   • Observability & health checks (6 guards)               │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -228,18 +252,19 @@ The provider factory auto-detects availability: NIM → Ollama → Error.
 
 ```
 src/
-├── index.ts                  # 🚀 Entry point — system lifecycle management (~950 LOC)
+├── index.ts                  # 🚀 Entry point — system lifecycle (~1050 LOC)
 ├── config/index.ts           # Zod-validated, type-safe configuration
-├── types/index.ts            # Complete domain type definitions (~570 LOC)
+├── types/index.ts            # Complete domain type definitions (~650 LOC)
 │
 ├── agents/                   # 🤖 Multi-agent system
 │   ├── base-agent.ts         # Abstract agent base class
-│   ├── agents.ts             # Six sub-agents (~1,720 LOC)
+│   ├── agents.ts             # Six sub-agents (~1720 LOC)
 │   ├── meta-agent.ts         # Meta-agent arbitration
 │   └── agent-models.ts       # Per-agent model configuration
 │
 ├── cognition/
-│   └── hacp.ts               # ⚡ HACP protocol implementation (~907 LOC)
+│   ├── hacp.ts               # ⚡ HACP protocol implementation (~950 LOC)
+│   └── a2a-utils.ts          # A2A inter-agent signal exchange
 │
 ├── llm/                      # 🔌 LLM abstraction layer
 │   ├── provider.ts           # Abstract interface
@@ -248,34 +273,57 @@ src/
 │   └── index.ts              # Provider factory (auto-detection)
 │
 ├── trading/                  # 💹 Trading engine
-│   ├── portfolio.ts          # Portfolio tracker (leverage-aware P&L)
+│   ├── portfolio.ts          # Portfolio tracker (leverage-aware P&L, trade lifecycle)
 │   ├── paper-engine.ts       # Paper trading simulation
 │   ├── real-trading-manager.ts # Real trading orchestrator
-│   ├── binance-real-engine.ts  # Binance real trading
 │   └── hyperliquid-real-engine.ts # Hyperliquid real trading
 │
-├── risk/engine.ts            # 🛡️ Risk management engine
-├── evolution/                # 🧬 Self-evolution system
+├── risk/                     # 🛡️ Risk management
+│   ├── engine.ts             # Multi-layer risk engine
+│   └── correlation-budget.ts # Cross-pair correlation budget
+│
+├── system-guard/             # 🛡️ SystemGuard (6 guards: margin, drawdown, data freshness, etc.)
+│
+├── evolution/                # 🧬 Dual-layer EM evolution + pattern classifier
 │   ├── index.ts              # Evolution orchestrator (~420 LOC)
 │   ├── trade-history.ts      # Trade history ledger
 │   ├── agent-outcomes.ts     # Per-agent performance tracking
-│   └── persistence.ts        # Durable state persistence
+│   ├── persistence.ts        # Durable state persistence
+│   ├── trade-pattern-classifier.ts # 🧬 Supervised KNN pattern DB (v2.0.5)
+│   ├── em-clustering.ts      # 🧬 GMM EM clustering engine (v2.0.5)
+│   └── cycle-summary.ts      # 🧬 EM Cycle Summary Manager (v2.0.2)
 │
-├── data/                     # 📊 Data pipeline
-│   ├── binance-websocket.ts  # Binance WS + market state aggregation
-│   └── hyperliquid-websocket.ts
+├── analysis/                 # 📊 Signal processing
+│   ├── sentiment-engine.ts   # Sigmoid·GA sentiment engine
+│   ├── sigmoid-ga.ts         # GA-evolved sigmoid functions
+│   └── support-resistance.ts # SNR zone detection
 │
-├── market-agent/             # 🎯 Auto pair selection
+├── market-agent/             # 🎯 Auto pair selection + position size/leverage
 ├── backtest/                 # 📜 Historical backtesting engine
 ├── observability/logger.ts   # Structured logging (Winston)
-└── api-server.ts             # REST + SSE API
+├── api-server.ts             # REST + SSE API (~950 LOC)
+└── utils/shutdown.ts         # Graceful shutdown handler
 
-ui/                           # 🖥️ React Web UI
+ui/                           # 🖥️ React Web UI (pantha_mats design system)
 ├── src/
-│   ├── App.tsx               # Main dashboard
+│   ├── App.tsx               # Main dashboard (collapsible rounds, trade lifecycle badges)
 │   ├── TradingViewChart.tsx  # TradingView chart integration
-│   └── StarsBackground.tsx   # Dynamic starfield background
+│   ├── StarsBackground.tsx   # Dynamic starfield background
+│   └── types.ts              # UI type definitions
 └── index.html
+
+scripts/                      # 🛠 One-time utilities
+├── loop-engineering.sh       # Loop engineering runner
+├── loop-engineering-deep.sh  # Deep session runner
+├── loop-engineering-memory.md # Known issues / checklist
+└── backfill-patterns.mjs     # Import portfolio trades into pattern DB
+
+data/                         # 💾 Runtime persistence
+└── evolution/
+    ├── trade-patterns.json   # Pattern DB (1000 max)
+    ├── em-clusters.json      # GMM EM model (mean, covar, weight, winRate)
+    ├── evolution-state.json  # GA population + memory + strategies
+    └── portfolio-state.json  # Portfolio snapshot
 ```
 
 ---
@@ -300,18 +348,21 @@ HYPERLIQUID_WALLET_ADDRESS=0x...
 HYPERLIQUID_PRIVATE_KEY=...
 ```
 
+The system defaults to **paper trading** — set `TRADE_MODE=real` in `.env` to enable live trading.
+```
+
 ### Decision Cycle Tuning
 
 ```env
-DECISION_INTERVAL_MS=60000     # 60s between decision cycles
+DECISION_INTERVAL_MS=300000    # 5min between decision cycles
 HACP_MAX_DEBATE_ROUNDS=3       # Maximum debate rounds
-HACP_CONSENSUS_THRESHOLD=0.60  # Consensus threshold (60%)
+HACP_CONSENSUS_THRESHOLD=0.60  # Consensus threshold (60%, dynamically adjusted)
 ```
 
 ### Risk Parameters
 
 ```env
-RISK_MAX_LEVERAGE=1.0          # Maximum leverage
+RISK_MAX_LEVERAGE=10.0         # Maximum leverage (Market Agent controls actual)
 RISK_STOP_LOSS_PCT=0.02        # Default stop-loss (2%)
 RISK_TAKE_PROFIT_PCT=0.05      # Default take-profit (5%)
 RISK_VETO_THRESHOLD=0.85       # Risk auditor veto threshold
