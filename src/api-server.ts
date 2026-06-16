@@ -101,6 +101,14 @@ export interface APIData {
     losses: number;
     cacheEntries: number;
   };
+  /** GMM EM clustering model summary */
+  emClusterState?: {
+    clusterCount: number;
+    totalSamples: number;
+    bic: number;
+    trained: boolean;
+    clusters: Array<{ index: number; winRate: number; sampleCount: number; weight: number }>;
+  };
 }
 
 type SSECallback = (data: APIData) => void;
