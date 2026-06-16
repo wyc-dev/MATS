@@ -857,11 +857,33 @@ class AMACRFSystem {
         }
       }
 
-      // ── Execute PER-POSITION SL/TP adjustments only (NO agent-based close) ──
-      // Positions are ONLY closed via stop-loss / take-profit triggers.
-      // The portfolio's checkPositionExits() handles SL/TP monitoring automatically
-      // on each price update. Real trades close on-exchange; reconciliation handles
-      // syncing paper portfolio with exchange state for GMM learning.
+      // ── Execute PER-POSITION decisions from agents (profitable positions only) ──
+      // If >=2 agents recommend closing a position that is IN PROFIT (>+0.5%),
+      // take profits early. Losing positions are NEVER closed by agent votes —
+      // they must ride to SL/TP. This prevents panic-closing during drawdowns.
+      const allThoughts = result.allThoughts;
+      const perPositionCloseReports: ExecutionReport[] = [];
+      for (const posSymbol of this.portfolio.getOpenSymbols()) {
+        const pos = this.portfolio.getPosition(posSymbol);
+        if (!pos) continue;
+        // Only allow agent-based close if position is in profit (>+0.5% return on margin)
+        if ((pos.unrealizedPnlPct ?? 0) <= 0.005) continue; // Not enough profit — let SL/TP handle it
+
+        const closeVotes = allThoughts.filter(t => {
+          if (t.agentRole === 'meta_agent' || t.agentRole === 'market_agent') return false;
+          const msd = t.metadata?.['multiSymbolDecision'] as any;
+          const posDecision = msd?.positions?.find((p: any) => p.symbol?.toLowerCase() === posSymbol.toLowerCase());
+          return posDecision?.closePosition === true;
+        }).length;
+        if (closeVotes >= 2) {
+          log.warn(`⚠️ ${closeVotes} agents recommend taking profit on ${posSymbol} @ $${pos.currentPrice.toFixed(2)} (PnL: +${(posPnlPct*100).toFixed(2)}%)...`);
+          const trade = this.portfolio.closePosition(posSymbol, pos.currentPrice);
+          if (trade) {
+            perPositionCloseReports.push({ order: {} as any, trade });
+            log.info(`  → Took profit on ${posSymbol}: $${trade.pnl.toFixed(2)}`);
+          }
+        }
+      }
 
       // ── P0: Pattern Classifier Hard Circuit Breaker ──
       // If pattern data from the previous cycle shows < 50% win rate for this
