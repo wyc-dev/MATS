@@ -575,39 +575,13 @@ class AMACRFSystem {
       return;
     }
 
-    // ── Save current cycle context for NEXT cycle's EM hypothetical training ──
-    // Do this BEFORE the guard check so it always saves, even if guard blocks.
-    try {
-      this.lastCycleEMContext = {
-        price: combinedState.price,
-        features: {
-          regime: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
-          regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
-          volatility: combinedState.volatility ?? 0,
-          trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
-          srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
-          obImbalance: combinedState.orderBookImbalance ?? 0,
-          fundingRate: 0,
-          fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
-          volumeRatio: 1,
-          positionSizePct: 0.10,
-          sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
-          sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
-          signalAgreement: 0.5,
-        },
-      };
-    } catch { /* non-critical */ }
-
-    // ── SYSTEM GUARD: Run 5-layer protection before any agent thinking ──
-    // Guards A (economic calendar), B (drawdown), C (data freshness), D (agent track)
-    // Guard E (liquidity) runs later after agents produce a decision
-
     // ── EM HYPOTHETICAL TRAINING: Learn from every cycle's price action ──
     // Compare current price vs last cycle's price. If price went up, BUY would
     // have won and SELL would have lost (and vice versa). Feed both hypothetical
     // outcomes into the GMM EM engine so it learns even without real trades.
     // This lets EM cluster "what market conditions lead to profitable entries"
     // purely from observed price action — self-supervised learning.
+    // IMPORTANT: This MUST run BEFORE saving the new context below.
     if (this.lastCycleEMContext && this.patternClassifier && marketPrice > 0) {
       try {
         const prevPrice = this.lastCycleEMContext.price;
@@ -632,6 +606,33 @@ class AMACRFSystem {
         log.warn(`[EM-hypothetical] Failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+
+    // ── Save current cycle context for NEXT cycle's EM hypothetical training ──
+    // Do this AFTER the training above so the old context is used for comparison.
+    try {
+      this.lastCycleEMContext = {
+        price: combinedState.price,
+        features: {
+          regime: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
+          regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
+          volatility: combinedState.volatility ?? 0,
+          trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
+          srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+          obImbalance: combinedState.orderBookImbalance ?? 0,
+          fundingRate: 0,
+          fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
+          volumeRatio: 1,
+          positionSizePct: 0.10,
+          sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+          sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+          signalAgreement: 0.5,
+        },
+      };
+    } catch { /* non-critical */ }
+
+    // ── SYSTEM GUARD: Run 5-layer protection before any agent thinking ──
+    // Guards A (economic calendar), B (drawdown), C (data freshness), D (agent track)
+    // Guard E (liquidity) runs later after agents produce a decision
     const guardParams = {
       activeSymbol,
       marketPrice,
