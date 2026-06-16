@@ -1051,7 +1051,16 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
             </div>
           ))}
         </div>
-      ) : null}
+      ) : (
+        <div style={{marginTop: 10}}>
+          <div className="panel-header" style={{marginBottom: 4}}>
+            <span className="panel-title" style={{fontSize:'0.7rem'}}>🧬 EM Clusters</span>
+          </div>
+          <div className="empty-state" style={{padding:'8px 0'}}>
+            <div className="empty-text" style={{fontSize:'0.6rem'}}>Waiting for enough trades (need 20+ meaningful per symbol)</div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
