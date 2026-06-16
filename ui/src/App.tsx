@@ -906,6 +906,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
         <span className="panel-title">🧬 Evolution</span>
         <div style={{display:'flex', alignItems:'center', gap:8}}>
           <span className="panel-badge">Gen {evo.generation}</span>
+          {(() => { const ecs = data?.emClusterState; return ecs?.symbols?.length ? <span className="panel-badge">{ecs.symbols.length} sym</span> : null })()}
           <button
             className="header-btn"
             style={{padding:'2px 8px', fontSize:'0.55rem', color:'var(--text-muted)'}}
@@ -1018,7 +1019,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
       )}
 
       {/* ── GMM EM Clusters ── */}
-      {data?.emClusterState?.symbols?.length > 0 && data.emClusterState.symbols.map(symState => (
+      {data?.emClusterState?.symbols?.map ? data.emClusterState.symbols.map(symState => (
         <div key={symState.symbol}>
           <div className="panel-header" style={{marginTop: 8, marginBottom: 4}}>
             <span className="panel-title" style={{fontSize:'0.65rem'}}>🧬 EM Clusters · {symState.symbol.toUpperCase()}</span>
@@ -1044,7 +1045,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
             {symState.totalSamples} samples
           </div>
         </div>
-      ))}
+      )) : null}
     </div>
   )
 }
