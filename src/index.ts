@@ -71,6 +71,8 @@ class AMACRFSystem {
   private emManager!: CycleSummaryManager;
   private patternClassifier!: TradePatternClassifier;
   private lastPatternContext = '';
+  /** Previous cycle's market context + price for hypothetical EM training */
+  private lastCycleEMContext: { price: number; features: Record<string, number> } | null = null;
   private lastBacktestResult: import('./backtest/index.ts').BacktestResult | null = null;
   private backtestProgress: BacktestProgress | null = null;
 
@@ -576,6 +578,37 @@ class AMACRFSystem {
     // ── SYSTEM GUARD: Run 5-layer protection before any agent thinking ──
     // Guards A (economic calendar), B (drawdown), C (data freshness), D (agent track)
     // Guard E (liquidity) runs later after agents produce a decision
+
+    // ── EM HYPOTHETICAL TRAINING: Learn from every cycle's price action ──
+    // Compare current price vs last cycle's price. If price went up, BUY would
+    // have won and SELL would have lost (and vice versa). Feed both hypothetical
+    // outcomes into the GMM EM engine so it learns even without real trades.
+    // This lets EM cluster "what market conditions lead to profitable entries"
+    // purely from observed price action — self-supervised learning.
+    if (this.lastCycleEMContext && this.patternClassifier && marketPrice > 0) {
+      try {
+        const prevPrice = this.lastCycleEMContext.price;
+        const priceChange = (marketPrice - prevPrice) / prevPrice;
+        const absChange = Math.abs(priceChange);
+
+        // Only learn from meaningful moves (>0.1%) — skip flat/noise cycles
+        if (absChange >= 0.001) {
+          const buyWon = priceChange > 0; // price up → BUY wins
+          const features = this.lastCycleEMContext.features;
+
+          // Feed both hypothetical outcomes
+          this.patternClassifier.em.feedTrade(activeSymbol, features, buyWon ? 1 : 0);   // BUY outcome
+          this.patternClassifier.em.feedTrade(activeSymbol, features, buyWon ? 0 : 1);   // SELL outcome (inverted)
+
+          // Trigger refit if enough new data accumulated
+          this.patternClassifier.em.maybeRefit(activeSymbol);
+
+          log.info(`🧬 EM hypothetical: ${activeSymbol} ${(priceChange * 100).toFixed(2)}% → BUY=${buyWon ? 'WIN' : 'LOSS'} SELL=${buyWon ? 'LOSS' : 'WIN'} (cycle #${this.totalCycles})`);
+        }
+      } catch (err) {
+        log.warn(`[EM-hypothetical] Failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     const guardParams = {
       activeSymbol,
       marketPrice,
@@ -1348,6 +1381,28 @@ class AMACRFSystem {
           const direction: 'up' | 'down' | 'flat' = priceChange > 0.002 ? 'up' : priceChange < -0.002 ? 'down' : 'flat';
           this.emManager.updateConvergence(direction);
         }
+      } catch { /* non-critical */ }
+
+      // ── Save current cycle context for next cycle's EM hypothetical training ──
+      try {
+        this.lastCycleEMContext = {
+          price: combinedState.price,
+          features: {
+            regime: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
+            regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
+            volatility: combinedState.volatility ?? 0,
+            trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
+            srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+            obImbalance: combinedState.orderBookImbalance ?? 0,
+            fundingRate: 0,
+            fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
+            volumeRatio: 1,
+            positionSizePct: 0.10,
+            sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+            sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+            signalAgreement: result.consensus.confidence,
+          },
+        };
       } catch { /* non-critical */ }
 
       // 8. Update API server with latest data
