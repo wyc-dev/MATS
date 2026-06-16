@@ -55,6 +55,10 @@ export interface TradePatternContext {
   positionSizePct: number;
   /** Leverage 1-10 */
   leverage: number;
+  /** Sigmoid·GA sentiment -1..+1 (forward-looking emotion signal) */
+  sentiment: number;
+  /** Sigmoid·GA conviction 0-1 */
+  sentimentConviction: number;
 }
 
 export interface TradePatternRecord {
@@ -84,6 +88,8 @@ export interface EntryQueryResult {
   wins: number;
   losses: number;
   winRate: number;
+  /** Wilson score adjusted win rate — penalises small sample sizes (95% confidence lower bound) */
+  adjustedWinRate: number;
   /** Top similar entries (best win + worst loss) */
   bestWin: { pnlPct: number; similarity: number; context: TradePatternContext; metaInsight: string } | null;
   worstLoss: { pnlPct: number; similarity: number; context: TradePatternContext; metaInsight: string } | null;
@@ -98,6 +104,8 @@ export interface PositionQueryResult {
   wins: number;
   losses: number;
   winRate: number;
+  /** Wilson score adjusted win rate — penalises small sample sizes */
+  adjustedWinRate: number;
   /** Entry context (what the user provided) */
   entryContext: TradePatternContext;
   /** Current context */
@@ -120,6 +128,7 @@ function defaultContext(): TradePatternContext {
     trendStrength: 0.5, srDistanceBps: 0, obImbalance: 0,
     fundingRate: 0, volumeRatio: 1, signalAgreement: 0.5,
     positionSizePct: 0, leverage: 1,
+    sentiment: 0, sentimentConviction: 0.5,
   };
 }
 
@@ -132,17 +141,32 @@ interface FeatureDef {
 }
 
 const NUMERICAL_FEATURES: FeatureDef[] = [
-  { key: 'volatility', weight: 0.20, threshold: 0.05 },
-  { key: 'trendStrength', weight: 0.15, threshold: 0.30 },
-  { key: 'srDistanceBps', weight: 0.15, threshold: 50 },
-  { key: 'obImbalance', weight: 0.15, threshold: 0.30 },
-  { key: 'signalAgreement', weight: 0.10, threshold: 0.30 },
-  { key: 'fundingRate', weight: 0.10, threshold: 0.001 },
-  { key: 'volumeRatio', weight: 0.10, threshold: 0.50 },
+  { key: 'volatility', weight: 0.18, threshold: 0.05 },
+  { key: 'trendStrength', weight: 0.12, threshold: 0.30 },
+  { key: 'srDistanceBps', weight: 0.12, threshold: 50 },
+  { key: 'obImbalance', weight: 0.12, threshold: 0.30 },
+  { key: 'sentiment', weight: 0.12, threshold: 0.30 },   // Sigmoid·GA forward-looking signal
+  { key: 'signalAgreement', weight: 0.08, threshold: 0.30 },
+  { key: 'fundingRate', weight: 0.08, threshold: 0.001 },
+  { key: 'volumeRatio', weight: 0.08, threshold: 0.50 },
   { key: 'positionSizePct', weight: 0.05, threshold: 0.10 },
+  { key: 'sentimentConviction', weight: 0.05, threshold: 0.30 },
 ];
 
 // ─── Manager ───
+
+/** Wilson score interval lower bound (95% confidence).
+ *  Penalises small sample sizes — 3/5 = 60% becomes ~25%, 30/50 = 60% stays ~47%.
+ *  This prevents overfitting on tiny match counts. */
+function wilsonScore(wins: number, total: number): number {
+  if (total === 0) return 0;
+  const p = wins / total;
+  const z = 1.96; // 95% confidence
+  const denominator = 1 + z * z / total;
+  const centre = p + z * z / (2 * total);
+  const adjusted = (centre - z * Math.sqrt(centre * (1 - centre) / total + z * z / (4 * total * total))) / denominator;
+  return Math.max(0, adjusted);
+}
 
 export class TradePatternClassifier {
   private patterns: TradePatternRecord[] = [];
@@ -272,7 +296,7 @@ export class TradePatternClassifier {
     currentPrice: number,
   ): EntryQueryResult {
     const empty: EntryQueryResult = {
-      totalMatches: 0, wins: 0, losses: 0, winRate: 0,
+      totalMatches: 0, wins: 0, losses: 0, winRate: 0, adjustedWinRate: 0,
       bestWin: null, worstLoss: null,
       regimeBreakdown: [], warnings: [],
     };
@@ -304,6 +328,7 @@ export class TradePatternClassifier {
       const losses = matches.filter(m => m.pattern.outcome === 'loss').length;
       const total = matches.length;
       const winRate = total > 0 ? wins / total : 0;
+      const adjustedWinRate = wilsonScore(wins, total);
 
       // Best win / worst loss
       const sorted = [...matches].sort((a, b) => b.similarity - a.similarity);
@@ -325,11 +350,11 @@ export class TradePatternClassifier {
 
       const warnings: string[] = [];
       if (total < CONFIG.minSimilarForReport) warnings.push(`Only ${total} similar ${side.toUpperCase()} entries — low confidence`);
-      if (winRate < 0.5 && total >= CONFIG.minSimilarForReport) warnings.push(`⚠️ Low win rate (${(winRate * 100).toFixed(0)}%) for similar ${side.toUpperCase()} entries — STRONG bias against this trade`);
-      if (winRate > 0.8 && total >= CONFIG.minSimilarForReport) warnings.push(`⭐ High win rate (${(winRate * 100).toFixed(0)}%) for similar ${side.toUpperCase()} entries — favorable setup`);
+      if (adjustedWinRate < 0.4 && total >= CONFIG.minSimilarForReport) warnings.push(`⚠️ Low adjusted win rate (${(adjustedWinRate * 100).toFixed(0)}%) for similar ${side.toUpperCase()} entries — STRONG bias against this trade`);
+      if (adjustedWinRate > 0.6 && total >= CONFIG.minSimilarForReport) warnings.push(`⭐ Good adjusted win rate (${(adjustedWinRate * 100).toFixed(0)}%) for similar ${side.toUpperCase()} entries — favorable setup`);
 
       const result: EntryQueryResult = {
-        totalMatches: total, wins, losses, winRate,
+        totalMatches: total, wins, losses, winRate, adjustedWinRate,
         bestWin: bestWin ? {
           pnlPct: bestWin.pattern.pnlPct,
           similarity: bestWin.similarity,
@@ -370,7 +395,7 @@ export class TradePatternClassifier {
     currentPrice: number,
   ): PositionQueryResult {
     const empty: PositionQueryResult = {
-      totalMatches: 0, wins: 0, losses: 0, winRate: 0,
+      totalMatches: 0, wins: 0, losses: 0, winRate: 0, adjustedWinRate: 0,
       entryContext, currentContext: { ...defaultContext(), ...currentContext },
       contextDelta: '', bestWin: null, worstLoss: null,
       conditionalInsights: [], warnings: [],
@@ -405,6 +430,7 @@ export class TradePatternClassifier {
       const losses = matches.filter(m => m.pattern.outcome === 'loss').length;
       const total = matches.length;
       const winRate = total > 0 ? wins / total : 0;
+      const adjustedWinRate = wilsonScore(wins, total);
 
       // Context delta string
       const contextDelta = this.formatContextDelta(entryContext, fullCurrent);
@@ -419,11 +445,11 @@ export class TradePatternClassifier {
 
       const warnings: string[] = [];
       if (total < CONFIG.minSimilarForReport) warnings.push(`Only ${total} similar transitions — low confidence`);
-      if (winRate < 0.5 && total >= CONFIG.minSimilarForReport) warnings.push(`⚠️ Low win rate (${(winRate * 100).toFixed(0)}%) for similar transitions — consider closing`);
-      if (winRate > 0.8 && total >= CONFIG.minSimilarForReport) warnings.push(`⭐ High win rate (${(winRate * 100).toFixed(0)}%) for similar transitions — strong hold signal`);
+      if (adjustedWinRate < 0.4 && total >= CONFIG.minSimilarForReport) warnings.push(`⚠️ Low adjusted win rate (${(adjustedWinRate * 100).toFixed(0)}%) for similar transitions — consider closing`);
+      if (adjustedWinRate > 0.6 && total >= CONFIG.minSimilarForReport) warnings.push(`⭐ Good adjusted win rate (${(adjustedWinRate * 100).toFixed(0)}%) for similar transitions — strong hold signal`);
 
       const result: PositionQueryResult = {
-        totalMatches: total, wins, losses, winRate,
+        totalMatches: total, wins, losses, winRate, adjustedWinRate,
         entryContext, currentContext: fullCurrent,
         contextDelta,
         bestWin: bestWin ? {
