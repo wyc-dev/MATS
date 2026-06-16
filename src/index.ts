@@ -1622,18 +1622,15 @@ class AMACRFSystem {
         } : undefined,
         patternStats: this.patternClassifier ? this.patternClassifier.getStats() : undefined,
         emClusterState: this.patternClassifier ? (() => {
-          const m = this.patternClassifier!.em.getModel();
-          if (!m) return undefined;
+          const allStats = this.patternClassifier!.em.getAllModelStats();
+          if (allStats.length === 0) return undefined;
           return {
-            clusterCount: m.clusters.length,
-            totalSamples: m.totalSamples,
-            bic: m.bic,
-            trained: m.clusters.length > 0,
-            clusters: m.clusters.map((c, i) => ({
-              index: i,
-              winRate: c.winRate,
-              sampleCount: c.sampleCount,
-              weight: c.weight,
+            symbols: allStats.map(s => ({
+              symbol: s.symbol,
+              clusterCount: s.clusterCount,
+              totalSamples: s.totalSamples,
+              bic: s.bic,
+              clusters: s.clusters,
             })),
           };
         })() : undefined,

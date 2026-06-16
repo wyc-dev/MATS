@@ -216,11 +216,15 @@ export class TradePatternClassifier {
     const meaningful = this.patterns.filter(p => p.outcome !== 'pending' && Math.abs(p.pnlPct) >= 0.005);
     for (const p of meaningful) {
       const outcome: 1 | 0 = p.outcome === 'win' ? 1 : 0;
-      this.em.feedTrade(p.entryContext as unknown as Record<string, number>, outcome);
+      this.em.feedTrade(p.symbol, p.entryContext as unknown as Record<string, number>, outcome);
     }
     if (meaningful.length >= 20) {
-      this.em.refit();
-      log.info(`[load] EM refit from ${meaningful.length} historical trades`);
+      // Refit per-symbol EM models that have enough data
+      const trainedSyms = [...new Set(meaningful.map(p => p.symbol))];
+      for (const sym of trainedSyms) {
+        this.em.maybeRefit(sym);
+      }
+      log.info(`[load] EM refit triggered for ${trainedSyms.length} symbols from ${meaningful.length} historical trades`);
     } else {
       log.info(`[load] EM queued ${meaningful.length} trades (need 20+ for refit)`);
     }
@@ -318,8 +322,8 @@ export class TradePatternClassifier {
       const absPnl = Math.abs(pnlPct);
       if (absPnl >= 0.005) {
         const outcome: 1 | 0 = pattern.outcome === 'win' ? 1 : 0;
-        this.em.feedTrade(pattern.entryContext as unknown as Record<string, number>, outcome);
-        this.em.maybeRefit();
+        this.em.feedTrade(pattern.symbol, pattern.entryContext as unknown as Record<string, number>, outcome);
+        this.em.maybeRefit(pattern.symbol);
         log.info(`[em] Fed trade #${id} (${pattern.outcome}, ${(pnlPct*100).toFixed(2)}%) → EM`);
       }
 
@@ -346,7 +350,7 @@ export class TradePatternClassifier {
       totalMatches: 0, wins: 0, losses: 0, winRate: 0, adjustedWinRate: 0,
       bestWin: null, worstLoss: null,
       regimeBreakdown: [], warnings: [],
-      emAssessment: this.em.query(currentContext as Record<string, number>),
+      emAssessment: this.em.query(symbol, currentContext as Record<string, number>),
     };
 
     try {
@@ -442,7 +446,7 @@ export class TradePatternClassifier {
         } : null,
         regimeBreakdown,
         warnings,
-        emAssessment: this.em.query(currentContext as Record<string, number>),
+        emAssessment: this.em.query(symbol, currentContext as Record<string, number>),
       };
 
       this.queryCache.set(cacheKey, { result, cachedAt: Date.now(), priceAtCache: currentPrice });

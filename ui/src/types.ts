@@ -164,13 +164,15 @@ export interface APIData {
   cycleProgress?: CycleProgress | null;
   hacpThreshold?: number;
   evolution?: EvolutionData;
-  /** GMM EM clustering model summary */
+  /** GMM EM clustering model summary (per-symbol) */
   emClusterState?: {
-    clusterCount: number;
-    totalSamples: number;
-    bic: number;
-    trained: boolean;
-    clusters: Array<{ index: number; winRate: number; sampleCount: number; weight: number }>;
+    symbols: Array<{
+      symbol: string;
+      clusterCount: number;
+      totalSamples: number;
+      bic: number;
+      clusters: Array<{ index: number; winRate: number; sampleCount: number; weight: number }>;
+    }>;
   };
   backtest?: BacktestData | null;
   backtestProgress?: BacktestProgress | null;
