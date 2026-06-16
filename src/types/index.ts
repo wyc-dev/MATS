@@ -632,6 +632,7 @@ export interface SentimentAggregate {
     orderBookImbalance: number;
     volumeAcceleration: number;
     fundingRateDelta: number;
+    fundingRateAccel: number;
     spreadPressure: number;
     priceAcceleration: number;
     largeTradeCount: number;

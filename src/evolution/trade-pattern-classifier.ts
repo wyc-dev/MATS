@@ -16,6 +16,7 @@
 import { createLogger } from '../observability/logger.ts';
 import type { MarketRegime, AgentRole } from '../types/index.ts';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { EMClusteringEngine, type EMQueryResult } from './em-clustering.ts';
 
 const log = createLogger({ phase: 'pattern_classifier' });
 
@@ -59,6 +60,8 @@ export interface TradePatternContext {
   sentiment: number;
   /** Sigmoid·GA conviction 0-1 */
   sentimentConviction: number;
+  /** Funding rate acceleration -1..+1 (positive = funding rising, bearish for longs) */
+  fundingRateAccel: number;
 }
 
 export interface TradePatternRecord {
@@ -96,6 +99,8 @@ export interface EntryQueryResult {
   /** Win rate broken down by regime */
   regimeBreakdown: Array<{ regime: MarketRegime; wins: number; losses: number; winRate: number }>;
   warnings: string[];
+  /** GMM EM clustering assessment (unsupervised pattern discovery) */
+  emAssessment: EMQueryResult;
 }
 
 export interface PositionQueryResult {
@@ -129,6 +134,7 @@ function defaultContext(): TradePatternContext {
     fundingRate: 0, volumeRatio: 1, signalAgreement: 0.5,
     positionSizePct: 0, leverage: 1,
     sentiment: 0, sentimentConviction: 0.5,
+    fundingRateAccel: 0,
   };
 }
 
@@ -146,11 +152,12 @@ const NUMERICAL_FEATURES: FeatureDef[] = [
   { key: 'srDistanceBps', weight: 0.12, threshold: 50 },
   { key: 'obImbalance', weight: 0.12, threshold: 0.30 },
   { key: 'sentiment', weight: 0.12, threshold: 0.30 },   // Sigmoid·GA forward-looking signal
-  { key: 'signalAgreement', weight: 0.08, threshold: 0.30 },
-  { key: 'fundingRate', weight: 0.08, threshold: 0.001 },
-  { key: 'volumeRatio', weight: 0.08, threshold: 0.50 },
-  { key: 'positionSizePct', weight: 0.05, threshold: 0.10 },
-  { key: 'sentimentConviction', weight: 0.05, threshold: 0.30 },
+  { key: 'signalAgreement', weight: 0.07, threshold: 0.30 },
+  { key: 'fundingRate', weight: 0.06, threshold: 0.001 },
+  { key: 'fundingRateAccel', weight: 0.08, threshold: 0.30 },
+  { key: 'volumeRatio', weight: 0.06, threshold: 0.50 },
+  { key: 'positionSizePct', weight: 0.04, threshold: 0.10 },
+  { key: 'sentimentConviction', weight: 0.03, threshold: 0.30 },
 ];
 
 // ─── Manager ───
@@ -173,6 +180,8 @@ export class TradePatternClassifier {
   private queryCache: Map<string, { result: EntryQueryResult | PositionQueryResult; cachedAt: number; priceAtCache: number }> = new Map();
   private lastPrice: Record<string, number> = {};
   private dirty = false;
+  /** GMM EM clustering engine for unsupervised pattern discovery */
+  readonly em: EMClusteringEngine = new EMClusteringEngine();
 
   // ─── Lifecycle ───
 
@@ -192,16 +201,45 @@ export class TradePatternClassifier {
       log.warn(`[load] No existing patterns or load failed: ${msg} — starting fresh`);
       this.patterns = [];
     }
+
+    // Load EM model from companion file
+    try {
+      const emPath = CONFIG.persistPath.replace('.json', '-em.json');
+      const emData = readFileSync(emPath, 'utf-8');
+      this.em.load(emData);
+      log.info(`Loaded EM model from ${emPath}`);
+    } catch {
+      log.info('[load] No existing EM model — will train from scratch');
+    }
+
+    // Feed all existing closed trades into EM (cold-start seed)
+    const meaningful = this.patterns.filter(p => p.outcome !== 'pending' && Math.abs(p.pnlPct) >= 0.005);
+    for (const p of meaningful) {
+      const outcome: 1 | 0 = p.outcome === 'win' ? 1 : 0;
+      this.em.feedTrade(p.entryContext as unknown as Record<string, number>, outcome);
+    }
+    if (meaningful.length >= 20) {
+      this.em.refit();
+      log.info(`[load] EM refit from ${meaningful.length} historical trades`);
+    } else {
+      log.info(`[load] EM queued ${meaningful.length} trades (need 20+ for refit)`);
+    }
   }
 
   persist(): void {
-    if (!this.dirty) return;
     try {
       const tmp = CONFIG.persistPath + '.tmp';
       writeFileSync(tmp, JSON.stringify(this.patterns, null, 2), 'utf-8');
       renameSync(tmp, CONFIG.persistPath);
       this.dirty = false;
       log.info(`Persisted ${this.patterns.length} trade patterns`);
+
+      // Persist EM model separately
+      const emTmp = CONFIG.persistPath.replace('.json', '-em.json') + '.tmp';
+      const emFinal = CONFIG.persistPath.replace('.json', '-em.json');
+      writeFileSync(emTmp, this.em.save(), 'utf-8');
+      renameSync(emTmp, emFinal);
+      log.info(`Persisted EM model (${this.em.getModel()?.clusters.length ?? 0} clusters)`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error(`[persist] Failed to save patterns: ${msg}`);
@@ -276,6 +314,15 @@ export class TradePatternClassifier {
       this.dirty = true;
       this.queryCache.clear(); // bust all caches
 
+      // Feed into EM clustering engine
+      const absPnl = Math.abs(pnlPct);
+      if (absPnl >= 0.005) {
+        const outcome: 1 | 0 = pattern.outcome === 'win' ? 1 : 0;
+        this.em.feedTrade(pattern.entryContext as unknown as Record<string, number>, outcome);
+        this.em.maybeRefit();
+        log.info(`[em] Fed trade #${id} (${pattern.outcome}, ${(pnlPct*100).toFixed(2)}%) → EM`);
+      }
+
       log.info(`[backfill] Closed ${pattern.side.toUpperCase()} #${id}: ${pattern.outcome} (${(pnlPct * 100).toFixed(2)}%) over ${holdDuration} cycles | entry: ${pattern.entryContext.regime}→exit: ${pattern.exitContext.regime}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -299,6 +346,7 @@ export class TradePatternClassifier {
       totalMatches: 0, wins: 0, losses: 0, winRate: 0, adjustedWinRate: 0,
       bestWin: null, worstLoss: null,
       regimeBreakdown: [], warnings: [],
+      emAssessment: this.em.query(currentContext as Record<string, number>),
     };
 
     try {
@@ -313,34 +361,59 @@ export class TradePatternClassifier {
         this.queryCache.delete(cacheKey);
       }
 
-      const closed = this.patterns.filter(p => p.outcome !== 'pending' && p.symbol === symbol && p.side === side);
-      if (closed.length < CONFIG.minPatternsForQuery) {
-        return { ...empty, warnings: [`Only ${closed.length} closed ${side.toUpperCase()} trades for ${symbol} — need ${CONFIG.minPatternsForQuery}`] };
+      // BUY/SELL share the same pattern pool:
+      //   - A losing BUY means SELL would have won (invert outcome)
+      //   - A winning BUY means SELL would have lost (invert outcome)
+      //   - Real SELL trades count directly for SELL query
+      //   - Any trade with |PnL%| < 0.5% is noise — skip it entirely
+      const MIN_PNL_PCT = 0.005; // 0.5% minimum to be considered meaningful
+      const allClosed = this.patterns.filter(p => p.outcome !== 'pending' && p.symbol === symbol);
+      const meaningful = allClosed.filter(p => Math.abs(p.pnlPct) >= MIN_PNL_PCT);
+      if (meaningful.length < CONFIG.minPatternsForQuery) {
+        return { ...empty, warnings: [`Only ${meaningful.length} meaningful closed trades for ${symbol} (need ${CONFIG.minPatternsForQuery}, |PnL| >= 0.5%)`] };
       }
 
       const queryCtx: TradePatternContext = { ...defaultContext(), ...currentContext };
-      const scored = closed.map(p => ({
+      const scored = meaningful.map(p => ({
         pattern: p,
         similarity: this.computeSimilarity(queryCtx, p.entryContext),
       }));
       const matches = scored.filter(s => s.similarity >= CONFIG.similarityThreshold);
-      const wins = matches.filter(m => m.pattern.outcome === 'win').length;
-      const losses = matches.filter(m => m.pattern.outcome === 'loss').length;
-      const total = matches.length;
+
+      // For each match, determine effective outcome for the requested side
+      let wins = 0, losses = 0;
+      const effectiveWins: typeof matches = [];
+      const effectiveLosses: typeof matches = [];
+      for (const m of matches) {
+        const tradeWon = m.pattern.outcome === 'win';
+        if (m.pattern.side === side) {
+          // Same side: outcome is directly applicable
+          if (tradeWon) { wins++; effectiveWins.push(m); }
+          else { losses++; effectiveLosses.push(m); }
+        } else {
+          // Opposite side: outcome is inverted
+          if (tradeWon) { losses++; effectiveLosses.push(m); }  // BUY win → SELL would lose
+          else { wins++; effectiveWins.push(m); }                // BUY loss → SELL would win
+        }
+      }
+      const total = wins + losses;
       const winRate = total > 0 ? wins / total : 0;
       const adjustedWinRate = wilsonScore(wins, total);
 
-      // Best win / worst loss
-      const sorted = [...matches].sort((a, b) => b.similarity - a.similarity);
-      const bestWin = sorted.find(m => m.pattern.outcome === 'win') ?? null;
-      const worstLoss = sorted.find(m => m.pattern.outcome === 'loss') ?? null;
+      // Best win / worst loss (using effective outcome considering inversion)
+      const sortedWins = [...effectiveWins].sort((a, b) => b.similarity - a.similarity);
+      const sortedLosses = [...effectiveLosses].sort((a, b) => b.similarity - a.similarity);
+      const bestWin = sortedWins[0] ?? null;
+      const worstLoss = sortedLosses[0] ?? null;
 
-      // Regime breakdown
+      // Regime breakdown (using effective outcome)
       const rMap = new Map<MarketRegime, { w: number; l: number }>();
       for (const m of matches) {
         const r = m.pattern.entryContext.regime;
         const e = rMap.get(r) ?? { w: 0, l: 0 };
-        if (m.pattern.outcome === 'win') e.w++; else e.l++;
+        const tradeWon = m.pattern.outcome === 'win';
+        const effectiveWin = m.pattern.side === side ? tradeWon : !tradeWon;
+        if (effectiveWin) e.w++; else e.l++;
         rMap.set(r, e);
       }
       const regimeBreakdown = Array.from(rMap.entries()).map(([regime, c]) => ({
@@ -369,6 +442,7 @@ export class TradePatternClassifier {
         } : null,
         regimeBreakdown,
         warnings,
+        emAssessment: this.em.query(currentContext as Record<string, number>),
       };
 
       this.queryCache.set(cacheKey, { result, cachedAt: Date.now(), priceAtCache: currentPrice });
@@ -523,6 +597,13 @@ export class TradePatternClassifier {
       }
 
       for (const w of result.warnings) lines.push(`  ${w}`);
+      lines.push('');
+      // EM clustering assessment (unsupervised win/loss pattern discovery)
+      const em = result.emAssessment;
+      lines.push(`EM Cluster: #${em.dominantCluster} (${(em.responsibilities[em.dominantCluster] ?? 0) * 100 > 50 ? (em.responsibilities[em.dominantCluster]! * 100).toFixed(0) : '<50'}% assignment)`);
+      lines.push(`  Weighted win rate: ${(em.weightedWinRate * 100).toFixed(0)}% (cluster-weighted expectation)`);
+      if (em.weightedWinRate > 0.6) lines.push(`  🟢 EM favours this trade`);
+      else if (em.weightedWinRate < 0.4) lines.push(`  🔴 EM disfavours this trade`);
       lines.push('---');
       return lines.join('\n');
     } catch (err: unknown) {

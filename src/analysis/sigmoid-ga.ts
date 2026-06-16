@@ -103,6 +103,7 @@ export interface SentimentInputs {
   orderBookImbalance: number;   // -1 (all asks) to +1 (all bids)
   volumeAcceleration: number;    // Δvol / Δt normalized (-1 to +1)
   fundingRateDelta: number;      // change in funding rate (-1 to +1)
+  fundingRateAccel: number;      // funding rate acceleration (-1 to +1)
   spreadPressure: number;        // bid/ask pressure (-1 to +1)
   priceAcceleration: number;     // Δ²p / Δt² normalized (-1 to +1)
   largeTradeCount: number;       // count of large trades normalized (0-1)
@@ -120,7 +121,7 @@ export function computeSentiment(
   // Compute individual signal channels
   const signals: SentimentSignal = {
     whaleScore: sigmoid(inputs.orderBookImbalance + inputs.largeTradeCount - 0.5, c.whale.k, c.whale.x0),
-    institutionalPressure: sigmoid(inputs.volumeAcceleration + inputs.fundingRateDelta, c.institutional.k, c.institutional.x0),
+    institutionalPressure: sigmoid(inputs.volumeAcceleration + inputs.fundingRateDelta + inputs.fundingRateAccel * 0.5, c.institutional.k, c.institutional.x0),
     microstructureTension: sigmoid(inputs.spreadPressure + inputs.orderBookImbalance * 0.5, c.microstructure.k, c.microstructure.x0),
     momentumBias: sigmoidBipolar(inputs.priceAcceleration, c.momentum.k, c.momentum.x0),
     fearGreedEcho: sigmoidBipolar(inputs.fearGreedIndex - 0.5 + inputs.volatilityRegime * 0.3, c.fearGreed.k, c.fearGreed.x0),
@@ -174,6 +175,7 @@ export function computeSentiment(
       orderBookImbalance: inputs.orderBookImbalance,
       volumeAcceleration: inputs.volumeAcceleration,
       fundingRateDelta: inputs.fundingRateDelta,
+      fundingRateAccel: inputs.fundingRateAccel,
       spreadPressure: inputs.spreadPressure,
       priceAcceleration: inputs.priceAcceleration,
       largeTradeCount: inputs.largeTradeCount,
