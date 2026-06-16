@@ -757,6 +757,7 @@ class AMACRFSystem {
           // Use Pattern Classifier to pick direction — compare BUY vs SELL win rates
           let direction = 'buy';
           try {
+            const sentimentData = this.sentimentEngine?.getSentiment();
             const patternCtx = {
               regime: combinedState.regime,
               regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
@@ -769,15 +770,17 @@ class AMACRFSystem {
               signalAgreement: 0.5,
               positionSizePct: exploreSize,
               leverage: exploreLev,
+              sentiment: sentimentData?.overallSentiment ?? 0,
+              sentimentConviction: sentimentData?.conviction ?? 0.5,
             };
             if (this.patternClassifier) {
               const buyResult = this.patternClassifier.queryEntry(patternCtx, combinedState.primarySymbol, 'buy', combinedState.price);
               const sellResult = this.patternClassifier.queryEntry(patternCtx, combinedState.primarySymbol, 'sell', combinedState.price);
-              const buyWr = buyResult.totalMatches >= 3 ? buyResult.winRate : 0;
-              const sellWr = sellResult.totalMatches >= 3 ? sellResult.winRate : 0;
+              const buyWr = buyResult.totalMatches >= 3 ? buyResult.adjustedWinRate : 0;
+              const sellWr = sellResult.totalMatches >= 3 ? sellResult.adjustedWinRate : 0;
               if (buyWr > 0 || sellWr > 0) {
                 direction = sellWr > buyWr ? 'sell' : 'buy';
-                log.info(`🧪 Pattern-guided exploration: BUY WR=${(buyWr*100).toFixed(0)}% SELL WR=${(sellWr*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+                log.info(`🧪 Pattern-guided exploration: BUY adjWR=${(buyWr*100).toFixed(0)}% SELL adjWR=${(sellWr*100).toFixed(0)}% → ${direction.toUpperCase()}`);
               }
             }
           } catch (err) {
@@ -885,6 +888,8 @@ class AMACRFSystem {
                   signalAgreement: result.consensus.confidence,
                   positionSizePct: finalDecision.positionSizePct,
                   leverage: finalDecision.leverage ?? 1,
+                  sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+                  sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
                 },
                 {
                   regime: combinedState.regime,
@@ -898,6 +903,8 @@ class AMACRFSystem {
                   signalAgreement: result.consensus.confidence,
                   positionSizePct: finalDecision.positionSizePct,
                   leverage: finalDecision.leverage ?? 1,
+                  sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+                  sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
                 },
                 combinedState.primarySymbol,
                 pos.side,
@@ -925,6 +932,8 @@ class AMACRFSystem {
                 signalAgreement: result.consensus.confidence,
                 positionSizePct: finalDecision.positionSizePct,
                 leverage: finalDecision.leverage ?? 1,
+                sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+                sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
               },
               combinedState.primarySymbol,
               finalDecision.action === 'buy' ? 'buy' : 'sell',
