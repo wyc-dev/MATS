@@ -243,7 +243,7 @@ export class TradePatternClassifier {
       const emFinal = CONFIG.persistPath.replace('.json', '-em.json');
       writeFileSync(emTmp, this.em.save(), 'utf-8');
       renameSync(emTmp, emFinal);
-      log.info(`Persisted EM model (${this.em.getModel()?.clusters.length ?? 0} clusters)`);
+      log.info(`Persisted EM model (${this.em.getSymbolsWithModels().length} symbols)`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error(`[persist] Failed to save patterns: ${msg}`);
