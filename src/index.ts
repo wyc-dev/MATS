@@ -778,10 +778,23 @@ class AMACRFSystem {
               const sellResult = this.patternClassifier.queryEntry(patternCtx, combinedState.primarySymbol, 'sell', combinedState.price);
               const buyWr = buyResult.totalMatches >= 3 ? buyResult.adjustedWinRate : 0;
               const sellWr = sellResult.totalMatches >= 3 ? sellResult.adjustedWinRate : 0;
-              if (buyWr > 0 || sellWr > 0) {
+              const buyHasData = buyResult.totalMatches >= 3;
+              const sellHasData = sellResult.totalMatches >= 3;
+
+              if (buyHasData && sellHasData) {
+                // Both sides have data — pick the better one
                 direction = sellWr > buyWr ? 'sell' : 'buy';
-                log.info(`🧪 Pattern-guided exploration: BUY adjWR=${(buyWr*100).toFixed(0)}% SELL adjWR=${(sellWr*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+              } else if (buyHasData && !sellHasData) {
+                // Only BUY has data — if adjWR is decent, stick with BUY; else force SELL
+                direction = buyWr >= 0.4 ? 'buy' : 'sell';
+              } else if (!buyHasData && sellHasData) {
+                // Only SELL has data
+                direction = sellWr >= 0.4 ? 'sell' : 'buy';
+              } else {
+                // Cold start: neither side has enough data — alternate every 3 cycles
+                direction = (this.totalCycles % 6 === 0) ? 'sell' : 'buy';
               }
+              log.info(`🧪 Pattern-guided exploration (${buyHasData ? buyResult.totalMatches : 0}B / ${sellHasData ? sellResult.totalMatches : 0}S): BUY adjWR=${(buyWr*100).toFixed(0)}% SELL adjWR=${(sellWr*100).toFixed(0)}% → ${direction.toUpperCase()}`);
             }
           } catch (err) {
             log.warn(`Pattern direction check failed, defaulting buy: ${err instanceof Error ? err.message : String(err)}`);
