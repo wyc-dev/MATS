@@ -541,7 +541,7 @@ export class EvolutionOrchestrator {
     const bestStrat = this.pressureEngine.getBestStrategy();
     const tradeSummary = this.tradeHistory.getSummary(3);
     const allAgentRoles: AgentRole[] = [
-      'fractal_momentum_sentinel', 'onchain_whisperer', 'regime_risk_guardian',
+      'fractal_momentum_sentinel', 'onchain_whisperer', 'rbc_sentiment_analyst',
       'news_reporter', 'independent_risk_auditor',
     ];
 

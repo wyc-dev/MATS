@@ -17,6 +17,7 @@ interface Props {
   symbol: string
   currentPrice: number
   trades: TradeMarker[]
+  refreshKey?: number
 }
 
 const TIMEFRAMES = [
@@ -87,7 +88,7 @@ async function fetchKlines(symbol: string, interval: string, limit: number): Pro
   return fetchHLKlines(symbol, interval, limit);
 }
 
-export default function TradingViewChart({ symbol, currentPrice, trades }: Props) {
+export default function TradingViewChart({ symbol, currentPrice, trades, refreshKey }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -98,7 +99,7 @@ export default function TradingViewChart({ symbol, currentPrice, trades }: Props
 
   const tf = TIMEFRAMES.find(t => t.value === timeframe) ?? TIMEFRAMES[0]!
 
-  // Load data when timeframe or symbol changes (NOT currentPrice — it ticks too fast)
+  // Load data when timeframe, symbol, or refreshKey changes (refreshKey = cycle number)
   useEffect(() => {
     if (!containerRef.current) return
 
@@ -194,7 +195,7 @@ export default function TradingViewChart({ symbol, currentPrice, trades }: Props
       seriesRef.current = null
       priceLinesRef.current = []
     }
-  }, [timeframe, symbol])
+  }, [timeframe, symbol, refreshKey])
 
   // Update markers + price lines when trades change
   useEffect(() => {

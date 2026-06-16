@@ -76,7 +76,7 @@ export type MarketRegime =
 export type AgentRole =
   | 'fractal_momentum_sentinel'
   | 'onchain_whisperer'
-  | 'regime_risk_guardian'
+  | 'rbc_sentiment_analyst'
   | 'independent_risk_auditor'
   | 'meta_agent'
   | 'news_reporter'

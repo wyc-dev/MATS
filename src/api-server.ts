@@ -101,7 +101,7 @@ export interface APIData {
     losses: number;
     cacheEntries: number;
   };
-  /** GMM EM clustering model summary (per-symbol) */
+  /** GMM EM clustering model summary (per-symbol) — DEPRECATED, use rbcState */
   emClusterState?: {
     symbols: Array<{
       symbol: string;
@@ -109,6 +109,30 @@ export interface APIData {
       totalSamples: number;
       bic: number;
       clusters: Array<{ index: number; winRate: number; sampleCount: number; weight: number }>;
+    }>;
+  };
+  /** RBC (Range-Based Clustering) state summary (per-symbol) */
+  rbcState?: {
+    symbols: Array<{
+      symbol: string;
+      winCount: number;
+      lossCount: number;
+      totalSamples: number;
+      discriminativeDims: number;
+      totalDims: number;
+    }>;
+    pending: Array<{
+      symbol: string;
+      pending: number;
+      needed: number;
+      pct: number;
+    }>;
+    dimDetails?: Array<{
+      name: string;
+      winMin: number; winMax: number; winCentroid: number;
+      lossMin: number; lossMax: number; lossCentroid: number;
+      overlap: boolean; boundary: number | null;
+      globalMin: number; globalMax: number;
     }>;
   };
 }

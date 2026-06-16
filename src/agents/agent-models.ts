@@ -54,7 +54,7 @@ function getDefaultModelMap(): Record<AgentRole, string> {
       // Regime guardian uses 2048 maxTokens (set in agents.ts) for verbose JSON
       fractal_momentum_sentinel: 'kimi-k2.6:cloud',
       onchain_whisperer: 'kimi-k2.6:cloud',
-      regime_risk_guardian: 'kimi-k2.6:cloud',
+      rbc_sentiment_analyst: 'kimi-k2.6:cloud',
       independent_risk_auditor: 'kimi-k2.6:cloud',
       meta_agent: 'deepseek-v4-flash:cloud',
       news_reporter: 'kimi-k2.6:cloud',
@@ -65,7 +65,7 @@ function getDefaultModelMap(): Record<AgentRole, string> {
     defaultModelMap = {
       fractal_momentum_sentinel: config.nim.models.fast,
       onchain_whisperer: config.nim.models.default,
-      regime_risk_guardian: config.nim.models.default,
+      rbc_sentiment_analyst: config.nim.models.default,
       independent_risk_auditor: config.nim.models.default,
       meta_agent: config.nim.models.strong,
       news_reporter: config.nim.models.default,
@@ -102,7 +102,7 @@ export function getAllAgentModels(): AgentModelConfig[] {
   const roles: AgentRole[] = [
     'fractal_momentum_sentinel',
     'onchain_whisperer',
-    'regime_risk_guardian',
+    'rbc_sentiment_analyst',
     'independent_risk_auditor',
     'meta_agent',
     'market_agent',

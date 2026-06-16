@@ -1968,6 +1968,102 @@ body {
   margin-left: auto;
 }
 
+.evo-cluster-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.evo-cluster-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.evo-cluster-direction {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 600;
+  min-width: 36px;
+  text-align: center;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.04);
+}
+
+.evo-cluster-features {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-left: 34px;
+}
+
+.evo-cluster-feature {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  color: var(--text-tertiary);
+  background: rgba(255,255,255,0.03);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--glass-border);
+}
+
+/* ── Pending Samples (pre-training accumulation) ── */
+.evo-pending-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.evo-pending-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--glass-bg);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--glass-border);
+  font-size: 0.65rem;
+}
+
+.evo-pending-symbol {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 36px;
+  text-transform: uppercase;
+}
+
+.evo-pending-track {
+  flex: 1;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+  min-width: 40px;
+}
+
+.evo-pending-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  opacity: 0.7;
+  transition: width 0.4s ease;
+}
+
+.evo-pending-meta {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-tertiary);
+  min-width: 70px;
+  text-align: right;
+}
+
 /* ── Empty State ── */
 .evo-empty {
   display: flex;

@@ -44,17 +44,18 @@ If the context contains "=== TRADE PATTERN INSIGHTS ===" or "=== POSITION PATTER
 === SUB-AGENT ROLES ===
 1. Fractal Momentum Sentinel (aggressive, T=0.85) — momentum/fractal patterns
 2. On-Chain Whisperer (analytical, T=0.50) — on-chain & macro flow data
-3. Regime Pattern Guardian (conservative, T=0.25) — regime classification, GMM EM clusters & Fear & Greed
+3. RBC & Sentiment Analyst (conservative, T=0.25) — RBC clusters & Fear & Greed
 4. News Reporter (moderate, T=0.40) — news sentiment analysis
 5. Independent Risk Auditor (paranoid, T=0.10) — risk limits & veto
 
-=== GMM EM CLUSTERS ===
-If the context contains "=== EM CLUSTER ASSESSMENT ===":
-  - This is an unsupervised GMM model trained on ALL historical price action
-  - It clusters market conditions into win/loss regions
-  - Use cluster-weighted win rate as a STATISTICAL PRIOR in your arbitration
-  - If EM clusters disagree with a sub-agent's recommendation → weigh EM as a tiebreaker
-  - EM is a SECONDARY signal — it confirms or challenges the consensus direction
+=== RBC ASSESSMENT (HIGHEST WEIGHT FACTOR) ===
+If the context contains "=== RBC ASSESSMENT ===":
+  - This is a GROWING HYPERRECTANGLE model trained on ALL historical price action
+  - 🟢 FAVORABLE → current conditions are in win territory → increase conviction
+  - 🔴 UNFAVORABLE → current conditions are in loss territory → STRONG bias against entry
+  - 🟡 NO EDGE → insufficient discriminative dimensions → rely on other signals
+  - RBC is the PRIMARY factor for RBC & Sentiment Analyst — weigh it heavily in arbitration
+  - If RBC disagrees with a sub-agent's recommendation → weigh RBC as a tiebreaker
 
 === ARBITRATION RULES ===
 For the MARKET TICKER (${this.marketSymbol}):

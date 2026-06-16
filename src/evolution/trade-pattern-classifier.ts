@@ -37,11 +37,8 @@ const CONFIG = {
 
 export interface TradePatternContext {
   regime: MarketRegime;
-  regimeConfidence: number;
   /** 24h volatility (normalized, e.g. 0.05 = 5% daily range / price) */
   volatility: number;
-  /** Trend strength 0-1 */
-  trendStrength: number;
   /** Distance to nearest S/R in bps (+ = above support, - = below resistance) */
   srDistanceBps: number;
   /** Order book imbalance -1..1 */
@@ -52,16 +49,12 @@ export interface TradePatternContext {
   volumeRatio: number;
   /** Agent signal agreement 0-1 */
   signalAgreement: number;
-  /** Position size as % of balance 0-1 */
-  positionSizePct: number;
   /** Leverage 1-10 */
   leverage: number;
   /** Sigmoid·GA sentiment -1..+1 (forward-looking emotion signal) */
   sentiment: number;
   /** Sigmoid·GA conviction 0-1 */
   sentimentConviction: number;
-  /** Funding rate acceleration -1..+1 (positive = funding rising, bearish for longs) */
-  fundingRateAccel: number;
 }
 
 export interface TradePatternRecord {
@@ -129,12 +122,11 @@ export interface PositionQueryResult {
 
 function defaultContext(): TradePatternContext {
   return {
-    regime: 'unknown', regimeConfidence: 0.5, volatility: 0,
-    trendStrength: 0.5, srDistanceBps: 0, obImbalance: 0,
+    regime: 'unknown', volatility: 0,
+    srDistanceBps: 0, obImbalance: 0,
     fundingRate: 0, volumeRatio: 1, signalAgreement: 0.5,
-    positionSizePct: 0, leverage: 1,
+    leverage: 1,
     sentiment: 0, sentimentConviction: 0.5,
-    fundingRateAccel: 0,
   };
 }
 
@@ -147,17 +139,14 @@ interface FeatureDef {
 }
 
 const NUMERICAL_FEATURES: FeatureDef[] = [
-  { key: 'volatility', weight: 0.18, threshold: 0.05 },
-  { key: 'trendStrength', weight: 0.12, threshold: 0.30 },
-  { key: 'srDistanceBps', weight: 0.12, threshold: 50 },
-  { key: 'obImbalance', weight: 0.12, threshold: 0.30 },
-  { key: 'sentiment', weight: 0.12, threshold: 0.30 },   // Sigmoid·GA forward-looking signal
-  { key: 'signalAgreement', weight: 0.07, threshold: 0.30 },
-  { key: 'fundingRate', weight: 0.06, threshold: 0.001 },
-  { key: 'fundingRateAccel', weight: 0.08, threshold: 0.30 },
+  { key: 'volatility', weight: 0.22, threshold: 0.05 },
+  { key: 'srDistanceBps', weight: 0.16, threshold: 50 },
+  { key: 'obImbalance', weight: 0.16, threshold: 0.30 },
+  { key: 'sentiment', weight: 0.16, threshold: 0.30 },   // Sigmoid·GA forward-looking signal
+  { key: 'signalAgreement', weight: 0.10, threshold: 0.30 },
+  { key: 'fundingRate', weight: 0.10, threshold: 0.001 },
   { key: 'volumeRatio', weight: 0.06, threshold: 0.50 },
-  { key: 'positionSizePct', weight: 0.04, threshold: 0.10 },
-  { key: 'sentimentConviction', weight: 0.03, threshold: 0.30 },
+  { key: 'sentimentConviction', weight: 0.04, threshold: 0.30 },
 ];
 
 // ─── Manager ───
@@ -216,7 +205,7 @@ export class TradePatternClassifier {
     const meaningful = this.patterns.filter(p => p.outcome !== 'pending' && Math.abs(p.pnlPct) >= 0.005);
     for (const p of meaningful) {
       const outcome: 1 | 0 = p.outcome === 'win' ? 1 : 0;
-      this.em.feedTrade(p.symbol, p.entryContext as unknown as Record<string, number>, outcome);
+      this.em.feedTrade(p.symbol, { ...(p.entryContext as unknown as Record<string, number>), direction: p.side === 'buy' ? 1 : -1 }, outcome);
     }
     if (meaningful.length >= 20) {
       // Refit per-symbol EM models that have enough data
@@ -322,7 +311,7 @@ export class TradePatternClassifier {
       const absPnl = Math.abs(pnlPct);
       if (absPnl >= 0.005) {
         const outcome: 1 | 0 = pattern.outcome === 'win' ? 1 : 0;
-        this.em.feedTrade(pattern.symbol, pattern.entryContext as unknown as Record<string, number>, outcome);
+        this.em.feedTrade(pattern.symbol, { ...(pattern.entryContext as unknown as Record<string, number>), direction: pattern.side === 'buy' ? 1 : -1 }, outcome);
         this.em.maybeRefit(pattern.symbol);
         log.info(`[em] Fed trade #${id} (${pattern.outcome}, ${(pnlPct*100).toFixed(2)}%) → EM`);
       }
@@ -350,7 +339,7 @@ export class TradePatternClassifier {
       totalMatches: 0, wins: 0, losses: 0, winRate: 0, adjustedWinRate: 0,
       bestWin: null, worstLoss: null,
       regimeBreakdown: [], warnings: [],
-      emAssessment: this.em.query(symbol, currentContext as Record<string, number>),
+      emAssessment: this.em.query(symbol, { ...currentContext as Record<string, number>, direction: side === 'buy' ? 1 : -1 }),
     };
 
     try {
@@ -446,7 +435,7 @@ export class TradePatternClassifier {
         } : null,
         regimeBreakdown,
         warnings,
-        emAssessment: this.em.query(symbol, currentContext as Record<string, number>),
+        emAssessment: this.em.query(symbol, { ...currentContext as Record<string, number>, direction: side === 'buy' ? 1 : -1 }),
       };
 
       this.queryCache.set(cacheKey, { result, cachedAt: Date.now(), priceAtCache: currentPrice });

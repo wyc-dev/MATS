@@ -90,6 +90,15 @@ export class VolumeBuffer {
     // Normalize: 100% increase → 0.8, 200% → ~0.95
     return Math.max(-1, Math.min(1, ratio / 2));
   }
+
+  /** Volume ratio: current volume / rolling average. 1.0 = normal, 0.5 = half, 2.0 = double */
+  getVolumeRatio(): number {
+    if (this.volumes.length < 2) return 1;
+    const avg = this.volumes.reduce((s, v) => s + v.volume, 0) / this.volumes.length;
+    const current = this.volumes[this.volumes.length - 1]!.volume;
+    if (avg < 0.001) return 1;
+    return current / avg;
+  }
 }
 
 // ─── Sentiment Engine ───
@@ -147,6 +156,16 @@ export class SentimentEngine {
     const diff = last - first;
     // Normalize: typical funding ranges -0.001..+0.001, multiply to get sensible range
     return Math.max(-1, Math.min(1, diff * 5000));
+  }
+
+  /** Get the raw current funding rate (or 0 if never updated) */
+  getFundingRate(): number {
+    return this.lastFundingRate;
+  }
+
+  /** Volume ratio: current 24h volume / rolling average. 1.0 = normal */
+  getVolumeRatio(): number {
+    return this.volumeBuffer.getVolumeRatio();
   }
 
   /** Get current sentiment for agent context injection */
