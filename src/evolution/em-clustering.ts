@@ -582,3 +582,22 @@ export class EMClusteringEngine {
 
     return parts.join(' | ');
   }
+
+  /**
+   * Format cluster info for agent context injection (all symbols).
+   */
+  formatForAgentContext(): string {
+    const parts: string[] = ['=== EM CLUSTERING ==='];
+    for (const [sym, state] of this.symbols) {
+      if (!state.model || state.model.clusters.length === 0) continue;
+      const m = state.model;
+      parts.push(`${sym}: ${m.clusters.length} clusters, ${m.totalSamples} samples, BIC=${m.bic.toFixed(1)}`);
+      for (let i = 0; i < m.clusters.length; i++) {
+        const c = m.clusters[i]!;
+        parts.push(`  #${i}: wr=${(c.winRate * 100).toFixed(0)}% n=${c.sampleCount} π=${(c.weight * 100).toFixed(0)}%`);
+      }
+    }
+    if (parts.length === 1) parts.push('  (no models trained yet)');
+    return parts.join('\n');
+  }
+}

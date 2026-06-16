@@ -876,7 +876,7 @@ class AMACRFSystem {
           return posDecision?.closePosition === true;
         }).length;
         if (closeVotes >= 2) {
-          log.warn(`⚠️ ${closeVotes} agents recommend taking profit on ${posSymbol} @ $${pos.currentPrice.toFixed(2)} (PnL: +${(posPnlPct*100).toFixed(2)}%)...`);
+          log.warn(`⚠️ ${closeVotes} agents recommend taking profit on ${posSymbol} @ $${pos.currentPrice.toFixed(2)} (PnL: +${((pos.unrealizedPnlPct ?? 0)*100).toFixed(2)}%)...`);
           const trade = this.portfolio.closePosition(posSymbol, pos.currentPrice);
           if (trade) {
             perPositionCloseReports.push({ order: {} as any, trade });
