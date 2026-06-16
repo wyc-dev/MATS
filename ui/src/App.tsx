@@ -1017,15 +1017,15 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
         </>
       )}
 
-      {/* ── GMM EM Clustering ── */}
-      {data?.emClusterState?.trained && (
-        <>
-          <div className="panel-header" style={{marginTop: 8, marginBottom: 6}}>
-            <span className="panel-title" style={{fontSize:'0.7rem'}}>🧬 GMM EM Clusters</span>
-            <span className="panel-badge" style={{fontSize:'0.5rem'}}>BIC {data.emClusterState.bic.toFixed(1)}</span>
+      {/* ── GMM EM Clusters ── */}
+      {data?.emClusterState?.symbols?.length > 0 && data.emClusterState.symbols.map(symState => (
+        <div key={symState.symbol}>
+          <div className="panel-header" style={{marginTop: 8, marginBottom: 4}}>
+            <span className="panel-title" style={{fontSize:'0.65rem'}}>🧬 EM Clusters · {symState.symbol.toUpperCase()}</span>
+            <span className="panel-badge" style={{fontSize:'0.5rem'}}>BIC {symState.bic.toFixed(1)}</span>
           </div>
           <div className="strategy-list">
-            {data.emClusterState.clusters.map(c => {
+            {symState.clusters.map(c => {
               const wrColor = c.winRate > 0.6 ? 'var(--accent-green)' : c.winRate > 0.4 ? 'var(--text-secondary)' : 'var(--accent-red)'
               return (
                 <div key={c.index} className="strategy-row active" style={{gap:6}}>
@@ -1034,17 +1034,17 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
                   <span style={{fontSize:'0.55rem', color:'var(--text-tertiary)'}}>n={c.sampleCount}</span>
                   <span style={{fontSize:'0.55rem', color:'var(--text-tertiary)'}}>π={((c.weight)*100).toFixed(0)}%</span>
                   <span style={{fontSize:'0.5rem', marginLeft:'auto'}}>
-                    {c.winRate > 0.6 ? '🟢 Profitable' : c.winRate < 0.4 ? '🔴 Unfavourable' : '🟡 Neutral'}
+                    {c.winRate > 0.6 ? '🟢' : c.winRate < 0.4 ? '🔴' : '🟡'}
                   </span>
                 </div>
               )
             })}
           </div>
-          <div style={{fontSize:'0.55rem', color:'var(--text-tertiary)', padding:'4px 0', textAlign:'right'}}>
-            {data.emClusterState.totalSamples} samples
+          <div style={{fontSize:'0.5rem', color:'var(--text-tertiary)', padding:'2px 0', textAlign:'right'}}>
+            {symState.totalSamples} samples
           </div>
-        </>
-      )}
+        </div>
+      ))}
     </div>
   )
 }

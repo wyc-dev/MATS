@@ -101,13 +101,15 @@ export interface APIData {
     losses: number;
     cacheEntries: number;
   };
-  /** GMM EM clustering model summary */
+  /** GMM EM clustering model summary (per-symbol) */
   emClusterState?: {
-    clusterCount: number;
-    totalSamples: number;
-    bic: number;
-    trained: boolean;
-    clusters: Array<{ index: number; winRate: number; sampleCount: number; weight: number }>;
+    symbols: Array<{
+      symbol: string;
+      clusterCount: number;
+      totalSamples: number;
+      bic: number;
+      clusters: Array<{ index: number; winRate: number; sampleCount: number; weight: number }>;
+    }>;
   };
 }
 
