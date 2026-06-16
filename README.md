@@ -7,6 +7,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
 [![Version](https://img.shields.io/badge/version-2.0.5--dev-blueviolet)](ARCHITECTURE.md)
+
 ## Table of Contents
 
 - [Quick Start (Ollama)](#quick-start-ollama)
@@ -87,12 +88,16 @@ OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud
 ```
 
 The system defaults to **Paper Trading mode** and will never use real funds.
+
+### 6. Launch the System
+
+```bash
 npm start
 ```
 
 On first launch, the system will:
 1. Auto-detect the LLM provider (Ollama → NVIDIA NIM fallback)
-2. Start the HACP decision cycle (every 60 seconds by default)
+2. Start the HACP decision cycle (every 5 minutes by default)
 3. Serve the Web UI at `http://localhost:3456`
 
 ### 7. Access the Dashboard
@@ -224,24 +229,24 @@ The provider factory auto-detects availability: NIM → Ollama → Error.
 │                                                              │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
-│   Layer 2: Cognitive (TypeScript + LLM)                     │
+│   Layer 2: Cognitive (TypeScript + LLM)                      │
 │   • HACP protocol (parallel multi-model inference)           │
-│   • 7-agent system + meta-agent arbitration                   │
-│   • Structured debate + weighted voting consensus             │
-│   • Self-evolution (meta-evolution)                           │
-│   • LLM invoked only at critical decision points              │
+│   • 7-agent system + meta-agent arbitration                  │
+│   • Structured debate + weighted voting consensus            │
+│   • Dual-layer EM self-evolution (Cycle Chain + GMM)         │
+│   • LLM invoked only at critical decision points             │
 │                                                              │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
-│   Layer 3: Execution (TypeScript Runtime)                     │
-   │   • Hyperliquid WebSocket + REST (9 perpetual DEXs)        │
-   │   • Market Agent auto-selects trading pair                  │
-   │   • Risk engine (millisecond latency, no LLM dependency)    │
-   │   • Paper trading engine (leverage-aware P&L simulation)    │
-   │   • Real Trading Manager (exchange orders + local mirror)   │
-   │   • Position tracking & stop-loss/take-profit               │
-   │   • Data pipeline & persistence                             │
-   │   • Observability & health checks (6 guards)               │
+│   Layer 3: Execution (TypeScript Runtime)                    │
+│   • Hyperliquid WebSocket + REST (9 perpetual DEXs)          │
+│   • Market Agent auto-selects trading pair                   │
+│   • Risk engine (millisecond latency, no LLM dependency)     │
+│   • Paper trading engine (leverage-aware P&L simulation)     │
+│   • Real Trading Manager (exchange orders + local mirror)    │
+│   • Position tracking & stop-loss/take-profit                │
+│   • Data pipeline & persistence                              │
+│   • Observability & health checks (6 guards)                 │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -282,7 +287,7 @@ src/
 │   ├── engine.ts             # Multi-layer risk engine
 │   └── correlation-budget.ts # Cross-pair correlation budget
 │
-├── system-guard/             # 🛡️ SystemGuard (6 guards: margin, drawdown, data freshness, etc.)
+├── system-guard/             # 🛡️ SystemGuard (6 guards)
 │
 ├── evolution/                # 🧬 Dual-layer EM evolution + pattern classifier
 │   ├── index.ts              # Evolution orchestrator (~420 LOC)
@@ -306,7 +311,7 @@ src/
 
 ui/                           # 🖥️ React Web UI (pantha_mats design system)
 ├── src/
-│   ├── App.tsx               # Main dashboard (collapsible rounds, trade lifecycle badges)
+│   ├── App.tsx               # Main dashboard (collapsible rounds, badges)
 │   ├── TradingViewChart.tsx  # TradingView chart integration
 │   ├── StarsBackground.tsx   # Dynamic starfield background
 │   └── types.ts              # UI type definitions
@@ -349,7 +354,6 @@ HYPERLIQUID_PRIVATE_KEY=...
 ```
 
 The system defaults to **paper trading** — set `TRADE_MODE=real` in `.env` to enable live trading.
-```
 
 ### Decision Cycle Tuning
 
