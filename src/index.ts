@@ -857,31 +857,11 @@ class AMACRFSystem {
         }
       }
 
-      // ── Execute PER-POSITION decisions from agents ──
-      // Each agent evaluates each open position in their "positions[]" output.
-      // If >=2 agents recommend "close" for the same position, we execute it.
-      const allThoughts = result.allThoughts;
-      const positionsOnBook = this.portfolio.getOpenSymbols();
-      const perPositionCloseReports: ExecutionReport[] = [];
-      for (const posSymbol of positionsOnBook) {
-        const pos = this.portfolio.getPosition(posSymbol);
-        if (!pos) continue;
-        const closeVotes = allThoughts.filter(t => {
-          if (t.agentRole === 'meta_agent' || t.agentRole === 'market_agent') return false;
-          const msd = t.metadata?.['multiSymbolDecision'] as any;
-          const posDecision = msd?.positions?.find((p: any) => p.symbol?.toLowerCase() === posSymbol.toLowerCase());
-          return posDecision?.closePosition === true;
-        }).length;
-        // Only close if at least 2 agents agree (avoids single-agent false positive)
-        if (closeVotes >= 2) {
-          log.warn(`⚠️ ${closeVotes} agents recommend closing ${posSymbol} @ $${pos.currentPrice.toFixed(2)}...`);
-          const trade = this.portfolio.closePosition(posSymbol, pos.currentPrice);
-          if (trade) {
-            perPositionCloseReports.push({ order: {} as any, trade });
-            log.info(`  → Closed ${posSymbol}: PnL $${trade.pnl.toFixed(2)}`);
-          }
-        }
-      }
+      // ── Execute PER-POSITION SL/TP adjustments only (NO agent-based close) ──
+      // Positions are ONLY closed via stop-loss / take-profit triggers.
+      // The portfolio's checkPositionExits() handles SL/TP monitoring automatically
+      // on each price update. Real trades close on-exchange; reconciliation handles
+      // syncing paper portfolio with exchange state for GMM learning.
 
       // ── P0: Pattern Classifier Hard Circuit Breaker ──
       // If pattern data from the previous cycle shows < 50% win rate for this
