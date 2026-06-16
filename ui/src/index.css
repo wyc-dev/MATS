@@ -38,6 +38,8 @@
   --red-bg: rgba(248, 113, 113, 0.12);
   --gold: #F5A623;
   --gold-bg: rgba(245, 166, 35, 0.12);
+  --accent-green: #34d399;
+  --accent-red: #f87171;
 
   /* ── Agent identity dots ── */
   --agent-1: #7c8a9e;
@@ -1562,6 +1564,433 @@ body {
 .footer-motto {
   color: var(--text-muted);
   font-style: italic;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   EVOLUTION PANEL — Production Grade
+   ═══════════════════════════════════════════════════════════════ */
+
+.evo-panel {
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-glass-sm);
+  padding: 20px;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.evo-panel:hover {
+  border-color: var(--glass-border-hover);
+  background: var(--glass-bg-hover);
+}
+
+.evo-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.evo-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.evo-icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.evo-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.evo-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.evo-badge {
+  font-size: 0.65rem;
+  padding: 3px 10px;
+  border-radius: 100px;
+  background: var(--glass-bg-active);
+  color: var(--text-tertiary);
+  font-weight: 500;
+  border: 1px solid var(--glass-border);
+  font-family: var(--font-mono);
+}
+
+.evo-badge.accent {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: rgba(245, 166, 35, 0.2);
+}
+
+.evo-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 0.6rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+}
+
+.evo-action-btn:hover {
+  background: var(--red-bg);
+  border-color: rgba(248, 113, 113, 0.3);
+  color: var(--red);
+}
+
+/* ── Stats Grid ── */
+.evo-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+@media (max-width: 1200px) {
+  .evo-stats-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+@media (max-width: 768px) {
+  .evo-stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.evo-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px;
+  background: var(--surface-elevated);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  transition: border-color var(--transition), transform var(--transition);
+}
+
+.evo-stat-card:hover {
+  border-color: var(--glass-border-hover);
+  transform: translateY(-1px);
+}
+
+.evo-stat-label {
+  font-size: 0.6rem;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.evo-stat-value {
+  font-family: var(--font-mono);
+  font-size: 1.1rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+
+.evo-stat-value.positive { color: var(--green); }
+.evo-stat-value.negative { color: var(--red); }
+.evo-stat-value.neutral { color: var(--text-primary); }
+.evo-stat-value.accent { color: var(--accent); }
+
+/* ── Section ── */
+.evo-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--glass-border);
+}
+
+.evo-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.evo-section-accent {
+  width: 3px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.evo-section-title {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ── Fitness Breakdown ── */
+.evo-fitness-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.evo-fitness-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.evo-fitness-name {
+  font-size: 0.65rem;
+  color: var(--text-tertiary);
+  min-width: 140px;
+  text-transform: capitalize;
+}
+
+@media (max-width: 768px) {
+  .evo-fitness-name { min-width: 100px; font-size: 0.6rem; }
+}
+
+.evo-fitness-track {
+  flex: 1;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+}
+
+.evo-fitness-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+  background: linear-gradient(90deg, var(--accent), #FBD06E);
+  opacity: 0.85;
+}
+
+.evo-fitness-pct {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 44px;
+  text-align: right;
+}
+
+/* ── Strategy Card ── */
+.evo-strategy-card {
+  background: var(--surface-elevated);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.evo-strategy-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.evo-strategy-id {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  font-weight: 600;
+}
+
+.evo-strategy-gen {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.evo-strategy-fitness {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin-left: auto;
+}
+
+.evo-strategy-fitness.positive { color: var(--green); }
+.evo-strategy-fitness.neutral { color: var(--text-secondary); }
+.evo-strategy-fitness.negative { color: var(--red); }
+
+.evo-strategy-status {
+  text-transform: uppercase;
+  font-size: 0.55rem;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+}
+
+.evo-strategy-status.active {
+  background: var(--green-bg);
+  color: var(--green);
+}
+
+.evo-strategy-params {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-tertiary);
+  margin-left: auto;
+}
+
+.evo-strategy-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px 16px;
+}
+
+@media (max-width: 768px) {
+  .evo-strategy-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.evo-strategy-param {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.evo-strategy-param-label {
+  font-size: 0.6rem;
+  color: var(--text-tertiary);
+  text-transform: capitalize;
+}
+
+.evo-strategy-param-value {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* ── EM Clusters ── */
+.evo-cluster-symbol {
+  margin-bottom: 12px;
+}
+
+.evo-cluster-symbol-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.evo-cluster-symbol-name {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.evo-cluster-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.evo-cluster-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--glass-bg);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--glass-border);
+  font-size: 0.65rem;
+  transition: background var(--transition);
+}
+
+.evo-cluster-row:hover {
+  background: var(--glass-bg-hover);
+}
+
+.evo-cluster-index {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-tertiary);
+  min-width: 24px;
+  font-weight: 600;
+}
+
+.evo-cluster-wr-track {
+  flex: 1;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+  min-width: 40px;
+}
+
+.evo-cluster-wr-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.evo-cluster-wr-fill.high { background: var(--green); opacity: 0.8; }
+.evo-cluster-wr-fill.mid { background: var(--gold); opacity: 0.8; }
+.evo-cluster-wr-fill.low { background: var(--red); opacity: 0.8; }
+
+.evo-cluster-meta {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-tertiary);
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.evo-cluster-indicator {
+  font-size: 0.65rem;
+  margin-left: auto;
+}
+
+/* ── Empty State ── */
+.evo-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 20px 0;
+  text-align: center;
+}
+
+.evo-empty-icon {
+  font-size: 1.5rem;
+  opacity: 0.25;
+}
+
+.evo-empty-text {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+}
+
+.evo-empty-hint {
+  font-size: 0.6rem;
+  color: var(--text-muted);
 }
 
 /* ═══════════════════════════════════════════════════════════════

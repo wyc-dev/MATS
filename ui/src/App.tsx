@@ -866,6 +866,190 @@ function DebatePanel({ data }: { data: APIData | null }) {
   )
 }
 
+/* ── Evolution Panel — Production Grade ── */
+
+function EvolutionHeader({ generation, symbolCount, onReset, resetStatus }: {
+  generation: number; symbolCount: number; onReset: () => void; resetStatus: string
+}) {
+  return (
+    <div className="evo-header">
+      <div className="evo-header-left">
+        <span className="evo-icon">🧬</span>
+        <span className="evo-title">Evolution</span>
+      </div>
+      <div className="evo-header-right">
+        <span className="evo-badge accent">Gen {generation}</span>
+        {symbolCount > 0 && <span className="evo-badge">{symbolCount} sym</span>}
+        <button className="evo-action-btn" onClick={onReset} title="Reset trade history (keeps strategy + generation)">
+          {resetStatus || '🗑️'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function EvolutionStatCard({ label, value, tone }: { label: string; value: string; tone: 'positive' | 'negative' | 'neutral' | 'accent' }) {
+  return (
+    <div className="evo-stat-card">
+      <span className="evo-stat-label">{label}</span>
+      <span className={`evo-stat-value ${tone}`}>{value}</span>
+    </div>
+  )
+}
+
+function EvolutionStats({ evo, th }: { evo: any; th: any }) {
+  const stats: Array<{ label: string; value: string; tone: 'positive' | 'negative' | 'neutral' | 'accent' }> = [
+    { label: 'Best Fitness', value: `${(evo.bestFitness * 100).toFixed(1)}%`, tone: evo.bestFitness >= 0.3 ? 'positive' : 'neutral' as const },
+    { label: 'Total Cycles', value: String(th.countedTrades ?? th.totalEntries), tone: 'neutral' as const },
+    { label: 'Win Rate', value: `${(th.winRate * 100).toFixed(1)}%`, tone: th.winRate >= 0.5 ? 'positive' : 'neutral' as const },
+    { label: 'Sharpe', value: th.sharpeRatio.toFixed(2), tone: th.sharpeRatio >= 1 ? 'positive' : 'neutral' as const },
+    { label: 'Sortino', value: th.sortinoRatio.toFixed(2), tone: th.sortinoRatio >= 1 ? 'positive' : 'neutral' as const },
+    { label: 'Calmar', value: th.calmarRatio.toFixed(2), tone: th.calmarRatio >= 1 ? 'positive' : 'neutral' as const },
+    { label: 'Profit Factor', value: th.profitFactor.toFixed(2), tone: th.profitFactor >= 1.5 ? 'positive' : 'neutral' as const },
+    { label: 'Total Return', value: `${(th.totalReturn * 100).toFixed(2)}%`, tone: th.totalReturn >= 0 ? 'positive' : 'negative' as const },
+    { label: 'Max DD', value: `${(th.maxDrawdown * 100).toFixed(2)}%`, tone: th.maxDrawdown < 0.1 ? 'neutral' : 'negative' as const },
+    { label: 'Expectancy', value: th.expectancy.toFixed(4), tone: th.expectancy >= 0 ? 'positive' : 'negative' as const },
+    { label: 'Real Trades', value: String(th.realTrades), tone: 'neutral' as const },
+    { label: 'Memory', value: `${evo.memoryShortTerm}ST / ${evo.memoryLongTerm}LT`, tone: 'neutral' as const },
+  ]
+
+  return (
+    <div className="evo-stats-grid">
+      {stats.map(s => (
+        <EvolutionStatCard key={s.label} label={s.label} value={s.value} tone={s.tone} />
+      ))}
+    </div>
+  )
+}
+
+function FitnessBreakdown({ fb }: { fb: any }) {
+  if (!fb) return null
+  const items = [
+    { name: 'Capital Preservation', value: fb.capitalPreservation },
+    { name: 'Return Generation', value: fb.returnGeneration },
+    { name: 'Adaptability', value: fb.adaptability },
+    { name: 'Consistency', value: fb.consistency },
+    { name: 'Risk Management', value: fb.riskManagement },
+    { name: 'Decision Quality', value: fb.decisionQuality },
+  ]
+
+  return (
+    <div className="evo-section">
+      <div className="evo-section-header">
+        <div className="evo-section-accent" />
+        <span className="evo-section-title">Fitness Breakdown</span>
+      </div>
+      <div className="evo-fitness-list">
+        {items.map(item => (
+          <div key={item.name} className="evo-fitness-row">
+            <span className="evo-fitness-name">{item.name}</span>
+            <div className="evo-fitness-track">
+              <div className="evo-fitness-fill" style={{ width: `${item.value * 100}%` }} />
+            </div>
+            <span className="evo-fitness-pct">{(item.value * 100).toFixed(1)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function StrategyCard({ strategy }: { strategy: any }) {
+  const params = [
+    { label: 'Volatility Threshold', value: `${(strategy.volatilityThreshold * 100).toFixed(2)}%` },
+    { label: 'Confirmation', value: `${strategy.confirmationRequired} agents` },
+    { label: 'Sizing Model', value: strategy.positionSizingModel },
+    { label: 'Risk Aversion', value: strategy.riskAversion.toFixed(2) },
+    { label: 'Signal Threshold', value: strategy.signalThreshold.toFixed(2) },
+    { label: 'Momentum Window', value: String(strategy.momentumWindow) },
+  ]
+
+  const fitnessTone = strategy.fitness >= 0.3 ? 'positive' : strategy.fitness >= 0.2 ? 'neutral' : 'negative'
+
+  return (
+    <div className="evo-section">
+      <div className="evo-section-header">
+        <div className="evo-section-accent" />
+        <span className="evo-section-title">Current Strategy</span>
+      </div>
+      <div className="evo-strategy-card">
+        <div className="evo-strategy-top">
+          <span className="evo-strategy-id">#1</span>
+          <span className="evo-strategy-gen">G{strategy.generation}</span>
+          <span className={`evo-strategy-fitness ${fitnessTone}`}>
+            {(strategy.fitness * 100).toFixed(1)}%
+          </span>
+          <span className="evo-strategy-status active">{strategy.status}</span>
+          <span className="evo-strategy-params" style={{ marginLeft: 'auto' }}>
+            M{strategy.momentumWindow} R{strategy.riskAversion.toFixed(2)} S{strategy.signalThreshold.toFixed(2)}
+          </span>
+        </div>
+        <div className="evo-strategy-grid">
+          {params.map(p => (
+            <div key={p.label} className="evo-strategy-param">
+              <span className="evo-strategy-param-label">{p.label}</span>
+              <span className="evo-strategy-param-value">{p.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function EMClusterSection({ emClusterState }: { emClusterState: any }) {
+  const hasSymbols = emClusterState?.symbols?.length > 0
+
+  return (
+    <div className="evo-section">
+      <div className="evo-section-header">
+        <div className="evo-section-accent" />
+        <span className="evo-section-title">GMM EM Clusters</span>
+        {hasSymbols && <span className="evo-badge" style={{ marginLeft: 'auto' }}>{emClusterState.symbols.length} symbols</span>}
+      </div>
+
+      {!hasSymbols ? (
+        <div className="evo-empty">
+          <div className="evo-empty-icon">🧬</div>
+          <div className="evo-empty-text">Waiting for enough trades</div>
+          <div className="evo-empty-hint">Need 20+ meaningful trades per symbol to train GMM model</div>
+        </div>
+      ) : (
+        emClusterState.symbols.map((symState: any) => (
+          <div key={symState.symbol} className="evo-cluster-symbol">
+            <div className="evo-cluster-symbol-header">
+              <span className="evo-cluster-symbol-name">{symState.symbol.toUpperCase()}</span>
+              <span className="evo-badge">BIC {symState.bic.toFixed(1)}</span>
+              <span className="evo-badge">{symState.totalSamples} samples</span>
+            </div>
+            <div className="evo-cluster-list">
+              {symState.clusters.map((c: any) => {
+                const wrPct = c.winRate * 100
+                const fillClass = c.winRate > 0.6 ? 'high' : c.winRate > 0.4 ? 'mid' : 'low'
+                const indicator = c.winRate > 0.6 ? '🟢' : c.winRate < 0.4 ? '🔴' : '🟡'
+                return (
+                  <div key={c.index} className="evo-cluster-row">
+                    <span className="evo-cluster-index">#{c.index}</span>
+                    <div className="evo-cluster-wr-track">
+                      <div className={`evo-cluster-wr-fill ${fillClass}`} style={{ width: `${wrPct}%` }} />
+                    </div>
+                    <span className="evo-cluster-meta">
+                      <span>wr {wrPct.toFixed(0)}%</span>
+                      <span>n={c.sampleCount}</span>
+                      <span>π={((c.weight) * 100).toFixed(0)}%</span>
+                    </span>
+                    <span className="evo-cluster-indicator">{indicator}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  )
+}
+
 function EvolutionPanel({ data }: { data: APIData | null }) {
   const evo = data?.evolution
   const [resetStatus, setResetStatus] = useState('')
@@ -883,184 +1067,32 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
 
   if (!evo) {
     return (
-      <div className="panel" style={{marginTop: 12}}>
-        <div className="panel-header"><span className="panel-title">🧬 Evolution</span></div>
-        <div className="empty-state">
-          <div className="empty-icon">🧬</div>
-          <div className="empty-text">Waiting for evolution data...</div>
+      <div className="evo-panel" style={{ marginTop: 12 }}>
+        <EvolutionHeader generation={0} symbolCount={0} onReset={handleResetTradeHistory} resetStatus={resetStatus} />
+        <div className="evo-empty" style={{ marginTop: 20 }}>
+          <div className="evo-empty-icon">🧬</div>
+          <div className="evo-empty-text">Waiting for evolution data...</div>
         </div>
       </div>
     )
   }
 
   const th = evo.tradeHistory
-  const fitnessPct = (evo.bestFitness * 100).toFixed(1)
-  const winRatePct = (th.winRate * 100).toFixed(1)
-  const totalReturnPct = (th.totalReturn * 100).toFixed(2)
-  const maxDdPct = (th.maxDrawdown * 100).toFixed(2)
-  const fb = evo.fitnessBreakdown
+  const activeStrategy = evo.strategies.find((s: any) => s.status === 'active')
+  const symbolCount = data?.emClusterState?.symbols?.length ?? 0
 
   return (
-    <div className="panel" style={{marginTop: 12}}>
-      <div className="panel-header">
-        <span className="panel-title">🧬 Evolution</span>
-        <div style={{display:'flex', alignItems:'center', gap:8}}>
-          <span className="panel-badge">Gen {evo.generation}</span>
-          {(() => { const ecs = data?.emClusterState; return ecs?.symbols?.length ? <span className="panel-badge">{ecs.symbols.length} sym</span> : null })()}
-          <button
-            className="header-btn"
-            style={{padding:'2px 8px', fontSize:'0.55rem', color:'var(--text-muted)'}}
-            onClick={handleResetTradeHistory}
-            title="Reset trade history (keeps strategy + generation)"
-          >{resetStatus || '🗑️'}</button>
-        </div>
-      </div>
-
-      <div className="portfolio-grid">
-        <div className="portfolio-cell">
-          <span className="stat-label">Best Fitness</span>
-          <span className={`stat-number ${evo.bestFitness >= 0.3 ? 'positive' : 'neutral'}`}>{fitnessPct}%</span>
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Total Cycles</span>
-          <span className="stat-number neutral">{th.countedTrades ?? th.totalEntries}</span>
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Win Rate</span>
-          <span className={`stat-number ${th.winRate >= 0.5 ? 'positive' : 'neutral'}`}>{winRatePct}%</span>
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Sharpe</span>
-          <span className={`stat-number ${th.sharpeRatio >= 1 ? 'positive' : 'neutral'}`}>{th.sharpeRatio.toFixed(2)}</span>
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Sortino</span>
-          <span className={`stat-number ${th.sortinoRatio >= 1 ? 'positive' : 'neutral'}`}>{th.sortinoRatio.toFixed(2)}</span>
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Calmar</span>
-          <span className={`stat-number ${th.calmarRatio >= 1 ? 'positive' : 'neutral'}`}>{th.calmarRatio.toFixed(2)}</span>
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Profit Factor</span>
-          <span className={`stat-number ${th.profitFactor >= 1.5 ? 'positive' : 'neutral'}`}>{th.profitFactor.toFixed(2)}</span>
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Total Return</span>
-          <span className={`stat-number ${th.totalReturn >= 0 ? 'positive' : 'negative'}`}>{totalReturnPct}%</span>
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Max DD</span>
-          <span className={`stat-number ${th.maxDrawdown < 0.1 ? 'neutral' : 'negative'}`}>{maxDdPct}%</span>
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Expectancy</span>
-          <span className={`stat-number ${th.expectancy >= 0 ? 'positive' : 'negative'}`}>{th.expectancy.toFixed(4)}</span>
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Real Trades</span>
-          <span className="stat-number neutral">{th.realTrades}</span>
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Memory</span>
-          <span className="stat-number neutral">{evo.memoryShortTerm}ST / {evo.memoryLongTerm}LT</span>
-        </div>
-      </div>
-
-      {fb && (
-        <div style={{marginTop: 6, marginBottom: 4}}>
-          <div className="panel-header" style={{marginBottom: 4}}>
-            <span className="panel-title" style={{fontSize:'0.7rem'}}>Fitness Breakdown</span>
-          </div>
-          <div style={{display:'flex', flexWrap:'wrap', gap:'2px 10px', fontSize:'0.6rem', color:'var(--text-tertiary)'}}>
-            <span>Capital Preservation: <strong style={{color:'var(--text-secondary)'}}>{(fb.capitalPreservation * 100).toFixed(1)}%</strong></span>
-            <span>Return Generation: <strong style={{color:'var(--text-secondary)'}}>{(fb.returnGeneration * 100).toFixed(1)}%</strong></span>
-            <span>Adaptability: <strong style={{color:'var(--text-secondary)'}}>{(fb.adaptability * 100).toFixed(1)}%</strong></span>
-            <span>Consistency: <strong style={{color:'var(--text-secondary)'}}>{(fb.consistency * 100).toFixed(1)}%</strong></span>
-            <span>Risk Management: <strong style={{color:'var(--text-secondary)'}}>{(fb.riskManagement * 100).toFixed(1)}%</strong></span>
-            <span>Decision Quality: <strong style={{color:'var(--text-secondary)'}}>{(fb.decisionQuality * 100).toFixed(1)}%</strong></span>
-          </div>
-        </div>
-      )}
-
-      {evo.strategies.length > 0 && (
-        <>
-          <div className="panel-header" style={{marginTop: 8, marginBottom: 6}}>
-            <span className="panel-title" style={{fontSize:'0.7rem'}}>Current Strategy</span>
-          </div>
-          <div className="strategy-list">
-            {evo.strategies.filter((s: any) => s.status === 'active').slice(0, 1).map((s: any, i: number) => (
-              <div key={s.id} className={`strategy-row ${s.status}`}>
-                <span className="strategy-id">#{i + 1}</span>
-                <span className={`strategy-gen`}>G{s.generation}</span>
-                <span className={`strategy-fitness ${s.fitness >= 0.3 ? 'positive' : s.fitness >= 0.2 ? 'neutral' : 'negative'}`}>
-                  {(s.fitness * 100).toFixed(1)}%
-                </span>
-                <span className={`strategy-status ${s.status}`}>{s.status}</span>
-                <span className="strategy-params">
-                  M{s.momentumWindow} R{s.riskAversion.toFixed(2)} S{s.signalThreshold.toFixed(2)}
-                </span>
-              </div>
-            ))}
-          </div>
-          <div className="strategy-detail-grid">
-            {evo.strategies.filter((s: any) => s.status === 'active').slice(0, 1).map((s: any) => (
-              <div key={s.id} style={{display:'flex', flexWrap:'wrap', gap:'4px 12px', padding:'6px 0', fontSize:'0.65rem', color:'var(--text-tertiary)'}}>
-                <span>Volatility Threshold: <strong style={{color:'var(--text-secondary)'}}>{(s.volatilityThreshold * 100).toFixed(2)}%</strong></span>
-                <span>Confirmation: <strong style={{color:'var(--text-secondary)'}}>{s.confirmationRequired} agents</strong></span>
-                <span>Sizing Model: <strong style={{color:'var(--text-secondary)'}}>{s.positionSizingModel}</strong></span>
-                <span>Risk Aversion: <strong style={{color:'var(--text-secondary)'}}>{s.riskAversion.toFixed(2)}</strong></span>
-                <span>Signal Threshold: <strong style={{color:'var(--text-secondary)'}}>{s.signalThreshold.toFixed(2)}</strong></span>
-                <span>Momentum Window: <strong style={{color:'var(--text-secondary)'}}>{s.momentumWindow}</strong></span>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
-      {/* ── GMM EM Clusters ── */}
-      {data?.emClusterState?.symbols?.map ? (
-        <div style={{marginTop: 10}}>
-          <div className="panel-header" style={{marginBottom: 6}}>
-            <span className="panel-title" style={{fontSize:'0.7rem'}}>🧬 EM Clusters</span>
-            <span className="panel-badge" style={{fontSize:'0.5rem'}}>{data.emClusterState.symbols.length} symbols</span>
-          </div>
-          {data.emClusterState.symbols.map(symState => (
-            <div key={symState.symbol} style={{marginBottom: 6}}>
-              <div style={{display:'flex', alignItems:'center', gap:6, marginBottom:3}}>
-                <span style={{fontSize:'0.65rem', fontWeight:600, color:'var(--text-secondary)'}}>{symState.symbol.toUpperCase()}</span>
-                <span className="panel-badge" style={{fontSize:'0.5rem'}}>BIC {symState.bic.toFixed(1)}</span>
-                <span style={{fontSize:'0.5rem', color:'var(--text-tertiary)', marginLeft:'auto'}}>{symState.totalSamples} samples</span>
-              </div>
-              <div className="strategy-list">
-                {symState.clusters.map(c => {
-                  const wrColor = c.winRate > 0.6 ? 'var(--accent-green)' : c.winRate > 0.4 ? 'var(--text-secondary)' : 'var(--accent-red)'
-                  return (
-                    <div key={c.index} className="strategy-row active" style={{gap:6}}>
-                      <span className="strategy-id">#{c.index}</span>
-                      <span style={{fontSize:'0.6rem', color: wrColor, fontWeight:600}}>wr={((c.winRate)*100).toFixed(0)}%</span>
-                      <span style={{fontSize:'0.55rem', color:'var(--text-tertiary)'}}>n={c.sampleCount}</span>
-                      <span style={{fontSize:'0.55rem', color:'var(--text-tertiary)'}}>π={((c.weight)*100).toFixed(0)}%</span>
-                      <span style={{fontSize:'0.5rem', marginLeft:'auto'}}>
-                        {c.winRate > 0.6 ? '🟢' : c.winRate < 0.4 ? '🔴' : '🟡'}
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div style={{marginTop: 10}}>
-          <div className="panel-header" style={{marginBottom: 4}}>
-            <span className="panel-title" style={{fontSize:'0.7rem'}}>🧬 EM Clusters</span>
-          </div>
-          <div className="empty-state" style={{padding:'8px 0'}}>
-            <div className="empty-text" style={{fontSize:'0.6rem'}}>Waiting for enough trades (need 20+ meaningful per symbol)</div>
-          </div>
-        </div>
-      )}
+    <div className="evo-panel" style={{ marginTop: 12 }}>
+      <EvolutionHeader
+        generation={evo.generation}
+        symbolCount={symbolCount}
+        onReset={handleResetTradeHistory}
+        resetStatus={resetStatus}
+      />
+      <EvolutionStats evo={evo} th={th} />
+      <FitnessBreakdown fb={evo.fitnessBreakdown} />
+      {activeStrategy && <StrategyCard strategy={activeStrategy} />}
+      <EMClusterSection emClusterState={data?.emClusterState} />
     </div>
   )
 }
@@ -1425,7 +1457,7 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
 export default function App() {
   const [data, setData] = useState<APIData | null>(null)
   const [connected, setConnected] = useState(false)
-  const [activeTab, setActiveTab] = useState<'status' | 'agents' | 'portfolio' | 'debate' | 'backtest'>('agents')
+  const [activeTab, setActiveTab] = useState<'status' | 'agents' | 'portfolio' | 'debate' | 'evolution' | 'backtest'>('agents')
   const esRef = useRef<EventSource | null>(null)
 
   const connectSSE = useCallback(() => {
@@ -1540,9 +1572,9 @@ export default function App() {
 
       {/* Mobile Tab Bar — hidden on desktop */}
       <div className="tab-bar">
-        {(['agents','portfolio','debate','backtest'] as const).map(tab => (
+        {(['agents','portfolio','debate','evolution','backtest'] as const).map(tab => (
           <button key={tab} className={`tab-btn ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
-            {tab === 'agents' ? '🤖 Agents' : tab === 'portfolio' ? '💼 Portfolio' : tab === 'debate' ? '🗣️ Debate' : '📜 Backtest'}
+            {tab === 'agents' ? '🤖 Agents' : tab === 'portfolio' ? '💼 Portfolio' : tab === 'debate' ? '🗣️ Debate' : tab === 'evolution' ? '🧬 Evolution' : '📜 Backtest'}
           </button>
         ))}
       </div>
@@ -1560,11 +1592,13 @@ export default function App() {
           <div className="mobile-only">
             {activeTab === 'portfolio' && <PortfolioPanel data={data} />}
             {activeTab === 'debate' && <DebatePanel data={data} />}
+            {activeTab === 'evolution' && <EvolutionPanel data={data} />}
             {activeTab === 'backtest' && <BacktestPanel data={data} onRun={handleRunBacktest} />}
           </div>
           <div className="desktop-only">
             <PortfolioPanel data={data} />
             <DebatePanel data={data} />
+            <EvolutionPanel data={data} />
             <BacktestPanel data={data} onRun={handleRunBacktest} />
           </div>
         </div>
