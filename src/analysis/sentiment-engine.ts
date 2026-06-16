@@ -100,6 +100,8 @@ export class SentimentEngine {
   private volumeBuffer: VolumeBuffer;
   private lastSentiment: SentimentAggregate | null = null;
   private lastFundingRate = 0;
+  /** Rolling funding rate history for acceleration computation (last 5 values) */
+  private fundingRateHistory: number[] = [];
 
   constructor() {
     this.ga = new SigmoidGA();
@@ -129,7 +131,22 @@ export class SentimentEngine {
 
   /** Update funding rate for funding Δ computation */
   updateFundingRate(rate: number): void {
+    this.fundingRateHistory.push(rate);
+    if (this.fundingRateHistory.length > 5) this.fundingRateHistory.shift();
     this.lastFundingRate = rate;
+  }
+
+  /** Get funding rate acceleration: direction of change (signed, -1..+1).
+   *  Positive = funding rising (longs paying more → bearish signal for longs).
+   *  Computed as the slope over the last 5 observations. */
+  getFundingRateAcceleration(): number {
+    if (this.fundingRateHistory.length < 3) return 0;
+    const recent = this.fundingRateHistory.slice(-5);
+    const first = recent[0]!;
+    const last = recent[recent.length - 1]!;
+    const diff = last - first;
+    // Normalize: typical funding ranges -0.001..+0.001, multiply to get sensible range
+    return Math.max(-1, Math.min(1, diff * 5000));
   }
 
   /** Get current sentiment for agent context injection */
@@ -151,17 +168,27 @@ export class SentimentEngine {
     // Update buffers
     this.priceBuffer.push(marketState.price);
     this.volumeBuffer.push(marketState.volume24h);
+
+    // Compute funding rate delta BEFORE updating lastFundingRate
+    let fundingRateDelta = 0;
+    let fundingRateAccel = 0;
     if (marketState.fundingRate !== undefined) {
+      const prevFunding = this.lastFundingRate;
+      this.fundingRateHistory.push(marketState.fundingRate);
+      if (this.fundingRateHistory.length > 5) this.fundingRateHistory.shift();
       this.lastFundingRate = marketState.fundingRate;
+      fundingRateDelta = prevFunding !== 0
+        ? Math.max(-1, Math.min(1, (marketState.fundingRate - prevFunding) * 1000))
+        : 0;
+      fundingRateAccel = this.getFundingRateAcceleration();
     }
 
     // Compute raw inputs
     const inputs: SentimentInputs = {
       orderBookImbalance: marketState.orderBookImbalance,
       volumeAcceleration: this.volumeBuffer.getAcceleration(),
-      fundingRateDelta: marketState.fundingRate !== undefined
-        ? Math.max(-1, Math.min(1, (marketState.fundingRate - this.lastFundingRate) * 1000))
-        : 0,
+      fundingRateDelta,
+      fundingRateAccel,
       spreadPressure: marketState.spread > 0
         ? Math.max(-1, Math.min(1, -Math.log(marketState.spread / 0.001) / 5))
         : 0,

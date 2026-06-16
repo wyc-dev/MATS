@@ -754,10 +754,13 @@ class AMACRFSystem {
           const exploreSize = maConfig.positionSizePct;
           const exploreLev = maConfig.leverage;
 
-          // Use Pattern Classifier to pick direction — compare BUY vs SELL win rates
-          let direction = 'buy';
+          // Use Pattern Classifier to pick direction — compare BUY vs SELL win rates.
+          // Fallback to technical signals when pattern data is insufficient.
+          let direction: string | null = null;
           try {
             const sentimentData = this.sentimentEngine?.getSentiment();
+            const hlPrice = this.hyperliquidWs?.getLatestMarkPrice?.();
+            const actualFundingRate = hlPrice?.fundingRate ?? 0;
             const patternCtx = {
               regime: combinedState.regime,
               regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
@@ -765,14 +768,17 @@ class AMACRFSystem {
               trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
               srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
               obImbalance: combinedState.orderBookImbalance ?? 0,
-              fundingRate: 0,
+              fundingRate: actualFundingRate,
               volumeRatio: 1,
               signalAgreement: 0.5,
               positionSizePct: exploreSize,
               leverage: exploreLev,
               sentiment: sentimentData?.overallSentiment ?? 0,
               sentimentConviction: sentimentData?.conviction ?? 0.5,
+              fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
             };
+
+            // Priority 1: Pattern data (most reliable, requires >=3 matches with 0.5+PnL)
             if (this.patternClassifier) {
               const buyResult = this.patternClassifier.queryEntry(patternCtx, combinedState.primarySymbol, 'buy', combinedState.price);
               const sellResult = this.patternClassifier.queryEntry(patternCtx, combinedState.primarySymbol, 'sell', combinedState.price);
@@ -780,11 +786,60 @@ class AMACRFSystem {
               const sellWr = sellResult.totalMatches >= 3 ? sellResult.adjustedWinRate : 0;
               if (buyWr > 0 || sellWr > 0) {
                 direction = sellWr > buyWr ? 'sell' : 'buy';
-                log.info(`🧪 Pattern-guided exploration: BUY adjWR=${(buyWr*100).toFixed(0)}% SELL adjWR=${(sellWr*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+                log.info(`🧪 Pattern-guided: BUY adjWR=${(buyWr*100).toFixed(0)}% SELL adjWR=${(sellWr*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+              }
+
+              // Priority 1b: EM cluster-weighted win rate (unsupervised GMM assessment)
+              if (!direction) {
+                const buyEM = buyResult.emAssessment;
+                const sellEM = sellResult.emAssessment;
+                // Only trust EM if it has a model and the signals disagree with neutral
+                const buyEMWr = buyEM.weightedWinRate;
+                const sellEMWr = sellEM.weightedWinRate;
+                if (buyEM.dominantCluster >= 0 && sellEM.dominantCluster >= 0 &&
+                    (Math.abs(buyEMWr - 0.5) > 0.1 || Math.abs(sellEMWr - 0.5) > 0.1)) {
+                  direction = sellEMWr > buyEMWr ? 'sell' : 'buy';
+                  log.info(`🧪 EM-guided: BUY EMwr=${(buyEMWr*100).toFixed(0)}% SELL EMwr=${(sellEMWr*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+                }
+              }
+            }
+
+            // Priority 2: Sigmoid·GA sentiment (forward-looking market emotion)
+            if (!direction && sentimentData && Math.abs(sentimentData.overallSentiment) > 0.15) {
+              direction = sentimentData.overallSentiment > 0 ? 'buy' : 'sell';
+              log.info(`🧪 Sentiment-guided: overall=${(sentimentData.overallSentiment*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+            }
+
+            // Priority 3: Funding rate (negative = longs get paid = bullish, positive = bearish)
+            if (!direction && Math.abs(actualFundingRate) > 0.0001) {
+              direction = actualFundingRate < 0 ? 'buy' : 'sell';
+              log.info(`🧪 Funding-guided: rate=${(actualFundingRate*10000).toFixed(2)}bps → ${direction.toUpperCase()}`);
+            }
+
+            // Priority 4: Order book imbalance (positive = bid pressure = buy, negative = sell pressure)
+            if (!direction && combinedState.orderBookImbalance !== undefined && Math.abs(combinedState.orderBookImbalance) > 0.15) {
+              direction = combinedState.orderBookImbalance > 0 ? 'buy' : 'sell';
+              log.info(`🧪 OB-guided: imbalance=${(combinedState.orderBookImbalance*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+            }
+
+            // Priority 5: Regime / Trend
+            if (!direction) {
+              if (combinedState.regime === 'trending_bull') {
+                direction = 'buy';
+                log.info(`🧪 Regime-guided: trending_bull → BUY`);
+              } else if (combinedState.regime === 'trending_bear') {
+                direction = 'sell';
+                log.info(`🧪 Regime-guided: trending_bear → SELL`);
               }
             }
           } catch (err) {
-            log.warn(`Pattern direction check failed, defaulting buy: ${err instanceof Error ? err.message : String(err)}`);
+            log.warn(`Pattern direction check failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+
+          // If all signals neutral (e.g. sideways regime, no sentiment), default to buy as neutral
+          if (!direction) {
+            direction = 'buy';
+            log.info(`🧪 No directional signal — defaulting to BUY (neutral exploration)`);
           }
 
           finalDecision = {
@@ -795,7 +850,7 @@ class AMACRFSystem {
             stopLossPct: 0.01,
             takeProfitPct: 0.02,
             leverage: exploreLev,
-            rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — pattern-guided direction.`,
+            rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — ${direction} exploration.`,
             urgency: 'immediate',
           };
           log.info(`🧪 Exploration trade triggered: ${direction.toUpperCase()} ${(exploreSize * 100).toFixed(1)}% ${activeSymbolUpper} @ ${exploreLev}x (cycle #${this.totalCycles})`);
@@ -890,6 +945,7 @@ class AMACRFSystem {
                   leverage: finalDecision.leverage ?? 1,
                   sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
                   sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+                  fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
                 },
                 {
                   regime: combinedState.regime,
@@ -905,6 +961,7 @@ class AMACRFSystem {
                   leverage: finalDecision.leverage ?? 1,
                   sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
                   sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+                  fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
                 },
                 combinedState.primarySymbol,
                 pos.side,
@@ -934,6 +991,7 @@ class AMACRFSystem {
                 leverage: finalDecision.leverage ?? 1,
                 sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
                 sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+                fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
               },
               combinedState.primarySymbol,
               finalDecision.action === 'buy' ? 'buy' : 'sell',
