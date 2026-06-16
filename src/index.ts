@@ -1621,6 +1621,22 @@ class AMACRFSystem {
           latestSignal: this.emManager.getLatest() ? this.emManager.getLatest()!.primarySignal.name + '=' + this.emManager.getLatest()!.primarySignal.value.toFixed(2) + ' (' + this.emManager.getLatest()!.primarySignal.direction + ')' : null,
         } : undefined,
         patternStats: this.patternClassifier ? this.patternClassifier.getStats() : undefined,
+        emClusterState: this.patternClassifier ? (() => {
+          const m = this.patternClassifier!.em.getModel();
+          if (!m) return undefined;
+          return {
+            clusterCount: m.clusters.length,
+            totalSamples: m.totalSamples,
+            bic: m.bic,
+            trained: m.clusters.length > 0,
+            clusters: m.clusters.map((c, i) => ({
+              index: i,
+              winRate: c.winRate,
+              sampleCount: c.sampleCount,
+              weight: c.weight,
+            })),
+          };
+        })() : undefined,
         agentModels: {
           available: getAvailableModels(),
           assignments: getAllAgentModels(),
