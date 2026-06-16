@@ -861,7 +861,6 @@ function DebatePanel({ data }: { data: APIData | null }) {
         )
       })}
 
-      <EvolutionPanel data={data} />
     </div>
   )
 }
