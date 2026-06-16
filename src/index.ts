@@ -14,7 +14,7 @@ import { PortfolioTracker } from './trading/portfolio.ts';
 import { PaperTradingEngine, type ExecutionReport } from './trading/paper-engine.ts';
 import { EvolutionOrchestrator } from './evolution/index.ts';
 import { savePortfolio, saveDebateHistory, loadDebateHistory } from './evolution/persistence.ts';
-import { FractalMomentumSentinel, OnChainWhisperer, RegimeRiskGuardian, IndependentRiskAuditor, NewsReporter, SkepticsAgent, getLastFearGreedValue } from './agents/agents.ts';
+import { FractalMomentumSentinel, OnChainWhisperer, RegimePatternGuardian, IndependentRiskAuditor, NewsReporter, SkepticsAgent, getLastFearGreedValue } from './agents/agents.ts';
 import { MetaAgent } from './agents/meta-agent.ts';
 import { APIServer } from './api-server.ts';
 import { getAllAgentModels, getAvailableModels } from './agents/agent-models.ts';
@@ -37,7 +37,7 @@ class AMACRFSystem {
   private marketState!: MarketStateAggregator;
   private fractalAgent!: FractalMomentumSentinel;
   private onchainAgent!: OnChainWhisperer;
-  private regimeAgent!: RegimeRiskGuardian;
+  private regimeAgent!: RegimePatternGuardian;
   private riskAuditor!: IndependentRiskAuditor;
   private newsAgent!: NewsReporter;
   private metaAgent!: MetaAgent;
@@ -105,7 +105,7 @@ class AMACRFSystem {
       log.info('Step 2/6: Initializing agents...');
       this.fractalAgent = new FractalMomentumSentinel();
       this.onchainAgent = new OnChainWhisperer();
-      this.regimeAgent = new RegimeRiskGuardian();
+      this.regimeAgent = new RegimePatternGuardian();
       this.riskAuditor = new IndependentRiskAuditor();
       this.newsAgent = new NewsReporter();
       this.skepticsAgent = new SkepticsAgent();
@@ -575,6 +575,29 @@ class AMACRFSystem {
       return;
     }
 
+    // ── Save current cycle context for NEXT cycle's EM hypothetical training ──
+    // Do this BEFORE the guard check so it always saves, even if guard blocks.
+    try {
+      this.lastCycleEMContext = {
+        price: combinedState.price,
+        features: {
+          regime: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
+          regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
+          volatility: combinedState.volatility ?? 0,
+          trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
+          srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+          obImbalance: combinedState.orderBookImbalance ?? 0,
+          fundingRate: 0,
+          fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
+          volumeRatio: 1,
+          positionSizePct: 0.10,
+          sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+          sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+          signalAgreement: 0.5,
+        },
+      };
+    } catch { /* non-critical */ }
+
     // ── SYSTEM GUARD: Run 5-layer protection before any agent thinking ──
     // Guards A (economic calendar), B (drawdown), C (data freshness), D (agent track)
     // Guard E (liquidity) runs later after agents produce a decision
@@ -591,8 +614,8 @@ class AMACRFSystem {
         const priceChange = (marketPrice - prevPrice) / prevPrice;
         const absChange = Math.abs(priceChange);
 
-        // Only learn from meaningful moves (>0.1%) — skip flat/noise cycles
-        if (absChange >= 0.001) {
+        // Only learn from meaningful moves (>0.05%) — skip flat/noise cycles
+        if (absChange >= 0.0005) {
           const buyWon = priceChange > 0; // price up → BUY wins
           const features = this.lastCycleEMContext.features;
 
@@ -671,7 +694,30 @@ class AMACRFSystem {
       // 1d. Inject previous cycle's trade pattern insights (stored after last HACP cycle)
       const patternContext = this.lastPatternContext ?? '';
 
-      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}`;
+      // 1e. Inject GMM EM cluster assessment (unsupervised win/loss regions from price action)
+      let emClusterContext = '';
+      try {
+        if (this.patternClassifier) {
+          const emStats = this.patternClassifier.em.getAllModelStats();
+          if (emStats.length > 0) {
+            const lines: string[] = ['=== EM CLUSTER ASSESSMENT ==='];
+            lines.push('GMM EM clusters trained on hypothetical BUY/SELL outcomes from price action.');
+            lines.push('These are UNSUPERVISED — they cluster market conditions into win/loss regions.');
+            for (const sym of emStats) {
+              lines.push(`  ${sym.symbol.toUpperCase()}: ${sym.clusterCount} clusters, ${sym.totalSamples} samples, BIC=${sym.bic.toFixed(1)}`);
+              for (const c of sym.clusters) {
+                const wrPct = (c.winRate * 100).toFixed(0);
+                const wtPct = (c.weight * 100).toFixed(0);
+                const tag = c.winRate > 0.6 ? '🟢 HIGH' : c.winRate < 0.4 ? '🔴 LOW' : '🟡 MID';
+                lines.push(`    Cluster #${c.index}: wr=${wrPct}% n=${c.sampleCount} π=${wtPct}% ${tag}`);
+              }
+            }
+            emClusterContext = '\n' + lines.join('\n');
+          }
+        }
+      } catch { /* non-critical */ }
+
+      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${emClusterContext}`;
 
       // Store latest S/R context for API push
       if (srContext) {
@@ -1383,26 +1429,12 @@ class AMACRFSystem {
         }
       } catch { /* non-critical */ }
 
-      // ── Save current cycle context for next cycle's EM hypothetical training ──
+      // ── Save current cycle context for NEXT cycle's EM hypothetical training ──
+      // (Primary save is at cycle START; this is a backup update with final signalAgreement)
       try {
-        this.lastCycleEMContext = {
-          price: combinedState.price,
-          features: {
-            regime: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
-            regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
-            volatility: combinedState.volatility ?? 0,
-            trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
-            srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
-            obImbalance: combinedState.orderBookImbalance ?? 0,
-            fundingRate: 0,
-            fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
-            volumeRatio: 1,
-            positionSizePct: 0.10,
-            sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
-            sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
-            signalAgreement: result.consensus.confidence,
-          },
-        };
+        if (this.lastCycleEMContext) {
+          this.lastCycleEMContext.features['signalAgreement'] = result.consensus.confidence;
+        }
       } catch { /* non-critical */ }
 
       // 8. Update API server with latest data

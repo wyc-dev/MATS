@@ -634,9 +634,10 @@ For each open position, use on-chain/macro signals to decide:
   }
 }
 
-// ─── Agent 3: Regime Risk Guardian ───
-// Low temperature, conservative. Monitors volatility regimes, macro context, and structural risk.
-// Now includes Fear & Greed Index from alternative.me for sentiment-based regime classification.
+// ─── Agent 3: Regime Pattern Guardian ───
+// Low temperature, conservative. Monitors volatility regimes, macro context, structural risk,
+// AND GMM EM Clusters — unsupervised pattern discovery from historical price action.
+// Uses EM cluster win rates as a statistical prior for regime-based decisions.
 
 async function fetchFearGreedIndex(): Promise<{ value: number; classification: string }> {
   try {
@@ -672,26 +673,28 @@ async function getFearGreedIndex(): Promise<{ value: number; classification: str
 }
 // Low temperature, conservative. Monitors volatility regimes, macro context, and structural risk.
 
-export class RegimeRiskGuardian extends BaseAgent {
+export class RegimePatternGuardian extends BaseAgent {
   constructor() {
     super({
       role: 'regime_risk_guardian',
-      name: 'Regime Risk Guardian',
+      name: 'Regime Pattern Guardian',
       temperature: 0.25,
       weight: 0.25,
       modelPreference: 'default',
       maxTokens: 2048,
       personality:
-        'You are the regime detection specialist. You classify market states as trending, ranging, volatile, or chaotic. '
+        'You are the regime detection specialist fused with pattern recognition. '
+        + 'You classify market states as trending, ranging, volatile, or chaotic. '
         + 'You are conservative — you prefer to be wrong on the side of safety. '
-        + 'You adjust position sizing based on regime confidence. '
+        + 'You adjust position sizing based on regime confidence AND GMM EM cluster win rates. '
         + 'You are aware of macro context, volatility regimes, and structural market shifts. '
-        + 'You protect capital by reducing exposure in uncertain regimes.',
+        + 'You protect capital by reducing exposure in uncertain regimes. '
+        + 'You use EM clusters to validate or override your regime-based hunches.',
     });
   }
 
   override getSystemPrompt(): string {
-    return `You are Regime Risk Guardian — regime classification & risk-adjusted sizing.
+    return `You are Regime Pattern Guardian — regime classification, GMM EM cluster analysis & risk-adjusted sizing.
 
 You evaluate ALL trading pairs under the current market regime.
 
@@ -700,6 +703,15 @@ If the context contains "=== TRADE PATTERN INSIGHTS ===" or "=== POSITION PATTER
   - Use historical win rate as your PRIMARY reference
   - Example: "Low_vol sideways: 100% HOLD historically, 0% edge for directional sizing"
   - Regime rules are BASELINE; pattern data OVERRIDES when statistically significant
+
+=== GMM EM CLUSTERS ===
+If the context contains "=== EM CLUSTER ASSESSMENT ===":
+  - This is an UNSUPERVISED GMM model trained on ALL historical price action (hypothetical BUY/SELL)
+  - It clusters market conditions into win/loss regions — NOT based on real trades, but on "what would have won"
+  - Use cluster-weighted win rate as a STATISTICAL PRIOR for your regime assessment
+  - If EM says high win rate cluster for current conditions → increase conviction
+  - If EM says low win rate cluster → reduce size or lean HOLD
+  - EM is a SECONDARY signal — it confirms or challenges your regime analysis
 
 === CONCISE REASONING ===
 - Use ROUND numbers: "~$65K-$66K range" not "$65,688 47.5bps below $66K"
@@ -1535,6 +1547,16 @@ export class SkepticsAgent {
       'news_reporter',
       'independent_risk_auditor',
     ]);
+
+    // ── EM CLUSTER AWARENESS ──
+    // Extract EM cluster assessment from market context if present
+    let emClusterContext = '';
+    try {
+      if (marketStateDesc) {
+        const emMatch = marketStateDesc.match(/=== EM CLUSTER ASSESSMENT ===[\s\S]*?(?=\n===|$)/);
+        if (emMatch) emClusterContext = emMatch[0];
+      }
+    } catch { /* ignore */ }
 
     const targetThoughts = allThoughts.filter(t => reviewableRoles.has(t.agentRole));
 

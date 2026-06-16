@@ -22,9 +22,9 @@ const CONFIG = {
   maxIterations: 200,
   convergenceTol: 1e-6,
   /** How many EM training rounds before triggering a full re-fit */
-  refitInterval: 50,          // every 50 new trades per symbol
+  refitInterval: 20,          // every 20 new trades per symbol (was 50)
   /** Minimum trades to bother running EM */
-  minSamplesForEM: 20,
+  minSamplesForEM: 10,
   /** Regularisation added to diagonal covariance diagonal (prevents singularities) */
   covarRegularizer: 1e-4,
   persistPath: 'data/evolution/em-clusters.json',
