@@ -21,8 +21,8 @@ const CONFIG = {
   minClusters: 2,
   maxIterations: 200,
   convergenceTol: 1e-6,
-  /** How many EM training rounds before triggering a full re-fit */
-  refitInterval: 20,          // every 20 new trades per symbol (was 50)
+  /** How many new trades before triggering a full re-fit */
+  refitInterval: 10,           // every 10 new trades per symbol
   /** Minimum trades to bother running EM */
   minSamplesForEM: 10,
   /** Regularisation added to diagonal covariance diagonal (prevents singularities) */
@@ -69,9 +69,9 @@ interface SymbolEMState {
 // ─── Feature Dimensions ───
 
 const FEATURE_NAMES = [
-  'volatility', 'trendStrength', 'srDistanceBps', 'obImbalance',
-  'sentiment', 'signalAgreement', 'fundingRate', 'fundingRateAccel',
-  'volumeRatio', 'positionSizePct', 'sentimentConviction',
+  'direction', 'volatility', 'srDistanceBps', 'obImbalance',
+  'sentiment', 'signalAgreement', 'fundingRate',
+  'volumeRatio', 'sentimentConviction',
 ];
 
 interface NormStats {
@@ -102,8 +102,14 @@ export class EMClusteringEngine {
       if (data.symbols) {
         for (const [sym, raw] of Object.entries(data.symbols)) {
           const s = raw as any;
+          // Reject stale models with wrong feature count (e.g. missing direction)
+          const model = s.model ?? null;
+          if (model && model.featureNames && model.featureNames.length !== FEATURE_NAMES.length) {
+            log.warn(`[load] ${sym}: stale model has ${model.featureNames.length} features, expected ${FEATURE_NAMES.length} — discarding`);
+            continue;
+          }
           this.symbols.set(sym, {
-            model: s.model ?? null,
+            model,
             norm: s.norm ?? defaultNorm(),
             pendingSamples: s.pendingSamples ?? [],
             tradesSinceRefit: s.tradesSinceRefit ?? 0,
@@ -151,7 +157,7 @@ export class EMClusteringEngine {
     clusterCount: number;
     totalSamples: number;
     bic: number;
-    clusters: Array<{ index: number; winRate: number; sampleCount: number; weight: number }>;
+    clusters: Array<{ index: number; winRate: number; sampleCount: number; weight: number; mean: number[]; featureNames: string[] }>;
   }> {
     const result: Array<any> = [];
     for (const [sym, state] of this.symbols) {
@@ -166,7 +172,25 @@ export class EMClusteringEngine {
           winRate: c.winRate,
           sampleCount: c.sampleCount,
           weight: c.weight,
+          mean: c.mean,
+          featureNames: state.model!.featureNames,
         })),
+      });
+    }
+    return result;
+  }
+
+  /** Get pending sample counts per symbol (real-time accumulation before EM train) */
+  getPendingStats(): Array<{ symbol: string; pending: number; needed: number; pct: number }> {
+    const result: Array<{ symbol: string; pending: number; needed: number; pct: number }> = [];
+    for (const [sym, state] of this.symbols) {
+      const pending = state.pendingSamples.length;
+      if (pending === 0 && !state.model) continue;
+      result.push({
+        symbol: sym,
+        pending,
+        needed: CONFIG.minSamplesForEM,
+        pct: Math.min(100, Math.round((pending / CONFIG.minSamplesForEM) * 100)),
       });
     }
     return result;
@@ -200,9 +224,16 @@ export class EMClusteringEngine {
 
   maybeRefit(symbol: string): boolean {
     const state = this.getOrCreateState(symbol);
+    // First refit: run as soon as we have enough samples
+    if (!state.model) {
+      if (state.pendingSamples.length < CONFIG.minSamplesForEM) return false;
+      this.refit(state);
+      state.tradesSinceRefit = 0;
+      return true;
+    }
+    // Subsequent refits: wait for refitInterval new trades
     if (state.tradesSinceRefit < CONFIG.refitInterval) return false;
     if (state.pendingSamples.length < CONFIG.minSamplesForEM) return false;
-
     this.refit(state);
     state.tradesSinceRefit = 0;
     return true;

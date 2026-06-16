@@ -14,7 +14,9 @@ import { PortfolioTracker } from './trading/portfolio.ts';
 import { PaperTradingEngine, type ExecutionReport } from './trading/paper-engine.ts';
 import { EvolutionOrchestrator } from './evolution/index.ts';
 import { savePortfolio, saveDebateHistory, loadDebateHistory } from './evolution/persistence.ts';
-import { FractalMomentumSentinel, OnChainWhisperer, RegimePatternGuardian, IndependentRiskAuditor, NewsReporter, SkepticsAgent, getLastFearGreedValue } from './agents/agents.ts';
+import fs from 'node:fs';
+import path from 'node:path';
+import { FractalMomentumSentinel, OnChainWhisperer, RBCSentimentAnalyst, IndependentRiskAuditor, NewsReporter, SkepticsAgent, getLastFearGreedValue } from './agents/agents.ts';
 import { MetaAgent } from './agents/meta-agent.ts';
 import { APIServer } from './api-server.ts';
 import { getAllAgentModels, getAvailableModels } from './agents/agent-models.ts';
@@ -29,6 +31,7 @@ import { calculateTakerFee, calculateFundingCost, getFeeSummary } from './tradin
 import { getSRZones } from './analysis/support-resistance.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
+import { RBCEngine } from './evolution/rbc-clustering.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole } from './types/index.ts';
 
 const log = createLogger({ phase: 'system' });
@@ -37,7 +40,7 @@ class AMACRFSystem {
   private marketState!: MarketStateAggregator;
   private fractalAgent!: FractalMomentumSentinel;
   private onchainAgent!: OnChainWhisperer;
-  private regimeAgent!: RegimePatternGuardian;
+  private regimeAgent!: RBCSentimentAnalyst;
   private riskAuditor!: IndependentRiskAuditor;
   private newsAgent!: NewsReporter;
   private metaAgent!: MetaAgent;
@@ -70,9 +73,10 @@ class AMACRFSystem {
   private lastSRContext: { formatted: string; regime: string; zoneCount: number; strongZones: number; nearestSupport: number | null; nearestResistance: number | null; distanceToSupportBps: number; distanceToResistanceBps: number; degradedReason: string | null } | null = null;
   private emManager!: CycleSummaryManager;
   private patternClassifier!: TradePatternClassifier;
+  private rbcEngine!: RBCEngine;
   private lastPatternContext = '';
-  /** Previous cycle's market context + price for hypothetical EM training */
-  private lastCycleEMContext: { price: number; features: Record<string, number> } | null = null;
+  /** Previous cycle's market context + price for hypothetical RBC training */
+  private lastCycleRBCContext: { price: number; features: Record<string, number> } | null = null;
   private lastBacktestResult: import('./backtest/index.ts').BacktestResult | null = null;
   private backtestProgress: BacktestProgress | null = null;
 
@@ -105,7 +109,7 @@ class AMACRFSystem {
       log.info('Step 2/6: Initializing agents...');
       this.fractalAgent = new FractalMomentumSentinel();
       this.onchainAgent = new OnChainWhisperer();
-      this.regimeAgent = new RegimePatternGuardian();
+      this.regimeAgent = new RBCSentimentAnalyst();
       this.riskAuditor = new IndependentRiskAuditor();
       this.newsAgent = new NewsReporter();
       this.skepticsAgent = new SkepticsAgent();
@@ -159,8 +163,21 @@ class AMACRFSystem {
       this.emManager = new CycleSummaryManager();
       log.info('✓ EM CycleSummary Manager ready');
 
-      // 3.10 Initialize Trade Pattern Classifier
-      log.info('Step 3.10/8: Initializing Trade Pattern Classifier...');
+      // 3.10 Initialize RBC Engine (replaces GMM EM + Pattern Data)
+      log.info('Step 3.10/8: Initializing RBC Engine...');
+      this.rbcEngine = new RBCEngine();
+      // Load persisted RBC state
+      try {
+        const rbcPath = path.join(process.cwd(), 'data/evolution/rbc-state.json');
+        if (fs.existsSync(rbcPath)) {
+          const data = fs.readFileSync(rbcPath, 'utf-8');
+          this.rbcEngine.load(data);
+        }
+      } catch { /* start fresh */ }
+      log.info('✓ RBC Engine ready');
+
+      // 3.11 Initialize Trade Pattern Classifier (kept for position management only)
+      log.info('Step 3.11/8: Initializing Trade Pattern Classifier...');
       this.patternClassifier = new TradePatternClassifier();
       this.patternClassifier.load();
       log.info('✓ Trade Pattern Classifier ready');
@@ -224,7 +241,6 @@ class AMACRFSystem {
         log.info('Step 5.5/6: Pre-warming NIM models...');
         const { getActiveProvider } = await import('./llm/index.ts');
         const provider = getActiveProvider();
-        
         // 使用 provider 的 warmUpAllModels 方法（如果可用）
         if ('warmUpAllModels' in provider) {
           await (provider as any).warmUpAllModels();
@@ -395,6 +411,13 @@ class AMACRFSystem {
           low24h: 0,
           timestamp: Date.now(),
         });
+      });
+      this.multiWs.onOrderBook((book) => {
+        // Feed order book depth into marketState for obImbalance computation
+        this.marketState.updateDepth(
+          book.bids.map(b => ({ price: b.price, qty: b.size })),
+          book.asks.map(a => ({ price: a.price, qty: a.size })),
+        );
       });
       this.multiWs.onConnectionChange((exchange: string, connected: boolean) => {
         if (!connected) {
@@ -570,62 +593,61 @@ class AMACRFSystem {
       this.paperEngine.updatePrice(activeSymbol, marketPrice);
     }
 
+    // Feed volume data into sentiment engine for volumeRatio computation
+    if (marketVolume24h > 0) {
+      this.sentimentEngine?.updateVolume(marketVolume24h);
+    }
+
     if (marketPrice <= 0) {
       log.warn(`No market price for ${activeSymbolUpper} — HL API may be rate-limited. Will retry next cycle.`);
       return;
     }
 
-    // ── EM HYPOTHETICAL TRAINING: Learn from every cycle's price action ──
-    // Compare current price vs last cycle's price. If price went up, BUY would
-    // have won and SELL would have lost (and vice versa). Feed both hypothetical
-    // outcomes into the GMM EM engine so it learns even without real trades.
-    // This lets EM cluster "what market conditions lead to profitable entries"
-    // purely from observed price action — self-supervised learning.
-    // IMPORTANT: This MUST run BEFORE saving the new context below.
-    if (this.lastCycleEMContext && this.patternClassifier && marketPrice > 0) {
+    // ── RBC HYPOTHETICAL TRAINING: Learn from every cycle's price action ──
+    // Compare current price vs last cycle's price.
+    //   - Price up >0.1% → BUY would have won (feed 1 sample: direction=+1, outcome=WIN)
+    //   - Price down >0.1% → SELL would have won (feed 1 sample: direction=-1, outcome=WIN)
+    //   - Price change <0.05% → flat market, both sides lose (feed 2 samples: both LOSS)
+    //   - 0.05%-0.1% → noise, skip
+    // This avoids the 50/50 problem of feeding both outcomes with identical features.
+    if (this.lastCycleRBCContext && marketPrice > 0) {
       try {
-        const prevPrice = this.lastCycleEMContext.price;
+        const prevPrice = this.lastCycleRBCContext.price;
         const priceChange = (marketPrice - prevPrice) / prevPrice;
         const absChange = Math.abs(priceChange);
+        const baseFeatures = this.lastCycleRBCContext.features;
 
-        // Only learn from meaningful moves (>0.05%) — skip flat/noise cycles
-        if (absChange >= 0.0005) {
-          const buyWon = priceChange > 0; // price up → BUY wins
-          const features = this.lastCycleEMContext.features;
-
-          // Feed both hypothetical outcomes
-          this.patternClassifier.em.feedTrade(activeSymbol, features, buyWon ? 1 : 0);   // BUY outcome
-          this.patternClassifier.em.feedTrade(activeSymbol, features, buyWon ? 0 : 1);   // SELL outcome (inverted)
-
-          // Trigger refit if enough new data accumulated
-          this.patternClassifier.em.maybeRefit(activeSymbol);
-
-          log.info(`🧬 EM hypothetical: ${activeSymbol} ${(priceChange * 100).toFixed(2)}% → BUY=${buyWon ? 'WIN' : 'LOSS'} SELL=${buyWon ? 'LOSS' : 'WIN'} (cycle #${this.totalCycles})`);
+        if (absChange >= 0.001) {
+          // Directional move: feed only the winning side
+          const buyWon = priceChange > 0;
+          this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures, direction: buyWon ? 1 : -1 }, 1);
+          log.info(`🧬 RBC hypothetical: ${activeSymbol} ${(priceChange * 100).toFixed(2)}% → ${buyWon ? 'BUY=WIN' : 'SELL=WIN'} (cycle #${this.totalCycles})`);
+        } else if (absChange < 0.0005) {
+          // Flat market: both sides lose
+          this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures, direction: 1 }, 0);
+          this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures, direction: -1 }, 0);
+          log.info(`🧬 RBC hypothetical: ${activeSymbol} flat (${(priceChange * 100).toFixed(2)}%) → BUY=LOSS SELL=LOSS (cycle #${this.totalCycles})`);
         }
+        // else: noise (0.05%-0.1%), skip
       } catch (err) {
-        log.warn(`[EM-hypothetical] Failed: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn(`[RBC-hypothetical] Failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
-    // ── Save current cycle context for NEXT cycle's EM hypothetical training ──
+    // ── Save current cycle context for NEXT cycle's RBC hypothetical training ──
     // Do this AFTER the training above so the old context is used for comparison.
     try {
-      this.lastCycleEMContext = {
+      this.lastCycleRBCContext = {
         price: combinedState.price,
         features: {
-          regime: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
-          regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
           volatility: combinedState.volatility ?? 0,
-          trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
           srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
           obImbalance: combinedState.orderBookImbalance ?? 0,
-          fundingRate: 0,
-          fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
-          volumeRatio: 1,
-          positionSizePct: 0.10,
+          fundingRate: this.sentimentEngine?.getFundingRate() ?? 0,
+          volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
           sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
           sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
-          signalAgreement: 0.5,
+          signalAgreement: 0.5, // updated after cycle with actual consensus confidence
         },
       };
     } catch { /* non-critical */ }
@@ -695,30 +717,45 @@ class AMACRFSystem {
       // 1d. Inject previous cycle's trade pattern insights (stored after last HACP cycle)
       const patternContext = this.lastPatternContext ?? '';
 
-      // 1e. Inject GMM EM cluster assessment (unsupervised win/loss regions from price action)
-      let emClusterContext = '';
+      // 1e. Inject RBC assessment (range-based win/loss regions from price action)
+      let rbcContext = '';
       try {
-        if (this.patternClassifier) {
-          const emStats = this.patternClassifier.em.getAllModelStats();
-          if (emStats.length > 0) {
-            const lines: string[] = ['=== EM CLUSTER ASSESSMENT ==='];
-            lines.push('GMM EM clusters trained on hypothetical BUY/SELL outcomes from price action.');
-            lines.push('These are UNSUPERVISED — they cluster market conditions into win/loss regions.');
-            for (const sym of emStats) {
-              lines.push(`  ${sym.symbol.toUpperCase()}: ${sym.clusterCount} clusters, ${sym.totalSamples} samples, BIC=${sym.bic.toFixed(1)}`);
-              for (const c of sym.clusters) {
-                const wrPct = (c.winRate * 100).toFixed(0);
-                const wtPct = (c.weight * 100).toFixed(0);
-                const tag = c.winRate > 0.6 ? '🟢 HIGH' : c.winRate < 0.4 ? '🔴 LOW' : '🟡 MID';
-                lines.push(`    Cluster #${c.index}: wr=${wrPct}% n=${c.sampleCount} π=${wtPct}% ${tag}`);
-              }
-            }
-            emClusterContext = '\n' + lines.join('\n');
-          }
+        const rbcBuy = this.rbcEngine.query(activeSymbol, {
+          volatility: combinedState.volatility ?? 0,
+          srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+          obImbalance: combinedState.orderBookImbalance ?? 0,
+          fundingRate: this.sentimentEngine?.getFundingRate() ?? 0,
+          volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
+          sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+          sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+          signalAgreement: 0.5, // updated after cycle with actual consensus confidence
+          direction: 1,
+        });
+        const rbcSell = this.rbcEngine.query(activeSymbol, {
+          volatility: combinedState.volatility ?? 0,
+          srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+          obImbalance: combinedState.orderBookImbalance ?? 0,
+          fundingRate: this.sentimentEngine?.getFundingRate() ?? 0,
+          volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
+          sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+          sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+          signalAgreement: 0.5, // updated after cycle with actual consensus confidence
+          direction: -1,
+        });
+        const hasData = rbcBuy.verdict !== 'no_edge' || rbcSell.verdict !== 'no_edge'
+          || (rbcBuy.explanation && !rbcBuy.explanation.startsWith('Only'))
+          || (rbcSell.explanation && !rbcSell.explanation.startsWith('Only'));
+        if (hasData) {
+          const lines: string[] = ['=== RBC ASSESSMENT ==='];
+          lines.push('Range-Based Clustering: growing hyperrectangles from hypothetical price action.');
+          lines.push(`BUY  → ${rbcBuy.verdict.toUpperCase()} (edge=${(rbcBuy.edgeScore * 100).toFixed(0)}%, ${rbcBuy.winDims}W/${rbcBuy.lossDims}L dims)`);
+          lines.push(`SELL → ${rbcSell.verdict.toUpperCase()} (edge=${(rbcSell.edgeScore * 100).toFixed(0)}%, ${rbcSell.winDims}W/${rbcSell.lossDims}L dims)`);
+          lines.push(`RBC is your PRIMARY factor. UNFAVORABLE → strong bias against entry. FAVORABLE → increase conviction.`);
+          rbcContext = '\n' + lines.join('\n');
         }
       } catch { /* non-critical */ }
 
-      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${emClusterContext}`;
+      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${rbcContext}`;
 
       // Store latest S/R context for API push
       if (srContext) {
@@ -808,8 +845,8 @@ class AMACRFSystem {
         emContext,
         this.emManager?.getLast(10) ?? [],
         {
-          positionSizePct: this.marketAgent.getConfig().positionSizePct,
           leverage: this.marketAgent.getConfig().leverage,
+          positionSizePct: this.marketAgent.getConfig().positionSizePct,
         },
       );
 
@@ -843,23 +880,53 @@ class AMACRFSystem {
             const actualFundingRate = hlPrice?.fundingRate ?? 0;
             const patternCtx = {
               regime: combinedState.regime,
-              regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
-              volatility: combinedState.volatility ?? 0,
-              trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
-              srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+                            volatility: combinedState.volatility ?? 0,
+                            srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
               obImbalance: combinedState.orderBookImbalance ?? 0,
               fundingRate: actualFundingRate,
-              volumeRatio: 1,
+              volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
               signalAgreement: 0.5,
-              positionSizePct: exploreSize,
-              leverage: exploreLev,
+                  leverage: exploreLev,
               sentiment: sentimentData?.overallSentiment ?? 0,
               sentimentConviction: sentimentData?.conviction ?? 0.5,
-              fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
-            };
+                };
+
+            // Priority 0: RBC assessment (highest weight — RBC & Sentiment Analyst's primary factor)
+            if (!direction) {
+              const rbcCtx = {
+                                                volatility: combinedState.volatility ?? 0,
+                                srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+                obImbalance: combinedState.orderBookImbalance ?? 0,
+                fundingRate: actualFundingRate,
+                volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
+                signalAgreement: 0.5,
+                      leverage: exploreLev,
+                sentiment: sentimentData?.overallSentiment ?? 0,
+                sentimentConviction: sentimentData?.conviction ?? 0.5,
+                    };
+              const rbcBuy = this.rbcEngine.query(combinedState.primarySymbol, { ...rbcCtx, direction: 1 });
+              const rbcSell = this.rbcEngine.query(combinedState.primarySymbol, { ...rbcCtx, direction: -1 });
+              if (rbcBuy.verdict === 'favorable' && rbcSell.verdict !== 'favorable') {
+                direction = 'buy';
+                log.info(`🧪 RBC-guided: BUY favorable (edge=${(rbcBuy.edgeScore * 100).toFixed(0)}%)`);
+              } else if (rbcSell.verdict === 'favorable' && rbcBuy.verdict !== 'favorable') {
+                direction = 'sell';
+                log.info(`🧪 RBC-guided: SELL favorable (edge=${(rbcSell.edgeScore * 100).toFixed(0)}%)`);
+              } else if (rbcBuy.verdict === 'unfavorable' && rbcSell.verdict === 'favorable') {
+                direction = 'sell';
+                log.info(`🧪 RBC-guided: BUY unfavorable, SELL favorable → SELL`);
+              } else if (rbcSell.verdict === 'unfavorable' && rbcBuy.verdict === 'favorable') {
+                direction = 'buy';
+                log.info(`🧪 RBC-guided: SELL unfavorable, BUY favorable → BUY`);
+              } else if (rbcBuy.verdict === 'unfavorable' && rbcSell.verdict === 'unfavorable') {
+                direction = null; // both unfavorable → no exploration
+                log.info(`🧪 RBC-guided: Both BUY and SELL unfavorable → skip exploration`);
+              }
+              // If both no_edge or mixed, fall through to other signals
+            }
 
             // Priority 1: Pattern data (most reliable, requires >=3 matches with 0.5+PnL)
-            if (this.patternClassifier) {
+            if (!direction && this.patternClassifier) {
               const buyResult = this.patternClassifier.queryEntry(patternCtx, combinedState.primarySymbol, 'buy', combinedState.price);
               const sellResult = this.patternClassifier.queryEntry(patternCtx, combinedState.primarySymbol, 'sell', combinedState.price);
               const buyWr = buyResult.totalMatches >= 3 ? buyResult.adjustedWinRate : 0;
@@ -925,8 +992,8 @@ class AMACRFSystem {
           finalDecision = {
             action: direction as 'buy' | 'sell',
             symbol: activeSymbolUpper,
-            positionSizePct: exploreSize,
             entryPrice: combinedState.price,
+            positionSizePct: exploreSize,
             stopLossPct: 0.01,
             takeProfitPct: 0.02,
             leverage: exploreLev,
@@ -1015,36 +1082,28 @@ class AMACRFSystem {
               const posResult = this.patternClassifier.queryPosition(
                 {
                   regime: combinedState.regime,
-                  regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
-                  volatility: combinedState.volatility ?? 0,
-                  trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
-                  srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+                                    volatility: combinedState.volatility ?? 0,
+                                    srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
                   obImbalance: combinedState.orderBookImbalance ?? 0,
-                  fundingRate: 0,
-                  volumeRatio: 1,
+                  fundingRate: this.sentimentEngine?.getFundingRate() ?? 0,
+                  volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
                   signalAgreement: result.consensus.confidence,
-                  positionSizePct: finalDecision.positionSizePct,
-                  leverage: finalDecision.leverage ?? 1,
+                          leverage: finalDecision.leverage ?? 1,
                   sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
                   sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
-                  fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
-                },
+                        },
                 {
                   regime: combinedState.regime,
-                  regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
-                  volatility: combinedState.volatility ?? 0,
-                  trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
-                  srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+                                    volatility: combinedState.volatility ?? 0,
+                                    srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
                   obImbalance: combinedState.orderBookImbalance ?? 0,
-                  fundingRate: 0,
-                  volumeRatio: 1,
+                  fundingRate: this.sentimentEngine?.getFundingRate() ?? 0,
+                  volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
                   signalAgreement: result.consensus.confidence,
-                  positionSizePct: finalDecision.positionSizePct,
-                  leverage: finalDecision.leverage ?? 1,
+                          leverage: finalDecision.leverage ?? 1,
                   sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
                   sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
-                  fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
-                },
+                        },
                 combinedState.primarySymbol,
                 pos.side,
                 combinedState.price,
@@ -1061,20 +1120,16 @@ class AMACRFSystem {
             const entryResult = this.patternClassifier.queryEntry(
               {
                 regime: combinedState.regime,
-                regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
-                volatility: combinedState.volatility ?? 0,
-                trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
-                srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+                                volatility: combinedState.volatility ?? 0,
+                                srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
                 obImbalance: combinedState.orderBookImbalance ?? 0,
-                fundingRate: 0,
-                volumeRatio: 1,
+                fundingRate: this.sentimentEngine?.getFundingRate() ?? 0,
+                volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
                 signalAgreement: result.consensus.confidence,
-                positionSizePct: finalDecision.positionSizePct,
-                leverage: finalDecision.leverage ?? 1,
+                      leverage: finalDecision.leverage ?? 1,
                 sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
                 sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
-                fundingRateAccel: this.sentimentEngine?.getFundingRateAcceleration() ?? 0,
-              },
+                    },
               combinedState.primarySymbol,
               finalDecision.action === 'buy' ? 'buy' : 'sell',
               combinedState.price,
@@ -1130,13 +1185,10 @@ class AMACRFSystem {
               report.trade.entryPrice,
               {
                 regime: combinedState.regime,
-                regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
-                volatility: combinedState.volatility ?? 0,
-                trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
-                srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+                                volatility: combinedState.volatility ?? 0,
+                                srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
                 signalAgreement: result.consensus.confidence,
-                positionSizePct: finalDecision.positionSizePct,
-                leverage: finalDecision.leverage ?? 1,
+                      leverage: finalDecision.leverage ?? 1,
               },
               metaThought?.thought ?? '',
               result.allThoughts
@@ -1305,10 +1357,8 @@ class AMACRFSystem {
                 report.trade.exitPrice ?? report.trade.entryPrice,
                 {
                   regime: combinedState.regime,
-                  regimeConfidence: combinedState.regime === 'trending_bull' || combinedState.regime === 'trending_bear' ? 0.7 : 0.5,
-                  volatility: combinedState.volatility ?? 0,
-                  trendStrength: combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
-                  srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+                                    volatility: combinedState.volatility ?? 0,
+                                    srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
                   signalAgreement: result.consensus.confidence,
                 },
                 report.trade.pnlPct,
@@ -1399,9 +1449,10 @@ class AMACRFSystem {
         log.warn(`[E-step] CycleSummary build failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      // 9.6 Persist evolution state + portfolio + debate history + patterns to disk
+      // 9.6 Persist evolution state + portfolio + debate history + patterns + RBC to disk
       this.evolution.persistState();
       this.patternClassifier?.persist();
+      this.persistRBC();
       this.persistPortfolio();
       saveDebateHistory({
         totalCycles: this.totalCycles,
@@ -1430,11 +1481,11 @@ class AMACRFSystem {
         }
       } catch { /* non-critical */ }
 
-      // ── Save current cycle context for NEXT cycle's EM hypothetical training ──
+      // ── Save current cycle context for NEXT cycle's RBC hypothetical training ──
       // (Primary save is at cycle START; this is a backup update with final signalAgreement)
       try {
-        if (this.lastCycleEMContext) {
-          this.lastCycleEMContext.features['signalAgreement'] = result.consensus.confidence;
+        if (this.lastCycleRBCContext) {
+          this.lastCycleRBCContext.features['signalAgreement'] = result.consensus.confidence;
         }
       } catch { /* non-critical */ }
 
@@ -1573,6 +1624,17 @@ class AMACRFSystem {
     }
   }
 
+  private persistRBC(): void {
+    try {
+      const dir = path.join(process.cwd(), 'data/evolution');
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const tmp = path.join(dir, 'rbc-state.json.tmp');
+      const final = path.join(dir, 'rbc-state.json');
+      fs.writeFileSync(tmp, this.rbcEngine.save(), 'utf-8');
+      fs.renameSync(tmp, final);
+    } catch { /* best-effort */ }
+  }
+
   private buildMarketDescription(state: AggregatedMarketState): string {
     const calSummary = this.marketState?.calibrator?.getCalibrationSummary?.() ?? '';
     const lines: string[] = [
@@ -1709,19 +1771,37 @@ class AMACRFSystem {
           latestSignal: this.emManager.getLatest() ? this.emManager.getLatest()!.primarySignal.name + '=' + this.emManager.getLatest()!.primarySignal.value.toFixed(2) + ' (' + this.emManager.getLatest()!.primarySignal.direction + ')' : null,
         } : undefined,
         patternStats: this.patternClassifier ? this.patternClassifier.getStats() : undefined,
-        emClusterState: this.patternClassifier ? (() => {
-          const allStats = this.patternClassifier!.em.getAllModelStats();
-          if (allStats.length === 0) return undefined;
+        rbcState: (() => {
+          const allStats = this.rbcEngine.getAllModelStats();
+          const pendingStats = this.rbcEngine.getPendingStats();
+          const hasData = allStats.length > 0 || pendingStats.length > 0;
+          if (!hasData) return undefined;
+          // Get dim details for the first symbol with data
+          const dimDetails = allStats.length > 0 ? this.rbcEngine.getDimDetails(allStats[0]!.symbol) : null;
           return {
             symbols: allStats.map(s => ({
               symbol: s.symbol,
-              clusterCount: s.clusterCount,
+              winCount: s.winCount,
+              lossCount: s.lossCount,
               totalSamples: s.totalSamples,
-              bic: s.bic,
-              clusters: s.clusters,
+              discriminativeDims: s.discriminativeDims,
+              totalDims: s.totalDims,
             })),
+            pending: pendingStats.map(p => ({
+              symbol: p.symbol,
+              pending: p.pending,
+              needed: p.needed,
+              pct: p.pct,
+            })),
+            dimDetails: dimDetails ? dimDetails.map(d => ({
+              name: d.name,
+              winMin: d.winMin, winMax: d.winMax, winCentroid: d.winCentroid,
+              lossMin: d.lossMin, lossMax: d.lossMax, lossCentroid: d.lossCentroid,
+              overlap: d.overlap, boundary: d.boundary,
+              globalMin: d.globalMin, globalMax: d.globalMax,
+            })) : undefined,
           };
-        })() : undefined,
+        })(),
         agentModels: {
           available: getAvailableModels(),
           assignments: getAllAgentModels(),
@@ -1759,9 +1839,10 @@ class AMACRFSystem {
   }
 
   async stop(): Promise<void> {
-    // Persist evolution state + portfolio before shutdown
+    // Persist evolution state + portfolio + RBC before shutdown
     this.evolution.persistState();
     this.persistPortfolio();
+    this.persistRBC();
     this.stopTimers();
     await this.apiServer?.stop();
     await this.multiWs?.disconnect();

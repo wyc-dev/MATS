@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { APIData, AgentModelConfig, ModelDefinition } from './types'
+import RBCVisualizer from './RBCVisualizer'
 import { AGENT_META, AGENT_ROLES } from './types'
 import StarsBackground from './StarsBackground'
 import TradingViewChart from './TradingViewChart'
@@ -351,9 +352,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               {change24h >= 0 ? '+' : ''}{change24h.toFixed(2)}
             </span>
           </div>
-          {/* Mini TradingView chart for the selected market */}
+          {/* Mini TradingView chart for the selected market — refreshes every cycle */}
           <div style={{ marginTop: 6, marginBottom: 6 }}>
-            <TradingViewChart symbol={activeSymbol} currentPrice={price} trades={[]} />
+            <TradingViewChart symbol={activeSymbol} currentPrice={price} trades={[]} refreshKey={s?.cycles ?? 0} />
           </div>
           {/* Top pairs list */}
           <div style={{ marginTop: 8 }}>
@@ -527,6 +528,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
             symbol={displaySymbol}
             currentPrice={chartPrice}
             trades={tradeMarkers}
+            refreshKey={s?.cycles ?? 0}
           />
         </div>
       ) : (
@@ -996,54 +998,79 @@ function StrategyCard({ strategy }: { strategy: any }) {
   )
 }
 
-function EMClusterSection({ emClusterState }: { emClusterState: any }) {
-  const hasSymbols = emClusterState?.symbols?.length > 0
+function RBCSection({ rbcState }: { rbcState: any }) {
+  const hasSymbols = rbcState?.symbols?.length > 0
+  const hasPending = rbcState?.pending?.length > 0
+  const hasDimDetails = rbcState?.dimDetails?.length > 0
 
   return (
     <div className="evo-section">
       <div className="evo-section-header">
         <div className="evo-section-accent" />
-        <span className="evo-section-title">GMM EM Clusters</span>
-        {hasSymbols && <span className="evo-badge" style={{ marginLeft: 'auto' }}>{emClusterState.symbols.length} symbols</span>}
+        <span className="evo-section-title">RBC Clusters</span>
+        {hasSymbols && <span className="evo-badge" style={{ marginLeft: 'auto' }}>{rbcState.symbols.length} symbols</span>}
       </div>
 
-      {!hasSymbols ? (
+      {!hasSymbols && !hasPending ? (
         <div className="evo-empty">
           <div className="evo-empty-icon">🧬</div>
-          <div className="evo-empty-text">Waiting for enough trades</div>
-          <div className="evo-empty-hint">Need 20+ meaningful trades per symbol to train GMM model</div>
+          <div className="evo-empty-text">Waiting for enough data</div>
+          <div className="evo-empty-hint">Need 3+ samples per symbol to start RBC assessment</div>
         </div>
       ) : (
-        emClusterState.symbols.map((symState: any) => (
-          <div key={symState.symbol} className="evo-cluster-symbol">
-            <div className="evo-cluster-symbol-header">
-              <span className="evo-cluster-symbol-name">{symState.symbol.toUpperCase()}</span>
-              <span className="evo-badge">BIC {symState.bic.toFixed(1)}</span>
-              <span className="evo-badge">{symState.totalSamples} samples</span>
-            </div>
-            <div className="evo-cluster-list">
-              {symState.clusters.map((c: any) => {
-                const wrPct = c.winRate * 100
-                const fillClass = c.winRate > 0.6 ? 'high' : c.winRate > 0.4 ? 'mid' : 'low'
-                const indicator = c.winRate > 0.6 ? '🟢' : c.winRate < 0.4 ? '🔴' : '🟡'
-                return (
-                  <div key={c.index} className="evo-cluster-row">
-                    <span className="evo-cluster-index">#{c.index}</span>
-                    <div className="evo-cluster-wr-track">
-                      <div className={`evo-cluster-wr-fill ${fillClass}`} style={{ width: `${wrPct}%` }} />
-                    </div>
-                    <span className="evo-cluster-meta">
-                      <span>wr {wrPct.toFixed(0)}%</span>
-                      <span>n={c.sampleCount}</span>
-                      <span>π={((c.weight) * 100).toFixed(0)}%</span>
-                    </span>
-                    <span className="evo-cluster-indicator">{indicator}</span>
+        <>
+          {hasPending && !hasSymbols && (
+            <div className="evo-pending-section">
+              {rbcState.pending.map((p: any) => (
+                <div key={p.symbol} className="evo-pending-row">
+                  <span className="evo-pending-symbol">{p.symbol.toUpperCase()}</span>
+                  <div className="evo-pending-track">
+                    <div className="evo-pending-fill" style={{ width: `${p.pct}%` }} />
                   </div>
-                )
-              })}
+                  <span className="evo-pending-meta">{p.pending}/{p.needed} ({p.pct}%)</span>
+                </div>
+              ))}
             </div>
-          </div>
-        ))
+          )}
+          {hasSymbols && (
+            rbcState.symbols.map((symState: any) => {
+              const edgePct = symState.totalDims > 0 ? Math.round((symState.discriminativeDims / symState.totalDims) * 100) : 0
+              const verdict = edgePct >= 25 ? (symState.winCount > symState.lossCount ? 'favorable' : 'unfavorable') : 'no_edge'
+              const verdictIcon = verdict === 'favorable' ? '🟢' : verdict === 'unfavorable' ? '🔴' : '🟡'
+              return (
+                <div key={symState.symbol} className="evo-cluster-symbol">
+                  <div className="evo-cluster-symbol-header">
+                    <span className="evo-cluster-symbol-name">{symState.symbol.toUpperCase()}</span>
+                    <span className="evo-badge">{symState.winCount}W/{symState.lossCount}L</span>
+                    <span className="evo-badge">{edgePct}% edge</span>
+                    <span className="evo-cluster-indicator">{verdictIcon}</span>
+                  </div>
+                  {hasDimDetails && (
+                    <div style={{ marginTop: 8 }}>
+                      <RBCVisualizer dimDetails={rbcState.dimDetails} />
+                    </div>
+                  )}
+                  <div className="evo-cluster-list" style={{ marginTop: 8 }}>
+                    <div className="evo-cluster-row">
+                      <div className="evo-cluster-main">
+                        <div className="evo-cluster-header">
+                          <span className="evo-cluster-index">RBC</span>
+                          <div className="evo-cluster-wr-track">
+                            <div className={`evo-cluster-wr-fill ${verdict === 'favorable' ? 'high' : verdict === 'unfavorable' ? 'low' : 'mid'}`} style={{ width: `${edgePct}%` }} />
+                          </div>
+                          <span className="evo-cluster-meta">
+                            <span>{symState.discriminativeDims}/{symState.totalDims} dims</span>
+                            <span>{symState.totalSamples} samples</span>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })
+          )}
+        </>
       )}
     </div>
   )
@@ -1078,7 +1105,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
 
   const th = evo.tradeHistory
   const activeStrategy = evo.strategies.find((s: any) => s.status === 'active')
-  const symbolCount = data?.emClusterState?.symbols?.length ?? 0
+  const symbolCount = data?.rbcState?.symbols?.length ?? 0
 
   return (
     <div className="evo-panel" style={{ marginTop: 12 }}>
@@ -1091,7 +1118,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
       <EvolutionStats evo={evo} th={th} />
       <FitnessBreakdown fb={evo.fitnessBreakdown} />
       {activeStrategy && <StrategyCard strategy={activeStrategy} />}
-      <EMClusterSection emClusterState={data?.emClusterState} />
+      <RBCSection rbcState={data?.rbcState} />
     </div>
   )
 }

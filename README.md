@@ -121,7 +121,7 @@ MATS does not rely on a single AI model. Instead, **seven specialized agents thi
 |:------|:-----|:-----------:|:------:|
 | **Fractal Momentum Sentinel** | Fractal pattern & trend analyst | 0.85 | 0.25 |
 | **On-Chain Whisperer** | On-chain data & macro analyst | 0.50 | 0.25 |
-| **Regime Risk Guardian** | Market regime + Fear & Greed specialist | 0.25 | 0.25 |
+| **RBC & Sentiment Analyst** | RBC clusters + Fear & Greed specialist | 0.25 | 0.25 |
 | **News Reporter** | Multi-source news sentiment analyst | 0.40 | 0.20 |
 | **Independent Risk Auditor** | 🚨 Final gatekeeper (absolute veto power) | 0.10 | 0.25 |
 | **Skeptics** | 🤔 Logic auditor (cross-references all agents) | 0.30 | — |
@@ -159,12 +159,12 @@ MATS has **two EM layers** that discover what makes trades profitable:
 - Skeptics cross-check insight vs actual price (convergence audit)
 - Tiered memory: hot(12) + warm(288) + cold(48 epochs, ~48 days)
 
-**Layer 2 — GMM EM Clustering** (`em-clustering.ts`):
-- True Gaussian Mixture Model via Expectation-Maximisation
-- Discovers latent clusters in feature space (11 dimensions)
-- Each cluster has a weighted win rate — answers "what kind of trade tends to win?"
-- BIC model selection (auto K=2..6), auto-refit every 50 trades
-- Soft assignment query → cluster-weighted win rate for any new context
+**Layer 2 — RBC (Range-Based Clustering)** (`rbc-clustering.ts`):
+- Growing hyperrectangles per symbol (winBox + lossBox), ranges only expand never contract
+- 9 feature dimensions: direction, volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction
+- Edge score = discriminative dims / total dims → verdict: favorable/unfavorable/no_edge
+- Per-symbol persistent memory (rbc-state.json, atomic write)
+- Hypothetical training: compares price change between cycles, feeds directional/flat samples
 
 **Evolutionary Pressure Engine:**
 - Survival Fitness: capital preservation 35% + return 20% + consistency 15% + risk 15% + adaptability 10% + quality 5%
@@ -176,11 +176,11 @@ MATS has **two EM layers** that discover what makes trades profitable:
 A supervised KNN pattern database that answers "in current conditions, has this setup won before?":
 
 - **Two query modes**: `queryEntry()` for new positions, `queryPosition()` for held positions
-- **13D feature space**: volatility, trendStrength, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, fundingRateAccel, volumeRatio, positionSizePct, sentimentConviction + regime (categorical)
+- **9D feature space**: volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction + regime (categorical)
 - **Wilson score**: 95% confidence lower bound — prevents overfitting on small samples
 - **BUY/SELL shared pool**: outcome inverted for opposite side (BUY loss = SELL win)
 - **Noise filter**: |PnL| < 0.5% skipped (fee-level noise)
-- **Direction priority chain**: KNN → GMM EM → Sentiment → Funding → OB → Regime
+- **Direction priority chain**: KNN → RBC → Sentiment → Funding → OB → Regime
 
 ### 🧠 Sigmoid·GA Sentiment Engine
 
@@ -326,7 +326,7 @@ scripts/                      # 🛠 One-time utilities
 data/                         # 💾 Runtime persistence
 └── evolution/
     ├── trade-patterns.json   # Pattern DB (1000 max)
-    ├── em-clusters.json      # GMM EM model (mean, covar, weight, winRate)
+    ├── rbc-state.json        # RBC state (winBox, lossBox per symbol)
     ├── evolution-state.json  # GA population + memory + strategies
     └── portfolio-state.json  # Portfolio snapshot
 ```

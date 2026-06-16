@@ -634,10 +634,8 @@ For each open position, use on-chain/macro signals to decide:
   }
 }
 
-// ─── Agent 3: Regime Pattern Guardian ───
-// Low temperature, conservative. Monitors volatility regimes, macro context, structural risk,
-// AND GMM EM Clusters — unsupervised pattern discovery from historical price action.
-// Uses EM cluster win rates as a statistical prior for regime-based decisions.
+// ─── Agent 3: RBC & Sentiment Analyst ───
+// Uses RBC edge score + Fear & Greed as primary factors.
 
 async function fetchFearGreedIndex(): Promise<{ value: number; classification: string }> {
   try {
@@ -671,680 +669,57 @@ async function getFearGreedIndex(): Promise<{ value: number; classification: str
   cachedFng = { ...result, timestamp: now };
   return result;
 }
-// Low temperature, conservative. Monitors volatility regimes, macro context, and structural risk.
 
-export class RegimePatternGuardian extends BaseAgent {
+// Conservative agent focused on RBC clusters + Fear & Greed sentiment.
+
+export class RBCSentimentAnalyst extends BaseAgent {
   constructor() {
     super({
-      role: 'regime_risk_guardian',
-      name: 'Regime Pattern Guardian',
+      role: 'rbc_sentiment_analyst',
+      name: 'RBC & Sentiment Analyst',
       temperature: 0.25,
       weight: 0.25,
       modelPreference: 'default',
       maxTokens: 2048,
       personality:
-        'You are the regime detection specialist fused with pattern recognition. '
-        + 'You classify market states as trending, ranging, volatile, or chaotic. '
+        'You are the RBC (Range-Based Clustering) specialist fused with sentiment analysis. '
+        + 'You evaluate market conditions through RBC win/loss ranges and Fear & Greed. '
         + 'You are conservative — you prefer to be wrong on the side of safety. '
-        + 'You adjust position sizing based on regime confidence AND GMM EM cluster win rates. '
-        + 'You are aware of macro context, volatility regimes, and structural market shifts. '
-        + 'You protect capital by reducing exposure in uncertain regimes. '
-        + 'You use EM clusters to validate or override your regime-based hunches.',
+        + 'RBC is a growing hyperrectangle that learns "what conditions win/lose" from price action. '
+        + 'RBC FAVORABLE → increase conviction. RBC UNFAVORABLE → strong bias against entry. '
+        + 'You balance RBC with Fear & Greed sentiment and macro context.',
     });
   }
 
   override getSystemPrompt(): string {
-    return `You are Regime Pattern Guardian — regime classification, GMM EM cluster analysis & risk-adjusted sizing.
+    return `You are RBC & Sentiment Analyst — RBC (Range-Based Clustering) & Fear & Greed analysis.
 
-You evaluate ALL trading pairs under the current market regime.
+You evaluate ALL trading pairs under the current market conditions.
 
-=== PATTERN DATA ===
-If the context contains "=== TRADE PATTERN INSIGHTS ===" or "=== POSITION PATTERN INSIGHTS ===":
-  - Use historical win rate as your PRIMARY reference
-  - Example: "Low_vol sideways: 100% HOLD historically, 0% edge for directional sizing"
-  - Regime rules are BASELINE; pattern data OVERRIDES when statistically significant
+=== RBC ASSESSMENT (KEY FACTOR) ===
+If the context contains "=== RBC ASSESSMENT ===":
+  - This is a GROWING HYPERRECTANGLE model trained on ALL historical price action
+  - It maintains win/loss ranges for each feature dimension — ranges only EXPAND, never contract
+  - When win and loss ranges overlap, the MIDPOINT becomes the decision boundary
+  - RBC shows BUY and SELL verdicts separately — compare them for directional bias
+  - 🟢 FAVORABLE → current conditions are in win territory → increase conviction
+  - 🔴 UNFAVORABLE → current conditions are in loss territory → strong bias against entry
+  - 🟡 NO EDGE → insufficient discriminative dimensions → rely on other signals
+  - RBC is your PRIMARY factor — balance it with Fear & Greed and macro context
 
-=== GMM EM CLUSTERS ===
-If the context contains "=== EM CLUSTER ASSESSMENT ===":
-  - This is an UNSUPERVISED GMM model trained on ALL historical price action (hypothetical BUY/SELL)
-  - It clusters market conditions into win/loss regions — NOT based on real trades, but on "what would have won"
-  - Use cluster-weighted win rate as a STATISTICAL PRIOR for your regime assessment
-  - If EM says high win rate cluster for current conditions → increase conviction
-  - If EM says low win rate cluster → reduce size or lean HOLD
-  - EM is a SECONDARY signal — it confirms or challenges your regime analysis
+=== FEAR & GREED INDEX ===
+- 0-25 Extreme Fear → oversold, potential bounce (but high risk)
+- 25-50 Fear → cautious, wait for confirmation
+- 50-75 Greed → normal conditions, follow RBC
+- 75-100 Extreme Greed → overbought, potential top (but trend is strong)
 
 === CONCISE REASONING ===
 - Use ROUND numbers: "~$65K-$66K range" not "$65,688 47.5bps below $66K"
 - Max 3 sentences per assessment
-- If regime is clear + pattern data confirms → short HOLD is fine
+- If RBC confirms + Fear & Greed aligns → short HOLD is fine
 
 === MARKET TICKER (${this.marketSymbol}) ===
-- Vol < 0.5% + sideways → small mean-reversion (2-3%)
-- Vol 0.5-2% + clear trend → normal size (4-5%), up to 8% if strong
-- Vol > 3% → reduce size 50%, still trade if setup exists
-- Chaotic → HOLD
-- Leverage 2-8x: low vol=higher lev, high vol=lower lev
-
-=== OPEN POSITIONS ===
-For each position, evaluate under current regime:
-- Trend continuation (regime supports position) → HOLD, consider trailing SL
-- Regime shift against position (e.g. trending_bear while long) → CLOSE position
-- Regime uncertain/changing → tighten SL, reduce risk, consider partial close
-- High vol regime → widen SL to avoid premature stop-out but reduce size
-- Low vol regime → tighten SL, normal sizing
-
-=== FEAR & GREED INDEX ===
-- 0-25 (Extreme Fear) → BEARISH bias, reduce ALL position sizes
-- 25-45 (Fear) → slightly BEARISH, cautious sizing
-- 45-55 (Neutral) → no sentiment bias, follow technicals
-- 55-75 (Greed) → slightly BULLISH, normal sizing
-- 75-100 (Extreme Greed) → BULLISH but watch for top, take profits on positions
-
-=== POSITION-SPECIFIC RULES ===
-- Regime aligned with position → HOLD, keep or widen TP
-- Regime opposite to position → CLOSE, set closeUrgency based on conviction
-- Regime neutral/mixed → tight SL, keep position but reduce exposure`;
-  }
-
-  /** Override think() to inject Fear & Greed index */
-  override async think(marketState: string, portfolioSnapshot: string, positions?: import('../types/index.ts').PositionContext[]): Promise<import('../types/index.ts').AgentThought> {
-    const fng = await getFearGreedIndex();
-    const enhancedContext = `${marketState}\n\nFear & Greed Index: ${fng.value}/100 (${fng.classification})`;
-    return super.think(enhancedContext, portfolioSnapshot, positions);
-  }
-}
-
-// ─── Agent 5: News Reporter ───
-// Category-aware news sentiment analyst.
-// For CRYPTO assets → fetches crypto-specific news (newsdata.io crypto feed, regulation, hacks, etf)
-// For TradFi assets (indices, stocks, FX, commodities) → fetches macro/financial news (Fed, CPI, GDP, earnings)
-// If no news available for the category, agent defaults to NEUTRAL / HOLD.
-// Falls back to web search if primary news source fails.
-
-const nrLog = createLogger({ agent: 'news_reporter', phase: 'data-fetch' });
-
-// ── RSS News Fetchers (zero-dependency, no API key) ──
-
-/** Parse RSS XML text into article titles/descriptions */
-function parseRssTitles(xml: string, skipFilters: string[] = []): Array<{ title: string; pubDate?: string }> {
-  const articles: Array<{ title: string; pubDate?: string }> = [];
-  // Extract items/entries
-  const items = xml.split(/<item>|<entry>/g).slice(1);
-  for (const item of items) {
-    const titleMatch = item.match(/<title[^>]*><!\[CDATA\[([^\]]*)\]\]><\/title>/) ?? item.match(/<title[^>]*>([^<]*)<\/title>/);
-    const dateMatch = item.match(/<pubDate[^>]*>([^<]*)<\/pubDate>/) ?? item.match(/<published[^>]*>([^<]*)<\/published>/) ?? item.match(/<updated[^>]*>([^<]*)<\/updated>/);
-    const title = titleMatch?.[1]?.replace(/<!\[CDATA\[([^\]]*)\]\]>/, '$1').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').trim() ?? '';
-    if (!title || title.length < 10) continue;
-    const skip = skipFilters.some(f => title.includes(f) || f.includes(title));
-    if (skip) continue;
-    const pubDate = dateMatch?.[1] ? new Date(dateMatch[1]).toISOString().slice(0, 10) : undefined;
-    articles.push({ title: title.slice(0, 150), pubDate });
-  }
-  return articles.slice(0, 5);
-}
-
-/** Fetch from Google News RSS (best free source — 100 articles per query) */
-async function fetchGoogleNewsRSS(query: string, skipFilters: string[] = ['Google News']): Promise<Array<{ title: string; pubDate?: string }> | null> {
-  try {
-    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
-    if (!res.ok) return null;
-    const xml = await res.text();
-    return parseRssTitles(xml, skipFilters);
-  } catch { return null; }
-}
-
-/** Fetch from CNBC RSS (financial news) */
-async function fetchCNBCRSS(): Promise<Array<{ title: string; pubDate?: string }> | null> {
-  try {
-    const res = await fetch('https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114', { signal: AbortSignal.timeout(6_000) });
-    if (!res.ok) return null;
-    return parseRssTitles(await res.text(), ['US Top News and Analysis']);
-  } catch { return null; }
-}
-
-/** Fetch from Bing News RSS */
-async function fetchBingNewsRSS(query: string): Promise<Array<{ title: string; pubDate?: string }> | null> {
-  try {
-    const url = `https://www.bing.com/news/search?q=${encodeURIComponent(query)}&format=rss`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(6_000) });
-    if (!res.ok) return null;
-    return parseRssTitles(await res.text(), ['news search', 'Bing']);
-  } catch { return null; }
-}
-
-/** Fetch from CoinDesk RSS (crypto-specific) */
-async function fetchCoinDeskRSS(): Promise<Array<{ title: string; pubDate?: string }> | null> {
-  try {
-    const res = await fetch('https://www.coindesk.com/arc/outboundfeeds/rss/', { signal: AbortSignal.timeout(6_000) });
-    if (!res.ok) return null;
-    const xml = await res.text();
-    const articles = parseRssTitles(xml, ['CoinDesk:', 'Bitcoin, Ethereum, Crypto News']);
-    return articles;
-  } catch { return null; }
-}
-
-/** Fetch from The Block RSS (crypto-specific) */
-async function fetchTheBlockRSS(): Promise<Array<{ title: string; pubDate?: string }> | null> {
-  try {
-    const res = await fetch('https://www.theblock.co/rss.xml', { signal: AbortSignal.timeout(6_000) });
-    if (!res.ok) return null;
-    return parseRssTitles(await res.text(), ['The Block |']);
-  } catch { return null; }
-}
-
-// ── Category detection (reuse same logic as On-Chain Whisperer) ──
-
-type NewsAssetCategory = 'crypto' | 'tradfi_indices' | 'tradfi_stocks' | 'tradfi_commodities' | 'tradfi_fx' | 'tradfi_other' | 'unknown';
-
-function detectNewsCategory(symbol: string, marketContext: string): NewsAssetCategory {
-  const upper = symbol.toUpperCase();
-  const colonIdx = symbol.indexOf(':');
-  const stripped = colonIdx >= 0 ? (symbol.split(':')[1]?.toUpperCase() ?? upper).replace(/USDT$/, '').replace(/USD$/, '').replace(/PERP$/, '') : upper.replace(/USDT$/, '').replace(/USD$/, '').replace(/PERP$/, '');
-
-  // Check context for explicit Asset Filter first
-  if (/asset\s*filter:\s*indices/i.test(marketContext)) return 'tradfi_indices';
-  if (/asset\s*filter:\s*stocks/i.test(marketContext)) return 'tradfi_stocks';
-  if (/asset\s*filter:\s*commodities/i.test(marketContext)) return 'tradfi_commodities';
-  if (/asset\s*filter:\s*fx/i.test(marketContext)) return 'tradfi_fx';
-  if (/asset\s*filter:\s*tradfi/i.test(marketContext)) return 'tradfi_other';
-  if (/asset\s*filter:\s*crypto_perps/i.test(marketContext)) return 'crypto';
-
-  // Colon-prefixed → likely TradFi
-  if (symbol.includes(':')) {
-    const knownIndices = ['SP500', 'SPX', 'NDX', 'DJI', 'VIX', 'RUT', 'FTSE', 'NKY', 'ASX', 'HSI', 'STOXX', 'NIFTY', 'DAX', 'CAC'];
-    const knownStocks = ['NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'QQQ', 'SPY', 'VTI', 'IWM', 'PLTR', 'MSTR', 'COIN'];
-    const knownCommodities = ['XAU', 'XAG', 'OIL', 'COPPER', 'NATURAL_GAS', 'GOLD', 'SILVER', 'PLATINUM', 'PALLADIUM', 'WHEAT', 'CORN', 'NG'];
-    const knownFX = ['EUR', 'GBP', 'JPY', 'CNH', 'AUD', 'CAD', 'CHF', 'NZD', 'HKD', 'SGD', 'NOK', 'SEK', 'MXN', 'ZAR', 'TRY'];
-    for (const x of knownIndices) if (stripped.includes(x)) return 'tradfi_indices';
-    for (const x of knownStocks) if (stripped.includes(x)) return 'tradfi_stocks';
-    for (const x of knownCommodities) if (stripped.includes(x)) return 'tradfi_commodities';
-    for (const x of knownFX) if (stripped.includes(x)) return 'tradfi_fx';
-    return 'tradfi_other';
-  }
-  return 'crypto';
-}
-
-// ── Macro-level query terms (broader than ticker-specific) ──
-
-interface NewsQueryStrategy {
-  /** Primary: ticker/asset-specific keyword for targeted search */
-  tickerQuery: (symbol: string, base: string) => string;
-  /** Macro: broad economic/financial queries relevant to this asset category */
-  macroQueries: string[];
-  /** World/geopolitical queries */
-  worldQueries: string[];
-  /** Sector queries (industry-level) */
-  sectorQueries: string[];
-}
-
-const NEWS_STRATEGIES: Record<NewsAssetCategory, NewsQueryStrategy> = {
-  crypto: {
-    tickerQuery: (_, base) => `${base} cryptocurrency bitcoin regulation market`,
-    macroQueries: [
-      'federal reserve interest rate inflation economy monetary policy',
-      'cryptocurrency regulation SEC ETF bitcoin institutional adoption',
-      'stablecoin regulation crypto market liquidity digital assets',
-    ],
-    worldQueries: [
-      'geopolitics trade war tariffs global economy risk',
-      'US dollar DXY treasury yield liquidity financial markets',
-    ],
-    sectorQueries: [
-      'DeFi blockchain layer 2 crypto technology development',
-      'bitcoin mining hashrate crypto exchange trading volume',
-    ],
-  },
-  tradfi_indices: {
-    tickerQuery: (_, base) => `${base} S&P 500 stock market index today`,
-    macroQueries: [
-      'federal reserve interest rates FOMC monetary policy inflation CPI',
-      'US economy GDP employment NFP jobs data manufacturing services PMI',
-      'treasury yield curve 2year 10year inversion recession bond market',
-      'corporate earnings season profit outlook forward guidance',
-    ],
-    worldQueries: [
-      'geopolitical risk trade war tariff global supply chain disruption',
-      'US China trade relations Ukraine Russia Middle East oil energy',
-      'global economic outlook IMF World Bank growth forecast recession',
-    ],
-    sectorQueries: [
-      'technology sector AI semiconductor stock market leadership',
-      'energy sector oil price commodity supercycle inflation hedge',
-      'financial sector bank lending credit conditions interest rate impact',
-      'healthcare sector biotech pharmaceutical regulatory policy',
-    ],
-  },
-  tradfi_stocks: {
-    tickerQuery: (_, base) => `${base} stock earnings analyst rating market`,
-    macroQueries: [
-      'stock market today sector rotation earnings season',
-      'federal reserve interest rate impact equity valuation',
-      'inflation consumer spending retail sales economic data',
-    ],
-    worldQueries: [
-      'geopolitics trade policy tariff impact stock market',
-      'global economic growth risk appetite equity flows',
-    ],
-    sectorQueries: [
-      'technology AI cloud computing software sector outlook',
-      'consumer discretionary retail e-commerce spending trends',
-      'industrial manufacturing supply chain automation robotics',
-    ],
-  },
-  tradfi_commodities: {
-    tickerQuery: (_, base) => `${base} commodity price supply demand`,
-    macroQueries: [
-      'commodities supercycle gold oil copper price inflation hedge',
-      'Federal Reserve interest rate dollar index commodity impact',
-      'supply chain raw materials shortage inventory build draw',
-    ],
-    worldQueries: [
-      'OPEC oil production supply cut energy price geopolitical risk',
-      'trade war tariff commodity export import restriction sanctions',
-      'weather climate El Nino agricultural commodity crop yield',
-    ],
-    sectorQueries: [
-      'precious metals gold silver platinum central bank reserve',
-      'energy transition critical minerals lithium copper rare earth',
-      'industrial metals steel aluminum construction demand China',
-    ],
-  },
-  tradfi_fx: {
-    tickerQuery: (_, base) => `${base} forex exchange rate outlook`,
-    macroQueries: [
-      'Federal Reserve interest rate dollar index DXY monetary policy',
-      'central bank policy ECB BOJ BOE rate differential carry trade',
-      'inflation differential purchasing power parity currency valuation',
-    ],
-    worldQueries: [
-      'geopolitical risk safe haven currency flight to quality',
-      'trade balance current account capital flows emerging market',
-      'global reserve currency status de-dollarization BRICS',
-    ],
-    sectorQueries: [
-      'EUR USD forex pair outlook technical analysis positioning',
-      'JPY USD yen carry trade unwind BOJ policy normalization',
-      'GBP USD sterling Brexit economic recovery UK outlook',
-    ],
-  },
-  tradfi_other: {
-    tickerQuery: (_, base) => `${base} financial market today`,
-    macroQueries: [
-      'global financial markets economic outlook today',
-      'central bank policy liquidity risk appetite investor sentiment',
-    ],
-    worldQueries: [
-      'geopolitics global risk trade policy economic uncertainty',
-    ],
-    sectorQueries: [
-      'cross-asset correlation equities bonds commodities currencies',
-    ],
-  },
-  unknown: {
-    tickerQuery: (_, base) => `${base} financial market today`,
-    macroQueries: [
-      'global financial markets economic outlook today',
-      'central bank policy liquidity risk appetite investor sentiment',
-    ],
-    worldQueries: [
-      'geopolitics global risk trade policy economic uncertainty',
-    ],
-    sectorQueries: [
-      'cross-asset correlation equities bonds commodities currencies',
-    ],
-  },
-};
-
-// ── Helper: format articles for injection ──
-
-function formatNewsArticles(
-  source: string,
-  articles: Array<{ title: string; pubDate?: string }>,
-  maxItems = 5,
-): string {
-  if (articles.length === 0) return '';
-  return articles.slice(0, maxItems).map((a, i) =>
-    `[${i + 1}] ${a.pubDate ? `[${a.pubDate}] ` : ''}${a.title}`
-  ).join('\n');
-}
-
-/** Format multiple RSS source results into a labelled block */
-function formatMultiSourceResults(results: Array<{ label: string; articles: Array<{ title: string; pubDate?: string }> }>): string {
-  return results
-    .filter(r => r.articles.length > 0)
-    .map(r => `--- ${r.label} ---\n${r.articles.slice(0, 4).map((a, i) =>
-      `[${i + 1}] ${a.pubDate ? `[${a.pubDate}] ` : ''}${a.title}`
-    ).join('\n')}`)
-    .join('\n\n');
-}
-
-// ── News API Keys ──
-
-const NEWS_API_KEY = 'pub_b330a34800274f45a6ab35467f1a5670';
-
-// ── Crypto News Fetcher ──
-
-async function fetchCryptoNewsFromAPI(): Promise<string> {
-  try {
-    const res = await fetch(
-      `https://newsdata.io/api/1/crypto?apikey=${NEWS_API_KEY}&excludefield=sentiment,sentiment_stats,ai_tag,content`,
-      { signal: AbortSignal.timeout(10_000) }
-    );
-    if (!res.ok) {
-      nrLog.warn(`Crypto news API returned ${res.status}`);
-      return 'NEWS_UNAVAILABLE';
-    }
-    const data = await res.json() as { status?: string; results?: Array<{ title: string; description?: string; source_id?: string; link?: string; pubDate?: string; category?: string[] }> };
-    if (!data?.results || data.results.length === 0) return 'NO_NEWS';
-    return data.results.slice(0, 8).map((article, i) =>
-      `[${i + 1}] [${article.pubDate?.slice(0, 10) ?? 'recent'}] ${article.title}${article.description ? ` — ${article.description.slice(0, 150)}` : ''}`
-    ).join('\n');
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    nrLog.warn(`Crypto news fetch failed: ${msg}`);
-    return 'NEWS_UNAVAILABLE';
-  }
-}
-
-// ── TradFi / Macro News Dispatcher ──
-
-async function fetchTradFiNews(category: NewsAssetCategory, symbol: string): Promise<string> {
-  const base = symbol.includes(':') ? symbol.split(':')[1]?.toUpperCase() ?? symbol : symbol.replace(/USDT$/, '').replace(/USD$/, '');
-  const strategy = NEWS_STRATEGIES[category] ?? NEWS_STRATEGIES.unknown;
-  const results: Array<{ label: string; articles: Array<{ title: string; pubDate?: string }> }> = [];
-
-  // ── TIER 0: NewsData.io API (try ticker-specific, then broader) ──
-  // Map category to valid newsdata.io categories (no 'economic' — not supported by free tier)
-  let newsdataCat: string;
-  switch (category) {
-    case 'tradfi_indices':    newsdataCat = 'business,top'; break;
-    case 'tradfi_stocks':     newsdataCat = 'business,technology'; break;
-    case 'tradfi_commodities': newsdataCat = 'business,environment,top'; break;
-    case 'tradfi_fx':         newsdataCat = 'business,politics,top'; break;
-    default:                  newsdataCat = 'business'; break;
-  }
-
-  async function tryNewsData(query: string): Promise<Array<{ title: string; pubDate?: string }> | null> {
-    try {
-      const res = await fetch(
-        `https://newsdata.io/api/1/news?apikey=${NEWS_API_KEY}&category=${newsdataCat}&q=${encodeURIComponent(query)}&language=en&size=6&excludefield=sentiment,sentiment_stats,ai_tag,content`,
-        { signal: AbortSignal.timeout(10_000) }
-      );
-      if (!res.ok) return null;
-      const data = await res.json() as { results?: Array<{ title: string; description?: string; pubDate?: string }> };
-      if (!data?.results?.length) return null;
-      return data.results.slice(0, 6).map(a => ({
-        title: `${a.title}${a.description ? ` — ${a.description.slice(0, 120)}` : ''}`,
-        pubDate: a.pubDate?.slice(0, 10),
-      }));
-    } catch { return null; }
-  }
-
-  // Try ticker-specific → macro → world → pure category
-  const newsDataQueries = [
-    { label: `${base}`, query: strategy.tickerQuery(symbol, base) },
-    { label: 'Macro', query: strategy.macroQueries[0] ?? '' },
-    { label: 'World', query: strategy.worldQueries[0] ?? '' },
-  ];
-  for (const q of newsDataQueries) {
-    if (!q.query) continue;
-    const articles = await tryNewsData(q.query);
-    if (articles && articles.length > 0) {
-      results.push({ label: `NewsData.io: ${q.label}`, articles });
-      break; // First successful NewsData.io result is enough
-    }
-  }
-
-  // ── TIER 1: Google News RSS (macro-level queries — casts wide net) ──
-  // Multiple macro queries in parallel
-  const macroPromises = strategy.macroQueries.slice(0, 3).map(q =>
-    fetchGoogleNewsRSS(q).then(articles => ({ label: `Google: ${q.slice(0, 40)}...`, articles: articles ?? [] }))
-  );
-  const worldPromises = strategy.worldQueries.slice(0, 2).map(q =>
-    fetchGoogleNewsRSS(q).then(articles => ({ label: `Google: ${q.slice(0, 40)}...`, articles: articles ?? [] }))
-  );
-  const sectorPromises = strategy.sectorQueries.slice(0, 2).map(q =>
-    fetchGoogleNewsRSS(q).then(articles => ({ label: `Google: ${q.slice(0, 40)}...`, articles: articles ?? [] }))
-  );
-
-  const [macroResults, worldResults, sectorResults] = await Promise.all([
-    Promise.all(macroPromises),
-    Promise.all(worldPromises),
-    Promise.all(sectorPromises),
-  ]);
-
-  // Take best 2 macro, best 1 world, best 1 sector
-  const allGoogleResults = [
-    ...macroResults.filter(r => r.articles.length >= 2).slice(0, 2),
-    ...worldResults.filter(r => r.articles.length >= 2).slice(0, 1),
-    ...sectorResults.filter(r => r.articles.length >= 2).slice(0, 1),
-  ];
-  results.push(...allGoogleResults);
-
-  // ── TIER 2: CNBC + Bing RSS (supplementary) ──
-  if (results.length < 3) {
-    const [cnbcArticles, bingArticles] = await Promise.all([
-      fetchCNBCRSS(),
-      fetchBingNewsRSS(strategy.macroQueries[0] ?? 'financial market'),
-    ]);
-    if (cnbcArticles && cnbcArticles.length >= 2) {
-      results.push({ label: 'CNBC', articles: cnbcArticles.slice(0, 3) });
-    }
-    if (bingArticles && bingArticles.length >= 2) {
-      results.push({ label: 'Bing News', articles: bingArticles.slice(0, 3) });
-    }
-  }
-
-  // ── TIER 3: Web search fallback (last resort) ──
-  if (results.length === 0) {
-    nrLog.info(`All news sources returned nothing for ${base}, web search fallback`);
-    const broadQuery = strategy.macroQueries[0] ?? 'financial market today';
-    const searchResult = await webSearch(broadQuery);
-    if (searchResult.length > 10 && !searchResult.includes('Found no direct results')) {
-      return `[Web Search] ${searchResult.slice(0, 400)}`;
-    }
-    return `[No News] No ${category.replace('tradfi_', '')} news found. Agent should remain NEUTRAL.`;
-  }
-
-  return formatMultiSourceResults(results);
-}
-
-// ── Crypto News with Political/Economic Context ──
-
-async function fetchCategoryAwareCryptoNews(symbol: string): Promise<string> {
-  const base = symbol.includes(':') ? symbol.split(':')[1]?.toUpperCase() ?? symbol : symbol.replace(/USDT$/, '').replace(/USD$/, '');
-  const strategy = NEWS_STRATEGIES.crypto;
-  const results: Array<{ label: string; articles: Array<{ title: string; pubDate?: string }> }> = [];
-
-  // TIER 0: NewsData.io crypto feed
-  const apiNews = await fetchCryptoNewsFromAPI();
-  if (apiNews !== 'NEWS_UNAVAILABLE' && apiNews !== 'NO_NEWS') {
-    results.push({ label: `NewsData.io: ${base}`, articles: apiNews.split('\n').map(line => {
-      const m = line.match(/^\[\d+\]\s*(\[[^\]]+\])?\s*(.+)/);
-      return { title: m?.[2] ?? line, pubDate: m?.[1]?.replace(/[\[\]]/g, '') };
-    }).filter(a => a.title.length > 5) });
-  }
-
-  // TIER 1: CoinDesk + The Block RSS (crypto-native)
-  const [coindeskArticles, theblockArticles] = await Promise.all([
-    fetchCoinDeskRSS(),
-    fetchTheBlockRSS(),
-  ]);
-  if (coindeskArticles && coindeskArticles.length >= 2) {
-    results.push({ label: 'CoinDesk', articles: coindeskArticles.slice(0, 4) });
-  }
-  if (theblockArticles && theblockArticles.length >= 2) {
-    results.push({ label: 'The Block', articles: theblockArticles.slice(0, 4) });
-  }
-
-  // TIER 2: Google News RSS — crypto regulation + macro context
-  const macroQuery = 'federal reserve interest rates cryptocurrency regulation institutional adoption monetary policy';
-  const politicalQuery = 'cryptocurrency regulation SEC Bitcoin ETF government policy digital assets';
-  const [macroArticles, politicalArticles] = await Promise.all([
-    fetchGoogleNewsRSS(macroQuery),
-    fetchGoogleNewsRSS(politicalQuery),
-    fetchGoogleNewsRSS(strategy.worldQueries[0] ?? 'global economy geopolitical risk financial markets'),
-  ]);
-  if (politicalArticles && politicalArticles.length >= 2) {
-    results.push({ label: 'Google: Regulation/Politics', articles: politicalArticles.slice(0, 4) });
-  }
-  if (macroArticles && macroArticles.length >= 2) {
-    results.push({ label: 'Google: Macro', articles: macroArticles.slice(0, 4) });
-  }
-
-  // TIER 3: Web search fallback
-  if (results.length === 0) {
-    nrLog.info(`All crypto news sources returned nothing, web search fallback`);
-    const searchResult = await webSearch(`${base} cryptocurrency news latest`);
-    if (searchResult.length > 10 && !searchResult.includes('Found no direct results')) {
-      return `[Web Search] ${searchResult.slice(0, 400)}`;
-    }
-    return '[No News] No crypto news found. Agent should remain NEUTRAL.';
-  }
-
-  return formatMultiSourceResults(results);
-}
-
-// ── Main news dispatcher ──
-
-async function fetchNews(symbol: string, marketContext: string): Promise<string> {
-  const category = detectNewsCategory(symbol, marketContext);
-  const lines: string[] = [`[News Reporter] Asset: ${symbol} | Category: ${category}`];
-
-  if (category === 'crypto') {
-    nrLog.info(`Fetching category-aware crypto news for ${symbol}`);
-    const newsBody = await fetchCategoryAwareCryptoNews(symbol);
-    lines.push(newsBody);
-  } else {
-    nrLog.info(`Fetching TradFi macro news for ${symbol} (${category})`);
-    const newsBody = await fetchTradFiNews(category, symbol);
-    lines.push(newsBody);
-  }
-
-  return lines.join('\n');
-}
-
-// ── Cache (5 min for news) ──
-
-interface NewsCacheEntry {
-  data: string;
-  timestamp: number;
-}
-
-const newsCache = new Map<string, NewsCacheEntry>();
-const newsInflight = new Map<string, Promise<string>>();
-
-async function getNews(symbol: string, marketContext: string): Promise<string> {
-  const cacheKey = `${symbol.toUpperCase()}|${detectNewsCategory(symbol, marketContext)}`;
-  const now = Date.now();
-  const cached = newsCache.get(cacheKey);
-  if (cached && now - cached.timestamp < 300_000) {
-    nrLog.debug(`News cache HIT for ${cacheKey}`);
-    return cached.data;
-  }
-  // Inflight lock: prevent duplicate fetches when 5 agents expire cache simultaneously
-  const inflight = newsInflight.get(cacheKey);
-  if (inflight) {
-    nrLog.debug(`News inflight WAIT for ${cacheKey}`);
-    return inflight;
-  }
-  nrLog.info(`Fetching fresh news for ${cacheKey}`);
-  const fetchPromise = fetchNews(symbol, marketContext).then(data => {
-    newsCache.set(cacheKey, { data, timestamp: Date.now() });
-    newsInflight.delete(cacheKey);
-    return data;
-  }).catch(err => {
-    newsInflight.delete(cacheKey);
-    throw err;
-  });
-  newsInflight.set(cacheKey, fetchPromise);
-  return fetchPromise;
-}
-
-// ── Revised NewsReporter Agent ──
-
-export class NewsReporter extends BaseAgent {
-  constructor() {
-    super({
-      role: 'news_reporter',
-      name: 'News Reporter',
-      temperature: 0.4,
-      weight: 0.20,
-      modelPreference: 'default',
-      personality:
-        'You are an elite multi-asset news analyst. For CRYPTO assets, you track regulatory developments, '
-        + 'ETF flows, exchange hacks, institutional adoption, and protocol changes. '
-        + 'For TradFi assets (indices, stocks, FX, commodities), you track Fed policy, economic data '
-        + '(CPI, GDP, NFP), earnings reports, geopolitics, and intermarket dynamics. '
-        + 'You distinguish between genuine catalysts and noise. '
-        + 'When no news is available, you default to NEUTRAL — you do NOT manufacture signals.',
-    });
-  }
-
-  override getSystemPrompt(): string {
-    return `You are News Reporter — category-aware multi-asset news sentiment analyst.
-
-You receive LIVE news headlines injected into your context.
-You evaluate ALL trading pairs against the news landscape.
-
-=== PATTERN DATA ===
-If the context contains "=== TRADE PATTERN INSIGHTS ===" or "=== POSITION PATTERN INSIGHTS ===":
-  - Use historical win rate to calibrate your confidence
-  - Example: "Positive news in low_vol → 30% win rate historically, not enough to override regime"
-  - News is a TACTICAL signal; pattern data is STRATEGIC
-
-=== CONCISE REASONING ===
-- Use ROUND numbers: "~2-week high" not "2-week high at $65,688"
-- Max 3 sentences per assessment
-- If news is positive but pattern data says low win rate → acknowledge both, defer to pattern data
-
-=== MARKET TICKER (${this.marketSymbol}) ===
-Check injected news for this asset's category. Decide buy/sell/hold.
-
-=== OPEN POSITIONS ===
-For each open position, check news relevant to ITS category:
-- Position in a crypto asset → check crypto news for this specific token
-- Position in a TradFi asset → check macro/sector/world news
-
-=== NEWS→POSITION DECISION RULES ===
-For each position:
-- News supports position direction → HOLD, keep current SL/TP
-- News contradicts position direction → CONSIDER CLOSE, tighten SL
-- Major negative catalyst for the exact asset → CLOSE immediately
-- Minor negative → tighten SL, watch closely
-- Major positive catalyst → consider increasing (via market ticker decision)
-- No relevant news → HOLD with current settings, no change
-
-=== NEUTRAL DEFAULT ===
-If the injected context says "No recent news" or "NO_NEWS":
-→ You MUST stay NEUTRAL. Do not create a signal.
-→ Confidence should be LOW (0.1-0.3).`;
-  }
-
-  /** Override think() to inject category-aware news for ALL relevant symbols */
-  override async think(marketState: string, portfolioSnapshot: string, positions?: import('../types/index.ts').PositionContext[]): Promise<import('../types/index.ts').AgentThought> {
-    // Collect ALL unique symbols
-    const allSymbols = new Set<string>();
-    const symMatch = marketState.match(/Selected Symbol:\s*(\S+)/i) ?? marketState.match(/Symbol:\s*(\S+)/i);
-    allSymbols.add(symMatch?.[1] ?? 'BTCUSDT');
-    if (positions) {
-      for (const p of positions) allSymbols.add(p.symbol);
-    }
-
-    nrLog.info(`Fetching news for ${allSymbols.size} symbol(s)`);
-    const newsParts: string[] = [];
-    for (const sym of allSymbols) {
-      try {
-        const newsText = await getNews(sym, marketState);
-        newsParts.push(`=== ${sym} News ===\n${newsText}`);
-      } catch (err: unknown) {
-        nrLog.warn(`News fetch failed for ${sym}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-
-    const enhancedContext = `${marketState}\n\n=== Live News Feed ===\n${newsParts.join('\n\n')}\n\nNOTE: If news is unavailable or empty, remain NEUTRAL — do NOT invent signals.`;
-    return super.think(enhancedContext, portfolioSnapshot, positions);
+- Vol < 0.5% + sideways → small mean-reversion (2-3%)`;
   }
 }
 
@@ -1468,6 +843,45 @@ You are NOT here to block all trades. Ensure they are SAFE. System needs to trad
   }
 }
 
+// ─── Agent 5: News Reporter ───
+// Moderate temperature. Monitors news sentiment for all trading pairs.
+
+export class NewsReporter extends BaseAgent {
+  constructor() {
+    super({
+      role: 'news_reporter',
+      name: 'News Reporter',
+      temperature: 0.4,
+      weight: 0.20,
+      modelPreference: 'default',
+      personality:
+        'You are the news sentiment analyst. You monitor news feeds for all trading pairs. '
+        + 'You are moderate — you neither panic at FUD nor chase hype. '
+        + 'You provide concise, factual news summaries with clear sentiment labels. '
+        + 'You avoid overreacting to single headlines. '
+        + 'You flag only genuinely market-moving news.',
+    });
+  }
+
+  override getSystemPrompt(): string {
+    return `You are News Reporter — news sentiment analysis for all trading pairs.
+
+You evaluate news sentiment for ALL trading pairs independently.
+
+=== NEWS SENTIMENT ===
+If the context contains "=== NEWS SENTIMENT ===":
+  - This is the latest news aggregated for each symbol
+  - Sentiment ranges from -1.0 (very bearish) to +1.0 (very bullish)
+  - News is a SECONDARY factor — use it to confirm or question other signals
+  - Do NOT trade based on news alone — news is slow, markets are fast
+
+=== CONCISE REASONING ===
+- Max 2 sentences per symbol
+- Focus on market-moving news only
+- Ignore routine noise and FUD`;
+  }
+}
+
 // ─── Agent 6: Skeptics ───
 // Post-thinking reviewer. Challenges every sub-agent's reasoning and data usage.
 // Default model: deepseek-v4-flash:cloud (fast, for minimal latency overhead).
@@ -1543,18 +957,18 @@ export class SkepticsAgent {
     const reviewableRoles = new Set<string>([
       'fractal_momentum_sentinel',
       'onchain_whisperer',
-      'regime_risk_guardian',
+      'rbc_sentiment_analyst',
       'news_reporter',
       'independent_risk_auditor',
     ]);
 
-    // ── EM CLUSTER AWARENESS ──
-    // Extract EM cluster assessment from market context if present
-    let emClusterContext = '';
+    // ── RBC AWARENESS ──
+    // Extract RBC assessment from market context if present
+    let rbcContext = '';
     try {
       if (marketStateDesc) {
-        const emMatch = marketStateDesc.match(/=== EM CLUSTER ASSESSMENT ===[\s\S]*?(?=\n===|$)/);
-        if (emMatch) emClusterContext = emMatch[0];
+        const rbcMatch = marketStateDesc.match(/=== RBC ASSESSMENT ===[\s\S]*?(?=\n===|$)/);
+        if (rbcMatch) rbcContext = rbcMatch[0];
       }
     } catch { /* ignore */ }
 
