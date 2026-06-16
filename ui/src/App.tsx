@@ -1019,33 +1019,39 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
       )}
 
       {/* ── GMM EM Clusters ── */}
-      {data?.emClusterState?.symbols?.map ? data.emClusterState.symbols.map(symState => (
-        <div key={symState.symbol}>
-          <div className="panel-header" style={{marginTop: 8, marginBottom: 4}}>
-            <span className="panel-title" style={{fontSize:'0.65rem'}}>🧬 EM Clusters · {symState.symbol.toUpperCase()}</span>
-            <span className="panel-badge" style={{fontSize:'0.5rem'}}>BIC {symState.bic.toFixed(1)}</span>
+      {data?.emClusterState?.symbols?.map ? (
+        <div style={{marginTop: 10}}>
+          <div className="panel-header" style={{marginBottom: 6}}>
+            <span className="panel-title" style={{fontSize:'0.7rem'}}>🧬 EM Clusters</span>
+            <span className="panel-badge" style={{fontSize:'0.5rem'}}>{data.emClusterState.symbols.length} symbols</span>
           </div>
-          <div className="strategy-list">
-            {symState.clusters.map(c => {
-              const wrColor = c.winRate > 0.6 ? 'var(--accent-green)' : c.winRate > 0.4 ? 'var(--text-secondary)' : 'var(--accent-red)'
-              return (
-                <div key={c.index} className="strategy-row active" style={{gap:6}}>
-                  <span className="strategy-id">#{c.index}</span>
-                  <span style={{fontSize:'0.6rem', color: wrColor, fontWeight:600}}>wr={((c.winRate)*100).toFixed(0)}%</span>
-                  <span style={{fontSize:'0.55rem', color:'var(--text-tertiary)'}}>n={c.sampleCount}</span>
-                  <span style={{fontSize:'0.55rem', color:'var(--text-tertiary)'}}>π={((c.weight)*100).toFixed(0)}%</span>
-                  <span style={{fontSize:'0.5rem', marginLeft:'auto'}}>
-                    {c.winRate > 0.6 ? '🟢' : c.winRate < 0.4 ? '🔴' : '🟡'}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-          <div style={{fontSize:'0.5rem', color:'var(--text-tertiary)', padding:'2px 0', textAlign:'right'}}>
-            {symState.totalSamples} samples
-          </div>
+          {data.emClusterState.symbols.map(symState => (
+            <div key={symState.symbol} style={{marginBottom: 6}}>
+              <div style={{display:'flex', alignItems:'center', gap:6, marginBottom:3}}>
+                <span style={{fontSize:'0.65rem', fontWeight:600, color:'var(--text-secondary)'}}>{symState.symbol.toUpperCase()}</span>
+                <span className="panel-badge" style={{fontSize:'0.5rem'}}>BIC {symState.bic.toFixed(1)}</span>
+                <span style={{fontSize:'0.5rem', color:'var(--text-tertiary)', marginLeft:'auto'}}>{symState.totalSamples} samples</span>
+              </div>
+              <div className="strategy-list">
+                {symState.clusters.map(c => {
+                  const wrColor = c.winRate > 0.6 ? 'var(--accent-green)' : c.winRate > 0.4 ? 'var(--text-secondary)' : 'var(--accent-red)'
+                  return (
+                    <div key={c.index} className="strategy-row active" style={{gap:6}}>
+                      <span className="strategy-id">#{c.index}</span>
+                      <span style={{fontSize:'0.6rem', color: wrColor, fontWeight:600}}>wr={((c.winRate)*100).toFixed(0)}%</span>
+                      <span style={{fontSize:'0.55rem', color:'var(--text-tertiary)'}}>n={c.sampleCount}</span>
+                      <span style={{fontSize:'0.55rem', color:'var(--text-tertiary)'}}>π={((c.weight)*100).toFixed(0)}%</span>
+                      <span style={{fontSize:'0.5rem', marginLeft:'auto'}}>
+                        {c.winRate > 0.6 ? '🟢' : c.winRate < 0.4 ? '🔴' : '🟡'}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
         </div>
-      )) : null}
+      ) : null}
     </div>
   )
 }
