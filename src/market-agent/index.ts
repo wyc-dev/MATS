@@ -668,7 +668,7 @@ export class MarketAgent {
             hlFetch({ type: 'l2Book', coin: symbol }),
             hlFetch({
               type: 'candleSnapshot',
-              req: { coin: symbol, interval: '1d', startTime: Date.now() - 172_800_000, endTime: Date.now() },
+              req: { coin: symbol.replace(/^.*:/, ''), interval: '1d', startTime: Date.now() - 172_800_000, endTime: Date.now() },
             }),
           ]);
           let price = 0;

@@ -163,7 +163,7 @@ async function fetchCandles(
   try {
     const data = await hlFetchFn({
       type: 'candleSnapshot',
-      req: { coin: symbol, interval, startTime, endTime },
+      req: { coin: symbol.replace(/^.*:/, ''), interval, startTime, endTime },
     }) as RawCandle[];
 
     if (!Array.isArray(data) || data.length === 0) {
