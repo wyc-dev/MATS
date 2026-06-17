@@ -1080,6 +1080,9 @@ function RBCSection({ rbcState }: { rbcState: any }) {
                               {d.boundary !== null && (
                                 <div className="rbc-dim-boundary" style={{ left: `${Math.max(0, Math.min(100, toPct(d.boundary)))}%` }} />
                               )}
+                              {d.value !== undefined && (
+                                <div className="rbc-dim-dot" style={{ left: `${Math.max(0, Math.min(100, toPct(d.value)))}%` }} />
+                              )}
                             </div>
                           </div>
                         )
@@ -1136,10 +1139,10 @@ function RBCSection({ rbcState }: { rbcState: any }) {
             </div>
           </div>
           <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch rbc-legend-swatch--dot" />
+            <div className="rbc-legend-swatch rbc-legend-swatch--boundary" />
             <div className="rbc-legend-text">
               <span className="rbc-legend-label">Boundary</span>
-              <span className="rbc-legend-desc">Midpoint of the overlap region. The decision threshold separating win-dominant from loss-dominant territory.</span>
+              <span className="rbc-legend-desc">Midpoint of the overlap region. Even when the win range is tiny and fully swallowed by loss (only gold + red visible), the boundary still marks the threshold between win-dominant and loss-dominant territory within the overlap. It remains useful as a decision divider.</span>
             </div>
           </div>
           <div className="rbc-legend-item">
