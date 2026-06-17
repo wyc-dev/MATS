@@ -31,7 +31,7 @@ import { calculateTakerFee, calculateFundingCost, getFeeSummary } from './tradin
 import { getSRZones } from './analysis/support-resistance.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
-import { RBCEngine } from './evolution/rbc-clustering.ts';
+import { RBCEngine, type RBCQueryResult } from './evolution/rbc-clustering.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole } from './types/index.ts';
 
 const log = createLogger({ phase: 'system' });
@@ -76,7 +76,7 @@ class AMACRFSystem {
   private rbcEngine!: RBCEngine;
   private lastPatternContext = '';
   /** Previous cycle's market context + price for hypothetical RBC training */
-  private lastCycleRBCContext: { price: number; features: Record<string, number> } | null = null;
+  private lastCycleRBCContext: { symbol: string; price: number; features: Record<string, number> } | null = null;
   private lastBacktestResult: import('./backtest/index.ts').BacktestResult | null = null;
   private backtestProgress: BacktestProgress | null = null;
   private paused = false;
@@ -633,30 +633,37 @@ class AMACRFSystem {
 
     // ── RBC HYPOTHETICAL TRAINING: Learn from every cycle's price action ──
     // Compare current price vs last cycle's price.
-    //   - Price up >0.1% → BUY would have won (feed 1 sample: direction=+1, outcome=WIN)
-    //   - Price down >0.1% → SELL would have won (feed 1 sample: direction=-1, outcome=WIN)
+    //   - Price up >0.1% → LONG wins → outcome=1 (winBox)
+    //   - Price down >0.1% → LONG loses → outcome=0 (lossBox)
     //   - Price change <0.05% → flat market, both sides lose (feed 2 samples: both LOSS)
     //   - 0.05%-0.1% → noise, skip
-    // This avoids the 50/50 problem of feeding both outcomes with identical features.
     if (this.lastCycleRBCContext && marketPrice > 0) {
       try {
-        const prevPrice = this.lastCycleRBCContext.price;
-        const priceChange = (marketPrice - prevPrice) / prevPrice;
-        const absChange = Math.abs(priceChange);
-        const baseFeatures = this.lastCycleRBCContext.features;
+        // Cross-symbol guard: if symbol changed, discard stale context to prevent
+        // absurd price-change calculations (e.g. BTC $105k → META $600 = -99%)
+        if (this.lastCycleRBCContext.symbol !== activeSymbol) {
+          log.warn(`🧬 RBC symbol mismatch: stored=${this.lastCycleRBCContext.symbol}, current=${activeSymbol}. Resetting context.`);
+          this.lastCycleRBCContext = null;
+        } else {
+          const prevPrice = this.lastCycleRBCContext.price;
+          const priceChange = (marketPrice - prevPrice) / prevPrice;
+          const absChange = Math.abs(priceChange);
+          const baseFeatures = this.lastCycleRBCContext.features;
 
-        if (absChange >= 0.001) {
-          // Directional move: feed only the winning side
-          const buyWon = priceChange > 0;
-          this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, 1);
-          log.info(`🧬 RBC hypothetical: ${activeSymbol} ${(priceChange * 100).toFixed(2)}% → ${buyWon ? 'BUY=WIN' : 'SELL=WIN'} (cycle #${this.totalCycles})`);
-        } else if (absChange < 0.0005) {
-          // Flat market: both sides lose
-          this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, 0);
-          this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, 0);
-          log.info(`🧬 RBC hypothetical: ${activeSymbol} flat (${(priceChange * 100).toFixed(2)}%) → BUY=LOSS SELL=LOSS (cycle #${this.totalCycles})`);
+          if (absChange >= 0.001) {
+            // Directional move: outcome tracks LONG perspective (1=win, 0=loss)
+            const outcome: 1 | 0 = priceChange > 0 ? 1 : 0;
+            this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, outcome);
+            const resultStr = outcome === 1 ? 'LONG=WIN' : 'LONG=LOSS';
+            log.info(`🧬 RBC hypothetical: ${activeSymbol} ${(priceChange * 100).toFixed(2)}% → ${resultStr} (cycle #${this.totalCycles})`);
+          } else if (absChange < 0.0005) {
+            // Flat market: both sides lose
+            this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, 0);
+            this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, 0);
+            log.info(`🧬 RBC hypothetical: ${activeSymbol} flat (${(priceChange * 100).toFixed(2)}%) → LONG=LOSS (cycle #${this.totalCycles})`);
+          }
+          // else: noise (0.05%-0.1%), skip
         }
-        // else: noise (0.05%-0.1%), skip
       } catch (err) {
         log.warn(`[RBC-hypothetical] Failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -666,6 +673,7 @@ class AMACRFSystem {
     // Do this AFTER the training above so the old context is used for comparison.
     try {
       this.lastCycleRBCContext = {
+        symbol: activeSymbol,
         price: combinedState.price,
         features: {
           volatility: combinedState.volatility ?? 0,
@@ -766,16 +774,13 @@ class AMACRFSystem {
           sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
           signalAgreement: 0.5, // updated after cycle with actual consensus confidence
         });
-        const rbcSell = this.rbcEngine.query(activeSymbol, {
-          volatility: combinedState.volatility ?? 0,
-          srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
-          obImbalance: combinedState.orderBookImbalance ?? 0,
-          fundingRate: this.sentimentEngine?.getFundingRate() ?? 0,
-          volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
-          sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
-          sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
-          signalAgreement: 0.5, // updated after cycle with actual consensus confidence
-        });
+        // Invert BUY verdict for SELL (same engine models long-only; short is the inverse)
+        const rbcSell: RBCQueryResult = {
+          ...rbcBuy,
+          verdict: rbcBuy.verdict === 'favorable' ? 'unfavorable' : rbcBuy.verdict === 'unfavorable' ? 'favorable' : 'no_edge',
+          winDims: rbcBuy.lossDims,
+          lossDims: rbcBuy.winDims,
+        };
         const hasData = rbcBuy.verdict !== 'no_edge' || rbcSell.verdict !== 'no_edge'
           || (rbcBuy.explanation && !rbcBuy.explanation.startsWith('Only'))
           || (rbcSell.explanation && !rbcSell.explanation.startsWith('Only'));
@@ -940,7 +945,12 @@ class AMACRFSystem {
                 sentimentConviction: sentimentData?.conviction ?? 0.5,
                     };
               const rbcBuy = this.rbcEngine.query(combinedState.primarySymbol, { ...rbcCtx });
-              const rbcSell = this.rbcEngine.query(combinedState.primarySymbol, { ...rbcCtx });
+              const rbcSell: RBCQueryResult = {
+                ...rbcBuy,
+                verdict: rbcBuy.verdict === 'favorable' ? 'unfavorable' : rbcBuy.verdict === 'unfavorable' ? 'favorable' : 'no_edge',
+                winDims: rbcBuy.lossDims,
+                lossDims: rbcBuy.winDims,
+              };
               if (rbcBuy.verdict === 'favorable' && rbcSell.verdict !== 'favorable') {
                 direction = 'buy';
                 log.info(`🧪 RBC-guided: BUY favorable (edge=${(rbcBuy.edgeScore * 100).toFixed(0)}%)`);
