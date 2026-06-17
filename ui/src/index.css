@@ -1862,12 +1862,26 @@ body {
   position: absolute;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 6px;
-  height: 6px;
-  background: #ffffff;
+  width: 18px;
+  height: 18px;
+  background: #1a1a2e;
+  border: 1.5px solid rgba(255, 255, 255, 0.4);
   border-radius: 50%;
-  box-shadow: 0 0 4px rgba(255, 255, 255, 0.6);
   z-index: 4;
+}
+
+.rbc-dim-dot {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 5px;
+  height: 5px;
+  background: #22d3ee;
+  border: 1.5px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(34, 211, 238, 0.8), 0 0 12px rgba(34, 211, 238, 0.3);
+  z-index: 5;
+  transition: left 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .rbc-dim-meta {
@@ -1939,6 +1953,15 @@ body {
 .rbc-legend-swatch--win { background: var(--green); opacity: 0.8; }
 .rbc-legend-swatch--loss { background: var(--red); opacity: 0.8; }
 .rbc-legend-swatch--overlap { background: var(--gold); opacity: 0.85; }
+.rbc-legend-swatch--boundary {
+  width: 14px;
+  height: 14px;
+  background: #1a1a2e;
+  border: 1.5px solid rgba(255, 255, 255, 0.4);
+  border-radius: 50%;
+  margin-top: 2px;
+}
+
 .rbc-legend-swatch--dot {
   width: 8px;
   height: 8px;

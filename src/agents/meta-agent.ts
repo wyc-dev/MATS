@@ -53,7 +53,8 @@ If the context contains "=== RBC ASSESSMENT ===":
   - This is a GROWING HYPERRECTANGLE model trained on ALL historical price action
   - 🟢 FAVORABLE → current conditions are in win territory → increase conviction
   - 🔴 UNFAVORABLE → current conditions are in loss territory → STRONG bias against entry
-  - 🟡 NO EDGE → insufficient discriminative dimensions → rely on other signals
+  - 🟡 NO EDGE → every dimension is in the overlap zone. The market state is ambiguous relative to past patterns. This is NOT a failure — it is a valid signal to HOLD. Do NOT force a direction.
+  - Even under NO_EDGE, the winDims/lossDims ratio (e.g. '3W/6L') shows mild directional tilt — the value falls on the win side of some overlap boundaries and loss side of others. Use as a weak bias only.
   - RBC is the PRIMARY factor for RBC & Sentiment Analyst — weigh it heavily in arbitration
   - If RBC disagrees with a sub-agent's recommendation → weigh RBC as a tiebreaker
 

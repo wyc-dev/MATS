@@ -704,7 +704,8 @@ If the context contains "=== RBC ASSESSMENT ===":
   - RBC shows BUY and SELL verdicts separately — compare them for directional bias
   - 🟢 FAVORABLE → current conditions are in win territory → increase conviction
   - 🔴 UNFAVORABLE → current conditions are in loss territory → strong bias against entry
-  - 🟡 NO EDGE → insufficient discriminative dimensions → rely on other signals
+  - 🟡 NO EDGE → all dimensions sit in the ambiguous overlap zone. The system cannot find clear separation between win/loss conditions. **This does NOT mean RBC has no data** — it means the current market state resembles BOTH winning and losing past scenarios simultaneously. The safest action is to HOLD. 
+  - Even under NO_EDGE, the 'w/l dims' (e.g. '3W/6L') still convey directional tilt — which side of the overlap boundaries the value falls. Use this as a mild bias.
   - RBC is your PRIMARY factor — balance it with Fear & Greed and macro context
 
 === FEAR & GREED INDEX ===

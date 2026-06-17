@@ -748,9 +748,9 @@ class AMACRFSystem {
         if (hasData) {
           const lines: string[] = ['=== RBC ASSESSMENT ==='];
           lines.push('Range-Based Clustering: growing hyperrectangles from hypothetical price action.');
-          lines.push(`BUY  → ${rbcBuy.verdict.toUpperCase()} (edge=${(rbcBuy.edgeScore * 100).toFixed(0)}%, ${rbcBuy.winDims}W/${rbcBuy.lossDims}L dims)`);
-          lines.push(`SELL → ${rbcSell.verdict.toUpperCase()} (edge=${(rbcSell.edgeScore * 100).toFixed(0)}%, ${rbcSell.winDims}W/${rbcSell.lossDims}L dims)`);
-          lines.push(`RBC is your PRIMARY factor. UNFAVORABLE → strong bias against entry. FAVORABLE → increase conviction.`);
+          lines.push(`BUY  → ${rbcBuy.verdict.toUpperCase()} (edge=${(rbcBuy.edgeScore * 100).toFixed(0)}%, ${rbcBuy.winDims}W/${rbcBuy.lossDims}L dims, ${rbcBuy.discriminativeDims}/${rbcBuy.totalDims} discriminative)`);
+          lines.push(`SELL → ${rbcSell.verdict.toUpperCase()} (edge=${(rbcSell.edgeScore * 100).toFixed(0)}%, ${rbcSell.winDims}W/${rbcSell.lossDims}L dims, ${rbcSell.discriminativeDims}/${rbcSell.totalDims} discriminative)`);
+          lines.push(`INTERPRETATION: FAVORABLE → win territory, increase conviction. UNFAVORABLE → loss territory, strong bias against entry. NO_EDGE → current values sit in the overlap zone on every dimension — the system lacks directional clarity. This is itself a useful signal: it means the market state is ambiguous relative to past patterns, and the RBC agent should HOLD or rely on other signals. winDims/lossDims still show tilt even in NO_EDGE (which side of each overlap boundary the value falls).`);
           rbcContext = '\n' + lines.join('\n');
         }
       } catch { /* non-critical */ }
@@ -1777,14 +1777,20 @@ class AMACRFSystem {
           const hasData = allStats.length > 0 || pendingStats.length > 0;
           if (!hasData) return undefined;
           // Get dim details for the first symbol with data
-          const dimDetails = allStats.length > 0 ? this.rbcEngine.getDimDetails(allStats[0]!.symbol) : null;
+          const firstSymbol = allStats[0]!.symbol;
+          const dimDetails = this.rbcEngine.getDimDetails(firstSymbol);
+          // Merge current feature values from query()
+          const queryResult = this.lastCycleRBCContext ? this.rbcEngine.query(firstSymbol, this.lastCycleRBCContext.features) : null;
+          const valueMap = new Map(queryResult?.dimDetails.map(d => [d.name, d.value]) ?? []);
+          // Use query()'s discriminativeDims (considers current value position) instead of getAllModelStats()'s static count
+          const liveDiscriminativeDims = queryResult?.discriminativeDims ?? 0;
           return {
             symbols: allStats.map(s => ({
               symbol: s.symbol,
               winCount: s.winCount,
               lossCount: s.lossCount,
               totalSamples: s.totalSamples,
-              discriminativeDims: s.discriminativeDims,
+              discriminativeDims: liveDiscriminativeDims,
               totalDims: s.totalDims,
             })),
             pending: pendingStats.map(p => ({
@@ -1795,6 +1801,7 @@ class AMACRFSystem {
             })),
             dimDetails: dimDetails ? dimDetails.map(d => ({
               name: d.name,
+              value: valueMap.get(d.name) ?? 0,
               winMin: d.winMin, winMax: d.winMax, winCentroid: d.winCentroid,
               lossMin: d.lossMin, lossMax: d.lossMax, lossCentroid: d.lossCentroid,
               overlap: d.overlap, boundary: d.boundary,
