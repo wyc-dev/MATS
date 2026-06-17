@@ -149,22 +149,22 @@ Phase 5:   Meta-Agent dynamic TP/SL adjustment
 - **Deterministic fallback**: If LLM is unavailable, risk engine enforces conservative defaults
 - **Total cycle budget**: 120s hard timeout, forced HOLD on expiry
 
-### 🧬 EM Self-Evolution System (Dual-Layer)
+### 🧬 Self-Evolution System (RBC + EM Cycle Chain)
 
-MATS has **two EM layers** that discover what makes trades profitable:
+MATS has **two self-evolution mechanisms**:
 
-**Layer 1 — EM Cycle Chain** (`cycle-summary.ts`):
-- Meta-Agent distills each cycle into a structured `CycleSummary` (E-step)
-- Previous summaries feed into next cycle's agent context (M-step)
-- Skeptics cross-check insight vs actual price (convergence audit)
-- Tiered memory: hot(12) + warm(288) + cold(48 epochs, ~48 days)
-
-**Layer 2 — RBC (Range-Based Clustering)** (`rbc-clustering.ts`):
+**Layer 1 — RBC (Range-Based Clustering)** (`rbc-clustering.ts`):
 - Growing hyperrectangles per symbol (winBox + lossBox), ranges only expand never contract
 - 9 feature dimensions: direction, volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction
 - Edge score = discriminative dims / total dims → verdict: favorable/unfavorable/no_edge
 - Per-symbol persistent memory (rbc-state.json, atomic write)
 - Hypothetical training: compares price change between cycles, feeds directional/flat samples
+
+**Layer 2 — EM Cycle Chain** (`cycle-summary.ts`):
+- Meta-Agent distills each cycle into a structured `CycleSummary` (E-step)
+- Previous summaries feed into next cycle's agent context (M-step)
+- Skeptics cross-check insight vs actual price (convergence audit)
+- Tiered memory: hot(12) + warm(288) + cold(48 epochs, ~48 days)
 
 **Evolutionary Pressure Engine:**
 - Survival Fitness: capital preservation 35% + return 20% + consistency 15% + risk 15% + adaptability 10% + quality 5%
@@ -233,7 +233,7 @@ The provider factory auto-detects availability: NIM → Ollama → Error.
 │   • HACP protocol (parallel multi-model inference)           │
 │   • 7-agent system + meta-agent arbitration                  │
 │   • Structured debate + weighted voting consensus            │
-│   • Dual-layer EM self-evolution (Cycle Chain + GMM)         │
+│   • Self-evolution (RBC + EM Cycle Chain + GA)         │
 │   • LLM invoked only at critical decision points             │
 │                                                              │
 ├──────────────────────────────────────────────────────────────┤
@@ -289,13 +289,14 @@ src/
 │
 ├── system-guard/             # 🛡️ SystemGuard (6 guards)
 │
-├── evolution/                # 🧬 Dual-layer EM evolution + pattern classifier
+├── evolution/                # 🧬 Evolution + RBC + pattern classifier
 │   ├── index.ts              # Evolution orchestrator (~420 LOC)
 │   ├── trade-history.ts      # Trade history ledger
 │   ├── agent-outcomes.ts     # Per-agent performance tracking
 │   ├── persistence.ts        # Durable state persistence
 │   ├── trade-pattern-classifier.ts # 🧬 Supervised KNN pattern DB (v2.0.5)
-│   ├── em-clustering.ts      # 🧬 GMM EM clustering engine (v2.0.5)
+│   ├── em-clustering.ts      # 🧬 GMM EM clustering (legacy, replaced by RBC)
+│   ├── rbc-clustering.ts     # 🧬 RBC Engine — growing hyperrectangles, 9 dims
 │   └── cycle-summary.ts      # 🧬 EM Cycle Summary Manager (v2.0.2)
 │
 ├── analysis/                 # 📊 Signal processing
@@ -391,7 +392,7 @@ If you require a commercial license — for example, for proprietary extensions,
 | **Language** | TypeScript 5.6 (strict mode, zero type errors) |
 | **Runtime** | Node.js 22+ |
 | **LLM** | Ollama / NVIDIA NIM / OpenAI-compatible |
-| **Market Data** | Binance WebSocket / Hyperliquid REST |
+| **Market Data** | Hyperliquid WebSocket (l2Book + trades + activeAssetCtx) + REST fallback |
 | **Frontend** | React 18 + Vite + TradingView Chart |
 | **Config Validation** | Zod schema |
 | **Logging** | Winston (structured + file rotation) |
