@@ -1041,37 +1041,120 @@ function RBCSection({ rbcState }: { rbcState: any }) {
                 <div key={symState.symbol} className="evo-cluster-symbol">
                   <div className="evo-cluster-symbol-header">
                     <span className="evo-cluster-symbol-name">{symState.symbol.toUpperCase()}</span>
-                    <span className="evo-badge">{symState.winCount}W/{symState.lossCount}L</span>
+                    <span className="evo-badge">{symState.winCount}W/{symState.lossCount}L *</span>
                     <span className="evo-badge">{edgePct}% edge</span>
                     <span className="evo-cluster-indicator">{verdictIcon}</span>
                   </div>
+
+                  {/* Per-dimension bars — styled like Fitness Breakdown with color coding */}
                   {hasDimDetails && (
-                    <div style={{ marginTop: 8 }}>
-                      <RBCVisualizer dimDetails={rbcState.dimDetails} />
-                    </div>
-                  )}
-                  <div className="evo-cluster-list" style={{ marginTop: 8 }}>
-                    <div className="evo-cluster-row">
-                      <div className="evo-cluster-main">
-                        <div className="evo-cluster-header">
-                          <span className="evo-cluster-index">RBC</span>
-                          <div className="evo-cluster-wr-track">
-                            <div className={`evo-cluster-wr-fill ${verdict === 'favorable' ? 'high' : verdict === 'unfavorable' ? 'low' : 'mid'}`} style={{ width: `${edgePct}%` }} />
+                    <div className="rbc-dim-list" style={{ marginTop: 10 }}>
+                      {rbcState.dimDetails.map((d: any) => {
+                        const span = d.globalMax - d.globalMin || 1
+                        const toPct = (v: number) => ((v - d.globalMin) / span) * 100
+
+                        const winL = toPct(d.winMin)
+                        const winR = toPct(d.winMax)
+                        const lossL = toPct(d.lossMin)
+                        const lossR = toPct(d.lossMax)
+                        const ovL = toPct(Math.max(d.winMin, d.lossMin))
+                        const ovR = toPct(Math.min(d.winMax, d.lossMax))
+
+                        const hasWin = d.winMin !== 0 || d.winMax !== 0 || d.winMin !== d.winMax
+                        const hasLoss = d.lossMin !== 0 || d.lossMax !== 0 || d.lossMin !== d.lossMax
+                        const hasOverlap = d.overlap && ovR > ovL
+
+                        return (
+                          <div key={d.name} className="rbc-dim-row">
+                            <span className="rbc-dim-name">{d.name}</span>
+                            <div className="rbc-dim-track">
+                              {hasLoss && (
+                                <div className="rbc-dim-seg-loss" style={{ left: `${Math.max(0, lossL)}%`, width: `${Math.min(100, lossR - lossL)}%` }} />
+                              )}
+                              {hasWin && (
+                                <div className="rbc-dim-seg-win" style={{ left: `${Math.max(0, winL)}%`, width: `${Math.min(100, winR - winL)}%` }} />
+                              )}
+                              {hasOverlap && (
+                                <div className="rbc-dim-seg-overlap" style={{ left: `${Math.max(0, ovL)}%`, width: `${Math.min(100, ovR - ovL)}%` }} />
+                              )}
+                              {d.boundary !== null && (
+                                <div className="rbc-dim-boundary" style={{ left: `${Math.max(0, Math.min(100, toPct(d.boundary)))}%` }} />
+                              )}
+                            </div>
                           </div>
-                          <span className="evo-cluster-meta">
-                            <span>{symState.discriminativeDims}/{symState.totalDims} dims</span>
-                            <span>{symState.totalSamples} samples</span>
-                          </span>
+                        )
+                      })}
+
+                      {/* Summary footer — white line + key stats */}
+                      <div className="rbc-summary-row" style={{ marginTop: 8 }}>
+                        <span className="rbc-dim-name" style={{ color: 'var(--text-secondary)' }}>RBC Edge</span>
+                        <div className="rbc-dim-track">
+                          <div
+                            className="rbc-summary-fill"
+                            style={{
+                              width: `${Math.max(2, edgePct)}%`,
+                              background: verdict === 'favorable' ? 'var(--green)' : verdict === 'unfavorable' ? 'var(--red)' : 'var(--text-muted)',
+                            }}
+                          />
                         </div>
+                        <span className="rbc-dim-meta">
+                          {edgePct}% · {symState.discriminativeDims}/{symState.totalDims} · {symState.totalSamples}s *
+                        </span>
                       </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               )
             })
           )}
         </>
       )}
+
+      {/* ── How to read legend ── */}
+      <div className="rbc-legend">
+        <div className="rbc-legend-title">How to Read RBC Clusters</div>
+        <div className="rbc-legend-grid">
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch rbc-legend-swatch--win" />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Win Range</span>
+              <span className="rbc-legend-desc">Historic feature values where the strategy profited. When the white position dot falls here, this dimension favours the trade.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch rbc-legend-swatch--loss" />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Loss Range</span>
+              <span className="rbc-legend-desc">Feature values associated with past losses. A dot in red territory suggests caution on this dimension.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch rbc-legend-swatch--overlap" />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Overlap</span>
+              <span className="rbc-legend-desc">Win and loss ranges intersect — the current value is ambiguous. Low conviction; no clear edge on this dimension.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch rbc-legend-swatch--dot" />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Boundary</span>
+              <span className="rbc-legend-desc">Midpoint of the overlap region. The decision threshold separating win-dominant from loss-dominant territory.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch rbc-legend-swatch--bar" />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">RBC Edge</span>
+              <span className="rbc-legend-desc">Percentage of dimensions where the current state falls outside overlap (discriminative dims / total dims). Higher = stronger conviction. <strong>0% does not mean the engine is broken</strong> — it means every dimension currently sits in the ambiguous overlap zone. This is itself a useful signal: the system recognises it lacks clarity and should hold.</span>
+            </div>
+          </div>
+        </div>
+        <div className="rbc-legend-footer">
+          Ranges grow monotonically as new trades are recorded — they never shrink. The white dot moves each cycle with live market state.
+          <span className="rbc-legend-footer-note" style={{ display: 'block', marginTop: 6 }}>* Win/loss counts are based on <strong>hypothetical training data</strong>: directional moves &gt;0.1% feed one winning sample, flat moves &lt;0.05% feed two losing samples (both directions). This reflects price-action bias, not real trade PnL.</span>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1598,9 +1681,9 @@ export default function App() {
 
       {/* Mobile Tab Bar — hidden on desktop */}
       <div className="tab-bar">
-        {(['agents','portfolio','debate','evolution','backtest'] as const).map(tab => (
+        {(['agents','portfolio','debate','evolution'] as const).map(tab => (
           <button key={tab} className={`tab-btn ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
-            {tab === 'agents' ? '🤖 Agents' : tab === 'portfolio' ? '💼 Portfolio' : tab === 'debate' ? '🗣️ Debate' : tab === 'evolution' ? '🧬 Evolution' : '📜 Backtest'}
+            {tab === 'agents' ? '🤖 Agents' : tab === 'portfolio' ? '💼 Portfolio' : tab === 'debate' ? '🗣️ Debate' : '🧬 Evolution'}
           </button>
         ))}
       </div>
@@ -1619,13 +1702,11 @@ export default function App() {
             {activeTab === 'portfolio' && <PortfolioPanel data={data} />}
             {activeTab === 'debate' && <DebatePanel data={data} />}
             {activeTab === 'evolution' && <EvolutionPanel data={data} />}
-            {activeTab === 'backtest' && <BacktestPanel data={data} onRun={handleRunBacktest} />}
           </div>
           <div className="desktop-only">
             <PortfolioPanel data={data} />
             <DebatePanel data={data} />
             <EvolutionPanel data={data} />
-            <BacktestPanel data={data} onRun={handleRunBacktest} />
           </div>
         </div>
       </div>
