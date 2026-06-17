@@ -400,8 +400,9 @@ class AMACRFSystem {
           const res = await hlFetchQueued({ type: 'candleSnapshot', req: { coin: symbol.toUpperCase().replace(/^.*:/, ''), interval: hlInterval, startTime, endTime } });
           if (!res.ok) throw new Error(`HL ${res.status}`);
           const data = await res.json() as Array<{ t: number; o: string; c: string; h: string; l: string }>;
+          // HL candleSnapshot returns candles as an array — the colon-prefix stripped coin name works
           return data.map(k => ({
-            time: Math.floor(k.t / 1000),
+            time: Math.floor(typeof k.t === 'number' ? k.t : parseInt(k.t as any ?? '0') / 1000),
             open: parseFloat(k.o),
             high: parseFloat(k.h),
             low: parseFloat(k.l),
@@ -982,8 +983,7 @@ class AMACRFSystem {
             if (rbcBlocked) {
               direction = null;
             }
-              // If both no_edge or mixed, fall through to other signals
-            }
+            // If both no_edge or mixed, fall through to other signals
 
             // Priority 1: Pattern data (most reliable, requires >=3 matches with 0.5+PnL)
             if (!direction && this.patternClassifier) {
