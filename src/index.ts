@@ -381,7 +381,7 @@ class AMACRFSystem {
           const msMap: Record<string, number> = { '5m': 300_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000, '1w': 604_800_000 };
           const startTime = endTime - (msMap[hlInterval] ?? 3_600_000) * limit;
 
-          const res = await hlFetchQueued({ type: 'candleSnapshot', req: { coin: symbol.toUpperCase(), interval: hlInterval, startTime, endTime } });
+          const res = await hlFetchQueued({ type: 'candleSnapshot', req: { coin: symbol.toUpperCase().replace(/^.*:/, ''), interval: hlInterval, startTime, endTime } });
           if (!res.ok) throw new Error(`HL ${res.status}`);
           const data = await res.json() as Array<{ t: number; o: string; c: string; h: string; l: string }>;
           return data.map(k => ({
