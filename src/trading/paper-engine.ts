@@ -30,11 +30,9 @@ export class PaperTradingEngine {
       this.trades.push(trade);
       log.info(`Trade captured from SL/TP/reconciliation: ${trade.side.toUpperCase()} ${trade.symbol} PnL: $${trade.pnl.toFixed(2)}`);
     });
-    // Capture open trades
-    this.portfolio.setOnPositionOpened((trade) => {
-      this.trades.push(trade);
-      log.info(`Trade captured from open: ${trade.side.toUpperCase()} ${trade.symbol} @ $${trade.entryPrice.toFixed(2)}`);
-    });
+    // NOTE: open trades are NOT recorded here — they are tracked via portfolio.positions.
+    // Only closed/SL-TP/reconciliation trades are captured above.
+    // This avoids duplicate 'ghost open' records (status=open + status=closed for the same trade).
     log.info('Paper trading engine initialized.', {
       initialBalance: portfolio.getPortfolio().initialBalance,
     });
@@ -43,8 +41,24 @@ export class PaperTradingEngine {
   /** Restore previously persisted trades on startup */
   restoreTrades(trades: TradeRecord[]): void {
     if (trades.length > 0) {
-      this.trades.push(...trades);
-      log.info(`📋 ${trades.length} trades restored from disk`);
+      // Filter out ghost open records (status=open but no corresponding position).
+      // These are historical artifacts from the old bug where openPosition() created
+      // a TradeRecord with status='open' but the position was later overwritten by
+      // a symbol overlap (Map.set overwrite). Ghost records can never be closed
+      // because the position no longer exists — they just pollute the trade history.
+      const openSymbols = new Set(
+        Array.from(this.portfolio.getPortfolio().positions.values()).map(p => p.symbol.toLowerCase())
+      );
+      const validTrades = trades.filter(t => {
+        if (t.status === 'open' && !openSymbols.has(t.symbol.toLowerCase())) {
+          log.warn(`🧹 Ghost open record removed: ${t.side.toUpperCase()} ${t.symbol} @ ${t.entryPrice} (no matching position)`);
+          return false;
+        }
+        return true;
+      });
+      const ghostCount = trades.length - validTrades.length;
+      this.trades.push(...validTrades);
+      log.info(`📋 ${validTrades.length} trades restored from disk${ghostCount > 0 ? ` (${ghostCount} ghosts removed)` : ''}`);
     }
   }
 
@@ -107,6 +121,20 @@ export class PaperTradingEngine {
     if (quantity <= 0) {
       log.info('Position size too small. Skipping.');
       return reports;
+    }
+
+    // ── Symbol Overlap Guard (defence-in-depth) ──
+    // If this symbol already has an open position, do NOT open a new trade.
+    // The existing position is already managed by per-symbol consensus + SL/TP.
+    // Opening a second trade would silently overwrite the existing position
+    // (portfolio.positions is a Map — .set(key) replaces), creating ghost PnL.
+    if (this.portfolio.hasPosition(sym)) {
+      const existing = this.portfolio.getPosition(sym)!;
+      log.warn(`🚫 Paper engine symbol-guard: ${sym.toUpperCase()} already has ${existing.side.toUpperCase()} position. Blocking new ${decision.action.toUpperCase()} trade.`);
+      return [{
+        order: this.createRejectedOrder(decision, `Symbol overlap: ${sym} already positioned (${existing.side}).`),
+        error: `Symbol overlap: ${sym} already positioned.`,
+      }];
     }
 
     // ── Cumulative position value check ──

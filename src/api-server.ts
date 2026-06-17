@@ -120,19 +120,21 @@ export interface APIData {
       totalSamples: number;
       discriminativeDims: number;
       totalDims: number;
+      /** Per-dimension range details for UI colour bars (🆕 per-symbol, v2.0.6) */
+      dimDetails?: Array<{
+        name: string;
+        value: number;
+        winMin: number; winMax: number; winCentroid: number;
+        lossMin: number; lossMax: number; lossCentroid: number;
+        overlap: boolean; boundary: number | null;
+        globalMin: number; globalMax: number;
+      }>;
     }>;
     pending: Array<{
       symbol: string;
       pending: number;
       needed: number;
       pct: number;
-    }>;
-    dimDetails?: Array<{
-      name: string;
-      winMin: number; winMax: number; winCentroid: number;
-      lossMin: number; lossMax: number; lossCentroid: number;
-      overlap: boolean; boundary: number | null;
-      globalMin: number; globalMax: number;
     }>;
   };
   systemPaused?: boolean;

@@ -202,7 +202,7 @@ export class MarketAgent {
       if (this.config.exchange === 'binance') {
         this.topPairs = await this.fetchBinanceTopPairs(limit);
       } else {
-        this.topPairs = await this.fetchHyperliquidTopPairs(limit);
+        this.topPairs = await this.fetchHyperliquidTopPairs(limit, wasDirty);
       }
       this.lastFetchTime = Date.now();
 
@@ -377,36 +377,37 @@ export class MarketAgent {
       allPairs.push({ symbol: name, volume24h: volume, price, priceChangePercent: changePct, exchange: 'hyperliquid' });
     }
 
-    // Fetch 5m volume for top DEX 0 pairs via a single candleSnapshot batch call
-    // Top 30 pairs have real volume — 5m volume helps gauge recent activity
-    const top30Pairs = allPairs.slice(0, 30);
-    if (top30Pairs.length > 0) {
+    // Fetch 5m volume for top DEX 0 pairs via candleSnapshot
+    const top5Pairs = allPairs.slice(0, 5);
+    if (top5Pairs.length > 0) {
       try {
-        await MarketAgent.hlLimiter.acquire();
-        const fiveMAgo = Date.now() - 21_600_000; // 6h
-        const fiveMRes = await fetch('https://api.hyperliquid.xyz/info', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type: 'candleSnapshot', req: { coin: 'BTC', interval: '5m', startTime: fiveMAgo, endTime: Date.now() } }),
-        });
-        // For DEX 0 pairs, 5m volume is optional — leave as 0 if unavailable
-        if (fiveMRes.ok) {
-          const fiveMData = await fiveMRes.json() as Array<{ v: string }>;
-          if (Array.isArray(fiveMData) && fiveMData.length > 0) {
-            let btc5mVol = 0;
-            for (const c of fiveMData.slice(-12)) { btc5mVol += parseFloat(c['v'] ?? '0'); }
-            if (btc5mVol > 0) {
-              const btcPair = allPairs.find(p => p.symbol === 'BTC');
-              if (btcPair) btcPair.volume5m = btc5mVol * (btcPair.price || 1);
+        const bgLimiter = new HLRateLimiter(10, 1_000);
+        const bgFetch = async (body: object): Promise<Response> => {
+          await bgLimiter.acquire();
+          return fetch('https://api.hyperliquid.xyz/info', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+        };
+        await Promise.all(top5Pairs.map(async (pair) => {
+          try {
+            const res = await bgFetch({
+              type: 'candleSnapshot',
+              req: { coin: pair.symbol, interval: '5m', startTime: Date.now() - 3_600_000, endTime: Date.now() },
+            });
+            if (res.ok) {
+              const data = await res.json() as Array<Record<string, string>>;
+              if (Array.isArray(data) && data.length > 0) {
+                let vol5m = 0;
+                for (const c of data) {
+                  const v = parseFloat(c['v'] ?? '0');
+                  if (!isNaN(v)) vol5m += v;
+                }
+                if (vol5m > 0 && pair.price > 0) pair.volume5m = vol5m * pair.price;
+              }
             }
-          }
-        }
-        // Use price volume proportion as rough 5m estimate for other top pairs
-        for (const p of allPairs) {
-          if (p.symbol !== 'BTC' && p.volume24h > 0 && p.price > 0) {
-            // rough: 5m vol ~ (5min / 1440min) * 24h vol
-            p.volume5m = p.volume24h * (5 / 1440);
-          }
-        }
+          } catch { /* 5m volume optional */ }
+        }));
       } catch { /* 5m volume is optional */ }
     }
 
@@ -470,6 +471,39 @@ export class MarketAgent {
         return b.price - a.price;
       }).slice(0, limit);
       this.topPairs = sorted;
+
+      // ── Fetch real 5m volume for top 5 pairs ──
+      if (sorted.length > 0) {
+        const top5 = sorted.slice(0, 5);
+        const bgLimiter = new HLRateLimiter(10, 1_000);
+        const bgFetch = async (body: object): Promise<Response> => {
+          await bgLimiter.acquire();
+          return fetch('https://api.hyperliquid.xyz/info', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+        };
+        await Promise.all(top5.map(async (pair) => {
+          try {
+            const res = await bgFetch({
+              type: 'candleSnapshot',
+              req: { coin: pair.symbol, interval: '5m', startTime: Date.now() - 3_600_000, endTime: Date.now() },
+            });
+            if (res.ok) {
+              const data = await res.json() as Array<Record<string, string>>;
+              if (Array.isArray(data) && data.length > 0) {
+                let vol5m = 0;
+                for (const c of data) {
+                  const v = parseFloat(c['v'] ?? '0');
+                  if (!isNaN(v)) vol5m += v;
+                }
+                if (vol5m > 0 && pair.price > 0) pair.volume5m = vol5m * pair.price;
+              }
+            }
+          } catch { /* 5m volume optional */ }
+        }));
+      }
+
       // Auto-select the top pair after background scan
       if (sorted.length > 0) {
         const top = sorted[0]!;
@@ -485,7 +519,7 @@ export class MarketAgent {
     }
 
     // Background fill for non-dirty fetches
-    backgroundTask.then(() => {
+    backgroundTask.then(async () => {
       const updated = this.filterHyperliquidPairs(allPairs, catMap);
       const sorted = updated.sort((a, b) => {
         if (a.volume24h > 0 && b.volume24h > 0) return b.volume24h - a.volume24h;
@@ -494,6 +528,39 @@ export class MarketAgent {
         return b.price - a.price;
       }).slice(0, limit);
       this.topPairs = sorted;
+
+      // ── Fetch real 5m volume for top 5 pairs ──
+      if (sorted.length > 0) {
+        const top5 = sorted.slice(0, 5);
+        const bgLimiter = new HLRateLimiter(10, 1_000);
+        const bgFetch = async (body: object): Promise<Response> => {
+          await bgLimiter.acquire();
+          return fetch('https://api.hyperliquid.xyz/info', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+        };
+        await Promise.all(top5.map(async (pair) => {
+          try {
+            const res = await bgFetch({
+              type: 'candleSnapshot',
+              req: { coin: pair.symbol, interval: '5m', startTime: Date.now() - 3_600_000, endTime: Date.now() },
+            });
+            if (res.ok) {
+              const data = await res.json() as Array<Record<string, string>>;
+              if (Array.isArray(data) && data.length > 0) {
+                let vol5m = 0;
+                for (const c of data) {
+                  const v = parseFloat(c['v'] ?? '0');
+                  if (!isNaN(v)) vol5m += v;
+                }
+                if (vol5m > 0 && pair.price > 0) pair.volume5m = vol5m * pair.price;
+              }
+            }
+          } catch { /* 5m volume optional */ }
+        }));
+      }
+
       // Auto-select top pair after background scan completes
       if (sorted.length > 0) {
         const top = sorted[0]!;
@@ -505,6 +572,8 @@ export class MarketAgent {
           }
         }
       }
+    }).catch((err: unknown) => {
+      log.error(`Background scan failed: ${err instanceof Error ? err.message : String(err)}`);
     });
 
     return result;
@@ -513,36 +582,46 @@ export class MarketAgent {
   /** Background scan of DEX 1-8 assets — completely non-blocking */
   private async scanDEX18AssetsInBackground(assets: Array<{ name: string; coin: string }>, allPairs: TopVolumePair[], hlFetch: (body: object, retries?: number) => Promise<Response>): Promise<void> {
     if (assets.length === 0) return;
-    log.info(`DEX 1-8: background-scanning ${assets.length} assets (via l2Book + candleSnapshot)`);
+    log.info(`DEX 1-8: background-scanning ${assets.length} assets (via candleSnapshot)`);
 
-    // Process ALL assets with concurrency control (max 5 parallel)
+    // Use a dedicated lighter rate limiter for background scan (20 tokens, 200ms refill = 5/s)
+    // candleSnapshot is read-only and not aggressively rate-limited
+    const bgLimiter = new HLRateLimiter(20, 200);
+    const bgFetch = async (body: object, retries = 3): Promise<Response> => {
+      for (let attempt = 0; attempt < retries; attempt++) {
+        await bgLimiter.acquire();
+        const res = await fetch('https://api.hyperliquid.xyz/info', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (res.status === 429) {
+          await new Promise(r => setTimeout(r, 2_000));
+          continue;
+        }
+        return res;
+      }
+      return new Response('', { status: 429, statusText: 'Too Many Requests' });
+    };
+
+    // candleSnapshot gives both price (c=close) and volume (v=raw contracts)
     const scanOne = async (asset: { name: string; coin: string }): Promise<void> => {
       try {
-        await MarketAgent.hlLimiter.acquire();
-        const [bookRes, snapRes] = await Promise.all([
-          fetch('https://api.hyperliquid.xyz/info', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'l2Book', coin: asset.coin }),
-          }),
-          fetch('https://api.hyperliquid.xyz/info', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'candleSnapshot', req: { coin: asset.name, interval: '1d', startTime: Date.now() - 172_800_000, endTime: Date.now() } }),
-          }),
-        ]);
+        const snapRes = await bgFetch({
+          type: 'candleSnapshot',
+          req: { coin: asset.coin, interval: '1d', startTime: Date.now() - 172_800_000, endTime: Date.now() },
+        });
         let price = 0;
         let volume = 0;
-        if (bookRes.ok) {
-          const book = await bookRes.json() as { levels: Array<Array<{ px: string }>> };
-          price = book.levels?.[0]?.[0]?.px ? parseFloat(book.levels[0][0].px) : 0;
-        }
         if (snapRes.ok) {
           const snapData = await snapRes.json() as Array<Record<string, string>>;
-          if (Array.isArray(snapData)) {
+          if (Array.isArray(snapData) && snapData.length > 0) {
+            const last = snapData[snapData.length - 1]!;
+            price = parseFloat(last['c'] ?? '0');
             for (const c of snapData) {
               const v = parseFloat(c['v'] ?? '0');
               if (!isNaN(v)) volume += v;
             }
-            // Convert raw contract volume → USD notional
             if (volume > 0 && price > 0) volume = volume * price;
           }
         }
@@ -727,7 +806,8 @@ export class MarketAgent {
             hlFetch({ type: 'l2Book', coin: symbol }),
             hlFetch({
               type: 'candleSnapshot',
-              req: { coin: symbol.replace(/^.*:/, ''), interval: '1d', startTime: Date.now() - 172_800_000, endTime: Date.now() },
+              // candleSnapshot requires FULL coin name (e.g. "xyz:META" not "META")
+              req: { coin: symbol, interval: '1d', startTime: Date.now() - 172_800_000, endTime: Date.now() },
             }),
           ]);
           let price = 0;

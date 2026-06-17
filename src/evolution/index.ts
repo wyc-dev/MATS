@@ -124,51 +124,78 @@ export class DualMemory {
 // Evaluates agent/strategy performance holistically
 
 export class SurvivalFitnessCalculator {
+  /**
+   * Production-grade scalping fitness function.
+   *
+   * Core principle: profit per trade > win rate.
+   * A strategy that wins 40% of trades but makes 5% on winners and loses 1% on losers
+   * is FAR superior to one that wins 90% but makes 0.01% each.
+   *
+   * Weight allocation reflects scalping priorities:
+   *   Profit Efficiency (35%): avgWin/avgLoss ratio + profitFactor + expectancy
+   *   Return Generation (25%): totalReturn + sharpeRatio — absolute performance
+   *   Capital Preservation (20%): maxDrawdown penalty — leverage amplifies losses
+   *   Win Quality (10%): avgWin magnitude — penalizes microscopic wins
+   *   Consistency (5%): winRate stability
+   *   Adaptability (5%): trade count — more trades = more proof
+   *
+   * Minimum profit threshold: avgWin < 0.5% → 0.7× penalty.
+   *   Rationale: a scalping system with 5-10x leverage should earn ≥0.5% per winning trade
+   *   (2.5-5% on margin). Strategies that "win" but make nothing are wasting capital.
+   */
   calculate(performance: StrategyPerformance): SurvivalFitness {
-    // Capital preservation is #1 priority
+    // ─── Profit Efficiency (35%) ───
+    // Measures how efficiently the strategy converts risk into reward.
+    // avgWin/avgLoss ratio: how much bigger are wins than losses?
+    // profitFactor: totalWin / totalLoss
+    // expectancy: expected value per trade
+    const avgWinLossRatio = performance.avgWin / (Math.abs(performance.avgLoss) + 0.0001);
+    const profitEfficiency = this.normalize(
+      this.normalize(avgWinLossRatio / 5) * 0.4 +   // 5:1 win/loss ratio = perfect
+      this.normalize(performance.profitFactor / 3) * 0.3 +
+      this.normalize(performance.expectancy * 20) * 0.3  // 5% expectancy = perfect
+    );
+
+    // ─── Return Generation (25%) ───
+    // Absolute performance: how much money did this strategy make?
+    const returnGen = this.normalize(
+      (performance.sharpeRatio / 2) * 0.35 +       // Sharpe 2.0 = perfect
+      (performance.totalReturn / 50) * 0.35 +       // 50% return = perfect (scalping target)
+      (performance.winRate) * 0.30
+    );
+
+    // ─── Capital Preservation (20%) ───
+    // Drawdown control — critical for leveraged scalping.
+    // maxDrawdown > 15% → heavy penalty (0.5× on entire score)
     const capitalPreservation = this.normalize(1 - Math.abs(performance.maxDrawdown / 0.3));
     const drawdownPenalty = performance.maxDrawdown > 0.15 ? 0.5 : 1.0;
 
-    // Return generation (risk-adjusted)
-    const returnGen = this.normalize(
-      (performance.sharpeRatio / 3) * 0.4 +
-      (performance.totalReturn / 100) * 0.3 +
-      (performance.winRate) * 0.3
-    );
+    // ─── Win Quality (10%) ───
+    // Penalizes strategies that "win" but make microscopic profits.
+    // avgWin >= 2% = perfect, avgWin < 0.5% = heavily penalized.
+    const winQuality = this.normalize(performance.avgWin / 0.02);
+    // Minimum profit threshold: if avgWin < 0.5%, apply 0.7× penalty
+    const minProfitPenalty = performance.avgWin < 0.005 && performance.trades > 5 ? 0.7 : 1.0;
 
-    // Adaptability (trades count suggests active adaptation)
-    const adaptability = this.normalize(Math.min(performance.trades / 200, 1));
-
-    // Consistency
+    // ─── Consistency (5%) ───
     const consistency = this.normalize(
       (performance.winRate) * 0.5 +
-      (performance.sortinoRatio / 3) * 0.3 +
-      (performance.calmarRatio / 2) * 0.2
+      (performance.sortinoRatio / 2) * 0.3 +
+      (performance.calmarRatio / 3) * 0.2
     );
 
-    // Risk management
-    const riskMgmt = this.normalize(
-      (1 - Math.abs(performance.maxDrawdown / 0.3)) * 0.5 +
-      this.normalize(performance.profitFactor / 5) * 0.3 +
-      this.normalize(performance.expectancy * 10) * 0.2
-    );
+    // ─── Adaptability (5%) ───
+    const adaptability = this.normalize(Math.min(performance.trades / 100, 1));
 
-    // Decision quality
-    const decisionQuality = this.normalize(
-      (performance.winRate) * 0.4 +
-      (performance.avgWin / (Math.abs(performance.avgLoss) + 0.01)) * 0.3 +
-      (performance.profitFactor / 3) * 0.3
-    );
-
-    // Composite score — capital preservation heavily weighted
+    // ─── Composite Score ───
     const score = (
-      capitalPreservation * 0.35 +
-      returnGen * 0.20 +
-      adaptability * 0.10 +
-      consistency * 0.15 +
-      riskMgmt * 0.15 +
-      decisionQuality * 0.05
-    ) * drawdownPenalty;
+      profitEfficiency * 0.35 +
+      returnGen * 0.25 +
+      capitalPreservation * 0.20 +
+      winQuality * 0.10 +
+      consistency * 0.05 +
+      adaptability * 0.05
+    ) * drawdownPenalty * minProfitPenalty;
 
     return {
       score: parseFloat(score.toFixed(4)),
@@ -176,8 +203,8 @@ export class SurvivalFitnessCalculator {
       returnGeneration: parseFloat(returnGen.toFixed(4)),
       adaptability: parseFloat(adaptability.toFixed(4)),
       consistency: parseFloat(consistency.toFixed(4)),
-      riskManagement: parseFloat(riskMgmt.toFixed(4)),
-      decisionQuality: parseFloat(decisionQuality.toFixed(4)),
+      riskManagement: parseFloat(profitEfficiency.toFixed(4)),
+      decisionQuality: parseFloat(winQuality.toFixed(4)),
     };
   }
 
@@ -297,50 +324,93 @@ export class EvolutionaryPressureEngine {
           log.info(`Strategy ${strat.id.slice(0, 8)} retired (fitness: ${fitness.score.toFixed(4)})`);
         }
       } else if (strat.status === 'evaluating') {
-        // Evaluating strategies: after 3 generations, promote to active or retire
+        // Evaluating strategies: after 3 generations, compare vs parent
         if (this.generation - strat.generation >= 3) {
           strat.performance = cumulativePerf ?? { ...strat.performance, ...performanceMetrics };
           const calculator = new SurvivalFitnessCalculator();
           const fitness = calculator.calculate(strat.performance);
           strat.fitness = fitness.score;
-          if (fitness.score >= 0.2) {
+
+          // Find parent strategy to compare against
+          const parent = strat.parentId
+            ? this.strategies.find(s => s.id === strat.parentId)
+            : null;
+          const parentFitness = parent?.fitness ?? 0;
+
+          if (fitness.score >= 0.2 && fitness.score > parentFitness) {
+            // Child beats parent → promote child, retire parent
+            if (parent && parent.status === 'active') {
+              parent.status = 'retired';
+              log.info(`Strategy ${parent.id.slice(0, 8)} retired (outperformed by child ${strat.id.slice(0, 8)}, f=${parentFitness.toFixed(4)} → ${fitness.score.toFixed(4)})`);
+            }
             strat.status = 'active';
-            log.info(`Strategy ${strat.id.slice(0, 8)} promoted to active (fitness: ${fitness.score.toFixed(4)})`);
+            log.info(`Strategy ${strat.id.slice(0, 8)} promoted to active (fitness: ${fitness.score.toFixed(4)} > parent ${parentFitness.toFixed(4)})`);
+          } else if (fitness.score >= 0.2) {
+            // Child is viable but didn't beat parent — keep as active for diversity
+            strat.status = 'active';
+            log.info(`Strategy ${strat.id.slice(0, 8)} promoted to active (viable, f=${fitness.score.toFixed(4)}, parent f=${parentFitness.toFixed(4)})`);
           } else {
             strat.status = 'retired';
-            log.info(`Strategy ${strat.id.slice(0, 8)} retired after evaluation (fitness: ${fitness.score.toFixed(4)})`);
+            log.info(`Strategy ${strat.id.slice(0, 8)} retired after evaluation (fitness: ${fitness.score.toFixed(4)} < 0.2)`);
           }
         }
       }
     }
 
-    // Mutate best strategy to create new generation
+    // ─── Production-Grade Evolution Gate ───
+    // Two triggers for creating a new child strategy:
+    //
+    // TRIGGER 1 (Loss-Adaptation): The most recent completed cycle lost money.
+    //   Real quant firms have loss-triggered circuit breakers that force immediate
+    //   strategy review. Every losing trade is a signal that the current parameters
+    //   are misaligned with market conditions — adapt now, don't wait.
+    //
+    // TRIGGER 2 (Scheduled Evolution): 3+ countedTrades accumulated.
+    //   Once there's enough data for basic evaluation, evolve on schedule.
+    //   Low threshold (3) ensures rapid adaptation in scalping environments.
+    //
     const best = this.getBestStrategy();
-    if (best && best.fitness > 0.3) {
-      const child = this.mutate(best);
-      // Demote parent, promote child immediately so the active strategy evolves
-      best.status = 'retired';
-      child.status = 'active';
-      this.strategies.push(child);
+    const activeCount = this.strategies.filter(s => s.status === 'active').length;
+    const evalCount = this.strategies.filter(s => s.status === 'evaluating').length;
+    const hasCapacity = (activeCount + evalCount) < this.maxActiveStrategies * 2;
 
-      log.info(`Evolved: Gen ${best.generation} (f=${(best.fitness * 100).toFixed(1)}%) → Gen ${child.generation} (active)`);
-
-      // Prune old strategies
-      this.prune();
-
-      return child;
+    // Check if the most recent completed cycle was a losing trade
+    let lastTradeWasLoss = false;
+    if (tradeHistory) {
+      const allEntries = tradeHistory.getAll();
+      // The last entry is the CURRENT cycle (just recorded, no PnL yet).
+      // The SECOND-TO-LAST entry is the PREVIOUS completed cycle with PnL computed.
+      const lastCompleted = allEntries.length >= 2 ? allEntries[allEntries.length - 2] : null;
+      if (lastCompleted) {
+        const lastPnl = lastCompleted.realisedPnl ?? lastCompleted.simulatedPnl ?? 0;
+        lastTradeWasLoss = lastPnl < 0;
+      }
     }
 
-    // If best fitness <= 0.3, still mutate but keep parent active for comparison
-    if (best) {
+    const minTradesForScheduledEvo = 3;
+    const hasEnoughData = cumulativePerf && cumulativePerf.trades >= minTradesForScheduledEvo;
+    const shouldEvolve = (lastTradeWasLoss || hasEnoughData) && hasCapacity && best && best.fitness > 0.3;
+
+    if (shouldEvolve) {
+      const trigger = lastTradeWasLoss ? 'loss-triggered' : 'scheduled';
       const child = this.mutate(best);
       child.status = 'evaluating';
+      // Child inherits parent's performance as baseline (not zero)
+      child.performance = { ...best.performance };
+      child.fitness = best.fitness;
       this.strategies.push(child);
-      log.info(`New evaluating strategy: Gen ${child.generation} (parent fitness: ${(best.fitness * 100).toFixed(1)}%)`);
+
+      log.info(`🧬 New incubating strategy [${trigger}]: Gen ${child.generation} (parent f=${(best.fitness * 100).toFixed(1)}%, countedTrades=${cumulativePerf?.trades ?? 0})`);
       this.prune();
       return child;
     }
 
+    if (!hasEnoughData && !lastTradeWasLoss && best && best.fitness > 0.3) {
+      log.info(`🧬 Evolution deferred: ${cumulativePerf?.trades ?? 0} countedTrades (need ${minTradesForScheduledEvo} or a loss), no recent loss`);
+    }
+
+    // No evolution this cycle — return current best (stays active, accumulates track record)
+    if (best) return best;
     return this.strategies[0]!;
   }
 

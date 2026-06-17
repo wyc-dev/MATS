@@ -2136,6 +2136,21 @@ body {
   gap: 8px;
   margin-bottom: 8px;
   flex-wrap: wrap;
+  user-select: none;
+}
+
+.evo-expand-arrow {
+  font-size: 0.55rem;
+  color: var(--text-tertiary);
+  transition: transform 0.2s ease;
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.evo-expand-arrow.expanded {
+  transform: rotate(90deg);
 }
 
 .evo-cluster-symbol-name {

@@ -14,6 +14,8 @@ import type {
   DebateStatement,
   MarketState,
   TradingDecision,
+  MultiSymbolDecision,
+  PerSymbolConsensus,
   Vote,
   CycleProgress,
   AgentProgress,
@@ -786,6 +788,9 @@ Current SL: ${pos.stopLoss ? `$${pos.stopLoss.toFixed(2)}` : 'NONE'}
 Current TP: ${pos.takeProfit ? `$${pos.takeProfit.toFixed(2)}` : 'NONE'}
 Unrealized PnL: ${(unrealizedPnlPct * 100).toFixed(2)}%
 
+The market context above contains "=== S/R Zones ===" with key Support (Demand) and Resistance (Supply) levels from historical candles.
+USE THESE S/R LEVELS to set TP and SL — they are more reliable than arbitrary percentages.
+
 CRITICAL RULES — FOLLOW EXACTLY:
 
 1. SL for LONG (buy): can ONLY move UP (increase). NEVER move SL down.
@@ -793,18 +798,25 @@ CRITICAL RULES — FOLLOW EXACTLY:
    If price moved in our favor, trail SL closer to lock profit.
    If price moved against us, LEAVE SL UNCHANGED — do not widen.
 
-2. TP: if unrealized PnL is POSITIVE, tighten TP toward current price to lock profit.
-   If unrealized PnL is NEGATIVE, leave TP unchanged or widen slightly.
+2. TP: set TP at the nearest S/R level on the profit side.
+   For LONG: TP = nearest Resistance (Supply) level above current price.
+   For SHORT: TP = nearest Support (Demand) level below current price.
+   If no S/R level is available, use 2x SL distance as fallback.
+   If unrealized PnL is POSITIVE, tighten TP toward current price to lock profit.
    TP must always be on the PROFIT side of entry (above entry for long, below for short).
 
-3. NEVER set SL further from current price than it already is.
+3. SL: set SL just BEYOND the nearest S/R level on the loss side.
+   For LONG: SL just below nearest Support (Demand) below current price.
+   For SHORT: SL just above nearest Resistance (Supply) above current price.
+   If no S/R level is available, use 1-2% from current price as fallback.
+   NEVER set SL further from current price than it already is.
    NEVER set TP further from current price than it already is.
 
 4. SL distance from current price: 1-2% max (with ${lev}x leverage = ${lev * 1}-${lev * 2}% loss).
    TP distance from current price: at least 2x SL distance.
 
 Output ONLY valid JSON:
-{"adjust":true,"newStopLoss":65000,"newTakeProfit":75000,"rationale":"..."}`,
+{"adjust":true,"newStopLoss":66000,"newTakeProfit":64000,"rationale":"Tightening TP as price approaches target, trailing SL to lock in profit."}`,
             },
             {
               role: 'user',
@@ -834,6 +846,28 @@ Output ONLY valid JSON:
           let finalSL = parsed.newStopLoss;
           let finalTP = parsed.newTakeProfit;
 
+          // ── CRITICAL: Validate TP direction ──
+          // TP for LONG must be ABOVE entry price (profit side)
+          // TP for SHORT must be BELOW entry price (profit side)
+          if (finalTP !== undefined) {
+            const tpValid = isLong ? finalTP > pos.entryPrice : finalTP < pos.entryPrice;
+            if (!tpValid) {
+              log.warn(`🚫 TP safety: ${isLong ? 'LONG' : 'SHORT'} TP $${finalTP} on wrong side of entry $${pos.entryPrice}. Rejecting.`);
+              finalTP = undefined;
+            }
+          }
+
+          // ── CRITICAL: Validate SL direction ──
+          // SL for LONG must be BELOW entry price (loss side)
+          // SL for SHORT must be ABOVE entry price (loss side)
+          if (finalSL !== undefined) {
+            const slValid = isLong ? finalSL < pos.entryPrice : finalSL > pos.entryPrice;
+            if (!slValid) {
+              log.warn(`🚫 SL safety: ${isLong ? 'LONG' : 'SHORT'} SL $${finalSL} on wrong side of entry $${pos.entryPrice}. Rejecting.`);
+              finalSL = undefined;
+            }
+          }
+
           // SL for long: can only go UP (increase). Clamp to [oldSL or entry, +inf)
           if (isLong && finalSL !== undefined) {
             const oldSL = pos.stopLoss ?? (pos.entryPrice * 0.95);
@@ -852,26 +886,45 @@ Output ONLY valid JSON:
           }
 
           // TP: if positive PnL, tighten toward price. Never widen.
-          if (unrealizedPnlPct > 0 && finalTP !== undefined) {
-            const oldTP = pos.takeProfit;
+          // Also validate TP is on the correct side of entry (defence-in-depth).
+          if (finalTP !== undefined) {
             if (isLong) {
-              if (oldTP !== undefined && finalTP > oldTP) finalTP = oldTP; // never widen
-              if (finalTP < pos.currentPrice * 1.005) finalTP = pos.currentPrice * 1.005; // min 0.5% above
+              // TP must be above entry for longs
+              if (finalTP <= pos.entryPrice) {
+                log.warn(`🚫 TP safety (2nd layer): LONG TP $${finalTP} <= entry $${pos.entryPrice}. Rejecting.`);
+                finalTP = undefined;
+              } else if (unrealizedPnlPct > 0) {
+                const oldTP = pos.takeProfit;
+                if (oldTP !== undefined && finalTP > oldTP) finalTP = oldTP; // never widen
+                if (finalTP < pos.currentPrice * 1.005) finalTP = pos.currentPrice * 1.005; // min 0.5% above
+              }
             } else {
-              if (oldTP !== undefined && finalTP < oldTP) finalTP = oldTP; // never widen
-              if (finalTP > pos.currentPrice * 0.995) finalTP = pos.currentPrice * 0.995; // max 0.5% below
+              // TP must be below entry for shorts
+              if (finalTP >= pos.entryPrice) {
+                log.warn(`🚫 TP safety (2nd layer): SHORT TP $${finalTP} >= entry $${pos.entryPrice}. Rejecting.`);
+                finalTP = undefined;
+              } else if (unrealizedPnlPct > 0) {
+                const oldTP = pos.takeProfit;
+                if (oldTP !== undefined && finalTP < oldTP) finalTP = oldTP; // never widen
+                if (finalTP > pos.currentPrice * 0.995) finalTP = pos.currentPrice * 0.995; // max 0.5% below
+              }
             }
           }
 
-          adjustments.push({
-            positionId: pos.id,
-            symbol: pos.symbol,
-            newStopLoss: finalSL,
-            newTakeProfit: finalTP,
-            rationale: parsed.rationale,
-            confidence: 0.7,
-          });
-          log.info(`📐 Position ${pos.id.slice(0, 8)} adjusted: SL=${finalSL?.toFixed(2) ?? 'unchanged'} TP=${finalTP?.toFixed(2) ?? 'unchanged'}`);
+          // Only push if at least one value changed (both could be undefined after validation)
+          if (finalSL !== undefined || finalTP !== undefined) {
+            adjustments.push({
+              positionId: pos.id,
+              symbol: pos.symbol,
+              newStopLoss: finalSL as number | undefined,
+              newTakeProfit: finalTP as number | undefined,
+              rationale: parsed.rationale,
+              confidence: 0.7,
+            });
+            log.info(`📐 Position ${pos.id.slice(0, 8)} adjusted: SL=${finalSL?.toFixed(2) ?? 'unchanged'} TP=${finalTP?.toFixed(2) ?? 'unchanged'}`);
+          } else {
+            log.warn(`📐 Position ${pos.id.slice(0, 8)}: both SL and TP rejected by safety layer — no adjustment applied.`);
+          }
         }
       } catch (err) {
         log.warn(`Position adjustment failed for ${pos.id.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`);
@@ -961,7 +1014,103 @@ Output ONLY valid JSON:
     deadlock: boolean,
     existingVotes?: Vote[]
   ): ConsensusResult {
-    // Aggregate decisions from thoughts
+    // ─── Per-Symbol Consensus ───
+    // Extract per-symbol decisions from each agent's multiSymbolDecision metadata.
+    // Each agent produces decisions for: market ticker + all open positions.
+    // We aggregate across agents to find the consensus for EACH symbol.
+    const perSymbolMap = new Map<string, { actions: string[]; confidences: number[]; closeFlags: boolean[]; sls: number[]; tps: number[]; sizes: number[]; levers: number[]; rationales: string[] }>();
+
+    for (const t of thoughts) {
+      const multiDec = t.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined;
+      if (!multiDec) {
+        // Fallback: single legacy decision
+        const singleDec = t.metadata?.['decision'] as TradingDecision | undefined;
+        if (singleDec) {
+          const sym = singleDec.symbol.toLowerCase();
+          if (!perSymbolMap.has(sym)) perSymbolMap.set(sym, { actions: [], confidences: [], closeFlags: [], sls: [], tps: [], sizes: [], levers: [], rationales: [] });
+          const entry = perSymbolMap.get(sym)!;
+          entry.actions.push(singleDec.action);
+          entry.confidences.push(t.confidence);
+          entry.closeFlags.push(false);
+          entry.sls.push(singleDec.stopLossPct ?? 0);
+          entry.tps.push(singleDec.takeProfitPct ?? 0);
+          entry.sizes.push(singleDec.positionSizePct);
+          entry.levers.push(singleDec.leverage ?? 1);
+          entry.rationales.push(singleDec.rationale);
+        }
+        continue;
+      }
+
+      // Market ticker decision
+      const mt = multiDec.marketTicker;
+      const mtSym = mt.symbol.toLowerCase();
+      if (!perSymbolMap.has(mtSym)) perSymbolMap.set(mtSym, { actions: [], confidences: [], closeFlags: [], sls: [], tps: [], sizes: [], levers: [], rationales: [] });
+      const mtEntry = perSymbolMap.get(mtSym)!;
+      mtEntry.actions.push(mt.action);
+      mtEntry.confidences.push(t.confidence);
+      mtEntry.closeFlags.push(mt.closePosition);
+      mtEntry.sls.push(mt.suggestedStopLoss ?? 0);
+      mtEntry.tps.push(mt.suggestedTakeProfit ?? 0);
+      mtEntry.sizes.push(mt.positionSizePct);
+      mtEntry.levers.push(mt.leverage);
+      mtEntry.rationales.push(mt.rationale);
+
+      // Open position decisions
+      for (const pos of multiDec.positions) {
+        const posSym = pos.symbol.toLowerCase();
+        if (!perSymbolMap.has(posSym)) perSymbolMap.set(posSym, { actions: [], confidences: [], closeFlags: [], sls: [], tps: [], sizes: [], levers: [], rationales: [] });
+        const posEntry = perSymbolMap.get(posSym)!;
+        posEntry.actions.push(pos.action);
+        posEntry.confidences.push(t.confidence);
+        posEntry.closeFlags.push(pos.closePosition);
+        posEntry.sls.push(pos.suggestedStopLoss ?? 0);
+        posEntry.tps.push(pos.suggestedTakeProfit ?? 0);
+        posEntry.sizes.push(pos.positionSizePct);
+        posEntry.levers.push(pos.leverage);
+        posEntry.rationales.push(pos.rationale);
+      }
+    }
+
+    // Compute per-symbol consensus
+    const perSymbolConsensus: PerSymbolConsensus[] = [];
+    for (const [sym, data] of perSymbolMap) {
+      const n = data.actions.length;
+      if (n === 0) continue;
+
+      const buyCount = data.actions.filter(a => a === 'buy').length;
+      const sellCount = data.actions.filter(a => a === 'sell').length;
+      const holdCount = data.actions.filter(a => a === 'hold').length;
+      const closeCount = data.actions.filter(a => a === 'close').length;
+
+      // Majority action: close > buy > sell > hold
+      const majorityAction: 'buy' | 'sell' | 'hold' | 'close' =
+        closeCount > buyCount && closeCount > sellCount && closeCount > holdCount ? 'close'
+        : buyCount > sellCount && buyCount > holdCount ? 'buy'
+        : sellCount > buyCount && sellCount > holdCount ? 'sell'
+        : 'hold';
+
+      const avgConfidence = data.confidences.reduce((s, c) => s + c, 0) / n;
+      const closeMajority = data.closeFlags.filter(c => c).length > n / 2;
+      const avgSl = data.sls.filter(s => s > 0).reduce((s, v) => s + v, 0) / Math.max(1, data.sls.filter(s => s > 0).length);
+      const avgTp = data.tps.filter(s => s > 0).reduce((s, v) => s + v, 0) / Math.max(1, data.tps.filter(s => s > 0).length);
+      const avgSize = data.sizes.reduce((s, v) => s + v, 0) / n;
+      const avgLev = data.levers.reduce((s, v) => s + v, 0) / n;
+
+      perSymbolConsensus.push({
+        symbol: sym,
+        action: majorityAction,
+        confidence: avgConfidence,
+        hasPosition: false, // filled in by caller
+        closePosition: closeMajority,
+        suggestedStopLoss: avgSl > 0 ? avgSl : undefined,
+        suggestedTakeProfit: avgTp > 0 ? avgTp : undefined,
+        positionSizePct: avgSize,
+        leverage: Math.round(avgLev),
+        rationale: `Majority: ${majorityAction.toUpperCase()} (${buyCount}B/${sellCount}S/${holdCount}H/${closeCount}C). Avg conf: ${(avgConfidence * 100).toFixed(0)}%`,
+      });
+    }
+
+    // Aggregate decisions from thoughts (legacy single-decision path)
     const decisions = thoughts
       .map((t) => ({
         action: ((t.metadata?.['decision'] as TradingDecision)?.action ?? 'hold') as 'buy' | 'sell' | 'hold',
@@ -986,11 +1135,12 @@ Output ONLY valid JSON:
       decision: normalizeDecision({
         action: majorityAction,
         symbol: 'BTCUSDT',
-        positionSizePct: majorityAction === 'hold' ? 0 : 0.10, // will be overridden by Market Agent Phase 4.5
-        leverage: 10, // will be overridden by Market Agent Phase 4.5
+        positionSizePct: majorityAction === 'hold' ? 0 : 0.10,
+        leverage: 10,
         rationale: `Majority decision: ${majorityAction.toUpperCase()} (${buyCount}B/${sellCount}S/${holdCount}H). Avg confidence: ${avgConfidence.toFixed(2)}. Rounds: ${rounds.length}.`,
         urgency: 'soon',
       }),
+      perSymbolConsensus,
       confidence: avgConfidence,
       reasoning: this.buildReasoning(thoughts, rounds),
       votes: existingVotes ?? [],
@@ -1017,8 +1167,33 @@ Output ONLY valid JSON:
 
     const decision = normalizeDecision((metaDecision.metadata?.['decision'] as TradingDecision | undefined) ?? undefined);
 
+    // Extract per-symbol consensus from meta-agent's multiSymbolDecision
+    const metaMultiDec = metaDecision.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined;
+    const perSymbolConsensus: PerSymbolConsensus[] = [];
+    if (metaMultiDec) {
+      const addSym = (psd: import('../types/index.ts').PerSymbolDecision, hasPos: boolean) => {
+        perSymbolConsensus.push({
+          symbol: psd.symbol.toLowerCase(),
+          action: psd.action,
+          confidence: metaDecision.confidence,
+          hasPosition: hasPos,
+          closePosition: psd.closePosition,
+          suggestedStopLoss: psd.suggestedStopLoss,
+          suggestedTakeProfit: psd.suggestedTakeProfit,
+          positionSizePct: psd.positionSizePct,
+          leverage: psd.leverage,
+          rationale: psd.rationale,
+        });
+      };
+      addSym(metaMultiDec.marketTicker, false);
+      for (const pos of metaMultiDec.positions) {
+        addSym(pos, true);
+      }
+    }
+
     const result: ConsensusResult = {
       decision,
+      perSymbolConsensus,
       confidence: metaDecision.confidence,
       reasoning: `Meta-Agent Final Arbitration:\n${metaDecision.thought}\n\nDebate Summary: ${rounds.length} rounds conducted.`,
       votes: votes ?? [],

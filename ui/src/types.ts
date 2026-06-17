@@ -57,6 +57,7 @@ export interface TradingDecision {
 
 export interface ConsensusResult {
   decision: TradingDecision;
+  perSymbolConsensus: PerSymbolConsensus[];
   confidence: number;
   reasoning: string;
   votes: Vote[];
@@ -64,6 +65,19 @@ export interface ConsensusResult {
   deadlockResolved: boolean;
   metaAgentOverridden: boolean;
   timestamp: number;
+}
+
+export interface PerSymbolConsensus {
+  symbol: string;
+  action: string;
+  confidence: number;
+  hasPosition: boolean;
+  closePosition: boolean;
+  suggestedStopLoss?: number;
+  suggestedTakeProfit?: number;
+  positionSizePct: number;
+  leverage: number;
+  rationale: string;
 }
 
 export interface Vote {
@@ -183,6 +197,13 @@ export interface APIData {
       totalSamples: number;
       discriminativeDims: number;
       totalDims: number;
+      dimDetails?: Array<{
+        name: string;
+        winMin: number; winMax: number; winCentroid: number;
+        lossMin: number; lossMax: number; lossCentroid: number;
+        overlap: boolean; boundary: number | null;
+        globalMin: number; globalMax: number;
+      }>;
     }>;
     pending: Array<{
       symbol: string;

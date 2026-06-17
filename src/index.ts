@@ -391,13 +391,15 @@ class AMACRFSystem {
             close: parseFloat(k[4] as string),
           }));
         } else {
-          // Hyperliquid
+          // Hyperliquid candleSnapshot is case-sensitive — preserve original case for colon-prefixed symbols
+          // DEX 0 bare names (BTC, ETH, SOL) need uppercase; DEX 1-8 (xyz:META) need exact case
+          const hlSymbol = symbol.includes(':') ? symbol : symbol.toUpperCase();
           const hlInterval = { '5m': '5m', '1h': '1h', '4h': '4h', '1d': '1d', '1w': '1w' }[interval] || '1h';
           const endTime = Date.now();
           const msMap: Record<string, number> = { '5m': 300_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000, '1w': 604_800_000 };
           const startTime = endTime - (msMap[hlInterval] ?? 3_600_000) * limit;
 
-          const res = await hlFetchQueued({ type: 'candleSnapshot', req: { coin: symbol.toUpperCase().replace(/^.*:/, ''), interval: hlInterval, startTime, endTime } });
+          const res = await hlFetchQueued({ type: 'candleSnapshot', req: { coin: hlSymbol, interval: hlInterval, startTime, endTime } });
           if (!res.ok) throw new Error(`HL ${res.status}`);
           const data = await res.json() as Array<{ t: number; o: string; c: string; h: string; l: string }>;
           // HL candleSnapshot returns candles as an array — the colon-prefix stripped coin name works
@@ -680,7 +682,7 @@ class AMACRFSystem {
           volatility: combinedState.volatility ?? 0,
           srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
           obImbalance: combinedState.orderBookImbalance ?? 0,
-          fundingRate: this.sentimentEngine?.getFundingRate() ?? 0,
+          fundingRate: this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
           volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
           sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
           sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
@@ -1092,6 +1094,34 @@ class AMACRFSystem {
         }
       }
 
+      // ── Per-Symbol Consensus: Position Management ──
+      // Use perSymbolConsensus from HACP to manage ALL open positions.
+      // Each symbol (market ticker + open positions) has a consensus decision.
+      const perSymbolConsensus = result.consensus.perSymbolConsensus ?? [];
+      for (const psc of perSymbolConsensus) {
+        if (!psc.hasPosition) continue; // market ticker handled by main flow
+
+        const pos = this.portfolio.getPosition(psc.symbol);
+        if (!pos) continue;
+
+        // Close position if consensus says so
+        if (psc.closePosition) {
+          log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%) — ${psc.rationale}`);
+          const trade = this.portfolio.closePosition(psc.symbol, combinedState.price);
+          if (trade) {
+            perPositionCloseReports.push({ order: {} as any, trade });
+            log.info(`  → Closed ${psc.symbol}: $${trade.pnl.toFixed(2)}`);
+          }
+          continue;
+        }
+
+        // Adjust TP/SL if suggested
+        if (psc.suggestedStopLoss !== undefined || psc.suggestedTakeProfit !== undefined) {
+          this.portfolio.adjustPosition(pos.id, psc.suggestedStopLoss, psc.suggestedTakeProfit);
+          log.info(`📐 Per-symbol consensus: ADJUST ${psc.symbol} SL=${psc.suggestedStopLoss?.toFixed(2) ?? '-'} TP=${psc.suggestedTakeProfit?.toFixed(2) ?? '-'}`);
+        }
+      }
+
       // ── P0: Pattern Classifier Hard Circuit Breaker ──
       // If pattern data from the previous cycle shows < 50% win rate for this
       // decision direction, override to HOLD — agents saw the warning but ignored it.
@@ -1203,6 +1233,27 @@ class AMACRFSystem {
 
       // 4. Execute decision through real trading manager
       // Routes automatically: paper-mode → paperEngine, real-mode → exchange + mirror
+      //
+      // ── Symbol Overlap Guard ──
+      // If the selected symbol already has an open position, do NOT open a new trade.
+      // The existing position is already being managed by per-symbol consensus
+      // and SL/TP monitoring. Opening a second trade on the same symbol can create
+      // opposite-direction positions where one cancels the other, wasting fees
+      // and confusing portfolio tracking (Map.set silently overwrites).
+      // Instead, force HOLD so only management (SL/TP, close) decisions apply.
+      const activeSym = finalDecision.symbol?.toLowerCase() ?? '';
+      if (activeSym && this.portfolio.hasPosition(activeSym)) {
+        const existingPos = this.portfolio.getPosition(activeSym);
+        if (existingPos && finalDecision.action !== 'hold') {
+          log.warn(`🚫 Symbol overlap guard: ${activeSym.toUpperCase()} already has ${existingPos.side.toUpperCase()} position @ $${existingPos.averageEntryPrice.toFixed(2)}. Converting ${finalDecision.action.toUpperCase()}→HOLD. Existing position managed by per-symbol consensus + SL/TP.`);
+          finalDecision = {
+            ...finalDecision,
+            action: 'hold',
+            positionSizePct: 0,
+            rationale: `Symbol overlap guard: ${activeSym} already positioned. HOLD for position management only.`,
+          };
+        }
+      }
       log.info(`💼 Executing ${this.realTradingManager.getTradeMode().toUpperCase()} trading decision...`);
       const execResult = await this.realTradingManager.executeDecision(finalDecision);
       const reports: ExecutionReport[] = execResult.paperReports ?? [];
@@ -1358,6 +1409,7 @@ class AMACRFSystem {
         : undefined;
       this.evolution.tradeHistory.record({
         cycleNumber: this.totalCycles,
+        symbol: combinedState.primarySymbol,
         decision: finalDecision,
         entryPrice: combinedState.price,
         regime: combinedState.regime,
@@ -1369,7 +1421,7 @@ class AMACRFSystem {
       });
 
       // Update previous cycle's exit price for simulated PnL computation
-      this.evolution.tradeHistory.updateLastExit(combinedState.price);
+      this.evolution.tradeHistory.updateLastExit(combinedState.price, combinedState.primarySymbol);
 
       // 6.5 Record per-agent outcomes for evolution
       try {
@@ -1797,8 +1849,11 @@ class AMACRFSystem {
           cycles: this.totalCycles,
           balance: p.balance,
           equity: p.totalEquity,
-          totalPnl: p.totalEquity - p.initialBalance,
-          totalPnlPct: p.initialBalance > 0 ? (p.totalEquity - p.initialBalance) / p.initialBalance : 0,
+          // totalPnl: use accumulated realized PnL from the portfolio tracker
+          // rather than (equity - initialBalance) which includes unrealized PnL
+          // and locked margin creating phantom gains/losses.
+          totalPnl: p.totalPnl,
+          totalPnlPct: p.totalPnlPct,
           drawdownPct: p.maxDrawdownPct,
           positions: p.positions.size,
           wsConnected: this.multiWs?.isConnected?.() ?? false,
@@ -1837,37 +1892,48 @@ class AMACRFSystem {
           const pendingStats = this.rbcEngine.getPendingStats();
           const hasData = allStats.length > 0 || pendingStats.length > 0;
           if (!hasData) return undefined;
-          // Get dim details for the first symbol with data
-          const firstSymbol = allStats[0]!.symbol;
-          const dimDetails = this.rbcEngine.getDimDetails(firstSymbol);
-          // Merge current feature values from query()
-          const queryResult = this.lastCycleRBCContext ? this.rbcEngine.query(firstSymbol, this.lastCycleRBCContext.features) : null;
-          const valueMap = new Map(queryResult?.dimDetails.map(d => [d.name, d.value]) ?? []);
-          // Use query()'s discriminativeDims (considers current value position) instead of getAllModelStats()'s static count
-          const liveDiscriminativeDims = queryResult?.discriminativeDims ?? 0;
+
+          // Build per-symbol dimDetails so the UI can render dimension bars for EACH symbol.
+          // Use lastCycleRBCContext features for the active symbol; other symbols get
+          // box ranges without current-value dots.
+          const activeSymbol = this.lastCycleRBCContext?.symbol?.toLowerCase() ?? '';
+          const activeFeatures = this.lastCycleRBCContext?.features ?? {};
+
           return {
-            symbols: allStats.map(s => ({
-              symbol: s.symbol,
-              winCount: s.winCount,
-              lossCount: s.lossCount,
-              totalSamples: s.totalSamples,
-              discriminativeDims: liveDiscriminativeDims,
-              totalDims: s.totalDims,
-            })),
+            symbols: allStats.map(s => {
+              const sym = s.symbol;
+              const dimDetailsRaw = this.rbcEngine.getDimDetails(sym);
+              // Query current features against this symbol's RBC state
+              const queryResult = sym === activeSymbol && Object.keys(activeFeatures).length > 0
+                ? this.rbcEngine.query(sym, activeFeatures)
+                : null;
+              const valueMap = new Map(queryResult?.dimDetails.map(d => [d.name, d.value]) ?? []);
+              // Use per-symbol query() discriminativeDims (considers current value position)
+              const liveDiscriminativeDims = queryResult?.discriminativeDims ?? s.discriminativeDims;
+
+              return {
+                symbol: s.symbol,
+                winCount: s.winCount,
+                lossCount: s.lossCount,
+                totalSamples: s.totalSamples,
+                discriminativeDims: liveDiscriminativeDims,
+                totalDims: s.totalDims,
+                dimDetails: dimDetailsRaw ? dimDetailsRaw.map(d => ({
+                  name: d.name,
+                  value: valueMap.get(d.name) ?? 0,
+                  winMin: d.winMin, winMax: d.winMax, winCentroid: d.winCentroid,
+                  lossMin: d.lossMin, lossMax: d.lossMax, lossCentroid: d.lossCentroid,
+                  overlap: d.overlap, boundary: d.boundary,
+                  globalMin: d.globalMin, globalMax: d.globalMax,
+                })) : undefined,
+              };
+            }),
             pending: pendingStats.map(p => ({
               symbol: p.symbol,
               pending: p.pending,
               needed: p.needed,
               pct: p.pct,
             })),
-            dimDetails: dimDetails ? dimDetails.map(d => ({
-              name: d.name,
-              value: valueMap.get(d.name) ?? 0,
-              winMin: d.winMin, winMax: d.winMax, winCentroid: d.winCentroid,
-              lossMin: d.lossMin, lossMax: d.lossMax, lossCentroid: d.lossCentroid,
-              overlap: d.overlap, boundary: d.boundary,
-              globalMin: d.globalMin, globalMax: d.globalMax,
-            })) : undefined,
           };
         })(),
         agentModels: {
@@ -1882,6 +1948,7 @@ class AMACRFSystem {
         tradeHistory: this.evolution.tradeHistory.getAllEntries().slice(-50),
         marketAgent: marketAgentState,
         tradeRecords: [
+          // Closed trades from paper engine (SL/TP closes, reconciliations)
           ...this.paperEngine.getTrades().slice(-50).map(t => ({
             id: t.id,
             symbol: t.symbol,
@@ -1897,9 +1964,23 @@ class AMACRFSystem {
             closedAt: t.closedAt,
             status: t.status,
           })),
+          // Open positions from portfolio (so they appear as open trade records)
+          ...Array.from(this.portfolio.getPortfolio().positions.values()).map(p => ({
+            id: p.id,
+            symbol: p.symbol,
+            side: p.side,
+            entryPrice: p.averageEntryPrice,
+            exitPrice: p.currentPrice,
+            quantity: p.quantity,
+            leverage: p.leverage ?? 1,
+            investment: p.averageEntryPrice * p.quantity,
+            pnl: p.unrealizedPnl,
+            pnlPct: p.unrealizedPnlPct,
+            openedAt: p.openedAt,
+            closedAt: p.openedAt,
+            status: 'open' as const,
+          })),
         ],
-        // Include open positions separately for the positions table
-        // (NOT duplicated in tradeRecords which is for CLOSED trades only)
       });
     } catch (err) {
       // API push is best-effort

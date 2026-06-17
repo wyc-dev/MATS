@@ -344,11 +344,39 @@ export class PortfolioTracker {
   adjustPosition(positionId: string, newStopLoss?: number, newTakeProfit?: number): boolean {
     for (const [, pos] of this.portfolio.positions) {
       if (pos.id === positionId) {
-        if (newStopLoss !== undefined) {
-          pos.stopLossPrice = newStopLoss;
+        const isLong = pos.side === 'buy';
+
+        // ── Hard safety: validate TP direction ──
+        // TP for LONG must be ABOVE entry (profit side)
+        // TP for SHORT must be BELOW entry (profit side)
+        const validatedTP = (() => {
+          if (newTakeProfit === undefined) return undefined;
+          const tpOk = isLong ? newTakeProfit > pos.averageEntryPrice : newTakeProfit < pos.averageEntryPrice;
+          if (!tpOk) {
+            log.warn(`🚫 adjustPosition REJECTED: ${isLong ? 'LONG' : 'SHORT'} TP $${newTakeProfit} on wrong side of entry $${pos.averageEntryPrice}. Ignoring.`);
+            return undefined;
+          }
+          return newTakeProfit;
+        })();
+
+        // ── Hard safety: validate SL direction ──
+        // SL for LONG must be BELOW entry (loss side)
+        // SL for SHORT must be ABOVE entry (loss side)
+        const validatedSL = (() => {
+          if (newStopLoss === undefined) return undefined;
+          const slOk = isLong ? newStopLoss < pos.averageEntryPrice : newStopLoss > pos.averageEntryPrice;
+          if (!slOk) {
+            log.warn(`🚫 adjustPosition REJECTED: ${isLong ? 'LONG' : 'SHORT'} SL $${newStopLoss} on wrong side of entry $${pos.averageEntryPrice}. Ignoring.`);
+            return undefined;
+          }
+          return newStopLoss;
+        })();
+
+        if (validatedSL !== undefined) {
+          pos.stopLossPrice = validatedSL;
         }
-        if (newTakeProfit !== undefined) {
-          pos.takeProfitPrice = newTakeProfit;
+        if (validatedTP !== undefined) {
+          pos.takeProfitPrice = validatedTP;
         }
         pos.updatedAt = Date.now();
         log.info(`Position ${positionId.slice(0, 8)} adjusted: SL=${pos.stopLossPrice?.toFixed(2) ?? '-'} TP=${pos.takeProfitPrice?.toFixed(2) ?? '-'}`);
