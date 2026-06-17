@@ -251,6 +251,16 @@ export class HyperliquidWebSocketManager {
   // ── Connection Management ──
 
   async connect(symbol: string): Promise<void> {
+    // Hyperliquid WebSocket ONLY supports DEX 0 bare symbols (BTC, ETH, SOL).
+    // DEX 1-8 colon-prefixed symbols (xyz:META, flx:NVDA) are NOT supported.
+    // MultiExchangeWebSocketManager uses REST polling fallback for those.
+    if (symbol.includes(':')) {
+      log.warn(`HL WS does not support DEX 1-8 symbols like ${symbol}. Use REST polling via MultiExchangeWebSocketManager.`);
+      this.connected = false;
+      this.notifyConnectionChange(false);
+      return;
+    }
+
     if (this.isConnected() && this.activeSymbol === symbol) {
       log.info(`Already connected to HL WS for ${symbol}`);
       return;
