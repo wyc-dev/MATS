@@ -513,36 +513,60 @@ export class MarketAgent {
   /** Background scan of DEX 1-8 assets — completely non-blocking */
   private async scanDEX18AssetsInBackground(assets: Array<{ name: string; coin: string }>, allPairs: TopVolumePair[], hlFetch: (body: object, retries?: number) => Promise<Response>): Promise<void> {
     if (assets.length === 0) return;
-    log.info(`DEX 1-8: background-scanning ${assets.length} assets (via l2Book, batched)`);
-    const priceMap = new Map<string, number>();
+    log.info(`DEX 1-8: background-scanning ${assets.length} assets (via l2Book + candleSnapshot)`);
 
-    // Scan up to 10 assets per background cycle via l2Book (no 422)
-    const batch = assets.slice(0, 10);
-    for (const asset of batch) {
+    // Process ALL assets with concurrency control (max 5 parallel)
+    const scanOne = async (asset: { name: string; coin: string }): Promise<void> => {
       try {
         await MarketAgent.hlLimiter.acquire();
-        const res = await fetch('https://api.hyperliquid.xyz/info', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type: 'l2Book', coin: asset.coin }),
-        });
-        if (res.ok) {
-          const book = await res.json() as { levels: Array<Array<{ px: string }>> };
-          const px = book.levels?.[0]?.[0]?.px ? parseFloat(book.levels[0][0].px) : 0;
-          if (px > 0) priceMap.set(asset.name, px);
+        const [bookRes, snapRes] = await Promise.all([
+          fetch('https://api.hyperliquid.xyz/info', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'l2Book', coin: asset.coin }),
+          }),
+          fetch('https://api.hyperliquid.xyz/info', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'candleSnapshot', req: { coin: asset.name, interval: '1d', startTime: Date.now() - 172_800_000, endTime: Date.now() } }),
+          }),
+        ]);
+        let price = 0;
+        let volume = 0;
+        if (bookRes.ok) {
+          const book = await bookRes.json() as { levels: Array<Array<{ px: string }>> };
+          price = book.levels?.[0]?.[0]?.px ? parseFloat(book.levels[0][0].px) : 0;
         }
-      } catch { /* skip */ }
-    }
+        if (snapRes.ok) {
+          const snapData = await snapRes.json() as Array<Record<string, string>>;
+          if (Array.isArray(snapData)) {
+            for (const c of snapData) {
+              const v = parseFloat(c['v'] ?? '0');
+              if (!isNaN(v)) volume += v;
+            }
+            // Convert raw contract volume → USD notional
+            if (volume > 0 && price > 0) volume = volume * price;
+          }
+        }
+        if (price > 0) {
+          const stored = this.previousPriceCache.get(asset.name);
+          const changePct = stored?.prevDay && stored.prevDay > 0 ? ((price - stored.prevDay) / stored.prevDay) * 100 : 0;
+          allPairs.push({ symbol: asset.coin, volume24h: volume, volume5m: 0, price, priceChangePercent: changePct, exchange: 'hyperliquid' });
+          this.previousPriceCache.set(asset.name, { price, prevDay: stored?.price ?? price });
+        }
+      } catch { /* skip individual asset */ }
+    };
 
-    for (const asset of batch) {
-      if (priceMap.has(asset.name)) {
-        const price = priceMap.get(asset.name)!;
-        const stored = this.previousPriceCache.get(asset.name);
-        const changePct = stored?.prevDay && stored.prevDay > 0 ? ((price - stored.prevDay) / stored.prevDay) * 100 : 0;
-        allPairs.push({ symbol: asset.coin, volume24h: 0, volume5m: 0, price, priceChangePercent: changePct, exchange: 'hyperliquid' });
-        this.previousPriceCache.set(asset.name, { price, prevDay: stored?.price ?? price });
+    // Process in batches of 5 concurrent
+    const promises: Promise<void>[] = [];
+    for (const asset of assets) {
+      promises.push(scanOne(asset));
+      if (promises.length >= 5) {
+        await Promise.all(promises);
+        promises.length = 0;
       }
     }
-    log.info(`DEX 1-8 background: scan complete — ${priceMap.size}/${batch.length} assets resolved`);
+    if (promises.length > 0) await Promise.all(promises);
+
+    log.info(`DEX 1-8 background: scan complete — ${assets.length} assets processed`);
   }
 
   /**
