@@ -1656,6 +1656,15 @@ export default function App() {
           <span className="topbar-subtitle">Multi-Agent Trading · Capital Preservation</span>
         </div>
         <div className="topbar-right">
+          <button className={`header-btn pause-btn ${data?.systemPaused ? 'paused' : ''}`} onClick={async () => {
+            try {
+              const isPaused = data?.systemPaused
+              await fetch(`${API_BASE}/${isPaused ? 'resume' : 'pause'}`, { method: 'POST' })
+            } catch {}
+          }} title={data?.systemPaused ? 'Resume system' : 'Pause system (RBC only)'}>
+            <span className="btn-icon">{data?.systemPaused ? '▶' : '⏸'}</span>
+            <span className="btn-label">{data?.systemPaused ? 'Resume' : 'Pause'}</span>
+          </button>
           <button className="header-btn trigger-btn" onClick={handleRunCycle} title="Run decision cycle now">
             <span className="btn-icon">▶</span>
             <span className="btn-label">Run Cycle</span>
