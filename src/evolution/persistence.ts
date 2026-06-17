@@ -303,7 +303,10 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       peakEquity: portfolio.peakEquity,
       dailyPnl: portfolio.dailyPnl,
       dailyLossLimit: portfolio.dailyLossLimit,
-      tradeCount: portfolio.winCount + portfolio.lossCount + portfolio.positions.size,
+      // tradeCount = total unique trades (closed + real open, no ghost duplicates).
+      // IMPORTANT: winCount + lossCount already equals the number of closed trades.
+      // Do NOT add positions.size — that inflates the count with phantom opens.
+      tradeCount: portfolio.winCount + portfolio.lossCount,
       winCount: portfolio.winCount,
       lossCount: portfolio.lossCount,
       lastUpdated: portfolio.lastUpdated,

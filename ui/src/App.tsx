@@ -829,6 +829,33 @@ function DebatePanel({ data }: { data: APIData | null }) {
               })}
             </div>
           )}
+
+          {/* Per-symbol consensus cards */}
+          {consensus.perSymbolConsensus?.length > 1 && (
+            <div className="per-symbol-consensus" style={{marginTop: 10, display:'flex', flexDirection:'column', gap:6}}>
+              {consensus.perSymbolConsensus.map((psc: any) => {
+                const isMkt = !psc.hasPosition
+                const actionClass = psc.action === 'close' ? 'sell' : psc.action
+                return (
+                  <div key={psc.symbol} className={`consensus-banner ${actionClass}`} style={{padding:'6px 10px', margin:0, opacity: isMkt ? 0.6 : 1}}>
+                    <div style={{display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
+                      <span style={{fontWeight:600, fontSize:'0.75rem', color:'var(--text-primary)'}}>
+                        {psc.symbol.toUpperCase()}
+                        {isMkt && <span style={{fontSize:'0.6rem', color:'var(--text-muted)', marginLeft:4}}>(market)</span>}
+                        {psc.hasPosition && <span style={{fontSize:'0.6rem', color:'var(--green)', marginLeft:4}}>● position</span>}
+                      </span>
+                      <span className={`vote-action-tag ${actionClass}`}>{psc.action.toUpperCase()}</span>
+                      <span style={{fontSize:'0.65rem', color:'var(--text-secondary)'}}>{(psc.confidence * 100).toFixed(0)}%</span>
+                      {psc.closePosition && <span style={{fontSize:'0.6rem', color:'var(--red)'}}>🔴 CLOSE</span>}
+                      {psc.suggestedStopLoss && <span style={{fontSize:'0.6rem', color:'var(--text-muted)'}}>SL:${psc.suggestedStopLoss.toFixed(1)}</span>}
+                      {psc.suggestedTakeProfit && <span style={{fontSize:'0.6rem', color:'var(--text-muted)'}}>TP:${psc.suggestedTakeProfit.toFixed(1)}</span>}
+                    </div>
+                    <div style={{fontSize:'0.65rem', color:'var(--text-secondary)', marginTop:2}}>{psc.rationale}</div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -998,10 +1025,29 @@ function StrategyCard({ strategy }: { strategy: any }) {
   )
 }
 
-function RBCSection({ rbcState }: { rbcState: any }) {
+function RBCSection({ rbcState, openPositionSymbols }: { rbcState: any; openPositionSymbols?: Set<string> }) {
   const hasSymbols = rbcState?.symbols?.length > 0
   const hasPending = rbcState?.pending?.length > 0
-  const hasDimDetails = rbcState?.dimDetails?.length > 0
+  const [expandedSet, setExpandedSet] = useState<Set<string>>(() => {
+    // Default: expand symbols that have open positions
+    if (!rbcState?.symbols || !openPositionSymbols) return new Set()
+    const initial = new Set<string>()
+    for (const sym of rbcState.symbols) {
+      if (openPositionSymbols.has(sym.symbol.toLowerCase())) {
+        initial.add(sym.symbol)
+      }
+    }
+    return initial
+  })
+
+  const toggleExpand = (symbol: string) => {
+    setExpandedSet(prev => {
+      const next = new Set(prev)
+      if (next.has(symbol)) next.delete(symbol)
+      else next.add(symbol)
+      return next
+    })
+  }
 
   return (
     <div className="evo-section">
@@ -1037,19 +1083,23 @@ function RBCSection({ rbcState }: { rbcState: any }) {
               const edgePct = symState.totalDims > 0 ? Math.round((symState.discriminativeDims / symState.totalDims) * 100) : 0
               const verdict = edgePct >= 25 ? (symState.winCount > symState.lossCount ? 'favorable' : 'unfavorable') : 'no_edge'
               const verdictIcon = verdict === 'favorable' ? '🟢' : verdict === 'unfavorable' ? '🔴' : '🟡'
+              const isExpanded = expandedSet.has(symState.symbol)
+              const hasPosition = openPositionSymbols?.has(symState.symbol.toLowerCase())
               return (
                 <div key={symState.symbol} className="evo-cluster-symbol">
-                  <div className="evo-cluster-symbol-header">
+                  <div className="evo-cluster-symbol-header" onClick={() => toggleExpand(symState.symbol)} style={{ cursor: 'pointer' }}>
+                    <span className={`evo-expand-arrow ${isExpanded ? 'expanded' : ''}`}>▶</span>
                     <span className="evo-cluster-symbol-name">{symState.symbol.toUpperCase()}</span>
+                    {hasPosition && <span className="evo-badge" style={{ background: 'var(--green)', color: '#000' }}>POSITION</span>}
                     <span className="evo-badge">{symState.winCount}W/{symState.lossCount}L *</span>
                     <span className="evo-badge">{edgePct}% edge</span>
                     <span className="evo-cluster-indicator">{verdictIcon}</span>
                   </div>
 
-                  {/* Per-dimension bars — styled like Fitness Breakdown with color coding */}
-                  {hasDimDetails && (
+                  {/* Per-dimension bars — per-symbol, not shared globally — only when expanded */}
+                  {isExpanded && symState.dimDetails?.length > 0 && (
                     <div className="rbc-dim-list" style={{ marginTop: 10 }}>
-                      {rbcState.dimDetails.map((d: any) => {
+                      {symState.dimDetails.map((d: any) => {
                         const span = d.globalMax - d.globalMin || 1
                         const toPct = (v: number) => ((v - d.globalMin) / span) * 100
 
@@ -1193,6 +1243,15 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
   const activeStrategy = evo.strategies.find((s: any) => s.status === 'active')
   const symbolCount = data?.rbcState?.symbols?.length ?? 0
 
+  // Build set of open position symbols (lowercased for matching)
+  const openPositionSymbols = new Set<string>()
+  const portfolioPositions = data?.portfolio?.positions
+  if (portfolioPositions) {
+    for (const pos of Object.values(portfolioPositions) as any[]) {
+      if (pos.symbol) openPositionSymbols.add(pos.symbol.toLowerCase())
+    }
+  }
+
   return (
     <div className="evo-panel" style={{ marginTop: 12 }}>
       <EvolutionHeader
@@ -1204,7 +1263,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
       <EvolutionStats evo={evo} th={th} />
       <FitnessBreakdown fb={evo.fitnessBreakdown} />
       {activeStrategy && <StrategyCard strategy={activeStrategy} />}
-      <RBCSection rbcState={data?.rbcState} />
+      <RBCSection rbcState={data?.rbcState} openPositionSymbols={openPositionSymbols} />
     </div>
   )
 }

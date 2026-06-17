@@ -127,7 +127,10 @@ export interface DebateStatement {
 }
 
 export interface ConsensusResult {
+  /** Primary decision (market ticker) — kept for backward compat */
   decision: TradingDecision;
+  /** Per-symbol consensus decisions (market ticker + all open positions) */
+  perSymbolConsensus: PerSymbolConsensus[];
   confidence: number;
   reasoning: string;
   votes: Vote[];
@@ -135,6 +138,25 @@ export interface ConsensusResult {
   deadlockResolved: boolean;
   metaAgentOverridden: boolean;
   timestamp: number;
+}
+
+export interface PerSymbolConsensus {
+  symbol: string;
+  action: 'buy' | 'sell' | 'hold' | 'close';
+  confidence: number;
+  /** Whether this symbol has an open position */
+  hasPosition: boolean;
+  /** Suggested stop-loss adjustment (undefined = no change) */
+  suggestedStopLoss?: number;
+  /** Suggested take-profit adjustment (undefined = no change) */
+  suggestedTakeProfit?: number;
+  /** Should we close the position NOW? */
+  closePosition: boolean;
+  /** Position size for new trades (0 = no new trade) */
+  positionSizePct: number;
+  /** Leverage for new trades */
+  leverage: number;
+  rationale: string;
 }
 
 export interface Vote {

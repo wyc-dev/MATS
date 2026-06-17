@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.5-dev  
+> **版本**: 2.0.7-dev  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~17,200+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -27,11 +27,13 @@
 16. [P0 — EM 進化系統 — 雙層 Expectation-Maximization](#p0--em-進化系統expectation-maximization-for-cognitive-trading)
 17. [P0 — RBC Engine (Range-Based Clustering)](#p0--rbc-enginerange-based-clustering)
 18. [P0 — Trade Pattern Classifier](#p0--trade-pattern-classifier)
-18. [可觀測性](#可觀測性)
+19. [🛡️ P0 — TP/SL 三層安全架構](#🛡️-p0--tpsl-三層安全架構v207)
+20. [可觀測性](#可觀測性)
 19. [配置與環境變數](#配置與環境變數)
 20. [PI Agent 命令](#pi-agent-命令)
 21. [啟動指南](#啟動指南)
 22. [技術棧](#技術棧)
+23. [附錄 B：已知錯誤與陷阱記錄](#附錄-b已知錯誤與陷阱記錄known-bugs--pitfalls)
 
 ---
 
@@ -211,12 +213,18 @@
 │   │   └── agent-models.ts       # Per-agent model config (126 行)
 │   │
 │   ├── market-agent/
-│   │   └── index.ts              # Market Agent (~480 行)
+│   │   └── index.ts              # Market Agent (~879 行)
 │   │       ├── autoSelectTopPair # 每次 HACP 週期前自動選 pair
 │   │       ├── fetchBinanceTopPairs  # /api/v3/ticker/24hr (USDT, 無穩定幣)
-│   │       ├── fetchHyperliquidTopPairs # allPerpMetas + perpCategories + l2Book (9 DEXs)
-│   │       ├── filterHyperliquidPairs # perpCategories 分類過濾
-│   │       ├── fetchPriceForSymbol # Binance REST / HL l2Book
+│   │       ├── fetchHyperliquidTopPairs # allPerpMetas + perpCategories + metaAndAssetCtxs (DEX 0) + candleSnapshot (DEX 1-8)
+│   │       │   ├── DEX 0 (230 crypto perps): dayNtlVlm = USD notional volume
+│   │       │   ├── DEX 1-8 (186 assets): candleSnapshot v × price = USD notional
+│   │       │   ├── Background scan: 20 tokens/200ms rate limiter, 5 concurrent
+│   │       │   ├── 5m volume: top 5 pairs via candleSnapshot 5m interval
+│   │       │   ├── candleSnapshot requires FULL coin name (e.g. "xyz:META" not "META")
+│   │       │   └── HL API is case-sensitive — preserve original case for colon-prefixed symbols
+│   │       ├── filterHyperliquidPairs # perpCategories 分類過濾 (crypto/indices/stocks/commodities/FX)
+│   │       ├── fetchPriceForSymbol # Binance REST / HL metaAndAssetCtxs / l2Book + candleSnapshot
 │   │       ├── setExchange/setTradeMode/setHyperliquidAssetType
 │   │       ├── getLastFetchTime       # 供 SystemGuard 數據新鮮度檢查
 │   │       └── getMarketDescription # 注入 Agent 上下文
@@ -231,7 +239,7 @@
 │   │       └── Guard E: Liquidity Check (order book depth vs 倉位大小)
 │   │
 │   ├── cognition/
-│   │   └── hacp.ts               # HACP 認知協議 (~907 行, v1.9.3)
+│   │   └── hacp.ts               # HACP 認知協議 (~1100 行, v2.0.6 — Per-Symbol Consensus)
 │   │       ├── Phase 1-5         # 平行思考 → Skeptics審查 → Meta仲裁 → 辯論 → 共識 → 否決 → 倉位調整
 │   │       ├── Phase 1.5         # Skeptics 邏輯審查 (跨 Agent 交叉對比)
 │   │       ├── Phase 1.75        # Meta-Agent 在 Skeptics 之後思考 (接收審查結果)
@@ -290,7 +298,7 @@
 │   │
 │   ├── evolution/
 │   │   ├── cycle-summary.ts     # 🧬 第一層 EM — Cycle Summary Chain (v2.0.2)
-│   │   ├── rbc-clustering.ts   # 🧬 RBC Engine — Range-Based Clustering (v2.0.5, 9 dims)
+│   │   ├── rbc-clustering.ts   # 🧬 RBC Engine — Range-Based Clustering (v2.0.6, 8 dims)
 │   │   │   ├── RBCEngine class       # Growing hyperrectangles per symbol
 │   │   │   ├── feedTrade()           # Expand win/loss boxes (never contract)
 │   │   │   ├── query()               # Edge score → favorable/unfavorable/no_edge
@@ -452,7 +460,7 @@ Risk Auditor 專注於**災難性風險預防**，不再審查倉位大小和槓
 
 ---
 
-### 🆕 Multi-Symbol 架構 (v1.9.2)
+### 🆕 Multi-Symbol 架構 (v2.0.6 — Per-Symbol Consensus)
 
 每個 Agent 在單一 HACP cycle 中同時評估 **所有交易對**：
 
@@ -478,6 +486,32 @@ Risk Auditor 專注於**災難性風險預防**，不再審查倉位大小和槓
 │ rationale         │       │ suggestedTakeProfit      │       │ suggestedTakeProfit  │
 └───────────────────┘       │ rationale                │       │ rationale            │
                             └─────────────────────────┘       └─────────────────────┘
+                                            │
+                                            ▼
+                              ┌─────────────────────────┐
+                              │  HACP buildConsensus()   │
+                              │  🆕 v2.0.6               │
+                              │                          │
+                              │  從每個 agent 嘅          │
+                              │  multiSymbolDecision      │
+                              │  提取 per-symbol 決定     │
+                              │  跨 agent 計算 majority   │
+                              └────────────┬────────────┘
+                                            │
+                                            ▼
+                              ┌─────────────────────────┐
+                              │  ConsensusResult         │
+                              │  ├─ decision (market)    │
+                              │  └─ perSymbolConsensus[] │
+                              │     ├─ { symbol: spcx,   │
+                              │     │   action: buy,     │
+                              │     │   hasPosition: false}│
+                              │     ├─ { symbol: btc,    │
+                              │     │   action: hold,    │
+                              │     │   hasPosition: true,│
+                              │     │   closePosition: false}│
+                              │     └─ ...               │
+                              └─────────────────────────┘
 ```
 
 #### Agent 決策範圍
@@ -792,10 +826,18 @@ PROP: BUY 4.5% immediate | momentum_strong but reduce_size_for_vol_uncertainty
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  PHASE 3: FAST CONSENSUS ENGINE                                 │
-│                                                                 │
+│  PHASE 3: FAST CONSENSUS ENGINE (v2.0.6 — Per-Symbol Consensus)
+│
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │ 加權投票                                                    │  │
+│  │ 加權投票（Per-Symbol）                                     │  │
+│  │ • 每個 Agent 產出 MultiSymbolDecision（marketTicker + positions[]）│  │
+│  │ • buildConsensus() 從每個 agent 嘅 multiSymbolDecision metadata │  │
+│  │   提取 per-symbol 決定，跨 agent 計算每個 symbol 嘅 majority    │  │
+│  │ • 結果: ConsensusResult.perSymbolConsensus[]               │  │
+│  │   └─ marketTicker: 新開倉決策 (buy/sell/hold)              │  │
+│  │   └─ positions[]: 每個持倉嘅管理決策 (hold/close + SL/TP)    │  │
+│  ├───────────────────────────────────────────────────────────┤  │
+│  │ 加權分數計算                                                │  │
 │  │ • 每個 Agent 權重 × 信心度 × 決策值                         │  │
 │  │ • decisionValue: buy=+1, hold=0, sell=-1                    │  │
 │  │ • 加權分數 = Σ(weight × |score|) / Σ(weight)                │  │
@@ -846,23 +888,46 @@ PROP: BUY 4.5% immediate | momentum_strong but reduce_size_for_vol_uncertainty
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  PHASE 5: PER-POSITION PROFIT-TAKING + TP/SL ADJUSTMENT        │
+│  PHASE 5: PER-POSITION CONSENSUS + PROFIT-TAKING + TP/SL ADJUSTMENT (v2.0.6)
 │                                                                 │
-│  Per-Position Close Voting（盈利持倉 only）：                    │
-│  • 每個 cycle 檢視所有 open positions                           │
-│  • 如果 >=2 agents 投票 closePosition && unrealizedPnlPct > +0.5%│
-│    → 提前止賺離場                                               │
-│  • 蝕錢持倉絕對唔會被 agent 投票 close                          │
-│    → 必須由 SL/TP 觸發（paper trade）或 exchange auto-close    │
-│                                                                 │
-│  Meta-Agent TP/SL Adjustment：                                  │
-│  • 每個 cycle 結束後，meta-agent 審視所有持倉                   │
-│  • 根據當前市場狀況建議調整 SL/TP                               │
-│  • 價格接近 SL → 適度放寬避免 premature stop-out               │
-│  • 價格接近 TP → trail upward 捕捉更多利潤                     │
-│  • 波動率上升 → 放寬 SL/TP                                     │
-│  • 波動率下降 → 收窄 SL/TP                                     │
-│  • 永遠唔會移除 SL                                              │
+│  Per-Symbol Consensus Execution（所有持倉）：
+│  • 每個 cycle 檢視 perSymbolConsensus[] 入面所有 hasPosition=true 嘅 entry
+│  • closePosition=true → 立即平倉（唔理賺蝕）
+│  • suggestedStopLoss/suggestedTakeProfit → 調整持倉 SL/TP
+│  • 如果 consensus 係 hold + 冇 SL/TP 建議 → 乜都唔做，等自然觸發
+│
+│  Per-Position Close Voting（盈利持倉 only）：
+│  • 每個 cycle 檢視所有 open positions
+│  • 如果 >=2 agents 投票 closePosition && unrealizedPnlPct > +0.5%
+│    → 提前止賺離場
+│  • 蝕錢持倉絕對唔會被 agent 投票 close
+│    → 必須由 SL/TP 觸發（paper trade）或 exchange auto-close
+│
+│  Meta-Agent TP/SL Adjustment（S/R 驅動 + 三層安全架構）：
+│  • 每個 cycle 結束後，meta-agent 審視所有持倉
+│  • **TP 設定以 S/R zones 為基礎**：
+│    - LONG: TP = nearest Resistance (Supply) level above current price
+│    - SHORT: TP = nearest Support (Demand) level below current price
+│    - 無 S/R level 時 fallback 至 2x SL distance
+│  • **SL 設定以 S/R zones 為基礎**：
+│    - LONG: SL just below nearest Support below current price
+│    - SHORT: SL just above nearest Resistance above current price
+│    - 無 S/R level 時 fallback 至 1-2% from current price
+│  • 價格接近 SL → 適度放寬避免 premature stop-out
+│  • 價格接近 TP → trail upward 捕捉更多利潤
+│  • 波動率上升 → 放寬 SL/TP
+│  • 波動率下降 → 收窄 SL/TP
+│  • 永遠唔會移除 SL
+│  • 接口與 RealTradingEngine 一致
+│
+│  🛡️ 三層 TP/SL 安全架構（v2.0.7）：
+│  Layer 1 — Meta-Agent Prompt：system prompt 明確指示用 S/R zones 定 TP/SL，
+│     example 用 realistic values（唔再用 75000 呢類離譜數字）
+│  Layer 2 — HACP Safety Layer：direction validation（TP for SHORT < entry,
+│     SL for SHORT > entry），唔再依賴 PnL sign，永遠執行
+│  Layer 3 — Portfolio Execution Guard：adjustPosition() 最終安全網，
+│     reject 任何方向錯誤嘅 TP/SL，log warning + return unchanged
+└─────────────────────────────────────────────────────────────────┘
 │  • 接口與 RealTradingEngine 一致                                │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -1642,48 +1707,76 @@ Backtest Run:
 └─────────────────────────────────────────────────────┘
 ```
 
-### Survival Fitness Function
+### Survival Fitness Function (v2.0.6 — Profit Efficiency 主導)
 
 ```
-Fitness Score 分解：
+Fitness Score 分解（Scalping 優化版）：
 
-資本保存 (35%) ────┐
-                  │  1 - |maxDrawdown / 0.3|
-回報生成 (20%) ───┤  normalize(sharpe/3 × 0.4 + return × 0.3 + winRate × 0.3)
-                  │
-適應性 (10%) ─────┤  normalize(min(trades/200, 1))
-                  │
-一致性 (15%) ─────┤  normalize(winRate × 0.5 + sortino/3 × 0.3 + calmar/2 × 0.2)
-                  │
-風險管理 (15%) ───┤  normalize(drawdownScore × 0.5 + profitFactor × 0.3 + expectancy × 0.2)
-                  │
-決策品質 (5%) ────┘  normalize(winRate × 0.4 + avgWin/avgLoss × 0.3 + profitFactor × 0.3)
+Profit Efficiency (35%) ─┐
+                         │  normalize(avgWinLossRatio/5 × 0.4 + profitFactor/3 × 0.3 + expectancy×20 × 0.3)
+                         │  核心問題：每筆贏嘅 trade 賺得夠唔夠多？win/loss ratio 有冇 5:1？
+回報生成 (25%) ─────────┤
+                         │  normalize(sharpe/2 × 0.35 + totalReturn/50 × 0.35 + winRate × 0.30)
+                         │  絕對績效：Sharpe 2.0 = 滿分，50% return = 滿分（scalping 目標）
+資本保存 (20%) ─────────┤
+                         │  normalize(1 - |maxDrawdown / 0.3|)
+                         │  槓桿交易仍需控制回撤，但不再主導 fitness
+Win Quality (10%) ──────┤
+                         │  normalize(avgWin / 0.02)
+                         │  avgWin >= 2% = 滿分；avgWin < 0.5% + trades > 5 → ×0.7 penalty
+                         │  杜絕「贏咗等於冇贏」嘅 micro-win strategy
+一致性 (5%) ────────────┤
+                         │  normalize(winRate × 0.5 + sortino/2 × 0.3 + calmar/3 × 0.2)
+適應性 (5%) ────────────┘
+                         │  normalize(min(trades/100, 1))
 
 最終調整：
   × drawdownPenalty (回撤 > 15% → ×0.5)
+  × minProfitPenalty (avgWin < 0.5% + trades > 5 → ×0.7)
   = Final Fitness Score [0.0 - 1.0]
 
 淘汰閾值: < 0.2 → retired → mutated → new generation
+
+🆕 設計哲學變更 (v2.0.6):
+  Before: Capital Preservation 35% 主導 → 保守，避開風險
+  After:  Profit Efficiency 35% 主導 → 賺得多 > 贏得多
+         一個 win rate 40% 但 avgWin 5%、avgLoss 1% 嘅 strategy
+         遠勝過 win rate 90% 但 avgWin 0.01% 嘅 strategy
 ```
 
-### Evolutionary Pressure Engine
+### Evolutionary Pressure Engine (v2.0.6 — Dual-Trigger + Incubation)
 
 ```
-Generation 1 (Default) ──── evaluate ──── fitness = 0.XXX
-                                               │
-                                         if < 0.2: retired
-                                               │
-                                         mutate (±10% noise):
-                                         • momentumWindow
-                                         • volatilityThreshold
-                                         • riskAversion
-                                         • signalThreshold
-                                               │
-                                               ▼
-Generation 2 ──── evaluate ──── fitness = 0.XXX
-                                               │
-                                          ...继续...
-                                               │
+Generation N (Active, fitness=0.75) ──── evaluate ──── fitness updated from cumulativePerf
+                                                          │
+                                                    Evolution Gate:
+                                                      ├─ 上一 cycle 蝕錢？ → Loss-Triggered 🔴
+                                                      ├─ countedTrades >= 3？ → Scheduled 🟢
+                                                      └─ 否則 → Defer ⏸️（parent 保持 active）
+                                                          │
+                                                    [Triggered] → mutate (±10% noise):
+                                                    • momentumWindow
+                                                    • volatilityThreshold
+                                                    • riskAversion
+                                                    • signalThreshold
+                                                          │
+                                                          ▼
+Generation N+1 (Child, evaluating, fitness=parent's)
+  │
+  ├─ Generation N+2: Child 觀察中（parent 仍 active）
+  ├─ Generation N+3: Child 觀察中
+  └─ Generation N+4: 3 代屆滿 → 比較 child vs parent
+                          │
+                    child.fitness > parent.fitness？
+                      ├─ YES → child 取代 parent (active), parent retired
+                      └─ NO  → child retired, parent 保持 active
+
+🆕 設計變更 (v2.0.6):
+  Before: 每 cycle 即刻 retire parent、child 即時 active → 1 cycle = 1 strategy churn
+  After:  Parent 保持 active 累積 track record，child 入 3 代 incubation
+         只有蝕錢或夠 3 個 countedTrades 先觸發 evolution
+         杜絕「好 strategy 被即時退休、新生兒 fitness=0」嘅死循環
+
 Max active strategies: 5
 Max total strategies: 15 (auto-prune)
 ```
@@ -1884,6 +1977,117 @@ try {
 | trending_bull/bear | +3-5% 🟢 | 在 S/R 確認 breakout 後進場 |
 | high_volatility | 0% (中性) | 不幫助也不傷害 |
 | chaotic | — | 已降級，無影響 |
+
+---
+
+## 🛡️ P0 — TP/SL 三層安全架構（v2.0.7）
+
+> **目的**: 防止 LLM 輸出離譜 TP/SL 值（如 SELL @ $65,254 但 TP=$75,000），
+> 透過 S/R zones + 三層 defence-in-depth 確保 TP/SL 永遠在正確方向。
+> **位置**: `src/cognition/hacp.ts`（adjustPositions）, `src/trading/portfolio.ts`（adjustPosition）
+
+### 問題背景
+
+2026-06-18 事故：SELL BTC @ $65,254，Meta-Agent 將 TP 設為 $75,000（高於 entry $10,000）。
+
+**Bug Chain（4 層同時失效）**：
+
+| 層 | 問題 | 點解冇 catch 到 |
+|:--:|:-----|:---------------|
+| **1. Meta-Agent Prompt** | `adjustPositions()` system prompt 有 example `"newTakeProfit":75000` | LLM 直接抄 literal value |
+| **2. HACP Safety Layer** | TP validation 只喺 `unrealizedPnlPct > 0` 時執行 | Position underwater (-2.08%) → 跳過 validation |
+| **3. Skeptics** | Skeptics 唔審計 Meta-Agent 嘅 TP/SL 調整 | 只審計 sub-agent 嘅 trade decisions |
+| **4. Risk Auditor** | Risk Auditor 冇檢查 TP 方向 | 只檢查 SL 存在、regime、drawdown |
+
+### 三層 Defence-in-Depth
+
+```
+Meta-Agent LLM output (newStopLoss, newTakeProfit)
+    │
+    ▼
+┌──────────────────────────────────────────────┐
+│ Layer 1: HACP Safety Layer (hacp.ts)         │
+│                                              │
+│ • Direction validation: 永遠執行，唔依賴 PnL │
+│   - TP for LONG must be > entry price        │
+│   - TP for SHORT must be < entry price        │
+│   - SL for LONG must be < entry price        │
+│   - SL for SHORT must be > entry price       │
+│ • S/R zone validation: TP/SL 必須對應 S/R    │
+│   level（唔可以 arbitrary number）          │
+│ • 如果 validation fail → reject + log warn  │
+└──────────────────────┬───────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────┐
+│ Layer 2: Portfolio Execution Guard (portfolio.ts)│
+│                                              │
+│ • adjustPosition() 最終安全網                │
+│ • 獨立於 HACP 邏輯，永遠執行                 │
+│ • 檢查 TP/SL 方向 vs position side           │
+│ • 方向錯誤 → reject + log warn               │
+│ • return unchanged（唔會 crash）             │
+└──────────────────────┬───────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────┐
+│ Layer 3: checkPositionExits (portfolio.ts)   │
+│                                              │
+│ • 每個 price update 自動檢查                  │
+│ • SL/TP trigger logic 已內建方向感知          │
+│ • LONG: SL below entry, TP above entry        │
+│ • SHORT: SL above entry, TP below entry       │
+│ • 即使 Layer 1+2 都失效，呢層都唔會錯誤平倉  │
+└──────────────────────────────────────────────┘
+```
+
+### S/R 驅動的 TP/SL 設定
+
+Meta-Agent 嘅 `adjustPositions()` prompt 而家明確指示用 S/R zones：
+
+```
+The market context above contains "=== S/R Zones ===" with key Support (Demand)
+and Resistance (Supply) levels from historical candles.
+USE THESE S/R LEVELS to set TP and SL — they are more reliable than arbitrary percentages.
+
+TP: set TP at the nearest S/R level on the profit side.
+  For LONG: TP = nearest Resistance (Supply) level above current price.
+  For SHORT: TP = nearest Support (Demand) level below current price.
+  If no S/R level is available, use 2x SL distance as fallback.
+
+SL: set SL just BEYOND the nearest S/R level on the loss side.
+  For LONG: SL just below nearest Support (Demand) below current price.
+  For SHORT: SL just above nearest Resistance (Supply) above current price.
+  If no S/R level is available, use 1-2% from current price as fallback.
+```
+
+### 整合點
+
+| 時機 | 動作 | 位置 |
+|:----:|------|:-----|
+| **每個 cycle** | `adjustPositions()` 接收 `marketStateDesc`（含 S/R zones） | `hacp.ts` Phase 5 |
+| **LLM output** | Layer 1 direction validation | `hacp.ts` adjustPositions() |
+| **Apply to position** | Layer 2 portfolio guard | `portfolio.ts` adjustPosition() |
+| **每個 price update** | Layer 3 exit check | `portfolio.ts` checkPositionExits() |
+
+### 錯誤處理
+
+```typescript
+// Layer 1 fail → reject TP/SL, log warn, continue without adjustment
+try {
+  const parsed = JSON.parse(jsonStr);
+  // validation...
+} catch (err) {
+  log.warn(`Position adjustment failed: ${err}`);
+  // continue — no adjustment is better than wrong adjustment
+}
+
+// Layer 2 fail → reject, log warn, return unchanged
+if (!tpOk) {
+  log.warn(`🚫 adjustPosition REJECTED: ...`);
+  return undefined;  // caller sees undefined → no change
+}
+```
 
 ---
 
@@ -2120,21 +2324,20 @@ query(features):
   → verdict: edgeScore >= 0.25 ? (winDims>lossDims ? favorable : unfavorable) : no_edge
 ```
 
-### 特徵維度（9 維 Numerical）
+### 特徵維度（8 維 Numerical）
 
 與 `TradePatternContext` 的 numerical features 一致：
 
-| 維度 | 意義 |
-|:-----|:------|
-| `direction` | 方向 (1=long, -1=short) |
-| `volatility` | 24h 波動率 |
-| `srDistanceBps` | 離 S/R 距離 |
-| `obImbalance` | 訂單簿傾斜 |
-| `sentiment` | Sigmoid·GA 情緒 |
-| `signalAgreement` | Agent 共識度 |
-| `fundingRate` | 資金費率 |
-| `volumeRatio` | 成交量異常 |
-| `sentimentConviction` | GA 信心度 |
+| 維度 | 意義 | 數據源 |
+|:-----|:------|:-------|
+| `volatility` | 市場波動率 | `MarketStateAggregator.calcVolatility()` — 最近 100 個 tick 嘅平均絕對回報。🆕 v2.0.6: symbol case normalization fix — `update()` 同 `getState()` 都 normalize 做 lowercase，防止 "BTC" vs "btc" mismatch 導致 volatility 永遠 = 0 |
+| `srDistanceBps` | 離 S/R 距離 | SNR zone detection |
+| `obImbalance` | 訂單簿傾斜 | WS order book depth |
+| `sentiment` | Sigmoid·GA 情緒 | Sentiment engine |
+| `signalAgreement` | Agent 共識度 | HACP consensus confidence |
+| `fundingRate` | 資金費率 | 🆕 v2.0.6: 直接從 `hyperliquidWs.getLatestMarkPrice().fundingRate` 讀取，唔經 sentiment engine，減少一層依賴 |
+| `volumeRatio` | 成交量異常 | Sentiment engine volume buffer |
+| `sentimentConviction` | GA 信心度 | Sigmoid·GA conviction score |
 
 ### 配置參數
 
@@ -2144,7 +2347,7 @@ const CONFIG = {
   flatThresholdPct: 0.0005,         // 0.05% — 低過呢個 threshold 當 flat
   directionalThresholdPct: 0.001,  // 0.1% — 高過呢個 threshold 當 directional
   minSamplesForQuery: 3,           // 最少 samples 先開始 query
-  edgeThreshold: 0.25,              // 3/12 dims discriminative → edge
+  edgeThreshold: 0.25,              // 2/8 dims discriminative → edge
   persistPath: 'data/evolution/rbc-state.json',
 };
 ```
@@ -2984,7 +3187,7 @@ scripts/loop-engineering-memory.md
 |:-----|:-----|:----:|:--------:|
 | **Phase 1** | Evolution state JSON 完整性驗證 + 損壞修復 + .tmp 清理 | `jq` + `python3` 逐步截斷重試 | ✅ 自動修復 corrupt JSON |
 | **Phase 2** | TypeScript 編譯檢查（60s timeout，backend + UI 分開 check） | `perl alarm` + `tsc --noEmit` + `cd ui && tsc -b` | ❌ 只報 warn |
-| **Phase 3** | .env 參數審計、evolution fitness 趨勢、cycle 計時 | `grep` + `jq` + `bc` | ❌ 只報 warn + info |
+| **Phase 3** | .env 參數審計、evolution fitness 趨勢（🆕 scan 所有 strategies 唔只 active）、cycle 計時 | `grep` + `jq` + `bc` | ❌ 只報 warn + info |
 | **Phase 4** | 系統健康（node_modules、磁碟用量、重複行程、Ollama 連線） | `du` + `pgrep` + `curl` | ✅ 重建 logs directory |
 | **Phase 5** | 自動修復（prune >50k trades、清理舊 log、深度分析） | `jq` + `python3` + `find` | ✅ Prune trade history |
 | **Phase 6** | 狀態持久化（`loop-engineering-last.json`） | `jq` + `cat` | — |
@@ -3182,7 +3385,7 @@ flowchart LR
 | **🐛 Per-Agent maxTokens** | ✅ 1.5.0 | **RBC & Sentiment Analyst 2048 tokens 防止 JSON 截斷** |
 | **📄 .env.example** | ✅ 1.5.0 | **配置模板文件** |
 | **📝 ARCHITECTURE.md 同步** | ✅ 1.5.0 | **實際運行參數、Ollama mapping、UI 架構、lockedWrite 防 concurrent write** |
-| **🧠 Meta-Agent TP/SL 調整** | ✅ 1.6.0 | **每個 cycle 動態調整持倉止損止盈** |
+| **🧠 Meta-Agent TP/SL 調整** | ✅ 2.0.7 | **S/R 驅動 + 三層安全架構（Prompt → HACP → Portfolio）** |
 | **🔌 RealTrading 介面** | ✅ 1.6.0 | **RealTradingConfig + RealTradingEngine 抽象** |
 | **🧬 Backtest 每步演化** | ✅ 1.6.0 | **每個 HACP run 後立即 evolve()** |
 | **📊 TradingView 圖表** | ✅ 1.8.0 | **Binance fapi / HL candleSnapshot (req wrapper) · 5m/1h/4h/1d/1w · 所有 DEX 資產即時陰陽燭 + Buy/Sell/SL/TP 標記 · 動態 symbol** |
@@ -3198,6 +3401,7 @@ flowchart LR
 | **🔄 SL/TP Trailing** | ✅ 1.7.0 | **Leverage-aware · 只收窄唔放寬** |
 | **🐛 Backtest Zero Fix** | ✅ 1.7.0 | **槓桿 PnL 計算修正** |
 | **🎨 UI 50/50 Layout** | ✅ 1.7.0 | **Desktop 兩欄 · Mobile 四 tab** |
+| **🛡️ TP/SL 三層安全架構** | ✅ 2.0.7 | **S/R 驅動 + Prompt→HACP→Portfolio 三層驗證，防 LLM 離譜 TP/SL** |
 
 ---
 
@@ -3422,11 +3626,11 @@ Default:     Neutral → buy
 
 **目的**：Evolution 系統需要真實交易數據來計算 fitness 和突變。如果永遠 HOLD，fitness 永遠為 0，永不演化。但如果 pattern 顯示低勝率，exploration trade 只會浪費手續費，所以跳過。
 
-### 系統架構圖更新（v2.0.3）
+### 系統架構圖更新（v2.0.7）
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│                         MATS v2.0.3                                     │
+│                         MATS v2.0.7                                     │
 │                                                                           │
 │  ├─ LLM: Ollama (deepseek-v4-flash:cloud) [think:false]                   │
 │  ├─ 數據: Hyperliquid WS (l2Book + trades + activeAssetCtx)                │
@@ -3482,6 +3686,245 @@ Default:     Neutral → buy
 │  └─ 回測: 真 HACP + 6 agents, 每步演化, 1yr/5m/reverse                   │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 附錄 B：已知錯誤與陷阱記錄（Known Bugs & Pitfalls）
+
+> **目的**: 記錄系統開發過程中發現的關鍵錯誤根因、修復方法，以及未來應避免的陷阱。
+> **對應檔案**: `scripts/loop-engineering-memory.md`（由 Loop Engineering 自動維護）
+> 此附錄記錄人為發現的架構級錯誤，loop-engineering-memory.md 記錄自動掃描發現的 runtime 錯誤。
+
+---
+
+### B.1 幽靈數據幽靈（Ghost Data）— 投資組合數字重複計算
+
+**發現日期**: 2026-06-17
+**嚴重性**: 🔴 Critical — 導致 UI 顯示錯誤的 tradeCount、winRate、drawdown、PnL
+**涉及檔案**: `src/trading/paper-engine.ts`, `src/evolution/persistence.ts`, `src/index.ts`
+
+#### 問題描述
+
+UI 系統狀態面板經常顯示不一致的數字：
+```
+Trades: 29  W:11  L:18    ← Win Rate 37.9%（應為 78.6%）
+Balance: $913.65           ← 應為 $1013.81
+Drawdown: 1.72%            ← 應為 0.15%
+```
+
+#### 根因 1：PaperTradingEngine 雙重記錄交易（Ghost Open Records）
+
+**位置**: `src/trading/paper-engine.ts`
+
+```
+OpenPosition  → onPositionOpenedCb(trade)   → trades[] 寫入 status=open
+ClosePosition → onPositionClosedCb(trade)   → trades[] 寫入 status=closed
+```
+
+同一筆真實交易被記錄兩次：一次 open（status=open）和一次 close（status=closed）。  
+這些 ghost open records（pnl=-$0.04，status=open）被 system 當作獨立交易計算，導致：
+- tradeCount 膨脹 2 倍（14 real closed + 14 ghost open = 28）
+- Win Rate 被稀釋（11W / (3L + 14 ghost) = 37.9% 而非 78.6%）
+- totalPnl 被 -$0.04 × 14 = -$0.56 污染
+
+**修復**: 移除 `setOnPositionOpened` callback，只保留 `setOnPositionClosed`：
+
+```typescript
+// ❌ 錯誤：開倉和平倉各記錄一次
+this.portfolio.setOnPositionOpened((trade) => { this.trades.push(trade); });
+this.portfolio.setOnPositionClosed((trade) => { this.trades.push(trade); });
+
+// ✅ 正確：只記錄平倉（開倉由 portfolio.positions 追蹤）
+this.portfolio.setOnPositionClosed((trade) => { this.trades.push(trade); });
+// onPositionOpened 已移除 — 開倉由 portfolio.positions 管理
+```
+
+#### 根因 2：savePortfolio 的 tradeCount 公式膨脹
+
+**位置**: `src/evolution/persistence.ts`
+
+```typescript
+// ❌ 錯誤：tradeCount = winCount + lossCount + positions.size
+// winCount + lossCount 已經是平倉總數，再加 positions.size 會雙重計算
+tradeCount: portfolio.winCount + portfolio.lossCount + portfolio.positions.size,
+
+// ✅ 正確：tradeCount = winCount + lossCount（closed trades count）
+tradeCount: portfolio.winCount + portfolio.lossCount,
+```
+
+#### 根因 3：API SystemSnapshot totalPnl 前後不一致
+
+**位置**: `src/index.ts`
+
+```typescript
+// ❌ 錯誤：使用 equity - initialBalance
+// equity 包含 unrealized PnL + locked margin，不等於 realized PnL
+totalPnl: p.totalEquity - p.initialBalance,
+
+// ✅ 正確：使用累計已實現 PnL
+totalPnl: p.totalPnl,
+totalPnlPct: p.totalPnlPct,
+```
+
+#### 根因 4：Win Rate 被 Ghost Open Records 稀釋
+
+由於根因 1，14 個 ghost open records（每個 pnl=-$0.04）被當作 Loss 計算。
+原有 11W / 3L → 被拉成 11W / (3+14)L = **37.9%（應為 78.6%）**。
+
+**修復**: 清除 ghost records + 根因 1 的 callback 移除。
+
+#### 預防措施
+
+| 措施 | 說明 |
+|:-----|:------|
+| **Single Source of Truth** | 交易記錄只能有一個寫入點，不要 open/close 各寫一次 |
+| **tradeCount 公式** | `winCount + lossCount` 已經是平倉數，不要加 `positions.size` |
+| **totalPnl 一致性** | API status 和 portfolio 應使用同一個 `p.totalPnl`，不要重新計算 |
+| **定期驗證** | 比較 `trades.length`、`winCount + lossCount`、`portfolio.tradeCount` 三者是否一致 |
+
+---
+
+### B.2 Symbol Overlap Guard — 同資產雙向持倉阻止
+
+**發現日期**: 2026-06-18
+**嚴重性**: 🔴 Critical — 導致持倉被無聲覆蓋、trade records 出現相反方向 ghost pairs
+**涉及檔案**: `src/index.ts`, `src/trading/paper-engine.ts`
+
+#### 問題描述
+
+當 Market Agent 選中的 symbol 已有一筆持倉時，HACP 或 exploration trade 仍可能對同一 symbol 開立新倉位。由於 `PortfolioTracker.positions` 是 `Map<string, Position>`，`.set(symbol)` 會直接覆蓋舊持倉：
+
+```
+Trade Records:
+  BUY btc OPEN  $65921.00   ← 被 SELL 覆蓋時丟失
+  SELL btc OPEN $65877.00   ← 新的，但 portfolio 只顯示 BUY
+  Portfolio: BUY btc         ← 只有一個 position（Map.set overwrite）
+```
+
+這導致：
+- 舊持倉的 PnL 無聲消失（未實現損益歸零）
+- Trade Records 出現 ghost pairs（一個 BUY open + 一個 SELL open）
+- 如果方向相反，相等於自己和自己對沖，浪費手續費
+- `equity = balance + unrealizedPnL + lockedMargin` 中 lockedMargin 可變成負數
+
+#### 根因分析
+
+系統有三個可能對同一 symbol 開倉的途徑：
+
+| 途徑 | 條件 | 位置 |
+|:-----|:------|:------|
+| **HACP consensus** | agents 多數決 buy/sell | `index.ts` — `finalDecision` |
+| **Exploration trade** | idle 3+ cycles, 無持倉 | `index.ts` — `p.positions.size === 0` |
+| **Per-symbol consensus** | perSymbolConsensus[] 的 marketTicker | `index.ts` — close 或 adjust |
+
+原本系統假設 `p.positions.size === 0` 才觸發 exploration，但：
+1. Exploration 與 HACP consensus 各自獨立檢查持倉 → race condition
+2. HACP consensus 不檢查持倉 → 直接開對面倉
+3. `PortfolioTracker.openPosition()` 直接 `positions.set(symbol, position)` → **無聲覆蓋**
+
+#### 修復
+
+兩層 defense-in-depth：
+
+**Layer 1: `index.ts` — 執行前 guard**
+
+```typescript
+// 在 executeDecision() 之前檢查
+const activeSym = finalDecision.symbol?.toLowerCase() ?? '';
+if (activeSym && this.portfolio.hasPosition(activeSym)) {
+  const existingPos = this.portfolio.getPosition(activeSym);
+  if (existingPos && finalDecision.action !== 'hold') {
+    log.warn(`🚫 Symbol overlap guard: ${activeSym.toUpperCase()} already has 
+      ${existingPos.side.toUpperCase()} position. Converting →HOLD.`);
+    finalDecision = {
+      ...finalDecision,
+      action: 'hold',
+      positionSizePct: 0,
+      rationale: `Symbol overlap guard: ${activeSym} already positioned.`,
+    };
+  }
+}
+```
+
+**Layer 2: `paper-engine.ts` — 執行層 guard (defence-in-depth)**
+
+```typescript
+if (this.portfolio.hasPosition(sym)) {
+  const existing = this.portfolio.getPosition(sym)!;
+  log.warn(`🚫 Paper engine symbol-guard: ${sym} already has 
+    ${existing.side.toUpperCase()} position. Blocking new trade.`);
+  return [{
+    order: this.createRejectedOrder(decision, 
+      `Symbol overlap: ${sym} already positioned (${existing.side}).`),
+    error: `Symbol overlap: ${sym} already positioned.`,
+  }];
+}
+```
+
+#### 預防措施
+
+| 措施 | 說明 |
+|:-----|:------|
+| **執行前檢查** | 每個決策在 executeDecision() 前檢查 hasPosition() |
+| **防禦深度** | index.ts 和 paper-engine.ts 各自獨立檢查 |
+| **Portfolio 不可覆寫** | `openPosition()` 應判斷已有的 position，不應無聲覆蓋 |
+| **log warning** | 每次觸發有明確的 warn log，便於 debugging |
+
+---
+
+### B.3 TP/SL 方向錯誤 — Meta-Agent 將 SELL TP 設為 $75,000（v2.0.7 修復）
+
+**發現日期**: 2026-06-18
+**嚴重性**: 🔴 Critical — 導致 SELL position 嘅 TP 設喺 entry 以上 $10,000，永遠唔會觸發
+**涉及檔案**: `src/cognition/hacp.ts`, `src/trading/portfolio.ts`
+
+#### 問題描述
+
+SELL BTC @ $65,254，Meta-Agent 將 TP 設為 $75,000（高於 entry $10,000）。
+正確 TP 應為 ~$63,949（低於 entry，profit side）。
+
+#### 根因
+
+| 層 | 問題 | 點解冇 catch 到 |
+|:--:|:-----|:---------------|
+| **1. Meta-Agent Prompt** | `adjustPositions()` system prompt 有 example `"newTakeProfit":75000` | LLM 直接抄 literal value |
+| **2. HACP Safety Layer** | TP validation 只喺 `unrealizedPnlPct > 0` 時執行 | Position underwater (-2.08%) → 跳過 validation → $75,000 pass through |
+| **3. Skeptics** | Skeptics 唔審計 Meta-Agent 嘅 TP/SL 調整 | 只審計 sub-agent 嘅 trade decisions |
+| **4. Risk Auditor** | Risk Auditor 冇檢查 TP 方向 | 只檢查 SL 存在、regime、drawdown |
+
+#### 修復
+
+**Layer 1: Meta-Agent Prompt** (`hacp.ts`)
+- Example 由 `"newTakeProfit":75000` 改為 realistic `"newTakeProfit":64000`（SELL TP 低過 entry）
+- 新增 S/R zone 指示：叫 LLM 用 nearest S/R level 嚟 set TP/SL
+
+**Layer 2: HACP Safety Layer** (`hacp.ts` — `adjustPositions()`)
+- 新增方向驗證：TP for SHORT 必須 < entry price；TP for LONG 必須 > entry price
+- 新增方向驗證：SL for SHORT 必須 > entry price；SL for LONG 必須 < entry price
+- 呢啲 check 唔再依賴 PnL sign — 永遠執行
+
+**Layer 3: Portfolio Execution Guard** (`portfolio.ts` — `adjustPosition()`)
+- 新增最終安全網：即使 HACP safety layer 失效，`adjustPosition()` 會 reject 任何方向錯誤嘅 TP/SL
+- Log warning + return unchanged
+
+#### 預防措施
+
+| 措施 | 說明 |
+|:-----|:------|
+| **S/R 驅動** | TP/SL 以歷史 S/R zones 為基礎，唔係 LLM 自由發揮 |
+| **三層驗證** | Prompt → HACP → Portfolio，任何一層失效都有 backup |
+| **永遠執行** | Direction validation 唔再依賴 PnL sign |
+| **Log warning** | 每次 reject 有明確 warn log，便於 debugging |
+
+---
+
+### B.4 參考文獻（Related Documentation）
+
+| 文件 | 位置 | 內容 |
+|:-----|:------|:------|
+| Loop Engineering 記憶 | `scripts/loop-engineering-memory.md` | 自動維護的錯誤記錄 |
+| 專案 HANDOFF | `HANDOFF.md` | 開發者交接備忘 |
+| IMPLEMENTATION 記錄 | `IMPLEMENTATION-COMPLETE.md` | 功能實現清單 |
 
 ---
 

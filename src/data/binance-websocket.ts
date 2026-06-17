@@ -477,11 +477,14 @@ export class MarketStateAggregator {
   readonly calibrator = new RegimeCalibrator();
 
   update(ticker: Ticker): void {
-    this.tickers.set(ticker.symbol, ticker);
-    if (!this.priceHistory.has(ticker.symbol)) {
-      this.priceHistory.set(ticker.symbol, []);
+    // Normalize symbol to lowercase for case-insensitive matching.
+    // HL WebSocket sends "BTC", Market Agent may use "btc" — both must land in the same bucket.
+    const sym = ticker.symbol.toLowerCase();
+    this.tickers.set(sym, ticker);
+    if (!this.priceHistory.has(sym)) {
+      this.priceHistory.set(sym, []);
     }
-    const history = this.priceHistory.get(ticker.symbol)!;
+    const history = this.priceHistory.get(sym)!;
     history.push(ticker.price);
     if (history.length > this.historySize) {
       history.shift();
@@ -498,8 +501,10 @@ export class MarketStateAggregator {
   }
 
   getState(symbol: string): AggregatedMarketState {
-    const ticker = this.tickers.get(symbol);
-    const history = this.priceHistory.get(symbol) ?? [];
+    // Normalize to lowercase — matches update()'s normalisation
+    const sym = symbol.toLowerCase();
+    const ticker = this.tickers.get(sym);
+    const history = this.priceHistory.get(sym) ?? [];
 
     const volatility = this.calcVolatility(history);
     const trend = this.calcTrend(ticker, volatility);

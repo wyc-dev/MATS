@@ -13,14 +13,16 @@ export interface TradeHistoryEntry {
   id: string;
   cycleNumber: number;
   timestamp: number;
+  /** Trading symbol (e.g. BTC-USDT) — used to detect symbol switches for PnL invalidation */
+  symbol: string;
   decision: TradingDecision;
   /** Actual price at decision time */
   entryPrice: number;
   /** Price at next cycle for computing simulated outcome */
   exitPrice?: number;
-  /** Realised PnL if a real trade was executed */
+  /** Realised PnL if a real trade was executed (portfolio return contribution, e.g. 0.005 = 0.5%) */
   realisedPnl?: number;
-  /** Simulated PnL if this was a HOLD/exploration */
+  /** Simulated PnL if this was a HOLD/exploration (portfolio return contribution) */
   simulatedPnl?: number;
   /** Market context */
   regime: MarketRegime;
@@ -75,23 +77,47 @@ export class TradeHistory {
     return record;
   }
 
-  /** Update the previous cycle entry's exit price (called on next cycle) */
-  updateLastExit(exitPrice: number): void {
+  /**
+   * Update the previous cycle entry's exit price (called on next cycle).
+   *
+   * Production-grade safety: if the symbol changed between cycles,
+   * the entry/exit prices are incomparable — skip PnL calculation.
+   * This prevents the 214% outlier we saw when Market Agent switched
+   * from a low-priced asset (~$598) to BTC (~$64,920).
+   */
+  updateLastExit(exitPrice: number, currentSymbol: string): void {
     if (this.entries.length < 2) return;
     // The last entry is the current cycle we just recorded.
     // The SECOND-TO-LAST entry is the PREVIOUS cycle whose outcome we can now compute.
     const prev = this.entries[this.entries.length - 2]!;
     if (prev.exitPrice !== undefined) return; // already set (real trade)
+
+    // ─── Symbol switch guard ───
+    // If the market agent switched symbols between cycles, prices are incomparable.
+    // Example: prev.symbol='HONEY-USDT' @ $598 → current symbol='BTC-USDT' @ $64,920
+    // Computing PnL across different assets produces garbage (e.g. +214% "return").
+    if (prev.symbol !== currentSymbol) {
+      log.info(`Symbol switch detected: ${prev.symbol} → ${currentSymbol} — skipping simulated PnL for cycle #${prev.cycleNumber}`);
+      prev.exitPrice = exitPrice; // still record the price for reference
+      // Don't compute simulatedPnl — leave as undefined (will be treated as 0 by computePerformance)
+      return;
+    }
+
     prev.exitPrice = exitPrice;
 
-    // Compute simulated PnL based on decision direction
+    // Compute simulated PnL based on decision direction.
+    // Use the actual positionSizePct from the decision (not hardcoded 0.02).
+    // This reflects what WOULD have happened if the system had taken the position.
+    const positionSize = prev.decision.positionSizePct || 0.05;
+    const priceChange = (exitPrice - prev.entryPrice) / prev.entryPrice;
+
     if (prev.decision.action === 'buy') {
-      prev.simulatedPnl = ((exitPrice - prev.entryPrice) / prev.entryPrice) * (prev.decision.positionSizePct || 0.05);
+      prev.simulatedPnl = priceChange * positionSize;
     } else if (prev.decision.action === 'sell') {
-      prev.simulatedPnl = ((prev.entryPrice - exitPrice) / prev.entryPrice) * (prev.decision.positionSizePct || 0.05);
+      prev.simulatedPnl = -priceChange * positionSize;
     } else {
-      // HOLD: simulate what would have happened with a small position
-      prev.simulatedPnl = ((exitPrice - prev.entryPrice) / prev.entryPrice) * 0.02;
+      // HOLD: simulate what would have happened with the planned position size
+      prev.simulatedPnl = priceChange * positionSize;
     }
   }
 
@@ -139,22 +165,34 @@ export class TradeHistory {
     let cumulativeReturn = 0;
     let countedTrades = 0;
 
+    // ─── Production-grade noise threshold ───
+    // Noise = PnL below estimated round-trip trading cost.
+    // Crypto perpetuals: taker fee ~0.05% × 2 (open+close) + slippage ~0.02% = ~0.12%
+    // We use 0.00001 (0.001%) as a conservative floor.
+    // With the new positionSizePct-based HOLD formula, typical PnLs are 0.002-0.01%,
+    // well above this threshold. Only sub-basis-point noise is filtered.
+    const NOISE_THRESHOLD = 0.00001;
+
     for (const e of this.entries) {
       const pnl = e.realisedPnl ?? e.simulatedPnl ?? 0;
-      // Skip stale zero-PnL entries
+      // Skip entries with no PnL data (includes symbol-switch invalidated entries)
+      if (pnl === 0 && e.realisedPnl === undefined && e.simulatedPnl === undefined) continue;
+      // Skip truly zero-PnL entries (price didn't move)
       if (pnl === 0) continue;
-      // Skip noise-level PnL (< 0.001% portfolio impact) — only for win/loss counting
-      const isNoise = Math.abs(pnl) < 0.00001;
+
+      const isNoise = Math.abs(pnl) < NOISE_THRESHOLD;
+
       // ALL entries with non-zero PnL count as wins or losses (including simulated/exploration).
       // Rationale: preservation of capital IS a win. Breaking even = win.
-      // Exploration trades with tiny PnL still represent a decision outcome.
       if (pnl > 0 || isNoise) { wins++; totalWin += Math.abs(pnl); }
       else { losses++; totalLoss += Math.abs(pnl); }
+
       if (!isNoise) {
         countedTrades++;
         pnls.push(pnl);
         cumulativeReturn += pnl;
       }
+
       // Track drawdown
       peak = Math.max(peak, cumulativeReturn);
       const dd = peak - cumulativeReturn;
