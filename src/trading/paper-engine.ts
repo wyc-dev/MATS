@@ -104,7 +104,14 @@ export class PaperTradingEngine {
 
     // Risk assessment — decision.symbol is guaranteed by normalizeDecision()
     const sym = decision.symbol.toLowerCase();
-    const price = this.lastPrices.get(sym) ?? decision.entryPrice ?? 0;
+    // 🐛 FIX: Use decision.entryPrice as PRIMARY source (price at decision time).
+    // lastPrices is a fallback only — it gets updated by WS ticks during HACP
+    // (~30-60s), so by execution time it reflects the LATEST tick, not the
+    // price at which the agents made their decision. Using the wrong price
+    // causes position entry at a different level than what was decided.
+    const price = decision.entryPrice && decision.entryPrice > 0
+      ? decision.entryPrice
+      : (this.lastPrices.get(sym) ?? 0);
     if (price <= 0) {
       const err = `No price available for ${decision.symbol}. Cannot execute.`;
       log.error(err);
