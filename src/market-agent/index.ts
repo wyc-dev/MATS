@@ -291,7 +291,7 @@ export class MarketAgent {
    * Volume source for ALL DEXs: metaAndAssetCtxs (dayNtlVlm = USD notional) for DEX 0,
    * candleSnapshot (v = raw contract units) for DEX 1-8, converted to USD notional (v * price).
    */
-  private async fetchHyperliquidTopPairs(limit: number): Promise<TopVolumePair[]> {
+  private async fetchHyperliquidTopPairs(limit: number, wasDirty?: boolean): Promise<TopVolumePair[]> {
     // Rate-limited fetch: acquire token before each request
     const hlFetch = async (body: object, retries = 2): Promise<Response> => {
       for (let attempt = 0; attempt < retries; attempt++) {
@@ -458,8 +458,33 @@ export class MarketAgent {
       return b.price - a.price;
     }).slice(0, limit);
 
-    // Wait for background scan to finish so next fetch has full data
-    // (don't block return though — stale data is fine for now)
+    // If config just changed (asset type), WAIT for background scan so user sees real pairs immediately.
+    // Otherwise, return DEX 0 pairs first and let background fill in later.
+    if (wasDirty && otherAssets.length > 0) {
+      await backgroundTask;
+      const updated = this.filterHyperliquidPairs(allPairs, catMap);
+      const sorted = updated.sort((a, b) => {
+        if (a.volume24h > 0 && b.volume24h > 0) return b.volume24h - a.volume24h;
+        if (a.volume24h > 0) return -1;
+        if (b.volume24h > 0) return 1;
+        return b.price - a.price;
+      }).slice(0, limit);
+      this.topPairs = sorted;
+      // Auto-select the top pair after background scan
+      if (sorted.length > 0) {
+        const top = sorted[0]!;
+        if (this.config.selectedSymbol !== top.symbol) {
+          this.config.selectedSymbol = top.symbol;
+          log.info(`Auto-selected top pair: ${top.symbol} ($${(top.volume24h / 1_000_000).toFixed(1)}M vol)`);
+          if (this.onSymbolChange) {
+            this.onSymbolChange(top.symbol);
+          }
+        }
+      }
+      return sorted;
+    }
+
+    // Background fill for non-dirty fetches
     backgroundTask.then(() => {
       const updated = this.filterHyperliquidPairs(allPairs, catMap);
       const sorted = updated.sort((a, b) => {
@@ -468,8 +493,18 @@ export class MarketAgent {
         if (b.volume24h > 0) return 1;
         return b.price - a.price;
       }).slice(0, limit);
-      // Push merged pairs back into this.topPairs via the protected setter
       this.topPairs = sorted;
+      // Auto-select top pair after background scan completes
+      if (sorted.length > 0) {
+        const top = sorted[0]!;
+        if (this.config.selectedSymbol !== top.symbol) {
+          this.config.selectedSymbol = top.symbol;
+          log.info(`Background scan: auto-selected top pair: ${top.symbol}`);
+          if (this.onSymbolChange) {
+            this.onSymbolChange(top.symbol);
+          }
+        }
+      }
     });
 
     return result;
@@ -503,7 +538,7 @@ export class MarketAgent {
         const price = priceMap.get(asset.name)!;
         const stored = this.previousPriceCache.get(asset.name);
         const changePct = stored?.prevDay && stored.prevDay > 0 ? ((price - stored.prevDay) / stored.prevDay) * 100 : 0;
-        allPairs.push({ symbol: asset.name, volume24h: 0, volume5m: 0, price, priceChangePercent: changePct, exchange: 'hyperliquid' });
+        allPairs.push({ symbol: asset.coin, volume24h: 0, volume5m: 0, price, priceChangePercent: changePct, exchange: 'hyperliquid' });
         this.previousPriceCache.set(asset.name, { price, prevDay: stored?.price ?? price });
       }
     }

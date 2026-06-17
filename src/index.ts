@@ -304,7 +304,23 @@ class AMACRFSystem {
         log.info(`Market Agent: HL asset type → ${assetType}`);
         this.marketAgent.setHyperliquidAssetType(assetType);
         await this.marketAgent.fetchTopPairs();
+        // Immediately connect WS + trigger a new decision cycle on the newly selected symbol
+        const selectedSymbol = this.marketAgent.getSelectedSymbol();
+        if (selectedSymbol) {
+          const exchange = detectExchange(selectedSymbol);
+          if (exchange === 'hyperliquid') {
+            await this.hyperliquidWs.connect(selectedSymbol);
+          }
+          await this.multiWs.connect(selectedSymbol).catch((err: Error) => {
+            log.warn(`Multi-WS connect failed for ${selectedSymbol}: ${err.message}`);
+          });
+        }
+        // Abort any running cycle and trigger a fresh one
+        log.info('Asset type changed — triggering immediate HACP cycle');
         this.pushToAPI();
+        if (!this.cycleInProgress && !isShuttingDown()) {
+          setTimeout(() => void this.runDecisionCycle(), 500);
+        }
       });
       this.apiServer.setMarketAgentFetchPairsHandler(() => {
         log.info('Market Agent: refresh top pairs');
