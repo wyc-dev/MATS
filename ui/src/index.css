@@ -1791,6 +1791,205 @@ body {
   text-align: right;
 }
 
+/* ── RBC Dimension Bars (production-grade, single source of truth) ── */
+.rbc-dim-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rbc-dim-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.rbc-dim-name {
+  font-size: 0.65rem;
+  color: var(--text-tertiary);
+  min-width: 110px;
+  text-transform: capitalize;
+  font-family: var(--font-mono);
+  letter-spacing: -0.02em;
+}
+
+@media (max-width: 768px) {
+  .rbc-dim-name { min-width: 80px; font-size: 0.6rem; }
+}
+
+.rbc-dim-track {
+  flex: 1;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+}
+
+.rbc-dim-seg-win {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: var(--green);
+  opacity: 0.7;
+  border-radius: 2px;
+  z-index: 2;
+}
+
+.rbc-dim-seg-loss {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: var(--red);
+  opacity: 0.7;
+  border-radius: 2px;
+  z-index: 1;
+}
+
+.rbc-dim-seg-overlap {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: var(--gold);
+  opacity: 0.85;
+  border-radius: 2px;
+  z-index: 3;
+}
+
+.rbc-dim-boundary {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 6px;
+  height: 6px;
+  background: #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.6);
+  z-index: 4;
+}
+
+.rbc-dim-meta {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-tertiary);
+  min-width: 48px;
+  text-align: right;
+  text-transform: lowercase;
+}
+
+/* ── RBC Summary Footer ── */
+.rbc-summary-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 2px;
+  border-top: 1px solid var(--glass-border);
+}
+
+.rbc-summary-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: 3px;
+  opacity: 0.8;
+  transition: width 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ── RBC Legend ── */
+.rbc-legend {
+  margin-top: 16px;
+  padding: 12px 14px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+}
+
+.rbc-legend-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.rbc-legend-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rbc-legend-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.rbc-legend-swatch {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  margin-top: 4px;
+}
+
+.rbc-legend-swatch--win { background: var(--green); opacity: 0.8; }
+.rbc-legend-swatch--loss { background: var(--red); opacity: 0.8; }
+.rbc-legend-swatch--overlap { background: var(--gold); opacity: 0.85; }
+.rbc-legend-swatch--dot {
+  width: 8px;
+  height: 8px;
+  background: #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.5);
+  margin-left: 1px;
+  margin-top: 5px;
+}
+.rbc-legend-swatch--bar {
+  height: 6px;
+  width: 14px;
+  border-radius: 2px;
+  background: var(--text-muted);
+  margin-top: 5px;
+}
+
+.rbc-legend-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rbc-legend-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.rbc-legend-desc {
+  font-size: 0.6rem;
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}
+
+.rbc-legend-footer {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--glass-border);
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.rbc-legend-footer-note {
+  font-size: 0.6rem;
+  color: var(--text-tertiary);
+  line-height: 1.45;
+  font-style: italic;
+}
+
 /* ── Strategy Card ── */
 .evo-strategy-card {
   background: var(--surface-elevated);
