@@ -403,8 +403,11 @@ class AMACRFSystem {
           if (!res.ok) throw new Error(`HL ${res.status}`);
           const data = await res.json() as Array<{ t: number; o: string; c: string; h: string; l: string }>;
           // HL candleSnapshot returns candles as an array — the colon-prefix stripped coin name works
+          // 🐛 FIX: HL returns t in MILLISECONDS, but lightweight-charts expects SECONDS.
+          // The old code only divided by 1000 when k.t was a string, but k.t is always
+          // a number (ms timestamp). Always divide by 1000.
           return data.map(k => ({
-            time: Math.floor(typeof k.t === 'number' ? k.t : parseInt(k.t as any ?? '0') / 1000),
+            time: Math.floor((typeof k.t === 'number' ? k.t : parseInt(String(k.t ?? '0'))) / 1000),
             open: parseFloat(k.o),
             high: parseFloat(k.h),
             low: parseFloat(k.l),
@@ -1097,12 +1100,14 @@ class AMACRFSystem {
       // ── Per-Symbol Consensus: Position Management ──
       // Use perSymbolConsensus from HACP to manage ALL open positions.
       // Each symbol (market ticker + open positions) has a consensus decision.
+      // 🐛 FIX: Do NOT check psc.hasPosition — it's always false because
+      // buildConsensus() in hacp.ts hardcodes hasPosition:false with the
+      // comment "filled in by caller" but the caller never fills it in.
+      // Instead, check the portfolio directly for the actual position.
       const perSymbolConsensus = result.consensus.perSymbolConsensus ?? [];
       for (const psc of perSymbolConsensus) {
-        if (!psc.hasPosition) continue; // market ticker handled by main flow
-
         const pos = this.portfolio.getPosition(psc.symbol);
-        if (!pos) continue;
+        if (!pos) continue; // no open position for this symbol → skip (market ticker handled by main flow)
 
         // Close position if consensus says so
         if (psc.closePosition) {

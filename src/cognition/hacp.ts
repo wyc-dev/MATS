@@ -1026,6 +1026,10 @@ Output ONLY valid JSON:
         // Fallback: single legacy decision
         const singleDec = t.metadata?.['decision'] as TradingDecision | undefined;
         if (singleDec) {
+          // 🐛 FIX: Skip agents that don't trade (Skeptics) — their fallback
+          // decision has symbol='UNKNOWN' which pollutes per-symbol consensus
+          // with a meaningless "UNKNOWN(market) HOLD 60%" entry in the UI.
+          if (singleDec.symbol === 'UNKNOWN') continue;
           const sym = singleDec.symbol.toLowerCase();
           if (!perSymbolMap.has(sym)) perSymbolMap.set(sym, { actions: [], confidences: [], closeFlags: [], sls: [], tps: [], sizes: [], levers: [], rationales: [] });
           const entry = perSymbolMap.get(sym)!;
@@ -1100,7 +1104,7 @@ Output ONLY valid JSON:
         symbol: sym,
         action: majorityAction,
         confidence: avgConfidence,
-        hasPosition: false, // filled in by caller
+        hasPosition: false, // ⚠️ UNRELIABLE — consumers MUST check portfolio directly (see index.ts per-symbol consensus loop)
         closePosition: closeMajority,
         suggestedStopLoss: avgSl > 0 ? avgSl : undefined,
         suggestedTakeProfit: avgTp > 0 ? avgTp : undefined,
