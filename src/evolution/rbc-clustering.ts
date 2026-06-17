@@ -37,12 +37,12 @@ const CONFIG = {
 // ─── Feature Dimensions (same as GMM EM) ───
 
 const FEATURE_NAMES = [
-  'direction', 'volatility', 'srDistanceBps', 'obImbalance',
+  'volatility', 'srDistanceBps', 'obImbalance',
   'sentiment', 'signalAgreement', 'fundingRate',
   'volumeRatio', 'sentimentConviction',
 ] as const;
 
-const D = FEATURE_NAMES.length; // 9
+const D = FEATURE_NAMES.length; // 8
 
 // ─── Types ───
 
@@ -150,8 +150,20 @@ export class RBCEngine {
           const lossBox = s.lossBox as RBCBox;
           if (!winBox || !lossBox) continue;
           if (winBox.min?.length !== D || lossBox.min?.length !== D) {
-            log.warn(`[load] ${sym}: stale state has wrong dimension — discarding`);
-            continue;
+            // Backward compat: 9-dim state (with 'direction') → strip index 0
+            if (winBox.min?.length === D + 1 && lossBox.min?.length === D + 1) {
+              log.info(`[load] ${sym}: migrating 9-dim state → ${D}-dim (dropping 'direction')`);
+              const stripDir = (arr: number[]) => arr.slice(1);
+              winBox.min = stripDir(winBox.min);
+              winBox.max = stripDir(winBox.max);
+              winBox.centroid = stripDir(winBox.centroid);
+              lossBox.min = stripDir(lossBox.min);
+              lossBox.max = stripDir(lossBox.max);
+              lossBox.centroid = stripDir(lossBox.centroid);
+            } else {
+              log.warn(`[load] ${sym}: stale state has wrong dimension (${winBox.min?.length}) — discarding`);
+              continue;
+            }
           }
           this.symbols.set(sym.toLowerCase(), {
             winBox,

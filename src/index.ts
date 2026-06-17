@@ -632,12 +632,12 @@ class AMACRFSystem {
         if (absChange >= 0.001) {
           // Directional move: feed only the winning side
           const buyWon = priceChange > 0;
-          this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures, direction: buyWon ? 1 : -1 }, 1);
+          this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, 1);
           log.info(`🧬 RBC hypothetical: ${activeSymbol} ${(priceChange * 100).toFixed(2)}% → ${buyWon ? 'BUY=WIN' : 'SELL=WIN'} (cycle #${this.totalCycles})`);
         } else if (absChange < 0.0005) {
           // Flat market: both sides lose
-          this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures, direction: 1 }, 0);
-          this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures, direction: -1 }, 0);
+          this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, 0);
+          this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, 0);
           log.info(`🧬 RBC hypothetical: ${activeSymbol} flat (${(priceChange * 100).toFixed(2)}%) → BUY=LOSS SELL=LOSS (cycle #${this.totalCycles})`);
         }
         // else: noise (0.05%-0.1%), skip
@@ -749,7 +749,6 @@ class AMACRFSystem {
           sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
           sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
           signalAgreement: 0.5, // updated after cycle with actual consensus confidence
-          direction: 1,
         });
         const rbcSell = this.rbcEngine.query(activeSymbol, {
           volatility: combinedState.volatility ?? 0,
@@ -760,7 +759,6 @@ class AMACRFSystem {
           sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
           sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
           signalAgreement: 0.5, // updated after cycle with actual consensus confidence
-          direction: -1,
         });
         const hasData = rbcBuy.verdict !== 'no_edge' || rbcSell.verdict !== 'no_edge'
           || (rbcBuy.explanation && !rbcBuy.explanation.startsWith('Only'))
@@ -924,8 +922,8 @@ class AMACRFSystem {
                 sentiment: sentimentData?.overallSentiment ?? 0,
                 sentimentConviction: sentimentData?.conviction ?? 0.5,
                     };
-              const rbcBuy = this.rbcEngine.query(combinedState.primarySymbol, { ...rbcCtx, direction: 1 });
-              const rbcSell = this.rbcEngine.query(combinedState.primarySymbol, { ...rbcCtx, direction: -1 });
+              const rbcBuy = this.rbcEngine.query(combinedState.primarySymbol, { ...rbcCtx });
+              const rbcSell = this.rbcEngine.query(combinedState.primarySymbol, { ...rbcCtx });
               if (rbcBuy.verdict === 'favorable' && rbcSell.verdict !== 'favorable') {
                 direction = 'buy';
                 log.info(`🧪 RBC-guided: BUY favorable (edge=${(rbcBuy.edgeScore * 100).toFixed(0)}%)`);
