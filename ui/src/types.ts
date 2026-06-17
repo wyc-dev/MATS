@@ -229,6 +229,7 @@ export interface APIData {
     config: MarketAgentConfig;
     topPairs: TopVolumePair[];
   };
+  systemPaused?: boolean;
 }
 
 export interface BacktestData {

@@ -241,6 +241,22 @@ body {
   color: var(--red);
 }
 
+.pause-btn {
+  min-width: 80px;
+  justify-content: center;
+}
+
+.pause-btn.paused {
+  border-color: var(--green);
+  color: var(--green);
+  box-shadow: 0 0 12px rgba(52, 211, 153, 0.15);
+}
+
+.pause-btn:not(.paused):hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
 .btn-icon { font-size: 0.75rem; line-height: 1; }
 .btn-label { white-space: nowrap; }
 

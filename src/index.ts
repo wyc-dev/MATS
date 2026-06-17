@@ -79,6 +79,7 @@ class AMACRFSystem {
   private lastCycleRBCContext: { price: number; features: Record<string, number> } | null = null;
   private lastBacktestResult: import('./backtest/index.ts').BacktestResult | null = null;
   private backtestProgress: BacktestProgress | null = null;
+  private paused = false;
 
   constructor() {
     log.info('🏛️  AMACRF System Initializing...');
@@ -258,7 +259,7 @@ class AMACRFSystem {
       });
       this.apiServer.setTriggerCycleHandler(() => {
         log.info('Manual cycle trigger from API');
-        if (!this.cycleInProgress && !isShuttingDown()) {
+        if (!this.cycleInProgress && !isShuttingDown() && !this.paused) {
           void this.runDecisionCycle();
         }
       });
@@ -317,6 +318,17 @@ class AMACRFSystem {
       this.apiServer.setMarketAgentSetLeverageHandler((lev) => {
         log.info(`Market Agent: leverage → ${lev}x`);
         this.marketAgent.setLeverage(lev);
+        this.pushToAPI();
+      });
+
+      this.apiServer.setPauseHandler(() => {
+        this.paused = true;
+        log.info('⏸️ System PAUSED — RBC engine continues, all agents/trading halted');
+        this.pushToAPI();
+      });
+      this.apiServer.setResumeHandler(() => {
+        this.paused = false;
+        log.info('▶️ System RESUMED — normal operation restored');
         this.pushToAPI();
       });
 
@@ -687,6 +699,14 @@ class AMACRFSystem {
       log.warn(`SystemGuard: ${healthSummary}`);
     } else {
       log.info(`SystemGuard: ${healthSummary}`);
+    }
+
+    // ── PAUSE CHECK: If paused, skip agents/trading but keep RBC running ──
+    if (this.paused) {
+      log.info(`⏸️ System paused — RBC training complete, skipping HACP agents and trading (cycle #${this.totalCycles})`);
+      this.cycleInProgress = false;
+      this.pushToAPI();
+      return;
     }
 
     this.cycleInProgress = true;
@@ -1732,6 +1752,7 @@ class AMACRFSystem {
       const marketAgentState = this.marketAgent?.getState() ?? { config: { selectedSymbol: '', tradeMode: 'paper', exchange: 'hyperliquid', hyperliquidAssetType: 'crypto_perps', updatedAt: Date.now() }, topPairs: [] };
 
       this.apiServer.update({
+        systemPaused: this.paused,
         status: {
           cycles: this.totalCycles,
           balance: p.balance,

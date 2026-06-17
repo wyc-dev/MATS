@@ -135,6 +135,7 @@ export interface APIData {
       globalMin: number; globalMax: number;
     }>;
   };
+  systemPaused?: boolean;
 }
 
 type SSECallback = (data: APIData) => void;
@@ -159,6 +160,8 @@ export class APIServer {
   private onMarketAgentSetLeverage: ((lev: number) => void) | null = null;
   private onCandlesRequest: ((symbol: string, interval: string, limit: number) => Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>>) | null = null;
   private onResetTradeHistory: (() => void) | null = null;
+  private onPause: (() => void) | null = null;
+  private onResume: (() => void) | null = null;
 
   constructor(port = 3456) {
     this.port = port;
@@ -238,6 +241,16 @@ export class APIServer {
   /** Register a callback for resetting trade history */
   setResetTradeHistoryHandler(cb: () => void): void {
     this.onResetTradeHistory = cb;
+  }
+
+  /** Register a callback for pausing the system (RBC only mode) */
+  setPauseHandler(cb: () => void): void {
+    this.onPause = cb;
+  }
+
+  /** Register a callback for resuming the system */
+  setResumeHandler(cb: () => void): void {
+    this.onResume = cb;
   }
 
   /** Update the latest system data and broadcast to SSE clients */
@@ -389,6 +402,20 @@ export class APIServer {
             res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
           }
         });
+        return;
+      }
+
+      // POST: pause/resume system
+      if (pathname === '/api/pause' && req.method === 'POST') {
+        if (this.onPause) this.onPause();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, paused: true }));
+        return;
+      }
+      if (pathname === '/api/resume' && req.method === 'POST') {
+        if (this.onResume) this.onResume();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, paused: false }));
         return;
       }
 
