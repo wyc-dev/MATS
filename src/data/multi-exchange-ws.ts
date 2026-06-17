@@ -69,6 +69,12 @@ export class MultiExchangeWebSocketManager {
   private activeSymbol: string | null = null;
   private activeExchange: 'binance' | 'hyperliquid' | null = null;
 
+  // REST polling fallback for DEX 1-8 symbols (xyz:META, flx:NVDA)
+  // HL WebSocket only supports DEX 0 bare symbols.
+  private restPollTimer: ReturnType<typeof setInterval> | null = null;
+  private restPollSymbol: string | null = null;
+  private readonly REST_POLL_INTERVAL_MS = 5000;
+
   // Unified callbacks
   private readonly priceCallbacks: Set<UnifiedPriceCallback> = new Set();
   private readonly orderBookCallbacks: Set<UnifiedOrderBookCallback> = new Set();
@@ -185,7 +191,11 @@ export class MultiExchangeWebSocketManager {
 
   isConnected(): boolean {
     if (this.activeExchange === 'binance') return this.binance?.isConnected() ?? false;
-    if (this.activeExchange === 'hyperliquid') return this.hyperliquid.isConnected();
+    if (this.activeExchange === 'hyperliquid') {
+      // REST polling mode for DEX 1-8 symbols counts as "connected"
+      if (this.restPollSymbol) return true;
+      return this.hyperliquid.isConnected();
+    }
     return false;
   }
 
@@ -193,11 +203,30 @@ export class MultiExchangeWebSocketManager {
   async connect(symbol: string): Promise<void> {
     const exchange = detectExchange(symbol);
 
-    if (this.activeSymbol === symbol && this.activeExchange === exchange) {
+    if (this.activeSymbol === symbol && this.activeExchange === exchange && !this.restPollSymbol) {
       return; // Already connected
     }
 
     log.info(`Multi-WS connecting: ${symbol} → ${exchange}`);
+
+    // ── DEX 1-8 symbols (xyz:META, flx:NVDA) ──
+    // Hyperliquid WebSocket ONLY supports DEX 0 bare symbols (BTC, ETH, SOL).
+    // For DEX 1-8 we must use REST polling via l2Book endpoint.
+    if (symbol.includes(':') && exchange === 'hyperliquid') {
+      // Disconnect any previous WS connection
+      if (this.activeExchange === 'binance') await this.binance?.disconnect();
+      else await this.hyperliquid.disconnect();
+
+      this.activeSymbol = symbol;
+      this.activeExchange = 'hyperliquid';
+      await this.startRestPolling(symbol);
+      log.info(`Multi-WS using REST polling for DEX 1-8 symbol: ${symbol}`);
+      this.emitConnectionChange('hyperliquid', true);
+      return;
+    }
+
+    // Stop REST polling if we were in fallback mode
+    this.stopRestPolling();
 
     // Disconnect previous if switching exchanges
     if (this.activeExchange && this.activeExchange !== exchange) {
@@ -218,10 +247,72 @@ export class MultiExchangeWebSocketManager {
   }
 
   async disconnect(): Promise<void> {
+    this.stopRestPolling();
     if (this.binance) await this.binance.disconnect();
     await this.hyperliquid.disconnect();
     this.activeSymbol = null;
     this.activeExchange = null;
+  }
+
+  // ── REST Polling Fallback (DEX 1-8) ──
+
+  private async pollHLRestPrice(symbol: string): Promise<void> {
+    try {
+      // l2Book REST API uses the full prefixed coin name for DEX 1-8 assets
+      // (e.g. xyz:META), unlike candleSnapshot which uses bare name (META).
+      // This matches the convention used in MarketAgent.fetchPriceForSymbol.
+      const coin = symbol;
+      const res = await fetch('https://api.hyperliquid.xyz/info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'l2Book', coin }),
+      });
+      if (res.ok) {
+        const book = await res.json() as { levels: Array<Array<{ px: string; sz: string; n: number }>> };
+        const px = book.levels?.[0]?.[0]?.px ? parseFloat(book.levels[0][0].px) : 0;
+        if (px > 0) {
+          this.emitUnifiedPrice({
+            symbol,
+            price: px,
+            markPrice: px,
+            exchange: 'hyperliquid',
+          });
+          // Emit a minimal orderbook for sentiment engine compatibility
+          const bidPx = px;
+          const askPx = px * 1.0001; // synthetic 1-bp spread
+          this.emitUnifiedOrderBook({
+            symbol,
+            bids: [{ price: bidPx, size: 0 }],
+            asks: [{ price: askPx, size: 0 }],
+            imbalance: 0,
+            spread: askPx - bidPx,
+            exchange: 'hyperliquid',
+          });
+        }
+      }
+    } catch (err) {
+      log.debug(`REST poll failed for ${symbol}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async startRestPolling(symbol: string): Promise<void> {
+    this.stopRestPolling();
+    this.restPollSymbol = symbol;
+    // Immediate first poll
+    await this.pollHLRestPrice(symbol);
+    this.restPollTimer = setInterval(() => {
+      if (this.restPollSymbol) {
+        this.pollHLRestPrice(this.restPollSymbol).catch(() => { /* ignore */ });
+      }
+    }, this.REST_POLL_INTERVAL_MS);
+  }
+
+  private stopRestPolling(): void {
+    if (this.restPollTimer) {
+      clearInterval(this.restPollTimer);
+      this.restPollTimer = null;
+    }
+    this.restPollSymbol = null;
   }
 
   // ── Unified Callbacks ──

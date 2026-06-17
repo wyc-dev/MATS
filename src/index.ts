@@ -925,7 +925,8 @@ class AMACRFSystem {
               sentimentConviction: sentimentData?.conviction ?? 0.5,
                 };
 
-            // Priority 0: RBC assessment (highest weight — RBC & Sentiment Analyst's primary factor)
+            // Priority 0: RBC assessment (highest weight — can HARD BLOCK)
+          let rbcBlocked = false;
             if (!direction) {
               const rbcCtx = {
                                                 volatility: combinedState.volatility ?? 0,
@@ -953,9 +954,24 @@ class AMACRFSystem {
                 direction = 'buy';
                 log.info(`🧪 RBC-guided: SELL unfavorable, BUY favorable → BUY`);
               } else if (rbcBuy.verdict === 'unfavorable' && rbcSell.verdict === 'unfavorable') {
-                direction = null; // both unfavorable → no exploration
-                log.info(`🧪 RBC-guided: Both BUY and SELL unfavorable → skip exploration`);
+                direction = null;
+                rbcBlocked = true;
+                log.info(`🧪 RBC-guided: Both UNFAVORABLE → HARD BLOCK`);
+              } else if (rbcBuy.verdict === 'no_edge' && rbcSell.verdict === 'no_edge') {
+                log.info(`🧪 RBC-guided: Both NO_EDGE — falling through to other signals`);
               }
+              if (!rbcBlocked && (rbcBuy.verdict === 'unfavorable' || rbcSell.verdict === 'unfavorable') &&
+                  (rbcBuy.verdict === 'no_edge' || rbcSell.verdict === 'no_edge')) {
+                direction = null;
+                rbcBlocked = true;
+                log.info(`🧪 RBC-guided: Mixed unfavorable+no_edge → HARD BLOCK`);
+              }
+            }
+
+            // If RBC hard-blocked, skip all remaining signal checks
+            if (rbcBlocked) {
+              direction = null;
+            }
               // If both no_edge or mixed, fall through to other signals
             }
 
@@ -1017,24 +1033,24 @@ class AMACRFSystem {
             log.warn(`Pattern direction check failed: ${err instanceof Error ? err.message : String(err)}`);
           }
 
-          // If all signals neutral (e.g. sideways regime, no sentiment), default to buy as neutral
+          // If all signals neutral, skip — don't default to buy
           if (!direction) {
-            direction = 'buy';
-            log.info(`🧪 No directional signal — defaulting to BUY (neutral exploration)`);
+            log.info(`🧪 All signals neutral — skipping exploration (no edge detected)`);
+            finalDecision = result.consensus.decision; // keep HOLD
+          } else {
+            finalDecision = {
+              action: direction as 'buy' | 'sell',
+              symbol: activeSymbolUpper,
+              entryPrice: combinedState.price,
+              positionSizePct: exploreSize,
+              stopLossPct: 0.01,
+              takeProfitPct: 0.02,
+              leverage: exploreLev,
+              rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — ${direction} exploration.`,
+              urgency: 'immediate',
+            };
+            log.info(`🧪 Exploration trade triggered: ${direction.toUpperCase()} ${(exploreSize * 100).toFixed(1)}% ${activeSymbolUpper} @ ${exploreLev}x (cycle #${this.totalCycles})`);
           }
-
-          finalDecision = {
-            action: direction as 'buy' | 'sell',
-            symbol: activeSymbolUpper,
-            entryPrice: combinedState.price,
-            positionSizePct: exploreSize,
-            stopLossPct: 0.01,
-            takeProfitPct: 0.02,
-            leverage: exploreLev,
-            rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — ${direction} exploration.`,
-            urgency: 'immediate',
-          };
-          log.info(`🧪 Exploration trade triggered: ${direction.toUpperCase()} ${(exploreSize * 100).toFixed(1)}% ${activeSymbolUpper} @ ${exploreLev}x (cycle #${this.totalCycles})`);
         }
       }
 
