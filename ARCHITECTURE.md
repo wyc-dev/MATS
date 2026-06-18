@@ -1753,7 +1753,7 @@ Win Quality (10%) ──────┤
          遠勝過 win rate 90% 但 avgWin 0.01% 嘅 strategy
 ```
 
-### Evolutionary Pressure Engine (v2.0.6 — Dual-Trigger + Incubation)
+### Evolutionary Pressure Engine (v2.0.8 — Dual-Trigger + 1-Gen Incubation)
 
 ```
 Generation N (Active, fitness=0.75) ──── evaluate ──── fitness updated from cumulativePerf
@@ -1772,19 +1772,17 @@ Generation N (Active, fitness=0.75) ──── evaluate ──── fitness u
                                                           ▼
 Generation N+1 (Child, evaluating, fitness=parent's)
   │
-  ├─ Generation N+2: Child 觀察中（parent 仍 active）
-  ├─ Generation N+3: Child 觀察中
-  └─ Generation N+4: 3 代屆滿 → 比較 child vs parent
+  └─ Generation N+2: 1 代屆滿 → 比較 child vs parent
                           │
                     child.fitness > parent.fitness？
                       ├─ YES → child 取代 parent (active), parent retired
                       └─ NO  → child retired, parent 保持 active
 
-🆕 設計變更 (v2.0.6):
-  Before: 每 cycle 即刻 retire parent、child 即時 active → 1 cycle = 1 strategy churn
-  After:  Parent 保持 active 累積 track record，child 入 3 代 incubation
-         只有蝕錢或夠 3 個 countedTrades 先觸發 evolution
-         杜絕「好 strategy 被即時退休、新生兒 fitness=0」嘅死循環
+🆕 設計變更 (v2.0.8):
+  Before (v2.0.6): child 入 3 代 incubation → 3 gen delay 意味 child 用 stale
+                    parent performance 做 baseline，在 fast-moving markets 永遠追唔上
+  After (v2.0.8):  child 入 1 代 incubation → 下個 cycle 立即比較
+                   更快適應市場變化，loss-triggered evolution 即時生效
 
 Max active strategies: 5
 Max total strategies: 15 (auto-prune)
@@ -2408,17 +2406,27 @@ SELL → UNFAVORABLE (edge=33%, 2W/4L dims)
 RBC is your PRIMARY factor. UNFAVORABLE → strong bias against entry. FAVORABLE → increase conviction.
 ```
 
-### 方向決策 Priority Chain（Exploration）
+### 方向決策 Priority Chain（Exploration v2.0.8）
 
 | Priority | 信號 | 條件 |
 |:--------:|:-----|:------|
 | **0** | **RBC assessment** | **RBC verdict comparison (BUY/SELL favorable/unfavorable)** |
 | **1a** | Pattern DB (KNN) | `adjustedWinRate` via Wilson score, >=3 matches |
 | **1b** | EM cluster-weighted | `dominantCluster >= 0 && |weightedWinRate - 0.5| > 0.1` |
-| **2** | Sigmoid·GA Sentiment | `|overallSentiment| > 0.15` |
-| **3** | Funding Rate | `|rate| > 0.01%` |
-| **4** | Order Book Imbalance | `|imbalance| > 0.15` |
-| **5** | Regime / Trend | `trending_bull`/`trending_bear` |
+| **2** | **Sigmoid·GA Sentiment** | **`conviction > 0.6 && |overallSentiment| > 0.15`** |
+| **3** | **Price Velocity + Acceleration** | **`|velocity| > 0.15` 或 `|velocity| > 0.05 + accel confirms`** |
+| **4** | **S/R Proximity Breakout** | **`positionInRange > 0.65 && distToResistance < 30bps → BUY` / `< 0.35 && distToSupport < 30bps → SELL`** |
+| **5** | **Funding Rate + Velocity** | **`|rate| > 0.02% && velocity confirms direction`** |
+| **6** | Order Book Imbalance | `|imbalance| > 0.15` |
+| **7** | Regime / Trend + 24h Change | `trending_bull`/`trending_bear`/`change24h > 0.5%`/`change24h < -0.5%` |
+
+**v2.0.8 改動**:
+- **移除** Funding Rate 做獨立 direction signal（bear market 永遠 negative → BUY bias）
+- **新增** Price Velocity (Sigmoid·GA PriceBuffer) 做主導方向信號
+- **新增** S/R Proximity Breakout — 價格接近阻力位/支持位時偏向突破方向
+- **新增** 24h change fallback — 明顯下跌時可以 SELL
+- **Sentiment** 加入 conviction threshold（>0.6 先信）
+- **Funding Rate** 改為需要 velocity 確認方向（避免 bear market false BUY signal）
 
 ### 檔案
 
@@ -2453,7 +2461,7 @@ RBC is your PRIMARY factor. UNFAVORABLE → strong bias against entry. FAVORABLE
 **Cold Start — Backfill 工具（v2.0.5）：**
 - `scripts/backfill-patterns.mjs` — 一次性工具，讀 `portfolio-state.json` 將歷史 meaningful trades（|PnL| >= 0.5%）import 入 pattern DB，解決 classifier 後加時冇歷史數據嘅問題
 
-### Exploration 方向決策 Priority Chain
+### Exploration 方向決策 Priority Chain (v2.0.8)
 
 當 consensus 係 HOLD 且系統 idle 3+ cycles，exploration trade 嘅方向由以下 priority chain 決定：
 
@@ -2472,27 +2480,47 @@ Priority 1a: Pattern Classifier (KNN — adjustedWinRate via Wilson score)
 Priority 1b: EM cluster-weighted win rate (GMM assessment, still active)
   └─ dominantCluster >= 0 && |weightedWinRate - 0.5| > 0.1 嘅方向
 
-Priority 2: Sigmoid·GA Sentiment
-  └─ overallSentiment > +0.15 → BUY
-  └─ overallSentiment < -0.15 → SELL
-  └─ |overallSentiment| <= 0.15 → fall through
+Priority 2: Sigmoid·GA Sentiment (with conviction gate)
+  └─ conviction > 0.6 && overallSentiment > +0.15 → BUY
+  └─ conviction > 0.6 && overallSentiment < -0.15 → SELL
+  └─ otherwise → fall through
 
-Priority 3: Funding Rate
-  └─ rate < -0.01% → BUY (longs get paid)
-  └─ rate > +0.01% → SELL (longs pay premium)
-  └─ |rate| <= 0.01% → fall through
+Priority 3: Price Velocity + Acceleration (Sigmoid·GA PriceBuffer)
+  └─ velocity > +0.15 → BUY (strong upward momentum)
+  └─ velocity < -0.15 → SELL (strong downward momentum)
+  └─ velocity > +0.05 && acceleration > +0.05 → BUY (weak but accelerating)
+  └─ velocity < -0.05 && acceleration < -0.05 → SELL (weak but accelerating)
+  └─ otherwise → fall through
 
-Priority 4: Order Book Imbalance
+Priority 4: S/R Proximity Breakout
+  └─ positionInRange > 0.65 && distToResistance < 30bps → BUY (breakout up)
+  └─ positionInRange < 0.35 && distToSupport < 30bps → SELL (breakdown down)
+  └─ otherwise → fall through
+
+Priority 5: Funding Rate + Velocity (combined, not standalone)
+  └─ rate < -0.02% && velocity > +0.05 → BUY (negative funding + price rising = genuine)
+  └─ rate > +0.02% && velocity < -0.05 → SELL (positive funding + price falling = genuine)
+  └─ otherwise → fall through
+
+Priority 6: Order Book Imbalance
   └─ imbalance > +0.15 → BUY (bid pressure)
   └─ imbalance < -0.15 → SELL (ask pressure)
 
-Priority 5: Regime / Trend
+Priority 7: Regime / Trend + 24h Change
   └─ trending_bull → BUY
   └─ trending_bear → SELL
-  └─ other regimes → BUY (中性方向)
-
-Default（所有信號中性）→ BUY
+  └─ change24h < -0.5% → SELL (明顯下跌)
+  └─ change24h > +0.5% → BUY (明顯上升)
+  └─ all neutral → skip (no edge detected)
 ```
+
+**v2.0.8 關鍵改動**:
+- **移除** Funding Rate 做獨立 direction signal（bear market 永遠 negative → BUY bias）
+- **新增** Price Velocity (Sigmoid·GA PriceBuffer) 做主導方向信號
+- **新增** S/R Proximity Breakout — 價格接近阻力位/支持位時偏向突破方向
+- **新增** 24h change fallback — 明顯下跌時可以 SELL
+- **Sentiment** 加入 conviction threshold（>0.6 先信）
+- **Funding Rate** 改為需要 velocity 確認方向（避免 bear market false BUY signal）
 
 Exploration 唔係賭博 — 每一層都有技術邏輯支撐。Pattern data 永遠優先，後面係 fallback 梯度。
 

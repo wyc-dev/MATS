@@ -168,6 +168,16 @@ export class SentimentEngine {
     return this.volumeBuffer.getVolumeRatio();
   }
 
+  /** Price velocity: Δp/Δt normalized (-1 to +1). Positive = price rising. */
+  getPriceVelocity(): number {
+    return this.priceBuffer.getVelocity();
+  }
+
+  /** Price acceleration: Δ²p/Δt² normalized (-1 to +1). Positive = velocity increasing. */
+  getPriceAcceleration(): number {
+    return this.priceBuffer.getAcceleration();
+  }
+
   /** Get current sentiment for agent context injection */
   getSentiment(): SentimentAggregate | null {
     return this.lastSentiment;

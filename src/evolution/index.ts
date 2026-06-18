@@ -324,8 +324,13 @@ export class EvolutionaryPressureEngine {
           log.info(`Strategy ${strat.id.slice(0, 8)} retired (fitness: ${fitness.score.toFixed(4)})`);
         }
       } else if (strat.status === 'evaluating') {
-        // Evaluating strategies: after 3 generations, compare vs parent
-        if (this.generation - strat.generation >= 3) {
+        // Evaluating strategies: after 1 generation, compare vs parent
+        // 🐛 FIX v2.0.8: Reduced from 3→1 gen incubation. In fast-moving markets,
+        // 3 generations of delay means the child strategy never gets a chance to
+        // adapt to current conditions before being compared against the parent's
+        // stale performance. 1 generation is enough to evaluate viability while
+        // still allowing rapid adaptation to regime changes.
+        if (this.generation - strat.generation >= 1) {
           strat.performance = cumulativePerf ?? { ...strat.performance, ...performanceMetrics };
           const calculator = new SurvivalFitnessCalculator();
           const fitness = calculator.calculate(strat.performance);

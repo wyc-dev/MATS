@@ -1017,24 +1017,85 @@ class AMACRFSystem {
             }
 
             // Priority 2: Sigmoid·GA sentiment (forward-looking market emotion)
-            if (!direction && sentimentData && Math.abs(sentimentData.overallSentiment) > 0.15) {
+            // Only trust sentiment if conviction is high enough (>0.6)
+            if (!direction && sentimentData && sentimentData.conviction > 0.6 && Math.abs(sentimentData.overallSentiment) > 0.15) {
               direction = sentimentData.overallSentiment > 0 ? 'buy' : 'sell';
-              log.info(`🧪 Sentiment-guided: overall=${(sentimentData.overallSentiment*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+              log.info(`🧪 Sentiment-guided: overall=${(sentimentData.overallSentiment*100).toFixed(0)}% conv=${(sentimentData.conviction*100).toFixed(0)}% → ${direction.toUpperCase()}`);
             }
 
-            // Priority 3: Funding rate (negative = longs get paid = bullish, positive = bearish)
-            if (!direction && Math.abs(actualFundingRate) > 0.0001) {
-              direction = actualFundingRate < 0 ? 'buy' : 'sell';
-              log.info(`🧪 Funding-guided: rate=${(actualFundingRate*10000).toFixed(2)}bps → ${direction.toUpperCase()}`);
+            // Priority 3: Sigmoid·GA price velocity + acceleration (directional filter)
+            // Uses the SentimentEngine's PriceBuffer to detect short-term price direction.
+            // velocity > 0 → price moving up (BUY bias), velocity < 0 → price moving down (SELL bias).
+            // acceleration confirms the velocity is strengthening.
+            // This is more reliable than funding rate which is a lagging indicator of positioning.
+            if (!direction && this.sentimentEngine) {
+              const velocity = this.sentimentEngine.getPriceVelocity();
+              const acceleration = this.sentimentEngine.getPriceAcceleration();
+              const absVelocity = Math.abs(velocity);
+              if (absVelocity > 0.15) {
+                // Strong velocity: direction follows the price movement
+                direction = velocity > 0 ? 'buy' : 'sell';
+                log.info(`🧪 Velocity-guided: vel=${(velocity*100).toFixed(0)}% accel=${(acceleration*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+              } else if (absVelocity > 0.05) {
+                // Weak velocity: only act if acceleration confirms direction
+                if (acceleration > 0.05 && velocity > 0) {
+                  direction = 'buy';
+                  log.info(`🧪 Velocity+accel-guided: vel=${(velocity*100).toFixed(0)}% accel=${(acceleration*100).toFixed(0)}% → BUY`);
+                } else if (acceleration < -0.05 && velocity < 0) {
+                  direction = 'sell';
+                  log.info(`🧪 Velocity+accel-guided: vel=${(velocity*100).toFixed(0)}% accel=${(acceleration*100).toFixed(0)}% → SELL`);
+                }
+              }
             }
 
-            // Priority 4: Order book imbalance (positive = bid pressure = buy, negative = sell pressure)
+            // Priority 4: S/R proximity breakout direction
+            // When price is near a support or resistance level and moving toward it,
+            // the market tends to challenge that level. If price is already past the
+            // midpoint between S/R and moving toward a boundary, bias toward a
+            // breakout in that direction.
+            if (!direction && this.lastSRContext) {
+              const distToSupport = this.lastSRContext.distanceToSupportBps;
+              const distToResistance = this.lastSRContext.distanceToResistanceBps;
+              const totalRange = distToSupport + distToResistance;
+              if (totalRange > 0) {
+                // Normalized position: 0 = at support, 1 = at resistance
+                const positionInRange = distToSupport / totalRange;
+                // If price is past the midpoint (>0.5) and closer to resistance,
+                // bias toward BUY (breakout up). If past midpoint toward support,
+                // bias toward SELL (breakdown down).
+                if (positionInRange > 0.65 && distToResistance < 30) {
+                  direction = 'buy';
+                  log.info(`🧪 S/R-guided: near resistance (${distToResistance.toFixed(0)}bps, pos=${(positionInRange*100).toFixed(0)}%) → BUY (breakout)`);
+                } else if (positionInRange < 0.35 && distToSupport < 30) {
+                  direction = 'sell';
+                  log.info(`🧪 S/R-guided: near support (${distToSupport.toFixed(0)}bps, pos=${(positionInRange*100).toFixed(0)}%) → SELL (breakdown)`);
+                }
+              }
+            }
+
+            // Priority 5: Funding rate (negative = longs get paid = bullish, positive = bearish)
+            // ⚠️ Only used as weak signal — in bear markets negative funding is common
+            // and does NOT mean price will reverse up. Combined with velocity check.
+            if (!direction && Math.abs(actualFundingRate) > 0.0002) {
+              const frVelocity = this.sentimentEngine?.getPriceVelocity() ?? 0;
+              if (actualFundingRate < 0 && frVelocity > 0.05) {
+                // Negative funding + price going up → genuine bullish
+                direction = 'buy';
+                log.info(`🧪 Funding+vel-guided: rate=${(actualFundingRate*10000).toFixed(2)}bps vel=${(frVelocity*100).toFixed(0)}% → BUY`);
+              } else if (actualFundingRate > 0 && frVelocity < -0.05) {
+                // Positive funding + price going down → genuine bearish
+                direction = 'sell';
+                log.info(`🧪 Funding+vel-guided: rate=${(actualFundingRate*10000).toFixed(2)}bps vel=${(frVelocity*100).toFixed(0)}% → SELL`);
+              }
+            }
+
+            // Priority 6: Order book imbalance (positive = bid pressure = buy, negative = sell pressure)
             if (!direction && combinedState.orderBookImbalance !== undefined && Math.abs(combinedState.orderBookImbalance) > 0.15) {
               direction = combinedState.orderBookImbalance > 0 ? 'buy' : 'sell';
               log.info(`🧪 OB-guided: imbalance=${(combinedState.orderBookImbalance*100).toFixed(0)}% → ${direction.toUpperCase()}`);
             }
 
-            // Priority 5: Regime / Trend
+            // Priority 7: Regime / Trend + 24h change combined
             if (!direction) {
               if (combinedState.regime === 'trending_bull') {
                 direction = 'buy';
@@ -1042,6 +1103,13 @@ class AMACRFSystem {
               } else if (combinedState.regime === 'trending_bear') {
                 direction = 'sell';
                 log.info(`🧪 Regime-guided: trending_bear → SELL`);
+              } else if (combinedState.change24h < -0.5) {
+                // 24h change significantly negative → SELL bias even in sideways/mean_reverting
+                direction = 'sell';
+                log.info(`🧪 24h-change-guided: ${combinedState.change24h.toFixed(2)}% → SELL`);
+              } else if (combinedState.change24h > 0.5) {
+                direction = 'buy';
+                log.info(`🧪 24h-change-guided: ${combinedState.change24h.toFixed(2)}% → BUY`);
               }
             }
           } catch (err) {

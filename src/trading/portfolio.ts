@@ -56,6 +56,11 @@ export class PortfolioTracker {
 
       // Restore positions
       for (const p of saved.positions ?? []) {
+        // 🐛 FIX: Guard against manually-edited portfolio-state.json where
+        // positions may contain empty objects {} (user removed losing trades).
+        // Skip entries without a valid symbol to prevent "Cannot read
+        // properties of undefined (reading 'toLowerCase')".
+        if (!p || !p.symbol) continue;
         this.portfolio.positions.set(p.symbol.toLowerCase(), {
           id: p.id,
           symbol: p.symbol.toLowerCase(),
