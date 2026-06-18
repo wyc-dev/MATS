@@ -76,7 +76,8 @@
 │   Layer 2: 認知層 (TypeScript + NVIDIA NIM)                   │
 │   ┌────────────────────────────────────────────────────────┐ │
 │   │ • HACP 高速認知協議（多模型平行推理）                    │ │
-│   │ • 9 智能體系統（5 sub-agents + On-Chain + News + Risk + Skeptics）+ Meta-Agent 仲裁       │ │
+│   │ • 9 智能體系統（5 sub-agents + On-Chain + News +        │ │
+│   │   Risk + Skeptics）+ Meta-Agent 仲裁                    │ │
 │   │ • 結構化辯論 & 加權投票共識                              │ │
 │   │ • Meta-Evolution 自我演化                                │ │
 │   │ • Position Reconciliation (Skeptics)                     │ │
@@ -92,7 +93,7 @@
 │   │ • Paper Trading 模擬引擎 (槓桿感知 P&L)                 │ │
 │   │ • Real Trading Manager (exchange 下單 + 本地 mirror)    │ │
 │   │ • 倉位追蹤 & 止損止盈（每個 price update 自動檢查）    │ │
-│   │ • Position Reconciliation (偵測 exchange 已平倉 → 同步)  │ │
+│   │ • Position Reconciliation (偵測 exchange 已平倉 → 同步)│ │
 │   │ • Per-Position Profit-Take（>=2 agents vote + PnL>+0.5%）│ │
 │   │ • 數據管道 & 持久化                                      │ │
 │   │ • 可觀測性 & 健康檢查                                    │ │
@@ -813,36 +814,37 @@ PROP: BUY 4.5% immediate | momentum_strong but reduce_size_for_vol_uncertainty
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  PHASE 2: STRUCTURED RAPID DEBATE (up to 3 rounds, auto-shortcut)  │
-│                                                                     │
-│  Round 1: ARGUMENTS                                                 │
-│  • 每個 Agent 陳述最強論點（1-3 句 + 信心度）                        │
-│  • 平行生成，基於 Phase 1 + Skeptics 修正後結果                      │
-│  • 如果 Round 1 後所有 agents 同一 action → 跳過 Round 2+3 ✅      │
-│  • 跳過後直接 consensus，節省 ~70% token                            │
-│  • 如有分歧 → 繼續 Round 2（Attack）和 Round 3（Synthesis）         │
-│                                                                     │
-│  Round 2 (optional): ATTACK                                         │
-│  • 只在 Round 1 有分歧時執行                                        │
-│  • 每個 Agent 質疑信心度最低的對手                                  │
-│                                                                     │
-│  Round 3 (optional): SYNTHESIS                                      │
-│  • 只在 Round 2 後仍有分歧時執行                                    │
-│  • 綜合各方立場，尋求共識                                            │
-│  └───────────────────────────────────────────────────────────────┘  │
+│  PHASE 2: STRUCTURED RAPID DEBATE (up to 3 rounds, auto-shortcut)│
+│                                                                 │
+│  Round 1: ARGUMENTS                                             │
+│  • 每個 Agent 陳述最強論點（1-3 句 + 信心度）                    │
+│  • 平行生成，基於 Phase 1 + Skeptics 修正後結果                  │
+│  • 如果 Round 1 後所有 agents 同一 action → 跳過 Round 2+3 ✅  │
+│  • 跳過後直接 consensus，節省 ~70% token                        │
+│  • 如有分歧 → 繼續 Round 2（Attack）和 Round 3（Synthesis）     │
+│                                                                 │
+│  Round 2 (optional): ATTACK                                     │
+│  • 只在 Round 1 有分歧時執行                                    │
+│  • 每個 Agent 質疑信心度最低的對手                              │
+│                                                                 │
+│  Round 3 (optional): SYNTHESIS                                  │
+│  • 只在 Round 2 後仍有分歧時執行                                │
+│  • 綜合各方立場，尋求共識                                        │
+│  └───────────────────────────────────────────────────────────┘  │
 │  • 極化檢測（信心方差 > 0.15 → 觸發元智能體仲裁）               │
 │  • 總時間限制：120s（超時強制共識）                              │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  PHASE 3: FAST CONSENSUS ENGINE (v2.0.6 — Per-Symbol Consensus)
-│
+│  PHASE 3: FAST CONSENSUS ENGINE (v2.0.6 — Per-Symbol Consensus)  │
+│                                                                 │
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │ 加權投票（Per-Symbol）                                     │  │
-│  │ • 每個 Agent 產出 MultiSymbolDecision（marketTicker + positions[]）│  │
-│  │ • buildConsensus() 從每個 agent 嘅 multiSymbolDecision metadata │  │
-│  │   提取 per-symbol 決定，跨 agent 計算每個 symbol 嘅 majority    │  │
+│  │ • 每個 Agent 產出 MultiSymbolDecision                      │  │
+│  │   （marketTicker + positions[]）                           │  │
+│  │ • buildConsensus() 從每個 agent 嘅 multiSymbolDecision     │  │
+│  │   metadata 提取 per-symbol 決定，跨 agent 計算 majority   │  │
 │  │ • 結果: ConsensusResult.perSymbolConsensus[]               │  │
 │  │   └─ marketTicker: 新開倉決策 (buy/sell/hold)              │  │
 │  │   └─ positions[]: 每個持倉嘅管理決策 (hold/close + SL/TP)    │  │
@@ -898,49 +900,42 @@ PROP: BUY 4.5% immediate | momentum_strong but reduce_size_for_vol_uncertainty
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  PHASE 5: PER-POSITION CONSENSUS + PROFIT-TAKING + TP/SL ADJUSTMENT (v2.0.8)
+│  PHASE 5: PER-POSITION CONSENSUS + PROFIT-TAKING + TP/SL ADJUST │
 │                                                                 │
-│  Per-Symbol Consensus Execution（所有持倉）：
-│  • 每個 cycle 檢視 perSymbolConsensus[] 入面所有 entry
-│  • 🐛 FIX v2.0.8: 唔再檢查 psc.hasPosition（buildConsensus() 永遠 set false）
-│  • 改為直接查 portfolio.getPosition(psc.symbol) 確認持倉是否存在
-│  • closePosition=true → 立即平倉（唔理賺蝕）
-│  • suggestedStopLoss/suggestedTakeProfit → 調整持倉 SL/TP
-│  • 如果 consensus 係 hold + 冇 SL/TP 建議 → 乜都唔做，等自然觸發
-│
-│  Per-Position Close Voting（盈利持倉 only）：
-│  • 每個 cycle 檢視所有 open positions
-│  • 如果 >=2 agents 投票 closePosition && unrealizedPnlPct > +0.5%
-│    → 提前止賺離場
-│  • 蝕錢持倉絕對唔會被 agent 投票 close
-│    → 必須由 SL/TP 觸發（paper trade）或 exchange auto-close
-│
-│  Meta-Agent TP/SL Adjustment（S/R 驅動 + 三層安全架構）：
-│  • 每個 cycle 結束後，meta-agent 審視所有持倉
-│  • **TP 設定以 S/R zones 為基礎**：
-│    - LONG: TP = nearest Resistance (Supply) level above current price
-│    - SHORT: TP = nearest Support (Demand) level below current price
-│    - 無 S/R level 時 fallback 至 2x SL distance
-│  • **SL 設定以 S/R zones 為基礎**：
-│    - LONG: SL just below nearest Support below current price
-│    - SHORT: SL just above nearest Resistance above current price
-│    - 無 S/R level 時 fallback 至 1-2% from current price
-│  • 價格接近 SL → 適度放寬避免 premature stop-out
-│  • 價格接近 TP → trail upward 捕捉更多利潤
-│  • 波動率上升 → 放寬 SL/TP
-│  • 波動率下降 → 收窄 SL/TP
-│  • 永遠唔會移除 SL
-│  • 接口與 RealTradingEngine 一致
-│
-│  🛡️ 三層 TP/SL 安全架構（v2.0.7）：
-│  Layer 1 — Meta-Agent Prompt：system prompt 明確指示用 S/R zones 定 TP/SL，
-│     example 用 realistic values（唔再用 75000 呢類離譜數字）
-│  Layer 2 — HACP Safety Layer：direction validation（TP for SHORT < entry,
-│     SL for SHORT > entry），唔再依賴 PnL sign，永遠執行
-│  Layer 3 — Portfolio Execution Guard：adjustPosition() 最終安全網，
-│     reject 任何方向錯誤嘅 TP/SL，log warning + return unchanged
-└─────────────────────────────────────────────────────────────────┘
-│  • 接口與 RealTradingEngine 一致                                │
+│  Per-Symbol Consensus Execution（所有持倉）：                    │
+│  • 每個 cycle 檢視 perSymbolConsensus[] 入面所有 entry          │
+│  • 🐛 FIX v2.0.8: 唔再檢查 psc.hasPosition                     │
+│    （buildConsensus() 永遠 set false）                          │
+│  • 改為直接查 portfolio.getPosition(psc.symbol)                 │
+│  • closePosition=true → 立即平倉（唔理賺蝕）                   │
+│  • suggestedStopLoss/suggestedTakeProfit → 調整持倉 SL/TP      │
+│  • 如果 consensus 係 hold + 冇 SL/TP 建議 → 等自然觸發         │
+│                                                                 │
+│  Per-Position Close Voting（盈利持倉 only）：                   │
+│  • 每個 cycle 檢視所有 open positions                           │
+│  • >=2 agents 投票 closePosition && unrealizedPnlPct > +0.5%   │
+│    → 提前止賺離場                                               │
+│  • 蝕錢持倉絕對唔會被 agent 投票 close                          │
+│    → 必須由 SL/TP 觸發或 exchange auto-close                    │
+│                                                                 │
+│  Meta-Agent TP/SL Adjustment（S/R 驅動 + 三層安全架構）：       │
+│  • TP 設定以 S/R zones 為基礎：                                 │
+│    - LONG: TP = nearest Resistance above current price          │
+│    - SHORT: TP = nearest Support below current price            │
+│    - 無 S/R level 時 fallback 至 2x SL distance                 │
+│  • SL 設定以 S/R zones 為基礎：                                 │
+│    - LONG: SL just below nearest Support below current price    │
+│    - SHORT: SL just above nearest Resistance above current price │
+│    - 無 S/R level 時 fallback 至 1-2% from current price        │
+│  • 價格接近 SL → 適度放寬避免 premature stop-out               │
+│  • 價格接近 TP → trail upward 捕捉更多利潤                     │
+│  • 波動率上升 → 放寬 SL/TP；波動率下降 → 收窄 SL/TP            │
+│  • 永遠唔會移除 SL                                              │
+│                                                                 │
+│  🛡️ 三層 TP/SL 安全架構（v2.0.7）：                            │
+│  Layer 1 — Meta-Agent Prompt：用 S/R zones 定 TP/SL             │
+│  Layer 2 — HACP Safety Layer：direction validation，永遠執行   │
+│  Layer 3 — Portfolio Execution Guard：最終安全網，reject 錯誤   │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -2567,20 +2562,28 @@ if (isSynthetic) {
 - **Sentiment** 加入 conviction threshold（>0.6 先信）
 - **Funding Rate** 改為需要 velocity 確認方向（避免 bear market false BUY signal）
 
-### 🆕 v2.0.9: 探索槓桿上限
+### 🆕 v2.0.9: 探索槓桿上限（已移除）
 
-**問題**: Exploration trade 直接用 `maConfig.leverage`（10x）→ 違反 `maxLeverage=6x` 硬約束 → 下個 cycle 全部 agent 一致 CLOSE → 浪費探索機會。
+**之前**: Exploration trade 用 `maConfig.leverage`（10x）→ 違反 `maxLeverage=6x` 硬約束 → 下個 cycle 全部 agent 一致 CLOSE → 浪費探索機會。
 
-**修復**: Cap exploration leverage 喺 3x：
+**之前嘅修復**: Cap exploration leverage 喺 3x：
 
 ```typescript
 const exploreLev = Math.min(maConfig.leverage, 3);
 ```
 
+**但呢個 cap 造成新問題**: 用戶 set 10x 槓桿但 exploration 用 3x → 違反用戶意圖。
+
+**最終解決 (v2.0.9)**: 移除 cap + 移除 Skeptics 槓桿檢查。槓桿完全由 Market Agent config 控制，agents 唔再審查槓桿：
+
+```typescript
+const exploreLev = maConfig.leverage; // 直接用 Market Agent 設定
+```
+
 **效果**:
-- Exploration trade 永遠唔會 trigger 槓桿違規
-- 3x 足夠 generate evolution data，唔需要高槓桿
-- Agent 唔會再因為槓桿問題而 CLOSE 探索倉
+- Exploration trade 用用戶設定嘅槓桿（10x）
+- Agents 唔會再因為槓桿問題而 CLOSE 探索倉
+- 槓桿控制權完全交還 Market Agent
 
 Exploration 唔係賭博 — 每一層都有技術邏輯支撐。Pattern data 永遠優先，後面係 fallback 梯度。
 
@@ -3713,11 +3716,11 @@ Default:     Neutral → buy
 - ✅ Pattern Classifier (KNN + RBC) 為最高優先級
 - ✅ 每層都有技術邏輯，冇 pattern data 都唔會亂賭
 - ✅ 🆕 v2.0.9: 獨立探索 guard — 只檢查 activeSymbol 有冇持倉，唔再檢查全 portfolio
-- ✅ 🆕 v2.0.9: 探索槓桿 cap 喺 3x — 避免違反 maxLeverage=6x 硬約束
+- ✅ 🆕 v2.0.9: 探索槓桿直接用 Market Agent 設定（已移除 cap + Skeptics 槓桿檢查）
   if (!this.portfolio.hasPosition(activeSymbol)) {
     const maConfig = this.marketAgent.getConfig();
     const exploreSize = maConfig.positionSizePct;
-    const exploreLev = Math.min(maConfig.leverage, 3);
+    const exploreLev = maConfig.leverage; // 直接用 Market Agent 設定（10x）
     ...
   }
 }
@@ -4280,11 +4283,11 @@ applyDecay(symbol: string): void {
 
 ---
 
-### B.10 Exploration 槓桿違規 — 10x 觸發 maxLeverage 硬約束（v2.0.9 修復）
+### B.10 Exploration 槓桿違規 — 10x 觸發 maxLeverage 硬約束（v2.0.9 修復 — 已移除 cap）
 
 **發現日期**: 2026-06-18
 **嚴重性**: 🟡 Medium — 探索交易被 agent 一致 CLOSE，浪費探索機會
-**涉及檔案**: `src/index.ts`
+**涉及檔案**: `src/index.ts`, `src/agents/agents.ts`, `src/evolution/index.ts`, `src/cognition/hacp.ts`
 
 #### 問題描述
 
@@ -4292,28 +4295,37 @@ Exploration trade 用 `maConfig.leverage`（10x）開倉 → 違反 `maxLeverage
 
 #### 根因
 
-```typescript
-// ❌ 直接用 Market Agent 嘅 10x 槓桿
-const exploreLev = maConfig.leverage; // 10x
-```
+兩個問題疊加：
 
-探索交易嘅目的係 generate evolution data，唔係 maximize returns。用 10x 槓桿只會 trigger 槓桿違規。
+1. **探索槓桿 cap** (`src/index.ts`)：`Math.min(maConfig.leverage, 3)` 將用戶設定嘅 10x 降為 3x
+2. **Skeptics 槓桿檢查** (`src/agents/agents.ts`)：`hardMaxLeverage` 檢查 block 任何超過 6x 嘅 trade
 
 #### 修復
 
-**`src/index.ts`** — Cap exploration leverage：
+**`src/index.ts`** — 移除 exploration leverage cap：
 
 ```typescript
-// ✅ 上限 3x，永遠唔會 trigger 槓桿違規
-const exploreLev = Math.min(maConfig.leverage, 3);
+// ✅ 直接用 Market Agent 設定
+const exploreLev = maConfig.leverage;
 ```
+
+**`src/agents/agents.ts`** — 移除 Skeptics 槓桿檢查：
+- 移除 `hardMaxLeverage` 變數
+- 移除 `maxLeverage` regex parse
+- 移除 `if (leverage > hardMaxLeverage)` 檢查
+- 更新 Skeptics system prompt 說明槓桿唔係 agent 嘅 concern
+
+**`src/evolution/index.ts`** — 移除 `maxLeverage` context 注入
+
+**`src/cognition/hacp.ts`** — 移除 HACP context 嘅 `Max Leverage` 行
 
 #### 預防措施
 
 | 措施 | 說明 |
 |:-----|:------|
-| **獨立槓桿上限** | Exploration 用 `min(maConfig.leverage, 3)` |
-| **唔用 Market Agent 設定** | 探索交易同正常交易嘅風險參數分開 |
+| **槓桿由 Market Agent 控制** | Agents 唔再審查槓桿 |
+| **Phase 4.5 保留** | 仍然強制使用 Market Agent 嘅槓桿值 |
+| **用戶設定優先** | 用戶 set 10x 就係 10x，唔會被 cap 或 override |
 
 ---
 

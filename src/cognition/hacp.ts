@@ -185,7 +185,6 @@ export class HACPEngine {
       constrainedMarketDesc += `\n\n=== MARKET AGENT HARD CONSTRAINTS ===\n`;
       constrainedMarketDesc += `These are NON-NEGOTIABLE limits set by the Market Agent. You MUST respect them.\n`;
       constrainedMarketDesc += `Max Position Size: ${sizePct}% of portfolio equity (${marketAgentConstraints.positionSizePct * 100}% hard cap)\n`;
-      constrainedMarketDesc += `Max Leverage: ${marketAgentConstraints.leverage}x\n`;
       constrainedMarketDesc += `If your proposed trade exceeds these limits, REDUCE to fit within them.\n`;
       constrainedMarketDesc += `If you cannot make a profitable trade within these limits, choose HOLD.\n`;
     }

@@ -940,13 +940,12 @@ export class SkepticsAgent {
     // ── Extract HARD CONSTRAINT overrides from evolution context ──
     // These are the NON-NEGOTIABLE limits emitted by getContextForAgent().
     // If present, they override the LLM-level review with code-level enforcement.
-    let hardMaxLeverage = 10;
+    // NOTE: Leverage is NOT checked here — it is set by the Market Agent and
+    // enforced by Phase 4.5 in HACP. Agents should NOT close positions based on leverage.
     let hardMaxPositionSize = 0.20;
     let hardMinConfidence = 0.30;
     try {
       if (marketStateDesc) {
-        const maxLevMatch = marketStateDesc.match(/maxLeverage=(\d+)x/);
-        if (maxLevMatch) hardMaxLeverage = parseInt(maxLevMatch[1]!) || 10;
         const maxPosMatch = marketStateDesc.match(/maxPositionSize=([\d.]+)/);
         if (maxPosMatch) hardMaxPositionSize = parseFloat(maxPosMatch[1]!) || 0.20;
         const minConfMatch = marketStateDesc.match(/minConfidenceForTrade=([\d.]+)/);
@@ -1038,9 +1037,9 @@ C) WITHIN the evolution engine's HARD CONSTRAINTS
 
 Look for the "=== EVOLUTION HARD CONSTRAINTS ===" section in the market context.
 These are NON-NEGOTIABLE limits. Any agent that violates them MUST be rejected:
-- maxLeverage: the agent's proposed leverage cannot exceed this
 - maxPositionSize: the agent's position size% cannot exceed this
 - minConfidenceForTrade: the agent's confidence must be at least this to propose a trade
+NOTE: Leverage is NOT a constraint for agents — it is set by the Market Agent and enforced by HACP Phase 4.5.
 
 If the agent violates a hard constraint, set approved: false and override the offending field.
 The code layer ALSO enforces these, so you and the code are aligned — but you catch subtle cases the code might miss (e.g. an agent that technically respects limits but takes multiple simultaneous positions that collectively exceed them).
@@ -1107,12 +1106,7 @@ Be concise. Output ONLY valid JSON.`,
         let hardBlocked = false;
         let hardRationale = '';
 
-        // Check leverage
-        if ((marketTicker.leverage ?? 1) > hardMaxLeverage) {
-          hardBlocked = true;
-          hardRationale += `Leverage ${marketTicker.leverage}x exceeds hard limit of ${hardMaxLeverage}x. `;
-        }
-        // Check position size
+        // Check position size (leverage is NOT checked — set by Market Agent)
         if ((marketTicker.positionSizePct ?? 0) > hardMaxPositionSize) {
           hardBlocked = true;
           hardRationale += `Position size ${(marketTicker.positionSizePct! * 100).toFixed(1)}% exceeds hard limit of ${(hardMaxPositionSize * 100).toFixed(1)}%. `;
@@ -1225,10 +1219,9 @@ Be concise. Output ONLY valid JSON.`,
     agentTrackRecord: string,
   ): string {
     // Re-extract hard constraints from the market context for display
-    let hcMaxLev = 10, hcMaxPos = 0.20, hcMinConf = 0.30;
+    // NOTE: Leverage is NOT included — it is set by Market Agent, not audited by agents.
+    let hcMaxPos = 0.20, hcMinConf = 0.30;
     try {
-      const ml = marketContext.match(/maxLeverage=(\d+)x/);
-      if (ml) hcMaxLev = parseInt(ml[1]!);
       const mp = marketContext.match(/maxPositionSize=([\d.]+)/);
       if (mp) hcMaxPos = parseFloat(mp[1]!);
       const mc = marketContext.match(/minConfidenceForTrade=([\d.]+)/);
@@ -1256,7 +1249,6 @@ Agent Decision (JSON):
 ${JSON.stringify(decision, null, 2)}
 
 Evolution Hard Constraints:
-  maxLeverage=${hcMaxLev}x
   maxPositionSize=${(hcMaxPos * 100).toFixed(1)}%
   minConfidenceForTrade=${(hcMinConf * 100).toFixed(0)}%
 

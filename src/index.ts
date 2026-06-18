@@ -971,10 +971,11 @@ class AMACRFSystem {
         if (!this.portfolio.hasPosition(activeSymbol)) {
           const maConfig = this.marketAgent.getConfig();
           const exploreSize = maConfig.positionSizePct;
-          // Cap exploration leverage to avoid violating maxLeverage hard constraint.
-          // Exploration trades are for generating evolution data, not maximizing returns.
-          // Using full Market Agent leverage (10x) triggers immediate CLOSE from all agents.
-          const exploreLev = Math.min(maConfig.leverage, 3);
+          // Use Market Agent's configured leverage directly.
+          // The user sets leverage via Market Agent config — agents should NOT
+          // override or close positions based on leverage (that's the Market
+          // Agent's job). Exploration trades use the same leverage as normal trades.
+          const exploreLev = maConfig.leverage;
 
           // ── Trend Filter ──
           // Two-layer short-term price direction check:

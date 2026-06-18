@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.6--dev-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.9--dev-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -115,10 +115,11 @@ Open **http://localhost:3456** in your browser to see:
 
 ### 🧠 Multi-Agent Consensus Engine
 
-MATS does not rely on a single AI model. Instead, **seven specialized agents think in parallel and engage in structured debate** to reach consensus:
+MATS does not rely on a single AI model. Instead, **eight specialized agents think in parallel and engage in structured debate** to reach consensus:
 
 | Agent | Role | Temperature | Weight |
 |:------|:-----|:-----------:|:------:|
+| **Market Agent** | Auto-selects trading pair, sets position size & leverage | — | — |
 | **Fractal Momentum Sentinel** | Fractal pattern & trend analyst | 0.85 | 0.25 |
 | **On-Chain Whisperer** | On-chain data & macro analyst | 0.50 | 0.25 |
 | **RBC & Sentiment Analyst** | RBC clusters + Fear & Greed specialist | 0.25 | 0.25 |
@@ -141,7 +142,8 @@ Phase 1.75: Meta-Agent final arbitration (incorporates Skeptics findings)
 Phase 2:   Structured rapid debate (1-3 rounds, configurable)
 Phase 3:   Weighted voting consensus (60% threshold, dynamic adjustment)
 Phase 4:   Risk Auditor final veto (absolute, non-overridable)
-Phase 5:   Meta-Agent dynamic TP/SL adjustment
+Phase 4.5: Market Agent hard constraints override (enforces position size & leverage)
+Phase 5:   Meta-Agent dynamic TP/SL adjustment + per-position consensus execution
 ```
 
 **Key properties:**
@@ -154,8 +156,10 @@ Phase 5:   Meta-Agent dynamic TP/SL adjustment
 MATS has **two self-evolution mechanisms**:
 
 **Layer 1 — RBC (Range-Based Clustering)** (`rbc-clustering.ts`):
-- Growing hyperrectangles per symbol (winBox + lossBox), ranges only expand never contract
-- 9 feature dimensions: direction, volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction
+- Growing hyperrectangles per symbol (winBox + lossBox), ranges expand with decay
+- 8 feature dimensions: volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction
+- 🆕 v2.0.9: `applyDecay()` shrinks overlap regions toward centroids (10%/cycle) — prevents box saturation
+- 🆕 v2.0.9: Multi-symbol training — trains active symbol + all open positions + all RBC symbols
 - Edge score = discriminative dims / total dims → verdict: favorable/unfavorable/no_edge
 - Per-symbol persistent memory (rbc-state.json, atomic write)
 - Hypothetical training: compares price change between cycles, feeds directional/flat samples
@@ -166,9 +170,11 @@ MATS has **two self-evolution mechanisms**:
 - Skeptics cross-check insight vs actual price (convergence audit)
 - Tiered memory: hot(12) + warm(288) + cold(48 epochs, ~48 days)
 
-**Evolutionary Pressure Engine:**
-- Survival Fitness: capital preservation 35% + return 20% + consistency 15% + risk 15% + adaptability 10% + quality 5%
+**Evolutionary Pressure Engine (v2.0.8 — Dual-Trigger + 1-Gen Incubation):**
+- Survival Fitness: Profit Efficiency 35% + Return 25% + Capital Preservation 20% + Win Quality 10% + Consistency 5% + Adaptability 5%
 - ±10% mutation per generation, automatic retirement below 0.2 fitness
+- Dual-trigger: loss-triggered (immediate) or scheduled (every 3 trades)
+- 1-gen incubation: child evaluated after 1 cycle (not 3) — faster adaptation
 - Agent Outcome Tracking: per-agent, per-symbol track record
 
 ### 🧬 Trade Pattern Classifier
@@ -176,11 +182,11 @@ MATS has **two self-evolution mechanisms**:
 A supervised KNN pattern database that answers "in current conditions, has this setup won before?":
 
 - **Two query modes**: `queryEntry()` for new positions, `queryPosition()` for held positions
-- **9D feature space**: volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction + regime (categorical)
+- **8D feature space**: volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction + regime (categorical)
 - **Wilson score**: 95% confidence lower bound — prevents overfitting on small samples
 - **BUY/SELL shared pool**: outcome inverted for opposite side (BUY loss = SELL win)
 - **Noise filter**: |PnL| < 0.5% skipped (fee-level noise)
-- **Direction priority chain**: KNN → RBC → Sentiment → Funding → OB → Regime
+- **Direction priority chain (v2.0.8)**: RBC → KNN → Sentiment → Velocity → S/R → Funding → OB → Regime/24h
 
 ### 🧠 Sigmoid·GA Sentiment Engine
 
@@ -231,9 +237,11 @@ The provider factory auto-detects availability: NIM → Ollama → Error.
 │                                                              │
 │   Layer 2: Cognitive (TypeScript + LLM)                      │
 │   • HACP protocol (parallel multi-model inference)           │
-│   • 7-agent system + meta-agent arbitration                  │
+│   • 8-agent system + meta-agent arbitration                  │
 │   • Structured debate + weighted voting consensus            │
-│   • Self-evolution (RBC + EM Cycle Chain + GA)         │
+│   • Self-evolution (RBC + EM Cycle Chain + GA + Pattern DB)  │
+│   • SystemGuard (5-layer protection: calendar, drawdown,     │
+│     data freshness, agent track record, liquidity)           │
 │   • LLM invoked only at critical decision points             │
 │                                                              │
 ├──────────────────────────────────────────────────────────────┤
@@ -257,69 +265,72 @@ The provider factory auto-detects availability: NIM → Ollama → Error.
 
 ```
 src/
-├── index.ts                  # 🚀 Entry point — system lifecycle (~1050 LOC)
+├── index.ts                  # 🚀 Entry point — system lifecycle (~2031 LOC)
 ├── config/index.ts           # Zod-validated, type-safe configuration
-├── types/index.ts            # Complete domain type definitions (~650 LOC)
+├── types/index.ts            # Complete domain type definitions (~749 LOC)
 │
 ├── agents/                   # 🤖 Multi-agent system
-│   ├── base-agent.ts         # Abstract agent base class
-│   ├── agents.ts             # Six sub-agents (~1720 LOC)
-│   ├── meta-agent.ts         # Meta-agent arbitration
-│   └── agent-models.ts       # Per-agent model configuration
+│   ├── base-agent.ts         # Abstract agent base class (~417 LOC)
+│   ├── agents.ts             # Six sub-agents (~1306 LOC)
+│   ├── meta-agent.ts         # Meta-agent arbitration (80 LOC)
+│   └── agent-models.ts       # Per-agent model configuration (126 LOC)
 │
 ├── cognition/
-│   ├── hacp.ts               # ⚡ HACP protocol implementation (~950 LOC)
+│   ├── hacp.ts               # ⚡ HACP protocol implementation (~1278 LOC)
 │   └── a2a-utils.ts          # A2A inter-agent signal exchange
 │
 ├── llm/                      # 🔌 LLM abstraction layer
-│   ├── provider.ts           # Abstract interface
-│   ├── nim-provider.ts       # NVIDIA NIM implementation
-│   ├── ollama-provider.ts    # Ollama implementation
-│   └── index.ts              # Provider factory (auto-detection)
+│   ├── provider.ts           # Abstract interface (57 LOC)
+│   ├── nim-provider.ts       # NVIDIA NIM implementation (128 LOC)
+│   ├── ollama-provider.ts    # Ollama implementation (139 LOC)
+│   └── index.ts              # Provider factory (auto-detection, 65 LOC)
 │
 ├── trading/                  # 💹 Trading engine
-│   ├── portfolio.ts          # Portfolio tracker (leverage-aware P&L, trade lifecycle)
-│   ├── paper-engine.ts       # Paper trading simulation
+│   ├── portfolio.ts          # Portfolio tracker (~548 LOC)
+│   ├── paper-engine.ts       # Paper trading simulation (~300 LOC)
+│   ├── cost-model.ts         # HL transaction cost model (taker 0.04%)
+│   ├── execution-tracker.ts  # Slippage/fee tracking
+│   ├── decision-utils.ts     # Decision normalization
 │   ├── real-trading-manager.ts # Real trading orchestrator
-│   └── hyperliquid-real-engine.ts # Hyperliquid real trading
+│   └── hyperliquid-real-engine.ts # Hyperliquid real trading (~730 LOC)
 │
 ├── risk/                     # 🛡️ Risk management
-│   ├── engine.ts             # Multi-layer risk engine
+│   ├── engine.ts             # Multi-layer risk engine (201 LOC)
 │   └── correlation-budget.ts # Cross-pair correlation budget
 │
-├── system-guard/             # 🛡️ SystemGuard (6 guards)
+├── system-guard/             # 🛡️ SystemGuard (5 guards, ~497 LOC)
 │
 ├── evolution/                # 🧬 Evolution + RBC + pattern classifier
 │   ├── index.ts              # Evolution orchestrator (~420 LOC)
 │   ├── trade-history.ts      # Trade history ledger
 │   ├── agent-outcomes.ts     # Per-agent performance tracking
-│   ├── persistence.ts        # Durable state persistence
-│   ├── trade-pattern-classifier.ts # 🧬 Supervised KNN pattern DB (v2.0.5)
-│   ├── em-clustering.ts      # 🧬 GMM EM clustering (legacy, replaced by RBC)
-│   ├── rbc-clustering.ts     # 🧬 RBC Engine — growing hyperrectangles, 9 dims
-│   └── cycle-summary.ts      # 🧬 EM Cycle Summary Manager (v2.0.2)
+│   ├── persistence.ts        # Durable state persistence (~561 LOC)
+│   ├── trade-pattern-classifier.ts # 🧬 Supervised KNN pattern DB
+│   ├── rbc-clustering.ts     # 🧬 RBC Engine — growing hyperrectangles, 8 dims
+│   └── cycle-summary.ts      # 🧬 EM Cycle Summary Manager
 │
 ├── analysis/                 # 📊 Signal processing
 │   ├── sentiment-engine.ts   # Sigmoid·GA sentiment engine
 │   ├── sigmoid-ga.ts         # GA-evolved sigmoid functions
-│   └── support-resistance.ts # SNR zone detection
+│   └── support-resistance.ts # SNR zone detection (synthetic symbol aware)
 │
-├── market-agent/             # 🎯 Auto pair selection + position size/leverage
+├── market-agent/             # 🎯 Auto pair selection + position size/leverage (~879 LOC)
 ├── backtest/                 # 📜 Historical backtesting engine
-├── observability/logger.ts   # Structured logging (Winston)
-├── api-server.ts             # REST + SSE API (~950 LOC)
+├── observability/logger.ts   # Structured logging (Winston, 78 LOC)
+├── api-server.ts             # REST + SSE API
 └── utils/shutdown.ts         # Graceful shutdown handler
 
 ui/                           # 🖥️ React Web UI (pantha_mats design system)
 ├── src/
-│   ├── App.tsx               # Main dashboard (collapsible rounds, badges)
+│   ├── App.tsx               # Main dashboard
+│   ├── RBCVisualizer.tsx     # RBC dimension visualizer
 │   ├── TradingViewChart.tsx  # TradingView chart integration
 │   ├── StarsBackground.tsx   # Dynamic starfield background
 │   └── types.ts              # UI type definitions
 └── index.html
 
-scripts/                      # 🛠 One-time utilities
-├── loop-engineering.sh       # Loop engineering runner
+scripts/                      # 🛠 Utilities
+├── loop-engineering.sh       # Loop engineering runner (bash + jq + python3)
 ├── loop-engineering-deep.sh  # Deep session runner
 ├── loop-engineering-memory.md # Known issues / checklist
 └── backfill-patterns.mjs     # Import portfolio trades into pattern DB
@@ -327,6 +338,7 @@ scripts/                      # 🛠 One-time utilities
 data/                         # 💾 Runtime persistence
 └── evolution/
     ├── trade-patterns.json   # Pattern DB (1000 max)
+    ├── trade-patterns-em.json # EM cluster assignments
     ├── rbc-state.json        # RBC state (winBox, lossBox per symbol)
     ├── evolution-state.json  # GA population + memory + strategies
     └── portfolio-state.json  # Portfolio snapshot
@@ -396,7 +408,7 @@ If you require a commercial license — for example, for proprietary extensions,
 | **Frontend** | React 18 + Vite + TradingView Chart |
 | **Config Validation** | Zod schema |
 | **Logging** | Winston (structured + file rotation) |
-| **Codebase** | ~14,000+ LOC TypeScript + React UI |
+| **Codebase** | ~18,600+ LOC TypeScript + React UI |
 
 ---
 
