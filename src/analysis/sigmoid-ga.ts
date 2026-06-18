@@ -155,8 +155,14 @@ export function computeSentiment(
   const productRaw = linearVals.reduce((p, v) => p * v, 1);
   const productSum = Math.pow(productRaw, 1 / linearVals.length); // geometric mean
 
-  // Blend linear + product
-  const blend = c.linearWeight * linearSum + c.productWeight * productSum;
+  // Blend linear + product.
+  // Normalise the two blend weights so their sum = 1 — this guarantees the
+  // blend stays in [0,1] (and overallSentiment in [-1,+1]) even if GA mutation
+  // drifts linearWeight + productWeight away from 1.0.
+  const blendWSum = c.linearWeight + c.productWeight;
+  const lw = blendWSum > 0 ? c.linearWeight / blendWSum : 0.5;
+  const pw = blendWSum > 0 ? c.productWeight / blendWSum : 0.5;
+  const blend = lw * linearSum + pw * productSum;
 
   // Scale to bipolar (-1 to +1)
   const overallSentiment = blend * 2 - 1;

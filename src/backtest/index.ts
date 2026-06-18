@@ -159,16 +159,21 @@ function detectRegime(candles: BacktestCandle[], idx: number, interval: string):
     den += (i - xMean) ** 2;
   }
   const slope = den > 0 ? num / den : 0;
-  const normalizedSlope = slope / (closes[0] ?? 1);
-
+  // Per-period fractional change (slope is in price units / period).
+  const perPeriodSlope = slope / (closes[0] ?? 1);
+  // Annualise the slope so thresholds are comparable across intervals
+  // (5m per-period change is ~0.001%, 1d is ~1% — fixed thresholds break).
   const periodsPerYear = interval === '5m' ? 105120 : interval === '1h' ? 8760 : interval === '1d' ? 365 : 52;
+  const annualizedSlope = perPeriodSlope * periodsPerYear;
   const annualizedVol = volatility * Math.sqrt(periodsPerYear);
 
   let regime: MarketRegime;
   let trend: string;
-  if (annualizedVol > 0.5) { regime = 'high_volatility'; trend = normalizedSlope > 0 ? 'bullish' : 'bearish'; }
-  else if (annualizedVol < 0.15) { regime = 'low_volatility'; trend = normalizedSlope > 0.01 ? 'bullish' : normalizedSlope < -0.01 ? 'bearish' : 'sideways'; }
-  else if (Math.abs(normalizedSlope) > 0.02) { regime = normalizedSlope > 0 ? 'trending_bull' : 'trending_bear'; trend = normalizedSlope > 0 ? 'bullish' : 'bearish'; }
+  // Annualised slope thresholds: >50% = strong trend, >15% = weak trend.
+  // These are now interval-invariant (e.g. 0.02% per 5m × 105120 ≈ 21x/yr).
+  if (annualizedVol > 0.5) { regime = 'high_volatility'; trend = annualizedSlope > 0 ? 'bullish' : 'bearish'; }
+  else if (annualizedVol < 0.15) { regime = 'low_volatility'; trend = annualizedSlope > 0.15 ? 'bullish' : annualizedSlope < -0.15 ? 'bearish' : 'sideways'; }
+  else if (Math.abs(annualizedSlope) > 0.50) { regime = annualizedSlope > 0 ? 'trending_bull' : 'trending_bear'; trend = annualizedSlope > 0 ? 'bullish' : 'bearish'; }
   else { regime = 'mean_reverting'; trend = 'sideways'; }
   if (annualizedVol > 1.0) regime = 'chaotic';
 
@@ -452,22 +457,24 @@ export class BacktestEngine {
 
     // ── Compute metrics ──
     const totalReturnPct = ((simBalance - 10000) / 10000) * 100;
-    const dailyReturns: number[] = [];
+    // Per-candle (not daily) log returns of the equity curve.
+    // Sharpe/Sortino annualise via periodsPerYear below.
+    const periodReturns: number[] = [];
     for (let i = 1; i < equityCurve.length; i++) {
       const prev = equityCurve[i - 1]!.equity;
       const curr = equityCurve[i]!.equity;
-      if (prev > 0) dailyReturns.push(Math.log(curr / prev));
+      if (prev > 0) periodReturns.push(Math.log(curr / prev));
     }
-    const n = dailyReturns.length;
-    const meanDailyRet = n > 0 ? dailyReturns.reduce((a, b) => a + b, 0) / n : 0;
-    const variance = n > 0 ? dailyReturns.reduce((sum, r) => sum + (r - meanDailyRet) ** 2, 0) / n : 0;
-    const stdDaily = Math.sqrt(variance);
+    const n = periodReturns.length;
+    const meanPeriodRet = n > 0 ? periodReturns.reduce((a, b) => a + b, 0) / n : 0;
+    const variance = n > 0 ? periodReturns.reduce((sum, r) => sum + (r - meanPeriodRet) ** 2, 0) / n : 0;
+    const stdPeriod = Math.sqrt(variance);
     const periodsPerYear = cfg.interval === '5m' ? 105120 : cfg.interval === '1h' ? 8760 : cfg.interval === '1d' ? 365 : 52;
-    const sharpeRatio = stdDaily > 0 ? (meanDailyRet / stdDaily) * Math.sqrt(periodsPerYear) : 0;
-    const downsideRets = dailyReturns.filter(r => r < 0);
+    const sharpeRatio = stdPeriod > 0 ? (meanPeriodRet / stdPeriod) * Math.sqrt(periodsPerYear) : 0;
+    const downsideRets = periodReturns.filter(r => r < 0);
     const downVariance = downsideRets.length > 0 ? downsideRets.reduce((sum, r) => sum + r * r, 0) / downsideRets.length : 0;
     const downStd = Math.sqrt(downVariance);
-    const sortinoRatio = downStd > 0 ? (meanDailyRet / downStd) * Math.sqrt(periodsPerYear) : sharpeRatio;
+    const sortinoRatio = downStd > 0 ? (meanPeriodRet / downStd) * Math.sqrt(periodsPerYear) : sharpeRatio;
     const annualizedReturn = Math.pow(1 + totalReturnPct / 100, 1 / cfg.years) - 1;
     const maxDdDecimal = maxDrawdown;
     const calmarRatio = maxDdDecimal > 0 ? annualizedReturn / maxDdDecimal : annualizedReturn > 0 ? 1 : 0;
