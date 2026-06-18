@@ -626,18 +626,12 @@ export class EvolutionOrchestrator {
 
     if (bestStrat) {
       const p = bestStrat.parameters;
-      // Map riskAversion to max leverage + position size
-      // riskAversion=0 → max 10x, 20% position
-      // riskAversion=1 → max 2x, 5% position
-      const maxLevRaw = 10 - (p.riskAversion * 8);
-      const maxLev = Math.max(2, Math.round(maxLevRaw));
       const maxPosPct = (0.20 * (1 - p.riskAversion * 0.75)).toFixed(3);
       const minConfForTrade = (0.3 + p.signalThreshold * 0.5).toFixed(2);
 
       ctx += `  riskAversion=${p.riskAversion.toFixed(2)}  (0=aggro, 1=conservative)\n`;
       ctx += `  signalThreshold=${p.signalThreshold.toFixed(2)}\n`;
       ctx += `  ── DERIVED CONSTRAINTS ──\n`;
-      ctx += `  maxLeverage=${maxLev}x  (any agent proposing >${maxLev}x = REJECTED)\n`;
       ctx += `  maxPositionSize=${maxPosPct}  (any agent proposing >${(parseFloat(maxPosPct)*100).toFixed(1)}% = REJECTED)\n`;
       ctx += `  minConfidenceForTrade=${minConfForTrade}  (any trade with confidence <${(parseFloat(minConfForTrade)*100).toFixed(0)}% = REJECTED)\n`;
       ctx += `  momentumWindow=${p.momentumWindow}  (signals inside this window get more weight)\n`;
@@ -647,7 +641,6 @@ export class EvolutionOrchestrator {
       ctx += `Best Strategy Fitness: ${(bestStrat.fitness * 100).toFixed(1)}%\n`;
     } else {
       ctx += `  (no best strategy yet — using default constraints)\n`;
-      ctx += `  maxLeverage=5x\n`;
       ctx += `  maxPositionSize=0.10\n`;
       ctx += `  minConfidenceForTrade=0.50\n`;
       ctx += `\n`;
