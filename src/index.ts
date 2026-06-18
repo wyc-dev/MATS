@@ -923,10 +923,18 @@ class AMACRFSystem {
           const exploreLev = maConfig.leverage;
 
           // ── Trend Filter ──
-          // Check the last 10 cycles' price action to determine short-term trend.
-          // If price is declining (more down cycles than up), block BUY.
-          // If price is rising (more up cycles than down), block SELL.
-          // This prevents the system from buying into a clear downtrend.
+          // Two-layer short-term price direction check:
+          //
+          // Layer 1: Micro-trend (last 10 cycles)
+          //   If more down cycles than up (>=3), block BUY.
+          //   If more up cycles than down (>=3), block SELL.
+          //
+          // Layer 2: Immediate price vs previous cycle close
+          //   If current price < previous cycle's price → BLOCK BUY
+          //   If current price > previous cycle's price → BLOCK SELL
+          //   This is the most basic "is the market going up or down right now?"
+          //   check. If price is falling, you don't buy. If rising, you don't sell.
+          //   Prevents the system from "blind buying" into a downtrend.
           let trendFilterBlocksBuy = false;
           let trendFilterBlocksSell = false;
           let recentHistory: import('./evolution/trade-history.ts').TradeHistoryEntry[] = [];
@@ -945,10 +953,28 @@ class AMACRFSystem {
               }
               if (downCount > upCount && downCount >= 3) {
                 trendFilterBlocksBuy = true;
-                log.info(`🧪 Trend filter: ${downCount}D/${upCount}U over last ${recentHistory.length} cycles → BLOCK BUY`);
+                log.info(`🧪 Trend filter (10-cycle): ${downCount}D/${upCount}U → BLOCK BUY`);
               } else if (upCount > downCount && upCount >= 3) {
                 trendFilterBlocksSell = true;
-                log.info(`🧪 Trend filter: ${upCount}U/${downCount}D over last ${recentHistory.length} cycles → BLOCK SELL`);
+                log.info(`🧪 Trend filter (10-cycle): ${upCount}U/${downCount}D → BLOCK SELL`);
+              }
+            }
+
+            // Layer 2: Immediate price vs previous cycle close
+            // This catches the "3 red candles in a row" scenario that the
+            // 10-cycle filter might miss if the decline is recent.
+            if (recentHistory.length >= 2) {
+              const prevPrice = recentHistory[recentHistory.length - 1]!.entryPrice;
+              if (prevPrice > 0 && combinedState.price > 0) {
+                if (combinedState.price < prevPrice) {
+                  // Price is DOWN from last cycle → don't buy
+                  trendFilterBlocksBuy = true;
+                  log.info(`🧪 Trend filter (immediate): $${combinedState.price.toFixed(2)} < $${prevPrice.toFixed(2)} (prev close) → BLOCK BUY`);
+                } else if (combinedState.price > prevPrice) {
+                  // Price is UP from last cycle → don't sell
+                  trendFilterBlocksSell = true;
+                  log.info(`🧪 Trend filter (immediate): $${combinedState.price.toFixed(2)} > $${prevPrice.toFixed(2)} (prev close) → BLOCK SELL`);
+                }
               }
             }
           } catch { /* non-critical */ }
