@@ -75,8 +75,11 @@ class AMACRFSystem {
   private patternClassifier!: TradePatternClassifier;
   private rbcEngine!: RBCEngine;
   private lastPatternContext = '';
-  /** Previous cycle's market context + price for hypothetical RBC training */
-  private lastCycleRBCContext: { symbol: string; price: number; features: Record<string, number> } | null = null;
+  /** Per-symbol RBC context for hypothetical training.
+   *  Key = lowercase symbol. Each entry stores the previous cycle's
+   *  price + features so we can compute price change and feed RBC.
+   *  Supports multiple symbols simultaneously (active ticker + open positions). */
+  private rbcContexts = new Map<string, { price: number; features: Record<string, number> }>();
   private lastBacktestResult: import('./backtest/index.ts').BacktestResult | null = null;
   private backtestProgress: BacktestProgress | null = null;
   private paused = false;
@@ -637,62 +640,85 @@ class AMACRFSystem {
       return;
     }
 
-    // ── RBC HYPOTHETICAL TRAINING: Learn from every cycle's price action ──
-    // Compare current price vs last cycle's price.
+    // ── RBC HYPOTHETICAL TRAINING: Multi-symbol ──
+    // Learn from every cycle's price action for ALL tracked symbols:
+    //   - Active symbol (Market Agent's selected ticker)
+    //   - All open positions (e.g. BTC while trading xyz:SPCX)
+    //   - All symbols with existing RBC state (maintain continuity)
+    //
+    // For each symbol:
     //   - Price up >0.1% → LONG wins → outcome=1 (winBox)
     //   - Price down >0.1% → LONG loses → outcome=0 (lossBox)
     //   - Price change <0.05% → flat market, both sides lose (feed 2 samples: both LOSS)
     //   - 0.05%-0.1% → noise, skip
-    if (this.lastCycleRBCContext && marketPrice > 0) {
-      try {
-        // Cross-symbol guard: if symbol changed, discard stale context to prevent
-        // absurd price-change calculations (e.g. BTC $105k → META $600 = -99%)
-        if (this.lastCycleRBCContext.symbol !== activeSymbol) {
-          log.warn(`🧬 RBC symbol mismatch: stored=${this.lastCycleRBCContext.symbol}, current=${activeSymbol}. Resetting context.`);
-          this.lastCycleRBCContext = null;
-        } else {
-          const prevPrice = this.lastCycleRBCContext.price;
-          const priceChange = (marketPrice - prevPrice) / prevPrice;
-          const absChange = Math.abs(priceChange);
-          const baseFeatures = this.lastCycleRBCContext.features;
-
-          if (absChange >= 0.001) {
-            // Directional move: outcome tracks LONG perspective (1=win, 0=loss)
-            const outcome: 1 | 0 = priceChange > 0 ? 1 : 0;
-            this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, outcome);
-            const resultStr = outcome === 1 ? 'LONG=WIN' : 'LONG=LOSS';
-            log.info(`🧬 RBC hypothetical: ${activeSymbol} ${(priceChange * 100).toFixed(2)}% → ${resultStr} (cycle #${this.totalCycles})`);
-          } else if (absChange < 0.0005) {
-            // Flat market: both sides lose
-            this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, 0);
-            this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, 0);
-            log.info(`🧬 RBC hypothetical: ${activeSymbol} flat (${(priceChange * 100).toFixed(2)}%) → LONG=LOSS (cycle #${this.totalCycles})`);
-          }
-          // else: noise (0.05%-0.1%), skip
-        }
-      } catch (err) {
-        log.warn(`[RBC-hypothetical] Failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
+    //
+    // Uses a Map<string, RBCContext> instead of a single lastCycleRBCContext,
+    // so symbol switches (e.g. BTC → xyz:SPCX) don't discard existing data.
+    const symbolsToTrain = new Set<string>();
+    symbolsToTrain.add(activeSymbol);
+    for (const sym of this.portfolio.getOpenSymbols()) {
+      symbolsToTrain.add(sym);
+    }
+    for (const sym of this.rbcEngine.getAllSymbols()) {
+      symbolsToTrain.add(sym);
     }
 
-    // ── Save current cycle context for NEXT cycle's RBC hypothetical training ──
-    // Do this AFTER the training above so the old context is used for comparison.
-    try {
-      this.lastCycleRBCContext = {
-        symbol: activeSymbol,
-        price: combinedState.price,
-        features: {
-          volatility: combinedState.volatility ?? 0,
-          srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
-          obImbalance: combinedState.orderBookImbalance ?? 0,
-          fundingRate: this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
-          volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
-          sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
-          sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
-          signalAgreement: 0.5, // updated after cycle with actual consensus confidence
-        },
-      };
-    } catch { /* non-critical */ }
+    for (const sym of symbolsToTrain) {
+      const prev = this.rbcContexts.get(sym);
+      // Fetch current price for this symbol
+      let currentPrice = 0;
+      if (sym === activeSymbol) {
+        currentPrice = marketPrice;
+      } else {
+        // For non-active symbols, try WS price first, then REST fallback
+        const state = this.marketState.getState(sym);
+        currentPrice = state.price;
+        if (currentPrice <= 0) {
+          try {
+            const pd = await this.marketAgent.fetchPriceForSymbol(sym);
+            currentPrice = pd.price;
+          } catch { /* skip this symbol */ }
+        }
+      }
+
+      if (prev && currentPrice > 0) {
+        try {
+          const priceChange = (currentPrice - prev.price) / prev.price;
+          const absChange = Math.abs(priceChange);
+          const baseFeatures = prev.features;
+
+          if (absChange >= 0.001) {
+            const outcome: 1 | 0 = priceChange > 0 ? 1 : 0;
+            this.rbcEngine.feedTrade(sym, { ...baseFeatures }, outcome);
+            const resultStr = outcome === 1 ? 'LONG=WIN' : 'LONG=LOSS';
+            log.info(`🧬 RBC hypothetical: ${sym} ${(priceChange * 100).toFixed(2)}% → ${resultStr} (cycle #${this.totalCycles})`);
+          } else if (absChange < 0.0005) {
+            this.rbcEngine.feedTrade(sym, { ...baseFeatures }, 0);
+            this.rbcEngine.feedTrade(sym, { ...baseFeatures }, 0);
+            log.info(`🧬 RBC hypothetical: ${sym} flat (${(priceChange * 100).toFixed(2)}%) → LONG=LOSS (cycle #${this.totalCycles})`);
+          }
+        } catch (err) {
+          log.warn(`[RBC-hypothetical] ${sym} failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      // Save context for next cycle
+      if (currentPrice > 0) {
+        this.rbcContexts.set(sym, {
+          price: currentPrice,
+          features: {
+            volatility: sym === activeSymbol ? (combinedState.volatility ?? 0) : 0,
+            srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+            obImbalance: sym === activeSymbol ? (combinedState.orderBookImbalance ?? 0) : 0,
+            fundingRate: this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
+            volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
+            sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+            sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+            signalAgreement: 0.5,
+          },
+        });
+      }
+    }
 
     // ── SYSTEM GUARD: Run 5-layer protection before any agent thinking ──
     // Guards A (economic calendar), B (drawdown), C (data freshness), D (agent track)
@@ -916,8 +942,11 @@ class AMACRFSystem {
       // and blocks BUY when price is declining, blocks SELL when rising.
       let finalDecision = result.consensus.decision;
       if (finalDecision.action === 'hold' && this.totalCycles > 2 && this.totalCycles % 3 === 0) {
-        const p = this.portfolio.getPortfolio();
-        if (p.positions.size === 0) {
+        // 🐛 FIX v2.0.8: Check if the ACTIVE SYMBOL has a position, not if ANY
+        // position exists. This allows exploration on xyz:SPCX while BTC position
+        // is still open and managed by per-symbol consensus.
+        const activeSymLower = activeSymbol.toLowerCase();
+        if (!this.portfolio.hasPosition(activeSymLower)) {
           const maConfig = this.marketAgent.getConfig();
           const exploreSize = maConfig.positionSizePct;
           const exploreLev = maConfig.leverage;
@@ -1771,11 +1800,14 @@ class AMACRFSystem {
         }
       } catch { /* non-critical */ }
 
-      // ── Save current cycle context for NEXT cycle's RBC hypothetical training ──
-      // (Primary save is at cycle START; this is a backup update with final signalAgreement)
+      // ── Update RBC context signalAgreement with actual consensus confidence ──
+      // The active symbol's RBC context was saved at cycle start with signalAgreement=0.5.
+      // Now that we have the actual consensus confidence, update it for next cycle.
       try {
-        if (this.lastCycleRBCContext) {
-          this.lastCycleRBCContext.features['signalAgreement'] = result.consensus.confidence;
+        const activeSymLower = activeSymbol.toLowerCase();
+        const ctx = this.rbcContexts.get(activeSymLower);
+        if (ctx) {
+          ctx.features['signalAgreement'] = result.consensus.confidence;
         }
       } catch { /* non-critical */ }
 
@@ -2072,17 +2104,18 @@ class AMACRFSystem {
           if (!hasData) return undefined;
 
           // Build per-symbol dimDetails so the UI can render dimension bars for EACH symbol.
-          // Use lastCycleRBCContext features for the active symbol; other symbols get
+          // Use rbcContexts for the active symbol's features; other symbols get
           // box ranges without current-value dots.
-          const activeSymbol = this.lastCycleRBCContext?.symbol?.toLowerCase() ?? '';
-          const activeFeatures = this.lastCycleRBCContext?.features ?? {};
+          const activeSymLower = activeSymbol.toLowerCase();
+          const activeCtx = this.rbcContexts.get(activeSymLower);
+          const activeFeatures = activeCtx?.features ?? {};
 
           return {
             symbols: allStats.map(s => {
               const sym = s.symbol;
               const dimDetailsRaw = this.rbcEngine.getDimDetails(sym);
               // Query current features against this symbol's RBC state
-              const queryResult = sym === activeSymbol && Object.keys(activeFeatures).length > 0
+              const queryResult = sym === activeSymLower && Object.keys(activeFeatures).length > 0
                 ? this.rbcEngine.query(sym, activeFeatures)
                 : null;
               const valueMap = new Map(queryResult?.dimDetails.map(d => [d.name, d.value]) ?? []);

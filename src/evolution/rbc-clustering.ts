@@ -31,6 +31,10 @@ const CONFIG = {
   minSamplesForQuery: 3,
   /** Edge score threshold: above this → FAVORABLE/UNFAVORABLE */
   edgeThreshold: 0.25,          // 3/12 dims discriminative
+  /** Decay rate per feedTrade call: overlap regions shrink toward centroids.
+   *  0.10 = 10% per cycle. Prevents saturation as boxes grow unbounded.
+   *  Only affects overlapping dimensions — non-overlap dims are untouched. */
+  decayRate: 0.10,
   persistPath: 'data/evolution/rbc-state.json',
 } as const;
 
@@ -131,6 +135,58 @@ function expandBox(box: RBCBox, vec: number[]): void {
   }
 }
 
+/**
+ * Apply decay: shrink both boxes' overlap regions toward their centroids.
+ *
+ * For each dimension where winBox and lossBox overlap:
+ *   - Shrink winBox.max toward winBox.centroid by decayRate
+ *   - Shrink lossBox.min toward lossBox.centroid by decayRate
+ *   - Also shrink the opposite sides (winBox.min, lossBox.max) toward centroids
+ *
+ * This prevents saturation as boxes grow unbounded. Over time, only
+ * consistently discriminative dimensions maintain non-overlap boundaries.
+ * Non-overlapping dimensions are untouched — they keep their full range.
+ *
+ * 「Decay is the price of adaptivity — without it, memory becomes dogma.」
+ */
+function applyDecay(state: RBCState, decayRate: number): void {
+  if (state.winBox.count === 0 || state.lossBox.count === 0) return;
+
+  for (let i = 0; i < D; i++) {
+    const wb = state.winBox;
+    const lb = state.lossBox;
+
+    // Check if overlap exists on this dimension
+    const overlapMin = Math.max(wb.min[i]!, lb.min[i]!);
+    const overlapMax = Math.min(wb.max[i]!, lb.max[i]!);
+
+    if (overlapMin < overlapMax) {
+      // Overlap exists — shrink both sides toward their centroids
+      // This gradually reduces the overlap region, forcing the model
+      // to rely on the most recent data to re-expand into useful territory.
+
+      // Shrink winBox max toward centroid (reduce overlap from above)
+      if (wb.max[i]! > wb.centroid[i]!) {
+        wb.max[i] = wb.max[i]! - (wb.max[i]! - wb.centroid[i]!) * decayRate;
+      }
+
+      // Shrink lossBox min toward centroid (reduce overlap from below)
+      if (lb.min[i]! < lb.centroid[i]!) {
+        lb.min[i] = lb.min[i]! + (lb.centroid[i]! - lb.min[i]!) * decayRate;
+      }
+
+      // Also shrink the opposite sides if they extend past centroid
+      if (wb.min[i]! < wb.centroid[i]!) {
+        wb.min[i] = wb.min[i]! + (wb.centroid[i]! - wb.min[i]!) * decayRate;
+      }
+      if (lb.max[i]! > lb.centroid[i]!) {
+        lb.max[i] = lb.max[i]! - (lb.max[i]! - lb.centroid[i]!) * decayRate;
+      }
+    }
+    // Non-overlapping dimensions are left untouched — they retain full range
+  }
+}
+
 // ─── RBC Engine ───
 
 export class RBCEngine {
@@ -210,9 +266,18 @@ export class RBCEngine {
   /**
    * Feed a trade outcome into the per-symbol RBC state.
    * Expands winBox or lossBox ranges (never contracts).
+   * Applies decay before expansion to prevent saturation.
    */
   feedTrade(symbol: string, features: Record<string, number>, outcome: 1 | 0): void {
     const state = this.getOrCreateState(symbol);
+
+    // 🆕 Apply decay before incorporating new data.
+    // This shrinks overlap regions toward centroids, preventing the
+    // boxes from becoming so large that every query returns NO_EDGE.
+    // After decay, expandBox may re-expand into useful territory if
+    // the new sample falls outside the shrunken range.
+    applyDecay(state, CONFIG.decayRate);
+
     const vec = this.contextToVector(features);
     state.totalSamples++;
 
@@ -369,6 +434,11 @@ export class RBCEngine {
   }
 
   // ─── Stats (for UI) ───
+
+  /** Get all symbol names that have RBC state */
+  getAllSymbols(): string[] {
+    return Array.from(this.symbols.keys());
+  }
 
   getAllModelStats(): RBCSymbolStats[] {
     const result: RBCSymbolStats[] = [];
