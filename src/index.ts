@@ -908,6 +908,12 @@ class AMACRFSystem {
       // This fires even after Risk Auditor veto — the system NEEDS trade data to evolve.
       // Direction is determined by Pattern Classifier: query BUY vs SELL win rates
       // for current market conditions and pick the higher one.
+      //
+      // 🐛 FIX v2.0.8: Added directional trend filter. In a slow bleed market
+      // (32 down / 17 up cycles over last 50), all signals are weak and the
+      // 24h change can briefly flip positive on small bounces, causing false
+      // BUY signals. The trend filter checks the last 10 cycles' price action
+      // and blocks BUY when price is declining, blocks SELL when rising.
       let finalDecision = result.consensus.decision;
       if (finalDecision.action === 'hold' && this.totalCycles > 2 && this.totalCycles % 3 === 0) {
         const p = this.portfolio.getPortfolio();
@@ -915,6 +921,37 @@ class AMACRFSystem {
           const maConfig = this.marketAgent.getConfig();
           const exploreSize = maConfig.positionSizePct;
           const exploreLev = maConfig.leverage;
+
+          // ── Trend Filter ──
+          // Check the last 10 cycles' price action to determine short-term trend.
+          // If price is declining (more down cycles than up), block BUY.
+          // If price is rising (more up cycles than down), block SELL.
+          // This prevents the system from buying into a clear downtrend.
+          let trendFilterBlocksBuy = false;
+          let trendFilterBlocksSell = false;
+          let recentHistory: import('./evolution/trade-history.ts').TradeHistoryEntry[] = [];
+          try {
+            recentHistory = this.evolution.tradeHistory.getRecent(10);
+            if (recentHistory.length >= 5) {
+              let upCount = 0;
+              let downCount = 0;
+              for (let i = 1; i < recentHistory.length; i++) {
+                const prev = recentHistory[i - 1]!.entryPrice;
+                const curr = recentHistory[i]!.entryPrice;
+                if (prev > 0 && curr > 0) {
+                  if (curr > prev) upCount++;
+                  else if (curr < prev) downCount++;
+                }
+              }
+              if (downCount > upCount && downCount >= 3) {
+                trendFilterBlocksBuy = true;
+                log.info(`🧪 Trend filter: ${downCount}D/${upCount}U over last ${recentHistory.length} cycles → BLOCK BUY`);
+              } else if (upCount > downCount && upCount >= 3) {
+                trendFilterBlocksSell = true;
+                log.info(`🧪 Trend filter: ${upCount}U/${downCount}D over last ${recentHistory.length} cycles → BLOCK SELL`);
+              }
+            }
+          } catch { /* non-critical */ }
 
           // Use Pattern Classifier to pick direction — compare BUY vs SELL win rates.
           // Fallback to technical signals when pattern data is insufficient.
@@ -1114,6 +1151,19 @@ class AMACRFSystem {
             }
           } catch (err) {
             log.warn(`Pattern direction check failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+
+          // ── Trend Filter Gate ──
+          // After the priority chain determines a direction, check if the
+          // short-term price trend contradicts it. If price has been declining
+          // (more down cycles than up over last 10), block BUY. If rising,
+          // block SELL. This prevents buying into a clear downtrend.
+          if (direction === 'buy' && trendFilterBlocksBuy) {
+            log.warn(`🧪 Trend filter gate: BLOCKED BUY — price declining over last ${recentHistory.length} cycles`);
+            direction = null;
+          } else if (direction === 'sell' && trendFilterBlocksSell) {
+            log.warn(`🧪 Trend filter gate: BLOCKED SELL — price rising over last ${recentHistory.length} cycles`);
+            direction = null;
           }
 
           // If all signals neutral, skip — don't default to buy
