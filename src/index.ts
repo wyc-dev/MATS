@@ -800,7 +800,7 @@ class AMACRFSystem {
         }
       } catch { /* non-critical */ }
 
-      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${rbcContext}`;
+      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${rbcContext}\n\n${getFeeSummary()}`;
 
       // Store latest S/R context for API push
       if (srContext) {
@@ -1138,16 +1138,23 @@ class AMACRFSystem {
       }
 
       // ── Execute PER-POSITION decisions from agents (profitable positions only) ──
-      // If >=2 agents recommend closing a position that is IN PROFIT (>+0.5%),
+      // If >=2 agents recommend closing a position that is IN PROFIT (>+1.5%),
       // take profits early. Losing positions are NEVER closed by agent votes —
       // they must ride to SL/TP. This prevents panic-closing during drawdowns.
+      //
+      // 🐛 FIX v2.0.8: Raised threshold from 0.5% → 1.5% to account for:
+      //   - Taker fee 0.04% × 2 (open + close) = 0.08%
+      //   - Spread ~0.1%
+      //   - Total round-trip cost ~0.18%
+      //   - Need minimum 1.5% return on margin to make closing worthwhile
+      //   - Otherwise you're paying fees for no meaningful gain
       const allThoughts = result.allThoughts;
       const perPositionCloseReports: ExecutionReport[] = [];
       for (const posSymbol of this.portfolio.getOpenSymbols()) {
         const pos = this.portfolio.getPosition(posSymbol);
         if (!pos) continue;
-        // Only allow agent-based close if position is in profit (>+0.5% return on margin)
-        if ((pos.unrealizedPnlPct ?? 0) <= 0.005) continue; // Not enough profit — let SL/TP handle it
+        // Only allow agent-based close if position is in profit (>+1.5% return on margin)
+        if ((pos.unrealizedPnlPct ?? 0) <= 0.015) continue; // Not enough profit — let SL/TP handle it
 
         const closeVotes = allThoughts.filter(t => {
           if (t.agentRole === 'meta_agent' || t.agentRole === 'market_agent') return false;
@@ -1178,8 +1185,11 @@ class AMACRFSystem {
         if (!pos) continue; // no open position for this symbol → skip (market ticker handled by main flow)
 
         // Close position if consensus says so
-        if (psc.closePosition) {
-          log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%) — ${psc.rationale}`);
+        // 🐛 FIX v2.0.8: Only close via per-symbol consensus if the position
+        // has enough profit to cover fees + spread (~0.18% round trip).
+        // Closing at breakeven or tiny profit just burns fees.
+        if (psc.closePosition && (pos.unrealizedPnlPct ?? 0) > 0.005) {
+          log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
           const trade = this.portfolio.closePosition(psc.symbol, combinedState.price);
           if (trade) {
             perPositionCloseReports.push({ order: {} as any, trade });
@@ -1307,24 +1317,43 @@ class AMACRFSystem {
       // 4. Execute decision through real trading manager
       // Routes automatically: paper-mode → paperEngine, real-mode → exchange + mirror
       //
-      // ── Symbol Overlap Guard ──
-      // If the selected symbol already has an open position, do NOT open a new trade.
-      // The existing position is already being managed by per-symbol consensus
-      // and SL/TP monitoring. Opening a second trade on the same symbol can create
-      // opposite-direction positions where one cancels the other, wasting fees
-      // and confusing portfolio tracking (Map.set silently overwrites).
-      // Instead, force HOLD so only management (SL/TP, close) decisions apply.
+      // ── Symbol Overlap Guard + Direction Flip ──
+      // If the selected symbol already has an open position AND the final decision
+      // is the OPPOSITE direction, this is a deliberate flip signal:
+      //   • finalDecision = SELL + existing BUY → close BUY first, then SELL
+      //   • finalDecision = BUY + existing SELL → close SELL first, then BUY
+      // This is NOT a symbol overlap error — it's a conviction-based reversal.
+      // The agents have decided the current position direction is wrong and want
+      // to flip. We close the old position, then let the new trade execute.
+      //
+      // If the final decision is the SAME direction as the existing position,
+      // we still HOLD (no double-position on same symbol).
       const activeSym = finalDecision.symbol?.toLowerCase() ?? '';
       if (activeSym && this.portfolio.hasPosition(activeSym)) {
         const existingPos = this.portfolio.getPosition(activeSym);
         if (existingPos && finalDecision.action !== 'hold') {
-          log.warn(`🚫 Symbol overlap guard: ${activeSym.toUpperCase()} already has ${existingPos.side.toUpperCase()} position @ $${existingPos.averageEntryPrice.toFixed(2)}. Converting ${finalDecision.action.toUpperCase()}→HOLD. Existing position managed by per-symbol consensus + SL/TP.`);
-          finalDecision = {
-            ...finalDecision,
-            action: 'hold',
-            positionSizePct: 0,
-            rationale: `Symbol overlap guard: ${activeSym} already positioned. HOLD for position management only.`,
-          };
+          const isFlip = (existingPos.side === 'buy' && finalDecision.action === 'sell') ||
+                         (existingPos.side === 'sell' && finalDecision.action === 'buy');
+          if (isFlip) {
+            // Direction flip: close existing position first, then let the new
+            // trade execute below. This is a conviction-based reversal.
+            log.warn(`🔄 Direction flip: ${activeSym.toUpperCase()} ${existingPos.side.toUpperCase()} @ $${existingPos.averageEntryPrice.toFixed(2)} → ${finalDecision.action.toUpperCase()}. Closing existing position first.`);
+            const flipTrade = this.portfolio.closePosition(activeSym, combinedState.price);
+            if (flipTrade) {
+              perPositionCloseReports.push({ order: {} as any, trade: flipTrade });
+              log.info(`  → Flipped ${activeSym}: $${flipTrade.pnl.toFixed(2)} (${flipTrade.pnl >= 0 ? 'profit' : 'loss'}). Proceeding with ${finalDecision.action.toUpperCase()} order.`);
+            }
+            // Continue to execute the new trade below — don't convert to HOLD
+          } else {
+            // Same direction: block the new trade, keep existing position
+            log.warn(`🚫 Symbol overlap guard: ${activeSym.toUpperCase()} already has ${existingPos.side.toUpperCase()} position @ $${existingPos.averageEntryPrice.toFixed(2)}. Converting ${finalDecision.action.toUpperCase()}→HOLD. Existing position managed by per-symbol consensus + SL/TP.`);
+            finalDecision = {
+              ...finalDecision,
+              action: 'hold',
+              positionSizePct: 0,
+              rationale: `Symbol overlap guard: ${activeSym} already positioned. HOLD for position management only.`,
+            };
+          }
         }
       }
       log.info(`💼 Executing ${this.realTradingManager.getTradeMode().toUpperCase()} trading decision...`);
