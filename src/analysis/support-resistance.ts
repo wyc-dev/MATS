@@ -88,7 +88,7 @@ interface PivotInfo {
 interface ZoneCluster {
   price: number;
   type: 'support' | 'resistance';
-  touches: Array<{ timestamp: number; volume: number }>;
+  touches: Array<{ price: number; timestamp: number; volume: number }>;
   source: 'pivot' | 'round_num' | 'orderbook';
 }
 
@@ -248,15 +248,28 @@ function clusterPivots(
     });
 
     if (existing) {
-      // Weighted average: more recent touches weighted higher
-      const totalWeight = existing.touches.length + 1;
-      existing.price = (existing.price * existing.touches.length + p.price) / totalWeight;
-      existing.touches.push({ timestamp: p.timestamp, volume: p.volume });
+      // Recency-weighted average: more recent touches contribute more to
+      // the zone price. Weight = exp(-age / halfLife), so a touch from 7d
+      // ago has weight 0.5, from 14d ago 0.25, etc.
+      const now = Date.now();
+      const newWeight = Math.pow(0.5, (now - p.timestamp) / CONFIG.recencyHalfLifeMs);
+      let prevWeightSum = 0;
+      let prevWeightedPrice = 0;
+      for (const t of existing.touches) {
+        const w = Math.pow(0.5, (now - t.timestamp) / CONFIG.recencyHalfLifeMs);
+        prevWeightSum += w;
+        prevWeightedPrice += t.price * w;
+      }
+      const totalWeight = prevWeightSum + newWeight;
+      existing.price = totalWeight > 0
+        ? (prevWeightedPrice + p.price * newWeight) / totalWeight
+        : (existing.price * existing.touches.length + p.price) / (existing.touches.length + 1);
+      existing.touches.push({ price: p.price, timestamp: p.timestamp, volume: p.volume });
     } else {
       clusters.push({
         price: p.price,
         type: p.type === 'pivot_low' ? 'support' : 'resistance',
-        touches: [{ timestamp: p.timestamp, volume: p.volume }],
+        touches: [{ price: p.price, timestamp: p.timestamp, volume: p.volume }],
         source: 'pivot',
       });
     }
@@ -288,13 +301,13 @@ function findRoundNumberZones(
 
     // Count touches: candles where low <= roundNum <= high (within 0.05%)
     const touchBps = CONFIG.roundNumProximityBps;
-    const touches: Array<{ timestamp: number; volume: number }> = [];
+    const touches: Array<{ price: number; timestamp: number; volume: number }> = [];
     for (const c of candles) {
       const proximity = Math.abs(c.close - roundNum) / roundNum * 10_000;
       const touchedLow = Math.abs(c.low - roundNum) / roundNum * 10_000 <= touchBps;
       const touchedHigh = Math.abs(c.high - roundNum) / roundNum * 10_000 <= touchBps;
       if (touchedLow || touchedHigh || proximity <= touchBps) {
-        touches.push({ timestamp: c.timestamp, volume: c.volume });
+        touches.push({ price: roundNum, timestamp: c.timestamp, volume: c.volume });
       }
     }
 
@@ -316,11 +329,14 @@ function findRoundNumberZones(
 // ─── Strength Scoring ───
 
 function computeStrength(
-  touches: Array<{ timestamp: number; volume: number }>,
+  touches: Array<{ price: number; timestamp: number; volume: number }>,
 ): { strength: 'strong' | 'moderate' | 'weak'; score: number } {
   if (touches.length === 0) return { strength: 'weak', score: 0 };
 
   const now = Date.now();
+
+  // Average volume across all touches — used as the baseline for relative scaling.
+  const avgVolume = touches.reduce((s, t) => s + (t.volume > 0 ? t.volume : 0), 0) / touches.length;
 
   // Score each touch: recency weight × volume weight
   let totalScore = 0;
@@ -328,8 +344,11 @@ function computeStrength(
     // Recency: exponential decay with half-life
     const age = now - t.timestamp;
     const recencyWeight = Math.pow(0.5, age / CONFIG.recencyHalfLifeMs);
-    // Volume normalization: relative to average (cap at 2x)
-    const volWeight = Math.min(t.volume > 0 ? 1.0 : 0.5, 2.0);
+    // Volume weight: relative to average touch volume, capped at 2x.
+    // A touch with 2× average volume scores 2.0; zero/missing volume scores 0.5.
+    const volWeight = avgVolume > 0
+      ? Math.min(Math.max(t.volume / avgVolume, 0.5), 2.0)
+      : (t.volume > 0 ? 1.0 : 0.5);
     totalScore += recencyWeight * volWeight;
   }
 

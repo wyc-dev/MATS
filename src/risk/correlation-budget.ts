@@ -23,8 +23,12 @@ const DEFAULT_CORRELATIONS: Record<string, Record<string, number>> = {
 };
 
 const DEFAULT_CORR_FOR_UNKNOWN = 0.50; // Default correlation for unknown pairs
-/** Maximum effective single-direction exposure as fraction of balance */
-const MAX_EFFECTIVE_EXPOSURE = 0.15; // 15% (correlation-adjusted)
+/** Maximum effective single-direction exposure as a fraction of EQUITY.
+ *  Notional values are leveraged (price × qty × leverage), so the budget is
+ *  expressed against total equity (not free balance) and allows up to 150%
+ *  leveraged gross effective exposure — consistent with the paper engine's
+ *  20%-of-balance margin cap at typical 5-10x leverage. */
+const MAX_EFFECTIVE_EXPOSURE = 1.50; // 150% of equity (correlation-adjusted)
 const CACHE_TTL_MS = 86_400_000; // 24h
 
 // ─── Types ───
@@ -186,12 +190,16 @@ export class CorrelationBudget {
     }
   }
 
-  /** Generate a correlation budget report for the portfolio */
-  generateReport(positions: PositionExposure[], balance: number): CorrelationBudgetReport {
+  /** Generate a correlation budget report for the portfolio.
+   *  @param positions — leveraged notional exposures (price × qty × leverage)
+   *  @param equity — TOTAL equity (balance + unrealized PnL + locked margin),
+   *                  NOT free balance. Leveraged notionals are compared against
+   *                  equity so the budget scales with actual risk capital. */
+  generateReport(positions: PositionExposure[], equity: number): CorrelationBudgetReport {
     try {
       const grossExposure = positions.reduce((s, p) => s + Math.abs(p.notional), 0);
       const effectiveExposure = this.getEffectiveExposure(positions);
-      const budgetLimit = balance * MAX_EFFECTIVE_EXPOSURE;
+      const budgetLimit = equity * MAX_EFFECTIVE_EXPOSURE;
       const exceeded = effectiveExposure > budgetLimit;
 
       const contributions = positions.map(p => ({

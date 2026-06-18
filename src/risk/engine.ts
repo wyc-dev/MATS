@@ -130,13 +130,16 @@ export class RiskEngine {
     volatility: number,
     confidence: number
   ): { quantity: number; riskAmount: number; riskPct: number } {
-    // Volatility-adjusted fixed fraction position sizing
-    const baseRiskPct = this.limits.maxPositionSizePct * confidence;
+    // Volatility-adjusted fixed fraction position sizing.
+    // Confidence is applied ONCE via a smooth mapping (0.3→0.65, 0.5→0.75,
+    // 0.9→0.95) to avoid the previous double-penalty where confidence
+    // multiplied baseRiskPct AND confAdjustment simultaneously.
+    const baseRiskPct = this.limits.maxPositionSizePct;
 
     // Reduce size in high volatility
     const volAdjustment = volatility > 0.03 ? 0.5 : volatility > 0.02 ? 0.75 : 1.0;
 
-    // Reduce size with low confidence
+    // Single confidence adjustment: maps [0,1] → [0.5,1.0] linearly.
     const confAdjustment = 0.5 + (confidence * 0.5);
 
     const riskPct = baseRiskPct * volAdjustment * confAdjustment;

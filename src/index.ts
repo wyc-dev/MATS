@@ -1602,7 +1602,7 @@ class AMACRFSystem {
               },
             ).catch(() => {});
 
-            const report = this.correlationBudget.generateReport(positions, this.portfolio.getPortfolio().balance);
+            const report = this.correlationBudget.generateReport(positions, this.portfolio.getPortfolio().totalEquity);
             if (report.exceeded) {
               log.warn(`🛑 Correlation budget exceeded! Effective: $${report.effectiveExposure.toFixed(0)} vs $${report.budgetLimit.toFixed(0)} budget`);
               log.warn(`   ${report.recommendation}`);

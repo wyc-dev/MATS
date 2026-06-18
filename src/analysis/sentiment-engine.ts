@@ -25,7 +25,9 @@ export class PriceBuffer {
     }
   }
 
-  /** Price change rate: Δp/Δt normalized (-1 to +1) */
+  /** Price change rate: Δp/Δt normalized (-1 to +1).
+   *  Uses rolling std of per-tick returns for adaptive normalisation —
+   *  a 1% move in a low-vol asset scores higher than 1% in a high-vol asset. */
   getVelocity(): number {
     if (this.prices.length < 2) return 0;
     const first = this.prices[0]!;
@@ -33,32 +35,53 @@ export class PriceBuffer {
     const dt = last.timestamp - first.timestamp;
     if (dt < 100) return 0; // Too short
     const dp = (last.price - first.price) / first.price;
-    // Normalize: dp of 0.01 (1%) → 0.5, dp of 0.03 (3%) → ~1.0
-    return Math.max(-1, Math.min(1, dp * 50));
+
+    // Adaptive scale: rolling std of per-tick returns.
+    // Fallback to a conservative 0.002 (0.2%) if insufficient data.
+    const rets: number[] = [];
+    for (let i = 1; i < this.prices.length; i++) {
+      const prev = this.prices[i - 1]!.price;
+      if (prev > 0) rets.push((this.prices[i]!.price - prev) / prev);
+    }
+    const scale = rets.length >= 3 ? stdDev(rets) * Math.sqrt(this.prices.length) : 0.002;
+    return Math.max(-1, Math.min(1, scale > 0 ? dp / scale : 0));
   }
 
-  /** Price acceleration: Δ²p/Δt² normalized (-1 to +1) */
+  /** Price acceleration: Δ²p/Δt² normalized (-1 to +1).
+   *  Adaptive normalisation via rolling std of per-tick returns. */
   getAcceleration(): number {
     if (this.prices.length < 6) return 0;
     const half = Math.floor(this.prices.length / 2);
-    const firstHalf = this.prices.slice(0, half);
-    const secondHalf = this.prices.slice(half);
 
-    const avgFirst = firstHalf.reduce((s, p) => s + p.price, 0) / firstHalf.length;
-    const avgSecond = secondHalf.reduce((s, p) => s + p.price, 0) / secondHalf.length;
+    const avgFirst = this.prices.slice(0, half).reduce((s, p) => s + p.price, 0) / half;
+    if (avgFirst <= 0) return 0;
 
-    // Average of first half vs second half — velocity change
-    const v1 = this.prices[half - 1]!.price - this.prices[0]!.price;
-    const v2 = this.prices[this.prices.length - 1]!.price - this.prices[half]!.price;
-    const accel = (v2 - v1) / avgFirst;
+    // Velocity of first half vs second half (fractional, per-tick)
+    const v1 = (this.prices[half - 1]!.price - this.prices[0]!.price) / this.prices[0]!.price;
+    const v2 = (this.prices[this.prices.length - 1]!.price - this.prices[half]!.price) / this.prices[half]!.price;
+    const accel = v2 - v1;
 
-    // Normalize: accel of 0.001 → 0.5, 0.005 → ~1.0
-    return Math.max(-1, Math.min(1, accel * 200));
+    // Adaptive scale: rolling std of per-tick returns.
+    const rets: number[] = [];
+    for (let i = 1; i < this.prices.length; i++) {
+      const prev = this.prices[i - 1]!.price;
+      if (prev > 0) rets.push((this.prices[i]!.price - prev) / prev);
+    }
+    const scale = rets.length >= 3 ? stdDev(rets) : 0.001;
+    return Math.max(-1, Math.min(1, scale > 0 ? accel / scale : 0));
   }
 
   reset(): void {
     this.prices = [];
   }
+}
+
+/** Sample standard deviation (Bessel-corrected). */
+function stdDev(x: number[]): number {
+  if (x.length < 2) return 0;
+  const mean = x.reduce((a, b) => a + b, 0) / x.length;
+  const variance = x.reduce((s, v) => s + (v - mean) ** 2, 0) / (x.length - 1);
+  return Math.sqrt(variance);
 }
 
 // ─── Volume Acceleration Buffer ───

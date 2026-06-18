@@ -30,6 +30,9 @@ const CONFIG = {
   persistPath: 'data/evolution/em-clusters.json',
 } as const;
 
+/** log(2π) — precomputed constant for Gaussian PDF */
+const LOG_2PI = Math.log(2 * Math.PI);
+
 // ─── Types ───
 
 export interface EMCluster {
@@ -82,6 +85,21 @@ interface NormStats {
 
 function defaultNorm(): NormStats {
   return { mean: [], std: [], count: 0 };
+}
+
+/**
+ * Standardise a raw feature vector using running norm stats (z-score).
+ * Falls back to raw values if norm not yet populated (count < 2 or zero std).
+ * This ensures all feature dimensions contribute comparably to the Gaussian
+ * PDF quadratic term, regardless of their native scale (e.g. srDistanceBps ~50
+ * vs fundingRate ~0.001).
+ */
+function normalize(x: number[], norm: NormStats): number[] {
+  if (norm.mean.length !== x.length || norm.count < 2) return [...x];
+  return x.map((v, i) => {
+    const std = Math.sqrt(norm.std[i]! / Math.max(1, norm.count - 1));
+    return std > 1e-12 ? (v - norm.mean[i]!) / std : 0;
+  });
 }
 
 function makeEmptyState(): SymbolEMState {
@@ -250,7 +268,11 @@ export class EMClusteringEngine {
     const X: number[][] = [];
     const y: number[] = [];
     for (const s of samples) {
-      X.push(s.slice(0, n));
+      // Normalise features via z-score using running Welford stats.
+      // Without this, large-scale dims (srDistanceBps ~50) dominate the
+      // Gaussian quadratic term and small-scale dims (fundingRate ~0.001)
+      // have ~zero discriminative power.
+      X.push(normalize(s.slice(0, n), state.norm));
       y.push(s[n]!);
     }
 
@@ -315,7 +337,9 @@ export class EMClusteringEngine {
     const state = this.getOrCreateState(symbol);
     if (!state.model || state.model.clusters.length === 0) return empty();
 
-    const x = this.contextToVector(features);
+    // Normalise query vector with the same running stats used during training.
+    // Model means/covars live in normalised space, so queries must match.
+    const x = normalize(this.contextToVector(features), state.norm);
     const { clusters } = state.model;
 
     const logR: number[] = clusters.map(c =>
@@ -359,11 +383,13 @@ export class EMClusteringEngine {
       const R = this.eStep(X, clusters);
       if (!R) return null;
 
-      // Compute log-likelihood
+      // Compute log-likelihood (total over all samples)
       ll = this.computeLogLikelihood(X, clusters);
 
-      // Check convergence
-      if (Math.abs(ll - prevLL) < CONFIG.convergenceTol && iter > 5) {
+      // Check convergence on per-sample average (ll is now a sum, so divide by n)
+      const llAvg = ll / n;
+      const prevLlAvg = prevLL / n;
+      if (Math.abs(llAvg - prevLlAvg) < CONFIG.convergenceTol && iter > 5) {
         // M-step one last time
         clusters = this.mStep(X, R, d);
         break;
@@ -374,9 +400,9 @@ export class EMClusteringEngine {
       clusters = this.mStep(X, R, d);
     }
 
-    // Compute BIC: -2 * LL + k * (d*2 + 1) * log(n)
-    // Each cluster has: d means + d covariances + 1 weight = 2d+1 params
-    const paramCount = k * (2 * d + 1);
+    // Compute BIC: -2 * LL + p * log(n)
+    // Free params p = (k-1) mixing weights (Σπ=1 constraint) + k*d means + k*d covariances
+    const paramCount = (k - 1) + k * (2 * d);
     const bic = -2 * ll + paramCount * Math.log(n);
 
     return { clusters, ll, bic, iters: Math.min(CONFIG.maxIterations, 200) };
@@ -529,10 +555,11 @@ export class EMClusteringEngine {
       const diff = x[j]! - mean[j]!;
       quad += diff * diff / v;
     }
-    return -0.5 * (d * Math.LN2 * Math.PI + logDet + quad);
+    return -0.5 * (d * LOG_2PI + logDet + quad);
   }
 
-  /** Compute total log-likelihood: Σ_i log Σ_k π_k N(x_i | μ_k, Σ_k) */
+  /** Compute total log-likelihood: Σ_i log Σ_k π_k N(x_i | μ_k, Σ_k)
+   *  Returns the SUM (not average) over all samples — required for correct BIC. */
   private computeLogLikelihood(X: number[][], clusters: EMCluster[]): number {
     let ll = 0;
     for (const x of X) {
@@ -543,7 +570,7 @@ export class EMClusteringEngine {
       const sumExp = logR.reduce((s, lr) => s + Math.exp(lr - logMax), 0);
       ll += logMax + Math.log(sumExp);
     }
-    return ll / X.length; // average per sample
+    return ll; // total log-likelihood (not averaged)
   }
 
   /**
