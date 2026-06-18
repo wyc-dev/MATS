@@ -1,9 +1,9 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.8-dev  
+> **版本**: 2.0.9-dev  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
-> **總代碼量**: ~18,500+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
+> **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
 ---
 
@@ -35,7 +35,10 @@
 22. [技術棧](#技術棧)
 23. [附錄 B：已知錯誤與陷阱記錄](#附錄-b已知錯誤與陷阱記錄known-bugs--pitfalls)
 24. [B.8 Per-Symbol Consensus 被 hasPosition 永遠 false 阻擋](#b8-per-symbol-consensus-被-hasposition-永遠-false-阻擋v208-修復)
-25. [B.9 參考文獻](#b9-參考文獻related-documentation)
+25. [B.9 RBC Box Saturation — 所有 dimensions overlap → 永久 NO_EDGE](#b9-rbc-box-saturation--所有-dimensions-overlap--永久-no_edgev209-修復)
+26. [B.10 Exploration 槓桿違規 — 10x 觸發 maxLeverage 硬約束](#b10-exploration-槓桿違規--10x-觸發-maxleverage-硬約束v209-修復)
+27. [B.11 合成資產 S/R 檢測 — HL candleSnapshot 500 error](#b11-合成資產-sr-檢測--hl-candlesnapshot-500-errorv209-修復)
+28. [B.12 參考文獻](#b12-參考文獻related-documentation)
 
 ---
 
@@ -2363,22 +2366,82 @@ const CONFIG = {
 
 ```
 每個 cycle（hypothetical training）:
-  → 比較 current price vs last cycle price
+  → 比較 current price vs last cycle price（per-symbol）
+  → 訓練 active symbol + 所有持倉 + 所有歷史 RBC symbols
   → price change > 0.1% → feed 1 sample（winning side only）
   → price change < 0.05% → feed 2 samples（both sides lose）
   → 0.05%-0.1% → noise, skip
   → 儲存 context 俾下個 cycle 用
+  → 🆕 v2.0.9: applyDecay() 喺 feedTrade() 前執行，收縮 overlap 區域
 
-Features（9 dims）:
-  direction, volatility, srDistanceBps, obImbalance,
-  sentiment, signalAgreement, fundingRate,
-  volumeRatio, sentimentConviction
+Features（8 dims）:
+  volatility, srDistanceBps, obImbalance, sentiment,
+  signalAgreement, fundingRate, volumeRatio, sentimentConviction
 
 Persistence:
   → 每個 cycle 結束後 atomic write 到 rbc-state.json
   → 啟動時自動 load
   → 永續記憶 — 唔會因為 restart 而消失
 ```
+
+### 🆕 v2.0.9: RBC Decay 機制
+
+**問題**: RBC boxes 只擴張唔收縮 → 隨時間所有 dimensions 都 overlap → query 永遠回傳 NO_EDGE。
+BTC 259L/51W samples 後 8/8 dims overlap → RBC 完全失效。
+
+**解決方案**: `applyDecay()` 喺每次 `feedTrade()` 前執行：
+
+```typescript
+applyDecay(symbol: string): void {
+  const rate = CONFIG.decayRate; // 0.10 (10%)
+  for (let i = 0; i < D; i++) {
+    const overlapMin = Math.max(wb.min[i]!, lb.min[i]!);
+    const overlapMax = Math.min(wb.max[i]!, lb.max[i]!);
+    if (overlapMin < overlapMax) {
+      // 收縮 winBox 同 lossBox 嘅 overlap 邊界向 centroid
+      wb.min[i]! += (wb.centroid[i]! - wb.min[i]!) * rate;
+      wb.max[i]! -= (wb.max[i]! - wb.centroid[i]!) * rate;
+      lb.min[i]! += (lb.centroid[i]! - lb.min[i]!) * rate;
+      lb.max[i]! -= (lb.max[i]! - lb.centroid[i]!) * rate;
+    }
+    // 非 overlap dimensions 唔郁 — 保留完整 discriminative range
+  }
+}
+```
+
+**效果**:
+- Overlap 區域每 cycle 收縮 10% → 逐漸恢復 discriminative power
+- 非 overlap dimensions 完全唔受影響
+- 新 sample 會 expand 返，形成 dynamic equilibrium
+
+### 🆕 v2.0.9: Multi-Symbol RBC Training
+
+**問題**: 之前只有 `lastCycleRBCContext`（單一 symbol），Market Agent 切換 symbol 時 context 丟失。
+
+**解決方案**: `lastCycleRBCContexts` Map + 每個 cycle 訓練所有 tracked symbols：
+
+```typescript
+// 1. 訓練 active symbol
+const activeCtx = this.lastCycleRBCContexts.get(activeSymbol);
+if (activeCtx) { /* feedTrade() */ }
+
+// 2. 訓練所有其他 RBC symbols
+for (const rbcSym of this.rbcEngine.getAllSymbols()) {
+  if (rbcSym === activeSymbol) continue;
+  const ctx = this.lastCycleRBCContexts.get(rbcSym);
+  if (ctx) { /* feedTrade() */ }
+}
+
+// 3. 儲存 context 俾所有 symbols
+this.lastCycleRBCContexts.set(activeSymbol, { ... });
+for (const posSym of this.portfolio.getOpenSymbols()) { /* set context */ }
+for (const rbcSym of this.rbcEngine.getAllSymbols()) { /* set context */ }
+```
+
+**效果**:
+- BTC 同 xyz:SPCX 各自有獨立 RBC boxes
+- 切換 symbol 唔會丟失 training context
+- 所有持倉嘅 RBC 持續更新
 
 ### Query
 
@@ -2387,7 +2450,7 @@ query(symbol, features) → RBCQueryResult:
   verdict: 'favorable' | 'unfavorable' | 'no_edge'
   edgeScore: number           — discriminativeDims / D
   discriminativeDims: number  — 冇 overlap 嘅 dimensions 數量
-  totalDims: number           — 9
+  totalDims: number           — 8
   winDims: number             — 落入 win territory 嘅 dims
   lossDims: number            — 落入 loss territory 嘅 dims
   dimDetails: RBCDimDetail[]  — per-dimension 詳細資料
@@ -2436,6 +2499,27 @@ RBC is your PRIMARY factor. UNFAVORABLE → strong bias against entry. FAVORABLE
 | `src/evolution/trade-pattern-classifier.ts` | 整合 RBC query，backfill 時 feed trade |
 | `data/evolution/rbc-state.json` | 持久化 RBC state（winBox, lossBox per symbol） |
 
+### 🆕 v2.0.9: 合成資產 S/R 處理
+
+**問題**: `xyz:SPCX` 呢類合成資產傳入 HL `candleSnapshot` API → HL 回傳 500（冇 candle data）→ 每次 cycle 都出 error log。
+
+**修復**: 喺 `getSRZones()` 開頭 detect synthetic symbol，跳過 HL fetch：
+
+```typescript
+const isSynthetic = symbol.startsWith('xyz:') || symbol.includes(':');
+if (isSynthetic) {
+  // 跳過 HL candle fetch，直接用 round numbers
+  log.warn(`[getSRZones] ${symbol}: synthetic symbol — using round numbers only`);
+  const roundZones = findRoundNumberZones([...], currentPrice);
+  return buildContext(roundZones, symbol, currentPrice, regime, ...);
+}
+```
+
+**效果**:
+- 合成資產唔再 call HL API → 冇 error log
+- 仍然有 round number S/R zones（心理整數位）
+- 唔影響正常資產嘅 S/R 檢測
+
 ---
 
 ## P0 — Trade Pattern Classifier
@@ -2461,66 +2545,42 @@ RBC is your PRIMARY factor. UNFAVORABLE → strong bias against entry. FAVORABLE
 **Cold Start — Backfill 工具（v2.0.5）：**
 - `scripts/backfill-patterns.mjs` — 一次性工具，讀 `portfolio-state.json` 將歷史 meaningful trades（|PnL| >= 0.5%）import 入 pattern DB，解決 classifier 後加時冇歷史數據嘅問題
 
-### Exploration 方向決策 Priority Chain (v2.0.8)
+### Exploration 方向決策 Priority Chain（Exploration v2.0.8）
 
-當 consensus 係 HOLD 且系統 idle 3+ cycles，exploration trade 嘅方向由以下 priority chain 決定：
+| Priority | 信號 | 條件 |
+|:--------:|:-----|:------|
+| **0** | **RBC assessment** | **RBC verdict comparison (BUY/SELL favorable/unfavorable)** |
+| **1a** | Pattern DB (KNN) | `adjustedWinRate` via Wilson score, >=3 matches |
+| **1b** | EM cluster-weighted | `dominantCluster >= 0 && |weightedWinRate - 0.5| > 0.1` |
+| **2** | **Sigmoid·GA Sentiment** | **`conviction > 0.6 && |overallSentiment| > 0.15`** |
+| **3** | **Price Velocity + Acceleration** | **`|velocity| > 0.15` 或 `|velocity| > 0.05 + accel confirms`** |
+| **4** | **S/R Proximity Breakout** | **`positionInRange > 0.65 && distToResistance < 30bps → BUY` / `< 0.35 && distToSupport < 30bps → SELL`** |
+| **5** | **Funding Rate + Velocity** | **`|rate| > 0.02% && velocity confirms direction`** |
+| **6** | Order Book Imbalance | `|imbalance| > 0.15` |
+| **7** | Regime / Trend + 24h Change | `trending_bull`/`trending_bear`/`change24h > 0.5%`/`change24h < -0.5%` |
 
-```
-Priority 0: RBC assessment (BUY/SELL verdict comparison)
-  └─ BUY favorable & SELL not favorable → BUY
-  └─ SELL favorable & BUY not favorable → SELL
-  └─ BUY unfavorable & SELL favorable → SELL
-  └─ SELL unfavorable & BUY favorable → BUY
-  └─ Both unfavorable → skip (no exploration)
-  └─ Both no_edge → fall through
-
-Priority 1a: Pattern Classifier (KNN — adjustedWinRate via Wilson score)
-  └─ queryEntry('buy') vs queryEntry('sell') → 需要 >=3 matches 先算
-
-Priority 1b: EM cluster-weighted win rate (GMM assessment, still active)
-  └─ dominantCluster >= 0 && |weightedWinRate - 0.5| > 0.1 嘅方向
-
-Priority 2: Sigmoid·GA Sentiment (with conviction gate)
-  └─ conviction > 0.6 && overallSentiment > +0.15 → BUY
-  └─ conviction > 0.6 && overallSentiment < -0.15 → SELL
-  └─ otherwise → fall through
-
-Priority 3: Price Velocity + Acceleration (Sigmoid·GA PriceBuffer)
-  └─ velocity > +0.15 → BUY (strong upward momentum)
-  └─ velocity < -0.15 → SELL (strong downward momentum)
-  └─ velocity > +0.05 && acceleration > +0.05 → BUY (weak but accelerating)
-  └─ velocity < -0.05 && acceleration < -0.05 → SELL (weak but accelerating)
-  └─ otherwise → fall through
-
-Priority 4: S/R Proximity Breakout
-  └─ positionInRange > 0.65 && distToResistance < 30bps → BUY (breakout up)
-  └─ positionInRange < 0.35 && distToSupport < 30bps → SELL (breakdown down)
-  └─ otherwise → fall through
-
-Priority 5: Funding Rate + Velocity (combined, not standalone)
-  └─ rate < -0.02% && velocity > +0.05 → BUY (negative funding + price rising = genuine)
-  └─ rate > +0.02% && velocity < -0.05 → SELL (positive funding + price falling = genuine)
-  └─ otherwise → fall through
-
-Priority 6: Order Book Imbalance
-  └─ imbalance > +0.15 → BUY (bid pressure)
-  └─ imbalance < -0.15 → SELL (ask pressure)
-
-Priority 7: Regime / Trend + 24h Change
-  └─ trending_bull → BUY
-  └─ trending_bear → SELL
-  └─ change24h < -0.5% → SELL (明顯下跌)
-  └─ change24h > +0.5% → BUY (明顯上升)
-  └─ all neutral → skip (no edge detected)
-```
-
-**v2.0.8 關鍵改動**:
+**v2.0.8 改動**:
 - **移除** Funding Rate 做獨立 direction signal（bear market 永遠 negative → BUY bias）
 - **新增** Price Velocity (Sigmoid·GA PriceBuffer) 做主導方向信號
 - **新增** S/R Proximity Breakout — 價格接近阻力位/支持位時偏向突破方向
 - **新增** 24h change fallback — 明顯下跌時可以 SELL
 - **Sentiment** 加入 conviction threshold（>0.6 先信）
 - **Funding Rate** 改為需要 velocity 確認方向（避免 bear market false BUY signal）
+
+### 🆕 v2.0.9: 探索槓桿上限
+
+**問題**: Exploration trade 直接用 `maConfig.leverage`（10x）→ 違反 `maxLeverage=6x` 硬約束 → 下個 cycle 全部 agent 一致 CLOSE → 浪費探索機會。
+
+**修復**: Cap exploration leverage 喺 3x：
+
+```typescript
+const exploreLev = Math.min(maConfig.leverage, 3);
+```
+
+**效果**:
+- Exploration trade 永遠唔會 trigger 槓桿違規
+- 3x 足夠 generate evolution data，唔需要高槓桿
+- Agent 唔會再因為槓桿問題而 CLOSE 探索倉
 
 Exploration 唔係賭博 — 每一層都有技術邏輯支撐。Pattern data 永遠優先，後面係 fallback 梯度。
 
@@ -3652,10 +3712,12 @@ Default:     Neutral → buy
 - ❌ 已移除 cold-start 方向交替（純賭博）
 - ✅ Pattern Classifier (KNN + RBC) 為最高優先級
 - ✅ 每層都有技術邏輯，冇 pattern data 都唔會亂賭
-  if (p.positions.size === 0) {
+- ✅ 🆕 v2.0.9: 獨立探索 guard — 只檢查 activeSymbol 有冇持倉，唔再檢查全 portfolio
+- ✅ 🆕 v2.0.9: 探索槓桿 cap 喺 3x — 避免違反 maxLeverage=6x 硬約束
+  if (!this.portfolio.hasPosition(activeSymbol)) {
     const maConfig = this.marketAgent.getConfig();
     const exploreSize = maConfig.positionSizePct;
-    const exploreLev = maConfig.leverage;
+    const exploreLev = Math.min(maConfig.leverage, 3);
     ...
   }
 }
@@ -4166,7 +4228,138 @@ hasPosition: false,
 
 ---
 
-### B.9 參考文獻（Related Documentation）
+### B.9 RBC Box Saturation — 所有 dimensions overlap → 永久 NO_EDGE（v2.0.9 修復）
+
+**發現日期**: 2026-06-18
+**嚴重性**: 🟠 High — RBC 逐漸失去 discriminative power，最終永遠回傳 NO_EDGE
+**涉及檔案**: `src/evolution/rbc-clustering.ts`
+
+#### 問題描述
+
+RBC boxes 只擴張唔收縮。隨住時間，winBox 同 lossBox 喺所有 8 個 dimensions 上都 overlap → query 永遠回傳 `no_edge`。BTC 259L/51W samples 後 8/8 dims overlap，RBC 完全失效。
+
+#### 根因
+
+`expandBox()` 只會擴大範圍，唔會收縮。當 winBox 同 lossBox 各自包含大量 samples，佢哋嘅範圍自然會 overlap：
+
+```
+winBox:  [min_1..max_1, min_2..max_2, ...]  ← 51 samples
+lossBox: [min_1..max_1, min_2..max_2, ...]  ← 259 samples
+→ 每個 dimension 嘅 min/max 都 overlap → 0 discriminative dims
+```
+
+#### 修復
+
+**`src/evolution/rbc-clustering.ts`** — 加入 `applyDecay()` 機制：
+
+```typescript
+// 喺 feedTrade() 開頭執行
+this.applyDecay(symbol);
+
+applyDecay(symbol: string): void {
+  const rate = CONFIG.decayRate; // 0.10
+  for (let i = 0; i < D; i++) {
+    if (overlapMin < overlapMax) {
+      // 收縮 overlap 邊界向 centroid
+      wb.min[i]! += (wb.centroid[i]! - wb.min[i]!) * rate;
+      wb.max[i]! -= (wb.max[i]! - wb.centroid[i]!) * rate;
+      lb.min[i]! += (lb.centroid[i]! - lb.min[i]!) * rate;
+      lb.max[i]! -= (lb.max[i]! - lb.centroid[i]!) * rate;
+    }
+  }
+}
+```
+
+#### 預防措施
+
+| 措施 | 說明 |
+|:-----|:------|
+| **decayRate config** | 0.10 (10%/cycle) — 可調整 |
+| **只收縮 overlap** | 非 overlap dimensions 唔受影響 |
+| **新 sample expand 返** | 形成 dynamic equilibrium |
+
+---
+
+### B.10 Exploration 槓桿違規 — 10x 觸發 maxLeverage 硬約束（v2.0.9 修復）
+
+**發現日期**: 2026-06-18
+**嚴重性**: 🟡 Medium — 探索交易被 agent 一致 CLOSE，浪費探索機會
+**涉及檔案**: `src/index.ts`
+
+#### 問題描述
+
+Exploration trade 用 `maConfig.leverage`（10x）開倉 → 違反 `maxLeverage=6x` 硬約束 → 下個 cycle 全部 5 個 agent 一致建議 CLOSE → 5 分鐘後 $0.00 PnL 平倉。
+
+#### 根因
+
+```typescript
+// ❌ 直接用 Market Agent 嘅 10x 槓桿
+const exploreLev = maConfig.leverage; // 10x
+```
+
+探索交易嘅目的係 generate evolution data，唔係 maximize returns。用 10x 槓桿只會 trigger 槓桿違規。
+
+#### 修復
+
+**`src/index.ts`** — Cap exploration leverage：
+
+```typescript
+// ✅ 上限 3x，永遠唔會 trigger 槓桿違規
+const exploreLev = Math.min(maConfig.leverage, 3);
+```
+
+#### 預防措施
+
+| 措施 | 說明 |
+|:-----|:------|
+| **獨立槓桿上限** | Exploration 用 `min(maConfig.leverage, 3)` |
+| **唔用 Market Agent 設定** | 探索交易同正常交易嘅風險參數分開 |
+
+---
+
+### B.11 合成資產 S/R 檢測 — HL candleSnapshot 500 error（v2.0.9 修復）
+
+**發現日期**: 2026-06-18
+**嚴重性**: 🟢 Low — 每次 cycle 出 error log，但唔影響交易
+**涉及檔案**: `src/analysis/support-resistance.ts`
+
+#### 問題描述
+
+`xyz:SPCX` 呢類合成資產傳入 HL `candleSnapshot` API → HL 回傳 500（冇 candle data）→ 每次 cycle 都出 error log：
+
+```
+error [sr_detector] [fetchCandles] Failed for XYZ:SPCX/1d: Error: HL fetch failed: 500 Internal Server Error
+warn [sr_detector] [getSRZones] No candle data for XYZ:SPCX — using round numbers only
+```
+
+#### 根因
+
+`getSRZones()` 直接將 symbol 傳入 HL API，但合成資產（`xyz:` 前綴）唔存在於 HL 嘅 candle 數據庫。
+
+#### 修復
+
+**`src/analysis/support-resistance.ts`** — 喺 `getSRZones()` 開頭 detect synthetic symbol：
+
+```typescript
+const isSynthetic = symbol.startsWith('xyz:') || symbol.includes(':');
+if (isSynthetic) {
+  log.warn(`[getSRZones] ${symbol}: synthetic symbol — using round numbers only`);
+  const roundZones = findRoundNumberZones([...], currentPrice);
+  return buildContext(roundZones, symbol, currentPrice, regime, ...);
+}
+```
+
+#### 預防措施
+
+| 措施 | 說明 |
+|:-----|:------|
+| **Synthetic detect** | `xyz:` 前綴 → 跳過 HL fetch |
+| **Round number fallback** | 仍然有心理整數位 S/R zones |
+| **唔影響正常資產** | 只有 `:` 前綴嘅 symbol 先會跳過 |
+
+---
+
+### B.12 參考文獻（Related Documentation）
 
 | 文件 | 位置 | 內容 |
 |:-----|:------|:------|

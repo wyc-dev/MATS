@@ -439,6 +439,17 @@ export async function getSRZones(
   }
 
   try {
+    // ── Synthetic symbol check ──
+    // Symbols with "xyz:" prefix are synthetic/derived assets not traded on HL.
+    // HL has no candle data for them — skip fetch and use round numbers only.
+    const isSynthetic = symbol.startsWith('xyz:') || symbol.includes(':');
+    if (isSynthetic) {
+      log.warn(`[getSRZones] ${symbol}: synthetic symbol — using round numbers only (no HL candle data)`);
+      const roundZones = findRoundNumberZones([{ timestamp: Date.now(), open: currentPrice, high: currentPrice, low: currentPrice, close: currentPrice, volume: 0 }], currentPrice);
+      const srZones = mergeAndRankZones(roundZones, regime);
+      return buildContext(srZones, symbol, currentPrice, regime, Date.now() - startTime);
+    }
+
     // ── 1. Fetch candle data ──
     const [dailyCandles, hourlyCandles] = await Promise.all([
       fetchDailyCandlesCached(symbol),
