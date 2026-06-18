@@ -40,7 +40,7 @@
 29. [B.10 Exploration 槓桿違規 — 10x 觸發 maxLeverage 硬約束](#b10-exploration-槓桿違規--10x-觸發-maxleverage-硬約束v209-修復)
 30. [B.11 合成資產 S/R 檢測 — HL candleSnapshot 500 error](#b11-合成資產-sr-檢測--hl-candlesnapshot-500-errorv209-修復)
 31. [B.12 參考文獻](#b12-參考文獻related-documentation)
-32. [B.13 Math Audit — 12 個數學計算錯誤](#b13-math-audit--12-個數學計算錯誤v2010-修復)
+32. [B.13 Math Audit — 13 個數學/邏輯錯誤](#b13-math-audit--13-個數學邏輯錯誤v2010-修復)
 
 ---
 
@@ -2385,13 +2385,14 @@ const CONFIG = {
 
 ```
 每個 cycle（hypothetical training）:
-  → 比較 current price vs last cycle price（per-symbol）
-  → 訓練 active symbol + 所有持倉 + 所有歷史 RBC symbols
+  → 比較 current price vs last cycle price（active symbol only）
+  → 只訓練 active symbol（唯一有真實 price 觀測嘅 symbol）
   → price change > 0.1% → feed 1 sample（winning side only）
   → price change < 0.05% → feed 2 samples（both sides lose）
   → 0.05%-0.1% → noise, skip
-  → 儲存 context 俾下個 cycle 用
+  → 儲存 context 俾 active symbol + open positions（下個 cycle 用）
   → 🆕 v2.0.9: applyDecay() 喺 feedTrade() 前執行，收縮 overlap 區域
+  → 🆕 v2.0.10: 只訓練 active symbol，非 active symbol 嘅 RBC state 保持唔變
 
 Features（8 dims）:
   volatility, srDistanceBps, obImbalance, sentiment,
@@ -2461,6 +2462,29 @@ for (const rbcSym of this.rbcEngine.getAllSymbols()) { /* set context */ }
 - BTC 同 xyz:SPCX 各自有獨立 RBC boxes
 - 切換 symbol 唔會丟失 training context
 - 所有持倉嘅 RBC 持續更新
+
+### 🆕 v2.0.10: RBC Training 限制為 Active Symbol Only
+
+**問題**: v2.0.9 嘅 multi-symbol training 會遍歷 `rbcEngine.getAllSymbols()`——即**所有曾經被 RBC 追蹤過嘅歷史 symbol**（包括 `xyz:META` 呢類冇持倉、又唔係 Market Agent 所選市場嘅 symbol）。而且對非 active symbol，用 active symbol 嘅 price change 做 proxy（BTC 升 1% 唔代表 META 升 1%），呢個會用市場整體波動污染嗰啲 symbol 嘅 win/loss boxes。
+
+**解決方案**: 只訓練 active symbol（唯一有真實 price 觀測嘅 symbol），非 active symbol 嘅 RBC state 保持唔變：
+
+```typescript
+// 1. 只訓練 active symbol（有真實 price data）
+const activeCtx = this.lastCycleRBCContexts.get(activeSymbol);
+if (activeCtx) { /* feedTrade() — 用 active symbol 真實 price change */ }
+// 非 active symbols 唔訓練 — 冇真實 per-symbol price，proxy 會污染 boxes
+
+// 2. 只為 active symbol + open positions 儲存 context
+this.lastCycleRBCContexts.set(activeSymbol, { ... });
+for (const posSym of this.portfolio.getOpenSymbols()) { /* set context */ }
+// 歷史 RBC symbols 唔儲存 context — 避免下個 cycle 被錯誤訓練
+```
+
+**效果**:
+- `xyz:META` 等歷史 symbol 嘅 RBC state 保持上次真實訓練結果，唔會被市場整體波動污染
+- Open positions 嘅 RBC state 保留，當佢哋成為 active symbol 時恢復訓練
+- Active symbol 訓練用真實 price change，數據品質保證
 
 ### Query
 
@@ -2954,7 +2978,7 @@ MultiExchangeWebSocketManager
 
 ### 審計方法
 
-逐模組讀取源碼，對每條數學公式做正確性驗證。共發現 13 條疑似問題，經交叉驗證後確認 12 條真實（1 條假警報）。
+逐模組讀取源碼，對每條數學公式做正確性驗證。共發現 14 條疑似問題，經交叉驗證後確認 13 條真實（1 條假警報）。
 
 ### 修復總覽
 
@@ -2972,6 +2996,7 @@ MultiExchangeWebSocketManager
 | 11 | Sentiment engine | `getVelocity`/`getAcceleration` 固定標準化因子 | 🟢 Minor | 改用 rolling std 自適應標準化 |
 | 12 | EM clustering | LL 用 average 唔係 total（BIC 公式錯） | 🟢 Minor | 改回傳 total，convergence 用 per-sample avg |
 | 13 | Backtest | `dailyReturns` 命名誤導 | 🟢 Minor | 改名 `periodReturns` |
+| 14 | RBC training | 非 active symbol 被錯誤訓練（proxy price 污染） | 🟡 Moderate | 只訓練 active symbol，歷史 symbol state 保持唔變 |
 
 ### 假警報（無需修復）
 
@@ -2984,6 +3009,7 @@ MultiExchangeWebSocketManager
 - **EM clustering（#2）**: 修復前 EM 只用 2-3 個大尺度特徵維度，`fundingRate` 等小尺度特徵 discriminative power 接近 0。修復後 9 個特徵全部有效參與 clustering。
 - **Risk engine（#4）**: 修復前低信心（c=0.3）倉位被過度懲罰至 0.195×，修復後為 0.65×，更符合風險意圖。
 - **Correlation budget（#8）**: 修復前槓桿倉位幾乎永遠超標（10x 下 3% 倉位已超 15% budget），修復後 threshold 與 paper engine margin cap 一致。
+- **RBC training（#14）**: 修復前 `xyz:META` 等歷史 symbol（冇持倉、非 active market）每個 cycle 都被用 active symbol 嘅 price change proxy 訓練，污染佢哋嘅 win/loss boxes。修復後只訓練 active symbol，歷史 symbol 保持上次真實訓練結果。
 - **Backtest regime（#7）**: 修復前 5m interval 幾乎永遠唔會分類為 trending regime，修復後跨 interval 分類一致。
 
 ---
@@ -4448,9 +4474,9 @@ if (isSynthetic) {
 
 ---
 
-### B.13 Math Audit — 12 個數學計算錯誤（v2.0.10 修復）
+### B.13 Math Audit — 13 個數學/邏輯錯誤（v2.0.10 修復）
 
-> **觸發**: 系統性數學審計發現 EM clustering、Risk engine、S/R detection、Correlation budget、Sigmoid·GA、Sentiment engine、Backtest 共 12 個數學錯誤。
+> **觸發**: 系統性數學審計發現 EM clustering、Risk engine、S/R detection、Correlation budget、Sigmoid·GA、Sentiment engine、Backtest、RBC training 共 13 個數學/邏輯錯誤。
 > **詳情**: 見 [🧮 v2.0.10 Math Audit](#v2010-math-audit--數學計算修正) 章節。
 
 | 子問題 | 模組 | 影響 |
@@ -4467,6 +4493,7 @@ if (isSynthetic) {
 | Sigmoid·GA blend weights 無歸一化 | `sigmoid-ga.ts` | sentiment 可能超出 [-1,+1] |
 | Sentiment accel 固定標準化因子 | `sentiment-engine.ts` | 無自適應波動率標準化 |
 | Backtest `dailyReturns` 命名誤導 | `backtest/index.ts` | 實際係 per-candle returns |
+| RBC 非 active symbol 被錯誤訓練 | `index.ts` | 歷史 symbol（如 `xyz:META`）用 active symbol price proxy 污染 boxes |
 
 **假警報（無需修復）**: Portfolio 槓桿重複計算 — 經完整金流追蹤確認會計正確（`totalEquity = balance + unrealizedPnl + lockedMargin` 係標準期貨保證金會計）。
 

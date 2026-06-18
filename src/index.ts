@@ -638,14 +638,18 @@ class AMACRFSystem {
     }
 
     // ── RBC HYPOTHETICAL TRAINING: Learn from every cycle's price action ──
-    // Multi-symbol: trains on the active symbol + ALL symbols tracked by RBC engine.
-    // Each symbol has its own previous context stored in lastCycleRBCContexts Map.
+    // Only trains on the ACTIVE symbol — it is the only symbol for which we have
+    // a real price observation this cycle. Previously this loop also iterated over
+    // every symbol ever tracked by the RBC engine (including historical symbols
+    // like "xyz:META" that have no open position and are not the selected market),
+    // using the active symbol's price change as a proxy. That polluted those
+    // symbols' win/loss boxes with market-wide moves they never experienced.
     //   - Price up >0.1% → LONG wins → outcome=1 (winBox)
     //   - Price down >0.1% → LONG loses → outcome=0 (lossBox)
     //   - Price change <0.05% → flat market, both sides lose (feed 2 samples: both LOSS)
     //   - 0.05%-0.1% → noise, skip
     if (marketPrice > 0) {
-      // Train on active symbol (always has a context after first cycle)
+      // Train on active symbol only (always has a context after first cycle)
       const activeCtx = this.lastCycleRBCContexts.get(activeSymbol);
       if (activeCtx) {
         try {
@@ -668,37 +672,17 @@ class AMACRFSystem {
           log.warn(`[RBC-hypothetical] Failed for ${activeSymbol}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
-
-      // Train on ALL other symbols tracked by RBC engine (open positions + historical)
-      // Uses the same price change as a proxy — we don't have per-symbol price data
-      // for non-active symbols, but the feature context (volatility, sentiment, etc.)
-      // is market-level and applies broadly. The price change direction is the same
-      // for all symbols on the same exchange (market-wide moves).
-      const allRbcSymbols = this.rbcEngine.getAllSymbols();
-      for (const rbcSym of allRbcSymbols) {
-        if (rbcSym === activeSymbol) continue; // already trained above
-        const ctx = this.lastCycleRBCContexts.get(rbcSym);
-        if (!ctx) continue;
-        try {
-          const prevPrice = ctx.price;
-          const priceChange = (marketPrice - prevPrice) / prevPrice;
-          const absChange = Math.abs(priceChange);
-          const baseFeatures = ctx.features;
-
-          if (absChange >= 0.001) {
-            const outcome: 1 | 0 = priceChange > 0 ? 1 : 0;
-            this.rbcEngine.feedTrade(rbcSym, { ...baseFeatures }, outcome);
-          } else if (absChange < 0.0005) {
-            this.rbcEngine.feedTrade(rbcSym, { ...baseFeatures }, 0);
-            this.rbcEngine.feedTrade(rbcSym, { ...baseFeatures }, 0);
-          }
-        } catch { /* non-critical */ }
-      }
+      // Non-active symbols (open positions, historical RBC symbols) are NOT
+      // trained here — we lack their real per-symbol price this cycle, so any
+      // proxy price change would corrupt their boxes. Their existing RBC state
+      // is preserved untouched and will resume training when they become active.
     }
 
     // ── Save current cycle context for NEXT cycle's RBC hypothetical training ──
-    // Multi-symbol: store context for active symbol + all open positions + all RBC symbols.
-    // Do this AFTER the training above so the old context is used for comparison.
+    // Only store context for the active symbol + open positions. Historical RBC
+    // symbols (e.g. "xyz:META" with no position and not the selected market) are
+    // NOT given a context — otherwise they would be trained next cycle using the
+    // active symbol's price change as a proxy, corrupting their boxes.
     try {
       const baseFeatures = {
         volatility: combinedState.volatility ?? 0,
@@ -718,22 +702,14 @@ class AMACRFSystem {
         features: { ...baseFeatures },
       });
 
-      // Also store for all open positions (so their RBC boxes keep training)
+      // Also store for all open positions (so their RBC boxes keep training
+      // when they later become the active symbol). Note: we only STORE context
+      // here — actual training only happens for the active symbol (see above),
+      // because only the active symbol has a real price observation per cycle.
       for (const posSym of this.portfolio.getOpenSymbols()) {
         if (!this.lastCycleRBCContexts.has(posSym)) {
           this.lastCycleRBCContexts.set(posSym, {
             symbol: posSym,
-            price: combinedState.price,
-            features: { ...baseFeatures },
-          });
-        }
-      }
-
-      // Also store for all existing RBC symbols (so historical symbols don't go stale)
-      for (const rbcSym of this.rbcEngine.getAllSymbols()) {
-        if (!this.lastCycleRBCContexts.has(rbcSym)) {
-          this.lastCycleRBCContexts.set(rbcSym, {
-            symbol: rbcSym,
             price: combinedState.price,
             features: { ...baseFeatures },
           });
