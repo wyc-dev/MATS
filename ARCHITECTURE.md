@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.10-dev (Math Audit — EM/Risk/SR/Correlation/Sentiment 數學修正)  
+> **版本**: 2.0.11-dev (RBC 分層衰減 + 時間加權 centroid + confidence-aware agent context)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -306,7 +306,7 @@
 │   │
 │   ├── evolution/
 │   │   ├── cycle-summary.ts     # 🧬 第一層 EM — Cycle Summary Chain (v2.0.2)
-│   │   ├── rbc-clustering.ts   # 🧬 RBC Engine — Range-Based Clustering (v2.0.6, 8 dims)
+│   │   ├── rbc-clustering.ts   # 🧬 RBC Engine — Range-Based Clustering (v2.0.11, 8 dims, 分層衰減 + 時間加權 centroid)
 │   │   │   ├── RBCEngine class       # Growing hyperrectangles per symbol
 │   │   │   ├── feedTrade()           # Expand win/loss boxes (never contract)
 │   │   │   ├── query()               # Edge score → favorable/unfavorable/no_edge
@@ -2486,6 +2486,46 @@ for (const posSym of this.portfolio.getOpenSymbols()) { /* set context */ }
 - Open positions 嘅 RBC state 保留，當佢哋成為 active symbol 時恢復訓練
 - Active symbol 訓練用真實 price change，數據品質保證
 
+### 🆕 v2.0.11: 分層衰減 + 時間加權 Centroid
+
+**問題**: v2.0.9 嘅 decay 只收縮 overlap 區域，有兩個偏見：
+1. **Stale boundary 偏見**: 非 overlap dimension 嘅邊界永遠唔收縮 → 早期極端值（例如 200 個 cycle 前嘅異常 win）永遠撐住 `winBox.min`，唔反映近期 regime 變化。
+2. **對稱收縮偏見**: winBox 同 lossBox 都收 10%，無考慮統計信心。80W/5L 嘅 lossBox（脆弱）同 80W/80L 嘅 winBox（穩固）以相同速率衰減唔合理。
+
+**解決方案**: 分層衰減（global + confidence 調節）+ 時間加權 centroid：
+
+```typescript
+// 1. 時間加權 centroid（expandBox）
+// 每個新 sample 權重 = 0.5^(age/halfLife)，halfLife=50 cycles
+// 近期 sample 主導 centroid → 衰變收縮目標自然反映當前 regime
+const decayFactor = Math.pow(0.5, elapsed / halfLife);
+const prevWeight = box.weightedCount * decayFactor;
+box.centroid[i] = (box.centroid[i] * prevWeight + vec[i]) / (prevWeight + 1);
+
+// 2. 分層衰減（applyDecay）— 所有 dimension 都收縮，速率由信心調節
+const confidence = min(winWeightedCount, lossWeightedCount) / max(...);
+const rate = CONFIG.decayRate * (1 - confidence * 0.70);
+// 信心高（balanced）→ rate × 0.30 → 穩固邊界衰減慢
+// 信心低（imbalanced）→ rate × 0.96 → 脆弱邊界衰減快
+for (let i = 0; i < D; i++) {
+  wb.min[i] += (wb.centroid[i] - wb.min[i]) * rate;  // global decay
+  wb.max[i] -= (wb.max[i] - wb.centroid[i]) * rate;
+  lb.min[i] += (lb.centroid[i] - lb.min[i]) * rate;
+  lb.max[i] -= (lb.max[i] - lb.centroid[i]) * rate;
+}
+```
+
+**效果**:
+- Stale extreme values 自然向近期 centroid 收縮 → 邊界跟住市場 regime 變化
+- 統計信心高嘅 dimension（balanced win/loss）衰減慢 → 長期有效 pattern 保留
+- 統計信心低嘅 dimension（imbalanced）衰減快 → 脆弱/noisy 邊界快啲淘汰
+- `weightedCount`（時間衰減 sample 數）用於 confidence 計算 → 近期 balance 權重高於古代
+
+**新增欄位**（`RBCBox`）: `lastSampleCycle`, `weightedCount`
+**新增欄位**（`RBCQueryResult`）: `confidence` (0-1), `effectiveSamples`（時間加權總 sample 數）
+**Backward compat**: `load()` 自動為舊 state 填補 `lastSampleCycle=0`, `weightedCount=count`
+**Agent 指引**: RBC & Sentiment Analyst system prompt + context injection 加入 confidence label（high/medium/low）同使用指引——低信心 verdict 當弱提示，高信心 verdict 當強信號
+
 ### Query
 
 ```
@@ -2497,7 +2537,9 @@ query(symbol, features) → RBCQueryResult:
   winDims: number             — 落入 win territory 嘅 dims
   lossDims: number            — 落入 loss territory 嘅 dims
   dimDetails: RBCDimDetail[]  — per-dimension 詳細資料
-  explanation: string         — human-readable summary
+  confidence: number          — 統計信心 0-1（balanced win/loss → 高）
+  effectiveSamples: number    — 時間加權總 sample 數
+  explanation: string         — human-readable summary（含 confidence label）
 ```
 
 ### Agent Context 注入格式
@@ -2506,11 +2548,17 @@ query(symbol, features) → RBCQueryResult:
 
 ```
 === RBC ASSESSMENT ===
-Range-Based Clustering: growing hyperrectangles from hypothetical price action.
-BUY  → FAVORABLE (edge=67%, 6W/1L dims)
-SELL → UNFAVORABLE (edge=33%, 2W/4L dims)
-RBC is your PRIMARY factor. UNFAVORABLE → strong bias against entry. FAVORABLE → increase conviction.
+Range-Based Clustering: time-weighted win/loss regions from price action.
+BUY  → FAVORABLE (edge=67%, 6W/1L dims, 5/8 discriminative)
+SELL → UNFAVORABLE (edge=33%, 2W/4L dims, 5/8 discriminative)
+CONFIDENCE: high (eff samples=142, balance=85%). Weight the verdict by this —
+  low confidence means one side is under-sampled and the boundary is noisy;
+  treat the verdict as a weak hint, not a strong signal.
+INTERPRETATION: FAVORABLE → win territory, increase conviction. UNFAVORABLE →
+  loss territory, strong bias against entry. NO_EDGE → ambiguous, HOLD.
 ```
+
+Agents 收到 confidence label 後會按信心加權 verdict：高信心（>0.6）當強信號，低信心（<0.3）當弱提示。
 
 ### 方向決策 Priority Chain（Exploration v2.0.8）
 

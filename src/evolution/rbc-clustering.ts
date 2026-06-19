@@ -31,8 +31,20 @@ const CONFIG = {
   minSamplesForQuery: 3,
   /** Edge score threshold: above this → FAVORABLE/UNFAVORABLE */
   edgeThreshold: 0.25,          // 3/12 dims discriminative
-  /** Decay rate per feedTrade(): overlap regions shrink toward centroids by this fraction */
-  decayRate: 0.10,              // 10% per cycle — prevents box saturation
+  /** Base decay rate per feedTrade(): boxes shrink toward centroids by this fraction.
+   *  Actual per-dimension rate is scaled by (1 - confidence × 0.7), so
+   *  high-confidence (balanced) dimensions decay slowly while low-confidence
+   *  (sample-imbalanced) dimensions decay faster. */
+  decayRate: 0.10,              // 10% base per cycle
+  /** Centroid exponential time-weighting half-life (in samples/cycles).
+   *  Each new sample's weight = 0.5^(age/halfLife). With halfLife=50, a sample
+   *  from 50 cycles ago has half the weight of the current one — the centroid
+   *  naturally tracks recent market regime without forgetting long-term wins. */
+  centroidHalfLifeCycles: 50,
+  /** Confidence scaling factor: how much statistical confidence reduces decay.
+   *  0.7 means a fully-balanced dimension (equal win/loss counts) decays at
+   *  30% of base rate, while a maximally-imbalanced one decays at 100% of base. */
+  confidenceDecayReduction: 0.70,
   persistPath: 'data/evolution/rbc-state.json',
 } as const;
 
@@ -52,7 +64,14 @@ export interface RBCBox {
   min: number[];
   max: number[];
   count: number;
+  /** Time-weighted centroid (exponential, half-life = centroidHalfLifeCycles).
+   *  Recent samples dominate; stale extreme values drift toward the recent mean. */
   centroid: number[];
+  /** Cycle index of the most recent sample added to this box. */
+  lastSampleCycle: number;
+  /** Exponentially-decayed sample count (Σ 0.5^(age/halfLife)). Used for
+   *  confidence calculation — reflects effective sample size after time weighting. */
+  weightedCount: number;
 }
 
 export interface RBCState {
@@ -81,6 +100,13 @@ export interface RBCQueryResult {
   winDims: number;
   lossDims: number;
   dimDetails: RBCDimDetail[];
+  /** Statistical confidence 0-1: how balanced are the (time-weighted) win/loss
+   *  sample counts. High confidence (≈1) = both sides well-sampled → verdict
+   *  is reliable. Low confidence (<0.3) = one side sparse → verdict is noisy,
+   *  agents should weight it less. */
+  confidence: number;
+  /** Effective (time-decayed) sample count backing this verdict. */
+  effectiveSamples: number;
   explanation: string;
 }
 
@@ -101,6 +127,8 @@ function makeEmptyBox(): RBCBox {
     max: new Array(D).fill(-Infinity),
     count: 0,
     centroid: new Array(D).fill(0),
+    lastSampleCycle: 0,
+    weightedCount: 0,
   };
 }
 
@@ -111,9 +139,15 @@ function makeEmptyState(): RBCState {
 /**
  * Expand a box to include a new sample.
  * Ranges only expand — never contract.
- * Centroid is running average.
+ * Centroid uses exponential time-weighting: recent samples dominate, so the
+ * centroid naturally tracks the current market regime. Each new sample's
+ * weight = 0.5^((currentCycle - lastSampleCycle) / halfLife), applied by
+ * decaying the existing centroid toward the new sample.
+ *
+ * @param currentCycle  monotonic cycle counter (engine-wide)
+ * @param halfLife       centroid time-weighting half-life in cycles
  */
-function expandBox(box: RBCBox, vec: number[]): void {
+function expandBox(box: RBCBox, vec: number[], currentCycle: number, halfLife: number): void {
   if (box.count === 0) {
     // First sample: initialise
     for (let i = 0; i < D; i++) {
@@ -122,14 +156,26 @@ function expandBox(box: RBCBox, vec: number[]): void {
       box.centroid[i] = vec[i]!;
     }
     box.count = 1;
+    box.lastSampleCycle = currentCycle;
+    box.weightedCount = 1;
   } else {
+    // Time-weighted update: decay existing centroid by the elapsed cycles,
+    // then blend with the new sample. This is equivalent to:
+    //   centroid_new = (centroid_old × decayFactor × weightedCount_old + vec) / (decayFactor × weightedCount_old + 1)
+    // where decayFactor = 0.5^(Δcycles / halfLife).
+    const elapsed = Math.max(0, currentCycle - box.lastSampleCycle);
+    const decayFactor = Math.pow(0.5, elapsed / halfLife);
+    const prevWeight = box.weightedCount * decayFactor;
+    const newWeight = prevWeight + 1;
     box.count++;
     for (let i = 0; i < D; i++) {
       if (vec[i]! < box.min[i]!) box.min[i] = vec[i]!;
       if (vec[i]! > box.max[i]!) box.max[i] = vec[i]!;
-      // Running average for centroid
-      box.centroid[i]! += (vec[i]! - box.centroid[i]!) / box.count;
+      // Time-weighted centroid: blend decayed old centroid with new sample
+      box.centroid[i]! = (box.centroid[i]! * prevWeight + vec[i]!) / newWeight;
     }
+    box.lastSampleCycle = currentCycle;
+    box.weightedCount = newWeight;
   }
 }
 
@@ -138,6 +184,10 @@ function expandBox(box: RBCBox, vec: number[]): void {
 export class RBCEngine {
   /** Per-symbol RBC states — key is lowercase symbol */
   private symbols = new Map<string, RBCState>();
+
+  /** Monotonic cycle counter — incremented on every feedTrade() call.
+   *  Drives time-weighted centroid updates and per-dimension decay rates. */
+  private currentCycle = 0;
 
   // ─── Lifecycle ───
 
@@ -168,8 +218,8 @@ export class RBCEngine {
             }
           }
           this.symbols.set(sym.toLowerCase(), {
-            winBox,
-            lossBox,
+            winBox: this.migrateBox(winBox),
+            lossBox: this.migrateBox(lossBox),
             totalSamples: s.totalSamples ?? 0,
           });
         }
@@ -210,35 +260,67 @@ export class RBCEngine {
   }
 
   /**
+   * Backward-compat: ensure loaded boxes have the v2.0.11 fields
+   * (lastSampleCycle, weightedCount). Old saved states lack these — default
+   * them so time-weighted decay starts from a sensible baseline.
+   */
+  private migrateBox(box: RBCBox): RBCBox {
+    if (box.lastSampleCycle === undefined) box.lastSampleCycle = 0;
+    if (box.weightedCount === undefined || box.weightedCount === 0) {
+      // Seed weightedCount from raw count so confidence calc has a baseline.
+      box.weightedCount = box.count;
+    }
+    return box;
+  }
+
+  /**
    * Feed a trade outcome into the per-symbol RBC state.
    * Expands winBox or lossBox ranges (never contracts).
    */
   /**
    * Feed a trade outcome into the per-symbol RBC state.
-   * Applies decay (shrink overlap toward centroids) BEFORE expanding,
-   * so boxes gradually tighten around their true clusters.
+   * Applies layered decay (shrink ALL dimensions toward centroids, rate scaled
+   * by per-dimension statistical confidence) BEFORE expanding, so boxes
+   * gradually tighten around their true clusters while stale boundaries fade.
+   *
+   * Decay strategy (v2.0.11):
+   *  - GLOBAL decay: every dimension shrinks toward its centroid (not just
+   *    overlap), so stale extreme values from old regimes drift inward.
+   *  - CONFIDENCE-scaled rate: dimensions with balanced win/loss sample counts
+   *    decay slowly (boundaries are statistically robust); imbalanced dimensions
+   *    decay fast (boundaries are fragile/noisy).
+   *  - Time-weighted centroid: the shrink target itself tracks recent samples,
+   *    so decay pulls boundaries toward the CURRENT regime, not a stale mean.
    */
   feedTrade(symbol: string, features: Record<string, number>, outcome: 1 | 0): void {
     const state = this.getOrCreateState(symbol);
     const vec = this.contextToVector(features);
     state.totalSamples++;
+    this.currentCycle++;
 
-    // Apply decay before expansion — shrink overlap regions toward centroids
+    // Apply layered decay before expansion — shrink toward time-weighted centroids
     this.applyDecay(symbol);
 
     if (outcome === 1) {
-      expandBox(state.winBox, vec);
+      expandBox(state.winBox, vec, this.currentCycle, CONFIG.centroidHalfLifeCycles);
     } else {
-      expandBox(state.lossBox, vec);
+      expandBox(state.lossBox, vec, this.currentCycle, CONFIG.centroidHalfLifeCycles);
     }
   }
 
   /**
-   * Shrink overlap regions toward each box's centroid.
-   * When winBox and lossBox overlap on a dimension, both boxes contract
-   * toward their respective centroids by decayRate fraction.
-   * Non-overlapping dimensions are untouched — they retain full discriminative range.
-   * This prevents box saturation (all dimensions overlapping → permanent NO_EDGE).
+   * Layered decay: shrink ALL dimensions of both boxes toward their time-weighted
+   * centroids, with the per-dimension rate scaled by statistical confidence.
+   *
+   * Confidence = min(winCount, lossCount) / max(winCount, lossCount):
+   *  - Balanced (80W/80L) → confidence ≈ 1 → rate × (1 - 0.7) = 30% of base
+   *    → robust boundaries decay slowly, preserving long-term discriminative power
+   *  - Imbalanced (80W/5L) → confidence ≈ 0.06 → rate × (1 - 0.04) ≈ 96% of base
+   *    → fragile boundaries decay fast, letting noisy extremes fade quickly
+   *
+   * This replaces the v2.0.9 overlap-only decay, which (a) left stale non-overlap
+   * boundaries frozen forever and (b) shrank win/loss boxes symmetrically even
+   * when one side was statistically far more robust than the other.
    */
   applyDecay(symbol: string): void {
     const state = this.getOrCreateState(symbol);
@@ -248,19 +330,22 @@ export class RBCEngine {
     const lb = state.lossBox;
     if (wb.count === 0 || lb.count === 0) return;
 
-    const rate = CONFIG.decayRate;
-    for (let i = 0; i < D; i++) {
-      const overlapMin = Math.max(wb.min[i]!, lb.min[i]!);
-      const overlapMax = Math.min(wb.max[i]!, lb.max[i]!);
+    // Per-box statistical confidence: how balanced are the sample counts?
+    // Uses weightedCount (time-decayed) so recent balance matters more than ancient.
+    const minW = Math.min(wb.weightedCount, lb.weightedCount);
+    const maxW = Math.max(wb.weightedCount, lb.weightedCount);
+    const confidence = maxW > 0 ? minW / maxW : 0;
+    const reduction = CONFIG.confidenceDecayReduction;
+    const rate = CONFIG.decayRate * (1 - confidence * reduction);
 
-      if (overlapMin < overlapMax) {
-        // Overlap exists — shrink both boxes toward their centroids
-        wb.min[i]! += (wb.centroid[i]! - wb.min[i]!) * rate;
-        wb.max[i]! -= (wb.max[i]! - wb.centroid[i]!) * rate;
-        lb.min[i]! += (lb.centroid[i]! - lb.min[i]!) * rate;
-        lb.max[i]! -= (lb.max[i]! - lb.centroid[i]!) * rate;
-      }
-      // Non-overlapping dimensions: untouched — retain full discriminative range
+    for (let i = 0; i < D; i++) {
+      // Global decay: every dimension shrinks toward its time-weighted centroid.
+      // This lets stale extreme values (e.g. a win from 200 cycles ago that set
+      // winBox.min) drift inward as the centroid tracks the recent regime.
+      wb.min[i]! += (wb.centroid[i]! - wb.min[i]!) * rate;
+      wb.max[i]! -= (wb.max[i]! - wb.centroid[i]!) * rate;
+      lb.min[i]! += (lb.centroid[i]! - lb.min[i]!) * rate;
+      lb.max[i]! -= (lb.max[i]! - lb.centroid[i]!) * rate;
     }
   }
 
@@ -279,6 +364,8 @@ export class RBCEngine {
       winDims: 0,
       lossDims: 0,
       dimDetails: [],
+      confidence: 0,
+      effectiveSamples: 0,
       explanation: reason,
     });
 
@@ -360,7 +447,15 @@ export class RBCEngine {
 
     const explanation = this.formatExplanation(verdict, edgeScore, winDims, lossDims, discriminativeDims, dimDetails, state);
 
-    return { verdict, edgeScore, discriminativeDims, totalDims: D, winDims, lossDims, dimDetails, explanation };
+    // Statistical confidence: balance of time-weighted win/loss sample counts.
+    const wb = state.winBox;
+    const lb = state.lossBox;
+    const minW = Math.min(wb.weightedCount, lb.weightedCount);
+    const maxW = Math.max(wb.weightedCount, lb.weightedCount);
+    const confidence = maxW > 0 ? minW / maxW : 0;
+    const effectiveSamples = wb.weightedCount + lb.weightedCount;
+
+    return { verdict, edgeScore, discriminativeDims, totalDims: D, winDims, lossDims, dimDetails, confidence, effectiveSamples, explanation };
   }
 
   private formatExplanation(
@@ -404,7 +499,17 @@ export class RBCEngine {
       parts.push(`Key dims: ${featStr}`);
     }
 
-    parts.push(`Samples: ${state.winBox.count}W / ${state.lossBox.count}L`);
+    // Statistical confidence: balance of time-weighted sample counts.
+    // Agents should weight the verdict by this — low confidence means one
+    // side is under-sampled and the boundary is noisy.
+    const wb = state.winBox;
+    const lb = state.lossBox;
+    const minW = Math.min(wb.weightedCount, lb.weightedCount);
+    const maxW = Math.max(wb.weightedCount, lb.weightedCount);
+    const confidence = maxW > 0 ? minW / maxW : 0;
+    const confLabel = confidence > 0.6 ? 'high' : confidence > 0.3 ? 'medium' : 'low';
+    const effSamples = Math.round(wb.weightedCount + lb.weightedCount);
+    parts.push(`Samples: ${wb.count}W/${lb.count}L (eff=${effSamples}, conf=${confLabel})`);
 
     return parts.join(' | ');
   }
@@ -503,7 +608,16 @@ export class RBCEngine {
   // ─── Agent Context ───
 
   formatForAgentContext(): string {
-    const parts: string[] = ['=== RBC ASSESSMENT ==='];
+    const parts: string[] = [
+      '=== RBC ASSESSMENT ===',
+      'Range-Based Clustering of historical win/loss feature ranges (per symbol).',
+      'Boxes use time-weighted centroids (recent regime dominates) + layered decay',
+      '(stale boundaries fade; balanced dimensions decay slowly).',
+      'USAGE: FAVORABLE → bias toward entry; UNFAVORABLE → bias against entry;',
+      'NO_EDGE → RBC has no opinion, rely on other signals.',
+      'Weight verdict by confidence: high (>0.6) = trust it; low (<0.3) = one side',
+      'under-sampled, treat verdict as noisy and weight it less.',
+    ];
     for (const [sym, state] of this.symbols) {
       if (state.totalSamples < CONFIG.minSamplesForQuery) continue;
       let discriminativeDims = 0;
@@ -517,9 +631,15 @@ export class RBCEngine {
         if (overlapMin >= overlapMax) discriminativeDims++;
       }
       const edgePct = Math.round((discriminativeDims / D) * 100);
-      parts.push(`${sym}: ${state.winBox.count}W/${state.lossBox.count}L samples, ${discriminativeDims}/${D} dims discriminative (${edgePct}% edge)`);
+      // Confidence = balance of time-weighted sample counts.
+      const minW = Math.min(state.winBox.weightedCount, state.lossBox.weightedCount);
+      const maxW = Math.max(state.winBox.weightedCount, state.lossBox.weightedCount);
+      const confidence = maxW > 0 ? minW / maxW : 0;
+      const confLabel = confidence > 0.6 ? 'high' : confidence > 0.3 ? 'medium' : 'low';
+      const effSamples = Math.round(state.winBox.weightedCount + state.lossBox.weightedCount);
+      parts.push(`${sym}: ${state.winBox.count}W/${state.lossBox.count}L (eff=${effSamples}, conf=${confLabel}), ${discriminativeDims}/${D} dims (${edgePct}% edge)`);
     }
-    if (parts.length === 1) parts.push('  (no RBC data yet)');
+    if (parts.length === 7) parts.push('  (no RBC data yet)');
     return parts.join('\n');
   }
 }

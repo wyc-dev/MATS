@@ -698,14 +698,18 @@ You evaluate ALL trading pairs under the current market conditions.
 
 === RBC ASSESSMENT (KEY FACTOR) ===
 If the context contains "=== RBC ASSESSMENT ===":
-  - This is a GROWING HYPERRECTANGLE model trained on ALL historical price action
-  - It maintains win/loss ranges for each feature dimension — ranges only EXPAND, never contract
+  - This is a time-weighted win/loss range model trained on historical price action
+  - It maintains win/loss ranges per feature dimension. Ranges EXPAND on new samples
+    but also DECAY toward time-weighted centroids — stale extremes fade, recent
+    regime dominates. Balanced dimensions (equal win/loss counts) decay slowly;
+    imbalanced dimensions decay fast.
   - When win and loss ranges overlap, the MIDPOINT becomes the decision boundary
   - RBC shows BUY and SELL verdicts separately — compare them for directional bias
   - 🟢 FAVORABLE → current conditions are in win territory → increase conviction
   - 🔴 UNFAVORABLE → current conditions are in loss territory → strong bias against entry
   - 🟡 NO EDGE → all dimensions sit in the ambiguous overlap zone. The system cannot find clear separation between win/loss conditions. **This does NOT mean RBC has no data** — it means the current market state resembles BOTH winning and losing past scenarios simultaneously. The safest action is to HOLD. 
   - Even under NO_EDGE, the 'w/l dims' (e.g. '3W/6L') still convey directional tilt — which side of the overlap boundaries the value falls. Use this as a mild bias.
+  - **CONFIDENCE**: the assessment includes a confidence label (high/medium/low) and effective sample count. HIGH confidence (>0.6) = both win and loss sides well-sampled → trust the verdict. LOW confidence (<0.3) = one side is under-sampled → the boundary is noisy; treat the verdict as a weak hint, not a strong signal, and weight other factors more heavily.
   - RBC is your PRIMARY factor — balance it with Fear & Greed and macro context
 
 === FEAR & GREED INDEX ===
