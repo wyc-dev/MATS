@@ -814,10 +814,12 @@ class AMACRFSystem {
           || (rbcBuy.explanation && !rbcBuy.explanation.startsWith('Only'))
           || (rbcSell.explanation && !rbcSell.explanation.startsWith('Only'));
         if (hasData) {
+          const confLabel = rbcBuy.confidence > 0.6 ? 'high' : rbcBuy.confidence > 0.3 ? 'medium' : 'low';
           const lines: string[] = ['=== RBC ASSESSMENT ==='];
-          lines.push('Range-Based Clustering: growing hyperrectangles from hypothetical price action.');
+          lines.push('Range-Based Clustering: time-weighted win/loss regions from price action.');
           lines.push(`BUY  → ${rbcBuy.verdict.toUpperCase()} (edge=${(rbcBuy.edgeScore * 100).toFixed(0)}%, ${rbcBuy.winDims}W/${rbcBuy.lossDims}L dims, ${rbcBuy.discriminativeDims}/${rbcBuy.totalDims} discriminative)`);
           lines.push(`SELL → ${rbcSell.verdict.toUpperCase()} (edge=${(rbcSell.edgeScore * 100).toFixed(0)}%, ${rbcSell.winDims}W/${rbcSell.lossDims}L dims, ${rbcSell.discriminativeDims}/${rbcSell.totalDims} discriminative)`);
+          lines.push(`CONFIDENCE: ${confLabel} (eff samples=${Math.round(rbcBuy.effectiveSamples)}, balance=${(rbcBuy.confidence * 100).toFixed(0)}%). Weight the verdict by this — low confidence means one side is under-sampled and the boundary is noisy; treat the verdict as a weak hint, not a strong signal.`);
           lines.push(`INTERPRETATION: FAVORABLE → win territory, increase conviction. UNFAVORABLE → loss territory, strong bias against entry. NO_EDGE → current values sit in the overlap zone on every dimension — the system lacks directional clarity. This is itself a useful signal: it means the market state is ambiguous relative to past patterns, and the RBC agent should HOLD or rely on other signals. winDims/lossDims still show tilt even in NO_EDGE (which side of each overlap boundary the value falls).`);
           rbcContext = '\n' + lines.join('\n');
         }
