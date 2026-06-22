@@ -43,12 +43,56 @@ export interface HLTrade {
   seller: string;
 }
 
+/**
+ * A position snapshot from the `clearinghouseState` user subscription.
+ * Pushed on every position change (open/close/resize) — no REST polling needed.
+ */
+export interface HLUserPosition {
+  symbol: string;
+  side: 'buy' | 'sell';
+  /** Absolute position size (base units) */
+  size: number;
+  /** Average entry price */
+  entryPx: number;
+  /** Unrealized PnL in USD */
+  unrealizedPnl: number;
+  /** Leverage value (e.g. 5 = 5x) */
+  leverage: number;
+  /** Liquidation price (0 if not provided) */
+  liquidationPx: number;
+  /** Whether this is the initial snapshot vs a streaming update */
+  isSnapshot: boolean;
+}
+
+/**
+ * A user fill from the `userFills` subscription. Pushed on every trade
+ * execution — used to update the local portfolio entry point immediately
+ * after a real order fills on Hyperliquid.
+ */
+export interface HLUserFill {
+  symbol: string;
+  side: 'B' | 'A';
+  price: number;
+  size: number;
+  timestamp: number;
+  /** Closed PnL if this fill closed part/all of a position (0 otherwise) */
+  closedPnl: number;
+  /** Fee paid (negative = rebate) */
+  fee: number;
+  /** Whether this is the initial snapshot vs a streaming fill */
+  isSnapshot: boolean;
+}
+
 // ─── Callback Types ───
 
 export type HLPriceCallback = (data: HLMarkPrice) => void;
 export type HLOrderBookCallback = (book: HLOrderBook) => void;
 export type HLTradeCallback = (trade: HLTrade) => void;
 export type HLConnectionCallback = (connected: boolean) => void;
+/** Called when the user's clearinghouse state changes (positions open/close/resize). */
+export type HLPositionCallback = (positions: HLUserPosition[]) => void;
+/** Called when a user fill arrives (order executed on Hyperliquid). */
+export type HLFillCallback = (fill: HLUserFill) => void;
 
 // ─── WS Message Types ───
 
@@ -103,11 +147,20 @@ export class HyperliquidWebSocketManager {
   private activeSymbol: string | null = null;
   private subscribedChannels: Set<string> = new Set();
 
+  // User-level subscription state (v2.0.16): clearinghouseState + userFills
+  // require a wallet address. When set, the WS subscribes to the user's
+  // position + fill feeds so the local portfolio + UI stay in sync with
+  // Hyperliquid in real time (no REST polling).
+  private walletAddress: string | null = null;
+  private userSubscribed = false;
+
   // Callbacks
   private readonly priceCallbacks: Set<HLPriceCallback> = new Set();
   private readonly orderBookCallbacks: Set<HLOrderBookCallback> = new Set();
   private readonly tradeCallbacks: Set<HLTradeCallback> = new Set();
   private readonly connectionCallbacks: Set<HLConnectionCallback> = new Set();
+  private readonly positionCallbacks: Set<HLPositionCallback> = new Set();
+  private readonly fillCallbacks: Set<HLFillCallback> = new Set();
 
   // Local order book state
   private bids: Map<number, { size: number; count: number }> = new Map();
@@ -139,6 +192,37 @@ export class HyperliquidWebSocketManager {
 
   getLatestMarkPrice(): HLMarkPrice | null {
     return this.latestMarkPrice;
+  }
+
+  /**
+   * Set the wallet address for user-level subscriptions (clearinghouseState +
+   * userFills). When set and the WS is connected, subscribes to the user's
+   * position + fill feeds. Call this once at startup when real trading is
+   * enabled (v2.0.16).
+   */
+  setWalletAddress(address: string): void {
+    this.walletAddress = address.toLowerCase();
+    log.info(`HL WS wallet address set: ${address.slice(0, 6)}...${address.slice(-4)}`);
+    // If already connected, subscribe immediately
+    if (this.isConnected() && !this.userSubscribed) {
+      this.subscribeUserFeeds();
+    }
+  }
+
+  /** Register a callback for user position updates (clearinghouseState). */
+  onPositions(cb: HLPositionCallback): void {
+    this.positionCallbacks.add(cb);
+  }
+
+  /** Register a callback for user fill updates (userFills). */
+  onFills(cb: HLFillCallback): void {
+    this.fillCallbacks.add(cb);
+  }
+
+  /** Get the latest user positions from the last clearinghouseState push. */
+  private latestUserPositions: HLUserPosition[] = [];
+  getUserPositions(): HLUserPosition[] {
+    return [...this.latestUserPositions];
   }
 
   /** Get the timestamp of the last order book update (ms epoch). 0 = never updated. */
@@ -291,6 +375,7 @@ export class HyperliquidWebSocketManager {
           for (const channel of this.subscribedChannels) {
             this.sendUnsubscribe(this.activeSymbol, channel);
           }
+          this.unsubscribeUserFeeds();
         } catch { /* ignore */ }
       }
 
@@ -344,10 +429,16 @@ export class HyperliquidWebSocketManager {
         this.reconnectAttempts = 0;
         this.notifyConnectionChange(true);
 
-        // Subscribe to channels
+        // Subscribe to market-data channels
         this.subscribe(symbol, 'l2Book');
         this.subscribe(symbol, 'trades');
         this.subscribe(symbol, 'activeAssetCtx');
+
+        // Subscribe to user-level feeds (clearinghouseState + userFills) if a
+        // wallet address is configured. This keeps the local portfolio + UI in
+        // real-time sync with Hyperliquid positions + fills (v2.0.16).
+        this.userSubscribed = false; // reset on reconnect
+        this.subscribeUserFeeds();
 
         this.startHeartbeat();
         resolve();
@@ -420,6 +511,50 @@ export class HyperliquidWebSocketManager {
     log.debug(`HL WS subscribed: ${type} for ${symbol}`);
   }
 
+  /**
+   * Subscribe to user-level feeds (clearinghouseState + userFills) for the
+   * configured wallet address. These push position + fill updates in real
+   * time, replacing REST polling for portfolio sync (v2.0.16).
+   */
+  private subscribeUserFeeds(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.walletAddress || this.userSubscribed) return;
+
+    const user = this.walletAddress;
+    // clearinghouseState: pushes the user's full position set on every change
+    this.ws.send(JSON.stringify({
+      method: 'subscribe',
+      subscription: { type: 'clearinghouseState', user },
+    }));
+    // userFills: pushes every fill (order execution) for the user
+    this.ws.send(JSON.stringify({
+      method: 'subscribe',
+      subscription: { type: 'userFills', user },
+    }));
+    this.userSubscribed = true;
+    log.info(`HL WS subscribed to user feeds (clearinghouseState + userFills) for ${user.slice(0, 6)}...${user.slice(-4)}`);
+  }
+
+  /** Unsubscribe from user-level feeds (called on disconnect / wallet change). */
+  private unsubscribeUserFeeds(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.walletAddress) {
+      this.userSubscribed = false;
+      return;
+    }
+    const user = this.walletAddress;
+    try {
+      this.ws.send(JSON.stringify({
+        method: 'unsubscribe',
+        subscription: { type: 'clearinghouseState', user },
+      }));
+      this.ws.send(JSON.stringify({
+        method: 'unsubscribe',
+        subscription: { type: 'userFills', user },
+      }));
+    } catch { /* ignore */ }
+    this.userSubscribed = false;
+  }
+
   private sendUnsubscribe(symbol: string, type: string): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
@@ -448,12 +583,90 @@ export class HyperliquidWebSocketManager {
       case 'activeAssetCtx':
         this.handleAssetCtx(data as HLWsAssetCtxData);
         break;
+      case 'clearinghouseState':
+        this.handleClearinghouseState(data as any);
+        break;
+      case 'userFills':
+        this.handleUserFills(data as any);
+        break;
       case 'subscriptionResponse':
         log.debug(`HL WS subscription confirmed: ${JSON.stringify(data)}`);
         break;
       default:
         // Ignore unknown channels
         break;
+    }
+  }
+
+  /**
+   * Handle clearinghouseState pushes — the user's full position set on every
+   * change (open/close/resize). Forwards to position callbacks so the local
+   * portfolio + UI stay in sync with Hyperliquid in real time (v2.0.16).
+   */
+  private handleClearinghouseState(data: any): void {
+    try {
+      const inner = data?.clearinghouseState ?? data;
+      const assetPositions = inner?.assetPositions ?? [];
+      const isSnapshot = data?.isSnapshot === true;
+
+      const positions: HLUserPosition[] = [];
+      for (const ap of assetPositions) {
+        const p = ap?.position;
+        if (!p) continue;
+        const size = parseFloat(p.szi ?? '0');
+        if (size === 0) continue; // skip closed positions
+        const entryPx = parseFloat(p.entryPx ?? '0');
+        const unrealizedPnl = parseFloat(p.unrealizedPnl ?? '0');
+        const leverage = p.leverage?.value ?? 1;
+        const liquidationPx = parseFloat(p.liquidationPx ?? '0');
+        positions.push({
+          symbol: p.coin,
+          side: size > 0 ? 'buy' : 'sell',
+          size: Math.abs(size),
+          entryPx,
+          unrealizedPnl,
+          leverage,
+          liquidationPx,
+          isSnapshot,
+        });
+      }
+      this.latestUserPositions = positions;
+      for (const cb of this.positionCallbacks) {
+        try { cb(positions); } catch { /* callback error */ }
+      }
+    } catch (err) {
+      log.warn(`[handleClearinghouseState] parse failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Handle userFills pushes — every order execution for the user. Forwards to
+   * fill callbacks so the local portfolio can update its entry point + SL/TP
+   * immediately after a real order fills (v2.0.16).
+   */
+  private handleUserFills(data: any): void {
+    try {
+      const fills = data?.fills ?? [];
+      const isSnapshot = data?.isSnapshot === true;
+      for (const f of fills) {
+        const fill: HLUserFill = {
+          symbol: f.coin,
+          side: f.side === 'B' ? 'B' : 'A',
+          price: parseFloat(f.px ?? '0'),
+          size: parseFloat(f.sz ?? '0'),
+          timestamp: f.time ?? Date.now(),
+          closedPnl: parseFloat(f.closedPnl ?? '0'),
+          fee: parseFloat(f.fee ?? '0'),
+          isSnapshot,
+        };
+        // Skip snapshot fills — only act on streaming fills (new executions)
+        if (isSnapshot) continue;
+        for (const cb of this.fillCallbacks) {
+          try { cb(fill); } catch { /* callback error */ }
+        }
+      }
+    } catch (err) {
+      log.warn(`[handleUserFills] parse failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

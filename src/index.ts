@@ -436,6 +436,36 @@ class AMACRFSystem {
       // 7. Initialize Hyperliquid + Multi-Exchange WebSocket (BEFORE Market Agent so onSymbolChanged works)
       log.info('Step 7/7: Initializing Hyperliquid WebSocket...');
       this.hyperliquidWs = new HyperliquidWebSocketManager();
+
+      // v2.0.16: subscribe to user-level feeds (clearinghouseState + userFills)
+      // so the local portfolio + UI stay in real-time sync with Hyperliquid
+      // positions + fills. Only when a wallet address is configured (real mode).
+      const hlWallet = config.realTrading.hyperliquidWalletAddress;
+      if (hlWallet && hlWallet.length > 0) {
+        this.hyperliquidWs.setWalletAddress(hlWallet);
+        // Position updates → soft-sync the local mirror (PnL + price only,
+        // no auto-close; the exchange natively manages stop-losses).
+        this.hyperliquidWs.onPositions((positions) => {
+          for (const p of positions) {
+            const sym = p.symbol.toLowerCase();
+            if (this.portfolio.hasPosition(sym)) {
+              this.portfolio.softUpdatePosition(sym, p.entryPx);
+            }
+          }
+        });
+        // Fill updates → immediate post-trade sync so the mirror's entry point
+        // reflects the actual fill price (not the decision price).
+        this.hyperliquidWs.onFills(async (fill) => {
+          const sym = fill.symbol.toLowerCase();
+          if (this.portfolio.hasPosition(sym)) {
+            // The fill price is the real entry; soft-update so the mirror +
+            // TradingView chart show the actual fill level.
+            this.portfolio.softUpdatePosition(sym, fill.price);
+            log.info(`📡 HL WS fill: ${fill.symbol} ${fill.side} ${fill.size} @ ${fill.price} — mirror synced`);
+          }
+        });
+        log.info('✓ HL WS user feeds wired (clearinghouseState + userFills)');
+      }
       log.info('✓ Hyperliquid WebSocket ready');
 
       // Multi-Exchange WS — binance left null intentionally (HL-only mode)

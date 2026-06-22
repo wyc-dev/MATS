@@ -251,6 +251,36 @@ export class RealTradingManager {
               tpPrice,
             );
           }
+
+          // Renew the local mirror's SL/TP so the TradingView chart + SL/TP
+          // monitoring reflect the real trade's levels (v2.0.16). The mirror
+          // was opened by paperEngine.executeDecision above with default SL/TP;
+          // override with the decision's actual SL/TP prices.
+          const mirrorPos = this.portfolio.getPosition(decision.symbol.toLowerCase());
+          if (mirrorPos && (slPrice || tpPrice)) {
+            const posId = mirrorPos.id;
+            this.portfolio.adjustPosition(posId, slPrice, tpPrice);
+            log.info(`Mirror SL/TP renewed for ${decision.symbol}: SL=${slPrice?.toFixed(2) ?? '-'} TP=${tpPrice?.toFixed(2) ?? '-'}`);
+          }
+        }
+
+        // ── Immediate exchange sync after place/re-place (v2.0.16) ──
+        // Fetch the real entry price from the exchange so the local mirror +
+        // TradingView chart show the actual fill price, not the decision price.
+        // This runs immediately after the order fills (not waiting for the next
+        // cycle's syncExchangePositions).
+        try {
+          const exchangePositions = await engine.getPositions();
+          const exPos = exchangePositions.find(
+            p => p.symbol.toLowerCase() === decision.symbol.toLowerCase(),
+          );
+          if (exPos && this.portfolio.hasPosition(decision.symbol.toLowerCase())) {
+            // Update the mirror's entry price to the real fill price + leverage
+            this.portfolio.softUpdatePosition(decision.symbol.toLowerCase(), exPos.currentPrice);
+            log.info(`Mirror synced to exchange fill: ${decision.symbol} entry=${exPos.averageEntryPrice.toFixed(2)} lev=${exPos.leverage}x`);
+          }
+        } catch (syncErr) {
+          log.warn(`Post-trade exchange sync failed: ${syncErr instanceof Error ? syncErr.message : String(syncErr)}`);
         }
 
         return {
