@@ -789,10 +789,14 @@ ATR/range-based, not fixed-percent widening):
   2. For EXISTING positions: NARROW TP to the opposite range edge (mean-reversion target — choppy
      markets do not travel far, so a wide TP will never hit). NARROW SL to just outside the recent
      range (if the range breaks, the regime has changed — stop out immediately rather than ride a
-     breakout against you). REDUCE position size via adjustedPositionSizePct (choppy markets have
-     low win rates — smaller size limits per-trade loss).
-     Typical: TP 5%→2-3% (range edge), SL 2%→1.5% (just beyond range), positionSize 50-70% of original.
-  3. If current loss streak ≥ 3: bias toward VETO on new entries — the system is out of sync with the market.
+     breakout against you). Do NOT widen SL — a wider SL in a choppy market just means a bigger loss
+     when the range breaks.
+  3. POSITION SIZE: The system AUTOMATICALLY cuts position size to 50% in choppy markets (hardcoded
+     in HACP, not LLM-discretionary). You do NOT need to set adjustedPositionSizePct for the choppy
+     cut — it is applied for you. Only set adjustedPositionSizePct if you want to reduce FURTHER
+     (e.g. loss streak ≥ 3 → cut to 25%). The paper engine floors the final notional to Hyperliquid's
+     $10 minimum, so the 50% cut never produces an untradeable tiny order.
+  4. If current loss streak ≥ 3: bias toward VETO on new entries — the system is out of sync with the market.
 
 - ✅ PROFITABLE RECENT TRADES (win rate ≥ 60%, net positive): market favours the current strategy.
   Approve entries that match the recent winning direction. For existing positions, you may WIDEN

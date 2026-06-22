@@ -9,6 +9,11 @@ import type { Order, OrderSide, OrderStatus, Ticker, TradingDecision, TradeRecor
 
 const log = createLogger({ phase: 'trading' });
 
+/** Hyperliquid minimum order notional in USD. Orders below this are rejected
+ *  by the exchange. Used as a floor so that Risk Auditor size reductions (e.g.
+ *  choppy-market 50% cut) never produce an untradeable tiny order. */
+const HL_MIN_NOTIONAL_USD = 10;
+
 export interface ExecutionReport {
   order: Order;
   trade?: TradeRecord;
@@ -130,6 +135,20 @@ export class PaperTradingEngine {
       return reports;
     }
 
+    // ── Hyperliquid minimum notional floor ──
+    // If the position size (after any Risk Auditor choppy-market reduction)
+    // falls below HL's minimum order notional, bump it up to the floor so the
+    // trade remains executable. This only applies to BUY/SELL — HOLD/close
+    // paths don't reach here. We floor the notional, not skip, because the
+    // agents already decided to trade; being below min is a sizing artefact,
+    // not a signal to abandon the trade.
+    const notional = quantity * price;
+    let effectiveQuantity = quantity;
+    if (notional < HL_MIN_NOTIONAL_USD && (decision.action === 'buy' || decision.action === 'sell')) {
+      effectiveQuantity = HL_MIN_NOTIONAL_USD / price;
+      log.info(`Position notional $${notional.toFixed(2)} below HL min $${HL_MIN_NOTIONAL_USD} — floored to ${effectiveQuantity.toFixed(6)} ($${HL_MIN_NOTIONAL_USD} notional)`);
+    }
+
     // ── Symbol Overlap Guard (defence-in-depth) ──
     // If this symbol already has an open position, do NOT open a new trade.
     // The existing position is already managed by per-symbol consensus + SL/TP.
@@ -155,7 +174,7 @@ export class PaperTradingEngine {
     for (const [, pos] of portfolio.positions) {
       totalMarginExposure += pos.quantity * pos.averageEntryPrice; // margin, not notional
     }
-    const newMargin = quantity * price; // margin for the new position
+    const newMargin = effectiveQuantity * price; // margin for the new position
     const totalMarginAfter = totalMarginExposure + newMargin;
     const maxMargin = portfolio.balance * 0.20; // 20% of balance max total margin
 
@@ -164,8 +183,15 @@ export class PaperTradingEngine {
       const allowedNewMargin = Math.max(0, maxMargin - totalMarginExposure);
       if (allowedNewMargin > 0) {
         const scaledQuantity = allowedNewMargin / price;
-        log.info(`Position scaled down: ${quantity.toFixed(6)} → ${scaledQuantity.toFixed(6)} (cumulative margin ${((totalMarginAfter / portfolio.balance) * 100).toFixed(1)}% > 20%)`);
-        return [await this.executeOrder(decision, scaledQuantity, price)];
+        // Re-apply the HL min notional floor after scaling down — if the
+        // scaled-down order is below min, floor it back up (the 20% margin
+        // cap is a soft guard; HL min notional is a hard exchange requirement).
+        const scaledNotional = scaledQuantity * price;
+        const finalScaled = scaledNotional < HL_MIN_NOTIONAL_USD && (decision.action === 'buy' || decision.action === 'sell')
+          ? HL_MIN_NOTIONAL_USD / price
+          : scaledQuantity;
+        log.info(`Position scaled down: ${effectiveQuantity.toFixed(6)} → ${finalScaled.toFixed(6)} (cumulative margin ${((totalMarginAfter / portfolio.balance) * 100).toFixed(1)}% > 20%)`);
+        return [await this.executeOrder(decision, finalScaled, price)];
       } else {
         const err = `Cumulative margin $${totalMarginAfter.toFixed(2)} exceeds 20% of balance $${portfolio.balance.toFixed(2)}. Cannot open new position.`;
         log.warn(err);
@@ -201,8 +227,8 @@ export class PaperTradingEngine {
       }];
     }
 
-    // Execute the order
-    const report = await this.executeOrder(decision, quantity, price);
+    // Execute the order (use effectiveQuantity which honours the HL min notional floor)
+    const report = await this.executeOrder(decision, effectiveQuantity, price);
 
     // Log execution summary
     if (report.trade) {
