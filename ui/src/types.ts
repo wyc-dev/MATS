@@ -4,9 +4,10 @@ export interface SystemSnapshot {
   cycles: number;
   balance: number;
   equity: number;
-  totalPnl: number;
-  totalPnlPct: number;
-  drawdownPct: number;
+  /** Null in real-trade mode (v2.0.17) — UI shows '--'. */
+  totalPnl: number | null;
+  totalPnlPct: number | null;
+  drawdownPct: number | null;
   positions: number;
   wsConnected: boolean;
   tradeCount: number;
@@ -108,10 +109,11 @@ export interface Portfolio {
   balance: number;
   initialBalance: number;
   totalEquity: number;
-  totalPnl: number;
-  totalPnlPct: number;
-  maxDrawdown: number;
-  maxDrawdownPct: number;
+  /** Null in real-trade mode (v2.0.17) — UI shows '--'. */
+  totalPnl: number | null;
+  totalPnlPct: number | null;
+  maxDrawdown: number | null;
+  maxDrawdownPct: number | null;
   peakEquity: number;
   dailyPnl: number;
   tradeCount: number;

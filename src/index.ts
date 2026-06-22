@@ -32,7 +32,7 @@ import { getSRZones } from './analysis/support-resistance.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
 import { RBCEngine, type RBCQueryResult } from './evolution/rbc-clustering.ts';
-import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole } from './types/index.ts';
+import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo } from './types/index.ts';
 
 const log = createLogger({ phase: 'system' });
 
@@ -70,6 +70,10 @@ class AMACRFSystem {
   private lastCycleDuration = 0;
   private lastHACPResult: { consensus: ConsensusResult; allThoughts: AgentThought[]; debateRounds: DebateRound[] } | null = null;
   private cycleProgress: CycleProgress | null = null;
+  /** Cached real-exchange balance (v2.0.17). Refreshed each cycle in real mode
+   *  via realTradingManager.getBalance(); used by pushToAPI() so the UI shows
+   *  the actual Hyperliquid account value instead of the local mirror. */
+  private cachedExchangeBalance: ExchangeAccountInfo | null = null;
   private lastSRContext: { formatted: string; regime: string; zoneCount: number; strongZones: number; nearestSupport: number | null; nearestResistance: number | null; distanceToSupportBps: number; distanceToResistanceBps: number; degradedReason: string | null } | null = null;
   private emManager!: CycleSummaryManager;
   private patternClassifier!: TradePatternClassifier;
@@ -897,7 +901,14 @@ class AMACRFSystem {
       // Sync real exchange positions into local portfolio before agents think
       if (this.realTradingManager.getTradeMode() === 'real') {
         await this.realTradingManager.syncExchangePositions();
-        log.info('📡 Exchange positions synced for agent context');
+        // Cache the real exchange balance so pushToAPI() can show the actual
+        // Hyperliquid account value (not the local mirror) in the UI (v2.0.17).
+        try {
+          this.cachedExchangeBalance = await this.realTradingManager.getBalance();
+          log.info(`📡 Exchange positions synced for agent context (HL balance: $${this.cachedExchangeBalance.total.toFixed(2)})`);
+        } catch (err) {
+          log.warn(`Exchange balance fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
 
       // ── Position Reconciliation (Skeptics phase) ──
@@ -1965,14 +1976,21 @@ class AMACRFSystem {
         exchange: pos.exchange,
       };
     }
+    // v2.0.17: in real mode, show the actual Hyperliquid account value +
+    // null out totalPnl/drawdown (paper-trade concepts). Win rate / trade
+    // count stay local (paper + real mixed).
+    const isRealMode = this.realTradingManager?.getTradeMode() === 'real';
+    const exBal = isRealMode ? this.cachedExchangeBalance : null;
+    const displayBalance = exBal && exBal.total > 0 ? exBal.total : p.balance;
+    const displayEquity = exBal && exBal.total > 0 ? exBal.total : p.totalEquity;
     return {
-      balance: p.balance,
+      balance: displayBalance,
       initialBalance: p.initialBalance,
-      totalEquity: p.totalEquity,
-      totalPnl: p.totalPnl,
-      totalPnlPct: p.totalPnlPct,
-      maxDrawdown: p.maxDrawdown,
-      maxDrawdownPct: p.maxDrawdownPct,
+      totalEquity: displayEquity,
+      totalPnl: isRealMode ? null : p.totalPnl,
+      totalPnlPct: isRealMode ? null : p.totalPnlPct,
+      maxDrawdown: isRealMode ? null : p.maxDrawdown,
+      maxDrawdownPct: isRealMode ? null : p.maxDrawdownPct,
       peakEquity: p.peakEquity,
       dailyPnl: p.dailyPnl,
       dailyLossLimit: p.dailyLossLimit,
@@ -2099,18 +2117,31 @@ class AMACRFSystem {
 
       const marketAgentState = this.marketAgent?.getState() ?? { config: { selectedSymbol: '', tradeMode: 'paper', exchange: 'hyperliquid', hyperliquidAssetType: 'crypto_perps', updatedAt: Date.now() }, topPairs: [] };
 
+      // v2.0.17: In real-trade mode, show the actual Hyperliquid account value
+      // (from the cached exchange balance) instead of the local mirror. The
+      // local mirror only tracks margin movements from our own trades; it
+      // misses deposits/withdrawals, funding settlements, and PnL from other
+      // sources. Total PnL + drawdown are nulled in real mode (UI shows '--')
+      // because they're paper-trade concepts that don't map cleanly to the
+      // real account. Win rate / trade count stay local (paper + real mixed).
+      const isRealMode = this.realTradingManager.getTradeMode() === 'real';
+      const exBal = isRealMode ? this.cachedExchangeBalance : null;
+      const displayBalance = exBal && exBal.total > 0 ? exBal.total : p.balance;
+      const displayEquity = exBal && exBal.total > 0 ? exBal.total : p.totalEquity;
+
       this.apiServer.update({
         systemPaused: this.paused,
         status: {
           cycles: this.totalCycles,
-          balance: p.balance,
-          equity: p.totalEquity,
+          balance: displayBalance,
+          equity: displayEquity,
           // totalPnl: use accumulated realized PnL from the portfolio tracker
           // rather than (equity - initialBalance) which includes unrealized PnL
           // and locked margin creating phantom gains/losses.
-          totalPnl: p.totalPnl,
-          totalPnlPct: p.totalPnlPct,
-          drawdownPct: p.maxDrawdownPct,
+          // In real mode, null → UI shows '--' (paper-trade concept).
+          totalPnl: isRealMode ? null as unknown as number : p.totalPnl,
+          totalPnlPct: isRealMode ? null as unknown as number : p.totalPnlPct,
+          drawdownPct: isRealMode ? null as unknown as number : p.maxDrawdownPct,
           positions: p.positions.size,
           wsConnected: this.multiWs?.isConnected?.() ?? false,
           tradeCount: p.tradeCount,

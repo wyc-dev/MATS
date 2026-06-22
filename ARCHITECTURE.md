@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.16-dev (HL WS user-level subscriptions + real-trade portfolio sync + UI chart position markers)  
+> **版本**: 2.0.17-dev (Real-trade 真實 Balance/Equity 顯示 — HL exchange balance + null PnL/drawdown)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -45,6 +45,7 @@
 34. [B.15 Risk Auditor 震盪市偵測 + Regime-aware TP/SL](#b15-risk-auditor-震盪市偵測--regime-aware-tpslv2013v2014-修復)
 35. [B.16 Evolution Enhancement — Directional Mutation + Agent Evolution + Regime-aware Strategy](#b16-evolution-enhancement--directional-mutation--agent-evolution--regime-aware-strategyv2015-修復)
 36. [B.17 HL WS User-Level Subscriptions + Real-Trade Portfolio Sync](#b17-hl-ws-user-level-subscriptions--real-trade-portfolio-syncv2016-修復)
+37. [B.18 Real-Trade 真實 Balance/Equity 顯示](#b18-real-trade-真實-balanceequity-顯示v2017-修復)
 
 ---
 
@@ -1213,7 +1214,33 @@ Real Mode:
   → reconcilePositions(): 清理本地已不存在的 mirror
 • 紙交模式: activeSymbol 作為 ground truth
   → 其他 symbol 的 position 視為 stale → 自動平倉
+• 🆕 v2.0.16: HL WS `clearinghouseState` + `userFills` 即時同步（唔再靠 REST 輪詢）
+• 🆕 v2.0.17: real mode 用 exchange 真實 balance/equity（唔再用本地 mirror）
 ```
+
+### 🆕 v2.0.17: Real-Trade 真實 Balance/Equity 顯示
+
+**問題**: `pushToAPI()` 嘅 Balance/Equity 來自本地 `portfolio.getPortfolio()` 嘅 `p.balance` / `p.totalEquity`（本地 mirror），而唔係 HL exchange 嘅真實賬戶餘額。本地 mirror 只追蹤我哋自己交易嘅 margin 變動，唔反映人手存款/提款、funding 結算、或其他來源嘅 PnL。
+
+**解決方案**: real-trade mode 用 HL exchange 真實 balance 覆蓋本地 mirror：
+
+| 欄位 | Paper mode | Real mode (v2.0.17) |
+|:-----|:-----------|:-------------------|
+| Balance | `p.balance`（本地 mirror） | **HL `clearinghouseState` 真實 account value** |
+| Equity | `p.totalEquity`（本地 mirror） | **HL 真實 account value** |
+| Total PnL | `p.totalPnl`（本地累積 realized） | **`null` → UI 顯示 `--`** |
+| Drawdown | `p.maxDrawdownPct`（本地） | **`null` → UI 顯示 `--`** |
+| Win Rate / Trades | `p.winCount`/`p.lossCount`/`p.tradeCount` | **保持本地**（paper + real 混合） |
+
+**實現**:
+- `index.ts` 新增 `cachedExchangeBalance: ExchangeAccountInfo | null` field
+- 每個 cycle `syncExchangePositions()` 之後 `realTradingManager.getBalance()` cache exchange balance
+- `pushToAPI()` 同 `serializePortfolio()` 喺 real mode 用 `cachedExchangeBalance.total` 作為 balance/equity
+- `totalPnl` / `totalPnlPct` / `maxDrawdown` / `maxDrawdownPct` 喺 real mode 設為 `null`
+- UI `SystemSnapshot` / `Portfolio` type 嘅呢啲欄位改為 `number | null`
+- UI `StatCell` / `PortfolioPanel` 喺 null 時顯示 `--`
+
+**效果**: Real-trade mode 時 UI 顯示 HL 真實賬戶餘額（反映存款/提款/funding/所有 PnL 來源），Total PnL 同 Drawdown 顯示 `--`（paper-trade 概念唔適用於 real account），Win Rate / Trades 保持本地（paper + real 混合計算）。
 
 ### 投資組合狀態輸出
 
@@ -4899,6 +4926,33 @@ if (isSynthetic) {
 | `ui/src/types.ts` | `tradeHistory` type 加 `decision.symbol` + `openedAt` |
 
 **效果**: Real-trade 喺 HL place/re-place 完後，本地 portfolio + UI TradingView chart 即時更新入場點 + SL/TP。持倉透過 `clearinghouseState` WS 即時同步（唔再靠 300s REST 輪詢）。UI 主 chart 顯示持倉 markers + SL/TP price lines。
+
+---
+
+### B.18 Real-Trade 真實 Balance/Equity 顯示（v2.0.17 修復）
+
+> **觸發**: Real-trade mode 時 UI 嘅 Balance/Equity 仍用本地 mirror，唔反映 HL 真實賬戶餘額（存款/提款/funding/其他 PnL 來源）。
+> **詳情**: 見 [Real-Trade 真實 Balance/Equity 顯示](#v2017-real-trade-真實-balanceequity-顯示) 章節。
+
+**欄位處理**:
+
+| 欄位 | Paper mode | Real mode (v2.0.17) |
+|:-----|:-----------|:-------------------|
+| Balance | `p.balance`（本地 mirror） | HL `clearinghouseState` 真實 account value |
+| Equity | `p.totalEquity`（本地 mirror） | HL 真實 account value |
+| Total PnL | `p.totalPnl` | `null` → UI `--` |
+| Drawdown | `p.maxDrawdownPct` | `null` → UI `--` |
+| Win Rate / Trades | 本地 | 保持本地（paper + real 混合） |
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/index.ts` | `cachedExchangeBalance` field；每 cycle `getBalance()` cache；`pushToAPI()` + `serializePortfolio()` real mode 用 exchange balance + null PnL/drawdown |
+| `ui/src/types.ts` | `SystemSnapshot` / `Portfolio` 嘅 `totalPnl`/`drawdownPct` 等改為 `number \| null` |
+| `ui/src/App.tsx` | `StatCell` + `PortfolioPanel` null 時顯示 `--` |
+
+**效果**: Real-trade mode 時 UI 顯示 HL 真實賬戶餘額，Total PnL 同 Drawdown 顯示 `--`，Win Rate / Trades 保持本地（paper + real 混合）。
 
 ---
 
