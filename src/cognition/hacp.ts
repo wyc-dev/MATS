@@ -104,6 +104,78 @@ export class HACPEngine {
   }
 
   /**
+   * Race an agent's think() against a deadline. If the agent exceeds the
+   * window (LLM timeout, circuit breaker open, network stall during HL WS
+   * reconnect), return a graceful HOLD thought instead of letting the caller
+   * block for the full LLM timeout. This keeps HACP cycles responsive: a
+   * single degraded agent degrades to HOLD rather than stalling all phases.
+   *
+   * The underlying agent.think() promise is NOT cancelled (JS has no native
+   * cancellation), but it is orphaned — its result is discarded if it arrives
+   * after the deadline. The agent's own LLM timeout (120s) still applies as a
+   * backstop, so orphaned promises eventually settle and free resources.
+   */
+  private async raceAgentThink(
+    agent: BaseAgent,
+    marketStateDesc: string,
+    portfolioDesc: string,
+    posCtx: PositionContext[],
+    deadlineMs: number,
+  ): Promise<AgentThought> {
+    const start = Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`agent think() exceeded ${deadlineMs}ms deadline`));
+      }, deadlineMs);
+    });
+
+    try {
+      const result = await Promise.race([
+        agent.think(marketStateDesc, portfolioDesc, posCtx),
+        timeoutPromise,
+      ]);
+      return result;
+    } catch (err) {
+      const elapsed = Date.now() - start;
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn(`⚠️ ${agent.identity.name} think() missed deadline after ${elapsed}ms: ${msg} — graceful HOLD`);
+      return {
+        agentId: agent.identity.id,
+        agentRole: agent.identity.role,
+        thought: `DEADLINE MISS (${elapsed}ms): ${msg}. Defaulting to HOLD for capital preservation.`,
+        confidence: 0,
+        timestamp: Date.now(),
+        metadata: {
+          latency: elapsed,
+          model: 'deadline-fallback',
+          multiSymbolDecision: {
+            marketTicker: {
+              action: 'hold',
+              symbol: '',
+              positionSizePct: 0,
+              leverage: 1,
+              rationale: `Agent think() deadline miss (${elapsed}ms) — HOLD fallback`,
+              urgency: 'patient',
+            },
+            positions: [],
+          },
+          decision: {
+            action: 'hold',
+            symbol: '',
+            positionSizePct: 0,
+            leverage: 1,
+            rationale: `Agent think() deadline miss — HOLD fallback`,
+            urgency: 'patient',
+          } as TradingDecision,
+        },
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
    * Get current dynamic consensus threshold value
    */
   getCurrentThreshold(): number {
@@ -237,6 +309,13 @@ export class HACPEngine {
     // Staggered calls to avoid overloading Ollama
     const staggerDelayMs = config.hacp.staggerDelayMs;
 
+    // Per-agent deadline: each agent must finish within the remaining HACP
+    // budget, leaving room for subsequent phases (debate, consensus, risk).
+    // We cap the per-agent thinking window at 60s so a single slow/timed-out
+    // agent (e.g. Ollama during a WS reconnect storm) cannot block the whole
+    // cycle for 120s. Agents that miss the deadline get a graceful HOLD.
+    const phase1DeadlineMs = 60_000;
+
     const thinkingPromises = this.subAgents.map(async (agent, idx) => {
       if (idx > 0) {
         const delay = idx * staggerDelayMs;
@@ -253,7 +332,10 @@ export class HACPEngine {
       }
       this.emitProgress('thinking', progress);
 
-      const result = await agent.think(marketStateDesc, portfolioDesc, posCtx);
+      // Race the agent think() against a deadline. If the agent exceeds the
+      // window (LLM timeout, circuit breaker, network stall), return a graceful
+      // HOLD instead of letting Promise.all wait for the full 120s timeout.
+      const result = await this.raceAgentThink(agent, marketStateDesc, portfolioDesc, posCtx, phase1DeadlineMs);
 
       // Emit: this agent finished thinking
       const progress2 = this.makeAgentProgressList();
@@ -824,6 +906,9 @@ Output ONLY valid JSON:
           ],
           temperature: 0.2,
           model: this.metaAgent.resolveModel(),
+          // Position adjustment is a focused single-position call — cap at 30s
+          // so a stalled provider cannot block the HACP cycle past its deadline.
+          timeoutMs: 30_000,
         });
 
         const jsonStr = (() => {
@@ -1229,6 +1314,9 @@ Output ONLY valid JSON:
         ],
         temperature: 0.05,
         model: this.riskAuditor.resolveModel(),
+        // Risk audit is a focused veto check — cap at 30s so a stalled
+        // provider cannot block the HACP cycle past its deadline.
+        timeoutMs: 30_000,
       });
 
       const parsed = JSON.parse(response.content) as {

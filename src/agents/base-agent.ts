@@ -151,7 +151,12 @@ RULES:
         ],
         temperature: this.identity.temperature,
         model: this.resolveModel(),
-        timeoutMs: 120_000,
+        // Tiered timeout: 45s for the LLM call, leaving a 15s buffer under the
+        // HACP Phase 1 deadline race (60s). Previously 120s, which meant a
+        // single stalled agent (e.g. Ollama during HL WS reconnect) blocked
+        // the entire HACP cycle for 2 minutes. The HACP deadline race now
+        // catches any overflow and degrades to a graceful HOLD.
+        timeoutMs: 45_000,
       });
 
       const parsed = this.parseMultiSymbolResponse(response.content);
@@ -290,6 +295,9 @@ RULES:
         ],
         temperature: this.identity.temperature * 0.8,
         model: this.resolveModel(),
+        // Debate rounds are shorter than full think(); cap at 30s so a stalled
+        // provider cannot drag the debate phase past the HACP deadline.
+        timeoutMs: 30_000,
       });
 
       const jsonStr = this.extractJSON(response.content);

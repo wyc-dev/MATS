@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.11-dev (RBC 分層衰減 + 時間加權 centroid + confidence-aware agent context)  
+> **版本**: 2.0.12-dev (LLM Resilience — circuit breaker + deadline race + tiered timeout)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -41,6 +41,7 @@
 30. [B.11 合成資產 S/R 檢測 — HL candleSnapshot 500 error](#b11-合成資產-sr-檢測--hl-candlesnapshot-500-errorv209-修復)
 31. [B.12 參考文獻](#b12-參考文獻related-documentation)
 32. [B.13 Math Audit — 13 個數學/邏輯錯誤](#b13-math-audit--13-個數學邏輯錯誤v2010-修復)
+33. [B.14 LLM 超時風暴 — HL WS 重連後 Agent think() 卡死 120s](#b14-llm-超時風暴--hl-ws-重連後-agent-think-卡死-120sv2012-修復)
 
 ---
 
@@ -151,13 +152,13 @@
 │   │   │   ├── LLMResponse       # 通用響應格式
 │   │   │   └── LLMProvider       # 抽象介面
 │   │   │
-│   │   ├── nim-provider.ts       # NVIDIA NIM 實現 (128 行)
+│   │   ├── nim-provider.ts       # NVIDIA NIM 實現 (v2.0.12 — circuit breaker)
 │   │   │   ├── OpenAI-compat API # /v1/chat/completions
 │   │   │   ├── 可用性檢查        # /v1/models
 │   │   │   ├── 超時控制          # AbortController
 │   │   │   └── Token 用量追蹤    # prompt/completion tokens
 │   │   │
-│   │   ├── ollama-provider.ts    # Ollama 備援實現 (139 行)
+│   │   ├── ollama-provider.ts    # Ollama 備援實現 (v2.0.12 — circuit breaker + slot timeout)
 │   │   │   ├── 本地 API          # /api/chat
 │   │   │   ├── 溫度模型映射      # 自動選擇最佳模型
 │   │   │   ├── 超時控制          # AbortController
@@ -247,7 +248,7 @@
 │   │       └── Guard E: Liquidity Check (order book depth vs 倉位大小)
 │   │
 │   ├── cognition/
-│   │   └── hacp.ts               # HACP 認知協議 (~1278 行, v2.0.8 — Per-Symbol Consensus)
+│   │   └── hacp.ts               # HACP 認知協議 (v2.0.12 — deadline race + tiered timeout)
 │   │       ├── Phase 1-5         # 平行思考 → Skeptics審查 → Meta仲裁 → 辯論 → 共識 → 否決 → 倉位調整
 │   │       ├── Phase 1.5         # Skeptics 邏輯審查 (跨 Agent 交叉對比)
 │   │       ├── Phase 1.75        # Meta-Agent 在 Skeptics 之後思考 (接收審查結果)
@@ -775,7 +776,7 @@ PROP: BUY 4.5% immediate | momentum_strong but reduce_size_for_vol_uncertainty
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  PHASE 1: PARALLEL THINKING (15s timeout)                       │
+│  PHASE 1: PARALLEL THINKING (60s deadline race per agent)       │
 │                                                                 │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
 │  │ Fractal  │  │ OnChain  │  │ RBC      │  │ Risk     │       │
@@ -1441,6 +1442,48 @@ AFTER:  1 agent × 5 APIs = 5 requests, 4 agents wait → 同一 data
 | Risk Auditor | Default | llama-3.3-70b | 風險審計 |
 | Skeptics | Fast | nemotron-8b | 邏輯審計 (default: deepseek-v4-flash:cloud) |
 | Meta-Agent | Strong | deepseek-r1 | 最終仲裁/複雜推理 |
+
+### 🆕 v2.0.12: LLM Resilience — Circuit Breaker + Deadline Race
+
+**問題**: HL WebSocket 斷線並 retry 重連之後，Agents 出現 `Agent think() failed: Ollama request timed out after 120000ms`。根本原因：
+1. **無 circuit breaker** — Ollama/NIM 連續超時後仍然繼續用，每個 agent 各自等 120s
+2. **Ollama slot busy-wait 無上限** — `acquireSlot()` 無限 busy-wait，2 個 slots 被佔用時其他 agents 累積延遲
+3. **HACP `Promise.all` 無 deadline race** — 一個 agent 超時 120s，整個 Phase 1 阻塞 120s
+4. **base-agent timeout 120s 太長** — 超過 HACP 總預算，無 buffer 俾後續 phases
+
+**解決方案**（4 層防護）：
+
+| 層 | 位置 | 機制 |
+|:--|:-----|:-----|
+| **1. Circuit Breaker** | `ollama-provider.ts`, `nim-provider.ts` | 連續 3 次失敗 → breaker OPEN，30s 內 fail-fast（唔再等 120s）；30s 後 half-open probe 測試恢復 |
+| **2. Slot Acquisition Timeout** | `ollama-provider.ts` `acquireSlot()` | busy-wait 上限 15s，超過即 fail-fast（之前無限 busy-wait） |
+| **3. HACP Deadline Race** | `hacp.ts` `raceAgentThink()` | 每個 agent think() race 60s deadline，超時返回 graceful HOLD（之前 `Promise.all` 無 race） |
+| **4. Tiered LLM Timeout** | `base-agent.ts`, `hacp.ts` | think() 45s、debate/audit 30s（之前全部 120s 或 provider default） |
+
+**Circuit Breaker 狀態機**：
+```
+CLOSED (正常) ──3 次連續失敗──▶ OPEN (fail-fast 30s)
+   ▲                               │
+   │                               │ 30s 後
+   │                               ▼
+   └──成功── HALF-OPEN (probe) ──失敗──▶ OPEN
+```
+
+**HACP Deadline Race**：
+```typescript
+// 每個 agent think() race 60s deadline
+const result = await Promise.race([
+  agent.think(marketStateDesc, portfolioDesc, posCtx),
+  timeoutPromise(60_000),
+]);
+// 超時 → 返回 graceful HOLD thought（confidence=0），唔阻塞 Promise.all
+```
+
+**效果**:
+- Ollama 超時風暴時，3 次失敗後 fail-fast，唔再每個 agent 等 120s
+- 單個 agent 超時唔再阻塞整個 HACP cycle（60s deadline race → HOLD fallback）
+- LLM timeout 分層（45s/30s）留 buffer 俾 HACP deadline 同後續 phases
+- WS 重連期間 LLM 服務降級時，系統 graceful degrade 到 HOLD 而非卡死
 
 ---
 
@@ -4544,6 +4587,24 @@ if (isSynthetic) {
 | RBC 非 active symbol 被錯誤訓練 | `index.ts` | 歷史 symbol（如 `xyz:META`）用 active symbol price proxy 污染 boxes |
 
 **假警報（無需修復）**: Portfolio 槓桿重複計算 — 經完整金流追蹤確認會計正確（`totalEquity = balance + unrealizedPnl + lockedMargin` 係標準期貨保證金會計）。
+
+---
+
+### B.14 LLM 超時風暴 — HL WS 重連後 Agent think() 卡死 120s（v2.0.12 修復）
+
+> **觸發**: Hyperliquid WebSocket 斷線並 retry 重連之後，Agents 出現 `Agent think() failed: Ollama request timed out after 120000ms`。
+> **詳情**: 見 [LLM Resilience](#v2012-llm-resilience--circuit-breaker--deadline-race) 章節。
+
+**根本原因**（4 層缺失）:
+
+| 層 | 問題 | 修復 |
+|:--|:-----|:-----|
+| Circuit Breaker | Ollama/NIM 連續超時後仍然繼續用，每個 agent 各自等 120s | 連續 3 次失敗 → breaker OPEN，30s fail-fast |
+| Slot Timeout | Ollama `acquireSlot()` 無限 busy-wait | busy-wait 上限 15s |
+| Deadline Race | HACP `Promise.all` 無 race，單個 agent 超時阻塞整個 cycle | 每個 agent race 60s deadline → graceful HOLD |
+| Tiered Timeout | base-agent think() 120s 超過 HACP 預算 | think() 45s、debate/audit 30s |
+
+**效果**: WS 重連期間 LLM 服務降級時，系統 graceful degrade 到 HOLD 而非卡死 120s。
 
 ---
 
