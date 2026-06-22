@@ -1526,17 +1526,19 @@ class AMACRFSystem {
       // When real-mode, paperReports mirrors the real trade into the local portfolio
       // so all downstream P&L tracking, stop-loss monitoring, and evolution learning work identically.
 
-      // ── P0: Apply Taker Fees to all executed trades ──
-      // Deduct HL taker fee (0.04%) from each trade's PnL so paper PnL reflects real costs.
+      // ── v2.0.18: Taker fees are now deducted inside portfolio.openPosition()
+      // and portfolio.closePosition() (notional-based, both sides). This loop
+      // previously did a margin-based single-side deduction that undercounted
+      // fees by the leverage factor (10x → 10x undercount). Now it only records
+      // execution quality + snapshots the pattern context — no fee adjustment
+      // needed here because the portfolio already reflects the real cost.
       for (const report of reports) {
         if (!report.trade) continue;
         try {
-          const notional = Math.abs(report.trade.entryPrice * report.trade.quantity);
-          const fee = calculateTakerFee(notional);
-          // Deduct fee from trade PnL (portfolio trade already recorded, adjust balance)
-          report.trade.pnl -= fee;
-          report.trade.pnlPct = report.trade.investment > 0 ? report.trade.pnl / report.trade.investment : 0;
-          log.info(`💰 Fee deducted: $${fee.toFixed(2)} (${(fee / notional * 100).toFixed(4)}%) from ${report.trade.symbol}`);
+          // Notional = entryPrice × quantity × leverage (the leveraged value
+          // HL charges the fee on). Used for execution-quality tracking.
+          const notional = Math.abs(report.trade.entryPrice * report.trade.quantity * (report.trade.leverage ?? finalDecision.leverage ?? 1));
+          log.info(`💰 Trade executed: ${report.trade.symbol} notional=$${notional.toFixed(2)} (fees already deducted in portfolio)`);
 
           // Record execution quality
           this.executionTracker.record({

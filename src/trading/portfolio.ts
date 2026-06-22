@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../observability/logger.ts';
 import { config } from '../config/index.ts';
 import { loadPortfolio, type PortfolioSnapshot } from '../evolution/persistence.ts';
+import { calculateTakerFee } from './cost-model.ts';
 import type {
   Portfolio,
   Position,
@@ -229,6 +230,18 @@ export class PortfolioTracker {
     // Deduct margin from balance.
     this.portfolio.balance -= cost;
 
+    // ── v2.0.18: Deduct entry taker fee (notional-based) ──
+    // HL taker fee = 0.04% of NOTIONAL (leveraged value), not margin.
+    // notional = entryPrice × quantity × leverage.
+    // At 10x leverage this is 0.4% of margin per side; at 100x it's 4%.
+    // Deducting this from balance ensures paper PnL reflects the real cost
+    // of entering a leveraged position, so the system only learns strategies
+    // that are profitable AFTER fees — critical for competing in an uneven
+    // market where we can't out-speed or out-news institutional quants.
+    const entryNotional = cost * leverage;
+    const entryFee = calculateTakerFee(entryNotional);
+    this.portfolio.balance -= entryFee;
+
     // Infer exchange from symbol format
     let exchange: string | undefined;
     if (symbol.includes(':')) {
@@ -444,6 +457,16 @@ export class PortfolioTracker {
       cashReturned = margin + realizedPnl;
       this.portfolio.balance += cashReturned;
     }
+
+    // ── v2.0.18: Deduct exit taker fee (notional-based) ──
+    // HL taker fee = 0.04% of NOTIONAL at exit. notional = exitPrice × quantity × leverage.
+    // Deduct from balance AND from realizedPnl so both the account and the
+    // trade record reflect the real cost. Combined with the entry fee, a
+    // round-trip costs 0.08% of notional = 0.8% of margin at 10x, 8% at 100x.
+    const exitNotional = exitPrice * pos.quantity * lev;
+    const exitFee = calculateTakerFee(exitNotional);
+    this.portfolio.balance -= exitFee;
+    realizedPnl -= exitFee;
 
     // Track P&L as a percentage of margin used (return on capital at risk)
     const marginUsed = margin;
