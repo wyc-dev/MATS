@@ -8,12 +8,14 @@ import { config } from '../config/index.ts';
 import { parseA2ASignal, formatA2ASignal } from './a2a-utils.ts';
 import { normalizeDecision, MAX_POSITION_PCT } from '../trading/decision-utils.ts';
 import type { TradeHistory } from '../evolution/trade-history.ts';
+import type { AgentEvolutionEngine } from '../evolution/agent-evolution.ts';
 import type {
   AgentThought,
   ConsensusResult,
   DebateRound,
   DebateStatement,
   MarketState,
+  MarketRegime,
   TradingDecision,
   MultiSymbolDecision,
   PerSymbolConsensus,
@@ -62,6 +64,13 @@ export class HACPEngine {
    *  Injected so the Risk Auditor can assess whether recent buy/sell churn
    *  is losing money — a signal to avoid new entries / widen TP/SL. */
   private tradeHistory: TradeHistory | null = null;
+  /** Agent evolution engine for regime-aware dynamic voting weights (v2.0.15).
+   *  When injected, consensus votes use dynamic weights instead of the
+   *  agents' hardcoded base weights. */
+  private agentEvolution: AgentEvolutionEngine | null = null;
+  /** Current market regime — set each cycle so dynamic weights + regime-aware
+   *  strategy selection use the active regime. */
+  private currentRegime: MarketRegime = 'unknown';
 
   constructor(
     metaAgent: BaseAgent,
@@ -81,6 +90,11 @@ export class HACPEngine {
   /** Inject trade history for Risk Auditor recent-pattern analysis. */
   setTradeHistory(th: TradeHistory): void {
     this.tradeHistory = th;
+  }
+
+  /** Inject the agent evolution engine for regime-aware dynamic weights. */
+  setAgentEvolution(ae: AgentEvolutionEngine): void {
+    this.agentEvolution = ae;
   }
 
   /** Register a callback for real-time progress updates */
@@ -259,6 +273,19 @@ export class HACPEngine {
     const allThoughts: AgentThought[] = [];
     const debateRounds: DebateRound[] = [];
     const deadline = Date.now() + this.totalTimeoutMs;
+
+    // Extract the current regime from the market description so dynamic
+    // agent weights + regime-aware strategy selection use the active regime.
+    const regimeMatch = marketStateDesc.match(/Regime:\s*(\w+)/i);
+    if (regimeMatch?.[1]) {
+      this.currentRegime = regimeMatch[1].toLowerCase() as MarketRegime;
+    }
+    // Update agent dynamic weights for the current regime (v2.0.15).
+    // This reads per-agent win rates from AgentOutcomeTracker and EMA-smooths
+    // the multipliers so consensus votes reflect each agent's recent performance.
+    if (this.agentEvolution) {
+      this.agentEvolution.updateWeights(this.currentRegime);
+    }
 
     // Inject Market Agent constraints into the market description
     let constrainedMarketDesc = marketStateDesc;
@@ -1119,10 +1146,15 @@ Output ONLY valid JSON:
       };
 
       const voteResult = await agent.vote([decision]);
+      // v2.0.15: use regime-aware dynamic weight when the agent evolution
+      // engine is injected; otherwise fall back to the hardcoded base weight.
+      const weight = this.agentEvolution
+        ? this.agentEvolution.getDynamicWeight(agent.identity.role, this.currentRegime)
+        : agent.identity.weight;
       votes.push({
         agentId: agent.identity.id,
         agentRole: agent.identity.role,
-        weight: agent.identity.weight,
+        weight,
         decision: voteResult.decision,
         confidence: voteResult.confidence,
       });

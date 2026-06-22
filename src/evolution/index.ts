@@ -4,6 +4,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../observability/logger.ts';
 import { AgentOutcomeTracker } from './agent-outcomes.ts';
+import { AgentEvolutionEngine } from './agent-evolution.ts';
 import type {
   AgentRole,
   MultiSymbolDecision,
@@ -317,6 +318,9 @@ export class EvolutionaryPressureEngine {
         const calculator = new SurvivalFitnessCalculator();
         const fitness = calculator.calculate(strat.performance);
         strat.fitness = fitness.score;
+        // Store the full breakdown so mutate() can guide the next child toward
+        // fixing the weakest dimension (v2.0.15 directional mutation).
+        strat.fitnessBreakdown = fitness;
 
         // Retire low-fitness strategies
         if (fitness.score < 0.2) {
@@ -426,8 +430,44 @@ export class EvolutionaryPressureEngine {
     return active[0];
   }
 
-  getStrategyParameters(): StrategyParameters {
-    const best = this.getBestStrategy();
+  /**
+   * Regime-aware best strategy selection (v2.0.15).
+   *
+   * Instead of always returning the globally-highest-fitness strategy, score
+   * each active strategy by how well its regimeWeights align with the current
+   * regime, then pick the best. A strategy tuned for trending_bull (weight 0.8)
+   * is a poor fit for a chaotic regime (weight 0.1) even if its overall
+   * fitness is high.
+   *
+   * Score = fitness × regimeWeight[currentRegime] (normalised by the max
+   * regimeWeight so a strategy with all-low weights isn't unfairly penalised).
+   * Falls back to getBestStrategy() when no regime is provided or no active
+   * strategies have a weight for the regime.
+   */
+  getBestStrategyForRegime(regime?: MarketRegime): EvolutionaryStrategy | undefined {
+    if (!regime) return this.getBestStrategy();
+    const active = this.strategies.filter((s) => s.status === 'active');
+    if (active.length === 0) return undefined;
+
+    let best: EvolutionaryStrategy | undefined;
+    let bestScore = -Infinity;
+    for (const strat of active) {
+      const regimeWeight = strat.parameters.regimeWeights[regime] ?? 0.3;
+      // Normalise: scale by the strategy's own max regime weight so a
+      // uniformly-conservative strategy isn't always deprioritised.
+      const maxRW = Math.max(...Object.values(strat.parameters.regimeWeights), 0.01);
+      const normalisedRW = regimeWeight / maxRW;
+      const score = strat.fitness * normalisedRW;
+      if (score > bestScore) {
+        bestScore = score;
+        best = strat;
+      }
+    }
+    return best ?? this.getBestStrategy();
+  }
+
+  getStrategyParameters(regime?: MarketRegime): StrategyParameters {
+    const best = regime ? this.getBestStrategyForRegime(regime) : this.getBestStrategy();
     return best?.parameters ?? this.strategies[0]!.parameters;
   }
 
@@ -435,14 +475,80 @@ export class EvolutionaryPressureEngine {
     return this.generation;
   }
 
+  /**
+   * Directional mutation (v2.0.15): guide the child's parameter changes toward
+   * fixing the parent's weakest fitness dimension, instead of blind random
+   * noise. This is how institutional quant funds mutate — gradient-guided by
+   * the fitness breakdown, not undirected search.
+   *
+   * For each weak dimension (breakdown < 0.4), apply a targeted parameter
+   * shift in the direction that should improve it. A small random noise is
+   * still added so the search doesn't collapse to a single gradient line.
+   *
+   * If no breakdown is available (legacy/loaded strategy), fall back to the
+   * original random ±10% mutation.
+   */
   private mutate(parent: EvolutionaryStrategy): EvolutionaryStrategy {
     const params = { ...parent.parameters };
-    const noise = () => (Math.random() - 0.5) * 0.2; // ±10% mutation
+    const noise = () => (Math.random() - 0.5) * 0.2; // ±10% residual noise
+    const fb = parent.fitnessBreakdown;
 
-    params.momentumWindow = Math.max(5, Math.round(params.momentumWindow * (1 + noise())));
-    params.volatilityThreshold = Math.max(0.005, params.volatilityThreshold * (1 + noise()));
-    params.riskAversion = Math.max(0, Math.min(1, params.riskAversion * (1 + noise())));
-    params.signalThreshold = Math.max(0.1, Math.min(0.95, params.signalThreshold * (1 + noise())));
+    if (!fb) {
+      // Legacy fallback: undirected mutation
+      params.momentumWindow = Math.max(5, Math.round(params.momentumWindow * (1 + noise())));
+      params.volatilityThreshold = Math.max(0.005, params.volatilityThreshold * (1 + noise()));
+      params.riskAversion = Math.max(0, Math.min(1, params.riskAversion * (1 + noise())));
+      params.signalThreshold = Math.max(0.1, Math.min(0.95, params.signalThreshold * (1 + noise())));
+    } else {
+      // Directional shifts: each weak dimension (< 0.4) nudges a parameter
+      // in the remediation direction, plus residual noise for exploration.
+      const weak = (v: number) => v < 0.4;
+      const nudge = (base: number, direction: number, magnitude = 0.15) =>
+        Math.max(0, Math.min(1, base * (1 + direction * magnitude + noise())));
+
+      // capitalPreservation low → raise riskAversion (more conservative)
+      if (weak(fb.capitalPreservation)) {
+        params.riskAversion = Math.min(1, params.riskAversion * (1 + 0.15 + noise() * 0.5));
+        log.info(`🧬 directional mutate: capitalPreservation=${fb.capitalPreservation.toFixed(2)} → raise riskAversion`);
+      }
+      // decisionQuality low (microscopic wins) → raise signalThreshold (pickier)
+      if (weak(fb.decisionQuality)) {
+        params.signalThreshold = Math.min(0.95, params.signalThreshold * (1 + 0.12 + noise() * 0.5));
+        log.info(`🧬 directional mutate: decisionQuality=${fb.decisionQuality.toFixed(2)} → raise signalThreshold`);
+      }
+      // adaptability low (few trades) → lower signalThreshold + confirmationRequired
+      if (weak(fb.adaptability)) {
+        params.signalThreshold = Math.max(0.1, params.signalThreshold * (1 - 0.10 + noise() * 0.5));
+        params.confirmationRequired = Math.max(1, (params.confirmationRequired ?? 2) - 1);
+        log.info(`🧬 directional mutate: adaptability=${fb.adaptability.toFixed(2)} → lower signalThreshold + confirmationRequired`);
+      }
+      // consistency low → raise riskAversion + narrow volatilityThreshold
+      if (weak(fb.consistency)) {
+        params.riskAversion = Math.min(1, (params.riskAversion + 0.05) * (1 + noise() * 0.3));
+        params.volatilityThreshold = Math.max(0.005, params.volatilityThreshold * (1 - 0.08 + noise() * 0.3));
+        log.info(`🧬 directional mutate: consistency=${fb.consistency.toFixed(2)} → raise riskAversion + narrow volThreshold`);
+      }
+      // returnGeneration low → lower riskAversion (more aggressive) + widen volThreshold
+      if (weak(fb.returnGeneration)) {
+        params.riskAversion = Math.max(0, params.riskAversion * (1 - 0.10 + noise() * 0.5));
+        params.volatilityThreshold = Math.max(0.005, params.volatilityThreshold * (1 + 0.10 + noise() * 0.3));
+        log.info(`🧬 directional mutate: returnGeneration=${fb.returnGeneration.toFixed(2)} → lower riskAversion + widen volThreshold`);
+      }
+      // riskManagement low (poor win/loss ratio) → raise signalThreshold (only high-quality signals)
+      if (weak(fb.riskManagement)) {
+        params.signalThreshold = Math.min(0.95, params.signalThreshold * (1 + 0.08 + noise() * 0.3));
+        log.info(`🧬 directional mutate: riskManagement=${fb.riskManagement.toFixed(2)} → raise signalThreshold`);
+
+      }
+
+      // Always apply a small residual mutation to momentumWindow for exploration
+      params.momentumWindow = Math.max(5, Math.round(params.momentumWindow * (1 + noise())));
+
+      // Clamp all params to valid ranges
+      params.riskAversion = Math.max(0, Math.min(1, params.riskAversion));
+      params.signalThreshold = Math.max(0.1, Math.min(0.95, params.signalThreshold));
+      params.volatilityThreshold = Math.max(0.005, params.volatilityThreshold);
+    }
 
     return {
       id: uuidv4(),
@@ -487,6 +593,8 @@ export class EvolutionOrchestrator {
   readonly pressureEngine: EvolutionaryPressureEngine;
   readonly tradeHistory: TradeHistory;
   readonly agentOutcomes: AgentOutcomeTracker;
+  /** v2.0.15: per-agent dynamic weight engine (regime-aware). */
+  readonly agentEvolution: AgentEvolutionEngine;
 
   constructor() {
     this.memory = new DualMemory();
@@ -494,6 +602,7 @@ export class EvolutionOrchestrator {
     this.pressureEngine = new EvolutionaryPressureEngine();
     this.tradeHistory = new TradeHistory();
     this.agentOutcomes = new AgentOutcomeTracker();
+    this.agentEvolution = new AgentEvolutionEngine(this.agentOutcomes);
 
     // Restore evolution state from disk (if any)
     this.restoreState();

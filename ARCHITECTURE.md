@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.14-dev (Regime-aware TP/SL — 震盪市硬編碼 50% 倉位 cut + 收窄 TP/SL，趨勢市加闊 TP 讓利潤奔跑，HL $10 min notional floor)  
+> **版本**: 2.0.15-dev (Evolution Enhancement — directional mutation + agent-level evolution + regime-aware strategy selection)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -43,6 +43,7 @@
 32. [B.13 Math Audit — 13 個數學/邏輯錯誤](#b13-math-audit--13-個數學邏輯錯誤v2010-修復)
 33. [B.14 LLM 超時風暴 — HL WS 重連後 Agent think() 卡死 120s](#b14-llm-超時風暴--hl-ws-重連後-agent-think-卡死-120sv2012-修復)
 34. [B.15 Risk Auditor 震盪市偵測 + Regime-aware TP/SL](#b15-risk-auditor-震盪市偵測--regime-aware-tpslv2013v2014-修復)
+35. [B.16 Evolution Enhancement — Directional Mutation + Agent Evolution + Regime-aware Strategy](#b16-evolution-enhancement--directional-mutation--agent-evolution--regime-aware-strategyv2015-修復)
 
 ---
 
@@ -333,12 +334,19 @@
 │   │   │   ├── getAgentPerformance() → Agent+Symbol+Regime 效能查詢
 │   │   │   └── getAllAgentWinRates() → SystemGuard Agent Track 輸入
 │   │   │
-│   │   ├── index.ts              # 演化系統 (~420 行, v1.9.3)
+│   │   ├── agent-evolution.ts    # 🧬 Agent Evolution Engine (v2.0.15) — 動態投票權重
+│   │   │   ├── registerBaseWeight() → 註冊 agent 硬編碼 base weight
+│   │   │   ├── getDynamicWeight(role, regime) → regime-aware 動態權重
+│   │   │   ├── updateWeights(regime) → 根據 win rate + EMA 更新 multiplier
+│   │   │   └── getWeightSummary() → API/UI 權重摘要
+│   │   │
+│   │   ├── index.ts              # 演化系統 (v2.0.15 — directional mutation + regime-aware strategy)
 │   │   │   ├── AgentOutcomeTracker 整合
+│   │   │   ├── AgentEvolutionEngine 整合 (v2.0.15 動態權重)
 │   │   │   ├── getContextForAgent() 輸出 per-agent 歷史 track record
 │   │   │   ├── DualMemory (short/long term with consolidation)
-│   │   │   ├── SurvivalFitnessCalculator (capital preservation 35%)
-│   │   │   ├── EvolutionaryPressureEngine (mutate ±10%, auto-retire <0.2)
+│   │   │   ├── SurvivalFitnessCalculator (capital preservation 35%, store breakdown)
+│   │   │   ├── EvolutionaryPressureEngine (directional mutate v2.0.15, auto-retire <0.2, getBestStrategyForRegime)
 │   │   │   └── EvolutionOrchestrator (整合 + persistState)
 │   │   │
 │   │   ├── trade-history.ts       # 📊 Trade History Ledger (v1.9.4)
@@ -1767,6 +1775,8 @@ Backtest Run
   → saveDebateHistory() ← 儲存辯論結果
   → 下一 cycle Agent 收到更新後的 evolution context (含 per-agent track record)
   → Skeptics 在 Phase 1.5 參考 track record 作更有智慧的審查
+  → 🆕 v2.0.15: agentEvolution.updateWeights(regime) ← 根據 per-agent per-regime win rate 調整投票權重
+  → 🆕 v2.0.15: HACP consensus vote 用 dynamic weight（表現好嘅 agent 加權，差嘅減權）
 
 Backtest Run:
   → 使用當前 strategy params 模擬歷史交易
@@ -1775,6 +1785,66 @@ Backtest Run:
   → 強制 evolution mutate → 新世代策略
   → persistState()
 ```
+
+### 🆕 v2.0.15: Evolution Enhancement — Fitness-Breakdown-Driven Mutation + Agent-Level Evolution + Regime-Aware Strategy Selection
+
+**問題**: 原有 Evolution 系統有 3 個缺口，令 agents 唔能真正適應當前市場：
+
+| 缺口 | 問題 | 後果 |
+|:-----|:-----|:-----|
+| **Mutation 冇方向** | `mutate()` 用純隨機 ±10% noise | 等於盲目試，進化效率低 |
+| **Fitness breakdown 冇用** | `SurvivalFitness` 返回 6 個維度但只用 `score` | 弱項資訊被丟棄，唔知邊度要改進 |
+| **Agent 層級冇進化** | Agent weight 硬編碼（0.20-0.35），唔根據表現調整 | 表現差嘅 agent 仍然用全權重投票 |
+| **策略選擇唔看 regime** | `getBestStrategy()` 只睇總 fitness | trending_bull 嘅策略喺 chaotic regime 仍然被選中 |
+
+**解決方案**（3 層強化）:
+
+#### 1. Directional Mutation（根據 Fitness Breakdown 引導）
+
+`EvolutionaryStrategy` 新增 `fitnessBreakdown?: SurvivalFitness` 欄位，`evolve()` 計算 fitness 時 store 完整 breakdown。`mutate()` 根據弱項（breakdown < 0.4）決定 mutation 方向：
+
+| 弱項（breakdown < 0.4） | Mutation 方向 |
+|:----------------------|:------------|
+| `capitalPreservation` 低 | 提高 `riskAversion`（更保守） |
+| `decisionQuality` 低（microscopic wins） | 提高 `signalThreshold`（更揀擇） |
+| `adaptability` 低（trade 少） | 降低 `signalThreshold` + `confirmationRequired`（更易出手） |
+| `consistency` 低 | 提高 `riskAversion` + 收窄 `volatilityThreshold` |
+| `returnGeneration` 低 | 降低 `riskAversion`（更進取）+ 加闊 `volatilityThreshold` |
+| `riskManagement` 低（win/loss ratio 差） | 提高 `signalThreshold`（只揀高質信號） |
+
+每個 directional shift 加埋 residual noise（±10%）保持探索能力。Legacy strategy（冇 breakdown）fallback 到原本隨機 mutation。
+
+#### 2. Agent-Level Evolution（動態投票權重）
+
+新增 `src/evolution/agent-evolution.ts` `AgentEvolutionEngine`：
+
+- 根據 `AgentOutcomeTracker.getAgentPerformance(role, undefined, regime)` 計算每個 agent 喺當前 regime 嘅 win rate
+- `dynamicWeight = baseWeight × multiplier`，其中 `multiplier = clamp(0.5 + (winRate - 0.5) × 2, 0.5, 1.5)`
+  - winRate 0.5 → ×1.0（中性），0.8 → ×1.5（capped），0.2 → ×0.7（floored）
+- EMA smoothing（alpha=0.3）防止單一 trade 令權重大幅波動
+- 需要 ≥5 個 outcome samples 先調整（避免小樣本懲罰）
+- HACP `runConsensusVote` 用 `getDynamicWeight(role, regime)` 代替硬編碼 `identity.weight`
+
+**效果**: Fractal Momentum 喺 high_volatility win rate 20% → 權重 ×0.7（減權）；RBC Analyst 喺 mean_reverting win rate 80% → 權重 ×1.5（加權）。表現好嘅 agent 主導 consensus，差嘅 agent 影響力下降。
+
+#### 3. Regime-Aware Strategy Selection
+
+`EvolutionaryPressureEngine.getBestStrategyForRegime(regime)`：
+
+- Score = `fitness × (regimeWeight[currentRegime] / maxRegimeWeight)`
+- 唔再只睇總 fitness，而係睇策略對當前 regime 嘅適配度
+- trending_bull 策略（regimeWeight=0.8）喺 chaotic regime（regimeWeight=0.1）唔會被選中
+- `getStrategyParameters(regime?)` 支援 regime 參數
+
+**整合點**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/types/index.ts` | `EvolutionaryStrategy` 加 `fitnessBreakdown?: SurvivalFitness` |
+| `src/evolution/index.ts` | `evolve()` store breakdown；`mutate()` directional；`getBestStrategyForRegime()`；`EvolutionOrchestrator` 加 `agentEvolution` |
+| `src/evolution/agent-evolution.ts` | **新增** `AgentEvolutionEngine` — 動態權重 + EMA + regime-aware |
+| `src/cognition/hacp.ts` | `setAgentEvolution()` 注入；`executeDecisionCycle` extract regime + `updateWeights()`；`runConsensusVote` 用 dynamic weight |
+| `src/index.ts` | register base weights + `hacpEngine.setAgentEvolution(ae)` |
 
 ### Trade History Ledger (`src/evolution/trade-history.ts`)
 
@@ -4703,6 +4773,44 @@ if (isSynthetic) {
 **HL 最少下注金額 floor**: Paper engine `executeOrder` 將最終 notional floor 到 `HL_MIN_NOTIONAL_USD = 10`（Hyperliquid 官方最少下注金額 $10 USDC）。即使 50% cut 令倉位縮到好細，都會 floor 返上 $10 確保可以交易。
 
 **效果**: Risk Auditor 依家可以根據近期 10 個 trade 嘅實際表現判斷市況，震盪市時 VETO 新入場或**收窄**現有持倉嘅 TP/SL 到 range 邊界 + **硬編碼 50% 倉位 cut**（唔靠 LLM，確保一定減半），而唔係盲目加闊 TP/SL 增加風險。趨勢市時加闊 TP 讓利潤奔跑。HL $10 min notional floor 確保減倉後仍然可以交易。
+
+---
+
+### B.16 Evolution Enhancement — Directional Mutation + Agent Evolution + Regime-aware Strategy（v2.0.15 修復）
+
+> **觸發**: Evolution 系統嘅 Fitness Breakdown 計算咗但冇用嚟推進進化；Agent weight 硬編碼唔根據表現調整；策略選擇唔看 regime。
+> **詳情**: 見 [Evolution Enhancement](#v2015-evolution-enhancement--fitness-breakdown-driven-mutation--agent-level-evolution--regime-aware-strategy-selection) 章節。
+
+**3 層強化**:
+
+| 層 | 問題 | 修復 |
+|:--|:-----|:-----|
+| **Directional Mutation** | `mutate()` 純隨機 ±10% noise；fitness breakdown 計算咗但丟棄 | `EvolutionaryStrategy` 加 `fitnessBreakdown`；`mutate()` 根據弱項（<0.4）決定方向（capitalPreservation 低→提高 riskAversion 等） |
+| **Agent-Level Evolution** | Agent weight 硬編碼（0.20-0.35），唔根據表現調整 | 新增 `AgentEvolutionEngine`：`dynamicWeight = baseWeight × clamp(0.5 + (winRate-0.5)×2, 0.5, 1.5)`，EMA smoothing，HACP consensus 用 dynamic weight |
+| **Regime-aware Strategy** | `getBestStrategy()` 只睇總 fitness | `getBestStrategyForRegime(regime)`：`score = fitness × regimeWeight[currentRegime]/maxRegimeWeight` |
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/types/index.ts` | `EvolutionaryStrategy` 加 `fitnessBreakdown?: SurvivalFitness` |
+| `src/evolution/index.ts` | `evolve()` store breakdown；`mutate()` directional；`getBestStrategyForRegime()`；`EvolutionOrchestrator` 加 `agentEvolution` |
+| `src/evolution/agent-evolution.ts` | **新增** `AgentEvolutionEngine` — 動態權重 + EMA + regime-aware |
+| `src/cognition/hacp.ts` | `setAgentEvolution()` 注入；`executeDecisionCycle` extract regime + `updateWeights()`；`runConsensusVote` 用 dynamic weight |
+| `src/index.ts` | register base weights + `hacpEngine.setAgentEvolution(ae)` |
+
+**Directional Mutation 對應表**:
+
+| 弱項 | Mutation 方向 |
+|:-----|:------------|
+| `capitalPreservation` 低 | 提高 `riskAversion` |
+| `decisionQuality` 低 | 提高 `signalThreshold` |
+| `adaptability` 低 | 降低 `signalThreshold` + `confirmationRequired` |
+| `consistency` 低 | 提高 `riskAversion` + 收窄 `volatilityThreshold` |
+| `returnGeneration` 低 | 降低 `riskAversion` + 加闊 `volatilityThreshold` |
+| `riskManagement` 低 | 提高 `signalThreshold` |
+
+**效果**: Evolution 系統依家真正能夠推進 agents 喺當前市場嘅適應度——mutation 有方向（根據弱項補救），agent 權重根據 per-regime 表現動態調整（表現好嘅加權），策略選擇根據當前 regime 揀最啱嘅策略。
 
 ---
 
