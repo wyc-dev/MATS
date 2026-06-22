@@ -432,6 +432,59 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     }
   }
 
+  /**
+   * Get the user's most recent N fills from Hyperliquid (v2.0.19).
+   * Uses the `userFillsByTime` REST endpoint. Returns fills newest-first.
+   * Used to sync the UI Trade Records panel with the real exchange so the
+   * user sees their actual Hyperliquid trade history (last 5 by default).
+   */
+  async getRecentFills(limit = 5): Promise<Array<{
+    symbol: string;
+    side: 'buy' | 'sell';
+    price: number;
+    size: number;
+    timestamp: number;
+    closedPnl: number;
+    fee: number;
+    dir: string;
+  }>> {
+    try {
+      // userFillsByTime: startTime optional; omit to get the most recent fills.
+      const res = await fetch(HL_INFO_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'userFillsByTime', user: this.walletAddress }),
+      });
+      if (!res.ok) return [];
+      const data = await res.json() as { fills?: Array<{
+        coin: string;
+        side: string;
+        px: string;
+        sz: string;
+        time: number;
+        closedPnl: string;
+        fee: string;
+        dir: string;
+      }> };
+      const fills = data.fills ?? [];
+      // Sort newest first (HL returns ascending), take the last `limit`.
+      const sorted = fills.sort((a, b) => b.time - a.time).slice(0, limit);
+      return sorted.map(f => ({
+        symbol: f.coin,
+        side: f.side === 'B' ? 'buy' : 'sell',
+        price: parseFloat(f.px ?? '0'),
+        size: parseFloat(f.sz ?? '0'),
+        timestamp: f.time,
+        closedPnl: parseFloat(f.closedPnl ?? '0'),
+        fee: parseFloat(f.fee ?? '0'),
+        dir: f.dir,
+      }));
+    } catch (err) {
+      log.error(`getRecentFills failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
   // ── Order Management ──
 
   async placeOrder(order: Order): Promise<{ success: boolean; orderId?: string; error?: string }> {

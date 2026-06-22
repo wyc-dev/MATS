@@ -219,6 +219,10 @@ export interface Position {
   updatedAt: number;
   agentId: UUID;
   exchange?: string;
+  /** v2.0.19: entry taker fee already paid (notional-based). Included in
+   *  unrealizedPnl so the UI shows the real cost from the moment the
+   *  position opens, not $0.00. */
+  entryFee?: number;
 }
 
 // ─── Multi-Symbol Decision (v1.9.2 — each agent evaluates ALL pairs) ───

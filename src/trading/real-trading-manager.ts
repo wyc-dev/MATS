@@ -149,6 +149,32 @@ export class RealTradingManager {
   }
 
   /**
+   * Get the user's most recent N fills from the active exchange (v2.0.19).
+   * Only HyperliquidRealEngine supports this; returns [] for paper/Binance.
+   * Used to sync the UI Trade Records panel with the real exchange.
+   */
+  async getRecentFills(limit = 5): Promise<Array<{
+    symbol: string;
+    side: 'buy' | 'sell';
+    price: number;
+    size: number;
+    timestamp: number;
+    closedPnl: number;
+    fee: number;
+    dir: string;
+  }>> {
+    const engine = this.getActiveEngine();
+    if (engine instanceof HyperliquidRealEngine) {
+      try {
+        return await engine.getRecentFills(limit);
+      } catch (err) {
+        log.warn(`getRecentFills failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return [];
+  }
+
+  /**
    * Get positions from the active exchange.
    * Falls back to paper portfolio if in paper mode.
    */
