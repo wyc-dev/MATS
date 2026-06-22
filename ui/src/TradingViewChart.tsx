@@ -197,7 +197,13 @@ export default function TradingViewChart({ symbol, currentPrice, trades, refresh
     }
   }, [timeframe, symbol, refreshKey])
 
-  // Update markers + price lines when trades change
+  // Update markers + price lines when trades change.
+  // v2.0.20: use a JSON-serialized dependency so the effect fires when SL/TP
+  // VALUES change (e.g. Meta-Agent adjusts the current position's TP/SL),
+  // not just when the trades array reference changes. Also only draw price
+  // lines for the CURRENT position (cycle=0) — historical trades get markers
+  // only, so old SL/TP lines don't clutter the chart or overlap the live ones.
+  const tradesKey = JSON.stringify(trades)
   useEffect(() => {
     if (!seriesRef.current) return
 
@@ -209,7 +215,7 @@ export default function TradingViewChart({ symbol, currentPrice, trades, refresh
 
     if (trades.length === 0) return
 
-    // Build markers (Buy/Sell arrows)
+    // Build markers (Buy/Sell arrows) — all trades get markers
     const markers: SeriesMarker<Time>[] = trades.map(t => {
       const isBuy = t.action === 'buy'
       return {
@@ -229,8 +235,14 @@ export default function TradingViewChart({ symbol, currentPrice, trades, refresh
     const markersApi = createSeriesMarkers(seriesRef.current, markers)
     ;(window as any).__markersApi = markersApi
 
-    // Add SL/TP horizontal lines
+    // Add SL/TP horizontal lines ONLY for the current position (cycle=0).
+    // Historical trades' SL/TP are stale and would overlap the live lines;
+    // their entry is already marked by the arrow above. This keeps the
+    // chart clean and ensures the live TP/SL lines update when Meta-Agent
+    // adjusts them (the cycle=0 marker uses the live stopLossPrice /
+    // takeProfitPrice from the position, which changes on adjustment).
     for (const t of trades) {
+      if (t.cycle !== 0) continue
       if (t.sl) {
         const line = seriesRef.current.createPriceLine({
           price: t.sl,
@@ -261,7 +273,8 @@ export default function TradingViewChart({ symbol, currentPrice, trades, refresh
         (window as any).__markersApi = null
       }
     }
-  }, [trades, timeframe])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tradesKey, timeframe])
 
   return (
     <div>
