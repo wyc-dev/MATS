@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.20-dev (TradingView TP/SL live update + Ollama concurrency 4 + slot leak protection)  
+> **版本**: 2.0.21-dev (Market Agent chart 只顯示當前持倉 marker，唔再顯示歷史 trade)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -49,6 +49,7 @@
 38. [B.19 Notional-Based 雙邊 Fee 扣除（槓桿感知）](#b19-notional-based-雙邊-fee-扣除槓桿感知v2018-修復)
 39. [B.20 Unrealized PnL 含 entry fee + Real-trade Positions/Fills 同步 HL](#b20-unrealized-pnl-含-entry-fee--real-trade-positionsfills-同步-hlv2019-修復)
 40. [B.21 TradingView TP/SL live update + Ollama concurrency + slot leak protection](#b21-tradingview-tpsl-live-update--ollama-concurrency--slot-leak-protectionv2020-修復)
+41. [B.22 Market Agent chart 只顯示當前持倉 marker](#b22-market-agent-chart-只顯示當前持倉-markerv2021-修復)
 
 ---
 
@@ -5094,6 +5095,24 @@ if (isSynthetic) {
 | `src/llm/ollama-provider.ts` | `maxConcurrentRequests` 2→4；`SLOT_ACQUIRE_TIMEOUT_MS` 15s→8s；新增 `slotAcquiredAt` + `reclaimLeakedSlots()`（>90s 強制釋放）；`releaseSlot` 同步清理 timestamp |
 
 **效果**: TradingView chart 只顯示當前持倉嘅 live SL/TP 線條，Meta-Agent 調整時即時更新（唔再有 3 組重疊線）。Ollama 4 個 concurrent slots 容納 8 agent 嘅 staggered thinking，slot 泄漏自動回收，slot acquisition timeout 由 15s 降到 8s 更快 fail-fast。
+
+---
+
+### B.22 Market Agent chart 只顯示當前持倉 marker（v2.0.21 修復）
+
+> **觸發**: Market Select Agent 嘅 TradingView chart 仍然顯示 2 個賣點（歷史 sell trade 嘅 marker）。
+
+**問題**: `MarketAgentCard` 嘅 `mainChartTrades` 將所有歷史 trade（包括已平倉嘅 sell）都加入做 marker，所以 chart 顯示多個歷史 sell arrow，而唔係只顯示當前持倉嘅入場點。
+
+**修復**: `mainChartTrades` 只加入當前持倉（cycle=0），唔再加入歷史 trade。歷史 trade 仍然喺 `PortfolioPanel` 嘅 chart 顯示（嗰度用戶 click position row 先睇到）。
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `ui/src/App.tsx` | `MarketAgentCard.mainChartTrades` 移除歷史 trade loop，只加入當前持倉 marker |
+
+**效果**: Market Agent chart 只顯示當前持倉嘅一個入場 marker + live SL/TP 線條，唔再有歷史 sell arrow 重疊。
 
 ---
 

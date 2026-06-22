@@ -260,43 +260,25 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const meta = AGENT_META['market_agent']
 
   // Build trade markers for the active symbol so the main TradingView chart
-  // shows the current position's entry point + live SL/TP (v2.0.16). Merges
-  // historical trade decisions with the current open position's live levels.
+  // shows the current position's entry point + live SL/TP (v2.0.16).
+  // v2.0.21: only show the CURRENT open position (cycle=0). Historical trades
+  // are shown in the Portfolio panel's chart (where the user clicks a
+  // position row) — the Market Agent chart should show a single current
+  // entry marker, not every past sell/buy which cluttered the chart with
+  // multiple stale arrows.
   const portfolioPositions = (Object.values(data?.portfolio?.positions ?? {}) as any[])
-  const tradeHistory = data?.tradeHistory ?? []
   const activePos = portfolioPositions.find((p: any) => p.symbol === activeSymbol)
   const mainChartTrades: Array<{ time: number; action: 'buy' | 'sell'; price: number; sl?: number; tp?: number; cycle: number }> = []
-  // Historical markers for the active symbol
-  for (const t of tradeHistory) {
-    if (t.decision?.symbol !== activeSymbol) continue
-    if (t.decision?.action !== 'buy' && t.decision?.action !== 'sell') continue
-    const isShort = t.decision.action === 'sell'
-    mainChartTrades.push({
-      time: Math.floor((t.openedAt ?? t.timestamp) / 1000),
-      action: t.decision.action as 'buy' | 'sell',
-      price: t.entryPrice,
-      sl: t.decision.stopLossPct
-        ? isShort ? t.entryPrice * (1 + t.decision.stopLossPct) : t.entryPrice * (1 - t.decision.stopLossPct)
-        : undefined,
-      tp: t.decision.takeProfitPct
-        ? isShort ? t.entryPrice * (1 - t.decision.takeProfitPct) : t.entryPrice * (1 + t.decision.takeProfitPct)
-        : undefined,
-      cycle: t.cycleNumber,
-    })
-  }
-  // Current position's live SL/TP (cycle=0 = current)
+  // Current position's live entry + SL/TP (cycle=0 = current)
   if (activePos) {
-    const hasCurrent = mainChartTrades.some(mk => mk.cycle === 0)
-    if (!hasCurrent) {
-      mainChartTrades.push({
-        time: Math.floor((activePos.openedAt ?? Date.now()) / 1000),
-        action: activePos.side === 'buy' ? 'buy' : 'sell',
-        price: activePos.averageEntryPrice ?? activePos.currentPrice ?? price,
-        sl: activePos.stopLossPrice,
-        tp: activePos.takeProfitPrice,
-        cycle: 0,
-      })
-    }
+    mainChartTrades.push({
+      time: Math.floor((activePos.openedAt ?? Date.now()) / 1000),
+      action: activePos.side === 'buy' ? 'buy' : 'sell',
+      price: activePos.averageEntryPrice ?? activePos.currentPrice ?? price,
+      sl: activePos.stopLossPrice,
+      tp: activePos.takeProfitPrice,
+      cycle: 0,
+    })
   }
 
   return (
