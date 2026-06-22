@@ -447,6 +447,9 @@ export interface EvolutionaryStrategy {
   generation: number;
   parentId?: UUID;
   fitness: number;
+  /** Full fitness breakdown (v2.0.15) — used to guide directional mutation.
+   *  When absent (legacy/loaded state), mutate() falls back to random noise. */
+  fitnessBreakdown?: SurvivalFitness;
   parameters: StrategyParameters;
   performance: StrategyPerformance;
   status: 'active' | 'retired' | 'mutating' | 'evaluating';

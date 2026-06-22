@@ -201,6 +201,17 @@ class AMACRFSystem {
       // Inject trade history so the Risk Auditor can detect choppy-market
       // patterns from recent buy/sell churn + losses and adjust TP/SL.
       this.hacpEngine.setTradeHistory(this.evolution.tradeHistory);
+      // Inject agent evolution engine for regime-aware dynamic voting weights.
+      // Register each agent's hardcoded base weight so the engine can scale
+      // them by per-regime win rate (v2.0.15).
+      const ae = this.evolution.agentEvolution;
+      ae.registerBaseWeight(this.fractalAgent.identity.role, this.fractalAgent.identity.weight);
+      ae.registerBaseWeight(this.onchainAgent.identity.role, this.onchainAgent.identity.weight);
+      ae.registerBaseWeight(this.regimeAgent.identity.role, this.regimeAgent.identity.weight);
+      ae.registerBaseWeight(this.newsAgent.identity.role, this.newsAgent.identity.weight);
+      ae.registerBaseWeight(this.riskAuditor.identity.role, this.riskAuditor.identity.weight);
+      ae.registerBaseWeight(this.metaAgent.identity.role, this.metaAgent.identity.weight);
+      this.hacpEngine.setAgentEvolution(ae);
       // Wire real-time progress updates to API
       this.hacpEngine.setProgressCallback((progress) => {
         this.cycleProgress = progress;
