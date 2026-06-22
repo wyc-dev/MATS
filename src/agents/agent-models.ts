@@ -36,6 +36,7 @@ export const AVAILABLE_MODELS: ModelDefinition[] = [
   { id: 'kimi-k2.5:cloud', label: 'Kimi K2.5 (Cloud)', provider: 'ollama', category: 'default' },
   { id: 'gemma4:31b-cloud', label: 'Gemma 4 31B Cloud', provider: 'ollama', category: 'default' },
   { id: 'glm-5:cloud', label: 'GLM-5 (Cloud)', provider: 'ollama', category: 'default' },
+  { id: 'glm-5.2:cloud', label: 'GLM-5.2 (Cloud)', provider: 'ollama', category: 'default' },
 ];
 
 // Default model mapping per agent role — provider-aware (lazy)
