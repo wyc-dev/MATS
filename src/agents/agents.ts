@@ -777,19 +777,27 @@ Your ONLY job is catastrophic risk prevention: missing SL, chaotic regime, no pr
 === RECENT TRADE PATTERN ANALYSIS (KEY INPUT) ===
 The audit prompt includes a "=== RECENT TRADE PATTERN (last 10) ===" section showing the
 directional trades, win/loss counts, net PnL, direction reversal rate, and current loss
-streak from the most recent 10 trades. USE THIS to judge the CURRENT market regime:
+streak from the most recent 10 trades. USE THIS to judge the CURRENT market regime.
+
+The TP/SL adjustment strategy is REGIME-AWARE (v2.0.14, aligned with institutional practice —
+ATR/range-based, not fixed-percent widening):
 
 - ⚠️ CHOPPY/WHIPSAW MARKET: frequent buy→sell→buy reversals with net losses.
   This means trend-following entries are getting stopped out repeatedly. When detected:
   1. For NEW entries: strongly consider VETO (the market is not trending — entries will churn).
-     Only allow entry if the decision has a clear, non-trend-following rationale (e.g. mean reversion at S/R).
-  2. For EXISTING positions: WIDEN stopLossPct and takeProfitPct via adjustedStopLossPct /
-     adjustedTakeProfitPct so the position can survive the chop instead of being stopped out.
-     Typical widening: SL from 2% → 3-4%, TP from 5% → 6-8% (only if leverage allows the wider SL loss).
+     Only allow entry if the decision has a clear mean-reversion rationale (fade at S/R extremes).
+  2. For EXISTING positions: NARROW TP to the opposite range edge (mean-reversion target — choppy
+     markets do not travel far, so a wide TP will never hit). NARROW SL to just outside the recent
+     range (if the range breaks, the regime has changed — stop out immediately rather than ride a
+     breakout against you). REDUCE position size via adjustedPositionSizePct (choppy markets have
+     low win rates — smaller size limits per-trade loss).
+     Typical: TP 5%→2-3% (range edge), SL 2%→1.5% (just beyond range), positionSize 50-70% of original.
   3. If current loss streak ≥ 3: bias toward VETO on new entries — the system is out of sync with the market.
 
 - ✅ PROFITABLE RECENT TRADES (win rate ≥ 60%, net positive): market favours the current strategy.
-  Approve entries that match the recent winning direction. No TP/SL adjustment needed unless volatility spiked.
+  Approve entries that match the recent winning direction. For existing positions, you may WIDEN
+  TP (let profits run in a trending market) and use a wider ATR-based SL to avoid premature stops.
+  No position size reduction needed.
 
 - 🟡 MIXED / INSUFFICIENT DATA: exercise normal caution. Apply standard per-position risk rules below.
 
@@ -807,9 +815,9 @@ For each open position, evaluate:
 - Drawdown > 15% → close ALL positions
 - Daily loss > 4% → close ALL positions, halt new trading
 
-=== TP/SL ADJUSTMENT OUTPUT ===
-When the recent trade pattern warrants it, set adjustedStopLossPct and/or adjustedTakeProfitPct
-in your JSON response to override the decision's SL/TP. These are decimals (e.g. 0.03 = 3%).
+=== TP/SL/SIZE ADJUSTMENT OUTPUT ===
+When the recent trade pattern warrants it, set adjustedStopLossPct, adjustedTakeProfitPct, and/or
+adjustedPositionSizePct in your JSON response to override the decision. These are decimals (e.g. 0.03 = 3%).
 Only set them when you have a clear reason (choppy market, volatility shift, loss streak).
 Leave them null when no adjustment is needed.
 

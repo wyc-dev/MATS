@@ -778,20 +778,32 @@ export class HACPEngine {
       finalConsensus.confidence = 0.0;
     } else if (
       !riskAudit.veto &&
-      (riskAudit.adjustedStopLossPct !== undefined || riskAudit.adjustedTakeProfitPct !== undefined)
+      (riskAudit.adjustedStopLossPct !== undefined ||
+       riskAudit.adjustedTakeProfitPct !== undefined ||
+       riskAudit.adjustedPositionSizePct !== undefined)
     ) {
-      // Risk Auditor recommended TP/SL adjustments (e.g. widen SL to survive
-      // choppy market detected from recent trade pattern). Apply them to the
-      // final consensus decision so the execution layer honours the new levels.
+      // Risk Auditor recommended TP/SL/size adjustments based on the recent
+      // trade pattern (e.g. choppy market → narrow TP/SL to range edges +
+      // reduce size; trending market → widen TP to let profits run).
+      // Apply them to the final consensus decision so the execution layer
+      // honours the new levels.
       const origSL = finalConsensus.decision.stopLossPct;
       const origTP = finalConsensus.decision.takeProfitPct;
+      const origSize = finalConsensus.decision.positionSizePct;
       if (riskAudit.adjustedStopLossPct !== undefined) {
         finalConsensus.decision.stopLossPct = riskAudit.adjustedStopLossPct;
       }
       if (riskAudit.adjustedTakeProfitPct !== undefined) {
         finalConsensus.decision.takeProfitPct = riskAudit.adjustedTakeProfitPct;
       }
-      log.info(`🔧 Risk Auditor adjusted TP/SL: SL ${origSL ? (origSL * 100).toFixed(1) + '%' : 'none'} → ${finalConsensus.decision.stopLossPct ? (finalConsensus.decision.stopLossPct * 100).toFixed(1) + '%' : 'none'}, TP ${origTP ? (origTP * 100).toFixed(1) + '%' : 'none'} → ${finalConsensus.decision.takeProfitPct ? (finalConsensus.decision.takeProfitPct * 100).toFixed(1) + '%' : 'none'} (${riskAudit.reason})`);
+      if (riskAudit.adjustedPositionSizePct !== undefined) {
+        // Clamp to the hard max — Risk Auditor can reduce but not exceed the cap.
+        finalConsensus.decision.positionSizePct = Math.min(
+          Math.max(0, riskAudit.adjustedPositionSizePct),
+          MAX_POSITION_PCT,
+        );
+      }
+      log.info(`🔧 Risk Auditor adjusted: SL ${origSL ? (origSL * 100).toFixed(1) + '%' : 'none'} → ${finalConsensus.decision.stopLossPct ? (finalConsensus.decision.stopLossPct * 100).toFixed(1) + '%' : 'none'}, TP ${origTP ? (origTP * 100).toFixed(1) + '%' : 'none'} → ${finalConsensus.decision.takeProfitPct ? (finalConsensus.decision.takeProfitPct * 100).toFixed(1) + '%' : 'none'}, size ${(origSize * 100).toFixed(1)}% → ${(finalConsensus.decision.positionSizePct * 100).toFixed(1)}% (${riskAudit.reason})`);
     }
 
     // ═══════════════════════════════════════════════════
@@ -877,6 +889,14 @@ export class HACPEngine {
         const lev = pos.leverage ?? 1;
         const isLong = pos.side === 'buy';
         const unrealizedPnlPct = ((pos.currentPrice - pos.entryPrice) / pos.entryPrice) * (isLong ? 1 : -1);
+
+        // Inject recent trade pattern so Meta-Agent can regime-aware adjust
+        // TP/SL (choppy → narrow to range edges; trending → widen TP to let
+        // profits run). Same analysis the Risk Auditor uses.
+        const tradePattern = this.tradeHistory
+          ? this.tradeHistory.getRecentTradeAnalysis(10).summary
+          : '=== RECENT TRADE PATTERN (last 10) ===\n(no trade history available)';
+
         const provider = getActiveProvider();
         const response = await provider.chat({
           messages: [
@@ -886,6 +906,8 @@ export class HACPEngine {
 
 Current market:
 ${marketStateDesc}
+
+${tradePattern}
 
 Position: ${pos.side.toUpperCase()} ${pos.symbol}
 Entry: $${pos.entryPrice.toFixed(2)}
@@ -897,6 +919,16 @@ Unrealized PnL: ${(unrealizedPnlPct * 100).toFixed(2)}%
 
 The market context above contains "=== S/R Zones ===" with key Support (Demand) and Resistance (Supply) levels from historical candles.
 USE THESE S/R LEVELS to set TP and SL — they are more reliable than arbitrary percentages.
+
+The "=== RECENT TRADE PATTERN (last 10) ===" section shows whether the market is currently choppy/whipsaw or trending.
+ADJUST TP/SL BASED ON THE REGIME:
+
+- ⚠️ CHOPPY/WHIPSAW MARKET (frequent reversals + net losses): NARROW TP to the opposite range edge
+  (mean-reversion target — choppy markets do not travel far, so a wide TP will never hit). NARROW SL
+  to just outside the recent range (if the range breaks, the regime has changed — stop out immediately).
+  Do NOT widen SL — a wider SL in a choppy market just means a bigger loss when the range breaks.
+- ✅ TRENDING MARKET (recent trades profitable, low reversal rate): WIDEN TP to let profits run.
+  Use a wider ATR-based SL to avoid premature stops. Trail SL in the profit direction only.
 
 CRITICAL RULES — FOLLOW EXACTLY:
 
@@ -927,7 +959,7 @@ Output ONLY valid JSON:
             },
             {
               role: 'user',
-              content: 'Review this position and suggest TP/SL adjustments following the rules exactly.',
+              content: 'Review this position and suggest TP/SL adjustments following the rules exactly, taking the recent trade pattern into account.',
             },
           ],
           temperature: 0.2,
@@ -1323,11 +1355,11 @@ Output ONLY valid JSON:
 
   private async riskAuditorAudit(
     decision: TradingDecision
-  ): Promise<{ veto: boolean; reason: string; adjustedPrice?: number; adjustedStopLossPct?: number; adjustedTakeProfitPct?: number }> {
+  ): Promise<{ veto: boolean; reason: string; adjustedPrice?: number; adjustedStopLossPct?: number; adjustedTakeProfitPct?: number; adjustedPositionSizePct?: number }> {
     try {
       // Build recent-trade-pattern context for choppy-market detection.
       // This lets the Risk Auditor see if recent buy/sell churn is losing
-      // money and adjust its veto / TP-SL guidance accordingly.
+      // money and adjust its veto / TP-SL-size guidance accordingly.
       const tradePattern = this.tradeHistory
         ? this.tradeHistory.getRecentTradeAnalysis(10).summary
         : '=== RECENT TRADE PATTERN (last 10) ===\n(no trade history available)';
@@ -1342,7 +1374,7 @@ Output ONLY valid JSON:
           },
           {
             role: 'user',
-            content: `Audit this trading decision:\n${JSON.stringify(decision, null, 2)}\n\n${tradePattern}\n\nRespond with valid JSON only:\n{"veto":false,"reason":"","adjustedPositionSize":null,"adjustedStopLossPct":null,"adjustedTakeProfitPct":null}\n\nIf the recent trade pattern shows a choppy/whipsaw market (frequent reversals + net losses), strongly consider vetoing new entries OR widening stopLossPct/takeProfitPct to survive the chop. Set adjustedStopLossPct/adjustedTakeProfitPct only if you want to override the decision's SL/TP.`,
+            content: `Audit this trading decision:\n${JSON.stringify(decision, null, 2)}\n\n${tradePattern}\n\nRespond with valid JSON only:\n{"veto":false,"reason":"","adjustedPositionSizePct":null,"adjustedStopLossPct":null,"adjustedTakeProfitPct":null}\n\nIf the recent trade pattern shows a choppy/whipsaw market (frequent reversals + net losses), strongly consider vetoing new entries OR narrowing TP/SL to the range edges + reducing position size (choppy markets have low win rates — smaller size limits per-trade loss). If profitable/trending, you may widen TP to let profits run. Set adjusted* fields only if you want to override the decision.`,
           },
         ],
         temperature: 0.05,
@@ -1355,7 +1387,7 @@ Output ONLY valid JSON:
       const parsed = JSON.parse(response.content) as {
         veto: boolean;
         reason: string;
-        adjustedPositionSize?: number | null;
+        adjustedPositionSizePct?: number | null;
         adjustedStopLossPct?: number | null;
         adjustedTakeProfitPct?: number | null;
       };
@@ -1373,6 +1405,7 @@ Output ONLY valid JSON:
         reason: parsed.reason ?? 'No concerns.',
         adjustedStopLossPct: parsed.adjustedStopLossPct ?? undefined,
         adjustedTakeProfitPct: parsed.adjustedTakeProfitPct ?? undefined,
+        adjustedPositionSizePct: parsed.adjustedPositionSizePct ?? undefined,
       };
     } catch {
       // On error, be conservative but respect Market Agent limits
