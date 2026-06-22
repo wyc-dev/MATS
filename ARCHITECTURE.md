@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.18-dev (Notional-based 雙邊 fee 扣除 — 槓桿感知真實成本，確保扣除 fee 後盈利)  
+> **版本**: 2.0.19-dev (Unrealized PnL 含 entry fee + real-trade positions/fills 同步 HL)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -47,6 +47,7 @@
 36. [B.17 HL WS User-Level Subscriptions + Real-Trade Portfolio Sync](#b17-hl-ws-user-level-subscriptions--real-trade-portfolio-syncv2016-修復)
 37. [B.18 Real-Trade 真實 Balance/Equity 顯示](#b18-real-trade-真實-balanceequity-顯示v2017-修復)
 38. [B.19 Notional-Based 雙邊 Fee 扣除（槓桿感知）](#b19-notional-based-雙邊-fee-扣除槓桿感知v2018-修復)
+39. [B.20 Unrealized PnL 含 entry fee + Real-trade Positions/Fills 同步 HL](#b20-unrealized-pnl-含-entry-fee--real-trade-positionsfills-同步-hlv2019-修復)
 
 ---
 
@@ -1324,6 +1325,20 @@ realizedPnl -= exitFee;  // 同時從 trade PnL 扣
 `index.ts` 嘅 post-execution fee loop 已移除（fee 已經喺 portfolio 層正確扣咗），只保留 execution quality tracking + pattern snapshot。
 
 **效果**: Paper PnL 準確反映真實成本。10x 槓桿開平一次扣 0.8% 保證金，100x 扣 8%。系統要賺超過呢個數先至真正盈利——令到 evolution 同 agent 學習嘅係**真實可盈利**嘅策略，而唔係忽略 fee 嘅幻覺盈利。呢個對於喺極度不平等環境下（消息/落單速度都輸畀量化機構）仍然能夠搵到真正 edge 至關重要。
+
+### 🆕 v2.0.19: Unrealized PnL 含 entry fee + Real-trade Positions/Fills 同步 HL
+
+**問題 1 — Unrealized PnL 開倉時 $0.00**: 開倉嗰刻 price 未變動，`unrealizedPnl = 0`，但實際已扣 entry fee。UI 顯示 `$0.00 (0.00%)` 隱藏咗已支付嘅開倉成本。
+
+**解決方案**: `Position` 新增 `entryFee` field，`openPosition` 初始化 `unrealizedPnl = -entryFee`，`updatePosition`/`softUpdatePosition` 計算時減 entryFee。開倉嗰刻即時顯示負數 unrealizedPnl（已扣 fee）。
+
+**問題 2 — Real-trade positions 唔同步 HL**: real mode 只顯示本地 mirror，唔反映 HL 真實持倉（例如人手開嘅倉）。
+
+**解決方案**: `serializePortfolio` 喺 real mode overlay `cachedExchangePositions`（真實 entry + unrealizedPnl），並加入冇本地 mirror 嘅 HL positions。
+
+**問題 3 — Trade Records 唔同步 HL**: 只顯示本地 trade records。
+
+**解決方案**: `HyperliquidRealEngine.getRecentFills(5)` 用 `userFillsByTime` REST endpoint 攞最近 5 個 fills，`pushToAPI` 加入 tradeRecords（status=`hl-fill`）。
 
 ### 錯誤處理
 
@@ -5028,6 +5043,34 @@ if (isSynthetic) {
 | `src/index.ts` | 移除 post-execution fee loop（fee 已喺 portfolio 層扣）；execution tracker 用正確 notional |
 
 **效果**: Paper PnL 準確反映真實成本。10x 槓桿開平一次扣 0.8% 保證金，100x 扣 8%。系統要賺超過呢個數先至真正盈利——令 evolution 同 agent 學習真實可盈利策略，確保喺極度不平等環境下（消息/速度都輸畀量化機構）仍然能夠搵到真正扣除成本後盈利嘅 edge。
+
+---
+
+### B.20 Unrealized PnL 含 entry fee + Real-trade Positions/Fills 同步 HL（v2.0.19 修復）
+
+> **觸發**: (1) 開倉嗰刻 Unrealized PnL 顯示 `$0.00 (0.00%)`，隱藏已扣嘅 entry fee；(2) real-trade 時 positions module 唔同步 HL；(3) Trade Records 唔同步 HL 最近交易。
+> **詳情**: 見 [Unrealized PnL 含 entry fee](#v2019-unrealized-pnl-含-entry-fee--real-trade-positionsfills-同步-hl) 章節。
+
+**3 部分修復**:
+
+| 部分 | 問題 | 修復 |
+|:-----|:-----|:-----|
+| **Unrealized PnL 含 fee** | 開倉時 `unrealizedPnl = 0`（price 未變動），隱藏已扣 entry fee | `Position.entryFee` store 開倉 fee；`openPosition` 初始化 `unrealizedPnl = -entryFee`；`updatePosition`/`softUpdatePosition` 計算時減 entryFee |
+| **Positions 同步 HL** | real mode 只顯示本地 mirror | `serializePortfolio` 喺 real mode overlay exchange positions（真實 entry + unrealizedPnl）+ 加入冇 mirror 嘅 HL positions |
+| **Trade Records 同步 HL** | 只顯示本地 trade records | `getRecentFills(5)` 攞 HL 最近 5 個 fills，加入 tradeRecords（status=`hl-fill`） |
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/types/index.ts` | `Position` 加 `entryFee?: number` |
+| `src/trading/portfolio.ts` | `openPosition` store entryFee + 初始化 unrealizedPnl = -entryFee；`updatePosition`/`softUpdatePosition` 計算時減 entryFee |
+| `src/trading/hyperliquid-real-engine.ts` | 新增 `getRecentFills(limit)` — 用 `userFillsByTime` REST endpoint 攞最近 N 個 fills |
+| `src/trading/real-trading-manager.ts` | 新增 `getRecentFills(limit)` 轉發到 HL engine |
+| `src/index.ts` | `cachedHLFills` + `cachedExchangePositions` field；每 cycle cache；`pushToAPI` tradeRecords 加入 HL fills；`serializePortfolio` real mode overlay exchange positions |
+| `src/api-server.ts` + `ui/src/types.ts` | `tradeRecords.status` 加 `'hl-fill'` |
+
+**效果**: 開倉嗰刻 Unrealized PnL 即時顯示已扣嘅 entry fee（負數），唔再係 $0.00。Real-trade 時 positions module 顯示 HL 真實持倉（entry + unrealizedPnl），Trade Records 顯示 HL 最近 5 個真實交易。
 
 ---
 

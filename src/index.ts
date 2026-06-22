@@ -74,6 +74,14 @@ class AMACRFSystem {
    *  via realTradingManager.getBalance(); used by pushToAPI() so the UI shows
    *  the actual Hyperliquid account value instead of the local mirror. */
   private cachedExchangeBalance: ExchangeAccountInfo | null = null;
+  /** Cached recent HL fills (v2.0.19). Refreshed each cycle in real mode via
+   *  realTradingManager.getRecentFills(5); merged into tradeRecords so the UI
+   *  Trade Records panel shows the real Hyperliquid trade history. */
+  private cachedHLFills: Array<{ symbol: string; side: 'buy' | 'sell'; price: number; size: number; timestamp: number; closedPnl: number; fee: number; dir: string }> = [];
+  /** Cached real-exchange positions (v2.0.19). Refreshed each cycle in real
+   *  mode so the UI Portfolio positions module shows the actual Hyperliquid
+   *  positions, not just the local mirror. */
+  private cachedExchangePositions: Array<{ symbol: string; side: 'buy' | 'sell'; quantity: number; averageEntryPrice: number; currentPrice: number; unrealizedPnl: number; leverage: number; openedAt: number }> | null = null;
   private lastSRContext: { formatted: string; regime: string; zoneCount: number; strongZones: number; nearestSupport: number | null; nearestResistance: number | null; distanceToSupportBps: number; distanceToResistanceBps: number; degradedReason: string | null } | null = null;
   private emManager!: CycleSummaryManager;
   private patternClassifier!: TradePatternClassifier;
@@ -905,9 +913,23 @@ class AMACRFSystem {
         // Hyperliquid account value (not the local mirror) in the UI (v2.0.17).
         try {
           this.cachedExchangeBalance = await this.realTradingManager.getBalance();
-          log.info(`📡 Exchange positions synced for agent context (HL balance: $${this.cachedExchangeBalance.total.toFixed(2)})`);
+          // v2.0.19: also cache recent HL fills (last 5) + exchange positions
+          // so the UI Trade Records + Portfolio positions modules show real
+          // Hyperliquid data, not just the local mirror.
+          this.cachedHLFills = await this.realTradingManager.getRecentFills(5);
+          this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
+            symbol: p.symbol,
+            side: p.side,
+            quantity: p.quantity,
+            averageEntryPrice: p.averageEntryPrice,
+            currentPrice: p.currentPrice,
+            unrealizedPnl: p.unrealizedPnl,
+            leverage: p.leverage ?? 1,
+            openedAt: p.openedAt,
+          }));
+          log.info(`📡 Exchange synced for agent context (HL balance: $${this.cachedExchangeBalance.total.toFixed(2)}, ${this.cachedHLFills.length} recent fills, ${this.cachedExchangePositions.length} positions)`);
         } catch (err) {
-          log.warn(`Exchange balance fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+          log.warn(`Exchange sync (balance/fills/positions) failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
@@ -1959,29 +1981,65 @@ class AMACRFSystem {
   /** Serialize portfolio (Map → plain object) for JSON transmission */
   private serializePortfolio(p: Readonly<import('./types/index.ts').Portfolio>): Record<string, unknown> {
     const positions: Record<string, unknown> = {};
+    const isRealMode = this.realTradingManager?.getTradeMode() === 'real';
+
     for (const [key, pos] of p.positions) {
+      // v2.0.19: in real mode, if we have a cached exchange position for this
+      // symbol, overlay the real entry price + unrealized PnL so the UI shows
+      // the actual Hyperliquid position, not just the local mirror.
+      const exPos = isRealMode && this.cachedExchangePositions
+        ? this.cachedExchangePositions.find(ep => ep.symbol.toLowerCase() === key)
+        : undefined;
       positions[key] = {
         id: pos.id,
         symbol: pos.symbol,
         side: pos.side,
         quantity: pos.quantity,
-        averageEntryPrice: pos.averageEntryPrice,
+        averageEntryPrice: exPos ? exPos.averageEntryPrice : pos.averageEntryPrice,
         currentPrice: pos.currentPrice,
-        unrealizedPnl: pos.unrealizedPnl,
+        unrealizedPnl: exPos ? exPos.unrealizedPnl : pos.unrealizedPnl,
         unrealizedPnlPct: pos.unrealizedPnlPct,
         stopLossPrice: pos.stopLossPrice,
         takeProfitPrice: pos.takeProfitPrice,
-        leverage: pos.leverage,
+        leverage: exPos ? exPos.leverage : pos.leverage,
         openedAt: pos.openedAt,
         updatedAt: pos.updatedAt,
         agentId: pos.agentId,
-        exchange: pos.exchange,
+        exchange: pos.exchange ?? 'hyperliquid',
       };
     }
+
+    // v2.0.19: in real mode, also add any exchange positions that don't have
+    // a local mirror (e.g. opened manually on HL outside this system) so the
+    // UI Portfolio module shows the complete real position set.
+    if (isRealMode && this.cachedExchangePositions) {
+      for (const exPos of this.cachedExchangePositions) {
+        const key = exPos.symbol.toLowerCase();
+        if (!positions[key]) {
+          positions[key] = {
+            id: `hl-${exPos.symbol}-${exPos.openedAt}`,
+            symbol: exPos.symbol,
+            side: exPos.side,
+            quantity: exPos.quantity,
+            averageEntryPrice: exPos.averageEntryPrice,
+            currentPrice: exPos.currentPrice,
+            unrealizedPnl: exPos.unrealizedPnl,
+            unrealizedPnlPct: exPos.averageEntryPrice > 0 ? exPos.unrealizedPnl / (exPos.quantity * exPos.averageEntryPrice) : 0,
+            stopLossPrice: undefined,
+            takeProfitPrice: undefined,
+            leverage: exPos.leverage,
+            openedAt: exPos.openedAt,
+            updatedAt: Date.now(),
+            agentId: 'hyperliquid-real',
+            exchange: 'hyperliquid',
+          };
+        }
+      }
+    }
+
     // v2.0.17: in real mode, show the actual Hyperliquid account value +
     // null out totalPnl/drawdown (paper-trade concepts). Win rate / trade
     // count stay local (paper + real mixed).
-    const isRealMode = this.realTradingManager?.getTradeMode() === 'real';
     const exBal = isRealMode ? this.cachedExchangeBalance : null;
     const displayBalance = exBal && exBal.total > 0 ? exBal.total : p.balance;
     const displayEquity = exBal && exBal.total > 0 ? exBal.total : p.totalEquity;
@@ -2270,6 +2328,25 @@ class AMACRFSystem {
             closedAt: p.openedAt,
             status: 'open' as const,
           })),
+          // v2.0.19: in real mode, also show the actual Hyperliquid recent
+          // fills (last 5) so the Trade Records panel reflects the real
+          // exchange history. Marked with status 'hl-fill' so the UI can
+          // distinguish them from local mirror trades.
+          ...(isRealMode ? this.cachedHLFills.map(f => ({
+            id: `hl-fill-${f.timestamp}-${f.symbol}`,
+            symbol: f.symbol,
+            side: f.side,
+            entryPrice: f.price,
+            exitPrice: f.price,
+            quantity: f.size,
+            leverage: 1,
+            investment: f.price * f.size,
+            pnl: f.closedPnl - f.fee,
+            pnlPct: f.price * f.size > 0 ? (f.closedPnl - f.fee) / (f.price * f.size) : 0,
+            openedAt: f.timestamp,
+            closedAt: f.timestamp,
+            status: 'hl-fill' as const,
+          })) : []),
         ],
       });
     } catch (err) {

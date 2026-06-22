@@ -250,6 +250,9 @@ export class PortfolioTracker {
       exchange = 'binance';
     }
 
+    // v2.0.19: unrealizedPnl starts at -entryFee so the UI shows the real
+    // cost from the moment the position opens (previously $0.00 because
+    // price hadn't moved yet, hiding the fee already paid).
     const position: Position = {
       id: uuidv4(),
       symbol,
@@ -257,14 +260,15 @@ export class PortfolioTracker {
       quantity,
       averageEntryPrice: entryPrice,
       currentPrice: entryPrice,
-      unrealizedPnl: 0,
-      unrealizedPnlPct: 0,
+      unrealizedPnl: -entryFee,
+      unrealizedPnlPct: cost > 0 ? -entryFee / cost : 0,
       realizedPnl: 0,
       leverage,
       openedAt: Date.now(),
       updatedAt: Date.now(),
       agentId: order.agentId,
       exchange,
+      entryFee,
     };
 
     // Set stop-loss and take-profit
@@ -316,12 +320,16 @@ export class PortfolioTracker {
     pos.currentPrice = currentPrice;
     pos.updatedAt = Date.now();
 
+    // v2.0.19: include the entry fee already paid so unrealized PnL reflects
+    // the real cost from open. The exit fee (paid on close) is NOT included
+    // here — it's deducted in closePosition() when the trade realises.
+    const entryFee = pos.entryFee ?? 0;
     if (pos.side === 'buy') {
-      pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity * (pos.leverage ?? 1);
-      pos.unrealizedPnlPct = ((currentPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1);
+      pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity * (pos.leverage ?? 1) - entryFee;
+      pos.unrealizedPnlPct = ((currentPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1) - (pos.averageEntryPrice * pos.quantity > 0 ? entryFee / (pos.averageEntryPrice * pos.quantity) : 0);
     } else {
-      pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity * (pos.leverage ?? 1);
-      pos.unrealizedPnlPct = ((pos.averageEntryPrice - currentPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1);
+      pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity * (pos.leverage ?? 1) - entryFee;
+      pos.unrealizedPnlPct = ((pos.averageEntryPrice - currentPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1) - (pos.averageEntryPrice * pos.quantity > 0 ? entryFee / (pos.averageEntryPrice * pos.quantity) : 0);
     }
 
     // Recalculate total equity so it reflects latest unrealized PnL
@@ -343,12 +351,14 @@ export class PortfolioTracker {
     pos.currentPrice = currentPrice;
     pos.updatedAt = Date.now();
 
+    // v2.0.19: include the entry fee already paid (same as updatePosition).
+    const entryFee = pos.entryFee ?? 0;
     if (pos.side === 'buy') {
-      pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity * (pos.leverage ?? 1);
-      pos.unrealizedPnlPct = ((currentPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1);
+      pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity * (pos.leverage ?? 1) - entryFee;
+      pos.unrealizedPnlPct = ((currentPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1) - (pos.averageEntryPrice * pos.quantity > 0 ? entryFee / (pos.averageEntryPrice * pos.quantity) : 0);
     } else {
-      pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity * (pos.leverage ?? 1);
-      pos.unrealizedPnlPct = ((pos.averageEntryPrice - currentPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1);
+      pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity * (pos.leverage ?? 1) - entryFee;
+      pos.unrealizedPnlPct = ((pos.averageEntryPrice - currentPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1) - (pos.averageEntryPrice * pos.quantity > 0 ? entryFee / (pos.averageEntryPrice * pos.quantity) : 0);
     }
 
     this.recalculateEquity();

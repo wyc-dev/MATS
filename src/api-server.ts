@@ -61,7 +61,8 @@ export interface APIData {
     leverage: number; investment: number;
     pnl: number; pnlPct: number;
     openedAt: number; closedAt: number;
-    status: 'open' | 'closed';
+    /** 'hl-fill' = a real Hyperliquid fill synced from the exchange (v2.0.19) */
+    status: 'open' | 'closed' | 'hl-fill';
   }>;
   marketAgent?: {
     config: MarketAgentConfig;
