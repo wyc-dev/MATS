@@ -1360,8 +1360,11 @@ Output ONLY valid JSON:
       // Build recent-trade-pattern context for choppy-market detection.
       // This lets the Risk Auditor see if recent buy/sell churn is losing
       // money and adjust its veto / TP-SL-size guidance accordingly.
-      const tradePattern = this.tradeHistory
-        ? this.tradeHistory.getRecentTradeAnalysis(10).summary
+      const analysis = this.tradeHistory
+        ? this.tradeHistory.getRecentTradeAnalysis(10)
+        : null;
+      const tradePattern = analysis
+        ? analysis.summary
         : '=== RECENT TRADE PATTERN (last 10) ===\n(no trade history available)';
 
       // Independent risk audit via LLM
@@ -1400,12 +1403,32 @@ Output ONLY valid JSON:
         };
       }
 
+      // ── Hardcoded choppy-market 50% position size reduction ──
+      // When the recent trade pattern is choppy (frequent reversals + net
+      // losses), deterministically cut the position size to 50% of the
+      // decision's size. This is a fixed rule (not LLM-discretionary) so the
+      // reduction is guaranteed whenever choppy conditions are detected.
+      // The paper engine floors the final notional to HL's $10 minimum, so
+      // this never produces an untradeable tiny order.
+      let adjustedPositionSizePct = parsed.adjustedPositionSizePct ?? undefined;
+      let reason = parsed.reason ?? 'No concerns.';
+      if (analysis?.isChoppy && decision.action !== 'hold' && decision.positionSizePct > 0) {
+        const reduced = decision.positionSizePct * 0.5;
+        // Only apply the hardcoded cut if the LLM didn't already reduce
+        // further (avoid overriding a more conservative LLM suggestion).
+        if (adjustedPositionSizePct === undefined || adjustedPositionSizePct > reduced) {
+          adjustedPositionSizePct = reduced;
+          reason = `Choppy market detected (reversalRate=${(analysis.reversalRate * 100).toFixed(0)}%, netPnl=${(analysis.netPnlPct * 100).toFixed(2)}%) — hardcoded 50% position size reduction. ${reason}`;
+          log.info(`🔧 Choppy-market hardcoded size cut: ${(decision.positionSizePct * 100).toFixed(1)}% → ${(reduced * 100).toFixed(1)}%`);
+        }
+      }
+
       return {
         veto: parsed.veto ?? false,
-        reason: parsed.reason ?? 'No concerns.',
+        reason,
         adjustedStopLossPct: parsed.adjustedStopLossPct ?? undefined,
         adjustedTakeProfitPct: parsed.adjustedTakeProfitPct ?? undefined,
-        adjustedPositionSizePct: parsed.adjustedPositionSizePct ?? undefined,
+        adjustedPositionSizePct,
       };
     } catch {
       // On error, be conservative but respect Market Agent limits

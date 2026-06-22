@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.14-dev (Regime-aware TP/SL — 震盪市收窄 + 減倉，趨勢市加闊 TP 讓利潤奔跑)  
+> **版本**: 2.0.14-dev (Regime-aware TP/SL — 震盪市硬編碼 50% 倉位 cut + 收窄 TP/SL，趨勢市加闊 TP 讓利潤奔跑，HL $10 min notional floor)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -497,20 +497,22 @@ Direction reversals: 5 (83% reversal rate) | Current loss streak: 3
 
 | 偵測到 | 新入場 | 現有持倉 TP/SL | 倉位大小 |
 |:-------|:-------|:--------------|:---------|
-| ⚠️ Choppy | 強烈考慮 VETO（除非 mean-reversion 依據） | **收窄** TP 到 range 對面邊（mean-reversion target），**收窄** SL 到 range 外側（突破即止損） | **減細**（50-70%）經 `adjustedPositionSizePct` |
+| ⚠️ Choppy | 強烈考慮 VETO（除非 mean-reversion 依據） | **收窄** TP 到 range 對面邊（mean-reversion target），**收窄** SL 到 range 外側（突破即止損） | **硬編碼 50% cut**（HACP 自動應用，唔靠 LLM）；loss streak ≥3 可再減到 25% |
 | ✅ Trending (win ≥ 60%) | 批准符合近期贏面方向 | **加闊** TP 讓利潤奔跑，用 ATR-based SL 避免過早止損 | 唔使減 |
 | 🟡 Mixed / 數據不足 | 正常謹慎 | 標準 per-position risk rules | 唔使調整 |
 
 **點解震盪市收窄而唔係加闊**（機構級邏輯）:
 1. **收窄 TP**: 震盪市價格喺 range 內來回，TP 應該設喺 range 嘅另一邊（mean-reversion target），加闊 TP 只會令 TP 永遠唔觸發
 2. **收窄 SL**: SL 放喺 range 邊界外側——如果價格突破 range，即係 regime 轉變，應該即時止損而唔係俾更大虧損
-3. **減細倉位**: 震盪市勝率低，減細倉位降低每筆虧損（ATR position sizing 嘅核心——volatility 高時減細 size）
+3. **硬編碼 50% 倉位 cut**: 震盪市勝率低，固定減半倉位降低每筆虧損。呢個係 HACP 硬編碼規則（唔靠 LLM 自由決定），確保每次偵測到 choppy 都一定減半。Paper engine 會將最終 notional floor 到 Hyperliquid $10 最少下注金額，所以 50% cut 永遠唔會產生唔可以交易嘅微細單。
 
 **TP/SL/Size 調整流程**:
-1. Risk Auditor LLM 返回 `adjustedStopLossPct` / `adjustedTakeProfitPct` / `adjustedPositionSizePct`
-2. HACP `riskAuditorAudit` 接收並寫入 `finalConsensus.decision.stopLossPct` / `takeProfitPct` / `positionSizePct`
-3. `positionSizePct` clamp 到 `[0, MAX_POSITION_PCT]`（Risk Auditor 只可以減，唔可以超過硬上限）
-4. 執行層用新 SL/TP/size 開倉
+1. HACP `riskAuditorAudit` 硬編碼：如果 `analysis.isChoppy` → `positionSizePct × 0.5`（除非 LLM 建議更細）
+2. Risk Auditor LLM 返回 `adjustedStopLossPct` / `adjustedTakeProfitPct` / `adjustedPositionSizePct`（可再減，但唔可以超過硬上限）
+3. HACP 接收並寫入 `finalConsensus.decision.stopLossPct` / `takeProfitPct` / `positionSizePct`
+4. `positionSizePct` clamp 到 `[0, MAX_POSITION_PCT]`
+5. Paper engine `executeOrder` 將 notional floor 到 `HL_MIN_NOTIONAL_USD = 10`（Hyperliquid 最少下注金額）
+6. 執行層用新 SL/TP/size 開倉
 
 **Meta-Agent position adjustment 都 regime-aware**:
 - `adjustPositions()` 注入 `getRecentTradeAnalysis(10).summary`
@@ -4685,8 +4687,9 @@ if (isSynthetic) {
 
 | 檔案 | 改動 |
 |:-----|:-----|
-| `src/agents/agents.ts` | Risk Auditor prompt 反轉策略：choppy→**收窄** TP/SL + **減細**倉位；trending→**加闊** TP 讓利潤奔跑 |
-| `src/cognition/hacp.ts` | `riskAuditorAudit` 加 `adjustedPositionSizePct`（clamp 到 `[0, MAX_POSITION_PCT]`）；`adjustPositions` Meta-Agent 都注入 analysis + regime-aware 指引 |
+| `src/agents/agents.ts` | Risk Auditor prompt 反轉策略：choppy→**收窄** TP/SL；trending→**加闊** TP 讓利潤奔跑。倉位 50% cut 由 HACP 硬編碼，LLM 唔使 set（可再減到 25% if loss streak ≥3） |
+| `src/cognition/hacp.ts` | `riskAuditorAudit` 硬編碼 choppy 50% cut（`analysis.isChoppy` → `positionSizePct × 0.5`，唔靠 LLM）+ `adjustedPositionSizePct` clamp；`adjustPositions` Meta-Agent 都注入 analysis + regime-aware 指引 |
+| `src/trading/paper-engine.ts` | 新增 `HL_MIN_NOTIONAL_USD = 10` — `executeOrder` 將 notional floor 到 Hyperliquid $10 最少下注金額，50% cut 永遠唔會產生唔可以交易嘅微細單 |
 
 **震盪市 heuristic**: `directionalTrades ≥ 3` + `reversalRate ≥ 50%` + `netPnl < 0` + `losses ≥ 2` → `isChoppy = true`
 
@@ -4694,10 +4697,12 @@ if (isSynthetic) {
 
 | Regime | TP | SL | 倉位 |
 |:-------|:---|:---|:-----|
-| ⚠️ Choppy | 收窄到 range 對面邊 | 收窄到 range 外側 | 減細 50-70% |
+| ⚠️ Choppy | 收窄到 range 對面邊 | 收窄到 range 外側 | **硬編碼 50% cut**（HACP 自動）；loss streak ≥3 → 25% |
 | ✅ Trending | 加闊讓利潤奔跑 | ATR-based 避免過早止損 | 唔使減 |
 
-**效果**: Risk Auditor 依家可以根據近期 10 個 trade 嘅實際表現判斷市況，震盪市時 VETO 新入場或**收窄**現有持倉嘅 TP/SL 到 range 邊界 + **減細**倉位，而唔係盲目加闊 TP/SL 增加風險。趨勢市時加闊 TP 讓利潤奔跑。
+**HL 最少下注金額 floor**: Paper engine `executeOrder` 將最終 notional floor 到 `HL_MIN_NOTIONAL_USD = 10`（Hyperliquid 官方最少下注金額 $10 USDC）。即使 50% cut 令倉位縮到好細，都會 floor 返上 $10 確保可以交易。
+
+**效果**: Risk Auditor 依家可以根據近期 10 個 trade 嘅實際表現判斷市況，震盪市時 VETO 新入場或**收窄**現有持倉嘅 TP/SL 到 range 邊界 + **硬編碼 50% 倉位 cut**（唔靠 LLM，確保一定減半），而唔係盲目加闊 TP/SL 增加風險。趨勢市時加闊 TP 讓利潤奔跑。HL $10 min notional floor 確保減倉後仍然可以交易。
 
 ---
 
