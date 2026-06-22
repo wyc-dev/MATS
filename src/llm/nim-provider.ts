@@ -34,9 +34,45 @@ export class NIMProvider implements LLMProvider {
   private available = false;
   private warmedUpModels = new Set<string>();
 
+  // ── Circuit breaker ──
+  // Same rationale as OllamaProvider: repeated timeouts (e.g. during HL WS
+  // reconnect storms or NIM API degradation) trip the breaker so subsequent
+  // calls fail fast instead of each waiting the full 120s.
+  private consecutiveFailures = 0;
+  private breakerOpenedAt = 0;
+  private static readonly BREAKER_THRESHOLD = 3;
+  private static readonly BREAKER_OPEN_MS = 30_000;
+
   constructor() {
     this.baseUrl = config.nim.baseUrl;
     this.apiKey = config.nim.apiKey ?? '';
+  }
+
+  /** True when the circuit breaker is open (fail-fast mode). */
+  private isBreakerOpen(): boolean {
+    if (this.consecutiveFailures < NIMProvider.BREAKER_THRESHOLD) return false;
+    const elapsed = Date.now() - this.breakerOpenedAt;
+    if (elapsed >= NIMProvider.BREAKER_OPEN_MS) {
+      log.info(`NIM circuit breaker half-open after ${elapsed}ms — probing`);
+      return false;
+    }
+    return true;
+  }
+
+  private recordSuccess(): void {
+    if (this.consecutiveFailures > 0) {
+      log.info(`NIM circuit breaker closed — recovered after ${this.consecutiveFailures} failures`);
+    }
+    this.consecutiveFailures = 0;
+    this.breakerOpenedAt = 0;
+  }
+
+  private recordFailure(): void {
+    this.consecutiveFailures++;
+    if (this.consecutiveFailures === NIMProvider.BREAKER_THRESHOLD) {
+      this.breakerOpenedAt = Date.now();
+      log.warn(`NIM circuit breaker OPENED after ${this.consecutiveFailures} consecutive failures — fail-fast for ${NIMProvider.BREAKER_OPEN_MS}ms`);
+    }
   }
 
   /**
@@ -143,6 +179,11 @@ export class NIMProvider implements LLMProvider {
   }
 
   async chat(request: LLMRequest): Promise<LLMResponse> {
+    // Circuit breaker: fail fast when NIM is in a known-bad state.
+    if (this.isBreakerOpen()) {
+      throw new Error(`NIM circuit breaker open — failing fast (recovering in ${Math.max(0, NIMProvider.BREAKER_OPEN_MS - (Date.now() - this.breakerOpenedAt))}ms)`);
+    }
+
     const startTime = performance.now();
     const model = request.model ?? config.nim.models.default;
 
@@ -189,6 +230,7 @@ export class NIMProvider implements LLMProvider {
         throw new Error('Empty response from NIM');
       }
 
+      this.recordSuccess();
       return {
         content,
         model: data.model,
@@ -204,8 +246,10 @@ export class NIMProvider implements LLMProvider {
     } catch (err) {
       clearTimeout(timeout);
       if (err instanceof DOMException && err.name === 'AbortError') {
+        this.recordFailure();
         throw new Error(`NIM request timed out after ${timeoutMs}ms`);
       }
+      this.recordFailure();
       throw err;
     }
   }

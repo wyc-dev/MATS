@@ -45,14 +45,63 @@ export class OllamaProvider implements LLMProvider {
   private activeRequests = 0;
   private readonly maxConcurrentRequests = 2;
 
+  // ── Circuit breaker ──
+  // When Ollama repeatedly times out (e.g. during HL WS reconnect storms that
+  // starve the local event loop, or when the local Ollama daemon is overloaded),
+  // we trip the breaker so subsequent calls fail-fast instead of each waiting
+  // the full 120s. This keeps HACP cycles responsive and lets the caller
+  // degrade gracefully to HOLD.
+  private consecutiveFailures = 0;
+  private breakerOpenedAt = 0;
+  /** Number of consecutive failures before the breaker opens (fail-fast). */
+  private static readonly BREAKER_THRESHOLD = 3;
+  /** How long the breaker stays open before allowing a half-open probe. */
+  private static readonly BREAKER_OPEN_MS = 30_000;
+  /** Max time to wait for a concurrency slot before failing fast. */
+  private static readonly SLOT_ACQUIRE_TIMEOUT_MS = 15_000;
+
   constructor() {
     this.baseUrl = config.ollama.baseUrl;
     this.defaultModel = config.ollama.modelDefault;
   }
 
-  /** Wait until we're under the concurrent request limit */
+  /** True when the circuit breaker is open (fail-fast mode). */
+  private isBreakerOpen(): boolean {
+    if (this.consecutiveFailures < OllamaProvider.BREAKER_THRESHOLD) return false;
+    const elapsed = Date.now() - this.breakerOpenedAt;
+    if (elapsed >= OllamaProvider.BREAKER_OPEN_MS) {
+      // Half-open: allow one probe through to test recovery
+      log.info(`Ollama circuit breaker half-open after ${elapsed}ms — probing`);
+      return false;
+    }
+    return true;
+  }
+
+  private recordSuccess(): void {
+    if (this.consecutiveFailures > 0) {
+      log.info(`Ollama circuit breaker closed — recovered after ${this.consecutiveFailures} failures`);
+    }
+    this.consecutiveFailures = 0;
+    this.breakerOpenedAt = 0;
+  }
+
+  private recordFailure(): void {
+    this.consecutiveFailures++;
+    if (this.consecutiveFailures === OllamaProvider.BREAKER_THRESHOLD) {
+      this.breakerOpenedAt = Date.now();
+      log.warn(`Ollama circuit breaker OPENED after ${this.consecutiveFailures} consecutive failures — fail-fast for ${OllamaProvider.BREAKER_OPEN_MS}ms`);
+    }
+  }
+
+  /** Wait until we're under the concurrent request limit, or fail fast after
+   *  SLOT_ACQUIRE_TIMEOUT_MS. This prevents unbounded busy-wait when all slots
+   *  are occupied by slow/timed-out requests. */
   private async acquireSlot(): Promise<void> {
+    const deadline = Date.now() + OllamaProvider.SLOT_ACQUIRE_TIMEOUT_MS;
     while (this.activeRequests >= this.maxConcurrentRequests) {
+      if (Date.now() >= deadline) {
+        throw new Error(`Ollama slot acquisition timed out after ${OllamaProvider.SLOT_ACQUIRE_TIMEOUT_MS}ms (all ${this.maxConcurrentRequests} slots busy)`);
+      }
       await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
     }
     this.activeRequests++;
@@ -82,11 +131,21 @@ export class OllamaProvider implements LLMProvider {
   }
 
   async chat(request: LLMRequest): Promise<LLMResponse> {
+    // Circuit breaker: fail fast when Ollama is in a known-bad state.
+    // This prevents every agent from waiting the full 120s timeout during
+    // a degraded period (e.g. HL WS reconnect storm starving the event loop,
+    // or local Ollama daemon overload).
+    if (this.isBreakerOpen()) {
+      throw new Error(`Ollama circuit breaker open — failing fast (recovering in ${Math.max(0, OllamaProvider.BREAKER_OPEN_MS - (Date.now() - this.breakerOpenedAt))}ms)`);
+    }
+
     const startTime = performance.now();
     const model = request.model ?? this.defaultModel;
     const maxRetries = 2;
 
-    // Acquire concurrency slot to avoid ephemeral port exhaustion
+    // Acquire concurrency slot to avoid ephemeral port exhaustion.
+    // acquireSlot() now fails fast after SLOT_ACQUIRE_TIMEOUT_MS instead of
+    // busy-waiting indefinitely behind slow requests.
     await this.acquireSlot();
 
     try {
@@ -196,6 +255,8 @@ export class OllamaProvider implements LLMProvider {
           throw new Error('Empty response from Ollama');
         }
 
+        // Successful response — reset the circuit breaker.
+        this.recordSuccess();
         return {
           content,
           model: (data as any).model as string ?? 'unknown',
@@ -211,9 +272,13 @@ export class OllamaProvider implements LLMProvider {
         } catch (err) {
           clearTimeout(timeout);
           if (err instanceof DOMException && err.name === 'AbortError') {
+            // Timeout — record as a circuit-breaker failure so repeated timeouts
+            // trip the breaker and stop further 120s waits.
+            this.recordFailure();
             throw new Error(`Ollama request timed out after ${timeoutMs}ms`);
           }
           if (attempt >= maxRetries) {
+            this.recordFailure();
             throw err;
           }
           log.warn(`Ollama request failed on attempt ${attempt}, will retry: ${err instanceof Error ? err.message : String(err)}`);
@@ -223,6 +288,7 @@ export class OllamaProvider implements LLMProvider {
       this.releaseSlot();
     }
 
+    this.recordFailure();
     throw new Error('Empty response from Ollama after retries');
   }
 }
