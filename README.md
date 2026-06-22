@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.9--dev-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.21--dev-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -124,7 +124,7 @@ MATS does not rely on a single AI model. Instead, **eight specialized agents thi
 | **On-Chain Whisperer** | On-chain data & macro analyst | 0.50 | 0.25 |
 | **RBC & Sentiment Analyst** | RBC clusters + Fear & Greed specialist | 0.25 | 0.25 |
 | **News Reporter** | Multi-source news sentiment analyst | 0.40 | 0.20 |
-| **Independent Risk Auditor** | 🚨 Final gatekeeper (absolute veto power) | 0.10 | 0.25 |
+| **Independent Risk Auditor** | 🚨 Final gatekeeper (absolute veto power) + 🆕 v2.0.13 regime-aware TP/SL | 0.10 | 0.25 |
 | **Skeptics** | 🤔 Logic auditor (cross-references all agents) | 0.30 | — |
 | **Meta-Agent** | Strategic coordinator / debate chair | 0.45 | 0.35 |
 
@@ -150,6 +150,8 @@ Phase 5:   Meta-Agent dynamic TP/SL adjustment + per-position consensus executio
 - **Graceful degradation**: Any error defaults to HOLD — the system never crashes into a bad trade
 - **Deterministic fallback**: If LLM is unavailable, risk engine enforces conservative defaults
 - **Total cycle budget**: 120s hard timeout, forced HOLD on expiry
+- 🆕 v2.0.12: **LLM resilience** — circuit breaker (3 failures → 30s fail-fast), slot acquisition timeout (8s), HACP deadline race (60s per agent → graceful HOLD), tiered LLM timeout (think 45s, debate/audit 30s). Prevents a single stalled agent from blocking the whole cycle.
+- 🆕 v2.0.13–v2.0.14: **Risk Auditor regime-aware TP/SL** — analyzes the last 10 trades' direction + PnL to detect choppy/whipsaw markets. Choppy → VETO new entries OR narrow TP/SL to range edges + hardcoded 50% position cut (HACP-enforced, not LLM-discretionary); loss streak ≥3 → 25%. Trending → widen TP to let profits run. Paper engine floors the final notional to HL's $10 minimum.
 
 ### 🧬 Self-Evolution System (RBC + EM Cycle Chain)
 
@@ -160,9 +162,12 @@ MATS has **two self-evolution mechanisms**:
 - 8 feature dimensions: volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction
 - 🆕 v2.0.9: `applyDecay()` shrinks overlap regions toward centroids (10%/cycle) — prevents box saturation
 - 🆕 v2.0.9: Multi-symbol training — trains active symbol + all open positions + all RBC symbols
+- 🆕 v2.0.10: Only trains the active symbol (avoids proxy-price pollution of historical symbols)
+- 🆕 v2.0.11: **Layered decay** — global decay on all dimensions (not just overlap), confidence-scaled rate (balanced win/loss → slow decay, imbalanced → fast), time-weighted centroid (half-life 50 cycles) so the shrink target tracks the recent regime
 - Edge score = discriminative dims / total dims → verdict: favorable/unfavorable/no_edge
 - Per-symbol persistent memory (rbc-state.json, atomic write)
 - Hypothetical training: compares price change between cycles, feeds directional/flat samples
+- 🆕 v2.0.11: `RBCQueryResult` includes `confidence` (0-1) + `effectiveSamples` — agents weight the verdict by confidence (low conf = weak hint, high conf = strong signal)
 
 **Layer 2 — EM Cycle Chain** (`cycle-summary.ts`):
 - Meta-Agent distills each cycle into a structured `CycleSummary` (E-step)
@@ -172,6 +177,9 @@ MATS has **two self-evolution mechanisms**:
 
 **Evolutionary Pressure Engine (v2.0.8 — Dual-Trigger + 1-Gen Incubation):**
 - Survival Fitness: Profit Efficiency 35% + Return 25% + Capital Preservation 20% + Win Quality 10% + Consistency 5% + Adaptability 5%
+- 🆕 v2.0.15: **Directional mutation** — `mutate()` guides parameter changes toward fixing the weakest fitness dimension (breakdown < 0.4), not blind random ±10% noise. E.g. low `capitalPreservation` → raise `riskAversion`; low `adaptability` → lower `signalThreshold` + `confirmationRequired`. Residual noise preserved for exploration.
+- 🆕 v2.0.15: **Agent-level evolution** — `AgentEvolutionEngine` dynamically adjusts each agent's voting weight by per-regime win rate: `dynamicWeight = baseWeight × clamp(0.5 + (winRate-0.5)×2, 0.5, 1.5)`, EMA-smoothed (alpha=0.3), requires ≥5 samples. High-performers gain influence, underperformers lose it. HACP consensus uses the dynamic weight.
+- 🆕 v2.0.15: **Regime-aware strategy selection** — `getBestStrategyForRegime(regime)` scores `fitness × regimeWeight/maxRegimeWeight` so a trending_bull-tuned strategy isn't picked in a chaotic regime.
 - ±10% mutation per generation, automatic retirement below 0.2 fitness
 - Dual-trigger: loss-triggered (immediate) or scheduled (every 3 trades)
 - 1-gen incubation: child evaluated after 1 cycle (not 3) — faster adaptation
@@ -208,6 +216,8 @@ profit generation must occur within safety constraints.
 - All decisions prioritize survival; profit is a secondary objective
 - **Graceful degradation**: every error path defaults to HOLD
 - Production-grade standards: strict TypeScript, structured logging, exponential backoff reconnection
+- 🆕 v2.0.18: **Notional-based double-sided fee deduction** — HL taker fee (0.04%) is charged on the leveraged notional, not the margin. At 10x leverage a round-trip costs 0.8% of margin; at 100x it's 8%. Fees are deducted from `balance` on both open and close (plus `realizedPnl` on close) so paper PnL reflects the real cost — the system only learns strategies that are profitable AFTER fees.
+- 🆕 v2.0.19: **Unrealized PnL includes entry fee** — opening a position immediately shows the paid entry fee as a negative unrealized PnL (not $0.00), so the UI reflects the real cost from the moment the position opens.
 
 ### 🔌 LLM Abstraction Layer
 
@@ -220,6 +230,8 @@ Swap LLM providers without modifying a single line of code:
 | Custom OpenAI-compatible | Implement `LLMProvider` interface | Any service with an OpenAI-compatible API |
 
 The provider factory auto-detects availability: NIM → Ollama → Error.
+
+🆕 v2.0.12: Both providers have a **circuit breaker** — 3 consecutive failures open the breaker for 30s (fail-fast instead of each agent waiting the full timeout). Ollama also has **slot leak protection** (v2.0.20): slots held >90s are auto-reclaimed, and concurrency is 4 (raised from 2) to handle 8 agents' staggered thinking.
 
 ---
 
@@ -248,10 +260,16 @@ The provider factory auto-detects availability: NIM → Ollama → Error.
 │                                                              │
 │   Layer 3: Execution (TypeScript Runtime)                    │
 │   • Hyperliquid WebSocket + REST (9 perpetual DEXs)          │
+│   • 🆕 v2.0.16: HL WS user-level subscriptions                │
+│     (clearinghouseState + userFills — real-time position/fill │
+│      sync, no REST polling)                                   │
 │   • Market Agent auto-selects trading pair                   │
 │   • Risk engine (millisecond latency, no LLM dependency)     │
 │   • Paper trading engine (leverage-aware P&L simulation)     │
+│   • 🆕 v2.0.18: Notional-based double-sided fee deduction    │
 │   • Real Trading Manager (exchange orders + local mirror)    │
+│   • 🆕 v2.0.16: Post-trade sync (renew mirror SL/TP + fill)   │
+│   • 🆕 v2.0.17: Real-trade UI shows HL real balance/equity    │
 │   • Position tracking & stop-loss/take-profit                │
 │   • Data pipeline & persistence                              │
 │   • Observability & health checks (6 guards)                 │
@@ -276,23 +294,23 @@ src/
 │   └── agent-models.ts       # Per-agent model configuration (126 LOC)
 │
 ├── cognition/
-│   ├── hacp.ts               # ⚡ HACP protocol implementation (~1278 LOC)
+│   ├── hacp.ts               # ⚡ HACP protocol (v2.0.12 — deadline race + tiered timeout + v2.0.15 dynamic weights)
 │   └── a2a-utils.ts          # A2A inter-agent signal exchange
 │
 ├── llm/                      # 🔌 LLM abstraction layer
 │   ├── provider.ts           # Abstract interface (57 LOC)
-│   ├── nim-provider.ts       # NVIDIA NIM implementation (128 LOC)
-│   ├── ollama-provider.ts    # Ollama implementation (139 LOC)
+│   ├── nim-provider.ts       # NVIDIA NIM (v2.0.12 — circuit breaker)
+│   ├── ollama-provider.ts    # Ollama (v2.0.12 — circuit breaker + v2.0.20 concurrency 4 + slot leak protection)
 │   └── index.ts              # Provider factory (auto-detection, 65 LOC)
 │
 ├── trading/                  # 💹 Trading engine
-│   ├── portfolio.ts          # Portfolio tracker (~548 LOC)
-│   ├── paper-engine.ts       # Paper trading simulation (~300 LOC)
-│   ├── cost-model.ts         # HL transaction cost model (taker 0.04%)
+│   ├── portfolio.ts          # Portfolio tracker (v2.0.18 — notional fee + v2.0.19 entryFee in unrealizedPnl)
+│   ├── paper-engine.ts       # Paper trading simulation (v2.0.14 — HL $10 min notional floor)
+│   ├── cost-model.ts         # HL transaction cost model (taker 0.04%, notional-based)
 │   ├── execution-tracker.ts  # Slippage/fee tracking
 │   ├── decision-utils.ts     # Decision normalization
-│   ├── real-trading-manager.ts # Real trading orchestrator
-│   └── hyperliquid-real-engine.ts # Hyperliquid real trading (~730 LOC)
+│   ├── real-trading-manager.ts # Real trading orchestrator (v2.0.16 — post-trade sync + SL/TP renew + getRecentFills)
+│   └── hyperliquid-real-engine.ts # Hyperliquid real trading (v2.0.19 — getRecentFills)
 │
 ├── risk/                     # 🛡️ Risk management
 │   ├── engine.ts             # Multi-layer risk engine (201 LOC)
@@ -301,32 +319,33 @@ src/
 ├── system-guard/             # 🛡️ SystemGuard (5 guards, ~497 LOC)
 │
 ├── evolution/                # 🧬 Evolution + RBC + pattern classifier
-│   ├── index.ts              # Evolution orchestrator (~420 LOC)
-│   ├── trade-history.ts      # Trade history ledger
+│   ├── index.ts              # Evolution orchestrator (v2.0.15 — directional mutation + regime-aware strategy)
+│   ├── trade-history.ts      # Trade history ledger (v2.0.13 — recent trade pattern analysis)
 │   ├── agent-outcomes.ts     # Per-agent performance tracking
+│   ├── agent-evolution.ts    # 🆕 v2.0.15 Agent Evolution Engine — dynamic voting weights
 │   ├── persistence.ts        # Durable state persistence (~561 LOC)
 │   ├── trade-pattern-classifier.ts # 🧬 Supervised KNN pattern DB
-│   ├── rbc-clustering.ts     # 🧬 RBC Engine — growing hyperrectangles, 8 dims
+│   ├── rbc-clustering.ts     # 🧬 RBC Engine (v2.0.11 — layered decay + time-weighted centroid)
 │   └── cycle-summary.ts      # 🧬 EM Cycle Summary Manager
 │
 ├── analysis/                 # 📊 Signal processing
-│   ├── sentiment-engine.ts   # Sigmoid·GA sentiment engine
-│   ├── sigmoid-ga.ts         # GA-evolved sigmoid functions
-│   └── support-resistance.ts # SNR zone detection (synthetic symbol aware)
+│   ├── sentiment-engine.ts   # Sigmoid·GA sentiment engine (v2.0.10 — adaptive velocity/acceleration)
+│   ├── sigmoid-ga.ts         # GA-evolved sigmoid functions (v2.0.10 — blend weight normalization)
+│   └── support-resistance.ts # SNR zone detection (v2.0.10 — recency weighting + volume scaling; synthetic symbol aware)
 │
 ├── market-agent/             # 🎯 Auto pair selection + position size/leverage (~879 LOC)
-├── backtest/                 # 📜 Historical backtesting engine
+├── backtest/                 # 📜 Historical backtesting engine (v2.0.10 — annualized regime slope)
 ├── observability/logger.ts   # Structured logging (Winston, 78 LOC)
 ├── api-server.ts             # REST + SSE API
 └── utils/shutdown.ts         # Graceful shutdown handler
 
 ui/                           # 🖥️ React Web UI (pantha_mats design system)
 ├── src/
-│   ├── App.tsx               # Main dashboard
+│   ├── App.tsx               # Main dashboard (v2.0.21 — Market Agent chart shows only current position)
 │   ├── RBCVisualizer.tsx     # RBC dimension visualizer
-│   ├── TradingViewChart.tsx  # TradingView chart integration
+│   ├── TradingViewChart.tsx  # TradingView chart (v2.0.20 — live TP/SL update via JSON dependency)
 │   ├── StarsBackground.tsx   # Dynamic starfield background
-│   └── types.ts              # UI type definitions
+│   └── types.ts              # UI type definitions (v2.0.17 — nullable PnL/drawdown; v2.0.19 — hl-fill status)
 └── index.html
 
 scripts/                      # 🛠 Utilities
@@ -368,6 +387,10 @@ HYPERLIQUID_PRIVATE_KEY=...
 
 The system defaults to **paper trading** — set `TRADE_MODE=real` in `.env` to enable live trading.
 
+🆕 v2.0.16: When a wallet address is configured, the HL WebSocket subscribes to user-level feeds (`clearinghouseState` + `userFills`) for real-time position + fill sync — no REST polling delay. The UI Portfolio module + Trade Records panel show the actual Hyperliquid positions + recent 5 fills.
+
+🆕 v2.0.17: In real mode the UI shows the actual HL account balance/equity (not the local mirror). Total PnL + Drawdown display `--` (paper-trade concepts); Win Rate/Trades stay local (paper + real mixed).
+
 ### Decision Cycle Tuning
 
 ```env
@@ -397,6 +420,26 @@ If you require a commercial license — for example, for proprietary extensions,
 
 ---
 
+## Changelog (v2.0.10 → v2.0.21)
+
+| Version | Change |
+|:--------|:-------|
+| **v2.0.10** | Math Audit — 13 numerical/logic fixes (EM z-score normalization, logGaussian constant, BIC paramCount, risk confidence double-application, S/R volume weighting + recency, backtest regime slope, correlation budget equity-based, Sigmoid·GA blend normalization, sentiment adaptive scaling, RBC active-symbol-only training) |
+| **v2.0.11** | RBC layered decay + time-weighted centroid — global decay on all dims (not just overlap), confidence-scaled rate, half-life 50 cycles; `RBCQueryResult` gains `confidence` + `effectiveSamples` |
+| **v2.0.12** | LLM resilience — circuit breaker (3 failures → 30s fail-fast), slot acquisition timeout, HACP deadline race (60s per agent → graceful HOLD), tiered LLM timeout (think 45s, debate/audit 30s) |
+| **v2.0.13–v2.0.14** | Risk Auditor regime-aware TP/SL — analyzes last 10 trades for choppy/whipsaw detection. Choppy → VETO or narrow TP/SL to range edges + hardcoded 50% position cut; trending → widen TP. Paper engine floors notional to HL $10 minimum |
+| **v2.0.15** | Evolution enhancement — directional mutation (fitness-breakdown-guided), agent-level evolution (dynamic voting weights by per-regime win rate), regime-aware strategy selection |
+| **v2.0.16** | HL WS user-level subscriptions (`clearinghouseState` + `userFills`) — real-time position/fill sync; post-trade mirror SL/TP renew + fill sync; UI main chart shows position markers + SL/TP |
+| **v2.0.17** | Real-trade UI shows HL real balance/equity (not local mirror); Total PnL + Drawdown show `--` in real mode; Win Rate/Trades stay local (paper + real mixed) |
+| **v2.0.18** | Notional-based double-sided fee deduction — HL taker fee charged on leveraged notional (10x → 0.8% of margin round-trip, 100x → 8%); deducted from `balance` on open + close |
+| **v2.0.19** | Unrealized PnL includes entry fee (not $0.00 at open); real-trade positions module syncs HL positions; Trade Records syncs HL recent 5 fills (`hl-fill` status) |
+| **v2.0.20** | TradingView TP/SL live update (JSON dependency, only cycle=0 lines); Ollama concurrency 2→4, slot timeout 15s→8s, slot leak protection (>90s reclaim) |
+| **v2.0.21** | Market Agent chart shows only the current position marker (no historical sell arrows) |
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.22 for full details on each fix.
+
+---
+
 ## Tech Stack
 
 | Category | Technology |
@@ -404,11 +447,11 @@ If you require a commercial license — for example, for proprietary extensions,
 | **Language** | TypeScript 5.6 (strict mode, zero type errors) |
 | **Runtime** | Node.js 22+ |
 | **LLM** | Ollama / NVIDIA NIM / OpenAI-compatible |
-| **Market Data** | Hyperliquid WebSocket (l2Book + trades + activeAssetCtx) + REST fallback |
-| **Frontend** | React 18 + Vite + TradingView Chart |
+| **Market Data** | Hyperliquid WebSocket (l2Book + trades + activeAssetCtx + 🆕 v2.0.16 clearinghouseState + userFills) + REST fallback |
+| **Frontend** | React 18 + Vite + TradingView Chart (🆕 v2.0.20 live TP/SL update) |
 | **Config Validation** | Zod schema |
 | **Logging** | Winston (structured + file rotation) |
-| **Codebase** | ~18,600+ LOC TypeScript + React UI |
+| **Codebase** | ~19,000+ LOC TypeScript + React UI |
 
 ---
 
