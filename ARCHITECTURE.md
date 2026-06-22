@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.13-dev (Risk Auditor 近期交易模式分析 — 震盪市偵測 + TP/SL 動態調整)  
+> **版本**: 2.0.14-dev (Regime-aware TP/SL — 震盪市收窄 + 減倉，趨勢市加闊 TP 讓利潤奔跑)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -42,7 +42,7 @@
 31. [B.12 參考文獻](#b12-參考文獻related-documentation)
 32. [B.13 Math Audit — 13 個數學/邏輯錯誤](#b13-math-audit--13-個數學邏輯錯誤v2010-修復)
 33. [B.14 LLM 超時風暴 — HL WS 重連後 Agent think() 卡死 120s](#b14-llm-超時風暴--hl-ws-重連後-agent-think-卡死-120sv2012-修復)
-34. [B.15 Risk Auditor 震盪市偵測 — 近期交易模式分析](#b15-risk-auditor-震盪市偵測--近期交易模式分析v2013-修復)
+34. [B.15 Risk Auditor 震盪市偵測 + Regime-aware TP/SL](#b15-risk-auditor-震盪市偵測--regime-aware-tpslv2013v2014-修復)
 
 ---
 
@@ -468,11 +468,11 @@ Risk Auditor 專注於**災難性風險預防**，不再審查倉位大小和槓
 - 槓桿倍數（由 Market Agent 控制）
 - 止損虧損 > 2%（由 Market Agent 決定風險承受度）
 
-### 🆕 v2.0.13: Risk Auditor 近期交易模式分析（震盪市偵測）
+### 🆕 v2.0.13–v2.0.14: Risk Auditor 近期交易模式分析（震盪市偵測 + Regime-aware TP/SL）
 
 **問題**: Risk Auditor 之前只睇當前 decision + 持倉狀態，唔知最近 10 個 trade 嘅方向 + 盈虧。震盪市（whipsaw）時系統會瘋狂買上買落，每個都俾止損打出去，但 Risk Auditor 冇察覺呢個 pattern，繼續批准新入場 → 持續蝕錢。
 
-**解決方案**: `TradeHistory.getRecentTradeAnalysis(10)` 分析最近 10 個 trade，注入 Risk Auditor 嘅 audit context：
+**解決方案**: `TradeHistory.getRecentTradeAnalysis(10)` 分析最近 10 個 trade，注入 Risk Auditor + Meta-Agent 嘅 context：
 
 ```
 === RECENT TRADE PATTERN (last 10) ===
@@ -482,31 +482,46 @@ Direction reversals: 5 (83% reversal rate) | Current loss streak: 3
 ⚠️ CHOPPY/WHIPSAW MARKET DETECTED: frequent buy→sell→buy reversals with net losses.
   → Trend-following entries are getting stopped out repeatedly. Consider:
   1. AVOIDING new entries until direction stabilises (HOLD)
-  2. WIDENING TP/SL on existing positions to survive the chop
-  3. REDUCING position size if entry is unavoidable
+  2. NARROWING TP/SL to range edges + REDUCING position size
+  3. If entry is unavoidable, use mean-reversion (fade at S/R extremes)
 ```
 
 **震盪市偵測 heuristic**:
 - `directionalTrades ≥ 3` + `reversalRate ≥ 50%` + `netPnl < 0` + `losses ≥ 2` → `isChoppy = true`
 - `reversalRate` = 連續方向性 trade 之間嘅方向反轉次數 / (directionalTrades - 1)
 
-**Risk Auditor 嘅 3 種應對策略**（system prompt 教導）:
+**🆕 v2.0.14 Regime-aware TP/SL 策略**（修正 v2.0.13 嘅錯誤策略）:
 
-| 偵測到 | 新入場 | 現有持倉 |
-|:-------|:-------|:---------|
-| ⚠️ Choppy | 強烈考慮 VETO（除非有明確 mean-reversion 依據） | **加闊 TP/SL**（SL 2%→3-4%, TP 5%→6-8%）經 `adjustedStopLossPct`/`adjustedTakeProfitPct` |
-| ✅ Profitable (win ≥ 60%) | 批准符合近期贏面方向嘅入場 | 唔使調整 |
-| 🟡 Mixed / 數據不足 | 正常謹慎 | 標準 per-position risk rules |
+> **v2.0.13 錯誤**: 震盪市加闊 TP/SL（SL 2%→3-4%, TP 5%→6-8%）——呢個會增加單筆風險，而且震盪市價格唔會行得遠，加闊 TP 永遠唔觸發。
+> **v2.0.14 修正**: 採用機構級做法（ATR/range-based，參考 Investopedia Chandelier Exit + Range-Bound Trading）——震盪市**收窄** TP/SL 到 range 邊界 + **減細**倉位；趨勢市先**加闊** TP 讓利潤奔跑。
 
-**TP/SL 調整流程**:
-1. Risk Auditor LLM 返回 `adjustedStopLossPct` / `adjustedTakeProfitPct`
-2. HACP `riskAuditorAudit` 接收並寫入 `finalConsensus.decision.stopLossPct` / `takeProfitPct`
-3. 執行層用新 SL/TP 開倉，令持倉能撐過震盪市
+| 偵測到 | 新入場 | 現有持倉 TP/SL | 倉位大小 |
+|:-------|:-------|:--------------|:---------|
+| ⚠️ Choppy | 強烈考慮 VETO（除非 mean-reversion 依據） | **收窄** TP 到 range 對面邊（mean-reversion target），**收窄** SL 到 range 外側（突破即止損） | **減細**（50-70%）經 `adjustedPositionSizePct` |
+| ✅ Trending (win ≥ 60%) | 批准符合近期贏面方向 | **加闊** TP 讓利潤奔跑，用 ATR-based SL 避免過早止損 | 唔使減 |
+| 🟡 Mixed / 數據不足 | 正常謹慎 | 標準 per-position risk rules | 唔使調整 |
+
+**點解震盪市收窄而唔係加闊**（機構級邏輯）:
+1. **收窄 TP**: 震盪市價格喺 range 內來回，TP 應該設喺 range 嘅另一邊（mean-reversion target），加闊 TP 只會令 TP 永遠唔觸發
+2. **收窄 SL**: SL 放喺 range 邊界外側——如果價格突破 range，即係 regime 轉變，應該即時止損而唔係俾更大虧損
+3. **減細倉位**: 震盪市勝率低，減細倉位降低每筆虧損（ATR position sizing 嘅核心——volatility 高時減細 size）
+
+**TP/SL/Size 調整流程**:
+1. Risk Auditor LLM 返回 `adjustedStopLossPct` / `adjustedTakeProfitPct` / `adjustedPositionSizePct`
+2. HACP `riskAuditorAudit` 接收並寫入 `finalConsensus.decision.stopLossPct` / `takeProfitPct` / `positionSizePct`
+3. `positionSizePct` clamp 到 `[0, MAX_POSITION_PCT]`（Risk Auditor 只可以減，唔可以超過硬上限）
+4. 執行層用新 SL/TP/size 開倉
+
+**Meta-Agent position adjustment 都 regime-aware**:
+- `adjustPositions()` 注入 `getRecentTradeAnalysis(10).summary`
+- 震盪市: 收窄 TP 到 range 對面邊，收窄 SL 到 range 外側
+- 趨勢市: 加闊 TP 讓利潤奔跑，用 ATR-based SL
 
 **整合點**:
 - `index.ts`: `hacpEngine.setTradeHistory(this.evolution.tradeHistory)` 注入
-- `hacp.ts` `riskAuditorAudit`: 注入 `getRecentTradeAnalysis(10).summary` 到 audit prompt
-- `agents.ts` `IndependentRiskAuditor.getSystemPrompt()`: 教導 3 種應對策略 + TP/SL 調整輸出格式
+- `hacp.ts` `riskAuditorAudit`: 注入 analysis + 接收 `adjustedStopLossPct`/`adjustedTakeProfitPct`/`adjustedPositionSizePct`
+- `hacp.ts` `adjustPositions`: Meta-Agent position adjustment 注入 analysis + regime-aware 指引
+- `agents.ts` `IndependentRiskAuditor.getSystemPrompt()`: 教導 regime-aware 策略 + TP/SL/size 調整輸出格式
 
 ---
 
@@ -4649,23 +4664,40 @@ if (isSynthetic) {
 
 ---
 
-### B.15 Risk Auditor 震盪市偵測 — 近期交易模式分析（v2.0.13 修復）
+### B.15 Risk Auditor 震盪市偵測 + Regime-aware TP/SL（v2.0.13–v2.0.14 修復）
 
 > **觸發**: 震盪市（whipsaw）時系統瘋狂買上買落，每個都俾止損打出去，但 Risk Auditor 冇察覺呢個 pattern，繼續批准新入場 → 持續蝕錢。
-> **詳情**: 見 [Risk Auditor 近期交易模式分析](#v2013-risk-auditor-近期交易模式分析震盪市偵測) 章節。
+> **詳情**: 見 [Risk Auditor 近期交易模式分析](#v2013v2014-risk-auditor-近期交易模式分析震盪市偵測--regime-aware-tpsl) 章節。
 
-**改動**:
+**v2.0.13 改動**（震盪市偵測）:
 
 | 檔案 | 改動 |
 |:-----|:-----|
 | `src/evolution/trade-history.ts` | 新增 `getRecentTradeAnalysis(10)` — 分析最近 10 個 trade 嘅方向、盈虧、reversal rate、loss streak，偵測震盪市 |
-| `src/cognition/hacp.ts` | `setTradeHistory()` 注入 + `riskAuditorAudit` 注入 analysis 到 audit prompt + 接收 `adjustedStopLossPct`/`adjustedTakeProfitPct` 並寫入 finalConsensus |
-| `src/agents/agents.ts` | `IndependentRiskAuditor.getSystemPrompt()` 教導 3 種應對策略（choppy→VETO/加闊TP-SL、profitable→批准、mixed→正常謹慎）+ TP/SL 調整輸出格式 |
+| `src/cognition/hacp.ts` | `setTradeHistory()` 注入 + `riskAuditorAudit` 注入 analysis 到 audit prompt |
+| `src/agents/agents.ts` | `IndependentRiskAuditor.getSystemPrompt()` 教導 regime-aware 策略 |
 | `src/index.ts` | `hacpEngine.setTradeHistory(this.evolution.tradeHistory)` 注入 |
+
+**v2.0.14 修正**（regime-aware TP/SL 策略）:
+
+> **v2.0.13 錯誤**: 震盪市加闊 TP/SL（SL 2%→3-4%, TP 5%→6-8%）——增加單筆風險，而且震盪市價格唔會行得遠，加闊 TP 永遠唔觸發。
+> **v2.0.14 修正**: 採用機構級做法（ATR/range-based，參考 Investopedia Chandelier Exit + Range-Bound Trading）。
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/agents/agents.ts` | Risk Auditor prompt 反轉策略：choppy→**收窄** TP/SL + **減細**倉位；trending→**加闊** TP 讓利潤奔跑 |
+| `src/cognition/hacp.ts` | `riskAuditorAudit` 加 `adjustedPositionSizePct`（clamp 到 `[0, MAX_POSITION_PCT]`）；`adjustPositions` Meta-Agent 都注入 analysis + regime-aware 指引 |
 
 **震盪市 heuristic**: `directionalTrades ≥ 3` + `reversalRate ≥ 50%` + `netPnl < 0` + `losses ≥ 2` → `isChoppy = true`
 
-**效果**: Risk Auditor 依家可以根據近期 10 個 trade 嘅實際表現判斷市況，震盪市時 VETO 新入場或加闊現有持倉嘅 TP/SL 令佢撐過 chop，而唔係盲目繼續批准趨勢入場。
+**Regime-aware 策略**:
+
+| Regime | TP | SL | 倉位 |
+|:-------|:---|:---|:-----|
+| ⚠️ Choppy | 收窄到 range 對面邊 | 收窄到 range 外側 | 減細 50-70% |
+| ✅ Trending | 加闊讓利潤奔跑 | ATR-based 避免過早止損 | 唔使減 |
+
+**效果**: Risk Auditor 依家可以根據近期 10 個 trade 嘅實際表現判斷市況，震盪市時 VETO 新入場或**收窄**現有持倉嘅 TP/SL 到 range 邊界 + **減細**倉位，而唔係盲目加闊 TP/SL 增加風險。趨勢市時加闊 TP 讓利潤奔跑。
 
 ---
 
