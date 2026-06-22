@@ -41,9 +41,13 @@ export class OllamaProvider implements LLMProvider {
   private readonly baseUrl: string;
   private readonly defaultModel: string;
   private available = false;
-  /** Track active connections to avoid ephemeral port exhaustion */
+  /** Track active connections to avoid ephemeral port exhaustion.
+   *  v2.0.20: raised from 2 to 4 — with 8 agents thinking in parallel (staggered),
+   *  2 slots caused chronic 'slot acquisition timed out' errors whenever two
+   *  requests ran long. Ollama's local HTTP server handles 4 concurrent
+   *  requests comfortably on typical hardware. */
   private activeRequests = 0;
-  private readonly maxConcurrentRequests = 2;
+  private readonly maxConcurrentRequests = 4;
 
   // ── Circuit breaker ──
   // When Ollama repeatedly times out (e.g. during HL WS reconnect storms that
@@ -57,8 +61,11 @@ export class OllamaProvider implements LLMProvider {
   private static readonly BREAKER_THRESHOLD = 3;
   /** How long the breaker stays open before allowing a half-open probe. */
   private static readonly BREAKER_OPEN_MS = 30_000;
-  /** Max time to wait for a concurrency slot before failing fast. */
-  private static readonly SLOT_ACQUIRE_TIMEOUT_MS = 15_000;
+  /** Max time to wait for a concurrency slot before failing fast.
+   *  v2.0.20: reduced from 15s to 8s — with 4 slots now available, an 8s wait
+   *  is enough headroom; failing faster lets the HACP deadline race degrade
+   *  the agent to HOLD instead of piling up waiting requests. */
+  private static readonly SLOT_ACQUIRE_TIMEOUT_MS = 8_000;
 
   constructor() {
     this.baseUrl = config.ollama.baseUrl;
@@ -95,20 +102,52 @@ export class OllamaProvider implements LLMProvider {
 
   /** Wait until we're under the concurrent request limit, or fail fast after
    *  SLOT_ACQUIRE_TIMEOUT_MS. This prevents unbounded busy-wait when all slots
-   *  are occupied by slow/timed-out requests. */
+   *  are occupied by slow/timed-out requests.
+   *  v2.0.20: before waiting, reclaim any slots held by requests that have
+   *  exceeded their own timeout + a grace buffer — this guards against slot
+   *  leaks where a fetch hung without the AbortController firing (rare but
+   *  possible on network stalls), which would permanently occupy a slot. */
   private async acquireSlot(): Promise<void> {
+    // Reclaim leaked slots: if activeRequests > 0 but the oldest slot was
+    // acquired more than (requestTimeout + 60s) ago, it's almost certainly
+    // leaked (the request should have timed out by now). Decrement to recover.
+    this.reclaimLeakedSlots();
+
     const deadline = Date.now() + OllamaProvider.SLOT_ACQUIRE_TIMEOUT_MS;
     while (this.activeRequests >= this.maxConcurrentRequests) {
       if (Date.now() >= deadline) {
         throw new Error(`Ollama slot acquisition timed out after ${OllamaProvider.SLOT_ACQUIRE_TIMEOUT_MS}ms (all ${this.maxConcurrentRequests} slots busy)`);
       }
       await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
+      // Re-check for leaked slots periodically while waiting.
+      this.reclaimLeakedSlots();
     }
     this.activeRequests++;
+    this.slotAcquiredAt.push(Date.now());
+  }
+
+  /** Timestamps of when each active slot was acquired (for leak detection). */
+  private slotAcquiredAt: number[] = [];
+  /** A slot held longer than this is considered leaked and reclaimed. */
+  private static readonly SLOT_LEAK_MS = 90_000; // 90s (45s timeout + 45s grace)
+
+  private reclaimLeakedSlots(): void {
+    const now = Date.now();
+    let reclaimed = 0;
+    while (this.slotAcquiredAt.length > 0 && (now - this.slotAcquiredAt[0]!) > OllamaProvider.SLOT_LEAK_MS) {
+      this.slotAcquiredAt.shift();
+      this.activeRequests = Math.max(0, this.activeRequests - 1);
+      reclaimed++;
+    }
+    if (reclaimed > 0) {
+      log.warn(`Ollama reclaimed ${reclaimed} leaked slot(s) (held > ${OllamaProvider.SLOT_LEAK_MS}ms)`);
+    }
   }
 
   private releaseSlot(): void {
     this.activeRequests = Math.max(0, this.activeRequests - 1);
+    // Pop the oldest acquired timestamp (FIFO — first acquired is first released).
+    if (this.slotAcquiredAt.length > 0) this.slotAcquiredAt.shift();
   }
 
   async isAvailable(): Promise<boolean> {

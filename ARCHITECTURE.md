@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.19-dev (Unrealized PnL 含 entry fee + real-trade positions/fills 同步 HL)  
+> **版本**: 2.0.20-dev (TradingView TP/SL live update + Ollama concurrency 4 + slot leak protection)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -48,6 +48,7 @@
 37. [B.18 Real-Trade 真實 Balance/Equity 顯示](#b18-real-trade-真實-balanceequity-顯示v2017-修復)
 38. [B.19 Notional-Based 雙邊 Fee 扣除（槓桿感知）](#b19-notional-based-雙邊-fee-扣除槓桿感知v2018-修復)
 39. [B.20 Unrealized PnL 含 entry fee + Real-trade Positions/Fills 同步 HL](#b20-unrealized-pnl-含-entry-fee--real-trade-positionsfills-同步-hlv2019-修復)
+40. [B.21 TradingView TP/SL live update + Ollama concurrency + slot leak protection](#b21-tradingview-tpsl-live-update--ollama-concurrency--slot-leak-protectionv2020-修復)
 
 ---
 
@@ -5071,6 +5072,28 @@ if (isSynthetic) {
 | `src/api-server.ts` + `ui/src/types.ts` | `tradeRecords.status` 加 `'hl-fill'` |
 
 **效果**: 開倉嗰刻 Unrealized PnL 即時顯示已扣嘅 entry fee（負數），唔再係 $0.00。Real-trade 時 positions module 顯示 HL 真實持倉（entry + unrealizedPnl），Trade Records 顯示 HL 最近 5 個真實交易。
+
+---
+
+### B.21 TradingView TP/SL live update + Ollama concurrency + slot leak protection（v2.0.20 修復）
+
+> **觸發**: (1) Market Agent TradingView chart 有 3 組 TP/SL 線條，冇隨倉位更新；(2) `Ollama slot acquisition timed out after 15000ms (all 2 slots busy)` + `Ollama request timed out after 45000ms`。
+
+**2 部分修復**:
+
+| 部分 | 問題 | 修復 |
+|:-----|:-----|:-----|
+| **TradingView TP/SL** | 歷史 trade + 當前持倉嘅 SL/TP 線條混埋一齊（3 組重疊）；`useEffect([trades])` 用 reference comparison，SL/TP 值改變時可能唔觸發 | 只對當前持倉（cycle=0）畫 live SL/TP 線條，歷史 trade 只畫 marker；用 JSON string 做 dependency 確保值改變時觸發 |
+| **Ollama concurrency** | `maxConcurrentRequests=2` 太少（8 agent 同時 think），bottleneck；slot 泄漏（fetch hang 住時 slot 永遠唔釋放） | `maxConcurrentRequests` 2→4；slot timeout 15s→8s；加 `reclaimLeakedSlots()`（slot 佔用 >90s 強制釋放） |
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `ui/src/TradingViewChart.tsx` | `useEffect` 用 `tradesKey = JSON.stringify(trades)` 做 dependency；只對 cycle=0 畫 SL/TP price lines（歷史只 marker） |
+| `src/llm/ollama-provider.ts` | `maxConcurrentRequests` 2→4；`SLOT_ACQUIRE_TIMEOUT_MS` 15s→8s；新增 `slotAcquiredAt` + `reclaimLeakedSlots()`（>90s 強制釋放）；`releaseSlot` 同步清理 timestamp |
+
+**效果**: TradingView chart 只顯示當前持倉嘅 live SL/TP 線條，Meta-Agent 調整時即時更新（唔再有 3 組重疊線）。Ollama 4 個 concurrent slots 容納 8 agent 嘅 staggered thinking，slot 泄漏自動回收，slot acquisition timeout 由 15s 降到 8s 更快 fail-fast。
 
 ---
 
