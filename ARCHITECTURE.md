@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.17-dev (Real-trade 真實 Balance/Equity 顯示 — HL exchange balance + null PnL/drawdown)  
+> **版本**: 2.0.18-dev (Notional-based 雙邊 fee 扣除 — 槓桿感知真實成本，確保扣除 fee 後盈利)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -46,6 +46,7 @@
 35. [B.16 Evolution Enhancement — Directional Mutation + Agent Evolution + Regime-aware Strategy](#b16-evolution-enhancement--directional-mutation--agent-evolution--regime-aware-strategyv2015-修復)
 36. [B.17 HL WS User-Level Subscriptions + Real-Trade Portfolio Sync](#b17-hl-ws-user-level-subscriptions--real-trade-portfolio-syncv2016-修復)
 37. [B.18 Real-Trade 真實 Balance/Equity 顯示](#b18-real-trade-真實-balanceequity-顯示v2017-修復)
+38. [B.19 Notional-Based 雙邊 Fee 扣除（槓桿感知）](#b19-notional-based-雙邊-fee-扣除槓桿感知v2018-修復)
 
 ---
 
@@ -1274,19 +1275,61 @@ Real Mode:
 
 | 時機 | 動作 | 位置 |
 |:----:|------|------|
-| **Trade execution** | 從 trade PnL 扣除 taker fee | `index.ts` — execution result 之後 |
+| **開倉** | 從 `balance` 扣除開倉 taker fee（notional-based） | `portfolio.ts` `openPosition()` |
+| **平倉** | 從 `balance` + `realizedPnl` 扣除平倉 taker fee（notional-based） | `portfolio.ts` `closePosition()` |
 | **每個 cycle** | 計算持倉資金費率成本（informational） | `index.ts` — 使用 `hyperliquidWs.getLatestMarkPrice().fundingRate` |
 | **Agent context** | 注入費用摘要 `getFeeSummary()` | 讓 agents 意識到交易成本 |
+
+### 🆕 v2.0.18: Notional-Based 雙邊 Fee 扣除（槓桿感知）
+
+**問題**: 之前嘅 fee 扣除有 3 個缺陷，令 paper PnL 喺高槓桿下嚴重高估盈利：
+
+1. **Margin-based 而唔係 notional-based**：`calculateTakerFee(entryPrice × quantity)` 用嘅係 margin，但 HL 真實 fee 係按 **notional**（槓桿後名義值）收。10x 槓桿下 fee 被低估 10 倍。
+2. **只扣一次（開倉），冇扣平倉**：真實係雙邊收費。
+3. **只改 trade record PnL，冇從 balance 扣**：`report.trade.pnl -= fee` 但 `portfolio.balance` 已經用未扣 fee 嘅 `realizedPnl` 更新咗。
+
+**槓桿放大效應**（關鍵數學）:
+
+```
+HL taker fee = 0.04% of NOTIONAL
+notional = margin × leverage
+所以 fee = margin × 0.04% × leverage
+
+單邊 fee（保證金比例）:
+  1x   → 0.04% of margin
+  10x  → 0.4%  of margin
+  100x → 4%    of margin
+
+雙邊 fee（開+平，保證金比例）:
+  1x   → 0.08% of margin
+  10x  → 0.8%  of margin   ← 一個 trade 要賺超過 0.8% 保證金先打和
+  100x → 8%    of margin
+```
+
+**解決方案**: `portfolio.ts` 喺 `openPosition()` 同 `closePosition()` 直接扣 notional-based fee：
+
+```typescript
+// openPosition: 開倉 fee
+const entryNotional = cost * leverage;  // cost = margin, × leverage = notional
+const entryFee = calculateTakerFee(entryNotional);  // notional × 0.04%
+this.portfolio.balance -= entryFee;
+
+// closePosition: 平倉 fee
+const exitNotional = exitPrice * pos.quantity * lev;
+const exitFee = calculateTakerFee(exitNotional);
+this.portfolio.balance -= exitFee;
+realizedPnl -= exitFee;  // 同時從 trade PnL 扣
+```
+
+`index.ts` 嘅 post-execution fee loop 已移除（fee 已經喺 portfolio 層正確扣咗），只保留 execution quality tracking + pattern snapshot。
+
+**效果**: Paper PnL 準確反映真實成本。10x 槓桿開平一次扣 0.8% 保證金，100x 扣 8%。系統要賺超過呢個數先至真正盈利——令到 evolution 同 agent 學習嘅係**真實可盈利**嘅策略，而唔係忽略 fee 嘅幻覺盈利。呢個對於喺極度不平等環境下（消息/落單速度都輸畀量化機構）仍然能夠搵到真正 edge 至關重要。
 
 ### 錯誤處理
 
 ```typescript
-try {
-  const fee = calculateTakerFee(notional);
-  report.trade.pnl -= fee;
-} catch (err) {
-  log.error(`[fee-deduction] Failed: ${err}`);  // Fail open — 不讓費用計算阻斷交易
-}
+// Fee 計算喺 portfolio.openPosition()/closePosition() 內，fail-open
+// （calculateTakerFee 內部 try/catch 返回 0），唔會阻斷交易。
 ```
 
 ---
@@ -4953,6 +4996,38 @@ if (isSynthetic) {
 | `ui/src/App.tsx` | `StatCell` + `PortfolioPanel` null 時顯示 `--` |
 
 **效果**: Real-trade mode 時 UI 顯示 HL 真實賬戶餘額，Total PnL 同 Drawdown 顯示 `--`，Win Rate / Trades 保持本地（paper + real 混合）。
+
+---
+
+### B.19 Notional-Based 雙邊 Fee 扣除（槓桿感知）（v2.0.18 修復）
+
+> **觸發**: Paper-trade 嘅 fee 扣除用 margin-based 而唔係 notional-based，高槓桿下嚴重低估成本（10x 低估 10 倍），令系統誤判虧錢 trade 為盈利。
+> **詳情**: 見 [Notional-Based 雙邊 Fee 扣除](#v2018-notional-based-雙邊-fee-扣除槓桿感知) 章節。
+
+**3 個缺陷 + 修復**:
+
+| 缺陷 | 之前 | v2.0.18 修復 |
+|:-----|:-----|:-------------|
+| Margin-based 而唔係 notional-based | `fee = margin × 0.04%` | `fee = notional × 0.04% = margin × leverage × 0.04%` |
+| 只扣一次（開倉） | 冇扣平倉 fee | 開倉 + 平倉各扣一次（雙邊） |
+| 只改 trade PnL，冇從 balance 扣 | `report.trade.pnl -= fee` | `portfolio.balance -= fee` + `realizedPnl -= fee` |
+
+**槓桿放大效應**:
+
+| 槓桿 | 單邊 fee（保證金%） | 雙邊 fee（保證金%） |
+|:-----|:-------------------|:-------------------|
+| 1x | 0.04% | 0.08% |
+| 10x | 0.4% | 0.8% |
+| 100x | 4% | 8% |
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/trading/portfolio.ts` | `openPosition()` 扣開倉 notional fee；`closePosition()` 扣平倉 notional fee from balance + realizedPnl |
+| `src/index.ts` | 移除 post-execution fee loop（fee 已喺 portfolio 層扣）；execution tracker 用正確 notional |
+
+**效果**: Paper PnL 準確反映真實成本。10x 槓桿開平一次扣 0.8% 保證金，100x 扣 8%。系統要賺超過呢個數先至真正盈利——令 evolution 同 agent 學習真實可盈利策略，確保喺極度不平等環境下（消息/速度都輸畀量化機構）仍然能夠搵到真正扣除成本後盈利嘅 edge。
 
 ---
 
