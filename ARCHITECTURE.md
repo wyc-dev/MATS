@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.15-dev (Evolution Enhancement — directional mutation + agent-level evolution + regime-aware strategy selection)  
+> **版本**: 2.0.16-dev (HL WS user-level subscriptions + real-trade portfolio sync + UI chart position markers)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -44,6 +44,7 @@
 33. [B.14 LLM 超時風暴 — HL WS 重連後 Agent think() 卡死 120s](#b14-llm-超時風暴--hl-ws-重連後-agent-think-卡死-120sv2012-修復)
 34. [B.15 Risk Auditor 震盪市偵測 + Regime-aware TP/SL](#b15-risk-auditor-震盪市偵測--regime-aware-tpslv2013v2014-修復)
 35. [B.16 Evolution Enhancement — Directional Mutation + Agent Evolution + Regime-aware Strategy](#b16-evolution-enhancement--directional-mutation--agent-evolution--regime-aware-strategyv2015-修復)
+36. [B.17 HL WS User-Level Subscriptions + Real-Trade Portfolio Sync](#b17-hl-ws-user-level-subscriptions--real-trade-portfolio-syncv2016-修復)
 
 ---
 
@@ -174,7 +175,7 @@
 │   ├── data/
 │   │   └── binance-websocket.ts  # Binance 數據管道 (~400 行)
 │   │
-│   ├── hyperliquid-websocket.ts # HL WebSocket (NEW v2.0.0, ~400 行)
+│   ├── hyperliquid-websocket.ts # HL WebSocket (v2.0.16 — user-level subscriptions: clearinghouseState + userFills)
 │   ├── multi-exchange-ws.ts    # Multi-Exchange 統一層 (NEW v2.0.0, ~250 行)
 │   │       ├── BinanceWebSocketManager
 │   │       │   ├── USDⓈ-M Futures WS  # fstream.binance.com
@@ -292,7 +293,7 @@
 │   │   │   ├── normalizePerSymbolDecision() # 保留每個 symbol 的 leverage
 │   │   │   └── MAX_POSITION_PCT = 0.20
 │   │   │
-│   │   ├── real-trading-manager.ts # 真實交易管理器 (v1.9.4)
+│   │   ├── real-trading-manager.ts # 真實交易管理器 (v2.0.16 — post-trade sync + SL/TP renew)
 │   │   │   ├── executeDecision()  # 下單到 exchange + mirror 到 paper engine
 │   │   │   ├── syncExchangePositions() # 定期同步 exchange 持倉到本地
 │   │   │   ├── getOpenPositionSymbols() # 取得 exchange 上真正 open 的 symbols
@@ -3052,6 +3053,8 @@ load() fail:             start fresh, no crash
 | `l2Book` | 即時 L2 訂單簿（bids + asks） | 每 block（~0.5s） |
 | `trades` | 即時成交記錄（price, size, side, users） | 每筆成交 |
 | `activeAssetCtx` | mark price, funding rate, open interest, 24h volume | 每 block |
+| 🆕 v2.0.16 `clearinghouseState` | **user-level**：持倉變更（開/平/調整）即時推送 | 每次持倉變更 |
+| 🆕 v2.0.16 `userFills` | **user-level**：每筆成交即時推送（fill price, size, closedPnl） | 每次訂單成交 |
 
 ### 架構
 
@@ -3077,8 +3080,65 @@ HyperliquidWebSocketManager (src/data/hyperliquid-websocket.ts)
     └── Callbacks → SentimentEngine + PaperEngine
         ├── onPrice → markPrice + fundingRate
         ├── onOrderBook → imbalance + spread
-        └── onTrade → large trade count
+        ├── onTrade → large trade count
+        ├── 🆕 v2.0.16 onPositions → clearinghouseState（持倉即時同步）
+        └── 🆕 v2.0.16 onFills → userFills（成交即時同步）
 ```
+
+### 🆕 v2.0.16: User-Level Subscriptions + Real-Trade Portfolio Sync
+
+**問題**: Real-trade 喺 Hyperliquid place/re-place 完 position 後，本地 portfolio + UI chart 嘅入場點 + SL/TP 唔會即時更新。持倉同步靠每 cycle（300s）REST `clearinghouseState` 輪詢，延遲好大。UI 主 chart 傳 `trades={[]}`（空 array），完全唔顯示持倉 markers + SL/TP。
+
+**解決方案**（4 部分）:
+
+#### 1. HL WebSocket User-Level Subscriptions
+
+`HyperliquidWebSocketManager` 新增 user-level subscriptions（需要 wallet address）：
+
+| 方法 | 用途 |
+|:-----|:-----|
+| `setWalletAddress(address)` | 設定 wallet address，自動 subscribe user feeds |
+| `onPositions(cb)` | 註冊 `clearinghouseState` callback（持倉變更即時推送） |
+| `onFills(cb)` | 註冊 `userFills` callback（成交即時推送） |
+| `getUserPositions()` | 攞最新 user positions |
+| `subscribeUserFeeds()` | 內部：subscribe `clearinghouseState` + `userFills` |
+| `unsubscribeUserFeeds()` | 內部：disconnect 時 unsubscribe |
+
+WS 連接成功時自動 subscribe user feeds（如果 wallet address 已設定）。重連時自動 re-subscribe。
+
+#### 2. Real-Trade 後即時 Sync Entry + Renew SL/TP
+
+`RealTradingManager.executeDecision()` 喺 `placeOrder()` 成功後：
+
+1. **Mirror 到 paper portfolio**（原有邏輯）
+2. **Renew mirror SL/TP**：用 `portfolio.adjustPosition()` 將 mirror 嘅 SL/TP 更新為 decision 嘅實際 SL/TP prices（之前 mirror 用預設 SL/TP）
+3. **即時 exchange sync**：`engine.getPositions()` 攞真實 fill price，`softUpdatePosition()` 更新 mirror entry（唔等下個 cycle）
+
+#### 3. UI 主 Chart 顯示持倉 Markers + SL/TP
+
+`App.tsx` `MarketAgentCard` 構建 `mainChartTrades`：
+- 歷史 trade decisions（tradeHistory）嘅 Buy/Sell markers + SL/TP price lines
+- 當前持倉嘅 live entry + SL/TP（cycle=0 = current）
+- 傳畀 `TradingViewChart`（之前傳 `trades={[]}`）
+
+#### 4. UI Portfolio 持續同步 HL WS
+
+`index.ts` 喺 HL WS 初始化時：
+- `setWalletAddress(config.realTrading.hyperliquidWalletAddress)`
+- `onPositions` → `softUpdatePosition()`（持倉變更即時更新 mirror）
+- `onFills` → `softUpdatePosition()`（成交即時更新 mirror entry）
+
+**整合點**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/data/hyperliquid-websocket.ts` | 新增 `HLUserPosition`/`HLUserFill` types、`setWalletAddress()`、`onPositions()`/`onFills()`、`subscribeUserFeeds()`、`handleClearinghouseState()`/`handleUserFills()` |
+| `src/trading/real-trading-manager.ts` | `executeDecision()` 後 renew mirror SL/TP + 即時 exchange sync |
+| `src/index.ts` | HL WS 注入 wallet address + register position/fill callbacks |
+| `ui/src/App.tsx` | `MarketAgentCard` 構建 `mainChartTrades` 傳畀主 chart |
+| `ui/src/types.ts` | `tradeHistory` type 加 `decision.symbol` + `openedAt` |
+
+**效果**: Real-trade 喺 HL place/re-place 完後，本地 portfolio + UI TradingView chart 即時更新入場點 + SL/TP。持倉透過 `clearinghouseState` WS 即時同步（唔再靠 300s REST 輪詢）。UI 主 chart 顯示持倉 markers + SL/TP price lines。
 
 ### 與 Market Agent 的整合
 
@@ -4811,6 +4871,34 @@ if (isSynthetic) {
 | `riskManagement` 低 | 提高 `signalThreshold` |
 
 **效果**: Evolution 系統依家真正能夠推進 agents 喺當前市場嘅適應度——mutation 有方向（根據弱項補救），agent 權重根據 per-regime 表現動態調整（表現好嘅加權），策略選擇根據當前 regime 揀最啱嘅策略。
+
+---
+
+### B.17 HL WS User-Level Subscriptions + Real-Trade Portfolio Sync（v2.0.16 修復）
+
+> **觸發**: Real-trade 喺 Hyperliquid place/re-place 完 position 後，本地 portfolio + UI chart 嘅入場點 + SL/TP 唔即時更新；持倉同步靠 300s REST 輪詢；UI 主 chart 唔顯示持倉 markers。
+> **詳情**: 見 [HL WS User-Level Subscriptions](#v2016-user-level-subscriptions--real-trade-portfolio-sync) 章節。
+
+**4 部分修復**:
+
+| 部分 | 問題 | 修復 |
+|:-----|:-----|:-----|
+| **HL WS user feeds** | 只訂閱 market data（l2Book/trades/activeAssetCtx），冇 user-level | 新增 `clearinghouseState` + `userFills` subscriptions（需要 wallet address） |
+| **Post-trade sync** | `executeDecision` 後 mirror 用預設 SL/TP，唔即時 sync exchange fill | renew mirror SL/TP + 即時 `engine.getPositions()` sync entry price |
+| **UI 主 chart** | `App.tsx` 傳 `trades={[]}`，主 chart 唔顯示持倉 | 構建 `mainChartTrades`（歷史 + 當前持倉 markers + SL/TP）傳畀主 chart |
+| **UI Portfolio sync** | 持倉靠 REST 輪詢 | `onPositions`/`onFills` callbacks 即時 `softUpdatePosition` |
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/data/hyperliquid-websocket.ts` | `HLUserPosition`/`HLUserFill` types、`setWalletAddress()`、`onPositions()`/`onFills()`、`subscribeUserFeeds()`、`handleClearinghouseState()`/`handleUserFills()` |
+| `src/trading/real-trading-manager.ts` | `executeDecision()` 後 renew mirror SL/TP + 即時 exchange sync |
+| `src/index.ts` | HL WS 注入 wallet address + register position/fill callbacks |
+| `ui/src/App.tsx` | `MarketAgentCard` 構建 `mainChartTrades` 傳畀主 chart |
+| `ui/src/types.ts` | `tradeHistory` type 加 `decision.symbol` + `openedAt` |
+
+**效果**: Real-trade 喺 HL place/re-place 完後，本地 portfolio + UI TradingView chart 即時更新入場點 + SL/TP。持倉透過 `clearinghouseState` WS 即時同步（唔再靠 300s REST 輪詢）。UI 主 chart 顯示持倉 markers + SL/TP price lines。
 
 ---
 

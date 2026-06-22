@@ -223,12 +223,13 @@ export interface APIData {
   backtestProgress?: BacktestProgress | null;
   tradeHistory?: Array<{
     cycleNumber: number;
-    decision: { action: string; positionSizePct: number; stopLossPct?: number; takeProfitPct?: number };
+    decision: { action: string; symbol?: string; positionSizePct: number; stopLossPct?: number; takeProfitPct?: number };
     entryPrice: number;
     exitPrice?: number;
     regime: string;
     type: string;
     timestamp: number;
+    openedAt?: number;
   }>;
   /** Trade records with leverage (both open and closed) */
   tradeRecords?: Array<{

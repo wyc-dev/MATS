@@ -258,6 +258,46 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const change24h = liveChange24h !== 0 ? liveChange24h : (currentPair?.priceChangePercent ?? 0)
   const meta = AGENT_META['market_agent']
 
+  // Build trade markers for the active symbol so the main TradingView chart
+  // shows the current position's entry point + live SL/TP (v2.0.16). Merges
+  // historical trade decisions with the current open position's live levels.
+  const portfolioPositions = (Object.values(data?.portfolio?.positions ?? {}) as any[])
+  const tradeHistory = data?.tradeHistory ?? []
+  const activePos = portfolioPositions.find((p: any) => p.symbol === activeSymbol)
+  const mainChartTrades: Array<{ time: number; action: 'buy' | 'sell'; price: number; sl?: number; tp?: number; cycle: number }> = []
+  // Historical markers for the active symbol
+  for (const t of tradeHistory) {
+    if (t.decision?.symbol !== activeSymbol) continue
+    if (t.decision?.action !== 'buy' && t.decision?.action !== 'sell') continue
+    const isShort = t.decision.action === 'sell'
+    mainChartTrades.push({
+      time: Math.floor((t.openedAt ?? t.timestamp) / 1000),
+      action: t.decision.action as 'buy' | 'sell',
+      price: t.entryPrice,
+      sl: t.decision.stopLossPct
+        ? isShort ? t.entryPrice * (1 + t.decision.stopLossPct) : t.entryPrice * (1 - t.decision.stopLossPct)
+        : undefined,
+      tp: t.decision.takeProfitPct
+        ? isShort ? t.entryPrice * (1 - t.decision.takeProfitPct) : t.entryPrice * (1 + t.decision.takeProfitPct)
+        : undefined,
+      cycle: t.cycleNumber,
+    })
+  }
+  // Current position's live SL/TP (cycle=0 = current)
+  if (activePos) {
+    const hasCurrent = mainChartTrades.some(mk => mk.cycle === 0)
+    if (!hasCurrent) {
+      mainChartTrades.push({
+        time: Math.floor((activePos.openedAt ?? Date.now()) / 1000),
+        action: activePos.side === 'buy' ? 'buy' : 'sell',
+        price: activePos.averageEntryPrice ?? activePos.currentPrice ?? price,
+        sl: activePos.stopLossPrice,
+        tp: activePos.takeProfitPrice,
+        cycle: 0,
+      })
+    }
+  }
+
   return (
     <div className="agent-card">
       <div className="agent-head">
@@ -352,9 +392,10 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               {change24h >= 0 ? '+' : ''}{change24h.toFixed(2)}
             </span>
           </div>
-          {/* Mini TradingView chart for the selected market — refreshes every cycle */}
+          {/* Mini TradingView chart for the selected market — refreshes every cycle.
+              Shows the current position's entry point + live SL/TP (v2.0.16). */}
           <div style={{ marginTop: 6, marginBottom: 6 }}>
-            <TradingViewChart symbol={activeSymbol} currentPrice={price} trades={[]} refreshKey={s?.cycles ?? 0} />
+            <TradingViewChart symbol={activeSymbol} currentPrice={price} trades={mainChartTrades} refreshKey={s?.cycles ?? 0} />
           </div>
           {/* Top pairs list */}
           <div style={{ marginTop: 8 }}>
