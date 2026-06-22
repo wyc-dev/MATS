@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.12-dev (LLM Resilience — circuit breaker + deadline race + tiered timeout)  
+> **版本**: 2.0.13-dev (Risk Auditor 近期交易模式分析 — 震盪市偵測 + TP/SL 動態調整)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -42,6 +42,7 @@
 31. [B.12 參考文獻](#b12-參考文獻related-documentation)
 32. [B.13 Math Audit — 13 個數學/邏輯錯誤](#b13-math-audit--13-個數學邏輯錯誤v2010-修復)
 33. [B.14 LLM 超時風暴 — HL WS 重連後 Agent think() 卡死 120s](#b14-llm-超時風暴--hl-ws-重連後-agent-think-卡死-120sv2012-修復)
+34. [B.15 Risk Auditor 震盪市偵測 — 近期交易模式分析](#b15-risk-auditor-震盪市偵測--近期交易模式分析v2013-修復)
 
 ---
 
@@ -406,7 +407,7 @@
 | 3 | **On-Chain Whisperer** | 0.50 | 0.25 | 2-4x | 類別感知鏈上分析師 (v1.9.3, multi-symbol)。Crypto 資產: BTC mempool(算力/手續費), ETH CoinGecko, 所有代幣 CoinGecko 交易所流量/供應量。TradFi 資產: DXY代理, FX匯率, 商品現貨, COT持倉, 網絡搜索回退。未知代幣自動搜索區塊鏈資源管理器。5分鐘緩存。每個 cycle 為所有持倉一次性 fetch on-chain 數據。|
 | 4 | **RBC & Sentiment Analyst** | 0.25 | 0.25 | 2-8x | RBC (Range-Based Clustering) 專家 + **恐慌指數 (F&G)**。RBC 係 growing hyperrectangle 從價格行為學習 win/loss 範圍。🟢 FAVORABLE → 增加信心。🔴 UNFAVORABLE → 強烈反對入場。0-25 Extreme Fear→BEARISH, 75-100 Extreme Greed→BULLISH。每個持倉獨立評估。|
 | 5 | **News Reporter** | 0.40 | 0.20 | 1-3x | 多源類別感知新聞分析師 (v1.9.3, multi-symbol)。Crypto: NewsData.io + CoinDesk RSS + The Block RSS + Google News (監管+宏觀+地緣政治)。TradFi: NewsData.io + Google News RSS (宏觀→世界→行業) + CNBC RSS + Bing RSS。5層回退鏈。每個 cycle 為所有持倉一次性 fetch 新聞。無新聞時自動NEUTRAL。|
-| 6 | **Independent Risk Auditor** | 0.10 | 0.25 | — | 🚨 **最終守門人。絕對否決權。** 逐倉風險審計 (v1.9.3)。每個持倉獨立評估風險，可個別建議平倉。|
+| 6 | **Independent Risk Auditor** | 0.10 | 0.25 | — | 🚨 **最終守門人。絕對否決權。** 逐倉風險審計 (v1.9.3)。每個持倉獨立評估風險，可個別建議平倉。🆕 v2.0.13: 近期 10 個 trade 模式分析，偵測震盪市並動態調整 TP/SL。|
 | 7 | **Skeptics** | 0.30 | 0.00 | — | 🤔 **邏輯審計員 (v1.9.3)。** Phase 1.5 執行，在 Meta-Agent 思考前質疑 5 個 sub-agent 的決策。檢查數據一致性、跨 Agent 交叉對比、**參考每個 Agent 的歷史 track record (AgentOutcomeTracker)**。有無計算遺漏。default 模型: deepseek-v4-flash:cloud。不干預 Meta-Agent 和 Market Agent。|
 | 8 | **Meta-Agent** | 0.45 | 0.35 | 2-10x | 戰略協調者。HACP 辯論主席。**在 Skeptics 審查後思考**，接收審查結果。根據風險/信心設定槓桿，動態調整 TP/SL。 |
 
@@ -466,6 +467,46 @@ Risk Auditor 專注於**災難性風險預防**，不再審查倉位大小和槓
 - 倉位大小（由 Market Agent 控制）
 - 槓桿倍數（由 Market Agent 控制）
 - 止損虧損 > 2%（由 Market Agent 決定風險承受度）
+
+### 🆕 v2.0.13: Risk Auditor 近期交易模式分析（震盪市偵測）
+
+**問題**: Risk Auditor 之前只睇當前 decision + 持倉狀態，唔知最近 10 個 trade 嘅方向 + 盈虧。震盪市（whipsaw）時系統會瘋狂買上買落，每個都俾止損打出去，但 Risk Auditor 冇察覺呢個 pattern，繼續批准新入場 → 持續蝕錢。
+
+**解決方案**: `TradeHistory.getRecentTradeAnalysis(10)` 分析最近 10 個 trade，注入 Risk Auditor 嘅 audit context：
+
+```
+=== RECENT TRADE PATTERN (last 10) ===
+Directional trades: 7 | Wins: 2 | Losses: 5 | Win rate: 29%
+Net PnL: -3.42% | Avg win: +0.85% | Avg loss: -0.91%
+Direction reversals: 5 (83% reversal rate) | Current loss streak: 3
+⚠️ CHOPPY/WHIPSAW MARKET DETECTED: frequent buy→sell→buy reversals with net losses.
+  → Trend-following entries are getting stopped out repeatedly. Consider:
+  1. AVOIDING new entries until direction stabilises (HOLD)
+  2. WIDENING TP/SL on existing positions to survive the chop
+  3. REDUCING position size if entry is unavoidable
+```
+
+**震盪市偵測 heuristic**:
+- `directionalTrades ≥ 3` + `reversalRate ≥ 50%` + `netPnl < 0` + `losses ≥ 2` → `isChoppy = true`
+- `reversalRate` = 連續方向性 trade 之間嘅方向反轉次數 / (directionalTrades - 1)
+
+**Risk Auditor 嘅 3 種應對策略**（system prompt 教導）:
+
+| 偵測到 | 新入場 | 現有持倉 |
+|:-------|:-------|:---------|
+| ⚠️ Choppy | 強烈考慮 VETO（除非有明確 mean-reversion 依據） | **加闊 TP/SL**（SL 2%→3-4%, TP 5%→6-8%）經 `adjustedStopLossPct`/`adjustedTakeProfitPct` |
+| ✅ Profitable (win ≥ 60%) | 批准符合近期贏面方向嘅入場 | 唔使調整 |
+| 🟡 Mixed / 數據不足 | 正常謹慎 | 標準 per-position risk rules |
+
+**TP/SL 調整流程**:
+1. Risk Auditor LLM 返回 `adjustedStopLossPct` / `adjustedTakeProfitPct`
+2. HACP `riskAuditorAudit` 接收並寫入 `finalConsensus.decision.stopLossPct` / `takeProfitPct`
+3. 執行層用新 SL/TP 開倉，令持倉能撐過震盪市
+
+**整合點**:
+- `index.ts`: `hacpEngine.setTradeHistory(this.evolution.tradeHistory)` 注入
+- `hacp.ts` `riskAuditorAudit`: 注入 `getRecentTradeAnalysis(10).summary` 到 audit prompt
+- `agents.ts` `IndependentRiskAuditor.getSystemPrompt()`: 教導 3 種應對策略 + TP/SL 調整輸出格式
 
 ---
 
@@ -4605,6 +4646,26 @@ if (isSynthetic) {
 | Tiered Timeout | base-agent think() 120s 超過 HACP 預算 | think() 45s、debate/audit 30s |
 
 **效果**: WS 重連期間 LLM 服務降級時，系統 graceful degrade 到 HOLD 而非卡死 120s。
+
+---
+
+### B.15 Risk Auditor 震盪市偵測 — 近期交易模式分析（v2.0.13 修復）
+
+> **觸發**: 震盪市（whipsaw）時系統瘋狂買上買落，每個都俾止損打出去，但 Risk Auditor 冇察覺呢個 pattern，繼續批准新入場 → 持續蝕錢。
+> **詳情**: 見 [Risk Auditor 近期交易模式分析](#v2013-risk-auditor-近期交易模式分析震盪市偵測) 章節。
+
+**改動**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/evolution/trade-history.ts` | 新增 `getRecentTradeAnalysis(10)` — 分析最近 10 個 trade 嘅方向、盈虧、reversal rate、loss streak，偵測震盪市 |
+| `src/cognition/hacp.ts` | `setTradeHistory()` 注入 + `riskAuditorAudit` 注入 analysis 到 audit prompt + 接收 `adjustedStopLossPct`/`adjustedTakeProfitPct` 並寫入 finalConsensus |
+| `src/agents/agents.ts` | `IndependentRiskAuditor.getSystemPrompt()` 教導 3 種應對策略（choppy→VETO/加闊TP-SL、profitable→批准、mixed→正常謹慎）+ TP/SL 調整輸出格式 |
+| `src/index.ts` | `hacpEngine.setTradeHistory(this.evolution.tradeHistory)` 注入 |
+
+**震盪市 heuristic**: `directionalTrades ≥ 3` + `reversalRate ≥ 50%` + `netPnl < 0` + `losses ≥ 2` → `isChoppy = true`
+
+**效果**: Risk Auditor 依家可以根據近期 10 個 trade 嘅實際表現判斷市況，震盪市時 VETO 新入場或加闊現有持倉嘅 TP/SL 令佢撐過 chop，而唔係盲目繼續批准趨勢入場。
 
 ---
 

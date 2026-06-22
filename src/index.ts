@@ -198,6 +198,9 @@ class AMACRFSystem {
         this.skepticsAgent,
         [this.fractalAgent, this.onchainAgent, this.regimeAgent, this.newsAgent]
       );
+      // Inject trade history so the Risk Auditor can detect choppy-market
+      // patterns from recent buy/sell churn + losses and adjust TP/SL.
+      this.hacpEngine.setTradeHistory(this.evolution.tradeHistory);
       // Wire real-time progress updates to API
       this.hacpEngine.setProgressCallback((progress) => {
         this.cycleProgress = progress;

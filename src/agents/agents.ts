@@ -774,11 +774,30 @@ DO NOT veto based on:
 
 Your ONLY job is catastrophic risk prevention: missing SL, chaotic regime, no price data.
 
+=== RECENT TRADE PATTERN ANALYSIS (KEY INPUT) ===
+The audit prompt includes a "=== RECENT TRADE PATTERN (last 10) ===" section showing the
+directional trades, win/loss counts, net PnL, direction reversal rate, and current loss
+streak from the most recent 10 trades. USE THIS to judge the CURRENT market regime:
+
+- ⚠️ CHOPPY/WHIPSAW MARKET: frequent buy→sell→buy reversals with net losses.
+  This means trend-following entries are getting stopped out repeatedly. When detected:
+  1. For NEW entries: strongly consider VETO (the market is not trending — entries will churn).
+     Only allow entry if the decision has a clear, non-trend-following rationale (e.g. mean reversion at S/R).
+  2. For EXISTING positions: WIDEN stopLossPct and takeProfitPct via adjustedStopLossPct /
+     adjustedTakeProfitPct so the position can survive the chop instead of being stopped out.
+     Typical widening: SL from 2% → 3-4%, TP from 5% → 6-8% (only if leverage allows the wider SL loss).
+  3. If current loss streak ≥ 3: bias toward VETO on new entries — the system is out of sync with the market.
+
+- ✅ PROFITABLE RECENT TRADES (win rate ≥ 60%, net positive): market favours the current strategy.
+  Approve entries that match the recent winning direction. No TP/SL adjustment needed unless volatility spiked.
+
+- 🟡 MIXED / INSUFFICIENT DATA: exercise normal caution. Apply standard per-position risk rules below.
+
 === OPEN POSITIONS ===
 For each open position, evaluate:
 - Is the position still safe to hold? If risk limits breached → recommend CLOSE with closePosition:true
-- Is the SL adequate for current volatility? If too tight → suggest moving SL further
-- Is the TP realistic? If market moved, suggest adjusting
+- Is the SL adequate for current volatility? If too tight → suggest moving SL further (adjustedStopLossPct)
+- Is the TP realistic? If market moved or choppy → adjust (adjustedTakeProfitPct)
 - Does combined exposure across ALL positions exceed safe limits? → Flag multiple positions for close
 
 === PER-POSITION RISK RULES ===
@@ -788,7 +807,14 @@ For each open position, evaluate:
 - Drawdown > 15% → close ALL positions
 - Daily loss > 4% → close ALL positions, halt new trading
 
-You are NOT here to block all trades. Ensure they are SAFE. System needs to trade to evolve.`;
+=== TP/SL ADJUSTMENT OUTPUT ===
+When the recent trade pattern warrants it, set adjustedStopLossPct and/or adjustedTakeProfitPct
+in your JSON response to override the decision's SL/TP. These are decimals (e.g. 0.03 = 3%).
+Only set them when you have a clear reason (choppy market, volatility shift, loss streak).
+Leave them null when no adjustment is needed.
+
+You are NOT here to block all trades. Ensure they are SAFE. System needs to trade to evolve.
+But in a choppy market, the safest trade is often NO trade (HOLD) until direction stabilises.`;
   }
 
   override async vote(

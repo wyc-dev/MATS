@@ -244,6 +244,143 @@ export class TradeHistory {
   }
 
   /** Get summary for agent context injection */
+  /**
+   * Analyse the most recent N trades for directional churn + loss patterns.
+   *
+   * Detects "震盪市 churn": frequent direction reversals (buy→sell→buy) that
+   * each lose money — a hallmark of a sideways/whipsaw market where trend-
+   * following entries get stopped out repeatedly. The Independent Risk
+   * Auditor uses this to decide whether new entries are advisable or whether
+   * existing positions need wider TP/SL to survive the chop.
+   *
+   * Only counts trades with a meaningful PnL (realised or simulated); HOLD
+   * entries with no directional action are excluded from the reversal count
+   * but included in the sample size.
+   */
+  getRecentTradeAnalysis(n = 10): {
+    sampleSize: number;
+    directionalTrades: number;
+    wins: number;
+    losses: number;
+    winRate: number;
+    netPnlPct: number;
+    avgWinPct: number;
+    avgLossPct: number;
+    /** Number of direction reversals between consecutive directional trades. */
+    reversals: number;
+    /** reversals / directionalTrades — 1.0 = every trade flipped direction. */
+    reversalRate: number;
+    /** Losing streak length (most recent consecutive losses). */
+    currentLossStreak: number;
+    /** True if the recent pattern looks like choppy/whipsaw market. */
+    isChoppy: boolean;
+    /** Human-readable summary for agent context injection. */
+    summary: string;
+  } {
+    const recent = this.getRecent(n);
+    const directional = recent.filter(
+      e => e.decision.action === 'buy' || e.decision.action === 'sell',
+    );
+
+    let wins = 0;
+    let losses = 0;
+    let netPnl = 0;
+    let totalWin = 0;
+    let totalLoss = 0;
+    let reversals = 0;
+    let prevAction: 'buy' | 'sell' | null = null;
+    let currentLossStreak = 0;
+
+    for (const e of directional) {
+      const pnl = e.realisedPnl ?? e.simulatedPnl ?? 0;
+      netPnl += pnl;
+      if (pnl > 0) {
+        wins++;
+        totalWin += pnl;
+        currentLossStreak = 0;
+      } else if (pnl < 0) {
+        losses++;
+        totalLoss += Math.abs(pnl);
+        currentLossStreak++;
+      }
+      // Count direction reversals (buy→sell or sell→buy)
+      const action = e.decision.action as 'buy' | 'sell';
+      if (prevAction !== null && action !== prevAction) {
+        reversals++;
+      }
+      if (pnl !== 0) prevAction = action; // only advance on real directional trades
+    }
+
+    const directionalCount = directional.length;
+    const winRate = directionalCount > 0 ? wins / directionalCount : 0;
+    const reversalRate = directionalCount > 1 ? reversals / (directionalCount - 1) : 0;
+    const avgWinPct = wins > 0 ? totalWin / wins : 0;
+    const avgLossPct = losses > 0 ? totalLoss / losses : 0;
+
+    // Choppy market heuristic: high reversal rate + net negative + multiple losses.
+    // Thresholds: ≥3 directional trades, ≥50% reversal rate, net loss, ≥2 losses.
+    const isChoppy =
+      directionalCount >= 3 &&
+      reversalRate >= 0.5 &&
+      netPnl < 0 &&
+      losses >= 2;
+
+    const summary = this.formatRecentTradeAnalysis({
+      sampleSize: recent.length,
+      directionalTrades: directionalCount,
+      wins, losses, winRate, netPnlPct: netPnl, avgWinPct, avgLossPct,
+      reversals, reversalRate, currentLossStreak, isChoppy,
+    });
+
+    return {
+      sampleSize: recent.length,
+      directionalTrades: directionalCount,
+      wins, losses, winRate,
+      netPnlPct: netPnl,
+      avgWinPct, avgLossPct,
+      reversals, reversalRate,
+      currentLossStreak,
+      isChoppy,
+      summary,
+    };
+  }
+
+  private formatRecentTradeAnalysis(a: {
+    sampleSize: number;
+    directionalTrades: number;
+    wins: number;
+    losses: number;
+    winRate: number;
+    netPnlPct: number;
+    avgWinPct: number;
+    avgLossPct: number;
+    reversals: number;
+    reversalRate: number;
+    currentLossStreak: number;
+    isChoppy: boolean;
+  }): string {
+    const lines: string[] = ['=== RECENT TRADE PATTERN (last 10) ==='];
+    lines.push(`Directional trades: ${a.directionalTrades} | Wins: ${a.wins} | Losses: ${a.losses} | Win rate: ${(a.winRate * 100).toFixed(0)}%`);
+    lines.push(`Net PnL: ${(a.netPnlPct * 100).toFixed(2)}% | Avg win: +${(a.avgWinPct * 100).toFixed(2)}% | Avg loss: -${(a.avgLossPct * 100).toFixed(2)}%`);
+    lines.push(`Direction reversals: ${a.reversals} (${(a.reversalRate * 100).toFixed(0)}% reversal rate) | Current loss streak: ${a.currentLossStreak}`);
+
+    if (a.isChoppy) {
+      lines.push(`⚠️ CHOPPY/WHIPSAW MARKET DETECTED: frequent buy→sell→buy reversals with net losses.`);
+      lines.push(`  → Trend-following entries are getting stopped out repeatedly. Consider:`);
+      lines.push(`  1. AVOIDING new entries until direction stabilises (HOLD)`);
+      lines.push(`  2. WIDENING TP/SL on existing positions to survive the chop`);
+      lines.push(`  3. REDUCING position size if entry is unavoidable`);
+    } else if (a.directionalTrades >= 3 && a.winRate >= 0.6) {
+      lines.push(`✅ Recent trades profitable — market conditions favour current strategy.`);
+    } else if (a.directionalTrades < 3) {
+      lines.push(`ℹ️ Insufficient directional trades for pattern analysis.`);
+    } else {
+      lines.push(`🟡 Mixed recent results — no strong choppy signal, exercise normal caution.`);
+    }
+
+    return lines.join('\n');
+  }
+
   getSummary(limit = 5): string {
     const perf = this.computePerformance();
     const recent = this.getRecent(limit);

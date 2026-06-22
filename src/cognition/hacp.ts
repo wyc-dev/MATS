@@ -7,6 +7,7 @@ import { getActiveProvider } from '../llm/index.ts';
 import { config } from '../config/index.ts';
 import { parseA2ASignal, formatA2ASignal } from './a2a-utils.ts';
 import { normalizeDecision, MAX_POSITION_PCT } from '../trading/decision-utils.ts';
+import type { TradeHistory } from '../evolution/trade-history.ts';
 import type {
   AgentThought,
   ConsensusResult,
@@ -57,6 +58,10 @@ export class HACPEngine {
   /** Dynamic threshold tracking */
   private cyclesWithoutTrade = 0;
   private consecutiveLosses = 0;
+  /** Trade history for recent-pattern analysis (choppy-market detection).
+   *  Injected so the Risk Auditor can assess whether recent buy/sell churn
+   *  is losing money — a signal to avoid new entries / widen TP/SL. */
+  private tradeHistory: TradeHistory | null = null;
 
   constructor(
     metaAgent: BaseAgent,
@@ -71,6 +76,11 @@ export class HACPEngine {
     this.maxRounds = config.hacp.maxDebateRounds;
     this.consensusThreshold = config.hacp.consensusThreshold;
     this.totalTimeoutMs = config.hacp.totalTimeoutMs;
+  }
+
+  /** Inject trade history for Risk Auditor recent-pattern analysis. */
+  setTradeHistory(th: TradeHistory): void {
+    this.tradeHistory = th;
   }
 
   /** Register a callback for real-time progress updates */
@@ -766,6 +776,22 @@ export class HACPEngine {
       };
       finalConsensus.metaAgentOverridden = true;
       finalConsensus.confidence = 0.0;
+    } else if (
+      !riskAudit.veto &&
+      (riskAudit.adjustedStopLossPct !== undefined || riskAudit.adjustedTakeProfitPct !== undefined)
+    ) {
+      // Risk Auditor recommended TP/SL adjustments (e.g. widen SL to survive
+      // choppy market detected from recent trade pattern). Apply them to the
+      // final consensus decision so the execution layer honours the new levels.
+      const origSL = finalConsensus.decision.stopLossPct;
+      const origTP = finalConsensus.decision.takeProfitPct;
+      if (riskAudit.adjustedStopLossPct !== undefined) {
+        finalConsensus.decision.stopLossPct = riskAudit.adjustedStopLossPct;
+      }
+      if (riskAudit.adjustedTakeProfitPct !== undefined) {
+        finalConsensus.decision.takeProfitPct = riskAudit.adjustedTakeProfitPct;
+      }
+      log.info(`🔧 Risk Auditor adjusted TP/SL: SL ${origSL ? (origSL * 100).toFixed(1) + '%' : 'none'} → ${finalConsensus.decision.stopLossPct ? (finalConsensus.decision.stopLossPct * 100).toFixed(1) + '%' : 'none'}, TP ${origTP ? (origTP * 100).toFixed(1) + '%' : 'none'} → ${finalConsensus.decision.takeProfitPct ? (finalConsensus.decision.takeProfitPct * 100).toFixed(1) + '%' : 'none'} (${riskAudit.reason})`);
     }
 
     // ═══════════════════════════════════════════════════
@@ -1297,8 +1323,15 @@ Output ONLY valid JSON:
 
   private async riskAuditorAudit(
     decision: TradingDecision
-  ): Promise<{ veto: boolean; reason: string; adjustedPrice?: number }> {
+  ): Promise<{ veto: boolean; reason: string; adjustedPrice?: number; adjustedStopLossPct?: number; adjustedTakeProfitPct?: number }> {
     try {
+      // Build recent-trade-pattern context for choppy-market detection.
+      // This lets the Risk Auditor see if recent buy/sell churn is losing
+      // money and adjust its veto / TP-SL guidance accordingly.
+      const tradePattern = this.tradeHistory
+        ? this.tradeHistory.getRecentTradeAnalysis(10).summary
+        : '=== RECENT TRADE PATTERN (last 10) ===\n(no trade history available)';
+
       // Independent risk audit via LLM
       const provider = getActiveProvider();
       const response = await provider.chat({
@@ -1309,7 +1342,7 @@ Output ONLY valid JSON:
           },
           {
             role: 'user',
-            content: `Audit this trading decision:\n${JSON.stringify(decision, null, 2)}\n\nRespond: {"veto":false,"reason":"","adjustedPositionSize":null}`,
+            content: `Audit this trading decision:\n${JSON.stringify(decision, null, 2)}\n\n${tradePattern}\n\nRespond with valid JSON only:\n{"veto":false,"reason":"","adjustedPositionSize":null,"adjustedStopLossPct":null,"adjustedTakeProfitPct":null}\n\nIf the recent trade pattern shows a choppy/whipsaw market (frequent reversals + net losses), strongly consider vetoing new entries OR widening stopLossPct/takeProfitPct to survive the chop. Set adjustedStopLossPct/adjustedTakeProfitPct only if you want to override the decision's SL/TP.`,
           },
         ],
         temperature: 0.05,
@@ -1322,7 +1355,9 @@ Output ONLY valid JSON:
       const parsed = JSON.parse(response.content) as {
         veto: boolean;
         reason: string;
-        adjustedPositionSize?: number;
+        adjustedPositionSize?: number | null;
+        adjustedStopLossPct?: number | null;
+        adjustedTakeProfitPct?: number | null;
       };
 
       // Hard overrides: enforce absolute risk limits (aligned with clamp)
@@ -1336,6 +1371,8 @@ Output ONLY valid JSON:
       return {
         veto: parsed.veto ?? false,
         reason: parsed.reason ?? 'No concerns.',
+        adjustedStopLossPct: parsed.adjustedStopLossPct ?? undefined,
+        adjustedTakeProfitPct: parsed.adjustedTakeProfitPct ?? undefined,
       };
     } catch {
       // On error, be conservative but respect Market Agent limits
