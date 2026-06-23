@@ -363,6 +363,9 @@ export interface Portfolio {
   peakEquity: number;
   dailyPnl: number;
   dailyLossLimit: number;
+  /** v2.0.23: date string (YYYY-MM-DD) when dailyPnl was last reset.
+   *  Used to auto-reset dailyPnl at the start of each new calendar day. */
+  dailyPnlResetDate?: string;
   tradeCount: number;
   winCount: number;
   lossCount: number;

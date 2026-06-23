@@ -49,6 +49,7 @@ export class PortfolioTracker {
         peakEquity: saved.peakEquity,
         dailyPnl: saved.dailyPnl,
         dailyLossLimit: saved.dailyLossLimit,
+        dailyPnlResetDate: saved.dailyPnlResetDate,
         tradeCount: saved.tradeCount,
         winCount: saved.winCount,
         lossCount: saved.lossCount,
@@ -204,6 +205,9 @@ export class PortfolioTracker {
   }
 
   canTrade(): { allowed: boolean; reason?: string } {
+    // v2.0.23: auto-reset dailyPnl on calendar date change.
+    this.checkDailyReset();
+
     if (this.portfolio.maxDrawdownPct >= config.paper.maxDrawdownPct) {
       return {
         allowed: false,
@@ -211,12 +215,18 @@ export class PortfolioTracker {
       };
     }
 
-    const dailyLossPct = Math.abs(this.portfolio.dailyPnl) / this.portfolio.totalEquity;
-    if (dailyLossPct >= config.paper.dailyLossLimitPct) {
-      return {
-        allowed: false,
-        reason: `Daily loss limit ${(dailyLossPct * 100).toFixed(1)}% reached. No more trades today.`,
-      };
+    // v2.0.23 fix: only block on ACTUAL daily loss (dailyPnl < 0).
+    // Previously used Math.abs(dailyPnl) which meant accumulated PROFIT
+    // could also trigger the "daily loss limit" — nonsensical. Now only
+    // a negative dailyPnl (real loss today) triggers the block.
+    if (this.portfolio.dailyPnl < 0) {
+      const dailyLossPct = Math.abs(this.portfolio.dailyPnl) / this.portfolio.totalEquity;
+      if (dailyLossPct >= config.paper.dailyLossLimitPct) {
+        return {
+          allowed: false,
+          reason: `Daily loss limit ${(dailyLossPct * 100).toFixed(1)}% reached. No more trades today.`,
+        };
+      }
     }
 
     return { allowed: true };
@@ -510,6 +520,8 @@ export class PortfolioTracker {
     }
     this.portfolio.tradeCount = this.portfolio.winCount + this.portfolio.lossCount;
 
+    // v2.0.23: auto-reset dailyPnl on calendar date change before accumulating.
+    this.checkDailyReset();
     this.portfolio.dailyPnl += realizedPnl;
     this.recalculateEquity();
     log.info(`Position closed: ${pos.side.toUpperCase()} ${pos.symbol} PnL: ${realizedPnl.toFixed(2)}`);
@@ -583,5 +595,29 @@ export class PortfolioTracker {
 
   resetDailyPnl(): void {
     this.portfolio.dailyPnl = 0;
+    this.portfolio.dailyPnlResetDate = this.todayString();
+  }
+
+  /**
+   * v2.0.23: Auto-reset dailyPnl when the calendar date changes.
+   * Called from canTrade() and closePosition() so the reset happens
+   * at the first trade/PnL event of each new day — no external scheduler
+   * needed. Previously resetDailyPnl() was never called, so dailyPnl
+   * accumulated across ALL days since system start, causing false
+   * "daily loss limit reached" blocks even on profitable days.
+   */
+  checkDailyReset(): void {
+    const today = this.todayString();
+    if (this.portfolio.dailyPnlResetDate !== today) {
+      if (this.portfolio.dailyPnlResetDate !== undefined) {
+        log.info(`📅 Daily PnL reset: ${this.portfolio.dailyPnlResetDate} → ${today} (was ${this.portfolio.dailyPnl >= 0 ? '+' : ''}${this.portfolio.dailyPnl.toFixed(2)})`);
+      }
+      this.portfolio.dailyPnl = 0;
+      this.portfolio.dailyPnlResetDate = today;
+    }
+  }
+
+  private todayString(): string {
+    return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
   }
 }

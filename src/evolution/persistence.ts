@@ -89,6 +89,8 @@ export interface PortfolioSnapshot {
   peakEquity: number;
   dailyPnl: number;
   dailyLossLimit: number;
+  /** v2.0.23: date string (YYYY-MM-DD) when dailyPnl was last reset. */
+  dailyPnlResetDate?: string;
   tradeCount: number;
   winCount: number;
   lossCount: number;
@@ -245,6 +247,7 @@ const PORTFOLIO_FIELDS: Record<string, SchemaField> = {
   peakEquity: { type: 'number', required: false },
   dailyPnl: { type: 'number', required: false },
   dailyLossLimit: { type: 'number', required: false },
+  dailyPnlResetDate: { type: 'string', required: false },
   tradeCount: { type: 'number', required: false },
   winCount: { type: 'number', required: false },
   lossCount: { type: 'number', required: false },
@@ -303,6 +306,7 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       peakEquity: portfolio.peakEquity,
       dailyPnl: portfolio.dailyPnl,
       dailyLossLimit: portfolio.dailyLossLimit,
+      dailyPnlResetDate: portfolio.dailyPnlResetDate,
       // tradeCount = total unique trades (closed + real open, no ghost duplicates).
       // IMPORTANT: winCount + lossCount already equals the number of closed trades.
       // Do NOT add positions.size — that inflates the count with phantom opens.

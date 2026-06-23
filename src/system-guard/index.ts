@@ -170,8 +170,8 @@ export class SystemGuard {
 
       for (const level of DD_THRESHOLDS) {
         if (dd >= level.threshold) {
-          // Check daily loss as well
-          const dailyLossPct = p.balance > 0 ? Math.abs(p.dailyPnl) / p.balance : 0;
+          // Check daily loss as well (v2.0.23: only on actual loss, not profit)
+          const dailyLossPct = (p.dailyPnl < 0 && p.balance > 0) ? Math.abs(p.dailyPnl) / p.balance : 0;
           if (dailyLossPct >= DAILY_LOSS_THRESHOLD && level.action === 'block_cycle') {
             return {
               allowed: false,
@@ -192,7 +192,8 @@ export class SystemGuard {
       }
 
       // Also check daily loss alone (even if drawdown is fine)
-      const dailyLossPct = p.balance > 0 ? Math.abs(p.dailyPnl) / p.balance : 0;
+      // v2.0.23: only block on actual loss (dailyPnl < 0), not on accumulated profit
+      const dailyLossPct = (p.dailyPnl < 0 && p.balance > 0) ? Math.abs(p.dailyPnl) / p.balance : 0;
       if (dailyLossPct >= DAILY_LOSS_THRESHOLD) {
         return {
           allowed: false,

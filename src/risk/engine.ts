@@ -44,8 +44,8 @@ export class RiskEngine {
       });
     }
 
-    // 2. Check daily loss
-    const dailyLossPct = Math.abs(portfolio.dailyPnl) / portfolio.totalEquity;
+    // 2. Check daily loss (v2.0.23: only on actual loss, not accumulated profit)
+    const dailyLossPct = portfolio.dailyPnl < 0 ? Math.abs(portfolio.dailyPnl) / portfolio.totalEquity : 0;
     if (dailyLossPct >= this.limits.dailyLossLimitPct) {
       concerns.push({
         type: 'daily_loss_exceeded',

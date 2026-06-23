@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.22-dev (Fitness Breakdown 修正 — adaptability + consistency 唔再永遠 100%)  
+> **版本**: 2.0.23-dev (dailyPnl 自動跨日重置 + 只檢查真虧損 — 修正賺錢觸發 daily loss limit)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -51,6 +51,7 @@
 40. [B.21 TradingView TP/SL live update + Ollama concurrency + slot leak protection](#b21-tradingview-tpsl-live-update--ollama-concurrency--slot-leak-protectionv2020-修復)
 41. [B.22 Market Agent chart 只顯示當前持倉 marker](#b22-market-agent-chart-只顯示當前持倉-markerv2021-修復)
 42. [B.23 Fitness Breakdown — adaptability + consistency 永遠 100%](#b23-fitness-breakdown--adaptability--consistency-永遠-100v2022-修復)
+43. [B.24 dailyPnl 永不重置 + Math.abs 令賺錢觸發 daily loss limit](#b24-dailypnl-永不重置--mathabs-令賺錢觸發-daily-loss-limitv2023-修復)
 
 ---
 
@@ -5140,6 +5141,31 @@ if (isSynthetic) {
 | `src/evolution/index.ts` | `SurvivalFitnessCalculator.calculate()` 修正 adaptability + consistency 公式 |
 
 **效果**: Adaptability 同 Consistency 依家真正反映策略表現——一個做咗好多 trade 但 win rate 低嘅策略會有低 adaptability，一個 sortino/calmar 高嘅策略嘅 consistency 會漸近 100% 而唔係被 clamp 到 100%。Directional mutation（v2.0.15）依家可以真正根據呢兩個維度嘅弱項做引導。
+
+---
+
+### B.24 dailyPnl 永不重置 + Math.abs 令賺錢觸發 daily loss limit（v2.0.23 修復）
+
+> **觸發**: 用戶發現 `Trade blocked: Daily loss limit 6.0% reached. No more trades today.`，但明明今日淨係賺冇蝕過。
+
+**2 個 bug**:
+
+| Bug | 問題 | v2.0.23 修復 |
+|:----|:-----|:-------------|
+| **`resetDailyPnl()` 從來冇被調用** | `dailyPnl` 係累積（由系統啟動以嚟），唔係「今日」——之前嘅虧損一路累積，即使今日全賺都會觸發 | 新增 `checkDailyReset()` + `dailyPnlResetDate` field，`canTrade()` 同 `closePosition()` 時自動檢查跨日重置 |
+| **`Math.abs(dailyPnl)` 令賺錢都觸發 loss limit** | `canTrade()` 用 `Math.abs(dailyPnl)`——累積賺錢超過 6% of equity 都會觸發 "Daily loss limit reached" | 只檢查 `dailyPnl < 0`（真虧損）時先 block；正數（賺錢）唔觸發 loss limit |
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/types/index.ts` | `Portfolio` 加 `dailyPnlResetDate?: string` |
+| `src/trading/portfolio.ts` | `checkDailyReset()` 自動跨日重置；`canTrade()` 只檢查 `dailyPnl < 0`；`closePosition()` 前調用 `checkDailyReset()`；constructor restore `dailyPnlResetDate` |
+| `src/evolution/persistence.ts` | `PortfolioSnapshot` + `PORTFOLIO_FIELDS` + `savePortfolio` 加 `dailyPnlResetDate` |
+| `src/system-guard/index.ts` | 兩處 `Math.abs(dailyPnl)` 改為只檢查 `dailyPnl < 0` |
+| `src/risk/engine.ts` | `Math.abs(dailyPnl)` 改為只檢查 `dailyPnl < 0` |
+
+**效果**: `dailyPnl` 依家每日自動重置（唔再累積跨日），而且只喺真虧損時先觸發 daily loss limit——賺錢唔會再被錯誤 block。
 
 ---
 
