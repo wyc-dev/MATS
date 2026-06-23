@@ -178,15 +178,30 @@ export class SurvivalFitnessCalculator {
     // Minimum profit threshold: if avgWin < 0.5%, apply 0.7× penalty
     const minProfitPenalty = performance.avgWin < 0.005 && performance.trades > 5 ? 0.7 : 1.0;
 
-    // ─── Consistency (5%) ───
+    // ─── Consistency (5%) ──
+    // v2.0.22 fix: previously used raw sortinoRatio/2 + calmarRatio/3 which are
+    // unbounded — once the strategy performs well these exceed 1.0 and normalize
+    // clamps to 1.0, making consistency permanently 100%. Now uses bounded
+    // transforms (x / (x + k)) so the ratios asymptote to 1.0 instead of
+    // blowing past it. winRate is already 0-1.
+    // sortino: k=2 (sortino 2.0 → 0.5, 4.0 → 0.67, ∞ → 1.0)
+    // calmar: k=3 (calmar 3.0 → 0.5, 6.0 → 0.67, ∞ → 1.0)
     const consistency = this.normalize(
       (performance.winRate) * 0.5 +
-      (performance.sortinoRatio / 2) * 0.3 +
-      (performance.calmarRatio / 3) * 0.2
+      (performance.sortinoRatio / (performance.sortinoRatio + 2)) * 0.3 +
+      (performance.calmarRatio / (performance.calmarRatio + 3)) * 0.2
     );
 
-    // ─── Adaptability (5%) ───
-    const adaptability = this.normalize(Math.min(performance.trades / 100, 1));
+    // ─── Adaptability (5%) ──
+    // v2.0.22 fix: previously used Math.min(trades/100, 1) which saturates to
+    // 1.0 once cumulative trades exceed 100 — so adaptability was permanently
+    // 100% after the first 100 trades, regardless of recent performance.
+    // Now combines trade sufficiency (≥50 trades = full sample) with actual
+    // win rate, so a strategy with 500 trades but 20% win rate gets low
+    // adaptability (it's NOT adapting to the market), while a strategy with
+    // 50 trades and 60% win rate gets high adaptability.
+    const tradeSufficiency = Math.min(performance.trades / 50, 1);
+    const adaptability = this.normalize(tradeSufficiency * performance.winRate);
 
     // ─── Composite Score ───
     const score = (
