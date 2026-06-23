@@ -484,10 +484,20 @@ class AMACRFSystem {
       this.multiWs = new MultiExchangeWebSocketManager(null as any, this.hyperliquidWs);
       // Wire unified WS data into sentiment engine + paper engine + marketState
       this.multiWs.onPrice((data: UnifiedPrice) => {
+        // v2.0.24: track trade count before updatePrice so we can detect
+        // SL/TP-triggered closes and push the updated totalPnl to the UI
+        // immediately (not waiting for the next cycle's pushToAPI()).
+        const tradesBefore = this.portfolio.getPortfolio().tradeCount;
         this.paperEngine.updatePrice(data.symbol, data.price);
         this.sentimentEngine.updatePrice(data.price);
         if (data.fundingRate !== undefined) {
           this.sentimentEngine.updateFundingRate(data.fundingRate);
+        }
+        // If a position was closed (SL/TP triggered), push the updated
+        // totalPnl + balance to the UI immediately.
+        const tradesAfter = this.portfolio.getPortfolio().tradeCount;
+        if (tradesAfter > tradesBefore) {
+          this.pushToAPI();
         }
         // Also feed into marketState aggregator for cycle analysis
         this.marketState.update({
@@ -680,7 +690,13 @@ class AMACRFSystem {
     // Update paper engine with the latest price for the active symbol
     // so positions are correctly marked-to-market before the decision cycle
     if (marketPrice > 0) {
+      // v2.0.24: detect SL/TP-triggered closes and push updated totalPnl
+      const tradesBefore = this.portfolio.getPortfolio().tradeCount;
       this.paperEngine.updatePrice(activeSymbol, marketPrice);
+      const tradesAfter = this.portfolio.getPortfolio().tradeCount;
+      if (tradesAfter > tradesBefore) {
+        this.pushToAPI();
+      }
     }
 
     // Feed volume data into sentiment engine for volumeRatio computation
