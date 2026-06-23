@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.23-dev (dailyPnl 自動跨日重置 + 只檢查真虧損 — 修正賺錢觸發 daily loss limit)  
+> **版本**: 2.0.24-dev (SL/TP 平倉後即時 pushToAPI — Total PnL 唔再滯後一個 cycle)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -52,6 +52,7 @@
 41. [B.22 Market Agent chart 只顯示當前持倉 marker](#b22-market-agent-chart-只顯示當前持倉-markerv2021-修復)
 42. [B.23 Fitness Breakdown — adaptability + consistency 永遠 100%](#b23-fitness-breakdown--adaptability--consistency-永遠-100v2022-修復)
 43. [B.24 dailyPnl 永不重置 + Math.abs 令賺錢觸發 daily loss limit](#b24-dailypnl-永不重置--mathabs-令賺錢觸發-daily-loss-limitv2023-修復)
+44. [B.25 SL/TP 平倉後 Total PnL 滯後一個 cycle](#b25-sltp-平倉後-total-pnl-滯後一個-cyclev2024-修復)
 
 ---
 
@@ -5166,6 +5167,24 @@ if (isSynthetic) {
 | `src/risk/engine.ts` | `Math.abs(dailyPnl)` 改為只檢查 `dailyPnl < 0` |
 
 **效果**: `dailyPnl` 依家每日自動重置（唔再累積跨日），而且只喺真虧損時先觸發 daily loss limit——賺錢唔會再被錯誤 block。
+
+---
+
+### B.25 SL/TP 平倉後 Total PnL 滯後一個 cycle（v2.0.24 修復）
+
+> **觸發**: 用戶發現一個 SELL btc 蝕咗 $3.74 嘅 trade 平倉後，Total PnL 並冇即時調整。
+
+**問題**: `closePosition()` 確實有 `totalPnl += realizedPnl`，但 SL/TP 觸發嘅平倉係喺 WS price update callback（`multiWs.onPrice`）入面發生嘅。呢個 callback 調用 `paperEngine.updatePrice()` → `updatePosition()` → `checkPositionExits()` → `closePosition()`，但**之後冇調用 `pushToAPI()`**。所以 `totalPnl` 喺 backend 已經更新咗，但 UI 要等到下一個 cycle 嘅 `pushToAPI()` 先會收到更新——令用戶以為 Total PnL 冇調整。
+
+**修復**: 喺 `onPrice` callback 同 REST polling price update 之後，比較 `tradeCount` 前後變化。如果 `tradeCount` 增加咗（即係有 SL/TP 觸發平倉），立即調用 `pushToAPI()` 令 UI 即時收到更新嘅 `totalPnl` + `balance`。
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/index.ts` | `multiWs.onPrice` callback + REST polling price update 之後檢查 `tradeCount` 變化，有變化即 `pushToAPI()` |
+
+**效果**: SL/TP 觸發平倉後，Total PnL + Balance 即時更新到 UI，唔再滯後一個 cycle。
 
 ---
 
