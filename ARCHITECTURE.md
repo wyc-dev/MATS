@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.21-dev (Market Agent chart 只顯示當前持倉 marker，唔再顯示歷史 trade)  
+> **版本**: 2.0.22-dev (Fitness Breakdown 修正 — adaptability + consistency 唔再永遠 100%)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -50,6 +50,7 @@
 39. [B.20 Unrealized PnL 含 entry fee + Real-trade Positions/Fills 同步 HL](#b20-unrealized-pnl-含-entry-fee--real-trade-positionsfills-同步-hlv2019-修復)
 40. [B.21 TradingView TP/SL live update + Ollama concurrency + slot leak protection](#b21-tradingview-tpsl-live-update--ollama-concurrency--slot-leak-protectionv2020-修復)
 41. [B.22 Market Agent chart 只顯示當前持倉 marker](#b22-market-agent-chart-只顯示當前持倉-markerv2021-修復)
+42. [B.23 Fitness Breakdown — adaptability + consistency 永遠 100%](#b23-fitness-breakdown--adaptability--consistency-永遠-100v2022-修復)
 
 ---
 
@@ -2001,9 +2002,14 @@ Win Quality (10%) ──────┤
                          │  avgWin >= 2% = 滿分；avgWin < 0.5% + trades > 5 → ×0.7 penalty
                          │  杜絕「贏咗等於冇贏」嘅 micro-win strategy
 一致性 (5%) ────────────┤
-                         │  normalize(winRate × 0.5 + sortino/2 × 0.3 + calmar/3 × 0.2)
+                         │  normalize(winRate × 0.5 + sortino/(sortino+2) × 0.3 + calmar/(calmar+3) × 0.2)
+                         │  🆕 v2.0.22 fix: 之前用 sortino/2 + calmar/3（無界），表現好時超過 1.0
+                         │  → normalize clamp 到 1.0 → consistency 永遠 100%。改用有界轉換 x/(x+k)
 適應性 (5%) ────────────┘
-                         │  normalize(min(trades/100, 1))
+                         │  normalize(min(trades/50, 1) × winRate)
+                         │  🆕 v2.0.22 fix: 之前用 min(trades/100, 1)，累積 trade 超過 100 後
+                         │  永遠 = 1.0 → adaptability 永遠 100%。改為 trade 充足度 × win rate，
+                         │  令 500 trades 但 20% win rate 嘅策略得到低 adaptability（唔適應市場）
 
 最終調整：
   × drawdownPenalty (回撤 > 15% → ×0.5)
@@ -5113,6 +5119,27 @@ if (isSynthetic) {
 | `ui/src/App.tsx` | `MarketAgentCard.mainChartTrades` 移除歷史 trade loop，只加入當前持倉 marker |
 
 **效果**: Market Agent chart 只顯示當前持倉嘅一個入場 marker + live SL/TP 線條，唔再有歷史 sell arrow 重疊。
+
+---
+
+### B.23 Fitness Breakdown — adaptability + consistency 永遠 100%（v2.0.22 修復）
+
+> **觸發**: 用戶發現 Fitness Breakdown 嘅 "Adaptability" 同 "Consistency" 永遠顯示 100%。
+
+**2 個 bug**:
+
+| 維度 | 之前公式 | 問題 | v2.0.22 修復 |
+|:-----|:---------|:-----|:-------------|
+| **Adaptability** | `normalize(min(trades/100, 1))` | `trades` 係累積 count，超過 100 後永遠 = 1.0 → adaptability 永遠 100%，無論近期表現幾差 | `normalize(min(trades/50, 1) × winRate)` — trade 充足度 × win rate，令 500 trades 但 20% win rate 嘅策略得到低 adaptability |
+| **Consistency** | `normalize(winRate×0.5 + sortino/2×0.3 + calmar/3×0.2)` | `sortino` 同 `calmar` 係無界 ratio，表現好時超過 1.0 → normalize clamp 到 1.0 → consistency 永遠 100% | `normalize(winRate×0.5 + sortino/(sortino+2)×0.3 + calmar/(calmar+3)×0.2)` — 有界轉換 `x/(x+k)` 令 ratio 漸近 1.0 而唔係超過 |
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/evolution/index.ts` | `SurvivalFitnessCalculator.calculate()` 修正 adaptability + consistency 公式 |
+
+**效果**: Adaptability 同 Consistency 依家真正反映策略表現——一個做咗好多 trade 但 win rate 低嘅策略會有低 adaptability，一個 sortino/calmar 高嘅策略嘅 consistency 會漸近 100% 而唔係被 clamp 到 100%。Directional mutation（v2.0.15）依家可以真正根據呢兩個維度嘅弱項做引導。
 
 ---
 
