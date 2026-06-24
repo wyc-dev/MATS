@@ -71,6 +71,18 @@ export class HACPEngine {
   /** Current market regime — set each cycle so dynamic weights + regime-aware
    *  strategy selection use the active regime. */
   private currentRegime: MarketRegime = 'unknown';
+  /** v2.0.26: Loss cooldown — after ANY loss, the next cycle's new entries
+   *  are blocked (cooldown). The Risk Auditor LLM reviews the loss during
+   *  the cooldown cycle and decides whether to resume trading or extend the
+   *  cooldown. This replaces the old hardcoded ≥3 VETO with a smarter
+   *  "pause + LLM review" approach. */
+  private cooldownUntilCycle: number = 0;
+  /** The LLM's review verdict from the last cooldown cycle. When the LLM
+   *  says "resume", this is set to true; when it says "extend", false. */
+  private cooldownResumeAllowed: boolean = true;
+  /** v2.0.26: Current cycle number — set by executeDecisionCycle() so the
+   *  cooldown logic knows which cycle we're in. */
+  private totalCycles: number = 0;
 
   constructor(
     metaAgent: BaseAgent,
@@ -95,6 +107,30 @@ export class HACPEngine {
   /** Inject the agent evolution engine for regime-aware dynamic weights. */
   setAgentEvolution(ae: AgentEvolutionEngine): void {
     this.agentEvolution = ae;
+  }
+
+  /**
+   * v2.0.26: Trigger a loss cooldown after any losing trade.
+   * Sets cooldownUntilCycle to the next cycle, blocking new entries for
+   * 1 cycle while the Risk Auditor LLM reviews the loss. The LLM's
+   * verdict (resume vs extend) is read from cooldownResumeAllowed.
+   */
+  triggerLossCooldown(currentCycle: number): void {
+    this.cooldownUntilCycle = currentCycle + 2; // next cycle + 1 for review
+    this.cooldownResumeAllowed = false; // default: don't resume until LLM says so
+    log.warn(`🧊 Loss cooldown triggered: new entries blocked until cycle ${this.cooldownUntilCycle} (current=${currentCycle})`);
+  }
+
+  /** Check if a loss cooldown is currently active. */
+  isCooldownActive(currentCycle: number): boolean {
+    return currentCycle < this.cooldownUntilCycle;
+  }
+
+  /** Allow the Risk Auditor LLM to resume trading after cooldown review. */
+  resumeFromCooldown(): void {
+    this.cooldownUntilCycle = 0;
+    this.cooldownResumeAllowed = true;
+    log.info('✅ Loss cooldown lifted — Risk Auditor approved resuming trading');
   }
 
   /** Register a callback for real-time progress updates */
@@ -268,11 +304,18 @@ export class HACPEngine {
     recentSummaries?: CycleSummary[],
     /** Market Agent constraints: position size fraction and leverage */
     marketAgentConstraints?: { positionSizePct: number; leverage: number },
+    /** v2.0.26: current cycle number — used by the loss cooldown logic */
+    cycleNumber?: number,
   ): Promise<HACPResult> {
     const startTime = performance.now();
     const allThoughts: AgentThought[] = [];
     const debateRounds: DebateRound[] = [];
     const deadline = Date.now() + this.totalTimeoutMs;
+
+    // v2.0.26: track the current cycle number for cooldown logic
+    if (cycleNumber !== undefined) {
+      this.totalCycles = cycleNumber;
+    }
 
     // Extract the current regime from the market description so dynamic
     // agent weights + regime-aware strategy selection use the active regime.
@@ -1409,7 +1452,7 @@ Output ONLY valid JSON:
           },
           {
             role: 'user',
-            content: `Audit this trading decision:\n${JSON.stringify(decision, null, 2)}\n\n${tradePattern}\n\nRespond with valid JSON only:\n{"veto":false,"reason":"","adjustedPositionSizePct":null,"adjustedStopLossPct":null,"adjustedTakeProfitPct":null}\n\nIf the recent trade pattern shows a choppy/whipsaw market (frequent reversals + net losses), strongly consider vetoing new entries OR narrowing TP/SL to the range edges + reducing position size (choppy markets have low win rates — smaller size limits per-trade loss). If profitable/trending, you may widen TP to let profits run. Set adjusted* fields only if you want to override the decision.`,
+            content: `Audit this trading decision:\n${JSON.stringify(decision, null, 2)}\n\n${tradePattern}\n\n${this.isCooldownActive(this.totalCycles) ? `⚠️ LOSS COOLDOWN ACTIVE: A recent trade lost money. You are reviewing during the cooldown cycle. Analyze WHY the loss happened (wrong direction? bad timing? choppy market? insufficient signal?) and decide:\n  - If the market conditions have changed and it's safe to resume → set "resumeTrading": true\n  - If the market is still unfavorable → set "resumeTrading": false (extend cooldown)\nRespond with valid JSON only:\n{"veto":false,"reason":"","resumeTrading":false,"adjustedPositionSizePct":null,"adjustedStopLossPct":null,"adjustedTakeProfitPct":null}\n\nIf the recent trade pattern shows a choppy/whipsaw market (frequent reversals + net losses), strongly consider vetoing new entries OR narrowing TP/SL to the range edges + reducing position size (choppy markets have low win rates — smaller size limits per-trade loss). If profitable/trending, you may widen TP to let profits run. Set adjusted* fields only if you want to override the decision.` : `Respond with valid JSON only:\n{"veto":false,"reason":"","adjustedPositionSizePct":null,"adjustedStopLossPct":null,"adjustedTakeProfitPct":null}\n\nIf the recent trade pattern shows a choppy/whipsaw market (frequent reversals + net losses), strongly consider vetoing new entries OR narrowing TP/SL to the range edges + reducing position size (choppy markets have low win rates — smaller size limits per-trade loss). If profitable/trending, you may widen TP to let profits run. Set adjusted* fields only if you want to override the decision.`}`,
           },
         ],
         temperature: 0.05,
@@ -1422,10 +1465,17 @@ Output ONLY valid JSON:
       const parsed = JSON.parse(response.content) as {
         veto: boolean;
         reason: string;
+        resumeTrading?: boolean;
         adjustedPositionSizePct?: number | null;
         adjustedStopLossPct?: number | null;
         adjustedTakeProfitPct?: number | null;
       };
+
+      // v2.0.26: If the LLM says "resumeTrading": true during cooldown,
+      // lift the cooldown so the next cycle can trade normally.
+      if (parsed.resumeTrading === true && this.isCooldownActive(this.totalCycles)) {
+        this.resumeFromCooldown();
+      }
 
       // Hard overrides: enforce absolute risk limits (aligned with clamp)
       if (decision.positionSizePct > MAX_POSITION_PCT) {
@@ -1452,6 +1502,56 @@ Output ONLY valid JSON:
           adjustedPositionSizePct = reduced;
           reason = `Choppy market detected (reversalRate=${(analysis.reversalRate * 100).toFixed(0)}%, netPnl=${(analysis.netPnlPct * 100).toFixed(2)}%) — hardcoded 50% position size reduction. ${reason}`;
           log.info(`🔧 Choppy-market hardcoded size cut: ${(decision.positionSizePct * 100).toFixed(1)}% → ${(reduced * 100).toFixed(1)}%`);
+        }
+      }
+
+      // ── v2.0.26: Loss cooldown — pause + LLM review ──
+      // After ANY loss (streak ≥1), the system enters a cooldown: the next
+      // cycle's new entries are blocked, giving the Risk Auditor LLM time to
+      // review WHY the loss happened and decide whether to resume trading
+      // or extend the cooldown. This replaces the old hardcoded ≥3 VETO with
+      // a smarter "pause one cycle, let the LLM review" approach.
+      //
+      // The cooldown is tracked via cooldownUntilCycle (set by
+      // onPositionClosedLearning when a loss is detected). During cooldown,
+      // new entries are VETO'd but existing positions are still managed
+      // (SL/TP adjustment allowed). The LLM's review verdict
+      // (cooldownResumeAllowed) determines whether trading resumes after the
+      // cooldown cycle.
+      if (
+        this.totalCycles < this.cooldownUntilCycle &&
+        decision.action !== 'hold' &&
+        decision.positionSizePct > 0
+      ) {
+        const remaining = this.cooldownUntilCycle - this.totalCycles;
+        log.warn(`🚨 Loss cooldown active (${remaining} cycle(s) remaining) — blocking new entry. Risk Auditor will review this cycle.`);
+        return {
+          veto: true,
+          reason: `Loss cooldown: a recent trade lost money. Pausing new entries for ${remaining} cycle(s) while the Risk Auditor reviews. Existing positions are still managed.`,
+          adjustedStopLossPct: parsed.adjustedStopLossPct ?? undefined,
+          adjustedTakeProfitPct: parsed.adjustedTakeProfitPct ?? undefined,
+          adjustedPositionSizePct: undefined,
+        };
+      }
+
+      // ── v2.0.26: Loss-streak graduated size reduction ──
+      // Even outside cooldown, reduce size proportionally to the loss
+      // streak — the more consecutive losses, the smaller the position.
+      // This is NOT a VETO; it lets the LLM's own verdict stand while
+      // adding a deterministic safety layer.
+      if (
+        analysis &&
+        analysis.currentLossStreak >= 1 &&
+        decision.action !== 'hold' &&
+        decision.positionSizePct > 0
+      ) {
+        // streak 1 → 75%, 2 → 50%, 3+ → 25%
+        const sizeMultiplier = Math.max(0.25, 1 - analysis.currentLossStreak * 0.25);
+        const reduced = decision.positionSizePct * sizeMultiplier;
+        if (adjustedPositionSizePct === undefined || adjustedPositionSizePct > reduced) {
+          adjustedPositionSizePct = reduced;
+          reason = `Loss streak: ${analysis.currentLossStreak} consecutive losses — size reduced to ${(sizeMultiplier * 100).toFixed(0)}%. ${reason}`;
+          log.info(`🔧 Loss-streak size reduction: ${(decision.positionSizePct * 100).toFixed(1)}% → ${(reduced * 100).toFixed(1)}% (streak=${analysis.currentLossStreak})`);
         }
       }
 

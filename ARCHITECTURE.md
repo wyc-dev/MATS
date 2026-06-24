@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.24-dev (SL/TP 平倉後即時 pushToAPI — Total PnL 唔再滯後一個 cycle)  
+> **版本**: 2.0.26-dev (SL/TP 平倉後即時學習 + 虧損冷卻期 + LLM 檢討恢復)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -53,6 +53,8 @@
 42. [B.23 Fitness Breakdown — adaptability + consistency 永遠 100%](#b23-fitness-breakdown--adaptability--consistency-永遠-100v2022-修復)
 43. [B.24 dailyPnl 永不重置 + Math.abs 令賺錢觸發 daily loss limit](#b24-dailypnl-永不重置--mathabs-令賺錢觸發-daily-loss-limitv2023-修復)
 44. [B.25 SL/TP 平倉後 Total PnL 滯後一個 cycle](#b25-sltp-平倉後-total-pnl-滯後一個-cyclev2024-修復)
+45. [B.26 SL/TP 平倉後即時學習 + 虧損冷卻期 + LLM 檢討恢復](#b26-sltp-平倉後即時學習--虧損冷卻期--llm-檢討恢復v2025v2026-修復)
+45. [B.26 SL/TP 平倉後即時學習 — 連續虧損偵測 + VETO](#b26-sltp-平倉後即時學習--連續虧損偵測--vetov2025-修復)
 
 ---
 
@@ -5185,6 +5187,117 @@ if (isSynthetic) {
 | `src/index.ts` | `multiWs.onPrice` callback + REST polling price update 之後檢查 `tradeCount` 變化，有變化即 `pushToAPI()` |
 
 **效果**: SL/TP 觸發平倉後，Total PnL + Balance 即時更新到 UI，唔再滯後一個 cycle。
+
+---
+
+### B.26 SL/TP 平倉後即時學習 — 連續虧損偵測 + VETO（v2.0.25 修復）
+
+> **觸發**: 用戶連續輸咗四次（-$3.74, -$9.35, -$8.12, -$1.68），但系統冇從中學到任何嘢——所有學習機制對 SL/TP 平倉完全隱形。
+
+**核心缺陷**: SL/TP 平倉喺 price update 時觸發，但所有學習機制只喺 decision cycle 入面運行。兩個流程完全脫節：
+
+| 學習機制 | SL/TP 平倉後有冇被調用？ | 後果 |
+|:---------|:---------------------------|:-----|
+| RBC `feedTrade()` | ❌ 冇 | RBC 只接收 hypothetical price change，真實虧損從未被記錄 |
+| Pattern Classifier `backfillOutcome()` | ❌ 冇 | 歷史 pattern DB 冇記錄呢四次虧損 |
+| Agent Outcomes `backfillOutcome()` | ❌ 冇 | 唔知邊個 agent 估錯咗 |
+| Trade History `record()` | ❌ 冇 | `getRecentTradeAnalysis()` 睇唔到呢四次虧損 |
+| Evolution `evolve()` | ❌ 冇 | 策略冇因為虧損而進化 |
+| Risk Auditor recent pattern | ❌ 冇 | Risk Auditor 睇唔到 loss streak，唔會 VETO |
+| Consensus threshold `adjustThreshold()` | ❌ 冇 | 共識門檻冇因為連續虧損而提高 |
+
+**修復方案**（3 部分）:
+
+#### 1. SL/TP 平倉後即時學習 hook
+
+`paperEngine.setOnClosedLearning()` — 喺每次 `closePosition()` 後觸發 `onPositionClosedLearning()`，即時餵入所有學習機制：
+
+| 學習機制 | 動作 |
+|:---------|:-----|
+| **Trade History** | `record()` 記錄 SL/TP 平倉嘅 PnL → `getRecentTradeAnalysis()` 可以睇到 |
+| **RBC** | `feedTrade()` 用平倉時嘅 market context + outcome → RBC 學到「呢啲條件下 LONG/SHORT 會輸」 |
+| **Pattern Classifier** | `backfillOutcome()` 用 matching pattern record → pattern DB 記錄呢次虧損 |
+| **Agent Outcomes** | `backfillOutcome()` → 系統知道邊個 agent 估錯 |
+| **Evolution** | `evolve()` → 策略因為虧損而進化（directional mutation） |
+| **Consensus Threshold** | `adjustThreshold()` → 連續虧損後提高共識門檻 |
+| **Persist** | `persistState()` → 學習結果持久化 |
+
+#### 2. Hardcoded loss-streak VETO（≥3 連續虧損）
+
+`riskAuditorAudit()` 加入硬編碼規則（唔靠 LLM）：
+
+| Loss Streak | 動作 |
+|:-----------|:-----|
+| 0-1 | 正常 |
+| 2 | 硬編碼 50% 倉位 cut（系統可能稍微 out of sync） |
+| ≥3 | **硬編碼 VETO 新入場**（系統明顯 out of sync，強制暫停直到贏一次恢復信心） |
+
+#### 3. 即時 UI 更新（v2.0.24 已修復）
+
+SL/TP 平倉後即時 `pushToAPI()` 令 UI 即時更新。
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/trading/paper-engine.ts` | 新增 `setOnClosedLearning()` callback + 喺 `onPositionClosedCb` 入面調用 |
+| `src/index.ts` | 新增 `onPositionClosedLearning()` 方法（7 個學習步驟）+ 喺 HACP 初始化後 register |
+| `src/cognition/hacp.ts` | `riskAuditorAudit()` 加入 hardcoded loss-streak VETO（≥3）+ size cut（=2） |
+
+**效果**: SL/TP 平倉嘅虧損依家會即時被所有學習機制吸收——RBC 學到「呢啲條件會輸」、Pattern DB 記錄虧損、Agent Outcomes 知道邊個 agent 估錯、Evolution 進化策略、Risk Auditor 喺連續 3 次虧損後硬編碼 VETO 新入場。系統唔再白白浪費連續虧損嘅學習機會。
+
+---
+
+### B.26 v2.0.26: 虧損冷卻期 + LLM 檢討恢復（取代硬編碼 VETO）
+
+> **觸發**: 用戶反饋硬編碼 VETO 太粗暴——應該虧損 1 次就觸發冷卻期，俾 Risk Auditor LLM 檢討原因，然後由 LLM 決定係咪恢復交易。
+
+**v2.0.25 問題**: 硬編碼 VETO 要連續虧損 ≥3 次先觸發，而且係永久 VETO（直到贏一次）。太遲觸發 + 太粗暴。
+
+**v2.0.26 修復**: 改為「虧損 1 次即觸發冷卻期 + LLM 檢討」：
+
+```
+任何虧損（1 次）
+  → 硬編碼觸發冷卻期（跳過下 1 個 cycle 嘅新交易）
+  → 冷卻期內，Risk Auditor LLM 檢討虧損原因
+  → LLM 決定：
+    - resumeTrading: true → 恢復交易
+    - resumeTrading: false → 延長冷卻
+  → 冷卻期外，loss-streak graduated size reduction（1→75%, 2→50%, 3+→25%）
+```
+
+**冷卻期機制**:
+
+| 方法 | 用途 |
+|:-----|:-----|
+| `triggerLossCooldown(currentCycle)` | 虧損後設 `cooldownUntilCycle = currentCycle + 2` |
+| `isCooldownActive(currentCycle)` | 檢查冷卻期係咪活躍 |
+| `resumeFromCooldown()` | LLM 說 resumeTrading: true 時解除冷卻 |
+
+**Risk Auditor audit prompt 變化**: 冷卻期活躍時，prompt 加入：
+```
+⚠️ LOSS COOLDOWN ACTIVE: A recent trade lost money.
+Analyze WHY the loss happened and decide:
+  - resume → set "resumeTrading": true
+  - extend → set "resumeTrading": false
+```
+
+**Loss-streak graduated size reduction**（冷卻期外）:
+
+| Loss streak | 倉位大小 |
+|:-----------|:---------|
+| 1 | 75% |
+| 2 | 50% |
+| 3+ | 25% |
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/cognition/hacp.ts` | 新增 `cooldownUntilCycle` + `cooldownResumeAllowed` + `totalCycles` field；`triggerLossCooldown()` / `isCooldownActive()` / `resumeFromCooldown()` 方法；`executeDecisionCycle` 加 `cycleNumber` 參數；`riskAuditorAudit` 冷卻期 VETO + LLM `resumeTrading` 處理 + graduated size reduction；audit prompt 冷卻期檢討指引 |
+| `src/index.ts` | `onPositionClosedLearning` 虧損時 `triggerLossCooldown()`；`executeDecisionCycle` 傳入 `cycleNumber` |
+
+**效果**: 虧損 1 次即觸發冷卻期——跳過下 1 個 cycle 嘅新交易，俾 Risk Auditor LLM 用最高級模型檢討虧損原因。LLM 決定恢復交易定延長冷卻。冷卻期外，loss-streak graduated size reduction 進一步降低風險。系統唔再粗暴 VETO，而係智能「停一停，諗一諗，由 LLM 決定」。
 
 ---
 
