@@ -32,7 +32,7 @@ import { getSRZones } from './analysis/support-resistance.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
 import { RBCEngine, type RBCQueryResult } from './evolution/rbc-clustering.ts';
-import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo } from './types/index.ts';
+import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord } from './types/index.ts';
 
 const log = createLogger({ phase: 'system' });
 
@@ -230,6 +230,18 @@ class AMACRFSystem {
         this.pushToAPI();
       });
       log.info('✓ HACP engine ready');
+
+      // ── v2.0.25: SL/TP Close Learning Hook ──
+      // Register a callback that fires after EVERY position close (SL/TP,
+      // reconciliation, agent-vote close). This bridges the gap between
+      // price-update-triggered closes and the learning system — previously
+      // SL/TP losses were invisible to RBC, Pattern Classifier, Agent
+      // Outcomes, Trade History, and Evolution, so the system never learned
+      // from consecutive losses that happened between decision cycles.
+      this.paperEngine.setOnClosedLearning((trade) => {
+        this.onPositionClosedLearning(trade);
+      });
+      log.info('✓ SL/TP close learning hook wired');
 
       // 5.6 Initialize Real Trading Manager
       log.info('Step 5.6/8: Initializing Real Trading Manager...');
@@ -626,6 +638,174 @@ class AMACRFSystem {
     this.restPollTimer = setInterval(() => { void poll(); }, pollMs);
   }
 
+  /**
+   * v2.0.25: Learning hook invoked after EVERY position close (SL/TP,
+   * reconciliation, agent-vote close). Bridges the gap between
+   * price-update-triggered closes and the learning system so the system
+   * learns from losses that happen BETWEEN decision cycles.
+   *
+   * Feeds the close outcome to:
+   *  1. Trade History — so getRecentTradeAnalysis() sees SL/TP losses
+   *  2. RBC — so it learns "these conditions → LONG/SHORT loses"
+   *  3. Pattern Classifier — so the pattern DB records the loss
+   *  4. Agent Outcomes — so the system knows which agents were wrong
+   *  5. Evolution — so the strategy adapts to the loss
+   */
+  private onPositionClosedLearning(trade: TradeRecord): void {
+    try {
+      const symbol = trade.symbol;
+      const isWin = trade.pnl >= 0;
+      const pnlPct = trade.pnlPct;
+      const outcome: 1 | 0 = isWin ? 1 : 0;
+
+      // Get current market context for learning
+      const activeSymbol = this.marketAgent?.getSelectedSymbol()?.toLowerCase() ?? symbol;
+      const state = this.marketState?.getState(activeSymbol) ?? null;
+      const regime = state?.regime ?? 'unknown';
+      const volatility = state?.volatility ?? 0;
+      const srDistanceBps = this.lastSRContext?.distanceToSupportBps ?? 0;
+      const obImbalance = state?.orderBookImbalance ?? 0;
+      const fundingRate = this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0;
+      const volumeRatio = this.sentimentEngine?.getVolumeRatio() ?? 1;
+      const sentimentAgg = this.sentimentEngine?.getSentiment();
+      const sentiment = sentimentAgg?.overallSentiment ?? 0;
+      const sentimentConviction = sentimentAgg?.conviction ?? 0.5;
+      const signalAgreement = 0.5; // unknown at close time
+
+      // 1. Record to Trade History so getRecentTradeAnalysis() sees it
+      try {
+        this.evolution.tradeHistory.record({
+          cycleNumber: this.totalCycles,
+          symbol,
+          decision: {
+            action: trade.side === 'buy' ? 'buy' : 'sell',
+            symbol,
+            positionSizePct: trade.investment > 0 && this.portfolio.getPortfolio().totalEquity > 0
+              ? trade.investment / this.portfolio.getPortfolio().totalEquity
+              : 0.05,
+            rationale: `SL/TP close: ${trade.side.toUpperCase()} ${symbol} PnL: $${trade.pnl.toFixed(2)}`,
+            urgency: 'immediate' as const,
+          },
+          entryPrice: trade.entryPrice,
+          regime,
+          trend: state?.trend ?? 'sideways',
+          volatility,
+          type: 'real',
+          confidence: 0.5,
+          realisedPnl: pnlPct,
+        });
+      } catch (err) {
+        log.warn(`[close-learning] Trade history record failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // 2. Feed RBC — learn "these conditions → LONG/SHORT wins/loses"
+      try {
+        const features = {
+          volatility,
+          srDistanceBps,
+          obImbalance,
+          sentiment,
+          signalAgreement,
+          fundingRate,
+          volumeRatio,
+          sentimentConviction,
+        };
+        this.rbcEngine.feedTrade(symbol, features, outcome);
+        log.info(`🧬 [close-learning] RBC fed: ${symbol} ${isWin ? 'WIN' : 'LOSS'} (pnl=${(pnlPct * 100).toFixed(1)}%)`);
+      } catch (err) {
+        log.warn(`[close-learning] RBC feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // 3. Backfill Pattern Classifier
+      try {
+        // Find the pattern record by matching symbol + side + pending status
+        const patterns = this.patternClassifier.getAllPatterns();
+        const matchingPattern = patterns.find(
+          (p: any) => p.symbol === symbol && p.side === trade.side && p.outcome === 'pending'
+            && Math.abs(p.entryTimestamp - trade.openedAt) < 60_000,
+        );
+        if (matchingPattern) {
+          const holdDuration = Math.max(1, Math.round((trade.closedAt - trade.openedAt) / 300_000));
+          this.patternClassifier.backfillOutcome(
+            matchingPattern.id,
+            trade.exitPrice,
+            {
+              regime,
+              volatility,
+              srDistanceBps,
+              obImbalance,
+              fundingRate,
+              volumeRatio,
+              signalAgreement,
+              leverage: trade.leverage,
+              sentiment,
+              sentimentConviction,
+            },
+            pnlPct,
+            holdDuration,
+          );
+          log.info(`🧬 [close-learning] Pattern backfilled: ${symbol} ${isWin ? 'WIN' : 'LOSS'}`);
+        }
+      } catch (err) {
+        log.warn(`[close-learning] Pattern backfill failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // 4. Backfill Agent Outcomes — mark all agents that recommended on this symbol
+      try {
+        this.evolution.agentOutcomes.backfillOutcome(symbol, pnlPct);
+        log.info(`🧬 [close-learning] Agent outcomes backfilled: ${symbol} ${isWin ? 'WIN' : 'LOSS'}`);
+      } catch (err) {
+        log.warn(`[close-learning] Agent outcomes backfill failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // 5. Trigger Evolution — adapt strategy to the loss
+      try {
+        this.evolution.pressureEngine.evolve({}, this.evolution.tradeHistory);
+        log.info(`🧬 [close-learning] Evolution triggered after ${isWin ? 'WIN' : 'LOSS'}`);
+      } catch (err) {
+        log.warn(`[close-learning] Evolution trigger failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // 6. Check for consecutive loss streak — raise consensus threshold
+      try {
+        const analysis = this.evolution.tradeHistory.getRecentTradeAnalysis(10);
+        if (analysis.currentLossStreak >= 2) {
+          log.warn(`🚨 [close-learning] Loss streak: ${analysis.currentLossStreak} consecutive losses — raising consensus threshold`);
+          // adjustThreshold(regime, hadRealTrade, wasProfitable)
+          // Passing hadRealTrade=true + wasProfitable=false increments the
+          // internal consecutiveLosses counter, which raises the threshold.
+          this.hacpEngine.adjustThreshold(
+            regime,
+            true,  // hadRealTrade
+            false, // wasProfitable = false on loss
+          );
+        }
+      } catch (err) {
+        log.warn(`[close-learning] Threshold adjustment failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // 8. v2.0.26: Trigger loss cooldown after ANY loss — pause new entries
+      // for 1 cycle while the Risk Auditor LLM reviews why the loss happened.
+      // The LLM decides whether to resume trading or extend the cooldown.
+      if (!isWin) {
+        try {
+          this.hacpEngine.triggerLossCooldown(this.totalCycles);
+        } catch (err) {
+          log.warn(`[close-learning] Cooldown trigger failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      // 7. Persist state so learning survives restarts
+      try {
+        this.evolution.persistState();
+      } catch { /* non-critical */ }
+
+      log.info(`🧬 [close-learning] ${isWin ? '✅ WIN' : '❌ LOSS'} ${trade.side.toUpperCase()} ${symbol} PnL: $${trade.pnl.toFixed(2)} (${(pnlPct * 100).toFixed(1)}%) — all learning mechanisms fed`);
+    } catch (err) {
+      log.error(`[onPositionClosedLearning] Failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private async runDecisionCycle(): Promise<void> {
     if (isShuttingDown()) return;
     if (this.cycleInProgress) {
@@ -1011,6 +1191,7 @@ class AMACRFSystem {
           leverage: this.marketAgent.getConfig().leverage,
           positionSizePct: this.marketAgent.getConfig().positionSizePct,
         },
+        this.totalCycles, // v2.0.26: pass cycle number for cooldown logic
       );
 
       // 3.1 Apply position adjustments (TP/SL) from meta-agent

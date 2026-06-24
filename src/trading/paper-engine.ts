@@ -26,6 +26,17 @@ export class PaperTradingEngine {
   private readonly orders: Map<string, Order> = new Map();
   private readonly trades: TradeRecord[] = [];
   private lastPrices: Map<string, number> = new Map();
+  /** v2.0.25: Learning callback invoked after EVERY position close (SL/TP,
+   *  reconciliation, agent-vote close). The caller (index.ts) uses this to
+   *  feed the loss/win into RBC, Pattern Classifier, Agent Outcomes, Trade
+   *  History, and Evolution — so the system learns from SL/TP closes that
+   *  happen outside the decision cycle. */
+  private onClosedLearningCb: ((trade: TradeRecord) => void) | null = null;
+
+  /** Register a learning callback invoked after every position close. */
+  setOnClosedLearning(cb: (trade: TradeRecord) => void): void {
+    this.onClosedLearningCb = cb;
+  }
 
   constructor(portfolio: PortfolioTracker, riskEngine: RiskEngine) {
     this.portfolio = portfolio;
@@ -34,6 +45,15 @@ export class PaperTradingEngine {
     this.portfolio.setOnPositionClosed((trade) => {
       this.trades.push(trade);
       log.info(`Trade captured from SL/TP/reconciliation: ${trade.side.toUpperCase()} ${trade.symbol} PnL: $${trade.pnl.toFixed(2)}`);
+      // v2.0.25: trigger learning hooks so SL/TP closes are fed to RBC,
+      // Pattern Classifier, Agent Outcomes, Trade History, and Evolution.
+      if (this.onClosedLearningCb) {
+        try {
+          this.onClosedLearningCb(trade);
+        } catch (err) {
+          log.warn(`[onClosedLearning] Failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     });
     // NOTE: open trades are NOT recorded here — they are tracked via portfolio.positions.
     // Only closed/SL-TP/reconciliation trades are captured above.
