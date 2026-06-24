@@ -136,6 +136,61 @@ export class TradeHistory {
     return this.entries.slice(-n);
   }
 
+  /**
+   * v2.0.27: Build a detailed loss-review context for the Risk Auditor LLM.
+   * Lists the most recent losing trades with per-trade details so the LLM
+   * can analyze WHY each loss happened and decide whether to resume trading.
+   *
+   * Includes: direction, entry/exit price, PnL, regime, trend, volatility,
+   * hold duration, and the decision rationale — everything the LLM needs
+   * to do a meaningful post-loss review instead of guessing from aggregates.
+   *
+   * @param maxLosses maximum number of recent losses to include (default 5)
+   * @returns human-readable string for LLM context injection
+   */
+  getLossReviewContext(maxLosses: number = 5): string {
+    try {
+      // Get recent entries that have a realised or simulated PnL
+      const recent = this.entries.slice(-20); // last 20 entries
+      const losses = recent.filter(e => {
+        const pnl = e.realisedPnl ?? e.simulatedPnl ?? 0;
+        return pnl < 0;
+      }).slice(-maxLosses); // most recent N losses
+
+      if (losses.length === 0) {
+        return '=== LOSS REVIEW ===\nNo recent losses to review.';
+      }
+
+      const lines: string[] = ['=== LOSS REVIEW (recent losing trades) ==='];
+      for (const e of losses) {
+        const pnl = e.realisedPnl ?? e.simulatedPnl ?? 0;
+        const action = e.decision.action.toUpperCase();
+        const entryStr = e.entryPrice > 0 ? `$${e.entryPrice.toFixed(2)}` : 'N/A';
+        const exitStr = e.exitPrice && e.exitPrice > 0 ? `$${e.exitPrice.toFixed(2)}` : 'N/A';
+        const holdCycles = e.exitPrice ? Math.max(1, Math.round((Date.now() - e.timestamp) / 300_000)) : 1;
+        const rationale = e.decision.rationale?.slice(0, 120) ?? 'N/A';
+
+        lines.push(
+          `  #${e.cycleNumber} ${action} ${e.symbol} | Entry ${entryStr} → Exit ${exitStr} | PnL ${(pnl * 100).toFixed(2)}% | ${e.regime}/${e.trend} | vol ${(e.volatility * 100).toFixed(1)}% | held ~${holdCycles} cycle(s)`,
+          `    Reason: ${rationale}`,
+        );
+      }
+
+      // Add current regime for comparison
+      const lastEntry = this.entries[this.entries.length - 1];
+      if (lastEntry) {
+        lines.push(`\nCurrent regime: ${lastEntry.regime}/${lastEntry.trend} | vol ${(lastEntry.volatility * 100).toFixed(1)}%`);
+      }
+
+      lines.push(`\nReview each loss above: Was the direction wrong? Was the timing bad? Was the market choppy? Were the signals conflicting?`);
+      lines.push(`Based on this analysis, decide: Has the market regime changed enough to resume trading? Or should the cooldown continue?`);
+
+      return lines.join('\n');
+    } catch {
+      return '=== LOSS REVIEW ===\nUnable to build loss review context.';
+    }
+  }
+
   /** Compute cumulative performance metrics from entire history */
   computePerformance(): {
     sharpeRatio: number;
