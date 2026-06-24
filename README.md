@@ -87,6 +87,8 @@ OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud
 ```
 
+> 💡 **Recommended**: Upgrade to **Ollama Pro** for cloud model access (`deepseek-v4-flash:cloud`, `kimi-k2.6:cloud`, `glm-5.2:cloud`) — faster inference, no local GPU required, supports 8 agents' concurrent requests.
+
 The system defaults to **Paper Trading mode** and will never use real funds.
 
 ### 6. Launch the System
@@ -96,7 +98,7 @@ npm start
 ```
 
 On first launch, the system will:
-1. Auto-detect the LLM provider (Ollama → NVIDIA NIM fallback)
+1. Auto-detect the LLM provider (Ollama)
 2. Start the HACP decision cycle (every 5 minutes by default)
 3. Serve the Web UI at `http://localhost:3456`
 
@@ -226,12 +228,13 @@ Swap LLM providers without modifying a single line of code:
 | Provider | Configuration | Characteristics |
 |:---------|:-------------|:----------------|
 | **Ollama** (default) | `OLLAMA_BASE_URL` | Local, free, no API key required |
-| **NVIDIA NIM** | `NIM_API_KEY` | Cloud API, supports Llama/DeepSeek |
 | Custom OpenAI-compatible | Implement `LLMProvider` interface | Any service with an OpenAI-compatible API |
 
-The provider factory auto-detects availability: NIM → Ollama → Error.
+The provider factory auto-detects availability: Ollama → Error.
 
-🆕 v2.0.12: Both providers have a **circuit breaker** — 3 consecutive failures open the breaker for 30s (fail-fast instead of each agent waiting the full timeout). Ollama also has **slot leak protection** (v2.0.20): slots held >90s are auto-reclaimed, and concurrency is 4 (raised from 2) to handle 8 agents' staggered thinking.
+> 💡 **Recommended**: Upgrade to **Ollama Pro** plan for cloud model access (e.g. `deepseek-v4-flash:cloud`, `kimi-k2.6:cloud`, `glm-5.2:cloud`) — faster inference, no local GPU required, and supports concurrent requests from 8 agents.
+
+🆕 v2.0.12: Ollama has a **circuit breaker** — 3 consecutive failures open the breaker for 30s (fail-fast instead of each agent waiting the full timeout). Ollama also has **slot leak protection** (v2.0.20): slots held >90s are auto-reclaimed, and concurrency is 4 (raised from 2) to handle 8 agents' staggered thinking.
 
 ---
 
@@ -299,7 +302,6 @@ src/
 │
 ├── llm/                      # 🔌 LLM abstraction layer
 │   ├── provider.ts           # Abstract interface (57 LOC)
-│   ├── nim-provider.ts       # NVIDIA NIM (v2.0.12 — circuit breaker)
 │   ├── ollama-provider.ts    # Ollama (v2.0.12 — circuit breaker + v2.0.20 concurrency 4 + slot leak protection)
 │   └── index.ts              # Provider factory (auto-detection, 65 LOC)
 │
@@ -367,16 +369,14 @@ data/                         # 💾 Runtime persistence
 
 ## Advanced Configuration
 
-### Using NVIDIA NIM (Cloud LLM)
+### Ollama Pro Plan (Recommended)
 
-If you have an NVIDIA NIM API key, set it in `.env`:
+For best performance, upgrade to **Ollama Pro** to access cloud-hosted models (e.g. `deepseek-v4-flash:cloud`, `kimi-k2.6:cloud`, `glm-5.2:cloud`). Cloud models offer faster inference, higher concurrency, and no local GPU requirement — ideal for running 8 agents in parallel.
 
 ```env
-NIM_API_KEY=nvapi-xxxxxxxxxxxx
-NIM_BASE_URL=https://integrate.api.nvidia.com/v1
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud
 ```
-
-The system auto-detects NIM and prioritizes it, with Ollama as fallback.
 
 ### Hyperliquid Real Trading
 
@@ -446,7 +446,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.22 for full details on each f
 |:---------|:-----------|
 | **Language** | TypeScript 5.6 (strict mode, zero type errors) |
 | **Runtime** | Node.js 22+ |
-| **LLM** | Ollama / NVIDIA NIM / OpenAI-compatible |
+| **LLM** | Ollama (local + Pro cloud models) / OpenAI-compatible |
 | **Market Data** | Hyperliquid WebSocket (l2Book + trades + activeAssetCtx + 🆕 v2.0.16 clearinghouseState + userFills) + REST fallback |
 | **Frontend** | React 18 + Vite + TradingView Chart (🆕 v2.0.20 live TP/SL update) |
 | **Config Validation** | Zod schema |
