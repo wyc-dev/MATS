@@ -96,6 +96,10 @@ Your decisions carry the highest weight (0.35). Be decisive.`;
         leverage: result.multiSymbolDecision.marketTicker.leverage,
         rationale: `Meta-Agent: ${result.multiSymbolDecision.marketTicker.rationale} | Positions: ${result.multiSymbolDecision.positions.map(p => `${p.symbol}=${p.closePosition ? 'CLOSE' : 'HOLD'}`).join(', ')}`,
         urgency: 'patient',
+        // v2.0.28: Forward patternTag from meta-agent's market ticker decision
+        ...(result.multiSymbolDecision.marketTicker.patternTag
+          ? { patternTag: result.multiSymbolDecision.marketTicker.patternTag }
+          : {}),
       },
     };
   }

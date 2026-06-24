@@ -5352,6 +5352,66 @@ resume trading? Or should the cooldown continue?
 
 ---
 
+### B.28 v2.0.28: LLM 形態標籤 + 勝率追蹤（Pattern Tag Tracker）
+
+> **觸發**: 用戶要求系統能辨別同記錄圖表形態，並記錄邊啲形態配合邊個方向（Buy/Sell）嘅贏率最高。經分析後，採用「LLM 形態標籤 + 統計驗證」方案——由 LLM 每次決策時標記佢見到嘅形態，然後統計每個標籤嘅歷史勝率。
+
+**設計理念**: 不寫死圖表形態偵測演算法（過擬合風險高 + 定義主觀），而係利用 LLM 天然嘅形態識別能力——每個 agent 喺決策時輸出 `patternTag`（snake_case 標籤），系統記錄每個標籤配合 Buy/Sell 嘅歷史勝率，然後注入返去 agent context 等佢哋參考。
+
+**流程**:
+
+```
+每個 cycle:
+  1. Agents 收到 market context（包含歷史 pattern tag 勝率）
+  2. 每個 agent 輸出 patternTag（例如 "momentum_breakout", "double_bottom_reversal"）
+  3. Meta-Agent 仲裁 → 最終 decision 帶有 patternTag
+  4. Trade 開倉 → PatternTagTracker.recordEntry(tag, side, symbol)
+  5. Trade 平倉 → PatternTagTracker.backfillOutcome(pnl)
+  6. 下個 cycle → formatContext() 注入歷史勝率俾 agents
+```
+
+**PatternTagTracker**（`src/evolution/pattern-tag-tracker.ts`）:
+
+| 方法 | 用途 |
+|:-----|:-----|
+| `recordEntry(id, tag, side, symbol, cycle, agentRole)` | 開倉時記錄形態標籤 |
+| `backfillOutcome(id, pnlPct)` | 平倉時回填勝/負 + PnL |
+| `getTagStats(tag, side)` | 查詢特定標籤+方向嘅勝率 |
+| `getSummary()` | 所有標籤統計（按樣本數排序） |
+| `formatContext(maxTags=8)` | 格式化歷史勝率注入 agent context |
+| `getWinRate(tag, side)` | 快速查詢特定標籤+方向嘅 Wilson 勝率 |
+| `getStats()` | API/UI 用嘅摘要統計 |
+
+**Wilson score 下界**: 用 95% 置信區間嘅下界嚟懲罰細樣本——3/5 = 60% 會降到 ~25%，30/50 = 60% 保持 ~47%。防止細樣本過擬合。
+
+**Agent context 注入格式**:
+
+```
+=== PATTERN TAG WIN RATES (LLM-identified patterns) ===
+  momentum_breakout: 🟢 BUY: 8/12 (67%, adj 39%) | 🔴 SELL: 2/5 (40%, adj 14%)
+  double_bottom_reversal: 🟢 BUY: 5/7 (71%, adj 31%) | 🟡 SELL: 1/3 (33%, adj 6%)
+  range_bound: 🟡 BUY: 4/10 (40%, adj 16%) | 🟡 SELL: 3/8 (38%, adj 12%)
+---
+```
+
+**Agent 輸出格式更新**: `getOutputFormatInstruction()` 新增 `patternTag` 欄位，要求 LLM 用 snake_case 標籤識別佢見到嘅形態。提供 20+ 範例標籤（momentum_breakout, double_bottom_reversal, ascending_triangle, range_bound, trend_exhaustion, support_bounce, resistance_rejection, consolidation_squeeze, vwap_reclaim, lower_highs, higher_lows, bearish_divergence, bullish_divergence, failed_breakout, breakout_retest, channel_breakdown, rsi_oversold, rsi_overbought, funding_flip, volume_climax, liquidation_cascade, mean_reversion, trend_continuation）。
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/types/index.ts` | `TradingDecision` + `PerSymbolDecision` 新增 `patternTag?: string` 欄位 |
+| `src/trading/decision-utils.ts` | `normalizeDecision()` + `normalizePerSymbolDecision()` 保留 `patternTag`（截斷至 80 字符） |
+| `src/agents/base-agent.ts` | `getOutputFormatInstruction()` 新增 `patternTag` 欄位 + 範例標籤；`think()` 將 `patternTag` 從 `multiSymbolDecision.marketTicker` 轉發到 `metadata.decision` |
+| `src/agents/meta-agent.ts` | `parseResponse()` 將 `patternTag` 從 `multiSymbolDecision.marketTicker` 轉發到 `decision` |
+| `src/evolution/pattern-tag-tracker.ts` | **新增** — `PatternTagTracker` class：記錄、回填、查詢、持久化、Wilson score |
+| `src/index.ts` | 初始化 `PatternTagTracker`；trade 開倉時 `recordEntry()`；平倉時 `backfillOutcome()`；每 cycle 注入 `formatContext()` 到 `marketDesc`；API push 加入 `patternTagStats` + `patternTagSummary` |
+| `src/api-server.ts` | `APIData` 新增 `patternTagStats` + `patternTagSummary` 欄位 |
+
+**效果**: 系統而家會記錄 LLM 識別嘅每個形態標籤，並追蹤邊啲標籤配合 Buy/Sell 有最高歷史勝率。每個 cycle，agents 會見到歷史形態勝率，等佢哋可以參考「呢個形態之前 BUY 贏率 67%，SELL 贏率 40%」嚟調整決策。Wilson score 下界確保細樣本唔會誤導。持久化到 `data/evolution/pattern-tags.json`，重啟後保留知識。
+
+---
+
 ### B.12 參考文獻（Related Documentation）
 
 | 文件 | 位置 | 內容 |

@@ -99,6 +99,7 @@ export abstract class BaseAgent {
     "positionSizePct": 0.0-0.20,
     "leverage": 1-10,
     "closePosition": false,
+    "patternTag": "short snake_case label for the chart pattern you see (e.g. momentum_breakout, double_bottom_reversal, ascending_triangle, range_bound, trend_exhaustion, support_bounce, resistance_rejection, consolidation_squeeze, vwap_reclaim, lower_highs)",
     "rationale": "..."
   },
   "positions": [
@@ -109,6 +110,7 @@ export abstract class BaseAgent {
       "closeUrgency": "immediate|soon|patient",
       "suggestedStopLoss": PRICE_OR_NULL,
       "suggestedTakeProfit": PRICE_OR_NULL,
+      "patternTag": "short snake_case label for the pattern relevant to this position",
       "rationale": "..."
     }
   ]
@@ -120,6 +122,7 @@ RULES:
 - For positions: action "hold" = keep open, action "close" = close immediately
 - Set "closePosition": true + "closeUrgency" when you want to exit
 - Set suggestedStopLoss/suggestedTakeProfit to adjust SL/TP levels (or omit/null to leave unchanged)
+- "patternTag" = a SHORT snake_case label identifying the chart/momentum pattern you see right now. Be specific but concise (max 40 chars). Examples: momentum_breakout, double_bottom_reversal, ascending_triangle, range_bound, trend_exhaustion, support_bounce, resistance_rejection, consolidation_squeeze, vwap_reclaim, lower_highs, higher_lows, bearish_divergence, bullish_divergence, failed_breakout, breakout_retest, channel_breakdown, rsi_oversold, rsi_overbought, funding_flip, volume_climax, liquidation_cascade, mean_reversion, trend_continuation
 - "overallConfidence" = how confident you are in ALL your decisions combined`;
   }
 
@@ -178,6 +181,10 @@ RULES:
             leverage: parsed.multiSymbolDecision.marketTicker.leverage,
             rationale: parsed.multiSymbolDecision.marketTicker.rationale,
             urgency: 'patient',
+            // v2.0.28: Forward patternTag from LLM output to decision metadata
+            ...(parsed.multiSymbolDecision.marketTicker.patternTag
+              ? { patternTag: parsed.multiSymbolDecision.marketTicker.patternTag }
+              : {}),
           } as TradingDecision,
         },
       };

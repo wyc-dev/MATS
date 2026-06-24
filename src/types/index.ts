@@ -177,6 +177,10 @@ export interface TradingDecision {
   leverage?: number; // 1-10x, meta-agent sets based on risk/confidence
   rationale: string;
   urgency: 'immediate' | 'soon' | 'patient';
+  /** v2.0.28: LLM-identified chart pattern tag (e.g. "ascending_triangle_breakout",
+   *  "double_bottom_reversal", "momentum_continuation"). Used by PatternTagTracker
+   *  to track which patterns have highest win rates per direction. */
+  patternTag?: string;
 }
 
 // ─── Order & Position ───
@@ -261,6 +265,8 @@ export interface PerSymbolDecision {
   suggestedTakeProfit?: number;
   /** Rationale for this symbol's decision */
   rationale: string;
+  /** v2.0.28: LLM-identified chart pattern tag for this symbol's decision */
+  patternTag?: string;
 }
 
 export interface MultiSymbolDecision {

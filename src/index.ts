@@ -31,6 +31,7 @@ import { calculateTakerFee, calculateFundingCost, getFeeSummary } from './tradin
 import { getSRZones } from './analysis/support-resistance.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
+import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
 import { RBCEngine, type RBCQueryResult } from './evolution/rbc-clustering.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord } from './types/index.ts';
 
@@ -85,6 +86,7 @@ class AMACRFSystem {
   private lastSRContext: { formatted: string; regime: string; zoneCount: number; strongZones: number; nearestSupport: number | null; nearestResistance: number | null; distanceToSupportBps: number; distanceToResistanceBps: number; degradedReason: string | null } | null = null;
   private emManager!: CycleSummaryManager;
   private patternClassifier!: TradePatternClassifier;
+  private patternTagTracker!: PatternTagTracker;
   private rbcEngine!: RBCEngine;
   private lastPatternContext = '';
   /** Per-symbol previous cycle context for hypothetical RBC training — Map<symbol, context> */
@@ -194,6 +196,12 @@ class AMACRFSystem {
       this.patternClassifier = new TradePatternClassifier();
       this.patternClassifier.load();
       log.info('✓ Trade Pattern Classifier ready');
+
+      // 3.12 Initialize Pattern Tag Tracker (v2.0.28)
+      log.info('Step 3.12/8: Initializing Pattern Tag Tracker...');
+      this.patternTagTracker = new PatternTagTracker();
+      this.patternTagTracker.load();
+      log.info('✓ Pattern Tag Tracker ready');
 
       // 4. Initialize evolution
       log.info('Step 4/6: Initializing evolution systems...');
@@ -750,6 +758,14 @@ class AMACRFSystem {
         log.warn(`[close-learning] Pattern backfill failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
+      // 3b. v2.0.28: Backfill Pattern Tag Tracker
+      try {
+        const tradeId = trade.id ?? `trade_${this.totalCycles}_${symbol}_${Date.now()}`;
+        this.patternTagTracker.backfillOutcome(tradeId, pnlPct);
+      } catch (err) {
+        log.warn(`[close-learning] Pattern tag backfill failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
       // 4. Backfill Agent Outcomes — mark all agents that recommended on this symbol
       try {
         this.evolution.agentOutcomes.backfillOutcome(symbol, pnlPct);
@@ -1042,6 +1058,9 @@ class AMACRFSystem {
       // 1d. Inject previous cycle's trade pattern insights (stored after last HACP cycle)
       const patternContext = this.lastPatternContext ?? '';
 
+      // 1d.2 v2.0.28: Inject pattern tag win rates (LLM-identified chart patterns)
+      const patternTagContext = this.patternTagTracker?.formatContext(8) ?? '';
+
       // 1e. Inject RBC assessment (range-based win/loss regions from price action)
       let rbcContext = '';
       try {
@@ -1077,7 +1096,7 @@ class AMACRFSystem {
         }
       } catch { /* non-critical */ }
 
-      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${rbcContext}\n\n${getFeeSummary()}`;
+      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${rbcContext}\n\n${getFeeSummary()}`;
 
       // Store latest S/R context for API push
       if (srContext) {
@@ -1800,6 +1819,25 @@ class AMACRFSystem {
           } catch (err) {
             log.error(`[pattern-snapshot] Failed for ${report.trade?.symbol}: ${err instanceof Error ? err.message : String(err)}`);
           }
+
+          // ── v2.0.28: Record pattern tag for this trade ──
+          try {
+            const tradeId = report.trade.id ?? `trade_${this.totalCycles}_${report.trade.symbol}_${Date.now()}`;
+            // Extract patternTag from the final decision (meta-agent's tag)
+            const patternTag = finalDecision.patternTag;
+            if (patternTag) {
+              this.patternTagTracker.recordEntry(
+                tradeId,
+                patternTag,
+                report.trade.side,
+                report.trade.symbol,
+                this.totalCycles,
+                'meta_agent',
+              );
+            }
+          } catch (err) {
+            log.warn(`[pattern-tag-record] Failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
         } catch (err) {
           log.error(`[fee-deduction] Failed for ${report.trade?.symbol}: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -2048,9 +2086,10 @@ class AMACRFSystem {
         log.warn(`[E-step] CycleSummary build failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      // 9.6 Persist evolution state + portfolio + debate history + patterns + RBC to disk
+      // 9.6 Persist evolution state + portfolio + debate history + patterns + RBC + pattern tags to disk
       this.evolution.persistState();
       this.patternClassifier?.persist();
+      this.patternTagTracker?.persist();
       this.persistRBC();
       this.persistPortfolio();
       saveDebateHistory({
@@ -2431,6 +2470,8 @@ class AMACRFSystem {
           latestSignal: this.emManager.getLatest() ? this.emManager.getLatest()!.primarySignal.name + '=' + this.emManager.getLatest()!.primarySignal.value.toFixed(2) + ' (' + this.emManager.getLatest()!.primarySignal.direction + ')' : null,
         } : undefined,
         patternStats: this.patternClassifier ? this.patternClassifier.getStats() : undefined,
+        patternTagStats: this.patternTagTracker ? this.patternTagTracker.getStats() : undefined,
+        patternTagSummary: this.patternTagTracker ? this.patternTagTracker.getSummary() : undefined,
         rbcState: (() => {
           const allStats = this.rbcEngine.getAllModelStats();
           const pendingStats = this.rbcEngine.getPendingStats();

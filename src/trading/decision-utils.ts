@@ -65,6 +65,11 @@ export function normalizeDecision(raw: Partial<TradingDecision> | undefined | nu
   const takeProfitPct = raw?.takeProfitPct;
   const leverage = typeof raw?.leverage === 'number' ? Math.max(1, Math.min(10, raw.leverage)) : 1;
 
+  // v2.0.28: Preserve LLM-identified pattern tag if provided
+  const patternTag = typeof raw?.patternTag === 'string' && raw.patternTag.trim().length > 0
+    ? raw.patternTag.trim().slice(0, 80) // cap length to prevent abuse
+    : undefined;
+
   return {
     action: validatedAction,
     symbol,
@@ -75,6 +80,7 @@ export function normalizeDecision(raw: Partial<TradingDecision> | undefined | nu
     ...(entryPrice !== undefined ? { entryPrice } : {}),
     ...(stopLossPct !== undefined ? { stopLossPct } : {}),
     ...(takeProfitPct !== undefined ? { takeProfitPct } : {}),
+    ...(patternTag !== undefined ? { patternTag } : {}),
   } as TradingDecision;
 }
 
@@ -112,6 +118,10 @@ export function normalizePerSymbolDecision(raw: Partial<PerSymbolDecision> | und
   if (positionSizePct > MAX_POSITION_PCT) positionSizePct = MAX_POSITION_PCT;
   if (positionSizePct < 0) positionSizePct = 0;
   const leverage = typeof raw.leverage === 'number' ? Math.max(1, Math.min(10, raw.leverage)) : 1;
+  // v2.0.28: Preserve pattern tag from per-symbol decision
+  const patternTag = typeof raw.patternTag === 'string' && raw.patternTag.trim().length > 0
+    ? raw.patternTag.trim().slice(0, 80)
+    : undefined;
   return {
     symbol,
     action,
@@ -122,6 +132,7 @@ export function normalizePerSymbolDecision(raw: Partial<PerSymbolDecision> | und
     suggestedStopLoss: typeof raw.suggestedStopLoss === 'number' ? raw.suggestedStopLoss : undefined,
     suggestedTakeProfit: typeof raw.suggestedTakeProfit === 'number' ? raw.suggestedTakeProfit : undefined,
     rationale: raw.rationale || 'No rationale provided.',
+    ...(patternTag !== undefined ? { patternTag } : {}),
   };
 }
 
