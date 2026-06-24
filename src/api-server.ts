@@ -102,6 +102,27 @@ export interface APIData {
     losses: number;
     cacheEntries: number;
   };
+  /** v2.0.28: Pattern tag tracker stats */
+  patternTagStats?: {
+    totalRecords: number;
+    pending: number;
+    closed: number;
+    uniqueTags: number;
+  };
+  patternTagSummary?: {
+    stats: Array<{
+      tag: string;
+      side: 'buy' | 'sell';
+      total: number;
+      wins: number;
+      losses: number;
+      winRate: number;
+      adjustedWinRate: number;
+      avgPnlPct: number;
+    }>;
+    totalRecords: number;
+    uniqueTags: number;
+  };
   /** GMM EM clustering model summary (per-symbol) — DEPRECATED, use rbcState */
   emClusterState?: {
     symbols: Array<{
