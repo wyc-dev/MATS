@@ -1442,8 +1442,27 @@ Output ONLY valid JSON:
         ? analysis.summary
         : '=== RECENT TRADE PATTERN (last 10) ===\n(no trade history available)';
 
+      // v2.0.27: Build per-trade loss review context for the LLM.
+      // When cooldown is active, the LLM needs to see WHICH trades lost
+      // money and WHY — not just aggregate stats. This lets it make a
+      // meaningful resumeTrading decision.
+      const cooldownActive = this.isCooldownActive(this.totalCycles);
+      const lossReview = (cooldownActive && this.tradeHistory)
+        ? this.tradeHistory.getLossReviewContext(5)
+        : '';
+
       // Independent risk audit via LLM
       const provider = getActiveProvider();
+      const cooldownPromptSection = cooldownActive
+        ? `${lossReview}\n\n⚠️ LOSS COOLDOWN ACTIVE: A recent trade lost money. You are reviewing during the cooldown cycle.\n` +
+          `Analyze EACH loss above: Was the direction wrong? Was the entry timing bad? Was the market choppy? Were the agent signals conflicting?\n` +
+          `Then decide:\n` +
+          `  - If market conditions have changed and it's safe to resume → set "resumeTrading": true\n` +
+          `  - If the market is still unfavorable → set "resumeTrading": false (extend cooldown)\n` +
+          `Respond with valid JSON only:\n` +
+          `{"veto":false,"reason":"your loss analysis","resumeTrading":false,"adjustedPositionSizePct":null,"adjustedStopLossPct":null,"adjustedTakeProfitPct":null}`
+        : `Respond with valid JSON only:\n{"veto":false,"reason":"","adjustedPositionSizePct":null,"adjustedStopLossPct":null,"adjustedTakeProfitPct":null}`;
+
       const response = await provider.chat({
         messages: [
           {
@@ -1452,7 +1471,7 @@ Output ONLY valid JSON:
           },
           {
             role: 'user',
-            content: `Audit this trading decision:\n${JSON.stringify(decision, null, 2)}\n\n${tradePattern}\n\n${this.isCooldownActive(this.totalCycles) ? `⚠️ LOSS COOLDOWN ACTIVE: A recent trade lost money. You are reviewing during the cooldown cycle. Analyze WHY the loss happened (wrong direction? bad timing? choppy market? insufficient signal?) and decide:\n  - If the market conditions have changed and it's safe to resume → set "resumeTrading": true\n  - If the market is still unfavorable → set "resumeTrading": false (extend cooldown)\nRespond with valid JSON only:\n{"veto":false,"reason":"","resumeTrading":false,"adjustedPositionSizePct":null,"adjustedStopLossPct":null,"adjustedTakeProfitPct":null}\n\nIf the recent trade pattern shows a choppy/whipsaw market (frequent reversals + net losses), strongly consider vetoing new entries OR narrowing TP/SL to the range edges + reducing position size (choppy markets have low win rates — smaller size limits per-trade loss). If profitable/trending, you may widen TP to let profits run. Set adjusted* fields only if you want to override the decision.` : `Respond with valid JSON only:\n{"veto":false,"reason":"","adjustedPositionSizePct":null,"adjustedStopLossPct":null,"adjustedTakeProfitPct":null}\n\nIf the recent trade pattern shows a choppy/whipsaw market (frequent reversals + net losses), strongly consider vetoing new entries OR narrowing TP/SL to the range edges + reducing position size (choppy markets have low win rates — smaller size limits per-trade loss). If profitable/trending, you may widen TP to let profits run. Set adjusted* fields only if you want to override the decision.`}`,
+            content: `Audit this trading decision:\n${JSON.stringify(decision, null, 2)}\n\n${tradePattern}\n\n${cooldownPromptSection}\n\nIf the recent trade pattern shows a choppy/whipsaw market (frequent reversals + net losses), strongly consider vetoing new entries OR narrowing TP/SL to the range edges + reducing position size (choppy markets have low win rates — smaller size limits per-trade loss). If profitable/trending, you may widen TP to let profits run. Set adjusted* fields only if you want to override the decision.`,
           },
         ],
         temperature: 0.05,

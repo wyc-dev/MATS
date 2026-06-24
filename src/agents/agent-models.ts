@@ -52,11 +52,12 @@ function getDefaultModelMap(): Record<AgentRole, string> {
     defaultModelMap = {
       // Sub-agents use kimi-k2.6:cloud — balanced speed/capability for parallel inference
       // Meta-agent uses deepseek-v4-flash:cloud — faster for arbitration/synthesis
+      // Risk Auditor uses deepseek-v4-flash:cloud — fast + analytical for risk veto decisions
       // Regime guardian uses 2048 maxTokens (set in agents.ts) for verbose JSON
       fractal_momentum_sentinel: 'kimi-k2.6:cloud',
       onchain_whisperer: 'kimi-k2.6:cloud',
       rbc_sentiment_analyst: 'kimi-k2.6:cloud',
-      independent_risk_auditor: 'kimi-k2.6:cloud',
+      independent_risk_auditor: 'deepseek-v4-flash:cloud',
       meta_agent: 'deepseek-v4-flash:cloud',
       news_reporter: 'kimi-k2.6:cloud',
       skeptics: 'deepseek-v4-flash:cloud',

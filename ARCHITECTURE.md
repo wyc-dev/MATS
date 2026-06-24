@@ -5301,6 +5301,57 @@ Analyze WHY the loss happened and decide:
 
 ---
 
+### B.27 v2.0.27: 豐富冷卻期 LLM 檢討上下文 + Risk Auditor 改用 deepseek-v4-flash
+
+> **觸發**: 用戶反饋冷卻期 LLM 檢討只有聚合統計（勝率、連虧次數、反轉率），冇每筆虧損 trade 嘅詳細資料。LLM 根本冇足夠資訊做有意義嘅 `resumeTrading` 決定。
+
+**v2.0.26 問題**: 冷卻期 audit prompt 只講「Analyze WHY the loss happened」但只提供聚合統計。LLM 喺盲猜——冇方向、冇入場/出場價、冇 PnL、冇 regime、冇持倉時間。
+
+**v2.0.27 修復**: 新增 `getLossReviewContext()` 方法，從 tradeHistory 提取最近 5 筆虧損 trade 嘅逐筆詳情：
+
+```
+=== LOSS REVIEW (recent losing trades) ===
+  #142 LONG BTC-USDT | Entry $43250.00 → Exit $43180.00 | PnL -0.16% | trending/up | vol 1.2% | held ~1 cycle(s)
+    Reason: Fractal momentum breakout confirmed by RBC sentiment shift...
+  #145 SHORT ETH-USDT | Entry $2610.50 → Exit $2625.00 | PnL -0.55% | ranging/sideways | vol 0.8% | held ~2 cycle(s)
+    Reason: RBC oversold bounce + support level holding...
+
+Current regime: trending/up | vol 1.5%
+
+Review each loss above: Was the direction wrong? Was the timing bad?
+Was the market choppy? Were the signals conflicting?
+Based on this analysis, decide: Has the market regime changed enough to
+resume trading? Or should the cooldown continue?
+```
+
+**每筆虧損包含**:
+- Cycle 編號 + 方向（LONG/SHORT）+ Symbol
+- 入場價 → 出場價
+- PnL 百分比
+- Market regime + trend + volatility
+- 持倉 cycle 數
+- 決策 rationale（截斷至 120 字符）
+
+**Risk Auditor 模型變更**: `kimi-k2.6:cloud` → `deepseek-v4-flash:cloud`
+
+| 項目 | 舊值 | 新值 |
+|:-----|:-----|:-----|
+| Risk Auditor 預設模型 | `kimi-k2.6:cloud` | `deepseek-v4-flash:cloud` |
+
+**原因**: Risk Auditor 需要快速分析 + 果斷決策。`deepseek-v4-flash:cloud` 喺仲裁/合成任務表現出色（Meta-Agent 已用），而且推理速度快。冷卻期檢討需要分析多筆 trade 詳情並做出 resumeTrading 決定——flash 模型嘅速度 + 分析能力最適合。
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/evolution/trade-history.ts` | 新增 `getLossReviewContext(maxLosses=5)` 方法——從最近 20 筆 trade 提取虧損 trade，格式化每筆詳情（方向、入場/出場價、PnL%、regime、持倉時間、rationale）供 LLM 檢討 |
+| `src/cognition/hacp.ts` | `riskAuditorAudit()` 冷卻期活躍時注入 `getLossReviewContext(5)` 到 audit prompt；重構 cooldown prompt section 為獨立變數；prompt 明確要求 LLM 分析每筆虧損方向/時機/市場狀態 |
+| `src/agents/agent-models.ts` | Risk Auditor 預設模型 `kimi-k2.6:cloud` → `deepseek-v4-flash:cloud` |
+
+**效果**: 冷卻期 LLM 檢討不再盲猜——每筆虧損 trade 嘅完整上下文（方向、價格、PnL、regime、rationale）直接注入 prompt。LLM 可以逐筆分析「方向錯？時機差？市場 choppy？信號衝突？」然後做出有意義嘅 `resumeTrading` 決定。Risk Auditor 改用 `deepseek-v4-flash:cloud` 提升分析速度。
+
+---
+
 ### B.12 參考文獻（Related Documentation）
 
 | 文件 | 位置 | 內容 |
