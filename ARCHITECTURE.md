@@ -89,7 +89,7 @@
 │   └────────────────────────────────────────────────────────┘ │
 │                           │                                   │
 │                           ▼                                   │
-│   Layer 2: 認知層 (TypeScript + NVIDIA NIM)                   │
+│   Layer 2: 認知層 (TypeScript + Ollama)                      │
 │   ┌────────────────────────────────────────────────────────┐ │
 │   │ • HACP 高速認知協議（多模型平行推理）                    │ │
 │   │ • 9 智能體系統（5 sub-agents + On-Chain + News +        │ │
@@ -165,20 +165,14 @@
 │   │   │   ├── LLMResponse       # 通用響應格式
 │   │   │   └── LLMProvider       # 抽象介面
 │   │   │
-│   │   ├── nim-provider.ts       # NVIDIA NIM 實現 (v2.0.12 — circuit breaker)
-│   │   │   ├── OpenAI-compat API # /v1/chat/completions
-│   │   │   ├── 可用性檢查        # /v1/models
-│   │   │   ├── 超時控制          # AbortController
-│   │   │   └── Token 用量追蹤    # prompt/completion tokens
-│   │   │
-│   │   ├── ollama-provider.ts    # Ollama 備援實現 (v2.0.12 — circuit breaker + slot timeout)
+│   │   ├── ollama-provider.ts    # Ollama 實現 (v2.0.12 — circuit breaker + slot timeout + v2.0.20 concurrency 4 + slot leak protection)
 │   │   │   ├── 本地 API          # /api/chat
 │   │   │   ├── 溫度模型映射      # 自動選擇最佳模型
 │   │   │   ├── 超時控制          # AbortController
 │   │   │   └── Token 用量追蹤    # eval_count
 │   │   │
 │   │   └── index.ts              # Provider 工廠 (65 行)
-│   │       ├── 自動檢測          # NIM → Ollama → Error
+│   │       ├── 自動檢測          # Ollama → Error
 │   │       ├── 供應商選擇        # preferred provider
 │   │       └── 單例管理          # 全域 active provider
 │   │
@@ -1573,39 +1567,42 @@ AFTER:  1 agent × 5 APIs = 5 requests, 4 agents wait → 同一 data
 │         ┌─────────┴─────────┐                │
 │         │                   │                │
 │  ┌──────┴──────┐    ┌──────┴──────┐         │
-│  │ NIMProvider │    │OllamaProvider│         │
+│  │             │    │OllamaProvider│         │
 │  │             │    │             │         │
-│  │ NVIDIA NIM  │    │ Ollama Local│         │
-│  │ Cloud API   │    │ HTTP API    │         │
+│  │             │    │ Ollama      │         │
+│  │             │    │ Local/Cloud │         │
 │  │             │    │             │         │
-│  │ Models:     │    │ Models:     │         │
-│  │ • Llama 70B │    │ • Qwen 2.5  │         │
-│  │ • Nemotron  │    │ • DeepSeek  │         │
-│  │ • DeepSeek  │    │ • Llama     │         │
+│  │             │    │ Models:     │         │
+│  │             │    │ • DeepSeek  │         │
+│  │             │    │ • Kimi      │         │
+│  │             │    │ • GLM       │         │
 │  └─────────────┘    └─────────────┘         │
 │                                              │
 │  Provider Selection:                         │
-│  1. Try NIM (cloud, fast)                   │
-│  2. Fallback Ollama (local, free)           │
-│  3. Error if both unavailable               │
+│  1. Ollama (local or Pro cloud)             │
+│  2. Error if unavailable                    │
+│                                              │
+│  💡 推薦升級 Ollama Pro plan 以使用雲端模型   │
+│     (deepseek-v4-flash:cloud 等) — 更快推理   │
+│     + 支援 8 agent 並發請求                   │
 └──────────────────────────────────────────────┘
 ```
 
-### NIM 模型分配
+### Ollama 模型分配
 
-| Agent | 模型選擇 | NIM 模型 | 用途 |
+| Agent | 模型選擇 | Ollama 模型 | 用途 |
 |:------|:--------:|:---------|:-----|
-| Fractal Momentum | Fast | nemotron-8b | 快速動量檢測 |
-| On-Chain Whisperer | Default | llama-3.3-70b | 類別感知鏈上/宏觀數據分析 (v1.9.3 multi-symbol) |
-| RBC & Sentiment Analyst | Default | llama-3.3-70b | RBC + Fear & Greed 分析 |
-| Risk Auditor | Default | llama-3.3-70b | 風險審計 |
-| Skeptics | Fast | nemotron-8b | 邏輯審計 (default: deepseek-v4-flash:cloud) |
-| Meta-Agent | Strong | deepseek-r1 | 最終仲裁/複雜推理 |
+| Fractal Momentum | Fast | kimi-k2.6:cloud | 快速動量檢測 |
+| On-Chain Whisperer | Default | kimi-k2.6:cloud | 類別感知鏈上/宏觀數據分析 (v1.9.3 multi-symbol) |
+| RBC & Sentiment Analyst | Default | kimi-k2.6:cloud | RBC + Fear & Greed 分析 |
+| Risk Auditor | Default | deepseek-v4-flash:cloud | 風險審計 (v2.0.27) |
+| Skeptics | Fast | deepseek-v4-flash:cloud | 邏輯審計 |
+| Meta-Agent | Strong | deepseek-v4-flash:cloud | 最終仲裁/複雜推理 |
 
 ### 🆕 v2.0.12: LLM Resilience — Circuit Breaker + Deadline Race
 
 **問題**: HL WebSocket 斷線並 retry 重連之後，Agents 出現 `Agent think() failed: Ollama request timed out after 120000ms`。根本原因：
-1. **無 circuit breaker** — Ollama/NIM 連續超時後仍然繼續用，每個 agent 各自等 120s
+1. **無 circuit breaker** — Ollama 連續超時後仍然繼續用，每個 agent 各自等 120s
 2. **Ollama slot busy-wait 無上限** — `acquireSlot()` 無限 busy-wait，2 個 slots 被佔用時其他 agents 累積延遲
 3. **HACP `Promise.all` 無 deadline race** — 一個 agent 超時 120s，整個 Phase 1 阻塞 120s
 4. **base-agent timeout 120s 太長** — 超過 HACP 總預算，無 buffer 俾後續 phases
@@ -1614,7 +1611,7 @@ AFTER:  1 agent × 5 APIs = 5 requests, 4 agents wait → 同一 data
 
 | 層 | 位置 | 機制 |
 |:--|:-----|:-----|
-| **1. Circuit Breaker** | `ollama-provider.ts`, `nim-provider.ts` | 連續 3 次失敗 → breaker OPEN，30s 內 fail-fast（唔再等 120s）；30s 後 half-open probe 測試恢復 |
+| **1. Circuit Breaker** | `ollama-provider.ts` | 連續 3 次失敗 → breaker OPEN，30s 內 fail-fast（唔再等 120s）；30s 後 half-open probe 測試恢復 |
 | **2. Slot Acquisition Timeout** | `ollama-provider.ts` `acquireSlot()` | busy-wait 上限 15s，超過即 fail-fast（之前無限 busy-wait） |
 | **3. HACP Deadline Race** | `hacp.ts` `raceAgentThink()` | 每個 agent think() race 60s deadline，超時返回 graceful HOLD（之前 `Promise.all` 無 race） |
 | **4. Tiered LLM Timeout** | `base-agent.ts`, `hacp.ts` | think() 45s、debate/audit 30s（之前全部 120s 或 provider default） |
@@ -3446,14 +3443,7 @@ BINANCE_API_KEY=your_binance_api_key_here
 BINANCE_WS_URL=wss://stream.binance.com:9443/ws
 BINANCE_REST_URL=https://api.binance.com
 
-# ─── NVIDIA NIM (Optional — leave empty to use Ollama) ───
-NIM_API_KEY=
-NIM_BASE_URL=https://integrate.api.nvidia.com/v1
-NIM_MODEL_DEFAULT=meta/llama-3.3-70b-instruct
-NIM_MODEL_FAST=nvidia/llama-3.1-nemotron-8b-instruct
-NIM_MODEL_STRONG=deepseek-ai/deepseek-r1
-
-# ─── Ollama (Primary — used when NIM is unavailable) ───
+# ─── Ollama (Primary LLM — upgrade to Pro for cloud models) ───
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud
 
@@ -3482,7 +3472,6 @@ LOG_LEVEL=info                             # debug for verbose output
 NODE_ENV=development
 HEARTBEAT_INTERVAL_MS=30000
 DECISION_INTERVAL_MS=300000                 # 5 min between cycles (not 60s)
-NIM_CALL_TIMEOUT_MS=120000
 API_PORT=3456                               # React UI + REST API
 ```
 
@@ -3493,7 +3482,6 @@ API_PORT=3456                               # React UI + REST API
 ```typescript
 const envSchema = z.object({
   BINANCE_API_KEY: z.string().min(1),
-  NIM_API_KEY: z.string().min(1),
   PAPER_INITIAL_BALANCE: z.coerce.number().positive().default(1000),
   HACP_CONSENSUS_THRESHOLD: z.coerce.number().min(0).max(1).default(0.60),
   // ... 所有變數都有型別驗證 + 預設值
@@ -3560,8 +3548,7 @@ const envSchema = z.object({
 
 - **Node.js** >= 18
 - **Binance API Key**（已配置於 `.env`，僅用於公開數據讀取）
-- **Ollama**（主要 LLM 提供商，安裝並運行）
-- **NVIDIA NIM API Key**（可選，配置後自動切換）
+- **Ollama**（主要 LLM 提供商，安裝並運行。推薦升級 **Pro plan** 以使用雲端模型如 `deepseek-v4-flash:cloud`、`kimi-k2.6:cloud`、`glm-5.2:cloud` — 更快推理 + 支援 8 agent 並發請求）
 
 ### 快速啟動
 
@@ -3587,7 +3574,7 @@ npm run dev
 
 打開瀏覽器 → `http://localhost:3456`
 
-> **LLM 提供商檢測**：啟動時自動檢測 NIM → Ollama → Error。若 NIM API key 為空或不可用，自動 fallback 至 Ollama。
+> **LLM 提供商檢測**：啟動時自動檢測 Ollama → Error。推薦升級 Ollama Pro plan 以使用雲端模型（`deepseek-v4-flash:cloud` 等）。
 
 ### 首次啟動預期輸出
 
@@ -3868,8 +3855,7 @@ flowchart LR
 |:-----|:-----|:-----|
 | **語言** | TypeScript 5.6 (Strict Mode) | 全專案 |
 | **運行時** | Node.js 18+ / tsx | 執行 TypeScript 無需編譯 |
-| **LLM (主要)** | Ollama (本地) | 多智能體認知層 — `deepseek-v4-flash:cloud` |
-| **LLM (備用)** | NVIDIA NIM (OpenAI-compat) | NIM API key 配置時自動切換 |
+| **LLM (主要)** | Ollama (本地 + Pro 雲端模型) | 多智能體認知層 — `deepseek-v4-flash:cloud` / `kimi-k2.6:cloud` / `glm-5.2:cloud` |
 | **市場數據** | Binance WebSocket (Mainnet) | 即時價格/成交量 |
 | **WebSocket** | ws | 持久連接管理 |
 | **簽名** | @noble/curves + @noble/hashes | Hyperliquid EIP-712 secp256k1 signing (import 需 .js 副檔名) |
@@ -3914,8 +3900,7 @@ flowchart LR
 |:-----|:----:|:-----|
 | 多智能體系統 | ✅ | 5 個 Agent，每個獨立 LLM 推理 |
 | HACP 協議 | ✅ | 平行思維 + 結構化辯論 + 加權共識 |
-| NVIDIA NIM 整合 | ✅ | 3 種模型分配（Fast/Default/Strong） |
-| Ollama 備援 | ✅ | 自動檢測 & 切換 |
+| Ollama 整合 | ✅ | 多模型分配（Fast/Default/Strong）+ Pro 雲端模型 |
 | Binance WS 即時數據 | ✅ | Mainnet，指數退避重連 |
 | 風險引擎 | ✅ | 6 種風險關注點，硬限制執行 |
 | 風險審計否決權 | ✅ | 獨立 Agent，絕對否決 |
@@ -4884,7 +4869,7 @@ if (isSynthetic) {
 
 | 層 | 問題 | 修復 |
 |:--|:-----|:-----|
-| Circuit Breaker | Ollama/NIM 連續超時後仍然繼續用，每個 agent 各自等 120s | 連續 3 次失敗 → breaker OPEN，30s fail-fast |
+| Circuit Breaker | Ollama 連續超時後仍然繼續用，每個 agent 各自等 120s | 連續 3 次失敗 → breaker OPEN，30s fail-fast |
 | Slot Timeout | Ollama `acquireSlot()` 無限 busy-wait | busy-wait 上限 15s |
 | Deadline Race | HACP `Promise.all` 無 race，單個 agent 超時阻塞整個 cycle | 每個 agent race 60s deadline → graceful HOLD |
 | Tiered Timeout | base-agent think() 120s 超過 HACP 預算 | think() 45s、debate/audit 30s |
