@@ -835,6 +835,57 @@ export class HyperliquidRealEngine implements RealTradingEngine {
   }
 
   /**
+   * v2.0.32: Get all open orders (including trigger/SL/TP orders) from HL.
+   * Used to check if SL/TP trigger orders already exist on the exchange.
+   * Queries both DEX 0 and xyz DEX.
+   */
+  async getOpenOrders(): Promise<Array<{
+    coin: string;
+    side: string;
+    orderType: string;
+    triggerPx?: string;
+    tpsl?: string;
+    sz: string;
+    oid: number;
+  }>> {
+    const allOrders: Array<{ coin: string; side: string; orderType: string; triggerPx?: string; tpsl?: string; sz: string; oid: number }> = [];
+
+    for (const dex of [undefined, 'xyz']) {
+      try {
+        const body: Record<string, unknown> = { type: 'openOrders', user: this.walletAddress };
+        if (dex) body['dex'] = dex;
+        const res = await fetch(HL_INFO_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) continue;
+        const data = await res.json() as Array<{
+          coin: string;
+          side: string;
+          sz: string;
+          oid: number;
+          orderType: { limit?: { tif: string }; trigger?: { isMarket: boolean; triggerPx: string; tpsl: string } };
+        }>;
+        for (const o of data) {
+          const trigger = o.orderType?.trigger;
+          allOrders.push({
+            coin: o.coin,
+            side: o.side,
+            orderType: trigger ? 'trigger' : 'limit',
+            triggerPx: trigger?.triggerPx,
+            tpsl: trigger?.tpsl,
+            sz: o.sz,
+            oid: o.oid,
+          });
+        }
+      } catch { /* non-critical */ }
+    }
+
+    return allOrders;
+  }
+
+  /**
    * Check if any monitored SL/TP levels have been breached.
    * Called periodically by the trading manager.
    */

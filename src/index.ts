@@ -1282,6 +1282,14 @@ class AMACRFSystem {
         } catch (err) {
           log.warn(`Exchange sync (balance/fills/positions) failed: ${err instanceof Error ? err.message : String(err)}`);
         }
+
+        // v2.0.32: Sync SL/TP to HL — check every cycle if HL has the trigger
+        // orders that the local mirror expects. If missing, place them.
+        try {
+          await this.realTradingManager.syncSLTP();
+        } catch (err) {
+          log.warn(`SL/TP sync failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
 
       // v2.0.29: In paper mode, if there are legacy real positions on the
