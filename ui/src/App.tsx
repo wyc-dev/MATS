@@ -505,8 +505,17 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
     }
   }
 
-  const balance: number | null = p?.balance ?? s.balance ?? null
-  const equity: number | null = p?.totalEquity ?? s.equity ?? null
+  // v2.0.30: In real mode, balance/equity are null when exchange balance
+  // hasn't been fetched yet. Use explicit null check — ?? would fallback
+  // from null to status.balance (which might be stale paper data).
+  const maConfig = data?.marketAgent?.config
+  const isRealMode = maConfig?.tradeMode === 'real'
+  const balance: number | null = isRealMode
+    ? (p?.balance !== null && p?.balance !== undefined ? p.balance : (s.balance !== null && s.balance !== undefined ? s.balance : null))
+    : (p?.balance ?? s.balance ?? 0)
+  const equity: number | null = isRealMode
+    ? (p?.totalEquity !== null && p?.totalEquity !== undefined ? p.totalEquity : (s.equity !== null && s.equity !== undefined ? s.equity : null))
+    : (p?.totalEquity ?? s.equity ?? 0)
   // totalPnl / drawdownPct are null in real-trade mode (v2.0.17) — UI shows '--'.
   const totalPnl: number | null = p?.totalPnl ?? s.totalPnl ?? null
   const drawdownPct: number | null = p?.maxDrawdownPct ?? s.drawdownPct ?? null
