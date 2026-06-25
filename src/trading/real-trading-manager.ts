@@ -632,17 +632,34 @@ export class RealTradingManager {
         // v2.0.32: Check if HL already has trigger orders at the SL/TP prices.
         // HL openOrders response doesn't include tpsl field, so we match by
         // coin + triggerPx only. This prevents duplicate SL/TP orders.
-        const hasSL = sl !== undefined && openOrders.some(o =>
-          o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
+        const symbolOrders = openOrders.filter(o =>
+          o.coin.toLowerCase() === pos.symbol.toLowerCase()
+        );
+        const hasSL = sl !== undefined && symbolOrders.some(o =>
           o.triggerPx &&
           Math.abs(parseFloat(o.triggerPx) - sl) < 0.01
         );
 
-        const hasTP = tp !== undefined && openOrders.some(o =>
-          o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
+        const hasTP = tp !== undefined && symbolOrders.some(o =>
           o.triggerPx &&
           Math.abs(parseFloat(o.triggerPx) - tp) < 0.01
         );
+
+        // v2.0.32: If SL or TP price has changed (Meta-Agent adjusted),
+        // cancel ALL existing trigger orders for this symbol before placing
+        // new ones. This prevents duplicate/stale trigger orders accumulating
+        // on HL.
+        const slChanged = sl !== undefined && !hasSL && symbolOrders.some(o =>
+          o.triggerPx && Math.abs(parseFloat(o.triggerPx) - (pos.stopLossPrice ?? 0)) > 0.01
+        );
+        const tpChanged = tp !== undefined && !hasTP && symbolOrders.some(o =>
+          o.triggerPx && Math.abs(parseFloat(o.triggerPx) - (pos.takeProfitPrice ?? 0)) > 0.01
+        );
+
+        if ((slChanged || tpChanged) && symbolOrders.length > 0) {
+          log.info(`🗑️ SL/TP price changed for ${pos.symbol} — cancelling ${symbolOrders.length} existing order(s) before placing new ones`);
+          await engine.cancelAllOrdersForSymbol(pos.symbol);
+        }
 
         // Place missing SL
         if (sl && !hasSL) {

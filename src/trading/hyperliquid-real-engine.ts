@@ -717,6 +717,56 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     }
   }
 
+  /**
+   * v2.0.32: Cancel all open orders for a specific symbol on HL.
+   * Used before placing new SL/TP orders (to avoid duplicates) and before
+   * closing a position (to avoid conflicts with existing trigger orders).
+   */
+  async cancelAllOrdersForSymbol(symbol: string): Promise<number> {
+    try {
+      const asset = await getAssetIndex(symbol);
+      if (!asset) return 0;
+
+      // Get open orders for both DEXs
+      const openOrders = await this.getOpenOrders();
+      const symbolOrders = openOrders.filter(o =>
+        o.coin.toLowerCase() === symbol.toLowerCase()
+      );
+
+      if (symbolOrders.length === 0) return 0;
+
+      const cancels = symbolOrders.map(o => ({ a: asset.index, o: o.oid }));
+      const action = {
+        type: 'cancel',
+        cancels,
+      };
+
+      const nonce = Date.now();
+      const signature = signL1Action(this.privateKeyHex, action, nonce);
+      const res = await fetch(HL_EXCHANGE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, nonce, signature }),
+      });
+
+      const result = await res.json() as {
+        response?: { data?: { statuses?: Array<string | { error: string }> } };
+      };
+
+      const cancelled = result.response?.data?.statuses?.filter(
+        s => s === 'success'
+      ).length ?? 0;
+
+      if (cancelled > 0) {
+        log.info(`🗑️ Cancelled ${cancelled} order(s) for ${symbol} on HL`);
+      }
+      return cancelled;
+    } catch (err) {
+      log.warn(`cancelAllOrdersForSymbol failed: ${err instanceof Error ? err.message : String(err)}`);
+      return 0;
+    }
+  }
+
   async adjustPosition(positionId: string, sl?: number, tp?: number): Promise<boolean> {
     if (!sl && !tp) {
       // Remove monitoring
@@ -841,6 +891,12 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       const positions = await this.getPositions();
       const pos = positions.find(p => p.symbol.toUpperCase() === symbol.toUpperCase());
       if (!pos) return true; // No position = already closed
+
+      // v2.0.32: Cancel all existing trigger orders (SL/TP) for this symbol
+      // before closing the position. If trigger orders are still open when
+      // we try to close, HL may reject the close order or the triggers may
+      // fire simultaneously causing conflicts.
+      await this.cancelAllOrdersForSymbol(symbol);
 
       const order: Order = {
         id: uuidv4(),
