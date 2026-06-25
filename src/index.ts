@@ -1405,9 +1405,10 @@ class AMACRFSystem {
       );
 
       // 3.1 Apply position adjustments (TP/SL) from meta-agent
+      // v2.0.31: In real mode, also place native trigger orders on HL exchange
       if (result.positionAdjustments && result.positionAdjustments.length > 0) {
         for (const adj of result.positionAdjustments) {
-          this.portfolio.adjustPosition(adj.positionId, adj.newStopLoss, adj.newTakeProfit);
+          await this.realTradingManager.adjustPosition(adj.positionId, adj.newStopLoss, adj.newTakeProfit);
           log.info(`📐 Position ${adj.positionId.slice(0, 8)} adjusted: SL=${adj.newStopLoss?.toFixed(2) ?? '-'} TP=${adj.newTakeProfit?.toFixed(2) ?? '-'}`);
         }
       }
@@ -1792,8 +1793,9 @@ class AMACRFSystem {
         }
 
         // Adjust TP/SL if suggested
+        // v2.0.31: In real mode, also place native trigger orders on HL exchange
         if (psc.suggestedStopLoss !== undefined || psc.suggestedTakeProfit !== undefined) {
-          this.portfolio.adjustPosition(pos.id, psc.suggestedStopLoss, psc.suggestedTakeProfit);
+          await this.realTradingManager.adjustPosition(pos.id, psc.suggestedStopLoss, psc.suggestedTakeProfit);
           log.info(`📐 Per-symbol consensus: ADJUST ${psc.symbol} SL=${psc.suggestedStopLoss?.toFixed(2) ?? '-'} TP=${psc.suggestedTakeProfit?.toFixed(2) ?? '-'}`);
         }
       }
