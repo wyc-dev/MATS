@@ -103,9 +103,42 @@ export class RealTradingManager {
 
   // ── Config Management ──
 
+  /**
+   * Ensure the Hyperliquid real engine is initialized when switching to real mode.
+   * If the engine was not created at startup (e.g. wallet keys were added to .env
+   * after startup, or the user switched to real mode via UI), this method creates
+   * it on demand using the stored wallet address + private key.
+   *
+   * Returns true if the engine is ready (or already was), false if keys are missing.
+   */
+  ensureHyperliquidEngine(): boolean {
+    if (this.hyperliquidEngine) return true;
+
+    const wallet = this.config.hyperliquidWalletAddress;
+    const privKey = this.config.hyperliquidPrivateKey;
+
+    if (!wallet || !privKey || wallet.length === 0 || privKey.length === 0) {
+      log.warn('Cannot initialize Hyperliquid engine: wallet address or private key is empty. Set HYPERLIQUID_WALLET_ADDRESS + HYPERLIQUID_PRIVATE_KEY in .env');
+      return false;
+    }
+
+    this.hyperliquidEngine = new HyperliquidRealEngine(wallet, privKey);
+    log.info('✓ Hyperliquid real engine initialized on demand', {
+      wallet: `${wallet.slice(0, 6)}...${wallet.slice(-4)}`,
+    });
+    return true;
+  }
+
   setTradeMode(mode: TradeMode): void {
     this.config.tradeMode = mode;
     log.info(`Trade mode set to: ${mode}`);
+
+    // When switching to real mode, ensure the exchange engine is initialized.
+    // The engine may not have been created at startup if .env keys were empty
+    // at that time, or if the user is switching via the UI.
+    if (mode === 'real' && this.config.exchange === 'hyperliquid') {
+      this.ensureHyperliquidEngine();
+    }
   }
 
   setExchange(exchange: ExchangeType): void {
@@ -135,6 +168,8 @@ export class RealTradingManager {
       } catch (err) {
         log.error(`Failed to get balance from ${engine.name}: ${err instanceof Error ? err.message : String(err)}`);
       }
+    } else if (this.config.tradeMode === 'real') {
+      log.warn('Real mode is active but no exchange engine is initialized. Set HYPERLIQUID_WALLET_ADDRESS + HYPERLIQUID_PRIVATE_KEY in .env and restart.');
     }
 
     // Fallback to paper portfolio
