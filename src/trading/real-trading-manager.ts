@@ -422,12 +422,19 @@ export class RealTradingManager {
       // unrelated positions. Only remove exchange-imported positions
       // (agentId='hyperliquid-real') — paper positions are handled by
       // reconciliation later.
+      // v2.0.32: Use closePosition() instead of removePosition() so that:
+      //   1. Trade record is produced (appears in Trade Records UI)
+      //   2. Margin is returned to balance
+      //   3. Learning mechanisms are triggered (RBC, pattern classifier, etc.)
+      //   4. Evolution system learns from the closed position
+      // Exchange-imported positions don't have margin deducted (importExchangePosition
+      // doesn't deduct), so closePosition() will add margin + PnL back.
       for (const localSym of this.portfolio.getOpenSymbols()) {
         const localPos = this.portfolio.getPosition(localSym);
         if (!localPos || localPos.agentId !== 'hyperliquid-real') continue;
         if (!exMap.has(localSym)) {
-          log.info(`🗑️ Removing stale exchange mirror: ${localSym} (no longer on HL)`);
-          this.portfolio.removePosition(localSym);
+          log.info(`📉 Exchange position closed on HL: ${localSym} — closing local mirror (produces trade record + triggers learning)`);
+          this.portfolio.closeExchangePosition(localSym, localPos.currentPrice);
         }
       }
 

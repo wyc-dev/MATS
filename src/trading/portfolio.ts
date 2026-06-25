@@ -629,6 +629,74 @@ export class PortfolioTracker {
     return trade;
   }
 
+  /**
+   * v2.0.32: Close an exchange-imported position and produce a trade record
+   * WITHOUT adding margin back to balance (because importExchangePosition
+   * didn't deduct margin). Only adds realized PnL to balance + produces
+   * trade record + triggers learning mechanisms.
+   * Used by syncExchangePositions() when HL SL/TP trigger closes a position.
+   */
+  closeExchangePosition(symbol: string, exitPrice: number): TradeRecord | null {
+    const pos = this.portfolio.positions.get(symbol);
+    if (!pos) return null;
+
+    const lev = pos.leverage ?? 1;
+    const margin = pos.averageEntryPrice * pos.quantity;
+    let realizedPnl: number;
+    if (pos.side === 'buy') {
+      realizedPnl = (exitPrice - pos.averageEntryPrice) * pos.quantity * lev;
+    } else {
+      realizedPnl = (pos.averageEntryPrice - exitPrice) * pos.quantity * lev;
+    }
+
+    // Deduct exit taker fee (notional-based)
+    const exitNotional = exitPrice * pos.quantity * lev;
+    const exitFee = calculateTakerFee(exitNotional);
+    realizedPnl -= exitFee;
+    // Only add PnL (not margin) to balance — margin was never deducted
+    this.portfolio.balance += realizedPnl;
+
+    const trade: TradeRecord = {
+      id: uuidv4(),
+      symbol: pos.symbol,
+      side: pos.side,
+      entryPrice: pos.averageEntryPrice,
+      exitPrice,
+      quantity: pos.quantity,
+      leverage: lev,
+      investment: margin,
+      pnl: realizedPnl,
+      pnlPct: margin > 0 ? realizedPnl / margin : 0,
+      openedAt: pos.openedAt,
+      closedAt: Date.now(),
+      agentId: pos.agentId,
+      status: 'closed',
+    };
+
+    // Update portfolio stats
+    this.portfolio.positions.delete(symbol);
+    this.portfolio.totalPnl += realizedPnl;
+    this.portfolio.totalPnlPct = this.portfolio.totalPnl / this.portfolio.initialBalance;
+
+    if (realizedPnl >= 0) {
+      this.portfolio.winCount++;
+    } else {
+      this.portfolio.lossCount++;
+    }
+    this.portfolio.tradeCount = this.portfolio.winCount + this.portfolio.lossCount;
+
+    this.checkDailyReset();
+    this.portfolio.dailyPnl += realizedPnl;
+    this.recalculateEquity();
+    log.info(`Exchange position closed: ${pos.side.toUpperCase()} ${pos.symbol} PnL: ${realizedPnl.toFixed(2)} (no margin returned)`);
+
+    if (this.onPositionClosedCb) {
+      this.onPositionClosedCb(trade);
+    }
+
+    return trade;
+  }
+
   getAllTrades(): TradeRecord[] {
     // In a real system, store trades in a DB. For now, return empty.
     return [];
