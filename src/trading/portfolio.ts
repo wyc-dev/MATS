@@ -388,7 +388,9 @@ export class PortfolioTracker {
     leverage: number,
     openedAt: number,
   ): void {
-    const sym = symbol.toLowerCase();
+    // v2.0.31: HL colon-prefixed symbols (xyz:SPCX) are case-sensitive.
+    // Lowercase only for non-colon symbols (BTC, ETH). Colon symbols keep original case.
+    const sym = symbol.includes(':') ? symbol : symbol.toLowerCase();
 
     // Don't import if already exists
     if (this.portfolio.positions.has(sym)) return;
