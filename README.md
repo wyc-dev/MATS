@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.31--dev-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.32--dev-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -424,7 +424,7 @@ If you require a commercial license — for example, for proprietary extensions,
 
 ---
 
-## Changelog (v2.0.10 → v2.0.31)
+## Changelog (v2.0.10 → v2.0.32)
 
 | Version | Change |
 |:--------|:-------|
@@ -445,8 +445,9 @@ If you require a commercial license — for example, for proprietary extensions,
 | **v2.0.29** | Legacy position management — positions from previous trade mode continue to be managed until naturally closed |
 | **v2.0.30** | Manual close position button (✕ + confirm); closeReason tracking ('manual'/'sl_tp'/'consensus'/etc); real-mode per-cycle position sync; Paper/Real UI labels |
 | **v2.0.31** | Multi-DEX balance + positions (DEX 0 + xyz + spot); exchange position import into local mirror with default SL/TP; getRecentFills startTime fix; NIM/Binance config cleanup; WS stale book detection |
+| **v2.0.32** | HL signing rewrite (phantom agent EIP-712 + msgpack + recovery bit); xyz DEX asset index offset (110000); `updateLeverage()` before order placement (fixes 40x→10x); SL/TP direction fix for short positions (stale local mirror → immediate trigger); `syncExchangePositions()` removes stale exchange mirrors; `syncSLTP()` validates HL position side + entry; `placeOrder()` only returns success on `filled` (not `resting`); UI filters stale positions in real mode; REAL/PAPER label based on `agentId` only; `getOpenOrders()` parses `limitPx` + `reduceOnly` |
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.31 for full details on each fix.
+See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.32 for full details on each fix.
 
 ---
 

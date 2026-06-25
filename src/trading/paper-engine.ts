@@ -72,10 +72,10 @@ export class PaperTradingEngine {
       // a symbol overlap (Map.set overwrite). Ghost records can never be closed
       // because the position no longer exists — they just pollute the trade history.
       const openSymbols = new Set(
-        Array.from(this.portfolio.getPortfolio().positions.values()).map(p => p.symbol.toLowerCase())
+        Array.from(this.portfolio.getPortfolio().positions.values()).map(p => p.symbol)
       );
       const validTrades = trades.filter(t => {
-        if (t.status === 'open' && !openSymbols.has(t.symbol.toLowerCase())) {
+        if (t.status === 'open' && !openSymbols.has(t.symbol)) {
           log.warn(`🧹 Ghost open record removed: ${t.side.toUpperCase()} ${t.symbol} @ ${t.entryPrice} (no matching position)`);
           return false;
         }
@@ -268,7 +268,7 @@ export class PaperTradingEngine {
     quantity: number,
     price: number
   ): Promise<ExecutionReport> {
-    const safeSymbol = decision.symbol.toLowerCase();
+    const safeSymbol = decision.symbol.includes(':') ? decision.symbol : decision.symbol.toLowerCase();
     const order: Order = {
       id: uuidv4(),
       symbol: safeSymbol,
@@ -316,7 +316,7 @@ export class PaperTradingEngine {
   private createRejectedOrder(decision: TradingDecision, reason: string): Order {
     return {
       id: uuidv4(),
-      symbol: decision.symbol.toLowerCase(),
+      symbol: decision.symbol.includes(':') ? decision.symbol : decision.symbol.toLowerCase(),
       side: decision.action as OrderSide,
       type: 'market',
       quantity: 0,

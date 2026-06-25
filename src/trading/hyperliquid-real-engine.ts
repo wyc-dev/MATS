@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../observability/logger.ts';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
+import { encode as msgpackEncode } from '@msgpack/msgpack';
 import type {
   Order,
   OrderSide,
@@ -23,16 +24,17 @@ const log = createLogger({ phase: 'hyperliquid-real' });
 
 const HL_EXCHANGE_URL = 'https://api.hyperliquid.xyz/exchange';
 const HL_INFO_URL = 'https://api.hyperliquid.xyz/info';
-const SIGNATURE_CHAIN_ID = '0xa4b1'; // Arbitrum mainnet
+const IS_MAINNET = true;
 
-// ─── EIP-712 Signing ───
+// ─── HL L1 Action Signing (Phantom Agent) ───
+// Implements the official Hyperliquid signing scheme:
+// 1. action_hash = keccak256(msgpack(action) + nonce(8 bytes BE) + vault_flag)
+// 2. phantom_agent = { source: "a"|"b", connectionId: action_hash }
+// 3. EIP-712 sign Agent(string source, bytes32 connectionId)
+//    Domain: { name: "Exchange", version: "1", chainId: 1337, verifyingContract: 0x000... }
 
 function keccak256(data: Uint8Array): Uint8Array {
   return keccak_256(data);
-}
-
-function toHex(bytes: Uint8Array): string {
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function hexToBytes(hex: string): Uint8Array {
@@ -44,219 +46,108 @@ function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
-/** EIP-712 domain separator for Hyperliquid */
-function buildDomainSeparator(chainId: number): Uint8Array {
-  // keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
+/** Compute the action hash: keccak256(msgpack(action) + nonce + vault_flag) */
+function actionHash(
+  action: Record<string, unknown>,
+  vaultAddress: string | null,
+  nonce: number,
+): Uint8Array {
+  const actionBytes = msgpackEncode(action);
+  const nonceBytes = new Uint8Array(8);
+  new DataView(nonceBytes.buffer).setBigUint64(0, BigInt(nonce));
+
+  let vaultBytes: Uint8Array;
+  if (vaultAddress) {
+    vaultBytes = new Uint8Array(21);
+    vaultBytes[0] = 0x01;
+    vaultBytes.set(hexToBytes(vaultAddress), 1);
+  } else {
+    vaultBytes = new Uint8Array([0x00]);
+  }
+
+  return keccak256(new Uint8Array([...actionBytes, ...nonceBytes, ...vaultBytes]));
+}
+
+/** Build EIP-712 domain separator for HL Exchange */
+function buildExchangeDomainSeparator(): Uint8Array {
   const typeHash = keccak256(new TextEncoder().encode(
     'EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)'
   ));
-
-  const nameHash = keccak256(new TextEncoder().encode('HyperliquidSignTransaction'));
+  const nameHash = keccak256(new TextEncoder().encode('Exchange'));
   const versionHash = keccak256(new TextEncoder().encode('1'));
 
-  // Encode: bytes32 typeHash + bytes32 nameHash + bytes32 versionHash + uint256 chainId + address
-  const encoded = new Uint8Array(32 * 5);
-  encoded.set(typeHash, 0);
-  encoded.set(nameHash, 32);
-  encoded.set(versionHash, 64);
-
-  // uint256 chainId (big-endian, right-aligned in 32 bytes)
   const chainIdBytes = new Uint8Array(32);
-  const view = new DataView(chainIdBytes.buffer);
-  view.setBigUint64(24, BigInt(chainId));
-  encoded.set(chainIdBytes, 96);
+  new DataView(chainIdBytes.buffer).setBigUint64(24, BigInt(1337));
 
-  // address (20 bytes, left-padded to 32)
-  const zeroAddr = new Uint8Array(32);
-  encoded.set(zeroAddr, 128);
+  const verifyingContractBytes = new Uint8Array(32);
 
-  return keccak256(encoded);
+  return keccak256(new Uint8Array([
+    ...typeHash,
+    ...nameHash,
+    ...versionHash,
+    ...chainIdBytes,
+    ...verifyingContractBytes,
+  ]));
 }
 
 /**
- * Sign a Hyperliquid action using EIP-712 typed data.
- * Uses secp256k1 (Ethereum-style) signing.
+ * Sign a Hyperliquid L1 action using the phantom agent EIP-712 scheme.
+ * Matches the official Python SDK sign_l1_action() implementation.
  */
 function signL1Action(
   privateKeyHex: string,
   action: Record<string, unknown>,
   nonce: number,
-  signatureChainId: string = SIGNATURE_CHAIN_ID,
+  vaultAddress: string | null = null,
 ): { r: string; s: string; v: number } {
   const privateKeyBytes = hexToBytes(privateKeyHex);
 
-  // Build the EIP-712 message hash
-  // Primary type: "HyperliquidTransaction:Order" (or appropriate type)
-  const actionType = (action as any).type as string || 'order';
-  const primaryType = `HyperliquidTransaction:${capitalize(actionType)}`;
+  // 1. Compute action hash
+  const hash = actionHash(action, vaultAddress, nonce);
 
-  // 1. Build type hash
-  const typeDef = buildTypeDef(action);
-  const typeHash = keccak256(new TextEncoder().encode(typeDef));
+  // 2. Construct phantom agent
+  const source = IS_MAINNET ? 'a' : 'b';
 
-  // 2. Build message struct hash
-  const messageHash = buildMessageHash(action, nonce, signatureChainId, typeHash);
+  // 3. EIP-712 encode Agent(string source, bytes32 connectionId)
+  const agentTypeHash = keccak256(
+    new TextEncoder().encode('Agent(string source,bytes32 connectionId)')
+  );
+  const sourceHash = keccak256(new TextEncoder().encode(source));
 
-  // 3. Build domain separator
-  const domainSeparator = buildDomainSeparator(42161); // Arbitrum chainId
+  const messageHash = keccak256(new Uint8Array([
+    ...agentTypeHash,
+    ...sourceHash,
+    ...hash, // connectionId is the action hash (bytes32)
+  ]));
 
-  // 4. Final EIP-712 hash: keccak256("\x19\x01" ‖ domainSeparator ‖ messageHash)
-  const prefix = new Uint8Array(2);
-  prefix[0] = 0x19;
-  prefix[1] = 0x01;
-  const finalHash = keccak256(new Uint8Array([...prefix, ...domainSeparator, ...messageHash]));
+  // 4. Domain separator
+  const domainSeparator = buildExchangeDomainSeparator();
 
-  // 5. Sign with secp256k1
-  const sig = secp256k1.sign(finalHash, privateKeyBytes) as unknown as {
-    r: bigint; s: bigint; recovery?: number;
+  // 5. Final EIP-712 hash: keccak256(0x19 0x01 || domainSeparator || messageHash)
+  const finalHash = keccak256(new Uint8Array([
+    0x19, 0x01,
+    ...domainSeparator,
+    ...messageHash,
+  ]));
+
+  // 6. Sign with secp256k1
+  // format: 'recovered' returns 65 bytes (recoveryByte || r || s)
+  // prehash: false because finalHash is already a keccak256 digest
+  const sigBytes = secp256k1.sign(finalHash, privateKeyBytes, {
+    format: 'recovered',
+    prehash: false,
+  });
+
+  const recovery = sigBytes[0]!;
+  // Convert r and s to BigInt then hex to strip leading zeros (matches Python's to_hex)
+  const rBig = BigInt('0x' + Buffer.from(sigBytes.slice(1, 33)).toString('hex'));
+  const sBig = BigInt('0x' + Buffer.from(sigBytes.slice(33, 65)).toString('hex'));
+
+  return {
+    r: '0x' + rBig.toString(16),
+    s: '0x' + sBig.toString(16),
+    v: recovery + 27,
   };
-  // Convert bigint r/s to 32-byte hex
-  const rHex = sig.r.toString(16).padStart(64, '0');
-  const sHex = sig.s.toString(16).padStart(64, '0');
-  const rBytes = new Uint8Array(32);
-  const sBytes = new Uint8Array(32);
-  for (let i = 0; i < 64; i += 2) {
-    rBytes[i / 2] = parseInt(rHex.slice(i, i + 2), 16);
-    sBytes[i / 2] = parseInt(sHex.slice(i, i + 2), 16);
-  }
-  const r = '0x' + toHex(rBytes);
-  const s = '0x' + toHex(sBytes);
-  const v = sig.recovery! + 27;
-
-  return { r, s, v };
-}
-
-function capitalize(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-/**
- * Build the EIP-712 type definition string for the action.
- * Types vary by action type per HL spec.
- */
-function buildTypeDef(action: Record<string, unknown>): string {
-  const actionType = (action as any).type as string;
-
-  switch (actionType) {
-    case 'order': {
-      const orders = (action as any).orders as Array<Record<string, unknown>>;
-      const hasTrigger = orders?.some((o: any) => o.t?.trigger);
-      const orderFields = hasTrigger
-        ? 'uint32 asset,bool isBuy,string limitPx,string size,bool reduceOnly,string orderType,string cloid,string triggerPx,string tpsl'
-        : 'uint32 asset,bool isBuy,string limitPx,string size,bool reduceOnly,string orderType,string cloid';
-      return `HyperliquidTransaction:Order(${orderFields})HyperliquidTransaction:Order(uint64 nonce,string signatureChainId,${orderFields})`;
-    }
-    case 'cancel':
-      return 'HyperliquidTransaction:Cancel(uint32 asset,uint64 oid)HyperliquidTransaction:Cancel(uint64 nonce,string signatureChainId,uint32 asset,uint64 oid)';
-    case 'updateLeverage':
-      return 'HyperliquidTransaction:UpdateLeverage(uint32 asset,bool isCross,uint32 leverage)HyperliquidTransaction:UpdateLeverage(uint64 nonce,string signatureChainId,uint32 asset,bool isCross,uint32 leverage)';
-    default:
-      // Generic: flatten all action fields
-      const fields = Object.keys(action)
-        .filter(k => k !== 'type')
-        .map(k => `string ${k}`)
-        .join(',');
-      return `HyperliquidTransaction:Action(${fields})HyperliquidTransaction:Action(uint64 nonce,string signatureChainId,${fields})`;
-  }
-}
-
-/**
- * Build the EIP-712 message hash for signing.
- * Encodes: typeHash ‖ encodeData(primaryType, message)
- */
-function buildMessageHash(
-  action: Record<string, unknown>,
-  nonce: number,
-  signatureChainId: string,
-  typeHash: Uint8Array,
-): Uint8Array {
-  // Encode the message fields in order
-  const parts: Uint8Array[] = [typeHash];
-
-  // nonce (uint64, 32 bytes)
-  const nonceBytes = new Uint8Array(32);
-  new DataView(nonceBytes.buffer).setBigUint64(24, BigInt(nonce));
-  parts.push(nonceBytes);
-
-  // signatureChainId (string → bytes32 keccak)
-  parts.push(keccak256(new TextEncoder().encode(signatureChainId)));
-
-  // Encode action fields
-  const actionType = (action as any).type as string;
-  switch (actionType) {
-    case 'order': {
-      const orders = (action as any).orders as Array<Record<string, any>>;
-      const o = orders?.[0];
-      if (o) {
-        // asset (uint32)
-        const assetBytes = new Uint8Array(32);
-        new DataView(assetBytes.buffer).setUint32(28, o['a'] as number);
-        parts.push(assetBytes);
-
-        // isBuy (bool → uint256)
-        const buyBytes = new Uint8Array(32);
-        buyBytes[31] = o['b'] ? 1 : 0;
-        parts.push(buyBytes);
-
-        // limitPx (string → bytes32)
-        parts.push(keccak256(new TextEncoder().encode(String(o['p'] ?? '0'))));
-
-        // size (string → bytes32)
-        parts.push(keccak256(new TextEncoder().encode(String(o['s'] ?? '0'))));
-
-        // reduceOnly (bool → uint256)
-        const roBytes = new Uint8Array(32);
-        roBytes[31] = o['r'] ? 1 : 0;
-        parts.push(roBytes);
-
-        // orderType (string → bytes32)
-        const ot = o['t']?.trigger ? 'Trigger' : 'Limit';
-        parts.push(keccak256(new TextEncoder().encode(ot)));
-
-        // cloid (string → bytes32)
-        parts.push(keccak256(new TextEncoder().encode(String(o['c'] ?? '0x0000000000000000000000000000000000000000000000000000000000000000'))));
-
-        // trigger fields if present
-        if (o['t']?.trigger) {
-          parts.push(keccak256(new TextEncoder().encode(String(o['t'].trigger.triggerPx ?? '0'))));
-          parts.push(keccak256(new TextEncoder().encode(String(o['t'].trigger.tpsl ?? 'sl'))));
-        }
-      }
-      break;
-    }
-    case 'cancel': {
-      const cancels = (action as any).cancels as Array<Record<string, any>>;
-      const c = cancels?.[0];
-      if (c) {
-        const assetBytes = new Uint8Array(32);
-        new DataView(assetBytes.buffer).setUint32(28, c['a'] as number);
-        parts.push(assetBytes);
-
-        const oidBytes = new Uint8Array(32);
-        new DataView(oidBytes.buffer).setBigUint64(24, BigInt(c['o']));
-        parts.push(oidBytes);
-      }
-      break;
-    }
-    default: {
-      // Generic encoding: string values → keccak256
-      for (const [key, value] of Object.entries(action)) {
-        if (key === 'type') continue;
-        parts.push(keccak256(new TextEncoder().encode(String(value))));
-      }
-    }
-  }
-
-  // Concatenate all parts and hash
-  const totalLength = parts.reduce((sum, p) => sum + p.length, 0);
-  const combined = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const p of parts) {
-    combined.set(p, offset);
-    offset += p.length;
-  }
-
-  return keccak256(combined);
 }
 
 // ─── Asset Index Cache ───
@@ -304,6 +195,9 @@ async function getAssetIndex(symbol: string): Promise<AssetMeta | null> {
     }
 
     // Fetch xyz DEX (TradFi perps) meta
+    // v2.0.32: xyz DEX assets need a global asset index offset of 110000
+    // (builder-deployed perp DEXs start at 110000 per HL Python SDK)
+    const XYZ_DEX_OFFSET = 110000;
     try {
       const resXyz = await fetch(HL_INFO_URL, {
         method: 'POST',
@@ -317,7 +211,7 @@ async function getAssetIndex(symbol: string): Promise<AssetMeta | null> {
         dataXyz.universe.forEach((asset, index) => {
           assetIndexCache!.set(asset.name.toUpperCase(), {
             name: asset.name,
-            index,
+            index: index + XYZ_DEX_OFFSET,
             szDecimals: asset.szDecimals,
             pxDecimals: asset.pxDecimals ?? 2,
             maxLeverage: asset.maxLeverage,
@@ -431,10 +325,9 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         }
       } catch { /* non-critical */ }
 
-      // v2.0.32: total = perp accountValue only (this is the "equity" for trading).
-      // spotUsdc is separate (held in spot wallet, not perp collateral).
+      // v2.0.32: total = perp accountValue + spot USDC (both are real assets).
       // free = perp withdrawable + spot USDC (total available across both wallets).
-      const total = totalAccountValue;
+      const total = totalAccountValue + spotUsdc;
       const free = totalWithdrawable + spotUsdc;
 
       log.info(`[getBalance] total(perp)=${total}, free=${free}, marginUsed=${totalMarginUsed}, unrealizedPnl=${totalUnrealizedPnl}, spotUsdc=${spotUsdc}`);
@@ -574,11 +467,61 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
   // ── Order Management ──
 
+  /**
+   * v2.0.32: Update leverage for an asset on HL before placing an order.
+   * HL uses per-asset leverage settings — the order itself doesn't specify leverage.
+   * If we don't call this, HL uses the account's default (which may be 40x).
+   */
+  async updateLeverage(symbol: string, leverage: number, isCross: boolean = true): Promise<boolean> {
+    try {
+      const asset = await getAssetIndex(symbol);
+      if (!asset) {
+        log.warn(`updateLeverage: unknown asset ${symbol}`);
+        return false;
+      }
+
+      const action = {
+        type: 'updateLeverage',
+        asset: asset.index,
+        isCross,
+        leverage,
+      };
+
+      const nonce = Date.now();
+      const signature = signL1Action(this.privateKeyHex, action, nonce);
+
+      const res = await fetch(HL_EXCHANGE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, nonce, signature }),
+      });
+
+      const result = await res.json() as { status?: string; response?: { data?: { statuses?: Array<string | { error: string }> } } };
+      if (result.status === 'ok') {
+        log.info(`Leverage set: ${symbol} ${leverage}x ${isCross ? 'cross' : 'isolated'}`);
+        return true;
+      }
+      log.warn(`updateLeverage failed: ${JSON.stringify(result)}`);
+      return false;
+    } catch (err) {
+      log.warn(`updateLeverage error: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
   async placeOrder(order: Order): Promise<{ success: boolean; orderId?: string; error?: string }> {
     try {
       const asset = await getAssetIndex(order.symbol);
       if (!asset) {
         return { success: false, error: `Unknown asset: ${order.symbol}. Run meta refresh first.` };
+      }
+
+      // v2.0.32: Set leverage on HL before placing the order.
+      // HL uses per-asset leverage settings; without this call, HL uses the
+      // account default (e.g. 40x) instead of the intended leverage.
+      const desiredLeverage = (order.metadata?.['leverage'] as number) ?? 10;
+      if (desiredLeverage !== asset.maxLeverage) {
+        await this.updateLeverage(order.symbol, desiredLeverage, true);
       }
 
       const isBuy = order.side === 'buy';
@@ -618,6 +561,28 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         if (mid > 0) {
           const aggressivePx = isBuy ? mid * 1.05 : mid * 0.95;
           (orderSpec as any).p = aggressivePx.toFixed(pxDecimals);
+        } else {
+          // v2.0.32: allMids doesn't include xyz DEX assets — use l2Book instead
+          try {
+            const l2Res = await fetch(HL_INFO_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ type: 'l2Book', coin: order.symbol }),
+            });
+            if (l2Res.ok) {
+              const l2Data = await l2Res.json() as { levels?: Array<Array<{ px: string; sz: string; n: number }>> };
+              const bids = l2Data.levels?.[0];
+              const asks = l2Data.levels?.[1];
+              if (bids?.length && asks?.length) {
+                const bestBid = parseFloat(bids[0]!.px);
+                const bestAsk = parseFloat(asks[0]!.px);
+                const l2Mid = (bestBid + bestAsk) / 2;
+                const aggressivePx = isBuy ? l2Mid * 1.05 : l2Mid * 0.95;
+                (orderSpec as any).p = aggressivePx.toFixed(pxDecimals);
+                log.info(`[placeOrder] Using l2Book mid for ${order.symbol}: $${l2Mid.toFixed(2)} → aggressive $${aggressivePx.toFixed(2)}`);
+              }
+            }
+          } catch { /* fallback to order.price */ }
         }
       }
 
@@ -662,16 +627,25 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         return { success: false, error: status.error };
       }
 
-      const oid = status?.resting?.oid ?? status?.filled?.oid;
-      if (oid) {
-        log.info(`Order placed: ${order.side} ${order.quantity} ${order.symbol} oid=${oid}`);
-        return { success: true, orderId: String(oid) };
+      // v2.0.32: Only treat FILLED orders as successful position opens.
+      // A RESTING order (limit order on the book) does NOT create a position
+      // yet — it may never fill. Returning success for resting orders caused
+      // phantom paper mirrors to be created without real exchange positions.
+      if (status?.filled?.oid) {
+        log.info(`Order filled: ${order.side} ${order.quantity} ${order.symbol} oid=${status.filled.oid} avgPx=${status.filled.avgPx}`);
+        return { success: true, orderId: String(status.filled.oid) };
+      }
+
+      if (status?.resting?.oid) {
+        log.info(`Order resting (not filled): ${order.side} ${order.quantity} ${order.symbol} oid=${status.resting.oid} — not creating mirror`);
+        return { success: false, error: 'Order placed but not filled (resting on book). No position created.' };
       }
 
       return { success: false, error: `Unexpected response: ${JSON.stringify(result).slice(0, 200)}` };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log.error(`placeOrder failed: ${msg}`);
+      const stack = err instanceof Error ? err.stack?.split('\n').slice(0, 5).join('\n') : '';
+      log.error(`placeOrder failed: ${msg}\n  symbol=${order.symbol} price=${order.price} qty=${order.quantity} side=${order.side}\n  ${stack}`);
       return { success: false, error: msg };
     }
   }
@@ -742,6 +716,26 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       const szDecimals = asset.szDecimals;
       log.info(`[adjustPosition] ${pos.symbol}: asset.index=${asset.index} pxDec=${pxDecimals} szDec=${szDecimals} qty=${pos.quantity} sl=${sl} tp=${tp}`);
 
+      // v2.0.32: Safety check — SL must be on the correct side of entry price.
+      // For BUY (long): SL < entry (price falling triggers stop)
+      // For SELL (short): SL > entry (price rising triggers stop)
+      // If SL is on the wrong side, it would immediately trigger and close
+      // the position as soon as it's placed.
+      if (sl && sl > 0) {
+        const slCorrect = pos.side === 'buy' ? sl < pos.averageEntryPrice : sl > pos.averageEntryPrice;
+        if (!slCorrect) {
+          log.error(`❌ SL $${sl} is on wrong side for ${pos.side} ${pos.symbol} (entry=$${pos.averageEntryPrice}) — NOT placing SL trigger`);
+          sl = undefined;
+        }
+      }
+      if (tp && tp > 0) {
+        const tpCorrect = pos.side === 'buy' ? tp > pos.averageEntryPrice : tp < pos.averageEntryPrice;
+        if (!tpCorrect) {
+          log.error(`❌ TP $${tp} is on wrong side for ${pos.side} ${pos.symbol} (entry=$${pos.averageEntryPrice}) — NOT placing TP trigger`);
+          tp = undefined;
+        }
+      }
+
       if (sl && sl > 0) {
         const slAction = {
           type: 'order',
@@ -762,13 +756,13 @@ export class HyperliquidRealEngine implements RealTradingEngine {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: slAction, nonce, signature }),
         });
-        const slResult = await slRes.json() as { response?: { data?: { statuses?: Array<string | { error: string }> } } };
+        const slResult = await slRes.json() as { response?: { data?: { statuses?: Array<string | { error: string; resting?: { oid: number } }> } } };
         const slStatus = slResult.response?.data?.statuses?.[0];
-        if (slStatus === 'success') {
-          log.info(`✅ SL order placed on HL: ${pos.symbol} @ $${sl.toFixed(2)}`);
+        if (slStatus === 'success' || (typeof slStatus === 'object' && slStatus.resting)) {
+          log.info(`✅ SL trigger order placed on HL: ${pos.symbol} @ $${sl.toFixed(2)}`);
         } else {
           const errMsg = typeof slStatus === 'object' ? slStatus.error : String(slStatus);
-          log.error(`❌ SL order rejected by HL: ${pos.symbol} @ $${sl.toFixed(2)} — ${errMsg}`);
+          log.error(`❌ SL trigger order rejected by HL: ${pos.symbol} @ $${sl.toFixed(2)} — ${errMsg}`);
         }
       }
 
@@ -785,20 +779,20 @@ export class HyperliquidRealEngine implements RealTradingEngine {
           }],
           grouping: 'na',
         };
-        const nonce = Date.now() + 1; // different nonce
-        const signature = signL1Action(this.privateKeyHex, tpAction, nonce);
+        const tpNonce = Date.now() + 1; // different nonce
+        const tpSig = signL1Action(this.privateKeyHex, tpAction, tpNonce);
         const tpRes = await fetch(HL_EXCHANGE_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: tpAction, nonce, signature }),
+          body: JSON.stringify({ action: tpAction, nonce: tpNonce, signature: tpSig }),
         });
-        const tpResult = await tpRes.json() as { response?: { data?: { statuses?: Array<string | { error: string }> } } };
+        const tpResult = await tpRes.json() as { response?: { data?: { statuses?: Array<string | { error: string; resting?: { oid: number } }> } } };
         const tpStatus = tpResult.response?.data?.statuses?.[0];
-        if (tpStatus === 'success') {
-          log.info(`✅ TP order placed on HL: ${pos.symbol} @ $${tp.toFixed(2)}`);
+        if (tpStatus === 'success' || (typeof tpStatus === 'object' && tpStatus.resting)) {
+          log.info(`✅ TP trigger order placed on HL: ${pos.symbol} @ $${tp.toFixed(2)}`);
         } else {
           const errMsg = typeof tpStatus === 'object' ? tpStatus.error : String(tpStatus);
-          log.error(`❌ TP order rejected by HL: ${pos.symbol} @ $${tp.toFixed(2)} — ${errMsg}`);
+          log.error(`❌ TP trigger order rejected by HL: ${pos.symbol} @ $${tp.toFixed(2)} — ${errMsg}`);
         }
       }
 
@@ -869,15 +863,21 @@ export class HyperliquidRealEngine implements RealTradingEngine {
           side: string;
           sz: string;
           oid: number;
-          orderType: { limit?: { tif: string }; trigger?: { isMarket: boolean; triggerPx: string; tpsl: string } };
+          limitPx: string;
+          reduceOnly: boolean;
+          orderType?: { limit?: { tif: string }; trigger?: { isMarket: boolean; triggerPx: string; tpsl: string } };
         }>;
         for (const o of data) {
           const trigger = o.orderType?.trigger;
+          // v2.0.32: HL openOrders response doesn't include orderType for trigger orders.
+          // Use limitPx as triggerPx for reduce-only orders (SL/TP are always reduce-only).
+          // tpsl can't be determined from the response, so we leave it undefined.
+          // syncSLTP() will use limitPx to check if an order already exists at that price.
           allOrders.push({
             coin: o.coin,
             side: o.side,
-            orderType: trigger ? 'trigger' : 'limit',
-            triggerPx: trigger?.triggerPx,
+            orderType: trigger ? 'trigger' : (o.reduceOnly ? 'trigger' : 'limit'),
+            triggerPx: trigger?.triggerPx ?? (o.reduceOnly ? o.limitPx : undefined),
             tpsl: trigger?.tpsl,
             sz: o.sz,
             oid: o.oid,

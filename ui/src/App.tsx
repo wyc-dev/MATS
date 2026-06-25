@@ -693,7 +693,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
                     )}
                   </td>
                   <td style={{fontSize:'0.75rem'}}>
-                    {pos.agentId === 'hyperliquid-real' || isRealMode ? (
+                    {pos.agentId === 'hyperliquid-real' ? (
                       <span style={{color:'var(--accent-green)', fontWeight:600}}>REAL</span>
                     ) : (
                       <span style={{color:'var(--text-tertiary)', fontWeight:600}}>PAPER</span>
