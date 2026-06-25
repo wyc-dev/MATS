@@ -355,20 +355,27 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json() as {
-        marginSummary?: { accountValue: string; totalMarginUsed: string; totalNtlPos: string; totalRawUsd: string };
-        withdrawable?: string;
-      };
+      const raw = await res.json() as Record<string, unknown>;
+      log.info(`[getBalance] Raw clearinghouseState: ${JSON.stringify(raw).slice(0, 500)}`);
 
-      const accountValue = parseFloat(data.marginSummary?.accountValue ?? '0');
-      const withdrawable = parseFloat(data.withdrawable ?? '0');
+      const marginSummary = raw['marginSummary'] as { accountValue?: string; totalMarginUsed?: string; totalNtlPos?: string; totalRawUsd?: string } | undefined;
+      const accountValue = parseFloat(marginSummary?.accountValue ?? '0');
+      const totalRawUsd = parseFloat(marginSummary?.totalRawUsd ?? '0');
+      const withdrawable = parseFloat(raw['withdrawable'] as string ?? '0');
+      const marginUsed = parseFloat(marginSummary?.totalMarginUsed ?? '0');
+
+      // HL's accountValue can be 0 for accounts with no positions but has USDC.
+      // Fall back to withdrawable (available to trade) or totalRawUsd.
+      const total = accountValue > 0 ? accountValue : (totalRawUsd > 0 ? totalRawUsd : withdrawable);
+
+      log.info(`[getBalance] accountValue=${accountValue}, totalRawUsd=${totalRawUsd}, withdrawable=${withdrawable}, marginUsed=${marginUsed} → total=${total}`);
 
       return {
-        free: accountValue,
-        locked: 0,
-        total: accountValue,
-        unrealizedPnl: 0,
-        marginUsed: 0,
+        free: withdrawable,
+        locked: marginUsed,
+        total,
+        unrealizedPnl: total - withdrawable - marginUsed,
+        marginUsed,
       };
     } catch (err) {
       log.error(`getBalance failed: ${err instanceof Error ? err.message : String(err)}`);

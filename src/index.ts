@@ -2292,13 +2292,25 @@ class AMACRFSystem {
       });
 
       // 10. Print portfolio summary
-      log.info(`\n📊 ${this.portfolio.getPortfolio().totalPnl >= 0 ? '🟢' : '🔴'} Portfolio:`, {
-        balance: this.portfolio.getPortfolio().balance.toFixed(2),
-        equity: this.portfolio.getPortfolio().totalEquity.toFixed(2),
-        pnl: `${this.portfolio.getPortfolio().totalPnl >= 0 ? '+' : ''}${this.portfolio.getPortfolio().totalPnl.toFixed(2)}`,
-        drawdown: `${(this.portfolio.getPortfolio().maxDrawdownPct * 100).toFixed(2)}%`,
-        positions: this.portfolio.getPortfolio().positions.size,
-      });
+      // v2.0.30: In real mode, show exchange balance instead of paper mirror
+      if (this.realTradingManager.getTradeMode() === 'real' && this.cachedExchangeBalance) {
+        log.info(`\n📊 🟢 Real Portfolio (HL):`, {
+          balance: this.cachedExchangeBalance.total.toFixed(2),
+          free: this.cachedExchangeBalance.free.toFixed(2),
+          marginUsed: this.cachedExchangeBalance.marginUsed.toFixed(2),
+          positions: this.cachedExchangePositions?.length ?? 0,
+        });
+      } else if (this.realTradingManager.getTradeMode() === 'real') {
+        log.info(`\n📊 ⏳ Real mode: exchange balance not yet fetched`);
+      } else {
+        log.info(`\n📊 ${this.portfolio.getPortfolio().totalPnl >= 0 ? '🟢' : '🔴'} Portfolio:`, {
+          balance: this.portfolio.getPortfolio().balance.toFixed(2),
+          equity: this.portfolio.getPortfolio().totalEquity.toFixed(2),
+          pnl: `${this.portfolio.getPortfolio().totalPnl >= 0 ? '+' : ''}${this.portfolio.getPortfolio().totalPnl.toFixed(2)}`,
+          drawdown: `${(this.portfolio.getPortfolio().maxDrawdownPct * 100).toFixed(2)}%`,
+          positions: this.portfolio.getPortfolio().positions.size,
+        });
+      }
 
       // 8. M-step: Update convergence accuracy based on price direction since last cycle
       try {
