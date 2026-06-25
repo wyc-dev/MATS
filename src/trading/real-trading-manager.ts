@@ -445,8 +445,18 @@ export class RealTradingManager {
 
             if (sideChanged || qtyChanged || entryChanged) {
               log.info(`🔄 Position changed on HL: ${sym} side=${localPos.side}→${exPos.side} qty=${localPos.quantity}→${exPos.quantity} entry=${localPos.averageEntryPrice}→${exPos.averageEntryPrice} — replacing mirror`);
-              // Remove old mirror and re-import with fresh SL/TP
-              this.portfolio.removePosition(sym);
+              // v2.0.32: Close the old mirror properly (produces trade record
+              // + returns margin to balance) instead of silently removing it.
+              // This prevents paper positions from "vanishing" without a trace
+              // when the exchange position differs (e.g. side flip).
+              // Only close if it's a paper position (agentId !== 'hyperliquid-real')
+              // — exchange-imported positions don't have margin deducted.
+              if (localPos.agentId !== 'hyperliquid-real') {
+                this.portfolio.closePosition(sym, localPos.currentPrice);
+                log.info(`  → Paper mirror closed: ${localPos.side.toUpperCase()} ${sym} PnL: ${(localPos.unrealizedPnl).toFixed(2)}`);
+              } else {
+                this.portfolio.removePosition(sym);
+              }
               this.portfolio.importExchangePosition(
                 exPos.symbol,
                 exPos.side,
@@ -640,14 +650,19 @@ export class RealTradingManager {
           o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
           o.side === closeSide
         );
-        const hasSL = sl !== undefined && myOrders.some(o =>
+        // v2.0.32: Compare using rounded prices — HL stores triggerPx as
+        // formatted strings (e.g. "60709" not "60709.38"), so we must round
+        // our SL/TP values the same way before comparing.
+        const slRounded = sl !== undefined ? parseFloat(sl.toFixed(2)) : undefined;
+        const tpRounded = tp !== undefined ? parseFloat(tp.toFixed(2)) : undefined;
+        const hasSL = slRounded !== undefined && myOrders.some(o =>
           o.triggerPx &&
-          Math.abs(parseFloat(o.triggerPx) - sl) < 0.01
+          Math.abs(parseFloat(o.triggerPx) - slRounded) < 1
         );
 
-        const hasTP = tp !== undefined && myOrders.some(o =>
+        const hasTP = tpRounded !== undefined && myOrders.some(o =>
           o.triggerPx &&
-          Math.abs(parseFloat(o.triggerPx) - tp) < 0.01
+          Math.abs(parseFloat(o.triggerPx) - tpRounded) < 1
         );
 
         // v2.0.32: Ensure each position (identified by coin + close side)
