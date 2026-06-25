@@ -370,7 +370,7 @@ class AMACRFSystem {
           // Immediately fetch real balance + positions + fills
           try {
             this.cachedExchangeBalance = await this.realTradingManager.getBalance();
-            this.cachedHLFills = await this.realTradingManager.getRecentFills(5);
+            this.cachedHLFills = await this.realTradingManager.getRecentFills(10);
             this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
               symbol: p.symbol,
               side: p.side,
@@ -1267,7 +1267,7 @@ class AMACRFSystem {
           // v2.0.19: also cache recent HL fills (last 5) + exchange positions
           // so the UI Trade Records + Portfolio positions modules show real
           // Hyperliquid data, not just the local mirror.
-          this.cachedHLFills = await this.realTradingManager.getRecentFills(5);
+          this.cachedHLFills = await this.realTradingManager.getRecentFills(10);
           this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
             symbol: p.symbol,
             side: p.side,

@@ -375,6 +375,71 @@ export class PortfolioTracker {
   }
 
   /**
+   * v2.0.31: Import an exchange position into the local portfolio as a mirror.
+   * Unlike openPosition(), this does NOT deduct margin from balance — the
+   * position was opened on the exchange, not in the paper portfolio.
+   * Used by syncExchangePositions() when a position exists on HL but not locally.
+   */
+  importExchangePosition(
+    symbol: string,
+    side: 'buy' | 'sell',
+    quantity: number,
+    entryPrice: number,
+    leverage: number,
+    openedAt: number,
+  ): void {
+    const sym = symbol.toLowerCase();
+
+    // Don't import if already exists
+    if (this.portfolio.positions.has(sym)) return;
+
+    let exchange: string | undefined;
+    if (sym.includes(':')) {
+      exchange = 'hyperliquid';
+    } else if (sym.endsWith('usdt') || sym.endsWith('usd')) {
+      exchange = 'binance';
+    }
+
+    // v2.0.31: Set default SL/TP for imported exchange positions so the
+    // local mirror has safety levels. The exchange may have its own SL/TP
+    // (set via HL UI), but the local mirror needs them too for:
+    //   - UI display (TradingView SL/TP lines)
+    //   - Per-position close voting (agents see SL/TP in context)
+    //   - Portfolio exit monitoring (checkPositionExits)
+    // Default: SL = 2% from entry, TP = 5% from entry (aligned with risk config)
+    const slPct = 0.02;
+    const tpPct = 0.05;
+    const stopLossPrice = side === 'buy'
+      ? entryPrice * (1 - slPct)
+      : entryPrice * (1 + slPct);
+    const takeProfitPrice = side === 'buy'
+      ? entryPrice * (1 + tpPct)
+      : entryPrice * (1 - tpPct);
+
+    const position: Position = {
+      id: `hl-${sym}-${Date.now()}`,
+      symbol: sym,
+      side,
+      quantity,
+      averageEntryPrice: entryPrice,
+      currentPrice: entryPrice,
+      unrealizedPnl: 0,
+      unrealizedPnlPct: 0,
+      realizedPnl: 0,
+      leverage,
+      openedAt,
+      updatedAt: Date.now(),
+      agentId: 'hyperliquid-real',
+      exchange,
+      stopLossPrice,
+      takeProfitPrice,
+    };
+
+    this.portfolio.positions.set(sym, position);
+    this.recalculateEquity();
+  }
+
+  /**
    * Adjust stop-loss and/or take-profit for an existing position.
    * Called by meta-agent during HACP cycle for dynamic TP/SL management.
    * This is the extension point for real trading — same interface.
