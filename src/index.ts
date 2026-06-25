@@ -1422,6 +1422,9 @@ class AMACRFSystem {
         this.totalCycles, // v2.0.26: pass cycle number for cooldown logic
       );
 
+      // v2.0.32: Debug log for consensus result
+      log.info(`🎯 HACP consensus: ${result.consensus.decision.action.toUpperCase()} ${result.consensus.decision.symbol} size=${(result.consensus.decision.positionSizePct * 100).toFixed(1)}% conf=${(result.consensus.confidence * 100).toFixed(0)}% metaOverride=${result.consensus.metaAgentOverridden} cooldown=${this.hacpEngine.isCooldownActive(this.totalCycles)}`);
+
       // 3.1 Apply position adjustments (TP/SL) from meta-agent
       // v2.0.31: In real mode, also place native trigger orders on HL exchange
       if (result.positionAdjustments && result.positionAdjustments.length > 0) {

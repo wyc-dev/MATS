@@ -697,7 +697,10 @@ export class HyperliquidWebSocketManager {
       }
     }
 
-    this.lastBookTimestamp = data.time;
+    // v2.0.32: Use local Date.now() instead of HL server time (data.time)
+    // so SystemGuard's staleness check (now - lastBookTimestamp) is accurate.
+    // HL server time can differ from local UTC, causing false stale alerts.
+    this.lastBookTimestamp = Date.now();
 
     // Notify callbacks
     const book: HLOrderBook = {
