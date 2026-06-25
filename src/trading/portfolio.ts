@@ -367,7 +367,14 @@ export class PortfolioTracker {
     // Recalculate total equity so it reflects latest unrealized PnL
     this.recalculateEquity();
 
-    // Check stop-loss / take-profit
+    // v2.0.32: For exchange-imported positions (agentId='hyperliquid-real'),
+    // do NOT trigger local SL/TP checks. The exchange manages SL/TP natively
+    // via trigger orders. Local SL triggering would close the paper mirror
+    // while the real HL position remains open — causing phantom trade records
+    // and incorrect learning.
+    if (pos.agentId === 'hyperliquid-real') return;
+
+    // Check stop-loss / take-profit (paper positions only)
     this.checkPositionExits(pos);
   }
 

@@ -46,6 +46,16 @@ function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
+/**
+ * v2.0.32: Format a price for HL API — strips trailing zeros.
+ * HL rejects prices with trailing zeros (e.g. "60709.00000" or "155.65000").
+ * BTC requires integer prices ("60709"), SPCX requires 2 decimals max ("155.65").
+ * Using parseFloat(toFixed(decimals)).toString() strips all trailing zeros.
+ */
+function formatPrice(price: number, decimals: number): string {
+  return parseFloat(price.toFixed(decimals)).toString();
+}
+
 /** Compute the action hash: keccak256(msgpack(action) + nonce + vault_flag) */
 function actionHash(
   action: Record<string, unknown>,
@@ -539,7 +549,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       const orderSpec: Record<string, unknown> = {
         a: asset.index,
         b: isBuy,
-        p: order.price.toFixed(pxDecimals),
+        p: formatPrice(order.price, pxDecimals),
         s: order.quantity.toFixed(szDecimals),
         r: false,
         t: { limit: { tif: 'Ioc' } }, // IOC for market-like execution
@@ -554,7 +564,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
           orderSpec['t'] = {
             trigger: {
               isMarket: true,
-              triggerPx: triggerPx.toFixed(pxDecimals),
+              triggerPx: formatPrice(triggerPx, pxDecimals),
               tpsl,
             },
           };
@@ -567,7 +577,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         const mid = await this.getMidPrice(order.symbol);
         if (mid > 0) {
           const aggressivePx = isBuy ? mid * 1.05 : mid * 0.95;
-          (orderSpec as any).p = aggressivePx.toFixed(pxDecimals);
+          (orderSpec as any).p = formatPrice(aggressivePx, pxDecimals);
         } else {
           // v2.0.32: allMids doesn't include xyz DEX assets — use l2Book instead
           try {
@@ -585,7 +595,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
                 const bestAsk = parseFloat(asks[0]!.px);
                 const l2Mid = (bestBid + bestAsk) / 2;
                 const aggressivePx = isBuy ? l2Mid * 1.05 : l2Mid * 0.95;
-                (orderSpec as any).p = aggressivePx.toFixed(pxDecimals);
+                (orderSpec as any).p = formatPrice(aggressivePx, pxDecimals);
                 log.info(`[placeOrder] Using l2Book mid for ${order.symbol}: $${l2Mid.toFixed(2)} → aggressive $${aggressivePx.toFixed(2)}`);
               }
             }
@@ -749,10 +759,10 @@ export class HyperliquidRealEngine implements RealTradingEngine {
           orders: [{
             a: asset.index,
             b: pos.side === 'buy' ? false : true, // opposite side
-            p: sl.toFixed(pxDecimals),
+            p: formatPrice(sl, pxDecimals),
             s: pos.quantity.toFixed(asset.szDecimals),
             r: true, // reduce-only
-            t: { trigger: { isMarket: true, triggerPx: sl.toFixed(pxDecimals), tpsl: 'sl' } },
+            t: { trigger: { isMarket: true, triggerPx: formatPrice(sl, pxDecimals), tpsl: 'sl' } },
           }],
           grouping: 'na',
         };
@@ -779,10 +789,10 @@ export class HyperliquidRealEngine implements RealTradingEngine {
           orders: [{
             a: asset.index,
             b: pos.side === 'buy' ? false : true,
-            p: tp.toFixed(pxDecimals),
+            p: formatPrice(tp, pxDecimals),
             s: pos.quantity.toFixed(asset.szDecimals),
             r: true,
-            t: { trigger: { isMarket: true, triggerPx: tp.toFixed(pxDecimals), tpsl: 'tp' } },
+            t: { trigger: { isMarket: true, triggerPx: formatPrice(tp, pxDecimals), tpsl: 'tp' } },
           }],
           grouping: 'na',
         };
