@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.30--dev-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.31--dev-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -385,11 +385,15 @@ HYPERLIQUID_WALLET_ADDRESS=0x...
 HYPERLIQUID_PRIVATE_KEY=...
 ```
 
-The system defaults to **paper trading** — set `TRADE_MODE=real` in `.env` to enable live trading.
+The system defaults to **paper trading** — switch to real mode via the UI Market Agent panel (no env var needed).
 
-🆕 v2.0.16: When a wallet address is configured, the HL WebSocket subscribes to user-level feeds (`clearinghouseState` + `userFills`) for real-time position + fill sync — no REST polling delay. The UI Portfolio module + Trade Records panel show the actual Hyperliquid positions + recent 5 fills.
+🆕 v2.0.16: When a wallet address is configured, the HL WebSocket subscribes to user-level feeds (`clearinghouseState` + `userFills`) for real-time position + fill sync — no REST polling delay. The UI Portfolio module + Trade Records panel show the actual Hyperliquid positions + recent 10 fills.
 
 🆕 v2.0.17: In real mode the UI shows the actual HL account balance/equity (not the local mirror). Total PnL + Drawdown display `--` (paper-trade concepts); Win Rate/Trades stay local (paper + real mixed).
+
+🆕 v2.0.30: Manual close position button (✕) on each position row with confirm dialog. `closeReason='manual'` tag lets agents know it was NOT a system decision. Real-mode positions synced every cycle.
+
+🆕 v2.0.31: Multi-DEX support — `getBalance()` + `getPositions()` query both DEX 0 (crypto perps) + DEX 'xyz' (TradFi perps) + spot clearinghouse. Exchange positions (e.g. user-opened SPCX on HL UI) are imported into local mirror with default SL/TP so agents can manage them. UI position table shows Paper/Real mode label. `getRecentFills` fixed to include `startTime` (HL API requires it).
 
 ### Decision Cycle Tuning
 
@@ -420,7 +424,7 @@ If you require a commercial license — for example, for proprietary extensions,
 
 ---
 
-## Changelog (v2.0.10 → v2.0.21)
+## Changelog (v2.0.10 → v2.0.31)
 
 | Version | Change |
 |:--------|:-------|
@@ -432,11 +436,17 @@ If you require a commercial license — for example, for proprietary extensions,
 | **v2.0.16** | HL WS user-level subscriptions (`clearinghouseState` + `userFills`) — real-time position/fill sync; post-trade mirror SL/TP renew + fill sync; UI main chart shows position markers + SL/TP |
 | **v2.0.17** | Real-trade UI shows HL real balance/equity (not local mirror); Total PnL + Drawdown show `--` in real mode; Win Rate/Trades stay local (paper + real mixed) |
 | **v2.0.18** | Notional-based double-sided fee deduction — HL taker fee charged on leveraged notional (10x → 0.8% of margin round-trip, 100x → 8%); deducted from `balance` on open + close |
-| **v2.0.19** | Unrealized PnL includes entry fee (not $0.00 at open); real-trade positions module syncs HL positions; Trade Records syncs HL recent 5 fills (`hl-fill` status) |
+| **v2.0.19** | Unrealized PnL includes entry fee (not $0.00 at open); real-trade positions module syncs HL positions; Trade Records syncs HL recent fills (`hl-fill` status) |
 | **v2.0.20** | TradingView TP/SL live update (JSON dependency, only cycle=0 lines); Ollama concurrency 2→4, slot timeout 15s→8s, slot leak protection (>90s reclaim) |
 | **v2.0.21** | Market Agent chart shows only the current position marker (no historical sell arrows) |
+| **v2.0.22–v2.0.26** | Fitness breakdown fix (adaptability + consistency), dailyPnl auto-reset, SL/TP close instant UI update, SL/TP close learning hook (7 mechanisms), loss cooldown + LLM review |
+| **v2.0.27** | Enriched cooldown LLM review with per-trade loss details; Risk Auditor → deepseek-v4-flash:cloud |
+| **v2.0.28** | LLM pattern tag tracking — agents label chart patterns, system tracks win rates per tag+direction (PatternTagTracker + Wilson score) |
+| **v2.0.29** | Legacy position management — positions from previous trade mode continue to be managed until naturally closed |
+| **v2.0.30** | Manual close position button (✕ + confirm); closeReason tracking ('manual'/'sl_tp'/'consensus'/etc); real-mode per-cycle position sync; Paper/Real UI labels |
+| **v2.0.31** | Multi-DEX balance + positions (DEX 0 + xyz + spot); exchange position import into local mirror with default SL/TP; getRecentFills startTime fix; NIM/Binance config cleanup; WS stale book detection |
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.22 for full details on each fix.
+See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.31 for full details on each fix.
 
 ---
 

@@ -513,11 +513,13 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     dir: string;
   }>> {
     try {
-      // userFillsByTime: startTime optional; omit to get the most recent fills.
+      // userFillsByTime requires startTime — HL API fails without it.
+      // Query last 7 days to capture all recent fills.
+      const startTime = Date.now() - 7 * 24 * 60 * 60 * 1000;
       const res = await fetch(HL_INFO_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'userFillsByTime', user: this.walletAddress }),
+        body: JSON.stringify({ type: 'userFillsByTime', user: this.walletAddress, startTime }),
       });
       if (!res.ok) return [];
       const data = await res.json() as { fills?: Array<{
