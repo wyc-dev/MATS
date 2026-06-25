@@ -1298,13 +1298,14 @@ class AMACRFSystem {
             if (engine) {
               const exchangePositions = await engine.getPositions();
               for (const exPos of exchangePositions) {
-                const sym = exPos.symbol.toLowerCase();
+                // v2.0.31: preserve case for colon-prefixed symbols
+                const sym = exPos.symbol.includes(':') ? exPos.symbol : exPos.symbol.toLowerCase();
                 if (this.portfolio.hasPosition(sym)) {
                   this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
                 }
               }
               // Check if any legacy real positions were closed on the exchange
-              const exchangeSyms = exchangePositions.map(p => p.symbol.toLowerCase());
+              const exchangeSyms = exchangePositions.map(p => p.symbol.includes(':') ? p.symbol : p.symbol.toLowerCase());
               for (const sym of legacyRealSymbols) {
                 if (!exchangeSyms.includes(sym) && this.portfolio.hasPosition(sym)) {
                   // Exchange no longer has this position — it was closed (SL/TP/manual)
@@ -2428,8 +2429,9 @@ class AMACRFSystem {
       // v2.0.19: in real mode, if we have a cached exchange position for this
       // symbol, overlay the real entry price + unrealized PnL so the UI shows
       // the actual Hyperliquid position, not just the local mirror.
+      // v2.0.31: colon-prefixed symbols are case-sensitive, match by case-insensitive comparison
       const exPos = isRealMode && this.cachedExchangePositions
-        ? this.cachedExchangePositions.find(ep => ep.symbol.toLowerCase() === key)
+        ? this.cachedExchangePositions.find(ep => ep.symbol.toLowerCase() === key.toLowerCase())
         : undefined;
       positions[key] = {
         id: pos.id,
@@ -2455,7 +2457,8 @@ class AMACRFSystem {
     // UI Portfolio module shows the complete real position set.
     if (isRealMode && this.cachedExchangePositions) {
       for (const exPos of this.cachedExchangePositions) {
-        const key = exPos.symbol.toLowerCase();
+        // v2.0.31: preserve original case for colon-prefixed symbols
+        const key = exPos.symbol.includes(':') ? exPos.symbol : exPos.symbol.toLowerCase();
         if (!positions[key]) {
           positions[key] = {
             id: `hl-${exPos.symbol}-${exPos.openedAt}`,

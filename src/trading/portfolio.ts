@@ -17,6 +17,15 @@ import type {
 
 const log = createLogger({ phase: 'portfolio' });
 
+/**
+ * v2.0.31: Normalize symbol for portfolio Map key.
+ * HL colon-prefixed symbols (xyz:SPCX) are case-sensitive — preserve original case.
+ * Non-colon symbols (BTC, ETH) are lowercased for backward compatibility.
+ */
+function normalizeSymbol(symbol: string): string {
+  return symbol.includes(':') ? symbol : symbol.toLowerCase();
+}
+
 /** Callback fired when a position is closed (SL/TP, reconciliation, or explicit close) */
 export type OnPositionClosed = (trade: TradeRecord) => void;
 /** Callback fired when a position is opened */
@@ -63,9 +72,10 @@ export class PortfolioTracker {
         // Skip entries without a valid symbol to prevent "Cannot read
         // properties of undefined (reading 'toLowerCase')".
         if (!p || !p.symbol) continue;
-        this.portfolio.positions.set(p.symbol.toLowerCase(), {
+        const normSym = normalizeSymbol(p.symbol);
+        this.portfolio.positions.set(normSym, {
           id: p.id,
-          symbol: p.symbol.toLowerCase(),
+          symbol: normSym,
           side: p.side,
           quantity: p.quantity,
           averageEntryPrice: p.averageEntryPrice,
@@ -188,11 +198,11 @@ export class PortfolioTracker {
   }
 
   hasPosition(symbol: string): boolean {
-    return this.portfolio.positions.has(symbol.toLowerCase());
+    return this.portfolio.positions.has(normalizeSymbol(symbol));
   }
 
   getPosition(symbol: string): Position | undefined {
-    return this.portfolio.positions.get(symbol.toLowerCase());
+    return this.portfolio.positions.get(normalizeSymbol(symbol));
   }
 
   /** Get all open symbols for reconciliation checks */
@@ -233,7 +243,7 @@ export class PortfolioTracker {
   }
 
   openPosition(order: Order, entryPrice: number, leverage = 1): Position {
-    const symbol = order.symbol.toLowerCase();
+    const symbol = normalizeSymbol(order.symbol);
     const quantity = order.filledQuantity > 0 ? order.filledQuantity : order.quantity;
     const cost = quantity * entryPrice;
 
@@ -388,9 +398,8 @@ export class PortfolioTracker {
     leverage: number,
     openedAt: number,
   ): void {
-    // v2.0.31: HL colon-prefixed symbols (xyz:SPCX) are case-sensitive.
-    // Lowercase only for non-colon symbols (BTC, ETH). Colon symbols keep original case.
-    const sym = symbol.includes(':') ? symbol : symbol.toLowerCase();
+    // v2.0.31: Use normalizeSymbol for case-sensitive colon symbol support
+    const sym = normalizeSymbol(symbol);
 
     // Don't import if already exists
     if (this.portfolio.positions.has(sym)) return;
@@ -507,7 +516,7 @@ export class PortfolioTracker {
    */
   reconcilePositions(externalOpenSymbols: string[]): string[] {
     const reconciled: string[] = [];
-    const externalSet = new Set(externalOpenSymbols.map(s => s.toLowerCase()));
+    const externalSet = new Set(externalOpenSymbols.map(s => normalizeSymbol(s)));
 
     for (const localSymbol of this.portfolio.positions.keys()) {
       if (!externalSet.has(localSymbol)) {

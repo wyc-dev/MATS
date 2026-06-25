@@ -100,7 +100,8 @@ export class PaperTradingEngine {
   }
 
   updatePrice(symbol: string, price: number): void {
-    const sym = symbol.toLowerCase();
+    // v2.0.31: Use case-preserving normalization for colon-prefixed symbols
+    const sym = symbol.includes(':') ? symbol : symbol.toLowerCase();
     this.lastPrices.set(sym, price);
 
     // Update all positions with new price
