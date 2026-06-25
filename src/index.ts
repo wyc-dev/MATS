@@ -1387,8 +1387,36 @@ class AMACRFSystem {
           });
         }
 
+        // v2.0.32: In real mode, before reconciliation closes exchange
+        // positions locally, record which ones are exchange-imported so
+        // we can close them on HL afterwards. reconcilePositions() deletes
+        // the local position, so we can't check agentId after it runs.
+        const exchangeSymbolsToClose: string[] = [];
+        if (this.realTradingManager.getTradeMode() === 'real') {
+          for (const sym of this.portfolio.getOpenSymbols()) {
+            const pos = this.portfolio.getPosition(sym);
+            if (pos && pos.agentId === 'hyperliquid-real' && !externalSymbols.includes(sym)) {
+              exchangeSymbolsToClose.push(sym);
+            }
+          }
+        }
+
         const reconciled = this.portfolio.reconcilePositions(externalSymbols);
         if (reconciled.length > 0) {
+          // v2.0.32: Close reconciled exchange positions on HL.
+          // The local mirror was closed by reconcilePositions(), but the
+          // real HL position may still be open — we must close it on HL
+          // to avoid leaving real money positions unmanaged.
+          for (const sym of exchangeSymbolsToClose) {
+            if (reconciled.includes(sym)) {
+              log.info(`🔒 Closing ${sym} on HL (reconciled locally but still open on exchange)`);
+              try {
+                await this.realTradingManager.closePosition(sym);
+              } catch (err) {
+                log.error(`Failed to close ${sym} on HL: ${err instanceof Error ? err.message : String(err)}`);
+              }
+            }
+          }
           // Clean up legacy tracking for reconciled positions
           for (const sym of reconciled) {
             this.legacyPositionModes.delete(sym);
