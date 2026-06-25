@@ -2,8 +2,10 @@
 
 export interface SystemSnapshot {
   cycles: number;
-  balance: number;
-  equity: number;
+  /** Null in real-trade mode before first exchange balance fetch — UI shows '--'. */
+  balance: number | null;
+  /** Null in real-trade mode before first exchange balance fetch — UI shows '--'. */
+  equity: number | null;
   /** Null in real-trade mode (v2.0.17) — UI shows '--'. */
   totalPnl: number | null;
   totalPnlPct: number | null;
@@ -106,9 +108,11 @@ export interface DebateStatement {
 }
 
 export interface Portfolio {
-  balance: number;
+  /** Null in real-trade mode before first exchange balance fetch — UI shows '--'. */
+  balance: number | null;
   initialBalance: number;
-  totalEquity: number;
+  /** Null in real-trade mode before first exchange balance fetch — UI shows '--'. */
+  totalEquity: number | null;
   /** Null in real-trade mode (v2.0.17) — UI shows '--'. */
   totalPnl: number | null;
   totalPnlPct: number | null;
