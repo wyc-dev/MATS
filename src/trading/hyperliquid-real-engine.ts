@@ -431,11 +431,13 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         }
       } catch { /* non-critical */ }
 
-      // Total = sum of all perp DEX account values + spot USDC (available but not in perp)
-      const total = totalAccountValue + spotUsdc;
+      // v2.0.32: total = perp accountValue only (this is the "equity" for trading).
+      // spotUsdc is separate (held in spot wallet, not perp collateral).
+      // free = perp withdrawable + spot USDC (total available across both wallets).
+      const total = totalAccountValue;
       const free = totalWithdrawable + spotUsdc;
 
-      log.info(`[getBalance] total=${total}, free=${free}, marginUsed=${totalMarginUsed}, unrealizedPnl=${totalUnrealizedPnl}, spotUsdc=${spotUsdc}`);
+      log.info(`[getBalance] total(perp)=${total}, free=${free}, marginUsed=${totalMarginUsed}, unrealizedPnl=${totalUnrealizedPnl}, spotUsdc=${spotUsdc}`);
 
       return {
         free,
