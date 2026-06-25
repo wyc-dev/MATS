@@ -403,15 +403,8 @@ RULES:
     const override = getAgentModel(this.identity.role);
     if (override) return override;
 
-    // Fallback to preference-based default
-    const provider = getActiveProvider();
-    if (provider.name === 'Ollama') {
-      return config.ollama.modelDefault;
-    }
-    const pref = this.identity.modelPreference;
-    if (pref === 'fast') return config.nim.models.fast;
-    if (pref === 'strong') return config.nim.models.strong;
-    return config.nim.models.default;
+    // Ollama is the only provider — use the default model
+    return config.ollama.modelDefault;
   }
 
   private buildDebatePrompt(

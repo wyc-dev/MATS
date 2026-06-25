@@ -2,7 +2,6 @@
 // Per-agent model overrides — allows UI to change which model each agent uses
 
 import { config } from '../config/index.ts';
-import { getActiveProviderType } from '../llm/index.ts';
 import type { AgentRole } from '../types/index.ts';
 
 export interface AgentModelConfig {
@@ -45,36 +44,21 @@ let defaultModelMap: Record<AgentRole, string> | null = null;
 function getDefaultModelMap(): Record<AgentRole, string> {
   if (defaultModelMap) return defaultModelMap;
 
-  let provider: string;
-  try { provider = getActiveProviderType(); } catch { provider = 'nim'; }
-
-  if (provider === 'ollama') {
-    defaultModelMap = {
-      // Sub-agents use kimi-k2.6:cloud — balanced speed/capability for parallel inference
-      // Meta-agent uses deepseek-v4-flash:cloud — faster for arbitration/synthesis
-      // Risk Auditor uses deepseek-v4-flash:cloud — fast + analytical for risk veto decisions
-      // Regime guardian uses 2048 maxTokens (set in agents.ts) for verbose JSON
-      fractal_momentum_sentinel: 'kimi-k2.6:cloud',
-      onchain_whisperer: 'kimi-k2.6:cloud',
-      rbc_sentiment_analyst: 'kimi-k2.6:cloud',
-      independent_risk_auditor: 'deepseek-v4-flash:cloud',
-      meta_agent: 'deepseek-v4-flash:cloud',
-      news_reporter: 'kimi-k2.6:cloud',
-      skeptics: 'deepseek-v4-flash:cloud',
-      market_agent: 'kimi-k2.6:cloud',
-    };
-  } else {
-    defaultModelMap = {
-      fractal_momentum_sentinel: config.nim.models.fast,
-      onchain_whisperer: config.nim.models.default,
-      rbc_sentiment_analyst: config.nim.models.default,
-      independent_risk_auditor: config.nim.models.default,
-      meta_agent: config.nim.models.strong,
-      news_reporter: config.nim.models.default,
-      skeptics: config.nim.models.fast,
-      market_agent: config.nim.models.default,
-    };
-  }
+  // Ollama is the only provider
+  defaultModelMap = {
+    // Sub-agents use kimi-k2.6:cloud — balanced speed/capability for parallel inference
+    // Meta-agent uses deepseek-v4-flash:cloud — faster for arbitration/synthesis
+    // Risk Auditor uses deepseek-v4-flash:cloud — fast + analytical for risk veto decisions
+    // Regime guardian uses 2048 maxTokens (set in agents.ts) for verbose JSON
+    fractal_momentum_sentinel: 'kimi-k2.6:cloud',
+    onchain_whisperer: 'kimi-k2.6:cloud',
+    rbc_sentiment_analyst: 'kimi-k2.6:cloud',
+    independent_risk_auditor: 'deepseek-v4-flash:cloud',
+    meta_agent: 'deepseek-v4-flash:cloud',
+    news_reporter: 'kimi-k2.6:cloud',
+    skeptics: 'deepseek-v4-flash:cloud',
+    market_agent: 'kimi-k2.6:cloud',
+  };
   return defaultModelMap;
 }
 
@@ -83,7 +67,7 @@ const agentModelOverrides = new Map<AgentRole, string>();
 
 /** Get the effective model for an agent — override or default */
 export function getAgentModel(role: AgentRole): string {
-  return agentModelOverrides.get(role) ?? getDefaultModelMap()[role] ?? config.nim.models.default;
+  return agentModelOverrides.get(role) ?? getDefaultModelMap()[role] ?? config.ollama.modelDefault;
 }
 
 /** Set a per-agent model override */

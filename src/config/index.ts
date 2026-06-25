@@ -7,22 +7,14 @@ import { config as dotenvConfig } from 'dotenv';
 dotenvConfig();
 
 const envSchema = z.object({
-  // Binance
-  BINANCE_API_KEY: z.string().min(1),
+  // Binance (optional — only used when exchange='binance')
+  BINANCE_API_KEY: z.string().optional().default(''),
   BINANCE_WS_URL: z.string().url().default('wss://stream.binance.com:9443/ws'),
   BINANCE_FUTURES_WS_URL: z.string().url().default('wss://fstream.binance.com/ws'),
   BINANCE_REST_URL: z.string().url().default('https://api.binance.com'),
   BINANCE_FUTURES_REST_URL: z.string().url().default('https://fapi.binance.com'),
-  // Note: BTCUSDT on fstream.binance.com IS the perpetual contract (永續合約).
 
-  // NVIDIA NIM
-  NIM_API_KEY: z.string().optional(),
-  NIM_BASE_URL: z.string().url().default('https://integrate.api.nvidia.com/v1'),
-  NIM_MODEL_DEFAULT: z.string().default('meta/llama-3.3-70b-instruct'),
-  NIM_MODEL_FAST: z.string().default('nvidia/llama-3.1-nemotron-8b-instruct'),
-  NIM_MODEL_STRONG: z.string().default('deepseek-ai/deepseek-r1'),
-
-  // Ollama Backup
+  // Ollama (Primary LLM provider)
   OLLAMA_BASE_URL: z.string().url().default('http://localhost:11434'),
   OLLAMA_MODEL_DEFAULT: z.string().default('kimi-k2.6:cloud'),  // Sub-agents default; meta-agent uses deepseek-v4-flash:cloud
 
@@ -59,7 +51,6 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   HEARTBEAT_INTERVAL_MS: z.coerce.number().positive().default(30000),
   DECISION_INTERVAL_MS: z.coerce.number().positive().default(60000),
-  NIM_CALL_TIMEOUT_MS: z.coerce.number().positive().default(120000),
   API_PORT: z.coerce.number().positive().default(3456),
 
   // Sigmoid·GA
@@ -89,16 +80,6 @@ export const config = {
     futuresWsUrl: raw.BINANCE_FUTURES_WS_URL,
     restUrl: raw.BINANCE_REST_URL,
     futuresRestUrl: raw.BINANCE_FUTURES_REST_URL,
-  },
-  nim: {
-    apiKey: raw.NIM_API_KEY,
-    baseUrl: raw.NIM_BASE_URL,
-    models: {
-      default: raw.NIM_MODEL_DEFAULT,
-      fast: raw.NIM_MODEL_FAST,
-      strong: raw.NIM_MODEL_STRONG,
-    },
-    timeoutMs: raw.NIM_CALL_TIMEOUT_MS,
   },
   ollama: {
     baseUrl: raw.OLLAMA_BASE_URL,
