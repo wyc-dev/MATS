@@ -631,46 +631,62 @@ export class RealTradingManager {
 
         // v2.0.32: Check if HL already has trigger orders at the SL/TP prices.
         // HL openOrders response doesn't include tpsl field, so we match by
-        // coin + triggerPx only. This prevents duplicate SL/TP orders.
-        const symbolOrders = openOrders.filter(o =>
-          o.coin.toLowerCase() === pos.symbol.toLowerCase()
+        // coin + side + triggerPx. Side is important: a short position's
+        // SL/TP are buy orders (side=B), a long position's are sell orders
+        // (side=S). We only manage orders matching the current position's
+        // close side — this allows simultaneous long + short on the same asset.
+        const closeSide = pos.side === 'buy' ? 'S' : 'B'; // sell to close long, buy to close short
+        const myOrders = openOrders.filter(o =>
+          o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
+          o.side === closeSide
         );
-        const hasSL = sl !== undefined && symbolOrders.some(o =>
+        const hasSL = sl !== undefined && myOrders.some(o =>
           o.triggerPx &&
           Math.abs(parseFloat(o.triggerPx) - sl) < 0.01
         );
 
-        const hasTP = tp !== undefined && symbolOrders.some(o =>
+        const hasTP = tp !== undefined && myOrders.some(o =>
           o.triggerPx &&
           Math.abs(parseFloat(o.triggerPx) - tp) < 0.01
         );
 
-        // v2.0.32: If SL or TP price has changed (Meta-Agent adjusted),
-        // cancel ALL existing trigger orders for this symbol before placing
-        // new ones. This prevents duplicate/stale trigger orders accumulating
-        // on HL.
-        const slChanged = sl !== undefined && !hasSL && symbolOrders.some(o =>
-          o.triggerPx && Math.abs(parseFloat(o.triggerPx) - (pos.stopLossPrice ?? 0)) > 0.01
-        );
-        const tpChanged = tp !== undefined && !hasTP && symbolOrders.some(o =>
-          o.triggerPx && Math.abs(parseFloat(o.triggerPx) - (pos.takeProfitPrice ?? 0)) > 0.01
-        );
+        // v2.0.32: Ensure each position (identified by coin + close side)
+        // has EXACTLY one SL + one TP on HL. If there are more than 2 orders
+        // for this side, or if SL/TP is missing, cancel all orders for this
+        // side and re-place them fresh. This prevents duplicate/stale trigger
+        // orders accumulating on HL without affecting the opposite side's
+        // orders (e.g. if there's also a long position on the same asset).
+        const needsRefresh = myOrders.length > 2 || 
+          (sl !== undefined && !hasSL) ||
+          (tp !== undefined && !hasTP);
 
-        if ((slChanged || tpChanged) && symbolOrders.length > 0) {
-          log.info(`🗑️ SL/TP price changed for ${pos.symbol} — cancelling ${symbolOrders.length} existing order(s) before placing new ones`);
-          await engine.cancelAllOrdersForSymbol(pos.symbol);
-        }
+        if (needsRefresh && myOrders.length > 0) {
+          log.info(`🗑️ Refreshing trigger orders for ${pos.symbol} (${closeSide} side) — cancelling ${myOrders.length} existing order(s)`);
+          // Cancel only orders matching this position's close side
+          for (const o of myOrders) {
+            await engine.cancelOrder(String(o.oid));
+          }
+          // Re-place both SL and TP fresh
+          if (sl && sl > 0) {
+            log.info(`🔧 Re-placing SL on HL for ${pos.symbol} @ $${sl.toFixed(2)}`);
+            await engine.adjustPosition(pos.symbol, sl, undefined);
+          }
+          if (tp && tp > 0) {
+            log.info(`🔧 Re-placing TP on HL for ${pos.symbol} @ $${tp.toFixed(2)}`);
+            await engine.adjustPosition(pos.symbol, undefined, tp);
+          }
+        } else {
+          // Place missing SL only if not already present
+          if (sl && !hasSL) {
+            log.info(`🔧 SL missing on HL for ${pos.symbol} — placing SL @ $${sl.toFixed(2)}`);
+            await engine.adjustPosition(pos.symbol, sl, undefined);
+          }
 
-        // Place missing SL
-        if (sl && !hasSL) {
-          log.info(`🔧 SL missing on HL for ${pos.symbol} — placing SL @ $${sl.toFixed(2)}`);
-          await engine.adjustPosition(pos.symbol, sl, undefined);
-        }
-
-        // Place missing TP
-        if (tp && !hasTP) {
-          log.info(`🔧 TP missing on HL for ${pos.symbol} — placing TP @ $${tp.toFixed(2)}`);
-          await engine.adjustPosition(pos.symbol, undefined, tp);
+          // Place missing TP only if not already present
+          if (tp && !hasTP) {
+            log.info(`🔧 TP missing on HL for ${pos.symbol} — placing TP @ $${tp.toFixed(2)}`);
+            await engine.adjustPosition(pos.symbol, undefined, tp);
+          }
         }
       }
     } catch (err) {

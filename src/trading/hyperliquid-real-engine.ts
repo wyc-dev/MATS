@@ -892,11 +892,23 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       const pos = positions.find(p => p.symbol.toUpperCase() === symbol.toUpperCase());
       if (!pos) return true; // No position = already closed
 
-      // v2.0.32: Cancel all existing trigger orders (SL/TP) for this symbol
-      // before closing the position. If trigger orders are still open when
-      // we try to close, HL may reject the close order or the triggers may
-      // fire simultaneously causing conflicts.
-      await this.cancelAllOrdersForSymbol(symbol);
+      // v2.0.32: Cancel existing trigger orders for this position's close
+      // side before closing. Only cancel orders matching this position's
+      // close side (B for short, S for long) — don't touch the opposite
+      // side's orders in case there's a simultaneous long+short on the
+      // same asset.
+      const closeSide = pos.side === 'buy' ? 'S' : 'B';
+      const openOrders = await this.getOpenOrders();
+      const myOrders = openOrders.filter(o =>
+        o.coin.toLowerCase() === symbol.toLowerCase() &&
+        o.side === closeSide
+      );
+      for (const o of myOrders) {
+        await this.cancelOrder(String(o.oid));
+      }
+      if (myOrders.length > 0) {
+        log.info(`🗑️ Cancelled ${myOrders.length} trigger order(s) for ${symbol} (${closeSide} side) before close`);
+      }
 
       const order: Order = {
         id: uuidv4(),
