@@ -683,13 +683,20 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     }
   }
 
-  async cancelOrder(orderId: string): Promise<boolean> {
+  async cancelOrder(orderId: string, symbol?: string): Promise<boolean> {
     try {
-      // Need asset index — try to get from first position
-      const positions = await this.getPositions();
-      const assetIdx = positions[0]?.symbol
-        ? (await getAssetIndex(positions[0].symbol))?.index ?? 0
-        : 0;
+      // v2.0.32: Use correct asset index for the order's coin.
+      // If symbol is provided, use it; otherwise fall back to positions[0].
+      let assetIdx = 0;
+      if (symbol) {
+        const asset = await getAssetIndex(symbol);
+        assetIdx = asset?.index ?? 0;
+      } else {
+        const positions = await this.getPositions();
+        assetIdx = positions[0]?.symbol
+          ? (await getAssetIndex(positions[0].symbol))?.index ?? 0
+          : 0;
+      }
 
       const action = {
         type: 'cancel',
@@ -713,6 +720,43 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       return status === 'success';
     } catch (err) {
       log.error(`cancelOrder failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /**
+   * v2.0.32: Get the asset index for a given symbol (public method).
+   * Used by realTradingManager to get the correct asset index for cancelling orders.
+   */
+  async getAssetIndexForSymbol(symbol: string): Promise<number> {
+    const asset = await getAssetIndex(symbol);
+    return asset?.index ?? 0;
+  }
+
+  /**
+   * v2.0.32: Cancel a specific order by oid with a known asset index.
+   * More efficient than cancelOrder() which looks up the asset index.
+   */
+  async cancelOrderWithAsset(assetIdx: number, oid: number): Promise<boolean> {
+    try {
+      const action = {
+        type: 'cancel',
+        cancels: [{ a: assetIdx, o: oid }],
+      };
+      const nonce = Date.now();
+      const signature = signL1Action(this.privateKeyHex, action, nonce);
+      const res = await fetch(HL_EXCHANGE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, nonce, signature }),
+      });
+      const result = await res.json() as {
+        response?: { data?: { statuses?: Array<string | { error: string }> } };
+      };
+      const status = result.response?.data?.statuses?.[0];
+      return status === 'success';
+    } catch (err) {
+      log.warn(`cancelOrderWithAsset failed: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
@@ -903,8 +947,11 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         o.coin.toLowerCase() === symbol.toLowerCase() &&
         o.side === closeSide
       );
+      // v2.0.32: Use correct asset index for cancel (not positions[0])
+      const asset = await getAssetIndex(symbol);
+      const assetIdx = asset?.index ?? 0;
       for (const o of myOrders) {
-        await this.cancelOrder(String(o.oid));
+        await this.cancelOrderWithAsset(assetIdx, o.oid);
       }
       if (myOrders.length > 0) {
         log.info(`🗑️ Cancelled ${myOrders.length} trigger order(s) for ${symbol} (${closeSide} side) before close`);

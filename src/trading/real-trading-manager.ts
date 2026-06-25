@@ -677,9 +677,11 @@ export class RealTradingManager {
 
         if (needsRefresh && myOrders.length > 0) {
           log.info(`🗑️ Refreshing trigger orders for ${pos.symbol} (${closeSide} side) — cancelling ${myOrders.length} existing order(s)`);
-          // Cancel only orders matching this position's close side
+          // Cancel only orders matching this position's close side.
+          // We need the correct asset index for each cancel, so we look it up.
+          const asset = await engine.getAssetIndexForSymbol(pos.symbol);
           for (const o of myOrders) {
-            await engine.cancelOrder(String(o.oid));
+            await engine.cancelOrderWithAsset(asset, o.oid);
           }
           // Re-place both SL and TP fresh
           if (sl && sl > 0) {
