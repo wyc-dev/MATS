@@ -322,10 +322,23 @@ class AMACRFSystem {
       });
 
       // Wire up Market Agent API handlers
-      this.apiServer.setMarketAgentSetTradeModeHandler((mode) => {
+      this.apiServer.setMarketAgentSetTradeModeHandler(async (mode) => {
         log.info(`Market Agent: trade mode → ${mode}`);
         this.marketAgent.setTradeMode(mode);
         this.realTradingManager.setTradeMode(mode);
+
+        // When switching to real mode, ensure HL WS subscribes to user-level
+        // feeds (clearinghouseState + userFills) for real-time balance/position sync.
+        if (mode === 'real') {
+          const hlWallet = config.realTrading.hyperliquidWalletAddress;
+          if (hlWallet && hlWallet.length > 0) {
+            this.hyperliquidWs.setWalletAddress(hlWallet);
+            log.info('📡 HL WS wallet address set for user-level feeds');
+          } else {
+            log.warn('⚠️ Real mode enabled but HYPERLIQUID_WALLET_ADDRESS is empty — balance/positions will not sync. Set it in .env and restart.');
+          }
+        }
+
         this.pushToAPI();
       });
       this.apiServer.setMarketAgentSetExchangeHandler(async (exchange) => {
