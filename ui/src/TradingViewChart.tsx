@@ -274,7 +274,7 @@ export default function TradingViewChart({ symbol, currentPrice, trades, refresh
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tradesKey, timeframe])
+  }, [tradesKey, timeframe, refreshKey])
 
   return (
     <div>

@@ -526,46 +526,21 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
   const selectedPos = positions.find((pos: any) => pos.symbol === displaySymbol)
   const chartPrice = selectedPos?.currentPrice ?? 0
 
-  // Build trade markers — merge historical trade decisions with current position's live SL/TP
+  // v2.0.32: Portfolio chart only shows the CURRENT position marker + live SL/TP.
+  // Historical trade markers are NOT shown here (they belong in the Market Agent chart).
+  // This prevents multiple buy markers from erroneous/old trade records.
   const tradeMarkers: Array<{ time: number; action: 'buy' | 'sell'; price: number; sl?: number; tp?: number; cycle: number }> = []
-  
-  // Add historical trade markers from trade history
-  const historyMarkers = th
-    .filter((t: any) => t.decision.symbol === displaySymbol && (t.decision.action === 'buy' || t.decision.action === 'sell'))
-    .map((t: any) => {
-      const isShort = t.decision.action === 'sell';
-      return {
-        time: Math.floor((t.openedAt ?? t.timestamp) / 1000),
-        action: t.decision.action as 'buy' | 'sell',
-        price: t.entryPrice,
-        sl: t.decision.stopLossPct
-          ? isShort
-            ? t.entryPrice * (1 + t.decision.stopLossPct)
-            : t.entryPrice * (1 - t.decision.stopLossPct)
-          : undefined,
-        tp: t.decision.takeProfitPct
-          ? isShort
-            ? t.entryPrice * (1 - t.decision.takeProfitPct)
-            : t.entryPrice * (1 + t.decision.takeProfitPct)
-          : undefined,
-        cycle: t.cycleNumber,
-      };
-    })
-  tradeMarkers.push(...historyMarkers)
 
-  // Add CURRENT position's live SL/TP as a special marker (cycle=0 = current)
+  // Add CURRENT position's live SL/TP as a marker (cycle=0 = current)
   if (selectedPos) {
-    const hasExisting = historyMarkers.some(m => m.cycle === 0)
-    if (!hasExisting) {
-      tradeMarkers.push({
-        time: Math.floor((selectedPos.openedAt ?? Date.now()) / 1000),
-        action: selectedPos.side === 'buy' ? 'buy' : 'sell',
-        price: selectedPos.currentPrice,
-        sl: selectedPos.stopLossPrice,
-        tp: selectedPos.takeProfitPrice,
-        cycle: 0, // 0 = current position
-      })
-    }
+    tradeMarkers.push({
+      time: Math.floor((selectedPos.openedAt ?? Date.now()) / 1000),
+      action: selectedPos.side === 'buy' ? 'buy' : 'sell',
+      price: selectedPos.averageEntryPrice,
+      sl: selectedPos.stopLossPrice,
+      tp: selectedPos.takeProfitPrice,
+      cycle: 0, // 0 = current position
+    })
   }
 
   return (
