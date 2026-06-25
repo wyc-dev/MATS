@@ -97,7 +97,7 @@ class AMACRFSystem {
 
   constructor() {
     log.info('🏛️  AMACRF System Initializing...');
-    log.info(`   Config: ${config.nim.models.default} (NIM), ${config.paper.initialBalance} USDT paper, ${config.system.decisionIntervalMs / 1000}s cycle`);
+    log.info(`   Config: ${config.ollama.modelDefault} (Ollama), ${config.paper.initialBalance} USDT paper, ${config.system.decisionIntervalMs / 1000}s cycle`);
 
     // Restore last debate/consensus result from disk so UI shows it immediately
     const savedDebate = loadDebateHistory();
@@ -282,19 +282,8 @@ class AMACRFSystem {
         this.pushToAPI();
       });
 
-      // 5.5. Pre-warm NIM models (避免冷啟動)
-      const providerType = getActiveProviderType();
-      if (providerType === 'nim') {
-        log.info('Step 5.5/6: Pre-warming NIM models...');
-        const { getActiveProvider } = await import('./llm/index.ts');
-        const provider = getActiveProvider();
-        // 使用 provider 的 warmUpAllModels 方法（如果可用）
-        if ('warmUpAllModels' in provider) {
-          await (provider as any).warmUpAllModels();
-        } else {
-          log.info('✓ Pre-warm skipped (provider does not support)');
-        }
-      }
+      // 5.5. Skip pre-warm (Ollama handles model loading internally)
+      log.info('Step 5.5/6: Ollama provider ready (no pre-warm needed)');
 
       // 6. Start API Server
       log.info('Step 6/7: Starting API server...');

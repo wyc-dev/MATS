@@ -1,5 +1,5 @@
 // ─── LLM Provider Interface ───
-// Abstract layer for all LLM providers: NVIDIA NIM, Ollama, OpenAI, Anthropic
+// Abstract layer for all LLM providers: Ollama, OpenAI, Anthropic
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
@@ -32,7 +32,7 @@ export interface LLMProvider {
   isAvailable(): Promise<boolean>;
 }
 
-export type LLMProviderType = 'nim' | 'ollama';
+export type LLMProviderType = 'ollama';
 
 export function buildSystemPrompt(role: string, personality: string, temperature: number): string {
   return `You are ${role}, an agent in the Adaptive Multi-Agent Chaotic Regime Framework (AMACRF).

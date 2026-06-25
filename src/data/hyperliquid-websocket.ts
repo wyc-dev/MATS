@@ -775,6 +775,22 @@ export class HyperliquidWebSocketManager {
         this.stopHeartbeat();
         return;
       }
+
+      // Check for stale book data — if no l2Book update received in 60s,
+      // the WS is likely in a silent disconnect state (TCP open but no data).
+      // Force reconnect to recover.
+      if (this.lastBookTimestamp > 0) {
+        const bookAge = Date.now() - this.lastBookTimestamp;
+        if (bookAge > 60_000) {
+          log.warn(`HL WS: book data stale (${(bookAge / 1000).toFixed(0)}s old) — forcing reconnect`);
+          this.stopHeartbeat();
+          if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.terminate(); // force close → triggers onclose → scheduleReconnect
+          }
+          return;
+        }
+      }
+
       // Send ping to keep connection alive
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.ping();
