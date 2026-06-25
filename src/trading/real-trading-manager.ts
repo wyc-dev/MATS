@@ -473,8 +473,17 @@ export class RealTradingManager {
     const engine = this.getActiveEngine();
     if (engine) {
       try {
-        await engine.adjustPosition(positionId, sl, tp);
-        log.info(`🔧 Real SL/TP placed on HL: ${positionId.slice(0, 12)} SL=${sl?.toFixed(2) ?? '-'} TP=${tp?.toFixed(2) ?? '-'}`);
+        // Get the position from local portfolio to extract the symbol
+        const pos = this.portfolio.getPosition(positionId);
+        if (pos) {
+          // Pass the symbol to the engine — it matches by symbol, not positionId
+          await engine.adjustPosition(pos.symbol, sl, tp);
+          log.info(`🔧 Real SL/TP placed on HL: ${pos.symbol} SL=${sl?.toFixed(2) ?? '-'} TP=${tp?.toFixed(2) ?? '-'}`);
+        } else {
+          // Fallback: pass positionId directly
+          await engine.adjustPosition(positionId, sl, tp);
+          log.info(`🔧 Real SL/TP placed on HL: ${positionId.slice(0, 20)} SL=${sl?.toFixed(2) ?? '-'} TP=${tp?.toFixed(2) ?? '-'}`);
+        }
       } catch (err) {
         log.error(`Failed to place SL/TP on HL: ${err instanceof Error ? err.message : String(err)}`);
       }

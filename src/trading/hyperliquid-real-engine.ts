@@ -722,9 +722,11 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     // HL supports native trigger orders — place them if we have the position details
     try {
       const positions = await this.getPositions();
-      const pos = positions.find(p => p.id === positionId);
+      // v2.0.31: Match by symbol (passed from realTradingManager) or by positionId
+      const pos = positions.find(p => p.id === positionId)
+        ?? positions.find(p => p.symbol.toLowerCase() === positionId.toLowerCase());
       if (!pos) {
-        log.warn(`Position ${positionId.slice(0, 8)} not found for SL/TP placement`);
+        log.warn(`Position ${positionId.slice(0, 20)} not found on exchange for SL/TP placement`);
         return true; // Monitoring will handle it
       }
 
