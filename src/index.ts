@@ -609,7 +609,7 @@ class AMACRFSystem {
         // no auto-close; the exchange natively manages stop-losses).
         this.hyperliquidWs.onPositions((positions) => {
           for (const p of positions) {
-            const sym = p.symbol.toLowerCase();
+            const sym = p.symbol.includes(':') ? p.symbol : p.symbol.toLowerCase();
             if (this.portfolio.hasPosition(sym)) {
               this.portfolio.softUpdatePosition(sym, p.entryPx);
             }
@@ -1354,13 +1354,14 @@ class AMACRFSystem {
           const legacySymbols = this.portfolio.getOpenSymbols().filter(sym =>
             this.legacyPositionModes.get(sym) === 'paper'
           );
-          // v2.0.31: Also keep exchange-imported positions (agentId='hyperliquid-real')
-          // even if getOpenPositionSymbols missed them due to case mismatch
-          const exchangeImportedSymbols = this.portfolio.getOpenSymbols().filter(sym => {
-            const pos = this.portfolio.getPosition(sym);
-            return pos && pos.agentId === 'hyperliquid-real';
-          });
-          externalSymbols = [...new Set([...exchangeSymbols, ...legacySymbols, ...exchangeImportedSymbols])];
+          // v2.0.32: Exchange-imported positions (agentId='hyperliquid-real')
+          // must be reconciled if they're no longer on the exchange.
+          // Previously, ALL exchange-imported positions were blindly kept,
+          // which meant positions closed on HL were never removed from the
+          // local portfolio — inflating the balance and causing phantom trades.
+          // Now: only keep exchange-imported positions that are actually open
+          // on the exchange (already in exchangeSymbols from getOpenPositionSymbols).
+          externalSymbols = [...new Set([...exchangeSymbols, ...legacySymbols])];
         } else {
           // Paper mode: no external exchange to verify against.
           // Only clean up truly stale positions — those opened in a
@@ -1369,17 +1370,19 @@ class AMACRFSystem {
           // DO NOT remove recently-opened positions (even on non-active
           // symbols) — they may be exploration trades or multi-symbol.
           // v2.0.29: Legacy real positions are kept too.
+          // v2.0.32: Exchange-imported positions (agentId='hyperliquid-real')
+          // are NOT kept in paper mode — they were real positions that may
+          // have been closed on HL. Without exchange access to verify, we
+          // can't know if they're still open. Close them to avoid phantom
+          // positions inflating the balance.
           const now = Date.now();
           const staleCutoff = 3_600_000 * 12; // 12 hours
           const activeSym = activeSymbol.toLowerCase();
           externalSymbols = this.portfolio.getOpenSymbols().filter(sym => {
             // Legacy positions are always kept
             if (this.legacyPositionModes.has(sym)) return true;
-            // v2.0.31: Exchange-imported positions are always kept — they represent
-            // real positions on HL that must not be closed by paper-mode reconciliation
-            const pos = this.portfolio.getPosition(sym);
-            if (pos && pos.agentId === 'hyperliquid-real') return true;
             if (sym === activeSym) return true;
+            const pos = this.portfolio.getPosition(sym);
             return !!pos && (now - pos.openedAt < staleCutoff);
           });
         }
@@ -2450,7 +2453,27 @@ class AMACRFSystem {
     const positions: Record<string, unknown> = {};
     const isRealMode = this.realTradingManager?.getTradeMode() === 'real';
 
+    // v2.0.32: In real mode, build a set of symbols that actually exist on HL.
+    // Any local mirror not on HL is stale (closed on exchange) and must NOT
+    // be shown in the UI — otherwise the system keeps trying to place SL/TP
+    // for a position that doesn't exist, causing console errors.
+    const hlSymbols = new Set<string>();
+    if (isRealMode && this.cachedExchangePositions) {
+      for (const ep of this.cachedExchangePositions) {
+        hlSymbols.add(ep.symbol.includes(':') ? ep.symbol : ep.symbol.toLowerCase());
+      }
+    }
+
     for (const [key, pos] of p.positions) {
+      // v2.0.32: In real mode, skip local mirrors that don't exist on HL.
+      // This prevents stale positions from showing in the UI and causing
+      // SL/TP placement errors on the exchange.
+      if (isRealMode && this.cachedExchangePositions) {
+        if (!hlSymbols.has(key)) {
+          continue;
+        }
+      }
+
       // v2.0.19: in real mode, if we have a cached exchange position for this
       // symbol, overlay the real entry price + unrealized PnL so the UI shows
       // the actual Hyperliquid position, not just the local mirror.
@@ -2788,7 +2811,18 @@ class AMACRFSystem {
             status: t.status,
           })),
           // Open positions from portfolio (so they appear as open trade records)
-          ...Array.from(this.portfolio.getPortfolio().positions.values()).map(p => ({
+          // v2.0.32: In real mode, only show positions that actually exist on HL.
+          // Stale local mirrors (closed on exchange but not yet reconciled) are
+          // filtered out to prevent confusing the UI and causing SL/TP errors.
+          ...Array.from(this.portfolio.getPortfolio().positions.values())
+            .filter(p => {
+              if (!isRealMode || !this.cachedExchangePositions) return true;
+              const sym = p.symbol.includes(':') ? p.symbol : p.symbol.toLowerCase();
+              return this.cachedExchangePositions.some(ep =>
+                (ep.symbol.includes(':') ? ep.symbol : ep.symbol.toLowerCase()) === sym
+              );
+            })
+            .map(p => ({
             id: p.id,
             symbol: p.symbol,
             side: p.side,

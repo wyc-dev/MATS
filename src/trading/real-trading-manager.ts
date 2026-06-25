@@ -273,6 +273,9 @@ export class RealTradingManager {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         agentId: '' as any,
+        // v2.0.32: Pass leverage via metadata so placeOrder() can call
+        // updateLeverage() on HL before placing the order.
+        metadata: { leverage: decision.leverage ?? 10 },
       };
 
       const result = await engine.placeOrder(order);
@@ -303,6 +306,7 @@ export class RealTradingManager {
               : price * (1 - decision.takeProfitPct)
             : undefined;
 
+          // v2.0.32: Place SL/TP on the real exchange (Binance or Hyperliquid)
           if (engine instanceof BinanceRealEngine && slPrice && tpPrice) {
             await engine.setStopLossTakeProfit(
               decision.symbol,
@@ -313,15 +317,37 @@ export class RealTradingManager {
             );
           }
 
+          // v2.0.32: For Hyperliquid, place native trigger orders on HL
+          // immediately after the position opens. This ensures SL/TP protection
+          // exists on the exchange from the very first cycle, rather than
+          // waiting for the next syncSLTP() call.
+          if (engine instanceof HyperliquidRealEngine && (slPrice || tpPrice)) {
+            try {
+              await engine.adjustPosition(decision.symbol, slPrice, tpPrice);
+              log.info(`🔧 SL/TP placed on HL immediately after open: ${decision.symbol} SL=${slPrice?.toFixed(2) ?? '-'} TP=${tpPrice?.toFixed(2) ?? '-'}`);
+            } catch (sltpErr) {
+              log.error(`Failed to place SL/TP on HL after open: ${sltpErr instanceof Error ? sltpErr.message : String(sltpErr)}`);
+            }
+          }
+
           // Renew the local mirror's SL/TP so the TradingView chart + SL/TP
           // monitoring reflect the real trade's levels (v2.0.16). The mirror
           // was opened by paperEngine.executeDecision above with default SL/TP;
           // override with the decision's actual SL/TP prices.
-          const mirrorPos = this.portfolio.getPosition(decision.symbol.toLowerCase());
+          const mirrorPos = this.portfolio.getPosition(decision.symbol.includes(':') ? decision.symbol : decision.symbol.toLowerCase());
           if (mirrorPos && (slPrice || tpPrice)) {
             const posId = mirrorPos.id;
             this.portfolio.adjustPosition(posId, slPrice, tpPrice);
+            // v2.0.32: Mark the mirror as a real position so syncSLTP() picks it up
+            mirrorPos.agentId = 'hyperliquid-real';
             log.info(`Mirror SL/TP renewed for ${decision.symbol}: SL=${slPrice?.toFixed(2) ?? '-'} TP=${tpPrice?.toFixed(2) ?? '-'}`);
+          }
+        } else {
+          // v2.0.32: Even without explicit SL/TP from the decision, mark the
+          // mirror as a real position so syncSLTP() can place default SL/TP.
+          const mirrorPos = this.portfolio.getPosition(decision.symbol.includes(':') ? decision.symbol : decision.symbol.toLowerCase());
+          if (mirrorPos) {
+            mirrorPos.agentId = 'hyperliquid-real';
           }
         }
 
@@ -369,8 +395,11 @@ export class RealTradingManager {
   /**
    * Sync positions from the exchange into the local portfolio tracker.
    * Called before each decision cycle so agents see real P&L.
-   * Only updates currentPrice + unrealizedPnl on existing mirror positions;
-   * does not auto-open/close (mirror handles that via HACP decisions).
+   * v2.0.32: Full sync — when the exchange position differs from the local
+   * mirror (side flip, quantity change, entry price change), the mirror is
+   * replaced to match the exchange. This prevents stale SL/TP from the old
+   * position being pushed to HL via syncSLTP(), which could immediately
+   * trigger and close the new position.
    */
   async syncExchangePositions(): Promise<void> {
     const engine = this.getActiveEngine();
@@ -380,15 +409,57 @@ export class RealTradingManager {
       const exchangePositions = await engine.getPositions();
       if (!exchangePositions) return;
 
+      // Build a map of exchange positions by normalized symbol
+      const exMap = new Map<string, Position>();
       for (const exPos of exchangePositions) {
-        // v2.0.31: HL colon-prefixed symbols (xyz:SPCX) are case-sensitive.
-        // Lowercase only for non-colon symbols (BTC, ETH). Colon symbols keep original case.
         const sym = exPos.symbol.includes(':') ? exPos.symbol : exPos.symbol.toLowerCase();
+        exMap.set(sym, exPos);
+      }
+
+      // v2.0.32: Remove local mirrors that no longer exist on the exchange.
+      // This must happen BEFORE syncSLTP() runs, otherwise stale SL/TP from
+      // closed positions get pushed to HL and may immediately trigger on
+      // unrelated positions. Only remove exchange-imported positions
+      // (agentId='hyperliquid-real') — paper positions are handled by
+      // reconciliation later.
+      for (const localSym of this.portfolio.getOpenSymbols()) {
+        const localPos = this.portfolio.getPosition(localSym);
+        if (!localPos || localPos.agentId !== 'hyperliquid-real') continue;
+        if (!exMap.has(localSym)) {
+          log.info(`🗑️ Removing stale exchange mirror: ${localSym} (no longer on HL)`);
+          this.portfolio.removePosition(localSym);
+        }
+      }
+
+      // Update or import exchange positions
+      for (const [sym, exPos] of exMap) {
         if (this.portfolio.hasPosition(sym)) {
-          // Soft-update: P&L recalculated, but SL/TP not auto-triggered.
-          // The exchange natively manages stop-losses; the mirror must not
-          // prematurely close a position that's still open on the exchange.
-          this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
+          const localPos = this.portfolio.getPosition(sym);
+          if (localPos) {
+            // v2.0.32: Check if the position has fundamentally changed
+            // (side flip, quantity change, or entry price change).
+            // If so, replace the mirror entirely with fresh SL/TP.
+            const sideChanged = localPos.side !== exPos.side;
+            const qtyChanged = Math.abs(localPos.quantity - exPos.quantity) > 0.0001;
+            const entryChanged = Math.abs(localPos.averageEntryPrice - exPos.averageEntryPrice) > 0.01;
+
+            if (sideChanged || qtyChanged || entryChanged) {
+              log.info(`🔄 Position changed on HL: ${sym} side=${localPos.side}→${exPos.side} qty=${localPos.quantity}→${exPos.quantity} entry=${localPos.averageEntryPrice}→${exPos.averageEntryPrice} — replacing mirror`);
+              // Remove old mirror and re-import with fresh SL/TP
+              this.portfolio.removePosition(sym);
+              this.portfolio.importExchangePosition(
+                exPos.symbol,
+                exPos.side,
+                exPos.quantity,
+                exPos.averageEntryPrice,
+                exPos.leverage,
+                exPos.openedAt,
+              );
+            } else {
+              // Only price changed — soft update
+              this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
+            }
+          }
         } else {
           // v2.0.31: Import exchange position that doesn't exist locally
           // (e.g. user opened a position manually on HL UI). Create a local
@@ -504,28 +575,71 @@ export class RealTradingManager {
       // Get all open orders on HL (both DEX 0 + xyz)
       const openOrders = await engine.getOpenOrders();
 
+      // v2.0.32: Get actual HL positions to verify the local mirror matches.
+      // This prevents pushing stale SL/TP from a local mirror that doesn't
+      // match the real exchange position (e.g. side flip, stale entry price).
+      const hlPositions = await engine.getPositions();
+      const hlMap = new Map<string, { side: string; entry: number }>();
+      for (const hp of hlPositions) {
+        const sym = hp.symbol.includes(':') ? hp.symbol : hp.symbol.toLowerCase();
+        hlMap.set(sym, { side: hp.side, entry: hp.averageEntryPrice });
+      }
+
       // Get all local positions that are exchange-imported (real positions)
       const openSymbols = this.portfolio.getOpenSymbols();
       for (const sym of openSymbols) {
         const pos = this.portfolio.getPosition(sym);
         if (!pos || pos.agentId !== 'hyperliquid-real') continue;
 
+        // v2.0.32: Verify the position actually exists on HL with matching side.
+        // If the local mirror doesn't match HL, skip SL/TP placement entirely.
+        const hlPos = hlMap.get(sym);
+        if (!hlPos) {
+          log.warn(`⚠️ syncSLTP: ${sym} not found on HL — skipping SL/TP`);
+          continue;
+        }
+        if (hlPos.side !== pos.side) {
+          log.warn(`⚠️ syncSLTP: ${sym} side mismatch (local=${pos.side} HL=${hlPos.side}) — skipping SL/TP`);
+          continue;
+        }
+
         const sl = pos.stopLossPrice;
         const tp = pos.takeProfitPrice;
         if (!sl && !tp) continue;
 
-        // Check if HL already has SL trigger order for this symbol
+        // v2.0.32: Safety check — ensure SL/TP are on the correct side
+        // of the entry price for the position's direction.
+        // Use the HL entry price (not the local mirror's) for accuracy.
+        // For BUY (long): SL < entry, TP > entry
+        // For SELL (short): SL > entry, TP < entry
+        // If SL/TP are on the wrong side, skip placing them (they would
+        // immediately trigger and close the position).
+        if (sl) {
+          const slCorrect = pos.side === 'buy' ? sl < hlPos.entry : sl > hlPos.entry;
+          if (!slCorrect) {
+            log.warn(`⚠️ SL ${sl} is on wrong side for ${pos.side} ${pos.symbol} (HL entry=${hlPos.entry}) — skipping SL placement`);
+            continue;
+          }
+        }
+        if (tp) {
+          const tpCorrect = pos.side === 'buy' ? tp > hlPos.entry : tp < hlPos.entry;
+          if (!tpCorrect) {
+            log.warn(`⚠️ TP ${tp} is on wrong side for ${pos.side} ${pos.symbol} (HL entry=${hlPos.entry}) — skipping TP placement`);
+            continue;
+          }
+        }
+
+        // v2.0.32: Check if HL already has trigger orders at the SL/TP prices.
+        // HL openOrders response doesn't include tpsl field, so we match by
+        // coin + triggerPx only. This prevents duplicate SL/TP orders.
         const hasSL = sl !== undefined && openOrders.some(o =>
           o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
-          o.tpsl === 'sl' &&
           o.triggerPx &&
           Math.abs(parseFloat(o.triggerPx) - sl) < 0.01
         );
 
-        // Check if HL already has TP trigger order for this symbol
         const hasTP = tp !== undefined && openOrders.some(o =>
           o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
-          o.tpsl === 'tp' &&
           o.triggerPx &&
           Math.abs(parseFloat(o.triggerPx) - tp) < 0.01
         );

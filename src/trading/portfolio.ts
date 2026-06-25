@@ -205,6 +205,18 @@ export class PortfolioTracker {
     return this.portfolio.positions.get(normalizeSymbol(symbol));
   }
 
+  /**
+   * v2.0.32: Remove a position from the local portfolio WITHOUT recording
+   * a trade or adjusting balance. Used by syncExchangePositions() when the
+   * exchange position has fundamentally changed (side flip, qty change) and
+   * the old mirror needs to be replaced with a fresh import.
+   */
+  removePosition(symbol: string): void {
+    const sym = normalizeSymbol(symbol);
+    this.portfolio.positions.delete(sym);
+    this.recalculateEquity();
+  }
+
   /** Get all open symbols for reconciliation checks */
   getOpenSymbols(): string[] {
     return Array.from(this.portfolio.positions.keys());

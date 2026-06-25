@@ -946,12 +946,13 @@ export class HACPEngine {
     // Extract the primary trading symbol from the market description
     const primaryMatch = marketStateDesc.match(/Selected Symbol:\s*(\S+)/i)
       ?? marketStateDesc.match(/Symbol:\s*(\S+)/i);
-    const primarySymbol = primaryMatch?.[1]?.toLowerCase();
+    // v2.0.32: Case-insensitive comparison for colon-prefixed symbols
+    const primarySymbol = primaryMatch?.[1];
 
     for (const pos of positions) {
       // Only adjust positions that match the primary trading symbol
       // to avoid applying the wrong market context to a different instrument
-      if (primarySymbol && pos.symbol.toLowerCase() !== primarySymbol) {
+      if (primarySymbol && pos.symbol.toLowerCase() !== primarySymbol.toLowerCase()) {
         log.debug(`Skipping adjustment for ${pos.symbol} — not the primary symbol ${primarySymbol}`);
         continue;
       }
@@ -1247,7 +1248,7 @@ Output ONLY valid JSON:
           // decision has symbol='UNKNOWN' which pollutes per-symbol consensus
           // with a meaningless "UNKNOWN(market) HOLD 60%" entry in the UI.
           if (singleDec.symbol === 'UNKNOWN') continue;
-          const sym = singleDec.symbol.toLowerCase();
+          const sym = singleDec.symbol.includes(':') ? singleDec.symbol : singleDec.symbol.toLowerCase();
           if (!perSymbolMap.has(sym)) perSymbolMap.set(sym, { actions: [], confidences: [], closeFlags: [], sls: [], tps: [], sizes: [], levers: [], rationales: [] });
           const entry = perSymbolMap.get(sym)!;
           entry.actions.push(singleDec.action);
@@ -1264,7 +1265,7 @@ Output ONLY valid JSON:
 
       // Market ticker decision
       const mt = multiDec.marketTicker;
-      const mtSym = mt.symbol.toLowerCase();
+      const mtSym = mt.symbol.includes(':') ? mt.symbol : mt.symbol.toLowerCase();
       if (!perSymbolMap.has(mtSym)) perSymbolMap.set(mtSym, { actions: [], confidences: [], closeFlags: [], sls: [], tps: [], sizes: [], levers: [], rationales: [] });
       const mtEntry = perSymbolMap.get(mtSym)!;
       mtEntry.actions.push(mt.action);
@@ -1278,7 +1279,7 @@ Output ONLY valid JSON:
 
       // Open position decisions
       for (const pos of multiDec.positions) {
-        const posSym = pos.symbol.toLowerCase();
+        const posSym = pos.symbol.includes(':') ? pos.symbol : pos.symbol.toLowerCase();
         if (!perSymbolMap.has(posSym)) perSymbolMap.set(posSym, { actions: [], confidences: [], closeFlags: [], sls: [], tps: [], sizes: [], levers: [], rationales: [] });
         const posEntry = perSymbolMap.get(posSym)!;
         posEntry.actions.push(pos.action);

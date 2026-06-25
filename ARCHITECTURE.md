@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.31-dev (多 DEX 餘額同步 + 交易所倉位匯入 + 手動平倉 + closeReason 追蹤 + legacy position management + LLM 形態標籤 + 虧損冷卻期 LLM 檢討)  
+> **版本**: 2.0.32-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -59,6 +59,7 @@
 48. [B.29 Legacy Position Management — 跨 trade mode 切換嘅持倉管理](#b29-v2029-legacy-position-management--跨-trade-mode-切換嘅持倉管理)
 49. [B.30 手動平倉按鈕 + closeReason 追蹤 + Real-mode 每個 Cycle 同步](#b30-v2030-手動平倉按鈕--closereason-追蹤--real-mode-每個-cycle-同步)
 50. [B.31 多 DEX 餘額同步 + 交易所倉位匯入 + getRecentFills 修復](#b31-v2031-多-dex-餘額同步--交易所倉位匯入--getrecentfills-修復)
+51. [B.32 HL 簽名修復 + xyz DEX 資產索引 + SL/TP 方向 + 槓桿 + 幽靈倉位](#b32-v2032-hl-簽名修復--xyz-dex-資產索引--sltp-方向--槓桿--幽靈倉位)
 
 ---
 
@@ -5525,6 +5526,82 @@ resume trading? Or should the cooldown continue?
 | `ui/src/App.tsx` | Position table 'Exchange' 欄改做 'Mode' 欄（REAL/PAPER） |
 
 **效果**: 系統而家可以正確 fetch 多 DEX 嘅餘額同倉位（包括 xyz DEX 嘅 SPCX）。用戶喺 HL UI 手動開嘅倉位會被匯入本地 mirror，agents 可以管理。Trade Records 正確顯示 HL fills（包括 SPCX 開倉記錄）。
+
+---
+
+### B.32 v2.0.32: HL 簽名修復 + xyz DEX 資產索引 + SL/TP 方向 + 槓桿 + 幽靈倉位
+
+> **觸發**: 所有 HL 真實交易功能完全失效——開倉、平倉、SL/TP 全部被 HL 拒絕。根本原因係簽名方案完全錯誤。
+
+#### 1. HL L1 Action 簽名方案完全重寫
+
+**問題**: `signL1Action()` 用咗一套完全錯誤嘅自定義 EIP-712 類型（`HyperliquidTransaction:Order`），而 HL 實際用嘅係 **phantom agent** 簽名方案。
+
+**正確方案**（匹配官方 Python SDK）:
+1. `actionHash = keccak256(msgpack(action) + nonce(8 bytes BE) + vault_flag(1 byte))`
+2. `phantomAgent = { source: "a"|"b", connectionId: actionHash }`（mainnet="a", testnet="b"）
+3. EIP-712 簽名 `Agent(string source, bytes32 connectionId)`，domain = `{ name: "Exchange", version: "1", chainId: 1337, verifyingContract: 0x000... }`
+4. `secp256k1.sign()` 用 `{ format: 'recovered', prehash: false }` 取得 recovery bit
+5. r/s 轉 BigInt 再轉 hex（strip leading zeros，匹配 Python `to_hex`）
+
+**驗證**: Python SDK 3 個 test vector 全部 match（dummy action + order + order with cloid）。
+
+**新增依賴**: `@msgpack/msgpack`
+
+#### 2. xyz DEX 資產索引偏移
+
+**問題**: Exchange API 用 per-DEX 資產索引（SPCX = 76 on xyz DEX），但 exchange endpoint 用嘅係 **global 資產索引**。builder-deployed perp DEX 嘅 offset = `110000 + i * 10000`。SPCX 嘅 global index = `110076`。用 76 會被當做 perp DEX 嘅 ORDI（asset 76），導致 "Order price cannot be more than 95% away from the reference price"。
+
+**修復**: `getAssetIndex()` 為 xyz DEX 資產加 110000 offset。
+
+#### 3. SL/TP 方向修正（Short 倉位即刻平倉 bug）
+
+**問題**: 本地 mirror 有舊嘅 SPCX long 倉位（side=buy, SL=151.29），但 HL 實際係 short 倉位（entry ~152）。`syncSLTP()` 用本地 mirror 嘅 side/entry 做安全檢查，通過後推 SL @ 151.29 去 HL。但 HL 嘅 short 倉位 entry 係 152，151.29 低過 entry → "Price above 151.29" 即刻觸發 → 平倉！
+
+**修復**:
+- `syncExchangePositions()` 喺每個 cycle 開始時**移除唔再喺 HL 上面嘅 exchange-imported 倉位**
+- `syncSLTP()` **攞 HL 實際倉位**驗證本地 mirror 嘅 side 同 entry price 係咪匹配。Side mismatch → skip SL/TP
+- 安全檢查用 **HL entry price**（唔係本地 mirror 嘅）
+- `engine.adjustPosition()` 安全檢查用 **exchange position 嘅 side**（唔係本地 mirror 嘅）
+
+#### 4. 槓桿設定（40x → 10x）
+
+**問題**: HL 用 per-asset leverage 設定，order 本身唔指定槓桿。冇 call `updateLeverage` → HL 用帳戶預設值（40x）。
+
+**修復**:
+- 新增 `updateLeverage()` 方法 — 發送 `updateLeverage` action 到 HL
+- `placeOrder()` 喺落單前自動 call `updateLeverage()`
+- `executeDecision()` 透過 `order.metadata.leverage` 傳遞所需槓桿
+
+#### 5. 幽靈倉位清理 + UI 真實倉位過濾
+
+**問題**: 本地 mirror 有陳舊嘅 SPCX long 倉位（已喺 HL 平倉），但系統每個 cycle 都將佡存返入檔案。UI 顯示唔存在嘅 "REAL" 倉位。`syncSLTP()` 不斷嘗試為呢個幽靈倉位放 SL/TP，產生 console error。
+
+**修復**:
+- `syncExchangePositions()` 移除唔再喺 HL 上面嘅 exchange-imported 倉位（喺 syncSLTP 之前執行）
+- `serializePortfolio()` 喺 real mode 過濾掉唔喺 HL 上面嘅本地 mirror
+- Trade Records 嘅 open positions 同樣過濾
+- UI REAL/PAPER 標籤改為純粹基於 `agentId === 'hyperliquid-real'`（唔再 `|| isRealMode`）
+- `placeOrder()` 只有 `filled` 先返回 `success: true`（`resting` 唔算成功，避免幽靈 mirror）
+- Reconciliation 喺 paper mode 唔再保留 `agentId === 'hyperliquid-real'` 嘅倉位
+
+#### 6. getOpenOrders 解析修正
+
+**問題**: HL `openOrders` response 冇 `orderType` 欄位，`getOpenOrders()` 搵 `o.orderType?.trigger` 永遠 undefined → `syncSLTP()` 偵測唔到現有 trigger orders → 每個 cycle 重複下單。
+
+**修復**: 用 `limitPx` + `reduceOnly` 偵測 trigger orders。`hasSL`/`hasTP` 檢查改為純粹用 `coin + triggerPx` 匹配。
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/trading/hyperliquid-real-engine.ts` | 簽名方案重寫；`updateLeverage()` 新增；`placeOrder()` 呼叫 `updateLeverage` + 只有 `filled` 算成功；`getAssetIndex()` 加 110000 offset；`adjustPosition()` 安全檢查用 exchange position；`getOpenOrders()` 用 `limitPx` + `reduceOnly` 解析 |
+| `src/trading/real-trading-manager.ts` | `executeDecision()` 傳遞 leverage + 即刻放 SL/TP + 標記 mirror 為 `hyperliquid-real`；`syncExchangePositions()` 移除陳舊 exchange mirror + 偵測 side/qty/entry 變化；`syncSLTP()` 驗證 HL 倉位存在 + side 匹配 + 用 HL entry price 做安全檢查 |
+| `src/index.ts` | `serializePortfolio()` 過濾唔喺 HL 嘅倉位；Trade Records open positions 過濾；reconciliation 唔再保留 exchange-imported 倉位（paper mode） |
+| `ui/src/App.tsx` | REAL/PAPER 標籤純粹基於 `agentId` |
+| `package.json` | 新增 `@msgpack/msgpack` 依賴 |
+
+**效果**: HL 真實交易完全修復——開倉、平倉、SL/TP 全部正常運作。xyz DEX 資產用正確 global index。槓桿正確設定為 10x。幽靈倉位唔再出現。UI 只顯示 HL 上面實際存在嘅倉位。
 
 ---
 
