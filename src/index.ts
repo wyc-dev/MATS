@@ -451,7 +451,8 @@ class AMACRFSystem {
       // The close is tagged with closeReason='manual' so agents know it was NOT a system decision.
       this.apiServer.setManualClosePositionHandler(async (symbol: string) => {
         try {
-          const sym = symbol.toLowerCase();
+          // v2.0.32: Use normalizeSymbol for case-sensitive colon symbol support
+          const sym = symbol.includes(':') ? symbol : symbol.toLowerCase();
           if (!this.portfolio.hasPosition(sym)) {
             return { success: false, error: `No open position for ${sym}` };
           }
@@ -2083,17 +2084,21 @@ class AMACRFSystem {
 
       // ── P0: Correlation Budget Check ──
       // Compute correlation-adjusted effective exposure against portfolio budget.
+      // v2.0.32: Exclude exchange-imported positions (agentId='hyperliquid-real')
+      // from paper correlation budget — they are real HL positions, not paper trades.
       try {
         const openPositions = this.portfolio.getOpenSymbols();
         if (openPositions.length > 0) {
           const positions = openPositions.map(sym => {
             const pos = this.portfolio.getPosition(sym);
+            // Skip exchange-imported positions — they don't count against paper budget
+            if (pos && pos.agentId === 'hyperliquid-real') return null;
             return {
               symbol: sym,
               notional: pos ? pos.currentPrice * pos.quantity * pos.leverage : 0,
               direction: pos?.side === 'buy' ? 1 : -1,
             };
-          }).filter(p => p.notional > 0);
+          }).filter((p): p is { symbol: string; notional: number; direction: number } => p !== null && p.notional > 0);
 
           if (positions.length > 0) {
             // Update correlation matrix asynchronously (cached, daily refresh)
