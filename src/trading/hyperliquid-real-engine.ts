@@ -737,6 +737,8 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       }
 
       const pxDecimals = asset.pxDecimals;
+      const szDecimals = asset.szDecimals;
+      log.info(`[adjustPosition] ${pos.symbol}: asset.index=${asset.index} pxDec=${pxDecimals} szDec=${szDecimals} qty=${pos.quantity} sl=${sl} tp=${tp}`);
 
       if (sl && sl > 0) {
         const slAction = {
