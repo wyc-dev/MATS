@@ -94,6 +94,12 @@ class AMACRFSystem {
   private lastBacktestResult: import('./backtest/index.ts').BacktestResult | null = null;
   private backtestProgress: BacktestProgress | null = null;
   private paused = false;
+  /** v2.0.29: Symbols that have legacy positions from the *other* trade mode.
+   *  When switching paper→real, paper positions become legacy — they stay open
+   *  and are managed (SL/TP, per-symbol consensus, price updates) until they
+   *  naturally close. Same for real→paper with exchange positions.
+   *  Map: symbol → 'paper' | 'real' (which mode the position originated from) */
+  private legacyPositionModes = new Map<string, 'paper' | 'real'>();
 
   constructor() {
     log.info('🏛️  AMACRF System Initializing...');
@@ -324,8 +330,20 @@ class AMACRFSystem {
       // Wire up Market Agent API handlers
       this.apiServer.setMarketAgentSetTradeModeHandler(async (mode) => {
         log.info(`Market Agent: trade mode → ${mode}`);
+        const previousMode = this.realTradingManager.getTradeMode();
         this.marketAgent.setTradeMode(mode);
         this.realTradingManager.setTradeMode(mode);
+
+        // v2.0.29: Mark existing positions as legacy so they continue to be
+        // managed (SL/TP, per-symbol consensus, price updates) until they
+        // naturally close. We don't force-close positions when switching modes.
+        if (previousMode !== mode) {
+          const openSymbols = this.portfolio.getOpenSymbols();
+          for (const sym of openSymbols) {
+            this.legacyPositionModes.set(sym, previousMode);
+            log.info(`📋 Legacy position marked: ${sym} (originated in ${previousMode} mode, will be managed until closed)`);
+          }
+        }
 
         if (mode === 'real') {
           // Clear cached exchange balance so UI immediately shows '--'
@@ -710,6 +728,13 @@ class AMACRFSystem {
       const isWin = trade.pnl >= 0;
       const pnlPct = trade.pnlPct;
       const outcome: 1 | 0 = isWin ? 1 : 0;
+
+      // v2.0.29: Clean up legacy position tracking when a position closes
+      if (this.legacyPositionModes.has(symbol)) {
+        const origMode = this.legacyPositionModes.get(symbol);
+        this.legacyPositionModes.delete(symbol);
+        log.info(`📋 Legacy position ${symbol} (from ${origMode} mode) closed: ${isWin ? 'WIN' : 'LOSS'} $${trade.pnl.toFixed(2)}`);
+      }
 
       // Get current market context for learning
       const activeSymbol = this.marketAgent?.getSelectedSymbol()?.toLowerCase() ?? symbol;
@@ -1193,9 +1218,54 @@ class AMACRFSystem {
         }
       }
 
+      // v2.0.29: In paper mode, if there are legacy real positions on the
+      // exchange, continue syncing their prices so the local mirror stays
+      // accurate. This lets agents manage (SL/TP, close consensus) legacy
+      // real positions even after switching to paper mode.
+      if (this.realTradingManager.getTradeMode() === 'paper') {
+        const legacyRealSymbols = this.portfolio.getOpenSymbols().filter(sym =>
+          this.legacyPositionModes.get(sym) === 'real'
+        );
+        if (legacyRealSymbols.length > 0) {
+          try {
+            const engine = this.realTradingManager.getEngineForExchange('hyperliquid');
+            if (engine) {
+              const exchangePositions = await engine.getPositions();
+              for (const exPos of exchangePositions) {
+                const sym = exPos.symbol.toLowerCase();
+                if (this.portfolio.hasPosition(sym)) {
+                  this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
+                }
+              }
+              // Check if any legacy real positions were closed on the exchange
+              const exchangeSyms = exchangePositions.map(p => p.symbol.toLowerCase());
+              for (const sym of legacyRealSymbols) {
+                if (!exchangeSyms.includes(sym) && this.portfolio.hasPosition(sym)) {
+                  // Exchange no longer has this position — it was closed (SL/TP/manual)
+                  const state = this.marketState.getState(sym);
+                  const closePrice = state?.price ?? this.portfolio.getPosition(sym)?.currentPrice ?? 0;
+                  if (closePrice > 0) {
+                    const trade = this.portfolio.closePosition(sym, closePrice);
+                    if (trade) {
+                      log.info(`📋 Legacy real position ${sym} closed on exchange: PnL $${trade.pnl.toFixed(2)} — syncing local mirror`);
+                      this.legacyPositionModes.delete(sym);
+                      this.onPositionClosedLearning(trade);
+                    }
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            log.warn(`Legacy real position sync failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      }
+
       // ── Position Reconciliation (Skeptics phase) ──
       // Detect orphan positions — open in local portfolio but no longer active
       // on the exchange (real mode) or stale from a previous session (paper mode).
+      // v2.0.29: Legacy positions (from the other trade mode) are NEVER
+      // reconciled away — they stay until naturally closed by SL/TP or consensus.
       {
         let externalSymbols: string[];
 
@@ -1203,7 +1273,12 @@ class AMACRFSystem {
           // Real mode: ask the exchange what positions it has open.
           // Any local mirror without a matching exchange position was
           // manually closed on the exchange.
-          externalSymbols = await this.realTradingManager.getOpenPositionSymbols();
+          // BUT: legacy paper positions are not on the exchange — keep them.
+          const exchangeSymbols = await this.realTradingManager.getOpenPositionSymbols();
+          const legacySymbols = this.portfolio.getOpenSymbols().filter(sym =>
+            this.legacyPositionModes.get(sym) === 'paper'
+          );
+          externalSymbols = [...new Set([...exchangeSymbols, ...legacySymbols])];
         } else {
           // Paper mode: no external exchange to verify against.
           // Only clean up truly stale positions — those opened in a
@@ -1211,12 +1286,13 @@ class AMACRFSystem {
           // that have been sitting untouched for >12h.
           // DO NOT remove recently-opened positions (even on non-active
           // symbols) — they may be exploration trades or multi-symbol.
+          // v2.0.29: Legacy real positions are kept too.
           const now = Date.now();
           const staleCutoff = 3_600_000 * 12; // 12 hours
-          // Keep ALL positions opened within the session window +
-          // positions on the active symbol (regardless of age)
           const activeSym = activeSymbol.toLowerCase();
           externalSymbols = this.portfolio.getOpenSymbols().filter(sym => {
+            // Legacy positions are always kept
+            if (this.legacyPositionModes.has(sym)) return true;
             if (sym === activeSym) return true;
             const pos = this.portfolio.getPosition(sym);
             return !!pos && (now - pos.openedAt < staleCutoff);
@@ -1225,6 +1301,10 @@ class AMACRFSystem {
 
         const reconciled = this.portfolio.reconcilePositions(externalSymbols);
         if (reconciled.length > 0) {
+          // Clean up legacy tracking for reconciled positions
+          for (const sym of reconciled) {
+            this.legacyPositionModes.delete(sym);
+          }
           log.info(`🧹 Reconciled ${reconciled.length} stale position(s): ${reconciled.join(', ')}`);
           // Update portfolio description after reconciliation
           this.pushToAPI();
