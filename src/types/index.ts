@@ -395,6 +395,8 @@ export interface TradeRecord {
   decisionId?: UUID;
   /** 'open' = position opened; 'closed' = position closed */
   status: 'open' | 'closed';
+  /** v2.0.30: How the position was closed — lets agents know if it was system or manual */
+  closeReason?: 'sl_tp' | 'consensus' | 'manual' | 'reconciliation' | 'exchange_closed';
 }
 
 // ─── Risk ───
