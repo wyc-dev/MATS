@@ -5639,6 +5639,44 @@ resume trading? Or should the cooldown continue?
 | `src/trading/hyperliquid-real-engine.ts` | `PERP_DEX_NAMES` 改為 `['', 'xyz']`；`getBalance()`/`getPositions()` 省略空 dex 欄位；新增 `formatPrice()` helper；取代全部 `toFixed(pxDecimals)` |
 | `src/trading/portfolio.ts` | `updatePosition()` 對 `agentId='hyperliquid-real'` 唔觸發 `checkPositionExits()` |
 
+#### 10. Paper positions 喺切換 mode 嗰陣憑空消失
+
+**問題**: `syncExchangePositions()` 偵測到本地 paper mirror 同 HL 倉位唔同（例如 paper long vs HL short）嗰陣，用 `removePosition()` 直接 delete — 冇產生 trade record、冇返還 margin。position 就噉「憑空消失」。
+
+**修復**: 當 position side/qty/entry 改變嗰陣：
+- Paper positions（`agentId !== 'hyperliquid-real'`）：用 `closePosition()` 正確平倉（產生 trade record + 返還 margin + 觸發學習機制）
+- Exchange positions（`agentId === 'hyperliquid-real'`）：仍然用 `removePosition()`（冇 margin 要返還）
+
+#### 11. SL/TP price 比較精度 + per-coin asset index cancel
+
+**問題 1**: `hasSL`/`hasTP` 用原始 `sl`/`tp` 數值同 HL `triggerPx` 比較，容差 `0.01`。但 `formatPrice()` 會 round 個價格（`60709.38` → `"60709"`），所以 `Math.abs(60709.0 - 60709.38) = 0.38 > 0.01` → `hasSL = false` → 每個 cycle 都 cancel + re-place。
+
+**修復**: 用 `toFixed(2)` round 價格再比較，容差改為 `< 1`。
+
+**問題 2**: `cancelOrder()` 用 `positions[0].symbol` 攞 asset index 去取消**所有** orders。如果 `positions[0]` 係 BTC（index 0）但要取消 SPCX（index 110076）嘅 order，cancel 會用錯 asset index → 靜默失敗。
+
+**修復**: 新增 `cancelOrderWithAsset(assetIdx, oid)` + `getAssetIndexForSymbol(symbol)`。`syncSLTP()` 同 `closePosition()` 都用正確嘅 per-coin asset index。
+
+#### 12. Reconciliation 先喺 HL 平倉再本地 close
+
+**問題**: `reconcilePositions()` 淨係本地 close 倉位，冇喺 HL 上面平倉。HL 倉位一直開住但系統以為已經平咗。
+
+**修復**: Reconciliation 之前記錄邊個 exchange-imported 倉位唔喺 `externalSymbols` 度。本地 close 之後，對呢啲倉位 call `realTradingManager.closePosition()` 喺 HL 上面平倉。
+
+#### 13. SL/TP 按 coin + close side 管理
+
+**問題**: 之前用 `symbolOrders.length > 2` 嚟判斷重複 orders，如果同一 asset 同時有 long 同 short 倉位，每邊都需要自己嘅 SL + TP（總共 4 個 orders），會被錯誤取消。
+
+**修復**: 用 `closeSide`（short → `B` buy to close，long → `S` sell to close）篩選 orders。只管理同當前倉位 close side 匹配嘅 orders。opposite side 嘅 orders 完全唔受影響。
+
+**改動檔案（最終補充）**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/trading/real-trading-manager.ts` | `syncExchangePositions()` paper mirror 用 `closePosition()`；`syncSLTP()` 按 coin+closeSide 管理 + 用 `cancelOrderWithAsset()` + rounded price comparison |
+| `src/trading/hyperliquid-real-engine.ts` | `cancelOrderWithAsset()` + `getAssetIndexForSymbol()` 新增；`cancelOrder()` 加 optional symbol param；`closePosition()` 用正確 asset index cancel |
+| `src/index.ts` | Reconciliation 之前記錄 exchange symbols，之後喺 HL 平倉 |
+
 ---
 
 ### B.12 參考文獻（Related Documentation）
