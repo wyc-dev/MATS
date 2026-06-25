@@ -641,7 +641,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
             <thead>
               <tr>
                 <th></th>
-                <th>Exchange</th>
+                <th>Mode</th>
                 <th>Symbol</th>
                 <th>Side</th>
                 <th>Qty</th>
@@ -657,11 +657,6 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
             </thead>
             <tbody>
               {Object.values(p.positions).map((pos: any) => {
-                const exchangeDisplay = pos.exchange
-                  ? pos.exchange
-                  : (pos.symbol && (pos.symbol.includes(':') || (!pos.symbol.endsWith('usdt') && !pos.symbol.endsWith('usd'))))
-                    ? 'hyperliquid'
-                    : 'binance';
                 return (
                 <tr key={pos.id} onClick={() => setChartSymbol(pos.symbol)} style={{ cursor: 'pointer' }} className={chartSymbol === pos.symbol ? 'selected-position' : ''}>
                   <td style={{ width: '40px', textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
@@ -722,7 +717,13 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
                       </button>
                     )}
                   </td>
-                  <td style={{fontSize:'0.85rem', color:'var(--text-tertiary)'}}>{exchangeDisplay}</td>
+                  <td style={{fontSize:'0.75rem'}}>
+                    {isRealMode ? (
+                      <span style={{color:'var(--accent-green)', fontWeight:600}}>REAL</span>
+                    ) : (
+                      <span style={{color:'var(--text-tertiary)', fontWeight:600}}>PAPER</span>
+                    )}
+                  </td>
                   <td style={{fontSize:'0.9rem', fontWeight:600}}>{pos.symbol}</td>
                   <td><span className={`side-tag ${pos.side}`}>{pos.side.toUpperCase()}</span></td>
                   <td>{pos.quantity.toFixed(6)}</td>

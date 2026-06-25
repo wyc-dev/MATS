@@ -346,56 +346,84 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
   // ── Account Info ──
 
+  /** DEX names to query for clearinghouseState (DEX 0 = crypto perps, 'xyz' = TradFi perps) */
+  private static readonly PERP_DEX_NAMES: Array<number | string> = [0, 'xyz'];
+
   async getBalance(): Promise<ExchangeAccountInfo> {
     try {
-      // Fetch perp clearinghouse state
-      const perpRes = await fetch(HL_INFO_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'clearinghouseState', user: this.walletAddress }),
-      });
-      if (!perpRes.ok) throw new Error(`HTTP ${perpRes.status}`);
-      const perpData = await perpRes.json() as {
-        marginSummary?: { accountValue?: string; totalMarginUsed?: string; totalNtlPos?: string; totalRawUsd?: string };
-        withdrawable?: string;
-        assetPositions?: unknown[];
-      };
+      let totalAccountValue = 0;
+      let totalWithdrawable = 0;
+      let totalMarginUsed = 0;
+      let totalUnrealizedPnl = 0;
 
-      // Fetch spot clearinghouse state (USDC held in spot wallet)
-      const spotRes = await fetch(HL_INFO_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'spotClearinghouseState', user: this.walletAddress }),
-      });
-      let spotUsdc = 0;
-      if (spotRes.ok) {
-        const spotData = await spotRes.json() as {
-          balances?: Array<{ coin: string; total: string; hold: string }>;
-        };
-        const usdcBalance = spotData.balances?.find(b => b.coin === 'USDC');
-        if (usdcBalance) {
-          spotUsdc = parseFloat(usdcBalance.total) - parseFloat(usdcBalance.hold);
+      // Query each perp DEX clearinghouse
+      for (const dex of HyperliquidRealEngine.PERP_DEX_NAMES) {
+        try {
+          const res = await fetch(HL_INFO_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'clearinghouseState', user: this.walletAddress, dex }),
+          });
+          if (!res.ok) continue;
+          const data = await res.json() as {
+            marginSummary?: { accountValue?: string; totalMarginUsed?: string };
+            withdrawable?: string;
+            assetPositions?: Array<{ position?: { unrealizedPnl?: string } }>;
+          };
+          if (!data || data.marginSummary === undefined) continue;
+
+          const acctVal = parseFloat(data.marginSummary.accountValue ?? '0');
+          const wdrl = parseFloat(data.withdrawable ?? '0');
+          const mgnUsed = parseFloat(data.marginSummary.totalMarginUsed ?? '0');
+
+          totalAccountValue += acctVal;
+          totalWithdrawable += wdrl;
+          totalMarginUsed += mgnUsed;
+
+          // Sum unrealized PnL from positions
+          if (data.assetPositions) {
+            for (const ap of data.assetPositions) {
+              totalUnrealizedPnl += parseFloat(ap.position?.unrealizedPnl ?? '0');
+            }
+          }
+
+          log.info(`[getBalance] DEX ${dex}: accountValue=${acctVal}, withdrawable=${wdrl}, marginUsed=${mgnUsed}`);
+        } catch (err) {
+          log.warn(`[getBalance] DEX ${dex} fetch failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
-      const accountValue = parseFloat(perpData.marginSummary?.accountValue ?? '0');
-      const totalRawUsd = parseFloat(perpData.marginSummary?.totalRawUsd ?? '0');
-      const withdrawable = parseFloat(perpData.withdrawable ?? '0');
-      const marginUsed = parseFloat(perpData.marginSummary?.totalMarginUsed ?? '0');
+      // Fetch spot clearinghouse state (USDC held in spot wallet)
+      let spotUsdc = 0;
+      try {
+        const spotRes = await fetch(HL_INFO_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'spotClearinghouseState', user: this.walletAddress }),
+        });
+        if (spotRes.ok) {
+          const spotData = await spotRes.json() as {
+            balances?: Array<{ coin: string; total: string; hold: string }>;
+          };
+          const usdcBalance = spotData.balances?.find(b => b.coin === 'USDC');
+          if (usdcBalance) {
+            spotUsdc = parseFloat(usdcBalance.total) - parseFloat(usdcBalance.hold);
+          }
+        }
+      } catch { /* non-critical */ }
 
-      // Total = perp account value + spot USDC (spot is separate from perp)
-      const perpTotal = accountValue > 0 ? accountValue : (totalRawUsd > 0 ? totalRawUsd : withdrawable);
-      const total = perpTotal + spotUsdc;
-      const free = withdrawable + spotUsdc;
+      // Total = sum of all perp DEX account values + spot USDC (available but not in perp)
+      const total = totalAccountValue + spotUsdc;
+      const free = totalWithdrawable + spotUsdc;
 
-      log.info(`[getBalance] perp: accountValue=${accountValue}, withdrawable=${withdrawable}, marginUsed=${marginUsed} | spot USDC=${spotUsdc} → total=${total}, free=${free}`);
+      log.info(`[getBalance] total=${total}, free=${free}, marginUsed=${totalMarginUsed}, unrealizedPnl=${totalUnrealizedPnl}, spotUsdc=${spotUsdc}`);
 
       return {
         free,
-        locked: marginUsed,
+        locked: totalMarginUsed,
         total,
-        unrealizedPnl: perpTotal - withdrawable - marginUsed,
-        marginUsed,
+        unrealizedPnl: totalUnrealizedPnl,
+        marginUsed: totalMarginUsed,
       };
     } catch (err) {
       log.error(`getBalance failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -405,54 +433,63 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
   async getPositions(): Promise<Position[]> {
     try {
-      const res = await fetch(HL_INFO_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'clearinghouseState', user: this.walletAddress }),
-      });
+      const allPositions: Position[] = [];
 
-      if (!res.ok) return [];
-      const data = await res.json() as {
-        assetPositions?: Array<{
-          position?: {
-            coin: string;
-            szi: string;
-            entryPx: string;
-            leverage?: { value: number };
-            unrealizedPnl?: string;
-            liquidationPx?: string;
+      // Query each perp DEX clearinghouse
+      for (const dex of HyperliquidRealEngine.PERP_DEX_NAMES) {
+        try {
+          const res = await fetch(HL_INFO_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'clearinghouseState', user: this.walletAddress, dex }),
+          });
+          if (!res.ok) continue;
+          const data = await res.json() as {
+            assetPositions?: Array<{
+              position?: {
+                coin: string;
+                szi: string;
+                entryPx: string;
+                leverage?: { value: number };
+                unrealizedPnl?: string;
+                liquidationPx?: string;
+                positionValue?: string;
+              };
+            }>;
           };
-        }>;
-      };
+          if (!data?.assetPositions) continue;
 
-      if (!data.assetPositions) return [];
+          for (const ap of data.assetPositions) {
+            const p = ap.position;
+            if (!p || parseFloat(p.szi) === 0) continue;
 
-      return data.assetPositions
-        .filter(ap => ap.position && parseFloat(ap.position.szi) !== 0)
-        .map(ap => {
-          const p = ap.position!;
-          const size = parseFloat(p.szi);
-          const entryPx = parseFloat(p.entryPx);
-          const markPx = entryPx; // Will be updated by mark price polling
-          const unrealizedPnl = parseFloat(p.unrealizedPnl ?? '0');
-          const leverage = p.leverage?.value ?? 1;
+            const size = parseFloat(p.szi);
+            const entryPx = parseFloat(p.entryPx);
+            const unrealizedPnl = parseFloat(p.unrealizedPnl ?? '0');
+            const leverage = p.leverage?.value ?? 1;
 
-          return {
-            id: `${p.coin}-${this.walletAddress}`,
-            symbol: p.coin,
-            side: size > 0 ? 'buy' : 'sell',
-            quantity: Math.abs(size),
-            averageEntryPrice: entryPx,
-            currentPrice: markPx,
-            unrealizedPnl,
-            unrealizedPnlPct: entryPx > 0 ? unrealizedPnl / (Math.abs(size) * entryPx / leverage) : 0,
-            realizedPnl: 0,
-            leverage,
-            openedAt: Date.now(),
-            updatedAt: Date.now(),
-            agentId: 'hyperliquid-real',
-          } as Position;
-        });
+            allPositions.push({
+              id: `${p.coin}-${this.walletAddress}`,
+              symbol: p.coin,
+              side: size > 0 ? 'buy' : 'sell',
+              quantity: Math.abs(size),
+              averageEntryPrice: entryPx,
+              currentPrice: entryPx, // Will be updated by mark price polling
+              unrealizedPnl,
+              unrealizedPnlPct: entryPx > 0 ? unrealizedPnl / (Math.abs(size) * entryPx / leverage) : 0,
+              realizedPnl: 0,
+              leverage,
+              openedAt: Date.now(),
+              updatedAt: Date.now(),
+              agentId: 'hyperliquid-real',
+            } as Position);
+          }
+        } catch (err) {
+          log.warn(`[getPositions] DEX ${dex} fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      return allPositions;
     } catch (err) {
       log.error(`getPositions failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
@@ -465,7 +502,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
    * Used to sync the UI Trade Records panel with the real exchange so the
    * user sees their actual Hyperliquid trade history (last 5 by default).
    */
-  async getRecentFills(limit = 5): Promise<Array<{
+  async getRecentFills(limit = 10): Promise<Array<{
     symbol: string;
     side: 'buy' | 'sell';
     price: number;

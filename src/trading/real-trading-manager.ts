@@ -378,14 +378,30 @@ export class RealTradingManager {
 
     try {
       const exchangePositions = await engine.getPositions();
-      if (!exchangePositions || exchangePositions.length === 0) return;
+      if (!exchangePositions) return;
 
       for (const exPos of exchangePositions) {
-        if (this.portfolio.hasPosition(exPos.symbol)) {
+        const sym = exPos.symbol.toLowerCase();
+        if (this.portfolio.hasPosition(sym)) {
           // Soft-update: P&L recalculated, but SL/TP not auto-triggered.
           // The exchange natively manages stop-losses; the mirror must not
           // prematurely close a position that's still open on the exchange.
-          this.portfolio.softUpdatePosition(exPos.symbol, exPos.currentPrice);
+          this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
+        } else {
+          // v2.0.31: Import exchange position that doesn't exist locally
+          // (e.g. user opened a position manually on HL UI). Create a local
+          // mirror so agents can see and manage it (SL/TP, consensus close).
+          // Don't deduct margin from paper balance — this position was opened
+          // on the exchange, not in the paper portfolio.
+          log.info(`📥 Importing exchange position into local mirror: ${exPos.symbol} ${exPos.side.toUpperCase()} qty=${exPos.quantity} entry=${exPos.averageEntryPrice.toFixed(2)} lev=${exPos.leverage}x`);
+          this.portfolio.importExchangePosition(
+            exPos.symbol,
+            exPos.side,
+            exPos.quantity,
+            exPos.averageEntryPrice,
+            exPos.leverage,
+            exPos.openedAt,
+          );
         }
       }
     } catch (err) {
