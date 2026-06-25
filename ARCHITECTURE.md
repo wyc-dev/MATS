@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.32-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾)  
+> **版本**: 2.0.32-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -5602,6 +5602,42 @@ resume trading? Or should the cooldown continue?
 | `package.json` | 新增 `@msgpack/msgpack` 依賴 |
 
 **效果**: HL 真實交易完全修復——開倉、平倉、SL/TP 全部正常運作。xyz DEX 資產用正確 global index。槓桿正確設定為 10x。幽靈倉位唔再出現。UI 只顯示 HL 上面實際存在嘅倉位。
+
+#### 7. PERP_DEX_NAMES 修正（dex: 0 → ''）
+
+**問題**: `PERP_DEX_NAMES = [0, 'xyz']` — 用數字 `0` 作為預設 perp DEX 標識。但 HL `clearinghouseState` API **拒絕 `dex: 0`（數字）**，回傳 "Failed to deserialize"。導致 perp DEX（BTC 等加密貨幣 perps）嘅倉位永遠 fetch 唔到——UI 只顯示 xyz DEX 嘅 SPCX，唔顯示 BTC。
+
+**修復**: `PERP_DEX_NAMES` 由 `[0, 'xyz']` 改為 `['', 'xyz']`。`getBalance()` 同 `getPositions()` 喺 `dex === ''` 時**省略 `dex` 欄位**（HL API 喺冇 `dex` 欄位時預設查 perp DEX 0）。
+
+#### 8. 價格格式修正（formatPrice — trailing zeros + per-asset decimals）
+
+**問題**: `toFixed(pxDecimals)` 產生尾隨零（`60709.00000`、`155.65000`），HL 拒絕。而且 `pxDecimals=5` 係錯誤預設——HL 每個資產有唔同嘅 tick size：BTC 要整數，ETH 要 1 decimal，SPCX 要 2 decimals。
+
+**修復**: 新增 `formatPrice()` helper，根據**價格大小自動決定小數位數**（l2Book 19 個資產驗證）：
+
+| 價格範圍 | 小數位 | 例子 |
+|:---------|:------|:-----|
+| >= 10000 | 0 | BTC $59,333 |
+| >= 1000 | 1 | ETH $1,562.9, GOLD $4,035.8 |
+| >= 100 | 2 | SPCX $155.65, TSLA $373.79 |
+| >= 10 | 3 | SOL $66.165, HOOD $94.665 |
+| >= 1 | 4 | ATOM $1.5976, EUR $1.1385 |
+| < 1 | 6 | DOGE $0.073336, ADA $0.14245 |
+
+然後 `parseFloat(toFixed(decimals)).toString()` strip 尾隨零。取代咗全部 8 個 `toFixed(pxDecimals)` 呼叫。
+
+#### 9. 本地 SL 觸發修正（exchange 倉位唔再被本地 SL 平倉）
+
+**問題**: `paperEngine.updatePrice()` → `portfolio.updatePosition()` → `checkPositionExits()`。對於 `agentId='hyperliquid-real'` 嘅倉位，本地 SL 觸發會平掉 paper mirror，但 HL 上面嘅真實倉位仍然存在（因為 HL 用自己嘅 trigger orders 管理 SL/TP）。導致 phantom trade records + 錯誤學習。
+
+**修復**: `updatePosition()` 對 `agentId === 'hyperliquid-real'` 嘅倉位**唔再觸發** `checkPositionExits()`。Exchange 倉位嘅 SL/TP 由 HL 原生 trigger orders 管理，本地 mirror 只負責顯示 PnL。
+
+**改動檔案（補充）**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/trading/hyperliquid-real-engine.ts` | `PERP_DEX_NAMES` 改為 `['', 'xyz']`；`getBalance()`/`getPositions()` 省略空 dex 欄位；新增 `formatPrice()` helper；取代全部 `toFixed(pxDecimals)` |
+| `src/trading/portfolio.ts` | `updatePosition()` 對 `agentId='hyperliquid-real'` 唔觸發 `checkPositionExits()` |
 
 ---
 
