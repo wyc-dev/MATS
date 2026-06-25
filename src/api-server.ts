@@ -182,6 +182,7 @@ export class APIServer {
   private onMarketAgentFetchPairs: (() => void) | null = null;
   private onMarketAgentSetPositionSize: ((pct: number) => void) | null = null;
   private onMarketAgentSetLeverage: ((lev: number) => void) | null = null;
+  private onManualClosePosition: ((symbol: string) => Promise<{ success: boolean; error?: string }>) | null = null;
   private onCandlesRequest: ((symbol: string, interval: string, limit: number) => Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>>) | null = null;
   private onResetTradeHistory: (() => void) | null = null;
   private onPause: (() => void) | null = null;
@@ -250,6 +251,11 @@ export class APIServer {
   /** Register a callback for setting position size */
   setMarketAgentSetPositionSizeHandler(cb: (pct: number) => void): void {
     this.onMarketAgentSetPositionSize = cb;
+  }
+
+  /** Register a callback for manual position close */
+  setManualClosePositionHandler(cb: (symbol: string) => Promise<{ success: boolean; error?: string }>): void {
+    this.onManualClosePosition = cb;
   }
 
   /** Register a callback for setting leverage */
@@ -598,6 +604,36 @@ export class APIServer {
             if (this.onMarketAgentSetPositionSize) this.onMarketAgentSetPositionSize(clamped);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: true, message: `Position size set to ${(clamped * 100).toFixed(1)}%` }));
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // POST: manual close position (v2.0.30)
+      // Body: { "symbol": "btc" }
+      // Closes the position in both local portfolio and (if real mode) on the exchange.
+      if (pathname === '/api/positions/close' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', async () => {
+          try {
+            const { symbol } = JSON.parse(body) as { symbol: string };
+            if (!symbol || typeof symbol !== 'string') {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'Symbol is required' }));
+              return;
+            }
+            if (this.onManualClosePosition) {
+              const result = await this.onManualClosePosition(symbol.toLowerCase());
+              res.writeHead(result.success ? 200 : 500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify(result));
+            } else {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'Close handler not registered' }));
+            }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));

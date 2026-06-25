@@ -253,6 +253,8 @@ export interface APIData {
     closedAt: number;
     /** 'hl-fill' = a real Hyperliquid fill synced from the exchange (v2.0.19) */
     status: 'open' | 'closed' | 'hl-fill';
+    /** v2.0.30: How the position was closed — 'manual' = user-initiated */
+    closeReason?: 'sl_tp' | 'consensus' | 'manual' | 'reconciliation' | 'exchange_closed';
   }>;
   marketAgent?: {
     config: MarketAgentConfig;

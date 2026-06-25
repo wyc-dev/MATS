@@ -471,6 +471,9 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
   const [chartSymbol, setChartSymbol] = useState<string | null>(
     positions.length > 0 ? positions[0]?.symbol ?? null : null
   )
+  // v2.0.30: Manual close confirmation state
+  const [closeConfirmSymbol, setCloseConfirmSymbol] = useState<string | null>(null)
+  const [closingSymbol, setClosingSymbol] = useState<string | null>(null)
 
   // Clear chartSymbol when all positions are closed
   useEffect(() => {
@@ -479,6 +482,28 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
     }
   }, [positions.length])
   if (!s) return null
+
+  // v2.0.30: Manual close position handler
+  const handleManualClose = async (symbol: string) => {
+    setClosingSymbol(symbol)
+    try {
+      const res = await fetch(`${API_BASE}/positions/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol }),
+      })
+      const result = await res.json()
+      if (result.success) {
+        setCloseConfirmSymbol(null)
+      } else {
+        alert(`Failed to close ${symbol}: ${result.error ?? result.message ?? 'Unknown error'}`)
+      }
+    } catch (err) {
+      alert(`Failed to close ${symbol}: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setClosingSymbol(null)
+    }
+  }
 
   const balance: number | null = p?.balance ?? s.balance ?? null
   const equity: number | null = p?.totalEquity ?? s.equity ?? null
@@ -606,6 +631,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
           <table className="positions-table">
             <thead>
               <tr>
+                <th></th>
                 <th>Exchange</th>
                 <th>Symbol</th>
                 <th>Side</th>
@@ -629,6 +655,64 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
                     : 'binance';
                 return (
                 <tr key={pos.id} onClick={() => setChartSymbol(pos.symbol)} style={{ cursor: 'pointer' }} className={chartSymbol === pos.symbol ? 'selected-position' : ''}>
+                  <td style={{ width: '40px', textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                    {closeConfirmSymbol === pos.symbol ? (
+                      <span style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
+                        <button
+                          onClick={() => handleManualClose(pos.symbol)}
+                          disabled={closingSymbol === pos.symbol}
+                          style={{
+                            background: 'var(--accent-red)',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            padding: '2px 6px',
+                            fontSize: '0.65rem',
+                            cursor: closingSymbol === pos.symbol ? 'wait' : 'pointer',
+                            fontWeight: 600,
+                          }}
+                        >
+                          {closingSymbol === pos.symbol ? '...' : '✓'}
+                        </button>
+                        <button
+                          onClick={() => setCloseConfirmSymbol(null)}
+                          disabled={closingSymbol === pos.symbol}
+                          style={{
+                            background: 'var(--bg-tertiary)',
+                            color: 'var(--text-secondary)',
+                            border: 'none',
+                            borderRadius: '4px',
+                            padding: '2px 6px',
+                            fontSize: '0.65rem',
+                            cursor: 'pointer',
+                            fontWeight: 600,
+                          }}
+                        >
+                          ✗
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => setCloseConfirmSymbol(pos.symbol)}
+                        title="Close position"
+                        style={{
+                          background: 'transparent',
+                          color: 'var(--accent-red)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '4px',
+                          padding: '2px 8px',
+                          fontSize: '0.65rem',
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                          opacity: 0.6,
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.opacity = '1' }}
+                        onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.6' }}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </td>
                   <td style={{fontSize:'0.85rem', color:'var(--text-tertiary)'}}>{exchangeDisplay}</td>
                   <td style={{fontSize:'0.9rem', fontWeight:600}}>{pos.symbol}</td>
                   <td><span className={`side-tag ${pos.side}`}>{pos.side.toUpperCase()}</span></td>

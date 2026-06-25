@@ -446,6 +446,72 @@ class AMACRFSystem {
         this.pushToAPI();
       });
 
+      // v2.0.30: Manual position close handler
+      // Closes a position in both local portfolio and (if real mode) on the exchange.
+      // The close is tagged with closeReason='manual' so agents know it was NOT a system decision.
+      this.apiServer.setManualClosePositionHandler(async (symbol: string) => {
+        try {
+          const sym = symbol.toLowerCase();
+          if (!this.portfolio.hasPosition(sym)) {
+            return { success: false, error: `No open position for ${sym}` };
+          }
+
+          const pos = this.portfolio.getPosition(sym);
+          if (!pos) {
+            return { success: false, error: `Position not found for ${sym}` };
+          }
+
+          log.warn(`📕 Manual close requested: ${sym.toUpperCase()} ${pos.side.toUpperCase()} @ $${pos.averageEntryPrice.toFixed(2)} (PnL: ${pos.unrealizedPnl >= 0 ? '+' : ''}$${pos.unrealizedPnl.toFixed(2)})`);
+
+          // Get current price for closing
+          const state = this.marketState?.getState(sym);
+          const closePrice = state?.price ?? pos.currentPrice ?? 0;
+          if (closePrice <= 0) {
+            return { success: false, error: `No current price available for ${sym}` };
+          }
+
+          // If real mode (or legacy real position), close on the exchange first
+          const isRealPosition = this.realTradingManager.getTradeMode() === 'real' ||
+            this.legacyPositionModes.get(sym) === 'real';
+
+          if (isRealPosition) {
+            const engine = this.realTradingManager.getEngineForExchange('hyperliquid');
+            if (engine) {
+              log.info(`📤 Closing ${sym} on Hyperliquid exchange...`);
+              const exchangeResult = await engine.closePosition(sym);
+              if (!exchangeResult) {
+                log.error(`❌ Exchange close failed for ${sym}`);
+                return { success: false, error: `Failed to close ${sym} on Hyperliquid` };
+              }
+              log.info(`✅ Exchange position closed for ${sym}`);
+            }
+          }
+
+          // Close in local portfolio
+          const trade = this.portfolio.closePosition(sym, closePrice);
+          if (trade) {
+            // Tag the trade record with manual close reason
+            trade.closeReason = 'manual';
+            log.info(`📕 Manual close completed: ${sym} PnL: $${trade.pnl.toFixed(2)} (${trade.pnl >= 0 ? 'profit' : 'loss'})`);
+
+            // Trigger learning (so the system records this trade)
+            // But the closeReason='manual' tag lets agents know this was NOT a system decision
+            this.onPositionClosedLearning(trade);
+
+            // Clean up legacy tracking
+            this.legacyPositionModes.delete(sym);
+          }
+
+          // Push updated portfolio to UI
+          this.pushToAPI();
+
+          return { success: true };
+        } catch (err) {
+          log.error(`Manual close failed: ${err instanceof Error ? err.message : String(err)}`);
+          return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      });
+
       this.apiServer.setPauseHandler(() => {
         this.paused = true;
         log.info('⏸️ System PAUSED — RBC engine continues, all agents/trading halted');
