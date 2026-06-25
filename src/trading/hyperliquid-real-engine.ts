@@ -47,28 +47,28 @@ function hexToBytes(hex: string): Uint8Array {
 }
 
 /**
- * v2.0.32: Format a price for HL API — strips trailing zeros and uses
- * the correct number of decimals based on price magnitude.
- * HL rejects prices with trailing zeros (e.g. "60709.00000" or "155.65000").
- * HL also rejects prices with too many decimals (e.g. "60709.38" for BTC
- * which requires integer prices, or "155.653" for SPCX which allows 2).
+ * v2.0.32: Format a price for HL API — uses the correct number of decimals
+ * based on price magnitude, then strips trailing zeros.
  *
- * Heuristic based on HL exchange behaviour:
- * - Price >= 1000: integer only (BTC, ETH, etc.)
- * - Price >= 100: 2 decimals max (SPCX, TSLA, etc.)
- * - Price >= 10: 3 decimals max
- * - Price >= 1: 4 decimals max
- * - Price < 1: 5 decimals max
+ * HL enforces per-asset tick sizes. From l2Book data analysis across 19 assets:
+ *   BTC  ($59,333):  0 decimals  (>= 10000)
+ *   ETH  ($1,562.9): 1 decimal    (>= 1000)
+ *   SOL  ($66.165):  3 decimals   (>= 10)
+ *   ATOM ($1.5976):  4 decimals   (>= 1)
+ *   DOGE ($0.073336): 6 decimals  (< 1)
  *
- * Then strip all trailing zeros with parseFloat().toString().
+ * Rule: use the max decimals allowed for the price magnitude, then strip
+ * trailing zeros with parseFloat().toString(). This ensures the price is
+ * always within HL's accepted tick size for any asset.
  */
 function formatPrice(price: number, _decimals?: number): string {
   let decimals: number;
-  if (price >= 1000) decimals = 0;
+  if (price >= 10000) decimals = 0;
+  else if (price >= 1000) decimals = 1;
   else if (price >= 100) decimals = 2;
   else if (price >= 10) decimals = 3;
   else if (price >= 1) decimals = 4;
-  else decimals = 5;
+  else decimals = 6;
   return parseFloat(price.toFixed(decimals)).toString();
 }
 
