@@ -47,12 +47,28 @@ function hexToBytes(hex: string): Uint8Array {
 }
 
 /**
- * v2.0.32: Format a price for HL API — strips trailing zeros.
+ * v2.0.32: Format a price for HL API — strips trailing zeros and uses
+ * the correct number of decimals based on price magnitude.
  * HL rejects prices with trailing zeros (e.g. "60709.00000" or "155.65000").
- * BTC requires integer prices ("60709"), SPCX requires 2 decimals max ("155.65").
- * Using parseFloat(toFixed(decimals)).toString() strips all trailing zeros.
+ * HL also rejects prices with too many decimals (e.g. "60709.38" for BTC
+ * which requires integer prices, or "155.653" for SPCX which allows 2).
+ *
+ * Heuristic based on HL exchange behaviour:
+ * - Price >= 1000: integer only (BTC, ETH, etc.)
+ * - Price >= 100: 2 decimals max (SPCX, TSLA, etc.)
+ * - Price >= 10: 3 decimals max
+ * - Price >= 1: 4 decimals max
+ * - Price < 1: 5 decimals max
+ *
+ * Then strip all trailing zeros with parseFloat().toString().
  */
-function formatPrice(price: number, decimals: number): string {
+function formatPrice(price: number, _decimals?: number): string {
+  let decimals: number;
+  if (price >= 1000) decimals = 0;
+  else if (price >= 100) decimals = 2;
+  else if (price >= 10) decimals = 3;
+  else if (price >= 1) decimals = 4;
+  else decimals = 5;
   return parseFloat(price.toFixed(decimals)).toString();
 }
 
