@@ -381,7 +381,9 @@ export class RealTradingManager {
       if (!exchangePositions) return;
 
       for (const exPos of exchangePositions) {
-        const sym = exPos.symbol.toLowerCase();
+        // v2.0.31: HL colon-prefixed symbols (xyz:SPCX) are case-sensitive.
+        // Lowercase only for non-colon symbols (BTC, ETH). Colon symbols keep original case.
+        const sym = exPos.symbol.includes(':') ? exPos.symbol : exPos.symbol.toLowerCase();
         if (this.portfolio.hasPosition(sym)) {
           // Soft-update: P&L recalculated, but SL/TP not auto-triggered.
           // The exchange natively manages stop-losses; the mirror must not
@@ -419,7 +421,7 @@ export class RealTradingManager {
     if (engine) {
       try {
         const positions = await engine.getPositions();
-        return positions.filter(p => Math.abs(p.quantity) > 0).map(p => p.symbol.toLowerCase());
+        return positions.filter(p => Math.abs(p.quantity) > 0).map(p => p.symbol.includes(':') ? p.symbol : p.symbol.toLowerCase());
       } catch (err) {
         log.warn(`getOpenPositionSymbols from exchange failed: ${err instanceof Error ? err.message : String(err)}`);
       }
