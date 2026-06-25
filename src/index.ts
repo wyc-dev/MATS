@@ -1345,7 +1345,13 @@ class AMACRFSystem {
           const legacySymbols = this.portfolio.getOpenSymbols().filter(sym =>
             this.legacyPositionModes.get(sym) === 'paper'
           );
-          externalSymbols = [...new Set([...exchangeSymbols, ...legacySymbols])];
+          // v2.0.31: Also keep exchange-imported positions (agentId='hyperliquid-real')
+          // even if getOpenPositionSymbols missed them due to case mismatch
+          const exchangeImportedSymbols = this.portfolio.getOpenSymbols().filter(sym => {
+            const pos = this.portfolio.getPosition(sym);
+            return pos && pos.agentId === 'hyperliquid-real';
+          });
+          externalSymbols = [...new Set([...exchangeSymbols, ...legacySymbols, ...exchangeImportedSymbols])];
         } else {
           // Paper mode: no external exchange to verify against.
           // Only clean up truly stale positions — those opened in a
@@ -1360,8 +1366,11 @@ class AMACRFSystem {
           externalSymbols = this.portfolio.getOpenSymbols().filter(sym => {
             // Legacy positions are always kept
             if (this.legacyPositionModes.has(sym)) return true;
-            if (sym === activeSym) return true;
+            // v2.0.31: Exchange-imported positions are always kept — they represent
+            // real positions on HL that must not be closed by paper-mode reconciliation
             const pos = this.portfolio.getPosition(sym);
+            if (pos && pos.agentId === 'hyperliquid-real') return true;
+            if (sym === activeSym) return true;
             return !!pos && (now - pos.openedAt < staleCutoff);
           });
         }
