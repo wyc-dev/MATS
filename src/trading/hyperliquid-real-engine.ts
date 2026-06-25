@@ -259,8 +259,9 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
   // ── Account Info ──
 
-  /** DEX names to query for clearinghouseState (DEX 0 = crypto perps, 'xyz' = TradFi perps) */
-  private static readonly PERP_DEX_NAMES: Array<number | string> = [0, 'xyz'];
+  /** DEX names to query for clearinghouseState ('' = default crypto perps, 'xyz' = TradFi perps) */
+  // v2.0.32: HL API rejects dex: 0 (number). Must use '' (empty string) or omit the field.
+  private static readonly PERP_DEX_NAMES: string[] = ['', 'xyz'];
 
   async getBalance(): Promise<ExchangeAccountInfo> {
     try {
@@ -272,10 +273,13 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       // Query each perp DEX clearinghouse
       for (const dex of HyperliquidRealEngine.PERP_DEX_NAMES) {
         try {
+          // v2.0.32: Omit dex field for default DEX ('') — HL API rejects dex: 0 or dex: ''
+          const body: Record<string, unknown> = { type: 'clearinghouseState', user: this.walletAddress };
+          if (dex) body['dex'] = dex;
           const res = await fetch(HL_INFO_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'clearinghouseState', user: this.walletAddress, dex }),
+            body: JSON.stringify(body),
           });
           if (!res.ok) continue;
           const data = await res.json() as {
@@ -352,10 +356,13 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       // Query each perp DEX clearinghouse
       for (const dex of HyperliquidRealEngine.PERP_DEX_NAMES) {
         try {
+          // v2.0.32: Omit dex field for default DEX ('') — HL API rejects dex: 0 or dex: ''
+          const body: Record<string, unknown> = { type: 'clearinghouseState', user: this.walletAddress };
+          if (dex) body['dex'] = dex;
           const res = await fetch(HL_INFO_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'clearinghouseState', user: this.walletAddress, dex }),
+            body: JSON.stringify(body),
           });
           if (!res.ok) continue;
           const data = await res.json() as {
