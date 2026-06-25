@@ -1125,12 +1125,18 @@ class AMACRFSystem {
     // ── SYSTEM GUARD: Run 5-layer protection before any agent thinking ──
     // Guards A (economic calendar), B (drawdown), C (data freshness), D (agent track)
     // Guard E (liquidity) runs later after agents produce a decision
+    // v2.0.32: In real mode, drawdown/dailyPnl from paper portfolio are meaningless
+    // (paper balance is inflated by exchange position closes). Use 0 so the
+    // drawdown guard doesn't block real trading. Real risk is managed by HL's
+    // own margin/liquidation system + our SL/TP trigger orders.
+    const isRealMode = this.realTradingManager.getTradeMode() === 'real';
+    const paperPortfolio = this.portfolio.getPortfolio();
     const guardParams = {
       activeSymbol,
       marketPrice,
-      maxDrawdownPct: this.portfolio.getPortfolio().maxDrawdownPct,
-      dailyPnl: this.portfolio.getPortfolio().dailyPnl,
-      balance: this.portfolio.getPortfolio().balance,
+      maxDrawdownPct: isRealMode ? 0 : paperPortfolio.maxDrawdownPct,
+      dailyPnl: isRealMode ? 0 : paperPortfolio.dailyPnl,
+      balance: isRealMode ? (this.cachedExchangeBalance?.total ?? paperPortfolio.balance) : paperPortfolio.balance,
       lastBookTimestamp: this.hyperliquidWs?.getLastBookTimestamp?.() ?? 0,
       lastFetchTime: this.marketAgent.getLastFetchTime(),
       agentWinRates: this.evolution.agentOutcomes.getAllAgentWinRates(),

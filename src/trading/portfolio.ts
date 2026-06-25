@@ -542,7 +542,12 @@ export class PortfolioTracker {
         // This position exists locally but NOT externally → manually closed
         const pos = this.portfolio.positions.get(localSymbol)!;
         log.warn(`🔍 Reconciliation: ${localSymbol} not found externally. Closing local mirror @ $${pos.currentPrice.toFixed(2)}`);
-        const trade = this.closePosition(localSymbol, pos.currentPrice);
+        // v2.0.32: Use closeExchangePosition() for exchange-imported positions
+        // (doesn't add margin back to balance — importExchangePosition didn't deduct it).
+        // Use closePosition() for paper positions (margin was deducted at open).
+        const trade = pos.agentId === 'hyperliquid-real'
+          ? this.closeExchangePosition(localSymbol, pos.currentPrice)
+          : this.closePosition(localSymbol, pos.currentPrice);
         if (trade) {
           reconciled.push(localSymbol);
           log.info(`  → Reconciled ${localSymbol}: PnL $${trade.pnl.toFixed(2)}`);
