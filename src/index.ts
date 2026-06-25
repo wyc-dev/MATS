@@ -2469,8 +2469,8 @@ class AMACRFSystem {
     // count stay local (paper + real mixed).
     // If real mode but exchange balance not yet fetched → null (UI shows '--')
     const exBal = isRealMode ? this.cachedExchangeBalance : null;
-    const displayBalance = isRealMode ? (exBal && exBal.total > 0 ? exBal.total : null) : p.balance;
-    const displayEquity = isRealMode ? (exBal && exBal.total > 0 ? exBal.total : null) : p.totalEquity;
+    const displayBalance = isRealMode ? (exBal ? exBal.total : null) : p.balance;
+    const displayEquity = isRealMode ? (exBal ? exBal.total : null) : p.totalEquity;
     return {
       balance: displayBalance as number,
       initialBalance: p.initialBalance,
@@ -2615,8 +2615,8 @@ class AMACRFSystem {
       const isRealMode = this.realTradingManager.getTradeMode() === 'real';
       const exBal = isRealMode ? this.cachedExchangeBalance : null;
       // In real mode: if exchange balance not yet fetched → null (UI shows '--')
-      const displayBalance = isRealMode ? (exBal && exBal.total > 0 ? exBal.total : null) : p.balance;
-      const displayEquity = isRealMode ? (exBal && exBal.total > 0 ? exBal.total : null) : p.totalEquity;
+      const displayBalance = isRealMode ? (exBal ? exBal.total : null) : p.balance;
+      const displayEquity = isRealMode ? (exBal ? exBal.total : null) : p.totalEquity;
 
       this.apiServer.update({
         systemPaused: this.paused,
