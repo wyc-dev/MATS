@@ -2010,6 +2010,28 @@ class AMACRFSystem {
       // When real-mode, paperReports mirrors the real trade into the local portfolio
       // so all downstream P&L tracking, stop-loss monitoring, and evolution learning work identically.
 
+      // v2.0.32: After a successful real trade, immediately refresh cachedExchangePositions
+      // so that serializePortfolio() includes the new position in the same cycle's pushToAPI().
+      // Without this, the new position won't appear in the UI until the NEXT cycle's
+      // syncExchangePositions() updates the cache — causing a 1-cycle delay.
+      if (this.realTradingManager.getTradeMode() === 'real' && execResult.success && execResult.orderId) {
+        try {
+          this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
+            symbol: p.symbol,
+            side: p.side,
+            quantity: p.quantity,
+            averageEntryPrice: p.averageEntryPrice,
+            currentPrice: p.currentPrice,
+            unrealizedPnl: p.unrealizedPnl,
+            leverage: p.leverage ?? 1,
+            openedAt: p.openedAt,
+          }));
+          log.info(`📡 Exchange positions refreshed after trade (${this.cachedExchangePositions.length} positions)`);
+        } catch (err) {
+          log.warn(`Post-trade exchange position refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
       // ── v2.0.18: Taker fees are now deducted inside portfolio.openPosition()
       // and portfolio.closePosition() (notional-based, both sides). This loop
       // previously did a margin-based single-side deduction that undercounted
