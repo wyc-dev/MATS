@@ -38,11 +38,12 @@ function SystemStatusPanel({ data }: { data: APIData | null }) {
 
   const decision = data?.consensus?.decision
   const vetoed = data?.consensus?.metaAgentOverridden
-  // totalPnl / drawdownPct are null in real-trade mode (v2.0.17) — UI shows '--'.
+  // totalPnl / drawdownPct / balance / equity are null in real-trade mode
+  // (before first exchange balance fetch) — UI shows '--'.
   const totalPnl: number | null = s.totalPnl ?? null
   const drawdownPct: number | null = s.drawdownPct ?? null
-  const balance = s.balance ?? 0
-  const equity = s.equity ?? 0
+  const balance: number | null = s.balance ?? null
+  const equity: number | null = s.equity ?? null
   const progress = data?.cycleProgress
   const phaseLabel = progress?.phase === 'thinking' ? '💭 Agents Thinking'
     : progress?.phase === 'debating' ? `🗣️ Debate Round ${progress.round}/${progress.totalRounds}`
@@ -58,8 +59,8 @@ function SystemStatusPanel({ data }: { data: APIData | null }) {
       </div>
       <div className="stat-grid-sm">
         <StatCell label="Cycles" value={String(s.cycles ?? 0)} />
-        <StatCell label="Balance" value={`$${balance.toFixed(0)}`} />
-        <StatCell label="Equity" value={`$${equity.toFixed(0)}`} cls={totalPnl === null ? 'neutral' : (totalPnl >= 0 ? 'positive' : 'negative')} />
+        <StatCell label="Balance" value={balance === null ? '--' : `$${balance.toFixed(0)}`} />
+        <StatCell label="Equity" value={equity === null ? '--' : `$${equity.toFixed(0)}`} cls={totalPnl === null ? 'neutral' : (totalPnl >= 0 ? 'positive' : 'negative')} />
         <StatCell label="Drawdown" value={drawdownPct === null ? '--' : `${(drawdownPct * 100).toFixed(1)}%`} cls={drawdownPct === null ? 'neutral' : (drawdownPct > 0.1 ? 'negative' : 'neutral')} />
         <StatCell label="Trades" value={String(s.tradeCount ?? 0)} sub={`W:${s.winCount ?? 0} L:${s.lossCount ?? 0}`} />
         <StatCell label="Positions" value={String(s.positions ?? 0)} />
@@ -479,8 +480,8 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
   }, [positions.length])
   if (!s) return null
 
-  const balance = p?.balance ?? s.balance ?? 0
-  const equity = p?.totalEquity ?? s.equity ?? 0
+  const balance: number | null = p?.balance ?? s.balance ?? null
+  const equity: number | null = p?.totalEquity ?? s.equity ?? null
   // totalPnl / drawdownPct are null in real-trade mode (v2.0.17) — UI shows '--'.
   const totalPnl: number | null = p?.totalPnl ?? s.totalPnl ?? null
   const drawdownPct: number | null = p?.maxDrawdownPct ?? s.drawdownPct ?? null
@@ -565,12 +566,12 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
       <div className="portfolio-grid">
         <div className="portfolio-cell">
           <span className="stat-label">Balance</span>
-          <span className="stat-number neutral">${balance.toFixed(2)}</span>
+          <span className="stat-number neutral">{balance === null ? '--' : `$${balance.toFixed(2)}`}</span>
         </div>
         <div className="portfolio-cell">
           <span className="stat-label">Equity</span>
-          <span className={`stat-number ${equity >= initialBalance ? 'positive' : 'negative'}`}>
-            ${equity.toFixed(2)}
+          <span className={`stat-number ${equity === null ? 'neutral' : (equity >= initialBalance ? 'positive' : 'negative')}`}>
+            {equity === null ? '--' : `$${equity.toFixed(2)}`}
           </span>
         </div>
         <div className="portfolio-cell">

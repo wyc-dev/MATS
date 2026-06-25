@@ -327,19 +327,62 @@ class AMACRFSystem {
         this.marketAgent.setTradeMode(mode);
         this.realTradingManager.setTradeMode(mode);
 
-        // When switching to real mode, ensure HL WS subscribes to user-level
-        // feeds (clearinghouseState + userFills) for real-time balance/position sync.
         if (mode === 'real') {
-          const hlWallet = config.realTrading.hyperliquidWalletAddress;
-          if (hlWallet && hlWallet.length > 0) {
-            this.hyperliquidWs.setWalletAddress(hlWallet);
-            log.info('📡 HL WS wallet address set for user-level feeds');
-          } else {
-            log.warn('⚠️ Real mode enabled but HYPERLIQUID_WALLET_ADDRESS is empty — balance/positions will not sync. Set it in .env and restart.');
-          }
-        }
+          // Clear cached exchange balance so UI immediately shows '--'
+          // until we successfully fetch the real HL balance.
+          this.cachedExchangeBalance = null;
+          this.cachedExchangePositions = null;
+          this.cachedHLFills = [];
 
-        this.pushToAPI();
+          // Immediately push to UI so balance/equity show '--'
+          this.pushToAPI();
+
+          const hlWallet = config.realTrading.hyperliquidWalletAddress;
+          const hlPrivKey = config.realTrading.hyperliquidPrivateKey;
+
+          if (!hlWallet || hlWallet.trim().length === 0 || !hlPrivKey || hlPrivKey.trim().length === 0) {
+            log.error('❌ Real mode enabled but HYPERLIQUID_WALLET_ADDRESS or HYPERLIQUID_PRIVATE_KEY is empty in .env. Balance/Equity will show "--" until configured. Fill them in .env and restart the system.');
+            return;
+          }
+
+          // Set HL WS wallet address for user-level feeds
+          this.hyperliquidWs.setWalletAddress(hlWallet.trim());
+          log.info('📡 HL WS wallet address set for user-level feeds');
+
+          // Immediately fetch real balance + positions + fills
+          try {
+            this.cachedExchangeBalance = await this.realTradingManager.getBalance();
+            this.cachedHLFills = await this.realTradingManager.getRecentFills(5);
+            this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
+              symbol: p.symbol,
+              side: p.side,
+              quantity: p.quantity,
+              averageEntryPrice: p.averageEntryPrice,
+              currentPrice: p.currentPrice,
+              unrealizedPnl: p.unrealizedPnl,
+              leverage: p.leverage ?? 1,
+              openedAt: p.openedAt,
+            }));
+            log.info(`💰 Real HL balance fetched: $${this.cachedExchangeBalance.total.toFixed(2)} | ${this.cachedExchangePositions.length} positions | ${this.cachedHLFills.length} recent fills`);
+          } catch (err) {
+            log.error(`❌ Failed to fetch real HL balance: ${err instanceof Error ? err.message : String(err)}. Will retry next cycle.`);
+          }
+
+          // Push updated data to UI
+          this.pushToAPI();
+
+          // Trigger an immediate decision cycle so agents can act on real data
+          log.info('🔄 Triggering immediate decision cycle after real mode switch...');
+          this.runDecisionCycle().catch((err: Error) => {
+            log.error(`Post-real-mode-switch cycle failed: ${err.message}`);
+          });
+        } else {
+          // Switching back to paper mode — clear real exchange cache
+          this.cachedExchangeBalance = null;
+          this.cachedExchangePositions = null;
+          this.cachedHLFills = [];
+          this.pushToAPI();
+        }
       });
       this.apiServer.setMarketAgentSetExchangeHandler(async (exchange) => {
         log.info(`Market Agent: exchange → ${exchange}`);
@@ -2278,13 +2321,14 @@ class AMACRFSystem {
     // v2.0.17: in real mode, show the actual Hyperliquid account value +
     // null out totalPnl/drawdown (paper-trade concepts). Win rate / trade
     // count stay local (paper + real mixed).
+    // If real mode but exchange balance not yet fetched → null (UI shows '--')
     const exBal = isRealMode ? this.cachedExchangeBalance : null;
-    const displayBalance = exBal && exBal.total > 0 ? exBal.total : p.balance;
-    const displayEquity = exBal && exBal.total > 0 ? exBal.total : p.totalEquity;
+    const displayBalance = isRealMode ? (exBal && exBal.total > 0 ? exBal.total : null) : p.balance;
+    const displayEquity = isRealMode ? (exBal && exBal.total > 0 ? exBal.total : null) : p.totalEquity;
     return {
-      balance: displayBalance,
+      balance: displayBalance as number,
       initialBalance: p.initialBalance,
-      totalEquity: displayEquity,
+      totalEquity: displayEquity as number,
       totalPnl: isRealMode ? null : p.totalPnl,
       totalPnlPct: isRealMode ? null : p.totalPnlPct,
       maxDrawdown: isRealMode ? null : p.maxDrawdown,
@@ -2424,8 +2468,9 @@ class AMACRFSystem {
       // real account. Win rate / trade count stay local (paper + real mixed).
       const isRealMode = this.realTradingManager.getTradeMode() === 'real';
       const exBal = isRealMode ? this.cachedExchangeBalance : null;
-      const displayBalance = exBal && exBal.total > 0 ? exBal.total : p.balance;
-      const displayEquity = exBal && exBal.total > 0 ? exBal.total : p.totalEquity;
+      // In real mode: if exchange balance not yet fetched → null (UI shows '--')
+      const displayBalance = isRealMode ? (exBal && exBal.total > 0 ? exBal.total : null) : p.balance;
+      const displayEquity = isRealMode ? (exBal && exBal.total > 0 ? exBal.total : null) : p.totalEquity;
 
       this.apiServer.update({
         systemPaused: this.paused,

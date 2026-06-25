@@ -13,9 +13,9 @@ const log = createLogger({ phase: 'api' });
 
 export interface SystemSnapshot {
   cycles: number;
-  balance: number;
-  equity: number;
-  totalPnl: number;
+  balance: number | null;
+  equity: number | null;
+  totalPnl: number | null;
   totalPnlPct: number;
   drawdownPct: number;
   positions: number;
