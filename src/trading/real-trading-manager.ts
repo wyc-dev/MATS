@@ -491,6 +491,63 @@ export class RealTradingManager {
   }
 
   /**
+   * v2.0.32: Sync SL/TP from local mirror to HL exchange. For each real position
+   * that has SL/TP in the local mirror, check if corresponding trigger orders
+   * exist on HL. If not, place them. This runs every cycle in real mode to
+   * ensure HL always has SL/TP protection.
+   */
+  async syncSLTP(): Promise<void> {
+    const engine = this.getActiveEngine();
+    if (!engine || !(engine instanceof HyperliquidRealEngine)) return;
+
+    try {
+      // Get all open orders on HL (both DEX 0 + xyz)
+      const openOrders = await engine.getOpenOrders();
+
+      // Get all local positions that are exchange-imported (real positions)
+      const openSymbols = this.portfolio.getOpenSymbols();
+      for (const sym of openSymbols) {
+        const pos = this.portfolio.getPosition(sym);
+        if (!pos || pos.agentId !== 'hyperliquid-real') continue;
+
+        const sl = pos.stopLossPrice;
+        const tp = pos.takeProfitPrice;
+        if (!sl && !tp) continue;
+
+        // Check if HL already has SL trigger order for this symbol
+        const hasSL = sl !== undefined && openOrders.some(o =>
+          o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
+          o.tpsl === 'sl' &&
+          o.triggerPx &&
+          Math.abs(parseFloat(o.triggerPx) - sl) < 0.01
+        );
+
+        // Check if HL already has TP trigger order for this symbol
+        const hasTP = tp !== undefined && openOrders.some(o =>
+          o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
+          o.tpsl === 'tp' &&
+          o.triggerPx &&
+          Math.abs(parseFloat(o.triggerPx) - tp) < 0.01
+        );
+
+        // Place missing SL
+        if (sl && !hasSL) {
+          log.info(`🔧 SL missing on HL for ${pos.symbol} — placing SL @ $${sl.toFixed(2)}`);
+          await engine.adjustPosition(pos.symbol, sl, undefined);
+        }
+
+        // Place missing TP
+        if (tp && !hasTP) {
+          log.info(`🔧 TP missing on HL for ${pos.symbol} — placing TP @ $${tp.toFixed(2)}`);
+          await engine.adjustPosition(pos.symbol, undefined, tp);
+        }
+      }
+    } catch (err) {
+      log.warn(`syncSLTP failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
    * Get current mark price from the active exchange.
    */
   async getMarkPrice(symbol: string): Promise<number> {
