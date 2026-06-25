@@ -2482,8 +2482,9 @@ class AMACRFSystem {
     // null out totalPnl/drawdown (paper-trade concepts). Win rate / trade
     // count stay local (paper + real mixed).
     // If real mode but exchange balance not yet fetched → null (UI shows '--')
+    // v2.0.31: Balance = free (available to trade), Equity = total (account value)
     const exBal = isRealMode ? this.cachedExchangeBalance : null;
-    const displayBalance = isRealMode ? (exBal ? exBal.total : null) : p.balance;
+    const displayBalance = isRealMode ? (exBal ? exBal.free : null) : p.balance;
     const displayEquity = isRealMode ? (exBal ? exBal.total : null) : p.totalEquity;
     return {
       balance: displayBalance as number,
@@ -2626,10 +2627,11 @@ class AMACRFSystem {
       // sources. Total PnL + drawdown are nulled in real mode (UI shows '--')
       // because they're paper-trade concepts that don't map cleanly to the
       // real account. Win rate / trade count stay local (paper + real mixed).
+      // v2.0.31: Balance = free (available to trade), Equity = total (account value)
       const isRealMode = this.realTradingManager.getTradeMode() === 'real';
       const exBal = isRealMode ? this.cachedExchangeBalance : null;
       // In real mode: if exchange balance not yet fetched → null (UI shows '--')
-      const displayBalance = isRealMode ? (exBal ? exBal.total : null) : p.balance;
+      const displayBalance = isRealMode ? (exBal ? exBal.free : null) : p.balance;
       const displayEquity = isRealMode ? (exBal ? exBal.total : null) : p.totalEquity;
 
       this.apiServer.update({
