@@ -348,33 +348,53 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
   async getBalance(): Promise<ExchangeAccountInfo> {
     try {
-      const res = await fetch(HL_INFO_URL, {
+      // Fetch perp clearinghouse state
+      const perpRes = await fetch(HL_INFO_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'clearinghouseState', user: this.walletAddress }),
       });
+      if (!perpRes.ok) throw new Error(`HTTP ${perpRes.status}`);
+      const perpData = await perpRes.json() as {
+        marginSummary?: { accountValue?: string; totalMarginUsed?: string; totalNtlPos?: string; totalRawUsd?: string };
+        withdrawable?: string;
+        assetPositions?: unknown[];
+      };
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const raw = await res.json() as Record<string, unknown>;
-      log.info(`[getBalance] Raw clearinghouseState: ${JSON.stringify(raw).slice(0, 500)}`);
+      // Fetch spot clearinghouse state (USDC held in spot wallet)
+      const spotRes = await fetch(HL_INFO_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'spotClearinghouseState', user: this.walletAddress }),
+      });
+      let spotUsdc = 0;
+      if (spotRes.ok) {
+        const spotData = await spotRes.json() as {
+          balances?: Array<{ coin: string; total: string; hold: string }>;
+        };
+        const usdcBalance = spotData.balances?.find(b => b.coin === 'USDC');
+        if (usdcBalance) {
+          spotUsdc = parseFloat(usdcBalance.total) - parseFloat(usdcBalance.hold);
+        }
+      }
 
-      const marginSummary = raw['marginSummary'] as { accountValue?: string; totalMarginUsed?: string; totalNtlPos?: string; totalRawUsd?: string } | undefined;
-      const accountValue = parseFloat(marginSummary?.accountValue ?? '0');
-      const totalRawUsd = parseFloat(marginSummary?.totalRawUsd ?? '0');
-      const withdrawable = parseFloat(raw['withdrawable'] as string ?? '0');
-      const marginUsed = parseFloat(marginSummary?.totalMarginUsed ?? '0');
+      const accountValue = parseFloat(perpData.marginSummary?.accountValue ?? '0');
+      const totalRawUsd = parseFloat(perpData.marginSummary?.totalRawUsd ?? '0');
+      const withdrawable = parseFloat(perpData.withdrawable ?? '0');
+      const marginUsed = parseFloat(perpData.marginSummary?.totalMarginUsed ?? '0');
 
-      // HL's accountValue can be 0 for accounts with no positions but has USDC.
-      // Fall back to withdrawable (available to trade) or totalRawUsd.
-      const total = accountValue > 0 ? accountValue : (totalRawUsd > 0 ? totalRawUsd : withdrawable);
+      // Total = perp account value + spot USDC (spot is separate from perp)
+      const perpTotal = accountValue > 0 ? accountValue : (totalRawUsd > 0 ? totalRawUsd : withdrawable);
+      const total = perpTotal + spotUsdc;
+      const free = withdrawable + spotUsdc;
 
-      log.info(`[getBalance] accountValue=${accountValue}, totalRawUsd=${totalRawUsd}, withdrawable=${withdrawable}, marginUsed=${marginUsed} → total=${total}`);
+      log.info(`[getBalance] perp: accountValue=${accountValue}, withdrawable=${withdrawable}, marginUsed=${marginUsed} | spot USDC=${spotUsdc} → total=${total}, free=${free}`);
 
       return {
-        free: withdrawable,
+        free,
         locked: marginUsed,
         total,
-        unrealizedPnl: total - withdrawable - marginUsed,
+        unrealizedPnl: perpTotal - withdrawable - marginUsed,
         marginUsed,
       };
     } catch (err) {
