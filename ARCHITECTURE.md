@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.30-dev (手動平倉 + closeReason 追蹤 + legacy position management + LLM 形態標籤 + 虧損冷卻期 LLM 檢討)  
+> **版本**: 2.0.31-dev (多 DEX 餘額同步 + 交易所倉位匯入 + 手動平倉 + closeReason 追蹤 + legacy position management + LLM 形態標籤 + 虧損冷卻期 LLM 檢討)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -58,6 +58,7 @@
 47. [B.28 LLM 形態標籤 + 勝率追蹤](#b28-v2028-llm-形態標籤--勝率追蹤pattern-tag-tracker)
 48. [B.29 Legacy Position Management — 跨 trade mode 切換嘅持倉管理](#b29-v2029-legacy-position-management--跨-trade-mode-切換嘅持倉管理)
 49. [B.30 手動平倉按鈕 + closeReason 追蹤 + Real-mode 每個 Cycle 同步](#b30-v2030-手動平倉按鈕--closereason-追蹤--real-mode-每個-cycle-同步)
+50. [B.31 多 DEX 餘額同步 + 交易所倉位匯入 + getRecentFills 修復](#b31-v2031-多-dex-餘額同步--交易所倉位匯入--getrecentfills-修復)
 
 ---
 
@@ -5477,6 +5478,53 @@ resume trading? Or should the cooldown continue?
 | `ui/src/App.tsx` | Position table 加 close button column + confirm dialog + fetch API |
 
 **效果**: 用戶可以喺 UI 手動平倉任何持倉，系統記錄 `closeReason='manual'` 讓 agent 知道呢個唔係系統嘅明智或過失。Real mode 下每個 cycle 同步 exchange positions 確保 UI 準確反映 HL 真實狀態。
+
+---
+
+### B.31 v2.0.31: 多 DEX 餘額同步 + 交易所倉位匯入 + getRecentFills 修復
+
+> **觸發**: 用戶喺 HL 買咗 1.9 SPCX（xyz DEX），但系統完全睇唔到——balance 顯示 $0、positions 空白、trade records 冇記錄。
+
+**3 個問題 + 修復**:
+
+#### 1. 多 DEX 餘額 + 倉位查詢
+
+**問題**: `clearinghouseState` 預設只查 DEX 0（crypto perps）。SPCX 喺 xyz DEX，完全睇唔到。
+
+**修復**: `getBalance()` + `getPositions()` 查 DEX 0 + DEX 'xyz' + spot clearinghouse：
+- `PERP_DEX_NAMES = [0, 'xyz']` — 遍歷所有 perp DEX
+- `total = sum(各 DEX accountValue) + spotUsdc`
+- `free = sum(各 DEX withdrawable) + spotUsdc`
+- `getPositions()` 合併所有 DEX 嘅 assetPositions
+
+驗證：SPCX 倉位（1.9 LONG @ $154.38, 20x leverage）正確 fetch。
+
+#### 2. 交易所倉位匯入本地 mirror
+
+**問題**: `syncExchangePositions()` 只 soft-update 已存在嘅本地倉位。用戶喺 HL UI 手動開嘅倉位（如 SPCX）唔會被匯入——agents 睇唔到，無法管理。
+
+**修復**:
+- `syncExchangePositions()` 匯入交易所有但本地冇嘅倉位
+- 新增 `PortfolioTracker.importExchangePosition()` — 建立本地 mirror 但**唔扣 paper balance**
+- 匯入嘅倉位自動設預設 SL（2%）+ TP（5%）以策安全
+- Agents 可以見到同管理（per-symbol consensus、per-position close voting、SL/TP 顯示）
+
+#### 3. getRecentFills startTime 修復
+
+**問題**: `userFillsByTime` API **必須傳 `startTime`**，冇傳會 return "Failed to deserialize"。所以 Trade Records 永遠冇 HL fills。
+
+**修復**: 加 `startTime = Date.now() - 7 * 24 * 60 * 60 * 1000`（查最近 7 日 fills）。
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/trading/hyperliquid-real-engine.ts` | `PERP_DEX_NAMES` 常量；`getBalance()` 查多 DEX + spot；`getPositions()` 查多 DEX；`getRecentFills()` 加 `startTime` |
+| `src/trading/real-trading-manager.ts` | `syncExchangePositions()` 匯入交易所倉位 |
+| `src/trading/portfolio.ts` | 新增 `importExchangePosition()` — 唔扣 balance + 預設 SL/TP |
+| `ui/src/App.tsx` | Position table 'Exchange' 欄改做 'Mode' 欄（REAL/PAPER） |
+
+**效果**: 系統而家可以正確 fetch 多 DEX 嘅餘額同倉位（包括 xyz DEX 嘅 SPCX）。用戶喺 HL UI 手動開嘅倉位會被匯入本地 mirror，agents 可以管理。Trade Records 正確顯示 HL fills（包括 SPCX 開倉記錄）。
 
 ---
 
