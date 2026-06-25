@@ -737,8 +737,6 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       }
 
       const pxDecimals = asset.pxDecimals;
-      // v2.0.31: xyz DEX assets need dex parameter in the action
-      const dexParam = pos.symbol.includes(':') ? { dex: 'xyz' } : {};
 
       if (sl && sl > 0) {
         const slAction = {
@@ -752,16 +750,22 @@ export class HyperliquidRealEngine implements RealTradingEngine {
             t: { trigger: { isMarket: true, triggerPx: sl.toFixed(pxDecimals), tpsl: 'sl' } },
           }],
           grouping: 'na',
-          ...dexParam,
         };
         const nonce = Date.now();
         const signature = signL1Action(this.privateKeyHex, slAction, nonce);
-        await fetch(HL_EXCHANGE_URL, {
+        const slRes = await fetch(HL_EXCHANGE_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: slAction, nonce, signature }),
         });
-        log.info(`SL order placed: ${pos.symbol} @ $${sl.toFixed(2)}`);
+        const slResult = await slRes.json() as { response?: { data?: { statuses?: Array<string | { error: string }> } } };
+        const slStatus = slResult.response?.data?.statuses?.[0];
+        if (slStatus === 'success') {
+          log.info(`✅ SL order placed on HL: ${pos.symbol} @ $${sl.toFixed(2)}`);
+        } else {
+          const errMsg = typeof slStatus === 'object' ? slStatus.error : String(slStatus);
+          log.error(`❌ SL order rejected by HL: ${pos.symbol} @ $${sl.toFixed(2)} — ${errMsg}`);
+        }
       }
 
       if (tp && tp > 0) {
@@ -776,16 +780,22 @@ export class HyperliquidRealEngine implements RealTradingEngine {
             t: { trigger: { isMarket: true, triggerPx: tp.toFixed(pxDecimals), tpsl: 'tp' } },
           }],
           grouping: 'na',
-          ...dexParam,
         };
         const nonce = Date.now() + 1; // different nonce
         const signature = signL1Action(this.privateKeyHex, tpAction, nonce);
-        await fetch(HL_EXCHANGE_URL, {
+        const tpRes = await fetch(HL_EXCHANGE_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: tpAction, nonce, signature }),
         });
-        log.info(`TP order placed: ${pos.symbol} @ $${tp.toFixed(2)}`);
+        const tpResult = await tpRes.json() as { response?: { data?: { statuses?: Array<string | { error: string }> } } };
+        const tpStatus = tpResult.response?.data?.statuses?.[0];
+        if (tpStatus === 'success') {
+          log.info(`✅ TP order placed on HL: ${pos.symbol} @ $${tp.toFixed(2)}`);
+        } else {
+          const errMsg = typeof tpStatus === 'object' ? tpStatus.error : String(tpStatus);
+          log.error(`❌ TP order rejected by HL: ${pos.symbol} @ $${tp.toFixed(2)} — ${errMsg}`);
+        }
       }
 
       return true;
