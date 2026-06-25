@@ -459,6 +459,27 @@ export class RealTradingManager {
   }
 
   /**
+   * v2.0.31: Adjust SL/TP for a position. In real mode, this calls the HL API
+   * to place native trigger orders AND updates the local mirror. In paper mode,
+   * only updates the local mirror.
+   */
+  async adjustPosition(positionId: string, sl?: number, tp?: number): Promise<void> {
+    // Always update local mirror first
+    this.portfolio.adjustPosition(positionId, sl, tp);
+
+    // In real mode, also place native trigger orders on HL
+    const engine = this.getActiveEngine();
+    if (engine) {
+      try {
+        await engine.adjustPosition(positionId, sl, tp);
+        log.info(`🔧 Real SL/TP placed on HL: ${positionId.slice(0, 12)} SL=${sl?.toFixed(2) ?? '-'} TP=${tp?.toFixed(2) ?? '-'}`);
+      } catch (err) {
+        log.error(`Failed to place SL/TP on HL: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  /**
    * Get current mark price from the active exchange.
    */
   async getMarkPrice(symbol: string): Promise<number> {

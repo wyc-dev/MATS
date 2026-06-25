@@ -280,35 +280,54 @@ async function getAssetIndex(symbol: string): Promise<AssetMeta | null> {
   }
 
   try {
-    const res = await fetch(HL_INFO_URL, {
+    assetIndexCache = new Map();
+
+    // Fetch DEX 0 (crypto perps) meta
+    const res0 = await fetch(HL_INFO_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'meta' }),
     });
-
-    if (!res.ok) return null;
-    const data = await res.json() as {
-      universe: Array<{
-        name: string;
-        szDecimals: number;
-        pxDecimals: number;
-        maxLeverage: number;
-      }>;
-    };
-
-    assetIndexCache = new Map();
-    data.universe.forEach((asset, index) => {
-      assetIndexCache!.set(asset.name.toUpperCase(), {
-        name: asset.name,
-        index,
-        szDecimals: asset.szDecimals,
-        pxDecimals: asset.pxDecimals,
-        maxLeverage: asset.maxLeverage,
+    if (res0.ok) {
+      const data0 = await res0.json() as {
+        universe: Array<{ name: string; szDecimals: number; pxDecimals: number; maxLeverage: number }>;
+      };
+      data0.universe.forEach((asset, index) => {
+        assetIndexCache!.set(asset.name.toUpperCase(), {
+          name: asset.name,
+          index,
+          szDecimals: asset.szDecimals,
+          pxDecimals: asset.pxDecimals ?? 5,
+          maxLeverage: asset.maxLeverage,
+        });
       });
-    });
-    assetCacheTimestamp = now;
+    }
 
-    log.info(`Asset index cache refreshed: ${assetIndexCache.size} assets`);
+    // Fetch xyz DEX (TradFi perps) meta
+    try {
+      const resXyz = await fetch(HL_INFO_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'meta', dex: 'xyz' }),
+      });
+      if (resXyz.ok) {
+        const dataXyz = await resXyz.json() as {
+          universe: Array<{ name: string; szDecimals: number; pxDecimals?: number; maxLeverage: number }>;
+        };
+        dataXyz.universe.forEach((asset, index) => {
+          assetIndexCache!.set(asset.name.toUpperCase(), {
+            name: asset.name,
+            index,
+            szDecimals: asset.szDecimals,
+            pxDecimals: asset.pxDecimals ?? 2,
+            maxLeverage: asset.maxLeverage,
+          });
+        });
+      }
+    } catch { /* xyz DEX meta optional */ }
+
+    assetCacheTimestamp = now;
+    log.info(`Asset index cache refreshed: ${assetIndexCache.size} assets (DEX 0 + xyz)`);
     return assetIndexCache.get(symbol.toUpperCase()) ?? null;
   } catch (err) {
     log.warn(`Failed to fetch asset meta: ${err instanceof Error ? err.message : String(err)}`);
@@ -710,9 +729,14 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       }
 
       const asset = await getAssetIndex(pos.symbol);
-      if (!asset) return true;
+      if (!asset) {
+        log.warn(`Asset meta not found for ${pos.symbol} — cannot place native SL/TP on HL`);
+        return true; // Local monitoring will handle it
+      }
 
       const pxDecimals = asset.pxDecimals;
+      // v2.0.31: xyz DEX assets need dex parameter in the action
+      const dexParam = pos.symbol.includes(':') ? { dex: 'xyz' } : {};
 
       if (sl && sl > 0) {
         const slAction = {
@@ -726,6 +750,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
             t: { trigger: { isMarket: true, triggerPx: sl.toFixed(pxDecimals), tpsl: 'sl' } },
           }],
           grouping: 'na',
+          ...dexParam,
         };
         const nonce = Date.now();
         const signature = signL1Action(this.privateKeyHex, slAction, nonce);
@@ -749,6 +774,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
             t: { trigger: { isMarket: true, triggerPx: tp.toFixed(pxDecimals), tpsl: 'tp' } },
           }],
           grouping: 'na',
+          ...dexParam,
         };
         const nonce = Date.now() + 1; // different nonce
         const signature = signL1Action(this.privateKeyHex, tpAction, nonce);
