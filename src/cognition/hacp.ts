@@ -1124,6 +1124,38 @@ Output ONLY valid JSON:
             }
           }
 
+          // v2.0.36: Minimum SL/TP gap constraint — if the gap between SL
+          // and TP is less than 1% of current price, reject the adjustment.
+          // Over-narrowing causes noise stop-outs + premature TP hits,
+          // cutting profits short. The LLM tends to aggressively tighten
+          // both SL and TP as price approaches target, leaving almost no
+          // room for normal market volatility.
+          if (finalSL !== undefined && finalTP !== undefined) {
+            const sltpGap = Math.abs(finalTP - finalSL);
+            const gapPct = sltpGap / pos.currentPrice;
+            if (gapPct < 0.01) {
+              log.warn(`🚫 SL/TP gap safety: ${pos.symbol} gap=$${sltpGap.toFixed(2)} (${(gapPct * 100).toFixed(2)}%) < 1% minimum — rejecting adjustment to prevent noise stop-out`);
+              finalSL = undefined;
+              finalTP = undefined;
+            }
+          } else if (finalSL !== undefined && pos.takeProfit !== undefined) {
+            // Only SL is being adjusted — check against existing TP
+            const sltpGap = Math.abs(pos.takeProfit - finalSL);
+            const gapPct = sltpGap / pos.currentPrice;
+            if (gapPct < 0.01) {
+              log.warn(`🚫 SL/TP gap safety: ${pos.symbol} SL=$${finalSL.toFixed(2)} too close to existing TP=$${pos.takeProfit.toFixed(2)} (gap ${(gapPct * 100).toFixed(2)}% < 1%) — rejecting SL adjustment`);
+              finalSL = undefined;
+            }
+          } else if (finalTP !== undefined && pos.stopLoss !== undefined) {
+            // Only TP is being adjusted — check against existing SL
+            const sltpGap = Math.abs(finalTP - pos.stopLoss);
+            const gapPct = sltpGap / pos.currentPrice;
+            if (gapPct < 0.01) {
+              log.warn(`🚫 SL/TP gap safety: ${pos.symbol} TP=$${finalTP.toFixed(2)} too close to existing SL=$${pos.stopLoss.toFixed(2)} (gap ${(gapPct * 100).toFixed(2)}% < 1%) — rejecting TP adjustment`);
+              finalTP = undefined;
+            }
+          }
+
           // Only push if at least one value changed (both could be undefined after validation)
           if (finalSL !== undefined || finalTP !== undefined) {
             adjustments.push({
