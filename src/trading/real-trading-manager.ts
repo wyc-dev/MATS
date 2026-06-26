@@ -462,11 +462,16 @@ export class RealTradingManager {
         const localPos = this.portfolio.getPosition(localSym);
         if (!localPos) continue;
         if (!exMap.has(localSym)) {
-          // v2.0.32: Find the matching HL fill to get actual realized PnL.
+          // v2.0.33: Find the matching HL fill to get actual realized PnL.
           // HL closedPnl is the real PnL (not leveraged), already net of fees.
+          // v2.0.33 FIX: Only match fills that occurred AFTER this position was
+          // opened (openedAt). Previously matched ANY closing fill for the same
+          // coin, which could match a stale fill from a previous close — creating
+          // duplicate close records for positions that were never closed.
           const matchingFill = recentFills.find(f =>
             f.symbol.toLowerCase() === localSym.toLowerCase() &&
-            !f.dir.toLowerCase().startsWith('open') // only closing fills (Close Short/Close Long)
+            !f.dir.toLowerCase().startsWith('open') && // only closing fills
+            f.timestamp >= localPos.openedAt // must be after this position opened
           );
           const hlPnl = matchingFill?.closedPnl;
           const exitPrice = matchingFill?.price ?? localPos.currentPrice;
@@ -580,10 +585,17 @@ export class RealTradingManager {
     if (engine) {
       const success = await engine.closePosition(symbol);
       if (success) {
-        // Record the trade in portfolio so it appears in trade records
+        // v2.0.33: Use closeExchangePosition() for real positions (agentId='hyperliquid-real')
+        // instead of closePosition(). closePosition() adds margin back to paper balance
+        // and updates paper stats — wrong for real positions. closeExchangePosition()
+        // only produces a trade record + triggers learning, without touching paper balance.
         const pos = this.portfolio.getPosition(symbol);
         if (pos) {
-          this.portfolio.closePosition(symbol, pos.currentPrice);
+          if (pos.agentId === 'hyperliquid-real') {
+            this.portfolio.closeExchangePosition(symbol, pos.currentPrice);
+          } else {
+            this.portfolio.closePosition(symbol, pos.currentPrice);
+          }
         }
       }
       return success;

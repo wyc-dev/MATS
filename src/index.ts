@@ -1354,7 +1354,13 @@ class AMACRFSystem {
                   const state = this.marketState.getState(sym);
                   const closePrice = state?.price ?? this.portfolio.getPosition(sym)?.currentPrice ?? 0;
                   if (closePrice > 0) {
-                    const trade = this.portfolio.closePosition(sym, closePrice);
+                    // v2.0.33: Use closeExchangePosition() for real positions —
+                    // closePosition() adds margin back to paper balance (wrong for
+                    // real positions where margin was never deducted from paper balance).
+                    const pos = this.portfolio.getPosition(sym);
+                    const trade = pos?.agentId === 'hyperliquid-real'
+                      ? this.portfolio.closeExchangePosition(sym, closePrice)
+                      : this.portfolio.closePosition(sym, closePrice);
                     if (trade) {
                       log.info(`📋 Legacy real position ${sym} closed on exchange: PnL $${trade.pnl.toFixed(2)} — syncing local mirror`);
                       this.legacyPositionModes.delete(sym);
@@ -1884,10 +1890,23 @@ class AMACRFSystem {
         }).length;
         if (closeVotes >= 2) {
           log.warn(`⚠️ ${closeVotes} agents recommend taking profit on ${posSymbol} @ $${pos.currentPrice.toFixed(2)} (PnL: +${((pos.unrealizedPnlPct ?? 0)*100).toFixed(2)}%)...`);
-          const trade = this.portfolio.closePosition(posSymbol, pos.currentPrice);
-          if (trade) {
-            perPositionCloseReports.push({ order: {} as any, trade });
-            log.info(`  → Took profit on ${posSymbol}: $${trade.pnl.toFixed(2)}`);
+          // v2.0.33: Route real positions through realTradingManager.closePosition()
+          // which closes on HL first. portfolio.closePosition() only closes locally
+          // — calling it on a real position creates a phantom close record.
+          if (pos.agentId === 'hyperliquid-real') {
+            const success = await this.realTradingManager.closePosition(posSymbol);
+            if (success) {
+              const trade = this.portfolio.getPosition(posSymbol); // already closed by realTradingManager
+              log.info(`  → Took profit on ${posSymbol} (real, closed on HL)`);
+            } else {
+              log.error(`  → Failed to close ${posSymbol} on HL — position remains open`);
+            }
+          } else {
+            const trade = this.portfolio.closePosition(posSymbol, pos.currentPrice);
+            if (trade) {
+              perPositionCloseReports.push({ order: {} as any, trade });
+              log.info(`  → Took profit on ${posSymbol}: $${trade.pnl.toFixed(2)}`);
+            }
           }
         }
       }
@@ -1910,10 +1929,21 @@ class AMACRFSystem {
         // Closing at breakeven or tiny profit just burns fees.
         if (psc.closePosition && (pos.unrealizedPnlPct ?? 0) > 0.005) {
           log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
-          const trade = this.portfolio.closePosition(psc.symbol, combinedState.price);
-          if (trade) {
-            perPositionCloseReports.push({ order: {} as any, trade });
-            log.info(`  → Closed ${psc.symbol}: $${trade.pnl.toFixed(2)}`);
+          // v2.0.33: Route real positions through realTradingManager.closePosition()
+          // which closes on HL first. portfolio.closePosition() only closes locally.
+          if (pos.agentId === 'hyperliquid-real') {
+            const success = await this.realTradingManager.closePosition(psc.symbol);
+            if (success) {
+              log.info(`  → Closed ${psc.symbol} (real, closed on HL)`);
+            } else {
+              log.error(`  → Failed to close ${psc.symbol} on HL — position remains open`);
+            }
+          } else {
+            const trade = this.portfolio.closePosition(psc.symbol, combinedState.price);
+            if (trade) {
+              perPositionCloseReports.push({ order: {} as any, trade });
+              log.info(`  → Closed ${psc.symbol}: $${trade.pnl.toFixed(2)}`);
+            }
           }
           continue;
         }
@@ -2059,10 +2089,27 @@ class AMACRFSystem {
             // Direction flip: close existing position first, then let the new
             // trade execute below. This is a conviction-based reversal.
             log.warn(`🔄 Direction flip: ${activeSym.toUpperCase()} ${existingPos.side.toUpperCase()} @ $${existingPos.averageEntryPrice.toFixed(2)} → ${finalDecision.action.toUpperCase()}. Closing existing position first.`);
-            const flipTrade = this.portfolio.closePosition(activeSym, combinedState.price);
-            if (flipTrade) {
-              perPositionCloseReports.push({ order: {} as any, trade: flipTrade });
-              log.info(`  → Flipped ${activeSym}: $${flipTrade.pnl.toFixed(2)} (${flipTrade.pnl >= 0 ? 'profit' : 'loss'}). Proceeding with ${finalDecision.action.toUpperCase()} order.`);
+            // v2.0.33: Route real positions through realTradingManager.closePosition()
+            // which closes on HL first. portfolio.closePosition() only closes locally.
+            if (existingPos.agentId === 'hyperliquid-real') {
+              const success = await this.realTradingManager.closePosition(activeSym);
+              if (success) {
+                log.info(`  → Flipped ${activeSym} (real, closed on HL). Proceeding with ${finalDecision.action.toUpperCase()} order.`);
+              } else {
+                log.error(`  → Failed to close ${activeSym} on HL for flip — aborting flip`);
+                finalDecision = {
+                  ...finalDecision,
+                  action: 'hold',
+                  positionSizePct: 0,
+                  rationale: `Flip failed: could not close ${activeSym} on HL. HOLD.`,
+                };
+              }
+            } else {
+              const flipTrade = this.portfolio.closePosition(activeSym, combinedState.price);
+              if (flipTrade) {
+                perPositionCloseReports.push({ order: {} as any, trade: flipTrade });
+                log.info(`  → Flipped ${activeSym}: $${flipTrade.pnl.toFixed(2)} (${flipTrade.pnl >= 0 ? 'profit' : 'loss'}). Proceeding with ${finalDecision.action.toUpperCase()} order.`);
+              }
             }
             // Continue to execute the new trade below — don't convert to HOLD
           } else {
