@@ -348,8 +348,23 @@ export class RealTradingManager {
 
         // Step 2: Calculate SL/TP from the ACTUAL fill price
         // Use decision SL/TP percentages, or fall back to defaults (2% SL, 5% TP)
-        const slPct = decision.stopLossPct ?? 0.02;
-        const tpPct = decision.takeProfitPct ?? 0.05;
+        // v2.0.33: Enforce sane constraints for 5-minute cycle trading:
+        //   - SL: minimum 1.5%, maximum 5% (too tight = stopped out by noise,
+        //     too wide = excessive risk at 10x leverage)
+        //   - TP: minimum 1%, maximum 3% (5% TP on 5min cycle is unreachable —
+        //     price rarely moves 5% in one cycle; position sits open forever)
+        //   - Risk/reward ratio: TP must be >= SL (never risk more than reward)
+        let slPct = decision.stopLossPct ?? 0.02;
+        let tpPct = decision.takeProfitPct ?? 0.03;
+        // Clamp SL to sane range
+        slPct = Math.max(0.015, Math.min(0.05, slPct));
+        // Clamp TP to sane range
+        tpPct = Math.max(0.01, Math.min(0.03, tpPct));
+        // Ensure TP >= SL (risk/reward >= 1:1)
+        if (tpPct < slPct) {
+          log.warn(`⚠️ TP ${(tpPct*100).toFixed(1)}% < SL ${(slPct*100).toFixed(1)}% — adjusting TP to match SL`);
+          tpPct = slPct;
+        }
         const slPrice = decision.action === 'buy'
           ? actualEntryPrice * (1 - slPct)
           : actualEntryPrice * (1 + slPct);
@@ -357,7 +372,7 @@ export class RealTradingManager {
           ? actualEntryPrice * (1 + tpPct)
           : actualEntryPrice * (1 - tpPct);
 
-        log.info(`🎯 SL/TP calculated from fill price: ${decision.symbol} entry=$${actualEntryPrice.toFixed(2)} SL=$${slPrice.toFixed(2)} (${(slPct*100).toFixed(1)}%) TP=$${tpPrice.toFixed(2)} (${(tpPct*100).toFixed(1)}%)`);
+        log.info(`🎯 SL/TP calculated from fill price: ${decision.symbol} entry=$${actualEntryPrice.toFixed(2)} SL=$${slPrice.toFixed(2)} (${(slPct*100).toFixed(1)}%) TP=$${tpPrice.toFixed(2)} (${(tpPct*100).toFixed(1)}%) [clamped: 1.5-5% SL, 1-3% TP]`);
 
         // Step 3: Place SL/TP on the exchange with retry logic
         if (engine instanceof HyperliquidRealEngine) {
@@ -539,9 +554,9 @@ export class RealTradingManager {
                 if (exPos.openedAt > 0) {
                   localPos.openedAt = exPos.openedAt;
                 }
-                // Recalculate SL/TP based on new entry
-                const slPct = 0.02;
-                const tpPct = 0.05;
+                // v2.0.33: Sane defaults for 5-minute cycle (1.5% SL, 3% TP)
+                const slPct = 0.015;
+                const tpPct = 0.03;
                 localPos.stopLossPrice = exPos.side === 'buy'
                   ? exPos.averageEntryPrice * (1 - slPct)
                   : exPos.averageEntryPrice * (1 + slPct);
