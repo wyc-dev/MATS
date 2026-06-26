@@ -868,13 +868,13 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         ?? positions.find(p => p.symbol.toLowerCase() === positionId.toLowerCase());
       if (!pos) {
         log.warn(`Position ${positionId.slice(0, 20)} not found on exchange for SL/TP placement`);
-        return true; // Monitoring will handle it
+        return false; // v2.0.33: return false so caller can retry or safety-close
       }
 
       const asset = await getAssetIndex(pos.symbol);
       if (!asset) {
         log.warn(`Asset meta not found for ${pos.symbol} — cannot place native SL/TP on HL`);
-        return true; // Local monitoring will handle it
+        return false; // v2.0.33: return false so caller can retry or safety-close
       }
 
       const pxDecimals = asset.pxDecimals;
@@ -901,6 +901,11 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         }
       }
 
+      // v2.0.33: Track actual success of trigger order placement.
+      // Previously returned true even when HL rejected the orders.
+      let slPlaced = !sl; // if no SL needed, consider it "placed"
+      let tpPlaced = !tp; // if no TP needed, consider it "placed"
+
       if (sl && sl > 0) {
         const slAction = {
           type: 'order',
@@ -925,9 +930,11 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         const slStatus = slResult.response?.data?.statuses?.[0];
         if (slStatus === 'success' || (typeof slStatus === 'object' && slStatus.resting)) {
           log.info(`✅ SL trigger order placed on HL: ${pos.symbol} @ $${sl.toFixed(2)}`);
+          slPlaced = true;
         } else {
           const errMsg = typeof slStatus === 'object' ? slStatus.error : String(slStatus);
           log.error(`❌ SL trigger order rejected by HL: ${pos.symbol} @ $${sl.toFixed(2)} — ${errMsg}`);
+          slPlaced = false;
         }
       }
 
@@ -955,16 +962,21 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         const tpStatus = tpResult.response?.data?.statuses?.[0];
         if (tpStatus === 'success' || (typeof tpStatus === 'object' && tpStatus.resting)) {
           log.info(`✅ TP trigger order placed on HL: ${pos.symbol} @ $${tp.toFixed(2)}`);
+          tpPlaced = true;
         } else {
           const errMsg = typeof tpStatus === 'object' ? tpStatus.error : String(tpStatus);
           log.error(`❌ TP trigger order rejected by HL: ${pos.symbol} @ $${tp.toFixed(2)} — ${errMsg}`);
+          tpPlaced = false;
         }
       }
 
-      return true;
+      // v2.0.33: Return true only if BOTH SL and TP were successfully placed
+      // (or weren't needed). If either failed, return false so the caller
+      // can retry or safety-close the position.
+      return slPlaced && tpPlaced;
     } catch (err) {
-      log.warn(`Native SL/TP placement failed, falling back to monitoring: ${err instanceof Error ? err.message : String(err)}`);
-      return true; // Monitoring loop will handle it
+      log.error(`Native SL/TP placement failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false; // v2.0.33: return false so caller can retry or safety-close
     }
   }
 
