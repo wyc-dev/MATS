@@ -1386,48 +1386,100 @@ class AMACRFSystem {
       // exchange, continue syncing their prices so the local mirror stays
       // accurate. This lets agents manage (SL/TP, close consensus) legacy
       // real positions even after switching to paper mode.
+      // v2.0.37: Also handle agentId='hyperliquid-real' positions that are NOT
+      // in legacyPositionModes — these are stale real positions that were never
+      // marked as legacy (e.g. system restart lost the tracking, or they were
+      // imported via syncExchangePositions while in real mode then the user
+      // switched to paper). Previously these were orphaned — no code path
+      // managed them, causing perpetual errors (syncSLTP, closePosition, etc.).
       if (this.realTradingManager.getTradeMode() === 'paper') {
-        const legacyRealSymbols = this.portfolio.getOpenSymbols().filter(sym =>
-          this.legacyPositionModes.get(sym) === 'real'
-        );
-        if (legacyRealSymbols.length > 0) {
+        // v2.0.37: Process ALL real positions — both legacy-tracked AND orphaned
+        const allRealSymbols = this.portfolio.getOpenSymbols().filter(sym => {
+          const pos = this.portfolio.getPosition(sym);
+          return pos && pos.agentId === 'hyperliquid-real';
+        });
+        if (allRealSymbols.length > 0) {
           try {
             const engine = this.realTradingManager.getEngineForExchange('hyperliquid');
             if (engine) {
               const exchangePositions = await engine.getPositions();
-              for (const exPos of exchangePositions) {
-                // v2.0.31: preserve case for colon-prefixed symbols
-                const sym = exPos.symbol.includes(':') ? exPos.symbol : exPos.symbol.toLowerCase();
-                if (this.portfolio.hasPosition(sym)) {
-                  this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
+              // v2.0.37: If getPositions() returned empty, we can't verify —
+              // but we also can't just skip (the position might be genuinely
+              // closed on HL). Check if any closing fills exist.
+              if (exchangePositions.length === 0) {
+                // Try to get recent fills to confirm the position was closed
+                let recentFills: Array<{ symbol: string; closedPnl: number; price: number; timestamp: number; dir: string }> = [];
+                if (typeof (engine as any).getRecentFills === 'function') {
+                  try { recentFills = await (engine as any).getRecentFills(50); } catch { /* non-critical */ }
                 }
-              }
-              // Check if any legacy real positions were closed on the exchange
-              const exchangeSyms = exchangePositions.map(p => p.symbol.includes(':') ? p.symbol : p.symbol.toLowerCase());
-              for (const sym of legacyRealSymbols) {
-                if (!exchangeSyms.includes(sym) && this.portfolio.hasPosition(sym)) {
-                  // Exchange no longer has this position — it was closed (SL/TP/manual)
-                  const state = this.marketState.getState(sym);
-                  const closePrice = state?.price ?? this.portfolio.getPosition(sym)?.currentPrice ?? 0;
-                  if (closePrice > 0) {
-                    // v2.0.33: Use closeExchangePosition() for real positions —
-                    // closePosition() adds margin back to paper balance (wrong for
-                    // real positions where margin was never deducted from paper balance).
-                    const pos = this.portfolio.getPosition(sym);
-                    const trade = pos?.agentId === 'hyperliquid-real'
-                      ? this.portfolio.closeExchangePosition(sym, closePrice)
-                      : this.portfolio.closePosition(sym, closePrice);
+                for (const sym of allRealSymbols) {
+                  const pos = this.portfolio.getPosition(sym);
+                  if (!pos) continue;
+                  const closingFill = recentFills.find(f =>
+                    f.symbol.toLowerCase() === sym.toLowerCase() &&
+                    !f.dir.toLowerCase().startsWith('open') &&
+                    f.timestamp >= pos.openedAt
+                  );
+                  if (closingFill) {
+                    // Confirmed closed on HL — close local mirror
+                    const trade = this.portfolio.closeExchangePosition(sym, closingFill.price, closingFill.closedPnl);
                     if (trade) {
-                      log.info(`📋 Legacy real position ${sym} closed on exchange: PnL $${trade.pnl.toFixed(2)} — syncing local mirror`);
+                      log.info(`📋 Stale real position ${sym} confirmed closed via HL fill: PnL $${trade.pnl.toFixed(2)} — cleaning up`);
                       this.legacyPositionModes.delete(sym);
                       this.onPositionClosedLearning(trade);
+                    }
+                  } else {
+                    // v2.0.37: No closing fill found — if the position is old
+                    // (> 1h), it's very likely been closed on HL (positions
+                    // don't stay empty for hours if genuinely open). Close it.
+                    const ageMs = Date.now() - pos.openedAt;
+                    if (ageMs > 3_600_000) {
+                      const state = this.marketState.getState(sym);
+                      const closePrice = state?.price ?? pos.currentPrice ?? 0;
+                      if (closePrice > 0) {
+                        const trade = this.portfolio.closeExchangePosition(sym, closePrice);
+                        if (trade) {
+                          log.info(`📋 Stale real position ${sym} (age ${Math.round(ageMs / 3_600_000)}h, no HL position, no closing fill) — closing local mirror (assuming closed on HL)`);
+                          this.legacyPositionModes.delete(sym);
+                          this.onPositionClosedLearning(trade);
+                        }
+                      }
+                    } else {
+                      log.warn(`⚠️ Paper mode: real position ${sym} not on HL and no closing fill — position is recent (${Math.round(ageMs / 60_000)}min), skipping (might be API failure)`);
+                    }
+                  }
+                }
+              } else {
+                // getPositions() returned non-empty — normal sync
+                for (const exPos of exchangePositions) {
+                  const sym = exPos.symbol.includes(':') ? exPos.symbol : exPos.symbol.toLowerCase();
+                  if (this.portfolio.hasPosition(sym)) {
+                    this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
+                  }
+                }
+                // Check if any real positions were closed on the exchange
+                const exchangeSyms = exchangePositions.map(p => p.symbol.includes(':') ? p.symbol : p.symbol.toLowerCase());
+                for (const sym of allRealSymbols) {
+                  if (!exchangeSyms.includes(sym) && this.portfolio.hasPosition(sym)) {
+                    const state = this.marketState.getState(sym);
+                    const closePrice = state?.price ?? this.portfolio.getPosition(sym)?.currentPrice ?? 0;
+                    if (closePrice > 0) {
+                      const pos = this.portfolio.getPosition(sym);
+                      const trade = pos?.agentId === 'hyperliquid-real'
+                        ? this.portfolio.closeExchangePosition(sym, closePrice)
+                        : this.portfolio.closePosition(sym, closePrice);
+                      if (trade) {
+                        log.info(`📋 Real position ${sym} closed on exchange: PnL $${trade.pnl.toFixed(2)} — syncing local mirror`);
+                        this.legacyPositionModes.delete(sym);
+                        this.onPositionClosedLearning(trade);
+                      }
                     }
                   }
                 }
               }
             }
           } catch (err) {
-            log.warn(`Legacy real position sync failed: ${err instanceof Error ? err.message : String(err)}`);
+            log.warn(`Real position sync in paper mode failed: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
       }
@@ -1470,14 +1522,23 @@ class AMACRFSystem {
           // have been closed on HL. Without exchange access to verify, we
           // can't know if they're still open. Close them to avoid phantom
           // positions inflating the balance.
+          // v2.0.37: Actually enforce this — previously the filter didn't
+          // check agentId at all, so real positions that weren't in
+          // legacyPositionModes were kept if < 12h old, causing perpetual
+          // errors (syncSLTP, closePosition, etc.).
           const now = Date.now();
           const staleCutoff = 3_600_000 * 12; // 12 hours
           const activeSym = activeSymbol.toLowerCase();
           externalSymbols = this.portfolio.getOpenSymbols().filter(sym => {
             // Legacy positions are always kept
             if (this.legacyPositionModes.has(sym)) return true;
-            if (sym === activeSym) return true;
+            // v2.0.37: Real positions NOT in legacyPositionModes are NEVER kept
+            // in paper mode — they're stale mirrors of HL positions that may
+            // have been closed. The paper-mode real position sync block above
+            // handles their cleanup.
             const pos = this.portfolio.getPosition(sym);
+            if (pos && pos.agentId === 'hyperliquid-real') return false;
+            if (sym === activeSym) return true;
             return !!pos && (now - pos.openedAt < staleCutoff);
           });
         }
