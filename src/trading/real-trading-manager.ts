@@ -430,19 +430,22 @@ export class RealTradingManager {
         exMap.set(sym, exPos);
       }
 
-      // v2.0.32: Remove local mirrors that no longer exist on the exchange.
-      // This must happen BEFORE syncSLTP() runs, otherwise stale SL/TP from
-      // closed positions get pushed to HL and may immediately trigger on
-      // unrelated positions. Only remove exchange-imported positions
-      // (agentId='hyperliquid-real') — paper positions are handled by
-      // reconciliation later.
-      // v2.0.32: Use closePosition() instead of removePosition() so that:
-      //   1. Trade record is produced (appears in Trade Records UI)
-      //   2. Margin is returned to balance
-      //   3. Learning mechanisms are triggered (RBC, pattern classifier, etc.)
-      //   4. Evolution system learns from the closed position
-      // Exchange-imported positions don't have margin deducted (importExchangePosition
-      // doesn't deduct), so closePosition() will add margin + PnL back.
+      // v2.0.32: Safety check — if getPositions() returned an empty array but
+      // we have exchange-imported positions locally, DON'T close them. This
+      // could be a transient API failure. Only close if we're confident the
+      // position is really gone (i.e. getPositions() returned non-empty but
+      // doesn't include this symbol).
+      const localExchangePositions = this.portfolio.getOpenSymbols().filter(sym => {
+        const pos = this.portfolio.getPosition(sym);
+        return pos && pos.agentId === 'hyperliquid-real';
+      });
+
+      if (exMap.size === 0 && localExchangePositions.length > 0) {
+        log.warn(`⚠️ syncExchangePositions: getPositions() returned empty but ${localExchangePositions.length} exchange positions exist locally — likely API failure, skipping close`);
+        // Still try to soft-update prices from exchange data (none available)
+        return;
+      }
+
       // v2.0.32: Fetch recent HL fills to get actual realized PnL for closed positions.
       // HL's closedPnl is the real money gained/lost (not leveraged), already includes fees.
       let recentFills: Array<{ symbol: string; closedPnl: number; side: string; price: number; size: number; timestamp: number; fee: number; dir: string }> = [];
@@ -452,9 +455,12 @@ export class RealTradingManager {
         } catch { /* non-critical */ }
       }
 
-      for (const localSym of this.portfolio.getOpenSymbols()) {
+      // v2.0.32: Close local mirrors for positions that are genuinely gone from HL.
+      // Only close if exMap is non-empty (proving the API worked) but doesn't include
+      // this symbol. This prevents false closes from API failures.
+      for (const localSym of localExchangePositions) {
         const localPos = this.portfolio.getPosition(localSym);
-        if (!localPos || localPos.agentId !== 'hyperliquid-real') continue;
+        if (!localPos) continue;
         if (!exMap.has(localSym)) {
           // v2.0.32: Find the matching HL fill to get actual realized PnL.
           // HL closedPnl is the real PnL (not leveraged), already net of fees.
@@ -482,27 +488,40 @@ export class RealTradingManager {
             const entryChanged = Math.abs(localPos.averageEntryPrice - exPos.averageEntryPrice) > 0.01;
 
             if (sideChanged || qtyChanged || entryChanged) {
-              log.info(`🔄 Position changed on HL: ${sym} side=${localPos.side}→${exPos.side} qty=${localPos.quantity}→${exPos.quantity} entry=${localPos.averageEntryPrice}→${exPos.averageEntryPrice} — replacing mirror`);
-              // v2.0.32: Close the old mirror properly (produces trade record
-              // + returns margin to balance) instead of silently removing it.
-              // This prevents paper positions from "vanishing" without a trace
-              // when the exchange position differs (e.g. side flip).
-              // Only close if it's a paper position (agentId !== 'hyperliquid-real')
-              // — exchange-imported positions don't have margin deducted.
-              if (localPos.agentId !== 'hyperliquid-real') {
+              log.info(`🔄 Position changed on HL: ${sym} side=${localPos.side}→${exPos.side} qty=${localPos.quantity}→${exPos.quantity} entry=${localPos.averageEntryPrice}→${exPos.averageEntryPrice} — updating mirror`);
+              // v2.0.32: For exchange-imported positions, just update the fields
+              // directly — don't close + re-import (which produces duplicate trade
+              // records). For paper positions, close properly + re-import.
+              if (localPos.agentId === 'hyperliquid-real') {
+                // Update in-place — no trade record, no balance change
+                localPos.side = exPos.side;
+                localPos.quantity = exPos.quantity;
+                localPos.averageEntryPrice = exPos.averageEntryPrice;
+                localPos.leverage = exPos.leverage;
+                localPos.openedAt = exPos.openedAt;
+                // Recalculate SL/TP based on new entry
+                const slPct = 0.02;
+                const tpPct = 0.05;
+                localPos.stopLossPrice = exPos.side === 'buy'
+                  ? exPos.averageEntryPrice * (1 - slPct)
+                  : exPos.averageEntryPrice * (1 + slPct);
+                localPos.takeProfitPrice = exPos.side === 'buy'
+                  ? exPos.averageEntryPrice * (1 + tpPct)
+                  : exPos.averageEntryPrice * (1 - tpPct);
+                log.info(`  → Exchange mirror updated in-place (no trade record)`);
+              } else {
+                // Paper position — close properly + re-import as exchange position
                 this.portfolio.closePosition(sym, localPos.currentPrice);
                 log.info(`  → Paper mirror closed: ${localPos.side.toUpperCase()} ${sym} PnL: ${(localPos.unrealizedPnl).toFixed(2)}`);
-              } else {
-                this.portfolio.removePosition(sym);
+                this.portfolio.importExchangePosition(
+                  exPos.symbol,
+                  exPos.side,
+                  exPos.quantity,
+                  exPos.averageEntryPrice,
+                  exPos.leverage,
+                  exPos.openedAt,
+                );
               }
-              this.portfolio.importExchangePosition(
-                exPos.symbol,
-                exPos.side,
-                exPos.quantity,
-                exPos.averageEntryPrice,
-                exPos.leverage,
-                exPos.openedAt,
-              );
             } else {
               // Only price changed — soft update
               this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
