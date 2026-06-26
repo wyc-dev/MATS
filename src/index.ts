@@ -1865,8 +1865,8 @@ class AMACRFSystem {
               symbol: activeSymbolUpper,
               entryPrice: combinedState.price,
               positionSizePct: exploreSize,
-              stopLossPct: 0.015,
-              takeProfitPct: 0.03,
+              stopLossPct: 0.02,
+              takeProfitPct: 0.05,
               leverage: exploreLev,
               rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — ${direction} exploration.`,
               urgency: 'immediate',
@@ -2146,7 +2146,14 @@ class AMACRFSystem {
         }
       }
       log.info(`💼 Executing ${this.realTradingManager.getTradeMode().toUpperCase()} trading decision...`);
-      const execResult = await this.realTradingManager.executeDecision(finalDecision);
+      // v2.0.33: Pass S/R levels to executeDecision so SL/TP can be set at
+      // actual support/resistance levels instead of fixed percentages.
+      const decisionWithSR: TradingDecision = {
+        ...finalDecision,
+        srSupport: this.lastSRContext?.nearestSupport ?? null,
+        srResistance: this.lastSRContext?.nearestResistance ?? null,
+      };
+      const execResult = await this.realTradingManager.executeDecision(decisionWithSR);
       const reports: ExecutionReport[] = execResult.paperReports ?? [];
       // When real-mode, paperReports mirrors the real trade into the local portfolio
       // so all downstream P&L tracking, stop-loss monitoring, and evolution learning work identically.
