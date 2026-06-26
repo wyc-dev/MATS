@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.33--dev-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.34--dev-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -286,14 +286,14 @@ The provider factory auto-detects availability: Ollama → Error.
 
 ```
 src/                                        # 24,502 LOC total
-├── index.ts                                # 🚀 Entry point — system lifecycle (3,025 LOC)
+├── index.ts                                # 🚀 Entry point — system lifecycle (3,124 LOC)
 ├── api-server.ts                           # REST + SSE API server (783 LOC)
 ├── config/index.ts                         # Zod-validated, type-safe configuration (129 LOC)
-├── types/index.ts                          # Complete domain type definitions (767 LOC)
+├── types/index.ts                          # Complete domain type definitions (773 LOC — srSupport/srResistance for S/R-based SL/TP)
 │
 ├── agents/                                 # 🤖 Multi-agent system
 │   ├── base-agent.ts                        # Abstract agent base class (425 LOC)
-│   ├── agents.ts                            # Six sub-agents (1,352 LOC)
+│   ├── agents.ts                            # Six sub-agents (1,358 LOC — on-chain dedup normalizeSym)
 │   ├── meta-agent.ts                       # Meta-agent arbitration (120 LOC)
 │   └── agent-models.ts                      # Per-agent model configuration (112 LOC)
 │
@@ -309,13 +309,13 @@ src/                                        # 24,502 LOC total
 │   └── index.ts                            # Provider factory (auto-detection, 46 LOC)
 │
 ├── trading/                                # 💹 Trading engine
-│   ├── portfolio.ts                         # Portfolio tracker (810 LOC — notional fee + entryFee + exchange position separation)
+│   ├── portfolio.ts                         # Portfolio tracker (858 LOC — closePosition defensive guard + recalculateEquity excludes real + exchange UI callback)
 │   ├── paper-engine.ts                     # Paper trading simulation (347 LOC — HL $10 min notional floor)
 │   ├── cost-model.ts                        # HL transaction cost model (91 LOC — taker 0.04%, notional-based)
 │   ├── execution-tracker.ts                 # Slippage/fee tracking (211 LOC)
 │   ├── decision-utils.ts                    # Decision normalization (150 LOC)
-│   ├── real-trading-manager.ts              # Real trading orchestrator (805 LOC — post-trade sync + SL/TP renew + getRecentFills)
-│   ├── hyperliquid-real-engine.ts           # HL real trading engine (1,105 LOC — phantom agent signing + formatPrice + multi-DEX)
+│   ├── real-trading-manager.ts              # Real trading orchestrator (932 LOC — pro algo firm SL/TP: fill-first + retry + safety-close + S/R-based SL/TP + openedAt sync)
+│   ├── hyperliquid-real-engine.ts           # HL real trading engine (1,149 LOC — phantom agent signing + formatPrice + multi-DEX + adjustPosition false-success fix + fill matching by coin+side+price)
 │   └── binance-real-engine.ts               # Binance real trading engine (440 LOC)
 │
 ├── risk/                                   # 🛡️ Risk management
@@ -443,7 +443,7 @@ If you require a commercial license — for example, for proprietary extensions,
 
 ---
 
-## Changelog (v2.0.10 → v2.0.33)
+## Changelog (v2.0.10 → v2.0.34)
 
 | Version | Change |
 |:--------|:-------|
@@ -467,7 +467,9 @@ If you require a commercial license — for example, for proprietary extensions,
 | **v2.0.32** | HL signing rewrite (phantom agent EIP-712 + msgpack + recovery bit); xyz DEX asset index offset (110000); `updateLeverage()` before order placement (fixes 40x→10x); SL/TP direction fix for short positions (stale local mirror → immediate trigger); `syncExchangePositions()` removes stale exchange mirrors + closes paper mirror properly on side/qty/entry change (produces trade record, not silent removal); `syncSLTP()` validates HL position side + entry + manages SL/TP per coin+closeSide (allows simultaneous long+short); `placeOrder()` only returns success on `filled` (not `resting`); UI filters stale positions in real mode; REAL/PAPER label based on `agentId` only; `getOpenOrders()` parses `limitPx` + `reduceOnly`; `PERP_DEX_NAMES` fix (`dex: 0` → `''` — HL API rejects number); `formatPrice()` price-magnitude-based decimals (BTC=0, ETH=1, SPCX=2, SOL=3, ATOM=4, DOGE=6) strips trailing zeros; `updatePosition()` skips `checkPositionExits()` for `agentId='hyperliquid-real'` (exchange SL/TP managed natively by HL trigger orders); `cancelOrderWithAsset()` uses correct per-coin asset index (not positions[0]); reconciliation closes on HL before local close; `syncSLTP()` hasSL/hasTP uses rounded price comparison (tolerance < 1, not < 0.01) |
 | **v2.0.33** | Regime-aware direction signals (mean-revert vs trend-following based on `combinedState.regime`); Planck-Chaos Resonance module (`src/analysis/planck-chaos.ts`) — Lyapunov exponent estimation, resonance frequency detection (autocorrelation), amplitude window prediction (diffusion model √(2Dt)), chaos regime classification, direction bias from cycle phase; Planck-Chaos is Priority -1 (highest) in exploration direction chain; Meta-Agent + Fractal Momentum prompts updated with chaos theory; new pattern tags (planck_resonance_strong, chaotic_divergence, diffusion_accumulation, cycle_phase_bottom/top, edge_of_chaos); removed trend filter Layer 2 that caused systematic buy-high-sell-low (13.3% win rate → anti-correlated); exploration SL/TP widened from 1%/2% to 2%/5% |
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.32 for full details on each fix.
+| **v2.0.34** | Phantom close fix — 8 code paths that closed real HL positions locally without closing on HL (reconcilePositions API-failure guard, engine.closePosition false-success fix, syncExchangePositions stale fill matching, agent vote/consensus/flip routed through realTradingManager, manual close fix, defensive guard in closePosition() that redirects real positions to closeExchangePosition()); Paper balance/equity inflation fix — recalculateEquity() excludes real positions, closePosition() defensive guard prevents margin inflation, portfolio-state reconstructed ($2060→$1278.95); Premature close fix — close thresholds use raw PnL% (unleveraged) instead of leveraged unrealizedPnlPct; S/R-based SL/TP — uses nearestSupport/nearestResistance from S/R engine instead of fixed percentages, with 0.5-5% hard constraints + risk:reward ≥ 1; Pro algo firm SL/TP — fill-first (actual fill price not decision price), 3x retry with 1s delay, safety-close if SL/TP placement fails (unprotected 10x = too dangerous), adjustPosition() false-success fix; openedAt sync — match HL fills by coin+side+price tolerance (200 fills), preserve existing timestamp when no match; on-chain dedup — normalizeSym() strips USDT/USD + xyz: prefix + lowercase (BTCUSDT/btc/xyz:SPCX all dedup); instant UI update — onExchangeClosedUICb callback fires pushToAPI + refreshHLFills immediately after close |
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.34 for full details on each fix.
 
 ---
 

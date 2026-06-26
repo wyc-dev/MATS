@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.33-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組)  
+> **版本**: 2.0.34-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -61,6 +61,7 @@
 50. [B.31 多 DEX 餘額同步 + 交易所倉位匯入 + getRecentFills 修復](#b31-v2031-多-dex-餘額同步--交易所倉位匯入--getrecentfills-修復)
 51. [B.32 HL 簽名修復 + xyz DEX 資產索引 + SL/TP 方向 + 槓桿 + 幽靈倉位](#b32-v2032-hl-簽名修復--xyz-dex-資產索引--sltp-方向--槓桿--幽靈倉位)
 52. [B.33 Regime-aware 方向信號 + Planck-Chaos Resonance 模組](#b33-v2033-regime-aware-方向信號--planck-chaos-resonance-模組)
+53. [B.34 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP](#b34-v2034-幽靈平倉修復--paperreal-分離--sr-based-sltp--pro-algo-firm-sltp)
 
 ---
 
@@ -5759,6 +5760,104 @@ src/index.ts → exploration direction chain:
 | `src/agents/meta-agent.ts` | Planck-Chaos 提示指引 |
 | `src/agents/agents.ts` | Fractal Momentum Sentinel 混沌理論提示 |
 | `src/agents/base-agent.ts` | 新增 pattern tags |
+
+---
+
+### B.34 v2.0.34: 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP
+
+> **觸發**: 多個嚴重 bug 導致真實 HL 倉位被本地平倉但 HL 上面仍然開住（幽靈平倉）、paper balance 被 real trade margin 通脹、提早平倉令利潤流失、SL/TP 用固定百分比唔貼市。
+
+#### 1. 幽靈平倉 Bug — 8 個 code path 本地平倉但唔關 HL
+
+**根因**: `portfolio.closePosition()` 同 `closeExchangePosition()` 係純本地簿記 — 只刪除本地 Map 嘅倉位 + 觸發學習回調，從來唔接觸交易所。但有 8 個 code path 對 real 倉位 (`agentId='hyperliquid-real'`) 調用呢啲函數而冇先喺 HL 發送平倉訂單。
+
+| # | 路徑 | 修復 |
+|---|------|------|
+| 1 | `reconcilePositions()` | 加 API 失敗守衛：external 為空但有 real 倉位時跳過 |
+| 2 | `engine.closePosition()` | `getPositions()` 返回空時返回 `false`（唔再 `true` 假成功）|
+| 3 | `syncExchangePositions()` matchingFill | 只匹配 `openedAt` 之後嘅 fill（唔匹配舊 fill）|
+| 4 | Agent vote close | 改用 `realTradingManager.closePosition()`（先喺 HL 平倉）|
+| 5 | Per-symbol consensus close | 同上 |
+| 6 | Direction flip close | 同上 + HL 失敗時中止 flip |
+| 7 | Paper-mode legacy real close | 用 `closeExchangePosition()`（唔再 `closePosition()`）|
+| 8 | `realTradingManager.closePosition()` | real 倉位用 `closeExchangePosition()`（唔再 `closePosition()`）|
+
+**防禦性守衛**: `closePosition()` 頂部檢查 `agentId='hyperliquid-real'` → 自動 redirect 到 `closeExchangePosition()` + warning log。以後任何 code path 都唔可能再 inflate balance。
+
+#### 2. Paper Balance / Equity 通脹修復
+
+**根因**: `closePosition()` 將 margin + PnL 加返 paper balance，但 real 倉位嘅 margin 從來冇從 paper balance 扣過（`importExchangePosition` 唔扣 margin）。`recalculateEquity()` 對所有倉位加 `lockedMargin`，包括 real 倉位。
+
+**修復**:
+- `closePosition()` 防禦性守衛 — real 倉位自動 redirect 到 `closeExchangePosition()`
+- `recalculateEquity()` 跳過 `agentId='hyperliquid-real'` 倉位 — real PnL 喺 HL 結算，唔計入 paper equity
+- `portfolio-state.json` 重建：balance $2060→$1278.95，equity $1409→$1278.95，drawdown 39%→0%
+- 12 筆錯誤交易記錄刪除，4 筆 real trades 從 paper trade list 移除
+
+#### 3. 提早平倉修復 — 用 raw PnL%（唔係槓桿化）
+
+**根因**: close threshold 用 `unrealizedPnlPct`（槓桿化 × leverage）。10x 槓桿下 1.5% 槓桿化 = 只有 0.15% 原始價格移動，低過 0.18% 手續費。倉位喺 0.35% 原始利潤時被平倉，但市場繼續行。
+
+**修復**: `rawPnlPct = unrealizedPnlPct / leverage` — agent vote 要求 1.5% 原始回報，per-symbol consensus 要求 0.5% 原始回報。
+
+#### 4. S/R-based SL/TP — 用支持/阻力位取代固定百分比
+
+**問題**: TP 設喺固定 3% — 5 分鐘週期永遠觸唔到。SL 0.75% — 太窄被噪音 stop out。SL/TP 同市場結構冇關係。
+
+**修復**: `executeDecision` 接收 `nearestSupport` + `nearestResistance`，用 S/R 位計 SL/TP：
+- LONG: SL = support × 0.997（剛低過 support），TP = resistance
+- SHORT: SL = resistance × 1.003（剛高過 resistance），TP = support
+- 硬約束：SL 0.5-5%，TP 0.5-5%，TP ≥ SL 距離
+- 冇 S/R 時 fallback 1.5%/3%
+
+#### 5. Pro Algo Firm SL/TP — fill-first, retry, safety-close
+
+**舊流程**: 用 decision price 計 SL/TP → 試放 → 失敗就 log 完事 → 冇 SL/TP 就咩都唔放
+
+**新流程**:
+1. Place order → 等成交確認
+2. 從交易所攞 ACTUAL fill price
+3. 用 ACTUAL fill price 計 SL/TP（唔係 decision price）
+4. 永遠放 SL/TP — 冇 decision SL/TP 就用預設 1.5%/3%
+5. 放 SL/TP 上 HL，3 次重試，每次隔 1 秒
+6. 3 次都失敗 → 🚨 SAFETY CLOSE 倉位（10x 槓桿冇保護太危險）
+7. 更新本地 mirror 用 fill-based SL/TP
+
+**`adjustPosition()` 假成功修復**: position 唔喺交易所 / asset meta 搵唔到 / HL 拒絕 / exception — 全部返回 `false`（唔再 `true`），等 retry 邏輯真正重試。
+
+#### 6. openedAt 同步 — 用 HL fill timestamp
+
+**根因**: `getPositions()` 用 coin name 匹配 open fill，fallback 係 `Date.now()` — 每 cycle 覆蓋 `openedAt`。
+
+**修復**:
+- 用 coin + side + entry price（0.5% 容差）匹配 open fill
+- fill limit 50→200（覆蓋 7 天活躍交易）
+- 搵唔到 fill 返回 0（唔再 `Date.now()`）
+- `syncExchangePositions()` 只有 `openedAt > 0` 先覆蓋，否則保留現有值
+- `executeDecision()` post-trade 即時同步 `openedAt` + 真實 entry price + leverage
+
+#### 7. On-chain dedup — normalize symbols
+
+**問題**: `BTC`（market state）同 `btc`（positions）被當做 2 個 symbol 各 fetch 一次。`SPCX` 同 `xyz:SPCX` 同樣。
+
+**修復**: `normalizeSym()` — strip USDT/USD suffix + strip `xyz:` prefix + lowercase。`BTCUSDT`、`btc`、`xyz:SPCX`、`xyz:spcx`、`SPCX` 全部 dedup 做 1 個 fetch。
+
+#### 8. UI 即時更新 — closeExchangePosition callback
+
+**問題**: 平倉後 UI 要等下一個 cycle 先更新 — 倉位仍然顯示，Trade Records 冇記錄。
+
+**修復**: `closeExchangePosition()` 新增 `onExchangeClosedUICb` callback — 平倉後即時刷新 `cachedHLFills` + `cachedExchangePositions` + `pushToAPI()`。
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/trading/portfolio.ts` | `closePosition()` 防禦性守衛；`recalculateEquity()` 跳過 real 倉位；`reconcilePositions()` API 失敗守衛；`setOnExchangeClosedUI()` callback |
+| `src/trading/hyperliquid-real-engine.ts` | `closePosition()` 返回 false 當 getPositions 空；`adjustPosition()` 返回 false 當失敗；`getPositions()` fill 匹配用 coin+side+price tolerance；fill limit 200 |
+| `src/trading/real-trading-manager.ts` | `executeDecision()` pro algo firm SL/TP flow；`closePosition()` 用 `closeExchangePosition()` for real；`syncExchangePositions()` matchingFill 用 openedAt；`openedAt` 只喺 >0 時覆蓋 |
+| `src/index.ts` | Agent vote / per-symbol consensus / direction flip 用 `realTradingManager.closePosition()` for real；manual close 用 `closeExchangePosition()`；S/R 傳入 `TradingDecision`；`refreshHLFillsAndPush()` 即時 UI 更新 |
+| `src/agents/agents.ts` | On-chain dedup `normalizeSym()` |
+| `src/types/index.ts` | `TradingDecision` 加 `srSupport` / `srResistance` |
 
 ---
 
