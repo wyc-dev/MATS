@@ -502,7 +502,13 @@ class AMACRFSystem {
           }
 
           // Close in local portfolio
-          const trade = this.portfolio.closePosition(sym, closePrice);
+          // v2.0.33: Use closeExchangePosition() for real positions —
+          // closePosition() adds margin back to paper balance (wrong for
+          // real positions where margin was never deducted from paper balance).
+          const existingPos = this.portfolio.getPosition(sym);
+          const trade = existingPos?.agentId === 'hyperliquid-real'
+            ? this.portfolio.closeExchangePosition(sym, closePrice)
+            : this.portfolio.closePosition(sym, closePrice);
           if (trade) {
             // Tag the trade record with manual close reason
             trade.closeReason = 'manual';
