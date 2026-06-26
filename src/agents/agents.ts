@@ -618,14 +618,22 @@ For each open position, use on-chain/macro signals to decide:
   /** Override think() for multi-symbol: fetch on-chain data for ALL relevant symbols */
   override async think(marketState: string, portfolioSnapshot: string, positions?: import('../types/index.ts').PositionContext[]): Promise<import('../types/index.ts').AgentThought> {
     // Collect ALL symbols that need on-chain data
+    // v2.0.33: Normalize all symbols to lowercase to avoid duplicate fetches
+    // (e.g. "BTC" from market state + "btc" from positions = same symbol)
     const allSymbols = new Set<string>();
     // Market ticker
     const symMatch = marketState.match(/Selected Symbol:\s*(\S+)/i) ?? marketState.match(/Symbol:\s*(\S+)/i);
     const marketSymbol = symMatch?.[1] ?? 'BTCUSDT';
-    allSymbols.add(marketSymbol);
+    // Strip USDT/USD suffix and lowercase for dedup
+    const marketBase = marketSymbol.replace(/USDT$|USD$/i, '').toLowerCase();
+    allSymbols.add(marketBase);
     // Position symbols
     if (positions) {
-      for (const p of positions) allSymbols.add(p.symbol);
+      for (const p of positions) {
+        // Strip USDT/USD suffix and lowercase for dedup
+        const base = p.symbol.replace(/USDT$|USD$/i, '').toLowerCase();
+        allSymbols.add(base);
+      }
     }
 
     ocwLog.info(`Fetching on-chain data for ${allSymbols.size} symbol(s): ${Array.from(allSymbols).join(', ')}`);
