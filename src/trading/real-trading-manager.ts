@@ -254,7 +254,21 @@ export class RealTradingManager {
 
       const equity = this.portfolio.getEquity();
       const positionSize = decision.positionSizePct * equity;
-      const quantity = positionSize / price;
+      let quantity = positionSize / price;
+
+      // v2.0.32: HL minimum notional floor — if position size is below HL's
+      // minimum order notional ($10), bump it up to the minimum so the trade
+      // can still execute. If balance can't even cover the minimum, stop.
+      const HL_MIN_NOTIONAL_USD = 10;
+      const notional = quantity * price;
+      if (notional < HL_MIN_NOTIONAL_USD && (decision.action === 'buy' || decision.action === 'sell')) {
+        if (equity < HL_MIN_NOTIONAL_USD) {
+          log.warn(`⛔ Balance $${equity.toFixed(2)} too low for HL minimum notional $${HL_MIN_NOTIONAL_USD} — skipping trade`);
+          return { success: false, error: `Insufficient balance for minimum notional ($${equity.toFixed(2)} < $${HL_MIN_NOTIONAL_USD})` };
+        }
+        quantity = HL_MIN_NOTIONAL_USD / price;
+        log.info(`Position notional $${notional.toFixed(2)} below HL min $${HL_MIN_NOTIONAL_USD} — floored to ${quantity.toFixed(6)} ($${HL_MIN_NOTIONAL_USD} notional)`);
+      }
 
       if (quantity <= 0) {
         return { success: false, error: 'Position size too small' };
