@@ -81,6 +81,10 @@ export interface HLUserFill {
   fee: number;
   /** Whether this is the initial snapshot vs a streaming fill */
   isSnapshot: boolean;
+  /** v2.0.35: Direction string from HL — "Open Long", "Open Short",
+   *  "Close Long", "Close Short", etc. Used to distinguish opening vs
+   *  closing fills (closedPnl alone is unreliable for partial closes). */
+  dir: string;
 }
 
 // ─── Callback Types ───
@@ -658,6 +662,7 @@ export class HyperliquidWebSocketManager {
           closedPnl: parseFloat(f.closedPnl ?? '0'),
           fee: parseFloat(f.fee ?? '0'),
           isSnapshot,
+          dir: f.dir ?? '',
         };
         // Skip snapshot fills — only act on streaming fills (new executions)
         if (isSnapshot) continue;

@@ -633,23 +633,66 @@ class AMACRFSystem {
         this.hyperliquidWs.setWalletAddress(hlWallet);
         // Position updates → soft-sync the local mirror (PnL + price only,
         // no auto-close; the exchange natively manages stop-losses).
+        // v2.0.35: Also detect positions that disappeared from HL (closed by
+        // SL/TP) and close the local mirror. This is a backup to the onFills
+        // handler — if the fill callback missed the close (e.g. WS reconnect),
+        // the position callback will catch it.
         this.hyperliquidWs.onPositions((positions) => {
+          const hlSymbols = new Set(positions.map(p => p.symbol.includes(':') ? p.symbol : p.symbol.toLowerCase()));
+          // Soft-update existing positions
           for (const p of positions) {
             const sym = p.symbol.includes(':') ? p.symbol : p.symbol.toLowerCase();
             if (this.portfolio.hasPosition(sym)) {
               this.portfolio.softUpdatePosition(sym, p.entryPx);
             }
           }
+          // v2.0.35: Check for real positions that disappeared from HL
+          const realPositions = this.portfolio.getOpenSymbols().filter(sym => {
+            const pos = this.portfolio.getPosition(sym);
+            return pos && pos.agentId === 'hyperliquid-real';
+          });
+          for (const sym of realPositions) {
+            if (!hlSymbols.has(sym)) {
+              // Position was on HL but is now gone — closed by SL/TP
+              // Only close if we have at least one HL position (proving the
+              // clearinghouseState push is valid, not an empty failure)
+              if (positions.length > 0 || hlSymbols.size > 0) {
+                const pos = this.portfolio.getPosition(sym);
+                if (pos) {
+                  log.info(`📡 HL WS position disappeared: ${sym} — closing local mirror (SL/TP triggered on HL)`);
+                  this.portfolio.closeExchangePosition(sym, pos.currentPrice);
+                }
+              }
+            }
+          }
         });
         // Fill updates → immediate post-trade sync so the mirror's entry point
         // reflects the actual fill price (not the decision price).
+        // v2.0.35: Also detect CLOSING fills (SL/TP triggered on HL) and
+        // immediately close the local mirror + create a trade record + trigger
+        // learning. Previously closing fills only did softUpdatePosition, so
+        // the local mirror stayed open forever and no trade record was created
+        // — the system never learned from HL-triggered SL/TP closes.
         this.hyperliquidWs.onFills(async (fill) => {
           const sym = fill.symbol.toLowerCase();
+          // v2.0.35: Use the HL dir field to reliably distinguish opening vs
+          // closing fills. "Close Long"/"Close Short" = closing, "Open Long"/
+          // "Open Short" = opening. closedPnl alone is unreliable for partial
+          // closes (a partial close may have closedPnl=0 if PnL is exactly 0).
+          const isClosingFill = fill.dir.toLowerCase().includes('close');
+          if (isClosingFill && this.portfolio.hasPosition(sym)) {
+            const pos = this.portfolio.getPosition(sym);
+            if (pos && pos.agentId === 'hyperliquid-real') {
+              log.info(`📡 HL WS closing fill: ${fill.symbol} ${fill.side} ${fill.size} @ ${fill.price} dir=${fill.dir} closedPnl=${fill.closedPnl} — closing local mirror immediately`);
+              // Close the local mirror with the actual HL fill price + realized PnL
+              this.portfolio.closeExchangePosition(sym, fill.price, fill.closedPnl);
+              return;
+            }
+          }
+          // Opening fill or non-closing fill — just soft-update the mirror price
           if (this.portfolio.hasPosition(sym)) {
-            // The fill price is the real entry; soft-update so the mirror +
-            // TradingView chart show the actual fill level.
             this.portfolio.softUpdatePosition(sym, fill.price);
-            log.info(`📡 HL WS fill: ${fill.symbol} ${fill.side} ${fill.size} @ ${fill.price} — mirror synced`);
+            log.info(`📡 HL WS fill: ${fill.symbol} ${fill.side} ${fill.size} @ ${fill.price} dir=${fill.dir} — mirror synced`);
           }
         });
         log.info('✓ HL WS user feeds wired (clearinghouseState + userFills)');
@@ -3032,6 +3075,25 @@ class AMACRFSystem {
             closedAt: t.closedAt,
             status: t.status,
           })),
+          // v2.0.35: Closed real (exchange) trades — SL/TP triggered on HL or
+          // manual exchange closes. These have accurate exit price + PnL from
+          // the actual HL fill. Previously these were only used for learning
+          // and never displayed in the UI.
+          ...(isRealMode ? this.portfolio.getClosedRealTrades().slice(-50).map(t => ({
+            id: t.id,
+            symbol: t.symbol,
+            side: t.side,
+            entryPrice: t.entryPrice,
+            exitPrice: t.exitPrice,
+            quantity: t.quantity,
+            leverage: t.leverage,
+            investment: t.investment,
+            pnl: t.pnl,
+            pnlPct: t.pnlPct,
+            openedAt: t.openedAt,
+            closedAt: t.closedAt,
+            status: t.status,
+          })) : []),
           // Open positions from portfolio (so they appear as open trade records)
           // v2.0.32: In real mode, only show positions that actually exist on HL.
           // Stale local mirrors (closed on exchange but not yet reconciled) are
