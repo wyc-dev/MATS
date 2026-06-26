@@ -37,6 +37,10 @@ export class PortfolioTracker {
   private onPositionClosedCb: OnPositionClosed | null = null;
   /** Callback so PaperTradingEngine can capture open trades */
   private onPositionOpenedCb: OnPositionOpened | null = null;
+  /** v2.0.32: Separate callback for exchange position closes — triggers
+   * learning WITHOUT adding to paperEngine.trades[] (real trades should
+   * not appear in paper trade list). */
+  private onExchangeClosedLearningCb: OnPositionClosed | null = null;
   /** Restored trades from disk (loaded in constructor) */
   readonly restoredTrades: TradeRecord[] = [];
 
@@ -136,6 +140,13 @@ export class PortfolioTracker {
   /** Register a callback for position closes (used by PaperTradingEngine to capture SL/TP trades) */
   setOnPositionClosed(cb: OnPositionClosed): void {
     this.onPositionClosedCb = cb;
+  }
+
+  /** v2.0.32: Register a learning-only callback for exchange position closes.
+   * Unlike setOnPositionClosed, this does NOT add the trade to paperEngine.trades[].
+   * It only triggers learning mechanisms (RBC, pattern classifier, evolution, etc.). */
+  setOnExchangeClosedLearning(cb: OnPositionClosed): void {
+    this.onExchangeClosedLearningCb = cb;
   }
 
   /** Register a callback for position opens (used by PaperTradingEngine to capture open trades) */
@@ -699,8 +710,13 @@ export class PortfolioTracker {
     this.recalculateEquity();
     log.info(`Exchange position closed: ${pos.side.toUpperCase()} ${pos.symbol} PnL: ${realizedPnl.toFixed(2)} (real trade, no paper balance/stats impact)`);
 
-    if (this.onPositionClosedCb) {
-      this.onPositionClosedCb(trade);
+    // v2.0.32: Trigger learning callback directly (NOT onPositionClosedCb).
+    // onPositionClosedCb pushes the trade into paperEngine.trades[] which
+    // is for PAPER trades only. Real trades should NOT appear in the paper
+    // trade list. But we still need to trigger learning (RBC, pattern
+    // classifier, agent outcomes, evolution) from real trade outcomes.
+    if (this.onExchangeClosedLearningCb) {
+      this.onExchangeClosedLearningCb(trade);
     }
 
     return trade;
