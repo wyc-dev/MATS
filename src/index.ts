@@ -255,7 +255,13 @@ class AMACRFSystem {
       this.paperEngine.setOnClosedLearning((trade) => {
         this.onPositionClosedLearning(trade);
       });
-      log.info('✓ SL/TP close learning hook wired');
+      // v2.0.32: Wire exchange position close learning — same learning
+      // callback but does NOT add to paperEngine.trades[] (real trades
+      // should not appear in paper trade list).
+      this.portfolio.setOnExchangeClosedLearning((trade) => {
+        this.onPositionClosedLearning(trade);
+      });
+      log.info('✓ SL/TP close learning hook wired (paper + exchange)');
 
       // 5.6 Initialize Real Trading Manager
       log.info('Step 5.6/8: Initializing Real Trading Manager...');
