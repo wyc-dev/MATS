@@ -884,11 +884,30 @@ body {
 }
 
 .agent-thought {
-  font-size: 0.78rem;
+  font-size: 0.68rem;
   color: var(--text-secondary);
   line-height: 1.7;
   max-height: 90px;
   overflow-y: auto;
+}
+
+.agent-thought-copy-btn {
+  float: right;
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  font-size: 0.6rem;
+  padding: 2px 6px;
+  cursor: pointer;
+  margin-top: 4px;
+  transition: color 0.2s ease, border-color 0.2s ease;
+  line-height: 1;
+}
+
+.agent-thought-copy-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
 }
 
 .agent-footer {

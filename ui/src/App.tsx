@@ -151,6 +151,13 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
       {displayThought ? (
         <>
           <div className="agent-thought">{displayThought}</div>
+          <button
+            className="agent-thought-copy-btn"
+            onClick={() => navigator.clipboard.writeText(displayThought)}
+            title="Copy thought"
+          >
+            📋 Copy
+          </button>
           <div className="agent-footer">
             {decision && (
               <span className="agent-footer-item">
