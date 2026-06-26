@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.36--dev-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.37--dev-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -443,7 +443,7 @@ If you require a commercial license — for example, for proprietary extensions,
 
 ---
 
-## Changelog (v2.0.10 → v2.0.36)
+## Changelog (v2.0.10 → v2.0.37)
 
 | Version | Change |
 |:--------|:-------|
@@ -469,8 +469,9 @@ If you require a commercial license — for example, for proprietary extensions,
 | **v2.0.34** | Phantom close fix — 8 code paths that closed real HL positions locally without closing on HL (reconcilePositions API-failure guard, engine.closePosition false-success fix, syncExchangePositions stale fill matching, agent vote/consensus/flip routed through realTradingManager, manual close fix, defensive guard in closePosition() that redirects real positions to closeExchangePosition()); Paper balance/equity inflation fix — recalculateEquity() excludes real positions, closePosition() defensive guard prevents margin inflation, portfolio-state reconstructed ($2060→$1278.95); Premature close fix — close thresholds use raw PnL% (unleveraged) instead of leveraged unrealizedPnlPct; S/R-based SL/TP — uses nearestSupport/nearestResistance from S/R engine instead of fixed percentages, with 0.5-5% hard constraints + risk:reward ≥ 1; Pro algo firm SL/TP — fill-first (actual fill price not decision price), 3x retry with 1s delay, safety-close if SL/TP placement fails (unprotected 10x = too dangerous), adjustPosition() false-success fix; openedAt sync — match HL fills by coin+side+price tolerance (200 fills), preserve existing timestamp when no match; on-chain dedup — normalizeSym() strips USDT/USD + xyz: prefix + lowercase (BTCUSDT/btc/xyz:SPCX all dedup); instant UI update — onExchangeClosedUICb callback fires pushToAPI + refreshHLFills immediately after close |
 | **v2.0.35** | HL SL/TP close detection — 3 bugs fixed: (1) WS `onFills` handler now detects closing fills via HL `dir` field (`Close Long`/`Close Short`) and immediately calls `closeExchangePosition()` with actual HL fill price + closedPnl — previously only did `softUpdatePosition()` so the local mirror stayed open forever with no trade record or learning; (2) `syncExchangePositions()` safety check now fetches recent fills to verify genuine closes vs API failure when `exMap.size === 0` (previously skipped close entirely when the last position was closed); (3) `closeExchangePosition()` now stores trade records in `closedRealTrades[]` (capped 200) and `pushToAPI()` includes them in UI Trade Records; WS `onPositions` backup detects positions that disappeared from HL clearinghouseState |
 | **v2.0.36** | Minimum 1% SL/TP gap constraint — Meta-Agent `adjustPositions()` had no minimum gap, LLM would over-narrow SL/TP to < 1% as price approached target, causing noise stop-outs that cut profits short. Added 1% minimum gap check in `hacp.ts` (after LLM returns new SL/TP, handles 3 cases: both new, only SL new vs existing TP, only TP new vs existing SL) + hard safety layer in `portfolio.ts` `adjustPosition()` (rejects if effective SL/TP gap < 1% of current price) |
+| **v2.0.37** | Stale real position cleanup in paper mode — 3 bugs fixed: (1) Paper-mode legacy sync only processed positions in `legacyPositionModes` — orphaned real positions (`agentId='hyperliquid-real'` but NOT in `legacyPositionModes`, e.g. after system restart) were never cleaned up. Now processes ALL real positions with 3 cases: closing fill found → close with HL PnL, position > 1h old with no HL position → close (assume closed), position not in HL `getPositions()` → close; (2) Paper-mode reconciliation didn't filter out `agentId='hyperliquid-real'` positions — they were kept if < 12h old, causing perpetual `syncSLTP` + `closePosition` errors. Now explicitly excludes them; (3) `syncExchangePositions` 'uncertain' case (no closing fill found) just warned and skipped — stale positions stayed forever. Now closes positions older than 1h |
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.36 for full details on each fix.
+See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.37 for full details on each fix.
 
 ---
 
