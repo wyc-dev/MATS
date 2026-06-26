@@ -592,7 +592,22 @@ export class RealTradingManager {
           }
         }
         if (uncertain.length > 0) {
-          log.warn(`⚠️ syncExchangePositions: ${uncertain.length} position(s) with no closing fill — likely API failure, skipping close: ${uncertain.join(', ')}`);
+          // v2.0.37: Don't just skip — if the position is old (> 1h), it's very
+          // likely been closed on HL (positions don't stay empty for hours if
+          // genuinely open). Close the local mirror to prevent perpetual errors.
+          for (const localSym of uncertain) {
+            const localPos = this.portfolio.getPosition(localSym);
+            if (!localPos) continue;
+            const ageMs = Date.now() - localPos.openedAt;
+            if (ageMs > 3_600_000) {
+              // Position is old and not on HL — assume closed
+              const exitPrice = localPos.currentPrice;
+              log.info(`📉 syncExchangePositions: ${localSym} (age ${Math.round(ageMs / 3_600_000)}h) not on HL and no closing fill — assuming closed, cleaning up local mirror`);
+              this.portfolio.closeExchangePosition(localSym, exitPrice);
+            } else {
+              log.warn(`⚠️ syncExchangePositions: ${localSym} (age ${Math.round(ageMs / 60_000)}min) not on HL and no closing fill — recent, might be API failure, skipping`);
+            }
+          }
         }
         // If all positions were either closed or uncertain, return (no exMap to iterate)
         if (exMap.size === 0) return;
