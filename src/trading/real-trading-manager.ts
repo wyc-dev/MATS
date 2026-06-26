@@ -443,12 +443,29 @@ export class RealTradingManager {
       //   4. Evolution system learns from the closed position
       // Exchange-imported positions don't have margin deducted (importExchangePosition
       // doesn't deduct), so closePosition() will add margin + PnL back.
+      // v2.0.32: Fetch recent HL fills to get actual realized PnL for closed positions.
+      // HL's closedPnl is the real money gained/lost (not leveraged), already includes fees.
+      let recentFills: Array<{ symbol: string; closedPnl: number; side: string; price: number; size: number; timestamp: number; fee: number; dir: string }> = [];
+      if (engine instanceof HyperliquidRealEngine) {
+        try {
+          recentFills = await engine.getRecentFills(20);
+        } catch { /* non-critical */ }
+      }
+
       for (const localSym of this.portfolio.getOpenSymbols()) {
         const localPos = this.portfolio.getPosition(localSym);
         if (!localPos || localPos.agentId !== 'hyperliquid-real') continue;
         if (!exMap.has(localSym)) {
-          log.info(`📉 Exchange position closed on HL: ${localSym} — closing local mirror (produces trade record + triggers learning)`);
-          this.portfolio.closeExchangePosition(localSym, localPos.currentPrice);
+          // v2.0.32: Find the matching HL fill to get actual realized PnL.
+          // HL closedPnl is the real PnL (not leveraged), already net of fees.
+          const matchingFill = recentFills.find(f =>
+            f.symbol.toLowerCase() === localSym.toLowerCase() &&
+            f.dir !== 'open' // only closing fills
+          );
+          const hlPnl = matchingFill?.closedPnl;
+          const exitPrice = matchingFill?.price ?? localPos.currentPrice;
+          log.info(`📉 Exchange position closed on HL: ${localSym} — closing local mirror (HL PnL: ${hlPnl !== undefined ? '$'+hlPnl.toFixed(2) : 'N/A'})`);
+          this.portfolio.closeExchangePosition(localSym, exitPrice, hlPnl);
         }
       }
 

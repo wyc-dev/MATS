@@ -641,23 +641,34 @@ export class PortfolioTracker {
    * trade record + triggers learning mechanisms.
    * Used by syncExchangePositions() when HL SL/TP trigger closes a position.
    */
-  closeExchangePosition(symbol: string, exitPrice: number): TradeRecord | null {
+  closeExchangePosition(symbol: string, exitPrice: number, hlRealizedPnl?: number): TradeRecord | null {
     const pos = this.portfolio.positions.get(symbol);
     if (!pos) return null;
 
     const lev = pos.leverage ?? 1;
     const margin = pos.averageEntryPrice * pos.quantity;
     let realizedPnl: number;
-    if (pos.side === 'buy') {
-      realizedPnl = (exitPrice - pos.averageEntryPrice) * pos.quantity * lev;
+
+    if (hlRealizedPnl !== undefined) {
+      // v2.0.32: Use HL's actual realized PnL (already calculated by the exchange,
+      // includes all fees/funding). This is the real money gained/lost.
+      // HL PnL = (exitPrice - entryPrice) × quantity (NO leverage multiplier).
+      // The leverage affects margin requirement, not PnL per unit.
+      realizedPnl = hlRealizedPnl;
     } else {
-      realizedPnl = (pos.averageEntryPrice - exitPrice) * pos.quantity * lev;
+      // Fallback: calculate ourselves (without leverage multiplier — HL PnL
+      // is not leveraged, it's the raw price difference × quantity)
+      if (pos.side === 'buy') {
+        realizedPnl = (exitPrice - pos.averageEntryPrice) * pos.quantity;
+      } else {
+        realizedPnl = (pos.averageEntryPrice - exitPrice) * pos.quantity;
+      }
+      // Deduct exit taker fee (notional-based, NOT leveraged)
+      const exitNotional = exitPrice * pos.quantity;
+      const exitFee = calculateTakerFee(exitNotional);
+      realizedPnl -= exitFee;
     }
 
-    // Deduct exit taker fee (notional-based)
-    const exitNotional = exitPrice * pos.quantity * lev;
-    const exitFee = calculateTakerFee(exitNotional);
-    realizedPnl -= exitFee;
     // Only add PnL (not margin) to balance — margin was never deducted
     this.portfolio.balance += realizedPnl;
 
