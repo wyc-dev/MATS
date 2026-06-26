@@ -268,7 +268,14 @@ class AMACRFSystem {
       this.portfolio.setOnExchangeClosedLearning((trade) => {
         this.onPositionClosedLearning(trade);
       });
-      log.info('✓ SL/TP close learning hook wired (paper + exchange)');
+      // v2.0.33: Wire UI callback for exchange position closes — immediately
+      // refresh cachedHLFills + pushToAPI() so the UI updates instantly
+      // (position disappears + HL fill appears in Trade Records) without
+      // waiting for the next cycle.
+      this.portfolio.setOnExchangeClosedUI(() => {
+        this.refreshHLFillsAndPush();
+      });
+      log.info('✓ SL/TP close learning hook wired (paper + exchange + UI)');
 
       // 5.6 Initialize Real Trading Manager
       log.info('Step 5.6/8: Initializing Real Trading Manager...');
@@ -1885,8 +1892,14 @@ class AMACRFSystem {
       for (const posSymbol of this.portfolio.getOpenSymbols()) {
         const pos = this.portfolio.getPosition(posSymbol);
         if (!pos) continue;
-        // Only allow agent-based close if position is in profit (>+1.5% return on margin)
-        if ((pos.unrealizedPnlPct ?? 0) <= 0.015) continue; // Not enough profit — let SL/TP handle it
+        // v2.0.33 FIX: Use RAW PnL% (unleveraged) for the close threshold.
+        // unrealizedPnlPct is LEVERAGED (× leverage) — at 10x leverage, 1.5%
+        // leveraged = only 0.15% raw price movement, which is less than the
+        // round-trip fee (0.18%). This caused premature closes at tiny profits.
+        // Now: require 1.5% RAW return on margin (15% leveraged at 10x) before
+        // agents can vote to close — ensures the profit covers fees + spread.
+        const rawPnlPct = (pos.unrealizedPnlPct ?? 0) / (pos.leverage ?? 1);
+        if (rawPnlPct <= 0.015) continue; // Not enough raw profit — let SL/TP handle it
 
         const closeVotes = allThoughts.filter(t => {
           if (t.agentRole === 'meta_agent' || t.agentRole === 'market_agent') return false;
@@ -1930,10 +1943,12 @@ class AMACRFSystem {
         if (!pos) continue; // no open position for this symbol → skip (market ticker handled by main flow)
 
         // Close position if consensus says so
-        // 🐛 FIX v2.0.8: Only close via per-symbol consensus if the position
-        // has enough profit to cover fees + spread (~0.18% round trip).
-        // Closing at breakeven or tiny profit just burns fees.
-        if (psc.closePosition && (pos.unrealizedPnlPct ?? 0) > 0.005) {
+        // v2.0.33 FIX: Use RAW PnL% (unleveraged) for the close threshold.
+        // unrealizedPnlPct is LEVERAGED — at 10x, 0.5% leveraged = 0.05% raw,
+        // which is way below the 0.18% round-trip fee. Now require 0.5% RAW
+        // return on margin (5% leveraged at 10x) before consensus can close.
+        const rawPnlPctConsensus = (pos.unrealizedPnlPct ?? 0) / (pos.leverage ?? 1);
+        if (psc.closePosition && rawPnlPctConsensus > 0.005) {
           log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
           // v2.0.33: Route real positions through realTradingManager.closePosition()
           // which closes on HL first. portfolio.closePosition() only closes locally.
@@ -2827,6 +2842,30 @@ class AMACRFSystem {
 
     log.info(`\n${status}`);
     return status;
+  }
+
+  /** v2.0.33: Refresh HL fills + exchange positions + push to UI immediately.
+   * Called after a real position close so the UI updates instantly — the
+   * closed position disappears from the Portfolio panel and the HL fill
+   * appears in Trade Records without waiting for the next cycle. */
+  private async refreshHLFillsAndPush(): Promise<void> {
+    try {
+      if (this.realTradingManager?.getTradeMode() === 'real') {
+        const engine = this.realTradingManager.getEngineForExchange('hyperliquid') as any;
+        if (engine) {
+          if (typeof engine.getRecentFills === 'function') {
+            this.cachedHLFills = await engine.getRecentFills(10);
+          }
+          if (typeof engine.getPositions === 'function') {
+            this.cachedExchangePositions = await engine.getPositions();
+          }
+          if (typeof engine.getBalance === 'function') {
+            this.cachedExchangeBalance = await engine.getBalance();
+          }
+        }
+      }
+    } catch { /* best-effort */ }
+    this.pushToAPI();
   }
 
   private pushToAPI(): void {
