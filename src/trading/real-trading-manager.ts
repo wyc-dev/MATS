@@ -307,21 +307,90 @@ export class RealTradingManager {
         const decisionWithLev = { ...decision, leverage: decision.leverage ?? 1 };
         const mirrorReports = await this.paperEngine.executeDecision(decisionWithLev);
 
-        // Set SL/TP if provided
-        if (decision.stopLossPct || decision.takeProfitPct) {
-          const slPrice = decision.stopLossPct
-            ? decision.action === 'buy'
-              ? price * (1 - decision.stopLossPct)
-              : price * (1 + decision.stopLossPct)
-            : undefined;
-          const tpPrice = decision.takeProfitPct
-            ? decision.action === 'buy'
-              ? price * (1 + decision.takeProfitPct)
-              : price * (1 - decision.takeProfitPct)
-            : undefined;
+        // v2.0.33: PRO ALGO FIRM PATTERN — place SL/TP immediately after fill,
+        // using the ACTUAL fill price (not the decision price). Retry on failure.
+        // The position must NEVER be left unprotected — if SL/TP placement fails,
+        // retry up to 3 times. If still failing, close the position (safety first).
+        const sym = decision.symbol.includes(':') ? decision.symbol : decision.symbol.toLowerCase();
 
-          // v2.0.32: Place SL/TP on the real exchange (Binance or Hyperliquid)
-          if (engine instanceof BinanceRealEngine && slPrice && tpPrice) {
+        // Step 1: Fetch the actual fill price from the exchange
+        let actualEntryPrice = price; // fallback to decision price
+        let actualLeverage = decision.leverage ?? 10;
+        let actualOpenedAt = Date.now();
+        try {
+          const exchangePositions = await engine.getPositions();
+          const exPos = exchangePositions.find(
+            p => p.symbol.toLowerCase() === decision.symbol.toLowerCase(),
+          );
+          if (exPos) {
+            actualEntryPrice = exPos.averageEntryPrice;
+            actualLeverage = exPos.leverage;
+            if (exPos.openedAt > 0) actualOpenedAt = exPos.openedAt;
+
+            // Update the mirror with the real fill price + leverage + openedAt
+            if (this.portfolio.hasPosition(sym)) {
+              this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
+              const mirrorPos = this.portfolio.getPosition(sym);
+              if (mirrorPos) {
+                mirrorPos.averageEntryPrice = exPos.averageEntryPrice;
+                mirrorPos.leverage = exPos.leverage;
+                if (exPos.openedAt > 0) mirrorPos.openedAt = exPos.openedAt;
+                mirrorPos.agentId = 'hyperliquid-real';
+                log.info(`Mirror synced to exchange fill: ${decision.symbol} entry=${exPos.averageEntryPrice.toFixed(2)} lev=${exPos.leverage}x openedAt=${new Date(actualOpenedAt).toISOString()}`);
+              }
+            }
+          } else {
+            log.warn(`⚠️ Position ${decision.symbol} not found on exchange after fill — SL/TP will use decision price`);
+          }
+        } catch (syncErr) {
+          log.warn(`Post-trade exchange sync failed: ${syncErr instanceof Error ? syncErr.message : String(syncErr)} — SL/TP will use decision price`);
+        }
+
+        // Step 2: Calculate SL/TP from the ACTUAL fill price
+        // Use decision SL/TP percentages, or fall back to defaults (2% SL, 5% TP)
+        const slPct = decision.stopLossPct ?? 0.02;
+        const tpPct = decision.takeProfitPct ?? 0.05;
+        const slPrice = decision.action === 'buy'
+          ? actualEntryPrice * (1 - slPct)
+          : actualEntryPrice * (1 + slPct);
+        const tpPrice = decision.action === 'buy'
+          ? actualEntryPrice * (1 + tpPct)
+          : actualEntryPrice * (1 - tpPct);
+
+        log.info(`🎯 SL/TP calculated from fill price: ${decision.symbol} entry=$${actualEntryPrice.toFixed(2)} SL=$${slPrice.toFixed(2)} (${(slPct*100).toFixed(1)}%) TP=$${tpPrice.toFixed(2)} (${(tpPct*100).toFixed(1)}%)`);
+
+        // Step 3: Place SL/TP on the exchange with retry logic
+        if (engine instanceof HyperliquidRealEngine) {
+          let sltpSuccess = false;
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              sltpSuccess = await engine.adjustPosition(decision.symbol, slPrice, tpPrice);
+              if (sltpSuccess) {
+                log.info(`✅ SL/TP placed on HL (attempt ${attempt}): ${decision.symbol} SL=$${slPrice.toFixed(2)} TP=$${tpPrice.toFixed(2)}`);
+                break;
+              }
+            } catch (sltpErr) {
+              log.error(`❌ SL/TP attempt ${attempt} failed: ${sltpErr instanceof Error ? sltpErr.message : String(sltpErr)}`);
+            }
+            if (attempt < 3) {
+              log.warn(`🔄 Retrying SL/TP placement in 1s (attempt ${attempt + 1}/3)...`);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          }
+
+          if (!sltpSuccess) {
+            // SAFETY: If SL/TP placement fails after 3 retries, close the position.
+            // An unprotected position with 10x leverage is too dangerous to leave open.
+            log.error(`🚨 SL/TP placement failed after 3 retries — CLOSING POSITION for safety: ${decision.symbol}`);
+            try {
+              await engine.closePosition(decision.symbol);
+              log.warn(`🛡️ Safety close executed: ${decision.symbol} — position closed because SL/TP could not be placed`);
+            } catch (closeErr) {
+              log.error(`🚨🚨 SAFETY CLOSE ALSO FAILED: ${closeErr instanceof Error ? closeErr.message : String(closeErr)} — POSITION IS UNPROTECTED ON HL!`);
+            }
+          }
+        } else if (engine instanceof BinanceRealEngine) {
+          try {
             await engine.setStopLossTakeProfit(
               decision.symbol,
               decision.action as OrderSide,
@@ -329,74 +398,19 @@ export class RealTradingManager {
               slPrice,
               tpPrice,
             );
-          }
-
-          // v2.0.32: For Hyperliquid, place native trigger orders on HL
-          // immediately after the position opens. This ensures SL/TP protection
-          // exists on the exchange from the very first cycle, rather than
-          // waiting for the next syncSLTP() call.
-          if (engine instanceof HyperliquidRealEngine && (slPrice || tpPrice)) {
-            try {
-              await engine.adjustPosition(decision.symbol, slPrice, tpPrice);
-              log.info(`🔧 SL/TP placed on HL immediately after open: ${decision.symbol} SL=${slPrice?.toFixed(2) ?? '-'} TP=${tpPrice?.toFixed(2) ?? '-'}`);
-            } catch (sltpErr) {
-              log.error(`Failed to place SL/TP on HL after open: ${sltpErr instanceof Error ? sltpErr.message : String(sltpErr)}`);
-            }
-          }
-
-          // Renew the local mirror's SL/TP so the TradingView chart + SL/TP
-          // monitoring reflect the real trade's levels (v2.0.16). The mirror
-          // was opened by paperEngine.executeDecision above with default SL/TP;
-          // override with the decision's actual SL/TP prices.
-          const mirrorPos = this.portfolio.getPosition(decision.symbol.includes(':') ? decision.symbol : decision.symbol.toLowerCase());
-          if (mirrorPos && (slPrice || tpPrice)) {
-            const posId = mirrorPos.id;
-            this.portfolio.adjustPosition(posId, slPrice, tpPrice);
-            // v2.0.32: Mark the mirror as a real position so syncSLTP() picks it up
-            mirrorPos.agentId = 'hyperliquid-real';
-            log.info(`Mirror SL/TP renewed for ${decision.symbol}: SL=${slPrice?.toFixed(2) ?? '-'} TP=${tpPrice?.toFixed(2) ?? '-'}`);
-          }
-        } else {
-          // v2.0.32: Even without explicit SL/TP from the decision, mark the
-          // mirror as a real position so syncSLTP() can place default SL/TP.
-          const mirrorPos = this.portfolio.getPosition(decision.symbol.includes(':') ? decision.symbol : decision.symbol.toLowerCase());
-          if (mirrorPos) {
-            mirrorPos.agentId = 'hyperliquid-real';
+            log.info(`✅ SL/TP placed on Binance: ${decision.symbol} SL=$${slPrice.toFixed(2)} TP=$${tpPrice.toFixed(2)}`);
+          } catch (sltpErr) {
+            log.error(`❌ Binance SL/TP placement failed: ${sltpErr instanceof Error ? sltpErr.message : String(sltpErr)}`);
           }
         }
 
-        // ── Immediate exchange sync after place/re-place (v2.0.16) ──
-        // Fetch the real entry price from the exchange so the local mirror +
-        // TradingView chart show the actual fill price, not the decision price.
-        // This runs immediately after the order fills (not waiting for the next
-        // cycle's syncExchangePositions).
-        try {
-          const exchangePositions = await engine.getPositions();
-          const exPos = exchangePositions.find(
-            p => p.symbol.toLowerCase() === decision.symbol.toLowerCase(),
-          );
-          if (exPos && this.portfolio.hasPosition(decision.symbol.toLowerCase())) {
-            const sym = decision.symbol.toLowerCase();
-            // Update the mirror's entry price to the real fill price + leverage
-            this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
-            // v2.0.33: Sync the real HL fill timestamp to the mirror's openedAt.
-            // getPositions() now matches fills by coin + entry price, so
-            // exPos.openedAt is the actual HL fill time (not Date.now()).
-            // Only update if the exchange returned a real timestamp.
-            if (exPos.openedAt > 0) {
-              const mirrorPos = this.portfolio.getPosition(sym);
-              if (mirrorPos) {
-                mirrorPos.averageEntryPrice = exPos.averageEntryPrice;
-                mirrorPos.leverage = exPos.leverage;
-                mirrorPos.openedAt = exPos.openedAt;
-                log.info(`Mirror synced to exchange fill: ${decision.symbol} entry=${exPos.averageEntryPrice.toFixed(2)} lev=${exPos.leverage}x openedAt=${new Date(exPos.openedAt).toISOString()}`);
-              }
-            } else {
-              log.info(`Mirror synced to exchange fill: ${decision.symbol} entry=${exPos.averageEntryPrice.toFixed(2)} lev=${exPos.leverage}x (open time not available from fills, preserving existing)`);
-            }
-          }
-        } catch (syncErr) {
-          log.warn(`Post-trade exchange sync failed: ${syncErr instanceof Error ? syncErr.message : String(syncErr)}`);
+        // Step 4: Update the local mirror's SL/TP with the actual fill-based prices
+        const mirrorPos = this.portfolio.getPosition(sym);
+        if (mirrorPos) {
+          const posId = mirrorPos.id;
+          this.portfolio.adjustPosition(posId, slPrice, tpPrice);
+          mirrorPos.agentId = 'hyperliquid-real';
+          log.info(`Mirror SL/TP set: ${decision.symbol} SL=$${slPrice.toFixed(2)} TP=$${tpPrice.toFixed(2)}`);
         }
 
         return {
