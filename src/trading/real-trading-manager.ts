@@ -466,7 +466,7 @@ export class RealTradingManager {
           // HL closedPnl is the real PnL (not leveraged), already net of fees.
           const matchingFill = recentFills.find(f =>
             f.symbol.toLowerCase() === localSym.toLowerCase() &&
-            f.dir !== 'open' // only closing fills
+            !f.dir.toLowerCase().startsWith('open') // only closing fills (Close Short/Close Long)
           );
           const hlPnl = matchingFill?.closedPnl;
           const exitPrice = matchingFill?.price ?? localPos.currentPrice;
