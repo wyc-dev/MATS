@@ -1647,59 +1647,90 @@ class AMACRFSystem {
               }
             }
 
-            // Priority 2: Sigmoid·GA sentiment (forward-looking market emotion)
-            // Only trust sentiment if conviction is high enough (>0.6)
+            // Priority 2: Sigmoid·GA sentiment
+            // v2.0.32: Regime-aware — in mean-reverting markets, fade sentiment
+            // (sentiment says BUY → actually SELL because price will revert).
+            // In trending markets, follow sentiment.
             if (!direction && sentimentData && sentimentData.conviction > 0.6 && Math.abs(sentimentData.overallSentiment) > 0.15) {
-              direction = sentimentData.overallSentiment > 0 ? 'buy' : 'sell';
-              log.info(`🧪 Sentiment-guided: overall=${(sentimentData.overallSentiment*100).toFixed(0)}% conv=${(sentimentData.conviction*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+              const isMeanRevert = combinedState.regime === 'mean_reverting' || combinedState.regime === 'low_volatility';
+              if (isMeanRevert) {
+                direction = sentimentData.overallSentiment > 0 ? 'sell' : 'buy';
+                log.info(`🧪 Sentiment-guided (mean-revert fade): overall=${(sentimentData.overallSentiment*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+              } else {
+                direction = sentimentData.overallSentiment > 0 ? 'buy' : 'sell';
+                log.info(`🧪 Sentiment-guided (trend follow): overall=${(sentimentData.overallSentiment*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+              }
             }
 
-            // Priority 3: Sigmoid·GA price velocity + acceleration (directional filter)
-            // Uses the SentimentEngine's PriceBuffer to detect short-term price direction.
-            // velocity > 0 → price moving up (BUY bias), velocity < 0 → price moving down (SELL bias).
-            // acceleration confirms the velocity is strengthening.
-            // This is more reliable than funding rate which is a lagging indicator of positioning.
+            // Priority 3: Price velocity + acceleration
+            // v2.0.32: Regime-aware — in mean-reverting markets, fade velocity
+            // (price rising → SELL because it will revert; price falling → BUY).
+            // In trending markets, follow velocity.
             if (!direction && this.sentimentEngine) {
               const velocity = this.sentimentEngine.getPriceVelocity();
               const acceleration = this.sentimentEngine.getPriceAcceleration();
               const absVelocity = Math.abs(velocity);
+              const isMeanRevert = combinedState.regime === 'mean_reverting' || combinedState.regime === 'low_volatility';
               if (absVelocity > 0.15) {
-                // Strong velocity: direction follows the price movement
-                direction = velocity > 0 ? 'buy' : 'sell';
-                log.info(`🧪 Velocity-guided: vel=${(velocity*100).toFixed(0)}% accel=${(acceleration*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+                if (isMeanRevert) {
+                  // Mean-revert: fade the move (opposite direction)
+                  direction = velocity > 0 ? 'sell' : 'buy';
+                  log.info(`🧪 Velocity-guided (mean-revert fade): vel=${(velocity*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+                } else {
+                  // Trend: follow the move (same direction)
+                  direction = velocity > 0 ? 'buy' : 'sell';
+                  log.info(`🧪 Velocity-guided (trend follow): vel=${(velocity*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+                }
               } else if (absVelocity > 0.05) {
-                // Weak velocity: only act if acceleration confirms direction
-                if (acceleration > 0.05 && velocity > 0) {
-                  direction = 'buy';
-                  log.info(`🧪 Velocity+accel-guided: vel=${(velocity*100).toFixed(0)}% accel=${(acceleration*100).toFixed(0)}% → BUY`);
-                } else if (acceleration < -0.05 && velocity < 0) {
-                  direction = 'sell';
-                  log.info(`🧪 Velocity+accel-guided: vel=${(velocity*100).toFixed(0)}% accel=${(acceleration*100).toFixed(0)}% → SELL`);
+                if (isMeanRevert) {
+                  if (acceleration > 0.05 && velocity > 0) {
+                    direction = 'sell'; // fade up move
+                    log.info(`🧪 Velocity+accel (mean-revert fade): vel=${(velocity*100).toFixed(0)}% → SELL`);
+                  } else if (acceleration < -0.05 && velocity < 0) {
+                    direction = 'buy'; // fade down move
+                    log.info(`🧪 Velocity+accel (mean-revert fade): vel=${(velocity*100).toFixed(0)}% → BUY`);
+                  }
+                } else {
+                  if (acceleration > 0.05 && velocity > 0) {
+                    direction = 'buy';
+                    log.info(`🧪 Velocity+accel (trend follow): vel=${(velocity*100).toFixed(0)}% → BUY`);
+                  } else if (acceleration < -0.05 && velocity < 0) {
+                    direction = 'sell';
+                    log.info(`🧪 Velocity+accel (trend follow): vel=${(velocity*100).toFixed(0)}% → SELL`);
+                  }
                 }
               }
             }
 
-            // Priority 4: S/R proximity breakout direction
-            // When price is near a support or resistance level and moving toward it,
-            // the market tends to challenge that level. If price is already past the
-            // midpoint between S/R and moving toward a boundary, bias toward a
-            // breakout in that direction.
+            // Priority 4: S/R proximity — regime-aware
+            // v2.0.32: In mean-reverting markets, use S/R as REVERSAL points
+            // (near resistance → SELL, near support → BUY).
+            // In trending markets, use S/R as BREAKOUT points (original logic).
             if (!direction && this.lastSRContext) {
               const distToSupport = this.lastSRContext.distanceToSupportBps;
               const distToResistance = this.lastSRContext.distanceToResistanceBps;
               const totalRange = distToSupport + distToResistance;
               if (totalRange > 0) {
-                // Normalized position: 0 = at support, 1 = at resistance
                 const positionInRange = distToSupport / totalRange;
-                // If price is past the midpoint (>0.5) and closer to resistance,
-                // bias toward BUY (breakout up). If past midpoint toward support,
-                // bias toward SELL (breakdown down).
-                if (positionInRange > 0.65 && distToResistance < 30) {
-                  direction = 'buy';
-                  log.info(`🧪 S/R-guided: near resistance (${distToResistance.toFixed(0)}bps, pos=${(positionInRange*100).toFixed(0)}%) → BUY (breakout)`);
-                } else if (positionInRange < 0.35 && distToSupport < 30) {
-                  direction = 'sell';
-                  log.info(`🧪 S/R-guided: near support (${distToSupport.toFixed(0)}bps, pos=${(positionInRange*100).toFixed(0)}%) → SELL (breakdown)`);
+                const isMeanRevert = combinedState.regime === 'mean_reverting' || combinedState.regime === 'low_volatility';
+                if (isMeanRevert) {
+                  // Mean-revert: fade at S/R extremes
+                  if (positionInRange > 0.65 && distToResistance < 30) {
+                    direction = 'sell'; // near resistance → SELL (revert down)
+                    log.info(`🧪 S/R-guided (mean-revert): near resistance → SELL (revert)`);
+                  } else if (positionInRange < 0.35 && distToSupport < 30) {
+                    direction = 'buy'; // near support → BUY (revert up)
+                    log.info(`🧪 S/R-guided (mean-revert): near support → BUY (revert)`);
+                  }
+                } else {
+                  // Trend: breakout at S/R (original logic)
+                  if (positionInRange > 0.65 && distToResistance < 30) {
+                    direction = 'buy';
+                    log.info(`🧪 S/R-guided (breakout): near resistance → BUY (breakout)`);
+                  } else if (positionInRange < 0.35 && distToSupport < 30) {
+                    direction = 'sell';
+                    log.info(`🧪 S/R-guided (breakout): near support → SELL (breakdown)`);
+                  }
                 }
               }
             }
@@ -1727,20 +1758,34 @@ class AMACRFSystem {
             }
 
             // Priority 7: Regime / Trend + 24h change combined
+            // v2.0.32: Regime-aware — in mean-reverting markets, 24h change
+            // is a CONTRARIAN signal (big drop → BUY, big rise → SELL).
             if (!direction) {
+              const isMeanRevert = combinedState.regime === 'mean_reverting' || combinedState.regime === 'low_volatility';
               if (combinedState.regime === 'trending_bull') {
                 direction = 'buy';
                 log.info(`🧪 Regime-guided: trending_bull → BUY`);
               } else if (combinedState.regime === 'trending_bear') {
                 direction = 'sell';
                 log.info(`🧪 Regime-guided: trending_bear → SELL`);
-              } else if (combinedState.change24h < -0.5) {
-                // 24h change significantly negative → SELL bias even in sideways/mean_reverting
-                direction = 'sell';
-                log.info(`🧪 24h-change-guided: ${combinedState.change24h.toFixed(2)}% → SELL`);
-              } else if (combinedState.change24h > 0.5) {
-                direction = 'buy';
-                log.info(`🧪 24h-change-guided: ${combinedState.change24h.toFixed(2)}% → BUY`);
+              } else if (isMeanRevert) {
+                // Mean-revert: buy low, sell high
+                if (combinedState.change24h < -0.5) {
+                  direction = 'buy'; // big drop → BUY (revert up)
+                  log.info(`🧪 24h-change (mean-revert): ${combinedState.change24h.toFixed(2)}% → BUY (buy low)`);
+                } else if (combinedState.change24h > 0.5) {
+                  direction = 'sell'; // big rise → SELL (revert down)
+                  log.info(`🧪 24h-change (mean-revert): ${combinedState.change24h.toFixed(2)}% → SELL (sell high)`);
+                }
+              } else {
+                // Other regimes: original logic
+                if (combinedState.change24h < -0.5) {
+                  direction = 'sell';
+                  log.info(`🧪 24h-change-guided: ${combinedState.change24h.toFixed(2)}% → SELL`);
+                } else if (combinedState.change24h > 0.5) {
+                  direction = 'buy';
+                  log.info(`🧪 24h-change-guided: ${combinedState.change24h.toFixed(2)}% → BUY`);
+                }
               }
             }
           } catch (err) {
