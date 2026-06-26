@@ -376,9 +376,24 @@ export class RealTradingManager {
             p => p.symbol.toLowerCase() === decision.symbol.toLowerCase(),
           );
           if (exPos && this.portfolio.hasPosition(decision.symbol.toLowerCase())) {
+            const sym = decision.symbol.toLowerCase();
             // Update the mirror's entry price to the real fill price + leverage
-            this.portfolio.softUpdatePosition(decision.symbol.toLowerCase(), exPos.currentPrice);
-            log.info(`Mirror synced to exchange fill: ${decision.symbol} entry=${exPos.averageEntryPrice.toFixed(2)} lev=${exPos.leverage}x`);
+            this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
+            // v2.0.33: Sync the real HL fill timestamp to the mirror's openedAt.
+            // getPositions() now matches fills by coin + entry price, so
+            // exPos.openedAt is the actual HL fill time (not Date.now()).
+            // Only update if the exchange returned a real timestamp.
+            if (exPos.openedAt > 0) {
+              const mirrorPos = this.portfolio.getPosition(sym);
+              if (mirrorPos) {
+                mirrorPos.averageEntryPrice = exPos.averageEntryPrice;
+                mirrorPos.leverage = exPos.leverage;
+                mirrorPos.openedAt = exPos.openedAt;
+                log.info(`Mirror synced to exchange fill: ${decision.symbol} entry=${exPos.averageEntryPrice.toFixed(2)} lev=${exPos.leverage}x openedAt=${new Date(exPos.openedAt).toISOString()}`);
+              }
+            } else {
+              log.info(`Mirror synced to exchange fill: ${decision.symbol} entry=${exPos.averageEntryPrice.toFixed(2)} lev=${exPos.leverage}x (open time not available from fills, preserving existing)`);
+            }
           }
         } catch (syncErr) {
           log.warn(`Post-trade exchange sync failed: ${syncErr instanceof Error ? syncErr.message : String(syncErr)}`);
@@ -503,7 +518,13 @@ export class RealTradingManager {
                 localPos.quantity = exPos.quantity;
                 localPos.averageEntryPrice = exPos.averageEntryPrice;
                 localPos.leverage = exPos.leverage;
-                localPos.openedAt = exPos.openedAt;
+                // v2.0.33: Only update openedAt if the exchange returned a real
+                // timestamp (non-zero). getPositions() returns 0 when no matching
+                // open fill was found — in that case preserve the existing openedAt
+                // instead of overwriting it with 0 or Date.now().
+                if (exPos.openedAt > 0) {
+                  localPos.openedAt = exPos.openedAt;
+                }
                 // Recalculate SL/TP based on new entry
                 const slPct = 0.02;
                 const tpPct = 0.05;
@@ -539,13 +560,17 @@ export class RealTradingManager {
           // Don't deduct margin from paper balance — this position was opened
           // on the exchange, not in the paper portfolio.
           log.info(`📥 Importing exchange position into local mirror: ${exPos.symbol} ${exPos.side.toUpperCase()} qty=${exPos.quantity} entry=${exPos.averageEntryPrice.toFixed(2)} lev=${exPos.leverage}x`);
+          // v2.0.33: If getPositions() couldn't find the open fill timestamp
+          // (openedAt=0), fall back to Date.now() for new imports only.
+          // For existing positions, syncExchangePositions preserves the
+          // existing openedAt (see the in-place update fix above).
           this.portfolio.importExchangePosition(
             exPos.symbol,
             exPos.side,
             exPos.quantity,
             exPos.averageEntryPrice,
             exPos.leverage,
-            exPos.openedAt,
+            exPos.openedAt > 0 ? exPos.openedAt : Date.now(),
           );
         }
       }

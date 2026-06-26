@@ -379,17 +379,27 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     try {
       const allPositions: Position[] = [];
 
-      // v2.0.32: Fetch recent fills to get actual open timestamps.
+      // v2.0.33: Fetch recent fills to get actual open timestamps.
       // HL clearinghouseState doesn't include position open time, so we
-      // match by coin + dir='open' to find the real open timestamp.
+      // match by coin + entry price to find the real open timestamp.
+      // v2.0.33 FIX: Previous code matched by coin only and took the first
+      // "Open" fill — wrong if there were multiple open/close cycles.
+      // Also, fallback was Date.now() which overwrote the real open time
+      // every cycle when no fill was found. Now we match by coin + entry
+      // price, and if no match is found we leave openedAt as undefined
+      // (caller preserves existing openedAt).
       let openFillTimes = new Map<string, number>();
       try {
         const fills = await this.getRecentFills(50);
         for (const f of fills) {
           // HL dir format: "Open Short", "Open Long", "Close Short", "Close Long"
-          // Match the LATEST "Open" fill for each coin = current position's open time
-          if (f.dir.toLowerCase().startsWith('open') && !openFillTimes.has(f.symbol)) {
-            openFillTimes.set(f.symbol, f.timestamp);
+          // Match "Open" fills — we'll match by coin + entry price below
+          if (f.dir.toLowerCase().startsWith('open')) {
+            // Use coin + rounded entry price as key to distinguish different positions
+            const entryKey = `${f.symbol}:${f.price.toFixed(2)}`;
+            if (!openFillTimes.has(entryKey)) {
+              openFillTimes.set(entryKey, f.timestamp);
+            }
           }
         }
       } catch { /* non-critical */ }
@@ -430,6 +440,11 @@ export class HyperliquidRealEngine implements RealTradingEngine {
             const unrealizedPnl = parseFloat(p.unrealizedPnl ?? '0');
             const leverage = p.leverage?.value ?? 1;
 
+            // v2.0.33: Match open fill by coin + entry price (not coin only).
+            // If no matching fill found, use 0 (caller preserves existing openedAt).
+            const entryKey = `${p.coin}:${entryPx.toFixed(2)}`;
+            const openTime = openFillTimes.get(entryKey) ?? 0;
+
             allPositions.push({
               id: `${p.coin}-${this.walletAddress}`,
               symbol: p.coin,
@@ -441,7 +456,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
               unrealizedPnlPct: entryPx > 0 ? unrealizedPnl / (Math.abs(size) * entryPx / leverage) : 0,
               realizedPnl: 0,
               leverage,
-              openedAt: openFillTimes.get(p.coin) ?? Date.now(),
+              openedAt: openTime, // 0 = unknown, caller should preserve existing
               updatedAt: Date.now(),
               agentId: 'hyperliquid-real',
             } as Position);
