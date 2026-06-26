@@ -285,84 +285,103 @@ The provider factory auto-detects availability: Ollama → Error.
 ## Project Structure
 
 ```
-src/
-├── index.ts                  # 🚀 Entry point — system lifecycle (~2031 LOC)
-├── config/index.ts           # Zod-validated, type-safe configuration
-├── types/index.ts            # Complete domain type definitions (~749 LOC)
+src/                                        # 24,502 LOC total
+├── index.ts                                # 🚀 Entry point — system lifecycle (3,025 LOC)
+├── api-server.ts                           # REST + SSE API server (783 LOC)
+├── config/index.ts                         # Zod-validated, type-safe configuration (129 LOC)
+├── types/index.ts                          # Complete domain type definitions (767 LOC)
 │
-├── agents/                   # 🤖 Multi-agent system
-│   ├── base-agent.ts         # Abstract agent base class (~417 LOC)
-│   ├── agents.ts             # Six sub-agents (~1306 LOC)
-│   ├── meta-agent.ts         # Meta-agent arbitration (80 LOC)
-│   └── agent-models.ts       # Per-agent model configuration (126 LOC)
+├── agents/                                 # 🤖 Multi-agent system
+│   ├── base-agent.ts                        # Abstract agent base class (425 LOC)
+│   ├── agents.ts                            # Six sub-agents (1,352 LOC)
+│   ├── meta-agent.ts                       # Meta-agent arbitration (120 LOC)
+│   └── agent-models.ts                      # Per-agent model configuration (112 LOC)
 │
-├── cognition/
-│   ├── hacp.ts               # ⚡ HACP protocol (v2.0.12 — deadline race + tiered timeout + v2.0.15 dynamic weights)
-│   └── a2a-utils.ts          # A2A inter-agent signal exchange
+├── cognition/                              # 🧠 Inter-agent cognition
+│   ├── hacp.ts                             # ⚡ HACP protocol (1,610 LOC — deadline race + tiered timeout + dynamic weights)
+│   ├── a2a-utils.ts                         # A2A inter-agent signal exchange (355 LOC)
+│   └── A2A-PROTOCOL.md                      # A2A protocol specification
 │
-├── llm/                      # 🔌 LLM abstraction layer
-│   ├── provider.ts           # Abstract interface (57 LOC)
-│   ├── ollama-provider.ts    # Ollama (v2.0.12 — circuit breaker + v2.0.20 concurrency 4 + slot leak protection)
-│   └── index.ts              # Provider factory (auto-detection, 65 LOC)
+├── llm/                                    # 🔌 LLM abstraction layer
+│   ├── provider.ts                          # Abstract interface (57 LOC)
+│   ├── ollama-provider.ts                   # Ollama provider (332 LOC — circuit breaker + concurrency 4 + slot leak protection)
+│   ├── nim-provider.ts                     # NVIDIA NIM provider
+│   └── index.ts                            # Provider factory (auto-detection, 46 LOC)
 │
-├── trading/                  # 💹 Trading engine
-│   ├── portfolio.ts          # Portfolio tracker (v2.0.18 — notional fee + v2.0.19 entryFee in unrealizedPnl)
-│   ├── paper-engine.ts       # Paper trading simulation (v2.0.14 — HL $10 min notional floor)
-│   ├── cost-model.ts         # HL transaction cost model (taker 0.04%, notional-based)
-│   ├── execution-tracker.ts  # Slippage/fee tracking
-│   ├── decision-utils.ts     # Decision normalization
-│   ├── real-trading-manager.ts # Real trading orchestrator (v2.0.16 — post-trade sync + SL/TP renew + getRecentFills)
-│   └── hyperliquid-real-engine.ts # Hyperliquid real trading (v2.0.19 — getRecentFills)
+├── trading/                                # 💹 Trading engine
+│   ├── portfolio.ts                         # Portfolio tracker (810 LOC — notional fee + entryFee + exchange position separation)
+│   ├── paper-engine.ts                     # Paper trading simulation (347 LOC — HL $10 min notional floor)
+│   ├── cost-model.ts                        # HL transaction cost model (91 LOC — taker 0.04%, notional-based)
+│   ├── execution-tracker.ts                 # Slippage/fee tracking (211 LOC)
+│   ├── decision-utils.ts                    # Decision normalization (150 LOC)
+│   ├── real-trading-manager.ts              # Real trading orchestrator (805 LOC — post-trade sync + SL/TP renew + getRecentFills)
+│   ├── hyperliquid-real-engine.ts           # HL real trading engine (1,105 LOC — phantom agent signing + formatPrice + multi-DEX)
+│   └── binance-real-engine.ts               # Binance real trading engine (440 LOC)
 │
-├── risk/                     # 🛡️ Risk management
-│   ├── engine.ts             # Multi-layer risk engine (201 LOC)
-│   └── correlation-budget.ts # Cross-pair correlation budget
+├── risk/                                   # 🛡️ Risk management
+│   ├── engine.ts                            # Multi-layer risk engine (204 LOC)
+│   └── correlation-budget.ts               # Cross-pair correlation budget (299 LOC)
 │
-├── system-guard/             # 🛡️ SystemGuard (5 guards, ~497 LOC)
+├── system-guard/                           # 🛡️ SystemGuard — 5 guards (540 LOC)
+│   ├── index.ts                            # Calendar / drawdown / data freshness / agent track record / liquidity
+│   └── types.ts                            # Guard type definitions (42 LOC)
 │
-├── evolution/                # 🧬 Evolution + RBC + pattern classifier
-│   ├── index.ts              # Evolution orchestrator (v2.0.15 — directional mutation + regime-aware strategy)
-│   ├── trade-history.ts      # Trade history ledger (v2.0.13 — recent trade pattern analysis)
-│   ├── agent-outcomes.ts     # Per-agent performance tracking
-│   ├── agent-evolution.ts    # 🆕 v2.0.15 Agent Evolution Engine — dynamic voting weights
-│   ├── persistence.ts        # Durable state persistence (~561 LOC)
-│   ├── trade-pattern-classifier.ts # 🧬 Supervised KNN pattern DB
-│   ├── rbc-clustering.ts     # 🧬 RBC Engine (v2.0.11 — layered decay + time-weighted centroid)
-│   └── cycle-summary.ts      # 🧬 EM Cycle Summary Manager
+├── evolution/                              # 🧬 Evolution + RBC + pattern classifier
+│   ├── index.ts                            # Evolution orchestrator (791 LOC — directional mutation + regime-aware strategy)
+│   ├── trade-history.ts                    # Trade history ledger (466 LOC — recent trade pattern analysis)
+│   ├── agent-outcomes.ts                   # Per-agent performance tracking (173 LOC)
+│   ├── agent-evolution.ts                  # Agent Evolution Engine (150 LOC — dynamic voting weights)
+│   ├── persistence.ts                      # Durable state persistence (565 LOC)
+│   ├── trade-pattern-classifier.ts         # Supervised KNN pattern DB (831 LOC)
+│   ├── rbc-clustering.ts                   # RBC Engine (645 LOC — layered decay + time-weighted centroid)
+│   ├── cycle-summary.ts                    # EM Cycle Summary Manager (587 LOC)
+│   ├── em-clustering.ts                    # EM clustering engine (660 LOC)
+│   └── pattern-tag-tracker.ts              # Pattern tag frequency tracker (358 LOC)
 │
-├── analysis/                 # 📊 Signal processing
-│   ├── sentiment-engine.ts   # Sigmoid·GA sentiment engine (v2.0.10 — adaptive velocity/acceleration)
-│   ├── sigmoid-ga.ts         # GA-evolved sigmoid functions (v2.0.10 — blend weight normalization)
-│   └── support-resistance.ts # SNR zone detection (v2.0.10 — recency weighting + volume scaling; synthetic symbol aware)
+├── analysis/                               # 📊 Signal processing
+│   ├── sentiment-engine.ts                 # Sigmoid·GA sentiment engine (279 LOC — adaptive velocity/acceleration)
+│   ├── sigmoid-ga.ts                       # GA-evolved sigmoid functions (393 LOC — blend weight normalization)
+│   ├── support-resistance.ts               # S/R zone detection (724 LOC — recency weighting + volume scaling; synthetic symbol aware)
+│   └── planck-chaos.ts                     # 🆕 v2.0.33 Planck-Chaos Resonance module (400 LOC — Lyapunov exponent + resonance detection + amplitude windows + chaos regime classification + direction bias)
 │
-├── market-agent/             # 🎯 Auto pair selection + position size/leverage (~879 LOC)
-├── backtest/                 # 📜 Historical backtesting engine (v2.0.10 — annualized regime slope)
-├── observability/logger.ts   # Structured logging (Winston, 78 LOC)
-├── api-server.ts             # REST + SSE API
-└── utils/shutdown.ts         # Graceful shutdown handler
+├── market-agent/                           # 🎯 Auto pair selection + position size/leverage
+│   ├── index.ts                            # Market Agent (879 LOC)
+│   └── hl-rate-limiter.ts                  # HL REST rate limiter (40 LOC)
+│
+├── data/                                   # 📡 WebSocket data feeds
+│   ├── hyperliquid-websocket.ts            # HL WS (817 LOC — user-level subscriptions + real-time position/fill sync)
+│   ├── binance-websocket.ts                # Binance WS (555 LOC)
+│   └── multi-exchange-ws.ts                # Multi-exchange WS manager (364 LOC)
+│
+├── backtest/index.ts                       # 📜 Historical backtesting engine (555 LOC — annualized regime slope)
+├── observability/logger.ts                 # Structured logging (Winston, 78 LOC)
+└── utils/shutdown.ts                       # Graceful shutdown handler (77 LOC)
 
-ui/                           # 🖥️ React Web UI (pantha_mats design system)
+ui/                                        # 🖥️ React Web UI (pantha_mats design system)
 ├── src/
-│   ├── App.tsx               # Main dashboard (v2.0.21 — Market Agent chart shows only current position)
-│   ├── RBCVisualizer.tsx     # RBC dimension visualizer
-│   ├── TradingViewChart.tsx  # TradingView chart (v2.0.20 — live TP/SL update via JSON dependency)
-│   ├── StarsBackground.tsx   # Dynamic starfield background
-│   └── types.ts              # UI type definitions (v2.0.17 — nullable PnL/drawdown; v2.0.19 — hl-fill status)
+│   ├── App.tsx                             # Main dashboard (1,888 LOC — REAL/PAPER labels + manual close + HL balance)
+│   ├── RBCVisualizer.tsx                   # RBC dimension visualizer (180 LOC)
+│   ├── TradingViewChart.tsx                # TradingView chart (342 LOC — live TP/SL update)
+│   ├── StarsBackground.tsx                 # Dynamic starfield background (114 LOC)
+│   ├── types.ts                            # UI type definitions (430 LOC — nullable PnL/drawdown + hl-fill status)
+│   ├── main.tsx                            # React entry point (10 LOC)
+│   └── index.css                           # pantha_mats design system (2,358 LOC)
 └── index.html
 
-scripts/                      # 🛠 Utilities
-├── loop-engineering.sh       # Loop engineering runner (bash + jq + python3)
-├── loop-engineering-deep.sh  # Deep session runner
-├── loop-engineering-memory.md # Known issues / checklist
-└── backfill-patterns.mjs     # Import portfolio trades into pattern DB
+scripts/                                   # 🛠 Utilities
+├── loop-engineering.sh                     # Loop engineering runner (bash + jq + python3)
+├── loop-engineering-deep.sh                # Deep session runner
+├── loop-engineering-memory.md              # Known issues / checklist
+├── backfill-patterns.mjs                   # Import portfolio trades into pattern DB
+└── reset-rbc-symbol.ts                     # Reset RBC state for a single symbol
 
-data/                         # 💾 Runtime persistence
+data/                                      # 💾 Runtime persistence
 └── evolution/
-    ├── trade-patterns.json   # Pattern DB (1000 max)
-    ├── trade-patterns-em.json # EM cluster assignments
-    ├── rbc-state.json        # RBC state (winBox, lossBox per symbol)
-    ├── evolution-state.json  # GA population + memory + strategies
-    └── portfolio-state.json  # Portfolio snapshot
+    ├── trade-patterns.json                 # Pattern DB (1000 max)
+    ├── trade-patterns-em.json               # EM cluster assignments
+    ├── rbc-state.json                       # RBC state (winBox, lossBox per symbol)
+    ├── evolution-state.json                 # GA population + memory + strategies
+    └── portfolio-state.json                 # Portfolio snapshot
 ```
 
 ---
