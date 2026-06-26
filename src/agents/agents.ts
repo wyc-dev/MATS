@@ -49,6 +49,18 @@ For each open position, evaluate:
 - Loss > 3%? → evaluate if thesis is still valid; if not, close
 - Adjust SL/TP to follow fractal structure levels
 
+=== PLANCK-CHAOS RESONANCE ===
+If the context contains "=== PLANCK-CHAOS RESONANCE ===":
+  - Lyapunov λ indicates predictability: λ > 0 = chaotic (short-term direction unreliable)
+  - Resonance frequencies show dominant cycles — if a 60-120min cycle is strong,
+    fractal patterns at that scale are more reliable
+  - Amplitude windows (2h/4h/8h) show expected price range — use these to set
+    realistic TP targets and SL levels
+  - Direction bias from cycle phase: BUY at bottom, SELL at top
+  - If regime = CHAOTIC → your fractal patterns are less reliable, reduce confidence
+  - If regime = EDGE OF CHAOS → fractal patterns are MOST reliable, increase confidence
+  - If regime = LAMINAR → trend is stable, fractal continuation is likely
+
 Output ONLY valid JSON with the format specified in the user message.`;
   }
 
