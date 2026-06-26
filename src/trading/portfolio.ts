@@ -453,15 +453,9 @@ export class PortfolioTracker {
       exchange = 'binance';
     }
 
-    // v2.0.31: Set default SL/TP for imported exchange positions so the
-    // local mirror has safety levels. The exchange may have its own SL/TP
-    // (set via HL UI), but the local mirror needs them too for:
-    //   - UI display (TradingView SL/TP lines)
-    //   - Per-position close voting (agents see SL/TP in context)
-    //   - Portfolio exit monitoring (checkPositionExits)
-    // Default: SL = 2% from entry, TP = 5% from entry (aligned with risk config)
-    const slPct = 0.02;
-    const tpPct = 0.05;
+    // v2.0.33: Sane defaults for 5-minute cycle (1.5% SL, 3% TP)
+    const slPct = 0.015;
+    const tpPct = 0.03;
     const stopLossPrice = side === 'buy'
       ? entryPrice * (1 - slPct)
       : entryPrice * (1 + slPct);
