@@ -1506,18 +1506,16 @@ class AMACRFSystem {
           const exploreLev = maConfig.leverage;
 
           // ── Trend Filter ──
-          // Two-layer short-term price direction check:
+          // v2.0.32: REMOVED the "immediate price vs previous cycle" trend filter.
+          // The old filter blocked BUY when price was falling and SELL when
+          // price was rising — this is "chase the trend" logic that causes
+          // the system to buy at the top and sell at the bottom (buy high,
+          // sell low). Short-term price movement is mean-reverting, so
+          // blocking the contrarian direction is counterproductive.
           //
-          // Layer 1: Micro-trend (last 10 cycles)
-          //   If more down cycles than up (>=3), block BUY.
-          //   If more up cycles than down (>=3), block SELL.
-          //
-          // Layer 2: Immediate price vs previous cycle close
-          //   If current price < previous cycle's price → BLOCK BUY
-          //   If current price > previous cycle's price → BLOCK SELL
-          //   This is the most basic "is the market going up or down right now?"
-          //   check. If price is falling, you don't buy. If rising, you don't sell.
-          //   Prevents the system from "blind buying" into a downtrend.
+          // Keep only the 10-cycle macro trend filter as a SOFT signal
+          // (not a hard block) — if 7+ of last 10 cycles are down, it's
+          // a strong downtrend and we should be cautious about buying.
           let trendFilterBlocksBuy = false;
           let trendFilterBlocksSell = false;
           let recentHistory: import('./evolution/trade-history.ts').TradeHistoryEntry[] = [];
@@ -1534,32 +1532,19 @@ class AMACRFSystem {
                   else if (curr < prev) downCount++;
                 }
               }
-              if (downCount > upCount && downCount >= 3) {
+              // v2.0.32: Only block on STRONG trends (7+ out of 10)
+              // This allows contrarian entries in mild trends while
+              // still protecting against strong directional moves.
+              if (downCount >= 7) {
                 trendFilterBlocksBuy = true;
-                log.info(`🧪 Trend filter (10-cycle): ${downCount}D/${upCount}U → BLOCK BUY`);
-              } else if (upCount > downCount && upCount >= 3) {
+                log.info(`🧪 Trend filter (strong downtrend): ${downCount}D/${upCount}U → BLOCK BUY`);
+              } else if (upCount >= 7) {
                 trendFilterBlocksSell = true;
-                log.info(`🧪 Trend filter (10-cycle): ${upCount}U/${downCount}D → BLOCK SELL`);
+                log.info(`🧪 Trend filter (strong uptrend): ${upCount}U/${downCount}D → BLOCK SELL`);
               }
             }
-
-            // Layer 2: Immediate price vs previous cycle close
-            // This catches the "3 red candles in a row" scenario that the
-            // 10-cycle filter might miss if the decline is recent.
-            if (recentHistory.length >= 2) {
-              const prevPrice = recentHistory[recentHistory.length - 1]!.entryPrice;
-              if (prevPrice > 0 && combinedState.price > 0) {
-                if (combinedState.price < prevPrice) {
-                  // Price is DOWN from last cycle → don't buy
-                  trendFilterBlocksBuy = true;
-                  log.info(`🧪 Trend filter (immediate): $${combinedState.price.toFixed(2)} < $${prevPrice.toFixed(2)} (prev close) → BLOCK BUY`);
-                } else if (combinedState.price > prevPrice) {
-                  // Price is UP from last cycle → don't sell
-                  trendFilterBlocksSell = true;
-                  log.info(`🧪 Trend filter (immediate): $${combinedState.price.toFixed(2)} > $${prevPrice.toFixed(2)} (prev close) → BLOCK SELL`);
-                }
-              }
-            }
+            // v2.0.32: REMOVED Layer 2 (immediate price vs previous cycle) —
+            // this was the main cause of "buy high sell low" behavior.
           } catch { /* non-critical */ }
 
           // Use Pattern Classifier to pick direction — compare BUY vs SELL win rates.
@@ -1785,8 +1770,8 @@ class AMACRFSystem {
               symbol: activeSymbolUpper,
               entryPrice: combinedState.price,
               positionSizePct: exploreSize,
-              stopLossPct: 0.01,
-              takeProfitPct: 0.02,
+              stopLossPct: 0.02,
+              takeProfitPct: 0.05,
               leverage: exploreLev,
               rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — ${direction} exploration.`,
               urgency: 'immediate',
