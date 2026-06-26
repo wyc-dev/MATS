@@ -669,8 +669,10 @@ export class PortfolioTracker {
       realizedPnl -= exitFee;
     }
 
-    // Only add PnL (not margin) to balance — margin was never deducted
-    this.portfolio.balance += realizedPnl;
+    // v2.0.32: Do NOT add PnL to paper balance — this is a REAL exchange
+    // position. Its PnL is settled on HL, not in the paper portfolio.
+    // Adding it here would inflate the paper balance with real trade PnL.
+    // The trade record is still produced for learning + UI display.
 
     const trade: TradeRecord = {
       id: uuidv4(),
@@ -689,22 +691,13 @@ export class PortfolioTracker {
       status: 'closed',
     };
 
-    // Update portfolio stats
+    // v2.0.32: Do NOT update paper portfolio stats (totalPnl, winCount,
+    // lossCount, dailyPnl) — this is a REAL exchange position. Its PnL
+    // should not affect paper portfolio statistics. Only delete the
+    // position + produce trade record + trigger learning.
     this.portfolio.positions.delete(symbol);
-    this.portfolio.totalPnl += realizedPnl;
-    this.portfolio.totalPnlPct = this.portfolio.totalPnl / this.portfolio.initialBalance;
-
-    if (realizedPnl >= 0) {
-      this.portfolio.winCount++;
-    } else {
-      this.portfolio.lossCount++;
-    }
-    this.portfolio.tradeCount = this.portfolio.winCount + this.portfolio.lossCount;
-
-    this.checkDailyReset();
-    this.portfolio.dailyPnl += realizedPnl;
     this.recalculateEquity();
-    log.info(`Exchange position closed: ${pos.side.toUpperCase()} ${pos.symbol} PnL: ${realizedPnl.toFixed(2)} (no margin returned)`);
+    log.info(`Exchange position closed: ${pos.side.toUpperCase()} ${pos.symbol} PnL: ${realizedPnl.toFixed(2)} (real trade, no paper balance/stats impact)`);
 
     if (this.onPositionClosedCb) {
       this.onPositionClosedCb(trade);
