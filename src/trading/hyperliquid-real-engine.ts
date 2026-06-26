@@ -381,25 +381,24 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
       // v2.0.33: Fetch recent fills to get actual open timestamps.
       // HL clearinghouseState doesn't include position open time, so we
-      // match by coin + entry price to find the real open timestamp.
+      // match by coin + side + approximate entry price to find the real
+      // open timestamp.
       // v2.0.33 FIX: Previous code matched by coin only and took the first
       // "Open" fill — wrong if there were multiple open/close cycles.
       // Also, fallback was Date.now() which overwrote the real open time
-      // every cycle when no fill was found. Now we match by coin + entry
-      // price, and if no match is found we leave openedAt as undefined
-      // (caller preserves existing openedAt).
-      let openFillTimes = new Map<string, number>();
+      // every cycle when no fill was found. Now we match by coin + side +
+      // entry price (within tolerance), and if no match is found we return
+      // openedAt=0 (caller preserves existing openedAt).
+      // v2.0.33 FIX 2: Increased fill limit from 50 to 200 to ensure we
+      // capture the open fill even after many subsequent trades. Also
+      // match by side (Open Short vs Open Long) to distinguish long/short
+      // positions on the same coin.
+      let openFills: Array<{ symbol: string; side: string; price: number; timestamp: number }> = [];
       try {
-        const fills = await this.getRecentFills(50);
+        const fills = await this.getRecentFills(200);
         for (const f of fills) {
-          // HL dir format: "Open Short", "Open Long", "Close Short", "Close Long"
-          // Match "Open" fills — we'll match by coin + entry price below
           if (f.dir.toLowerCase().startsWith('open')) {
-            // Use coin + rounded entry price as key to distinguish different positions
-            const entryKey = `${f.symbol}:${f.price.toFixed(2)}`;
-            if (!openFillTimes.has(entryKey)) {
-              openFillTimes.set(entryKey, f.timestamp);
-            }
+            openFills.push({ symbol: f.symbol, side: f.dir, price: f.price, timestamp: f.timestamp });
           }
         }
       } catch { /* non-critical */ }
@@ -440,10 +439,19 @@ export class HyperliquidRealEngine implements RealTradingEngine {
             const unrealizedPnl = parseFloat(p.unrealizedPnl ?? '0');
             const leverage = p.leverage?.value ?? 1;
 
-            // v2.0.33: Match open fill by coin + entry price (not coin only).
-            // If no matching fill found, use 0 (caller preserves existing openedAt).
-            const entryKey = `${p.coin}:${entryPx.toFixed(2)}`;
-            const openTime = openFillTimes.get(entryKey) ?? 0;
+            // v2.0.33: Match open fill by coin + side + approximate entry price.
+            // The fill price might not exactly match the position entry price
+            // (weighted average for partial fills, or different decimal precision).
+            // Use a tolerance of 0.5% to match approximately.
+            // Also match by side: "Open Short" for sell, "Open Long" for buy.
+            const posSide = size > 0 ? 'long' : 'short';
+            const matchingFill = openFills.find(f => {
+              if (f.symbol.toLowerCase() !== p.coin.toLowerCase()) return false;
+              if (!f.side.toLowerCase().includes(posSide)) return false;
+              const priceDiff = Math.abs(f.price - entryPx) / entryPx;
+              return priceDiff < 0.005; // 0.5% tolerance
+            });
+            const openTime = matchingFill?.timestamp ?? 0;
 
             allPositions.push({
               id: `${p.coin}-${this.walletAddress}`,
