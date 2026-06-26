@@ -379,6 +379,19 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     try {
       const allPositions: Position[] = [];
 
+      // v2.0.32: Fetch recent fills to get actual open timestamps.
+      // HL clearinghouseState doesn't include position open time, so we
+      // match by coin + dir='open' to find the real open timestamp.
+      let openFillTimes = new Map<string, number>();
+      try {
+        const fills = await this.getRecentFills(50);
+        for (const f of fills) {
+          if (f.dir === 'open' && !openFillTimes.has(f.symbol)) {
+            openFillTimes.set(f.symbol, f.timestamp);
+          }
+        }
+      } catch { /* non-critical */ }
+
       // Query each perp DEX clearinghouse
       for (const dex of HyperliquidRealEngine.PERP_DEX_NAMES) {
         try {
@@ -426,7 +439,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
               unrealizedPnlPct: entryPx > 0 ? unrealizedPnl / (Math.abs(size) * entryPx / leverage) : 0,
               realizedPnl: 0,
               leverage,
-              openedAt: Date.now(),
+              openedAt: openFillTimes.get(p.coin) ?? Date.now(),
               updatedAt: Date.now(),
               agentId: 'hyperliquid-real',
             } as Position);
