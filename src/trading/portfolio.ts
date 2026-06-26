@@ -548,6 +548,18 @@ export class PortfolioTracker {
     const reconciled: string[] = [];
     const externalSet = new Set(externalOpenSymbols.map(s => normalizeSymbol(s)));
 
+    // v2.0.33: API-failure guard — if externalOpenSymbols is empty but we have
+    // real (exchange-imported) positions locally, do NOT reconcile. An empty
+    // external list likely means getPositions() failed (429, timeout, etc.),
+    // not that all positions were closed. Reconciling would create phantom
+    // close records for positions that are still open on HL.
+    const hasRealPositions = Array.from(this.portfolio.positions.values())
+      .some(p => p.agentId === 'hyperliquid-real');
+    if (externalSet.size === 0 && hasRealPositions) {
+      log.warn(`⚠️ reconcilePositions: externalOpenSymbols is empty but real positions exist locally — likely API failure, skipping reconciliation to prevent phantom closes`);
+      return [];
+    }
+
     for (const localSymbol of this.portfolio.positions.keys()) {
       if (!externalSet.has(localSymbol)) {
         // This position exists locally but NOT externally → manually closed

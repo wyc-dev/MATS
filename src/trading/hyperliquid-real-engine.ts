@@ -948,8 +948,17 @@ export class HyperliquidRealEngine implements RealTradingEngine {
   async closePosition(symbol: string): Promise<boolean> {
     try {
       const positions = await this.getPositions();
+      // v2.0.33: If getPositions() returned empty, this is likely an API
+      // failure, NOT "already closed". Return false so the caller knows
+      // the close did not succeed. Previously returned true (false success)
+      // which caused phantom close records — the local mirror was deleted
+      // but the HL position remained open.
+      if (positions.length === 0) {
+        log.warn(`⚠️ closePosition(${symbol}): getPositions() returned empty — likely API failure, cannot confirm close`);
+        return false;
+      }
       const pos = positions.find(p => p.symbol.toUpperCase() === symbol.toUpperCase());
-      if (!pos) return true; // No position = already closed
+      if (!pos) return true; // Position genuinely not found = already closed
 
       // v2.0.32: Cancel existing trigger orders for this position's close
       // side before closing. Only cancel orders matching this position's
