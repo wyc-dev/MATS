@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.36-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup + HL SL/TP close detection + 最小 SL/TP 間距限制)  
+> **版本**: 2.0.37-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup + HL SL/TP close detection + 最小 SL/TP 間距限制 + Stale real position cleanup)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -64,6 +64,7 @@
 53. [B.34 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP](#b34-v2034-幽靈平倉修復--paperreal-分離--sr-based-sltp--pro-algo-firm-sltp)
 54. [B.35 HL SL/TP Close Detection — 交易記錄追蹤 + ML 學習](#b35-v2035-hl-sltp-close-detection--交易記錄追蹤--ml-學習)
 55. [B.36 最小 SL/TP 間距限制 — 防止過度收窄](#b36-v2036-最小-sltp-間距限制--防止過度收窄)
+56. [B.37 Stale Real Position Cleanup — Paper mode 孤兒倉位清理](#b37-v2037-stale-real-position-cleanup--paper-mode-孤兒倉位清理)
 
 ---
 
@@ -5958,6 +5959,55 @@ Gap < 1% → reject 成個 adjustment + warning log。
 |:-----|:-----|
 | `src/cognition/hacp.ts` | `adjustPositions()` 加 1% minimum gap check（3 種情況）|
 | `src/trading/portfolio.ts` | `adjustPosition()` 加 1% minimum gap hard safety |
+
+---
+
+### B.37 v2.0.37: Stale Real Position Cleanup — Paper mode 孤兒倉位清理
+
+> **觸發**: Paper mode 下一個 `agentId='hyperliquid-real'` 嘅 BTC 倉位一直留住，每個 cycle 產生 `syncSLTP: btc not found on HL` + `closePosition(btc): getPositions() returned empty` 錯誤。切返 real mode 就消失（因為 reconciliation 清理咗），但 paper mode 永遠清唔到。
+
+#### 根因 — 3 個 Bug
+
+**Bug 1: Paper-mode legacy sync 只處理 `legacyPositionModes` 嘅倉位**
+
+舊代碼只損 `legacyPositionModes.get(sym) === 'real'` 嘅倉位。如果一個 `agentId='hyperliquid-real'` 嘅倉位唔喺 `legacyPositionModes`（例如系統重啟後 tracking 丟失，或者喺 real mode 經 `syncExchangePositions` import 之後切返 paper mode），就**完全冇 code path 處理佢** — 唔 sync 價格、唔偵測平倉、唔清理。
+
+**Bug 2: Paper-mode reconciliation 唔過濾 `agentId='hyperliquid-real'`**
+
+Reconciliation 嘅 `externalSymbols` filter 淨係保留 `legacyPositionModes` + active symbol + < 12h 嘅倉位。一個 `agentId='hyperliquid-real'` 嘅 stale position 如果唔喺 `legacyPositionModes` 但 < 12h 新，就會被保留 — 永遠留喺度。
+
+**Bug 3: `syncExchangePositions` "uncertain" case 淨係 warn 唔 close**
+
+喺 real mode，如果 `getPositions()` 返回空但損唔到 closing fill（可能超過 7 天，超出 `getRecentFills` 範圍），就 log 完 warning 就跳過 — 倉位永遠留住。
+
+#### 修復
+
+**1. Paper-mode real position sync — 處理所有 real 倉位**
+
+改為處理所有 `agentId === 'hyperliquid-real'` 嘅倉位，唔理 `legacyPositionModes`。3 種情況：
+
+| `getPositions()` | Closing Fill | 倉位年齡 | 行動 |
+|:----------------|:------------|:---------|:-----|
+| 空 | 損到 | — | ✅ Close with HL fill price + closedPnl |
+| 空 | 損唔到 | > 1h | ✅ Close（假設已喺 HL 平倉）|
+| 空 | 損唔到 | < 1h | ⚠️ Skip（可能 API 失敗）|
+| 非空 + 倉位唔喺 HL | — | — | ✅ Close（確認已平倉）|
+| 非空 + 倉位喺 HL | — | — | 🔄 Soft-update price |
+
+**2. Paper-mode reconciliation — 排除 real 倉位**
+
+`externalSymbols` filter 明確排除 `agentId === 'hyperliquid-real'` 嘅倉位 — 佢哋由 paper-mode real position sync block 負責清理，唔由 reconciliation 處理。
+
+**3. `syncExchangePositions` uncertain case — 超過 1h 就 close**
+
+如果倉位超過 1 小時都唔喺 HL 上面又損唔到 closing fill，就假設已平倉，close local mirror。倉位唔會喺 HL 上面空超過 1 小時如果真係開住。
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/index.ts` | Paper-mode real position sync 處理所有 `agentId='hyperliquid-real'` 倉位（唔理 `legacyPositionModes`）；3 種情況處理（closing fill / old position / HL position）；reconciliation 排除 real 倉位 |
+| `src/trading/real-trading-manager.ts` | `syncExchangePositions` uncertain case 超過 1h 就 close（唔再只 warn）|
 
 ---
 
