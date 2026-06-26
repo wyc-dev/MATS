@@ -799,6 +799,12 @@ export class PortfolioTracker {
     let unrealizedSum = 0;
     let lockedMargin = 0;
     for (const pos of this.portfolio.positions.values()) {
+      // v2.0.33: Do NOT include real (exchange) positions in paper equity.
+      // Real position margin was never deducted from paper balance
+      // (importExchangePosition doesn't deduct), so adding lockedMargin
+      // back would inflate the paper equity. Real position PnL is settled
+      // on HL, not in the paper portfolio.
+      if (pos.agentId === 'hyperliquid-real') continue;
       unrealizedSum += pos.unrealizedPnl;
       lockedMargin += pos.averageEntryPrice * pos.quantity;
     }
