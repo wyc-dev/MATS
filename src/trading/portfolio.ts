@@ -584,6 +584,17 @@ export class PortfolioTracker {
     const pos = this.portfolio.positions.get(symbol);
     if (!pos) return null;
 
+    // v2.0.33: Defensive guard — real positions (agentId='hyperliquid-real')
+    // must NEVER be closed via closePosition(). closePosition() adds margin
+    // back to paper balance and updates paper stats — wrong for real positions
+    // where margin was never deducted from paper balance. Redirect to
+    // closeExchangePosition() which only produces a trade record + learning
+    // without touching paper balance/stats.
+    if (pos.agentId === 'hyperliquid-real') {
+      log.warn(`⚠️ closePosition() called on real position ${symbol} — redirecting to closeExchangePosition() to prevent balance inflation`);
+      return this.closeExchangePosition(symbol, exitPrice);
+    }
+
     const lev = pos.leverage ?? 1;
     let realizedPnl: number;
     let cashReturned: number;
