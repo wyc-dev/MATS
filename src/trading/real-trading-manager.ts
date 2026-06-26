@@ -347,32 +347,93 @@ export class RealTradingManager {
         }
 
         // Step 2: Calculate SL/TP from the ACTUAL fill price
-        // Use decision SL/TP percentages, or fall back to defaults (2% SL, 5% TP)
-        // v2.0.33: Enforce sane constraints for 5-minute cycle trading:
-        //   - SL: minimum 1.5%, maximum 5% (too tight = stopped out by noise,
-        //     too wide = excessive risk at 10x leverage)
-        //   - TP: minimum 1%, maximum 3% (5% TP on 5min cycle is unreachable —
-        //     price rarely moves 5% in one cycle; position sits open forever)
-        //   - Risk/reward ratio: TP must be >= SL (never risk more than reward)
-        let slPct = decision.stopLossPct ?? 0.02;
-        let tpPct = decision.takeProfitPct ?? 0.03;
-        // Clamp SL to sane range
-        slPct = Math.max(0.015, Math.min(0.05, slPct));
-        // Clamp TP to sane range
-        tpPct = Math.max(0.01, Math.min(0.03, tpPct));
-        // Ensure TP >= SL (risk/reward >= 1:1)
-        if (tpPct < slPct) {
-          log.warn(`⚠️ TP ${(tpPct*100).toFixed(1)}% < SL ${(slPct*100).toFixed(1)}% — adjusting TP to match SL`);
-          tpPct = slPct;
-        }
-        const slPrice = decision.action === 'buy'
-          ? actualEntryPrice * (1 - slPct)
-          : actualEntryPrice * (1 + slPct);
-        const tpPrice = decision.action === 'buy'
-          ? actualEntryPrice * (1 + tpPct)
-          : actualEntryPrice * (1 - tpPct);
+        // v2.0.33: Use S/R levels when available — SL just beyond nearest
+        // support (for long) or resistance (for short), TP at the next S/R level.
+        // Fall back to percentage-based if S/R not available.
+        const srSupport = (decision as any).srSupport as number | null | undefined;
+        const srResistance = (decision as any).srResistance as number | null | undefined;
+        const slPctDefault = 0.015; // 1.5% default
+        const tpPctDefault = 0.03;  // 3% default
 
-        log.info(`🎯 SL/TP calculated from fill price: ${decision.symbol} entry=$${actualEntryPrice.toFixed(2)} SL=$${slPrice.toFixed(2)} (${(slPct*100).toFixed(1)}%) TP=$${tpPrice.toFixed(2)} (${(tpPct*100).toFixed(1)}%) [clamped: 1.5-5% SL, 1-3% TP]`);
+        let slPrice: number, tpPrice: number;
+
+        if (decision.action === 'buy') {
+          // Long: SL below entry (below nearest support), TP above entry (at resistance)
+          if (srSupport && srSupport > 0 && srSupport < actualEntryPrice) {
+            // SL just below support (0.3% beyond support to avoid wick stop-outs)
+            slPrice = srSupport * 0.997;
+            // Ensure SL is at least 0.5% from entry (avoid noise stop-out)
+            const minSL = actualEntryPrice * (1 - 0.005);
+            slPrice = Math.min(slPrice, minSL);
+          } else {
+            slPrice = actualEntryPrice * (1 - (decision.stopLossPct ?? slPctDefault));
+          }
+          if (srResistance && srResistance > 0 && srResistance > actualEntryPrice) {
+            tpPrice = srResistance;
+          } else {
+            tpPrice = actualEntryPrice * (1 + (decision.takeProfitPct ?? tpPctDefault));
+          }
+        } else {
+          // Short: SL above entry (above nearest resistance), TP below entry (at support)
+          if (srResistance && srResistance > 0 && srResistance > actualEntryPrice) {
+            // SL just above resistance (0.3% beyond resistance to avoid wick stop-outs)
+            slPrice = srResistance * 1.003;
+            // Ensure SL is at least 0.5% from entry (avoid noise stop-out)
+            const minSL = actualEntryPrice * (1 + 0.005);
+            slPrice = Math.max(slPrice, minSL);
+          } else {
+            slPrice = actualEntryPrice * (1 + (decision.stopLossPct ?? slPctDefault));
+          }
+          if (srSupport && srSupport > 0 && srSupport < actualEntryPrice) {
+            tpPrice = srSupport;
+          } else {
+            tpPrice = actualEntryPrice * (1 - (decision.takeProfitPct ?? tpPctDefault));
+          }
+        }
+
+        // v2.0.33: Hard constraints — SL 0.5-5% from entry, TP 0.5-5% from entry
+        // SL too tight = noise stop-out, SL too wide = excessive risk
+        // TP too tight = not enough profit, TP too wide = unreachable
+        const slDistPct = Math.abs(slPrice - actualEntryPrice) / actualEntryPrice;
+        const tpDistPct = Math.abs(tpPrice - actualEntryPrice) / actualEntryPrice;
+        if (slDistPct < 0.005) {
+          // SL too tight — widen to 0.5%
+          slPrice = decision.action === 'buy'
+            ? actualEntryPrice * 0.995
+            : actualEntryPrice * 1.005;
+        }
+        if (slDistPct > 0.05) {
+          // SL too wide — narrow to 5%
+          slPrice = decision.action === 'buy'
+            ? actualEntryPrice * 0.95
+            : actualEntryPrice * 1.05;
+        }
+        if (tpDistPct < 0.005) {
+          // TP too tight — widen to 0.5%
+          tpPrice = decision.action === 'buy'
+            ? actualEntryPrice * 1.005
+            : actualEntryPrice * 0.995;
+        }
+        if (tpDistPct > 0.05) {
+          // TP too wide — narrow to 5%
+          tpPrice = decision.action === 'buy'
+            ? actualEntryPrice * 1.05
+            : actualEntryPrice * 0.95;
+        }
+
+        // Risk:Reward — TP must be >= SL distance (never risk more than reward)
+        const finalSlDist = Math.abs(slPrice - actualEntryPrice);
+        const finalTpDist = Math.abs(tpPrice - actualEntryPrice);
+        if (finalTpDist < finalSlDist) {
+          // TP closer than SL — widen TP to match SL distance
+          tpPrice = decision.action === 'buy'
+            ? actualEntryPrice + finalSlDist
+            : actualEntryPrice - finalSlDist;
+        }
+
+        const slPctActual = Math.abs(slPrice - actualEntryPrice) / actualEntryPrice;
+        const tpPctActual = Math.abs(tpPrice - actualEntryPrice) / actualEntryPrice;
+        log.info(`🎯 SL/TP from S/R: ${decision.symbol} entry=$${actualEntryPrice.toFixed(2)} SL=$${slPrice.toFixed(2)} (${(slPctActual*100).toFixed(2)}%) TP=$${tpPrice.toFixed(2)} (${(tpPctActual*100).toFixed(2)}%) S/R: support=${srSupport ?? 'N/A'} resistance=${srResistance ?? 'N/A'}`);
 
         // Step 3: Place SL/TP on the exchange with retry logic
         if (engine instanceof HyperliquidRealEngine) {
@@ -554,9 +615,9 @@ export class RealTradingManager {
                 if (exPos.openedAt > 0) {
                   localPos.openedAt = exPos.openedAt;
                 }
-                // v2.0.33: Sane defaults for 5-minute cycle (1.5% SL, 3% TP)
-                const slPct = 0.015;
-                const tpPct = 0.03;
+                // Recalculate SL/TP based on new entry
+                const slPct = 0.02;
+                const tpPct = 0.05;
                 localPos.stopLossPrice = exPos.side === 'buy'
                   ? exPos.averageEntryPrice * (1 - slPct)
                   : exPos.averageEntryPrice * (1 + slPct);

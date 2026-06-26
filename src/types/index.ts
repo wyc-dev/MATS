@@ -174,6 +174,12 @@ export interface TradingDecision {
   entryPrice?: number;
   stopLossPct?: number;
   takeProfitPct?: number;
+  /** v2.0.33: Nearest support/resistance levels from S/R engine.
+   * Used by executeDecision to place SL/TP at actual S/R levels instead
+   * of fixed percentages. SL goes just beyond the nearest support (for long)
+   * or resistance (for short), TP goes at the next S/R level. */
+  srSupport?: number | null;
+  srResistance?: number | null;
   leverage?: number; // 1-10x, meta-agent sets based on risk/confidence
   rationale: string;
   urgency: 'immediate' | 'soon' | 'patient';
