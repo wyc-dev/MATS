@@ -41,6 +41,11 @@ export class PortfolioTracker {
    * learning WITHOUT adding to paperEngine.trades[] (real trades should
    * not appear in paper trade list). */
   private onExchangeClosedLearningCb: OnPositionClosed | null = null;
+  /** v2.0.33: UI callback for exchange position closes — fires AFTER the
+   * position is deleted + learning is triggered, so index.ts can immediately
+   * call pushToAPI() + refresh cachedHLFills to update the UI without waiting
+   * for the next cycle. */
+  private onExchangeClosedUICb: (() => void) | null = null;
   /** Restored trades from disk (loaded in constructor) */
   readonly restoredTrades: TradeRecord[] = [];
 
@@ -147,6 +152,13 @@ export class PortfolioTracker {
    * It only triggers learning mechanisms (RBC, pattern classifier, evolution, etc.). */
   setOnExchangeClosedLearning(cb: OnPositionClosed): void {
     this.onExchangeClosedLearningCb = cb;
+  }
+
+  /** v2.0.33: Register a UI-update callback for exchange position closes.
+   * Fires after the position is deleted + learning is triggered, so the caller
+   * can immediately update the UI (pushToAPI + refresh fills). */
+  setOnExchangeClosedUI(cb: () => void): void {
+    this.onExchangeClosedUICb = cb;
   }
 
   /** Register a callback for position opens (used by PaperTradingEngine to capture open trades) */
@@ -740,6 +752,13 @@ export class PortfolioTracker {
     // classifier, agent outcomes, evolution) from real trade outcomes.
     if (this.onExchangeClosedLearningCb) {
       this.onExchangeClosedLearningCb(trade);
+    }
+
+    // v2.0.33: Fire UI callback so index.ts can immediately pushToAPI() +
+    // refresh cachedHLFills — the UI updates instantly without waiting for
+    // the next cycle.
+    if (this.onExchangeClosedUICb) {
+      this.onExchangeClosedUICb();
     }
 
     return trade;
