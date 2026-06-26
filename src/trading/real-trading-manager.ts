@@ -536,19 +536,66 @@ export class RealTradingManager {
       }
 
       // v2.0.32: Safety check — if getPositions() returned an empty array but
-      // we have exchange-imported positions locally, DON'T close them. This
-      // could be a transient API failure. Only close if we're confident the
-      // position is really gone (i.e. getPositions() returned non-empty but
-      // doesn't include this symbol).
+      // we have exchange-imported positions locally, we need to determine if
+      // this is a genuine "all positions closed on HL" or an API failure.
+      // v2.0.35 FIX: Previously this skipped close entirely when exMap.size === 0,
+      // which meant the LAST position to close was never detected — the local
+      // mirror stayed forever, no trade record was created, no learning happened.
+      // Now we fetch recent fills to verify: if there's a closing fill after the
+      // position was opened, the position was genuinely closed on HL.
       const localExchangePositions = this.portfolio.getOpenSymbols().filter(sym => {
         const pos = this.portfolio.getPosition(sym);
         return pos && pos.agentId === 'hyperliquid-real';
       });
 
       if (exMap.size === 0 && localExchangePositions.length > 0) {
-        log.warn(`⚠️ syncExchangePositions: getPositions() returned empty but ${localExchangePositions.length} exchange positions exist locally — likely API failure, skipping close`);
-        // Still try to soft-update prices from exchange data (none available)
-        return;
+        // v2.0.35: Don't just skip — check recent fills to see if the position
+        // was actually closed on HL. If there's a closing fill after openedAt,
+        // it's a genuine close, not an API failure.
+        let recentFillsForCheck: Array<{ symbol: string; closedPnl: number; side: string; price: number; size: number; timestamp: number; fee: number; dir: string }> = [];
+        if (engine instanceof HyperliquidRealEngine) {
+          try {
+            recentFillsForCheck = await engine.getRecentFills(50);
+          } catch { /* non-critical */ }
+        }
+        const genuinelyClosed: string[] = [];
+        const uncertain: string[] = [];
+        for (const localSym of localExchangePositions) {
+          const localPos = this.portfolio.getPosition(localSym);
+          if (!localPos) continue;
+          // Look for a closing fill (not "Open *") after this position was opened
+          const closingFill = recentFillsForCheck.find(f =>
+            f.symbol.toLowerCase() === localSym.toLowerCase() &&
+            !f.dir.toLowerCase().startsWith('open') &&
+            f.timestamp >= localPos.openedAt
+          );
+          if (closingFill) {
+            genuinelyClosed.push(localSym);
+          } else {
+            uncertain.push(localSym);
+          }
+        }
+        if (genuinelyClosed.length > 0) {
+          log.info(`📉 syncExchangePositions: ${genuinelyClosed.length} position(s) confirmed closed via HL fills (exMap empty but closing fills found)`);
+          for (const localSym of genuinelyClosed) {
+            const localPos = this.portfolio.getPosition(localSym);
+            if (!localPos) continue;
+            const closingFill = recentFillsForCheck.find(f =>
+              f.symbol.toLowerCase() === localSym.toLowerCase() &&
+              !f.dir.toLowerCase().startsWith('open') &&
+              f.timestamp >= localPos.openedAt
+            );
+            const hlPnl = closingFill?.closedPnl;
+            const exitPrice = closingFill?.price ?? localPos.currentPrice;
+            log.info(`📉 Exchange position closed on HL: ${localSym} — closing local mirror (HL PnL: ${hlPnl !== undefined ? '$'+hlPnl.toFixed(2) : 'N/A'})`);
+            this.portfolio.closeExchangePosition(localSym, exitPrice, hlPnl);
+          }
+        }
+        if (uncertain.length > 0) {
+          log.warn(`⚠️ syncExchangePositions: ${uncertain.length} position(s) with no closing fill — likely API failure, skipping close: ${uncertain.join(', ')}`);
+        }
+        // If all positions were either closed or uncertain, return (no exMap to iterate)
+        if (exMap.size === 0) return;
       }
 
       // v2.0.32: Fetch recent HL fills to get actual realized PnL for closed positions.

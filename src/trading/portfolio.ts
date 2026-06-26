@@ -46,6 +46,12 @@ export class PortfolioTracker {
    * call pushToAPI() + refresh cachedHLFills to update the UI without waiting
    * for the next cycle. */
   private onExchangeClosedUICb: (() => void) | null = null;
+  /** v2.0.35: Closed real (exchange) trade records — stored separately from
+   *  paperEngine.trades[] so the UI Trade Records panel can display real HL
+   *  closes (SL/TP triggered on exchange) with accurate exit price + PnL.
+   *  Previously closeExchangePosition() created a TradeRecord but it was only
+   *  used for learning — never stored, so the UI never showed the close. */
+  private readonly closedRealTrades: TradeRecord[] = [];
   /** Restored trades from disk (loaded in constructor) */
   readonly restoredTrades: TradeRecord[] = [];
 
@@ -159,6 +165,14 @@ export class PortfolioTracker {
    * can immediately update the UI (pushToAPI + refresh fills). */
   setOnExchangeClosedUI(cb: () => void): void {
     this.onExchangeClosedUICb = cb;
+  }
+
+  /** v2.0.35: Get closed real (exchange) trade records for UI display.
+   * These are trades closed by HL SL/TP triggers or manual exchange closes —
+   * stored separately from paperEngine.trades[] so they don't pollute paper
+   * stats but still appear in the Trade Records panel. */
+  getClosedRealTrades(): readonly TradeRecord[] {
+    return this.closedRealTrades;
   }
 
   /** Register a callback for position opens (used by PaperTradingEngine to capture open trades) */
@@ -743,6 +757,15 @@ export class PortfolioTracker {
     // position + produce trade record + trigger learning.
     this.portfolio.positions.delete(symbol);
     this.recalculateEquity();
+    // v2.0.35: Store the closed real trade so the UI Trade Records panel
+    // can display it with accurate exit price + PnL. Previously this trade
+    // was only used for learning — never stored, so the UI never showed
+    // the close (the position just disappeared with no trace).
+    this.closedRealTrades.push(trade);
+    // Cap at 200 to avoid unbounded memory growth
+    if (this.closedRealTrades.length > 200) {
+      this.closedRealTrades.splice(0, this.closedRealTrades.length - 200);
+    }
     log.info(`Exchange position closed: ${pos.side.toUpperCase()} ${pos.symbol} PnL: ${realizedPnl.toFixed(2)} (real trade, no paper balance/stats impact)`);
 
     // v2.0.32: Trigger learning callback directly (NOT onPositionClosedCb).
