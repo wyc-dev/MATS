@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.34--dev-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.36--dev-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -443,7 +443,7 @@ If you require a commercial license — for example, for proprietary extensions,
 
 ---
 
-## Changelog (v2.0.10 → v2.0.34)
+## Changelog (v2.0.10 → v2.0.36)
 
 | Version | Change |
 |:--------|:-------|
@@ -467,8 +467,10 @@ If you require a commercial license — for example, for proprietary extensions,
 | **v2.0.32** | HL signing rewrite (phantom agent EIP-712 + msgpack + recovery bit); xyz DEX asset index offset (110000); `updateLeverage()` before order placement (fixes 40x→10x); SL/TP direction fix for short positions (stale local mirror → immediate trigger); `syncExchangePositions()` removes stale exchange mirrors + closes paper mirror properly on side/qty/entry change (produces trade record, not silent removal); `syncSLTP()` validates HL position side + entry + manages SL/TP per coin+closeSide (allows simultaneous long+short); `placeOrder()` only returns success on `filled` (not `resting`); UI filters stale positions in real mode; REAL/PAPER label based on `agentId` only; `getOpenOrders()` parses `limitPx` + `reduceOnly`; `PERP_DEX_NAMES` fix (`dex: 0` → `''` — HL API rejects number); `formatPrice()` price-magnitude-based decimals (BTC=0, ETH=1, SPCX=2, SOL=3, ATOM=4, DOGE=6) strips trailing zeros; `updatePosition()` skips `checkPositionExits()` for `agentId='hyperliquid-real'` (exchange SL/TP managed natively by HL trigger orders); `cancelOrderWithAsset()` uses correct per-coin asset index (not positions[0]); reconciliation closes on HL before local close; `syncSLTP()` hasSL/hasTP uses rounded price comparison (tolerance < 1, not < 0.01) |
 | **v2.0.33** | Regime-aware direction signals (mean-revert vs trend-following based on `combinedState.regime`); Planck-Chaos Resonance module (`src/analysis/planck-chaos.ts`) — Lyapunov exponent estimation, resonance frequency detection (autocorrelation), amplitude window prediction (diffusion model √(2Dt)), chaos regime classification, direction bias from cycle phase; Planck-Chaos is Priority -1 (highest) in exploration direction chain; Meta-Agent + Fractal Momentum prompts updated with chaos theory; new pattern tags (planck_resonance_strong, chaotic_divergence, diffusion_accumulation, cycle_phase_bottom/top, edge_of_chaos); removed trend filter Layer 2 that caused systematic buy-high-sell-low (13.3% win rate → anti-correlated); exploration SL/TP widened from 1%/2% to 2%/5% |
 | **v2.0.34** | Phantom close fix — 8 code paths that closed real HL positions locally without closing on HL (reconcilePositions API-failure guard, engine.closePosition false-success fix, syncExchangePositions stale fill matching, agent vote/consensus/flip routed through realTradingManager, manual close fix, defensive guard in closePosition() that redirects real positions to closeExchangePosition()); Paper balance/equity inflation fix — recalculateEquity() excludes real positions, closePosition() defensive guard prevents margin inflation, portfolio-state reconstructed ($2060→$1278.95); Premature close fix — close thresholds use raw PnL% (unleveraged) instead of leveraged unrealizedPnlPct; S/R-based SL/TP — uses nearestSupport/nearestResistance from S/R engine instead of fixed percentages, with 0.5-5% hard constraints + risk:reward ≥ 1; Pro algo firm SL/TP — fill-first (actual fill price not decision price), 3x retry with 1s delay, safety-close if SL/TP placement fails (unprotected 10x = too dangerous), adjustPosition() false-success fix; openedAt sync — match HL fills by coin+side+price tolerance (200 fills), preserve existing timestamp when no match; on-chain dedup — normalizeSym() strips USDT/USD + xyz: prefix + lowercase (BTCUSDT/btc/xyz:SPCX all dedup); instant UI update — onExchangeClosedUICb callback fires pushToAPI + refreshHLFills immediately after close |
+| **v2.0.35** | HL SL/TP close detection — 3 bugs fixed: (1) WS `onFills` handler now detects closing fills via HL `dir` field (`Close Long`/`Close Short`) and immediately calls `closeExchangePosition()` with actual HL fill price + closedPnl — previously only did `softUpdatePosition()` so the local mirror stayed open forever with no trade record or learning; (2) `syncExchangePositions()` safety check now fetches recent fills to verify genuine closes vs API failure when `exMap.size === 0` (previously skipped close entirely when the last position was closed); (3) `closeExchangePosition()` now stores trade records in `closedRealTrades[]` (capped 200) and `pushToAPI()` includes them in UI Trade Records; WS `onPositions` backup detects positions that disappeared from HL clearinghouseState |
+| **v2.0.36** | Minimum 1% SL/TP gap constraint — Meta-Agent `adjustPositions()` had no minimum gap, LLM would over-narrow SL/TP to < 1% as price approached target, causing noise stop-outs that cut profits short. Added 1% minimum gap check in `hacp.ts` (after LLM returns new SL/TP, handles 3 cases: both new, only SL new vs existing TP, only TP new vs existing SL) + hard safety layer in `portfolio.ts` `adjustPosition()` (rejects if effective SL/TP gap < 1% of current price) |
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.34 for full details on each fix.
+See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.36 for full details on each fix.
 
 ---
 

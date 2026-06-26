@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.34-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup)  
+> **版本**: 2.0.36-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup + HL SL/TP close detection + 最小 SL/TP 間距限制)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -62,6 +62,8 @@
 51. [B.32 HL 簽名修復 + xyz DEX 資產索引 + SL/TP 方向 + 槓桿 + 幽靈倉位](#b32-v2032-hl-簽名修復--xyz-dex-資產索引--sltp-方向--槓桿--幽靈倉位)
 52. [B.33 Regime-aware 方向信號 + Planck-Chaos Resonance 模組](#b33-v2033-regime-aware-方向信號--planck-chaos-resonance-模組)
 53. [B.34 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP](#b34-v2034-幽靈平倉修復--paperreal-分離--sr-based-sltp--pro-algo-firm-sltp)
+54. [B.35 HL SL/TP Close Detection — 交易記錄追蹤 + ML 學習](#b35-v2035-hl-sltp-close-detection--交易記錄追蹤--ml-學習)
+55. [B.36 最小 SL/TP 間距限制 — 防止過度收窄](#b36-v2036-最小-sltp-間距限制--防止過度收窄)
 
 ---
 
@@ -5858,6 +5860,104 @@ src/index.ts → exploration direction chain:
 | `src/index.ts` | Agent vote / per-symbol consensus / direction flip 用 `realTradingManager.closePosition()` for real；manual close 用 `closeExchangePosition()`；S/R 傳入 `TradingDecision`；`refreshHLFillsAndPush()` 即時 UI 更新 |
 | `src/agents/agents.ts` | On-chain dedup `normalizeSym()` |
 | `src/types/index.ts` | `TradingDecision` 加 `srSupport` / `srResistance` |
+
+---
+
+### B.35 v2.0.35: HL SL/TP Close Detection — 交易記錄追蹤 + ML 學習
+
+> **觸發**: HL SL 觸發平倉（BTC Short @ 59,863）但 MATS 完全冇記錄 — Trade Records 冇記錄、冇觸發學習、本地 mirror 永遠開住。用戶報告咗多次但一直修唔好。
+
+#### 根因分析 — 3 個獨立 Bug
+
+**Bug 1: WS `onFills` 唔偵測平倉 fill**
+
+WebSocket `userFills` 推送嘅 fill 包含開倉同平倉兩種，但 `onFills` handler 對所有 fill 只做 `softUpdatePosition()` — 包括平倉 fill。所以 HL 推送 "Close Short" fill 嗰陣，MATS 只更新 mirror 價格就完事，本地 mirror 永遠開住，冇 trade record，冇學習。
+
+**Bug 2: `syncExchangePositions` 安全檢查跳過最後一個平倉**
+
+當 BTC 係唯一倉位而且被 SL 平倉，`getPositions()` 返回空 array。安全檢查 `exMap.size === 0 && localExchangePositions.length > 0` 假設係 API 失敗，直接 `return` 跳過平倉。最後一個倉位嘅平倉永遠偵測唔到。
+
+**Bug 3: `closeExchangePosition()` 唔儲存 trade record**
+
+即使平倉發生咗（早期 cycle 嘅 `syncExchangePositions`），`closeExchangePosition()` 只觸發 learning callback，從來唔儲存 `TradeRecord`。UI Trade Records 面板永遠睇唔到真實平倉記錄。
+
+#### 修復
+
+**1. WS `onFills` 偵測平倉 fill**
+
+- `HLUserFill` interface 新增 `dir` 欄位（`"Open Long"` / `"Close Short"` 等）
+- `handleUserFills()` 解析 `f.dir` 並傳入 callback
+- `onFills` handler 用 `dir.toLowerCase().includes('close')` 偵測平倉 fill
+- 平倉 fill 即時 call `closeExchangePosition(sym, fill.price, fill.closedPnl)` — 用 HL 真實成交價 + 實際 PnL
+- 開倉 fill 繼續做 `softUpdatePosition()`
+
+**2. `syncExchangePositions` 攞 recent fills 驗證**
+
+- `exMap.size === 0` 時唔再直接跳過
+- 攞 recent 50 fills，對每個 local exchange position 搵 matching closing fill（`timestamp >= openedAt` + `!dir.startsWith('open')`）
+- 搵到 closing fill → 確認係真實平倉 → call `closeExchangePosition()`
+- 搵唔到 → 先當係 API 失敗跳過
+
+**3. `closeExchangePosition()` 儲存 trade record**
+
+- 新增 `closedRealTrades: TradeRecord[]`（上限 200）
+- `closeExchangePosition()` 將 trade record push 入 `closedRealTrades`
+- `pushToAPI()` 喺 real mode 加入 `closedRealTrades` 到 trade records list
+- UI Trade Records 面板而家顯示真實 HL 平倉記錄（準確 exit price + PnL）
+
+**4. WS `onPositions` backup 偵測**
+
+- `clearinghouseState` push 嘅 position list 唔再包含某個 real position → 表示 HL 上面已平倉
+- 即時 call `closeExchangePosition()` — backup to `onFills`（catch WS reconnect 期間錯過嘅平倉）
+- 安全檢查：只有 `positions.length > 0` 先 close（避免空 push = API 失敗）
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/data/hyperliquid-websocket.ts` | `HLUserFill` 加 `dir` 欄位；`handleUserFills()` 解析 `f.dir` |
+| `src/index.ts` | `onFills` 偵測 closing fill → `closeExchangePosition()`；`onPositions` 偵測消失倉位 → `closeExchangePosition()`；`pushToAPI()` 加入 `closedRealTrades` |
+| `src/trading/portfolio.ts` | 新增 `closedRealTrades[]` + `getClosedRealTrades()`；`closeExchangePosition()` push trade record |
+| `src/trading/real-trading-manager.ts` | `syncExchangePositions()` 攞 recent fills 驗證 genuine close vs API failure |
+
+---
+
+### B.36 v2.0.36: 最小 SL/TP 間距限制 — 防止過度收窄
+
+> **觸發**: Meta-Agent `adjustPositions()` 每個 cycle 收窄 SL/TP，當價格接近 TP 時將 SL 同 TP 收到差距 < 1%。正常市場波動就揩到 SL，賺少咗一轉，降低勝率。
+
+#### 根因
+
+SL/TP 縮窄機制（`hacp.ts` `adjustPositions()`）有安全規則：
+- SL 只可以朝利潤方向移動（long SL 只升、short SL 只跌）
+- TP 只可以縮窄，唔可以擴闊
+- SL/TP 必須喺 entry 嘅正確方向
+
+**但冇最小間距限制** — LLM 會過度收窄，SL 同 TP 差距可以收窄到 < 0.5%。10x 槓桿下 0.5% = 5% on margin，正常波動就觸發 SL。
+
+#### 修復
+
+加咗 **1% 最小 SL/TP 間距限制**，喺兩個地方：
+
+**1. `hacp.ts` `adjustPositions()` — LLM 計完後檢查**
+
+LLM 返回新 SL/TP 後，檢查 gap 係咪 ≥ 1% current price。處理 3 種情況：
+- Both SL + TP new → 檢查 `|newTP - newSL| / currentPrice`
+- Only SL new → 檢查 `|existingTP - newSL| / currentPrice`
+- Only TP new → 檢查 `|newTP - existingSL| / currentPrice`
+
+Gap < 1% → reject 成個 adjustment + warning log。
+
+**2. `portfolio.ts` `adjustPosition()` — 硬安全網**
+
+最後防線：如果 effective SL/TP gap（新或舊）< 1% of current price，reject adjustment 並保留原本較闊嘅 SL/TP。
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/cognition/hacp.ts` | `adjustPositions()` 加 1% minimum gap check（3 種情況）|
+| `src/trading/portfolio.ts` | `adjustPosition()` 加 1% minimum gap hard safety |
 
 ---
 
