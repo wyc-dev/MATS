@@ -24,6 +24,7 @@ import { BacktestEngine, type BacktestProgress } from './backtest/index.ts';
 import { MarketAgent } from './market-agent/index.ts';
 import { RealTradingManager } from './trading/real-trading-manager.ts';
 import { SentimentEngine } from './analysis/sentiment-engine.ts';
+import { PlanckChaosEngine } from './analysis/planck-chaos.ts';
 import { SystemGuard } from './system-guard/index.ts';
 import { ExecutionTracker } from './trading/execution-tracker.ts';
 import { CorrelationBudget } from './risk/correlation-budget.ts';
@@ -56,6 +57,7 @@ class AMACRFSystem {
   private marketAgent!: MarketAgent;
   private realTradingManager!: RealTradingManager;
   private sentimentEngine!: SentimentEngine;
+  private planckChaos!: PlanckChaosEngine;
   private hyperliquidWs!: HyperliquidWebSocketManager;
   private multiWs!: MultiExchangeWebSocketManager;
   private systemGuard!: SystemGuard;
@@ -162,6 +164,11 @@ class AMACRFSystem {
       log.info('Step 3.5/8: Initializing Sentiment Engine...');
       this.sentimentEngine = new SentimentEngine();
       log.info('✓ Sentiment Engine ready');
+
+      // 3.5b Initialize Planck-Chaos Resonance Engine
+      log.info('Step 3.5b/8: Initializing Planck-Chaos Resonance Engine...');
+      this.planckChaos = new PlanckChaosEngine();
+      log.info('✓ Planck-Chaos Resonance Engine ready');
 
       // 3.6 Initialize Market State Aggregator (MUST be before WebSocket data flows)
       log.info('Step 3.6/8: Initializing Market State Aggregator...');
@@ -646,6 +653,8 @@ class AMACRFSystem {
         const tradesBefore = this.portfolio.getPortfolio().tradeCount;
         this.paperEngine.updatePrice(data.symbol, data.price);
         this.sentimentEngine.updatePrice(data.price);
+        // v2.0.32: Feed price into Planck-Chaos Resonance Engine
+        this.planckChaos.feedPrice(data.price, Date.now());
         if (data.fundingRate !== undefined) {
           this.sentimentEngine.updateFundingRate(data.fundingRate);
         }
@@ -1245,7 +1254,19 @@ class AMACRFSystem {
         }
       } catch { /* non-critical */ }
 
-      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${rbcContext}\n\n${getFeeSummary()}`;
+      // v2.0.32: Run Planck-Chaos Resonance analysis and inject context
+      let planckChaosContext = '';
+      try {
+        const chaosResult = this.planckChaos.analyze(combinedState.price, combinedState.volatility ?? 0);
+        if (chaosResult) {
+          planckChaosContext = '\n' + chaosResult.contextString;
+          log.info(`🌌 [planck-chaos] Regime=${chaosResult.chaosRegime} λ=${chaosResult.lyapunov.lambda.toFixed(4)} resonance=${(chaosResult.resonanceStrength * 100).toFixed(0)}% bias=${chaosResult.directionBias}`);
+        }
+      } catch (err) {
+        log.warn(`[planck-chaos] Analysis failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${rbcContext}${planckChaosContext}\n\n${getFeeSummary()}`;
 
       // Store latest S/R context for API push
       if (srContext) {
@@ -1554,6 +1575,16 @@ class AMACRFSystem {
             const sentimentData = this.sentimentEngine?.getSentiment();
             const hlPrice = this.hyperliquidWs?.getLatestMarkPrice?.();
             const actualFundingRate = hlPrice?.fundingRate ?? 0;
+
+            // v2.0.32: Priority -1: Planck-Chaos Resonance direction bias
+            // This is the HIGHEST priority signal — if the chaos engine detects
+            // a strong resonance with a clear phase position, use it directly.
+            const chaosResult = this.planckChaos.getLastResult();
+            if (chaosResult && chaosResult.resonanceStrength > 0.4 && chaosResult.directionBias !== 'neutral') {
+              direction = chaosResult.directionBias;
+              log.info(`🧪 Planck-Chaos-guided: resonance=${(chaosResult.resonanceStrength * 100).toFixed(0)}% bias=${direction} (λ=${chaosResult.lyapunov.lambda.toFixed(4)}, regime=${chaosResult.chaosRegime})`);
+            }
+
             const patternCtx = {
               regime: combinedState.regime,
                             volatility: combinedState.volatility ?? 0,

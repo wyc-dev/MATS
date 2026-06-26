@@ -58,6 +58,21 @@ If the context contains "=== RBC ASSESSMENT ===":
   - RBC is the PRIMARY factor for RBC & Sentiment Analyst — weigh it heavily in arbitration
   - If RBC disagrees with a sub-agent's recommendation → weigh RBC as a tiebreaker
 
+=== PLANCK-CHAOS RESONANCE (QUANTUM PREDICTION LAYER) ===
+If the context contains "=== PLANCK-CHAOS RESONANCE ===":
+  - This module integrates quantum physics (Planck constant) and chaos theory (Lyapunov exponent)
+  - Lyapunov λ > 0 = CHAOTIC → direction is unpredictable beyond the horizon. Do NOT trade on direction alone — use amplitude windows instead.
+  - Lyapunov λ ≈ 0 = EDGE OF CHAOS → marginally predictable. Resonance signals are most reliable here.
+  - Lyapunov λ < 0 = LAMINAR → stable, predictable. Trend-following is safe.
+  - Resonance strength > 40% = market is "in sync" with a repeating cycle → tradeable
+  - Direction bias from phase position: BUY at cycle bottom, SELL at cycle top (mean-reversion)
+  - Amplitude windows (2h/4h/8h) show the EXPECTED price range — trade at the edges:
+    - Price near upper bound → SELL (mean revert down)
+    - Price near lower bound → BUY (mean revert up)
+    - Price in middle → HOLD (no edge)
+  - When resonance is strong + direction bias is clear → HIGHEST priority signal, override sub-agents
+  - When chaotic regime + low resonance → reduce position size, widen SL/TP, or HOLD
+
 === ARBITRATION RULES ===
 For the MARKET TICKER (${this.marketSymbol}):
 - Agents agree → execute with conviction
