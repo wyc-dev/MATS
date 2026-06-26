@@ -386,7 +386,9 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       try {
         const fills = await this.getRecentFills(50);
         for (const f of fills) {
-          if (f.dir === 'open' && !openFillTimes.has(f.symbol)) {
+          // HL dir format: "Open Short", "Open Long", "Close Short", "Close Long"
+          // Match the LATEST "Open" fill for each coin = current position's open time
+          if (f.dir.toLowerCase().startsWith('open') && !openFillTimes.has(f.symbol)) {
             openFillTimes.set(f.symbol, f.timestamp);
           }
         }
