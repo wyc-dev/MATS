@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.37-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup + HL SL/TP close detection + 最小 SL/TP 間距限制 + Stale real position cleanup)  
+> **版本**: 2.0.40-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup + HL SL/TP close detection + 最小 SL/TP 間距限制 + Stale real position cleanup + Real trade 持久化 + Consensus 方向性修正 + 學習衰減機制)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -65,6 +65,9 @@
 54. [B.35 HL SL/TP Close Detection — 交易記錄追蹤 + ML 學習](#b35-v2035-hl-sltp-close-detection--交易記錄追蹤--ml-學習)
 55. [B.36 最小 SL/TP 間距限制 — 防止過度收窄](#b36-v2036-最小-sltp-間距限制--防止過度收窄)
 56. [B.37 Stale Real Position Cleanup — Paper mode 孤兒倉位清理](#b37-v2037-stale-real-position-cleanup--paper-mode-孤兒倉位清理)
+57. [B.38 Real Trade 持久化 — 重啟後保留交易記錄](#b38-v2038-real-trade-持久化--重啟後保留交易記錄)
+58. [B.39 Consensus 方向性修正 — Math.abs() bug](#b39-v2039-consensus-方向性修正--mathabs-bug)
+59. [B.40 學習衰減機制 — Agent Outcomes + Pattern Classifier](#b40-v2040-學習衰減機制--agent-outcomes--pattern-classifier)
 
 ---
 
@@ -6008,6 +6011,127 @@ Reconciliation 嘅 `externalSymbols` filter 淨係保留 `legacyPositionModes` +
 |:-----|:-----|
 | `src/index.ts` | Paper-mode real position sync 處理所有 `agentId='hyperliquid-real'` 倉位（唔理 `legacyPositionModes`）；3 種情況處理（closing fill / old position / HL position）；reconciliation 排除 real 倉位 |
 | `src/trading/real-trading-manager.ts` | `syncExchangePositions` uncertain case 超過 1h 就 close（唔再只 warn）|
+
+---
+
+### B.38 v2.0.38: Real Trade 持久化 — 重啟後保留交易記錄
+
+> **觸發**: 重啟後 REAL trade 嘅 5 個 Trade Records 全部消失。`closedRealTrades` 只存喺 memory，從來冇寫入 `portfolio-state.json`。
+
+#### 根因
+
+`closeExchangePosition()` 將 trade record push 入 `closedRealTrades[]`（in-memory array），但：
+- `savePortfolio()` 從來冇接收 `closedRealTrades` 參數
+- `PortfolioSnapshot` 冇 `realTrades` 欄位
+- Constructor 從 disk load 時冇 restore `closedRealTrades`
+- `onPositionClosedLearning()` 冇即時 persist
+
+結果：重啟 = 全部 real trade 記錄消失。
+
+#### 修復
+
+| 改動 | 位置 |
+|:-----|:-----|
+| `PortfolioSnapshot` 新增 `realTrades` 欄位 | `persistence.ts` — 同 paper `trades` 分開存 |
+| `savePortfolio()` 接受第 3 個參數 `realTrades` | `persistence.ts` — 分開 serialize |
+| Constructor 載入 `saved.realTrades` 到 `closedRealTrades[]` | `portfolio.ts` — restart 後恢復 |
+| `persistPortfolio()` 傳 `closedRealTrades` | `index.ts` — 每 cycle + shutdown 時存 |
+| `onPositionClosedLearning` 即時 `persistPortfolio()` | `index.ts` — 平倉後即刻存碟，唔等下一個 cycle |
+
+**Paper stats 完全唔受影響** — `realTrades` 同 `trades` 分開存，`balance`、`winCount`、`lossCount`、`totalPnl`、`drawdown` 唔會被 real trades 污染。Real trades 只用嚟 UI Trade Records 顯示 + ML 學習。
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/evolution/persistence.ts` | `PortfolioSnapshot` 加 `realTrades` 欄位；`savePortfolio()` 加第 3 個參數 |
+| `src/trading/portfolio.ts` | Constructor 載入 `saved.realTrades` 到 `closedRealTrades[]` |
+| `src/index.ts` | `persistPortfolio()` 傳 `closedRealTrades`；`onPositionClosedLearning` 即時 persist |
+
+---
+
+### B.39 v2.0.39: Consensus 方向性修正 — Math.abs() bug
+
+> **觸發**: 6 連輸後分析發現 `calcWeightedConsensus()` 用 `Math.abs(agreementScore)` — BUY (+1) 同 SELL (-1) 都變正數，threshold 量度緊「信心」唔係「方向一致性」。5 個 agent 一齊信心爆棚投 BUY 就過到 threshold，就算 RBC 話 UNFAVORABLE。
+
+#### 根因
+
+```typescript
+// ❌ 錯誤：Math.abs() 令 BUY 同 SELL 都計正數
+weightedSum += vote.weight * Math.abs(agreementScore);
+```
+
+`decisionValue`: BUY=+1, SELL=-1, HOLD=0
+`agreementScore = confidence × decisionValue`
+
+用 `Math.abs()` 之後：
+- 5 個 agent 投 BUY（conf 0.8）→ `abs(0.8×1)×5 = 4.0` → 過 threshold
+- 3 個投 BUY + 2 個投 SELL（conf 0.8）→ `abs(0.8×1)×3 + abs(0.8×(-1))×2 = 4.0` → **都過 threshold**
+
+threshold 變成量度「agents 幾有信心」而唔係「agents 係咪同意同一個方向」。方向分裂嘅情況下都過到 threshold。
+
+#### 修復
+
+```typescript
+// ✅ 正確：唔用 Math.abs()，方向性計分
+weightedSum += vote.weight * agreementScore;
+// ...
+return totalWeight > 0 ? Math.abs(weightedSum / totalWeight) : 0;
+```
+
+- 3 個投 BUY + 2 個投 SELL（conf 0.8）→ `0.8×1×3 + 0.8×(-1)×2 = 0.8` → **低過 threshold** → 唔入場
+- 5 個投 BUY（conf 0.8）→ `0.8×1×5 = 4.0` → `abs(4.0/5) = 0.8` → 過 threshold → 入場
+- 5 個投 SELL（conf 0.8）→ `0.8×(-1)×5 = -4.0` → `abs(-4.0/5) = 0.8` → 過 threshold → 入場
+
+最後 `Math.abs(total)` 保留 SELL consensus（負數變正數做 threshold 比較），所以 SELL trade 唔會被 block。
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/cognition/hacp.ts` | `calcWeightedConsensus()` 移除 per-vote `Math.abs()`，改用 directional agreement + 最後 `Math.abs(total)` |
+
+---
+
+### B.40 v2.0.40: 學習衰減機制 — Agent Outcomes + Pattern Classifier
+
+> **觸發**: `Math.abs()` bug 修咗之後，舊有嘅 RBC / Pattern / Agent Outcomes 數據未必匹配新嘅 consensus 邏輯。RBC 已有衰減（10%/cycle + half-life 50），Trade History 只睇最近 10 筆，但 Agent Outcomes 同 Pattern Classifier 冇衰減 — 舊數據永久影響。
+
+#### 衰減地圖
+
+| 機制 | 衰減方式 | 速度 |
+|:-----|:---------|:-----|
+| RBC Engine | `applyDecay()` 10%/cycle + time-weighted centroid half-life 50 cycles | ~5 小時 |
+| Trade History | `getRecentTradeAnalysis(10)` 只睇最近 10 筆 | 即時 |
+| **Agent Outcomes** | **v2.0.40: 只計最近 50 筆**（filter 後） | ~50 trades |
+| **Pattern Classifier** | **v2.0.40: time-weighted win/loss，half-life 7 天** | ~7 天 |
+| Agent Evolution weights | EMA α=0.3 | ~5-6 cycles |
+| HACP threshold | 重啟歸零 + consecutiveLosses | 每 cycle |
+
+#### 1. Agent Outcomes — 只計最近 50 筆
+
+`getAgentPerformance()` 之前用全部 10,000 筆 records 計 winRate。舊 regime 嘅數據永久 anchor 個 winRate。
+
+**修復**: filter 後取 `slice(-50)` — 只用最近 50 筆計 winRate。舊 regime 數據自然被新 trade 淡出。
+
+#### 2. Pattern Classifier — time-weighted win/loss
+
+`queryEntry()` 同 `queryPosition()` 之前用 plain integer count（每個 pattern 計 1）。1,000 筆 patterns 全部平等。
+
+**修復**: 每個 pattern 嘅 win/loss 貢獻乘以 `timeWeight = 0.5^(age / 7days)`：
+- 今日嘅 pattern：weight = 1.0
+- 7 日前：weight = 0.5
+- 14 日前：weight = 0.25
+- 21 日前：weight = 0.125
+
+`wilsonScore()` 也加固：`total <= 0` guard + `p` clamping。
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/evolution/agent-outcomes.ts` | `getAgentPerformance()` 只用最近 50 筆（`slice(-recentWindowForPerformance)`）|
+| `src/evolution/trade-pattern-classifier.ts` | `queryEntry()` + `queryPosition()` 用 `timeWeight()` 計 time-weighted win/loss；`wilsonScore()` 加固 |
 
 ---
 
