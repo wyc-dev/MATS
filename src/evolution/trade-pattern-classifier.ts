@@ -31,6 +31,11 @@ const CONFIG = {
   similarityThreshold: 0.50,
   maxContextPatterns: 5,
   persistPath: 'data/evolution/trade-patterns.json',
+  /** v2.0.38: Time-weight decay half-life in ms. A pattern from 7 days ago
+   *  has half the weight of one from today. This prevents stale data from a
+   *  completely different market phase from permanently anchoring win rates.
+   *  7 days = 604,800,000 ms. */
+  patternDecayHalfLifeMs: 7 * 24 * 60 * 60 * 1000,
 } as const;
 
 // ─── Types ───
@@ -155,13 +160,23 @@ const NUMERICAL_FEATURES: FeatureDef[] = [
  *  Penalises small sample sizes — 3/5 = 60% becomes ~25%, 30/50 = 60% stays ~47%.
  *  This prevents overfitting on tiny match counts. */
 function wilsonScore(wins: number, total: number): number {
-  if (total === 0) return 0;
-  const p = wins / total;
+  if (total <= 0) return 0;
+  const p = Math.min(1, Math.max(0, wins / total));
   const z = 1.96; // 95% confidence
   const denominator = 1 + z * z / total;
   const centre = p + z * z / (2 * total);
   const adjusted = (centre - z * Math.sqrt(centre * (1 - centre) / total + z * z / (4 * total * total))) / denominator;
   return Math.max(0, adjusted);
+}
+
+/** v2.0.38: Time-weight decay factor for a pattern.
+ *  weight = 0.5^(age / halfLife). A pattern from 7 days ago has half the
+ *  weight of one from today. This prevents stale data from a completely
+ *  different market phase from permanently anchoring win rates.
+ *  Patterns with outcome='pending' are not decayed (they haven't resolved yet). */
+function timeWeight(entryTimestamp: number): number {
+  const ageMs = Date.now() - entryTimestamp;
+  return Math.pow(0.5, ageMs / CONFIG.patternDecayHalfLifeMs);
 }
 
 export class TradePatternClassifier {
@@ -374,19 +389,23 @@ export class TradePatternClassifier {
       const matches = scored.filter(s => s.similarity >= CONFIG.similarityThreshold);
 
       // For each match, determine effective outcome for the requested side
+      // v2.0.38: Use time-weighted counts — old patterns count less than
+      // recent ones. weight = 0.5^(age / 7days). This prevents stale data
+      // from a completely different market phase from anchoring win rates.
       let wins = 0, losses = 0;
       const effectiveWins: typeof matches = [];
       const effectiveLosses: typeof matches = [];
       for (const m of matches) {
         const tradeWon = m.pattern.outcome === 'win';
+        const w = timeWeight(m.pattern.entryTimestamp);
         if (m.pattern.side === side) {
           // Same side: outcome is directly applicable
-          if (tradeWon) { wins++; effectiveWins.push(m); }
-          else { losses++; effectiveLosses.push(m); }
+          if (tradeWon) { wins += w; effectiveWins.push(m); }
+          else { losses += w; effectiveLosses.push(m); }
         } else {
           // Opposite side: outcome is inverted
-          if (tradeWon) { losses++; effectiveLosses.push(m); }  // BUY win → SELL would lose
-          else { wins++; effectiveWins.push(m); }                // BUY loss → SELL would win
+          if (tradeWon) { losses += w; effectiveLosses.push(m); }  // BUY win → SELL would lose
+          else { wins += w; effectiveWins.push(m); }                // BUY loss → SELL would win
         }
       }
       const total = wins + losses;
@@ -493,9 +512,14 @@ export class TradePatternClassifier {
         similarity: this.computeTransitionSimilarity(entryContext, fullCurrent, p.entryContext, p.exitContext),
       }));
       const matches = scored.filter(s => s.similarity >= CONFIG.similarityThreshold);
-      const wins = matches.filter(m => m.pattern.outcome === 'win').length;
-      const losses = matches.filter(m => m.pattern.outcome === 'loss').length;
-      const total = matches.length;
+      // v2.0.38: Time-weighted counts — old patterns count less than recent ones
+      let wins = 0, losses = 0;
+      for (const m of matches) {
+        const w = timeWeight(m.pattern.entryTimestamp);
+        if (m.pattern.outcome === 'win') wins += w;
+        else losses += w;
+      }
+      const total = wins + losses;
       const winRate = total > 0 ? wins / total : 0;
       const adjustedWinRate = wilsonScore(wins, total);
 
