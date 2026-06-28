@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.40-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup + HL SL/TP close detection + 最小 SL/TP 間距限制 + Stale real position cleanup + Real trade 持久化 + Consensus 方向性修正 + 學習衰減機制)  
+> **版本**: 2.0.41-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup + HL SL/TP close detection + 最小 SL/TP 間距限制 + Stale real position cleanup + Real trade 持久化 + Consensus 方向性修正 + 學習衰減機制 + MAX_POSITION_PCT 移除 + Evolution signalThreshold 確定性強制 + Planck-Chaos 簡化)  
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -68,6 +68,7 @@
 57. [B.38 Real Trade 持久化 — 重啟後保留交易記錄](#b38-v2038-real-trade-持久化--重啟後保留交易記錄)
 58. [B.39 Consensus 方向性修正 — Math.abs() bug](#b39-v2039-consensus-方向性修正--mathabs-bug)
 59. [B.40 學習衰減機制 — Agent Outcomes + Pattern Classifier](#b40-v2040-學習衰減機制--agent-outcomes--pattern-classifier)
+60. [B.41 MAX_POSITION_PCT 移除 + Evolution signalThreshold 強制 + Planck-Chaos 簡化](#b41-v2041-max_position_pct-移除--evolution-signalthreshold-強制--planck-chaos-簡化)
 
 ---
 
@@ -6132,6 +6133,98 @@ return totalWeight > 0 ? Math.abs(weightedSum / totalWeight) : 0;
 |:-----|:-----|
 | `src/evolution/agent-outcomes.ts` | `getAgentPerformance()` 只用最近 50 筆（`slice(-recentWindowForPerformance)`）|
 | `src/evolution/trade-pattern-classifier.ts` | `queryEntry()` + `queryPosition()` 用 `timeWeight()` 計 time-weighted win/loss；`wilsonScore()` 加固 |
+
+---
+
+### B.41 v2.0.41: MAX_POSITION_PCT 移除 + Evolution signalThreshold 強制 + Planck-Chaos 簡化
+
+> **觸發**: 自我學習機制分析發現 Evolution params 係裝飾（計完冇 code 讀）、Planck-Chaos directionBias 同 regime-aware 重疊、MAX_POSITION_PCT 同 Market Agent Phase 4.5 override 衝突。
+
+#### 1. MAX_POSITION_PCT 完全移除 — Market Agent 控制倉位大小
+
+**根因**: `MAX_POSITION_PCT = 0.20` 喺多個地方 clamp/veto position size，但 HACP Phase 4.5 已經強制 override 做 Market Agent 嘅值。兩層邏輯重疊而且衝突 — LLM 輸出 200% 被 clamp 做 20%，然後 Phase 4.5 又 override 做 Market Agent 嘅 10%。`MAX_POSITION_PCT` 係多餘嘅。
+
+**移除位置**:
+
+| 位置 | 之前 | 之後 |
+|:-----|:-----|:-----|
+| `decision-utils.ts` `normalizeDecision()` | clamp to 20% | sanity clamp to 100% only |
+| `decision-utils.ts` `normalizePerSymbolDecision()` | clamp to 20% | sanity clamp to 100% only |
+| `hacp.ts` Risk Auditor | veto if > 20% | 移除 veto |
+| `hacp.ts` `adjustedPositionSizePct` | clamp to MAX_POSITION_PCT | 只 clamp to ≥ 0 |
+| `risk/engine.ts` | severity: 'high' (blocks trade) | severity: 'medium' (warn only) |
+| `risk/engine.ts` size adjustment | clamp to maxPositionSizePct | 移除 clamp |
+| `evolution/index.ts` `getContextForAgent()` | "maxPositionSize = REJECTED" | 移除 |
+
+**Position size enforcement chain**（v2.0.41）:
+```
+normalizeDecision (sanity 0-100%) → Risk Auditor (can reduce) → Phase 4.5 (Market Agent override)
+```
+
+⚠️ **MAINTENANCE NOTE**: 如果加新嘅 position size clamping logic，必須更新 `decision-utils.ts` 嘅註解。
+
+#### 2. Evolution signalThreshold → HACP consensusThreshold 確定性強制
+
+**根因**: Evolution Engine 計出嘅 `signalThreshold`（0.1-0.95）只係變成文字注入 prompt（"HARD CONSTRAINTS" label 但冇 enforcement）。LLM 可以忽略。Evolution params 係裝飾。
+
+**修復**: `signalThreshold` 而家直接 override HACP consensus threshold — Evolution 話「要揀擇啲」（高 signalThreshold），agents 就真係需要更強方向一致性先過到 threshold。
+
+**Threshold enforcement chain**（v2.0.41）:
+```
+1. Evolution signalThreshold → setEvolutionThreshold() (base)
+2. adjustThreshold() loss-streak adjustment (+0.15 max on top)
+3. getEffectiveConsensusThreshold() returns Evolution override if set
+4. calcWeightedConsensus() result compared against effective threshold
+```
+
+**改動**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `hacp.ts` | 新增 `setEvolutionThreshold()` + `getEffectiveConsensusThreshold()`；consensus check 用 effective threshold |
+| `index.ts` | 每 cycle `evolution.pressureEngine.getStrategyParameters(regime).signalThreshold` → `hacpEngine.setEvolutionThreshold()` |
+| `evolution/index.ts` | `getContextForAgent()` label 由 "HARD CONSTRAINTS" 改做 "STRATEGY CONTEXT"；`signalThreshold` 標明 ENFORCED；`riskAversion` 標明 informational |
+
+⚠️ **MAINTENANCE NOTE**: 如果修改 consensus threshold logic，必須更新 `hacp.ts` `setEvolutionThreshold()` + `getEffectiveConsensusThreshold()` 嘅註解。
+
+#### 3. Planck-Chaos 簡化 — 移除 directionBias
+
+**根因**: `deriveDirectionBias()` 係 Priority -1（最高），覆蓋所有其他方向信號。但 regime-aware direction chain（Priority 0）已經做緊同樣嘅 mean-reversion 邏輯。兩個方向信號重疊，造成混亂。
+
+**修復**: 移除 `directionBias`，Planck-Chaos 而家只提供：
+- **Lyapunov 指數**（可預測性指標 — 其他模組冇）
+- **振幅窗口**（擴散模型 SL/TP 驗證）
+- **共振頻率**（informational context）
+
+方向由 regime-aware direction chain（Priority 0）負責。
+
+**改動**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `planck-chaos.ts` | `PlanckChaosResult` 移除 `directionBias` 欄位；`deriveDirectionBias()` 方法移除；`buildContextString()` 移除 direction bias line |
+| `index.ts` | Exploration Priority -1 block 移除；log 移除 `bias=` |
+
+⚠️ **MAINTENANCE NOTE**: 如果重新加 direction bias，必須更新 `index.ts` exploration direction chain + `planck-chaos.ts` `PlanckChaosResult` interface + `buildContextString()`。
+
+#### 4. 強制維護註解
+
+每個修改過嘅 function 都加咗 `⚠️ MAINTENANCE NOTE` 註解，指示下一個 agent 修改時必須同步更新註解：
+- Position size enforcement chain（`decision-utils.ts`）
+- Threshold enforcement chain（`hacp.ts` + `index.ts`）
+- Planck-Chaos direction removal（`planck-chaos.ts` + `index.ts`）
+- Risk Engine position size downgrade（`risk/engine.ts`）
+
+**改動檔案**:
+
+| 檔案 | 改動 |
+|:-----|:-----|
+| `src/trading/decision-utils.ts` | 移除 `MAX_POSITION_PCT`；sanity clamp 100%；維護註解 |
+| `src/cognition/hacp.ts` | 移除 `MAX_POSITION_PCT` import + veto + clamp；新增 `setEvolutionThreshold()` + `getEffectiveConsensusThreshold()`；consensus check 用 effective threshold；維護註解 |
+| `src/risk/engine.ts` | position_size_too_large 降級做 medium；移除 size clamp；維護註解 |
+| `src/evolution/index.ts` | `getContextForAgent()` 改 label + 移除 maxPositionSize；signalThreshold 標明 ENFORCED；維護註解 |
+| `src/analysis/planck-chaos.ts` | 移除 `directionBias` + `deriveDirectionBias()` + buildContextString direction line；維護註解 |
+| `src/index.ts` | 每 cycle apply Evolution signalThreshold；移除 Planck-Chaos Priority -1 block；維護註解 |
 
 ---
 
