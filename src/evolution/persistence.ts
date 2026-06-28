@@ -114,8 +114,27 @@ export interface PortfolioSnapshot {
     agentId: string;
     exchange?: string;
   }>;
-  /** Persisted trades (TradeRecord[]) */
+  /** Persisted paper trades (TradeRecord[]) */
   trades?: Array<{
+    id: string;
+    symbol: string;
+    side: 'buy' | 'sell';
+    entryPrice: number;
+    exitPrice: number;
+    quantity: number;
+    leverage: number;
+    investment: number;
+    pnl: number;
+    pnlPct: number;
+    openedAt: number;
+    closedAt: number;
+    agentId?: string;
+    status?: 'open' | 'closed';
+  }>;
+  /** v2.0.38: Persisted real (exchange) trades — stored separately from
+   *  paper trades so they survive restarts but don't pollute paper stats.
+   *  These are HL SL/TP-triggered closes + manual exchange closes. */
+  realTrades?: Array<{
     id: string;
     symbol: string;
     side: 'buy' | 'sell';
@@ -256,7 +275,7 @@ const PORTFOLIO_FIELDS: Record<string, SchemaField> = {
 };
 
 /** Serialize portfolio to JSON-safe format (atomic write) */
-export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly TradeRecord[]
+export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly TradeRecord[], realTrades?: readonly TradeRecord[]
 ): boolean {
   try {
     ensureDir();
@@ -278,6 +297,25 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       agentId: p.agentId,      exchange: (p as any).exchange,    }));
 
     const serializedTrades = trades ? Array.from(trades).map(t => ({
+      id: t.id,
+      symbol: t.symbol,
+      side: t.side,
+      entryPrice: t.entryPrice,
+      exitPrice: t.exitPrice,
+      quantity: t.quantity,
+      leverage: t.leverage,
+      investment: t.investment,
+      pnl: t.pnl,
+      pnlPct: t.pnlPct,
+      openedAt: t.openedAt,
+      closedAt: t.closedAt,
+      agentId: t.agentId,
+      status: t.status,
+    })) : undefined;
+
+    // v2.0.38: Serialize real (exchange) trades separately so they survive
+    // restarts but don't pollute paper stats (balance, winCount, etc.).
+    const serializedRealTrades = realTrades ? Array.from(realTrades).map(t => ({
       id: t.id,
       symbol: t.symbol,
       side: t.side,
@@ -316,6 +354,7 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       lastUpdated: portfolio.lastUpdated,
       positions,
       trades: serializedTrades,
+      realTrades: serializedRealTrades,
     };
 
     const filePath = path.join(DATA_DIR, 'portfolio-state.json');

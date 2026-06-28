@@ -1020,8 +1020,11 @@ class AMACRFSystem {
       }
 
       // 7. Persist state so learning survives restarts
+      // v2.0.38: Also persist portfolio so real trade records survive restarts.
+      // Previously closedRealTrades was in-memory only — lost on every restart.
       try {
         this.evolution.persistState();
+        this.persistPortfolio();
       } catch { /* non-critical */ }
 
       log.info(`🧬 [close-learning] ${isWin ? '✅ WIN' : '❌ LOSS'} ${trade.side.toUpperCase()} ${symbol} PnL: $${trade.pnl.toFixed(2)} (${(pnlPct * 100).toFixed(1)}%) — all learning mechanisms fed`);
@@ -2860,7 +2863,9 @@ class AMACRFSystem {
 
   private persistPortfolio(): void {
     try {
-      savePortfolio(this.portfolio.getPortfolio(), this.paperEngine.getTrades());
+      // v2.0.38: Pass closedRealTrades so real exchange trades survive restarts.
+      // They're stored separately from paper trades and don't affect paper stats.
+      savePortfolio(this.portfolio.getPortfolio(), this.paperEngine.getTrades(), this.portfolio.getClosedRealTrades());
     } catch (err) {
       // Best-effort
     }
