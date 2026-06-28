@@ -1118,32 +1118,42 @@ Output ONLY valid JSON:
             }
           }
 
-          // ── CRITICAL: Validate SL direction ──
-          // SL for LONG must be BELOW entry price (loss side)
-          // SL for SHORT must be ABOVE entry price (loss side)
+          // ── v2.0.42: Validate SL direction — relaxed to allow profit-side SL ──
+          // OLD: SL must be on the loss side of entry (LONG SL < entry, SHORT SL > entry)
+          // NEW: SL can be on EITHER side of entry (allowing trailing stop / lock profit),
+          //   BUT must be on the correct side of CURRENT MARK PRICE:
+          //     LONG SL must be BELOW current price (otherwise it would trigger immediately)
+          //     SHORT SL must be ABOVE current price (otherwise it would trigger immediately)
+          //
+          // ⚠️ MAINTENANCE NOTE: If you change SL validation logic, you MUST update
+          // this comment AND the corresponding validation in portfolio.ts adjustPosition().
+          // The SL validation chain is: hacp.ts (here) → portfolio.ts adjustPosition().
           if (finalSL !== undefined) {
-            const slValid = isLong ? finalSL < pos.entryPrice : finalSL > pos.entryPrice;
+            const slValid = isLong ? finalSL < pos.currentPrice : finalSL > pos.currentPrice;
             if (!slValid) {
-              log.warn(`🚫 SL safety: ${isLong ? 'LONG' : 'SHORT'} SL $${finalSL} on wrong side of entry $${pos.entryPrice}. Rejecting.`);
+              log.warn(`🚫 SL safety: ${isLong ? 'LONG' : 'SHORT'} SL $${finalSL} on wrong side of current price $${pos.currentPrice} (would trigger immediately). Rejecting.`);
               finalSL = undefined;
             }
           }
 
-          // SL for long: can only go UP (increase). Clamp to [oldSL or entry, +inf)
+          // SL for long: can only go UP (increase) — trail toward price to lock profit.
+          // Clamp to [oldSL, currentPrice) — never below old SL (no widening), never above current price.
           if (isLong && finalSL !== undefined) {
             const oldSL = pos.stopLoss ?? (pos.entryPrice * 0.95);
             const minSL = Math.max(oldSL, pos.entryPrice * 0.95); // never below 95% of entry
             if (finalSL < minSL) finalSL = minSL; // enforce no widening
-            // Also ensure SL is not above current price (would be pointless)
-            if (finalSL > pos.currentPrice) finalSL = pos.currentPrice * 0.98;
+            // v2.0.42: SL must be below current price (not just below entry)
+            if (finalSL >= pos.currentPrice) finalSL = pos.currentPrice * 0.998;
           }
 
-          // SL for short: can only go DOWN (decrease). Clamp to (-inf, oldSL or entry]
+          // SL for short: can only go DOWN (decrease) — trail toward price to lock profit.
+          // Clamp to (currentPrice, oldSL] — never above old SL (no widening), never below current price.
           if (!isLong && finalSL !== undefined) {
             const oldSL = pos.stopLoss ?? (pos.entryPrice * 1.05);
             const maxSL = Math.min(oldSL, pos.entryPrice * 1.05); // never above 105% of entry
             if (finalSL > maxSL) finalSL = maxSL; // enforce no widening
-            if (finalSL < pos.currentPrice) finalSL = pos.currentPrice * 1.02;
+            // v2.0.42: SL must be above current price (not just above entry)
+            if (finalSL <= pos.currentPrice) finalSL = pos.currentPrice * 1.002;
           }
 
           // TP: if positive PnL, tighten toward price. Never widen.

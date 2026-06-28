@@ -553,14 +553,21 @@ export class PortfolioTracker {
           return newTakeProfit;
         })();
 
-        // ── Hard safety: validate SL direction ──
-        // SL for LONG must be BELOW entry (loss side)
-        // SL for SHORT must be ABOVE entry (loss side)
+        // ── v2.0.42: Validate SL direction — relaxed to allow profit-side SL ──
+        // OLD: SL must be on the loss side of entry (LONG SL < entry, SHORT SL > entry)
+        // NEW: SL can be on EITHER side of entry (allowing trailing stop / lock profit),
+        //   BUT must be on the correct side of CURRENT MARK PRICE:
+        //     LONG SL must be BELOW current price (otherwise it would trigger immediately)
+        //     SHORT SL must be ABOVE current price (otherwise it would trigger immediately)
+        //
+        // ⚠️ MAINTENANCE NOTE: If you change SL validation logic, you MUST update
+        // this comment AND the corresponding validation in hacp.ts adjustPositions().
+        // The SL validation chain is: hacp.ts adjustPositions() → portfolio.ts adjustPosition().
         const validatedSL = (() => {
           if (newStopLoss === undefined) return undefined;
-          const slOk = isLong ? newStopLoss < pos.averageEntryPrice : newStopLoss > pos.averageEntryPrice;
+          const slOk = isLong ? newStopLoss < pos.currentPrice : newStopLoss > pos.currentPrice;
           if (!slOk) {
-            log.warn(`🚫 adjustPosition REJECTED: ${isLong ? 'LONG' : 'SHORT'} SL $${newStopLoss} on wrong side of entry $${pos.averageEntryPrice}. Ignoring.`);
+            log.warn(`🚫 adjustPosition REJECTED: ${isLong ? 'LONG' : 'SHORT'} SL $${newStopLoss} on wrong side of current price $${pos.currentPrice} (would trigger immediately). Ignoring.`);
             return undefined;
           }
           return newStopLoss;
