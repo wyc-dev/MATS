@@ -65,8 +65,16 @@ export interface PlanckChaosResult {
   chaosRegime: 'predictable' | 'chaotic' | 'edge_of_chaos' | 'laminar';
   /** Resonance strength (0-1) — how "in sync" the market is */
   resonanceStrength: number;
-  /** Direction bias based on phase position in dominant cycle */
-  directionBias: 'buy' | 'sell' | 'neutral';
+  // v2.0.41: directionBias REMOVED — regime-aware mean-reversion in index.ts
+  // already does the same thing. Having two direction signals caused
+  // confusion. Planck-Chaos now only provides Lyapunov (predictability)
+  // + amplitude windows (SL/TP validation) + resonance (cycle detection
+  // as informational context). Direction is handled by the regime-aware
+  // direction chain in index.ts.
+  //
+  // ⚠️ MAINTENANCE NOTE: If you re-add directionBias, you MUST update the
+  // exploration direction chain in index.ts (Priority -1 block) and ensure
+  // it doesn't conflict with the regime-aware direction logic (Priority 0).
   /** Formatted context string for agent injection */
   contextString: string;
   /** Timestamp of this analysis */
@@ -141,12 +149,14 @@ export class PlanckChaosEngine {
     // ── 5. Resonance Strength ──
     const resonanceStrength = this.calculateResonanceStrength(resonances);
 
-    // ── 6. Direction Bias from Phase ──
-    const directionBias = this.deriveDirectionBias(resonances, currentPrice, prices);
+    // v2.0.41: directionBias REMOVED — regime-aware mean-reversion in
+    // index.ts already handles direction. Planck-Chaos now focuses on
+    // predictability (Lyapunov) + amplitude (diffusion model) only.
+    // Resonance is kept as informational context for agents.
 
-    // ── 7. Build context string ──
+    // ── 6. Build context string ──
     const contextString = this.buildContextString(
-      lyapunov, resonances, amplitudeWindows, chaosRegime, resonanceStrength, directionBias
+      lyapunov, resonances, amplitudeWindows, chaosRegime, resonanceStrength
     );
 
     const result: PlanckChaosResult = {
@@ -155,7 +165,6 @@ export class PlanckChaosEngine {
       amplitudeWindows,
       chaosRegime,
       resonanceStrength,
-      directionBias,
       contextString,
       timestamp: Date.now(),
     };
@@ -318,30 +327,18 @@ export class PlanckChaosEngine {
     return Math.min(1, topStrengths.reduce((a, b) => a + b, 0) / 1.5);
   }
 
-  /**
-   * Derive direction bias from the phase position in the dominant cycle.
-   * If we're in the bottom half of the cycle → BUY (expect upswing).
-   * If we're in the top half → SELL (expect downswing).
-   * This is mean-reversion logic applied to the detected cycle.
-   */
-  private deriveDirectionBias(
-    resonances: ResonanceFrequency[],
-    currentPrice: number,
-    prices: number[]
-  ): 'buy' | 'sell' | 'neutral' {
-    if (resonances.length === 0) return 'neutral';
-    const dominant = resonances[0]!;
-    if (dominant.strength < 0.2) return 'neutral';
-
-    // Phase < 0.5 = near bottom of cycle → BUY (expect upswing)
-    // Phase > 0.5 = near top of cycle → SELL (expect downswing)
-    if (dominant.phase < 0.35) return 'buy';
-    if (dominant.phase > 0.65) return 'sell';
-    return 'neutral';
-  }
+  // v2.0.41: deriveDirectionBias() REMOVED — regime-aware mean-reversion
+  // in index.ts already handles direction. This method was redundant with
+  // the regime-aware direction chain (Priority 0 in exploration).
+  //
+  // ⚠️ MAINTENANCE NOTE: If you re-add direction bias, update the
+  // exploration direction chain in index.ts and this file's
+  // PlanckChaosResult interface + buildContextString().
 
   /**
    * Build a formatted context string for injection into agent prompts.
+   * v2.0.41: directionBias line removed — only Lyapunov + amplitude +
+   * resonance are shown.
    */
   private buildContextString(
     lyapunov: LyapunovEstimate,
@@ -349,7 +346,6 @@ export class PlanckChaosEngine {
     amplitudeWindows: AmplitudeWindow[],
     chaosRegime: PlanckChaosResult['chaosRegime'],
     resonanceStrength: number,
-    directionBias: 'buy' | 'sell' | 'neutral'
   ): string {
     const lines: string[] = [];
     lines.push('=== PLANCK-CHAOS RESONANCE ===');
@@ -381,9 +377,7 @@ export class PlanckChaosEngine {
       lines.push(`${w.hoursAhead}h window: $${w.lowerBound.toFixed(2)} - $${w.upperBound.toFixed(2)} (range $${range.toFixed(2)}, conf ${(w.confidence * 100).toFixed(0)}%)`);
     }
 
-    // Direction bias
-    const biasLabel = directionBias === 'buy' ? '🟢 BUY (cycle bottom)' : directionBias === 'sell' ? '🔴 SELL (cycle top)' : '➖ NEUTRAL';
-    lines.push(`Direction bias: ${biasLabel}`);
+    // v2.0.41: directionBias line removed — regime-aware direction in index.ts
 
     lines.push('---');
     return lines.join('\n');

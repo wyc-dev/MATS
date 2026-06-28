@@ -1314,12 +1314,16 @@ class AMACRFSystem {
       } catch { /* non-critical */ }
 
       // v2.0.32: Run Planck-Chaos Resonance analysis and inject context
+      // v2.0.41: directionBias removed from Planck-Chaos — regime-aware
+      // direction chain in exploration handles direction. Planck-Chaos now
+      // only provides Lyapunov (predictability) + amplitude windows (SL/TP
+      // validation) + resonance (informational context).
       let planckChaosContext = '';
       try {
         const chaosResult = this.planckChaos.analyze(combinedState.price, combinedState.volatility ?? 0);
         if (chaosResult) {
           planckChaosContext = '\n' + chaosResult.contextString;
-          log.info(`🌌 [planck-chaos] Regime=${chaosResult.chaosRegime} λ=${chaosResult.lyapunov.lambda.toFixed(4)} resonance=${(chaosResult.resonanceStrength * 100).toFixed(0)}% bias=${chaosResult.directionBias}`);
+          log.info(`🌌 [planck-chaos] Regime=${chaosResult.chaosRegime} λ=${chaosResult.lyapunov.lambda.toFixed(4)} resonance=${(chaosResult.resonanceStrength * 100).toFixed(0)}%`);
         }
       } catch (err) {
         log.warn(`[planck-chaos] Analysis failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1346,6 +1350,26 @@ class AMACRFSystem {
       const evolutionContext = this.evolution.getContextForAgent(combinedState.regime);
       const backtestContext = this.backtest.getBacktestSummary();
       const portfolioDesc = this.paperEngine.getPortfolioSummary();
+
+      // v2.0.41: Apply Evolution signalThreshold as HACP consensus threshold.
+      // This gives the Evolution Engine DETERMINISTIC control over how strict
+      // the consensus must be. Higher signalThreshold = agents need stronger
+      // directional agreement to pass.
+      //
+      // ⚠️ MAINTENANCE NOTE: If you modify the threshold enforcement chain,
+      // you MUST update the comment in hacp.ts setEvolutionThreshold() and
+      // getEffectiveConsensusThreshold(). The chain is:
+      //   1. Here: evolution.getStrategyParameters(regime).signalThreshold
+      //   2. hacpEngine.setEvolutionThreshold() stores it
+      //   3. hacpEngine.adjustThreshold() adjusts base (loss-streak etc.)
+      //   4. getEffectiveConsensusThreshold() returns Evolution override
+      //   5. calcWeightedConsensus() compared against effective threshold
+      try {
+        const evoParams = this.evolution.pressureEngine.getStrategyParameters(combinedState.regime);
+        if (evoParams && typeof evoParams.signalThreshold === 'number') {
+          this.hacpEngine.setEvolutionThreshold(evoParams.signalThreshold);
+        }
+      } catch { /* non-critical — fallback to config threshold */ }
 
       // 3. HACP Decision Cycle
       log.info('🤖 HACP: Starting multi-agent cognition...');
@@ -1702,14 +1726,15 @@ class AMACRFSystem {
             const hlPrice = this.hyperliquidWs?.getLatestMarkPrice?.();
             const actualFundingRate = hlPrice?.fundingRate ?? 0;
 
-            // v2.0.32: Priority -1: Planck-Chaos Resonance direction bias
-            // This is the HIGHEST priority signal — if the chaos engine detects
-            // a strong resonance with a clear phase position, use it directly.
-            const chaosResult = this.planckChaos.getLastResult();
-            if (chaosResult && chaosResult.resonanceStrength > 0.4 && chaosResult.directionBias !== 'neutral') {
-              direction = chaosResult.directionBias;
-              log.info(`🧪 Planck-Chaos-guided: resonance=${(chaosResult.resonanceStrength * 100).toFixed(0)}% bias=${direction} (λ=${chaosResult.lyapunov.lambda.toFixed(4)}, regime=${chaosResult.chaosRegime})`);
-            }
+            // v2.0.41: Planck-Chaos direction bias REMOVED from exploration.
+            // The regime-aware direction chain (Priority 0 below) already
+            // handles mean-reversion vs trend-following. Planck-Chaos now
+            // only provides Lyapunov (predictability) + amplitude windows
+            // as informational context, not direction.
+            //
+            // ⚠️ MAINTENANCE NOTE: If you re-add Planck-Chaos direction,
+            // update this block AND the PlanckChaosResult interface +
+            // buildContextString in planck-chaos.ts.
 
             const patternCtx = {
               regime: combinedState.regime,

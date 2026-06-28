@@ -735,6 +735,28 @@ export class EvolutionOrchestrator {
     };
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // v2.0.41: Evolution params now have DETERMINISTIC ENFORCEMENT.
+  //
+  // signalThreshold → directly overrides HACP consensusThreshold.
+  //   The Evolution Engine's best strategy signalThreshold (0.1-0.95)
+  //   is applied as the HACP consensus threshold via
+  //   hacpEngine.setEvolutionThreshold() every cycle.
+  //   This means: if Evolution says "be pickier" (high signalThreshold),
+  //   the consensus threshold actually rises — agents need stronger
+  //   directional agreement to pass.
+  //
+  // riskAversion → no longer controls position size (Market Agent does).
+  //   riskAversion is still used in getContextForAgent() as informational
+  //   context for the LLM, but it does NOT deterministically enforce
+  //   any position size cap.
+  //
+  // ⚠️ MAINTENANCE NOTE: If you add new Evolution param enforcement,
+  // you MUST update this comment AND add the enforcement code in the
+  // appropriate runtime location (HACP, Risk Engine, etc.). Evolution
+  // params without deterministic enforcement are just decoration.
+  // ═══════════════════════════════════════════════════════════════
+
   getContextForAgent(regime: MarketRegime): string {
     const memories = this.memory.recall(regime, 5);
     const bestStrat = this.pressureEngine.getBestStrategy();
@@ -744,28 +766,29 @@ export class EvolutionOrchestrator {
       'news_reporter', 'independent_risk_auditor',
     ];
 
-    let ctx = `=== EVOLUTION HARD CONSTRAINTS ===\n`;
-    ctx += `These are NON-NEGOTIABLE limits derived from the evolution engine's best strategy.\n`;
-    ctx += `Skeptics will reject any decision that violates them.\n\n`;
+    // v2.0.41: Changed label from "HARD CONSTRAINTS" to "STRATEGY CONTEXT"
+    // because maxPositionSize is no longer enforced (Market Agent controls
+    // size). Only signalThreshold has deterministic enforcement (via
+    // setEvolutionThreshold in HACP). Other params are informational.
+    let ctx = `=== EVOLUTION STRATEGY CONTEXT ===\n`;
+    ctx += `signalThreshold is DETERMINISTICALLY ENFORCED as the HACP consensus threshold.\n`;
+    ctx += `Other params are informational — Market Agent controls position size.\n\n`;
 
     if (bestStrat) {
       const p = bestStrat.parameters;
-      const maxPosPct = (0.20 * (1 - p.riskAversion * 0.75)).toFixed(3);
       const minConfForTrade = (0.3 + p.signalThreshold * 0.5).toFixed(2);
 
-      ctx += `  riskAversion=${p.riskAversion.toFixed(2)}  (0=aggro, 1=conservative)\n`;
-      ctx += `  signalThreshold=${p.signalThreshold.toFixed(2)}\n`;
-      ctx += `  ── DERIVED CONSTRAINTS ──\n`;
-      ctx += `  maxPositionSize=${maxPosPct}  (any agent proposing >${(parseFloat(maxPosPct)*100).toFixed(1)}% = REJECTED)\n`;
-      ctx += `  minConfidenceForTrade=${minConfForTrade}  (any trade with confidence <${(parseFloat(minConfForTrade)*100).toFixed(0)}% = REJECTED)\n`;
-      ctx += `  momentumWindow=${p.momentumWindow}  (signals inside this window get more weight)\n`;
-      ctx += `  volatilityThreshold=${p.volatilityThreshold.toFixed(4)}  (vol > this → mandatory size reduction)\n`;
+      ctx += `  riskAversion=${p.riskAversion.toFixed(2)}  (0=aggro, 1=conservative) [informational]\n`;
+      ctx += `  signalThreshold=${p.signalThreshold.toFixed(2)}  [ENFORCED as consensus threshold]\n`;
+      ctx += `  ── DERIVED ──\n`;
+      ctx += `  minConfidenceForTrade=${minConfForTrade}  (informational — LLM should consider)\n`;
+      ctx += `  momentumWindow=${p.momentumWindow}  (informational — signals inside this window get more weight)\n`;
+      ctx += `  volatilityThreshold=${p.volatilityThreshold.toFixed(4)}  (informational — vol > this suggests caution)\n`;
       ctx += `\n`;
       ctx += `Generation: ${this.pressureEngine.getGeneration()}\n`;
       ctx += `Best Strategy Fitness: ${(bestStrat.fitness * 100).toFixed(1)}%\n`;
     } else {
       ctx += `  (no best strategy yet — using default constraints)\n`;
-      ctx += `  maxPositionSize=0.10\n`;
       ctx += `  minConfidenceForTrade=0.50\n`;
       ctx += `\n`;
       ctx += `Generation: ${this.pressureEngine.getGeneration()}\n`;

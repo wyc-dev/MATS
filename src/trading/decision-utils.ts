@@ -22,14 +22,33 @@ export const DEFAULT_TRADING_DECISION: TradingDecision = {
   urgency: 'patient',
 };
 
-/** Hard cap — LLM sometimes outputs 200%+. Aligned with Risk Auditor and Risk Engine config. */
-export const MAX_POSITION_PCT = 0.20;
+// ═══════════════════════════════════════════════════════════════
+// v2.0.41: MAX_POSITION_PCT REMOVED — Market Agent controls position size.
+//
+// Position size is set by the user via the Market Agent UI slider and
+// enforced deterministically by HACP Phase 4.5 (Market Agent Hard
+// Constraints Override). LLM agents do NOT control position size — their
+// positionSizePct output is always overridden.
+//
+// Therefore MAX_POSITION_PCT clamping is unnecessary and was removed.
+// The only remaining size-related logic is:
+//   1. normalizeDecision() clamps to [0, 1.0] (100% — sanity floor only)
+//   2. HACP Phase 4.5 overrides to Market Agent's value
+//   3. Risk Auditor can reduce size (choppy market 50% cut, loss streak
+//      graduated reduction) but cannot increase it
+//
+// ⚠️ MAINTENANCE NOTE: If you add any new position size clamping logic,
+// you MUST update this comment to reflect the new enforcement layer.
+// The position size enforcement chain is: normalizeDecision (sanity) →
+// Risk Auditor (can reduce) → Phase 4.5 (Market Agent override).
+// ═══════════════════════════════════════════════════════════════
 
 /**
  * Normalize a partial/raw TradingDecision from any agent (including meta-agent).
  *
  * - Fills in all required fields with safe defaults if missing
- * - Clamps positionSizePct to [0, 20%]
+ * - Clamps positionSizePct to [0, 1.0] (sanity floor only — Market Agent
+ *   controls the actual size via HACP Phase 4.5 override)
  * - Preserves ALL extra keys (meta-agent can attach arbitrary strategy data)
  *
  * @param raw - Raw decision from LLM (may be partial, undefined, or contain extra keys)
@@ -51,13 +70,10 @@ export function normalizeDecision(raw: Partial<TradingDecision> | undefined | nu
   const symbol = (raw?.symbol ?? 'BTCUSDT').toUpperCase();
   let positionSizePct = typeof raw?.positionSizePct === 'number' ? raw.positionSizePct : 0;
 
-  // Clamp: no negative, no > MAX_POSITION_PCT
-  if (positionSizePct > MAX_POSITION_PCT) {
-    positionSizePct = MAX_POSITION_PCT;
-  }
-  if (positionSizePct < 0) {
-    positionSizePct = 0;
-  }
+  // v2.0.41: Sanity clamp only — Market Agent controls actual size.
+  // No MAX_POSITION_PCT cap. HACP Phase 4.5 will override to Market Agent's value.
+  if (positionSizePct > 1.0) positionSizePct = 1.0; // 100% sanity floor
+  if (positionSizePct < 0) positionSizePct = 0;
 
   const rationale = raw?.rationale || 'No rationale provided.';
   const entryPrice = raw?.entryPrice;
@@ -115,7 +131,8 @@ export function normalizePerSymbolDecision(raw: Partial<PerSymbolDecision> | und
   if (!raw) return { ...DEFAULT_PER_SYMBOL, symbol };
   const action = raw.action === 'buy' || raw.action === 'sell' || raw.action === 'hold' ? raw.action : 'hold';
   let positionSizePct = typeof raw.positionSizePct === 'number' ? raw.positionSizePct : 0;
-  if (positionSizePct > MAX_POSITION_PCT) positionSizePct = MAX_POSITION_PCT;
+  // v2.0.41: Sanity clamp only — Market Agent controls size via HACP Phase 4.5
+  if (positionSizePct > 1.0) positionSizePct = 1.0;
   if (positionSizePct < 0) positionSizePct = 0;
   const leverage = typeof raw.leverage === 'number' ? Math.max(1, Math.min(10, raw.leverage)) : 1;
   // v2.0.28: Preserve pattern tag from per-symbol decision
