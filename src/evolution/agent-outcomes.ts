@@ -12,6 +12,11 @@ const log = createLogger({ phase: 'agent-outcomes' });
 export class AgentOutcomeTracker {
   private records: AgentOutcomeRecord[] = [];
   private readonly maxRecords = 10_000;
+  /** v2.0.38: Only the most recent N records per agent+symbol+regime are
+   *  used to compute winRate. Old records naturally fade out as new trades
+   *  come in — the system adapts to the current regime instead of being
+   *  anchored to stale data from a completely different market phase. */
+  private readonly recentWindowForPerformance = 50;
 
   /** Load from persisted state */
   load(records: AgentOutcomeRecord[]): void {
@@ -114,7 +119,11 @@ export class AgentOutcomeTracker {
     log.info(`Backfilled outcome for ${symbol}: ${isWin ? 'WIN' : 'LOSS'} (${(closePnlPct * 100).toFixed(2)}%)`);
   }
 
-  /** Get performance snapshot for a specific agent + symbol + regime combo */
+  /** Get performance snapshot for a specific agent + symbol + regime combo.
+   *  v2.0.38: Only uses the most recent `recentWindowForPerformance` records
+   *  (default 50) after filtering by agent+symbol+regime. This prevents stale
+   *  data from a completely different market phase from permanently anchoring
+   *  the winRate. Old records naturally fade as new trades come in. */
   getAgentPerformance(
     agentRole: AgentRole,
     symbol?: string,
@@ -124,10 +133,13 @@ export class AgentOutcomeTracker {
     if (symbol) filtered = filtered.filter(r => r.symbol === symbol);
     if (regime) filtered = filtered.filter(r => r.regime === regime);
 
-    const wins = filtered.filter(r => r.outcome === 'win').length;
-    const total = filtered.length;
-    const avgConf = total > 0 ? filtered.reduce((s, r) => s + r.confidence, 0) / total : 0;
-    const skepticismCount = filtered.filter(r => r.confidence < 0.3).length;
+    // v2.0.38: Only use the most recent N records — old records fade out
+    const recent = filtered.slice(-this.recentWindowForPerformance);
+
+    const wins = recent.filter(r => r.outcome === 'win').length;
+    const total = recent.length;
+    const avgConf = total > 0 ? recent.reduce((s, r) => s + r.confidence, 0) / total : 0;
+    const skepticismCount = recent.filter(r => r.confidence < 0.3).length;
 
     return {
       agentRole,
