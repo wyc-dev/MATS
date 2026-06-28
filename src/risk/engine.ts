@@ -56,12 +56,21 @@ export class RiskEngine {
     }
 
     // 3. Check position size
+    // v2.0.41: Position size is controlled by Market Agent (UI slider) +
+    // HACP Phase 4.5 override. Risk Engine no longer vetoes on size —
+    // it only warns. The actual size enforcement is in HACP Phase 4.5.
+    //
+    // ⚠️ MAINTENANCE NOTE: If you re-add position size veto here, you MUST
+    // update this comment and ensure it doesn't conflict with HACP Phase 4.5
+    // (which overrides positionSizePct to Market Agent's value AFTER the
+    // Risk Auditor runs). A veto here would block trades the user explicitly
+    // configured via the Market Agent UI slider.
     if (positionSizePct > this.limits.maxPositionSizePct) {
       concerns.push({
         type: 'position_size_too_large',
-        severity: 'high',
-        description: `Position size ${(positionSizePct * 100).toFixed(1)}% exceeds max ${(this.limits.maxPositionSizePct * 100).toFixed(1)}%`,
-        mitigation: `Reduce position size to ${(this.limits.maxPositionSizePct * 100).toFixed(1)}%`,
+        severity: 'medium', // downgraded from 'high' — no longer blocks trade
+        description: `Position size ${(positionSizePct * 100).toFixed(1)}% exceeds recommended max ${(this.limits.maxPositionSizePct * 100).toFixed(1)}%`,
+        mitigation: `Market Agent controls size — consider reducing via UI slider`,
       });
     }
 
@@ -100,13 +109,13 @@ export class RiskEngine {
     const allowed = criticalConcerns.length === 0 && highConcerns.length <= 1;
 
     // Adjust position size based on concerns
+    // v2.0.41: No longer clamps to maxPositionSizePct — Market Agent controls size.
+    // Only volatility-based 50% reduction remains (Risk Auditor can also reduce).
     let adjustedSize = positionSizePct;
     if (concerns.some((c) => c.type === 'volatility_risk')) {
       adjustedSize *= 0.5;
     }
-    if (concerns.some((c) => c.type === 'position_size_too_large')) {
-      adjustedSize = this.limits.maxPositionSizePct;
-    }
+    // v2.0.41: Removed position_size_too_large clamp — Market Agent controls size
     if (adjustedSize !== positionSizePct) {
       log.info(`Position size adjusted: ${(positionSizePct * 100).toFixed(1)}% → ${(adjustedSize * 100).toFixed(1)}%`);
     }

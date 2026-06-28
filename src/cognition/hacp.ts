@@ -6,7 +6,7 @@ import { createLogger } from '../observability/logger.ts';
 import { getActiveProvider } from '../llm/index.ts';
 import { config } from '../config/index.ts';
 import { parseA2ASignal, formatA2ASignal } from './a2a-utils.ts';
-import { normalizeDecision, MAX_POSITION_PCT } from '../trading/decision-utils.ts';
+import { normalizeDecision } from '../trading/decision-utils.ts';
 import type { TradeHistory } from '../evolution/trade-history.ts';
 import type { AgentEvolutionEngine } from '../evolution/agent-evolution.ts';
 import type {
@@ -102,6 +102,43 @@ export class HACPEngine {
   /** Inject trade history for Risk Auditor recent-pattern analysis. */
   setTradeHistory(th: TradeHistory): void {
     this.tradeHistory = th;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // v2.0.41: Evolution signalThreshold → consensusThreshold override.
+  //
+  // The Evolution Engine's best strategy signalThreshold (0.1-0.95) is
+  // applied as the HACP consensus threshold. This gives Evolution
+  // DETERMINISTIC control over how strict the consensus must be —
+  // higher signalThreshold = agents need stronger directional agreement.
+  //
+  // The override is applied each cycle BEFORE the decision cycle runs.
+  // adjustThreshold() (loss-streak based) still runs AFTER, adding its
+  // own +0.15 max on top of the Evolution-derived base.
+  //
+  // ⚠️ MAINTENANCE NOTE: If you modify the consensus threshold logic,
+  // you MUST update this comment. The threshold enforcement chain is:
+  //   1. Evolution signalThreshold → setEvolutionThreshold() (base)
+  //   2. adjustThreshold() loss-streak adjustment (+0.15 max on top)
+  //   3. Final threshold used in calcWeightedConsensus() comparison
+  // ═══════════════════════════════════════════════════════════════
+  private evolutionThreshold: number | null = null;
+
+  /** Set the Evolution-derived consensus threshold. Called each cycle
+   *  before executeDecisionCycle(). Pass the best strategy's signalThreshold
+   *  (0.1-0.95). Pass null to disable Evolution override (revert to config). */
+  setEvolutionThreshold(threshold: number | null): void {
+    if (threshold !== null) {
+      // Clamp to reasonable range — signalThreshold is 0.1-0.95
+      this.evolutionThreshold = Math.max(0.1, Math.min(0.95, threshold));
+    } else {
+      this.evolutionThreshold = null;
+    }
+  }
+
+  /** Get the effective consensus threshold (Evolution override or config default). */
+  private getEffectiveConsensusThreshold(): number {
+    return this.evolutionThreshold ?? this.consensusThreshold;
   }
 
   /** Inject the agent evolution engine for regime-aware dynamic weights. */
@@ -236,21 +273,31 @@ export class HACPEngine {
   }
 
   /**
-   * Get current dynamic consensus threshold value
+   * Get current dynamic consensus threshold value.
+   * v2.0.41: Returns the EFFECTIVE threshold (Evolution override if set,
+   * otherwise the adjustThreshold-adjusted config value).
    */
   getCurrentThreshold(): number {
-    return this.consensusThreshold;
+    return this.getEffectiveConsensusThreshold();
   }
 
   /**
-   * Dynamically adjust consensus threshold based on market conditions:
-   * - No trade for a while → lower threshold to encourage action
-   * - Consecutive losses → raise threshold to be more conservative
-   * - High vol regime → lower threshold (opportunity)
-   * - Chaotic regime → raise threshold (caution)
+   * Dynamically adjust consensus threshold based on market conditions.
    *
-   * Called externally from MATSSystem.runDecisionCycle() after each cycle,
-   * where we have full context (regime, trade outcome).
+   * v2.0.41: This now adjusts the BASE threshold (this.consensusThreshold).
+   * If Evolution signalThreshold override is active (this.evolutionThreshold
+   * !== null), the effective threshold is evolutionThreshold — this method's
+   * adjustments are applied ON TOP of the Evolution base via
+   * getEffectiveConsensusThreshold().
+   *
+   * ⚠️ MAINTENANCE NOTE: The threshold enforcement chain is:
+   *   1. Evolution signalThreshold → setEvolutionThreshold() sets base
+   *   2. adjustThreshold() adjusts this.consensusThreshold (loss-streak etc.)
+   *   3. getEffectiveConsensusThreshold() returns evolutionThreshold if set,
+   *      otherwise this.consensusThreshold
+   *   4. calcWeightedConsensus() result compared against effective threshold
+   *
+   * If you change this logic, update getEffectiveConsensusThreshold() too.
    */
   adjustThreshold(currentRegime?: string, hadRealTrade?: boolean, wasProfitable?: boolean): void {
     const initial = config.hacp.consensusThreshold;
@@ -754,8 +801,11 @@ export class HACPEngine {
         const voteResults = await this.runConsensusVote(allThoughts);
         const weightedScore = this.calcWeightedConsensus(voteResults);
 
-        if (weightedScore >= this.consensusThreshold) {
-          log.info(`Consensus reached at round ${round} (weighted: ${weightedScore.toFixed(3)})`);
+        // v2.0.41: Use effective threshold (Evolution signalThreshold override
+        // or config default + adjustThreshold loss-streak adjustment)
+        const effectiveThreshold = this.getEffectiveConsensusThreshold();
+        if (weightedScore >= effectiveThreshold) {
+          log.info(`Consensus reached at round ${round} (weighted: ${weightedScore.toFixed(3)}, threshold: ${effectiveThreshold.toFixed(3)})`);
           consensusReached = true;
           finalConsensus = this.buildConsensus(
             allThoughts,
@@ -867,11 +917,9 @@ export class HACPEngine {
         finalConsensus.decision.takeProfitPct = riskAudit.adjustedTakeProfitPct;
       }
       if (riskAudit.adjustedPositionSizePct !== undefined) {
-        // Clamp to the hard max — Risk Auditor can reduce but not exceed the cap.
-        finalConsensus.decision.positionSizePct = Math.min(
-          Math.max(0, riskAudit.adjustedPositionSizePct),
-          MAX_POSITION_PCT,
-        );
+        // v2.0.41: No MAX_POSITION_PCT clamp — Market Agent controls size.
+        // Risk Auditor can reduce but Phase 4.5 will override to Market Agent's value.
+        finalConsensus.decision.positionSizePct = Math.max(0, riskAudit.adjustedPositionSizePct);
       }
       log.info(`🔧 Risk Auditor adjusted: SL ${origSL ? (origSL * 100).toFixed(1) + '%' : 'none'} → ${finalConsensus.decision.stopLossPct ? (finalConsensus.decision.stopLossPct * 100).toFixed(1) + '%' : 'none'}, TP ${origTP ? (origTP * 100).toFixed(1) + '%' : 'none'} → ${finalConsensus.decision.takeProfitPct ? (finalConsensus.decision.takeProfitPct * 100).toFixed(1) + '%' : 'none'}, size ${(origSize * 100).toFixed(1)}% → ${(finalConsensus.decision.positionSizePct * 100).toFixed(1)}% (${riskAudit.reason})`);
     }
@@ -1545,13 +1593,9 @@ Output ONLY valid JSON:
         this.resumeFromCooldown();
       }
 
-      // Hard overrides: enforce absolute risk limits (aligned with clamp)
-      if (decision.positionSizePct > MAX_POSITION_PCT) {
-        return {
-          veto: true,
-          reason: `Position size ${(decision.positionSizePct * 100).toFixed(1)}% exceeds hard limit of ${(MAX_POSITION_PCT * 100).toFixed(1)}%. VETO.`,
-        };
-      }
+      // v2.0.41: Removed MAX_POSITION_PCT veto — Market Agent controls size.
+      // Phase 4.5 will override positionSizePct to Market Agent's value.
+      // Risk Auditor can still reduce size (choppy 50% cut, loss streak reduction).
 
       // ── Hardcoded choppy-market 50% position size reduction ──
       // When the recent trade pattern is choppy (frequent reversals + net
@@ -1631,10 +1675,10 @@ Output ONLY valid JSON:
         adjustedPositionSizePct,
       };
     } catch {
-      // On error, be conservative but respect Market Agent limits
+      // On error, be conservative — allow trade (Market Agent controls size)
       return {
-        veto: decision.positionSizePct > MAX_POSITION_PCT,
-        reason: 'Risk audit LLM unavailable. Conservative veto only if position exceeds absolute max (20%).',
+        veto: false,
+        reason: 'Risk audit LLM unavailable. Allowing trade — Market Agent controls position size.',
       };
     }
   }
