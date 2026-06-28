@@ -1240,8 +1240,20 @@ Output ONLY valid JSON:
   }
 
   private calcWeightedConsensus(votes: Vote[]): number {
-    // Weighted score: sum(weight * confidence * decisionValue) / sum(weight)
-    // decisionValue: buy=1, hold=0, sell=-1
+    // v2.0.38 FIX: Directional agreement — NOT Math.abs().
+    // Previously used Math.abs(agreementScore) which meant BUY and SELL votes
+    // both added positive weight. The threshold measured conviction (how
+    // confident agents are) not directional agreement (do agents agree on
+    // the SAME direction). 5 agents confidently voting BUY passed the
+    // threshold even if RBC said UNFAVORABLE, because the threshold only
+    // checked "are agents confident" not "do agents agree on direction".
+    //
+    // Now: weightedSum = sum(weight * confidence * decisionValue)
+    //   BUY = +1, SELL = -1, HOLD = 0
+    // The score ranges from -1 (all SELL) to +1 (all BUY).
+    // A score near 0 means agents are split (half BUY, half SELL) —
+    // this will NOT pass the threshold even if all agents are confident.
+    // The threshold now truly measures "do agents agree on one direction?"
     let totalWeight = 0;
     let weightedSum = 0;
 
@@ -1250,11 +1262,15 @@ Output ONLY valid JSON:
         : vote.decision.action === 'sell' ? -1
         : 0;
       const agreementScore = vote.confidence * decisionValue;
-      weightedSum += vote.weight * Math.abs(agreementScore);
+      weightedSum += vote.weight * agreementScore;
       totalWeight += vote.weight;
     }
 
-    return totalWeight > 0 ? weightedSum / totalWeight : 0;
+    // Return absolute value so both strong BUY and strong SELL consensus
+    // can pass the threshold — but a split (half BUY half SELL) will NOT.
+    // Without abs(), a strong SELL consensus would return negative and
+    // never pass a positive threshold — which would block all SELL trades.
+    return totalWeight > 0 ? Math.abs(weightedSum / totalWeight) : 0;
   }
 
   private buildConsensus(
