@@ -126,7 +126,31 @@ export class PortfolioTracker {
         status: (t as any).status ?? 'closed',
       }));
 
-      log.info(`Portfolio restored: balance=${saved.balance.toFixed(2)}, ${saved.positions?.length ?? 0} positions, ${saved.tradeCount} trades`);
+      // v2.0.38: Restore real (exchange) trades — these are HL SL/TP-triggered
+      // closes + manual exchange closes. Stored separately from paper trades
+      // so they survive restarts but don't pollute paper stats.
+      const restoredRealTrades = (saved.realTrades ?? []).map(t => ({
+        id: t.id,
+        symbol: t.symbol,
+        side: t.side as 'buy' | 'sell',
+        entryPrice: t.entryPrice,
+        exitPrice: t.exitPrice,
+        quantity: t.quantity,
+        leverage: t.leverage,
+        investment: t.investment,
+        pnl: t.pnl,
+        pnlPct: t.pnlPct,
+        openedAt: t.openedAt,
+        closedAt: t.closedAt,
+        agentId: t.agentId ?? '',
+        status: (t as any).status ?? 'closed',
+      }));
+      this.closedRealTrades.push(...restoredRealTrades);
+      if (restoredRealTrades.length > 0) {
+        log.info(`📋 Restored ${restoredRealTrades.length} real (exchange) trade records`);
+      }
+
+      log.info(`Portfolio restored: balance=${saved.balance.toFixed(2)}, ${saved.positions?.length ?? 0} positions, ${saved.tradeCount} trades, ${restoredRealTrades.length} real trades`);
     } else {
       this.portfolio = {
         balance: initialBalance,
