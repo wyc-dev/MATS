@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.37--dev-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.41--dev-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -443,7 +443,7 @@ If you require a commercial license — for example, for proprietary extensions,
 
 ---
 
-## Changelog (v2.0.10 → v2.0.37)
+## Changelog (v2.0.10 → v2.0.41)
 
 | Version | Change |
 |:--------|:-------|
@@ -470,8 +470,12 @@ If you require a commercial license — for example, for proprietary extensions,
 | **v2.0.35** | HL SL/TP close detection — 3 bugs fixed: (1) WS `onFills` handler now detects closing fills via HL `dir` field (`Close Long`/`Close Short`) and immediately calls `closeExchangePosition()` with actual HL fill price + closedPnl — previously only did `softUpdatePosition()` so the local mirror stayed open forever with no trade record or learning; (2) `syncExchangePositions()` safety check now fetches recent fills to verify genuine closes vs API failure when `exMap.size === 0` (previously skipped close entirely when the last position was closed); (3) `closeExchangePosition()` now stores trade records in `closedRealTrades[]` (capped 200) and `pushToAPI()` includes them in UI Trade Records; WS `onPositions` backup detects positions that disappeared from HL clearinghouseState |
 | **v2.0.36** | Minimum 1% SL/TP gap constraint — Meta-Agent `adjustPositions()` had no minimum gap, LLM would over-narrow SL/TP to < 1% as price approached target, causing noise stop-outs that cut profits short. Added 1% minimum gap check in `hacp.ts` (after LLM returns new SL/TP, handles 3 cases: both new, only SL new vs existing TP, only TP new vs existing SL) + hard safety layer in `portfolio.ts` `adjustPosition()` (rejects if effective SL/TP gap < 1% of current price) |
 | **v2.0.37** | Stale real position cleanup in paper mode — 3 bugs fixed: (1) Paper-mode legacy sync only processed positions in `legacyPositionModes` — orphaned real positions (`agentId='hyperliquid-real'` but NOT in `legacyPositionModes`, e.g. after system restart) were never cleaned up. Now processes ALL real positions with 3 cases: closing fill found → close with HL PnL, position > 1h old with no HL position → close (assume closed), position not in HL `getPositions()` → close; (2) Paper-mode reconciliation didn't filter out `agentId='hyperliquid-real'` positions — they were kept if < 12h old, causing perpetual `syncSLTP` + `closePosition` errors. Now explicitly excludes them; (3) `syncExchangePositions` 'uncertain' case (no closing fill found) just warned and skipped — stale positions stayed forever. Now closes positions older than 1h |
+| **v2.0.38** | Real trade persistence — `closedRealTrades` was in-memory only, lost on every restart. Now `PortfolioSnapshot` has `realTrades` field, `savePortfolio()` accepts 3rd param, constructor loads from disk, `persistPortfolio()` passes `closedRealTrades`, `onPositionClosedLearning` persists immediately after close. Paper stats unaffected (separate storage) |
+| **v2.0.39** | Consensus directional agreement fix — `calcWeightedConsensus()` used `Math.abs(agreementScore)` per-vote, meaning BUY (+1) and SELL (-1) both added positive weight. Threshold measured conviction not direction. 5 agents confidently voting BUY passed even if RBC said UNFAVORABLE. Fixed: removed per-vote `Math.abs()`, uses directional agreement. Split (half BUY half SELL) produces ~0 — won't pass threshold. Final `Math.abs(total)` preserves SELL consensus |
+| **v2.0.40** | Learning decay — Agent Outcomes `getAgentPerformance()` now only uses recent 50 records (was all 10,000). Pattern Classifier `queryEntry()` + `queryPosition()` use time-weighted win/loss (`0.5^(age/7days)` half-life). Old regime data naturally fades out. `wilsonScore()` hardened with `total <= 0` guard + `p` clamping |
+| **v2.0.41** | MAX_POSITION_PCT removed (Market Agent controls size via Phase 4.5 override — was redundant); Evolution `signalThreshold` now DETERMINISTICALLY overrides HACP consensus threshold (was just informational text — now agents need stronger directional agreement when Evolution says "be pickier"); Planck-Chaos `directionBias` removed (redundant with regime-aware direction chain — Lyapunov + amplitude windows + resonance retained as informational); mandatory `⚠️ MAINTENANCE NOTE` comments added to all modified functions instructing future agents to update comments when changing enforcement chains |
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.37 for full details on each fix.
+See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.41 for full details on each fix.
 
 ---
 
