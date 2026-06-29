@@ -1028,7 +1028,7 @@ body {
 }
 
 .portfolio-cell .stat-number {
-  font-size: var(--fs-2xl);
+  font-size: var(--fs-xl);
   font-weight: var(--fw-bold);
   line-height: 1.2;
 }
@@ -2599,7 +2599,7 @@ body {
 
 .model-select-wide {
   max-width: 100%;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   flex: 1;
 }
 
@@ -2626,7 +2626,7 @@ body {
 }
 
 .market-control-label {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   color: var(--text-tertiary);
   margin-bottom: var(--space-2);
 }
@@ -2645,7 +2645,7 @@ body {
 .year-btn-wide {
   flex: 1;
   padding: var(--space-2) var(--space-4);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
 }
 
 .slider-row {
@@ -2655,7 +2655,7 @@ body {
 }
 
 .slider-value {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--text-tertiary);
   min-width: 20px;
   text-align: right;

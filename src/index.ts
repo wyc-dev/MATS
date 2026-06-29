@@ -912,11 +912,17 @@ class MATSSystem {
 
     const poll = async () => {
       try {
-        // Fetch price for the Market Agent's active symbol (not just hardcoded BTCUSDT)
+        // v2.0.66: Batch fetch prices for active symbol + all open positions.
+        // This reduces HL API calls from N×3 to 1 (metaAndAssetCtxs) + M (l2Book
+        // for M colon symbols), preventing 429 rate limit errors.
         const activeSymbol = this.marketAgent.getSelectedSymbol() || 'BTCUSDT';
-        const priceData = await this.marketAgent.fetchPriceForSymbol(activeSymbol);
-        if (priceData.price > 0) {
-          this.paperEngine.updatePrice(activeSymbol, priceData.price);
+        const openSymbols = this.portfolio.getOpenSymbols();
+        const allSymbols = Array.from(new Set([activeSymbol, ...openSymbols]));
+        const priceMap = await this.marketAgent.fetchPricesForSymbols(allSymbols);
+        for (const [sym, data] of priceMap) {
+          if (data.price > 0) {
+            this.paperEngine.updatePrice(sym, data.price);
+          }
         }
       } catch {
         // silent retry on next poll
