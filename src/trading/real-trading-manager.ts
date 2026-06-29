@@ -823,8 +823,21 @@ export class RealTradingManager {
    * exist on HL. If not, place them. This runs every cycle in real mode to
    * ensure HL always has SL/TP protection.
    */
+  /**
+   * v2.0.32: Sync SL/TP from local mirror to HL exchange. For each real position
+   * that has SL/TP in the local mirror, check if corresponding trigger orders
+   * exist on HL. If not, place them. This runs every cycle in real mode to
+   * ensure HL always has SL/TP protection.
+   *
+   * v2.0.51: Now also runs in paper mode for legacy real positions. Uses
+   * getEngineForExchange() instead of getActiveEngine() so it works regardless
+   * of trade mode. Also called at startup before first pushToAPI() so the UI
+   * shows real HL SL/TP values from the start.
+   */
   async syncSLTP(): Promise<void> {
-    const engine = this.getActiveEngine();
+    // v2.0.51: Use getEngineForExchange so this works in paper mode too
+    // (for legacy real positions that need SL/TP sync).
+    const engine = this.getEngineForExchange('hyperliquid');
     if (!engine || !(engine instanceof HyperliquidRealEngine)) return;
 
     try {

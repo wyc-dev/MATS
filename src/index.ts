@@ -796,6 +796,33 @@ class AMACRFSystem {
       // REST API polling fallback for price data — 30s interval to avoid HL 429
       this.startRESTPolling();
 
+      // v2.0.51: Sync SL/TP from HL at startup BEFORE first pushToAPI().
+      // The local portfolio was restored from portfolio-state.json which has
+      // stale SL/TP values. We need to read the actual HL trigger orders and
+      // update the local mirror so the UI shows the real SL/TP from the start.
+      // Without this, the UI shows stale SL/TP until the first decision cycle
+      // runs syncSLTP() (which can take 5+ seconds after startup).
+      try {
+        const engine = this.realTradingManager.getEngineForExchange('hyperliquid');
+        if (engine) {
+          const hlPositions = await engine.getPositions();
+          if (hlPositions.length > 0) {
+            // Update local mirror prices from HL
+            for (const exPos of hlPositions) {
+              const sym = exPos.symbol.includes(':') ? exPos.symbol : exPos.symbol.toLowerCase();
+              if (this.portfolio.hasPosition(sym)) {
+                this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
+              }
+            }
+            // Sync SL/TP from HL trigger orders → local mirror
+            await this.realTradingManager.syncSLTP();
+            log.info(`📡 Startup HL sync: ${hlPositions.length} positions, SL/TP synced from exchange`);
+          }
+        }
+      } catch (err) {
+        log.warn(`Startup HL sync failed (non-critical, will retry on first cycle): ${err instanceof Error ? err.message : String(err)}`);
+      }
+
       // Register shutdown handlers
       registerShutdownHandler('system-timers', async () => {
         this.stopTimers();
