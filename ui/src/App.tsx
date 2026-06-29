@@ -431,6 +431,69 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           <div className="empty-text empty-text-sm">Waiting for market data...</div>
         </div>
       )}
+
+      {/* ── Responsibility of Each Agent ── */}
+      <div className="rbc-legend">
+        <div className="rbc-legend-title">Responsibility of Each Agent</div>
+        <div className="rbc-legend-grid">
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: '#34d399', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Market Select Agent</span>
+              <span className="rbc-legend-desc">Scans top-volume pairs across Hyperliquid, selects the trading market, and manages exchange config (trade mode, leverage, position size). Click a pair above to manually override.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: '#7c8a9e', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Fractal Momentum Sentinel</span>
+              <span className="rbc-legend-desc">Detects multi-timeframe momentum patterns and fractal breakouts. Provides directional bias based on price structure (higher highs/lower lows).</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: '#8a9bb0', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">On-Chain Whisperer</span>
+              <span className="rbc-legend-desc">Analyses on-chain metrics (volume, open interest, funding rates, liquidation levels) to gauge institutional positioning and market sentiment.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: '#9aabb8', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">RBC &amp; Sentiment Analyst</span>
+              <span className="rbc-legend-desc">Combines Regime-Based Clustering (RBC) trade pattern recognition with sentiment analysis to classify the current market regime (trending, choppy, volatile).</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: '#6b7a8e', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Independent Risk Auditor</span>
+              <span className="rbc-legend-desc">Reviews the consensus decision for risk compliance — checks position sizing, leverage, drawdown limits, and correlation exposure. Can veto or reduce the proposed trade size.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: '#fbbf24', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">News Reporter</span>
+              <span className="rbc-legend-desc">Fetches and summarises relevant market news and events. Provides context that may explain sudden price moves or regime shifts.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: '#e879f9', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Skeptics</span>
+              <span className="rbc-legend-desc">Plays devil's advocate — challenges the consensus, identifies edge cases, and stress-tests the decision against worst-case scenarios. Prevents groupthink.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: '#5b8def', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Meta-Agent</span>
+              <span className="rbc-legend-desc">Orchestrates the HACP debate cycle, aggregates agent thoughts, adjusts SL/TP for open positions, and produces the final consensus decision with a weighted vote.</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -956,7 +1019,7 @@ function DebatePanel({ data }: { data: APIData | null }) {
                         {psc.hasPosition && <span className="consensus-meta-green">● position</span>}
                       </span>
                       <span className={`vote-action-tag ${actionClass}`}>{psc.action.toUpperCase()}</span>
-                      <span style={{fontSize:'0.65rem', color:'var(--text-secondary)'}}>{(psc.confidence * 100).toFixed(0)}%</span>
+                      <span className="consensus-conf-pct">{(psc.confidence * 100).toFixed(0)}%</span>
                       {psc.closePosition && <span className="consensus-meta-red">🔴 CLOSE</span>}
                       {psc.suggestedStopLoss && <span className="consensus-meta-muted">SL:${psc.suggestedStopLoss.toFixed(1)}</span>}
                       {psc.suggestedTakeProfit && <span className="consensus-meta-muted">TP:${psc.suggestedTakeProfit.toFixed(1)}</span>}
@@ -1087,6 +1150,57 @@ function FitnessBreakdown({ fb }: { fb: any }) {
             <span className="evo-fitness-pct">{(item.value * 100).toFixed(1)}%</span>
           </div>
         ))}
+      </div>
+      {/* ── How to Read Fitness Breakdown ── */}
+      <div className="rbc-legend">
+        <div className="rbc-legend-title">How to Read Fitness Breakdown</div>
+        <div className="rbc-legend-grid">
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: 'var(--green)', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Capital Preservation</span>
+              <span className="rbc-legend-desc">How well the strategy avoids large drawdowns. High score = small peak-to-trough equity drops, indicating defensive robustness.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: 'var(--accent)', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Return Generation</span>
+              <span className="rbc-legend-desc">Profitability of the strategy relative to capital deployed. High score = consistent positive PnL per cycle, not just lucky spikes.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: '#9aabb8', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Adaptability</span>
+              <span className="rbc-legend-desc">Ability to adjust parameters across market regimes (trending vs choppy). High score = strategy parameters shift correctly when volatility or trend changes.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: '#8a9bb0', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Consistency</span>
+              <span className="rbc-legend-desc">Stability of returns over time. High score = low variance in per-cycle PnL, indicating the strategy is reliable rather than feast-or-famine.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: '#6b7a8e', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Risk Management</span>
+              <span className="rbc-legend-desc">Effectiveness of stop-loss and position sizing. High score = losses are capped early, winners are allowed to run, and leverage is used prudently.</span>
+            </div>
+          </div>
+          <div className="rbc-legend-item">
+            <div className="rbc-legend-swatch" style={{ background: '#5b8def', opacity: 0.8 }} />
+            <div className="rbc-legend-text">
+              <span className="rbc-legend-label">Decision Quality</span>
+              <span className="rbc-legend-desc">Accuracy of the HACP consensus decisions. High score = agents agree on the right direction (buy/sell/hold) and the outcome matches the prediction.</span>
+            </div>
+          </div>
+        </div>
+        <div className="rbc-legend-footer">
+          Each dimension is scored 0–100%. The overall fitness score is a weighted average. The Evolution Engine uses these scores to select which strategy parameters survive to the next generation.
+        </div>
       </div>
     </div>
   )
