@@ -1788,12 +1788,46 @@ class AMACRFSystem {
       // v2.0.32: Debug log for consensus result
       log.info(`🎯 HACP consensus: ${result.consensus.decision.action.toUpperCase()} ${result.consensus.decision.symbol} size=${(result.consensus.decision.positionSizePct * 100).toFixed(1)}% conf=${(result.consensus.confidence * 100).toFixed(0)}% metaOverride=${result.consensus.metaAgentOverridden} cooldown=${this.hacpEngine.isCooldownActive(this.totalCycles)}`);
 
+      // v2.0.60: Options Playbook deterministic veto.
+      // If the Regime → Playbook says vetoNewPositions (Stand Aside regime),
+      // override the consensus decision to HOLD — no new positions allowed.
+      // This is a DETERMINISTIC enforcement that overrides LLM voting.
+      if (useOptionsData && (result.consensus.decision.action === 'buy' || result.consensus.decision.action === 'sell')) {
+        const pb = this.optionsDataManager.getRegimePlaybook(activeSymbol, combinedState.trend, combinedState.regime);
+        if (pb.vetoNewPositions) {
+          log.warn(`🛑 [options-playbook] VETO: ${pb.playbook} — ${pb.rationale}. Overriding ${result.consensus.decision.action.toUpperCase()} → HOLD`);
+          result.consensus.decision = {
+            ...result.consensus.decision,
+            action: 'hold',
+            positionSizePct: 0,
+            rationale: `[OPTIONS VETO] ${pb.rationale}. ${result.consensus.decision.rationale}`,
+          };
+        }
+      }
+
       // 3.1 Apply position adjustments (TP/SL) from meta-agent
       // v2.0.31: In real mode, also place native trigger orders on HL exchange
+      // v2.0.60: Validate SL against implied move (options data) before applying.
       if (result.positionAdjustments && result.positionAdjustments.length > 0) {
         for (const adj of result.positionAdjustments) {
-          await this.realTradingManager.adjustPosition(adj.positionId, adj.newStopLoss, adj.newTakeProfit);
-          log.info(`📐 Position ${adj.positionId.slice(0, 8)} adjusted: SL=${adj.newStopLoss?.toFixed(2) ?? '-'} TP=${adj.newTakeProfit?.toFixed(2) ?? '-'}`);
+          // v2.0.60: If we have options data, validate SL distance against implied move.
+          // If SL is too tight (< 50% of implied move) or too wide (> 3x implied move),
+          // skip the SL adjustment and keep the existing value.
+          let effectiveSL = adj.newStopLoss;
+          let effectiveTP = adj.newTakeProfit;
+          if (useOptionsData && adj.newStopLoss !== undefined) {
+            const pos = this.portfolio.getPosition(adj.positionId);
+            if (pos) {
+              const slDistPct = Math.abs(pos.currentPrice - adj.newStopLoss) / pos.currentPrice;
+              const slCheck = this.optionsDataManager.validateSLAgainstImpliedMove(adj.positionId.includes('-') ? pos.symbol : adj.positionId, slDistPct);
+              if (!slCheck.valid) {
+                log.warn(`🛑 [options-SL] ${pos.symbol}: ${slCheck.reason} — skipping SL adjustment, keeping existing SL`);
+                effectiveSL = undefined; // skip SL, keep existing
+              }
+            }
+          }
+          await this.realTradingManager.adjustPosition(adj.positionId, effectiveSL, effectiveTP);
+          log.info(`📐 Position ${adj.positionId.slice(0, 8)} adjusted: SL=${effectiveSL?.toFixed(2) ?? '-'} TP=${effectiveTP?.toFixed(2) ?? '-'}`);
         }
       }
 
