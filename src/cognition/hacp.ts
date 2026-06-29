@@ -1113,7 +1113,11 @@ CRITICAL RULES — FOLLOW EXACTLY:
 
 7. ⚠️ GRADUAL ADJUSTMENT — move SL/TP slowly, maximum 0.5% of current price per cycle.
    Do NOT aggressively tighten both SL and TP at once — leave room for market volatility.
+   Narrowing is capped at 0.5% of current price per adjustment. If you try to narrow
+   more than 0.5%, the system will REJECT your adjustment and ask you to try again.
    Minimum gap between SL and TP: 2% of current price.
+   Minimum SL distance from current price: 1%.
+   Minimum TP distance from current price: 1.5%.
 
 Output ONLY valid JSON:
 {"adjust":true,"newStopLoss":66000,"newTakeProfit":64000,"rationale":"Tightening TP as price approaches target, trailing SL to lock in profit."}`,
@@ -1219,6 +1223,32 @@ Output ONLY valid JSON:
                 retryError += `ERROR: SHORT TP $${finalTP.toFixed(2)} < old TP $${pos.takeProfit.toFixed(2)} — this WIDENS the take profit (harder to hit). TP can only move UP (toward current price). Please set TP >= old TP.\n`;
                 finalTP = undefined;
               }
+            }
+          }
+
+          // ── v2.0.50: Maximum narrowing step — SL/TP can only move MAX_NARROW_STEP_PCT
+          //    of current price per cycle. This prevents the LLM from aggressively
+          //    jumping SL/TP too close to current price in a single adjustment.
+          //    The old code had no max step — SL could go from 5% away to 1% away
+          //    in one cycle, causing premature stop-outs. Now it's capped at 0.5%
+          //    of current price per adjustment, so narrowing takes multiple cycles.
+          const MAX_NARROW_STEP_PCT = 0.005; // 0.5% of current price per cycle
+          if (finalSL !== undefined && pos.stopLoss !== undefined) {
+            const oldDist = Math.abs(pos.currentPrice - pos.stopLoss);
+            const newDist = Math.abs(pos.currentPrice - finalSL);
+            const narrowingAmount = oldDist - newDist; // positive = narrowing
+            if (narrowingAmount > pos.currentPrice * MAX_NARROW_STEP_PCT) {
+              retryError += `ERROR: SL narrowing too fast — moved $${narrowingAmount.toFixed(2)} (${(narrowingAmount / pos.currentPrice * 100).toFixed(2)}% of price) but max is ${(MAX_NARROW_STEP_PCT * 100)}% per cycle. Old SL distance: $${oldDist.toFixed(2)}, new: $${newDist.toFixed(2)}. Please narrow SL more gradually — move it at most ${(MAX_NARROW_STEP_PCT * 100)}% of current price closer.\n`;
+              finalSL = undefined;
+            }
+          }
+          if (finalTP !== undefined && pos.takeProfit !== undefined) {
+            const oldDist = Math.abs(pos.currentPrice - pos.takeProfit);
+            const newDist = Math.abs(pos.currentPrice - finalTP);
+            const narrowingAmount = oldDist - newDist; // positive = narrowing
+            if (narrowingAmount > pos.currentPrice * MAX_NARROW_STEP_PCT) {
+              retryError += `ERROR: TP narrowing too fast — moved $${narrowingAmount.toFixed(2)} (${(narrowingAmount / pos.currentPrice * 100).toFixed(2)}% of price) but max is ${(MAX_NARROW_STEP_PCT * 100)}% per cycle. Old TP distance: $${oldDist.toFixed(2)}, new: $${newDist.toFixed(2)}. Please narrow TP more gradually — move it at most ${(MAX_NARROW_STEP_PCT * 100)}% of current price closer.\n`;
+              finalTP = undefined;
             }
           }
 

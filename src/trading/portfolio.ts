@@ -668,6 +668,30 @@ export class PortfolioTracker {
           }
         }
 
+        // v2.0.50: Maximum narrowing step — SL/TP can only move 0.5% of
+        // current price closer per adjustment. This is the HARD SAFETY layer
+        // (hacp.ts also enforces this with retry feedback to the LLM).
+        // Prevents aggressive narrowing that causes premature stop-outs.
+        const MAX_NARROW_STEP_PCT = 0.005; // 0.5% of current price
+        if (finalSL !== undefined && pos.stopLossPrice !== undefined) {
+          const oldDist = Math.abs(pos.currentPrice - pos.stopLossPrice);
+          const newDist = Math.abs(pos.currentPrice - finalSL);
+          const narrowingAmount = oldDist - newDist;
+          if (narrowingAmount > pos.currentPrice * MAX_NARROW_STEP_PCT) {
+            log.warn(`🚫 adjustPosition SL narrowing blocked: ${pos.symbol} moved $${narrowingAmount.toFixed(2)} (${(narrowingAmount / pos.currentPrice * 100).toFixed(2)}%) but max ${(MAX_NARROW_STEP_PCT * 100)}% per cycle — too fast`);
+            finalSL = undefined;
+          }
+        }
+        if (finalTP !== undefined && pos.takeProfitPrice !== undefined) {
+          const oldDist = Math.abs(pos.currentPrice - pos.takeProfitPrice);
+          const newDist = Math.abs(pos.currentPrice - finalTP);
+          const narrowingAmount = oldDist - newDist;
+          if (narrowingAmount > pos.currentPrice * MAX_NARROW_STEP_PCT) {
+            log.warn(`🚫 adjustPosition TP narrowing blocked: ${pos.symbol} moved $${narrowingAmount.toFixed(2)} (${(narrowingAmount / pos.currentPrice * 100).toFixed(2)}%) but max ${(MAX_NARROW_STEP_PCT * 100)}% per cycle — too fast`);
+            finalTP = undefined;
+          }
+        }
+
         if (finalSL !== undefined) {
           pos.stopLossPrice = finalSL;
         }
