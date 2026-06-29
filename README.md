@@ -1,12 +1,12 @@
 # {MATS} — Multi-Agent Trading System
 
 > **A self-evolving, multi-agent quantitative trading framework powered by the Hyper-Accelerated Cognition Protocol (HACP).**  
-> Institutional-grade paper trading simulation across Hyperliquid perpetual markets.
+> Institutional-grade trading across Hyperliquid perpetual markets — crypto perps, stocks, indices, and RWA synthetic equities, with an integrated Options Data Layer for equities trading.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.41--dev-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.62-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -443,7 +443,7 @@ If you require a commercial license — for example, for proprietary extensions,
 
 ---
 
-## Changelog (v2.0.10 → v2.0.41)
+## Changelog (v2.0.10 → v2.0.62)
 
 | Version | Change |
 |:--------|:-------|
@@ -474,6 +474,19 @@ If you require a commercial license — for example, for proprietary extensions,
 | **v2.0.39** | Consensus directional agreement fix — `calcWeightedConsensus()` used `Math.abs(agreementScore)` per-vote, meaning BUY (+1) and SELL (-1) both added positive weight. Threshold measured conviction not direction. 5 agents confidently voting BUY passed even if RBC said UNFAVORABLE. Fixed: removed per-vote `Math.abs()`, uses directional agreement. Split (half BUY half SELL) produces ~0 — won't pass threshold. Final `Math.abs(total)` preserves SELL consensus |
 | **v2.0.40** | Learning decay — Agent Outcomes `getAgentPerformance()` now only uses recent 50 records (was all 10,000). Pattern Classifier `queryEntry()` + `queryPosition()` use time-weighted win/loss (`0.5^(age/7days)` half-life). Old regime data naturally fades out. `wilsonScore()` hardened with `total <= 0` guard + `p` clamping |
 | **v2.0.41** | MAX_POSITION_PCT removed (Market Agent controls size via Phase 4.5 override — was redundant); Evolution `signalThreshold` now DETERMINISTICALLY overrides HACP consensus threshold (was just informational text — now agents need stronger directional agreement when Evolution says "be pickier"); Planck-Chaos `directionBias` removed (redundant with regime-aware direction chain — Lyapunov + amplitude windows + resonance retained as informational); mandatory `⚠️ MAINTENANCE NOTE` comments added to all modified functions instructing future agents to update comments when changing enforcement chains |
+| **v2.0.42** | Drawdown high-water mark fix (`currentDrawdownPct` replaces `maxDrawdownPct` for trading decisions — decreases on recovery); Recent 20 trade win rate in UI (`getRecentWinLoss(20)` → `recent20WinRate` → UI Win Rate cell shows `(lastest 20 trades)`) |
+| **v2.0.43** | PnL/PnL% PAPER/REAL consistency — `serializePortfolio()` overlay mixed 3 inconsistent data sources (currentPrice from WS, unrealizedPnl from HL API, unrealizedPnlPct from local). Fixed: all 3 fields now internally consistent using exPos + live price + recomputed PnL% |
+| **v2.0.44** | Manual market selection — Top Volume Pairs table is clickable (user chooses market, not auto-selected); `manualSymbolLock` flag prevents `autoSelectTopPair()` from overriding; Clear Drawdown button when drawdown ≥ 15% (`portfolio.clearDrawdown()` resets peakEquity/drawdown/dailyPnl) |
+| **v2.0.45** | `manualSymbolLock` fix — `fetchTopPairs()` had 3 internal auto-select sites that bypassed the lock. All 3 now check `!this.manualSymbolLock` |
+| **v2.0.46** | SL/TP HL bidirectional sync — `syncSLTP()` now reads actual HL trigger orders and syncs back to local mirror via `syncSLTPFromExchange()` |
+| **v2.0.47** | PnL leverage inflation fix — `updatePosition()`/`softUpdatePosition()`/`closePosition()` multiplied PnL by leverage (×10 inflation). PnL = priceDelta × quantity (NOT × leverage). Also: paper mode SL/TP sync + trailing stop validation |
+| **v2.0.48** | SL/TP startup HL sync — `syncSLTP()` now runs at startup before first `pushToAPI()` so UI shows real HL SL/TP from the start. `syncSLTP()` uses `getEngineForExchange()` (works in paper mode too) |
+| **v2.0.49** | SL/TP retry loop (3 attempts) with error feedback to LLM; slower narrowing (min gap 2%, min TP dist 1.5%, min SL dist 1%) |
+| **v2.0.50** | SL/TP max narrowing step — SL/TP can only move 0.5% of current price closer per cycle. Enforced in both `hacp.ts` (retry feedback) and `portfolio.ts` (hard safety) |
+| **v2.0.51** | Error trade filter (entry≈exit + PnL≈$0 filtered from Trade Records); Paper/Real cross-mode position display (REAL positions show in PAPER mode, PAPER legacy positions show in REAL mode) |
+| **v2.0.52–v2.0.57** | Per-symbol consensus SL/TP direction validation; `adjustPosition()` ignores portfolio rejection fix; HL engine trailing stop validation; `correctInvertedSLTP()` self-healing; SL/TP inference logic fix (entry price + direction, not current price distance) |
+| **v2.0.58–v2.0.61** | **Options Data Layer** — `src/analysis/options-data.ts` connects to Polygon.io REST API for option chain snapshots (IV, Greeks, OI, P/C ratio, Gamma regime, Max Pain, Skew, Implied Move, Event Risk). Regime → Playbook mapping (Premium Sell / Directional Credit / Defined-Risk Debit / Stand Aside / Buy Convexity). `vetoNewPositions` deterministic veto. `validateSLAgainstImpliedMove()` SL validation. Options Data Layer gets HIGHEST voting weight (0.30) in HACP consensus for Stocks/Indices |
+| **v2.0.62** | **Options-aware evolution** — `OptionsStrategyParameters` (7 options-specific params that evolve: minIVRankForPremiumSell, maxIVRankForDebit, gammaRegimePreference, maxImpliedMovePct, putCallOIThreshold, eventRiskTolerance, targetPOP). `SurvivalFitness.optionsAlpha` new fitness dimension. `mutate()` has options-specific directional mutation. `getContextForAgent()` shows options strategy context. Full evolution loop: options data → vote → decision → result → fitness → mutation → better strategy |
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.41 for full details on each fix.
 
