@@ -372,6 +372,14 @@ export interface Portfolio {
   totalPnlPct: number;
   maxDrawdown: number;
   maxDrawdownPct: number;
+  /** v2.0.42: Current drawdown from peak equity (not high-water mark).
+   *  Unlike maxDrawdownPct which only increases, this decreases when equity
+   *  recovers. Used by canTrade() + SystemGuard to decide if trading should
+   *  be blocked. maxDrawdownPct is kept for historical reporting.
+   *
+   *  ⚠️ MAINTENANCE NOTE: If you change drawdown calculation, update
+   *  recalculateEquity() in portfolio.ts where both are computed. */
+  currentDrawdownPct: number;
   peakEquity: number;
   dailyPnl: number;
   dailyLossLimit: number;

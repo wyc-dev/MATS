@@ -78,6 +78,10 @@ export class PortfolioTracker {
         totalPnlPct: saved.totalPnlPct,
         maxDrawdown: saved.maxDrawdown,
         maxDrawdownPct: saved.maxDrawdownPct,
+        // v2.0.42: currentDrawdownPct — restored from saved or default 0.
+        // Old portfolio-state.json files won't have this field, so default to 0.
+        // It will be recalculated on the first recalculateEquity() call.
+        currentDrawdownPct: (saved as any).currentDrawdownPct ?? 0,
         peakEquity: saved.peakEquity,
         dailyPnl: saved.dailyPnl,
         dailyLossLimit: saved.dailyLossLimit,
@@ -169,6 +173,7 @@ export class PortfolioTracker {
         totalPnlPct: 0,
         maxDrawdown: 0,
         maxDrawdownPct: 0,
+        currentDrawdownPct: 0,
         peakEquity: initialBalance,
         dailyPnl: 0,
         dailyLossLimit: initialBalance * config.paper.dailyLossLimitPct,
@@ -251,6 +256,7 @@ export class PortfolioTracker {
       totalPnlPct: this.portfolio.totalPnlPct,
       maxDrawdown: this.portfolio.maxDrawdown,
       maxDrawdownPct: this.portfolio.maxDrawdownPct,
+      currentDrawdownPct: this.portfolio.currentDrawdownPct,
       peakEquity: this.portfolio.peakEquity,
       dailyPnl: this.portfolio.dailyPnl,
       dailyLossLimit: this.portfolio.dailyLossLimit,
@@ -299,10 +305,16 @@ export class PortfolioTracker {
     // v2.0.23: auto-reset dailyPnl on calendar date change.
     this.checkDailyReset();
 
-    if (this.portfolio.maxDrawdownPct >= config.paper.maxDrawdownPct) {
+    // v2.0.42: canTrade() uses CURRENT drawdown, not historical max.
+    // maxDrawdownPct is a high-water mark that only increases — using it
+    // here meant that once drawdown hit 27%, trading was permanently
+    // blocked even after equity fully recovered.
+    // currentDrawdownPct decreases when equity recovers, so trading
+    // resumes once the drawdown drops below the threshold.
+    if (this.portfolio.currentDrawdownPct >= config.paper.maxDrawdownPct) {
       return {
         allowed: false,
-        reason: `Max drawdown ${(this.portfolio.maxDrawdownPct * 100).toFixed(1)}% exceeded. Trading halted.`,
+        reason: `Current drawdown ${(this.portfolio.currentDrawdownPct * 100).toFixed(1)}% exceeded. Trading halted. (Historical max: ${(this.portfolio.maxDrawdownPct * 100).toFixed(1)}%)`,
       };
     }
 
@@ -941,8 +953,14 @@ export class PortfolioTracker {
     }
 
     const currentDrawdown = this.portfolio.peakEquity - this.portfolio.totalEquity;
-    const currentDrawdownPct = currentDrawdown / this.portfolio.peakEquity;
+    const currentDrawdownPct = this.portfolio.peakEquity > 0 ? currentDrawdown / this.portfolio.peakEquity : 0;
 
+    // v2.0.42: currentDrawdownPct tracks the CURRENT drawdown from peak.
+    // It decreases when equity recovers — used by canTrade() + SystemGuard.
+    this.portfolio.currentDrawdownPct = currentDrawdownPct;
+
+    // maxDrawdown/maxDrawdownPct are high-water marks (only increase).
+    // Kept for historical reporting — NOT used for trading decisions.
     if (currentDrawdown > this.portfolio.maxDrawdown) {
       this.portfolio.maxDrawdown = currentDrawdown;
       this.portfolio.maxDrawdownPct = currentDrawdownPct;

@@ -22,7 +22,11 @@ export interface GuardReport {
 export interface GuardParams {
   activeSymbol: string;
   marketPrice: number;
-  /** Portfolio drawdown pct (0.05 = 5%) */
+  /** v2.0.42: CURRENT drawdown from peak equity (decreases on recovery).
+   *  Used by guardDrawdown to decide if trading should be blocked.
+   *  maxDrawdownPct (below) is the historical high-water mark for reporting. */
+  currentDrawdownPct: number;
+  /** Historical max drawdown (high-water mark, only increases). For reporting only. */
   maxDrawdownPct: number;
   /** Daily PnL in quote currency */
   dailyPnl: number;
