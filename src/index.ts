@@ -1,4 +1,4 @@
-// ─── AMACRF Main Entry Point ───
+// ─── MATS Main Entry Point ───
 // System orchestrator — ties together data, agents, cognition, risk, trading, evolution
 
 import { config } from './config/index.ts';
@@ -39,7 +39,7 @@ import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, C
 
 const log = createLogger({ phase: 'system' });
 
-class AMACRFSystem {
+class MATSSystem {
   private marketState!: MarketStateAggregator;
   private fractalAgent!: FractalMomentumSentinel;
   private onchainAgent!: OnChainWhisperer;
@@ -107,7 +107,7 @@ class AMACRFSystem {
   private legacyPositionModes = new Map<string, 'paper' | 'real'>();
 
   constructor() {
-    log.info('🏛️  AMACRF System Initializing...');
+    log.info('🏛️  MATS System Initializing...');
     log.info(`   Config: ${config.ollama.modelDefault} (Ollama), ${config.paper.initialBalance} USDT paper, ${config.system.decisionIntervalMs / 1000}s cycle`);
 
     // Restore last debate/consensus result from disk so UI shows it immediately
@@ -852,7 +852,7 @@ class AMACRFSystem {
       this.startDecisionCycle();
       this.startHeartbeat();
 
-      log.info('🚀 AMACRF System is LIVE — paper trading on Binance Mainnet data');
+      log.info('🚀 MATS System is LIVE — trading on Hyperliquid data');
 
       // Push any restored state (debate history, evolution, portfolio) to UI immediately
       this.pushToAPI();
@@ -866,7 +866,7 @@ class AMACRFSystem {
       // Run first decision cycle immediately
       await this.runDecisionCycle();
     } catch (err) {
-      log.error(`Failed to start AMACRF system: ${err instanceof Error ? err.message : String(err)}`);
+      log.error(`Failed to start MATS system: ${err instanceof Error ? err.message : String(err)}`);
       throw err;
     }
   }
@@ -3271,7 +3271,7 @@ class AMACRFSystem {
     const p = this.portfolio.getPortfolio();
     const status = [
       `┌─────────────────────────────────────┐`,
-      `│ 🏛️  AMACRF System Status              │`,
+      `│ 🏛️  MATS System Status              │`,
       `├─────────────────────────────────────┤`,
       `│ Cycles: ${String(this.totalCycles).padEnd(8)} Balance: $${p.balance.toFixed(0).padStart(6)}│`,
       `│ Equity: $${p.totalEquity.toFixed(0).padStart(6)}  PnL: ${(p.totalPnl >= 0 ? '+' : '')}${p.totalPnl.toFixed(0).padStart(5)} │`,
@@ -3582,14 +3582,14 @@ class AMACRFSystem {
     this.stopTimers();
     await this.apiServer?.stop();
     await this.multiWs?.disconnect();
-    log.info('AMACRF system stopped cleanly.');
+    log.info('MATS system stopped cleanly.');
   }
 }
 
 // ─── Boot ───
 
 async function main(): Promise<void> {
-  const system = new AMACRFSystem();
+  const system = new MATSSystem();
 
   registerShutdownHandler('amacrf-system', async () => {
     await system.stop();

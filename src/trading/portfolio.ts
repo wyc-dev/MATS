@@ -338,10 +338,15 @@ export class PortfolioTracker {
   openPosition(order: Order, entryPrice: number, leverage = 1): Position {
     const symbol = normalizeSymbol(order.symbol);
     const quantity = order.filledQuantity > 0 ? order.filledQuantity : order.quantity;
-    const cost = quantity * entryPrice;
+    const notional = quantity * entryPrice;
+    // v2.0.63: Deduct MARGIN (notional / leverage), not full notional.
+    // On Hyperliquid, a 10x leveraged position only requires 10% margin.
+    // The old code deducted full notional, causing balance to drop 10x
+    // faster than reality. closePosition() now returns margin (not notional).
+    const margin = notional / leverage;
 
     // Deduct margin from balance.
-    this.portfolio.balance -= cost;
+    this.portfolio.balance -= margin;
 
     // ── v2.0.18: Deduct entry taker fee (notional-based) ──
     // HL taker fee = 0.04% of NOTIONAL (full position value).
@@ -351,7 +356,7 @@ export class PortfolioTracker {
     // Deducting this from balance ensures paper PnL reflects the real cost
     // of entering a leveraged position, so the system only learns strategies
     // that are profitable AFTER fees.
-    const entryNotional = cost; // cost = quantity * entryPrice = raw notional
+    const entryNotional = notional; // notional = quantity * entryPrice = full position value
     const entryFee = calculateTakerFee(entryNotional);
     this.portfolio.balance -= entryFee;
 
@@ -366,6 +371,8 @@ export class PortfolioTracker {
     // v2.0.19: unrealizedPnl starts at -entryFee so the UI shows the real
     // cost from the moment the position opens (previously $0.00 because
     // price hadn't moved yet, hiding the fee already paid).
+    // v2.0.63: unrealizedPnlPct is relative to MARGIN (not notional) so it
+    // reflects the actual return on capital at risk.
     const position: Position = {
       id: uuidv4(),
       symbol,
@@ -374,7 +381,7 @@ export class PortfolioTracker {
       averageEntryPrice: entryPrice,
       currentPrice: entryPrice,
       unrealizedPnl: -entryFee,
-      unrealizedPnlPct: cost > 0 ? -entryFee / cost : 0,
+      unrealizedPnlPct: margin > 0 ? -entryFee / margin : 0,
       realizedPnl: 0,
       leverage,
       openedAt: Date.now(),
@@ -406,7 +413,7 @@ export class PortfolioTracker {
       exitPrice: entryPrice,
       quantity,
       leverage,
-      investment: cost,
+      investment: margin,
       pnl: 0,
       pnlPct: 0,
       openedAt: position.openedAt,
@@ -419,7 +426,7 @@ export class PortfolioTracker {
     }
 
     log.info(`Position opened: ${order.side.toUpperCase()} ${quantity.toFixed(6)} ${symbol} @ ${entryPrice}`, {
-      cost: cost.toFixed(2),
+      cost: margin.toFixed(2),
       balance: this.portfolio.balance.toFixed(2),
     });
 
@@ -438,20 +445,23 @@ export class PortfolioTracker {
     // here — it's deducted in closePosition() when the trade realises.
     //
     // v2.0.48: FIX — removed `* (pos.leverage ?? 1)` from PnL calculation.
+    // v2.0.48: FIX — removed `* (pos.leverage ?? 1)` from PnL calculation.
     // PnL = priceDelta * quantity (NOT priceDelta * quantity * leverage).
     // Leverage affects margin (capital required to open), not PnL per
     // contract. With 10x leverage, a $786 price move on 0.00154 BTC =
     // $1.21 PnL (not $12.10). The old formula inflated PnL by leverage,
     // causing the UI to show $12.10 in paper mode while HL showed $1.21.
-    // unrealizedPnlPct is now PnL / notional (margin-neutral return).
+    // v2.0.63: unrealizedPnlPct is PnL / MARGIN (return on capital at risk),
+    // not PnL / notional. At 10x leverage, a 1% price move = 10% return
+    // on margin — this is the leveraged return the UI should show.
     const entryFee = pos.entryFee ?? 0;
-    const notional = pos.averageEntryPrice * pos.quantity;
+    const margin = (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
     if (pos.side === 'buy') {
       pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee;
-      pos.unrealizedPnlPct = notional > 0 ? ((currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee) / notional : 0;
+      pos.unrealizedPnlPct = margin > 0 ? ((currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee) / margin : 0;
     } else {
       pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee;
-      pos.unrealizedPnlPct = notional > 0 ? ((pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee) / notional : 0;
+      pos.unrealizedPnlPct = margin > 0 ? ((pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee) / margin : 0;
     }
 
     // Recalculate total equity so it reflects latest unrealized PnL
@@ -485,14 +495,15 @@ export class PortfolioTracker {
 
     // v2.0.19: include the entry fee already paid (same as updatePosition).
     // v2.0.48: PnL = priceDelta * quantity (no leverage multiplier).
+    // v2.0.63: unrealizedPnlPct = PnL / margin (leveraged return on capital).
     const entryFee = pos.entryFee ?? 0;
-    const notional = pos.averageEntryPrice * pos.quantity;
+    const margin = (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
     if (pos.side === 'buy') {
       pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee;
-      pos.unrealizedPnlPct = notional > 0 ? ((currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee) / notional : 0;
+      pos.unrealizedPnlPct = margin > 0 ? ((currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee) / margin : 0;
     } else {
       pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee;
-      pos.unrealizedPnlPct = notional > 0 ? ((pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee) / notional : 0;
+      pos.unrealizedPnlPct = margin > 0 ? ((pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee) / margin : 0;
     }
 
     this.recalculateEquity();
@@ -914,13 +925,14 @@ export class PortfolioTracker {
     const lev = pos.leverage ?? 1;
     let realizedPnl: number;
     let cashReturned: number;
-    // Margin capital at risk = entryPrice * quantity
-    const margin = pos.averageEntryPrice * pos.quantity;
+    // v2.0.63: Return MARGIN (notional / leverage), not full notional.
+    // openPosition() deducts margin (notional / leverage), so closePosition()
+    // must return the same amount. The old code returned full notional,
+    // which inflated balance by (notional - margin) = notional × (1 - 1/lev)
+    // on every close — at 10x leverage, this added 9× the margin back.
+    const notional = pos.averageEntryPrice * pos.quantity;
+    const margin = notional / lev;
     // v2.0.48: PnL = priceDelta * quantity (NOT * leverage).
-    // Leverage affects margin requirement, not PnL per contract.
-    // A 10x leveraged $100 margin controls $1000 notional, but PnL is
-    // still just priceDelta * quantity. The old formula inflated PnL
-    // by 10x, causing paper balance to diverge from real HL balance.
     if (pos.side === 'buy') {
       realizedPnl = (exitPrice - pos.averageEntryPrice) * pos.quantity;
       cashReturned = margin + realizedPnl;
@@ -1119,9 +1131,12 @@ export class PortfolioTracker {
       // (importExchangePosition doesn't deduct), so adding lockedMargin
       // back would inflate the paper equity. Real position PnL is settled
       // on HL, not in the paper portfolio.
-      if (pos.agentId === 'hyperliquid-real') continue;
-      unrealizedSum += pos.unrealizedPnl;
-      lockedMargin += pos.averageEntryPrice * pos.quantity;
+    // v2.0.63: lockedMargin = margin (notional / leverage), not full notional.
+    // openPosition() deducts margin from balance, so equity adds it back.
+    // Using full notional here would inflate equity by (notional - margin).
+    if (pos.agentId === 'hyperliquid-real') continue;
+    unrealizedSum += pos.unrealizedPnl;
+    lockedMargin += (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
     }
 
     // totalEquity = available balance + unrealized PnL + locked margin on open positions

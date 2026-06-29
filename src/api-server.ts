@@ -1,4 +1,4 @@
-// ─── AMACRF API Server ───
+// ─── MATS API Server ───
 // Lightweight HTTP server exposing system state via REST + SSE for the React UI
 
 import http from 'node:http';
