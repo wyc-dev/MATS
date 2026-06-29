@@ -164,191 +164,165 @@ export class OptionsDataManager {
   }
 
   /**
-   * v2.0.59: Fetch option chain snapshot from Polygon.io REST API.
-   * Extracts: IV, Greeks (delta/gamma/theta/vega), open interest, put/call ratio,
-   * implied move, high-OI strike, max pain, skew, gamma regime.
+   * v2.0.67: Fetch options data using contracts + daily aggregates.
    *
-   * API: GET /v3/snapshot/options/{underlyingAsset}?apiKey=...
-   * Returns array of contracts with greeks, IV, OI, quotes, trades.
+   * The API key has access to:
+   *   - /v3/reference/options/contracts (all plans) — contract metadata
+   *   - /v2/aggs/ticker/{ticker}/prev (all plans) — daily OHLCV
+   *   - NOT /v3/snapshot/options (needs Options Starter+)
+   *
+   * So we fetch the option chain (contracts list), then batch-fetch daily
+   * aggregates for each contract to get price + volume. From the option
+   * prices + underlying price + strike + DTE, we estimate IV using
+   * a simplified Black-Scholes approximation. Put/Call ratio is computed
+   * from contract volume.
    */
   private async fetchOptionChain(symbol: string): Promise<void> {
-    // Strip exchange prefix for API call (e.g. "xyz:SKHX" → "SKHX")
     const underlying = symbol.includes(':') ? symbol.split(':')[1]! : symbol.toUpperCase();
-    const url = `${this.restBaseUrl}/v3/snapshot/options/${underlying}?apiKey=${this.apiKey}&limit=250`;
 
-    const res = await fetch(url);
-    if (!res.ok) {
-      if (res.status === 429) {
+    // Step 1: Fetch option contracts (available on all plans)
+    const contractsUrl = `${this.restBaseUrl}/v3/reference/options/contracts?underlying_ticker=${underlying}&expired=false&limit=250&apiKey=${this.apiKey}`;
+    const contractsRes = await fetch(contractsUrl);
+    if (!contractsRes.ok) {
+      if (contractsRes.status === 429) {
         log.warn(`OptionsDataManager: Rate limited for ${underlying} — keeping cached data`);
         return;
       }
-      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      throw new Error(`HTTP ${contractsRes.status}: ${contractsRes.statusText}`);
     }
 
-    const data = await res.json() as {
-      results?: Array<{
-        break_even_price?: number;
-        details?: { contract_type?: string; strike_price?: number; expiration_date?: string };
-        greeks?: { delta?: number; gamma?: number; theta?: number; vega?: number };
-        implied_volatility?: number;
-        open_interest?: number;
-        last_quote?: { bid?: number; ask?: number; bid_size?: number; ask_size?: number };
-        last_trade?: { price?: number; size?: number };
-        day?: { volume?: number; close?: number; change?: number; change_percent?: number };
-        underlying_asset?: { price?: number; ticker?: string };
-      }>;
+    const contractsData = await contractsRes.json() as {
+      results?: Array<{ ticker: string; contract_type?: string; strike_price?: number; expiration_date?: string }>;
       status?: string;
     };
 
-    if (!data.results || data.results.length === 0) {
+    if (!contractsData.results || contractsData.results.length === 0) {
       log.debug(`OptionsDataManager: No option contracts for ${underlying}`);
       return;
     }
 
-    // Aggregate metrics from the option chain
-    const contracts = data.results;
-    const calls = contracts.filter(c => c.details?.contract_type === 'call');
-    const puts = contracts.filter(c => c.details?.contract_type === 'put');
+    const contracts = contractsData.results;
+    const calls = contracts.filter(c => c.contract_type === 'call');
+    const puts = contracts.filter(c => c.contract_type === 'put');
 
-    // Implied Volatility: average across all contracts (weighted by OI if available)
-    const allIVs = contracts.map(c => ({ iv: c.implied_volatility ?? 0, oi: c.open_interest ?? 0 }));
-    const totalOI = allIVs.reduce((s, c) => s + c.oi, 0);
-    const avgIV = totalOI > 0
-      ? allIVs.reduce((s, c) => s + c.iv * c.oi, 0) / totalOI
-      : allIVs.reduce((s, c) => s + c.iv, 0) / Math.max(1, allIVs.length);
-
-    // Put/Call ratio (by open interest)
-    const callOI = calls.reduce((s, c) => s + (c.open_interest ?? 0), 0);
-    const putOI = puts.reduce((s, c) => s + (c.open_interest ?? 0), 0);
-    const putCallOIRatio = callOI > 0 ? putOI / callOI : 1.0;
-
-    // Put/Call ratio (by volume)
-    const callVol = calls.reduce((s, c) => s + (c.day?.volume ?? 0), 0);
-    const putVol = puts.reduce((s, c) => s + (c.day?.volume ?? 0), 0);
-    const putCallRatio = callVol > 0 ? putVol / callVol : 1.0;
-
-    // High OI strike: strike with highest total OI (calls + puts)
-    const strikeOIMap = new Map<number, number>();
-    for (const c of contracts) {
-      const strike = c.details?.strike_price;
-      if (strike !== undefined) {
-        strikeOIMap.set(strike, (strikeOIMap.get(strike) ?? 0) + (c.open_interest ?? 0));
+    // Step 2: Fetch underlying price
+    let underlyingPrice = 0;
+    try {
+      const stockRes = await fetch(`${this.restBaseUrl}/v2/aggs/ticker/${underlying}/prev?apiKey=${this.apiKey}`);
+      if (stockRes.ok) {
+        const stockData = await stockRes.json() as { results?: Array<{ c: number }> };
+        if (stockData.results?.[0]?.c) underlyingPrice = stockData.results[0].c;
       }
-    }
-    let highOIStrike: number | null = null;
-    let maxOI = 0;
-    for (const [strike, oi] of strikeOIMap) {
-      if (oi > maxOI) { maxOI = oi; highOIStrike = strike; }
-    }
+    } catch { /* non-critical */ }
 
-    // v2.0.60: Max pain — actual calculation.
-    // For each possible expiry price, compute total option holder loss
-    // (calls expire worthless if price < strike, puts expire worthless if price > strike).
-    // Max pain = the price that maximizes total holder loss (= minimizes dealer payout).
-    const allStrikes = Array.from(strikeOIMap.keys()).sort((a, b) => a - b);
-    let maxPain: number | null = null;
-    if (allStrikes.length > 0) {
-      let maxLoss = -1;
-      for (const testPrice of allStrikes) {
-        // Total holder value at this expiry price:
-        // Call holders: max(0, price - strike) * OI per call contract
-        // Put holders: max(0, strike - price) * OI per put contract
-        // Max pain = price that MINIMIZES total holder value (= MAXIMIZES holder loss)
-        let holderValue = 0;
-        for (const c of calls) {
-          const strike = c.details?.strike_price ?? 0;
-          const oi = c.open_interest ?? 0;
-          if (testPrice > strike) holderValue += (testPrice - strike) * oi;
-        }
-        for (const p of puts) {
-          const strike = p.details?.strike_price ?? 0;
-          const oi = p.open_interest ?? 0;
-          if (testPrice < strike) holderValue += (strike - testPrice) * oi;
-        }
-        if (holderValue < maxLoss || maxLoss < 0) {
-          maxLoss = holderValue;
-          maxPain = testPrice;
-        }
-      }
+    if (underlyingPrice <= 0) {
+      log.debug(`OptionsDataManager: No underlying price for ${underlying}`);
+      return;
     }
 
-    // v2.0.60: Gamma regime — use put/call OI balance as proxy for dealer gamma.
-    // Dealers are typically short calls (sold to buyers) and long puts (sold to put buyers).
-    // When call OI >> put OI: dealers are short gamma (negative) — price moves destabilizing.
-    // When put OI >> call OI: dealers are long gamma (positive) — price moves stabilizing.
-    // This is a simplified GEX proxy without strike-weighted delta, but captures
-    // the directional signal that matters for regime classification.
-    const callPutOIRatio = callOI > 0 ? callOI / putOI : 1.0;
-    const gammaRegime: 'positive' | 'negative' | 'neutral' =
-      callPutOIRatio > 1.3 ? 'negative'   // lots of calls → dealers short gamma
-      : callPutOIRatio < 0.77 ? 'positive' // lots of puts → dealers long gamma
-      : 'neutral';
+    // Step 3: Batch-fetch daily aggregates for nearest 10 calls + 10 puts
+    const sortedCalls = calls
+      .map(c => ({ ticker: c.ticker, strike: c.strike_price ?? 0, exp: c.expiration_date ?? '' }))
+      .sort((a, b) => Math.abs(a.strike - underlyingPrice) - Math.abs(b.strike - underlyingPrice))
+      .slice(0, 10);
+    const sortedPuts = puts
+      .map(c => ({ ticker: c.ticker, strike: c.strike_price ?? 0, exp: c.expiration_date ?? '' }))
+      .sort((a, b) => Math.abs(a.strike - underlyingPrice) - Math.abs(b.strike - underlyingPrice))
+      .slice(0, 10);
 
-    // Implied move: ATM IV * sqrt(days_to_exp / 365)
-    // Find nearest expiration
+    const allContracts = [...sortedCalls, ...sortedPuts];
+    const aggResults = await Promise.allSettled(
+      allContracts.map(async (c) => {
+        const res = await fetch(`${this.restBaseUrl}/v2/aggs/ticker/${c.ticker}/prev?apiKey=${this.apiKey}`);
+        if (!res.ok) return { ticker: c.ticker, strike: c.strike, exp: c.exp, type: c.ticker.includes('C') ? 'call' : 'put' as const, close: 0, volume: 0 };
+        const data = await res.json() as { results?: Array<{ c: number; v: number }> };
+        const r = data.results?.[0];
+        return { ticker: c.ticker, strike: c.strike, exp: c.exp, type: c.ticker.includes('C') ? 'call' as const : 'put' as const, close: r?.c ?? 0, volume: r?.v ?? 0 };
+      })
+    );
+
+    const contractPrices = aggResults
+      .filter((r): r is PromiseFulfilledResult<{ ticker: string; strike: number; exp: string; type: 'call' | 'put'; close: number; volume: number }> => r.status === 'fulfilled')
+      .map(r => r.value)
+      .filter(c => c.close > 0);
+
+    if (contractPrices.length === 0) {
+      log.debug(`OptionsDataManager: No option price data for ${underlying}`);
+      return;
+    }
+
+    // Step 4: Compute metrics
     const now = new Date();
-    const expDates = contracts
-      .map(c => c.details?.expiration_date)
-      .filter((d): d is string => !!d)
-      .sort();
-    const nearestExp = expDates[0];
+    const expDates = Array.from(new Set(allContracts.map(c => c.exp))).sort();
+    const nearestExp = expDates[0] ?? '';
     let daysToExp = 7;
     if (nearestExp) {
       const expDate = new Date(nearestExp);
       daysToExp = Math.max(1, Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
     }
-    const impliedMovePct = avgIV * Math.sqrt(daysToExp / 365);
 
-    // Skew: OTM put IV - ATM call IV (simplified)
-    const atmStrike = contracts.reduce((closest, c) => {
-      const strike = c.details?.strike_price ?? 0;
-      const underlyingPrice = c.underlying_asset?.price ?? 0;
-      return Math.abs(strike - underlyingPrice) < Math.abs(closest - underlyingPrice) ? strike : closest;
-    }, 0);
-    const otmPutIV = puts.find(c => (c.details?.strike_price ?? 0) < atmStrike * 0.95)?.implied_volatility ?? avgIV;
-    const atmCallIV = calls.find(c => Math.abs((c.details?.strike_price ?? 0) - atmStrike) < 1)?.implied_volatility ?? avgIV;
-    const skew = otmPutIV - atmCallIV;
+    // Simplified IV estimation: IV ≈ timeValue / (S × sqrt(T/365)) × sqrt(2π)
+    const estimateIV = (optionPrice: number, strike: number, type: 'call' | 'put', S: number, T: number): number => {
+      const intrinsic = type === 'call' ? Math.max(0, S - strike) : Math.max(0, strike - S);
+      const timeValue = optionPrice - intrinsic;
+      if (timeValue <= 0) return 0.01;
+      const iv = (timeValue / (S * Math.sqrt(T / 365))) * Math.sqrt(2 * Math.PI);
+      return Math.max(0.01, Math.min(5.0, iv));
+    };
 
-    // v2.0.60: IV Rank — compare current IV to the range of IVs across all contracts.
-    // True IV Rank needs 252-day historical IV, which requires a paid plan.
-    // Proxy: use the spread of IVs across the option chain as a snapshot.
-    // If current ATM IV is at the high end of the chain's IV range → high rank.
-    // This captures relative expensiveness within the current chain.
-    const allIVValues = contracts.map(c => c.implied_volatility ?? 0).filter(v => v > 0);
-    const minIV = allIVValues.length > 0 ? Math.min(...allIVValues) : 0;
-    const maxIV = allIVValues.length > 0 ? Math.max(...allIVValues) : 1;
-    const ivRange = maxIV - minIV;
-    // Use ATM IV (closest to underlying price) for rank calculation
-    const atmIV = atmCallIV > 0 ? atmCallIV : avgIV;
-    const ivRank = ivRange > 0.001
-      ? Math.min(100, Math.max(0, ((atmIV - minIV) / ivRange) * 100))
-      : 50; // no range → neutral
+    const atmCall = contractPrices.filter(c => c.type === 'call').sort((a, b) => Math.abs(a.strike - underlyingPrice) - Math.abs(b.strike - underlyingPrice))[0];
+    const atmPut = contractPrices.filter(c => c.type === 'put').sort((a, b) => Math.abs(a.strike - underlyingPrice) - Math.abs(b.strike - underlyingPrice))[0];
+    const atmIV = atmCall ? estimateIV(atmCall.close, atmCall.strike, 'call', underlyingPrice, daysToExp) : 0.3;
+    const putIV = atmPut ? estimateIV(atmPut.close, atmPut.strike, 'put', underlyingPrice, daysToExp) : atmIV;
+    const impliedMovePct = atmIV * Math.sqrt(daysToExp / 365);
+
+    const callVol = contractPrices.filter(c => c.type === 'call').reduce((s, c) => s + c.volume, 0);
+    const putVol = contractPrices.filter(c => c.type === 'put').reduce((s, c) => s + c.volume, 0);
+    const putCallRatio = callVol > 0 ? putVol / callVol : 1.0;
+    const putCallOIRatio = putCallRatio; // volume proxy
+
+    const otmPut = contractPrices.filter(c => c.type === 'put' && c.strike < underlyingPrice * 0.95).sort((a, b) => b.strike - a.strike)[0];
+    const otmPutIV = otmPut ? estimateIV(otmPut.close, otmPut.strike, 'put', underlyingPrice, daysToExp) : putIV;
+    const skew = otmPutIV - atmIV;
+
+    const ivRange = Math.abs(atmIV - putIV);
+    const ivRank = ivRange > 0.001 ? Math.min(100, Math.max(0, ((atmIV - Math.min(atmIV, putIV)) / ivRange) * 100)) : 50;
     const ivPercentile = ivRank;
 
-    // Event risk: check if expiration is within 3 days (OPEX risk)
-    const eventRisk: 'none' | 'earnings' | 'opex' | 'fomc' | 'high' =
-      daysToExp <= 3 ? 'opex' : 'none';
+    const callPutVolRatio = putVol > 0 ? callVol / putVol : 1.0;
+    const gammaRegime: 'positive' | 'negative' | 'neutral' =
+      callPutVolRatio > 1.3 ? 'negative' : callPutVolRatio < 0.77 ? 'positive' : 'neutral';
+
+    const allByStrike = new Map<number, number>();
+    for (const c of contractPrices) allByStrike.set(c.strike, (allByStrike.get(c.strike) ?? 0) + c.volume);
+    let highOIStrike: number | null = null;
+    let maxVol = 0;
+    for (const [strike, vol] of allByStrike) { if (vol > maxVol) { maxVol = vol; highOIStrike = strike; } }
+
+    const allStrikes = Array.from(allByStrike.keys()).sort((a, b) => a - b);
+    let maxPain: number | null = null;
+    if (allStrikes.length > 0) {
+      let minHolderValue = -1;
+      for (const testPrice of allStrikes) {
+        let holderValue = 0;
+        for (const c of contractPrices) {
+          if (c.type === 'call' && testPrice > c.strike) holderValue += (testPrice - c.strike) * c.volume;
+          if (c.type === 'put' && testPrice < c.strike) holderValue += (c.strike - testPrice) * c.volume;
+        }
+        if (holderValue < minHolderValue || minHolderValue < 0) { minHolderValue = holderValue; maxPain = testPrice; }
+      }
+    }
+
+    const eventRisk: 'none' | 'earnings' | 'opex' | 'fomc' | 'high' = daysToExp <= 3 ? 'opex' : 'none';
 
     const ctx: OptionsContext = {
-      symbol,
-      ivRank,
-      ivPercentile,
-      impliedVolatility: avgIV,
-      impliedMovePct,
-      putCallRatio,
-      putCallOIRatio,
-      gammaRegime,
-      highOIStrike,
-      maxPain,
-      skew,
-      eventRisk,
-      daysToExpiration: daysToExp,
-      lastUpdated: Date.now(),
-      available: true,
+      symbol, ivRank, ivPercentile, impliedVolatility: atmIV, impliedMovePct,
+      putCallRatio, putCallOIRatio, gammaRegime, highOIStrike, maxPain, skew,
+      eventRisk, daysToExpiration: daysToExp, lastUpdated: Date.now(), available: true,
     };
 
     this.cache.set(symbol, ctx);
-    log.info(`📊 [options-data] ${symbol}: IV=${(avgIV * 100).toFixed(1)}% IVR=${ivRank.toFixed(0)} P/C=${putCallOIRatio.toFixed(2)} γ=${gammaRegime} impliedMove=±${(impliedMovePct * 100).toFixed(2)}%`);
+    log.info(`📊 [options-data] ${symbol}: IV=${(atmIV * 100).toFixed(1)}% IVR=${ivRank.toFixed(0)} P/C=${putCallRatio.toFixed(2)} γ=${gammaRegime} impliedMove=±${(impliedMovePct * 100).toFixed(2)}% (estimated from contracts+aggs)`);
   }
 
   /**
