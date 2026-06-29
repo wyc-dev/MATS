@@ -12,6 +12,10 @@
 //   are PRESERVED and passed through unchanged
 
 import type { TradingDecision, PerSymbolDecision, MultiSymbolDecision } from '../types/index.ts';
+// v2.0.42: Import normalizeSymbol to ensure symbol casing matches portfolio storage.
+// Without this, colon symbols (xyz:MU) get .toUpperCase() → XYZ:MU, but portfolio
+// stores them as xyz:MU → hasPosition() fails → duplicate opens + false closes.
+import { normalizeSymbol } from './portfolio.ts';
 
 /** Default TradingDecision with safe fallback values */
 export const DEFAULT_TRADING_DECISION: TradingDecision = {
@@ -67,7 +71,18 @@ export function normalizeDecision(raw: Partial<TradingDecision> | undefined | nu
       ? urgency
       : 'patient';
 
-  const symbol = (raw?.symbol ?? 'BTCUSDT').toUpperCase();
+  // v2.0.42: Use normalizeSymbol for consistent symbol casing.
+  // Colon-prefixed symbols (xyz:MU) preserve their original case —
+  // normalizeSymbol keeps them as-is. Non-colon symbols (BTC) are
+  // lowercased. This MUST match how positions are stored in the portfolio
+  // (via normalizeSymbol), otherwise hasPosition() will fail to find
+  // existing positions → duplicate opens + false closes.
+  //
+  // ⚠️ MAINTENANCE NOTE: If you change symbol normalization here, you MUST
+  // also update normalizeSymbol() in portfolio.ts. The symbol normalization
+  // chain is: normalizeDecision() here → normalizeSymbol() in portfolio.ts.
+  // Both MUST produce the same result for the same input symbol.
+  const symbol = normalizeSymbol(raw?.symbol ?? 'BTCUSDT');
   let positionSizePct = typeof raw?.positionSizePct === 'number' ? raw.positionSizePct : 0;
 
   // v2.0.41: Sanity clamp only — Market Agent controls actual size.
@@ -159,10 +174,16 @@ export function normalizeMultiSymbolDecision(
   marketSymbol: string,
   positionSymbols: string[],
 ): MultiSymbolDecision {
-  const marketTicker = normalizePerSymbolDecision(raw?.marketTicker, marketSymbol);
+  const marketTicker = normalizePerSymbolDecision(raw?.marketTicker, normalizeSymbol(marketSymbol));
   const positions: PerSymbolDecision[] = positionSymbols.map(sym => {
-    const found = (raw?.positions ?? []).find((p: any) => p?.symbol?.toUpperCase() === sym.toUpperCase());
-    return normalizePerSymbolDecision(found, sym);
+    // v2.0.42: Use normalizeSymbol for case-insensitive comparison that
+    // respects colon-prefixed symbols (xyz:MU vs XYZ:MU).
+    const normSym = normalizeSymbol(sym);
+    const found = (raw?.positions ?? []).find((p: any) => {
+      if (!p?.symbol) return false;
+      return normalizeSymbol(p.symbol) === normSym;
+    });
+    return normalizePerSymbolDecision(found, normSym);
   });
   return { marketTicker, positions };
 }

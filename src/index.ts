@@ -10,7 +10,7 @@ import { HyperliquidWebSocketManager } from './data/hyperliquid-websocket.ts';
 import { MultiExchangeWebSocketManager, detectExchange, type UnifiedPrice, type UnifiedOrderBook } from './data/multi-exchange-ws.ts';
 import { HACPEngine } from './cognition/hacp.ts';
 import { RiskEngine } from './risk/engine.ts';
-import { PortfolioTracker } from './trading/portfolio.ts';
+import { PortfolioTracker, normalizeSymbol } from './trading/portfolio.ts';
 import { PaperTradingEngine, type ExecutionReport } from './trading/paper-engine.ts';
 import { EvolutionOrchestrator } from './evolution/index.ts';
 import { savePortfolio, saveDebateHistory, loadDebateHistory } from './evolution/persistence.ts';
@@ -638,15 +638,18 @@ class AMACRFSystem {
         // handler — if the fill callback missed the close (e.g. WS reconnect),
         // the position callback will catch it.
         this.hyperliquidWs.onPositions((positions) => {
-          const hlSymbols = new Set(positions.map(p => p.symbol.includes(':') ? p.symbol : p.symbol.toLowerCase()));
+          // v2.0.42: Use normalizeSymbol for consistent casing with portfolio.
+          const hlSymbols = new Set(positions.map(p => normalizeSymbol(p.symbol)));
           // Soft-update existing positions
           for (const p of positions) {
-            const sym = p.symbol.includes(':') ? p.symbol : p.symbol.toLowerCase();
+            const sym = normalizeSymbol(p.symbol);
             if (this.portfolio.hasPosition(sym)) {
               this.portfolio.softUpdatePosition(sym, p.entryPx);
             }
           }
           // v2.0.35: Check for real positions that disappeared from HL
+          // v2.0.42: Use normalizeSymbol for hlSymbols comparison — previously
+          // colon symbols could mismatch (xyz:MU vs XYZ:MU) causing false closes.
           const realPositions = this.portfolio.getOpenSymbols().filter(sym => {
             const pos = this.portfolio.getPosition(sym);
             return pos && pos.agentId === 'hyperliquid-real';
@@ -674,7 +677,8 @@ class AMACRFSystem {
         // the local mirror stayed open forever and no trade record was created
         // — the system never learned from HL-triggered SL/TP closes.
         this.hyperliquidWs.onFills(async (fill) => {
-          const sym = fill.symbol.toLowerCase();
+          // v2.0.42: Use normalizeSymbol for consistent casing with portfolio.
+          const sym = normalizeSymbol(fill.symbol);
           // v2.0.35: Use the HL dir field to reliably distinguish opening vs
           // closing fills. "Close Long"/"Close Short" = closing, "Open Long"/
           // "Open Short" = opening. closedPnl alone is unreliable for partial
@@ -2232,7 +2236,9 @@ class AMACRFSystem {
       //
       // If the final decision is the SAME direction as the existing position,
       // we still HOLD (no double-position on same symbol).
-      const activeSym = finalDecision.symbol?.toLowerCase() ?? '';
+      // v2.0.42: Use normalizeSymbol instead of .toLowerCase() — colon symbols
+      // (xyz:MU) must preserve case to match portfolio storage.
+      const activeSym = finalDecision.symbol ? normalizeSymbol(finalDecision.symbol) : '';
       if (activeSym && this.portfolio.hasPosition(activeSym)) {
         const existingPos = this.portfolio.getPosition(activeSym);
         if (existingPos && finalDecision.action !== 'hold') {
