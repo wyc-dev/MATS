@@ -22,7 +22,15 @@ const log = createLogger({ phase: 'portfolio' });
  * HL colon-prefixed symbols (xyz:SPCX) are case-sensitive — preserve original case.
  * Non-colon symbols (BTC, ETH) are lowercased for backward compatibility.
  */
-function normalizeSymbol(symbol: string): string {
+// v2.0.42: Exported for use by decision-utils.ts + base-agent.ts + index.ts.
+// All symbol normalization MUST go through this function to ensure consistent
+// casing across the system. Colon-prefixed symbols (xyz:MU) preserve case;
+// non-colon symbols (BTC) are lowercased.
+//
+// ⚠️ MAINTENANCE NOTE: If you change this function, you MUST update all
+// callers: decision-utils.ts normalizeDecision(), base-agent.ts parseResponse(),
+// index.ts overlap guard + onPositions + onFills handlers.
+export function normalizeSymbol(symbol: string): string {
   return symbol.includes(':') ? symbol : symbol.toLowerCase();
 }
 

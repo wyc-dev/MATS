@@ -20,6 +20,8 @@ import type {
   PositionContext,
 } from '../types/index.ts';
 import { normalizePerSymbolDecision } from '../trading/decision-utils.ts';
+// v2.0.42: Import normalizeSymbol for consistent symbol casing with portfolio.
+import { normalizeSymbol } from '../trading/portfolio.ts';
 
 export interface BaseAgentConfig {
   role: AgentRole;
@@ -236,10 +238,15 @@ RULES:
       const marketRaw = parsed.marketTicker as Partial<PerSymbolDecision> | undefined;
       const positionsRaw = (parsed.positions ?? []) as Partial<PerSymbolDecision>[];
 
-      const marketTicker = normalizePerSymbolDecision(marketRaw, this.marketSymbol);
+      // v2.0.42: Use normalizeSymbol for consistent symbol casing.
+      const marketTicker = normalizePerSymbolDecision(marketRaw, normalizeSymbol(this.marketSymbol));
       const positions: PerSymbolDecision[] = posSymbols.map(sym => {
-        const found = positionsRaw.find((p: any) => p?.symbol?.toUpperCase() === sym.toUpperCase());
-        return normalizePerSymbolDecision(found, sym);
+        const normSym = normalizeSymbol(sym);
+        const found = positionsRaw.find((p: any) => {
+          if (!p?.symbol) return false;
+          return normalizeSymbol(p.symbol) === normSym;
+        });
+        return normalizePerSymbolDecision(found, normSym);
       });
 
       return {
