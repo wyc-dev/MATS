@@ -138,6 +138,8 @@ export class MarketAgent {
     this.config.selectedSymbol = '';
     this.topPairs = [];
     this.configDirty = true;
+    // v2.0.46: Clear manual lock — exchange change means fresh market.
+    this.manualSymbolLock = false;
     log.info(`Exchange changed: ${exchange}`);
   }
 
@@ -147,6 +149,8 @@ export class MarketAgent {
     this.config.updatedAt = Date.now();
     // Don't clear topPairs — client-side filter temporarily keeps showable data while re-fetching
     this.configDirty = true;
+    // v2.0.46: Clear manual lock — asset type change means different market category.
+    this.manualSymbolLock = false;
     log.info(`Hyperliquid asset type changed: ${assetType} (re-fetch queued)`);
   }
 
@@ -234,8 +238,11 @@ export class MarketAgent {
       }
       this.lastFetchTime = Date.now();
 
-      // Auto-select the top pair
-      if (this.topPairs.length > 0) {
+      // v2.0.46: Auto-select the top pair — but ONLY if the user hasn't
+      // manually locked a symbol. fetchTopPairs() is called from both
+      // autoSelectTopPair() and the UI refresh button, so this guard is
+      // critical to prevent overriding the user's manual selection.
+      if (this.topPairs.length > 0 && !this.manualSymbolLock) {
         const top = this.topPairs[0]!;
         if (this.config.selectedSymbol !== top.symbol) {
           this.config.selectedSymbol = top.symbol;
@@ -532,8 +539,8 @@ export class MarketAgent {
         }));
       }
 
-      // Auto-select the top pair after background scan
-      if (sorted.length > 0) {
+      // v2.0.46: Auto-select top pair after background scan — respect manual lock.
+      if (sorted.length > 0 && !this.manualSymbolLock) {
         const top = sorted[0]!;
         if (this.config.selectedSymbol !== top.symbol) {
           this.config.selectedSymbol = top.symbol;
@@ -589,8 +596,8 @@ export class MarketAgent {
         }));
       }
 
-      // Auto-select top pair after background scan completes
-      if (sorted.length > 0) {
+      // v2.0.46: Auto-select top pair after background scan — respect manual lock.
+      if (sorted.length > 0 && !this.manualSymbolLock) {
         const top = sorted[0]!;
         if (this.config.selectedSymbol !== top.symbol) {
           this.config.selectedSymbol = top.symbol;
