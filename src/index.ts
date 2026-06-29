@@ -2819,45 +2819,91 @@ class AMACRFSystem {
       // symbol, overlay the real entry price + unrealized PnL so the UI shows
       // the actual Hyperliquid position, not just the local mirror.
       // v2.0.31: colon-prefixed symbols are case-sensitive, match by case-insensitive comparison
+      //
+      // v2.0.43: FIX — previously the overlay mixed two inconsistent data sources:
+      //   currentPrice  ← local mirror (live websocket)
+      //   unrealizedPnl ← HL API (computed with HL's mark price at fetch time)
+      //   unrealizedPnlPct ← local mirror (computed with local price)
+      // This caused the UI to show a Mark price that didn't match the PnL or
+      // PnL%. Now we use exPos for entry/PnL/leverage, the live websocket price
+      // for currentPrice, and recompute unrealizedPnlPct from exPos.unrealizedPnl
+      // so all three fields are internally consistent.
       const exPos = isRealMode && this.cachedExchangePositions
         ? this.cachedExchangePositions.find(ep => ep.symbol.toLowerCase() === key.toLowerCase())
         : undefined;
-      positions[key] = {
-        id: pos.id,
-        symbol: pos.symbol,
-        side: pos.side,
-        quantity: pos.quantity,
-        averageEntryPrice: exPos ? exPos.averageEntryPrice : pos.averageEntryPrice,
-        currentPrice: pos.currentPrice,
-        unrealizedPnl: exPos ? exPos.unrealizedPnl : pos.unrealizedPnl,
-        unrealizedPnlPct: pos.unrealizedPnlPct,
-        stopLossPrice: pos.stopLossPrice,
-        takeProfitPrice: pos.takeProfitPrice,
-        leverage: exPos ? exPos.leverage : pos.leverage,
-        openedAt: pos.openedAt,
-        updatedAt: pos.updatedAt,
-        agentId: pos.agentId,
-        exchange: pos.exchange ?? 'hyperliquid',
-      };
+      // v2.0.43: Use the live websocket price for Mark (exPos.currentPrice is
+      // stale — set to entryPx at fetch time and never updated).
+      const livePrice = pos.currentPrice;
+      if (exPos) {
+        // v2.0.43: Recompute unrealizedPnlPct from the HL API PnL and the live
+        // mark price so it's consistent with both. Margin = qty * entry / lev.
+        const margin = exPos.averageEntryPrice > 0
+          ? exPos.quantity * exPos.averageEntryPrice / (exPos.leverage ?? 1)
+          : 0;
+        positions[key] = {
+          id: pos.id,
+          symbol: pos.symbol,
+          side: pos.side,
+          quantity: exPos.quantity,
+          averageEntryPrice: exPos.averageEntryPrice,
+          currentPrice: livePrice,
+          unrealizedPnl: exPos.unrealizedPnl,
+          unrealizedPnlPct: margin > 0 ? exPos.unrealizedPnl / margin : 0,
+          stopLossPrice: pos.stopLossPrice,
+          takeProfitPrice: pos.takeProfitPrice,
+          leverage: exPos.leverage,
+          openedAt: pos.openedAt,
+          updatedAt: Date.now(),
+          agentId: pos.agentId,
+          exchange: pos.exchange ?? 'hyperliquid',
+        };
+      } else {
+        positions[key] = {
+          id: pos.id,
+          symbol: pos.symbol,
+          side: pos.side,
+          quantity: pos.quantity,
+          averageEntryPrice: pos.averageEntryPrice,
+          currentPrice: pos.currentPrice,
+          unrealizedPnl: pos.unrealizedPnl,
+          unrealizedPnlPct: pos.unrealizedPnlPct,
+          stopLossPrice: pos.stopLossPrice,
+          takeProfitPrice: pos.takeProfitPrice,
+          leverage: pos.leverage,
+          openedAt: pos.openedAt,
+          updatedAt: pos.updatedAt,
+          agentId: pos.agentId,
+          exchange: pos.exchange ?? 'hyperliquid',
+        };
+      }
     }
 
     // v2.0.19: in real mode, also add any exchange positions that don't have
     // a local mirror (e.g. opened manually on HL outside this system) so the
     // UI Portfolio module shows the complete real position set.
+    // v2.0.43: Use live mark price from market state (exPos.currentPrice is
+    // stale — set to entryPx at fetch time). Recompute unrealizedPnlPct from
+    // margin (notional / leverage), not notional.
     if (isRealMode && this.cachedExchangePositions) {
       for (const exPos of this.cachedExchangePositions) {
         // v2.0.31: preserve original case for colon-prefixed symbols
         const key = exPos.symbol.includes(':') ? exPos.symbol : exPos.symbol.toLowerCase();
         if (!positions[key]) {
+          // v2.0.43: Try to get live price from market state or local mirror.
+          const localPos = p.positions.get(key);
+          const livePrice = localPos?.currentPrice ?? exPos.currentPrice;
+          const margin = exPos.averageEntryPrice > 0
+            ? exPos.quantity * exPos.averageEntryPrice / (exPos.leverage ?? 1)
+            : 0;
           positions[key] = {
             id: `hl-${exPos.symbol}-${exPos.openedAt}`,
             symbol: exPos.symbol,
             side: exPos.side,
             quantity: exPos.quantity,
             averageEntryPrice: exPos.averageEntryPrice,
-            currentPrice: exPos.currentPrice,
+            currentPrice: livePrice,
             unrealizedPnl: exPos.unrealizedPnl,
-            unrealizedPnlPct: exPos.averageEntryPrice > 0 ? exPos.unrealizedPnl / (exPos.quantity * exPos.averageEntryPrice) : 0,
+            unrealizedPnlPct: margin > 0 ? exPos.unrealizedPnl / margin : 0,
             stopLossPrice: undefined,
             takeProfitPrice: undefined,
             leverage: exPos.leverage,
