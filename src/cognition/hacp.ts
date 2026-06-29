@@ -1019,11 +1019,37 @@ export class HACPEngine {
           : '=== RECENT TRADE PATTERN (last 10) ===\n(no trade history available)';
 
         const provider = getActiveProvider();
-        const response = await provider.chat({
-          messages: [
-            {
-              role: 'system',
-              content: `You are the Meta-Agent adjusting position parameters.
+
+        // v2.0.49: Retry loop — if the LLM returns invalid SL/TP (wrong side
+        // of current price or entry), we send the error back to the LLM and
+        // ask it to re-evaluate. Maximum 3 attempts. This ensures the agent
+        // actually fixes the problem instead of silently dropping the adjustment.
+        //
+        // v2.0.49: SL/TP narrowing speed is now slower:
+        //   - Minimum SL/TP gap: 2% of current price (was 1%)
+        //   - Minimum TP distance from current price: 1.5% (was 0.5%)
+        //   - Minimum SL distance from current price: 1% (was implicit)
+        //   - Prompt now explicitly says "move SL/TP gradually, max 0.5% per cycle"
+        const MAX_RETRIES = 3;
+        const MIN_SLTP_GAP_PCT = 0.02;      // v2.0.49: 2% minimum gap (was 1%)
+        const MIN_TP_DIST_PCT = 0.015;      // v2.0.49: 1.5% min TP distance (was 0.5%)
+        const MIN_SL_DIST_PCT = 0.01;       // v2.0.49: 1% min SL distance
+
+        let finalSL: number | undefined;
+        let finalTP: number | undefined;
+        let lastRationale = '';
+        let retryError = '';
+
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+          const errorContext = retryError
+            ? `\n\n⚠️ PREVIOUS ATTEMPT REJECTED — FIX THE ERROR:\n${retryError}\nPlease re-evaluate and provide corrected SL/TP values that satisfy ALL rules.`
+            : '';
+
+          const response = await provider.chat({
+            messages: [
+              {
+                role: 'system',
+                content: `You are the Meta-Agent adjusting position parameters.
 
 Current market:
 ${marketStateDesc}
@@ -1036,7 +1062,7 @@ Current: $${pos.currentPrice.toFixed(2)}
 Leverage: ${lev}x
 Current SL: ${pos.stopLoss ? `$${pos.stopLoss.toFixed(2)}` : 'NONE'}
 Current TP: ${pos.takeProfit ? `$${pos.takeProfit.toFixed(2)}` : 'NONE'}
-Unrealized PnL: ${(unrealizedPnlPct * 100).toFixed(2)}%
+Unrealized PnL: ${(unrealizedPnlPct * 100).toFixed(2)}%${errorContext}
 
 The market context above contains "=== S/R Zones ===" with key Support (Demand) and Resistance (Supply) levels from historical candles.
 USE THESE S/R LEVELS to set TP and SL — they are more reliable than arbitrary percentages.
@@ -1075,167 +1101,196 @@ CRITICAL RULES — FOLLOW EXACTLY:
 4. SL distance from current price: 1-2% max (with ${lev}x leverage = ${lev * 1}-${lev * 2}% loss).
    TP distance from current price: at least 2x SL distance.
 
+5. ⚠️ CRITICAL — SL must be on the CORRECT side of CURRENT MARK PRICE:
+   LONG: SL must be BELOW current price (never above — it would trigger immediately).
+   SHORT: SL must be ABOVE current price (never below — it would trigger immediately).
+   If you set SL on the wrong side, the position will close instantly at a loss.
+
+6. ⚠️ CRITICAL — TP must be on the CORRECT side of CURRENT MARK PRICE:
+   LONG: TP must be ABOVE current price (never below — it would trigger immediately).
+   SHORT: TP must be BELOW current price (never above — it would trigger immediately).
+   TP must also be on the profit side of entry (above entry for long, below for short).
+
+7. ⚠️ GRADUAL ADJUSTMENT — move SL/TP slowly, maximum 0.5% of current price per cycle.
+   Do NOT aggressively tighten both SL and TP at once — leave room for market volatility.
+   Minimum gap between SL and TP: 2% of current price.
+
 Output ONLY valid JSON:
 {"adjust":true,"newStopLoss":66000,"newTakeProfit":64000,"rationale":"Tightening TP as price approaches target, trailing SL to lock in profit."}`,
-            },
-            {
-              role: 'user',
-              content: 'Review this position and suggest TP/SL adjustments following the rules exactly, taking the recent trade pattern into account.',
-            },
-          ],
-          temperature: 0.2,
-          model: this.metaAgent.resolveModel(),
-          // Position adjustment is a focused single-position call — cap at 30s
-          // so a stalled provider cannot block the HACP cycle past its deadline.
-          timeoutMs: 30_000,
-        });
+              },
+              {
+                role: 'user',
+                content: 'Review this position and suggest TP/SL adjustments following the rules exactly, taking the recent trade pattern into account.',
+              },
+            ],
+            temperature: 0.2,
+            model: this.metaAgent.resolveModel(),
+            // Position adjustment is a focused single-position call — cap at 30s
+            // so a stalled provider cannot block the HACP cycle past its deadline.
+            timeoutMs: 30_000,
+          });
 
-        const jsonStr = (() => {
-          const trimmed = response.content.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-          const start = trimmed.indexOf('{');
-          const end = trimmed.lastIndexOf('}');
-          if (start !== -1 && end > start) return trimmed.slice(start, end + 1);
-          return trimmed;
-        })();
-        const parsed = JSON.parse(jsonStr) as {
-          adjust: boolean;
-          newStopLoss?: number;
-          newTakeProfit?: number;
-          rationale: string;
-        };
+          const jsonStr = (() => {
+            const trimmed = response.content.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+            const start = trimmed.indexOf('{');
+            const end = trimmed.lastIndexOf('}');
+            if (start !== -1 && end > start) return trimmed.slice(start, end + 1);
+            return trimmed;
+          })();
+          const parsed = JSON.parse(jsonStr) as {
+            adjust: boolean;
+            newStopLoss?: number;
+            newTakeProfit?: number;
+            rationale: string;
+          };
 
-        if (parsed.adjust && (parsed.newStopLoss || parsed.newTakeProfit)) {
-          // ── Hard safety layer: enforce SL direction rules ──
-          let finalSL = parsed.newStopLoss;
-          let finalTP = parsed.newTakeProfit;
-
-          // ── CRITICAL: Validate TP direction ──
-          // TP for LONG must be ABOVE entry price (profit side)
-          // TP for SHORT must be BELOW entry price (profit side)
-          if (finalTP !== undefined) {
-            const tpValid = isLong ? finalTP > pos.entryPrice : finalTP < pos.entryPrice;
-            if (!tpValid) {
-              log.warn(`🚫 TP safety: ${isLong ? 'LONG' : 'SHORT'} TP $${finalTP} on wrong side of entry $${pos.entryPrice}. Rejecting.`);
-              finalTP = undefined;
-            }
+          if (!parsed.adjust || (!parsed.newStopLoss && !parsed.newTakeProfit)) {
+            break; // LLM says no adjustment needed
           }
 
-          // ── v2.0.42: Validate SL direction — relaxed to allow profit-side SL ──
-          // OLD: SL must be on the loss side of entry (LONG SL < entry, SHORT SL > entry)
-          // NEW: SL can be on EITHER side of entry (allowing trailing stop / lock profit),
-          //   BUT must be on the correct side of CURRENT MARK PRICE:
-          //     LONG SL must be BELOW current price (otherwise it would trigger immediately)
-          //     SHORT SL must be ABOVE current price (otherwise it would trigger immediately)
-          //
-          // ⚠️ MAINTENANCE NOTE: If you change SL validation logic, you MUST update
-          // this comment AND the corresponding validation in portfolio.ts adjustPosition().
-          // The SL validation chain is: hacp.ts (here) → portfolio.ts adjustPosition().
+          finalSL = parsed.newStopLoss;
+          finalTP = parsed.newTakeProfit;
+          lastRationale = parsed.rationale;
+          retryError = ''; // reset error
+
+          // ── v2.0.49: Validation layer with retry feedback ──
+          // Each validation failure appends to retryError so the LLM can fix it.
+
+          // Validate SL: must be on correct side of current price
           if (finalSL !== undefined) {
-            const slValid = isLong ? finalSL < pos.currentPrice : finalSL > pos.currentPrice;
-            if (!slValid) {
-              log.warn(`🚫 SL safety: ${isLong ? 'LONG' : 'SHORT'} SL $${finalSL} on wrong side of current price $${pos.currentPrice} (would trigger immediately). Rejecting.`);
+            const slValidVsPrice = isLong ? finalSL < pos.currentPrice : finalSL > pos.currentPrice;
+            if (!slValidVsPrice) {
+              retryError += `ERROR: ${isLong ? 'LONG' : 'SHORT'} SL $${finalSL.toFixed(2)} is on the WRONG side of current price $${pos.currentPrice.toFixed(2)}. ${isLong ? 'LONG SL must be BELOW current price' : 'SHORT SL must be ABOVE current price'}. You set SL ${isLong ? 'above' : 'below'} current price — this would trigger an immediate stop-loss and close the position at a loss. Please set SL on the correct side.\n`;
               finalSL = undefined;
             }
           }
 
-          // SL for long: can only go UP (increase) — trail toward price to lock profit.
-          // Clamp to [oldSL, currentPrice) — never below old SL (no widening), never above current price.
-          if (isLong && finalSL !== undefined) {
-            const oldSL = pos.stopLoss ?? (pos.entryPrice * 0.95);
-            const minSL = Math.max(oldSL, pos.entryPrice * 0.95); // never below 95% of entry
-            if (finalSL < minSL) finalSL = minSL; // enforce no widening
-            // v2.0.42: SL must be below current price (not just below entry)
-            if (finalSL >= pos.currentPrice) finalSL = pos.currentPrice * 0.998;
-          }
-
-          // SL for short: can only go DOWN (decrease) — trail toward price to lock profit.
-          // Clamp to (currentPrice, oldSL] — never above old SL (no widening), never below current price.
-          if (!isLong && finalSL !== undefined) {
-            const oldSL = pos.stopLoss ?? (pos.entryPrice * 1.05);
-            const maxSL = Math.min(oldSL, pos.entryPrice * 1.05); // never above 105% of entry
-            if (finalSL > maxSL) finalSL = maxSL; // enforce no widening
-            // v2.0.42: SL must be above current price (not just above entry)
-            if (finalSL <= pos.currentPrice) finalSL = pos.currentPrice * 1.002;
-          }
-
-          // TP: if positive PnL, tighten toward price. Never widen.
-          // v2.0.42: No-widen rule now runs REGARDLESS of PnL sign.
-          // Previously only enforced when unrealizedPnlPct > 0, meaning
-          // a losing position could have its TP widened. TP must NEVER
-          // be moved further from current price than it already is.
-          // Also validate TP is on the correct side of entry (defence-in-depth).
+          // Validate TP: must be on correct side of current price AND entry price
           if (finalTP !== undefined) {
+            const tpValidVsPrice = isLong ? finalTP > pos.currentPrice : finalTP < pos.currentPrice;
+            const tpValidVsEntry = isLong ? finalTP > pos.entryPrice : finalTP < pos.entryPrice;
+            if (!tpValidVsPrice) {
+              retryError += `ERROR: ${isLong ? 'LONG' : 'SHORT'} TP $${finalTP.toFixed(2)} is on the WRONG side of current price $${pos.currentPrice.toFixed(2)}. ${isLong ? 'LONG TP must be ABOVE current price' : 'SHORT TP must be BELOW current price'}. This would trigger an immediate take-profit. Please set TP on the correct side.\n`;
+              finalTP = undefined;
+            } else if (!tpValidVsEntry) {
+              retryError += `ERROR: ${isLong ? 'LONG' : 'SHORT'} TP $${finalTP.toFixed(2)} is on the WRONG side of entry price $${pos.entryPrice.toFixed(2)}. ${isLong ? 'LONG TP must be ABOVE entry price (profit side)' : 'SHORT TP must be BELOW entry price (profit side)'}. Please set TP on the profit side of entry.\n`;
+              finalTP = undefined;
+            }
+          }
+
+          // If both rejected, retry with error feedback
+          if (finalSL === undefined && finalTP === undefined && retryError) {
+            log.warn(`📐 Position ${pos.id.slice(0, 8)} attempt ${attempt + 1}/${MAX_RETRIES}: SL/TP rejected — retrying with error feedback`);
+            continue; // retry
+          }
+
+          // ── No-widen enforcement for SL ──
+          // SL can only move TOWARD current price (trailing stop / lock profit).
+          // It must NEVER move AWAY from current price (widening = more risk).
+          // ⚠️ MAINTENANCE NOTE: This is the HARD SAFETY layer for SL no-widen.
+          // portfolio.ts adjustPosition() also enforces no-widen.
+          if (finalSL !== undefined && pos.stopLoss !== undefined) {
             if (isLong) {
-              // TP must be above entry for longs
-              if (finalTP <= pos.entryPrice) {
-                log.warn(`🚫 TP safety (2nd layer): LONG TP $${finalTP} <= entry $${pos.entryPrice}. Rejecting.`);
-                finalTP = undefined;
-              } else {
-                // v2.0.42: No-widen rule — ALWAYS enforce, not just when PnL > 0
-                const oldTP = pos.takeProfit;
-                if (oldTP !== undefined && finalTP > oldTP) finalTP = oldTP; // never widen
-                if (finalTP < pos.currentPrice * 1.005) finalTP = pos.currentPrice * 1.005; // min 0.5% above
+              // Long SL can only go UP (toward price). If new SL < old SL, it's widening.
+              if (finalSL < pos.stopLoss) {
+                retryError += `ERROR: LONG SL $${finalSL.toFixed(2)} < old SL $${pos.stopLoss.toFixed(2)} — this WIDENS the stop loss (more risk). SL can only move UP (toward current price). Please set SL >= old SL.\n`;
+                finalSL = undefined;
               }
             } else {
-              // TP must be below entry for shorts
-              if (finalTP >= pos.entryPrice) {
-                log.warn(`🚫 TP safety (2nd layer): SHORT TP $${finalTP} >= entry $${pos.entryPrice}. Rejecting.`);
-                finalTP = undefined;
-              } else {
-                // v2.0.42: No-widen rule — ALWAYS enforce, not just when PnL > 0
-                const oldTP = pos.takeProfit;
-                if (oldTP !== undefined && finalTP < oldTP) finalTP = oldTP; // never widen
-                if (finalTP > pos.currentPrice * 0.995) finalTP = pos.currentPrice * 0.995; // max 0.5% below
+              // Short SL can only go DOWN (toward price). If new SL > old SL, it's widening.
+              if (finalSL > pos.stopLoss) {
+                retryError += `ERROR: SHORT SL $${finalSL.toFixed(2)} > old SL $${pos.stopLoss.toFixed(2)} — this WIDENS the stop loss (more risk). SL can only move DOWN (toward current price). Please set SL <= old SL.\n`;
+                finalSL = undefined;
               }
             }
           }
 
-          // v2.0.36: Minimum SL/TP gap constraint — if the gap between SL
-          // and TP is less than 1% of current price, reject the adjustment.
-          // Over-narrowing causes noise stop-outs + premature TP hits,
-          // cutting profits short. The LLM tends to aggressively tighten
-          // both SL and TP as price approaches target, leaving almost no
-          // room for normal market volatility.
+          // ── No-widen enforcement for TP ──
+          // TP can only move TOWARD current price (tightening). It must NEVER
+          // move AWAY (widening = greedier target that may never hit).
+          if (finalTP !== undefined && pos.takeProfit !== undefined) {
+            if (isLong) {
+              if (finalTP > pos.takeProfit) {
+                retryError += `ERROR: LONG TP $${finalTP.toFixed(2)} > old TP $${pos.takeProfit.toFixed(2)} — this WIDENS the take profit (harder to hit). TP can only move DOWN (toward current price). Please set TP <= old TP.\n`;
+                finalTP = undefined;
+              }
+            } else {
+              if (finalTP < pos.takeProfit) {
+                retryError += `ERROR: SHORT TP $${finalTP.toFixed(2)} < old TP $${pos.takeProfit.toFixed(2)} — this WIDENS the take profit (harder to hit). TP can only move UP (toward current price). Please set TP >= old TP.\n`;
+                finalTP = undefined;
+              }
+            }
+          }
+
+          // ── v2.0.49: Minimum distance constraints (slower narrowing) ──
+          // SL must be at least MIN_SL_DIST_PCT from current price.
+          if (finalSL !== undefined) {
+            const slDistPct = Math.abs(pos.currentPrice - finalSL) / pos.currentPrice;
+            if (slDistPct < MIN_SL_DIST_PCT) {
+              retryError += `ERROR: SL $${finalSL.toFixed(2)} is too close to current price $${pos.currentPrice.toFixed(2)} (${(slDistPct * 100).toFixed(2)}% < ${(MIN_SL_DIST_PCT * 100)}% minimum). This would cause premature stop-outs from normal market noise. Please set SL at least ${MIN_SL_DIST_PCT * 100}% away from current price.\n`;
+              finalSL = undefined;
+            }
+          }
+
+          // TP must be at least MIN_TP_DIST_PCT from current price.
+          if (finalTP !== undefined) {
+            const tpDistPct = Math.abs(pos.currentPrice - finalTP) / pos.currentPrice;
+            if (tpDistPct < MIN_TP_DIST_PCT) {
+              retryError += `ERROR: TP $${finalTP.toFixed(2)} is too close to current price $${pos.currentPrice.toFixed(2)} (${(tpDistPct * 100).toFixed(2)}% < ${(MIN_TP_DIST_PCT * 100)}% minimum). This would cause premature take-profit from normal market noise. Please set TP at least ${MIN_TP_DIST_PCT * 100}% away from current price.\n`;
+              finalTP = undefined;
+            }
+          }
+
+          // ── v2.0.49: Minimum SL/TP gap constraint (2% of current price) ──
+          // Over-narrowing causes noise stop-outs + premature TP hits.
           if (finalSL !== undefined && finalTP !== undefined) {
             const sltpGap = Math.abs(finalTP - finalSL);
             const gapPct = sltpGap / pos.currentPrice;
-            if (gapPct < 0.01) {
-              log.warn(`🚫 SL/TP gap safety: ${pos.symbol} gap=$${sltpGap.toFixed(2)} (${(gapPct * 100).toFixed(2)}%) < 1% minimum — rejecting adjustment to prevent noise stop-out`);
+            if (gapPct < MIN_SLTP_GAP_PCT) {
+              retryError += `ERROR: SL/TP gap $${sltpGap.toFixed(2)} (${(gapPct * 100).toFixed(2)}%) < ${(MIN_SLTP_GAP_PCT * 100)}% minimum. SL and TP are too close together — normal market noise will trigger one of them. Please widen the gap to at least ${MIN_SLTP_GAP_PCT * 100}% of current price.\n`;
               finalSL = undefined;
               finalTP = undefined;
             }
           } else if (finalSL !== undefined && pos.takeProfit !== undefined) {
-            // Only SL is being adjusted — check against existing TP
             const sltpGap = Math.abs(pos.takeProfit - finalSL);
             const gapPct = sltpGap / pos.currentPrice;
-            if (gapPct < 0.01) {
-              log.warn(`🚫 SL/TP gap safety: ${pos.symbol} SL=$${finalSL.toFixed(2)} too close to existing TP=$${pos.takeProfit.toFixed(2)} (gap ${(gapPct * 100).toFixed(2)}% < 1%) — rejecting SL adjustment`);
+            if (gapPct < MIN_SLTP_GAP_PCT) {
+              retryError += `ERROR: SL $${finalSL.toFixed(2)} too close to existing TP $${pos.takeProfit.toFixed(2)} (gap ${(gapPct * 100).toFixed(2)}% < ${(MIN_SLTP_GAP_PCT * 100)}% minimum). Please move SL further from TP.\n`;
               finalSL = undefined;
             }
           } else if (finalTP !== undefined && pos.stopLoss !== undefined) {
-            // Only TP is being adjusted — check against existing SL
             const sltpGap = Math.abs(finalTP - pos.stopLoss);
             const gapPct = sltpGap / pos.currentPrice;
-            if (gapPct < 0.01) {
-              log.warn(`🚫 SL/TP gap safety: ${pos.symbol} TP=$${finalTP.toFixed(2)} too close to existing SL=$${pos.stopLoss.toFixed(2)} (gap ${(gapPct * 100).toFixed(2)}% < 1%) — rejecting TP adjustment`);
+            if (gapPct < MIN_SLTP_GAP_PCT) {
+              retryError += `ERROR: TP $${finalTP.toFixed(2)} too close to existing SL $${pos.stopLoss.toFixed(2)} (gap ${(gapPct * 100).toFixed(2)}% < ${(MIN_SLTP_GAP_PCT * 100)}% minimum). Please move TP further from SL.\n`;
               finalTP = undefined;
             }
           }
 
-          // Only push if at least one value changed (both could be undefined after validation)
-          if (finalSL !== undefined || finalTP !== undefined) {
-            adjustments.push({
-              positionId: pos.id,
-              symbol: pos.symbol,
-              newStopLoss: finalSL as number | undefined,
-              newTakeProfit: finalTP as number | undefined,
-              rationale: parsed.rationale,
-              confidence: 0.7,
-            });
-            log.info(`📐 Position ${pos.id.slice(0, 8)} adjusted: SL=${finalSL?.toFixed(2) ?? 'unchanged'} TP=${finalTP?.toFixed(2) ?? 'unchanged'}`);
-          } else {
-            log.warn(`📐 Position ${pos.id.slice(0, 8)}: both SL and TP rejected by safety layer — no adjustment applied.`);
+          // If both rejected after all validation, retry with error feedback
+          if (finalSL === undefined && finalTP === undefined && retryError) {
+            if (attempt < MAX_RETRIES - 1) {
+              log.warn(`📐 Position ${pos.id.slice(0, 8)} attempt ${attempt + 1}/${MAX_RETRIES}: all validation failed — retrying with error feedback`);
+              continue; // retry
+            } else {
+              log.warn(`📐 Position ${pos.id.slice(0, 8)}: all ${MAX_RETRIES} attempts failed — no adjustment applied. Last errors:\n${retryError}`);
+            }
           }
+
+          break; // either success or max retries reached
+        }
+
+        // Only push if at least one value changed
+        if (finalSL !== undefined || finalTP !== undefined) {
+          adjustments.push({
+            positionId: pos.id,
+            symbol: pos.symbol,
+            newStopLoss: finalSL as number | undefined,
+            newTakeProfit: finalTP as number | undefined,
+            rationale: lastRationale,
+            confidence: 0.7,
+          });
+          log.info(`📐 Position ${pos.id.slice(0, 8)} adjusted: SL=${finalSL?.toFixed(2) ?? 'unchanged'} TP=${finalTP?.toFixed(2) ?? 'unchanged'}`);
         }
       } catch (err) {
         log.warn(`Position adjustment failed for ${pos.id.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`);
