@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.52 (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup + HL SL/TP close detection + 最小 SL/TP 間距限制 + Stale real position cleanup + Real trade 持久化 + Consensus 方向性修正 + 學習衰減機制 + MAX_POSITION_PCT 移除 + Evolution signalThreshold 確定性強制 + Planck-Chaos 簡化 + Recent 20 trade win rate UI + PnL/PnL% PAPER/REAL 一致性 + 手動市場選擇 + Clear Drawdown 按鈕 + manualSymbolLock 修復 + SL/TP HL 雙向同步 + PnL 槓桿膨脹修復 + SL/TP trailing stop 驗證 + SL/TP 啟動時 HL 同步 + SL/TP 最大收窄步長 + 錯誤交易過濾 + Paper/Real 跨模式倉位顯示)
+> **版本**: 2.0.62 (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup + HL SL/TP close detection + 最小 SL/TP 間距限制 + Stale real position cleanup + Real trade 持久化 + Consensus 方向性修正 + 學習衰減機制 + MAX_POSITION_PCT 移除 + Evolution signalThreshold 確定性強制 + Planck-Chaos 簡化 + Recent 20 trade win rate UI + PnL/PnL% PAPER/REAL 一致性 + 手動市場選擇 + Clear Drawdown 按鈕 + manualSymbolLock 修復 + SL/TP HL 雙向同步 + PnL 槓桿膨脹修復 + SL/TP trailing stop 驗證 + SL/TP 啟動時 HL 同步 + SL/TP Retry Loop + SL/TP 最大收窄步長 + 錯誤交易過濾 + Paper/Real 跨模式倉位顯示 + Per-symbol consensus SL/TP 方向驗證 + SL/TP 自動修正 + SL/TP 推斷邏輯修正 + Options Data Layer + Options REST Polling + Options Audit + Options 最高投票權重 + Options-aware 進化系統)
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -79,6 +79,9 @@
 68. [B.49 SL/TP Retry Loop + Slower Narrowing](#b49-v2049-sltp-retry-loop--slower-narrowing)
 69. [B.50 SL/TP 最大收窄步長](#b50-v2050-sltp-最大收窄步長)
 70. [B.51 錯誤交易過濾 + Paper/Real 跨模式倉位顯示](#b51-v2051-錯誤交易過濾--paperreal-跨模式倉位顯示)
+71. [B.52 Per-Symbol Consensus SL/TP 方向驗證 + Trailing Stop](#b52-v2052-per-symbol-consensus-sltp-方向驗證--trailing-stop)
+72. [B.53 SL/TP 自動修正 + 推斷邏輯修正](#b53-v2053-sltp-自動修正--推斷邏輯修正)
+73. [B.54 Options Data Layer + REST Polling + Audit + 最高投票權重 + Options-aware 進化](#b54-v2054-options-data-layer--rest-polling--audit--最高投票權重--options-aware-進化)
 
 ---
 
@@ -6354,6 +6357,55 @@ normalizeDecision (sanity 0-100%) → Risk Auditor (can reduce) → Phase 4.5 (M
 | **錯誤交易過濾** | entry≈exit + PnL≈$0 嘅 phantom trades 顯示響 Trade Records | 過濾 price moved <0.01% AND \|PnL\| <$0.01 |
 | **REAL 倉位 PAPER mode** | Reconciliation filter 對所有 `agentId='hyperliquid-real'` 返回 false，閉倉 | Paper-mode sync block cache `cachedExchangePositions`；reconciliation 用 `hlConfirmedSymbols` keep HL-confirmed 倉位 |
 | **PAPER 倉位 REAL mode** | `serializePortfolio()` 過濾所有唔響 HL 嘅倉位 | 檢查 `legacyPositionModes` — legacy paper 倉位響 real mode 都顯示 |
+
+---
+
+### B.52 v2.0.52–v2.0.57: Per-Symbol Consensus SL/TP 方向驗證 + SL/TP 自動修正 + 推斷邏輯修正
+
+> **觸發**: (1) Per-symbol consensus 將錯誤方向嘅 SL/TP 推送到 HL；(2) 本地 mirror SL/TP inverted 但冇自動修正；(3) SL/TP 推斷邏輯用「最接近現價 = SL」係錯嘅。
+
+**v2.0.52**: `realTradingManager.adjustPosition()` 之前無視 `portfolio.adjustPosition()` 嘅拒絕，直接將 raw SL/TP 推到 HL。修正為：如果 portfolio 拒絕，用 position 現有嘅 validated SL/TP。
+
+**v2.0.53**: Per-symbol consensus loop 加入方向驗證（SL vs current price, TP vs current price + entry）先至 call `adjustPosition()`。
+
+**v2.0.54**: HL engine `adjustPosition()` SL 驗證由 entry price 改為 current price（允許 trailing stop）。
+
+**v2.0.55**: `syncSLTPFromExchange()` 加入方向驗證 + `correctInvertedSLTP()` 自動修正 inverted SL/TP。
+
+**v2.0.56**: `correctInvertedSLTP()` 延伸到處理 missing SL/TP（唔只 inverted）。
+
+**v2.0.57**: SL/TP 推斷邏輯由「最接近現價 = SL」改為基於 entry price + position direction：LONG: SL < entry, TP > entry；SHORT: SL > entry, TP < entry。
+
+---
+
+### B.53 v2.0.58–v2.0.61: Options Data Layer + REST Polling + Audit + 最高投票權重
+
+> **觸發**: Stocks/Indices 交易需要 options data（IV Rank, Gamma, P/C ratio）嚟提升 win rate + expectancy。
+
+**v2.0.58**: 新增 `src/analysis/options-data.ts` — Options Data Layer 連接 Massive.com (Polygon.io) WebSocket。提供 IV Rank, Skew, Implied Move, GEX, Put/Call ratio, High-OI strikes。`getRegimePlaybook()` Regime → Playbook mapping（Premium Sell / Directional Credit / Defined-Risk Debit / Stand Aside / Buy Convexity）。`validateSLAgainstImpliedMove()` SL 距離 vs implied move 驗證。
+
+**v2.0.59**: WebSocket → REST polling（15s interval）。Option chain snapshot endpoint 一次過返回 IV, Greeks, OI, quotes, trades。Rate limit (429) 時保留 cached data。
+
+**v2.0.60**: 7 個 audit gaps 修正：(1) `vetoNewPositions` 從未執行 → wired into decision cycle；(2) `validateSLAgainstImpliedMove` 從未呼叫 → wired into SL/TP pipeline；(3) IV Rank 計算由 arbitrary baseline 改為 chain IV range；(4) Gamma regime 由 raw gamma average 改為 put/call OI balance proxy；(5) Max pain 由 high OI strike 改為 actual calculation；(6) Stale header comment 修正；(7) Options context 覆蓋所有 open positions。
+
+**v2.0.61**: Options Data Layer 獲得最高投票權重（0.30）響 Stocks/Indices mode。`hacp.ts` 新增 `setOptionsVote()` 注入 options-derived vote 到 `runConsensusVote()`。Playbook → vote mapping：Stand Aside → HOLD (0.95 conf), Premium Sell → HOLD, Directional → follow trend。Vote 係 per-cycle（用完即清）。
+
+---
+
+### B.54 v2.0.62: Options-aware 進化系統
+
+> **觸發**: 進化系統需要包括 Options Data Layer 嘅資料嚟進化 Stocks/Indices 策略。
+
+**新增 types**:
+- `OptionsStrategyParameters`: 7 個 options-specific 參數（minIVRankForPremiumSell, maxIVRankForDebit, gammaRegimePreference, maxImpliedMovePct, putCallOIThreshold, eventRiskTolerance, targetPOP）
+- `SurvivalFitness.optionsAlpha`: 新 fitness dimension 量度策略有幾善用 options data
+
+**Evolution system**:
+- Default strategy 包含 `optionsParams` with balanced defaults
+- `mutate()` 有 options-specific directional mutation：optionsAlpha 低 → 收緊 IV thresholds + reduce max implied move；optionsAlpha 高 → relax thresholds + tune POP
+- `getContextForAgent()` 顯示 options strategy context with ENFORCED/informational labels
+
+**進化閉環**: Options data → `setOptionsVote()` (最高權重) → HACP consensus → 交易決定 → 交易結果 → `optionsAlpha` fitness → `mutate()` 突變 options 參數 → 下一個 cycle 策略更佳
 
 ---
 
