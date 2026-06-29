@@ -1052,8 +1052,36 @@ export class RealTradingManager {
             if (otherOrder?.triggerPx) actualTP = parseFloat(otherOrder.triggerPx);
           }
         }
-        // Sync the actual HL values back to the local mirror
+        // Sync the actual HL values back to the local mirror.
+        // v2.0.56: syncSLTPFromExchange() also runs correctInvertedSLTP()
+        // which may recalculate SL/TP if the local mirror had inverted values.
         this.portfolio.syncSLTPFromExchange(pos.symbol, actualSL, actualTP);
+
+        // v2.0.56: After correction, check if local SL/TP matches HL.
+        // If correctInvertedSLTP() changed the local values, push them to HL
+        // so the exchange has the correct trigger orders.
+        const correctedPos = this.portfolio.getPosition(sym);
+        if (correctedPos) {
+          const localSL = correctedPos.stopLossPrice;
+          const localTP = correctedPos.takeProfitPrice;
+          // Check if HL is missing SL or has a different SL than local
+          if (localSL !== undefined && localSL > 0) {
+            const localSLRounded = parseFloat(localSL.toFixed(2));
+            const hlHasSL = myOrders.some(o => o.triggerPx && Math.abs(parseFloat(o.triggerPx) - localSLRounded) < 1);
+            if (!hlHasSL) {
+              log.info(`🔧 Pushing corrected SL to HL for ${pos.symbol} @ $${localSL.toFixed(2)} (was inverted/missing on HL)`);
+              try { await engine.adjustPosition(pos.symbol, localSL, undefined); } catch { /* non-critical */ }
+            }
+          }
+          if (localTP !== undefined && localTP > 0) {
+            const localTPRounded = parseFloat(localTP.toFixed(2));
+            const hlHasTP = myOrders.some(o => o.triggerPx && Math.abs(parseFloat(o.triggerPx) - localTPRounded) < 1);
+            if (!hlHasTP) {
+              log.info(`🔧 Pushing corrected TP to HL for ${pos.symbol} @ $${localTP.toFixed(2)} (was inverted/missing on HL)`);
+              try { await engine.adjustPosition(pos.symbol, undefined, localTP); } catch { /* non-critical */ }
+            }
+          }
+        }
       }
     } catch (err) {
       log.warn(`syncSLTP failed: ${err instanceof Error ? err.message : String(err)}`);
