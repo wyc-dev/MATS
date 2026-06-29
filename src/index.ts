@@ -1543,6 +1543,17 @@ class AMACRFSystem {
                 }
               }
             }
+
+            // v2.0.48: Sync SL/TP from HL for legacy real positions in paper mode.
+            // This reads the actual HL trigger orders and updates the local mirror
+            // so the UI shows the real SL/TP values. Without this, the local mirror's
+            // SL/TP drifts from HL (HL rounds prices, user can manually adjust on HL).
+            // Also pushes any missing SL/TP from the local mirror to HL.
+            try {
+              await this.realTradingManager.syncSLTP();
+            } catch (err) {
+              log.warn(`SL/TP sync (paper mode legacy) failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
           } catch (err) {
             log.warn(`Real position sync in paper mode failed: ${err instanceof Error ? err.message : String(err)}`);
           }
