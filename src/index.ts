@@ -3326,11 +3326,19 @@ class AMACRFSystem {
           // (these are phantom trades from immediate open→close cycles, often
           // caused by reconciliation or system errors. They pollute the Trade
           // Records panel with meaningless entries).
+          // v2.0.53: FIX — previous filter used OR (priceMoved || hasPnl) which
+          // let fee-only trades through (price didn't move but PnL = -$0.15 from
+          // fees > $0.01). Now uses AND: a trade is kept only if price moved
+          // AND PnL is non-trivial. Fee-only trades (entry≈exit, PnL=fees) are
+          // filtered out regardless of fee amount.
           ...this.paperEngine.getTrades().slice(-50).filter(t => {
-            // Keep trades with meaningful price movement or non-trivial PnL
-            const priceMoved = Math.abs(t.exitPrice - t.entryPrice) / t.entryPrice > 0.0001; // >0.01%
+            // v2.0.53: Price must have moved meaningfully (>0.05% = 5 bps)
+            // AND PnL must be non-trivial (>$0.01). Fee-only trades where
+            // price barely moved but PnL = -(fees) are filtered out.
+            const priceMovedPct = Math.abs(t.exitPrice - t.entryPrice) / (t.entryPrice || 1);
+            const priceMoved = priceMovedPct > 0.0005; // >0.05% = 5 bps
             const hasPnl = Math.abs(t.pnl) > 0.01; // >$0.01
-            return priceMoved || hasPnl;
+            return priceMoved && hasPnl;
           }).map(t => ({
             id: t.id,
             symbol: t.symbol,
@@ -3351,10 +3359,12 @@ class AMACRFSystem {
           // the actual HL fill. Previously these were only used for learning
           // and never displayed in the UI.
           // v2.0.52: Also filter out error trades (entry ≈ exit, PnL ≈ 0).
+          // v2.0.53: Same AND fix as paper engine trades above.
           ...(isRealMode ? this.portfolio.getClosedRealTrades().slice(-50).filter(t => {
-            const priceMoved = Math.abs(t.exitPrice - t.entryPrice) / t.entryPrice > 0.0001;
+            const priceMovedPct = Math.abs(t.exitPrice - t.entryPrice) / (t.entryPrice || 1);
+            const priceMoved = priceMovedPct > 0.0005; // >0.05% = 5 bps
             const hasPnl = Math.abs(t.pnl) > 0.01;
-            return priceMoved || hasPnl;
+            return priceMoved && hasPnl;
           }).map(t => ({
             id: t.id,
             symbol: t.symbol,
@@ -3401,7 +3411,13 @@ class AMACRFSystem {
           // fills (last 5) so the Trade Records panel reflects the real
           // exchange history. Marked with status 'hl-fill' so the UI can
           // distinguish them from local mirror trades.
-          ...(isRealMode ? this.cachedHLFills.map(f => ({
+          // v2.0.53: Filter out fee-only fills (price didn't move meaningfully).
+          ...(isRealMode ? this.cachedHLFills.filter(f => {
+            // HL fills have entry=exit (same fill price), so we can't use
+            // price movement. Instead, filter by PnL significance: keep fills
+            // where |closedPnl| > $0.01 (actual profit/loss, not dust).
+            return Math.abs(f.closedPnl) > 0.01;
+          }).map(f => ({
             id: `hl-fill-${f.timestamp}-${f.symbol}`,
             symbol: f.symbol,
             side: f.side,
