@@ -913,6 +913,33 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         }
       }
 
+      // v2.0.64: CANCEL existing trigger orders BEFORE placing new ones.
+      // Without this, every SL/TP adjustment adds a NEW pair of trigger orders
+      // on HL while the old ones remain — causing duplicate/stale orders to
+      // accumulate (e.g. 5 SL + 5 TP for the same position).
+      // We cancel all existing reduce-only orders for this coin + close side,
+      // then place fresh SL + TP orders.
+      try {
+        const existingOrders = await this.getOpenOrders();
+        const closeSide = pos.side === 'buy' ? 'S' : 'B'; // sell to close long, buy to close short
+        const myOrders = existingOrders.filter(o =>
+          o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
+          o.side === closeSide
+        );
+        if (myOrders.length > 0) {
+          log.info(`🗑️ Cancelling ${myOrders.length} existing trigger order(s) for ${pos.symbol} before placing new SL/TP`);
+          for (const o of myOrders) {
+            try {
+              await this.cancelOrderWithAsset(asset.index, o.oid);
+            } catch (err) {
+              log.warn(`Failed to cancel order ${o.oid} for ${pos.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+        }
+      } catch (err) {
+        log.warn(`Failed to fetch/cancel existing orders for ${pos.symbol}: ${err instanceof Error ? err.message : String(err)} — continuing with new placement`);
+      }
+
       // v2.0.33: Track actual success of trigger order placement.
       // Previously returned true even when HL rejected the orders.
       let slPlaced = !sl; // if no SL needed, consider it "placed"

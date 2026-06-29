@@ -34,7 +34,7 @@ function StatCell({ label, value, cls = 'neutral', sub }: { label: string; value
 
 function SystemStatusPanel({ data }: { data: APIData | null }) {
   const s = data?.status
-  if (!s) return <div className="panel"><div className="panel-title">System Status</div><span className="text-tertiary">Waiting...</span></div>
+  if (!s) return <div className="panel"><div className="panel-title">System Status</div><span className="text-tertiary" style={{fontSize:'0.7rem'}}>Waiting...</span></div>
 
   const decision = data?.consensus?.decision
   const vetoed = data?.consensus?.metaAgentOverridden
@@ -69,7 +69,7 @@ function SystemStatusPanel({ data }: { data: APIData | null }) {
       </div>
 
       {s.cycleInProgress && (
-        <div className="cycle-spinner cycle-spinner-top">
+        <div className="cycle-spinner" style={{marginTop: 12}}>
           <span className="spinner" />
           <span>{phaseLabel || 'Decision cycle in progress...'}</span>
         </div>
@@ -128,7 +128,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
           {isLive && liveProgress.status === 'thinking' && <span className="live-dot" />}
         </div>
         {analyzingSymbols.length > 0 && (
-          <div className="agent-symbols">
+          <div className="agent-symbols" style={{fontSize:'0.6rem', color:'var(--text-tertiary)', marginLeft:8}}>
             {analyzingSymbols.join(' , ')}
           </div>
         )}
@@ -161,7 +161,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
           <div className="agent-footer">
             {decision && (
               <span className="agent-footer-item">
-                <span className={`decision-tag ${decision.action} decision-tag-inner`}>
+                <span className={`decision-tag ${decision.action}`} style={{fontSize:'0.55rem',padding:'1px 5px'}}>
                   {decision.action.toUpperCase()}
                 </span>
                 {decision.positionSizePct > 0 && <span>{(decision.positionSizePct * 100).toFixed(1)}%</span>}
@@ -177,7 +177,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
               <span className="agent-footer-item thinking-pulse">⟳ thinking...</span>
             )}
             {thought?.metadata?.fallback && !isLive && (
-              <span className="agent-footer-item agent-footer-fallback">⚠️ Fallback</span>
+              <span className="agent-footer-item" style={{color:'var(--accent-gold)'}}>⚠️ Fallback</span>
             )}
           </div>
         </>
@@ -187,11 +187,12 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
         </div>
       )}
       {/* Model selector inside each agent card */}
-      <div className="agent-card-model-row">
+      <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
         <select
-          className="model-select model-select-wide"
+          className="model-select"
           value={currentModel}
           onChange={e => onModelChange(role, e.target.value)}
+          style={{ maxWidth: '100%', fontSize: '0.6rem', flex: 1 }}
         >
           {models.map(m => (
             <option key={m.id} value={m.id}>{m.label}</option>
@@ -299,21 +300,21 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       </div>
 
       {/* Trade Mode toggle only (exchange fixed to Hyperliquid) */}
-      <div className="market-control-group">
-        <div className="market-control-col">
-          <div className="market-control-label">Trade Mode</div>
-          <div className="market-agent-selector-btns">
-            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'paper' ? 'active' : ''}`} onClick={() => handleTradeModeChange('paper')}>📒 Paper</button>
-            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'real' ? 'active' : ''}`} onClick={() => handleTradeModeChange('real')}>💰 Real</button>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', marginBottom: 4 }}>Trade Mode</div>
+          <div className="market-agent-selector-btns" style={{ display: 'flex', gap: 6 }}>
+            <button className={`year-btn ${selectedTradeMode === 'paper' ? 'active' : ''}`} style={{ flex: 1, padding: '4px 8px', fontSize: '0.65rem' }} onClick={() => handleTradeModeChange('paper')}>📒 Paper</button>
+            <button className={`year-btn ${selectedTradeMode === 'real' ? 'active' : ''}`} style={{ flex: 1, padding: '4px 8px', fontSize: '0.65rem' }} onClick={() => handleTradeModeChange('real')}>💰 Real</button>
           </div>
         </div>
-        <div className="market-control-col">
-          <div className="market-control-label">Exchange · Asset Type</div>
-          <div className="market-control-btns-row">
-            <select className="model-select model-select-wide" value={exchange} onChange={e => handleExchangeChange(e.target.value)}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', marginBottom: 4 }}>Exchange · Asset Type</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <select className="model-select" value={exchange} onChange={e => handleExchangeChange(e.target.value)} style={{ flex: 1, fontSize: '0.65rem' }}>
               <option value="hyperliquid">Hyperliquid</option>
             </select>
-            <select className="model-select model-select-wide" value={selectedAssetType} onChange={e => handleAssetTypeChange(e.target.value)}>
+            <select className="model-select" value={selectedAssetType} onChange={e => handleAssetTypeChange(e.target.value)} style={{ flex: 1, fontSize: '0.65rem' }}>
               <option value="crypto_perps">Crypto Perps</option>
               <option value="indices">Indices</option>
               <option value="stocks">Stocks</option>
@@ -326,12 +327,12 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       </div>
 
       {/* Position Size & Leverage Controls */}
-      <div className="market-control-group">
-        <div className="market-control-col">
-          <div className="market-control-label">
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', marginBottom: 4 }}>
             Position Size: <strong>{(positionSizePct * 100).toFixed(0)}%</strong>
           </div>
-          <div className="slider-row">
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
             <input
               type="range" min="1" max="20" value={Math.round(positionSizePct * 100)}
               onChange={async (e) => {
@@ -344,14 +345,14 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               }}
               style={{ flex: 1, height: 4, accentColor: 'var(--accent)' }}
             />
-            <span className="slider-value">{Math.round(positionSizePct * 100)}%</span>
+            <span style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', minWidth: 20, textAlign: 'right' }}>{Math.round(positionSizePct * 100)}%</span>
           </div>
         </div>
-        <div className="market-control-col">
-          <div className="market-control-label">
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', marginBottom: 4 }}>
             Leverage: <strong>{leverage}x</strong>
           </div>
-          <div className="slider-row">
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
             <input
               type="range" min="1" max="10" value={leverage}
               onChange={async (e) => {
@@ -364,42 +365,48 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               }}
               style={{ flex: 1, height: 4, accentColor: 'var(--accent)' }}
             />
-            <span className="slider-value">{leverage}x</span>
+            <span style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', minWidth: 20, textAlign: 'right' }}>{leverage}x</span>
           </div>
         </div>
       </div>
 
       {/* Status msg */}
-      <div className={`model-status model-status-compact ${statusVisible ? '' : 'hidden'}`}>{statusMsg}</div>
+      <div className={`model-status ${statusVisible ? '' : 'hidden'}`} style={{ marginTop: 4, fontSize: '0.65rem' }}>{statusMsg}</div>
 
       {/* Price info */}
       {activeSymbol ? (
         <>
-          <div className="market-price market-price-top">
-            <span className="market-symbol market-symbol-lg">{activeSymbol}</span>
-            <span className="market-value market-value-sm">${price.toFixed(2)}</span>
-            <span className={`market-change market-change-sm ${change24h >= 0 ? 'text-green' : 'text-red'}`}>
+          <div className="market-price" style={{ marginTop: 10 }}>
+            <span className="market-symbol" style={{ fontSize: '0.8rem' }}>{activeSymbol}</span>
+            <span className="market-value" style={{ fontSize: '0.85rem' }}>${price.toFixed(2)}</span>
+            <span className={`market-change ${change24h >= 0 ? 'text-green' : 'text-red'}`} style={{ fontSize: '0.75rem' }}>
               {change24h >= 0 ? '+' : ''}{change24h.toFixed(2)}
             </span>
           </div>
           {/* Mini TradingView chart for the selected market — refreshes every cycle.
               Shows the current position's entry point + live SL/TP (v2.0.16). */}
-          <div className="market-vol-row">
+          <div style={{ marginTop: 6, marginBottom: 6 }}>
             <TradingViewChart symbol={activeSymbol} currentPrice={price} trades={mainChartTrades} refreshKey={s?.cycles ?? 0} />
           </div>
           {/* Top pairs list — v2.0.44: Clickable to manually select trading market.
               Clicking a pair sends a POST to /api/market-agent/select-symbol which
               locks the selection (autoSelectTopPair won't override it) and triggers
               an immediate decision cycle for the newly selected market. */}
-          <div className="market-pairs-header">
-            <div className="market-pairs-header-label">
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginBottom: 6 }}>
               Top Volume Pairs — click to select trading market
             </div>
             <div className="top-pairs-list">
               {topPairs.slice(0, 5).map((pair, i) => (
                 <div
                   key={pair.symbol}
-                  className={`top-pair-row top-pair-row-inline ${pair.symbol === activeSymbol ? 'active-pair' : ''}`}
+                  className={`top-pair-row ${pair.symbol === activeSymbol ? 'active-pair' : ''}`}
+                  style={{
+                    fontSize: '0.8rem',
+                    padding: '6px 8px',
+                    cursor: 'pointer',
+                    transition: 'background 0.15s, transform 0.1s',
+                  }}
                   onClick={async () => {
                     try {
                       await fetch(`${API_BASE}/market-agent/select-symbol`, {
@@ -414,11 +421,11 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                   onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
                 >
-                  <span className="top-pair-rank top-pair-cell">#{i + 1}</span>
-                  <span className="top-pair-symbol top-pair-cell-bold">{pair.symbol}</span>
-                  <span className="top-pair-vol top-pair-cell">{pair.volume24h > 0 ? `$${(pair.volume24h / 1_000_000).toFixed(1)}M` : 'N/A'}</span>
-                  <span className="top-pair-vol top-pair-cell-tertiary">{pair.volume5m != null && pair.volume5m > 0 ? `${(pair.volume5m / 1000).toFixed(0)}K` : '-'}</span>
-                  <span className={`top-pair-chg top-pair-cell ${pair.priceChangePercent >= 0 ? 'positive' : 'negative'}`}>
+                  <span className="top-pair-rank" style={{ fontSize: '0.8rem' }}>#{i + 1}</span>
+                  <span className="top-pair-symbol" style={{ fontSize: '0.8rem', fontWeight: 600 }}>{pair.symbol}</span>
+                  <span className="top-pair-vol" style={{ fontSize: '0.8rem' }}>{pair.volume24h > 0 ? `$${(pair.volume24h / 1_000_000).toFixed(1)}M` : 'N/A'}</span>
+                  <span className="top-pair-vol" style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>{pair.volume5m != null && pair.volume5m > 0 ? `${(pair.volume5m / 1000).toFixed(0)}K` : '-'}</span>
+                  <span className={`top-pair-chg ${pair.priceChangePercent >= 0 ? 'positive' : 'negative'}`} style={{ fontSize: '0.8rem' }}>
                     {pair.volume24h > 0 ? `${pair.priceChangePercent >= 0 ? '+' : ''}${pair.priceChangePercent.toFixed(2)}%` : 'N/A'}
                   </span>
                 </div>
@@ -427,8 +434,8 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           </div>
         </>
       ) : (
-        <div className="empty-state empty-state-compact">
-          <div className="empty-text empty-text-sm">Waiting for market data...</div>
+        <div className="empty-state" style={{ marginTop: 12, padding: '12px 0' }}>
+          <div className="empty-text" style={{ fontSize: '0.75rem' }}>Waiting for market data...</div>
         </div>
       )}
     </div>
@@ -579,11 +586,11 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
 
       {/* TradingView Chart — only shows when user clicks a position row */}
       {displaySymbol ? (
-        <div className="portfolio-section-header">
-          <div className="portfolio-section-top">
-            <span className="portfolio-section-label">
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+            <span style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)' }}>
               Chart: {displaySymbol}
-              {positions.length > 0 && !chartSymbol && <span className="portfolio-click-hint">(click a position row)</span>}
+              {positions.length > 0 && !chartSymbol && <span style={{ marginLeft: 6, fontSize: '0.6rem', color: 'var(--text-tertiary)' }}>(click a position row)</span>}
             </span>
           </div>
           <TradingViewChart
@@ -594,8 +601,8 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
           />
         </div>
       ) : (
-        <div className="empty-state chart-empty-state">
-          <div className="empty-text empty-text-sm">Click a position row to view chart</div>
+        <div className="empty-state" style={{ margin: '12px 0' }}>
+          <div className="empty-text" style={{ fontSize: '0.75rem' }}>Click a position row to view chart</div>
         </div>
       )}
 
@@ -634,11 +641,22 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
                     console.error('Failed to clear drawdown:', err);
                   }
                 }}
-                className="clear-drawdown-btn"
+                style={{
+                  display: 'block',
+                  marginTop: 4,
+                  padding: '2px 8px',
+                  fontSize: '0.6rem',
+                  fontWeight: 600,
+                  background: 'var(--accent-red)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                }}
               >
                 Clear Drawdown
               </button>
-              <span className="stat-sub stat-sub-block">
+              <span className="stat-sub" style={{ display: 'block', fontSize: '0.6em', opacity: 0.7, marginTop: 2 }}>
                 Drawdown ≥ 15% — trading halted. Clear to relaunch.
               </span>
             </>
@@ -650,7 +668,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
             {((s.recent20WinRate ?? 0) * 100).toFixed(1)}%
           </span>
           {/* v2.0.42: Shows win rate from the most recent 20 trades only */}
-          <span className="stat-sub stat-sub-inline">
+          <span className="stat-sub" style={{ display: 'block', fontSize: '0.7em', opacity: 0.7, marginTop: 2 }}>
             (lastest 20 trades)
           </span>
         </div>
@@ -658,7 +676,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
           <span className="stat-label">Trades</span>
           <span className="stat-number neutral">
             {s.tradeCount}
-            <span className="stat-sub stat-sub-ml">W:{s.winCount} L:{s.lossCount}</span>
+            <span className="stat-sub" style={{marginLeft:6}}>W:{s.winCount} L:{s.lossCount}</span>
           </span>
         </div>
       </div>
@@ -686,21 +704,39 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
             <tbody>
               {Object.values(p.positions).map((pos: any) => {
                 return (
-                <tr key={pos.id} onClick={() => setChartSymbol(pos.symbol)} className={`position-row-clickable ${chartSymbol === pos.symbol ? 'selected-position' : ''}`}>
-                  <td className="td-action-cell" onClick={(e) => e.stopPropagation()}>
+                <tr key={pos.id} onClick={() => setChartSymbol(pos.symbol)} style={{ cursor: 'pointer' }} className={chartSymbol === pos.symbol ? 'selected-position' : ''}>
+                  <td style={{ width: '40px', textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
                     {closeConfirmSymbol === pos.symbol ? (
-                      <span className="action-btns-row">
+                      <span style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
                         <button
                           onClick={() => handleManualClose(pos.symbol)}
                           disabled={closingSymbol === pos.symbol}
-                          className="close-btn-action"
+                          style={{
+                            background: 'var(--accent-red)',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            padding: '2px 6px',
+                            fontSize: '0.65rem',
+                            cursor: closingSymbol === pos.symbol ? 'wait' : 'pointer',
+                            fontWeight: 600,
+                          }}
                         >
                           {closingSymbol === pos.symbol ? '...' : '✓'}
                         </button>
                         <button
                           onClick={() => setCloseConfirmSymbol(null)}
                           disabled={closingSymbol === pos.symbol}
-                          className="close-btn-cancel"
+                          style={{
+                            background: 'var(--bg-tertiary)',
+                            color: 'var(--text-secondary)',
+                            border: 'none',
+                            borderRadius: '4px',
+                            padding: '2px 6px',
+                            fontSize: '0.65rem',
+                            cursor: 'pointer',
+                            fontWeight: 600,
+                          }}
                         >
                           ✗
                         </button>
@@ -709,7 +745,17 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
                       <button
                         onClick={() => setCloseConfirmSymbol(pos.symbol)}
                         title="Close position"
-                        className="close-btn-trigger"
+                        style={{
+                          background: 'transparent',
+                          color: 'var(--accent-red)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '4px',
+                          padding: '2px 8px',
+                          fontSize: '0.65rem',
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                          opacity: 0.6,
+                        }}
                         onMouseEnter={(e) => { e.currentTarget.style.opacity = '1' }}
                         onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.6' }}
                       >
@@ -717,28 +763,28 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
                       </button>
                     )}
                   </td>
-                  <td className="td-mode-cell">
+                  <td style={{fontSize:'0.75rem'}}>
                     {pos.agentId === 'hyperliquid-real' ? (
-                      <span className="mode-badge-real">REAL</span>
+                      <span style={{color:'var(--accent-green)', fontWeight:600}}>REAL</span>
                     ) : (
-                      <span className="mode-badge-paper">PAPER</span>
+                      <span style={{color:'var(--text-tertiary)', fontWeight:600}}>PAPER</span>
                     )}
                   </td>
-                  <td className="td-symbol-cell">{pos.symbol}</td>
+                  <td style={{fontSize:'0.9rem', fontWeight:600}}>{pos.symbol}</td>
                   <td><span className={`side-tag ${pos.side}`}>{pos.side.toUpperCase()}</span></td>
                   <td>{pos.quantity.toFixed(6)}</td>
-                  <td className="td-price-cell">
+                  <td style={{fontFamily:'var(--font-mono)', fontSize:'0.95rem', fontWeight:500, color:'var(--text-secondary)'}}>
                     ${(pos.quantity * pos.currentPrice).toFixed(2)}
                   </td>
                   <td>${pos.averageEntryPrice.toFixed(2)}</td>
                   <td>${pos.currentPrice.toFixed(2)}</td>
-                  <td className={`td-pnl-cell ${pos.unrealizedPnl >= 0 ? 'td-pnl-positive' : 'td-pnl-negative'}`}>
+                  <td style={{color: pos.unrealizedPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'}}>
                     ${pos.unrealizedPnl.toFixed(2)} ({(pos.unrealizedPnlPct * 100).toFixed(2)}%)
                   </td>
                   <td>{pos.stopLossPrice ? `$${pos.stopLossPrice.toFixed(2)}` : '-'}</td>
                   <td>{pos.takeProfitPrice ? `$${pos.takeProfitPrice.toFixed(2)}` : '-'}</td>
                   <td>{pos.leverage ?? 1}x</td>
-                  <td className="td-time-cell">
+                  <td style={{fontSize:'0.9rem', color:'var(--text-tertiary)', whiteSpace:'nowrap'}}>
                     {formatHKTime(pos.openedAt)}
                   </td>
                 </tr>
@@ -756,7 +802,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
       )}
 
       {/* History Panel */}
-      <div className="trade-history-section">
+      <div style={{ marginTop: 14 }}>
         <HistoryPanel data={data} />
       </div>
     </div>
@@ -787,8 +833,8 @@ function HistoryPanel({ data }: { data: APIData | null }) {
           <span className="panel-title">Trade Records</span>
           <span className="panel-badge">0 trades</span>
         </div>
-        <div className="empty-state trade-history-empty">
-          <div className="empty-text empty-text-sm">No trades yet</div>
+        <div className="empty-state" style={{ padding: '16px 0' }}>
+          <div className="empty-text" style={{ fontSize: '0.75rem' }}>No trades yet</div>
         </div>
       </div>
     )
@@ -798,62 +844,71 @@ function HistoryPanel({ data }: { data: APIData | null }) {
     <div className="panel">
       <div className="panel-header">
         <span className="panel-title">Trade Records</span>
-        <div className="trade-filter-row">
-          <span className="panel-badge trade-filter-badge">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="panel-badge" style={{ display: 'flex', gap: 6 }}>
             {openCount > 0 && <span>{openCount} open</span>}
             {closedCount > 0 && <span>{closedCount} closed</span>}
           </span>
-          <div className="trade-filter-btns">
-            <button className="header-btn trade-page-btn"
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button className="header-btn" style={{ padding: '3px 10px', fontSize: '0.6rem', opacity: safePage === 0 ? 0.3 : 1 }}
               disabled={safePage === 0} onClick={() => setPage(p => Math.max(0, p - 1))}>◀</button>
-            <span className="trade-page-sep">
+            <span style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)', padding: '0 6px', alignSelf: 'center' }}>
               {safePage + 1}/{totalPages}
             </span>
-            <button className="header-btn trade-page-btn"
+            <button className="header-btn" style={{ padding: '3px 10px', fontSize: '0.6rem', opacity: safePage >= totalPages - 1 ? 0.3 : 1 }}
               disabled={safePage >= totalPages - 1} onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}>▶</button>
           </div>
         </div>
       </div>
-      <div className="trade-list">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {visible.map((t: any, i: number) => {
           const isOpen = t.status === 'open'
           return (
-            <div key={t.id ?? i} className="trade-record-card" style={{
+            <div key={t.id ?? i} style={{
+              display: 'flex', flexDirection: 'column', gap: 3,
+              padding: '8px 12px', borderRadius: 'var(--radius-md)',
               background: isOpen ? 'rgba(255, 215, 0, 0.04)' : 'var(--surface-elevated)',
               border: isOpen ? '1px solid rgba(255, 215, 0, 0.15)' : '1px solid var(--glass-border)',
+              fontSize: '0.7rem',
             }}>
-              <div className="trade-card-row">
-                <span className={`side-tag trade-card-side-tag ${t.side}`}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span className={`side-tag ${t.side}`} style={{ fontSize: '0.55rem', padding: '1px 5px' }}>
                   {t.side.toUpperCase()}
                 </span>
-                <span className="trade-card-symbol">{t.symbol}</span>
+                <span style={{ fontWeight: 600, fontSize: '0.72rem' }}>{t.symbol}</span>
                 {isOpen && (
-                  <span className="trade-badge-open">
+                  <span style={{
+                    fontSize: '0.55rem', padding: '1px 5px', borderRadius: 'var(--radius-sm)',
+                    background: 'rgba(255, 215, 0, 0.12)', color: '#ffd700', fontWeight: 600,
+                  }}>
                     OPEN
                   </span>
                 )}
                 {!isOpen && (
-                  <span className="trade-badge-closed">
+                  <span style={{
+                    fontSize: '0.55rem', padding: '1px 5px', borderRadius: 'var(--radius-sm)',
+                    background: 'rgba(255, 255, 255, 0.06)', color: 'var(--text-tertiary)', fontWeight: 600,
+                  }}>
                     CLOSE
                   </span>
                 )}
-                <span className="trade-card-meta">
+                <span style={{ color: 'var(--text-tertiary)', fontSize: '0.6rem' }}>
                   Invest ${t.investment?.toFixed(2) ?? '—'} × {t.leverage ?? 1}x
                 </span>
-                <span className="trade-card-meta">
+                <span style={{ color: 'var(--text-tertiary)', fontSize: '0.6rem' }}>
                   {isOpen
                     ? `Entry $${t.entryPrice?.toFixed(2)}`
                     : `Entry $${t.entryPrice?.toFixed(2)} → Exit $${t.exitPrice?.toFixed(2)}`
                   }
                 </span>
                 {!isOpen && (
-                  <span className="trade-pnl-value" style={{
+                  <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontWeight: 600,
                     color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
                     {t.pnl >= 0 ? '+' : ''}${t.pnl?.toFixed(2) ?? '0.00'} ({(t.pnlPct != null ? (t.pnlPct * 100) : 0).toFixed(1)}%)
                   </span>
                 )}
               </div>
-              <div className="trade-card-footer">
+              <div style={{ display: 'flex', gap: 12, fontSize: '0.6rem', color: 'var(--text-tertiary)' }}>
                 <span>Open: {formatHKTime(t.openedAt)}</span>
                 {!isOpen && <span>Close: {formatHKTime(t.closedAt)}</span>}
               </div>
@@ -904,7 +959,7 @@ function DebatePanel({ data }: { data: APIData | null }) {
       </div>
 
       {progress && progress.phase === 'thinking' && (
-        <div className="cycle-spinner evo-cycle-spinner">
+        <div className="cycle-spinner" style={{marginBottom: 12}}>
           <span className="spinner" />
           <span>💭 Agents Thinking</span>
         </div>
@@ -943,25 +998,25 @@ function DebatePanel({ data }: { data: APIData | null }) {
 
           {/* Per-symbol consensus cards */}
           {consensus.perSymbolConsensus?.length > 1 && (
-            <div className="per-symbol-consensus">
+            <div className="per-symbol-consensus" style={{marginTop: 10, display:'flex', flexDirection:'column', gap:6}}>
               {consensus.perSymbolConsensus.map((psc: any) => {
                 const isMkt = !psc.hasPosition
                 const actionClass = psc.action === 'close' ? 'sell' : psc.action
                 return (
-                  <div key={psc.symbol} className={`consensus-banner consensus-banner-compact ${actionClass}`}>
-                    <div className="consensus-row">
-                      <span className="consensus-symbol">
+                  <div key={psc.symbol} className={`consensus-banner ${actionClass}`} style={{padding:'6px 10px', margin:0, opacity: isMkt ? 0.6 : 1}}>
+                    <div style={{display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
+                      <span style={{fontWeight:600, fontSize:'0.75rem', color:'var(--text-primary)'}}>
                         {psc.symbol.toUpperCase()}
-                        {isMkt && <span className="consensus-meta-tag">(market)</span>}
-                        {psc.hasPosition && <span className="consensus-meta-green">● position</span>}
+                        {isMkt && <span style={{fontSize:'0.6rem', color:'var(--text-muted)', marginLeft:4}}>(market)</span>}
+                        {psc.hasPosition && <span style={{fontSize:'0.6rem', color:'var(--green)', marginLeft:4}}>● position</span>}
                       </span>
                       <span className={`vote-action-tag ${actionClass}`}>{psc.action.toUpperCase()}</span>
                       <span style={{fontSize:'0.65rem', color:'var(--text-secondary)'}}>{(psc.confidence * 100).toFixed(0)}%</span>
-                      {psc.closePosition && <span className="consensus-meta-red">🔴 CLOSE</span>}
-                      {psc.suggestedStopLoss && <span className="consensus-meta-muted">SL:${psc.suggestedStopLoss.toFixed(1)}</span>}
-                      {psc.suggestedTakeProfit && <span className="consensus-meta-muted">TP:${psc.suggestedTakeProfit.toFixed(1)}</span>}
+                      {psc.closePosition && <span style={{fontSize:'0.6rem', color:'var(--red)'}}>🔴 CLOSE</span>}
+                      {psc.suggestedStopLoss && <span style={{fontSize:'0.6rem', color:'var(--text-muted)'}}>SL:${psc.suggestedStopLoss.toFixed(1)}</span>}
+                      {psc.suggestedTakeProfit && <span style={{fontSize:'0.6rem', color:'var(--text-muted)'}}>TP:${psc.suggestedTakeProfit.toFixed(1)}</span>}
                     </div>
-                    <div className="consensus-rationale">{psc.rationale}</div>
+                    <div style={{fontSize:'0.65rem', color:'var(--text-secondary)', marginTop:2}}>{psc.rationale}</div>
                   </div>
                 )
               })}
@@ -975,12 +1030,13 @@ function DebatePanel({ data }: { data: APIData | null }) {
         return (
           <div key={round.roundNumber} className="round-card">
             <div
-              className="round-head debate-toggle-clickable"
+              className="round-head"
               onClick={() => toggleRound(round.roundNumber)}
+              style={{ cursor: 'pointer', userSelect: 'none' }}
             >
               <span className="round-num">Round {round.roundNumber}</span>
               <span className={`round-phase-tag ${round.phase}`}>{round.phase.toUpperCase()}</span>
-              <span className="round-toggle round-toggle-right">
+              <span className="round-toggle" style={{ marginLeft: 'auto', fontSize: '0.7rem', color: 'var(--text-tertiary)' }}>
                 {isExpanded ? '▼' : '▶'} {round.statements.length} statement{round.statements.length !== 1 ? 's' : ''}
               </span>
             </div>
@@ -1118,7 +1174,7 @@ function StrategyCard({ strategy }: { strategy: any }) {
             {(strategy.fitness * 100).toFixed(1)}%
           </span>
           <span className="evo-strategy-status active">{strategy.status}</span>
-          <span className="evo-strategy-params evo-params-right">
+          <span className="evo-strategy-params" style={{ marginLeft: 'auto' }}>
             M{strategy.momentumWindow} R{strategy.riskAversion.toFixed(2)} S{strategy.signalThreshold.toFixed(2)}
           </span>
         </div>
@@ -1164,7 +1220,7 @@ function RBCSection({ rbcState, openPositionSymbols }: { rbcState: any; openPosi
       <div className="evo-section-header">
         <div className="evo-section-accent" />
         <span className="evo-section-title">RBC Clusters</span>
-        {hasSymbols && <span className="evo-badge evo-badge-right">{rbcState.symbols.length} symbols</span>}
+        {hasSymbols && <span className="evo-badge" style={{ marginLeft: 'auto' }}>{rbcState.symbols.length} symbols</span>}
       </div>
 
       {!hasSymbols && !hasPending ? (
@@ -1197,10 +1253,10 @@ function RBCSection({ rbcState, openPositionSymbols }: { rbcState: any; openPosi
               const hasPosition = openPositionSymbols?.has(symState.symbol.toLowerCase())
               return (
                 <div key={symState.symbol} className="evo-cluster-symbol">
-                  <div className="evo-cluster-symbol-header evo-cluster-clickable" onClick={() => toggleExpand(symState.symbol)}>
+                  <div className="evo-cluster-symbol-header" onClick={() => toggleExpand(symState.symbol)} style={{ cursor: 'pointer' }}>
                     <span className={`evo-expand-arrow ${isExpanded ? 'expanded' : ''}`}>▶</span>
                     <span className="evo-cluster-symbol-name">{symState.symbol.toUpperCase()}</span>
-                    {hasPosition && <span className="evo-badge evo-badge-position">POSITION</span>}
+                    {hasPosition && <span className="evo-badge" style={{ background: 'var(--green)', color: '#000' }}>POSITION</span>}
                     <span className="evo-badge">{symState.winCount}W/{symState.lossCount}L *</span>
                     <span className="evo-badge">{edgePct}% edge</span>
                     <span className="evo-cluster-indicator">{verdictIcon}</span>
@@ -1208,7 +1264,7 @@ function RBCSection({ rbcState, openPositionSymbols }: { rbcState: any; openPosi
 
                   {/* Per-dimension bars — per-symbol, not shared globally — only when expanded */}
                   {isExpanded && symState.dimDetails?.length > 0 && (
-                    <div className="rbc-dim-list rbc-dim-list-top">
+                    <div className="rbc-dim-list" style={{ marginTop: 10 }}>
                       {symState.dimDetails.map((d: any) => {
                         const span = d.globalMax - d.globalMin || 1
                         const toPct = (v: number) => ((v - d.globalMin) / span) * 100
@@ -1249,8 +1305,8 @@ function RBCSection({ rbcState, openPositionSymbols }: { rbcState: any; openPosi
                       })}
 
                       {/* Summary footer — white line + key stats */}
-                      <div className="rbc-summary-row rbc-summary-top">
-                        <span className="rbc-dim-name rbc-dim-name-secondary">RBC Edge</span>
+                      <div className="rbc-summary-row" style={{ marginTop: 8 }}>
+                        <span className="rbc-dim-name" style={{ color: 'var(--text-secondary)' }}>RBC Edge</span>
                         <div className="rbc-dim-track">
                           <div
                             className="rbc-summary-fill"
@@ -1315,7 +1371,7 @@ function RBCSection({ rbcState, openPositionSymbols }: { rbcState: any; openPosi
         </div>
         <div className="rbc-legend-footer">
           Ranges grow monotonically as new trades are recorded — they never shrink. The white dot moves each cycle with live market state.
-          <span className="rbc-legend-footer-note rbc-legend-note-block">* Win/loss counts are based on <strong>hypothetical training data</strong>: directional moves &gt;0.1% feed one winning sample, flat moves &lt;0.05% feed two losing samples (both directions). This reflects price-action bias, not real trade PnL.</span>
+          <span className="rbc-legend-footer-note" style={{ display: 'block', marginTop: 6 }}>* Win/loss counts are based on <strong>hypothetical training data</strong>: directional moves &gt;0.1% feed one winning sample, flat moves &lt;0.05% feed two losing samples (both directions). This reflects price-action bias, not real trade PnL.</span>
         </div>
       </div>
     </div>
@@ -1339,9 +1395,9 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
 
   if (!evo) {
     return (
-      <div className="evo-panel evo-panel-top">
+      <div className="evo-panel" style={{ marginTop: 12 }}>
         <EvolutionHeader generation={0} symbolCount={0} onReset={handleResetTradeHistory} resetStatus={resetStatus} />
-        <div className="evo-empty evo-empty-top">
+        <div className="evo-empty" style={{ marginTop: 20 }}>
           <div className="evo-empty-icon">🧬</div>
           <div className="evo-empty-text">Waiting for evolution data...</div>
         </div>
@@ -1363,7 +1419,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
   }
 
   return (
-    <div className="evo-panel evo-panel-top">
+    <div className="evo-panel" style={{ marginTop: 12 }}>
       <EvolutionHeader
         generation={evo.generation}
         symbolCount={symbolCount}
@@ -1486,7 +1542,7 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
       <div className="panel-header">
         <span className="panel-title">📜 Backtest</span>
         {bt && !isRunning && <span className="panel-badge">{bt.years}yr · {bt.interval ?? selectedInterval} · {bt.candlesProcessed} candles{reverseMode ? ' 🔄' : ''}</span>}
-        {isRunning && <span className="panel-badge backtest-phase-badge">{phaseIcon} {bp!.phase}</span>}
+        {isRunning && <span className="panel-badge" style={{color:'var(--accent-gold)'}}>{phaseIcon} {bp!.phase}</span>}
       </div>
 
       {/* Controls */}
@@ -1504,9 +1560,10 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
           ))}
         </div>
         <select
-          className="model-select backtest-year-btn"
+          className="model-select"
           value={selectedInterval}
           onChange={e => setSelectedInterval(e.target.value)}
+          style={{maxWidth: 80, fontSize: '0.6rem'}}
           disabled={isRunning}
         >
           <option value="5m">5m</option>
@@ -1515,9 +1572,10 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
           <option value="1w">1w</option>
         </select>
         <select
-          className="model-select backtest-year-btn-wide"
+          className="model-select"
           value={selectedModel}
           onChange={e => setSelectedModel(e.target.value)}
+          style={{maxWidth: 140, fontSize: '0.6rem'}}
           disabled={isRunning}
         >
           {backtestModels.map(m => (
@@ -1525,17 +1583,19 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
           ))}
         </select>
         <button
-          className={`header-btn backtest-run-btn ${reverseMode ? 'shutdown-btn' : ''}`}
+          className={`header-btn ${reverseMode ? 'shutdown-btn' : ''}`}
           onClick={() => setReverseMode(v => !v)}
           disabled={isRunning}
           title="Reverse mode: process newest → oldest (contrarian analysis)"
+          style={{ opacity: isRunning ? 0.5 : 1, padding: '6px 10px' }}
         >
           <span className="btn-label">🔄</span>
         </button>
         {isRunning && !isPaused && (
           <button
-            className="header-btn backtest-btn-pad"
+            className="header-btn"
             onClick={handlePause}
+            style={{ padding: '6px 10px' }}
             title="Pause backtest"
           >
             <span className="btn-label">⏸️</span>
@@ -1543,8 +1603,9 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
         )}
         {isRunning && (
           <button
-            className="header-btn shutdown-btn backtest-btn-pad"
+            className="header-btn shutdown-btn"
             onClick={handleStop}
+            style={{ padding: '6px 10px' }}
             title="Stop/cancel backtest"
           >
             <span className="btn-label">⏹️</span>
@@ -1552,8 +1613,9 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
         )}
         {isPaused && (
           <button
-            className="header-btn trigger-btn backtest-btn-pad"
+            className="header-btn trigger-btn"
             onClick={handleResume}
+            style={{ padding: '6px 10px' }}
             title="Resume backtest"
           >
             <span className="btn-label">▶️</span>
@@ -1605,7 +1667,7 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
       {bt ? (
         <>
           {/* Summary metrics */}
-          <div className="portfolio-grid portfolio-grid-top">
+          <div className="portfolio-grid" style={{marginTop: 12}}>
             <div className="portfolio-cell">
               <span className="stat-label">Total Return</span>
               <span className={`stat-number ${bt.finalReturnPct >= 0 ? 'positive' : 'negative'}`}>
@@ -1641,8 +1703,8 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
           </div>
 
           {/* Signal distribution */}
-          <div className="panel-header signal-header">
-            <span className="panel-title signal-title">Signal Distribution</span>
+          <div className="panel-header" style={{marginTop: 8, marginBottom: 6}}>
+            <span className="panel-title" style={{fontSize:'0.7rem'}}>Signal Distribution</span>
           </div>
           <div className="backtest-signals">
             <div className="signal-bar">
@@ -1660,8 +1722,8 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
           {/* Equity curve (simplified sparkline) */}
           {bt.equityCurve && bt.equityCurve.length > 1 && (
             <>
-              <div className="panel-header signal-header">
-                <span className="panel-title signal-title">Accumulated P&L</span>
+              <div className="panel-header" style={{marginTop: 8, marginBottom: 6}}>
+                <span className="panel-title" style={{fontSize:'0.7rem'}}>Accumulated P&L</span>
                 <span className="panel-badge">
                   ${bt.equityCurve[0]?.equity.toFixed(0)} → ${bt.equityCurve[bt.equityCurve.length - 1]?.equity.toFixed(0)}
                 </span>
@@ -1693,8 +1755,8 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
           {/* Regime distribution */}
           {Object.keys(bt.regimeDistribution).length > 0 && (
             <>
-              <div className="panel-header signal-header">
-                <span className="panel-title signal-title">Regime Distribution</span>
+              <div className="panel-header" style={{marginTop: 8, marginBottom: 6}}>
+                <span className="panel-title" style={{fontSize:'0.7rem'}}>Regime Distribution</span>
               </div>
               <div className="regime-list">
                 {Object.entries(bt.regimeDistribution)

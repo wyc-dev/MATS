@@ -126,8 +126,10 @@ export class MarketAgent {
     if (this.config.tradeMode === mode) return;
     this.config.tradeMode = mode;
     this.config.updatedAt = Date.now();
-    // v2.0.44: Mode change resets manual symbol lock — fresh start.
-    this.manualSymbolLock = false;
+    // v2.0.64: Do NOT clear manualSymbolLock on trade mode change.
+    // The user's market selection should persist across PAPER↔REAL switches.
+    // Only setExchange() and setHyperliquidAssetType() clear the lock (they
+    // change the market category, which invalidates the selection).
     log.info(`Trade mode changed: ${mode}`);
   }
 
