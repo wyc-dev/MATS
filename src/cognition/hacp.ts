@@ -28,6 +28,7 @@ import type {
   PositionAdjustment,
   PositionContext,
   CycleSummary,
+  UUID,
 } from '../types/index.ts';
 import type { BaseAgent } from '../agents/base-agent.ts';
 import type { IndependentRiskAuditor, SkepticsAgent, SkepticsReview } from '../agents/agents.ts';
@@ -86,6 +87,18 @@ export class HACPEngine {
    *  cooldown logic knows which cycle we're in. */
   private totalCycles: number = 0;
 
+  /**
+   * v2.0.61: Options-derived vote override for Stocks/Indices.
+   *
+   * When set, this vote is injected into runConsensusVote() with the HIGHEST
+   * weight among all agents. This gives the Options Data Layer (Regime →
+   * Playbook) the dominant voice in consensus when trading Stocks/Indices.
+   *
+   * The vote is cleared after each cycle so it doesn't persist to the next.
+   * Set via setOptionsVote() before executeDecisionCycle().
+   */
+  private optionsVote: Vote | null = null;
+
   constructor(
     metaAgent: BaseAgent,
     riskAuditor: IndependentRiskAuditor,
@@ -104,6 +117,37 @@ export class HACPEngine {
   /** Inject trade history for Risk Auditor recent-pattern analysis. */
   setTradeHistory(th: TradeHistory): void {
     this.tradeHistory = th;
+  }
+
+  /**
+   * v2.0.61: Set the Options Data Layer vote for the next cycle.
+   *
+   * When asset type is Stocks/Indices, the Options Data Layer (Regime →
+   * Playbook) gets the HIGHEST voting weight in consensus. This ensures
+   * options-derived signals (IV Rank, Gamma regime, Put/Call ratio, Event
+   * Risk) dominate the trading decision — as they should for equities.
+   *
+   * The vote is consumed (cleared) after each cycle.
+   *
+   * @param action    'buy' | 'sell' | 'hold' — the playbook's directional bias
+   * @param confidence 0.0-1.0 — how strongly the options data supports this
+   * @param weight    Voting weight (should be ≥ max agent weight = 0.25)
+   * @param rationale  Human-readable reason from the playbook
+   */
+  setOptionsVote(action: 'buy' | 'sell' | 'hold', confidence: number, weight: number, rationale: string): void {
+    this.optionsVote = {
+      agentId: 'options-data-layer' as UUID,
+      agentRole: 'meta_agent' as AgentRole,
+      weight,
+      decision: {
+        action,
+        symbol: '',
+        positionSizePct: 0,
+        rationale: `[OPTIONS] ${rationale}`,
+        urgency: 'immediate',
+      },
+      confidence,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1385,6 +1429,16 @@ Output ONLY valid JSON:
         decision: voteResult.decision,
         confidence: voteResult.confidence,
       });
+    }
+
+    // v2.0.61: Inject Options Data Layer vote for Stocks/Indices.
+    // This vote has the HIGHEST weight, giving options-derived signals
+    // dominant influence in the consensus when trading equities.
+    if (this.optionsVote) {
+      votes.push(this.optionsVote);
+      log.info(`📊 [options-vote] Injected: ${this.optionsVote.decision.action.toUpperCase()} weight=${this.optionsVote.weight} conf=${this.optionsVote.confidence.toFixed(2)}`);
+      // Consume the vote — it's per-cycle, not persistent
+      this.optionsVote = null;
     }
 
     return votes;
