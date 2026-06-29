@@ -466,6 +466,19 @@ class AMACRFSystem {
         this.pushToAPI();
       });
 
+      // v2.0.44: Manual symbol selection from Top Volume Pairs list.
+      // Sets the manual lock so autoSelectTopPair() doesn't override it,
+      // then immediately triggers a decision cycle for the new market.
+      this.apiServer.setMarketAgentSelectSymbolHandler((symbol) => {
+        log.info(`Market Agent: manual symbol selection → ${symbol}`);
+        this.marketAgent.setSelectedSymbolManual(symbol);
+        this.pushToAPI();
+        // Trigger a cycle immediately so the user sees analysis for the
+        // newly selected market without waiting for the next interval tick.
+        // 500ms delay lets the WS reconnect to the new symbol's price feed.
+        setTimeout(() => void this.runDecisionCycle(), 500);
+      });
+
       // v2.0.30: Manual position close handler
       // Closes a position in both local portfolio and (if real mode) on the exchange.
       // The close is tagged with closeReason='manual' so agents know it was NOT a system decision.

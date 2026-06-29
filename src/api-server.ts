@@ -188,6 +188,8 @@ export class APIServer {
   private onMarketAgentFetchPairs: (() => void) | null = null;
   private onMarketAgentSetPositionSize: ((pct: number) => void) | null = null;
   private onMarketAgentSetLeverage: ((lev: number) => void) | null = null;
+  /** v2.0.44: Manual symbol selection from Top Volume Pairs list. */
+  private onMarketAgentSelectSymbol: ((symbol: string) => void) | null = null;
   private onManualClosePosition: ((symbol: string) => Promise<{ success: boolean; error?: string }>) | null = null;
   private onCandlesRequest: ((symbol: string, interval: string, limit: number) => Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>>) | null = null;
   private onResetTradeHistory: (() => void) | null = null;
@@ -267,6 +269,11 @@ export class APIServer {
   /** Register a callback for setting leverage */
   setMarketAgentSetLeverageHandler(cb: (lev: number) => void): void {
     this.onMarketAgentSetLeverage = cb;
+  }
+
+  /** v2.0.44: Register a callback for manual symbol selection from Top Volume Pairs */
+  setMarketAgentSelectSymbolHandler(cb: (symbol: string) => void): void {
+    this.onMarketAgentSelectSymbol = cb;
   }
 
   /** Register a callback for fetching candle data */
@@ -673,6 +680,36 @@ export class APIServer {
         if (this.onMarketAgentFetchPairs) this.onMarketAgentFetchPairs();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, message: 'Refreshing top pairs...' }));
+        return;
+      }
+
+      // v2.0.44: POST — manual symbol selection from Top Volume Pairs list.
+      // Sets the manualSymbolLock so autoSelectTopPair() doesn't override it.
+      // The UI triggers this when the user clicks a pair in the Top Volume table.
+      if (pathname === '/api/market-agent/select-symbol' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { symbol } = JSON.parse(body) as { symbol: string };
+            if (!symbol || typeof symbol !== 'string' || symbol.length > 50) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'Invalid symbol. Must be a non-empty string (max 50 chars).' }));
+              return;
+            }
+            if (this.onMarketAgentSelectSymbol) {
+              this.onMarketAgentSelectSymbol(symbol);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: true, message: `Symbol set to ${symbol}. Cycle triggered.` }));
+            } else {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'Symbol selection handler not registered.' }));
+            }
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
         return;
       }
 
