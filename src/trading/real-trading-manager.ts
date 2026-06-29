@@ -39,6 +39,11 @@ export class RealTradingManager {
   private riskEngine: RiskEngine;
   private binanceEngine: BinanceRealEngine | null = null;
   private hyperliquidEngine: HyperliquidRealEngine | null = null;
+  /** v2.0.66: Per-symbol debounce lock — prevents duplicate SL/TP placement
+   *  when multiple code paths (syncSLTP, hacp adjustPositions, per-symbol
+   *  consensus) all call adjustPosition() within the same cycle. */
+  private lastSLTPPlacement: Map<string, { sl?: number; tp?: number; ts: number }> = new Map();
+  private readonly SLTP_DEBOUNCE_MS = 10_000;
 
   constructor(
     config: TradingManagerConfig,
@@ -824,7 +829,26 @@ export class RealTradingManager {
           // unvalidated ones that the local mirror already rejected.
           const hlSl = accepted ? sl : pos.stopLossPrice;
           const hlTp = accepted ? tp : pos.takeProfitPrice;
+
+          // v2.0.66: DEBOUNCE — skip if we already placed the same SL/TP
+          // for this symbol within SLTP_DEBOUNCE_MS. Multiple code paths
+          // (syncSLTP, hacp adjustPositions, per-symbol consensus) all call
+          // this method in the same cycle. Without this lock, each path
+          // places duplicate orders because HL's async processing means
+          // getOpenOrders() returns stale data for all of them.
+          const sym = normalizeSymbol(pos.symbol);
+          const last = this.lastSLTPPlacement.get(sym);
+          if (last && (Date.now() - last.ts) < this.SLTP_DEBOUNCE_MS) {
+            const slMatch = hlSl === undefined || (last.sl !== undefined && Math.abs(last.sl - hlSl) < 1);
+            const tpMatch = hlTp === undefined || (last.tp !== undefined && Math.abs(last.tp - hlTp) < 1);
+            if (slMatch && tpMatch) {
+              log.info(`⏭️ SL/TP debounced for ${pos.symbol} — already placed ${Date.now() - last.ts}ms ago (SL=${hlSl?.toFixed(2) ?? '-'} TP=${hlTp?.toFixed(2) ?? '-'})`);
+              return;
+            }
+          }
+
           if (hlSl !== undefined || hlTp !== undefined) {
+            this.lastSLTPPlacement.set(sym, { sl: hlSl, tp: hlTp, ts: Date.now() });
             await engine.adjustPosition(pos.symbol, hlSl, hlTp);
             log.info(`🔧 Real SL/TP placed on HL: ${pos.symbol} SL=${hlSl?.toFixed(2) ?? '-'} TP=${hlTp?.toFixed(2) ?? '-'}${accepted ? '' : ' (used existing — input rejected)'}`);
           }
@@ -991,44 +1015,30 @@ export class RealTradingManager {
         // valid and needed (missing or being refreshed).
         const placeSL = sl && sl > 0 && slValid;
         const placeTP = tp && tp > 0 && tpValid;
+        let justPlaced = false;
         if (placeSL || placeTP) {
           const slToPlace = placeSL ? sl : undefined;
           const tpToPlace = placeTP ? tp : undefined;
           log.info(`🔧 Placing SL/TP on HL for ${pos.symbol}: SL=${slToPlace?.toFixed(2) ?? '-'} TP=${tpToPlace?.toFixed(2) ?? '-'}`);
           await engine.adjustPosition(pos.symbol, slToPlace, tpToPlace);
+          justPlaced = true;
+        }
+
+        // v2.0.66: If we just placed orders, SKIP the reverse-sync + push-corrected
+        // block entirely. Re-fetching getOpenOrders() 0.2s after placement will
+        // return stale data (HL async processing hasn't completed), causing:
+        //   1. correctInvertedSLTP() sees 0 orders → recalculates same values
+        //   2. "Push corrected" sees mismatch → pushes AGAIN → DUPLICATES
+        //   3. Next cycle: 2+ orders → needsRefresh → cancel all → place again
+        // The local mirror already has the correct SL/TP — no need to re-verify.
+        if (justPlaced) {
+          continue;
         }
 
         // v2.0.47: REVERSE SYNC — read the actual SL/TP trigger prices from HL
         // and update the local mirror so the UI shows what's really on the exchange.
         // HL is the ground truth — the local mirror must match it.
-        //
-        // v2.0.65: RE-FETCH open orders AFTER placement to get fresh data.
-        // The old code used `myOrders` captured at the START of syncSLTP(),
-        // BEFORE the cancel+replace block placed new orders. This caused:
-        //   1. Stale inference: seeing old orders instead of new ones
-        //   2. Single-order bug: when only 1 order existed, it was always
-        //      assigned as SL (even if it was actually TP)
-        //   3. Ping-pong: "push corrected" block saw mismatch against stale
-        //      data → pushed to HL again → created duplicates
-        //
-        // v2.0.57: FIX — the old inference logic was completely wrong:
-        //   - "closest to current price = SL" is incorrect — SL and TP can
-        //     be at any distance from current price depending on market movement
-        //   - The correct inference is based on POSITION DIRECTION + ENTRY PRICE:
-        //     LONG: SL < entry (loss side), TP > entry (profit side)
-        //     SHORT: SL > entry (loss side), TP < entry (profit side)
-        //   - If both orders are on the same side of entry (trailing stop),
-        //     the one FURTHER from entry is SL, the one CLOSER to entry is TP
-        //
-        // Example: BTC SHORT entry=$60,565, HL orders at $59,354 and $61,050.
-        // $61,050 > entry → SL (loss side, price rising stops us out).
-        // $59,354 < entry → TP (profit side, price falling hits target).
-        //
-        // v2.0.65: SINGLE-ORDER INFERENCE FIX — when only 1 order exists on HL,
-        // use position direction + entry price to determine SL vs TP:
-        //   LONG: order < entry → SL, order > entry → TP
-        //   SHORT: order > entry → SL, order < entry → TP
-        // Previously always assigned as SL, which was wrong for TP-only orders.
+        // Only runs when we did NOT just place orders (justPlaced=false).
         let freshOrders: Array<{ coin: string; side: string; orderType: string; triggerPx?: string; tpsl?: string; sz: string; oid: number }> = [];
         try {
           freshOrders = await engine.getOpenOrders();

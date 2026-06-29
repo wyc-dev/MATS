@@ -168,6 +168,8 @@ export class OptionsDataManager {
    * v2.0.69: Set the active symbol to poll.
    * Only this symbol is fetched on each poll cycle — not all open positions.
    * Called by index.ts when the Market Agent selects a new symbol.
+   * v2.0.70: Only called when asset type is stocks/indices/tradfi.
+   * When asset type is crypto_perps, call clearActiveSymbol() to stop polling.
    */
   setActiveSymbol(symbol: string): void {
     this.activeSymbol = symbol;
@@ -177,6 +179,21 @@ export class OptionsDataManager {
     if (this.connected) {
       void this.fetchOptionChain(symbol).catch(() => { /* non-critical */ });
     }
+  }
+
+  /**
+   * v2.0.70: Clear the active symbol — stops polling.
+   * Called when asset type switches away from stocks/indices/tradfi.
+   */
+  clearActiveSymbol(): void {
+    this.activeSymbol = '';
+  }
+
+  /**
+   * v2.0.70: Get the currently active symbol being polled.
+   */
+  getActiveSymbol(): string {
+    return this.activeSymbol;
   }
 
   /**
