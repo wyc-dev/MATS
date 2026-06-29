@@ -113,6 +113,18 @@ export class OptionsDataManager {
   /** Max symbols to poll (keep lightweight) */
   private readonly MAX_SYMBOLS = 5;
 
+  /**
+   * v2.0.68: Detected API plan tier — determines data quality + voting weight.
+   * - 'none': No API key → no options data, no vote
+   * - 'free': Free plan → contracts + daily aggregates only (estimated IV)
+   * - 'starter': Options Starter → snapshot endpoint (15min delayed IV/Greeks/OI)
+   * - 'developer': Options Developer → snapshot + more endpoints (15min delayed)
+   * - 'advanced': Options Advanced → snapshot (real-time IV/Greeks/OI)
+   * - 'unknown': API key present but plan not yet detected
+   */
+  private planTier: 'none' | 'free' | 'starter' | 'developer' | 'advanced' | 'unknown' = 'none';
+  private planDetected = false;
+
   constructor(apiKey?: string) {
     this.apiKey = apiKey ?? config.massiveApiKey ?? '';
     if (!this.apiKey) {
@@ -128,12 +140,16 @@ export class OptionsDataManager {
   async connect(): Promise<void> {
     if (!this.apiKey) {
       log.warn('OptionsDataManager: No API key — skipping REST polling (agents will use default options context)');
+      this.planTier = 'none';
       return;
     }
     if (this.connected) return;
 
+    // v2.0.68: Detect API plan tier before starting polling.
+    await this.detectPlanTier();
+
     this.connected = true;
-    log.info('✅ OptionsDataManager: REST polling started (15s interval)');
+    log.info(`✅ OptionsDataManager: REST polling started (15s interval, plan=${this.planTier})`);
 
     // Start polling loop
     this.pollTimer = setInterval(() => {
@@ -142,6 +158,101 @@ export class OptionsDataManager {
 
     // Do an immediate poll for any already-subscribed symbols
     void this.pollAllSymbols();
+  }
+
+  /**
+   * v2.0.68: Detect the API plan tier by testing endpoints.
+   *
+   * Tests the option chain snapshot endpoint (/v3/snapshot/options/{ticker}):
+   * - 200 OK → has snapshot access (Starter/Developer/Advanced)
+   * - 403 NOT_AUTHORIZED → no snapshot access (free plan)
+   * - Other error → unknown
+   *
+   * This determines:
+   * - Which fetch method to use (snapshot vs contracts+aggs)
+   * - Data quality (direct IV/Greeks/OI vs estimated)
+   * - Voting weight in HACP consensus (high for paid, low for free)
+   */
+  private async detectPlanTier(): Promise<void> {
+    if (!this.apiKey) {
+      this.planTier = 'none';
+      return;
+    }
+
+    try {
+      // Test snapshot endpoint with a common ticker (AAPL)
+      const testUrl = `${this.restBaseUrl}/v3/snapshot/options/AAPL?apiKey=${this.apiKey}&limit=1`;
+      const res = await fetch(testUrl);
+
+      if (res.ok) {
+        // Has snapshot access — determine if real-time or delayed
+        // We can't easily distinguish Starter (15min) from Advanced (real-time)
+        // from the API response alone. Default to 'starter' (conservative).
+        // The data quality is the same; only recency differs.
+        this.planTier = 'starter';
+        log.info(`📊 [options-data] Plan detected: ${this.planTier} (snapshot endpoint accessible)`);
+      } else if (res.status === 403) {
+        // No snapshot access — free plan, use contracts + aggregates
+        this.planTier = 'free';
+        log.info(`📊 [options-data] Plan detected: ${this.planTier} (snapshot not authorized — using contracts+aggs fallback)`);
+      } else {
+        this.planTier = 'unknown';
+        log.warn(`📊 [options-data] Plan detection failed: HTTP ${res.status} — using contracts+aggs fallback`);
+      }
+    } catch (err) {
+      this.planTier = 'unknown';
+      log.warn(`📊 [options-data] Plan detection error: ${err instanceof Error ? err.message : String(err)} — using contracts+aggs fallback`);
+    }
+
+    this.planDetected = true;
+  }
+
+  /**
+   * v2.0.68: Get the detected plan tier.
+   * Used by index.ts to determine voting weight + confidence.
+   */
+  getPlanTier(): 'none' | 'free' | 'starter' | 'developer' | 'advanced' | 'unknown' {
+    return this.planTier;
+  }
+
+  /**
+   * v2.0.68: Get the recommended voting weight based on plan tier.
+   * - none/unknown: 0.0 (no vote — no data)
+   * - free: 0.10 (low weight — estimated IV, 1-day delayed)
+   * - starter: 0.25 (medium weight — direct IV/Greeks/OI, 15min delayed)
+   * - developer: 0.28 (medium-high — same data + more endpoints)
+   * - advanced: 0.30 (highest — real-time IV/Greeks/OI)
+   */
+  getRecommendedVoteWeight(): number {
+    switch (this.planTier) {
+      case 'none': return 0.0;
+      case 'unknown': return 0.05;
+      case 'free': return 0.10;
+      case 'starter': return 0.25;
+      case 'developer': return 0.28;
+      case 'advanced': return 0.30;
+      default: return 0.10;
+    }
+  }
+
+  /**
+   * v2.0.68: Get the recommended confidence based on plan tier.
+   * - none/unknown: 0.0 (no confidence)
+   * - free: 0.50 (moderate — estimated data)
+   * - starter: 0.70 (good — direct API data, 15min delay)
+   * - developer: 0.75 (good — direct API data)
+   * - advanced: 0.80 (high — real-time data)
+   */
+  getRecommendedConfidence(): number {
+    switch (this.planTier) {
+      case 'none': return 0.0;
+      case 'unknown': return 0.30;
+      case 'free': return 0.50;
+      case 'starter': return 0.70;
+      case 'developer': return 0.75;
+      case 'advanced': return 0.80;
+      default: return 0.50;
+    }
   }
 
   /**
@@ -164,20 +275,170 @@ export class OptionsDataManager {
   }
 
   /**
-   * v2.0.67: Fetch options data using contracts + daily aggregates.
+   * v2.0.68: Fetch options data — uses snapshot endpoint for paid plans,
+   * falls back to contracts + daily aggregates for free plans.
    *
-   * The API key has access to:
-   *   - /v3/reference/options/contracts (all plans) — contract metadata
-   *   - /v2/aggs/ticker/{ticker}/prev (all plans) — daily OHLCV
-   *   - NOT /v3/snapshot/options (needs Options Starter+)
-   *
-   * So we fetch the option chain (contracts list), then batch-fetch daily
-   * aggregates for each contract to get price + volume. From the option
-   * prices + underlying price + strike + DTE, we estimate IV using
-   * a simplified Black-Scholes approximation. Put/Call ratio is computed
-   * from contract volume.
+   * Plan tier determines fetch method:
+   * - starter/developer/advanced: /v3/snapshot/options (direct IV/Greeks/OI)
+   * - free/unknown: /v3/reference/options/contracts + /v2/aggs/ticker/prev (estimated IV)
    */
   private async fetchOptionChain(symbol: string): Promise<void> {
+    // v2.0.68: Use snapshot endpoint for paid plans (direct IV/Greeks/OI)
+    if (this.planTier === 'starter' || this.planTier === 'developer' || this.planTier === 'advanced') {
+      try {
+        await this.fetchOptionChainSnapshot(symbol);
+        return; // success — no need for fallback
+      } catch (err) {
+        log.warn(`📊 [options-data] Snapshot fetch failed for ${symbol}, falling back to contracts+aggs: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // Free plan or snapshot failed — use contracts + aggregates (estimated IV)
+    await this.fetchOptionChainFromContracts(symbol);
+  }
+
+  /**
+   * v2.0.68: Fetch option chain from snapshot endpoint (paid plans).
+   * Returns direct IV, Greeks, OI, quotes, trades from the API.
+   * This is the accurate path — no estimation needed.
+   */
+  private async fetchOptionChainSnapshot(symbol: string): Promise<void> {
+    const underlying = symbol.includes(':') ? symbol.split(':')[1]! : symbol.toUpperCase();
+    const url = `${this.restBaseUrl}/v3/snapshot/options/${underlying}?apiKey=${this.apiKey}&limit=250`;
+
+    const res = await fetch(url);
+    if (!res.ok) {
+      if (res.status === 429) {
+        log.warn(`OptionsDataManager: Rate limited for ${underlying} — keeping cached data`);
+        return;
+      }
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    }
+
+    const data = await res.json() as {
+      results?: Array<{
+        break_even_price?: number;
+        details?: { contract_type?: string; strike_price?: number; expiration_date?: string };
+        greeks?: { delta?: number; gamma?: number; theta?: number; vega?: number };
+        implied_volatility?: number;
+        open_interest?: number;
+        last_quote?: { bid?: number; ask?: number; bid_size?: number; ask_size?: number };
+        last_trade?: { price?: number; size?: number };
+        day?: { volume?: number; close?: number; change?: number; change_percent?: number };
+        underlying_asset?: { price?: number; ticker?: string };
+      }>;
+      status?: string;
+    };
+
+    if (!data.results || data.results.length === 0) {
+      log.debug(`OptionsDataManager: No option contracts for ${underlying}`);
+      return;
+    }
+
+    const contracts = data.results;
+    const calls = contracts.filter(c => c.details?.contract_type === 'call');
+    const puts = contracts.filter(c => c.details?.contract_type === 'put');
+
+    // Direct IV from API (OI-weighted average)
+    const allIVs = contracts.map(c => ({ iv: c.implied_volatility ?? 0, oi: c.open_interest ?? 0 }));
+    const totalOI = allIVs.reduce((s, c) => s + c.oi, 0);
+    const avgIV = totalOI > 0
+      ? allIVs.reduce((s, c) => s + c.iv * c.oi, 0) / totalOI
+      : allIVs.reduce((s, c) => s + c.iv, 0) / Math.max(1, allIVs.length);
+
+    // Put/Call ratio (by OI)
+    const callOI = calls.reduce((s, c) => s + (c.open_interest ?? 0), 0);
+    const putOI = puts.reduce((s, c) => s + (c.open_interest ?? 0), 0);
+    const putCallOIRatio = callOI > 0 ? putOI / callOI : 1.0;
+
+    // Put/Call ratio (by volume)
+    const callVol = calls.reduce((s, c) => s + (c.day?.volume ?? 0), 0);
+    const putVol = puts.reduce((s, c) => s + (c.day?.volume ?? 0), 0);
+    const putCallRatio = callVol > 0 ? putVol / callVol : 1.0;
+
+    // High OI strike
+    const strikeOIMap = new Map<number, number>();
+    for (const c of contracts) {
+      const strike = c.details?.strike_price;
+      if (strike !== undefined) strikeOIMap.set(strike, (strikeOIMap.get(strike) ?? 0) + (c.open_interest ?? 0));
+    }
+    let highOIStrike: number | null = null;
+    let maxOI = 0;
+    for (const [strike, oi] of strikeOIMap) { if (oi > maxOI) { maxOI = oi; highOIStrike = strike; } }
+
+    // Max pain
+    const allStrikes = Array.from(strikeOIMap.keys()).sort((a, b) => a - b);
+    let maxPain: number | null = null;
+    if (allStrikes.length > 0) {
+      let minHolderValue = -1;
+      for (const testPrice of allStrikes) {
+        let holderValue = 0;
+        for (const c of calls) {
+          const strike = c.details?.strike_price ?? 0;
+          const oi = c.open_interest ?? 0;
+          if (testPrice > strike) holderValue += (testPrice - strike) * oi;
+        }
+        for (const p of puts) {
+          const strike = p.details?.strike_price ?? 0;
+          const oi = p.open_interest ?? 0;
+          if (testPrice < strike) holderValue += (strike - testPrice) * oi;
+        }
+        if (holderValue < minHolderValue || minHolderValue < 0) { minHolderValue = holderValue; maxPain = testPrice; }
+      }
+    }
+
+    // Gamma regime (call/put OI balance)
+    const callPutOIRatio = callOI > 0 ? callOI / putOI : 1.0;
+    const gammaRegime: 'positive' | 'negative' | 'neutral' =
+      callPutOIRatio > 1.3 ? 'negative' : callPutOIRatio < 0.77 ? 'positive' : 'neutral';
+
+    // Implied move + DTE
+    const now = new Date();
+    const expDates = contracts.map(c => c.details?.expiration_date).filter((d): d is string => !!d).sort();
+    const nearestExp = expDates[0];
+    let daysToExp = 7;
+    if (nearestExp) {
+      const expDate = new Date(nearestExp);
+      daysToExp = Math.max(1, Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+    }
+    const impliedMovePct = avgIV * Math.sqrt(daysToExp / 365);
+
+    // Skew
+    const atmStrike = contracts.reduce((closest, c) => {
+      const strike = c.details?.strike_price ?? 0;
+      const underlyingPrice = c.underlying_asset?.price ?? 0;
+      return Math.abs(strike - underlyingPrice) < Math.abs(closest - underlyingPrice) ? strike : closest;
+    }, 0);
+    const otmPutIV = puts.find(c => (c.details?.strike_price ?? 0) < atmStrike * 0.95)?.implied_volatility ?? avgIV;
+    const atmCallIV = calls.find(c => Math.abs((c.details?.strike_price ?? 0) - atmStrike) < 1)?.implied_volatility ?? avgIV;
+    const skew = otmPutIV - atmCallIV;
+
+    // IV Rank (chain IV range)
+    const allIVValues = contracts.map(c => c.implied_volatility ?? 0).filter(v => v > 0);
+    const minIV = allIVValues.length > 0 ? Math.min(...allIVValues) : 0;
+    const maxIV = allIVValues.length > 0 ? Math.max(...allIVValues) : 1;
+    const ivRange = maxIV - minIV;
+    const atmIV = atmCallIV > 0 ? atmCallIV : avgIV;
+    const ivRank = ivRange > 0.001 ? Math.min(100, Math.max(0, ((atmIV - minIV) / ivRange) * 100)) : 50;
+    const ivPercentile = ivRank;
+
+    const eventRisk: 'none' | 'earnings' | 'opex' | 'fomc' | 'high' = daysToExp <= 3 ? 'opex' : 'none';
+
+    const ctx: OptionsContext = {
+      symbol, ivRank, ivPercentile, impliedVolatility: avgIV, impliedMovePct,
+      putCallRatio, putCallOIRatio, gammaRegime, highOIStrike, maxPain, skew,
+      eventRisk, daysToExpiration: daysToExp, lastUpdated: Date.now(), available: true,
+    };
+
+    this.cache.set(symbol, ctx);
+    log.info(`📊 [options-data] ${symbol}: IV=${(avgIV * 100).toFixed(1)}% IVR=${ivRank.toFixed(0)} P/C=${putCallOIRatio.toFixed(2)} γ=${gammaRegime} impliedMove=±${(impliedMovePct * 100).toFixed(2)}% (snapshot, plan=${this.planTier})`);
+  }
+
+  /**
+   * v2.0.68: Fetch option chain from contracts + daily aggregates (free plan).
+   * Estimates IV using simplified Black-Scholes approximation.
+   */
+  private async fetchOptionChainFromContracts(symbol: string): Promise<void> {
     const underlying = symbol.includes(':') ? symbol.split(':')[1]! : symbol.toUpperCase();
 
     // Step 1: Fetch option contracts (available on all plans)

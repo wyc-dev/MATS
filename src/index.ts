@@ -1458,10 +1458,17 @@ class MATSSystem {
             : combinedState.trend === 'bullish' ? 'buy'
             : combinedState.trend === 'bearish' ? 'sell'
             : 'hold';
-          // Weight = 0.30 (highest — base agent weights are 0.20-0.25)
-          const optionsWeight = 0.30;
-          const optionsConfidence = pb.vetoNewPositions ? 0.95 : 0.70;
-          this.hacpEngine.setOptionsVote(optionsAction, optionsConfidence, optionsWeight, pb.rationale);
+          // v2.0.68: Dynamic voting weight based on detected API plan tier.
+          // - free plan: weight 0.10 (low — estimated IV, 1-day delayed)
+          // - starter/developer: weight 0.25-0.28 (medium — direct IV/Greeks/OI)
+          // - advanced: weight 0.30 (highest — real-time IV/Greeks/OI)
+          // - none/unknown: weight 0.0 (no vote — no data)
+          const optionsWeight = this.optionsDataManager.getRecommendedVoteWeight();
+          const baseConfidence = this.optionsDataManager.getRecommendedConfidence();
+          const optionsConfidence = pb.vetoNewPositions ? Math.max(baseConfidence, 0.90) : baseConfidence;
+          if (optionsWeight > 0) {
+            this.hacpEngine.setOptionsVote(optionsAction, optionsConfidence, optionsWeight, pb.rationale);
+          }
         } catch (err) {
           log.warn(`[options-data] Failed to get context: ${err instanceof Error ? err.message : String(err)}`);
         }

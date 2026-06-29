@@ -1003,6 +1003,13 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       // accumulate (e.g. 5 SL + 5 TP for the same position).
       // We cancel all existing reduce-only orders for this coin + close side,
       // then place fresh SL + TP orders.
+      //
+      // v2.0.65: DEDUP GUARD — before cancelling, check if the orders we want
+      // to place ALREADY EXIST at the target prices. If both SL and TP are
+      // already present (within tolerance), skip the entire cancel+replace
+      // cycle. This prevents race conditions where syncSLTP() and
+      // adjustPositions() run concurrently and both try to place orders.
+      let skipPlacement = false;
       try {
         const existingOrders = await this.getOpenOrders();
         const closeSide = pos.side === 'buy' ? 'S' : 'B'; // sell to close long, buy to close short
@@ -1010,7 +1017,22 @@ export class HyperliquidRealEngine implements RealTradingEngine {
           o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
           o.side === closeSide
         );
-        if (myOrders.length > 0) {
+
+        // Dedup check: if both SL and TP already exist at target prices, skip
+        const slRounded = sl !== undefined ? parseFloat(sl.toFixed(2)) : undefined;
+        const tpRounded = tp !== undefined ? parseFloat(tp.toFixed(2)) : undefined;
+        const hasSL = slRounded !== undefined && myOrders.some(o =>
+          o.triggerPx && Math.abs(parseFloat(o.triggerPx) - slRounded) < 1
+        );
+        const hasTP = tpRounded !== undefined && myOrders.some(o =>
+          o.triggerPx && Math.abs(parseFloat(o.triggerPx) - tpRounded) < 1
+        );
+        const slNeeded = sl !== undefined && sl > 0;
+        const tpNeeded = tp !== undefined && tp > 0;
+        if ((!slNeeded || hasSL) && (!tpNeeded || hasTP)) {
+          log.info(`⏭️ SL/TP already present on HL for ${pos.symbol} — skipping placement (SL=${hasSL} TP=${hasTP})`);
+          skipPlacement = true;
+        } else if (myOrders.length > 0) {
           log.info(`🗑️ Cancelling ${myOrders.length} existing trigger order(s) for ${pos.symbol} before placing new SL/TP`);
           for (const o of myOrders) {
             try {
@@ -1022,6 +1044,10 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         }
       } catch (err) {
         log.warn(`Failed to fetch/cancel existing orders for ${pos.symbol}: ${err instanceof Error ? err.message : String(err)} — continuing with new placement`);
+      }
+
+      if (skipPlacement) {
+        return true;
       }
 
       // v2.0.33: Track actual success of trigger order placement.

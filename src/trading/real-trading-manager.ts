@@ -968,35 +968,34 @@ export class RealTradingManager {
           (sl !== undefined && slValid && !hasSL) ||
           (tp !== undefined && tpValid && !hasTP);
 
+        // v2.0.65: FIX — always pass BOTH SL + TP together to adjustPosition().
+        // Previously we called adjustPosition(symbol, sl, undefined) then
+        // adjustPosition(symbol, undefined, tp) separately. Each call cancels
+        // ALL existing orders for the close side before placing new ones —
+        // so the first call cancels TP (placing SL), then the second call
+        // cancels SL (placing TP). Result: infinite ping-pong where SL/TP
+        // alternate being present on HL, and duplicate orders accumulate.
+        //
+        // Now: if needsRefresh, cancel all then place BOTH together.
+        // If only one is missing, place BOTH (the existing one will be
+        // deduped by the engine's price-check guard).
         if (needsRefresh && myOrders.length > 0) {
           log.info(`🗑️ Refreshing trigger orders for ${pos.symbol} (${closeSide} side) — cancelling ${myOrders.length} existing order(s)`);
-          // Cancel only orders matching this position's close side.
-          // We need the correct asset index for each cancel, so we look it up.
           const asset = await engine.getAssetIndexForSymbol(pos.symbol);
           for (const o of myOrders) {
             await engine.cancelOrderWithAsset(asset, o.oid);
           }
-          // Re-place both SL and TP fresh (only if valid)
-          if (sl && sl > 0 && slValid) {
-            log.info(`🔧 Re-placing SL on HL for ${pos.symbol} @ $${sl.toFixed(2)}`);
-            await engine.adjustPosition(pos.symbol, sl, undefined);
-          }
-          if (tp && tp > 0 && tpValid) {
-            log.info(`🔧 Re-placing TP on HL for ${pos.symbol} @ $${tp.toFixed(2)}`);
-            await engine.adjustPosition(pos.symbol, undefined, tp);
-          }
-        } else {
-          // Place missing SL only if not already present and valid
-          if (sl && !hasSL && slValid) {
-            log.info(`🔧 SL missing on HL for ${pos.symbol} — placing SL @ $${sl.toFixed(2)}`);
-            await engine.adjustPosition(pos.symbol, sl, undefined);
-          }
+        }
 
-          // Place missing TP only if not already present and valid
-          if (tp && !hasTP && tpValid) {
-            log.info(`🔧 TP missing on HL for ${pos.symbol} — placing TP @ $${tp.toFixed(2)}`);
-            await engine.adjustPosition(pos.symbol, undefined, tp);
-          }
+        // Build the combined SL+TP to place. Only include values that are
+        // valid and needed (missing or being refreshed).
+        const placeSL = sl && sl > 0 && slValid;
+        const placeTP = tp && tp > 0 && tpValid;
+        if (placeSL || placeTP) {
+          const slToPlace = placeSL ? sl : undefined;
+          const tpToPlace = placeTP ? tp : undefined;
+          log.info(`🔧 Placing SL/TP on HL for ${pos.symbol}: SL=${slToPlace?.toFixed(2) ?? '-'} TP=${tpToPlace?.toFixed(2) ?? '-'}`);
+          await engine.adjustPosition(pos.symbol, slToPlace, tpToPlace);
         }
 
         // v2.0.47: REVERSE SYNC — read the actual SL/TP trigger prices from HL
@@ -1075,26 +1074,26 @@ export class RealTradingManager {
         // v2.0.56: After correction, check if local SL/TP matches HL.
         // If correctInvertedSLTP() changed the local values, push them to HL
         // so the exchange has the correct trigger orders.
+        // v2.0.65: Pass BOTH SL+TP together to avoid ping-pong cancellation.
         const correctedPos = this.portfolio.getPosition(sym);
         if (correctedPos) {
           const localSL = correctedPos.stopLossPrice;
           const localTP = correctedPos.takeProfitPrice;
-          // Check if HL is missing SL or has a different SL than local
+          let needsPushSL = false;
+          let needsPushTP = false;
           if (localSL !== undefined && localSL > 0) {
             const localSLRounded = parseFloat(localSL.toFixed(2));
-            const hlHasSL = myOrders.some(o => o.triggerPx && Math.abs(parseFloat(o.triggerPx) - localSLRounded) < 1);
-            if (!hlHasSL) {
-              log.info(`🔧 Pushing corrected SL to HL for ${pos.symbol} @ $${localSL.toFixed(2)} (was inverted/missing on HL)`);
-              try { await engine.adjustPosition(pos.symbol, localSL, undefined); } catch { /* non-critical */ }
-            }
+            needsPushSL = !myOrders.some(o => o.triggerPx && Math.abs(parseFloat(o.triggerPx) - localSLRounded) < 1);
           }
           if (localTP !== undefined && localTP > 0) {
             const localTPRounded = parseFloat(localTP.toFixed(2));
-            const hlHasTP = myOrders.some(o => o.triggerPx && Math.abs(parseFloat(o.triggerPx) - localTPRounded) < 1);
-            if (!hlHasTP) {
-              log.info(`🔧 Pushing corrected TP to HL for ${pos.symbol} @ $${localTP.toFixed(2)} (was inverted/missing on HL)`);
-              try { await engine.adjustPosition(pos.symbol, undefined, localTP); } catch { /* non-critical */ }
-            }
+            needsPushTP = !myOrders.some(o => o.triggerPx && Math.abs(parseFloat(o.triggerPx) - localTPRounded) < 1);
+          }
+          if (needsPushSL || needsPushTP) {
+            log.info(`🔧 Pushing corrected SL/TP to HL for ${pos.symbol}: SL=${needsPushSL ? localSL!.toFixed(2) : '-'} TP=${needsPushTP ? localTP!.toFixed(2) : '-'}`);
+            try {
+              await engine.adjustPosition(pos.symbol, needsPushSL ? localSL : undefined, needsPushTP ? localTP : undefined);
+            } catch { /* non-critical */ }
           }
         }
       }
