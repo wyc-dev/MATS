@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.62-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.68-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -443,7 +443,7 @@ If you require a commercial license — for example, for proprietary extensions,
 
 ---
 
-## Changelog (v2.0.10 → v2.0.62)
+## Changelog (v2.0.10 → v2.0.68)
 
 | Version | Change |
 |:--------|:-------|
@@ -487,6 +487,8 @@ If you require a commercial license — for example, for proprietary extensions,
 | **v2.0.52–v2.0.57** | Per-symbol consensus SL/TP direction validation; `adjustPosition()` ignores portfolio rejection fix; HL engine trailing stop validation; `correctInvertedSLTP()` self-healing; SL/TP inference logic fix (entry price + direction, not current price distance) |
 | **v2.0.58–v2.0.61** | **Options Data Layer** — `src/analysis/options-data.ts` connects to Polygon.io REST API for option chain snapshots (IV, Greeks, OI, P/C ratio, Gamma regime, Max Pain, Skew, Implied Move, Event Risk). Regime → Playbook mapping (Premium Sell / Directional Credit / Defined-Risk Debit / Stand Aside / Buy Convexity). `vetoNewPositions` deterministic veto. `validateSLAgainstImpliedMove()` SL validation. Options Data Layer gets HIGHEST voting weight (0.30) in HACP consensus for Stocks/Indices |
 | **v2.0.62** | **Options-aware evolution** — `OptionsStrategyParameters` (7 options-specific params that evolve: minIVRankForPremiumSell, maxIVRankForDebit, gammaRegimePreference, maxImpliedMovePct, putCallOIThreshold, eventRiskTolerance, targetPOP). `SurvivalFitness.optionsAlpha` new fitness dimension. `mutate()` has options-specific directional mutation. `getContextForAgent()` shows options strategy context. Full evolution loop: options data → vote → decision → result → fitness → mutation → better strategy |
+| **v2.0.63–v2.0.67** | Paper balance leak fix (margin vs notional — `openPosition()` now deducts margin not full notional); Startup message fix (AMACRF→MATS, Binance→Hyperliquid); Duplicate SL/TP trigger orders fix (`engine.adjustPosition()` now cancels existing orders before placing new ones); `manualSymbolLock` preserved on trade mode switch; Batch price fetch (`fetchPricesForSymbols()` reduces HL 429 errors); Options Data Layer refactored to use contracts+aggs (free plan fallback with estimated IV) |
+| **v2.0.68** | **Options Plan Detection + Dynamic Vote Weight** — `OptionsDataManager.detectPlanTier()` tests the snapshot endpoint at startup to determine API plan tier (none/free/starter/developer/advanced). Voting weight + confidence scale dynamically: free=0.10/0.50 (estimated IV, 1-day delayed), starter=0.25/0.70 (direct IV/Greeks/OI, 15min delayed), advanced=0.30/0.80 (real-time). Paid plans use snapshot endpoint (accurate data); free plan uses contracts+aggs fallback (estimated IV via Black-Scholes). `getRecommendedVoteWeight()` + `getRecommendedConfidence()` used by `index.ts` to set HACP consensus vote. |
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.41 for full details on each fix.
 
