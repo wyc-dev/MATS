@@ -166,6 +166,30 @@ export interface APIData {
     }>;
   };
   systemPaused?: boolean;
+  /** v2.0.65: Options Data Layer context for Stocks/Indices */
+  optionsData?: {
+    symbol: string;
+    ivRank: number;
+    ivPercentile: number;
+    impliedVolatility: number;
+    impliedMovePct: number;
+    putCallRatio: number;
+    putCallOIRatio: number;
+    gammaRegime: string;
+    highOIStrike: number | null;
+    maxPain: number | null;
+    skew: number;
+    eventRisk: string;
+    daysToExpiration: number;
+    available: boolean;
+    playbook?: {
+      playbook: string;
+      structure: string;
+      targetPOP: number;
+      rationale: string;
+      vetoNewPositions: boolean;
+    };
+  };
 }
 
 type SSECallback = (data: APIData) => void;

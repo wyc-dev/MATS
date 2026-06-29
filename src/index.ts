@@ -3449,6 +3449,39 @@ class MATSSystem {
             })),
           };
         })(),
+        // v2.0.65: Options Data Layer context for Stocks/Indices.
+        // Only populated when asset type is stocks/indices/tradfi.
+        optionsData: (() => {
+          const assetType = this.marketAgent.getConfig().hyperliquidAssetType ?? 'crypto_perps';
+          if (assetType !== 'stocks' && assetType !== 'indices' && assetType !== 'tradfi') return undefined;
+          const sym = this.marketAgent.getSelectedSymbol() || '';
+          if (!sym) return undefined;
+          const ctx = this.optionsDataManager.getOptionsContext(sym);
+          const pb = this.optionsDataManager.getRegimePlaybook(sym, '', '');
+          return {
+            symbol: ctx.symbol,
+            ivRank: ctx.ivRank,
+            ivPercentile: ctx.ivPercentile,
+            impliedVolatility: ctx.impliedVolatility,
+            impliedMovePct: ctx.impliedMovePct,
+            putCallRatio: ctx.putCallRatio,
+            putCallOIRatio: ctx.putCallOIRatio,
+            gammaRegime: ctx.gammaRegime,
+            highOIStrike: ctx.highOIStrike,
+            maxPain: ctx.maxPain,
+            skew: ctx.skew,
+            eventRisk: ctx.eventRisk,
+            daysToExpiration: ctx.daysToExpiration,
+            available: ctx.available,
+            playbook: {
+              playbook: pb.playbook,
+              structure: pb.structure,
+              targetPOP: pb.targetPOP,
+              rationale: pb.rationale,
+              vetoNewPositions: pb.vetoNewPositions,
+            },
+          };
+        })(),
         agentModels: {
           available: getAvailableModels(),
           assignments: getAllAgentModels(),

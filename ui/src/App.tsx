@@ -381,48 +381,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               {change24h >= 0 ? '+' : ''}{change24h.toFixed(2)}
             </span>
           </div>
-          {/* Mini TradingView chart for the selected market — refreshes every cycle.
-              Shows the current position's entry point + live SL/TP (v2.0.16). */}
+          {/* Mini TradingView chart for the selected market — refreshes every cycle. */}
           <div className="market-vol-row">
             <TradingViewChart symbol={activeSymbol} currentPrice={price} trades={mainChartTrades} refreshKey={s?.cycles ?? 0} />
-          </div>
-          {/* Top pairs list — v2.0.44: Clickable to manually select trading market.
-              Clicking a pair sends a POST to /api/market-agent/select-symbol which
-              locks the selection (autoSelectTopPair won't override it) and triggers
-              an immediate decision cycle for the newly selected market. */}
-          <div className="market-pairs-header">
-            <div className="market-pairs-header-label">
-              Top Volume Pairs — click to select trading market
-            </div>
-            <div className="top-pairs-list">
-              {topPairs.slice(0, 5).map((pair, i) => (
-                <div
-                  key={pair.symbol}
-                  className={`top-pair-row top-pair-row-inline ${pair.symbol === activeSymbol ? 'active-pair' : ''}`}
-                  onClick={async () => {
-                    try {
-                      await fetch(`${API_BASE}/market-agent/select-symbol`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ symbol: pair.symbol }),
-                      });
-                    } catch (err) {
-                      console.error('Failed to select symbol:', err);
-                    }
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
-                >
-                  <span className="top-pair-rank top-pair-cell">#{i + 1}</span>
-                  <span className="top-pair-symbol top-pair-cell-bold">{pair.symbol}</span>
-                  <span className="top-pair-vol top-pair-cell">{pair.volume24h > 0 ? `$${(pair.volume24h / 1_000_000).toFixed(1)}M` : 'N/A'}</span>
-                  <span className="top-pair-vol top-pair-cell-tertiary">{pair.volume5m != null && pair.volume5m > 0 ? `${(pair.volume5m / 1000).toFixed(0)}K` : '-'}</span>
-                  <span className={`top-pair-chg top-pair-cell ${pair.priceChangePercent >= 0 ? 'positive' : 'negative'}`}>
-                    {pair.volume24h > 0 ? `${pair.priceChangePercent >= 0 ? '+' : ''}${pair.priceChangePercent.toFixed(2)}%` : 'N/A'}
-                  </span>
-                </div>
-              ))}
-            </div>
           </div>
         </>
       ) : (
@@ -430,6 +391,42 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           <div className="empty-text empty-text-sm">Waiting for market data...</div>
         </div>
       )}
+
+      {/* Top pairs list — always visible */}
+      <div className="market-pairs-header">
+        <div className="market-pairs-header-label">
+          Top Volume Pairs — click to select trading market
+        </div>
+        <div className="top-pairs-list">
+          {topPairs.slice(0, 5).map((pair, i) => (
+            <div
+              key={pair.symbol}
+              className={`top-pair-row top-pair-row-inline ${pair.symbol === activeSymbol ? 'active-pair' : ''}`}
+              onClick={async () => {
+                try {
+                  await fetch(`${API_BASE}/market-agent/select-symbol`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: pair.symbol }),
+                  });
+                } catch (err) {
+                  console.error('Failed to select symbol:', err);
+                }
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
+            >
+              <span className="top-pair-rank top-pair-cell">#{i + 1}</span>
+              <span className="top-pair-symbol top-pair-cell-bold">{pair.symbol}</span>
+              <span className="top-pair-vol top-pair-cell">{pair.volume24h > 0 ? `$${(pair.volume24h / 1_000_000).toFixed(1)}M` : 'N/A'}</span>
+              <span className="top-pair-vol top-pair-cell-tertiary">{pair.volume5m != null && pair.volume5m > 0 ? `${(pair.volume5m / 1000).toFixed(0)}K` : '-'}</span>
+              <span className={`top-pair-chg top-pair-cell ${pair.priceChangePercent >= 0 ? 'positive' : 'negative'}`}>
+                {pair.volume24h > 0 ? `${pair.priceChangePercent >= 0 ? '+' : ''}${pair.priceChangePercent.toFixed(2)}%` : 'N/A'}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
 
     </div>
   )
@@ -679,16 +676,18 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
             {totalPnl === null ? '--' : `${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}`}
           </span>
         </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Drawdown</span>
-          <span className={`stat-number ${drawdownPct === null ? 'neutral' : (drawdownPct > 0.1 ? 'negative' : 'neutral')}`}>
-            {drawdownPct === null ? '--' : `${(drawdownPct * 100).toFixed(2)}%`}
-          </span>
+        <div className="portfolio-cell drawdown-cell">
+          <div className="drawdown-left">
+            <span className="stat-label">Drawdown</span>
+            <span className={`stat-number ${drawdownPct === null ? 'neutral' : (drawdownPct > 0.1 ? 'negative' : 'neutral')}`}>
+              {drawdownPct === null ? '--' : `${(drawdownPct * 100).toFixed(2)}%`}
+            </span>
+          </div>
           {/* v2.0.45: Clear Drawdown button — resets drawdown data and relaunches trading.
               When drawdown ≥ 15%, the SystemGuard blocks all cycles. This button
               clears the drawdown so the next cycle can resume. */}
           {drawdownPct !== null && drawdownPct >= 0.15 && (
-            <>
+            <div className="drawdown-right">
               <button
                 onClick={async () => {
                   try {
@@ -704,7 +703,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
               <span className="stat-sub">
                 Drawdown ≥ 15% — trading halted. Clear to relaunch.
               </span>
-            </>
+            </div>
           )}
         </div>
         <div className="portfolio-cell">
@@ -1021,8 +1020,8 @@ function DebatePanel({ data }: { data: APIData | null }) {
                       <span className={`vote-action-tag ${actionClass}`}>{psc.action.toUpperCase()}</span>
                       <span className="consensus-conf-pct">{(psc.confidence * 100).toFixed(0)}%</span>
                       {psc.closePosition && <span className="consensus-meta-red">🔴 CLOSE</span>}
-                      {psc.suggestedStopLoss && <span className="consensus-meta-muted">SL:${psc.suggestedStopLoss.toFixed(1)}</span>}
-                      {psc.suggestedTakeProfit && <span className="consensus-meta-muted">TP:${psc.suggestedTakeProfit.toFixed(1)}</span>}
+                      {psc.suggestedStopLoss && <span className="consensus-meta-muted">SL:$${psc.suggestedStopLoss.toFixed(1)}</span>}
+                      {psc.suggestedTakeProfit && <span className="consensus-meta-muted">TP:$${psc.suggestedTakeProfit.toFixed(1)}</span>}
                     </div>
                     <div className="consensus-rationale">{psc.rationale}</div>
                   </div>
@@ -1063,6 +1062,98 @@ function DebatePanel({ data }: { data: APIData | null }) {
         )
       })}
 
+    </div>
+  )
+}
+
+/* ── Options Data Layer Panel (v2.0.65) — Stocks/Indices only ── */
+
+function OptionsDataPanel({ data }: { data: APIData | null }) {
+  const od = data?.optionsData
+  const assetType = data?.marketAgent?.config?.hyperliquidAssetType ?? 'crypto_perps'
+  const isOptionsAsset = assetType === 'stocks' || assetType === 'indices' || assetType === 'tradfi'
+
+  // Only render for Stocks/Indices/Tradfi
+  if (!isOptionsAsset) return null
+
+  if (!od) {
+    return (
+      <div className="panel">
+        <div className="panel-header">
+          <span className="panel-title">📊 Options Data Layer</span>
+        </div>
+        <div className="empty-state" style={{ padding: '12px 0' }}>
+          <div className="empty-text" style={{ fontSize: '0.75rem' }}>Waiting for options data...</div>
+        </div>
+      </div>
+    )
+  }
+
+  const stats: Array<{ label: string; value: string; tone: 'positive' | 'negative' | 'neutral' | 'accent' }> = [
+    { label: 'IV Rank', value: `${od.ivRank.toFixed(0)}/100`, tone: od.ivRank >= 50 ? 'accent' : 'neutral' as const },
+    { label: 'IV %ile', value: `${od.ivPercentile.toFixed(0)}%`, tone: 'neutral' as const },
+    { label: 'Implied Vol', value: `${(od.impliedVolatility * 100).toFixed(1)}%`, tone: 'neutral' as const },
+    { label: 'Implied Move', value: `±${(od.impliedMovePct * 100).toFixed(2)}%`, tone: 'neutral' as const },
+    { label: 'P/C (Vol)', value: od.putCallRatio.toFixed(2), tone: od.putCallRatio > 1.2 ? 'negative' : od.putCallRatio < 0.8 ? 'positive' : 'neutral' as const },
+    { label: 'P/C (OI)', value: od.putCallOIRatio.toFixed(2), tone: od.putCallOIRatio > 1.2 ? 'negative' : od.putCallOIRatio < 0.8 ? 'positive' : 'neutral' as const },
+    { label: 'Gamma', value: od.gammaRegime.toUpperCase(), tone: od.gammaRegime === 'positive' ? 'positive' : od.gammaRegime === 'negative' ? 'negative' : 'neutral' as const },
+    { label: 'DTE', value: `${od.daysToExpiration}d`, tone: 'neutral' as const },
+  ]
+
+  if (od.highOIStrike !== null) {
+    stats.push({ label: 'High OI Strike', value: `$${od.highOIStrike.toFixed(2)}`, tone: 'accent' as const })
+  }
+  if (od.maxPain !== null) {
+    stats.push({ label: 'Max Pain', value: `$${od.maxPain.toFixed(2)}`, tone: 'accent' as const })
+  }
+  if (od.skew !== 0) {
+    stats.push({ label: 'Skew', value: od.skew.toFixed(3), tone: od.skew > 0.05 ? 'negative' : od.skew < -0.05 ? 'positive' : 'neutral' as const })
+  }
+
+  return (
+    <div className="panel">
+      <div className="panel-header">
+        <span className="panel-title">📊 Options Data Layer</span>
+        <span className="panel-badge">{od.symbol}</span>
+      </div>
+
+      {!od.available && (
+        <div style={{ padding: '4px 8px', fontSize: '0.7rem', color: 'var(--text-tertiary)' }}>
+          No live data — using defaults. Check API key + connection.
+        </div>
+      )}
+
+      <div className="evo-stats-grid" style={{ marginTop: 8 }}>
+        {stats.map(s => (
+          <div key={s.label} className="evo-stat-card">
+            <span className="evo-stat-label">{s.label}</span>
+            <span className={`evo-stat-value ${s.tone}`}>{s.value}</span>
+          </div>
+        ))}
+      </div>
+
+      {od.eventRisk !== 'none' && (
+        <div style={{ padding: '6px 8px', margin: '8px 0', background: 'var(--accent-red)', color: 'white', borderRadius: '4px', fontSize: '0.75rem', fontWeight: 600 }}>
+          ⚠️ Event Risk: {od.eventRisk.toUpperCase()} ({od.daysToExpiration}d to expiration)
+        </div>
+      )}
+
+      {od.playbook && (
+        <div style={{ margin: '8px 0', padding: '8px', border: '1px solid var(--border-color)', borderRadius: '6px' }}>
+          <div style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginBottom: 4 }}>REGIME → PLAYBOOK</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span className="evo-badge accent" style={{ fontSize: '0.7rem' }}>{od.playbook.playbook}</span>
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>{od.playbook.structure}</span>
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)' }}>POP: {(od.playbook.targetPOP * 100).toFixed(0)}%</span>
+          </div>
+          <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: 4 }}>{od.playbook.rationale}</div>
+          {od.playbook.vetoNewPositions && (
+            <div style={{ fontSize: '0.7rem', color: 'var(--accent-red)', fontWeight: 600, marginTop: 4 }}>
+              ⚠️ VETO NEW POSITIONS
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -1969,11 +2060,14 @@ export default function App() {
 
       {/* Mobile Tab Bar — hidden on desktop */}
       <div className="tab-bar">
-        {(['agents','portfolio','debate','evolution'] as const).map(tab => (
-          <button key={tab} className={`tab-btn ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
-            {tab === 'agents' ? '🤖 Agents' : tab === 'portfolio' ? '💼 Portfolio' : tab === 'debate' ? '🗣️ Debate' : '🧬 Evolution'}
-          </button>
-        ))}
+        {(['agents','portfolio','debate','evolution'] as const).map(tab => {
+          const posCount = tab === 'portfolio' ? (data?.status?.positions ?? 0) : 0
+          return (
+            <button key={tab} className={`tab-btn ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
+              {tab === 'agents' ? 'Agents' : tab === 'portfolio' ? (posCount > 0 ? <><span className="tab-badge">{posCount}</span>Portfolio</> : 'Portfolio') : tab === 'debate' ? 'Debate' : 'Evolution'}
+            </button>
+          )
+        })}
       </div>
 
       {/* Main 50/50 Grid — both columns always visible on desktop */}
@@ -1989,11 +2083,13 @@ export default function App() {
           <div className="mobile-only">
             {activeTab === 'portfolio' && <PortfolioPanel data={data} />}
             {activeTab === 'debate' && <DebatePanel data={data} />}
+            {activeTab === 'debate' && <OptionsDataPanel data={data} />}
             {activeTab === 'evolution' && <EvolutionPanel data={data} />}
           </div>
           <div className="desktop-only">
             <PortfolioPanel data={data} />
             <DebatePanel data={data} />
+            <OptionsDataPanel data={data} />
             <EvolutionPanel data={data} />
           </div>
         </div>
