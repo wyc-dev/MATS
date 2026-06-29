@@ -883,6 +883,110 @@ export class MarketAgent {
   }
 
   /**
+   * v2.0.66: Batch fetch prices for multiple symbols in a single call.
+   *
+   * DEX 0 symbols (BTC, ETH, etc.) are all fetched from a single
+   * `metaAndAssetCtxs` REST call (which returns ALL DEX 0 prices at once).
+   * Colon symbols (xyz:SKHX, xyz:MU) are fetched via `l2Book` in parallel.
+   *
+   * This reduces HL API calls from N×3 (per-symbol metaAndAssetCtxs + l2Book
+   * + candleSnapshot) to 1 (metaAndAssetCtxs) + M (l2Book for M colon symbols).
+   * At 3 symbols (2 DEX 0 + 1 colon), this saves ~5 API calls per cycle.
+   *
+   * @param symbols Array of symbols to fetch prices for
+   * @returns Map of symbol → { price, volume24h, change24h }
+   */
+  async fetchPricesForSymbols(symbols: string[]): Promise<Map<string, { price: number; volume24h: number; change24h: number }>> {
+    const result = new Map<string, { price: number; volume24h: number; change24h: number }>();
+
+    if (symbols.length === 0) return result;
+
+    // Split into DEX 0 (bare) and colon symbols
+    const dex0Symbols = symbols.filter(s => !s.includes(':'));
+    const colonSymbols = symbols.filter(s => s.includes(':'));
+
+    // ── DEX 0: single metaAndAssetCtxs call gets ALL prices ──
+    if (dex0Symbols.length > 0 && this.config.exchange !== 'binance') {
+      // Check cache first
+      const cached = MarketAgent.dex0CtxsCache;
+      if (cached && Date.now() - cached.timestamp < MarketAgent.DEX0_CACHE_TTL) {
+        for (const sym of dex0Symbols) {
+          const entry = cached.data.find(e => e.name === sym.toUpperCase());
+          if (entry) {
+            result.set(sym, { price: entry.price, volume24h: entry.volume24h, change24h: entry.change24h });
+          }
+        }
+      }
+
+      // If any DEX 0 symbols missed the cache, fetch fresh metaAndAssetCtxs
+      const missing = dex0Symbols.filter(s => !result.has(s));
+      if (missing.length > 0) {
+        try {
+          await MarketAgent.hlLimiter.acquire();
+          const res = await fetch('https://api.hyperliquid.xyz/info', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'metaAndAssetCtxs' }),
+          });
+          if (res.ok) {
+            const [meta, ctxs] = await res.json() as [
+              { universe: Array<{ name: string }> },
+              Array<{ dayNtlVlm: string; markPx: string; midPx: string; prevDayPx: string }>,
+            ];
+            // Update cache
+            const newEntries: Array<{ name: string; price: number; volume24h: number; change24h: number }> = [];
+            for (let i = 0; i < meta.universe.length && i < ctxs.length; i++) {
+              const name = meta.universe[i]!.name;
+              const ctx = ctxs[i]!;
+              const price = parseFloat(ctx.markPx) || parseFloat(ctx.midPx) || 0;
+              const volume24h = parseFloat(ctx.dayNtlVlm) || 0;
+              const prevDay = parseFloat(ctx.prevDayPx) || price;
+              const change24h = prevDay > 0 ? ((price - prevDay) / prevDay) * 100 : 0;
+              newEntries.push({ name, price, volume24h, change24h });
+            }
+            MarketAgent.dex0CtxsCache = { timestamp: Date.now(), data: newEntries };
+
+            // Fill in missing symbols from fresh data
+            for (const sym of missing) {
+              const entry = newEntries.find(e => e.name === sym.toUpperCase());
+              if (entry) {
+                result.set(sym, { price: entry.price, volume24h: entry.volume24h, change24h: entry.change24h });
+              }
+            }
+          }
+        } catch (err) {
+          log.warn(`[fetchPricesForSymbols] DEX 0 batch fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+
+    // ── Colon symbols: parallel l2Book fetch (1 call each, but parallel) ──
+    if (colonSymbols.length > 0) {
+      const colonResults = await Promise.allSettled(
+        colonSymbols.map(async (sym) => {
+          await MarketAgent.hlLimiter.acquire();
+          const res = await fetch('https://api.hyperliquid.xyz/info', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'l2Book', coin: sym }),
+          });
+          if (!res.ok) return { symbol: sym, price: 0, volume24h: 0, change24h: 0 };
+          const book = await res.json() as { levels: Array<Array<{ px: string }>> };
+          const price = parseFloat(book.levels?.[0]?.[0]?.px ?? '0');
+          return { symbol: sym, price, volume24h: 0, change24h: 0 };
+        })
+      );
+      for (const r of colonResults) {
+        if (r.status === 'fulfilled') {
+          result.set(r.value.symbol, { price: r.value.price, volume24h: r.value.volume24h, change24h: r.value.change24h });
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Get a market description string for agent context.
    */
   getMarketDescription(): string {

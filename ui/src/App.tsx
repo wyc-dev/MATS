@@ -302,8 +302,8 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         <div className="market-control-col">
           <div className="market-control-label">Trade Mode</div>
           <div className="market-agent-selector-btns">
-            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'paper' ? 'active' : ''}`} onClick={() => handleTradeModeChange('paper')}>📒 Paper</button>
-            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'real' ? 'active' : ''}`} onClick={() => handleTradeModeChange('real')}>💰 Real</button>
+            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'paper' ? 'active' : ''}`} onClick={() => handleTradeModeChange('paper')}>Paper</button>
+            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'real' ? 'active' : ''}`} onClick={() => handleTradeModeChange('real')}>Real</button>
           </div>
         </div>
         <div className="market-control-col">
@@ -2072,24 +2072,30 @@ export default function App() {
 
       {/* Main 50/50 Grid — both columns always visible on desktop */}
       <div className="main-grid">
-        {/* Left Column: Agents only */}
+        {/* Left Column: Agents + HACP Debate + Options Data Layer */}
         <div className={`col-left ${activeTab === 'agents' ? 'visible' : ''}`}>
           <AgentPanel data={data} />
+          {/* Mobile: show debate + options under agents tab */}
+          <div className="mobile-only">
+            {activeTab === 'debate' && <DebatePanel data={data} />}
+            {activeTab === 'debate' && <OptionsDataPanel data={data} />}
+          </div>
+          {/* Desktop: always show debate + options below agents */}
+          <div className="desktop-only">
+            <DebatePanel data={data} />
+            <OptionsDataPanel data={data} />
+          </div>
         </div>
 
-        {/* Right Column: conditional on mobile, always on desktop */}
+        {/* Right Column: Portfolio + Evolution */}
         <div className={`col-right ${activeTab !== 'agents' ? 'visible' : ''}`}>
           {/* Mobile: only show active tab's content; Desktop: show all */}
           <div className="mobile-only">
             {activeTab === 'portfolio' && <PortfolioPanel data={data} />}
-            {activeTab === 'debate' && <DebatePanel data={data} />}
-            {activeTab === 'debate' && <OptionsDataPanel data={data} />}
             {activeTab === 'evolution' && <EvolutionPanel data={data} />}
           </div>
           <div className="desktop-only">
             <PortfolioPanel data={data} />
-            <DebatePanel data={data} />
-            <OptionsDataPanel data={data} />
             <EvolutionPanel data={data} />
           </div>
         </div>
