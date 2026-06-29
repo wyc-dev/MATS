@@ -34,6 +34,7 @@ import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
 import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
 import { RBCEngine, type RBCQueryResult } from './evolution/rbc-clustering.ts';
+import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord } from './types/index.ts';
 
 const log = createLogger({ phase: 'system' });
@@ -63,6 +64,8 @@ class AMACRFSystem {
   private systemGuard!: SystemGuard;
   private executionTracker!: ExecutionTracker;
   private correlationBudget!: CorrelationBudget;
+  /** v2.0.58: Options data layer for Stocks/Indices trading */
+  private optionsDataManager = getOptionsDataManager();
 
   private decisionTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -169,6 +172,18 @@ class AMACRFSystem {
       log.info('Step 3.5b/8: Initializing Planck-Chaos Resonance Engine...');
       this.planckChaos = new PlanckChaosEngine();
       log.info('✓ Planck-Chaos Resonance Engine ready');
+
+      // v2.0.58: Initialize Options Data Layer (Massive.com WS)
+      // Only connects if MASSIVE_API_KEY is configured. Used for Stocks/Indices
+      // trading to provide IV Rank, Gamma regime, Put/Call ratio, etc.
+      // If connection fails or no API key, agents fall back to defaults.
+      log.info('Step 3.5c/8: Initializing Options Data Layer...');
+      try {
+        await this.optionsDataManager.connect();
+        log.info('✓ Options Data Layer ready');
+      } catch (err) {
+        log.warn(`Options Data Layer init failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
 
       // 3.6 Initialize Market State Aggregator (MUST be before WebSocket data flows)
       log.info('Step 3.6/8: Initializing Market State Aggregator...');
@@ -828,6 +843,11 @@ class AMACRFSystem {
         this.stopTimers();
       }, 5);
 
+      // v2.0.58: Disconnect options data layer on shutdown
+      registerShutdownHandler('options-data', async () => {
+        this.optionsDataManager.disconnect();
+      }, 8);
+
       // Start decision cycles
       this.startDecisionCycle();
       this.startHeartbeat();
@@ -1394,7 +1414,31 @@ class AMACRFSystem {
         log.warn(`[planck-chaos] Analysis failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${rbcContext}${planckChaosContext}\n\n${getFeeSummary()}`;
+      // v2.0.58: Inject Options Data Layer context for Stocks/Indices.
+      // Only fetches options data when asset type is stocks, indices, or tradfi.
+      // If no data available (WS not connected or no API key), falls back to
+      // neutral defaults — agents still function normally.
+      let optionsContext = '';
+      let playbookContext = '';
+      const assetType = this.marketAgent.getConfig().hyperliquidAssetType ?? 'crypto_perps';
+      const useOptionsData = assetType === 'stocks' || assetType === 'indices' || assetType === 'tradfi';
+      if (useOptionsData) {
+        try {
+          // Subscribe to options data for the active symbol
+          this.optionsDataManager.subscribe(activeSymbol);
+          // Also subscribe for any open positions
+          for (const sym of this.portfolio.getOpenSymbols()) {
+            this.optionsDataManager.subscribe(sym);
+          }
+          optionsContext = '\n' + formatOptionsForAgent(activeSymbol);
+          playbookContext = '\n' + formatPlaybookForAgent(activeSymbol, combinedState.trend, combinedState.regime);
+          log.info(`📊 [options-data] Context injected for ${activeSymbol} (assetType=${assetType})`);
+        } catch (err) {
+          log.warn(`[options-data] Failed to get context: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${rbcContext}${planckChaosContext}${optionsContext}${playbookContext}\n\n${getFeeSummary()}`;
 
       // Store latest S/R context for API push
       if (srContext) {
