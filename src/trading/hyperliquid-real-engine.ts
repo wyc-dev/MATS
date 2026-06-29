@@ -265,6 +265,12 @@ export class HyperliquidRealEngine implements RealTradingEngine {
   private privateKeyHex: string;
   /** SL/TP monitoring: positionId → { sl, tp } */
   private stopLossTakeProfit: Map<string, { sl?: number; tp?: number }> = new Map();
+  /** v2.0.65: Pending orders cache — symbol → { slPrice, tpPrice, timestamp }.
+   *  Prevents race-condition duplicates when syncSLTP() and hacp adjustPositions()
+   *  both call adjustPosition() within the same cycle. Orders are considered
+   *  pending for 15 seconds (HL typically processes in < 2s). */
+  private pendingOrders: Map<string, { sl?: number; tp?: number; ts: number }> = new Map();
+  private readonly PENDING_TTL_MS = 15_000;
 
   constructor(walletAddress: string, privateKeyHex: string) {
     this.walletAddress = walletAddress;
@@ -1009,6 +1015,9 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       // already present (within tolerance), skip the entire cancel+replace
       // cycle. This prevents race conditions where syncSLTP() and
       // adjustPositions() run concurrently and both try to place orders.
+      //
+      // Also check the local pending-orders cache — if we just placed these
+      // orders within PENDING_TTL_MS, skip to avoid race-condition duplicates.
       let skipPlacement = false;
       try {
         const existingOrders = await this.getOpenOrders();
@@ -1018,27 +1027,40 @@ export class HyperliquidRealEngine implements RealTradingEngine {
           o.side === closeSide
         );
 
-        // Dedup check: if both SL and TP already exist at target prices, skip
-        const slRounded = sl !== undefined ? parseFloat(sl.toFixed(2)) : undefined;
-        const tpRounded = tp !== undefined ? parseFloat(tp.toFixed(2)) : undefined;
-        const hasSL = slRounded !== undefined && myOrders.some(o =>
-          o.triggerPx && Math.abs(parseFloat(o.triggerPx) - slRounded) < 1
-        );
-        const hasTP = tpRounded !== undefined && myOrders.some(o =>
-          o.triggerPx && Math.abs(parseFloat(o.triggerPx) - tpRounded) < 1
-        );
-        const slNeeded = sl !== undefined && sl > 0;
-        const tpNeeded = tp !== undefined && tp > 0;
-        if ((!slNeeded || hasSL) && (!tpNeeded || hasTP)) {
-          log.info(`⏭️ SL/TP already present on HL for ${pos.symbol} — skipping placement (SL=${hasSL} TP=${hasTP})`);
-          skipPlacement = true;
-        } else if (myOrders.length > 0) {
-          log.info(`🗑️ Cancelling ${myOrders.length} existing trigger order(s) for ${pos.symbol} before placing new SL/TP`);
-          for (const o of myOrders) {
-            try {
-              await this.cancelOrderWithAsset(asset.index, o.oid);
-            } catch (err) {
-              log.warn(`Failed to cancel order ${o.oid} for ${pos.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+        // Check pending cache first (fast path, no API call needed)
+        const pending = this.pendingOrders.get(pos.symbol.toLowerCase());
+        if (pending && (Date.now() - pending.ts) < this.PENDING_TTL_MS) {
+          const slMatch = sl === undefined || (pending.sl !== undefined && Math.abs(pending.sl - sl) < 1);
+          const tpMatch = tp === undefined || (pending.tp !== undefined && Math.abs(pending.tp - tp) < 1);
+          if (slMatch && tpMatch) {
+            log.info(`⏭️ SL/TP pending in local cache for ${pos.symbol} — skipping placement (age=${Date.now() - pending.ts}ms)`);
+            skipPlacement = true;
+          }
+        }
+
+        if (!skipPlacement) {
+          // Dedup check: if both SL and TP already exist at target prices, skip
+          const slRounded = sl !== undefined ? parseFloat(sl.toFixed(2)) : undefined;
+          const tpRounded = tp !== undefined ? parseFloat(tp.toFixed(2)) : undefined;
+          const hasSL = slRounded !== undefined && myOrders.some(o =>
+            o.triggerPx && Math.abs(parseFloat(o.triggerPx) - slRounded) < 1
+          );
+          const hasTP = tpRounded !== undefined && myOrders.some(o =>
+            o.triggerPx && Math.abs(parseFloat(o.triggerPx) - tpRounded) < 1
+          );
+          const slNeeded = sl !== undefined && sl > 0;
+          const tpNeeded = tp !== undefined && tp > 0;
+          if ((!slNeeded || hasSL) && (!tpNeeded || hasTP)) {
+            log.info(`⏭️ SL/TP already present on HL for ${pos.symbol} — skipping placement (SL=${hasSL} TP=${hasTP})`);
+            skipPlacement = true;
+          } else if (myOrders.length > 0) {
+            log.info(`🗑️ Cancelling ${myOrders.length} existing trigger order(s) for ${pos.symbol} before placing new SL/TP`);
+            for (const o of myOrders) {
+              try {
+                await this.cancelOrderWithAsset(asset.index, o.oid);
+              } catch (err) {
+                log.warn(`Failed to cancel order ${o.oid} for ${pos.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+              }
             }
           }
         }
@@ -1049,6 +1071,10 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       if (skipPlacement) {
         return true;
       }
+
+      // v2.0.65: Record pending orders BEFORE placing to prevent race-condition
+      // duplicates from concurrent calls within the same cycle.
+      this.pendingOrders.set(pos.symbol.toLowerCase(), { sl, tp, ts: Date.now() });
 
       // v2.0.33: Track actual success of trigger order placement.
       // Previously returned true even when HL rejected the orders.

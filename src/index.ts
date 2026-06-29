@@ -1430,12 +1430,10 @@ class MATSSystem {
       const useOptionsData = assetType === 'stocks' || assetType === 'indices' || assetType === 'tradfi';
       if (useOptionsData) {
         try {
-          // Subscribe to options data for the active symbol
-          this.optionsDataManager.subscribe(activeSymbol);
-          // Also subscribe for any open positions
-          for (const sym of this.portfolio.getOpenSymbols()) {
-            this.optionsDataManager.subscribe(sym);
-          }
+          // v2.0.69: Only set active symbol for polling — don't subscribe all positions.
+          // This prevents rate limit (429) errors from fetching multiple symbols.
+          // The active symbol is the Market Agent's selected trading pair.
+          this.optionsDataManager.setActiveSymbol(activeSymbol);
           optionsContext = '\n' + formatOptionsForAgent(activeSymbol);
           playbookContext = '\n' + formatPlaybookForAgent(activeSymbol, combinedState.trend, combinedState.regime);
           log.info(`📊 [options-data] Context injected for ${activeSymbol} (assetType=${assetType})`);
