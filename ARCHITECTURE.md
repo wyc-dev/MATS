@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.41-dev (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup + HL SL/TP close detection + 最小 SL/TP 間距限制 + Stale real position cleanup + Real trade 持久化 + Consensus 方向性修正 + 學習衰減機制 + MAX_POSITION_PCT 移除 + Evolution signalThreshold 確定性強制 + Planck-Chaos 簡化)  
+> **版本**: 2.0.52 (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup + HL SL/TP close detection + 最小 SL/TP 間距限制 + Stale real position cleanup + Real trade 持久化 + Consensus 方向性修正 + 學習衰減機制 + MAX_POSITION_PCT 移除 + Evolution signalThreshold 確定性強制 + Planck-Chaos 簡化 + Recent 20 trade win rate UI + PnL/PnL% PAPER/REAL 一致性 + 手動市場選擇 + Clear Drawdown 按鈕 + manualSymbolLock 修復 + SL/TP HL 雙向同步 + PnL 槓桿膨脹修復 + SL/TP trailing stop 驗證 + SL/TP 啟動時 HL 同步 + SL/TP 最大收窄步長 + 錯誤交易過濾 + Paper/Real 跨模式倉位顯示)
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -69,6 +69,16 @@
 58. [B.39 Consensus 方向性修正 — Math.abs() bug](#b39-v2039-consensus-方向性修正--mathabs-bug)
 59. [B.40 學習衰減機制 — Agent Outcomes + Pattern Classifier](#b40-v2040-學習衰減機制--agent-outcomes--pattern-classifier)
 60. [B.41 MAX_POSITION_PCT 移除 + Evolution signalThreshold 強制 + Planck-Chaos 簡化](#b41-v2041-max_position_pct-移除--evolution-signalthreshold-強制--planck-chaos-簡化)
+61. [B.42 Drawdown 高水位線修正 + Recent 20 Trade Win Rate UI](#b42-v2042-drawdown-高水位線修正--recent-20-trade-win-rate-ui)
+62. [B.43 PnL/PnL% PAPER/REAL 一致性](#b43-v2043-pnlpnl-paperreal-一致性)
+63. [B.44 手動市場選擇 + Clear Drawdown 按鈕](#b44-v2044-手動市場選擇--clear-drawdown-按鈕)
+64. [B.45 manualSymbolLock 修復](#b45-v2045-manualsymbollock-修復)
+65. [B.46 SL/TP HL 雙向同步](#b46-v2046-sltp-hl-雙向同步)
+66. [B.47 PnL 槓桿膨脹修復 + Paper Mode SL/TP 同步 + Trailing Stop 驗證](#b47-v2047-pnl-槓桿膨脹修復--paper-mode-sltp-同步--trailing-stop-驗證)
+67. [B.48 SL/TP 啟動時 HL 同步](#b48-v2048-sltp-啟動時-hl-同步)
+68. [B.49 SL/TP Retry Loop + Slower Narrowing](#b49-v2049-sltp-retry-loop--slower-narrowing)
+69. [B.50 SL/TP 最大收窄步長](#b50-v2050-sltp-最大收窄步長)
+70. [B.51 錯誤交易過濾 + Paper/Real 跨模式倉位顯示](#b51-v2051-錯誤交易過濾--paperreal-跨模式倉位顯示)
 
 ---
 
@@ -6225,6 +6235,125 @@ normalizeDecision (sanity 0-100%) → Risk Auditor (can reduce) → Phase 4.5 (M
 | `src/evolution/index.ts` | `getContextForAgent()` 改 label + 移除 maxPositionSize；signalThreshold 標明 ENFORCED；維護註解 |
 | `src/analysis/planck-chaos.ts` | 移除 `directionBias` + `deriveDirectionBias()` + buildContextString direction line；維護註解 |
 | `src/index.ts` | 每 cycle apply Evolution signalThreshold；移除 Planck-Chaos Priority -1 block；維護註解 |
+
+---
+
+### B.42 v2.0.42: Drawdown 高水位線修正 + Recent 20 Trade Win Rate UI
+
+> **觸發**: (1) Drawdown 27% 永久封鎖交易，即使 equity 已恢復；(2) 用戶要求 UI 顯示最近 20 個 trade 嘅 win rate。
+
+**2 部分修復**:
+
+| 部分 | 問題 | 修復 |
+|:-----|:-----|:-----|
+| **Drawdown 高水位線** | `maxDrawdownPct` 係高水位線（只增不減），用佢做交易決策令系統永久封鎖 | 新增 `currentDrawdownPct`（隨 equity 恢復下降）；`guardDrawdown()` + `canTrade()` 改用 `currentDrawdownPct` |
+| **Recent 20 Win Rate** | UI 只顯示 all-time win rate | `paperEngine.getRecentWinLoss(20)` → `pushToAPI()` → `SystemSnapshot.recent20WinRate` → UI Win Rate cell 顯示 `(lastest 20 trades)` |
+
+**改動檔案**: `portfolio.ts`, `system-guard/index.ts`, `paper-engine.ts`, `api-server.ts`, `index.ts`, `ui/src/types.ts`, `ui/src/App.tsx`
+
+---
+
+### B.43 v2.0.43: PnL/PnL% PAPER/REAL 一致性
+
+> **觸發**: 同一倉位響 PAPER mode 顯示 `$11.57 (12.40%)`，REAL mode 顯示 `$1.19 (12.71%)`。
+
+**根因**: `serializePortfolio()` overlay 混合 3 個唔一致嘅數據源：
+- `currentPrice` ← 本地 mirror（live WS）
+- `unrealizedPnl` ← HL API（fetch 時間計算）
+- `unrealizedPnlPct` ← 本地 mirror（本地價格計算）
+
+**修復**: 當 `exPos` 存在時，用 `exPos` for entry/PnL/leverage，live WS price for currentPrice，重新計算 `unrealizedPnlPct = exPos.unrealizedPnl / margin`（margin = qty × entry / leverage），令 3 個值內部一致。
+
+---
+
+### B.44 v2.0.44: 手動市場選擇 + Clear Drawdown 按鈕
+
+> **觸發**: (1) 用戶要求點擊 Top Volume Pairs 選擇交易市場；(2) Drawdown ≥ 15% 時需要 Clear Drawdown 按鈕重新啟動。
+
+**2 部分修復**:
+
+| 部分 | 問題 | 修復 |
+|:-----|:-----|:-----|
+| **手動市場選擇** | `autoSelectTopPair()` 每個 cycle 自動選 #1，覆蓋用戶選擇 | `manualSymbolLock` flag；`setSelectedSymbolManual()` 設定 lock；`autoSelectTopPair()` 尊重 lock；`fetchTopPairs()` 3 個 auto-select 站都加 lock 檢查；API `POST /api/market-agent/select-symbol`；UI Top Volume Pairs 表格可點擊 |
+| **Clear Drawdown** | Drawdown ≥ 15% 時 SystemGuard 封鎖所有 cycle，冇方法恢復 | `portfolio.clearDrawdown()` 重置 peakEquity/currentDrawdownPct/maxDrawdown/dailyPnl；API `POST /api/clear-drawdown`；UI Drawdown cell 顯示 "Clear Drawdown" 按鈕 + 描述文字 |
+
+---
+
+### B.45 v2.0.45: manualSymbolLock 修復
+
+> **觸發**: 用戶選擇 SOL 後，下一個 cycle 自動跳返 BTC。
+
+**根因**: `fetchTopPairs()` 內部有 3 個 auto-select-top-pair 站點繞過 `manualSymbolLock` 檢查。`autoSelectTopPair()` 先 call `fetchTopPairs(30)` 再檢查 lock，但 symbol 已經被覆蓋。
+
+**修復**: 所有 3 個 auto-select 站加 `!this.manualSymbolLock` guard。`setExchange()` + `setHyperliquidAssetType()` 清除 lock（市場類別改變時失效）。
+
+---
+
+### B.46 v2.0.46: SL/TP HL 雙向同步
+
+> **觸發**: UI 顯示 SL=$59,681 但 HL 實際 SL=$60,690。
+
+**根因**: `syncSLTP()` 只單向推送本地 SL/TP → HL，從不讀取 HL 實際 trigger orders 同步返本地 mirror。
+
+**修復**: `portfolio.syncSLTPFromExchange()` 直接設定 HL 嘅 SL/TP（唔經 no-widen/gap 約束）。`syncSLTP()` 讀取 HL trigger orders，用 `tpsl` field 或價格位置推斷 SL vs TP，call `syncSLTPFromExchange()` 更新本地 mirror。
+
+---
+
+### B.47 v2.0.47: PnL 槓桿膨脹修復 + Paper Mode SL/TP 同步 + Trailing Stop 驗證
+
+> **觸發**: (1) PAPER mode PnL 顯示 $12.10 但 HL 顯示 $1.21；(2) SL/TP 響 paper mode 唔同步；(3) SL 響 profit side 被 syncSLTP 拒絕。
+
+**3 部分修復**:
+
+| 部分 | 問題 | 修復 |
+|:-----|:-----|:-----|
+| **PnL 槓桿膨脹** | `updatePosition()` PnL = priceDelta × qty × **leverage**（×10 膨脹） | 移除 `× (pos.leverage ?? 1)`；PnL = priceDelta × quantity；`closePosition()` + `openPosition()` fee notional 同修 |
+| **Paper Mode SL/TP** | `syncSLTP()` 只響 real mode 行 | paper mode legacy real position sync block 加 `syncSLTP()` call；`syncSLTP()` 改用 `getEngineForExchange()` |
+| **Trailing Stop 驗證** | `syncSLTP()` 要求 SL > entry for shorts，trailing stop（SL < entry）被拒絕 | SL 可響 profit side of entry，只要響 current price 正確側；`slValid`/`tpValid` flag 獨立放置 |
+
+---
+
+### B.48 v2.0.48: SL/TP 啟動時 HL 同步
+
+> **觸發**: 啟動時 UI 顯示 stale SL/TP（從 portfolio-state.json），要等第一個 cycle 先同步。
+
+**根因**: `syncSLTP()` 只響 decision cycle 行，啟動時唔行。`getActiveEngine()` 響 paper mode 返回 null。
+
+**修復**: 啟動時加 HL sync block（fetch positions + `syncSLTP()`）before first `pushToAPI()`。`syncSLTP()` 改用 `getEngineForExchange('hyperliquid')` — paper mode 都行。
+
+---
+
+### B.49 v2.0.49: SL/TP Retry Loop + Slower Narrowing
+
+> **觸發**: (1) SL/TP 驗證失敗時靜默丟棄，agent 唔知要修正；(2) SL/TP 收窄速度太快。
+
+**修復**:
+- **Retry loop（3 次）**: 驗證失敗時 error message 送返 LLM 做重新評估
+- **SL 驗證**: SHORT SL < current price = invalid；LONG SL > current price = invalid → retry with error
+- **TP 驗證**: TP 必須響 current price + entry 正確側 → retry with error
+- **Slower narrowing**: min gap 2%（was 1%）；min TP distance 1.5%（was 0.5%）；min SL distance 1%（new）
+
+---
+
+### B.50 v2.0.50: SL/TP 最大收窄步長
+
+> **觸發**: SL 可以一個 cycle 由 5% 跳到 1% away，造成 premature stop-out。
+
+**修復**: SL/TP 每個 adjustment 最多移 0.5% of current price closer。響 `hacp.ts`（retry feedback）+ `portfolio.ts`（hard safety layer）雙重強制。收窄需要多個 cycle，俾價格有空間呼吸。
+
+---
+
+### B.51 v2.0.51: 錯誤交易過濾 + Paper/Real 跨模式倉位顯示
+
+> **觸發**: (1) Trade Records 有 entry≈exit 嘅錯誤交易；(2) REAL 倉位響 PAPER mode 消失；(3) PAPER 倉位響 REAL mode 唔顯示。
+
+**3 部分修復**:
+
+| 部分 | 問題 | 修復 |
+|:-----|:-----|:-----|
+| **錯誤交易過濾** | entry≈exit + PnL≈$0 嘅 phantom trades 顯示響 Trade Records | 過濾 price moved <0.01% AND \|PnL\| <$0.01 |
+| **REAL 倉位 PAPER mode** | Reconciliation filter 對所有 `agentId='hyperliquid-real'` 返回 false，閉倉 | Paper-mode sync block cache `cachedExchangePositions`；reconciliation 用 `hlConfirmedSymbols` keep HL-confirmed 倉位 |
+| **PAPER 倉位 REAL mode** | `serializePortfolio()` 過濾所有唔響 HL 嘅倉位 | 檢查 `legacyPositionModes` — legacy paper 倉位響 real mode 都顯示 |
 
 ---
 
