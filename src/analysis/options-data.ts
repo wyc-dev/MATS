@@ -83,19 +83,27 @@ const DEFAULT_CONTEXT = (symbol: string): OptionsContext => ({
  * selected or have open positions — keeping the system lightweight.
  *
  * v2.0.58: Initial implementation for Stocks/RWA trading.
+ * v2.0.59: Switched from WebSocket to REST polling — Massive.com (Polygon.io)
+ * REST API provides option chain snapshots with IV, Greeks, OI in a single
+ * request, which is more practical than streaming raw trades/quotes.
+ * Polls every 15s for active symbols only.
+ *
+ * API: https://api.polygon.io/v3/snapshot/options/{underlyingAsset}?apiKey=...
+ * The option chain snapshot returns: greeks, implied_volatility, open_interest,
+ * break_even_price, last_quote, last_trade, day (OHLC), underlying_asset.
  */
 export class OptionsDataManager {
-  private ws: WebSocket | null = null;
   private apiKey: string;
-  private wsUrl = 'wss://ws.massive.com/v1/options';
+  /** REST API base URL (Polygon.io / Massive.com) */
+  private restBaseUrl = 'https://api.polygon.io';
   private cache = new Map<string, OptionsContext>();
   private subscribedSymbols = new Set<string>();
   private connected = false;
-  private reconnectAttempts = 0;
-  private readonly MAX_RECONNECT_ATTEMPTS = 5;
-  private readonly RECONNECT_DELAY_MS = 5_000;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  /** Poll interval: 15s — balances freshness vs rate limits */
+  private readonly POLL_INTERVAL_MS = 15_000;
+  /** Max symbols to poll (keep lightweight) */
+  private readonly MAX_SYMBOLS = 5;
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey ?? config.massiveApiKey ?? '';
@@ -105,148 +113,223 @@ export class OptionsDataManager {
   }
 
   /**
-   * Connect to Massive.com WebSocket.
-   * Subscribes to options feeds for all symbols in subscribedSymbols.
+   * v2.0.59: Connect = start REST polling loop.
+   * Polls the option chain snapshot endpoint every 15s for all subscribed symbols.
+   * If API key is missing, logs a warning and returns — agents use defaults.
    */
   async connect(): Promise<void> {
     if (!this.apiKey) {
-      log.warn('OptionsDataManager: No API key — skipping WS connection');
+      log.warn('OptionsDataManager: No API key — skipping REST polling (agents will use default options context)');
       return;
     }
     if (this.connected) return;
 
-    try {
-      log.info('OptionsDataManager: Connecting to Massive.com WS...');
-      this.ws = new WebSocket(`${this.wsUrl}?api_key=${this.apiKey}`);
+    this.connected = true;
+    log.info('✅ OptionsDataManager: REST polling started (15s interval)');
 
-      this.ws.onopen = () => {
-        this.connected = true;
-        this.reconnectAttempts = 0;
-        log.info('✅ OptionsDataManager: Connected to Massive.com WS');
-        // Subscribe to all pending symbols
-        for (const sym of this.subscribedSymbols) {
-          this.sendSubscription(sym);
-        }
-      };
+    // Start polling loop
+    this.pollTimer = setInterval(() => {
+      void this.pollAllSymbols();
+    }, this.POLL_INTERVAL_MS);
 
-      this.ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data as string);
-          this.handleMessage(data);
-        } catch {
-          // Non-JSON message (heartbeat, etc.) — ignore
-        }
-      };
+    // Do an immediate poll for any already-subscribed symbols
+    void this.pollAllSymbols();
+  }
 
-      this.ws.onerror = (err) => {
-        log.error(`OptionsDataManager: WS error: ${err}`);
-      };
-
-      this.ws.onclose = () => {
-        this.connected = false;
-        log.warn('OptionsDataManager: WS disconnected');
-        this.scheduleReconnect();
-      };
-    } catch (err) {
-      log.error(`OptionsDataManager: Failed to connect: ${err instanceof Error ? err.message : String(err)}`);
-      this.scheduleReconnect();
+  /**
+   * v2.0.59: Poll the option chain snapshot for all subscribed symbols.
+   * Fetches IV, Greeks, OI, put/call ratio from the REST API.
+   * If a fetch fails (rate limit, network error), the cached data stays
+   * unchanged — agents continue with the last known values.
+   */
+  private async pollAllSymbols(): Promise<void> {
+    if (this.subscribedSymbols.size === 0) return;
+    const symbols = Array.from(this.subscribedSymbols).slice(0, this.MAX_SYMBOLS);
+    for (const sym of symbols) {
+      try {
+        await this.fetchOptionChain(sym);
+      } catch (err) {
+        // Non-critical — keep cached data, try again next poll
+        log.debug(`OptionsDataManager: Poll failed for ${sym}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 
   /**
-   * Schedule a reconnection attempt with exponential backoff.
+   * v2.0.59: Fetch option chain snapshot from Polygon.io REST API.
+   * Extracts: IV, Greeks (delta/gamma/theta/vega), open interest, put/call ratio,
+   * implied move, high-OI strike, max pain, skew, gamma regime.
+   *
+   * API: GET /v3/snapshot/options/{underlyingAsset}?apiKey=...
+   * Returns array of contracts with greeks, IV, OI, quotes, trades.
    */
-  private scheduleReconnect(): void {
-    if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
-      log.error(`OptionsDataManager: Max reconnection attempts (${this.MAX_RECONNECT_ATTEMPTS}) reached — giving up`);
+  private async fetchOptionChain(symbol: string): Promise<void> {
+    // Strip exchange prefix for API call (e.g. "xyz:SKHX" → "SKHX")
+    const underlying = symbol.includes(':') ? symbol.split(':')[1]! : symbol.toUpperCase();
+    const url = `${this.restBaseUrl}/v3/snapshot/options/${underlying}?apiKey=${this.apiKey}&limit=250`;
+
+    const res = await fetch(url);
+    if (!res.ok) {
+      if (res.status === 429) {
+        log.warn(`OptionsDataManager: Rate limited for ${underlying} — keeping cached data`);
+        return;
+      }
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    }
+
+    const data = await res.json() as {
+      results?: Array<{
+        break_even_price?: number;
+        details?: { contract_type?: string; strike_price?: number; expiration_date?: string };
+        greeks?: { delta?: number; gamma?: number; theta?: number; vega?: number };
+        implied_volatility?: number;
+        open_interest?: number;
+        last_quote?: { bid?: number; ask?: number; bid_size?: number; ask_size?: number };
+        last_trade?: { price?: number; size?: number };
+        day?: { volume?: number; close?: number; change?: number; change_percent?: number };
+        underlying_asset?: { price?: number; ticker?: string };
+      }>;
+      status?: string;
+    };
+
+    if (!data.results || data.results.length === 0) {
+      log.debug(`OptionsDataManager: No option contracts for ${underlying}`);
       return;
     }
-    this.reconnectAttempts++;
-    const delay = this.RECONNECT_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1);
-    log.info(`OptionsDataManager: Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS})`);
-    this.reconnectTimer = setTimeout(() => void this.connect(), delay);
-  }
 
-  /**
-   * Send a subscription message for a symbol.
-   * Subscribes to: quotes, trades, greeks, IV, open interest, volume.
-   */
-  private sendSubscription(symbol: string): void {
-    if (!this.ws || !this.connected) return;
-    const msg = {
-      action: 'subscribe',
-      channel: 'options',
+    // Aggregate metrics from the option chain
+    const contracts = data.results;
+    const calls = contracts.filter(c => c.details?.contract_type === 'call');
+    const puts = contracts.filter(c => c.details?.contract_type === 'put');
+
+    // Implied Volatility: average across all contracts (weighted by OI if available)
+    const allIVs = contracts.map(c => ({ iv: c.implied_volatility ?? 0, oi: c.open_interest ?? 0 }));
+    const totalOI = allIVs.reduce((s, c) => s + c.oi, 0);
+    const avgIV = totalOI > 0
+      ? allIVs.reduce((s, c) => s + c.iv * c.oi, 0) / totalOI
+      : allIVs.reduce((s, c) => s + c.iv, 0) / Math.max(1, allIVs.length);
+
+    // Put/Call ratio (by open interest)
+    const callOI = calls.reduce((s, c) => s + (c.open_interest ?? 0), 0);
+    const putOI = puts.reduce((s, c) => s + (c.open_interest ?? 0), 0);
+    const putCallOIRatio = callOI > 0 ? putOI / callOI : 1.0;
+
+    // Put/Call ratio (by volume)
+    const callVol = calls.reduce((s, c) => s + (c.day?.volume ?? 0), 0);
+    const putVol = puts.reduce((s, c) => s + (c.day?.volume ?? 0), 0);
+    const putCallRatio = callVol > 0 ? putVol / callVol : 1.0;
+
+    // High OI strike: strike with highest total OI (calls + puts)
+    const strikeOIMap = new Map<number, number>();
+    for (const c of contracts) {
+      const strike = c.details?.strike_price;
+      if (strike !== undefined) {
+        strikeOIMap.set(strike, (strikeOIMap.get(strike) ?? 0) + (c.open_interest ?? 0));
+      }
+    }
+    let highOIStrike: number | null = null;
+    let maxOI = 0;
+    for (const [strike, oi] of strikeOIMap) {
+      if (oi > maxOI) { maxOI = oi; highOIStrike = strike; }
+    }
+
+    // Max pain: strike where total option holder loss is maximized
+    // (simplified: strike with highest OI is a good proxy)
+    const maxPain = highOIStrike;
+
+    // Gamma regime: sum of gamma * OI for ATM strikes
+    // Positive gamma (dealers long gamma) = stabilizing, negative = destabilizing
+    // Simplified: if average gamma > 0 → positive, < 0 → negative
+    const allGammas = contracts.map(c => ({ gamma: c.greeks?.gamma ?? 0, oi: c.open_interest ?? 0 }));
+    const avgGamma = totalOI > 0
+      ? allGammas.reduce((s, c) => s + c.gamma * c.oi, 0) / totalOI
+      : 0;
+    const gammaRegime: 'positive' | 'negative' | 'neutral' =
+      avgGamma > 0.0001 ? 'positive' : avgGamma < -0.0001 ? 'negative' : 'neutral';
+
+    // Implied move: ATM IV * sqrt(days_to_exp / 365)
+    // Find nearest expiration
+    const now = new Date();
+    const expDates = contracts
+      .map(c => c.details?.expiration_date)
+      .filter((d): d is string => !!d)
+      .sort();
+    const nearestExp = expDates[0];
+    let daysToExp = 7;
+    if (nearestExp) {
+      const expDate = new Date(nearestExp);
+      daysToExp = Math.max(1, Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+    }
+    const impliedMovePct = avgIV * Math.sqrt(daysToExp / 365);
+
+    // Skew: OTM put IV - ATM call IV (simplified)
+    const atmStrike = contracts.reduce((closest, c) => {
+      const strike = c.details?.strike_price ?? 0;
+      const underlyingPrice = c.underlying_asset?.price ?? 0;
+      return Math.abs(strike - underlyingPrice) < Math.abs(closest - underlyingPrice) ? strike : closest;
+    }, 0);
+    const otmPutIV = puts.find(c => (c.details?.strike_price ?? 0) < atmStrike * 0.95)?.implied_volatility ?? avgIV;
+    const atmCallIV = calls.find(c => Math.abs((c.details?.strike_price ?? 0) - atmStrike) < 1)?.implied_volatility ?? avgIV;
+    const skew = otmPutIV - atmCallIV;
+
+    // IV Rank: simplified — use current IV vs a nominal 30% baseline
+    // (true IV Rank requires historical IV data, which needs a paid plan)
+    const ivRank = Math.min(100, Math.max(0, (avgIV / 0.6) * 100));
+    const ivPercentile = ivRank; // simplified
+
+    // Event risk: check if expiration is within 3 days (OPEX risk)
+    const eventRisk: 'none' | 'earnings' | 'opex' | 'fomc' | 'high' =
+      daysToExp <= 3 ? 'opex' : 'none';
+
+    const ctx: OptionsContext = {
       symbol,
-      feeds: ['quotes', 'trades', 'greeks', 'iv', 'open_interest', 'volume', 'unusual_flow'],
-    };
-    this.ws.send(JSON.stringify(msg));
-    log.info(`OptionsDataManager: Subscribed to ${symbol}`);
-  }
-
-  /**
-   * Send an unsubscription message for a symbol.
-   */
-  private sendUnsubscription(symbol: string): void {
-    if (!this.ws || !this.connected) return;
-    const msg = { action: 'unsubscribe', channel: 'options', symbol };
-    this.ws.send(JSON.stringify(msg));
-    log.info(`OptionsDataManager: Unsubscribed from ${symbol}`);
-  }
-
-  /**
-   * Handle incoming WS message — update cache with new data.
-   */
-  private handleMessage(data: any): void {
-    if (!data || !data.symbol) return;
-    const sym = data.symbol as string;
-    const existing = this.cache.get(sym) ?? DEFAULT_CONTEXT(sym);
-
-    // Update fields based on message type
-    const updated: OptionsContext = {
-      ...existing,
-      symbol: sym,
+      ivRank,
+      ivPercentile,
+      impliedVolatility: avgIV,
+      impliedMovePct,
+      putCallRatio,
+      putCallOIRatio,
+      gammaRegime,
+      highOIStrike,
+      maxPain,
+      skew,
+      eventRisk,
+      daysToExpiration: daysToExp,
       lastUpdated: Date.now(),
       available: true,
     };
 
-    if (data.iv !== undefined) updated.impliedVolatility = data.iv;
-    if (data.ivRank !== undefined) updated.ivRank = data.ivRank;
-    if (data.ivPercentile !== undefined) updated.ivPercentile = data.ivPercentile;
-    if (data.impliedMove !== undefined) updated.impliedMovePct = data.impliedMove;
-    if (data.putCallRatio !== undefined) updated.putCallRatio = data.putCallRatio;
-    if (data.putCallOIRatio !== undefined) updated.putCallOIRatio = data.putCallOIRatio;
-    if (data.gammaRegime !== undefined) updated.gammaRegime = data.gammaRegime;
-    if (data.highOIStrike !== undefined) updated.highOIStrike = data.highOIStrike;
-    if (data.maxPain !== undefined) updated.maxPain = data.maxPain;
-    if (data.skew !== undefined) updated.skew = data.skew;
-    if (data.eventRisk !== undefined) updated.eventRisk = data.eventRisk;
-    if (data.daysToExpiration !== undefined) updated.daysToExpiration = data.daysToExpiration;
-
-    this.cache.set(sym, updated);
+    this.cache.set(symbol, ctx);
+    log.info(`📊 [options-data] ${symbol}: IV=${(avgIV * 100).toFixed(1)}% IVR=${ivRank.toFixed(0)} P/C=${putCallOIRatio.toFixed(2)} γ=${gammaRegime} impliedMove=±${(impliedMovePct * 100).toFixed(2)}%`);
   }
 
   /**
-   * Subscribe to options data for a symbol.
-   * Only subscribes if not already subscribed.
+   * v2.0.59: Subscribe to options data for a symbol.
+   * Adds the symbol to the polling set — the next poll cycle will fetch its data.
+   * Only subscribes if not already subscribed and under the max symbol limit.
    */
   subscribe(symbol: string): void {
     if (this.subscribedSymbols.has(symbol)) return;
+    if (this.subscribedSymbols.size >= this.MAX_SYMBOLS) {
+      log.warn(`OptionsDataManager: Max symbols (${this.MAX_SYMBOLS}) reached — skipping ${symbol}`);
+      return;
+    }
     this.subscribedSymbols.add(symbol);
+    log.info(`OptionsDataManager: Subscribed to ${symbol} (${this.subscribedSymbols.size}/${this.MAX_SYMBOLS})`);
+    // If already connected, do an immediate fetch for this symbol
     if (this.connected) {
-      this.sendSubscription(symbol);
+      void this.fetchOptionChain(symbol).catch(() => { /* non-critical */ });
     }
   }
 
   /**
-   * Unsubscribe from options data for a symbol.
+   * v2.0.59: Unsubscribe from options data for a symbol.
    */
   unsubscribe(symbol: string): void {
     if (!this.subscribedSymbols.has(symbol)) return;
     this.subscribedSymbols.delete(symbol);
     this.cache.delete(symbol);
-    if (this.connected) {
-      this.sendUnsubscription(symbol);
-    }
+    log.info(`OptionsDataManager: Unsubscribed from ${symbol}`);
   }
 
   /**
@@ -452,25 +535,17 @@ export class OptionsDataManager {
   }
 
   /**
-   * Disconnect and clean up.
+   * v2.0.59: Disconnect = stop REST polling loop.
    */
   disconnect(): void {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
     this.connected = false;
     this.subscribedSymbols.clear();
     this.cache.clear();
-    log.info('OptionsDataManager: Disconnected and cleaned up');
+    log.info('OptionsDataManager: REST polling stopped and cleaned up');
   }
 
   isConnected(): boolean {
