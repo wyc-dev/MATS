@@ -628,6 +628,39 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
           <span className={`stat-number ${drawdownPct === null ? 'neutral' : (drawdownPct > 0.1 ? 'negative' : 'neutral')}`}>
             {drawdownPct === null ? '--' : `${(drawdownPct * 100).toFixed(2)}%`}
           </span>
+          {/* v2.0.45: Clear Drawdown button — resets drawdown data and relaunches trading.
+              When drawdown ≥ 15%, the SystemGuard blocks all cycles. This button
+              clears the drawdown so the next cycle can resume. */}
+          {drawdownPct !== null && drawdownPct >= 0.15 && (
+            <>
+              <button
+                onClick={async () => {
+                  try {
+                    await fetch(`${API_BASE}/clear-drawdown`, { method: 'POST' });
+                  } catch (err) {
+                    console.error('Failed to clear drawdown:', err);
+                  }
+                }}
+                style={{
+                  display: 'block',
+                  marginTop: 4,
+                  padding: '2px 8px',
+                  fontSize: '0.6rem',
+                  fontWeight: 600,
+                  background: 'var(--accent-red)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                }}
+              >
+                Clear Drawdown
+              </button>
+              <span className="stat-sub" style={{ display: 'block', fontSize: '0.6em', opacity: 0.7, marginTop: 2 }}>
+                Drawdown ≥ 15% — trading halted. Clear to relaunch.
+              </span>
+            </>
+          )}
         </div>
         <div className="portfolio-cell">
           <span className="stat-label">Win Rate</span>
