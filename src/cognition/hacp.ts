@@ -7,6 +7,8 @@ import { getActiveProvider } from '../llm/index.ts';
 import { config } from '../config/index.ts';
 import { parseA2ASignal, formatA2ASignal } from './a2a-utils.ts';
 import { normalizeDecision } from '../trading/decision-utils.ts';
+// v2.0.42: Import normalizeSymbol for consistent symbol casing in adjustPositions.
+import { normalizeSymbol } from '../trading/portfolio.ts';
 import type { TradeHistory } from '../evolution/trade-history.ts';
 import type { AgentEvolutionEngine } from '../evolution/agent-evolution.ts';
 import type {
@@ -1000,7 +1002,7 @@ export class HACPEngine {
     for (const pos of positions) {
       // Only adjust positions that match the primary trading symbol
       // to avoid applying the wrong market context to a different instrument
-      if (primarySymbol && pos.symbol.toLowerCase() !== primarySymbol.toLowerCase()) {
+      if (primarySymbol && normalizeSymbol(pos.symbol) !== normalizeSymbol(primarySymbol)) {
         log.debug(`Skipping adjustment for ${pos.symbol} — not the primary symbol ${primarySymbol}`);
         continue;
       }
@@ -1157,6 +1159,10 @@ Output ONLY valid JSON:
           }
 
           // TP: if positive PnL, tighten toward price. Never widen.
+          // v2.0.42: No-widen rule now runs REGARDLESS of PnL sign.
+          // Previously only enforced when unrealizedPnlPct > 0, meaning
+          // a losing position could have its TP widened. TP must NEVER
+          // be moved further from current price than it already is.
           // Also validate TP is on the correct side of entry (defence-in-depth).
           if (finalTP !== undefined) {
             if (isLong) {
@@ -1164,7 +1170,8 @@ Output ONLY valid JSON:
               if (finalTP <= pos.entryPrice) {
                 log.warn(`🚫 TP safety (2nd layer): LONG TP $${finalTP} <= entry $${pos.entryPrice}. Rejecting.`);
                 finalTP = undefined;
-              } else if (unrealizedPnlPct > 0) {
+              } else {
+                // v2.0.42: No-widen rule — ALWAYS enforce, not just when PnL > 0
                 const oldTP = pos.takeProfit;
                 if (oldTP !== undefined && finalTP > oldTP) finalTP = oldTP; // never widen
                 if (finalTP < pos.currentPrice * 1.005) finalTP = pos.currentPrice * 1.005; // min 0.5% above
@@ -1174,7 +1181,8 @@ Output ONLY valid JSON:
               if (finalTP >= pos.entryPrice) {
                 log.warn(`🚫 TP safety (2nd layer): SHORT TP $${finalTP} >= entry $${pos.entryPrice}. Rejecting.`);
                 finalTP = undefined;
-              } else if (unrealizedPnlPct > 0) {
+              } else {
+                // v2.0.42: No-widen rule — ALWAYS enforce, not just when PnL > 0
                 const oldTP = pos.takeProfit;
                 if (oldTP !== undefined && finalTP < oldTP) finalTP = oldTP; // never widen
                 if (finalTP > pos.currentPrice * 0.995) finalTP = pos.currentPrice * 0.995; // max 0.5% below
@@ -1501,7 +1509,7 @@ Output ONLY valid JSON:
     if (metaMultiDec) {
       const addSym = (psd: import('../types/index.ts').PerSymbolDecision, hasPos: boolean) => {
         perSymbolConsensus.push({
-          symbol: psd.symbol.toLowerCase(),
+          symbol: normalizeSymbol(psd.symbol),
           action: psd.action,
           confidence: metaDecision.confidence,
           hasPosition: hasPos,

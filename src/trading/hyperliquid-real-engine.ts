@@ -17,6 +17,8 @@ import type {
   RealTradingEngine,
   ExchangeAccountInfo,
 } from '../types/index.ts';
+// v2.0.42: Import normalizeSymbol for consistent symbol casing.
+import { normalizeSymbol } from './portfolio.ts';
 
 const log = createLogger({ phase: 'hyperliquid-real' });
 
@@ -992,7 +994,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         log.warn(`⚠️ closePosition(${symbol}): getPositions() returned empty — likely API failure, cannot confirm close`);
         return false;
       }
-      const pos = positions.find(p => p.symbol.toUpperCase() === symbol.toUpperCase());
+      const pos = positions.find(p => normalizeSymbol(p.symbol) === normalizeSymbol(symbol));
       if (!pos) return true; // Position genuinely not found = already closed
 
       // v2.0.32: Cancel existing trigger orders for this position's close

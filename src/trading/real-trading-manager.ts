@@ -5,7 +5,7 @@
 
 import { createLogger } from '../observability/logger.ts';
 import { config } from '../config/index.ts';
-import { PortfolioTracker } from './portfolio.ts';
+import { PortfolioTracker, normalizeSymbol } from './portfolio.ts';
 import { RiskEngine } from '../risk/engine.ts';
 import { PaperTradingEngine } from './paper-engine.ts';
 import { BinanceRealEngine } from './binance-real-engine.ts';
@@ -320,7 +320,7 @@ export class RealTradingManager {
         try {
           const exchangePositions = await engine.getPositions();
           const exPos = exchangePositions.find(
-            p => p.symbol.toLowerCase() === decision.symbol.toLowerCase(),
+            p => normalizeSymbol(p.symbol) === normalizeSymbol(decision.symbol),
           );
           if (exPos) {
             actualEntryPrice = exPos.averageEntryPrice;
