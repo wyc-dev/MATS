@@ -581,12 +581,57 @@ export class PortfolioTracker {
           return newStopLoss;
         })();
 
+        // ── v2.0.42: No-widen enforcement for SL ──
+        // SL can only move TOWARD current price (trailing stop / lock profit).
+        // It must NEVER move AWAY from current price (widening = more risk).
+        //
+        // ⚠️ MAINTENANCE NOTE: This is the HARD SAFETY layer for SL no-widen.
+        // hacp.ts adjustPositions() also enforces no-widen, but this layer
+        // catches any caller that bypasses HACP (per-symbol consensus, manual).
+        // If you change no-widen logic, update BOTH layers.
+        let finalSL = validatedSL;
+        if (finalSL !== undefined && pos.stopLossPrice !== undefined) {
+          if (isLong) {
+            // Long SL can only go UP (toward price). If new SL < old SL, it's widening.
+            if (finalSL < pos.stopLossPrice) {
+              log.warn(`🚫 adjustPosition SL no-widen: LONG SL $${finalSL} < old SL $${pos.stopLossPrice} — widening blocked`);
+              finalSL = undefined;
+            }
+          } else {
+            // Short SL can only go DOWN (toward price). If new SL > old SL, it's widening.
+            if (finalSL > pos.stopLossPrice) {
+              log.warn(`🚫 adjustPosition SL no-widen: SHORT SL $${finalSL} > old SL $${pos.stopLossPrice} — widening blocked`);
+              finalSL = undefined;
+            }
+          }
+        }
+
+        // ── v2.0.42: No-widen enforcement for TP ──
+        // TP can only move TOWARD current price (tightening). It must NEVER
+        // move AWAY (widening = greedier target that may never hit).
+        let finalTP = validatedTP;
+        if (finalTP !== undefined && pos.takeProfitPrice !== undefined) {
+          if (isLong) {
+            // Long TP can only go DOWN (toward price). If new TP > old TP, it's widening.
+            if (finalTP > pos.takeProfitPrice) {
+              log.warn(`🚫 adjustPosition TP no-widen: LONG TP $${finalTP} > old TP $${pos.takeProfitPrice} — widening blocked`);
+              finalTP = undefined;
+            }
+          } else {
+            // Short TP can only go UP (toward price). If new TP < old TP, it's widening.
+            if (finalTP < pos.takeProfitPrice) {
+              log.warn(`🚫 adjustPosition TP no-widen: SHORT TP $${finalTP} < old TP $${pos.takeProfitPrice} — widening blocked`);
+              finalTP = undefined;
+            }
+          }
+        }
+
         // v2.0.36: Minimum SL/TP gap constraint — if the gap between the
         // new SL and the existing/new TP is less than 1% of current price,
         // reject the adjustment. Over-narrowing causes noise stop-outs +
         // premature TP hits, cutting profits short.
-        const effectiveSL = validatedSL ?? pos.stopLossPrice;
-        const effectiveTP = validatedTP ?? pos.takeProfitPrice;
+        const effectiveSL = finalSL ?? pos.stopLossPrice;
+        const effectiveTP = finalTP ?? pos.takeProfitPrice;
         if (effectiveSL !== undefined && effectiveTP !== undefined) {
           const sltpGap = Math.abs(effectiveTP - effectiveSL);
           const gapPct = pos.currentPrice > 0 ? sltpGap / pos.currentPrice : 0;
@@ -596,11 +641,11 @@ export class PortfolioTracker {
           }
         }
 
-        if (validatedSL !== undefined) {
-          pos.stopLossPrice = validatedSL;
+        if (finalSL !== undefined) {
+          pos.stopLossPrice = finalSL;
         }
-        if (validatedTP !== undefined) {
-          pos.takeProfitPrice = validatedTP;
+        if (finalTP !== undefined) {
+          pos.takeProfitPrice = finalTP;
         }
         pos.updatedAt = Date.now();
         log.info(`Position ${positionId.slice(0, 8)} adjusted: SL=${pos.stopLossPrice?.toFixed(2) ?? '-'} TP=${pos.takeProfitPrice?.toFixed(2) ?? '-'}`);

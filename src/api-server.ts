@@ -5,6 +5,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from './observability/logger.ts';
+// v2.0.42: Import normalizeSymbol for manual close symbol normalization.
+import { normalizeSymbol } from './trading/portfolio.ts';
 import { getAllAgentModels, getAvailableModels, setAgentModel, resetAgentModel, type AgentModelConfig, type ModelDefinition } from './agents/agent-models.ts';
 import type { AgentThought, ConsensusResult, DebateRound, Portfolio, MarketState, AgentStatus, CycleProgress, MarketAgentConfig, TopVolumePair, TradeMode, ExchangeType, HyperliquidAssetType } from './types/index.ts';
 import type { BacktestResult, BacktestProgress } from './backtest/index.ts';
@@ -627,7 +629,8 @@ export class APIServer {
               return;
             }
             if (this.onManualClosePosition) {
-              const result = await this.onManualClosePosition(symbol.toLowerCase());
+              // v2.0.42: Use normalizeSymbol for consistent casing with portfolio.
+              const result = await this.onManualClosePosition(normalizeSymbol(symbol));
               res.writeHead(result.success ? 200 : 500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify(result));
             } else {

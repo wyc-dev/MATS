@@ -2040,7 +2040,7 @@ class AMACRFSystem {
         const closeVotes = allThoughts.filter(t => {
           if (t.agentRole === 'meta_agent' || t.agentRole === 'market_agent') return false;
           const msd = t.metadata?.['multiSymbolDecision'] as any;
-          const posDecision = msd?.positions?.find((p: any) => p.symbol?.toLowerCase() === posSymbol.toLowerCase());
+          const posDecision = msd?.positions?.find((p: any) => normalizeSymbol(p?.symbol ?? '') === normalizeSymbol(posSymbol));
           return posDecision?.closePosition === true;
         }).length;
         if (closeVotes >= 2) {
@@ -2366,7 +2366,7 @@ class AMACRFSystem {
                 .filter(t => t.agentRole !== 'meta_agent' && t.agentRole !== 'market_agent')
                 .map(t => {
                   const msd = t.metadata?.['multiSymbolDecision'] as any;
-                  const posDecision = msd?.positions?.find((p: any) => p.symbol?.toLowerCase() === report.trade!.symbol.toLowerCase());
+                  const posDecision = msd?.positions?.find((p: any) => normalizeSymbol(p?.symbol ?? '') === normalizeSymbol(report.trade!.symbol));
                   return { role: t.agentRole, action: posDecision?.action ?? 'hold', confidence: t.confidence };
                 }),
             );

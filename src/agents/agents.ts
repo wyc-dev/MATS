@@ -4,6 +4,8 @@
 import { BaseAgent } from './base-agent.ts';
 import type { TradingDecision } from '../types/index.ts';
 import { normalizeDecision } from '../trading/decision-utils.ts';
+// v2.0.42: Import normalizeSymbol for consistent symbol casing.
+import { normalizeSymbol } from '../trading/portfolio.ts';
 import { createLogger } from '../observability/logger.ts';
 
 export class FractalMomentumSentinel extends BaseAgent {
@@ -1214,7 +1216,8 @@ Be concise. Output ONLY valid JSON.`,
 
           const modPositions: PerSymbolDecision[] = posSymbols.map((sym, i) => {
             const orig = origDecision.positions[i]!;
-            const found = (parsed.modifiedPositions ?? []).find((p: any) => p?.symbol?.toUpperCase() === sym.toUpperCase());
+            // v2.0.42: Use normalizeSymbol for consistent casing.
+        const found = (parsed.modifiedPositions ?? []).find((p: any) => normalizeSymbol(p?.symbol ?? '') === normalizeSymbol(sym));
             return found
               ? {
                   ...orig,
