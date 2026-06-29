@@ -999,19 +999,21 @@ export class RealTradingManager {
 
         // v2.0.47: REVERSE SYNC — read the actual SL/TP trigger prices from HL
         // and update the local mirror so the UI shows what's really on the exchange.
-        // The local mirror's SL/TP may drift from HL due to:
-        //   - HL rounding/price decimals on placement
-        //   - Manual adjustments on HL's web UI
-        //   - Local adjustPosition() no-widen clamping that differs from HL
         // HL is the ground truth — the local mirror must match it.
         //
-        // v2.0.55: FIX — the fallback inference logic assumed SL is always on
-        // the loss side of entry (SHORT: SL > entry, LONG: SL < entry). But
-        // trailing stops move SL to the profit side of entry. The old logic
-        // used Math.max/min relative to entry, which SWAPPED SL and TP when
-        // SL was on the profit side. Now we infer based on which price is
-        // closer to current price (SL is always closer than TP).
-        const hlSL = myOrders.find(o => o.triggerPx && o.side === closeSide && (o.tpsl === 'sl' || myOrders.filter(o2 => o2.triggerPx && o2.side === closeSide).indexOf(o) === 0));
+        // v2.0.57: FIX — the old inference logic was completely wrong:
+        //   - "closest to current price = SL" is incorrect — SL and TP can
+        //     be at any distance from current price depending on market movement
+        //   - The correct inference is based on POSITION DIRECTION + ENTRY PRICE:
+        //     LONG: SL < entry (loss side), TP > entry (profit side)
+        //     SHORT: SL > entry (loss side), TP < entry (profit side)
+        //   - If both orders are on the same side of entry (trailing stop),
+        //     the one FURTHER from entry is SL, the one CLOSER to entry is TP
+        //
+        // Example: BTC SHORT entry=$60,565, HL orders at $59,354 and $61,050.
+        // $61,050 > entry → SL (loss side, price rising stops us out).
+        // $59,354 < entry → TP (profit side, price falling hits target).
+        const hlSL = myOrders.find(o => o.triggerPx && o.side === closeSide && o.tpsl === 'sl');
         const hlTP = myOrders.find(o => o.triggerPx && o.side === closeSide && o.tpsl === 'tp');
         const triggerOrders = myOrders.filter(o => o.triggerPx);
         let actualSL: number | undefined;
@@ -1019,35 +1021,46 @@ export class RealTradingManager {
         if (triggerOrders.length > 0) {
           if (hlSL?.triggerPx) {
             actualSL = parseFloat(hlSL.triggerPx);
-          } else if (hlTP?.triggerPx) {
+          }
+          if (hlTP?.triggerPx) {
             actualTP = parseFloat(hlTP.triggerPx);
           }
-          // If tpsl fields are missing, infer from price position relative
-          // to CURRENT PRICE (not entry — trailing stops can be on profit side).
-          // v2.0.55: SL is the order CLOSER to current price (SL is always
-          // tighter than TP). TP is the order FURTHER from current price.
-          // This works for both loss-side SL and trailing-stop (profit-side SL).
+          // v2.0.57: If tpsl fields are missing, infer from ENTRY PRICE + position direction.
+          // SL is on the LOSS side of entry, TP is on the PROFIT side:
+          //   LONG: SL < entry, TP > entry
+          //   SHORT: SL > entry, TP < entry
+          // If both are on the same side (trailing stop), the one FURTHER
+          // from entry is SL, the one CLOSER is TP.
           if (actualSL === undefined && actualTP === undefined && triggerOrders.length >= 1) {
             const prices = triggerOrders.map(o => parseFloat(o.triggerPx!));
             if (prices.length === 1) {
-              // Only one order — can't determine if SL or TP, assume SL
               actualSL = prices[0];
             } else {
-              // Two orders — SL is closer to current price, TP is further
-              const currentPrice = pos.currentPrice;
-              const sortedByDist = prices.map(p => ({
-                price: p,
-                dist: Math.abs(p - currentPrice),
-              })).sort((a, b) => a.dist - b.dist);
-              actualSL = sortedByDist[0]!.price; // closest = SL
-              actualTP = sortedByDist[1]!.price; // furthest = TP
+              const entry = hlPos.entry;
+              const isLong = pos.side === 'buy';
+              const aboveOrder = prices.find(p => p > entry);
+              const belowOrder = prices.find(p => p < entry);
+              if (aboveOrder !== undefined && belowOrder !== undefined) {
+                // One above entry, one below — use direction to assign
+                if (isLong) {
+                  actualSL = belowOrder;  // LONG SL below entry
+                  actualTP = aboveOrder;   // LONG TP above entry
+                } else {
+                  actualSL = aboveOrder;   // SHORT SL above entry
+                  actualTP = belowOrder;   // SHORT TP below entry
+                }
+              } else {
+                // Both on same side of entry (trailing stop)
+                // SL is further from entry, TP is closer
+                const sorted = prices.map(p => ({ price: p, dist: Math.abs(p - entry) })).sort((a, b) => b.dist - a.dist);
+                actualSL = sorted[0]!.price; // furthest from entry = SL
+                actualTP = sorted[1]!.price; // closest to entry = TP
+              }
             }
           } else if (actualSL === undefined && triggerOrders.length >= 2) {
-            // We found TP via tpsl but not SL — SL is the other order
             const otherOrder = triggerOrders.find(o => o.triggerPx !== hlTP?.triggerPx);
             if (otherOrder?.triggerPx) actualSL = parseFloat(otherOrder.triggerPx);
           } else if (actualTP === undefined && triggerOrders.length >= 2) {
-            // We found SL via tpsl but not TP — TP is the other order
             const otherOrder = triggerOrders.find(o => o.triggerPx !== hlSL?.triggerPx);
             if (otherOrder?.triggerPx) actualTP = parseFloat(otherOrder.triggerPx);
           }
