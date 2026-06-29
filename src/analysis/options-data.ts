@@ -108,10 +108,14 @@ export class OptionsDataManager {
   private subscribedSymbols = new Set<string>();
   private connected = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
-  /** Poll interval: 15s — balances freshness vs rate limits */
-  private readonly POLL_INTERVAL_MS = 15_000;
+  /** Poll interval: 60s — only fetch active symbol, not all positions */
+  private readonly POLL_INTERVAL_MS = 60_000;
   /** Max symbols to poll (keep lightweight) */
   private readonly MAX_SYMBOLS = 5;
+  /** v2.0.69: Rate limit cooldown — after a 429, wait this long before retrying */
+  private rateLimitCooldown = 0;
+  /** v2.0.69: Only poll the active symbol (set via setActiveSymbol), not all subscribed */
+  private activeSymbol = '';
 
   /**
    * v2.0.68: Detected API plan tier — determines data quality + voting weight.
@@ -149,15 +153,30 @@ export class OptionsDataManager {
     await this.detectPlanTier();
 
     this.connected = true;
-    log.info(`✅ OptionsDataManager: REST polling started (15s interval, plan=${this.planTier})`);
+    log.info(`✅ OptionsDataManager: REST polling started (60s interval, plan=${this.planTier})`);
 
-    // Start polling loop
+    // Start polling loop — only fetches the active symbol, not all positions
     this.pollTimer = setInterval(() => {
-      void this.pollAllSymbols();
+      void this.pollActiveSymbol();
     }, this.POLL_INTERVAL_MS);
 
-    // Do an immediate poll for any already-subscribed symbols
-    void this.pollAllSymbols();
+    // Do an immediate poll for the active symbol
+    void this.pollActiveSymbol();
+  }
+
+  /**
+   * v2.0.69: Set the active symbol to poll.
+   * Only this symbol is fetched on each poll cycle — not all open positions.
+   * Called by index.ts when the Market Agent selects a new symbol.
+   */
+  setActiveSymbol(symbol: string): void {
+    this.activeSymbol = symbol;
+    // Also subscribe so it's in the set
+    this.subscribedSymbols.add(symbol);
+    // Do an immediate fetch if connected
+    if (this.connected) {
+      void this.fetchOptionChain(symbol).catch(() => { /* non-critical */ });
+    }
   }
 
   /**
@@ -256,21 +275,23 @@ export class OptionsDataManager {
   }
 
   /**
-   * v2.0.59: Poll the option chain snapshot for all subscribed symbols.
-   * Fetches IV, Greeks, OI, put/call ratio from the REST API.
-   * If a fetch fails (rate limit, network error), the cached data stays
-   * unchanged — agents continue with the last known values.
+   * v2.0.69: Poll ONLY the active symbol (not all open positions).
+   * This prevents rate limit (429) errors from fetching multiple symbols
+   * every 15s. Only the Market Agent's selected symbol is polled.
+   * If rate limited, enters a cooldown period before retrying.
    */
-  private async pollAllSymbols(): Promise<void> {
-    if (this.subscribedSymbols.size === 0) return;
-    const symbols = Array.from(this.subscribedSymbols).slice(0, this.MAX_SYMBOLS);
-    for (const sym of symbols) {
-      try {
-        await this.fetchOptionChain(sym);
-      } catch (err) {
-        // Non-critical — keep cached data, try again next poll
-        log.debug(`OptionsDataManager: Poll failed for ${sym}: ${err instanceof Error ? err.message : String(err)}`);
-      }
+  private async pollActiveSymbol(): Promise<void> {
+    if (!this.activeSymbol) return;
+    // v2.0.69: Rate limit cooldown — skip poll if in cooldown
+    if (this.rateLimitCooldown > 0) {
+      this.rateLimitCooldown--;
+      log.debug(`OptionsDataManager: Rate limit cooldown (${this.rateLimitCooldown} polls remaining) — skipping ${this.activeSymbol}`);
+      return;
+    }
+    try {
+      await this.fetchOptionChain(this.activeSymbol);
+    } catch (err) {
+      log.debug(`OptionsDataManager: Poll failed for ${this.activeSymbol}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -309,7 +330,8 @@ export class OptionsDataManager {
     const res = await fetch(url);
     if (!res.ok) {
       if (res.status === 429) {
-        log.warn(`OptionsDataManager: Rate limited for ${underlying} — keeping cached data`);
+        log.warn(`OptionsDataManager: Rate limited for ${underlying} — entering 3-poll cooldown`);
+        this.rateLimitCooldown = 3;
         return;
       }
       throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -446,7 +468,8 @@ export class OptionsDataManager {
     const contractsRes = await fetch(contractsUrl);
     if (!contractsRes.ok) {
       if (contractsRes.status === 429) {
-        log.warn(`OptionsDataManager: Rate limited for ${underlying} — keeping cached data`);
+        log.warn(`OptionsDataManager: Rate limited for ${underlying} — entering 3-poll cooldown`);
+        this.rateLimitCooldown = 3;
         return;
       }
       throw new Error(`HTTP ${contractsRes.status}: ${contractsRes.statusText}`);

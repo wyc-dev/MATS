@@ -1002,6 +1002,15 @@ export class RealTradingManager {
         // and update the local mirror so the UI shows what's really on the exchange.
         // HL is the ground truth — the local mirror must match it.
         //
+        // v2.0.65: RE-FETCH open orders AFTER placement to get fresh data.
+        // The old code used `myOrders` captured at the START of syncSLTP(),
+        // BEFORE the cancel+replace block placed new orders. This caused:
+        //   1. Stale inference: seeing old orders instead of new ones
+        //   2. Single-order bug: when only 1 order existed, it was always
+        //      assigned as SL (even if it was actually TP)
+        //   3. Ping-pong: "push corrected" block saw mismatch against stale
+        //      data → pushed to HL again → created duplicates
+        //
         // v2.0.57: FIX — the old inference logic was completely wrong:
         //   - "closest to current price = SL" is incorrect — SL and TP can
         //     be at any distance from current price depending on market movement
@@ -1014,9 +1023,26 @@ export class RealTradingManager {
         // Example: BTC SHORT entry=$60,565, HL orders at $59,354 and $61,050.
         // $61,050 > entry → SL (loss side, price rising stops us out).
         // $59,354 < entry → TP (profit side, price falling hits target).
-        const hlSL = myOrders.find(o => o.triggerPx && o.side === closeSide && o.tpsl === 'sl');
-        const hlTP = myOrders.find(o => o.triggerPx && o.side === closeSide && o.tpsl === 'tp');
-        const triggerOrders = myOrders.filter(o => o.triggerPx);
+        //
+        // v2.0.65: SINGLE-ORDER INFERENCE FIX — when only 1 order exists on HL,
+        // use position direction + entry price to determine SL vs TP:
+        //   LONG: order < entry → SL, order > entry → TP
+        //   SHORT: order > entry → SL, order < entry → TP
+        // Previously always assigned as SL, which was wrong for TP-only orders.
+        let freshOrders: Array<{ coin: string; side: string; orderType: string; triggerPx?: string; tpsl?: string; sz: string; oid: number }> = [];
+        try {
+          freshOrders = await engine.getOpenOrders();
+        } catch { /* non-critical — fall back to stale myOrders */ }
+        const freshMyOrders = freshOrders.length > 0
+          ? freshOrders.filter(o =>
+              o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
+              o.side === closeSide
+            )
+          : myOrders; // fallback to stale if re-fetch failed
+
+        const hlSL = freshMyOrders.find(o => o.triggerPx && o.side === closeSide && o.tpsl === 'sl');
+        const hlTP = freshMyOrders.find(o => o.triggerPx && o.side === closeSide && o.tpsl === 'tp');
+        const triggerOrders = freshMyOrders.filter(o => o.triggerPx);
         let actualSL: number | undefined;
         let actualTP: number | undefined;
         if (triggerOrders.length > 0) {
@@ -1034,11 +1060,25 @@ export class RealTradingManager {
           // from entry is SL, the one CLOSER is TP.
           if (actualSL === undefined && actualTP === undefined && triggerOrders.length >= 1) {
             const prices = triggerOrders.map(o => parseFloat(o.triggerPx!));
+            const entry = hlPos.entry;
+            const isLong = pos.side === 'buy';
             if (prices.length === 1) {
-              actualSL = prices[0];
+              // v2.0.65: Single order — use direction + entry to determine SL vs TP
+              const singlePrice = prices[0]!;
+              if (isLong) {
+                if (singlePrice < entry) {
+                  actualSL = singlePrice;  // LONG: below entry = SL
+                } else {
+                  actualTP = singlePrice;  // LONG: above entry = TP
+                }
+              } else {
+                if (singlePrice > entry) {
+                  actualSL = singlePrice;  // SHORT: above entry = SL
+                } else {
+                  actualTP = singlePrice;  // SHORT: below entry = TP
+                }
+              }
             } else {
-              const entry = hlPos.entry;
-              const isLong = pos.side === 'buy';
               const aboveOrder = prices.find(p => p > entry);
               const belowOrder = prices.find(p => p < entry);
               if (aboveOrder !== undefined && belowOrder !== undefined) {
@@ -1074,7 +1114,8 @@ export class RealTradingManager {
         // v2.0.56: After correction, check if local SL/TP matches HL.
         // If correctInvertedSLTP() changed the local values, push them to HL
         // so the exchange has the correct trigger orders.
-        // v2.0.65: Pass BOTH SL+TP together to avoid ping-pong cancellation.
+        // v2.0.65: Use FRESH orders (freshMyOrders) instead of stale myOrders.
+        // Also pass BOTH SL+TP together to avoid ping-pong cancellation.
         const correctedPos = this.portfolio.getPosition(sym);
         if (correctedPos) {
           const localSL = correctedPos.stopLossPrice;
@@ -1083,11 +1124,11 @@ export class RealTradingManager {
           let needsPushTP = false;
           if (localSL !== undefined && localSL > 0) {
             const localSLRounded = parseFloat(localSL.toFixed(2));
-            needsPushSL = !myOrders.some(o => o.triggerPx && Math.abs(parseFloat(o.triggerPx) - localSLRounded) < 1);
+            needsPushSL = !freshMyOrders.some(o => o.triggerPx && Math.abs(parseFloat(o.triggerPx) - localSLRounded) < 1);
           }
           if (localTP !== undefined && localTP > 0) {
             const localTPRounded = parseFloat(localTP.toFixed(2));
-            needsPushTP = !myOrders.some(o => o.triggerPx && Math.abs(parseFloat(o.triggerPx) - localTPRounded) < 1);
+            needsPushTP = !freshMyOrders.some(o => o.triggerPx && Math.abs(parseFloat(o.triggerPx) - localTPRounded) < 1);
           }
           if (needsPushSL || needsPushTP) {
             log.info(`🔧 Pushing corrected SL/TP to HL for ${pos.symbol}: SL=${needsPushSL ? localSL!.toFixed(2) : '-'} TP=${needsPushTP ? localTP!.toFixed(2) : '-'}`);
