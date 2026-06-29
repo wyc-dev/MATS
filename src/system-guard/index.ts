@@ -166,7 +166,12 @@ export class SystemGuard {
    */
   private guardDrawdown(p: GuardParams): GuardResult {
     try {
-      const dd = p.maxDrawdownPct;
+      // v2.0.42: Use CURRENT drawdown, not historical max.
+      // maxDrawdownPct is a high-water mark that only increases — using it
+      // meant trading was permanently blocked after a drawdown spike,
+      // even after equity fully recovered. currentDrawdownPct decreases
+      // when equity recovers, so trading resumes once drawdown drops.
+      const dd = p.currentDrawdownPct;
 
       for (const level of DD_THRESHOLDS) {
         if (dd >= level.threshold) {

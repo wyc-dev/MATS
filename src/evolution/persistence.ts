@@ -86,6 +86,8 @@ export interface PortfolioSnapshot {
   totalPnlPct: number;
   maxDrawdown: number;
   maxDrawdownPct: number;
+  /** v2.0.42: Current drawdown from peak (decreases on recovery). */
+  currentDrawdownPct?: number;
   peakEquity: number;
   dailyPnl: number;
   dailyLossLimit: number;
@@ -263,6 +265,7 @@ const PORTFOLIO_FIELDS: Record<string, SchemaField> = {
   totalPnlPct: { type: 'number', required: true },
   maxDrawdown: { type: 'number', required: false },
   maxDrawdownPct: { type: 'number', required: false },
+  currentDrawdownPct: { type: 'number', required: false },
   peakEquity: { type: 'number', required: false },
   dailyPnl: { type: 'number', required: false },
   dailyLossLimit: { type: 'number', required: false },
@@ -341,6 +344,7 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       totalPnlPct: portfolio.totalPnlPct,
       maxDrawdown: portfolio.maxDrawdown,
       maxDrawdownPct: portfolio.maxDrawdownPct,
+      currentDrawdownPct: (portfolio as any).currentDrawdownPct ?? 0,
       peakEquity: portfolio.peakEquity,
       dailyPnl: portfolio.dailyPnl,
       dailyLossLimit: portfolio.dailyLossLimit,

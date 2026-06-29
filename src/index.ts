@@ -1212,6 +1212,11 @@ class AMACRFSystem {
     const guardParams = {
       activeSymbol,
       marketPrice,
+      // v2.0.42: Use currentDrawdownPct (decreases on recovery) instead of
+      // maxDrawdownPct (high-water mark that only increases). In real mode,
+      // drawdown is 0 (SystemGuard uses 0 for real mode — real drawdown is
+      // tracked on HL, not in paper portfolio).
+      currentDrawdownPct: isRealMode ? 0 : paperPortfolio.currentDrawdownPct,
       maxDrawdownPct: isRealMode ? 0 : paperPortfolio.maxDrawdownPct,
       dailyPnl: isRealMode ? 0 : paperPortfolio.dailyPnl,
       balance: isRealMode ? (this.cachedExchangeBalance?.total ?? paperPortfolio.balance) : paperPortfolio.balance,
@@ -2879,8 +2884,10 @@ class AMACRFSystem {
       totalEquity: displayEquity as number,
       totalPnl: isRealMode ? null : p.totalPnl,
       totalPnlPct: isRealMode ? null : p.totalPnlPct,
+      // v2.0.42: UI shows CURRENT drawdown (decreases on recovery), not
+      // historical max (which only increases and would show 27% forever).
       maxDrawdown: isRealMode ? null : p.maxDrawdown,
-      maxDrawdownPct: isRealMode ? null : p.maxDrawdownPct,
+      maxDrawdownPct: isRealMode ? null : (p as any).currentDrawdownPct ?? p.maxDrawdownPct,
       peakEquity: p.peakEquity,
       dailyPnl: p.dailyPnl,
       dailyLossLimit: p.dailyLossLimit,
@@ -2982,7 +2989,7 @@ class AMACRFSystem {
       `├─────────────────────────────────────┤`,
       `│ Cycles: ${String(this.totalCycles).padEnd(8)} Balance: $${p.balance.toFixed(0).padStart(6)}│`,
       `│ Equity: $${p.totalEquity.toFixed(0).padStart(6)}  PnL: ${(p.totalPnl >= 0 ? '+' : '')}${p.totalPnl.toFixed(0).padStart(5)} │`,
-      `│ Drawdown: ${(p.maxDrawdownPct * 100).toFixed(1).padStart(5)}%     Positions: ${p.positions.size}          │`,
+      `│ Drawdown: ${(((p as any).currentDrawdownPct ?? p.maxDrawdownPct) * 100).toFixed(1).padStart(5)}%     Positions: ${p.positions.size}          │`,
       `│ WS: ${this.multiWs?.isConnected() ? '✓' : '✗'} (${this.multiWs?.getActiveExchange() ?? '?'})  Trades: ${p.tradeCount} (W:${p.winCount} L:${p.lossCount})   │`,
       `└─────────────────────────────────────┘`,
     ].join('\n');
