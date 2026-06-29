@@ -607,6 +607,10 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
           <span className="stat-number positive">
             {s.tradeCount > 0 ? ((s.winCount / s.tradeCount) * 100).toFixed(1) : '0.0'}%
           </span>
+          {/* v2.0.42: Recent 20 trades win rate */}
+          <span className="stat-sub" style={{ display: 'block', fontSize: '0.7em', opacity: 0.7, marginTop: 2 }}>
+            Last {s.recent20Count ?? 0}: {((s.recent20WinRate ?? 0) * 100).toFixed(1)}%
+          </span>
         </div>
         <div className="portfolio-cell">
           <span className="stat-label">Trades</span>

@@ -2870,6 +2870,9 @@ class AMACRFSystem {
       }
     }
 
+    // v2.0.42: Recent 20 trades win rate — reflects current performance.
+    const recent20 = this.paperEngine.getRecentWinLoss(20);
+
     // v2.0.17: in real mode, show the actual Hyperliquid account value +
     // null out totalPnl/drawdown (paper-trade concepts). Win rate / trade
     // count stay local (paper + real mixed).
@@ -2894,6 +2897,9 @@ class AMACRFSystem {
       tradeCount: p.tradeCount,
       winCount: p.winCount,
       lossCount: p.lossCount,
+      // v2.0.42: Recent 20 trades win rate.
+      recent20WinRate: recent20.winRate,
+      recent20Count: recent20.total,
       lastUpdated: p.lastUpdated,
       positions,
     };
@@ -2991,6 +2997,8 @@ class AMACRFSystem {
       `│ Equity: $${p.totalEquity.toFixed(0).padStart(6)}  PnL: ${(p.totalPnl >= 0 ? '+' : '')}${p.totalPnl.toFixed(0).padStart(5)} │`,
       `│ Drawdown: ${(((p as any).currentDrawdownPct ?? p.maxDrawdownPct) * 100).toFixed(1).padStart(5)}%     Positions: ${p.positions.size}          │`,
       `│ WS: ${this.multiWs?.isConnected() ? '✓' : '✗'} (${this.multiWs?.getActiveExchange() ?? '?'})  Trades: ${p.tradeCount} (W:${p.winCount} L:${p.lossCount})   │`,
+      // v2.0.42: Show recent 20 trades win rate below the main status line
+      `│ Recent20: ${(() => { const r = this.paperEngine.getRecentWinLoss(20); return `${r.wins}W/${r.losses}L (${(r.winRate * 100).toFixed(0)}%)`; })().padEnd(52)}│`,
       `└─────────────────────────────────────┘`,
     ].join('\n');
 
@@ -3050,6 +3058,8 @@ class AMACRFSystem {
       // v2.0.31: Balance = free (available to trade), Equity = total (account value)
       const isRealMode = this.realTradingManager.getTradeMode() === 'real';
       const exBal = isRealMode ? this.cachedExchangeBalance : null;
+      // v2.0.42: Recent 20 trades win rate — reflects current performance.
+      const recent20 = this.paperEngine.getRecentWinLoss(20);
       // In real mode: if exchange balance not yet fetched → null (UI shows '--')
       const displayBalance = isRealMode ? (exBal ? exBal.free : null) : p.balance;
       const displayEquity = isRealMode ? (exBal ? exBal.total : null) : p.totalEquity;
@@ -3072,6 +3082,9 @@ class AMACRFSystem {
           tradeCount: p.tradeCount,
           winCount: p.winCount,
           lossCount: p.lossCount,
+          // v2.0.42: Recent 20 trades win rate — reflects current performance.
+          recent20WinRate: recent20.winRate,
+          recent20Count: recent20.total,
           currentPrice: state.price,
           regime: state.regime,
           trend: state.trend,
