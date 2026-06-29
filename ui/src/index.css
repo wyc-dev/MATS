@@ -6,38 +6,38 @@
 /* ── Sora + JetBrains Mono (pantha_mats type system) ── */
 :root {
   /* ── Glass palette (more transparent) ── */
-  --glass-bg: rgba(255, 255, 255, 0.02);
-  --glass-bg-hover: rgba(255, 255, 255, 0.04);
-  --glass-bg-active: rgba(255, 255, 255, 0.06);
-  --glass-border: rgba(255, 255, 255, 0.05);
-  --glass-border-hover: rgba(255, 255, 255, 0.08);
-  --glass-border-active: rgba(255, 255, 255, 0.12);
-  --glass-blur: blur(16px);
-  --glass-blur-strong: blur(24px);
+  --glass-bg: rgba(255, 255, 255, 0.03);
+  --glass-bg-hover: rgba(255, 255, 255, 0.06);
+  --glass-bg-active: rgba(255, 255, 255, 0.08);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-border-hover: rgba(255, 255, 255, 0.12);
+  --glass-border-active: rgba(255, 255, 255, 0.18);
+  --glass-blur: blur(20px);
+  --glass-blur-strong: blur(32px);
 
   /* ── Surface layers (pantha_mats navy) ── */
   --surface-deepest: #060b16;
-  --surface-primary: #080c18;
-  --surface-elevated: rgba(255, 255, 255, 0.015);
-  --surface-glass: rgba(255, 255, 255, 0.025);
-  --surface-glass-hover: rgba(255, 255, 255, 0.04);
+  --surface-primary: #0a1022;
+  --surface-elevated: rgba(255, 255, 255, 0.025);
+  --surface-glass: rgba(255, 255, 255, 0.035);
+  --surface-glass-hover: rgba(255, 255, 255, 0.05);
 
   /* ── Text ── */
-  --text-primary: #eef1f8;
-  --text-secondary: #a8b0c4;
-  --text-tertiary: #6b7488;
-  --text-muted: #454d5e;
+  --text-primary: #f0f4fc;
+  --text-secondary: #b4bcd0;
+  --text-tertiary: #7880a0;
+  --text-muted: #4a5270;
 
   /* ── Accent (pantha_mats gold #F5A623) ── */
   --accent: #F5A623;
-  --accent-bg: rgba(245, 166, 35, 0.12);
-  --accent-glow: rgba(245, 166, 35, 0.15);
+  --accent-bg: rgba(245, 166, 35, 0.15);
+  --accent-glow: rgba(245, 166, 35, 0.2);
   --green: #34d399;
-  --green-bg: rgba(52, 211, 153, 0.12);
+  --green-bg: rgba(52, 211, 153, 0.15);
   --red: #f87171;
-  --red-bg: rgba(248, 113, 113, 0.12);
+  --red-bg: rgba(248, 113, 113, 0.15);
   --gold: #F5A623;
-  --gold-bg: rgba(245, 166, 35, 0.12);
+  --gold-bg: rgba(245, 166, 35, 0.15);
   --accent-green: #34d399;
   --accent-red: #f87171;
 
@@ -53,14 +53,14 @@
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
 
   /* ── Font Size Scale (8-tier) ── */
-  --fs-micro:  0.55rem;  /* var(--space-5) — tags, badges */
-  --fs-xs:     0.6rem;   /* 11px — timestamps, aux data */
-  --fs-sm:     0.65rem;  /* var(--space-6) — stat-label, agent-meta */
-  --fs-base:   0.7rem;   /* 13px — body, panel-title, buttons */
-  --fs-md:     0.75rem;  /* var(--space-7) — emphasized body, agent-thought */
-  --fs-lg:     0.85rem;  /* var(--space-8) — sub-title, stat-number-sm */
-  --fs-xl:     1rem;     /* 19px — main data, section-title */
-  --fs-2xl:    1.25rem;  /* var(--space-12) — large numbers, brand */
+  --fs-micro:  0.6rem;   /* 10px — tags, badges */
+  --fs-xs:     0.65rem;  /* 11px — timestamps, aux data */
+  --fs-sm:     0.7rem;   /* 12px — stat-label, agent-meta */
+  --fs-base:   0.75rem;  /* 13px — body, panel-title, buttons */
+  --fs-md:     0.8rem;   /* 14px — emphasized body, agent-thought */
+  --fs-lg:     0.9rem;   /* 16px — sub-title, stat-number-sm */
+  --fs-xl:     1.05rem;  /* 19px — main data, section-title */
+  --fs-2xl:    1.3rem;   /* 24px — large numbers, brand */
   --fs-3xl:    1.8rem;   /* 34px — hero numbers */
 
   /* ── Font Weight ── */
@@ -70,31 +70,31 @@
   --fw-bold: 700;
 
   /* ── Spacing Scale (4px grid) ── */
-  --space-1:  var(--space-1);
-  --space-2:  var(--space-2);
-  --space-3:  var(--space-3);
-  --space-4:  var(--space-4);
-  --space-5:  var(--space-5);
-  --space-6:  var(--space-6);
-  --space-7:  var(--space-7);
-  --space-8:  var(--space-8);
-  --space-9:  var(--space-9);
-  --space-10: var(--space-10);
-  --space-12: var(--space-12);
-  --space-14: var(--space-14);
-  --space-16: var(--space-16);
+  --space-1:  2px;
+  --space-2:  4px;
+  --space-3:  6px;
+  --space-4:  8px;
+  --space-5:  10px;
+  --space-6:  12px;
+  --space-7:  14px;
+  --space-8:  16px;
+  --space-9:  18px;
+  --space-10: 20px;
+  --space-12: 24px;
+  --space-14: 28px;
+  --space-16: 32px;
   --space-20: 40px;
 
   /* ── Radii ── */
-  --radius-sm:  var(--space-3);
-  --radius-md:  var(--space-5);
-  --radius-lg:  var(--space-7);
-  --radius-xl:  var(--space-9);
+  --radius-sm:  6px;
+  --radius-md:  10px;
+  --radius-lg:  14px;
+  --radius-xl:  18px;
   --radius-full: 100px;
 
   /* ── Shadows ── */
-  --shadow-glass: 0 var(--space-4) var(--space-16) rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  --shadow-glass-sm: 0 var(--space-2) var(--space-8) rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --shadow-glass-sm: 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
   --shadow-glow: 0 0 40px var(--accent-glow);
 
   /* ── Transitions ── */
@@ -179,11 +179,11 @@ body {
 .topbar-brand-icon { font-size: var(--fs-2xl); }
 
 .brand-mark {
-  width: var(--space-4);
-  height: var(--space-4);
+  width: var(--space-5);
+  height: var(--space-5);
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 var(--space-6) var(--accent-glow);
+  box-shadow: 0 0 var(--space-10) var(--accent-glow);
   animation: pulse-glow 3s ease-in-out infinite;
   flex-shrink: 0;
 }
@@ -491,11 +491,16 @@ body {
 .stat-cell {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-2);
   padding: var(--space-7);
   background: var(--surface-elevated);
   border-radius: var(--radius-md);
   border: 1px solid var(--glass-border);
+  transition: border-color var(--transition);
+}
+
+.stat-cell:hover {
+  border-color: var(--glass-border-hover);
 }
 
 .stat-cell.span-2 { grid-column: span 2; }
@@ -3042,6 +3047,12 @@ body {
 
 .close-btn-trigger:hover {
   opacity: 1;
+}
+
+/* ── Consensus ── */
+.consensus-conf-pct {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
 }
 
 /* ═══════════════════════════════════════════════════════════════
