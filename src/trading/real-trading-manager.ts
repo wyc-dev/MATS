@@ -863,25 +863,40 @@ export class RealTradingManager {
         const tp = pos.takeProfitPrice;
         if (!sl && !tp) continue;
 
-        // v2.0.32: Safety check — ensure SL/TP are on the correct side
-        // of the entry price for the position's direction.
-        // Use the HL entry price (not the local mirror's) for accuracy.
-        // For BUY (long): SL < entry, TP > entry
-        // For SELL (short): SL > entry, TP < entry
-        // If SL/TP are on the wrong side, skip placing them (they would
-        // immediately trigger and close the position).
+        // v2.0.48: Safety check — ensure SL/TP are on the correct side.
+        // SL can be on EITHER side of entry (trailing stop / profit-side SL
+        // is allowed), BUT must be on the correct side of CURRENT MARK PRICE
+        // to avoid immediate triggering:
+        //   BUY (long): SL must be BELOW current price
+        //   SELL (short): SL must be ABOVE current price
+        // TP must be on the profit side of entry:
+        //   BUY (long): TP > entry
+        //   SELL (short): TP < entry
+        // Use the HL entry price for TP validation, current price for SL.
+        // ⚠️ MAINTENANCE NOTE: This matches the relaxed SL validation in
+        // hacp.ts adjustPositions() and portfolio.ts adjustPosition().
+        let slValid = true;
+        let tpValid = true;
         if (sl) {
-          const slCorrect = pos.side === 'buy' ? sl < hlPos.entry : sl > hlPos.entry;
-          if (!slCorrect) {
-            log.warn(`⚠️ SL ${sl} is on wrong side for ${pos.side} ${pos.symbol} (HL entry=${hlPos.entry}) — skipping SL placement`);
-            continue;
+          const slOnLossSide = pos.side === 'buy' ? sl < hlPos.entry : sl > hlPos.entry;
+          if (!slOnLossSide) {
+            // SL is on the profit side of entry — check if it's still valid
+            // relative to current price (must not trigger immediately).
+            const currentPrice = pos.currentPrice;
+            const slSafeVsPrice = pos.side === 'buy' ? sl < currentPrice : sl > currentPrice;
+            if (!slSafeVsPrice) {
+              log.warn(`⚠️ SL ${sl} would trigger immediately for ${pos.side} ${pos.symbol} (current=$${currentPrice}) — skipping SL placement`);
+              slValid = false;
+            } else {
+              log.info(`📐 SL ${sl} is on profit side of entry ${hlPos.entry} for ${pos.side} ${pos.symbol} — trailing stop, valid (current=$${currentPrice})`);
+            }
           }
         }
         if (tp) {
           const tpCorrect = pos.side === 'buy' ? tp > hlPos.entry : tp < hlPos.entry;
           if (!tpCorrect) {
             log.warn(`⚠️ TP ${tp} is on wrong side for ${pos.side} ${pos.symbol} (HL entry=${hlPos.entry}) — skipping TP placement`);
-            continue;
+            tpValid = false;
           }
         }
 
@@ -917,9 +932,10 @@ export class RealTradingManager {
         // side and re-place them fresh. This prevents duplicate/stale trigger
         // orders accumulating on HL without affecting the opposite side's
         // orders (e.g. if there's also a long position on the same asset).
+        // v2.0.48: Only place SL/TP if they passed validation (slValid/tpValid).
         const needsRefresh = myOrders.length > 2 || 
-          (sl !== undefined && !hasSL) ||
-          (tp !== undefined && !hasTP);
+          (sl !== undefined && slValid && !hasSL) ||
+          (tp !== undefined && tpValid && !hasTP);
 
         if (needsRefresh && myOrders.length > 0) {
           log.info(`🗑️ Refreshing trigger orders for ${pos.symbol} (${closeSide} side) — cancelling ${myOrders.length} existing order(s)`);
@@ -929,24 +945,24 @@ export class RealTradingManager {
           for (const o of myOrders) {
             await engine.cancelOrderWithAsset(asset, o.oid);
           }
-          // Re-place both SL and TP fresh
-          if (sl && sl > 0) {
+          // Re-place both SL and TP fresh (only if valid)
+          if (sl && sl > 0 && slValid) {
             log.info(`🔧 Re-placing SL on HL for ${pos.symbol} @ $${sl.toFixed(2)}`);
             await engine.adjustPosition(pos.symbol, sl, undefined);
           }
-          if (tp && tp > 0) {
+          if (tp && tp > 0 && tpValid) {
             log.info(`🔧 Re-placing TP on HL for ${pos.symbol} @ $${tp.toFixed(2)}`);
             await engine.adjustPosition(pos.symbol, undefined, tp);
           }
         } else {
-          // Place missing SL only if not already present
-          if (sl && !hasSL) {
+          // Place missing SL only if not already present and valid
+          if (sl && !hasSL && slValid) {
             log.info(`🔧 SL missing on HL for ${pos.symbol} — placing SL @ $${sl.toFixed(2)}`);
             await engine.adjustPosition(pos.symbol, sl, undefined);
           }
 
-          // Place missing TP only if not already present
-          if (tp && !hasTP) {
+          // Place missing TP only if not already present and valid
+          if (tp && !hasTP && tpValid) {
             log.info(`🔧 TP missing on HL for ${pos.symbol} — placing TP @ $${tp.toFixed(2)}`);
             await engine.adjustPosition(pos.symbol, undefined, tp);
           }

@@ -344,14 +344,14 @@ export class PortfolioTracker {
     this.portfolio.balance -= cost;
 
     // ── v2.0.18: Deduct entry taker fee (notional-based) ──
-    // HL taker fee = 0.04% of NOTIONAL (leveraged value), not margin.
-    // notional = entryPrice × quantity × leverage.
-    // At 10x leverage this is 0.4% of margin per side; at 100x it's 4%.
+    // HL taker fee = 0.04% of NOTIONAL (full position value).
+    // v2.0.48: Notional = entryPrice × quantity (NOT × leverage).
+    // Leverage only affects margin requirement, not fee basis.
+    // At 10x leverage, notional = margin × 10, so fee = 0.04% of notional.
     // Deducting this from balance ensures paper PnL reflects the real cost
     // of entering a leveraged position, so the system only learns strategies
-    // that are profitable AFTER fees — critical for competing in an uneven
-    // market where we can't out-speed or out-news institutional quants.
-    const entryNotional = cost * leverage;
+    // that are profitable AFTER fees.
+    const entryNotional = cost; // cost = quantity * entryPrice = raw notional
     const entryFee = calculateTakerFee(entryNotional);
     this.portfolio.balance -= entryFee;
 
@@ -436,13 +436,22 @@ export class PortfolioTracker {
     // v2.0.19: include the entry fee already paid so unrealized PnL reflects
     // the real cost from open. The exit fee (paid on close) is NOT included
     // here — it's deducted in closePosition() when the trade realises.
+    //
+    // v2.0.48: FIX — removed `* (pos.leverage ?? 1)` from PnL calculation.
+    // PnL = priceDelta * quantity (NOT priceDelta * quantity * leverage).
+    // Leverage affects margin (capital required to open), not PnL per
+    // contract. With 10x leverage, a $786 price move on 0.00154 BTC =
+    // $1.21 PnL (not $12.10). The old formula inflated PnL by leverage,
+    // causing the UI to show $12.10 in paper mode while HL showed $1.21.
+    // unrealizedPnlPct is now PnL / notional (margin-neutral return).
     const entryFee = pos.entryFee ?? 0;
+    const notional = pos.averageEntryPrice * pos.quantity;
     if (pos.side === 'buy') {
-      pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity * (pos.leverage ?? 1) - entryFee;
-      pos.unrealizedPnlPct = ((currentPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1) - (pos.averageEntryPrice * pos.quantity > 0 ? entryFee / (pos.averageEntryPrice * pos.quantity) : 0);
+      pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee;
+      pos.unrealizedPnlPct = notional > 0 ? ((currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee) / notional : 0;
     } else {
-      pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity * (pos.leverage ?? 1) - entryFee;
-      pos.unrealizedPnlPct = ((pos.averageEntryPrice - currentPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1) - (pos.averageEntryPrice * pos.quantity > 0 ? entryFee / (pos.averageEntryPrice * pos.quantity) : 0);
+      pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee;
+      pos.unrealizedPnlPct = notional > 0 ? ((pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee) / notional : 0;
     }
 
     // Recalculate total equity so it reflects latest unrealized PnL
@@ -463,6 +472,9 @@ export class PortfolioTracker {
    * Update a position's price and PnL WITHOUT triggering SL/TP checks.
    * Used when syncing exchange positions — the exchange handles SL/TP
    * natively, and we must not auto-close the mirror prematurely.
+   *
+   * v2.0.48: Same PnL formula fix as updatePosition() — removed leverage
+   * multiplier. PnL = priceDelta * quantity, not priceDelta * quantity * lev.
    */
   softUpdatePosition(symbol: string, currentPrice: number): void {
     const pos = this.portfolio.positions.get(symbol);
@@ -472,13 +484,15 @@ export class PortfolioTracker {
     pos.updatedAt = Date.now();
 
     // v2.0.19: include the entry fee already paid (same as updatePosition).
+    // v2.0.48: PnL = priceDelta * quantity (no leverage multiplier).
     const entryFee = pos.entryFee ?? 0;
+    const notional = pos.averageEntryPrice * pos.quantity;
     if (pos.side === 'buy') {
-      pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity * (pos.leverage ?? 1) - entryFee;
-      pos.unrealizedPnlPct = ((currentPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1) - (pos.averageEntryPrice * pos.quantity > 0 ? entryFee / (pos.averageEntryPrice * pos.quantity) : 0);
+      pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee;
+      pos.unrealizedPnlPct = notional > 0 ? ((currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee) / notional : 0;
     } else {
-      pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity * (pos.leverage ?? 1) - entryFee;
-      pos.unrealizedPnlPct = ((pos.averageEntryPrice - currentPrice) / pos.averageEntryPrice) * (pos.leverage ?? 1) - (pos.averageEntryPrice * pos.quantity > 0 ? entryFee / (pos.averageEntryPrice * pos.quantity) : 0);
+      pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee;
+      pos.unrealizedPnlPct = notional > 0 ? ((pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee) / notional : 0;
     }
 
     this.recalculateEquity();
@@ -770,24 +784,26 @@ export class PortfolioTracker {
     let cashReturned: number;
     // Margin capital at risk = entryPrice * quantity
     const margin = pos.averageEntryPrice * pos.quantity;
+    // v2.0.48: PnL = priceDelta * quantity (NOT * leverage).
+    // Leverage affects margin requirement, not PnL per contract.
+    // A 10x leveraged $100 margin controls $1000 notional, but PnL is
+    // still just priceDelta * quantity. The old formula inflated PnL
+    // by 10x, causing paper balance to diverge from real HL balance.
     if (pos.side === 'buy') {
-      // Leveraged P&L = (exit - entry) * quantity * leverage
-      realizedPnl = (exitPrice - pos.averageEntryPrice) * pos.quantity * lev;
+      realizedPnl = (exitPrice - pos.averageEntryPrice) * pos.quantity;
       cashReturned = margin + realizedPnl;
       this.portfolio.balance += cashReturned;
     } else {
       // Short: profit when exit < entry
-      realizedPnl = (pos.averageEntryPrice - exitPrice) * pos.quantity * lev;
+      realizedPnl = (pos.averageEntryPrice - exitPrice) * pos.quantity;
       cashReturned = margin + realizedPnl;
       this.portfolio.balance += cashReturned;
     }
 
     // ── v2.0.18: Deduct exit taker fee (notional-based) ──
-    // HL taker fee = 0.04% of NOTIONAL at exit. notional = exitPrice × quantity × leverage.
-    // Deduct from balance AND from realizedPnl so both the account and the
-    // trade record reflect the real cost. Combined with the entry fee, a
-    // round-trip costs 0.08% of notional = 0.8% of margin at 10x, 8% at 100x.
-    const exitNotional = exitPrice * pos.quantity * lev;
+    // HL taker fee = 0.04% of NOTIONAL at exit. notional = exitPrice × quantity.
+    // v2.0.48: Notional is NOT leveraged — fee is on raw position value.
+    const exitNotional = exitPrice * pos.quantity;
     const exitFee = calculateTakerFee(exitNotional);
     this.portfolio.balance -= exitFee;
     realizedPnl -= exitFee;
