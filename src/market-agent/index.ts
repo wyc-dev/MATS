@@ -39,6 +39,12 @@ export class MarketAgent {
   private fetchInProgress = false;
   /** Tracks whether exchange has changed since last fetch — forces re-fetch */
   private configDirty = false;
+  /**
+   * v2.0.44: When true, autoSelectTopPair() will NOT override the user's
+   * manual symbol selection. Set by setSelectedSymbolManual(). Cleared by
+   * setSelectedSymbol('') or setTradeMode() (mode change resets selection).
+   */
+  private manualSymbolLock = false;
   /** HL rate limiter (8 tokens, 3s refill) shared across all calls */
   private static hlLimiter = new HLRateLimiter(8, 3_000);
   /** Cache for allPerpMetas + perpCategories (rarely changes) */
@@ -120,6 +126,8 @@ export class MarketAgent {
     if (this.config.tradeMode === mode) return;
     this.config.tradeMode = mode;
     this.config.updatedAt = Date.now();
+    // v2.0.44: Mode change resets manual symbol lock — fresh start.
+    this.manualSymbolLock = false;
     log.info(`Trade mode changed: ${mode}`);
   }
 
@@ -140,6 +148,26 @@ export class MarketAgent {
     // Don't clear topPairs — client-side filter temporarily keeps showable data while re-fetching
     this.configDirty = true;
     log.info(`Hyperliquid asset type changed: ${assetType} (re-fetch queued)`);
+  }
+
+  /**
+   * v2.0.44: Manual symbol selection — sets the lock flag so autoSelectTopPair()
+   * does NOT override this choice on the next cycle. The user explicitly chose
+   * this market from the Top Volume Pairs list.
+   */
+  setSelectedSymbolManual(symbol: string): void {
+    this.manualSymbolLock = true;
+    this.setSelectedSymbol(symbol);
+  }
+
+  /** v2.0.44: Clear the manual lock (e.g. when switching trade mode). */
+  clearManualSymbolLock(): void {
+    this.manualSymbolLock = false;
+  }
+
+  /** v2.0.44: Returns true if the user has manually locked a symbol. */
+  isManualSymbolLocked(): boolean {
+    return this.manualSymbolLock;
   }
 
   setSelectedSymbol(symbol: string): void {
@@ -704,9 +732,18 @@ export class MarketAgent {
    * Auto-select the top volume pair.
    * Always fetches fresh data and picks #1. Called at the start of each HACP cycle.
    * Returns the selected symbol.
+   *
+   * v2.0.44: If the user has manually selected a symbol (manualSymbolLock=true),
+   * this method will NOT override their choice. It still fetches fresh top pairs
+   * data (for the UI table) but keeps the user's selected symbol.
    */
   async autoSelectTopPair(): Promise<string> {
     await this.fetchTopPairs(30);
+    // v2.0.44: Respect manual symbol lock — don't override user's choice.
+    if (this.manualSymbolLock && this.config.selectedSymbol) {
+      log.info(`Manual symbol lock active — keeping user-selected: ${this.config.selectedSymbol}`);
+      return this.config.selectedSymbol;
+    }
     if (this.topPairs.length > 0) {
       const top = this.topPairs[0]!;
       if (this.config.selectedSymbol !== top.symbol) {

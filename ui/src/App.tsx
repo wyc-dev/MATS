@@ -388,17 +388,44 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           <div style={{ marginTop: 6, marginBottom: 6 }}>
             <TradingViewChart symbol={activeSymbol} currentPrice={price} trades={mainChartTrades} refreshKey={s?.cycles ?? 0} />
           </div>
-          {/* Top pairs list */}
+          {/* Top pairs list — v2.0.44: Clickable to manually select trading market.
+              Clicking a pair sends a POST to /api/market-agent/select-symbol which
+              locks the selection (autoSelectTopPair won't override it) and triggers
+              an immediate decision cycle for the newly selected market. */}
           <div style={{ marginTop: 8 }}>
-            <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', marginBottom: 6 }}>Top Volume Pairs (top auto-selected)</div>
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginBottom: 6 }}>
+              Top Volume Pairs — click to select trading market
+            </div>
             <div className="top-pairs-list">
               {topPairs.slice(0, 5).map((pair, i) => (
-                <div key={pair.symbol} className={`top-pair-row ${pair.symbol === activeSymbol ? 'active-pair' : ''}`} style={{ fontSize: '0.6rem', padding: '4px 6px' }}>
-                  <span className="top-pair-rank" style={{ fontSize: '0.6rem' }}>#{i + 1}</span>
-                  <span className="top-pair-symbol" style={{ fontSize: '0.6rem' }}>{pair.symbol}</span>
-                  <span className="top-pair-vol" style={{ fontSize: '0.6rem' }}>{pair.volume24h > 0 ? `$${(pair.volume24h / 1_000_000).toFixed(1)}M` : 'N/A'}</span>
-                  <span className="top-pair-vol" style={{ fontSize: '0.6rem', color: 'var(--text-tertiary)' }}>{pair.volume5m != null && pair.volume5m > 0 ? `${(pair.volume5m / 1000).toFixed(0)}K` : '-'}</span>
-                  <span className={`top-pair-chg ${pair.priceChangePercent >= 0 ? 'positive' : 'negative'}`} style={{ fontSize: '0.6rem' }}>
+                <div
+                  key={pair.symbol}
+                  className={`top-pair-row ${pair.symbol === activeSymbol ? 'active-pair' : ''}`}
+                  style={{
+                    fontSize: '0.8rem',
+                    padding: '6px 8px',
+                    cursor: 'pointer',
+                    transition: 'background 0.15s, transform 0.1s',
+                  }}
+                  onClick={async () => {
+                    try {
+                      await fetch(`${API_BASE}/market-agent/select-symbol`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ symbol: pair.symbol }),
+                      });
+                    } catch (err) {
+                      console.error('Failed to select symbol:', err);
+                    }
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
+                >
+                  <span className="top-pair-rank" style={{ fontSize: '0.8rem' }}>#{i + 1}</span>
+                  <span className="top-pair-symbol" style={{ fontSize: '0.8rem', fontWeight: 600 }}>{pair.symbol}</span>
+                  <span className="top-pair-vol" style={{ fontSize: '0.8rem' }}>{pair.volume24h > 0 ? `$${(pair.volume24h / 1_000_000).toFixed(1)}M` : 'N/A'}</span>
+                  <span className="top-pair-vol" style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>{pair.volume5m != null && pair.volume5m > 0 ? `${(pair.volume5m / 1000).toFixed(0)}K` : '-'}</span>
+                  <span className={`top-pair-chg ${pair.priceChangePercent >= 0 ? 'positive' : 'negative'}`} style={{ fontSize: '0.8rem' }}>
                     {pair.volume24h > 0 ? `${pair.priceChangePercent >= 0 ? '+' : ''}${pair.priceChangePercent.toFixed(2)}%` : 'N/A'}
                   </span>
                 </div>
