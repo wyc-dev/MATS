@@ -792,24 +792,40 @@ export class RealTradingManager {
    * to place native trigger orders AND updates the local mirror. In paper mode,
    * only updates the local mirror.
    */
+  /**
+   * v2.0.54: Adjust position SL/TP — validates BEFORE sending to HL.
+   *
+   * Previously this method called portfolio.adjustPosition() (which validates
+   * and may reject) but then UNCONDITIONALLY sent the raw sl/tp to the HL engine
+   * — ignoring the portfolio's rejection. This meant invalid SL/TP (wrong side,
+   * widening, too narrow) was placed on HL even though the local mirror rejected it.
+   *
+   * Now: portfolio.adjustPosition() returns true/false. If it returns false
+   * (rejected), we do NOT send the raw values to HL. We read the position's
+   * current validated SL/TP from the local mirror and send THOSE to HL instead.
+   * This ensures HL always matches the local mirror's validated values.
+   */
   async adjustPosition(positionId: string, sl?: number, tp?: number): Promise<void> {
-    // Always update local mirror first
-    this.portfolio.adjustPosition(positionId, sl, tp);
+    // Always update local mirror first — this validates SL/TP direction,
+    // no-widen, gap, and narrowing constraints. Returns false if rejected.
+    const accepted = this.portfolio.adjustPosition(positionId, sl, tp);
 
-    // In real mode, also place native trigger orders on HL
+    // In real mode, place native trigger orders on HL
     const engine = this.getActiveEngine();
     if (engine) {
       try {
-        // Get the position from local portfolio to extract the symbol
         const pos = this.portfolio.getPosition(positionId);
         if (pos) {
-          // Pass the symbol to the engine — it matches by symbol, not positionId
-          await engine.adjustPosition(pos.symbol, sl, tp);
-          log.info(`🔧 Real SL/TP placed on HL: ${pos.symbol} SL=${sl?.toFixed(2) ?? '-'} TP=${tp?.toFixed(2) ?? '-'}`);
-        } else {
-          // Fallback: pass positionId directly
-          await engine.adjustPosition(positionId, sl, tp);
-          log.info(`🔧 Real SL/TP placed on HL: ${positionId.slice(0, 20)} SL=${sl?.toFixed(2) ?? '-'} TP=${tp?.toFixed(2) ?? '-'}`);
+          // v2.0.54: If portfolio.adjustPosition() rejected the values,
+          // use the position's EXISTING validated SL/TP (not the rejected ones).
+          // This ensures HL gets the correct, validated values — not raw
+          // unvalidated ones that the local mirror already rejected.
+          const hlSl = accepted ? sl : pos.stopLossPrice;
+          const hlTp = accepted ? tp : pos.takeProfitPrice;
+          if (hlSl !== undefined || hlTp !== undefined) {
+            await engine.adjustPosition(pos.symbol, hlSl, hlTp);
+            log.info(`🔧 Real SL/TP placed on HL: ${pos.symbol} SL=${hlSl?.toFixed(2) ?? '-'} TP=${hlTp?.toFixed(2) ?? '-'}${accepted ? '' : ' (used existing — input rejected)'}`);
+          }
         }
       } catch (err) {
         log.error(`Failed to place SL/TP on HL: ${err instanceof Error ? err.message : String(err)}`);
