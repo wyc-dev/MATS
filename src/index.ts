@@ -3129,8 +3129,13 @@ class MATSSystem {
           const margin = exPos.averageEntryPrice > 0
             ? exPos.quantity * exPos.averageEntryPrice / (exPos.leverage ?? 1)
             : 0;
+          // v2.0.50: If exPos.openedAt is 0 (fill not found), use local mirror's
+          // openedAt or Date.now() — never show Jan 1 1970 in the UI.
+          const safeOpenedAt = exPos.openedAt > 0
+            ? exPos.openedAt
+            : (localPos?.openedAt ?? Date.now());
           positions[key] = {
-            id: `hl-${exPos.symbol}-${exPos.openedAt}`,
+            id: `hl-${exPos.symbol}-${safeOpenedAt}`,
             symbol: exPos.symbol,
             side: exPos.side,
             quantity: exPos.quantity,
@@ -3141,7 +3146,7 @@ class MATSSystem {
             stopLossPrice: undefined,
             takeProfitPrice: undefined,
             leverage: exPos.leverage,
-            openedAt: exPos.openedAt,
+            openedAt: safeOpenedAt,
             updatedAt: Date.now(),
             agentId: 'hyperliquid-real',
             exchange: 'hyperliquid',

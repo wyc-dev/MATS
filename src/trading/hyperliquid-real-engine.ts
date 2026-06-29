@@ -447,13 +447,43 @@ export class HyperliquidRealEngine implements RealTradingEngine {
             // Use a tolerance of 0.5% to match approximately.
             // Also match by side: "Open Short" for sell, "Open Long" for buy.
             const posSide = size > 0 ? 'long' : 'short';
-            const matchingFill = openFills.find(f => {
+            let matchingFill = openFills.find(f => {
               if (f.symbol.toLowerCase() !== p.coin.toLowerCase()) return false;
               if (!f.side.toLowerCase().includes(posSide)) return false;
               const priceDiff = Math.abs(f.price - entryPx) / entryPx;
               return priceDiff < 0.005; // 0.5% tolerance
             });
-            const openTime = matchingFill?.timestamp ?? 0;
+
+            // v2.0.50: If no matching fill found, retry instantly with a
+            // wider time window (30 days instead of 7). HL's userFillsByTime
+            // API sometimes misses fills that are older than 7 days, especially
+            // for positions opened weeks ago. Without this retry, openedAt=0
+            // (Unix epoch Jan 1 1970) shows in the UI — confusing and wrong.
+            // If the retry also fails, fall back to Date.now() so the UI shows
+            // a reasonable timestamp instead of 1970.
+            if (!matchingFill) {
+              try {
+                const widerFills = await this.getRecentFillsByTime(30 * 24 * 60 * 60 * 1000, 500);
+                const widerOpenFills = widerFills
+                  .filter(f => f.dir.toLowerCase().startsWith('open'))
+                  .map(f => ({ symbol: f.symbol, side: f.dir, price: f.price, timestamp: f.timestamp }));
+                matchingFill = widerOpenFills.find(f => {
+                  if (f.symbol.toLowerCase() !== p.coin.toLowerCase()) return false;
+                  if (!f.side.toLowerCase().includes(posSide)) return false;
+                  const priceDiff = Math.abs(f.price - entryPx) / entryPx;
+                  return priceDiff < 0.005;
+                });
+                if (matchingFill) {
+                  log.info(`[getPositions] Found open fill for ${p.coin} via wider 30-day search: ${new Date(matchingFill.timestamp).toISOString()}`);
+                }
+              } catch { /* non-critical — fall through to fallback */ }
+            }
+
+            // v2.0.50: If still no matching fill, use Date.now() as fallback.
+            // Showing Jan 1 1970 is worse than showing "now" — at least "now"
+            // is a plausible open time. The local mirror may have the real
+            // openedAt from the original trade execution.
+            const openTime = matchingFill?.timestamp ?? Date.now();
 
             allPositions.push({
               id: `${p.coin}-${this.walletAddress}`,
@@ -538,7 +568,61 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     }
   }
 
-  // ── Order Management ──
+  /**
+   * v2.0.50: Fetch recent fills with a custom time window and larger limit.
+   * Used by getPositions() when the default 7-day / 200-fill search misses
+   * the open fill (e.g. position opened weeks ago). The wider window catches
+   * fills that the default search misses, so the UI shows the real open time
+   * instead of Jan 1 1970 (Unix epoch 0).
+   *
+   * @param timeWindowMs  How far back to search (default 30 days)
+   * @param limit         Max fills to return (default 500)
+   */
+  async getRecentFillsByTime(timeWindowMs = 30 * 24 * 60 * 60 * 1000, limit = 500): Promise<Array<{
+    symbol: string;
+    side: 'buy' | 'sell';
+    price: number;
+    size: number;
+    timestamp: number;
+    closedPnl: number;
+    fee: number;
+    dir: string;
+  }>> {
+    try {
+      const startTime = Date.now() - timeWindowMs;
+      const res = await fetch(HL_INFO_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'userFillsByTime', user: this.walletAddress, startTime }),
+      });
+      if (!res.ok) return [];
+      const data = await res.json() as { fills?: Array<{
+        coin: string;
+        side: string;
+        px: string;
+        sz: string;
+        time: number;
+        closedPnl: string;
+        fee: string;
+        dir: string;
+      }> };
+      const fills = data.fills ?? [];
+      const sorted = fills.sort((a, b) => b.time - a.time).slice(0, limit);
+      return sorted.map(f => ({
+        symbol: f.coin,
+        side: f.side === 'B' ? 'buy' : 'sell',
+        price: parseFloat(f.px ?? '0'),
+        size: parseFloat(f.sz ?? '0'),
+        timestamp: f.time,
+        closedPnl: parseFloat(f.closedPnl ?? '0'),
+        fee: parseFloat(f.fee ?? '0'),
+        dir: f.dir,
+      }));
+    } catch (err) {
+      log.error(`getRecentFillsByTime failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
 
   /**
    * v2.0.32: Update leverage for an asset on HL before placing an order.

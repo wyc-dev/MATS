@@ -691,13 +691,15 @@ export class RealTradingManager {
                 // Paper position — close properly + re-import as exchange position
                 this.portfolio.closePosition(sym, localPos.currentPrice);
                 log.info(`  → Paper mirror closed: ${localPos.side.toUpperCase()} ${sym} PnL: ${(localPos.unrealizedPnl).toFixed(2)}`);
+                // v2.0.50: If exPos.openedAt is 0 (fill not found), preserve
+                // the local mirror's openedAt — it's more accurate than 0.
                 this.portfolio.importExchangePosition(
                   exPos.symbol,
                   exPos.side,
                   exPos.quantity,
                   exPos.averageEntryPrice,
                   exPos.leverage,
-                  exPos.openedAt,
+                  exPos.openedAt > 0 ? exPos.openedAt : (localPos.openedAt > 0 ? localPos.openedAt : Date.now()),
                 );
               }
             } else {
