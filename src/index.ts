@@ -2207,9 +2207,43 @@ class AMACRFSystem {
 
         // Adjust TP/SL if suggested
         // v2.0.31: In real mode, also place native trigger orders on HL exchange
+        // v2.0.54: Validate per-symbol consensus SL/TP direction BEFORE applying.
+        // The consensus averages SL/TP from all agents — if agents disagree on
+        // direction, the averaged SL/TP can end up on the wrong side of current
+        // price. We must validate and skip invalid values rather than sending
+        // them to adjustPosition() which would place them on HL.
         if (psc.suggestedStopLoss !== undefined || psc.suggestedTakeProfit !== undefined) {
-          await this.realTradingManager.adjustPosition(pos.id, psc.suggestedStopLoss, psc.suggestedTakeProfit);
-          log.info(`📐 Per-symbol consensus: ADJUST ${psc.symbol} SL=${psc.suggestedStopLoss?.toFixed(2) ?? '-'} TP=${psc.suggestedTakeProfit?.toFixed(2) ?? '-'}`);
+          let validSL = psc.suggestedStopLoss;
+          let validTP = psc.suggestedTakeProfit;
+          const isLong = pos.side === 'buy';
+          const currentPrice = pos.currentPrice;
+          const entryPrice = pos.averageEntryPrice;
+
+          // v2.0.54: Validate SL — must be on correct side of current price
+          if (validSL !== undefined) {
+            const slValid = isLong ? validSL < currentPrice : validSL > currentPrice;
+            if (!slValid) {
+              log.warn(`🚫 Per-symbol consensus SL ${validSL.toFixed(2)} on wrong side of current price ${currentPrice.toFixed(2)} for ${isLong ? 'LONG' : 'SHORT'} ${psc.symbol} — skipping SL`);
+              validSL = undefined;
+            }
+          }
+
+          // v2.0.54: Validate TP — must be on correct side of both current price and entry
+          if (validTP !== undefined) {
+            const tpValidVsPrice = isLong ? validTP > currentPrice : validTP < currentPrice;
+            const tpValidVsEntry = isLong ? validTP > entryPrice : validTP < entryPrice;
+            if (!tpValidVsPrice || !tpValidVsEntry) {
+              log.warn(`🚫 Per-symbol consensus TP ${validTP.toFixed(2)} on wrong side (${!tpValidVsPrice ? 'price' : 'entry'}) for ${isLong ? 'LONG' : 'SHORT'} ${psc.symbol} — skipping TP`);
+              validTP = undefined;
+            }
+          }
+
+          if (validSL !== undefined || validTP !== undefined) {
+            await this.realTradingManager.adjustPosition(pos.id, validSL, validTP);
+            log.info(`📐 Per-symbol consensus: ADJUST ${psc.symbol} SL=${validSL?.toFixed(2) ?? '-'} TP=${validTP?.toFixed(2) ?? '-'}`);
+          } else {
+            log.warn(`📐 Per-symbol consensus: ADJUST ${psc.symbol} — all SL/TP rejected by direction validation, skipping`);
+          }
         }
       }
 

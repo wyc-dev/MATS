@@ -883,16 +883,26 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       const szDecimals = asset.szDecimals;
       log.info(`[adjustPosition] ${pos.symbol}: asset.index=${asset.index} pxDec=${pxDecimals} szDec=${szDecimals} qty=${pos.quantity} sl=${sl} tp=${tp}`);
 
-      // v2.0.32: Safety check — SL must be on the correct side of entry price.
-      // For BUY (long): SL < entry (price falling triggers stop)
-      // For SELL (short): SL > entry (price rising triggers stop)
-      // If SL is on the wrong side, it would immediately trigger and close
-      // the position as soon as it's placed.
+      // v2.0.32: Safety check — SL must be on the correct side.
+      // v2.0.54: SL can be on EITHER side of entry (trailing stop / profit-side
+      // SL is allowed), BUT must be on the correct side of CURRENT MARK PRICE
+      // to avoid immediate triggering:
+      //   BUY (long): SL must be BELOW current price
+      //   SELL (short): SL must be ABOVE current price
+      // TP must be on the profit side of entry:
+      //   BUY (long): TP > entry
+      //   SELL (short): TP < entry
       if (sl && sl > 0) {
-        const slCorrect = pos.side === 'buy' ? sl < pos.averageEntryPrice : sl > pos.averageEntryPrice;
-        if (!slCorrect) {
-          log.error(`❌ SL $${sl} is on wrong side for ${pos.side} ${pos.symbol} (entry=$${pos.averageEntryPrice}) — NOT placing SL trigger`);
-          sl = undefined;
+        const slOnLossSide = pos.side === 'buy' ? sl < pos.averageEntryPrice : sl > pos.averageEntryPrice;
+        if (!slOnLossSide) {
+          // SL is on profit side of entry — check if it's safe vs current price
+          const slSafeVsPrice = pos.side === 'buy' ? sl < pos.currentPrice : sl > pos.currentPrice;
+          if (!slSafeVsPrice) {
+            log.error(`❌ SL $${sl} would trigger immediately for ${pos.side} ${pos.symbol} (current=$${pos.currentPrice}) — NOT placing SL trigger`);
+            sl = undefined;
+          } else {
+            log.info(`📐 SL $${sl} is on profit side of entry $${pos.averageEntryPrice} for ${pos.side} ${pos.symbol} — trailing stop, valid (current=$${pos.currentPrice})`);
+          }
         }
       }
       if (tp && tp > 0) {
