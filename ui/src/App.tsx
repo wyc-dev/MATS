@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { APIData, AgentModelConfig, ModelDefinition } from './types'
 import RBCVisualizer from './RBCVisualizer'
 import { AGENT_META, AGENT_ROLES } from './types'
-import StarsBackground from './StarsBackground'
 import TradingViewChart from './TradingViewChart'
 
 const API_BASE = '/api'
@@ -432,6 +431,62 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         </div>
       )}
 
+    </div>
+  )
+}
+
+function AgentPanel({ data }: { data: APIData | null }) {
+  const thoughts = data?.agentThoughts ?? []
+  const statuses = data?.agentStatuses ?? []
+  const progress = data?.cycleProgress
+  const models = data?.agentModels?.available ?? []
+  const assignments = data?.agentModels?.assignments ?? []
+  const activeSymbol = data?.marketAgent?.config?.selectedSymbol
+  const progressMap = new Map<string, any>()
+  if (progress?.agentProgress) {
+    for (const p of progress.agentProgress) progressMap.set(p.agentRole, p)
+  }
+  const thoughtMap = new Map<string, any>()
+  for (const t of thoughts) thoughtMap.set(t.agentRole, t)
+  const statusMap = new Map<string, any>()
+  for (const s of statuses) statusMap.set(s.role, s)
+
+  const handleModelChange = async (role: string, modelId: string) => {
+    try {
+      await fetch(`${API_BASE}/models/assign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role, model: modelId }),
+      })
+    } catch { /* ignore */ }
+  }
+
+  return (
+    <div className="panel">
+      <div className="panel-header">
+        <span className="panel-title">Agent Cognition</span>
+        <span className="panel-badge">
+          {progress ? `Phase: ${progress.phase}` : ''}
+        </span>
+      </div>
+      <div className="agent-list">
+        {AGENT_ROLES.map(role => (
+          role === 'market_agent'
+            ? <MarketAgentCard key={role} data={data} />
+            : <AgentCard
+                key={role}
+                role={role}
+                thought={thoughtMap.get(role)}
+                status={statusMap.get(role)}
+                progress={progressMap.get(role)}
+                models={models}
+                assignments={assignments}
+                onModelChange={handleModelChange}
+                activeSymbol={activeSymbol}
+              />
+        ))}
+      </div>
+
       {/* ── Responsibility of Each Agent ── */}
       <div className="rbc-legend">
         <div className="rbc-legend-title">Responsibility of Each Agent</div>
@@ -493,61 +548,6 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
             </div>
           </div>
         </div>
-      </div>
-    </div>
-  )
-}
-
-function AgentPanel({ data }: { data: APIData | null }) {
-  const thoughts = data?.agentThoughts ?? []
-  const statuses = data?.agentStatuses ?? []
-  const progress = data?.cycleProgress
-  const models = data?.agentModels?.available ?? []
-  const assignments = data?.agentModels?.assignments ?? []
-  const activeSymbol = data?.marketAgent?.config?.selectedSymbol
-  const progressMap = new Map<string, any>()
-  if (progress?.agentProgress) {
-    for (const p of progress.agentProgress) progressMap.set(p.agentRole, p)
-  }
-  const thoughtMap = new Map<string, any>()
-  for (const t of thoughts) thoughtMap.set(t.agentRole, t)
-  const statusMap = new Map<string, any>()
-  for (const s of statuses) statusMap.set(s.role, s)
-
-  const handleModelChange = async (role: string, modelId: string) => {
-    try {
-      await fetch(`${API_BASE}/models/assign`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role, model: modelId }),
-      })
-    } catch { /* ignore */ }
-  }
-
-  return (
-    <div className="panel">
-      <div className="panel-header">
-        <span className="panel-title">Agent Cognition</span>
-        <span className="panel-badge">
-          {progress ? `Phase: ${progress.phase}` : ''}
-        </span>
-      </div>
-      <div className="agent-list">
-        {AGENT_ROLES.map(role => (
-          role === 'market_agent'
-            ? <MarketAgentCard key={role} data={data} />
-            : <AgentCard
-                key={role}
-                role={role}
-                thought={thoughtMap.get(role)}
-                status={statusMap.get(role)}
-                progress={progressMap.get(role)}
-                models={models}
-                assignments={assignments}
-                onModelChange={handleModelChange}
-                activeSymbol={activeSymbol}
-              />
-        ))}
       </div>
     </div>
   )
@@ -701,7 +701,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
               >
                 Clear Drawdown
               </button>
-              <span className="stat-sub stat-sub-block">
+              <span className="stat-sub">
                 Drawdown ≥ 15% — trading halted. Clear to relaunch.
               </span>
             </>
@@ -713,7 +713,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
             {((s.recent20WinRate ?? 0) * 100).toFixed(1)}%
           </span>
           {/* v2.0.42: Shows win rate from the most recent 20 trades only */}
-          <span className="stat-sub stat-sub-inline">
+          <span className="stat-sub">
             (lastest 20 trades)
           </span>
         </div>
@@ -721,8 +721,8 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
           <span className="stat-label">Trades</span>
           <span className="stat-number neutral">
             {s.tradeCount}
-            <span className="stat-sub stat-sub-ml">W:{s.winCount} L:{s.lossCount}</span>
           </span>
+          <span className="stat-sub">W:{s.winCount} L:{s.lossCount}</span>
         </div>
       </div>
 
@@ -1921,7 +1921,6 @@ export default function App() {
 
   return (
     <div className="app">
-      <StarsBackground />
       {/* Top Bar */}
       <header className="topbar">
         <div className="topbar-left">
