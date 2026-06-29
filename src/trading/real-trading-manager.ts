@@ -951,6 +951,53 @@ export class RealTradingManager {
             await engine.adjustPosition(pos.symbol, undefined, tp);
           }
         }
+
+        // v2.0.47: REVERSE SYNC — read the actual SL/TP trigger prices from HL
+        // and update the local mirror so the UI shows what's really on the exchange.
+        // The local mirror's SL/TP may drift from HL due to:
+        //   - HL rounding/price decimals on placement
+        //   - Manual adjustments on HL's web UI
+        //   - Local adjustPosition() no-widen clamping that differs from HL
+        // HL is the ground truth — the local mirror must match it.
+        const hlSL = myOrders.find(o => o.triggerPx && o.side === closeSide && (o.tpsl === 'sl' || myOrders.filter(o2 => o2.triggerPx && o2.side === closeSide).indexOf(o) === 0));
+        const hlTP = myOrders.find(o => o.triggerPx && o.side === closeSide && o.tpsl === 'tp');
+        // Fallback: if tpsl field is undefined (HL doesn't always return it),
+        // determine SL vs TP by price position relative to entry.
+        // For SHORT (closeSide=B): SL is the higher price, TP is the lower price.
+        // For LONG (closeSide=S): SL is the lower price, TP is the higher price.
+        const triggerOrders = myOrders.filter(o => o.triggerPx);
+        let actualSL: number | undefined;
+        let actualTP: number | undefined;
+        if (triggerOrders.length > 0) {
+          if (hlSL?.triggerPx) {
+            actualSL = parseFloat(hlSL.triggerPx);
+          } else if (hlTP?.triggerPx) {
+            actualTP = parseFloat(hlTP.triggerPx);
+          }
+          // If tpsl fields are missing, infer from price position
+          if (actualSL === undefined && actualTP === undefined && triggerOrders.length >= 1) {
+            const prices = triggerOrders.map(o => parseFloat(o.triggerPx!));
+            if (pos.side === 'sell') {
+              // SHORT: SL > entry, TP < entry → SL is the higher price
+              actualSL = Math.max(...prices);
+              actualTP = prices.length > 1 ? Math.min(...prices) : undefined;
+            } else {
+              // LONG: SL < entry, TP > entry → SL is the lower price
+              actualSL = Math.min(...prices);
+              actualTP = prices.length > 1 ? Math.max(...prices) : undefined;
+            }
+          } else if (actualSL === undefined && triggerOrders.length >= 2) {
+            // We found TP via tpsl but not SL — SL is the other order
+            const otherOrder = triggerOrders.find(o => o.triggerPx !== hlTP?.triggerPx);
+            if (otherOrder?.triggerPx) actualSL = parseFloat(otherOrder.triggerPx);
+          } else if (actualTP === undefined && triggerOrders.length >= 2) {
+            // We found SL via tpsl but not TP — TP is the other order
+            const otherOrder = triggerOrders.find(o => o.triggerPx !== hlSL?.triggerPx);
+            if (otherOrder?.triggerPx) actualTP = parseFloat(otherOrder.triggerPx);
+          }
+        }
+        // Sync the actual HL values back to the local mirror
+        this.portfolio.syncSLTPFromExchange(pos.symbol, actualSL, actualTP);
       }
     } catch (err) {
       log.warn(`syncSLTP failed: ${err instanceof Error ? err.message : String(err)}`);
