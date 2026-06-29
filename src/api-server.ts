@@ -190,6 +190,8 @@ export class APIServer {
   private onMarketAgentSetLeverage: ((lev: number) => void) | null = null;
   /** v2.0.44: Manual symbol selection from Top Volume Pairs list. */
   private onMarketAgentSelectSymbol: ((symbol: string) => void) | null = null;
+  /** v2.0.45: Clear drawdown data to relaunch trading after circuit breaker. */
+  private onClearDrawdown: (() => void) | null = null;
   private onManualClosePosition: ((symbol: string) => Promise<{ success: boolean; error?: string }>) | null = null;
   private onCandlesRequest: ((symbol: string, interval: string, limit: number) => Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>>) | null = null;
   private onResetTradeHistory: (() => void) | null = null;
@@ -274,6 +276,11 @@ export class APIServer {
   /** v2.0.44: Register a callback for manual symbol selection from Top Volume Pairs */
   setMarketAgentSelectSymbolHandler(cb: (symbol: string) => void): void {
     this.onMarketAgentSelectSymbol = cb;
+  }
+
+  /** v2.0.45: Register a callback for clearing drawdown data to relaunch trading */
+  setClearDrawdownHandler(cb: () => void): void {
+    this.onClearDrawdown = cb;
   }
 
   /** Register a callback for fetching candle data */
@@ -710,6 +717,21 @@ export class APIServer {
             res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
           }
         });
+        return;
+      }
+
+      // v2.0.45: POST — clear drawdown data to relaunch trading.
+      // Resets peakEquity, currentDrawdownPct, maxDrawdown, dailyPnl.
+      // The next decision cycle will pass the SystemGuard drawdown check.
+      if (pathname === '/api/clear-drawdown' && req.method === 'POST') {
+        if (this.onClearDrawdown) {
+          this.onClearDrawdown();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: 'Drawdown cleared. Trading will resume on the next cycle.' }));
+        } else {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'Clear drawdown handler not registered.' }));
+        }
         return;
       }
 

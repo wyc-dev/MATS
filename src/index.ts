@@ -479,6 +479,22 @@ class AMACRFSystem {
         setTimeout(() => void this.runDecisionCycle(), 500);
       });
 
+      // v2.0.45: Clear drawdown data to relaunch trading after circuit breaker.
+      // Resets peakEquity to current equity, clears currentDrawdownPct,
+      // maxDrawdown, and dailyPnl. The next cycle will pass the guard check.
+      this.apiServer.setClearDrawdownHandler(() => {
+        log.info('🔄 Clear drawdown requested from UI — resetting drawdown data');
+        this.portfolio.clearDrawdown();
+        // Also unpause if the system was paused
+        if (this.paused) {
+          this.paused = false;
+          log.info('▶️ System unpaused — trading will resume on next cycle');
+        }
+        this.pushToAPI();
+        // Trigger a cycle immediately so trading resumes right away
+        setTimeout(() => void this.runDecisionCycle(), 500);
+      });
+
       // v2.0.30: Manual position close handler
       // Closes a position in both local portfolio and (if real mode) on the exchange.
       // The close is tagged with closeReason='manual' so agents know it was NOT a system decision.

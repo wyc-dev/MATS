@@ -975,6 +975,30 @@ export class PortfolioTracker {
   }
 
   /**
+   * v2.0.45: Clear all drawdown data so the system can relaunch trading
+   * after a drawdown circuit breaker (≥15%) has blocked cycles.
+   *
+   * Resets:
+   *   - peakEquity → current totalEquity (so drawdown = 0%)
+   *   - currentDrawdownPct → 0
+   *   - maxDrawdown / maxDrawdownPct → 0 (historical high-water mark cleared)
+   *   - dailyPnl → 0 (clears daily loss limit block)
+   *
+   * After this call, the next decision cycle will pass the SystemGuard
+   * drawdown check and resume normal trading.
+   */
+  clearDrawdown(): void {
+    this.portfolio.peakEquity = this.portfolio.totalEquity;
+    this.portfolio.currentDrawdownPct = 0;
+    this.portfolio.maxDrawdown = 0;
+    this.portfolio.maxDrawdownPct = 0;
+    this.portfolio.dailyPnl = 0;
+    this.portfolio.dailyPnlResetDate = this.todayString();
+    this.portfolio.lastUpdated = Date.now();
+    log.info('🔄 Drawdown cleared — peakEquity reset to current equity, dailyPnl reset to 0. Trading can resume.');
+  }
+
+  /**
    * v2.0.23: Auto-reset dailyPnl when the calendar date changes.
    * Called from canTrade() and closePosition() so the reset happens
    * at the first trade/PnL event of each new day — no external scheduler
