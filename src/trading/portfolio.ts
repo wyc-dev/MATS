@@ -669,6 +669,39 @@ export class PortfolioTracker {
   }
 
   /**
+   * v2.0.47: Sync SL/TP from the actual Hyperliquid trigger orders into the
+   * local mirror. This is the REVERSE of syncSLTP() — it reads what's actually
+   * placed on HL and updates the local mirror so the UI shows the real values.
+   *
+   * Unlike adjustPosition(), this method does NOT enforce no-widen or gap
+   * constraints because HL's values are the ground truth — the exchange already
+   * accepted these orders, so they are valid by definition.
+   *
+   * @param symbol  The position symbol (case-preserved, e.g. 'btc' or 'xyz:SKHX')
+   * @param slPrice The actual SL trigger price from HL (undefined if no SL on HL)
+   * @param tpPrice The actual TP trigger price from HL (undefined if no TP on HL)
+   */
+  syncSLTPFromExchange(symbol: string, slPrice?: number, tpPrice?: number): void {
+    const sym = normalizeSymbol(symbol);
+    const pos = this.portfolio.positions.get(sym);
+    if (!pos) return;
+
+    let changed = false;
+    if (slPrice !== undefined && pos.stopLossPrice !== slPrice) {
+      pos.stopLossPrice = slPrice;
+      changed = true;
+    }
+    if (tpPrice !== undefined && pos.takeProfitPrice !== tpPrice) {
+      pos.takeProfitPrice = tpPrice;
+      changed = true;
+    }
+    if (changed) {
+      pos.updatedAt = Date.now();
+      log.info(`🔄 SL/TP synced from HL for ${sym}: SL=${slPrice?.toFixed(2) ?? '-'} TP=${tpPrice?.toFixed(2) ?? '-'}`);
+    }
+  }
+
+  /**
    * Reconcile the local portfolio against externally-known open positions.
    *
    * Detects positions that exist in the local tracker but have been manually
