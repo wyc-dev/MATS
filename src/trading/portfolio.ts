@@ -716,6 +716,11 @@ export class PortfolioTracker {
    * constraints because HL's values are the ground truth — the exchange already
    * accepted these orders, so they are valid by definition.
    *
+   * v2.0.55: Added direction validation — if HL has inverted SL/TP (SL on
+   * wrong side of current price, TP on wrong side of entry), the values are
+   * REJECTED and the local mirror keeps its existing (correct) values.
+   * This prevents corrupted HL trigger orders from polluting the local mirror.
+   *
    * @param symbol  The position symbol (case-preserved, e.g. 'btc' or 'xyz:SKHX')
    * @param slPrice The actual SL trigger price from HL (undefined if no SL on HL)
    * @param tpPrice The actual TP trigger price from HL (undefined if no TP on HL)
@@ -725,18 +730,43 @@ export class PortfolioTracker {
     const pos = this.portfolio.positions.get(sym);
     if (!pos) return;
 
+    const isLong = pos.side === 'buy';
+    let validSL = slPrice;
+    let validTP = tpPrice;
+
+    // v2.0.55: Validate SL direction — must be on correct side of current price.
+    // LONG: SL must be BELOW current price. SHORT: SL must be ABOVE current price.
+    // If SL would trigger immediately, it's invalid — reject it.
+    if (validSL !== undefined) {
+      const slSafe = isLong ? validSL < pos.currentPrice : validSL > pos.currentPrice;
+      if (!slSafe) {
+        log.warn(`🚫 syncSLTPFromExchange: ${isLong ? 'LONG' : 'SHORT'} SL $${validSL.toFixed(2)} on wrong side of current price $${pos.currentPrice.toFixed(2)} for ${sym} — rejecting HL value, keeping local SL=$${pos.stopLossPrice?.toFixed(2) ?? 'none'}`);
+        validSL = undefined;
+      }
+    }
+
+    // v2.0.55: Validate TP direction — must be on profit side of entry.
+    // LONG: TP must be ABOVE entry. SHORT: TP must be BELOW entry.
+    if (validTP !== undefined) {
+      const tpValid = isLong ? validTP > pos.averageEntryPrice : validTP < pos.averageEntryPrice;
+      if (!tpValid) {
+        log.warn(`🚫 syncSLTPFromExchange: ${isLong ? 'LONG' : 'SHORT'} TP $${validTP.toFixed(2)} on wrong side of entry $${pos.averageEntryPrice.toFixed(2)} for ${sym} — rejecting HL value, keeping local TP=$${pos.takeProfitPrice?.toFixed(2) ?? 'none'}`);
+        validTP = undefined;
+      }
+    }
+
     let changed = false;
-    if (slPrice !== undefined && pos.stopLossPrice !== slPrice) {
-      pos.stopLossPrice = slPrice;
+    if (validSL !== undefined && pos.stopLossPrice !== validSL) {
+      pos.stopLossPrice = validSL;
       changed = true;
     }
-    if (tpPrice !== undefined && pos.takeProfitPrice !== tpPrice) {
-      pos.takeProfitPrice = tpPrice;
+    if (validTP !== undefined && pos.takeProfitPrice !== validTP) {
+      pos.takeProfitPrice = validTP;
       changed = true;
     }
     if (changed) {
       pos.updatedAt = Date.now();
-      log.info(`🔄 SL/TP synced from HL for ${sym}: SL=${slPrice?.toFixed(2) ?? '-'} TP=${tpPrice?.toFixed(2) ?? '-'}`);
+      log.info(`🔄 SL/TP synced from HL for ${sym}: SL=${validSL?.toFixed(2) ?? '-'} TP=${validTP?.toFixed(2) ?? '-'}`);
     }
   }
 

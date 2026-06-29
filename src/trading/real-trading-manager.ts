@@ -1004,12 +1004,15 @@ export class RealTradingManager {
         //   - Manual adjustments on HL's web UI
         //   - Local adjustPosition() no-widen clamping that differs from HL
         // HL is the ground truth — the local mirror must match it.
+        //
+        // v2.0.55: FIX — the fallback inference logic assumed SL is always on
+        // the loss side of entry (SHORT: SL > entry, LONG: SL < entry). But
+        // trailing stops move SL to the profit side of entry. The old logic
+        // used Math.max/min relative to entry, which SWAPPED SL and TP when
+        // SL was on the profit side. Now we infer based on which price is
+        // closer to current price (SL is always closer than TP).
         const hlSL = myOrders.find(o => o.triggerPx && o.side === closeSide && (o.tpsl === 'sl' || myOrders.filter(o2 => o2.triggerPx && o2.side === closeSide).indexOf(o) === 0));
         const hlTP = myOrders.find(o => o.triggerPx && o.side === closeSide && o.tpsl === 'tp');
-        // Fallback: if tpsl field is undefined (HL doesn't always return it),
-        // determine SL vs TP by price position relative to entry.
-        // For SHORT (closeSide=B): SL is the higher price, TP is the lower price.
-        // For LONG (closeSide=S): SL is the lower price, TP is the higher price.
         const triggerOrders = myOrders.filter(o => o.triggerPx);
         let actualSL: number | undefined;
         let actualTP: number | undefined;
@@ -1019,17 +1022,25 @@ export class RealTradingManager {
           } else if (hlTP?.triggerPx) {
             actualTP = parseFloat(hlTP.triggerPx);
           }
-          // If tpsl fields are missing, infer from price position
+          // If tpsl fields are missing, infer from price position relative
+          // to CURRENT PRICE (not entry — trailing stops can be on profit side).
+          // v2.0.55: SL is the order CLOSER to current price (SL is always
+          // tighter than TP). TP is the order FURTHER from current price.
+          // This works for both loss-side SL and trailing-stop (profit-side SL).
           if (actualSL === undefined && actualTP === undefined && triggerOrders.length >= 1) {
             const prices = triggerOrders.map(o => parseFloat(o.triggerPx!));
-            if (pos.side === 'sell') {
-              // SHORT: SL > entry, TP < entry → SL is the higher price
-              actualSL = Math.max(...prices);
-              actualTP = prices.length > 1 ? Math.min(...prices) : undefined;
+            if (prices.length === 1) {
+              // Only one order — can't determine if SL or TP, assume SL
+              actualSL = prices[0];
             } else {
-              // LONG: SL < entry, TP > entry → SL is the lower price
-              actualSL = Math.min(...prices);
-              actualTP = prices.length > 1 ? Math.max(...prices) : undefined;
+              // Two orders — SL is closer to current price, TP is further
+              const currentPrice = pos.currentPrice;
+              const sortedByDist = prices.map(p => ({
+                price: p,
+                dist: Math.abs(p - currentPrice),
+              })).sort((a, b) => a.dist - b.dist);
+              actualSL = sortedByDist[0]!.price; // closest = SL
+              actualTP = sortedByDist[1]!.price; // furthest = TP
             }
           } else if (actualSL === undefined && triggerOrders.length >= 2) {
             // We found TP via tpsl but not SL — SL is the other order
