@@ -1050,11 +1050,19 @@ export class HyperliquidRealEngine implements RealTradingEngine {
           );
           const slNeeded = sl !== undefined && sl > 0;
           const tpNeeded = tp !== undefined && tp > 0;
-          if ((!slNeeded || hasSL) && (!tpNeeded || hasTP)) {
-            log.info(`⏭️ SL/TP already present on HL for ${pos.symbol} — skipping placement (SL=${hasSL} TP=${hasTP})`);
+          // v2.0.66: Only skip if prices match AND we have at most 2 orders
+          // (1 SL + 1 TP). If myOrders.length > 2, there are DUPLICATES from
+          // previous buggy cycles — must cancel ALL and re-place fresh even
+          // if the target prices happen to match one of the duplicates.
+          const orderCountOk = myOrders.length <= 2;
+          if ((!slNeeded || hasSL) && (!tpNeeded || hasTP) && orderCountOk) {
+            log.info(`⏭️ SL/TP already present on HL for ${pos.symbol} — skipping placement (SL=${hasSL} TP=${hasTP}, orders=${myOrders.length})`);
             skipPlacement = true;
           } else if (myOrders.length > 0) {
-            log.info(`🗑️ Cancelling ${myOrders.length} existing trigger order(s) for ${pos.symbol} before placing new SL/TP`);
+            // v2.0.66: Always cancel ALL existing orders before placing new ones.
+            // This handles: (a) price mismatch, (b) duplicate orders from previous
+            // buggy cycles (myOrders.length > 2), (c) stale orders at old prices.
+            log.info(`🗑️ Cancelling ${myOrders.length} existing trigger order(s) for ${pos.symbol} before placing new SL/TP${myOrders.length > 2 ? ' (CLEANING DUPLICATES)' : ''}`);
             for (const o of myOrders) {
               try {
                 await this.cancelOrderWithAsset(asset.index, o.oid);

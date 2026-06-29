@@ -1433,7 +1433,11 @@ class MATSSystem {
           // v2.0.69: Only set active symbol for polling — don't subscribe all positions.
           // This prevents rate limit (429) errors from fetching multiple symbols.
           // The active symbol is the Market Agent's selected trading pair.
-          this.optionsDataManager.setActiveSymbol(activeSymbol);
+          // v2.0.70: Only fetch if the symbol changed (prevents duplicate fetch).
+          const currentActive = this.optionsDataManager.getActiveSymbol();
+          if (currentActive !== activeSymbol) {
+            this.optionsDataManager.setActiveSymbol(activeSymbol);
+          }
           optionsContext = '\n' + formatOptionsForAgent(activeSymbol);
           playbookContext = '\n' + formatPlaybookForAgent(activeSymbol, combinedState.trend, combinedState.regime);
           log.info(`📊 [options-data] Context injected for ${activeSymbol} (assetType=${assetType})`);
@@ -1470,6 +1474,10 @@ class MATSSystem {
         } catch (err) {
           log.warn(`[options-data] Failed to get context: ${err instanceof Error ? err.message : String(err)}`);
         }
+      } else {
+        // v2.0.70: Not stocks/indices — stop polling options data.
+        // This prevents fetching BTC/ETH options data when trading crypto.
+        this.optionsDataManager.clearActiveSymbol();
       }
 
       const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${rbcContext}${planckChaosContext}${optionsContext}${playbookContext}\n\n${getFeeSummary()}`;
