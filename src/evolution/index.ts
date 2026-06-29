@@ -278,6 +278,18 @@ export class EvolutionaryPressureEngine {
         riskAversion: 0.6,
         signalThreshold: 0.5,
         confirmationRequired: 2,
+        // v2.0.62: Default options params — used when asset type is stocks/indices.
+        // These represent a balanced starting point: moderate IV thresholds,
+        // positive gamma preference, conservative event risk tolerance.
+        optionsParams: {
+          minIVRankForPremiumSell: 40,
+          maxIVRankForDebit: 50,
+          gammaRegimePreference: 'positive',
+          maxImpliedMovePct: 0.05,    // 5% max implied move
+          putCallOIThreshold: 1.2,    // P/C > 1.2 = bearish
+          eventRiskTolerance: 'none', // veto on any event risk
+          targetPOP: 0.55,            // 55% target probability of profit
+        },
       },
       performance: {
         sharpeRatio: 0,
@@ -559,6 +571,39 @@ export class EvolutionaryPressureEngine {
       // Always apply a small residual mutation to momentumWindow for exploration
       params.momentumWindow = Math.max(5, Math.round(params.momentumWindow * (1 + noise())));
 
+      // v2.0.62: Options-specific mutation for Stocks/Indices strategies.
+      // Only mutates if the strategy has optionsParams (set when asset type
+      // is stocks/indices/tradfi). Each weak options dimension nudges a
+      // specific options parameter in the remediation direction.
+      if (params.optionsParams && fb.optionsAlpha !== undefined) {
+        const op = { ...params.optionsParams };
+        const oNoise = () => (Math.random() - 0.5) * 0.15; // ±7.5% noise
+
+        // optionsAlpha low → tighten IV Rank thresholds + reduce max implied move
+        if (weak(fb.optionsAlpha)) {
+          op.minIVRankForPremiumSell = Math.min(90, op.minIVRankForPremiumSell * (1 + 0.10 + oNoise() * 0.5));
+          op.maxIVRankForDebit = Math.max(10, op.maxIVRankForDebit * (1 - 0.10 + oNoise() * 0.5));
+          op.maxImpliedMovePct = Math.max(0.01, op.maxImpliedMovePct * (1 - 0.08 + oNoise() * 0.3));
+          log.info(`🧬 directional mutate: optionsAlpha=${fb.optionsAlpha.toFixed(2)} → tighten IV thresholds + reduce max implied move`);
+        }
+
+        // optionsAlpha high → relax thresholds slightly (explore more opportunities)
+        if (fb.optionsAlpha > 0.7) {
+          op.minIVRankForPremiumSell = Math.max(20, op.minIVRankForPremiumSell * (1 - 0.05 + oNoise() * 0.3));
+          op.targetPOP = Math.max(0.30, Math.min(0.75, op.targetPOP * (1 + oNoise() * 0.2)));
+          log.info(`🧬 directional mutate: optionsAlpha=${fb.optionsAlpha.toFixed(2)} (strong) → relax IV thresholds, tune POP`);
+        }
+
+        // Clamp options params to valid ranges
+        op.minIVRankForPremiumSell = Math.max(0, Math.min(100, op.minIVRankForPremiumSell));
+        op.maxIVRankForDebit = Math.max(0, Math.min(100, op.maxIVRankForDebit));
+        op.maxImpliedMovePct = Math.max(0.005, op.maxImpliedMovePct);
+        op.putCallOIThreshold = Math.max(0.5, Math.min(3.0, op.putCallOIThreshold));
+        op.targetPOP = Math.max(0.25, Math.min(0.80, op.targetPOP));
+
+        params.optionsParams = op;
+      }
+
       // Clamp all params to valid ranges
       params.riskAversion = Math.max(0, Math.min(1, params.riskAversion));
       params.signalThreshold = Math.max(0.1, Math.min(0.95, params.signalThreshold));
@@ -784,6 +829,23 @@ export class EvolutionOrchestrator {
       ctx += `  minConfidenceForTrade=${minConfForTrade}  (informational — LLM should consider)\n`;
       ctx += `  momentumWindow=${p.momentumWindow}  (informational — signals inside this window get more weight)\n`;
       ctx += `  volatilityThreshold=${p.volatilityThreshold.toFixed(4)}  (informational — vol > this suggests caution)\n`;
+
+      // v2.0.62: Options-specific strategy context for Stocks/Indices.
+      // Only shown when the strategy has optionsParams (set when asset type
+      // is stocks/indices/tradfi). These parameters guide the agents' use
+      // of options data (IV Rank, Gamma, P/C ratio, Event Risk).
+      if (p.optionsParams) {
+        const op = p.optionsParams;
+        ctx += `  ── OPTIONS STRATEGY (Stocks/Indices) ──\n`;
+        ctx += `  minIVRankForPremiumSell=${op.minIVRankForPremiumSell.toFixed(0)}/100  [ENFORCED — veto premium sell below this IVR]\n`;
+        ctx += `  maxIVRankForDebit=${op.maxIVRankForDebit.toFixed(0)}/100  [ENFORCED — veto debit spreads above this IVR]\n`;
+        ctx += `  gammaRegimePreference=${op.gammaRegimePreference}  [informational — prefer this gamma regime]\n`;
+        ctx += `  maxImpliedMovePct=${(op.maxImpliedMovePct * 100).toFixed(1)}%  [ENFORCED — veto if implied move exceeds this]\n`;
+        ctx += `  putCallOIThreshold=${op.putCallOIThreshold.toFixed(2)}  [informational — P/C OI > this = bearish]\n`;
+        ctx += `  eventRiskTolerance=${op.eventRiskTolerance}  [ENFORCED — veto on events not tolerated]\n`;
+        ctx += `  targetPOP=${(op.targetPOP * 100).toFixed(0)}%  [informational — target probability of profit]\n`;
+      }
+
       ctx += `\n`;
       ctx += `Generation: ${this.pressureEngine.getGeneration()}\n`;
       ctx += `Best Strategy Fitness: ${(bestStrat.fitness * 100).toFixed(1)}%\n`;
