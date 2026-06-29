@@ -1543,6 +1543,18 @@ class AMACRFSystem {
                 }
               } else {
                 // getPositions() returned non-empty — normal sync
+                // v2.0.52: Cache the exchange positions so the reconciliation
+                // filter below can use them to keep HL-confirmed real positions.
+                this.cachedExchangePositions = exchangePositions.map(p => ({
+                  symbol: p.symbol,
+                  side: p.side,
+                  quantity: p.quantity,
+                  averageEntryPrice: p.averageEntryPrice,
+                  currentPrice: p.currentPrice,
+                  unrealizedPnl: p.unrealizedPnl,
+                  leverage: p.leverage ?? 1,
+                  openedAt: p.openedAt,
+                }));
                 for (const exPos of exchangePositions) {
                   const sym = exPos.symbol.includes(':') ? exPos.symbol : exPos.symbol.toLowerCase();
                   if (this.portfolio.hasPosition(sym)) {
@@ -1629,18 +1641,34 @@ class AMACRFSystem {
           // check agentId at all, so real positions that weren't in
           // legacyPositionModes were kept if < 12h old, causing perpetual
           // errors (syncSLTP, closePosition, etc.).
+          //
+          // v2.0.52: FIX — real positions that were CONFIRMED to exist on HL
+          // by the paper-mode sync block above must NOT be reconciled away.
+          // The sync block already verified them against HL and updated
+          // their prices. Reconciling them here would close the local mirror
+          // even though the real HL position is still open.
+          // We build a set of HL-confirmed symbols from cachedExchangePositions
+          // (populated by the sync block's getPositions() call).
+          const hlConfirmedSymbols = new Set<string>();
+          if (this.cachedExchangePositions) {
+            for (const ep of this.cachedExchangePositions) {
+              hlConfirmedSymbols.add(ep.symbol.includes(':') ? ep.symbol : ep.symbol.toLowerCase());
+            }
+          }
           const now = Date.now();
           const staleCutoff = 3_600_000 * 12; // 12 hours
           const activeSym = activeSymbol.toLowerCase();
           externalSymbols = this.portfolio.getOpenSymbols().filter(sym => {
             // Legacy positions are always kept
             if (this.legacyPositionModes.has(sym)) return true;
-            // v2.0.37: Real positions NOT in legacyPositionModes are NEVER kept
-            // in paper mode — they're stale mirrors of HL positions that may
-            // have been closed. The paper-mode real position sync block above
-            // handles their cleanup.
+            // v2.0.52: Real positions confirmed on HL are kept (not reconciled).
             const pos = this.portfolio.getPosition(sym);
-            if (pos && pos.agentId === 'hyperliquid-real') return false;
+            if (pos && pos.agentId === 'hyperliquid-real') {
+              // If the sync block confirmed this position exists on HL, keep it.
+              if (hlConfirmedSymbols.has(sym)) return true;
+              // Otherwise, it's a stale mirror — let the sync block handle cleanup.
+              return false;
+            }
             if (sym === activeSym) return true;
             return !!pos && (now - pos.openedAt < staleCutoff);
           });
@@ -2876,8 +2904,12 @@ class AMACRFSystem {
       // v2.0.32: In real mode, skip local mirrors that don't exist on HL.
       // This prevents stale positions from showing in the UI and causing
       // SL/TP placement errors on the exchange.
+      // v2.0.52: BUT keep legacy paper positions (opened in paper mode, now
+      // in real mode) — they're not on HL and shouldn't be filtered out.
       if (isRealMode && this.cachedExchangePositions) {
-        if (!hlSymbols.has(key)) {
+        // v2.0.52: Legacy paper positions are managed locally, not on HL.
+        const isLegacyPaper = this.legacyPositionModes.get(key) === 'paper';
+        if (!hlSymbols.has(key) && !isLegacyPaper) {
           continue;
         }
       }
@@ -3290,7 +3322,16 @@ class AMACRFSystem {
         marketAgent: marketAgentState,
         tradeRecords: [
           // Closed trades from paper engine (SL/TP closes, reconciliations)
-          ...this.paperEngine.getTrades().slice(-50).map(t => ({
+          // v2.0.52: Filter out error trades where entry ≈ exit and PnL ≈ 0
+          // (these are phantom trades from immediate open→close cycles, often
+          // caused by reconciliation or system errors. They pollute the Trade
+          // Records panel with meaningless entries).
+          ...this.paperEngine.getTrades().slice(-50).filter(t => {
+            // Keep trades with meaningful price movement or non-trivial PnL
+            const priceMoved = Math.abs(t.exitPrice - t.entryPrice) / t.entryPrice > 0.0001; // >0.01%
+            const hasPnl = Math.abs(t.pnl) > 0.01; // >$0.01
+            return priceMoved || hasPnl;
+          }).map(t => ({
             id: t.id,
             symbol: t.symbol,
             side: t.side,
@@ -3309,7 +3350,12 @@ class AMACRFSystem {
           // manual exchange closes. These have accurate exit price + PnL from
           // the actual HL fill. Previously these were only used for learning
           // and never displayed in the UI.
-          ...(isRealMode ? this.portfolio.getClosedRealTrades().slice(-50).map(t => ({
+          // v2.0.52: Also filter out error trades (entry ≈ exit, PnL ≈ 0).
+          ...(isRealMode ? this.portfolio.getClosedRealTrades().slice(-50).filter(t => {
+            const priceMoved = Math.abs(t.exitPrice - t.entryPrice) / t.entryPrice > 0.0001;
+            const hasPnl = Math.abs(t.pnl) > 0.01;
+            return priceMoved || hasPnl;
+          }).map(t => ({
             id: t.id,
             symbol: t.symbol,
             side: t.side,
