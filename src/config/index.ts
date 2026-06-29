@@ -57,6 +57,9 @@ const envSchema = z.object({
   GA_POPULATION_SIZE: z.coerce.number().int().positive().default(20),
   GA_MUTATION_RATE: z.coerce.number().min(0).max(1).default(0.15),
   GA_CROSSOVER_RATE: z.coerce.number().min(0).max(1).default(0.70),
+
+  // v2.0.58: Massive.com Options Data API key for Stocks/RWA options data layer
+  MASSIVE_API_KEY: z.string().optional().default(''),
 });
 
 function parseEnv() {
@@ -125,6 +128,8 @@ export const config = {
     mutationRate: raw.GA_MUTATION_RATE,
     crossoverRate: raw.GA_CROSSOVER_RATE,
   },
+  // v2.0.58: Massive.com Options Data API key
+  massiveApiKey: raw.MASSIVE_API_KEY,
 } as const;
 
 export type AppConfig = typeof config;
