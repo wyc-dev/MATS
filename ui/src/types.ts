@@ -15,6 +15,10 @@ export interface SystemSnapshot {
   tradeCount: number;
   winCount: number;
   lossCount: number;
+  /** v2.0.42: Win rate from the most recent 20 trades (not all-time). */
+  recent20WinRate: number;
+  /** v2.0.42: Number of trades used for recent20WinRate (may be < 20 if fewer trades exist). */
+  recent20Count: number;
   currentPrice: number;
   regime: string;
   trend: string;
@@ -123,6 +127,10 @@ export interface Portfolio {
   tradeCount: number;
   winCount: number;
   lossCount: number;
+  /** v2.0.42: Win rate from the most recent 20 trades. */
+  recent20WinRate: number;
+  /** v2.0.42: Number of trades used for recent20WinRate. */
+  recent20Count: number;
   positions: Record<string, Position>;
 }
 

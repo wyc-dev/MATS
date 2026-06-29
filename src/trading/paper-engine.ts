@@ -95,6 +95,23 @@ export class PaperTradingEngine {
     return this.trades;
   }
 
+  /**
+   * v2.0.42: Get win/loss stats for the most recent N trades.
+   * Used by UI + heartbeat to show a RECENT win rate that reflects
+   * current performance, not the all-time cumulative rate.
+   *
+   * ⚠️ MAINTENANCE NOTE: If you change the win/loss definition (e.g. what
+   * counts as a "win"), update this method AND onPositionClosedLearning
+   * in index.ts which also classifies wins/losses.
+   */
+  getRecentWinLoss(n = 20): { wins: number; losses: number; total: number; winRate: number } {
+    const recent = this.trades.slice(-n);
+    const wins = recent.filter(t => t.pnl >= 0).length;
+    const losses = recent.filter(t => t.pnl < 0).length;
+    const total = wins + losses;
+    return { wins, losses, total, winRate: total > 0 ? wins / total : 0 };
+  }
+
   getOrders(): readonly Order[] {
     return Array.from(this.orders.values());
   }
