@@ -1433,6 +1433,29 @@ class AMACRFSystem {
           optionsContext = '\n' + formatOptionsForAgent(activeSymbol);
           playbookContext = '\n' + formatPlaybookForAgent(activeSymbol, combinedState.trend, combinedState.regime);
           log.info(`📊 [options-data] Context injected for ${activeSymbol} (assetType=${assetType})`);
+
+          // v2.0.61: Inject Options Data Layer vote with HIGHEST weight.
+          // For Stocks/Indices, the Regime → Playbook gets the dominant
+          // voting weight in consensus. This ensures options-derived signals
+          // (IV Rank, Gamma regime, Put/Call ratio, Event Risk) drive the
+          // trading decision — as they should for equities.
+          const pb = this.optionsDataManager.getRegimePlaybook(activeSymbol, combinedState.trend, combinedState.regime);
+          // Map playbook to a directional vote:
+          // - Stand Aside / vetoNewPositions → HOLD with high confidence
+          // - Premium Sell (range + high IV) → HOLD (non-directional premium collection)
+          // - Directional Credit / Defined-Risk Debit → follow trend
+          // - Buy Convexity → follow trend (breakout expected)
+          // - Standard Directional → follow trend
+          const optionsAction: 'buy' | 'sell' | 'hold' =
+            pb.vetoNewPositions ? 'hold'
+            : pb.playbook === 'Premium Sell' ? 'hold'
+            : combinedState.trend === 'bullish' ? 'buy'
+            : combinedState.trend === 'bearish' ? 'sell'
+            : 'hold';
+          // Weight = 0.30 (highest — base agent weights are 0.20-0.25)
+          const optionsWeight = 0.30;
+          const optionsConfidence = pb.vetoNewPositions ? 0.95 : 0.70;
+          this.hacpEngine.setOptionsVote(optionsAction, optionsConfidence, optionsWeight, pb.rationale);
         } catch (err) {
           log.warn(`[options-data] Failed to get context: ${err instanceof Error ? err.message : String(err)}`);
         }
