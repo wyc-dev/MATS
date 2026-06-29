@@ -652,17 +652,18 @@ export class PortfolioTracker {
           }
         }
 
-        // v2.0.36: Minimum SL/TP gap constraint — if the gap between the
-        // new SL and the existing/new TP is less than 1% of current price,
+        // v2.0.49: Minimum SL/TP gap constraint — if the gap between the
+        // new SL and the existing/new TP is less than 2% of current price,
         // reject the adjustment. Over-narrowing causes noise stop-outs +
         // premature TP hits, cutting profits short.
+        // (was 1% in v2.0.36 — increased to 2% for slower narrowing)
         const effectiveSL = finalSL ?? pos.stopLossPrice;
         const effectiveTP = finalTP ?? pos.takeProfitPrice;
         if (effectiveSL !== undefined && effectiveTP !== undefined) {
           const sltpGap = Math.abs(effectiveTP - effectiveSL);
           const gapPct = pos.currentPrice > 0 ? sltpGap / pos.currentPrice : 0;
-          if (gapPct < 0.01) {
-            log.warn(`🚫 adjustPosition REJECTED: ${isLong ? 'LONG' : 'SHORT'} ${pos.symbol} SL/TP gap=$${sltpGap.toFixed(2)} (${(gapPct * 100).toFixed(2)}%) < 1% minimum — keeping wider SL/TP to avoid noise stop-out`);
+          if (gapPct < 0.02) {
+            log.warn(`🚫 adjustPosition REJECTED: ${isLong ? 'LONG' : 'SHORT'} ${pos.symbol} SL/TP gap=$${sltpGap.toFixed(2)} (${(gapPct * 100).toFixed(2)}%) < 2% minimum — keeping wider SL/TP to avoid noise stop-out`);
             return false;
           }
         }
