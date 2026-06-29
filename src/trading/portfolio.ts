@@ -768,6 +768,73 @@ export class PortfolioTracker {
       pos.updatedAt = Date.now();
       log.info(`🔄 SL/TP synced from HL for ${sym}: SL=${validSL?.toFixed(2) ?? '-'} TP=${validTP?.toFixed(2) ?? '-'}`);
     }
+
+    // v2.0.56: Auto-correct inverted SL/TP in the local mirror.
+    // If the local mirror's SL/TP are on the WRONG side (would trigger immediately
+    // or are on the wrong side of entry), they were corrupted by a previous bug.
+    // Recalculate correct SL/TP from config percentages and overwrite.
+    // This runs every cycle via syncSLTP(), so corrupted values are fixed
+    // automatically without manual intervention.
+    this.correctInvertedSLTP(sym);
+  }
+
+  /**
+   * v2.0.56: Detect and correct inverted SL/TP in the local mirror.
+   *
+   * Previous bugs (v2.0.47-v2.0.55) could write inverted SL/TP to the local
+   * mirror — e.g. a SHORT position with SL below current price (LONG direction)
+   * and TP above entry (LONG direction). These values would trigger immediately
+   * if pushed to HL, or cause the UI to show nonsensical SL/TP.
+   *
+   * This method checks if the local SL/TP are on the correct side for the
+   * position's direction. If not, it recalculates from config percentages:
+   *   LONG: SL = entry × (1 - stopLossPct), TP = entry × (1 + takeProfitPct)
+   *   SHORT: SL = entry × (1 + stopLossPct), TP = entry × (1 - takeProfitPct)
+   *
+   * This is a SELF-HEALING mechanism — corrupted values are automatically
+   * corrected every cycle without manual intervention.
+   */
+  private correctInvertedSLTP(sym: string): void {
+    const pos = this.portfolio.positions.get(sym);
+    if (!pos) return;
+
+    const isLong = pos.side === 'buy';
+    let needsCorrection = false;
+    const slPct = config.risk.stopLossPct;
+    const tpPct = config.risk.takeProfitPct;
+
+    // Check if SL is on the wrong side of current price (would trigger immediately)
+    if (pos.stopLossPrice !== undefined) {
+      const slSafe = isLong ? pos.stopLossPrice < pos.currentPrice : pos.stopLossPrice > pos.currentPrice;
+      if (!slSafe) {
+        log.warn(`🔧 correctInvertedSLTP: ${isLong ? 'LONG' : 'SHORT'} ${sym} SL $${pos.stopLossPrice.toFixed(2)} on wrong side of current price $${pos.currentPrice.toFixed(2)} — recalculating`);
+        needsCorrection = true;
+      }
+    }
+
+    // Check if TP is on the wrong side of entry (wrong profit direction)
+    if (pos.takeProfitPrice !== undefined) {
+      const tpValid = isLong ? pos.takeProfitPrice > pos.averageEntryPrice : pos.takeProfitPrice < pos.averageEntryPrice;
+      if (!tpValid) {
+        log.warn(`🔧 correctInvertedSLTP: ${isLong ? 'LONG' : 'SHORT'} ${sym} TP $${pos.takeProfitPrice.toFixed(2)} on wrong side of entry $${pos.averageEntryPrice.toFixed(2)} — recalculating`);
+        needsCorrection = true;
+      }
+    }
+
+    if (needsCorrection) {
+      // Recalculate correct SL/TP from config percentages
+      const newSL = isLong
+        ? pos.averageEntryPrice * (1 - slPct)
+        : pos.averageEntryPrice * (1 + slPct);
+      const newTP = isLong
+        ? pos.averageEntryPrice * (1 + tpPct)
+        : pos.averageEntryPrice * (1 - tpPct);
+
+      pos.stopLossPrice = newSL;
+      pos.takeProfitPrice = newTP;
+      pos.updatedAt = Date.now();
+      log.info(`🔧 correctInvertedSLTP: ${sym} SL/TP corrected → SL=$${newSL.toFixed(2)} TP=$${newTP.toFixed(2)} (was inverted)`);
+    }
   }
 
   /**
