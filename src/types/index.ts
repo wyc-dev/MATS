@@ -494,6 +494,34 @@ export interface StrategyParameters {
   riskAversion: number; // 0 to 1
   signalThreshold: number;
   confirmationRequired: number; // number of agents that must agree
+  /**
+   * v2.0.62: Options-specific parameters for Stocks/Indices evolution.
+   * Undefined for crypto_perps — only set when asset type is stocks/indices/tradfi.
+   * These parameters guide the evolution system's mutation of options-aware strategies.
+   */
+  optionsParams?: OptionsStrategyParameters;
+}
+
+/**
+ * v2.0.62: Options-specific strategy parameters for Stocks/Indices trading.
+ * These evolve alongside the base StrategyParameters when trading equities.
+ * The evolution system mutates these based on options-specific fitness dimensions.
+ */
+export interface OptionsStrategyParameters {
+  /** Minimum IV Rank to enter a premium-selling trade (0-100). Higher = stricter. */
+  minIVRankForPremiumSell: number;
+  /** Maximum IV Rank to enter a directional debit trade (0-100). Higher = more permissive. */
+  maxIVRankForDebit: number;
+  /** Gamma regime preference: 'positive' = prefer stabilizing regimes, 'any' = no preference. */
+  gammaRegimePreference: 'positive' | 'negative' | 'any';
+  /** Maximum implied move (% of price) to accept before vetoing (too volatile = too risky). */
+  maxImpliedMovePct: number;
+  /** Put/Call OI ratio threshold for bearish sentiment confirmation (>1 = bearish). */
+  putCallOIThreshold: number;
+  /** Event risk tolerance: 'none' = veto on any event, 'opex' = allow OPEX, 'all' = allow all. */
+  eventRiskTolerance: 'none' | 'opex' | 'all';
+  /** Target Probability of Profit for strategy selection (0-1). */
+  targetPOP: number;
 }
 
 export interface StrategyPerformance {
@@ -518,6 +546,13 @@ export interface SurvivalFitness {
   consistency: number;
   riskManagement: number;
   decisionQuality: number;
+  /**
+   * v2.0.62: Options-specific fitness dimension for Stocks/Indices.
+   * Measures how well the strategy uses options data (IV Rank, Gamma, P/C ratio)
+   * to make profitable decisions. Undefined for crypto strategies.
+   * Scale: 0 (ignoring options data) to 1 (excellent options-aware decisions).
+   */
+  optionsAlpha?: number;
 }
 
 // ─── Observability ───
