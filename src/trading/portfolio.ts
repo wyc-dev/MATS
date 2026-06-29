@@ -803,8 +803,14 @@ export class PortfolioTracker {
     const slPct = config.risk.stopLossPct;
     const tpPct = config.risk.takeProfitPct;
 
-    // Check if SL is on the wrong side of current price (would trigger immediately)
-    if (pos.stopLossPrice !== undefined) {
+    // v2.0.58: Check if SL is MISSING — real positions must always have SL/TP.
+    // This happens when a position is restored from portfolio-state.json without
+    // SL/TP values (e.g. imported via exchange sync but never had defaults set).
+    if (pos.stopLossPrice === undefined) {
+      log.warn(`🔧 correctInvertedSLTP: ${isLong ? 'LONG' : 'SHORT'} ${sym} has NO stop-loss — setting default`);
+      needsCorrection = true;
+    } else {
+      // Check if SL is on the wrong side of current price (would trigger immediately)
       const slSafe = isLong ? pos.stopLossPrice < pos.currentPrice : pos.stopLossPrice > pos.currentPrice;
       if (!slSafe) {
         log.warn(`🔧 correctInvertedSLTP: ${isLong ? 'LONG' : 'SHORT'} ${sym} SL $${pos.stopLossPrice.toFixed(2)} on wrong side of current price $${pos.currentPrice.toFixed(2)} — recalculating`);
@@ -812,8 +818,12 @@ export class PortfolioTracker {
       }
     }
 
-    // Check if TP is on the wrong side of entry (wrong profit direction)
-    if (pos.takeProfitPrice !== undefined) {
+    // v2.0.58: Check if TP is MISSING
+    if (pos.takeProfitPrice === undefined) {
+      log.warn(`🔧 correctInvertedSLTP: ${isLong ? 'LONG' : 'SHORT'} ${sym} has NO take-profit — setting default`);
+      needsCorrection = true;
+    } else {
+      // Check if TP is on the wrong side of entry (wrong profit direction)
       const tpValid = isLong ? pos.takeProfitPrice > pos.averageEntryPrice : pos.takeProfitPrice < pos.averageEntryPrice;
       if (!tpValid) {
         log.warn(`🔧 correctInvertedSLTP: ${isLong ? 'LONG' : 'SHORT'} ${sym} TP $${pos.takeProfitPrice.toFixed(2)} on wrong side of entry $${pos.averageEntryPrice.toFixed(2)} — recalculating`);
