@@ -6,6 +6,7 @@
 import { createLogger } from '../observability/logger.ts';
 import { config } from '../config/index.ts';
 import { HLRateLimiter } from './hl-rate-limiter.ts';
+import { hlRateLimitedFetch } from '../utils/hl-global-limiter.ts';
 import { setHLFetchFn } from '../analysis/support-resistance.ts';
 import { setHLFetchFnForATR } from '../analysis/atr.ts';
 import type {
@@ -66,11 +67,13 @@ export class MarketAgent {
 
   /**
    * Rate-limited HL info endpoint fetch.
-   * Exposed for external modules (S/R detector, etc.) to share the same rate limiter.
+   * v2.0.XX: Now routes through the GLOBAL rate limiter (hl-global-limiter.ts)
+   * instead of the per-class HLRateLimiter. This ensures ALL HL API calls
+   * across the entire process share one queue, preventing 429 storms.
+   * Exposed for external modules (S/R detector, ATR, etc.) to share the same limiter.
    */
   static async hlFetch(body: unknown): Promise<unknown> {
-    await MarketAgent.hlLimiter.acquire();
-    const res = await fetch('https://api.hyperliquid.xyz/info', {
+    const res = await hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -332,24 +335,16 @@ export class MarketAgent {
    * candleSnapshot (v = raw contract units) for DEX 1-8, converted to USD notional (v * price).
    */
   private async fetchHyperliquidTopPairs(limit: number, wasDirty?: boolean): Promise<TopVolumePair[]> {
-    // Rate-limited fetch: acquire token before each request
-    const hlFetch = async (body: object, retries = 2): Promise<Response> => {
-      for (let attempt = 0; attempt < retries; attempt++) {
-        await MarketAgent.hlLimiter.acquire();
-        const res = await fetch('https://api.hyperliquid.xyz/info', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (res.status === 429) {
-          log.warn(`HL API 429 — waiting ${3_000}ms (attempt ${attempt + 1}/${retries})`);
-          await new Promise(r => setTimeout(r, 3_000));
-          continue;
-        }
-        if (res.ok) return res;
-        log.warn(`HL API ${res.status} — retrying`);
-      }
-      return new Response('', { status: 429, statusText: 'Too Many Requests' });
+    // v2.0.XX: Use the global rate limiter instead of per-class HLRateLimiter.
+    // This ensures fetchTopPairs shares the same request budget as the HL real
+    // engine, candle proxy, REST polling, S/R detector, and ATR — preventing
+    // 429 storms when multiple modules fire simultaneously.
+    const hlFetch = async (body: object): Promise<Response> => {
+      return hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
     };
 
     // ── Step 1: fetch metadata + categories (cached for 5 min) + DEX 0 price/volume ──
@@ -421,10 +416,9 @@ export class MarketAgent {
     const top5Pairs = allPairs.slice(0, 5);
     if (top5Pairs.length > 0) {
       try {
-        const bgLimiter = new HLRateLimiter(10, 1_000);
+        // v2.0.XX: Use global rate limiter instead of per-call bgLimiter
         const bgFetch = async (body: object): Promise<Response> => {
-          await bgLimiter.acquire();
-          return fetch('https://api.hyperliquid.xyz/info', {
+          return hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
           });
@@ -515,10 +509,9 @@ export class MarketAgent {
       // ── Fetch real 5m volume for top 5 pairs ──
       if (sorted.length > 0) {
         const top5 = sorted.slice(0, 5);
-        const bgLimiter = new HLRateLimiter(10, 1_000);
+        // v2.0.XX: Use global rate limiter
         const bgFetch = async (body: object): Promise<Response> => {
-          await bgLimiter.acquire();
-          return fetch('https://api.hyperliquid.xyz/info', {
+          return hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
           });
@@ -572,10 +565,9 @@ export class MarketAgent {
       // ── Fetch real 5m volume for top 5 pairs ──
       if (sorted.length > 0) {
         const top5 = sorted.slice(0, 5);
-        const bgLimiter = new HLRateLimiter(10, 1_000);
+        // v2.0.XX: Use global rate limiter
         const bgFetch = async (body: object): Promise<Response> => {
-          await bgLimiter.acquire();
-          return fetch('https://api.hyperliquid.xyz/info', {
+          return hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
           });
@@ -624,24 +616,14 @@ export class MarketAgent {
     if (assets.length === 0) return;
     log.info(`DEX 1-8: background-scanning ${assets.length} assets (via candleSnapshot)`);
 
-    // Use a dedicated lighter rate limiter for background scan (20 tokens, 200ms refill = 5/s)
-    // candleSnapshot is read-only and not aggressively rate-limited
-    const bgLimiter = new HLRateLimiter(20, 200);
-    const bgFetch = async (body: object, retries = 3): Promise<Response> => {
-      for (let attempt = 0; attempt < retries; attempt++) {
-        await bgLimiter.acquire();
-        const res = await fetch('https://api.hyperliquid.xyz/info', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (res.status === 429) {
-          await new Promise(r => setTimeout(r, 2_000));
-          continue;
-        }
-        return res;
-      }
-      return new Response('', { status: 429, statusText: 'Too Many Requests' });
+    // v2.0.XX: Use global rate limiter — no per-scan bgLimiter needed.
+    // The global limiter handles 429 retries with exponential backoff.
+    const bgFetch = async (body: object): Promise<Response> => {
+      return hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
     };
 
     // candleSnapshot gives both price (c=close) and volume (v=raw contracts)
@@ -783,23 +765,13 @@ export class MarketAgent {
    * all other DEX assets (via l2Book).
    */
   async fetchPriceForSymbol(symbol: string): Promise<{ price: number; volume24h: number; change24h: number }> {
-    // Use shared rate-limited fetch (token-bucket, 8 tokens, 3s refill)
-    const hlFetch = async (body: object, retries = 2): Promise<Response> => {
-      for (let attempt = 0; attempt < retries; attempt++) {
-        await MarketAgent.hlLimiter.acquire();
-        const res = await fetch('https://api.hyperliquid.xyz/info', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (res.status === 429) {
-          log.warn(`HL price fetch 429 — waiting 3s (attempt ${attempt + 1}/${retries})`);
-          await new Promise(r => setTimeout(r, 3_000));
-          continue;
-        }
-        if (res.ok) return res;
-      }
-      return new Response('', { status: 429, statusText: 'Too Many Requests' });
+    // v2.0.XX: Use global rate limiter
+    const hlFetch = async (body: object): Promise<Response> => {
+      return hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
     };
 
     try {
@@ -925,8 +897,8 @@ export class MarketAgent {
       const missing = dex0Symbols.filter(s => !result.has(s));
       if (missing.length > 0) {
         try {
-          await MarketAgent.hlLimiter.acquire();
-          const res = await fetch('https://api.hyperliquid.xyz/info', {
+          // v2.0.XX: Use global rate limiter
+          const res = await hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ type: 'metaAndAssetCtxs' }),
@@ -967,8 +939,8 @@ export class MarketAgent {
     if (colonSymbols.length > 0) {
       const colonResults = await Promise.allSettled(
         colonSymbols.map(async (sym) => {
-          await MarketAgent.hlLimiter.acquire();
-          const res = await fetch('https://api.hyperliquid.xyz/info', {
+          // v2.0.XX: Use global rate limiter
+          const res = await hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ type: 'l2Book', coin: sym }),

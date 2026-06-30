@@ -4,6 +4,7 @@
 import { config } from './config/index.ts';
 import { rootLogger, createLogger } from './observability/logger.ts';
 import { setupShutdownHandlers, registerShutdownHandler, isShuttingDown } from './utils/shutdown.ts';
+import { hlRateLimitedFetch } from './utils/hl-global-limiter.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
 import { BinanceWebSocketManager, MarketStateAggregator, type AggregatedMarketState } from './data/binance-websocket.ts';
 import { HyperliquidWebSocketManager } from './data/hyperliquid-websocket.ts';
@@ -485,14 +486,22 @@ class MATSSystem {
       // v2.0.44: Manual symbol selection from Top Volume Pairs list.
       // Sets the manual lock so autoSelectTopPair() doesn't override it,
       // then immediately triggers a decision cycle for the new market.
+      // v2.0.XX: Debounce — rapid UI clicks (e.g. cycling through DEX 1-8
+      // symbols) must not trigger N simultaneous WS connects + N cycles.
+      // Only the LAST symbol in a 1.5s burst is acted on.
+      let selectSymbolTimer: ReturnType<typeof setTimeout> | null = null;
       this.apiServer.setMarketAgentSelectSymbolHandler((symbol) => {
-        log.info(`Market Agent: manual symbol selection → ${symbol}`);
-        this.marketAgent.setSelectedSymbolManual(symbol);
-        this.pushToAPI();
-        // Trigger a cycle immediately so the user sees analysis for the
-        // newly selected market without waiting for the next interval tick.
-        // 500ms delay lets the WS reconnect to the new symbol's price feed.
-        setTimeout(() => void this.runDecisionCycle(), 500);
+        if (selectSymbolTimer) clearTimeout(selectSymbolTimer);
+        selectSymbolTimer = setTimeout(() => {
+          log.info(`Market Agent: manual symbol selection → ${symbol}`);
+          this.marketAgent.setSelectedSymbolManual(symbol);
+          this.pushToAPI();
+          // Trigger a cycle immediately so the user sees analysis for the
+          // newly selected market without waiting for the next interval tick.
+          // 1.5s delay lets the WS reconnect to the new symbol's price feed
+          // without being interrupted by another rapid selection.
+          setTimeout(() => void this.runDecisionCycle(), 1500);
+        }, 1500);
       });
 
       // v2.0.45: Clear drawdown data to relaunch trading after circuit breaker.
@@ -596,28 +605,9 @@ class MATSSystem {
       });
 
       // Wire up candle data proxy — routes through backend to avoid CORS + 429
-      // Global HL rate-limit queue to prevent 429 across all backend HL calls
-      let lastHLCall = 0;
-      const HL_MIN_GAP_MS = 500;
-      const hlFetchQueued = async (body: object, retries = 5): Promise<Response> => {
-        for (let attempt = 0; attempt < retries; attempt++) {
-          const now = Date.now();
-          const wait = Math.max(0, lastHLCall + HL_MIN_GAP_MS - now);
-          if (wait > 0) await new Promise(r => setTimeout(r, wait));
-          lastHLCall = Date.now();
-          const res = await fetch('https://api.hyperliquid.xyz/info', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-          });
-          if (res.status !== 429) return res;
-          const delay = Math.min(1000 * 2 ** attempt, 8000);
-          console.warn(`[candle-proxy] HL 429 for ${(body as any).req?.coin || '?'}, retry ${attempt + 1}/${retries} in ${delay}ms`);
-          await new Promise(r => setTimeout(r, delay));
-        }
-        throw new Error('Hyperliquid API 429 after retries');
-      };
-
+      // v2.0.XX: Use the global rate limiter (hl-global-limiter.ts) instead of
+      // a per-proxy lastHLCall gap. This shares the same request budget as
+      // MarketAgent, HL real engine, REST polling, S/R detector, and ATR.
       this.apiServer.setCandlesRequestHandler(async (symbol, interval, limit) => {
         // Route candle requests by symbol format, not by exchange setting:
         // - symbols containing ":" (xyz:CL, flx:NVDA) → Hyperliquid DEX 1-8
@@ -638,15 +628,22 @@ class MATSSystem {
             close: parseFloat(k[4] as string),
           }));
         } else {
-          // Hyperliquid candleSnapshot is case-sensitive — preserve original case for colon-prefixed symbols
-          // DEX 0 bare names (BTC, ETH, SOL) need uppercase; DEX 1-8 (xyz:META) need exact case
-          const hlSymbol = symbol.includes(':') ? symbol : symbol.toUpperCase();
+          // Hyperliquid candleSnapshot is case-sensitive — DEX 1-8 prefixed
+          // symbols need lowercase prefix (xyz:SKHX, not XYZ:SKHX).
+          // DEX 0 bare names (BTC, ETH, SOL) need uppercase.
+          const hlSymbol = symbol.includes(':')
+            ? symbol.replace(/^[^:]+:/, (m) => m.toLowerCase())
+            : symbol.toUpperCase();
           const hlInterval = { '5m': '5m', '1h': '1h', '4h': '4h', '1d': '1d', '1w': '1w' }[interval] || '1h';
           const endTime = Date.now();
           const msMap: Record<string, number> = { '5m': 300_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000, '1w': 604_800_000 };
           const startTime = endTime - (msMap[hlInterval] ?? 3_600_000) * limit;
 
-          const res = await hlFetchQueued({ type: 'candleSnapshot', req: { coin: hlSymbol, interval: hlInterval, startTime, endTime } });
+          const res = await hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'candleSnapshot', req: { coin: hlSymbol, interval: hlInterval, startTime, endTime } }),
+          });
           if (!res.ok) throw new Error(`HL ${res.status}`);
           const data = await res.json() as Array<{ t: number; o: string; c: string; h: string; l: string }>;
           // HL candleSnapshot returns candles as an array — the colon-prefix stripped coin name works
@@ -2729,7 +2726,7 @@ class MATSSystem {
             this.correlationBudget.update(
               positions.map(p => p.symbol),
               async (body: object) => {
-                const res = await fetch('https://api.hyperliquid.xyz/info', {
+                const res = await hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
                   method: 'POST', headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify(body),
                 });
@@ -3184,6 +3181,12 @@ class MATSSystem {
           const safeOpenedAt = exPos.openedAt > 0
             ? exPos.openedAt
             : (localPos?.openedAt ?? Date.now());
+          // v2.0.XX: Read SL/TP from the real positions map (set by adjustPosition)
+          // instead of hardcoding undefined. The real positions map stores the
+          // validated SL/TP that was placed on HL via trigger orders.
+          const realPos = this.portfolio.getRealPositions().find(rp =>
+            rp.symbol.toLowerCase() === key.toLowerCase()
+          );
           positions[key] = {
             id: `hl-${exPos.symbol}-${safeOpenedAt}`,
             symbol: exPos.symbol,
@@ -3193,8 +3196,8 @@ class MATSSystem {
             currentPrice: livePrice,
             unrealizedPnl: exPos.unrealizedPnl,
             unrealizedPnlPct: margin > 0 ? exPos.unrealizedPnl / margin : 0,
-            stopLossPrice: undefined,
-            takeProfitPrice: undefined,
+            stopLossPrice: realPos?.stopLossPrice,
+            takeProfitPrice: realPos?.takeProfitPrice,
             leverage: exPos.leverage,
             openedAt: safeOpenedAt,
             updatedAt: Date.now(),
@@ -3543,8 +3546,58 @@ class MATSSystem {
         backtestProgress: this.backtestProgress,
         tradeHistory: this.evolution.tradeHistory.getAllEntries().slice(-50),
         marketAgent: marketAgentState,
-        tradeRecords: [
-          // Closed trades from paper engine (SL/TP closes, reconciliations)
+        tradeRecords: isRealMode ? [
+          // v2.0.78: In real mode, Trade Records uses ONLY live HL data —
+          // no local memory (closedRealTrades, paperEngine trades). This
+          // ensures the UI reflects the actual exchange state, not stale
+          // local mirrors. Open positions come from realPositions only
+          // (paper positions are hidden in real mode). Closed history
+          // comes from cachedHLFills (fetched via userFillsByTime REST).
+          // Open real positions (filtered against exchange to exclude stale)
+          ...this.portfolio.getRealPositions()
+            .filter(p => {
+              if (!this.cachedExchangePositions) return true;
+              const sym = p.symbol.replace(/^xyz:/i, '').toLowerCase();
+              return this.cachedExchangePositions.some(ep => {
+                const epSym = ep.symbol.replace(/^xyz:/i, '').toLowerCase();
+                return epSym === sym;
+              });
+            })
+            .map(p => ({
+              id: p.id,
+              symbol: p.symbol,
+              side: p.side,
+              entryPrice: p.averageEntryPrice,
+              exitPrice: p.currentPrice,
+              quantity: p.quantity,
+              leverage: p.leverage ?? 1,
+              investment: p.averageEntryPrice * p.quantity,
+              pnl: p.unrealizedPnl,
+              pnlPct: p.unrealizedPnlPct,
+              openedAt: p.openedAt,
+              closedAt: p.openedAt,
+              status: 'open' as const,
+            })),
+          // Recent HL fills (closed trade history from the exchange)
+          ...this.cachedHLFills.filter(f => {
+            return Math.abs(f.closedPnl) > 0.01;
+          }).map(f => ({
+            id: `hl-fill-${f.timestamp}-${f.symbol}`,
+            symbol: f.symbol,
+            side: f.side,
+            entryPrice: f.price,
+            exitPrice: f.price,
+            quantity: f.size,
+            leverage: 1,
+            investment: f.price * f.size,
+            pnl: f.closedPnl - f.fee,
+            pnlPct: f.price * f.size > 0 ? (f.closedPnl - f.fee) / (f.price * f.size) : 0,
+            openedAt: f.timestamp,
+            closedAt: f.timestamp,
+            status: 'hl-fill' as const,
+          })),
+        ] : [
+          // Paper mode: paper engine trades + paper open positions
           // v2.0.52: Filter out error trades where entry ≈ exit and PnL ≈ 0
           // (these are phantom trades from immediate open→close cycles, often
           // caused by reconciliation or system errors. They pollute the Trade
@@ -3577,50 +3630,8 @@ class MATSSystem {
             closedAt: t.closedAt,
             status: t.status,
           })),
-          // v2.0.35: Closed real (exchange) trades — SL/TP triggered on HL or
-          // manual exchange closes. These have accurate exit price + PnL from
-          // the actual HL fill. Previously these were only used for learning
-          // and never displayed in the UI.
-          // v2.0.52: Also filter out error trades (entry ≈ exit, PnL ≈ 0).
-          // v2.0.53: Same AND fix as paper engine trades above.
-          ...(isRealMode ? this.portfolio.getClosedRealTrades().slice(-50).filter(t => {
-            const priceMovedPct = Math.abs(t.exitPrice - t.entryPrice) / (t.entryPrice || 1);
-            const priceMoved = priceMovedPct > 0.0005; // >0.05% = 5 bps
-            const hasPnl = Math.abs(t.pnl) > 0.01;
-            return priceMoved && hasPnl;
-          }).map(t => ({
-            id: t.id,
-            symbol: t.symbol,
-            side: t.side,
-            entryPrice: t.entryPrice,
-            exitPrice: t.exitPrice,
-            quantity: t.quantity,
-            leverage: t.leverage,
-            investment: t.investment,
-            pnl: t.pnl,
-            pnlPct: t.pnlPct,
-            openedAt: t.openedAt,
-            closedAt: t.closedAt,
-            status: t.status,
-          })) : []),
-          // Open positions from portfolio (so they appear as open trade records)
-          // v2.0.32: In real mode, only show positions that actually exist on HL.
-          // Stale local mirrors (closed on exchange but not yet reconciled) are
-          // filtered out to prevent confusing the UI and causing SL/TP errors.
-          // v2.0.66: Normalize both sides — strip 'xyz:' prefix from local symbols
-          // and compare case-insensitively. HL returns xyz DEX assets without prefix
-          // (e.g. 'MU' not 'xyz:MU'), but local portfolio stores them with prefix.
-          // v2.0.72: include realPositions (now separate from paper positions)
-          ...[...Array.from(this.portfolio.getPortfolio().positions.values()), ...this.portfolio.getRealPositions()]
-            .filter(p => {
-              if (!isRealMode || !this.cachedExchangePositions) return true;
-              // Strip 'xyz:' prefix and lowercase for comparison
-              const sym = p.symbol.replace(/^xyz:/i, '').toLowerCase();
-              return this.cachedExchangePositions.some(ep => {
-                const epSym = ep.symbol.replace(/^xyz:/i, '').toLowerCase();
-                return epSym === sym;
-              });
-            })
+          // Open paper positions only (real positions hidden in paper mode)
+          ...Array.from(this.portfolio.getPortfolio().positions.values())
             .map(p => ({
             id: p.id,
             symbol: p.symbol,
@@ -3636,31 +3647,6 @@ class MATSSystem {
             closedAt: p.openedAt,
             status: 'open' as const,
           })),
-          // v2.0.19: in real mode, also show the actual Hyperliquid recent
-          // fills (last 5) so the Trade Records panel reflects the real
-          // exchange history. Marked with status 'hl-fill' so the UI can
-          // distinguish them from local mirror trades.
-          // v2.0.53: Filter out fee-only fills (price didn't move meaningfully).
-          ...(isRealMode ? this.cachedHLFills.filter(f => {
-            // HL fills have entry=exit (same fill price), so we can't use
-            // price movement. Instead, filter by PnL significance: keep fills
-            // where |closedPnl| > $0.01 (actual profit/loss, not dust).
-            return Math.abs(f.closedPnl) > 0.01;
-          }).map(f => ({
-            id: `hl-fill-${f.timestamp}-${f.symbol}`,
-            symbol: f.symbol,
-            side: f.side,
-            entryPrice: f.price,
-            exitPrice: f.price,
-            quantity: f.size,
-            leverage: 1,
-            investment: f.price * f.size,
-            pnl: f.closedPnl - f.fee,
-            pnlPct: f.price * f.size > 0 ? (f.closedPnl - f.fee) / (f.price * f.size) : 0,
-            openedAt: f.timestamp,
-            closedAt: f.timestamp,
-            status: 'hl-fill' as const,
-          })) : []),
         ],
       });
     } catch (err) {
