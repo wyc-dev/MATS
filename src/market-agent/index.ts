@@ -27,6 +27,7 @@ const DEFAULT_CONFIG: MarketAgentConfig = {
   selectedSymbol: '',
   hyperliquidAssetType: 'crypto_perps',
   positionSizePct: 0.10,
+  maxPortionPct: 0.20,
   leverage: 10,
   updatedAt: Date.now(),
 };
@@ -193,11 +194,28 @@ export class MarketAgent {
   }
 
   setPositionSizePct(pct: number): void {
-    const clamped = Math.max(0.01, Math.min(0.20, pct));
+    // v2.0.XX: Clamp to maxPortionPct (not hardcoded 20%) so position size
+    // can go up to the user-configured max portion.
+    const maxPct = this.config.maxPortionPct ?? 0.20;
+    const clamped = Math.max(0.01, Math.min(maxPct, pct));
     if (Math.abs(this.config.positionSizePct - clamped) < 0.001) return;
     this.config.positionSizePct = clamped;
     this.config.updatedAt = Date.now();
     log.info(`Position size changed: ${(clamped * 100).toFixed(1)}%`);
+  }
+
+  /** v2.0.XX: Set max portion of balance for all positions combined (10%-50%). */
+  setMaxPortionPct(pct: number): void {
+    const clamped = Math.max(0.10, Math.min(0.50, pct));
+    if (Math.abs(this.config.maxPortionPct - clamped) < 0.001) return;
+    this.config.maxPortionPct = clamped;
+    this.config.updatedAt = Date.now();
+    // If current position size exceeds the new max, clamp it down
+    if (this.config.positionSizePct > clamped) {
+      this.config.positionSizePct = clamped;
+      log.info(`Position size clamped to new max portion: ${(clamped * 100).toFixed(1)}%`);
+    }
+    log.info(`Max portion changed: ${(clamped * 100).toFixed(1)}%`);
   }
 
   setLeverage(lev: number): void {

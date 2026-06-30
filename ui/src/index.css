@@ -2809,10 +2809,12 @@ body {
   display: flex;
   gap: var(--space-4);
   margin-top: var(--space-4);
+  flex-wrap: wrap;
 }
 
 .market-control-col {
   flex: 1;
+  min-width: 120px;
 }
 
 .market-control-label {

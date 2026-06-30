@@ -26,6 +26,9 @@ export class PaperTradingEngine {
   private readonly orders: Map<string, Order> = new Map();
   private readonly trades: TradeRecord[] = [];
   private lastPrices: Map<string, number> = new Map();
+  /** v2.0.XX: Max portion of balance for all positions combined. Set by
+   *  index.ts from MarketAgent config. Default 0.20 (20%) — the old hardcoded value. */
+  private maxPortionPct = 0.20;
   /** v2.0.25: Learning callback invoked after EVERY position close (SL/TP,
    *  reconciliation, agent-vote close). The caller (index.ts) uses this to
    *  feed the loss/win into RBC, Pattern Classifier, Agent Outcomes, Trade
@@ -61,6 +64,12 @@ export class PaperTradingEngine {
     log.info('Paper trading engine initialized.', {
       initialBalance: portfolio.getPortfolio().initialBalance,
     });
+  }
+
+  /** v2.0.XX: Set max portion of balance for all positions combined.
+   *  Called by index.ts when Market Agent config changes. */
+  setMaxPortionPct(pct: number): void {
+    this.maxPortionPct = Math.max(0.10, Math.min(0.50, pct));
   }
 
   /** Restore previously persisted trades on startup */
@@ -214,7 +223,8 @@ export class PaperTradingEngine {
     }
     const newMargin = effectiveQuantity * price; // margin for the new position
     const totalMarginAfter = totalMarginExposure + newMargin;
-    const maxMargin = portfolio.balance * 0.20; // 20% of balance max total margin
+    // v2.0.XX: Use configurable maxPortionPct instead of hardcoded 0.20
+    const maxMargin = portfolio.balance * this.maxPortionPct;
 
     if (totalMarginAfter > maxMargin) {
       // Try to scale down the new position to fit within limit
@@ -231,7 +241,7 @@ export class PaperTradingEngine {
         log.info(`Position scaled down: ${effectiveQuantity.toFixed(6)} → ${finalScaled.toFixed(6)} (cumulative margin ${((totalMarginAfter / portfolio.balance) * 100).toFixed(1)}% > 20%)`);
         return [await this.executeOrder(decision, finalScaled, price)];
       } else {
-        const err = `Cumulative margin $${totalMarginAfter.toFixed(2)} exceeds 20% of balance $${portfolio.balance.toFixed(2)}. Cannot open new position.`;
+        const err = `Cumulative margin $${totalMarginAfter.toFixed(2)} exceeds ${(this.maxPortionPct * 100).toFixed(0)}% of balance $${portfolio.balance.toFixed(2)}. Cannot open new position.`;
         log.warn(err);
         return [{ order: this.createRejectedOrder(decision, err), error: err }];
       }

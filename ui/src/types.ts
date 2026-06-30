@@ -167,6 +167,7 @@ export interface MarketAgentConfig {
   hyperliquidAssetType?: 'crypto_perps' | 'tradfi' | 'indices' | 'stocks' | 'commodities' | 'fx';
   selectedSymbol: string;
   positionSizePct: number;
+  maxPortionPct: number;
   leverage: number;
   updatedAt: number;
 }
