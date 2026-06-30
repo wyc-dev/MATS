@@ -1,9 +1,9 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.68 (HL 簽名修復 + xyz DEX 資產索引偏移 + SL/TP 方向修正 + 槓桿設定 + 幽靈倉位清理 + UI 真實倉位過濾 + 價格格式 + 本地 SL 觸發修正 + Regime-aware 方向信號 + Planck-Chaos Resonance 模組 + 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP + 提早平倉修復 + openedAt 同步 + on-chain dedup + HL SL/TP close detection + 最小 SL/TP 間距限制 + Stale real position cleanup + Real trade 持久化 + Consensus 方向性修正 + 學習衰減機制 + MAX_POSITION_PCT 移除 + Evolution signalThreshold 確定性強制 + Planck-Chaos 簡化 + Recent 20 trade win rate UI + PnL/PnL% PAPER/REAL 一致性 + 手動市場選擇 + Clear Drawdown 按鈕 + manualSymbolLock 修復 + SL/TP HL 雙向同步 + PnL 槓桿膨脹修復 + SL/TP trailing stop 驗證 + SL/TP 啟動時 HL 同步 + SL/TP Retry Loop + SL/TP 最大收窄步長 + 錯誤交易過濾 + Paper/Real 跨模式倉位顯示 + Per-symbol consensus SL/TP 方向驗證 + SL/TP 自動修正 + SL/TP 推斷邏輯修正 + Options Data Layer + Options REST Polling + Options Audit + Options 最高投票權重 + Options-aware 進化系統 + Options Plan Detection + Dynamic Vote Weight)
+> **版本**: 2.0.78 (v2.0.68 基礎 + SL/TP UI 顯示修復 + Symbol selection debounce + S/R DEX 1-8 candle fetch 修復 + ATR prefix stripping 修復 + News Reporter 重寫 + Paper accounting fix + UI masonry layout + RGB marquee border + Global HL rate limiter + WS infinite reconnect + REST polling backoff + Configurable max portion + Real trading margin check)
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
-> **總代碼量**: ~18,600+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
+> **總代碼量**: ~20,000+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
 ---
 
@@ -82,6 +82,9 @@
 71. [B.52 Per-Symbol Consensus SL/TP 方向驗證 + Trailing Stop](#b52-v2052-per-symbol-consensus-sltp-方向驗證--trailing-stop)
 72. [B.53 SL/TP 自動修正 + 推斷邏輯修正](#b53-v2053-sltp-自動修正--推斷邏輯修正)
 73. [B.54 Options Data Layer + REST Polling + Audit + 最高投票權重 + Options-aware 進化](#b54-v2054-options-data-layer--rest-polling--audit--最高投票權重--options-aware-進化)
+74. [B.55 SL/TP UI 顯示修復 + Symbol Selection Debounce + S/R DEX 1-8 Candle Fetch](#b55-v2069-v2075-sltp-ui-顯示修復--symbol-debounce--sr-dex-1-8-candle-fetch)
+75. [B.56 Global HL Rate Limiter + WS Infinite Reconnect + REST Polling Backoff](#b56-v2076-v2077-global-hl-rate-limiter--ws-infinite-reconnect--rest-polling-backoff)
+76. [B.57 Configurable Max Portion + Real Trading Margin Check](#b57-v2078-configurable-max-portion--real-trading-margin-check)
 
 ---
 
@@ -6432,6 +6435,71 @@ normalizeDecision (sanity 0-100%) → Risk Auditor (can reduce) → Phase 4.5 (M
 | Loop Engineering 記憶 | `scripts/loop-engineering-memory.md` | 自動維護的錯誤記錄 |
 | 專案 HANDOFF | `HANDOFF.md` | 開發者交接備忘 |
 | IMPLEMENTATION 記錄 | `IMPLEMENTATION-COMPLETE.md` | 功能實現清單 |
+
+---
+
+### B.55 SL/TP UI 顯示修復 + Symbol Debounce + S/R DEX 1-8 Candle Fetch (v2.0.69–v2.0.75)
+
+**4 個 bug 修復**:
+
+| Bug | 問題 | 修復 |
+|:----|:-----|:-----|
+| **SL/TP UI 顯示** | `serializePortfolio()` 嘅 fallback loop hardcode `stopLossPrice: undefined`，v2.0.72 realPositions map 嘅 SL/TP 永遠傳唔到 UI | fallback loop 改用 `portfolio.getRealPositions()` 讀取已驗證嘅 SL/TP |
+| **Symbol rapid cycling** | UI rapid click POST `/api/market-agent/select-symbol` → N 個 WS connect 同時觸發 → WS 永遠連唔上 | API handler debounce 1.5s — 只處理 burst 最後一個 symbol |
+| **S/R DEX 1-8 candle fetch** | `fetchCandles()` 用 `symbol.replace(/^.*:/, '')` strip 咗 DEX prefix，`xyz:SKHX` → `SKHX` → HL 返回空 → S/R fallback round numbers only | 移除 prefix stripping + 移除 synthetic symbol check — HL `candleSnapshot` 接受 full coin name |
+| **ATR prefix stripping** | `atr.ts` `getATR()` 同樣 strip prefix → DEX 1-8 ATR 永遠 = 0 → SL/TP fallback 固定 % | 移除 `symbol.replace(/^.*:/, '')`，用 full coin name |
+
+**效果**: UI 正確顯示 real position 嘅 SL/TP；rapid symbol click 唔再 crash WS；DEX 1-8 資產（股票/指數/商品）嘅 S/R + ATR 正確計算。
+
+---
+
+### B.56 Global HL Rate Limiter + WS Infinite Reconnect + REST Polling Backoff (v2.0.76–v2.0.77)
+
+**問題 1 — HL 429 風暴** (v2.0.76):
+
+系統有 6+ 個獨立 rate limiter（MarketAgent.hlLimiter、bgLimiters、candle proxy gap、HL real engine 冇 limiter），各自獨立計算配額，加起來遠超 HL 限制。每個 decision cycle 幾十個並行請求 → 429。
+
+**修復**: `src/utils/hl-global-limiter.ts` — 全局 rate limiter，所有 HL API call 必須經過。200ms gap = 5 req/s 全局上限 + 429 exponential backoff retry + DNS failure 處理。MarketAgent、HL real engine（18 個 fetch）、candle proxy、REST polling、S/R detector、ATR、correlation budget 全部改用 `hlRateLimitedFetch()`。
+
+**問題 2 — WS 永久放棄** (v2.0.77):
+
+網絡斷線（DNS failure）50 分鐘後 WS `maxReconnectAttempts=50` 用完 → `Giving up` → 網絡返嚟都唔再連。REST polling 每 30s 死打一次 fill 爆 log。
+
+**修復**:
+- WS `maxReconnectAttempts` 改為 `Infinity` — backoff 封頂 60s 但永不停
+- REST polling exponential backoff（30s → 60s → 120s → ... → 5min cap），成功 reset
+- Global rate limiter DNS failure 處理：頭 2 次短 retry，之後 throw（唔浪費 retry slot），等 REST polling 自己 backoff
+
+**效果**: 網絡斷咗安靜 backoff，網絡返嚟自動恢復。唔再 fill 爆 log。
+
+---
+
+### B.57 Configurable Max Portion + Real Trading Margin Check (v2.0.78)
+
+**問題 1 — 固定 20% cumulative margin cap**:
+
+`paper-engine.ts` hardcode `portfolio.balance * 0.20` 作為所有持倉 margin 上限。用戶無法調整。
+
+**修復**:
+- `MarketAgentConfig` 新增 `maxPortionPct`（10%-50%）
+- `PaperTradingEngine.setMaxPortionPct()` setter，cumulative margin check 用 `this.maxPortionPct`
+- `RealTradingManager.setMaxPortionPct()` + `executeDecision()` 喺 send order 去 HL 之前 check cumulative margin（用 `getRealPositions()` 計現有 exposure + 新倉 margin）
+- API endpoint `POST /api/market-agent/max-portion`
+- UI slider（10%-50%），Position Size slider max 動態跟 maxPortion
+
+**問題 2 — Config reset on market/mode switch**:
+
+`useEffect` 無條件用 `config` 覆蓋所有 slider 值。每次 SSE push config（轉 asset type 觸發 fetchTopPairs → pushToAPI），slider 被 reset。
+
+**修復**: `useEffect` 改用 functional update — 每個 slider 只喺 `config` 值同本地 state 有差異時先 update。
+
+**問題 3 — 手機版 3 control 擠一行**:
+
+窄屏 3 個 slider（Position Size + Max Portion + Leverage）擠一行。
+
+**修復**: `.market-control-group` 加 `flex-wrap: wrap`，`.market-control-col` 加 `min-width: 120px`。窄屏自動 wrap 成 2 行。
+
+**效果**: 用戶可調節 max portion（10%-50%），paper + real 都 enforce。轉 market/mode 唔再 reset slider。手機版自動分兩行。
 
 ---
 

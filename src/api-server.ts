@@ -211,6 +211,8 @@ export class APIServer {
   private onMarketAgentSetAssetType: ((assetType: HyperliquidAssetType) => void) | null = null;
   private onMarketAgentFetchPairs: (() => void) | null = null;
   private onMarketAgentSetPositionSize: ((pct: number) => void) | null = null;
+  /** v2.0.XX: Max portion of balance for all positions combined. */
+  private onMarketAgentSetMaxPortion: ((pct: number) => void) | null = null;
   private onMarketAgentSetLeverage: ((lev: number) => void) | null = null;
   /** v2.0.44: Manual symbol selection from Top Volume Pairs list. */
   private onMarketAgentSelectSymbol: ((symbol: string) => void) | null = null;
@@ -285,6 +287,11 @@ export class APIServer {
   /** Register a callback for setting position size */
   setMarketAgentSetPositionSizeHandler(cb: (pct: number) => void): void {
     this.onMarketAgentSetPositionSize = cb;
+  }
+
+  /** v2.0.XX: Register a callback for setting max portion */
+  setMarketAgentSetMaxPortionHandler(cb: (pct: number) => void): void {
+    this.onMarketAgentSetMaxPortion = cb;
   }
 
   /** Register a callback for manual position close */
@@ -644,10 +651,29 @@ export class APIServer {
         req.on('end', () => {
           try {
             const { pct } = JSON.parse(body) as { pct: number };
-            const clamped = Math.max(0.01, Math.min(0.20, pct));
+            const clamped = Math.max(0.01, Math.min(0.50, pct));
             if (this.onMarketAgentSetPositionSize) this.onMarketAgentSetPositionSize(clamped);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: true, message: `Position size set to ${(clamped * 100).toFixed(1)}%` }));
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // v2.0.XX: POST: set max portion (0.10-0.50 = 10%-50%)
+      if (pathname === '/api/market-agent/max-portion' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { pct } = JSON.parse(body) as { pct: number };
+            const clamped = Math.max(0.10, Math.min(0.50, pct));
+            if (this.onMarketAgentSetMaxPortion) this.onMarketAgentSetMaxPortion(clamped);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, message: `Max portion set to ${(clamped * 100).toFixed(0)}%` }));
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));

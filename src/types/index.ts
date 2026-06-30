@@ -637,8 +637,11 @@ export interface MarketAgentConfig {
   hyperliquidAssetType?: HyperliquidAssetType;
   /** The actively selected trading symbol */
   selectedSymbol: string;
-  /** Position size as fraction of equity (0.01 = 1%, 0.20 = 20%) */
+  /** Position size as fraction of equity (0.01 = 1%, 0.50 = 50%) */
   positionSizePct: number;
+  /** v2.0.XX: Max portion of balance usable for ALL positions combined (0.10-0.50 = 10%-50%).
+   *  Replaces the hardcoded 20% cap in paper-engine.ts. */
+  maxPortionPct: number;
   /** Leverage multiplier (1-10) */
   leverage: number;
   /** Timestamp of last config change */

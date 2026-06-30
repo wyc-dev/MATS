@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.68-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.78-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -207,6 +207,24 @@ A genetic algorithm that evolves sigmoid-based sentiment functions to model mark
 - Fitness: Sharpe × 0.5 + WinRate × 0.3 + Drawdown × 0.2
 - Raw inputs: order book, volume acceleration, funding rate delta + acceleration, spread, price acceleration, large trades, F&G index, volatility regime
 
+### � Options Data Layer (v2.0.58–v2.0.68)
+
+An integrated options market data layer for Stocks/Indices/Commodities trading:
+
+- **Data source**: Massive.com (Polygon.io compatible) REST API for option chain snapshots
+- **Plan detection**: `detectPlanTier()` auto-detects API plan (none/free/starter/developer/advanced) at startup
+- **Extracted metrics**: IV Rank, implied volatility, put/call OI ratio, gamma regime (positive/negative/neutral), max pain, skew, implied move %, days to expiration, event risk (OPEX/earnings/FOMC)
+- **Regime → Playbook mapping**: 5 deterministic playbooks based on options regime:
+  - **Premium Sell** (positive gamma + range + high IV rank) → Iron Condor / Credit Spreads
+  - **Directional Credit** (positive gamma + mild trend) → Bull/Bear Credit Spreads
+  - **Defined-Risk Debit** (negative gamma + trend) → Debit Spreads / small trend
+  - **Stand Aside** (high event risk / negative gamma) → HOLD, veto new positions
+  - **Buy Convexity** (low IV rank) → Long options (cheap convexity)
+- **Deterministic veto**: `vetoNewPositions=true` overrides HACP consensus → HOLD (e.g. OPEX within 3 days → no new positions)
+- **Dynamic voting weight**: Options Data Layer vote weight scales with plan tier — free=0.10, starter=0.25, advanced=0.30 (highest among all agents for Stocks/Indices)
+- **Options-aware evolution**: `OptionsStrategyParameters` (7 evolving params: minIVRankForPremiumSell, maxIVRankForDebit, gammaRegimePreference, maxImpliedMovePct, putCallOIThreshold, eventRiskTolerance, targetPOP). `SurvivalFitness.optionsAlpha` measures how well the strategy uses options data.
+- **Free plan fallback**: Uses contracts+aggs endpoint with Black-Scholes estimated IV when snapshot endpoint is unavailable
+
 ### 🛡️ Capital Preservation First
 
 ```
@@ -220,6 +238,7 @@ profit generation must occur within safety constraints.
 - Production-grade standards: strict TypeScript, structured logging, exponential backoff reconnection
 - 🆕 v2.0.18: **Notional-based double-sided fee deduction** — HL taker fee (0.04%) is charged on the leveraged notional, not the margin. At 10x leverage a round-trip costs 0.8% of margin; at 100x it's 8%. Fees are deducted from `balance` on both open and close (plus `realizedPnl` on close) so paper PnL reflects the real cost — the system only learns strategies that are profitable AFTER fees.
 - 🆕 v2.0.19: **Unrealized PnL includes entry fee** — opening a position immediately shows the paid entry fee as a negative unrealized PnL (not $0.00), so the UI reflects the real cost from the moment the position opens.
+- 🆕 v2.0.78: **Configurable max portion** — user-configurable max % of balance for all positions combined (10%-50%), replacing the hardcoded 20% cap. Enforced in both paper engine AND real trading manager (checked before sending orders to HL).
 
 ### 🔌 LLM Abstraction Layer
 
@@ -266,6 +285,7 @@ The provider factory auto-detects availability: Ollama → Error.
 │   • 🆕 v2.0.16: HL WS user-level subscriptions                │
 │     (clearinghouseState + userFills — real-time position/fill │
 │      sync, no REST polling)                                   │
+│   • 🆕 v2.0.58: Options Data Layer (IV/Greeks/OI/Max Pain)    │
 │   • Market Agent auto-selects trading pair                   │
 │   • Risk engine (millisecond latency, no LLM dependency)     │
 │   • Paper trading engine (leverage-aware P&L simulation)     │
@@ -273,6 +293,9 @@ The provider factory auto-detects availability: Ollama → Error.
 │   • Real Trading Manager (exchange orders + local mirror)    │
 │   • 🆕 v2.0.16: Post-trade sync (renew mirror SL/TP + fill)   │
 │   • 🆕 v2.0.17: Real-trade UI shows HL real balance/equity    │
+│   • 🆕 v2.0.76: Global HL rate limiter (single queue, 429 retry)│
+│   • 🆕 v2.0.77: WS infinite reconnect + REST polling backoff  │
+│   • 🆕 v2.0.78: Configurable max portion (paper + real)        │
 │   • Position tracking & stop-loss/take-profit                │
 │   • Data pipeline & persistence                              │
 │   • Observability & health checks (6 guards)                 │
@@ -341,12 +364,15 @@ src/                                        # 24,502 LOC total
 ├── analysis/                               # 📊 Signal processing
 │   ├── sentiment-engine.ts                 # Sigmoid·GA sentiment engine (279 LOC — adaptive velocity/acceleration)
 │   ├── sigmoid-ga.ts                       # GA-evolved sigmoid functions (393 LOC — blend weight normalization)
-│   ├── support-resistance.ts               # S/R zone detection (724 LOC — recency weighting + volume scaling; synthetic symbol aware)
-│   └── planck-chaos.ts                     # 🆕 v2.0.33 Planck-Chaos Resonance module (400 LOC — Lyapunov exponent + resonance detection + amplitude windows + chaos regime classification + direction bias)
+│   ├── support-resistance.ts               # S/R zone detection (724 LOC — recency weighting + volume scaling; DEX 1-8 candle fetch fix)
+│   ├── planck-chaos.ts                     # 🆕 v2.0.33 Planck-Chaos Resonance module (400 LOC — Lyapunov exponent + resonance detection + amplitude windows + chaos regime classification + direction bias)
+│   ├── options-data.ts                     # 📊 Options Data Layer (v2.0.58 — IV/Greeks/OI/Max Pain/Event Risk + Regime→Playbook + plan detection)
+│   ├── atr.ts                              # ATR-based volatility-adaptive SL/TP (v2.0.73 — DEX 1-8 full coin name fix)
+│   └── news-sentiment.ts                   # News sentiment (Google News RSS + GDELT + Bing News, multi-symbol)
 │
-├── market-agent/                           # 🎯 Auto pair selection + position size/leverage
-│   ├── index.ts                            # Market Agent (879 LOC)
-│   └── hl-rate-limiter.ts                  # HL REST rate limiter (40 LOC)
+├── market-agent/                           # 🎯 Auto pair selection + position size/leverage/max portion
+│   ├── index.ts                            # Market Agent (879 LOC — global rate limiter integration)
+│   └── hl-rate-limiter.ts                  # HL REST rate limiter (40 LOC — legacy, superseded by global limiter)
 │
 ├── data/                                   # 📡 WebSocket data feeds
 │   ├── hyperliquid-websocket.ts            # HL WS (817 LOC — user-level subscriptions + real-time position/fill sync)
@@ -355,7 +381,9 @@ src/                                        # 24,502 LOC total
 │
 ├── backtest/index.ts                       # 📜 Historical backtesting engine (555 LOC — annualized regime slope)
 ├── observability/logger.ts                 # Structured logging (Winston, 78 LOC)
-└── utils/shutdown.ts                       # Graceful shutdown handler (77 LOC)
+└── utils/
+    ├── shutdown.ts                          # Graceful shutdown handler (77 LOC)
+    └── hl-global-limiter.ts                # 🆕 v2.0.76 Global HL rate limiter (single queue, 429 retry, DNS failure handling)
 
 ui/                                        # 🖥️ React Web UI (pantha_mats design system)
 ├── src/
@@ -489,8 +517,12 @@ If you require a commercial license — for example, for proprietary extensions,
 | **v2.0.62** | **Options-aware evolution** — `OptionsStrategyParameters` (7 options-specific params that evolve: minIVRankForPremiumSell, maxIVRankForDebit, gammaRegimePreference, maxImpliedMovePct, putCallOIThreshold, eventRiskTolerance, targetPOP). `SurvivalFitness.optionsAlpha` new fitness dimension. `mutate()` has options-specific directional mutation. `getContextForAgent()` shows options strategy context. Full evolution loop: options data → vote → decision → result → fitness → mutation → better strategy |
 | **v2.0.63–v2.0.67** | Paper balance leak fix (margin vs notional — `openPosition()` now deducts margin not full notional); Startup message fix (AMACRF→MATS, Binance→Hyperliquid); Duplicate SL/TP trigger orders fix (`engine.adjustPosition()` now cancels existing orders before placing new ones); `manualSymbolLock` preserved on trade mode switch; Batch price fetch (`fetchPricesForSymbols()` reduces HL 429 errors); Options Data Layer refactored to use contracts+aggs (free plan fallback with estimated IV) |
 | **v2.0.68** | **Options Plan Detection + Dynamic Vote Weight** — `OptionsDataManager.detectPlanTier()` tests the snapshot endpoint at startup to determine API plan tier (none/free/starter/developer/advanced). Voting weight + confidence scale dynamically: free=0.10/0.50 (estimated IV, 1-day delayed), starter=0.25/0.70 (direct IV/Greeks/OI, 15min delayed), advanced=0.30/0.80 (real-time). Paid plans use snapshot endpoint (accurate data); free plan uses contracts+aggs fallback (estimated IV via Black-Scholes). `getRecommendedVoteWeight()` + `getRecommendedConfidence()` used by `index.ts` to set HACP consensus vote. |
+| **v2.0.69–v2.0.75** | SL/TP UI display fix (serializePortfolio reads from realPositions map instead of hardcoding undefined); Symbol selection debounce (rapid UI clicks no longer trigger N simultaneous WS connects); S/R candle fetch fix for DEX 1-8 (removed prefix stripping — HL candleSnapshot requires full coin name `xyz:SKHX`); ATR prefix stripping fix (same root cause); News Reporter rewrite (Google News RSS + GDELT + Bing News, multi-symbol, hidden strategist persona); Paper accounting fix (closePosition realizedPnl subtracts entryFee); UI masonry layout + RGB marquee border + mobile fixes |
+| **v2.0.76** | **Global HL rate limiter** — `src/utils/hl-global-limiter.ts` replaces 6+ scattered per-module rate limiters with ONE global queue (200ms gap = 5 req/s). All HL API calls (MarketAgent, HL real engine, candle proxy, REST polling, S/R detector, ATR, correlation budget) now share a single request budget. 429 retry with exponential backoff. DNS failure handling (short retry then throw, let caller back off). Eliminates 429 storms from concurrent modules. |
+| **v2.0.77** | **WS infinite reconnect + REST polling backoff** — HL WebSocket no longer gives up after 50 attempts (network outages can last hours). Backoff caps at 60s but retries forever. REST polling now has exponential backoff on consecutive failures (30s → 60s → 120s → ... → 5min cap), resets on success. Global rate limiter handles DNS errors gracefully (2 short retries then throw, so REST polling can back off). System auto-recovers when network returns. |
+| **v2.0.78** | **Configurable max portion** — `maxPortionPct` (10%-50%) replaces hardcoded 20% cumulative margin cap. UI slider in Market Agent panel. Enforced in both paper engine AND real trading manager (checked BEFORE sending orders to HL — prevents sending trades that exceed the cap). Position Size slider max dynamically follows maxPortion. Mobile layout wraps 3 controls to 2 rows. Config no longer resets on market/mode switch (useEffect only syncs when values actually change). |
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.41 for full details on each fix.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for full details on each fix.
 
 ---
 
@@ -501,11 +533,12 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) § B.13–B.41 for full details on each f
 | **Language** | TypeScript 5.6 (strict mode, zero type errors) |
 | **Runtime** | Node.js 22+ |
 | **LLM** | Ollama (local + Pro cloud models) / OpenAI-compatible |
-| **Market Data** | Hyperliquid WebSocket (l2Book + trades + activeAssetCtx + 🆕 v2.0.16 clearinghouseState + userFills) + REST fallback |
-| **Frontend** | React 18 + Vite + TradingView Chart (🆕 v2.0.20 live TP/SL update) |
+| **Market Data** | Hyperliquid WebSocket (l2Book + trades + activeAssetCtx + clearinghouseState + userFills) + REST fallback |
+| **Options Data** | Massive.com / Polygon.io REST API (IV, Greeks, OI, Max Pain, Event Risk) |
+| **Frontend** | React 18 + Vite + TradingView Chart (live TP/SL update) |
 | **Config Validation** | Zod schema |
 | **Logging** | Winston (structured + file rotation) |
-| **Codebase** | ~19,000+ LOC TypeScript + React UI |
+| **Codebase** | ~20,000+ LOC TypeScript + React UI |
 
 ---
 

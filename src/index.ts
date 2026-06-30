@@ -477,6 +477,14 @@ class MATSSystem {
         this.marketAgent.setPositionSizePct(pct);
         this.pushToAPI();
       });
+      // v2.0.XX: Max portion handler — sets the max % of balance for all positions
+      this.apiServer.setMarketAgentSetMaxPortionHandler((pct) => {
+        log.info(`Market Agent: max portion → ${(pct * 100).toFixed(0)}%`);
+        this.marketAgent.setMaxPortionPct(pct);
+        this.paperEngine.setMaxPortionPct(pct);
+        this.realTradingManager.setMaxPortionPct(pct);
+        this.pushToAPI();
+      });
       this.apiServer.setMarketAgentSetLeverageHandler((lev) => {
         log.info(`Market Agent: leverage → ${lev}x`);
         this.marketAgent.setLeverage(lev);
@@ -805,6 +813,10 @@ class MATSSystem {
       await this.marketAgent.fetchTopPairs();
       log.info('✓ Market Agent ready');
       MarketAgent.registerSRModule();
+
+      // v2.0.XX: Sync initial maxPortionPct from Market Agent to paper engine + real manager
+      this.paperEngine.setMaxPortionPct(this.marketAgent.getConfig().maxPortionPct);
+      this.realTradingManager.setMaxPortionPct(this.marketAgent.getConfig().maxPortionPct);
 
       // REST API polling fallback for price data — 30s interval to avoid HL 429
       this.startRESTPolling();

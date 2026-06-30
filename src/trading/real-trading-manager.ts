@@ -40,6 +40,10 @@ export class RealTradingManager {
   private riskEngine: RiskEngine;
   private binanceEngine: BinanceRealEngine | null = null;
   private hyperliquidEngine: HyperliquidRealEngine | null = null;
+  /** v2.0.XX: Max portion of balance for all positions combined (10%-50%).
+   *  Synced from MarketAgent config via setMaxPortionPct(). Checked BEFORE
+   *  placing real orders so we don't send a trade to HL that exceeds the cap. */
+  private maxPortionPct = 0.20;
   /** v2.0.66: Per-symbol debounce lock — prevents duplicate SL/TP placement
    *  when multiple code paths (syncSLTP, hacp adjustPositions, per-symbol
    *  consensus) all call adjustPosition() within the same cycle. */
@@ -160,6 +164,12 @@ export class RealTradingManager {
     return this.config.exchange;
   }
 
+  /** v2.0.XX: Set max portion of balance for all positions combined.
+   *  Checked BEFORE placing real orders on HL. */
+  setMaxPortionPct(pct: number): void {
+    this.maxPortionPct = Math.max(0.10, Math.min(0.50, pct));
+  }
+
   // ── Balance & Positions ──
 
   /**
@@ -278,6 +288,43 @@ export class RealTradingManager {
 
       if (quantity <= 0) {
         return { success: false, error: 'Position size too small' };
+      }
+
+      // v2.0.XX: Cumulative margin check BEFORE sending the order to HL.
+      // In real mode, the exchange holds the actual margin — but we check
+      // locally first so we don't send an order that exceeds the user's
+      // configured max portion. Uses realPositions (actual HL positions)
+      // + the new position's margin. Margin = notional / leverage.
+      const realPositions = this.portfolio.getRealPositions();
+      let totalMarginExposure = 0;
+      for (const pos of realPositions) {
+        totalMarginExposure += (pos.quantity * pos.averageEntryPrice) / (pos.leverage ?? 1);
+      }
+      const newMargin = (quantity * price) / (decision.leverage ?? 10);
+      const totalMarginAfter = totalMarginExposure + newMargin;
+      // Use exchange balance if available, otherwise paper equity as proxy
+      const exBal = await this.getBalance();
+      const checkBalance = exBal.free > 0 ? exBal.free : equity;
+      const maxMargin = checkBalance * this.maxPortionPct;
+
+      if (totalMarginAfter > maxMargin) {
+        const allowedNewMargin = Math.max(0, maxMargin - totalMarginExposure);
+        if (allowedNewMargin > 0) {
+          // Scale down to fit within limit
+          const scaledQty = (allowedNewMargin * (decision.leverage ?? 10)) / price;
+          if (scaledQty * price >= HL_MIN_NOTIONAL_USD) {
+            log.info(`Real position scaled down: ${quantity.toFixed(6)} → ${scaledQty.toFixed(6)} (cumulative margin ${((totalMarginAfter / checkBalance) * 100).toFixed(1)}% > ${(this.maxPortionPct * 100).toFixed(0)}%)`);
+            quantity = scaledQty;
+          } else {
+            const err = `Real cumulative margin $${totalMarginAfter.toFixed(2)} exceeds ${(this.maxPortionPct * 100).toFixed(0)}% of balance $${checkBalance.toFixed(2)}. Scaled order below HL min notional — rejecting.`;
+            log.warn(err);
+            return { success: false, error: err };
+          }
+        } else {
+          const err = `Real cumulative margin $${totalMarginAfter.toFixed(2)} exceeds ${(this.maxPortionPct * 100).toFixed(0)}% of balance $${checkBalance.toFixed(2)}. Cannot open new position.`;
+          log.warn(err);
+          return { success: false, error: err };
+        }
       }
 
       const order: Order = {

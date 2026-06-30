@@ -218,16 +218,22 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [statusMsg, setStatusMsg] = useState('')
   const [statusVisible, setStatusVisible] = useState(false)
   const [positionSizePct, setPositionSizePct] = useState(config?.positionSizePct ?? 0.10)
+  const [maxPortionPct, setMaxPortionPct] = useState(config?.maxPortionPct ?? 0.20)
   const [leverage, setLeverage] = useState(config?.leverage ?? 10)
 
   useEffect(() => {
     if (config) {
       setSelectedTradeMode(config.tradeMode)
       if (config.hyperliquidAssetType) setSelectedAssetType(config.hyperliquidAssetType)
-      setPositionSizePct(config.positionSizePct)
-      setLeverage(config.leverage)
+      // v2.0.XX: Only sync slider values from config when they actually change.
+      // Previously this ran on every tradeMode/assetType change and reset the
+      // sliders to whatever config had — even if the user just adjusted them.
+      // Now each slider only updates from config when its specific value changes.
+      setPositionSizePct(prev => Math.abs(prev - config.positionSizePct) > 0.001 ? config.positionSizePct : prev)
+      setMaxPortionPct(prev => Math.abs(prev - (config.maxPortionPct ?? 0.20)) > 0.001 ? (config.maxPortionPct ?? 0.20) : prev)
+      setLeverage(prev => prev !== config.leverage ? config.leverage : prev)
     }
-  }, [config?.tradeMode, config?.hyperliquidAssetType, config?.positionSizePct, config?.leverage])
+  }, [config?.tradeMode, config?.hyperliquidAssetType, config?.positionSizePct, config?.maxPortionPct, config?.leverage])
 
   const showStatus = (msg: string) => {
     setStatusMsg(msg)
@@ -325,7 +331,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         </div>
       </div>
 
-      {/* Position Size & Leverage Controls */}
+      {/* Position Size & Max Portion & Leverage Controls */}
       <div className="market-control-group">
         <div className="market-control-col">
           <div className="market-control-label">
@@ -333,7 +339,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           </div>
           <div className="slider-row">
             <input
-              type="range" min="1" max="20" value={Math.round(positionSizePct * 100)}
+              type="range" min="1" max={Math.round(maxPortionPct * 100)} value={Math.round(positionSizePct * 100)}
               onChange={async (e) => {
                 const pct = parseInt(e.target.value) / 100
                 setPositionSizePct(pct)
@@ -345,6 +351,28 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               style={{ flex: 1, height: 4, accentColor: 'var(--accent)' }}
             />
             <span className="slider-value">{Math.round(positionSizePct * 100)}%</span>
+          </div>
+        </div>
+        <div className="market-control-col">
+          <div className="market-control-label">
+            Max Portion: <strong>{(maxPortionPct * 100).toFixed(0)}%</strong>
+          </div>
+          <div className="slider-row">
+            <input
+              type="range" min="10" max="50" value={Math.round(maxPortionPct * 100)}
+              onChange={async (e) => {
+                const pct = parseInt(e.target.value) / 100
+                setMaxPortionPct(pct)
+                // If position size exceeds new max, clamp it down
+                if (positionSizePct > pct) setPositionSizePct(pct)
+                try {
+                  const res = await fetch(`${API_BASE}/market-agent/max-portion`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pct }) })
+                  if ((await res.json()).success) showStatus(`✓ Max ${(pct * 100).toFixed(0)}%`)
+                } catch { showStatus('✗ Failed') }
+              }}
+              style={{ flex: 1, height: 4, accentColor: 'var(--accent)' }}
+            />
+            <span className="slider-value">{Math.round(maxPortionPct * 100)}%</span>
           </div>
         </div>
         <div className="market-control-col">
