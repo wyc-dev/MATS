@@ -7,6 +7,7 @@ import { createLogger } from '../observability/logger.ts';
 import { config } from '../config/index.ts';
 import { HLRateLimiter } from './hl-rate-limiter.ts';
 import { setHLFetchFn } from '../analysis/support-resistance.ts';
+import { setHLFetchFnForATR } from '../analysis/atr.ts';
 import type {
   MarketAgentConfig,
   TopVolumePair,
@@ -59,6 +60,8 @@ export class MarketAgent {
    */
   static registerSRModule(): void {
     setHLFetchFn((body: unknown) => MarketAgent.hlFetch(body));
+    // v2.0.73 S2.3: register ATR module's HL fetch fn too (same rate-limited endpoint)
+    setHLFetchFnForATR((body: unknown) => MarketAgent.hlFetch(body));
   }
 
   /**

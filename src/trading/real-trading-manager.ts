@@ -10,6 +10,7 @@ import { RiskEngine } from '../risk/engine.ts';
 import { PaperTradingEngine } from './paper-engine.ts';
 import { BinanceRealEngine } from './binance-real-engine.ts';
 import { HyperliquidRealEngine } from './hyperliquid-real-engine.ts';
+import { getATR, computeATRSLTP } from '../analysis/atr.ts';
 import type {
   TradeMode,
   ExchangeType,
@@ -355,6 +356,8 @@ export class RealTradingManager {
         // v2.0.33: Use S/R levels when available — SL just beyond nearest
         // support (for long) or resistance (for short), TP at the next S/R level.
         // Fall back to percentage-based if S/R not available.
+        // v2.0.73 S2.3: ATR is now the PRIMARY method (volatility-adaptive).
+        // Priority: ATR → S/R → fixed %.
         const srSupport = (decision as any).srSupport as number | null | undefined;
         const srResistance = (decision as any).srResistance as number | null | undefined;
         const slPctDefault = 0.015; // 1.5% default
@@ -362,7 +365,23 @@ export class RealTradingManager {
 
         let slPrice: number, tpPrice: number;
 
-        if (decision.action === 'buy') {
+        // v2.0.73 S2.3: Try ATR-based SL/TP first (volatility-adaptive).
+        // SL = 1.5×ATR, TP = 3×ATR (R:R 2:1). Falls back to S/R or % if ATR unavailable.
+        let atrSLTP: { sl: number; tp: number } | null = null;
+        try {
+          const atr = await getATR(decision.symbol);
+          if (atr > 0) {
+            atrSLTP = computeATRSLTP(actualEntryPrice, atr, decision.action as 'buy' | 'sell');
+            if (atrSLTP) {
+              log.info(`📐 ATR SL/TP: ${decision.symbol} entry=$${actualEntryPrice.toFixed(2)} ATR=$${atr.toFixed(2)} SL=$${atrSLTP.sl.toFixed(2)} TP=$${atrSLTP.tp.toFixed(2)}`);
+            }
+          }
+        } catch { /* fall back below */ }
+
+        if (atrSLTP) {
+          slPrice = atrSLTP.sl;
+          tpPrice = atrSLTP.tp;
+        } else if (decision.action === 'buy') {
           // Long: SL below entry (below nearest support), TP above entry (at resistance)
           if (srSupport && srSupport > 0 && srSupport < actualEntryPrice) {
             // SL just below support (0.3% beyond support to avoid wick stop-outs)
@@ -886,6 +905,36 @@ export class RealTradingManager {
       // Get all open orders on HL (both DEX 0 + xyz)
       const openOrders = await engine.getOpenOrders();
 
+      // v2.0.66: BATCH DEDUP — before per-position sync, clean up duplicate
+      // trigger orders left over from previous buggy cycles. Group by (coin, side),
+      // and if any group has > 2 orders (should be exactly 1 SL + 1 TP), cancel
+      // ALL orders in that group. Track which symbols were cleaned so the
+      // per-position loop below FORCES re-placement of 1 SL + 1 TP.
+      const cleanedSymbols = new Set<string>(); // normalized symbol → force re-place
+      const groups = new Map<string, Array<{ oid: number; coin: string }>>();
+      for (const o of openOrders) {
+        if (!o.triggerPx) continue; // only trigger orders
+        const key = `${o.coin.toLowerCase()}:${o.side}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push({ oid: o.oid, coin: o.coin });
+      }
+      for (const [key, orders] of groups) {
+        if (orders.length > 2) {
+          const coin = orders[0]!.coin;
+          log.warn(`🧹 BATCH CLEANUP: ${coin} (${key}) has ${orders.length} duplicate trigger orders — cancelling ALL`);
+          const assetIdx = await engine.getAssetIndexForSymbol(coin);
+          for (const o of orders) {
+            try {
+              await engine.cancelOrderWithAsset(assetIdx, o.oid);
+            } catch { /* best-effort */ }
+          }
+          // Mark this symbol for forced re-placement. HL cancel is async so
+          // re-fetching openOrders may still show the old orders. We track
+          // cleaned symbols separately to force needsRefresh=true below.
+          cleanedSymbols.add(coin.toLowerCase());
+        }
+      }
+
       // v2.0.32: Get actual HL positions to verify the local mirror matches.
       // This prevents pushing stale SL/TP from a local mirror that doesn't
       // match the real exchange position (e.g. side flip, stale entry price).
@@ -961,11 +1010,14 @@ export class RealTradingManager {
         // SL/TP are buy orders (side=B), a long position's are sell orders
         // (side=S). We only manage orders matching the current position's
         // close side — this allows simultaneous long + short on the same asset.
-        const closeSide = pos.side === 'buy' ? 'S' : 'B'; // sell to close long, buy to close short
+        const closeSide = pos.side === 'buy' ? 'A' : 'B'; // HL: 'A'=Ask(sell), 'B'=Bid(buy). Sell to close long, buy to close short.
         const myOrders = openOrders.filter(o =>
           o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
           o.side === closeSide
         );
+        // v2.0.66: If this symbol was batch-cleaned, force re-placement
+        // regardless of what the stale openOrders snapshot shows.
+        const wasCleaned = cleanedSymbols.has(pos.symbol.toLowerCase());
         // v2.0.32: Compare using rounded prices — HL stores triggerPx as
         // formatted strings (e.g. "60709" not "60709.38"), so we must round
         // our SL/TP values the same way before comparing.
@@ -988,7 +1040,8 @@ export class RealTradingManager {
         // orders accumulating on HL without affecting the opposite side's
         // orders (e.g. if there's also a long position on the same asset).
         // v2.0.48: Only place SL/TP if they passed validation (slValid/tpValid).
-        const needsRefresh = myOrders.length > 2 || 
+        // v2.0.66: wasCleaned forces re-placement after batch cleanup.
+        const needsRefresh = wasCleaned || myOrders.length > 2 || 
           (sl !== undefined && slValid && !hasSL) ||
           (tp !== undefined && tpValid && !hasTP);
 

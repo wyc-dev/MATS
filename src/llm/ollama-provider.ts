@@ -17,6 +17,44 @@ function suggestModel(temperature: number): string {
   return config.ollama.modelDefault;
 }
 
+// v2.0.77: Model-aware context window (num_ctx) sent to Ollama.
+// Ollama allocates this many tokens of KV cache per request. Setting it too
+// low truncates the prompt; too high wastes memory on small models. Map each
+// model to its documented max context so cloud models get their full window.
+//
+// Reference (as of 2026-06):
+//   glm-5.2:cloud       → 1,048,576 (1M)  ← user requested full 1M
+//   kimi-k2.6/k2.5      → 262,144   (256K)
+//   qwen3.5:397b        → 262,144   (256K)
+//   qwen3-coder:30b     → 262,144   (256K)
+//   glm-5:cloud         → 131,072   (128K)
+//   deepseek-v4-flash/pro → 131,072 (128K)
+//   gemma4:31b-cloud    → 131,072   (128K)
+//   local/small models  → 8,192     (conservative)
+//   unknown             → 262,144   (assume cloud-capable default)
+const MODEL_NUM_CTX: Record<string, number> = {
+  'glm-5.2:cloud': 1_048_576,
+  'glm-5:cloud': 131_072,
+  'kimi-k2.6:cloud': 262_144,
+  'kimi-k2.5:cloud': 262_144,
+  'qwen3.5:397b-cloud': 262_144,
+  'qwen3-coder:30b': 262_144,
+  'deepseek-v4-flash:cloud': 131_072,
+  'deepseek-v4-pro:cloud': 131_072,
+  'gemma4:31b-cloud': 131_072,
+};
+
+/** Resolve the num_ctx (context window) for a given model. */
+function getNumCtxForModel(model: string): number {
+  // Exact match against the known map.
+  if (MODEL_NUM_CTX[model]) return MODEL_NUM_CTX[model];
+  // Heuristic: cloud models (':cloud' suffix) are server-side and memory-rich —
+  // default to 256k so context isn't the bottleneck.
+  if (model.includes(':cloud')) return 262_144;
+  // Local models (no :cloud) run on the user's GPU — keep 8192 to avoid OOM.
+  return 8_192;
+}
+
 interface OllamaMessage {
   role: string;
   content: string;
@@ -200,7 +238,13 @@ export class OllamaProvider implements LLMProvider {
           think: false,
           options: {
             temperature: request.temperature,
-            num_ctx: 8192,
+            // v2.0.77: Model-aware context window. Previously hardcoded to 8192
+            // which truncated rich HACP context (market state + news + positions
+            // + evolution context + RBC + pattern DB) well under capacity.
+            // GLM-5.2 supports 1M tokens — give it the full window. Other cloud
+            // models get 256k (their typical max). Local/small models keep 8192
+            // to avoid OOM on modest hardware.
+            num_ctx: getNumCtxForModel(model),
           },
           stream: false,
         };

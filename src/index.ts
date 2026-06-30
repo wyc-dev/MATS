@@ -35,6 +35,7 @@ import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts'
 import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
 import { RBCEngine, type RBCQueryResult } from './evolution/rbc-clustering.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
+import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti } from './analysis/news-sentiment.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord } from './types/index.ts';
 
 const log = createLogger({ phase: 'system' });
@@ -1438,6 +1439,9 @@ class MATSSystem {
           if (currentActive !== activeSymbol) {
             this.optionsDataManager.setActiveSymbol(activeSymbol);
           }
+          // v2.0.71: Poll once per decision cycle (no independent setInterval).
+          // This ensures options data is fetched exactly once per cycle.
+          void this.optionsDataManager.pollOnce();
           optionsContext = '\n' + formatOptionsForAgent(activeSymbol);
           playbookContext = '\n' + formatPlaybookForAgent(activeSymbol, combinedState.trend, combinedState.regime);
           log.info(`📊 [options-data] Context injected for ${activeSymbol} (assetType=${assetType})`);
@@ -1480,7 +1484,30 @@ class MATSSystem {
         this.optionsDataManager.clearActiveSymbol();
       }
 
-      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${rbcContext}${planckChaosContext}${optionsContext}${playbookContext}\n\n${getFeeSummary()}`;
+      // v2.0.75: Fetch real-time news sentiment (fail-open).
+      // Replaces the dead Reddit module (HTTP 403 blocked). Sources: Google News
+      // RSS + GDELT 2.0 + Bing News RSS (all free, no key, verified reachable).
+      // v2.0.77: Multi-symbol — fetch news for the active symbol PLUS all other
+      // open positions (deduped, capped at 5) so the News Reporter agent can
+      // evaluate sentiment for every held position, not just the focused one.
+      // Injects "=== NEWS SENTIMENT ===" to match the News Reporter system prompt
+      // trigger — the agent analyzes positive/negative sentiment from REAL headlines.
+      let newsContext = '';
+      try {
+        // Build symbol list: active symbol first, then open positions (deduped).
+        const openSyms = this.portfolio.getOpenSymbols();
+        const symList = [activeSymbol, ...openSyms];
+        const newsResults = await fetchNewsForSymbols(symList, marketAgentDesc);
+        newsContext = formatNewsForAgentMulti(newsResults);
+        const total = newsResults.filter(r => r && r.headlineCount > 0).length;
+        if (total > 0) {
+          log.info(`📰 [news] ${total}/${newsResults.length} symbols have headlines for this cycle`);
+        }
+      } catch (err) {
+        log.debug(`[news] Failed for ${activeSymbol}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${rbcContext}${planckChaosContext}${optionsContext}${playbookContext}${newsContext ? `\n${newsContext}` : ''}\n\n${getFeeSummary()}`;
 
       // Store latest S/R context for API push
       if (srContext) {
@@ -1801,7 +1828,11 @@ class MATSSystem {
       }
 
       // Build current positions for TP/SL adjustment
-      const currentPositions = Array.from(this.portfolio.getPortfolio().positions.values()).map(p => ({
+      // v2.0.72: include realPositions (now separate from paper positions)
+      const currentPositions = [
+        ...Array.from(this.portfolio.getPortfolio().positions.values()),
+        ...this.portfolio.getRealPositions(),
+      ].map(p => ({
         id: p.id,
         symbol: p.symbol,
         side: p.side,
@@ -2929,7 +2960,7 @@ class MATSSystem {
           equity: this.portfolio.getPortfolio().totalEquity.toFixed(2),
           pnl: `${this.portfolio.getPortfolio().totalPnl >= 0 ? '+' : ''}${this.portfolio.getPortfolio().totalPnl.toFixed(2)}`,
           drawdown: `${(this.portfolio.getPortfolio().maxDrawdownPct * 100).toFixed(2)}%`,
-          positions: this.portfolio.getPortfolio().positions.size,
+          positions: this.portfolio.getPortfolio().positions.size + this.portfolio.getRealPositions().length,
         });
       }
 
@@ -3576,13 +3607,19 @@ class MATSSystem {
           // v2.0.32: In real mode, only show positions that actually exist on HL.
           // Stale local mirrors (closed on exchange but not yet reconciled) are
           // filtered out to prevent confusing the UI and causing SL/TP errors.
-          ...Array.from(this.portfolio.getPortfolio().positions.values())
+          // v2.0.66: Normalize both sides — strip 'xyz:' prefix from local symbols
+          // and compare case-insensitively. HL returns xyz DEX assets without prefix
+          // (e.g. 'MU' not 'xyz:MU'), but local portfolio stores them with prefix.
+          // v2.0.72: include realPositions (now separate from paper positions)
+          ...[...Array.from(this.portfolio.getPortfolio().positions.values()), ...this.portfolio.getRealPositions()]
             .filter(p => {
               if (!isRealMode || !this.cachedExchangePositions) return true;
-              const sym = p.symbol.includes(':') ? p.symbol : p.symbol.toLowerCase();
-              return this.cachedExchangePositions.some(ep =>
-                (ep.symbol.includes(':') ? ep.symbol : ep.symbol.toLowerCase()) === sym
-              );
+              // Strip 'xyz:' prefix and lowercase for comparison
+              const sym = p.symbol.replace(/^xyz:/i, '').toLowerCase();
+              return this.cachedExchangePositions.some(ep => {
+                const epSym = ep.symbol.replace(/^xyz:/i, '').toLowerCase();
+                return epSym === sym;
+              });
             })
             .map(p => ({
             id: p.id,

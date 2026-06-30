@@ -604,8 +604,15 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
     ? (p?.totalEquity !== null && p?.totalEquity !== undefined ? p.totalEquity : (s.equity !== null && s.equity !== undefined ? s.equity : null))
     : (p?.totalEquity ?? s.equity ?? 0)
   // totalPnl / drawdownPct are null in real-trade mode (v2.0.17) — UI shows '--'.
-  const totalPnl: number | null = p?.totalPnl ?? s.totalPnl ?? null
-  const drawdownPct: number | null = p?.maxDrawdownPct ?? s.drawdownPct ?? null
+  // v2.0.74: Use explicit null check (like balance/equity above) — `??` would
+  // fall through null to s.totalPnl (stale paper data), leaking paper PnL
+  // (+278.50) into the real-mode UI.
+  const totalPnl: number | null = isRealMode
+    ? (p?.totalPnl !== null && p?.totalPnl !== undefined ? p.totalPnl : null)
+    : (p?.totalPnl ?? s.totalPnl ?? null)
+  const drawdownPct: number | null = isRealMode
+    ? (p?.maxDrawdownPct !== null && p?.maxDrawdownPct !== undefined ? p.maxDrawdownPct : null)
+    : (p?.maxDrawdownPct ?? s.drawdownPct ?? null)
   const initialBalance = p?.initialBalance ?? 1000
   const displaySymbol = chartSymbol ?? ''
 

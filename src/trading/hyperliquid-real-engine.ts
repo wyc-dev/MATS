@@ -988,8 +988,14 @@ export class HyperliquidRealEngine implements RealTradingEngine {
           // SL is on profit side of entry — check if it's safe vs current price
           const slSafeVsPrice = pos.side === 'buy' ? sl < pos.currentPrice : sl > pos.currentPrice;
           if (!slSafeVsPrice) {
-            log.error(`❌ SL $${sl} would trigger immediately for ${pos.side} ${pos.symbol} (current=$${pos.currentPrice}) — NOT placing SL trigger`);
-            sl = undefined;
+            // v2.0.71: Don't just reject — calculate a fallback SL at 2% from
+            // current price on the correct side. An unprotected position is
+            // worse than a slightly wider SL.
+            const fallbackSL = pos.side === 'buy'
+              ? pos.currentPrice * 0.98   // LONG: 2% below current
+              : pos.currentPrice * 1.02;  // SHORT: 2% above current
+            log.warn(`⚠️ SL $${sl.toFixed(2)} would trigger immediately for ${pos.side} ${pos.symbol} (current=$${pos.currentPrice.toFixed(2)}) — using fallback SL $${fallbackSL.toFixed(2)} (2% from current)`);
+            sl = fallbackSL;
           } else {
             log.info(`📐 SL $${sl} is on profit side of entry $${pos.averageEntryPrice} for ${pos.side} ${pos.symbol} — trailing stop, valid (current=$${pos.currentPrice})`);
           }
@@ -1001,6 +1007,15 @@ export class HyperliquidRealEngine implements RealTradingEngine {
           log.error(`❌ TP $${tp} is on wrong side for ${pos.side} ${pos.symbol} (entry=$${pos.averageEntryPrice}) — NOT placing TP trigger`);
           tp = undefined;
         }
+      }
+
+      // v2.0.66: EARLY RETURN if nothing to place. Do NOT cancel existing
+      // orders — the position must stay protected. Previously the cancel
+      // block ran BEFORE this check, so invalid SL/TP would cancel old
+      // orders and leave the position UNPROTECTED.
+      if (!sl && !tp) {
+        log.info(`⏭️ No valid SL/TP to place for ${pos.symbol} — keeping existing orders`);
+        return true;
       }
 
       // v2.0.64: CANCEL existing trigger orders BEFORE placing new ones.
@@ -1021,7 +1036,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       let skipPlacement = false;
       try {
         const existingOrders = await this.getOpenOrders();
-        const closeSide = pos.side === 'buy' ? 'S' : 'B'; // sell to close long, buy to close short
+        const closeSide = pos.side === 'buy' ? 'A' : 'B'; // HL: 'A'=Ask(sell), 'B'=Bid(buy). Sell to close long, buy to close short.
         const myOrders = existingOrders.filter(o =>
           o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
           o.side === closeSide
@@ -1180,10 +1195,10 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
       // v2.0.32: Cancel existing trigger orders for this position's close
       // side before closing. Only cancel orders matching this position's
-      // close side (B for short, S for long) — don't touch the opposite
+      // close side (B for short, A for long) — don't touch the opposite
       // side's orders in case there's a simultaneous long+short on the
       // same asset.
-      const closeSide = pos.side === 'buy' ? 'S' : 'B';
+      const closeSide = pos.side === 'buy' ? 'A' : 'B'; // HL: 'A'=Ask(sell), 'B'=Bid(buy)
       const openOrders = await this.getOpenOrders();
       const myOrders = openOrders.filter(o =>
         o.coin.toLowerCase() === symbol.toLowerCase() &&

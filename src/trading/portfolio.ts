@@ -60,6 +60,20 @@ export class PortfolioTracker {
    *  Previously closeExchangePosition() created a TradeRecord but it was only
    *  used for learning — never stored, so the UI never showed the close. */
   private readonly closedRealTrades: TradeRecord[] = [];
+  /** v2.0.66: Dedup set — symbols that were recently closed via closeExchangePosition().
+   *  Prevents duplicate trade records when reconciliation fires multiple times
+   *  for the same position. TTL: 60 seconds (long enough to cover a full cycle). */
+  private readonly recentlyClosedSyms: Map<string, number> = new Map();
+  /** v2.0.71: Extended to 5min — syncExchangePositions re-imports positions
+   *  within the same cycle after closeExchangePosition deletes them. */
+  private readonly CLOSE_DEDUP_TTL_MS = 300_000;
+  /** v2.0.72: COMPLETELY SEPARATE store for real (exchange) positions.
+   *  Paper and real positions no longer share the same Map. This eliminates:
+   *    - recalculateEquity needing to skip real positions (fragile)
+   *    - syncExchangePositions re-importing after close → duplicate records
+   *    - symbol casing mismatches between paper/real
+   *  Real positions never touch paper balance/equity/stats. */
+  private readonly realPositions: Map<string, Position> = new Map();
   /** Restored trades from disk (loaded in constructor) */
   readonly restoredTrades: TradeRecord[] = [];
 
@@ -100,7 +114,7 @@ export class PortfolioTracker {
         // properties of undefined (reading 'toLowerCase')".
         if (!p || !p.symbol) continue;
         const normSym = normalizeSymbol(p.symbol);
-        this.portfolio.positions.set(normSym, {
+        const pos: Position = {
           id: p.id,
           symbol: normSym,
           side: p.side,
@@ -117,7 +131,13 @@ export class PortfolioTracker {
           updatedAt: p.updatedAt,
           agentId: p.agentId,
           exchange: p.exchange,
-        });
+        };
+        // v2.0.72: route real positions to realPositions, paper to portfolio.positions
+        if (p.agentId === 'hyperliquid-real') {
+          this.realPositions.set(normSym, pos);
+        } else {
+          this.portfolio.positions.set(normSym, pos);
+        }
       }
 
       // Restore trades
@@ -228,7 +248,11 @@ export class PortfolioTracker {
 
   /** Get portfolio data for persistence (serializable format) */
   getPortfolioSnapshot(): import('../evolution/persistence.ts').PortfolioSnapshot {
-    const positions = Array.from(this.portfolio.positions.values()).map(p => ({
+    // v2.0.72: persist both paper + real positions
+    const positions = [
+      ...Array.from(this.portfolio.positions.values()),
+      ...Array.from(this.realPositions.values()),
+    ].map(p => ({
       id: p.id,
       symbol: p.symbol,
       side: p.side as 'buy' | 'sell',
@@ -273,11 +297,13 @@ export class PortfolioTracker {
   }
 
   hasPosition(symbol: string): boolean {
-    return this.portfolio.positions.has(normalizeSymbol(symbol));
+    const sym = normalizeSymbol(symbol);
+    return this.portfolio.positions.has(sym) || this.realPositions.has(sym);
   }
 
   getPosition(symbol: string): Position | undefined {
-    return this.portfolio.positions.get(normalizeSymbol(symbol));
+    const sym = normalizeSymbol(symbol);
+    return this.portfolio.positions.get(sym) ?? this.realPositions.get(sym);
   }
 
   /**
@@ -288,17 +314,33 @@ export class PortfolioTracker {
    */
   removePosition(symbol: string): void {
     const sym = normalizeSymbol(symbol);
+    const wasReal = this.realPositions.has(sym);
+    this.realPositions.delete(sym);
     this.portfolio.positions.delete(sym);
-    this.recalculateEquity();
+    if (!wasReal) this.recalculateEquity();
   }
 
   /** Get all open symbols for reconciliation checks */
   getOpenSymbols(): string[] {
-    return Array.from(this.portfolio.positions.keys());
+    // v2.0.72: include real positions
+    return Array.from(new Set([
+      ...this.portfolio.positions.keys(),
+      ...this.realPositions.keys(),
+    ]));
   }
 
   getPositionCount(): number {
-    return this.portfolio.positions.size;
+    return this.portfolio.positions.size + this.realPositions.size;
+  }
+
+  /** v2.0.72: Get all real (exchange) positions — completely separate from paper. */
+  getRealPositions(): Position[] {
+    return Array.from(this.realPositions.values());
+  }
+
+  /** v2.0.72: Get all paper positions — completely separate from real. */
+  getPaperPositions(): Position[] {
+    return Array.from(this.portfolio.positions.values());
   }
 
   canTrade(): { allowed: boolean; reason?: string } {
@@ -487,7 +529,9 @@ export class PortfolioTracker {
    * multiplier. PnL = priceDelta * quantity, not priceDelta * quantity * lev.
    */
   softUpdatePosition(symbol: string, currentPrice: number): void {
-    const pos = this.portfolio.positions.get(symbol);
+    // v2.0.72: check real positions first, then paper
+    const sym = normalizeSymbol(symbol);
+    const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(symbol);
     if (!pos) return;
 
     pos.currentPrice = currentPrice;
@@ -528,6 +572,18 @@ export class PortfolioTracker {
 
     // Don't import if already exists
     if (this.portfolio.positions.has(sym)) return;
+
+    // v2.0.72: BLOCK re-import if this position was recently closed.
+    // syncExchangePositions() runs every cycle and re-imports positions
+    // that exist on HL. After closeExchangePosition() deletes the local
+    // mirror, the next cycle re-imports it → close again → duplicate
+    // trade records. Block re-import within CLOSE_DEDUP_TTL_MS.
+    const dedupKey = `${sym}:${entryPrice.toFixed(2)}`;
+    const lastClose = this.recentlyClosedSyms.get(dedupKey);
+    if (lastClose && (Date.now() - lastClose) < this.CLOSE_DEDUP_TTL_MS) {
+      log.info(`⏭️ importExchangePosition blocked: ${sym} @ $${entryPrice.toFixed(2)} was closed ${Date.now() - lastClose}ms ago — not re-importing (prevents duplicate trade records)`);
+      return;
+    }
 
     let exchange: string | undefined;
     if (sym.includes(':')) {
@@ -571,8 +627,9 @@ export class PortfolioTracker {
       takeProfitPrice,
     };
 
-    this.portfolio.positions.set(sym, position);
-    this.recalculateEquity();
+    // v2.0.72: Store in realPositions (separate from paper positions).
+    this.realPositions.set(sym, position);
+    // No recalculateEquity — real positions don't affect paper equity.
   }
 
   /**
@@ -581,7 +638,9 @@ export class PortfolioTracker {
    * This is the extension point for real trading — same interface.
    */
   adjustPosition(positionId: string, newStopLoss?: number, newTakeProfit?: number): boolean {
-    for (const [, pos] of this.portfolio.positions) {
+    // v2.0.72: search both real and paper positions
+    const allPositions = [...this.realPositions.values(), ...this.portfolio.positions.values()];
+    for (const pos of allPositions) {
       if (pos.id === positionId) {
         const isLong = pos.side === 'buy';
 
@@ -738,7 +797,8 @@ export class PortfolioTracker {
    */
   syncSLTPFromExchange(symbol: string, slPrice?: number, tpPrice?: number): void {
     const sym = normalizeSymbol(symbol);
-    const pos = this.portfolio.positions.get(sym);
+    // v2.0.72: real positions live in realPositions
+    const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(sym);
     if (!pos) return;
 
     const isLong = pos.side === 'buy';
@@ -806,7 +866,8 @@ export class PortfolioTracker {
    * corrected every cycle without manual intervention.
    */
   private correctInvertedSLTP(sym: string): void {
-    const pos = this.portfolio.positions.get(sym);
+    // v2.0.72: real positions live in realPositions
+    const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(sym);
     if (!pos) return;
 
     const isLong = pos.side === 'buy';
@@ -880,17 +941,23 @@ export class PortfolioTracker {
     // external list likely means getPositions() failed (429, timeout, etc.),
     // not that all positions were closed. Reconciling would create phantom
     // close records for positions that are still open on HL.
-    const hasRealPositions = Array.from(this.portfolio.positions.values())
-      .some(p => p.agentId === 'hyperliquid-real');
+    // v2.0.72: real positions now live in realPositions
+    const hasRealPositions = this.realPositions.size > 0;
     if (externalSet.size === 0 && hasRealPositions) {
       log.warn(`⚠️ reconcilePositions: externalOpenSymbols is empty but real positions exist locally — likely API failure, skipping reconciliation to prevent phantom closes`);
       return [];
     }
 
-    for (const localSymbol of this.portfolio.positions.keys()) {
+    // v2.0.72: reconcile both real and paper positions
+    const allSymbols = Array.from(new Set([
+      ...this.realPositions.keys(),
+      ...this.portfolio.positions.keys(),
+    ]));
+    for (const localSymbol of allSymbols) {
       if (!externalSet.has(localSymbol)) {
         // This position exists locally but NOT externally → manually closed
-        const pos = this.portfolio.positions.get(localSymbol)!;
+        const pos = this.realPositions.get(localSymbol) ?? this.portfolio.positions.get(localSymbol);
+        if (!pos) continue;
         log.warn(`🔍 Reconciliation: ${localSymbol} not found externally. Closing local mirror @ $${pos.currentPrice.toFixed(2)}`);
         // v2.0.32: Use closeExchangePosition() for exchange-imported positions
         // (doesn't add margin back to balance — importExchangePosition didn't deduct it).
@@ -1006,8 +1073,27 @@ export class PortfolioTracker {
    * Used by syncExchangePositions() when HL SL/TP trigger closes a position.
    */
   closeExchangePosition(symbol: string, exitPrice: number, hlRealizedPnl?: number): TradeRecord | null {
-    const pos = this.portfolio.positions.get(symbol);
+    // v2.0.72: real positions live in realPositions
+    const sym = normalizeSymbol(symbol);
+    const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(symbol);
     if (!pos) return null;
+
+    // v2.0.66: DEDUP — if this position was already closed within CLOSE_DEDUP_TTL_MS,
+    // skip creating a duplicate trade record. Reconciliation fires multiple times
+    // per cycle (syncExchangePositions + paper mode cleanup + per-symbol loop),
+    // and each path may detect the same position as "closed on HL".
+    // Use (normalizedSymbol, entryPrice) as key — same symbol can have multiple
+    // positions with different entry prices, and we only want to dedup the SAME one.
+    const dedupKey = `${normalizeSymbol(symbol)}:${pos.averageEntryPrice.toFixed(2)}`;
+    const lastClose = this.recentlyClosedSyms.get(dedupKey);
+    if (lastClose && (Date.now() - lastClose) < this.CLOSE_DEDUP_TTL_MS) {
+      log.info(`⏭️ closeExchangePosition dedup: ${symbol} @ $${pos.averageEntryPrice.toFixed(2)} already closed ${Date.now() - lastClose}ms ago — skipping duplicate`);
+      // Still delete the position from the map (it's gone from HL)
+      this.realPositions.delete(sym);
+      this.portfolio.positions.delete(symbol);
+      return null;
+    }
+    this.recentlyClosedSyms.set(dedupKey, Date.now());
 
     const lev = pos.leverage ?? 1;
     const margin = pos.averageEntryPrice * pos.quantity;
@@ -1059,8 +1145,10 @@ export class PortfolioTracker {
     // lossCount, dailyPnl) — this is a REAL exchange position. Its PnL
     // should not affect paper portfolio statistics. Only delete the
     // position + produce trade record + trigger learning.
+    // v2.0.72: delete from realPositions (separate store)
+    this.realPositions.delete(sym);
     this.portfolio.positions.delete(symbol);
-    this.recalculateEquity();
+    // No recalculateEquity — real positions don't affect paper equity.
     // v2.0.35: Store the closed real trade so the UI Trade Records panel
     // can display it with accurate exit price + PnL. Previously this trade
     // was only used for learning — never stored, so the UI never showed
@@ -1125,16 +1213,12 @@ export class PortfolioTracker {
   private recalculateEquity(): void {
     let unrealizedSum = 0;
     let lockedMargin = 0;
+    // v2.0.72: portfolio.positions now contains ONLY paper positions.
+    // Real positions live in realPositions and never affect paper equity.
     for (const pos of this.portfolio.positions.values()) {
-      // v2.0.33: Do NOT include real (exchange) positions in paper equity.
-      // Real position margin was never deducted from paper balance
-      // (importExchangePosition doesn't deduct), so adding lockedMargin
-      // back would inflate the paper equity. Real position PnL is settled
-      // on HL, not in the paper portfolio.
     // v2.0.63: lockedMargin = margin (notional / leverage), not full notional.
     // openPosition() deducts margin from balance, so equity adds it back.
     // Using full notional here would inflate equity by (notional - margin).
-    if (pos.agentId === 'hyperliquid-real') continue;
     unrealizedSum += pos.unrealizedPnl;
     lockedMargin += (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
     }
