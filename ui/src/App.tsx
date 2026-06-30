@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import type { APIData, AgentModelConfig, ModelDefinition } from './types'
 import RBCVisualizer from './RBCVisualizer'
 import { AGENT_META, AGENT_ROLES } from './types'
@@ -423,6 +423,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               <span className={`top-pair-chg top-pair-cell ${pair.priceChangePercent >= 0 ? 'positive' : 'negative'}`}>
                 {pair.volume24h > 0 ? `${pair.priceChangePercent >= 0 ? '+' : ''}${pair.priceChangePercent.toFixed(2)}%` : 'N/A'}
               </span>
+              <span className="top-pair-spacer" />
             </div>
           ))}
         </div>
@@ -459,7 +460,7 @@ function AgentPanel({ data }: { data: APIData | null }) {
   }
 
   return (
-    <div className="panel">
+    <div className="panel panel-rgb-border">
       <div className="panel-header">
         <span className="panel-title">Agent Cognition</span>
         <span className="panel-badge">
@@ -554,7 +555,15 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
   const s = data?.status
   const p = data?.portfolio
   const th = data?.tradeHistory ?? []
-  const positions = Object.values(p?.positions ?? {}) as any[]
+  // v2.0.78: Filter positions by trade mode — paper mode shows only paper
+  // positions, real mode shows only real (exchange) positions. Prevents
+  // cross-mode contamination in the positions table.
+  const maConfig = data?.marketAgent?.config
+  const isRealMode = maConfig?.tradeMode === 'real'
+  const allPositions = Object.values(p?.positions ?? {}) as any[]
+  const positions = isRealMode
+    ? allPositions.filter((pos) => pos.agentId === 'hyperliquid-real')
+    : allPositions.filter((pos) => pos.agentId !== 'hyperliquid-real')
   const [chartSymbol, setChartSymbol] = useState<string | null>(
     positions.length > 0 ? positions[0]?.symbol ?? null : null
   )
@@ -595,8 +604,6 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
   // v2.0.30: In real mode, balance/equity are null when exchange balance
   // hasn't been fetched yet. Use explicit null check — ?? would fallback
   // from null to status.balance (which might be stale paper data).
-  const maConfig = data?.marketAgent?.config
-  const isRealMode = maConfig?.tradeMode === 'real'
   const balance: number | null = isRealMode
     ? (p?.balance !== null && p?.balance !== undefined ? p.balance : (s.balance !== null && s.balance !== undefined ? s.balance : null))
     : (p?.balance ?? s.balance ?? 0)
@@ -638,7 +645,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
   }
 
   return (
-    <div className="panel">
+    <div className="panel panel-rgb-border">
       <div className="panel-header">
         <span className="panel-title">Portfolio</span>
         <span className="panel-badge">{s.positions} positions</span>
@@ -677,62 +684,73 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
             {equity === null ? '--' : `$${equity.toFixed(2)}`}
           </span>
         </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Total PnL</span>
-          <span className={`stat-number ${totalPnl === null ? 'neutral' : (totalPnl >= 0 ? 'positive' : 'negative')}`}>
-            {totalPnl === null ? '--' : `${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}`}
-          </span>
-        </div>
-        <div className="portfolio-cell drawdown-cell">
-          <div className="drawdown-left">
-            <span className="stat-label">Drawdown</span>
-            <span className={`stat-number ${drawdownPct === null ? 'neutral' : (drawdownPct > 0.1 ? 'negative' : 'neutral')}`}>
-              {drawdownPct === null ? '--' : `${(drawdownPct * 100).toFixed(2)}%`}
+        {/* v2.0.78: In real mode, hide paper-only stats (Total PnL, Drawdown,
+            Win Rate, Trades) — they're paper-trade concepts that don't map to
+            the real exchange account. Only Balance + Equity are shown. */}
+        {!isRealMode && (
+          <div className="portfolio-cell">
+            <span className="stat-label">Total PnL</span>
+            <span className={`stat-number ${totalPnl === null ? 'neutral' : (totalPnl >= 0 ? 'positive' : 'negative')}`}>
+              {totalPnl === null ? '--' : `${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}`}
             </span>
           </div>
-          {/* v2.0.45: Clear Drawdown button — resets drawdown data and relaunches trading.
-              When drawdown ≥ 15%, the SystemGuard blocks all cycles. This button
-              clears the drawdown so the next cycle can resume. */}
-          {drawdownPct !== null && drawdownPct >= 0.15 && (
-            <div className="drawdown-right">
-              <button
-                onClick={async () => {
-                  try {
-                    await fetch(`${API_BASE}/clear-drawdown`, { method: 'POST' });
-                  } catch (err) {
-                    console.error('Failed to clear drawdown:', err);
-                  }
-                }}
-                className="clear-drawdown-btn"
-              >
-                Clear Drawdown
-              </button>
-              <span className="stat-sub">
-                Drawdown ≥ 15% — trading halted. Clear to relaunch.
+        )}
+        {!isRealMode && (
+          <div className="portfolio-cell drawdown-cell">
+            <div className="drawdown-left">
+              <span className="stat-label">Drawdown</span>
+              <span className={`stat-number ${drawdownPct === null ? 'neutral' : (drawdownPct > 0.1 ? 'negative' : 'neutral')}`}>
+                {drawdownPct === null ? '--' : `${(drawdownPct * 100).toFixed(2)}%`}
               </span>
             </div>
-          )}
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Win Rate</span>
-          <span className="stat-number positive">
-            {((s.recent20WinRate ?? 0) * 100).toFixed(1)}%
-          </span>
-          {/* v2.0.42: Shows win rate from the most recent 20 trades only */}
-          <span className="stat-sub">
-            (lastest 20 trades)
-          </span>
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Trades</span>
-          <span className="stat-number neutral">
-            {s.tradeCount}
-          </span>
-          <span className="stat-sub">W:{s.winCount} L:{s.lossCount}</span>
-        </div>
+            {/* v2.0.45: Clear Drawdown button — resets drawdown data and relaunches trading.
+                When drawdown ≥ 15%, the SystemGuard blocks all cycles. This button
+                clears the drawdown so the next cycle can resume. */}
+            {drawdownPct !== null && drawdownPct >= 0.15 && (
+              <div className="drawdown-right">
+                <button
+                  onClick={async () => {
+                    try {
+                      await fetch(`${API_BASE}/clear-drawdown`, { method: 'POST' });
+                    } catch (err) {
+                      console.error('Failed to clear drawdown:', err);
+                    }
+                  }}
+                  className="clear-drawdown-btn"
+                >
+                  Clear Drawdown
+                </button>
+                <span className="stat-sub">
+                  Drawdown ≥ 15% — trading halted. Clear to relaunch.
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+        {!isRealMode && (
+          <div className="portfolio-cell">
+            <span className="stat-label">Win Rate</span>
+            <span className="stat-number positive">
+              {((s.recent20WinRate ?? 0) * 100).toFixed(1)}%
+            </span>
+            {/* v2.0.42: Shows win rate from the most recent 20 trades only */}
+            <span className="stat-sub">
+              (lastest 20 trades)
+            </span>
+          </div>
+        )}
+        {!isRealMode && (
+          <div className="portfolio-cell">
+            <span className="stat-label">Trades</span>
+            <span className="stat-number neutral">
+              {s.tradeCount}
+            </span>
+            <span className="stat-sub">W:{s.winCount} L:{s.lossCount}</span>
+          </div>
+        )}
       </div>
 
-      {p?.positions && Object.keys(p.positions).length > 0 ? (
+      {positions.length > 0 ? (
         <div className="positions-table-wrap">
           <table className="positions-table">
             <thead>
@@ -753,7 +771,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
               </tr>
             </thead>
             <tbody>
-              {Object.values(p.positions).map((pos: any) => {
+              {positions.map((pos: any) => {
                 return (
                 <tr key={pos.id} onClick={() => setChartSymbol(pos.symbol)} className={`position-row-clickable ${chartSymbol === pos.symbol ? 'selected-position' : ''}`}>
                   <td className="td-action-cell" onClick={(e) => e.stopPropagation()}>
@@ -955,7 +973,7 @@ function DebatePanel({ data }: { data: APIData | null }) {
 
   if (!consensus && rounds.length === 0) {
     return (
-      <div className="panel">
+      <div className="panel panel-rgb-border">
         <div className="panel-header"><span className="panel-title">HACP Debate</span></div>
         <div className="empty-state">
           <div className="empty-icon">🗣️</div>
@@ -966,7 +984,7 @@ function DebatePanel({ data }: { data: APIData | null }) {
   }
 
   return (
-    <div className="panel">
+    <div className="panel panel-rgb-border">
       <div className="panel-header">
         <span className="panel-title">HACP Debate</span>
         {consensus && <span className="panel-badge">Cycle #{cycleNum} · {consensus.roundsUsed} round{consensus.roundsUsed !== 1 ? 's' : ''}</span>}
@@ -1085,9 +1103,9 @@ function OptionsDataPanel({ data }: { data: APIData | null }) {
 
   if (!od) {
     return (
-      <div className="panel">
+      <div className="panel panel-rgb-border">
         <div className="panel-header">
-          <span className="panel-title">📊 Options Data Layer</span>
+          <span className="panel-title">Options Data Layer</span>
         </div>
         <div className="empty-state" style={{ padding: '12px 0' }}>
           <div className="empty-text" style={{ fontSize: '0.75rem' }}>Waiting for options data...</div>
@@ -1118,9 +1136,9 @@ function OptionsDataPanel({ data }: { data: APIData | null }) {
   }
 
   return (
-    <div className="panel">
+    <div className="panel panel-rgb-border">
       <div className="panel-header">
-        <span className="panel-title">📊 Options Data Layer</span>
+        <span className="panel-title">Options Data Layer</span>
         <span className="panel-badge">{od.symbol}</span>
       </div>
 
@@ -1173,7 +1191,6 @@ function EvolutionHeader({ generation, symbolCount, onReset, resetStatus }: {
   return (
     <div className="evo-header">
       <div className="evo-header-left">
-        <span className="evo-icon">🧬</span>
         <span className="evo-title">Evolution</span>
       </div>
       <div className="evo-header-right">
@@ -1551,10 +1568,9 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
 
   if (!evo) {
     return (
-      <div className="evo-panel evo-panel-top">
+      <div className="evo-panel evo-panel-top panel-rgb-border">
         <EvolutionHeader generation={0} symbolCount={0} onReset={handleResetTradeHistory} resetStatus={resetStatus} />
         <div className="evo-empty evo-empty-top">
-          <div className="evo-empty-icon">🧬</div>
           <div className="evo-empty-text">Waiting for evolution data...</div>
         </div>
       </div>
@@ -1575,7 +1591,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
   }
 
   return (
-    <div className="evo-panel evo-panel-top">
+    <div className="evo-panel evo-panel-top panel-rgb-border">
       <EvolutionHeader
         generation={evo.generation}
         symbolCount={symbolCount}
@@ -1941,11 +1957,24 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
 
 /* ── Main App ── */
 
+// v2.0.78: Desktop panel render functions for masonry layout.
+// Order: Agent Cognition, HACP Debate, Options Data Layer, Portfolio, Evolution.
+const DESKTOP_PANELS: Array<(data: APIData | null) => React.ReactNode> = [
+  (data) => <AgentPanel key="agents" data={data} />,
+  (data) => <DebatePanel key="debate" data={data} />,
+  (data) => <OptionsDataPanel key="options" data={data} />,
+  (data) => <PortfolioPanel key="portfolio" data={data} />,
+  (data) => <EvolutionPanel key="evolution" data={data} />,
+]
+
 export default function App() {
   const [data, setData] = useState<APIData | null>(null)
   const [connected, setConnected] = useState(false)
   const [activeTab, setActiveTab] = useState<'status' | 'agents' | 'portfolio' | 'debate' | 'evolution' | 'backtest'>('agents')
   const esRef = useRef<EventSource | null>(null)
+  // v2.0.78: Masonry — measure all panels, assign to shorter column
+  const [colAssignments, setColAssignments] = useState<number[]>([])
+  const stagingRef = useRef<HTMLDivElement | null>(null)
 
   const connectSSE = useCallback(() => {
     // Close existing connection if any
@@ -2015,6 +2044,25 @@ export default function App() {
     }
   }, [connectSSE])
 
+  // v2.0.78: Masonry layout — measure staging panel heights, assign
+  // each panel to the shorter column. Recomputes on data change.
+  useLayoutEffect(() => {
+    const staging = stagingRef.current
+    if (!staging) return
+    const wrappers = staging.querySelectorAll('[data-panel-idx]')
+    if (wrappers.length === 0) return
+
+    const heights = Array.from(wrappers).map(w => w.getBoundingClientRect().height)
+    const colHeights = [0, 0]
+    const assignments: number[] = []
+    for (let i = 0; i < heights.length; i++) {
+      const targetCol = colHeights[0] <= colHeights[1] ? 0 : 1
+      assignments.push(targetCol)
+      colHeights[targetCol] += heights[i]!
+    }
+    setColAssignments(assignments)
+  }, [data])
+
   const s = data?.status
 
   return (
@@ -2077,33 +2125,40 @@ export default function App() {
         })}
       </div>
 
-      {/* Main 50/50 Grid — both columns always visible on desktop */}
+      {/* Main Grid — desktop: JS masonry; mobile: tab-based */}
       <div className="main-grid">
-        {/* Left Column: Agents + HACP Debate + Options Data Layer */}
-        <div className={`col-left ${activeTab === 'agents' ? 'visible' : ''}`}>
-          <AgentPanel data={data} />
-          {/* Mobile: show debate + options under agents tab */}
+        {/* Mobile: original tab-based layout */}
+        <div className={`col-left ${activeTab === 'agents' || activeTab === 'debate' ? 'visible' : ''}`}>
+          <div className="mobile-only">
+            {activeTab === 'agents' && <AgentPanel data={data} />}
+          </div>
           <div className="mobile-only">
             {activeTab === 'debate' && <DebatePanel data={data} />}
             {activeTab === 'debate' && <OptionsDataPanel data={data} />}
           </div>
-          {/* Desktop: always show debate + options below agents */}
-          <div className="desktop-only">
-            <DebatePanel data={data} />
-            <OptionsDataPanel data={data} />
-          </div>
         </div>
-
-        {/* Right Column: Portfolio + Evolution */}
-        <div className={`col-right ${activeTab !== 'agents' ? 'visible' : ''}`}>
-          {/* Mobile: only show active tab's content; Desktop: show all */}
+        <div className={`col-right ${activeTab === 'portfolio' || activeTab === 'evolution' ? 'visible' : ''}`}>
           <div className="mobile-only">
             {activeTab === 'portfolio' && <PortfolioPanel data={data} />}
             {activeTab === 'evolution' && <EvolutionPanel data={data} />}
           </div>
-          <div className="desktop-only">
-            <PortfolioPanel data={data} />
-            <EvolutionPanel data={data} />
+        </div>
+
+        {/* Desktop: JS masonry — panels distributed to shorter column */}
+        <div className="desktop-only">
+          <div className="masonry-grid">
+            <div className="masonry-col">
+              {colAssignments.map((col, i) => col === 0 ? DESKTOP_PANELS[i]!(data) : null)}
+            </div>
+            <div className="masonry-col">
+              {colAssignments.map((col, i) => col === 1 ? DESKTOP_PANELS[i]!(data) : null)}
+            </div>
+          </div>
+          {/* Hidden staging area to measure panel heights */}
+          <div ref={stagingRef} className="masonry-staging" aria-hidden="true">
+            {DESKTOP_PANELS.map((fn, i) => (
+              <div key={i} data-panel-idx={i}>{fn(data)}</div>
+            ))}
           </div>
         </div>
       </div>

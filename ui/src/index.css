@@ -48,9 +48,9 @@
   --agent-4: #6b7a8e;
   --agent-5: #F5A623;
 
-  /* ── Typography (pantha_mats: Sora + JetBrains Mono) ── */
+  /* ── Typography (Sora for everything, tabular-nums for numeric alignment) ── */
   --font-sans: 'Sora', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  --font-mono: 'Sora', system-ui, -apple-system, sans-serif;
 
   /* ── Font Size Scale (8-tier) ── */
   --fs-micro:  0.6rem;   /* 10px — tags, badges */
@@ -378,10 +378,12 @@ body {
    MAIN GRID — Desktop 50/50, Mobile single column
    ═══════════════════════════════════════════════════════════════ */
 
+/* v2.0.78: Desktop uses JS-driven masonry layout (see App.tsx useEffect).
+   Two fixed columns; panels assigned to the shorter column each time.
+   Mobile keeps the tab-based show/hide system. */
 .main-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-8);
+  display: flex;
+  flex-direction: column;
   padding: var(--space-8) var(--space-10);
   flex: 1;
   min-height: 0;
@@ -390,8 +392,38 @@ body {
   width: 100%;
 }
 
+/* Desktop: two-column masonry via JS */
+@media (min-width: 1201px) {
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-8);
+    align-items: start;
+  }
+  .masonry-grid {
+    display: contents;
+  }
+  .masonry-col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-7);
+    min-width: 0;
+  }
+  .masonry-staging {
+    position: fixed;
+    left: -9999px;
+    top: 0;
+    width: 700px;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .col-left, .col-right {
+    display: contents;
+  }
+}
+
 @media (max-width: 1200px) {
-  .main-grid { grid-template-columns: 1fr; padding: var(--space-6); }
+  .main-grid { padding: var(--space-6); }
 }
 
 .col-left, .col-right {
@@ -408,6 +440,7 @@ body {
   .col-left.visible, .col-right.visible { display: flex; }
   .desktop-only { display: none !important; }
   .mobile-only { display: contents; }
+  .masonry-col { display: none; }
 }
 
 /* Desktop: show all, hide mobile-only wrappers */
@@ -434,6 +467,81 @@ body {
 .panel:hover {
   border-color: var(--glass-border-hover);
   background: var(--glass-bg-hover);
+}
+
+/* ── RGB Light Strip Border (e-sports rotating marquee) ── */
+/* A conic-gradient rotates around the panel's border ring. The gradient
+   contains the full RGB spectrum + a dark "lights off" segment. As the
+   angle animates 0→360°, the colors travel around all four edges
+   (top→right→bottom→left→top) continuously. A dot-pattern mask makes
+   the gradient appear as individual "bulbs" instead of a solid strip. */
+
+/* Register animatable custom properties for smooth interpolation */
+@property --rgb-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.panel-rgb-border {
+  position: relative;
+  border: 4px solid transparent;
+  border-radius: var(--radius-xl);
+}
+
+/* ::before = the rotating RGB conic-gradient, masked to border ring */
+.panel-rgb-border::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-xl);
+  padding: 4px;
+  /* Mask: only show the 4px border ring, not the interior */
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  /* The conic gradient: rainbow + dark segment, rotating around the border.
+     The gradient travels around all 4 edges (top→right→bottom→left→top)
+     as the angle animates 0→360°. */
+  background: conic-gradient(
+    from var(--rgb-angle, 0deg),
+    #ff0080 0deg,
+    #ff8c00 40deg,
+    #ffd700 80deg,
+    #00ff7f 120deg,
+    #00bfff 160deg,
+    #8a2be2 200deg,
+    #ff0080 240deg,
+    #ff8c00 280deg,
+    #0a0a14 300deg,   /* dark "lights off" segment */
+    #0a0a14 330deg,
+    #ff0080 360deg
+  );
+  animation: rgb-rotate 6s linear infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ::after = dashed border overlaid on the conic gradient to create
+   individual "bulb" separation. CSS dashed border auto-aligns on all
+   4 edges with proper corner gaps — symmetric left/right/top/bottom. */
+.panel-rgb-border::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-xl);
+  border: 4px dashed var(--surface-deepest);
+  pointer-events: none;
+  z-index: 2;
+}
+
+@keyframes rgb-rotate {
+  to { --rgb-angle: 360deg; }
 }
 
 .panel-header {
@@ -705,14 +813,16 @@ body {
 
 .top-pair-rank {
   color: var(--text-tertiary);
-  min-width: var(--space-12);
   font-size: var(--fs-xs);
+  flex: 1;
+  text-align: center;
 }
 
 .top-pair-symbol {
   color: var(--text-primary);
   font-weight: var(--fw-semibold);
-  min-width: 80px;
+  flex: 1;
+  text-align: center;
 }
 
 .top-pair-price {
@@ -723,14 +833,23 @@ body {
 
 .top-pair-vol {
   color: var(--text-tertiary);
-  min-width: 60px;
+  flex: 1;
   text-align: right;
 }
 
 .top-pair-chg {
-  min-width: 50px;
+  flex: 1;
   text-align: right;
   font-weight: var(--fw-semibold);
+}
+
+/* v2.0.78: Spacer column so the table doesn't stretch to full width.
+   The last real column (chg) is right-aligned; this invisible spacer
+   absorbs remaining width so columns stay proportional and the table
+   doesn't hug the right edge. */
+.top-pair-spacer {
+  width: 24px;
+  flex-shrink: 0;
 }
 
 .top-pair-chg.positive { color: var(--green); }
@@ -1130,7 +1249,7 @@ body {
   background: var(--glass-bg);
   border-radius: var(--radius-sm);
   font-size: var(--fs-sm);
-  font-family: var(--mono, 'SF Mono', 'Fira Code', monospace);
+  font-family: var(--font-sans);
 }
 
 .strategy-row.retired { opacity: 0.5; }
@@ -1824,7 +1943,6 @@ body {
   background: var(--glass-bg);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-glass-sm);
   padding: var(--space-10);
@@ -2690,6 +2808,7 @@ body {
   font-size: var(--fs-base);
   color: var(--text-tertiary);
   margin-bottom: var(--space-3);
+  padding-right: var(--space-8);
 }
 
 .top-pair-cell {
@@ -3035,7 +3154,7 @@ body {
 /* ── Top Pair Row ── */
 .top-pair-row-inline {
   font-size: var(--fs-md);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-3) var(--space-8);
   cursor: pointer;
   transition: background 0.15s, transform 0.1s;
 }

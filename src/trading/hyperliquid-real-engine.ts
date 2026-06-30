@@ -7,6 +7,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../observability/logger.ts';
+import { hlRateLimitedFetch } from '../utils/hl-global-limiter.ts';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { encode as msgpackEncode } from '@msgpack/msgpack';
@@ -202,7 +203,7 @@ async function getAssetIndex(symbol: string): Promise<AssetMeta | null> {
     assetIndexCache = new Map();
 
     // Fetch DEX 0 (crypto perps) meta
-    const res0 = await fetch(HL_INFO_URL, {
+    const res0 = await hlRateLimitedFetch(HL_INFO_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'meta' }),
@@ -227,7 +228,7 @@ async function getAssetIndex(symbol: string): Promise<AssetMeta | null> {
     // (builder-deployed perp DEXs start at 110000 per HL Python SDK)
     const XYZ_DEX_OFFSET = 110000;
     try {
-      const resXyz = await fetch(HL_INFO_URL, {
+      const resXyz = await hlRateLimitedFetch(HL_INFO_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'meta', dex: 'xyz' }),
@@ -280,7 +281,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
   async isConnected(): Promise<boolean> {
     try {
-      const res = await fetch(HL_INFO_URL, {
+      const res = await hlRateLimitedFetch(HL_INFO_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'spotMeta' }),
@@ -310,7 +311,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
           // v2.0.32: Omit dex field for default DEX ('') — HL API rejects dex: 0 or dex: ''
           const body: Record<string, unknown> = { type: 'clearinghouseState', user: this.walletAddress };
           if (dex) body['dex'] = dex;
-          const res = await fetch(HL_INFO_URL, {
+          const res = await hlRateLimitedFetch(HL_INFO_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -347,7 +348,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       // Fetch spot clearinghouse state (USDC held in spot wallet)
       let spotUsdc = 0;
       try {
-        const spotRes = await fetch(HL_INFO_URL, {
+        const spotRes = await hlRateLimitedFetch(HL_INFO_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: 'spotClearinghouseState', user: this.walletAddress }),
@@ -417,7 +418,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
           // v2.0.32: Omit dex field for default DEX ('') — HL API rejects dex: 0 or dex: ''
           const body: Record<string, unknown> = { type: 'clearinghouseState', user: this.walletAddress };
           if (dex) body['dex'] = dex;
-          const res = await fetch(HL_INFO_URL, {
+          const res = await hlRateLimitedFetch(HL_INFO_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -539,7 +540,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       // userFillsByTime requires startTime — HL API fails without it.
       // Query last 7 days to capture all recent fills.
       const startTime = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      const res = await fetch(HL_INFO_URL, {
+      const res = await hlRateLimitedFetch(HL_INFO_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'userFillsByTime', user: this.walletAddress, startTime }),
@@ -596,7 +597,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
   }>> {
     try {
       const startTime = Date.now() - timeWindowMs;
-      const res = await fetch(HL_INFO_URL, {
+      const res = await hlRateLimitedFetch(HL_INFO_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'userFillsByTime', user: this.walletAddress, startTime }),
@@ -653,7 +654,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       const nonce = Date.now();
       const signature = signL1Action(this.privateKeyHex, action, nonce);
 
-      const res = await fetch(HL_EXCHANGE_URL, {
+      const res = await hlRateLimitedFetch(HL_EXCHANGE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, nonce, signature }),
@@ -727,7 +728,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         } else {
           // v2.0.32: allMids doesn't include xyz DEX assets — use l2Book instead
           try {
-            const l2Res = await fetch(HL_INFO_URL, {
+            const l2Res = await hlRateLimitedFetch(HL_INFO_URL, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ type: 'l2Book', coin: order.symbol }),
@@ -765,7 +766,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         signature,
       };
 
-      const res = await fetch(HL_EXCHANGE_URL, {
+      const res = await hlRateLimitedFetch(HL_EXCHANGE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -836,7 +837,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       const nonce = Date.now();
       const signature = signL1Action(this.privateKeyHex, action, nonce);
 
-      const res = await fetch(HL_EXCHANGE_URL, {
+      const res = await hlRateLimitedFetch(HL_EXCHANGE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, nonce, signature }),
@@ -875,7 +876,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       };
       const nonce = Date.now();
       const signature = signL1Action(this.privateKeyHex, action, nonce);
-      const res = await fetch(HL_EXCHANGE_URL, {
+      const res = await hlRateLimitedFetch(HL_EXCHANGE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, nonce, signature }),
@@ -917,7 +918,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
       const nonce = Date.now();
       const signature = signL1Action(this.privateKeyHex, action, nonce);
-      const res = await fetch(HL_EXCHANGE_URL, {
+      const res = await hlRateLimitedFetch(HL_EXCHANGE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, nonce, signature }),
@@ -1119,7 +1120,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         };
         const nonce = Date.now();
         const signature = signL1Action(this.privateKeyHex, slAction, nonce);
-        const slRes = await fetch(HL_EXCHANGE_URL, {
+        const slRes = await hlRateLimitedFetch(HL_EXCHANGE_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: slAction, nonce, signature }),
@@ -1151,7 +1152,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         };
         const tpNonce = Date.now() + 1; // different nonce
         const tpSig = signL1Action(this.privateKeyHex, tpAction, tpNonce);
-        const tpRes = await fetch(HL_EXCHANGE_URL, {
+        const tpRes = await hlRateLimitedFetch(HL_EXCHANGE_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: tpAction, nonce: tpNonce, signature: tpSig }),
@@ -1257,7 +1258,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       try {
         const body: Record<string, unknown> = { type: 'openOrders', user: this.walletAddress };
         if (dex) body['dex'] = dex;
-        const res = await fetch(HL_INFO_URL, {
+        const res = await hlRateLimitedFetch(HL_INFO_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -1333,7 +1334,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
   private async getMidPrice(symbol: string): Promise<number> {
     try {
-      const res = await fetch(HL_INFO_URL, {
+      const res = await hlRateLimitedFetch(HL_INFO_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'allMids' }),

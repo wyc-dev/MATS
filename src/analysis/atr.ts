@@ -92,7 +92,7 @@ export function computeATR(candles: Candle[], period = 14): number {
  * Fetch recent candles for a symbol and compute ATR.
  * Uses HL candleSnapshot (1h interval, ~30 candles → 14-period ATR seeded + smoothed).
  *
- * @param symbol  HL symbol (e.g. 'BTC' or 'xyz:MU'). Prefix stripped for API call.
+ * @param symbol  HL symbol (e.g. 'BTC' or 'xyz:MU'). Full coin name required for DEX 1-8.
  * @param period  ATR period (default 14).
  * @returns ATR in price units, or 0 if unavailable.
  */
@@ -102,7 +102,9 @@ export async function getATR(symbol: string, period = 14): Promise<number> {
     return 0;
   }
   try {
-    const coin = symbol.replace(/^.*:/, '');
+    // v2.0.XX: DEX 1-8 symbols (xyz:SKHX) require the FULL coin name.
+    // Stripping the prefix caused HL to return empty data for all DEX 1-8 assets.
+    const coin = symbol;
     const endTime = Date.now();
     // 1h candles, fetch 30 → enough for 14-period ATR + smoothing
     const intervalMs = 3_600_000;

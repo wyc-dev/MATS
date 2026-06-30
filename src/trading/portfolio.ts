@@ -1017,7 +1017,14 @@ export class PortfolioTracker {
     const exitNotional = exitPrice * pos.quantity;
     const exitFee = calculateTakerFee(exitNotional);
     this.portfolio.balance -= exitFee;
-    realizedPnl -= exitFee;
+    // v2.0.78: realizedPnl must reflect TRUE net PnL (priceDelta − entryFee − exitFee).
+    // entryFee was already deducted from balance at openPosition() time, so
+    // balance arithmetic is correct. But realizedPnl (used for the trade record,
+    // totalPnl, win/loss stats, dailyPnl, and the entire learning pipeline) only
+    // subtracted exitFee — overstating by entryFee every close. This made
+    // totalPnl diverge from (balance − initialBalance) by cumulative entryFees.
+    const entryFee = pos.entryFee ?? 0;
+    realizedPnl = realizedPnl - entryFee - exitFee;
 
     // Track P&L as a percentage of margin used (return on capital at risk)
     const marginUsed = margin;

@@ -161,9 +161,14 @@ async function fetchCandles(
   const startTime = endTime - limit * intervalMs;
 
   try {
+    // v2.0.XX: DEX 1-8 symbols (xyz:SKHX) require the FULL coin name including
+    // the DEX prefix. Stripping the prefix (symbol.replace(/^.*:/, '')) caused
+    // HL to return empty candle data for all DEX 1-8 assets, forcing S/R to
+    // fall back to round numbers only. The full symbol works for both DEX 0
+    // (BTC) and DEX 1-8 (xyz:SKHX) — HL's candleSnapshot API accepts both.
     const data = await hlFetchFn({
       type: 'candleSnapshot',
-      req: { coin: symbol.replace(/^.*:/, ''), interval, startTime, endTime },
+      req: { coin: symbol, interval, startTime, endTime },
     }) as RawCandle[];
 
     if (!Array.isArray(data) || data.length === 0) {
@@ -458,18 +463,9 @@ export async function getSRZones(
   }
 
   try {
-    // ── Synthetic symbol check ──
-    // Symbols with "xyz:" prefix are synthetic/derived assets not traded on HL.
-    // HL has no candle data for them — skip fetch and use round numbers only.
-    const isSynthetic = symbol.startsWith('xyz:') || symbol.includes(':');
-    if (isSynthetic) {
-      log.warn(`[getSRZones] ${symbol}: synthetic symbol — using round numbers only (no HL candle data)`);
-      const roundZones = findRoundNumberZones([{ timestamp: Date.now(), open: currentPrice, high: currentPrice, low: currentPrice, close: currentPrice, volume: 0 }], currentPrice);
-      const srZones = mergeAndRankZones(roundZones, regime);
-      return buildContext(srZones, symbol, currentPrice, regime, Date.now() - startTime);
-    }
-
     // ── 1. Fetch candle data ──
+    // DEX 1-8 symbols (xyz:SKHX) are fully supported by HL's candleSnapshot
+    // API when using the full coin name. No need to strip the prefix.
     const [dailyCandles, hourlyCandles] = await Promise.all([
       fetchDailyCandlesCached(symbol),
       fetchHourlyCandlesCached(symbol),

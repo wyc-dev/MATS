@@ -61,3 +61,6 @@ data/*.backup.json
 
 # ─── Docker ───
 .docker/
+
+# ─── Agent instructions (private) ───
+.github/instructions/PI.instructions.md

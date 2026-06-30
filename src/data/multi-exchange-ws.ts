@@ -9,6 +9,7 @@
 //   - Bare symbol on HL exchange setting → Hyperliquid
 
 import { createLogger } from '../observability/logger.ts';
+import { hlRateLimitedFetch } from '../utils/hl-global-limiter.ts';
 import { BinanceWebSocketManager } from './binance-websocket.ts';
 import { HyperliquidWebSocketManager, type HLMarkPrice, type HLOrderBook, type HLTrade } from './hyperliquid-websocket.ts';
 import type { Ticker } from '../types/index.ts';
@@ -261,8 +262,9 @@ export class MultiExchangeWebSocketManager {
       // l2Book REST API uses the full prefixed coin name for DEX 1-8 assets
       // (e.g. xyz:META), unlike candleSnapshot which uses bare name (META).
       // This matches the convention used in MarketAgent.fetchPriceForSymbol.
+      // v2.0.XX: Use global rate limiter instead of raw fetch.
       const coin = symbol;
-      const res = await fetch('https://api.hyperliquid.xyz/info', {
+      const res = await hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'l2Book', coin }),
