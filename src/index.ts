@@ -903,9 +903,13 @@ class MATSSystem {
     }
   }
 
-  /** REST API polling fallback for price data — 30s interval to avoid HL rate limiting */
+  /** REST API polling fallback for price data — 30s interval, exponential backoff on failure */
   private startRESTPolling(): void {
     const pollMs = 30_000;
+    // v2.0.XX: Exponential backoff on consecutive failures — when network is
+    // down (DNS failure), don't hammer every 30s. Back off to max 5min.
+    const maxBackoffMs = 300_000;
+    let consecutiveFailures = 0;
     log.info(`REST polling started (every ${pollMs / 1000}s) as WebSocket fallback`);
 
     const poll = async () => {
@@ -922,8 +926,26 @@ class MATSSystem {
             this.paperEngine.updatePrice(sym, data.price);
           }
         }
+        // Success — reset backoff
+        if (consecutiveFailures > 0) {
+          log.info(`REST polling recovered after ${consecutiveFailures} failures — resuming ${pollMs / 1000}s interval`);
+          consecutiveFailures = 0;
+        }
       } catch {
-        // silent retry on next poll
+        // Exponential backoff — don't spam logs every 30s when network is down
+        consecutiveFailures++;
+        const backoff = Math.min(pollMs * Math.pow(2, consecutiveFailures - 1), maxBackoffMs);
+        if (consecutiveFailures <= 3 || consecutiveFailures % 10 === 0) {
+          log.warn(`REST poll failed (${consecutiveFailures}×) — backing off to ${backoff / 1000}s`);
+        }
+        // Reschedule next poll with backoff instead of fixed interval
+        if (this.restPollTimer) clearInterval(this.restPollTimer);
+        this.restPollTimer = setInterval(() => { void poll(); }, backoff);
+        // After one backoff tick, restore the dynamic interval for subsequent polls
+        setTimeout(() => {
+          if (this.restPollTimer) clearInterval(this.restPollTimer);
+          this.restPollTimer = setInterval(() => { void poll(); }, pollMs);
+        }, backoff);
       }
     };
 

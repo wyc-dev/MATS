@@ -48,9 +48,9 @@
   --agent-4: #6b7a8e;
   --agent-5: #F5A623;
 
-  /* ── Typography (Sora for everything, tabular-nums for numeric alignment) ── */
+  /* ── Typography (Sora for body, JetBrains Mono for numeric/code/panel-titles) ── */
   --font-sans: 'Sora', system-ui, -apple-system, sans-serif;
-  --font-mono: 'Sora', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
 
   /* ── Font Size Scale (8-tier) ── */
   --fs-micro:  0.6rem;   /* 10px — tags, badges */
@@ -152,7 +152,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 60px;
+  height: 80px;
   padding: 0 var(--space-14);
   background: transparent;
   backdrop-filter: var(--glass-blur-strong);
@@ -190,14 +190,14 @@ body {
 
 .brand-text {
   font-family: var(--font-mono);
-  font-size: var(--fs-lg);
+  font-size: 2.1rem;
   color: var(--accent);
   opacity: 0.6;
 }
 
 .brand-name {
   font-family: var(--font-mono);
-  font-size: var(--fs-xl);
+  font-size: 2.1rem;
   font-weight: var(--fw-bold);
   background: linear-gradient(135deg, var(--accent), #FBD06E, var(--accent));
   background-size: 200% 100%;
@@ -258,9 +258,10 @@ body {
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-6);
+  padding: var(--space-4) var(--space-6);
+  margin: var(--space-3);
   border-radius: var(--radius-md);
-  font-size: var(--fs-sm);
+  font-size: 1.4rem;
   font-weight: var(--fw-semibold);
   line-height: 1;
   cursor: pointer;
@@ -273,8 +274,18 @@ body {
   font-family: var(--font-sans);
   white-space: nowrap;
   min-width: 0;
-  height: 32px;
+  height: 64px;
   box-sizing: border-box;
+}
+
+/* v2.0.78: Icon-only circular buttons with accent orange border */
+.header-btn.icon-btn {
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  color: var(--accent);
 }
 
 .header-btn:hover {
@@ -300,6 +311,12 @@ body {
   color: var(--red);
 }
 
+.settings-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 var(--space-8) var(--accent-glow);
+}
+
 .pause-btn {
   justify-content: center;
 }
@@ -315,8 +332,8 @@ body {
   color: var(--gold);
 }
 
-.btn-icon { font-size: var(--fs-md); line-height: 1; display: flex; align-items: center; }
-.btn-label { white-space: nowrap; line-height: 1; display: flex; align-items: center; }
+.btn-icon { font-size: 1.6rem; line-height: 1; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex-shrink: 0; }
+.btn-label { font-size: 1.4rem; white-space: nowrap; line-height: 1; display: flex; align-items: center; }
 
 @media (max-width: 768px) {
   .btn-label { display: none; }
@@ -329,7 +346,7 @@ body {
   gap: var(--space-2);
   padding: var(--space-2) var(--space-6);
   border-radius: var(--radius-md);
-  font-size: var(--fs-sm);
+  font-size: 1.4rem;
   font-weight: var(--fw-semibold);
   line-height: 1;
   font-family: var(--font-sans);
@@ -337,14 +354,14 @@ body {
   -webkit-backdrop-filter: var(--glass-blur);
   border: 1px solid var(--glass-border);
   white-space: nowrap;
-  height: 32px;
+  height: 64px;
   box-sizing: border-box;
 }
 
-.conn-badge.live { background: var(--green-bg); color: var(--green); border-color: rgba(52, 211, 153, 0.2); }
-.conn-badge.dead { background: var(--red-bg); color: var(--red); border-color: rgba(248, 113, 113, 0.2); }
+.conn-badge.live { background: var(--green-bg); color: var(--green); border-color: var(--green); }
+.conn-badge.dead { background: var(--red-bg); color: var(--red); border-color: var(--red); }
 
-.conn-dot { width: var(--space-3); height: var(--space-3); border-radius: 50%; background: currentColor; }
+.conn-dot { width: 12px; height: 12px; border-radius: 50%; background: currentColor; }
 .conn-badge.live .conn-dot { animation: pulse-dot 2s ease-in-out infinite; }
 @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
@@ -355,17 +372,17 @@ body {
   gap: var(--space-2);
   padding: var(--space-2) var(--space-6);
   border-radius: var(--radius-md);
-  font-size: var(--fs-sm);
+  font-size: 1.4rem;
   font-weight: var(--fw-semibold);
   line-height: 1;
   font-family: var(--font-sans);
   background: var(--accent-bg);
   color: var(--accent);
-  border: 1px solid var(--glass-border);
+  border: 2px solid var(--accent);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   white-space: nowrap;
-  height: 32px;
+  height: 64px;
   box-sizing: border-box;
 }
 
@@ -454,19 +471,34 @@ body {
    ═══════════════════════════════════════════════════════════════ */
 
 .panel {
-  background: var(--glass-bg);
+  background: transparent;
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-glass-sm);
   padding: var(--space-10);
-  transition: border-color var(--transition), background var(--transition);
+  transition: border-color 0.4s ease-in-out, backdrop-filter 0.4s ease-in-out, box-shadow 0.4s ease-in-out;
 }
 
 .panel:hover {
-  border-color: var(--glass-border-hover);
-  background: var(--glass-bg-hover);
+  border-color: transparent;
+  /* v2.0.78: Liquid glass hover — frosted glass with rotating RGB color bleed.
+     A faint conic-gradient (same rotation as the border) sits behind the
+     frosted glass so the RGB colors glow through the blur. */
+  background: conic-gradient(
+    from var(--rgb-angle, 0deg),
+    rgba(255, 0, 128, 0.04),
+    rgba(255, 140, 0, 0.04),
+    rgba(255, 215, 0, 0.04),
+    rgba(0, 255, 127, 0.04),
+    rgba(0, 191, 255, 0.04),
+    rgba(138, 43, 226, 0.04),
+    rgba(255, 0, 128, 0.04)
+  );
+  backdrop-filter: var(--glass-blur-strong);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  animation: rgb-rotate 10s linear infinite;
 }
 
 /* ── RGB Light Strip Border (e-sports rotating marquee) ── */
@@ -522,7 +554,9 @@ body {
     #0a0a14 330deg,
     #ff0080 360deg
   );
-  animation: rgb-rotate 6s linear infinite;
+  /* v2.0.78: Subtle drop shadow so the RGB border glows off the panel */
+  filter: drop-shadow(0 0 3px rgba(255, 0, 128, 0.3));
+  animation: rgb-rotate 10s linear infinite;
   pointer-events: none;
   z-index: 1;
 }
@@ -552,11 +586,26 @@ body {
 }
 
 .panel-title {
-  font-size: var(--fs-base);
+  font-size: var(--fs-lg);
+  font-family: var(--font-mono);
   font-weight: var(--fw-semibold);
-  color: var(--text-tertiary);
+  /* v2.0.78: RGB gradient text — softened to near-white pastel tones */
+  background: linear-gradient(
+    90deg,
+    #ffb3cf, #ffd9b3, #fff0b3, #b3ffcc, #b3e0ff, #d4b3ff, #ffb3cf
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: rgb-text-shimmer 4s linear infinite;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+@keyframes rgb-text-shimmer {
+  0% { background-position: 0% 0; }
+  100% { background-position: 200% 0; }
 }
 
 .panel-badge {
@@ -1940,18 +1989,31 @@ body {
    ═══════════════════════════════════════════════════════════════ */
 
 .evo-panel {
-  background: var(--glass-bg);
+  background: transparent;
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-glass-sm);
   padding: var(--space-10);
-  transition: border-color var(--transition), background var(--transition);
+  transition: border-color 0.4s ease-in-out, backdrop-filter 0.4s ease-in-out, box-shadow 0.4s ease-in-out;
 }
 
 .evo-panel:hover {
-  border-color: var(--glass-border-hover);
-  background: var(--glass-bg-hover);
+  border-color: transparent;
+  /* v2.0.78: Liquid glass hover — frosted glass with rotating RGB color bleed */
+  background: conic-gradient(
+    from var(--rgb-angle, 0deg),
+    rgba(255, 0, 128, 0.04),
+    rgba(255, 140, 0, 0.04),
+    rgba(255, 215, 0, 0.04),
+    rgba(0, 255, 127, 0.04),
+    rgba(0, 191, 255, 0.04),
+    rgba(138, 43, 226, 0.04),
+    rgba(255, 0, 128, 0.04)
+  );
+  backdrop-filter: var(--glass-blur-strong);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  animation: rgb-rotate 10s linear infinite;
 }
 
 .evo-header {
@@ -1973,9 +2035,19 @@ body {
 }
 
 .evo-title {
-  font-size: var(--fs-base);
+  font-size: var(--fs-lg);
+  font-family: var(--font-mono);
   font-weight: var(--fw-semibold);
-  color: var(--text-tertiary);
+  /* v2.0.78: RGB gradient text — softened to near-white pastel tones */
+  background: linear-gradient(
+    90deg,
+    #ffb3cf, #ffd9b3, #fff0b3, #b3ffcc, #b3e0ff, #d4b3ff, #ffb3cf
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: rgb-text-shimmer 4s linear infinite;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }

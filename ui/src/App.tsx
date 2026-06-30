@@ -1,4 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
+import { Settings, Pause, Play, Power } from 'lucide-react'
 import type { APIData, AgentModelConfig, ModelDefinition } from './types'
 import RBCVisualizer from './RBCVisualizer'
 import { AGENT_META, AGENT_ROLES } from './types'
@@ -2071,27 +2072,26 @@ export default function App() {
       <header className="topbar">
         <div className="topbar-left">
           <div className="topbar-brand">
-            <span className="brand-mark" />
             <span className="brand-text">{"{"}</span><span className="brand-name">MATS</span><span className="brand-text">{"}"}</span>
           </div>
           <div className="glow-line" />
-          <span className="topbar-subtitle">Multi-Agent Trading · Capital Preservation</span>
         </div>
         <div className="topbar-right">
-          <button className={`header-btn pause-btn ${data?.systemPaused ? 'paused' : ''}`} onClick={async () => {
+          <button className="header-btn icon-btn settings-btn" title="Settings">
+            <Settings size={21} />
+          </button>
+          <button className={`header-btn icon-btn pause-btn ${data?.systemPaused ? 'paused' : ''}`} onClick={async () => {
             try {
               const isPaused = data?.systemPaused
               await fetch(`${API_BASE}/${isPaused ? 'resume' : 'pause'}`, { method: 'POST' })
             } catch {}
           }} title={data?.systemPaused ? 'Resume system' : 'Pause system (RBC only)'}>
-            <span className="btn-icon">{data?.systemPaused ? '▶' : '⏸'}</span>
-            <span className="btn-label">{data?.systemPaused ? 'Resume' : 'Pause'}</span>
+            {data?.systemPaused ? <Play size={21} /> : <Pause size={21} />}
           </button>
-          <button className="header-btn trigger-btn" onClick={handleRunCycle} title="Run decision cycle now">
-            <span className="btn-icon">▶</span>
-            <span className="btn-label">Run Cycle</span>
+          <button className="header-btn icon-btn trigger-btn" onClick={handleRunCycle} title="Run decision cycle now">
+            <Play size={21} />
           </button>
-          <button className="header-btn shutdown-btn" onClick={async () => {
+          <button className="header-btn icon-btn shutdown-btn" onClick={async () => {
             try {
               await fetch(`${API_BASE}/shutdown`, { method: 'POST' })
               if (esRef.current) {
@@ -2102,14 +2102,8 @@ export default function App() {
               setTimeout(() => window.location.reload(), 500)
             } catch {}
           }} title="Shutdown system">
-            <span className="btn-icon">⏻</span>
-            <span className="btn-label">Shutdown</span>
+            <Power size={21} />
           </button>
-          <span className={`conn-badge ${connected ? 'live' : 'dead'}`}>
-            <span className="conn-dot" />
-            {connected ? 'Live' : 'Disconnected'}
-          </span>
-          {s && <span className="cycle-badge">Cycle #{s.cycles}</span>}
         </div>
       </header>
 

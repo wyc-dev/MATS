@@ -140,7 +140,11 @@ interface HLWsAssetCtxData {
 export class HyperliquidWebSocketManager {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
-  private readonly maxReconnectAttempts = 50;
+  // v2.0.XX: Infinite reconnect — network outages (DNS failure, WiFi drop)
+  // can last longer than 50 × 60s = 50min. Giving up permanently means the
+  // system never recovers when the network returns. Cap the backoff at 60s
+  // but never stop trying.
+  private readonly maxReconnectAttempts = Infinity;
   private readonly baseDelay = 1000;
   private readonly maxDelay = 60_000;
   private connected = false;
@@ -478,9 +482,11 @@ export class HyperliquidWebSocketManager {
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      log.error(`HL WS: max reconnect attempts (${this.maxReconnectAttempts}) reached. Giving up.`);
-      return;
+    // v2.0.XX: Never give up — network outages can last hours.
+    // Cap backoff at maxDelay (60s) but keep retrying forever.
+    if (this.reconnectAttempts >= 1000) {
+      // Safety valve — log every 1000 attempts but don't stop.
+      log.warn(`HL WS: ${this.reconnectAttempts} reconnect attempts — still trying (network may be down).`);
     }
 
     const delay = Math.min(

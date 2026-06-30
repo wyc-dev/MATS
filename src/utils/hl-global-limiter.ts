@@ -66,7 +66,27 @@ export async function hlRateLimitedFetch(
 ): Promise<Response> {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     await acquire();
-    const res = await fetch(url, options);
+    let res: Response;
+    try {
+      res = await fetch(url, options);
+    } catch (err) {
+      // Network-level error (DNS failure, connection refused, timeout).
+      // Retry with backoff — the network may recover.
+      const isDns = err instanceof Error && (err.message.includes('ENOTFOUND') || err.message.includes('getaddrinfo'));
+      const delay = Math.min(1000 * 2 ** attempt, 8000);
+      if (isDns && attempt < 2) {
+        // First couple DNS failures — short backoff, might be transient
+        log.warn(`HL fetch network error (DNS), retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
+      } else if (isDns) {
+        // Sustained DNS failure — network is down. Don't spam logs.
+        // Throw immediately so callers can handle it (REST polling backs off).
+        throw err;
+      } else {
+        log.warn(`HL fetch error: ${err instanceof Error ? err.message : String(err)}, retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
+      }
+      await new Promise(r => setTimeout(r, delay));
+      continue;
+    }
     if (res.status !== 429) return res;
 
     const delay = Math.min(1000 * 2 ** attempt, 8000);
