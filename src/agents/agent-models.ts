@@ -55,7 +55,11 @@ function getDefaultModelMap(): Record<AgentRole, string> {
     rbc_sentiment_analyst: 'kimi-k2.6:cloud',
     independent_risk_auditor: 'deepseek-v4-flash:cloud',
     meta_agent: 'deepseek-v4-flash:cloud',
-    news_reporter: 'kimi-k2.6:cloud',
+    // v2.0.76: News Reporter uses DeepSeek V4 Flash — cold, analytical, fast.
+    // The Shadow Strategist mandate (source/motive/conspiracy analysis) demands
+    // sharp reasoning without hype-chasing; Flash keeps the 8-agent parallel
+    // Phase 1 within budget.
+    news_reporter: 'deepseek-v4-flash:cloud',
     skeptics: 'deepseek-v4-flash:cloud',
     market_agent: 'kimi-k2.6:cloud',
   };

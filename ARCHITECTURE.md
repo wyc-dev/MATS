@@ -454,7 +454,7 @@
 | 2 | **Fractal Momentum Sentinel** | 0.85 | 0.25 | 2-5x | 碎形數學家轉量化交易員。多時間框架自相似模式檢測。趨勢加速早期信號。極端逆向，中間趨勢追隨。 |
 | 3 | **On-Chain Whisperer** | 0.50 | 0.25 | 2-4x | 類別感知鏈上分析師 (v1.9.3, multi-symbol)。Crypto 資產: BTC mempool(算力/手續費), ETH CoinGecko, 所有代幣 CoinGecko 交易所流量/供應量。TradFi 資產: DXY代理, FX匯率, 商品現貨, COT持倉, 網絡搜索回退。未知代幣自動搜索區塊鏈資源管理器。5分鐘緩存。每個 cycle 為所有持倉一次性 fetch on-chain 數據。|
 | 4 | **RBC & Sentiment Analyst** | 0.25 | 0.25 | 2-8x | RBC (Range-Based Clustering) 專家 + **恐慌指數 (F&G)**。RBC 係 growing hyperrectangle 從價格行為學習 win/loss 範圍。🟢 FAVORABLE → 增加信心。🔴 UNFAVORABLE → 強烈反對入場。0-25 Extreme Fear→BEARISH, 75-100 Extreme Greed→BULLISH。每個持倉獨立評估。|
-| 5 | **News Reporter** | 0.40 | 0.20 | 1-3x | 多源類別感知新聞分析師 (v1.9.3, multi-symbol)。Crypto: NewsData.io + CoinDesk RSS + The Block RSS + Google News (監管+宏觀+地緣政治)。TradFi: NewsData.io + Google News RSS (宏觀→世界→行業) + CNBC RSS + Bing RSS。5層回退鏈。每個 cycle 為所有持倉一次性 fetch 新聞。無新聞時自動NEUTRAL。|
+| 5 | **News Reporter** | 0.40 | 0.30 | 1-3x | 隐性策略师新闻动机分析 (v2.0.76)。分析新闻源头、阴谋、动机；评估该资产中长线盈利与需求是否有急性增加或急性价值下跌。动机修正后情感面：为派发而制造的「利好」= 看跌，为收集而制造的 FUD = 看涨。模型 DeepSeek V4 Flash，权重 0.30（人性是市场重心）。|
 | 6 | **Independent Risk Auditor** | 0.10 | 0.25 | — | 🚨 **最終守門人。絕對否決權。** 逐倉風險審計 (v1.9.3)。每個持倉獨立評估風險，可個別建議平倉。🆕 v2.0.13: 近期 10 個 trade 模式分析，偵測震盪市並動態調整 TP/SL。|
 | 7 | **Skeptics** | 0.30 | 0.00 | — | 🤔 **邏輯審計員 (v1.9.3)。** Phase 1.5 執行，在 Meta-Agent 思考前質疑 5 個 sub-agent 的決策。檢查數據一致性、跨 Agent 交叉對比、**參考每個 Agent 的歷史 track record (AgentOutcomeTracker)**。有無計算遺漏。default 模型: deepseek-v4-flash:cloud。不干預 Meta-Agent 和 Market Agent。|
 | 8 | **Meta-Agent** | 0.45 | 0.35 | 2-10x | 戰略協調者。HACP 辯論主席。**在 Skeptics 審查後思考**，接收審查結果。根據風險/信心設定槓桿，動態調整 TP/SL。 |
@@ -715,7 +715,9 @@ Direction reversals: 5 (83% reversal rate) | Current loss streak: 3
 
 ---
 
-### 📰 News Reporter — 多源新聞策略 (v1.9.2, multi-symbol)
+### 📰 News Reporter — 隱性策略師新聞分析 (v2.0.76, multi-symbol)
+
+> **⚠️ v2.0.75–v2.0.77 重寫**：以下舊版 ASCII 圖描述的 NewsData.io + CoinDesk/The Block/CNBC RSS 多源管線 **從未實作**（Reddit public JSON 又於 2026-06 被 403 封鎖）。真實實作見下方「v2.0.76 真實實作」小節。舊圖保留僅供歷史參考。
 
 ```
 資產符號 + 市場上下文
@@ -795,6 +797,19 @@ Direction reversals: 5 (83% reversal rate) | Current loss streak: 3
     → AI 被指示: 保持 NEUTRAL, confidence 0.1-0.3
     → 絕不憑空創造信號
 ```
+
+#### v2.0.76 真實實作（取代上面舊圖）
+
+舊版 NewsData.io/CoinDesk/The Block/CNBC 管線從未實作。真實模組為 `src/analysis/news-sentiment.ts`（v2.0.75 新建，v2.0.77 multi-symbol 強化）：
+
+- **來源**（全部免鑰匙、實測 HTTP 200）：Google News RSS（primary, Bloomberg/Reuters/CNBC 真實標題）+ GDELT 2.0 doc API（secondary, 結構化 JSON）+ Bing News RSS（tertiary）。三源並行 `Promise.allSettled`，任一通即可。
+- **Multi-symbol**（v2.0.77）：`fetchNewsForSymbols(symbols[], cap=5)` — active symbol 排首 + 其他持倉跟後，去重上限 5 個/cycle。5 分鐘/symbol 記憶體快取，重複抓取免費。
+- **Symbol → 查詢**：`SYMBOL_NEWS_NAMES` 表（crypto/stocks/indices/commodities/fx）+ `detectCategory()` + `resolveNewsQuery()`。例：BTC→`"Bitcoin" crypto news`、xyz:MU→`"Micron Technology" MU stock news`。
+- **自適應視窗**：24h → 72h → 168h 級聯。crypto 24h 命中豐；低覆蓋率（SK Hynix）放寬到 168h 仍有真實標題。
+- **Lexicon hint**：crypto/finance 詞庫快速預評分（BULLISH/BEARISH/NEUTRAL + score），僅作 HINT，真正分析交給 News Reporter LLM。
+- **注入**：`formatNewsForAgentMulti()` 輸出 `=== NEWS SENTIMENT ===`（與 News Reporter 系統提示詞觸發詞對齊），首個 symbol 8 則、其餘各 3 則。無新聞 → "no recent news — NEUTRAL"。
+- **News Reporter agent**：DeepSeek V4 Flash + 隱性策略師人格（權重 0.30）。分析新聞源頭/陰謀/動機，評估急性中長線盈利+需求增加 vs 急性價值下跌。為派發造的「利好」= 看跌、為收集造的 FUD = 看漇。
+- **Fail-open**：任何 fetch 錯誤不阻擋決策周期。
 
 ---
 
@@ -3907,7 +3922,7 @@ flowchart LR
 | **🎨 TradingView Chart** | ✅ 1.8.0 | **Binance fapi / HL candleSnapshot (req wrapper) · 5m/1h/4h/1d/1w · Buy/Sell/SL/TP 標記 · 所有 DEX 資產即時 candles** |
 | **🔤 Unbounded Font** | ✅ 1.5.0 | **全 UI 使用 Unbounded Variable 字體 · woff2 + ttf 自託管** |
 | **🔍 On-Chain Whisperer Agent** | ✅ 1.9.3 | **類別感知鏈上/宏觀流動數據 + multi-symbol: 每個 cycle 為所有持倉一次 fetch。BTC mempool(算力/手續費), ETH CoinGecko, 所有代幣 CoinGecko(交易所流量/供應量), TradFi DXY代理/FX匯率/商品現貨, DDG HTML搜索回退, 5分鐘緩存** |
-| **📰 News Reporter Agent** | ✅ 1.9.3 | **多源類別感知新聞分析 + multi-symbol: 每個 cycle 為所有持倉一次 fetch。NewsData.io API + Google News RSS (100+篇) + CNBC RSS + CoinDesk RSS + The Block RSS + Bing RSS · 每類別 4 層宏觀→世界→行業策略 · 5分鐘緩存 · 無新聞→NEUTRAL** |
+| **📰 News Reporter Agent** | ✅ 2.0.77 | **隱性策略師新聞分析 (DeepSeek V4 Flash, weight 0.30) + multi-symbol: 每個 cycle 為 active symbol + 所有持倉一次 fetch (cap=5, 5min cache)。Google News RSS + GDELT 2.0 + Bing News RSS (全免鑰匙) · 自適應視窗 24h→72h→168h · lexicon hint + LLM 動機分析 · 無新聞→NEUTRAL · v2.0.76 隱性策略師人格分析源頭/陰謀/動機** |
 | **🤔 Skeptics Agent** | ✅ 1.9.3 | **邏輯審計員: Phase 1.5 執行, 跨 Agent 交叉對比 + 歷史 track record 參考, 檢查數據一致性/計算遺漏。default: deepseek-v4-flash:cloud。不干預 Meta-Agent/Market Agent。失敗時 auto-approve。** |
 | **🧬 AgentOutcomeTracker** | ✅ 1.9.3 | **Per-Agent Per-Symbol Per-Regime outcome 追蹤: 每個 cycle 記錄所有 agent 的 recommendation, 平倉時 backfill win/loss。getContextSummary() 注入 agent context。Skeptics 參考 track record 做審查。** |
 | **😱 Fear & Greed Index** | ✅ 1.7.0 | **alternative.me FNG · RBC & Sentiment Analyst 整合** |
@@ -4072,8 +4087,9 @@ const FOMC_2026 = [
 ```
 
 - **資料源**: 無 runtime API 調用。FOMC 日期一年 hardcode 一次。NFP 日期動態計算（每月第一個星期五）。
+- **🆕 v2.0.77: CPI 已實作**（之前只定義未實作）。CPI 於每月 10-15 號 @ 08:30 ET（12:30 UTC）發布，確切日期逐月變動且由 BLS 公布。代碼用防禦性視窗：10-15 號每天都檢查 ±4h blackout，略微過保護（某些非 CPI 日也在視窗內）但對 TradFi 倉位遠比無 CPI guard 安全。
 - **錯誤處理**: try/catch 包覆 → fail open（log error，不 block cycle）
-- **日曆可擴展**: 可在 `FOMC_2026_DATES` 陣列中追加 CPI、OPEC、選舉等日期
+- **日曆可擴展**: 可在 `FOMC_2026_DATES` 陣列中追加 OPEC、選舉等日期
 
 #### Guard B: Drawdown Circuit Breaker（回撤熔斷）
 
@@ -4267,7 +4283,7 @@ Default:     Neutral → buy
 │  │   ├─ Phase 1.75: Meta-Agent 接收 Skeptics 結果後仲裁                    │
 │  │   ├─ Phase 2-5: 辯論→共識→否決→倉位調整                               │
 │  │   ├─ On-Chain Whisperer → 類別感知鏈上/宏觀 (所有持倉一次性)           │
-│  │   ├─ News Reporter → 多源 RSS+API (所有持倉一次性)                     │
+│  │   ├─ News Reporter → Google News RSS + GDELT + Bing (active+持倉, cap=5)    │
 │  │   ├─ Fractal Momentum → 碎形動量 (逐倉)                               │
 │  │   ├─ RBC & Sentiment Analyst → 制度+F&G (逐倉驗證 + SNR 聯動)                 │
 │  │   ├─ Risk Auditor → 逐倉否決權                                        │

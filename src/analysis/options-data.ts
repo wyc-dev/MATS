@@ -153,15 +153,12 @@ export class OptionsDataManager {
     await this.detectPlanTier();
 
     this.connected = true;
-    log.info(`✅ OptionsDataManager: REST polling started (60s interval, plan=${this.planTier})`);
+    log.info(`✅ OptionsDataManager: connected (plan=${this.planTier}, poll-on-demand via decision cycle)`);
 
-    // Start polling loop — only fetches the active symbol, not all positions
-    this.pollTimer = setInterval(() => {
-      void this.pollActiveSymbol();
-    }, this.POLL_INTERVAL_MS);
-
-    // Do an immediate poll for the active symbol
-    void this.pollActiveSymbol();
+    // v2.0.71: NO setInterval — polling is driven by the decision cycle.
+    // index.ts calls pollOnce() during each runDecisionCycle() for the
+    // active symbol. This ensures options data is fetched exactly once
+    // per cycle, not every 60s independently.
   }
 
   /**
@@ -292,23 +289,20 @@ export class OptionsDataManager {
   }
 
   /**
-   * v2.0.69: Poll ONLY the active symbol (not all open positions).
-   * This prevents rate limit (429) errors from fetching multiple symbols
-   * every 15s. Only the Market Agent's selected symbol is polled.
-   * If rate limited, enters a cooldown period before retrying.
+   * v2.0.71: Poll the active symbol ONCE — called by index.ts during each
+   * decision cycle. No independent setInterval. This ensures options data
+   * is fetched exactly once per cycle, not every 60s independently.
    */
-  private async pollActiveSymbol(): Promise<void> {
+  async pollOnce(): Promise<void> {
     if (!this.activeSymbol) return;
-    // v2.0.69: Rate limit cooldown — skip poll if in cooldown
     if (this.rateLimitCooldown > 0) {
       this.rateLimitCooldown--;
-      log.debug(`OptionsDataManager: Rate limit cooldown (${this.rateLimitCooldown} polls remaining) — skipping ${this.activeSymbol}`);
       return;
     }
     try {
       await this.fetchOptionChain(this.activeSymbol);
-    } catch (err) {
-      log.debug(`OptionsDataManager: Poll failed for ${this.activeSymbol}: ${err instanceof Error ? err.message : String(err)}`);
+    } catch {
+      /* non-critical */
     }
   }
 

@@ -125,7 +125,7 @@ MATS does not rely on a single AI model. Instead, **eight specialized agents thi
 | **Fractal Momentum Sentinel** | Fractal pattern & trend analyst | 0.85 | 0.25 |
 | **On-Chain Whisperer** | On-chain data & macro analyst | 0.50 | 0.25 |
 | **RBC & Sentiment Analyst** | RBC clusters + Fear & Greed specialist | 0.25 | 0.25 |
-| **News Reporter** | Multi-source news sentiment analyst | 0.40 | 0.20 |
+| **News Reporter** | Shadow Strategist news motive analyzer | 0.40 | 0.30 |
 | **Independent Risk Auditor** | 🚨 Final gatekeeper (absolute veto power) + 🆕 v2.0.13 regime-aware TP/SL | 0.10 | 0.25 |
 | **Skeptics** | 🤔 Logic auditor (cross-references all agents) | 0.30 | — |
 | **Meta-Agent** | Strategic coordinator / debate chair | 0.45 | 0.35 |

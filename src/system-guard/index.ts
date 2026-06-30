@@ -82,6 +82,29 @@ function getEconomicEventBlackoutWindow(): { active: boolean; eventName: string;
       }
     }
 
+    // v2.0.77: Check CPI (released ~10th-15th of each month @ 08:30 ET).
+    // Exact CPI dates vary month-to-month and are published by BLS. We use a
+    // defensive window: any day from the 10th to the 15th of the month, with
+    // the release assumed at 12:30 UTC (08:30 ET). This over-blocks slightly
+    // (a few days per month are in the window even when CPI isn't that exact
+    // day) but is far safer than no CPI guard for TradFi positions.
+    for (const m of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
+      // CPI release day is uncertain; check each candidate day 10-15.
+      for (const day of [10, 11, 12, 13, 14, 15]) {
+        const cpiDay = new Date(Date.UTC(2026, m - 1, day, 12, 30, 0, 0));
+        const cpiMs = cpiDay.getTime();
+        const diff = nowMs - cpiMs;
+        if (diff >= -BLACKOUT_MS && diff <= 2 * 3_600_000) {
+          const hoursUntil = diff < 0 ? Math.round(-diff / 3_600_000) : Math.round(diff / 3_600_000);
+          return {
+            active: diff < 0,
+            eventName: `CPI ${months[m - 1] ?? ''} (window day ${day})`,
+            hoursUntilRelease: hoursUntil,
+          };
+        }
+      }
+    }
+
     return null;
   } catch (err) {
     log.error(`[economic-calendar] Failed: ${err instanceof Error ? err.message : String(err)}`);
