@@ -299,17 +299,31 @@ export class HyperliquidRealEngine implements RealTradingEngine {
   private static readonly PERP_DEX_NAMES: string[] = ['', 'xyz'];
 
   // v2.0.79: Short-lived balance cache — prevents redundant getBalance() calls
-  // within the same cycle (index.ts cycle + executeDecision margin check +
-  // refreshHLFillsAndPush all call getBalance() within ~3 seconds).
+  // within the same cycle. Uses inflight promise to prevent cache stampede
+  // (multiple concurrent calls all miss the cache and all fetch simultaneously).
   private balanceCache: { value: ExchangeAccountInfo; ts: number } | null = null;
   private static readonly BALANCE_CACHE_TTL_MS = 10_000; // 10s cache
+  private balanceInflight: Promise<ExchangeAccountInfo> | null = null;
 
   async getBalance(): Promise<ExchangeAccountInfo> {
     // v2.0.79: Return cached balance if fresh (< 10s old)
     if (this.balanceCache && (Date.now() - this.balanceCache.ts) < HyperliquidRealEngine.BALANCE_CACHE_TTL_MS) {
       return this.balanceCache.value;
     }
+    // v2.0.79: If a fetch is already in flight, await it instead of starting a new one
+    if (this.balanceInflight) {
+      return this.balanceInflight;
+    }
 
+    this.balanceInflight = this._fetchBalance();
+    try {
+      return await this.balanceInflight;
+    } finally {
+      this.balanceInflight = null;
+    }
+  }
+
+  private async _fetchBalance(): Promise<ExchangeAccountInfo> {
     try {
       let totalAccountValue = 0;
       let totalWithdrawable = 0;
@@ -393,7 +407,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       this.balanceCache = { value: result, ts: Date.now() };
       return result;
     } catch (err) {
-      log.error(`getBalance failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.error(`_fetchBalance failed: ${err instanceof Error ? err.message : String(err)}`);
       return { free: 0, locked: 0, total: 0, unrealizedPnl: 0, marginUsed: 0 };
     }
   }
@@ -401,15 +415,29 @@ export class HyperliquidRealEngine implements RealTradingEngine {
   // v2.0.79: Short-lived positions cache — same reason as balance cache
   private positionsCache: { value: Position[]; ts: number } | null = null;
   private static readonly POSITIONS_CACHE_TTL_MS = 10_000;
+  private positionsInflight: Promise<Position[]> | null = null;
 
   async getPositions(): Promise<Position[]> {
     // v2.0.79: Return cached positions if fresh
     if (this.positionsCache && (Date.now() - this.positionsCache.ts) < HyperliquidRealEngine.POSITIONS_CACHE_TTL_MS) {
       return this.positionsCache.value;
     }
+    // v2.0.79: If a fetch is already in flight, await it
+    if (this.positionsInflight) {
+      return this.positionsInflight;
+    }
+    this.positionsInflight = this._fetchPositions();
+    try {
+      return await this.positionsInflight;
+    } finally {
+      this.positionsInflight = null;
+    }
+  }
 
+  private async _fetchPositions(): Promise<Position[]> {
     try {
       const allPositions: Position[] = [];
+      let dexFetchFailures = 0;
 
       // v2.0.33: Fetch recent fills to get actual open timestamps.
       // HL clearinghouseState doesn't include position open time, so we
@@ -532,15 +560,21 @@ export class HyperliquidRealEngine implements RealTradingEngine {
             } as Position);
           }
         } catch (err) {
+          dexFetchFailures++;
           log.warn(`[getPositions] DEX ${dex} fetch failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
-      // v2.0.79: Cache the result
-      this.positionsCache = { value: allPositions, ts: Date.now() };
+      // v2.0.79: Only cache if ALL DEXes succeeded — a partial result (missing
+      // xyz DEX) would be cached and prevent the next caller from getting full data.
+      if (dexFetchFailures === 0) {
+        this.positionsCache = { value: allPositions, ts: Date.now() };
+      } else {
+        log.warn(`[getPositions] ${dexFetchFailures} DEX fetch(es) failed — NOT caching (partial data)`);
+      }
       return allPositions;
     } catch (err) {
-      log.error(`getPositions failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.error(`_fetchPositions failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
     }
   }
@@ -554,6 +588,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
   // v2.0.79: Short-lived fills cache
   private fillsCache: { value: any[]; ts: number; limit: number } | null = null;
   private static readonly FILLS_CACHE_TTL_MS = 10_000;
+  private fillsInflight: Promise<any[]> | null = null;
 
   async getRecentFills(limit = 10): Promise<Array<{
     symbol: string;
@@ -569,7 +604,28 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     if (this.fillsCache && this.fillsCache.limit >= limit && (Date.now() - this.fillsCache.ts) < HyperliquidRealEngine.FILLS_CACHE_TTL_MS) {
       return this.fillsCache.value.slice(0, limit);
     }
+    // v2.0.79: If a fetch is already in flight, await it
+    if (this.fillsInflight) {
+      return (await this.fillsInflight).slice(0, limit);
+    }
+    this.fillsInflight = this._fetchRecentFills(limit);
+    try {
+      return await this.fillsInflight;
+    } finally {
+      this.fillsInflight = null;
+    }
+  }
 
+  private async _fetchRecentFills(limit = 10): Promise<Array<{
+    symbol: string;
+    side: 'buy' | 'sell';
+    price: number;
+    size: number;
+    timestamp: number;
+    closedPnl: number;
+    fee: number;
+    dir: string;
+  }>> {
     try {
       // userFillsByTime requires startTime — HL API fails without it.
       // Query last 7 days to capture all recent fills.
@@ -610,7 +666,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       this.fillsCache = { value: result, ts: Date.now(), limit };
       return result;
     } catch (err) {
-      log.error(`getRecentFills failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.error(`_fetchRecentFills failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
     }
   }

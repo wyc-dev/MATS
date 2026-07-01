@@ -1127,6 +1127,7 @@ function HistoryPanel({ data }: { data: APIData | null }) {
   const tradeRecords = data?.tradeRecords ?? []
   const [page, setPage] = useState(0)
   const pageSize = 10
+  const isRealMode = data?.marketAgent?.config?.tradeMode === 'real'
 
   // Sort newest first by close/open timestamp
   const sorted = [...tradeRecords].sort((a: any, b: any) => {
@@ -1142,6 +1143,17 @@ function HistoryPanel({ data }: { data: APIData | null }) {
   const closedCount = sorted.filter((t: any) => t.status === 'closed').length
 
   useEffect(() => { setPage(0) }, [tradeRecords.length])
+
+  const handleResetTrades = async () => {
+    if (!confirm('Reset all paper trade records? This clears the trade history and cannot be undone.')) return
+    try {
+      await fetch(`${API_BASE}/evolution/reset-trade-history`, { method: 'POST' })
+      // Also reset paper engine trades via a new endpoint
+      await fetch(`${API_BASE}/paper/reset-trades`, { method: 'POST' })
+    } catch (err) {
+      console.error('Failed to reset trades:', err)
+    }
+  }
 
   if (sorted.length === 0) {
     return (
@@ -1162,6 +1174,11 @@ function HistoryPanel({ data }: { data: APIData | null }) {
       <div className="panel-header">
         <span className="panel-title">Trade Records</span>
         <div className="trade-filter-row">
+          {!isRealMode && (
+            <button className="header-btn trade-reset-btn" onClick={handleResetTrades} title="Reset paper trade records">
+              🗑️
+            </button>
+          )}
           <span className="panel-badge trade-filter-badge">
             {openCount > 0 && <span>{openCount} open</span>}
             {closedCount > 0 && <span>{closedCount} closed</span>}
