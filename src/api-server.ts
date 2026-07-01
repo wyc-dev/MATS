@@ -225,6 +225,8 @@ export class APIServer {
   private onManualClosePosition: ((symbol: string) => Promise<{ success: boolean; error?: string }>) | null = null;
   private onCandlesRequest: ((symbol: string, interval: string, limit: number) => Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>>) | null = null;
   private onResetTradeHistory: (() => void) | null = null;
+  /** v2.0.79: Reset paper engine trades */
+  private onResetPaperTrades: (() => void) | null = null;
   private onPause: (() => void) | null = null;
   private onResume: (() => void) | null = null;
 
@@ -331,6 +333,11 @@ export class APIServer {
   /** Register a callback for resetting trade history */
   setResetTradeHistoryHandler(cb: () => void): void {
     this.onResetTradeHistory = cb;
+  }
+
+  /** v2.0.79: Register a callback for resetting paper engine trades */
+  setResetPaperTradesHandler(cb: () => void): void {
+    this.onResetPaperTrades = cb;
   }
 
   /** Register a callback for pausing the system (RBC only mode) */
@@ -587,6 +594,14 @@ export class APIServer {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, message: 'Trade history reset requested' }));
         if (this.onResetTradeHistory) this.onResetTradeHistory();
+        return;
+      }
+
+      // v2.0.79: POST — reset paper engine trades (clears paper trade records)
+      if (pathname === '/api/paper/reset-trades' && req.method === 'POST') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: 'Paper trades reset' }));
+        if (this.onResetPaperTrades) this.onResetPaperTrades();
         return;
       }
 

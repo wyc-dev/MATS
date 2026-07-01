@@ -369,6 +369,13 @@ class MATSSystem {
         this.pushToAPI();
       });
 
+      // v2.0.79: Reset paper engine trades
+      this.apiServer.setResetPaperTradesHandler(() => {
+        log.info('🗑️ Paper trades reset requested from API');
+        this.paperEngine.resetTrades();
+        this.pushToAPI();
+      });
+
       // Wire up Market Agent API handlers
       this.apiServer.setMarketAgentSetTradeModeHandler(async (mode) => {
         log.info(`Market Agent: trade mode → ${mode}`);
@@ -1558,49 +1565,37 @@ class MATSSystem {
       const useOptionsData = assetType === 'stocks' || assetType === 'indices' || assetType === 'tradfi';
       if (useOptionsData) {
         try {
-          // v2.0.69: Only set active symbol for polling — don't subscribe all positions.
-          // This prevents rate limit (429) errors from fetching multiple symbols.
-          // The active symbol is the Market Agent's selected trading pair.
-          // v2.0.70: Only fetch if the symbol changed (prevents duplicate fetch).
-          const currentActive = this.optionsDataManager.getActiveSymbol();
-          if (currentActive !== activeSymbol) {
-            this.optionsDataManager.setActiveSymbol(activeSymbol);
+          // v2.0.79: Fetch options data for ALL trading markets + open positions,
+          // not just the active symbol. Each symbol gets its own context block.
+          const optionSymbols = allSymbols.filter(s => s.includes(':') || !s.match(/^(BTC|ETH|SOL|XRP|DOGE|ADA|AVAX|LINK|DOT|MATIC|BNB|TRX|SHIB|UNI|ATOM|LTC|BCH|NEAR|APT|FIL|ARBITRUM|ARB|OP|PENDLE|AAVE|ENA|WIF|PEPE|INJ|STX|SEI|TIA|RUNE|INJ|ORDI|SUI|JUP|PYTH|JTO|BLUR|FLOKI|BONK|MEME)$/i));
+          for (const sym of optionSymbols) {
+            const currentActive = this.optionsDataManager.getActiveSymbol();
+            if (currentActive !== sym) {
+              this.optionsDataManager.setActiveSymbol(sym);
+            }
+            void this.optionsDataManager.pollOnce();
+            const symCtx = formatOptionsForAgent(sym);
+            if (symCtx) {
+              optionsContext += '\n' + symCtx;
+              log.info(`📊 [options-data] Context injected for ${sym} (assetType=${assetType})`);
+            }
           }
-          // v2.0.71: Poll once per decision cycle (no independent setInterval).
-          // This ensures options data is fetched exactly once per cycle.
-          void this.optionsDataManager.pollOnce();
-          optionsContext = '\n' + formatOptionsForAgent(activeSymbol);
-          playbookContext = '\n' + formatPlaybookForAgent(activeSymbol, combinedState.trend, combinedState.regime);
-          log.info(`📊 [options-data] Context injected for ${activeSymbol} (assetType=${assetType})`);
-
-          // v2.0.61: Inject Options Data Layer vote with HIGHEST weight.
-          // For Stocks/Indices, the Regime → Playbook gets the dominant
-          // voting weight in consensus. This ensures options-derived signals
-          // (IV Rank, Gamma regime, Put/Call ratio, Event Risk) drive the
-          // trading decision — as they should for equities.
-          const pb = this.optionsDataManager.getRegimePlaybook(activeSymbol, combinedState.trend, combinedState.regime);
-          // Map playbook to a directional vote:
-          // - Stand Aside / vetoNewPositions → HOLD with high confidence
-          // - Premium Sell (range + high IV) → HOLD (non-directional premium collection)
-          // - Directional Credit / Defined-Risk Debit → follow trend
-          // - Buy Convexity → follow trend (breakout expected)
-          // - Standard Directional → follow trend
-          const optionsAction: 'buy' | 'sell' | 'hold' =
-            pb.vetoNewPositions ? 'hold'
-            : pb.playbook === 'Premium Sell' ? 'hold'
-            : combinedState.trend === 'bullish' ? 'buy'
-            : combinedState.trend === 'bearish' ? 'sell'
-            : 'hold';
-          // v2.0.68: Dynamic voting weight based on detected API plan tier.
-          // - free plan: weight 0.10 (low — estimated IV, 1-day delayed)
-          // - starter/developer: weight 0.25-0.28 (medium — direct IV/Greeks/OI)
-          // - advanced: weight 0.30 (highest — real-time IV/Greeks/OI)
-          // - none/unknown: weight 0.0 (no vote — no data)
-          const optionsWeight = this.optionsDataManager.getRecommendedVoteWeight();
-          const baseConfidence = this.optionsDataManager.getRecommendedConfidence();
-          const optionsConfidence = pb.vetoNewPositions ? Math.max(baseConfidence, 0.90) : baseConfidence;
-          if (optionsWeight > 0) {
-            this.hacpEngine.setOptionsVote(optionsAction, optionsConfidence, optionsWeight, pb.rationale);
+          // Playbook + vote only for the active symbol
+          if (activeSymbol.includes(':') || !activeSymbol.match(/^(BTC|ETH|SOL|XRP|DOGE|ADA|AVAX|LINK|DOT|MATIC|BNB|TRX|SHIB|UNI|ATOM|LTC|BCH|NEAR|APT|FIL|ARBITRUM|ARB|OP|PENDLE|AAVE|ENA|WIF|PEPE|INJ|STX|SEI|TIA|RUNE|INJ|ORDI|SUI|JUP|PYTH|JTO|BLUR|FLOKI|BONK|MEME)$/i)) {
+            playbookContext = '\n' + formatPlaybookForAgent(activeSymbol, combinedState.trend, combinedState.regime);
+            const pb = this.optionsDataManager.getRegimePlaybook(activeSymbol, combinedState.trend, combinedState.regime);
+            const optionsAction: 'buy' | 'sell' | 'hold' =
+              pb.vetoNewPositions ? 'hold'
+              : pb.playbook === 'Premium Sell' ? 'hold'
+              : combinedState.trend === 'bullish' ? 'buy'
+              : combinedState.trend === 'bearish' ? 'sell'
+              : 'hold';
+            const optionsWeight = this.optionsDataManager.getRecommendedVoteWeight();
+            const baseConfidence = this.optionsDataManager.getRecommendedConfidence();
+            const optionsConfidence = pb.vetoNewPositions ? Math.max(baseConfidence, 0.90) : baseConfidence;
+            if (optionsWeight > 0) {
+              this.hacpEngine.setOptionsVote(optionsAction, optionsConfidence, optionsWeight, pb.rationale);
+            }
           }
         } catch (err) {
           log.warn(`[options-data] Failed to get context: ${err instanceof Error ? err.message : String(err)}`);
@@ -1986,17 +1981,36 @@ class MATSSystem {
 
       // Build current positions for TP/SL adjustment
       // v2.0.72: include realPositions (now separate from paper positions)
+      // v2.0.79: Also include cachedExchangePositions not in realPositions
+      // (e.g. if syncExchangePositions missed them due to 429 on xyz DEX)
+      const realPos = this.portfolio.getRealPositions();
+      const realPosSyms = new Set(realPos.map(p => normalizeSymbol(p.symbol)));
       const currentPositions = [
         ...Array.from(this.portfolio.getPortfolio().positions.values()),
-        ...this.portfolio.getRealPositions(),
+        ...realPos,
+        // Add any exchange positions missing from realPositions
+        ...(this.cachedExchangePositions ?? [])
+          .filter(ep => !realPosSyms.has(normalizeSymbol(ep.symbol)))
+          .map(ep => ({
+            id: `hl-${ep.symbol}-${ep.openedAt}`,
+            symbol: ep.symbol,
+            side: ep.side,
+            entryPrice: ep.averageEntryPrice,
+            currentPrice: ep.currentPrice,
+            stopLossPrice: undefined as number | undefined,
+            takeProfitPrice: undefined as number | undefined,
+            leverage: ep.leverage,
+            quantity: ep.quantity,
+            exchange: 'hyperliquid',
+          })),
       ].map(p => ({
         id: p.id,
         symbol: p.symbol,
         side: p.side,
-        entryPrice: p.averageEntryPrice,
+        entryPrice: 'averageEntryPrice' in p ? p.averageEntryPrice : p.entryPrice,
         currentPrice: p.currentPrice,
-        stopLoss: p.stopLossPrice,
-        takeProfit: p.takeProfitPrice,
+        stopLoss: 'stopLossPrice' in p ? p.stopLossPrice : undefined,
+        takeProfit: 'takeProfitPrice' in p ? p.takeProfitPrice : undefined,
         leverage: p.leverage,
         quantity: p.quantity,
         exchange: (p as any).exchange ?? 'hyperliquid',
@@ -3788,23 +3802,16 @@ class MATSSystem {
             }),
         ] : [
           // Paper mode: paper engine trades + paper open positions
-          // v2.0.52: Filter out error trades where entry ≈ exit and PnL ≈ 0
-          // (these are phantom trades from immediate open→close cycles, often
-          // caused by reconciliation or system errors. They pollute the Trade
-          // Records panel with meaningless entries).
-          // v2.0.53: FIX — previous filter used OR (priceMoved || hasPnl) which
-          // let fee-only trades through (price didn't move but PnL = -$0.15 from
-          // fees > $0.01). Now uses AND: a trade is kept only if price moved
-          // AND PnL is non-trivial. Fee-only trades (entry≈exit, PnL=fees) are
-          // filtered out regardless of fee amount.
+          // v2.0.79: Relaxed filter — only filter out truly phantom trades
+          // (entry ≈ exit AND PnL ≈ 0). Previous filter was too aggressive,
+          // hiding real trades with small price movements.
           ...this.paperEngine.getTrades().slice(-50).filter(t => {
-            // v2.0.53: Price must have moved meaningfully (>0.05% = 5 bps)
-            // AND PnL must be non-trivial (>$0.01). Fee-only trades where
-            // price barely moved but PnL = -(fees) are filtered out.
+            // Only filter out trades where NOTHING happened — no price
+            // movement AND no PnL. These are phantom reconciliation trades.
             const priceMovedPct = Math.abs(t.exitPrice - t.entryPrice) / (t.entryPrice || 1);
-            const priceMoved = priceMovedPct > 0.0005; // >0.05% = 5 bps
-            const hasPnl = Math.abs(t.pnl) > 0.01; // >$0.01
-            return priceMoved && hasPnl;
+            const priceMoved = priceMovedPct > 0.0001; // >0.01% = 1 bps
+            const hasPnl = Math.abs(t.pnl) > 0.005; // >$0.005
+            return priceMoved || hasPnl;
           }).map(t => ({
             id: t.id,
             symbol: t.symbol,

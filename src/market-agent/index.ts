@@ -921,6 +921,12 @@ export class MarketAgent {
 
     if (symbols.length === 0) return result;
 
+    // v2.0.79: Update lastFetchTime on successful fetch so SystemGuard's
+    // data_freshness check doesn't block cycles. Previously lastFetchTime
+    // was only updated by fetchTopPairs(), not by this method — so REST
+    // polling could succeed but lastFetchTime stayed stale forever.
+    let fetchedAny = false;
+
     // Split into DEX 0 (bare) and colon symbols
     const dex0Symbols = symbols.filter(s => !s.includes(':'));
     const colonSymbols = symbols.filter(s => s.includes(':'));
@@ -934,6 +940,7 @@ export class MarketAgent {
           const entry = cached.data.find(e => e.name === sym.toUpperCase());
           if (entry) {
             result.set(sym, { price: entry.price, volume24h: entry.volume24h, change24h: entry.change24h });
+            fetchedAny = true;
           }
         }
       }
@@ -971,6 +978,7 @@ export class MarketAgent {
               const entry = newEntries.find(e => e.name === sym.toUpperCase());
               if (entry) {
                 result.set(sym, { price: entry.price, volume24h: entry.volume24h, change24h: entry.change24h });
+                fetchedAny = true;
               }
             }
           }
@@ -997,12 +1005,17 @@ export class MarketAgent {
         })
       );
       for (const r of colonResults) {
-        if (r.status === 'fulfilled') {
+        if (r.status === 'fulfilled' && r.value.price > 0) {
           result.set(r.value.symbol, { price: r.value.price, volume24h: r.value.volume24h, change24h: r.value.change24h });
+          fetchedAny = true;
         }
       }
     }
 
+    // v2.0.79: Update lastFetchTime so SystemGuard data_freshness check passes
+    if (fetchedAny) {
+      this.lastFetchTime = Date.now();
+    }
     return result;
   }
 

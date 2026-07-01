@@ -3303,6 +3303,21 @@ body {
   cursor: not-allowed;
 }
 
+.trade-reset-btn {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--fs-md);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.trade-reset-btn:hover {
+  border-color: var(--red);
+  background: rgba(248, 113, 113, 0.1);
+}
+
 .trade-page-sep {
   font-size: var(--fs-xs);
   color: var(--text-tertiary);

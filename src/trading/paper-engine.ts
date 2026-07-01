@@ -104,6 +104,12 @@ export class PaperTradingEngine {
     return this.trades;
   }
 
+  /** v2.0.79: Reset all paper trade records (for UI reset button) */
+  resetTrades(): void {
+    this.trades.length = 0;
+    log.info('🗑️ Paper trades reset — all trade records cleared');
+  }
+
   /**
    * v2.0.42: Get win/loss stats for the most recent N trades.
    * Used by UI + heartbeat to show a RECENT win rate that reflects

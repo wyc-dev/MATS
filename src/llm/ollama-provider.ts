@@ -217,8 +217,11 @@ export class OllamaProvider implements LLMProvider {
     }
 
     const startTime = performance.now();
-    const model = request.model ?? this.defaultModel;
+    let model = request.model ?? this.defaultModel;
+    const originalModel = model;
     const maxRetries = 2;
+    // v2.0.79: Fallback models for 503 (model overloaded)
+    const FALLBACK_MODELS = ['kimi-k2.6:cloud', 'glm-5:cloud', 'kimi-k2.5:cloud'];
 
     // Acquire concurrency slot to avoid ephemeral port exhaustion.
     // acquireSlot() now fails fast after SLOT_ACQUIRE_TIMEOUT_MS instead of
@@ -361,6 +364,57 @@ export class OllamaProvider implements LLMProvider {
             throw new Error(`Ollama request timed out after ${timeoutMs}ms`);
           }
           if (attempt >= maxRetries) {
+            // v2.0.79: On 503 (model overloaded), try fallback models before giving up
+            const is503 = err instanceof Error && err.message.includes('503');
+            if (is503) {
+              for (const fallback of FALLBACK_MODELS) {
+                if (fallback === model) continue;
+                log.warn(`Model ${model} overloaded (503) — falling back to ${fallback}`);
+                model = fallback;
+                // Retry with fallback model (single attempt, no more retries)
+                try {
+                  const fallbackBody = {
+                    model,
+                    messages: request.messages,
+                    options: {
+                      temperature: request.temperature,
+                      num_ctx: getNumCtxForModel(model),
+                    },
+                    stream: false,
+                  };
+                  const fbController = new AbortController();
+                  const fbTimeout = setTimeout(() => fbController.abort(), request.timeoutMs ?? 30_000);
+                  const fbResponse = await fetch(`${this.baseUrl}/api/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(fallbackBody),
+                    signal: fbController.signal,
+                  });
+                  clearTimeout(fbTimeout);
+                  if (!fbResponse.ok) {
+                    const fbError = await fbResponse.text().catch(() => 'unknown');
+                    log.warn(`Fallback model ${fallback} also failed: ${fbResponse.status} ${fbError.slice(0, 100)}`);
+                    continue;
+                  }
+                  const fbData = await fbResponse.json() as any;
+                  const fbContent = typeof fbData.message?.content === 'string' ? fbData.message.content : '';
+                  if (fbContent) {
+                    this.recordSuccess();
+                    log.info(`✅ Fallback model ${fallback} succeeded after ${originalModel} was overloaded`);
+                    return {
+                      content: fbContent,
+                      model: (fbData as any).model as string ?? fallback,
+                      usage: (fbData as any).prompt_eval_count != null
+                        ? { promptTokens: (fbData as any).prompt_eval_count as number, completionTokens: (fbData as any).eval_count as number ?? 0, totalTokens: ((fbData as any).prompt_eval_count as number ?? 0) + ((fbData as any).eval_count as number ?? 0) }
+                        : undefined,
+                      latencyMs: Math.round(performance.now() - startTime),
+                    };
+                  }
+                } catch (fbErr) {
+                  log.warn(`Fallback model ${fallback} failed: ${fbErr instanceof Error ? fbErr.message : String(fbErr)}`);
+                }
+              }
+            }
             this.recordFailure();
             throw err;
           }
