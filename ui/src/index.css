@@ -2188,6 +2188,13 @@ body {
 .options-table-wrap {
   overflow-x: auto;
   margin-top: var(--space-4);
+  margin-bottom: var(--space-6);
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.options-table-wrap::-webkit-scrollbar {
+  display: none;
 }
 
 .options-table {

@@ -305,6 +305,13 @@ export class HyperliquidRealEngine implements RealTradingEngine {
   private static readonly BALANCE_CACHE_TTL_MS = 10_000; // 10s cache
   private balanceInflight: Promise<ExchangeAccountInfo> | null = null;
 
+  /** v2.0.79: Clear all caches — called after position close to force fresh fetch */
+  clearCaches(): void {
+    this.balanceCache = null;
+    this.positionsCache = null;
+    this.fillsCache = null;
+  }
+
   async getBalance(): Promise<ExchangeAccountInfo> {
     // v2.0.79: Return cached balance if fresh (< 10s old)
     if (this.balanceCache && (Date.now() - this.balanceCache.ts) < HyperliquidRealEngine.BALANCE_CACHE_TTL_MS) {

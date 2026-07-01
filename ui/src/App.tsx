@@ -377,7 +377,20 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
     try {
       const raw = localStorage.getItem(TRADING_MARKETS_KEY)
       const arr = raw ? JSON.parse(raw) : null
-      return Array.isArray(arr) ? arr.filter((s: unknown) => typeof s === 'string').slice(0, 3) : []
+      if (!Array.isArray(arr)) return []
+      // v2.0.79: Dedup by normalized symbol on load — prevents BTC + btc coexisting
+      const norm = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
+      const seen = new Set<string>()
+      const deduped: string[] = []
+      for (const s of arr) {
+        if (typeof s !== 'string') continue
+        const n = norm(s)
+        if (!seen.has(n)) {
+          seen.add(n)
+          deduped.push(s)
+        }
+      }
+      return deduped.slice(0, 3)
     } catch { return [] }
   })
 
@@ -401,8 +414,18 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   useEffect(() => {
     if (data?.tradingMarkets && Array.isArray(data.tradingMarkets)) {
       setTradingMarkets(prev => {
-        // Only update if backend has markets not in local state
-        const merged = [...new Set([...prev, ...data.tradingMarkets!])].slice(0, 3)
+        // v2.0.79: Dedup by normalized symbol — "BTC" and "btc" are the same
+        const norm = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
+        const seen = new Set<string>()
+        const merged: string[] = []
+        for (const s of [...prev, ...data.tradingMarkets!]) {
+          const n = norm(s)
+          if (!seen.has(n)) {
+            seen.add(n)
+            merged.push(s)
+          }
+          if (merged.length >= 3) break
+        }
         const prevJson = JSON.stringify(prev)
         const mergedJson = JSON.stringify(merged)
         return mergedJson !== prevJson ? merged : prev
@@ -411,21 +434,17 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   }, [data?.tradingMarkets])
 
   const addTradingMarket = async (symbol: string) => {
-    // v2.0.79: Check total count (trading markets + open positions) — max 3
-    // Position pills are always shown, so trading market pills + position pills
-    // must not exceed 3 total.
+    // v2.0.79: Normalize symbol before adding — prevents BTC + btc coexistence.
+    const norm = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
+    const normalizedSymbol = norm(symbol)
     const positionCount = positionMap.size
     setTradingMarkets(prev => {
-      // Dedup — only add if not already present (by normalized symbol)
-      const norm = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
-      if (prev.some(s => norm(s) === norm(symbol))) return prev
-      // Also check if a position already covers this symbol
+      if (prev.some(s => norm(s) === normalizedSymbol)) return prev
       for (const [posSym] of positionMap) {
-        if (norm(posSym) === norm(symbol)) return prev
+        if (norm(posSym) === normalizedSymbol) return prev
       }
-      // Max 3 total (trading markets + positions)
       if (prev.length + positionCount >= 3) return prev
-      return [...prev, symbol]
+      return [...prev, normalizedSymbol]
     })
     // Also select the symbol as active for chart display
     try {
@@ -1028,7 +1047,6 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
             <thead>
               <tr>
                 <th></th>
-                <th>Mode</th>
                 <th>Symbol</th>
                 <th>Side</th>
                 <th>Qty</th>
@@ -1074,13 +1092,6 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
                       >
                         ✕
                       </button>
-                    )}
-                  </td>
-                  <td className="td-mode-cell">
-                    {pos.agentId === 'hyperliquid-real' ? (
-                      <span className="mode-badge-real">REAL</span>
-                    ) : (
-                      <span className="mode-badge-paper">PAPER</span>
                     )}
                   </td>
                   <td className="td-symbol-cell">{pos.symbol}</td>
@@ -1389,9 +1400,11 @@ function DebatePanel({ data }: { data: APIData | null }) {
 function OptionsDataPanel({ data }: { data: APIData | null }) {
   const od = data?.optionsData
   const assetType = data?.marketAgent?.config?.hyperliquidAssetType ?? 'crypto_perps'
-  const isOptionsAsset = assetType === 'stocks' || assetType === 'indices' || assetType === 'tradfi'
+  // v2.0.79: Show panel if optionsData exists (backend decides when to fetch)
+  // OR if assetType is stocks/indices/tradfi
+  const hasTradFiPositions = Object.values(data?.portfolio?.positions ?? {}).some((p: any) => typeof p.symbol === 'string' && p.symbol.includes(':'))
+  const isOptionsAsset = assetType === 'stocks' || assetType === 'indices' || assetType === 'tradfi' || hasTradFiPositions || !!od
 
-  // Only render for Stocks/Indices/Tradfi
   if (!isOptionsAsset) return null
 
   // v2.0.79: Normalize to array — backend may return single object or array
