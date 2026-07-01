@@ -1261,6 +1261,7 @@ function DebatePanel({ data }: { data: APIData | null }) {
   const rounds = data?.debateRounds ?? []
   const cycleNum = data?.status?.cycles ?? 0
   const progress = data?.cycleProgress
+  const od = data?.optionsData
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set())
 
   const toggleRound = (roundNum: number) => {
@@ -1332,12 +1333,23 @@ function DebatePanel({ data }: { data: APIData | null }) {
             </div>
           )}
 
-          {/* Per-symbol consensus cards */}
-          {consensus.perSymbolConsensus?.length > 1 && (
+          {/* Per-symbol consensus cards — deduped by normalized symbol */}
+          {consensus.perSymbolConsensus?.length > 1 && (() => {
+            const normSym = (s: string) => s.replace(/^xyz:/i, '').toLowerCase()
+            const seen = new Set<string>()
+            const deduped = consensus.perSymbolConsensus.filter((psc: any) => {
+              const n = normSym(psc.symbol)
+              if (seen.has(n)) return false
+              seen.add(n)
+              return true
+            })
+            return (
             <div className="per-symbol-consensus">
-              {consensus.perSymbolConsensus.map((psc: any) => {
+              {deduped.map((psc: any) => {
                 const isMkt = !psc.hasPosition
                 const actionClass = psc.action === 'close' ? 'sell' : psc.action
+                const odArr = od ? (Array.isArray(od) ? od : [od]) : []
+                const symOd = odArr.find((o: any) => normSym(o.symbol) === normSym(psc.symbol))
                 return (
                   <div key={psc.symbol} className={`consensus-banner consensus-banner-compact ${actionClass}`}>
                     <div className="consensus-row">
@@ -1353,11 +1365,17 @@ function DebatePanel({ data }: { data: APIData | null }) {
                       {psc.suggestedTakeProfit && <span className="consensus-meta-muted">TP:$${psc.suggestedTakeProfit.toFixed(1)}</span>}
                     </div>
                     <div className="consensus-rationale">{psc.rationale}</div>
+                    {symOd && symOd.playbook && (
+                      <div className="consensus-options-info">
+                        📊 {symOd.playbook.playbook} — IV:{(symOd.impliedVolatility * 100).toFixed(0)}% IVR:{symOd.ivRank.toFixed(0)} γ:{symOd.gammaRegime.toUpperCase()} P/C:{symOd.putCallRatio.toFixed(2)}
+                      </div>
+                    )}
                   </div>
                 )
               })}
             </div>
-          )}
+            )
+          })()}
         </div>
       )}
 
@@ -1470,19 +1488,6 @@ function OptionsDataPanel({ data }: { data: APIData | null }) {
           </tbody>
         </table>
       </div>
-
-      {/* Per-asset details (event risk, playbook rationale) */}
-      {odArray.filter(o => o.eventRisk !== 'none' || o.playbook).map((o, i) => (
-        <div key={`detail-${i}`} className="options-detail-row">
-          <span className="ot-detail-symbol">{o.symbol}</span>
-          {o.eventRisk !== 'none' && (
-            <span className="ot-event-risk">⚠️ {o.eventRisk.toUpperCase()}</span>
-          )}
-          {o.playbook && (
-            <span className="ot-playbook-detail">{o.playbook.playbook} — {o.playbook.rationale.slice(0, 80)}</span>
-          )}
-        </div>
-      ))}
     </div>
   )
 }
@@ -2261,12 +2266,11 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
 
 /* ── Main App ── */
 
-// v2.0.78: Desktop panel render functions for masonry layout.
-// Order: Agent Cognition, HACP Debate, Options Data Layer, Portfolio, Evolution.
+// v2.0.79: Options Data Layer removed — options info integrated into HACP Debate.
+// Order: Agent Cognition, HACP Debate, Portfolio, Evolution.
 const DESKTOP_PANELS: Array<(data: APIData | null) => React.ReactNode> = [
   (data) => <AgentPanel key="agents" data={data} />,
   (data) => <DebatePanel key="debate" data={data} />,
-  (data) => <OptionsDataPanel key="options" data={data} />,
   (data) => <PortfolioPanel key="portfolio" data={data} />,
   (data) => <EvolutionPanel key="evolution" data={data} />,
 ]
@@ -2431,7 +2435,6 @@ export default function App() {
           </div>
           <div className="mobile-only">
             {activeTab === 'debate' && <DebatePanel data={data} />}
-            {activeTab === 'debate' && <OptionsDataPanel data={data} />}
           </div>
         </div>
         <div className={`col-right ${activeTab === 'portfolio' || activeTab === 'evolution' ? 'visible' : ''}`}>
