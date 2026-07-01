@@ -129,6 +129,26 @@ export class OptionsDataManager {
   private planTier: 'none' | 'free' | 'starter' | 'developer' | 'advanced' | 'unknown' = 'none';
   private planDetected = false;
 
+  /**
+   * v2.0.79: Map HL perp symbols to Polygon.io underlying tickers.
+   * HL uses custom names (XYZ100, SP500, SPCX) but Polygon.io uses
+   * standard option underlying tickers (NDX, SPX, etc).
+   */
+  private static readonly HL_TO_POLYGON: Record<string, string> = {
+    XYZ100: 'NDX',
+    SP500: 'SPX',
+    SPCX: 'SPX',
+    SPX: 'SPX',
+    NDX: 'NDX',
+    DJI: 'DJX',
+    RUT: 'RUT',
+  };
+
+  private resolveUnderlying(symbol: string): string {
+    const raw = symbol.includes(':') ? symbol.split(':')[1]! : symbol.toUpperCase();
+    return OptionsDataManager.HL_TO_POLYGON[raw] ?? raw;
+  }
+
   constructor(apiKey?: string) {
     this.apiKey = apiKey ?? config.massiveApiKey ?? '';
     if (!this.apiKey) {
@@ -335,7 +355,7 @@ export class OptionsDataManager {
    * This is the accurate path — no estimation needed.
    */
   private async fetchOptionChainSnapshot(symbol: string): Promise<void> {
-    const underlying = symbol.includes(':') ? symbol.split(':')[1]! : symbol.toUpperCase();
+    const underlying = this.resolveUnderlying(symbol);
     const url = `${this.restBaseUrl}/v3/snapshot/options/${underlying}?apiKey=${this.apiKey}&limit=250`;
 
     const res = await fetch(url);
@@ -472,7 +492,7 @@ export class OptionsDataManager {
    * Estimates IV using simplified Black-Scholes approximation.
    */
   private async fetchOptionChainFromContracts(symbol: string): Promise<void> {
-    const underlying = symbol.includes(':') ? symbol.split(':')[1]! : symbol.toUpperCase();
+    const underlying = this.resolveUnderlying(symbol);
 
     // Step 1: Fetch option contracts (available on all plans)
     const contractsUrl = `${this.restBaseUrl}/v3/reference/options/contracts?underlying_ticker=${underlying}&expired=false&limit=250&apiKey=${this.apiKey}`;

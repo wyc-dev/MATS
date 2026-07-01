@@ -1562,18 +1562,26 @@ class MATSSystem {
       let optionsContext = '';
       let playbookContext = '';
       const assetType = this.marketAgent.getConfig().hyperliquidAssetType ?? 'crypto_perps';
-      const useOptionsData = assetType === 'stocks' || assetType === 'indices' || assetType === 'tradfi';
+      // v2.0.79: Run options data if ANY trading market or position is TradFi
+      // (has colon prefix) OR if assetType is stocks/indices/tradfi.
+      // Previously only ran when assetType was stocks/indices, which meant
+      // BTC options were never checked when trading mixed crypto + indices.
+      const hasTradFiSymbols = allSymbols.some(s => s.includes(':'));
+      const useOptionsData = hasTradFiSymbols || assetType === 'stocks' || assetType === 'indices' || assetType === 'tradfi';
       if (useOptionsData) {
         try {
-          // v2.0.79: Fetch options data for ALL trading markets + open positions,
-          // not just the active symbol. Each symbol gets its own context block.
-          const optionSymbols = allSymbols.filter(s => s.includes(':') || !s.match(/^(BTC|ETH|SOL|XRP|DOGE|ADA|AVAX|LINK|DOT|MATIC|BNB|TRX|SHIB|UNI|ATOM|LTC|BCH|NEAR|APT|FIL|ARBITRUM|ARB|OP|PENDLE|AAVE|ENA|WIF|PEPE|INJ|STX|SEI|TIA|RUNE|INJ|ORDI|SUI|JUP|PYTH|JTO|BLUR|FLOKI|BONK|MEME)$/i));
+          // v2.0.79: Fetch options data for ALL trading markets + open positions.
+          // Previously filtered out known crypto symbols (BTC, ETH, etc),
+          // but BTC has options data on Polygon.io (underlying: BTC).
+          const optionSymbols = allSymbols.slice();
           for (const sym of optionSymbols) {
             const currentActive = this.optionsDataManager.getActiveSymbol();
             if (currentActive !== sym) {
               this.optionsDataManager.setActiveSymbol(sym);
             }
-            void this.optionsDataManager.pollOnce();
+            // v2.0.79: Await pollOnce — previously was fire-and-forget (void),
+            // so formatOptionsForAgent() was called before data was fetched.
+            await this.optionsDataManager.pollOnce();
             const symCtx = formatOptionsForAgent(sym);
             if (symCtx) {
               optionsContext += '\n' + symCtx;
@@ -3528,6 +3536,12 @@ class MATSSystem {
       if (this.realTradingManager?.getTradeMode() === 'real') {
         const engine = this.realTradingManager.getEngineForExchange('hyperliquid') as any;
         if (engine) {
+          // v2.0.79: Clear caches so we get FRESH data after a position close.
+          // Without this, getPositions() returns cached data that still has
+          // the closed position, and serializePortfolio() re-adds it.
+          if (typeof engine.clearCaches === 'function') {
+            engine.clearCaches();
+          }
           if (typeof engine.getRecentFills === 'function') {
             this.cachedHLFills = await engine.getRecentFills(10);
           }
@@ -3683,10 +3697,11 @@ class MATSSystem {
         // Only populated when asset type is stocks/indices/tradfi.
         optionsData: (() => {
           const assetType = this.marketAgent.getConfig().hyperliquidAssetType ?? 'crypto_perps';
-          if (assetType !== 'stocks' && assetType !== 'indices' && assetType !== 'tradfi') return undefined;
-          // v2.0.79: Return options data for ALL trading markets + positions
           const openPosSyms = this.portfolio.getRealPositions().map(p => p.symbol);
-          const optionSymbols = [...this.tradingMarkets, ...openPosSyms].filter(s => s.includes(':'));
+          const optionSymbols = [...this.tradingMarkets, ...openPosSyms];
+          // v2.0.79: Run if ANY symbol is TradFi (has colon) or assetType is stocks/indices
+          const hasTradFi = optionSymbols.some(s => s.includes(':'));
+          if (!hasTradFi && assetType !== 'stocks' && assetType !== 'indices' && assetType !== 'tradfi') return undefined;
           const results: Array<{
             symbol: string; ivRank: number; ivPercentile: number; impliedVolatility: number;
             impliedMovePct: number; putCallRatio: number; putCallOIRatio: number;
