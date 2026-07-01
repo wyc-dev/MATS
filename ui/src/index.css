@@ -2184,6 +2184,70 @@ body {
   .evo-stats-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
+/* ── Options Data multi-asset table ── */
+.options-table-wrap {
+  overflow-x: auto;
+  margin-top: var(--space-4);
+}
+
+.options-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.options-table th {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-tertiary);
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-xs);
+  border-bottom: 1px solid var(--glass-border);
+  white-space: nowrap;
+}
+
+.options-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--glass-border);
+  white-space: nowrap;
+}
+
+.options-table td.ot-symbol {
+  font-weight: 600;
+  color: #fbbf24;
+}
+
+.options-table td.accent { color: var(--accent); font-weight: 600; }
+.options-table td.positive { color: var(--green); }
+.options-table td.negative { color: var(--red); }
+.options-table td.ot-playbook { color: var(--text-tertiary); font-size: var(--fs-xs); }
+
+.options-detail-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--glass-border);
+  flex-wrap: wrap;
+}
+
+.ot-detail-symbol {
+  font-weight: 600;
+  color: #fbbf24;
+  font-size: var(--fs-sm);
+}
+
+.ot-event-risk {
+  color: var(--red);
+  font-weight: 600;
+  font-size: var(--fs-xs);
+}
+
+.ot-playbook-detail {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+
 .evo-stat-card {
   display: flex;
   flex-direction: column;
