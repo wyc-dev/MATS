@@ -24,14 +24,25 @@ const log = createLogger({ phase: 'portfolio' });
  */
 // v2.0.42: Exported for use by decision-utils.ts + base-agent.ts + index.ts.
 // All symbol normalization MUST go through this function to ensure consistent
-// casing across the system. Colon-prefixed symbols (xyz:MU) preserve case;
+// casing across the system. Colon-prefixed symbols (xyz:MU) normalize the
+// prefix to lowercase (xyz:MU) while preserving the asset name case;
 // non-colon symbols (BTC) are lowercased.
+//
+// v2.0.78 FIX: Previously, colon symbols preserved the original prefix case
+// (XYZ:SP500 stayed XYZ:SP500). This caused hasPosition() to miss when the
+// decision symbol was uppercased (activeSymbolUpper = 'XYZ:SP500') but the
+// portfolio stored it as 'xyz:SP500'. Now the prefix is always lowercased.
 //
 // ⚠️ MAINTENANCE NOTE: If you change this function, you MUST update all
 // callers: decision-utils.ts normalizeDecision(), base-agent.ts parseResponse(),
 // index.ts overlap guard + onPositions + onFills handlers.
 export function normalizeSymbol(symbol: string): string {
-  return symbol.includes(':') ? symbol : symbol.toLowerCase();
+  if (symbol.includes(':')) {
+    // Lowercase the prefix (before colon), preserve the asset name (after colon)
+    const colonIdx = symbol.indexOf(':');
+    return symbol.slice(0, colonIdx).toLowerCase() + symbol.slice(colonIdx);
+  }
+  return symbol.toLowerCase();
 }
 
 /** Callback fired when a position is closed (SL/TP, reconciliation, or explicit close) */

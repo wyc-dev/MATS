@@ -91,6 +91,11 @@ class MATSSystem {
    *  positions, not just the local mirror. */
   private cachedExchangePositions: Array<{ symbol: string; side: 'buy' | 'sell'; quantity: number; averageEntryPrice: number; currentPrice: number; unrealizedPnl: number; leverage: number; openedAt: number }> | null = null;
   private lastSRContext: { formatted: string; regime: string; zoneCount: number; strongZones: number; nearestSupport: number | null; nearestResistance: number | null; distanceToSupportBps: number; distanceToResistanceBps: number; degradedReason: string | null } | null = null;
+  /** v2.0.79: Cached news headlines per symbol for UI display in News Reporter card. */
+  private cachedNewsHeadlines: Array<{ symbol: string; headlines: Array<{ title: string; publisher: string; url?: string; pubDate: number | null }> }> = [];
+  /** v2.0.79: Trading markets list from UI pills — determines which symbols
+   *  agents analyze (combined with open positions). Replaces auto-select. */
+  private tradingMarkets: string[] = [];
   private emManager!: CycleSummaryManager;
   private patternClassifier!: TradePatternClassifier;
   private patternTagTracker!: PatternTagTracker;
@@ -504,12 +509,16 @@ class MATSSystem {
           log.info(`Market Agent: manual symbol selection → ${symbol}`);
           this.marketAgent.setSelectedSymbolManual(symbol);
           this.pushToAPI();
-          // Trigger a cycle immediately so the user sees analysis for the
-          // newly selected market without waiting for the next interval tick.
-          // 1.5s delay lets the WS reconnect to the new symbol's price feed
-          // without being interrupted by another rapid selection.
           setTimeout(() => void this.runDecisionCycle(), 1500);
         }, 1500);
+      });
+
+      // v2.0.79: Trading markets list from UI pills — determines which symbols
+      // agents analyze (combined with open positions). Replaces auto-select.
+      this.apiServer.setTradingMarketsHandler((markets) => {
+        this.tradingMarkets = markets;
+        log.info(`Trading markets set from UI: ${markets.join(', ') || '(empty)'}`);
+        this.pushToAPI();
       });
 
       // v2.0.45: Clear drawdown data to relaunch trading after circuit breaker.
@@ -818,6 +827,52 @@ class MATSSystem {
       this.paperEngine.setMaxPortionPct(this.marketAgent.getConfig().maxPortionPct);
       this.realTradingManager.setMaxPortionPct(this.marketAgent.getConfig().maxPortionPct);
 
+      // v2.0.78: Sync tradeMode + exchange from restored Market Agent config to
+      // RealTradingManager. The RTM was created with hardcoded 'paper' in step 5.6
+      // because MarketAgent didn't exist yet. Now that MarketAgent has loaded its
+      // saved config from disk (which may be 'real'), we must sync RTM to match.
+      const restoredTradeMode = this.marketAgent.getTradeMode();
+      const restoredExchange = this.marketAgent.getExchange();
+      if (restoredTradeMode !== this.realTradingManager.getTradeMode()) {
+        log.info(`🔄 Syncing restored trade mode to Real Trading Manager: ${this.realTradingManager.getTradeMode()} → ${restoredTradeMode}`);
+        this.realTradingManager.setTradeMode(restoredTradeMode);
+      }
+      if (restoredExchange !== this.realTradingManager.getExchange()) {
+        this.realTradingManager.setExchange(restoredExchange);
+      }
+
+      // v2.0.78: If restored trade mode is 'real', perform the same real-mode
+      // initialization that the UI API handler does when switching to real:
+      // set HL WS wallet address + fetch real balance/positions/fills so the
+      // UI shows real data from the start (not paper defaults).
+      if (restoredTradeMode === 'real') {
+        const hlWallet = config.realTrading.hyperliquidWalletAddress;
+        const hlPrivKey = config.realTrading.hyperliquidPrivateKey;
+        if (hlWallet && hlWallet.trim().length > 0 && hlPrivKey && hlPrivKey.trim().length > 0) {
+          this.hyperliquidWs.setWalletAddress(hlWallet.trim());
+          log.info('📡 HL WS wallet address set for user-level feeds (restored real mode)');
+          try {
+            this.cachedExchangeBalance = await this.realTradingManager.getBalance();
+            this.cachedHLFills = await this.realTradingManager.getRecentFills(10);
+            this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
+              symbol: p.symbol,
+              side: p.side,
+              quantity: p.quantity,
+              averageEntryPrice: p.averageEntryPrice,
+              currentPrice: p.currentPrice,
+              unrealizedPnl: p.unrealizedPnl,
+              leverage: p.leverage ?? 1,
+              openedAt: p.openedAt,
+            }));
+            log.info(`💰 Real HL balance restored: $${this.cachedExchangeBalance.total.toFixed(2)} | ${this.cachedExchangePositions.length} positions | ${this.cachedHLFills.length} recent fills`);
+          } catch (err) {
+            log.error(`❌ Failed to fetch real HL balance on startup: ${err instanceof Error ? err.message : String(err)}. Will retry next cycle.`);
+          }
+        } else {
+          log.warn('⚠️ Restored trade mode is REAL but HL wallet/key not configured in .env — balance will show "--"');
+        }
+      }
+
       // REST API polling fallback for price data — 30s interval to avoid HL 429
       this.startRESTPolling();
 
@@ -839,6 +894,11 @@ class MATSSystem {
                 this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
               }
             }
+            // v2.0.79: Sync exchange positions into local mirror at startup
+            // so agents see all open positions in the first HACP cycle.
+            // Without this, the first cycle only sees positions restored
+            // from portfolio-state.json (which may be stale or incomplete).
+            await this.realTradingManager.syncExchangePositions();
             // Sync SL/TP from HL trigger orders → local mirror
             await this.realTradingManager.syncSLTP();
             log.info(`📡 Startup HL sync: ${hlPositions.length} positions, SL/TP synced from exchange`);
@@ -931,7 +991,11 @@ class MATSSystem {
         // for M colon symbols), preventing 429 rate limit errors.
         const activeSymbol = this.marketAgent.getSelectedSymbol() || 'BTCUSDT';
         const openSymbols = this.portfolio.getOpenSymbols();
-        const allSymbols = Array.from(new Set([activeSymbol, ...openSymbols]));
+        // v2.0.79: Dedup symbols by normalized name — tradingMarkets may have
+        // "BTC" while openPositions has "btc", causing duplicate API calls.
+        const allSymbols = Array.from(new Set(
+          [activeSymbol, ...openSymbols].map(s => s.includes(':') ? s : s.toUpperCase())
+        ));
         const priceMap = await this.marketAgent.fetchPricesForSymbols(allSymbols);
         for (const [sym, data] of priceMap) {
           if (data.price > 0) {
@@ -1158,17 +1222,49 @@ class MATSSystem {
       return;
     }
 
-    // ── Market Agent: auto-select top volume pair before agents think ──
-    // This blocks until a symbol is selected. If no pairs available yet,
-    // we skip the cycle entirely — agents must NOT run without a market.
-    const selectedSymbol = await this.marketAgent.autoSelectTopPair();
-    if (!selectedSymbol || !this.marketAgent.hasValidSymbol()) {
-      log.warn('Market Agent has no valid symbol. Skipping cycle.');
-      this.cycleInProgress = false;
-      return;
+    // ── v2.0.79: Determine which symbols to analyze this cycle ──
+    // Priority: Trading Markets (UI pills) + open positions (deduped).
+    // If both are empty, fall back to Market Agent auto-select and add it
+    // to the Trading Markets list.
+    const openPositionSymbols = this.portfolio.getRealPositions().map(p => p.symbol);
+    // Dedup by normalized symbol — "BTC" and "btc" are the same asset
+    const seenNorm = new Set<string>();
+    const allSymbols: string[] = [];
+    for (const sym of [...this.tradingMarkets, ...openPositionSymbols]) {
+      const norm = sym.includes(':') ? sym.split(':')[0]!.toLowerCase() + sym.slice(sym.indexOf(':')) : sym.toLowerCase();
+      if (!seenNorm.has(norm)) {
+        seenNorm.add(norm);
+        allSymbols.push(sym);
+      }
     }
-    const activeSymbol = selectedSymbol;
-    const activeSymbolUpper = activeSymbol.toUpperCase();
+
+    let activeSymbol: string;
+
+    if (allSymbols.length > 0) {
+      // Use the first trading market, or first open position if no trading markets
+      activeSymbol = this.tradingMarkets[0] ?? openPositionSymbols[0]!;
+      // Ensure Market Agent has this symbol selected (for WS + price feed)
+      if (this.marketAgent.getSelectedSymbol() !== activeSymbol) {
+        this.marketAgent.setSelectedSymbolManual(activeSymbol);
+      }
+      log.info(`Cycle symbols: ${allSymbols.join(', ')} (active: ${activeSymbol})`);
+    } else {
+      // No trading markets and no open positions — fall back to auto-select
+      const selectedSymbol = await this.marketAgent.autoSelectTopPair();
+      if (!selectedSymbol || !this.marketAgent.hasValidSymbol()) {
+        log.warn('No trading markets, no open positions, and auto-select failed. Skipping cycle.');
+        this.cycleInProgress = false;
+        return;
+      }
+      activeSymbol = selectedSymbol;
+      // Add the auto-selected symbol to trading markets
+      this.tradingMarkets = [activeSymbol];
+      log.info(`No trading markets or positions — auto-selected ${activeSymbol} and added to trading markets`);
+    }
+    // v2.0.79: Use normalizeSymbol instead of toUpperCase — DEX prefixes (xyz:)
+    // must stay lowercase for HL API calls. normalizeSymbol lowercases the
+    // prefix while preserving the asset name after the colon.
+    const activeSymbolUpper = normalizeSymbol(activeSymbol);
 
     // ── Fetch market data for the selected symbol ──
     // PRIORITY 1: WS price (from hyperliquidWs → multiWs.onPrice → marketState)
@@ -1534,6 +1630,18 @@ class MATSSystem {
         if (total > 0) {
           log.info(`📰 [news] ${total}/${newsResults.length} symbols have headlines for this cycle`);
         }
+        // v2.0.79: Cache top 3 headlines per symbol for UI display
+        this.cachedNewsHeadlines = newsResults
+          .filter((r): r is NonNullable<typeof r> => r != null && r.headlineCount > 0)
+          .map(r => ({
+            symbol: r.symbol,
+            headlines: r.headlines.slice(0, 3).map(h => ({
+              title: h.title,
+              publisher: h.publisher,
+              url: h.url,
+              pubDate: h.pubDate ? h.pubDate.getTime() : null,
+            })),
+          }));
       } catch (err) {
         log.debug(`[news] Failed for ${activeSymbol}: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -1604,6 +1712,24 @@ class MATSSystem {
             leverage: p.leverage ?? 1,
             openedAt: p.openedAt,
           }));
+          // v2.0.79: Ensure all exchange positions are in realPositions map.
+          // syncExchangePositions() may have missed some if the DEX fetch
+          // failed (429). Now that we have cachedExchangePositions, import
+          // any that are missing so agents see ALL open positions.
+          for (const exPos of this.cachedExchangePositions) {
+            const sym = normalizeSymbol(exPos.symbol);
+            if (!this.portfolio.hasPosition(sym)) {
+              log.info(`📥 Late import: ${exPos.symbol} ${exPos.side.toUpperCase()} qty=${exPos.quantity} entry=${exPos.averageEntryPrice.toFixed(2)} lev=${exPos.leverage}x (missed by syncExchangePositions)`);
+              this.portfolio.importExchangePosition(
+                exPos.symbol,
+                exPos.side,
+                exPos.quantity,
+                exPos.averageEntryPrice,
+                exPos.leverage,
+                exPos.openedAt > 0 ? exPos.openedAt : Date.now(),
+              );
+            }
+          }
           log.info(`📡 Exchange synced for agent context (HL balance: $${this.cachedExchangeBalance.total.toFixed(2)}, ${this.cachedHLFills.length} recent fills, ${this.cachedExchangePositions.length} positions)`);
         } catch (err) {
           log.warn(`Exchange sync (balance/fills/positions) failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -3468,6 +3594,8 @@ class MATSSystem {
         agentStatuses,
         consensus: this.lastHACPResult?.consensus ?? null,
         debateRounds: this.lastHACPResult?.debateRounds ?? [],
+        newsHeadlines: this.cachedNewsHeadlines,
+        tradingMarkets: this.tradingMarkets,
         portfolio: this.serializePortfolio(p) as any,
         marketState: {
           ...state,
@@ -3581,25 +3709,18 @@ class MATSSystem {
         tradeHistory: this.evolution.tradeHistory.getAllEntries().slice(-50),
         marketAgent: marketAgentState,
         tradeRecords: isRealMode ? [
-          // v2.0.78: In real mode, Trade Records uses ONLY live HL data —
-          // no local memory (closedRealTrades, paperEngine trades). This
-          // ensures the UI reflects the actual exchange state, not stale
-          // local mirrors. Open positions come from realPositions only
-          // (paper positions are hidden in real mode). Closed history
-          // comes from cachedHLFills (fetched via userFillsByTime REST).
-          // Open real positions (filtered against exchange to exclude stale)
+          // v2.0.79: Removed the cachedExchangePositions filter — it was
+          // filtering out xyz:DEX positions when cachedExchangePositions
+          // didn't include them (timing mismatch between getPositions()
+          // and getRealPositions()). getRealPositions() already reflects
+          // the actual exchange state, so no additional filter is needed.
+          // v2.0.79: Also add any cachedExchangePositions that are missing
+          // from realPositions (e.g. syncExchangePositions missed them due
+          // to 429 on the xyz DEX fetch).
           ...this.portfolio.getRealPositions()
-            .filter(p => {
-              if (!this.cachedExchangePositions) return true;
-              const sym = p.symbol.replace(/^xyz:/i, '').toLowerCase();
-              return this.cachedExchangePositions.some(ep => {
-                const epSym = ep.symbol.replace(/^xyz:/i, '').toLowerCase();
-                return epSym === sym;
-              });
-            })
             .map(p => ({
               id: p.id,
-              symbol: p.symbol,
+              symbol: normalizeSymbol(p.symbol),
               side: p.side,
               entryPrice: p.averageEntryPrice,
               exitPrice: p.currentPrice,
@@ -3612,24 +3733,59 @@ class MATSSystem {
               closedAt: p.openedAt,
               status: 'open' as const,
             })),
-          // Recent HL fills (closed trade history from the exchange)
-          ...this.cachedHLFills.filter(f => {
-            return Math.abs(f.closedPnl) > 0.01;
-          }).map(f => ({
-            id: `hl-fill-${f.timestamp}-${f.symbol}`,
-            symbol: f.symbol,
-            side: f.side,
-            entryPrice: f.price,
-            exitPrice: f.price,
-            quantity: f.size,
-            leverage: 1,
-            investment: f.price * f.size,
-            pnl: f.closedPnl - f.fee,
-            pnlPct: f.price * f.size > 0 ? (f.closedPnl - f.fee) / (f.price * f.size) : 0,
-            openedAt: f.timestamp,
-            closedAt: f.timestamp,
-            status: 'hl-fill' as const,
-          })),
+          // v2.0.79: Fallback — add exchange positions not in realPositions
+          ...(this.cachedExchangePositions ?? [])
+            .filter(ep => {
+              const sym = normalizeSymbol(ep.symbol);
+              return !this.portfolio.getRealPositions().some(rp => normalizeSymbol(rp.symbol) === sym);
+            })
+            .map(ep => ({
+              id: `hl-${ep.symbol}-${ep.openedAt}`,
+              symbol: normalizeSymbol(ep.symbol),
+              side: ep.side,
+              entryPrice: ep.averageEntryPrice,
+              exitPrice: ep.currentPrice,
+              quantity: ep.quantity,
+              leverage: ep.leverage ?? 1,
+              investment: ep.averageEntryPrice * ep.quantity,
+              pnl: ep.unrealizedPnl,
+              pnlPct: ep.unrealizedPnl / Math.max(0.01, ep.averageEntryPrice * ep.quantity / (ep.leverage ?? 1)),
+              openedAt: ep.openedAt,
+              closedAt: ep.openedAt,
+              status: 'open' as const,
+            })),
+          // Recent HL fills — ONLY closing fills shown as trade history.
+          // v2.0.79: Open fills are skipped because the corresponding open
+          // position is already displayed above from getRealPositions().
+          // Showing both would create duplicate OPEN entries (1 position +
+          // N open fills = N+1 OPEN rows for the same position).
+          // v2.0.79: Use dir field to distinguish Open vs Close fills, and
+          // look up actual leverage from cachedExchangePositions.
+          ...this.cachedHLFills
+            .filter(f => !f.dir.toLowerCase().includes('open'))
+            .map(f => {
+              // Look up leverage from cached exchange positions
+              const posMatch = this.cachedExchangePositions?.find(ep => {
+                const epSym = ep.symbol.replace(/^xyz:/i, '').toLowerCase();
+                const fSym = f.symbol.replace(/^xyz:/i, '').toLowerCase();
+                return epSym === fSym;
+              });
+              return {
+                id: `hl-fill-${f.timestamp}-${f.symbol}`,
+                symbol: normalizeSymbol(f.symbol),
+                side: f.side,
+                entryPrice: f.price,
+                exitPrice: f.price,
+                quantity: f.size,
+                leverage: posMatch?.leverage ?? 1,
+                investment: f.price * f.size,
+                pnl: f.closedPnl - f.fee,
+                pnlPct: f.price * f.size > 0 ? (f.closedPnl - f.fee) / (f.price * f.size) : 0,
+                openedAt: f.timestamp,
+                closedAt: f.timestamp,
+                status: 'closed' as const,
+              };
+            }),
         ] : [
           // Paper mode: paper engine trades + paper open positions
           // v2.0.52: Filter out error trades where entry ≈ exit and PnL ≈ 0

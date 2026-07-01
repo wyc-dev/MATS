@@ -9,6 +9,7 @@ import { HLRateLimiter } from './hl-rate-limiter.ts';
 import { hlRateLimitedFetch } from '../utils/hl-global-limiter.ts';
 import { setHLFetchFn } from '../analysis/support-resistance.ts';
 import { setHLFetchFnForATR } from '../analysis/atr.ts';
+import { loadMarketAgentConfig, saveMarketAgentConfig } from '../evolution/persistence.ts';
 import type {
   MarketAgentConfig,
   TopVolumePair,
@@ -92,7 +93,29 @@ export class MarketAgent {
   private onSymbolChange: ((symbol: string) => void) | null = null;
 
   constructor() {
-    log.info('Market Agent initialized', { exchange: this.config.exchange, symbol: this.config.selectedSymbol });
+    // v2.0.78: Load saved config from disk so user settings survive restarts.
+    const saved = loadMarketAgentConfig();
+    if (saved) {
+      this.config = { ...this.config, ...saved };
+      log.info('Market Agent initialized (config restored from disk)', {
+        tradeMode: this.config.tradeMode,
+        exchange: this.config.exchange,
+        symbol: this.config.selectedSymbol,
+        positionSizePct: this.config.positionSizePct,
+        maxPortionPct: this.config.maxPortionPct,
+        leverage: this.config.leverage,
+      });
+    } else {
+      log.info('Market Agent initialized (default config — no saved config found)', {
+        exchange: this.config.exchange,
+        symbol: this.config.selectedSymbol,
+      });
+    }
+  }
+
+  /** v2.0.78: Persist current config to disk. Called after every config change. */
+  private persistConfig(): void {
+    saveMarketAgentConfig(this.config);
   }
 
   // ── Config Getters ──
@@ -133,6 +156,7 @@ export class MarketAgent {
     if (this.config.tradeMode === mode) return;
     this.config.tradeMode = mode;
     this.config.updatedAt = Date.now();
+    this.persistConfig();
     // v2.0.64: Do NOT clear manualSymbolLock on trade mode change.
     // The user's market selection should persist across PAPER↔REAL switches.
     // Only setExchange() and setHyperliquidAssetType() clear the lock (they
@@ -147,8 +171,8 @@ export class MarketAgent {
     this.config.selectedSymbol = '';
     this.topPairs = [];
     this.configDirty = true;
-    // v2.0.46: Clear manual lock — exchange change means fresh market.
     this.manualSymbolLock = false;
+    this.persistConfig();
     log.info(`Exchange changed: ${exchange}`);
   }
 
@@ -156,10 +180,9 @@ export class MarketAgent {
     if (this.config.hyperliquidAssetType === assetType) return;
     this.config.hyperliquidAssetType = assetType;
     this.config.updatedAt = Date.now();
-    // Don't clear topPairs — client-side filter temporarily keeps showable data while re-fetching
     this.configDirty = true;
-    // v2.0.46: Clear manual lock — asset type change means different market category.
     this.manualSymbolLock = false;
+    this.persistConfig();
     log.info(`Hyperliquid asset type changed: ${assetType} (re-fetch queued)`);
   }
 
@@ -171,6 +194,7 @@ export class MarketAgent {
   setSelectedSymbolManual(symbol: string): void {
     this.manualSymbolLock = true;
     this.setSelectedSymbol(symbol);
+    this.persistConfig();
   }
 
   /** v2.0.44: Clear the manual lock (e.g. when switching trade mode). */
@@ -201,6 +225,7 @@ export class MarketAgent {
     if (Math.abs(this.config.positionSizePct - clamped) < 0.001) return;
     this.config.positionSizePct = clamped;
     this.config.updatedAt = Date.now();
+    this.persistConfig();
     log.info(`Position size changed: ${(clamped * 100).toFixed(1)}%`);
   }
 
@@ -215,6 +240,7 @@ export class MarketAgent {
       this.config.positionSizePct = clamped;
       log.info(`Position size clamped to new max portion: ${(clamped * 100).toFixed(1)}%`);
     }
+    this.persistConfig();
     log.info(`Max portion changed: ${(clamped * 100).toFixed(1)}%`);
   }
 
@@ -223,6 +249,7 @@ export class MarketAgent {
     if (this.config.leverage === clamped) return;
     this.config.leverage = clamped;
     this.config.updatedAt = Date.now();
+    this.persistConfig();
     log.info(`Leverage changed: ${clamped}x`);
   }
 

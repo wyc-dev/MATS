@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from '../observability/logger.ts';
-import type { MemoryEntry, EvolutionaryStrategy, Portfolio, ConsensusResult, AgentThought, DebateRound } from '../types/index.ts';
+import type { MemoryEntry, EvolutionaryStrategy, Portfolio, ConsensusResult, AgentThought, DebateRound, MarketAgentConfig } from '../types/index.ts';
 import type { TradeHistoryEntry } from './trade-history.ts';
 import type { GAPopulation, TradeRecord } from '../types/index.ts';
 
@@ -604,6 +604,97 @@ export function loadDebateHistory(): {
     };
   } catch (err) {
     log.warn(`Failed to load debate history: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+// ─── Market Agent Config Persistence (v2.0.78) ───
+// Saves/loads Market Agent config (tradeMode, positionSizePct, maxPortionPct,
+// leverage, selectedSymbol, hyperliquidAssetType) so user settings survive
+// restarts. Previously these reset to DEFAULT_CONFIG on every restart.
+
+interface MarketAgentConfigSnapshot {
+  version: 1;
+  savedAt: string;
+  tradeMode: string;
+  exchange: string;
+  hyperliquidAssetType: string;
+  selectedSymbol: string;
+  positionSizePct: number;
+  maxPortionPct: number;
+  leverage: number;
+  updatedAt: number;
+}
+
+const MARKET_AGENT_CONFIG_FIELDS: Record<string, SchemaField> = {
+  version: { type: 'number', required: true },
+  tradeMode: { type: 'string', required: true },
+  exchange: { type: 'string', required: true },
+  hyperliquidAssetType: { type: 'string', required: false },
+  selectedSymbol: { type: 'string', required: false },
+  positionSizePct: { type: 'number', required: true },
+  maxPortionPct: { type: 'number', required: false },
+  leverage: { type: 'number', required: true },
+  updatedAt: { type: 'number', required: true },
+};
+
+/** Save Market Agent config to disk (atomic write). */
+export function saveMarketAgentConfig(cfg: MarketAgentConfig): boolean {
+  try {
+    ensureDir();
+    const snapshot: MarketAgentConfigSnapshot = {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      tradeMode: cfg.tradeMode,
+      exchange: cfg.exchange,
+      hyperliquidAssetType: cfg.hyperliquidAssetType ?? 'crypto_perps',
+      selectedSymbol: cfg.selectedSymbol,
+      positionSizePct: cfg.positionSizePct,
+      maxPortionPct: cfg.maxPortionPct ?? 0.20,
+      leverage: cfg.leverage,
+      updatedAt: cfg.updatedAt,
+    };
+    // v2.0.78: Use direct atomicWriteSync (not lockedWrite) because this is
+    // a small config file that must be immediately readable after save.
+    // lockedWrite queues via promises which can delay the write past a
+    // synchronous load in the same tick.
+    const filePath = path.join(DATA_DIR, 'market-agent-config.json');
+    atomicWriteSync(filePath, JSON.stringify(snapshot, null, 2));
+    return true;
+  } catch (err) {
+    log.error(`Failed to save market agent config: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+/** Load Market Agent config from disk. Returns null if not found or corrupt. */
+export function loadMarketAgentConfig(): Partial<MarketAgentConfig> | null {
+  try {
+    const filePath = path.join(DATA_DIR, 'market-agent-config.json');
+    if (!fs.existsSync(filePath)) return null;
+
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const snapshot = JSON.parse(raw) as MarketAgentConfigSnapshot;
+
+    const schemaErr = validateSnapshot(snapshot, MARKET_AGENT_CONFIG_FIELDS);
+    if (schemaErr) {
+      log.warn(`Corrupt market agent config (${schemaErr}) — ignoring`);
+      return null;
+    }
+
+    log.info(`Market agent config loaded: tradeMode=${snapshot.tradeMode}, size=${(snapshot.positionSizePct * 100).toFixed(0)}%, maxPortion=${((snapshot.maxPortionPct ?? 0.20) * 100).toFixed(0)}%, lev=${snapshot.leverage}x, symbol=${snapshot.selectedSymbol}`);
+    return {
+      tradeMode: snapshot.tradeMode as MarketAgentConfig['tradeMode'],
+      exchange: snapshot.exchange as MarketAgentConfig['exchange'],
+      hyperliquidAssetType: snapshot.hyperliquidAssetType as MarketAgentConfig['hyperliquidAssetType'],
+      selectedSymbol: snapshot.selectedSymbol,
+      positionSizePct: snapshot.positionSizePct,
+      maxPortionPct: snapshot.maxPortionPct ?? 0.20,
+      leverage: snapshot.leverage,
+      updatedAt: snapshot.updatedAt,
+    };
+  } catch (err) {
+    log.warn(`Failed to load market agent config: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }

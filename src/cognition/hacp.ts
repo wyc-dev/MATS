@@ -569,12 +569,53 @@ export class HACPEngine {
         : marketStateDesc;
       skepticsReviews = await this.skeptics.review(allThoughts, skepticsContext, portfolioDesc, marketStateDesc);
 
-      // Build skeptics own thought summary
+      // Build skeptics own thought summary — per-symbol breakdown
       const approvedCount = skepticsReviews.filter(r => r.approved).length;
       const modifiedCount = skepticsReviews.filter(r => !r.approved).length;
+
+      // Collect all symbols audited across all reviews
+      const auditedSymbols = new Set<string>();
+      for (const r of skepticsReviews) {
+        if (r.originalDecision?.marketTicker?.symbol) auditedSymbols.add(r.originalDecision.marketTicker.symbol);
+        if (r.originalDecision?.positions?.length) {
+          for (const p of r.originalDecision.positions) {
+            if (p.symbol) auditedSymbols.add(p.symbol);
+          }
+        }
+      }
+
+      // Build per-symbol audit summary
+      const perSymbolLines: string[] = [];
+      for (const sym of auditedSymbols) {
+        const symReviews = skepticsReviews.filter(r => {
+          const hasInTicker = r.originalDecision?.marketTicker?.symbol === sym;
+          const hasInPositions = r.originalDecision?.positions?.some(p => p.symbol === sym);
+          return hasInTicker || hasInPositions;
+        });
+        const symApproved = symReviews.filter(r => r.approved).length;
+        const symModified = symReviews.filter(r => !r.approved).length;
+        const modDetails = symReviews.filter(r => !r.approved).map(r => `[${r.agentRole}] ${r.skepticismRationale.slice(0, 100)}`).join(' | ');
+        perSymbolLines.push(`  ${sym}: ${symApproved} approved, ${symModified} modified${modDetails ? ` — ${modDetails}` : ''}`);
+      }
+
       const skepticsThoughtText = skepticsReviews.length > 0
-        ? `Reviewed ${skepticsReviews.length} agents: ${approvedCount} approved, ${modifiedCount} modified. ${modifiedCount > 0 ? skepticsReviews.filter(r => !r.approved).map(r => `[${r.agentRole}] ${r.skepticismRationale.slice(0, 120)}`).join(' | ') : 'No logical inconsistencies detected.'}`
+        ? `Reviewed ${skepticsReviews.length} agents across ${auditedSymbols.size} symbol(s):\n${perSymbolLines.join('\n')}${modifiedCount > 0 ? `\nOverall: ${approvedCount} approved, ${modifiedCount} modified.` : '\nNo logical inconsistencies detected.'}`
         : 'Skeptics review completed — no agents to review.';
+
+      // Build per-symbol audit metadata for UI
+      const perSymbolAudit = Array.from(auditedSymbols).map(sym => {
+        const symReviews = skepticsReviews.filter(r => {
+          const hasInTicker = r.originalDecision?.marketTicker?.symbol === sym;
+          const hasInPositions = r.originalDecision?.positions?.some(p => p.symbol === sym);
+          return hasInTicker || hasInPositions;
+        });
+        return {
+          symbol: sym,
+          approved: symReviews.filter(r => r.approved).length,
+          modified: symReviews.filter(r => !r.approved).length,
+          details: symReviews.filter(r => !r.approved).map(r => `[${r.agentRole}] ${r.skepticismRationale.slice(0, 80)}`),
+        };
+      });
 
       // Push skeptics thought into allThoughts
       const skepticsThought: AgentThought = {
@@ -586,6 +627,7 @@ export class HACPEngine {
         metadata: {
           decision: { action: 'hold', symbol: 'UNKNOWN', positionSizePct: 0, leverage: 1, rationale: 'Skeptics do not trade; they audit.', urgency: 'patient' } as TradingDecision,
           skepticsReviews,
+          perSymbolAudit,
           latency: Math.round(performance.now() - startTime),
         },
       };

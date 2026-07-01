@@ -16,17 +16,29 @@ import { createLogger } from '../observability/logger.ts';
 const log = createLogger({ phase: 'hl-limiter' });
 
 // HL's REST API allows ~20 req/s per IP, but sustained bursts trigger 429.
-// We use a conservative 5 req/s global budget (200ms gap) to stay well under
-// the limit while keeping latency low.
-const MIN_GAP_MS = 200;
+// v2.0.79: Increased from 200ms to 400ms gap (2.5 req/s) — 200ms was too
+// aggressive when multiple modules fire simultaneously (S/R candles, balance,
+// positions, fills, options data, market agent). The 429 retry storm was
+// caused by too many requests in too short a window.
+const MIN_GAP_MS = 400;
 const MAX_RETRIES = 5;
 
 let lastCallTime = 0;
 let queue: Array<() => void> = [];
 let processing = false;
+// v2.0.79: Global cooldown after 429 — pauses ALL new requests for a
+// short period so HL has time to recover. Without this, 429 retries
+// compete with new requests, causing a cascade of 429s.
+let cooldownUntil = 0;
 
 /** Acquire a slot — resolves when it's this caller's turn. */
 async function acquire(): Promise<void> {
+  // If in cooldown, wait until it expires
+  const cooldownRemaining = cooldownUntil - Date.now();
+  if (cooldownRemaining > 0) {
+    await new Promise(r => setTimeout(r, cooldownRemaining));
+  }
+
   const now = Date.now();
   const wait = Math.max(0, lastCallTime + MIN_GAP_MS - now);
   if (wait === 0 && !processing && queue.length === 0) {
@@ -89,9 +101,11 @@ export async function hlRateLimitedFetch(
     }
     if (res.status !== 429) return res;
 
-    const delay = Math.min(1000 * 2 ** attempt, 8000);
-    log.warn(`HL 429 for ${url.split('/').pop() ?? url}, retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
-    await new Promise(r => setTimeout(r, delay));
+    // v2.0.79: Set global cooldown so all queued requests pause too
+    const cooldownMs = Math.min(1000 * 2 ** attempt, 8000);
+    cooldownUntil = Date.now() + cooldownMs;
+    log.warn(`HL 429 for ${url.split('/').pop() ?? url}, retry ${attempt + 1}/${MAX_RETRIES} in ${cooldownMs}ms (global cooldown activated)`);
+    await new Promise(r => setTimeout(r, cooldownMs));
   }
   throw new Error(`Hyperliquid API 429 after ${MAX_RETRIES} retries`);
 }
