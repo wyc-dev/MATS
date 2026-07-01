@@ -1571,6 +1571,14 @@ body {
   border-radius: var(--radius-sm);
 }
 
+.consensus-options-info {
+  font-size: var(--fs-xs);
+  color: #fbbf24;
+  padding: var(--space-1) var(--space-3);
+  margin-top: var(--space-1);
+  opacity: 0.8;
+}
+
 /* ── Round cards ── */
 .round-card {
   border: 1px solid var(--glass-border);

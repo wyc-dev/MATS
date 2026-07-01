@@ -419,7 +419,7 @@ class MATSSystem {
           // Immediately fetch real balance + positions + fills
           try {
             this.cachedExchangeBalance = await this.realTradingManager.getBalance();
-            this.cachedHLFills = await this.realTradingManager.getRecentFills(10);
+            this.cachedHLFills = await this.realTradingManager.getRecentFills(20);
             this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
               symbol: p.symbol,
               side: p.side,
@@ -860,7 +860,7 @@ class MATSSystem {
           log.info('📡 HL WS wallet address set for user-level feeds (restored real mode)');
           try {
             this.cachedExchangeBalance = await this.realTradingManager.getBalance();
-            this.cachedHLFills = await this.realTradingManager.getRecentFills(10);
+            this.cachedHLFills = await this.realTradingManager.getRecentFills(20);
             this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
               symbol: p.symbol,
               side: p.side,
@@ -1233,7 +1233,14 @@ class MATSSystem {
     // Priority: Trading Markets (UI pills) + open positions (deduped).
     // If both are empty, fall back to Market Agent auto-select and add it
     // to the Trading Markets list.
-    const openPositionSymbols = this.portfolio.getRealPositions().map(p => p.symbol);
+    // v2.0.79: Also include cachedExchangePositions as fallback — syncExchangePositions
+    // runs later in the cycle, so realPositions may not have xyz DEX positions yet
+    // if the previous cycle's fetch failed (429). cachedExchangePositions has the
+    // last successful fetch result.
+    const openPositionSymbols = [
+      ...this.portfolio.getRealPositions().map(p => p.symbol),
+      ...(this.cachedExchangePositions ?? []).map(p => p.symbol),
+    ];
     // Dedup by normalized symbol — "BTC" and "btc" are the same asset
     const seenNorm = new Set<string>();
     const allSymbols: string[] = [];
@@ -1248,8 +1255,17 @@ class MATSSystem {
     let activeSymbol: string;
 
     if (allSymbols.length > 0) {
-      // Use the first trading market, or first open position if no trading markets
-      activeSymbol = this.tradingMarkets[0] ?? openPositionSymbols[0]!;
+      // v2.0.79: Prefer a trading market that is NOT an open position as activeSymbol.
+      // This prevents BTC appearing as both "marketTicker" and "position" in HACP.
+      // If all trading markets are open positions, use the first trading market.
+      const openPosNorms = new Set(openPositionSymbols.map(s =>
+        s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
+      ));
+      const nonPositionMarket = this.tradingMarkets.find(s => {
+        const n = s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase();
+        return !openPosNorms.has(n);
+      });
+      activeSymbol = nonPositionMarket ?? this.tradingMarkets[0] ?? openPositionSymbols[0]!;
       // Ensure Market Agent has this symbol selected (for WS + price feed)
       if (this.marketAgent.getSelectedSymbol() !== activeSymbol) {
         this.marketAgent.setSelectedSymbolManual(activeSymbol);
@@ -1705,7 +1721,7 @@ class MATSSystem {
           // v2.0.19: also cache recent HL fills (last 5) + exchange positions
           // so the UI Trade Records + Portfolio positions modules show real
           // Hyperliquid data, not just the local mirror.
-          this.cachedHLFills = await this.realTradingManager.getRecentFills(10);
+          this.cachedHLFills = await this.realTradingManager.getRecentFills(20);
           this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
             symbol: p.symbol,
             side: p.side,
@@ -2023,7 +2039,15 @@ class MATSSystem {
         leverage: p.leverage,
         quantity: p.quantity,
         exchange: (p as any).exchange ?? 'hyperliquid',
-      }));
+      }))
+      // v2.0.79: Remove the activeSymbol from positions list — it's already
+      // the marketTicker. Without this, BTC appears as both "BTC(market)"
+      // and "BTC● position" in HACP Debate, causing duplicate entries.
+      .filter(p => {
+        const pNorm = p.symbol.includes(':') ? p.symbol.split(':')[0]!.toLowerCase() + p.symbol.slice(p.symbol.indexOf(':')) : p.symbol.toLowerCase()
+        const aNorm = activeSymbol.includes(':') ? activeSymbol.split(':')[0]!.toLowerCase() + activeSymbol.slice(activeSymbol.indexOf(':')) : activeSymbol.toLowerCase()
+        return pNorm !== aNorm
+      });
 
       const result = await this.hacpEngine.executeDecisionCycle(
         `${marketDesc}\n\n${evolutionContext}${backtestContext}`,
@@ -3543,7 +3567,7 @@ class MATSSystem {
             engine.clearCaches();
           }
           if (typeof engine.getRecentFills === 'function') {
-            this.cachedHLFills = await engine.getRecentFills(10);
+            this.cachedHLFills = await engine.getRecentFills(20);
           }
           if (typeof engine.getPositions === 'function') {
             this.cachedExchangePositions = await engine.getPositions();
@@ -3591,7 +3615,7 @@ class MATSSystem {
       const displayBalance = isRealMode ? (exBal ? exBal.free : null) : p.balance;
       const displayEquity = isRealMode ? (exBal ? exBal.total : null) : p.totalEquity;
 
-      this.apiServer.update({
+      const apiData = {
         systemPaused: this.paused,
         status: {
           cycles: this.totalCycles,
@@ -3698,7 +3722,15 @@ class MATSSystem {
         optionsData: (() => {
           const assetType = this.marketAgent.getConfig().hyperliquidAssetType ?? 'crypto_perps';
           const openPosSyms = this.portfolio.getRealPositions().map(p => p.symbol);
-          const optionSymbols = [...this.tradingMarkets, ...openPosSyms];
+          // v2.0.79: Dedup by normalized symbol — prevents BTC+btc duplicate entries
+          const norm = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase();
+          const seen = new Set<string>();
+          const optionSymbols = [...this.tradingMarkets, ...openPosSyms].filter(s => {
+            const n = norm(s);
+            if (seen.has(n)) return false;
+            seen.add(n);
+            return true;
+          });
           // v2.0.79: Run if ANY symbol is TradFi (has colon) or assetType is stocks/indices
           const hasTradFi = optionSymbols.some(s => s.includes(':'));
           if (!hasTradFi && assetType !== 'stocks' && assetType !== 'indices' && assetType !== 'tradfi') return undefined;
@@ -3808,12 +3840,15 @@ class MATSSystem {
           ...this.cachedHLFills
             .filter(f => !f.dir.toLowerCase().includes('open'))
             .map(f => {
-              // Look up leverage from cached exchange positions
+              // Look up leverage from cached exchange positions (for still-open positions)
               const posMatch = this.cachedExchangePositions?.find(ep => {
                 const epSym = ep.symbol.replace(/^xyz:/i, '').toLowerCase();
                 const fSym = f.symbol.replace(/^xyz:/i, '').toLowerCase();
                 return epSym === fSym;
               });
+              // v2.0.79: For closed positions, posMatch is undefined (position
+              // no longer on HL). Default to 10x — the system's standard leverage.
+              // Previously defaulted to 1x, making PnL% look wrong.
               return {
                 id: `hl-fill-${f.timestamp}-${f.symbol}`,
                 symbol: normalizeSymbol(f.symbol),
@@ -3821,7 +3856,7 @@ class MATSSystem {
                 entryPrice: f.price,
                 exitPrice: f.price,
                 quantity: f.size,
-                leverage: posMatch?.leverage ?? 1,
+                leverage: posMatch?.leverage ?? 10,
                 investment: f.price * f.size,
                 pnl: f.closedPnl - f.fee,
                 pnlPct: f.price * f.size > 0 ? (f.closedPnl - f.fee) / (f.price * f.size) : 0,
@@ -3875,7 +3910,17 @@ class MATSSystem {
             status: 'open' as const,
           })),
         ],
-      });
+      };
+      // v2.0.79: Dedup trade records by ID — prevents duplicate entries
+      if (apiData.tradeRecords && Array.isArray(apiData.tradeRecords)) {
+        const seenIds = new Set<string>();
+        apiData.tradeRecords = apiData.tradeRecords.filter((r: any) => {
+          if (seenIds.has(r.id)) return false;
+          seenIds.add(r.id);
+          return true;
+        });
+      }
+      this.apiServer.update(apiData);
     } catch (err) {
       // API push is best-effort
     }
