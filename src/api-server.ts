@@ -43,6 +43,8 @@ export interface APIData {
   agentStatuses: AgentStatus[];
   consensus: ConsensusResult | null;
   debateRounds: DebateRound[];
+  newsHeadlines?: Array<{ symbol: string; headlines: Array<{ title: string; publisher: string; url?: string; pubDate: number | null }> }>;
+  tradingMarkets?: string[];
   portfolio: Portfolio | null;
   marketState: MarketState | null;
   agentModels?: { available: ModelDefinition[]; assignments: AgentModelConfig[] };
@@ -216,6 +218,8 @@ export class APIServer {
   private onMarketAgentSetLeverage: ((lev: number) => void) | null = null;
   /** v2.0.44: Manual symbol selection from Top Volume Pairs list. */
   private onMarketAgentSelectSymbol: ((symbol: string) => void) | null = null;
+  /** v2.0.79: Set trading markets list from UI pills. */
+  private onSetTradingMarkets: ((markets: string[]) => void) | null = null;
   /** v2.0.45: Clear drawdown data to relaunch trading after circuit breaker. */
   private onClearDrawdown: (() => void) | null = null;
   private onManualClosePosition: ((symbol: string) => Promise<{ success: boolean; error?: string }>) | null = null;
@@ -307,6 +311,11 @@ export class APIServer {
   /** v2.0.44: Register a callback for manual symbol selection from Top Volume Pairs */
   setMarketAgentSelectSymbolHandler(cb: (symbol: string) => void): void {
     this.onMarketAgentSelectSymbol = cb;
+  }
+
+  /** v2.0.79: Register a callback for setting trading markets list from UI */
+  setTradingMarketsHandler(cb: (markets: string[]) => void): void {
+    this.onSetTradingMarkets = cb;
   }
 
   /** v2.0.45: Register a callback for clearing drawdown data to relaunch trading */
@@ -761,6 +770,37 @@ export class APIServer {
             } else {
               res.writeHead(500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ success: false, message: 'Symbol selection handler not registered.' }));
+            }
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // v2.0.79: POST — set trading markets list (from UI pills).
+      // The backend uses this list + open positions to determine which
+      // symbols agents should analyze, instead of auto-selecting top pair.
+      if (pathname === '/api/market-agent/trading-markets' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { markets } = JSON.parse(body) as { markets: string[] };
+            if (!Array.isArray(markets)) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'markets must be an array' }));
+              return;
+            }
+            const valid = markets.filter(s => typeof s === 'string' && s.length > 0 && s.length <= 50).slice(0, 3);
+            if (this.onSetTradingMarkets) {
+              this.onSetTradingMarkets(valid);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: true, message: `Trading markets set: ${valid.join(', ')}` }));
+            } else {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'Handler not registered' }));
             }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });

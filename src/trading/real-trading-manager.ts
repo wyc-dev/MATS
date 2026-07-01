@@ -263,6 +263,20 @@ export class RealTradingManager {
         return { success: true };
       }
 
+      // v2.0.78: Symbol overlap guard (defence-in-depth).
+      // index.ts has its own guard, but if the symbol normalization mismatches
+      // or a different code path reaches here, we must NOT open a duplicate
+      // position on the same symbol. HL would increase the position size,
+      // effectively doubling the exposure without the system knowing.
+      const sym = normalizeSymbol(decision.symbol);
+      if (this.portfolio.hasPosition(sym)) {
+        const existing = this.portfolio.getPosition(sym);
+        if (existing && existing.side === decision.action) {
+          log.warn(`🚫 Real engine symbol-guard: ${sym.toUpperCase()} already has ${existing.side.toUpperCase()} position. Blocking duplicate ${decision.action.toUpperCase()} trade.`);
+          return { success: false, error: `Symbol overlap: ${sym} already positioned (${existing.side}).` };
+        }
+      }
+
       const price = decision.entryPrice ?? 0;
       if (price <= 0) {
         return { success: false, error: 'No price available for real trade' };
@@ -599,6 +613,20 @@ export class RealTradingManager {
       const exchangePositions = await engine.getPositions();
       if (!exchangePositions) return;
 
+      // v2.0.79: Track which DEXes were successfully fetched.
+      // If a DEX fetch failed (429/500), we must NOT close local mirrors
+      // for symbols on that DEX — they may still be open on HL.
+      const fetchedDexSymbols = new Set<string>();
+      for (const exPos of exchangePositions) {
+        if (exPos.symbol.includes(':')) {
+          // DEX 1-8 symbol — mark the prefix as fetched
+          fetchedDexSymbols.add(exPos.symbol.split(':')[0]!.toLowerCase());
+        } else {
+          // DEX 0 symbol
+          fetchedDexSymbols.add('');
+        }
+      }
+
       // Build a map of exchange positions by normalized symbol
       const exMap = new Map<string, Position>();
       for (const exPos of exchangePositions) {
@@ -696,10 +724,19 @@ export class RealTradingManager {
       // v2.0.32: Close local mirrors for positions that are genuinely gone from HL.
       // Only close if exMap is non-empty (proving the API worked) but doesn't include
       // this symbol. This prevents false closes from API failures.
+      // v2.0.79: Also check that the DEX for this symbol was successfully fetched.
+      // If the DEX fetch failed (429/500), don't close local mirrors for symbols
+      // on that DEX — they may still be open on HL.
       for (const localSym of localExchangePositions) {
         const localPos = this.portfolio.getPosition(localSym);
         if (!localPos) continue;
         if (!exMap.has(localSym)) {
+          // v2.0.79: Check if this symbol's DEX was successfully fetched
+          const localDex = localSym.includes(':') ? localSym.split(':')[0]!.toLowerCase() : '';
+          if (!fetchedDexSymbols.has(localDex)) {
+            log.warn(`⏭️ syncExchangePositions: ${localSym} — DEX "${localDex || 'default'}" fetch failed, skipping close (position may still be open on HL)`);
+            continue;
+          }
           // v2.0.33: Find the matching HL fill to get actual realized PnL.
           // HL closedPnl is the real PnL (not leveraged), already net of fees.
           // v2.0.33 FIX: Only match fills that occurred AFTER this position was

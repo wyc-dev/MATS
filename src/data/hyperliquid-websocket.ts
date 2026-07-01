@@ -380,8 +380,9 @@ export class HyperliquidWebSocketManager {
       // Unsubscribe before closing
       if (this.connected && this.activeSymbol) {
         try {
+          const wsCoin = this.activeSymbol.includes(':') ? this.activeSymbol : this.activeSymbol.toUpperCase();
           for (const channel of this.subscribedChannels) {
-            this.sendUnsubscribe(this.activeSymbol, channel);
+            this.sendUnsubscribe(wsCoin, channel);
           }
           this.unsubscribeUserFeeds();
         } catch { /* ignore */ }
@@ -438,9 +439,14 @@ export class HyperliquidWebSocketManager {
         this.notifyConnectionChange(true);
 
         // Subscribe to market-data channels
-        this.subscribe(symbol, 'l2Book');
-        this.subscribe(symbol, 'trades');
-        this.subscribe(symbol, 'activeAssetCtx');
+        // v2.0.79: HL WS requires UPPERCASE coin names for DEX 0 assets
+        // (e.g. "BTC", not "btc"). DEX 1-8 symbols (xyz:XYZ100) use the
+        // full prefixed name as-is. normalizeSymbol lowercases DEX 0
+        // assets, so we must uppercase them back for WS subscriptions.
+        const wsCoin = symbol.includes(':') ? symbol : symbol.toUpperCase();
+        this.subscribe(wsCoin, 'l2Book');
+        this.subscribe(wsCoin, 'trades');
+        this.subscribe(wsCoin, 'activeAssetCtx');
 
         // Subscribe to user-level feeds (clearinghouseState + userFills) if a
         // wallet address is configured. This keeps the local portfolio + UI in

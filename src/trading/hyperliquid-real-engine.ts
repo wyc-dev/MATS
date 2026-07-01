@@ -298,7 +298,18 @@ export class HyperliquidRealEngine implements RealTradingEngine {
   // v2.0.32: HL API rejects dex: 0 (number). Must use '' (empty string) or omit the field.
   private static readonly PERP_DEX_NAMES: string[] = ['', 'xyz'];
 
+  // v2.0.79: Short-lived balance cache — prevents redundant getBalance() calls
+  // within the same cycle (index.ts cycle + executeDecision margin check +
+  // refreshHLFillsAndPush all call getBalance() within ~3 seconds).
+  private balanceCache: { value: ExchangeAccountInfo; ts: number } | null = null;
+  private static readonly BALANCE_CACHE_TTL_MS = 10_000; // 10s cache
+
   async getBalance(): Promise<ExchangeAccountInfo> {
+    // v2.0.79: Return cached balance if fresh (< 10s old)
+    if (this.balanceCache && (Date.now() - this.balanceCache.ts) < HyperliquidRealEngine.BALANCE_CACHE_TTL_MS) {
+      return this.balanceCache.value;
+    }
+
     try {
       let totalAccountValue = 0;
       let totalWithdrawable = 0;
@@ -371,20 +382,32 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
       log.info(`[getBalance] total(perp)=${total}, free=${free}, marginUsed=${totalMarginUsed}, unrealizedPnl=${totalUnrealizedPnl}, spotUsdc=${spotUsdc}`);
 
-      return {
+      const result: ExchangeAccountInfo = {
         free,
         locked: totalMarginUsed,
         total,
         unrealizedPnl: totalUnrealizedPnl,
         marginUsed: totalMarginUsed,
       };
+      // v2.0.79: Cache the result
+      this.balanceCache = { value: result, ts: Date.now() };
+      return result;
     } catch (err) {
       log.error(`getBalance failed: ${err instanceof Error ? err.message : String(err)}`);
       return { free: 0, locked: 0, total: 0, unrealizedPnl: 0, marginUsed: 0 };
     }
   }
 
+  // v2.0.79: Short-lived positions cache — same reason as balance cache
+  private positionsCache: { value: Position[]; ts: number } | null = null;
+  private static readonly POSITIONS_CACHE_TTL_MS = 10_000;
+
   async getPositions(): Promise<Position[]> {
+    // v2.0.79: Return cached positions if fresh
+    if (this.positionsCache && (Date.now() - this.positionsCache.ts) < HyperliquidRealEngine.POSITIONS_CACHE_TTL_MS) {
+      return this.positionsCache.value;
+    }
+
     try {
       const allPositions: Position[] = [];
 
@@ -513,6 +536,8 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         }
       }
 
+      // v2.0.79: Cache the result
+      this.positionsCache = { value: allPositions, ts: Date.now() };
       return allPositions;
     } catch (err) {
       log.error(`getPositions failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -526,6 +551,10 @@ export class HyperliquidRealEngine implements RealTradingEngine {
    * Used to sync the UI Trade Records panel with the real exchange so the
    * user sees their actual Hyperliquid trade history (last 5 by default).
    */
+  // v2.0.79: Short-lived fills cache
+  private fillsCache: { value: any[]; ts: number; limit: number } | null = null;
+  private static readonly FILLS_CACHE_TTL_MS = 10_000;
+
   async getRecentFills(limit = 10): Promise<Array<{
     symbol: string;
     side: 'buy' | 'sell';
@@ -536,6 +565,11 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     fee: number;
     dir: string;
   }>> {
+    // v2.0.79: Return cached fills if fresh and same limit
+    if (this.fillsCache && this.fillsCache.limit >= limit && (Date.now() - this.fillsCache.ts) < HyperliquidRealEngine.FILLS_CACHE_TTL_MS) {
+      return this.fillsCache.value.slice(0, limit);
+    }
+
     try {
       // userFillsByTime requires startTime — HL API fails without it.
       // Query last 7 days to capture all recent fills.
@@ -546,7 +580,11 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         body: JSON.stringify({ type: 'userFillsByTime', user: this.walletAddress, startTime }),
       });
       if (!res.ok) return [];
-      const data = await res.json() as { fills?: Array<{
+      // v2.0.78 FIX: HL userFillsByTime returns a BARE ARRAY, not { fills: [...] }.
+      // Previous code read data.fills which was always undefined → empty array →
+      // no fills ever reached the UI Trade Records panel.
+      const raw = await res.json();
+      const fills = (Array.isArray(raw) ? raw : (raw as { fills?: Array<{
         coin: string;
         side: string;
         px: string;
@@ -555,13 +593,12 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         closedPnl: string;
         fee: string;
         dir: string;
-      }> };
-      const fills = data.fills ?? [];
+      }> }).fills) ?? [];
       // Sort newest first (HL returns ascending), take the last `limit`.
       const sorted = fills.sort((a, b) => b.time - a.time).slice(0, limit);
-      return sorted.map(f => ({
+      const result: Array<{ symbol: string; side: 'buy' | 'sell'; price: number; size: number; timestamp: number; closedPnl: number; fee: number; dir: string }> = sorted.map(f => ({
         symbol: f.coin,
-        side: f.side === 'B' ? 'buy' : 'sell',
+        side: (f.side === 'B' ? 'buy' : 'sell') as 'buy' | 'sell',
         price: parseFloat(f.px ?? '0'),
         size: parseFloat(f.sz ?? '0'),
         timestamp: f.time,
@@ -569,6 +606,9 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         fee: parseFloat(f.fee ?? '0'),
         dir: f.dir,
       }));
+      // v2.0.79: Cache the result
+      this.fillsCache = { value: result, ts: Date.now(), limit };
+      return result;
     } catch (err) {
       log.error(`getRecentFills failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
@@ -603,7 +643,9 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         body: JSON.stringify({ type: 'userFillsByTime', user: this.walletAddress, startTime }),
       });
       if (!res.ok) return [];
-      const data = await res.json() as { fills?: Array<{
+      // v2.0.78 FIX: Same as getRecentFills — HL returns a bare array.
+      const raw = await res.json();
+      const fills = (Array.isArray(raw) ? raw : (raw as { fills?: Array<{
         coin: string;
         side: string;
         px: string;
@@ -612,8 +654,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         closedPnl: string;
         fee: string;
         dir: string;
-      }> };
-      const fills = data.fills ?? [];
+      }> }).fills) ?? [];
       const sorted = fills.sort((a, b) => b.time - a.time).slice(0, limit);
       return sorted.map(f => ({
         symbol: f.coin,

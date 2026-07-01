@@ -154,6 +154,10 @@ export function normalizePerSymbolDecision(raw: Partial<PerSymbolDecision> | und
   const patternTag = typeof raw.patternTag === 'string' && raw.patternTag.trim().length > 0
     ? raw.patternTag.trim().slice(0, 80)
     : undefined;
+  // v2.0.79: Per-symbol confidence (0.0-1.0), clamped
+  const confidence = typeof raw.confidence === 'number'
+    ? Math.max(0, Math.min(1, raw.confidence))
+    : undefined;
   return {
     symbol,
     action,
@@ -165,6 +169,7 @@ export function normalizePerSymbolDecision(raw: Partial<PerSymbolDecision> | und
     suggestedTakeProfit: typeof raw.suggestedTakeProfit === 'number' ? raw.suggestedTakeProfit : undefined,
     rationale: raw.rationale || 'No rationale provided.',
     ...(patternTag !== undefined ? { patternTag } : {}),
+    ...(confidence !== undefined ? { confidence } : {}),
   };
 }
 

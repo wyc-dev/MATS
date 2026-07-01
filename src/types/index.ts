@@ -273,6 +273,8 @@ export interface PerSymbolDecision {
   rationale: string;
   /** v2.0.28: LLM-identified chart pattern tag for this symbol's decision */
   patternTag?: string;
+  /** v2.0.79: Per-symbol confidence (0.0-1.0) — LLM's confidence for THIS symbol specifically */
+  confidence?: number;
 }
 
 export interface MultiSymbolDecision {

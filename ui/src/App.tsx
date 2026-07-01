@@ -78,11 +78,13 @@ function SystemStatusPanel({ data }: { data: APIData | null }) {
   )
 }
 
-function AgentCard({ role, thought, status, progress, models, assignments, onModelChange, activeSymbol }: {
+function AgentCard({ role, thought, status, progress, models, assignments, onModelChange, activeSymbol, newsHeadlines }: {
   role: string; thought: any; status: any; progress?: any;
   models: ModelDefinition[]; assignments: AgentModelConfig[]; onModelChange: (role: string, model: string) => void; activeSymbol?: string
+  newsHeadlines?: Array<{ symbol: string; headlines: Array<{ title: string; publisher: string; url?: string; pubDate: number | null }> }>
 }) {
   const meta = AGENT_META[role]
+  const [thoughtExpanded, setThoughtExpanded] = useState(false)
   if (!meta) return null
 
   // Extract which symbols this agent analyzed
@@ -116,6 +118,52 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
   const decision = isLive ? liveProgress.decision : thought?.metadata?.decision
   const latency = isLive ? liveProgress.latencyMs : thought?.metadata?.latency
 
+  // Collect all per-symbol decisions from multiSymbolDecision (deduped by normalized symbol)
+  const allDecisions: { symbol: string; action: string; positionSizePct: number; closePosition?: boolean; confidence?: number }[] = []
+  if (thought?.metadata?.multiSymbolDecision) {
+    const msd = thought.metadata.multiSymbolDecision
+    const seenSyms = new Set<string>()
+    // marketTicker first, then positions — skip if symbol already seen
+    if (msd.marketTicker) {
+      const symNorm = msd.marketTicker.symbol.replace(/^xyz:/i, '').toLowerCase()
+      allDecisions.push({
+        symbol: msd.marketTicker.symbol,
+        action: msd.marketTicker.action,
+        positionSizePct: msd.marketTicker.positionSizePct,
+        confidence: msd.marketTicker.confidence,
+      })
+      seenSyms.add(symNorm)
+    }
+    if (msd.positions?.length) {
+      for (const p of msd.positions) {
+        const symNorm = p.symbol.replace(/^xyz:/i, '').toLowerCase()
+        if (seenSyms.has(symNorm)) continue
+        seenSyms.add(symNorm)
+        allDecisions.push({
+          symbol: p.symbol,
+          action: p.action,
+          positionSizePct: p.positionSizePct,
+          closePosition: p.closePosition,
+          confidence: p.confidence,
+        })
+      }
+    }
+  } else if (decision && decision.symbol !== 'UNKNOWN') {
+    // Skip Skeptics' placeholder decision (symbol: 'UNKNOWN') — it's an auditor, not a trader
+    allDecisions.push({
+      symbol: decision.symbol ?? activeSymbol ?? '',
+      action: decision.action,
+      positionSizePct: decision.positionSizePct,
+    })
+  }
+
+  // For Skeptics: extract per-symbol audit results
+  const skepticsAudit: { symbol: string; approved: number; modified: number; details: string[] }[] =
+    thought?.metadata?.perSymbolAudit ?? []
+
+  // News headlines only shown for News Reporter
+  const isNewsReporter = role === 'news_reporter'
+
   const currentAssignment = assignments.find((a: AgentModelConfig) => a.role === role)
   const currentModel = currentAssignment?.model ?? ''
 
@@ -141,32 +189,12 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
         <span>Weight: {role === 'meta_agent' ? '0.35' : role === 'news_reporter' ? '0.20' : '0.25'}</span>
         {status && <span>Decisions: {status.decisionsGenerated}</span>}
       </div>
-      <div className="agent-conf-bar">
-        <div className="conf-track">
-          <div className={`conf-fill ${isLive && liveProgress.status === 'thinking' ? 'conf-animate' : ''}`}
-            style={{ width: `${confidence * 100}%`, background: meta.color }} />
-        </div>
-        <span className="conf-pct" style={{ color: meta.color }}>{(confidence * 100).toFixed(0)}%</span>
-      </div>
       {displayThought ? (
         <>
-          <div className="agent-thought">{displayThought}</div>
-          <button
-            className="agent-thought-copy-btn"
-            onClick={() => navigator.clipboard.writeText(displayThought)}
-            title="Copy thought"
-          >
-            📋 Copy
-          </button>
+          <div className={`agent-thought ${thoughtExpanded ? 'agent-thought-expanded' : 'agent-thought-collapsed'}`}>
+            {displayThought}
+          </div>
           <div className="agent-footer">
-            {decision && (
-              <span className="agent-footer-item">
-                <span className={`decision-tag ${decision.action} decision-tag-inner`}>
-                  {decision.action.toUpperCase()}
-                </span>
-                {decision.positionSizePct > 0 && <span>{(decision.positionSizePct * 100).toFixed(1)}%</span>}
-              </span>
-            )}
             {latency != null && (
               <span className="agent-footer-item">⏱ {(latency / 1000).toFixed(1)}s</span>
             )}
@@ -186,8 +214,26 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
           {isLive && liveProgress.status === 'thinking' ? '⟳ Thinking...' : 'Waiting for first thought...'}
         </div>
       )}
-      {/* Model selector inside each agent card */}
+      {/* Expand/Copy buttons + Model selector on same row */}
       <div className="agent-card-model-row">
+        {displayThought && (
+          <>
+            <button
+              className="agent-thought-toggle-btn"
+              onClick={() => setThoughtExpanded(v => !v)}
+              title={thoughtExpanded ? 'Collapse' : 'Expand'}
+            >
+              {thoughtExpanded ? '▲ Collapse' : '▼ Expand'}
+            </button>
+            <button
+              className="agent-thought-copy-btn"
+              onClick={() => navigator.clipboard.writeText(displayThought)}
+              title="Copy thought"
+            >
+              📋 Copy
+            </button>
+          </>
+        )}
         <select
           className="model-select model-select-wide"
           value={currentModel}
@@ -198,6 +244,92 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
           ))}
         </select>
       </div>
+      {/* Per-symbol section: decision tag + news headlines (News Reporter only) */}
+      {/* For Skeptics: per-symbol audit results instead of decisions */}
+      {skepticsAudit.length > 0 ? (
+        <div className="agent-per-symbol-section">
+          {skepticsAudit.map((a, i) => (
+            <div key={i} className="agent-per-symbol-group">
+              <div className="agent-per-symbol-header">
+                <span className="agent-decision-symbol">{a.symbol}</span>
+                <span className={`decision-tag ${a.modified > 0 ? 'sell' : 'hold'} decision-tag-inner`}>
+                  {a.modified > 0 ? `⚠ ${a.modified} MOD` : `✓ ${a.approved} OK`}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : allDecisions.length > 0 ? (
+        <div className="agent-per-symbol-section">
+          {allDecisions.map((d, i) => {
+            // Match news headlines to this symbol — only for News Reporter
+            const dSymNorm = d.symbol.replace(/^xyz:/i, '').toLowerCase()
+            const ns = isNewsReporter ? newsHeadlines?.find(n => {
+              const nSymNorm = n.symbol.replace(/^xyz:/i, '').toLowerCase()
+              return nSymNorm === dSymNorm
+            }) : undefined
+            return (
+              <div key={i} className="agent-per-symbol-group">
+                <div className="agent-per-symbol-header">
+                  <span className="agent-decision-symbol">{d.symbol}</span>
+                  <span className={`decision-tag ${d.action} decision-tag-inner`}>
+                    {d.closePosition ? 'CLOSE' : d.action.toUpperCase()}
+                  </span>
+                  {d.positionSizePct > 0 && <span className="agent-decision-size">{(d.positionSizePct * 100).toFixed(1)}%</span>}
+                  {/* Per-symbol confidence bar — uses per-symbol confidence if available, falls back to overall */}
+                  {(() => {
+                    const symConf = d.confidence ?? confidence
+                    return (
+                      <span className="agent-per-symbol-conf">
+                        <span className="conf-track conf-track-inline">
+                          <span className={`conf-fill ${isLive && liveProgress.status === 'thinking' ? 'conf-animate' : ''}`}
+                            style={{ width: `${symConf * 100}%`, background: meta.color }} />
+                        </span>
+                        <span className="conf-pct conf-pct-inline" style={{ color: meta.color }}>{(symConf * 100).toFixed(0)}%</span>
+                      </span>
+                    )
+                  })()}
+                </div>
+                {ns && ns.headlines.length > 0 && (
+                  <div className="agent-news-items">
+                    {ns.headlines.map((h, hi) => (
+                      <div key={hi} className="agent-news-item">
+                        {h.url
+                          ? <a href={h.url} target="_blank" rel="noopener noreferrer" className="agent-news-link" title={h.title}>{h.title}</a>
+                          : <span className="agent-news-title" title={h.title}>{h.title}</span>
+                        }
+                        <span className="agent-news-source">{h.publisher}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          {/* Show news for symbols that have headlines but no decision — News Reporter only */}
+          {isNewsReporter && newsHeadlines?.filter(ns => {
+            const nSymNorm = ns.symbol.replace(/^xyz:/i, '').toLowerCase()
+            return !allDecisions.some(d => d.symbol.replace(/^xyz:/i, '').toLowerCase() === nSymNorm)
+          }).map((ns, ni) => (
+            <div key={`extra-${ni}`} className="agent-per-symbol-group">
+              <div className="agent-per-symbol-header">
+                <span className="agent-decision-symbol">{ns.symbol}</span>
+              </div>
+              <div className="agent-news-items">
+                {ns.headlines.map((h, hi) => (
+                  <div key={hi} className="agent-news-item">
+                    {h.url
+                      ? <a href={h.url} target="_blank" rel="noopener noreferrer" className="agent-news-link" title={h.title}>{h.title}</a>
+                      : <span className="agent-news-title" title={h.title}>{h.title}</span>
+                    }
+                    <span className="agent-news-source">{h.publisher}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -211,6 +343,20 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const config = ma?.config
   const topPairs = ma?.topPairs ?? []
 
+  // v2.0.79: Get open positions for position pills (green=BUY, red=SELL)
+  const isRealMode = config?.tradeMode === 'real'
+  const allPortfolioPositions = Object.values(data?.portfolio?.positions ?? {}) as any[]
+  const openPositions = isRealMode
+    ? allPortfolioPositions.filter((pos) => pos.agentId === 'hyperliquid-real')
+    : allPortfolioPositions.filter((pos) => pos.agentId !== 'hyperliquid-real')
+  // Build a map of symbol → side for position pills
+  const positionMap = new Map<string, 'buy' | 'sell'>()
+  for (const pos of openPositions) {
+    positionMap.set(pos.symbol, pos.side)
+  }
+  // Normalize symbol for comparison (lowercase prefix for colon symbols)
+  const normSym = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
+
   const [selectedTradeMode, setSelectedTradeMode] = useState(config?.tradeMode ?? 'paper')
   // Exchange is now fixed to hyperliquid
   const exchange = 'hyperliquid'
@@ -220,6 +366,80 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [positionSizePct, setPositionSizePct] = useState(config?.positionSizePct ?? 0.10)
   const [maxPortionPct, setMaxPortionPct] = useState(config?.maxPortionPct ?? 0.20)
   const [leverage, setLeverage] = useState(config?.leverage ?? 10)
+
+  // ── Persistent "Trading Markets" pills (max 3).
+  // When user clicks a Top Volume Pair, it gets added as a pill.
+  // Deduped — same symbol only appears once. Persisted to localStorage
+  // with a single key so it survives Trade Mode / Asset Type switches.
+  // v2.0.79: Also synced to backend so agents analyze these symbols.
+  const TRADING_MARKETS_KEY = 'amacrf:tradingMarkets'
+  const [tradingMarkets, setTradingMarkets] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(TRADING_MARKETS_KEY)
+      const arr = raw ? JSON.parse(raw) : null
+      return Array.isArray(arr) ? arr.filter((s: unknown) => typeof s === 'string').slice(0, 3) : []
+    } catch { return [] }
+  })
+
+  // Sync trading markets to backend whenever they change.
+  // v2.0.79: Use a ref to avoid duplicate POSTs on initial render.
+  const lastPostedMarkets = useRef<string>('')
+  useEffect(() => {
+    const json = JSON.stringify(tradingMarkets)
+    if (json === lastPostedMarkets.current) return // skip if unchanged
+    lastPostedMarkets.current = json
+    try { localStorage.setItem(TRADING_MARKETS_KEY, json) } catch { /* ignore */ }
+    // POST to backend so agents know which symbols to analyze
+    fetch(`${API_BASE}/market-agent/trading-markets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ markets: tradingMarkets }),
+    }).catch(() => { /* ignore */ })
+  }, [tradingMarkets])
+
+  // Sync from backend on initial load (in case backend auto-added a market)
+  useEffect(() => {
+    if (data?.tradingMarkets && Array.isArray(data.tradingMarkets)) {
+      setTradingMarkets(prev => {
+        // Only update if backend has markets not in local state
+        const merged = [...new Set([...prev, ...data.tradingMarkets!])].slice(0, 3)
+        const prevJson = JSON.stringify(prev)
+        const mergedJson = JSON.stringify(merged)
+        return mergedJson !== prevJson ? merged : prev
+      })
+    }
+  }, [data?.tradingMarkets])
+
+  const addTradingMarket = async (symbol: string) => {
+    // v2.0.79: Check total count (trading markets + open positions) — max 3
+    // Position pills are always shown, so trading market pills + position pills
+    // must not exceed 3 total.
+    const positionCount = positionMap.size
+    setTradingMarkets(prev => {
+      // Dedup — only add if not already present (by normalized symbol)
+      const norm = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
+      if (prev.some(s => norm(s) === norm(symbol))) return prev
+      // Also check if a position already covers this symbol
+      for (const [posSym] of positionMap) {
+        if (norm(posSym) === norm(symbol)) return prev
+      }
+      // Max 3 total (trading markets + positions)
+      if (prev.length + positionCount >= 3) return prev
+      return [...prev, symbol]
+    })
+    // Also select the symbol as active for chart display
+    try {
+      await fetch(`${API_BASE}/market-agent/select-symbol`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol }),
+      })
+    } catch { /* ignore */ }
+  }
+
+  const removeTradingMarket = (symbol: string) => {
+    setTradingMarkets(prev => prev.filter(s => s !== symbol))
+  }
 
   useEffect(() => {
     if (config) {
@@ -400,26 +620,58 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       {/* Status msg */}
       <div className={`model-status model-status-compact ${statusVisible ? '' : 'hidden'}`}>{statusMsg}</div>
 
-      {/* Price info */}
-      {activeSymbol ? (
-        <>
-          <div className="market-price market-price-top">
-            <span className="market-symbol market-symbol-lg">{activeSymbol}</span>
-            <span className="market-value market-value-sm">${price.toFixed(2)}</span>
-            <span className={`market-change market-change-sm ${change24h >= 0 ? 'text-green' : 'text-red'}`}>
-              {change24h >= 0 ? '+' : ''}{change24h.toFixed(2)}
-            </span>
-          </div>
-          {/* Mini TradingView chart for the selected market — refreshes every cycle. */}
-          <div className="market-vol-row">
-            <TradingViewChart symbol={activeSymbol} currentPrice={price} trades={mainChartTrades} refreshKey={s?.cycles ?? 0} />
-          </div>
-        </>
-      ) : (
-        <div className="empty-state empty-state-compact">
-          <div className="empty-text empty-text-sm">Waiting for market data...</div>
+      {/* Price info + chart, with 3 persistent Saved-Market slots on the right of price */}
+      <div className="market-chart-row">
+        <div className="market-chart-col">
+          {activeSymbol ? (
+            <>
+              {/* Trading Markets + Position pills — horizontal row above price */}
+              <div className="market-slot-row">
+                <span className="market-slot-label">Trading Markets (Max: 3):</span>
+                {/* Position pills — green for BUY, red for SELL */}
+                {Array.from(positionMap.entries()).map(([sym, side]) => (
+                  <span key={`pos-${sym}`} className={`trading-market-pill position-pill ${side === 'buy' ? 'position-pill-buy' : 'position-pill-sell'}`} title={`${side.toUpperCase()} position: ${sym}`}>
+                    {sym}
+                  </span>
+                ))}
+                {/* Trading market pills — orange, skip if already has a position pill */}
+                {tradingMarkets
+                  .filter(sym => {
+                    // Skip if position pill already covers this symbol
+                    for (const [posSym] of positionMap) {
+                      if (normSym(posSym) === normSym(sym)) return false
+                    }
+                    return true
+                  })
+                  .map(sym => (
+                    <span key={`tm-${sym}`} className="trading-market-pill" onClick={() => removeTradingMarket(sym)} title={`Click to remove ${sym}`}>
+                      {sym}
+                      <span className="trading-market-pill-x">✕</span>
+                    </span>
+                  ))}
+                {tradingMarkets.length === 0 && positionMap.size === 0 && (
+                  <span className="market-slot-empty">Click a pair below to add</span>
+                )}
+              </div>
+              <div className="market-price market-price-top">
+                <span className="market-symbol market-symbol-lg">{activeSymbol}</span>
+                <span className="market-value market-value-sm">${price.toFixed(2)}</span>
+                <span className={`market-change market-change-sm ${change24h >= 0 ? 'text-green' : 'text-red'}`}>
+                  {change24h >= 0 ? '+' : ''}{change24h.toFixed(2)}
+                </span>
+              </div>
+              {/* Mini TradingView chart for the selected market — refreshes every cycle. */}
+              <div className="market-vol-row">
+                <TradingViewChart symbol={activeSymbol} currentPrice={price} trades={mainChartTrades} refreshKey={s?.cycles ?? 0} />
+              </div>
+            </>
+          ) : (
+            <div className="empty-state empty-state-compact">
+              <div className="empty-text empty-text-sm">Waiting for market data...</div>
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
       {/* Top pairs list — always visible */}
       <div className="market-pairs-header">
@@ -431,17 +683,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
             <div
               key={pair.symbol}
               className={`top-pair-row top-pair-row-inline ${pair.symbol === activeSymbol ? 'active-pair' : ''}`}
-              onClick={async () => {
-                try {
-                  await fetch(`${API_BASE}/market-agent/select-symbol`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ symbol: pair.symbol }),
-                  });
-                } catch (err) {
-                  console.error('Failed to select symbol:', err);
-                }
-              }}
+              onClick={() => addTradingMarket(pair.symbol)}
               onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
             >
@@ -510,6 +752,7 @@ function AgentPanel({ data }: { data: APIData | null }) {
                 assignments={assignments}
                 onModelChange={handleModelChange}
                 activeSymbol={activeSymbol}
+                newsHeadlines={data?.newsHeadlines}
               />
         ))}
       </div>
@@ -885,8 +1128,12 @@ function HistoryPanel({ data }: { data: APIData | null }) {
   const [page, setPage] = useState(0)
   const pageSize = 10
 
-  // Sort newest first
-  const sorted = [...tradeRecords].reverse()
+  // Sort newest first by close/open timestamp
+  const sorted = [...tradeRecords].sort((a: any, b: any) => {
+    const ta = a.closedAt ?? a.openedAt ?? 0
+    const tb = b.closedAt ?? b.openedAt ?? 0
+    return tb - ta
+  })
   const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize))
   const safePage = Math.min(page, totalPages - 1)
   const visible = sorted.slice(safePage * pageSize, (safePage + 1) * pageSize)

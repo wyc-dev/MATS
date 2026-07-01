@@ -187,6 +187,8 @@ export interface APIData {
   agentStatuses: AgentStatus[];
   consensus: ConsensusResult | null;
   debateRounds: DebateRound[];
+  newsHeadlines?: Array<{ symbol: string; headlines: Array<{ title: string; publisher: string; url?: string; pubDate: number | null }> }>;
+  tradingMarkets?: string[];
   portfolio: Portfolio | null;
   marketState: MarketState | null;
   agentModels?: { available: ModelDefinition[]; assignments: AgentModelConfig[] };

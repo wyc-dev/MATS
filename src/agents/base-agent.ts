@@ -98,6 +98,7 @@ export abstract class BaseAgent {
   "marketTicker": {
     "symbol": "${this.marketSymbol}",
     "action": "buy|sell|hold",
+    "confidence": 0.0-1.0,
     "positionSizePct": 0.0-0.20,
     "leverage": 1-10,
     "closePosition": false,
@@ -108,6 +109,7 @@ export abstract class BaseAgent {
     {
       "symbol": "POSITION_SYMBOL",
       "action": "hold|close",
+      "confidence": 0.0-1.0,
       "closePosition": true|false,
       "closeUrgency": "immediate|soon|patient",
       "suggestedStopLoss": PRICE_OR_NULL,
@@ -125,7 +127,8 @@ RULES:
 - Set "closePosition": true + "closeUrgency" when you want to exit
 - Set suggestedStopLoss/suggestedTakeProfit to adjust SL/TP levels (or omit/null to leave unchanged)
 - "patternTag" = a SHORT snake_case label identifying the chart/momentum pattern you see right now. Be specific but concise (max 40 chars). Examples: momentum_breakout, double_bottom_reversal, ascending_triangle, range_bound, trend_exhaustion, support_bounce, resistance_rejection, consolidation_squeeze, vwap_reclaim, lower_highs, higher_lows, bearish_divergence, bullish_divergence, failed_breakout, breakout_retest, channel_breakdown, rsi_oversold, rsi_overbought, funding_flip, volume_climax, liquidation_cascade, mean_reversion, trend_continuation, planck_resonance_strong, chaotic_divergence, diffusion_accumulation, cycle_phase_bottom, cycle_phase_top, edge_of_chaos
-- "overallConfidence" = how confident you are in ALL your decisions combined`;
+- "overallConfidence" = how confident you are in ALL your decisions combined
+- "confidence" (per symbol) = how confident you are in THIS specific symbol's decision. This may differ from overallConfidence — e.g. you may be 80% confident on BTC but only 40% on SP500.`;
   }
 
   async think(

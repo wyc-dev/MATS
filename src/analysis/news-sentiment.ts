@@ -88,10 +88,11 @@ const STOCK_NAMES: Record<string, string> = {
 
 const INDEX_NAMES: Record<string, string> = {
   SPX: 'S&P 500', SP500: 'S&P 500', SPY: 'S&P 500',
-  NDX: 'Nasdaq 100', QQQ: 'Nasdaq 100',
+  NDX: 'Nasdaq 100', QQQ: 'Nasdaq 100', XYZ100: 'Nasdaq 100',
   DJI: 'Dow Jones Industrial', DIA: 'Dow Jones Industrial',
   VIX: 'VIX volatility index', UVXY: 'VIX volatility index',
   RUT: 'Russell 2000',
+  SPCX: 'S&P 500 CME',
 };
 
 const COMMODITY_NAMES: Record<string, string> = {

@@ -96,6 +96,7 @@ export function getAllAgentModels(): AgentModelConfig[] {
     'independent_risk_auditor',
     'meta_agent',
     'market_agent',
+    'news_reporter',
     'skeptics',
   ];
   return roles.map(role => {
