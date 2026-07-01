@@ -1394,7 +1394,10 @@ function OptionsDataPanel({ data }: { data: APIData | null }) {
   // Only render for Stocks/Indices/Tradfi
   if (!isOptionsAsset) return null
 
-  if (!od) {
+  // v2.0.79: Normalize to array — backend may return single object or array
+  const odArray = od ? (Array.isArray(od) ? od : [od]) : []
+
+  if (odArray.length === 0) {
     return (
       <div className="panel panel-rgb-border">
         <div className="panel-header">
@@ -1407,71 +1410,66 @@ function OptionsDataPanel({ data }: { data: APIData | null }) {
     )
   }
 
-  const stats: Array<{ label: string; value: string; tone: 'positive' | 'negative' | 'neutral' | 'accent' }> = [
-    { label: 'IV Rank', value: `${od.ivRank.toFixed(0)}/100`, tone: od.ivRank >= 50 ? 'accent' : 'neutral' as const },
-    { label: 'IV %ile', value: `${od.ivPercentile.toFixed(0)}%`, tone: 'neutral' as const },
-    { label: 'Implied Vol', value: `${(od.impliedVolatility * 100).toFixed(1)}%`, tone: 'neutral' as const },
-    { label: 'Implied Move', value: `±${(od.impliedMovePct * 100).toFixed(2)}%`, tone: 'neutral' as const },
-    { label: 'P/C (Vol)', value: od.putCallRatio.toFixed(2), tone: od.putCallRatio > 1.2 ? 'negative' : od.putCallRatio < 0.8 ? 'positive' : 'neutral' as const },
-    { label: 'P/C (OI)', value: od.putCallOIRatio.toFixed(2), tone: od.putCallOIRatio > 1.2 ? 'negative' : od.putCallOIRatio < 0.8 ? 'positive' : 'neutral' as const },
-    { label: 'Gamma', value: od.gammaRegime.toUpperCase(), tone: od.gammaRegime === 'positive' ? 'positive' : od.gammaRegime === 'negative' ? 'negative' : 'neutral' as const },
-    { label: 'DTE', value: `${od.daysToExpiration}d`, tone: 'neutral' as const },
-  ]
-
-  if (od.highOIStrike !== null) {
-    stats.push({ label: 'High OI Strike', value: `$${od.highOIStrike.toFixed(2)}`, tone: 'accent' as const })
-  }
-  if (od.maxPain !== null) {
-    stats.push({ label: 'Max Pain', value: `$${od.maxPain.toFixed(2)}`, tone: 'accent' as const })
-  }
-  if (od.skew !== 0) {
-    stats.push({ label: 'Skew', value: od.skew.toFixed(3), tone: od.skew > 0.05 ? 'negative' : od.skew < -0.05 ? 'positive' : 'neutral' as const })
-  }
-
   return (
     <div className="panel panel-rgb-border">
       <div className="panel-header">
         <span className="panel-title">Options Data Layer</span>
-        <span className="panel-badge">{od.symbol}</span>
+        <span className="panel-badge">{odArray.length} asset{odArray.length > 1 ? 's' : ''}</span>
       </div>
 
-      {!od.available && (
-        <div style={{ padding: '4px 8px', fontSize: '0.7rem', color: 'var(--text-tertiary)' }}>
-          No live data — using defaults. Check API key + connection.
-        </div>
-      )}
-
-      <div className="evo-stats-grid" style={{ marginTop: 8 }}>
-        {stats.map(s => (
-          <div key={s.label} className="evo-stat-card">
-            <span className="evo-stat-label">{s.label}</span>
-            <span className={`evo-stat-value ${s.tone}`}>{s.value}</span>
-          </div>
-        ))}
+      {/* Multi-asset table */}
+      <div className="options-table-wrap">
+        <table className="options-table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>IV Rank</th>
+              <th>IV %ile</th>
+              <th>IV</th>
+              <th>Imp. Move</th>
+              <th>P/C Vol</th>
+              <th>P/C OI</th>
+              <th>Gamma</th>
+              <th>DTE</th>
+              <th>Playbook</th>
+            </tr>
+          </thead>
+          <tbody>
+            {odArray.map((o, i) => {
+              const pcVolTone = o.putCallRatio > 1.2 ? 'negative' : o.putCallRatio < 0.8 ? 'positive' : 'neutral'
+              const pcOITone = o.putCallOIRatio > 1.2 ? 'negative' : o.putCallOIRatio < 0.8 ? 'positive' : 'neutral'
+              const gammaTone = o.gammaRegime === 'positive' ? 'positive' : o.gammaRegime === 'negative' ? 'negative' : 'neutral'
+              return (
+                <tr key={i}>
+                  <td className="ot-symbol">{o.symbol}</td>
+                  <td className={o.ivRank >= 50 ? 'accent' : ''}>{o.ivRank.toFixed(0)}/100</td>
+                  <td>{o.ivPercentile.toFixed(0)}%</td>
+                  <td>{(o.impliedVolatility * 100).toFixed(1)}%</td>
+                  <td>±{(o.impliedMovePct * 100).toFixed(2)}%</td>
+                  <td className={pcVolTone}>{o.putCallRatio.toFixed(2)}</td>
+                  <td className={pcOITone}>{o.putCallOIRatio.toFixed(2)}</td>
+                  <td className={gammaTone}>{o.gammaRegime.toUpperCase()}</td>
+                  <td>{o.daysToExpiration}d</td>
+                  <td className="ot-playbook">{o.playbook?.playbook ?? '-'}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
       </div>
 
-      {od.eventRisk !== 'none' && (
-        <div style={{ padding: '6px 8px', margin: '8px 0', background: 'var(--accent-red)', color: 'white', borderRadius: '4px', fontSize: '0.75rem', fontWeight: 600 }}>
-          ⚠️ Event Risk: {od.eventRisk.toUpperCase()} ({od.daysToExpiration}d to expiration)
-        </div>
-      )}
-
-      {od.playbook && (
-        <div style={{ margin: '8px 0', padding: '8px', border: '1px solid var(--border-color)', borderRadius: '6px' }}>
-          <div style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginBottom: 4 }}>REGIME → PLAYBOOK</div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <span className="evo-badge accent" style={{ fontSize: '0.7rem' }}>{od.playbook.playbook}</span>
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>{od.playbook.structure}</span>
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)' }}>POP: {(od.playbook.targetPOP * 100).toFixed(0)}%</span>
-          </div>
-          <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: 4 }}>{od.playbook.rationale}</div>
-          {od.playbook.vetoNewPositions && (
-            <div style={{ fontSize: '0.7rem', color: 'var(--accent-red)', fontWeight: 600, marginTop: 4 }}>
-              ⚠️ VETO NEW POSITIONS
-            </div>
+      {/* Per-asset details (event risk, playbook rationale) */}
+      {odArray.filter(o => o.eventRisk !== 'none' || o.playbook).map((o, i) => (
+        <div key={`detail-${i}`} className="options-detail-row">
+          <span className="ot-detail-symbol">{o.symbol}</span>
+          {o.eventRisk !== 'none' && (
+            <span className="ot-event-risk">⚠️ {o.eventRisk.toUpperCase()}</span>
+          )}
+          {o.playbook && (
+            <span className="ot-playbook-detail">{o.playbook.playbook} — {o.playbook.rationale.slice(0, 80)}</span>
           )}
         </div>
-      )}
+      ))}
     </div>
   )
 }

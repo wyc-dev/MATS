@@ -1617,9 +1617,10 @@ class MATSSystem {
       let newsContext = '';
       try {
         // Build symbol list: active symbol first, then open positions (deduped).
-        const openSyms = this.portfolio.getOpenSymbols();
-        const symList = [activeSymbol, ...openSyms];
-        const newsResults = await fetchNewsForSymbols(symList, marketAgentDesc);
+        // v2.0.79: Use allSymbols (trading markets + open positions) for news,
+        // not just activeSymbol + openSyms. This ensures all trading markets
+        // get news headlines, not just the active symbol.
+        const newsResults = await fetchNewsForSymbols(allSymbols, marketAgentDesc);
         newsContext = formatNewsForAgentMulti(newsResults);
         const total = newsResults.filter(r => r && r.headlineCount > 0).length;
         if (total > 0) {
@@ -3683,33 +3684,47 @@ class MATSSystem {
         optionsData: (() => {
           const assetType = this.marketAgent.getConfig().hyperliquidAssetType ?? 'crypto_perps';
           if (assetType !== 'stocks' && assetType !== 'indices' && assetType !== 'tradfi') return undefined;
-          const sym = this.marketAgent.getSelectedSymbol() || '';
-          if (!sym) return undefined;
-          const ctx = this.optionsDataManager.getOptionsContext(sym);
-          const pb = this.optionsDataManager.getRegimePlaybook(sym, '', '');
-          return {
-            symbol: ctx.symbol,
-            ivRank: ctx.ivRank,
-            ivPercentile: ctx.ivPercentile,
-            impliedVolatility: ctx.impliedVolatility,
-            impliedMovePct: ctx.impliedMovePct,
-            putCallRatio: ctx.putCallRatio,
-            putCallOIRatio: ctx.putCallOIRatio,
-            gammaRegime: ctx.gammaRegime,
-            highOIStrike: ctx.highOIStrike,
-            maxPain: ctx.maxPain,
-            skew: ctx.skew,
-            eventRisk: ctx.eventRisk,
-            daysToExpiration: ctx.daysToExpiration,
-            available: ctx.available,
-            playbook: {
-              playbook: pb.playbook,
-              structure: pb.structure,
-              targetPOP: pb.targetPOP,
-              rationale: pb.rationale,
-              vetoNewPositions: pb.vetoNewPositions,
-            },
-          };
+          // v2.0.79: Return options data for ALL trading markets + positions
+          const openPosSyms = this.portfolio.getRealPositions().map(p => p.symbol);
+          const optionSymbols = [...this.tradingMarkets, ...openPosSyms].filter(s => s.includes(':'));
+          const results: Array<{
+            symbol: string; ivRank: number; ivPercentile: number; impliedVolatility: number;
+            impliedMovePct: number; putCallRatio: number; putCallOIRatio: number;
+            gammaRegime: string; highOIStrike: number | null; maxPain: number | null;
+            skew: number; eventRisk: string; daysToExpiration: number; available: boolean;
+            playbook?: { playbook: string; structure: string; targetPOP: number; rationale: string; vetoNewPositions: boolean };
+          }> = [];
+          for (const sym of optionSymbols) {
+            const ctx = this.optionsDataManager.getOptionsContext(sym);
+            const pb = this.optionsDataManager.getRegimePlaybook(sym, '', '');
+            results.push({
+              symbol: ctx.symbol,
+              ivRank: ctx.ivRank,
+              ivPercentile: ctx.ivPercentile,
+              impliedVolatility: ctx.impliedVolatility,
+              impliedMovePct: ctx.impliedMovePct,
+              putCallRatio: ctx.putCallRatio,
+              putCallOIRatio: ctx.putCallOIRatio,
+              gammaRegime: ctx.gammaRegime,
+              highOIStrike: ctx.highOIStrike,
+              maxPain: ctx.maxPain,
+              skew: ctx.skew,
+              eventRisk: ctx.eventRisk,
+              daysToExpiration: ctx.daysToExpiration,
+              available: ctx.available,
+              playbook: {
+                playbook: pb.playbook,
+                structure: pb.structure,
+                targetPOP: pb.targetPOP,
+                rationale: pb.rationale,
+                vetoNewPositions: pb.vetoNewPositions,
+              },
+            });
+          }
+          // Return single object if only 1 symbol (backward compat), array if multiple
+          if (results.length === 0) return undefined;
+          if (results.length === 1) return results[0];
+          return results as any;
         })(),
         agentModels: {
           available: getAvailableModels(),
