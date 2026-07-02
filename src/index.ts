@@ -2529,9 +2529,42 @@ class MATSSystem {
       //   - Otherwise you're paying fees for no meaningful gain
       const allThoughts = result.allThoughts;
       const perPositionCloseReports: ExecutionReport[] = [];
-      // v2.0.90: Removed per-position close voting path — closing must go through
-      // Meta-Agent decision + Skeptics validation, not sub-agent majority vote.
-      // The per-symbol consensus path below handles all closes with proper validation.
+
+      // v2.0.91: Per-position close voting — ONLY for legacy positions without entryThesis.
+      // Positions opened before the thesis system (v2.0.80) don't have entryThesis,
+      // so they can't go through the Meta-Agent → Skeptics close validation.
+      // For these legacy positions, sub-agent majority vote (≥2) is the close mechanism.
+      // Positions WITH entryThesis must go through the per-symbol consensus path below
+      // which includes Skeptics validateCloseDecision.
+      for (const posSymbol of this.portfolio.getOpenSymbols()) {
+        const pos = this.portfolio.getPosition(posSymbol);
+        if (!pos) continue;
+        // Only apply this path to legacy positions without entryThesis
+        if (pos.entryThesis) continue; // Has thesis → use consensus path with Skeptics validation
+
+        const closeVotes = allThoughts.filter(t => {
+          if (t.agentRole === 'meta_agent' || t.agentRole === 'market_agent') return false;
+          const msd = t.metadata?.['multiSymbolDecision'] as any;
+          const posDecision = msd?.positions?.find((p: any) => normalizeSymbol(p?.symbol ?? '') === normalizeSymbol(posSymbol));
+          return posDecision?.closePosition === true;
+        }).length;
+        if (closeVotes < 2) continue;
+        log.warn(`⚠️ ${closeVotes} agents recommend closing legacy position ${posSymbol} @ $${pos.currentPrice.toFixed(2)} (PnL: ${((pos.unrealizedPnlPct ?? 0)*100).toFixed(2)}%)...`);
+        if (pos.agentId === 'hyperliquid-real') {
+          const success = await this.realTradingManager.closePosition(posSymbol);
+          if (success) {
+            log.info(`  → Closed ${posSymbol} (real, legacy position)`);
+          } else {
+            log.error(`  → Failed to close ${posSymbol} on HL — position remains open`);
+          }
+        } else {
+          const trade = this.portfolio.closePosition(posSymbol, pos.currentPrice);
+          if (trade) {
+            perPositionCloseReports.push({ order: {} as any, trade });
+            log.info(`  → Closed ${posSymbol}: $${trade.pnl.toFixed(2)} (legacy)`);
+          }
+        }
+      }
 
       // ── Per-Symbol Consensus: Position Management ──
       // Use perSymbolConsensus from HACP to manage ALL open positions.
@@ -2546,26 +2579,34 @@ class MATSSystem {
         if (!pos) continue; // no open position for this symbol → skip (market ticker handled by main flow)
 
         // Close position if consensus says so
-        // v2.0.90: Close must be validated by Skeptics before execution.
-        // Meta-Agent decides to close → Skeptics validates reasoning → execute.
+        // v2.0.91: Close validation depends on whether the position has an entryThesis.
+        // - WITH entryThesis: Meta-Agent → Skeptics validateCloseDecision → execute
+        // - WITHOUT entryThesis (legacy): sub-agent voting already handled above,
+        //   but if consensus also says close, execute directly (legacy positions
+        //   don't need Skeptics validation since they predate the thesis system)
         if (psc.closePosition) {
-          // v2.0.90: Validate close decision with Skeptics
-          const closeRationale = psc.rationale || 'No rationale provided.';
-          const closeValidation = await this.hacpEngine.getSkeptics().validateCloseDecision(
-            psc.symbol,
-            pos.side as 'buy' | 'sell',
-            pos.averageEntryPrice,
-            pos.currentPrice,
-            pos.unrealizedPnlPct ?? 0,
-            closeRationale,
-            `${marketDesc}\n\n${evolutionContext}`,
-            allThoughts,
-          );
-          if (!closeValidation.approved) {
-            log.warn(`🚫 Skeptics BLOCKED close for ${psc.symbol}: ${closeValidation.rationale} — position remains open`);
-            continue;
+          if (pos.entryThesis) {
+            // v2.0.90: Validate close decision with Skeptics for thesis-backed positions
+            const closeRationale = psc.rationale || 'No rationale provided.';
+            const closeValidation = await this.hacpEngine.getSkeptics().validateCloseDecision(
+              psc.symbol,
+              pos.side as 'buy' | 'sell',
+              pos.averageEntryPrice,
+              pos.currentPrice,
+              pos.unrealizedPnlPct ?? 0,
+              closeRationale,
+              `${marketDesc}\n\n${evolutionContext}`,
+              allThoughts,
+            );
+            if (!closeValidation.approved) {
+              log.warn(`🚫 Skeptics BLOCKED close for ${psc.symbol}: ${closeValidation.rationale} — position remains open`);
+              continue;
+            }
+            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale} [Skeptics: ✅ ${closeValidation.rationale}]`);
+          } else {
+            // v2.0.91: Legacy position without entryThesis — close directly
+            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (legacy, no thesis) (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
           }
-          log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale} [Skeptics: ✅ ${closeValidation.rationale}]`);
           // v2.0.33: Route real positions through realTradingManager.closePosition()
           // which closes on HL first. portfolio.closePosition() only closes locally.
           if (pos.agentId === 'hyperliquid-real') {
