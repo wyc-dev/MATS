@@ -863,56 +863,56 @@ function AgentPanel({ data }: { data: APIData | null }) {
             <div className="rbc-legend-swatch" style={{ background: '#34d399', opacity: 0.8 }} />
             <div className="rbc-legend-text">
               <span className="rbc-legend-label">Market Select Agent</span>
-              <span className="rbc-legend-desc">Scans top-volume pairs across Hyperliquid, selects the trading market, and manages exchange config (trade mode, leverage, position size). Click a pair above to manually override.</span>
+              <span className="rbc-legend-desc">Scans top-volume pairs across Hyperliquid, selects the trading market, and manages exchange config (trade mode, leverage, position size, max portion). Click a pair above to manually override.</span>
             </div>
           </div>
           <div className="rbc-legend-item">
             <div className="rbc-legend-swatch" style={{ background: '#7c8a9e', opacity: 0.8 }} />
             <div className="rbc-legend-text">
               <span className="rbc-legend-label">Fractal Momentum Sentinel</span>
-              <span className="rbc-legend-desc">Detects multi-timeframe momentum patterns and fractal breakouts. Provides directional bias based on price structure (higher highs/lower lows).</span>
+              <span className="rbc-legend-desc">Detects multi-timeframe momentum patterns and fractal breakouts. Provides directional bias based on price structure. When this agent outputs BUY/SELL, Meta-Agent must pay special attention.</span>
             </div>
           </div>
           <div className="rbc-legend-item">
             <div className="rbc-legend-swatch" style={{ background: '#8a9bb0', opacity: 0.8 }} />
             <div className="rbc-legend-text">
               <span className="rbc-legend-label">On-Chain Whisperer</span>
-              <span className="rbc-legend-desc">Analyses on-chain metrics (volume, open interest, funding rates, liquidation levels) to gauge institutional positioning and market sentiment.</span>
+              <span className="rbc-legend-desc">Analyses on-chain metrics (mempool, exchange flows, funding rates, macro data) to gauge institutional positioning and market sentiment. Category-aware: crypto on-chain vs TradFi macro flows.</span>
             </div>
           </div>
           <div className="rbc-legend-item">
             <div className="rbc-legend-swatch" style={{ background: '#9aabb8', opacity: 0.8 }} />
             <div className="rbc-legend-text">
               <span className="rbc-legend-label">RBC &amp; Sentiment Analyst</span>
-              <span className="rbc-legend-desc">Combines Regime-Based Clustering (RBC) trade pattern recognition with sentiment analysis to classify the current market regime (trending, choppy, volatile).</span>
+              <span className="rbc-legend-desc">Combines Range-Based Clustering (RBC) — growing hyperrectangles that learn win/loss conditions from price action — with Fear & Greed sentiment analysis to classify market edge.</span>
             </div>
           </div>
           <div className="rbc-legend-item">
             <div className="rbc-legend-swatch" style={{ background: '#6b7a8e', opacity: 0.8 }} />
             <div className="rbc-legend-text">
               <span className="rbc-legend-label">Independent Risk Auditor</span>
-              <span className="rbc-legend-desc">Reviews the consensus decision for risk compliance — checks position sizing, leverage, drawdown limits, and correlation exposure. Can veto or reduce the proposed trade size.</span>
+              <span className="rbc-legend-desc">Advisory-only risk reviewer (v2.0.82). Suggests TP/SL/size adjustments and detects choppy markets. Cannot veto trades — the Meta-Agent + Skeptics thesis system is the sole gatekeeper for new positions.</span>
             </div>
           </div>
           <div className="rbc-legend-item">
             <div className="rbc-legend-swatch" style={{ background: '#fbbf24', opacity: 0.8 }} />
             <div className="rbc-legend-text">
               <span className="rbc-legend-label">News Reporter</span>
-              <span className="rbc-legend-desc">Fetches and summarises relevant market news and events. Provides context that may explain sudden price moves or regime shifts.</span>
+              <span className="rbc-legend-desc">Shadow Strategist news motive analyzer. Analyzes news source, conspiracy, and motive — evaluates whether news is engineered for distribution (bullish = bearish) or accumulation (FUD = bullish).</span>
             </div>
           </div>
           <div className="rbc-legend-item">
             <div className="rbc-legend-swatch" style={{ background: '#e879f9', opacity: 0.8 }} />
             <div className="rbc-legend-text">
               <span className="rbc-legend-label">Skeptics</span>
-              <span className="rbc-legend-desc">Plays devil's advocate — challenges the consensus, identifies edge cases, and stress-tests the decision against worst-case scenarios. Prevents groupthink.</span>
+              <span className="rbc-legend-desc">Absolute gatekeeper with veto power over new positions (v2.0.80+). Validates Meta-Agent's entryThesis for strength, data consistency, dark psychology (whale manipulation?), and fact distortion. Also validates close decisions for thesis-backed positions. When in doubt, REJECT.</span>
             </div>
           </div>
           <div className="rbc-legend-item">
             <div className="rbc-legend-swatch" style={{ background: '#5b8def', opacity: 0.8 }} />
             <div className="rbc-legend-text">
               <span className="rbc-legend-label">Meta-Agent</span>
-              <span className="rbc-legend-desc">Orchestrates the HACP debate cycle, aggregates agent thoughts, adjusts SL/TP for open positions, and produces the final consensus decision with a weighted vote.</span>
+              <span className="rbc-legend-desc">Detective mode (v2.0.83). Aggressively reasons from sub-agent data to find trade edges, but never distorts facts. Generates entryThesis (1h + 1d rationale) for BUY/SELL, holdReason for HOLD. Weight 0.00 — thesis system controls, not voting.</span>
             </div>
           </div>
         </div>
