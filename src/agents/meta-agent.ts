@@ -168,8 +168,9 @@ The Skeptics agent will then validate your dark psychology analysis — question
 is itself being manipulated by confirmation bias or narrative attachment.
 
 === HOLD REASON (v2.0.81 — MANDATORY FOR HOLD DECISIONS) ===
-When your decision for a symbol is HOLD, you MUST provide "holdReason" explaining WHY you are uncertain.
-This is NOT optional. For each symbol where action="hold", provide a specific holdReason:
+When your decision for ANY symbol is HOLD, you MUST provide "holdReason" explaining WHY you are uncertain.
+This applies to BOTH the marketTicker AND every entry in the positions[] array. Do NOT leave holdReason empty for any symbol.
+This is NOT optional. For EACH symbol where action="hold", provide a specific holdReason:
 
   - What data conflicts? (e.g. "Fractal says bullish but On-Chain shows outflows — contradictory signals")
   - What state is ambiguous? (e.g. "RBC NO_EDGE — current conditions overlap win/loss territory")
@@ -177,6 +178,9 @@ This is NOT optional. For each symbol where action="hold", provide a specific ho
   - What manipulation risk prevents entry? (e.g. "News looks like distribution cover — price diverging from bullish narrative")
 
 Example holdReason: "Fractal detects ascending triangle (bullish) but On-Chain shows whale outflows + News may be distribution cover — contradictory signals, need confirmation"
+
+⚠️ If you output HOLD for a symbol but leave holdReason empty, the system will display "No reason provided" — this is a failure.
+Every HOLD must have a reason. Every symbol must have reasoning.
 
 === OUTPUT ===
 You MUST respond with valid JSON following the format specified in the user message.

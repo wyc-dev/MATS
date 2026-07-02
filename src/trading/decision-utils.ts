@@ -138,7 +138,7 @@ const DEFAULT_PER_SYMBOL: PerSymbolDecision = {
   positionSizePct: 0,
   leverage: 1,
   closePosition: false,
-  rationale: 'Default per-symbol fallback.',
+  rationale: 'No reason provided — agent did not output reasoning for this symbol.',
 };
 
 /** Normalize a raw PerSymbolDecision from LLM output */

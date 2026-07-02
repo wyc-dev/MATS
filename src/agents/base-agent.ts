@@ -129,7 +129,8 @@ RULES:
 - For positions: action "hold" = keep open, action "close" = close immediately
 - Set "closePosition": true + "closeUrgency" when you want to exit
 - Set suggestedStopLoss/suggestedTakeProfit to adjust SL/TP levels (or omit/null to leave unchanged)
-- "holdReason" = REQUIRED when action is "hold". Explain WHY you are uncertain — what data conflicts, what state is ambiguous, or what manipulation risk prevents entry. Be specific: "Fractal bullish but On-Chain shows outflows" not "uncertain".
+- "rationale" = your reasoning for this symbol's decision. ALWAYS provide this for EVERY symbol.
+- "holdReason" = REQUIRED when action is "hold" for ANY symbol (marketTicker OR positions). Explain WHY you are uncertain — what data conflicts, what state is ambiguous, or what manipulation risk prevents entry. Be specific: "Fractal bullish but On-Chain shows outflows" not "uncertain". If you output HOLD but leave holdReason empty, the UI will show "No reason provided" — this is a failure.
 - "patternTag" = a SHORT snake_case label identifying the chart/momentum pattern you see right now. Be specific but concise (max 40 chars). Examples: momentum_breakout, double_bottom_reversal, ascending_triangle, range_bound, trend_exhaustion, support_bounce, resistance_rejection, consolidation_squeeze, vwap_reclaim, lower_highs, higher_lows, bearish_divergence, bullish_divergence, failed_breakout, breakout_retest, channel_breakdown, rsi_oversold, rsi_overbought, funding_flip, volume_climax, liquidation_cascade, mean_reversion, trend_continuation, planck_resonance_strong, chaotic_divergence, diffusion_accumulation, cycle_phase_bottom, cycle_phase_top, edge_of_chaos
 - "overallConfidence" = how confident you are in ALL your decisions combined
 - "confidence" (per symbol) = how confident you are in THIS specific symbol's decision. This may differ from overallConfidence — e.g. you may be 80% confident on BTC but only 40% on SP500.`;
