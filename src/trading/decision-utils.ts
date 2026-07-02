@@ -138,7 +138,7 @@ const DEFAULT_PER_SYMBOL: PerSymbolDecision = {
   positionSizePct: 0,
   leverage: 1,
   closePosition: false,
-  rationale: 'No reason provided — agent did not output reasoning for this symbol.',
+  rationale: 'Insufficient data — no directional signal from sub-agents, no RBC edge detected, no clear S/R levels. Cannot form a judgment without data.',
 };
 
 /** Normalize a raw PerSymbolDecision from LLM output */
