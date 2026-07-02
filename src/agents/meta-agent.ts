@@ -141,18 +141,20 @@ For the MARKET TICKER (${this.marketSymbol}) — NO POSITION:
 
 For each OPEN POSITION — HAS POSITION:
 - You MUST decide CLOSE or HOLD. CLOSE is the DEFAULT — HOLD requires strong confirmation.
-- CLOSE if ANY of these are true:
+- CLOSE if ≥3 of these 6 conditions are true (not just 1 — choppy markets make conditions 3 & 4
+  fire frequently on noise, so require 3 to avoid whipsaw closes):
   1. Entry thesis is invalidated by new information
   2. Trend has changed (price broke key level, momentum reversed)
   3. ≥2 sub-agents recommend CLOSE
   4. Position is losing money with no recovery thesis
   5. Market regime is now chaotic/unsuitable for position direction
   6. New information contradicts the original position rationale
-- HOLD only if ALL of these are true:
-  1. Thesis still valid + 2. Trend not changed + 3. No agents saying close
-  4. Position not losing + 5. Regime still suitable + 6. No contradicting news
-- When you decide HOLD, provide holdReason explaining why ALL six conditions are met
-- When you decide CLOSE, set closePosition=true and provide rationale explaining which condition triggered the close
+- HOLD if fewer than 3 conditions are true (i.e., 0-2 conditions true = HOLD)
+- When you decide HOLD, provide holdReason explaining which conditions ARE true and why
+  they are insufficient to justify closing (e.g., "conditions 3 & 4 true but only due to
+  choppy market noise — thesis still valid, trend not changed, regime suitable")
+- When you decide CLOSE, set closePosition=true and provide rationale explaining which
+  3+ conditions triggered the close
 
 === ENTRY THESIS (v2.0.80 — CORE SYSTEM FEATURE) ===
 When your marketTicker decision is BUY or SELL (opening a new position), you MUST provide "entryThesis".
@@ -211,9 +213,11 @@ For symbols WITHOUT a position — HOLD only when ALL six signals are absent:
   - No regime signal (chaotic with no resonances)
   holdReason must list which signals are absent and why NONE of them lean any direction.
 
-For symbols WITH a position — HOLD only when ALL six conditions are met:
-  - Thesis still valid + Trend not changed + No agents saying close + Not losing + Regime suitable + No contradicting news
-  holdReason must confirm each of the six conditions is true.
+For symbols WITH a position — HOLD when fewer than 3 of 6 conditions are true:
+  - List which conditions ARE true (0-2) and explain why they are insufficient to close
+  - e.g., "Conditions 3 & 4 true (agents saying close + position losing) but only due to
+    choppy market noise — thesis still valid (1 false), trend not changed (2 false),
+    regime suitable (5 false), no contradicting news (6 false) = only 2/6 → HOLD"
 
 ⚠️ CRITICAL: Even if you have NO DATA for a symbol, you MUST still output reasoning.
 "No RBC data, no on-chain data, no S/R levels" IS a valid starting point — but you MUST then
