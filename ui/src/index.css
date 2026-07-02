@@ -1115,10 +1115,12 @@ body {
   background: rgba(255, 255, 255, 0.08);
   overflow: hidden;
   display: inline-block;
+  vertical-align: middle;
 }
 
 .conf-track-inline .conf-fill {
   opacity: 1;
+  display: block;
 }
 
 .conf-pct {
