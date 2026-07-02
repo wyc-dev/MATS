@@ -293,13 +293,17 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                   {/* Per-symbol confidence bar — v2.0.84: hidden for Meta-Agent (weight=0, confidence is meaningless) */}
                   {role !== 'meta_agent' && (() => {
                     const symConf = d.confidence ?? confidence
+                    // v2.0.86: Dynamic color based on confidence — smooth gradient red→orange→yellow→green
+                    // HSL hue: 0% conf = 0° (red), 50% = 60° (yellow), 100% = 120° (green)
+                    const confHue = symConf * 120
+                    const confColor = `hsl(${confHue}, 70%, 50%)`
                     return (
                       <span className="agent-per-symbol-conf">
                         <span className="conf-track conf-track-inline">
                           <span className={`conf-fill ${isLive && liveProgress.status === 'thinking' ? 'conf-animate' : ''}`}
-                            style={{ width: `${symConf * 100}%`, background: meta.color }} />
+                            style={{ width: `${symConf * 100}%`, background: confColor }} />
                         </span>
-                        <span className="conf-pct conf-pct-inline" style={{ color: meta.color }}>{(symConf * 100).toFixed(0)}%</span>
+                        <span className="conf-pct conf-pct-inline" style={{ color: confColor }}>{(symConf * 100).toFixed(0)}%</span>
                       </span>
                     )
                   })()}
