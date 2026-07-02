@@ -193,9 +193,6 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
           {isLive && liveProgress.status === 'thinking' ? '💭 thinking' : agentState}
         </span>
       </div>
-      <div className="agent-meta">
-        {status && <span>Decisions: {status.decisionsGenerated}</span>}
-      </div>
       {displayThought ? (
         <>
           <div className={`agent-thought ${thoughtExpanded ? 'agent-thought-expanded' : 'agent-thought-collapsed'}`}>
