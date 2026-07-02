@@ -1133,7 +1133,7 @@ body {
 }
 
 .agent-thought-expanded {
-  max-height: 500px;
+  max-height: none;
   opacity: 1;
   transition: max-height 0.3s ease, opacity 0.25s ease;
 }
@@ -3032,6 +3032,12 @@ body {
   -webkit-box-orient: vertical;
 }
 
+.agent-hold-reason-expanded {
+  -webkit-line-clamp: unset;
+  display: block;
+  overflow: visible;
+}
+
 /* v2.0.80: Meta-Agent entryThesis — why price reaches TP */
 .agent-entry-thesis {
   font-size: var(--fs-xs);
@@ -3046,6 +3052,39 @@ body {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
+}
+
+.agent-entry-thesis-expanded {
+  -webkit-line-clamp: unset;
+  display: block;
+  overflow: visible;
+}
+
+/* v2.0.84: Per-symbol rationale — collapsed by default for sub-agents */
+.agent-per-symbol-rationale {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  padding: var(--space-1) var(--space-3);
+  border-left: 2px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  line-height: 1.5;
+  margin-top: var(--space-1);
+}
+
+.agent-rationale-collapsed {
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  padding: 0;
+  margin: 0;
+  transition: max-height 0.25s ease, opacity 0.2s ease;
+}
+
+.agent-rationale-expanded {
+  max-height: none;
+  opacity: 1;
+  transition: max-height 0.3s ease, opacity 0.25s ease;
 }
 
 .agent-news-item {
