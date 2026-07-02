@@ -329,14 +329,14 @@ export class PaperTradingEngine {
           this.portfolio.closePosition(safeSymbol, price);
         }
       }
-      this.portfolio.openPosition(order, price, decision.leverage ?? 1);
+      this.portfolio.openPosition(order, price, decision.leverage ?? 1, decision.entryThesis);
     } else if (decision.action === 'sell') {
       // Close long position
       if (this.portfolio.hasPosition(safeSymbol)) {
         this.portfolio.closePosition(safeSymbol, price);
       } else {
         // Open short position (paper)
-        this.portfolio.openPosition(order, price, decision.leverage ?? 1);
+        this.portfolio.openPosition(order, price, decision.leverage ?? 1, decision.entryThesis);
       }
     }
 

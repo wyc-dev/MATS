@@ -14,7 +14,7 @@ export class FractalMomentumSentinel extends BaseAgent {
       role: 'fractal_momentum_sentinel',
       name: 'Fractal Momentum Sentinel',
       temperature: 0.85,
-      weight: 0.25,
+      weight: 0.10,
       modelPreference: 'fast',
       personality:
         'You are a fractal mathematician turned trader. You see self-similar patterns across timeframes. '
@@ -565,7 +565,7 @@ export class OnChainWhisperer extends BaseAgent {
       role: 'onchain_whisperer',
       name: 'On-Chain Whisperer',
       temperature: 0.5,
-      weight: 0.25,
+      weight: 0.10,
       modelPreference: 'default',
       personality:
         'You are an elite on-chain analyst who reads blockchain data and macro flows with surgical precision. '
@@ -698,7 +698,7 @@ export class RBCSentimentAnalyst extends BaseAgent {
       role: 'rbc_sentiment_analyst',
       name: 'RBC & Sentiment Analyst',
       temperature: 0.25,
-      weight: 0.25,
+      weight: 0.10,
       modelPreference: 'default',
       maxTokens: 2048,
       personality:
@@ -915,7 +915,7 @@ export class NewsReporter extends BaseAgent {
       role: 'news_reporter',
       name: 'News Reporter',
       temperature: 0.4,
-      weight: 0.30,
+      weight: 0.10,
       modelPreference: 'fast',
       personality:
         'You are a Shadow Strategist — cold, no-nonsense, results-oriented. '
@@ -1366,5 +1366,221 @@ Output ONLY valid JSON:
       return trimmed.slice(start, end + 1);
     }
     return trimmed;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // v2.0.80: Entry Thesis Validation
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Validate Meta-Agent's entry thesis for a NEW position before it opens.
+   * Called after Meta-Agent produces a BUY/SELL decision with entryThesis.
+   *
+   * Returns true if the thesis is approved (trade may proceed), false if
+   * rejected (trade is blocked — consensus overridden to HOLD).
+   */
+  async validateEntryThesis(
+    thesis: string,
+    action: 'buy' | 'sell',
+    symbol: string,
+    marketStateDesc: string,
+    subAgentThoughts: AgentThought[],
+  ): Promise<{ approved: boolean; rationale: string }> {
+    if (!thesis || thesis.trim().length === 0) {
+      return {
+        approved: false,
+        rationale: 'Entry thesis is empty — Meta-Agent must provide a thesis for BUY/SELL decisions.',
+      };
+    }
+
+    try {
+      const provider = getActiveProvider();
+
+      // Build summary of sub-agent thoughts for cross-reference
+      const agentSummary = subAgentThoughts
+        .filter(t => t.agentRole !== 'meta_agent' && t.agentRole !== 'skeptics' && t.agentRole !== 'market_agent')
+        .map(t => `[${t.agentRole}] conf=${t.confidence.toFixed(2)}: ${(t.thought ?? '').slice(0, 200)}`)
+        .join('\n');
+
+      const response = await provider.chat({
+        messages: [
+          {
+            role: 'system',
+            content: `You are Skeptics — the system's thesis validator, dark psychology auditor, and ABSOLUTE GATEKEEPER.
+
+=== YOUR AUTHORITY (v2.0.83) ===
+You have ABSOLUTE VETO POWER over every new position. Meta-Agent is smart but can be wrong.
+Your job is to catch Meta-Agent's mistakes BEFORE real money is risked. If you have ANY doubt
+about the thesis, REJECT it. Capital preservation is more important than any single trade.
+
+A valid thesis must:
+1. Contain BOTH a 1h reason (short-term catalyst) AND a 1d reason (medium-term driver)
+2. Be SPECIFIC — cite actual data levels, events, or structural evidence (not "it will go up")
+3. Be CONSISTENT with the sub-agents' data — if agents say bearish but thesis says bullish, flag it
+4. NOT be a generic narrative ("BTC is digital gold") — must reference current market conditions
+5. The action (${action.toUpperCase()}) must align with the thesis direction
+6. MUST address dark psychology — did Meta-Agent check whether the data could be whale/institutional manipulation?
+   - If the thesis cites "bullish news" but doesn't address whether it could be distribution cover → REJECT
+   - If the thesis cites "momentum breakout" but doesn't address whether it could be a liquidity grab → REJECT
+   - If the thesis ignores obvious manipulation patterns visible in the data → REJECT
+7. Must NOT itself be a victim of confirmation bias — is Meta-Agent cherry-picking data to support its desired direction?
+8. Must NOT distort facts — Meta-Agent is instructed to aggressively find reasons to trade. Check if it crossed
+   the line from "finding subtle signals" to "twisting data to fit a desired direction". If facts are distorted → REJECT
+
+DARK PSYCHOLOGY VALIDATION:
+- Check if the sub-agent data Meta-Agent cites could be manufactured (wash volume, fake breakout, planted news)
+- Check if Meta-Agent's thesis direction aligns with what whales would WANT retail to believe
+- If ${action.toUpperCase()} = BUY: could the "bullish" data actually be distribution? Is someone creating exit liquidity?
+- If ${action.toUpperCase()} = SELL: could the "bearish" data actually be accumulation? Is someone creating entry liquidity?
+- If the thesis doesn't address these questions → REJECT and explain why
+
+REJECTION THRESHOLD: When in doubt, REJECT. A rejected trade costs nothing. A bad trade costs real money.
+If the thesis is strong, specific, data-driven, addresses manipulation risk, AND does not distort facts → approved: true
+If the thesis is weak, vague, missing 1h or 1d, contradicts data, ignores manipulation risk, or distorts facts → approved: false
+
+Output ONLY valid JSON:
+{"approved": true/false, "rationale": "1-3 sentence explanation including dark psychology assessment"}`,
+          },
+          {
+            role: 'user',
+            content: `Meta-Agent wants to ${action.toUpperCase()} ${symbol}.
+
+Entry Thesis: "${thesis}"
+
+Market Context (abridged):
+${marketStateDesc.slice(0, 1500)}
+
+Sub-Agent Thoughts:
+${agentSummary}
+
+Validate this thesis:
+1. Is it strong, specific, and data-driven? Does it justify why price will reach TP within 1h and 1d?
+2. Did Meta-Agent check for dark psychology / whale manipulation? Could the cited data be manufactured?
+3. Is Meta-Agent itself free from confirmation bias — or is it cherry-picking data to support a desired direction?
+4. Did Meta-Agent DISTORT facts to justify this trade? Compare the thesis claims against the sub-agent data — if the thesis says "bullish" but the raw data says "bearish", that's distortion → REJECT.
+5. If ${action.toUpperCase()} = BUY: could this be distribution disguised as bullish? If SELL: could this be accumulation disguised as bearish?
+6. When in doubt, REJECT — a rejected trade costs nothing, a bad trade costs real money.`,
+          },
+        ],
+        temperature: 0.3,
+        model: this.model,
+        timeoutMs: 30_000,
+      });
+
+      const jsonStr = this.extractSkepticsJSON(response.content);
+      const parsed = JSON.parse(jsonStr) as { approved: boolean; rationale: string };
+      this.logger.info(`Thesis validation [${action} ${symbol}]: ${parsed.approved ? '✅ APPROVED' : '🚫 REJECTED'} — ${parsed.rationale?.slice(0, 100) ?? ''}`);
+      return { approved: parsed.approved, rationale: parsed.rationale ?? 'No rationale provided.' };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Thesis validation failed: ${msg}. Defaulting to REJECT (capital preservation).`);
+      return { approved: false, rationale: `Thesis validation error: ${msg}. Rejected for safety.` };
+    }
+  }
+
+  /**
+   * Re-validate entry theses for ALL open positions each cycle.
+   * For each position with an entryThesis, fetch fresh market data and ask
+   * the LLM if the thesis is still valid given current conditions.
+   *
+   * Returns a map of symbol → { valid: boolean, rationale: string }.
+   * Positions with valid=false should be force-closed.
+   */
+  async validateOpenPositionTheses(
+    positions: Array<{
+      symbol: string;
+      side: 'buy' | 'sell';
+      entryPrice: number;
+      currentPrice: number;
+      stopLoss?: number;
+      takeProfit?: number;
+      leverage: number;
+      entryThesis?: string;
+    }>,
+    marketStateDesc: string,
+    fetchPriceForSymbol: (symbol: string) => Promise<number | null>,
+  ): Promise<Map<string, { valid: boolean; rationale: string }>> {
+    const results = new Map<string, { valid: boolean; rationale: string }>();
+
+    // Filter positions that have a thesis to validate
+    const positionsWithThesis = positions.filter(p => p.entryThesis && p.entryThesis.trim().length > 0);
+    if (positionsWithThesis.length === 0) {
+      return results;
+    }
+
+    this.logger.info(`Validating entry theses for ${positionsWithThesis.length} open position(s)...`);
+
+    for (const pos of positionsWithThesis) {
+      try {
+        // Fetch fresh price for this symbol
+        const freshPrice = await fetchPriceForSymbol(pos.symbol);
+        const priceDesc = freshPrice !== null
+          ? `Current price: $${freshPrice.toFixed(2)} (fetched fresh)`
+          : `Current price: $${pos.currentPrice.toFixed(2)} (stale — no fresh data)`;
+
+        const pnlPct = pos.side === 'buy'
+          ? ((pos.currentPrice - pos.entryPrice) / pos.entryPrice) * 100
+          : ((pos.entryPrice - pos.currentPrice) / pos.entryPrice) * 100;
+
+        const provider = getActiveProvider();
+        const response = await provider.chat({
+          messages: [
+            {
+              role: 'system',
+              content: `You are Skeptics — validating whether an open position's entry thesis is STILL valid.
+
+The position was opened with a specific thesis explaining why price would reach TP within 1h and 1d.
+Your job: determine if that thesis is STILL valid given the current market data, or if it has been invalidated.
+
+A thesis is INVALIDATED if:
+1. The catalyst/event the thesis was based on has already happened (and price didn't reach TP) — the thesis is spent
+2. The market structure has changed in a way that contradicts the thesis (e.g. thesis said "S/R bounce at $64K" but price broke BELOW $64K)
+3. The thesis direction is now contradicted by current data (e.g. thesis said bullish but trend is now bearish)
+4. The 1h timeframe has expired and the short-term reason did not materialize
+5. Key data the thesis relied on has reversed (e.g. thesis cited "funding negative" but funding is now positive)
+
+A thesis is STILL VALID if:
+1. The catalyst hasn't happened yet but the setup is still intact
+2. Price is moving toward TP (even if slowly) and the structural reasons haven't changed
+3. The 1d reason is still in play even if the 1h reason hasn't fully materialized
+
+Output ONLY valid JSON:
+{"valid": true/false, "rationale": "1-2 sentence explanation of why the thesis is still valid or invalidated"}`,
+            },
+            {
+              role: 'user',
+              content: `Position: ${pos.side.toUpperCase()} ${pos.symbol}
+Entry Price: $${pos.entryPrice.toFixed(2)}
+${priceDesc}
+Stop Loss: ${pos.stopLoss ? `$${pos.stopLoss.toFixed(2)}` : 'NONE'}
+Take Profit: ${pos.takeProfit ? `$${pos.takeProfit.toFixed(2)}` : 'NONE'}
+Leverage: ${pos.leverage}x
+Unrealized PnL: ${pnlPct.toFixed(2)}%
+
+Original Entry Thesis: "${pos.entryThesis}"
+
+Current Market Context (abridged):
+${marketStateDesc.slice(0, 1200)}
+
+Is this thesis STILL valid? Has the market changed in a way that invalidates the original reasoning?`,
+            },
+          ],
+          temperature: 0.3,
+          model: this.model,
+          timeoutMs: 30_000,
+        });
+
+        const jsonStr = this.extractSkepticsJSON(response.content);
+        const parsed = JSON.parse(jsonStr) as { valid: boolean; rationale: string };
+        results.set(pos.symbol, { valid: parsed.valid, rationale: parsed.rationale ?? 'No rationale.' });
+        this.logger.info(`Thesis re-validation [${pos.symbol}]: ${parsed.valid ? '✅ STILL VALID' : '🚫 INVALIDATED'} — ${(parsed.rationale ?? '').slice(0, 100)}`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Thesis re-validation failed for ${pos.symbol}: ${msg}. Defaulting to VALID (avoid premature close on error).`);
+        results.set(pos.symbol, { valid: true, rationale: `Validation error: ${msg}. Kept open to avoid erroneous close.` });
+      }
+    }
+
+    return results;
   }
 }

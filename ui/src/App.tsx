@@ -119,7 +119,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
   const latency = isLive ? liveProgress.latencyMs : thought?.metadata?.latency
 
   // Collect all per-symbol decisions from multiSymbolDecision (deduped by normalized symbol)
-  const allDecisions: { symbol: string; action: string; positionSizePct: number; closePosition?: boolean; confidence?: number }[] = []
+  const allDecisions: { symbol: string; action: string; positionSizePct: number; closePosition?: boolean; confidence?: number; holdReason?: string; entryThesis?: string }[] = []
   if (thought?.metadata?.multiSymbolDecision) {
     const msd = thought.metadata.multiSymbolDecision
     const seenSyms = new Set<string>()
@@ -131,6 +131,8 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
         action: msd.marketTicker.action,
         positionSizePct: msd.marketTicker.positionSizePct,
         confidence: msd.marketTicker.confidence,
+        holdReason: msd.marketTicker.holdReason,
+        entryThesis: msd.marketTicker.entryThesis,
       })
       seenSyms.add(symNorm)
     }
@@ -145,6 +147,8 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
           positionSizePct: p.positionSizePct,
           closePosition: p.closePosition,
           confidence: p.confidence,
+          holdReason: p.holdReason,
+          entryThesis: p.entryThesis,
         })
       }
     }
@@ -154,6 +158,8 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
       symbol: decision.symbol ?? activeSymbol ?? '',
       action: decision.action,
       positionSizePct: decision.positionSizePct,
+      holdReason: decision.holdReason,
+      entryThesis: decision.entryThesis,
     })
   }
 
@@ -186,7 +192,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
       </div>
       <div className="agent-meta">
         <span>Temp: {role === 'fractal_momentum_sentinel' ? '0.85' : role === 'onchain_whisperer' ? '0.50' : role === 'regime_risk_guardian' ? '0.25' : role === 'independent_risk_auditor' ? '0.10' : role === 'news_reporter' ? '0.40' : '0.45'}</span>
-        <span>Weight: {role === 'meta_agent' ? '0.35' : role === 'news_reporter' ? '0.20' : '0.25'}</span>
+        <span>Weight: {role === 'meta_agent' ? '0.00' : role === 'news_reporter' ? '0.10' : role === 'independent_risk_auditor' ? '0.25' : '0.10'}</span>
         {status && <span>Decisions: {status.decisionsGenerated}</span>}
       </div>
       {displayThought ? (
@@ -290,6 +296,18 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                     )
                   })()}
                 </div>
+                {/* v2.0.81: Show holdReason for HOLD decisions (Meta-Agent only) */}
+                {d.action === 'hold' && d.holdReason && (
+                  <div className="agent-hold-reason" title={d.holdReason}>
+                    {d.holdReason}
+                  </div>
+                )}
+                {/* v2.0.80: Show entryThesis for BUY/SELL decisions (Meta-Agent only) */}
+                {(d.action === 'buy' || d.action === 'sell') && d.entryThesis && (
+                  <div className="agent-entry-thesis" title={d.entryThesis}>
+                    📝 {d.entryThesis}
+                  </div>
+                )}
                 {ns && ns.headlines.length > 0 && (
                   <div className="agent-news-items">
                     {ns.headlines.map((h, hi) => (

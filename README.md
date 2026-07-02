@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.78-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.83-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -122,13 +122,13 @@ MATS does not rely on a single AI model. Instead, **eight specialized agents thi
 | Agent | Role | Temperature | Weight |
 |:------|:-----|:-----------:|:------:|
 | **Market Agent** | Auto-selects trading pair, sets position size & leverage | — | — |
-| **Fractal Momentum Sentinel** | Fractal pattern & trend analyst | 0.85 | 0.25 |
-| **On-Chain Whisperer** | On-chain data & macro analyst | 0.50 | 0.25 |
-| **RBC & Sentiment Analyst** | RBC clusters + Fear & Greed specialist | 0.25 | 0.25 |
-| **News Reporter** | Shadow Strategist news motive analyzer | 0.40 | 0.30 |
-| **Independent Risk Auditor** | 🚨 Final gatekeeper (absolute veto power) + 🆕 v2.0.13 regime-aware TP/SL | 0.10 | 0.25 |
-| **Skeptics** | 🤔 Logic auditor (cross-references all agents) | 0.30 | — |
-| **Meta-Agent** | Strategic coordinator / debate chair | 0.45 | 0.35 |
+| **Fractal Momentum Sentinel** | Fractal pattern & trend analyst | 0.85 | 0.10 |
+| **On-Chain Whisperer** | On-chain data & macro analyst | 0.50 | 0.10 |
+| **RBC & Sentiment Analyst** | RBC clusters + Fear & Greed specialist | 0.25 | 0.10 |
+| **News Reporter** | Shadow Strategist news motive analyzer | 0.40 | 0.10 |
+| **Independent Risk Auditor** | Risk limits + regime-aware TP/SL (🆕 v2.0.82 advisory-only, cannot veto) | 0.10 | 0.25 |
+| **Skeptics** | 🤔 Logic auditor + 🆕 v2.0.80–v2.0.83 **absolute veto on new positions** (thesis validation + dark psychology audit) | 0.30 | — |
+| **Meta-Agent** | 🆕 v2.0.83 Detective — aggressively reasons from facts to find trade edges; generates entryThesis (1h+1d rationale); weight 0.00 (thesis system controls, not voting) | 0.45 | 0.00 |
 
 Each agent operates with **independent temperature, weight, data sources, and reasoning models**, ensuring genuine opinion diversity and preventing groupthink.
 
@@ -137,15 +137,18 @@ Each agent operates with **independent temperature, weight, data sources, and re
 A structured multi-LLM debate protocol that replaces traditional single-model inference:
 
 ```
-Phase 0:   Market Agent auto-selects trading pair + position reconciliation
-Phase 1:   5 agents think in parallel (staggered, with 15s timeout)
-Phase 1.5: Skeptics logic audit + EM convergence cross-cycle check
+Phase 0:    Market Agent auto-selects trading pair + position reconciliation
+Phase 0.5:  🆕 v2.0.80 Skeptics re-validates each open position's entryThesis against fresh market data → invalidated → force-close
+Phase 1:    5 agents think in parallel (staggered, with 15s timeout)
+Phase 1.5:  Skeptics logic audit + EM convergence cross-cycle check
 Phase 1.75: Meta-Agent final arbitration (incorporates Skeptics findings)
-Phase 2:   Structured rapid debate (1-3 rounds, configurable)
-Phase 3:   Weighted voting consensus (60% threshold, dynamic adjustment)
-Phase 4:   Risk Auditor final veto (absolute, non-overridable)
-Phase 4.5: Market Agent hard constraints override (enforces position size & leverage)
-Phase 5:   Meta-Agent dynamic TP/SL adjustment + per-position consensus execution
+Phase 1.8:  🆕 v2.0.80 Skeptics validates Meta-Agent's entryThesis for BUY/SELL → rejected → HOLD override
+Phase 2:    Structured rapid debate (1-3 rounds, configurable)
+Phase 3:    Weighted voting consensus (60% threshold, dynamic adjustment)
+Phase 4:    Risk Auditor advisory check (🆕 v2.0.82 non-blocking, TP/SL/size adjustments only)
+Phase 4.5:  Market Agent hard constraints override (enforces position size & leverage)
+Phase 4.8:  🆕 v2.0.80 Entry Thesis Hard Gate — final check: BUY/SELL without valid+validated entryThesis → BLOCK
+Phase 5:    Meta-Agent dynamic TP/SL adjustment + per-position consensus execution
 ```
 
 **Key properties:**
@@ -521,6 +524,8 @@ If you require a commercial license — for example, for proprietary extensions,
 | **v2.0.76** | **Global HL rate limiter** — `src/utils/hl-global-limiter.ts` replaces 6+ scattered per-module rate limiters with ONE global queue (200ms gap = 5 req/s). All HL API calls (MarketAgent, HL real engine, candle proxy, REST polling, S/R detector, ATR, correlation budget) now share a single request budget. 429 retry with exponential backoff. DNS failure handling (short retry then throw, let caller back off). Eliminates 429 storms from concurrent modules. |
 | **v2.0.77** | **WS infinite reconnect + REST polling backoff** — HL WebSocket no longer gives up after 50 attempts (network outages can last hours). Backoff caps at 60s but retries forever. REST polling now has exponential backoff on consecutive failures (30s → 60s → 120s → ... → 5min cap), resets on success. Global rate limiter handles DNS errors gracefully (2 short retries then throw, so REST polling can back off). System auto-recovers when network returns. |
 | **v2.0.78** | **Configurable max portion** — `maxPortionPct` (10%-50%) replaces hardcoded 20% cumulative margin cap. UI slider in Market Agent panel. Enforced in both paper engine AND real trading manager (checked BEFORE sending orders to HL — prevents sending trades that exceed the cap). Position Size slider max dynamically follows maxPortion. Mobile layout wraps 3 controls to 2 rows. Config no longer resets on market/mode switch (useEffect only syncs when values actually change). |
+
+| **v2.0.79–v2.0.83** | **Entry Thesis System + Dark Psychology + Skeptics Absolute Veto** — The most significant cognitive architecture upgrade. Meta-Agent now operates as a detective: every cycle it aggressively reasons from sub-agent data to find subtle trade edges ("蛛絲馬跡"), but must NEVER distort facts. When it finds an edge, it generates an `entryThesis` explaining why price will reach TP within 1h (short-term catalyst) and 1d (medium-term driver), referencing specific sub-agent data. **Skeptics has absolute veto power** over new positions — it validates the thesis for strength, specificity, data consistency, dark psychology (is the data whale manipulation? distribution disguised as bullish news? accumulation disguised as FUD?), and fact distortion (did Meta-Agent cherry-pick data to fit a desired direction?). When in doubt, REJECT — a rejected trade costs nothing, a bad trade costs real money. **Phase 0.5**: each cycle, Skeptics re-validates every open position's thesis against fresh market data — if invalidated, the position is force-closed. **Phase 1.8**: after Meta-Agent thinks, Skeptics validates the thesis before the trade is allowed. **Phase 4.8**: final hard gate — any BUY/SELL without a valid+validated entryThesis is blocked, regardless of which consensus path produced it. Meta-Agent weight → 0.00 (thesis system controls, not voting). Sub-agent weights → 0.10 (data-gathering role, confidence is reference for Skeptics). Risk Auditor veto → advisory-only (cannot block trades, only suggests TP/SL/size adjustments; hardcoded safety layers retained). HOLD decisions require `holdReason` explaining what data conflicts or what state is ambiguous — displayed in UI under each symbol. Dark Psychology interrogation: Meta-Agent must question whether sub-agent data is genuine market signal or deliberate whale/institutional manipulation (distribution disguised as bullish, accumulation disguised as FUD, fake breakout traps, wash trading, sentiment manipulation, suspicious news timing). Skeptics then validates whether Meta-Agent's own interpretation is free from confirmation bias. All positions (including exploration trades) require a thesis. Thesis is persisted in `Position.entryThesis` and survives restarts. |
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for full details on each fix.
 

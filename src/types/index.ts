@@ -157,6 +157,14 @@ export interface PerSymbolConsensus {
   /** Leverage for new trades */
   leverage: number;
   rationale: string;
+  /** v2.0.80: Meta-Agent's entry thesis for new positions (from marketTicker
+   *  decision). Propagated to Position.entryThesis when the position opens.
+   *  Format: "[1h: <reason>] [1d: <reason>]" */
+  entryThesis?: string;
+  /** v2.0.81: Meta-Agent's explanation for why it chose HOLD. Explains what
+   *  data conflicts, ambiguous states, or manipulation risks prevented
+   *  a confident directional decision. Displayed in the UI. */
+  holdReason?: string;
 }
 
 export interface Vote {
@@ -187,6 +195,10 @@ export interface TradingDecision {
    *  "double_bottom_reversal", "momentum_continuation"). Used by PatternTagTracker
    *  to track which patterns have highest win rates per direction. */
   patternTag?: string;
+  /** v2.0.80: Meta-Agent's entry thesis for new positions. Propagated to
+   *  Position.entryThesis when the position opens. Re-validated by Skeptics
+   *  each cycle. Format: "[1h: <reason>] [1d: <reason>]" */
+  entryThesis?: string;
 }
 
 // ─── Order & Position ───
@@ -233,6 +245,15 @@ export interface Position {
    *  unrealizedPnl so the UI shows the real cost from the moment the
    *  position opens, not $0.00. */
   entryFee?: number;
+  /** v2.0.79: Meta-Agent's single condensed rationale for why this position
+   *  will reach TP within 1h (short-term) and 1d (medium-term). Required for
+   *  all HACP-opened positions. Skeptics validates this each cycle; if
+   *  invalidated, the position is force-closed.
+   *
+   *  Format: "[1h: <short-term reason>] [1d: <medium-term reason>]"
+   *  Example: "[1h: RSI oversold + S/R bounce at $64K] [1d: Fed dovish pivot
+   *  Friday + BTC ETF inflows accelerating]" */
+  entryThesis?: string;
 }
 
 // ─── Multi-Symbol Decision (v1.9.2 — each agent evaluates ALL pairs) ───
@@ -250,6 +271,10 @@ export interface PositionContext {
   takeProfitPrice?: number;
   leverage: number;
   exchange: string;
+  /** v2.0.80: Entry thesis stored when the position was opened. Skeptics
+   *  re-validates this each cycle to determine if the position should
+   *  be force-closed. */
+  entryThesis?: string;
 }
 
 export interface PerSymbolDecision {
@@ -275,6 +300,18 @@ export interface PerSymbolDecision {
   patternTag?: string;
   /** v2.0.79: Per-symbol confidence (0.0-1.0) — LLM's confidence for THIS symbol specifically */
   confidence?: number;
+  /** v2.0.80: Meta-Agent's single condensed entry thesis for new positions.
+   *  Required when action is 'buy' or 'sell'. Explains why price will reach
+   *  TP within 1h (short-term) and 1d (medium-term). Skeptics validates this
+   *  before the position is opened, and re-validates each cycle.
+   *  Format: "[1h: <reason>] [1d: <reason>]" */
+  entryThesis?: string;
+  /** v2.0.81: Meta-Agent's explanation for why it chose HOLD for this
+   *  symbol. Required when action is 'hold'. Explains what data conflicts,
+   *  ambiguous states, or missing information prevented a confident
+   *  directional decision. Displayed in the UI under each symbol's HOLD tag.
+   *  Example: "Fractal says bullish but On-Chain shows outflows — contradictory signals" */
+  holdReason?: string;
 }
 
 export interface MultiSymbolDecision {

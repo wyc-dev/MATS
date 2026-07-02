@@ -3016,6 +3016,38 @@ body {
   gap: var(--space-2);
 }
 
+/* v2.0.81: Meta-Agent holdReason — why uncertain for HOLD decisions */
+.agent-hold-reason {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  padding: var(--space-1) var(--space-3);
+  border-left: 2px solid rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.03);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* v2.0.80: Meta-Agent entryThesis — why price reaches TP */
+.agent-entry-thesis {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  padding: var(--space-1) var(--space-3);
+  border-left: 2px solid rgba(52, 211, 153, 0.4);
+  background: rgba(52, 211, 153, 0.04);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
 .agent-news-item {
   display: flex;
   flex-direction: column;

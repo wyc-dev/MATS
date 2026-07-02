@@ -115,6 +115,8 @@ export interface PortfolioSnapshot {
     updatedAt: number;
     agentId: string;
     exchange?: string;
+    /** v2.0.80: Entry thesis for Skeptics re-validation */
+    entryThesis?: string;
   }>;
   /** Persisted paper trades (TradeRecord[]) */
   trades?: Array<{
@@ -297,7 +299,10 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       leverage: p.leverage,
       openedAt: p.openedAt,
       updatedAt: p.updatedAt,
-      agentId: p.agentId,      exchange: (p as any).exchange,    }));
+      agentId: p.agentId,      exchange: (p as any).exchange,
+      // v2.0.80: Persist entryThesis so it survives restarts
+      entryThesis: (p as any).entryThesis,
+    }));
 
     const serializedTrades = trades ? Array.from(trades).map(t => ({
       id: t.id,
