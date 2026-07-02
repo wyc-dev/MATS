@@ -2607,11 +2607,22 @@ class MATSSystem {
         }).length;
 
         // v2.0.94: Also check if Meta-Agent decided CLOSE for this position
+        // Check both positions[] AND marketTicker (activeSymbol is filtered from
+        // positions[] to avoid UI duplication, so its CLOSE decision may be in
+        // marketTicker instead)
         const metaCloseDecision = allThoughts.some(t => {
           if (t.agentRole !== 'meta_agent') return false;
           const msd = t.metadata?.['multiSymbolDecision'] as any;
-          const posDecision = msd?.positions?.find((p: any) => normalizeSymbol(p?.symbol ?? '') === normalizeSymbol(posSymbol));
-          return posDecision?.closePosition === true || posDecision?.action === 'close';
+          if (!msd) return false;
+          // Check positions[] array
+          const posDecision = msd.positions?.find((p: any) => normalizeSymbol(p?.symbol ?? '') === normalizeSymbol(posSymbol));
+          if (posDecision?.closePosition === true || posDecision?.action === 'close') return true;
+          // Check marketTicker (in case this symbol is the activeSymbol and was
+          // filtered from positions[] — its CLOSE decision is in marketTicker)
+          if (msd.marketTicker && normalizeSymbol(msd.marketTicker.symbol ?? '') === normalizeSymbol(posSymbol)) {
+            if (msd.marketTicker.closePosition === true || msd.marketTicker.action === 'close') return true;
+          }
+          return false;
         });
 
         // Close if ≥2 sub-agents vote close OR Meta-Agent decides close
