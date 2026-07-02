@@ -2014,6 +2014,7 @@ class MATSSystem {
         ...Array.from(this.portfolio.getPortfolio().positions.values()),
         ...realPos,
         // Add any exchange positions missing from realPositions
+        // v2.0.80: Compute default SL/TP (2% SL, 5% TP) so agents see safety levels
         ...(this.cachedExchangePositions ?? [])
           .filter(ep => !realPosSyms.has(normalizeSymbol(ep.symbol)))
           .map(ep => ({
@@ -2022,8 +2023,12 @@ class MATSSystem {
             side: ep.side,
             entryPrice: ep.averageEntryPrice,
             currentPrice: ep.currentPrice,
-            stopLossPrice: undefined as number | undefined,
-            takeProfitPrice: undefined as number | undefined,
+            stopLossPrice: ep.side === 'buy'
+              ? ep.averageEntryPrice * (1 - 0.02)
+              : ep.averageEntryPrice * (1 + 0.02),
+            takeProfitPrice: ep.side === 'buy'
+              ? ep.averageEntryPrice * (1 + 0.05)
+              : ep.averageEntryPrice * (1 - 0.05),
             leverage: ep.leverage,
             quantity: ep.quantity,
             exchange: 'hyperliquid',
@@ -2039,6 +2044,8 @@ class MATSSystem {
         leverage: p.leverage,
         quantity: p.quantity,
         exchange: (p as any).exchange ?? 'hyperliquid',
+        // v2.0.80: Forward entryThesis so Skeptics can re-validate each cycle
+        entryThesis: (p as any).entryThesis,
       }))
       // v2.0.79: Remove the activeSymbol from positions list — it's already
       // the marketTicker. Without this, BTC appears as both "BTC(market)"
@@ -2060,6 +2067,15 @@ class MATSSystem {
           positionSizePct: this.marketAgent.getConfig().positionSizePct,
         },
         this.totalCycles, // v2.0.26: pass cycle number for cooldown logic
+        // v2.0.80: Pass price fetcher for Skeptics thesis re-validation
+        async (symbol: string): Promise<number | null> => {
+          try {
+            const result = await this.marketAgent.fetchPriceForSymbol(symbol);
+            return result.price;
+          } catch {
+            return null;
+          }
+        },
       );
 
       // v2.0.32: Debug log for consensus result
@@ -2079,6 +2095,28 @@ class MATSSystem {
             positionSizePct: 0,
             rationale: `[OPTIONS VETO] ${pb.rationale}. ${result.consensus.decision.rationale}`,
           };
+        }
+      }
+
+      // v2.0.80: Force-close positions whose entry thesis was invalidated by Skeptics
+      if (result.thesisInvalidatedSymbols && result.thesisInvalidatedSymbols.length > 0) {
+        for (const sym of result.thesisInvalidatedSymbols) {
+          const pos = this.portfolio.getPosition(sym);
+          if (!pos) continue;
+          log.warn(`🚫 Thesis INVALIDATED for ${sym} — force-closing position (entry thesis no longer valid)`);
+          if (pos.agentId === 'hyperliquid-real') {
+            const success = await this.realTradingManager.closePosition(sym);
+            if (success) {
+              log.info(`  → Force-closed ${sym} (real, thesis invalidated)`);
+            } else {
+              log.error(`  → Failed to force-close ${sym} on HL — position remains open`);
+            }
+          } else {
+            const trade = this.portfolio.closePosition(sym, pos.currentPrice);
+            if (trade) {
+              log.info(`  → Force-closed ${sym}: $${trade.pnl.toFixed(2)} (thesis invalidated)`);
+            }
+          }
         }
       }
 
@@ -2120,6 +2158,15 @@ class MATSSystem {
       // BUY signals. The trend filter checks the last 10 cycles' price action
       // and blocks BUY when price is declining, blocks SELL when rising.
       let finalDecision = result.consensus.decision;
+      // v2.0.80: Extract entryThesis from perSymbolConsensus for the active symbol
+      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+        const activePsc = (result.consensus.perSymbolConsensus ?? []).find(
+          psc => normalizeSymbol(psc.symbol) === normalizeSymbol(activeSymbol),
+        );
+        if (activePsc?.entryThesis && !finalDecision.entryThesis) {
+          finalDecision = { ...finalDecision, entryThesis: activePsc.entryThesis };
+        }
+      }
       if (finalDecision.action === 'hold' && this.totalCycles > 2 && this.totalCycles % 3 === 0) {
         // Independent exploration: only block if the ACTIVE symbol has a position.
         // Previously checked p.positions.size === 0 which blocked exploration on
@@ -2461,6 +2508,8 @@ class MATSSystem {
               leverage: exploreLev,
               rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — ${direction} exploration.`,
               urgency: 'immediate',
+              // v2.0.80: Exploration trades also require an entry thesis
+              entryThesis: `[1h: ${direction} exploration — pattern classifier suggests ${direction} has higher historical win rate in current regime] [1d: system needs trade data for evolution; ${direction} direction selected by pattern win-rate query]`,
             };
             log.info(`🧪 Exploration trade triggered: ${direction.toUpperCase()} ${(exploreSize * 100).toFixed(1)}% ${activeSymbolUpper} @ ${exploreLev}x (cycle #${this.totalCycles})`);
           }
@@ -3391,9 +3440,18 @@ class MATSSystem {
           // v2.0.XX: Read SL/TP from the real positions map (set by adjustPosition)
           // instead of hardcoding undefined. The real positions map stores the
           // validated SL/TP that was placed on HL via trigger orders.
+          // v2.0.80: If no local mirror exists (realPos undefined), compute
+          // default SL/TP from entry price (2% SL, 5% TP) so the UI always
+          // shows safety levels — same defaults as importExchangePosition().
           const realPos = this.portfolio.getRealPositions().find(rp =>
             rp.symbol.toLowerCase() === key.toLowerCase()
           );
+          const fallbackSL = exPos.side === 'buy'
+            ? exPos.averageEntryPrice * (1 - 0.02)
+            : exPos.averageEntryPrice * (1 + 0.02);
+          const fallbackTP = exPos.side === 'buy'
+            ? exPos.averageEntryPrice * (1 + 0.05)
+            : exPos.averageEntryPrice * (1 - 0.05);
           positions[key] = {
             id: `hl-${exPos.symbol}-${safeOpenedAt}`,
             symbol: exPos.symbol,
@@ -3403,8 +3461,8 @@ class MATSSystem {
             currentPrice: livePrice,
             unrealizedPnl: exPos.unrealizedPnl,
             unrealizedPnlPct: margin > 0 ? exPos.unrealizedPnl / margin : 0,
-            stopLossPrice: realPos?.stopLossPrice,
-            takeProfitPrice: realPos?.takeProfitPrice,
+            stopLossPrice: realPos?.stopLossPrice ?? fallbackSL,
+            takeProfitPrice: realPos?.takeProfitPrice ?? fallbackTP,
             leverage: exPos.leverage,
             openedAt: safeOpenedAt,
             updatedAt: Date.now(),

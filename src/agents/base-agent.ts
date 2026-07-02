@@ -103,7 +103,9 @@ export abstract class BaseAgent {
     "leverage": 1-10,
     "closePosition": false,
     "patternTag": "short snake_case label for the chart pattern you see (e.g. momentum_breakout, double_bottom_reversal, ascending_triangle, range_bound, trend_exhaustion, support_bounce, resistance_rejection, consolidation_squeeze, vwap_reclaim, lower_highs)",
-    "rationale": "..."
+    "rationale": "...",
+    "entryThesis": "[1h: <why price reaches TP within 1 hour>] [1d: <why price reaches TP within 1 day>]",
+    "holdReason": "why uncertain — what data conflicts or what state is ambiguous (required when action=hold)"
   },
   "positions": [
     {
@@ -115,7 +117,8 @@ export abstract class BaseAgent {
       "suggestedStopLoss": PRICE_OR_NULL,
       "suggestedTakeProfit": PRICE_OR_NULL,
       "patternTag": "short snake_case label for the pattern relevant to this position",
-      "rationale": "..."
+      "rationale": "...",
+      "holdReason": "why uncertain — what data conflicts or what state is ambiguous (required when action=hold)"
     }
   ]
 }
@@ -126,6 +129,7 @@ RULES:
 - For positions: action "hold" = keep open, action "close" = close immediately
 - Set "closePosition": true + "closeUrgency" when you want to exit
 - Set suggestedStopLoss/suggestedTakeProfit to adjust SL/TP levels (or omit/null to leave unchanged)
+- "holdReason" = REQUIRED when action is "hold". Explain WHY you are uncertain — what data conflicts, what state is ambiguous, or what manipulation risk prevents entry. Be specific: "Fractal bullish but On-Chain shows outflows" not "uncertain".
 - "patternTag" = a SHORT snake_case label identifying the chart/momentum pattern you see right now. Be specific but concise (max 40 chars). Examples: momentum_breakout, double_bottom_reversal, ascending_triangle, range_bound, trend_exhaustion, support_bounce, resistance_rejection, consolidation_squeeze, vwap_reclaim, lower_highs, higher_lows, bearish_divergence, bullish_divergence, failed_breakout, breakout_retest, channel_breakdown, rsi_oversold, rsi_overbought, funding_flip, volume_climax, liquidation_cascade, mean_reversion, trend_continuation, planck_resonance_strong, chaotic_divergence, diffusion_accumulation, cycle_phase_bottom, cycle_phase_top, edge_of_chaos
 - "overallConfidence" = how confident you are in ALL your decisions combined
 - "confidence" (per symbol) = how confident you are in THIS specific symbol's decision. This may differ from overallConfidence — e.g. you may be 80% confident on BTC but only 40% on SP500.`;

@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.78 (v2.0.68 基礎 + SL/TP UI 顯示修復 + Symbol selection debounce + S/R DEX 1-8 candle fetch 修復 + ATR prefix stripping 修復 + News Reporter 重寫 + Paper accounting fix + UI masonry layout + RGB marquee border + Global HL rate limiter + WS infinite reconnect + REST polling backoff + Configurable max portion + Real trading margin check)
+> **版本**: 2.0.83 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology Interrogation + Skeptics Absolute Veto + Meta-Agent Detective Mode + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation)
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~20,000+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -98,8 +98,10 @@
 |:-----|:-----|
 | **資本保存第一** | 所有決策以生存為前提，利潤為次要目標 |
 | **自我演化** | 策略自動評估、淘汰、突變、進化 |
+| **理據驅動 (v2.0.80)** | Meta-Agent 必須提供強而有力的 entryThesis 才可開倉，Skeptics 絕對否決權 |
+| **暗黑心理學 (v2.0.81)** | Meta-Agent 質疑數據是否大戶操縱，Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **多智能體共識** | 7+ 智能體（含 Skeptics 跨 Agent 邏輯審查）+ 結構化辯論 |
-| **風險審計否決權** | 獨立風險審計員擁有絕對否決權 |
+| **風險審計參考 (v2.0.82)** | Risk Auditor 降級為參考（advisory-only），不可 veto |
 | **優雅降級** | 任何錯誤預設 HOLD，永遠不倒 |
 | **生產級標準** | 完整型別、結構化日誌、優雅關閉、指數退避重連 |
 
@@ -294,9 +296,12 @@
 │   │
 │   ├── cognition/
 │   │   └── hacp.ts               # HACP 認知協議 (v2.0.12 — deadline race + tiered timeout)
-│   │       ├── Phase 1-5         # 平行思考 → Skeptics審查 → Meta仲裁 → 辯論 → 共識 → 否決 → 倉位調整
+│   │       ├── Phase 0-5         # 平行思考 → Skeptics審查 → Meta仲裁 → 辯論 → 共識 → 否決 → 倉位調整
+│   │       ├── Phase 0.5         # 🆕 v2.0.80 Skeptics 重新驗證所有未平倉位 entryThesis → 失效即強制平倉
 │   │       ├── Phase 1.5         # Skeptics 邏輯審查 (跨 Agent 交叉對比)
 │   │       ├── Phase 1.75        # Meta-Agent 在 Skeptics 之後思考 (接收審查結果)
+│   │       ├── Phase 1.8         # 🆕 v2.0.80 Skeptics 驗證 Meta-Agent entryThesis → 拒絕即 HOLD
+│   │       ├── Phase 4.8         # 🆕 v2.0.80 Entry Thesis 硬性閘門 — 沒理據的 BUY/SELL = BLOCK
 │   │       ├── Progress callback # 即時進度推送
 │   │       └── adjustPositions() # Meta-Agent 動態 TP/SL 調整
 │   │
@@ -454,13 +459,13 @@
 | # | Agent | 溫度 | 權重 | 槓桿 | 角色描述 |
 |:-:|:------|:----:|:----:|:----:|:---------|
 | 1 | **Market Agent** | — | — | — | 自動從 Binance/Hyperliquid 選取最高 24h 交易量 pair。支援 9 個 Hyperliquid DEX，416 個資產，按類別過濾（Indices/Stocks/Commodities/FX）。HACP 週期前執行，阻塞其餘 Agent 直到選定。|
-| 2 | **Fractal Momentum Sentinel** | 0.85 | 0.25 | 2-5x | 碎形數學家轉量化交易員。多時間框架自相似模式檢測。趨勢加速早期信號。極端逆向，中間趨勢追隨。 |
-| 3 | **On-Chain Whisperer** | 0.50 | 0.25 | 2-4x | 類別感知鏈上分析師 (v1.9.3, multi-symbol)。Crypto 資產: BTC mempool(算力/手續費), ETH CoinGecko, 所有代幣 CoinGecko 交易所流量/供應量。TradFi 資產: DXY代理, FX匯率, 商品現貨, COT持倉, 網絡搜索回退。未知代幣自動搜索區塊鏈資源管理器。5分鐘緩存。每個 cycle 為所有持倉一次性 fetch on-chain 數據。|
-| 4 | **RBC & Sentiment Analyst** | 0.25 | 0.25 | 2-8x | RBC (Range-Based Clustering) 專家 + **恐慌指數 (F&G)**。RBC 係 growing hyperrectangle 從價格行為學習 win/loss 範圍。🟢 FAVORABLE → 增加信心。🔴 UNFAVORABLE → 強烈反對入場。0-25 Extreme Fear→BEARISH, 75-100 Extreme Greed→BULLISH。每個持倉獨立評估。|
-| 5 | **News Reporter** | 0.40 | 0.30 | 1-3x | 隐性策略师新闻动机分析 (v2.0.76)。分析新闻源头、阴谋、动机；评估该资产中长线盈利与需求是否有急性增加或急性价值下跌。动机修正后情感面：为派发而制造的「利好」= 看跌，为收集而制造的 FUD = 看涨。模型 DeepSeek V4 Flash，权重 0.30（人性是市场重心）。|
-| 6 | **Independent Risk Auditor** | 0.10 | 0.25 | — | 🚨 **最終守門人。絕對否決權。** 逐倉風險審計 (v1.9.3)。每個持倉獨立評估風險，可個別建議平倉。🆕 v2.0.13: 近期 10 個 trade 模式分析，偵測震盪市並動態調整 TP/SL。|
-| 7 | **Skeptics** | 0.30 | 0.00 | — | 🤔 **邏輯審計員 (v1.9.3)。** Phase 1.5 執行，在 Meta-Agent 思考前質疑 5 個 sub-agent 的決策。檢查數據一致性、跨 Agent 交叉對比、**參考每個 Agent 的歷史 track record (AgentOutcomeTracker)**。有無計算遺漏。default 模型: deepseek-v4-flash:cloud。不干預 Meta-Agent 和 Market Agent。|
-| 8 | **Meta-Agent** | 0.45 | 0.35 | 2-10x | 戰略協調者。HACP 辯論主席。**在 Skeptics 審查後思考**，接收審查結果。根據風險/信心設定槓桿，動態調整 TP/SL。 |
+| 2 | **Fractal Momentum Sentinel** | 0.85 | 0.10 | 2-5x | 碎形數學家轉量化交易員。多時間框架自相似模式檢測。趨勢加速早期信號。極端逆向，中間趨勢追隨。 |
+| 3 | **On-Chain Whisperer** | 0.50 | 0.10 | 2-4x | 類別感知鏈上分析師 (v1.9.3, multi-symbol)。Crypto 資產: BTC mempool(算力/手續費), ETH CoinGecko, 所有代幣 CoinGecko 交易所流量/供應量。TradFi 資產: DXY代理, FX匯率, 商品現貨, COT持倉, 網絡搜索回退。未知代幣自動搜索區塊鏈資源管理器。5分鐘緩存。每個 cycle 為所有持倉一次性 fetch on-chain 數據。|
+| 4 | **RBC & Sentiment Analyst** | 0.25 | 0.10 | 2-8x | RBC (Range-Based Clustering) 專家 + **恐慌指數 (F&G)**。RBC 係 growing hyperrectangle 從價格行為學習 win/loss 範圍。🟢 FAVORABLE → 增加信心。🔴 UNFAVORABLE → 強烈反對入場。0-25 Extreme Fear→BEARISH, 75-100 Extreme Greed→BULLISH。每個持倉獨立評估。|
+| 5 | **News Reporter** | 0.40 | 0.10 | 1-3x | 隐性策略师新闻动机分析 (v2.0.76)。分析新闻源头、阴谋、动机；评估该资产中长线盈利与需求是否有急性增加或急性价值下跌。动机修正后情感面：为派发而制造的「利好」= 看跌，为收集而制造的 FUD = 看涨。模型 DeepSeek V4 Flash，权重 0.10（v2.0.82 降權——數據收集角色，信心指數供 Meta-Agent + Skeptics 參考）。|
+| 6 | **Independent Risk Auditor** | 0.10 | 0.25 | — | 🆕 v2.0.82: **降級為參考**（advisory-only，不可 veto）。保留 TP/SL/size 調整建議 + 硬性代碼限制（震盪市 50% 減倉、loss-streak 漸進減倉、虧損冷卻期）。Meta-Agent + Skeptics 理據系統是唯一開倉把關。🆕 v2.0.13: 近期 10 個 trade 模式分析，偵測震盪市並動態調整 TP/SL。|
+| 7 | **Skeptics** | 0.30 | 0.00 | — | 🤔 **邏輯審計員 + 絕對否決權 (v2.0.80–v2.0.83)。** Phase 1.5 執行，在 Meta-Agent 思考前質疑 5 個 sub-agent 的決策。檢查數據一致性、跨 Agent 交叉對比、**參考每個 Agent 的歷史 track record (AgentOutcomeTracker)**。🆕 v2.0.80: **Phase 1.8** 驗證 Meta-Agent 的 entryThesis（強而有力、數據驅動、暗黑心理學審查、事實扭曲檢查）→ 拒絕即 HOLD。🆕 v2.0.80: **Phase 0.5** 每個 cycle 重新驗證所有未平倉位的 entryThesis → 失效即強制平倉。🆕 v2.0.83: **絕對否決權** — 有疑即拒，拒絕的交易零成本，壞交易花真金白銀。default 模型: deepseek-v4-flash:cloud。不干預 Meta-Agent 和 Market Agent。|
+| 8 | **Meta-Agent** | 0.45 | 0.00 | 2-10x | 🆕 v2.0.83: **偵探模式** — 每個 cycle 積極從事實推理蛛絲馬跡嘗試開倉，但絕不歪曲事實。生成 entryThesis（1h + 1d 理據）。🆕 v2.0.82: 權重 0.00（理據系統控制決策，唔靠投票）。HACP 辯論主席。**在 Skeptics 審查後思考**，接收審查結果。根據風險/信心設定槓桿，動態調整 TP/SL。HOLD 時必須提供 holdReason（什麼數據矛盾/什麼狀態模糊）。 |
 
 ### Agent System Prompt 強化（v2.0.2）
 
@@ -900,6 +905,19 @@ PROP: BUY 4.5% immediate | momentum_strong but reduce_size_for_vol_uncertainty
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
+│  PHASE 0.5: 🆕 v2.0.80 ENTRY THESIS RE-VALIDATION               │
+│                                                                 │
+│  • Skeptics re-validates each open position's entryThesis       │
+│  • Fetches fresh price for each position's symbol               │
+│  • If thesis is INVALIDATED (catalyst spent, structure broken,  │
+│    direction contradicted, 1h timeframe expired):               │
+│    → position flagged for force-close                           │
+│  • thesisInvalidatedSymbols[] passed to index.ts for execution  │
+│  • Runs BEFORE agents think so agents see validation results    │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
 │  PHASE 1: PARALLEL THINKING (60s deadline race per agent)       │
 │                                                                 │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
@@ -936,7 +954,25 @@ PROP: BUY 4.5% immediate | momentum_strong but reduce_size_for_vol_uncertainty
 │  • Meta-Agent 收到 Skeptics 審查結果                             │
 │  • 上下文注入: "=== Skeptics Review Results ==="                 │
 │  • 知道哪些 agent 被修改、哪些 approved                          │
+│  • 🆕 v2.0.83: 偵探模式 — 積極從事實推理蛛絲馬跡嘗試開倉         │
+│  • 🆕 v2.0.81: 暗黑心理學 — 質疑數據是否大戶操縱                │
 │  • 基於修正後的 allThoughts[] 做最終仲裁                         │
+│  • BUY/SELL 時必須生成 entryThesis (1h + 1d 理據)               │
+│  • HOLD 時必須提供 holdReason (什麼數據矛盾/狀態模糊)           │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  PHASE 1.8: 🆕 v2.0.80 ENTRY THESIS VALIDATION                   │
+│                                                                 │
+│  • 如果 Meta-Agent 決定 BUY/SELL + 有 entryThesis:              │
+│    → Skeptics 驗證理據是否強而有力、數據驅動、無事實扭曲        │
+│    → 驗證暗黑心理學：數據是否大戶操縱？                         │
+│    → 驗證確認偏誤：Meta-Agent 是否 cherry-picking 數據？         │
+│    → 拒絕 → 覆蓋 Meta-Agent 決策為 HOLD                          │
+│  • 如果 Meta-Agent 決定 BUY/SELL 但冇 entryThesis:              │
+│    → 直接覆蓋為 HOLD（理據是必須的）                            │
+│  • Skeptics 擁有絕對否決權 — 有疑即拒                            │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -993,24 +1029,19 @@ PROP: BUY 4.5% immediate | momentum_strong but reduce_size_for_vol_uncertainty
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  PHASE 4: RISK AUDITOR FINAL VETO                               │
+│  PHASE 4: RISK AUDITOR ADVISORY CHECK (🆕 v2.0.82)               │
 │                                                                 │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │ 獨立風險審計                                                │  │
+│  │ 獨立風險審計（advisory-only，不可 veto）                    │  │
 │  │ • 風險審計員獨立重新評估最終決策                              │  │
 │  │ • 調用 LLM (T=0.05, 極低溫度)                               │  │
-│  │ • 檢查所有否決條件                                          │  │
+│  │ • 🆕 v2.0.82: veto 降級為 advisory — 記錄警告但不阻止交易    │  │
+│  │ • TP/SL/size 調整建議仍然應用                                │  │
 │  ├───────────────────────────────────────────────────────────┤  │
-│  │ 硬限制執行（不可覆蓋）                                       │  │
-│  │ • 倉位 > 20% → VETO（與 clamp 上限一致）                  │  │
-│  │ • 無可用價格 → VETO                                        │  │
-│  │ • LLM 不可用 → 保守否決 (>5% 倉位)                          │  │
-│  ├───────────────────────────────────────────────────────────┤  │
-│  │ 否決發生時：                                                │  │
-│  │ • decision.action = 'hold'                                  │  │
-│  │ • positionSizePct = 0                                       │  │
-│  │ • metaAgentOverridden = true                                │  │
-│  │ • confidence = 0.0                                          │  │
+│  │ 硬性代碼限制（保留）                                         │  │
+│  │ • 震盪市 50% 減倉（硬編碼，不靠 LLM）                        │  │
+│  │ • Loss-streak 漸進減倉（1→75%, 2→50%, 3+→25%）              │  │
+│  │ • 虧損冷卻期（advisory，不阻止）                              │  │
 │  └───────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -1018,11 +1049,26 @@ PROP: BUY 4.5% immediate | momentum_strong but reduce_size_for_vol_uncertainty
 ┌─────────────────────────────────────────────────────────────────┐
 │  PHASE 4.5: MARKET AGENT HARD CONSTRAINTS OVERRIDE              │
 │                                                                 │
-│  • 在 Risk Auditor 否決之後、執行之前執行                        │
+│  • 在 Risk Auditor 之後、執行之前執行                            │
 │  • 強制將最終決策的 positionSizePct 設定為 Market Agent 的值    │
 │  • 強制將最終決策的 leverage 設定為 Market Agent 的值           │
-│  • 如果 Risk Auditor veto 了，跳過此階段（veto 優先）           │
+│  • 🆕 v2.0.82: Risk Auditor veto 已降級為 advisory（不跳過）     │
 │  • Log 記錄 override 事件                                       │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  PHASE 4.8: 🆕 v2.0.80 ENTRY THESIS HARD GATE                    │
+│                                                                 │
+│  • 最終硬性閘門 — 在所有共識路徑之後、執行之前                  │
+│  • 如果最終決策是 BUY/SELL 但冇 entryThesis → BLOCK → HOLD      │
+│  • 如果有 entryThesis 但未經 Phase 1.8 驗證（來自仲裁/多數）    │
+│    → 即時調用 Skeptics 驗證 → 拒絕即 BLOCK                      │
+│  • 捕捉所有繞過路徑：                                            │
+│    · Sub-agent 多數投票繞過 Meta-Agent HOLD                     │
+│    · metaAgentArbitration 第二次 LLM 調用產生新 BUY/SELL        │
+│    · 一致同意快速路徑跳過 Phase 1.8                              │
+│  • 只有理據存在且通過驗證的 BUY/SELL 才能執行                    │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼

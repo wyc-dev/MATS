@@ -47,6 +47,9 @@ export interface HACPResult {
   positionAdjustments?: PositionAdjustment[];
   /** E-step: Meta-Agent's distilled summary for EM loop (if built) */
   cycleSummary?: CycleSummary;
+  /** v2.0.80: Symbols whose entry thesis was invalidated by Skeptics this
+   *  cycle. index.ts force-closes these positions. */
+  thesisInvalidatedSymbols?: string[];
 }
 
 export type HACPProgressCallback = (progress: CycleProgress) => void;
@@ -131,7 +134,7 @@ export class HACPEngine {
    *
    * @param action    'buy' | 'sell' | 'hold' — the playbook's directional bias
    * @param confidence 0.0-1.0 — how strongly the options data supports this
-   * @param weight    Voting weight (should be ≥ max agent weight = 0.25)
+   * @param weight    Voting weight (should be ≥ max agent weight = 0.10)
    * @param rationale  Human-readable reason from the playbook
    */
   setOptionsVote(action: 'buy' | 'sell' | 'hold', confidence: number, weight: number, rationale: string): void {
@@ -390,7 +393,7 @@ export class HACPEngine {
     marketStateDesc: string,
     portfolioDesc: string,
     /** Current open positions for TP/SL adjustment */
-    currentPositions?: Array<{ id: string; symbol: string; side: string; entryPrice: number; currentPrice: number; stopLoss?: number; takeProfit?: number; leverage?: number; quantity?: number; exchange?: string }>,
+    currentPositions?: Array<{ id: string; symbol: string; side: string; entryPrice: number; currentPrice: number; stopLoss?: number; takeProfit?: number; leverage?: number; quantity?: number; exchange?: string; entryThesis?: string }>,
     /** Previous cycle summary chain — injected into Meta-Agent context for EM continuity */
     emContext?: string,
     /** Cycle summaries for Skeptics convergence audit */
@@ -399,6 +402,10 @@ export class HACPEngine {
     marketAgentConstraints?: { positionSizePct: number; leverage: number },
     /** v2.0.26: current cycle number — used by the loss cooldown logic */
     cycleNumber?: number,
+    /** v2.0.80: Function to fetch fresh price for a symbol — used by Skeptics
+     *  to re-validate open position theses with current market data.
+     *  Returns null if price unavailable (Skeptics will use stale price). */
+    fetchPriceForSymbol?: (symbol: string) => Promise<number | null>,
   ): Promise<HACPResult> {
     const startTime = performance.now();
     const allThoughts: AgentThought[] = [];
@@ -460,6 +467,8 @@ export class HACPEngine {
         takeProfitPrice: p.takeProfit,
         leverage: lev,
         exchange: p.exchange ?? 'hyperliquid',
+        // v2.0.80: Forward entryThesis for Skeptics re-validation
+        entryThesis: p.entryThesis,
       };
     });
 
@@ -472,6 +481,53 @@ export class HACPEngine {
 
     // Emit initial progress
     this.emitProgress('thinking', this.makeAgentProgressList());
+
+    // ═══════════════════════════════════════════════════
+    // PHASE 0.5: Open Position Thesis Re-Validation (v2.0.80)
+    // Skeptics re-validates each open position's entry thesis against
+    // current market data. If a thesis is invalidated, the position is
+    // flagged for force-close. This runs BEFORE agents think so agents
+    // see the validation results in their context.
+    // ═══════════════════════════════════════════════════
+
+    /** v2.0.80: Symbols whose entry thesis has been invalidated by Skeptics.
+     *  These are force-closed in index.ts via the consensus result. */
+    const thesisInvalidatedSymbols = new Set<string>();
+
+    if (posCtx.length > 0 && fetchPriceForSymbol) {
+      const positionsWithThesis = posCtx
+        .filter(p => p.entryThesis && p.entryThesis.trim().length > 0)
+        .map(p => ({
+          symbol: p.symbol,
+          side: p.side,
+          entryPrice: p.averageEntryPrice,
+          currentPrice: p.currentPrice,
+          stopLoss: p.stopLossPrice,
+          takeProfit: p.takeProfitPrice,
+          leverage: p.leverage,
+          entryThesis: p.entryThesis,
+        }));
+
+      if (positionsWithThesis.length > 0) {
+        log.info(`Phase 0.5: Re-validating entry theses for ${positionsWithThesis.length} open position(s)...`);
+        try {
+          const thesisResults = await this.skeptics.validateOpenPositionTheses(
+            positionsWithThesis,
+            marketStateDesc,
+            fetchPriceForSymbol,
+          );
+          for (const [symbol, result] of thesisResults) {
+            if (!result.valid) {
+              thesisInvalidatedSymbols.add(symbol);
+              log.warn(`🚫 Thesis INVALIDATED for ${symbol}: ${result.rationale} — flagging for force-close`);
+            }
+          }
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.warn(`Phase 0.5 thesis re-validation failed: ${msg}. Continuing without thesis validation.`);
+        }
+      }
+    }
 
     // ═══════════════════════════════════════════════════
     // PHASE 1: Parallel Thinking (all agents think simultaneously)
@@ -723,6 +779,97 @@ export class HACPEngine {
       };
     }
 
+    // ═══════════════════════════════════════════════════
+    // PHASE 1.8: Entry Thesis Validation (v2.0.80)
+    // If Meta-Agent decided BUY or SELL, Skeptics must validate the
+    // entryThesis before the trade is allowed to proceed. If the thesis
+    // is rejected, the Meta-Agent's decision is overridden to HOLD.
+    // ═══════════════════════════════════════════════════
+
+    const metaDecision = metaThought.metadata?.['decision'] as TradingDecision | undefined;
+    const metaMultiDec = metaThought.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined;
+    const metaAction = metaDecision?.action ?? metaMultiDec?.marketTicker.action ?? 'hold';
+    const metaThesis = metaDecision?.entryThesis ?? metaMultiDec?.marketTicker.entryThesis;
+    const metaSymbol = metaDecision?.symbol ?? metaMultiDec?.marketTicker.symbol ?? '';
+
+    if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis) {
+      log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);
+      const thesisResult = await this.skeptics.validateEntryThesis(
+        metaThesis,
+        metaAction,
+        metaSymbol,
+        marketStateDesc,
+        allThoughts,
+      );
+      if (!thesisResult.approved) {
+        log.warn(`🚫 Entry thesis REJECTED by Skeptics: ${thesisResult.rationale} — overriding ${metaAction.toUpperCase()} → HOLD`);
+        // Override Meta-Agent's decision to HOLD
+        const lastIdx = allThoughts.length - 1;
+        allThoughts[lastIdx] = {
+          ...allThoughts[lastIdx]!,
+          thought: `[THESIS REJECTED] ${allThoughts[lastIdx]!.thought}`,
+          confidence: 0.1,
+          metadata: {
+            ...allThoughts[lastIdx]!.metadata,
+            multiSymbolDecision: {
+              ...(allThoughts[lastIdx]!.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined) ?? metaMultiDec ?? {
+                marketTicker: { symbol: metaSymbol, action: 'hold' as const, positionSizePct: 0, leverage: 1, closePosition: false, rationale: 'Thesis rejected' },
+                positions: [],
+              },
+              marketTicker: {
+                ...((allThoughts[lastIdx]!.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined)?.marketTicker ?? metaMultiDec?.marketTicker ?? { symbol: metaSymbol, action: 'hold' as const, positionSizePct: 0, leverage: 1, closePosition: false, rationale: '' }),
+                action: 'hold' as const,
+                positionSizePct: 0,
+                leverage: 1,
+                rationale: `[THESIS REJECTED] ${thesisResult.rationale}`,
+              },
+            },
+            decision: {
+              ...(allThoughts[lastIdx]!.metadata?.['decision'] as TradingDecision | undefined) ?? {},
+              action: 'hold' as const,
+              positionSizePct: 0,
+              leverage: 1,
+              rationale: `[THESIS REJECTED] ${thesisResult.rationale}`,
+            } as TradingDecision,
+          },
+        };
+      } else {
+        log.info(`✅ Entry thesis approved by Skeptics for ${metaAction.toUpperCase()} ${metaSymbol}`);
+      }
+    } else if ((metaAction === 'buy' || metaAction === 'sell') && !metaThesis) {
+      // Meta-Agent wants to trade but provided no thesis — block it
+      log.warn(`🚫 Meta-Agent ${metaAction.toUpperCase()} ${metaSymbol} has NO entry thesis — overriding → HOLD`);
+      const lastIdx = allThoughts.length - 1;
+      allThoughts[lastIdx] = {
+        ...allThoughts[lastIdx]!,
+        thought: `[NO THESIS] ${allThoughts[lastIdx]!.thought}`,
+        confidence: 0.1,
+        metadata: {
+          ...allThoughts[lastIdx]!.metadata,
+          multiSymbolDecision: {
+            ...(allThoughts[lastIdx]!.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined) ?? metaMultiDec ?? {
+              marketTicker: { symbol: metaSymbol, action: 'hold' as const, positionSizePct: 0, leverage: 1, closePosition: false, rationale: 'No thesis provided' },
+              positions: [],
+            },
+            marketTicker: {
+              ...((allThoughts[lastIdx]!.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined)?.marketTicker ?? metaMultiDec?.marketTicker ?? { symbol: metaSymbol, action: 'hold' as const, positionSizePct: 0, leverage: 1, closePosition: false, rationale: '' }),
+              action: 'hold' as const,
+              positionSizePct: 0,
+              leverage: 1,
+              rationale: '[NO THESIS] Meta-Agent must provide entryThesis for BUY/SELL decisions.',
+            },
+          },
+          decision: {
+            ...(allThoughts[lastIdx]!.metadata?.['decision'] as TradingDecision | undefined) ?? {},
+            action: 'hold' as const,
+            positionSizePct: 0,
+            leverage: 1,
+            rationale: '[NO THESIS] Meta-Agent must provide entryThesis for BUY/SELL decisions.',
+          } as TradingDecision,
+        },
+      };
+    }
+
     // Check if we have enough information for immediate consensus
     const allHold = allThoughts.every((t) => {
       const decision = t.metadata?.['decision'] as TradingDecision | undefined;
@@ -744,6 +891,7 @@ export class HACPEngine {
         debateRounds: [],
         durationMs: Math.round(performance.now() - startTime),
         positionAdjustments: adjustments,
+        thesisInvalidatedSymbols: Array.from(thesisInvalidatedSymbols),
       };
     }
 
@@ -973,17 +1121,11 @@ export class HACPEngine {
     }
     this.emitProgress('auditing', auditProg2);
     if (riskAudit.veto) {
-      log.warn('🚨 Independent Risk Auditor VETOED the decision!');
-      finalConsensus.decision = {
-        action: 'hold',
-        symbol: finalConsensus.decision.symbol,
-        positionSizePct: 0,
-        leverage: 1,
-        rationale: `Risk Auditor VETO: ${riskAudit.reason}. Capital preservation override.`,
-        urgency: 'immediate',
-      };
-      finalConsensus.metaAgentOverridden = true;
-      finalConsensus.confidence = 0.0;
+      // v2.0.82: Risk Auditor veto is now ADVISORY ONLY — it cannot block trades.
+      // The Meta-Agent + Skeptics thesis system is the sole gatekeeper for
+      // new entries. Risk Auditor's veto is logged as a warning but does not
+      // override the decision. TP/SL/size adjustments below are still applied.
+      log.warn(`⚠️ Risk Auditor ADVISORY veto (non-blocking): ${riskAudit.reason}`);
     } else if (
       !riskAudit.veto &&
       (riskAudit.adjustedStopLossPct !== undefined ||
@@ -1035,6 +1177,85 @@ export class HACPEngine {
     }
 
     // ═══════════════════════════════════════════════════
+    // PHASE 4.8: Entry Thesis Hard Gate (v2.0.80)
+    // FINAL enforcement — regardless of which consensus path was taken
+    // (buildConsensus majority, metaAgentArbitration, or unanimous fast-path),
+    // if the final decision is BUY or SELL it MUST have a valid entryThesis.
+    // Without a thesis, the trade is blocked. This catches:
+    //   - Sub-agent majority overriding Meta-Agent's HOLD (buildConsensus)
+    //   - metaAgentArbitration producing a new BUY/SELL without thesis
+    //   - Unanimous fast-path skipping Phase 1.8 thesis validation
+    // ═══════════════════════════════════════════════════
+
+    if (finalConsensus.decision.action === 'buy' || finalConsensus.decision.action === 'sell') {
+      // Check the decision itself
+      const decisionThesis = finalConsensus.decision.entryThesis;
+      // Also check perSymbolConsensus for the active symbol
+      const activeSym = finalConsensus.decision.symbol;
+      const pscThesis = finalConsensus.perSymbolConsensus.find(
+        psc => normalizeSymbol(psc.symbol) === normalizeSymbol(activeSym),
+      )?.entryThesis;
+      const effectiveThesis = decisionThesis ?? pscThesis;
+
+      if (!effectiveThesis || effectiveThesis.trim().length === 0) {
+        log.warn(`🚫 [THESIS GATE] ${finalConsensus.decision.action.toUpperCase()} ${activeSym} has NO entry thesis — BLOCKING trade (overriding → HOLD)`);
+        finalConsensus.decision = {
+          ...finalConsensus.decision,
+          action: 'hold',
+          positionSizePct: 0,
+          leverage: 1,
+          rationale: `[THESIS GATE] No entry thesis provided — trade blocked. Meta-Agent must articulate why price reaches TP within 1h and 1d. Original: ${finalConsensus.decision.rationale}`,
+        };
+        finalConsensus.confidence = 0.0;
+      } else {
+        // Thesis exists — but was it validated by Skeptics in Phase 1.8?
+        // If Phase 1.8 rejected it, the Meta-Agent thought was already overridden
+        // to HOLD. But metaAgentArbitration or buildConsensus majority could
+        // have resurrected a BUY/SELL. We need to validate here as a fallback.
+        // Check if the thesis was already validated (Phase 1.8 ran for this thesis)
+        const metaThought = allThoughts.find(t => t.agentRole === 'meta_agent');
+        const wasValidated = metaThought?.thought?.includes('[THESIS REJECTED]') === false
+          && metaThought?.thought?.includes('[NO THESIS]') === false
+          && metaThought?.metadata?.['decision'] !== undefined;
+
+        if (!wasValidated) {
+          // Thesis exists but wasn't validated by Phase 1.8 (e.g. came from
+          // metaAgentArbitration or buildConsensus). Validate now.
+          log.info(`Phase 4.8: Validating unvalidated thesis for ${finalConsensus.decision.action.toUpperCase()} ${activeSym}...`);
+          const thesisResult = await this.skeptics.validateEntryThesis(
+            effectiveThesis,
+            finalConsensus.decision.action,
+            activeSym,
+            marketStateDesc,
+            allThoughts,
+          );
+          if (!thesisResult.approved) {
+            log.warn(`🚫 [THESIS GATE] Skeptics REJECTED thesis for ${finalConsensus.decision.action.toUpperCase()} ${activeSym}: ${thesisResult.rationale} — BLOCKING trade`);
+            finalConsensus.decision = {
+              ...finalConsensus.decision,
+              action: 'hold',
+              positionSizePct: 0,
+              leverage: 1,
+              rationale: `[THESIS GATE] Skeptics rejected thesis: ${thesisResult.rationale}. Original: ${finalConsensus.decision.rationale}`,
+            };
+            finalConsensus.confidence = 0.0;
+          } else {
+            // Thesis validated — ensure it's on the decision for downstream storage
+            if (!finalConsensus.decision.entryThesis) {
+              finalConsensus.decision.entryThesis = effectiveThesis;
+            }
+            log.info(`✅ [THESIS GATE] Thesis validated for ${finalConsensus.decision.action.toUpperCase()} ${activeSym}`);
+          }
+        } else {
+          // Thesis was already validated in Phase 1.8 — ensure it's on the decision
+          if (!finalConsensus.decision.entryThesis) {
+            finalConsensus.decision.entryThesis = effectiveThesis;
+          }
+        }
+      }
+    }
+
+    // ═══════════════════════════════════════════════════
     // PHASE 5: Meta-Agent Position Adjustment (TP/SL)
     // ═══════════════════════════════════════════════════
 
@@ -1062,6 +1283,7 @@ export class HACPEngine {
       debateRounds,
       durationMs,
       positionAdjustments,
+      thesisInvalidatedSymbols: Array.from(thesisInvalidatedSymbols),
     };
   }
 
@@ -1531,7 +1753,7 @@ Output ONLY valid JSON:
     // Extract per-symbol decisions from each agent's multiSymbolDecision metadata.
     // Each agent produces decisions for: market ticker + all open positions.
     // We aggregate across agents to find the consensus for EACH symbol.
-    const perSymbolMap = new Map<string, { actions: string[]; confidences: number[]; closeFlags: boolean[]; sls: number[]; tps: number[]; sizes: number[]; levers: number[]; rationales: string[] }>();
+    const perSymbolMap = new Map<string, { actions: string[]; confidences: number[]; closeFlags: boolean[]; sls: number[]; tps: number[]; sizes: number[]; levers: number[]; rationales: string[]; theses: string[]; holdReasons: string[] }>();
 
     for (const t of thoughts) {
       const multiDec = t.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined;
@@ -1544,7 +1766,7 @@ Output ONLY valid JSON:
           // with a meaningless "UNKNOWN(market) HOLD 60%" entry in the UI.
           if (singleDec.symbol === 'UNKNOWN') continue;
           const sym = singleDec.symbol.includes(':') ? singleDec.symbol : singleDec.symbol.toLowerCase();
-          if (!perSymbolMap.has(sym)) perSymbolMap.set(sym, { actions: [], confidences: [], closeFlags: [], sls: [], tps: [], sizes: [], levers: [], rationales: [] });
+          if (!perSymbolMap.has(sym)) perSymbolMap.set(sym, { actions: [], confidences: [], closeFlags: [], sls: [], tps: [], sizes: [], levers: [], rationales: [], theses: [], holdReasons: [] });
           const entry = perSymbolMap.get(sym)!;
           entry.actions.push(singleDec.action);
           entry.confidences.push(t.confidence);
@@ -1554,6 +1776,8 @@ Output ONLY valid JSON:
           entry.sizes.push(singleDec.positionSizePct);
           entry.levers.push(singleDec.leverage ?? 1);
           entry.rationales.push(singleDec.rationale);
+          // v2.0.80: Forward entryThesis from TradingDecision
+          if (singleDec.entryThesis) entry.theses.push(singleDec.entryThesis);
         }
         continue;
       }
@@ -1561,7 +1785,7 @@ Output ONLY valid JSON:
       // Market ticker decision
       const mt = multiDec.marketTicker;
       const mtSym = mt.symbol.includes(':') ? mt.symbol : mt.symbol.toLowerCase();
-      if (!perSymbolMap.has(mtSym)) perSymbolMap.set(mtSym, { actions: [], confidences: [], closeFlags: [], sls: [], tps: [], sizes: [], levers: [], rationales: [] });
+      if (!perSymbolMap.has(mtSym)) perSymbolMap.set(mtSym, { actions: [], confidences: [], closeFlags: [], sls: [], tps: [], sizes: [], levers: [], rationales: [], theses: [], holdReasons: [] });
       const mtEntry = perSymbolMap.get(mtSym)!;
       mtEntry.actions.push(mt.action);
       mtEntry.confidences.push(t.confidence);
@@ -1571,11 +1795,15 @@ Output ONLY valid JSON:
       mtEntry.sizes.push(mt.positionSizePct);
       mtEntry.levers.push(mt.leverage);
       mtEntry.rationales.push(mt.rationale);
+      // v2.0.80: Forward entryThesis — Meta-Agent's thesis is authoritative
+      if (mt.entryThesis) mtEntry.theses.push(mt.entryThesis);
+      // v2.0.81: Forward holdReason — Meta-Agent's HOLD explanation
+      if (mt.holdReason) mtEntry.holdReasons.push(mt.holdReason);
 
       // Open position decisions
       for (const pos of multiDec.positions) {
         const posSym = pos.symbol.includes(':') ? pos.symbol : pos.symbol.toLowerCase();
-        if (!perSymbolMap.has(posSym)) perSymbolMap.set(posSym, { actions: [], confidences: [], closeFlags: [], sls: [], tps: [], sizes: [], levers: [], rationales: [] });
+        if (!perSymbolMap.has(posSym)) perSymbolMap.set(posSym, { actions: [], confidences: [], closeFlags: [], sls: [], tps: [], sizes: [], levers: [], rationales: [], theses: [], holdReasons: [] });
         const posEntry = perSymbolMap.get(posSym)!;
         posEntry.actions.push(pos.action);
         posEntry.confidences.push(t.confidence);
@@ -1585,6 +1813,8 @@ Output ONLY valid JSON:
         posEntry.sizes.push(pos.positionSizePct);
         posEntry.levers.push(pos.leverage);
         posEntry.rationales.push(pos.rationale);
+        // v2.0.81: Forward holdReason for position decisions
+        if (pos.holdReason) posEntry.holdReasons.push(pos.holdReason);
       }
     }
 
@@ -1624,6 +1854,10 @@ Output ONLY valid JSON:
         positionSizePct: avgSize,
         leverage: Math.round(avgLev),
         rationale: `Majority: ${majorityAction.toUpperCase()} (${buyCount}B/${sellCount}S/${holdCount}H/${closeCount}C). Avg conf: ${(avgConfidence * 100).toFixed(0)}%`,
+        // v2.0.80: Use the first (Meta-Agent's) thesis if available
+        entryThesis: data.theses.length > 0 ? data.theses[0] : undefined,
+        // v2.0.81: Use the first (Meta-Agent's) holdReason if available
+        holdReason: data.holdReasons.length > 0 ? data.holdReasons[0] : undefined,
       });
     }
 
@@ -1700,6 +1934,10 @@ Output ONLY valid JSON:
           positionSizePct: psd.positionSizePct,
           leverage: psd.leverage,
           rationale: psd.rationale,
+          // v2.0.80: Forward entryThesis from Meta-Agent's per-symbol decision
+          entryThesis: psd.entryThesis,
+          // v2.0.81: Forward holdReason from Meta-Agent's per-symbol decision
+          holdReason: psd.holdReason,
         });
       };
       addSym(metaMultiDec.marketTicker, false);
@@ -1835,10 +2073,12 @@ Output ONLY valid JSON:
         decision.positionSizePct > 0
       ) {
         const remaining = this.cooldownUntilCycle - this.totalCycles;
-        log.warn(`🚨 Loss cooldown active (${remaining} cycle(s) remaining) — blocking new entry. Risk Auditor will review this cycle.`);
+        // v2.0.82: Cooldown veto is now ADVISORY ONLY — logged but non-blocking.
+        // The Meta-Agent + Skeptics thesis system decides whether to trade.
+        log.warn(`⚠️ Loss cooldown active (${remaining} cycle(s) remaining) — ADVISORY only, non-blocking. Risk Auditor reviewing.`);
         return {
           veto: true,
-          reason: `Loss cooldown: a recent trade lost money. Pausing new entries for ${remaining} cycle(s) while the Risk Auditor reviews. Existing positions are still managed.`,
+          reason: `Loss cooldown advisory: a recent trade lost money. Pausing recommended for ${remaining} cycle(s). Non-blocking — Meta-Agent thesis system decides.`,
           adjustedStopLossPct: parsed.adjustedStopLossPct ?? undefined,
           adjustedTakeProfitPct: parsed.adjustedTakeProfitPct ?? undefined,
           adjustedPositionSizePct: undefined,

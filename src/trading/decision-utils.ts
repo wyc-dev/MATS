@@ -158,6 +158,16 @@ export function normalizePerSymbolDecision(raw: Partial<PerSymbolDecision> | und
   const confidence = typeof raw.confidence === 'number'
     ? Math.max(0, Math.min(1, raw.confidence))
     : undefined;
+  // v2.0.80: Forward entryThesis from LLM output (Meta-Agent only, but
+  // normalizePerSymbolDecision is shared so it passes through for all agents).
+  // Only set if it's a non-empty string. Truncate to 500 chars for sanity.
+  const entryThesis = typeof raw.entryThesis === 'string' && raw.entryThesis.trim().length > 0
+    ? raw.entryThesis.trim().slice(0, 500)
+    : undefined;
+  // v2.0.81: Forward holdReason — Meta-Agent's explanation for HOLD decisions.
+  const holdReason = typeof raw.holdReason === 'string' && raw.holdReason.trim().length > 0
+    ? raw.holdReason.trim().slice(0, 500)
+    : undefined;
   return {
     symbol,
     action,
@@ -170,6 +180,8 @@ export function normalizePerSymbolDecision(raw: Partial<PerSymbolDecision> | und
     rationale: raw.rationale || 'No rationale provided.',
     ...(patternTag !== undefined ? { patternTag } : {}),
     ...(confidence !== undefined ? { confidence } : {}),
+    ...(entryThesis !== undefined ? { entryThesis } : {}),
+    ...(holdReason !== undefined ? { holdReason } : {}),
   };
 }
 

@@ -142,6 +142,8 @@ export class PortfolioTracker {
           updatedAt: p.updatedAt,
           agentId: p.agentId,
           exchange: p.exchange,
+          // v2.0.80: Restore entryThesis from saved state
+          entryThesis: (p as any).entryThesis,
         };
         // v2.0.72: route real positions to realPositions, paper to portfolio.positions
         if (p.agentId === 'hyperliquid-real') {
@@ -388,7 +390,7 @@ export class PortfolioTracker {
     return { allowed: true };
   }
 
-  openPosition(order: Order, entryPrice: number, leverage = 1): Position {
+  openPosition(order: Order, entryPrice: number, leverage = 1, entryThesis?: string): Position {
     const symbol = normalizeSymbol(order.symbol);
     const quantity = order.filledQuantity > 0 ? order.filledQuantity : order.quantity;
     const notional = quantity * entryPrice;
@@ -442,6 +444,8 @@ export class PortfolioTracker {
       agentId: order.agentId,
       exchange,
       entryFee,
+      // v2.0.80: Store Meta-Agent's entry thesis for Skeptics re-validation
+      entryThesis,
     };
 
     // Set stop-loss and take-profit
