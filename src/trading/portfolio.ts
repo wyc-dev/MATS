@@ -593,11 +593,21 @@ export class PortfolioTracker {
     // that exist on HL. After closeExchangePosition() deletes the local
     // mirror, the next cycle re-imports it → close again → duplicate
     // trade records. Block re-import within CLOSE_DEDUP_TTL_MS.
+    // v2.0.97: BUT if the position still exists on the exchange (HL), we MUST
+    // re-import it — the local close may have failed on HL, leaving the position
+    // orphaned (locally closed but still open on exchange). The dedup should only
+    // block re-import if the position was ACTUALLY closed on the exchange.
+    // Since importExchangePosition is only called when syncExchangePositions
+    // confirms the position exists on HL, we can safely bypass the dedup here.
     const dedupKey = `${sym}:${entryPrice.toFixed(2)}`;
     const lastClose = this.recentlyClosedSyms.get(dedupKey);
     if (lastClose && (Date.now() - lastClose) < this.CLOSE_DEDUP_TTL_MS) {
-      log.info(`⏭️ importExchangePosition blocked: ${sym} @ $${entryPrice.toFixed(2)} was closed ${Date.now() - lastClose}ms ago — not re-importing (prevents duplicate trade records)`);
-      return;
+      // v2.0.97: Position exists on HL (caller confirmed via getPositions()),
+      // so the local close was either a paper-only close or the HL close failed.
+      // Either way, the position is still open on HL and must be re-imported
+      // so agents can manage it. Clear the dedup entry and proceed.
+      log.info(`⏭️ importExchangePosition dedup bypassed: ${sym} @ $${entryPrice.toFixed(2)} was closed locally ${Date.now() - lastClose}ms ago but still exists on HL — re-importing`);
+      this.recentlyClosedSyms.delete(dedupKey);
     }
 
     let exchange: string | undefined;
