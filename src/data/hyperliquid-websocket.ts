@@ -417,6 +417,24 @@ export class HyperliquidWebSocketManager {
     const symbol = this.activeSymbol;
     if (!symbol) return;
 
+  private async establishConnection(): Promise<void> {
+    // v2.0.101: Ensure the old WebSocket is fully closed before creating a new one.
+    // Without this, reconnects pile up connections → "Cannot open more than 15 connections."
+    if (this.ws) {
+      try {
+        if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+          this.ws.onopen = null;
+          this.ws.onclose = null;
+          this.ws.onerror = null;
+          this.ws.onmessage = null;
+          this.ws.close(1000, 'Reconnecting');
+        }
+      } catch { /* ignore */ }
+      this.ws = null;
+      // Wait a brief moment for the close to complete
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
     return new Promise((resolve, reject) => {
       const wsUrl = 'wss://api.hyperliquid.xyz/ws';
       log.info(`Connecting to HL WS: ${wsUrl} for ${symbol}`);
