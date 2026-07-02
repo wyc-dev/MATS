@@ -3087,6 +3087,24 @@ body {
   transition: max-height 0.3s ease, opacity 0.25s ease;
 }
 
+/* v2.0.84: Rationale toggle button for sub-agents */
+.agent-rationale-toggle {
+  background: none;
+  border: 1px solid var(--glass-border);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  margin-top: var(--space-1);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.agent-rationale-toggle:hover {
+  background: var(--glass-hover);
+  color: var(--text-secondary);
+}
+
 .agent-news-item {
   display: flex;
   flex-direction: column;
