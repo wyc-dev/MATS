@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.83 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology Interrogation + Skeptics Absolute Veto + Meta-Agent Detective Mode + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation)
+> **版本**: 2.0.91 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology + Skeptics Absolute Veto + Meta-Agent Detective Mode + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation + Close Validation + Active Position Management + No Backward-Looking Blocking + UI Improvements)
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~20,000+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -35,56 +35,11 @@
 24. [啟動指南](#啟動指南)
 25. [技術棧](#技術棧)
 26. [附錄 B：已知錯誤與陷阱記錄](#附錄-b已知錯誤與陷阱記錄known-bugs--pitfalls)
-27. [B.8 Per-Symbol Consensus 被 hasPosition 永遠 false 阻擋](#b8-per-symbol-consensus-被-hasposition-永遠-false-阻擋v208-修復)
-28. [B.9 RBC Box Saturation — 所有 dimensions overlap → 永久 NO_EDGE](#b9-rbc-box-saturation--所有-dimensions-overlap--永久-no_edgev209-修復)
-29. [B.10 Exploration 槓桿違規 — 10x 觸發 maxLeverage 硬約束](#b10-exploration-槓桿違規--10x-觸發-maxleverage-硬約束v209-修復)
-30. [B.11 合成資產 S/R 檢測 — HL candleSnapshot 500 error](#b11-合成資產-sr-檢測--hl-candlesnapshot-500-errorv209-修復)
-31. [B.12 參考文獻](#b12-參考文獻related-documentation)
-32. [B.13 Math Audit — 13 個數學/邏輯錯誤](#b13-math-audit--13-個數學邏輯錯誤v2010-修復)
-33. [B.14 LLM 超時風暴 — HL WS 重連後 Agent think() 卡死 120s](#b14-llm-超時風暴--hl-ws-重連後-agent-think-卡死-120sv2012-修復)
-34. [B.15 Risk Auditor 震盪市偵測 + Regime-aware TP/SL](#b15-risk-auditor-震盪市偵測--regime-aware-tpslv2013v2014-修復)
-35. [B.16 Evolution Enhancement — Directional Mutation + Agent Evolution + Regime-aware Strategy](#b16-evolution-enhancement--directional-mutation--agent-evolution--regime-aware-strategyv2015-修復)
-36. [B.17 HL WS User-Level Subscriptions + Real-Trade Portfolio Sync](#b17-hl-ws-user-level-subscriptions--real-trade-portfolio-syncv2016-修復)
-37. [B.18 Real-Trade 真實 Balance/Equity 顯示](#b18-real-trade-真實-balanceequity-顯示v2017-修復)
-38. [B.19 Notional-Based 雙邊 Fee 扣除（槓桿感知）](#b19-notional-based-雙邊-fee-扣除槓桿感知v2018-修復)
-39. [B.20 Unrealized PnL 含 entry fee + Real-trade Positions/Fills 同步 HL](#b20-unrealized-pnl-含-entry-fee--real-trade-positionsfills-同步-hlv2019-修復)
-40. [B.21 TradingView TP/SL live update + Ollama concurrency + slot leak protection](#b21-tradingview-tpsl-live-update--ollama-concurrency--slot-leak-protectionv2020-修復)
-41. [B.22 Market Agent chart 只顯示當前持倉 marker](#b22-market-agent-chart-只顯示當前持倉-markerv2021-修復)
-42. [B.23 Fitness Breakdown — adaptability + consistency 永遠 100%](#b23-fitness-breakdown--adaptability--consistency-永遠-100v2022-修復)
-43. [B.24 dailyPnl 永不重置 + Math.abs 令賺錢觸發 daily loss limit](#b24-dailypnl-永不重置--mathabs-令賺錢觸發-daily-loss-limitv2023-修復)
-44. [B.25 SL/TP 平倉後 Total PnL 滯後一個 cycle](#b25-sltp-平倉後-total-pnl-滯後一個-cyclev2024-修復)
-45. [B.26 SL/TP 平倉後即時學習 + 虧損冷卻期 + LLM 檢討恢復](#b26-sltp-平倉後即時學習--虧損冷卻期--llm-檢討恢復v2025v2026-修復)
-46. [B.27 豐富冷卻期 LLM 檢討上下文 + Risk Auditor 改用 deepseek-v4-flash](#b27-v2027-豐富冷卻期-llm-檢討上下文--risk-auditor-改用-deepseek-v4-flash)
-47. [B.28 LLM 形態標籤 + 勝率追蹤](#b28-v2028-llm-形態標籤--勝率追蹤pattern-tag-tracker)
-48. [B.29 Legacy Position Management — 跨 trade mode 切換嘅持倉管理](#b29-v2029-legacy-position-management--跨-trade-mode-切換嘅持倉管理)
-49. [B.30 手動平倉按鈕 + closeReason 追蹤 + Real-mode 每個 Cycle 同步](#b30-v2030-手動平倉按鈕--closereason-追蹤--real-mode-每個-cycle-同步)
-50. [B.31 多 DEX 餘額同步 + 交易所倉位匯入 + getRecentFills 修復](#b31-v2031-多-dex-餘額同步--交易所倉位匯入--getrecentfills-修復)
-51. [B.32 HL 簽名修復 + xyz DEX 資產索引 + SL/TP 方向 + 槓桿 + 幽靈倉位](#b32-v2032-hl-簽名修復--xyz-dex-資產索引--sltp-方向--槓桿--幽靈倉位)
-52. [B.33 Regime-aware 方向信號 + Planck-Chaos Resonance 模組](#b33-v2033-regime-aware-方向信號--planck-chaos-resonance-模組)
-53. [B.34 幽靈平倉修復 + Paper/Real 分離 + S/R-based SL/TP + Pro algo firm SL/TP](#b34-v2034-幽靈平倉修復--paperreal-分離--sr-based-sltp--pro-algo-firm-sltp)
-54. [B.35 HL SL/TP Close Detection — 交易記錄追蹤 + ML 學習](#b35-v2035-hl-sltp-close-detection--交易記錄追蹤--ml-學習)
-55. [B.36 最小 SL/TP 間距限制 — 防止過度收窄](#b36-v2036-最小-sltp-間距限制--防止過度收窄)
-56. [B.37 Stale Real Position Cleanup — Paper mode 孤兒倉位清理](#b37-v2037-stale-real-position-cleanup--paper-mode-孤兒倉位清理)
-57. [B.38 Real Trade 持久化 — 重啟後保留交易記錄](#b38-v2038-real-trade-持久化--重啟後保留交易記錄)
-58. [B.39 Consensus 方向性修正 — Math.abs() bug](#b39-v2039-consensus-方向性修正--mathabs-bug)
-59. [B.40 學習衰減機制 — Agent Outcomes + Pattern Classifier](#b40-v2040-學習衰減機制--agent-outcomes--pattern-classifier)
-60. [B.41 MAX_POSITION_PCT 移除 + Evolution signalThreshold 強制 + Planck-Chaos 簡化](#b41-v2041-max_position_pct-移除--evolution-signalthreshold-強制--planck-chaos-簡化)
-61. [B.42 Drawdown 高水位線修正 + Recent 20 Trade Win Rate UI](#b42-v2042-drawdown-高水位線修正--recent-20-trade-win-rate-ui)
-62. [B.43 PnL/PnL% PAPER/REAL 一致性](#b43-v2043-pnlpnl-paperreal-一致性)
-63. [B.44 手動市場選擇 + Clear Drawdown 按鈕](#b44-v2044-手動市場選擇--clear-drawdown-按鈕)
-64. [B.45 manualSymbolLock 修復](#b45-v2045-manualsymbollock-修復)
-65. [B.46 SL/TP HL 雙向同步](#b46-v2046-sltp-hl-雙向同步)
-66. [B.47 PnL 槓桿膨脹修復 + Paper Mode SL/TP 同步 + Trailing Stop 驗證](#b47-v2047-pnl-槓桿膨脹修復--paper-mode-sltp-同步--trailing-stop-驗證)
-67. [B.48 SL/TP 啟動時 HL 同步](#b48-v2048-sltp-啟動時-hl-同步)
-68. [B.49 SL/TP Retry Loop + Slower Narrowing](#b49-v2049-sltp-retry-loop--slower-narrowing)
-69. [B.50 SL/TP 最大收窄步長](#b50-v2050-sltp-最大收窄步長)
-70. [B.51 錯誤交易過濾 + Paper/Real 跨模式倉位顯示](#b51-v2051-錯誤交易過濾--paperreal-跨模式倉位顯示)
-71. [B.52 Per-Symbol Consensus SL/TP 方向驗證 + Trailing Stop](#b52-v2052-per-symbol-consensus-sltp-方向驗證--trailing-stop)
-72. [B.53 SL/TP 自動修正 + 推斷邏輯修正](#b53-v2053-sltp-自動修正--推斷邏輯修正)
-73. [B.54 Options Data Layer + REST Polling + Audit + 最高投票權重 + Options-aware 進化](#b54-v2054-options-data-layer--rest-polling--audit--最高投票權重--options-aware-進化)
-74. [B.55 SL/TP UI 顯示修復 + Symbol Selection Debounce + S/R DEX 1-8 Candle Fetch](#b55-v2069-v2075-sltp-ui-顯示修復--symbol-debounce--sr-dex-1-8-candle-fetch)
-75. [B.56 Global HL Rate Limiter + WS Infinite Reconnect + REST Polling Backoff](#b56-v2076-v2077-global-hl-rate-limiter--ws-infinite-reconnect--rest-polling-backoff)
-76. [B.57 Configurable Max Portion + Real Trading Margin Check](#b57-v2078-configurable-max-portion--real-trading-margin-check)
+27. [B.8–B.11 早期修復（Per-Symbol Consensus / RBC / Exploration / S/R）](#b8b11-早期修復)
+28. [B.12 參考文獻](#b12-參考文獻related-documentation)
+29. [B.13–B.31 Math Audit + LLM Resilience + Evolution + HL WS + Real Trading](#b13b31-math-audit--llm-resilience--evolution--hl-ws--real-trading)
+30. [B.32–B.57 HL Real Trading Fixes + SL/TP Safety + Position Management + Options + UI](#b32b57-hl-real-trading-fixes--sltp-safety--position-management--options--ui)
+31. [B.58+ Entry Thesis System + Dark Psychology + Skeptics Veto + Close Validation](#b58-entry-thesis-system--dark-psychology--skeptics-veto--close-validation)
 
 ---
 
@@ -102,6 +57,8 @@
 | **暗黑心理學 (v2.0.81)** | Meta-Agent 質疑數據是否大戶操縱，Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **多智能體共識** | 7+ 智能體（含 Skeptics 跨 Agent 邏輯審查）+ 結構化辯論 |
 | **風險審計參考 (v2.0.82)** | Risk Auditor 降級為參考（advisory-only），不可 veto |
+| **平倉驗證 (v2.0.90)** | 平倉決策必須經過 Meta-Agent 判斷 + Skeptics 驗證 |
+| **唔靠過去 P&L (v2.0.88)** | 過去 drawdown/losses 唔係拒絕交易嘅理由——RBC 持續學習，市況不斷變化 |
 | **優雅降級** | 任何錯誤預設 HOLD，永遠不倒 |
 | **生產級標準** | 完整型別、結構化日誌、優雅關閉、指數退避重連 |
 
@@ -142,7 +99,7 @@
 │   │ • Real Trading Manager (exchange 下單 + 本地 mirror)    │ │
 │   │ • 倉位追蹤 & 止損止盈（每個 price update 自動檢查）    │ │
 │   │ • Position Reconciliation (偵測 exchange 已平倉 → 同步)│ │
-│   │ • Per-Position Profit-Take（>=2 agents vote + PnL>+0.5%）│ │
+│   │ • Per-Position Close（Meta-Agent → Skeptics 驗證，或 legacy ≥2 agents vote）│ │
 │   │ • 數據管道 & 持久化                                      │ │
 │   │ • 可觀測性 & 健康檢查                                    │ │
 │   └────────────────────────────────────────────────────────┘ │
@@ -507,22 +464,22 @@ Pattern: Balanced flows in low_vol → 80% continuation, no edge.
 
 ### Agent 否決條件（Risk Auditor）
 
-Risk Auditor 專注於**災難性風險預防**，不再審查倉位大小和槓桿（由 Market Agent UI slider 控制）：
+Risk Auditor 專注於**災難性風險預防** + **TP/SL/size 調整建議**（v2.0.82 降級為 advisory-only，不可 veto）：
 
 | 條件 | 說明 |
 |:-----|:-----|
 | 冇 set Stop Loss | 裸倉 = 災難性風險 |
 | 制度 = 混沌 | 市場處於不可預測狀態 |
 | 冇可用價格數據 | 無法估值，唔可以交易 |
-| 單一持倉 unrealized loss > 5% | 虧損過大，強制平倉 |
-| 回撤 > 15% | 平所有倉位 |
-| 日虧損 > 4% | 停止當日交易 |
-| 倉位 > 20% | 超過絕對硬上限（`MAX_POSITION_PCT`，與 `normalizeDecision()` 一致） |
+| 單一持倉 unrealized loss > 5% | 虧損過大，建議平倉 |
+| 回撤 > 15% | 警告但唔強制平所有倉位（v2.0.88：RBC 持續學習，市況變化） |
+| 日虧損 > 4% | 警告但唔停止交易（v2.0.88） |
+| 震盪市偵測 | 硬編碼 50% 減倉 + loss-streak 漸進減倉（保留） |
 
 **唔再審查：**
 - 倉位大小（由 Market Agent 控制）
 - 槓桿倍數（由 Market Agent 控制）
-- 止損虧損 > 2%（由 Market Agent 決定風險承受度）
+- 過去 drawdown/losses 作為阻止開倉嘅理由（v2.0.88）
 
 ### 🆕 v2.0.13–v2.0.14: Risk Auditor 近期交易模式分析（震盪市偵測 + Regime-aware TP/SL）
 
@@ -1080,16 +1037,16 @@ PROP: BUY 4.5% immediate | momentum_strong but reduce_size_for_vol_uncertainty
 │  • 🐛 FIX v2.0.8: 唔再檢查 psc.hasPosition                     │
 │    （buildConsensus() 永遠 set false）                          │
 │  • 改為直接查 portfolio.getPosition(psc.symbol)                 │
-│  • closePosition=true → 立即平倉（唔理賺蝕）                   │
+│  • closePosition=true → v2.0.90: Meta-Agent → Skeptics 驗證   │
+│    · 有 entryThesis: Skeptics validateCloseDecision → 通過先平 │
+│    · 冇 entryThesis (legacy): 直接平倉                         │
 │  • suggestedStopLoss/suggestedTakeProfit → 調整持倉 SL/TP      │
 │  • 如果 consensus 係 hold + 冇 SL/TP 建議 → 等自然觸發         │
 │                                                                 │
-│  Per-Position Close Voting（盈利持倉 only）：                   │
-│  • 每個 cycle 檢視所有 open positions                           │
-│  • >=2 agents 投票 closePosition && unrealizedPnlPct > +0.5%   │
-│    → 提前止賺離場                                               │
-│  • 蝕錢持倉絕對唔會被 agent 投票 close                          │
-│    → 必須由 SL/TP 觸發或 exchange auto-close                    │
+│  Legacy Close Voting（冇 entryThesis 嘅倉位 only）：           │
+│  • v2.0.91: ≥2 sub-agents 投票 closePosition → 直接平倉       │
+│    （繞過 Meta-Agent + Skeptics，因為呢啲倉位冇理據可驗證）    │
+│  • 蝕錢持倉都可以被投票 close（v2.0.89: 移除利潤門檻）          │
 │                                                                 │
 │  Meta-Agent TP/SL Adjustment（S/R 驅動 + 三層安全架構）：       │
 │  • TP 設定以 S/R zones 為基礎：                                 │
@@ -1129,7 +1086,7 @@ PROP: BUY 4.5% immediate | momentum_strong but reduce_size_for_vol_uncertainty
 | Meta-Agent (Phase 1.75) | ~10s | 接收 Skeptics 結果後做最終仲裁 |
 | Debate Round 1 | ~10s | 論點陳述（僅 1 輪，可配置至 3 輪） |
 | Consensus + Veto | ~5s | 加權投票 + 風險審計 |
-| Per-Position Close Voting | ~2s | 盈利持倉(+0.5%+) agent vote close; 蝕錢等 SL/TP |
+| Per-Position Close | ~2s | v2.0.90: Meta-Agent → Skeptics 驗證平倉；legacy ≥2 agents vote |
 | Position Adjustment | ~5s | Meta-Agent 動態調整持倉 TP/SL |
 | **總預算** | **120s** | 超時強制共識 → 預設 HOLD |
 
