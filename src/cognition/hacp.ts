@@ -789,6 +789,10 @@ export class HACPEngine {
     // If Meta-Agent decided BUY or SELL, Skeptics must validate the
     // entryThesis before the trade is allowed to proceed. If the thesis
     // is rejected, the Meta-Agent's decision is overridden to HOLD.
+    // v2.0.94: Skip thesis validation if the symbol already has an open position —
+    // the marketTicker decision for a symbol with an existing position is NOT a new
+    // entry, it's the Meta-Agent's directional view. Position management (CLOSE/HOLD)
+    // is handled via the positions[] array, not via marketTicker BUY/SELL.
     // ═══════════════════════════════════════════════════
 
     const metaDecision = metaThought.metadata?.['decision'] as TradingDecision | undefined;
@@ -797,7 +801,10 @@ export class HACPEngine {
     const metaThesis = metaDecision?.entryThesis ?? metaMultiDec?.marketTicker.entryThesis;
     const metaSymbol = metaDecision?.symbol ?? metaMultiDec?.marketTicker.symbol ?? '';
 
-    if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis) {
+    // v2.0.94: Check if this symbol already has an open position
+    const hasExistingPosition = posCtx.some(p => normalizeSymbol(p.symbol) === normalizeSymbol(metaSymbol));
+
+    if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);
       const thesisResult = await this.skeptics.validateEntryThesis(
         metaThesis,

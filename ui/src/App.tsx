@@ -318,16 +318,17 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                   
                   if (role === 'meta_agent') {
                     // Meta-Agent: holdReason/entryThesis IS the rationale — don't duplicate
+                    // v2.0.94: Always expanded for Meta-Agent — user needs to see full reasoning
                     if (d.action === 'hold' && d.holdReason) {
                       return (
-                        <div className={`agent-hold-reason ${thoughtExpanded || rationaleExpanded ? 'agent-hold-reason-expanded' : ''}`} title={d.holdReason}>
+                        <div className="agent-hold-reason agent-hold-reason-expanded" title={d.holdReason}>
                           {d.holdReason}
                         </div>
                       )
                     }
                     if ((d.action === 'buy' || d.action === 'sell') && d.entryThesis) {
                       return (
-                        <div className={`agent-entry-thesis ${thoughtExpanded || rationaleExpanded ? 'agent-entry-thesis-expanded' : ''}`} title={d.entryThesis}>
+                        <div className="agent-entry-thesis agent-entry-thesis-expanded" title={d.entryThesis}>
                           📝 {d.entryThesis}
                         </div>
                       )
