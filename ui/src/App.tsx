@@ -85,8 +85,17 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
 }) {
   const meta = AGENT_META[role]
   const [thoughtExpanded, setThoughtExpanded] = useState(false)
-  const [rationaleExpanded, setRationaleExpanded] = useState(false)
+  const [expandedRationales, setExpandedRationales] = useState<Set<string>>(new Set())
   if (!meta) return null
+
+  const toggleRationale = (symbol: string) => {
+    setExpandedRationales(prev => {
+      const next = new Set(prev)
+      if (next.has(symbol)) next.delete(symbol)
+      else next.add(symbol)
+      return next
+    })
+  }
 
   // Extract which symbols this agent analyzed
   const analyzingSymbols: string[] = []
@@ -295,33 +304,57 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                     )
                   })()}
                 </div>
-                {/* v2.0.81: Show holdReason for HOLD decisions */}
-                {d.action === 'hold' && d.holdReason && (
-                  <div className={`agent-hold-reason ${thoughtExpanded || rationaleExpanded ? 'agent-hold-reason-expanded' : ''}`} title={d.holdReason}>
-                    {d.holdReason}
-                  </div>
-                )}
-                {/* v2.0.80: Show entryThesis for BUY/SELL decisions */}
-                {(d.action === 'buy' || d.action === 'sell') && d.entryThesis && (
-                  <div className={`agent-entry-thesis ${thoughtExpanded || rationaleExpanded ? 'agent-entry-thesis-expanded' : ''}`} title={d.entryThesis}>
-                    📝 {d.entryThesis}
-                  </div>
-                )}
-                {/* v2.0.84: Per-symbol rationale — always show for Meta-Agent + News Reporter; collapsible for others */}
-                {d.rationale && (() => {
+                {/* v2.0.84: Per-symbol rationale display logic:
+                    - Meta-Agent: show holdReason (HOLD) or entryThesis (BUY/SELL) — these ARE the rationale, don't also show rationale
+                    - News Reporter: always show rationale expanded
+                    - Other sub-agents: show rationale behind ▼ Reason toggle */}
+                {(() => {
                   const isMetaOrNews = role === 'meta_agent' || role === 'news_reporter'
+                  const rationaleExpanded = expandedRationales.has(d.symbol)
+                  
+                  if (role === 'meta_agent') {
+                    // Meta-Agent: holdReason/entryThesis IS the rationale — don't duplicate
+                    if (d.action === 'hold' && d.holdReason) {
+                      return (
+                        <div className={`agent-hold-reason ${thoughtExpanded || rationaleExpanded ? 'agent-hold-reason-expanded' : ''}`} title={d.holdReason}>
+                          {d.holdReason}
+                        </div>
+                      )
+                    }
+                    if ((d.action === 'buy' || d.action === 'sell') && d.entryThesis) {
+                      return (
+                        <div className={`agent-entry-thesis ${thoughtExpanded || rationaleExpanded ? 'agent-entry-thesis-expanded' : ''}`} title={d.entryThesis}>
+                          📝 {d.entryThesis}
+                        </div>
+                      )
+                    }
+                    // Meta-Agent fallback: show rationale if no holdReason/entryThesis
+                    if (d.rationale) {
+                      return (
+                        <div className="agent-per-symbol-rationale agent-rationale-expanded" title={d.rationale}>
+                          {d.rationale}
+                        </div>
+                      )
+                    }
+                    return null
+                  }
+                  
                   if (isMetaOrNews) {
-                    return (
+                    // News Reporter: always show rationale expanded
+                    return d.rationale ? (
                       <div className="agent-per-symbol-rationale agent-rationale-expanded" title={d.rationale}>
                         {d.rationale}
                       </div>
-                    )
+                    ) : null
                   }
+                  
+                  // Other sub-agents: rationale behind toggle button
+                  if (!d.rationale) return null
                   return (
                     <>
                       <button
                         className="agent-rationale-toggle"
-                        onClick={() => setRationaleExpanded(v => !v)}
+                        onClick={() => toggleRationale(d.symbol)}
                         title={rationaleExpanded ? 'Collapse rationale' : 'Expand rationale'}
                       >
                         {rationaleExpanded ? '▲ Reason' : '▼ Reason'}
