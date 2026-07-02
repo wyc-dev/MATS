@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.91-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.94-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -142,7 +142,7 @@ Phase 0.5:  Skeptics re-validates each open position's entryThesis against fresh
 Phase 1:    5 agents think in parallel (staggered, with 60s deadline race)
 Phase 1.5:  Skeptics logic audit + EM convergence cross-cycle check
 Phase 1.75: Meta-Agent final arbitration (incorporates Skeptics findings)
-Phase 1.8:  Skeptics validates Meta-Agent's entryThesis for BUY/SELL → rejected → HOLD override
+Phase 1.8:  Skeptics validates Meta-Agent's entryThesis for BUY/SELL (skipped if symbol already has a position) → rejected → HOLD override
 Phase 2:    Structured rapid debate (1-3 rounds, configurable)
 Phase 3:    Weighted voting consensus (60% threshold, dynamically adjusted by Evolution)
 Phase 4:    Risk Auditor advisory check (non-blocking, TP/SL/size adjustments only)
@@ -157,17 +157,23 @@ Phase 5:    Meta-Agent dynamic TP/SL adjustment + per-position consensus executi
 - **Total cycle budget**: 120s hard timeout, forced HOLD on expiry
 - **LLM resilience**: Circuit breaker (3 failures → 30s fail-fast), slot acquisition timeout (8s), HACP deadline race (60s per agent → graceful HOLD), tiered LLM timeout (think 45s, debate/audit 30s)
 
-### 🎯 Entry Thesis System (v2.0.80+)
+### 🎯 Entry Thesis System + Extreme Reasoning (v2.0.80+)
 
-The core cognitive architecture — every new position requires a strong, validated rationale:
+The core cognitive architecture — every new position requires a strong, validated rationale, and every symbol gets a directional judgment every cycle:
+
+**No position → MUST decide BUY or SELL** (HOLD only when ALL six signals absent: RBC + S/R + sentiment + momentum + news + regime). Even a 51% lean is enough to act. Even with no data, reason from first principles (price level, round numbers, regime, fees).
+
+**Has position → MUST decide CLOSE or HOLD** (CLOSE if ≥3 of 6 conditions true: thesis invalidated + trend changed + ≥2 agents close + losing money + regime unsuitable + contradicting news. HOLD if 0-2 conditions true).
 
 1. **Meta-Agent generates `entryThesis`** — explains why price will reach TP within 1h (short-term catalyst) and 1d (medium-term driver), referencing specific sub-agent data
 2. **Skeptics validates** — checks for strength, specificity, data consistency, dark psychology (whale manipulation?), and fact distortion
 3. **Phase 4.8 Hard Gate** — any BUY/SELL without a valid+validated thesis is blocked, regardless of consensus path
 4. **Phase 0.5 Re-validation** — each cycle, Skeptics re-validates every open position's thesis against fresh market data; if invalidated, force-close
-5. **`holdReason`** — HOLD decisions must explain what data conflicts or what state is ambiguous (displayed in UI)
-6. **Dark Psychology** — Meta-Agent must question whether sub-agent data is genuine market signal or whale/institutional manipulation (distribution as bullish, accumulation as FUD, fake breakouts, wash trading)
-7. **Close validation** — closing a thesis-backed position also goes through Meta-Agent → Skeptics validation (v2.0.90)
+5. **`holdReason`** — HOLD decisions must explain which conditions are true and why they are insufficient to act (displayed in UI, always expanded for Meta-Agent)
+6. **Dark Psychology** — Meta-Agent must question whether sub-agent data is genuine market signal or whale/institutional manipulation
+7. **Close validation** — closing a thesis-backed position goes through Meta-Agent → Skeptics validation (v2.0.90); legacy positions close on Meta-Agent CLOSE decision or ≥2 sub-agent votes (v2.0.94)
+8. **RBC + S/R for ALL positions** — context generated for every open position, not just the active symbol (v2.0.92)
+9. **3-5 sentences minimum** reasoning per symbol — no truncation, no silence
 
 ### 🧬 Self-Evolution System (RBC + EM Cycle Chain)
 
@@ -456,6 +462,14 @@ If you require a commercial license — for example, for proprietary extensions,
 ---
 
 ## Changelog
+
+### v2.0.92–v2.0.94 — Extreme Reasoning + RBC/S/R for All Positions + Bug Fixes
+
+- **Extreme reasoning** (v2.0.93): No position → MUST decide BUY/SELL (HOLD only when ALL 6 signals absent). Has position → MUST decide CLOSE/HOLD (CLOSE if ≥3 of 6 conditions true, HOLD if 0-2). Even with no data, reason from first principles. 3-5 sentences minimum per symbol.
+- **RBC + S/R for all open positions** (v2.0.92): Previously only generated for the active symbol. Now every open position gets RBC edge assessment + S/R zones in agent context.
+- **Phase 1.8 skip for existing positions** (v2.0.94): Thesis validation skipped if symbol already has a position — marketTicker BUY/SELL for a symbol with an existing position is NOT a new entry.
+- **Legacy close on Meta-Agent decision** (v2.0.94): Legacy positions (no entryThesis) now close when Meta-Agent decides CLOSE, not just when ≥2 sub-agents vote close.
+- **UI: Meta-Agent reasoning always expanded** (v2.0.94): holdReason/entryThesis no longer truncated to 2 lines.
 
 ### v2.0.79–v2.0.91 — Entry Thesis System + Dark Psychology + Skeptics Absolute Veto
 
