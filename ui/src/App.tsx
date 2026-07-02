@@ -85,6 +85,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
 }) {
   const meta = AGENT_META[role]
   const [thoughtExpanded, setThoughtExpanded] = useState(false)
+  const [rationaleExpanded, setRationaleExpanded] = useState(false)
   if (!meta) return null
 
   // Extract which symbols this agent analyzed
@@ -296,23 +297,39 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                 </div>
                 {/* v2.0.81: Show holdReason for HOLD decisions */}
                 {d.action === 'hold' && d.holdReason && (
-                  <div className={`agent-hold-reason ${thoughtExpanded ? 'agent-hold-reason-expanded' : ''}`} title={d.holdReason}>
+                  <div className={`agent-hold-reason ${thoughtExpanded || rationaleExpanded ? 'agent-hold-reason-expanded' : ''}`} title={d.holdReason}>
                     {d.holdReason}
                   </div>
                 )}
                 {/* v2.0.80: Show entryThesis for BUY/SELL decisions */}
                 {(d.action === 'buy' || d.action === 'sell') && d.entryThesis && (
-                  <div className={`agent-entry-thesis ${thoughtExpanded ? 'agent-entry-thesis-expanded' : ''}`} title={d.entryThesis}>
+                  <div className={`agent-entry-thesis ${thoughtExpanded || rationaleExpanded ? 'agent-entry-thesis-expanded' : ''}`} title={d.entryThesis}>
                     📝 {d.entryThesis}
                   </div>
                 )}
-                {/* v2.0.84: Show per-symbol rationale — collapsed by default for sub-agents, expanded for Meta-Agent + News Reporter */}
-                {d.rationale && !d.holdReason && !d.entryThesis && (() => {
+                {/* v2.0.84: Per-symbol rationale — always show for Meta-Agent + News Reporter; collapsible for others */}
+                {d.rationale && (() => {
                   const isMetaOrNews = role === 'meta_agent' || role === 'news_reporter'
+                  if (isMetaOrNews) {
+                    return (
+                      <div className="agent-per-symbol-rationale agent-rationale-expanded" title={d.rationale}>
+                        {d.rationale}
+                      </div>
+                    )
+                  }
                   return (
-                    <div className={`agent-per-symbol-rationale ${isMetaOrNews || thoughtExpanded ? 'agent-rationale-expanded' : 'agent-rationale-collapsed'}`} title={d.rationale}>
-                      {d.rationale}
-                    </div>
+                    <>
+                      <button
+                        className="agent-rationale-toggle"
+                        onClick={() => setRationaleExpanded(v => !v)}
+                        title={rationaleExpanded ? 'Collapse rationale' : 'Expand rationale'}
+                      >
+                        {rationaleExpanded ? '▲ Reason' : '▼ Reason'}
+                      </button>
+                      <div className={`agent-per-symbol-rationale ${rationaleExpanded ? 'agent-rationale-expanded' : 'agent-rationale-collapsed'}`} title={d.rationale}>
+                        {d.rationale}
+                      </div>
+                    </>
                   )
                 })()}
                 {ns && ns.headlines.length > 0 && (
