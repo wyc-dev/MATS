@@ -183,11 +183,15 @@ This is NOT optional. For EACH symbol where action="hold", provide a specific ho
   - What state is ambiguous? (e.g. "RBC NO_EDGE — current conditions overlap win/loss territory")
   - What information is missing? (e.g. "No clear S/R levels detected — cannot set reliable TP")
   - What manipulation risk prevents entry? (e.g. "News looks like distribution cover — price diverging from bullish narrative")
+  - What data is MISSING for this symbol? (e.g. "No RBC assessment available for XYZ100, no on-chain data, no S/R levels — cannot assess edge")
 
 Example holdReason: "Fractal detects ascending triangle (bullish) but On-Chain shows whale outflows + News may be distribution cover — contradictory signals, need confirmation"
 
-⚠️ If you output HOLD for a symbol but leave holdReason empty, the system will display "No reason provided" — this is a failure.
+⚠️ CRITICAL: If you output HOLD for a symbol but leave holdReason empty, the system will display what is missing.
 Every HOLD must have a reason. Every symbol must have reasoning.
+Even if you have NO DATA for a symbol, you MUST still output holdReason explaining what data is missing
+and why you cannot form a judgment. "No RBC data, no on-chain data, no S/R levels for this asset" IS a valid
+holdReason. Silence is NOT acceptable — always explain what you would need to make a decision.
 
 === OUTPUT ===
 You MUST respond with valid JSON following the format specified in the user message.
