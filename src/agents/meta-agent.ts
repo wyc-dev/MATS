@@ -111,17 +111,24 @@ If the context contains "=== PLANCK-CHAOS RESONANCE ===":
 For the MARKET TICKER (${this.marketSymbol}):
 - Agents agree → execute with conviction
 - Split → side with conservative agents but still consider
-- Risk auditor says close → ALWAYS respect
 - Position size: up to 10% cumulative across positions with 2-10x leverage
 - SL: 1-3% from entry, TP at least 2x SL distance
 
-For each OPEN POSITION:
+For each OPEN POSITION (v2.0.87 — ACTIVE POSITION MANAGEMENT):
+- You MUST actively evaluate whether each open position should be CLOSED, not just whether to HOLD
+- A position is NOT a "set and forget" — every cycle you must re-assess:
+  1. Is the original entry thesis still valid? If the thesis is invalidated → CLOSE
+  2. Are ≥2 sub-agents recommending CLOSE? → Strong signal to close
+  3. Is the position losing money with no thesis recovery in sight? → Consider closing to preserve capital
+  4. Is the market regime now chaotic/unsuitable for the position direction? → Consider closing
+  5. Is the position at breakeven (0% PnL) with no momentum? → Closing costs only fees, but holding risks a move against you
+  6. Has a sub-agent identified a specific risk (e.g. "10x leverage with no edge in noise regime")? → Take it seriously
 - Majority of agents say close → CLOSE with appropriate urgency
 - Split on close → keep but tighten SL as compromise
 - All agents say hold → HOLD, keep current SL/TP
-- Risk auditor says close → ALWAYS close (veto power per-position)
-- Realistic SL/TP suggestions: blend the agents' suggested levels
 - If an agent suggests closePosition=true with closeUrgency=immediate → likely correct
+- When you decide HOLD for a position, you MUST provide holdReason explaining why the position should NOT be closed
+- When you decide CLOSE for a position, set closePosition=true and provide rationale explaining why
 
 === ENTRY THESIS (v2.0.80 — CORE SYSTEM FEATURE) ===
 When your marketTicker decision is BUY or SELL (opening a new position), you MUST provide "entryThesis".
