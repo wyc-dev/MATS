@@ -3358,13 +3358,13 @@ class MATSSystem {
       // v2.0.100: Run HACP sub-cycles for additional trading markets
       // Each additional non-position trading market gets its own HACP cycle
       // so agents analyze ALL trading markets, not just the first one.
+      // v2.0.102: Do NOT call setSelectedSymbolManual — it triggers WS reconnect.
+      // Just fetch price via REST and build market description manually.
       const additionalMarkets: string[] = (this as any)._additionalMarkets ?? [];
       for (const mktSym of additionalMarkets) {
         try {
           log.info(`📊 Running HACP sub-cycle for additional market: ${mktSym}`);
-          // Switch Market Agent to this symbol (for price feed)
-          this.marketAgent.setSelectedSymbolManual(mktSym);
-          // Fetch market data for this symbol
+          // Fetch market data for this symbol via REST (no WS switch needed)
           const mktPriceData = await this.marketAgent.fetchPriceForSymbol(mktSym);
           const mktState = this.marketState.getState(mktSym);
           const mktCombinedState = {
@@ -3378,7 +3378,8 @@ class MATSSystem {
             orderBookImbalance: mktState?.orderBookImbalance ?? 0,
             updatedAt: Date.now(),
           };
-          const mktMarketDesc = `${this.marketAgent.getMarketDescription()}\n${this.buildMarketDescription(mktCombinedState as any)}`;
+          // Build market description WITHOUT switching Market Agent (no WS reconnect)
+          const mktMarketDesc = `Selected Symbol: ${mktSym}\nPrice: $${mktPriceData.price.toFixed(2)}\n24h Change: ${mktPriceData.change24h.toFixed(2)}%\n24h Volume: $${(mktPriceData.volume24h / 1e6).toFixed(2)}M\nTrend: ${mktCombinedState.trend}\nRegime: ${mktCombinedState.regime}\nVolatility: ${(mktCombinedState.volatility * 100).toFixed(2)}%`;
           // Run HACP for this market (positions[] = open positions, marketTicker = this market)
           const mktResult = await this.hacpEngine.executeDecisionCycle(
             mktMarketDesc,
@@ -3419,10 +3420,8 @@ class MATSSystem {
           log.warn(`Sub-cycle for ${mktSym} failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
-      // Restore Market Agent to primary activeSymbol
-      if (additionalMarkets.length > 0) {
-        this.marketAgent.setSelectedSymbolManual(activeSymbolUpper);
-      }
+      // v2.0.102: No need to restore Market Agent — we never switched it.
+      // The WS connection stays on the primary activeSymbol throughout.
 
     } catch (err) {
       log.error(`Decision cycle #${this.totalCycles} failed:`, {
