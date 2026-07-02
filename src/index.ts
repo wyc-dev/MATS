@@ -1256,9 +1256,9 @@ class MATSSystem {
 
     if (allSymbols.length > 0) {
       // v2.0.79: Prefer a trading market that is NOT an open position as activeSymbol.
-      // v2.0.99: ALL trading markets are analyzed in the SAME cycle.
-      // Non-position trading markets are added as pseudo-positions to currentPositions
-      // so agents see them in positions[] and can output BUY/SELL/HOLD for them.
+      // v2.0.100: Run a SEPARATE HACP cycle for EACH trading market (not just one).
+      // The first non-position market is the primary activeSymbol (for WS + price feed).
+      // Additional non-position markets get their own HACP sub-cycle after the main one.
       const openPosNorms = new Set(openPositionSymbols.map(s =>
         s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
       ));
@@ -1266,7 +1266,7 @@ class MATSSystem {
         const n = s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase();
         return !openPosNorms.has(n);
       });
-      // Pick the first non-position market as activeSymbol (for WS + price feed)
+      // Pick the first non-position market as primary activeSymbol
       activeSymbol = nonPositionMarkets.length > 0
         ? nonPositionMarkets[0]!
         : (this.tradingMarkets[0] ?? openPositionSymbols[0]!);
@@ -1275,8 +1275,8 @@ class MATSSystem {
         this.marketAgent.setSelectedSymbolManual(activeSymbol);
       }
       log.info(`Cycle symbols: ${allSymbols.join(', ')} (active: ${activeSymbol})`);
-      // v2.0.99: Store nonPositionMarkets for later use (adding pseudo-positions)
-      (this as any)._nonPositionMarkets = nonPositionMarkets;
+      // v2.0.100: Store additional markets that need their own HACP sub-cycle
+      (this as any)._additionalMarkets = nonPositionMarkets.filter(s => s !== activeSymbol);
     } else {
       // No trading markets and no open positions — fall back to auto-select
       const selectedSymbol = await this.marketAgent.autoSelectTopPair();
@@ -1288,7 +1288,7 @@ class MATSSystem {
       activeSymbol = selectedSymbol;
       // Add the auto-selected symbol to trading markets
       this.tradingMarkets = [activeSymbol];
-      (this as any)._nonPositionMarkets = [];
+      (this as any)._additionalMarkets = [];
       log.info(`No trading markets or positions — auto-selected ${activeSymbol} and added to trading markets`);
     }
     // v2.0.79: Use normalizeSymbol instead of toUpperCase — DEX prefixes (xyz:)
@@ -2118,37 +2118,9 @@ class MATSSystem {
       // The UI may show a duplicate entry, but correct position management
       // is more important than UI cleanliness.
 
-      // v2.0.99: Add non-position trading markets as pseudo-positions so agents
-      // can analyze ALL trading markets in the same cycle. These are symbols the
-      // user selected in "Trading Markets" but don't have open positions. Without
-      // this, only the activeSymbol (marketTicker) is analyzed — other trading
-      // markets are invisible to agents.
-      const nonPositionMarkets: string[] = (this as any)._nonPositionMarkets ?? [];
-      const existingSyms = new Set(currentPositions.map(p => normalizeSymbol(p.symbol)));
-      for (const mktSym of nonPositionMarkets) {
-        if (mktSym === activeSymbolUpper) continue; // activeSymbol is already marketTicker
-        if (existingSyms.has(normalizeSymbol(mktSym))) continue; // already has a position
-        // Fetch price for this market symbol
-        try {
-          const mktPrice = await this.marketAgent.fetchPriceForSymbol(mktSym);
-          currentPositions.push({
-            id: `mkt-${mktSym}`,
-            symbol: mktSym,
-            side: 'buy' as const, // placeholder — agents will decide BUY/SELL
-            entryPrice: mktPrice.price,
-            currentPrice: mktPrice.price,
-            stopLoss: undefined,
-            takeProfit: undefined,
-            leverage: this.marketAgent.getConfig().leverage,
-            quantity: 0,
-            exchange: 'hyperliquid',
-            entryThesis: undefined,
-          } as any);
-          log.info(`📊 Added trading market ${mktSym} @ $${mktPrice.price.toFixed(2)} as pseudo-position for analysis`);
-        } catch (err) {
-          log.warn(`Failed to fetch price for trading market ${mktSym}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
+      // v2.0.100: Removed pseudo-position hack. Instead, run a separate HACP
+      // sub-cycle for each additional trading market after the main cycle.
+      // This is handled after the main HACP result is processed below.
 
       const result = await this.hacpEngine.executeDecisionCycle(
         `${marketDesc}\n\n${evolutionContext}${backtestContext}`,
@@ -3382,6 +3354,75 @@ class MATSSystem {
         debateRounds: result.debateRounds,
       };
       this.pushToAPI();
+
+      // v2.0.100: Run HACP sub-cycles for additional trading markets
+      // Each additional non-position trading market gets its own HACP cycle
+      // so agents analyze ALL trading markets, not just the first one.
+      const additionalMarkets: string[] = (this as any)._additionalMarkets ?? [];
+      for (const mktSym of additionalMarkets) {
+        try {
+          log.info(`📊 Running HACP sub-cycle for additional market: ${mktSym}`);
+          // Switch Market Agent to this symbol (for price feed)
+          this.marketAgent.setSelectedSymbolManual(mktSym);
+          // Fetch market data for this symbol
+          const mktPriceData = await this.marketAgent.fetchPriceForSymbol(mktSym);
+          const mktState = this.marketState.getState(mktSym);
+          const mktCombinedState = {
+            primarySymbol: mktSym,
+            price: mktPriceData.price,
+            change24h: mktPriceData.change24h,
+            volume24h: mktPriceData.volume24h,
+            trend: mktState?.trend ?? 'sideways',
+            volatility: mktState?.volatility ?? 0,
+            regime: mktState?.regime ?? 'unknown',
+            orderBookImbalance: mktState?.orderBookImbalance ?? 0,
+            updatedAt: Date.now(),
+          };
+          const mktMarketDesc = `${this.marketAgent.getMarketDescription()}\n${this.buildMarketDescription(mktCombinedState as any)}`;
+          // Run HACP for this market (positions[] = open positions, marketTicker = this market)
+          const mktResult = await this.hacpEngine.executeDecisionCycle(
+            mktMarketDesc,
+            portfolioDesc,
+            currentPositions.length > 0 ? currentPositions : undefined,
+            emContext,
+            this.emManager?.getLast(10) ?? [],
+            { leverage: this.marketAgent.getConfig().leverage, positionSizePct: this.marketAgent.getConfig().positionSizePct },
+            this.totalCycles,
+            async (symbol: string): Promise<number | null> => {
+              try {
+                const r = await this.marketAgent.fetchPriceForSymbol(symbol);
+                return r.price;
+              } catch { return null; }
+            },
+          );
+          // Process the sub-cycle result (execute BUY/SELL if consensus says so)
+          const mktDecision = mktResult.consensus.decision;
+          if ((mktDecision.action === 'buy' || mktDecision.action === 'sell') && mktDecision.positionSizePct > 0) {
+            log.info(`📊 Sub-cycle ${mktSym}: ${mktDecision.action.toUpperCase()} ${(mktDecision.positionSizePct * 100).toFixed(1)}% — executing`);
+            // Execute the decision (same as main cycle)
+            const mktExecResult = await this.realTradingManager.executeDecision({
+              ...mktDecision,
+              srSupport: null,
+              srResistance: null,
+            });
+            log.info(`📊 Sub-cycle ${mktSym} executed: ${mktExecResult.success ? '✅' : '❌'}`);
+          } else {
+            log.info(`📊 Sub-cycle ${mktSym}: ${mktDecision.action.toUpperCase()} — no action needed`);
+          }
+          // Merge thoughts into lastHACPResult for UI display
+          if (this.lastHACPResult) {
+            this.lastHACPResult.allThoughts.push(...mktResult.allThoughts);
+            this.lastHACPResult.consensus.perSymbolConsensus.push(...mktResult.consensus.perSymbolConsensus);
+          }
+          this.pushToAPI();
+        } catch (err) {
+          log.warn(`Sub-cycle for ${mktSym} failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      // Restore Market Agent to primary activeSymbol
+      if (additionalMarkets.length > 0) {
+        this.marketAgent.setSelectedSymbolManual(activeSymbolUpper);
+      }
 
     } catch (err) {
       log.error(`Decision cycle #${this.totalCycles} failed:`, {
