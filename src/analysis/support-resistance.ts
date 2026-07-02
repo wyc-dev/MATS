@@ -166,9 +166,14 @@ async function fetchCandles(
     // HL to return empty candle data for all DEX 1-8 assets, forcing S/R to
     // fall back to round numbers only. The full symbol works for both DEX 0
     // (BTC) and DEX 1-8 (xyz:SKHX) — HL's candleSnapshot API accepts both.
+    // v2.0.98: HL candleSnapshot API is CASE-SENSITIVE. DEX 0 symbols (BTC, ETH)
+    // must be UPPERCASE. DEX 1-8 symbols (xyz:SKHX) must preserve original case.
+    // normalizeSymbol lowercases non-colon symbols → 'btc' → HL returns null → 500.
+    // Fix: uppercase non-colon symbols before sending to HL.
+    const coinName = symbol.includes(':') ? symbol : symbol.toUpperCase();
     const data = await hlFetchFn({
       type: 'candleSnapshot',
-      req: { coin: symbol, interval, startTime, endTime },
+      req: { coin: coinName, interval, startTime, endTime },
     }) as RawCandle[];
 
     if (!Array.isArray(data) || data.length === 0) {
