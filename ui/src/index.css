@@ -1332,7 +1332,7 @@ body {
   color: var(--text-tertiary);
   font-weight: var(--fw-medium);
   border-bottom: 1px solid var(--glass-border);
-  font-size: var(--fs-lg);
+  font-size: var(--fs-sm);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   white-space: nowrap;
@@ -1342,7 +1342,7 @@ body {
   padding: var(--space-8) var(--space-10);
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
   font-family: var(--font-mono);
-  font-size: var(--fs-xl);
+  font-size: var(--fs-lg);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
