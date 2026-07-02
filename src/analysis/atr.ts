@@ -104,7 +104,9 @@ export async function getATR(symbol: string, period = 14): Promise<number> {
   try {
     // v2.0.XX: DEX 1-8 symbols (xyz:SKHX) require the FULL coin name.
     // Stripping the prefix caused HL to return empty data for all DEX 1-8 assets.
-    const coin = symbol;
+    // v2.0.98: HL candleSnapshot API is CASE-SENSITIVE. DEX 0 symbols (BTC, ETH)
+    // must be UPPERCASE. normalizeSymbol lowercases non-colon symbols → fix here.
+    const coin = symbol.includes(':') ? symbol : symbol.toUpperCase();
     const endTime = Date.now();
     // 1h candles, fetch 30 → enough for 14-period ATR + smoothing
     const intervalMs = 3_600_000;
