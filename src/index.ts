@@ -2532,40 +2532,41 @@ class MATSSystem {
       for (const posSymbol of this.portfolio.getOpenSymbols()) {
         const pos = this.portfolio.getPosition(posSymbol);
         if (!pos) continue;
-        // v2.0.33 FIX: Use RAW PnL% (unleveraged) for the close threshold.
-        // unrealizedPnlPct is LEVERAGED (× leverage) — at 10x leverage, 1.5%
-        // leveraged = only 0.15% raw price movement, which is less than the
-        // round-trip fee (0.18%). This caused premature closes at tiny profits.
-        // Now: require 1.5% RAW return on margin (15% leveraged at 10x) before
-        // agents can vote to close — ensures the profit covers fees + spread.
-        const rawPnlPct = (pos.unrealizedPnlPct ?? 0) / (pos.leverage ?? 1);
-        if (rawPnlPct <= 0.015) continue; // Not enough raw profit — let SL/TP handle it
-
+        // v2.0.89 FIX: The profit threshold (1.5% raw) was preventing agents from
+        // closing positions at 0% or negative PnL even when ALL agents agreed the
+        // thesis was invalidated. The threshold was designed to prevent premature
+        // profit-taking at tiny gains, but it also blocked risk-avoidance closes.
+        // Now: count close votes FIRST, then apply threshold only to profit-taking.
         const closeVotes = allThoughts.filter(t => {
           if (t.agentRole === 'meta_agent' || t.agentRole === 'market_agent') return false;
           const msd = t.metadata?.['multiSymbolDecision'] as any;
           const posDecision = msd?.positions?.find((p: any) => normalizeSymbol(p?.symbol ?? '') === normalizeSymbol(posSymbol));
           return posDecision?.closePosition === true;
         }).length;
-        if (closeVotes >= 2) {
-          log.warn(`⚠️ ${closeVotes} agents recommend taking profit on ${posSymbol} @ $${pos.currentPrice.toFixed(2)} (PnL: +${((pos.unrealizedPnlPct ?? 0)*100).toFixed(2)}%)...`);
-          // v2.0.33: Route real positions through realTradingManager.closePosition()
-          // which closes on HL first. portfolio.closePosition() only closes locally
-          // — calling it on a real position creates a phantom close record.
-          if (pos.agentId === 'hyperliquid-real') {
-            const success = await this.realTradingManager.closePosition(posSymbol);
-            if (success) {
-              const trade = this.portfolio.getPosition(posSymbol); // already closed by realTradingManager
-              log.info(`  → Took profit on ${posSymbol} (real, closed on HL)`);
-            } else {
-              log.error(`  → Failed to close ${posSymbol} on HL — position remains open`);
-            }
+        // v2.0.89: If ≥2 agents vote close, close REGARDLESS of PnL — this is a
+        // risk-avoidance close (thesis invalidated), not a profit-taking close.
+        // The profit threshold only applies when closing for profit-taking.
+        const rawPnlPct = (pos.unrealizedPnlPct ?? 0) / (pos.leverage ?? 1);
+        if (closeVotes < 2) continue; // Not enough votes to close
+        // If closing at a loss or breakeven, that's fine — agents see a reason to exit.
+        // If closing at a tiny profit (< 1.5% raw), also fine — agents may see risk of reversal.
+        log.warn(`⚠️ ${closeVotes} agents recommend closing ${posSymbol} @ $${pos.currentPrice.toFixed(2)} (PnL: ${((pos.unrealizedPnlPct ?? 0)*100).toFixed(2)}%)...`);
+        // v2.0.33: Route real positions through realTradingManager.closePosition()
+        // which closes on HL first. portfolio.closePosition() only closes locally
+        // — calling it on a real position creates a phantom close record.
+        if (pos.agentId === 'hyperliquid-real') {
+          const success = await this.realTradingManager.closePosition(posSymbol);
+          if (success) {
+            const trade = this.portfolio.getPosition(posSymbol); // already closed by realTradingManager
+            log.info(`  → Closed ${posSymbol} (real, closed on HL)`);
           } else {
-            const trade = this.portfolio.closePosition(posSymbol, pos.currentPrice);
-            if (trade) {
-              perPositionCloseReports.push({ order: {} as any, trade });
-              log.info(`  → Took profit on ${posSymbol}: $${trade.pnl.toFixed(2)}`);
-            }
+            log.error(`  → Failed to close ${posSymbol} on HL — position remains open`);
+          }
+        } else {
+          const trade = this.portfolio.closePosition(posSymbol, pos.currentPrice);
+          if (trade) {
+            perPositionCloseReports.push({ order: {} as any, trade });
+            log.info(`  → Closed ${posSymbol}: $${trade.pnl.toFixed(2)}`);
           }
         }
       }
@@ -2583,12 +2584,11 @@ class MATSSystem {
         if (!pos) continue; // no open position for this symbol → skip (market ticker handled by main flow)
 
         // Close position if consensus says so
-        // v2.0.33 FIX: Use RAW PnL% (unleveraged) for the close threshold.
-        // unrealizedPnlPct is LEVERAGED — at 10x, 0.5% leveraged = 0.05% raw,
-        // which is way below the 0.18% round-trip fee. Now require 0.5% RAW
-        // return on margin (5% leveraged at 10x) before consensus can close.
-        const rawPnlPctConsensus = (pos.unrealizedPnlPct ?? 0) / (pos.leverage ?? 1);
-        if (psc.closePosition && rawPnlPctConsensus > 0.005) {
+        // v2.0.89 FIX: Remove profit threshold for consensus close — if the
+        // per-symbol consensus says closePosition=true, close it regardless of PnL.
+        // The threshold was blocking closes at 0% PnL even when all agents agreed
+        // the thesis was invalidated by new information.
+        if (psc.closePosition) {
           log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
           // v2.0.33: Route real positions through realTradingManager.closePosition()
           // which closes on HL first. portfolio.closePosition() only closes locally.
