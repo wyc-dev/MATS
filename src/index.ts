@@ -1256,21 +1256,27 @@ class MATSSystem {
 
     if (allSymbols.length > 0) {
       // v2.0.79: Prefer a trading market that is NOT an open position as activeSymbol.
-      // This prevents BTC appearing as both "marketTicker" and "position" in HACP.
-      // If all trading markets are open positions, use the first trading market.
+      // v2.0.99: ALL trading markets are analyzed in the SAME cycle.
+      // Non-position trading markets are added as pseudo-positions to currentPositions
+      // so agents see them in positions[] and can output BUY/SELL/HOLD for them.
       const openPosNorms = new Set(openPositionSymbols.map(s =>
         s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
       ));
-      const nonPositionMarket = this.tradingMarkets.find(s => {
+      const nonPositionMarkets = this.tradingMarkets.filter(s => {
         const n = s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase();
         return !openPosNorms.has(n);
       });
-      activeSymbol = nonPositionMarket ?? this.tradingMarkets[0] ?? openPositionSymbols[0]!;
+      // Pick the first non-position market as activeSymbol (for WS + price feed)
+      activeSymbol = nonPositionMarkets.length > 0
+        ? nonPositionMarkets[0]!
+        : (this.tradingMarkets[0] ?? openPositionSymbols[0]!);
       // Ensure Market Agent has this symbol selected (for WS + price feed)
       if (this.marketAgent.getSelectedSymbol() !== activeSymbol) {
         this.marketAgent.setSelectedSymbolManual(activeSymbol);
       }
       log.info(`Cycle symbols: ${allSymbols.join(', ')} (active: ${activeSymbol})`);
+      // v2.0.99: Store nonPositionMarkets for later use (adding pseudo-positions)
+      (this as any)._nonPositionMarkets = nonPositionMarkets;
     } else {
       // No trading markets and no open positions — fall back to auto-select
       const selectedSymbol = await this.marketAgent.autoSelectTopPair();
@@ -1282,6 +1288,7 @@ class MATSSystem {
       activeSymbol = selectedSymbol;
       // Add the auto-selected symbol to trading markets
       this.tradingMarkets = [activeSymbol];
+      (this as any)._nonPositionMarkets = [];
       log.info(`No trading markets or positions — auto-selected ${activeSymbol} and added to trading markets`);
     }
     // v2.0.79: Use normalizeSymbol instead of toUpperCase — DEX prefixes (xyz:)
@@ -2110,6 +2117,38 @@ class MATSSystem {
       // Now the active symbol stays in positions[] so Meta-Agent can manage it.
       // The UI may show a duplicate entry, but correct position management
       // is more important than UI cleanliness.
+
+      // v2.0.99: Add non-position trading markets as pseudo-positions so agents
+      // can analyze ALL trading markets in the same cycle. These are symbols the
+      // user selected in "Trading Markets" but don't have open positions. Without
+      // this, only the activeSymbol (marketTicker) is analyzed — other trading
+      // markets are invisible to agents.
+      const nonPositionMarkets: string[] = (this as any)._nonPositionMarkets ?? [];
+      const existingSyms = new Set(currentPositions.map(p => normalizeSymbol(p.symbol)));
+      for (const mktSym of nonPositionMarkets) {
+        if (mktSym === activeSymbolUpper) continue; // activeSymbol is already marketTicker
+        if (existingSyms.has(normalizeSymbol(mktSym))) continue; // already has a position
+        // Fetch price for this market symbol
+        try {
+          const mktPrice = await this.marketAgent.fetchPriceForSymbol(mktSym);
+          currentPositions.push({
+            id: `mkt-${mktSym}`,
+            symbol: mktSym,
+            side: 'buy' as const, // placeholder — agents will decide BUY/SELL
+            entryPrice: mktPrice.price,
+            currentPrice: mktPrice.price,
+            stopLoss: undefined,
+            takeProfit: undefined,
+            leverage: this.marketAgent.getConfig().leverage,
+            quantity: 0,
+            exchange: 'hyperliquid',
+            entryThesis: undefined,
+          } as any);
+          log.info(`📊 Added trading market ${mktSym} @ $${mktPrice.price.toFixed(2)} as pseudo-position for analysis`);
+        } catch (err) {
+          log.warn(`Failed to fetch price for trading market ${mktSym}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
 
       const result = await this.hacpEngine.executeDecisionCycle(
         `${marketDesc}\n\n${evolutionContext}${backtestContext}`,
