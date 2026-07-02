@@ -2101,14 +2101,15 @@ class MATSSystem {
         // v2.0.80: Forward entryThesis so Skeptics can re-validate each cycle
         entryThesis: (p as any).entryThesis,
       }))
-      // v2.0.79: Remove the activeSymbol from positions list — it's already
-      // the marketTicker. Without this, BTC appears as both "BTC(market)"
-      // and "BTC● position" in HACP Debate, causing duplicate entries.
-      .filter(p => {
-        const pNorm = p.symbol.includes(':') ? p.symbol.split(':')[0]!.toLowerCase() + p.symbol.slice(p.symbol.indexOf(':')) : p.symbol.toLowerCase()
-        const aNorm = activeSymbol.includes(':') ? activeSymbol.split(':')[0]!.toLowerCase() + activeSymbol.slice(activeSymbol.indexOf(':')) : activeSymbol.toLowerCase()
-        return pNorm !== aNorm
-      });
+      // v2.0.96: Do NOT remove the activeSymbol from positions list.
+      // Previously, activeSymbol was filtered out to avoid UI duplication
+      // (BTC appearing as both "BTC(market)" and "BTC● position"). But this
+      // prevented Meta-Agent from outputting CLOSE/HOLD decisions for the
+      // active symbol's position — CLOSE is a positions[] action, and if the
+      // position isn't in positions[], Meta-Agent can't close it.
+      // Now the active symbol stays in positions[] so Meta-Agent can manage it.
+      // The UI may show a duplicate entry, but correct position management
+      // is more important than UI cleanliness.
 
       const result = await this.hacpEngine.executeDecisionCycle(
         `${marketDesc}\n\n${evolutionContext}${backtestContext}`,
