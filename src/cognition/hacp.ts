@@ -195,6 +195,11 @@ export class HACPEngine {
     this.agentEvolution = ae;
   }
 
+  /** v2.0.90: Expose Skeptics for close decision validation from index.ts */
+  getSkeptics(): SkepticsAgent {
+    return this.skeptics;
+  }
+
   /**
    * v2.0.26: Trigger a loss cooldown after any losing trade.
    * Sets cooldownUntilCycle to the next cycle, blocking new entries for

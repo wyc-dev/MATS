@@ -1598,4 +1598,103 @@ Is this thesis STILL valid? Has the market changed in a way that invalidates the
 
     return results;
   }
+
+  /**
+   * v2.0.90: Validate Meta-Agent's decision to CLOSE a position.
+   * Called before executing a close order. Meta-Agent decides to close →
+   * Skeptics validates the reasoning → only then is the close executed.
+   *
+   * Returns true if the close is approved, false if the close should be blocked.
+   */
+  async validateCloseDecision(
+    symbol: string,
+    side: 'buy' | 'sell',
+    entryPrice: number,
+    currentPrice: number,
+    unrealizedPnlPct: number,
+    closeRationale: string,
+    marketStateDesc: string,
+    subAgentThoughts: AgentThought[],
+  ): Promise<{ approved: boolean; rationale: string }> {
+    if (!closeRationale || closeRationale.trim().length === 0) {
+      return {
+        approved: false,
+        rationale: 'Close rationale is empty — Meta-Agent must provide reasoning for closing a position.',
+      };
+    }
+
+    try {
+      const provider = getActiveProvider();
+
+      const agentSummary = subAgentThoughts
+        .filter(t => t.agentRole !== 'meta_agent' && t.agentRole !== 'skeptics' && t.agentRole !== 'market_agent')
+        .map(t => `[${t.agentRole}] conf=${t.confidence.toFixed(2)}: ${(t.thought ?? '').slice(0, 200)}`)
+        .join('\n');
+
+      const response = await provider.chat({
+        messages: [
+          {
+            role: 'system',
+            content: `You are Skeptics — validating Meta-Agent's decision to CLOSE a position.
+
+Meta-Agent has decided to close a ${side.toUpperCase()} position. Your job is to verify the reasoning is sound.
+
+A valid close decision must:
+1. Have a SPECIFIC reason — not just "holding is risky" or "market is uncertain"
+2. Be based on CURRENT data — not past drawdown or loss streaks (RBC learns, market changes)
+3. Be consistent with sub-agent data — if agents say the thesis is still valid, why close?
+4. Not be panic-driven — closing at a small loss to avoid a larger loss is valid, but closing
+   out of fear without a specific catalyst is not
+5. Address whether the original entry thesis is actually invalidated — or is Meta-Agent
+   overreacting to noise?
+
+Valid close reasons:
+- Entry thesis is invalidated by new information (e.g. bullish news contradicts SHORT thesis)
+- ≥2 sub-agents independently recommend close with specific reasoning
+- Structural break (price broke key S/R level that the thesis depended on)
+- Catalyst event happened and thesis didn't play out
+
+Invalid close reasons:
+- "Market is chaotic" without specifying how it specifically threatens this position
+- "Past trades lost money" (backward-looking, RBC learns)
+- "Drawdown is high" (backward-looking)
+- Vague uncertainty without a specific threat
+
+Output ONLY valid JSON:
+{"approved": true/false, "rationale": "1-2 sentence explanation"}`,
+          },
+          {
+            role: 'user',
+            content: `Meta-Agent wants to CLOSE a ${side.toUpperCase()} position on ${symbol}.
+
+Entry: $${entryPrice.toFixed(2)}
+Current: $${currentPrice.toFixed(2)}
+PnL: ${unrealizedPnlPct.toFixed(2)}%
+
+Close Rationale: "${closeRationale}"
+
+Market Context (abridged):
+${marketStateDesc.slice(0, 1200)}
+
+Sub-Agent Thoughts:
+${agentSummary}
+
+Validate this close decision. Is the reasoning specific and data-driven? Is the entry thesis actually invalidated?`,
+          },
+        ],
+        temperature: 0.3,
+        model: this.model,
+        timeoutMs: 30_000,
+      });
+
+      const jsonStr = this.extractSkepticsJSON(response.content);
+      const parsed = JSON.parse(jsonStr) as { approved: boolean; rationale: string };
+      this.logger.info(`Close validation [${symbol}]: ${parsed.approved ? '✅ APPROVED' : '🚫 BLOCKED'} — ${parsed.rationale?.slice(0, 100) ?? ''}`);
+      return { approved: parsed.approved, rationale: parsed.rationale ?? 'No rationale provided.' };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Close validation failed for ${symbol}: ${msg}. Defaulting to APPROVE (allow close on error).`);
+      return { approved: true, rationale: `Validation error: ${msg}. Close allowed.` };
+    }
+  }
 }
