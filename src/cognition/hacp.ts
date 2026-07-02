@@ -801,8 +801,12 @@ export class HACPEngine {
     const metaThesis = metaDecision?.entryThesis ?? metaMultiDec?.marketTicker.entryThesis;
     const metaSymbol = metaDecision?.symbol ?? metaMultiDec?.marketTicker.symbol ?? '';
 
-    // v2.0.94: Check if this symbol already has an open position
-    const hasExistingPosition = posCtx.some(p => normalizeSymbol(p.symbol) === normalizeSymbol(metaSymbol));
+    // v2.0.94: Check if this symbol already has an open position.
+    // IMPORTANT: Check currentPositions (the RAW parameter, before active-symbol
+    // filtering) — not posCtx (which has the active symbol removed). Otherwise
+    // BTC (which is both activeSymbol AND has a position) would be treated as a
+    // new entry and its thesis would be validated/rejected by Skeptics.
+    const hasExistingPosition = (currentPositions ?? []).some(p => normalizeSymbol(p.symbol) === normalizeSymbol(metaSymbol));
 
     if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);
@@ -1200,6 +1204,11 @@ export class HACPEngine {
     // ═══════════════════════════════════════════════════
 
     if (finalConsensus.decision.action === 'buy' || finalConsensus.decision.action === 'sell') {
+      // v2.0.95: Skip thesis gate if the symbol already has an open position.
+      // Check currentPositions (raw parameter, before active-symbol filtering).
+      const activeSymForGate = finalConsensus.decision.symbol;
+      const hasExistingPositionForGate = (currentPositions ?? []).some(p => normalizeSymbol(p.symbol) === normalizeSymbol(activeSymForGate));
+      if (!hasExistingPositionForGate) {
       // Check the decision itself
       const decisionThesis = finalConsensus.decision.entryThesis;
       // Also check perSymbolConsensus for the active symbol
@@ -1265,6 +1274,7 @@ export class HACPEngine {
           }
         }
       }
+      } // end if (!hasExistingPositionForGate)
     }
 
     // ═══════════════════════════════════════════════════
