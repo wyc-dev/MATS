@@ -816,7 +816,9 @@ ATR/range-based, not fixed-percent widening):
      cut — it is applied for you. Only set adjustedPositionSizePct if you want to reduce FURTHER
      (e.g. loss streak ≥ 3 → cut to 25%). The paper engine floors the final notional to Hyperliquid's
      $10 minimum, so the 50% cut never produces an untradeable tiny order.
-  4. If current loss streak ≥ 3: bias toward VETO on new entries — the system is out of sync with the market.
+  4. If current loss streak ≥ 3: the system may be out of sync — but do NOT automatically veto. The RBC engine
+     learns from every trade and market conditions change. Evaluate the CURRENT thesis on its own merits.
+     Only veto if the CURRENT thesis has a specific flaw, not because of past losses.
 
 - ✅ PROFITABLE RECENT TRADES (win rate ≥ 60%, net positive): market favours the current strategy.
   Approve entries that match the recent winning direction. For existing positions, you may WIDEN
@@ -836,8 +838,14 @@ For each open position, evaluate:
 - Unrealized loss > 5% on a single position → CLOSE (loss too large)
 - Unrealized loss > 3% + no SL → CLOSE (unprotected downside)
 - Position with SL that would cause > 2% portfolio loss → adjust SL tighter
-- Drawdown > 15% → close ALL positions
-- Daily loss > 4% → close ALL positions, halt new trading
+- Drawdown > 15% → warn but do NOT force close all positions (market conditions may be changing;
+  RBC is learning. Only close positions that have specific risk, not all positions blindly)
+- Daily loss > 4% → warn but do NOT halt all trading (same reasoning — past losses don't predict
+  future trades when the system is actively learning and adapting)
+
+⚠️ v2.0.88: Past drawdown and loss streaks are NOT reasons to block new entries. The RBC engine
+continuously learns from every trade, and market conditions change. A new entry must be judged
+on its CURRENT risk profile, not on historical P&L.
 
 === TP/SL/SIZE ADJUSTMENT OUTPUT ===
 When the recent trade pattern warrants it, set adjustedStopLossPct, adjustedTakeProfitPct, and/or
@@ -1410,8 +1418,13 @@ Output ONLY valid JSON:
 
 === YOUR AUTHORITY (v2.0.83) ===
 You have ABSOLUTE VETO POWER over every new position. Meta-Agent is smart but can be wrong.
-Your job is to catch Meta-Agent's mistakes BEFORE real money is risked. If you have ANY doubt
-about the thesis, REJECT it. Capital preservation is more important than any single trade.
+Your job is to catch Meta-Agent's mistakes BEFORE real money is risked.
+
+⚠️ v2.0.88: Past drawdown, loss streaks, and poor historical win rates are NOT valid reasons to reject a thesis.
+The RBC engine continuously learns from every trade, and market conditions change constantly.
+A thesis must be judged on its CURRENT merits — is the reasoning sound RIGHT NOW based on CURRENT data?
+Do NOT reject a thesis because "the system has been losing money" or "drawdown is high" or "recent win rate is poor".
+Those are backward-looking; a thesis is forward-looking. Judge the thesis on its own facts, not on past P&L.
 
 A valid thesis must:
 1. Contain BOTH a 1h reason (short-term catalyst) AND a 1d reason (medium-term driver)
@@ -1434,9 +1447,11 @@ DARK PSYCHOLOGY VALIDATION:
 - If ${action.toUpperCase()} = SELL: could the "bearish" data actually be accumulation? Is someone creating entry liquidity?
 - If the thesis doesn't address these questions → REJECT and explain why
 
-REJECTION THRESHOLD: When in doubt, REJECT. A rejected trade costs nothing. A bad trade costs real money.
+REJECTION THRESHOLD: Reject if the thesis is weak, vague, missing 1h or 1d, contradicts data, ignores manipulation risk, or distorts facts.
+Do NOT reject just because you "have doubt" — doubt without a specific flaw is not a reason to reject.
+Do NOT reject based on past drawdown, loss streaks, or poor win rates — the RBC engine learns and market conditions change.
 If the thesis is strong, specific, data-driven, addresses manipulation risk, AND does not distort facts → approved: true
-If the thesis is weak, vague, missing 1h or 1d, contradicts data, ignores manipulation risk, or distorts facts → approved: false
+If the thesis has a SPECIFIC flaw (weak, vague, missing 1h or 1d, contradicts data, ignores manipulation, distorts facts) → approved: false
 
 Output ONLY valid JSON:
 {"approved": true/false, "rationale": "1-3 sentence explanation including dark psychology assessment"}`,
