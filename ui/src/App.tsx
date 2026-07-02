@@ -119,7 +119,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
   const latency = isLive ? liveProgress.latencyMs : thought?.metadata?.latency
 
   // Collect all per-symbol decisions from multiSymbolDecision (deduped by normalized symbol)
-  const allDecisions: { symbol: string; action: string; positionSizePct: number; closePosition?: boolean; confidence?: number; holdReason?: string; entryThesis?: string }[] = []
+  const allDecisions: { symbol: string; action: string; positionSizePct: number; closePosition?: boolean; confidence?: number; holdReason?: string; entryThesis?: string; rationale?: string }[] = []
   if (thought?.metadata?.multiSymbolDecision) {
     const msd = thought.metadata.multiSymbolDecision
     const seenSyms = new Set<string>()
@@ -133,6 +133,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
         confidence: msd.marketTicker.confidence,
         holdReason: msd.marketTicker.holdReason,
         entryThesis: msd.marketTicker.entryThesis,
+        rationale: msd.marketTicker.rationale,
       })
       seenSyms.add(symNorm)
     }
@@ -149,6 +150,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
           confidence: p.confidence,
           holdReason: p.holdReason,
           entryThesis: p.entryThesis,
+          rationale: p.rationale,
         })
       }
     }
@@ -160,6 +162,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
       positionSizePct: decision.positionSizePct,
       holdReason: decision.holdReason,
       entryThesis: decision.entryThesis,
+      rationale: decision.rationale,
     })
   }
 
@@ -191,8 +194,6 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
         </span>
       </div>
       <div className="agent-meta">
-        <span>Temp: {role === 'fractal_momentum_sentinel' ? '0.85' : role === 'onchain_whisperer' ? '0.50' : role === 'regime_risk_guardian' ? '0.25' : role === 'independent_risk_auditor' ? '0.10' : role === 'news_reporter' ? '0.40' : '0.45'}</span>
-        <span>Weight: {role === 'meta_agent' ? '0.00' : role === 'news_reporter' ? '0.10' : role === 'independent_risk_auditor' ? '0.25' : '0.10'}</span>
         {status && <span>Decisions: {status.decisionsGenerated}</span>}
       </div>
       {displayThought ? (
@@ -282,8 +283,8 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                     {d.closePosition ? 'CLOSE' : d.action.toUpperCase()}
                   </span>
                   {d.positionSizePct > 0 && <span className="agent-decision-size">{(d.positionSizePct * 100).toFixed(1)}%</span>}
-                  {/* Per-symbol confidence bar — uses per-symbol confidence if available, falls back to overall */}
-                  {(() => {
+                  {/* Per-symbol confidence bar — v2.0.84: hidden for Meta-Agent (weight=0, confidence is meaningless) */}
+                  {role !== 'meta_agent' && (() => {
                     const symConf = d.confidence ?? confidence
                     return (
                       <span className="agent-per-symbol-conf">
@@ -296,18 +297,27 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                     )
                   })()}
                 </div>
-                {/* v2.0.81: Show holdReason for HOLD decisions (Meta-Agent only) */}
+                {/* v2.0.81: Show holdReason for HOLD decisions */}
                 {d.action === 'hold' && d.holdReason && (
-                  <div className="agent-hold-reason" title={d.holdReason}>
+                  <div className={`agent-hold-reason ${thoughtExpanded ? 'agent-hold-reason-expanded' : ''}`} title={d.holdReason}>
                     {d.holdReason}
                   </div>
                 )}
-                {/* v2.0.80: Show entryThesis for BUY/SELL decisions (Meta-Agent only) */}
+                {/* v2.0.80: Show entryThesis for BUY/SELL decisions */}
                 {(d.action === 'buy' || d.action === 'sell') && d.entryThesis && (
-                  <div className="agent-entry-thesis" title={d.entryThesis}>
+                  <div className={`agent-entry-thesis ${thoughtExpanded ? 'agent-entry-thesis-expanded' : ''}`} title={d.entryThesis}>
                     📝 {d.entryThesis}
                   </div>
                 )}
+                {/* v2.0.84: Show per-symbol rationale — collapsed by default for sub-agents, expanded for Meta-Agent + News Reporter */}
+                {d.rationale && !d.holdReason && !d.entryThesis && (() => {
+                  const isMetaOrNews = role === 'meta_agent' || role === 'news_reporter'
+                  return (
+                    <div className={`agent-per-symbol-rationale ${isMetaOrNews || thoughtExpanded ? 'agent-rationale-expanded' : 'agent-rationale-collapsed'}`} title={d.rationale}>
+                      {d.rationale}
+                    </div>
+                  )
+                })()}
                 {ns && ns.headlines.length > 0 && (
                   <div className="agent-news-items">
                     {ns.headlines.map((h, hi) => (
