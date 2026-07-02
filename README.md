@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.83-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.91-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -126,9 +126,9 @@ MATS does not rely on a single AI model. Instead, **eight specialized agents thi
 | **On-Chain Whisperer** | On-chain data & macro analyst | 0.50 | 0.10 |
 | **RBC & Sentiment Analyst** | RBC clusters + Fear & Greed specialist | 0.25 | 0.10 |
 | **News Reporter** | Shadow Strategist news motive analyzer | 0.40 | 0.10 |
-| **Independent Risk Auditor** | Risk limits + regime-aware TP/SL (🆕 v2.0.82 advisory-only, cannot veto) | 0.10 | 0.25 |
-| **Skeptics** | 🤔 Logic auditor + 🆕 v2.0.80–v2.0.83 **absolute veto on new positions** (thesis validation + dark psychology audit) | 0.30 | — |
-| **Meta-Agent** | 🆕 v2.0.83 Detective — aggressively reasons from facts to find trade edges; generates entryThesis (1h+1d rationale); weight 0.00 (thesis system controls, not voting) | 0.45 | 0.00 |
+| **Independent Risk Auditor** | Risk limits + regime-aware TP/SL (advisory-only, cannot veto) | 0.10 | 0.25 |
+| **Skeptics** | Logic auditor + **absolute veto on new positions** (thesis validation + dark psychology audit + close decision validation) | 0.30 | — |
+| **Meta-Agent** | Detective — aggressively reasons from facts to find trade edges; generates entryThesis (1h+1d rationale); weight 0.00 (thesis system controls, not voting) | 0.45 | 0.00 |
 
 Each agent operates with **independent temperature, weight, data sources, and reasoning models**, ensuring genuine opinion diversity and preventing groupthink.
 
@@ -138,16 +138,16 @@ A structured multi-LLM debate protocol that replaces traditional single-model in
 
 ```
 Phase 0:    Market Agent auto-selects trading pair + position reconciliation
-Phase 0.5:  🆕 v2.0.80 Skeptics re-validates each open position's entryThesis against fresh market data → invalidated → force-close
-Phase 1:    5 agents think in parallel (staggered, with 15s timeout)
+Phase 0.5:  Skeptics re-validates each open position's entryThesis against fresh market data → invalidated → force-close
+Phase 1:    5 agents think in parallel (staggered, with 60s deadline race)
 Phase 1.5:  Skeptics logic audit + EM convergence cross-cycle check
 Phase 1.75: Meta-Agent final arbitration (incorporates Skeptics findings)
-Phase 1.8:  🆕 v2.0.80 Skeptics validates Meta-Agent's entryThesis for BUY/SELL → rejected → HOLD override
+Phase 1.8:  Skeptics validates Meta-Agent's entryThesis for BUY/SELL → rejected → HOLD override
 Phase 2:    Structured rapid debate (1-3 rounds, configurable)
-Phase 3:    Weighted voting consensus (60% threshold, dynamic adjustment)
-Phase 4:    Risk Auditor advisory check (🆕 v2.0.82 non-blocking, TP/SL/size adjustments only)
+Phase 3:    Weighted voting consensus (60% threshold, dynamically adjusted by Evolution)
+Phase 4:    Risk Auditor advisory check (non-blocking, TP/SL/size adjustments only)
 Phase 4.5:  Market Agent hard constraints override (enforces position size & leverage)
-Phase 4.8:  🆕 v2.0.80 Entry Thesis Hard Gate — final check: BUY/SELL without valid+validated entryThesis → BLOCK
+Phase 4.8:  Entry Thesis Hard Gate — final check: BUY/SELL without valid+validated entryThesis → BLOCK
 Phase 5:    Meta-Agent dynamic TP/SL adjustment + per-position consensus execution
 ```
 
@@ -155,8 +155,19 @@ Phase 5:    Meta-Agent dynamic TP/SL adjustment + per-position consensus executi
 - **Graceful degradation**: Any error defaults to HOLD — the system never crashes into a bad trade
 - **Deterministic fallback**: If LLM is unavailable, risk engine enforces conservative defaults
 - **Total cycle budget**: 120s hard timeout, forced HOLD on expiry
-- 🆕 v2.0.12: **LLM resilience** — circuit breaker (3 failures → 30s fail-fast), slot acquisition timeout (8s), HACP deadline race (60s per agent → graceful HOLD), tiered LLM timeout (think 45s, debate/audit 30s). Prevents a single stalled agent from blocking the whole cycle.
-- 🆕 v2.0.13–v2.0.14: **Risk Auditor regime-aware TP/SL** — analyzes the last 10 trades' direction + PnL to detect choppy/whipsaw markets. Choppy → VETO new entries OR narrow TP/SL to range edges + hardcoded 50% position cut (HACP-enforced, not LLM-discretionary); loss streak ≥3 → 25%. Trending → widen TP to let profits run. Paper engine floors the final notional to HL's $10 minimum.
+- **LLM resilience**: Circuit breaker (3 failures → 30s fail-fast), slot acquisition timeout (8s), HACP deadline race (60s per agent → graceful HOLD), tiered LLM timeout (think 45s, debate/audit 30s)
+
+### 🎯 Entry Thesis System (v2.0.80+)
+
+The core cognitive architecture — every new position requires a strong, validated rationale:
+
+1. **Meta-Agent generates `entryThesis`** — explains why price will reach TP within 1h (short-term catalyst) and 1d (medium-term driver), referencing specific sub-agent data
+2. **Skeptics validates** — checks for strength, specificity, data consistency, dark psychology (whale manipulation?), and fact distortion
+3. **Phase 4.8 Hard Gate** — any BUY/SELL without a valid+validated thesis is blocked, regardless of consensus path
+4. **Phase 0.5 Re-validation** — each cycle, Skeptics re-validates every open position's thesis against fresh market data; if invalidated, force-close
+5. **`holdReason`** — HOLD decisions must explain what data conflicts or what state is ambiguous (displayed in UI)
+6. **Dark Psychology** — Meta-Agent must question whether sub-agent data is genuine market signal or whale/institutional manipulation (distribution as bullish, accumulation as FUD, fake breakouts, wash trading)
+7. **Close validation** — closing a thesis-backed position also goes through Meta-Agent → Skeptics validation (v2.0.90)
 
 ### 🧬 Self-Evolution System (RBC + EM Cycle Chain)
 
@@ -165,14 +176,9 @@ MATS has **two self-evolution mechanisms**:
 **Layer 1 — RBC (Range-Based Clustering)** (`rbc-clustering.ts`):
 - Growing hyperrectangles per symbol (winBox + lossBox), ranges expand with decay
 - 8 feature dimensions: volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction
-- 🆕 v2.0.9: `applyDecay()` shrinks overlap regions toward centroids (10%/cycle) — prevents box saturation
-- 🆕 v2.0.9: Multi-symbol training — trains active symbol + all open positions + all RBC symbols
-- 🆕 v2.0.10: Only trains the active symbol (avoids proxy-price pollution of historical symbols)
-- 🆕 v2.0.11: **Layered decay** — global decay on all dimensions (not just overlap), confidence-scaled rate (balanced win/loss → slow decay, imbalanced → fast), time-weighted centroid (half-life 50 cycles) so the shrink target tracks the recent regime
+- Layered decay (global + confidence-scaled), time-weighted centroid (half-life 50 cycles)
 - Edge score = discriminative dims / total dims → verdict: favorable/unfavorable/no_edge
 - Per-symbol persistent memory (rbc-state.json, atomic write)
-- Hypothetical training: compares price change between cycles, feeds directional/flat samples
-- 🆕 v2.0.11: `RBCQueryResult` includes `confidence` (0-1) + `effectiveSamples` — agents weight the verdict by confidence (low conf = weak hint, high conf = strong signal)
 
 **Layer 2 — EM Cycle Chain** (`cycle-summary.ts`):
 - Meta-Agent distills each cycle into a structured `CycleSummary` (E-step)
@@ -180,26 +186,22 @@ MATS has **two self-evolution mechanisms**:
 - Skeptics cross-check insight vs actual price (convergence audit)
 - Tiered memory: hot(12) + warm(288) + cold(48 epochs, ~48 days)
 
-**Evolutionary Pressure Engine (v2.0.8 — Dual-Trigger + 1-Gen Incubation):**
+**Evolutionary Pressure Engine:**
 - Survival Fitness: Profit Efficiency 35% + Return 25% + Capital Preservation 20% + Win Quality 10% + Consistency 5% + Adaptability 5%
-- 🆕 v2.0.15: **Directional mutation** — `mutate()` guides parameter changes toward fixing the weakest fitness dimension (breakdown < 0.4), not blind random ±10% noise. E.g. low `capitalPreservation` → raise `riskAversion`; low `adaptability` → lower `signalThreshold` + `confirmationRequired`. Residual noise preserved for exploration.
-- 🆕 v2.0.15: **Agent-level evolution** — `AgentEvolutionEngine` dynamically adjusts each agent's voting weight by per-regime win rate: `dynamicWeight = baseWeight × clamp(0.5 + (winRate-0.5)×2, 0.5, 1.5)`, EMA-smoothed (alpha=0.3), requires ≥5 samples. High-performers gain influence, underperformers lose it. HACP consensus uses the dynamic weight.
-- 🆕 v2.0.15: **Regime-aware strategy selection** — `getBestStrategyForRegime(regime)` scores `fitness × regimeWeight/maxRegimeWeight` so a trending_bull-tuned strategy isn't picked in a chaotic regime.
-- ±10% mutation per generation, automatic retirement below 0.2 fitness
+- **Directional mutation** — `mutate()` guides parameter changes toward fixing the weakest fitness dimension
+- **Agent-level evolution** — dynamically adjusts each agent's voting weight by per-regime win rate
+- **Regime-aware strategy selection** — scores `fitness × regimeWeight/maxRegimeWeight`
 - Dual-trigger: loss-triggered (immediate) or scheduled (every 3 trades)
-- 1-gen incubation: child evaluated after 1 cycle (not 3) — faster adaptation
-- Agent Outcome Tracking: per-agent, per-symbol track record
+- 1-gen incubation: child evaluated after 1 cycle — faster adaptation
 
 ### 🧬 Trade Pattern Classifier
 
 A supervised KNN pattern database that answers "in current conditions, has this setup won before?":
 
 - **Two query modes**: `queryEntry()` for new positions, `queryPosition()` for held positions
-- **8D feature space**: volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction + regime (categorical)
+- **8D feature space** + regime (categorical)
 - **Wilson score**: 95% confidence lower bound — prevents overfitting on small samples
-- **BUY/SELL shared pool**: outcome inverted for opposite side (BUY loss = SELL win)
-- **Noise filter**: |PnL| < 0.5% skipped (fee-level noise)
-- **Direction priority chain (v2.0.8)**: RBC → KNN → Sentiment → Velocity → S/R → Funding → OB → Regime/24h
+- **Time-weighted win/loss** (half-life 7 days) — old regime data naturally fades out
 
 ### 🧠 Sigmoid·GA Sentiment Engine
 
@@ -207,26 +209,18 @@ A genetic algorithm that evolves sigmoid-based sentiment functions to model mark
 
 - 5 signal channels: Whale Presence, Institutional Flow, Microstructure Tension, Momentum Bias, Fear/Greed Echo
 - GA population of 20 chromosomes, evolved every HACP cycle
-- Fitness: Sharpe × 0.5 + WinRate × 0.3 + Drawdown × 0.2
 - Raw inputs: order book, volume acceleration, funding rate delta + acceleration, spread, price acceleration, large trades, F&G index, volatility regime
 
-### � Options Data Layer (v2.0.58–v2.0.68)
+### 📊 Options Data Layer
 
 An integrated options market data layer for Stocks/Indices/Commodities trading:
 
 - **Data source**: Massive.com (Polygon.io compatible) REST API for option chain snapshots
-- **Plan detection**: `detectPlanTier()` auto-detects API plan (none/free/starter/developer/advanced) at startup
-- **Extracted metrics**: IV Rank, implied volatility, put/call OI ratio, gamma regime (positive/negative/neutral), max pain, skew, implied move %, days to expiration, event risk (OPEX/earnings/FOMC)
-- **Regime → Playbook mapping**: 5 deterministic playbooks based on options regime:
-  - **Premium Sell** (positive gamma + range + high IV rank) → Iron Condor / Credit Spreads
-  - **Directional Credit** (positive gamma + mild trend) → Bull/Bear Credit Spreads
-  - **Defined-Risk Debit** (negative gamma + trend) → Debit Spreads / small trend
-  - **Stand Aside** (high event risk / negative gamma) → HOLD, veto new positions
-  - **Buy Convexity** (low IV rank) → Long options (cheap convexity)
-- **Deterministic veto**: `vetoNewPositions=true` overrides HACP consensus → HOLD (e.g. OPEX within 3 days → no new positions)
-- **Dynamic voting weight**: Options Data Layer vote weight scales with plan tier — free=0.10, starter=0.25, advanced=0.30 (highest among all agents for Stocks/Indices)
-- **Options-aware evolution**: `OptionsStrategyParameters` (7 evolving params: minIVRankForPremiumSell, maxIVRankForDebit, gammaRegimePreference, maxImpliedMovePct, putCallOIThreshold, eventRiskTolerance, targetPOP). `SurvivalFitness.optionsAlpha` measures how well the strategy uses options data.
-- **Free plan fallback**: Uses contracts+aggs endpoint with Black-Scholes estimated IV when snapshot endpoint is unavailable
+- **Extracted metrics**: IV Rank, implied volatility, put/call OI ratio, gamma regime, max pain, skew, implied move %, event risk
+- **Regime → Playbook mapping**: 5 deterministic playbooks (Premium Sell, Directional Credit, Defined-Risk Debit, Stand Aside, Buy Convexity)
+- **Deterministic veto**: `vetoNewPositions=true` overrides HACP consensus → HOLD
+- **Dynamic voting weight**: scales with plan tier (free=0.10, starter=0.25, advanced=0.30)
+- **Options-aware evolution**: `OptionsStrategyParameters` (7 evolving params) + `SurvivalFitness.optionsAlpha`
 
 ### 🛡️ Capital Preservation First
 
@@ -235,13 +229,12 @@ Capital preservation is the absolute first priority —
 profit generation must occur within safety constraints.
 ```
 
-- Independent Risk Auditor holds **absolute veto power** over any decision
-- All decisions prioritize survival; profit is a secondary objective
+- **Skeptics absolute veto** over new positions — thesis must be strong, specific, data-driven, and free from manipulation blind spots
+- **Risk Auditor advisory-only** — cannot block trades, only suggests TP/SL/size adjustments; hardcoded safety layers (choppy market 50% cut, loss-streak graduated reduction) retained
 - **Graceful degradation**: every error path defaults to HOLD
+- **Notional-based double-sided fee deduction** — HL taker fee (0.04%) charged on leveraged notional; paper PnL reflects real cost
+- **Configurable max portion** — user-configurable max % of balance for all positions combined (10%-50%)
 - Production-grade standards: strict TypeScript, structured logging, exponential backoff reconnection
-- 🆕 v2.0.18: **Notional-based double-sided fee deduction** — HL taker fee (0.04%) is charged on the leveraged notional, not the margin. At 10x leverage a round-trip costs 0.8% of margin; at 100x it's 8%. Fees are deducted from `balance` on both open and close (plus `realizedPnl` on close) so paper PnL reflects the real cost — the system only learns strategies that are profitable AFTER fees.
-- 🆕 v2.0.19: **Unrealized PnL includes entry fee** — opening a position immediately shows the paid entry fee as a negative unrealized PnL (not $0.00), so the UI reflects the real cost from the moment the position opens.
-- 🆕 v2.0.78: **Configurable max portion** — user-configurable max % of balance for all positions combined (10%-50%), replacing the hardcoded 20% cap. Enforced in both paper engine AND real trading manager (checked before sending orders to HL).
 
 ### 🔌 LLM Abstraction Layer
 
@@ -256,7 +249,7 @@ The provider factory auto-detects availability: Ollama → Error.
 
 > 💡 **Recommended**: Upgrade to **Ollama Pro** plan for cloud model access (e.g. `deepseek-v4-flash:cloud`, `kimi-k2.6:cloud`, `glm-5.2:cloud`) — faster inference, no local GPU required, and supports concurrent requests from 8 agents.
 
-🆕 v2.0.12: Ollama has a **circuit breaker** — 3 consecutive failures open the breaker for 30s (fail-fast instead of each agent waiting the full timeout). Ollama also has **slot leak protection** (v2.0.20): slots held >90s are auto-reclaimed, and concurrency is 4 (raised from 2) to handle 8 agents' staggered thinking.
+Ollama has a **circuit breaker** (3 consecutive failures → 30s fail-fast), **slot leak protection** (slots held >90s auto-reclaimed), and **concurrency 4** to handle 8 agents' staggered thinking.
 
 ---
 
@@ -274,34 +267,31 @@ The provider factory auto-detects availability: Ollama → Error.
 │                                                              │
 │   Layer 2: Cognitive (TypeScript + LLM)                      │
 │   • HACP protocol (parallel multi-model inference)           │
-│   • 8-agent system + meta-agent arbitration                  │
+│   • 8-agent system + Meta-Agent arbitration                  │
+│   • Entry Thesis System (Meta-Agent → Skeptics validation)   │
+│   • Dark Psychology data interrogation                       │
 │   • Structured debate + weighted voting consensus            │
 │   • Self-evolution (RBC + EM Cycle Chain + GA + Pattern DB)  │
-│   • SystemGuard (5-layer protection: calendar, drawdown,     │
-│     data freshness, agent track record, liquidity)           │
+│   • SystemGuard (5-layer protection)                         │
 │   • LLM invoked only at critical decision points             │
 │                                                              │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │   Layer 3: Execution (TypeScript Runtime)                    │
 │   • Hyperliquid WebSocket + REST (9 perpetual DEXs)          │
-│   • 🆕 v2.0.16: HL WS user-level subscriptions                │
-│     (clearinghouseState + userFills — real-time position/fill │
-│      sync, no REST polling)                                   │
-│   • 🆕 v2.0.58: Options Data Layer (IV/Greeks/OI/Max Pain)    │
+│   • HL WS user-level subscriptions (real-time position/fill) │
+│   • Options Data Layer (IV/Greeks/OI/Max Pain)               │
 │   • Market Agent auto-selects trading pair                   │
 │   • Risk engine (millisecond latency, no LLM dependency)     │
 │   • Paper trading engine (leverage-aware P&L simulation)     │
-│   • 🆕 v2.0.18: Notional-based double-sided fee deduction    │
+│   • Notional-based double-sided fee deduction                │
 │   • Real Trading Manager (exchange orders + local mirror)    │
-│   • 🆕 v2.0.16: Post-trade sync (renew mirror SL/TP + fill)   │
-│   • 🆕 v2.0.17: Real-trade UI shows HL real balance/equity    │
-│   • 🆕 v2.0.76: Global HL rate limiter (single queue, 429 retry)│
-│   • 🆕 v2.0.77: WS infinite reconnect + REST polling backoff  │
-│   • 🆕 v2.0.78: Configurable max portion (paper + real)        │
+│   • Global HL rate limiter (single queue, 429 retry)         │
+│   • WS infinite reconnect + REST polling backoff             │
+│   • Configurable max portion (paper + real)                  │
 │   • Position tracking & stop-loss/take-profit                │
 │   • Data pipeline & persistence                              │
-│   • Observability & health checks (6 guards)                 │
+│   • Observability & health checks                            │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -311,96 +301,95 @@ The provider factory auto-detects availability: Ollama → Error.
 ## Project Structure
 
 ```
-src/                                        # 24,502 LOC total
-├── index.ts                                # 🚀 Entry point — system lifecycle (3,124 LOC)
-├── api-server.ts                           # REST + SSE API server (783 LOC)
-├── config/index.ts                         # Zod-validated, type-safe configuration (129 LOC)
-├── types/index.ts                          # Complete domain type definitions (773 LOC — srSupport/srResistance for S/R-based SL/TP)
+src/                                        # ~25,000 LOC total
+├── index.ts                                # 🚀 Entry point — system lifecycle
+├── api-server.ts                           # REST + SSE API server
+├── config/index.ts                         # Zod-validated configuration
+├── types/index.ts                          # Domain type definitions
 │
 ├── agents/                                 # 🤖 Multi-agent system
-│   ├── base-agent.ts                        # Abstract agent base class (425 LOC)
-│   ├── agents.ts                            # Six sub-agents (1,358 LOC — on-chain dedup normalizeSym)
-│   ├── meta-agent.ts                       # Meta-agent arbitration (120 LOC)
-│   └── agent-models.ts                      # Per-agent model configuration (112 LOC)
+│   ├── base-agent.ts                        # Abstract agent base class
+│   ├── agents.ts                            # Sub-agents + Skeptics (thesis validation + close validation)
+│   ├── meta-agent.ts                       # Meta-Agent (detective mode + entryThesis + holdReason)
+│   └── agent-models.ts                      # Per-agent model configuration
 │
 ├── cognition/                              # 🧠 Inter-agent cognition
-│   ├── hacp.ts                             # ⚡ HACP protocol (1,610 LOC — deadline race + tiered timeout + dynamic weights)
-│   ├── a2a-utils.ts                         # A2A inter-agent signal exchange (355 LOC)
+│   ├── hacp.ts                             # ⚡ HACP protocol (Phase 0-5 + 0.5/1.8/4.8 thesis gates)
+│   ├── a2a-utils.ts                         # A2A inter-agent signal exchange
 │   └── A2A-PROTOCOL.md                      # A2A protocol specification
 │
 ├── llm/                                    # 🔌 LLM abstraction layer
-│   ├── provider.ts                          # Abstract interface (57 LOC)
-│   ├── ollama-provider.ts                   # Ollama provider (332 LOC — circuit breaker + concurrency 4 + slot leak protection)
-│   ├── nim-provider.ts                     # NVIDIA NIM provider
-│   └── index.ts                            # Provider factory (auto-detection, 46 LOC)
+│   ├── provider.ts                          # Abstract interface
+│   ├── ollama-provider.ts                   # Ollama provider (circuit breaker + concurrency 4)
+│   └── index.ts                            # Provider factory
 │
 ├── trading/                                # 💹 Trading engine
-│   ├── portfolio.ts                         # Portfolio tracker (858 LOC — closePosition defensive guard + recalculateEquity excludes real + exchange UI callback)
-│   ├── paper-engine.ts                     # Paper trading simulation (347 LOC — HL $10 min notional floor)
-│   ├── cost-model.ts                        # HL transaction cost model (91 LOC — taker 0.04%, notional-based)
-│   ├── execution-tracker.ts                 # Slippage/fee tracking (211 LOC)
-│   ├── decision-utils.ts                    # Decision normalization (150 LOC)
-│   ├── real-trading-manager.ts              # Real trading orchestrator (932 LOC — pro algo firm SL/TP: fill-first + retry + safety-close + S/R-based SL/TP + openedAt sync)
-│   ├── hyperliquid-real-engine.ts           # HL real trading engine (1,149 LOC — phantom agent signing + formatPrice + multi-DEX + adjustPosition false-success fix + fill matching by coin+side+price)
-│   └── binance-real-engine.ts               # Binance real trading engine (440 LOC)
+│   ├── portfolio.ts                         # Portfolio tracker (entryThesis persistence)
+│   ├── paper-engine.ts                     # Paper trading simulation
+│   ├── cost-model.ts                        # HL transaction cost model
+│   ├── execution-tracker.ts                 # Slippage/fee tracking
+│   ├── decision-utils.ts                    # Decision normalization
+│   ├── real-trading-manager.ts              # Real trading orchestrator
+│   ├── hyperliquid-real-engine.ts           # HL real trading engine (phantom agent signing)
+│   └── binance-real-engine.ts               # Binance real trading engine
 │
 ├── risk/                                   # 🛡️ Risk management
-│   ├── engine.ts                            # Multi-layer risk engine (204 LOC)
-│   └── correlation-budget.ts               # Cross-pair correlation budget (299 LOC)
+│   ├── engine.ts                            # Multi-layer risk engine
+│   └── correlation-budget.ts               # Cross-pair correlation budget
 │
-├── system-guard/                           # 🛡️ SystemGuard — 5 guards (540 LOC)
-│   ├── index.ts                            # Calendar / drawdown / data freshness / agent track record / liquidity
-│   └── types.ts                            # Guard type definitions (42 LOC)
+├── system-guard/                           # 🛡️ SystemGuard — 5 guards
+│   ├── index.ts                            # Calendar / drawdown / data freshness / agent track / liquidity
+│   └── types.ts                            # Guard type definitions
 │
 ├── evolution/                              # 🧬 Evolution + RBC + pattern classifier
-│   ├── index.ts                            # Evolution orchestrator (791 LOC — directional mutation + regime-aware strategy)
-│   ├── trade-history.ts                    # Trade history ledger (466 LOC — recent trade pattern analysis)
-│   ├── agent-outcomes.ts                   # Per-agent performance tracking (173 LOC)
-│   ├── agent-evolution.ts                  # Agent Evolution Engine (150 LOC — dynamic voting weights)
-│   ├── persistence.ts                      # Durable state persistence (565 LOC)
-│   ├── trade-pattern-classifier.ts         # Supervised KNN pattern DB (831 LOC)
-│   ├── rbc-clustering.ts                   # RBC Engine (645 LOC — layered decay + time-weighted centroid)
-│   ├── cycle-summary.ts                    # EM Cycle Summary Manager (587 LOC)
-│   ├── em-clustering.ts                    # EM clustering engine (660 LOC)
-│   └── pattern-tag-tracker.ts              # Pattern tag frequency tracker (358 LOC)
+│   ├── index.ts                            # Evolution orchestrator (directional mutation)
+│   ├── trade-history.ts                    # Trade history ledger
+│   ├── agent-outcomes.ts                   # Per-agent performance tracking
+│   ├── agent-evolution.ts                  # Agent Evolution Engine (dynamic voting weights)
+│   ├── persistence.ts                      # Durable state persistence
+│   ├── trade-pattern-classifier.ts         # Supervised KNN pattern DB
+│   ├── rbc-clustering.ts                   # RBC Engine (layered decay + time-weighted centroid)
+│   ├── cycle-summary.ts                    # EM Cycle Summary Manager
+│   ├── em-clustering.ts                    # EM clustering engine
+│   └── pattern-tag-tracker.ts              # Pattern tag frequency tracker
 │
 ├── analysis/                               # 📊 Signal processing
-│   ├── sentiment-engine.ts                 # Sigmoid·GA sentiment engine (279 LOC — adaptive velocity/acceleration)
-│   ├── sigmoid-ga.ts                       # GA-evolved sigmoid functions (393 LOC — blend weight normalization)
-│   ├── support-resistance.ts               # S/R zone detection (724 LOC — recency weighting + volume scaling; DEX 1-8 candle fetch fix)
-│   ├── planck-chaos.ts                     # 🆕 v2.0.33 Planck-Chaos Resonance module (400 LOC — Lyapunov exponent + resonance detection + amplitude windows + chaos regime classification + direction bias)
-│   ├── options-data.ts                     # 📊 Options Data Layer (v2.0.58 — IV/Greeks/OI/Max Pain/Event Risk + Regime→Playbook + plan detection)
-│   ├── atr.ts                              # ATR-based volatility-adaptive SL/TP (v2.0.73 — DEX 1-8 full coin name fix)
-│   └── news-sentiment.ts                   # News sentiment (Google News RSS + GDELT + Bing News, multi-symbol)
+│   ├── sentiment-engine.ts                 # Sigmoid·GA sentiment engine
+│   ├── sigmoid-ga.ts                       # GA-evolved sigmoid functions
+│   ├── support-resistance.ts               # S/R zone detection
+│   ├── planck-chaos.ts                     # Planck-Chaos Resonance module
+│   ├── options-data.ts                     # Options Data Layer
+│   ├── atr.ts                              # ATR-based volatility-adaptive SL/TP
+│   └── news-sentiment.ts                   # News sentiment (Google News RSS + GDELT + Bing News)
 │
-├── market-agent/                           # 🎯 Auto pair selection + position size/leverage/max portion
-│   ├── index.ts                            # Market Agent (879 LOC — global rate limiter integration)
-│   └── hl-rate-limiter.ts                  # HL REST rate limiter (40 LOC — legacy, superseded by global limiter)
+├── market-agent/                           # 🎯 Auto pair selection
+│   ├── index.ts                            # Market Agent
+│   └── hl-rate-limiter.ts                  # HL REST rate limiter (legacy)
 │
 ├── data/                                   # 📡 WebSocket data feeds
-│   ├── hyperliquid-websocket.ts            # HL WS (817 LOC — user-level subscriptions + real-time position/fill sync)
-│   ├── binance-websocket.ts                # Binance WS (555 LOC)
-│   └── multi-exchange-ws.ts                # Multi-exchange WS manager (364 LOC)
+│   ├── hyperliquid-websocket.ts            # HL WS (user-level subscriptions)
+│   ├── binance-websocket.ts                # Binance WS
+│   └── multi-exchange-ws.ts                # Multi-exchange WS manager
 │
-├── backtest/index.ts                       # 📜 Historical backtesting engine (555 LOC — annualized regime slope)
-├── observability/logger.ts                 # Structured logging (Winston, 78 LOC)
+├── backtest/index.ts                       # 📜 Historical backtesting engine
+├── observability/logger.ts                 # Structured logging (Winston)
 └── utils/
-    ├── shutdown.ts                          # Graceful shutdown handler (77 LOC)
-    └── hl-global-limiter.ts                # 🆕 v2.0.76 Global HL rate limiter (single queue, 429 retry, DNS failure handling)
+    ├── shutdown.ts                          # Graceful shutdown handler
+    └── hl-global-limiter.ts                # Global HL rate limiter
 
 ui/                                        # 🖥️ React Web UI (pantha_mats design system)
 ├── src/
-│   ├── App.tsx                             # Main dashboard (1,888 LOC — REAL/PAPER labels + manual close + HL balance)
-│   ├── RBCVisualizer.tsx                   # RBC dimension visualizer (180 LOC)
-│   ├── TradingViewChart.tsx                # TradingView chart (342 LOC — live TP/SL update)
-│   ├── StarsBackground.tsx                 # Dynamic starfield background (114 LOC)
-│   ├── types.ts                            # UI type definitions (430 LOC — nullable PnL/drawdown + hl-fill status)
-│   ├── main.tsx                            # React entry point (10 LOC)
-│   └── index.css                           # pantha_mats design system (2,358 LOC)
+│   ├── App.tsx                             # Main dashboard
+│   ├── RBCVisualizer.tsx                   # RBC dimension visualizer
+│   ├── TradingViewChart.tsx                # TradingView chart (live TP/SL update)
+│   ├── StarsBackground.tsx                 # Dynamic starfield background
+│   ├── types.ts                            # UI type definitions
+│   ├── main.tsx                            # React entry point
+│   └── index.css                           # pantha_mats design system
 └── index.html
 
 scripts/                                   # 🛠 Utilities
-├── loop-engineering.sh                     # Loop engineering runner (bash + jq + python3)
+├── loop-engineering.sh                     # Loop engineering runner
 ├── loop-engineering-deep.sh                # Deep session runner
 ├── loop-engineering-memory.md              # Known issues / checklist
 ├── backfill-patterns.mjs                   # Import portfolio trades into pattern DB
@@ -408,8 +397,7 @@ scripts/                                   # 🛠 Utilities
 
 data/                                      # 💾 Runtime persistence
 └── evolution/
-    ├── trade-patterns.json                 # Pattern DB (1000 max)
-    ├── trade-patterns-em.json               # EM cluster assignments
+    ├── trade-patterns.json                 # Pattern DB
     ├── rbc-state.json                       # RBC state (winBox, lossBox per symbol)
     ├── evolution-state.json                 # GA population + memory + strategies
     └── portfolio-state.json                 # Portfolio snapshot
@@ -437,20 +425,14 @@ HYPERLIQUID_PRIVATE_KEY=...
 
 The system defaults to **paper trading** — switch to real mode via the UI Market Agent panel (no env var needed).
 
-🆕 v2.0.16: When a wallet address is configured, the HL WebSocket subscribes to user-level feeds (`clearinghouseState` + `userFills`) for real-time position + fill sync — no REST polling delay. The UI Portfolio module + Trade Records panel show the actual Hyperliquid positions + recent 10 fills.
-
-🆕 v2.0.17: In real mode the UI shows the actual HL account balance/equity (not the local mirror). Total PnL + Drawdown display `--` (paper-trade concepts); Win Rate/Trades stay local (paper + real mixed).
-
-🆕 v2.0.30: Manual close position button (✕) on each position row with confirm dialog. `closeReason='manual'` tag lets agents know it was NOT a system decision. Real-mode positions synced every cycle.
-
-🆕 v2.0.31: Multi-DEX support — `getBalance()` + `getPositions()` query both DEX 0 (crypto perps) + DEX 'xyz' (TradFi perps) + spot clearinghouse. Exchange positions (e.g. user-opened SPCX on HL UI) are imported into local mirror with default SL/TP so agents can manage them. UI position table shows Paper/Real mode label. `getRecentFills` fixed to include `startTime` (HL API requires it).
+When a wallet address is configured, the HL WebSocket subscribes to user-level feeds (`clearinghouseState` + `userFills`) for real-time position + fill sync — no REST polling delay. In real mode the UI shows the actual HL account balance/equity (not the local mirror).
 
 ### Decision Cycle Tuning
 
 ```env
 DECISION_INTERVAL_MS=300000    # 5min between decision cycles
 HACP_MAX_DEBATE_ROUNDS=3       # Maximum debate rounds
-HACP_CONSENSUS_THRESHOLD=0.60  # Consensus threshold (60%, dynamically adjusted)
+HACP_CONSENSUS_THRESHOLD=0.60  # Consensus threshold (60%, dynamically adjusted by Evolution)
 ```
 
 ### Risk Parameters
@@ -459,7 +441,6 @@ HACP_CONSENSUS_THRESHOLD=0.60  # Consensus threshold (60%, dynamically adjusted)
 RISK_MAX_LEVERAGE=10.0         # Maximum leverage (Market Agent controls actual)
 RISK_STOP_LOSS_PCT=0.02        # Default stop-loss (2%)
 RISK_TAKE_PROFIT_PCT=0.05      # Default take-profit (5%)
-RISK_VETO_THRESHOLD=0.85       # Risk auditor veto threshold
 ```
 
 ---
@@ -474,58 +455,54 @@ If you require a commercial license — for example, for proprietary extensions,
 
 ---
 
-## Changelog (v2.0.10 → v2.0.68)
+## Changelog
 
-| Version | Change |
-|:--------|:-------|
-| **v2.0.10** | Math Audit — 13 numerical/logic fixes (EM z-score normalization, logGaussian constant, BIC paramCount, risk confidence double-application, S/R volume weighting + recency, backtest regime slope, correlation budget equity-based, Sigmoid·GA blend normalization, sentiment adaptive scaling, RBC active-symbol-only training) |
-| **v2.0.11** | RBC layered decay + time-weighted centroid — global decay on all dims (not just overlap), confidence-scaled rate, half-life 50 cycles; `RBCQueryResult` gains `confidence` + `effectiveSamples` |
-| **v2.0.12** | LLM resilience — circuit breaker (3 failures → 30s fail-fast), slot acquisition timeout, HACP deadline race (60s per agent → graceful HOLD), tiered LLM timeout (think 45s, debate/audit 30s) |
-| **v2.0.13–v2.0.14** | Risk Auditor regime-aware TP/SL — analyzes last 10 trades for choppy/whipsaw detection. Choppy → VETO or narrow TP/SL to range edges + hardcoded 50% position cut; trending → widen TP. Paper engine floors notional to HL $10 minimum |
-| **v2.0.15** | Evolution enhancement — directional mutation (fitness-breakdown-guided), agent-level evolution (dynamic voting weights by per-regime win rate), regime-aware strategy selection |
-| **v2.0.16** | HL WS user-level subscriptions (`clearinghouseState` + `userFills`) — real-time position/fill sync; post-trade mirror SL/TP renew + fill sync; UI main chart shows position markers + SL/TP |
-| **v2.0.17** | Real-trade UI shows HL real balance/equity (not local mirror); Total PnL + Drawdown show `--` in real mode; Win Rate/Trades stay local (paper + real mixed) |
-| **v2.0.18** | Notional-based double-sided fee deduction — HL taker fee charged on leveraged notional (10x → 0.8% of margin round-trip, 100x → 8%); deducted from `balance` on open + close |
-| **v2.0.19** | Unrealized PnL includes entry fee (not $0.00 at open); real-trade positions module syncs HL positions; Trade Records syncs HL recent fills (`hl-fill` status) |
-| **v2.0.20** | TradingView TP/SL live update (JSON dependency, only cycle=0 lines); Ollama concurrency 2→4, slot timeout 15s→8s, slot leak protection (>90s reclaim) |
-| **v2.0.21** | Market Agent chart shows only the current position marker (no historical sell arrows) |
-| **v2.0.22–v2.0.26** | Fitness breakdown fix (adaptability + consistency), dailyPnl auto-reset, SL/TP close instant UI update, SL/TP close learning hook (7 mechanisms), loss cooldown + LLM review |
-| **v2.0.27** | Enriched cooldown LLM review with per-trade loss details; Risk Auditor → deepseek-v4-flash:cloud |
-| **v2.0.28** | LLM pattern tag tracking — agents label chart patterns, system tracks win rates per tag+direction (PatternTagTracker + Wilson score) |
-| **v2.0.29** | Legacy position management — positions from previous trade mode continue to be managed until naturally closed |
-| **v2.0.30** | Manual close position button (✕ + confirm); closeReason tracking ('manual'/'sl_tp'/'consensus'/etc); real-mode per-cycle position sync; Paper/Real UI labels |
-| **v2.0.31** | Multi-DEX balance + positions (DEX 0 + xyz + spot); exchange position import into local mirror with default SL/TP; getRecentFills startTime fix; NIM/Binance config cleanup; WS stale book detection |
-| **v2.0.32** | HL signing rewrite (phantom agent EIP-712 + msgpack + recovery bit); xyz DEX asset index offset (110000); `updateLeverage()` before order placement (fixes 40x→10x); SL/TP direction fix for short positions (stale local mirror → immediate trigger); `syncExchangePositions()` removes stale exchange mirrors + closes paper mirror properly on side/qty/entry change (produces trade record, not silent removal); `syncSLTP()` validates HL position side + entry + manages SL/TP per coin+closeSide (allows simultaneous long+short); `placeOrder()` only returns success on `filled` (not `resting`); UI filters stale positions in real mode; REAL/PAPER label based on `agentId` only; `getOpenOrders()` parses `limitPx` + `reduceOnly`; `PERP_DEX_NAMES` fix (`dex: 0` → `''` — HL API rejects number); `formatPrice()` price-magnitude-based decimals (BTC=0, ETH=1, SPCX=2, SOL=3, ATOM=4, DOGE=6) strips trailing zeros; `updatePosition()` skips `checkPositionExits()` for `agentId='hyperliquid-real'` (exchange SL/TP managed natively by HL trigger orders); `cancelOrderWithAsset()` uses correct per-coin asset index (not positions[0]); reconciliation closes on HL before local close; `syncSLTP()` hasSL/hasTP uses rounded price comparison (tolerance < 1, not < 0.01) |
-| **v2.0.33** | Regime-aware direction signals (mean-revert vs trend-following based on `combinedState.regime`); Planck-Chaos Resonance module (`src/analysis/planck-chaos.ts`) — Lyapunov exponent estimation, resonance frequency detection (autocorrelation), amplitude window prediction (diffusion model √(2Dt)), chaos regime classification, direction bias from cycle phase; Planck-Chaos is Priority -1 (highest) in exploration direction chain; Meta-Agent + Fractal Momentum prompts updated with chaos theory; new pattern tags (planck_resonance_strong, chaotic_divergence, diffusion_accumulation, cycle_phase_bottom/top, edge_of_chaos); removed trend filter Layer 2 that caused systematic buy-high-sell-low (13.3% win rate → anti-correlated); exploration SL/TP widened from 1%/2% to 2%/5% |
-| **v2.0.34** | Phantom close fix — 8 code paths that closed real HL positions locally without closing on HL (reconcilePositions API-failure guard, engine.closePosition false-success fix, syncExchangePositions stale fill matching, agent vote/consensus/flip routed through realTradingManager, manual close fix, defensive guard in closePosition() that redirects real positions to closeExchangePosition()); Paper balance/equity inflation fix — recalculateEquity() excludes real positions, closePosition() defensive guard prevents margin inflation, portfolio-state reconstructed ($2060→$1278.95); Premature close fix — close thresholds use raw PnL% (unleveraged) instead of leveraged unrealizedPnlPct; S/R-based SL/TP — uses nearestSupport/nearestResistance from S/R engine instead of fixed percentages, with 0.5-5% hard constraints + risk:reward ≥ 1; Pro algo firm SL/TP — fill-first (actual fill price not decision price), 3x retry with 1s delay, safety-close if SL/TP placement fails (unprotected 10x = too dangerous), adjustPosition() false-success fix; openedAt sync — match HL fills by coin+side+price tolerance (200 fills), preserve existing timestamp when no match; on-chain dedup — normalizeSym() strips USDT/USD + xyz: prefix + lowercase (BTCUSDT/btc/xyz:SPCX all dedup); instant UI update — onExchangeClosedUICb callback fires pushToAPI + refreshHLFills immediately after close |
-| **v2.0.35** | HL SL/TP close detection — 3 bugs fixed: (1) WS `onFills` handler now detects closing fills via HL `dir` field (`Close Long`/`Close Short`) and immediately calls `closeExchangePosition()` with actual HL fill price + closedPnl — previously only did `softUpdatePosition()` so the local mirror stayed open forever with no trade record or learning; (2) `syncExchangePositions()` safety check now fetches recent fills to verify genuine closes vs API failure when `exMap.size === 0` (previously skipped close entirely when the last position was closed); (3) `closeExchangePosition()` now stores trade records in `closedRealTrades[]` (capped 200) and `pushToAPI()` includes them in UI Trade Records; WS `onPositions` backup detects positions that disappeared from HL clearinghouseState |
-| **v2.0.36** | Minimum 1% SL/TP gap constraint — Meta-Agent `adjustPositions()` had no minimum gap, LLM would over-narrow SL/TP to < 1% as price approached target, causing noise stop-outs that cut profits short. Added 1% minimum gap check in `hacp.ts` (after LLM returns new SL/TP, handles 3 cases: both new, only SL new vs existing TP, only TP new vs existing SL) + hard safety layer in `portfolio.ts` `adjustPosition()` (rejects if effective SL/TP gap < 1% of current price) |
-| **v2.0.37** | Stale real position cleanup in paper mode — 3 bugs fixed: (1) Paper-mode legacy sync only processed positions in `legacyPositionModes` — orphaned real positions (`agentId='hyperliquid-real'` but NOT in `legacyPositionModes`, e.g. after system restart) were never cleaned up. Now processes ALL real positions with 3 cases: closing fill found → close with HL PnL, position > 1h old with no HL position → close (assume closed), position not in HL `getPositions()` → close; (2) Paper-mode reconciliation didn't filter out `agentId='hyperliquid-real'` positions — they were kept if < 12h old, causing perpetual `syncSLTP` + `closePosition` errors. Now explicitly excludes them; (3) `syncExchangePositions` 'uncertain' case (no closing fill found) just warned and skipped — stale positions stayed forever. Now closes positions older than 1h |
-| **v2.0.38** | Real trade persistence — `closedRealTrades` was in-memory only, lost on every restart. Now `PortfolioSnapshot` has `realTrades` field, `savePortfolio()` accepts 3rd param, constructor loads from disk, `persistPortfolio()` passes `closedRealTrades`, `onPositionClosedLearning` persists immediately after close. Paper stats unaffected (separate storage) |
-| **v2.0.39** | Consensus directional agreement fix — `calcWeightedConsensus()` used `Math.abs(agreementScore)` per-vote, meaning BUY (+1) and SELL (-1) both added positive weight. Threshold measured conviction not direction. 5 agents confidently voting BUY passed even if RBC said UNFAVORABLE. Fixed: removed per-vote `Math.abs()`, uses directional agreement. Split (half BUY half SELL) produces ~0 — won't pass threshold. Final `Math.abs(total)` preserves SELL consensus |
-| **v2.0.40** | Learning decay — Agent Outcomes `getAgentPerformance()` now only uses recent 50 records (was all 10,000). Pattern Classifier `queryEntry()` + `queryPosition()` use time-weighted win/loss (`0.5^(age/7days)` half-life). Old regime data naturally fades out. `wilsonScore()` hardened with `total <= 0` guard + `p` clamping |
-| **v2.0.41** | MAX_POSITION_PCT removed (Market Agent controls size via Phase 4.5 override — was redundant); Evolution `signalThreshold` now DETERMINISTICALLY overrides HACP consensus threshold (was just informational text — now agents need stronger directional agreement when Evolution says "be pickier"); Planck-Chaos `directionBias` removed (redundant with regime-aware direction chain — Lyapunov + amplitude windows + resonance retained as informational); mandatory `⚠️ MAINTENANCE NOTE` comments added to all modified functions instructing future agents to update comments when changing enforcement chains |
-| **v2.0.42** | Drawdown high-water mark fix (`currentDrawdownPct` replaces `maxDrawdownPct` for trading decisions — decreases on recovery); Recent 20 trade win rate in UI (`getRecentWinLoss(20)` → `recent20WinRate` → UI Win Rate cell shows `(lastest 20 trades)`) |
-| **v2.0.43** | PnL/PnL% PAPER/REAL consistency — `serializePortfolio()` overlay mixed 3 inconsistent data sources (currentPrice from WS, unrealizedPnl from HL API, unrealizedPnlPct from local). Fixed: all 3 fields now internally consistent using exPos + live price + recomputed PnL% |
-| **v2.0.44** | Manual market selection — Top Volume Pairs table is clickable (user chooses market, not auto-selected); `manualSymbolLock` flag prevents `autoSelectTopPair()` from overriding; Clear Drawdown button when drawdown ≥ 15% (`portfolio.clearDrawdown()` resets peakEquity/drawdown/dailyPnl) |
-| **v2.0.45** | `manualSymbolLock` fix — `fetchTopPairs()` had 3 internal auto-select sites that bypassed the lock. All 3 now check `!this.manualSymbolLock` |
-| **v2.0.46** | SL/TP HL bidirectional sync — `syncSLTP()` now reads actual HL trigger orders and syncs back to local mirror via `syncSLTPFromExchange()` |
-| **v2.0.47** | PnL leverage inflation fix — `updatePosition()`/`softUpdatePosition()`/`closePosition()` multiplied PnL by leverage (×10 inflation). PnL = priceDelta × quantity (NOT × leverage). Also: paper mode SL/TP sync + trailing stop validation |
-| **v2.0.48** | SL/TP startup HL sync — `syncSLTP()` now runs at startup before first `pushToAPI()` so UI shows real HL SL/TP from the start. `syncSLTP()` uses `getEngineForExchange()` (works in paper mode too) |
-| **v2.0.49** | SL/TP retry loop (3 attempts) with error feedback to LLM; slower narrowing (min gap 2%, min TP dist 1.5%, min SL dist 1%) |
-| **v2.0.50** | SL/TP max narrowing step — SL/TP can only move 0.5% of current price closer per cycle. Enforced in both `hacp.ts` (retry feedback) and `portfolio.ts` (hard safety) |
-| **v2.0.51** | Error trade filter (entry≈exit + PnL≈$0 filtered from Trade Records); Paper/Real cross-mode position display (REAL positions show in PAPER mode, PAPER legacy positions show in REAL mode) |
-| **v2.0.52–v2.0.57** | Per-symbol consensus SL/TP direction validation; `adjustPosition()` ignores portfolio rejection fix; HL engine trailing stop validation; `correctInvertedSLTP()` self-healing; SL/TP inference logic fix (entry price + direction, not current price distance) |
-| **v2.0.58–v2.0.61** | **Options Data Layer** — `src/analysis/options-data.ts` connects to Polygon.io REST API for option chain snapshots (IV, Greeks, OI, P/C ratio, Gamma regime, Max Pain, Skew, Implied Move, Event Risk). Regime → Playbook mapping (Premium Sell / Directional Credit / Defined-Risk Debit / Stand Aside / Buy Convexity). `vetoNewPositions` deterministic veto. `validateSLAgainstImpliedMove()` SL validation. Options Data Layer gets HIGHEST voting weight (0.30) in HACP consensus for Stocks/Indices |
-| **v2.0.62** | **Options-aware evolution** — `OptionsStrategyParameters` (7 options-specific params that evolve: minIVRankForPremiumSell, maxIVRankForDebit, gammaRegimePreference, maxImpliedMovePct, putCallOIThreshold, eventRiskTolerance, targetPOP). `SurvivalFitness.optionsAlpha` new fitness dimension. `mutate()` has options-specific directional mutation. `getContextForAgent()` shows options strategy context. Full evolution loop: options data → vote → decision → result → fitness → mutation → better strategy |
-| **v2.0.63–v2.0.67** | Paper balance leak fix (margin vs notional — `openPosition()` now deducts margin not full notional); Startup message fix (AMACRF→MATS, Binance→Hyperliquid); Duplicate SL/TP trigger orders fix (`engine.adjustPosition()` now cancels existing orders before placing new ones); `manualSymbolLock` preserved on trade mode switch; Batch price fetch (`fetchPricesForSymbols()` reduces HL 429 errors); Options Data Layer refactored to use contracts+aggs (free plan fallback with estimated IV) |
-| **v2.0.68** | **Options Plan Detection + Dynamic Vote Weight** — `OptionsDataManager.detectPlanTier()` tests the snapshot endpoint at startup to determine API plan tier (none/free/starter/developer/advanced). Voting weight + confidence scale dynamically: free=0.10/0.50 (estimated IV, 1-day delayed), starter=0.25/0.70 (direct IV/Greeks/OI, 15min delayed), advanced=0.30/0.80 (real-time). Paid plans use snapshot endpoint (accurate data); free plan uses contracts+aggs fallback (estimated IV via Black-Scholes). `getRecommendedVoteWeight()` + `getRecommendedConfidence()` used by `index.ts` to set HACP consensus vote. |
-| **v2.0.69–v2.0.75** | SL/TP UI display fix (serializePortfolio reads from realPositions map instead of hardcoding undefined); Symbol selection debounce (rapid UI clicks no longer trigger N simultaneous WS connects); S/R candle fetch fix for DEX 1-8 (removed prefix stripping — HL candleSnapshot requires full coin name `xyz:SKHX`); ATR prefix stripping fix (same root cause); News Reporter rewrite (Google News RSS + GDELT + Bing News, multi-symbol, hidden strategist persona); Paper accounting fix (closePosition realizedPnl subtracts entryFee); UI masonry layout + RGB marquee border + mobile fixes |
-| **v2.0.76** | **Global HL rate limiter** — `src/utils/hl-global-limiter.ts` replaces 6+ scattered per-module rate limiters with ONE global queue (200ms gap = 5 req/s). All HL API calls (MarketAgent, HL real engine, candle proxy, REST polling, S/R detector, ATR, correlation budget) now share a single request budget. 429 retry with exponential backoff. DNS failure handling (short retry then throw, let caller back off). Eliminates 429 storms from concurrent modules. |
-| **v2.0.77** | **WS infinite reconnect + REST polling backoff** — HL WebSocket no longer gives up after 50 attempts (network outages can last hours). Backoff caps at 60s but retries forever. REST polling now has exponential backoff on consecutive failures (30s → 60s → 120s → ... → 5min cap), resets on success. Global rate limiter handles DNS errors gracefully (2 short retries then throw, so REST polling can back off). System auto-recovers when network returns. |
-| **v2.0.78** | **Configurable max portion** — `maxPortionPct` (10%-50%) replaces hardcoded 20% cumulative margin cap. UI slider in Market Agent panel. Enforced in both paper engine AND real trading manager (checked BEFORE sending orders to HL — prevents sending trades that exceed the cap). Position Size slider max dynamically follows maxPortion. Mobile layout wraps 3 controls to 2 rows. Config no longer resets on market/mode switch (useEffect only syncs when values actually change). |
+### v2.0.79–v2.0.91 — Entry Thesis System + Dark Psychology + Skeptics Absolute Veto
 
-| **v2.0.79–v2.0.83** | **Entry Thesis System + Dark Psychology + Skeptics Absolute Veto** — The most significant cognitive architecture upgrade. Meta-Agent now operates as a detective: every cycle it aggressively reasons from sub-agent data to find subtle trade edges ("蛛絲馬跡"), but must NEVER distort facts. When it finds an edge, it generates an `entryThesis` explaining why price will reach TP within 1h (short-term catalyst) and 1d (medium-term driver), referencing specific sub-agent data. **Skeptics has absolute veto power** over new positions — it validates the thesis for strength, specificity, data consistency, dark psychology (is the data whale manipulation? distribution disguised as bullish news? accumulation disguised as FUD?), and fact distortion (did Meta-Agent cherry-pick data to fit a desired direction?). When in doubt, REJECT — a rejected trade costs nothing, a bad trade costs real money. **Phase 0.5**: each cycle, Skeptics re-validates every open position's thesis against fresh market data — if invalidated, the position is force-closed. **Phase 1.8**: after Meta-Agent thinks, Skeptics validates the thesis before the trade is allowed. **Phase 4.8**: final hard gate — any BUY/SELL without a valid+validated entryThesis is blocked, regardless of which consensus path produced it. Meta-Agent weight → 0.00 (thesis system controls, not voting). Sub-agent weights → 0.10 (data-gathering role, confidence is reference for Skeptics). Risk Auditor veto → advisory-only (cannot block trades, only suggests TP/SL/size adjustments; hardcoded safety layers retained). HOLD decisions require `holdReason` explaining what data conflicts or what state is ambiguous — displayed in UI under each symbol. Dark Psychology interrogation: Meta-Agent must question whether sub-agent data is genuine market signal or deliberate whale/institutional manipulation (distribution disguised as bullish, accumulation disguised as FUD, fake breakout traps, wash trading, sentiment manipulation, suspicious news timing). Skeptics then validates whether Meta-Agent's own interpretation is free from confirmation bias. All positions (including exploration trades) require a thesis. Thesis is persisted in `Position.entryThesis` and survives restarts. |
+The most significant cognitive architecture upgrade. Meta-Agent operates as a detective — every cycle it aggressively reasons from sub-agent data to find subtle trade edges ("蛛絲馬跡"), but must NEVER distort facts. When it finds an edge, it generates an `entryThesis` explaining why price will reach TP within 1h and 1d. **Skeptics has absolute veto power** over new positions — validates thesis for strength, specificity, data consistency, dark psychology (whale manipulation?), and fact distortion.
+
+- **Phase 0.5**: Re-validates open position theses each cycle with fresh market data → invalidated → force-close
+- **Phase 1.8**: Validates Meta-Agent's entryThesis before trade is allowed
+- **Phase 4.8**: Final hard gate — BUY/SELL without valid+validated thesis → BLOCK
+- **Meta-Agent weight → 0.00** (thesis system controls, not voting)
+- **Sub-agent weights → 0.10** (data-gathering role, confidence is reference for Skeptics)
+- **Risk Auditor → advisory-only** (cannot veto, only suggests TP/SL/size adjustments)
+- **`holdReason`** required for HOLD decisions — displayed in UI
+- **Dark Psychology**: Meta-Agent must question whether data is whale manipulation
+- **Close validation** (v2.0.90): Closing thesis-backed positions also goes through Meta-Agent → Skeptics validation
+- **Legacy positions** (v2.0.91): Positions without entryThesis (pre-v2.0.80) use sub-agent majority vote for closing
+- **Sub-agent BUY/SELL signals** (v2.0.85): Meta-Agent must pay special attention when sub-agents output directional signals
+- **Active position management** (v2.0.87): Meta-Agent must actively evaluate closing positions every cycle
+- **No backward-looking blocking** (v2.0.88): Past drawdown/losses are NOT valid reasons to reject trades — RBC learns, market changes
+- **UI improvements**: Per-symbol rationale with independent expand/collapse, dynamic confidence bar colors (HSL gradient), removed obsolete Temp/Weight/Decisions display
+
+### v2.0.78 — Configurable Max Portion + Real Trading Margin Check
+
+`maxPortionPct` (10%-50%) replaces hardcoded 20% cumulative margin cap. UI slider in Market Agent panel. Enforced in both paper engine AND real trading manager.
+
+### v2.0.76–v2.0.77 — Global HL Rate Limiter + WS Infinite Reconnect
+
+Global rate limiter replaces 6+ scattered per-module limiters with one queue (200ms gap = 5 req/s). WS reconnect retries forever (backoff caps at 60s). REST polling exponential backoff (30s → 5min cap).
+
+### v2.0.69–v2.0.75 — SL/TP UI + Symbol Debounce + S/R DEX Fix + News Reporter Rewrite
+
+SL/TP UI display fix, symbol selection debounce, S/R + ATR candle fetch fix for DEX 1-8, News Reporter rewrite (Google News RSS + GDELT + Bing News, multi-symbol, hidden strategist persona), UI masonry layout.
+
+### v2.0.58–v2.0.68 — Options Data Layer + Options-aware Evolution
+
+Options Data Layer connecting to Massive.com/Polygon.io. Regime → Playbook mapping. Options-aware evolution (`OptionsStrategyParameters` + `SurvivalFitness.optionsAlpha`). Plan detection + dynamic vote weight.
+
+### v2.0.32–v2.0.57 — HL Real Trading Fixes + SL/TP Safety + Position Management
+
+HL signing rewrite (phantom agent EIP-712), xyz DEX asset index offset, SL/TP direction fixes, phantom close fix (8 code paths), paper balance inflation fix, S/R-based SL/TP, pro algo firm SL/TP (fill-first + retry + safety-close), HL SL/TP close detection, stale real position cleanup, real trade persistence, consensus directional agreement fix, learning decay, MAX_POSITION_PCT removal, drawdown high-water mark fix, manual market selection, SL/TP HL bidirectional sync, PnL leverage inflation fix, SL/TP retry loop + slower narrowing, SL/TP max narrowing step, error trade filter, per-symbol consensus SL/TP direction validation.
+
+### v2.0.10–v2.0.31 — Math Audit + LLM Resilience + Evolution + HL WS + Real Trading
+
+Math audit (13 numerical fixes), LLM resilience (circuit breaker + deadline race), Risk Auditor regime-aware TP/SL, evolution enhancement (directional mutation + agent-level evolution + regime-aware strategy), HL WS user-level subscriptions, real-trade UI balance, notional-based fee deduction, unrealized PnL includes entry fee, TradingView TP/SL live update, fitness breakdown fix, dailyPnl auto-reset, SL/TP close learning hook, loss cooldown + LLM review, LLM pattern tag tracking, legacy position management, manual close button, multi-DEX balance + positions.
+
+### v2.0.0–v2.0.9 — Foundation + RBC + Pattern Classifier + SystemGuard
+
+Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, paper trading, dual memory, survival fitness, evolutionary pressure, Sigmoid·GA sentiment engine, S/R zone detection, RBC engine (layered decay + time-weighted centroid), trade pattern classifier (Wilson score), EM cycle chain, backtest engine, loop engineering, real trading interface, TradingView chart, agent model selector, live progress, Fear & Greed index, leverage 2-10x, cumulative position cap, atomic write, schema validation.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for full details on each fix.
 
@@ -543,7 +520,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full details on each fix.
 | **Frontend** | React 18 + Vite + TradingView Chart (live TP/SL update) |
 | **Config Validation** | Zod schema |
 | **Logging** | Winston (structured + file rotation) |
-| **Codebase** | ~20,000+ LOC TypeScript + React UI |
+| **Codebase** | ~25,000 LOC TypeScript + React UI |
 
 ---
 
