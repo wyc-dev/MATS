@@ -2587,23 +2587,39 @@ class MATSSystem {
       // v2.0.91: Per-position close voting — ONLY for legacy positions without entryThesis.
       // Positions opened before the thesis system (v2.0.80) don't have entryThesis,
       // so they can't go through the Meta-Agent → Skeptics close validation.
-      // For these legacy positions, sub-agent majority vote (≥2) is the close mechanism.
-      // Positions WITH entryThesis must go through the per-symbol consensus path below
-      // which includes Skeptics validateCloseDecision.
+      // For these legacy positions, sub-agent majority vote (≥2) OR Meta-Agent CLOSE
+      // decision is the close mechanism.
+      // v2.0.94: Also close if Meta-Agent decides CLOSE (it's the decision maker —
+      // its CLOSE decision should be respected even without Skeptics validation
+      // for legacy positions that predate the thesis system).
       for (const posSymbol of this.portfolio.getOpenSymbols()) {
         const pos = this.portfolio.getPosition(posSymbol);
         if (!pos) continue;
         // Only apply this path to legacy positions without entryThesis
         if (pos.entryThesis) continue; // Has thesis → use consensus path with Skeptics validation
 
+        // Check sub-agent close votes
         const closeVotes = allThoughts.filter(t => {
           if (t.agentRole === 'meta_agent' || t.agentRole === 'market_agent') return false;
           const msd = t.metadata?.['multiSymbolDecision'] as any;
           const posDecision = msd?.positions?.find((p: any) => normalizeSymbol(p?.symbol ?? '') === normalizeSymbol(posSymbol));
           return posDecision?.closePosition === true;
         }).length;
-        if (closeVotes < 2) continue;
-        log.warn(`⚠️ ${closeVotes} agents recommend closing legacy position ${posSymbol} @ $${pos.currentPrice.toFixed(2)} (PnL: ${((pos.unrealizedPnlPct ?? 0)*100).toFixed(2)}%)...`);
+
+        // v2.0.94: Also check if Meta-Agent decided CLOSE for this position
+        const metaCloseDecision = allThoughts.some(t => {
+          if (t.agentRole !== 'meta_agent') return false;
+          const msd = t.metadata?.['multiSymbolDecision'] as any;
+          const posDecision = msd?.positions?.find((p: any) => normalizeSymbol(p?.symbol ?? '') === normalizeSymbol(posSymbol));
+          return posDecision?.closePosition === true || posDecision?.action === 'close';
+        });
+
+        // Close if ≥2 sub-agents vote close OR Meta-Agent decides close
+        if (closeVotes < 2 && !metaCloseDecision) continue;
+        const closeReason = metaCloseDecision && closeVotes < 2
+          ? `Meta-Agent decided CLOSE`
+          : `${closeVotes} agents + Meta-Agent recommend closing`;
+        log.warn(`⚠️ ${closeReason} legacy position ${posSymbol} @ $${pos.currentPrice.toFixed(2)} (PnL: ${((pos.unrealizedPnlPct ?? 0)*100).toFixed(2)}%)...`);
         if (pos.agentId === 'hyperliquid-real') {
           const success = await this.realTradingManager.closePosition(posSymbol);
           if (success) {
