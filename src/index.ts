@@ -1666,7 +1666,61 @@ class MATSSystem {
         log.debug(`[news] Failed for ${activeSymbol}: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      const marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${rbcContext}${planckChaosContext}${optionsContext}${playbookContext}${newsContext ? `\n${newsContext}` : ''}\n\n${getFeeSummary()}`;
+      let marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${rbcContext}${planckChaosContext}${optionsContext}${playbookContext}${newsContext ? `\n${newsContext}` : ''}\n\n${getFeeSummary()}`;
+
+      // v2.0.92: Generate RBC + S/R context for ALL open positions (not just active symbol).
+      // Previously, RBC and S/R were only generated for the active symbol (e.g. BTC).
+      // Open positions on other symbols (e.g. xyz:XYZ100, xyz:SP500) had NO RBC/S/R data
+      // in the agent context, causing Meta-Agent to output "Insufficient data" for those
+      // positions. Now we query RBC + fetch S/R for every open position and append to marketDesc.
+      for (const posSym of this.portfolio.getOpenSymbols()) {
+        if (normalizeSymbol(posSym) === normalizeSymbol(activeSymbol)) continue; // already covered above
+        const pos = this.portfolio.getPosition(posSym);
+        if (!pos) continue;
+
+        // RBC context for this position's symbol
+        try {
+          const posCtx = this.lastCycleRBCContexts.get(posSym);
+          const features = posCtx?.features ?? {
+            volatility: combinedState.volatility ?? 0,
+            srDistanceBps: 0,
+            obImbalance: combinedState.orderBookImbalance ?? 0,
+            fundingRate: this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
+            volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
+            sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+            sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+            signalAgreement: 0.5,
+          };
+          const rbcBuy = this.rbcEngine.query(posSym, features);
+          const rbcSell: RBCQueryResult = {
+            ...rbcBuy,
+            verdict: rbcBuy.verdict === 'favorable' ? 'unfavorable' : rbcBuy.verdict === 'unfavorable' ? 'favorable' : 'no_edge',
+            winDims: rbcBuy.lossDims,
+            lossDims: rbcBuy.winDims,
+          };
+          const hasData = rbcBuy.verdict !== 'no_edge' || rbcSell.verdict !== 'no_edge'
+            || (rbcBuy.explanation && !rbcBuy.explanation.startsWith('Only'))
+            || (rbcSell.explanation && !rbcSell.explanation.startsWith('Only'));
+          if (hasData) {
+            const confLabel = rbcBuy.confidence > 0.6 ? 'high' : rbcBuy.confidence > 0.3 ? 'medium' : 'low';
+            marketDesc += `\n\n=== RBC ASSESSMENT for ${posSym} ===`;
+            marketDesc += `\nRange-Based Clustering for ${posSym} (position: ${pos.side.toUpperCase()} @ $${pos.averageEntryPrice.toFixed(2)}, PnL: ${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%).`;
+            marketDesc += `\nBUY  → ${rbcBuy.verdict.toUpperCase()} (edge=${(rbcBuy.edgeScore * 100).toFixed(0)}%, ${rbcBuy.winDims}W/${rbcBuy.lossDims}L dims)`;
+            marketDesc += `\nSELL → ${rbcSell.verdict.toUpperCase()} (edge=${(rbcSell.edgeScore * 100).toFixed(0)}%, ${rbcSell.winDims}W/${rbcSell.lossDims}L dims)`;
+            marketDesc += `\nCONFIDENCE: ${confLabel} (eff samples=${Math.round(rbcBuy.effectiveSamples)}, balance=${(rbcBuy.confidence * 100).toFixed(0)}%)`;
+          } else {
+            marketDesc += `\n\n=== RBC ASSESSMENT for ${posSym} ===\nNo RBC data for ${posSym} — insufficient samples or no edge detected.`;
+          }
+        } catch { /* non-critical */ }
+
+        // S/R zones for this position's symbol
+        try {
+          const posSR = await getSRZones(posSym, pos.currentPrice, combinedState.regime).catch(() => null);
+          if (posSR?.formatted) {
+            marketDesc += `\n${posSR.formatted}`;
+          }
+        } catch { /* non-critical */ }
+      }
 
       // Store latest S/R context for API push
       if (srContext) {
