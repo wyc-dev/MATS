@@ -37,7 +37,7 @@ import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts'
 import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
 import { RBCEngine, type RBCQueryResult } from './evolution/rbc-clustering.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
-import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti } from './analysis/news-sentiment.ts';
+import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent } from './analysis/news-sentiment.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord } from './types/index.ts';
 
 const log = createLogger({ phase: 'system' });
@@ -1771,6 +1771,19 @@ class MATSSystem {
       }
 
       let marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${rbcContext}${planckChaosContext}${optionsContext}${playbookContext}${newsContext ? `\n${newsContext}` : ''}\n\n${getFeeSummary()}`;
+
+      // v2.0.109: Fetch global breaking news (Top 10 international headlines) for Meta-Agent
+      // cross-asset correlation analysis. Meta-Agent must assess whether any headline
+      // has a logical or correlated impact on the currently traded assets.
+      try {
+        const globalNews = await fetchGlobalBreakingNews();
+        const globalNewsContext = formatGlobalNewsForMetaAgent(globalNews);
+        if (globalNewsContext) {
+          marketDesc += `\n${globalNewsContext}`;
+        }
+      } catch {
+        // Fail-open — global news is supplementary context
+      }
 
       // v2.0.92: Generate RBC + S/R context for ALL open positions (not just active symbol).
       // Previously, RBC and S/R were only generated for the active symbol (e.g. BTC).
