@@ -1293,6 +1293,7 @@ class MATSSystem {
       log.info(`Cycle symbols: ${allSymbols.join(', ')} (active: ${activeSymbol})`);
       // v2.0.104: Store additional non-position trading markets to inject into currentPositions
       (this as any)._additionalMarkets = nonPositionMarkets.filter(s => s !== activeSymbol);
+      log.info(`📊 _additionalMarkets: [${((this as any)._additionalMarkets as string[]).join(', ')}] (tradingMarkets=${this.tradingMarkets.length}, nonPosition=${nonPositionMarkets.length})`);
     } else {
       // No trading markets and no open positions — fall back to auto-select
       const selectedSymbol = await this.marketAgent.autoSelectTopPair();
@@ -1374,6 +1375,10 @@ class MATSSystem {
 
     // v2.0.106: Market Agent judges the filter profile for the active symbol
     // and all trading markets. This runs each cycle to catch regime changes.
+    // v2.0.107: Use autoDetectProfile (no API call) for initial assignment to
+    // avoid exhausting the HL rate limiter before the injection code runs.
+    // selectFilterProfile with real market data runs on subsequent cycles when
+    // the filter already exists (re-evaluation uses cached market state).
     const allTradingSymbols = [...new Set([
       activeSymbol,
       ...(this as any)._additionalMarkets ?? [],
@@ -1382,13 +1387,10 @@ class MATSSystem {
 
     for (const sym of allTradingSymbols) {
       if (this.assetFilterRegistry.hasFilter(sym)) continue; // already assigned
-      try {
-        const profileType = await this.marketAgent.selectFilterProfile(sym);
-        this.assetFilterRegistry.assignProfile(sym, profileType);
-      } catch {
-        // Fallback: auto-detect without market data
-        this.assetFilterRegistry.assignProfile(sym, this.assetFilterRegistry.autoDetectProfile(sym));
-      }
+      // v2.0.107: Auto-detect first (no API call needed) — avoids rate limiter exhaustion
+      const autoProfile = this.assetFilterRegistry.autoDetectProfile(sym);
+      this.assetFilterRegistry.assignProfile(sym, autoProfile);
+      log.info(`📊 Auto-assigned filter profile for ${sym}: ${autoProfile}`);
     }
 
     // Get the active symbol's filter (create if needed)
@@ -1817,7 +1819,10 @@ class MATSSystem {
       // v2.0.104: Generate market data (price + RBC + S/R) for ALL trading markets
       // without open positions. These are injected into currentPositions as
       // isTradingMarket entries, and agents need market context to analyze them.
+      // v2.0.107: Cache fetched prices for reuse in injection code (avoids
+      // double-fetching and rate limiter exhaustion).
       const additionalMarketsForCtx: string[] = (this as any)._additionalMarkets ?? [];
+      const additionalMarketsPrices: Map<string, { price: number; change24h: number; volume24h: number }> = new Map();
       for (const mktSym of additionalMarketsForCtx) {
         if (normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol)) continue; // already covered
         // Fetch price + market state for this trading market
@@ -1829,9 +1834,13 @@ class MATSSystem {
           mktPrice = priceData.price;
           mktChange24h = priceData.change24h;
           mktVolume24h = priceData.volume24h;
+          // v2.0.107: Cache for injection code
+          additionalMarketsPrices.set(mktSym, { price: mktPrice, change24h: mktChange24h, volume24h: mktVolume24h });
         } catch {
           log.warn(`Failed to fetch market data for ${mktSym} — agents will have limited context`);
         }
+        // v2.0.107: Store cached prices for injection code to reuse
+        (this as any)._additionalMarketsPrices = additionalMarketsPrices;
         const mktState = this.marketState.getState(mktSym);
         // Append market data for this trading market
         marketDesc += `\n\n=== MARKET DATA for ${mktSym} (TRADING MARKET — no position) ===`;
@@ -2282,19 +2291,31 @@ class MATSSystem {
       // are added with quantity=0 and isTradingMarket=true. Agents see ALL
       // trading markets in positions[] and output BUY/SELL/HOLD for each.
       const additionalMarkets: string[] = (this as any)._additionalMarkets ?? [];
+      log.info(`📊 Injection check: additionalMarkets=[${additionalMarkets.join(', ')}], currentPositions before injection=${currentPositions.length}`);
       if (additionalMarkets.length > 0) {
+        // v2.0.107: Reuse prices cached from buildMarketDescription (avoids double-fetch)
+        const cachedPrices = (this as any)._additionalMarketsPrices as Map<string, { price: number; change24h: number; volume24h: number }> | undefined;
         const existingSyms = new Set(currentPositions.map(p => normalizeSymbol(p.symbol)));
         for (const mktSym of additionalMarkets) {
           const mktNorm = normalizeSymbol(mktSym);
           if (existingSyms.has(mktNorm)) continue; // already has a real position
-          // Fetch current price for this market
-          let mktPrice = 0;
-          try {
-            const priceData = await this.marketAgent.fetchPriceForSymbol(mktSym);
-            mktPrice = priceData.price;
-          } catch {
-            log.warn(`Failed to fetch price for trading market ${mktSym}, skipping injection`);
-            continue;
+          // v2.0.107: Use cached price first, then fetchPriceForSymbol, then marketState
+          let mktPrice = cachedPrices?.get(mktSym)?.price ?? 0;
+          if (mktPrice <= 0) {
+            try {
+              const priceData = await this.marketAgent.fetchPriceForSymbol(mktSym);
+              mktPrice = priceData.price;
+            } catch {
+              log.warn(`Failed to fetch price for trading market ${mktSym} — injecting with price=0 (agents will have limited context)`);
+              // v2.0.107: Don't skip — still inject so agents see the market.
+            }
+          }
+          // v2.0.107: Try marketState as fallback for price
+          if (mktPrice <= 0) {
+            const mktStateFallback = this.marketState.getState(mktSym);
+            if (mktStateFallback && mktStateFallback.price > 0) {
+              mktPrice = mktStateFallback.price;
+            }
           }
           currentPositions.push({
             id: `market-${mktSym}`,
@@ -2311,8 +2332,33 @@ class MATSSystem {
             isTradingMarket: true, // v2.0.104: flag for agent context + execution
           });
         }
-        log.info(`📊 Injected ${additionalMarkets.length} trading market(s) for multi-symbol single-cycle analysis`);
+        log.info(`📊 Injected ${additionalMarkets.length} trading market(s) for multi-symbol single-cycle analysis: ${additionalMarkets.join(', ')}`);
       }
+
+      // v2.0.107: Re-evaluate filter profiles using market data we already have
+      // (from the injection fetch above + marketState). This does NOT make
+      // additional API calls — it uses cached data to refine the profile.
+      // Only runs if the filter was auto-assigned (not manually overridden).
+      for (const sym of allTradingSymbols) {
+        const currentProfile = this.assetFilterRegistry.getProfileType(sym);
+        const symState = this.marketState.getState(sym);
+        const symPrice = symState?.price ?? 0;
+        const symChange = symState?.change24h ?? 0;
+        const symVolume = symState?.volume24h ?? 0;
+        if (symPrice <= 0) continue; // no data to re-evaluate
+
+        // Use Market Agent's judgment with cached data (no API call)
+        const refinedProfile = await this.marketAgent.selectFilterProfile(sym, {
+          price: symPrice,
+          volume24h: symVolume,
+          change24h: symChange,
+        });
+        if (refinedProfile !== currentProfile) {
+          this.assetFilterRegistry.assignProfile(sym, refinedProfile);
+          log.info(`📊 Refined filter profile for ${sym}: ${currentProfile} → ${refinedProfile}`);
+        }
+      }
+      log.info(`📊 currentPositions after injection=${currentPositions.length} (symbols: ${currentPositions.map(p => p.symbol).join(', ')})`);
 
       const result = await this.hacpEngine.executeDecisionCycle(
         `${marketDesc}\n\n${evolutionContext}${backtestContext}`,
