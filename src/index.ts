@@ -511,11 +511,11 @@ class MATSSystem {
       });
 
       // v2.0.44: Manual symbol selection from Top Volume Pairs list.
-      // Sets the manual lock so autoSelectTopPair() doesn't override it,
-      // then immediately triggers a decision cycle for the new market.
-      // v2.0.XX: Debounce — rapid UI clicks (e.g. cycling through DEX 1-8
-      // symbols) must not trigger N simultaneous WS connects + N cycles.
-      // Only the LAST symbol in a 1.5s burst is acted on.
+      // Sets the manual lock so autoSelectTopPair() doesn't override it.
+      // v2.0.110: Do NOT trigger a cycle here — the trading-markets handler
+      // already debounces a single cycle trigger. This was causing duplicate
+      // cycle triggers when addTradingMarket sends both select-symbol AND
+      // trading-markets POSTs.
       let selectSymbolTimer: ReturnType<typeof setTimeout> | null = null;
       this.apiServer.setMarketAgentSelectSymbolHandler((symbol) => {
         if (selectSymbolTimer) clearTimeout(selectSymbolTimer);
@@ -523,26 +523,34 @@ class MATSSystem {
           log.info(`Market Agent: manual symbol selection → ${symbol}`);
           this.marketAgent.setSelectedSymbolManual(symbol);
           this.pushToAPI();
-          setTimeout(() => void this.runDecisionCycle(), 1500);
+          // v2.0.110: No cycle trigger here — trading-markets handler handles it.
+          // If this was a pure symbol switch (not a trading market add),
+          // the next scheduled cycle (300s) will pick it up.
         }, 1500);
       });
 
       // v2.0.79: Trading markets list from UI pills — determines which symbols
       // agents analyze (combined with open positions). Replaces auto-select.
+      // v2.0.110: Debounce immediate cycle trigger — UI may send multiple POSTs
+      // (addTradingMarket sends both trading-markets + select-symbol). Only
+      // trigger ONE cycle after the last change settles. All trading markets
+      // are analyzed in that SINGLE HACP cycle (multi-symbol single-cycle).
+      let tradingMarketsCycleTimer: ReturnType<typeof setTimeout> | null = null;
       this.apiServer.setTradingMarketsHandler((markets) => {
         this.tradingMarkets = markets;
         log.info(`Trading markets set from UI: ${markets.join(', ') || '(empty)'}`);
         this.pushToAPI();
-        // v2.0.108: Trigger an immediate decision cycle when trading markets change
-        // so agents analyze the new markets without waiting for the next scheduled cycle.
-        if (!this.cycleInProgress && !isShuttingDown()) {
-          log.info(`📊 Trading markets changed — triggering immediate decision cycle`);
-          setTimeout(() => {
-            if (!this.cycleInProgress && !isShuttingDown()) {
-              void this.runDecisionCycle();
-            }
-          }, 1500);
-        }
+        // v2.0.110: Debounce — only trigger ONE cycle 2s after the last change.
+        // This prevents multiple overlapping cycle triggers when UI sends
+        // rapid updates (e.g. adding 3 markets in quick succession).
+        if (tradingMarketsCycleTimer) clearTimeout(tradingMarketsCycleTimer);
+        tradingMarketsCycleTimer = setTimeout(() => {
+          tradingMarketsCycleTimer = null;
+          if (!this.cycleInProgress && !isShuttingDown()) {
+            log.info(`📊 Trading markets settled — triggering single HACP cycle for all ${this.tradingMarkets.length} market(s)`);
+            void this.runDecisionCycle();
+          }
+        }, 2000);
       });
 
       // v2.0.45: Clear drawdown data to relaunch trading after circuit breaker.
@@ -1245,6 +1253,13 @@ class MATSSystem {
       log.warn('Previous decision cycle still running. Skipping this tick.');
       return;
     }
+    // v2.0.110: Set cycleInProgress IMMEDIATELY — not 350 lines later.
+    // Previously this was set at line ~1604, after symbol selection + RBC
+    // training + pause check. If multiple runDecisionCycle() calls were
+    // triggered in quick succession (e.g. UI sending multiple POSTs), they
+    // ALL passed the guard because none had reached the `= true` line yet.
+    // This caused multiple HACP cycles to run simultaneously.
+    this.cycleInProgress = true;
 
     // ── v2.0.79: Determine which symbols to analyze this cycle ──
     // Priority: Trading Markets (UI pills) + open positions (deduped).
@@ -1454,6 +1469,8 @@ class MATSSystem {
 
     if (marketPrice <= 0) {
       log.warn(`No market price for ${activeSymbolUpper} — HL API may be rate-limited. Will retry next cycle.`);
+      // v2.0.110: Reset cycleInProgress — we set it at the top of runDecisionCycle()
+      this.cycleInProgress = false;
       return;
     }
 
@@ -1574,6 +1591,8 @@ class MATSSystem {
       }
       log.warn('SystemGuard blocked this cycle.');
       this.pushToAPI();
+      // v2.0.110: Reset cycleInProgress — we set it at the top of runDecisionCycle()
+      this.cycleInProgress = false;
       return;
     }
 
@@ -1593,7 +1612,7 @@ class MATSSystem {
       return;
     }
 
-    this.cycleInProgress = true;
+    // v2.0.110: cycleInProgress was already set at the top of runDecisionCycle()
     this.totalCycles++;
     const cycleStart = performance.now();
 
