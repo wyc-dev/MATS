@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.106 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology + Skeptics Absolute Veto + Meta-Agent Detective Mode + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation + Close Validation + Active Position Management + No Backward-Looking Blocking + Extreme Reasoning + RBC/S/R for All Positions + UI Improvements + Thesis-Mandatory Close + Multi-Symbol Single-Cycle + Trading Market Injection + Per-Asset Adaptive Noise Filter)
+> **版本**: 2.0.108 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology + Skeptics Absolute Veto + Meta-Agent Detective Mode + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation + Close Validation + Active Position Management + No Backward-Looking Blocking + Extreme Reasoning + RBC/S/R for All Positions + UI Improvements + Thesis-Mandatory Close + Multi-Symbol Single-Cycle + Trading Market Injection + Per-Asset Adaptive Noise Filter + EADDRINUSE Recovery + Immediate Cycle on Market Change)
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~20,000+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -6509,6 +6509,112 @@ normalizeDecision (sanity 0-100%) → Risk Auditor (can reduce) → Phase 4.5 (M
 **修復**: `.market-control-group` 加 `flex-wrap: wrap`，`.market-control-col` 加 `min-width: 120px`。窄屏自動 wrap 成 2 行。
 
 **效果**: 用戶可調節 max portion（10%-50%），paper + real 都 enforce。轉 market/mode 唔再 reset slider。手機版自動分兩行。
+
+---
+
+### B.58 Trading Markets Not Analyzed — EADDRINUSE + Timing + Rate Limiter (v2.0.107–v2.0.108)
+
+**發現日期**: 2026-07-03
+**嚴重性**: 🔴 Critical — 導致 agents 只顯示 BTC，xyz:SKHX 和 xyz:SILVER 從未被分析
+**涉及檔案**: `src/api-server.ts`, `src/index.ts`, `src/analysis/adaptive-filter.ts`
+
+#### 問題描述
+
+用戶設定 Trading Markets = [BTC, xyz:SKHX, xyz:SILVER]，但所有 agents 只顯示 `btc`，xyz: 資產從未出現在 agent 卡片中。v2.0.102 的 sub-cycle 方法可以顯示多資產，但 v2.0.104+ 的 injection 方法失敗。
+
+#### 根因分析（3 個獨立問題疊加）
+
+| # | 問題 | 影響 | 修復版本 |
+|:-:|:-----|:-----|:--------:|
+| **1** | **EADDRINUSE** — Port 3456 被舊進程佔用，API Server `server.listen()` 靜默失敗（無 error handler）。UI 的 POST `/api/market-agent/trading-markets` 永遠到達不了後端 | `tradingMarkets` 永遠為空 → auto-select 只選一個 symbol | v2.0.108 |
+| **2** | **時序問題** — 第一個 decision cycle 在啟動時立即執行（`await this.runDecisionCycle()`），此時 UI 還未連接。Decision interval = 300s，所以 UI 發送 trading markets 後要等 5 分鐘才會在下一個 cycle 分析 | 第一個 cycle 永遠只看到 auto-selected symbol | v2.0.108 |
+| **3** | **Rate limiter 耗盡** — v2.0.106 的 `selectFilterProfile()` 在 injection code 之前為每個 trading market 調用 `fetchPriceForSymbol`，耗盡 HL rate limiter。Injection code 之後嘗試 fetch xyz: symbol 價格時失敗，舊 code `continue` 跳過注入 | xyz:SKHX 和 xyz:SILVER 被靜默跳過 | v2.0.107 |
+
+#### 完整失效鏈
+
+```
+系統啟動
+  → API Server listen(3456) → EADDRINUSE → 靜默失敗（無 error handler）
+  → UI 無法連接後端
+  → tradingMarkets = [] (後端從未收到 UI 的 POST)
+  → 第一個 cycle 立即執行 → "No trading markets or positions — auto-selected xyz:SILVER"
+  → tradingMarkets = ["xyz:SILVER"] (只有 auto-select 的一個)
+  → _additionalMarkets = [] (只有一個 trading market，無額外市場)
+  → Injection: additionalMarkets=[] → 冇注入
+  → Agents 只看到 xyz:SILVER (activeSymbol)
+  → UI 顯示：只有一個 symbol
+
+即使 EADDRINUSE 解決：
+  → UI 發送 tradingMarkets = ["BTC", "xyz:SKHX", "xyz:SILVER"]
+  → 第一個 cycle 已跑完（只看到 auto-select）
+  → 下一個 cycle 要等 300s
+  → v2.0.106 selectFilterProfile() 為每個 symbol fetchPriceForSymbol
+  → HL rate limiter 耗盡
+  → Injection code fetch xyz:SKHX → 失敗 → continue (跳過)
+  → Agents 只看到 BTC
+```
+
+#### 修復
+
+**v2.0.108 — EADDRINUSE Recovery** (`src/api-server.ts`):
+```typescript
+this.server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    log.warn(`⚠️ Port ${this.port} already in use — killing old process and retrying...`);
+    exec(`lsof -ti:${this.port} | xargs kill -9`, () => {
+      setTimeout(() => this.server!.listen(this.port, ...), 1000);
+    });
+  }
+});
+```
+
+**v2.0.108 — Immediate Cycle on Market Change** (`src/index.ts`):
+```typescript
+this.apiServer.setTradingMarketsHandler((markets) => {
+  this.tradingMarkets = markets;
+  // v2.0.108: Trigger immediate decision cycle when trading markets change
+  if (!this.cycleInProgress && !isShuttingDown()) {
+    setTimeout(() => void this.runDecisionCycle(), 1500);
+  }
+});
+```
+
+**v2.0.107 — Auto-detect Filter Profile (No API Call)** (`src/index.ts`):
+```typescript
+// v2.0.107: Use autoDetectProfile (no API call) for initial assignment
+// to avoid exhausting the HL rate limiter before the injection code runs
+const autoProfile = this.assetFilterRegistry.autoDetectProfile(sym);
+this.assetFilterRegistry.assignProfile(sym, autoProfile);
+```
+
+**v2.0.107 — Cache Prices from buildMarketDescription** (`src/index.ts`):
+```typescript
+// v2.0.107: Reuse prices cached from buildMarketDescription (avoids double-fetch)
+const cachedPrices = (this as any)._additionalMarketsPrices;
+let mktPrice = cachedPrices?.get(mktSym)?.price ?? 0;
+```
+
+**v2.0.107 — Never Skip Injection on Fetch Failure** (`src/index.ts`):
+```typescript
+// v2.0.107: Don't skip — still inject so agents see the market
+// Price=0 is better than not seeing the market at all
+// Try marketState as fallback for price
+if (mktPrice <= 0) {
+  const mktStateFallback = this.marketState.getState(mktSym);
+  if (mktStateFallback && mktStateFallback.price > 0) mktPrice = mktStateFallback.price;
+}
+```
+
+#### 預防措施
+
+| 措施 | 說明 |
+|:-----|:------|
+| **EADDRINUSE handler** | API Server 必須處理 port 衝突 — kill 舊進程 + retry |
+| **Immediate cycle on config change** | UI 發送 trading markets 後立即觸發 cycle，唔等 300s |
+| **Auto-detect first, refine later** | Filter profile 先用 autoDetectProfile（無 API call），再用 cached marketState 數據 refine |
+| **Cache + reuse prices** | buildMarketDescription fetch 嘅價格 cache 俾 injection code 重用，避免 double-fetch |
+| **Never skip injection** | 即使 fetch 失敗都注入（price=0 + fallback），agents 至少能看到市場 |
+| **Debug logging** | 記錄 `_additionalMarkets`、injection count、currentPositions after injection |
 
 ---
 
