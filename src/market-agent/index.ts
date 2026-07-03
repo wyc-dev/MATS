@@ -903,6 +903,97 @@ export class MarketAgent {
   }
 
   /**
+   * v2.0.106: Select the best adaptive noise filter profile for an asset
+   * based on its real market characteristics (volatility, liquidity, volume).
+   *
+   * Market Agent is the AUTHORITY on filter profile selection — it has
+   * access to market data (price, volume, 24h change) and can make an
+   * informed judgment about which smoothing profile fits each asset.
+   *
+   * The selected profile determines:
+   *   - EMA alpha range (smoothing aggressiveness)
+   *   - Sigmoid k range (signal sharpness)
+   *   - Conviction gate bounds (entry strictness)
+   *   - Trade frequency limits (over-trading prevention)
+   *
+   * Each asset gets its own independent filter — BTC's filter is tuned
+   * differently from xyz:SKHX's because their noise characteristics differ.
+   */
+  async selectFilterProfile(
+    symbol: string,
+    marketData?: { price: number; volume24h: number; change24h: number },
+  ): Promise<import('../analysis/adaptive-filter.ts').FilterProfileType> {
+    // Fetch market data if not provided
+    let data = marketData;
+    if (!data || data.price <= 0) {
+      try {
+        data = await this.fetchPriceForSymbol(symbol);
+      } catch {
+        data = { price: 0, volume24h: 0, change24h: 0 };
+      }
+    }
+
+    const symLower = symbol.toLowerCase();
+    const change24h = Math.abs(data.change24h);
+    const volume24h = data.volume24h;
+
+    // ── Step 1: Start with auto-detected profile from symbol naming ──
+    let profileType: import('../analysis/adaptive-filter.ts').FilterProfileType;
+
+    if (symLower.startsWith('xyz:')) {
+      const asset = symLower.slice(4);
+      if (/^(eur|gbp|jpy|aud|cad|chf|nzd|usd)/.test(asset) ||
+          /^(eurusd|gbpusd|usdjpy|audusd|usdcad|nzdusd|usdchf)/.test(asset) ||
+          /^(sp500|spx|nasdaq|ndx|ni225|nikkei|dax|ftse|hsi|spx500|nas100|ger30|uk100)/.test(asset)) {
+        profileType = 'forex_index';
+      } else if (/^(xau|gold|silver|xag|oil|wti|brent|copper|natgas|gas)/.test(asset)) {
+        profileType = 'commodity';
+      } else {
+        profileType = 'dex_perp';
+      }
+    } else if (/^(btc|eth|sol|bnb)$/.test(symLower)) {
+      profileType = 'high_vol_crypto';
+    } else if (/^(doge|shib|pepe|wif|bonk|floki|meme|pump|wen|bome)/.test(symLower)) {
+      profileType = 'high_vol_alt';
+    } else if (/^(usdt|usdc|dai|busd|tusd|frax)/.test(symLower)) {
+      profileType = 'low_vol_crypto';
+    } else {
+      profileType = 'high_vol_crypto';
+    }
+
+    // ── Step 2: Refine based on real market data ──
+    // High 24h change (>5%) → upgrade to higher-vol profile (more smoothing)
+    // Low volume (<$1M) → upgrade to stricter profile (less liquidity = more noise)
+    if (change24h > 0.08) {
+      // Extreme volatility — use high_vol_alt profile regardless of asset type
+      profileType = 'high_vol_alt';
+    } else if (change24h > 0.05 && profileType === 'high_vol_crypto') {
+      // High vol for a major crypto — keep high_vol_crypto but it will adapt
+      profileType = 'high_vol_crypto';
+    } else if (change24h < 0.01 && volume24h > 100_000_000) {
+      // Very stable + high volume → low_vol_crypto (relax entry)
+      if (profileType === 'high_vol_crypto') {
+        profileType = 'low_vol_crypto';
+      }
+    }
+
+    // Low volume assets get stricter filtering (more noise from thin books)
+    if (volume24h > 0 && volume24h < 1_000_000 && profileType !== 'high_vol_alt') {
+      profileType = 'high_vol_alt';
+    } else if (volume24h > 0 && volume24h < 10_000_000 && profileType === 'low_vol_crypto') {
+      // Not enough volume for relaxed entry
+      profileType = 'high_vol_crypto';
+    }
+
+    log.info(`Market Agent filter judgment: ${symbol} → ${profileType}`, {
+      change24h: `${(change24h * 100).toFixed(2)}%`,
+      volume24h: `$${(volume24h / 1_000_000).toFixed(2)}M`,
+    });
+
+    return profileType;
+  }
+
+  /**
    * v2.0.66: Batch fetch prices for multiple symbols in a single call.
    *
    * DEX 0 symbols (BTC, ETH, etc.) are all fetched from a single

@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.94-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.106-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -171,8 +171,10 @@ The core cognitive architecture — every new position requires a strong, valida
 4. **Phase 0.5 Re-validation** — each cycle, Skeptics re-validates every open position's thesis against fresh market data; if invalidated, force-close
 5. **`holdReason`** — HOLD decisions must explain which conditions are true and why they are insufficient to act (displayed in UI, always expanded for Meta-Agent)
 6. **Dark Psychology** — Meta-Agent must question whether sub-agent data is genuine market signal or whale/institutional manipulation
-7. **Close validation** — closing a thesis-backed position goes through Meta-Agent → Skeptics validation (v2.0.90); legacy positions close on Meta-Agent CLOSE decision or ≥2 sub-agent votes (v2.0.94)
+7. **Close validation** — closing a thesis-backed position goes through Meta-Agent → Skeptics validation (v2.0.90); thesis MUST be invalidated (mandatory) + ≥2 other conditions (v2.0.103); legacy positions close on Meta-Agent CLOSE decision or ≥2 sub-agent votes (v2.0.94)
 8. **RBC + S/R for ALL positions** — context generated for every open position, not just the active symbol (v2.0.92)
+9. **Multi-symbol single-cycle** — ALL trading markets analyzed in ONE HACP cycle. Non-position markets injected as `isTradingMarket` entries in `positions[]` with full market context (price, RBC, S/R). Agents output BUY/SELL/HOLD for all markets simultaneously (v2.0.104)
+10. **Per-asset adaptive noise filter** — Market Agent selects a `FilterProfile` for each asset (7 profiles: high_vol_crypto, low_vol_crypto, high_vol_alt, dex_perp, forex_index, commodity, default). Each asset gets its own `AdaptiveNoiseFilter` with independent EMA alpha, sigmoid k, conviction gate, and trade frequency throttle. Filter adapts per-cycle based on volatility, win rate, SNR, and trade frequency. Meta-Agent receives per-asset SNR data and must factor it into every decision (v2.0.106)
 9. **3-5 sentences minimum** reasoning per symbol — no truncation, no silence
 
 ### 🧬 Self-Evolution System (RBC + EM Cycle Chain)
@@ -463,9 +465,23 @@ If you require a commercial license — for example, for proprietary extensions,
 
 ## Changelog
 
+### v2.0.106 — Per-Asset Adaptive Noise Filter + Market Agent Judgment
+
+- **Per-asset filter profiles** (v2.0.106): Market Agent selects one of 7 filter profiles for each asset based on its real market data (volatility, liquidity, volume, 24h change). Each profile defines different EMA alpha ranges, sigmoid k ranges, conviction gate bounds, and trade frequency limits. Profiles: `high_vol_crypto` (BTC/ETH), `low_vol_crypto` (stablecoins), `high_vol_alt` (meme coins), `dex_perp` (xyz: assets), `forex_index` (EURUSD/SP500), `commodity` (gold/oil), `default`.
+- **Per-asset AdaptiveNoiseFilter** (v2.0.106): Each asset gets its own independent filter instance with separate channel states (price, OB imbalance, volume, funding, spread, momentum, large trades, fear/greed, volatility). Filter adapts per-cycle based on: market volatility (high vol → more smoothing), recent trade performance (losses → more smoothing), trade frequency (over-trading → raise conviction gate), and SNR (low signal-to-noise → more smoothing).
+- **Meta-Agent filter awareness** (v2.0.106): Meta-Agent receives per-asset SNR data, conviction gates, and throttle status in its context. It must factor this into every decision: SNR < 30% → prefer HOLD, SNR 30-50% → reduce position size, throttled → HOLD. Meta-Agent prompt includes detailed instructions for interpreting filter data.
+- **Trade frequency throttle** (v2.0.106): Each asset has its own trade frequency limit (e.g. BTC: 3 trades per 10 cycles, meme coins: 2 trades per 15 cycles). When limit is reached, new entries for that asset are blocked — prevents over-trading on noise.
+- **Conviction gate** (v2.0.106): Each asset has its own adaptive conviction threshold. Consensus confidence below the gate → trade blocked. Gate adapts: over-trading → raise gate, under-trading + winning → lower gate, losing → raise gate.
+
+### v2.0.104 — Multi-Symbol Single-Cycle + Trading Market Injection
+
+- **Trading market injection** (v2.0.104): Non-position trading markets are now injected into `currentPositions` with `isTradingMarket=true` and `quantity=0`. Agents see ALL trading markets in `positions[]` and output BUY/SELL/HOLD for each in a single HACP cycle. Full market context (price, trend, regime, RBC, S/R) is generated for each trading market and appended to `marketDesc`. The `MultiSymbolDecision.positions[]` now serves dual purpose: open position management (CLOSE/HOLD) AND trading market analysis (BUY/SELL/HOLD). Agent prompts updated to explain the distinction. HACP thesis validation checks `quantity > 0` to distinguish real positions from trading markets.
+- **Thesis-mandatory close** (v2.0.103): Closing a position now REQUIRES entry thesis invalidation as a MANDATORY condition, plus ≥2 of the other 5 conditions. If the thesis is still valid → HOLD, no exceptions. This prevents panic-closing on short-term price noise. Meta-Agent prompt, Skeptics close validation, and reasoning chain all updated to enforce this.
+- **Multi-symbol single-cycle** (v2.0.103): Reverted the v2.0.100 sub-cycle approach (separate HACP cycle per market). ALL trading markets are now analyzed in ONE HACP cycle. Entry decisions for trading markets are executed via the `perSymbolConsensus` loop.
+
 ### v2.0.92–v2.0.94 — Extreme Reasoning + RBC/S/R for All Positions + Bug Fixes
 
-- **Extreme reasoning** (v2.0.93): No position → MUST decide BUY/SELL (HOLD only when ALL 6 signals absent). Has position → MUST decide CLOSE/HOLD (CLOSE if ≥3 of 6 conditions true, HOLD if 0-2). Even with no data, reason from first principles. 3-5 sentences minimum per symbol.
+- **Extreme reasoning** (v2.0.93, updated v2.0.103): No position → MUST decide BUY/SELL (HOLD only when ALL 6 signals absent). Has position → MUST decide CLOSE/HOLD. CLOSE requires thesis invalidated (MANDATORY) + ≥2 of 5 other conditions. HOLD is the default. Even with no data, reason from first principles. 3-5 sentences minimum per symbol.
 - **RBC + S/R for all open positions** (v2.0.92): Previously only generated for the active symbol. Now every open position gets RBC edge assessment + S/R zones in agent context.
 - **Phase 1.8 skip for existing positions** (v2.0.94): Thesis validation skipped if symbol already has a position — marketTicker BUY/SELL for a symbol with an existing position is NOT a new entry.
 - **Legacy close on Meta-Agent decision** (v2.0.94): Legacy positions (no entryThesis) now close when Meta-Agent decides CLOSE, not just when ≥2 sub-agents vote close.

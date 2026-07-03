@@ -275,6 +275,10 @@ export interface PositionContext {
    *  re-validates this each cycle to determine if the position should
    *  be force-closed. */
   entryThesis?: string;
+  /** v2.0.104: true if this is a trading market without an open position
+   *  (quantity = 0). Agents can output BUY/SELL to open a new position.
+   *  false or undefined = real open position. */
+  isTradingMarket?: boolean;
 }
 
 export interface PerSymbolDecision {

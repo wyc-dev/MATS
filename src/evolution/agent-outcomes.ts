@@ -90,13 +90,13 @@ export class AgentOutcomeTracker {
         regime: currentRegime,
       });
 
-      // Per-position recommendations
+      // Per-position recommendations (includes trading markets without position)
       for (const pos of multiSymbolDecision.positions) {
         this.addRecord({
           cycleNumber,
           agentRole,
           symbol: pos.symbol,
-          recommendedAction: pos.closePosition ? 'close' : 'hold',
+          recommendedAction: pos.closePosition ? 'close' : (pos.action === 'buy' || pos.action === 'sell' ? pos.action : 'hold'),
           confidence,
           isPositionRecommendation: true,
           regime: currentRegime,
