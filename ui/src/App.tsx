@@ -103,7 +103,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
     const msd = thought.metadata.multiSymbolDecision
     // Primary market ticker symbol
     if (msd.marketTicker?.symbol) analyzingSymbols.push(msd.marketTicker.symbol)
-    // Open position symbols
+    // Position + trading market symbols (v2.0.104: includes trading markets without position)
     if (msd.positions?.length) {
       for (const p of msd.positions) {
         if (p.symbol && !analyzingSymbols.includes(p.symbol)) analyzingSymbols.push(p.symbol)

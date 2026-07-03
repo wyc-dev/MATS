@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.94 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology + Skeptics Absolute Veto + Meta-Agent Detective Mode + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation + Close Validation + Active Position Management + No Backward-Looking Blocking + Extreme Reasoning + RBC/S/R for All Positions + UI Improvements)
+> **版本**: 2.0.106 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology + Skeptics Absolute Veto + Meta-Agent Detective Mode + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation + Close Validation + Active Position Management + No Backward-Looking Blocking + Extreme Reasoning + RBC/S/R for All Positions + UI Improvements + Thesis-Mandatory Close + Multi-Symbol Single-Cycle + Trading Market Injection + Per-Asset Adaptive Noise Filter)
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~20,000+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -55,12 +55,16 @@
 | **自我演化** | 策略自動評估、淘汰、突變、進化 |
 | **理據驅動 (v2.0.80)** | Meta-Agent 必須提供強而有力的 entryThesis 才可開倉，Skeptics 絕對否決權 |
 | **暗黑心理學 (v2.0.81)** | Meta-Agent 質疑數據是否大戶操縱，Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
-| **極限推理 (v2.0.93)** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位必須 CLOSE/HOLD（≥3/6 條件先 CLOSE） |
+| **極限推理 (v2.0.93)** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE (v2.0.103) |
 | **多智能體共識** | 7+ 智能體（含 Skeptics 跨 Agent 邏輯審查）+ 結構化辯論 |
 | **風險審計參考 (v2.0.82)** | Risk Auditor 降級為參考（advisory-only），不可 veto |
 | **平倉驗證 (v2.0.90)** | 平倉決策必須經過 Meta-Agent 判斷 + Skeptics 驗證 |
 | **唔靠過去 P&L (v2.0.88)** | 過去 drawdown/losses 唔係拒絕交易嘅理由——RBC 持續學習，市況不斷變化 |
 | **所有持倉有 RBC/S/R (v2.0.92)** | RBC + S/R 數據為每個未平倉部位生成，唔只 active symbol |
+| **Thesis 強制平倉 (v2.0.103)** | 平倉必須 entryThesis 失效（強制條件）+ ≥2 其他條件。Thesis 仍有效 → HOLD，無例外 |
+| **交易市場注入 (v2.0.104)** | 無持倉的交易市場以 isTradingMarket=true + quantity=0 注入 positions[]，agents 在單一循環內分析所有市場並輸出 BUY/SELL/HOLD |
+| **Per-Asset 雜訊過濾 (v2.0.106)** | Market Agent 為每個資產選擇獨立 FilterProfile（7種），AdaptiveNoiseFilter 按資產特性自動調節 EMA α + Sigmoid k + Conviction Gate + 交易頻率節流。Meta-Agent 必須參考每個資產的 SNR 決策 |
+| **多資產單循環 (v2.0.104)** | 所有交易市場單一 HACP 循環分析。無持倉的市場以 isTradingMarket=true 注入 positions[]，agents 同時分析所有市場 |
 | **優雅降級** | 任何錯誤預設 HOLD，永遠不倒 |
 | **生產級標準** | 完整型別、結構化日誌、優雅關閉、指數退避重連 |
 

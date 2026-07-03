@@ -1237,7 +1237,10 @@ Be concise. Output ONLY valid JSON.`,
             return found
               ? {
                   ...orig,
-                  action: 'hold' as const,
+                  // v2.0.104: Preserve buy/sell for trading markets, hold for positions
+                  action: (found.action === 'buy' || found.action === 'sell')
+                    ? found.action as 'buy' | 'sell'
+                    : 'hold' as const,
                   closePosition: found.closePosition === true,
                   closeUrgency: (found.closeUrgency === 'immediate' || found.closeUrgency === 'soon' || found.closeUrgency === 'patient') ? found.closeUrgency : undefined,
                   suggestedStopLoss: typeof found.suggestedStopLoss === 'number' ? found.suggestedStopLoss : orig.suggestedStopLoss,
@@ -1640,25 +1643,27 @@ Is this thesis STILL valid? Has the market changed in a way that invalidates the
 Meta-Agent has decided to close a ${side.toUpperCase()} position. Your job is to verify the reasoning is sound.
 
 A valid close decision must:
-1. Have a SPECIFIC reason — not just "holding is risky" or "market is uncertain"
-2. Be based on CURRENT data — not past drawdown or loss streaks (RBC learns, market changes)
-3. Be consistent with sub-agent data — if agents say the thesis is still valid, why close?
-4. Not be panic-driven — closing at a small loss to avoid a larger loss is valid, but closing
+1. **MANDATORY**: The entry thesis must be INVALIDATED. If the thesis is still valid,
+   the close is INVALID — no exceptions. Short-term price noise, temporary drawdown,
+   or agent disagreement alone do NOT invalidate a thesis.
+2. Have a SPECIFIC reason — not just "holding is risky" or "market is uncertain"
+3. Be based on CURRENT data — not past drawdown or loss streaks (RBC learns, market changes)
+4. Be consistent with sub-agent data — if agents say the thesis is still valid, why close?
+5. Not be panic-driven — closing at a small loss to avoid a larger loss is valid, but closing
    out of fear without a specific catalyst is not
-5. Address whether the original entry thesis is actually invalidated — or is Meta-Agent
-   overreacting to noise?
 
-Valid close reasons:
+Valid close reasons (ALL require thesis invalidation as the primary reason):
 - Entry thesis is invalidated by new information (e.g. bullish news contradicts SHORT thesis)
-- ≥2 sub-agents independently recommend close with specific reasoning
 - Structural break (price broke key S/R level that the thesis depended on)
 - Catalyst event happened and thesis didn't play out
+- ≥2 sub-agents independently recommend close with specific reasoning AND thesis is broken
 
 Invalid close reasons:
 - "Market is chaotic" without specifying how it specifically threatens this position
 - "Past trades lost money" (backward-looking, RBC learns)
 - "Drawdown is high" (backward-looking)
 - Vague uncertainty without a specific threat
+- Thesis is still valid but price went against us temporarily
 
 Output ONLY valid JSON:
 {"approved": true/false, "rationale": "1-2 sentence explanation"}`,
@@ -1679,7 +1684,7 @@ ${marketStateDesc.slice(0, 1200)}
 Sub-Agent Thoughts:
 ${agentSummary}
 
-Validate this close decision. Is the reasoning specific and data-driven? Is the entry thesis actually invalidated?`,
+Validate this close decision. Is the reasoning specific and data-driven? Is the entry thesis ACTUALLY invalidated? If the thesis is still valid, BLOCK the close.`,
           },
         ],
         temperature: 0.3,

@@ -397,8 +397,11 @@ export class HACPEngine {
   async executeDecisionCycle(
     marketStateDesc: string,
     portfolioDesc: string,
-    /** Current open positions for TP/SL adjustment */
-    currentPositions?: Array<{ id: string; symbol: string; side: string; entryPrice: number; currentPrice: number; stopLoss?: number; takeProfit?: number; leverage?: number; quantity?: number; exchange?: string; entryThesis?: string }>,
+    /** Current positions AND trading markets for analysis.
+     *  v2.0.104: Includes both real open positions (quantity > 0) and
+     *  trading markets without positions (quantity = 0, isTradingMarket = true).
+     *  Agents output decisions for ALL entries in a single cycle. */
+    currentPositions?: Array<{ id: string; symbol: string; side: string; entryPrice: number; currentPrice: number; stopLoss?: number; takeProfit?: number; leverage?: number; quantity?: number; exchange?: string; entryThesis?: string; isTradingMarket?: boolean }>,
     /** Previous cycle summary chain — injected into Meta-Agent context for EM continuity */
     emContext?: string,
     /** Cycle summaries for Skeptics convergence audit */
@@ -474,6 +477,8 @@ export class HACPEngine {
         exchange: p.exchange ?? 'hyperliquid',
         // v2.0.80: Forward entryThesis for Skeptics re-validation
         entryThesis: p.entryThesis,
+        // v2.0.104: Forward isTradingMarket flag for agent context
+        isTradingMarket: p.isTradingMarket,
       };
     });
 
@@ -806,7 +811,11 @@ export class HACPEngine {
     // filtering) — not posCtx (which has the active symbol removed). Otherwise
     // BTC (which is both activeSymbol AND has a position) would be treated as a
     // new entry and its thesis would be validated/rejected by Skeptics.
-    const hasExistingPosition = (currentPositions ?? []).some(p => normalizeSymbol(p.symbol) === normalizeSymbol(metaSymbol));
+    // v2.0.104: Trading markets (quantity=0, isTradingMarket=true) are NOT
+    // existing positions — they should go through thesis validation.
+    const hasExistingPosition = (currentPositions ?? []).some(p =>
+      normalizeSymbol(p.symbol) === normalizeSymbol(metaSymbol) && (p.quantity ?? 0) > 0
+    );
 
     if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);
@@ -1206,8 +1215,11 @@ export class HACPEngine {
     if (finalConsensus.decision.action === 'buy' || finalConsensus.decision.action === 'sell') {
       // v2.0.95: Skip thesis gate if the symbol already has an open position.
       // Check currentPositions (raw parameter, before active-symbol filtering).
+      // v2.0.104: Trading markets (quantity=0) are NOT existing positions.
       const activeSymForGate = finalConsensus.decision.symbol;
-      const hasExistingPositionForGate = (currentPositions ?? []).some(p => normalizeSymbol(p.symbol) === normalizeSymbol(activeSymForGate));
+      const hasExistingPositionForGate = (currentPositions ?? []).some(p =>
+        normalizeSymbol(p.symbol) === normalizeSymbol(activeSymForGate) && (p.quantity ?? 0) > 0
+      );
       if (!hasExistingPositionForGate) {
       // Check the decision itself
       const decisionThesis = finalConsensus.decision.entryThesis;

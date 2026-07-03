@@ -25,6 +25,7 @@ import { BacktestEngine, type BacktestProgress } from './backtest/index.ts';
 import { MarketAgent } from './market-agent/index.ts';
 import { RealTradingManager } from './trading/real-trading-manager.ts';
 import { SentimentEngine } from './analysis/sentiment-engine.ts';
+import { AdaptiveNoiseFilter, AssetFilterRegistry, type MarketContext as FilterMarketContext, type FilterProfileType } from './analysis/adaptive-filter.ts';
 import { PlanckChaosEngine } from './analysis/planck-chaos.ts';
 import { SystemGuard } from './system-guard/index.ts';
 import { ExecutionTracker } from './trading/execution-tracker.ts';
@@ -60,6 +61,10 @@ class MATSSystem {
   private marketAgent!: MarketAgent;
   private realTradingManager!: RealTradingManager;
   private sentimentEngine!: SentimentEngine;
+  /** v2.0.105: Adaptive noise filter — sigmoid+EMA with per-cycle auto-tuning */
+  private adaptiveFilter!: AdaptiveNoiseFilter;
+  /** v2.0.106: Per-asset filter registry — each asset gets its own filter */
+  private assetFilterRegistry!: AssetFilterRegistry;
   private planckChaos!: PlanckChaosEngine;
   private hyperliquidWs!: HyperliquidWebSocketManager;
   private multiWs!: MultiExchangeWebSocketManager;
@@ -170,10 +175,12 @@ class MATSSystem {
       }
       log.info('✓ Trading systems ready');
 
-      // 3.5 Initialize Sigmoid·GA Sentiment Engine
-      log.info('Step 3.5/8: Initializing Sentiment Engine...');
+      // 3.5 Initialize Sigmoid·GA Sentiment Engine + Adaptive Noise Filter
+      log.info('Step 3.5/8: Initializing Sentiment Engine + Adaptive Filter...');
       this.sentimentEngine = new SentimentEngine();
-      log.info('✓ Sentiment Engine ready');
+      this.adaptiveFilter = new AdaptiveNoiseFilter({}, 'global');
+      this.assetFilterRegistry = new AssetFilterRegistry();
+      log.info('✓ Sentiment Engine + Adaptive Filter ready');
 
       // 3.5b Initialize Planck-Chaos Resonance Engine
       log.info('Step 3.5b/8: Initializing Planck-Chaos Resonance Engine...');
@@ -1255,10 +1262,19 @@ class MATSSystem {
     let activeSymbol: string;
 
     if (allSymbols.length > 0) {
-      // v2.0.79: Prefer a trading market that is NOT an open position as activeSymbol.
-      // v2.0.100: Run a SEPARATE HACP cycle for EACH trading market (not just one).
-      // The first non-position market is the primary activeSymbol (for WS + price feed).
-      // Additional non-position markets get their own HACP sub-cycle after the main one.
+      // v2.0.104: ALL trading markets are analyzed in ONE HACP cycle.
+      // The original architecture was designed for this: each agent
+      // outputs a MultiSymbolDecision with marketTicker + positions[] covering
+      // ALL symbols. Sub-cycles (v2.0.100) were a regression — they ran separate
+      // HACP cycles per market, wasting time and compute.
+      //
+      // How it works:
+      // - activeSymbol = first non-position trading market (for WS + price feed)
+      // - All OTHER non-position trading markets are added to currentPositions
+      //   with quantity=0 and isTradingMarket=true so agents see them in positions[]
+      //   and can output BUY/SELL/HOLD for them
+      // - All real open positions are in positions[] for CLOSE/HOLD management
+      // - ONE HACP cycle covers everything
       const openPosNorms = new Set(openPositionSymbols.map(s =>
         s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
       ));
@@ -1275,7 +1291,7 @@ class MATSSystem {
         this.marketAgent.setSelectedSymbolManual(activeSymbol);
       }
       log.info(`Cycle symbols: ${allSymbols.join(', ')} (active: ${activeSymbol})`);
-      // v2.0.100: Store additional markets that need their own HACP sub-cycle
+      // v2.0.104: Store additional non-position trading markets to inject into currentPositions
       (this as any)._additionalMarkets = nonPositionMarkets.filter(s => s !== activeSymbol);
     } else {
       // No trading markets and no open positions — fall back to auto-select
@@ -1336,6 +1352,75 @@ class MATSSystem {
       regime: state.regime,
       orderBookImbalance: state.orderBookImbalance,
       updatedAt: Date.now(),
+    };
+
+    // v2.0.106: Per-asset adaptive noise filter.
+    // Market Agent selects the best filter profile for each asset based on
+    // its real market data (volatility, liquidity, volume). Each asset gets
+    // its own independent filter with tuned alpha/k/conviction parameters.
+    //
+    // The active symbol's filter is used for signal smoothing this cycle.
+    // All asset filters are adapted and their summaries injected into agent context.
+    const recentTrades = this.evolution.tradeHistory.getRecent(10);
+    const recentWinRate = recentTrades.length >= 3
+      ? recentTrades.filter(t => (t.realisedPnl ?? t.simulatedPnl ?? 0) > 0).length / recentTrades.length
+      : undefined;
+    const recentTradeCount = recentTrades.filter(t =>
+      t.type === 'real' && (Date.now() - t.timestamp) < 600_000
+    ).length;
+    const cyclesSinceLastTrade = recentTrades.length > 0
+      ? this.totalCycles - (recentTrades[recentTrades.length - 1]?.cycleNumber ?? 0)
+      : 999;
+
+    // v2.0.106: Market Agent judges the filter profile for the active symbol
+    // and all trading markets. This runs each cycle to catch regime changes.
+    const allTradingSymbols = [...new Set([
+      activeSymbol,
+      ...(this as any)._additionalMarkets ?? [],
+      ...this.portfolio.getOpenSymbols(),
+    ])];
+
+    for (const sym of allTradingSymbols) {
+      if (this.assetFilterRegistry.hasFilter(sym)) continue; // already assigned
+      try {
+        const profileType = await this.marketAgent.selectFilterProfile(sym);
+        this.assetFilterRegistry.assignProfile(sym, profileType);
+      } catch {
+        // Fallback: auto-detect without market data
+        this.assetFilterRegistry.assignProfile(sym, this.assetFilterRegistry.autoDetectProfile(sym));
+      }
+    }
+
+    // Get the active symbol's filter (create if needed)
+    const activeFilter = this.assetFilterRegistry.getFilter(activeSymbol);
+
+    // Adapt ALL asset filters based on their individual market context
+    for (const [sym, filter] of this.assetFilterRegistry.getAllFilters()) {
+      const symState = this.marketState.getState(sym);
+      const symVolatility = symState?.volatility ?? combinedState.volatility;
+      const symRegime = symState?.regime ?? combinedState.regime;
+      filter.adapt({
+        volatility: symVolatility,
+        regime: symRegime,
+        recentWinRate,
+        recentTradeCount,
+        cyclesSinceLastTrade,
+        totalCycles: this.totalCycles,
+      });
+    }
+
+    // v2.0.106: Filter raw market signals through the ACTIVE symbol's adaptive filter.
+    // Each asset has its own filter, so BTC's smoothing differs from xyz:SKHX's.
+    const filteredPrice = activeFilter.filterEMA('price', marketPrice);
+    const filteredOBImbalance = activeFilter.filterEMA('orderBookImbalance', state.orderBookImbalance);
+    const filteredVolatility = activeFilter.filterEMA('volatilityRegime', state.volatility);
+
+    // Use filtered values for the combined state that agents see
+    const filteredState = {
+      ...combinedState,
+      price: filteredPrice > 0 ? filteredPrice : marketPrice, // fallback if EMA not yet seeded
+      orderBookImbalance: filteredOBImbalance,
+      volatility: filteredVolatility > 0 ? filteredVolatility : combinedState.volatility,
     };
 
     // Update paper engine with the latest price for the active symbol
@@ -1729,6 +1814,78 @@ class MATSSystem {
         } catch { /* non-critical */ }
       }
 
+      // v2.0.104: Generate market data (price + RBC + S/R) for ALL trading markets
+      // without open positions. These are injected into currentPositions as
+      // isTradingMarket entries, and agents need market context to analyze them.
+      const additionalMarketsForCtx: string[] = (this as any)._additionalMarkets ?? [];
+      for (const mktSym of additionalMarketsForCtx) {
+        if (normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol)) continue; // already covered
+        // Fetch price + market state for this trading market
+        let mktPrice = 0;
+        let mktChange24h = 0;
+        let mktVolume24h = 0;
+        try {
+          const priceData = await this.marketAgent.fetchPriceForSymbol(mktSym);
+          mktPrice = priceData.price;
+          mktChange24h = priceData.change24h;
+          mktVolume24h = priceData.volume24h;
+        } catch {
+          log.warn(`Failed to fetch market data for ${mktSym} — agents will have limited context`);
+        }
+        const mktState = this.marketState.getState(mktSym);
+        // Append market data for this trading market
+        marketDesc += `\n\n=== MARKET DATA for ${mktSym} (TRADING MARKET — no position) ===`;
+        marketDesc += `\nPrice: $${mktPrice.toFixed(2)}`;
+        marketDesc += `\n24h Change: ${mktChange24h >= 0 ? '+' : ''}${mktChange24h.toFixed(2)}%`;
+        if (mktVolume24h > 0) marketDesc += `\n24h Volume: $${(mktVolume24h / 1_000_000).toFixed(2)}M`;
+        marketDesc += `\nTrend: ${(mktState?.trend ?? 'sideways').toUpperCase()}`;
+        marketDesc += `\nRegime: ${(mktState?.regime ?? 'unknown').toUpperCase()}`;
+        if (mktState && mktState.volatility > 0) marketDesc += `\nVolatility: ${(mktState.volatility * 100).toFixed(3)}%`;
+
+        // RBC context for this trading market
+        try {
+          const mktCtx = this.lastCycleRBCContexts.get(mktSym);
+          const features = mktCtx?.features ?? {
+            volatility: mktState?.volatility ?? 0,
+            srDistanceBps: 0,
+            obImbalance: mktState?.orderBookImbalance ?? 0,
+            fundingRate: 0,
+            volumeRatio: 1,
+            sentiment: 0,
+            sentimentConviction: 0.5,
+            signalAgreement: 0.5,
+          };
+          const rbcBuy = this.rbcEngine.query(mktSym, features);
+          const rbcSell: RBCQueryResult = {
+            ...rbcBuy,
+            verdict: rbcBuy.verdict === 'favorable' ? 'unfavorable' : rbcBuy.verdict === 'unfavorable' ? 'favorable' : 'no_edge',
+            winDims: rbcBuy.lossDims,
+            lossDims: rbcBuy.winDims,
+          };
+          const hasData = rbcBuy.verdict !== 'no_edge' || rbcSell.verdict !== 'no_edge'
+            || (rbcBuy.explanation && !rbcBuy.explanation.startsWith('Only'))
+            || (rbcSell.explanation && !rbcSell.explanation.startsWith('Only'));
+          if (hasData) {
+            const confLabel = rbcBuy.confidence > 0.6 ? 'high' : rbcBuy.confidence > 0.3 ? 'medium' : 'low';
+            marketDesc += `\n\n=== RBC ASSESSMENT for ${mktSym} ===`;
+            marketDesc += `\nRange-Based Clustering for ${mktSym} (no position — entry evaluation).`;
+            marketDesc += `\nBUY  → ${rbcBuy.verdict.toUpperCase()} (edge=${(rbcBuy.edgeScore * 100).toFixed(0)}%, ${rbcBuy.winDims}W/${rbcBuy.lossDims}L dims)`;
+            marketDesc += `\nSELL → ${rbcSell.verdict.toUpperCase()} (edge=${(rbcSell.edgeScore * 100).toFixed(0)}%, ${rbcSell.winDims}W/${rbcSell.lossDims}L dims)`;
+            marketDesc += `\nCONFIDENCE: ${confLabel} (eff samples=${Math.round(rbcBuy.effectiveSamples)}, balance=${(rbcBuy.confidence * 100).toFixed(0)}%)`;
+          } else {
+            marketDesc += `\n\n=== RBC ASSESSMENT for ${mktSym} ===\nNo RBC data for ${mktSym} — insufficient samples or no edge detected.`;
+          }
+        } catch { /* non-critical */ }
+
+        // S/R zones for this trading market
+        try {
+          const mktSR = await getSRZones(mktSym, mktPrice, mktState?.regime ?? 'unknown').catch(() => null);
+          if (mktSR?.formatted) {
+            marketDesc += `\n${mktSR.formatted}`;
+          }
+        } catch { /* non-critical */ }
+      }
+
       // Store latest S/R context for API push
       if (srContext) {
         this.lastSRContext = {
@@ -2107,6 +2264,8 @@ class MATSSystem {
         exchange: (p as any).exchange ?? 'hyperliquid',
         // v2.0.80: Forward entryThesis so Skeptics can re-validate each cycle
         entryThesis: (p as any).entryThesis,
+        // v2.0.104: Forward isTradingMarket flag (undefined for real positions)
+        isTradingMarket: (p as any).isTradingMarket as boolean | undefined,
       }))
       // v2.0.96: Do NOT remove the activeSymbol from positions list.
       // Previously, activeSymbol was filtered out to avoid UI duplication
@@ -2118,9 +2277,42 @@ class MATSSystem {
       // The UI may show a duplicate entry, but correct position management
       // is more important than UI cleanliness.
 
-      // v2.0.100: Removed pseudo-position hack. Instead, run a separate HACP
-      // sub-cycle for each additional trading market after the main cycle.
-      // This is handled after the main HACP result is processed below.
+      // v2.0.104: Inject ALL trading markets into currentPositions for
+      // single-cycle multi-asset analysis. Markets without open positions
+      // are added with quantity=0 and isTradingMarket=true. Agents see ALL
+      // trading markets in positions[] and output BUY/SELL/HOLD for each.
+      const additionalMarkets: string[] = (this as any)._additionalMarkets ?? [];
+      if (additionalMarkets.length > 0) {
+        const existingSyms = new Set(currentPositions.map(p => normalizeSymbol(p.symbol)));
+        for (const mktSym of additionalMarkets) {
+          const mktNorm = normalizeSymbol(mktSym);
+          if (existingSyms.has(mktNorm)) continue; // already has a real position
+          // Fetch current price for this market
+          let mktPrice = 0;
+          try {
+            const priceData = await this.marketAgent.fetchPriceForSymbol(mktSym);
+            mktPrice = priceData.price;
+          } catch {
+            log.warn(`Failed to fetch price for trading market ${mktSym}, skipping injection`);
+            continue;
+          }
+          currentPositions.push({
+            id: `market-${mktSym}`,
+            symbol: mktSym,
+            side: 'buy' as const, // placeholder — quantity=0 means no real position
+            entryPrice: mktPrice,
+            currentPrice: mktPrice,
+            stopLoss: undefined,
+            takeProfit: undefined,
+            leverage: this.marketAgent.getConfig().leverage,
+            quantity: 0, // 0 = no real position, agents can open new
+            exchange: 'hyperliquid' as const,
+            entryThesis: undefined,
+            isTradingMarket: true, // v2.0.104: flag for agent context + execution
+          });
+        }
+        log.info(`📊 Injected ${additionalMarkets.length} trading market(s) for multi-symbol single-cycle analysis`);
+      }
 
       const result = await this.hacpEngine.executeDecisionCycle(
         `${marketDesc}\n\n${evolutionContext}${backtestContext}`,
@@ -2669,7 +2861,57 @@ class MATSSystem {
       const perSymbolConsensus = result.consensus.perSymbolConsensus ?? [];
       for (const psc of perSymbolConsensus) {
         const pos = this.portfolio.getPosition(psc.symbol);
-        if (!pos) continue; // no open position for this symbol → skip (market ticker handled by main flow)
+
+        // v2.0.104: If no real position exists, this might be a trading market
+        // without position (injected for multi-symbol single-cycle analysis).
+        // If consensus says BUY/SELL, execute the entry decision for this symbol.
+        if (!pos) {
+          // Skip the activeSymbol — it's handled by the main marketTicker flow
+          if (normalizeSymbol(psc.symbol) === normalizeSymbol(activeSymbol)) continue;
+
+          // v2.0.104: Execute entry decisions for trading markets without position
+          // v2.0.106: Apply per-asset conviction gate + frequency throttle
+          if ((psc.action === 'buy' || psc.action === 'sell') && psc.positionSizePct > 0) {
+            // v2.0.106: Check per-asset filter gate
+            const pscFilter = this.assetFilterRegistry.getFilter(psc.symbol);
+            if (psc.confidence < pscFilter.getConvictionThreshold()) {
+              log.warn(`🛑 [adaptive-filter] Multi-symbol conviction gate [${psc.symbol}]: ${(psc.confidence * 100).toFixed(0)}% < ${(pscFilter.getConvictionThreshold() * 100).toFixed(0)}% — skipping entry (noise-dominated)`);
+              continue;
+            }
+            if (pscFilter.isTradeFrequencyLimited()) {
+              log.warn(`🛑 [adaptive-filter] Multi-symbol frequency throttle [${psc.symbol}]: limit reached — skipping entry`);
+              continue;
+            }
+            log.info(`📊 Multi-symbol entry: ${psc.action.toUpperCase()} ${psc.symbol} ${(psc.positionSizePct * 100).toFixed(1)}% — executing (trading market → real entry)`);
+            const pscEntryDecision = {
+              action: psc.action,
+              symbol: psc.symbol,
+              positionSizePct: psc.positionSizePct,
+              leverage: psc.leverage ?? this.marketAgent.getConfig().leverage,
+              rationale: psc.rationale,
+              urgency: 'soon' as const,
+              entryThesis: psc.entryThesis,
+              stopLossPct: 0.02,
+              takeProfitPct: 0.05,
+            };
+            try {
+              const pscExecResult = await this.realTradingManager.executeDecision({
+                ...pscEntryDecision,
+                srSupport: null,
+                srResistance: null,
+              });
+              if (pscExecResult.success) {
+                pscFilter.recordTrade();
+                log.info(`📊 Multi-symbol entry ${psc.symbol}: ✅ — ${pscFilter.getRemainingTradeSlots()} slots remaining`);
+              } else {
+                log.info(`📊 Multi-symbol entry ${psc.symbol}: ❌`);
+              }
+            } catch (err) {
+              log.error(`📊 Multi-symbol entry ${psc.symbol} failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+          continue;
+        }
 
         // Close position if consensus says so
         // v2.0.91: Close validation depends on whether the position has an entryThesis.
@@ -2932,8 +3174,38 @@ class MATSSystem {
         }
       }
       log.info(`💼 Executing ${this.realTradingManager.getTradeMode().toUpperCase()} trading decision...`);
+
+      // v2.0.106: Adaptive conviction gate + trade frequency throttle.
+      // Uses the ACTIVE symbol's per-asset filter — each asset has its own
+      // conviction threshold and trade frequency limit based on Market Agent's
+      // profile selection.
+      // Block new entries if:
+      //   1. Consensus confidence is below the adaptive conviction threshold, OR
+      //   2. Trade frequency limit is reached (over-trading prevention)
+      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+        const symFilter = this.assetFilterRegistry.getFilter(finalDecision.symbol || activeSymbol);
+        const convictionThreshold = symFilter.getConvictionThreshold();
+        const consensusConfidence = result.consensus.confidence;
+        if (consensusConfidence < convictionThreshold) {
+          log.warn(`🛑 [adaptive-filter] Conviction gate [${finalDecision.symbol || activeSymbol}]: ${(consensusConfidence * 100).toFixed(0)}% < threshold ${(convictionThreshold * 100).toFixed(0)}% — overriding ${finalDecision.action.toUpperCase()} → HOLD (signal below noise floor)`);
+          finalDecision = {
+            ...finalDecision,
+            action: 'hold',
+            positionSizePct: 0,
+            rationale: `[ADAPTIVE FILTER ${finalDecision.symbol || activeSymbol}] Conviction ${(consensusConfidence * 100).toFixed(0)}% below threshold ${(convictionThreshold * 100).toFixed(0)}%. Signal is noise-dominated — HOLD. Original: ${finalDecision.rationale}`,
+          };
+        } else if (symFilter.isTradeFrequencyLimited()) {
+          log.warn(`🛑 [adaptive-filter] Trade frequency throttle [${finalDecision.symbol || activeSymbol}]: limit reached — overriding ${finalDecision.action.toUpperCase()} → HOLD (over-trading prevention)`);
+          finalDecision = {
+            ...finalDecision,
+            action: 'hold',
+            positionSizePct: 0,
+            rationale: `[ADAPTIVE FILTER ${finalDecision.symbol || activeSymbol}] Trade frequency limit reached. Over-trading prevention — HOLD. Original: ${finalDecision.rationale}`,
+          };
+        }
+      }
+
       // v2.0.33: Pass S/R levels to executeDecision so SL/TP can be set at
-      // actual support/resistance levels instead of fixed percentages.
       const decisionWithSR: TradingDecision = {
         ...finalDecision,
         srSupport: this.lastSRContext?.nearestSupport ?? null,
@@ -2941,6 +3213,14 @@ class MATSSystem {
       };
       const execResult = await this.realTradingManager.executeDecision(decisionWithSR);
       const reports: ExecutionReport[] = execResult.paperReports ?? [];
+
+      // v2.0.106: Record trade execution for per-asset frequency throttling
+      if (execResult.success && (finalDecision.action === 'buy' || finalDecision.action === 'sell')) {
+        const tradeSym = finalDecision.symbol || activeSymbol;
+        const symFilter = this.assetFilterRegistry.getFilter(tradeSym);
+        symFilter.recordTrade();
+        log.info(`📊 [adaptive-filter] Trade recorded for ${tradeSym} — ${symFilter.getRemainingTradeSlots()} slots remaining`);
+      }
       // When real-mode, paperReports mirrors the real trade into the local portfolio
       // so all downstream P&L tracking, stop-loss monitoring, and evolution learning work identically.
 
@@ -3355,73 +3635,11 @@ class MATSSystem {
       };
       this.pushToAPI();
 
-      // v2.0.100: Run HACP sub-cycles for additional trading markets
-      // Each additional non-position trading market gets its own HACP cycle
-      // so agents analyze ALL trading markets, not just the first one.
-      // v2.0.102: Do NOT call setSelectedSymbolManual — it triggers WS reconnect.
-      // Just fetch price via REST and build market description manually.
-      const additionalMarkets: string[] = (this as any)._additionalMarkets ?? [];
-      for (const mktSym of additionalMarkets) {
-        try {
-          log.info(`📊 Running HACP sub-cycle for additional market: ${mktSym}`);
-          // Fetch market data for this symbol via REST (no WS switch needed)
-          const mktPriceData = await this.marketAgent.fetchPriceForSymbol(mktSym);
-          const mktState = this.marketState.getState(mktSym);
-          const mktCombinedState = {
-            primarySymbol: mktSym,
-            price: mktPriceData.price,
-            change24h: mktPriceData.change24h,
-            volume24h: mktPriceData.volume24h,
-            trend: mktState?.trend ?? 'sideways',
-            volatility: mktState?.volatility ?? 0,
-            regime: mktState?.regime ?? 'unknown',
-            orderBookImbalance: mktState?.orderBookImbalance ?? 0,
-            updatedAt: Date.now(),
-          };
-          // Build market description WITHOUT switching Market Agent (no WS reconnect)
-          const mktMarketDesc = `Selected Symbol: ${mktSym}\nPrice: $${mktPriceData.price.toFixed(2)}\n24h Change: ${mktPriceData.change24h.toFixed(2)}%\n24h Volume: $${(mktPriceData.volume24h / 1e6).toFixed(2)}M\nTrend: ${mktCombinedState.trend}\nRegime: ${mktCombinedState.regime}\nVolatility: ${(mktCombinedState.volatility * 100).toFixed(2)}%`;
-          // Run HACP for this market (positions[] = open positions, marketTicker = this market)
-          const mktResult = await this.hacpEngine.executeDecisionCycle(
-            mktMarketDesc,
-            portfolioDesc,
-            currentPositions.length > 0 ? currentPositions : undefined,
-            emContext,
-            this.emManager?.getLast(10) ?? [],
-            { leverage: this.marketAgent.getConfig().leverage, positionSizePct: this.marketAgent.getConfig().positionSizePct },
-            this.totalCycles,
-            async (symbol: string): Promise<number | null> => {
-              try {
-                const r = await this.marketAgent.fetchPriceForSymbol(symbol);
-                return r.price;
-              } catch { return null; }
-            },
-          );
-          // Process the sub-cycle result (execute BUY/SELL if consensus says so)
-          const mktDecision = mktResult.consensus.decision;
-          if ((mktDecision.action === 'buy' || mktDecision.action === 'sell') && mktDecision.positionSizePct > 0) {
-            log.info(`📊 Sub-cycle ${mktSym}: ${mktDecision.action.toUpperCase()} ${(mktDecision.positionSizePct * 100).toFixed(1)}% — executing`);
-            // Execute the decision (same as main cycle)
-            const mktExecResult = await this.realTradingManager.executeDecision({
-              ...mktDecision,
-              srSupport: null,
-              srResistance: null,
-            });
-            log.info(`📊 Sub-cycle ${mktSym} executed: ${mktExecResult.success ? '✅' : '❌'}`);
-          } else {
-            log.info(`📊 Sub-cycle ${mktSym}: ${mktDecision.action.toUpperCase()} — no action needed`);
-          }
-          // Merge thoughts into lastHACPResult for UI display
-          if (this.lastHACPResult) {
-            this.lastHACPResult.allThoughts.push(...mktResult.allThoughts);
-            this.lastHACPResult.consensus.perSymbolConsensus.push(...mktResult.consensus.perSymbolConsensus);
-          }
-          this.pushToAPI();
-        } catch (err) {
-          log.warn(`Sub-cycle for ${mktSym} failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-      // v2.0.102: No need to restore Market Agent — we never switched it.
-      // The WS connection stays on the primary activeSymbol throughout.
+      // v2.0.104: Sub-cycles removed. ALL trading markets are analyzed in the
+      // single HACP cycle above. Non-position trading markets are injected as
+      // entries in currentPositions (quantity=0, isTradingMarket=true) before
+      // HACP runs, so agents see them in positions[] and output decisions for
+      // them. This is the original multi-symbol single-cycle architecture.
 
     } catch (err) {
       log.error(`Decision cycle #${this.totalCycles} failed:`, {
@@ -3745,13 +3963,17 @@ class MATSSystem {
       const hlLargeTrades = this.hyperliquidWs?.getLargeTradeCount(60_000) ?? 0;
       const totalLargeTrades = hlLargeTrades;
       const hlMarkPrice = this.hyperliquidWs?.getLatestMarkPrice();
-      const effectiveOB = hlOB;
+      // v2.0.105: Filter raw OB imbalance through adaptive EMA before sentiment
+      // v2.0.106: Use the active symbol's per-asset filter
+      const rawOB = hlOB !== 0 ? hlOB : state.orderBookImbalance;
+      const activeSymFilter = this.assetFilterRegistry?.getFilter(state.primarySymbol ?? '');
+      const effectiveOB = activeSymFilter?.filterEMA('orderBookImbalance', rawOB) ?? rawOB;
       const largeTradeNorm = Math.min(1, totalLargeTrades / 10);
 
       this.sentimentEngine.compute({
         price: state.price,
         volume24h: state.volume24h,
-        orderBookImbalance: effectiveOB !== 0 ? effectiveOB : state.orderBookImbalance,
+        orderBookImbalance: effectiveOB,
         spread: hlSpread > 0 ? hlSpread : 0.0001,
         fearGreedIndex: getLastFearGreedValue(),
         volatilityRegime: state.volatility > 0.02 ? 0.7 : state.volatility > 0.01 ? 0.4 : 0.2,
@@ -3763,6 +3985,16 @@ class MATSSystem {
       lines.push('');
       lines.push('=== GA CHROMOSOME (Sentiment Model) ===');
       lines.push(this.sentimentEngine.getChromosomeSummary());
+    }
+
+    // v2.0.106: Inject per-asset adaptive filter summaries into agent context.
+    // Meta-Agent MUST receive this and factor it into every decision.
+    if (this.assetFilterRegistry && this.assetFilterRegistry.getAllFilters().size > 0) {
+      lines.push('');
+      lines.push(this.assetFilterRegistry.getMetaAgentSummary());
+    } else if (this.adaptiveFilter) {
+      lines.push('');
+      lines.push(this.adaptiveFilter.getCompactSummary());
     }
 
     return lines.join('\n');
@@ -4013,6 +4245,32 @@ class MATSSystem {
           available: getAvailableModels(),
           assignments: getAllAgentModels(),
         },
+        // v2.0.106: Per-asset adaptive filter data for UI display
+        adaptiveFilters: this.assetFilterRegistry ? (() => {
+          const result: Record<string, any> = {};
+          for (const [sym, filter] of this.assetFilterRegistry.getAllFilters()) {
+            const states = filter.getAllChannelStates();
+            let avgSnr = 0, avgAlpha = 0, count = 0;
+            for (const s of Object.values(states)) {
+              avgSnr += s.snr;
+              avgAlpha += s.alpha;
+              count++;
+            }
+            if (count > 0) { avgSnr /= count; avgAlpha /= count; }
+            result[sym] = {
+              profile: filter.getProfileType(),
+              profileDescription: filter.getProfileDescription(),
+              convictionThreshold: filter.getConvictionThreshold(),
+              isThrottled: filter.isTradeFrequencyLimited(),
+              remainingTradeSlots: filter.getRemainingTradeSlots(),
+              maxTradesPerWindow: filter['config'].maxTradesPerWindow,
+              avgAlpha,
+              avgSnr,
+              channels: states,
+            };
+          }
+          return result;
+        })() : undefined,
         cycleProgress: this.cycleProgress,
         hacpThreshold: this.hacpEngine.getCurrentThreshold(),
         evolution: this.evolution.getEvolutionData(),
