@@ -934,6 +934,30 @@ export class APIServer {
         log.info(`   UI: http://localhost:${this.port}`);
       }
     });
+
+    // v2.0.108: Handle EADDRINUSE — kill the old process and retry
+    this.server.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        log.warn(`⚠️ Port ${this.port} already in use — killing old process and retrying...`);
+        import('child_process').then(({ exec }) => {
+          exec(`lsof -ti:${this.port} | xargs kill -9`, (killErr) => {
+            if (killErr) {
+              log.error(`Failed to kill process on port ${this.port}: ${killErr.message}`);
+              log.error(`Please manually kill the process: lsof -ti:${this.port} | xargs kill -9`);
+              return;
+            }
+            // Retry after 1s
+            setTimeout(() => {
+              this.server!.listen(this.port, () => {
+                log.info(`🌐 API Server running on http://localhost:${this.port} (recovered after killing old process)`);
+              });
+            }, 1000);
+          });
+        });
+      } else {
+        log.error(`API Server error: ${err.message}`);
+      }
+    });
   }
 
   stop(): Promise<void> {

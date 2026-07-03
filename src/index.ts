@@ -533,6 +533,16 @@ class MATSSystem {
         this.tradingMarkets = markets;
         log.info(`Trading markets set from UI: ${markets.join(', ') || '(empty)'}`);
         this.pushToAPI();
+        // v2.0.108: Trigger an immediate decision cycle when trading markets change
+        // so agents analyze the new markets without waiting for the next scheduled cycle.
+        if (!this.cycleInProgress && !isShuttingDown()) {
+          log.info(`📊 Trading markets changed — triggering immediate decision cycle`);
+          setTimeout(() => {
+            if (!this.cycleInProgress && !isShuttingDown()) {
+              void this.runDecisionCycle();
+            }
+          }, 1500);
+        }
       });
 
       // v2.0.45: Clear drawdown data to relaunch trading after circuit breaker.
