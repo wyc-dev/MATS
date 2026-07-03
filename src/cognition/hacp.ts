@@ -858,6 +858,22 @@ export class HACPEngine {
             } as TradingDecision,
           },
         };
+        // Also store the full rejection rationale in the Skeptics thought metadata
+        // so the UI can display it per-symbol in the Skeptics card.
+        const skepticsThoughtIdx = allThoughts.findIndex(t => t.agentRole === 'skeptics');
+        if (skepticsThoughtIdx >= 0) {
+          const existingRejections = (allThoughts[skepticsThoughtIdx]!.metadata?.['thesisRejections'] as Array<{ symbol: string; action: string; rationale: string }>) ?? [];
+          allThoughts[skepticsThoughtIdx] = {
+            ...allThoughts[skepticsThoughtIdx]!,
+            metadata: {
+              ...allThoughts[skepticsThoughtIdx]!.metadata,
+              thesisRejections: [
+                ...existingRejections,
+                { symbol: metaSymbol, action: metaAction, rationale: thesisResult.rationale },
+              ],
+            },
+          };
+        }
       } else {
         log.info(`✅ Entry thesis approved by Skeptics for ${metaAction.toUpperCase()} ${metaSymbol}`);
       }
