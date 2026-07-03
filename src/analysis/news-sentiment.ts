@@ -528,3 +528,178 @@ export function formatNewsForAgentMulti(results: (NewsSentimentResult | null)[])
   }
   return `=== NEWS SENTIMENT ===\n${blocks.join('\n---\n')}`;
 }
+
+// ─── v2.0.109: Global Breaking News (Top 10 international headlines) ───
+//
+// Fetches the TOP 10 breaking international headlines from Google News RSS.
+// These are NOT symbol-specific — they are global market-moving news that
+// Meta-Agent uses to assess cross-asset correlations and macro context.
+//
+// Examples: "Fed cuts rates 50bps", "OPEC announces production cut",
+// "SEC sues Binance", "China announces stimulus package"
+//
+// Meta-Agent receives these headlines and must determine whether any of them
+// have a logical or correlated impact on the assets currently being traded.
+
+export interface GlobalNewsHeadline {
+  title: string;
+  publisher: string;
+  pubDate: Date | null;
+  url?: string;
+}
+
+export interface GlobalNewsResult {
+  headlines: GlobalNewsHeadline[];
+  fetchedAt: number;
+  source: string;
+}
+
+// 5-minute cache for global news (same cadence as per-symbol news)
+let globalNewsCache: GlobalNewsResult | null = null;
+let globalNewsCacheTime = 0;
+const GLOBAL_NEWS_CACHE_TTL = 300_000; // 5 min
+
+/**
+ * Fetch the TOP 10 breaking international headlines from Google News RSS.
+ * These are general market/business headlines, not symbol-specific.
+ * Used by Meta-Agent for cross-asset correlation analysis.
+ */
+export async function fetchGlobalBreakingNews(): Promise<GlobalNewsResult | null> {
+  // Check cache
+  if (globalNewsCache && Date.now() - globalNewsCacheTime < GLOBAL_NEWS_CACHE_TTL) {
+    return globalNewsCache;
+  }
+
+  try {
+    // Google News RSS "Business" + "World" categories — top breaking headlines
+    // We fetch from the general "business" section which covers markets, economy, geopolitics
+    const headlines: GlobalNewsHeadline[] = [];
+
+    // Source 1: Google News Business RSS (top breaking business/market news)
+    const businessUrl = 'https://news.google.com/rss/search?q=stock+market+OR+federal+reserve+OR+economy+OR+crypto+OR+bitcoin+OR+oil+OR+gold+OR+geopolitics+OR+tariff+OR+inflation+OR+recession&hl=en-US&gl=US&ceid=US:en';
+    try {
+      const res = await fetch(businessUrl, { signal: AbortSignal.timeout(8_000) });
+      if (res.ok) {
+        const xml = await res.text();
+        const items = xml.match(/<item>[\s\S]*?<\/item>/g) ?? [];
+        for (const item of items.slice(0, 10)) {
+          const titleMatch = item.match(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/);
+          const pubMatch = item.match(/<pubDate>(.*?)<\/pubDate>/);
+          const sourceMatch = item.match(/<source[^>]*>(.*?)<\/source>/);
+          const linkMatch = item.match(/<link>(.*?)<\/link>/);
+          if (titleMatch?.[1]) {
+            headlines.push({
+              title: titleMatch[1].trim(),
+              publisher: sourceMatch?.[1]?.trim() ?? 'Google News',
+              pubDate: pubMatch?.[1] ? new Date(pubMatch[1].trim()) : null,
+              url: linkMatch?.[1]?.trim(),
+            });
+          }
+        }
+      }
+    } catch {
+      // Fail-open — try next source
+    }
+
+    // Source 2: Bing News RSS as fallback (if Google News returned < 5 headlines)
+    if (headlines.length < 5) {
+      try {
+        const bingUrl = 'https://www.bing.com/news/search?q=breaking+market+news+economy+geopolitics&format=rss';
+        const res = await fetch(bingUrl, { signal: AbortSignal.timeout(6_000) });
+        if (res.ok) {
+          const xml = await res.text();
+          const items = xml.match(/<item>[\s\S]*?<\/item>/g) ?? [];
+          for (const item of items.slice(0, 10)) {
+            const titleMatch = item.match(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/);
+            const pubMatch = item.match(/<pubDate>(.*?)<\/pubDate>/);
+            const sourceMatch = item.match(/<source[^>]*>(.*?)<\/source>/);
+            if (titleMatch?.[1]) {
+              // Dedup by title
+              const title = titleMatch[1].trim();
+              if (!headlines.some(h => h.title === title)) {
+                headlines.push({
+                  title,
+                  publisher: sourceMatch?.[1]?.trim() ?? 'Bing News',
+                  pubDate: pubMatch?.[1] ? new Date(pubMatch[1].trim()) : null,
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // Fail-open
+      }
+    }
+
+    if (headlines.length === 0) {
+      log.debug('[global-news] No headlines fetched from any source');
+      return null;
+    }
+
+    // Sort by date (newest first), cap at 10
+    headlines.sort((a, b) => {
+      if (!a.pubDate && !b.pubDate) return 0;
+      if (!a.pubDate) return 1;
+      if (!b.pubDate) return -1;
+      return b.pubDate.getTime() - a.pubDate.getTime();
+    });
+
+    const result: GlobalNewsResult = {
+      headlines: headlines.slice(0, 10),
+      fetchedAt: Date.now(),
+      source: headlines.length >= 5 ? 'Google News RSS' : 'Google News + Bing News RSS',
+    };
+
+    // Update cache
+    globalNewsCache = result;
+    globalNewsCacheTime = Date.now();
+
+    log.info(`🌍 [global-news] Fetched ${result.headlines.length} breaking headlines from ${result.source}`);
+    return result;
+  } catch {
+    log.debug('[global-news] Failed to fetch global breaking news');
+    return null;
+  }
+}
+
+/**
+ * Format global breaking news for Meta-Agent context injection.
+ * Meta-Agent receives these headlines and must assess cross-asset impact.
+ */
+export function formatGlobalNewsForMetaAgent(result: GlobalNewsResult | null): string {
+  if (!result || result.headlines.length === 0) {
+    return '';
+  }
+
+  const lines: string[] = [
+    '=== GLOBAL BREAKING NEWS (Top 10 — Cross-Asset Impact Analysis) ===',
+    '⚠️ META-AGENT: You MUST analyze whether ANY of these headlines have a logical or correlated',
+    'impact on the assets you are currently trading (BTC, xyz:SKHX, xyz:SILVER, etc.).',
+    'Consider: macro cascading effects, sector rotation, risk-on/risk-off shifts, currency impacts,',
+    'commodity supply/demand changes, geopolitical risk premiums, and regulatory developments.',
+    'If a headline directly impacts a traded asset → factor it into your entryThesis or holdReason.',
+    '',
+  ];
+
+  for (let i = 0; i < result.headlines.length; i++) {
+    const h = result.headlines[i]!;
+    const emoji = h.title.match(new RegExp(`\\b(${[...POSITIVE_WORDS].slice(0, 15).join('|')})\\b`, 'i'))
+      ? '🟢'
+      : h.title.match(new RegExp(`\\b(${[...NEGATIVE_WORDS].slice(0, 15).join('|')})\\b`, 'i'))
+        ? '🔴'
+        : '⚪';
+    lines.push(`${i + 1}. ${emoji} [${h.publisher}, ${ageLabel(h.pubDate)}] ${h.title.slice(0, 150)}`);
+  }
+
+  lines.push('');
+  lines.push('CROSS-ASSET CORRELATION GUIDE:');
+  lines.push('  • Fed/ECB rate decisions → ALL assets (risk-on/off, DXY, gold, crypto)');
+  lines.push('  • Geopolitical conflict → oil ↑, gold ↑, risk assets ↓, safe-haven flows');
+  lines.push('  • Crypto regulation → BTC/ETH direct impact, correlated alts');
+  lines.push('  • AI/semiconductor news → SK Hynix, Nvidia, tech indices direct impact');
+  lines.push('  • Inflation/CPI data → gold, silver, FX, rate-sensitive assets');
+  lines.push('  • Trade/tariff news → commodities, FX, supply chain stocks');
+  lines.push('  • Recession indicators → risk assets ↓, bonds/gold ↑, defensive rotation');
+
+  return lines.join('\n');
+}

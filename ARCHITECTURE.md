@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.108 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology + Skeptics Absolute Veto + Meta-Agent Detective Mode + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation + Close Validation + Active Position Management + No Backward-Looking Blocking + Extreme Reasoning + RBC/S/R for All Positions + UI Improvements + Thesis-Mandatory Close + Multi-Symbol Single-Cycle + Trading Market Injection + Per-Asset Adaptive Noise Filter + EADDRINUSE Recovery + Immediate Cycle on Market Change)
+> **版本**: 2.0.109 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology + Skeptics Absolute Veto + Meta-Agent Detective Mode + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation + Close Validation + Active Position Management + No Backward-Looking Blocking + Extreme Reasoning + RBC/S/R for All Positions + UI Improvements + Thesis-Mandatory Close + Multi-Symbol Single-Cycle + Trading Market Injection + Per-Asset Adaptive Noise Filter + EADDRINUSE Recovery + Immediate Cycle on Market Change + News Reporter Priority + Global Breaking News Cross-Asset Analysis)
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~20,000+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
