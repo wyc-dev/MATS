@@ -537,8 +537,9 @@ class MATSSystem {
       // are analyzed in that SINGLE HACP cycle (multi-symbol single-cycle).
       let tradingMarketsCycleTimer: ReturnType<typeof setTimeout> | null = null;
       this.apiServer.setTradingMarketsHandler((markets) => {
+        const prevCount = this.tradingMarkets.length;
         this.tradingMarkets = markets;
-        log.info(`Trading markets set from UI: ${markets.join(', ') || '(empty)'}`);
+        log.info(`Trading markets set from UI: ${markets.join(', ') || '(empty)'} (prev=${prevCount}, new=${markets.length})`);
         this.pushToAPI();
         // v2.0.110: Debounce — only trigger ONE cycle 2s after the last change.
         // This prevents multiple overlapping cycle triggers when UI sends
@@ -549,6 +550,12 @@ class MATSSystem {
           if (!this.cycleInProgress && !isShuttingDown()) {
             log.info(`📊 Trading markets settled — triggering single HACP cycle for all ${this.tradingMarkets.length} market(s)`);
             void this.runDecisionCycle();
+          } else if (this.cycleInProgress) {
+            // v2.0.108: If a cycle is already running, the new markets will be
+            // picked up by the NEXT scheduled cycle (300s). But if the current
+            // cycle only has 1 market and we just received 3, we should trigger
+            // an immediate cycle after the current one finishes.
+            log.info(`📊 Trading markets updated during cycle — will be picked up by next cycle (tradingMarkets=${this.tradingMarkets.length})`);
           }
         }, 2000);
       });
@@ -1319,6 +1326,8 @@ class MATSSystem {
       // v2.0.104: Store additional non-position trading markets to inject into currentPositions
       (this as any)._additionalMarkets = nonPositionMarkets.filter(s => s !== activeSymbol);
       log.info(`📊 _additionalMarkets: [${((this as any)._additionalMarkets as string[]).join(', ')}] (tradingMarkets=${this.tradingMarkets.length}, nonPosition=${nonPositionMarkets.length})`);
+      // v2.0.108: Record market count at cycle start for post-cycle drift detection
+      (this as any)._cycleMarketCount = this.tradingMarkets.length;
     } else {
       // No trading markets and no open positions — fall back to auto-select
       const selectedSymbol = await this.marketAgent.autoSelectTopPair();
@@ -1328,10 +1337,20 @@ class MATSSystem {
         return;
       }
       activeSymbol = selectedSymbol;
-      // Add the auto-selected symbol to trading markets
-      this.tradingMarkets = [activeSymbol];
+      // v2.0.106: APPEND auto-selected symbol to trading markets — do NOT
+      // overwrite. Previously this set this.tradingMarkets = [activeSymbol],
+      // which destroyed any markets the UI had set. If the UI had 3 markets
+      // and a cycle ran with allSymbols.length === 0 (e.g. all were filtered
+      // out by a transient bug), this line would reset to 1 market, and the
+      // UI would never re-sync because its lastPostedMarkets hadn't changed.
+      // Now we only add the auto-selected symbol if it's not already in the list.
+      if (!this.tradingMarkets.includes(activeSymbol)) {
+        this.tradingMarkets = [...this.tradingMarkets, activeSymbol].slice(0, 3);
+      }
       (this as any)._additionalMarkets = [];
-      log.info(`No trading markets or positions — auto-selected ${activeSymbol} and added to trading markets`);
+      // v2.0.108: Record market count at cycle start for post-cycle drift detection
+      (this as any)._cycleMarketCount = this.tradingMarkets.length;
+      log.info(`No trading markets or positions — auto-selected ${activeSymbol} and appended to trading markets (now ${this.tradingMarkets.length})`);
     }
     // v2.0.79: Use normalizeSymbol instead of toUpperCase — DEX prefixes (xyz:)
     // must stay lowercase for HL API calls. normalizeSymbol lowercases the
@@ -3737,6 +3756,20 @@ class MATSSystem {
       this.cycleInProgress = false;
       this.cycleProgress = null;
       this.pushToAPI();
+      // v2.0.108: Post-cycle market drift check. If tradingMarkets changed
+      // during the cycle (e.g. UI re-POSTed 3 markets while cycle only had 1),
+      // trigger an immediate cycle to analyze the full set. Without this,
+      // the system waits 300s for the next scheduled cycle.
+      const cycleMarketCount = (this as any)._cycleMarketCount ?? 0;
+      const currentMarketCount = this.tradingMarkets.length;
+      if (currentMarketCount > cycleMarketCount && !isShuttingDown()) {
+        log.info(`📊 Post-cycle drift: markets ${cycleMarketCount} → ${currentMarketCount} — triggering immediate cycle`);
+        setTimeout(() => {
+          if (!this.cycleInProgress && !isShuttingDown()) {
+            void this.runDecisionCycle();
+          }
+        }, 1000);
+      }
     }
   }
 

@@ -86,6 +86,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
   const meta = AGENT_META[role]
   const [thoughtExpanded, setThoughtExpanded] = useState(false)
   const [expandedRationales, setExpandedRationales] = useState<Set<string>>(new Set())
+  const [expandedRejections, setExpandedRejections] = useState<Set<string>>(new Set())
   if (!meta) return null
 
   const toggleRationale = (symbol: string) => {
@@ -179,6 +180,9 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
   // For Skeptics: extract per-symbol audit results
   const skepticsAudit: { symbol: string; approved: number; modified: number; details: string[] }[] =
     thought?.metadata?.perSymbolAudit ?? []
+  // v2.0.105: Extract thesis rejections (Phase 1.8 full rationale) for Skeptics UI
+  const thesisRejections: { symbol: string; action: string; rationale: string }[] =
+    thought?.metadata?.thesisRejections ?? []
 
   // News headlines only shown for News Reporter
   const isNewsReporter = role === 'news_reporter'
@@ -259,16 +263,55 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
         </select>
       </div>
       {/* Per-symbol section: decision tag + news headlines (News Reporter only) */}
-      {/* For Skeptics: per-symbol audit results instead of decisions */}
-      {skepticsAudit.length > 0 ? (
+      {/* For Skeptics: per-symbol audit results + thesis rejections instead of decisions */}
+      {skepticsAudit.length > 0 || thesisRejections.length > 0 ? (
         <div className="agent-per-symbol-section">
-          {skepticsAudit.map((a, i) => (
-            <div key={i} className="agent-per-symbol-group">
+          {skepticsAudit.map((a, i) => {
+            // Check if there's a thesis rejection for this symbol
+            const rejection = thesisRejections.find(r => r.symbol === a.symbol)
+            const rejKey = `skeptics-${a.symbol}`
+            const rejExpanded = expandedRejections.has(rejKey)
+            return (
+              <div key={i} className="agent-per-symbol-group">
+                <div className="agent-per-symbol-header">
+                  <span className="agent-decision-symbol">{a.symbol}</span>
+                  <span className={`decision-tag ${a.modified > 0 ? 'sell' : 'hold'} decision-tag-inner`}>
+                    {a.modified > 0 ? `⚠ ${a.modified} MOD` : `✓ ${a.approved} OK`}
+                  </span>
+                </div>
+                {rejection && (
+                  <>
+                    <button
+                      className="agent-rationale-toggle"
+                      onClick={() => {
+                        setExpandedRejections(prev => {
+                          const next = new Set(prev)
+                          if (next.has(rejKey)) next.delete(rejKey)
+                          else next.add(rejKey)
+                          return next
+                        })
+                      }}
+                      title={rejExpanded ? 'Collapse' : 'Expand'}
+                    >
+                      {rejExpanded ? '▲ Rejection' : '▼ Rejection'}
+                    </button>
+                    <div className={`agent-per-symbol-rationale ${rejExpanded ? 'agent-rationale-expanded' : 'agent-rationale-collapsed'}`} style={{ fontSize: 'var(--fs-sm)', lineHeight: 1.5, color: 'var(--red)' }}>
+                      🚫 REJECTED {rejection.action.toUpperCase()}: {rejection.rationale}
+                    </div>
+                  </>
+                )}
+              </div>
+            )
+          })}
+          {/* Show thesis rejections that don't have a matching perSymbolAudit entry */}
+          {thesisRejections.filter(r => !skepticsAudit.some(a => a.symbol === r.symbol)).map((r, i) => (
+            <div key={`rej-${i}`} className="agent-per-symbol-group">
               <div className="agent-per-symbol-header">
-                <span className="agent-decision-symbol">{a.symbol}</span>
-                <span className={`decision-tag ${a.modified > 0 ? 'sell' : 'hold'} decision-tag-inner`}>
-                  {a.modified > 0 ? `⚠ ${a.modified} MOD` : `✓ ${a.approved} OK`}
-                </span>
+                <span className="agent-decision-symbol">{r.symbol}</span>
+                <span className="decision-tag sell decision-tag-inner">🚫 REJ</span>
+              </div>
+              <div className="agent-per-symbol-rationale agent-rationale-expanded" style={{ fontSize: 'var(--fs-sm)', lineHeight: 1.5, color: 'var(--red)' }}>
+                {r.rationale}
               </div>
             </div>
           ))}
@@ -491,27 +534,52 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   }, [tradingMarkets])
 
   // Sync from backend on initial load (in case backend auto-added a market)
+  // v2.0.106: Also RE-POST if UI has more markets than backend (drift correction).
+  // Previously, if backend lost markets (e.g. auto-select overwrote to 1),
+  // the UI kept showing 3 pills but never re-synced because lastPostedMarkets
+  // hadn't changed. Now we detect the drift and force a re-POST directly.
+  // v2.0.109: MUST depend on tradingMarkets too — otherwise the closure captures
+  // a stale tradingMarkets value and the comparison is wrong. Also removed the
+  // lastPostedMarkets guard in the drift branch — if backend is missing markets,
+  // we MUST re-POST unconditionally (lastPostedMarkets only guards the normal
+  // sync effect, not the drift correction).
   useEffect(() => {
-    if (data?.tradingMarkets && Array.isArray(data.tradingMarkets)) {
-      setTradingMarkets(prev => {
-        // v2.0.79: Dedup by normalized symbol — "BTC" and "btc" are the same
-        const norm = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
-        const seen = new Set<string>()
-        const merged: string[] = []
-        for (const s of [...prev, ...data.tradingMarkets!]) {
-          const n = norm(s)
-          if (!seen.has(n)) {
-            seen.add(n)
-            merged.push(s)
-          }
-          if (merged.length >= 3) break
-        }
-        const prevJson = JSON.stringify(prev)
-        const mergedJson = JSON.stringify(merged)
-        return mergedJson !== prevJson ? merged : prev
-      })
+    if (!data?.tradingMarkets || !Array.isArray(data.tradingMarkets)) return
+    const backendMarkets = data.tradingMarkets
+    const norm = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
+    // Check if backend is missing any markets that the UI has
+    const uiSet = new Set(tradingMarkets.map(norm))
+    const backendSet = new Set(backendMarkets.map(norm))
+    const backendMissing = [...uiSet].filter(s => !backendSet.has(s))
+    if (backendMissing.length > 0 && tradingMarkets.length > 0) {
+      // Backend has fewer markets than UI — re-POST to correct drift.
+      // Do NOT check lastPostedMarkets here — the whole point is that
+      // the normal sync effect already posted but backend lost the data.
+      // We must force re-POST every time we detect drift.
+      lastPostedMarkets.current = JSON.stringify(tradingMarkets)
+      fetch(`${API_BASE}/market-agent/trading-markets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ markets: tradingMarkets }),
+      }).catch(() => { /* ignore */ })
     }
-  }, [data?.tradingMarkets])
+    // Also merge backend markets into UI (in case backend auto-added a market)
+    setTradingMarkets(prev => {
+      const seen = new Set<string>()
+      const merged: string[] = []
+      for (const s of [...prev, ...backendMarkets]) {
+        const n = norm(s)
+        if (!seen.has(n)) {
+          seen.add(n)
+          merged.push(s)
+        }
+        if (merged.length >= 3) break
+      }
+      const prevJson = JSON.stringify(prev)
+      const mergedJson = JSON.stringify(merged)
+      return mergedJson !== prevJson ? merged : prev
+    })
+  }, [data?.tradingMarkets, tradingMarkets])
 
   const addTradingMarket = async (symbol: string) => {
     // v2.0.79: Normalize symbol before adding — prevents BTC + btc coexistence.
