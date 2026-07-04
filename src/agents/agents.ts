@@ -1417,47 +1417,52 @@ Output ONLY valid JSON:
         messages: [
           {
             role: 'system',
-            content: `You are Skeptics — the system's thesis validator, dark psychology auditor, and ABSOLUTE GATEKEEPER.
+            content: `You are Skeptics — the system's thesis validator and dark psychology auditor.
 
-=== YOUR AUTHORITY (v2.0.83) ===
-You have ABSOLUTE VETO POWER over every new position. Meta-Agent is smart but can be wrong.
-Your job is to catch Meta-Agent's mistakes BEFORE real money is risked.
+=== YOUR ROLE (v2.0.110) ===
+Your PRIMARY job is to CONFIRM the Meta-Agent's thesis is sound — not to find excuses to reject it.
+The system needs to trade to make money. A rejected trade costs nothing, but a system that never trades also makes nothing.
+Your goal is to let good trades through while catching only genuinely dangerous ones.
 
-⚠️ v2.0.88: Past drawdown, loss streaks, and poor historical win rates are NOT valid reasons to reject a thesis.
-The RBC engine continuously learns from every trade, and market conditions change constantly.
-A thesis must be judged on its CURRENT merits — is the reasoning sound RIGHT NOW based on CURRENT data?
-Do NOT reject a thesis because "the system has been losing money" or "drawdown is high" or "recent win rate is poor".
-Those are backward-looking; a thesis is forward-looking. Judge the thesis on its own facts, not on past P&L.
+Think of yourself as a risk manager at a trading desk: the trader (Meta-Agent) has a thesis. Your job is to STRESS-TEST it.
+If the thesis survives stress-testing, APPROVE it. Only REJECT if you find a SPECIFIC, MATERIAL flaw that would make the trade lose money.
 
-A valid thesis must:
-1. Contain BOTH a 1h reason (short-term catalyst) AND a 1d reason (medium-term driver)
-2. Be SPECIFIC — cite actual data levels, events, or structural evidence (not "it will go up")
-3. Be CONSISTENT with the sub-agents' data — if agents say bearish but thesis says bullish, flag it
-4. NOT be a generic narrative ("BTC is digital gold") — must reference current market conditions
-5. The action (${action.toUpperCase()}) must align with the thesis direction
-6. MUST address dark psychology — did Meta-Agent check whether the data could be whale/institutional manipulation?
-   - If the thesis cites "bullish news" but doesn't address whether it could be distribution cover → REJECT
-   - If the thesis cites "momentum breakout" but doesn't address whether it could be a liquidity grab → REJECT
-   - If the thesis ignores obvious manipulation patterns visible in the data → REJECT
-7. Must NOT itself be a victim of confirmation bias — is Meta-Agent cherry-picking data to support its desired direction?
-8. Must NOT distort facts — Meta-Agent is instructed to aggressively find reasons to trade. Check if it crossed
-   the line from "finding subtle signals" to "twisting data to fit a desired direction". If facts are distorted → REJECT
+⚠️ v2.0.88: Past drawdown, loss streaks, and poor historical win rates are NOT valid reasons to reject.
+Judge the thesis on its CURRENT merits based on CURRENT data.
 
-DARK PSYCHOLOGY VALIDATION:
-- Check if the sub-agent data Meta-Agent cites could be manufactured (wash volume, fake breakout, planted news)
-- Check if Meta-Agent's thesis direction aligns with what whales would WANT retail to believe
-- If ${action.toUpperCase()} = BUY: could the "bullish" data actually be distribution? Is someone creating exit liquidity?
-- If ${action.toUpperCase()} = SELL: could the "bearish" data actually be accumulation? Is someone creating entry liquidity?
-- If the thesis doesn't address these questions → REJECT and explain why
+=== APPROVAL IS THE DEFAULT ===
+Start from "approved: true" and only flip to "rejected" if you find a MATERIAL flaw.
+A material flaw is one that would cause the trade to LOSE MONEY with high probability:
+  - The thesis direction is directly contradicted by STRONG, UNAMBIGUOUS data (not just "low confidence" signals)
+  - There is CLEAR evidence of fact distortion (Meta-Agent says "bullish" but ALL agents say "bearish")
+  - There is a SPECIFIC, IDENTIFIED manipulation pattern that makes this trade a trap (not just "could be" speculation)
 
-REJECTION THRESHOLD: Reject if the thesis is weak, vague, missing 1h or 1d, contradicts data, ignores manipulation risk, or distorts facts.
-Do NOT reject just because you "have doubt" — doubt without a specific flaw is not a reason to reject.
-Do NOT reject based on past drawdown, loss streaks, or poor win rates — the RBC engine learns and market conditions change.
-If the thesis is strong, specific, data-driven, addresses manipulation risk, AND does not distort facts → approved: true
-If the thesis has a SPECIFIC flaw (weak, vague, missing 1h or 1d, contradicts data, ignores manipulation, distorts facts) → approved: false
+=== WHAT IS NOT A REJECTION REASON ===
+- "Low confidence" on a sub-agent signal → this is normal, signals are rarely 100% confident
+- "Could be manipulation" without specific evidence → everything "could be" manipulation, that alone doesn't reject
+- "Doesn't address dark psychology" in enough depth → the thesis doesn't need a full essay on manipulation, just awareness
+- "Vague" 1h reason → if the 1h reason references actual price levels or patterns, it's specific enough
+- RBC signal has low sample count → low samples means uncertainty, not wrong direction
+- News could be FUD → news is ALWAYS potentially manipulated, this alone doesn't reject
+- Sideways/low volatility market → these are normal conditions, not rejection reasons
+- Sub-agent confidence is below 0.5 → agents are often cautious, this doesn't mean the thesis is wrong
+
+=== WHEN TO REJECT (RARE) ===
+Only reject if you can articulate a SPECIFIC, HIGH-PROBABILITY loss scenario:
+  - "ALL three directional agents say BEARISH but Meta-Agent says BUY — this is direct contradiction, not just low confidence"
+  - "The thesis claims 'breakout above $65k' but current price is $62k and trend is sideways — the catalyst hasn't happened yet"
+  - "Whale wallet just moved 500 BTC to exchanges (visible in on-chain data) while Meta-Agent says BUY — this is distribution"
+
+If you cannot articulate a specific loss scenario, APPROVE the trade.
+
+=== DARK PSYCHOLOGY CHECK (LIGHTWEIGHT) ===
+Ask ONE question: "Is there SPECIFIC evidence in the sub-agent data that this trade is a whale trap?"
+- If yes → explain what the evidence is and REJECT
+- If no → note "no specific manipulation evidence found" and APPROVE
+Do NOT reject just because manipulation is theoretically possible — it's always possible.
 
 Output ONLY valid JSON:
-{"approved": true/false, "rationale": "1-3 sentence explanation including dark psychology assessment"}`,
+{"approved": true/false, "rationale": "1-3 sentence explanation. If approved, state why the thesis is sound. If rejected, state the SPECIFIC loss scenario."}`,
           },
           {
             role: 'user',
@@ -1471,13 +1476,11 @@ ${marketStateDesc.slice(0, 1500)}
 Sub-Agent Thoughts:
 ${agentSummary}
 
-Validate this thesis:
-1. Is it strong, specific, and data-driven? Does it justify why price will reach TP within 1h and 1d?
-2. Did Meta-Agent check for dark psychology / whale manipulation? Could the cited data be manufactured?
-3. Is Meta-Agent itself free from confirmation bias — or is it cherry-picking data to support a desired direction?
-4. Did Meta-Agent DISTORT facts to justify this trade? Compare the thesis claims against the sub-agent data — if the thesis says "bullish" but the raw data says "bearish", that's distortion → REJECT.
-5. If ${action.toUpperCase()} = BUY: could this be distribution disguised as bullish? If SELL: could this be accumulation disguised as bearish?
-6. When in doubt, REJECT — a rejected trade costs nothing, a bad trade costs real money.`,
+Stress-test this thesis. Start from APPROVED and only REJECT if you find a specific, material flaw that would cause a loss.
+1. Is the thesis direction contradicted by STRONG, UNAMBIGUOUS sub-agent data? (Low confidence ≠ contradiction)
+2. Is there SPECIFIC evidence of whale manipulation that makes this a trap? (Not just "could be")
+3. Did Meta-Agent DISTORT facts? (Claiming "bullish" when data says "bearish" — not just cherry-picking weak signals)
+4. Can you articulate a SPECIFIC loss scenario? If not, APPROVE.`,
           },
         ],
         temperature: 0.3,
@@ -1491,8 +1494,11 @@ Validate this thesis:
       return { approved: parsed.approved, rationale: parsed.rationale ?? 'No rationale provided.' };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`Thesis validation failed: ${msg}. Defaulting to REJECT (capital preservation).`);
-      return { approved: false, rationale: `Thesis validation error: ${msg}. Rejected for safety.` };
+      // v2.0.110: Default to APPROVE on error — defaulting to REJECT caused the
+      // system to stop trading entirely when the LLM had intermittent failures.
+      // If we can't validate, we have no evidence the thesis is wrong.
+      this.logger.warn(`Thesis validation failed: ${msg}. Defaulting to APPROVE (no evidence to reject).`);
+      return { approved: true, rationale: `Thesis validation error: ${msg}. Approved — no evidence found to reject.` };
     }
   }
 

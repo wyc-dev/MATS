@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.109-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.110-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -127,7 +127,7 @@ MATS does not rely on a single AI model. Instead, **eight specialized agents thi
 | **RBC & Sentiment Analyst** | RBC clusters + Fear & Greed specialist | 0.25 | 0.10 |
 | **News Reporter** | Shadow Strategist news motive analyzer | 0.40 | 0.10 |
 | **Independent Risk Auditor** | Risk limits + regime-aware TP/SL (advisory-only, cannot veto) | 0.10 | 0.25 |
-| **Skeptics** | Logic auditor + **absolute veto on new positions** (thesis validation + dark psychology audit + close decision validation) | 0.30 | — |
+| **Skeptics** | Logic auditor + **stress-tester for new positions** (approve-first: validates thesis, only rejects on specific material flaw that would cause a loss) | 0.30 | — |
 | **Meta-Agent** | Detective — aggressively reasons from facts to find trade edges; generates entryThesis (1h+1d rationale); weight 0.00 (thesis system controls, not voting) | 0.45 | 0.00 |
 
 Each agent operates with **independent temperature, weight, data sources, and reasoning models**, ensuring genuine opinion diversity and preventing groupthink.
@@ -237,7 +237,7 @@ Capital preservation is the absolute first priority —
 profit generation must occur within safety constraints.
 ```
 
-- **Skeptics absolute veto** over new positions — thesis must be strong, specific, data-driven, and free from manipulation blind spots
+- **Skeptics stress-tester** over new positions — thesis must survive stress-testing; only rejected if a specific, material flaw is found that would cause a loss. Approve-first design (v2.0.110): previously "reject by default" caused the system to stop trading for days
 - **Risk Auditor advisory-only** — cannot block trades, only suggests TP/SL/size adjustments; hardcoded safety layers (choppy market 50% cut, loss-streak graduated reduction) retained
 - **Graceful degradation**: every error path defaults to HOLD
 - **Notional-based double-sided fee deduction** — HL taker fee (0.04%) charged on leveraged notional; paper PnL reflects real cost
@@ -464,6 +464,13 @@ If you require a commercial license — for example, for proprietary extensions,
 ---
 
 ## Changelog
+
+### v2.0.110 — Skeptics Approve-First + Noise Trading Reduction + Multi-Market Drift Correction
+
+- **Skeptics Approve-First** (v2.0.110): Rewrote `validateEntryThesis()` prompt from "ABSOLUTE GATEKEEPER, reject by default" to "risk manager, approve by default, only reject on specific material flaw that would cause a loss". Explicitly lists what is NOT a rejection reason (low confidence, could-be manipulation, vague 1h reason, low RBC samples, news could be FUD, sideways market). Error fallback changed from REJECT to APPROVE. This fixed the issue where the system didn't trade for 2 consecutive days because Skeptics rejected every thesis.
+- **Decision interval 60s → 300s** (v2.0.103): Reduced decision cycle frequency from 1 minute to 5 minutes. 1-minute price changes are microstructure noise, not signal. RBC hypothetical training also throttled to every 5 cycles (25min samples instead of 1min noise).
+- **Skeptics thesis rejection UI** (v2.0.105): Full rejection rationale now stored in `metadata.thesisRejections[]` and displayed per-symbol in the Skeptics UI card with expand/collapse toggle.
+- **Multi-market drift correction** (v2.0.106–v2.0.108): UI force re-POSTs trading markets when backend has fewer markets than UI. Auto-select fallback appends instead of overwrites. Post-cycle drift check triggers immediate cycle when markets changed mid-cycle. Fixed the issue where backend lost trading markets (e.g. had 1 instead of 3) but UI kept showing 3 pills without re-syncing.
 
 ### v2.0.109 — News Reporter Priority + Global Breaking News Cross-Asset Analysis
 
