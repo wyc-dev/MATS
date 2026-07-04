@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.109 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology + Skeptics Absolute Veto + Meta-Agent Detective Mode + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation + Close Validation + Active Position Management + No Backward-Looking Blocking + Extreme Reasoning + RBC/S/R for All Positions + UI Improvements + Thesis-Mandatory Close + Multi-Symbol Single-Cycle + Trading Market Injection + Per-Asset Adaptive Noise Filter + EADDRINUSE Recovery + Immediate Cycle on Market Change + News Reporter Priority + Global Breaking News Cross-Asset Analysis)
+> **版本**: 2.0.110 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology + Skeptics Stress-Tester + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation + Close Validation + Active Position Management + No Backward-Looking Blocking + Extreme Reasoning + RBC/S/R for All Positions + UI Improvements + Thesis-Mandatory Close + Multi-Symbol Single-Cycle + Trading Market Injection + Per-Asset Adaptive Noise Filter + EADDRINUSE Recovery + Immediate Cycle on Market Change + News Reporter Priority + Global Breaking News Cross-Asset Analysis + Skeptics Approve-First + Noise Trading Reduction + Multi-Market Drift Correction)
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~20,000+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -427,7 +427,7 @@
 | 4 | **RBC & Sentiment Analyst** | 0.25 | 0.10 | 2-8x | RBC (Range-Based Clustering) 專家 + **恐慌指數 (F&G)**。RBC 係 growing hyperrectangle 從價格行為學習 win/loss 範圍。🟢 FAVORABLE → 增加信心。🔴 UNFAVORABLE → 強烈反對入場。0-25 Extreme Fear→BEARISH, 75-100 Extreme Greed→BULLISH。每個持倉獨立評估。|
 | 5 | **News Reporter** | 0.40 | 0.10 | 1-3x | 隐性策略师新闻动机分析 (v2.0.76)。分析新闻源头、阴谋、动机；评估该资产中长线盈利与需求是否有急性增加或急性价值下跌。动机修正后情感面：为派发而制造的「利好」= 看跌，为收集而制造的 FUD = 看涨。模型 DeepSeek V4 Flash，权重 0.10（v2.0.82 降權——數據收集角色，信心指數供 Meta-Agent + Skeptics 參考）。|
 | 6 | **Independent Risk Auditor** | 0.10 | 0.25 | — | 🆕 v2.0.82: **降級為參考**（advisory-only，不可 veto）。保留 TP/SL/size 調整建議 + 硬性代碼限制（震盪市 50% 減倉、loss-streak 漸進減倉、虧損冷卻期）。Meta-Agent + Skeptics 理據系統是唯一開倉把關。🆕 v2.0.13: 近期 10 個 trade 模式分析，偵測震盪市並動態調整 TP/SL。|
-| 7 | **Skeptics** | 0.30 | 0.00 | — | 🤔 **邏輯審計員 + 絕對否決權 (v2.0.80–v2.0.83)。** Phase 1.5 執行，在 Meta-Agent 思考前質疑 5 個 sub-agent 的決策。檢查數據一致性、跨 Agent 交叉對比、**參考每個 Agent 的歷史 track record (AgentOutcomeTracker)**。🆕 v2.0.80: **Phase 1.8** 驗證 Meta-Agent 的 entryThesis（強而有力、數據驅動、暗黑心理學審查、事實扭曲檢查）→ 拒絕即 HOLD。🆕 v2.0.80: **Phase 0.5** 每個 cycle 重新驗證所有未平倉位的 entryThesis → 失效即強制平倉。🆕 v2.0.83: **絕對否決權** — 有疑即拒，拒絕的交易零成本，壞交易花真金白銀。default 模型: deepseek-v4-flash:cloud。不干預 Meta-Agent 和 Market Agent。|
+| 7 | **Skeptics** | 0.30 | 0.00 | — | 🤔 **邏輯審計員 + 壓力測試員 (v2.0.80–v2.0.110)。** Phase 1.5 執行，在 Meta-Agent 思考前質疑 5 個 sub-agent 的決策。檢查數據一致性、跨 Agent 交叉對比、**參考每個 Agent 的歷史 track record (AgentOutcomeTracker)**。🆕 v2.0.80: **Phase 1.8** 驗證 Meta-Agent 的 entryThesis（強而有力、數據驅動、暗黑心理學審查、事實扭曲檢查）→ 拒絕即 HOLD。🆕 v2.0.80: **Phase 0.5** 每個 cycle 重新驗證所有未平倉位的 entryThesis → 失效即強制平倉。🆕 v2.0.110: **Approve-First 壓力測試** — 預設 APPROVE，只係喺搵到具體、會導致輸錢嘅 material flaw 嗰陣先 REJECT。唔再因為「low confidence」、「could be manipulation」等弱理由 reject。Error fallback 改為 APPROVE（之前 REJECT 導致系統連續兩日冇開過倉）。default 模型: deepseek-v4-flash:cloud。不干預 Meta-Agent 和 Market Agent。|
 | 8 | **Meta-Agent** | 0.45 | 0.00 | 2-10x | 🆕 v2.0.93: **極限推理** — 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位必須 CLOSE/HOLD（≥3/6 條件先 CLOSE）。🆕 v2.0.83: 偵探模式 — 積極從事實推理蛛絲馬跡嘗試開倉，但絕不歪曲事實。生成 entryThesis（1h + 1d 理據）。🆕 v2.0.82: 權重 0.00（理據系統控制決策，唔靠投票）。HACP 辯論主席。**在 Skeptics 審查後思考**，接收審查結果。根據風險/信心設定槓桿，動態調整 TP/SL。HOLD 時必須提供 holdReason（什麼數據矛盾/什麼狀態模糊）。每個 symbol 最少 3-5 句推理。 |
 
 ### Agent System Prompt 強化（v2.0.2）
@@ -3532,7 +3532,7 @@ HACP_STAGGER_DELAY_MS=6000                 # Avoid Ollama overload from parallel
 LOG_LEVEL=info                             # debug for verbose output
 NODE_ENV=development
 HEARTBEAT_INTERVAL_MS=30000
-DECISION_INTERVAL_MS=300000                 # 5 min between cycles (not 60s)
+DECISION_INTERVAL_MS=300000                 # 5 min between cycles (v2.0.103: 60s→300s to reduce noise-trading)
 API_PORT=3456                               # React UI + REST API
 ```
 
@@ -6615,6 +6615,90 @@ if (mktPrice <= 0) {
 | **Cache + reuse prices** | buildMarketDescription fetch 嘅價格 cache 俾 injection code 重用，避免 double-fetch |
 | **Never skip injection** | 即使 fetch 失敗都注入（price=0 + fallback），agents 至少能看到市場 |
 | **Debug logging** | 記錄 `_additionalMarkets`、injection count、currentPositions after injection |
+
+---
+
+### B.59 Skeptics Approve-First + Noise Trading Reduction + Multi-Market Drift Correction (v2.0.110)
+
+**發現日期**: 2026-07-04
+**嚴重性**: 🔴 Critical — 系統連續兩日冇開過倉，Skeptics 攔截咗所有交易決定
+**涉及檔案**: `src/agents/agents.ts`, `src/config/index.ts`, `src/index.ts`, `src/cognition/hacp.ts`, `ui/src/App.tsx`
+
+#### 問題描述
+
+1. **Skeptics 過度攔截**: Skeptics 嘅 prompt 寫到極度保守 — 「when in doubt, REJECT」、「ABSOLUTE VETO」、「REJECTION THRESHOLD」。LLM 收到呢個 instruction 後幾乎所有 thesis 都 reject，導致連續兩日冇開過倉。
+2. **Noise trading**: Decision interval 60s（1 分鐘），1 分鐘嘅價格變動係 microstructure noise。RBC 每 1 分鐘 train 一次，用 0.1% 嘅 noise move 當 signal。
+3. **Multi-market drift**: Backend 因為 auto-select fallback 覆蓋到 1 個 market，但 UI 顯示 3 個 pill。UI 嘅 `lastPostedMarkets` 冇變到所以唔會再 POST。Backend 永遠得 1 個 market。
+
+#### 根因分析
+
+| # | 問題 | 根因 | 修復版本 |
+|:-:|:-----|:-----|:--------:|
+| **1** | **Skeptics 預設 reject** | System prompt 教 LLM 「when in doubt, REJECT」+ 列出 8 個 reject 條件，冇列明咩唔係 reject 理由 | v2.0.110 |
+| **2** | **Error fallback reject** | LLM call 失敗（timeout、network）→ default REJECT。冇證據話 thesis 錯但都 reject | v2.0.110 |
+| **3** | **Decision interval 太短** | `DECISION_INTERVAL_MS=60000`（1 分鐘）。1 分鐘 price change 係 noise | v2.0.103 |
+| **4** | **RBC training 太密** | 每 1 分鐘 train 一次，0.1% move 當 signal。15 分鐘內 15 個 noise samples | v2.0.103 |
+| **5** | **UI drift correction 失效** | `useEffect([data?.tradingMarkets])` 只 depend `data?.tradingMarkets`，唔 depend `tradingMarkets` → `tradingMarkets` 喺 closure 係 stale。`lastPostedMarkets` guard 阻止 re-POST | v2.0.106–v2.0.109 |
+| **6** | **Auto-select overwrite** | `this.tradingMarkets = [activeSymbol]` 鏟走 UI 設定嘅所有 markets | v2.0.106 |
+
+#### 修復
+
+**1. Skeptics Approve-First Prompt** (`src/agents/agents.ts`):
+
+完全重寫 `validateEntryThesis()` system prompt：
+- 從「ABSOLUTE GATEKEEPER，預設 reject」改做「risk manager，預設 approve，只係喺搵到具體 material flaw 嗰陣先 reject」
+- 明確列出 **唔係 reject 理由**：low confidence、could be manipulation（冇具體證據）、vague 1h reason（有 price levels 就夠）、low RBC samples、news could be FUD、sideways/low volatility market
+- Reject 只適用於能夠講出 **具體 loss scenario** 嘅情況
+- Dark psychology check 改為輕量級：只問一條問題「有冇 SPECIFIC evidence 呢個 trade 係 whale trap？」
+
+**2. Error Fallback Approve** (`src/agents/agents.ts`):
+
+```typescript
+// v2.0.110: Default to APPROVE on error — defaulting to REJECT caused the
+// system to stop trading entirely when the LLM had intermittent failures.
+// If we can't validate, we have no evidence the thesis is wrong.
+return { approved: true, rationale: `Thesis validation error: ${msg}. Approved — no evidence found to reject.` };
+```
+
+**3. Decision Interval 60s → 300s** (`src/config/index.ts`):
+
+```typescript
+DECISION_INTERVAL_MS: z.coerce.number().positive().default(300000), // 5min
+```
+
+**4. RBC Training Throttle** (`src/index.ts`):
+
+RBC hypothetical training throttled to every 5 cycles（25min samples）。Per-symbol cycle counter 確保每個 symbol 獨立 throttle。
+
+**5. UI Drift Correction** (`ui/src/App.tsx`):
+
+- `useEffect` deps 加入 `tradingMarkets`（之前只 depend `data?.tradingMarkets` → stale closure）
+- Drift correction 唔 check `lastPostedMarkets`（之前 guard 阻止 re-POST）
+- 直接喺 effect 入面 POST（唔依賴另一個 effect 觸發）
+
+**6. Auto-select Append** (`src/index.ts`):
+
+```typescript
+// v2.0.106: APPEND auto-selected symbol — do NOT overwrite
+if (!this.tradingMarkets.includes(activeSymbol)) {
+  this.tradingMarkets = [...this.tradingMarkets, activeSymbol].slice(0, 3);
+}
+```
+
+**7. Post-cycle Drift Check** (`src/index.ts`):
+
+Cycle 完成後比較 `_cycleMarketCount`（cycle 開始時嘅 market 數量）同 `this.tradingMarkets.length`。如果當前多過 cycle 開始時 → 1 秒後 trigger 新 cycle。
+
+**8. Skeptics Thesis Rejection UI** (`src/cognition/hacp.ts` + `ui/src/App.tsx`):
+
+Phase 1.8 thesis rejection 時，完整 rationale 存入 `metadata.thesisRejections[]`。UI Skeptics card 顯示每個 symbol 嘅 rejection rationale（可摺疊）。
+
+#### 效果
+
+- Skeptics 唔再因為弱理由 reject — 系統恢復交易
+- Decision cycle 5 分鐘一次，RBC training 25 分鐘一次 — 唔再 trade noise
+- UI 3 個 trading markets 正確同步到 backend — agents 分析齊晒所有 markets
+- Skeptics rejection rationale 直接顯示喺 UI — 唔使再靠 log
 
 ---
 
