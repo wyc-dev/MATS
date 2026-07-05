@@ -536,7 +536,25 @@ class MATSSystem {
       // trigger ONE cycle after the last change settles. All trading markets
       // are analyzed in that SINGLE HACP cycle (multi-symbol single-cycle).
       let tradingMarketsCycleTimer: ReturnType<typeof setTimeout> | null = null;
+      // v2.0.114: Throttle — ignore trading-markets POSTs within 3s of the last
+      // accepted one. Multiple browser tabs each have their own SSE connection
+      // and each POSTs its own tradingMarkets. Without throttling, two tabs
+      // with different markets alternate POSTs → backend flips back and forth
+      // → infinite loop. The throttle ensures only one update per 3s window.
+      let lastTradingMarketsAccept = 0;
+      const TRADING_MARKETS_THROTTLE_MS = 3000;
       this.apiServer.setTradingMarketsHandler((markets) => {
+        // Skip if markets haven't changed
+        const prevJson = JSON.stringify(this.tradingMarkets);
+        const newJson = JSON.stringify(markets);
+        if (prevJson === newJson) return;
+        // v2.0.114: Throttle — skip if within throttle window
+        const now = Date.now();
+        if (now - lastTradingMarketsAccept < TRADING_MARKETS_THROTTLE_MS) {
+          log.debug(`Trading markets POST throttled (within ${TRADING_MARKETS_THROTTLE_MS}ms window): ${markets.join(', ')}`);
+          return;
+        }
+        lastTradingMarketsAccept = now;
         const prevCount = this.tradingMarkets.length;
         this.tradingMarkets = markets;
         log.info(`Trading markets set from UI: ${markets.join(', ') || '(empty)'} (prev=${prevCount}, new=${markets.length})`);
