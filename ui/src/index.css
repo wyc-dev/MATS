@@ -3160,7 +3160,7 @@ body {
 
 .market-control-col {
   flex: 1;
-  min-width: 120px;
+  min-width: 100px;
 }
 
 .market-control-label {
@@ -3318,6 +3318,7 @@ body {
 
 @media (max-width: 768px) {
   .market-chart-row { flex-direction: column; }
+  .market-chart-col { width: 100%; }
   .market-slot-row {
     flex-direction: row;
     flex-wrap: wrap;
@@ -3334,6 +3335,26 @@ body {
     padding: var(--space-1) var(--space-3);
   }
   .market-slot-select { width: 100%; }
+  /* v2.0.113: Mobile Market Agent controls — stack vertically on narrow screens */
+  .market-control-group {
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+  .market-control-col {
+    min-width: 0;
+    width: 100%;
+  }
+  .market-control-btns-row {
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .slider-row {
+    width: 100%;
+  }
+  .slider-row input[type="range"] {
+    flex: 1;
+    min-width: 0;
+  }
 }
 
 .market-symbol-lg {

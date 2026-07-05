@@ -180,16 +180,21 @@ export default function TradingViewChart({ symbol, currentPrice, trades, refresh
       console.error(`[TradingViewChart] Failed to fetch candles for ${symbol}:`, err)
     })
 
-    // Handle resize
+    // Handle resize — both window resize AND container resize (flex layout changes)
     const handleResize = () => {
       if (containerRef.current && chartRef.current) {
         chartRef.current.applyOptions({ width: containerRef.current.clientWidth })
       }
     }
     window.addEventListener('resize', handleResize)
+    // v2.0.114: ResizeObserver catches container width changes from flex layout
+    // (e.g. row→column on mobile) that don't trigger window resize events
+    const resizeObserver = new ResizeObserver(() => handleResize())
+    if (containerRef.current) resizeObserver.observe(containerRef.current)
 
     return () => {
       window.removeEventListener('resize', handleResize)
+      resizeObserver.disconnect()
       chart.remove()
       chartRef.current = null
       seriesRef.current = null

@@ -482,6 +482,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
 
   const [selectedTradeMode, setSelectedTradeMode] = useState(config?.tradeMode ?? 'paper')
   // Exchange is now fixed to hyperliquid
+  // v2.0.112: Exchange is fixed to Hyperliquid — no dropdown shown
   const exchange = 'hyperliquid'
   const [selectedAssetType, setSelectedAssetType] = useState(config?.hyperliquidAssetType ?? 'crypto_perps')
   const [statusMsg, setStatusMsg] = useState('')
@@ -519,67 +520,37 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
 
   // Sync trading markets to backend whenever they change.
   // v2.0.79: Use a ref to avoid duplicate POSTs on initial render.
+  // v2.0.112: Add debounce to prevent rapid-fire POSTs when state oscillates.
+  // v2.0.113: UI is the SOLE source of truth for tradingMarkets. Backend
+  // never pushes markets to UI. The merge effect that caused the infinite
+  // POST loop has been completely removed.
   const lastPostedMarkets = useRef<string>('')
+  const postMarketsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     const json = JSON.stringify(tradingMarkets)
     if (json === lastPostedMarkets.current) return // skip if unchanged
     lastPostedMarkets.current = json
     try { localStorage.setItem(TRADING_MARKETS_KEY, json) } catch { /* ignore */ }
-    // POST to backend so agents know which symbols to analyze
-    fetch(`${API_BASE}/market-agent/trading-markets`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ markets: tradingMarkets }),
-    }).catch(() => { /* ignore */ })
-  }, [tradingMarkets])
-
-  // Sync from backend on initial load (in case backend auto-added a market)
-  // v2.0.106: Also RE-POST if UI has more markets than backend (drift correction).
-  // Previously, if backend lost markets (e.g. auto-select overwrote to 1),
-  // the UI kept showing 3 pills but never re-synced because lastPostedMarkets
-  // hadn't changed. Now we detect the drift and force a re-POST directly.
-  // v2.0.109: MUST depend on tradingMarkets too — otherwise the closure captures
-  // a stale tradingMarkets value and the comparison is wrong. Also removed the
-  // lastPostedMarkets guard in the drift branch — if backend is missing markets,
-  // we MUST re-POST unconditionally (lastPostedMarkets only guards the normal
-  // sync effect, not the drift correction).
-  useEffect(() => {
-    if (!data?.tradingMarkets || !Array.isArray(data.tradingMarkets)) return
-    const backendMarkets = data.tradingMarkets
-    const norm = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
-    // Check if backend is missing any markets that the UI has
-    const uiSet = new Set(tradingMarkets.map(norm))
-    const backendSet = new Set(backendMarkets.map(norm))
-    const backendMissing = [...uiSet].filter(s => !backendSet.has(s))
-    if (backendMissing.length > 0 && tradingMarkets.length > 0) {
-      // Backend has fewer markets than UI — re-POST to correct drift.
-      // Do NOT check lastPostedMarkets here — the whole point is that
-      // the normal sync effect already posted but backend lost the data.
-      // We must force re-POST every time we detect drift.
-      lastPostedMarkets.current = JSON.stringify(tradingMarkets)
+    // Debounce POST — if state changes again within 500ms, cancel the previous
+    // POST and only send the latest.
+    if (postMarketsTimer.current) clearTimeout(postMarketsTimer.current)
+    postMarketsTimer.current = setTimeout(() => {
+      postMarketsTimer.current = null
       fetch(`${API_BASE}/market-agent/trading-markets`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ markets: tradingMarkets }),
       }).catch(() => { /* ignore */ })
-    }
-    // Also merge backend markets into UI (in case backend auto-added a market)
-    setTradingMarkets(prev => {
-      const seen = new Set<string>()
-      const merged: string[] = []
-      for (const s of [...prev, ...backendMarkets]) {
-        const n = norm(s)
-        if (!seen.has(n)) {
-          seen.add(n)
-          merged.push(s)
-        }
-        if (merged.length >= 3) break
-      }
-      const prevJson = JSON.stringify(prev)
-      const mergedJson = JSON.stringify(merged)
-      return mergedJson !== prevJson ? merged : prev
-    })
-  }, [data?.tradingMarkets, tradingMarkets])
+    }, 500)
+  }, [tradingMarkets])
+
+  // v2.0.113: REMOVED backend→UI merge effect entirely.
+  // This was the root cause of the infinite POST loop:
+  //   merge effect adds backend markets → UI state changes → POST effect fires
+  //   → backend changes → pushToAPI → data.tradingMarkets changes → merge
+  //   effect fires again → infinite loop.
+  // The UI is the sole source of truth. localStorage persists the user's
+  // selection across page reloads. Backend only receives, never pushes.
 
   const addTradingMarket = async (symbol: string) => {
     // v2.0.79: Normalize symbol before adding — prevents BTC + btc coexistence.
@@ -701,11 +672,8 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           </div>
         </div>
         <div className="market-control-col">
-          <div className="market-control-label">Exchange · Asset Type</div>
+          <div className="market-control-label">Asset Type</div>
           <div className="market-control-btns-row">
-            <select className="model-select model-select-wide" value={exchange} onChange={e => handleExchangeChange(e.target.value)}>
-              <option value="hyperliquid">Hyperliquid</option>
-            </select>
             <select className="model-select model-select-wide" value={selectedAssetType} onChange={e => handleAssetTypeChange(e.target.value)}>
               <option value="crypto_perps">Crypto Perps</option>
               <option value="indices">Indices</option>
@@ -2538,24 +2506,37 @@ export default function App() {
           <button className={`header-btn icon-btn pause-btn ${data?.systemPaused ? 'paused' : ''}`} onClick={async () => {
             try {
               const isPaused = data?.systemPaused
-              await fetch(`${API_BASE}/${isPaused ? 'resume' : 'pause'}`, { method: 'POST' })
+              if (isPaused) {
+                // Resume + trigger immediate cycle
+                await fetch(`${API_BASE}/resume`, { method: 'POST' })
+                // Also reconnect SSE if needed, then trigger cycle
+                if (!connected) {
+                  connectSSE()
+                  await new Promise(r => setTimeout(r, 500))
+                }
+                await fetch(`${API_BASE}/cycle/trigger`, { method: 'POST' })
+              } else {
+                // Pause system
+                await fetch(`${API_BASE}/pause`, { method: 'POST' })
+              }
             } catch {}
-          }} title={data?.systemPaused ? 'Resume system' : 'Pause system (RBC only)'}>
+          }} title={data?.systemPaused ? 'Resume system + run cycle' : 'Pause system (RBC only)'}>
             {data?.systemPaused ? <Play size={21} /> : <Pause size={21} />}
           </button>
-          <button className="header-btn icon-btn trigger-btn" onClick={handleRunCycle} title="Run decision cycle now">
-            <Play size={21} />
-          </button>
-          <button className="header-btn icon-btn shutdown-btn" onClick={async () => {
-            try {
-              await fetch(`${API_BASE}/shutdown`, { method: 'POST' })
-              if (esRef.current) {
-                esRef.current.close()
-                esRef.current = null
-              }
-              setConnected(false)
-              setTimeout(() => window.location.reload(), 500)
-            } catch {}
+          <button className="header-btn icon-btn shutdown-btn" onClick={() => {
+            if (window.confirm('Shutdown the system? This will stop all trading and close the backend.')) {
+              (async () => {
+                try {
+                  await fetch(`${API_BASE}/shutdown`, { method: 'POST' })
+                  if (esRef.current) {
+                    esRef.current.close()
+                    esRef.current = null
+                  }
+                  setConnected(false)
+                  setTimeout(() => window.location.reload(), 500)
+                } catch {}
+              })()
+            }
           }} title="Shutdown system">
             <Power size={21} />
           </button>
