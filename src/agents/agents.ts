@@ -34,10 +34,15 @@ You evaluate ALL trading pairs every cycle:
 
 === MARKET TICKER RULES ===
 - Low vol sideways → small mean-reversion (2-3%)
-- Trending → follow with 3-5%, up to 8% if strong trend
+- Trending → FOLLOW THE TREND with 3-5%, up to 8% if strong trend. If price has been
+  rising for multiple cycles, BUY is the DEFAULT — do not fight the trend.
 - High vol → reduce size 50%, still trade if setup exists
-- Chaotic → HOLD
-- Never force a trade, but actively scan
+- Chaotic → HOLD (only legitimate HOLD reason)
+- ⚠️ v2.0.115: MISSING a trending move is as bad as taking a bad trade. If price has
+  moved >3% in one direction over recent cycles and you output HOLD, you are leaving
+  money on the table. Trend-following entries in confirmed trends have HIGH win rates.
+  Actively SCAN for trend entries every cycle. "Never force a trade" does NOT mean
+  "default to HOLD" — it means "don't trade on noise." A confirmed trend is NOT noise.
 - Leverage 2-5x based on confidence
 
 === OPEN POSITION RULES ===
@@ -614,6 +619,9 @@ For each open position, use on-chain/macro signals to decide:
 - On-chain/flow data confirms position → HOLD, consider trailing SL
 - On-chain/flow data contradicts position → CLOSE or tighten SL aggressively
 - No clear signal → HOLD with current SL/TP
+- ⚠️ v2.0.115: If on-chain data shows EXCHANGE OUTFLOWS + price rising → this is ACCUMULATION,
+  not "no clear signal." Actively identify accumulation/distribution patterns. A rising price
+  with neutral on-chain data is NOT bearish — it means on-chain confirms the trend.
 - If you recommend closing, set closePosition:true with appropriate closeUrgency`;
   }
 
@@ -727,8 +735,13 @@ If the context contains "=== RBC ASSESSMENT ===":
   - RBC shows BUY and SELL verdicts separately — compare them for directional bias
   - 🟢 FAVORABLE → current conditions are in win territory → increase conviction
   - 🔴 UNFAVORABLE → current conditions are in loss territory → strong bias against entry
-  - 🟡 NO EDGE → all dimensions sit in the ambiguous overlap zone. The system cannot find clear separation between win/loss conditions. **This does NOT mean RBC has no data** — it means the current market state resembles BOTH winning and losing past scenarios simultaneously. The safest action is to HOLD. 
-  - Even under NO_EDGE, the 'w/l dims' (e.g. '3W/6L') still convey directional tilt — which side of the overlap boundaries the value falls. Use this as a mild bias.
+  - 🟡 NO EDGE → all dimensions sit in the ambiguous overlap zone. This means the current
+    market state resembles BOTH winning and losing past scenarios. ⚠️ v2.0.115: NO_EDGE does
+    NOT mean "HOLD" — it means RBC is neutral and you should weight OTHER signals more heavily.
+    If momentum, news, or on-chain data shows a clear trend, ACT ON IT despite RBC NO_EDGE.
+    RBC NO_EDGE is a NEUTRAL signal, not a BEARISH signal. Do not let NO_EDGE paralyze you.
+  - Even under NO_EDGE, the 'w/l dims' (e.g. '3W/6L') still convey directional tilt — which side
+    of the overlap boundaries the value falls. Use this as a mild bias.
   - **CONFIDENCE**: the assessment includes a confidence label (high/medium/low) and effective sample count. HIGH confidence (>0.6) = both win and loss sides well-sampled → trust the verdict. LOW confidence (<0.3) = one side is under-sampled → the boundary is noisy; treat the verdict as a weak hint, not a strong signal, and weight other factors more heavily.
   - RBC is your PRIMARY factor — balance it with Fear & Greed and macro context
 

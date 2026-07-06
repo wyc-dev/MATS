@@ -4090,6 +4090,19 @@ class MATSSystem {
     lines.push(
       `Trend: ${state.trend.toUpperCase()}`,
       `Regime: ${state.regime.toUpperCase()}`,
+    );
+
+    // v2.0.115: Inject short-term price trend so agents can see multi-cycle direction
+    const priceTrend = this.marketState?.getRecentPriceTrend?.(state.primarySymbol, 20);
+    if (priceTrend) {
+      const arrow = priceTrend.direction === 'up' ? '↑' : priceTrend.direction === 'down' ? '↓' : '→';
+      lines.push(`Short-term Trend: ${arrow} ${priceTrend.direction.toUpperCase()} ${priceTrend.pctChange >= 0 ? '+' : ''}${priceTrend.pctChange.toFixed(2)}% over last ${priceTrend.ticks} ticks ($${priceTrend.startPrice.toFixed(2)} → $${priceTrend.endPrice.toFixed(2)})`);
+      if (Math.abs(priceTrend.pctChange) > 2) {
+        lines.push(`⚠️ SIGNIFICANT TREND: Price has moved ${priceTrend.pctChange >= 0 ? 'up' : 'down'} ${Math.abs(priceTrend.pctChange).toFixed(1)}% — trend-following entry recommended`);
+      }
+    }
+
+    lines.push(
       calSummary,
       `Last Updated: ${new Date(state.updatedAt).toISOString()}`,
       `---`,
