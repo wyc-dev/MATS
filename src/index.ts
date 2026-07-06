@@ -594,6 +594,51 @@ class MATSSystem {
         setTimeout(() => void this.runDecisionCycle(), 500);
       });
 
+      // v2.0.116: Settings modal — get/update env vars
+      this.apiServer.setGetEnvSettingsHandler(() => {
+        const settings: Record<string, string> = {};
+        const keys = ['HYPERLIQUID_WALLET_ADDRESS', 'HYPERLIQUID_PRIVATE_KEY', 'OLLAMA_API_KEY', 'MASSIVE_API_KEY', 'OLLAMA_PLAN'];
+        for (const key of keys) {
+          const val = process.env[key] ?? '';
+          // Mask: show first 6 + last 6 chars if value is long enough
+          if (val && val.length > 12) {
+            settings[key] = val.slice(0, 6) + '••••••' + val.slice(-6);
+          } else if (val) {
+            settings[key] = '••••••';
+          } else {
+            settings[key] = '';
+          }
+        }
+        return settings;
+      });
+
+      this.apiServer.setUpdateEnvSettingsHandler(async (settings: Record<string, string>) => {
+        try {
+          const envPath = path.join(process.cwd(), '.env');
+          let envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
+          for (const [key, value] of Object.entries(settings)) {
+            // Skip if value is masked (contains ••••) — means user didn't change it
+            if (value.includes('••••')) continue;
+            // Update or add the env var
+            const regex = new RegExp(`^${key}=.*$`, 'm');
+            if (regex.test(envContent)) {
+              envContent = envContent.replace(regex, `${key}=${value}`);
+            } else {
+              envContent += `\n${key}=${value}`;
+            }
+            // Also update process.env so the change takes effect immediately
+            process.env[key] = value;
+          }
+          fs.writeFileSync(envPath, envContent, 'utf-8');
+          log.info('⚙️ Env settings updated from UI Settings modal');
+          return { success: true };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.error(`Failed to update env settings: ${msg}`);
+          return { success: false, error: msg };
+        }
+      });
+
       // v2.0.30: Manual position close handler
       // Closes a position in both local portfolio and (if real mode) on the exchange.
       // The close is tagged with closeReason='manual' so agents know it was NOT a system decision.

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createLogger } from './observability/logger.ts';
 // v2.0.42: Import normalizeSymbol for manual close symbol normalization.
 import { normalizeSymbol } from './trading/portfolio.ts';
-import { getAllAgentModels, getAvailableModels, setAgentModel, resetAgentModel, type AgentModelConfig, type ModelDefinition } from './agents/agent-models.ts';
+import { getAllAgentModels, getAvailableModels, getDynamicAvailableModels, setAgentModel, resetAgentModel, type AgentModelConfig, type ModelDefinition } from './agents/agent-models.ts';
 import type { AgentThought, ConsensusResult, DebateRound, Portfolio, MarketState, AgentStatus, CycleProgress, MarketAgentConfig, TopVolumePair, TradeMode, ExchangeType, HyperliquidAssetType } from './types/index.ts';
 import type { BacktestResult, BacktestProgress } from './backtest/index.ts';
 
@@ -229,6 +229,9 @@ export class APIServer {
   private onResetPaperTrades: (() => void) | null = null;
   private onPause: (() => void) | null = null;
   private onResume: (() => void) | null = null;
+  /** v2.0.116: Settings modal — get/update env vars */
+  private onGetEnvSettings: (() => Record<string, string>) | null = null;
+  private onUpdateEnvSettings: ((settings: Record<string, string>) => Promise<{ success: boolean; error?: string }>) | null = null;
 
   constructor(port = 3456) {
     this.port = port;
@@ -323,6 +326,16 @@ export class APIServer {
   /** v2.0.45: Register a callback for clearing drawdown data to relaunch trading */
   setClearDrawdownHandler(cb: () => void): void {
     this.onClearDrawdown = cb;
+  }
+
+  /** v2.0.116: Register callback for getting env settings */
+  setGetEnvSettingsHandler(cb: () => Record<string, string>): void {
+    this.onGetEnvSettings = cb;
+  }
+
+  /** v2.0.116: Register callback for updating env settings */
+  setUpdateEnvSettingsHandler(cb: (settings: Record<string, string>) => Promise<{ success: boolean; error?: string }>): void {
+    this.onUpdateEnvSettings = cb;
   }
 
   /** Register a callback for fetching candle data */
@@ -450,11 +463,38 @@ export class APIServer {
       }
 
       // REST: agent model config
-      if (pathname === '/api/models') {
+      if (pathname === '/api/models' && req.method === 'GET') {
+        // v2.0.121: Dynamic model list based on Ollama plan + installed models
+        const ollamaPlan = process.env['OLLAMA_PLAN'] ?? 'auto';
+        const ollamaBaseUrl = process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434';
+        const apiKey = process.env['OLLAMA_API_KEY'] ?? '';
+        let effectivePlan = 'Free';
+        try {
+          // Quick check: is Ollama running?
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 3000);
+          const tagsRes = await fetch(`${ollamaBaseUrl}/api/tags`, { signal: controller.signal });
+          clearTimeout(timeout);
+          if (tagsRes.ok) {
+            const tagsData = await tagsRes.json() as { models?: Array<{ name: string }> };
+            const hasCloud = tagsData.models?.some(m => m.name.includes(':cloud')) ?? false;
+            if (ollamaPlan && ollamaPlan !== 'auto') effectivePlan = ollamaPlan;
+            else if (apiKey) effectivePlan = 'Pro';
+            else if (hasCloud) effectivePlan = 'Pro';
+            else effectivePlan = 'Free';
+          } else {
+            effectivePlan = 'None';
+          }
+        } catch {
+          effectivePlan = 'None';
+        }
+
+        const dynamicModels = await getDynamicAvailableModels(effectivePlan, ollamaBaseUrl);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
-          available: getAvailableModels(),
+          available: dynamicModels,
           assignments: getAllAgentModels(),
+          plan: effectivePlan,
         }));
         return;
       }
@@ -837,6 +877,133 @@ export class APIServer {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: false, message: 'Clear drawdown handler not registered.' }));
         }
+        return;
+      }
+
+      // v2.0.116: GET — get current env settings (masked)
+      if (pathname === '/api/settings/env' && req.method === 'GET') {
+        if (this.onGetEnvSettings) {
+          const settings = this.onGetEnvSettings();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, settings }));
+        } else {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'Get env settings handler not registered.' }));
+        }
+        return;
+      }
+
+      // v2.0.117: GET — get Ollama plan info (Free/Pro/Max)
+      if (pathname === '/api/settings/ollama-plan' && req.method === 'GET') {
+        const apiKey = process.env['OLLAMA_API_KEY'] ?? '';
+        const modelDefault = process.env['OLLAMA_MODEL_DEFAULT'] ?? '';
+        const ollamaBaseUrl = process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434';
+        const envPlan = process.env['OLLAMA_PLAN'] ?? '';
+
+        // Determine plan by checking:
+        // 1. /api/tags — is the Ollama process running?
+        // 2. /api/chat with a tiny ping — is the auth valid? (401 = signed out)
+        // 3. If tags OK but chat 401 → process running but not authenticated → None
+        let plan = 'None';
+        let ollamaReachable = false;
+        let authValid = false;
+        try {
+          // Step 1: Check if Ollama process is running
+          const tagsController = new AbortController();
+          const tagsTimeout = setTimeout(() => tagsController.abort(), 3000);
+          const tagsResponse = await fetch(`${ollamaBaseUrl}/api/tags`, { signal: tagsController.signal });
+          clearTimeout(tagsTimeout);
+          if (tagsResponse.ok) {
+            ollamaReachable = true;
+            const tagsData = await tagsResponse.json() as { models?: Array<{ name: string }> };
+            const modelNames = tagsData.models?.map(m => m.name) ?? [];
+            const hasCloudModels = modelNames.some(n => n.includes(':cloud'));
+
+            // Step 2: Ping /api/chat with a minimal request to check auth
+            // Use the first available cloud model (or any model) for the ping
+            const pingModel = modelNames.find(n => n.includes(':cloud')) ?? modelNames[0] ?? 'kimi-k2.6:cloud';
+            try {
+              const chatController = new AbortController();
+              const chatTimeout = setTimeout(() => chatController.abort(), 5000);
+              const chatResponse = await fetch(`${ollamaBaseUrl}/api/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  model: pingModel,
+                  messages: [{ role: 'user', content: 'hi' }],
+                  stream: false,
+                  options: { num_predict: 1 },
+                }),
+                signal: chatController.signal,
+              });
+              clearTimeout(chatTimeout);
+              if (chatResponse.ok) {
+                authValid = true;
+              } else if (chatResponse.status === 401) {
+                // Process running but not authenticated (signed out)
+                authValid = false;
+              }
+            } catch {
+              // Chat ping failed (timeout/network) — assume auth invalid
+              authValid = false;
+            }
+
+            // Determine plan based on auth + models
+            if (!authValid) {
+              plan = 'None'; // Process running but signed out
+            } else if (envPlan && envPlan !== 'auto') {
+              plan = envPlan;
+            } else if (apiKey) {
+              plan = 'Pro';
+            } else if (hasCloudModels) {
+              plan = 'Pro';
+            } else {
+              plan = 'Free';
+            }
+          } else if (apiKey) {
+            plan = 'Pro';
+          } else if (envPlan && envPlan !== 'auto') {
+            plan = envPlan;
+          }
+        } catch {
+          if (apiKey) plan = 'Pro';
+          else if (envPlan && envPlan !== 'auto') plan = envPlan;
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, plan, hasApiKey: !!apiKey, model: modelDefault, ollamaReachable, authValid }));
+        return;
+      }
+
+      // v2.0.116: POST — update env settings
+      if (pathname === '/api/settings/env' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { settings } = JSON.parse(body) as { settings: Record<string, string> };
+            if (!settings || typeof settings !== 'object') {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'settings must be an object' }));
+              return;
+            }
+            if (this.onUpdateEnvSettings) {
+              this.onUpdateEnvSettings(settings).then(result => {
+                res.writeHead(result.success ? 200 : 500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(result));
+              }).catch(err => {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, message: err instanceof Error ? err.message : String(err) }));
+              });
+            } else {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'Update env settings handler not registered.' }));
+            }
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
         return;
       }
 

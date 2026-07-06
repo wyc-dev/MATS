@@ -3918,3 +3918,356 @@ body {
 .text-gold { color: var(--gold); }
 .text-secondary { color: var(--text-secondary); }
 .text-tertiary { color: var(--text-tertiary); }
+
+/* ═══════════════════════════════════════════════════════════════
+   v2.0.116: Settings Modal
+   ═══════════════════════════════════════════════════════════════ */
+
+.settings-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: settings-fade-in 0.3s ease-in-out;
+}
+
+@keyframes settings-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes settings-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes settings-modal-pop-in {
+  from { opacity: 0; transform: scale(0.9) translateY(20px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes settings-modal-pop-out {
+  from { opacity: 1; transform: scale(1) translateY(0); }
+  to { opacity: 0; transform: scale(0.9) translateY(20px); }
+}
+
+.settings-modal {
+  background: rgba(15, 18, 30, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  padding: 0;
+  width: 90%;
+  max-width: 500px;
+  max-height: 80vh;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  animation: settings-modal-pop-in 0.3s ease-in-out;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.settings-modal-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-modal-close {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.settings-modal-close:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.settings-modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.settings-field {
+  margin-bottom: 16px;
+}
+
+.settings-label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.5px;
+}
+
+.settings-input {
+  width: 100%;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-family: var(--font-mono);
+  transition: all 0.2s;
+  box-sizing: border-box;
+}
+
+.settings-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(245, 166, 35, 0.15);
+}
+
+.settings-input::placeholder {
+  color: var(--text-muted);
+}
+
+.settings-select {
+  appearance: auto;
+  cursor: pointer;
+}
+
+.settings-modal-footer {
+  display: flex;
+  gap: 10px;
+  padding: 16px 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  justify-content: flex-end;
+}
+
+.settings-btn-cancel {
+  padding: 8px 20px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.settings-btn-cancel:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+}
+
+.settings-btn-confirm {
+  padding: 8px 20px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: rgba(245, 166, 35, 0.1);
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.settings-btn-confirm:hover {
+  background: rgba(245, 166, 35, 0.2);
+  box-shadow: 0 0 12px rgba(245, 166, 35, 0.2);
+}
+
+.settings-btn-confirm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* v2.0.116: Settings hints + links */
+.settings-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 6px;
+  border-left: 2px solid rgba(245, 166, 35, 0.3);
+}
+
+.settings-hint code {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--accent);
+  background: rgba(245, 166, 35, 0.08);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.settings-hint strong {
+  color: var(--text-secondary);
+}
+
+.settings-link {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(245, 166, 35, 0.4);
+  transition: all 0.2s;
+}
+
+.settings-link:hover {
+  color: #ffc04d;
+  border-bottom-color: var(--accent);
+}
+
+/* v2.0.117: Shutdown modal */
+.shutdown-modal {
+  border-color: rgba(248, 113, 113, 0.2);
+}
+
+.shutdown-title {
+  color: var(--red);
+}
+
+.shutdown-warning {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+
+.shutdown-info-box {
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.shutdown-info-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+
+.shutdown-info-row:last-child {
+  margin-bottom: 0;
+}
+
+.shutdown-info-icon {
+  font-size: 1rem;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.shutdown-info-row strong {
+  color: var(--text-secondary);
+}
+
+.shutdown-confirm-text {
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  font-weight: 600;
+  text-align: center;
+}
+
+.shutdown-btn-confirm {
+  border-color: var(--red) !important;
+  background: rgba(248, 113, 113, 0.1) !important;
+  color: var(--red) !important;
+}
+
+.shutdown-btn-confirm:hover {
+  background: rgba(248, 113, 113, 0.2) !important;
+  box-shadow: 0 0 12px rgba(248, 113, 113, 0.2) !important;
+}
+
+/* v2.0.117: Ollama plan label in header */
+.brand-plan {
+  font-size: 0.6rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-left: 8px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.brand-plan-free {
+  background: rgba(120, 128, 160, 0.15);
+  color: var(--text-tertiary);
+  border: 1px solid rgba(120, 128, 160, 0.2);
+}
+
+.brand-plan-pro {
+  background: rgba(245, 166, 35, 0.12);
+  color: var(--accent);
+  border: 1px solid rgba(245, 166, 35, 0.25);
+}
+
+.brand-plan-max {
+  background: rgba(91, 141, 239, 0.12);
+  color: #5b8def;
+  border: 1px solid rgba(91, 141, 239, 0.25);
+}
+
+.brand-plan-none {
+  background: rgba(248, 113, 113, 0.12);
+  color: var(--red);
+  border: 1px solid rgba(248, 113, 113, 0.25);
+}
+
+/* v2.0.118: Ollama not connected warning banner */
+.ollama-warning-banner {
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.2);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.ollama-warning-icon {
+  font-size: 1.2rem;
+  flex-shrink: 0;
+}
+
+.ollama-warning-text strong {
+  color: var(--red);
+}
+
+/* v2.0.117: Trade mode warning */
+.trade-mode-warning {
+  font-size: 0.7rem;
+  color: var(--red);
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: rgba(248, 113, 113, 0.08);
+  border-radius: 6px;
+  border-left: 2px solid var(--red);
+  line-height: 1.4;
+}

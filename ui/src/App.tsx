@@ -78,10 +78,11 @@ function SystemStatusPanel({ data }: { data: APIData | null }) {
   )
 }
 
-function AgentCard({ role, thought, status, progress, models, assignments, onModelChange, activeSymbol, newsHeadlines }: {
+function AgentCard({ role, thought, status, progress, models, assignments, onModelChange, activeSymbol, newsHeadlines, ollamaPlan }: {
   role: string; thought: any; status: any; progress?: any;
   models: ModelDefinition[]; assignments: AgentModelConfig[]; onModelChange: (role: string, model: string) => void; activeSymbol?: string
   newsHeadlines?: Array<{ symbol: string; headlines: Array<{ title: string; publisher: string; url?: string; pubDate: number | null }> }>
+  ollamaPlan?: string
 }) {
   const meta = AGENT_META[role]
   const [thoughtExpanded, setThoughtExpanded] = useState(false)
@@ -463,6 +464,8 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const s = data?.status
   const m = data?.marketState
   const ma = data?.marketAgent
+  // v2.0.117: Warning when switching to Real mode without wallet/private key
+  const [realModeWarning, setRealModeWarning] = useState('')
   const config = ma?.config
   const topPairs = ma?.topPairs ?? []
 
@@ -668,8 +671,30 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           <div className="market-control-label">Trade Mode</div>
           <div className="market-agent-selector-btns">
             <button className={`year-btn year-btn-wide ${selectedTradeMode === 'paper' ? 'active' : ''}`} onClick={() => handleTradeModeChange('paper')}>Paper</button>
-            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'real' ? 'active' : ''}`} onClick={() => handleTradeModeChange('real')}>Real</button>
+            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'real' ? 'active' : ''}`} onClick={async () => {
+              // v2.0.117: Check wallet + private key before switching to Real mode
+              try {
+                const res = await fetch(`${API_BASE}/settings/env`)
+                const json = await res.json()
+                if (json.success) {
+                  const settings = json.settings as Record<string, string>
+                  const wallet = settings['HYPERLIQUID_WALLET_ADDRESS'] ?? ''
+                  const privKey = settings['HYPERLIQUID_PRIVATE_KEY'] ?? ''
+                  if (!wallet || !privKey || wallet.includes('••••') && !privKey.includes('••••')) {
+                    // Has wallet but no private key (or vice versa)
+                    if (!wallet || !privKey) {
+                      setRealModeWarning('⚠️ Hyperliquid wallet address and/or private key not configured. Go to Settings ⚙️ to set them before trading in Real mode.')
+                      return
+                    }
+                  }
+                  // Both exist (even if masked) — allow switch
+                  setRealModeWarning('')
+                }
+              } catch { /* ignore — allow switch if fetch fails */ }
+              handleTradeModeChange('real')
+            }}>Real</button>
           </div>
+          {realModeWarning && <div className="trade-mode-warning">{realModeWarning}</div>}
         </div>
         <div className="market-control-col">
           <div className="market-control-label">Asset Type</div>
@@ -839,7 +864,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   )
 }
 
-function AgentPanel({ data }: { data: APIData | null }) {
+function AgentPanel({ data, ollamaPlan }: { data: APIData | null; ollamaPlan?: string }) {
   const thoughts = data?.agentThoughts ?? []
   const statuses = data?.agentStatuses ?? []
   const progress = data?.cycleProgress
@@ -874,6 +899,14 @@ function AgentPanel({ data }: { data: APIData | null }) {
         </span>
       </div>
       <div className="agent-list">
+        {ollamaPlan === 'None' && (
+          <div className="ollama-warning-banner">
+            <span className="ollama-warning-icon">⚠️</span>
+            <span className="ollama-warning-text">
+              <strong>Ollama not connected.</strong> The trading system is paused. Please open the Ollama desktop app or enter an API key in <strong>Settings ⚙️</strong> to start trading.
+            </span>
+          </div>
+        )}
         {AGENT_ROLES.map(role => (
           role === 'market_agent'
             ? <MarketAgentCard key={role} data={data} />
@@ -888,6 +921,7 @@ function AgentPanel({ data }: { data: APIData | null }) {
                 onModelChange={handleModelChange}
                 activeSymbol={activeSymbol}
                 newsHeadlines={data?.newsHeadlines}
+                ollamaPlan={ollamaPlan}
               />
         ))}
       </div>
@@ -2384,12 +2418,7 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
 
 // v2.0.79: Options Data Layer removed — options info integrated into HACP Debate.
 // Order: Agent Cognition, HACP Debate, Portfolio, Evolution.
-const DESKTOP_PANELS: Array<(data: APIData | null) => React.ReactNode> = [
-  (data) => <AgentPanel key="agents" data={data} />,
-  (data) => <DebatePanel key="debate" data={data} />,
-  (data) => <PortfolioPanel key="portfolio" data={data} />,
-  (data) => <EvolutionPanel key="evolution" data={data} />,
-]
+// v2.0.119: DESKTOP_PANELS moved inside App() so it can access ollamaPlan state.
 
 export default function App() {
   const [data, setData] = useState<APIData | null>(null)
@@ -2399,6 +2428,25 @@ export default function App() {
   // v2.0.78: Masonry — measure all panels, assign to shorter column
   const [colAssignments, setColAssignments] = useState<number[]>([])
   const stagingRef = useRef<HTMLDivElement | null>(null)
+  // v2.0.116: Settings modal state
+  const [showSettings, setShowSettings] = useState(false)
+  const [envSettings, setEnvSettings] = useState<Record<string, string>>({})
+  const [envSettingsLoading, setEnvSettingsLoading] = useState(false)
+  // v2.0.117: Shutdown confirmation modal state
+  const [showShutdown, setShowShutdown] = useState(false)
+  const [shutdownLoading, setShutdownLoading] = useState(false)
+  // v2.0.117: Ollama plan info
+  const [ollamaPlan, setOllamaPlan] = useState<string>('')
+  // v2.0.120: Ref for plan polling interval
+  const planPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // v2.0.119: DESKTOP_PANELS defined inside App() so it can access ollamaPlan
+  const DESKTOP_PANELS: Array<(data: APIData | null) => React.ReactNode> = [
+    (data) => <AgentPanel key="agents" data={data} ollamaPlan={ollamaPlan} />,
+    (data) => <DebatePanel key="debate" data={data} />,
+    (data) => <PortfolioPanel key="portfolio" data={data} />,
+    (data) => <EvolutionPanel key="evolution" data={data} />,
+  ]
 
   const connectSSE = useCallback(() => {
     // Close existing connection if any
@@ -2410,7 +2458,38 @@ export default function App() {
     esRef.current = es
     es.onopen = async () => {
       setConnected(true)
+      // v2.0.117: Fetch Ollama plan info on connect
+      try {
+        const res = await fetch(`${API_BASE}/settings/ollama-plan`)
+        const json = await res.json()
+        if (json.success) {
+          setOllamaPlan(json.plan)
+          // v2.0.118: If Ollama is not connected (None), auto-pause system to save compute
+          if (json.plan === 'None') {
+            try { await fetch(`${API_BASE}/pause`, { method: 'POST' }) } catch { /* ignore */ }
+          }
+        }
+      } catch { /* ignore */ }
     }
+
+    // v2.0.120: Poll Ollama plan every 30s to detect disconnection
+    const planPoll = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/settings/ollama-plan`)
+        const json = await res.json()
+        if (json.success) {
+          const newPlan = json.plan
+          setOllamaPlan(prev => {
+            // If plan changed to None, auto-pause
+            if (newPlan === 'None' && prev !== 'None') {
+              fetch(`${API_BASE}/pause`, { method: 'POST' }).catch(() => {})
+            }
+            return newPlan
+          })
+        }
+      } catch { /* ignore */ }
+    }, 30000)
+    planPollRef.current = planPoll
     es.onmessage = (event) => {
       try {
         const parsed: APIData = JSON.parse(event.data)
@@ -2419,6 +2498,11 @@ export default function App() {
     }
     es.onerror = () => {
       setConnected(false)
+      // v2.0.120: Clear plan polling interval on disconnect
+      if (planPollRef.current) {
+        clearInterval(planPollRef.current)
+        planPollRef.current = null
+      }
       // Auto-reconnect after 2s
       es.close()
       esRef.current = null
@@ -2496,11 +2580,19 @@ export default function App() {
         <div className="topbar-left">
           <div className="topbar-brand">
             <span className="brand-text">{"{"}</span><span className="brand-name">MATS</span><span className="brand-text">{"}"}</span>
+            {ollamaPlan && <span className={`brand-plan brand-plan-${ollamaPlan.toLowerCase()}`}>Ollama {ollamaPlan}</span>}
           </div>
           <div className="glow-line" />
         </div>
         <div className="topbar-right">
-          <button className="header-btn icon-btn settings-btn" title="Settings">
+          <button className="header-btn icon-btn settings-btn" title="Settings" onClick={async () => {
+            try {
+              const res = await fetch(`${API_BASE}/settings/env`)
+              const json = await res.json()
+              if (json.success) setEnvSettings(json.settings)
+            } catch { /* ignore */ }
+            setShowSettings(true)
+          }}>
             <Settings size={21} />
           </button>
           <button className={`header-btn icon-btn pause-btn ${data?.systemPaused ? 'paused' : ''}`} onClick={async () => {
@@ -2523,21 +2615,7 @@ export default function App() {
           }} title={data?.systemPaused ? 'Resume system + run cycle' : 'Pause system (RBC only)'}>
             {data?.systemPaused ? <Play size={21} /> : <Pause size={21} />}
           </button>
-          <button className="header-btn icon-btn shutdown-btn" onClick={() => {
-            if (window.confirm('Shutdown the system? This will stop all trading and close the backend.')) {
-              (async () => {
-                try {
-                  await fetch(`${API_BASE}/shutdown`, { method: 'POST' })
-                  if (esRef.current) {
-                    esRef.current.close()
-                    esRef.current = null
-                  }
-                  setConnected(false)
-                  setTimeout(() => window.location.reload(), 500)
-                } catch {}
-              })()
-            }
-          }} title="Shutdown system">
+          <button className="header-btn icon-btn shutdown-btn" title="Shutdown system" onClick={() => setShowShutdown(true)}>
             <Power size={21} />
           </button>
         </div>
@@ -2560,7 +2638,7 @@ export default function App() {
         {/* Mobile: original tab-based layout */}
         <div className={`col-left ${activeTab === 'agents' || activeTab === 'debate' ? 'visible' : ''}`}>
           <div className="mobile-only">
-            {activeTab === 'agents' && <AgentPanel data={data} />}
+            {activeTab === 'agents' && <AgentPanel data={data} ollamaPlan={ollamaPlan} />}
           </div>
           <div className="mobile-only">
             {activeTab === 'debate' && <DebatePanel data={data} />}
@@ -2598,6 +2676,167 @@ export default function App() {
         <span className="footer-motto">Capital Preservation First. Never Blow Up. Continuously Evolve.</span>
         {s && <span>Uptime: {Math.floor(s.cycles * 60 / 60)}h</span>}
       </footer>
+
+      {/* v2.0.116: Settings Modal */}
+      {showSettings && (
+        <div className="settings-overlay" onClick={() => setShowSettings(false)}>
+          <div className="settings-modal" onClick={e => e.stopPropagation()}>
+            <div className="settings-modal-header">
+              <span className="settings-modal-title">⚙️ Settings</span>
+              <button className="settings-modal-close" onClick={() => setShowSettings(false)}>✕</button>
+            </div>
+            <div className="settings-modal-body">
+              {/* HYPERLIQUID_WALLET_ADDRESS */}
+              <div className="settings-field">
+                <label className="settings-label">HYPERLIQUID_WALLET_ADDRESS</label>
+                <input
+                  type="text"
+                  className="settings-input"
+                  value={envSettings['HYPERLIQUID_WALLET_ADDRESS'] ?? ''}
+                  onChange={e => setEnvSettings(prev => ({ ...prev, HYPERLIQUID_WALLET_ADDRESS: e.target.value }))}
+                  placeholder="0x..."
+                />
+                <p className="settings-hint">
+                  Your Arbitrum wallet address for Hyperliquid trading. Required for real trading mode + real-time position/fill sync via WebSocket.
+                  <br />📍 Get it from <a href="https://app.hyperliquid.xyz" target="_blank" rel="noopener noreferrer" className="settings-link">Hyperliquid</a> → top-right wallet button → copy address.
+                </p>
+              </div>
+
+              {/* HYPERLIQUID_PRIVATE_KEY */}
+              <div className="settings-field">
+                <label className="settings-label">HYPERLIQUID_PRIVATE_KEY</label>
+                <input
+                  type="password"
+                  className="settings-input"
+                  value={envSettings['HYPERLIQUID_PRIVATE_KEY'] ?? ''}
+                  onChange={e => setEnvSettings(prev => ({ ...prev, HYPERLIQUID_PRIVATE_KEY: e.target.value }))}
+                  placeholder="64 hex chars (secp256k1)"
+                />
+                <p className="settings-hint">
+                  Your wallet's private key (secp256k1, 64 hex chars). Used to sign EIP-712 orders on Hyperliquid.
+                  <br />📍 Export from your wallet (MetaMask → Account Details → Show Private Key, or Rabby → Export). ⚠️ Never share this with anyone.
+                </p>
+              </div>
+
+              {/* OLLAMA_API_KEY */}
+              <div className="settings-field">
+                <label className="settings-label">OLLAMA_API_KEY</label>
+                <input
+                  type="password"
+                  className="settings-input"
+                  value={envSettings['OLLAMA_API_KEY'] ?? ''}
+                  onChange={e => setEnvSettings(prev => ({ ...prev, OLLAMA_API_KEY: e.target.value }))}
+                  placeholder="ollama API key (optional)"
+                />
+                <p className="settings-hint">
+                  Ollama API key for cloud model access. Without this, the system uses local models only (slower, limited concurrency for personal devices).
+                  <br />📍 Get it from <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="settings-link">ollama.com</a> → Settings → API Keys.
+                  <br />💡 <strong>Recommended:</strong> Upgrade to <a href="https://ollama.com/pricing" target="_blank" rel="noopener noreferrer" className="settings-link">Ollama Pro</a> ($20/mo) for cloud models like <code>deepseek-v4-flash:cloud</code>, <code>kimi-k2.6:cloud</code>, <code>glm-5.2:cloud</code>. Pro gives faster inference, 8-agent concurrent requests, and no local GPU required — making trading decisions more reliable and timely, directly improving profitability.
+                </p>
+              </div>
+
+              {/* MASSIVE_API_KEY */}
+              <div className="settings-field">
+                <label className="settings-label">MASSIVE_API_KEY</label>
+                <input
+                  type="password"
+                  className="settings-input"
+                  value={envSettings['MASSIVE_API_KEY'] ?? ''}
+                  onChange={e => setEnvSettings(prev => ({ ...prev, MASSIVE_API_KEY: e.target.value }))}
+                  placeholder="massive.com API key (optional)"
+                />
+                <p className="settings-hint">
+                  Massive.com (Polygon.io compatible) API key for options data. Provides IV Rank, Greeks, Put/Call ratio, Gamma regime, Implied Move — used for Stocks/Indices/Commodities trading to improve win rate and expectancy.
+                  <br />📍 Get it from <a href="https://massive.com" target="_blank" rel="noopener noreferrer" className="settings-link">massive.com</a> → API Keys. Optional — system works without it (agents fall back to defaults).
+                </p>
+              </div>
+
+              {/* OLLAMA_PLAN */}
+              <div className="settings-field">
+                <label className="settings-label">OLLAMA_PLAN</label>
+                <select
+                  className="settings-input settings-select"
+                  value={envSettings['OLLAMA_PLAN'] ?? 'auto'}
+                  onChange={e => setEnvSettings(prev => ({ ...prev, OLLAMA_PLAN: e.target.value }))}
+                >
+                  <option value="auto">Auto-detect (defaults to Pro if cloud models found)</option>
+                  <option value="Free">Free (local models only)</option>
+                  <option value="Pro">Pro (cloud models, standard rate limits)</option>
+                  <option value="Max">Max (cloud models, highest rate limits + concurrency)</option>
+                </select>
+                <p className="settings-hint">
+                  Your Ollama subscription plan. Used for display in the header badge. Ollama API does not expose plan info, so select manually.
+                  <br />💡 If unsure, leave as <strong>Auto-detect</strong> — the system will check if cloud models are available and default to Pro.
+                </p>
+              </div>
+            </div>
+            <div className="settings-modal-footer">
+              <button className="settings-btn-cancel" onClick={() => setShowSettings(false)}>Cancel</button>
+              <button className="settings-btn-confirm" disabled={envSettingsLoading} onClick={async () => {
+                setEnvSettingsLoading(true)
+                try {
+                  await fetch(`${API_BASE}/settings/env`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ settings: envSettings }),
+                  })
+                } catch { /* ignore */ }
+                setEnvSettingsLoading(false)
+                setShowSettings(false)
+              }}>{envSettingsLoading ? 'Saving...' : 'Confirm'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* v2.0.117: Shutdown Confirmation Modal */}
+      {showShutdown && (
+        <div className="settings-overlay" onClick={() => !shutdownLoading && setShowShutdown(false)}>
+          <div className="settings-modal shutdown-modal" onClick={e => e.stopPropagation()}>
+            <div className="settings-modal-header">
+              <span className="settings-modal-title shutdown-title">⚠️ Shutdown System</span>
+              <button className="settings-modal-close" onClick={() => !shutdownLoading && setShowShutdown(false)} disabled={shutdownLoading}>✕</button>
+            </div>
+            <div className="settings-modal-body">
+              <p className="shutdown-warning">
+                You are about to shut down the MATS system. This will immediately stop all trading activity and close both the backend server and this dashboard.
+              </p>
+              <div className="shutdown-info-box">
+                <p className="shutdown-info-row">
+                  <span className="shutdown-info-icon">📈</span>
+                  <span><strong>Real trade positions</strong> on Hyperliquid will remain open. They are managed by HL's native trigger orders (SL/TP) and will continue to be tracked on the exchange.</span>
+                </p>
+                <p className="shutdown-info-row">
+                  <span className="shutdown-info-icon">📉</span>
+                  <span><strong>Paper trade positions</strong> will be automatically closed at the last known market price before shutdown.</span>
+                </p>
+                <p className="shutdown-info-row">
+                  <span className="shutdown-info-icon">💾</span>
+                  <span>All evolution data, portfolio state, and trade history are persisted to disk and will be restored on next startup.</span>
+                </p>
+              </div>
+              <p className="shutdown-confirm-text">Are you sure you want to shut down?</p>
+            </div>
+            <div className="settings-modal-footer">
+              <button className="settings-btn-cancel" onClick={() => setShowShutdown(false)} disabled={shutdownLoading}>Cancel</button>
+              <button className="settings-btn-confirm shutdown-btn-confirm" disabled={shutdownLoading} onClick={async () => {
+                setShutdownLoading(true)
+                try {
+                  await fetch(`${API_BASE}/shutdown`, { method: 'POST' })
+                  if (esRef.current) {
+                    esRef.current.close()
+                    esRef.current = null
+                  }
+                  setConnected(false)
+                  setTimeout(() => window.location.reload(), 1000)
+                } catch {
+                  setShutdownLoading(false)
+                }
+              }}>{shutdownLoading ? 'Shutting down...' : 'Shutdown'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -115,3 +115,94 @@ export function getAvailableModels(provider?: 'nim' | 'ollama'): ModelDefinition
   if (provider) return AVAILABLE_MODELS.filter(m => m.provider === provider);
   return [...AVAILABLE_MODELS];
 }
+
+/**
+ * v2.0.121: Get dynamically available models based on Ollama plan + actual
+ * installed models from /api/tags. This replaces the static AVAILABLE_MODELS
+ * list for the UI model dropdown.
+ *
+ * Logic:
+ * - Free plan: only show models that are actually installed locally (from /api/tags)
+ *   + kimi-k2.6:cloud (the one free cloud model). If user has local models
+ *   like glm-5.2 installed, they'll appear.
+ * - Pro/Max plan: show all AVAILABLE_MODELS (cloud models accessible)
+ * - None: show empty list (Ollama not connected)
+ */
+export async function getDynamicAvailableModels(ollamaPlan: string, ollamaBaseUrl: string): Promise<ModelDefinition[]> {
+  if (ollamaPlan === 'None') {
+    return [];
+  }
+
+  if (ollamaPlan === 'Free') {
+    // For Free plan, query /api/tags to see what's actually installed
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const response = await fetch(`${ollamaBaseUrl}/api/tags`, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (response.ok) {
+        const tagsData = await response.json() as { models?: Array<{ name: string }> };
+        const installedNames = tagsData.models?.map(m => m.name) ?? [];
+
+        // Build model list from actually installed models
+        const dynamicModels: ModelDefinition[] = [];
+
+        // Always include kimi-k2.6:cloud (the free cloud model)
+        const kimiDef = AVAILABLE_MODELS.find(m => m.id === 'kimi-k2.6:cloud');
+        if (kimiDef) dynamicModels.push(kimiDef);
+
+        // Add any locally installed models that aren't cloud-only
+        for (const name of installedNames) {
+          // Skip if already in the list
+          if (dynamicModels.some(m => m.id === name)) continue;
+          // Skip cloud models that aren't kimi-k2.6 (Free plan can't use other cloud models)
+          if (name.includes(':cloud') && name !== 'kimi-k2.6:cloud') continue;
+          // Find in AVAILABLE_MODELS or create a dynamic entry
+          const existing = AVAILABLE_MODELS.find(m => m.id === name);
+          if (existing) {
+            dynamicModels.push(existing);
+          } else {
+            // Locally installed model not in our static list — add it
+            dynamicModels.push({
+              id: name,
+              label: name.replace(/:cloud$/, ' (Cloud)').replace(/-/g, ' '),
+              provider: 'ollama',
+              category: 'default',
+            });
+          }
+        }
+
+        return dynamicModels;
+      }
+    } catch { /* fall through to static list */ }
+    // Fallback: just kimi-k2.6:cloud
+    return AVAILABLE_MODELS.filter(m => m.id === 'kimi-k2.6:cloud');
+  }
+
+  // Pro/Max: show all models, but also check /api/tags for any locally
+  // installed models not in our static list
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const response = await fetch(`${ollamaBaseUrl}/api/tags`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (response.ok) {
+      const tagsData = await response.json() as { models?: Array<{ name: string }> };
+      const installedNames = tagsData.models?.map(m => m.name) ?? [];
+
+      const dynamicModels = [...AVAILABLE_MODELS];
+      for (const name of installedNames) {
+        if (dynamicModels.some(m => m.id === name)) continue;
+        dynamicModels.push({
+          id: name,
+          label: name.replace(/:cloud$/, ' (Cloud)').replace(/-/g, ' '),
+          provider: 'ollama',
+          category: 'default',
+        });
+      }
+      return dynamicModels;
+    }
+  } catch { /* fall through to static list */ }
+
+  return [...AVAILABLE_MODELS];
+}
