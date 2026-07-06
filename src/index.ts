@@ -108,6 +108,14 @@ class MATSSystem {
   private lastPatternContext = '';
   /** Per-symbol previous cycle context for hypothetical RBC training — Map<symbol, context> */
   private lastCycleRBCContexts = new Map<string, { symbol: string; price: number; features: Record<string, number> }>();
+  /** v2.0.122: Pending entry theses from Meta-Agent that didn't execute.
+   *  When Meta-Agent outputs BUY/SELL with an entryThesis but the trade is
+   *  blocked (conviction gate, liquidity, direction restriction, etc.), the
+   *  thesis is stored here so it carries forward to the next cycle. Skeptics
+   *  re-validates it each cycle, and Meta-Agent sees the prior reasoning.
+   *  Cleared when a position actually opens for that symbol.
+   *  Map: normalized symbol → { thesis, action, storedAt, cycle } */
+  private pendingTheses = new Map<string, { thesis: string; action: 'buy' | 'sell'; storedAt: number; cycle: number }>();
   private lastBacktestResult: import('./backtest/index.ts').BacktestResult | null = null;
   private backtestProgress: BacktestProgress | null = null;
   private paused = false;
@@ -578,6 +586,14 @@ class MATSSystem {
         }, 2000);
       });
 
+      // v2.0.122: Per-symbol direction restrictions from UI.
+      // Allows the user to restrict a symbol to only BUY or only SELL.
+      // Example: { "xyz:SILVER": "sell" } → SILVER can only be shorted.
+      this.apiServer.setDirectionRestrictionsHandler((restrictions) => {
+        this.marketAgent.setDirectionRestrictions(restrictions);
+        this.pushToAPI();
+      });
+
       // v2.0.45: Clear drawdown data to relaunch trading after circuit breaker.
       // Resets peakEquity to current equity, clears currentDrawdownPct,
       // maxDrawdown, and dailyPnl. The next cycle will pass the guard check.
@@ -700,6 +716,8 @@ class MATSSystem {
 
             // Clean up legacy tracking
             this.legacyPositionModes.delete(sym);
+            // v2.0.122: Clear pending thesis on manual close
+            this.pendingTheses.delete(normalizeSymbol(sym));
           }
 
           // Push updated portfolio to UI
@@ -2034,6 +2052,20 @@ class MATSSystem {
         };
       }
 
+      // v2.0.122: Inject pending entry theses into market description.
+      // These are theses from previous cycles where Meta-Agent output BUY/SELL
+      // but the trade didn't execute (blocked by conviction gate, liquidity,
+      // direction restriction, etc.). Meta-Agent should see its prior reasoning
+      // and either re-affirm it or update it. Skeptics re-validates each cycle.
+      if (this.pendingTheses.size > 0) {
+        marketDesc += `\n\n=== PENDING ENTRY THESES (prior cycle — not yet executed) ===`;
+        for (const [sym, entry] of this.pendingTheses) {
+          const ageCycles = this.totalCycles - entry.cycle;
+          marketDesc += `\n${sym}: ${entry.action.toUpperCase()} (pending ${ageCycles} cycle(s)) — Thesis: "${entry.thesis}"`;
+        }
+        marketDesc += `\n⚠️ These theses were output by Meta-Agent but the trade did NOT execute. Re-evaluate: is the thesis still valid? If yes, re-output the same direction. If market conditions changed, update the thesis or switch to HOLD.`;
+      }
+
       // 2. Build agent context (including evolution memory + backtest knowledge)
       const evolutionContext = this.evolution.getContextForAgent(combinedState.regime);
       const backtestContext = this.backtest.getBacktestSummary();
@@ -2595,6 +2627,12 @@ class MATSSystem {
           finalDecision = { ...finalDecision, entryThesis: activePsc.entryThesis };
         }
       }
+      // v2.0.122: Capture the original Meta-Agent thesis+action BEFORE any gates
+      // (conviction gate, direction restriction, liquidity, etc.) can override it.
+      // If the trade doesn't execute, we store this as a pending thesis so it
+      // carries forward to the next cycle for Skeptics re-validation.
+      const originalMetaAction = finalDecision.action;
+      const originalMetaThesis = finalDecision.entryThesis;
       if (finalDecision.action === 'hold' && this.totalCycles > 2 && this.totalCycles % 3 === 0) {
         // Independent exploration: only block if the ACTIVE symbol has a position.
         // Previously checked p.positions.size === 0 which blocked exploration on
@@ -3042,6 +3080,12 @@ class MATSSystem {
           // v2.0.104: Execute entry decisions for trading markets without position
           // v2.0.106: Apply per-asset conviction gate + frequency throttle
           if ((psc.action === 'buy' || psc.action === 'sell') && psc.positionSizePct > 0) {
+            // v2.0.122: Check per-symbol direction restriction
+            if (!this.marketAgent.isDirectionAllowed(psc.symbol, psc.action)) {
+              const allowedDir = this.marketAgent.getDirectionRestrictions()[normalizeSymbol(psc.symbol)];
+              log.warn(`🚫 [direction-restrict] Multi-symbol ${psc.symbol}: ${psc.action.toUpperCase()} blocked — only ${allowedDir?.toUpperCase() ?? 'unknown'} allowed. Skipping entry.`);
+              continue;
+            }
             // v2.0.106: Check per-asset filter gate
             const pscFilter = this.assetFilterRegistry.getFilter(psc.symbol);
             if (psc.confidence < pscFilter.getConvictionThreshold()) {
@@ -3345,6 +3389,24 @@ class MATSSystem {
       }
       log.info(`💼 Executing ${this.realTradingManager.getTradeMode().toUpperCase()} trading decision...`);
 
+      // v2.0.122: Per-symbol direction restriction enforcement.
+      // If the Market Agent config restricts a symbol to one direction,
+      // block the opposite direction from executing. Existing positions
+      // can still be closed (closePosition is not a new entry).
+      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+        const decisionSym = finalDecision.symbol || activeSymbol;
+        if (!this.marketAgent.isDirectionAllowed(decisionSym, finalDecision.action)) {
+          const allowedDir = this.marketAgent.getDirectionRestrictions()[normalizeSymbol(decisionSym)];
+          log.warn(`🚫 [direction-restrict] ${decisionSym}: ${finalDecision.action.toUpperCase()} blocked — only ${allowedDir?.toUpperCase()} allowed. Overriding → HOLD.`);
+          finalDecision = {
+            ...finalDecision,
+            action: 'hold',
+            positionSizePct: 0,
+            rationale: `[DIRECTION RESTRICT] ${decisionSym} is restricted to ${allowedDir?.toUpperCase() ?? 'unknown'} only. ${finalDecision.action.toUpperCase()} blocked. Original: ${finalDecision.rationale}`,
+          };
+        }
+      }
+
       // v2.0.106: Adaptive conviction gate + trade frequency throttle.
       // Uses the ACTIVE symbol's per-asset filter — each asset has its own
       // conviction threshold and trade frequency limit based on Market Agent's
@@ -3391,6 +3453,57 @@ class MATSSystem {
         symFilter.recordTrade();
         log.info(`📊 [adaptive-filter] Trade recorded for ${tradeSym} — ${symFilter.getRemainingTradeSlots()} slots remaining`);
       }
+
+      // v2.0.122: Pending thesis management for the active symbol.
+      // If Meta-Agent output BUY/SELL with a thesis but the trade didn't execute
+      // (gates overrode to HOLD, or execution failed), store the thesis as pending
+      // so it carries forward to the next cycle. If the trade DID execute, clear
+      // any pending thesis for this symbol (the position now has its own thesis).
+      if (originalMetaAction === 'buy' || originalMetaAction === 'sell') {
+        const activeSymNorm = normalizeSymbol(activeSymbol);
+        if (execResult.success && (finalDecision.action === 'buy' || finalDecision.action === 'sell')) {
+          // Trade executed — clear pending thesis (position has its own thesis)
+          if (this.pendingTheses.has(activeSymNorm)) {
+            this.pendingTheses.delete(activeSymNorm);
+            log.info(`📝 [pending-thesis] Cleared for ${activeSymNorm} — trade executed`);
+          }
+        } else if (originalMetaThesis) {
+          // Trade didn't execute — store/update the pending thesis
+          this.pendingTheses.set(activeSymNorm, {
+            thesis: originalMetaThesis,
+            action: originalMetaAction,
+            storedAt: Date.now(),
+            cycle: this.totalCycles,
+          });
+          log.info(`📝 [pending-thesis] Stored for ${activeSymNorm}: ${originalMetaAction.toUpperCase()} — "${originalMetaThesis.slice(0, 80)}..." (will re-validate next cycle)`);
+        }
+      }
+
+      // v2.0.122: Also manage pending theses for multi-symbol trading markets.
+      // If a per-symbol consensus had a BUY/SELL with thesis but the entry was
+      // blocked (conviction gate, direction restriction, etc.), store it.
+      for (const psc of perSymbolConsensus) {
+        if (psc.action !== 'buy' && psc.action !== 'sell') continue;
+        if (normalizeSymbol(psc.symbol) === normalizeSymbol(activeSymbol)) continue; // handled above
+        if (!psc.entryThesis) continue;
+        const pscNorm = normalizeSymbol(psc.symbol);
+        // If a position now exists for this symbol, the entry succeeded — clear pending
+        if (this.portfolio.hasPosition(pscNorm)) {
+          if (this.pendingTheses.has(pscNorm)) {
+            this.pendingTheses.delete(pscNorm);
+            log.info(`📝 [pending-thesis] Cleared for ${pscNorm} — position opened`);
+          }
+        } else {
+          // No position — entry was blocked or not attempted. Store/update pending thesis.
+          this.pendingTheses.set(pscNorm, {
+            thesis: psc.entryThesis,
+            action: psc.action,
+            storedAt: Date.now(),
+            cycle: this.totalCycles,
+          });
+        }
+      }
+
       // When real-mode, paperReports mirrors the real trade into the local portfolio
       // so all downstream P&L tracking, stop-loss monitoring, and evolution learning work identically.
 
@@ -4263,6 +4376,16 @@ class MATSSystem {
       ];
 
       const marketAgentState = this.marketAgent?.getState() ?? { config: { selectedSymbol: '', tradeMode: 'paper', exchange: 'hyperliquid', hyperliquidAssetType: 'crypto_perps', updatedAt: Date.now() }, topPairs: [] };
+      // v2.0.122: Attach pending theses so UI can display them
+      if (this.pendingTheses.size > 0) {
+        (marketAgentState as { pendingTheses?: unknown }).pendingTheses = Array.from(this.pendingTheses.entries()).map(([sym, entry]) => ({
+          symbol: sym,
+          action: entry.action,
+          thesis: entry.thesis,
+          cycle: entry.cycle,
+          storedAt: entry.storedAt,
+        }));
+      }
 
       // v2.0.17: In real-trade mode, show the actual Hyperliquid account value
       // (from the cached exchange balance) instead of the local mirror. The

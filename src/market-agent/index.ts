@@ -253,6 +253,44 @@ export class MarketAgent {
     log.info(`Leverage changed: ${clamped}x`);
   }
 
+  // ── v2.0.122: Per-Symbol Direction Restrictions ──
+
+  /** Get the current direction restrictions map (normalized symbol → allowed direction). */
+  getDirectionRestrictions(): Record<string, 'buy' | 'sell'> {
+    return { ...(this.config.directionRestrictions ?? {}) };
+  }
+
+  /** Set direction restrictions for symbols. Replaces the entire map.
+   *  Keys are normalized internally. Values must be 'buy' or 'sell'. */
+  setDirectionRestrictions(restrictions: Record<string, 'buy' | 'sell'>): void {
+    const normalized: Record<string, 'buy' | 'sell'> = {};
+    for (const [sym, dir] of Object.entries(restrictions)) {
+      if (dir !== 'buy' && dir !== 'sell') continue;
+      const normSym = sym.includes(':')
+        ? sym.slice(0, sym.indexOf(':')).toLowerCase() + sym.slice(sym.indexOf(':'))
+        : sym.toLowerCase();
+      normalized[normSym] = dir;
+    }
+    this.config.directionRestrictions = Object.keys(normalized).length > 0 ? normalized : undefined;
+    this.config.updatedAt = Date.now();
+    this.persistConfig();
+    log.info(`Direction restrictions set: ${JSON.stringify(this.config.directionRestrictions ?? {})}`);
+  }
+
+  /** Check if a given action is allowed for a symbol given its direction restrictions.
+   *  Returns true if allowed (no restriction, or restriction matches action).
+   *  Returns false if the symbol has a restriction and the action is the opposite direction. */
+  isDirectionAllowed(symbol: string, action: 'buy' | 'sell'): boolean {
+    const restrictions = this.config.directionRestrictions;
+    if (!restrictions) return true;
+    const normSym = symbol.includes(':')
+      ? symbol.slice(0, symbol.indexOf(':')).toLowerCase() + symbol.slice(symbol.indexOf(':'))
+      : symbol.toLowerCase();
+    const allowed = restrictions[normSym];
+    if (!allowed) return true; // no restriction for this symbol
+    return allowed === action;
+  }
+
   /** Register callback for symbol changes */
   onSymbolChanged(cb: (symbol: string) => void): void {
     this.onSymbolChange = cb;
@@ -1132,6 +1170,15 @@ export class MarketAgent {
         `Price: $${pair.price.toFixed(2)}`,
         `24h Change: ${pair.priceChangePercent >= 0 ? '+' : ''}${pair.priceChangePercent.toFixed(2)}%`,
       );
+    }
+
+    // v2.0.122: Include direction restrictions so agents know which directions
+    // are blocked. Agents should not waste a BUY/SELL output on a blocked direction.
+    const restrictions = this.config.directionRestrictions;
+    if (restrictions && Object.keys(restrictions).length > 0) {
+      const restrictionLines = Object.entries(restrictions)
+        .map(([sym, dir]) => `${sym}: ${dir.toUpperCase()} only`);
+      lines.push(`Direction Restrictions: ${restrictionLines.join(', ')}`);
     }
 
     lines.push(`---`);

@@ -75,6 +75,8 @@ export interface APIData {
   marketAgent?: {
     config: MarketAgentConfig;
     topPairs: TopVolumePair[];
+    /** v2.0.122: Pending entry theses from Meta-Agent that didn't execute. */
+    pendingTheses?: Array<{ symbol: string; action: 'buy' | 'sell'; thesis: string; cycle: number; storedAt: number }>;
   };
   executionStats?: {
     totalTrades: number;
@@ -220,6 +222,8 @@ export class APIServer {
   private onMarketAgentSelectSymbol: ((symbol: string) => void) | null = null;
   /** v2.0.79: Set trading markets list from UI pills. */
   private onSetTradingMarkets: ((markets: string[]) => void) | null = null;
+  /** v2.0.122: Set per-symbol direction restrictions from UI. */
+  private onSetDirectionRestrictions: ((restrictions: Record<string, 'buy' | 'sell'>) => void) | null = null;
   /** v2.0.45: Clear drawdown data to relaunch trading after circuit breaker. */
   private onClearDrawdown: (() => void) | null = null;
   private onManualClosePosition: ((symbol: string) => Promise<{ success: boolean; error?: string }>) | null = null;
@@ -321,6 +325,11 @@ export class APIServer {
   /** v2.0.79: Register a callback for setting trading markets list from UI */
   setTradingMarketsHandler(cb: (markets: string[]) => void): void {
     this.onSetTradingMarkets = cb;
+  }
+
+  /** v2.0.122: Register a callback for setting per-symbol direction restrictions */
+  setDirectionRestrictionsHandler(cb: (restrictions: Record<string, 'buy' | 'sell'>) => void): void {
+    this.onSetDirectionRestrictions = cb;
   }
 
   /** v2.0.45: Register a callback for clearing drawdown data to relaunch trading */
@@ -853,6 +862,44 @@ export class APIServer {
               this.onSetTradingMarkets(valid);
               res.writeHead(200, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ success: true, message: `Trading markets set: ${valid.join(', ')}` }));
+            } else {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'Handler not registered' }));
+            }
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // v2.0.122: POST — set per-symbol direction restrictions.
+      // Body: { "restrictions": { "xyz:SILVER": "sell", "btc": "buy" } }
+      // Keys are symbol names, values are the ONLY allowed direction ('buy' or 'sell').
+      // A symbol not in the map has no restriction.
+      if (pathname === '/api/market-agent/direction-restrictions' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { restrictions } = JSON.parse(body) as { restrictions: Record<string, string> };
+            if (!restrictions || typeof restrictions !== 'object' || Array.isArray(restrictions)) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'restrictions must be an object mapping symbol → "buy"|"sell"' }));
+              return;
+            }
+            // Validate values — only 'buy' and 'sell' allowed
+            const cleaned: Record<string, 'buy' | 'sell'> = {};
+            for (const [sym, dir] of Object.entries(restrictions)) {
+              if (typeof sym === 'string' && sym.length > 0 && sym.length <= 50 && (dir === 'buy' || dir === 'sell')) {
+                cleaned[sym] = dir;
+              }
+            }
+            if (this.onSetDirectionRestrictions) {
+              this.onSetDirectionRestrictions(cleaned);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: true, message: `Direction restrictions set: ${JSON.stringify(cleaned)}` }));
             } else {
               res.writeHead(500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ success: false, message: 'Handler not registered' }));

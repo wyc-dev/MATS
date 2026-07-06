@@ -687,6 +687,13 @@ export interface MarketAgentConfig {
   maxPortionPct: number;
   /** Leverage multiplier (1-10) */
   leverage: number;
+  /** v2.0.122: Per-symbol direction restriction. Key = normalized symbol,
+   *  value = allowed direction ('buy' | 'sell'). If a symbol is in this map,
+   *  only the specified direction is allowed for new entries; the opposite
+   *  direction is blocked at execution time. Existing positions can still
+   *  be closed. Example: { "xyz:silver": "sell" } means SILVER can only be
+   *  shorted, never bought. */
+  directionRestrictions?: Record<string, 'buy' | 'sell'>;
   /** Timestamp of last config change */
   updatedAt: number;
 }

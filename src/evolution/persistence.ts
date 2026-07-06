@@ -628,6 +628,7 @@ interface MarketAgentConfigSnapshot {
   positionSizePct: number;
   maxPortionPct: number;
   leverage: number;
+  directionRestrictions?: Record<string, string>;
   updatedAt: number;
 }
 
@@ -640,6 +641,7 @@ const MARKET_AGENT_CONFIG_FIELDS: Record<string, SchemaField> = {
   positionSizePct: { type: 'number', required: true },
   maxPortionPct: { type: 'number', required: false },
   leverage: { type: 'number', required: true },
+  directionRestrictions: { type: 'object', required: false },
   updatedAt: { type: 'number', required: true },
 };
 
@@ -657,6 +659,7 @@ export function saveMarketAgentConfig(cfg: MarketAgentConfig): boolean {
       positionSizePct: cfg.positionSizePct,
       maxPortionPct: cfg.maxPortionPct ?? 0.20,
       leverage: cfg.leverage,
+      ...(cfg.directionRestrictions ? { directionRestrictions: cfg.directionRestrictions } : {}),
       updatedAt: cfg.updatedAt,
     };
     // v2.0.78: Use direct atomicWriteSync (not lockedWrite) because this is
@@ -688,6 +691,15 @@ export function loadMarketAgentConfig(): Partial<MarketAgentConfig> | null {
     }
 
     log.info(`Market agent config loaded: tradeMode=${snapshot.tradeMode}, size=${(snapshot.positionSizePct * 100).toFixed(0)}%, maxPortion=${((snapshot.maxPortionPct ?? 0.20) * 100).toFixed(0)}%, lev=${snapshot.leverage}x, symbol=${snapshot.selectedSymbol}`);
+    // v2.0.122: Restore directionRestrictions, filtering to valid 'buy'|'sell' values
+    const rawRestrictions = snapshot.directionRestrictions;
+    const directionRestrictions: Record<string, 'buy' | 'sell'> | undefined = rawRestrictions
+      ? Object.fromEntries(
+          Object.entries(rawRestrictions)
+            .filter(([, v]) => v === 'buy' || v === 'sell')
+            .map(([k, v]) => [k, v as 'buy' | 'sell']),
+        )
+      : undefined;
     return {
       tradeMode: snapshot.tradeMode as MarketAgentConfig['tradeMode'],
       exchange: snapshot.exchange as MarketAgentConfig['exchange'],
@@ -696,6 +708,7 @@ export function loadMarketAgentConfig(): Partial<MarketAgentConfig> | null {
       positionSizePct: snapshot.positionSizePct,
       maxPortionPct: snapshot.maxPortionPct ?? 0.20,
       leverage: snapshot.leverage,
+      ...(directionRestrictions ? { directionRestrictions } : {}),
       updatedAt: snapshot.updatedAt,
     };
   } catch (err) {
