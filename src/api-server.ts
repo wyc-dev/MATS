@@ -962,6 +962,11 @@ export class APIServer {
           clearTimeout(tagsTimeout);
           if (tagsResponse.ok) {
             ollamaReachable = true;
+            // v2.0.123: Default authValid=true when Ollama is reachable. Only an
+            // explicit 401 from the chat ping flips it to false. Transient errors
+            // (500/429/503/timeout) must NOT flip to false — that caused the UI
+            // to auto-pause the system whenever Ollama was briefly overloaded.
+            authValid = true;
             const tagsData = await tagsResponse.json() as { models?: Array<{ name: string }> };
             const modelNames = tagsData.models?.map(m => m.name) ?? [];
             const hasCloudModels = modelNames.some(n => n.includes(':cloud'));
@@ -969,9 +974,13 @@ export class APIServer {
             // Step 2: Ping /api/chat with a minimal request to check auth
             // Use the first available cloud model (or any model) for the ping
             const pingModel = modelNames.find(n => n.includes(':cloud')) ?? modelNames[0] ?? 'kimi-k2.6:cloud';
+            let pingStatus: number | null = null;
             try {
               const chatController = new AbortController();
-              const chatTimeout = setTimeout(() => chatController.abort(), 5000);
+              // v2.0.123: raised from 5s to 15s — when 8 agents are hitting Ollama
+              // concurrently, a 5s ping times out and gets treated as auth failure,
+              // causing the UI to auto-pause the system. 15s gives headroom.
+              const chatTimeout = setTimeout(() => chatController.abort(), 15_000);
               const chatResponse = await fetch(`${ollamaBaseUrl}/api/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -984,15 +993,22 @@ export class APIServer {
                 signal: chatController.signal,
               });
               clearTimeout(chatTimeout);
+              pingStatus = chatResponse.status;
               if (chatResponse.ok) {
                 authValid = true;
               } else if (chatResponse.status === 401) {
                 // Process running but not authenticated (signed out)
                 authValid = false;
               }
+              // v2.0.123: 500/429/503/timeout are TRANSIENT errors (overload, rate
+              // limit, network hiccup) — NOT auth failures. Leave authValid at its
+              // default (true if tags OK) so we don't falsely flip to 'None' and
+              // trigger the UI auto-pause. Only 401 means actually signed out.
             } catch {
-              // Chat ping failed (timeout/network) — assume auth invalid
-              authValid = false;
+              // Chat ping timed out or network error — transient, not auth failure.
+              // v2.0.123: Do NOT set authValid=false here. A timeout when Ollama is
+              // busy serving 8 agents is normal and should not pause the system.
+              pingStatus = null;
             }
 
             // Determine plan based on auth + models
