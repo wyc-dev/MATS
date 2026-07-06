@@ -2439,6 +2439,10 @@ export default function App() {
   const [ollamaPlan, setOllamaPlan] = useState<string>('')
   // v2.0.120: Ref for plan polling interval
   const planPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // v2.0.123: Consecutive 'None' plan readings — require 2 in a row before
+  // auto-pausing, so a single transient 500/timeout from Ollama (common when
+  // 8 agents are hitting it concurrently) doesn't pause the system.
+  const nonePlanCountRef = useRef<number>(0)
 
   // v2.0.119: DESKTOP_PANELS defined inside App() so it can access ollamaPlan
   const DESKTOP_PANELS: Array<(data: APIData | null) => React.ReactNode> = [
@@ -2464,9 +2468,15 @@ export default function App() {
         const json = await res.json()
         if (json.success) {
           setOllamaPlan(json.plan)
-          // v2.0.118: If Ollama is not connected (None), auto-pause system to save compute
+          // v2.0.123: Require 2 consecutive 'None' readings before auto-pausing.
+          // A single transient None (Ollama busy/overloaded) should not pause.
           if (json.plan === 'None') {
-            try { await fetch(`${API_BASE}/pause`, { method: 'POST' }) } catch { /* ignore */ }
+            nonePlanCountRef.current += 1
+            if (nonePlanCountRef.current >= 2) {
+              try { await fetch(`${API_BASE}/pause`, { method: 'POST' }) } catch { /* ignore */ }
+            }
+          } else {
+            nonePlanCountRef.current = 0
           }
         }
       } catch { /* ignore */ }
@@ -2480,9 +2490,16 @@ export default function App() {
         if (json.success) {
           const newPlan = json.plan
           setOllamaPlan(prev => {
-            // If plan changed to None, auto-pause
+            // v2.0.123: Require 2 consecutive 'None' readings before auto-pausing.
+            // A transient 500/timeout when Ollama is busy serving 8 agents should
+            // not pause the system. Only persistently being signed out pauses.
             if (newPlan === 'None' && prev !== 'None') {
-              fetch(`${API_BASE}/pause`, { method: 'POST' }).catch(() => {})
+              nonePlanCountRef.current += 1
+              if (nonePlanCountRef.current >= 2) {
+                fetch(`${API_BASE}/pause`, { method: 'POST' }).catch(() => {})
+              }
+            } else if (newPlan !== 'None') {
+              nonePlanCountRef.current = 0
             }
             return newPlan
           })
