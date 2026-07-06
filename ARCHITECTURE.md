@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.115 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology + Skeptics Stress-Tester + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation + Close Validation + Active Position Management + No Backward-Looking Blocking + Extreme Reasoning + RBC/S/R for All Positions + UI Improvements + Thesis-Mandatory Close + Multi-Symbol Single-Cycle + Trading Market Injection + Per-Asset Adaptive Noise Filter + EADDRINUSE Recovery + Immediate Cycle on Market Change + News Reporter Priority + Global Breaking News Cross-Asset Analysis + Skeptics Approve-First + Noise Trading Reduction + Multi-Market Drift Correction + Trend-Following Incentives + Short-Term Price Trend Injection + Mobile UI Overhaul + Infinite POST Loop Fix)
+> **版本**: 2.0.122 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology + Skeptics Stress-Tester + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation + Close Validation + Active Position Management + No Backward-Looking Blocking + Extreme Reasoning + RBC/S/R for All Positions + UI Improvements + Thesis-Mandatory Close + Multi-Symbol Single-Cycle + Trading Market Injection + Per-Asset Adaptive Noise Filter + EADDRINUSE Recovery + Immediate Cycle on Market Change + News Reporter Priority + Global Breaking News Cross-Asset Analysis + Skeptics Approve-First + Noise Trading Reduction + Multi-Market Drift Correction + Trend-Following Incentives + Short-Term Price Trend Injection + Mobile UI Overhaul + Infinite POST Loop Fix + Pending Thesis Persistence + Per-Symbol Direction Restrictions)
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~20,000+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -40,6 +40,7 @@
 29. [B.13–B.31 Math Audit + LLM Resilience + Evolution + HL WS + Real Trading](#b13b31-math-audit--llm-resilience--evolution--hl-ws--real-trading)
 30. [B.32–B.57 HL Real Trading Fixes + SL/TP Safety + Position Management + Options + UI](#b32b57-hl-real-trading-fixes--sltp-safety--position-management--options--ui)
 31. [B.58+ Entry Thesis System + Dark Psychology + Skeptics Veto + Close Validation](#b58-entry-thesis-system--dark-psychology--skeptics-veto--close-validation)
+32. [B.61 Pending Thesis Persistence + Per-Symbol Direction Restrictions (v2.0.122)](#b61-pending-thesis-persistence--per-symbol-direction-restrictions-v20122)
 
 ---
 
@@ -6758,6 +6759,50 @@ Agents 而家可以睇到「BTC 已經升咗 3%」而唔係淨係睇到當前價
 - 多 tab 開啟唔再導致 infinite POST loop
 - 手機版 Market Agent 控制項垂直堆疊，每個控制項獨佔一行
 - TradingView chart 喺手機版正確 resize
+
+---
+
+### B.61 Pending Thesis Persistence + Per-Symbol Direction Restrictions (v2.0.122)
+
+**發現日期**: 2026-07-06
+**嚴重性**: 🟡 High — Meta-Agent SELL thesis 每個 cycle 都遺失；SILVER 不應 BUY 但系統允許
+**涉及檔案**: `src/types/index.ts`, `src/evolution/persistence.ts`, `src/market-agent/index.ts`, `src/api-server.ts`, `src/index.ts`
+
+#### 問題描述
+
+1. **Pending thesis 遺失**: Meta-Agent 輸出 SELL + entryThesis（例如 BTC SELL from $62,850 targeting $62,000），但交易未執行（被 conviction gate / liquidity / direction restriction 阻擋）。下一個 cycle Meta-Agent 完全忘記上一個 cycle 嘅推理 → 重新由零開始 → HOLD。Skeptics 嘅 thesis re-validation（Phase 0.5）只驗證**已開倉位**嘅 thesis，未開倉嘅 SELL thesis 完全冇記憶。
+
+2. **SILVER 不應 BUY**: 系統冇 per-symbol 方向限制機制。Meta-Agent 輸出 BUY SILVER 就會執行，即使該資產只應做空（例如 commodity 嘅 macro headwind）。
+
+#### 修復
+
+**1. Pending Thesis Persistence** (`src/index.ts`):
+
+新增 `pendingTheses: Map<string, { thesis, action, storedAt, cycle }>` 喺 `MATSSystem`。
+
+- **捕獲**: 喺所有 gates（conviction gate、direction restriction、liquidity）override 之前，捕獲 Meta-Agent 嘅原始 `action` + `entryThesis`（`originalMetaAction` / `originalMetaThesis`）。
+- **存儲**: 如果交易未執行（`execResult.success === false` 或 `finalDecision.action` 被 override 為 HOLD），將 thesis 存入 `pendingTheses`。
+- **注入**: 下一個 cycle 嘅 `marketDesc` 加入 `=== PENDING ENTRY THESES ===` 區塊，列出所有 pending thesis（symbol、action、pending 幾個 cycle、thesis 全文）。Meta-Agent 睇到 prior reasoning → re-affirm 或 update。Skeptics 每個 cycle re-validate。
+- **清除**: 倉位實際開啟（position 有自己嘅 thesis）或手動平倉時清除。
+- **Multi-symbol**: per-symbol consensus 嘅 BUY/SELL thesis 也存入 pending（trading markets 未開倉嘅情況）。
+- **API push**: `pendingTheses` 附喺 `marketAgent` state 推送到 UI。
+
+**2. Per-Symbol Direction Restrictions** (`src/types/index.ts` + `src/market-agent/index.ts` + `src/api-server.ts` + `src/index.ts`):
+
+新增 `directionRestrictions?: Record<string, 'buy' | 'sell'>` 喺 `MarketAgentConfig`。
+
+- **持久化**: `persistence.ts` save/load `directionRestrictions`，存喺 `data/evolution/market-agent-config.json`（gitignored）。
+- **MarketAgent**: `getDirectionRestrictions()` / `setDirectionRestrictions()` / `isDirectionAllowed(symbol, action)` — normalize symbol 後查 map，restricted direction 嘅相反方向被 block。
+- **Agent context**: `getMarketDescription()` 加入 `Direction Restrictions: xyz:SILVER: SELL only`，agents 唔浪費 output 喺 blocked direction。
+- **API**: `POST /api/market-agent/direction-restrictions` — body `{ restrictions: { "xyz:SILVER": "sell" } }`，handler 注册喺 `index.ts`。
+- **執行強制**: 兩個路徑都 check — active symbol final decision（conviction gate 之前）+ multi-symbol trading market entry（conviction gate 之前）。Blocked 時 override 為 HOLD + `[DIRECTION RESTRICT]` rationale。
+- **本地配置**: `market-agent-config.json` 設定 `"xyz:SILVER": "sell"` — SILVER 只能做空。
+
+#### 效果
+
+- Meta-Agent 嘅 SELL thesis 唔再每個 cycle 遺失 — pending thesis 持續 re-validate 直到 market conditions 改變或 trade 終於執行
+- SILVER 永遠唔會 BUY — direction restriction 喺執行層硬 block，agents 也喺 context 中看到限制
+- 用戶可透過 UI API 動態設定任何 symbol 嘅方向限制
 
 ---
 

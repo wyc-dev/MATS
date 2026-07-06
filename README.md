@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.115-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.122-blueviolet)](ARCHITECTURE.md)
 
 ## Table of Contents
 
@@ -451,6 +451,29 @@ RISK_STOP_LOSS_PCT=0.02        # Default stop-loss (2%)
 RISK_TAKE_PROFIT_PCT=0.05      # Default take-profit (5%)
 ```
 
+### Per-Symbol Direction Restrictions (v2.0.122)
+
+Restrict a symbol to only one direction (BUY or SELL). Useful for assets that should only be shorted (e.g. commodities with macro headwinds) or only bought (e.g. indices in a bull market). Configured via API or directly in `data/evolution/market-agent-config.json`:
+
+```json
+{
+  "directionRestrictions": {
+    "xyz:SILVER": "sell",
+    "btc": "buy"
+  }
+}
+```
+
+Or via API:
+
+```bash
+curl -X POST http://localhost:3456/api/market-agent/direction-restrictions \
+  -H 'Content-Type: application/json' \
+  -d '{"restrictions": {"xyz:SILVER": "sell"}}'
+```
+
+When a direction is restricted, the opposite direction is blocked at execution time (overridden to HOLD with `[DIRECTION RESTRICT]` rationale). Agents also see the restrictions in their market context so they don't waste output on blocked directions. Existing positions can still be closed regardless of restriction.
+
 ---
 
 ## Commercial Licensing
@@ -464,6 +487,11 @@ If you require a commercial license — for example, for proprietary extensions,
 ---
 
 ## Changelog
+
+### v2.0.122 — Pending Thesis Persistence + Per-Symbol Direction Restrictions
+
+- **Pending thesis persistence** (v2.0.122): When Meta-Agent outputs BUY/SELL with an `entryThesis` but the trade doesn't execute (blocked by conviction gate, liquidity, direction restriction, etc.), the thesis is now stored as "pending" and injected into the next cycle's market description as `=== PENDING ENTRY THESES ===`. Meta-Agent sees its prior reasoning and either re-affirms or updates it. Skeptics re-validates each cycle. Cleared when a position actually opens (position has its own thesis) or is manually closed. Also applies to multi-symbol trading market entries that were blocked. Exposed via API in `marketAgent.pendingTheses[]`.
+- **Per-symbol direction restrictions** (v2.0.122): New `directionRestrictions` field on `MarketAgentConfig` maps normalized symbol → allowed direction (`'buy' | 'sell'`). When a symbol is restricted, only the specified direction can execute; the opposite direction is blocked at both the active symbol path and the multi-symbol trading market entry path. Persisted to `data/evolution/market-agent-config.json` (gitignored). Exposed via `POST /api/market-agent/direction-restrictions` (body: `{ "restrictions": { "xyz:SILVER": "sell" } }`). Included in agent context via `getMarketDescription()` so agents don't waste output on blocked directions. SILVER restricted to SELL-only in local config.
 
 ### v2.0.115 — Trend-Following Incentives + Short-Term Price Trend Injection + Mobile UI + Infinite POST Loop Fix
 
