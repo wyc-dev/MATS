@@ -694,6 +694,10 @@ export interface MarketAgentConfig {
    *  be closed. Example: { "xyz:silver": "sell" } means SILVER can only be
    *  shorted, never bought. */
   directionRestrictions?: Record<string, 'buy' | 'sell'>;
+  /** v2.0.124: Trading markets list (from UI pills). Persisted so the system
+   *  resumes with the correct markets on restart instead of falling back to
+   *  auto-select with only the selectedSymbol. Max 3 symbols. */
+  tradingMarkets?: string[];
   /** Timestamp of last config change */
   updatedAt: number;
 }

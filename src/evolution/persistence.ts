@@ -629,6 +629,7 @@ interface MarketAgentConfigSnapshot {
   maxPortionPct: number;
   leverage: number;
   directionRestrictions?: Record<string, string>;
+  tradingMarkets?: string[];
   updatedAt: number;
 }
 
@@ -642,6 +643,7 @@ const MARKET_AGENT_CONFIG_FIELDS: Record<string, SchemaField> = {
   maxPortionPct: { type: 'number', required: false },
   leverage: { type: 'number', required: true },
   directionRestrictions: { type: 'object', required: false },
+  tradingMarkets: { type: 'array', required: false },
   updatedAt: { type: 'number', required: true },
 };
 
@@ -660,6 +662,7 @@ export function saveMarketAgentConfig(cfg: MarketAgentConfig): boolean {
       maxPortionPct: cfg.maxPortionPct ?? 0.20,
       leverage: cfg.leverage,
       ...(cfg.directionRestrictions ? { directionRestrictions: cfg.directionRestrictions } : {}),
+      ...(cfg.tradingMarkets && cfg.tradingMarkets.length > 0 ? { tradingMarkets: cfg.tradingMarkets } : {}),
       updatedAt: cfg.updatedAt,
     };
     // v2.0.78: Use direct atomicWriteSync (not lockedWrite) because this is
@@ -700,6 +703,11 @@ export function loadMarketAgentConfig(): Partial<MarketAgentConfig> | null {
             .map(([k, v]) => [k, v as 'buy' | 'sell']),
         )
       : undefined;
+    // v2.0.124: Restore tradingMarkets (array of strings, max 3)
+    const rawTradingMarkets = snapshot.tradingMarkets;
+    const tradingMarkets: string[] | undefined = Array.isArray(rawTradingMarkets)
+      ? rawTradingMarkets.filter(s => typeof s === 'string' && s.length > 0 && s.length <= 50).slice(0, 3)
+      : undefined;
     return {
       tradeMode: snapshot.tradeMode as MarketAgentConfig['tradeMode'],
       exchange: snapshot.exchange as MarketAgentConfig['exchange'],
@@ -709,6 +717,7 @@ export function loadMarketAgentConfig(): Partial<MarketAgentConfig> | null {
       maxPortionPct: snapshot.maxPortionPct ?? 0.20,
       leverage: snapshot.leverage,
       ...(directionRestrictions ? { directionRestrictions } : {}),
+      ...(tradingMarkets && tradingMarkets.length > 0 ? { tradingMarkets } : {}),
       updatedAt: snapshot.updatedAt,
     };
   } catch (err) {
