@@ -1,7 +1,7 @@
 # {MATS} — Multi Agent Trading System
 
 > **作者**: YC Wong
-> **版本**: 2.0.110 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology + Skeptics Stress-Tester + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation + Close Validation + Active Position Management + No Backward-Looking Blocking + Extreme Reasoning + RBC/S/R for All Positions + UI Improvements + Thesis-Mandatory Close + Multi-Symbol Single-Cycle + Trading Market Injection + Per-Asset Adaptive Noise Filter + EADDRINUSE Recovery + Immediate Cycle on Market Change + News Reporter Priority + Global Breaking News Cross-Asset Analysis + Skeptics Approve-First + Noise Trading Reduction + Multi-Market Drift Correction)
+> **版本**: 2.0.115 (v2.0.78 基礎 + Entry Thesis System + Dark Psychology + Skeptics Stress-Tester + Risk Auditor Advisory-Only + holdReason UI + Thesis Re-validation + Close Validation + Active Position Management + No Backward-Looking Blocking + Extreme Reasoning + RBC/S/R for All Positions + UI Improvements + Thesis-Mandatory Close + Multi-Symbol Single-Cycle + Trading Market Injection + Per-Asset Adaptive Noise Filter + EADDRINUSE Recovery + Immediate Cycle on Market Change + News Reporter Priority + Global Breaking News Cross-Asset Analysis + Skeptics Approve-First + Noise Trading Reduction + Multi-Market Drift Correction + Trend-Following Incentives + Short-Term Price Trend Injection + Mobile UI Overhaul + Infinite POST Loop Fix)
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利  
 > **總代碼量**: ~20,000+ 行 TypeScript（嚴格模式，零類型錯誤，`noPropertyAccessFromIndexSignature`） + React UI (pantha_mats design system)
 
@@ -6699,6 +6699,65 @@ Phase 1.8 thesis rejection 時，完整 rationale 存入 `metadata.thesisRejecti
 - Decision cycle 5 分鐘一次，RBC training 25 分鐘一次 — 唔再 trade noise
 - UI 3 個 trading markets 正確同步到 backend — agents 分析齊晒所有 markets
 - Skeptics rejection rationale 直接顯示喺 UI — 唔使再靠 log
+
+---
+
+### B.60 Trend-Following Incentives + Short-Term Price Trend Injection + Mobile UI + Infinite POST Loop Fix (v2.0.111–v2.0.115)
+
+**發現日期**: 2026-07-04 ~ 2026-07-06
+**嚴重性**: 🔴 Critical — BTC 由 $58K 升到 $63K（+8.6%）系統都未開倉；多 tab 開啟導致 infinite POST loop；手機版 Market Agent UI 擠成一團
+**涉及檔案**: `src/agents/agents.ts`, `src/agents/meta-agent.ts`, `src/index.ts`, `src/data/binance-websocket.ts`, `ui/src/App.tsx`, `ui/src/index.css`, `ui/src/TradingViewChart.tsx`
+
+#### 問題描述
+
+1. **系統唔開倉**: BTC 持續上升趨勢但 agents 全部輸出 HOLD。根因：sub-agent prompts 傾向保守（「Never force a trade」、RBC NO_EDGE → 「safest action is HOLD」），Meta-Agent 嘅 HOLD 條件太寬鬆（7 個 signal 全部 absent 先 HOLD，但 LLM 會將微弱信號解讀為 absent）。
+2. **Infinite POST loop**: 多個 browser tab 各自 SSE 連接，各自 POST trading markets。兩個 tab 有唔同 markets → 交替 POST → backend 來回切換 → 無限循環。
+3. **手機版 UI**: Market Agent 控制項喺 iPhone SE（375px）擠成一團。Exchange dropdown 冇用（fixed to Hyperliquid）。Pause/Run cycle 兩粒掣應該合併。Shutdown 掣冇確認。
+
+#### 修復
+
+**1. Trend-Following Incentives** (`src/agents/agents.ts` + `src/agents/meta-agent.ts`):
+
+- **Fractal Momentum**: 「Never force a trade」改為「MISSING a trending move is as bad as taking a bad trade」。Confirmed trend 唔係 noise。
+- **RBC Analyst**: NO_EDGE 由「safest action is HOLD」改為「NEUTRAL signal, not BEARISH — weight OTHER signals more heavily」。
+- **On-Chain Whisperer**: 「No clear signal → HOLD」加註解：rising price with neutral on-chain = trend confirmation。
+- **Meta-Agent**: TREND DIRECTION 升到 reasoning chain 第一位。Confirmed uptrend + even ONE confirming signal = sufficient for entry。HOLD 條件由 7 個改為 8 個（加「No clear TREND」）。明確指出「MISSING a 5% trending move is a FAILURE, not prudence」。
+
+**2. Short-Term Price Trend Injection** (`src/data/binance-websocket.ts` + `src/index.ts`):
+
+新增 `getRecentPriceTrend()` method 計算最近 20 個 tick 嘅價格變化。注入到 market description：
+```
+Short-term Trend: ↑ UP +3.2% over last 20 ticks ($58,000 → $59,856)
+⚠️ SIGNIFICANT TREND: Price has moved up 3.2% — trend-following entry recommended
+```
+Agents 而家可以睇到「BTC 已經升咗 3%」而唔係淨係睇到當前價格。
+
+**3. Infinite POST Loop Fix** (`ui/src/App.tsx` + `src/index.ts`):
+
+- 完全移除 backend→UI trading markets merge effect（根因：merge effect → UI state changes → POST effect → backend changes → merge effect → infinite loop）
+- Backend `setTradingMarketsHandler` 加 3 秒 throttle（多 tab dedup）
+- UI POST effect 加 500ms debounce
+- Backend 加 `JSON.stringify` dedup guard
+
+**4. Mobile UI Overhaul** (`ui/src/App.tsx` + `ui/src/index.css`):
+
+- Exchange dropdown 移除（fixed to Hyperliquid），label 從「Exchange · Asset Type」改為「Asset Type」
+- Pause/Run cycle 兩粒掣合併成一粒 toggle 掣（運行中 → click = 暫停；已暫停 → click = 恢復 + 即時 trigger cycle）
+- Shutdown 掣加 `window.confirm()` 確認
+- `@media (max-width: 768px)`：`.market-control-group` 改為 `flex-direction: column`，所有控制項垂直堆疊
+- `.market-control-col` min-width 從 140px 減到 100px
+- `.market-chart-col` 加 `width: 100%` 喺 mobile
+
+**5. TradingView Chart Resize** (`ui/src/TradingViewChart.tsx`):
+
+- 加 `ResizeObserver` 監聽容器闊度變化。之前只監聽 `window.resize`，但 flex 佈局由 row 轉 column（手機版）唔會觸發 window resize event。
+
+#### 效果
+
+- Agents 唔再因為「唔夠信號」而 HOLD 一個明顯嘅趨勢 — trend 本身就係信號
+- 多 tab 開啟唔再導致 infinite POST loop
+- 手機版 Market Agent 控制項垂直堆疊，每個控制項獨佔一行
+- TradingView chart 喺手機版正確 resize
 
 ---
 

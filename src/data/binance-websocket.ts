@@ -553,4 +553,22 @@ export class MarketStateAggregator {
     if (trend === 'volatile') return 'chaotic';
     return 'mean_reverting';
   }
+
+  /**
+   * v2.0.115: Get a short-term price trend summary for agent context.
+   * Returns the price change over the last N ticks, direction, and momentum.
+   * This helps agents see "BTC has been rising for the last 20 ticks" instead
+   * of just seeing the current price in isolation.
+   */
+  getRecentPriceTrend(symbol: string, lookback = 20): { direction: 'up' | 'down' | 'flat'; pctChange: number; startPrice: number; endPrice: number; ticks: number } | null {
+    const sym = symbol.toLowerCase();
+    const history = this.priceHistory.get(sym);
+    if (!history || history.length < 5) return null;
+    const start = Math.max(0, history.length - lookback);
+    const startPrice = history[start]!;
+    const endPrice = history[history.length - 1]!;
+    const pctChange = startPrice > 0 ? ((endPrice - startPrice) / startPrice) * 100 : 0;
+    const direction: 'up' | 'down' | 'flat' = pctChange > 0.1 ? 'up' : pctChange < -0.1 ? 'down' : 'flat';
+    return { direction, pctChange, startPrice, endPrice, ticks: history.length - start };
+  }
 }
