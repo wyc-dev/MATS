@@ -923,7 +923,30 @@ export class HACPEngine {
 
     // Skip debate if all agents agree on HOLD with high conviction
     // Now includes all 5 agents (3 sub-agents + meta-agent + risk auditor)
-    if (allHold && highConviction >= allThoughts.length - 1) {
+    // v2.0.126: Do NOT skip if Meta-Agent has a BUY/SELL for any trading market
+    // in its multiSymbolDecision. The overall decision.action may be HOLD (the
+    // active symbol), but Meta-Agent may have SELL for a trading market (e.g.
+    // SILVER). Skipping debate would still call buildConsensus (which has the
+    // v2.0.125 override), but the fast-path returns early without debate,
+    // which is fine — the override works in buildConsensus. However, we must
+    // NOT skip if Meta-Agent has a directional call that needs Skeptics
+    // validation (Phase 1.8 thesis gate runs in the normal path).
+    const metaHasTradingMarketSignal = allThoughts.some(t => {
+      if (t.agentRole !== 'meta_agent') return false;
+      const msd = t.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined;
+      if (!msd) return false;
+      const tradingSyms = new Set((currentPositions ?? [])
+        .filter(p => (p.quantity ?? 0) === 0 || p.isTradingMarket === true)
+        .map(p => normalizeSymbol(p.symbol)));
+      // Check marketTicker
+      if (tradingSyms.has(normalizeSymbol(msd.marketTicker.symbol)) &&
+          (msd.marketTicker.action === 'buy' || msd.marketTicker.action === 'sell')) return true;
+      // Check positions
+      return msd.positions.some(p =>
+        tradingSyms.has(normalizeSymbol(p.symbol)) &&
+        (p.action === 'buy' || p.action === 'sell'));
+    });
+    if (allHold && highConviction >= allThoughts.length - 1 && !metaHasTradingMarketSignal) {
       log.info('Skipping debate: unanimous HOLD with high conviction.');
       const consensus = this.buildConsensus(allThoughts, [], true, false, undefined, currentPositions);
       const adjustments = await this.adjustPositions(constrainedMarketDesc, currentPositions);
@@ -1937,6 +1960,23 @@ Output ONLY valid JSON:
       }
 
       const avgConfidence = data.confidences.reduce((s, c) => s + c, 0) / n;
+      // v2.0.126: When Meta-Agent overrides a trading market's action, use
+      // Meta-Agent's confidence instead of the sub-agent average. The sub-agent
+      // average (~33%) is always below the conviction gate threshold (~52%),
+      // so even when Meta-Agent's SELL override works, the conviction gate
+      // blocks the trade because psc.confidence is the average. Meta-Agent's
+      // own confidence (typically 35-50%) should be used for trading markets
+      // where it made the authoritative call.
+      let finalConfidence = avgConfidence;
+      if (tradingMarketSymbols.has(sym) && metaPerSymbol.has(sym)) {
+        const metaDec = metaPerSymbol.get(sym)!;
+        if (metaDec.action === 'buy' || metaDec.action === 'sell') {
+          const metaThought = thoughts.find(t => t.agentRole === 'meta_agent');
+          if (metaThought) {
+            finalConfidence = metaThought.confidence;
+          }
+        }
+      }
       const closeMajority = data.closeFlags.filter(c => c).length > n / 2;
       const avgSl = data.sls.filter(s => s > 0).reduce((s, v) => s + v, 0) / Math.max(1, data.sls.filter(s => s > 0).length);
       const avgTp = data.tps.filter(s => s > 0).reduce((s, v) => s + v, 0) / Math.max(1, data.tps.filter(s => s > 0).length);
@@ -1944,7 +1984,7 @@ Output ONLY valid JSON:
       perSymbolConsensus.push({
         symbol: sym,
         action: finalAction,
-        confidence: avgConfidence,
+        confidence: finalConfidence,
         hasPosition: false, // ⚠️ UNRELIABLE — consumers MUST check portfolio directly (see index.ts per-symbol consensus loop)
         closePosition: closeMajority,
         suggestedStopLoss: avgSl > 0 ? avgSl : undefined,
