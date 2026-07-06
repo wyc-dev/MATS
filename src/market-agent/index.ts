@@ -277,6 +277,23 @@ export class MarketAgent {
     log.info(`Direction restrictions set: ${JSON.stringify(this.config.directionRestrictions ?? {})}`);
   }
 
+  // ── v2.0.124: Trading Markets Persistence ──
+
+  /** Get persisted trading markets list (from config). Max 3 symbols. */
+  getTradingMarkets(): string[] {
+    return [...(this.config.tradingMarkets ?? [])];
+  }
+
+  /** Set trading markets list. Persists to disk so the system resumes with
+   *  the correct markets on restart instead of falling back to auto-select. */
+  setTradingMarkets(markets: string[]): void {
+    const valid = markets.filter(s => typeof s === 'string' && s.length > 0 && s.length <= 50).slice(0, 3);
+    this.config.tradingMarkets = valid.length > 0 ? valid : undefined;
+    this.config.updatedAt = Date.now();
+    this.persistConfig();
+    log.info(`Trading markets persisted: ${valid.join(', ') || '(empty)'}`);
+  }
+
   /** Check if a given action is allowed for a symbol given its direction restrictions.
    *  Returns true if allowed (no restriction, or restriction matches action).
    *  Returns false if the symbol has a restriction and the action is the opposite direction. */

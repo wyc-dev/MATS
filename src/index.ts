@@ -565,6 +565,9 @@ class MATSSystem {
         lastTradingMarketsAccept = now;
         const prevCount = this.tradingMarkets.length;
         this.tradingMarkets = markets;
+        // v2.0.124: Persist trading markets so the system resumes with the
+        // correct markets on restart instead of falling back to auto-select.
+        this.marketAgent.setTradingMarkets(markets);
         log.info(`Trading markets set from UI: ${markets.join(', ') || '(empty)'} (prev=${prevCount}, new=${markets.length})`);
         this.pushToAPI();
         // v2.0.110: Debounce — only trigger ONE cycle 2s after the last change.
@@ -946,6 +949,16 @@ class MATSSystem {
       // v2.0.XX: Sync initial maxPortionPct from Market Agent to paper engine + real manager
       this.paperEngine.setMaxPortionPct(this.marketAgent.getConfig().maxPortionPct);
       this.realTradingManager.setMaxPortionPct(this.marketAgent.getConfig().maxPortionPct);
+
+      // v2.0.124: Restore trading markets from persisted config so the system
+      // starts with the correct markets instead of falling back to auto-select.
+      // Without this, the first cycle after restart only analyzes the
+      // selectedSymbol (1 market) until the UI connects and POSTs the markets.
+      const restoredMarkets = this.marketAgent.getTradingMarkets();
+      if (restoredMarkets.length > 0) {
+        this.tradingMarkets = restoredMarkets;
+        log.info(`📊 Trading markets restored from config: ${restoredMarkets.join(', ')} (${restoredMarkets.length} market(s))`);
+      }
 
       // v2.0.78: Sync tradeMode + exchange from restored Market Agent config to
       // RealTradingManager. The RTM was created with hardcoded 'paper' in step 5.6
