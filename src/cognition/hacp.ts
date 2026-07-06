@@ -20,6 +20,7 @@ import type {
   MarketRegime,
   TradingDecision,
   MultiSymbolDecision,
+  PerSymbolDecision,
   PerSymbolConsensus,
   Vote,
   CycleProgress,
@@ -924,7 +925,7 @@ export class HACPEngine {
     // Now includes all 5 agents (3 sub-agents + meta-agent + risk auditor)
     if (allHold && highConviction >= allThoughts.length - 1) {
       log.info('Skipping debate: unanimous HOLD with high conviction.');
-      const consensus = this.buildConsensus(allThoughts, [], true, false);
+      const consensus = this.buildConsensus(allThoughts, [], true, false, undefined, currentPositions);
       const adjustments = await this.adjustPositions(constrainedMarketDesc, currentPositions);
       return {
         consensus,
@@ -1068,7 +1069,7 @@ export class HACPEngine {
           log.info(`Unanimous action "${actions[0]}" after Round 1 — skipping attack/synthesis rounds (saved ${this.maxRounds - 1} rounds)`);
           const voteResults = await this.runConsensusVote(allThoughts);
           consensusReached = true;
-          finalConsensus = this.buildConsensus(allThoughts, debateRounds, true, false, voteResults);
+          finalConsensus = this.buildConsensus(allThoughts, debateRounds, true, false, voteResults, currentPositions);
           break;
         }
       }
@@ -1089,7 +1090,8 @@ export class HACPEngine {
             debateRounds,
             true,
             false,
-            voteResults
+            voteResults,
+            currentPositions,
           );
           break;
         }
@@ -1133,7 +1135,7 @@ export class HACPEngine {
           null
         );
       } else {
-        finalConsensus = this.buildConsensus(allThoughts, debateRounds, true, false);
+        finalConsensus = this.buildConsensus(allThoughts, debateRounds, true, false, undefined, currentPositions);
       }
     }
 
@@ -1797,7 +1799,11 @@ Output ONLY valid JSON:
     rounds: DebateRound[],
     reached: boolean,
     deadlock: boolean,
-    existingVotes?: Vote[]
+    existingVotes?: Vote[],
+    /** v2.0.125: Current positions + trading markets. Used to determine which
+     *  symbols are trading markets (no open position) — for those, Meta-Agent's
+     *  per-symbol decision is authoritative (not sub-agent majority vote). */
+    currentPositions?: Array<{ symbol: string; quantity?: number; isTradingMarket?: boolean }>,
   ): ConsensusResult {
     // ─── Per-Symbol Consensus ───
     // Extract per-symbol decisions from each agent's multiSymbolDecision metadata.
@@ -1869,6 +1875,31 @@ Output ONLY valid JSON:
     }
 
     // Compute per-symbol consensus
+    // v2.0.125: For trading markets (no open position), Meta-Agent's decision
+    // is authoritative — not the sub-agent majority vote. Sub-agents are
+    // data-gatherers; Meta-Agent is the arbitrator. When Meta-Agent says SELL
+    // for a trading market but sub-agents say HOLD, the majority vote produces
+    // HOLD, which blocks the trade. Meta-Agent's per-symbol decision must
+    // override for trading markets.
+    const tradingMarketSymbols = new Set<string>(
+      (currentPositions ?? [])
+        .filter(p => (p.quantity ?? 0) === 0 || p.isTradingMarket === true)
+        .map(p => normalizeSymbol(p.symbol))
+    );
+
+    // Extract Meta-Agent's per-symbol decisions for override
+    const metaPerSymbol = new Map<string, PerSymbolDecision>();
+    const metaThought = thoughts.find(t => t.agentRole === 'meta_agent');
+    if (metaThought) {
+      const metaMulti = metaThought.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined;
+      if (metaMulti) {
+        metaPerSymbol.set(normalizeSymbol(metaMulti.marketTicker.symbol), metaMulti.marketTicker);
+        for (const pos of metaMulti.positions) {
+          metaPerSymbol.set(normalizeSymbol(pos.symbol), pos);
+        }
+      }
+    }
+
     const perSymbolConsensus: PerSymbolConsensus[] = [];
     for (const [sym, data] of perSymbolMap) {
       const n = data.actions.length;
@@ -1886,24 +1917,41 @@ Output ONLY valid JSON:
         : sellCount > buyCount && sellCount > holdCount ? 'sell'
         : 'hold';
 
+      // v2.0.125: For trading markets (no open position), Meta-Agent's decision
+      // overrides the sub-agent majority. Meta-Agent is the arbitrator — its
+      // SELL/BUY for a trading market should execute, not be drowned out by
+      // sub-agent HOLDs. Sub-agents are data-gatherers, not decision-makers.
+      let finalAction = majorityAction;
+      let finalRationale = `Majority: ${majorityAction.toUpperCase()} (${buyCount}B/${sellCount}S/${holdCount}H/${closeCount}C). Avg conf: ${(data.confidences.reduce((s, c) => s + c, 0) / n * 100).toFixed(0)}%`;
+      let finalSize = data.sizes.reduce((s, v) => s + v, 0) / n;
+      let finalLev = Math.round(data.levers.reduce((s, v) => s + v, 0) / n);
+      if (tradingMarketSymbols.has(sym) && metaPerSymbol.has(sym)) {
+        const metaDec = metaPerSymbol.get(sym)!;
+        if (metaDec.action === 'buy' || metaDec.action === 'sell') {
+          finalAction = metaDec.action;
+          finalRationale = `Meta-Agent: ${metaDec.action.toUpperCase()} ${sym} (trading market — Meta-Agent authoritative). Sub-agent majority: ${majorityAction.toUpperCase()} (${buyCount}B/${sellCount}S/${holdCount}H). ${metaDec.rationale ?? ''}`;
+          finalSize = metaDec.positionSizePct;
+          finalLev = metaDec.leverage;
+          log.info(`📊 [v2.0.125] Trading market ${sym}: Meta-Agent override ${majorityAction.toUpperCase()} → ${finalAction.toUpperCase()} (sub-agents: ${buyCount}B/${sellCount}S/${holdCount}H)`);
+        }
+      }
+
       const avgConfidence = data.confidences.reduce((s, c) => s + c, 0) / n;
       const closeMajority = data.closeFlags.filter(c => c).length > n / 2;
       const avgSl = data.sls.filter(s => s > 0).reduce((s, v) => s + v, 0) / Math.max(1, data.sls.filter(s => s > 0).length);
       const avgTp = data.tps.filter(s => s > 0).reduce((s, v) => s + v, 0) / Math.max(1, data.tps.filter(s => s > 0).length);
-      const avgSize = data.sizes.reduce((s, v) => s + v, 0) / n;
-      const avgLev = data.levers.reduce((s, v) => s + v, 0) / n;
 
       perSymbolConsensus.push({
         symbol: sym,
-        action: majorityAction,
+        action: finalAction,
         confidence: avgConfidence,
         hasPosition: false, // ⚠️ UNRELIABLE — consumers MUST check portfolio directly (see index.ts per-symbol consensus loop)
         closePosition: closeMajority,
         suggestedStopLoss: avgSl > 0 ? avgSl : undefined,
         suggestedTakeProfit: avgTp > 0 ? avgTp : undefined,
-        positionSizePct: avgSize,
-        leverage: Math.round(avgLev),
-        rationale: `Majority: ${majorityAction.toUpperCase()} (${buyCount}B/${sellCount}S/${holdCount}H/${closeCount}C). Avg conf: ${(avgConfidence * 100).toFixed(0)}%`,
+        positionSizePct: finalSize,
+        leverage: finalLev,
+        rationale: finalRationale,
         // v2.0.80: Use the first (Meta-Agent's) thesis if available
         entryThesis: data.theses.length > 0 ? data.theses[0] : undefined,
         // v2.0.81: Use the first (Meta-Agent's) holdReason if available
