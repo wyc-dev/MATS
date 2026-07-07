@@ -4271,6 +4271,8 @@ class MATSSystem {
           updatedAt: Date.now(),
           agentId: pos.agentId,
           exchange: pos.exchange ?? 'hyperliquid',
+          // v2.0.134: Include entryThesis so UI can display the opening rationale
+          entryThesis: pos.entryThesis,
         };
       } else {
         positions[key] = {
@@ -4289,6 +4291,8 @@ class MATSSystem {
           updatedAt: pos.updatedAt,
           agentId: pos.agentId,
           exchange: pos.exchange ?? 'hyperliquid',
+          // v2.0.134: Include entryThesis so UI can display the opening rationale
+          entryThesis: pos.entryThesis,
         };
       }
     }
@@ -4346,6 +4350,8 @@ class MATSSystem {
             updatedAt: Date.now(),
             agentId: 'hyperliquid-real',
             exchange: 'hyperliquid',
+            // v2.0.134: Include entryThesis from real position if available
+            entryThesis: realPos?.entryThesis,
           };
         }
       }
