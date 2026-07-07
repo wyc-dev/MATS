@@ -309,6 +309,12 @@ export class RealTradingManager {
       // locally first so we don't send an order that exceeds the user's
       // configured max portion. Uses realPositions (actual HL positions)
       // + the new position's margin. Margin = notional / leverage.
+      // v2.0.131: Use TOTAL equity (not free balance) for the max portion
+      // check. Free balance is reduced by existing position margin, so
+      // comparing total margin against free balance * maxPortion blocks
+      // all new trades when an existing position uses most of the margin.
+      // The correct comparison is: total margin after new trade vs
+      // maxPortion * total equity.
       const realPositions = this.portfolio.getRealPositions();
       let totalMarginExposure = 0;
       for (const pos of realPositions) {
@@ -316,9 +322,9 @@ export class RealTradingManager {
       }
       const newMargin = (quantity * price) / (decision.leverage ?? 10);
       const totalMarginAfter = totalMarginExposure + newMargin;
-      // Use exchange balance if available, otherwise paper equity as proxy
+      // Use exchange TOTAL equity if available, otherwise paper equity as proxy
       const exBal = await this.getBalance();
-      const checkBalance = exBal.free > 0 ? exBal.free : equity;
+      const checkBalance = exBal.total > 0 ? exBal.total : equity;
       const maxMargin = checkBalance * this.maxPortionPct;
 
       if (totalMarginAfter > maxMargin) {
