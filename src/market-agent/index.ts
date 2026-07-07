@@ -231,7 +231,7 @@ export class MarketAgent {
 
   /** v2.0.XX: Set max portion of balance for all positions combined (10%-50%). */
   setMaxPortionPct(pct: number): void {
-    const clamped = Math.max(0.10, Math.min(0.50, pct));
+    const clamped = Math.max(0.10, Math.min(1.00, pct));
     if (Math.abs(this.config.maxPortionPct - clamped) < 0.001) return;
     this.config.maxPortionPct = clamped;
     this.config.updatedAt = Date.now();
