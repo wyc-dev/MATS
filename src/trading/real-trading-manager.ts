@@ -167,7 +167,7 @@ export class RealTradingManager {
   /** v2.0.XX: Set max portion of balance for all positions combined.
    *  Checked BEFORE placing real orders on HL. */
   setMaxPortionPct(pct: number): void {
-    this.maxPortionPct = Math.max(0.10, Math.min(0.50, pct));
+    this.maxPortionPct = Math.max(0.10, Math.min(1.00, pct));
   }
 
   // ── Balance & Positions ──
