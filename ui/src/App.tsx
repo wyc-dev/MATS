@@ -1271,6 +1271,14 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
                     </td>
                   </tr>
                 )}
+                {!pos.entryThesis && pos.holdReason && (
+                  <tr key={`${pos.id}-hold`} className="position-thesis-row">
+                    <td colSpan={12} className="position-thesis-cell">
+                      <span className="position-thesis-label">🤔 Hold Reason:</span>
+                      <span className="position-thesis-text">{pos.holdReason}</span>
+                    </td>
+                  </tr>
+                )}
                 </>
               );
             })}
