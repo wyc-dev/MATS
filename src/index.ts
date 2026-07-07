@@ -116,6 +116,13 @@ class MATSSystem {
    *  Cleared when a position actually opens for that symbol.
    *  Map: normalized symbol → { thesis, action, storedAt, cycle } */
   private pendingTheses = new Map<string, { thesis: string; action: 'buy' | 'sell'; storedAt: number; cycle: number }>();
+  /** v2.0.128: Decision audit log — tracks every Meta-Agent BUY/SELL decision
+   *  and which gate blocked or allowed it. Kept to the last 50 entries. */
+  private decisionAudit: Array<{
+    cycle: number; symbol: string; action: 'buy' | 'sell'; confidence: number;
+    thesis: string; gates: Array<{ gate: string; passed: boolean; reason: string }>;
+    executed: boolean; timestamp: number;
+  }> = [];
   private lastBacktestResult: import('./backtest/index.ts').BacktestResult | null = null;
   private backtestProgress: BacktestProgress | null = null;
   private paused = false;
@@ -3168,22 +3175,38 @@ class MATSSystem {
           // v2.0.104: Execute entry decisions for trading markets without position
           // v2.0.106: Apply per-asset conviction gate + frequency throttle
           if ((psc.action === 'buy' || psc.action === 'sell') && psc.positionSizePct > 0) {
+            // v2.0.128: Decision audit — track gates for this trading market entry
+            const auditGates: Array<{ gate: string; passed: boolean; reason: string }> = [];
+            let pscExecuted = false;
+
             // v2.0.122: Check per-symbol direction restriction
             if (!this.marketAgent.isDirectionAllowed(psc.symbol, psc.action)) {
               const allowedDir = this.marketAgent.getDirectionRestrictions()[normalizeSymbol(psc.symbol)];
               log.warn(`🚫 [direction-restrict] Multi-symbol ${psc.symbol}: ${psc.action.toUpperCase()} blocked — only ${allowedDir?.toUpperCase() ?? 'unknown'} allowed. Skipping entry.`);
+              auditGates.push({ gate: 'direction-restrict', passed: false, reason: `${psc.action.toUpperCase()} blocked — only ${allowedDir?.toUpperCase() ?? 'unknown'} allowed` });
+              this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
               continue;
             }
+            auditGates.push({ gate: 'direction-restrict', passed: true, reason: 'allowed' });
+
             // v2.0.106: Check per-asset filter gate
             const pscFilter = this.assetFilterRegistry.getFilter(psc.symbol);
             if (psc.confidence < pscFilter.getConvictionThreshold()) {
               log.warn(`🛑 [adaptive-filter] Multi-symbol conviction gate [${psc.symbol}]: ${(psc.confidence * 100).toFixed(0)}% < ${(pscFilter.getConvictionThreshold() * 100).toFixed(0)}% — skipping entry (noise-dominated)`);
+              auditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(psc.confidence * 100).toFixed(0)}% < ${(pscFilter.getConvictionThreshold() * 100).toFixed(0)}%` });
+              this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
               continue;
             }
+            auditGates.push({ gate: 'conviction-gate', passed: true, reason: `${(psc.confidence * 100).toFixed(0)}% ≥ ${(pscFilter.getConvictionThreshold() * 100).toFixed(0)}%` });
+
             if (pscFilter.isTradeFrequencyLimited()) {
               log.warn(`🛑 [adaptive-filter] Multi-symbol frequency throttle [${psc.symbol}]: limit reached — skipping entry`);
+              auditGates.push({ gate: 'frequency-throttle', passed: false, reason: 'limit reached' });
+              this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
               continue;
             }
+            auditGates.push({ gate: 'frequency-throttle', passed: true, reason: 'OK' });
+
             log.info(`📊 Multi-symbol entry: ${psc.action.toUpperCase()} ${psc.symbol} ${(psc.positionSizePct * 100).toFixed(1)}% — executing (trading market → real entry)`);
             const pscEntryDecision = {
               action: psc.action,
@@ -3204,13 +3227,18 @@ class MATSSystem {
               });
               if (pscExecResult.success) {
                 pscFilter.recordTrade();
+                pscExecuted = true;
                 log.info(`📊 Multi-symbol entry ${psc.symbol}: ✅ — ${pscFilter.getRemainingTradeSlots()} slots remaining`);
               } else {
-                log.info(`📊 Multi-symbol entry ${psc.symbol}: ❌`);
+                log.info(`📊 Multi-symbol entry ${psc.symbol}: ❌ — ${pscExecResult.error ?? 'unknown'}`);
+                auditGates.push({ gate: 'execution', passed: false, reason: pscExecResult.error ?? 'execution failed' });
               }
             } catch (err) {
               log.error(`📊 Multi-symbol entry ${psc.symbol} failed: ${err instanceof Error ? err.message : String(err)}`);
+              auditGates.push({ gate: 'execution', passed: false, reason: err instanceof Error ? err.message : String(err) });
             }
+            if (pscExecuted) auditGates.push({ gate: 'execution', passed: true, reason: 'executed on HL' });
+            this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, pscExecuted);
           }
           continue;
         }
@@ -3477,6 +3505,9 @@ class MATSSystem {
       }
       log.info(`💼 Executing ${this.realTradingManager.getTradeMode().toUpperCase()} trading decision...`);
 
+      // v2.0.128: Decision audit for the active symbol — track gates
+      const activeAuditGates: Array<{ gate: string; passed: boolean; reason: string }> = [];
+
       // v2.0.122: Per-symbol direction restriction enforcement.
       // If the Market Agent config restricts a symbol to one direction,
       // block the opposite direction from executing. Existing positions
@@ -3486,12 +3517,15 @@ class MATSSystem {
         if (!this.marketAgent.isDirectionAllowed(decisionSym, finalDecision.action)) {
           const allowedDir = this.marketAgent.getDirectionRestrictions()[normalizeSymbol(decisionSym)];
           log.warn(`🚫 [direction-restrict] ${decisionSym}: ${finalDecision.action.toUpperCase()} blocked — only ${allowedDir?.toUpperCase()} allowed. Overriding → HOLD.`);
+          activeAuditGates.push({ gate: 'direction-restrict', passed: false, reason: `${finalDecision.action.toUpperCase()} blocked — only ${allowedDir?.toUpperCase() ?? 'unknown'} allowed` });
           finalDecision = {
             ...finalDecision,
             action: 'hold',
             positionSizePct: 0,
             rationale: `[DIRECTION RESTRICT] ${decisionSym} is restricted to ${allowedDir?.toUpperCase() ?? 'unknown'} only. ${finalDecision.action.toUpperCase()} blocked. Original: ${finalDecision.rationale}`,
           };
+        } else {
+          activeAuditGates.push({ gate: 'direction-restrict', passed: true, reason: 'allowed' });
         }
       }
 
@@ -3508,6 +3542,7 @@ class MATSSystem {
         const consensusConfidence = result.consensus.confidence;
         if (consensusConfidence < convictionThreshold) {
           log.warn(`🛑 [adaptive-filter] Conviction gate [${finalDecision.symbol || activeSymbol}]: ${(consensusConfidence * 100).toFixed(0)}% < threshold ${(convictionThreshold * 100).toFixed(0)}% — overriding ${finalDecision.action.toUpperCase()} → HOLD (signal below noise floor)`);
+          activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(consensusConfidence * 100).toFixed(0)}% < ${(convictionThreshold * 100).toFixed(0)}%` });
           finalDecision = {
             ...finalDecision,
             action: 'hold',
@@ -3516,12 +3551,16 @@ class MATSSystem {
           };
         } else if (symFilter.isTradeFrequencyLimited()) {
           log.warn(`🛑 [adaptive-filter] Trade frequency throttle [${finalDecision.symbol || activeSymbol}]: limit reached — overriding ${finalDecision.action.toUpperCase()} → HOLD (over-trading prevention)`);
+          activeAuditGates.push({ gate: 'frequency-throttle', passed: false, reason: 'limit reached' });
           finalDecision = {
             ...finalDecision,
             action: 'hold',
             positionSizePct: 0,
             rationale: `[ADAPTIVE FILTER ${finalDecision.symbol || activeSymbol}] Trade frequency limit reached. Over-trading prevention — HOLD. Original: ${finalDecision.rationale}`,
           };
+        } else {
+          activeAuditGates.push({ gate: 'conviction-gate', passed: true, reason: `${(consensusConfidence * 100).toFixed(0)}% ≥ ${(convictionThreshold * 100).toFixed(0)}%` });
+          activeAuditGates.push({ gate: 'frequency-throttle', passed: true, reason: 'OK' });
         }
       }
 
@@ -3540,6 +3579,24 @@ class MATSSystem {
         const symFilter = this.assetFilterRegistry.getFilter(tradeSym);
         symFilter.recordTrade();
         log.info(`📊 [adaptive-filter] Trade recorded for ${tradeSym} — ${symFilter.getRemainingTradeSlots()} slots remaining`);
+      }
+
+      // v2.0.128: Record decision audit for the active symbol
+      if (originalMetaAction === 'buy' || originalMetaAction === 'sell') {
+        const activeExecuted = execResult.success && (finalDecision.action === 'buy' || finalDecision.action === 'sell');
+        if (execResult.success && activeExecuted) {
+          activeAuditGates.push({ gate: 'execution', passed: true, reason: 'executed on HL' });
+        } else if (!activeExecuted) {
+          activeAuditGates.push({ gate: 'execution', passed: false, reason: finalDecision.action === 'hold' ? 'overridden to HOLD by gate' : (execResult.error ?? 'execution failed') });
+        }
+        this.recordDecisionAudit(
+          finalDecision.symbol || activeSymbol,
+          originalMetaAction,
+          result.consensus.confidence,
+          originalMetaThesis ?? '',
+          activeAuditGates,
+          activeExecuted,
+        );
       }
 
       // v2.0.122: Pending thesis management for the active symbol.
@@ -4103,6 +4160,35 @@ class MATSSystem {
   }
 
   /** Persist portfolio state to disk */
+  /** v2.0.128: Record a Meta-Agent decision in the audit log.
+   *  Tracks every BUY/SELL decision and which gates passed/blocked it.
+   *  Kept to the last 50 entries. Exposed via API for periodic review. */
+  private recordDecisionAudit(
+    symbol: string,
+    action: 'buy' | 'sell',
+    confidence: number,
+    thesis: string,
+    gates: Array<{ gate: string; passed: boolean; reason: string }>,
+    executed: boolean,
+  ): void {
+    this.decisionAudit.push({
+      cycle: this.totalCycles,
+      symbol,
+      action,
+      confidence,
+      thesis: thesis.slice(0, 200),
+      gates,
+      executed,
+      timestamp: Date.now(),
+    });
+    // Keep last 50 entries
+    if (this.decisionAudit.length > 50) {
+      this.decisionAudit = this.decisionAudit.slice(-50);
+    }
+    const gateSummary = gates.map(g => `${g.gate}:${g.passed ? '✅' : '❌'}`).join(' ');
+    log.info(`📋 [audit] Cycle ${this.totalCycles} ${action.toUpperCase()} ${symbol} conf=${(confidence * 100).toFixed(0)}% executed=${executed} gates=[${gateSummary}]`);
+  }
+
   /** Serialize portfolio (Map → plain object) for JSON transmission */
   private serializePortfolio(p: Readonly<import('./types/index.ts').Portfolio>): Record<string, unknown> {
     const positions: Record<string, unknown> = {};
@@ -4493,6 +4579,7 @@ class MATSSystem {
 
       const apiData = {
         systemPaused: this.paused,
+        decisionAudit: this.decisionAudit.slice(-20),
         status: {
           cycles: this.totalCycles,
           balance: displayBalance,

@@ -170,6 +170,19 @@ export interface APIData {
     }>;
   };
   systemPaused?: boolean;
+  /** v2.0.128: Decision audit log — tracks every Meta-Agent BUY/SELL decision
+   *  and which gate blocked or allowed it. For periodic review of whether
+   *  Meta-Agent's decisions are being executed. */
+  decisionAudit?: Array<{
+    cycle: number;
+    symbol: string;
+    action: 'buy' | 'sell';
+    confidence: number;
+    thesis: string;
+    gates: Array<{ gate: string; passed: boolean; reason: string }>;
+    executed: boolean;
+    timestamp: number;
+  }>;
   /** v2.0.65: Options Data Layer context for Stocks/Indices */
   optionsData?: {
     symbol: string;
