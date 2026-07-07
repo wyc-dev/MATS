@@ -733,6 +733,81 @@ class MATSSystem {
         }
       });
 
+      // v2.0.127: Manual trade execution — bypasses conviction gate + thesis validation.
+      // Used when the user wants to force a trade that the system's gates blocked.
+      this.apiServer.setManualTradeHandler(async (action, symbol, positionSizePct, leverage) => {
+        try {
+          const sym = normalizeSymbol(symbol);
+          log.warn(`📕 Manual trade: ${action.toUpperCase()} ${sym} size=${(positionSizePct * 100).toFixed(1)}% lev=${leverage}x`);
+
+          // Check direction restriction
+          if (!this.marketAgent.isDirectionAllowed(sym, action)) {
+            const allowed = this.marketAgent.getDirectionRestrictions()[sym];
+            return { success: false, error: `${sym} is restricted to ${allowed?.toUpperCase() ?? 'unknown'} only — ${action.toUpperCase()} blocked` };
+          }
+
+          // Check for existing position
+          if (this.portfolio.hasPosition(sym)) {
+            const existing = this.portfolio.getPosition(sym);
+            if (existing && existing.side === action) {
+              return { success: false, error: `${sym} already has ${existing.side.toUpperCase()} position` };
+            }
+            // Flip: close existing first
+            log.warn(`🔄 Manual flip: closing existing ${existing!.side.toUpperCase()} ${sym} first`);
+            if (existing!.agentId === 'hyperliquid-real') {
+              await this.realTradingManager.closePosition(sym);
+            } else {
+              this.portfolio.closePosition(sym, existing!.currentPrice);
+            }
+          }
+
+          // Fetch current price
+          let price = 0;
+          try {
+            const priceData = await this.marketAgent.fetchPriceForSymbol(sym);
+            price = priceData.price;
+          } catch {
+            const state = this.marketState.getState(sym);
+            price = state?.price ?? 0;
+          }
+          if (price <= 0) {
+            return { success: false, error: `No price available for ${sym}` };
+          }
+
+          // Execute the trade
+          const decision: TradingDecision = {
+            action,
+            symbol: sym,
+            positionSizePct,
+            leverage,
+            entryPrice: price,
+            rationale: `Manual trade — bypassed conviction gate + thesis validation`,
+            urgency: 'immediate',
+            stopLossPct: 0.02,
+            takeProfitPct: 0.05,
+          };
+
+          const execResult = await this.realTradingManager.executeDecision({
+            ...decision,
+            srSupport: this.lastSRContext?.nearestSupport ?? null,
+            srResistance: this.lastSRContext?.nearestResistance ?? null,
+          });
+
+          if (execResult.success) {
+            log.info(`✅ Manual trade executed: ${action.toUpperCase()} ${sym} @ $${price.toFixed(2)}`);
+            // Clear pending thesis for this symbol
+            this.pendingTheses.delete(sym);
+            this.pushToAPI();
+            return { success: true };
+          } else {
+            return { success: false, error: execResult.error ?? 'Execution failed' };
+          }
+        } catch (err) {
+          log.error(`Manual trade failed: ${err instanceof Error ? err.message : String(err)}`);
+          return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      });
+
       this.apiServer.setPauseHandler(() => {
         this.paused = true;
         log.info('⏸️ System PAUSED — RBC engine continues, all agents/trading halted');

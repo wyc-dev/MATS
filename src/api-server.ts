@@ -227,6 +227,8 @@ export class APIServer {
   /** v2.0.45: Clear drawdown data to relaunch trading after circuit breaker. */
   private onClearDrawdown: (() => void) | null = null;
   private onManualClosePosition: ((symbol: string) => Promise<{ success: boolean; error?: string }>) | null = null;
+  /** v2.0.127: Manual trade execution — bypasses conviction gate + thesis validation. */
+  private onManualTrade: ((action: 'buy' | 'sell', symbol: string, positionSizePct: number, leverage: number) => Promise<{ success: boolean; error?: string }>) | null = null;
   private onCandlesRequest: ((symbol: string, interval: string, limit: number) => Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>>) | null = null;
   private onResetTradeHistory: (() => void) | null = null;
   /** v2.0.79: Reset paper engine trades */
@@ -310,6 +312,11 @@ export class APIServer {
   /** Register a callback for manual position close */
   setManualClosePositionHandler(cb: (symbol: string) => Promise<{ success: boolean; error?: string }>): void {
     this.onManualClosePosition = cb;
+  }
+
+  /** v2.0.127: Register a callback for manual trade execution */
+  setManualTradeHandler(cb: (action: 'buy' | 'sell', symbol: string, positionSizePct: number, leverage: number) => Promise<{ success: boolean; error?: string }>): void {
+    this.onManualTrade = cb;
   }
 
   /** Register a callback for setting leverage */
@@ -777,6 +784,44 @@ export class APIServer {
             } else {
               res.writeHead(500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ success: false, message: 'Close handler not registered' }));
+            }
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // v2.0.127: POST — manual trade execution (bypasses conviction gate + thesis validation).
+      // Body: { "action": "sell", "symbol": "xyz:SILVER", "positionSizePct": 0.10, "leverage": 5 }
+      if (pathname === '/api/positions/manual-trade' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', async () => {
+          try {
+            const { action, symbol, positionSizePct, leverage } = JSON.parse(body) as {
+              action: string; symbol: string; positionSizePct?: number; leverage?: number;
+            };
+            if (!symbol || typeof symbol !== 'string') {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'Symbol is required' }));
+              return;
+            }
+            if (action !== 'buy' && action !== 'sell') {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'Action must be "buy" or "sell"' }));
+              return;
+            }
+            const size = typeof positionSizePct === 'number' ? Math.max(0.01, Math.min(0.50, positionSizePct)) : 0.10;
+            const lev = typeof leverage === 'number' ? Math.max(1, Math.min(10, Math.round(leverage))) : 10;
+            if (this.onManualTrade) {
+              const result = await this.onManualTrade(action, normalizeSymbol(symbol), size, lev);
+              res.writeHead(result.success ? 200 : 500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify(result));
+            } else {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'Manual trade handler not registered' }));
             }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
