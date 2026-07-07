@@ -3342,6 +3342,14 @@ class MATSSystem {
             log.warn(`📐 Per-symbol consensus: ADJUST ${psc.symbol} — all SL/TP rejected by direction validation, skipping`);
           }
         }
+
+        // v2.0.134: Sync entryThesis from per-symbol consensus to the position.
+        // Positions imported via importExchangePosition() don't have entryThesis.
+        // The thesis from HACP consensus (Meta-Agent's rationale) is the best
+        // available — sync it so the UI Portfolio can display the opening rationale.
+        if (psc.entryThesis && psc.entryThesis.trim().length > 0) {
+          this.portfolio.setEntryThesis(psc.symbol, psc.entryThesis);
+        }
       }
 
       // ── P0: Pattern Classifier Hard Circuit Breaker ──

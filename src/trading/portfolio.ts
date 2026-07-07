@@ -559,6 +559,19 @@ export class PortfolioTracker {
    * v2.0.48: Same PnL formula fix as updatePosition() — removed leverage
    * multiplier. PnL = priceDelta * quantity, not priceDelta * quantity * lev.
    */
+  /** v2.0.134: Set entry thesis on a position (real or paper).
+   *  Used to sync the thesis from HACP consensus to positions that were
+   *  imported via importExchangePosition() (which doesn't set thesis). */
+  setEntryThesis(symbol: string, thesis: string): void {
+    const sym = normalizeSymbol(symbol);
+    const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(sym);
+    if (!pos) return;
+    if (thesis && thesis.trim().length > 0) {
+      pos.entryThesis = thesis.trim();
+      pos.updatedAt = Date.now();
+    }
+  }
+
   softUpdatePosition(symbol: string, currentPrice: number): void {
     // v2.0.72: check real positions first, then paper
     const sym = normalizeSymbol(symbol);
