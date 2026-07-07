@@ -371,8 +371,11 @@ export class RealTradingManager {
         //   - Unrealized PnL updates on every price tick
         //   - Trade records for evolution learning
         // The local mirror uses the same leverage as the real trade.
+        // v2.0.127: forceMirror=true bypasses canTrade() drawdown/daily-loss
+        // guards — the real trade already executed on HL, the mirror must
+        // not be blocked by paper portfolio guards.
         const decisionWithLev = { ...decision, leverage: decision.leverage ?? 1 };
-        const mirrorReports = await this.paperEngine.executeDecision(decisionWithLev);
+        const mirrorReports = await this.paperEngine.executeDecision(decisionWithLev, true);
 
         // v2.0.33: PRO ALGO FIRM PATTERN — place SL/TP immediately after fill,
         // using the ACTUAL fill price (not the decision price). Retry on failure.
