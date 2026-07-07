@@ -1,23 +1,34 @@
-# {MATS} — Multi-Agent Trading System
+# MATS — The First Self-Evolving AI Trading Brain
 
-> **A self-evolving, multi-agent quantitative trading framework powered by the Hyper-Accelerated Cognition Protocol (HACP).**  
-> Institutional-grade trading across Hyperliquid perpetual markets — crypto perps, stocks, indices, and RWA synthetic equities, with an integrated Options Data Layer for equities trading.
+**8 AI agents debate every trade. A Skeptics agent vetoes bad ones. The system evolves its own strategy — no manual tuning.**
+
+Single-LLM trading bots hallucinate. They lack oversight, have no risk governance, and cannot adapt to changing markets. MATS solves this with a multi-agent cognitive architecture: 8 specialized agents think in parallel, debate through the HACP protocol, and reach weighted consensus. A dedicated Skeptics agent stress-tests every position before execution. The system self-evolves via genetic algorithms + range-based clustering + EM cycle chains — it learns from every trade and adapts its own parameters.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.122-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.131-blueviolet)](ARCHITECTURE.md)
+[![GitHub stars](https://img.shields.io/github/stars/wyc-dev/MATS?style=social)](https://github.com/wyc-dev/MATS)
 
-## Table of Contents
+🌐 [mats.trading](https://mats.trading/) · 💬 [Discord](https://discord.gg/mats) (coming soon) · ⭐ [Star on GitHub](https://github.com/wyc-dev/MATS)
 
-- [Quick Start (Ollama)](#quick-start-ollama)
-- [System Highlights](#system-highlights)
-- [Architecture Overview](#architecture-overview)
-- [Project Structure](#project-structure)
-- [Advanced Configuration](#advanced-configuration)
-- [Commercial Licensing](#commercial-licensing)
-- [Tech Stack](#tech-stack)
-- [License](#license)
+---
+
+## 📸 See It In Action
+
+<!-- TODO: add docs/demo.gif — dashboard + HACP debate + TradingView chart -->
+![MATS Dashboard](docs/demo.gif)
+*Dashboard: real-time HACP debate transcripts, agent reasoning, TradingView chart with live SL/TP lines, evolution metrics.*
+
+<!-- TODO: add docs/backtest-curve.png — equity curve from backtest -->
+![Backtest Equity Curve](docs/backtest-curve.png)
+*Backtest: equity curve showing self-evolving strategy performance over historical data.*
+
+<!-- TODO: add docs/skeptics-veto.png — Skeptics rejecting a trade -->
+![Skeptics Veto](docs/skeptics-veto.png)
+*Skeptics agent rejecting a trade — the cool factor. Every BUY/SELL must survive stress-testing.*
+
+> Images coming — ⭐ star and watch the repo to be notified when added.
 
 ---
 
@@ -67,8 +78,8 @@ curl http://localhost:11434/api/tags
 ### 4. Clone & Install
 
 ```bash
-git clone https://github.com/your-username/amacrf.git
-cd amacrf
+git clone https://github.com/wyc-dev/MATS.git
+cd MATS
 npm install
 cd ui && npm install && cd ..
 ```
@@ -110,6 +121,38 @@ Open **http://localhost:3456** in your browser to see:
 - 🗣️ **HACP debate transcripts** — every agent's reasoning and deliberation
 - 🧬 **Evolution metrics** — strategy fitness, memory utilization, GA progress
 - 📈 **TradingView chart** — price action with technical analysis
+
+---
+
+## Why MATS is Different
+
+| | Single-LLM Bots | MATS |
+|:--|:--|:--|
+| **Decision making** | One model, one opinion | 8 agents debate in parallel, weighted consensus |
+| **Risk governance** | Trust the LLM | Skeptics agent stress-tests every trade before execution |
+| **Adaptation** | Static parameters | Self-evolving: GA + RBC + EM cycle chain, no manual tuning |
+| **Reasoning** | Black box | Every trade requires a validated entry thesis (1h catalyst + 1d driver) |
+| **Failure mode** | Crashes into bad trades | Every error path defaults to HOLD — capital preservation first |
+
+### 🧠 Entry Thesis System — every trade needs a validated thesis
+
+Meta-Agent must articulate why price will reach TP within 1h (short-term catalyst) and 1d (medium-term driver), referencing specific sub-agent data. Skeptics validates the thesis for strength, specificity, data consistency, and dark psychology (whale manipulation?). No thesis = no trade.
+
+### 🛡️ Skeptics veto — AI stress-tests every position before execution
+
+A dedicated agent with approve-first design: validates every BUY/SELL thesis, only rejects on a specific, material flaw that would cause a loss. Each cycle, re-validates all open position theses against fresh market data — if invalidated, force-closes.
+
+### 🧬 Self-evolving — GA + RBC + EM cycle chain, no manual tuning
+
+Three evolution mechanisms: (1) RBC (Range-Based Clustering) — growing hyperrectangles learn win/loss market conditions per symbol. (2) EM Cycle Chain — Meta-Agent distills each cycle into a structured summary, previous summaries feed into next cycle. (3) GA — survival fitness drives directional mutation of strategy parameters.
+
+### ⚡ HACP protocol — 8 agents parallel debate, 60s deadline race
+
+Hyper-Accelerated Cognition Protocol: 5 sub-agents think in parallel (staggered, 60s deadline race), Skeptics audits logic, Meta-Agent arbitrates, structured debate (1-3 rounds), weighted voting consensus (60% threshold, dynamically adjusted by Evolution). 120s hard timeout — forced HOLD on expiry.
+
+### 💰 Capital preservation first — every error path defaults to HOLD
+
+Graceful degradation: any error defaults to HOLD. Circuit breaker (3 failures → 30s fail-fast). Notional-based double-sided fee deduction. Configurable max portion. SL/TP hard safety layers (no-widen, not-too-tight, min-gap, max-narrow-step).
 
 ---
 
@@ -175,7 +218,7 @@ The core cognitive architecture — every new position requires a strong, valida
 8. **RBC + S/R for ALL positions** — context generated for every open position, not just the active symbol (v2.0.92)
 9. **Multi-symbol single-cycle** — ALL trading markets analyzed in ONE HACP cycle. Non-position markets injected as `isTradingMarket` entries in `positions[]` with full market context (price, RBC, S/R). Agents output BUY/SELL/HOLD for all markets simultaneously (v2.0.104)
 10. **Per-asset adaptive noise filter** — Market Agent selects a `FilterProfile` for each asset (7 profiles: high_vol_crypto, low_vol_crypto, high_vol_alt, dex_perp, forex_index, commodity, default). Each asset gets its own `AdaptiveNoiseFilter` with independent EMA alpha, sigmoid k, conviction gate, and trade frequency throttle. Filter adapts per-cycle based on volatility, win rate, SNR, and trade frequency. Meta-Agent receives per-asset SNR data and must factor it into every decision (v2.0.106)
-9. **3-5 sentences minimum** reasoning per symbol — no truncation, no silence
+11. **3-5 sentences minimum** reasoning per symbol — no truncation, no silence
 
 ### 🧬 Self-Evolution System (RBC + EM Cycle Chain)
 
@@ -191,7 +234,7 @@ MATS has **two self-evolution mechanisms**:
 **Layer 2 — EM Cycle Chain** (`cycle-summary.ts`):
 - Meta-Agent distills each cycle into a structured `CycleSummary` (E-step)
 - Previous summaries feed into next cycle's agent context (M-step)
-- Skeptics cross-check insight vs actual price (convergence audit)
+- Skeptics cross-checks insight vs actual price (convergence audit)
 - Tiered memory: hot(12) + warm(288) + cold(48 epochs, ~48 days)
 
 **Evolutionary Pressure Engine:**
@@ -241,7 +284,8 @@ profit generation must occur within safety constraints.
 - **Risk Auditor advisory-only** — cannot block trades, only suggests TP/SL/size adjustments; hardcoded safety layers (choppy market 50% cut, loss-streak graduated reduction) retained
 - **Graceful degradation**: every error path defaults to HOLD
 - **Notional-based double-sided fee deduction** — HL taker fee (0.04%) charged on leveraged notional; paper PnL reflects real cost
-- **Configurable max portion** — user-configurable max % of balance for all positions combined (10%-50%)
+- **Configurable max portion** — user-configurable max % of balance for all positions combined (10%-100%)
+- **SL/TP hard safety layers** — no-widen, not-too-tight (SL ≥1%, TP ≥1.5% from price), min-gap (2%), max-narrow-step (0.5%/cycle)
 - Production-grade standards: strict TypeScript, structured logging, exponential backoff reconnection
 
 ### 🔌 LLM Abstraction Layer
@@ -476,6 +520,46 @@ When a direction is restricted, the opposite direction is blocked at execution t
 
 ---
 
+## Community
+
+- 🌐 **Homepage**: [mats.trading](https://mats.trading/)
+- 💬 **Discord**: [Coming soon — star + watch to be notified](https://github.com/wyc-dev/MATS)
+- 🐦 **Twitter**: [@MATS_trading](https://twitter.com/) (coming soon)
+- 🤝 **Contributing**: PRs welcome! Fork → branch → PR. See [ARCHITECTURE.md](ARCHITECTURE.md) for system overview.
+
+---
+
+## Roadmap
+
+- **A2A Protocol v1.1** — inter-agent signal exchange with structured handoffs
+- **More exchanges** — Binance Futures, OKX, additional perp DEXs
+- **Real trading hardening** — additional safety layers, position reconciliation, funding cost tracking
+- **Decision audit UI** — visualize gate-by-gate decision flow in the dashboard
+- **Backtest visualization** — equity curve + trade markers in the UI
+
+---
+
+## Changelog
+
+### v2.0.131 — Margin Check Uses Total Equity + Max Portion 100% + Price Fallback
+
+- **Margin check fix**: Cumulative margin check now uses total equity instead of free balance. Free balance is reduced by existing position margin, so comparing against free balance blocked all new trades when an existing position used most of the margin.
+- **Max portion 100%**: Clamp raised from 50% to 100% in API, MarketAgent, and RealTradingManager.
+- **Manual trade price fallback**: Re-fetch using Market Agent's selected symbol when first price fetch fails.
+
+### v2.0.130 — Meta-Agent Override for Active Symbol + adjustPositions for ALL
+
+- **Active symbol override**: Meta-Agent's `marketTicker` decision overrides majority vote for the active symbol (same as trading markets). Previously, 6 sub-agent HOLDs drowned out Meta-Agent's SELL.
+- **adjustPositions for ALL**: Now adjusts all open positions, not just the primary symbol. SILVER's SL/TP finally goes through the HACP LLM loop.
+
+### v2.0.129 — Not-Too-Tight SL/TP Constraint
+
+- **Min distance**: SL ≥ 1% from current price, TP ≥ 1.5%. Prevents noise stop-outs from over-tightening.
+
+→ **Full changelog in [CHANGELOG.md](CHANGELOG.md)**
+
+---
+
 ## Commercial Licensing
 
 **Pantha AI Labs** holds a perpetual, irrevocable commercial license to use, modify, and distribute MATS. This license is governed by a separate agreement between YC Wong and Pantha AI Labs, and is independent of the Apache 2.0 open-source license.
@@ -483,115 +567,6 @@ When a direction is restricted, the opposite direction is blocked at execution t
 For all other use, MATS is open source under the **Apache License 2.0**.
 
 If you require a commercial license — for example, for proprietary extensions, redistribution without open-source obligations, or enterprise support — please contact YC Wong.
-
----
-
-## Changelog
-
-### v2.0.122 — Pending Thesis Persistence + Per-Symbol Direction Restrictions
-
-- **Pending thesis persistence** (v2.0.122): When Meta-Agent outputs BUY/SELL with an `entryThesis` but the trade doesn't execute (blocked by conviction gate, liquidity, direction restriction, etc.), the thesis is now stored as "pending" and injected into the next cycle's market description as `=== PENDING ENTRY THESES ===`. Meta-Agent sees its prior reasoning and either re-affirms or updates it. Skeptics re-validates each cycle. Cleared when a position actually opens (position has its own thesis) or is manually closed. Also applies to multi-symbol trading market entries that were blocked. Exposed via API in `marketAgent.pendingTheses[]`.
-- **Per-symbol direction restrictions** (v2.0.122): New `directionRestrictions` field on `MarketAgentConfig` maps normalized symbol → allowed direction (`'buy' | 'sell'`). When a symbol is restricted, only the specified direction can execute; the opposite direction is blocked at both the active symbol path and the multi-symbol trading market entry path. Persisted to `data/evolution/market-agent-config.json` (gitignored). Exposed via `POST /api/market-agent/direction-restrictions` (body: `{ "restrictions": { "xyz:SILVER": "sell" } }`). Included in agent context via `getMarketDescription()` so agents don't waste output on blocked directions. SILVER restricted to SELL-only in local config.
-
-### v2.0.115 — Trend-Following Incentives + Short-Term Price Trend Injection + Mobile UI + Infinite POST Loop Fix
-
-- **Trend-following incentives** (v2.0.115): Rewrote agent prompts to prioritize trend-following. Fractal Momentum: "MISSING a trending move is as bad as taking a bad trade". RBC: NO_EDGE is NEUTRAL not BEARISH. Meta-Agent: TREND DIRECTION is first in reasoning chain; confirmed uptrend + one confirming signal = sufficient for entry; HOLD requires 8 signals absent (added "no clear trend"). "MISSING a 5% trending move is a FAILURE, not prudence".
-- **Short-term price trend injection** (v2.0.115): New `getRecentPriceTrend()` method calculates price change over last 20 ticks. Injected into market description: `Short-term Trend: ↑ UP +3.2% over last 20 ticks ($58,000 → $59,856)`. Agents can now see multi-cycle price direction, not just the current price.
-- **Infinite POST loop fix** (v2.0.111–v2.0.114): Removed backend→UI trading markets merge effect (root cause of infinite loop). Backend `setTradingMarketsHandler` 3s throttle (multi-tab dedup). UI POST effect 500ms debounce. Backend JSON.stringify dedup guard.
-- **Mobile UI overhaul** (v2.0.113): Exchange dropdown removed (fixed to Hyperliquid), label → "Asset Type". Pause/Run cycle buttons merged into one toggle. Shutdown button now confirms. `@media (max-width: 768px)`: Market Agent controls stack vertically. Slider min-width 100px. Chart col width 100%.
-- **TradingView chart resize** (v2.0.114): Added `ResizeObserver` to catch container width changes from flex layout (row→column on mobile) that don't trigger window resize events.
-
-### v2.0.110 — Skeptics Approve-First + Noise Trading Reduction + Multi-Market Drift Correction
-
-- **Skeptics Approve-First** (v2.0.110): Rewrote `validateEntryThesis()` prompt from "ABSOLUTE GATEKEEPER, reject by default" to "risk manager, approve by default, only reject on specific material flaw that would cause a loss". Explicitly lists what is NOT a rejection reason (low confidence, could-be manipulation, vague 1h reason, low RBC samples, news could be FUD, sideways market). Error fallback changed from REJECT to APPROVE. This fixed the issue where the system didn't trade for 2 consecutive days because Skeptics rejected every thesis.
-- **Decision interval 60s → 300s** (v2.0.103): Reduced decision cycle frequency from 1 minute to 5 minutes. 1-minute price changes are microstructure noise, not signal. RBC hypothetical training also throttled to every 5 cycles (25min samples instead of 1min noise).
-- **Skeptics thesis rejection UI** (v2.0.105): Full rejection rationale now stored in `metadata.thesisRejections[]` and displayed per-symbol in the Skeptics UI card with expand/collapse toggle.
-- **Multi-market drift correction** (v2.0.106–v2.0.108): UI force re-POSTs trading markets when backend has fewer markets than UI. Auto-select fallback appends instead of overwrites. Post-cycle drift check triggers immediate cycle when markets changed mid-cycle. Fixed the issue where backend lost trading markets (e.g. had 1 instead of 3) but UI kept showing 3 pills without re-syncing.
-
-### v2.0.109 — News Reporter Priority + Global Breaking News Cross-Asset Analysis
-
-- **News Reporter priority** (v2.0.109): Meta-Agent prompt updated to treat News Reporter's BUY/SELL signals as HIGH-PRIORITY. News catalysts (ETF launches, regulatory changes, earnings, geopolitical events) drive price action faster than lagging technical indicators. When News Reporter says BUY and RBC says SELL, Meta-Agent must investigate whether RBC reflects stale pre-catalyst positioning. News catalyst is now FIRST in the reasoning chain.
-- **Global breaking news** (v2.0.109): Meta-Agent now receives TOP 10 international breaking headlines (Google News RSS + Bing News RSS) every cycle. Meta-Agent must analyze cross-asset correlations: Fed rate decisions → ALL assets, geopolitical conflict → oil/gold/risk assets, AI/semiconductor news → SK Hynix/tech, inflation data → gold/silver/FX. Includes a cross-asset correlation guide. Meta-Agent must reference global news in reasoning for EVERY symbol.
-- **Sub-agent directional signals** (v2.0.109): News Reporter added to the list of 5 data-gathering agents (was 4). Meta-Agent must acknowledge News Reporter's BUY/SELL signals and explain why they're insufficient if deciding HOLD.
-
-### v2.0.108 — Fix Trading Markets Not Analyzed + EADDRINUSE Recovery
-
-- **EADDRINUSE recovery** (v2.0.108): API Server detected port 3456 already in use → silently failed → UI could never send trading markets to backend. Now handles `EADDRINUSE` by killing the old process and retrying.
-- **Immediate cycle on market change** (v2.0.108): When UI sends trading markets via POST, an immediate decision cycle is triggered (1.5s delay). Previously the first cycle ran before UI connected, and the 300s interval meant waiting 5 minutes for the next cycle — so agents only analyzed the auto-selected symbol, not the user's trading markets.
-- **Rate limiter exhaustion fix** (v2.0.107): v2.0.106 `selectFilterProfile()` called `fetchPriceForSymbol` for each trading market BEFORE the injection code, exhausting the HL rate limiter. Injection then failed for xyz: symbols → markets skipped. Fixed by using `autoDetectProfile` (no API call) for initial assignment, and re-evaluating profiles using cached `marketState` data.
-- **Double-fetch elimination** (v2.0.107): Prices fetched in `buildMarketDescription` are now cached and reused in the injection code, avoiding double-fetching and rate limiter exhaustion.
-- **Injection never skips** (v2.0.107): Even if `fetchPriceForSymbol` fails for a trading market, the market is still injected with `price=0` + `marketState` fallback. Previously the `continue` on error caused markets to be silently dropped.
-
-### v2.0.106 — Per-Asset Adaptive Noise Filter + Market Agent Judgment
-
-- **Per-asset filter profiles** (v2.0.106): Market Agent selects one of 7 filter profiles for each asset based on its real market data (volatility, liquidity, volume, 24h change). Each profile defines different EMA alpha ranges, sigmoid k ranges, conviction gate bounds, and trade frequency limits. Profiles: `high_vol_crypto` (BTC/ETH), `low_vol_crypto` (stablecoins), `high_vol_alt` (meme coins), `dex_perp` (xyz: assets), `forex_index` (EURUSD/SP500), `commodity` (gold/oil), `default`.
-- **Per-asset AdaptiveNoiseFilter** (v2.0.106): Each asset gets its own independent filter instance with separate channel states (price, OB imbalance, volume, funding, spread, momentum, large trades, fear/greed, volatility). Filter adapts per-cycle based on: market volatility (high vol → more smoothing), recent trade performance (losses → more smoothing), trade frequency (over-trading → raise conviction gate), and SNR (low signal-to-noise → more smoothing).
-- **Meta-Agent filter awareness** (v2.0.106): Meta-Agent receives per-asset SNR data, conviction gates, and throttle status in its context. It must factor this into every decision: SNR < 30% → prefer HOLD, SNR 30-50% → reduce position size, throttled → HOLD. Meta-Agent prompt includes detailed instructions for interpreting filter data.
-- **Trade frequency throttle** (v2.0.106): Each asset has its own trade frequency limit (e.g. BTC: 3 trades per 10 cycles, meme coins: 2 trades per 15 cycles). When limit is reached, new entries for that asset are blocked — prevents over-trading on noise.
-- **Conviction gate** (v2.0.106): Each asset has its own adaptive conviction threshold. Consensus confidence below the gate → trade blocked. Gate adapts: over-trading → raise gate, under-trading + winning → lower gate, losing → raise gate.
-
-### v2.0.104 — Multi-Symbol Single-Cycle + Trading Market Injection
-
-- **Trading market injection** (v2.0.104): Non-position trading markets are now injected into `currentPositions` with `isTradingMarket=true` and `quantity=0`. Agents see ALL trading markets in `positions[]` and output BUY/SELL/HOLD for each in a single HACP cycle. Full market context (price, trend, regime, RBC, S/R) is generated for each trading market and appended to `marketDesc`. The `MultiSymbolDecision.positions[]` now serves dual purpose: open position management (CLOSE/HOLD) AND trading market analysis (BUY/SELL/HOLD). Agent prompts updated to explain the distinction. HACP thesis validation checks `quantity > 0` to distinguish real positions from trading markets.
-- **Thesis-mandatory close** (v2.0.103): Closing a position now REQUIRES entry thesis invalidation as a MANDATORY condition, plus ≥2 of the other 5 conditions. If the thesis is still valid → HOLD, no exceptions. This prevents panic-closing on short-term price noise. Meta-Agent prompt, Skeptics close validation, and reasoning chain all updated to enforce this.
-- **Multi-symbol single-cycle** (v2.0.103): Reverted the v2.0.100 sub-cycle approach (separate HACP cycle per market). ALL trading markets are now analyzed in ONE HACP cycle. Entry decisions for trading markets are executed via the `perSymbolConsensus` loop.
-
-### v2.0.92–v2.0.94 — Extreme Reasoning + RBC/S/R for All Positions + Bug Fixes
-
-- **Extreme reasoning** (v2.0.93, updated v2.0.103): No position → MUST decide BUY/SELL (HOLD only when ALL 6 signals absent). Has position → MUST decide CLOSE/HOLD. CLOSE requires thesis invalidated (MANDATORY) + ≥2 of 5 other conditions. HOLD is the default. Even with no data, reason from first principles. 3-5 sentences minimum per symbol.
-- **RBC + S/R for all open positions** (v2.0.92): Previously only generated for the active symbol. Now every open position gets RBC edge assessment + S/R zones in agent context.
-- **Phase 1.8 skip for existing positions** (v2.0.94): Thesis validation skipped if symbol already has a position — marketTicker BUY/SELL for a symbol with an existing position is NOT a new entry.
-- **Legacy close on Meta-Agent decision** (v2.0.94): Legacy positions (no entryThesis) now close when Meta-Agent decides CLOSE, not just when ≥2 sub-agents vote close.
-- **UI: Meta-Agent reasoning always expanded** (v2.0.94): holdReason/entryThesis no longer truncated to 2 lines.
-
-### v2.0.79–v2.0.91 — Entry Thesis System + Dark Psychology + Skeptics Absolute Veto
-
-The most significant cognitive architecture upgrade. Meta-Agent operates as a detective — every cycle it aggressively reasons from sub-agent data to find subtle trade edges ("蛛絲馬跡"), but must NEVER distort facts. When it finds an edge, it generates an `entryThesis` explaining why price will reach TP within 1h and 1d. **Skeptics has absolute veto power** over new positions — validates thesis for strength, specificity, data consistency, dark psychology (whale manipulation?), and fact distortion.
-
-- **Phase 0.5**: Re-validates open position theses each cycle with fresh market data → invalidated → force-close
-- **Phase 1.8**: Validates Meta-Agent's entryThesis before trade is allowed
-- **Phase 4.8**: Final hard gate — BUY/SELL without valid+validated thesis → BLOCK
-- **Meta-Agent weight → 0.00** (thesis system controls, not voting)
-- **Sub-agent weights → 0.10** (data-gathering role, confidence is reference for Skeptics)
-- **Risk Auditor → advisory-only** (cannot veto, only suggests TP/SL/size adjustments)
-- **`holdReason`** required for HOLD decisions — displayed in UI
-- **Dark Psychology**: Meta-Agent must question whether data is whale manipulation
-- **Close validation** (v2.0.90): Closing thesis-backed positions also goes through Meta-Agent → Skeptics validation
-- **Legacy positions** (v2.0.91): Positions without entryThesis (pre-v2.0.80) use sub-agent majority vote for closing
-- **Sub-agent BUY/SELL signals** (v2.0.85): Meta-Agent must pay special attention when sub-agents output directional signals
-- **Active position management** (v2.0.87): Meta-Agent must actively evaluate closing positions every cycle
-- **No backward-looking blocking** (v2.0.88): Past drawdown/losses are NOT valid reasons to reject trades — RBC learns, market changes
-- **UI improvements**: Per-symbol rationale with independent expand/collapse, dynamic confidence bar colors (HSL gradient), removed obsolete Temp/Weight/Decisions display
-
-### v2.0.78 — Configurable Max Portion + Real Trading Margin Check
-
-`maxPortionPct` (10%-50%) replaces hardcoded 20% cumulative margin cap. UI slider in Market Agent panel. Enforced in both paper engine AND real trading manager.
-
-### v2.0.76–v2.0.77 — Global HL Rate Limiter + WS Infinite Reconnect
-
-Global rate limiter replaces 6+ scattered per-module limiters with one queue (200ms gap = 5 req/s). WS reconnect retries forever (backoff caps at 60s). REST polling exponential backoff (30s → 5min cap).
-
-### v2.0.69–v2.0.75 — SL/TP UI + Symbol Debounce + S/R DEX Fix + News Reporter Rewrite
-
-SL/TP UI display fix, symbol selection debounce, S/R + ATR candle fetch fix for DEX 1-8, News Reporter rewrite (Google News RSS + GDELT + Bing News, multi-symbol, hidden strategist persona), UI masonry layout.
-
-### v2.0.58–v2.0.68 — Options Data Layer + Options-aware Evolution
-
-Options Data Layer connecting to Massive.com/Polygon.io. Regime → Playbook mapping. Options-aware evolution (`OptionsStrategyParameters` + `SurvivalFitness.optionsAlpha`). Plan detection + dynamic vote weight.
-
-### v2.0.32–v2.0.57 — HL Real Trading Fixes + SL/TP Safety + Position Management
-
-HL signing rewrite (phantom agent EIP-712), xyz DEX asset index offset, SL/TP direction fixes, phantom close fix (8 code paths), paper balance inflation fix, S/R-based SL/TP, pro algo firm SL/TP (fill-first + retry + safety-close), HL SL/TP close detection, stale real position cleanup, real trade persistence, consensus directional agreement fix, learning decay, MAX_POSITION_PCT removal, drawdown high-water mark fix, manual market selection, SL/TP HL bidirectional sync, PnL leverage inflation fix, SL/TP retry loop + slower narrowing, SL/TP max narrowing step, error trade filter, per-symbol consensus SL/TP direction validation.
-
-### v2.0.10–v2.0.31 — Math Audit + LLM Resilience + Evolution + HL WS + Real Trading
-
-Math audit (13 numerical fixes), LLM resilience (circuit breaker + deadline race), Risk Auditor regime-aware TP/SL, evolution enhancement (directional mutation + agent-level evolution + regime-aware strategy), HL WS user-level subscriptions, real-trade UI balance, notional-based fee deduction, unrealized PnL includes entry fee, TradingView TP/SL live update, fitness breakdown fix, dailyPnl auto-reset, SL/TP close learning hook, loss cooldown + LLM review, LLM pattern tag tracking, legacy position management, manual close button, multi-DEX balance + positions.
-
-### v2.0.0–v2.0.9 — Foundation + RBC + Pattern Classifier + SystemGuard
-
-Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, paper trading, dual memory, survival fitness, evolutionary pressure, Sigmoid·GA sentiment engine, S/R zone detection, RBC engine (layered decay + time-weighted centroid), trade pattern classifier (Wilson score), EM cycle chain, backtest engine, loop engineering, real trading interface, TradingView chart, agent model selector, live progress, Fear & Greed index, leverage 2-10x, cumulative position cap, atomic write, schema validation.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for full details on each fix.
 
 ---
 
