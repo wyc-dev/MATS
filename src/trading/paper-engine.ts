@@ -142,7 +142,15 @@ export class PaperTradingEngine {
     }
   }
 
-  async executeDecision(decision: TradingDecision): Promise<ExecutionReport[]> {
+  /**
+   * Execute a trading decision.
+   * @param decision The trading decision to execute
+   * @param forceMirror v2.0.127: When true, bypasses canTrade() drawdown/daily-loss
+   *   guards. Used by RealTradingManager to mirror a trade that ALREADY executed
+   *   on the exchange — the local mirror must not be blocked by paper portfolio
+   *   guards because the real trade is already live.
+   */
+  async executeDecision(decision: TradingDecision, forceMirror = false): Promise<ExecutionReport[]> {
     const reports: ExecutionReport[] = [];
 
     if (decision.action === 'hold') {
@@ -150,14 +158,16 @@ export class PaperTradingEngine {
       return reports;
     }
 
-    // Check if trading is allowed
-    const tradeCheck = this.portfolio.canTrade();
-    if (!tradeCheck.allowed) {
-      log.warn(`Trade blocked: ${tradeCheck.reason}`);
-      return [{
-        order: this.createRejectedOrder(decision, tradeCheck.reason ?? 'Unknown reason'),
-        error: tradeCheck.reason,
-      }];
+    // Check if trading is allowed (skip for forced mirrors of real trades)
+    if (!forceMirror) {
+      const tradeCheck = this.portfolio.canTrade();
+      if (!tradeCheck.allowed) {
+        log.warn(`Trade blocked: ${tradeCheck.reason}`);
+        return [{
+          order: this.createRejectedOrder(decision, tradeCheck.reason ?? 'Unknown reason'),
+          error: tradeCheck.reason,
+        }];
+      }
     }
 
     // Risk assessment — decision.symbol is guaranteed by normalizeDecision()
