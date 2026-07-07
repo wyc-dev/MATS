@@ -1965,9 +1965,19 @@ Output ONLY valid JSON:
       if (tradingMarketSymbols.has(sym) && metaPerSymbol.has(sym)) {
         const metaDec = metaPerSymbol.get(sym)!;
         if (metaDec.action === 'buy' || metaDec.action === 'sell') {
-          const metaThought = thoughts.find(t => t.agentRole === 'meta_agent');
-          if (metaThought) {
-            finalConfidence = metaThought.confidence;
+          // v2.0.132: Use per-symbol confidence from Meta-Agent's
+          // multiSymbolDecision, not the overall metaThought.confidence.
+          // Meta-Agent may be 55% confident overall (because other symbols
+          // are HOLD) but 60% confident for this specific symbol. The
+          // per-symbol confidence is the correct value for the conviction
+          // gate — using the overall confidence unfairly lowers it.
+          if (metaDec.confidence !== undefined && metaDec.confidence > 0) {
+            finalConfidence = metaDec.confidence;
+          } else {
+            const metaThought = thoughts.find(t => t.agentRole === 'meta_agent');
+            if (metaThought) {
+              finalConfidence = metaThought.confidence;
+            }
           }
         }
       }
