@@ -40,9 +40,14 @@ export class RealTradingManager {
   private riskEngine: RiskEngine;
   private binanceEngine: BinanceRealEngine | null = null;
   private hyperliquidEngine: HyperliquidRealEngine | null = null;
-  /** v2.0.XX: Max portion of balance for all positions combined (10%-50%).
+  /** v2.0.XX: Max portion of TOTAL equity for all positions combined (10%-100%).
    *  Synced from MarketAgent config via setMaxPortionPct(). Checked BEFORE
-   *  placing real orders so we don't send a trade to HL that exceeds the cap. */
+   *  placing real orders so we don't send a trade to HL that exceeds the cap.
+   *  v2.0.131: Uses TOTAL equity (not free balance) — free balance is reduced
+   *  by existing position margin, so comparing against free balance blocks
+   *  all new trades when an existing position uses most of the margin.
+   *  v2.0.131: Clamp raised from 50% to 100% to allow users to set higher
+   *  when they have existing positions using most of the margin. */
   private maxPortionPct = 0.20;
   /** v2.0.66: Per-symbol debounce lock — prevents duplicate SL/TP placement
    *  when multiple code paths (syncSLTP, hacp adjustPositions, per-symbol
@@ -247,6 +252,28 @@ export class RealTradingManager {
 
   /**
    * Execute a trading decision through the active engine or paper trading.
+   *
+   * v2.0.127: In real mode, the paper engine mirror is called with
+   * forceMirror=true to bypass canTrade() drawdown/daily-loss guards.
+   * The real trade already executed on HL — the mirror must not be blocked
+   * by paper portfolio guards. Previously, a 21.74% paper drawdown blocked
+   * the mirror, causing positions to exist on HL but not in the local
+   * portfolio (UI showed "No Open Positions").
+   *
+   * v2.0.131: The cumulative margin check uses TOTAL equity (exBal.total),
+   * not free balance (exBal.free). Free balance is reduced by existing
+   * position margin, so comparing total margin against free balance * maxPortion
+   * blocks all new trades when an existing position uses most of the margin.
+   *
+   * Gate stack (in order):
+   *   1. Symbol overlap guard (no duplicate positions)
+   *   2. Price check (> 0)
+   *   3. HL minimum notional floor ($10)
+   *   4. Cumulative margin check (total margin vs maxPortion * total equity)
+   *   5. HL engine.placeOrder() (actual exchange order)
+   *   6. Paper engine mirror (forceMirror=true, bypasses canTrade)
+   *   7. Post-trade sync (fetch actual fill price + leverage from HL)
+   *   8. SL/TP placement (using actual fill price, not decision price)
    */
   async executeDecision(decision: TradingDecision): Promise<{
     success: boolean;
@@ -923,6 +950,27 @@ export class RealTradingManager {
    * (rejected), we do NOT send the raw values to HL. We read the position's
    * current validated SL/TP from the local mirror and send THOSE to HL instead.
    * This ensures HL always matches the local mirror's validated values.
+   *
+   * v2.0.129: portfolio.adjustPosition() now also enforces not-too-tight
+   * constraints (MIN_SL_DIST_PCT=1%, MIN_TP_DIST_PCT=1.5%) in addition to
+   * no-widen, max-narrow-step, and min-gap. This is the HARD SAFETY layer —
+   * all callers (HACP adjustPositions, per-symbol consensus, manual trade)
+   * go through this validation.
+   *
+   * v2.0.130: This method is called for ALL open positions (not just the
+   * primary symbol). HACP's adjustPositions() now adjusts every position
+   * with full market context, so non-primary positions (e.g. SILVER) get
+   * proper LLM-driven SL/TP adjustments instead of only sub-agent averages.
+   *
+   * SL/TP validation chain (hard safety layers):
+   *   1. hacp.ts adjustPositions() — LLM retry loop with error feedback
+   *      (direction, no-widen, min-distance, min-gap, max-narrow-step)
+   *   2. portfolio.ts adjustPosition() — hard safety layer
+   *      (direction, no-widen, not-too-tight, min-gap, max-narrow-step)
+   *   3. real-trading-manager.ts adjustPosition() — debounce + HL placement
+   *      (uses validated values from layer 2, or existing if rejected)
+   *   4. hyperliquid-real-engine.ts adjustPosition() — HL trigger orders
+   *      (cancel existing + place fresh SL + TP)
    */
   async adjustPosition(positionId: string, sl?: number, tp?: number): Promise<void> {
     // Always update local mirror first — this validates SL/TP direction,

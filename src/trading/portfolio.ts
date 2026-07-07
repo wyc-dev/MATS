@@ -356,6 +356,22 @@ export class PortfolioTracker {
     return Array.from(this.portfolio.positions.values());
   }
 
+  /**
+   * v2.0.42: canTrade() uses CURRENT drawdown, not historical max.
+   * maxDrawdownPct is a high-water mark that only increases — using it
+   * here meant that once drawdown hit 27%, trading was permanently
+   * blocked even after equity fully recovered.
+   * currentDrawdownPct decreases when equity recovers, so trading
+   * resumes once the drawdown drops below the threshold.
+   *
+   * v2.0.127: This check is BYPASSED when forceMirror=true is passed to
+   * paperEngine.executeDecision(). Real trades that already executed on HL
+   * must not be blocked by paper portfolio drawdown guards.
+   *
+   * Guards checked:
+   *   1. currentDrawdownPct >= maxDrawdownPct (drawdown circuit breaker)
+   *   2. dailyPnl < 0 AND dailyLossPct >= dailyLossLimitPct (daily loss limit)
+   */
   canTrade(): { allowed: boolean; reason?: string } {
     // v2.0.23: auto-reset dailyPnl on calendar date change.
     this.checkDailyReset();
@@ -658,9 +674,23 @@ export class PortfolioTracker {
   }
 
   /**
-   * Adjust stop-loss and/or take-profit for an existing position.
-   * Called by meta-agent during HACP cycle for dynamic TP/SL management.
-   * This is the extension point for real trading — same interface.
+   * v2.0.42: adjustPosition — the HARD SAFETY layer for SL/TP adjustments.
+   *
+   * All callers (HACP adjustPositions, per-symbol consensus, manual trade)
+   * go through this method. It validates:
+   *   1. Direction: SL must be on correct side of current price (not trigger immediately)
+   *   2. Direction: TP must be on profit side of entry
+   *   3. No-widen: SL can only move TOWARD current price (never away = more risk)
+   *   4. No-widen: TP can only move TOWARD current price (never away = greedier)
+   *   5. v2.0.129: Not-too-tight: SL ≥ 1% from current price, TP ≥ 1.5% from current price
+   *   6. Min gap: SL/TP gap ≥ 2% of current price
+   *   7. Max narrow step: SL/TP can only move 0.5% of current price per cycle
+   *
+   * Returns true if accepted (values applied to local mirror), false if rejected.
+   * RealTradingManager uses this return value to decide what to send to HL.
+   *
+   * ⚠️ MAINTENANCE NOTE: If you change validation logic, update BOTH this layer
+   * AND hacp.ts adjustPositions() (the LLM retry loop layer).
    */
   adjustPosition(positionId: string, newStopLoss?: number, newTakeProfit?: number): boolean {
     // v2.0.72: search both real and paper positions

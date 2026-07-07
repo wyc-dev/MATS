@@ -6806,6 +6806,83 @@ Agents 而家可以睇到「BTC 已經升咗 3%」而唔係淨係睇到當前價
 
 ---
 
+### B.62 Gate Stack Fix + SL/TP Safety + Margin Check (v2.0.123–v2.0.131)
+
+**發現日期**: 2026-07-07
+**嚴重性**: 🔴 Critical — 連續 4 日冇開倉，多層 gate 阻住交易
+**涉及檔案**: `src/cognition/hacp.ts`, `src/trading/real-trading-manager.ts`, `src/trading/paper-engine.ts`, `src/trading/portfolio.ts`, `src/api-server.ts`, `src/market-agent/index.ts`, `src/index.ts`, `ui/src/App.tsx`
+
+#### 問題描述
+
+系統連續 4 日冇開倉。診斷發現 **5 層 gate** 依次阻住交易：
+
+| Gate | 版本 | 問題 | 修復 |
+|:-----|:-----|:-----|:-----|
+| Sub-agent majority vote | v2.0.125 | Meta-Agent SELL 被 5 個 sub-agent HOLD 蓋過 | Trading market 用 Meta-Agent 決定 |
+| Unanimous HOLD fast-path | v2.0.126 | 有 per-symbol SELL 都跳過辯論 | 檢查 multiSymbolDecision |
+| Conviction gate | v2.0.126 | 用 sub-agent 平均 confidence (33%) | 用 Meta-Agent confidence |
+| Paper drawdown gate | v2.0.127 | 21.74% > 20% → mirror 被拒 | forceMirror bypass canTrade() |
+| Active symbol majority | v2.0.130 | marketTicker SELL 被 majority HOLD 蓋過 | Meta-Agent override finalDecision |
+
+#### 修復
+
+**v2.0.123**: Ollama 500/timeout 不再 auto-pause。authValid 預設 true（Ollama 可達時），只有 401 先 flip false。UI 要求 2 次連續 None 先 pause。
+
+**v2.0.124**: tradingMarkets 持久化到 market-agent-config.json。啟動時載入，第一個 cycle 就有正確 markets。
+
+**v2.0.125**: `buildConsensus()` 對 trading markets（冇倉位）用 Meta-Agent per-symbol 決定，唔用 sub-agent majority。
+
+**v2.0.126**: Unanimous HOLD fast-path 觸發前檢查 Meta-Agent multiSymbolDecision 有冇 trading market BUY/SELL。Conviction gate 用 Meta-Agent confidence（唔用 sub-agent 平均）。
+
+**v2.0.127**: `paperEngine.executeDecision()` 加 `forceMirror` 參數。RealTradingManager 用 `forceMirror=true` bypass `canTrade()` drawdown gate。之前 paper drawdown 21.74% 阻住 real trade mirror → HL 有倉位但本地冇 → UI 顯示 "No Open Positions"。
+
+**v2.0.128**: Decision audit log — 每個 Meta-Agent BUY/SELL 決定記錄 gate-by-gate 結果。API `decisionAudit[]` 暴露最後 20 筆。
+
+**v2.0.129**: `portfolio.ts adjustPosition()` 加 not-too-tight 約束：SL ≥ 1% from current price，TP ≥ 1.5%。之前 SL 可以收緊到 0.39% → 正常雜訊觸發止損。
+
+**v2.0.130**: `buildConsensus()` 對 active symbol（marketTicker）都用 Meta-Agent override。之前 finalDecision 用 legacy majority vote，Meta-Agent SELL 被 6 個 HOLD 蓋過。`adjustPositions()` 改為調整所有持倉（唔只 primary symbol），SILVER 嘅 SL/TP 終於經 HACP LLM loop。
+
+**v2.0.131**: Margin check 用 total equity（唔用 free balance）。之前 free balance 被 SILVER 倉位 margin 減少 → 50% of $13 = $6.50 < $47 existing → 所有新交易被 block。Max portion clamp 由 50% 提到 100%。Manual trade price fallback 加 selected symbol re-fetch。
+
+#### SL/TP 驗證鏈（hard safety layers）
+
+```
+1. hacp.ts adjustPositions() — LLM retry loop
+   (direction, no-widen, min-distance, min-gap, max-narrow-step)
+
+2. portfolio.ts adjustPosition() — hard safety layer
+   (direction, no-widen, not-too-tight, min-gap, max-narrow-step)
+
+3. real-trading-manager.ts adjustPosition() — debounce + HL placement
+   (uses validated values from layer 2, or existing if rejected)
+
+4. hyperliquid-real-engine.ts adjustPosition() — HL trigger orders
+   (cancel existing + place fresh SL + TP)
+```
+
+#### Gate stack（executeDecision）
+
+```
+1. Symbol overlap guard (no duplicate positions)
+2. Price check (> 0)
+3. HL minimum notional floor ($10)
+4. Cumulative margin check (total margin vs maxPortion * total equity)
+5. HL engine.placeOrder() (actual exchange order)
+6. Paper engine mirror (forceMirror=true, bypasses canTrade)
+7. Post-trade sync (fetch actual fill price + leverage from HL)
+8. SL/TP placement (using actual fill price, not decision price)
+```
+
+#### 效果
+
+- 連續 4 日冇開倉嘅 5 層 gate 全部修復
+- BTC SELL + SILVER SELL 成功喺 HL 開倉，SL/TP 正確配置
+- Decision audit log 令用戶可以定期檢查 Meta-Agent 決定有冇執行
+- SL/TP 唔會收得太緊（≥1% SL、≥1.5% TP from current price）
+- Margin check 唔會因為現有倉位用咗大部分 margin 而 block 所有新交易
+
+---
+
 > *"In the chaos of markets, only the adaptive survive. But the truly wise preserve capital first, profit second."*
 >
 > — ** YC Wong **
