@@ -4840,6 +4840,24 @@ class MATSSystem {
           ...this.cachedHLFills
             .filter(f => !f.dir.toLowerCase().includes('open'))
             .map(f => {
+              // v2.0.133: Extract position side from dir ("Close Short" → sell,
+              // "Close Long" → buy). Previously used f.side which is the ORDER
+              // side (buy to close short), not the POSITION side (sell/short).
+              const positionSide: 'buy' | 'sell' = f.dir.toLowerCase().includes('short') ? 'sell' : 'buy';
+
+              // v2.0.133: Find the matching open fill to get the entry price.
+              // HL fills are sorted newest-first in cachedHLFills. Look for an
+              // "Open Short" or "Open Long" fill for the same symbol with the
+              // same size, before this close fill.
+              const openFill = this.cachedHLFills.find(of =>
+                of.dir.toLowerCase().includes('open') &&
+                of.symbol === f.symbol &&
+                Math.abs(of.size - f.size) < 0.0001 &&
+                of.timestamp < f.timestamp
+              );
+              const entryPrice = openFill?.price ?? f.price;
+              const exitPrice = f.price;
+
               // Look up leverage from cached exchange positions (for still-open positions)
               const posMatch = this.cachedExchangePositions?.find(ep => {
                 const epSym = ep.symbol.replace(/^xyz:/i, '').toLowerCase();
@@ -4852,15 +4870,15 @@ class MATSSystem {
               return {
                 id: `hl-fill-${f.timestamp}-${f.symbol}`,
                 symbol: normalizeSymbol(f.symbol),
-                side: f.side,
-                entryPrice: f.price,
-                exitPrice: f.price,
+                side: positionSide,
+                entryPrice,
+                exitPrice,
                 quantity: f.size,
                 leverage: posMatch?.leverage ?? 10,
-                investment: f.price * f.size,
+                investment: entryPrice * f.size,
                 pnl: f.closedPnl - f.fee,
-                pnlPct: f.price * f.size > 0 ? (f.closedPnl - f.fee) / (f.price * f.size) : 0,
-                openedAt: f.timestamp,
+                pnlPct: entryPrice * f.size > 0 ? (f.closedPnl - f.fee) / (entryPrice * f.size) : 0,
+                openedAt: openFill?.timestamp ?? f.timestamp,
                 closedAt: f.timestamp,
                 status: 'closed' as const,
               };
