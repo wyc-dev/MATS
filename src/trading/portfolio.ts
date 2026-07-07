@@ -787,6 +787,30 @@ export class PortfolioTracker {
           }
         }
 
+        // v2.0.129: Not-too-tight — minimum distance from current price.
+        // SL must be at least MIN_SL_DIST_PCT away from current price
+        // (otherwise normal market noise triggers premature stop-out).
+        // TP must be at least MIN_TP_DIST_PCT away from current price
+        // (otherwise normal market noise triggers premature take-profit).
+        // This is the HARD SAFETY layer — hacp.ts also enforces this in the
+        // LLM retry loop, but per-symbol consensus + manual paths bypass HACP.
+        const MIN_SL_DIST_PCT = 0.01;  // 1% minimum SL distance
+        const MIN_TP_DIST_PCT = 0.015; // 1.5% minimum TP distance
+        if (finalSL !== undefined && pos.currentPrice > 0) {
+          const slDistPct = Math.abs(pos.currentPrice - finalSL) / pos.currentPrice;
+          if (slDistPct < MIN_SL_DIST_PCT) {
+            log.warn(`🚫 adjustPosition SL too-tight: ${pos.symbol} SL $${finalSL.toFixed(2)} is ${(slDistPct * 100).toFixed(2)}% from current price $${pos.currentPrice.toFixed(2)} — minimum ${(MIN_SL_DIST_PCT * 100)}% required to avoid noise stop-out`);
+            finalSL = undefined;
+          }
+        }
+        if (finalTP !== undefined && pos.currentPrice > 0) {
+          const tpDistPct = Math.abs(pos.currentPrice - finalTP) / pos.currentPrice;
+          if (tpDistPct < MIN_TP_DIST_PCT) {
+            log.warn(`🚫 adjustPosition TP too-tight: ${pos.symbol} TP $${finalTP.toFixed(2)} is ${(tpDistPct * 100).toFixed(2)}% from current price $${pos.currentPrice.toFixed(2)} — minimum ${(MIN_TP_DIST_PCT * 100)}% required to avoid noise take-profit`);
+            finalTP = undefined;
+          }
+        }
+
         if (finalSL !== undefined) {
           pos.stopLossPrice = finalSL;
         }
