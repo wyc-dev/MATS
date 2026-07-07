@@ -1351,6 +1351,24 @@ body {
 .positions-table tr:hover td { background: rgba(255, 255, 255, 0.02); }
 .positions-table tr.selected-position td { background: rgba(255, 215, 0, 0.06); outline: 1px solid rgba(255, 215, 0, 0.2); }
 
+/* v2.0.134: Entry thesis row below each position */
+.position-thesis-row td { padding: 0 !important; border-top: none !important; }
+.position-thesis-cell {
+  background: rgba(255, 255, 255, 0.015);
+  border-left: 2px solid rgba(255, 215, 0, 0.2);
+  padding: var(--space-2) var(--space-8) !important;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.position-thesis-label {
+  color: var(--gold);
+  font-weight: 600;
+  margin-right: var(--space-4);
+  white-space: nowrap;
+}
+.position-thesis-text { word-break: break-word; }
+
 .side-tag {
   padding: var(--space-2) var(--space-6);
   border-radius: var(--radius-sm);

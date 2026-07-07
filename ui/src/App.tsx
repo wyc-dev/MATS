@@ -1213,6 +1213,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
             <tbody>
               {positions.map((pos: any) => {
                 return (
+                <>
                 <tr key={pos.id} onClick={() => setChartSymbol(pos.symbol)} className={`position-row-clickable ${chartSymbol === pos.symbol ? 'selected-position' : ''}`}>
                   <td className="td-action-cell" onClick={(e) => e.stopPropagation()}>
                     {closeConfirmSymbol === pos.symbol ? (
@@ -1262,6 +1263,15 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
                     {formatHKTime(pos.openedAt)}
                   </td>
                 </tr>
+                {pos.entryThesis && (
+                  <tr key={`${pos.id}-thesis`} className="position-thesis-row">
+                    <td colSpan={12} className="position-thesis-cell">
+                      <span className="position-thesis-label">📝 Entry Thesis:</span>
+                      <span className="position-thesis-text">{pos.entryThesis}</span>
+                    </td>
+                  </tr>
+                )}
+                </>
               );
             })}
             </tbody>
