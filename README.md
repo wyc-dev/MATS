@@ -16,19 +16,19 @@ Single-LLM trading bots hallucinate. They lack oversight, have no risk governanc
 
 ## 📸 See It In Action
 
-<!-- TODO: add docs/demo.gif — dashboard + HACP debate + TradingView chart -->
-![MATS Dashboard](docs/demo.gif)
-*Dashboard: real-time HACP debate transcripts, agent reasoning, TradingView chart with live SL/TP lines, evolution metrics.*
+### Dashboard — live HACP debate + TradingView + evolution metrics
 
-<!-- TODO: add docs/backtest-curve.png — equity curve from backtest -->
-![Backtest Equity Curve](docs/backtest-curve.png)
-*Backtest: equity curve showing self-evolving strategy performance over historical data.*
+<video src="docs/dashboard.mov" controls muted preload="metadata" width="100%"></video>
 
-<!-- TODO: add docs/skeptics-veto.png — Skeptics rejecting a trade -->
-![Skeptics Veto](docs/skeptics-veto.png)
-*Skeptics agent rejecting a trade — the cool factor. Every BUY/SELL must survive stress-testing.*
+*Real-time: 8 agents debate → Skeptics validation → weighted consensus → live TP/SL on TradingView chart → self-evolution metrics.*
 
-> Images coming — ⭐ star and watch the repo to be notified when added.
+### Backtest equity curve — coming soon
+
+> 📈 Backtest results being generated. ⭐ Star + watch the repo to be notified when the equity curve lands.
+
+### Skeptics veto — AI stress-tests every trade
+
+> 🛡️ Screenshot coming. Every BUY/SELL must survive a Skeptics stress-test before execution — only rejected on a specific, material flaw that would cause a loss.
 
 ---
 
