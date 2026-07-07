@@ -18,7 +18,7 @@ Single-LLM trading bots hallucinate. They lack oversight, have no risk governanc
 
 ### Dashboard — live HACP debate + TradingView + evolution metrics
 
-<video src="docs/dashboard.mov" controls muted preload="metadata" width="100%"></video>
+<video src="https://raw.githubusercontent.com/wyc-dev/MATS/main/docs/dashboard.mp4" controls muted preload="metadata" width="100%"></video>
 
 *Real-time: 8 agents debate → Skeptics validation → weighted consensus → live TP/SL on TradingView chart → self-evolution metrics.*
 
