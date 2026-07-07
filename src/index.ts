@@ -3343,12 +3343,16 @@ class MATSSystem {
           }
         }
 
-        // v2.0.134: Sync entryThesis from per-symbol consensus to the position.
-        // Positions imported via importExchangePosition() don't have entryThesis.
-        // The thesis from HACP consensus (Meta-Agent's rationale) is the best
-        // available — sync it so the UI Portfolio can display the opening rationale.
-        if (psc.entryThesis && psc.entryThesis.trim().length > 0) {
+        // v2.0.134: Sync entryThesis + holdReason from per-symbol consensus to
+        // the position. Positions imported via importExchangePosition() don't
+        // have entryThesis. The thesis/holdReason from HACP consensus is the
+        // best available — sync it so the UI Portfolio can display the rationale.
+        if (psc.entryThesis && psc.entryThesis.trim().length > 0
+            && !psc.entryThesis.includes('Not applicable')) {
           this.portfolio.setEntryThesis(psc.symbol, psc.entryThesis);
+        }
+        if (psc.holdReason && psc.holdReason.trim().length > 0) {
+          this.portfolio.setHoldReason(psc.symbol, psc.holdReason);
         }
       }
 
@@ -4281,6 +4285,7 @@ class MATSSystem {
           exchange: pos.exchange ?? 'hyperliquid',
           // v2.0.134: Include entryThesis so UI can display the opening rationale
           entryThesis: pos.entryThesis,
+          holdReason: (pos as any).holdReason,
         };
       } else {
         positions[key] = {
@@ -4301,6 +4306,7 @@ class MATSSystem {
           exchange: pos.exchange ?? 'hyperliquid',
           // v2.0.134: Include entryThesis so UI can display the opening rationale
           entryThesis: pos.entryThesis,
+          holdReason: (pos as any).holdReason,
         };
       }
     }
@@ -4360,6 +4366,7 @@ class MATSSystem {
             exchange: 'hyperliquid',
             // v2.0.134: Include entryThesis from real position if available
             entryThesis: realPos?.entryThesis,
+            holdReason: (realPos as any)?.holdReason,
           };
         }
       }

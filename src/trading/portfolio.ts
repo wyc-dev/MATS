@@ -572,6 +572,17 @@ export class PortfolioTracker {
     }
   }
 
+  /** v2.0.134: Set hold reason on a position (real or paper). */
+  setHoldReason(symbol: string, reason: string): void {
+    const sym = normalizeSymbol(symbol);
+    const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(sym);
+    if (!pos) return;
+    if (reason && reason.trim().length > 0) {
+      (pos as any).holdReason = reason.trim();
+      pos.updatedAt = Date.now();
+    }
+  }
+
   softUpdatePosition(symbol: string, currentPrice: number): void {
     // v2.0.72: check real positions first, then paper
     const sym = normalizeSymbol(symbol);
