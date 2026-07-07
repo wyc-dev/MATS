@@ -756,14 +756,14 @@ export class APIServer {
         return;
       }
 
-      // v2.0.XX: POST: set max portion (0.10-0.50 = 10%-50%)
+      // v2.0.XX: POST: set max portion (0.10-1.00 = 10%-100%)
       if (pathname === '/api/market-agent/max-portion' && req.method === 'POST') {
         let body = '';
         req.on('data', (chunk: string) => { body += chunk; });
         req.on('end', () => {
           try {
             const { pct } = JSON.parse(body) as { pct: number };
-            const clamped = Math.max(0.10, Math.min(0.50, pct));
+            const clamped = Math.max(0.10, Math.min(1.00, pct));
             if (this.onMarketAgentSetMaxPortion) this.onMarketAgentSetMaxPortion(clamped);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: true, message: `Max portion set to ${(clamped * 100).toFixed(0)}%` }));

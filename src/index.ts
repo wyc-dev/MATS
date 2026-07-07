@@ -774,8 +774,19 @@ class MATSSystem {
             const priceData = await this.marketAgent.fetchPriceForSymbol(sym);
             price = priceData.price;
           } catch {
+            // fallback 1: marketState
             const state = this.marketState.getState(sym);
             price = state?.price ?? 0;
+          }
+          // v2.0.131: fallback 2 — re-fetch with selected symbol
+          if (price <= 0) {
+            try {
+              const selected = this.marketAgent.getSelectedSymbol();
+              if (selected && normalizeSymbol(selected) === normalizeSymbol(sym)) {
+                const priceData2 = await this.marketAgent.fetchPriceForSymbol(selected);
+                price = priceData2.price;
+              }
+            } catch { /* best-effort */ }
           }
           if (price <= 0) {
             return { success: false, error: `No price available for ${sym}` };
