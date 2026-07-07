@@ -1376,19 +1376,13 @@ export class HACPEngine {
 
     const adjustments: PositionAdjustment[] = [];
 
-    // Extract the primary trading symbol from the market description
-    const primaryMatch = marketStateDesc.match(/Selected Symbol:\s*(\S+)/i)
-      ?? marketStateDesc.match(/Symbol:\s*(\S+)/i);
-    // v2.0.32: Case-insensitive comparison for colon-prefixed symbols
-    const primarySymbol = primaryMatch?.[1];
-
     for (const pos of positions) {
-      // Only adjust positions that match the primary trading symbol
-      // to avoid applying the wrong market context to a different instrument
-      if (primarySymbol && normalizeSymbol(pos.symbol) !== normalizeSymbol(primarySymbol)) {
-        log.debug(`Skipping adjustment for ${pos.symbol} — not the primary symbol ${primarySymbol}`);
-        continue;
-      }
+      // v2.0.130: Adjust ALL open positions, not just the primary symbol.
+      // Previously this skipped non-primary symbols, so SILVER's SL/TP was
+      // never adjusted by the HACP LLM loop — only by per-symbol consensus
+      // (which uses sub-agent averages, not Meta-Agent's judgment).
+      // The marketStateDesc contains data for ALL symbols (including trading
+      // markets), so the LLM has enough context to adjust any position.
       try {
         const lev = pos.leverage ?? 1;
         const isLong = pos.side === 'buy';
@@ -2020,22 +2014,58 @@ Output ONLY valid JSON:
 
     const avgConfidence = decisions.reduce((s, d) => s + d.confidence, 0) / decisions.length;
 
+    // v2.0.130: Meta-Agent override for the active symbol (marketTicker).
+    // The finalDecision uses the legacy majority vote, which drowns out
+    // Meta-Agent's SELL when sub-agents say HOLD. But Meta-Agent is the
+    // arbitrator — when it says BUY/SELL for the marketTicker (active symbol
+    // with no open position), its decision should override the majority,
+    // same as the v2.0.125 override for trading markets.
+    let finalDecisionAction = majorityAction;
+    let finalDecisionSize = majorityAction === 'hold' ? 0 : 0.10;
+    let finalDecisionLev = 10;
+    let finalDecisionRationale = `Majority decision: ${majorityAction.toUpperCase()} (${buyCount}B/${sellCount}S/${holdCount}H). Avg confidence: ${avgConfidence.toFixed(2)}. Rounds: ${rounds.length}.`;
+    let finalDecisionThesis: string | undefined = undefined;
+    let metaOverridden = false;
+    const metaThoughtForDecision = thoughts.find(t => t.agentRole === 'meta_agent');
+    if (metaThoughtForDecision) {
+      const metaMs = metaThoughtForDecision.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined;
+      if (metaMs) {
+        const mtSym = normalizeSymbol(metaMs.marketTicker.symbol);
+        // Check if the marketTicker symbol has no open position (trading market
+        // or active symbol without position). If so, Meta-Agent's decision is
+        // authoritative.
+        const hasOpenPos = (currentPositions ?? []).some(p =>
+          normalizeSymbol(p.symbol) === mtSym && (p.quantity ?? 0) > 0
+        );
+        if (!hasOpenPos && (metaMs.marketTicker.action === 'buy' || metaMs.marketTicker.action === 'sell')) {
+          finalDecisionAction = metaMs.marketTicker.action;
+          finalDecisionSize = metaMs.marketTicker.positionSizePct;
+          finalDecisionLev = metaMs.marketTicker.leverage;
+          finalDecisionThesis = metaMs.marketTicker.entryThesis;
+          finalDecisionRationale = `Meta-Agent: ${metaMs.marketTicker.action.toUpperCase()} ${metaMs.marketTicker.symbol} (marketTicker — Meta-Agent authoritative). Sub-agent majority: ${majorityAction.toUpperCase()} (${buyCount}B/${sellCount}S/${holdCount}H). ${metaMs.marketTicker.rationale ?? ''}`;
+          metaOverridden = true;
+          log.info(`📊 [v2.0.130] Active symbol ${metaMs.marketTicker.symbol}: Meta-Agent override ${majorityAction.toUpperCase()} → ${finalDecisionAction.toUpperCase()} (sub-agents: ${buyCount}B/${sellCount}S/${holdCount}H)`);
+        }
+      }
+    }
+
     return {
       decision: normalizeDecision({
-        action: majorityAction,
+        action: finalDecisionAction,
         symbol: 'BTCUSDT',
-        positionSizePct: majorityAction === 'hold' ? 0 : 0.10,
-        leverage: 10,
-        rationale: `Majority decision: ${majorityAction.toUpperCase()} (${buyCount}B/${sellCount}S/${holdCount}H). Avg confidence: ${avgConfidence.toFixed(2)}. Rounds: ${rounds.length}.`,
+        positionSizePct: finalDecisionSize,
+        leverage: finalDecisionLev,
+        rationale: finalDecisionRationale,
         urgency: 'soon',
+        ...(finalDecisionThesis ? { entryThesis: finalDecisionThesis } : {}),
       }),
       perSymbolConsensus,
-      confidence: avgConfidence,
+      confidence: metaOverridden && metaThoughtForDecision ? metaThoughtForDecision.confidence : avgConfidence,
       reasoning: this.buildReasoning(thoughts, rounds),
       votes: existingVotes ?? [],
       roundsUsed: rounds.length,
       deadlockResolved: deadlock,
-      metaAgentOverridden: false,
+      metaAgentOverridden: metaOverridden,
       timestamp: Date.now(),
     };
   }
