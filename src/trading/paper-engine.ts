@@ -144,11 +144,22 @@ export class PaperTradingEngine {
 
   /**
    * Execute a trading decision.
+   *
    * @param decision The trading decision to execute
    * @param forceMirror v2.0.127: When true, bypasses canTrade() drawdown/daily-loss
    *   guards. Used by RealTradingManager to mirror a trade that ALREADY executed
    *   on the exchange — the local mirror must not be blocked by paper portfolio
    *   guards because the real trade is already live.
+   *
+   * v2.0.127: Previously, canTrade() checked currentDrawdownPct >= maxDrawdownPct.
+   * When paper drawdown was 21.74% (threshold 20%), the mirror was rejected →
+   * positions existed on HL but not in local portfolio → UI showed "No Open
+   * Positions". forceMirror=true bypasses this for real trade mirrors.
+   *
+   * Callers:
+   *   - index.ts runDecisionCycle() → forceMirror=false (normal paper trading)
+   *   - RealTradingManager.executeDecision() → forceMirror=true (real trade mirror)
+   *   - Manual trade API → forceMirror=true (user-initiated, bypasses gates)
    */
   async executeDecision(decision: TradingDecision, forceMirror = false): Promise<ExecutionReport[]> {
     const reports: ExecutionReport[] = [];
