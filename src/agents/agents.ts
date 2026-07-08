@@ -725,35 +725,44 @@ export class OLRSentimentAnalyst extends BaseAgent {
 You evaluate ALL trading pairs under the current market conditions.
 
 === OLR ASSESSMENT (KEY FACTOR) ===
-If the context contains "=== OLR + PATH RISK ASSESSMENT ===":
-  - OLR (Online Logistic Regression) learns P(win) from SHADOW TRADE outcomes (TP-before-SL)
-    and REAL trade outcomes. Each side (LONG/SHORT) has an independent model.
-  - P(win) > 60% → current conditions favor this side → increase conviction
-  - P(win) < 40% → current conditions disfavor this side → strong bias against entry
-  - P(win) 40-60% → no clear edge, weight OTHER signals more heavily
-  - **RR-AWARE THRESHOLDS (v2 fix)**: the flat 60/40 gates assume a ~1:1 RR.
-    Under the default 1:2.5 RR (SL 2% / TP 5%) the random-walk breakeven is
-    a/(a+b) = 28.6%, so a learned P(win) of 35% may actually be an EDGE,
-    not a block. Use the First-Passage breakevenP as the reference:
-    P(win) > breakevenP + 10pp → favor; P(win) < breakevenP − 5pp → against;
-    within that band → no clear edge.
-  - **CONFIDENCE**: high (>50 samples) = trust the probability; low (<20) = noisy, weight less
-  - **FEATURE WEIGHTS**: OLR shows which features drive the probability (e.g. fundingRate w=+2.3
-    means positive funding favors this side). Use these to explain WHY the probability is high/low.
+If the context contains "=== OLR + PATH RISK ASSESSMENT ===" (active symbol) or
+"=== OLR ASSESSMENT for <sym> ===" (positions + trading markets):
+  - OLR (Online Logistic Regression) learns P(win) from SHADOW + PAPER + REAL + BACKFILL
+    trade outcomes (TP-before-SL). Each side (BUY/SELL) has an INDEPENDENT model per symbol.
+  - **PRIMARY SIGNAL — the EDGE line**: the context shows an explicit
+    "OLR EDGE vs breakeven: BUY +Xpp (FAVOR BUY) | SELL +Ypp (FAVOR SELL)" line.
+    This is P(win) minus the RR-aware breakeven probability — use it directly:
+    edge > +10pp → this side has a real learned edge → FAVOR entry on that side
+    edge < −5pp → this side is a learned loser → bias AGAINST entry
+    within [−5pp, +10pp] → no clear edge, weight OTHER signals more heavily
+  - **Why RR-aware, not flat 60/40**: under the default 1:2.5 RR (SL 2% / TP 5%) the
+    random-walk breakeven is a/(a+b) = 28.6%, so a learned P(win) of 35% is an EDGE,
+    not a block. The flat 60/40 gates assume ~1:1 RR and are WRONG for this system.
+    Always prefer the EDGE line over flat P(win) thresholds.
+  - **CONFIDENCE** (high/medium/low): high (>50 samples) = trust the edge; low (<20) =
+    noisy — treat the edge as weak, weight other signals more.
+  - **SOURCE BREAKDOWN** [shadow=N paper=N real=N backfill=N]: real > paper > shadow >
+    backfill in reliability. If the edge comes mostly from backfill (cold-start prior)
+    and live (shadow/paper/real) trades disagree → discount the edge.
+  - **FEATURE CONTRIBUTIONS**: the context shows BOTH "BUY key features" and "SELL key
+    features" (e.g. fundingRate=0.003(w=+2.3) means positive funding favors this side).
+    Use these to explain WHY the edge exists and to cross-check against other agents.
   - OLR is your PRIMARY factor — balance it with First-Passage and Fear & Greed
 
 === FIRST-PASSAGE PROBABILITY (PATH RISK) ===
 If the context shows "First-Passage P(TP before SL)":
-  - This is the INSTANT probability that TP will be hit BEFORE SL, based on current
-    volatility (σ of log returns), log-drift, and S/R-based SL/TP distances.
-  - It uses the Cox & Miller (1965) first-passage formula for Geometric Brownian Motion.
-  - **Compare P(win) to breakevenP (a/(a+b)), NOT to 50%.** breakevenP is the
-    symmetric-random-walk baseline for the current SL/TP distances. Under a 1:2.5
-    RR, breakevenP ≈ 29% — so P=40% is a positive edge, not a weak signal.
-  - P > breakevenP + 10pp → path risk favors TP → supports entry
-  - P < breakevenP − 10pp → path risk favors SL → caution against entry
-  - confidence: low means vol is too low to trust the diffusion model — weight less.
-  - This measures PATH RISK (will SL be hit first?), not just direction.
+  - INSTANT probability that TP will be hit BEFORE SL, from volatility (σ of log
+    returns), log-drift, and S/R-based SL/TP distances. Cox & Miller (1965) GBM.
+  - **The context shows per-side breakeven + edge inline**:
+    "LONG P=X% (breakeven=Y% → edge Zpp) conf=high" — use the edge directly.
+  - LONG edge > +10pp → path risk favors TP → supports LONG entry
+  - LONG edge < −10pp → path risk favors SL → caution against LONG entry
+  - BOTH LONG + SHORT SL/TP distances are shown — assess path risk for EACH side.
+  - conf=low means vol is too low to trust the diffusion model — weight less.
+  - This measures PATH RISK (will SL be hit first?), independent of OLR's learned
+    edge. If OLR edge is positive but First-Passage edge is strongly negative →
+    path risk warns the position may stop out before TP → reduce conviction or
+    require wider SL. If BOTH agree → high conviction.
 
 === SHADOW TRADE RESULTS ===
 If the context shows "=== SHADOW TRADE RESULTS ===":
@@ -873,7 +882,7 @@ ATR/range-based, not fixed-percent widening):
      cut — it is applied for you. Only set adjustedPositionSizePct if you want to reduce FURTHER
      (e.g. loss streak ≥ 3 → cut to 25%). The paper engine floors the final notional to Hyperliquid's
      $10 minimum, so the 50% cut never produces an untradeable tiny order.
-  4. If current loss streak ≥ 3: the system may be out of sync — but do NOT automatically veto. The RBC engine
+  4. If current loss streak ≥ 3: the system may be out of sync — but do NOT automatically veto. The OLR engine
      learns from every trade and market conditions change. Evaluate the CURRENT thesis on its own merits.
      Only veto if the CURRENT thesis has a specific flaw, not because of past losses.
 
@@ -900,7 +909,7 @@ For each open position, evaluate:
 - Daily loss > 4% → warn but do NOT halt all trading (same reasoning — past losses don't predict
   future trades when the system is actively learning and adapting)
 
-⚠️ v2.0.88: Past drawdown and loss streaks are NOT reasons to block new entries. The RBC engine
+⚠️ v2.0.88: Past drawdown and loss streaks are NOT reasons to block new entries. The OLR engine
 continuously learns from every trade, and market conditions change. A new entry must be judged
 on its CURRENT risk profile, not on historical P&L.
 

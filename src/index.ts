@@ -1516,6 +1516,90 @@ class MATSSystem {
     }
   }
 
+  // ── v2.0.135: Shared OLR + First-Passage context builder ──
+  // Produces a COMPLETE evolution-data block for any symbol, so the OLR &
+  // Sentiment Analyst AND Meta-Agent can extract the full potential of the
+  // OLR + Shadow + First-Passage system. Used for:
+  //   (a) the active symbol  → "=== OLR + PATH RISK ASSESSMENT ==="
+  //   (b) each open position → "=== OLR ASSESSMENT for <sym> ==="
+  //   (c) each trading market → "=== OLR ASSESSMENT for <sym> ==="
+  // Injects EVERYTHING the agent prompts reference: P(win) per side, source
+  // breakdown (shadow/paper/real/backfill), confidence, feature contributions
+  // (BUY + SELL), recent trades with recency + [SL narrowed], First-Passage
+  // P(TP before SL) with breakevenP + per-side SL/TP + fp.confidence, and an
+  // explicit EDGE line (P(win) − breakevenP in pp) so the agent does not have
+  // to do mental math.
+  private buildOLRBlock(
+    sym: string,
+    features: Record<string, number>,
+    heading: string,
+    positionInfo?: string,
+    srDistances?: { slLong: number; tpLong: number; slShort: number; tpShort: number },
+  ): string {
+    try {
+      const olrBuy = this.olrEngine.query(sym, features, 'buy', this.totalCycles);
+      const olrSell = this.olrEngine.query(sym, features, 'sell', this.totalCycles);
+      if (olrBuy.nSamples === 0 && olrSell.nSamples === 0) return '';
+
+      const lines: string[] = [`=== ${heading} ===`];
+      if (positionInfo) lines.push(positionInfo);
+
+      // ── OLR probabilities with FULL source breakdown (incl. backfill) ──
+      lines.push(`OLR (learned from TP-before-SL outcomes — per-side logistic regression):`);
+      const sb = (q: OLRQueryResult) => `shadow=${q.sourceBreakdown.shadow} paper=${q.sourceBreakdown.paper} real=${q.sourceBreakdown.real} backfill=${q.sourceBreakdown.backfill}`;
+      lines.push(`  BUY  P(win)=${(olrBuy.pWin * 100).toFixed(0)}% (${olrBuy.nSamples} samples [${sb(olrBuy)}], conf=${olrBuy.confidence})`);
+      lines.push(`  SELL P(win)=${(olrSell.pWin * 100).toFixed(0)}% (${olrSell.nSamples} samples [${sb(olrSell)}], conf=${olrSell.confidence})`);
+
+      // Feature contributions — BOTH sides (what drives each probability)
+      const fmtFeatures = (c: OLRQueryResult['featureContributions']) =>
+        c.length > 0 ? c.slice(0, 3).map(f => `${f.name}=${f.value.toFixed(3)}(w=${f.weight.toFixed(2)})`).join(', ') : 'none';
+      lines.push(`  BUY key features: ${fmtFeatures(olrBuy.featureContributions)}`);
+      lines.push(`  SELL key features: ${fmtFeatures(olrSell.featureContributions)}`);
+
+      // Recent trades — both sides, with source + recency + [SL narrowed]
+      const recentBuy = olrBuy.recentTrades.filter(rt => rt.source !== 'shadow' || rt.cyclesAgo <= 20).slice(-5);
+      const recentSell = olrSell.recentTrades.filter(rt => rt.source !== 'shadow' || rt.cyclesAgo <= 20).slice(-5);
+      if (recentBuy.length > 0 || recentSell.length > 0) {
+        lines.push(`  Recent outcomes (cyclesAgo = recency — older trades may reflect different market conditions):`);
+        for (const rt of recentBuy) {
+          const icon = rt.outcome === 'win' ? '✅' : '❌';
+          const narrow = rt.slNarrowed ? ' [SL narrowed]' : '';
+          lines.push(`    ${icon} BUY ${rt.source} ${rt.outcome} (${rt.cyclesAgo} cycles ago${narrow})`);
+        }
+        for (const rt of recentSell) {
+          const icon = rt.outcome === 'win' ? '✅' : '❌';
+          const narrow = rt.slNarrowed ? ' [SL narrowed]' : '';
+          lines.push(`    ${icon} SELL ${rt.source} ${rt.outcome} (${rt.cyclesAgo} cycles ago${narrow})`);
+        }
+      }
+
+      // ── First-Passage per-symbol (instant path risk) + EDGE ──
+      const dist = srDistances ?? { slLong: 0.02, tpLong: 0.05, slShort: 0.05, tpShort: 0.02 };
+      try {
+        const priceHistory = this.marketState.getPriceHistory(sym);
+        const vol = estimateVolatility(priceHistory, 20);
+        const drift = estimateDrift(priceHistory, 20);
+        const fp = calculateFirstPassage(vol, drift, dist.slLong, dist.tpLong, dist.slShort, dist.tpShort);
+        lines.push(`First-Passage P(TP before SL) — path-risk from vol + drift + S/R SL/TP:`);
+        lines.push(`  LONG  P=${(fp.longPWin * 100).toFixed(0)}% (breakeven=${(fp.breakevenPLong * 100).toFixed(0)}% → edge ${((fp.longPWin - fp.breakevenPLong) * 100).toFixed(0)}pp) conf=${fp.confidence}`);
+        lines.push(`  SHORT P=${(fp.shortPWin * 100).toFixed(0)}% (breakeven=${(fp.breakevenPShort * 100).toFixed(0)}% → edge ${((fp.shortPWin - fp.breakevenPShort) * 100).toFixed(0)}pp) conf=${fp.confidence}`);
+        lines.push(`  Drift=${(fp.drift * 100).toFixed(2)}%/cycle | Vol=${(fp.volatility * 100).toFixed(2)}%/cycle`);
+        lines.push(`  LONG SL=${(dist.slLong * 100).toFixed(1)}% TP=${(dist.tpLong * 100).toFixed(1)}% | SHORT SL=${(dist.slShort * 100).toFixed(1)}% TP=${(dist.tpShort * 100).toFixed(1)}%`);
+        // OLR-vs-breakeven EDGE — the ready-made decision signal
+        const buyEdge = olrBuy.pWin - fp.breakevenPLong;
+        const sellEdge = olrSell.pWin - fp.breakevenPShort;
+        const buySig = buyEdge > 0.10 ? 'FAVOR BUY' : buyEdge < -0.05 ? 'AGAINST BUY' : 'no edge';
+        const sellSig = sellEdge > 0.10 ? 'FAVOR SELL' : sellEdge < -0.05 ? 'AGAINST SELL' : 'no edge';
+        lines.push(`OLR EDGE vs breakeven: BUY ${(buyEdge * 100).toFixed(0)}pp (${buySig}) | SELL ${(sellEdge * 100).toFixed(0)}pp (${sellSig})`);
+      } catch { /* price history unavailable for this symbol — skip FP + edge */ }
+
+      lines.push(`DATA SOURCES: shadow=fixed S/R SL/TP sim, paper=dynamic SL/TP, real=HL exchange (truest), backfill=cold-start prior (weight least). Weight by recency + source reliability.`);
+      lines.push(`SL/TP NARROWING: [SL narrowed] tag = SL was tightened — if narrowed trades mostly lost, consider widening SL; if they won, narrowing is working.`);
+      return '\n' + lines.join('\n');
+    } catch { /* non-critical */ }
+    return '';
+  }
+
   private async runDecisionCycle(): Promise<void> {
     if (isShuttingDown()) return;
     if (this.cycleInProgress) {
@@ -1988,58 +2072,19 @@ class MATSSystem {
           sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
           signalAgreement: 0.5,
         };
-        const olrBuy = this.olrEngine.query(activeSymbol, olrFeatures, 'buy', this.totalCycles);
-        const olrSell = this.olrEngine.query(activeSymbol, olrFeatures, 'sell', this.totalCycles);
-        const lines: string[] = ['=== OLR + PATH RISK ASSESSMENT ==='];
-
-        // OLR probabilities with source breakdown
-        if (olrBuy.nSamples > 0 || olrSell.nSamples > 0) {
-          lines.push(`OLR (learned from TP-before-SL outcomes — shadow=paper sim, paper=paper trade, real=HL exchange):`);
-          const sbBuy = olrBuy.sourceBreakdown;
-          const sbSell = olrSell.sourceBreakdown;
-          lines.push(`  BUY  P(win)=${(olrBuy.pWin * 100).toFixed(0)}% (${olrBuy.nSamples} samples [shadow=${sbBuy.shadow} paper=${sbBuy.paper} real=${sbBuy.real}], conf=${olrBuy.confidence})`);
-          lines.push(`  SELL P(win)=${(olrSell.pWin * 100).toFixed(0)}% (${olrSell.nSamples} samples [shadow=${sbSell.shadow} paper=${sbSell.paper} real=${sbSell.real}], conf=${olrSell.confidence})`);
-          if (olrBuy.featureContributions.length > 0) {
-            const topBuy = olrBuy.featureContributions.slice(0, 3).map(c => `${c.name}(w=${c.weight.toFixed(2)})`).join(', ');
-            lines.push(`  BUY key features: ${topBuy}`);
-          }
-
-          // Recent trades with source + recency + SL/TP narrowing info
-          const recentBuy = olrBuy.recentTrades.filter(rt => rt.source !== 'shadow' || rt.cyclesAgo <= 20).slice(-5);
-          const recentSell = olrSell.recentTrades.filter(rt => rt.source !== 'shadow' || rt.cyclesAgo <= 20).slice(-5);
-          if (recentBuy.length > 0 || recentSell.length > 0) {
-            lines.push(`  Recent outcomes (for recency judgment — older trades may reflect different market conditions):`);
-            for (const rt of recentBuy) {
-              const icon = rt.outcome === 'win' ? '✅' : '❌';
-              const narrow = rt.slNarrowed ? ' [SL narrowed]' : '';
-              lines.push(`    ${icon} BUY ${rt.source} ${rt.outcome} (${rt.cyclesAgo} cycles ago${narrow})`);
-            }
-            for (const rt of recentSell) {
-              const icon = rt.outcome === 'win' ? '✅' : '❌';
-              const narrow = rt.slNarrowed ? ' [SL narrowed]' : '';
-              lines.push(`    ${icon} SELL ${rt.source} ${rt.outcome} (${rt.cyclesAgo} cycles ago${narrow})`);
-            }
-          }
-        }
-
-        // First-passage probability (instant path risk)
-        if (this.lastFirstPassage) {
-          const fp = this.lastFirstPassage;
-          lines.push(`First-Passage P(TP before SL) — instant path-risk from vol + drift + S/R:`);
-          lines.push(`  LONG  P=${(fp.longPWin * 100).toFixed(0)}% | SHORT P=${(fp.shortPWin * 100).toFixed(0)}%`);
-          lines.push(`  Drift=${(fp.drift * 100).toFixed(2)}%/cycle | Vol=${(fp.volatility * 100).toFixed(2)}%/cycle | SL=${(fp.slDistanceLong * 100).toFixed(1)}% TP=${(fp.tpDistanceLong * 100).toFixed(1)}%`);
-        }
-
-        // Shadow trade results
+        // v2.0.135: use shared helper — injects full OLR + First-Passage + edge
+        const srD = {
+          slLong: this.lastSRContext?.distanceToSupportBps ? this.lastSRContext.distanceToSupportBps / 10000 : 0.02,
+          tpLong: this.lastSRContext?.distanceToResistanceBps ? this.lastSRContext.distanceToResistanceBps / 10000 : 0.05,
+          slShort: this.lastSRContext?.distanceToResistanceBps ? this.lastSRContext.distanceToResistanceBps / 10000 : 0.05,
+          tpShort: this.lastSRContext?.distanceToSupportBps ? this.lastSRContext.distanceToSupportBps / 10000 : 0.02,
+        };
+        olrContext = this.buildOLRBlock(activeSymbol, olrFeatures, 'OLR + PATH RISK ASSESSMENT', undefined, srD);
+        // Shadow trade results (active-symbol global — supplementary reality check)
         const shadowCtx = this.shadowEngine.getContext();
         if (shadowCtx.openCount > 0 || shadowCtx.recentResults.length > 0) {
-          lines.push(shadowCtx.contextString);
+          olrContext += '\n' + shadowCtx.contextString;
         }
-
-        lines.push(`INTERPRETATION: OLR P(win) > 60% → bias toward entry. First-Passage P > 55% → path risk favors TP.`);
-        lines.push(`DATA SOURCES: shadow=fixed SL/TP sim (entry timing), paper=dynamic SL/TP (real management), real=HL exchange (truest). Weight by recency + source reliability.`);
-        lines.push(`SL/TP NARROWING: [SL narrowed] tag means SL was tightened during the trade — if narrowed trades mostly lost, consider widening SL; if they won, narrowing is working.`);
-        olrContext = '\n' + lines.join('\n');
       } catch { /* non-critical */ }
 
       // v2.0.32: Run Planck-Chaos Resonance analysis and inject context
@@ -2187,14 +2232,10 @@ class MATSSystem {
             sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
             signalAgreement: 0.5,
           };
-          const olrBuy = this.olrEngine.query(posSym, features, 'buy', this.totalCycles);
-          const olrSell = this.olrEngine.query(posSym, features, 'sell', this.totalCycles);
-          if (olrBuy.nSamples > 0 || olrSell.nSamples > 0) {
-            marketDesc += `\n\n=== OLR ASSESSMENT for ${posSym} ===`;
-            marketDesc += `\nOLR for ${posSym} (position: ${pos.side.toUpperCase()} @ $${pos.averageEntryPrice.toFixed(2)}, PnL: ${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%).`;
-            marketDesc += `\nBUY  P(win)=${(olrBuy.pWin * 100).toFixed(0)}% (${olrBuy.nSamples} samples, conf=${olrBuy.confidence})`;
-            marketDesc += `\nSELL P(win)=${(olrSell.pWin * 100).toFixed(0)}% (${olrSell.nSamples} samples, conf=${olrSell.confidence})`;
-          }
+          // v2.0.135: full OLR + First-Passage block via shared helper
+          const posInfo = `OLR for ${posSym} (position: ${pos.side.toUpperCase()} @ $${pos.averageEntryPrice.toFixed(2)}, PnL: ${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%).`;
+          const posBlock = this.buildOLRBlock(posSym, features, `OLR ASSESSMENT for ${posSym}`, posInfo);
+          if (posBlock) marketDesc += `\n\n` + posBlock;
         } catch { /* non-critical */ }
 
         // S/R zones for this position's symbol
@@ -2254,14 +2295,10 @@ class MATSSystem {
             sentimentConviction: 0.5,
             signalAgreement: 0.5,
           };
-          const olrBuy = this.olrEngine.query(mktSym, features, 'buy', this.totalCycles);
-          const olrSell = this.olrEngine.query(mktSym, features, 'sell', this.totalCycles);
-          if (olrBuy.nSamples > 0 || olrSell.nSamples > 0) {
-            marketDesc += `\n\n=== OLR ASSESSMENT for ${mktSym} ===`;
-            marketDesc += `\nOLR for ${mktSym} (no position — entry evaluation).`;
-            marketDesc += `\nBUY  P(win)=${(olrBuy.pWin * 100).toFixed(0)}% (${olrBuy.nSamples} samples, conf=${olrBuy.confidence})`;
-            marketDesc += `\nSELL P(win)=${(olrSell.pWin * 100).toFixed(0)}% (${olrSell.nSamples} samples, conf=${olrSell.confidence})`;
-          }
+          // v2.0.135: full OLR + First-Passage block via shared helper
+          const mktInfo = `OLR for ${mktSym} (no position — entry evaluation).`;
+          const mktBlock = this.buildOLRBlock(mktSym, features, `OLR ASSESSMENT for ${mktSym}`, mktInfo);
+          if (mktBlock) marketDesc += `\n\n` + mktBlock;
         } catch { /* non-critical */ }
 
         // S/R zones for this trading market

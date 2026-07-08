@@ -206,15 +206,46 @@ Examples of cross-asset reasoning:
 
 This is MANDATORY — you must reference global news in your reasoning for EVERY symbol.
 
-=== OLR ASSESSMENT (HIGHEST WEIGHT FACTOR) ===
-If the context contains "=== OLR + PATH RISK ASSESSMENT ===":
-  - This is a GROWING HYPERRECTANGLE model trained on ALL historical price action
-  - 🟢 FAVORABLE → current conditions are in win territory → increase conviction
-  - 🔴 UNFAVORABLE → current conditions are in loss territory → STRONG bias against entry
-  - 🟡 NO EDGE → every dimension is in the overlap zone. The market state is ambiguous relative to past patterns. This is NOT a failure — it is a valid signal to HOLD. Do NOT force a direction.
-  - Even under NO_EDGE, the winDims/lossDims ratio (e.g. '3W/6L') shows mild directional tilt — the value falls on the win side of some overlap boundaries and loss side of others. Use as a weak bias only.
-  - OLR is the PRIMARY factor for OLR & Sentiment Analyst — weigh it heavily in arbitration
-  - If OLR disagrees with a sub-agent's recommendation → weigh OLR as a tiebreaker
+=== OLR + PATH RISK ASSESSMENT (HIGHEST WEIGHT FACTOR) ===
+If the context contains "=== OLR + PATH RISK ASSESSMENT ===" or "=== OLR ASSESSMENT for <sym> ===":
+  - OLR (Online Logistic Regression) learns P(win) — the probability of winning
+    (TP-before-SL) — from SHADOW + PAPER + REAL + BACKFILL trade outcomes.
+    Each side (BUY/SELL) has an INDEPENDENT model per symbol.
+  - **RR-AWARE EDGE (the key signal)**: the context shows an explicit
+    "OLR EDGE vs breakeven: BUY +Xpp (FAVOR BUY) | SELL +Ypp (FAVOR SELL)" line.
+    This is P(win) minus the RR-aware breakeven probability — the ready-made edge.
+    - edge > +10pp → this side has a real learned edge → FAVOR entry on that side
+    - edge < −5pp → this side is a learned loser → bias AGAINST entry
+    - within [−5pp, +10pp] → no clear edge; weight OTHER signals more
+  - **CONFIDENCE** (high/medium/low): high (>50 samples) = trust the edge;
+    low (<20) = noisy — treat the edge as weak, weight other signals more.
+  - **SOURCE BREAKDOWN** [shadow=N paper=N real=N backfill=N]:
+    real > paper > shadow > backfill in reliability. If the edge comes mostly
+    from backfill (cold-start prior) and live trades disagree → discount it.
+  - **FEATURE CONTRIBUTIONS**: "BUY key features: fundingRate=0.003(w=+2.3)..."
+    shows WHICH features drive the probability and in which direction. Use these
+    to explain WHY the edge exists and to cross-check against other agents
+    (e.g. if fundingRate drives BUY edge, confirm with On-Chain Whisperer).
+  - **FIRST-PASSAGE P(TP before SL)**: instant path-risk from volatility + drift
+    + S/R-based SL/TP. Compare to its own breakeven (shown inline). This measures
+    whether SL or TP will be hit FIRST given current diffusion — independent of
+    OLR's learned edge. If OLR edge is positive but First-Passage edge is
+    strongly negative → path risk warns the position may stop out before TP →
+    reduce size or require wider SL. If BOTH agree → high conviction.
+  - **RECENT OUTCOMES** (with cyclesAgo): a reality check on the probabilities.
+    If OLR says BUY P(win)=70% but recent BUY outcomes are mostly ❌ → OLR may
+    be overfitting or the market has shifted → lower conviction.
+  - **[SL narrowed] tag**: if narrowed trades mostly lost → SL tightening is too
+    aggressive → consider WIDENING SL on new entries.
+  - OLR is the PRIMARY factor for the OLR & Sentiment Analyst. In arbitration:
+    if OLR EDGE disagrees with a sub-agent's recommendation → weigh the OLR edge
+    as a tiebreaker, BUT only at high/medium confidence. At low confidence, defer
+    to sub-agents with stronger direct evidence (Pattern, On-Chain, Fractal).
+  - For OPEN POSITIONS: the "=== OLR ASSESSMENT for <sym> ===" block shows whether
+    current conditions still favor the position's side. If the edge has flipped
+    against the position's direction AND the entry thesis is invalidated → that
+    supports CLOSE. If the edge still favors the position's side → supports HOLD
+    even if unrealized PnL is negative.
 
 === PLANCK-CHAOS RESONANCE (QUANTUM PREDICTION LAYER) ===
 If the context contains "=== PLANCK-CHAOS RESONANCE ===":
