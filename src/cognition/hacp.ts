@@ -1264,10 +1264,13 @@ export class HACPEngine {
       if (!hasExistingPositionForGate) {
       // Check the decision itself
       const decisionThesis = finalConsensus.decision.entryThesis;
-      // Also check perSymbolConsensus for the active symbol
+      // Also check perSymbolConsensus for the active symbol.
+      // v2.0.136: Reconcile quote-suffix mismatch (decision.symbol 'btcusdt' vs
+      // psc.symbol 'btc') by stripping common quote suffixes before comparing.
       const activeSym = finalConsensus.decision.symbol;
+      const baseSym = (s: string) => normalizeSymbol(s).replace(/(usdt|usdc|busd|usd)$/, '');
       const pscThesis = finalConsensus.perSymbolConsensus.find(
-        psc => normalizeSymbol(psc.symbol) === normalizeSymbol(activeSym),
+        psc => baseSym(psc.symbol) === baseSym(activeSym),
       )?.entryThesis;
       const effectiveThesis = decisionThesis ?? pscThesis;
 
@@ -1370,13 +1373,23 @@ export class HACPEngine {
    */
   private async adjustPositions(
     marketStateDesc: string,
-    positions?: Array<{ id: string; symbol: string; side: string; entryPrice: number; currentPrice: number; stopLoss?: number; takeProfit?: number; leverage?: number }>
+    positions?: Array<{ id: string; symbol: string; side: string; entryPrice: number; currentPrice: number; stopLoss?: number; takeProfit?: number; leverage?: number; quantity?: number; isTradingMarket?: boolean }>
   ): Promise<PositionAdjustment[]> {
     if (!positions || positions.length === 0) return [];
 
     const adjustments: PositionAdjustment[] = [];
 
     for (const pos of positions) {
+      // v2.0.136: Skip injected trading-market placeholders (quantity=0,
+      // isTradingMarket=true). These have no real position on the exchange —
+      // they exist only so agents output decisions for markets the user wants
+      // monitored. Asking the LLM to adjust SL/TP for a non-existent position
+      // wastes a provider call every cycle AND always fails the min-distance
+      // validation (no real SL/TP to anchor to), spamming the retry-error log.
+      // Only adjust positions that actually hold quantity on the exchange.
+      if ((pos.quantity ?? 0) === 0 || pos.isTradingMarket === true) {
+        continue;
+      }
       // v2.0.130: Adjust ALL open positions, not just the primary symbol.
       // Previously this skipped non-primary symbols, so SILVER's SL/TP was
       // never adjusted by the HACP LLM loop — only by per-symbol consensus
@@ -1897,6 +1910,15 @@ Output ONLY valid JSON:
         posEntry.sizes.push(pos.positionSizePct);
         posEntry.levers.push(pos.leverage);
         posEntry.rationales.push(pos.rationale);
+        // v2.0.136: Forward entryThesis for position decisions. Previously this
+        // positions[] loop pushed rationale + holdReason but NOT entryThesis —
+        // unlike the marketTicker path (line ~1895) and singleDec path (line
+        // ~1876) which both push it. So trading-market positions (e.g. xyz:MU
+        // when it's a non-active trading market, whose decision lives in
+        // multiDec.positions[]) lost their entryThesis → psc.entryThesis was
+        // undefined → the real-trade mirror was created with no thesis → the
+        // Portfolio UI "Reason" was empty from cycle 1. Add the missing push.
+        if (pos.entryThesis) posEntry.theses.push(pos.entryThesis);
         // v2.0.81: Forward holdReason for position decisions
         if (pos.holdReason) posEntry.holdReasons.push(pos.holdReason);
       }
@@ -2047,11 +2069,20 @@ Output ONLY valid JSON:
     let finalDecisionRationale = `Majority decision: ${majorityAction.toUpperCase()} (${buyCount}B/${sellCount}S/${holdCount}H). Avg confidence: ${avgConfidence.toFixed(2)}. Rounds: ${rounds.length}.`;
     let finalDecisionThesis: string | undefined = undefined;
     let metaOverridden = false;
+    // v2.0.136: Decision symbol = the active market ticker symbol, NOT a
+    // hardcoded 'BTCUSDT'. Previously this was always 'BTCUSDT', which:
+    //   (a) broke execution for any non-BTC active symbol, AND
+    //   (b) broke the Phase 4.8 thesis gate's perSymbolConsensus fallback
+    //       lookup (decision.symbol 'btcusdt' never matched psc.symbol 'btc').
+    // Derive from the Meta-Agent's marketTicker (authoritative), with a
+    // fallback to the first perSymbolConsensus symbol, then 'BTCUSDT'.
+    let finalDecisionSymbol = 'BTCUSDT';
     const metaThoughtForDecision = thoughts.find(t => t.agentRole === 'meta_agent');
     if (metaThoughtForDecision) {
       const metaMs = metaThoughtForDecision.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined;
       if (metaMs) {
         const mtSym = normalizeSymbol(metaMs.marketTicker.symbol);
+        if (metaMs.marketTicker.symbol) finalDecisionSymbol = metaMs.marketTicker.symbol;
         // Check if the marketTicker symbol has no open position (trading market
         // or active symbol without position). If so, Meta-Agent's decision is
         // authoritative.
@@ -2069,11 +2100,16 @@ Output ONLY valid JSON:
         }
       }
     }
+    // Fallback: if Meta-Agent had no marketTicker symbol, use the first
+    // perSymbolConsensus symbol (the active market ticker is always first).
+    if (finalDecisionSymbol === 'BTCUSDT' && perSymbolConsensus.length > 0) {
+      finalDecisionSymbol = perSymbolConsensus[0]!.symbol;
+    }
 
     return {
       decision: normalizeDecision({
         action: finalDecisionAction,
-        symbol: 'BTCUSDT',
+        symbol: finalDecisionSymbol,
         positionSizePct: finalDecisionSize,
         leverage: finalDecisionLev,
         rationale: finalDecisionRationale,

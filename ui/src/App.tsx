@@ -1513,7 +1513,19 @@ function DebatePanel({ data }: { data: APIData | null }) {
             return (
             <div className="per-symbol-consensus">
               {deduped.map((psc: any) => {
-                const isMkt = !psc.hasPosition
+                // v2.0.136: Derive position/market label from the ACTUAL portfolio
+                // positions, not psc.hasPosition. The backend's hasPosition field
+                // is documented UNRELIABLE (buildConsensus hardcodes false;
+                // metaAgentArbitration marks every positions[] entry true, but
+                // positions[] also contains injected trading markets with no real
+                // position). This caused MU/SILVER to flicker between '● position'
+                // and '(market)' cycle-to-cycle depending on which consensus path
+                // ran. Use the real portfolio positions as the source of truth.
+                const pfPositions = (Object.values(data?.portfolio?.positions ?? {}) as any[])
+                const pscSymNorm = psc.symbol.replace(/^xyz:/i, '').toLowerCase()
+                const isPosition = pfPositions.some((p: any) =>
+                  (p.symbol ?? '').replace(/^xyz:/i, '').toLowerCase() === pscSymNorm)
+                const isMkt = !isPosition
                 const actionClass = psc.action === 'close' ? 'sell' : psc.action
                 const odArr = od ? (Array.isArray(od) ? od : [od]) : []
                 const symOd = odArr.find((o: any) => normSym(o.symbol) === normSym(psc.symbol))
@@ -1523,7 +1535,7 @@ function DebatePanel({ data }: { data: APIData | null }) {
                       <span className="consensus-symbol">
                         {psc.symbol.toUpperCase()}
                         {isMkt && <span className="consensus-meta-tag">(market)</span>}
-                        {psc.hasPosition && <span className="consensus-meta-green">● position</span>}
+                        {isPosition && <span className="consensus-meta-green">● position</span>}
                       </span>
                       <span className={`vote-action-tag ${actionClass}`}>{psc.action.toUpperCase()}</span>
                       <span className="consensus-conf-pct">{(psc.confidence * 100).toFixed(0)}%</span>

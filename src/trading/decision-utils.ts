@@ -101,6 +101,21 @@ export function normalizeDecision(raw: Partial<TradingDecision> | undefined | nu
     ? raw.patternTag.trim().slice(0, 80) // cap length to prevent abuse
     : undefined;
 
+  // v2.0.136: Preserve entryThesis (Meta-Agent's [1h:..] [1d:..] thesis).
+  // Previously normalizeDecision() silently dropped entryThesis, so the
+  // Phase 4.8 thesis gate in hacp.ts saw `decision.entryThesis === undefined`,
+  // fell back to perSymbolConsensus lookup (which also failed due to symbol
+  // mismatch), and blocked every BUY/SELL → HOLD. This was the root cause of
+  // "BTC SELL shown on dashboard but never executes".
+  const entryThesis = typeof raw?.entryThesis === 'string' && raw.entryThesis.trim().length > 0
+    ? raw.entryThesis
+    : undefined;
+
+  // v2.0.136: Preserve S/R levels if provided (TradingDecision fields that
+  // were previously lost through normalizeDecision).
+  const srSupport = raw?.srSupport;
+  const srResistance = raw?.srResistance;
+
   return {
     action: validatedAction,
     symbol,
@@ -112,6 +127,9 @@ export function normalizeDecision(raw: Partial<TradingDecision> | undefined | nu
     ...(stopLossPct !== undefined ? { stopLossPct } : {}),
     ...(takeProfitPct !== undefined ? { takeProfitPct } : {}),
     ...(patternTag !== undefined ? { patternTag } : {}),
+    ...(entryThesis !== undefined ? { entryThesis } : {}),
+    ...(srSupport !== undefined ? { srSupport } : {}),
+    ...(srResistance !== undefined ? { srResistance } : {}),
   } as TradingDecision;
 }
 
