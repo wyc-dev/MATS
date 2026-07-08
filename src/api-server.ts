@@ -153,6 +153,8 @@ export interface APIData {
       shortPWin: number;
       longConfidence: 'high' | 'medium' | 'low';
       shortConfidence: 'high' | 'medium' | 'low';
+      longSource?: { shadow: number; paper: number; real: number; backfill: number };
+      shortSource?: { shadow: number; paper: number; real: number; backfill: number };
       featureWeights?: Array<{ name: string; longWeight: number; shortWeight: number }>;
     }>;
     pending: Array<{
@@ -168,6 +170,11 @@ export interface APIData {
       volatility: number;
       slDistance: number;
       tpDistance: number;
+      slDistanceShort: number;
+      tpDistanceShort: number;
+      breakevenPLong: number;
+      breakevenPShort: number;
+      confidence: 'high' | 'low';
     };
     shadowStats?: Array<{
       symbol: string;
