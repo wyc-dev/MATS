@@ -95,6 +95,9 @@ export interface OLRSymbolStats {
   shortPWin: number;
   /** Timestamp of the newest sample across either side (0 if no samples). */
   newestSampleTs: number;
+  /** Per-side source breakdown (shadow / paper / real / backfill sample counts). */
+  longSource: { shadow: number; paper: number; real: number; backfill: number };
+  shortSource: { shadow: number; paper: number; real: number; backfill: number };
 }
 
 // ─── Config ───
@@ -445,6 +448,8 @@ export class OLREngine {
         longPWin,
         shortPWin,
         newestSampleTs: Math.max(models.long.newestSampleTs, models.short.newestSampleTs),
+        longSource: { shadow: models.long.shadowSamples, paper: models.long.paperSamples, real: models.long.realSamples, backfill: models.long.backfillSamples },
+        shortSource: { shadow: models.short.shadowSamples, paper: models.short.paperSamples, real: models.short.realSamples, backfill: models.short.backfillSamples },
       });
     }
     return result;
