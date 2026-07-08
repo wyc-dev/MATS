@@ -1367,7 +1367,15 @@ body {
   margin-right: var(--space-4);
   white-space: nowrap;
 }
-.position-thesis-text { word-break: break-word; }
+.position-thesis-text {
+  word-break: break-word;
+  display: inline-block;
+  max-width: 500px;
+  max-height: 60px;
+  overflow-y: auto;
+  vertical-align: top;
+  padding-right: 4px;
+}
 
 .side-tag {
   padding: var(--space-2) var(--space-6);

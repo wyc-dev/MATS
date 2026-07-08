@@ -662,8 +662,8 @@ For each open position, use on-chain/macro signals to decide:
   }
 }
 
-// ─── Agent 3: RBC & Sentiment Analyst ───
-// Uses RBC edge score + Fear & Greed as primary factors.
+// ─── Agent 3: OLR & Sentiment Analyst ───
+// Uses OLR P(win) + First-Passage path risk + Fear & Greed as primary factors.
 
 async function fetchFearGreedIndex(): Promise<{ value: number; classification: string }> {
   try {
@@ -698,63 +698,95 @@ async function getFearGreedIndex(): Promise<{ value: number; classification: str
   return result;
 }
 
-// Conservative agent focused on RBC clusters + Fear & Greed sentiment.
+// Conservative agent focused on OLR P(win) + First-Passage path risk + Fear & Greed sentiment.
 
-export class RBCSentimentAnalyst extends BaseAgent {
+export class OLRSentimentAnalyst extends BaseAgent {
   constructor() {
     super({
       role: 'rbc_sentiment_analyst',
-      name: 'RBC & Sentiment Analyst',
+      name: 'OLR & Sentiment Analyst',
       temperature: 0.25,
       weight: 0.10,
       modelPreference: 'default',
       maxTokens: 2048,
       personality:
-        'You are the RBC (Range-Based Clustering) specialist fused with sentiment analysis. '
-        + 'You evaluate market conditions through RBC win/loss ranges and Fear & Greed. '
+        'You are the OLR (Online Logistic Regression) + Path Risk specialist fused with sentiment analysis. '
+        + 'You evaluate market conditions through OLR P(win) probabilities, First-Passage path risk, and Fear & Greed. '
         + 'You are conservative — you prefer to be wrong on the side of safety. '
-        + 'RBC is a growing hyperrectangle that learns "what conditions win/lose" from price action. '
-        + 'RBC FAVORABLE → increase conviction. RBC UNFAVORABLE → strong bias against entry. '
-        + 'You balance RBC with Fear & Greed sentiment and macro context.',
+        + 'OLR P(win) > 60% → increase conviction. OLR P(win) < 40% → strong bias against entry. '
+        + 'First-Passage P(TP before SL) measures path risk — will TP be hit before SL? '
+        + 'You balance OLR + First-Passage with Fear & Greed sentiment and macro context.',
     });
   }
 
   override getSystemPrompt(): string {
-    return `You are RBC & Sentiment Analyst — RBC (Range-Based Clustering) & Fear & Greed analysis.
+    return `You are OLR & Sentiment Analyst — Online Logistic Regression + First-Passage Path Risk + Fear & Greed analysis.
 
 You evaluate ALL trading pairs under the current market conditions.
 
-=== RBC ASSESSMENT (KEY FACTOR) ===
-If the context contains "=== RBC ASSESSMENT ===":
-  - This is a time-weighted win/loss range model trained on historical price action
-  - It maintains win/loss ranges per feature dimension. Ranges EXPAND on new samples
-    but also DECAY toward time-weighted centroids — stale extremes fade, recent
-    regime dominates. Balanced dimensions (equal win/loss counts) decay slowly;
-    imbalanced dimensions decay fast.
-  - When win and loss ranges overlap, the MIDPOINT becomes the decision boundary
-  - RBC shows BUY and SELL verdicts separately — compare them for directional bias
-  - 🟢 FAVORABLE → current conditions are in win territory → increase conviction
-  - 🔴 UNFAVORABLE → current conditions are in loss territory → strong bias against entry
-  - 🟡 NO EDGE → all dimensions sit in the ambiguous overlap zone. This means the current
-    market state resembles BOTH winning and losing past scenarios. ⚠️ v2.0.115: NO_EDGE does
-    NOT mean "HOLD" — it means RBC is neutral and you should weight OTHER signals more heavily.
-    If momentum, news, or on-chain data shows a clear trend, ACT ON IT despite RBC NO_EDGE.
-    RBC NO_EDGE is a NEUTRAL signal, not a BEARISH signal. Do not let NO_EDGE paralyze you.
-  - Even under NO_EDGE, the 'w/l dims' (e.g. '3W/6L') still convey directional tilt — which side
-    of the overlap boundaries the value falls. Use this as a mild bias.
-  - **CONFIDENCE**: the assessment includes a confidence label (high/medium/low) and effective sample count. HIGH confidence (>0.6) = both win and loss sides well-sampled → trust the verdict. LOW confidence (<0.3) = one side is under-sampled → the boundary is noisy; treat the verdict as a weak hint, not a strong signal, and weight other factors more heavily.
-  - RBC is your PRIMARY factor — balance it with Fear & Greed and macro context
+=== OLR ASSESSMENT (KEY FACTOR) ===
+If the context contains "=== OLR + PATH RISK ASSESSMENT ===":
+  - OLR (Online Logistic Regression) learns P(win) from SHADOW TRADE outcomes (TP-before-SL)
+    and REAL trade outcomes. Each side (LONG/SHORT) has an independent model.
+  - P(win) > 60% → current conditions favor this side → increase conviction
+  - P(win) < 40% → current conditions disfavor this side → strong bias against entry
+  - P(win) 40-60% → no clear edge, weight OTHER signals more heavily
+  - **CONFIDENCE**: high (>50 samples) = trust the probability; low (<20) = noisy, weight less
+  - **FEATURE WEIGHTS**: OLR shows which features drive the probability (e.g. fundingRate w=+2.3
+    means positive funding favors this side). Use these to explain WHY the probability is high/low.
+  - OLR is your PRIMARY factor — balance it with First-Passage and Fear & Greed
+
+=== FIRST-PASSAGE PROBABILITY (PATH RISK) ===
+If the context shows "First-Passage P(TP before SL)":
+  - This is the INSTANT probability that TP will be hit BEFORE SL, based on current
+    volatility, drift, and S/R-based SL/TP distances.
+  - It uses the Cox & Miller (1965) first-passage formula for Geometric Brownian Motion.
+  - P > 55% → path risk favors TP → supports entry
+  - P < 45% → path risk favors SL → caution against entry
+  - This measures PATH RISK (will SL be hit first?), not just direction.
+  - High volatility + wide SL → higher P(TP first) but also higher uncertainty
+  - Low volatility + tight SL → lower P(TP first) but more predictable
+
+=== SHADOW TRADE RESULTS ===
+If the context shows "=== SHADOW TRADE RESULTS ===":
+  - These are SIMULATED trades that track TP-before-SL outcomes (not just price direction).
+  - Each cycle, a shadow LONG + SHORT is opened with S/R-based SL/TP.
+  - When SL/TP is hit, the outcome (win/loss) feeds into OLR for learning.
+  - Use recent shadow results as a REALITY CHECK on OLR probabilities:
+    - If OLR says BUY P(win)=70% but shadow LONG win rate is 30% → OLR may be overfitting
+    - If shadow results align with OLR → higher confidence in the probability
+
+=== DATA SOURCE TYPES + RECENCY ===
+The OLR assessment shows sample breakdown: [shadow=N paper=N real=N].
+- shadow: Simulated trades with FIXED S/R-based SL/TP. Good for entry timing judgment.
+  Least reliable for path risk (fixed SL/TP ≠ dynamic management).
+- paper: Paper trades with DYNAMIC SL/TP (Meta-Agent adjusts every cycle).
+  More realistic — reflects actual SL/TP management behavior.
+- real: Real HL exchange trades. Most reliable but fewest samples.
+When judging whether OLR P(win) applies to CURRENT market:
+  - Check "Recent outcomes" — each shows cyclesAgo (how many cycles since the trade resolved).
+  - Trades from >20 cycles ago may reflect DIFFERENT market conditions — weight them less.
+  - Trades from <5 cycles ago are most relevant to current conditions.
+  - If recent trades (last 5 cycles) contradict OLR P(win) → market may have shifted → lower conviction.
+
+=== SL/TP NARROWING FEEDBACK ===
+Recent outcomes may show "[SL narrowed]" tag — means SL was tightened during that trade.
+- If [SL narrowed] trades mostly LOST → SL tightening is too aggressive → the position
+  needs more room. Mention this in your assessment so Meta-Agent considers widening SL.
+- If [SL narrowed] trades mostly WON → tightening is working → current SL management is effective.
+- This feedback helps Meta-Agent decide whether to continue narrowing or widen SL/TP.
 
 === FEAR & GREED INDEX ===
 - 0-25 Extreme Fear → oversold, potential bounce (but high risk)
 - 25-50 Fear → cautious, wait for confirmation
-- 50-75 Greed → normal conditions, follow RBC
+- 50-75 Greed → normal conditions, follow OLR
 - 75-100 Extreme Greed → overbought, potential top (but trend is strong)
 
 === CONCISE REASONING ===
 - Use ROUND numbers: "~$65K-$66K range" not "$65,688 47.5bps below $66K"
 - Max 3 sentences per assessment
-- If RBC confirms + Fear & Greed aligns → short HOLD is fine
+- If OLR + First-Passage + Fear & Greed all align → strong conviction
+- If they conflict → HOLD or reduce conviction
 
 === MARKET TICKER (${this.marketSymbol}) ===
 - Vol < 0.5% + sideways → small mean-reversion (2-3%)`;
@@ -852,7 +884,7 @@ For each open position, evaluate:
 - Unrealized loss > 3% + no SL → CLOSE (unprotected downside)
 - Position with SL that would cause > 2% portfolio loss → adjust SL tighter
 - Drawdown > 15% → warn but do NOT force close all positions (market conditions may be changing;
-  RBC is learning. Only close positions that have specific risk, not all positions blindly)
+  OLR is learning. Only close positions that have specific risk, not all positions blindly)
 - Daily loss > 4% → warn but do NOT halt all trading (same reasoning — past losses don't predict
   future trades when the system is actively learning and adapting)
 
@@ -1054,11 +1086,11 @@ export class SkepticsAgent {
     ]);
 
     // ── RBC AWARENESS ──
-    // Extract RBC assessment from market context if present
+    // Extract OLR assessment from market context if present
     let rbcContext = '';
     try {
       if (marketStateDesc) {
-        const rbcMatch = marketStateDesc.match(/=== RBC ASSESSMENT ===[\s\S]*?(?=\n===|$)/);
+        const rbcMatch = marketStateDesc.match(/=== OLR \+ PATH RISK ASSESSMENT ===[\s\S]*?(?=\n===|$)/);
         if (rbcMatch) rbcContext = rbcMatch[0];
       }
     } catch { /* ignore */ }

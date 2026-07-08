@@ -133,7 +133,7 @@ export interface APIData {
     totalRecords: number;
     uniqueTags: number;
   };
-  /** GMM EM clustering model summary (per-symbol) — DEPRECATED, use rbcState */
+  /** GMM EM clustering model summary (per-symbol) — DEPRECATED, use olrState */
   emClusterState?: {
     symbols: Array<{
       symbol: string;
@@ -143,30 +143,51 @@ export interface APIData {
       clusters: Array<{ index: number; winRate: number; sampleCount: number; weight: number }>;
     }>;
   };
-  /** RBC (Range-Based Clustering) state summary (per-symbol) */
-  rbcState?: {
+  /** OLR (Online Logistic Regression) + Shadow Trade + First-Passage state */
+  olrState?: {
     symbols: Array<{
       symbol: string;
-      winCount: number;
-      lossCount: number;
-      totalSamples: number;
-      discriminativeDims: number;
-      totalDims: number;
-      /** Per-dimension range details for UI colour bars (🆕 per-symbol, v2.0.6) */
-      dimDetails?: Array<{
-        name: string;
-        value: number;
-        winMin: number; winMax: number; winCentroid: number;
-        lossMin: number; lossMax: number; lossCentroid: number;
-        overlap: boolean; boundary: number | null;
-        globalMin: number; globalMax: number;
-      }>;
+      longSamples: number;
+      shortSamples: number;
+      longPWin: number;
+      shortPWin: number;
+      longConfidence: 'high' | 'medium' | 'low';
+      shortConfidence: 'high' | 'medium' | 'low';
+      featureWeights?: Array<{ name: string; longWeight: number; shortWeight: number }>;
     }>;
     pending: Array<{
       symbol: string;
       pending: number;
       needed: number;
       pct: number;
+    }>;
+    firstPassage?: {
+      longPWin: number;
+      shortPWin: number;
+      drift: number;
+      volatility: number;
+      slDistance: number;
+      tpDistance: number;
+    };
+    shadowStats?: Array<{
+      symbol: string;
+      totalOpened: number;
+      openCount: number;
+      longWins: number;
+      longLosses: number;
+      shortWins: number;
+      shortLosses: number;
+      longWinRate: number;
+      shortWinRate: number;
+      avgHoldCycles: number;
+    }>;
+    shadowOpen?: Array<{
+      symbol: string;
+      side: 'buy' | 'sell';
+      entryPrice: number;
+      stopLossPrice: number;
+      takeProfitPrice: number;
+      openCycle: number;
     }>;
   };
   systemPaused?: boolean;

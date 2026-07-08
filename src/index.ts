@@ -17,7 +17,7 @@ import { EvolutionOrchestrator } from './evolution/index.ts';
 import { savePortfolio, saveDebateHistory, loadDebateHistory } from './evolution/persistence.ts';
 import fs from 'node:fs';
 import path from 'node:path';
-import { FractalMomentumSentinel, OnChainWhisperer, RBCSentimentAnalyst, IndependentRiskAuditor, NewsReporter, SkepticsAgent, getLastFearGreedValue } from './agents/agents.ts';
+import { FractalMomentumSentinel, OnChainWhisperer, OLRSentimentAnalyst, IndependentRiskAuditor, NewsReporter, SkepticsAgent, getLastFearGreedValue } from './agents/agents.ts';
 import { MetaAgent } from './agents/meta-agent.ts';
 import { APIServer } from './api-server.ts';
 import { getAllAgentModels, getAvailableModels } from './agents/agent-models.ts';
@@ -35,7 +35,9 @@ import { getSRZones } from './analysis/support-resistance.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
 import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
-import { RBCEngine, type RBCQueryResult } from './evolution/rbc-clustering.ts';
+import { OLREngine, type OLRQueryResult } from './evolution/olr-engine.ts';
+import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
+import { calculateFirstPassage, estimateDrift, type FirstPassageResult } from './evolution/first-passage.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
 import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent } from './analysis/news-sentiment.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord } from './types/index.ts';
@@ -46,7 +48,7 @@ class MATSSystem {
   private marketState!: MarketStateAggregator;
   private fractalAgent!: FractalMomentumSentinel;
   private onchainAgent!: OnChainWhisperer;
-  private regimeAgent!: RBCSentimentAnalyst;
+  private regimeAgent!: OLRSentimentAnalyst;
   private riskAuditor!: IndependentRiskAuditor;
   private newsAgent!: NewsReporter;
   private metaAgent!: MetaAgent;
@@ -104,10 +106,15 @@ class MATSSystem {
   private emManager!: CycleSummaryManager;
   private patternClassifier!: TradePatternClassifier;
   private patternTagTracker!: PatternTagTracker;
-  private rbcEngine!: RBCEngine;
+  /** OLR (Online Logistic Regression) engine — learns P(win) from shadow + real trade outcomes. */
+  private olrEngine!: OLREngine;
+  /** Shadow Trade Engine — opens simulated LONG+SHORT each cycle, tracks TP-before-SL outcomes. */
+  private shadowEngine!: ShadowTradeEngine;
+  /** Last first-passage probability result (for agent context + UI). */
+  private lastFirstPassage: FirstPassageResult | null = null;
   private lastPatternContext = '';
-  /** Per-symbol previous cycle context for hypothetical RBC training — Map<symbol, context> */
-  private lastCycleRBCContexts = new Map<string, { symbol: string; price: number; features: Record<string, number> }>();
+  /** Per-symbol previous cycle context for shadow trade opening — Map<symbol, context> */
+  private lastCycleShadowContexts = new Map<string, { symbol: string; price: number; features: Record<string, number> }>();
   /** v2.0.122: Pending entry theses from Meta-Agent that didn't execute.
    *  When Meta-Agent outputs BUY/SELL with an entryThesis but the trade is
    *  blocked (conviction gate, liquidity, direction restriction, etc.), the
@@ -162,7 +169,7 @@ class MATSSystem {
       log.info('Step 2/6: Initializing agents...');
       this.fractalAgent = new FractalMomentumSentinel();
       this.onchainAgent = new OnChainWhisperer();
-      this.regimeAgent = new RBCSentimentAnalyst();
+      this.regimeAgent = new OLRSentimentAnalyst();
       this.riskAuditor = new IndependentRiskAuditor();
       this.newsAgent = new NewsReporter();
       this.skepticsAgent = new SkepticsAgent();
@@ -235,18 +242,26 @@ class MATSSystem {
       this.emManager = new CycleSummaryManager();
       log.info('✓ EM CycleSummary Manager ready');
 
-      // 3.10 Initialize RBC Engine (replaces GMM EM + Pattern Data)
-      log.info('Step 3.10/8: Initializing RBC Engine...');
-      this.rbcEngine = new RBCEngine();
-      // Load persisted RBC state
+      // 3.10 Initialize OLR + Shadow Trade Engine (replaces RBC)
+      // OLR learns P(win) from shadow trade outcomes (TP-before-SL) + real trade outcomes.
+      // Shadow Trade Engine opens simulated LONG+SHORT each cycle, tracks until SL/TP hit.
+      log.info('Step 3.10/8: Initializing OLR + Shadow Trade Engine...');
+      this.olrEngine = new OLREngine();
+      this.shadowEngine = new ShadowTradeEngine(this.olrEngine);
+      // Load persisted OLR + shadow state
       try {
-        const rbcPath = path.join(process.cwd(), 'data/evolution/rbc-state.json');
-        if (fs.existsSync(rbcPath)) {
-          const data = fs.readFileSync(rbcPath, 'utf-8');
-          this.rbcEngine.load(data);
+        const olrPath = path.join(process.cwd(), 'data/evolution/olr-state.json');
+        if (fs.existsSync(olrPath)) {
+          const data = fs.readFileSync(olrPath, 'utf-8');
+          this.olrEngine.load(data);
+        }
+        const shadowPath = path.join(process.cwd(), 'data/evolution/shadow-state.json');
+        if (fs.existsSync(shadowPath)) {
+          const data = fs.readFileSync(shadowPath, 'utf-8');
+          this.shadowEngine.load(data);
         }
       } catch { /* start fresh */ }
-      log.info('✓ RBC Engine ready');
+      log.info('✓ OLR + Shadow Trade Engine ready');
 
       // 3.11 Initialize Trade Pattern Classifier (kept for position management only)
       log.info('Step 3.11/8: Initializing Trade Pattern Classifier...');
@@ -300,7 +315,7 @@ class MATSSystem {
       // Register a callback that fires after EVERY position close (SL/TP,
       // reconciliation, agent-vote close). This bridges the gap between
       // price-update-triggered closes and the learning system — previously
-      // SL/TP losses were invisible to RBC, Pattern Classifier, Agent
+      // SL/TP losses were invisible to OLR, Pattern Classifier, Agent
       // Outcomes, Trade History, and Evolution, so the system never learned
       // from consecutive losses that happened between decision cycles.
       this.paperEngine.setOnClosedLearning((trade) => {
@@ -1263,7 +1278,7 @@ class MATSSystem {
    *
    * Feeds the close outcome to:
    *  1. Trade History — so getRecentTradeAnalysis() sees SL/TP losses
-   *  2. RBC — so it learns "these conditions → LONG/SHORT loses"
+   *  2. OLR — so it learns "these conditions → LONG/SHORT loses"
    *  3. Pattern Classifier — so the pattern DB records the loss
    *  4. Agent Outcomes — so the system knows which agents were wrong
    *  5. Evolution — so the strategy adapts to the loss
@@ -1322,7 +1337,8 @@ class MATSSystem {
         log.warn(`[close-learning] Trade history record failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      // 2. Feed RBC — learn "these conditions → LONG/SHORT wins/loses"
+      // 2. Feed OLR — learn "these conditions → LONG/SHORT wins/loses" from trade outcome
+      // Source type: 'real' if exchange trade (agentId='hyperliquid-real'), 'paper' otherwise
       try {
         const features = {
           volatility,
@@ -1334,10 +1350,11 @@ class MATSSystem {
           volumeRatio,
           sentimentConviction,
         };
-        this.rbcEngine.feedTrade(symbol, features, outcome);
-        log.info(`🧬 [close-learning] RBC fed: ${symbol} ${isWin ? 'WIN' : 'LOSS'} (pnl=${(pnlPct * 100).toFixed(1)}%)`);
+        const tradeSource: 'paper' | 'real' = trade.agentId === 'hyperliquid-real' ? 'real' : 'paper';
+        this.olrEngine.feedTrade(symbol, features, outcome, trade.side === 'buy' ? 'buy' : 'sell', tradeSource, this.totalCycles);
+        log.info(`🧬 [close-learning] OLR fed (${tradeSource}): ${symbol} ${trade.side.toUpperCase()} ${isWin ? 'WIN' : 'LOSS'} (pnl=${(pnlPct * 100).toFixed(1)}%)`);
       } catch (err) {
-        log.warn(`[close-learning] RBC feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn(`[close-learning] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       // 3. Backfill Pattern Classifier
@@ -1448,7 +1465,7 @@ class MATSSystem {
       return;
     }
     // v2.0.110: Set cycleInProgress IMMEDIATELY — not 350 lines later.
-    // Previously this was set at line ~1604, after symbol selection + RBC
+    // Previously this was set at line ~1604, after symbol selection + OLR
     // training + pause check. If multiple runDecisionCycle() calls were
     // triggered in quick succession (e.g. UI sending multiple POSTs), they
     // ALL passed the guard because none had reached the `= true` line yet.
@@ -1680,83 +1697,104 @@ class MATSSystem {
       return;
     }
 
-    // ── RBC HYPOTHETICAL TRAINING: Learn from every cycle's price action ──
-    // Only trains on the ACTIVE symbol — it is the only symbol for which we have
-    // a real price observation this cycle. Previously this loop also iterated over
-    // every symbol ever tracked by the RBC engine (including historical symbols
-    // like "xyz:META" that have no open position and are not the selected market),
-    // using the active symbol's price change as a proxy. That polluted those
-    // symbols' win/loss boxes with market-wide moves they never experienced.
-    //   - Price up >0.1% → LONG wins → outcome=1 (winBox)
-    //   - Price down >0.1% → LONG loses → outcome=0 (lossBox)
-    //   - Price change <0.05% → flat market, both sides lose (feed 2 samples: both LOSS)
-    //   - 0.05%-0.1% → noise, skip
+    // ── SHADOW TRADE ENGINE: Check + Open for ALL trading markets ──
+    // 1. Check existing shadow positions against current price (resolve SL/TP → feed OLR)
+    // 2. Open new shadow LONG + SHORT for each trading market
+    // This replaces RBC's hypothetical training — shadow trades learn TP-before-SL,
+    // not 5-minute price direction.
     if (marketPrice > 0) {
-      // Train on active symbol only (always has a context after first cycle)
-      const activeCtx = this.lastCycleRBCContexts.get(activeSymbol);
-      if (activeCtx) {
-        try {
-          const prevPrice = activeCtx.price;
-          const priceChange = (marketPrice - prevPrice) / prevPrice;
-          const absChange = Math.abs(priceChange);
-          const baseFeatures = activeCtx.features;
-
-          if (absChange >= 0.001) {
-            const outcome: 1 | 0 = priceChange > 0 ? 1 : 0;
-            this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, outcome);
-            const resultStr = outcome === 1 ? 'LONG=WIN' : 'LONG=LOSS';
-            log.info(`🧬 RBC hypothetical: ${activeSymbol} ${(priceChange * 100).toFixed(2)}% → ${resultStr} (cycle #${this.totalCycles})`);
-          } else if (absChange < 0.0005) {
-            this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, 0);
-            this.rbcEngine.feedTrade(activeSymbol, { ...baseFeatures }, 0);
-            log.info(`🧬 RBC hypothetical: ${activeSymbol} flat (${(priceChange * 100).toFixed(2)}%) → LONG=LOSS (cycle #${this.totalCycles})`);
-          }
-        } catch (err) {
-          log.warn(`[RBC-hypothetical] Failed for ${activeSymbol}: ${err instanceof Error ? err.message : String(err)}`);
+      try {
+        // Check + resolve existing shadow positions for active symbol
+        const resolved = this.shadowEngine.checkPositions(activeSymbol, marketPrice, this.totalCycles);
+        if (resolved > 0) {
+          log.info(`🧬 [shadow] ${activeSymbol}: ${resolved} shadow trades resolved (cycle #${this.totalCycles})`);
         }
+
+        // Also check positions for other trading markets (using their marketState price)
+        for (const mktSym of this.tradingMarkets) {
+          if (normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol)) continue;
+          const mktState = this.marketState.getState(mktSym);
+          if (mktState && mktState.price > 0) {
+            const mktResolved = this.shadowEngine.checkPositions(mktSym, mktState.price, this.totalCycles);
+            if (mktResolved > 0) {
+              log.info(`🧬 [shadow] ${mktSym}: ${mktResolved} shadow trades resolved (cycle #${this.totalCycles})`);
+            }
+          }
+        }
+
+        // Open new shadow trades for ALL trading markets
+        const allMarkets = [...new Set([activeSymbol, ...this.tradingMarkets.map(m => normalizeSymbol(m))])];
+        for (const mktSym of allMarkets) {
+          const mktState = this.marketState.getState(mktSym);
+          const mktPrice = normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? marketPrice : (mktState?.price ?? 0);
+          if (mktPrice <= 0) continue;
+
+          const mktFeatures = {
+            volatility: mktState?.volatility ?? 0,
+            srDistanceBps: 0, // S/R is only fetched for active symbol
+            obImbalance: mktState?.orderBookImbalance ?? 0,
+            fundingRate: this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
+            volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
+            sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+            sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+            signalAgreement: 0.5,
+          };
+
+          // Use S/R levels for active symbol; default distances for others
+          const srSupport = normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol)
+            ? (this.lastSRContext?.nearestSupport ?? null) : null;
+          const srResistance = normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol)
+            ? (this.lastSRContext?.nearestResistance ?? null) : null;
+
+          this.shadowEngine.openShadowTrades(
+            mktSym,
+            mktPrice,
+            srSupport,
+            srResistance,
+            srResistance,
+            srSupport,
+            this.totalCycles,
+            mktFeatures,
+          );
+        }
+      } catch (err) {
+        log.warn(`[shadow-trade] Failed: ${err instanceof Error ? err.message : String(err)}`);
       }
-      // Non-active symbols (open positions, historical RBC symbols) are NOT
-      // trained here — we lack their real per-symbol price this cycle, so any
-      // proxy price change would corrupt their boxes. Their existing RBC state
-      // is preserved untouched and will resume training when they become active.
     }
 
-    // ── Save current cycle context for NEXT cycle's RBC hypothetical training ──
-    // Only store context for the active symbol + open positions. Historical RBC
-    // symbols (e.g. "xyz:META" with no position and not the selected market) are
-    // NOT given a context — otherwise they would be trained next cycle using the
-    // active symbol's price change as a proxy, corrupting their boxes.
+    // ── FIRST-PASSAGE PROBABILITY: Calculate P(TP before SL) for active symbol ──
+    // Uses per-symbol price history for drift (NOT mixed-symbol trade history).
     try {
-      const baseFeatures = {
-        volatility: combinedState.volatility ?? 0,
-        srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
-        obImbalance: combinedState.orderBookImbalance ?? 0,
-        fundingRate: this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
-        volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
-        sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
-        sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
-        signalAgreement: 0.5, // updated after cycle with actual consensus confidence
-      };
+      const vol = combinedState.volatility ?? 0;
+      // Estimate drift from active symbol's price history (per-symbol, not mixed)
+      const priceHistory = this.marketState.getPriceHistory(activeSymbol);
+      const drift = estimateDrift(priceHistory, 10);
+      const slDist = this.lastSRContext?.distanceToSupportBps ? this.lastSRContext.distanceToSupportBps / 10000 : 0.02;
+      const tpDist = this.lastSRContext?.distanceToResistanceBps ? this.lastSRContext.distanceToResistanceBps / 10000 : 0.05;
+      this.lastFirstPassage = calculateFirstPassage(vol, drift, slDist, tpDist);
+    } catch { /* non-critical */ }
 
-      // Always store for active symbol
-      this.lastCycleRBCContexts.set(activeSymbol, {
-        symbol: activeSymbol,
-        price: combinedState.price,
-        features: { ...baseFeatures },
-      });
-
-      // Also store for all open positions (so their RBC boxes keep training
-      // when they later become the active symbol). Note: we only STORE context
-      // here — actual training only happens for the active symbol (see above),
-      // because only the active symbol has a real price observation per cycle.
-      for (const posSym of this.portfolio.getOpenSymbols()) {
-        if (!this.lastCycleRBCContexts.has(posSym)) {
-          this.lastCycleRBCContexts.set(posSym, {
-            symbol: posSym,
-            price: combinedState.price,
-            features: { ...baseFeatures },
-          });
-        }
+    // ── Save current cycle context for ALL trading markets ──
+    try {
+      const allMarkets = [...new Set([activeSymbol, ...this.tradingMarkets.map(m => normalizeSymbol(m))])];
+      for (const mktSym of allMarkets) {
+        const mktState = this.marketState.getState(mktSym);
+        const mktFeatures = {
+          volatility: mktState?.volatility ?? (normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? (combinedState.volatility ?? 0) : 0),
+          srDistanceBps: normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? (this.lastSRContext?.distanceToSupportBps ?? 0) : 0,
+          obImbalance: mktState?.orderBookImbalance ?? (normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? (combinedState.orderBookImbalance ?? 0) : 0),
+          fundingRate: this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
+          volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
+          sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+          sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+          signalAgreement: 0.5,
+        };
+        const mktPrice = normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? combinedState.price : (mktState?.price ?? 0);
+        this.lastCycleShadowContexts.set(mktSym, {
+          symbol: mktSym,
+          price: mktPrice,
+          features: mktFeatures,
+        });
       }
     } catch { /* non-critical */ }
 
@@ -1810,9 +1848,9 @@ class MATSSystem {
       log.info(`SystemGuard: ${healthSummary}`);
     }
 
-    // ── PAUSE CHECK: If paused, skip agents/trading but keep RBC running ──
+    // ── PAUSE CHECK: If paused, skip agents/trading but keep OLR/shadow running ──
     if (this.paused) {
-      log.info(`⏸️ System paused — RBC training complete, skipping HACP agents and trading (cycle #${this.totalCycles})`);
+      log.info(`⏸️ System paused — OLR/shadow training complete, skipping HACP agents and trading (cycle #${this.totalCycles})`);
       this.cycleInProgress = false;
       this.pushToAPI();
       return;
@@ -1849,10 +1887,13 @@ class MATSSystem {
       // 1d.2 v2.0.28: Inject pattern tag win rates (LLM-identified chart patterns)
       const patternTagContext = this.patternTagTracker?.formatContext(8) ?? '';
 
-      // 1e. Inject RBC assessment (range-based win/loss regions from price action)
-      let rbcContext = '';
+      // 1e. Inject OLR assessment + First-Passage probability + Shadow trade results
+      // OLR: P(win) per side from shadow + paper + real trade outcomes (TP-before-SL learning)
+      // First-Passage: Instant P(TP before SL) from volatility + drift + S/R distances
+      // Shadow: Recent simulated trade outcomes for agent context
+      let olrContext = '';
       try {
-        const rbcBuy = this.rbcEngine.query(activeSymbol, {
+        const olrFeatures = {
           volatility: combinedState.volatility ?? 0,
           srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
           obImbalance: combinedState.orderBookImbalance ?? 0,
@@ -1860,28 +1901,60 @@ class MATSSystem {
           volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
           sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
           sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
-          signalAgreement: 0.5, // updated after cycle with actual consensus confidence
-        });
-        // Invert BUY verdict for SELL (same engine models long-only; short is the inverse)
-        const rbcSell: RBCQueryResult = {
-          ...rbcBuy,
-          verdict: rbcBuy.verdict === 'favorable' ? 'unfavorable' : rbcBuy.verdict === 'unfavorable' ? 'favorable' : 'no_edge',
-          winDims: rbcBuy.lossDims,
-          lossDims: rbcBuy.winDims,
+          signalAgreement: 0.5,
         };
-        const hasData = rbcBuy.verdict !== 'no_edge' || rbcSell.verdict !== 'no_edge'
-          || (rbcBuy.explanation && !rbcBuy.explanation.startsWith('Only'))
-          || (rbcSell.explanation && !rbcSell.explanation.startsWith('Only'));
-        if (hasData) {
-          const confLabel = rbcBuy.confidence > 0.6 ? 'high' : rbcBuy.confidence > 0.3 ? 'medium' : 'low';
-          const lines: string[] = ['=== RBC ASSESSMENT ==='];
-          lines.push('Range-Based Clustering: time-weighted win/loss regions from price action.');
-          lines.push(`BUY  → ${rbcBuy.verdict.toUpperCase()} (edge=${(rbcBuy.edgeScore * 100).toFixed(0)}%, ${rbcBuy.winDims}W/${rbcBuy.lossDims}L dims, ${rbcBuy.discriminativeDims}/${rbcBuy.totalDims} discriminative)`);
-          lines.push(`SELL → ${rbcSell.verdict.toUpperCase()} (edge=${(rbcSell.edgeScore * 100).toFixed(0)}%, ${rbcSell.winDims}W/${rbcSell.lossDims}L dims, ${rbcSell.discriminativeDims}/${rbcSell.totalDims} discriminative)`);
-          lines.push(`CONFIDENCE: ${confLabel} (eff samples=${Math.round(rbcBuy.effectiveSamples)}, balance=${(rbcBuy.confidence * 100).toFixed(0)}%). Weight the verdict by this — low confidence means one side is under-sampled and the boundary is noisy; treat the verdict as a weak hint, not a strong signal.`);
-          lines.push(`INTERPRETATION: FAVORABLE → win territory, increase conviction. UNFAVORABLE → loss territory, strong bias against entry. NO_EDGE → current values sit in the overlap zone on every dimension — the system lacks directional clarity. This is itself a useful signal: it means the market state is ambiguous relative to past patterns, and the RBC agent should HOLD or rely on other signals. winDims/lossDims still show tilt even in NO_EDGE (which side of each overlap boundary the value falls).`);
-          rbcContext = '\n' + lines.join('\n');
+        const olrBuy = this.olrEngine.query(activeSymbol, olrFeatures, 'buy', this.totalCycles);
+        const olrSell = this.olrEngine.query(activeSymbol, olrFeatures, 'sell', this.totalCycles);
+        const lines: string[] = ['=== OLR + PATH RISK ASSESSMENT ==='];
+
+        // OLR probabilities with source breakdown
+        if (olrBuy.nSamples > 0 || olrSell.nSamples > 0) {
+          lines.push(`OLR (learned from TP-before-SL outcomes — shadow=paper sim, paper=paper trade, real=HL exchange):`);
+          const sbBuy = olrBuy.sourceBreakdown;
+          const sbSell = olrSell.sourceBreakdown;
+          lines.push(`  BUY  P(win)=${(olrBuy.pWin * 100).toFixed(0)}% (${olrBuy.nSamples} samples [shadow=${sbBuy.shadow} paper=${sbBuy.paper} real=${sbBuy.real}], conf=${olrBuy.confidence})`);
+          lines.push(`  SELL P(win)=${(olrSell.pWin * 100).toFixed(0)}% (${olrSell.nSamples} samples [shadow=${sbSell.shadow} paper=${sbSell.paper} real=${sbSell.real}], conf=${olrSell.confidence})`);
+          if (olrBuy.featureContributions.length > 0) {
+            const topBuy = olrBuy.featureContributions.slice(0, 3).map(c => `${c.name}(w=${c.weight.toFixed(2)})`).join(', ');
+            lines.push(`  BUY key features: ${topBuy}`);
+          }
+
+          // Recent trades with source + recency + SL/TP narrowing info
+          const recentBuy = olrBuy.recentTrades.filter(rt => rt.source !== 'shadow' || rt.cyclesAgo <= 20).slice(-5);
+          const recentSell = olrSell.recentTrades.filter(rt => rt.source !== 'shadow' || rt.cyclesAgo <= 20).slice(-5);
+          if (recentBuy.length > 0 || recentSell.length > 0) {
+            lines.push(`  Recent outcomes (for recency judgment — older trades may reflect different market conditions):`);
+            for (const rt of recentBuy) {
+              const icon = rt.outcome === 'win' ? '✅' : '❌';
+              const narrow = rt.slNarrowed ? ' [SL narrowed]' : '';
+              lines.push(`    ${icon} BUY ${rt.source} ${rt.outcome} (${rt.cyclesAgo} cycles ago${narrow})`);
+            }
+            for (const rt of recentSell) {
+              const icon = rt.outcome === 'win' ? '✅' : '❌';
+              const narrow = rt.slNarrowed ? ' [SL narrowed]' : '';
+              lines.push(`    ${icon} SELL ${rt.source} ${rt.outcome} (${rt.cyclesAgo} cycles ago${narrow})`);
+            }
+          }
         }
+
+        // First-passage probability (instant path risk)
+        if (this.lastFirstPassage) {
+          const fp = this.lastFirstPassage;
+          lines.push(`First-Passage P(TP before SL) — instant path-risk from vol + drift + S/R:`);
+          lines.push(`  LONG  P=${(fp.longPWin * 100).toFixed(0)}% | SHORT P=${(fp.shortPWin * 100).toFixed(0)}%`);
+          lines.push(`  Drift=${(fp.drift * 100).toFixed(2)}%/cycle | Vol=${(fp.volatility * 100).toFixed(2)}%/cycle | SL=${(fp.slDistanceLong * 100).toFixed(1)}% TP=${(fp.tpDistanceLong * 100).toFixed(1)}%`);
+        }
+
+        // Shadow trade results
+        const shadowCtx = this.shadowEngine.getContext();
+        if (shadowCtx.openCount > 0 || shadowCtx.recentResults.length > 0) {
+          lines.push(shadowCtx.contextString);
+        }
+
+        lines.push(`INTERPRETATION: OLR P(win) > 60% → bias toward entry. First-Passage P > 55% → path risk favors TP.`);
+        lines.push(`DATA SOURCES: shadow=fixed SL/TP sim (entry timing), paper=dynamic SL/TP (real management), real=HL exchange (truest). Weight by recency + source reliability.`);
+        lines.push(`SL/TP NARROWING: [SL narrowed] tag means SL was tightened during the trade — if narrowed trades mostly lost, consider widening SL; if they won, narrowing is working.`);
+        olrContext = '\n' + lines.join('\n');
       } catch { /* non-critical */ }
 
       // v2.0.32: Run Planck-Chaos Resonance analysis and inject context
@@ -1995,7 +2068,7 @@ class MATSSystem {
         log.debug(`[news] Failed for ${activeSymbol}: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      let marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${rbcContext}${planckChaosContext}${optionsContext}${playbookContext}${newsContext ? `\n${newsContext}` : ''}\n\n${getFeeSummary()}`;
+      let marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${olrContext}${planckChaosContext}${optionsContext}${playbookContext}${newsContext ? `\n${newsContext}` : ''}\n\n${getFeeSummary()}`;
 
       // v2.0.109: Fetch global breaking news (Top 10 international headlines) for Meta-Agent
       // cross-asset correlation analysis. Meta-Agent must assess whether any headline
@@ -2010,19 +2083,15 @@ class MATSSystem {
         // Fail-open — global news is supplementary context
       }
 
-      // v2.0.92: Generate RBC + S/R context for ALL open positions (not just active symbol).
-      // Previously, RBC and S/R were only generated for the active symbol (e.g. BTC).
-      // Open positions on other symbols (e.g. xyz:XYZ100, xyz:SP500) had NO RBC/S/R data
-      // in the agent context, causing Meta-Agent to output "Insufficient data" for those
-      // positions. Now we query RBC + fetch S/R for every open position and append to marketDesc.
+      // v2.0.92: Generate OLR + S/R context for ALL open positions (not just active symbol).
       for (const posSym of this.portfolio.getOpenSymbols()) {
         if (normalizeSymbol(posSym) === normalizeSymbol(activeSymbol)) continue; // already covered above
         const pos = this.portfolio.getPosition(posSym);
         if (!pos) continue;
 
-        // RBC context for this position's symbol
+        // OLR context for this position's symbol
         try {
-          const posCtx = this.lastCycleRBCContexts.get(posSym);
+          const posCtx = this.lastCycleShadowContexts.get(posSym);
           const features = posCtx?.features ?? {
             volatility: combinedState.volatility ?? 0,
             srDistanceBps: 0,
@@ -2033,25 +2102,13 @@ class MATSSystem {
             sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
             signalAgreement: 0.5,
           };
-          const rbcBuy = this.rbcEngine.query(posSym, features);
-          const rbcSell: RBCQueryResult = {
-            ...rbcBuy,
-            verdict: rbcBuy.verdict === 'favorable' ? 'unfavorable' : rbcBuy.verdict === 'unfavorable' ? 'favorable' : 'no_edge',
-            winDims: rbcBuy.lossDims,
-            lossDims: rbcBuy.winDims,
-          };
-          const hasData = rbcBuy.verdict !== 'no_edge' || rbcSell.verdict !== 'no_edge'
-            || (rbcBuy.explanation && !rbcBuy.explanation.startsWith('Only'))
-            || (rbcSell.explanation && !rbcSell.explanation.startsWith('Only'));
-          if (hasData) {
-            const confLabel = rbcBuy.confidence > 0.6 ? 'high' : rbcBuy.confidence > 0.3 ? 'medium' : 'low';
-            marketDesc += `\n\n=== RBC ASSESSMENT for ${posSym} ===`;
-            marketDesc += `\nRange-Based Clustering for ${posSym} (position: ${pos.side.toUpperCase()} @ $${pos.averageEntryPrice.toFixed(2)}, PnL: ${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%).`;
-            marketDesc += `\nBUY  → ${rbcBuy.verdict.toUpperCase()} (edge=${(rbcBuy.edgeScore * 100).toFixed(0)}%, ${rbcBuy.winDims}W/${rbcBuy.lossDims}L dims)`;
-            marketDesc += `\nSELL → ${rbcSell.verdict.toUpperCase()} (edge=${(rbcSell.edgeScore * 100).toFixed(0)}%, ${rbcSell.winDims}W/${rbcSell.lossDims}L dims)`;
-            marketDesc += `\nCONFIDENCE: ${confLabel} (eff samples=${Math.round(rbcBuy.effectiveSamples)}, balance=${(rbcBuy.confidence * 100).toFixed(0)}%)`;
-          } else {
-            marketDesc += `\n\n=== RBC ASSESSMENT for ${posSym} ===\nNo RBC data for ${posSym} — insufficient samples or no edge detected.`;
+          const olrBuy = this.olrEngine.query(posSym, features, 'buy', this.totalCycles);
+          const olrSell = this.olrEngine.query(posSym, features, 'sell', this.totalCycles);
+          if (olrBuy.nSamples > 0 || olrSell.nSamples > 0) {
+            marketDesc += `\n\n=== OLR ASSESSMENT for ${posSym} ===`;
+            marketDesc += `\nOLR for ${posSym} (position: ${pos.side.toUpperCase()} @ $${pos.averageEntryPrice.toFixed(2)}, PnL: ${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%).`;
+            marketDesc += `\nBUY  P(win)=${(olrBuy.pWin * 100).toFixed(0)}% (${olrBuy.nSamples} samples, conf=${olrBuy.confidence})`;
+            marketDesc += `\nSELL P(win)=${(olrSell.pWin * 100).toFixed(0)}% (${olrSell.nSamples} samples, conf=${olrSell.confidence})`;
           }
         } catch { /* non-critical */ }
 
@@ -2064,7 +2121,7 @@ class MATSSystem {
         } catch { /* non-critical */ }
       }
 
-      // v2.0.104: Generate market data (price + RBC + S/R) for ALL trading markets
+      // v2.0.104: Generate market data (price + OLR + S/R) for ALL trading markets
       // without open positions. These are injected into currentPositions as
       // isTradingMarket entries, and agents need market context to analyze them.
       // v2.0.107: Cache fetched prices for reuse in injection code (avoids
@@ -2099,9 +2156,9 @@ class MATSSystem {
         marketDesc += `\nRegime: ${(mktState?.regime ?? 'unknown').toUpperCase()}`;
         if (mktState && mktState.volatility > 0) marketDesc += `\nVolatility: ${(mktState.volatility * 100).toFixed(3)}%`;
 
-        // RBC context for this trading market
+        // OLR context for this trading market
         try {
-          const mktCtx = this.lastCycleRBCContexts.get(mktSym);
+          const mktCtx = this.lastCycleShadowContexts.get(mktSym);
           const features = mktCtx?.features ?? {
             volatility: mktState?.volatility ?? 0,
             srDistanceBps: 0,
@@ -2112,25 +2169,13 @@ class MATSSystem {
             sentimentConviction: 0.5,
             signalAgreement: 0.5,
           };
-          const rbcBuy = this.rbcEngine.query(mktSym, features);
-          const rbcSell: RBCQueryResult = {
-            ...rbcBuy,
-            verdict: rbcBuy.verdict === 'favorable' ? 'unfavorable' : rbcBuy.verdict === 'unfavorable' ? 'favorable' : 'no_edge',
-            winDims: rbcBuy.lossDims,
-            lossDims: rbcBuy.winDims,
-          };
-          const hasData = rbcBuy.verdict !== 'no_edge' || rbcSell.verdict !== 'no_edge'
-            || (rbcBuy.explanation && !rbcBuy.explanation.startsWith('Only'))
-            || (rbcSell.explanation && !rbcSell.explanation.startsWith('Only'));
-          if (hasData) {
-            const confLabel = rbcBuy.confidence > 0.6 ? 'high' : rbcBuy.confidence > 0.3 ? 'medium' : 'low';
-            marketDesc += `\n\n=== RBC ASSESSMENT for ${mktSym} ===`;
-            marketDesc += `\nRange-Based Clustering for ${mktSym} (no position — entry evaluation).`;
-            marketDesc += `\nBUY  → ${rbcBuy.verdict.toUpperCase()} (edge=${(rbcBuy.edgeScore * 100).toFixed(0)}%, ${rbcBuy.winDims}W/${rbcBuy.lossDims}L dims)`;
-            marketDesc += `\nSELL → ${rbcSell.verdict.toUpperCase()} (edge=${(rbcSell.edgeScore * 100).toFixed(0)}%, ${rbcSell.winDims}W/${rbcSell.lossDims}L dims)`;
-            marketDesc += `\nCONFIDENCE: ${confLabel} (eff samples=${Math.round(rbcBuy.effectiveSamples)}, balance=${(rbcBuy.confidence * 100).toFixed(0)}%)`;
-          } else {
-            marketDesc += `\n\n=== RBC ASSESSMENT for ${mktSym} ===\nNo RBC data for ${mktSym} — insufficient samples or no edge detected.`;
+          const olrBuy = this.olrEngine.query(mktSym, features, 'buy', this.totalCycles);
+          const olrSell = this.olrEngine.query(mktSym, features, 'sell', this.totalCycles);
+          if (olrBuy.nSamples > 0 || olrSell.nSamples > 0) {
+            marketDesc += `\n\n=== OLR ASSESSMENT for ${mktSym} ===`;
+            marketDesc += `\nOLR for ${mktSym} (no position — entry evaluation).`;
+            marketDesc += `\nBUY  P(win)=${(olrBuy.pWin * 100).toFixed(0)}% (${olrBuy.nSamples} samples, conf=${olrBuy.confidence})`;
+            marketDesc += `\nSELL P(win)=${(olrSell.pWin * 100).toFixed(0)}% (${olrSell.nSamples} samples, conf=${olrSell.confidence})`;
           }
         } catch { /* non-critical */ }
 
@@ -2827,56 +2872,46 @@ class MATSSystem {
               sentimentConviction: sentimentData?.conviction ?? 0.5,
                 };
 
-            // Priority 0: RBC assessment (highest weight — can HARD BLOCK)
-          let rbcBlocked = false;
+            // Priority 0: OLR + First-Passage assessment (highest weight — can HARD BLOCK)
+            let olrBlocked = false;
             if (!direction) {
-              const rbcCtx = {
-                                                volatility: combinedState.volatility ?? 0,
-                                srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+              const olrCtx = {
+                volatility: combinedState.volatility ?? 0,
+                srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
                 obImbalance: combinedState.orderBookImbalance ?? 0,
                 fundingRate: actualFundingRate,
                 volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
                 signalAgreement: 0.5,
-                      leverage: exploreLev,
                 sentiment: sentimentData?.overallSentiment ?? 0,
                 sentimentConviction: sentimentData?.conviction ?? 0.5,
-                    };
-              const rbcBuy = this.rbcEngine.query(combinedState.primarySymbol, { ...rbcCtx });
-              const rbcSell: RBCQueryResult = {
-                ...rbcBuy,
-                verdict: rbcBuy.verdict === 'favorable' ? 'unfavorable' : rbcBuy.verdict === 'unfavorable' ? 'favorable' : 'no_edge',
-                winDims: rbcBuy.lossDims,
-                lossDims: rbcBuy.winDims,
               };
-              if (rbcBuy.verdict === 'favorable' && rbcSell.verdict !== 'favorable') {
+              const olrBuy = this.olrEngine.query(combinedState.primarySymbol, { ...olrCtx }, 'buy', this.totalCycles);
+              const olrSell = this.olrEngine.query(combinedState.primarySymbol, { ...olrCtx }, 'sell', this.totalCycles);
+
+              // Use OLR P(win) + first-passage probability combined
+              const fpLong = this.lastFirstPassage?.longPWin ?? 0.5;
+              const fpShort = this.lastFirstPassage?.shortPWin ?? 0.5;
+              // Combined score: average of OLR and first-passage
+              const buyScore = (olrBuy.pWin + fpLong) / 2;
+              const sellScore = (olrSell.pWin + fpShort) / 2;
+
+              if (buyScore > 0.6 && sellScore < 0.5) {
                 direction = 'buy';
-                log.info(`🧪 RBC-guided: BUY favorable (edge=${(rbcBuy.edgeScore * 100).toFixed(0)}%)`);
-              } else if (rbcSell.verdict === 'favorable' && rbcBuy.verdict !== 'favorable') {
+                log.info(`🧪 OLR+FP-guided: BUY score=${(buyScore * 100).toFixed(0)}% (OLR=${(olrBuy.pWin * 100).toFixed(0)}%, FP=${(fpLong * 100).toFixed(0)}%)`);
+              } else if (sellScore > 0.6 && buyScore < 0.5) {
                 direction = 'sell';
-                log.info(`🧪 RBC-guided: SELL favorable (edge=${(rbcSell.edgeScore * 100).toFixed(0)}%)`);
-              } else if (rbcBuy.verdict === 'unfavorable' && rbcSell.verdict === 'favorable') {
-                direction = 'sell';
-                log.info(`🧪 RBC-guided: BUY unfavorable, SELL favorable → SELL`);
-              } else if (rbcSell.verdict === 'unfavorable' && rbcBuy.verdict === 'favorable') {
-                direction = 'buy';
-                log.info(`🧪 RBC-guided: SELL unfavorable, BUY favorable → BUY`);
-              } else if (rbcBuy.verdict === 'unfavorable' && rbcSell.verdict === 'unfavorable') {
+                log.info(`🧪 OLR+FP-guided: SELL score=${(sellScore * 100).toFixed(0)}% (OLR=${(olrSell.pWin * 100).toFixed(0)}%, FP=${(fpShort * 100).toFixed(0)}%)`);
+              } else if (buyScore < 0.35 && sellScore < 0.35) {
                 direction = null;
-                rbcBlocked = true;
-                log.info(`🧪 RBC-guided: Both UNFAVORABLE → HARD BLOCK`);
-              } else if (rbcBuy.verdict === 'no_edge' && rbcSell.verdict === 'no_edge') {
-                log.info(`🧪 RBC-guided: Both NO_EDGE — falling through to other signals`);
-              }
-              if (!rbcBlocked && (rbcBuy.verdict === 'unfavorable' || rbcSell.verdict === 'unfavorable') &&
-                  (rbcBuy.verdict === 'no_edge' || rbcSell.verdict === 'no_edge')) {
-                direction = null;
-                rbcBlocked = true;
-                log.info(`🧪 RBC-guided: Mixed unfavorable+no_edge → HARD BLOCK`);
+                olrBlocked = true;
+                log.info(`🧪 OLR+FP-guided: Both scores < 35% → HARD BLOCK (buy=${(buyScore * 100).toFixed(0)}%, sell=${(sellScore * 100).toFixed(0)}%)`);
+              } else {
+                log.info(`🧪 OLR+FP-guided: No clear edge (buy=${(buyScore * 100).toFixed(0)}%, sell=${(sellScore * 100).toFixed(0)}%) — falling through to other signals`);
               }
             }
 
-            // If RBC hard-blocked, skip all remaining signal checks
-            if (rbcBlocked) {
+            // If OLR+FP hard-blocked, skip all remaining signal checks
+            if (olrBlocked) {
               direction = null;
             }
             // If both no_edge or mixed, fall through to other signals
@@ -4023,11 +4058,11 @@ class MATSSystem {
         log.warn(`[E-step] CycleSummary build failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      // 9.6 Persist evolution state + portfolio + debate history + patterns + RBC + pattern tags to disk
+      // 9.6 Persist evolution state + portfolio + debate history + patterns + OLR + pattern tags to disk
       this.evolution.persistState();
       this.patternClassifier?.persist();
       this.patternTagTracker?.persist();
-      this.persistRBC();
+      this.persistOLR();
       this.persistPortfolio();
       saveDebateHistory({
         totalCycles: this.totalCycles,
@@ -4068,10 +4103,9 @@ class MATSSystem {
         }
       } catch { /* non-critical */ }
 
-      // ── Save current cycle context for NEXT cycle's RBC hypothetical training ──
-      // (Primary save is at cycle START; this is a backup update with final signalAgreement)
+      // ── Update shadow context with final signalAgreement ──
       try {
-        const activeCtx = this.lastCycleRBCContexts.get(activeSymbol);
+        const activeCtx = this.lastCycleShadowContexts.get(activeSymbol);
         if (activeCtx) {
           activeCtx.features['signalAgreement'] = result.consensus.confidence;
         }
@@ -4417,14 +4451,20 @@ class MATSSystem {
     }
   }
 
-  private persistRBC(): void {
+  private persistOLR(): void {
     try {
       const dir = path.join(process.cwd(), 'data/evolution');
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      const tmp = path.join(dir, 'rbc-state.json.tmp');
-      const final = path.join(dir, 'rbc-state.json');
-      fs.writeFileSync(tmp, this.rbcEngine.save(), 'utf-8');
-      fs.renameSync(tmp, final);
+      // Save OLR state
+      const olrTmp = path.join(dir, 'olr-state.json.tmp');
+      const olrFinal = path.join(dir, 'olr-state.json');
+      fs.writeFileSync(olrTmp, this.olrEngine.save(), 'utf-8');
+      fs.renameSync(olrTmp, olrFinal);
+      // Save shadow trade state
+      const shadowTmp = path.join(dir, 'shadow-state.json.tmp');
+      const shadowFinal = path.join(dir, 'shadow-state.json');
+      fs.writeFileSync(shadowTmp, this.shadowEngine.save(), 'utf-8');
+      fs.renameSync(shadowTmp, shadowFinal);
     } catch { /* best-effort */ }
   }
 
@@ -4662,45 +4702,45 @@ class MATSSystem {
         patternStats: this.patternClassifier ? this.patternClassifier.getStats() : undefined,
         patternTagStats: this.patternTagTracker ? this.patternTagTracker.getStats() : undefined,
         patternTagSummary: this.patternTagTracker ? this.patternTagTracker.getSummary() : undefined,
-        rbcState: (() => {
-          const allStats = this.rbcEngine.getAllModelStats();
-          const pendingStats = this.rbcEngine.getPendingStats();
-          const hasData = allStats.length > 0 || pendingStats.length > 0;
+        olrState: (() => {
+          const allStats = this.olrEngine.getAllModelStats();
+          const pendingStats = this.olrEngine.getPendingStats();
+          const shadowStats = this.shadowEngine.getStats();
+          const hasFirstPassage = !!this.lastFirstPassage;
+          const hasShadowOpen = this.shadowEngine.getOpenPositions().length > 0;
+          const hasData = allStats.length > 0 || pendingStats.length > 0 || hasFirstPassage || shadowStats.length > 0 || hasShadowOpen;
           if (!hasData) return undefined;
 
-          // Build per-symbol dimDetails so the UI can render dimension bars for EACH symbol.
-          // Use lastCycleRBCContexts features for the active symbol; other symbols get
-          // box ranges without current-value dots.
           const activeSymbol = this.marketAgent.getSelectedSymbol()?.toLowerCase() ?? '';
-          const activeCtx = this.lastCycleRBCContexts.get(activeSymbol);
+          const activeCtx = this.lastCycleShadowContexts.get(activeSymbol);
           const activeFeatures = activeCtx?.features ?? {};
 
           return {
             symbols: allStats.map(s => {
               const sym = s.symbol;
-              const dimDetailsRaw = this.rbcEngine.getDimDetails(sym);
-              // Query current features against this symbol's RBC state
-              const queryResult = sym === activeSymbol && Object.keys(activeFeatures).length > 0
-                ? this.rbcEngine.query(sym, activeFeatures)
+              // Get feature weights for UI visualization
+              const longWeights = this.olrEngine.getFeatureWeights(sym, 'buy');
+              const shortWeights = this.olrEngine.getFeatureWeights(sym, 'short' as 'buy' | 'sell');
+              // Query current features for live P(win)
+              const liveLong = sym === activeSymbol && Object.keys(activeFeatures).length > 0
+                ? this.olrEngine.query(sym, activeFeatures, 'buy', this.totalCycles)
                 : null;
-              const valueMap = new Map(queryResult?.dimDetails.map(d => [d.name, d.value]) ?? []);
-              // Use per-symbol query() discriminativeDims (considers current value position)
-              const liveDiscriminativeDims = queryResult?.discriminativeDims ?? s.discriminativeDims;
+              const liveShort = sym === activeSymbol && Object.keys(activeFeatures).length > 0
+                ? this.olrEngine.query(sym, activeFeatures, 'sell', this.totalCycles)
+                : null;
 
               return {
                 symbol: s.symbol,
-                winCount: s.winCount,
-                lossCount: s.lossCount,
-                totalSamples: s.totalSamples,
-                discriminativeDims: liveDiscriminativeDims,
-                totalDims: s.totalDims,
-                dimDetails: dimDetailsRaw ? dimDetailsRaw.map(d => ({
-                  name: d.name,
-                  value: valueMap.get(d.name) ?? 0,
-                  winMin: d.winMin, winMax: d.winMax, winCentroid: d.winCentroid,
-                  lossMin: d.lossMin, lossMax: d.lossMax, lossCentroid: d.lossCentroid,
-                  overlap: d.overlap, boundary: d.boundary,
-                  globalMin: d.globalMin, globalMax: d.globalMax,
+                longSamples: s.longSamples,
+                shortSamples: s.shortSamples,
+                longPWin: liveLong?.pWin ?? s.longPWin,
+                shortPWin: liveShort?.pWin ?? s.shortPWin,
+                longConfidence: liveLong?.confidence ?? 'low',
+                shortConfidence: liveShort?.confidence ?? 'low',
+                featureWeights: longWeights ? longWeights.map((w, i) => ({
+                  name: w.name,
+                  longWeight: w.weight,
+                  shortWeight: shortWeights?.[i]?.weight ?? 0,
                 })) : undefined,
               };
             }),
@@ -4709,6 +4749,23 @@ class MATSSystem {
               pending: p.pending,
               needed: p.needed,
               pct: p.pct,
+            })),
+            firstPassage: this.lastFirstPassage ? {
+              longPWin: this.lastFirstPassage.longPWin,
+              shortPWin: this.lastFirstPassage.shortPWin,
+              drift: this.lastFirstPassage.drift,
+              volatility: this.lastFirstPassage.volatility,
+              slDistance: this.lastFirstPassage.slDistanceLong,
+              tpDistance: this.lastFirstPassage.tpDistanceLong,
+            } : undefined,
+            shadowStats: this.shadowEngine.getStats(),
+            shadowOpen: this.shadowEngine.getOpenPositions().map(p => ({
+              symbol: p.symbol,
+              side: p.side,
+              entryPrice: p.entryPrice,
+              stopLossPrice: p.stopLossPrice,
+              takeProfitPrice: p.takeProfitPrice,
+              openCycle: p.openCycle,
             })),
           };
         })(),
@@ -4966,10 +5023,10 @@ class MATSSystem {
   }
 
   async stop(): Promise<void> {
-    // Persist evolution state + portfolio + RBC before shutdown
+    // Persist evolution state + portfolio + OLR + shadow trades before shutdown
     this.evolution.persistState();
     this.persistPortfolio();
-    this.persistRBC();
+    this.persistOLR();
     this.stopTimers();
     await this.apiServer?.stop();
     await this.multiWs?.disconnect();

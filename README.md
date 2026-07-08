@@ -132,7 +132,7 @@ Open **http://localhost:3456** in your browser to see:
 |:--|:--|:--|
 | **Decision making** | One model, one opinion | 8 agents debate in parallel, weighted consensus |
 | **Risk governance** | Trust the LLM | Skeptics agent stress-tests every trade before execution |
-| **Adaptation** | Static parameters | Self-evolving: GA + RBC + EM cycle chain, no manual tuning |
+| **Adaptation** | Static parameters | Self-evolving: GA + OLR + Shadow Trading + EM cycle chain, no manual tuning |
 | **Reasoning** | Black box | Every trade requires a validated entry thesis (1h catalyst + 1d driver) |
 | **Failure mode** | Crashes into bad trades | Every error path defaults to HOLD — capital preservation first |
 
@@ -144,9 +144,9 @@ Meta-Agent must articulate why price will reach TP within 1h (short-term catalys
 
 A dedicated agent with approve-first design: validates every BUY/SELL thesis, only rejects on a specific, material flaw that would cause a loss. Each cycle, re-validates all open position theses against fresh market data — if invalidated, force-closes.
 
-### 🧬 Self-evolving — GA + RBC + EM cycle chain, no manual tuning
+### 🧬 Self-evolving — GA + OLR + Shadow Trading + EM cycle chain, no manual tuning
 
-Three evolution mechanisms: (1) RBC (Range-Based Clustering) — growing hyperrectangles learn win/loss market conditions per symbol. (2) EM Cycle Chain — Meta-Agent distills each cycle into a structured summary, previous summaries feed into next cycle. (3) GA — survival fitness drives directional mutation of strategy parameters.
+Three evolution mechanisms: (1) OLR (Online Logistic Regression) + Shadow Trading — simulated trades track TP-before-SL outcomes, feeding OLR which learns P(win) per side from real path-risk results. First-Passage probability provides instant path-risk assessment. (2) EM Cycle Chain — Meta-Agent distills each cycle into a structured summary, previous summaries feed into next cycle. (3) GA — survival fitness drives directional mutation of strategy parameters.
 
 ### ⚡ HACP protocol — 8 agents parallel debate, 60s deadline race
 
@@ -169,7 +169,7 @@ MATS does not rely on a single AI model. Instead, **eight specialized agents thi
 | **Market Agent** | Auto-selects trading pair, sets position size & leverage | — | — |
 | **Fractal Momentum Sentinel** | Fractal pattern & trend analyst | 0.85 | 0.10 |
 | **On-Chain Whisperer** | On-chain data & macro analyst | 0.50 | 0.10 |
-| **RBC & Sentiment Analyst** | RBC clusters + Fear & Greed specialist | 0.25 | 0.10 |
+| **OLR & Sentiment Analyst** | OLR P(win) + First-Passage path risk + Fear & Greed | 0.25 | 0.10 |
 | **News Reporter** | Shadow Strategist news motive analyzer | 0.40 | 0.10 |
 | **Independent Risk Auditor** | Risk limits + regime-aware TP/SL (advisory-only, cannot veto) | 0.10 | 0.25 |
 | **Skeptics** | Logic auditor + **stress-tester for new positions** (approve-first: validates thesis, only rejects on specific material flaw that would cause a loss) | 0.30 | — |
@@ -206,7 +206,7 @@ Phase 5:    Meta-Agent dynamic TP/SL adjustment + per-position consensus executi
 
 The core cognitive architecture — every new position requires a strong, validated rationale, and every symbol gets a directional judgment every cycle:
 
-**No position → MUST decide BUY or SELL** (HOLD only when ALL six signals absent: RBC + S/R + sentiment + momentum + news + regime). Even a 51% lean is enough to act. Even with no data, reason from first principles (price level, round numbers, regime, fees).
+**No position → MUST decide BUY or SELL** (HOLD only when ALL six signals absent: OLR + S/R + sentiment + momentum + news + regime). Even a 51% lean is enough to act. Even with no data, reason from first principles (price level, round numbers, regime, fees).
 
 **Has position → MUST decide CLOSE or HOLD** (CLOSE if ≥3 of 6 conditions true: thesis invalidated + trend changed + ≥2 agents close + losing money + regime unsuitable + contradicting news. HOLD if 0-2 conditions true).
 
@@ -217,21 +217,35 @@ The core cognitive architecture — every new position requires a strong, valida
 5. **`holdReason`** — HOLD decisions must explain which conditions are true and why they are insufficient to act (displayed in UI, always expanded for Meta-Agent)
 6. **Dark Psychology** — Meta-Agent must question whether sub-agent data is genuine market signal or whale/institutional manipulation
 7. **Close validation** — closing a thesis-backed position goes through Meta-Agent → Skeptics validation (v2.0.90); thesis MUST be invalidated (mandatory) + ≥2 other conditions (v2.0.103); legacy positions close on Meta-Agent CLOSE decision or ≥2 sub-agent votes (v2.0.94)
-8. **RBC + S/R for ALL positions** — context generated for every open position, not just the active symbol (v2.0.92)
-9. **Multi-symbol single-cycle** — ALL trading markets analyzed in ONE HACP cycle. Non-position markets injected as `isTradingMarket` entries in `positions[]` with full market context (price, RBC, S/R). Agents output BUY/SELL/HOLD for all markets simultaneously (v2.0.104)
+8. **OLR + S/R for ALL positions** — context generated for every open position, not just the active symbol (v2.0.92)
+9. **Multi-symbol single-cycle** — ALL trading markets analyzed in ONE HACP cycle. Non-position markets injected as `isTradingMarket` entries in `positions[]` with full market context (price, OLR, S/R). Agents output BUY/SELL/HOLD for all markets simultaneously (v2.0.104)
 10. **Per-asset adaptive noise filter** — Market Agent selects a `FilterProfile` for each asset (7 profiles: high_vol_crypto, low_vol_crypto, high_vol_alt, dex_perp, forex_index, commodity, default). Each asset gets its own `AdaptiveNoiseFilter` with independent EMA alpha, sigmoid k, conviction gate, and trade frequency throttle. Filter adapts per-cycle based on volatility, win rate, SNR, and trade frequency. Meta-Agent receives per-asset SNR data and must factor it into every decision (v2.0.106)
 11. **3-5 sentences minimum** reasoning per symbol — no truncation, no silence
 
-### 🧬 Self-Evolution System (RBC + EM Cycle Chain)
+### 🧬 Self-Evolution System (OLR + Shadow Trading + First-Passage + EM Cycle Chain)
 
-MATS has **two self-evolution mechanisms**:
+MATS has **multiple self-evolution mechanisms**:
 
-**Layer 1 — RBC (Range-Based Clustering)** (`rbc-clustering.ts`):
-- Growing hyperrectangles per symbol (winBox + lossBox), ranges expand with decay
-- 8 feature dimensions: volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction
-- Layered decay (global + confidence-scaled), time-weighted centroid (half-life 50 cycles)
-- Edge score = discriminative dims / total dims → verdict: favorable/unfavorable/no_edge
-- Per-symbol persistent memory (rbc-state.json, atomic write)
+**Layer 1 — OLR (Online Logistic Regression)** (`olr-engine.ts`):
+- Per-symbol, per-side (LONG/SHORT) logistic regression with Welford z-score normalization
+- SGD online updates from shadow trade + paper trade + real trade outcomes (TP-before-SL)
+- Outputs P(win) ∈ (0,1) — probability of winning for each side
+- Source-type tracking: shadow / paper / real samples (no weighting, agents judge reliability)
+- Recency tracking: recent trades with cyclesAgo for agent temporal judgment
+- SL/TP narrowing feedback: [SL narrowed] tag for Meta-Agent SL/TP adjustment decisions
+
+**Layer 1b — Shadow Trading** (`shadow-trade-engine.ts`):
+- Opens simulated LONG + SHORT every cycle for each trading market
+- Uses S/R-based SL/TP (same as real trades)
+- Tracks until SL or TP is hit → feeds outcome to OLR
+- Learns TP-before-SL (actual trade profitability), NOT 5-minute price direction
+- Max 50 cycles hold before force-resolve
+
+**Layer 1c — First-Passage Probability** (`first-passage.ts`):
+- Instant P(TP before SL) from volatility + drift + S/R-based SL/TP distances
+- Cox & Miller (1965) first-passage formula for Geometric Brownian Motion
+- Returns 50% (no edge) when volatility too low (< 0.1%)
+- Per-symbol drift from marketState price history (not mixed-symbol trade history)
 
 **Layer 2 — EM Cycle Chain** (`cycle-summary.ts`):
 - Meta-Agent distills each cycle into a structured `CycleSummary` (E-step)
@@ -325,7 +339,7 @@ Ollama has a **circuit breaker** (3 consecutive failures → 30s fail-fast), **s
 │   • Entry Thesis System (Meta-Agent → Skeptics validation)   │
 │   • Dark Psychology data interrogation                       │
 │   • Structured debate + weighted voting consensus            │
-│   • Self-evolution (RBC + EM Cycle Chain + GA + Pattern DB)  │
+│   • Self-evolution (OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + Pattern DB)  │
 │   • SystemGuard (5-layer protection)                         │
 │   • LLM invoked only at critical decision points             │
 │                                                              │
@@ -395,14 +409,16 @@ src/                                        # ~25,000 LOC total
 │   ├── index.ts                            # Calendar / drawdown / data freshness / agent track / liquidity
 │   └── types.ts                            # Guard type definitions
 │
-├── evolution/                              # 🧬 Evolution + RBC + pattern classifier
+├── evolution/                              # 🧬 Evolution + OLR + Shadow Trading + pattern classifier
 │   ├── index.ts                            # Evolution orchestrator (directional mutation)
 │   ├── trade-history.ts                    # Trade history ledger
 │   ├── agent-outcomes.ts                   # Per-agent performance tracking
 │   ├── agent-evolution.ts                  # Agent Evolution Engine (dynamic voting weights)
 │   ├── persistence.ts                      # Durable state persistence
 │   ├── trade-pattern-classifier.ts         # Supervised KNN pattern DB
-│   ├── rbc-clustering.ts                   # RBC Engine (layered decay + time-weighted centroid)
+│   ├── olr-engine.ts                       # OLR Engine (Online Logistic Regression)
+│   ├── shadow-trade-engine.ts              # Shadow Trade Engine (simulated TP-before-SL)
+│   ├── first-passage.ts                    # First-Passage Probability Calculator
 │   ├── cycle-summary.ts                    # EM Cycle Summary Manager
 │   ├── em-clustering.ts                    # EM clustering engine
 │   └── pattern-tag-tracker.ts              # Pattern tag frequency tracker
@@ -434,7 +450,6 @@ src/                                        # ~25,000 LOC total
 ui/                                        # 🖥️ React Web UI (pantha_mats design system)
 ├── src/
 │   ├── App.tsx                             # Main dashboard
-│   ├── RBCVisualizer.tsx                   # RBC dimension visualizer
 │   ├── TradingViewChart.tsx                # TradingView chart (live TP/SL update)
 │   ├── StarsBackground.tsx                 # Dynamic starfield background
 │   ├── types.ts                            # UI type definitions
@@ -447,12 +462,13 @@ scripts/                                   # 🛠 Utilities
 ├── loop-engineering-deep.sh                # Deep session runner
 ├── loop-engineering-memory.md              # Known issues / checklist
 ├── backfill-patterns.mjs                   # Import portfolio trades into pattern DB
-└── reset-rbc-symbol.ts                     # Reset RBC state for a single symbol
+└── reset-rbc-symbol.ts                     # Legacy: reset RBC state (deprecated)
 
 data/                                      # 💾 Runtime persistence
 └── evolution/
     ├── trade-patterns.json                 # Pattern DB
-    ├── rbc-state.json                       # RBC state (winBox, lossBox per symbol)
+    ├── olr-state.json                      # OLR state (weights per symbol/side)
+    ├── shadow-state.json                   # Shadow trade state (open positions + recent results)
     ├── evolution-state.json                 # GA population + memory + strategies
     └── portfolio-state.json                 # Portfolio snapshot
 ```

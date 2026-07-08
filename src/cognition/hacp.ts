@@ -1496,6 +1496,17 @@ CRITICAL RULES — FOLLOW EXACTLY:
    Minimum SL distance from current price: 1%.
    Minimum TP distance from current price: 1.5%.
 
+8. ⚠️ SL/TP NARROWING FEEDBACK — The "=== OLR + PATH RISK ASSESSMENT ===" section shows
+   recent trade outcomes with a "[SL narrowed]" tag for trades where SL was tightened.
+   USE THIS FEEDBACK to decide whether to continue narrowing or widen:
+   - If [SL narrowed] trades mostly LOST → narrowing is too aggressive → consider WIDENING SL
+     (price is hitting the tightened SL before reaching TP — give the position more room).
+   - If [SL narrowed] trades mostly WON → narrowing is working → continue trailing SL.
+   - If non-narrowed trades have better win rate than narrowed ones → stop narrowing,
+     let the original S/R-based SL/TP run.
+   This feedback is from shadow + paper + real trades — weight real trades highest,
+   then paper, then shadow (shadow uses fixed SL/TP so its narrowing tag is always false).
+
 Output ONLY valid JSON:
 {"adjust":true,"newStopLoss":66000,"newTakeProfit":64000,"rationale":"Tightening TP as price approaches target, trailing SL to lock in profit."}`,
               },

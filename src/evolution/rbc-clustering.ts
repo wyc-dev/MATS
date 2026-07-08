@@ -643,3 +643,498 @@ export class RBCEngine {
     return parts.join('\n');
   }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Online Logistic Regression Engine (OLR)
+// ═══════════════════════════════════════════════════════════════
+//
+// Replaces RBC's growing-hyperrectangle approach with online logistic
+// regression — the textbook method for online binary classification.
+//
+// Key advantages over RBC:
+//   1. Linear (not axis-aligned) decision boundary → captures feature
+//      interactions naturally.
+//   2. Weights move freely in both directions → adapts to regime shifts
+//      without the "only expand" constraint.
+//   3. LONG and SHORT each have independent models → no mechanical
+//      inversion (which assumes perfect anti-correlation).
+//   4. Outputs P(win) ∈ (0,1) → agents get a probability, not a binary
+//      verdict. Natural confidence measure.
+//   5. Only ONE assumption: linear separability (can be relaxed with
+//      interaction features in the future).
+//
+// Per-symbol, per-side model:
+//   P(win | x, side) = σ(w_side · normalize(x))
+//
+// where normalize(x) uses Welford running z-score standardization so
+// features at different scales (funding ~0.001 vs volatility ~0.03)
+// contribute fairly.
+//
+// Training: SGD on logistic loss (cross-entropy):
+//   w ← w - η (σ(w·x) - y) x
+//   where y ∈ {0, 1} (loss=0, win=1), η = learning rate.
+//
+// Backward compatibility: load() can accept old RBC box state and
+// initialize weights by fitting logistic regression on pseudo-labels
+// derived from box boundaries. This preserves the knowledge from
+// 4000+ historical samples.
+
+// ─── OLR Types ───
+
+export interface OLRModel {
+  /** Weights vector (D+1: bias + D features) */
+  weights: number[];
+  /** Number of training samples for this model */
+  nSamples: number;
+  /** Welford running stats for feature normalization */
+  mean: number[];
+  m2: number[];
+  /** Total count for Welford (includes hypothetical + real samples) */
+  welfordCount: number;
+}
+
+export interface OLRQueryResult {
+  /** P(win) ∈ (0,1) — probability of winning for this side */
+  pWin: number;
+  /** Number of samples backing this model */
+  nSamples: number;
+  /** Confidence label: high (>50 samples), medium (20-50), low (<20) */
+  confidence: 'high' | 'medium' | 'low';
+  /** Per-feature contribution to the logit (w_i × x_i), for explainability */
+  featureContributions: Array<{ name: string; weight: number; value: number; contribution: number }>;
+  /** Human-readable explanation */
+  explanation: string;
+}
+
+export interface OLRSymbolStats {
+  symbol: string;
+  longSamples: number;
+  shortSamples: number;
+  longPWin: number;
+  shortPWin: number;
+}
+
+// ─── OLR Config ───
+
+const OLR_CONFIG = {
+  /** Learning rate for SGD updates */
+  learningRate: 0.05,
+  /** L2 regularization strength (prevents weight explosion on noisy data) */
+  l2Regularization: 0.001,
+  /** Minimum samples before query returns non-0.5 probability */
+  minSamplesForQuery: 10,
+  /** Samples needed for "high" confidence label */
+  highConfidenceSamples: 50,
+  /** Samples needed for "medium" confidence label */
+  mediumConfidenceSamples: 20,
+  /** Welford count floor (avoid division by near-zero variance) */
+  welfordEpsilon: 1e-8,
+  /** Max weight magnitude (clip to prevent overflow) */
+  maxWeight: 10.0,
+} as const;
+
+// ─── OLR Helpers ───
+
+function sigmoid(z: number): number {
+  if (z >= 0) {
+    const ez = Math.exp(-z);
+    return 1 / (1 + ez);
+  }
+  const ez = Math.exp(z);
+  return ez / (1 + ez);
+}
+
+function makeEmptyModel(): OLRModel {
+  return {
+    weights: new Array(D + 1).fill(0), // bias + D features
+    nSamples: 0,
+    mean: new Array(D).fill(0),
+    m2: new Array(D).fill(0),
+    welfordCount: 0,
+  };
+}
+
+// ─── OLR Engine ───
+
+export class OLREngine {
+  /** Per-symbol models — key is lowercase symbol */
+  private symbols = new Map<string, { long: OLRModel; short: OLRModel }>();
+
+  // ─── Lifecycle ───
+
+  load(json: string): void {
+    try {
+      const data = JSON.parse(json);
+      if (data.olrSymbols) {
+        // New OLR format
+        for (const [sym, raw] of Object.entries(data.olrSymbols)) {
+          const s = raw as any;
+          if (!s.long || !s.short) continue;
+          this.symbols.set(sym.toLowerCase(), {
+            long: this.migrateModel(s.long),
+            short: this.migrateModel(s.short),
+          });
+        }
+        log.info(`OLR states loaded: ${this.symbols.size} symbols`);
+        for (const [sym, models] of this.symbols) {
+          log.info(`  ${sym}: long=${models.long.nSamples} short=${models.short.nSamples}`);
+        }
+      } else if (data.symbols) {
+        // Backward compat: old RBC box state → migrate to OLR
+        log.info('[OLR] Loading legacy RBC box state — migrating to logistic regression weights');
+        this.migrateFromRBC(data.symbols);
+      }
+    } catch {
+      log.warn('[OLR load] Failed to parse data, starting fresh');
+    }
+  }
+
+  private migrateModel(m: any): OLRModel {
+    const weights = Array.isArray(m.weights) ? m.weights : new Array(D + 1).fill(0);
+    // Ensure correct length
+    while (weights.length < D + 1) weights.push(0);
+    return {
+      weights: weights.slice(0, D + 1),
+      nSamples: m.nSamples ?? 0,
+      mean: Array.isArray(m.mean) ? m.mean.slice(0, D) : new Array(D).fill(0),
+      m2: Array.isArray(m.m2) ? m.m2.slice(0, D) : new Array(D).fill(0),
+      welfordCount: m.welfordCount ?? 0,
+    };
+  }
+
+  /**
+   * Migrate from old RBC box state to OLR models.
+   *
+   * For each symbol's winBox/lossBox, we generate pseudo-labels:
+   *   - Samples near the winBox centroid → label=1 (win)
+   *   - Samples near the lossBox centroid → label=0 (loss)
+   * Then fit logistic regression weights via batch gradient descent.
+   *
+   * LONG model: winBox samples = win (1), lossBox samples = loss (0)
+   * SHORT model: winBox samples = loss (0), lossBox samples = win (1)
+   *   (because old RBC trained on price direction: price up = LONG win)
+   */
+  private migrateFromRBC(rbcSymbols: Record<string, any>): void {
+    for (const [sym, raw] of Object.entries(rbcSymbols)) {
+      const s = raw as any;
+      const winBox = s.winBox as RBCBox | undefined;
+      const lossBox = s.lossBox as RBCBox | undefined;
+      if (!winBox || !lossBox) continue;
+      if (winBox.min?.length !== D || lossBox.min?.length !== D) continue;
+
+      const winCount = winBox.count ?? 0;
+      const lossCount = lossBox.count ?? 0;
+      if (winCount === 0 && lossCount === 0) continue;
+
+      // Generate pseudo-samples from box centroids
+      const winCentroid = winBox.centroid ?? new Array(D).fill(0);
+      const lossCentroid = lossBox.centroid ?? new Array(D).fill(0);
+
+      // Create pseudo-samples: replicate centroid with small noise
+      const pseudoSamples: { x: number[]; y: number }[] = [];
+      const nPseudo = Math.min(Math.max(winCount, lossCount, 20), 100);
+      for (let i = 0; i < nPseudo; i++) {
+        // Win samples (near win centroid)
+        const winX = winCentroid.slice(0, D).map((v, j) => v + (Math.random() - 0.5) * (winBox.max[j]! - winBox.min[j]! + 1e-6) * 0.3);
+        pseudoSamples.push({ x: winX, y: 1 });
+        // Loss samples (near loss centroid)
+        const lossX = lossCentroid.slice(0, D).map((v, j) => v + (Math.random() - 0.5) * (lossBox.max[j]! - lossBox.min[j]! + 1e-6) * 0.3);
+        pseudoSamples.push({ x: lossX, y: 0 });
+      }
+
+      // Initialize Welford stats from pseudo-samples
+      const longModel = makeEmptyModel();
+      const shortModel = makeEmptyModel();
+      for (const ps of pseudoSamples) {
+        this.updateWelford(longModel, ps.x);
+        this.updateWelford(shortModel, ps.x);
+      }
+
+      // Fit weights via batch gradient descent (50 iterations)
+      for (let iter = 0; iter < 50; iter++) {
+        for (const ps of pseudoSamples) {
+          const xNorm = this.normalize(longModel, ps.x);
+          // LONG: y as-is (win=1, loss=0)
+          this.sgdUpdate(longModel, xNorm, ps.y);
+          // SHORT: invert label (win=0, loss=1)
+          this.sgdUpdate(shortModel, xNorm, 1 - ps.y);
+        }
+      }
+
+      longModel.nSamples = winCount + lossCount;
+      shortModel.nSamples = winCount + lossCount;
+
+      this.symbols.set(sym.toLowerCase(), { long: longModel, short: shortModel });
+      log.info(`[OLR migrate] ${sym}: ${winCount}W/${lossCount}L → long.nSamples=${longModel.nSamples}, short.nSamples=${shortModel.nSamples}`);
+    }
+  }
+
+  save(): string {
+    const obj: Record<string, any> = {};
+    for (const [sym, models] of this.symbols) {
+      obj[sym] = {
+        long: models.long,
+        short: models.short,
+      };
+    }
+    return JSON.stringify({ olrSymbols: obj });
+  }
+
+  // ─── Training ───
+
+  private getOrCreate(symbol: string): { long: OLRModel; short: OLRModel } {
+    const sym = symbol.toLowerCase();
+    if (!this.symbols.has(sym)) {
+      this.symbols.set(sym, { long: makeEmptyModel(), short: makeEmptyModel() });
+    }
+    return this.symbols.get(sym)!;
+  }
+
+  private updateWelford(model: OLRModel, x: number[]): void {
+    model.welfordCount++;
+    const n = model.welfordCount;
+    for (let i = 0; i < D; i++) {
+      const delta = x[i]! - model.mean[i]!;
+      model.mean[i]! += delta / n;
+      model.m2[i]! += delta * (x[i]! - model.mean[i]!);
+    }
+  }
+
+  private normalize(model: OLRModel, x: number[]): number[] {
+    const result = new Array(D);
+    const n = model.welfordCount;
+    for (let i = 0; i < D; i++) {
+      const variance = n > 1 ? model.m2[i]! / (n - 1) : 1;
+      const std = Math.sqrt(Math.max(variance, OLR_CONFIG.welfordEpsilon));
+      result[i] = (x[i]! - model.mean[i]!) / std;
+    }
+    return result;
+  }
+
+  private sgdUpdate(model: OLRModel, xNorm: number[], y: number): void {
+    // Forward pass
+    const xFull = [1, ...xNorm]; // bias term
+    let z = 0;
+    for (let i = 0; i <= D; i++) z += model.weights[i]! * xFull[i]!;
+    const p = sigmoid(z);
+    // Gradient: (p - y) × x, with L2 regularization
+    const error = p - y;
+    for (let i = 0; i <= D; i++) {
+      const reg = i > 0 ? OLR_CONFIG.l2Regularization * model.weights[i]! : 0;
+      model.weights[i]! -= OLR_CONFIG.learningRate * (error * xFull[i]! + reg);
+      // Clip weights to prevent overflow
+      model.weights[i]! = Math.max(-OLR_CONFIG.maxWeight, Math.min(OLR_CONFIG.maxWeight, model.weights[i]!));
+    }
+  }
+
+  /**
+   * Feed a trade outcome into the per-symbol OLR models.
+   *
+   * @param symbol   Trade symbol
+   * @param features Feature vector (8 dimensions, same as RBC)
+   * @param outcome  1 = win, 0 = loss
+   * @param side     'buy' (LONG) or 'sell' (SHORT) — determines which model(s) to update
+   */
+  feedTrade(symbol: string, features: Record<string, number>, outcome: 1 | 0, side?: 'buy' | 'sell'): void {
+    const models = this.getOrCreate(symbol);
+    const vec = this.contextToVector(features);
+
+    // Update Welford normalization stats (shared between long & short)
+    this.updateWelford(models.long, vec);
+    this.updateWelford(models.short, vec);
+
+    const xNorm = this.normalize(models.long, vec);
+
+    if (side === 'sell') {
+      // SHORT trade: outcome directly applies to short model
+      this.sgdUpdate(models.short, xNorm, outcome);
+      models.short.nSamples++;
+    } else if (side === 'buy') {
+      // LONG trade: outcome directly applies to long model
+      this.sgdUpdate(models.long, xNorm, outcome);
+      models.long.nSamples++;
+    } else {
+      // No side specified (legacy hypothetical training) — update long model only
+      // (old RBC trained on price direction: price up = LONG win)
+      this.sgdUpdate(models.long, xNorm, outcome);
+      models.long.nSamples++;
+    }
+  }
+
+  private contextToVector(features: Record<string, number>): number[] {
+    return FEATURE_NAMES.map(name => features[name] ?? 0) as number[];
+  }
+
+  // ─── Query ───
+
+  query(symbol: string, features: Record<string, number>, side: 'buy' | 'sell'): OLRQueryResult {
+    const empty = (reason: string): OLRQueryResult => ({
+      pWin: 0.5,
+      nSamples: 0,
+      confidence: 'low',
+      featureContributions: [],
+      explanation: reason,
+    });
+
+    const models = this.symbols.get(symbol.toLowerCase());
+    if (!models) return empty(`No OLR data for ${symbol}`);
+
+    const model = side === 'buy' ? models.long : models.short;
+    if (model.nSamples < OLR_CONFIG.minSamplesForQuery) {
+      return empty(`Only ${model.nSamples} samples for ${symbol} ${side.toUpperCase()} (need ${OLR_CONFIG.minSamplesForQuery})`);
+    }
+
+    const vec = this.contextToVector(features);
+    const xNorm = this.normalize(model, vec);
+    const xFull = [1, ...xNorm];
+
+    let z = 0;
+    const contributions: Array<{ name: string; weight: number; value: number; contribution: number }> = [];
+    for (let i = 0; i <= D; i++) {
+      const w = model.weights[i]!;
+      const xv = xFull[i]!;
+      z += w * xv;
+      if (i > 0) {
+        contributions.push({
+          name: FEATURE_NAMES[i - 1]!,
+          weight: w,
+          value: vec[i - 1]!,
+          contribution: w * xv,
+        });
+      }
+    }
+
+    const pWin = sigmoid(z);
+    const confLabel: 'high' | 'medium' | 'low' =
+      model.nSamples >= OLR_CONFIG.highConfidenceSamples ? 'high'
+      : model.nSamples >= OLR_CONFIG.mediumConfidenceSamples ? 'medium'
+      : 'low';
+
+    // Sort contributions by absolute value (most influential first)
+    contributions.sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution));
+
+    const topFeatures = contributions.slice(0, 4)
+      .map(c => `${c.name}=${c.value.toFixed(3)} (w=${c.weight.toFixed(2)})`)
+      .join(', ');
+
+    const explanation = `P(win)=${(pWin * 100).toFixed(0)}% (${model.nSamples} samples, conf=${confLabel}) | Key: ${topFeatures}`;
+
+    return { pWin, nSamples: model.nSamples, confidence: confLabel, featureContributions: contributions, explanation };
+  }
+
+  // ─── Stats (for UI) ───
+
+  getAllModelStats(): OLRSymbolStats[] {
+    const result: OLRSymbolStats[] = [];
+    for (const [sym, models] of this.symbols) {
+      const longPWin = models.long.nSamples >= OLR_CONFIG.minSamplesForQuery
+        ? sigmoid(this.computeLogit(models.long, this.zeroFeatures()))
+        : 0.5;
+      const shortPWin = models.short.nSamples >= OLR_CONFIG.minSamplesForQuery
+        ? sigmoid(this.computeLogit(models.short, this.zeroFeatures()))
+        : 0.5;
+      result.push({
+        symbol: sym,
+        longSamples: models.long.nSamples,
+        shortSamples: models.short.nSamples,
+        longPWin,
+        shortPWin,
+      });
+    }
+    return result;
+  }
+
+  private zeroFeatures(): Record<string, number> {
+    const obj: Record<string, number> = {};
+    for (const name of FEATURE_NAMES) obj[name] = 0;
+    return obj;
+  }
+
+  private computeLogit(model: OLRModel, features: Record<string, number>): number {
+    const vec = this.contextToVector(features);
+    const xNorm = this.normalize(model, vec);
+    const xFull = [1, ...xNorm];
+    let z = 0;
+    for (let i = 0; i <= D; i++) z += model.weights[i]! * xFull[i]!;
+    return z;
+  }
+
+  /** Get feature weights for a symbol+side (for UI visualization) */
+  getFeatureWeights(symbol: string, side: 'buy' | 'sell'): Array<{ name: string; weight: number }> | null {
+    const models = this.symbols.get(symbol.toLowerCase());
+    if (!models) return null;
+    const model = side === 'buy' ? models.long : models.short;
+    const result: Array<{ name: string; weight: number }> = [];
+    for (let i = 0; i < D; i++) {
+      result.push({ name: FEATURE_NAMES[i]!, weight: model.weights[i + 1]! });
+    }
+    return result;
+  }
+
+  /** Get normalization stats for a symbol+side (for UI) */
+  getNormalizationStats(symbol: string, side: 'buy' | 'sell'): Array<{ name: string; mean: number; std: number }> | null {
+    const models = this.symbols.get(symbol.toLowerCase());
+    if (!models) return null;
+    const model = side === 'buy' ? models.long : models.short;
+    const n = model.welfordCount;
+    const result: Array<{ name: string; mean: number; std: number }> = [];
+    for (let i = 0; i < D; i++) {
+      const variance = n > 1 ? model.m2[i]! / (n - 1) : 0;
+      result.push({ name: FEATURE_NAMES[i]!, mean: model.mean[i]!, std: Math.sqrt(Math.max(variance, 0)) });
+    }
+    return result;
+  }
+
+  /** Return all tracked symbol names */
+  getAllSymbols(): string[] {
+    return Array.from(this.symbols.keys());
+  }
+
+  getPendingStats(): Array<{ symbol: string; pending: number; needed: number; pct: number }> {
+    const result: Array<{ symbol: string; pending: number; needed: number; pct: number }> = [];
+    for (const [sym, models] of this.symbols) {
+      const totalSamples = Math.max(models.long.nSamples, models.short.nSamples);
+      if (totalSamples === 0) continue;
+      result.push({
+        symbol: sym,
+        pending: totalSamples,
+        needed: OLR_CONFIG.minSamplesForQuery,
+        pct: Math.min(100, Math.round((totalSamples / OLR_CONFIG.minSamplesForQuery) * 100)),
+      });
+    }
+    return result;
+  }
+
+  // ─── Agent Context ───
+
+  formatForAgentContext(): string {
+    const parts: string[] = [
+      '=== OLR ASSESSMENT ===',
+      'Online Logistic Regression: P(win) per side from feature weights.',
+      'Each side (LONG/SHORT) has independent model — no inversion assumption.',
+      'USAGE: P(win) > 60% → bias toward entry; P(win) < 40% → bias against;',
+      'P(win) 40-60% → no edge, rely on other signals.',
+      'Weight by confidence: high (>50 samples) = trust it; low (<20) = noisy.',
+    ];
+    let hasData = false;
+    for (const [sym, models] of this.symbols) {
+      const longS = models.long.nSamples;
+      const shortS = models.short.nSamples;
+      if (longS < OLR_CONFIG.minSamplesForQuery && shortS < OLR_CONFIG.minSamplesForQuery) continue;
+      hasData = true;
+      const longP = longS >= OLR_CONFIG.minSamplesForQuery
+        ? sigmoid(this.computeLogit(models.long, this.zeroFeatures()))
+        : 0.5;
+      const shortP = shortS >= OLR_CONFIG.minSamplesForQuery
+        ? sigmoid(this.computeLogit(models.short, this.zeroFeatures()))
+        : 0.5;
+      const longConf = longS >= OLR_CONFIG.highConfidenceSamples ? 'high'
+        : longS >= OLR_CONFIG.mediumConfidenceSamples ? 'medium' : 'low';
+      const shortConf = shortS >= OLR_CONFIG.highConfidenceSamples ? 'high'
+        : shortS >= OLR_CONFIG.mediumConfidenceSamples ? 'medium' : 'low';
+      parts.push(`${sym}: BUY P(win)=${(longP * 100).toFixed(0)}% (${longS} samples, ${longConf}) | SELL P(win)=${(shortP * 100).toFixed(0)}% (${shortS} samples, ${shortConf})`);
+    }
+    if (!hasData) parts.push('  (no OLR data yet)');
+    return parts.join('\n');
+  }
+}

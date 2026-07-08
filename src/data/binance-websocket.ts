@@ -491,6 +491,12 @@ export class MarketStateAggregator {
     }
   }
 
+  /** Get per-symbol price history (for drift estimation). Returns copy of array. */
+  getPriceHistory(symbol: string): number[] {
+    const sym = symbol.toLowerCase();
+    return [...(this.priceHistory.get(sym) ?? [])];
+  }
+
   /** Update order book imbalance from depth callbacks */
   updateDepth(bids: Array<{price: number; qty: number}>, asks: Array<{price: number; qty: number}>): void {
     let bidVol = 0, askVol = 0;
