@@ -1794,7 +1794,7 @@ Output ONLY valid JSON:
     // both added positive weight. The threshold measured conviction (how
     // confident agents are) not directional agreement (do agents agree on
     // the SAME direction). 5 agents confidently voting BUY passed the
-    // threshold even if RBC said UNFAVORABLE, because the threshold only
+    // threshold even if OLR showed no edge, because the threshold only
     // checked "are agents confident" not "do agents agree on direction".
     //
     // Now: weightedSum = sum(weight * confidence * decisionValue)
