@@ -3386,10 +3386,29 @@ class MATSSystem {
             }
             auditGates.push({ gate: 'frequency-throttle', passed: true, reason: 'OK' });
 
-            log.info(`📊 Multi-symbol entry: ${psc.action.toUpperCase()} ${psc.symbol} ${(psc.positionSizePct * 100).toFixed(1)}% — executing (trading market → real entry)`);
+            // v2.0.135 fix: fetch entry price for this trading market — the
+            // multi-symbol entry path previously omitted entryPrice, so
+            // realTradingManager.executeDecision() got price=0 → "No price
+            // available for real trade" even though all gates passed.
+            let pscPrice = this.marketState.getState(psc.symbol)?.price ?? 0;
+            if (pscPrice <= 0) {
+              // Fallback: fetch via Market Agent (same source as the trading-
+              // market price fetch earlier in the cycle).
+              try {
+                pscPrice = (await this.marketAgent.fetchPriceForSymbol(psc.symbol)).price;
+              } catch { /* keep 0 */ }
+            }
+            if (pscPrice <= 0) {
+              log.warn(`📊 Multi-symbol entry ${psc.symbol}: ❌ — no price available (marketState + HL REST both failed)`);
+              auditGates.push({ gate: 'execution', passed: false, reason: 'no price available for entry' });
+              this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
+              continue;
+            }
+            log.info(`📊 Multi-symbol entry: ${psc.action.toUpperCase()} ${psc.symbol} ${(psc.positionSizePct * 100).toFixed(1)}% @ $${pscPrice.toFixed(2)} — executing (trading market → real entry)`);
             const pscEntryDecision = {
               action: psc.action,
               symbol: psc.symbol,
+              entryPrice: pscPrice,
               positionSizePct: psc.positionSizePct,
               leverage: psc.leverage ?? this.marketAgent.getConfig().leverage,
               rationale: psc.rationale,
@@ -4836,7 +4855,15 @@ class MATSSystem {
         patternTagStats: this.patternTagTracker ? this.patternTagTracker.getStats() : undefined,
         patternTagSummary: this.patternTagTracker ? this.patternTagTracker.getSummary() : undefined,
         olrState: (() => {
-          const allStats = this.olrEngine.getAllModelStats();
+          // v2.0.135: filter OLR panel to CURRENT trading markets + open positions
+          // only. Without this, stale persisted models from previous sessions
+          // (e.g. auto-selected symbols that are no longer traded) pollute the
+          // Evolution panel with symbols the user never chose.
+          const allStatsRaw = this.olrEngine.getAllModelStats();
+          const _panelNorm = (sy: string) => sy.toLowerCase();
+          const _tradingNorms = new Set(this.tradingMarkets.map(_panelNorm));
+          const _posNorms = new Set(this.portfolio.getOpenSymbols().map(_panelNorm));
+          const allStats = allStatsRaw.filter(st => _tradingNorms.has(_panelNorm(st.symbol)) || _posNorms.has(_panelNorm(st.symbol)));
           const pendingStats = this.olrEngine.getPendingStats();
           const shadowStats = this.shadowEngine.getStats();
           const hasFirstPassage = !!this.lastFirstPassage;
@@ -4898,8 +4925,9 @@ class MATSSystem {
               breakevenPShort: this.lastFirstPassage.breakevenPShort,
               confidence: this.lastFirstPassage.confidence,
             } : undefined,
-            shadowStats: this.shadowEngine.getStats(),
-            shadowOpen: this.shadowEngine.getOpenPositions().map(p => ({
+            shadowStats: this.shadowEngine.getStats().filter(ss => _tradingNorms.has(_panelNorm(ss.symbol)) || _posNorms.has(_panelNorm(ss.symbol))),
+
+            shadowOpen: this.shadowEngine.getOpenPositions().filter(p => _tradingNorms.has(_panelNorm(p.symbol)) || _posNorms.has(_panelNorm(p.symbol))).map(p => ({
               symbol: p.symbol,
               side: p.side,
               entryPrice: p.entryPrice,
