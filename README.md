@@ -14,6 +14,20 @@ MATS is a multi-agent cognitive trading system: 8 specialized agents think in pa
 
 ---
 
+## 📸 See It In Action
+
+<a href="https://github.com/wyc-dev/MATS/blob/main/docs/dashboard.mp4" target="_blank" title="Click to play the full 27s demo">
+  <img src="docs/dashboard.gif" alt="MATS Dashboard demo — 8 AI agents debate every trade in real time" width="100%">
+</a>
+
+*10-second loop. [Click for the full 27s demo video](https://github.com/wyc-dev/MATS/blob/main/docs/dashboard.mp4) — real-time HACP debate, Skeptics validation, weighted consensus, live TP/SL on TradingView, self-evolution metrics.*
+
+### Backtest equity curve — coming soon
+
+> 📈 Backtest results being generated. ⭐ Star + watch the repo to be notified when the equity curve lands.
+
+---
+
 ## Quick Start (Ollama)
 
 ### Prerequisites
@@ -232,6 +246,23 @@ Restrict a symbol to BUY-only or SELL-only via API or `data/evolution/market-age
 - **Tests**: 41 passing. `tsc --noEmit` clean. UI build clean.
 
 → Full history in `git log`.
+
+---
+
+## Community
+
+- 🌐 **Homepage**: [mats.trading](https://mats.trading/)
+- 💬 **Discord**: [coming soon — star + watch to be notified](https://github.com/wyc-dev/MATS)
+- 🐦 **Twitter**: [@MATS_trading](https://twitter.com/) (coming soon)
+- 🤝 **Contributing**: PRs welcome! Fork → branch → PR. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system overview.
+
+## Roadmap
+
+- **Backtest visualization** — equity curve + trade markers in the dashboard UI
+- **More exchanges** — Binance Futures, OKX, additional perp DEXs
+- **Decision audit UI** — gate-by-gate HACP decision flow visualization
+- **Real trading hardening** — position reconciliation, funding cost tracking, multi-DEX balance
+- **Multi-model ensemble** — per-agent model routing across Ollama / cloud providers
 
 ---
 
