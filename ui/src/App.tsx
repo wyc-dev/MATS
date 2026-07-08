@@ -1843,7 +1843,6 @@ function StrategyCard({ strategy }: { strategy: any }) {
 function OLRSection({ olrState, openPositionSymbols }: { olrState: any; openPositionSymbols?: Set<string> }) {
   const hasSymbols = olrState?.symbols?.length > 0
   const hasPending = olrState?.pending?.length > 0
-  const hasFirstPassage = !!olrState?.firstPassage
   const hasShadow = olrState?.shadowStats?.length > 0
 
   return (
@@ -1854,7 +1853,7 @@ function OLRSection({ olrState, openPositionSymbols }: { olrState: any; openPosi
         {hasSymbols && <span className="evo-badge evo-badge-right">{olrState.symbols.length} symbols</span>}
       </div>
 
-      {!hasSymbols && !hasPending && !hasFirstPassage ? (
+      {!hasSymbols && !hasPending ? (
         <div className="evo-empty">
           <div className="evo-empty-icon">🧬</div>
           <div className="evo-empty-text">Waiting for shadow trade data</div>
@@ -1862,46 +1861,6 @@ function OLRSection({ olrState, openPositionSymbols }: { olrState: any; openPosi
         </div>
       ) : (
         <>
-          {hasFirstPassage && (() => {
-            const fp = olrState.firstPassage
-            const beLong = fp.breakevenPLong ?? 0.5
-            const beShort = fp.breakevenPShort ?? 0.5
-            const longEdge = fp.longPWin - beLong
-            const shortEdge = fp.shortPWin - beShort
-            const longColor = longEdge > 0.05 ? 'var(--green)' : longEdge < -0.05 ? 'var(--red)' : 'var(--text-muted)'
-            const shortColor = shortEdge > 0.05 ? 'var(--green)' : shortEdge < -0.05 ? 'var(--red)' : 'var(--text-muted)'
-            const lowConf = fp.confidence === 'low'
-            return (
-            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                First-Passage P(TP before SL)
-                {lowConf && <span style={{ background: 'var(--warning, #f59e0b)', color: '#000', borderRadius: '3px', padding: '1px 6px', fontSize: '0.6rem', fontWeight: 700 }}>low-conf</span>}
-              </div>
-              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'center' }}>
-                <div>
-                  <span style={{ color: longColor, fontWeight: 700, fontSize: '1.1rem' }}>
-                    LONG {(fp.longPWin * 100).toFixed(0)}%
-                  </span>
-                  <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginLeft: '4px' }}>be {(beLong * 100).toFixed(0)}% ({(longEdge * 100).toFixed(0)}pp)</span>
-                </div>
-                <div>
-                  <span style={{ color: shortColor, fontWeight: 700, fontSize: '1.1rem' }}>
-                    SHORT {(fp.shortPWin * 100).toFixed(0)}%
-                  </span>
-                  <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginLeft: '4px' }}>be {(beShort * 100).toFixed(0)}% ({(shortEdge * 100).toFixed(0)}pp)</span>
-                </div>
-                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                  Drift: {(fp.drift * 100).toFixed(2)}%/c · σ: {(fp.volatility * 100).toFixed(2)}%/c
-                </div>
-              </div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                LONG SL {(fp.slDistance * 100).toFixed(1)}% / TP {(fp.tpDistance * 100).toFixed(1)}% · SHORT SL {(fp.slDistanceShort * 100).toFixed(1)}% / TP {(fp.tpDistanceShort * 100).toFixed(1)}%
-              </div>
-            </div>
-          )
-          })()}
-
-
           {hasShadow && (
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
               <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
