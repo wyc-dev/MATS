@@ -1,7 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import { Settings, Pause, Play, Power } from 'lucide-react'
 import type { APIData, AgentModelConfig, ModelDefinition } from './types'
-import RBCVisualizer from './RBCVisualizer'
 import { AGENT_META, AGENT_ROLES } from './types'
 import TradingViewChart from './TradingViewChart'
 
@@ -1841,49 +1840,75 @@ function StrategyCard({ strategy }: { strategy: any }) {
   )
 }
 
-function RBCSection({ rbcState, openPositionSymbols }: { rbcState: any; openPositionSymbols?: Set<string> }) {
-  const hasSymbols = rbcState?.symbols?.length > 0
-  const hasPending = rbcState?.pending?.length > 0
-  const [expandedSet, setExpandedSet] = useState<Set<string>>(() => {
-    // Default: expand symbols that have open positions
-    if (!rbcState?.symbols || !openPositionSymbols) return new Set()
-    const initial = new Set<string>()
-    for (const sym of rbcState.symbols) {
-      if (openPositionSymbols.has(sym.symbol.toLowerCase())) {
-        initial.add(sym.symbol)
-      }
-    }
-    return initial
-  })
-
-  const toggleExpand = (symbol: string) => {
-    setExpandedSet(prev => {
-      const next = new Set(prev)
-      if (next.has(symbol)) next.delete(symbol)
-      else next.add(symbol)
-      return next
-    })
-  }
+function OLRSection({ olrState, openPositionSymbols }: { olrState: any; openPositionSymbols?: Set<string> }) {
+  const hasSymbols = olrState?.symbols?.length > 0
+  const hasPending = olrState?.pending?.length > 0
+  const hasFirstPassage = !!olrState?.firstPassage
+  const hasShadow = olrState?.shadowStats?.length > 0
 
   return (
     <div className="evo-section">
       <div className="evo-section-header">
         <div className="evo-section-accent" />
-        <span className="evo-section-title">RBC Clusters</span>
-        {hasSymbols && <span className="evo-badge evo-badge-right">{rbcState.symbols.length} symbols</span>}
+        <span className="evo-section-title">OLR + Path Risk</span>
+        {hasSymbols && <span className="evo-badge evo-badge-right">{olrState.symbols.length} symbols</span>}
       </div>
 
-      {!hasSymbols && !hasPending ? (
+      {!hasSymbols && !hasPending && !hasFirstPassage ? (
         <div className="evo-empty">
           <div className="evo-empty-icon">🧬</div>
-          <div className="evo-empty-text">Waiting for enough data</div>
-          <div className="evo-empty-hint">Need 3+ samples per symbol to start RBC assessment</div>
+          <div className="evo-empty-text">Waiting for shadow trade data</div>
+          <div className="evo-empty-hint">Shadow trades open every cycle — outcomes feed OLR after SL/TP hit</div>
         </div>
       ) : (
         <>
-          {hasPending && !hasSymbols && (
+          {hasFirstPassage && (
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                First-Passage P(TP before SL)
+              </div>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                <div>
+                  <span style={{ color: olrState.firstPassage.longPWin > 0.55 ? 'var(--green)' : olrState.firstPassage.longPWin < 0.45 ? 'var(--red)' : 'var(--text-muted)', fontWeight: 700, fontSize: '1.1rem' }}>
+                    LONG {(olrState.firstPassage.longPWin * 100).toFixed(0)}%
+                  </span>
+                </div>
+                <div>
+                  <span style={{ color: olrState.firstPassage.shortPWin > 0.55 ? 'var(--green)' : olrState.firstPassage.shortPWin < 0.45 ? 'var(--red)' : 'var(--text-muted)', fontWeight: 700, fontSize: '1.1rem' }}>
+                    SHORT {(olrState.firstPassage.shortPWin * 100).toFixed(0)}%
+                  </span>
+                </div>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                  Drift: {(olrState.firstPassage.drift * 100).toFixed(2)}%/cycle · Vol: {(olrState.firstPassage.volatility * 100).toFixed(2)}% · SL: {(olrState.firstPassage.slDistance * 100).toFixed(1)}% TP: {(olrState.firstPassage.tpDistance * 100).toFixed(1)}%
+                </div>
+              </div>
+            </div>
+          )}
+
+          {hasShadow && (
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Shadow Trade Results (TP-before-SL)
+              </div>
+              {olrState.shadowStats.map((ss: any) => (
+                <div key={ss.symbol} style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '4px' }}>
+                  <span style={{ fontWeight: 600, fontSize: '0.8rem' }}>{ss.symbol.toUpperCase()}</span>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{ss.openCount} open</span>
+                  <span style={{ fontSize: '0.7rem', color: ss.longWinRate > 0.5 ? 'var(--green)' : 'var(--red)' }}>
+                    LONG {ss.longWins}W/{ss.longLosses}L ({(ss.longWinRate * 100).toFixed(0)}%)
+                  </span>
+                  <span style={{ fontSize: '0.7rem', color: ss.shortWinRate > 0.5 ? 'var(--green)' : 'var(--red)' }}>
+                    SHORT {ss.shortWins}W/{ss.shortLosses}L ({(ss.shortWinRate * 100).toFixed(0)}%)
+                  </span>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>avg {ss.avgHoldCycles.toFixed(0)} cycles</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {hasPending && (
             <div className="evo-pending-section">
-              {rbcState.pending.map((p: any) => (
+              {olrState.pending.map((p: any) => (
                 <div key={p.symbol} className="evo-pending-row">
                   <span className="evo-pending-symbol">{p.symbol.toUpperCase()}</span>
                   <div className="evo-pending-track">
@@ -1894,82 +1919,49 @@ function RBCSection({ rbcState, openPositionSymbols }: { rbcState: any; openPosi
               ))}
             </div>
           )}
+
           {hasSymbols && (
-            rbcState.symbols.map((symState: any) => {
-              const edgePct = symState.totalDims > 0 ? Math.round((symState.discriminativeDims / symState.totalDims) * 100) : 0
-              const verdict = edgePct >= 25 ? (symState.winCount > symState.lossCount ? 'favorable' : 'unfavorable') : 'no_edge'
-              const verdictIcon = verdict === 'favorable' ? '🟢' : verdict === 'unfavorable' ? '🔴' : '🟡'
-              const isExpanded = expandedSet.has(symState.symbol)
+            olrState.symbols.map((symState: any) => {
               const hasPosition = openPositionSymbols?.has(symState.symbol.toLowerCase())
+              const longIcon = symState.longPWin > 0.6 ? '🟢' : symState.longPWin < 0.4 ? '🔴' : '🟡'
+              const shortIcon = symState.shortPWin > 0.6 ? '🟢' : symState.shortPWin < 0.4 ? '🔴' : '🟡'
               return (
                 <div key={symState.symbol} className="evo-cluster-symbol">
-                  <div className="evo-cluster-symbol-header evo-cluster-clickable" onClick={() => toggleExpand(symState.symbol)}>
-                    <span className={`evo-expand-arrow ${isExpanded ? 'expanded' : ''}`}>▶</span>
+                  <div className="evo-cluster-symbol-header">
                     <span className="evo-cluster-symbol-name">{symState.symbol.toUpperCase()}</span>
                     {hasPosition && <span className="evo-badge evo-badge-position">POSITION</span>}
-                    <span className="evo-badge">{symState.winCount}W/{symState.lossCount}L *</span>
-                    <span className="evo-badge">{edgePct}% edge</span>
-                    <span className="evo-cluster-indicator">{verdictIcon}</span>
+                    <span className="evo-badge">{symState.longSamples}L / {symState.shortSamples}S samples</span>
                   </div>
-
-                  {/* Per-dimension bars — per-symbol, not shared globally — only when expanded */}
-                  {isExpanded && symState.dimDetails?.length > 0 && (
-                    <div className="rbc-dim-list rbc-dim-list-top">
-                      {symState.dimDetails.map((d: any) => {
-                        const span = d.globalMax - d.globalMin || 1
-                        const toPct = (v: number) => ((v - d.globalMin) / span) * 100
-
-                        const winL = toPct(d.winMin)
-                        const winR = toPct(d.winMax)
-                        const lossL = toPct(d.lossMin)
-                        const lossR = toPct(d.lossMax)
-                        const ovL = toPct(Math.max(d.winMin, d.lossMin))
-                        const ovR = toPct(Math.min(d.winMax, d.lossMax))
-
-                        const hasWin = d.winMin !== 0 || d.winMax !== 0 || d.winMin !== d.winMax
-                        const hasLoss = d.lossMin !== 0 || d.lossMax !== 0 || d.lossMin !== d.lossMax
-                        const hasOverlap = d.overlap && ovR > ovL
-
+                  <div style={{ padding: '4px 16px 8px', display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '0.8rem' }}>
+                      {longIcon} BUY P(win)=<b style={{ color: symState.longPWin > 0.6 ? 'var(--green)' : symState.longPWin < 0.4 ? 'var(--red)' : 'var(--text-muted)' }}>{(symState.longPWin * 100).toFixed(0)}%</b>
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>({symState.longConfidence})</span>
+                    </span>
+                    <span style={{ fontSize: '0.8rem' }}>
+                      {shortIcon} SELL P(win)=<b style={{ color: symState.shortPWin > 0.6 ? 'var(--green)' : symState.shortPWin < 0.4 ? 'var(--red)' : 'var(--text-muted)' }}>{(symState.shortPWin * 100).toFixed(0)}%</b>
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>({symState.shortConfidence})</span>
+                    </span>
+                  </div>
+                  {symState.featureWeights && symState.featureWeights.length > 0 && (
+                    <div style={{ padding: '0 16px 8px' }}>
+                      {symState.featureWeights.map((fw: any) => {
+                        const maxAbs = Math.max(...symState.featureWeights.map((w: any) => Math.max(Math.abs(w.longWeight), Math.abs(w.shortWeight))), 0.1)
+                        const longPct = Math.abs(fw.longWeight) / maxAbs * 50
+                        const shortPct = Math.abs(fw.shortWeight) / maxAbs * 50
                         return (
-                          <div key={d.name} className="rbc-dim-row">
-                            <span className="rbc-dim-name">{d.name}</span>
-                            <div className="rbc-dim-track">
-                              {hasLoss && (
-                                <div className="rbc-dim-seg-loss" style={{ left: `${Math.max(0, lossL)}%`, width: `${Math.min(100, lossR - lossL)}%` }} />
-                              )}
-                              {hasWin && (
-                                <div className="rbc-dim-seg-win" style={{ left: `${Math.max(0, winL)}%`, width: `${Math.min(100, winR - winL)}%` }} />
-                              )}
-                              {hasOverlap && (
-                                <div className="rbc-dim-seg-overlap" style={{ left: `${Math.max(0, ovL)}%`, width: `${Math.min(100, ovR - ovL)}%` }} />
-                              )}
-                              {d.boundary !== null && (
-                                <div className="rbc-dim-boundary" style={{ left: `${Math.max(0, Math.min(100, toPct(d.boundary)))}%` }} />
-                              )}
-                              {d.value !== undefined && (
-                                <div className="rbc-dim-dot" style={{ left: `${Math.max(0, Math.min(100, toPct(d.value)))}%` }} />
-                              )}
+                          <div key={fw.name} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
+                            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', width: '100px', textAlign: 'right' }}>{fw.name}</span>
+                            <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '2px' }}>
+                              <div style={{ width: `${longPct}%`, height: '6px', background: fw.longWeight > 0 ? 'var(--green)' : 'var(--red)', borderRadius: '2px', opacity: 0.7 }} />
+                              <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>{fw.longWeight.toFixed(2)}</span>
+                            </div>
+                            <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '2px', flexDirection: 'row-reverse' }}>
+                              <div style={{ width: `${shortPct}%`, height: '6px', background: fw.shortWeight > 0 ? 'var(--green)' : 'var(--red)', borderRadius: '2px', opacity: 0.7 }} />
+                              <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>{fw.shortWeight.toFixed(2)}</span>
                             </div>
                           </div>
                         )
                       })}
-
-                      {/* Summary footer — white line + key stats */}
-                      <div className="rbc-summary-row rbc-summary-top">
-                        <span className="rbc-dim-name rbc-dim-name-secondary">RBC Edge</span>
-                        <div className="rbc-dim-track">
-                          <div
-                            className="rbc-summary-fill"
-                            style={{
-                              width: `${Math.max(2, edgePct)}%`,
-                              background: verdict === 'favorable' ? 'var(--green)' : verdict === 'unfavorable' ? 'var(--red)' : 'var(--text-muted)',
-                            }}
-                          />
-                        </div>
-                        <span className="rbc-dim-meta">
-                          {edgePct}% · {symState.discriminativeDims}/{symState.totalDims} · {symState.totalSamples}s *
-                        </span>
-                      </div>
                     </div>
                   )}
                 </div>
@@ -1978,52 +1970,6 @@ function RBCSection({ rbcState, openPositionSymbols }: { rbcState: any; openPosi
           )}
         </>
       )}
-
-      {/* ── How to read legend ── */}
-      <div className="rbc-legend">
-        <div className="rbc-legend-title">How to Read RBC Clusters</div>
-        <div className="rbc-legend-grid">
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch rbc-legend-swatch--win" />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Win Range</span>
-              <span className="rbc-legend-desc">Historic feature values where the strategy profited. When the white position dot falls here, this dimension favours the trade.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch rbc-legend-swatch--loss" />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Loss Range</span>
-              <span className="rbc-legend-desc">Feature values associated with past losses. A dot in red territory suggests caution on this dimension.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch rbc-legend-swatch--overlap" />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Overlap</span>
-              <span className="rbc-legend-desc">Win and loss ranges intersect — the current value is ambiguous. Low conviction; no clear edge on this dimension.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch rbc-legend-swatch--boundary" />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Boundary</span>
-              <span className="rbc-legend-desc">Midpoint of the overlap region. Even when the win range is tiny and fully swallowed by loss (only gold + red visible), the boundary still marks the threshold between win-dominant and loss-dominant territory within the overlap. It remains useful as a decision divider.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch rbc-legend-swatch--bar" />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">RBC Edge</span>
-              <span className="rbc-legend-desc">Percentage of dimensions where the current state falls outside overlap (discriminative dims / total dims). Higher = stronger conviction. <strong>0% does not mean the engine is broken</strong> — it means every dimension currently sits in the ambiguous overlap zone. This is itself a useful signal: the system recognises it lacks clarity and should hold.</span>
-            </div>
-          </div>
-        </div>
-        <div className="rbc-legend-footer">
-          Ranges grow monotonically as new trades are recorded — they never shrink. The white dot moves each cycle with live market state.
-          <span className="rbc-legend-footer-note rbc-legend-note-block">* Win/loss counts are based on <strong>hypothetical training data</strong>: directional moves &gt;0.1% feed one winning sample, flat moves &lt;0.05% feed two losing samples (both directions). This reflects price-action bias, not real trade PnL.</span>
-        </div>
-      </div>
     </div>
   )
 }
@@ -2056,7 +2002,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
 
   const th = evo.tradeHistory
   const activeStrategy = evo.strategies.find((s: any) => s.status === 'active')
-  const symbolCount = data?.rbcState?.symbols?.length ?? 0
+  const symbolCount = data?.olrState?.symbols?.length ?? 0
 
   // Build set of open position symbols (lowercased for matching)
   const openPositionSymbols = new Set<string>()
@@ -2078,7 +2024,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
       <EvolutionStats evo={evo} th={th} />
       <FitnessBreakdown fb={evo.fitnessBreakdown} />
       {activeStrategy && <StrategyCard strategy={activeStrategy} />}
-      <RBCSection rbcState={data?.rbcState} openPositionSymbols={openPositionSymbols} />
+      <OLRSection olrState={data?.olrState} openPositionSymbols={openPositionSymbols} />
     </div>
   )
 }
