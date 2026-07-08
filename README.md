@@ -2,7 +2,7 @@
 
 **8 AI agents debate every trade. A Skeptics agent vetoes bad ones. The system evolves its own strategy — no manual tuning.**
 
-Single-LLM trading bots hallucinate. They lack oversight, have no risk governance, and cannot adapt to changing markets. MATS solves this with a multi-agent cognitive architecture: 8 specialized agents think in parallel, debate through the HACP protocol, and reach weighted consensus. A dedicated Skeptics agent stress-tests every position before execution. The system self-evolves via genetic algorithms + online logistic regression (OLR) + shadow trading + first-passage path-risk + EM cycle chains — it learns from every trade and adapts its own parameters.
+MATS is a multi-agent cognitive trading system: 8 specialized agents think in parallel, debate through the HACP protocol, and reach weighted consensus. A dedicated Skeptics agent stress-tests every position before execution. The system self-evolves via online logistic regression (OLR) + shadow trading + first-passage path-risk + EM cycle chains + genetic algorithms — it learns from every trade and adapts its own parameters.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -14,311 +14,53 @@ Single-LLM trading bots hallucinate. They lack oversight, have no risk governanc
 
 ---
 
-## 📸 See It In Action
-
-### Dashboard — live HACP debate + TradingView + evolution metrics
-
-<a href="https://github.com/wyc-dev/MATS/blob/main/docs/dashboard.mp4" target="_blank" title="Click to play the full 27s demo">
-  <img src="docs/dashboard.gif" alt="MATS Dashboard demo — 8 AI agents debate every trade in real time" width="100%">
-</a>
-
-*10-second loop. [Click for the full 27s demo video](https://github.com/wyc-dev/MATS/blob/main/docs/dashboard.mp4). Real-time: 8 agents debate → Skeptics validation → weighted consensus → live TP/SL on TradingView chart → self-evolution metrics.*
-
-### Backtest equity curve — coming soon
-
-> 📈 Backtest results being generated. ⭐ Star + watch the repo to be notified when the equity curve lands.
-
-### Skeptics veto — AI stress-tests every trade
-
-> 🛡️ Screenshot coming. Every BUY/SELL must survive a Skeptics stress-test before execution — only rejected on a specific, material flaw that would cause a loss.
-
----
-
 ## Quick Start (Ollama)
 
 ### Prerequisites
+- Node.js 22+, npm
+- [Ollama](https://ollama.com) running locally (or Pro plan for cloud models)
 
-- **Node.js 22+**
-- **Ollama** (local LLM runtime — free, no API key required)
-
-### 1. Install Ollama
-
+### 1. Install Ollama & Pull a Model
 ```bash
-# macOS
-brew install ollama
-
-# Linux
-curl -fsSL https://ollama.com/install.sh | sh
-```
-
-### 2. Pull a Model
-
-MATS requires a model with strong reasoning capabilities. **DeepSeek** series is recommended:
-
-```bash
-# Primary model (used by sub-agents)
-ollama pull deepseek-v4-flash:cloud
-
-# Alternative compatible models
-ollama pull qwen2.5:32b
-ollama pull llama-3.3-70b-instruct
-```
-
-### 3. Start Ollama
-
-```bash
+# macOS: brew install ollama  |  Linux: curl -fsSL https://ollama.com/install.sh | sh
 ollama serve
+ollama pull deepseek-v4-flash   # primary model used by sub-agents
 ```
 
-Verify the service is running:
-
-```bash
-curl http://localhost:11434/api/tags
-# Expected: JSON response listing available models
-```
-
-### 4. Clone & Install
-
+### 2. Clone & Install
 ```bash
 git clone https://github.com/wyc-dev/MATS.git
-cd MATS
-npm install
+cd MATS && npm install
 cd ui && npm install && cd ..
 ```
 
-### 5. Configure Environment
-
+### 3. Configure Environment
 ```bash
 cp .env.example .env
+# Edit .env — key vars:
+#   OLLAMA_BASE_URL=http://localhost:11434
+#   OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud
+#   DECISION_INTERVAL_MS=300000   # 5-min cycles
+#   API_PORT=3456
+#   HYPERLIQUID_WALLET_ADDRESS=   # optional, for real trading
+#   HYPERLIQUID_PRIVATE_KEY=      # optional, RADIOACTIVE — never commit
 ```
 
-At minimum, set the following in `.env`:
-
-```env
-# ─── Ollama (local LLM) ───
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud
-```
-
-> 💡 **Recommended**: Upgrade to **Ollama Pro** for cloud model access (`deepseek-v4-flash:cloud`, `kimi-k2.6:cloud`, `glm-5.2:cloud`) — faster inference, no local GPU required, supports 8 agents' concurrent requests.
-
-The system defaults to **Paper Trading mode** and will never use real funds.
-
-### 6. Launch the System
-
+### 4. Launch
 ```bash
-npm start
+npm run dev    # concurrently: tsx watch (API :3456) + vite (UI :5173)
 ```
-
-On first launch, the system will:
-1. Auto-detect the LLM provider (Ollama)
-2. Start the HACP decision cycle (every 5 minutes by default)
-3. Serve the Web UI at `http://localhost:3456`
-
-### 7. Access the Dashboard
-
-Open **http://localhost:3456** in your browser to see:
-
-- 📊 **Real-time dashboard** — system status, open positions, P&L
-- 🗣️ **HACP debate transcripts** — every agent's reasoning and deliberation
-- 🧬 **Evolution metrics** — strategy fitness, memory utilization, GA progress
-- 📈 **TradingView chart** — price action with technical analysis
+Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 
 ---
 
 ## Why MATS is Different
 
-| | Single-LLM Bots | MATS |
-|:--|:--|:--|
-| **Decision making** | One model, one opinion | 8 agents debate in parallel, weighted consensus |
-| **Risk governance** | Trust the LLM | Skeptics agent stress-tests every trade before execution |
-| **Adaptation** | Static parameters | Self-evolving: GA + OLR + Shadow Trading + EM cycle chain, no manual tuning |
-| **Reasoning** | Black box | Every trade requires a validated entry thesis (1h catalyst + 1d driver) |
-| **Failure mode** | Crashes into bad trades | Every error path defaults to HOLD — capital preservation first |
-
-### 🧠 Entry Thesis System — every trade needs a validated thesis
-
-Meta-Agent must articulate why price will reach TP within 1h (short-term catalyst) and 1d (medium-term driver), referencing specific sub-agent data. Skeptics validates the thesis for strength, specificity, data consistency, and dark psychology (whale manipulation?). No thesis = no trade.
-
-### 🛡️ Skeptics veto — AI stress-tests every position before execution
-
-A dedicated agent with approve-first design: validates every BUY/SELL thesis, only rejects on a specific, material flaw that would cause a loss. Each cycle, re-validates all open position theses against fresh market data — if invalidated, force-closes.
-
-### 🧬 Self-evolving — GA + OLR + Shadow Trading + EM cycle chain, no manual tuning
-
-Three evolution mechanisms: (1) OLR (Online Logistic Regression) + Shadow Trading — simulated trades track TP-before-SL outcomes, feeding OLR which learns P(win) per side from real path-risk results. First-Passage probability provides instant path-risk assessment. (2) EM Cycle Chain — Meta-Agent distills each cycle into a structured summary, previous summaries feed into next cycle. (3) GA — survival fitness drives directional mutation of strategy parameters.
-
-### ⚡ HACP protocol — 8 agents parallel debate, 60s deadline race
-
-Hyper-Accelerated Cognition Protocol: 5 sub-agents think in parallel (staggered, 60s deadline race), Skeptics audits logic, Meta-Agent arbitrates, structured debate (1-3 rounds), weighted voting consensus (60% threshold, dynamically adjusted by Evolution). 120s hard timeout — forced HOLD on expiry.
-
-### 💰 Capital preservation first — every error path defaults to HOLD
-
-Graceful degradation: any error defaults to HOLD. Circuit breaker (3 failures → 30s fail-fast). Notional-based double-sided fee deduction. Configurable max portion. SL/TP hard safety layers (no-widen, not-too-tight, min-gap, max-narrow-step).
-
----
-
-## System Highlights
-
-### 🧠 Multi-Agent Consensus Engine
-
-MATS does not rely on a single AI model. Instead, **eight specialized agents think in parallel and engage in structured debate** to reach consensus:
-
-| Agent | Role | Temperature | Weight |
-|:------|:-----|:-----------:|:------:|
-| **Market Agent** | Auto-selects trading pair, sets position size & leverage | — | — |
-| **Fractal Momentum Sentinel** | Fractal pattern & trend analyst | 0.85 | 0.10 |
-| **On-Chain Whisperer** | On-chain data & macro analyst | 0.50 | 0.10 |
-| **OLR & Sentiment Analyst** | OLR P(win) + First-Passage path risk + Fear & Greed | 0.25 | 0.10 |
-| **News Reporter** | Shadow Strategist news motive analyzer | 0.40 | 0.10 |
-| **Independent Risk Auditor** | Risk limits + regime-aware TP/SL (advisory-only, cannot veto) | 0.10 | 0.25 |
-| **Skeptics** | Logic auditor + **stress-tester for new positions** (approve-first: validates thesis, only rejects on specific material flaw that would cause a loss) | 0.30 | — |
-| **Meta-Agent** | Detective — aggressively reasons from facts to find trade edges; generates entryThesis (1h+1d rationale); weight 0.00 (thesis system controls, not voting) | 0.45 | 0.00 |
-
-Each agent operates with **independent temperature, weight, data sources, and reasoning models**, ensuring genuine opinion diversity and preventing groupthink.
-
-### ⚡ HACP — Hyper-Accelerated Cognition Protocol
-
-A structured multi-LLM debate protocol that replaces traditional single-model inference:
-
-```
-Phase 0:    Market Agent auto-selects trading pair + position reconciliation
-Phase 0.5:  Skeptics re-validates each open position's entryThesis against fresh market data → invalidated → force-close
-Phase 1:    5 agents think in parallel (staggered, with 60s deadline race)
-Phase 1.5:  Skeptics logic audit + EM convergence cross-cycle check
-Phase 1.75: Meta-Agent final arbitration (incorporates Skeptics findings)
-Phase 1.8:  Skeptics validates Meta-Agent's entryThesis for BUY/SELL (skipped if symbol already has a position) → rejected → HOLD override
-Phase 2:    Structured rapid debate (1-3 rounds, configurable)
-Phase 3:    Weighted voting consensus (60% threshold, dynamically adjusted by Evolution)
-Phase 4:    Risk Auditor advisory check (non-blocking, TP/SL/size adjustments only)
-Phase 4.5:  Market Agent hard constraints override (enforces position size & leverage)
-Phase 4.8:  Entry Thesis Hard Gate — final check: BUY/SELL without valid+validated entryThesis → BLOCK
-Phase 5:    Meta-Agent dynamic TP/SL adjustment + per-position consensus execution
-```
-
-**Key properties:**
-- **Graceful degradation**: Any error defaults to HOLD — the system never crashes into a bad trade
-- **Deterministic fallback**: If LLM is unavailable, risk engine enforces conservative defaults
-- **Total cycle budget**: 120s hard timeout, forced HOLD on expiry
-- **LLM resilience**: Circuit breaker (3 failures → 30s fail-fast), slot acquisition timeout (8s), HACP deadline race (60s per agent → graceful HOLD), tiered LLM timeout (think 45s, debate/audit 30s)
-
-### 🎯 Entry Thesis System + Extreme Reasoning (v2.0.80+)
-
-The core cognitive architecture — every new position requires a strong, validated rationale, and every symbol gets a directional judgment every cycle:
-
-**No position → MUST decide BUY or SELL** (HOLD only when ALL six signals absent: OLR + S/R + sentiment + momentum + news + regime). Even a 51% lean is enough to act. Even with no data, reason from first principles (price level, round numbers, regime, fees).
-
-**Has position → MUST decide CLOSE or HOLD** (CLOSE if ≥3 of 6 conditions true: thesis invalidated + trend changed + ≥2 agents close + losing money + regime unsuitable + contradicting news. HOLD if 0-2 conditions true).
-
-1. **Meta-Agent generates `entryThesis`** — explains why price will reach TP within 1h (short-term catalyst) and 1d (medium-term driver), referencing specific sub-agent data
-2. **Skeptics validates** — checks for strength, specificity, data consistency, dark psychology (whale manipulation?), and fact distortion
-3. **Phase 4.8 Hard Gate** — any BUY/SELL without a valid+validated thesis is blocked, regardless of consensus path
-4. **Phase 0.5 Re-validation** — each cycle, Skeptics re-validates every open position's thesis against fresh market data; if invalidated, force-close
-5. **`holdReason`** — HOLD decisions must explain which conditions are true and why they are insufficient to act (displayed in UI, always expanded for Meta-Agent)
-6. **Dark Psychology** — Meta-Agent must question whether sub-agent data is genuine market signal or whale/institutional manipulation
-7. **Close validation** — closing a thesis-backed position goes through Meta-Agent → Skeptics validation (v2.0.90); thesis MUST be invalidated (mandatory) + ≥2 other conditions (v2.0.103); legacy positions close on Meta-Agent CLOSE decision or ≥2 sub-agent votes (v2.0.94)
-8. **OLR + S/R for ALL positions** — context generated for every open position, not just the active symbol (v2.0.92)
-9. **Multi-symbol single-cycle** — ALL trading markets analyzed in ONE HACP cycle. Non-position markets injected as `isTradingMarket` entries in `positions[]` with full market context (price, OLR, S/R). Agents output BUY/SELL/HOLD for all markets simultaneously (v2.0.104)
-10. **Per-asset adaptive noise filter** — Market Agent selects a `FilterProfile` for each asset (7 profiles: high_vol_crypto, low_vol_crypto, high_vol_alt, dex_perp, forex_index, commodity, default). Each asset gets its own `AdaptiveNoiseFilter` with independent EMA alpha, sigmoid k, conviction gate, and trade frequency throttle. Filter adapts per-cycle based on volatility, win rate, SNR, and trade frequency. Meta-Agent receives per-asset SNR data and must factor it into every decision (v2.0.106)
-11. **3-5 sentences minimum** reasoning per symbol — no truncation, no silence
-
-### 🧬 Self-Evolution System (OLR + Shadow Trading + First-Passage + EM Cycle Chain)
-
-MATS has **multiple self-evolution mechanisms**:
-
-**Layer 1 — OLR (Online Logistic Regression)** (`olr-engine.ts`):
-- Per-symbol, per-side (LONG/SHORT) logistic regression with Welford z-score normalization
-- SGD online updates from shadow trade + paper trade + real trade outcomes (TP-before-SL)
-- Outputs P(win) ∈ (0,1) — probability of winning for each side
-- Source-type tracking: shadow / paper / real / backfill samples (source-weighted: real=4, paper=2, shadow=1, backfill=0.3; backfill excluded from SGD decay)
-- Per-feature Welford normalization: each feature maintains its own count, so missing features (e.g. no S/R pivot) return neutral z=0 instead of polluting the model
-- Recency tracking: recent trades with cyclesAgo for agent temporal judgment
-- SL/TP narrowing feedback: [SL narrowed] tag for Meta-Agent SL/TP adjustment decisions
-
-**Layer 1b — Shadow Trading** (`shadow-trade-engine.ts`):
-- Opens simulated LONG + SHORT every cycle for each trading market
-- Uses S/R-based SL/TP (same as real trades)
-- Tracks until SL or TP is hit → feeds outcome to OLR
-- Learns TP-before-SL (actual trade profitability), NOT 5-minute price direction
-- Multi-candle hold resolution: each shadow scans forward up to maxHoldCandles (20), resolves on first SL/TP hit; unresolved shadows are skipped (no fabricated labels)
-
-**Layer 1c — First-Passage Probability** (`first-passage.ts`):
-- Instant P(TP before SL) from volatility + drift + S/R-based SL/TP distances
-- Cox & Miller (1965) first-passage formula for Geometric Brownian Motion
-- RR-aware: P(win) compared against breakeven probability (not a flat threshold); per-side SL/TP distances (LONG + SHORT)
-- Per-symbol drift from marketState price history (not mixed-symbol trade history)
-
-**Layer 2 — EM Cycle Chain** (`cycle-summary.ts`):
-- Meta-Agent distills each cycle into a structured `CycleSummary` (E-step)
-- Previous summaries feed into next cycle's agent context (M-step)
-- Skeptics cross-checks insight vs actual price (convergence audit)
-- Tiered memory: hot(12) + warm(288) + cold(48 epochs, ~48 days)
-
-**Evolutionary Pressure Engine:**
-- Survival Fitness: Profit Efficiency 35% + Return 25% + Capital Preservation 20% + Win Quality 10% + Consistency 5% + Adaptability 5%
-- **Directional mutation** — `mutate()` guides parameter changes toward fixing the weakest fitness dimension
-- **Agent-level evolution** — dynamically adjusts each agent's voting weight by per-regime win rate
-- **Regime-aware strategy selection** — scores `fitness × regimeWeight/maxRegimeWeight`
-- Dual-trigger: loss-triggered (immediate) or scheduled (every 3 trades)
-- 1-gen incubation: child evaluated after 1 cycle — faster adaptation
-
-### 🧬 Trade Pattern Classifier
-
-A supervised KNN pattern database that answers "in current conditions, has this setup won before?":
-
-- **Two query modes**: `queryEntry()` for new positions, `queryPosition()` for held positions
-- **8D feature space** + regime (categorical)
-- **Wilson score**: 95% confidence lower bound — prevents overfitting on small samples
-- **Time-weighted win/loss** (half-life 7 days) — old regime data naturally fades out
-
-### 🧠 Sigmoid·GA Sentiment Engine
-
-A genetic algorithm that evolves sigmoid-based sentiment functions to model market emotion:
-
-- 5 signal channels: Whale Presence, Institutional Flow, Microstructure Tension, Momentum Bias, Fear/Greed Echo
-- GA population of 20 chromosomes, evolved every HACP cycle
-- Raw inputs: order book, volume acceleration, funding rate delta + acceleration, spread, price acceleration, large trades, F&G index, volatility regime
-
-### 📊 Options Data Layer
-
-An integrated options market data layer for Stocks/Indices/Commodities trading:
-
-- **Data source**: Massive.com (Polygon.io compatible) REST API for option chain snapshots
-- **Extracted metrics**: IV Rank, implied volatility, put/call OI ratio, gamma regime, max pain, skew, implied move %, event risk
-- **Regime → Playbook mapping**: 5 deterministic playbooks (Premium Sell, Directional Credit, Defined-Risk Debit, Stand Aside, Buy Convexity)
-- **Deterministic veto**: `vetoNewPositions=true` overrides HACP consensus → HOLD
-- **Dynamic voting weight**: scales with plan tier (free=0.10, starter=0.25, advanced=0.30)
-- **Options-aware evolution**: `OptionsStrategyParameters` (7 evolving params) + `SurvivalFitness.optionsAlpha`
-
-### 🛡️ Capital Preservation First
-
-```
-Capital preservation is the absolute first priority —
-profit generation must occur within safety constraints.
-```
-
-- **Skeptics stress-tester** over new positions — thesis must survive stress-testing; only rejected if a specific, material flaw is found that would cause a loss. Approve-first design (v2.0.110): previously "reject by default" caused the system to stop trading for days
-- **Risk Auditor advisory-only** — cannot block trades, only suggests TP/SL/size adjustments; hardcoded safety layers (choppy market 50% cut, loss-streak graduated reduction) retained
-- **Graceful degradation**: every error path defaults to HOLD
-- **Notional-based double-sided fee deduction** — HL taker fee (0.04%) charged on leveraged notional; paper PnL reflects real cost
-- **Configurable max portion** — user-configurable max % of balance for all positions combined (10%-100%)
-- **SL/TP hard safety layers** — no-widen, not-too-tight (SL ≥1%, TP ≥1.5% from price), min-gap (2%), max-narrow-step (0.5%/cycle)
-- Production-grade standards: strict TypeScript, structured logging, exponential backoff reconnection
-
-### 🔌 LLM Abstraction Layer
-
-Swap LLM providers without modifying a single line of code:
-
-| Provider | Configuration | Characteristics |
-|:---------|:-------------|:----------------|
-| **Ollama** (default) | `OLLAMA_BASE_URL` | Local, free, no API key required |
-| Custom OpenAI-compatible | Implement `LLMProvider` interface | Any service with an OpenAI-compatible API |
-
-The provider factory auto-detects availability: Ollama → Error.
-
-> 💡 **Recommended**: Upgrade to **Ollama Pro** plan for cloud model access (e.g. `deepseek-v4-flash:cloud`, `kimi-k2.6:cloud`, `glm-5.2:cloud`) — faster inference, no local GPU required, and supports concurrent requests from 8 agents.
-
-Ollama has a **circuit breaker** (3 consecutive failures → 30s fail-fast), **slot leak protection** (slots held >90s auto-reclaimed), and **concurrency 4** to handle 8 agents' staggered thinking.
+- **🧠 Entry Thesis System** — every trade needs a validated `[1h: ...] [1d: ...]` rationale. Meta-Agent generates it; Skeptics stress-tests it. No thesis → no trade.
+- **🛡️ Skeptics veto** — an AI stress-tests every position's logic, data consistency, and dark-psychology (whale manipulation?) before execution. Approve-first: rejects only on concrete money-losing flaws.
+- **🧬 Self-evolving** — OLR learns P(win) per side from shadow + paper + real trade outcomes. First-Passage gives instant path-risk. GA mutates strategy parameters by weakest fitness dimension. EM cycle chain carries insights across cycles.
+- **⚡ HACP protocol** — 5 sub-agents think in parallel (staggered, 60s deadline race), Skeptics audits, Meta-Agent arbitrates, weighted voting consensus. 120s hard timeout → HOLD on expiry.
+- **💰 Capital preservation first** — every error path defaults to HOLD. SystemGuard (5 layers). Notional-based fees. SL/TP hard safety layers. Configurable max portion + drawdown + daily-loss limits.
 
 ---
 
@@ -326,298 +68,138 @@ Ollama has a **circuit breaker** (3 consecutive failures → 30s fail-fast), **s
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                                                              │
-│   Layer 1: Strategic (PI Agent + SKILL.md)                   │
-│   • System start / stop                                      │
-│   • Performance review & parameter tuning                    │
-│   • Manual intervention interface                            │
-│                                                              │
+│   Layer 1: Strategic (PI Agent)                              │
+│   • System start/stop · performance review · manual override  │
 ├──────────────────────────────────────────────────────────────┤
-│                                                              │
 │   Layer 2: Cognitive (TypeScript + LLM)                      │
-│   • HACP protocol (parallel multi-model inference)           │
-│   • 8-agent system + Meta-Agent arbitration                  │
-│   • Entry Thesis System (Meta-Agent → Skeptics validation)   │
-│   • Dark Psychology data interrogation                       │
-│   • Structured debate + weighted voting consensus            │
-│   • Self-evolution (OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + Pattern DB)  │
-│   • SystemGuard (5-layer protection)                         │
-│   • LLM invoked only at critical decision points             │
-│                                                              │
+│   • HACP protocol (parallel multi-model inference)            │
+│   • 8-agent system + Meta-Agent arbitration                   │
+│   • Entry Thesis System (Meta-Agent → Skeptics validation)    │
+│   • Self-evolution (OLR + Shadow + First-Passage + EM + GA)   │
+│   • SystemGuard (5-layer protection)                          │
 ├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│   Layer 3: Execution (TypeScript Runtime)                    │
-│   • Hyperliquid WebSocket + REST (9 perpetual DEXs)          │
-│   • HL WS user-level subscriptions (real-time position/fill) │
-│   • Options Data Layer (IV/Greeks/OI/Max Pain)               │
-│   • Market Agent auto-selects trading pair                   │
-│   • Risk engine (millisecond latency, no LLM dependency)     │
-│   • Paper trading engine (leverage-aware P&L simulation)     │
-│   • Notional-based double-sided fee deduction                │
-│   • Real Trading Manager (exchange orders + local mirror)    │
-│   • Global HL rate limiter (single queue, 429 retry)         │
-│   • WS infinite reconnect + REST polling backoff             │
-│   • Configurable max portion (paper + real)                  │
-│   • Position tracking & stop-loss/take-profit                │
-│   • Data pipeline & persistence                              │
-│   • Observability & health checks                            │
-│                                                              │
+│   Layer 3: Execution (TypeScript Runtime)                     │
+│   • Hyperliquid WebSocket + REST (9 perpetual DEXs)           │
+│   • Risk engine (millisecond, no LLM)                         │
+│   • Paper trading (leverage-aware P&L) + Real Trading Manager │
+│   • Position tracking & SL/TP · persistence · observability   │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+→ Full architecture in [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ---
 
 ## Project Structure
 
 ```
-src/                                        # ~25,000 LOC total
-├── index.ts                                # 🚀 Entry point — system lifecycle
-├── api-server.ts                           # REST + SSE API server
-├── config/index.ts                         # Zod-validated configuration
-├── types/index.ts                          # Domain type definitions
-│
-├── agents/                                 # 🤖 Multi-agent system
-│   ├── base-agent.ts                        # Abstract agent base class
-│   ├── agents.ts                            # Sub-agents + Skeptics (thesis validation + close validation)
-│   ├── meta-agent.ts                       # Meta-Agent (detective mode + entryThesis + holdReason)
-│   └── agent-models.ts                      # Per-agent model configuration
-│
-├── cognition/                              # 🧠 Inter-agent cognition
-│   ├── hacp.ts                             # ⚡ HACP protocol (Phase 0-5 + 0.5/1.8/4.8 thesis gates)
-│   ├── a2a-utils.ts                         # A2A inter-agent signal exchange
-│   └── A2A-PROTOCOL.md                      # A2A protocol specification
-│
-├── llm/                                    # 🔌 LLM abstraction layer
-│   ├── provider.ts                          # Abstract interface
-│   ├── ollama-provider.ts                   # Ollama provider (circuit breaker + concurrency 4)
-│   └── index.ts                            # Provider factory
-│
-├── trading/                                # 💹 Trading engine
-│   ├── portfolio.ts                         # Portfolio tracker (entryThesis persistence)
-│   ├── paper-engine.ts                     # Paper trading simulation
-│   ├── cost-model.ts                        # HL transaction cost model
-│   ├── execution-tracker.ts                 # Slippage/fee tracking
-│   ├── decision-utils.ts                    # Decision normalization
-│   ├── real-trading-manager.ts              # Real trading orchestrator
-│   ├── hyperliquid-real-engine.ts           # HL real trading engine (phantom agent signing)
-│   └── binance-real-engine.ts               # Binance real trading engine
-│
-├── risk/                                   # 🛡️ Risk management
-│   ├── engine.ts                            # Multi-layer risk engine
-│   └── correlation-budget.ts               # Cross-pair correlation budget
-│
-├── system-guard/                           # 🛡️ SystemGuard — 5 guards
-│   ├── index.ts                            # Calendar / drawdown / data freshness / agent track / liquidity
-│   └── types.ts                            # Guard type definitions
-│
-├── evolution/                              # 🧬 Evolution + OLR + Shadow Trading + pattern classifier
-│   ├── index.ts                            # Evolution orchestrator (directional mutation)
-│   ├── trade-history.ts                    # Trade history ledger
-│   ├── agent-outcomes.ts                   # Per-agent performance tracking
-│   ├── agent-evolution.ts                  # Agent Evolution Engine (dynamic voting weights)
-│   ├── persistence.ts                      # Durable state persistence
-│   ├── trade-pattern-classifier.ts         # Supervised KNN pattern DB
-│   ├── olr-engine.ts                       # OLR Engine (Online Logistic Regression)
-│   ├── shadow-trade-engine.ts              # Shadow Trade Engine (simulated TP-before-SL)
-│   ├── first-passage.ts                    # First-Passage Probability Calculator (Cox & Miller GBM)
-│   ├── olr-backfill.ts                      # Cold-start OLR backfill from historical HL candles
-│   ├── cycle-summary.ts                    # EM Cycle Summary Manager
-│   ├── em-clustering.ts                    # EM clustering engine
-│   └── pattern-tag-tracker.ts              # Pattern tag frequency tracker
-│
-├── analysis/                               # 📊 Signal processing
-│   ├── sentiment-engine.ts                 # Sigmoid·GA sentiment engine
-│   ├── sigmoid-ga.ts                       # GA-evolved sigmoid functions
-│   ├── support-resistance.ts               # S/R zone detection
-│   ├── planck-chaos.ts                     # Planck-Chaos Resonance module
-│   ├── options-data.ts                     # Options Data Layer
-│   ├── atr.ts                              # ATR-based volatility-adaptive SL/TP
-│   └── news-sentiment.ts                   # News sentiment (Google News RSS + GDELT + Bing News)
-│
-├── market-agent/                           # 🎯 Auto pair selection
-│   ├── index.ts                            # Market Agent
-│   └── hl-rate-limiter.ts                  # HL REST rate limiter (legacy)
-│
-├── data/                                   # 📡 WebSocket data feeds
-│   ├── hyperliquid-websocket.ts            # HL WS (user-level subscriptions)
-│   ├── binance-websocket.ts                # Binance WS
-│   └── multi-exchange-ws.ts                # Multi-exchange WS manager
-│
-├── backtest/index.ts                       # 📜 Historical backtesting engine
-├── observability/logger.ts                 # Structured logging (Winston)
-└── utils/
-    ├── shutdown.ts                          # Graceful shutdown handler
-    └── hl-global-limiter.ts                # Global HL rate limiter
+src/
+├── agents/                             # 🧠 8 agents + Meta-Agent
+│   ├── base-agent.ts                   # Base agent (LLM call + retry + confidence)
+│   ├── meta-agent.ts                   # Meta-Agent (arbitration + entryThesis)
+│   ├── skeptics.ts                     # Skeptics (logic audit + thesis validation)
+│   └── agents.ts                       # 5 sub-agents (Fractal/OnChain/OLR/News/Risk)
+├── cognition/                          # 🧠 Inter-agent cognition
+│   ├── hacp.ts                         # HACP protocol (Phase 0-5 + thesis gates)
+│   ├── a2a-utils.ts                    # A2A inter-agent signal exchange
+│   └── A2A-PROTOCOL.md
+├── llm/                                # 🔌 LLM abstraction (provider + circuit breaker)
+├── trading/                            # 💹 Portfolio · paper/real engines · cost model
+├── risk/                               # 🛡️ Risk engine + correlation budget
+├── system-guard/                       # 🛡️ SystemGuard (calendar/drawdown/freshness/track/liquidity)
+├── evolution/                          # 🧬 Self-evolution
+│   ├── index.ts                        # GA orchestrator (directional mutation)
+│   ├── olr-engine.ts                   # OLR (Online Logistic Regression, per-symbol/side)
+│   ├── shadow-trade-engine.ts          # Shadow trades (simulated TP-before-SL)
+│   ├── first-passage.ts                # First-Passage P(TP before SL) — Cox & Miller GBM
+│   ├── olr-backfill.ts                 # Cold-start backfill from historical HL candles
+│   ├── trade-pattern-classifier.ts     # Supervised KNN pattern DB (Wilson score)
+│   ├── cycle-summary.ts                # EM Cycle Summary Manager (tiered memory)
+│   ├── agent-outcomes.ts               # Per-agent performance tracking
+│   └── agent-evolution.ts              # Dynamic voting weights by regime win rate
+├── analysis/                           # 📊 Sentiment · S/R · ATR · Planck-Chaos · options · news
+├── market-agent/                       # 🎯 Auto pair selection (9 HL DEXs, 416 assets)
+├── data/                               # 📡 Hyperliquid + Binance WebSocket feeds
+├── api-server.ts                       # 🌐 REST + SSE (port 3456) + static UI
+└── index.ts                            # 🚀 System orchestrator (decision cycle)
 
-ui/                                        # 🖥️ React Web UI (pantha_mats design system)
-├── src/
-│   ├── App.tsx                             # Main dashboard
-│   ├── TradingViewChart.tsx                # TradingView chart (live TP/SL update)
-│   ├── StarsBackground.tsx                 # Dynamic starfield background
-│   ├── types.ts                            # UI type definitions
-│   ├── main.tsx                            # React entry point
-│   └── index.css                           # pantha_mats design system
-└── index.html
-
-scripts/                                   # 🛠 Utilities
-├── loop-engineering.sh                     # Loop engineering runner
-├── loop-engineering-deep.sh                # Deep session runner
-├── loop-engineering-memory.md              # Known issues / checklist
-├── backfill-patterns.mjs                   # Import portfolio trades into pattern DB
-
-data/                                      # 💾 Runtime persistence
-└── evolution/
-    ├── trade-patterns.json                 # Pattern DB
-    ├── olr-state.json                      # OLR state (weights per symbol/side)
-    ├── shadow-state.json                   # Shadow trade state (open positions + recent results)
-    ├── evolution-state.json                 # GA population + memory + strategies
-    └── portfolio-state.json                 # Portfolio snapshot
+ui/                                     # 🖥️ React + Vite dashboard (:5173)
+data/evolution/                         # 💾 olr-state · shadow-state · patterns · GA state
+tests/                                  # ✅ vitest (evolution-memory: 41 tests)
 ```
 
 ---
 
-## Advanced Configuration
+## Self-Evolution System (v2.0.135)
 
-### Ollama Pro Plan (Recommended)
+**Layer 1 — OLR** (`olr-engine.ts`): Per-symbol, per-side online logistic regression with Welford z-score normalization. Learns P(win) from shadow + paper + real + backfill outcomes (TP-before-SL). Source-weighted (real=4, paper=2, shadow=1, backfill=0.3; backfill excluded from decay). Per-feature Welford counts so missing features return neutral z=0. Confidence: high(≥50)/medium(≥20)/low.
 
-For best performance, upgrade to **Ollama Pro** to access cloud-hosted models (e.g. `deepseek-v4-flash:cloud`, `kimi-k2.6:cloud`, `glm-5.2:cloud`). Cloud models offer faster inference, higher concurrency, and no local GPU requirement — ideal for running 8 agents in parallel.
+**Layer 1b — Shadow Trading** (`shadow-trade-engine.ts`): Opens simulated LONG + SHORT every cycle with S/R-aligned SL/TP. Multi-candle hold: scans forward up to 20 candles, resolves on first SL/TP hit; unresolved skipped (no fabricated labels). Feeds outcomes to OLR.
 
-```env
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud
-```
+**Layer 1c — First-Passage** (`first-passage.ts`): Instant P(TP before SL) from volatility (σ of log-returns) + log-drift (ν) + per-side S/R SL/TP distances. Cox & Miller (1965) GBM formula. RR-aware: compares to breakeven P = a/(a+b), not 50%. Returns 50% when vol too low.
 
-### Hyperliquid Real Trading
+**Cold-Start Backfill** (`olr-backfill.ts`): First cycle per market replays 186 historical HL M5 candles into OLR. Non-blocking; idempotent (skips warm markets ≥20 samples).
 
-```env
-HYPERLIQUID_WALLET_ADDRESS=0x...
-HYPERLIQUID_PRIVATE_KEY=...
-```
+**Layer 2 — EM Cycle Chain** (`cycle-summary.ts`): Meta-Agent distills each cycle → structured summary; previous summaries feed next cycle. Tiered memory: hot(12) + warm(288) + cold(48 epochs).
 
-The system defaults to **paper trading** — switch to real mode via the UI Market Agent panel (no env var needed).
+**Layer 3 — GA + Pattern DB**: Survival Fitness (Profit Efficiency 35% + Return 25% + Capital Preservation 20% + Win Quality 10% + Consistency 5% + Adaptability 5%). Directional mutation toward weakest dimension. KNN pattern DB with Wilson-score 95% confidence lower bound + time-weighted win/loss (half-life 7 days).
 
-When a wallet address is configured, the HL WebSocket subscribes to user-level feeds (`clearinghouseState` + `userFills`) for real-time position + fill sync — no REST polling delay. In real mode the UI shows the actual HL account balance/equity (not the local mirror).
+---
 
-### Decision Cycle Tuning
+## 8-Agent System
 
-```env
-DECISION_INTERVAL_MS=300000    # 5min between decision cycles
-HACP_MAX_DEBATE_ROUNDS=3       # Maximum debate rounds
-HACP_CONSENSUS_THRESHOLD=0.60  # Consensus threshold (60%, dynamically adjusted by Evolution)
-```
+| # | Agent | Temp | Weight | Role |
+|:-:|:------|:----:|:------:|:-----|
+| 1 | **Market Agent** | — | — | Auto-selects highest-volume pair across 9 HL DEXs / 416 assets, by category. Blocks cycle until selected. |
+| 2 | **Fractal Momentum Sentinel** | 0.85 | 0.10 | Multi-timeframe fractal breakout detection. Early trend acceleration. |
+| 3 | **On-Chain Whisperer** | 0.50 | 0.10 | Category-aware on-chain: crypto (mempool, flows, supply) + TradFi (DXY, COT, commodities). |
+| 4 | **OLR & Sentiment Analyst** | 0.25 | 0.10 | OLR P(win) per side + First-Passage path-risk + Fear & Greed. RR-aware edge vs breakeven. |
+| 5 | **News Reporter** | 0.40 | 0.10 | Shadow-strategist news motive analysis. Distribution bull = bearish; accumulation FUD = bullish. |
+| 6 | **Independent Risk Auditor** | 0.10 | 0.25 | Advisory-only (no veto). TP/SL/size suggestions + hard-coded loss-streak/choppy-market limits. |
+| 7 | **Skeptics** | 0.30 | 0.00 | Logic auditor + thesis stress-tester. Approve-first; rejects only on concrete flaws. Validates entryThesis (Phase 1.8) + re-validates held positions (Phase 0.5). |
+| 8 | **Meta-Agent** | 0.45 | 0.00 | Arbitration chairman. Detective mode — reasons from facts to find edges, never distorts. Generates entryThesis. Weight 0.00 (thesis system controls, not voting). |
 
-### Risk Parameters
+---
 
-```env
-RISK_MAX_LEVERAGE=10.0         # Maximum leverage (Market Agent controls actual)
-RISK_STOP_LOSS_PCT=0.02        # Default stop-loss (2%)
-RISK_TAKE_PROFIT_PCT=0.05      # Default take-profit (5%)
-```
+## Risk Management
 
-### Per-Symbol Direction Restrictions (v2.0.122)
+| Parameter | Default | Description |
+|:----------|:-------:|:------------|
+| Max position | 20% | Single trade cap of equity (hard clamp) |
+| Max drawdown | 20% | Halt all trading above this |
+| Daily loss limit | 5% | No new trades rest of day |
+| Max leverage | 10x | Market Agent sets per-asset; Meta-Agent tunes 1-10x by risk/confidence |
+| Stop loss | 2% | Per trade (un-leveraged) |
+| Take profit | 5% | Per trade (un-leveraged) |
+| Trailing stop | 1.5% | Activates in profit |
+| Cumulative margin | 20% | All positions' margin ≤ 20% balance |
 
-Restrict a symbol to only one direction (BUY or SELL). Useful for assets that should only be shorted (e.g. commodities with macro headwinds) or only bought (e.g. indices in a bull market). Configured via API or directly in `data/evolution/market-agent-config.json`:
+SL/TP three-layer safety: no-widen + not-too-tight (SL ≥ 1%, TP ≥ 1.5%) + min-gap + max-narrow-step.
 
-```json
-{
-  "directionRestrictions": {
-    "xyz:SILVER": "sell",
-    "btc": "buy"
-  }
-}
-```
+---
 
-Or via API:
+## Configuration
 
 ```bash
-curl -X POST http://localhost:3456/api/market-agent/direction-restrictions \
-  -H 'Content-Type: application/json' \
-  -d '{"restrictions": {"xyz:SILVER": "sell"}}'
+# .env essentials (validated by Zod schema on startup)
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud
+DECISION_INTERVAL_MS=300000          # 5-min cycles
+API_PORT=3456
+PAPER_INITIAL_BALANCE=1000
+PAPER_MAX_POSITION_SIZE_PCT=0.20
+PAPER_MAX_DRAWDOWN_PCT=0.20
+RISK_STOP_LOSS_PCT=0.02
+RISK_TAKE_PROFIT_PCT=0.05
+HACP_CONSENSUS_THRESHOLD=0.60
+HACP_TOTAL_TIMEOUT_MS=120000
+# Real trading (optional):
+HYPERLIQUID_WALLET_ADDRESS=
+HYPERLIQUID_PRIVATE_KEY=             # RADIOACTIVE — never commit
 ```
 
-When a direction is restricted, the opposite direction is blocked at execution time (overridden to HOLD with `[DIRECTION RESTRICT]` rationale). Agents also see the restrictions in their market context so they don't waste output on blocked directions. Existing positions can still be closed regardless of restriction.
-
----
-
-## Community
-
-- 🌐 **Homepage**: [mats.trading](https://mats.trading/)
-- 💬 **Discord**: [Coming soon — star + watch to be notified](https://github.com/wyc-dev/MATS)
-- 🐦 **Twitter**: [@MATS_trading](https://twitter.com/) (coming soon)
-- 🤝 **Contributing**: PRs welcome! Fork → branch → PR. See [ARCHITECTURE.md](ARCHITECTURE.md) for system overview.
-
----
-
-## Roadmap
-
-- **A2A Protocol v1.1** — inter-agent signal exchange with structured handoffs
-- **More exchanges** — Binance Futures, OKX, additional perp DEXs
-- **Real trading hardening** — additional safety layers, position reconciliation, funding cost tracking
-- **Decision audit UI** — visualize gate-by-gate decision flow in the dashboard
-- **Backtest visualization** — equity curve + trade markers in the UI
-
----
-
-## Changelog
-
-### v2.0.135 — OLR + Shadow + First-Passage Production Hardening + Cold-Start Backfill + UI Restructure
-
-**Critical math fixes (first-passage.ts rewrite):**
-- **C1**: LONG/SHORT first-passage formulas were swapped — LONG used the SHORT formula and vice versa. Now uses scale-function derivation: LONG P = (e^(2νa/σ²)−1)/(e^(2νa/σ²)−e^(−2νb/σ²)), SHORT P = (1−e^(−2νa'/σ²))/(e^(2νb'/σ²)−e^(−2νa'/σ²)), zero-drift limit = a/(a+b).
-- **C2**: Used raw μ (arithmetic drift) instead of log-drift ν (geometric). Now derives ν from log-returns.
-- **M4**: SHORT SL/TP distances were not independently passed — SHORT used LONG's distances. Now per-side distances.
-
-**OLR engine hardening (olr-engine.ts):**
-- Per-feature Welford counts: each feature tracks its own count + mask, so missing features (no S/R pivot) return neutral z=0 instead of dividing by a frozen single count → NaN.
-- `backfill` source type (weight 0.3) excluded from SGD decay; `liveSamples = nSamples − backfillSamples` prevents 200 backfill samples from freezing the model.
-- Cold/stale/warm detection via `newestSampleTs`; stale state (>6h) auto-resets + re-backfills. NaN guards on normalize().
-- `resetSymbol()` for clean re-backfill.
-
-**Shadow trade engine (shadow-trade-engine.ts):**
-- Multi-candle hold: each shadow scans forward up to `maxHoldCandles` (20), resolves on first SL/TP hit. Unresolved shadows skipped — no fabricated labels.
-- H/L tracking from candle data; S/R-aligned SL/TP via self-contained pivot detector with ATR fallback.
-- `srDistanceBps` = actual distance to nearest support/resistance pivot.
-
-**Cold-start backfill (olr-backfill.ts — new):**
-- On first cycle per market, replays historical Hyperliquid candles (186 M5) into OLR as `backfill` source samples.
-- Non-blocking (`void ... .catch()`): trading loop continues; first-passage covers cycle 1, OLR available from cycle 2.
-- Idempotent: skips markets that are already warm (≥20 total samples). Verified live: 945 samples injected across 3 markets in ~1s.
-
-**UI restructure (App.tsx + types):**
-- Agent Cognition legend: "RBC & Sentiment Analyst" → "OLR & Sentiment Analyst" (description rewritten for OLR + first-passage + RR-aware breakeven).
-- Evolution panel first-passage display: breakeven-aware (compares P(win) to `breakevenPLong/Short`, shows edge in percentage-points) + low-confidence badge + per-side SHORT SL/TP distances.
-- Per-symbol OLR: new source-breakdown row (shadow / paper / real / backfill counts) — data provenance at a glance.
-- Deleted dead `ui/src/RBCVisualizer.tsx`.
-- Backend symbols payload extended with `longSource`/`shortSource` sourceBreakdown.
-
-**Tests:** 41 passing (23 evolution-memory regression + 8 backfill/Welford/multi-candle/S-R). `tsc --noEmit` clean. UI build clean.
-
-### v2.0.131 — Margin Check Uses Total Equity + Max Portion 100% + Price Fallback
-
-- **Margin check fix**: Cumulative margin check now uses total equity instead of free balance. Free balance is reduced by existing position margin, so comparing against free balance blocked all new trades when an existing position used most of the margin.
-- **Max portion 100%**: Clamp raised from 50% to 100% in API, MarketAgent, and RealTradingManager.
-- **Manual trade price fallback**: Re-fetch using Market Agent's selected symbol when first price fetch fails.
-
-### v2.0.130 — Meta-Agent Override for Active Symbol + adjustPositions for ALL
-
-- **Active symbol override**: Meta-Agent's `marketTicker` decision overrides majority vote for the active symbol (same as trading markets). Previously, 6 sub-agent HOLDs drowned out Meta-Agent's SELL.
-- **adjustPositions for ALL**: Now adjusts all open positions, not just the primary symbol. SILVER's SL/TP finally goes through the HACP LLM loop.
-
-### v2.0.129 — Not-Too-Tight SL/TP Constraint
-
-- **Min distance**: SL ≥ 1% from current price, TP ≥ 1.5%. Prevents noise stop-outs from over-tightening.
-
-→ **Full changelog in [CHANGELOG.md](CHANGELOG.md)**
-
----
-
-## Commercial Licensing
-
-**Pantha AI Labs** holds a perpetual, irrevocable commercial license to use, modify, and distribute MATS. This license is governed by a separate agreement between YC Wong and Pantha AI Labs, and is independent of the Apache 2.0 open-source license.
-
-For all other use, MATS is open source under the **Apache License 2.0**.
-
-If you require a commercial license — for example, for proprietary extensions, redistribution without open-source obligations, or enterprise support — please contact YC Wong.
+### Per-Symbol Direction Restrictions
+Restrict a symbol to BUY-only or SELL-only via API or `data/evolution/market-agent-config.json`. Useful for commodities with macro headwinds (short-only) or bull-market indices (buy-only).
 
 ---
 
@@ -627,20 +209,36 @@ If you require a commercial license — for example, for proprietary extensions,
 |:---------|:-----------|
 | **Language** | TypeScript 5.6 (strict mode, zero type errors) |
 | **Runtime** | Node.js 22+ |
-| **LLM** | Ollama (local + Pro cloud models) / OpenAI-compatible |
-| **Market Data** | Hyperliquid WebSocket (l2Book + trades + activeAssetCtx + clearinghouseState + userFills) + REST fallback |
-| **Options Data** | Massive.com / Polygon.io REST API (IV, Greeks, OI, Max Pain, Event Risk) |
-| **Frontend** | React 18 + Vite + TradingView Chart (live TP/SL update) |
-| **Config Validation** | Zod schema |
+| **LLM** | Ollama (local + Pro cloud) / OpenAI-compatible |
+| **Market Data** | Hyperliquid WebSocket (l2Book + trades + userFills) + REST fallback |
+| **Frontend** | React 18 + Vite + TradingView Chart |
+| **Config** | Zod schema validation |
 | **Logging** | Winston (structured + file rotation) |
+| **Testing** | vitest (41 tests) |
 | **Codebase** | ~25,000 LOC TypeScript + React UI |
 
 ---
 
+## Changelog
+
+### v2.0.135 — OLR + Shadow + First-Passage Production Hardening + Cold-Start Backfill + Full Agent Cognition Integration
+
+- **First-passage math fixes**: C1 (LONG/SHORT formula swap), C2 (raw μ → log-drift ν), M4 (per-side SHORT SL/TP). Cox & Miller GBM scale-function derivation.
+- **OLR hardening**: per-feature Welford counts (missing features → neutral z=0), backfill source (weight 0.3, decay-excluded), cold/stale/warm detection, NaN guards.
+- **Shadow trading**: multi-candle hold (≤20, no fabricated labels), S/R-aligned SL/TP via pivot detector + ATR fallback.
+- **Cold-start backfill**: non-blocking replay of 186 historical HL candles into OLR. Idempotent. Live-verified: 945 samples / 3 markets / ~1s.
+- **Full agent cognition integration**: shared `buildOLRBlock()` helper injects complete OLR + First-Passage + edge data to OLR & Sentiment Analyst AND Meta-Agent (active symbol + all positions + all trading markets). Meta-Agent OLR prompt rewritten from stale RBC docs to RR-aware edge arbitration. Source breakdown exposed for all symbols in API.
+- **UI**: Agent Cognition legend RBC → OLR; Evolution panel breakeven-aware first-passage + source-breakdown row; deleted dead `RBCVisualizer.tsx`.
+- **Tests**: 41 passing. `tsc --noEmit` clean. UI build clean.
+
+→ Full history in `git log`.
+
+---
+
+## Commercial Licensing
+
+**Pantha AI Labs** holds a perpetual, irrevocable commercial license. For all other use, MATS is open source under **Apache License 2.0**. Contact YC Wong for commercial licensing.
+
 ## License
 
-[Apache License 2.0](LICENSE)
-
-Copyright (c) 2026 YC Wong
-
-Pantha AI Labs holds a perpetual commercial license under a separate agreement.
+[Apache License 2.0](LICENSE) · Copyright (c) 2026 YC Wong
