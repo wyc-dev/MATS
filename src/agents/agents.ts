@@ -731,6 +731,12 @@ If the context contains "=== OLR + PATH RISK ASSESSMENT ===":
   - P(win) > 60% → current conditions favor this side → increase conviction
   - P(win) < 40% → current conditions disfavor this side → strong bias against entry
   - P(win) 40-60% → no clear edge, weight OTHER signals more heavily
+  - **RR-AWARE THRESHOLDS (v2 fix)**: the flat 60/40 gates assume a ~1:1 RR.
+    Under the default 1:2.5 RR (SL 2% / TP 5%) the random-walk breakeven is
+    a/(a+b) = 28.6%, so a learned P(win) of 35% may actually be an EDGE,
+    not a block. Use the First-Passage breakevenP as the reference:
+    P(win) > breakevenP + 10pp → favor; P(win) < breakevenP − 5pp → against;
+    within that band → no clear edge.
   - **CONFIDENCE**: high (>50 samples) = trust the probability; low (<20) = noisy, weight less
   - **FEATURE WEIGHTS**: OLR shows which features drive the probability (e.g. fundingRate w=+2.3
     means positive funding favors this side). Use these to explain WHY the probability is high/low.
@@ -739,13 +745,15 @@ If the context contains "=== OLR + PATH RISK ASSESSMENT ===":
 === FIRST-PASSAGE PROBABILITY (PATH RISK) ===
 If the context shows "First-Passage P(TP before SL)":
   - This is the INSTANT probability that TP will be hit BEFORE SL, based on current
-    volatility, drift, and S/R-based SL/TP distances.
+    volatility (σ of log returns), log-drift, and S/R-based SL/TP distances.
   - It uses the Cox & Miller (1965) first-passage formula for Geometric Brownian Motion.
-  - P > 55% → path risk favors TP → supports entry
-  - P < 45% → path risk favors SL → caution against entry
+  - **Compare P(win) to breakevenP (a/(a+b)), NOT to 50%.** breakevenP is the
+    symmetric-random-walk baseline for the current SL/TP distances. Under a 1:2.5
+    RR, breakevenP ≈ 29% — so P=40% is a positive edge, not a weak signal.
+  - P > breakevenP + 10pp → path risk favors TP → supports entry
+  - P < breakevenP − 10pp → path risk favors SL → caution against entry
+  - confidence: low means vol is too low to trust the diffusion model — weight less.
   - This measures PATH RISK (will SL be hit first?), not just direction.
-  - High volatility + wide SL → higher P(TP first) but also higher uncertainty
-  - Low volatility + tight SL → lower P(TP first) but more predictable
 
 === SHADOW TRADE RESULTS ===
 If the context shows "=== SHADOW TRADE RESULTS ===":
@@ -757,12 +765,16 @@ If the context shows "=== SHADOW TRADE RESULTS ===":
     - If shadow results align with OLR → higher confidence in the probability
 
 === DATA SOURCE TYPES + RECENCY ===
-The OLR assessment shows sample breakdown: [shadow=N paper=N real=N].
+The OLR assessment shows sample breakdown: [shadow=N paper=N real=N backfill=N].
 - shadow: Simulated trades with FIXED S/R-based SL/TP. Good for entry timing judgment.
   Least reliable for path risk (fixed SL/TP ≠ dynamic management).
 - paper: Paper trades with DYNAMIC SL/TP (Meta-Agent adjusts every cycle).
   More realistic — reflects actual SL/TP management behavior.
 - real: Real HL exchange trades. Most reliable but fewest samples.
+- backfill: Cold-start historical candle replay (real H/L outcomes, but synthetic
+  features — no order book / sentiment / funding history). Weighted lowest.
+  Treat backfill samples as a WARM PRIOR only — prefer live (shadow/paper/real)
+  evidence when it disagrees.
 When judging whether OLR P(win) applies to CURRENT market:
   - Check "Recent outcomes" — each shows cyclesAgo (how many cycles since the trade resolved).
   - Trades from >20 cycles ago may reflect DIFFERENT market conditions — weight them less.

@@ -953,8 +953,8 @@ function AgentPanel({ data, ollamaPlan }: { data: APIData | null; ollamaPlan?: s
           <div className="rbc-legend-item">
             <div className="rbc-legend-swatch" style={{ background: '#9aabb8', opacity: 0.8 }} />
             <div className="rbc-legend-text">
-              <span className="rbc-legend-label">RBC &amp; Sentiment Analyst</span>
-              <span className="rbc-legend-desc">Combines Range-Based Clustering (RBC) — growing hyperrectangles that learn win/loss conditions from price action — with Fear & Greed sentiment analysis to classify market edge.</span>
+              <span className="rbc-legend-label">OLR &amp; Sentiment Analyst</span>
+              <span className="rbc-legend-desc">Online Logistic Regression (per-symbol, per-side) learns P(win) from shadow + paper + real trade outcomes (TP-before-SL), fused with First-Passage path-risk (Cox &amp; Miller GBM) and Fear &amp; Greed sentiment to classify market edge. P(win) is compared to the RR-aware breakeven, not a flat threshold.</span>
             </div>
           </div>
           <div className="rbc-legend-item">
@@ -1862,28 +1862,45 @@ function OLRSection({ olrState, openPositionSymbols }: { olrState: any; openPosi
         </div>
       ) : (
         <>
-          {hasFirstPassage && (
+          {hasFirstPassage && (() => {
+            const fp = olrState.firstPassage
+            const beLong = fp.breakevenPLong ?? 0.5
+            const beShort = fp.breakevenPShort ?? 0.5
+            const longEdge = fp.longPWin - beLong
+            const shortEdge = fp.shortPWin - beShort
+            const longColor = longEdge > 0.05 ? 'var(--green)' : longEdge < -0.05 ? 'var(--red)' : 'var(--text-muted)'
+            const shortColor = shortEdge > 0.05 ? 'var(--green)' : shortEdge < -0.05 ? 'var(--red)' : 'var(--text-muted)'
+            const lowConf = fp.confidence === 'low'
+            return (
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 First-Passage P(TP before SL)
+                {lowConf && <span style={{ background: 'var(--warning, #f59e0b)', color: '#000', borderRadius: '3px', padding: '1px 6px', fontSize: '0.6rem', fontWeight: 700 }}>low-conf</span>}
               </div>
-              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'center' }}>
                 <div>
-                  <span style={{ color: olrState.firstPassage.longPWin > 0.55 ? 'var(--green)' : olrState.firstPassage.longPWin < 0.45 ? 'var(--red)' : 'var(--text-muted)', fontWeight: 700, fontSize: '1.1rem' }}>
-                    LONG {(olrState.firstPassage.longPWin * 100).toFixed(0)}%
+                  <span style={{ color: longColor, fontWeight: 700, fontSize: '1.1rem' }}>
+                    LONG {(fp.longPWin * 100).toFixed(0)}%
                   </span>
+                  <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginLeft: '4px' }}>be {(beLong * 100).toFixed(0)}% ({(longEdge * 100).toFixed(0)}pp)</span>
                 </div>
                 <div>
-                  <span style={{ color: olrState.firstPassage.shortPWin > 0.55 ? 'var(--green)' : olrState.firstPassage.shortPWin < 0.45 ? 'var(--red)' : 'var(--text-muted)', fontWeight: 700, fontSize: '1.1rem' }}>
-                    SHORT {(olrState.firstPassage.shortPWin * 100).toFixed(0)}%
+                  <span style={{ color: shortColor, fontWeight: 700, fontSize: '1.1rem' }}>
+                    SHORT {(fp.shortPWin * 100).toFixed(0)}%
                   </span>
+                  <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginLeft: '4px' }}>be {(beShort * 100).toFixed(0)}% ({(shortEdge * 100).toFixed(0)}pp)</span>
                 </div>
                 <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                  Drift: {(olrState.firstPassage.drift * 100).toFixed(2)}%/cycle · Vol: {(olrState.firstPassage.volatility * 100).toFixed(2)}% · SL: {(olrState.firstPassage.slDistance * 100).toFixed(1)}% TP: {(olrState.firstPassage.tpDistance * 100).toFixed(1)}%
+                  Drift: {(fp.drift * 100).toFixed(2)}%/c · σ: {(fp.volatility * 100).toFixed(2)}%/c
                 </div>
               </div>
+              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                LONG SL {(fp.slDistance * 100).toFixed(1)}% / TP {(fp.tpDistance * 100).toFixed(1)}% · SHORT SL {(fp.slDistanceShort * 100).toFixed(1)}% / TP {(fp.tpDistanceShort * 100).toFixed(1)}%
+              </div>
             </div>
-          )}
+          )
+          })()}
+
 
           {hasShadow && (
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
@@ -1942,6 +1959,21 @@ function OLRSection({ olrState, openPositionSymbols }: { olrState: any; openPosi
                       <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>({symState.shortConfidence})</span>
                     </span>
                   </div>
+                  {(symState.longSource || symState.shortSource) && (() => {
+                    const ls = symState.longSource ?? { shadow: 0, paper: 0, real: 0, backfill: 0 };
+                    const ss = symState.shortSource ?? { shadow: 0, paper: 0, real: 0, backfill: 0 };
+                    const srcRow = (label: string, s: { shadow: number; paper: number; real: number; backfill: number }) => (
+                      <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>
+                        {label}: <b style={{ color: 'var(--text)' }}>{s.shadow}</b> sh · <b style={{ color: 'var(--text)' }}>{s.paper}</b> pa · <b style={{ color: 'var(--text)' }}>{s.real}</b> re · <b style={{ color: 'var(--accent, #a78bfa)' }}>{s.backfill}</b> bf
+                      </span>
+                    );
+                    return (
+                      <div style={{ padding: '0 16px 4px', display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+                        {srcRow('LONG', ls)}
+                        {srcRow('SHORT', ss)}
+                      </div>
+                    );
+                  })()}
                   {symState.featureWeights && symState.featureWeights.length > 0 && (
                     <div style={{ padding: '0 16px 8px' }}>
                       {symState.featureWeights.map((fw: any) => {

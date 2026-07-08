@@ -1,123 +1,179 @@
 // ─── First-Passage Probability Calculator ───
 //
 // Calculates the probability that TP is hit before SL, assuming price
-// follows a Geometric Brownian Motion (GBM) with drift μ and volatility σ.
+// follows a Geometric Brownian Motion (GBM) with log-drift ν and per-cycle
+// volatility σ.
 //
-// For a LONG position with entry S, SL = S×(1-a), TP = S×(1+b):
+// For a LONG position with entry S, SL = S×(1−a) (distance a below),
+// TP = S×(1+b) (distance b above), the log-process X = ln S has drift
+// ν = μ − σ²/2 and diffusion σ. First-passage probability of hitting
+// the upper barrier +b before the lower barrier −a (Cox & Miller 1965,
+// via the scale function s(x) = exp(−2νx/σ²)):
 //
-//   P(TP before SL) = (1 - e^(-2μa/σ²)) / (e^(2μb/σ²) - e^(-2μa/σ²))
+//   P(TP before SL) = (e^(2νa/σ²) − 1) / (e^(2νa/σ²) − e^(−2νb/σ²))
 //
-// For a SHORT position, the formula is inverted (SL above, TP below).
+// For a SHORT position the barriers invert: SL is above (distance a'),
+// TP is below (distance b'). By symmetry (flip sign of ν, swap barrier
+// roles):
+//
+//   P(TP before SL) = (1 − e^(−2νa'/σ²)) / (e^(2νb'/σ²) − e^(−2νa'/σ²))
+//
+// Zero-drift limit (ν → 0, L'Hôpital): P = a / (a + b) for both sides
+// (the nearer barrier is hit first with probability = opposite distance /
+// total). This is the correct symmetric-random-walk limit.
 //
 // This is an INSTANT signal — no waiting for shadow trades to resolve.
 // It gives agents a real-time path-risk assessment based on current
-// volatility, drift, and S/R-based SL/TP distances.
+// volatility, log-drift, and S/R-based SL/TP distances.
 //
 // Reference: Cox & Miller (1965), "The Theory of Stochastic Processes",
 // Chapter 3 — First-passage times for diffusion processes.
+//
+// IMPORTANT (v2 fix): the previous implementation swapped the LONG and
+// SHORT formulas (code's longPWin was the SHORT probability and vice
+// versa) AND used raw price drift μ instead of log-drift ν. Both inverted
+// the signal under directional drift — a critical capital-risk bug. This
+// version uses the correct formulas and log-drift.
 
 import { createLogger } from '../observability/logger.ts';
 
 const log = createLogger({ phase: 'first-passage' });
 
 export interface FirstPassageResult {
-  /** P(TP before SL) for LONG ∈ (0,1) */
+  /** P(TP before SL) for LONG ∈ [0,1] */
   longPWin: number;
-  /** P(TP before SL) for SHORT ∈ (0,1) */
+  /** P(TP before SL) for SHORT ∈ [0,1] */
   shortPWin: number;
-  /** Drift used (per-cycle, annualized for context) */
+  /** Log-drift used (per-cycle, already log-process drift ν = μ − σ²/2) */
   drift: number;
-  /** Volatility used (per-cycle) */
+  /** Per-cycle volatility σ used (std of log returns) */
   volatility: number;
   /** SL distance as fraction of price (LONG) */
   slDistanceLong: number;
   /** TP distance as fraction of price (LONG) */
   tpDistanceLong: number;
+  /** SL distance as fraction of price (SHORT) */
+  slDistanceShort: number;
+  /** TP distance as fraction of price (SHORT) */
+  tpDistanceShort: number;
+  /** Symmetric-random-walk breakeven P(TP first) for LONG = a/(a+b).
+   *  Agents should compare P(win) against this, NOT against a flat 50%. */
+  breakevenPLong: number;
+  /** Breakeven P(TP first) for SHORT */
+  breakevenPShort: number;
+  /** Confidence label: 'low' when vol is too low to trust the diffusion model */
+  confidence: 'high' | 'low';
   /** Human-readable explanation */
   explanation: string;
+}
+
+/** Numerical guard: exponents can overflow for large 2νa/σ². Clamp the
+ *  argument to avoid Infinity propagating into a NaN ratio. */
+const MAX_EXP_ARG = 50;
+
+function safeExp(x: number): number {
+  if (!Number.isFinite(x)) return 0;
+  if (x > MAX_EXP_ARG) return Math.exp(MAX_EXP_ARG);
+  if (x < -MAX_EXP_ARG) return Math.exp(-MAX_EXP_ARG);
+  return Math.exp(x);
 }
 
 /**
  * Calculate first-passage probability for both LONG and SHORT.
  *
- * @param volatility  Per-cycle volatility (e.g. 0.02 = 2% per cycle)
- * @param drift       Per-cycle drift (e.g. 0.001 = 0.1% per cycle)
- * @param slDistance  SL distance as fraction of price (e.g. 0.008 = 0.8%)
- * @param tpDistance  TP distance as fraction of price (e.g. 0.016 = 1.6%)
- *
- * @returns FirstPassageResult with P(TP before SL) for both sides
+ * @param volatility      Per-cycle volatility σ (std of log returns, e.g. 0.02 = 2%/cycle)
+ * @param drift           Per-cycle LOG-drift ν = μ − σ²/2 (e.g. 0.001 = 0.1%/cycle). May be negative.
+ * @param slDistanceLong  LONG SL distance as fraction of price (a, below entry)
+ * @param tpDistanceLong  LONG TP distance as fraction of price (b, above entry)
+ * @param slDistanceShort SHORT SL distance as fraction of price (above entry). Defaults to tpDistanceLong
+ *                        (SHORT's SL sits at resistance = LONG's TP level).
+ * @param tpDistanceShort SHORT TP distance as fraction of price (below entry). Defaults to slDistanceLong
+ *                        (SHORT's TP sits at support = LONG's SL level).
  */
 export function calculateFirstPassage(
   volatility: number,
   drift: number,
-  slDistance: number,
-  tpDistance: number,
+  slDistanceLong: number,
+  tpDistanceLong: number,
+  slDistanceShort?: number,
+  tpDistanceShort?: number,
 ): FirstPassageResult {
-  // Guard against degenerate inputs
-  const a = Math.max(slDistance, 1e-6);
-  const b = Math.max(tpDistance, 1e-6);
-  const mu = drift; // can be negative
+  const aLong = Math.max(slDistanceLong, 1e-6);
+  const bLong = Math.max(tpDistanceLong, 1e-6);
+  // SHORT barriers: SL above (distance a'), TP below (distance b').
+  // Default mirrors LONG's S/R levels — SHORT SL at resistance (LONG TP),
+  // SHORT TP at support (LONG SL).
+  const aShort = Math.max(slDistanceShort ?? tpDistanceLong, 1e-6);
+  const bShort = Math.max(tpDistanceShort ?? slDistanceLong, 1e-6);
+  const nu = Number.isFinite(drift) ? drift : 0;
 
-  // If volatility is too low (< 0.1%), the formula degenerates into a
-  // symmetric random walk that always returns b/(a+b) for both sides.
-  // This is misleading — it looks like a strong signal but is actually
-  // just the TP/SL ratio. Return 50% (no edge) instead.
-  if (volatility < 0.001) {
+  const breakevenPLong = aLong / (aLong + bLong);
+  const breakevenPShort = aShort / (aShort + bShort);
+
+  // Volatility too low (< 0.1%/cycle): the diffusion model is not
+  // meaningful — returns are dominated by quantisation/measurement noise.
+  // Return the zero-drift breakeven a/(a+b) (NOT a flat 50%, which is
+  // wrong whenever SL ≠ TP distance) and flag low confidence so agents
+  // weight the signal less.
+  if (!Number.isFinite(volatility) || volatility < 0.001) {
     return {
-      longPWin: 0.5,
-      shortPWin: 0.5,
-      drift: mu,
+      longPWin: breakevenPLong,
+      shortPWin: breakevenPShort,
+      drift: nu,
       volatility,
-      slDistanceLong: a,
-      tpDistanceLong: b,
-      explanation: `First-Passage P(TP before SL): vol too low (${(volatility * 100).toFixed(4)}%) — no reliable path-risk signal. Returning 50% (no edge).`,
+      slDistanceLong: aLong,
+      tpDistanceLong: bLong,
+      slDistanceShort: aShort,
+      tpDistanceShort: bShort,
+      breakevenPLong,
+      breakevenPShort,
+      confidence: 'low',
+      explanation: `First-Passage P(TP before SL): vol too low (${(volatility * 100).toFixed(4)}%) — using zero-drift breakeven a/(a+b) (LONG=${(breakevenPLong * 100).toFixed(0)}%, SHORT=${(breakevenPShort * 100).toFixed(0)}%). Low confidence — weight path-risk signal less.`,
     };
   }
 
-  const vol = Math.max(volatility, 1e-6);
-
+  const vol = volatility;
   const volSq = vol * vol;
 
-  // LONG: SL below (distance a), TP above (distance b)
-  // P(TP before SL) = (1 - e^(-2μa/σ²)) / (e^(2μb/σ²) - e^(-2μa/σ²))
-  const expNeg2muA = Math.exp((-2 * mu * a) / volSq);
-  const expPos2muB = Math.exp((2 * mu * b) / volSq);
-
+  // LONG: P(hit +b before −a) = (e^(2νa/σ²) − 1) / (e^(2νa/σ²) − e^(−2νb/σ²))
+  const expPos2nuA_long = safeExp((2 * nu * aLong) / volSq);
+  const expNeg2nuB_long = safeExp((-2 * nu * bLong) / volSq);
+  const denomLong = expPos2nuA_long - expNeg2nuB_long;
   let longPWin: number;
-  const denomLong = expPos2muB - expNeg2muA;
   if (Math.abs(denomLong) < 1e-12) {
-    // μ ≈ 0 → symmetric random walk → P = b / (a + b) (classical result)
-    longPWin = b / (a + b);
+    // ν ≈ 0 → symmetric random walk → a/(a+b) (nearer barrier hit first)
+    longPWin = breakevenPLong;
   } else {
-    longPWin = (1 - expNeg2muA) / denomLong;
+    longPWin = (expPos2nuA_long - 1) / denomLong;
   }
   longPWin = Math.max(0, Math.min(1, longPWin));
 
-  // SHORT: SL above (distance a), TP below (distance b)
-  // Invert drift sign and swap roles: P(TP before SL) for SHORT
-  // = P(hit lower barrier b before upper barrier a) with drift -μ
-  // = (e^(2μa/σ²) - 1) / (e^(2μa/σ²) - e^(-2μb/σ²))
-  const expPos2muA = Math.exp((2 * mu * a) / volSq);
-  const expNeg2muB = Math.exp((-2 * mu * b) / volSq);
-
+  // SHORT: P(hit −b' before +a') = (1 − e^(−2νa'/σ²)) / (e^(2νb'/σ²) − e^(−2νa'/σ²))
+  const expNeg2nuA_short = safeExp((-2 * nu * aShort) / volSq);
+  const expPos2nuB_short = safeExp((2 * nu * bShort) / volSq);
+  const denomShort = expPos2nuB_short - expNeg2nuA_short;
   let shortPWin: number;
-  const denomShort = expPos2muA - expNeg2muB;
   if (Math.abs(denomShort) < 1e-12) {
-    shortPWin = b / (a + b);
+    shortPWin = breakevenPShort;
   } else {
-    shortPWin = (expPos2muA - 1) / denomShort;
+    shortPWin = (1 - expNeg2nuA_short) / denomShort;
   }
   shortPWin = Math.max(0, Math.min(1, shortPWin));
 
-  const explanation = buildExplanation(longPWin, shortPWin, mu, vol, a, b);
+  const explanation = buildExplanation(longPWin, shortPWin, nu, vol, aLong, bLong, aShort, bShort, breakevenPLong, breakevenPShort);
 
   return {
     longPWin,
     shortPWin,
-    drift: mu,
+    drift: nu,
     volatility: vol,
-    slDistanceLong: a,
-    tpDistanceLong: b,
+    slDistanceLong: aLong,
+    tpDistanceLong: bLong,
+    slDistanceShort: aShort,
+    tpDistanceShort: bShort,
+    breakevenPLong,
+    breakevenPShort,
+    confidence: 'high',
     explanation,
   };
 }
@@ -127,48 +183,94 @@ function buildExplanation(
   shortPWin: number,
   drift: number,
   vol: number,
-  a: number,
-  b: number,
+  aLong: number,
+  bLong: number,
+  aShort: number,
+  bShort: number,
+  breakevenPLong: number,
+  breakevenPShort: number,
 ): string {
   const driftLabel = drift > 0.0005 ? '↑ upward' : drift < -0.0005 ? '↓ downward' : '→ flat';
   const volLabel = vol > 0.03 ? 'high' : vol > 0.01 ? 'moderate' : 'low';
-  const longLabel = longPWin > 0.6 ? '🟢' : longPWin < 0.4 ? '🔴' : '🟡';
-  const shortLabel = shortPWin > 0.6 ? '🟢' : shortPWin < 0.4 ? '🔴' : '🟡';
+  const longLabel = longPWin > breakevenPLong + 0.1 ? '🟢' : longPWin < breakevenPLong - 0.1 ? '🔴' : '🟡';
+  const shortLabel = shortPWin > breakevenPShort + 0.1 ? '🟢' : shortPWin < breakevenPShort - 0.1 ? '🔴' : '🟡';
 
   return [
     `First-Passage P(TP before SL):`,
-    `  ${longLabel} LONG  P=${(longPWin * 100).toFixed(0)}% (SL=${(a * 100).toFixed(1)}%, TP=${(b * 100).toFixed(1)}%)`,
-    `  ${shortLabel} SHORT P=${(shortPWin * 100).toFixed(0)}% (SL=${(a * 100).toFixed(1)}%, TP=${(b * 100).toFixed(1)}%)`,
-    `  Drift: ${driftLabel} (${(drift * 100).toFixed(2)}%/cycle) | Vol: ${volLabel} (${(vol * 100).toFixed(2)}%/cycle)`,
+    `  ${longLabel} LONG  P=${(longPWin * 100).toFixed(0)}% (SL=${(aLong * 100).toFixed(1)}%, TP=${(bLong * 100).toFixed(1)}%, breakeven=${(breakevenPLong * 100).toFixed(0)}%)`,
+    `  ${shortLabel} SHORT P=${(shortPWin * 100).toFixed(0)}% (SL=${(aShort * 100).toFixed(1)}%, TP=${(bShort * 100).toFixed(1)}%, breakeven=${(breakevenPShort * 100).toFixed(0)}%)`,
+    `  Drift: ${driftLabel} (${(drift * 100).toFixed(2)}%/cycle, log) | Vol: ${volLabel} (${(vol * 100).toFixed(2)}%/cycle, σ)`,
+    `  Compare P(win) to breakeven, not 50%: P > breakeven+10% → path favors TP; P < breakeven−10% → path favors SL.`,
   ].join('\n');
 }
 
 /**
- * Estimate per-cycle drift from recent price history.
+ * Estimate per-cycle volatility σ as the standard deviation of log returns.
  *
- * Uses the last N cycle entry prices to compute the average per-cycle
- * return. This is a simple moving-average drift estimator — not sophisticated,
- * but sufficient for first-pass probability calculation.
+ * The previous global `calcVolatility` (mean of |arithmetic returns|) is NOT
+ * σ — it underestimates diffusion by ~20% under normality and conflates
+ * mean absolute displacement with standard deviation. First-passage requires
+ * the true diffusion coefficient σ of the log process.
  *
  * @param prices  Array of historical prices (oldest first)
- * @param n       Number of recent cycles to use (default 10)
- * @returns Per-cycle drift (as a fraction, e.g. 0.001 = 0.1%)
+ * @param n       Number of recent prices to use (default 20)
+ * @returns Per-cycle σ (std of log returns). 0 if insufficient data.
  */
-export function estimateDrift(prices: number[], n: number = 10): number {
+export function estimateVolatility(prices: number[], n: number = 20): number {
+  const recent = prices.slice(-Math.min(n, prices.length));
+  if (recent.length < 3) return 0;
+  const logReturns: number[] = [];
+  for (let i = 1; i < recent.length; i++) {
+    const prev = recent[i - 1]!;
+    const curr = recent[i]!;
+    if (prev > 0 && curr > 0 && Number.isFinite(prev) && Number.isFinite(curr)) {
+      logReturns.push(Math.log(curr / prev));
+    }
+  }
+  if (logReturns.length < 2) return 0;
+  const mean = logReturns.reduce((a, b) => a + b, 0) / logReturns.length;
+  const variance = logReturns.reduce((a, b) => a + (b - mean) ** 2, 0) / (logReturns.length - 1);
+  const sigma = Math.sqrt(Math.max(variance, 0));
+  if (!Number.isFinite(sigma)) return 0;
+  return sigma;
+}
+
+/**
+ * Estimate per-cycle LOG-drift ν = μ − σ²/2 from recent price history.
+ *
+ * Uses an exponentially-weighted moving average (EWMA) of log returns with a
+ * 20-cycle window. EWMA weights recent observations more heavily (adapts to
+ * regime shifts faster) while dampening the noise that broke the previous
+ * 10-cycle simple MA (whose standard error ≈ σ/√10 dominated the signal).
+ *
+ * The returned value is the log-process drift ν directly — pass it to
+ * `calculateFirstPassage` as `drift`; do NOT subtract σ²/2 again.
+ *
+ * @param prices  Array of historical prices (oldest first)
+ * @param n       Window length (default 20)
+ * @returns Per-cycle log-drift ν (fraction, e.g. 0.001 = 0.1%). 0 if insufficient data.
+ */
+export function estimateDrift(prices: number[], n: number = 20): number {
   if (prices.length < 2) return 0;
   const recent = prices.slice(-Math.min(n, prices.length));
   if (recent.length < 2) return 0;
 
-  let sumReturns = 0;
-  let count = 0;
+  const logReturns: number[] = [];
   for (let i = 1; i < recent.length; i++) {
     const prev = recent[i - 1]!;
     const curr = recent[i]!;
-    if (prev > 0 && curr > 0) {
-      sumReturns += (curr - prev) / prev;
-      count++;
+    if (prev > 0 && curr > 0 && Number.isFinite(prev) && Number.isFinite(curr)) {
+      logReturns.push(Math.log(curr / prev));
     }
   }
+  if (logReturns.length === 0) return 0;
 
-  return count > 0 ? sumReturns / count : 0;
+  // EWMA with halving weight ≈ every n/2 samples (α = 2/(n+1) classic EWMA)
+  const alpha = 2 / (logReturns.length + 1);
+  let ewma = logReturns[0]!;
+  for (let i = 1; i < logReturns.length; i++) {
+    ewma = alpha * logReturns[i]! + (1 - alpha) * ewma;
+  }
+  if (!Number.isFinite(ewma)) return 0;
+  return ewma;
 }

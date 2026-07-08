@@ -497,6 +497,25 @@ export class MarketStateAggregator {
     return [...(this.priceHistory.get(sym) ?? [])];
   }
 
+  /** Get the high/low of the recent price-history window for a symbol.
+   *  Used by the Shadow Trade Engine to resolve TP/SL on the actual
+   *  intra-window path (H1 fix) rather than on the cycle close alone.
+   *  Returns {high: price, low: price}; falls back to 0 when no history. */
+  getHighLow(symbol: string): { high: number; low: number } {
+    const sym = symbol.toLowerCase();
+    const history = this.priceHistory.get(sym);
+    if (!history || history.length === 0) return { high: 0, low: 0 };
+    let high = -Infinity;
+    let low = Infinity;
+    for (const p of history) {
+      if (!Number.isFinite(p)) continue;
+      if (p > high) high = p;
+      if (p < low) low = p;
+    }
+    if (!Number.isFinite(high) || !Number.isFinite(low)) return { high: 0, low: 0 };
+    return { high, low };
+  }
+
   /** Update order book imbalance from depth callbacks */
   updateDepth(bids: Array<{price: number; qty: number}>, asks: Array<{price: number; qty: number}>): void {
     let bidVol = 0, askVol = 0;

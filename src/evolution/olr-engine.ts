@@ -33,18 +33,30 @@ export interface OLRModel {
   weights: number[];
   /** Number of training samples for this model */
   nSamples: number;
-  /** Welford running stats for feature normalization */
+  /** Welford running stats for feature normalization (per-feature).
+   *  Per-feature counts (#1 fix): backfill updates Welford only for features
+   *  it has real data for; the 0-filled missing features keep count=0 and
+   *  normalize to a neutral z=0, so the first live value does not explode.
+   *  A single model-wide count would contaminate the missing features. */
   mean: number[];
   m2: number[];
-  /** Total count for Welford */
-  welfordCount: number;
+  welfordCount: number[];
   /** Per-source-type sample counts (for agent context — no weighting, just info) */
   shadowSamples: number;
   paperSamples: number;
   realSamples: number;
+  /** Cold-start backfill samples (historical candle simulation). Tracked
+   *  separately so SGD decay counts only LIVE samples — otherwise 200
+   *  backfill samples would inflate nSamples and freeze the model against
+   *  live adaptation. */
+  backfillSamples: number;
+  /** Timestamp of the most recent sample fed to this model (any source).
+   *  Used by cold-start backfill to decide whether the prior is STALE and
+   *  should be refreshed (#2 freshness fix). */
+  newestSampleTs: number;
   /** Recent resolved trades (last N, for agent context recency display) */
   recentTrades: Array<{
-    source: 'shadow' | 'paper' | 'real';
+    source: 'shadow' | 'paper' | 'real' | 'backfill';
     side: 'buy' | 'sell';
     outcome: 'win' | 'loss';
     timestamp: number;
@@ -65,10 +77,10 @@ export interface OLRQueryResult {
   /** Human-readable explanation */
   explanation: string;
   /** Per-source-type sample breakdown (for agent context — no weighting) */
-  sourceBreakdown: { shadow: number; paper: number; real: number };
+  sourceBreakdown: { shadow: number; paper: number; real: number; backfill: number };
   /** Recent resolved trades for this side (for recency judgment) */
   recentTrades: Array<{
-    source: 'shadow' | 'paper' | 'real';
+    source: 'shadow' | 'paper' | 'real' | 'backfill';
     outcome: 'win' | 'loss';
     cyclesAgo: number;
     slNarrowed?: boolean;
@@ -81,6 +93,8 @@ export interface OLRSymbolStats {
   shortSamples: number;
   longPWin: number;
   shortPWin: number;
+  /** Timestamp of the newest sample across either side (0 if no samples). */
+  newestSampleTs: number;
 }
 
 // ─── Config ───
@@ -88,6 +102,16 @@ export interface OLRSymbolStats {
 const OLR_CONFIG = {
   learningRate: 0.05,
   l2Regularization: 0.001,
+  /** SGD learning-rate decay: η_t = learningRate / (1 + decayRate × nSamples).
+   *  Prevents late samples from dominating a mature model and reduces
+   *  noise overfitting as the sample count grows. */
+  decayRate: 0.01,
+  /** Source-type weights for weighted SGD. Shadow trades are simulated
+   *  (no slippage/fee/funding/liquidity), so they carry less evidence
+   *  about REAL trade profitability than paper/real outcomes. Weighting
+   *  prevents the high-volume shadow stream from drowning out the
+   *  scarcer, higher-fidelity paper/real signal. */
+  sourceWeight: { shadow: 1, paper: 2, real: 4, backfill: 0.3 } as Record<'shadow' | 'paper' | 'real' | 'backfill', number>,
   minSamplesForQuery: 10,
   highConfidenceSamples: 50,
   mediumConfidenceSamples: 20,
@@ -112,10 +136,12 @@ function makeEmptyModel(): OLRModel {
     nSamples: 0,
     mean: new Array(D).fill(0),
     m2: new Array(D).fill(0),
-    welfordCount: 0,
+    welfordCount: new Array(D).fill(0),
     shadowSamples: 0,
     paperSamples: 0,
     realSamples: 0,
+    backfillSamples: 0,
+    newestSampleTs: 0,
     recentTrades: [],
   };
 }
@@ -148,17 +174,23 @@ export class OLREngine {
   }
 
   private migrateModel(m: any): OLRModel {
-    const weights = Array.isArray(m.weights) ? m.weights : new Array(D + 1).fill(0);
+    const rawWeights = Array.isArray(m.weights) ? m.weights : new Array(D + 1).fill(0);
+    // NaN/Infinity guard on load (M6): a previously-poisoned state file
+    // would otherwise resurrect NaN weights. Reset any non-finite weight to 0.
+    const weights = rawWeights.slice(0, D + 1).map((w: number) => (Number.isFinite(w) ? w : 0));
     while (weights.length < D + 1) weights.push(0);
     return {
-      weights: weights.slice(0, D + 1),
+      weights,
       nSamples: m.nSamples ?? 0,
       mean: Array.isArray(m.mean) ? m.mean.slice(0, D) : new Array(D).fill(0),
       m2: Array.isArray(m.m2) ? m.m2.slice(0, D) : new Array(D).fill(0),
-      welfordCount: m.welfordCount ?? 0,
+      // Backward compat: old state stored a single number; broadcast to all features.
+      welfordCount: Array.isArray(m.welfordCount) ? m.welfordCount.slice(0, D) : new Array(D).fill(typeof m.welfordCount === 'number' ? m.welfordCount : 0),
       shadowSamples: m.shadowSamples ?? 0,
       paperSamples: m.paperSamples ?? 0,
       realSamples: m.realSamples ?? 0,
+      backfillSamples: m.backfillSamples ?? 0,
+      newestSampleTs: m.newestSampleTs ?? 0,
       recentTrades: Array.isArray(m.recentTrades) ? m.recentTrades.slice(-20) : [],
     };
   }
@@ -179,10 +211,21 @@ export class OLREngine {
     return this.symbols.get(sym)!;
   }
 
-  private updateWelford(model: OLRModel, x: number[]): void {
-    model.welfordCount++;
-    const n = model.welfordCount;
+  /** Update Welford running stats for selected feature indices only.
+   *  #1 fix: backfill provides real values for only SOME features
+   *  (volatility / srDistanceBps / volumeRatio) and 0-fills the rest
+   *  (obImbalance / sentiment / fundingRate / sentimentConviction). If
+   *  backfill updated Welford for the 0-filled features, their mean/std
+   *  would collapse to ~0/epsilon and the first live value would normalize
+   *  to an explosive z-score. The mask restricts Welford updates to
+   *  features the caller actually has data for; missing features keep a
+   *  live-only Welford distribution. undefined mask = update all (live).
+   *  Counts are per-feature so masked-out features stay at count=0. */
+  private updateWelford(model: OLRModel, x: number[], mask?: Set<number>): void {
     for (let i = 0; i < D; i++) {
+      if (mask !== undefined && !mask.has(i)) continue;
+      const n = model.welfordCount[i]! + 1;
+      model.welfordCount[i]! = n;
       const delta = x[i]! - model.mean[i]!;
       model.mean[i]! += delta / n;
       model.m2[i]! += delta * (x[i]! - model.mean[i]!);
@@ -191,24 +234,38 @@ export class OLREngine {
 
   private normalize(model: OLRModel, x: number[]): number[] {
     const result = new Array(D);
-    const n = model.welfordCount;
     for (let i = 0; i < D; i++) {
-      const variance = n > 1 ? model.m2[i]! / (n - 1) : 1;
+      const n = model.welfordCount[i]!;
+      if (n < 2) {
+        // No/insufficient Welford data for this feature → neutral z=0 so it
+        // contributes nothing (rather than dividing by epsilon and exploding).
+        result[i] = 0;
+        continue;
+      }
+      const variance = model.m2[i]! / (n - 1);
       const std = Math.sqrt(Math.max(variance, OLR_CONFIG.welfordEpsilon));
       result[i] = (x[i]! - model.mean[i]!) / std;
     }
     return result;
   }
 
-  private sgdUpdate(model: OLRModel, xNorm: number[], y: number): void {
+  private sgdUpdate(model: OLRModel, xNorm: number[], y: number, sourceWeight: number, liveSamples: number): void {
     const xFull = [1, ...xNorm];
     let z = 0;
     for (let i = 0; i <= D; i++) z += model.weights[i]! * xFull[i]!;
     const p = sigmoid(z);
     const error = p - y;
+    // Decayed learning rate based on LIVE samples only (excludes backfill),
+    // so a cold-start backfill prior does not freeze the model against live
+    // adaptation (M2 fix extended for backfill). Scaled by source weight so
+    // real/paper outcomes outweigh the high-volume shadow stream (H2 fix).
+    const eta = (OLR_CONFIG.learningRate / (1 + OLR_CONFIG.decayRate * liveSamples)) * sourceWeight;
     for (let i = 0; i <= D; i++) {
       const reg = i > 0 ? OLR_CONFIG.l2Regularization * model.weights[i]! : 0;
-      model.weights[i]! -= OLR_CONFIG.learningRate * (error * xFull[i]! + reg);
+      model.weights[i]! -= eta * (error * xFull[i]! + reg);
+      // NaN/Infinity guard (M6) — a single NaN feature would otherwise
+      // propagate and poison the persisted model forever.
+      if (!Number.isFinite(model.weights[i]!)) model.weights[i]! = 0;
       model.weights[i]! = Math.max(-OLR_CONFIG.maxWeight, Math.min(OLR_CONFIG.maxWeight, model.weights[i]!));
     }
   }
@@ -220,43 +277,74 @@ export class OLREngine {
    * @param features   Feature vector (8 dimensions)
    * @param outcome    1 = win (TP hit), 0 = loss (SL hit)
    * @param side       'buy' (LONG) or 'sell' (SHORT)
-   * @param source     'shadow' | 'paper' | 'real' — recorded for agent context (no weighting)
+   * @param source     'shadow' | 'paper' | 'real' | 'backfill' — recorded for agent context + weighted SGD
    * @param cycle      Cycle number when trade resolved
    * @param slNarrowed Whether SL/TP was narrowed during the trade (for Meta-Agent feedback)
+   * @param welfordMask Optional set of feature indices to update Welford stats for.
+   *                   Backfill passes only the indices it has real data for, so
+   *                   0-filled missing features don't collapse the live Welford
+   *                   distribution (#1 fix). undefined = update all (live sources).
    */
   feedTrade(
     symbol: string,
     features: Record<string, number>,
     outcome: 1 | 0,
     side: 'buy' | 'sell',
-    source: 'shadow' | 'paper' | 'real' = 'shadow',
+    source: 'shadow' | 'paper' | 'real' | 'backfill' = 'shadow',
     cycle: number = 0,
     slNarrowed: boolean = false,
+    welfordMask?: Set<number>,
   ): void {
     const models = this.getOrCreate(symbol);
     const vec = this.contextToVector(features);
 
-    this.updateWelford(models.long, vec);
-    this.updateWelford(models.short, vec);
+    // NaN guard (M6): reject features that would poison the model.
+    for (let i = 0; i < D; i++) {
+      if (!Number.isFinite(vec[i]!)) {
+        log.warn(`[OLR feedTrade] Non-finite feature ${FEATURE_NAMES[i]} for ${symbol} — sample skipped`);
+        return;
+      }
+    }
 
+    // Normalise with PRE-update Welford stats (M3 fix): the current sample
+    // should be normalised against the distribution learned so far, not
+    // against a distribution that already includes itself (inclusive stats
+    // bias early-sample normalisation).
+    //
+    // Features are side-agnostic (market state, not trade-specific), so the
+    // long and short Welford stats are kept in lock-step by updating both
+    // with the same vector (L1). Query-side normalisation for either side
+    // therefore yields identical results, which is correct.
     const xNorm = this.normalize(models.long, vec);
+    this.updateWelford(models.long, vec, welfordMask);
+    this.updateWelford(models.short, vec, welfordMask);
+
     const outcomeLabel: 'win' | 'loss' = outcome === 1 ? 'win' : 'loss';
     const ts = Date.now();
+    const srcWeight = OLR_CONFIG.sourceWeight[source] ?? 1;
 
     if (side === 'sell') {
-      this.sgdUpdate(models.short, xNorm, outcome);
+      // Live samples = total minus backfill — SGD decay uses only live so
+      // the backfill prior doesn't freeze the model (see OLR_CONFIG.backfill).
+      const liveSamples = models.short.nSamples - models.short.backfillSamples;
+      this.sgdUpdate(models.short, xNorm, outcome, srcWeight, liveSamples);
       models.short.nSamples++;
+      models.short.newestSampleTs = ts;
       if (source === 'shadow') models.short.shadowSamples++;
       else if (source === 'paper') models.short.paperSamples++;
-      else models.short.realSamples++;
+      else if (source === 'real') models.short.realSamples++;
+      else if (source === 'backfill') models.short.backfillSamples++;
       models.short.recentTrades.push({ source, side, outcome: outcomeLabel, timestamp: ts, cycle, slNarrowed });
       if (models.short.recentTrades.length > 20) models.short.recentTrades.shift();
     } else {
-      this.sgdUpdate(models.long, xNorm, outcome);
+      const liveSamples = models.long.nSamples - models.long.backfillSamples;
+      this.sgdUpdate(models.long, xNorm, outcome, srcWeight, liveSamples);
       models.long.nSamples++;
+      models.long.newestSampleTs = ts;
       if (source === 'shadow') models.long.shadowSamples++;
       else if (source === 'paper') models.long.paperSamples++;
-      else models.long.realSamples++;
+      else if (source === 'real') models.long.realSamples++;
+      else if (source === 'backfill') models.long.backfillSamples++;
       models.long.recentTrades.push({ source, side, outcome: outcomeLabel, timestamp: ts, cycle, slNarrowed });
       if (models.long.recentTrades.length > 20) models.long.recentTrades.shift();
     }
@@ -273,7 +361,7 @@ export class OLREngine {
       confidence: 'low',
       featureContributions: [],
       explanation: reason,
-      sourceBreakdown: { shadow: 0, paper: 0, real: 0 },
+      sourceBreakdown: { shadow: 0, paper: 0, real: 0, backfill: 0 },
       recentTrades: [],
     });
 
@@ -330,9 +418,10 @@ export class OLREngine {
       shadow: model.shadowSamples,
       paper: model.paperSamples,
       real: model.realSamples,
+      backfill: model.backfillSamples,
     };
 
-    const sourceStr = `shadow=${sourceBreakdown.shadow} paper=${sourceBreakdown.paper} real=${sourceBreakdown.real}`;
+    const sourceStr = `shadow=${sourceBreakdown.shadow} paper=${sourceBreakdown.paper} real=${sourceBreakdown.real} backfill=${sourceBreakdown.backfill}`;
     const explanation = `P(win)=${(pWin * 100).toFixed(0)}% (${model.nSamples} samples [${sourceStr}], conf=${confLabel}) | Key: ${topFeatures}`;
 
     return { pWin, nSamples: model.nSamples, confidence: confLabel, featureContributions: contributions, explanation, sourceBreakdown, recentTrades };
@@ -355,9 +444,19 @@ export class OLREngine {
         shortSamples: models.short.nSamples,
         longPWin,
         shortPWin,
+        newestSampleTs: Math.max(models.long.newestSampleTs, models.short.newestSampleTs),
       });
     }
     return result;
+  }
+
+  /** Reset a single symbol's long+short models to empty. Used by cold-start
+   *  backfill when the persisted prior is STALE (older than the max-age
+   *  threshold) so the refresh starts from a clean state instead of piling
+   *  fresh backfill on top of obsolete samples (#2 freshness fix). */
+  resetSymbol(symbol: string): boolean {
+    const sym = symbol.toLowerCase();
+    return this.symbols.delete(sym);
   }
 
   private zeroFeatures(): Record<string, number> {
@@ -390,9 +489,9 @@ export class OLREngine {
     const models = this.symbols.get(symbol.toLowerCase());
     if (!models) return null;
     const model = side === 'buy' ? models.long : models.short;
-    const n = model.welfordCount;
     const result: Array<{ name: string; mean: number; std: number }> = [];
     for (let i = 0; i < D; i++) {
+      const n = model.welfordCount[i]!;
       const variance = n > 1 ? model.m2[i]! / (n - 1) : 0;
       result.push({ name: FEATURE_NAMES[i]!, mean: model.mean[i]!, std: Math.sqrt(Math.max(variance, 0)) });
     }

@@ -48,6 +48,12 @@ export interface ShadowPosition {
   /** Original SL/TP at open (for tracking narrowing) */
   originalSL: number;
   originalTP: number;
+  /** Highest price observed since the shadow position opened (intra-cycle
+   *  high tracking — H1 fix: resolves TP/SL on the actual path, not just
+   *  the cycle close price, which previously missed intra-cycle hits). */
+  highSinceOpen: number;
+  /** Lowest price observed since open */
+  lowSinceOpen: number;
 }
 
 export interface ShadowTradeStats {
@@ -159,6 +165,8 @@ export class ShadowTradeEngine {
       slNarrowed: false,
       originalSL: longSL,
       originalTP: longTP,
+      highSinceOpen: entryPrice,
+      lowSinceOpen: entryPrice,
     });
 
     // Open shadow SHORT
@@ -177,64 +185,105 @@ export class ShadowTradeEngine {
       slNarrowed: false,
       originalSL: shortSL,
       originalTP: shortTP,
+      highSinceOpen: entryPrice,
+      lowSinceOpen: entryPrice,
     });
 
-    // Prune old resolved positions (keep last 100)
+    // Prune old resolved positions (keep all open + last 100 resolved).
+    // O(n) single-pass (L3 fix) — the previous indexOf-based filter was O(n²).
     if (this.positions.length > 200) {
-      this.positions = this.positions.filter(p => p.status === 'open' || this.positions.indexOf(p) > this.positions.length - 100);
+      const open = this.positions.filter(p => p.status === 'open');
+      const resolved = this.positions.filter(p => p.status !== 'open');
+      this.positions = [...open, ...resolved.slice(-100)];
     }
   }
 
   /**
-   * Check all open shadow positions against current price.
-   * Resolve any that have hit SL or TP, and feed outcomes to OLR.
+   * Check all open shadow positions against the current price AND the
+   * intra-cycle high/low observed since the position opened.
    *
-   * @param symbol   Symbol to check (only resolves positions for this symbol)
-   * @param price    Current price
-   * @param cycle    Current cycle number
+   * H1 fix: the previous implementation only compared the cycle CLOSE
+   * price against SL/TP, so a price that touched TP then reverted to SL
+   * within a cycle was misclassified (or left open indefinitely). Using
+   * the high/low since open resolves the actual TP-before-SL outcome.
+   *
+   * When both SL and TP were touched intra-cycle, the position is
+   * resolved as a LOSS (SL-first, conservative — path risk favours the
+   * nearer barrier, and a real trade would have been stopped first).
+   *
+   * @param symbol     Symbol to check
+   * @param price      Current cycle close price (fallback when no H/L)
+   * @param cycle      Current cycle number
+   * @param cycleHigh  Highest price observed this cycle (optional)
+   * @param cycleLow   Lowest price observed this cycle (optional)
    * @returns Number of positions resolved this call
    */
-  checkPositions(symbol: string, price: number, cycle: number): number {
+  checkPositions(symbol: string, price: number, cycle: number, cycleHigh?: number, cycleLow?: number): number {
     if (price <= 0) return 0;
     const sym = symbol.toLowerCase();
     let resolved = 0;
+    const hi = cycleHigh != null && cycleHigh > 0 ? cycleHigh : price;
+    const lo = cycleLow != null && cycleLow > 0 ? cycleLow : price;
 
     for (const pos of this.positions) {
       if (pos.status !== 'open') continue;
       if (pos.symbol !== sym) continue;
 
+      // Update intra-cycle extremes observed since open.
+      pos.highSinceOpen = Math.max(pos.highSinceOpen, hi);
+      pos.lowSinceOpen = Math.min(pos.lowSinceOpen, lo);
+
       let outcome: 'win' | 'loss' | null = null;
       let exitPrice = 0;
 
       if (pos.side === 'buy') {
-        // LONG: SL below, TP above
-        if (price <= pos.stopLossPrice) {
+        // LONG: SL below, TP above. Use path extremes — a real trade
+        // would have been stopped/TP'd the moment the barrier was touched.
+        const slHit = pos.lowSinceOpen <= pos.stopLossPrice;
+        const tpHit = pos.highSinceOpen >= pos.takeProfitPrice;
+        if (slHit && tpHit) {
+          outcome = 'loss'; // both touched → conservative SL-first
+          exitPrice = pos.stopLossPrice;
+        } else if (slHit) {
           outcome = 'loss';
           exitPrice = pos.stopLossPrice;
-        } else if (price >= pos.takeProfitPrice) {
+        } else if (tpHit) {
           outcome = 'win';
           exitPrice = pos.takeProfitPrice;
         }
       } else {
-        // SHORT: SL above, TP below
-        if (price >= pos.stopLossPrice) {
+        // SHORT: SL above, TP below.
+        const slHit = pos.highSinceOpen >= pos.stopLossPrice;
+        const tpHit = pos.lowSinceOpen <= pos.takeProfitPrice;
+        if (slHit && tpHit) {
           outcome = 'loss';
           exitPrice = pos.stopLossPrice;
-        } else if (price <= pos.takeProfitPrice) {
+        } else if (slHit) {
+          outcome = 'loss';
+          exitPrice = pos.stopLossPrice;
+        } else if (tpHit) {
           outcome = 'win';
           exitPrice = pos.takeProfitPrice;
         }
       }
 
-      // Force-resolve if held too long (stale shadow trade)
+      // Force-resolve if held too long (stale shadow trade).
+      // M5 fix: a mark-to-current PnL label is NOT a TP-before-SL outcome
+      // and would poison OLR's learning signal. We resolve the position
+      // for stats/UI but DO NOT feed the fabricated label to OLR — better
+      // to lose one training sample than teach the model noise.
       if (!outcome && cycle - pos.openCycle >= SHADOW_CONFIG.maxHoldCycles) {
-        // Resolve based on current P&L direction
         const pnl = pos.side === 'buy'
           ? (price - pos.entryPrice) / pos.entryPrice
           : (pos.entryPrice - price) / pos.entryPrice;
-        outcome = pnl > 0 ? 'win' : 'loss';
-        exitPrice = price;
-        log.info(`[shadow] Force-resolved ${pos.id} (${pos.side} ${sym}) after ${cycle - pos.openCycle} cycles — pnl=${(pnl * 100).toFixed(2)}%`);
+        pos.status = pnl >= 0 ? 'win' : 'loss';
+        pos.resolvedCycle = cycle;
+        pos.exitPrice = price;
+        log.info(`[shadow] Force-resolved ${pos.id} (${pos.side} ${sym}) after ${cycle - pos.openCycle} cycles — pnl=${(pnl * 100).toFixed(2)}% (NOT fed to OLR: stale label unreliable)`);
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles: cycle - pos.openCycle, cycle });
+        if (this.recentResults.length > 50) this.recentResults.shift();
+        resolved++;
+        continue;
       }
 
       if (outcome) {
@@ -245,7 +294,6 @@ export class ShadowTradeEngine {
         const holdCycles = cycle - pos.openCycle;
         const outcomeNum: 1 | 0 = outcome === 'win' ? 1 : 0;
 
-        // Feed to OLR with source type + cycle + slNarrowed info
         try {
           this.olrEngine.feedTrade(sym, pos.features, outcomeNum, pos.side, 'shadow', cycle, pos.slNarrowed);
           log.info(`[shadow] ${outcome.toUpperCase()} ${pos.side.toUpperCase()} ${sym} held ${holdCycles} cycles (entry=$${pos.entryPrice.toFixed(2)} exit=$${exitPrice.toFixed(2)}, slNarrowed=${pos.slNarrowed}) → OLR fed`);
@@ -253,16 +301,7 @@ export class ShadowTradeEngine {
           log.warn(`[shadow] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        // Record for stats + context
-        this.recentResults.push({
-          id: pos.id,
-          symbol: sym,
-          side: pos.side,
-          outcome,
-          holdCycles,
-          cycle,
-        });
-        // Keep only recent 50
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle });
         if (this.recentResults.length > 50) this.recentResults.shift();
 
         resolved++;
@@ -393,6 +432,9 @@ export class ShadowTradeEngine {
         this.positions = (data.positions as any[]).map(p => ({
           ...p,
           status: 'open' as const,
+          // Backfill H/L fields for positions persisted before the H1 fix.
+          highSinceOpen: p.highSinceOpen ?? p.entryPrice,
+          lowSinceOpen: p.lowSinceOpen ?? p.entryPrice,
         }));
       }
       if (data.recentResults) {

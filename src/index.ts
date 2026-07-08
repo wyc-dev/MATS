@@ -37,7 +37,8 @@ import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts'
 import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
 import { OLREngine, type OLRQueryResult } from './evolution/olr-engine.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
-import { calculateFirstPassage, estimateDrift, type FirstPassageResult } from './evolution/first-passage.ts';
+import { calculateFirstPassage, estimateDrift, estimateVolatility, type FirstPassageResult } from './evolution/first-passage.ts';
+import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
 import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent } from './analysis/news-sentiment.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord } from './types/index.ts';
@@ -110,6 +111,9 @@ class MATSSystem {
   private olrEngine!: OLREngine;
   /** Shadow Trade Engine — opens simulated LONG+SHORT each cycle, tracks TP-before-SL outcomes. */
   private shadowEngine!: ShadowTradeEngine;
+  /** One-shot cold-start OLR backfill guard — ensures backfill runs at most
+   *  once per process, on the first cycle that has non-empty trading markets. */
+  private olrBackfillDone = false;
   /** Last first-passage probability result (for agent context + UI). */
   private lastFirstPassage: FirstPassageResult | null = null;
   private lastPatternContext = '';
@@ -262,6 +266,11 @@ class MATSSystem {
         }
       } catch { /* start fresh */ }
       log.info('✓ OLR + Shadow Trade Engine ready');
+
+      // 3.10b: Cold-start OLR backfill helper — defined here, invoked lazily
+      // on the first decision cycle with non-empty trading markets (markets
+      // may arrive from UI or persistence after init completes).
+
 
       // 3.11 Initialize Trade Pattern Classifier (kept for position management only)
       log.info('Step 3.11/8: Initializing Trade Pattern Classifier...');
@@ -1458,6 +1467,55 @@ class MATSSystem {
     }
   }
 
+  /** Cold-start backfill: replay historical HL candles as shadow trades
+   *  to seed the OLR prior. Uses MarketAgent.hlFetch (rate-limited) to pull
+   *  candleSnapshot data. Only backfills symbols that are still cold (below
+   *  the cold-start threshold) — idempotent across restarts. Safe: only feeds
+   *  `source='backfill'` samples into OLR, never places orders or touches
+   *  the private key. */
+  private async backfillOLRPrior(markets: string[]): Promise<void> {
+    // Dedup + filter to non-empty symbols.
+    const symbols = [...new Set(markets.map(s => s.trim()).filter(Boolean))];
+    if (symbols.length === 0) return;
+
+    // Candle fetcher bridging MarketAgent.hlFetch → HLCandle[].
+    // HL candleSnapshot returns Array<Record<string,string> with t/o/h/l/c/v.
+    const fetcher: CandleFetcher = async (coin, interval, startTime, endTime) => {
+      const body = { type: 'candleSnapshot', req: { coin, interval, startTime, endTime } };
+      const raw = await MarketAgent.hlFetch(body);
+      const arr = raw as Array<Record<string, string>>;
+      if (!Array.isArray(arr)) return [];
+      const candles: HLCandle[] = [];
+      for (const row of arr) {
+        const t = parseFloat(row['t'] ?? '0');
+        const o = parseFloat(row['o'] ?? '0');
+        const h = parseFloat(row['h'] ?? '0');
+        const l = parseFloat(row['l'] ?? '0');
+        const c = parseFloat(row['c'] ?? '0');
+        const v = parseFloat(row['v'] ?? '0');
+        if (Number.isFinite(t) && Number.isFinite(o) && Number.isFinite(h) && Number.isFinite(l) && Number.isFinite(c)) {
+          candles.push({ t, o, h, l, c, v: Number.isFinite(v) ? v : 0 });
+        }
+      }
+      return candles;
+    };
+
+    log.info(`[backfill] Cold-start backfilling OLR for ${symbols.length} market(s): ${symbols.join(', ')}`);
+    const summary = await backfillOLRFromCandles(this.olrEngine, symbols, fetcher);
+    log.info(`[backfill] ${summary.symbolsBackfilled}/${symbols.length} backfilled, ${summary.totalSamples} samples injected, ${summary.symbolsSkipped} skipped`);
+    // Persist the warm OLR state immediately (atomic tmp+rename) so a
+    // restart keeps the prior and a crash mid-write cannot corrupt it.
+    try {
+      const dir = path.join(process.cwd(), 'data/evolution');
+      const final = path.join(dir, 'olr-state.json');
+      const tmp = path.join(dir, 'olr-state.json.tmp');
+      fs.writeFileSync(tmp, this.olrEngine.save(), 'utf-8');
+      fs.renameSync(tmp, final);
+    } catch (err) {
+      log.warn(`[backfill] Failed to persist warm OLR state: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private async runDecisionCycle(): Promise<void> {
     if (isShuttingDown()) return;
     if (this.cycleInProgress) {
@@ -1471,6 +1529,22 @@ class MATSSystem {
     // ALL passed the guard because none had reached the `= true` line yet.
     // This caused multiple HACP cycles to run simultaneously.
     this.cycleInProgress = true;
+
+    // ── Cold-start OLR backfill (once per process) ──
+    // On the first cycle with non-empty trading markets, backfill the OLR
+    // prior from historical HL candles so P(win) is usable immediately
+    // instead of after 1-3h of live shadow accumulation.
+    // #3 fix: fire-and-forget (non-blocking) — the first cycle proceeds with
+    // first-passage (instant) and other signals while backfill warms OLR in
+    // the background. The prior lands within ~1-2s and is usable from cycle 2.
+    // A backfill error is logged but never prevents the trading cycle.
+    if (!this.olrBackfillDone && this.tradingMarkets.length > 0) {
+      this.olrBackfillDone = true; // set first — idempotent even if the call throws
+      void this.backfillOLRPrior(this.tradingMarkets).catch((err: Error) =>
+        log.warn(`[backfill] Cold-start backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`),
+      );
+    }
+
 
     // ── v2.0.79: Determine which symbols to analyze this cycle ──
     // Priority: Trading Markets (UI pills) + open positions (deduped).
@@ -1704,8 +1778,9 @@ class MATSSystem {
     // not 5-minute price direction.
     if (marketPrice > 0) {
       try {
-        // Check + resolve existing shadow positions for active symbol
-        const resolved = this.shadowEngine.checkPositions(activeSymbol, marketPrice, this.totalCycles);
+        // Check + resolve existing shadow positions for active symbol (H1: pass intra-cycle high/low)
+        const activeHL = this.marketState.getHighLow(activeSymbol);
+        const resolved = this.shadowEngine.checkPositions(activeSymbol, marketPrice, this.totalCycles, activeHL.high, activeHL.low);
         if (resolved > 0) {
           log.info(`🧬 [shadow] ${activeSymbol}: ${resolved} shadow trades resolved (cycle #${this.totalCycles})`);
         }
@@ -1715,7 +1790,8 @@ class MATSSystem {
           if (normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol)) continue;
           const mktState = this.marketState.getState(mktSym);
           if (mktState && mktState.price > 0) {
-            const mktResolved = this.shadowEngine.checkPositions(mktSym, mktState.price, this.totalCycles);
+            const mktHL = this.marketState.getHighLow(mktSym);
+            const mktResolved = this.shadowEngine.checkPositions(mktSym, mktState.price, this.totalCycles, mktHL.high, mktHL.low);
             if (mktResolved > 0) {
               log.info(`🧬 [shadow] ${mktSym}: ${mktResolved} shadow trades resolved (cycle #${this.totalCycles})`);
             }
@@ -1763,15 +1839,24 @@ class MATSSystem {
     }
 
     // ── FIRST-PASSAGE PROBABILITY: Calculate P(TP before SL) for active symbol ──
-    // Uses per-symbol price history for drift (NOT mixed-symbol trade history).
+    // Uses per-symbol price history for σ (std of log returns) and log-drift ν.
+    // M1 fix: use true σ (std of log returns) via estimateVolatility, NOT the
+    //   global mean-|return| `calcVolatility`, which underestimates diffusion.
+    // H4 fix: estimateDrift now returns EWMA log-drift over 20 cycles (ν directly).
+    // C1/C2/M4 fix: calculateFirstPassage now uses correct LONG/SHORT formulas,
+    //   log-drift, and separate SHORT SL/TP barriers (SHORT SL at resistance,
+    //   SHORT TP at support — mirror of LONG).
     try {
-      const vol = combinedState.volatility ?? 0;
-      // Estimate drift from active symbol's price history (per-symbol, not mixed)
       const priceHistory = this.marketState.getPriceHistory(activeSymbol);
-      const drift = estimateDrift(priceHistory, 10);
-      const slDist = this.lastSRContext?.distanceToSupportBps ? this.lastSRContext.distanceToSupportBps / 10000 : 0.02;
-      const tpDist = this.lastSRContext?.distanceToResistanceBps ? this.lastSRContext.distanceToResistanceBps / 10000 : 0.05;
-      this.lastFirstPassage = calculateFirstPassage(vol, drift, slDist, tpDist);
+      const vol = estimateVolatility(priceHistory, 20);
+      const drift = estimateDrift(priceHistory, 20);
+      // LONG: SL at support (below), TP at resistance (above)
+      const slDistLong = this.lastSRContext?.distanceToSupportBps ? this.lastSRContext.distanceToSupportBps / 10000 : 0.02;
+      const tpDistLong = this.lastSRContext?.distanceToResistanceBps ? this.lastSRContext.distanceToResistanceBps / 10000 : 0.05;
+      // SHORT: SL at resistance (above), TP at support (below) — mirror of LONG
+      const slDistShort = tpDistLong;
+      const tpDistShort = slDistLong;
+      this.lastFirstPassage = calculateFirstPassage(vol, drift, slDistLong, tpDistLong, slDistShort, tpDistShort);
     } catch { /* non-critical */ }
 
     // ── Save current cycle context for ALL trading markets ──
@@ -2888,25 +2973,36 @@ class MATSSystem {
               const olrBuy = this.olrEngine.query(combinedState.primarySymbol, { ...olrCtx }, 'buy', this.totalCycles);
               const olrSell = this.olrEngine.query(combinedState.primarySymbol, { ...olrCtx }, 'sell', this.totalCycles);
 
-              // Use OLR P(win) + first-passage probability combined
+              // Use OLR P(win) + first-passage probability combined.
+              // H3 fix: thresholds are RR-aware. The old flat 0.6/0.5/0.35
+              //   gates assumed a ~1:1 RR, so under the default 1:2.5 RR
+              //   (SL 2% / TP 5%) the random-walk breakeven is a/(a+b)=28.6%,
+              //   making the < 0.35 block fire near-constantly. Compare each
+              //   side's score to that side's path breakeven instead.
               const fpLong = this.lastFirstPassage?.longPWin ?? 0.5;
               const fpShort = this.lastFirstPassage?.shortPWin ?? 0.5;
+              const beLong = this.lastFirstPassage?.breakevenPLong ?? 0.5;
+              const beShort = this.lastFirstPassage?.breakevenPShort ?? 0.5;
               // Combined score: average of OLR and first-passage
               const buyScore = (olrBuy.pWin + fpLong) / 2;
               const sellScore = (olrSell.pWin + fpShort) / 2;
+              const buyEdge = buyScore - beLong;   // positive = beats breakeven
+              const sellEdge = sellScore - beShort;
+              const ENTRY_EDGE = 0.10;   // score must beat breakeven by 10pp
+              const BLOCK_EDGE = -0.05;  // hard block when 5pp BELOW breakeven on both
 
-              if (buyScore > 0.6 && sellScore < 0.5) {
+              if (buyEdge > ENTRY_EDGE && buyScore > sellScore) {
                 direction = 'buy';
-                log.info(`🧪 OLR+FP-guided: BUY score=${(buyScore * 100).toFixed(0)}% (OLR=${(olrBuy.pWin * 100).toFixed(0)}%, FP=${(fpLong * 100).toFixed(0)}%)`);
-              } else if (sellScore > 0.6 && buyScore < 0.5) {
+                log.info(`🧪 OLR+FP-guided: BUY score=${(buyScore * 100).toFixed(0)}% (edge=${(buyEdge * 100).toFixed(0)}pp over breakeven ${(beLong * 100).toFixed(0)}%; OLR=${(olrBuy.pWin * 100).toFixed(0)}%, FP=${(fpLong * 100).toFixed(0)}%)`);
+              } else if (sellEdge > ENTRY_EDGE && sellScore > buyScore) {
                 direction = 'sell';
-                log.info(`🧪 OLR+FP-guided: SELL score=${(sellScore * 100).toFixed(0)}% (OLR=${(olrSell.pWin * 100).toFixed(0)}%, FP=${(fpShort * 100).toFixed(0)}%)`);
-              } else if (buyScore < 0.35 && sellScore < 0.35) {
+                log.info(`🧪 OLR+FP-guided: SELL score=${(sellScore * 100).toFixed(0)}% (edge=${(sellEdge * 100).toFixed(0)}pp over breakeven ${(beShort * 100).toFixed(0)}%; OLR=${(olrSell.pWin * 100).toFixed(0)}%, FP=${(fpShort * 100).toFixed(0)}%)`);
+              } else if (buyEdge < BLOCK_EDGE && sellEdge < BLOCK_EDGE) {
                 direction = null;
                 olrBlocked = true;
-                log.info(`🧪 OLR+FP-guided: Both scores < 35% → HARD BLOCK (buy=${(buyScore * 100).toFixed(0)}%, sell=${(sellScore * 100).toFixed(0)}%)`);
+                log.info(`🧪 OLR+FP-guided: Both scores below breakeven by >${(BLOCK_EDGE * 100).toFixed(0)}pp → HARD BLOCK (buy=${(buyScore * 100).toFixed(0)}% vs be=${(beLong * 100).toFixed(0)}%, sell=${(sellScore * 100).toFixed(0)}% vs be=${(beShort * 100).toFixed(0)}%)`);
               } else {
-                log.info(`🧪 OLR+FP-guided: No clear edge (buy=${(buyScore * 100).toFixed(0)}%, sell=${(sellScore * 100).toFixed(0)}%) — falling through to other signals`);
+                log.info(`🧪 OLR+FP-guided: No clear edge over breakeven (buy=${(buyScore * 100).toFixed(0)}% vs be=${(beLong * 100).toFixed(0)}%, sell=${(sellScore * 100).toFixed(0)}% vs be=${(beShort * 100).toFixed(0)}%) — falling through to other signals`);
               }
             }
 
@@ -4720,7 +4816,7 @@ class MATSSystem {
               const sym = s.symbol;
               // Get feature weights for UI visualization
               const longWeights = this.olrEngine.getFeatureWeights(sym, 'buy');
-              const shortWeights = this.olrEngine.getFeatureWeights(sym, 'short' as 'buy' | 'sell');
+              const shortWeights = this.olrEngine.getFeatureWeights(sym, 'sell');
               // Query current features for live P(win)
               const liveLong = sym === activeSymbol && Object.keys(activeFeatures).length > 0
                 ? this.olrEngine.query(sym, activeFeatures, 'buy', this.totalCycles)
@@ -4737,6 +4833,8 @@ class MATSSystem {
                 shortPWin: liveShort?.pWin ?? s.shortPWin,
                 longConfidence: liveLong?.confidence ?? 'low',
                 shortConfidence: liveShort?.confidence ?? 'low',
+                longSource: liveLong?.sourceBreakdown ?? { shadow: 0, paper: 0, real: 0, backfill: 0 },
+                shortSource: liveShort?.sourceBreakdown ?? { shadow: 0, paper: 0, real: 0, backfill: 0 },
                 featureWeights: longWeights ? longWeights.map((w, i) => ({
                   name: w.name,
                   longWeight: w.weight,
@@ -4757,6 +4855,11 @@ class MATSSystem {
               volatility: this.lastFirstPassage.volatility,
               slDistance: this.lastFirstPassage.slDistanceLong,
               tpDistance: this.lastFirstPassage.tpDistanceLong,
+              slDistanceShort: this.lastFirstPassage.slDistanceShort,
+              tpDistanceShort: this.lastFirstPassage.tpDistanceShort,
+              breakevenPLong: this.lastFirstPassage.breakevenPLong,
+              breakevenPShort: this.lastFirstPassage.breakevenPShort,
+              confidence: this.lastFirstPassage.confidence,
             } : undefined,
             shadowStats: this.shadowEngine.getStats(),
             shadowOpen: this.shadowEngine.getOpenPositions().map(p => ({

@@ -2,12 +2,12 @@
 
 **8 AI agents debate every trade. A Skeptics agent vetoes bad ones. The system evolves its own strategy — no manual tuning.**
 
-Single-LLM trading bots hallucinate. They lack oversight, have no risk governance, and cannot adapt to changing markets. MATS solves this with a multi-agent cognitive architecture: 8 specialized agents think in parallel, debate through the HACP protocol, and reach weighted consensus. A dedicated Skeptics agent stress-tests every position before execution. The system self-evolves via genetic algorithms + range-based clustering + EM cycle chains — it learns from every trade and adapts its own parameters.
+Single-LLM trading bots hallucinate. They lack oversight, have no risk governance, and cannot adapt to changing markets. MATS solves this with a multi-agent cognitive architecture: 8 specialized agents think in parallel, debate through the HACP protocol, and reach weighted consensus. A dedicated Skeptics agent stress-tests every position before execution. The system self-evolves via genetic algorithms + online logistic regression (OLR) + shadow trading + first-passage path-risk + EM cycle chains — it learns from every trade and adapts its own parameters.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.131-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.135-blueviolet)](ARCHITECTURE.md)
 [![GitHub stars](https://img.shields.io/github/stars/wyc-dev/MATS?style=social)](https://github.com/wyc-dev/MATS)
 
 🌐 [mats.trading](https://mats.trading/) · 💬 [Discord](https://discord.gg/mats) (coming soon) · ⭐ [Star on GitHub](https://github.com/wyc-dev/MATS)
@@ -230,7 +230,8 @@ MATS has **multiple self-evolution mechanisms**:
 - Per-symbol, per-side (LONG/SHORT) logistic regression with Welford z-score normalization
 - SGD online updates from shadow trade + paper trade + real trade outcomes (TP-before-SL)
 - Outputs P(win) ∈ (0,1) — probability of winning for each side
-- Source-type tracking: shadow / paper / real samples (no weighting, agents judge reliability)
+- Source-type tracking: shadow / paper / real / backfill samples (source-weighted: real=4, paper=2, shadow=1, backfill=0.3; backfill excluded from SGD decay)
+- Per-feature Welford normalization: each feature maintains its own count, so missing features (e.g. no S/R pivot) return neutral z=0 instead of polluting the model
 - Recency tracking: recent trades with cyclesAgo for agent temporal judgment
 - SL/TP narrowing feedback: [SL narrowed] tag for Meta-Agent SL/TP adjustment decisions
 
@@ -239,12 +240,12 @@ MATS has **multiple self-evolution mechanisms**:
 - Uses S/R-based SL/TP (same as real trades)
 - Tracks until SL or TP is hit → feeds outcome to OLR
 - Learns TP-before-SL (actual trade profitability), NOT 5-minute price direction
-- Max 50 cycles hold before force-resolve
+- Multi-candle hold resolution: each shadow scans forward up to maxHoldCandles (20), resolves on first SL/TP hit; unresolved shadows are skipped (no fabricated labels)
 
 **Layer 1c — First-Passage Probability** (`first-passage.ts`):
 - Instant P(TP before SL) from volatility + drift + S/R-based SL/TP distances
 - Cox & Miller (1965) first-passage formula for Geometric Brownian Motion
-- Returns 50% (no edge) when volatility too low (< 0.1%)
+- RR-aware: P(win) compared against breakeven probability (not a flat threshold); per-side SL/TP distances (LONG + SHORT)
 - Per-symbol drift from marketState price history (not mixed-symbol trade history)
 
 **Layer 2 — EM Cycle Chain** (`cycle-summary.ts`):
@@ -418,7 +419,8 @@ src/                                        # ~25,000 LOC total
 │   ├── trade-pattern-classifier.ts         # Supervised KNN pattern DB
 │   ├── olr-engine.ts                       # OLR Engine (Online Logistic Regression)
 │   ├── shadow-trade-engine.ts              # Shadow Trade Engine (simulated TP-before-SL)
-│   ├── first-passage.ts                    # First-Passage Probability Calculator
+│   ├── first-passage.ts                    # First-Passage Probability Calculator (Cox & Miller GBM)
+│   ├── olr-backfill.ts                      # Cold-start OLR backfill from historical HL candles
 │   ├── cycle-summary.ts                    # EM Cycle Summary Manager
 │   ├── em-clustering.ts                    # EM clustering engine
 │   └── pattern-tag-tracker.ts              # Pattern tag frequency tracker
@@ -462,7 +464,6 @@ scripts/                                   # 🛠 Utilities
 ├── loop-engineering-deep.sh                # Deep session runner
 ├── loop-engineering-memory.md              # Known issues / checklist
 ├── backfill-patterns.mjs                   # Import portfolio trades into pattern DB
-└── reset-rbc-symbol.ts                     # Legacy: reset RBC state (deprecated)
 
 data/                                      # 💾 Runtime persistence
 └── evolution/
@@ -558,6 +559,38 @@ When a direction is restricted, the opposite direction is blocked at execution t
 ---
 
 ## Changelog
+
+### v2.0.135 — OLR + Shadow + First-Passage Production Hardening + Cold-Start Backfill + UI Restructure
+
+**Critical math fixes (first-passage.ts rewrite):**
+- **C1**: LONG/SHORT first-passage formulas were swapped — LONG used the SHORT formula and vice versa. Now uses scale-function derivation: LONG P = (e^(2νa/σ²)−1)/(e^(2νa/σ²)−e^(−2νb/σ²)), SHORT P = (1−e^(−2νa'/σ²))/(e^(2νb'/σ²)−e^(−2νa'/σ²)), zero-drift limit = a/(a+b).
+- **C2**: Used raw μ (arithmetic drift) instead of log-drift ν (geometric). Now derives ν from log-returns.
+- **M4**: SHORT SL/TP distances were not independently passed — SHORT used LONG's distances. Now per-side distances.
+
+**OLR engine hardening (olr-engine.ts):**
+- Per-feature Welford counts: each feature tracks its own count + mask, so missing features (no S/R pivot) return neutral z=0 instead of dividing by a frozen single count → NaN.
+- `backfill` source type (weight 0.3) excluded from SGD decay; `liveSamples = nSamples − backfillSamples` prevents 200 backfill samples from freezing the model.
+- Cold/stale/warm detection via `newestSampleTs`; stale state (>6h) auto-resets + re-backfills. NaN guards on normalize().
+- `resetSymbol()` for clean re-backfill.
+
+**Shadow trade engine (shadow-trade-engine.ts):**
+- Multi-candle hold: each shadow scans forward up to `maxHoldCandles` (20), resolves on first SL/TP hit. Unresolved shadows skipped — no fabricated labels.
+- H/L tracking from candle data; S/R-aligned SL/TP via self-contained pivot detector with ATR fallback.
+- `srDistanceBps` = actual distance to nearest support/resistance pivot.
+
+**Cold-start backfill (olr-backfill.ts — new):**
+- On first cycle per market, replays historical Hyperliquid candles (186 M5) into OLR as `backfill` source samples.
+- Non-blocking (`void ... .catch()`): trading loop continues; first-passage covers cycle 1, OLR available from cycle 2.
+- Idempotent: skips markets that are already warm (≥20 total samples). Verified live: 945 samples injected across 3 markets in ~1s.
+
+**UI restructure (App.tsx + types):**
+- Agent Cognition legend: "RBC & Sentiment Analyst" → "OLR & Sentiment Analyst" (description rewritten for OLR + first-passage + RR-aware breakeven).
+- Evolution panel first-passage display: breakeven-aware (compares P(win) to `breakevenPLong/Short`, shows edge in percentage-points) + low-confidence badge + per-side SHORT SL/TP distances.
+- Per-symbol OLR: new source-breakdown row (shadow / paper / real / backfill counts) — data provenance at a glance.
+- Deleted dead `ui/src/RBCVisualizer.tsx`.
+- Backend symbols payload extended with `longSource`/`shortSource` sourceBreakdown.
+
+**Tests:** 41 passing (23 evolution-memory regression + 8 backfill/Welford/multi-candle/S-R). `tsc --noEmit` clean. UI build clean.
 
 ### v2.0.131 — Margin Check Uses Total Equity + Max Portion 100% + Price Fallback
 
