@@ -275,31 +275,45 @@ export class PaperTradingEngine {
     }
 
     // Validate against risk limits
-    const riskAssessment = this.riskEngine.assessTrade(
-      this.portfolio.getPortfolio() as any,
-      decision.action,
-      decision.positionSizePct,
-      price,
-      0.02 // default volatility
-    );
+    // v2.0.136: forceMirror bypasses this check, mirroring the existing
+    // canTrade() bypass above. A forced mirror reflects a real trade that
+    // ALREADY executed on HL — real risk is managed by HL margin/liquidation
+    // + SL/TP trigger orders, NOT by the paper portfolio's drawdown guard.
+    // Previously forceMirror bypassed canTrade() (drawdown/daily-loss) but
+    // NOT this assessTrade() (also a drawdown/daily-loss check) — an
+    // oversight. The result: when paper drawdown exceeded 20%, the mirror
+    // was rejected, so no thesis-bearing position was created locally. The
+    // next syncExchangePositions then re-imported the HL position with NO
+    // entryThesis, and the Portfolio UI "Reason" vanished after cycle 1.
+    // Bypassing here for forced mirrors does NOT weaken any REAL risk limit
+    // — it only makes the paper portfolio accurately track the real trade.
+    if (!forceMirror) {
+      const riskAssessment = this.riskEngine.assessTrade(
+        this.portfolio.getPortfolio() as any,
+        decision.action,
+        decision.positionSizePct,
+        price,
+        0.02 // default volatility
+      );
 
-    if (!riskAssessment.allowed) {
-      const err = `Risk assessment failed: ${riskAssessment.concerns.map((c) => c.description).join('; ')}`;
-      log.warn(err);
+      if (!riskAssessment.allowed) {
+        const err = `Risk assessment failed: ${riskAssessment.concerns.map((c) => c.description).join('; ')}`;
+        log.warn(err);
 
-      // If adjusted position size is available, try with reduced size
-      if (riskAssessment.adjustedPositionSize) {
-        const adjustedQuantity = (riskAssessment.adjustedPositionSize * equity) / price;
-        if (adjustedQuantity > 0) {
-          log.info(`Retrying with adjusted size: ${(riskAssessment.adjustedPositionSize! * 100).toFixed(1)}%`);
-          return [await this.executeOrder(decision, adjustedQuantity, price)];
+        // If adjusted position size is available, try with reduced size
+        if (riskAssessment.adjustedPositionSize) {
+          const adjustedQuantity = (riskAssessment.adjustedPositionSize * equity) / price;
+          if (adjustedQuantity > 0) {
+            log.info(`Retrying with adjusted size: ${(riskAssessment.adjustedPositionSize! * 100).toFixed(1)}%`);
+            return [await this.executeOrder(decision, adjustedQuantity, price)];
+          }
         }
-      }
 
-      return [{
-        order: this.createRejectedOrder(decision, err),
-        error: err,
-      }];
+        return [{
+          order: this.createRejectedOrder(decision, err),
+          error: err,
+        }];
+      }
     }
 
     // Execute the order (use effectiveQuantity which honours the HL min notional floor)

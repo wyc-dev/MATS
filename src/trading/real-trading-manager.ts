@@ -410,6 +410,27 @@ export class RealTradingManager {
         const decisionWithLev = { ...decision, leverage: decision.leverage ?? 1 };
         const mirrorReports = await this.paperEngine.executeDecision(decisionWithLev, true);
 
+        // v2.0.136: Tag the mirror as a real position IMMEDIATELY after creation.
+        // Previously the mirror was created with agentId='' (openPosition uses
+        // order.agentId which is '' for paper-engine orders) and only re-tagged
+        // to 'hyperliquid-real' inside the post-trade sync block BELOW — but that
+        // block only runs if engine.getPositions() finds the freshly opened HL
+        // position. Due to a race condition (HL not yet indexing the fill),
+        // exPos is often NOT found on the first call, so agentId stays ''.
+        // The next cycle's syncExchangePositions then sees agentId !== 'hyperliquid-real'
+        // and takes the close+reimport path, replacing the thesis-bearing mirror
+        // with a fresh importExchangePosition() position that has NO entryThesis /
+        // holdReason. This is why the Portfolio UI's 'Reason' showed on the 1st
+        // cycle and vanished on the 2nd (Skeptics lost the thesis to re-validate).
+        // Setting agentId here (unconditionally, before the sync) ensures the
+        // next syncExchangePositions uses the in-place update path that preserves
+        // entryThesis / holdReason / S/R-aligned SL-TP.
+        const symImmediate = decision.symbol.includes(':') ? decision.symbol : decision.symbol.toLowerCase();
+        if (this.portfolio.hasPosition(symImmediate)) {
+          const freshMirror = this.portfolio.getPosition(symImmediate);
+          if (freshMirror) freshMirror.agentId = 'hyperliquid-real';
+        }
+
         // v2.0.33: PRO ALGO FIRM PATTERN — place SL/TP immediately after fill,
         // using the ACTUAL fill price (not the decision price). Retry on failure.
         // The position must NEVER be left unprotected — if SL/TP placement fails,
@@ -617,6 +638,12 @@ export class RealTradingManager {
         };
       }
 
+      // v2.0.136: Log placeOrder failures. Previously the HL error was
+      // returned silently, making it impossible to diagnose why a trade
+      // that passed every gate still failed to execute.
+      if (!result.success) {
+        log.warn(`❌ [real-trading] placeOrder failed for ${decision.action.toUpperCase()} ${decision.symbol} qty=${quantity.toFixed(6)} @ $${price.toFixed(2)}: ${result.error ?? 'unknown error'}`);
+      }
       return {
         success: result.success,
         orderId: result.orderId,

@@ -3801,8 +3801,16 @@ class MATSSystem {
       }
 
       // v2.0.33: Pass S/R levels to executeDecision so SL/TP can be set at
+      // v2.0.136: Set entryPrice for the active-symbol consensus decision. The
+      // HACP consensus decision does not carry an entryPrice (only the
+      // multi-symbol entry path and exploration path set it). Without this,
+      // realTradingManager.executeDecision() received price=0 and silently
+      // returned "No price available for real trade" -> execution FAILED even
+      // after every gate (thesis, conviction, direction, frequency) passed.
+      // This was the direct cause of "BTC SELL shown but never opens".
       const decisionWithSR: TradingDecision = {
         ...finalDecision,
+        entryPrice: finalDecision.entryPrice ?? combinedState.price ?? marketPrice,
         srSupport: this.lastSRContext?.nearestSupport ?? null,
         srResistance: this.lastSRContext?.nearestResistance ?? null,
       };

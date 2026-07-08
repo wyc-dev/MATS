@@ -824,33 +824,53 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       }
 
       if (order.type === 'market') {
-        // Get mid price for aggressive market order
-        const mid = await this.getMidPrice(order.symbol);
-        if (mid > 0) {
-          const aggressivePx = isBuy ? mid * 1.05 : mid * 0.95;
-          (orderSpec as any).p = formatPrice(aggressivePx, pxDecimals);
-        } else {
-          // v2.0.32: allMids doesn't include xyz DEX assets — use l2Book instead
-          try {
-            const l2Res = await hlRateLimitedFetch(HL_INFO_URL, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ type: 'l2Book', coin: order.symbol }),
-            });
-            if (l2Res.ok) {
-              const l2Data = await l2Res.json() as { levels?: Array<Array<{ px: string; sz: string; n: number }>> };
-              const bids = l2Data.levels?.[0];
-              const asks = l2Data.levels?.[1];
-              if (bids?.length && asks?.length) {
-                const bestBid = parseFloat(bids[0]!.px);
-                const bestAsk = parseFloat(asks[0]!.px);
-                const l2Mid = (bestBid + bestAsk) / 2;
-                const aggressivePx = isBuy ? l2Mid * 1.05 : l2Mid * 0.95;
-                (orderSpec as any).p = formatPrice(aggressivePx, pxDecimals);
-                log.info(`[placeOrder] Using l2Book mid for ${order.symbol}: $${l2Mid.toFixed(2)} → aggressive $${aggressivePx.toFixed(2)}`);
+        // v2.0.136: Use the LIVE l2Book (best bid/ask) as the PRIMARY source for
+        // the aggressive price, keyed by the canonical HL coin name (asset.name).
+        // The previous code used allMids keyed by order.symbol, but order.symbol is
+        // normalizeSymbol()'d to lowercase ('btc'), while HL's l2Book/allMids APIs
+        // are CASE-SENSITIVE and require the canonical name ('BTC'). l2Book('btc')
+        // returns null and allMids has no 'btc' key, so both price fetches silently
+        // returned 0 and the order fell back to the decision price (~= mid). For a
+        // SELL that mid sits just above the best bid -> no match -> HL rejected
+        // with "Order could not immediately match against any resting orders".
+        // xyz:SILVER worked only because normalizeSymbol preserves its case.
+        //
+        // Fix: use asset.name (canonical HL coin name) for both l2Book and
+        // allMids. SELL -> price just below best bid; BUY -> just above best ask.
+        // A 0.5% buffer absorbs book movement between fetch and submission.
+        const hlCoin = asset.name; // canonical HL coin name (e.g. 'BTC', 'xyz:SILVER')
+        let aggressivePx: number | null = null;
+        try {
+          const l2Res = await hlRateLimitedFetch(HL_INFO_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'l2Book', coin: hlCoin }),
+          });
+          if (l2Res.ok) {
+            const l2Data = await l2Res.json() as { levels?: Array<Array<{ px: string; sz: string; n: number }>> };
+            const bids = l2Data.levels?.[0];
+            const asks = l2Data.levels?.[1];
+            if (bids?.length && asks?.length) {
+              const bestBid = parseFloat(bids[0]!.px);
+              const bestAsk = parseFloat(asks[0]!.px);
+              if (bestBid > 0 && bestAsk > 0) {
+                aggressivePx = isBuy ? bestAsk * 1.005 : bestBid * 0.995;
+                log.info(`[placeOrder] Using l2Book for ${hlCoin}: bestBid=$${bestBid.toFixed(2)} bestAsk=$${bestAsk.toFixed(2)} -> aggressive $${aggressivePx.toFixed(2)} (${isBuy ? 'BUY' : 'SELL'})`);
               }
             }
-          } catch { /* fallback to order.price */ }
+          }
+        } catch { /* fall through to allMids fallback */ }
+
+        if (aggressivePx === null) {
+          const mid = await this.getMidPrice(hlCoin);
+          if (mid > 0) {
+            aggressivePx = isBuy ? mid * 1.05 : mid * 0.95;
+            log.info(`[placeOrder] Using allMids mid for ${hlCoin}: $${mid.toFixed(2)} -> aggressive $${aggressivePx.toFixed(2)} (l2Book unavailable - STALE RISK)`);
+          }
+        }
+
+        if (aggressivePx !== null) {
+          (orderSpec as any).p = formatPrice(aggressivePx, pxDecimals);
         }
       }
 

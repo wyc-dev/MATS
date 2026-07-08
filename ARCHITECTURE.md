@@ -224,6 +224,8 @@ quantity = (equity × riskPct) / (entryPrice × priceRisk)
 - Position Reconciliation：偵測 exchange 已平倉 → 同步 local mirror
 - Real Trading Manager：HL exchange 下單 + 本地 mirror（phantom agent signing via `@noble/curves`）
 - Real mode：drawdown/dailyPnl 從 paper portfolio 無意義 → 用 0（real 風險由 HL margin/liquidation + SL/TP trigger 管理）
+- **v2.0.136 Mirror thesis 持久化**：`forceMirror=true`（real trade 成交後嘅本地 mirror）同時 bypass `canTrade()` **同** `riskEngine.assessTrade()`（之前只 bypass 前者，後者喺 paper drawdown  20% 時拒絕 mirror → 無 thesis 倉位 → reimport 丟失 Reason）。mirror 建立後即時標 `agentId='hyperliquid-real'` 並持久化到 `portfolio-state.json`。`syncExchangePositions` 走 in-place update 路徑保留 `entryThesis` / `holdReason` / S/R-aligned SL/TP（重啟後亦由持久化 mirror 恢復），而唔係 close+reimport 換成無 thesis 嘅 `importExchangePosition`。Portfolio UI 嘅「Reason」由是跨多個 cycle 持續顯示直至平倉。
+- **v2.0.136 placeOrder 價格源**：real engine `placeOrder()` 以 LIVE `l2Book`（best bid/ask）做 aggressive price 主源（bid*0.995 / ask*1.005 保證穿價），`allMids` REST 做 fallback。HL l2Book/allMids API **case-sensitive** — 必須用 canonical `asset.name`（如 `'BTC'`）而唔係 lowercase `order.symbol`（`'btc'`），否則返 null/0 → 用 decision price → SELL 唔穿 best bid → "could not immediately match"。
 
 ---
 
@@ -314,6 +316,27 @@ LOG_LEVEL=info
 | Logging | Winston（structured + file rotation） |
 | Testing | vitest（41 tests） |
 | Crypto | `@noble/curves`（HL phantom agent signing） |
+
+---
+
+## v2.0.136 — 執行漏洞修復 + UI 持倉標籤修正
+
+本輪修復咗 7 個阻塞真實交易同 UI 顯示嘅漏洞：
+
+| # | Bug | 根因 | 修復 |
+|:--|:----|:----|:----|
+| 1 | `normalizeDecision()` 丟棄 `entryThesis` | decision-utils 回傳物件漏 entryThesis | 保留 entryThesis / srSupport / srResistance |
+| 2 | `buildConsensus()` 硬編碼 `symbol:'BTCUSDT'` | hacp.ts 寫死 | 改用 Meta-Agent marketTicker 真實 symbol + perSymbolConsensus fallback |
+| 3 | 主決策路徑唔設 `entryPrice` | index.ts decisionWithSR 漏 entryPrice | `entryPrice: combinedState.price ?? marketPrice` |
+| 4 | BTC SELL 「could not immediately match」 | l2Book/allMids case-sensitive，傳 lowercase 'btc' 返 null → price=0 → 用 decision price 唔穿 bid | 改用 `asset.name`（'BTC'）+ l2Book best bid/ask 主源 |
+| 5 | Portfolio「Reason」只 show 1st cycle | `paperEngine.executeDecision` 嘅 `riskEngine.assessTrade()` 喺 paper drawdown  20% 時拒絕 mirror（`forceMirror=true` 只 bypass 咗 `canTrade()` 嘜 bypass 呢個）→ 無 thesis mirror 被建立 → 下個 cycle `syncExchangePositions` reimport HL 倉位（無 thesis） | `forceMirror=true` 同時 bypass `assessTrade()`（同 canTrade 一致）→ mirror 帶 entryThesis 建立並持久化到 `portfolio-state.json` + 即時 tag `agentId='hyperliquid-real'` → in-place update 保留 thesis |
+| 6 | HACP Debate MU/SILVER 閃「● position」↔「(market)」 | UI trust `psc.hasPosition`（metaAgentArbitration 盲設 true，含注入 trading markets） | UI 改用 `data.portfolio.positions` 實際持倉做 source of truth |
+| 7 | `adjustPositions()` 對注入 trading market placeholder 產生 SL/TP validation 噪音 | 對 qty=0 placeholder 調 LLM 調 SL/TP → 必失敗 retry-error spam | skip `quantity===0 || isTradingMarket===true` |
+| 8 | Portfolio「Reason」連第 1 個 cycle 都空（trading market 倉位） | `buildConsensus` 嘅 `positions[]` 迴圈 push 咗 `rationale` + `holdReason` 但漏咗 `entryThesis`（marketTicker / singleDec 兩條路徑都有 push）→ trading market 嘅 psc.entryThesis=undefined → mirror 無 thesis | `positions[]` 迴圈補回 `if (pos.entryThesis) posEntry.theses.push(pos.entryThesis)` + perSymbolConsensus sync 每個 cycle 重設 → 既有倉位即時攞返 thesis |
+
+**v2.0.136 Bug 5/8 詳情**：Portfolio「Reason」消失有兩個疊加根因——(a) `paperEngine` 嘅 `riskEngine.assessTrade()` 喺 paper drawdown \u001e 20% 時拒絕 mirror（`forceMirror` 只 bypass `canTrade` 嘜 bypass 呢個）→ 無 thesis mirror → reimport 丟失；(b) 即便 mirror 建立，trading market 嘅 `positions[]` 迴圈漏 push `entryThesis` → psc 無 thesis → mirror 一開始就空。兩者皆已修。每個 cycle `perSymbolConsensus` sync 重設 thesis（主神要求：有新 reason 就 update）。
+
+**紅線守護**：本座冇降低 conviction threshold、冇改變 SL/TP 最小距離 floor（1%/1.5%/2% 百分比隨價格自動縮放，SILVER 實倉 SL 1.6%/TP 3.2% 未被 floor 阻擋）、冇觸碰槓桿/私鑰/交易模式。
 
 ---
 
