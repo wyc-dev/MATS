@@ -1872,21 +1872,47 @@ class MATSSystem {
         // Also check positions for other trading markets (using their marketState price)
         for (const mktSym of this.tradingMarkets) {
           if (normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol)) continue;
-          const mktState = this.marketState.getState(mktSym);
-          if (mktState && mktState.price > 0) {
+          let mktState = this.marketState.getState(mktSym);
+          let mktChkPrice = mktState?.price ?? 0;
+          // v2.0.135 fix: same fallback as the open loop — fetch via REST if
+          // marketState has no price, so shadows for non-active trading markets
+          // actually get checked for SL/TP resolution each cycle.
+          if (mktChkPrice <= 0) {
+            try { mktChkPrice = (await this.marketAgent.fetchPriceForSymbol(mktSym)).price; } catch { /* keep 0 */ }
+          }
+          if (mktChkPrice > 0) {
             const mktHL = this.marketState.getHighLow(mktSym);
-            const mktResolved = this.shadowEngine.checkPositions(mktSym, mktState.price, this.totalCycles, mktHL.high, mktHL.low);
+            const mktResolved = this.shadowEngine.checkPositions(mktSym, mktChkPrice, this.totalCycles, mktHL.high, mktHL.low);
             if (mktResolved > 0) {
               log.info(`🧬 [shadow] ${mktSym}: ${mktResolved} shadow trades resolved (cycle #${this.totalCycles})`);
             }
           }
         }
 
+        // v2.0.135: Prune shadow positions for symbols no longer in the active
+        // trading set (delisted symbols). Without this, stale shadows from
+        // previous sessions permanently occupy the maxTotalOpen cap and block
+        // new shadows from opening for current trading markets.
+        this.shadowEngine.pruneStaleSymbols([
+          ...this.tradingMarkets,
+          ...this.portfolio.getOpenSymbols(),
+        ]);
         // Open new shadow trades for ALL trading markets
-        const allMarkets = [...new Set([activeSymbol, ...this.tradingMarkets.map(m => normalizeSymbol(m))])];
+        const allMarkets = [...new Set([normalizeSymbol(activeSymbol), ...this.tradingMarkets.map(m => normalizeSymbol(m))])];
         for (const mktSym of allMarkets) {
           const mktState = this.marketState.getState(mktSym);
-          const mktPrice = normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? marketPrice : (mktState?.price ?? 0);
+          let mktPrice = normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? marketPrice : (mktState?.price ?? 0);
+          // v2.0.135 fix: non-active trading markets often have no price in
+          // marketState (WS not subscribed or no data yet). Fetch via Market
+          // Agent REST so shadow trades open for ALL trading markets, not just
+          // the active one. Without this, the live shadow learning loop only
+          // runs for the active symbol — OLR never gets shadow outcomes for
+          // the others.
+          if (mktPrice <= 0 && normalizeSymbol(mktSym) !== normalizeSymbol(activeSymbol)) {
+            try {
+              mktPrice = (await this.marketAgent.fetchPriceForSymbol(mktSym)).price;
+            } catch { /* keep 0 */ }
+          }
           if (mktPrice <= 0) continue;
 
           const mktFeatures = {

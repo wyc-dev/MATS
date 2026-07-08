@@ -412,6 +412,24 @@ export class ShadowTradeEngine {
   }
 
   /**
+   * v2.0.135: Prune shadow positions (open + recent) for symbols no longer in
+   * the active trading set. Stale shadows for delisted symbols never get
+   * checked (checkPositions only runs for current trading markets) so they
+   * would permanently occupy the maxTotalOpen cap and block new shadows from
+   * opening for current markets. Returns the number of pruned positions.
+   */
+  pruneStaleSymbols(keepSymbols: string[]): number {
+    const keep = new Set(keepSymbols.map(s => s.toLowerCase()));
+    const before = this.positions.length;
+    this.positions = this.positions.filter(p => keep.has(p.symbol));
+    // Also prune recent results for delisted symbols (keeps the scoreboard clean)
+    this.recentResults = this.recentResults.filter(r => keep.has(r.symbol));
+    const pruned = before - this.positions.length;
+    if (pruned > 0) log.info(`[shadow-trade] Pruned ${pruned} stale positions for delisted symbols (${this.positions.length} remaining)`);
+    return pruned;
+  }
+
+  /**
    * Save state for persistence.
    */
   save(): string {
