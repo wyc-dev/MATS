@@ -4870,8 +4870,8 @@ class MATSSystem {
                 shortPWin: liveShort?.pWin ?? s.shortPWin,
                 longConfidence: liveLong?.confidence ?? 'low',
                 shortConfidence: liveShort?.confidence ?? 'low',
-                longSource: liveLong?.sourceBreakdown ?? { shadow: 0, paper: 0, real: 0, backfill: 0 },
-                shortSource: liveShort?.sourceBreakdown ?? { shadow: 0, paper: 0, real: 0, backfill: 0 },
+                longSource: liveLong?.sourceBreakdown ?? s.longSource,
+                shortSource: liveShort?.sourceBreakdown ?? s.shortSource,
                 featureWeights: longWeights ? longWeights.map((w, i) => ({
                   name: w.name,
                   longWeight: w.weight,
