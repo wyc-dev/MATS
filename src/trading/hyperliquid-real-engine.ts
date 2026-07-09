@@ -64,6 +64,21 @@ function hexToBytes(hex: string): Uint8Array {
  * trailing zeros with parseFloat().toString(). This ensures the price is
  * always within HL's accepted tick size for any asset.
  */
+/** Strip trailing zeros + trailing decimal point from a numeric string so it
+ *  matches Hyperliquid's server-side normalization. HL normalizes "0.00100"→"0.001"
+ *  and "62062.0"→"62062" before re-msgpacking the action for signature verification.
+ *  If the signed payload contains trailing zeros, the recomputed hash diverges from
+ *  the signed hash and ECDSA recovery yields a garbage address →
+ *  "User or API Wallet <random> does not exist." (intermittent — only triggers when
+ *  the size/price rounds to a value ending in zero). v2.0.139 fix.
+ *
+ *  String-based (not parseFloat) to avoid scientific-notation for tiny values
+ *  (e.g. parseFloat("0.0000001").toString() === "1e-7" which HL would reject). */
+function stripTrailingZeros(s: string): string {
+  if (!s.includes('.')) return s;
+  return s.replace(/0+$/, '').replace(/\.$/, '');
+}
+
 function formatPrice(price: number, _decimals?: number): string {
   let decimals: number;
   if (price >= 10000) decimals = 0;
@@ -72,7 +87,7 @@ function formatPrice(price: number, _decimals?: number): string {
   else if (price >= 10) decimals = 3;
   else if (price >= 1) decimals = 4;
   else decimals = 6;
-  return parseFloat(price.toFixed(decimals)).toString();
+  return stripTrailingZeros(price.toFixed(decimals));
 }
 
 /** Compute the action hash: keccak256(msgpack(action) + nonce + vault_flag) */
@@ -801,7 +816,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
         a: asset.index,
         b: isBuy,
         p: formatPrice(order.price, pxDecimals),
-        s: order.quantity.toFixed(szDecimals),
+        s: stripTrailingZeros(order.quantity.toFixed(szDecimals)),
         r: false,
         t: { limit: { tif: 'Ioc' } }, // IOC for market-like execution
       };
@@ -1236,7 +1251,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
             a: asset.index,
             b: pos.side === 'buy' ? false : true, // opposite side
             p: formatPrice(sl, pxDecimals),
-            s: pos.quantity.toFixed(asset.szDecimals),
+            s: stripTrailingZeros(pos.quantity.toFixed(asset.szDecimals)),
             r: true, // reduce-only
             t: { trigger: { isMarket: true, triggerPx: formatPrice(sl, pxDecimals), tpsl: 'sl' } },
           }],
@@ -1268,7 +1283,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
             a: asset.index,
             b: pos.side === 'buy' ? false : true,
             p: formatPrice(tp, pxDecimals),
-            s: pos.quantity.toFixed(asset.szDecimals),
+            s: stripTrailingZeros(pos.quantity.toFixed(asset.szDecimals)),
             r: true,
             t: { trigger: { isMarket: true, triggerPx: formatPrice(tp, pxDecimals), tpsl: 'tp' } },
           }],
