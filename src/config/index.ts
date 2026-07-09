@@ -61,6 +61,28 @@ const envSchema = z.object({
 
   // v2.0.58: Massive.com Options Data API key for Stocks/RWA options data layer
   MASSIVE_API_KEY: z.string().optional().default(''),
+
+  // v2.0.138: EXP — Thesis Experience Vector Memory (Skeptics Phase 1.8a)
+  EXP_ENABLED: z.coerce.boolean().default(false),
+  EXP_EMBED_MODEL: z.string().default('Xenova/all-MiniLM-L6-v2'),
+  EXP_EMBED_DIM: z.coerce.number().int().positive().default(384),
+  EXP_MAX_RECORDS: z.coerce.number().int().positive().default(200),
+  EXP_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.55),
+  EXP_WIN_PROB_THRESHOLD: z.coerce.number().min(0).max(1).default(0.6),
+  EXP_LOSS_PROB_THRESHOLD: z.coerce.number().min(0).max(1).default(0.4),
+  EXP_DELTA_THRESHOLD: z.coerce.number().min(0).max(1).default(0.55),
+  EXP_MIN_DELTA_SAMPLES: z.coerce.number().int().positive().default(2),
+  EXP_DELTA_WIN_RATE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.6),
+  EXP_DELTA_LOSS_RATE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.4),
+  EXP_ALLOW_REVERSE: z.coerce.boolean().default(true),
+  EXP_BREAKEVEN_IS: z.enum(['win', 'loss', 'exclude']).default('exclude'),
+  EXP_SIMILARITY_MODE: z.enum(['asymmetric', 'symmetric']).default('asymmetric'),
+  EXP_JSONL_PATH: z.string().default('data/exp/trades.jsonl'),
+  EXP_EXPMD_PATH: z.string().default('data/EXP.md'),
+  EXP_INCIDENTS_PATH: z.string().default('data/exp/incidents.jsonl'),
+  EXP_REPAIR_ENABLED: z.coerce.boolean().default(true),
+  EXP_REPAIR_MAX_RETRIES: z.coerce.number().int().positive().default(1),
+  EXP_REPAIR_BACKOFF_MS: z.coerce.number().positive().default(800),
 });
 
 function parseEnv() {
@@ -129,8 +151,42 @@ export const config = {
     mutationRate: raw.GA_MUTATION_RATE,
     crossoverRate: raw.GA_CROSSOVER_RATE,
   },
-  // v2.0.58: Massive.com Options Data API key
+  // v2.0.58: Massive.com Options Data key
   massiveApiKey: raw.MASSIVE_API_KEY,
+  // v2.0.138: EXP thesis-experience vector memory
+  exp: {
+    enabled: raw.EXP_ENABLED,
+    embedModel: raw.EXP_EMBED_MODEL,
+    embedDim: raw.EXP_EMBED_DIM,
+    maxRecords: raw.EXP_MAX_RECORDS,
+    matchThreshold: raw.EXP_MATCH_THRESHOLD,
+    winProbThreshold: raw.EXP_WIN_PROB_THRESHOLD,
+    lossProbThreshold: raw.EXP_LOSS_PROB_THRESHOLD,
+    deltaThreshold: raw.EXP_DELTA_THRESHOLD,
+    minDeltaSamples: raw.EXP_MIN_DELTA_SAMPLES,
+    deltaWinRateThreshold: raw.EXP_DELTA_WIN_RATE_THRESHOLD,
+    deltaLossRateThreshold: raw.EXP_DELTA_LOSS_RATE_THRESHOLD,
+    allowReverse: raw.EXP_ALLOW_REVERSE,
+    breakevenIs: raw.EXP_BREAKEVEN_IS,
+    similarityMode: raw.EXP_SIMILARITY_MODE,
+    jsonlPath: raw.EXP_JSONL_PATH,
+    expMdPath: raw.EXP_EXPMD_PATH,
+    incidentsPath: raw.EXP_INCIDENTS_PATH,
+    repair: {
+      enabled: raw.EXP_REPAIR_ENABLED,
+      maxRetries: raw.EXP_REPAIR_MAX_RETRIES,
+      backoffMs: raw.EXP_REPAIR_BACKOFF_MS,
+    },
+    /** Per-symbol asset-category override. Symbols not listed are inferred by assetCategory(). */
+    assetCategoryMap: {
+      BTC: 'crypto',
+      ETH: 'crypto',
+      'xyz:MU': 'equity',
+      'xyz:SILVER': 'commodity',
+      XAU: 'commodity',
+      SILVER: 'commodity',
+    } as Record<string, 'crypto' | 'commodity' | 'equity' | 'forex' | 'other'>,
+  },
 } as const;
 
 export type AppConfig = typeof config;

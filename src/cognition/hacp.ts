@@ -34,6 +34,7 @@ import type {
 import type { BaseAgent } from '../agents/base-agent.ts';
 import type { IndependentRiskAuditor, SkepticsAgent, SkepticsReview } from '../agents/agents.ts';
 import { buildConvergenceAuditContext } from '../evolution/cycle-summary.ts';
+import type { ThesisExperience } from '../evolution/thesis-experience.ts';
 
 const log = createLogger({ phase: 'hacp' });
 
@@ -194,6 +195,66 @@ export class HACPEngine {
   /** Inject the agent evolution engine for regime-aware dynamic weights. */
   setAgentEvolution(ae: AgentEvolutionEngine): void {
     this.agentEvolution = ae;
+  }
+
+  /** v2.0.138: EXP thesis-experience memory (Skeptics Phase 1.8a). Optional — when
+   *  injected AND config.exp.enabled, Phase 1.8 runs the history-probability gate
+   *  before the subjective 1.8b strength check. DISABLED/ERRORED → fall back to 1.8b. */
+  private expMemory: ThesisExperience | null = null;
+  setExpMemory(exp: ThesisExperience): void {
+    this.expMemory = exp;
+  }
+
+  /** v2.0.138: Override the Meta-Agent thought's decision (action / thesis / rationale).
+   *  Used by EXP Phase 1.8a for REJECT (→HOLD) and REVERSE_DIRECTION (→opposite side).
+   *  Preserves the multiSymbolDecision + decision metadata shape that downstream
+   *  consensus / conviction / risk gates expect. */
+  private overrideMetaDecision(
+    allThoughts: AgentThought[],
+    metaSymbol: string,
+    metaMultiDec: MultiSymbolDecision | undefined,
+    opts: { action: 'buy' | 'sell' | 'hold'; rationale: string; entryThesis?: string; confidence?: number; tag: string },
+  ): void {
+    const lastIdx = allThoughts.length - 1;
+    const base = allThoughts[lastIdx]!;
+    const prevMulti = (base.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined) ?? metaMultiDec ?? {
+      marketTicker: { symbol: metaSymbol, action: 'hold' as const, positionSizePct: 0, leverage: 1, closePosition: false, rationale: opts.rationale },
+      positions: [],
+    };
+    const prevTick = prevMulti.marketTicker;
+    const prevDec = (base.metadata?.['decision'] as TradingDecision | undefined) ?? ({} as Partial<TradingDecision>);
+    const positionSizePct = opts.action === 'hold' ? 0 : (prevDec.positionSizePct ?? prevTick.positionSizePct ?? 0);
+    const leverage = prevDec.leverage ?? prevTick.leverage ?? 1;
+    const newDec: TradingDecision = {
+      ...prevDec,
+      symbol: prevDec.symbol ?? metaSymbol,
+      urgency: prevDec.urgency ?? 'soon',
+      action: opts.action,
+      positionSizePct,
+      leverage,
+      rationale: opts.rationale,
+      ...(opts.entryThesis !== undefined ? { entryThesis: opts.entryThesis } : {}),
+    };
+    allThoughts[lastIdx] = {
+      ...base,
+      thought: `[${opts.tag}] ${base.thought}`,
+      confidence: opts.confidence ?? base.confidence,
+      metadata: {
+        ...base.metadata,
+        multiSymbolDecision: {
+          ...prevMulti,
+          marketTicker: {
+            ...prevTick,
+            action: opts.action,
+            positionSizePct,
+            leverage,
+            rationale: opts.rationale,
+            ...(opts.entryThesis !== undefined ? { entryThesis: opts.entryThesis } : {}),
+          },
+        },
+        decision: newDec,
+      },
+    };
   }
 
   /** v2.0.90: Expose Skeptics for close decision validation from index.ts */
@@ -818,7 +879,51 @@ export class HACPEngine {
       normalizeSymbol(p.symbol) === normalizeSymbol(metaSymbol) && (p.quantity ?? 0) > 0
     );
 
-    if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition) {
+    // v2.0.138 Phase 1.8a: EXP thesis-history probability gate.
+    // Runs BEFORE the subjective 1.8b strength check when expMemory is injected
+    // and config.exp.enabled. Verdicts:
+    //   PASS_OPEN_DIRECTLY / FAST_APPROVE / APPROVE_WITH_NOTE → skip 1.8b, proceed
+    //   REVERSE_DIRECTION → override decision to reversed side + contrarian thesis, proceed
+    //   REJECT → override to HOLD
+    //   EXP_DISABLED / EXP_ERRORED → fall back to 1.8b (expThesisGated stays false)
+    let expThesisGated = false;
+    if (this.expMemory && this.expMemory.getCfg().enabled
+        && (metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition) {
+      try {
+        const expResult = await this.expMemory.checkThesisHistory({
+          thesis: metaThesis, symbol: metaSymbol, side: metaAction, marketCtx: marketStateDesc,
+        });
+        const v = expResult.verdict;
+        if (v === 'PASS_OPEN_DIRECTLY' || v === 'FAST_APPROVE' || v === 'APPROVE_WITH_NOTE') {
+          log.info(`[EXP 1.8a] ${v} ${metaAction.toUpperCase()} ${metaSymbol} — skip 1.8b${expResult.reason ? ' (' + expResult.reason + ')' : ''}`);
+          expThesisGated = true;
+        } else if (v === 'REVERSE_DIRECTION' && expResult.reversedSide && expResult.reversedThesis) {
+          log.info(`[EXP 1.8a] REVERSE_DIRECTION ${metaAction.toUpperCase()}→${expResult.reversedSide.toUpperCase()} ${metaSymbol} — ${expResult.reason ?? ''}`);
+          this.overrideMetaDecision(allThoughts, metaSymbol, metaMultiDec, {
+            action: expResult.reversedSide, rationale: `[EXP REVERSE] ${expResult.reason ?? ''}`,
+            entryThesis: expResult.reversedThesis, tag: 'EXP-REVERSE',
+          });
+          // v1: conviction re-evaluation rides on the existing conviction gate using
+          // the original meta confidence. Full Meta-Agent re-HACP for a fresh reversed
+          // conviction (option b) is a v2 refinement — see EXP_core_plan.md §8.4e.
+          expThesisGated = true;
+        } else if (v === 'REJECT') {
+          log.warn(`[EXP 1.8a] REJECT ${metaAction.toUpperCase()} ${metaSymbol} — ${expResult.reason ?? ''} → HOLD`);
+          this.overrideMetaDecision(allThoughts, metaSymbol, metaMultiDec, {
+            action: 'hold', rationale: `[EXP REJECT] ${expResult.reason ?? 'EXP history reject'}`,
+            confidence: 0.1, tag: 'EXP-REJECT',
+          });
+          expThesisGated = true;
+        } else {
+          // EXP_DISABLED / EXP_ERRORED → fall back to 1.8b
+          log.info(`[EXP 1.8a] ${v} ${metaAction.toUpperCase()} ${metaSymbol} — falling back to 1.8b strength check${expResult.error ? ' (' + expResult.error + ')' : ''}`);
+        }
+      } catch (err) {
+        log.warn(`[EXP 1.8a] error — falling back to 1.8b: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition && !expThesisGated) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);
       const thesisResult = await this.skeptics.validateEntryThesis(
         metaThesis,
