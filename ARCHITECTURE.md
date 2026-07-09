@@ -218,6 +218,11 @@ Meta-Agent OLR prompt 已從 stale RBC 文檔重寫為 RR-aware edge 仲裁：ed
 
 `thesis-experience.ts` + `embeddings.ts` (transformers.js MiniLM 384-d, in-process). Phase 1.8a `checkThesisHistory` gates entries by thesis-combo historical win-rate; Skeptics history probability gate. Cold-start (no history) = direct open. PnL=0 excluded. Asymmetric similarity. Enabled via `EXP_ENABLED=true`.
 
+### Placeholder entryThesis gate + live Mark price refresh
+
+- **Placeholder thesis gate**: `isThesisPlaceholder` broadened to catch theses containing n/a/hold inside the `[tf: ...]` format (e.g. "[1h: N/A — hold] [1d: N/A — hold]") — strips timeframe labels + punctuation + placeholder words; if no real content remains, it's a placeholder. The per-symbol consensus path BLOCKS BUY/SELL with a placeholder entryThesis (a trade without a real entry reason is invalid).
+- **Live Mark price refresh**: `refreshPositionMarkPrices()` called at the start of every `pushToAPI()` — updates each real position's currentPrice from the live `marketState` price (tries the position symbol, then the base symbol without xyz: prefix). Previously the mirror currentPrice was only updated from HL `getPositions()` (which returns entryPx — never updated) or fills, so the UI Mark was stuck at the Entry price.
+
 ### v2.0.139 共識閘 + Evolution cleanup
 
 - Consensus threshold 0.70 -> 0.50 (floor 0.49); the evolution override (intended to lower it to ~0.5) was vestigial (empty strategies) so the real gate was 70-85% blocking nearly all entries.
