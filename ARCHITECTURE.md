@@ -321,6 +321,32 @@ LOG_LEVEL=info
 
 ---
 
+## v2.0.138 — EXP 向量理據記憶（Skeptics Phase 1.8a 歷史機率閘）
+
+**功能**：每筆已平倉 trade 嘅 rationale 組合 embed 成向量，存入 `data/exp/trades.jsonl`（inline vectors）+ `data/EXP.md`（人讀）。Meta-Agent 開倉時 Skeptics Phase 1.8a 用 set-to-set combination similarity（非對稱平均最佳匹配）搵最接近嘅歷史組合，算 similarity-weighted P(win)：
+- 冇記錄 / 邊界 / delta 無歷史 → `PASS_OPEN_DIRECTLY`（直出開倉，跳過 1.8b）
+- 歷史偏贏 → `FAST_APPROVE`（跳過 1.8b）
+- 輸錢組合 + delta 同類別正面 / 跨類別正面+額外理據 → `APPROVE_WITH_NOTE`
+- delta 負面 + 進一步風險因素 → `REVERSE_DIRECTION`（反向開倉，帶 Skeptics contrarian thesis）
+- 輸錢組合無 delta / 跨類別無額外 / 負面無風險 / 反向被 direction 限制 → `REJECT`→HOLD
+- EXP 出錯 / 被關 → 退返 1.8b 主觀強度檢查（fallback）
+
+**Embedding**：`@xenova/transformers` + `all-MiniLM-L6-v2`（22MB ONNX、384-dim、in-process、CPU）。啟動時 warmup 預載。唔用 30B+ 本地模型。
+
+**跨資產類別 + 多 delta 衝突**：`assetCategory()` 分類 crypto/commodity/equity/forex；delta 正面歷史若跨類別要 Skeptics 再搵一個理據；多 delta 衝突時揀 winRate 距 0.5 最遠（最極端）嗰邊決策，衝突 delta 組合記入 EXP 作未來參考。
+
+**自癒（§8.6）**：1.8a fallback 時 `diagnoseError` → `skepticsAttemptRepair`（重載 embed / salvage 重建索引 / heuristic split）→ 修復成功重跑 1.8a（recursion guard 1 次）→ 記錄 incident 到 `data/exp/incidents.jsonl` + EXP.md 摘要。
+
+**紅線不變**：EXP 只能 REJECT→HOLD 或放行 thesis gate，**永不 bypass** conviction / frequency / risk / direction / SL-TP。所有失敗安全 fallback。`config.exp.enabled` 預設 `false`（dormant，不影響現有行為）；主神批准後 `EXP_ENABLED=true` 啟用。
+
+**檔案**：新 `src/evolution/embeddings.ts`（EmbedProvider + Transformers.js + Mock + 向量數學）、`src/evolution/thesis-experience.ts`（核心：extract/record/check/delta/reverse/repair）、`scripts/reindex-exp.ts`（換模型時重 embed）。改 `src/types/index.ts`（ThesisExperienceRecord/ExpVerdict/ExpCheckResult/ExpFallbackIncident + TradeRecord.entryThesis）、`src/config/index.ts`（exp block）、`src/trading/portfolio.ts`（close 時 capture `pos.entryThesis`→`trade.entryThesis`）、`src/index.ts`（實例化 + startup load/warmup + close hook）、`src/cognition/hacp.ts`（Phase 1.8a + `overrideMetaDecision` helper）。24 新測試（總 77）。tsc clean。
+
+**v1 限制（v2 待辦）**：(1) REVERSE conviction 係 in-place override 用原 meta confidence，未做 Meta-Agent 重出 conviction 嘅 full re-HACP（option b）；(2) close hook `decisionOrigin` 暫固定 `meta-agent`，reverse 倉位嘅 `skeptics-reverse` origin 偵測需 open 時 tag position。
+
+Blueprint：`/Users/y.c./Downloads/EXP_core_plan.md`（556 行，15 項定奪 + §8.6 自癘）。
+
+---
+
 ## v2.0.137 — Thesis 凍結（Root Cause B：修復交易太密＋勝率低）
 
 **症狀**：real trade 全部被 thesis invalidation 6-15 分鐘內強制平倉（唔係 SL/TP），PnL 接近零，open→invalidate→close→再 open churn loop。

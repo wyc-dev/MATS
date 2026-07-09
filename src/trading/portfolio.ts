@@ -1191,6 +1191,8 @@ export class PortfolioTracker {
       closedAt: Date.now(),
       agentId: pos.agentId,
       status: 'closed',
+      // v2.0.138: capture frozen entryThesis for EXP thesis-experience memory
+      entryThesis: pos.entryThesis,
     };
 
     // Update portfolio stats
@@ -1293,6 +1295,8 @@ export class PortfolioTracker {
       closedAt: Date.now(),
       agentId: pos.agentId,
       status: 'closed',
+      // v2.0.138: capture frozen entryThesis for EXP thesis-experience memory
+      entryThesis: pos.entryThesis,
     };
 
     // v2.0.32: Do NOT update paper portfolio stats (totalPnl, winCount,

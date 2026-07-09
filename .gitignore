@@ -29,6 +29,7 @@ Thumbs.db
 
 # ─── Internal documents (not for public release) ───
 HANDOFF.md
+EXP_UPGRADE_PLAN.md
 IMPLEMENTATION-COMPLETE.md
 SKILL.md
 docs/A2A-INTEGRATION-GUIDE.md
@@ -50,6 +51,9 @@ scripts/*.log
 data/evolution/
 !data/evolution/.gitkeep
 data/*.backup.json
+# v2.0.138: EXP thesis-experience memory (local-only, contains trade rationales)
+data/exp/
+data/EXP.md
 
 # ─── Temp files ───
 *.tmp

@@ -454,6 +454,88 @@ export interface TradeRecord {
   status: 'open' | 'closed';
   /** v2.0.30: How the position was closed — lets agents know if it was system or manual */
   closeReason?: 'sl_tp' | 'consensus' | 'manual' | 'reconciliation' | 'exchange_closed';
+  /** v2.0.138: Frozen entryThesis captured from the position at close time,
+   *  fed to the EXP thesis-experience memory so Skeptics can match rationale
+   *  combinations against historical win/loss outcomes. Source: pos.entryThesis
+   *  (which is set-if-absent per v2.0.137, so this is the ORIGINAL open thesis). */
+  entryThesis?: string;
+}
+
+// ─── EXP: Thesis Experience Vector Memory (v2.0.138) ───
+// See /Users/y.c./Downloads/EXP_core_plan.md for the full blueprint.
+// Each closed trade becomes one ThesisExperienceRecord stored in data/exp/trades.jsonl.
+
+/** A single rationale extracted (by LLM) from an entryThesis, plus its embedding vector. */
+export interface RationaleItem {
+  point: string;
+  category: RationaleCategory;
+}
+
+export type RationaleCategory =
+  | 'technical' | 'fundamental' | 'news' | 'macro' | 'flow' | 'sentiment' | 'pattern' | 'other';
+
+export type AssetCategory = 'crypto' | 'commodity' | 'equity' | 'forex' | 'other';
+
+export type TradeOutcome = 'WIN' | 'LOSS';
+
+export type DecisionOrigin = 'meta-agent' | 'skeptics-reverse';
+
+/** One closed trade = one record in the EXP memory (data/exp/trades.jsonl). */
+export interface ThesisExperienceRecord {
+  id: string;
+  ts: number;                    // close timestamp
+  symbol: string;
+  side: 'buy' | 'sell';
+  source: 'paper' | 'real';
+  decisionOrigin: DecisionOrigin;
+  outcome: TradeOutcome;
+  pnl: number;
+  pnlPct: number;
+  entry: number;
+  exit: number;
+  leverage: number;
+  holdMin: number;
+  regime: string;
+  assetCategory: AssetCategory;
+  entryThesis: string;           // frozen original
+  rationales: string[];          // extracted rationale points
+  rationaleCats: RationaleCategory[];
+  rationaleVectors: number[][];  // one vector per rationale (embedDim-dim); [] if embed failed
+}
+
+/** Verdict returned by checkThesisHistory() (Skeptics Phase 1.8a). */
+export type ExpVerdict =
+  | 'PASS_OPEN_DIRECTLY'   // no history / ambiguous / delta-no-history — valid, skip 1.8b
+  | 'FAST_APPROVE'         // history skews WIN
+  | 'APPROVE_WITH_NOTE'    // losing combo + delta positive (same-cat or cross-cat+extra)
+  | 'REVERSE_DIRECTION'    // delta negative + further risk factors → flip BUY↔SELL
+  | 'REJECT'               // losing combo, no delta / cross-cat no extra / neg no risk / reverse restricted
+  | 'EXP_DISABLED'         // exp.enabled=false → fall back to 1.8b
+  | 'EXP_ERRORED';         // technical failure (repair failed) → fall back to 1.8b
+
+export interface ExpCheckResult {
+  verdict: ExpVerdict;
+  pWin?: number;
+  reason?: string;
+  matchedLossId?: string;
+  extraRationale?: string;
+  reversedSide?: 'buy' | 'sell';
+  reversedThesis?: string;
+  riskFactors?: string[];
+  /** Diagnostics when verdict = EXP_ERRORED */
+  errorType?: string;
+  error?: string;
+}
+
+/** Fallback incident record (data/exp/incidents.jsonl) — §8.6 self-healing audit trail. */
+export interface ExpFallbackIncident {
+  ts: number;
+  errorType: string;
+  reason: string;
+  repairResult: 'fixed' | 'degraded' | 'failed';
+  resolvedBy: 'retry' | 'reload' | 'rebuild' | 'heuristic' | 'none';
+  retried1_8a: boolean;
+  finalVerdict: ExpVerdict;
 }
 
 // ─── Risk ───

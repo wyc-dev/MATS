@@ -24,6 +24,8 @@ import { getAllAgentModels, getAvailableModels } from './agents/agent-models.ts'
 import { BacktestEngine, type BacktestProgress } from './backtest/index.ts';
 import { MarketAgent } from './market-agent/index.ts';
 import { RealTradingManager } from './trading/real-trading-manager.ts';
+import { ThesisExperience, ActiveProviderLLMCaller } from './evolution/thesis-experience.ts';
+import { TransformersEmbedProvider } from './evolution/embeddings.ts';
 import { SentimentEngine } from './analysis/sentiment-engine.ts';
 import { AdaptiveNoiseFilter, AssetFilterRegistry, type MarketContext as FilterMarketContext, type FilterProfileType } from './analysis/adaptive-filter.ts';
 import { PlanckChaosEngine } from './analysis/planck-chaos.ts';
@@ -59,6 +61,8 @@ class MATSSystem {
   private paperEngine!: PaperTradingEngine;
   private evolution!: EvolutionOrchestrator;
   private hacpEngine!: HACPEngine;
+  /** v2.0.138: EXP thesis-experience vector memory (Skeptics Phase 1.8a). Gated by config.exp.enabled. */
+  private expMemory!: ThesisExperience;
   private backtest!: BacktestEngine;
   private apiServer!: APIServer;
   private marketAgent!: MarketAgent;
@@ -1063,6 +1067,28 @@ class MATSSystem {
       log.info('✓ Market Agent ready');
       MarketAgent.registerSRModule();
 
+      // v2.0.138: Instantiate EXP thesis-experience memory and wire to HACP.
+      // directionAllowed delegates to Market Agent's directionRestrictions.
+      // Gated by config.exp.enabled — when false, checkThesisHistory returns
+      // EXP_DISABLED and HACP falls back to the existing 1.8b strength check.
+      this.expMemory = new ThesisExperience({
+        embed: new TransformersEmbedProvider(),
+        llm: new ActiveProviderLLMCaller(),
+        directionAllowed: (sym: string, side: 'buy' | 'sell') => this.marketAgent.isDirectionAllowed(sym, side),
+      });
+      this.hacpEngine.setExpMemory(this.expMemory);
+      if (config.exp.enabled) {
+        try {
+          this.expMemory.load();
+          await this.expMemory.warmup();
+          log.info(`✓ EXP thesis-experience memory ready (${this.expMemory.size()} records)`);
+        } catch (err) {
+          log.warn(`[EXP] startup load/warmup failed (will self-heal on first use): ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        log.info('EXP thesis-experience memory disabled (config.exp.enabled=false) — HACP uses 1.8b fallback');
+      }
+
       // v2.0.XX: Sync initial maxPortionPct from Market Agent to paper engine + real manager
       this.paperEngine.setMaxPortionPct(this.marketAgent.getConfig().maxPortionPct);
       this.realTradingManager.setMaxPortionPct(this.marketAgent.getConfig().maxPortionPct);
@@ -1459,6 +1485,28 @@ class MATSSystem {
       try {
         this.evolution.persistState();
         this.persistPortfolio();
+      } catch { /* non-critical */ }
+
+      // v2.0.138: Feed EXP thesis-experience memory (Skeptics Phase 1.8a).
+      // Fire-and-forget — recordClose is async but must NEVER block the close path.
+      // It honours config.exp.enabled, breakeven-exclude, and placeholder-thesis internally.
+      try {
+        const holdMin = Math.max(0, Math.round((trade.closedAt - trade.openedAt) / 60_000));
+        const expSource: 'paper' | 'real' = trade.agentId === 'hyperliquid-real' ? 'real' : 'paper';
+        void this.expMemory?.recordClose({
+          symbol,
+          side: trade.side === 'buy' ? 'buy' : 'sell',
+          source: expSource,
+          decisionOrigin: 'meta-agent',
+          pnl: trade.pnl,
+          pnlPct,
+          entry: trade.entryPrice,
+          exit: trade.exitPrice,
+          leverage: trade.leverage,
+          holdMin,
+          regime,
+          entryThesis: trade.entryThesis ?? '',
+        }).catch((e: unknown) => log.warn(`[EXP] recordClose failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`));
       } catch { /* non-critical */ }
 
       log.info(`🧬 [close-learning] ${isWin ? '✅ WIN' : '❌ LOSS'} ${trade.side.toUpperCase()} ${symbol} PnL: $${trade.pnl.toFixed(2)} (${(pnlPct * 100).toFixed(1)}%) — all learning mechanisms fed`);
