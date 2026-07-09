@@ -58,7 +58,22 @@ export function isThesisPlaceholder(thesis: string | undefined | null): boolean 
   if (!thesis) return true;
   const t = thesis.trim().toLowerCase();
   if (t.length === 0) return true;
-  return t === 'n/a' || t === 'na' || t === 'not applicable' || t === 'none' || t === 'null' || t === '-';
+  if (t === 'n/a' || t === 'na' || t === 'not applicable' || t === 'none' || t === 'null' || t === '-') return true;
+  // v2.0.139: catch placeholder-filled theses in the [1h: ...] [1d: ...] format
+  // (e.g. "[1h: N/A — hold] [1d: N/A — hold]"). The Meta-Agent sometimes emits
+  // this for a trade entry when it has no real timeframe rationale — it is NOT
+  // a real entry reason. Strip timeframe labels, structural punctuation, and
+  // placeholder words; if no real content (3+ letter word) remains, it's a
+  // placeholder.
+  const stripped = t
+    .replace(/\[(1h|1d|4h|1w|1m|5m|15m)\s*:/g, ' ')
+    .replace(/[\[\]():,.\-—_/\\]/g, ' ')
+    .replace(/\b(n\/a|na|hold|none|null|not applicable|tbd|todo)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (stripped.length === 0) return true;
+  if (!/[a-z]{3,}/.test(stripped)) return true;
+  return false;
 }
 
 /** Callback fired when a position is closed (SL/TP, reconciliation, or explicit close) */

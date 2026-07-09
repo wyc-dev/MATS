@@ -11,7 +11,7 @@ import { HyperliquidWebSocketManager } from './data/hyperliquid-websocket.ts';
 import { MultiExchangeWebSocketManager, detectExchange, type UnifiedPrice, type UnifiedOrderBook } from './data/multi-exchange-ws.ts';
 import { HACPEngine } from './cognition/hacp.ts';
 import { RiskEngine } from './risk/engine.ts';
-import { PortfolioTracker, normalizeSymbol } from './trading/portfolio.ts';
+import { PortfolioTracker, normalizeSymbol, isThesisPlaceholder } from './trading/portfolio.ts';
 import { PaperTradingEngine, type ExecutionReport } from './trading/paper-engine.ts';
 import { EvolutionOrchestrator } from './evolution/index.ts';
 import { savePortfolio, saveDebateHistory, loadDebateHistory } from './evolution/persistence.ts';
@@ -3543,6 +3543,15 @@ class MATSSystem {
               this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
               continue;
             }
+            // v2.0.139: Block BUY/SELL entries with a placeholder entryThesis (e.g.
+            // "[1h: N/A — hold] [1d: N/A — hold]"). A trade without a real entry
+            // reason is invalid — the Entry Thesis System requires a specific,
+            // data-driven thesis for every entry. Skip execution (HOLD).
+            if ((psc.action === 'buy' || psc.action === 'sell') && isThesisPlaceholder(psc.entryThesis)) {
+              log.warn(`🛑 [thesis-gate] ${psc.action.toUpperCase()} ${psc.symbol} blocked — entryThesis is a placeholder: "${(psc.entryThesis ?? '').slice(0, 60)}". A real entry reason is required.`);
+              this.recordDecisionAudit(psc.symbol, psc.action as 'buy' | 'sell', psc.confidence, psc.entryThesis ?? '', [{ gate: 'thesis-placeholder', passed: false, reason: 'placeholder thesis' }], false);
+              continue;
+            }
             log.info(`📊 Multi-symbol entry: ${psc.action.toUpperCase()} ${psc.symbol} ${(psc.positionSizePct * 100).toFixed(1)}% @ $${pscPrice.toFixed(2)} — executing (trading market → real entry)`);
             const pscEntryDecision = {
               action: psc.action,
@@ -4909,10 +4918,37 @@ class MATSSystem {
     this.pushToAPI();
   }
 
+  /**
+   * v2.0.139: Refresh open positions' Mark (currentPrice) from the live
+   * marketState so the UI Mark column reflects the actual current price, not
+   * the stale entryPx. Previously the mirror currentPrice was only updated from
+   * HL getPositions() (which returns entryPx as currentPrice — never updated)
+   * or fills — so for an open position the Mark was stuck at the Entry price.
+   * Called at the start of every pushToAPI() so the UI always sees fresh marks.
+   */
+  private refreshPositionMarkPrices(): void {
+    if (!this.marketState || !this.portfolio) return;
+    const realPositions = this.portfolio.getRealPositions();
+    for (const pos of realPositions) {
+      try {
+        // Try the position symbol as-is, then the base symbol (without xyz: prefix)
+        // — the marketState ticker key may be either form depending on the feed.
+        let livePrice = this.marketState.getState(pos.symbol)?.price ?? 0;
+        if (!livePrice && pos.symbol.includes(':')) {
+          livePrice = this.marketState.getState(pos.symbol.split(':').slice(-1)[0] ?? pos.symbol)?.price ?? 0;
+        }
+        if (livePrice > 0) {
+          this.portfolio.softUpdatePosition(pos.symbol, livePrice);
+        }
+      } catch { /* skip — keep existing currentPrice */ }
+    }
+  }
+
   private pushToAPI(): void {
     try {
       // Guard: allow push before MarketAgent/MarketState are initialized (e.g. during startup)
       if (!this.marketAgent || !this.marketState) return;
+      this.refreshPositionMarkPrices(); // v2.0.139: fresh Mark prices before serializing
       const activeSymbol = this.marketAgent.getSelectedSymbol() || 'BTCUSDT';
       const state = this.marketState.getState(activeSymbol);
       const p = this.portfolio.getPortfolio();
