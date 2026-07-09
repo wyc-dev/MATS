@@ -42,6 +42,7 @@ import {
   combinationSimilarity,
   cosine,
 } from './embeddings.ts';
+import { ExperienceDigester } from './experience-digester.ts';
 
 const log = rootLogger;
 
@@ -230,6 +231,8 @@ export class ThesisExperience {
   private readonly llm: ExpLLMCaller;
   private readonly directionAllowed: (symbol: string, side: 'buy' | 'sell') => boolean;
   private loaded = false;
+  /** v2.0.140: A2A Experience Digester — lesson digestion + classification. */
+  private readonly digester: ExperienceDigester;
 
   constructor(opts: {
     embed: EmbedProvider;
@@ -241,6 +244,26 @@ export class ThesisExperience {
     this.llm = opts.llm;
     this.directionAllowed = opts.directionAllowed;
     this.cfg = { ...defaultCfg(), ...opts.cfg };
+    // v2.0.140: the digester shares our embed + LLM. EXP disabled → digester
+    // stays dormant (isReady()=false); getDigestSummary falls back to simple stats.
+    this.digester = new ExperienceDigester({
+      embed: opts.embed,
+      llm: opts.llm as unknown as import('./experience-digester.ts').DigestLLMCaller,
+      cfg: {
+        enabled: this.cfg.enabled && config.exp.digest.enabled,
+        classifyThreshold: config.exp.digest.classifyThreshold,
+        clusterThreshold: config.exp.digest.clusterThreshold,
+        minClassSize: config.exp.digest.minClassSize,
+        classWinThreshold: config.exp.digest.classWinThreshold,
+        classLossThreshold: config.exp.digest.classLossThreshold,
+        maxDigestCache: config.exp.digest.maxDigestCache,
+      },
+    });
+  }
+
+  /** Access the A2A Experience Digester (for startup rebuild + UI). */
+  getDigester(): ExperienceDigester {
+    return this.digester;
   }
 
   getCfg(): ExpRuntimeConfig {
@@ -261,6 +284,34 @@ export class ThesisExperience {
     } catch (err) {
       log.warn(`[EXP] warmup failed (will repair on first use): ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /** v2.0.140: rebuild experience classes from all loaded records. Call after
+   *  load() at startup (non-blocking to the trading loop). */
+  async rebuildClasses(): Promise<void> {
+    if (!this.cfg.enabled || !this.digester.getCfg().enabled) return;
+    try {
+      await this.digester.rebuildClasses(this.records);
+    } catch (err) {
+      log.warn(`[EXP] rebuildClasses failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** v2.0.140: layered digest summary for agent context + UI. Falls back to
+   *  simple stats when the digester is dormant. */
+  getDigestSummary(): string {
+    if (this.records.length === 0) return '';
+    if (this.digester.getCfg().enabled && this.digester.classCount() >= 0) {
+      return this.digester.getDigestSummary(this.records);
+    }
+    return this.simpleDigestSummary();
+  }
+
+  private simpleDigestSummary(): string {
+    const wins = this.records.filter((r) => r.outcome === 'WIN').length;
+    const losses = this.records.length - wins;
+    const net = this.records.reduce((s, r) => s + r.pnl, 0);
+    return `=== EXPERIENCE DIGEST (from ${this.records.length} closed trades) ===\nWin rate: ${(wins / this.records.length * 100).toFixed(0)}% (W${wins} L${losses}) | Net PnL: ${net.toFixed(3)}\n(digestion disabled — enable EXP + EXP_DIGEST_ENABLED for full analysis)`;
   }
 
   /** Number of records currently in memory. */
@@ -460,6 +511,12 @@ export class ThesisExperience {
         this.records = this.records.slice(-this.cfg.maxRecords);
       }
       this.renderEXPmd();
+      // v2.0.140: incremental class update (non-blocking) — digest + embed the
+      // new trade into its lesson class so the next checkThesisHistory can
+      // classify against it.
+      void this.digester.addRecord(record).catch((err: unknown) =>
+        log.warn(`[EXP-digest] addRecord failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
+      );
       log.info(`[EXP] recorded ${outcome} ${input.symbol} ${input.side.toUpperCase()} (${rationales.length} rationales) — memory ${this.records.length}`);
     } catch (err) {
       // NEVER block the close path
@@ -479,6 +536,50 @@ export class ThesisExperience {
     // Valid "no history" state — EXP works, just empty
     if (!this.loaded || this.records.length === 0) {
       return { verdict: 'PASS_OPEN_DIRECTLY', reason: 'EXP memory empty — no history to match' };
+    }
+
+    // v2.0.140: A2A Experience Classification (Master Lord's core request).
+    // FIRST, digest the candidate into a lesson vector and classify it against
+    // the clustered experience classes. This captures the SEMANTIC lesson
+    // (why similar setups lost/won) rather than raw rationale wording. If a
+    // class matches with enough members, emit a verdict here and skip the
+    // raw-rationale similarity path. If no class matches (cold-start / sparse),
+    // fall through to the existing raw similarity + delta logic.
+    if (this.digester.getCfg().enabled) {
+      try {
+        const candCat = assetCategory(input.symbol, this.cfg.assetCategoryMap);
+        const cls = await this.digester.classifyCandidate(
+          input.thesis, input.symbol, input.side, input.marketCtx, candCat,
+        );
+        if (cls.bestClass) {
+          const c = cls.bestClass;
+          const simPct = (cls.similarity * 100).toFixed(0);
+          if (cls.classWinRate >= this.digester.getCfg().classWinThreshold && cls.directionAligned) {
+            return {
+              verdict: 'FAST_APPROVE',
+              pWin: cls.classWinRate,
+              reason: `classified to winning lesson class [${c.count} trades, win ${(c.winRate * 100).toFixed(0)}%, ${c.directionBias}] (sim ${simPct}%): ${c.lesson}`,
+            };
+          }
+          if (cls.classWinRate < this.digester.getCfg().classLossThreshold && cls.directionAligned) {
+            // Repeating a LOSING setup class in the SAME direction — reject.
+            // This directly answers Master Lord's "learn why it keeps losing":
+            // the candidate matches a clustered losing pattern (e.g. quick-close
+            // churn / SELL-near-resistance-FUD-misread) and keeps that direction.
+            return {
+              verdict: 'REJECT',
+              matchedLossId: c.memberIds[0],
+              reason: `classified to LOSING lesson class [${c.count} trades, win ${(c.winRate * 100).toFixed(0)}%, avg ${c.avgHoldMin.toFixed(0)}min, ${c.directionBias}] (sim ${simPct}%): ${c.lesson}. Avoid repeating this losing pattern.`,
+            };
+          }
+          // Ambiguous band OR opposite-direction match (may be a contrarian
+          // edge) → let it trade; the raw path below will still run as a tie-break.
+          // (We do NOT short-circuit here; fall through to raw similarity which
+          // can still FAST_APPROVE / delta / reverse.)
+        }
+      } catch (err) {
+        log.warn(`[EXP-digest] classification failed — falling through to raw similarity: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
     let candRationales: RationaleItem[];

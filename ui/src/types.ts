@@ -132,6 +132,8 @@ export interface Portfolio {
   /** v2.0.42: Number of trades used for recent20WinRate. */
   recent20Count: number;
   positions: Record<string, Position>;
+  /** v2.0.140: EXP digest summary (experience digestion text). */
+  expDigest?: string;
 }
 
 export interface Position {
@@ -295,6 +297,26 @@ export interface APIData {
     topPairs: TopVolumePair[];
   };
   systemPaused?: boolean;
+  /** v2.0.128: Decision audit log */
+  decisionAudit?: Array<{
+    cycle: number;
+    symbol: string;
+    action: 'buy' | 'sell';
+    confidence: number;
+    thesis: string;
+    gates: Array<{ gate: string; passed: boolean; reason: string }>;
+    executed: boolean;
+    timestamp: number;
+  }>;
+  /** v2.0.140: EXP action log — what EXP decided per symbol this cycle */
+  expActions?: Array<{
+    symbol: string;
+    side: 'buy' | 'sell';
+    verdict: string;
+    reason: string;
+    cycle: number;
+    ts: number;
+  }>;
   /** v2.0.65: Options Data Layer context for Stocks/Indices */
   optionsData?: {
     symbol: string;

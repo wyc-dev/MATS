@@ -29,12 +29,14 @@ Thumbs.db
 
 # ─── Internal documents (not for public release) ───
 HANDOFF.md
+EXP_plan.md
 EXP_UPGRADE_PLAN.md
 IMPLEMENTATION-COMPLETE.md
 SKILL.md
 docs/A2A-INTEGRATION-GUIDE.md
 docs/A2A-QUICK-REF.md
 docs/loop-engineering-blueprint.md
+AGENT_PROMPT.md
 
 # ─── Logs ───
 logs/
@@ -68,3 +70,4 @@ data/EXP.md
 
 # ─── Agent instructions (private) ───
 .github/instructions/PI.instructions.md
+NEWS_DECODER_PLAN.md

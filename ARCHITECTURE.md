@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System
 
-> **作者**: YC Wong · **版本**: 2.0.139
+> **作者**: YC Wong · **版本**: 2.0.140
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **代碼量**: ~42,000 行 TypeScript（嚴格模式，零類型錯誤）+ React UI
 
@@ -68,7 +68,8 @@ src/
 ├── system-guard/            # 5 層保護閘門
 ├── evolution/               # 自我演化（OLR + Shadow + First-Passage + EM + GA + EXP 向量記憶，見下方專節）
 │   ├── embeddings.ts        # v2.0.138: Transformers.js MiniLM 384-d 向量（in-process）
-│   └── thesis-experience.ts # v2.0.138: EXP 理據組合歷史勝率閘（Phase 1.8a）
+│   ├── thesis-experience.ts # v2.0.138: EXP 理據組合歷史勝率閘（Phase 1.8a）
+│   └── experience-digester.ts # v2.0.140: A2A 經驗消化（LLM lesson → embed → cluster → classify）
 ├── analysis/                # sentiment · S/R · ATR · planck-chaos · options · news
 ├── market-agent/            # 自動 pair 選擇（9 DEX, 416 assets, 類別過濾）
 ├── data/                    # Hyperliquid + Binance WebSocket
@@ -76,7 +77,7 @@ src/
 └── index.ts                 # 系統 orchestrator（決策循環）
 ui/                          # React + Vite dashboard (:5173)
 data/evolution/              # olr-state · shadow-state · patterns · GA state
-tests/                       # vitest（77 tests）
+tests/                       # vitest（94 tests）
 ```
 
 ---
@@ -249,7 +250,9 @@ The adaptive-filter conviction gate had drifted to 59-64%, blocking all new entr
 
 **v2.0.137 Thesis 凍結（Root Cause B fix）**：`entryThesis` 喺開倉時凍結為「原始理據」，之後**永不覆寫**。`PortfolioTracker.setEntryThesis()` 改為 set-if-absent（只喺倉位冇 thesis 時先填入，例如由 HL re-import 嘅倉位），並拒絕 placeholder（`'N/A'`/`'Not applicable'`/空字串）。之前 index.ts 每循環用最新 Meta-Agent thesis 無條件覆寫 entryThesis，令 Skeptics re-validate 嘅「原始 thesis」變成**移動目標**（不斷被改寫，有時被覆寫成 `'N/A'`→自動失效→6-15 分鐘內強制平倉，造成交易太密＋勝率低）。而家 re-validate 針對嘅係開倉時凍結嘅原始理據。Live 每循環 reasoning 改存 `holdReason`（唔被 re-validate，可自由更新）。
 
-**平倉規則（v2.0.103）**：CLOSE 必須 thesis 失效（強制）+ ≥2 其他條件（trend 改變 / ≥2 agents recommend CLOSE / 虧損無恢復 thesis / regime 唔適合 / 新資訊 contradicts）。Thesis 仍有效 → HOLD，無例外。
+**平倉規則（v2.0.103 + v2.0.140）**：CLOSE 必須 thesis 失效（強制）+ ≥2 其他條件。Thesis 仍有效 → HOLD，無例外。
+
+**v2.0.140 提早平倉防護**：系統最大反覆問題係 Meta-Agent + Skeptics 無視價位提早平倉。新增 5 重強制檢查：PRICE LEVEL（是否真正突破 S/R）/ SL/TP CHECK（是否已觸發）/ TIME CHECK（持倉 ≥15min）/ EXPERIENCE DIGEST（高 premature 率 → 格外保守）/ DIRECTION（OLR 仍支持 → HOLD）。Skeptics 預設改為 VALID / BLOCK（when in doubt, keep open）。
 
 **Skeptics Approve-First（v2.0.110）**：預設 APPROVE，只係喺搵到具體、會導致輸錢嘅 material flaw 時先 REJECT。唔因「low confidence」「could be manipulation」等弱理由 reject。Error fallback = APPROVE。
 
@@ -376,7 +379,7 @@ LOG_LEVEL=info
 | Frontend | React 18 + Vite + TradingView Chart |
 | Config | Zod schema validation |
 | Logging | Winston（structured + file rotation） |
-| Testing | vitest（77 tests，4 test files） |
+| Testing | vitest（94 tests，5 test files） |
 | Crypto | `@noble/curves`（HL phantom agent signing） |
 
 ---
@@ -398,6 +401,30 @@ LOG_LEVEL=info
 **自癒（§8.6）**：1.8a fallback 時 `diagnoseError` → `skepticsAttemptRepair`（重載 embed / salvage 重建索引 / heuristic split）→ 修復成功重跑 1.8a（recursion guard 1 次）→ 記錄 incident 到 `data/exp/incidents.jsonl` + EXP.md 摘要。
 
 **紅線不變**：EXP 只能 REJECT→HOLD 或放行 thesis gate，**永不 bypass** conviction / frequency / risk / direction / SL-TP。所有失敗安全 fallback。`config.exp.enabled` 預設 `false`（dormant，不影響現有行為）；主神批准後 `EXP_ENABLED=true` 啟用。
+
+---
+
+## v2.0.140 — A2A 經驗消化 + 提早平倉防護 + 波動率修復
+
+### A2A Experience Digester（三層經驗消化）
+
+`experience-digester.ts`：每筆 closed trade 由 LLM 消化成 A2A-structured `LessonStatement`（OBS + ASSESS + rootCause + exitType + lesson），embed 成濃縮向量，相似 lessons 聚類成 `ExperienceClass`。新 candidate thesis 經同樣消化 → classification vs class centroids → verdict。
+
+**`digestTrade` LLM prompt** 強制 5 層根因診斷：thesis 是否太浮動 / 市場形態 / 資訊是否不全面 / SL 是否任意 % / 波動率計算是否有問題。`exitType` 分類：`premature_sl` / `premature_tp` / `correct_sl` / `correct_tp` / `thesis_invalidated`。
+
+**`getDigestSummary()` 7 層結構**：Headline → EXIT QUALITY ANALYSIS → ROOT CAUSE DIAGNOSIS（why theses fail in ≤8min）→ VOLATILITY ANOMALY CHECK（>70% low_vol → broken）→ CLOSE DISCIPLINE LESSONS → Losing + Winning classes（with exit-type）→ Per symbol/side。
+
+**Agent prompt 整合**：OLR & Sentiment Analyst + Skeptics + Meta-Agent 加入 EXP digest awareness，聚焦於提早平倉係 Meta-Agent/Skeptics 發起（唔係 SL/TP 太緊）、方向通常冇錯、波動率異常係 SYSTEM issue。
+
+**`expActions` action log**：HACP Phase 1.8a 每個 EXP verdict 記錄到 `HACPResult.expActions`，經 API 傳送到 UI 顯示「經驗決定」。
+
+### 提早平倉防護（PREMATURE CLOSE PREVENTION）
+
+根因：系統最大反覆問題唔係 SL/TP 太緊，係 Meta-Agent + Skeptics 無視價位提早平倉。Meta-Agent CLOSE 決策前強制 5 重檢查。Skeptics thesis re-validation（Phase 0.5）+ close validation 加入 4 重檢查，預設改為 VALID / BLOCK。
+
+### 波動率計算修復
+
+`MarketStateAggregator.calcVolatility()` 從 mean of |arithmetic returns| 改為 std of log returns（同 `first-passage.ts` 一致）。舊算法低估 ~20%，導致所有 regime 永遠 `low_volatility` → SL 太緊 → premature stops → false regime classification。
 
 **檔案**：新 `src/evolution/embeddings.ts`（EmbedProvider + Transformers.js + Mock + 向量數學）、`src/evolution/thesis-experience.ts`（核心：extract/record/check/delta/reverse/repair）、`scripts/reindex-exp.ts`（換模型時重 embed）。改 `src/types/index.ts`（ThesisExperienceRecord/ExpVerdict/ExpCheckResult/ExpFallbackIncident + TradeRecord.entryThesis）、`src/config/index.ts`（exp block）、`src/trading/portfolio.ts`（close 時 capture `pos.entryThesis`→`trade.entryThesis`）、`src/index.ts`（實例化 + startup load/warmup + close hook）、`src/cognition/hacp.ts`（Phase 1.8a + `overrideMetaDecision` helper）。24 新測試（總 77）。tsc clean。
 

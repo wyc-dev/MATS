@@ -7,7 +7,7 @@ MATS is a multi-agent cognitive trading system: 8 specialized agents think in pa
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.139-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.140-blueviolet)](ARCHITECTURE.md)
 [![GitHub stars](https://img.shields.io/github/stars/wyc-dev/MATS?style=social)](https://github.com/wyc-dev/MATS)
 
 🌐 [mats.trading](https://mats.trading/) · 💬 [Discord](https://discord.gg/mats) (coming soon) · ⭐ [Star on GitHub](https://github.com/wyc-dev/MATS)
@@ -129,6 +129,7 @@ src/
 │   ├── olr-backfill.ts                 # Cold-start backfill from historical HL candles
 │   ├── embeddings.ts                   # v2.0.138: Transformers.js MiniLM 384-d vectors (in-process)
 │   ├── thesis-experience.ts            # v2.0.138: EXP thesis-combo historical win-rate gate (Phase 1.8a)
+│   ├── experience-digester.ts          # v2.0.140: A2A Experience Digester (LLM lesson → embed → cluster → classify)
 │   ├── trade-pattern-classifier.ts     # Supervised KNN pattern DB (Wilson score)
 │   ├── cycle-summary.ts                # EM Cycle Summary Manager (tiered memory)
 │   ├── agent-outcomes.ts               # Per-agent performance tracking
@@ -141,7 +142,7 @@ src/
 
 ui/                                     # 🖥️ React + Vite dashboard (:5173)
 data/evolution/                         # 💾 olr-state · shadow-state · patterns · GA state
-tests/                                  # ✅ vitest (77 tests, 4 test files)
+tests/                                  # ✅ vitest (94 tests, 5 test files)
 ```
 
 ---
@@ -232,12 +233,24 @@ Restrict a symbol to BUY-only or SELL-only via API or `data/evolution/market-age
 | **Frontend** | React 18 + Vite + TradingView Chart |
 | **Config** | Zod schema validation |
 | **Logging** | Winston (structured + file rotation) |
-| **Testing** | vitest (77 tests, 4 test files) |
+| **Testing** | vitest (94 tests, 5 test files) |
 | **Codebase** | ~42,000 LOC TypeScript + React UI |
 
 ---
 
 ## Changelog
+
+### v2.0.140 — A2A Experience Digester + Premature Close Prevention + Volatility Fix
+
+**A2A Experience Digester** — every closed trade is LLM-digested into a structured `LessonStatement` (OBS + ASSESS + rootCause + exitType + lesson), embedded into a condensed vector, and clustered into `ExperienceClass`. New candidate theses are classified against class centroids → verdict. The `digestTrade` LLM prompt forces 5-layer root cause diagnosis. `getDigestSummary()` produces a 7-layer structured digest injected into agent prompts. `expActions` action log wired through HACP → API → UI.
+
+**Premature Close Prevention** — the system's biggest recurring problem is NOT tight SL/TP, it's Meta-Agent + Skeptics initiating manual closes that ignore the actual price structure. Three gatekeeper prompts rewritten with mandatory checks (price level breached? SL/TP hit? position ≥15min? digest shows premature history? direction still correct?). Skeptics defaults → VALID/BLOCK (when in doubt, keep open).
+
+**Volatility calculation fix** — `MarketStateAggregator.calcVolatility()` was using mean of |arithmetic returns| (underestimates ~20%), causing ALL regimes to classify as `low_volatility`. Fixed to std of log returns.
+
+**Visual Experience Digestion UI** — fully visual: W/L bar, exit quality bars, class cards with win-rate bars + exit-type badges, per-symbol table with PnL color coding, volatility anomaly banner, root cause diagnosis. No raw text dump.
+
+**17 new tests** (total 94). `tsc --noEmit` clean. UI build clean.
 
 ### v2.0.139 — News Reporter v2 Institutional Narrative Decoder + Real-Trading Hardening + Live Mark Price
 

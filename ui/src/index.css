@@ -2349,6 +2349,382 @@ body {
   border-top: 1px solid var(--glass-border);
 }
 
+/* ── v2.0.140: Experience Digestion (visual) ── */
+.exp-digest-content {
+  padding: var(--space-4);
+  background: rgba(255,255,255,0.02);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+}
+
+.exp-digest-section {
+  margin-top: var(--space-4);
+}
+
+.exp-digest-subtitle {
+  font-weight: var(--fw-semibold);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-3);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.exp-digest-action {
+  color: var(--text-primary);
+  padding: var(--space-2) 0;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.exp-digest-raw {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* Headline row */
+.exp-headline-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.exp-headline-streak {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.exp-streak-badge {
+  color: var(--red);
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-xs);
+  padding: 2px var(--space-2);
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: var(--radius-sm);
+}
+
+.exp-headline-pnl {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* W/L bar */
+.exp-wl-bar-section {
+  margin-bottom: var(--space-4);
+}
+
+.exp-bar-container {
+  display: flex;
+  height: 6px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--glass-border);
+}
+
+.exp-bar-wins {
+  background: var(--green);
+  transition: width 0.3s ease;
+}
+
+.exp-bar-losses {
+  background: var(--red);
+  transition: width 0.3s ease;
+}
+
+.exp-wl-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--space-1);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.exp-wl-win { color: var(--green); }
+.exp-wl-loss { color: var(--red); }
+
+/* Exit quality bars */
+.exp-eq-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.exp-eq-label {
+  flex-shrink: 0;
+  width: 160px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.exp-eq-bar-wrap {
+  flex: 1;
+  height: 8px;
+  background: var(--glass-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.exp-eq-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-sm);
+  transition: width 0.3s ease;
+}
+
+.exp-eq-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.exp-eq-count { color: var(--text-tertiary); }
+.exp-eq-pnl { font-weight: var(--fw-medium); }
+.exp-eq-major {
+  color: var(--red);
+  font-weight: var(--fw-semibold);
+  font-size: 10px;
+  padding: 1px var(--space-1);
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: var(--radius-sm);
+}
+
+/* Close discipline lessons */
+.exp-lesson-item {
+  color: var(--text-tertiary);
+  padding: var(--space-1) 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.exp-lesson-insight {
+  color: var(--text-primary);
+  font-weight: var(--fw-medium);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--glass-border);
+}
+
+/* Patterns grid (losing + winning side by side) */
+.exp-patterns-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+@media (max-width: 768px) {
+  .exp-patterns-grid { grid-template-columns: 1fr; }
+}
+
+.exp-patterns-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Class card */
+.exp-class-card {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--glass-border);
+}
+
+.exp-class-card.losing { border-left: 2px solid var(--red); }
+.exp-class-card.winning { border-left: 2px solid var(--green); }
+
+.exp-class-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.exp-class-symbols {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
+}
+
+.exp-class-exit {
+  font-size: 10px;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-weight: var(--fw-medium);
+}
+
+.exp-class-exit.premature {
+  color: var(--red);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.exp-class-exit.correct {
+  color: var(--green);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.exp-class-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.exp-class-bar-fill {
+  height: 6px;
+  border-radius: var(--radius-sm);
+  transition: width 0.3s ease;
+}
+
+.exp-class-winrate {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: var(--fw-semibold);
+  flex-shrink: 0;
+}
+
+.exp-class-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  margin-bottom: var(--space-2);
+}
+
+.exp-class-lesson {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Per symbol table */
+.exp-symbol-table {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.exp-symbol-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.exp-sym-name {
+  width: 80px;
+  color: var(--text-primary);
+  font-weight: var(--fw-medium);
+  flex-shrink: 0;
+}
+
+.exp-sym-side {
+  width: 36px;
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  text-align: center;
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.exp-sym-side.buy { color: var(--green); background: rgba(34, 197, 94, 0.08); }
+.exp-sym-side.sell { color: var(--red); background: rgba(239, 68, 68, 0.08); }
+
+.exp-sym-bar-wrap {
+  flex: 1;
+  height: 4px;
+  background: var(--glass-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.exp-sym-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-sm);
+  transition: width 0.3s ease;
+}
+
+.exp-sym-wl {
+  width: 60px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.exp-sym-net {
+  width: 60px;
+  font-weight: var(--fw-medium);
+  flex-shrink: 0;
+}
+
+.exp-sym-hold {
+  width: 50px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+/* Volatility anomaly banner */
+.exp-anomaly-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  margin-top: var(--space-4);
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.2);
+  border-radius: var(--radius-md);
+}
+
+.exp-anomaly-icon {
+  font-size: var(--fs-sm);
+  flex-shrink: 0;
+}
+
+.exp-anomaly-title {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: #fbbf24;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: var(--space-1);
+}
+
+.exp-anomaly-desc {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+
+/* Streak warning + toggle (kept from before) */
+.exp-streak-warning {
+  margin-left: var(--space-2);
+  animation: pulse-warning 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-warning {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.evo-section-toggle {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+
 .evo-section-header {
   display: flex;
   align-items: center;
