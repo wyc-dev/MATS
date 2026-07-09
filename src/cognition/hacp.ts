@@ -376,7 +376,7 @@ export class HACPEngine {
    * Dynamically adjust the consensus threshold based on market conditions.
    * Adjusts this.consensusThreshold (the config base): lowers on idle cycles
    * (encourage trades), raises on consecutive losses (capital protection),
-   * regime-aware. Clamped to [0.40, 0.85]. This is the SOLE threshold path —
+   * regime-aware. Clamped to [0.49, 0.85]. This is the SOLE threshold path —
    * the v2.0.41 Evolution override was removed in v2.0.139.
    */
   adjustThreshold(currentRegime?: string, hadRealTrade?: boolean, wasProfitable?: boolean): void {
@@ -413,7 +413,9 @@ export class HACPEngine {
       adj += 0.10; // Danger! raise barrier
     }
 
-    const newThreshold = Math.max(0.40, Math.min(0.85, initial + adj));
+    // v2.0.139: floor 0.49 (don't let consensus gate drop below the intended
+    // ~49-53% band even on long idle — keeps capital-protection floor).
+    const newThreshold = Math.max(0.49, Math.min(0.85, initial + adj));
     if (Math.abs(newThreshold - this.consensusThreshold) > 0.005) {
       log.info(`Consensus threshold: ${(this.consensusThreshold * 100).toFixed(0)}% → ${(newThreshold * 100).toFixed(0)}% (idle=${this.cyclesWithoutTrade}, lossStreak=${this.consecutiveLosses}, regime=${currentRegime ?? '?'})`);
     }
