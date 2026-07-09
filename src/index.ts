@@ -1080,10 +1080,13 @@ class MATSSystem {
       if (config.exp.enabled) {
         try {
           this.expMemory.load();
-          await this.expMemory.warmup();
-          log.info(`✓ EXP thesis-experience memory ready (${this.expMemory.size()} records)`);
+          // Fire-and-forget warmup: transformers.js downloads the 22MB ONNX from
+          // HuggingFace Hub on first use — do NOT block system startup on network.
+          // If not ready by the first trade, 1.8a self-heals (diagnose→repair→1.8b).
+          void this.expMemory.warmup();
+          log.info(`✓ EXP thesis-experience memory ready (${this.expMemory.size()} records) — embed model warming up in background`);
         } catch (err) {
-          log.warn(`[EXP] startup load/warmup failed (will self-heal on first use): ${err instanceof Error ? err.message : String(err)}`);
+          log.warn(`[EXP] startup load failed (will self-heal on first use): ${err instanceof Error ? err.message : String(err)}`);
         }
       } else {
         log.info('EXP thesis-experience memory disabled (config.exp.enabled=false) — HACP uses 1.8b fallback');
