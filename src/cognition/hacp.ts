@@ -2148,6 +2148,13 @@ Output ONLY valid JSON:
     // Derive from the Meta-Agent's marketTicker (authoritative), with a
     // fallback to the first perSymbolConsensus symbol, then 'BTCUSDT'.
     let finalDecisionSymbol = 'BTCUSDT';
+    // v2.0.139: Capture the per-symbol marketTicker conviction so the
+    // conviction gate sees the SAME value the Meta-Agent stated for THIS
+    // symbol — not the top-level metaThought.confidence (which is a blend
+    // across all symbols including HOLDs and unfairly lowers the active
+    // symbol's gate confidence). This mirrors the v2.0.132 fix already
+    // applied to the trading-market perSymbolConsensus path (L2078).
+    let metaTickerConfidence: number | undefined;
     const metaThoughtForDecision = thoughts.find(t => t.agentRole === 'meta_agent');
     if (metaThoughtForDecision) {
       const metaMs = metaThoughtForDecision.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined;
@@ -2167,6 +2174,7 @@ Output ONLY valid JSON:
           finalDecisionThesis = metaMs.marketTicker.entryThesis;
           finalDecisionRationale = `Meta-Agent: ${metaMs.marketTicker.action.toUpperCase()} ${metaMs.marketTicker.symbol} (marketTicker — Meta-Agent authoritative). Sub-agent majority: ${majorityAction.toUpperCase()} (${buyCount}B/${sellCount}S/${holdCount}H). ${metaMs.marketTicker.rationale ?? ''}`;
           metaOverridden = true;
+          metaTickerConfidence = metaMs.marketTicker.confidence;
           log.info(`📊 [v2.0.130] Active symbol ${metaMs.marketTicker.symbol}: Meta-Agent override ${majorityAction.toUpperCase()} → ${finalDecisionAction.toUpperCase()} (sub-agents: ${buyCount}B/${sellCount}S/${holdCount}H)`);
         }
       }
@@ -2188,7 +2196,12 @@ Output ONLY valid JSON:
         ...(finalDecisionThesis ? { entryThesis: finalDecisionThesis } : {}),
       }),
       perSymbolConsensus,
-      confidence: metaOverridden && metaThoughtForDecision ? metaThoughtForDecision.confidence : avgConfidence,
+      // v2.0.139: Use per-symbol marketTicker conviction (not top-level
+      // metaThought.confidence) when Meta-Agent overrides the active symbol —
+      // same fix as v2.0.132 for trading markets. The Meta-Agent may be 55%
+      // confident overall (other symbols are HOLD) but 65% for the active
+      // symbol. The conviction gate must see the per-symbol value.
+      confidence: metaOverridden ? (metaTickerConfidence ?? metaThoughtForDecision?.confidence ?? avgConfidence) : avgConfidence,
       reasoning: this.buildReasoning(thoughts, rounds),
       votes: existingVotes ?? [],
       roundsUsed: rounds.length,
