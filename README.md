@@ -7,7 +7,7 @@ MATS is a multi-agent cognitive trading system: 8 specialized agents think in pa
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.135-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.139-blueviolet)](ARCHITECTURE.md)
 [![GitHub stars](https://img.shields.io/github/stars/wyc-dev/MATS?style=social)](https://github.com/wyc-dev/MATS)
 
 🌐 [mats.trading](https://mats.trading/) · 💬 [Discord](https://discord.gg/mats) (coming soon) · ⭐ [Star on GitHub](https://github.com/wyc-dev/MATS)
@@ -121,12 +121,14 @@ src/
 ├── trading/                            # 💹 Portfolio · paper/real engines · cost model
 ├── risk/                               # 🛡️ Risk engine + correlation budget
 ├── system-guard/                       # 🛡️ SystemGuard (calendar/drawdown/freshness/track/liquidity)
-├── evolution/                          # 🧬 Self-evolution
+├── evolution/                          # 🧬 Self-evolution + EXP vector thesis memory
 │   ├── index.ts                        # GA orchestrator (directional mutation)
 │   ├── olr-engine.ts                   # OLR (Online Logistic Regression, per-symbol/side)
 │   ├── shadow-trade-engine.ts          # Shadow trades (simulated TP-before-SL)
 │   ├── first-passage.ts                # First-Passage P(TP before SL) — Cox & Miller GBM
 │   ├── olr-backfill.ts                 # Cold-start backfill from historical HL candles
+│   ├── embeddings.ts                   # v2.0.138: Transformers.js MiniLM 384-d vectors (in-process)
+│   ├── thesis-experience.ts            # v2.0.138: EXP thesis-combo historical win-rate gate (Phase 1.8a)
 │   ├── trade-pattern-classifier.ts     # Supervised KNN pattern DB (Wilson score)
 │   ├── cycle-summary.ts                # EM Cycle Summary Manager (tiered memory)
 │   ├── agent-outcomes.ts               # Per-agent performance tracking
@@ -139,12 +141,14 @@ src/
 
 ui/                                     # 🖥️ React + Vite dashboard (:5173)
 data/evolution/                         # 💾 olr-state · shadow-state · patterns · GA state
-tests/                                  # ✅ vitest (evolution-memory: 41 tests)
+tests/                                  # ✅ vitest (77 tests, 4 test files)
 ```
 
 ---
 
-## Self-Evolution System (v2.0.135)
+## Self-Evolution System (v2.0.135) + EXP Vector Thesis Memory (v2.0.138)
+
+**EXP Vector Thesis Memory (v2.0.138)** (`thesis-experience.ts` + `embeddings.ts`): Every closed trade's rationale combination is embedded into a vector (transformers.js MiniLM 384-d, in-process) and stored in `data/exp/trades.jsonl`. On new entries, Skeptics Phase 1.8a `checkThesisHistory` finds the closest historical combination via asymmetric set-to-set similarity and computes a similarity-weighted P(win): no history → direct open; winning combo → fast-approve; losing combo + confirming delta → approve-with-note; losing combo + contradicting delta → reverse-direction; no delta → reject→HOLD. Cold-start dormant until `EXP_ENABLED=true`. PnL=0 excluded. Self-healing fallback to subjective 1.8b on error.
 
 **Layer 1 — OLR** (`olr-engine.ts`): Per-symbol, per-side online logistic regression with Welford z-score normalization. Learns P(win) from shadow + paper + real + backfill outcomes (TP-before-SL). Source-weighted (real=4, paper=2, shadow=1, backfill=0.3; backfill excluded from decay). Per-feature Welford counts so missing features return neutral z=0. Confidence: high(≥50)/medium(≥20)/low.
 
@@ -168,7 +172,7 @@ tests/                                  # ✅ vitest (evolution-memory: 41 tests
 | 2 | **Fractal Momentum Sentinel** | 0.85 | 0.10 | Multi-timeframe fractal breakout detection. Early trend acceleration. |
 | 3 | **On-Chain Whisperer** | 0.50 | 0.10 | Category-aware on-chain: crypto (mempool, flows, supply) + TradFi (DXY, COT, commodities). |
 | 4 | **OLR & Sentiment Analyst** | 0.25 | 0.10 | OLR P(win) per side + First-Passage path-risk + Fear & Greed. RR-aware edge vs breakeven. |
-| 5 | **News Reporter** | 0.40 | 0.10 | Shadow-strategist news motive analysis. Distribution bull = bearish; accumulation FUD = bullish. |
+| 5 | **News Reporter** | 0.40 | 0.20 | **Institutional Narrative Decoder (v2.0.139)**. 5-part framework: information-asymmetry prior, price-news timing matrix, 6-bucket motive taxonomy, power-map, net institutional-adjusted signal. L3 Meta-Agent decisive override when named motive + price confirmation. Weight 0.10→0.20. |
 | 6 | **Independent Risk Auditor** | 0.10 | 0.25 | Advisory-only (no veto). TP/SL/size suggestions + hard-coded loss-streak/choppy-market limits. |
 | 7 | **Skeptics** | 0.30 | 0.00 | Logic auditor + thesis stress-tester. Approve-first; rejects only on concrete flaws. Validates entryThesis (Phase 1.8) + re-validates held positions (Phase 0.5). |
 | 8 | **Meta-Agent** | 0.45 | 0.00 | Arbitration chairman. Detective mode — reasons from facts to find edges, never distorts. Generates entryThesis. Weight 0.00 (thesis system controls, not voting). |
@@ -228,12 +232,46 @@ Restrict a symbol to BUY-only or SELL-only via API or `data/evolution/market-age
 | **Frontend** | React 18 + Vite + TradingView Chart |
 | **Config** | Zod schema validation |
 | **Logging** | Winston (structured + file rotation) |
-| **Testing** | vitest (41 tests) |
-| **Codebase** | ~25,000 LOC TypeScript + React UI |
+| **Testing** | vitest (77 tests, 4 test files) |
+| **Codebase** | ~42,000 LOC TypeScript + React UI |
 
 ---
 
 ## Changelog
+
+### v2.0.139 — News Reporter v2 Institutional Narrative Decoder + Real-Trading Hardening + Live Mark Price
+
+**News Reporter v2** — financial news is a WEAPON, not information. 3-layer upgrade:
+- **L1 data enrichment**: `PriceNewsTiming` (1h/4h/24h/3d price changes, `movedBeforeNews` front-run tell, headline cadence, source clustering, dominant angle) from 80 1h candles via same-asset routing + 5-min cache.
+- **L2 prompt upgrade**: 5-part Institutional Narrative Decoder (information-asymmetry prior, price-news timing matrix, 6-bucket motive taxonomy, power-map, net signal). Weight 0.10→0.20.
+- **L3 Meta-Agent decisive weighting**: engineered-play detection with price confirmation may override HOLD-lean majority; guardrail requires both named motive AND timing confirmation.
+
+**A+B conviction fixes**:
+- **A**: removed Meta-Agent self-censoring (was told the gate threshold + instructed to HOLD below it → self-fulfilling paralysis). Now emits honest conviction; gate filters independently.
+- **B**: OLR edge weighted by `magnitude × confidence-label` (not raw sample count). +58pp high-confidence edges no longer discarded during cold-start.
+
+**BTC wallet trailing-zero fix**: `quantity.toFixed(szDecimals)` produced trailing zeros → HL normalizes before signature re-hash → mismatch → ECDSA recovery yields garbage wallet → "User or API Wallet does not exist". Fix: `stripTrailingZeros()` on all signed numeric fields.
+
+**3 critical bug fixes (from first real trades)**:
+1. **Leverage config authoritative** — agent LLM's 5x was overriding Market Agent's 10x. Config is now the single source of truth.
+2. **Closed-fill display leverage** — hardcoded `?? 10` masked the real 5x. Added `lastKnownLeverage` cache.
+3. **SL/TP REST-lag race** — after a fill, HL REST lags 2-5s; `adjustPosition` now accepts `knownPosition` from the caller's fill data to place SL/TP on the open cycle.
+
+**Consensus gate + Evolution cleanup**: threshold 0.70→0.50 (floor 0.49); `getPortfolioSummary` uses `currentDrawdownPct` (recovers) not `maxDrawdownPct` (high-water mark); removed EvolutionStats UI + global aggregate injection (caused over-conservatism).
+
+**Placeholder thesis gate + live Mark price**: broadened `isThesisPlaceholder` to catch `[1h: N/A — hold]`-style placeholders (BLOCK BUY/SELL). Fixed UI Mark=Entry by introducing `cachedPriceMap` (live prices per cycle) + `refreshPositionMarkPrices()` (async, on-demand fetch for late-imported positions) + `serializePortfolio` fallback using cached live price.
+
+### v2.0.138 — EXP Vector Thesis Memory (Skeptics Phase 1.8a Historical Probability Gate)
+
+Every closed trade's rationale combination is embedded (transformers.js MiniLM 384-d, in-process) and stored. On new entries, Skeptics Phase 1.8a `checkThesisHistory` gates by thesis-combo historical win-rate: no history → direct open; winning combo → fast-approve; losing + contradicting delta → reverse-direction; no delta → reject→HOLD. Cold-start dormant until `EXP_ENABLED=true`. Self-healing fallback to 1.8b. 24 new tests (total 77). Files: `src/evolution/embeddings.ts`, `src/evolution/thesis-experience.ts`, `scripts/reindex-exp.ts`.
+
+### v2.0.137 — Thesis Freeze (Root Cause B: fix over-trading + low win rate)
+
+`setEntryThesis()` → set-if-absent. The original opening rationale is now FROZEN until close; previously each cycle's latest Meta-Agent thesis overwrote it → Skeptics re-validated a moving target → sometimes overwritten to `'N/A'` → auto-invalidated → forced close 6-15 min later → churn loop. `holdReason` remains live per-cycle reasoning (not re-validated). 5 regression tests.
+
+### v2.0.136 — Execution Bug Fixes + UI Position Label Fixes
+
+7 bugs blocking real trading + UI display: `normalizeDecision()` dropping `entryThesis`; `buildConsensus()` hardcoded `BTCUSDT`; missing `entryPrice`; BTC SELL "could not immediately match" (l2Book case-sensitivity — use canonical `asset.name` not lowercase); Portfolio "Reason" vanishing after 1st cycle (`forceMirror` now bypasses `assessTrade()` too); HACP debate position badge flicker (UI uses actual portfolio, not `hasPosition`); SL/TP validation spam on qty=0 placeholders.
 
 ### v2.0.135 — OLR + Shadow + First-Passage Production Hardening + Cold-Start Backfill + Full Agent Cognition Integration
 
