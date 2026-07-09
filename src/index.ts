@@ -117,6 +117,14 @@ class MATSSystem {
   // to update the UI Mark column — the marketState aggregator only has the
   // ACTIVE symbol's ticker, not all position symbols.
   private cachedPriceMap: Map<string, number> = new Map();
+  /** v2.0.139: Symbols being force-closed due to thesis invalidation. Set
+   *  before calling closePosition/closeExchangePosition so the
+   *  onPositionClosedLearning callback can tag the trade record. Thesis-
+   *  invalidation losses are excluded from the conviction-gate winRate so the
+   *  gate only tightens on real market-risk losses (SL hit), not thesis-system
+   *  force-closes — prevents the feedback trap where thesis invalidation
+   *  raises the gate → new entries blocked → system stuck in cash. */
+  private thesisInvalidatedCloseSymbols = new Set<string>();
   /** v2.0.79: Trading markets list from UI pills — determines which symbols
    *  agents analyze (combined with open positions). Replaces auto-select. */
   private tradingMarkets: string[] = [];
@@ -1392,6 +1400,14 @@ class MATSSystem {
       const isWin = trade.pnl >= 0;
       const pnlPct = trade.pnlPct;
       const outcome: 1 | 0 = isWin ? 1 : 0;
+      // v2.0.139: Detect thesis-invalidation closes (Option C). The force-close
+      // path adds the symbol to thesisInvalidatedCloseSymbols before calling
+      // closePosition; the callback fires synchronously during closePosition,
+      // so we can check + clear here. Thesis-invalidation losses are excluded
+      // from the conviction-gate winRate so the gate only tightens on real
+      // market-risk losses (SL hit), not thesis-system force-closes.
+      const isThesisInvalidation = this.thesisInvalidatedCloseSymbols.delete(symbol);
+      const closeReason = isThesisInvalidation ? 'thesis_invalidation' : (trade.closeReason ?? 'sl_tp');
 
       // v2.0.29: Clean up legacy position tracking when a position closes
       if (this.legacyPositionModes.has(symbol)) {
@@ -1435,6 +1451,7 @@ class MATSSystem {
           type: 'real',
           confidence: 0.5,
           realisedPnl: pnlPct,
+          closeReason,
         });
       } catch (err) {
         log.warn(`[close-learning] Trade history record failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1885,14 +1902,20 @@ class MATSSystem {
     // The active symbol's filter is used for signal smoothing this cycle.
     // All asset filters are adapted and their summaries injected into agent context.
     const recentTrades = this.evolution.tradeHistory.getRecent(10);
-    const recentWinRate = recentTrades.length >= 3
-      ? recentTrades.filter(t => (t.realisedPnl ?? t.simulatedPnl ?? 0) > 0).length / recentTrades.length
+    // v2.0.139: Exclude thesis-invalidation force-closes from the conviction-gate
+    // winRate (Option C). The conviction gate should only tighten on real
+    // market-risk losses (SL hit), not thesis-system force-closes. Otherwise two
+    // thesis invalidations → winRate 0% → gate raised to 64% → new strong theses
+    // blocked → system stuck in cash → no new wins to lower the gate.
+    const marketRiskTrades = recentTrades.filter(t => t.closeReason !== 'thesis_invalidation');
+    const recentWinRate = marketRiskTrades.length >= 3
+      ? marketRiskTrades.filter(t => (t.realisedPnl ?? t.simulatedPnl ?? 0) > 0).length / marketRiskTrades.length
       : undefined;
-    const recentTradeCount = recentTrades.filter(t =>
+    const recentTradeCount = marketRiskTrades.filter(t =>
       t.type === 'real' && (Date.now() - t.timestamp) < 600_000
     ).length;
-    const cyclesSinceLastTrade = recentTrades.length > 0
-      ? this.totalCycles - (recentTrades[recentTrades.length - 1]?.cycleNumber ?? 0)
+    const cyclesSinceLastTrade = marketRiskTrades.length > 0
+      ? this.totalCycles - (marketRiskTrades[marketRiskTrades.length - 1]?.cycleNumber ?? 0)
       : 999;
 
     // v2.0.106: Market Agent judges the filter profile for the active symbol
@@ -2979,22 +3002,29 @@ class MATSSystem {
       }
 
       // v2.0.80: Force-close positions whose entry thesis was invalidated by Skeptics
+      // v2.0.139: Mark these as thesis_invalidation closes so the conviction-gate
+      // winRate excludes them (Option C — prevents the feedback trap where thesis
+      // invalidation losses raise the gate → new entries blocked → stuck in cash).
       if (result.thesisInvalidatedSymbols && result.thesisInvalidatedSymbols.length > 0) {
         for (const sym of result.thesisInvalidatedSymbols) {
           const pos = this.portfolio.getPosition(sym);
           if (!pos) continue;
           log.warn(`🚫 Thesis INVALIDATED for ${sym} — force-closing position (entry thesis no longer valid)`);
+          this.thesisInvalidatedCloseSymbols.add(sym);
           if (pos.agentId === 'hyperliquid-real') {
             const success = await this.realTradingManager.closePosition(sym);
             if (success) {
               log.info(`  → Force-closed ${sym} (real, thesis invalidated)`);
             } else {
               log.error(`  → Failed to force-close ${sym} on HL — position remains open`);
+              this.thesisInvalidatedCloseSymbols.delete(sym);
             }
           } else {
             const trade = this.portfolio.closePosition(sym, pos.currentPrice);
             if (trade) {
               log.info(`  → Force-closed ${sym}: $${trade.pnl.toFixed(2)} (thesis invalidated)`);
+            } else {
+              this.thesisInvalidatedCloseSymbols.delete(sym);
             }
           }
         }
