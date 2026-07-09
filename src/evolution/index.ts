@@ -722,61 +722,13 @@ export class EvolutionOrchestrator {
     log.info(`🧹 Trade history reset: ${prevCount} entries cleared (strategies + generation preserved)`);
   }
 
+  // v2.0.139: Trimmed to generation only. The aggregate trade-history stats
+  // (winRate/Sharpe/maxDrawdown/etc.), fitness breakdown, memory counts, and
+  // strategy list were pure UI display with no functional consumer — removed.
+  // OLR/shadow-trade state is served separately via the top-level olrState field.
   getEvolutionData(): Record<string, unknown> {
-    const perf = this.tradeHistory.computePerformance();
-    const bestStrat = this.pressureEngine.getBestStrategy();
-    const strategies = this.pressureEngine.getStrategies();
-
-    // Compute fitness breakdown for the best active strategy
-    let fitnessBreakdown: Record<string, number> | null = null;
-    if (bestStrat) {
-      const calculator = new SurvivalFitnessCalculator();
-      const fitness = calculator.calculate(bestStrat.performance);
-      fitnessBreakdown = {
-        score: fitness.score,
-        capitalPreservation: fitness.capitalPreservation,
-        returnGeneration: fitness.returnGeneration,
-        adaptability: fitness.adaptability,
-        consistency: fitness.consistency,
-        riskManagement: fitness.riskManagement,
-        decisionQuality: fitness.decisionQuality,
-      };
-    }
-
     return {
       generation: this.pressureEngine.getGeneration(),
-      bestFitness: bestStrat?.fitness ?? 0,
-      fitnessBreakdown,
-      memoryShortTerm: this.memory.getStats().shortTerm,
-      memoryLongTerm: this.memory.getStats().longTerm,
-      tradeHistory: {
-        totalEntries: this.tradeHistory.getStats().totalEntries,
-        realTrades: this.tradeHistory.getStats().realTrades,
-        simulatedTrades: this.tradeHistory.getStats().simulatedTrades,
-        countedTrades: perf.countedTrades,
-        winRate: perf.winRate,
-        sharpeRatio: perf.sharpeRatio,
-        sortinoRatio: perf.sortinoRatio,
-        calmarRatio: perf.calmarRatio,
-        totalReturn: perf.totalReturn,
-        maxDrawdown: perf.maxDrawdown,
-        profitFactor: perf.profitFactor,
-        expectancy: perf.expectancy,
-        avgWin: perf.avgWin,
-        avgLoss: perf.avgLoss,
-      },
-      strategies: strategies.map(s => ({
-        id: s.id.slice(0, 8),
-        generation: s.generation,
-        fitness: s.fitness,
-        status: s.status,
-        momentumWindow: s.parameters.momentumWindow,
-        riskAversion: s.parameters.riskAversion,
-        signalThreshold: s.parameters.signalThreshold,
-        volatilityThreshold: s.parameters.volatilityThreshold,
-        confirmationRequired: s.parameters.confirmationRequired,
-        positionSizingModel: s.parameters.positionSizingModel,
-      })),
     };
   }
 

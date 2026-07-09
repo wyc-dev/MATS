@@ -1692,166 +1692,6 @@ function EvolutionHeader({ generation, symbolCount, onReset, resetStatus }: {
   )
 }
 
-function EvolutionStatCard({ label, value, tone }: { label: string; value: string; tone: 'positive' | 'negative' | 'neutral' | 'accent' }) {
-  return (
-    <div className="evo-stat-card">
-      <span className="evo-stat-label">{label}</span>
-      <span className={`evo-stat-value ${tone}`}>{value}</span>
-    </div>
-  )
-}
-
-function EvolutionStats({ evo, th }: { evo: any; th: any }) {
-  const stats: Array<{ label: string; value: string; tone: 'positive' | 'negative' | 'neutral' | 'accent' }> = [
-    { label: 'Best Fitness', value: `${(evo.bestFitness * 100).toFixed(1)}%`, tone: evo.bestFitness >= 0.3 ? 'positive' : 'neutral' as const },
-    { label: 'Total Cycles', value: String(th.countedTrades ?? th.totalEntries), tone: 'neutral' as const },
-    { label: 'Win Rate', value: `${(th.winRate * 100).toFixed(1)}%`, tone: th.winRate >= 0.5 ? 'positive' : 'neutral' as const },
-    { label: 'Sharpe', value: th.sharpeRatio.toFixed(2), tone: th.sharpeRatio >= 1 ? 'positive' : 'neutral' as const },
-    { label: 'Sortino', value: th.sortinoRatio.toFixed(2), tone: th.sortinoRatio >= 1 ? 'positive' : 'neutral' as const },
-    { label: 'Calmar', value: th.calmarRatio.toFixed(2), tone: th.calmarRatio >= 1 ? 'positive' : 'neutral' as const },
-    { label: 'Profit Factor', value: th.profitFactor.toFixed(2), tone: th.profitFactor >= 1.5 ? 'positive' : 'neutral' as const },
-    { label: 'Total Return', value: `${(th.totalReturn * 100).toFixed(2)}%`, tone: th.totalReturn >= 0 ? 'positive' : 'negative' as const },
-    { label: 'Max DD', value: `${(th.maxDrawdown * 100).toFixed(2)}%`, tone: th.maxDrawdown < 0.1 ? 'neutral' : 'negative' as const },
-    { label: 'Expectancy', value: th.expectancy.toFixed(4), tone: th.expectancy >= 0 ? 'positive' : 'negative' as const },
-    { label: 'Real Trades', value: String(th.realTrades), tone: 'neutral' as const },
-    { label: 'Memory', value: `${evo.memoryShortTerm}ST / ${evo.memoryLongTerm}LT`, tone: 'neutral' as const },
-  ]
-
-  return (
-    <div className="evo-stats-grid">
-      {stats.map(s => (
-        <EvolutionStatCard key={s.label} label={s.label} value={s.value} tone={s.tone} />
-      ))}
-    </div>
-  )
-}
-
-function FitnessBreakdown({ fb }: { fb: any }) {
-  if (!fb) return null
-  const items = [
-    { name: 'Capital Preservation', value: fb.capitalPreservation },
-    { name: 'Return Generation', value: fb.returnGeneration },
-    { name: 'Adaptability', value: fb.adaptability },
-    { name: 'Consistency', value: fb.consistency },
-    { name: 'Risk Management', value: fb.riskManagement },
-    { name: 'Decision Quality', value: fb.decisionQuality },
-  ]
-
-  return (
-    <div className="evo-section">
-      <div className="evo-section-header">
-        <div className="evo-section-accent" />
-        <span className="evo-section-title">Fitness Breakdown</span>
-      </div>
-      <div className="evo-fitness-list">
-        {items.map(item => (
-          <div key={item.name} className="evo-fitness-row">
-            <span className="evo-fitness-name">{item.name}</span>
-            <div className="evo-fitness-track">
-              <div className="evo-fitness-fill" style={{ width: `${item.value * 100}%` }} />
-            </div>
-            <span className="evo-fitness-pct">{(item.value * 100).toFixed(1)}%</span>
-          </div>
-        ))}
-      </div>
-      {/* ── How to Read Fitness Breakdown ── */}
-      <div className="rbc-legend">
-        <div className="rbc-legend-title">How to Read Fitness Breakdown</div>
-        <div className="rbc-legend-grid">
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: 'var(--green)', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Capital Preservation</span>
-              <span className="rbc-legend-desc">How well the strategy avoids large drawdowns. High score = small peak-to-trough equity drops, indicating defensive robustness.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: 'var(--accent)', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Return Generation</span>
-              <span className="rbc-legend-desc">Profitability of the strategy relative to capital deployed. High score = consistent positive PnL per cycle, not just lucky spikes.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: '#9aabb8', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Adaptability</span>
-              <span className="rbc-legend-desc">Ability to adjust parameters across market regimes (trending vs choppy). High score = strategy parameters shift correctly when volatility or trend changes.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: '#8a9bb0', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Consistency</span>
-              <span className="rbc-legend-desc">Stability of returns over time. High score = low variance in per-cycle PnL, indicating the strategy is reliable rather than feast-or-famine.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: '#6b7a8e', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Risk Management</span>
-              <span className="rbc-legend-desc">Effectiveness of stop-loss and position sizing. High score = losses are capped early, winners are allowed to run, and leverage is used prudently.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: '#5b8def', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Decision Quality</span>
-              <span className="rbc-legend-desc">Accuracy of the HACP consensus decisions. High score = agents agree on the right direction (buy/sell/hold) and the outcome matches the prediction.</span>
-            </div>
-          </div>
-        </div>
-        <div className="rbc-legend-footer">
-          Each dimension is scored 0–100%. The overall fitness score is a weighted average. The Evolution Engine uses these scores to select which strategy parameters survive to the next generation.
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function StrategyCard({ strategy }: { strategy: any }) {
-  const params = [
-    { label: 'Volatility Threshold', value: `${(strategy.volatilityThreshold * 100).toFixed(2)}%` },
-    { label: 'Confirmation', value: `${strategy.confirmationRequired} agents` },
-    { label: 'Sizing Model', value: strategy.positionSizingModel },
-    { label: 'Risk Aversion', value: strategy.riskAversion.toFixed(2) },
-    { label: 'Signal Threshold', value: strategy.signalThreshold.toFixed(2) },
-    { label: 'Momentum Window', value: String(strategy.momentumWindow) },
-  ]
-
-  const fitnessTone = strategy.fitness >= 0.3 ? 'positive' : strategy.fitness >= 0.2 ? 'neutral' : 'negative'
-
-  return (
-    <div className="evo-section">
-      <div className="evo-section-header">
-        <div className="evo-section-accent" />
-        <span className="evo-section-title">Current Strategy</span>
-      </div>
-      <div className="evo-strategy-card">
-        <div className="evo-strategy-top">
-          <span className="evo-strategy-id">#1</span>
-          <span className="evo-strategy-gen">G{strategy.generation}</span>
-          <span className={`evo-strategy-fitness ${fitnessTone}`}>
-            {(strategy.fitness * 100).toFixed(1)}%
-          </span>
-          <span className="evo-strategy-status active">{strategy.status}</span>
-          <span className="evo-strategy-params evo-params-right">
-            M{strategy.momentumWindow} R{strategy.riskAversion.toFixed(2)} S{strategy.signalThreshold.toFixed(2)}
-          </span>
-        </div>
-        <div className="evo-strategy-grid">
-          {params.map(p => (
-            <div key={p.label} className="evo-strategy-param">
-              <span className="evo-strategy-param-label">{p.label}</span>
-              <span className="evo-strategy-param-value">{p.value}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function OLRSection({ olrState, openPositionSymbols }: { olrState: any; openPositionSymbols?: Set<string> }) {
   const hasSymbols = olrState?.symbols?.length > 0
   const hasPending = olrState?.pending?.length > 0
@@ -2003,8 +1843,6 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
     )
   }
 
-  const th = evo.tradeHistory
-  const activeStrategy = evo.strategies.find((s: any) => s.status === 'active')
   const symbolCount = data?.olrState?.symbols?.length ?? 0
 
   // Build set of open position symbols (lowercased for matching)
@@ -2024,9 +1862,6 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
         onReset={handleResetTradeHistory}
         resetStatus={resetStatus}
       />
-      <EvolutionStats evo={evo} th={th} />
-      <FitnessBreakdown fb={evo.fitnessBreakdown} />
-      {activeStrategy && <StrategyCard strategy={activeStrategy} />}
       <OLRSection olrState={data?.olrState} openPositionSymbols={openPositionSymbols} />
     </div>
   )

@@ -2421,25 +2421,11 @@ class MATSSystem {
       const backtestContext = this.backtest.getBacktestSummary();
       const portfolioDesc = this.paperEngine.getPortfolioSummary();
 
-      // v2.0.41: Apply Evolution signalThreshold as HACP consensus threshold.
-      // This gives the Evolution Engine DETERMINISTIC control over how strict
-      // the consensus must be. Higher signalThreshold = agents need stronger
-      // directional agreement to pass.
-      //
-      // ⚠️ MAINTENANCE NOTE: If you modify the threshold enforcement chain,
-      // you MUST update the comment in hacp.ts setEvolutionThreshold() and
-      // getEffectiveConsensusThreshold(). The chain is:
-      //   1. Here: evolution.getStrategyParameters(regime).signalThreshold
-      //   2. hacpEngine.setEvolutionThreshold() stores it
-      //   3. hacpEngine.adjustThreshold() adjusts base (loss-streak etc.)
-      //   4. getEffectiveConsensusThreshold() returns Evolution override
-      //   5. calcWeightedConsensus() compared against effective threshold
-      try {
-        const evoParams = this.evolution.pressureEngine.getStrategyParameters(combinedState.regime);
-        if (evoParams && typeof evoParams.signalThreshold === 'number') {
-          this.hacpEngine.setEvolutionThreshold(evoParams.signalThreshold);
-        }
-      } catch { /* non-critical — fallback to config threshold */ }
+      // v2.0.139: Evolution signalThreshold override REMOVED. The consensus
+      // threshold is now purely config (HACP_CONSENSUS_THRESHOLD) + adjustThreshold
+      // (loss-streak/idle/regime). The EvolutionaryPressureEngine strategy pool
+      // was empty so getStrategyParameters() threw every cycle — the override
+      // never applied. Global-aggregate fitness no longer feeds the consensus gate.
 
       // 3. HACP Decision Cycle
       log.info('🤖 HACP: Starting multi-agent cognition...');

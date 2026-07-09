@@ -465,46 +465,9 @@ export const AGENT_ROLES = [
   'meta_agent',
 ] as const;
 
+// v2.0.139: Trimmed — aggregate trade-history stats, fitness breakdown, memory
+// counts, and strategy list were pure display with no functional consumer.
+// OLR/shadow-trade state lives in the top-level olrState field.
 export interface EvolutionData {
   generation: number;
-  bestFitness: number;
-  fitnessBreakdown?: {
-    score: number;
-    capitalPreservation: number;
-    returnGeneration: number;
-    adaptability: number;
-    consistency: number;
-    riskManagement: number;
-    decisionQuality: number;
-  };
-  memoryShortTerm: number;
-  memoryLongTerm: number;
-  tradeHistory: {
-    totalEntries: number;
-    countedTrades?: number;
-    realTrades: number;
-    simulatedTrades: number;
-    winRate: number;
-    sharpeRatio: number;
-    sortinoRatio: number;
-    calmarRatio: number;
-    totalReturn: number;
-    maxDrawdown: number;
-    profitFactor: number;
-    expectancy: number;
-    avgWin: number;
-    avgLoss: number;
-  };
-  strategies: Array<{
-    id: string;
-    generation: number;
-    fitness: number;
-    status: string;
-    momentumWindow: number;
-    riskAversion: number;
-    signalThreshold: number;
-    volatilityThreshold: number;
-    confirmationRequired?: number;
-    positionSizingModel?: string;
-  }>;
 }

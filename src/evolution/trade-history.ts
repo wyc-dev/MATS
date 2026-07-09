@@ -436,23 +436,19 @@ export class TradeHistory {
     return lines.join('\n');
   }
 
+  // v2.0.139: Aggregate portfolio metrics (winRate/Sharpe/totalReturn/profitFactor)
+  // removed from agent context — they are global (not per-asset) and made agents
+  // overly conservative when the all-time aggregate was poor, contributing to
+  // "reluctant to trade" behaviour. Only recent INDIVIDUAL decisions remain
+  // (per-trade context is signal, not a discouraging global score).
   getSummary(limit = 5): string {
-    const perf = this.computePerformance();
     const recent = this.getRecent(limit);
-
-    let s = `=== Trade History ===\n`;
-    s += `Total Cycles: ${perf.countedTrades} meaningful / ${this.entries.length} total\n`;
-    s += `Win Rate: ${(perf.winRate * 100).toFixed(1)}% | Sharpe: ${perf.sharpeRatio.toFixed(2)}\n`;
-    s += `Total Return: ${(perf.totalReturn * 100).toFixed(2)}% | Profit Factor: ${perf.profitFactor.toFixed(2)}\n`;
-
-    if (recent.length > 0) {
-      s += `\nRecent Decisions:\n`;
-      for (const e of recent) {
-        const pnl = e.realisedPnl ?? e.simulatedPnl ?? 0;
-        s += `  #${e.cycleNumber} ${e.decision.action.toUpperCase()} (${(e.confidence * 100).toFixed(0)}%) → ${pnl >= 0 ? '+' : ''}${(pnl * 100).toFixed(3)}%\n`;
-      }
+    if (recent.length === 0) return '';
+    let s = `=== Recent Trade Decisions ===\n`;
+    for (const e of recent) {
+      const pnl = e.realisedPnl ?? e.simulatedPnl ?? 0;
+      s += `  #${e.cycleNumber} ${e.decision.action.toUpperCase()} (${(e.confidence * 100).toFixed(0)}%) → ${pnl >= 0 ? '+' : ''}${(pnl * 100).toFixed(3)}%\n`;
     }
-
     return s;
   }
 
