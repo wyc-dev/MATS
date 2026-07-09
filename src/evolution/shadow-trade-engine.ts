@@ -84,7 +84,7 @@ const SHADOW_CONFIG = {
   /** Max open shadow positions per symbol (prevent unbounded growth) */
   maxOpenPerSymbol: 10,
   /** Max total shadow positions across all symbols */
-  maxTotalOpen: 30,
+  maxTotalOpen: 60,
   /** Default SL distance if S/R not available (fraction of price) */
   defaultSLDistance: 0.02,
   /** Default TP distance if S/R not available (fraction of price) */
