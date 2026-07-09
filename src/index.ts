@@ -112,6 +112,11 @@ class MATSSystem {
   // records display the REAL leverage instead of a hardcoded 10x default.
   // Updated whenever cachedExchangePositions is refreshed; survives the close.
   private lastKnownLeverage: Map<string, number> = new Map();
+  // v2.0.139: Cached live prices for all trading-market + open-position symbols
+  // (from fetchPricesForSymbols each cycle). Used by refreshPositionMarkPrices()
+  // to update the UI Mark column — the marketState aggregator only has the
+  // ACTIVE symbol's ticker, not all position symbols.
+  private cachedPriceMap: Map<string, number> = new Map();
   /** v2.0.79: Trading markets list from UI pills — determines which symbols
    *  agents analyze (combined with open positions). Replaces auto-select. */
   private tradingMarkets: string[] = [];
@@ -1333,8 +1338,11 @@ class MATSSystem {
           [activeSymbol, ...openSymbols].map(s => s.includes(':') ? s : s.toUpperCase())
         ));
         const priceMap = await this.marketAgent.fetchPricesForSymbols(allSymbols);
+        // v2.0.139: cache live prices (lowercase key) for refreshPositionMarkPrices
+        this.cachedPriceMap = new Map();
         for (const [sym, data] of priceMap) {
           if (data.price > 0) {
+            this.cachedPriceMap.set(sym.toLowerCase(), data.price);
             this.paperEngine.updatePrice(sym, data.price);
           }
         }
@@ -4670,8 +4678,14 @@ class MATSSystem {
         const key = exPos.symbol.includes(':') ? exPos.symbol : exPos.symbol.toLowerCase();
         if (!positions[key]) {
           // v2.0.43: Try to get live price from market state or local mirror.
+          // v2.0.139: also fall back to cachedPriceMap (populated by
+          // refreshPositionMarkPrices) so the Mark reflects the live price
+          // even when there's no local mirror (exPos.currentPrice is stale
+          // entryPx — never updated by HL getPositions).
           const localPos = p.positions.get(key);
-          const livePrice = localPos?.currentPrice ?? exPos.currentPrice;
+          const baseSym = exPos.symbol.includes(':') ? (exPos.symbol.split(':').slice(-1)[0] ?? exPos.symbol) : exPos.symbol;
+          const cachedLive = this.cachedPriceMap.get(exPos.symbol.toLowerCase()) ?? this.cachedPriceMap.get(baseSym.toLowerCase()) ?? 0;
+          const livePrice = localPos?.currentPrice || cachedLive || exPos.currentPrice;
           const margin = exPos.averageEntryPrice > 0
             ? exPos.quantity * exPos.averageEntryPrice / (exPos.leverage ?? 1)
             : 0;
@@ -4926,21 +4940,43 @@ class MATSSystem {
    * or fills — so for an open position the Mark was stuck at the Entry price.
    * Called at the start of every pushToAPI() so the UI always sees fresh marks.
    */
-  private refreshPositionMarkPrices(): void {
-    if (!this.marketState || !this.portfolio) return;
+  /**
+   * v2.0.139: Refresh open positions' Mark (currentPrice) from live prices so
+   * the UI Mark column reflects the actual current price, not the stale entryPx
+   * (HL getPositions returns entryPx as currentPrice — never updated). Uses the
+   * cachedPriceMap (populated each cycle from fetchPricesForSymbols). For
+   * position symbols missing from the cache (e.g. late-imported HL positions
+   * that weren't in getOpenSymbols at cycle start), fetches on-demand.
+   * Called fire-and-forget from pushToAPI (async) so it never blocks the UI push.
+   */
+  private async refreshPositionMarkPrices(): Promise<void> {
+    if (!this.portfolio || !this.marketAgent) return;
     const realPositions = this.portfolio.getRealPositions();
+    if (realPositions.length === 0) return;
+
+    // On-demand fetch for position symbols not yet in the cache (late-imported
+    // positions that weren't in getOpenSymbols when the cycle built the cache).
+    const base = (sym: string) => sym.includes(':') ? (sym.split(':').slice(-1)[0] ?? sym) : sym;
+    const hasPrice = (sym: string) => (this.cachedPriceMap.get(sym.toLowerCase()) ?? 0) > 0 || (this.cachedPriceMap.get(base(sym).toLowerCase()) ?? 0) > 0;
+    const missing = realPositions.filter(pos => !hasPrice(pos.symbol)).map(pos => pos.symbol.includes(':') ? pos.symbol : pos.symbol.toUpperCase());
+    if (missing.length > 0) {
+      try {
+        const fresh = await this.marketAgent.fetchPricesForSymbols(Array.from(new Set(missing)));
+        for (const [sym, data] of fresh) {
+          if (data.price > 0) this.cachedPriceMap.set(sym.toLowerCase(), data.price);
+        }
+      } catch { /* fail-open — keep existing cache */ }
+    }
+
+    // Update each position's Mark from the cache.
     for (const pos of realPositions) {
       try {
-        // Try the position symbol as-is, then the base symbol (without xyz: prefix)
-        // — the marketState ticker key may be either form depending on the feed.
-        let livePrice = this.marketState.getState(pos.symbol)?.price ?? 0;
-        if (!livePrice && pos.symbol.includes(':')) {
-          livePrice = this.marketState.getState(pos.symbol.split(':').slice(-1)[0] ?? pos.symbol)?.price ?? 0;
-        }
+        let livePrice = this.cachedPriceMap.get(pos.symbol.toLowerCase()) ?? 0;
+        if (!livePrice) livePrice = this.cachedPriceMap.get(base(pos.symbol).toLowerCase()) ?? 0;
         if (livePrice > 0) {
           this.portfolio.softUpdatePosition(pos.symbol, livePrice);
         }
-      } catch { /* skip — keep existing currentPrice */ }
+      } catch { /* skip */ }
     }
   }
 
@@ -4948,7 +4984,7 @@ class MATSSystem {
     try {
       // Guard: allow push before MarketAgent/MarketState are initialized (e.g. during startup)
       if (!this.marketAgent || !this.marketState) return;
-      this.refreshPositionMarkPrices(); // v2.0.139: fresh Mark prices before serializing
+      void this.refreshPositionMarkPrices(); // v2.0.139: fresh Mark prices (async, fire-and-forget)
       const activeSymbol = this.marketAgent.getSelectedSymbol() || 'BTCUSDT';
       const state = this.marketState.getState(activeSymbol);
       const p = this.portfolio.getPortfolio();
