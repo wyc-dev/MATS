@@ -181,6 +181,51 @@ Meta-Agent OLR prompt 已從 stale RBC 文檔重寫為 RR-aware edge 仲裁：ed
 
 ---
 
+## 🆕 v2.0.139 — News Reporter v2 Institutional Narrative Decoder + A+B + L3 + Critical Bug Fixes
+
+> Master Lord doctrine: financial news is a WEAPON, not information. Institutions already know the situation >=24-48h before retail sees headlines and actively DRIVE narratives to induce retail to take the losing side. The News Reporter must decode this institutional intent — and its read must be DECISIVE.
+
+### News Reporter v2 — Institutional Narrative Decoder
+
+**Layer 1 — Price-News Timing data enrichment** (`news-sentiment.ts` + `index.ts`):
+- `PriceNewsTiming` + `computePriceNewsTiming()`: from the SAME asset's 1h candle closes + headline pubDates, computes 1h/4h/24h/3d price changes, `movedBeforeNews` (front-run tell: did price move >2% in the hint direction before the news cluster?), `headlineCadence`, `sourceClustering`, `dominantAngle`.
+- `fetchTimingCandlesForSymbol()`: fetches 80 1h candles (3.3d) via the same routing as the UI chart proxy (Binance for USDT/USD, HL candleSnapshot for bare/colon symbols) + 5-min cache. Uses the ORIGINAL allSymbols (xyz: prefix preserved) so HL gets the correct coin name.
+- `formatPriceNewsTiming()` appends a `PRICE-NEWS TIMING` block to the agent context.
+
+**Layer 2 — Prompt upgrade** (`agents.ts` NewsReporter, weight 0.10 -> 0.20):
+- 5-part Institutional Narrative Decoder framework: (A) Information-Asymmetry Prior, (B) Price-News Timing Matrix (7 rows -> NET signal; no pre-news move + low cadence = treat face-value, preventing over-attribution), (C) 6-bucket Motive Taxonomy (front-run / accumulation-FUD / distribution-hype / narrative-pivot / decoy-smoke / genuine paradigm shift), (D) Power-Map (which institution + their position + what they need retail to do), (E) Net Institutional-Adjusted Signal (confidence cap 0.40 without price confirmation; 0.65-0.85 with pre-news move + coordinated cadence).
+
+**Layer 3 — Meta-Agent decisive weighting** (`meta-agent.ts`):
+- When News Reporter flags an ENGINEERED institutional play WITH price-news timing confirmation, the Meta-Agent MAY override a HOLD-lean sub-agent majority + uses CONFIDENCE PASSTHROUGH (per-symbol confidence pulled toward News Reporter's confidence, not drowned to the ~0.35 sub-agent average).
+- GUARDRAIL: decisive override requires BOTH a named engineered motive AND timing confirmation (no naked-motive over-empowerment).
+
+### A+B — Meta-Agent self-censoring + OLR weighting
+
+- **A**: removed pre-emptive self-censoring (the Meta-Agent was told the conviction-gate threshold + instructed to HOLD below it -> self-fulfilling paralysis). Now emits honest conviction; the gate filters independently.
+- **B**: OLR edge weighted by `magnitude x confidence-label` (not raw sample count). A +58pp high-confidence edge is no longer discarded during cold-start.
+
+### BTC wallet trailing-zero fix
+
+`quantity.toFixed(szDecimals)` produced trailing zeros (0.000997 -> "0.00100"); HL normalizes numeric strings before re-msgpacking for signature verification -> hash mismatch -> ECDSA recovery yields garbage -> "User or API Wallet <random> does not exist". Fix: `stripTrailingZeros()` on all signed numeric fields (regular size, SL/TP trigger sizes, `formatPrice`).
+
+### 3 critical bug fixes (from first real trades)
+
+1. **Leverage config authoritative** (`index.ts:3545`): the per-symbol consensus used `psc.leverage ?? config.leverage` — the agent LLM's leverage output (5x) overrode the Market Agent config (10x). Config is now AUTHORITATIVE; agent LLM leverage output ignored.
+2. **Closed-fill display leverage** (`index.ts:5268`): closed HL fills fell back to a HARDCODED 10x (cachedExchangePositions no longer has the closed position). Added `lastKnownLeverage` cache (updated whenever cachedExchangePositions refreshes); closed-fill leverage now uses the REAL leverage, not a default that masked the actual 5x.
+3. **SL/TP REST-lag race** (`hyperliquid-real-engine.ts` adjustPosition): after a fill, HL REST `getPositions()` lags 2-5s (WS confirms within ~50ms). adjustPosition relied on REST -> "Position not found" -> 3 retries failed -> safety-close (which also failed). The position was left UNPROTECTED on the open cycle. Fix: adjustPosition accepts an optional `knownPosition` (qty/side/entry from the caller's fill data); when REST doesn't find the position, it falls back to knownPosition to place SL/TP immediately. Caller (`real-trading-manager`) passes the known fill data.
+
+### EXP 向量理據記憶 (v2.0.138, carried forward)
+
+`thesis-experience.ts` + `embeddings.ts` (transformers.js MiniLM 384-d, in-process). Phase 1.8a `checkThesisHistory` gates entries by thesis-combo historical win-rate; Skeptics history probability gate. Cold-start (no history) = direct open. PnL=0 excluded. Asymmetric similarity. Enabled via `EXP_ENABLED=true`.
+
+### v2.0.139 共識閘 + Evolution cleanup
+
+- Consensus threshold 0.70 -> 0.50 (floor 0.49); the evolution override (intended to lower it to ~0.5) was vestigial (empty strategies) so the real gate was 70-85% blocking nearly all entries.
+- `getPortfolioSummary` uses `currentDrawdownPct` (recovers) not `maxDrawdownPct` (high-water mark, permanently conservative).
+- Removed EvolutionStats UI + global aggregate stats injection into agent context (caused over-conservatism); kept OLR section.
+
+---
+
 ## Entry Thesis System + Skeptics
 
 **Entry Thesis（v2.0.80）**：Meta-Agent 開倉時必須提供 `entryThesis = "[1h: <短線原因>] [1d: <中線原因>]"`。Skeptics Phase 1.8 驗證：強而有力、數據驅動、暗黑心理學審查（大戶操縱？）、事實扭曲檢查。拒絕即 HOLD。
