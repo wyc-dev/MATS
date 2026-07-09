@@ -552,12 +552,25 @@ export class MarketStateAggregator {
   }
 
   private calcVolatility(prices: number[]): number {
-    if (prices.length < 10) return 0;
-    const returns: number[] = [];
+    if (prices.length < 3) return 0;
+    // v2.0.140: Use std of log returns (true σ) — same algorithm as
+    // first-passage.ts estimateVolatility(). The previous mean-of-|arithmetic
+    // returns| underestimated diffusion by ~20% and caused ALL regimes to
+    // classify as low_volatility, which led to premature closes + false
+    // regime classification across the entire system.
+    const logReturns: number[] = [];
     for (let i = 1; i < prices.length; i++) {
-      returns.push(Math.abs(prices[i]! - prices[i - 1]!) / prices[i - 1]!);
+      const prev = prices[i - 1]!;
+      const curr = prices[i]!;
+      if (prev > 0 && curr > 0 && Number.isFinite(prev) && Number.isFinite(curr)) {
+        logReturns.push(Math.log(curr / prev));
+      }
     }
-    return returns.reduce((a, b) => a + b, 0) / returns.length;
+    if (logReturns.length < 2) return 0;
+    const mean = logReturns.reduce((a, b) => a + b, 0) / logReturns.length;
+    const variance = logReturns.reduce((a, b) => a + (b - mean) ** 2, 0) / (logReturns.length - 1);
+    const sigma = Math.sqrt(Math.max(variance, 0));
+    return Number.isFinite(sigma) ? sigma : 0;
   }
 
   private calcTrend(ticker: Ticker | undefined, volatility: number): Trend {

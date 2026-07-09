@@ -52,6 +52,18 @@ export interface HACPResult {
   /** v2.0.80: Symbols whose entry thesis was invalidated by Skeptics this
    *  cycle. index.ts force-closes these positions. */
   thesisInvalidatedSymbols?: string[];
+  /** v2.0.140: EXP action log for this cycle — what EXP decided per symbol. */
+  expActions?: ExpAction[];
+}
+
+/** v2.0.140: A single EXP decision record for the UI action log. */
+export interface ExpAction {
+  symbol: string;
+  side: 'buy' | 'sell';
+  verdict: string;
+  reason: string;
+  cycle: number;
+  ts: number;
 }
 
 export type HACPProgressCallback = (progress: CycleProgress) => void;
@@ -91,6 +103,8 @@ export class HACPEngine {
   /** v2.0.26: Current cycle number — set by executeDecisionCycle() so the
    *  cooldown logic knows which cycle we're in. */
   private totalCycles: number = 0;
+  /** v2.0.140: EXP action log for this cycle. */
+  private expActions: ExpAction[] = [];
 
   /**
    * v2.0.61: Options-derived vote override for Stocks/Indices.
@@ -452,6 +466,8 @@ export class HACPEngine {
     if (cycleNumber !== undefined) {
       this.totalCycles = cycleNumber;
     }
+    // v2.0.140: clear EXP action log for this cycle
+    this.expActions = [];
 
     // Extract the current regime from the market description so dynamic
     // agent weights + regime-aware strategy selection use the active regime.
@@ -860,6 +876,10 @@ export class HACPEngine {
           thesis: metaThesis, symbol: metaSymbol, side: metaAction, marketCtx: marketStateDesc,
         });
         const v = expResult.verdict;
+        const expAction: ExpAction = {
+          symbol: metaSymbol, side: metaAction, verdict: v,
+          reason: expResult.reason ?? '', cycle: this.totalCycles, ts: Date.now(),
+        };
         if (v === 'PASS_OPEN_DIRECTLY' || v === 'FAST_APPROVE' || v === 'APPROVE_WITH_NOTE') {
           log.info(`[EXP 1.8a] ${v} ${metaAction.toUpperCase()} ${metaSymbol} — skip 1.8b${expResult.reason ? ' (' + expResult.reason + ')' : ''}`);
           expThesisGated = true;
@@ -869,9 +889,6 @@ export class HACPEngine {
             action: expResult.reversedSide, rationale: `[EXP REVERSE] ${expResult.reason ?? ''}`,
             entryThesis: expResult.reversedThesis, tag: 'EXP-REVERSE',
           });
-          // v1: conviction re-evaluation rides on the existing conviction gate using
-          // the original meta confidence. Full Meta-Agent re-HACP for a fresh reversed
-          // conviction (option b) is a v2 refinement — see EXP_core_plan.md §8.4e.
           expThesisGated = true;
         } else if (v === 'REJECT') {
           log.warn(`[EXP 1.8a] REJECT ${metaAction.toUpperCase()} ${metaSymbol} — ${expResult.reason ?? ''} → HOLD`);
@@ -884,6 +901,7 @@ export class HACPEngine {
           // EXP_DISABLED / EXP_ERRORED → fall back to 1.8b
           log.info(`[EXP 1.8a] ${v} ${metaAction.toUpperCase()} ${metaSymbol} — falling back to 1.8b strength check${expResult.error ? ' (' + expResult.error + ')' : ''}`);
         }
+        this.expActions.push(expAction);
       } catch (err) {
         log.warn(`[EXP 1.8a] error — falling back to 1.8b: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -1028,6 +1046,7 @@ export class HACPEngine {
         durationMs: Math.round(performance.now() - startTime),
         positionAdjustments: adjustments,
         thesisInvalidatedSymbols: Array.from(thesisInvalidatedSymbols),
+        expActions: this.expActions,
       };
     }
 
@@ -1433,6 +1452,7 @@ export class HACPEngine {
       durationMs,
       positionAdjustments,
       thesisInvalidatedSymbols: Array.from(thesisInvalidatedSymbols),
+      expActions: this.expActions,
     };
   }
 

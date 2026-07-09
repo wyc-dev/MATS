@@ -77,6 +77,15 @@ const envSchema = z.object({
   EXP_ALLOW_REVERSE: z.coerce.boolean().default(true),
   EXP_BREAKEVEN_IS: z.enum(['win', 'loss', 'exclude']).default('exclude'),
   EXP_SIMILARITY_MODE: z.enum(['asymmetric', 'symmetric']).default('asymmetric'),
+
+  // v2.0.140: A2A Experience Digestion — 濃縮精簡向量做數據分類
+  EXP_DIGEST_ENABLED: z.coerce.boolean().default(true),
+  EXP_DIGEST_CLASSIFY_THRESHOLD: z.coerce.number().min(0).max(1).default(0.72),
+  EXP_DIGEST_CLUSTER_THRESHOLD: z.coerce.number().min(0).max(1).default(0.80),
+  EXP_DIGEST_MIN_CLASS_SIZE: z.coerce.number().int().positive().default(2),
+  EXP_DIGEST_CLASS_WIN_THRESHOLD: z.coerce.number().min(0).max(1).default(0.6),
+  EXP_DIGEST_CLASS_LOSS_THRESHOLD: z.coerce.number().min(0).max(1).default(0.4),
+  EXP_DIGEST_MAX_CACHE: z.coerce.number().int().positive().default(300),
   EXP_JSONL_PATH: z.string().default('data/exp/trades.jsonl'),
   EXP_EXPMD_PATH: z.string().default('data/EXP.md'),
   EXP_INCIDENTS_PATH: z.string().default('data/exp/incidents.jsonl'),
@@ -177,6 +186,16 @@ export const config = {
       maxRetries: raw.EXP_REPAIR_MAX_RETRIES,
       backoffMs: raw.EXP_REPAIR_BACKOFF_MS,
     },
+    // v2.0.140: A2A Experience Digestion (三層經驗消化)
+    digest: {
+      enabled: raw.EXP_DIGEST_ENABLED,
+      classifyThreshold: raw.EXP_DIGEST_CLASSIFY_THRESHOLD,
+      clusterThreshold: raw.EXP_DIGEST_CLUSTER_THRESHOLD,
+      minClassSize: raw.EXP_DIGEST_MIN_CLASS_SIZE,
+      classWinThreshold: raw.EXP_DIGEST_CLASS_WIN_THRESHOLD,
+      classLossThreshold: raw.EXP_DIGEST_CLASS_LOSS_THRESHOLD,
+      maxDigestCache: raw.EXP_DIGEST_MAX_CACHE,
+    } as const,
     /** Per-symbol asset-category override. Symbols not listed are inferred by assetCategory(). */
     assetCategoryMap: {
       BTC: 'crypto',

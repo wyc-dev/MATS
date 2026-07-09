@@ -1862,7 +1862,437 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
         onReset={handleResetTradeHistory}
         resetStatus={resetStatus}
       />
+      <ExperienceDigestionSection expDigest={data?.portfolio?.expDigest} expActions={data?.expActions} />
       <OLRSection olrState={data?.olrState} openPositionSymbols={openPositionSymbols} />
+    </div>
+  )
+}
+
+/* ── v2.0.140: Experience Digestion Section (visual) ── */
+
+interface ParsedClass {
+  count: number; winRate: number; avgHoldMin: number; directionBias: string;
+  exitNote: string; lesson: string; symbols: string; netPnl: number;
+}
+interface ParsedSymbol {
+  symbol: string; side: string; wins: number; losses: number; netPnl: number; avgHold: number; isPremature: boolean;
+}
+
+function parseDigest(raw: string): {
+  streak: number; netPnl: number; total: number; wins: number; losses: number;
+  exitQuality: { prematureLossCount: number; prematureLossPnl: number; isMajor: boolean; prematureWinCount: number; prematureWinPnl: number; longWinCount: number; longWinPnl: number };
+  rootCause: { quickExitCount: number; quickLosses: number; quickWins: number; dominantRegime: string | null; shallowThesis: boolean; avgThesisLen: number; newsFailed: number; insight: string | null };
+  volatilityAnomaly: { lowVolCount: number; total: number; pct: number; isAnomaly: boolean };
+  losingClasses: ParsedClass[];
+  winningClasses: ParsedClass[];
+  perSymbol: ParsedSymbol[];
+  closeLessons: string[];
+} | null {
+  try {
+    const lines = raw.split('\n').filter(l => l.trim())
+    // Headline: "🔴 Win rate: 35% (W8 L15) | Net PnL: 0.652 | Current losing streak: 10"
+    const hl = lines[0] ?? ''
+    const streakMatch = hl.match(/losing streak:\s*(\d+)/)
+    const streak = streakMatch ? parseInt(streakMatch[1]) : 0
+    const pnlMatch = hl.match(/Net PnL:\s*(-?[\d.]+)/)
+    const netPnl = pnlMatch ? parseFloat(pnlMatch[1]) : 0
+    const wMatch = hl.match(/W(\d+)\s+L(\d+)/)
+    const wins = wMatch ? parseInt(wMatch[1]) : 0
+    const losses = wMatch ? parseInt(wMatch[2]) : 0
+    const total = wins + losses
+
+    // Exit quality
+    const prematureLossLine = lines.find(l => l.includes('Premature close (≤8min loss)'))
+    const prematureLossCount = prematureLossLine ? parseInt(prematureLossLine.match(/(\d+)\s*trades/)?.[1] ?? '0') : 0
+    const prematureLossPnl = prematureLossLine ? parseFloat(prematureLossLine.match(/net\s*(-?[\d.]+)/)?.[1] ?? '0') : 0
+    const isMajor = prematureLossLine?.includes('MAJOR') ?? false
+    const prematureWinLine = lines.find(l => l.includes('Premature close (≤8min win)'))
+    const prematureWinCount = prematureWinLine ? parseInt(prematureWinLine.match(/(\d+)\s*trades/)?.[1] ?? '0') : 0
+    const prematureWinPnl = prematureWinLine ? parseFloat(prematureWinLine.match(/net\s*(-?[\d.]+)/)?.[1] ?? '0') : 0
+    const longWinLine = lines.find(l => l.includes('Long holds (>30min wins)'))
+    const longWinCount = longWinLine ? parseInt(longWinLine.match(/(\d+)\s*trades/)?.[1] ?? '0') : 0
+    const longWinPnl = longWinLine ? parseFloat(longWinLine.match(/net\s*(-?[\d.]+)/)?.[1] ?? '0') : 0
+
+    // Root cause
+    const quickExitLine = lines.find(l => l.includes('Quick exits:'))
+    const quickExitCount = quickExitLine ? parseInt(quickExitLine.match(/(\d+)\s*trades/)?.[1] ?? '0') : 0
+    const quickLossMatch = quickExitLine?.match(/(\d+)\s*losses/)
+    const quickWinsMatch = quickExitLine?.match(/(\d+)\s*wins/)
+    const quickLosses = quickLossMatch ? parseInt(quickLossMatch[1]) : 0
+    const quickWins = quickWinsMatch ? parseInt(quickWinsMatch[1]) : 0
+    const regimeLine = lines.find(l => l.includes('Dominant regime at exit:'))
+    const dominantRegime = regimeLine ? regimeLine.match(/at exit:\s*(\S+)/)?.[1]?.replace(/[(),]/g, '') ?? null : null
+    const shallowLine = lines.find(l => l.includes('THESIS TOO SHALLOW'))
+    const shallowThesis = !!shallowLine
+    const avgThesisLen = shallowLine ? parseInt(shallowLine.match(/avg thesis length\s*(\d+)/)?.[1] ?? '0') : 0
+    const newsLine = lines.find(l => l.includes('NEWS/MACRO thesis failed'))
+    const newsFailed = newsLine ? parseInt(newsLine.match(/(\d+)\s*trades/)?.[1] ?? '0') : 0
+    const insightLine = lines.find(l => l.includes('KEY INSIGHT:'))
+    const insight = insightLine ? insightLine.replace(/^.*KEY INSIGHT:\s*/, '') : null
+
+    // Volatility anomaly
+    const anomalyLine = lines.find(l => l.includes('ANOMALY:') || l.includes('low_volatility'))
+    const lowVolMatch = raw.match(/(\d+)\/(\d+)\s*trades.*low_volatility/)
+    const lowVolCount = lowVolMatch ? parseInt(lowVolMatch[1]) : 0
+    const volTotal = lowVolMatch ? parseInt(lowVolMatch[2]) : total
+    const volPct = volTotal > 0 ? lowVolCount / volTotal : 0
+    const isAnomaly = volPct > 0.7
+
+    // Losing classes
+    const losingClasses: ParsedClass[] = []
+    const losingSection = raw.indexOf('LOSING PATTERNS')
+    const winningSection = raw.indexOf('WINNING PATTERNS')
+    if (losingSection >= 0) {
+      const losingText = raw.slice(losingSection, winningSection >= 0 ? winningSection : raw.length)
+      const classLines = losingText.split('\n').filter(l => l.trim().startsWith('❌') && l.includes('trades'))
+      for (const cl of classLines) {
+        const countM = cl.match(/\[(\d+)\s*trades/)
+        const winM = cl.match(/win\s*(\d+)%/)
+        const holdM = cl.match(/avg\s*(\d+)min/)
+        const biasM = cl.match(/,\s*(buy|sell|mixed)\]/)
+        const exitNote = cl.includes('PREMATURE') ? 'PREMATURE SL' : cl.includes('SL correct') ? 'SL correct' : ''
+        const symbolsM = cl.match(/symbols:\s*([^\n|]+)/)
+        const netM = cl.match(/net\s*(-?[\d.]+)/)
+        // Lesson is the next non-empty line after the ❌ line
+        const idx = losingText.indexOf(cl)
+        const afterCl = losingText.slice(idx + cl.length)
+        const lessonM = afterCl.match(/^\s*(.+)$/m)
+        losingClasses.push({
+          count: countM ? parseInt(countM[1]) : 0,
+          winRate: winM ? parseInt(winM[1]) / 100 : 0,
+          avgHoldMin: holdM ? parseInt(holdM[1]) : 0,
+          directionBias: biasM ? biasM[1] : 'mixed',
+          exitNote,
+          lesson: lessonM ? lessonM[1].trim() : '',
+          symbols: symbolsM ? symbolsM[1].trim() : '',
+          netPnl: netM ? parseFloat(netM[1]) : 0,
+        })
+      }
+    }
+
+    // Winning classes
+    const winningClasses: ParsedClass[] = []
+    if (winningSection >= 0) {
+      const winningText = raw.slice(winningSection)
+      const classLines = winningText.split('\n').filter(l => l.trim().startsWith('✅') && l.includes('trades'))
+      for (const cl of classLines) {
+        const countM = cl.match(/\[(\d+)\s*trades/)
+        const winM = cl.match(/win\s*(\d+)%/)
+        const holdM = cl.match(/avg\s*(\d+)min/)
+        const biasM = cl.match(/,\s*(buy|sell|mixed)\]/)
+        const exitNote = cl.includes('PREMATURE TP') ? 'PREMATURE TP' : cl.includes('TP correct') ? 'TP correct' : ''
+        const idx = winningText.indexOf(cl)
+        const afterCl = winningText.slice(idx + cl.length)
+        const lessonM = afterCl.match(/^\s*(.+)$/m)
+        winningClasses.push({
+          count: countM ? parseInt(countM[1]) : 0,
+          winRate: winM ? parseInt(winM[1]) / 100 : 0,
+          avgHoldMin: holdM ? parseInt(holdM[1]) : 0,
+          directionBias: biasM ? biasM[1] : 'mixed',
+          exitNote,
+          lesson: lessonM ? lessonM[1].trim() : '',
+          symbols: '',
+          netPnl: 0,
+        })
+      }
+    }
+
+    // Per symbol
+    const perSymbol: ParsedSymbol[] = []
+    const perSymSection = raw.indexOf('PER SYMBOL/SIDE:')
+    if (perSymSection >= 0) {
+      const perSymText = raw.slice(perSymSection)
+      const symLines = perSymText.split('\n').filter(l => l.trim().startsWith('  ') && l.includes(': W') && !l.includes('PATTERNS'))
+      for (const sl of symLines) {
+        const symM = sl.match(/^\s+(\S+)\s+(BUY|SELL):/)
+        const wM = sl.match(/W(\d+)/)
+        const lM = sl.match(/L(\d+)/)
+        const netM = sl.match(/net\s*([+-]?[\d.]+)/)
+        const holdM = sl.match(/avg\s*(\d+)min/)
+        perSymbol.push({
+          symbol: symM ? symM[1] : '',
+          side: symM ? symM[2] : '',
+          wins: wM ? parseInt(wM[1]) : 0,
+          losses: lM ? parseInt(lM[1]) : 0,
+          netPnl: netM ? parseFloat(netM[1]) : 0,
+          avgHold: holdM ? parseInt(holdM[1]) : 0,
+          isPremature: sl.includes('⚠️'),
+        })
+      }
+    }
+
+    // Close lessons
+    const closeLessons: string[] = []
+    const closeSection = raw.indexOf('CLOSE DISCIPLINE LESSONS')
+    if (closeSection >= 0) {
+      const closeText = raw.slice(closeSection)
+      const lessonLines = closeText.split('\n').filter(l => l.trim().startsWith('→'))
+      for (const ll of lessonLines) {
+        closeLessons.push(ll.trim().replace(/^→\s*/, ''))
+      }
+    }
+
+    return {
+      streak, netPnl, total, wins, losses,
+      exitQuality: { prematureLossCount, prematureLossPnl, isMajor, prematureWinCount, prematureWinPnl, longWinCount, longWinPnl },
+      rootCause: { quickExitCount, quickLosses, quickWins, dominantRegime, shallowThesis, avgThesisLen, newsFailed, insight },
+      volatilityAnomaly: { lowVolCount, total: volTotal, pct: volPct, isAnomaly },
+      losingClasses, winningClasses, perSymbol, closeLessons,
+    }
+  } catch { return null }
+}
+
+function WinRateBar({ wins, losses }: { wins: number; losses: number }) {
+  const total = wins + losses
+  if (total === 0) return null
+  const winPct = (wins / total) * 100
+  return (
+    <div className="exp-bar-container">
+      <div className="exp-bar-wins" style={{ width: `${winPct}%` }} />
+      <div className="exp-bar-losses" style={{ width: `${100 - winPct}%` }} />
+    </div>
+  )
+}
+
+function ExitQualityBar({ count, total, color, label, pnl, isMajor }: { count: number; total: number; color: string; label: string; pnl: number; isMajor?: boolean }) {
+  if (total === 0) return null
+  const pct = (count / total) * 100
+  return (
+    <div className="exp-eq-row">
+      <div className="exp-eq-label">{label}</div>
+      <div className="exp-eq-bar-wrap">
+        <div className="exp-eq-bar-fill" style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <div className="exp-eq-meta">
+        <span className="exp-eq-count">{count} trades</span>
+        <span className="exp-eq-pnl" style={{ color: pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(3)}</span>
+        {isMajor && <span className="exp-eq-major">⚠️ MAJOR</span>}
+      </div>
+    </div>
+  )
+}
+
+function ClassCard({ cls, type }: { cls: ParsedClass; type: 'losing' | 'winning' }) {
+  const winPct = (cls.winRate * 100).toFixed(0)
+  const isPremature = cls.exitNote.includes('PREMATURE')
+  return (
+    <div className={`exp-class-card ${type}`}>
+      <div className="exp-class-header">
+        <span className="exp-class-symbols">{cls.symbols || cls.directionBias.toUpperCase()}</span>
+        <span className={`exp-class-exit ${isPremature ? 'premature' : 'correct'}`}>{cls.exitNote}</span>
+      </div>
+      <div className="exp-class-bar-wrap">
+        <div className="exp-class-bar-fill" style={{ width: `${winPct}%`, background: type === 'losing' ? 'var(--red)' : 'var(--green)' }} />
+        <span className="exp-class-winrate">{winPct}%</span>
+      </div>
+      <div className="exp-class-meta">
+        <span>{cls.count} trades</span>
+        <span>·</span>
+        <span>{cls.avgHoldMin}min</span>
+        <span>·</span>
+        <span>{cls.directionBias}</span>
+        {type === 'losing' && <span style={{ color: cls.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>· net {cls.netPnl >= 0 ? '+' : ''}{cls.netPnl.toFixed(3)}</span>}
+      </div>
+      <div className="exp-class-lesson">{cls.lesson}</div>
+    </div>
+  )
+}
+
+function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: string; expActions?: Array<{ symbol: string; side: string; verdict: string; reason: string; cycle: number; ts: number }> }) {
+  const [expanded, setExpanded] = useState(false)
+  if (!expDigest && (!expActions || expActions.length === 0)) return null
+
+  const hasStreakWarning = expDigest?.includes('losing streak')
+  const parsed = expDigest ? parseDigest(expDigest) : null
+
+  // Build action log lines
+  const actionLines: string[] = []
+  if (expActions && expActions.length > 0) {
+    for (const a of expActions) {
+      const sideLabel = a.side === 'buy' ? 'LONG' : 'SHORT'
+      if (a.verdict === 'FAST_APPROVE' || a.verdict === 'APPROVE_WITH_NOTE' || a.verdict === 'PASS_OPEN_DIRECTLY') {
+        actionLines.push(`✅ 根據經驗之後決定落單 ${a.symbol} ${sideLabel} — ${a.reason}`)
+      } else if (a.verdict === 'REJECT') {
+        actionLines.push(`❌ 根據經驗之後決定暫時唔落單 ${a.symbol} ${sideLabel} — ${a.reason}`)
+      } else if (a.verdict === 'REVERSE_DIRECTION') {
+        actionLines.push(`🔄 根據經驗之後決定反方向落單 ${a.symbol} — ${a.reason}`)
+      } else if (a.verdict === 'EXP_DISABLED' || a.verdict === 'EXP_ERRORED') {
+        actionLines.push(`⚠️ 經驗系統未準備好，暫時唔落單 ${a.symbol} ${sideLabel} — ${a.reason}`)
+      }
+    }
+  }
+
+  return (
+    <div className="evo-section">
+      <div className="evo-section-header" onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer' }}>
+        <div className="evo-section-accent" />
+        <span className="evo-section-title">
+          Experience Digestion
+          {hasStreakWarning && <span className="exp-streak-warning">🔴</span>}
+        </span>
+        <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
+      </div>
+      {expanded && (
+        <div className="exp-digest-content">
+          {/* Action log */}
+          {actionLines.length > 0 && (
+            <div className="exp-digest-section">
+              <div className="exp-digest-subtitle">📋 經驗決定</div>
+              {actionLines.map((l, i) => (
+                <div key={i} className="exp-digest-action">{l}</div>
+              ))}
+            </div>
+          )}
+
+          {parsed && (
+            <>
+              {/* Streak + PnL headline */}
+              <div className="exp-headline-row">
+                <div className="exp-headline-streak">
+                  {parsed.streak >= 3 && <span className="exp-streak-badge">🔴 {parsed.streak} losing streak</span>}
+                </div>
+                <div className="exp-headline-pnl">
+                  Net PnL: <span style={{ color: parsed.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{parsed.netPnl >= 0 ? '+' : ''}{parsed.netPnl.toFixed(3)}</span>
+                </div>
+              </div>
+
+              {/* W/L bar */}
+              <div className="exp-wl-bar-section">
+                <WinRateBar wins={parsed.wins} losses={parsed.losses} />
+                <div className="exp-wl-labels">
+                  <span className="exp-wl-win">W {parsed.wins}</span>
+                  <span className="exp-wl-loss">L {parsed.losses}</span>
+                </div>
+              </div>
+
+              {/* Exit quality */}
+              <div className="exp-digest-section">
+                <div className="exp-digest-subtitle">⚡ Exit Quality</div>
+                <ExitQualityBar
+                  count={parsed.exitQuality.prematureLossCount}
+                  total={parsed.losses}
+                  color="var(--red)"
+                  label="Premature close (≤8min loss)"
+                  pnl={parsed.exitQuality.prematureLossPnl}
+                  isMajor={parsed.exitQuality.isMajor}
+                />
+                <ExitQualityBar
+                  count={parsed.exitQuality.prematureWinCount}
+                  total={parsed.wins}
+                  color="var(--green)"
+                  label="Premature close (≤8min win)"
+                  pnl={parsed.exitQuality.prematureWinPnl}
+                />
+                {parsed.exitQuality.longWinCount > 0 && (
+                  <ExitQualityBar
+                    count={parsed.exitQuality.longWinCount}
+                    total={parsed.wins}
+                    color="var(--accent)"
+                    label="Long holds (>30min wins)"
+                    pnl={parsed.exitQuality.longWinPnl}
+                  />
+                )}
+              </div>
+
+              {/* Close discipline lessons */}
+              {parsed.closeLessons.length > 0 && (
+                <div className="exp-digest-section">
+                  <div className="exp-digest-subtitle">💡 Close Discipline</div>
+                  {parsed.closeLessons.map((l, i) => (
+                    <div key={i} className="exp-lesson-item">{l}</div>
+                  ))}
+                </div>
+              )}
+
+              {/* Losing + Winning patterns side by side */}
+              <div className="exp-patterns-grid">
+                {parsed.losingClasses.length > 0 && (
+                  <div className="exp-patterns-col">
+                    <div className="exp-digest-subtitle">❌ Losing Patterns</div>
+                    {parsed.losingClasses.map((c, i) => <ClassCard key={i} cls={c} type="losing" />)}
+                  </div>
+                )}
+                {parsed.winningClasses.length > 0 && (
+                  <div className="exp-patterns-col">
+                    <div className="exp-digest-subtitle">✅ Winning Patterns</div>
+                    {parsed.winningClasses.map((c, i) => <ClassCard key={i} cls={c} type="winning" />)}
+                  </div>
+                )}
+              </div>
+
+              {/* Per symbol table */}
+              {parsed.perSymbol.length > 0 && (
+                <div className="exp-digest-section">
+                  <div className="exp-digest-subtitle">📊 Per Symbol</div>
+                  <div className="exp-symbol-table">
+                    {parsed.perSymbol.map((s, i) => {
+                      const total = s.wins + s.losses
+                      const winPct = total > 0 ? (s.wins / total) * 100 : 0
+                      return (
+                        <div key={i} className="exp-symbol-row">
+                          <span className="exp-sym-name">{s.symbol}</span>
+                          <span className={`exp-sym-side ${s.side.toLowerCase()}`}>{s.side}</span>
+                          <div className="exp-sym-bar-wrap">
+                            <div className="exp-sym-bar-fill" style={{ width: `${winPct}%`, background: s.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }} />
+                          </div>
+                          <span className="exp-sym-wl">W{s.wins} L{s.losses}</span>
+                          <span className="exp-sym-net" style={{ color: s.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{s.netPnl >= 0 ? '+' : ''}{s.netPnl.toFixed(3)}</span>
+                          <span className="exp-sym-hold">{s.avgHold}min{s.isPremature ? ' ⚠️' : ''}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Volatility anomaly */}
+              {parsed.volatilityAnomaly.isAnomaly && (
+                <div className="exp-anomaly-banner">
+                  <span className="exp-anomaly-icon">⚠️</span>
+                  <div>
+                    <div className="exp-anomaly-title">VOLATILITY ANOMALY</div>
+                    <div className="exp-anomaly-desc">
+                      {parsed.volatilityAnomaly.lowVolCount}/{parsed.volatilityAnomaly.total} trades ({(parsed.volatilityAnomaly.pct * 100).toFixed(0)}%) show low_volatility — NO normal/high.
+                      Volatility calculation likely broken.
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Root cause diagnosis */}
+              {parsed.rootCause.insight && (
+                <div className="exp-digest-section">
+                  <div className="exp-digest-subtitle">🔍 Root Cause</div>
+                  {parsed.rootCause.quickExitCount > 0 && (
+                    <div className="exp-lesson-item">
+                      Quick exits: {parsed.rootCause.quickExitCount} trades — {parsed.rootCause.quickLosses} losses, {parsed.rootCause.quickWins} wins
+                    </div>
+                  )}
+                  {parsed.rootCause.dominantRegime && (
+                    <div className="exp-lesson-item">Dominant regime: {parsed.rootCause.dominantRegime}</div>
+                  )}
+                  {parsed.rootCause.shallowThesis && (
+                    <div className="exp-lesson-item">⚠️ Thesis too shallow: avg {parsed.rootCause.avgThesisLen} chars — no structural anchor</div>
+                  )}
+                  {parsed.rootCause.newsFailed > 0 && (
+                    <div className="exp-lesson-item">⚠️ News/macro thesis failed ≤8min: {parsed.rootCause.newsFailed} trades</div>
+                  )}
+                  <div className="exp-lesson-item exp-lesson-insight">{parsed.rootCause.insight}</div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Fallback: raw text if parse failed */}
+          {!parsed && expDigest && (
+            <div className="exp-digest-raw">
+              {expDigest.split('\n').filter(l => l.trim()).map((l, i) => (
+                <div key={i} className="exp-digest-detail">{l}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

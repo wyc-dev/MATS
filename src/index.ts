@@ -89,6 +89,8 @@ class MATSSystem {
   private cycleInProgress = false;
   private lastCycleDuration = 0;
   private lastHACPResult: { consensus: ConsensusResult; allThoughts: AgentThought[]; debateRounds: DebateRound[] } | null = null;
+  /** v2.0.140: EXP action log from the last HACP cycle. */
+  private lastExpActions: import('./cognition/hacp.ts').ExpAction[] = [];
   private cycleProgress: CycleProgress | null = null;
   /** Cached real-exchange balance (v2.0.17). Refreshed each cycle in real mode
    *  via realTradingManager.getBalance(); used by pushToAPI() so the UI shows
@@ -1105,7 +1107,13 @@ class MATSSystem {
           // HuggingFace Hub on first use — do NOT block system startup on network.
           // If not ready by the first trade, 1.8a self-heals (diagnose→repair→1.8b).
           void this.expMemory.warmup();
-          log.info(`✓ EXP thesis-experience memory ready (${this.expMemory.size()} records) — embed model warming up in background`);
+          // v2.0.140: rebuild A2A experience classes from loaded records so
+          // classification is available from the first cycle. Fire-and-forget:
+          // digests + embeds every record (LLM + embed cost), runs in background.
+          void this.expMemory.rebuildClasses().catch((err: unknown) =>
+            log.warn(`[EXP] startup class rebuild failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
+          );
+          log.info(`✓ EXP thesis-experience memory ready (${this.expMemory.size()} records) — embed model warming up + classes rebuilding in background`);
         } catch (err) {
           log.warn(`[EXP] startup load failed (will self-heal on first use): ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -1668,6 +1676,10 @@ class MATSSystem {
     heading: string,
     positionInfo?: string,
     srDistances?: { slLong: number; tpLong: number; slShort: number; tpShort: number },
+    /** v2.0.140: EXP digest summary — injected only for the active symbol to
+     *  avoid per-symbol duplication. When provided, appended after the OLR
+     *  block so agents see learned experience alongside OLR probabilities. */
+    digest?: string,
   ): string {
     try {
       const olrBuy = this.olrEngine.query(sym, features, 'buy', this.totalCycles);
@@ -1728,6 +1740,8 @@ class MATSSystem {
 
       lines.push(`DATA SOURCES: shadow=fixed S/R SL/TP sim, paper=dynamic SL/TP, real=HL exchange (truest), backfill=cold-start prior (weight least). Weight by recency + source reliability.`);
       lines.push(`SL/TP NARROWING: [SL narrowed] tag = SL was tightened — if narrowed trades mostly lost, consider widening SL; if they won, narrowing is working.`);
+      // v2.0.140: inject EXP digest (only for active symbol — avoids per-symbol duplication)
+      if (digest) lines.push(`\n${digest}`);
       return '\n' + lines.join('\n');
     } catch { /* non-critical */ }
     return '';
@@ -2244,7 +2258,10 @@ class MATSSystem {
           slShort: this.lastSRContext?.distanceToResistanceBps ? this.lastSRContext.distanceToResistanceBps / 10000 : 0.05,
           tpShort: this.lastSRContext?.distanceToSupportBps ? this.lastSRContext.distanceToSupportBps / 10000 : 0.02,
         };
-        olrContext = this.buildOLRBlock(activeSymbol, olrFeatures, 'OLR + PATH RISK ASSESSMENT', undefined, srD);
+        // v2.0.140: inject EXP digest for the active symbol only (avoids per-symbol
+        // duplication in agent context). Non-blocking — if digest fails, OLR still runs.
+        const expDigest = this.expMemory?.getDigestSummary() ?? '';
+        olrContext = this.buildOLRBlock(activeSymbol, olrFeatures, 'OLR + PATH RISK ASSESSMENT', undefined, srD, expDigest);
         // Shadow trade results (active-symbol global — supplementary reality check)
         const shadowCtx = this.shadowEngine.getContext();
         if (shadowCtx.openCount > 0 || shadowCtx.recentResults.length > 0) {
@@ -4469,6 +4486,7 @@ class MATSSystem {
         allThoughts: result.allThoughts,
         debateRounds: result.debateRounds,
       };
+      this.lastExpActions = result.expActions ?? [];
       this.pushToAPI();
 
       // v2.0.104: Sub-cycles removed. ALL trading markets are analyzed in the
@@ -4795,6 +4813,8 @@ class MATSSystem {
       recent20Count: recent20.total,
       lastUpdated: p.lastUpdated,
       positions,
+      // v2.0.140: EXP digest summary for UI ExperienceDigestionSection
+      expDigest: this.expMemory?.getDigestSummary() ?? '',
     };
   }
 
@@ -5429,6 +5449,8 @@ class MATSSystem {
           })),
         ],
       };
+      // v2.0.140: EXP action log for the UI ExperienceDigestionSection
+      (apiData as any).expActions = this.lastExpActions;
       // v2.0.79: Dedup trade records by ID — prevents duplicate entries
       if (apiData.tradeRecords && Array.isArray(apiData.tradeRecords)) {
         const seenIds = new Set<string>();

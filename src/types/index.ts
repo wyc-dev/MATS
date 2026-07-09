@@ -538,6 +538,89 @@ export interface ExpFallbackIncident {
   finalVerdict: ExpVerdict;
 }
 
+// ─── v2.0.140: A2A Experience Digestion (三層經驗消化) ───
+// Master Lord doctrine: EXP.md 經 A2A prompt 重點處理 → 濃縮精簡向量 →
+// 判斷數據分類 → 更準確嘅經驗消化物。每筆 closed trade 由 LLM 消化成一條
+// 結構化 lesson statement（A2A 格式），embed 成 lesson vector；相似 lessons
+// 聚類成 ExperienceClass（centroid + 勝率/PnL）。新 thesis 經同樣消化 →
+// classification vs class centroids → 更準確嘅 verdict。
+
+/** A2A-structured lesson statement distilled from one closed trade (or a candidate thesis). */
+export interface LessonStatement {
+  /** A2A OBS — the market conditions that were observed (regime, S/R, news, timing). */
+  obs: string;
+  /** A2A ASSESS — the directional conviction that was taken (or proposed). */
+  assess: { direction: 'buy' | 'sell'; conviction: number };
+  /** Outcome for historical trades; undefined for candidates. */
+  outcome?: TradeOutcome;
+  /** Root cause: WHY this trade won/lost (the actual lesson). */
+  rootCause?: string;
+  /** v2.0.140: Exit quality classification — was the SL/TP premature? */
+  exitType?: 'premature_sl' | 'premature_tp' | 'correct_sl' | 'correct_tp' | 'thesis_invalidated';
+  /** One condensed sentence capturing the entire lesson. */
+  lesson: string;
+  /** Dominant rationale categories driving this lesson. */
+  categories: RationaleCategory[];
+  /** Market regime at the time. */
+  regime?: string;
+  /** Hold time in minutes (historical only). */
+  holdMin?: number;
+}
+
+/** A cluster of similar lesson vectors — an "experience class" with aggregate stats. */
+export interface ExperienceClass {
+  id: string;
+  /** L2-normalised centroid of member lesson vectors (embedDim-dim). */
+  centroid: number[];
+  /** Representative lesson statement (most-central member). */
+  lesson: string;
+  count: number;
+  wins: number;
+  losses: number;
+  netPnl: number;
+  winRate: number;
+  /** Distinct symbols seen in this class. */
+  symbols: string[];
+  /** Distinct sides (buy/sell) — reveals direction bias. */
+  sides: Array<'buy' | 'sell'>;
+  /** Distinct regimes. */
+  regimes: string[];
+  avgHoldMin: number;
+  /** Record ids belonging to this class. */
+  memberIds: string[];
+  /** Dominant direction ('buy' / 'sell' / 'mixed' when both appear). */
+  directionBias: 'buy' | 'sell' | 'mixed';
+  /** Timestamp of last member added (for recency). */
+  ts: number;
+}
+
+/** Result of classifying a candidate thesis against experience classes. */
+export interface DigestClassification {
+  bestClass: ExperienceClass | null;
+  similarity: number;
+  /** winRate of bestClass (0 if no class). */
+  classWinRate: number;
+  /** Does the candidate direction align with the class directionBias? */
+  directionAligned: boolean;
+}
+
+/** Digest runtime config (overridable for tests). */
+export interface DigestConfig {
+  enabled: boolean;
+  /** Cosine threshold for assigning a candidate to an existing class. */
+  classifyThreshold: number;
+  /** Cosine threshold for merging two lessons into the same class on rebuild. */
+  clusterThreshold: number;
+  /** Minimum class size to be trustworthy (below = treat as sparse, defer). */
+  minClassSize: number;
+  /** winRate above which a matched class → FAST_APPROVE. */
+  classWinThreshold: number;
+  /** winRate below which a matched class → REJECT (unless delta). */
+  classLossThreshold: number;
+  /** Max lesson statements to keep in the digest cache. */
+  maxDigestCache: number;
+}
+
 // ─── Risk ───
 
 export interface RiskLimits {

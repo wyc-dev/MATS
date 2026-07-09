@@ -797,6 +797,35 @@ Recent outcomes may show "[SL narrowed]" tag — means SL was tightened during t
 - If [SL narrowed] trades mostly WON → tightening is working → current SL management is effective.
 - This feedback helps Meta-Agent decide whether to continue narrowing or widen SL/TP.
 
+=== EXPERIENCE DIGEST (v2.0.140 — premature close diagnosis) ===
+If the context contains "=== EXPERIENCE DIGEST (from N closed trades) ===":
+  This digest analyses the system's biggest recurring problem: PREMATURE CLOSES initiated
+  by Meta-Agent and Skeptics (not SL/TP hits). The SL/TP placement itself is not the primary
+  issue — the issue is that Meta-Agent/Skeptics override the SL with manual closes that
+  ignore the actual price structure.
+
+  **EXIT QUALITY ANALYSIS**: shows how many trades closed in ≤8min. If the digest shows a
+  high premature count, the problem is NOT your SL/TP recommendation — it is that Meta-Agent
+  and Skeptics are closing positions before SL/TP is hit. Your role is to provide the OLR
+  edge and First-Passage probability so Meta-Agent has OBJECTIVE data to resist panic-closing.
+
+  **ROOT CAUSE DIAGNOSIS**: if theses fail in ≤8min, the digest diagnoses whether:
+    - The thesis was too shallow (no structural anchor)
+    - The market was choppy (direction is noise)
+    - Meta-Agent/Skeptics closed prematurely ignoring price levels
+  If the digest shows the DIRECTION was correct but the position was closed prematurely,
+  reinforce your OLR edge assessment — a positive edge means the position should NOT have
+  been closed. State this explicitly in your assessment so Meta-Agent sees it.
+
+  **VOLATILITY ANOMALY CHECK**: if ALL trades show "low_volatility", the volatility
+  calculation is likely broken. This affects First-Passage probability (which uses vol)
+  and regime classification. If you see this anomaly, FLAG IT and note that your
+  First-Passage edge may be unreliable due to broken vol input.
+
+  Your job: provide accurate OLR edge + First-Passage probability. Do NOT recommend closes
+  yourself — that is Meta-Agent's job. Your data helps Meta-Agent resist premature closes
+  by showing the objective edge.
+
 === FEAR & GREED INDEX ===
 - 0-25 Extreme Fear → oversold, potential bounce (but high risk)
 - 25-50 Fear → cautious, wait for confirmation
@@ -1426,6 +1455,34 @@ ${marketContext.slice(0, 1200)}${otherAgentsSummary}${historyNote}
 
 TASK: Review this agent's decision for logical consistency AND behavioral biases.
 
+=== EXPERIENCE DIGEST (v2.0.140 — premature close prevention) ===
+If the market context contains "=== EXPERIENCE DIGEST (from N closed trades) ===":
+  This digest analyses the system's biggest recurring problem: PREMATURE CLOSES
+  initiated by Meta-Agent and Skeptics (YOU). The SL/TP placement is NOT the primary
+  issue — the issue is that YOU and Meta-Agent override the SL with manual closes
+  that ignore the actual price structure.
+
+  **EXIT QUALITY**: if the digest shows a high premature close count (≤8min), YOU
+  have a history of invalidating theses too early. When reviewing an agent's decision,
+  check: is the agent recommending CLOSE? If so, verify the close is NOT premature
+  using the same checks you apply to your own thesis re-validation:
+    - Has price ACTUALLY breached the key S/R level (candle close, not just a wick)?
+    - Has the position been open ≥15min? If not, the thesis hasn't had time.
+    - Has SL been hit? If not, why is the agent recommending close?
+    - Is the direction still correct per OLR/momentum?
+
+  **ROOT CAUSE**: if the digest shows the DIRECTION was correct but positions were
+  closed prematurely, this means YOUR thesis invalidations were wrong. Be more
+  conservative — when in doubt, keep the thesis VALID and let SL/TP work.
+
+  **VOLATILITY ANOMALY**: if ALL trades show low_volatility, the vol calculation is
+  broken. This is a SYSTEM issue, not an agent error. Do NOT flag agents for bad
+  judgment when the underlying data (volatility, regime) is faulty.
+
+  **LOSING PATTERNS**: if a losing class shows "PREMATURE SL", the direction was
+  correct — do NOT flag the agent's direction as wrong. The loss was caused by a
+  premature close, not a wrong direction.
+
 === LOGIC CHECKS ===
 - Does the decision follow from the data they cited?
 - Did they misinterpret or omit anything?
@@ -1643,17 +1700,45 @@ Stress-test this thesis. Start from APPROVED and only REJECT if you find a speci
 The position was opened with a specific thesis explaining why price would reach TP within 1h and 1d.
 Your job: determine if that thesis is STILL valid given the current market data, or if it has been invalidated.
 
-A thesis is INVALIDATED if:
-1. The catalyst/event the thesis was based on has already happened (and price didn't reach TP) — the thesis is spent
-2. The market structure has changed in a way that contradicts the thesis (e.g. thesis said "S/R bounce at $64K" but price broke BELOW $64K)
-3. The thesis direction is now contradicted by current data (e.g. thesis said bullish but trend is now bearish)
-4. The 1h timeframe has expired and the short-term reason did not materialize
+⚠️ v2.0.140 PREMATURE CLOSE PREVENTION (CRITICAL):
+The system's biggest recurring problem is CLOSING POSITIONS TOO EARLY. You and Meta-Agent
+have a history of initiating closes that ignore the actual price structure, causing small
+losses that pile up. Before marking a thesis as invalidated, you MUST verify:
+
+  1. **PRICE LEVEL**: Has price ACTUALLY breached the key S/R level the thesis depends on?
+     If the thesis said "bounce at $64K" and price is at $63.8K, that is a NORMAL DRAWDOWN,
+     not a thesis invalidation. $64K support is still intact unless price has decisively
+     broken below it (e.g. 1h candle close below, not just a wick).
+
+  2. **TIME**: How long has the position been open? If < 15 minutes, the thesis has NOT
+     had time to play out. A 1h thesis CANNOT be invalidated in 5 minutes. A 1d thesis
+     CANNOT be invalidated in 10 minutes. If the position has been open < 15min, default
+     to VALID — the thesis needs time.
+
+  3. **SL/TP**: If SL has NOT been hit and TP has NOT been hit, the position is in a
+     normal range. Do NOT invalidate the thesis just because price moved against the
+     position — that is what SL is for. Let the SL do its job.
+
+  4. **DIRECTION**: Is the overall direction still correct? If the trend/momentum/OLR
+     edge still favors the position's side, the thesis is NOT invalidated — the position
+     just needs more time.
+
+A thesis is INVALIDATED only if:
+1. The catalyst/event the thesis was based on has already happened AND price didn't reach TP — the thesis is spent
+2. The market structure has DECISIVELY changed (price broke key S/R level with a candle close, not just a wick)
+3. The thesis direction is now contradicted by CURRENT data (e.g. thesis said bullish but trend is now bearish with confirmation)
+4. The 1h timeframe has expired (>60min) AND the short-term reason did not materialize
 5. Key data the thesis relied on has reversed (e.g. thesis cited "funding negative" but funding is now positive)
 
 A thesis is STILL VALID if:
-1. The catalyst hasn't happened yet but the setup is still intact
+1. The catalyst hasn't happened yet but the setup is still intact (price is in the expected range)
 2. Price is moving toward TP (even if slowly) and the structural reasons haven't changed
 3. The 1d reason is still in play even if the 1h reason hasn't fully materialized
+4. The position has been open < 15min — too early to judge
+5. Price is in a normal drawdown within the SL range — SL hasn't been hit
+
+When in doubt, default to VALID. A premature invalidation causes a small loss that piles up.
+A missed invalidation lets the SL handle it. Asymmetric risk favors patience.
 
 Output ONLY valid JSON:
 {"valid": true/false, "rationale": "1-2 sentence explanation of why the thesis is still valid or invalidated"}`,
@@ -1735,28 +1820,53 @@ Is this thesis STILL valid? Has the market changed in a way that invalidates the
 
 Meta-Agent has decided to close a ${side.toUpperCase()} position. Your job is to verify the reasoning is sound.
 
-A valid close decision must:
-1. **MANDATORY**: The entry thesis must be INVALIDATED. If the thesis is still valid,
-   the close is INVALID — no exceptions. Short-term price noise, temporary drawdown,
-   or agent disagreement alone do NOT invalidate a thesis.
-2. Have a SPECIFIC reason — not just "holding is risky" or "market is uncertain"
-3. Be based on CURRENT data — not past drawdown or loss streaks (RBC learns, market changes)
-4. Be consistent with sub-agent data — if agents say the thesis is still valid, why close?
-5. Not be panic-driven — closing at a small loss to avoid a larger loss is valid, but closing
-   out of fear without a specific catalyst is not
+⚠️ v2.0.140 PREMATURE CLOSE PREVENTION (CRITICAL):
+The system's biggest recurring problem is CLOSING POSITIONS TOO EARLY. Meta-Agent has a
+history of initiating closes that ignore the actual price structure. Before approving a
+close, you MUST verify ALL of the following:
 
-Valid close reasons (ALL require thesis invalidation as the primary reason):
-- Entry thesis is invalidated by new information (e.g. bullish news contradicts SHORT thesis)
-- Structural break (price broke key S/R level that the thesis depended on)
-- Catalyst event happened and thesis didn't play out
+  1. **PRICE LEVEL**: Has price ACTUALLY breached the key S/R level? If the thesis depends
+     on "bounce at $64K" and price is at $63.8K but $64K hasn't been decisively broken
+     (candle close, not just a wick), the thesis is NOT invalidated. BLOCK the close.
+
+  2. **SL/TP NOT HIT**: If SL has NOT been hit and TP has NOT been hit, Meta-Agent is
+     overriding the stop-loss with a manual close. This is almost always premature.
+     The SL exists for a reason — let it work. BLOCK the close unless there is a
+     SPECIFIC structural reason (catalyst happened, S/R broken with confirmation).
+
+  3. **TIME**: If the position has been open < 15 minutes, the thesis has NOT had time
+     to play out. A 1h thesis cannot be invalidated in 5 minutes. BLOCK the close.
+
+  4. **DIRECTION**: If the trend/momentum/OLR edge still favors the position's side,
+     the direction is still correct. The position just needs more time. BLOCK the close.
+
+A valid close decision must:
+1. **MANDATORY**: The entry thesis must be DECISIVELY invalidated (not just "might be"
+   or "looks uncertain" — a specific structural break or catalyst failure).
+2. Have a SPECIFIC reason referencing a PRICE LEVEL or CATALYST — not just "holding is risky"
+3. Be based on CURRENT data — not past drawdown or loss streaks
+4. Be consistent with sub-agent data — if agents say the thesis is still valid, BLOCK
+5. NOT be panic-driven — closing at a small loss to avoid a larger loss is valid ONLY if
+   the thesis is actually broken, not just because PnL is negative
+
+Valid close reasons (ALL require DECISIVE thesis invalidation):
+- Entry thesis is invalidated by a SPECIFIC new event (e.g. bullish news contradicts SHORT thesis)
+- Structural break with CONFIRMATION (price closed below key S/R, not just wicked)
+- Catalyst event happened and thesis didn't play out (price went opposite after the event)
 - ≥2 sub-agents independently recommend close with specific reasoning AND thesis is broken
 
-Invalid close reasons:
+Invalid close reasons (BLOCK THESE):
 - "Market is chaotic" without specifying how it specifically threatens this position
 - "Past trades lost money" (backward-looking, RBC learns)
 - "Drawdown is high" (backward-looking)
 - Vague uncertainty without a specific threat
 - Thesis is still valid but price went against us temporarily
+- Position has been open < 15min (too early to judge)
+- SL has not been hit and no structural break has occurred
+- Price is in a normal drawdown within the SL range
+
+When in doubt, BLOCK the close. A premature close causes a small loss that piles up.
+A missed close lets the SL handle it. Asymmetric risk favors patience.
 
 Output ONLY valid JSON:
 {"approved": true/false, "rationale": "1-2 sentence explanation"}`,
