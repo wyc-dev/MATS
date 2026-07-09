@@ -3556,12 +3556,17 @@ class MATSSystem {
           }
         }
 
-        // v2.0.134: Sync entryThesis + holdReason from per-symbol consensus to
-        // the position. Positions imported via importExchangePosition() don't
-        // have entryThesis. The thesis/holdReason from HACP consensus is the
-        // best available — sync it so the UI Portfolio can display the rationale.
-        if (psc.entryThesis && psc.entryThesis.trim().length > 0
-            && !psc.entryThesis.includes('Not applicable')) {
+        // v2.0.134/v2.0.137: Sync entryThesis + holdReason from per-symbol
+        // consensus to the position.
+        //  - entryThesis is FROZEN at open (see PortfolioTracker.setEntryThesis):
+        //    it is only filled in when the position has none yet (e.g. a
+        //    position re-imported from HL with no thesis). Once set it is never
+        //    overwritten, so Skeptics Phase 0.5 re-validates the ORIGINAL entry
+        //    rationale, not a moving target. Placeholder theses ('N/A' etc.)
+        //    are rejected by the setter.
+        //  - holdReason is the LIVE per-cycle reason for holding and may update
+        //    freely (it is NOT re-validated by Skeptics).
+        if (psc.entryThesis) {
           this.portfolio.setEntryThesis(psc.symbol, psc.entryThesis);
         }
         if (psc.holdReason && psc.holdReason.trim().length > 0) {
