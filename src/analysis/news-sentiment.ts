@@ -189,6 +189,10 @@ export interface NewsSentimentResult {
   fetchedAt: number;
   source: string;                 // which tier served the result
   windowHours: number;            // actual age window used (24/72/168)
+  /** v2.0.139: price-news timing context for institutional front-run /
+   *  sell-the-news detection. Populated by the caller from the same asset's
+   *  candle cache; null when candle data is unavailable. */
+  priceNewsTiming?: PriceNewsTiming | null;
 }
 
 // ─── Source 1: Google News RSS (primary) ───
@@ -349,6 +353,151 @@ function lexiconHint(headlines: NewsHeadline[]): { label: 'BULLISH' | 'BEARISH' 
   const score = (pos - neg) / total;   // -1..+1
   const label = score > 0.15 ? 'BULLISH' : score < -0.15 ? 'BEARISH' : 'NEUTRAL';
   return { label, score: Math.max(-1, Math.min(1, score)) };
+}
+
+// ─── Price-News Timing (institutional front-run / sell-the-news detection) ───
+// v2.0.139: enriches the news block with the SAME asset's recent price action
+// so the News Reporter can detect whether price front-ran the news cluster
+// (institutions pre-positioned) — the single most reliable institutional tell.
+// Candle shape is minimal (time in ms + close); the caller fetches 1h candles
+// from the same routed source the chart uses, ensuring same-asset consistency.
+
+export interface TimingCandle { t: number; c: number; }
+
+export interface PriceNewsTiming {
+  change1h: number;       // fractional (0.058 = +5.8%)
+  change4h: number;
+  change24h: number;
+  change3d: number;
+  movedBeforeNews: boolean;   // price moved >2% in the hint direction before the news cluster
+  preNewsMovePct: number;     // the pre-news-window move (signed, fractional)
+  preNewsMoveDir: 'up' | 'down' | 'flat';
+  headlineCadence: number;    // headlines per day
+  cadenceLevel: 'elevated' | 'normal' | 'low';
+  sourceClustering: number;   // 0..1 — fraction sharing dominant angle within a 6h window
+  clusteringLevel: 'coordinated' | 'mixed' | 'independent';
+  dominantAngle: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+}
+
+/** Classify a single headline's angle via the same lexicon as `lexiconHint`. */
+function classifyAngle(title: string): 'BULLISH' | 'BEARISH' | 'NEUTRAL' {
+  const text = title.toLowerCase();
+  let pos = 0, neg = 0;
+  for (const w of POSITIVE_WORDS) if (text.includes(w)) pos++;
+  for (const w of NEGATIVE_WORDS) if (text.includes(w)) neg++;
+  if (pos === 0 && neg === 0) return 'NEUTRAL';
+  return pos > neg ? 'BULLISH' : neg > pos ? 'BEARISH' : 'NEUTRAL';
+}
+
+/** Closest candle close at-or-before an absolute ms timestamp (null if out of range). */
+function closeAtAbs(sorted: TimingCandle[], target: number): number | null {
+  let best: TimingCandle | null = null;
+  for (const cd of sorted) {
+    if (cd.t <= target) best = cd;
+    else break;
+  }
+  return best?.c ?? null;
+}
+
+/**
+ * Compute the price-news timing context for institutional motive detection.
+ * @param candles  1h OHLC closes for the SAME asset (any reasonable count; 80
+ *                 candles ≈ 3.3d covers the 3d window). Oldest or newest first —
+ *                 sorted internally.
+ * @param headlines  the headlines returned for this symbol (with pubDate).
+ * @param windowHours  the news fetch window (24/72/168).
+ * @param lexiconHint  the aggregate lexicon label for the cluster.
+ * @returns PriceNewsTiming, or null if insufficient candle / headline data.
+ */
+export function computePriceNewsTiming(
+  candles: TimingCandle[],
+  headlines: NewsHeadline[],
+  windowHours: number,
+  lexiconHint: 'BULLISH' | 'BEARISH' | 'NEUTRAL',
+): PriceNewsTiming | null {
+  if (candles.length < 5 || headlines.length === 0) return null;
+  const sorted = [...candles].sort((a, b) => a.t - b.t);
+  const now = sorted[sorted.length - 1]!.t;
+  const last = sorted[sorted.length - 1]!.c;
+  const pctAgo = (msAgo: number): number => {
+    const ref = closeAtAbs(sorted, now - msAgo);
+    return ref && ref !== 0 ? (last - ref) / ref : 0;
+  };
+  const change1h = pctAgo(3_600_000);
+  const change4h = pctAgo(14_400_000);
+  const change24h = pctAgo(86_400_000);
+  const change3d = pctAgo(3 * 86_400_000);
+
+  // ── movedBeforeNews: did price move >2% in the hint direction BEFORE the
+  //    earliest headline in the cluster? (front-run / pre-positioning tell)
+  const validDates = headlines
+    .map(h => h.pubDate?.getTime() ?? null)
+    .filter((x): x is number => x != null)
+    .sort((a, b) => a - b);
+  let movedBeforeNews = false;
+  let preNewsMovePct = 0;
+  let preNewsMoveDir: 'up' | 'down' | 'flat' = 'flat';
+  if (validDates.length > 0) {
+    const earliest = validDates[0]!;
+    const preStart = earliest - windowHours * 3_600_000;
+    const priceAtEarliest = closeAtAbs(sorted, earliest);
+    const priceAtPreStart = closeAtAbs(sorted, preStart);
+    if (priceAtEarliest != null && priceAtPreStart != null && priceAtPreStart !== 0) {
+      preNewsMovePct = (priceAtEarliest - priceAtPreStart) / priceAtPreStart;
+      preNewsMoveDir = preNewsMovePct > 0.002 ? 'up' : preNewsMovePct < -0.002 ? 'down' : 'flat';
+      const THRESH = 0.02;  // 2% — meaningful pre-news positioning
+      if (Math.abs(preNewsMovePct) >= THRESH) {
+        if (lexiconHint === 'BULLISH' && preNewsMoveDir === 'up') movedBeforeNews = true;
+        else if (lexiconHint === 'BEARISH' && preNewsMoveDir === 'down') movedBeforeNews = true;
+        else if (lexiconHint === 'NEUTRAL' && preNewsMoveDir !== 'flat') movedBeforeNews = true;
+      }
+    }
+  }
+
+  // ── headlineCadence: headlines per day vs baseline (~1-2/day is typical).
+  const headlineCadence = headlines.length / Math.max(1, windowHours / 24);
+  const cadenceLevel: 'elevated' | 'normal' | 'low' =
+    headlineCadence >= 4 ? 'elevated' : headlineCadence >= 1 ? 'normal' : 'low';
+
+  // ── sourceClustering: fraction of headlines sharing the dominant lexicon
+  //    angle within a 6h window. High clustering ⇒ coordinated narrative push.
+  const angles = headlines.map(h => classifyAngle(h.title));
+  const bullN = angles.filter(a => a === 'BULLISH').length;
+  const bearN = angles.filter(a => a === 'BEARISH').length;
+  const dominantAngle: 'BULLISH' | 'BEARISH' | 'NEUTRAL' =
+    bullN > bearN && bullN > 0 ? 'BULLISH' : bearN > bullN && bearN > 0 ? 'BEARISH' : 'NEUTRAL';
+  let maxIn6h = 0;
+  for (let i = 0; i < validDates.length; i++) {
+    const winEnd = validDates[i]! + 6 * 3_600_000;
+    const cnt = validDates.filter(t => t >= validDates[i]! && t <= winEnd).length;
+    if (cnt > maxIn6h) maxIn6h = cnt;
+  }
+  const sourceClustering = validDates.length > 0 ? maxIn6h / validDates.length : 0;
+  const clusteringLevel: 'coordinated' | 'mixed' | 'independent' =
+    sourceClustering >= 0.6 ? 'coordinated' : sourceClustering >= 0.3 ? 'mixed' : 'independent';
+
+  return {
+    change1h, change4h, change24h, change3d,
+    movedBeforeNews, preNewsMovePct, preNewsMoveDir,
+    headlineCadence, cadenceLevel,
+    sourceClustering, clusteringLevel, dominantAngle,
+  };
+}
+
+/** Format the price-news timing block for agent context (the 📊 section). */
+export function formatPriceNewsTiming(pt: PriceNewsTiming): string {
+  const pct = (x: number) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
+  const lines = [
+    `  📊 PRICE-NEWS TIMING:`,
+    `     Recent move: 1h ${pct(pt.change1h)} | 4h ${pct(pt.change4h)} | 24h ${pct(pt.change24h)} | 3d ${pct(pt.change3d)}`,
+  ];
+  if (pt.movedBeforeNews) {
+    lines.push(`     ⚡ Price MOVED ${pt.preNewsMoveDir.toUpperCase()} ${(Math.abs(pt.preNewsMovePct) * 100).toFixed(1)}% BEFORE the news cluster → institutions likely PRE-POSITIONED (front-run tell)`);
+  } else {
+    lines.push(`     No meaningful pre-news move (${pct(pt.preNewsMovePct)} over the pre-news window) → news not obviously front-run`);
+  }
+  lines.push(`     Headline cadence: ${pt.headlineCadence.toFixed(1)}/day (${pt.cadenceLevel}) | Source clustering: ${(pt.sourceClustering * 100).toFixed(0)}% (${pt.clusteringLevel}, dominant=${pt.dominantAngle})`);
+  return lines.join('\n');
 }
 
 // ─── 5-minute in-memory cache (per symbol) ───
@@ -523,6 +672,10 @@ export function formatNewsForAgentMulti(results: (NewsSentimentResult | null)[])
           ? '🔴'
           : '⚪';
       lines.push(`  ${emoji} [${h.publisher}, ${ageLabel(h.pubDate)}] ${h.title.slice(0, 120)}`);
+    }
+    // v2.0.139: append the price-news timing block (institutional front-run tell)
+    if (r.priceNewsTiming) {
+      lines.push(formatPriceNewsTiming(r.priceNewsTiming));
     }
     blocks.push(lines.join('\n'));
   }

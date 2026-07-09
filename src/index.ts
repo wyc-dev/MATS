@@ -42,7 +42,7 @@ import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
-import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent } from './analysis/news-sentiment.ts';
+import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent, computePriceNewsTiming, type TimingCandle } from './analysis/news-sentiment.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord } from './types/index.ts';
 
 const log = createLogger({ phase: 'system' });
@@ -105,6 +105,9 @@ class MATSSystem {
   private lastSRContext: { formatted: string; regime: string; zoneCount: number; strongZones: number; nearestSupport: number | null; nearestResistance: number | null; distanceToSupportBps: number; distanceToResistanceBps: number; degradedReason: string | null } | null = null;
   /** v2.0.79: Cached news headlines per symbol for UI display in News Reporter card. */
   private cachedNewsHeadlines: Array<{ symbol: string; headlines: Array<{ title: string; publisher: string; url?: string; pubDate: number | null }> }> = [];
+  // v2.0.139: 5-min cache for 1h candles fetched for price-news timing analysis
+  // (avoids re-fetching the same asset's chart every cycle; 80 candles ≈ 3.3d).
+  private candleTimingCache: Map<string, { candles: TimingCandle[]; ts: number }> = new Map();
   /** v2.0.79: Trading markets list from UI pills — determines which symbols
    *  agents analyze (combined with open positions). Replaces auto-select. */
   private tradingMarkets: string[] = [];
@@ -1220,6 +1223,54 @@ class MATSSystem {
     }
   }
 
+  /**
+   * v2.0.139: Fetch 1h candles for the SAME asset the chart uses, for price-news
+   * timing (institutional front-run detection). Routes by symbol format exactly
+   * like the UI candle proxy (Binance Futures for USDT/USD suffix, HL
+   * candleSnapshot for bare/colon symbols) so the timing read is always on the
+   * same series the rest of the system sees. 80 candles ≈ 3.3d covers the 3d
+   * window. 5-minute per-symbol cache avoids re-fetching within a cycle.
+   * Failures resolve to [] (the caller skips timing enrichment).
+   */
+  private async fetchTimingCandlesForSymbol(symbol: string): Promise<TimingCandle[]> {
+    const cached = this.candleTimingCache.get(symbol);
+    if (cached && Date.now() - cached.ts < 5 * 60_000) return cached.candles;
+    const interval = '1h';
+    const limit = 80;
+    const msPerCandle = 3_600_000;
+    try {
+      const upper = symbol.toUpperCase();
+      const isBinanceSymbol = (upper.endsWith('USDT') || upper.endsWith('USD')) && !symbol.includes(':');
+      let candles: TimingCandle[];
+      if (isBinanceSymbol) {
+        const res = await fetch(`${config.binance.futuresRestUrl}/fapi/v1/klines?symbol=${upper}&interval=${interval}&limit=${limit}`);
+        if (!res.ok) throw new Error(`Binance ${res.status}`);
+        const data = await res.json() as unknown[][];
+        candles = data.map(k => ({ t: Math.floor(Number(k[0]) / 1000) * 1000, c: parseFloat(k[4] as string) }));
+      } else {
+        // HL candleSnapshot is case-sensitive — colon prefixes lowercase, bare uppercase.
+        const hlSymbol = symbol.includes(':')
+          ? symbol.replace(/^[^:]+:/, (m) => m.toLowerCase())
+          : symbol.toUpperCase();
+        const endTime = Date.now();
+        const startTime = endTime - msPerCandle * limit;
+        const res = await hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'candleSnapshot', req: { coin: hlSymbol, interval, startTime, endTime } }),
+        });
+        if (!res.ok) throw new Error(`HL ${res.status}`);
+        const data = await res.json() as Array<{ t: number; c: string }>; // v = string
+        candles = data.map(k => ({ t: typeof k.t === 'number' ? k.t : parseInt(String(k.t ?? '0')), c: parseFloat(k.c) }));
+      }
+      this.candleTimingCache.set(symbol, { candles, ts: Date.now() });
+      return candles;
+    } catch (err) {
+      log.debug(`[news-timing] candle fetch failed for ${symbol}: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
   private startDecisionCycle(): void {
     const intervalMs = config.system.decisionIntervalMs;
     log.info(`Decision cycle set for every ${intervalMs / 1000}s`);
@@ -2254,6 +2305,18 @@ class MATSSystem {
         // not just activeSymbol + openSyms. This ensures all trading markets
         // get news headlines, not just the active symbol.
         const newsResults = await fetchNewsForSymbols(allSymbols, marketAgentDesc);
+        // v2.0.139: enrich each symbol's news with price-news timing (same-asset
+        // 1h candles) for institutional front-run / sell-the-news detection.
+        // Parallel + fail-open (a candle fetch failure just skips timing).
+        await Promise.all(newsResults.map(async (r) => {
+          if (!r || r.headlineCount === 0) return;
+          try {
+            const candles = await this.fetchTimingCandlesForSymbol(r.symbol);
+            if (candles.length >= 5) {
+              r.priceNewsTiming = computePriceNewsTiming(candles, r.headlines, r.windowHours, r.lexiconHint);
+            }
+          } catch { /* fail-open — timing is supplementary */ }
+        }));
         newsContext = formatNewsForAgentMulti(newsResults);
         const total = newsResults.filter(r => r && r.headlineCount > 0).length;
         if (total > 0) {
