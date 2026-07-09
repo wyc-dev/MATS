@@ -406,7 +406,7 @@ export class PaperTradingEngine {
       `Balance: $${p.balance.toFixed(2)}`,
       `Equity: $${p.totalEquity.toFixed(2)}`,
       `P&L: $${p.totalPnl.toFixed(2)} (${(p.totalPnlPct * 100).toFixed(2)}%)`,
-      `Drawdown: ${(p.maxDrawdownPct * 100).toFixed(2)}%`,
+      `Drawdown: ${(p.currentDrawdownPct * 100).toFixed(2)}% (current — recovers with equity)`,
       `Positions: ${p.positions.size}`,
       `Trades: ${p.tradeCount} (W:${p.winCount} L:${p.lossCount})`,
       `Daily P&L: $${p.dailyPnl.toFixed(2)}`,

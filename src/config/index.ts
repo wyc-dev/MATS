@@ -36,7 +36,7 @@ const envSchema = z.object({
   HACP_PARALLEL_THINKING_TIMEOUT_MS: z.coerce.number().positive().default(30000),
   HACP_MAX_DEBATE_ROUNDS: z.coerce.number().int().positive().default(3),
   // v2.0.73 S2.2: consensus threshold 0.60→0.70 (stricter — requires direction consistency)
-  HACP_CONSENSUS_THRESHOLD: z.coerce.number().min(0).max(1).default(0.70),
+  HACP_CONSENSUS_THRESHOLD: z.coerce.number().min(0).max(1).default(0.50),
   HACP_TOTAL_TIMEOUT_MS: z.coerce.number().positive().default(120000),
   HACP_STAGGER_DELAY_MS: z.coerce.number().positive().default(4000),
   // Real Trading — Binance
