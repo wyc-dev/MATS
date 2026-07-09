@@ -156,40 +156,16 @@ export class HACPEngine {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // v2.0.41: Evolution signalThreshold → consensusThreshold override.
-  //
-  // The Evolution Engine's best strategy signalThreshold (0.1-0.95) is
-  // applied as the HACP consensus threshold. This gives Evolution
-  // DETERMINISTIC control over how strict the consensus must be —
-  // higher signalThreshold = agents need stronger directional agreement.
-  //
-  // The override is applied each cycle BEFORE the decision cycle runs.
-  // adjustThreshold() (loss-streak based) still runs AFTER, adding its
-  // own +0.15 max on top of the Evolution-derived base.
-  //
-  // ⚠️ MAINTENANCE NOTE: If you modify the consensus threshold logic,
-  // you MUST update this comment. The threshold enforcement chain is:
-  //   1. Evolution signalThreshold → setEvolutionThreshold() (base)
-  //   2. adjustThreshold() loss-streak adjustment (+0.15 max on top)
-  //   3. Final threshold used in calcWeightedConsensus() comparison
+  // v2.0.139: Consensus threshold is now purely config-driven + adjusted by
+  // adjustThreshold() (loss-streak / idle / regime). The v2.0.41 Evolution
+  // signalThreshold override has been REMOVED — the EvolutionaryPressureEngine
+  // no longer has deterministic control over the consensus gate (its strategy
+  // pool was empty, getStrategyParameters() threw every cycle, and the override
+  // never actually applied; the effective threshold was always config + adjust).
+  // This dead feedback loop (global-aggregate fitness → signalThreshold) is gone.
   // ═══════════════════════════════════════════════════════════════
-  private evolutionThreshold: number | null = null;
-
-  /** Set the Evolution-derived consensus threshold. Called each cycle
-   *  before executeDecisionCycle(). Pass the best strategy's signalThreshold
-   *  (0.1-0.95). Pass null to disable Evolution override (revert to config). */
-  setEvolutionThreshold(threshold: number | null): void {
-    if (threshold !== null) {
-      // Clamp to reasonable range — signalThreshold is 0.1-0.95
-      this.evolutionThreshold = Math.max(0.1, Math.min(0.95, threshold));
-    } else {
-      this.evolutionThreshold = null;
-    }
-  }
-
-  /** Get the effective consensus threshold (Evolution override or config default). */
   private getEffectiveConsensusThreshold(): number {
-    return this.evolutionThreshold ?? this.consensusThreshold;
+    return this.consensusThreshold;
   }
 
   /** Inject the agent evolution engine for regime-aware dynamic weights. */
@@ -389,31 +365,19 @@ export class HACPEngine {
   }
 
   /**
-   * Get current dynamic consensus threshold value.
-   * v2.0.41: Returns the EFFECTIVE threshold (Evolution override if set,
-   * otherwise the adjustThreshold-adjusted config value).
+   * Get current dynamic consensus threshold value (config base + adjustThreshold
+   * loss-streak/idle/regime adjustments).
    */
   getCurrentThreshold(): number {
     return this.getEffectiveConsensusThreshold();
   }
 
   /**
-   * Dynamically adjust consensus threshold based on market conditions.
-   *
-   * v2.0.41: This now adjusts the BASE threshold (this.consensusThreshold).
-   * If Evolution signalThreshold override is active (this.evolutionThreshold
-   * !== null), the effective threshold is evolutionThreshold — this method's
-   * adjustments are applied ON TOP of the Evolution base via
-   * getEffectiveConsensusThreshold().
-   *
-   * ⚠️ MAINTENANCE NOTE: The threshold enforcement chain is:
-   *   1. Evolution signalThreshold → setEvolutionThreshold() sets base
-   *   2. adjustThreshold() adjusts this.consensusThreshold (loss-streak etc.)
-   *   3. getEffectiveConsensusThreshold() returns evolutionThreshold if set,
-   *      otherwise this.consensusThreshold
-   *   4. calcWeightedConsensus() result compared against effective threshold
-   *
-   * If you change this logic, update getEffectiveConsensusThreshold() too.
+   * Dynamically adjust the consensus threshold based on market conditions.
+   * Adjusts this.consensusThreshold (the config base): lowers on idle cycles
+   * (encourage trades), raises on consecutive losses (capital protection),
+   * regime-aware. Clamped to [0.40, 0.85]. This is the SOLE threshold path —
+   * the v2.0.41 Evolution override was removed in v2.0.139.
    */
   adjustThreshold(currentRegime?: string, hadRealTrade?: boolean, wasProfitable?: boolean): void {
     const initial = config.hacp.consensusThreshold;
