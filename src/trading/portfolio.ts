@@ -45,6 +45,22 @@ export function normalizeSymbol(symbol: string): string {
   return symbol.toLowerCase();
 }
 
+/**
+ * v2.0.137: Detect placeholder entry-thesis strings that must NEVER be stored
+ * on a position. The perSymbolConsensus sync (index.ts) forwards Meta-Agent's
+ * per-cycle thesis, which can be 'N/A', 'Not applicable', 'none', or whitespace
+ * when Meta-Agent didn't produce a real rationale for that symbol this cycle.
+ * Storing such a placeholder would (a) wipe a frozen real thesis if the setter
+ * ever allowed overwrite, and (b) make Skeptics Phase 0.5 auto-invalidate
+ * ("entry thesis empty, no reasoning to evaluate") → premature force-close.
+ */
+export function isThesisPlaceholder(thesis: string | undefined | null): boolean {
+  if (!thesis) return true;
+  const t = thesis.trim().toLowerCase();
+  if (t.length === 0) return true;
+  return t === 'n/a' || t === 'na' || t === 'not applicable' || t === 'none' || t === 'null' || t === '-';
+}
+
 /** Callback fired when a position is closed (SL/TP, reconciliation, or explicit close) */
 export type OnPositionClosed = (trade: TradeRecord) => void;
 /** Callback fired when a position is opened */
@@ -559,17 +575,45 @@ export class PortfolioTracker {
    * v2.0.48: Same PnL formula fix as updatePosition() — removed leverage
    * multiplier. PnL = priceDelta * quantity, not priceDelta * quantity * lev.
    */
-  /** v2.0.134: Set entry thesis on a position (real or paper).
-   *  Used to sync the thesis from HACP consensus to positions that were
-   *  imported via importExchangePosition() (which doesn't set thesis). */
+  /**
+   * v2.0.134: Set entry thesis on a position (real or paper).
+   * v2.0.137 FREEZE: The entry thesis is the rationale that justified OPENING
+   * the position, and Skeptics Phase 0.5 re-validates exactly this thesis each
+   * cycle ("is the ORIGINAL reasoning still valid?"). Previously this setter
+   * overwrote unconditionally every cycle from the perSymbolConsensus sync
+   * (index.ts), so the "original" thesis being re-validated was actually a
+   * MOVING TARGET — constantly replaced with Meta-Agent's latest re-statement
+   * (sometimes 'N/A'/empty), which caused premature/erratic invalidation and
+   * force-closes (positions closed within 6-15 min with near-zero PnL).
+   *
+   * Now the thesis is FROZEN at open: this setter only fills the thesis in
+   * when the position has none yet (e.g. a position re-imported from HL via
+   * importExchangePosition, which carries no thesis — there the best-available
+   * HACP thesis is used). Once a real thesis is set (at openPosition, or here
+   * on first fill), it is never overwritten for the lifetime of the position.
+   *
+   * The live per-cycle reasoning belongs in `holdReason` (setHoldReason),
+   * which is NOT re-validated and may update freely.
+   *
+   * Candidate theses that are placeholders ('', whitespace, 'N/A',
+   * 'Not applicable', 'none') are never stored — they would make Skeptics
+   * auto-invalidate ("entry thesis empty, no reasoning") and force-close.
+   *
+   * @param symbol position symbol (normalised internally)
+   * @param thesis candidate thesis; ignored if the position already has a
+   *               frozen thesis, or if the candidate is a placeholder.
+   */
   setEntryThesis(symbol: string, thesis: string): void {
     const sym = normalizeSymbol(symbol);
     const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(sym);
     if (!pos) return;
-    if (thesis && thesis.trim().length > 0) {
-      pos.entryThesis = thesis.trim();
-      pos.updatedAt = Date.now();
-    }
+    // Already frozen — never overwrite the original entry rationale.
+    if (pos.entryThesis && pos.entryThesis.trim().length > 0) return;
+    // Only store a real thesis; reject placeholders that would trigger
+    // spurious Skeptics invalidation ("empty thesis → no reasoning").
+    if (isThesisPlaceholder(thesis)) return;
+    pos.entryThesis = thesis.trim();
+    pos.updatedAt = Date.now();
   }
 
   /** v2.0.134: Set hold reason on a position (real or paper). */

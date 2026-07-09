@@ -161,3 +161,56 @@ describe('PortfolioTracker paper accounting (Bug #3 fix)', () => {
     expect(balance).toBeCloseTo(initialBalance + totalPnl, 1e-9);
   });
 });
+
+describe('setEntryThesis freeze (v2.0.137 Root Cause B fix)', () => {
+  let tracker: PortfolioTracker;
+
+  beforeEach(() => {
+    tracker = new PortfolioTracker();
+  });
+
+  it('openPosition freezes the original entry thesis', () => {
+    const order = makeOrder('btc', 'buy', 1);
+    tracker.openPosition(order, 60000, 1, '[1h: break 61k] [1d: trend up]');
+    const pos = tracker.getPosition('btc');
+    expect(pos?.entryThesis).toBe('[1h: break 61k] [1d: trend up]');
+  });
+
+  it('setEntryThesis does NOT overwrite an already-frozen thesis', () => {
+    const order = makeOrder('btc', 'buy', 1);
+    const original = '[1h: break 61k] [1d: trend up]';
+    tracker.openPosition(order, 60000, 1, original);
+    tracker.setEntryThesis('btc', '[1h: now needs 62k] [1d: still up]');
+    tracker.setEntryThesis('btc', '[1h: reclaim 63k] [1d: momentum]');
+    expect(tracker.getPosition('btc')?.entryThesis).toBe(original);
+  });
+
+  it('setEntryThesis fills an empty thesis (re-imported position) then freezes it', () => {
+    tracker.importExchangePosition('btc', 'buy', 1, 60000, 1, Date.now());
+    expect(tracker.getPosition('btc')?.entryThesis).toBeUndefined();
+    tracker.setEntryThesis('btc', '[1h: break 61k] [1d: trend up]');
+    expect(tracker.getPosition('btc')?.entryThesis).toBe('[1h: break 61k] [1d: trend up]');
+    tracker.setEntryThesis('btc', '[1h: now 62k]');
+    expect(tracker.getPosition('btc')?.entryThesis).toBe('[1h: break 61k] [1d: trend up]');
+  });
+
+  it('setEntryThesis rejects placeholder theses to prevent spurious invalidation', () => {
+    tracker.importExchangePosition('btc', 'buy', 1, 60000, 1, Date.now());
+    for (const bad of ['', '   ', 'N/A', 'n/a', 'Not applicable', 'none', 'null', '-']) {
+      tracker.setEntryThesis('btc', bad);
+      expect(tracker.getPosition('btc')?.entryThesis).toBeUndefined();
+    }
+    tracker.setEntryThesis('btc', '[1h: break 61k] [1d: trend up]');
+    expect(tracker.getPosition('btc')?.entryThesis).toBe('[1h: break 61k] [1d: trend up]');
+  });
+
+  it('a re-opened position (after close) gets a new frozen thesis', () => {
+    const order = makeOrder('btc', 'buy', 1);
+    tracker.openPosition(order, 60000, 1, 'first thesis');
+    expect(tracker.getPosition('btc')?.entryThesis).toBe('first thesis');
+    tracker.closePosition('btc', 61000);
+    const order2 = makeOrder('btc', 'buy', 1);
+    tracker.openPosition(order2, 61000, 1, 'second thesis');
+    expect(tracker.getPosition('btc')?.entryThesis).toBe('second thesis');
+  });
+});

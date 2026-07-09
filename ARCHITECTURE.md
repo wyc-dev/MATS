@@ -187,6 +187,8 @@ Meta-Agent OLR prompt 已從 stale RBC 文檔重寫為 RR-aware edge 仲裁：ed
 
 **Thesis 重新驗證（v2.0.80 Phase 0.5）**：每循環 Skeptics 重新驗證所有持倉嘅 entryThesis。失效條件：catalyst 已耗、結構破壞、方向 contradicted、1h timeframe 過期。失效 → 強制平倉。
 
+**v2.0.137 Thesis 凍結（Root Cause B fix）**：`entryThesis` 喺開倉時凍結為「原始理據」，之後**永不覆寫**。`PortfolioTracker.setEntryThesis()` 改為 set-if-absent（只喺倉位冇 thesis 時先填入，例如由 HL re-import 嘅倉位），並拒絕 placeholder（`'N/A'`/`'Not applicable'`/空字串）。之前 index.ts 每循環用最新 Meta-Agent thesis 無條件覆寫 entryThesis，令 Skeptics re-validate 嘅「原始 thesis」變成**移動目標**（不斷被改寫，有時被覆寫成 `'N/A'`→自動失效→6-15 分鐘內強制平倉，造成交易太密＋勝率低）。而家 re-validate 針對嘅係開倉時凍結嘅原始理據。Live 每循環 reasoning 改存 `holdReason`（唔被 re-validate，可自由更新）。
+
 **平倉規則（v2.0.103）**：CLOSE 必須 thesis 失效（強制）+ ≥2 其他條件（trend 改變 / ≥2 agents recommend CLOSE / 虧損無恢復 thesis / regime 唔適合 / 新資訊 contradicts）。Thesis 仍有效 → HOLD，無例外。
 
 **Skeptics Approve-First（v2.0.110）**：預設 APPROVE，只係喺搵到具體、會導致輸錢嘅 material flaw 時先 REJECT。唔因「low confidence」「could be manipulation」等弱理由 reject。Error fallback = APPROVE。
@@ -316,6 +318,20 @@ LOG_LEVEL=info
 | Logging | Winston（structured + file rotation） |
 | Testing | vitest（41 tests） |
 | Crypto | `@noble/curves`（HL phantom agent signing） |
+
+---
+
+## v2.0.137 — Thesis 凍結（Root Cause B：修復交易太密＋勝率低）
+
+**症狀**：real trade 全部被 thesis invalidation 6-15 分鐘內強制平倉（唔係 SL/TP），PnL 接近零，open→invalidate→close→再 open churn loop。
+
+**根因 B（本輪修復）**：`setEntryThesis()` 無條件覆寫 → 每循環最新 Meta-Agent thesis 取代原始理據 → Skeptics Phase 0.5 re-validate 一個移動目標 → 有時被覆寫成 `'N/A'`/空 → 自動失效 → 強制平倉。
+
+**修復**：`setEntryThesis` → set-if-absent + 拒絕 placeholder（`isThesisPlaceholder()` helper）。原始開倉理據凍結至平倉；re-import 倉位用 best-available HACP thesis 填入後同樣凍結。`holdReason` 保留為 live 每循環 reasoning（唔被 re-validate）。
+
+**根因 A/D 保留**：re-validation prompt 進取性 + 短 cooldown 係有意設計（緊急應對特殊情況），唔改。
+
+5 個 regression tests（總 53）。tsc clean。
 
 ---
 
