@@ -1,8 +1,8 @@
 # {MATS} — Multi Agent Trading System
 
-> **作者**: YC Wong · **版本**: 2.0.135
+> **作者**: YC Wong · **版本**: 2.0.139
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **代碼量**: ~25,000 行 TypeScript（嚴格模式，零類型錯誤）+ React UI
+> **代碼量**: ~42,000 行 TypeScript（嚴格模式，零類型錯誤）+ React UI
 
 ---
 
@@ -66,7 +66,9 @@ src/
 ├── trading/                 # portfolio · paper-engine · real-trading-manager · cost-model
 ├── risk/                    # 風險引擎 + correlation-budget
 ├── system-guard/            # 5 層保護閘門
-├── evolution/               # 自我演化（見下方專節）
+├── evolution/               # 自我演化（OLR + Shadow + First-Passage + EM + GA + EXP 向量記憶，見下方專節）
+│   ├── embeddings.ts        # v2.0.138: Transformers.js MiniLM 384-d 向量（in-process）
+│   └── thesis-experience.ts # v2.0.138: EXP 理據組合歷史勝率閘（Phase 1.8a）
 ├── analysis/                # sentiment · S/R · ATR · planck-chaos · options · news
 ├── market-agent/            # 自動 pair 選擇（9 DEX, 416 assets, 類別過濾）
 ├── data/                    # Hyperliquid + Binance WebSocket
@@ -74,7 +76,7 @@ src/
 └── index.ts                 # 系統 orchestrator（決策循環）
 ui/                          # React + Vite dashboard (:5173)
 data/evolution/              # olr-state · shadow-state · patterns · GA state
-tests/                       # vitest（41 tests）
+tests/                       # vitest（77 tests）
 ```
 
 ---
@@ -87,12 +89,12 @@ tests/                       # vitest（41 tests）
 | 2 | **Fractal Momentum Sentinel** | 0.85 | 0.10 | 多時間框架碎形自相似模式檢測。趨勢加速早期信號。極端逆向，中間趨勢追隨。 |
 | 3 | **On-Chain Whisperer** | 0.50 | 0.10 | 類別感知鏈上分析。Crypto: mempool/flows/supply。TradFi: DXY/COT/商品/COT 持倉。5 分鐘緩存。 |
 | 4 | **OLR & Sentiment Analyst** | 0.25 | 0.10 | OLR P(win) per side + First-Passage path-risk + Fear & Greed。RR-aware：P(win) 對 breakevenP 計 edge。PRIMARY factor。 |
-| 5 | **News Reporter** | 0.40 | 0.10 | 隱性策略師新聞動機分析。為派發製造的「利好」= 看跌；為收集製造的 FUD = 看漇。 |
+| 5 | **News Reporter** | 0.40 | 0.20 | **Institutional Narrative Decoder（v2.0.139）**。5 部分框架：信息不對稱先驗、價格-新聞時機矩陣、6 桶動機分類（front-run/accumulation-FUD/distribution-hype/narrative-pivot/decoy-smoke/paradigm shift）、權力圖、淨機構調整信號。L3 Meta-Agent 決定性權重（命名動機 + 時機確認時可覆蓋 HOLD 多數）。 |
 | 6 | **Independent Risk Auditor** | 0.10 | 0.25 | **advisory-only（不可 veto）**。TP/SL/size 建議 + 硬性代碼限制（震盪市減倉、loss-streak 漸進減倉、虧損冷卻期）。近期 10 trade 模式分析。 |
 | 7 | **Skeptics** | 0.30 | 0.00 | 邏輯審計員 + 壓力測試員。**Approve-First**——預設 APPROVE，只係喺搵到具體會導致輸錢嘅 material flaw 時先 REJECT。Phase 1.5 審查 5 sub-agents；Phase 1.8 驗證 entryThesis；Phase 0.5 每循環重新驗證持倉 thesis → 失效即強制平倉。 |
 | 8 | **Meta-Agent** | 0.45 | 0.00 | 仲裁主席。偵探模式——積極從事實推理蛛絲馬跡嘗試開倉，絕不歪曲事實。生成 entryThesis。權重 0.00（理據系統控制，唔靠投票）。HOLD 時必須提供 holdReason。 |
 
-> **權重說明**：Meta-Agent + Skeptics 權重 0.00 — 佢哋透過 thesis 系統控制決策，唔參與投票。5 個 sub-agent 加權投票，consensus threshold 60%（由 Evolution 動態調整）。
+> **權重說明**：Meta-Agent + Skeptics 權重 0.00 — 佢哋透過 thesis 系統控制決策，唔參與投票。5 個 sub-agent 加權投票，consensus threshold 50%（由 Evolution 動態調整，floor 0.49）。
 
 ---
 
@@ -114,7 +116,7 @@ PHASE 1.75 Meta-Agent 仲裁（接收 Skeptics 結果後做最終判斷）
 PHASE 1.8 Skeptics 驗證 Meta-Agent entryThesis（強而有力、數據驅動、暗黑心理學、事實扭曲）
           • 拒絕即 HOLD
 PHASE 2-4 結構化辯論（1-3 rounds，unanimous 可跳過）
-PHASE 5   加權投票共識（60% threshold，動態調整）+ 執行
+PHASE 5   加權投票共識（50% threshold，動態調整，floor 0.49）+ 執行
 ```
 
 **時間預算**：Phase 1 平行 ~60s · Skeptics ~10s · Meta-Agent ~10s · 辯論 ~30s · 120s hard timeout → HOLD。
@@ -341,7 +343,7 @@ RISK_TRAILING_STOP_PCT=0.015
 # HACP
 HACP_PARALLEL_THINKING_TIMEOUT_MS=15000
 HACP_MAX_DEBATE_ROUNDS=1
-HACP_CONSENSUS_THRESHOLD=0.60
+HACP_CONSENSUS_THRESHOLD=0.50            # v2.0.139: 0.70→0.50（floor 0.49）
 HACP_TOTAL_TIMEOUT_MS=120000
 HACP_STAGGER_DELAY_MS=6000
 
@@ -366,7 +368,7 @@ LOG_LEVEL=info
 | Frontend | React 18 + Vite + TradingView Chart |
 | Config | Zod schema validation |
 | Logging | Winston（structured + file rotation） |
-| Testing | vitest（41 tests） |
+| Testing | vitest（77 tests，4 test files） |
 | Crypto | `@noble/curves`（HL phantom agent signing） |
 
 ---
