@@ -582,7 +582,16 @@ export class RealTradingManager {
           let sltpSuccess = false;
           for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-              sltpSuccess = await engine.adjustPosition(decision.symbol, slPrice, tpPrice);
+              sltpSuccess = await engine.adjustPosition(
+                decision.symbol,
+                slPrice,
+                tpPrice,
+                // v2.0.139: pass known fill data so SL/TP can be placed even when HL
+                // REST getPositions() lags behind the fresh fill (WS-confirmed but
+                // not yet REST-indexed). Prevents the race that left positions
+                // unprotected on the open cycle.
+                { quantity, side: decision.action === 'buy' ? 'buy' : 'sell', averageEntryPrice: actualEntryPrice, currentPrice: actualEntryPrice },
+              );
               if (sltpSuccess) {
                 log.info(`✅ SL/TP placed on HL (attempt ${attempt}): ${decision.symbol} SL=$${slPrice.toFixed(2)} TP=$${tpPrice.toFixed(2)}`);
                 break;

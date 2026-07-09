@@ -1081,7 +1081,16 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     }
   }
 
-  async adjustPosition(positionId: string, sl?: number, tp?: number): Promise<boolean> {
+  async adjustPosition(
+    positionId: string,
+    sl?: number,
+    tp?: number,
+    /** v2.0.139: Fallback position data (qty/side/entry) from the caller when HL
+     *  REST getPositions() lags behind a fresh fill (WS confirms within ~50ms,
+     *  REST can lag 2-5s). Lets SL/TP be placed on the OPEN cycle without waiting
+     *  for REST indexing — prevents the race that left positions unprotected. */
+    knownPosition?: { quantity: number; side: 'buy' | 'sell'; averageEntryPrice: number; currentPrice?: number },
+  ): Promise<boolean> {
     if (!sl && !tp) {
       // Remove monitoring
       this.stopLossTakeProfit.delete(positionId);
@@ -1096,11 +1105,33 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     try {
       const positions = await this.getPositions();
       // v2.0.31: Match by symbol (passed from realTradingManager) or by positionId
-      const pos = positions.find(p => p.id === positionId)
+      let pos = positions.find(p => p.id === positionId)
         ?? positions.find(p => p.symbol.toLowerCase() === positionId.toLowerCase());
       if (!pos) {
-        log.warn(`Position ${positionId.slice(0, 20)} not found on exchange for SL/TP placement`);
-        return false; // v2.0.33: return false so caller can retry or safety-close
+        // v2.0.139: HL REST getPositions() has an indexing delay after a fill (WS
+        // confirms within ~50ms but REST can lag 2-5s). Previously this returned
+        // false → 3 retries failed → safety-close of a position that was actually
+        // open + WS-confirmed (and the safety-close itself failed because it also
+        // relied on REST). Fall back to the caller-provided knownPosition to place
+        // SL/TP on the OPEN cycle without waiting for REST.
+        if (knownPosition) {
+          const sym = positionId.includes(':') ? positionId : positionId.toUpperCase();
+          pos = {
+            id: positionId as any,
+            symbol: sym,
+            side: knownPosition.side,
+            quantity: knownPosition.quantity,
+            averageEntryPrice: knownPosition.averageEntryPrice,
+            currentPrice: knownPosition.currentPrice ?? knownPosition.averageEntryPrice,
+            unrealizedPnl: 0, unrealizedPnlPct: 0, realizedPnl: 0,
+            leverage: 1, openedAt: Date.now(), updatedAt: Date.now(),
+            agentId: '' as any,
+          };
+          log.info(`[adjustPosition] ${sym}: REST lag — using caller-provided knownPosition (qty=${knownPosition.quantity}, side=${knownPosition.side}, entry=${knownPosition.averageEntryPrice}) to place SL/TP without waiting for REST indexing`);
+        } else {
+          log.warn(`Position ${positionId.slice(0, 20)} not found on exchange for SL/TP placement`);
+          return false; // v2.0.33: return false so caller can retry or safety-close
+        }
       }
 
       const asset = await getAssetIndex(pos.symbol);

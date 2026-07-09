@@ -108,6 +108,10 @@ class MATSSystem {
   // v2.0.139: 5-min cache for 1h candles fetched for price-news timing analysis
   // (avoids re-fetching the same asset's chart every cycle; 80 candles ≈ 3.3d).
   private candleTimingCache: Map<string, { candles: TimingCandle[]; ts: number }> = new Map();
+  // v2.0.139: Remember each position's actual leverage so closed-fill trade
+  // records display the REAL leverage instead of a hardcoded 10x default.
+  // Updated whenever cachedExchangePositions is refreshed; survives the close.
+  private lastKnownLeverage: Map<string, number> = new Map();
   /** v2.0.79: Trading markets list from UI pills — determines which symbols
    *  agents analyze (combined with open positions). Replaces auto-select. */
   private tradingMarkets: string[] = [];
@@ -483,6 +487,7 @@ class MATSSystem {
               leverage: p.leverage ?? 1,
               openedAt: p.openedAt,
             }));
+            for (const p of this.cachedExchangePositions) { this.lastKnownLeverage.set(p.symbol.replace(/^xyz:/i, '').toLowerCase(), p.leverage ?? 1); }
             log.info(`💰 Real HL balance fetched: $${this.cachedExchangeBalance.total.toFixed(2)} | ${this.cachedExchangePositions.length} positions | ${this.cachedHLFills.length} recent fills`);
           } catch (err) {
             log.error(`❌ Failed to fetch real HL balance: ${err instanceof Error ? err.message : String(err)}. Will retry next cycle.`);
@@ -1146,6 +1151,7 @@ class MATSSystem {
               leverage: p.leverage ?? 1,
               openedAt: p.openedAt,
             }));
+            for (const p of this.cachedExchangePositions) { this.lastKnownLeverage.set(p.symbol.replace(/^xyz:/i, '').toLowerCase(), p.leverage ?? 1); }
             log.info(`💰 Real HL balance restored: $${this.cachedExchangeBalance.total.toFixed(2)} | ${this.cachedExchangePositions.length} positions | ${this.cachedHLFills.length} recent fills`);
           } catch (err) {
             log.error(`❌ Failed to fetch real HL balance on startup: ${err instanceof Error ? err.message : String(err)}. Will retry next cycle.`);
@@ -2520,6 +2526,7 @@ class MATSSystem {
             leverage: p.leverage ?? 1,
             openedAt: p.openedAt,
           }));
+          for (const p of this.cachedExchangePositions) { this.lastKnownLeverage.set(p.symbol.replace(/^xyz:/i, '').toLowerCase(), p.leverage ?? 1); }
           // v2.0.79: Ensure all exchange positions are in realPositions map.
           // syncExchangePositions() may have missed some if the DEX fetch
           // failed (429). Now that we have cachedExchangePositions, import
@@ -3542,7 +3549,7 @@ class MATSSystem {
               symbol: psc.symbol,
               entryPrice: pscPrice,
               positionSizePct: psc.positionSizePct,
-              leverage: psc.leverage ?? this.marketAgent.getConfig().leverage,
+              leverage: this.marketAgent.getConfig().leverage, // v2.0.139: config authoritative — agent LLM leverage output ignored (Master Lord sets leverage via Market Agent, not per-trade LLM)
               rationale: psc.rationale,
               urgency: 'soon' as const,
               entryThesis: psc.entryThesis,
@@ -5265,7 +5272,7 @@ class MATSSystem {
                 entryPrice,
                 exitPrice,
                 quantity: f.size,
-                leverage: posMatch?.leverage ?? 10,
+                leverage: posMatch?.leverage ?? this.lastKnownLeverage.get(f.symbol.replace(/^xyz:/i, '').toLowerCase()) ?? this.marketAgent.getConfig().leverage,
                 investment: entryPrice * f.size,
                 pnl: f.closedPnl - f.fee,
                 pnlPct: entryPrice * f.size > 0 ? (f.closedPnl - f.fee) / (entryPrice * f.size) : 0,
