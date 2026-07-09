@@ -42,7 +42,7 @@ import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
-import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent, computePriceNewsTiming, type TimingCandle } from './analysis/news-sentiment.ts';
+import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent, computePriceNewsTiming, normalizeBaseAsset, type TimingCandle } from './analysis/news-sentiment.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord } from './types/index.ts';
 
 const log = createLogger({ phase: 'system' });
@@ -2307,11 +2307,17 @@ class MATSSystem {
         const newsResults = await fetchNewsForSymbols(allSymbols, marketAgentDesc);
         // v2.0.139: enrich each symbol's news with price-news timing (same-asset
         // 1h candles) for institutional front-run / sell-the-news detection.
-        // Parallel + fail-open (a candle fetch failure just skips timing).
-        await Promise.all(newsResults.map(async (r) => {
+        // Use the ORIGINAL allSymbols (with xyz: prefix intact) so HL candleSnapshot
+        // gets the correct coin name for DEX 1-8 assets (xyz:MU, not the normalized
+        // "MU" which fails on HL). Match to news results by normalized base asset.
+        // Parallel + fail-open (a candle fetch failure just skips timing). The
+        // 5-min per-symbol cache deduplicates within the cycle.
+        await Promise.all(allSymbols.map(async (sym) => {
+          const norm = normalizeBaseAsset(sym);
+          const r = newsResults.find(nr => nr && nr.symbol === norm);
           if (!r || r.headlineCount === 0) return;
           try {
-            const candles = await this.fetchTimingCandlesForSymbol(r.symbol);
+            const candles = await this.fetchTimingCandlesForSymbol(sym);
             if (candles.length >= 5) {
               r.priceNewsTiming = computePriceNewsTiming(candles, r.headlines, r.windowHours, r.lexiconHint);
             }

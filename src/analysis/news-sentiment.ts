@@ -122,7 +122,7 @@ type AssetCategory = 'crypto' | 'indices' | 'stocks' | 'commodities' | 'fx' | 'u
 
 // ─── Symbol normalisation (mirrors agents.ts normalizeBaseAsset) ───
 
-function normalizeBaseAsset(symbol: string): string {
+export function normalizeBaseAsset(symbol: string): string {
   const colonIdx = symbol.indexOf(':');
   const stripped = colonIdx >= 0 ? symbol.slice(colonIdx + 1) : symbol;
   return stripped.toUpperCase().replace(/USDT$/, '').replace(/USD$/, '').replace(/PERP$/, '');
