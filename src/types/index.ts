@@ -453,7 +453,7 @@ export interface TradeRecord {
   /** 'open' = position opened; 'closed' = position closed */
   status: 'open' | 'closed';
   /** v2.0.30: How the position was closed — lets agents know if it was system or manual */
-  closeReason?: 'sl_tp' | 'consensus' | 'manual' | 'reconciliation' | 'exchange_closed';
+  closeReason?: 'sl_tp' | 'consensus' | 'manual' | 'reconciliation' | 'exchange_closed' | 'thesis_invalidation';
   /** v2.0.138: Frozen entryThesis captured from the position at close time,
    *  fed to the EXP thesis-experience memory so Skeptics can match rationale
    *  combinations against historical win/loss outcomes. Source: pos.entryThesis

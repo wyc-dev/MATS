@@ -557,8 +557,14 @@ export class AdaptiveNoiseFilter {
       // Under-trading: lower threshold (but not below floor)
       targetConviction = this.config.convictionFloor;
     } else if (ctx.recentWinRate !== undefined && ctx.recentWinRate < 0.4) {
-      // Losing: raise threshold
-      targetConviction = this.config.convictionCeiling * 0.85;
+      // Losing: raise threshold — but cap at ceiling × 0.70 (v2.0.139, was 0.85).
+      // At 0.85 the losing target was 0.64 — above what the Meta-Agent can
+      // typically produce (55-62%), creating a feedback trap: loss → gate
+      // 64% → entries blocked → no new wins → gate never recovers. At 0.70
+      // the target is 0.525 — still tightens on real SL-hit losses but stays
+      // within the Meta-Agent's producible conviction range so re-entry remains
+      // possible after a losing streak.
+      targetConviction = this.config.convictionCeiling * 0.70;
     } else if (ctx.recentWinRate !== undefined && ctx.recentWinRate > 0.6) {
       // Winning: lower threshold
       targetConviction = this.config.convictionFloor + 0.05;

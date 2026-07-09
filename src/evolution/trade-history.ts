@@ -32,6 +32,10 @@ export interface TradeHistoryEntry {
   type: 'real' | 'simulated' | 'exploration';
   /** Confidence from consensus */
   confidence: number;
+  /** v2.0.139: How the position was closed — thesis_invalidation losses are
+   *  excluded from the conviction-gate winRate so the gate only tightens on
+   *  real market-risk losses (SL hit), not thesis-system force-closes. */
+  closeReason?: 'sl_tp' | 'consensus' | 'manual' | 'reconciliation' | 'exchange_closed' | 'thesis_invalidation';
 }
 
 /**
