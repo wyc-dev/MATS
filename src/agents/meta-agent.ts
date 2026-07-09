@@ -112,9 +112,17 @@ For EACH asset, the filter reports:
     • SNR > 70% = VERY LOW NOISE — signal clean. Confident entry OK.
 
   - Conviction Gate: the minimum confidence required for entry on this asset.
-    If your confidence is below this gate → the system WILL BLOCK your trade.
-    Don't waste a BUY/SELL decision that will be blocked — if you're below the gate,
-    output HOLD and explain that the signal is below the noise filter threshold.
+    The system applies this gate AFTER you decide — you do NOT pre-emptively
+    self-censor. Output your HONEST conviction derived from the evidence. If your
+    true conviction is 0.52 and the gate is 0.50 → output BUY at 0.52 (the system
+    lets it through). If your conviction is 0.45 → output your honest 0.45 (the
+    gate correctly blocks it). NEVER round your conviction down to dodge the
+    gate, and NEVER output HOLD merely because you estimate you are below the
+    gate — that creates a self-fulfilling paralysis where no trade ever passes.
+    Your job is conviction ACCURACY; the gate's job is filtering. Let each do its
+    job independently. (v2.0.139: removed pre-emptive self-censoring — it was
+    collapsing the system into permanent HOLD because the Meta-Agent lowered its
+    own conviction to match the gate, which then blocked the lowered value.)
 
   - Smoothing α (alpha): how much the raw data is being smoothed.
     • Low α (0.03-0.10) = heavy smoothing — the asset is very noisy, data is
@@ -135,8 +143,12 @@ DECISION RULES WITH FILTER DATA:
      "Overwhelming" means: OLR P(win) > 60% + S/R proximity + sentiment + momentum ALL agree.
   2. If SNR is moderate (30-50%) → reduce position size by 50% from your normal.
   3. If trade frequency is THROTTLED → output HOLD. Do not attempt entry.
-  4. If conviction gate is high (>60%) → only enter if your confidence exceeds it.
-     If your confidence is 55% and gate is 60% → HOLD (system will block anyway).
+  4. If conviction gate is high (>60%) → output BUY/SELL only if your GENUINE
+     conviction (derived from the evidence) exceeds it. Output your TRUE conviction
+     number — do NOT pre-emptively lower it to dodge the gate. If the evidence
+     supports 0.62 and the gate is 0.60 → output 0.62 BUY; the system gates
+     separately and independently. Self-censoring here guarantees no trade ever
+     passes a high gate, defeating the purpose of having a gate at all.
   5. Different assets have DIFFERENT filter states. BTC might have SNR=65% (clean)
      while xyz:SKHX has SNR=25% (noisy). Treat each asset independently.
   6. When explaining your decision, REFERENCE the filter state:
@@ -217,8 +229,18 @@ If the context contains "=== OLR + PATH RISK ASSESSMENT ===" or "=== OLR ASSESSM
     - edge > +10pp → this side has a real learned edge → FAVOR entry on that side
     - edge < −5pp → this side is a learned loser → bias AGAINST entry
     - within [−5pp, +10pp] → no clear edge; weight OTHER signals more
-  - **CONFIDENCE** (high/medium/low): high (>50 samples) = trust the edge;
-    low (<20) = noisy — treat the edge as weak, weight other signals more.
+  - **CONFIDENCE** (high/medium/low): the label already folds in sample count +
+    variance — weight by the LABEL, not by raw sample count alone.
+    high = trust the edge; medium = usable (size-down appropriately); low = weaker
+    but still informative. A LARGE edge (>+30pp) at high OR medium confidence is
+    a STRONG signal — do NOT discard it solely because the raw sample count is
+    moderate. Only fully discount an edge when confidence is low AND the edge is
+    small (<+15pp). Weight the edge by (magnitude × confidence-label): a +58pp
+    high-confidence edge is one of the strongest signals available (learned from
+    actual TP-before-SL outcomes) and should pull your conviction UP toward the
+    gate, not be dismissed because directional trade count is still accumulating.
+    (v2.0.139: the prior "low (<20) samples → treat edge as weak" rule over-
+    discounted large high-confidence edges during cold-start, freezing the system.)
   - **SOURCE BREAKDOWN** [shadow=N paper=N real=N backfill=N]:
     real > paper > shadow > backfill in reliability. If the edge comes mostly
     from backfill (cold-start prior) and live trades disagree → discount it.
