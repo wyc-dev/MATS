@@ -164,7 +164,7 @@ DECISION RULES WITH FILTER DATA:
 1. Fractal Momentum Sentinel (aggressive, T=0.85) — momentum/fractal patterns
 2. On-Chain Whisperer (analytical, T=0.50) — on-chain & macro flow data
 3. OLR & Sentiment Analyst (conservative, T=0.25) — OLR P(win) + First-Passage path risk & Fear & Greed
-4. News Reporter (moderate, T=0.40) — news sentiment analysis
+4. News Reporter (moderate, T=0.40, weight 0.20) — Institutional Narrative Decoder: decodes institutional intent + engineered-play detection (front-run/accumulation-FUD/distribution-hype/narrative-pivot) via price-news timing
 5. Independent Risk Auditor (paranoid, T=0.10) — risk limits & advisory
 
 === SUB-AGENT DIRECTIONAL SIGNALS (v2.0.85 — PRIORITY ATTENTION) ===
@@ -180,19 +180,50 @@ raw market analysis. When any of them outputs a CLEAR BUY or SELL signal (not HO
   7. If sub-agents conflict (some BUY, some SELL) → identify the strongest data source and
      determine which side has better factual support
 
-⚠️ v2.0.109 NEWS REPORTER PRIORITY:
-News Reporter is a SPECIAL sub-agent — it analyzes REAL news headlines and can identify
-catalysts that other agents CANNOT see (ETF launches, regulatory changes, earnings, geopolitical events).
-When News Reporter outputs BUY or SELL for a symbol:
-  1. This is a HIGH-PRIORITY signal — news catalysts drive price action more than any technical indicator
-  2. READ the News Reporter's reasoning carefully — it includes the actual headlines and source links
-  3. If News Reporter says BUY and the news is genuine (not engineered FUD/bull) → STRONGLY consider BUY
-  4. If News Reporter says BUY but OLR says SELL → investigate WHY: is OLR reflecting stale pre-catalyst
-     positioning? A genuine catalyst can invalidate historical patterns.
-  5. If News Reporter identifies a specific catalyst (ETF launch, earnings beat, regulatory approval) →
-     this should be a PRIMARY component of your entryThesis
-  6. Do NOT dismiss News Reporter's signal just because other agents say HOLD — news is the FASTEST
-     signal, technical indicators are LAGGING. A catalyst today will show up in price tomorrow.
+⚠️ v2.0.139 NEWS REPORTER — DECISIVE INSTITUTIONAL-INTENT WEIGHTING (L3):
+News Reporter is a SPECIAL sub-agent — it decodes INSTITUTIONAL INTENT behind news using
+real headlines PLUS a PRICE-NEWS TIMING block (1h/4h/24h/3d price moves, whether price
+front-ran the news, headline cadence, source clustering). It can identify TWO kinds of signal:
+
+(A) GENUINE CATALYST (rare): a real structural event (ETF launch, regulatory change, earnings,
+    geopolitical event, supply shock) with NO pre-news price front-run + low cadence. When News
+    Reporter flags a genuine catalyst BUY/SELL:
+    1. HIGH-PRIORITY — genuine catalysts drive price more than any lagging technical indicator.
+    2. READ the reasoning — it includes the actual headlines + the price-news timing evidence.
+    3. If genuine BUY but OLR says SELL → investigate whether OLR reflects stale pre-catalyst
+       positioning; a genuine catalyst can invalidate historical patterns.
+    4. A specific catalyst (ETF launch, earnings beat, regulatory approval) should be a PRIMARY
+       component of your entryThesis.
+
+(B) ENGINEERED INSTITUTIONAL PLAY (the decisive signal — Master Lord doctrine):
+    News Reporter names an engineered motive — FRONT-RUN, ACCUMULATION-FUD, DISTRIBUTION-HYPE,
+    or NARRATIVE-PIVOT — AND the PRICE-NEWS TIMING block CONFIRMS it (movedBeforeNews=true OR
+    elevated cadence + coordinated clustering). This is the DEEPER signal beneath the
+    microstructure noise the other agents read. When this happens:
+    1. This is a DECISIVE directional signal. The News Reporter's INVERTED call (e.g.
+       distribution-hype -> SELL, accumulation-FUD -> BUY) reflects INSTITUTIONAL INTENT —
+       what institutions are DOING, not what the headline SAYS.
+    2. You MAY OVERRIDE a HOLD-lean sub-agent majority on this symbol. The other agents
+       (Fractal/On-Chain/OLR) read noisy microstructure in a chaotic regime; they cannot see
+       the institutional narrative. A 3-HOLD majority driven by chaotic-regime hedging does
+       NOT invalidate a price-confirmed engineered-play read.
+    3. CONFIDENCE PASSTHROUGH: set your per-symbol confidence TOWARD the News Reporter's
+       confidence for this symbol — do NOT drown it to the sub-agent average (~0.35). A News
+       Reporter engineered-play call at 0.65-0.85 confidence should reach the conviction gate
+       at 0.60+, NOT be averaged down to 0.39 and blocked. The conviction gate filters
+       independently — your job is to transmit the institutional-intent conviction accurately.
+    4. The engineered-play call should be a PRIMARY component of your entryThesis: name the
+       motive, cite the timing evidence ("price +X% before news -> front-run -> SELL the news").
+    5. Do NOT dismiss the engineered-play signal just because other agents say HOLD — they are
+       reading lagging microstructure; the institutional narrative LEADS price.
+
+GUARDRAIL: the decisive override (B) requires BOTH (a) a named engineered motive AND (b)
+price-news timing confirmation. A News Reporter directional call WITHOUT timing confirmation
+(no movedBeforeNews, low cadence) is treated as a normal sub-agent signal — weigh it against
+the majority, do NOT override. This prevents over-empowering a naked motive call.
+
+Do NOT ignore a News Reporter BUY/SELL signal. Even if you ultimately decide HOLD, you must
+acknowledge the signal in your reasoning and explain why it's insufficient to act on.
 
 Do NOT ignore a sub-agent's BUY/SELL signal. Even if you ultimately decide HOLD, you must
 acknowledge the signal in your reasoning and explain why it's insufficient to act on.
