@@ -3954,10 +3954,20 @@ class MATSSystem {
       // Block new entries if:
       //   1. Consensus confidence is below the adaptive conviction threshold, OR
       //   2. Trade frequency limit is reached (over-trading prevention)
+      // v2.0.140: Use PER-SYMBOL confidence from perSymbolConsensus, not the
+      // overall consensus.confidence (which is diluted by HOLD symbols).
+      // This is the same fix as v2.0.132 for the multi-symbol path — the
+      // active-symbol path was never fixed and still used the diluted
+      // overall confidence, causing the conviction gate to block all
+      // entries when other symbols were HOLD.
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
         const symFilter = this.assetFilterRegistry.getFilter(finalDecision.symbol || activeSymbol);
         const convictionThreshold = symFilter.getConvictionThreshold();
-        const consensusConfidence = result.consensus.confidence;
+        // v2.0.140: Use per-symbol confidence if available, fall back to overall
+        const activePscForGate = (result.consensus.perSymbolConsensus ?? []).find(
+          psc => normalizeSymbol(psc.symbol) === normalizeSymbol(finalDecision.symbol || activeSymbol),
+        );
+        const consensusConfidence = activePscForGate?.confidence ?? result.consensus.confidence;
         if (consensusConfidence < convictionThreshold) {
           log.warn(`🛑 [adaptive-filter] Conviction gate [${finalDecision.symbol || activeSymbol}]: ${(consensusConfidence * 100).toFixed(0)}% < threshold ${(convictionThreshold * 100).toFixed(0)}% — overriding ${finalDecision.action.toUpperCase()} → HOLD (signal below noise floor)`);
           activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(consensusConfidence * 100).toFixed(0)}% < ${(convictionThreshold * 100).toFixed(0)}%` });
