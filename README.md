@@ -130,6 +130,7 @@ src/
 │   ├── embeddings.ts                   # v2.0.138: Transformers.js MiniLM 384-d vectors (in-process)
 │   ├── thesis-experience.ts            # v2.0.138: EXP thesis-combo historical win-rate gate (Phase 1.8a)
 │   ├── experience-digester.ts          # v2.0.140: A2A Experience Digester (LLM lesson → embed → cluster → classify)
+│   ├── cycle-summary.ts                # v2.0.140: EM Cycle Digestion (MiniLM insight retrieval + self-adjustment)
 │   ├── trade-pattern-classifier.ts     # Supervised KNN pattern DB (Wilson score)
 │   ├── cycle-summary.ts                # EM Cycle Summary Manager (tiered memory)
 │   ├── agent-outcomes.ts               # Per-agent performance tracking
@@ -159,7 +160,7 @@ tests/                                  # ✅ vitest (94 tests, 5 test files)
 
 **Cold-Start Backfill** (`olr-backfill.ts`): First cycle per market replays 186 historical HL M5 candles into OLR. Non-blocking; idempotent (skips warm markets ≥20 samples).
 
-**Layer 2 — EM Cycle Chain** (`cycle-summary.ts`): Meta-Agent distills each cycle → structured summary; previous summaries feed next cycle. Tiered memory: hot(12) + warm(288) + cold(48 epochs).
+**Layer 2 — EM Cycle Chain** (`cycle-summary.ts`): Meta-Agent distills each cycle → structured summary; previous summaries feed next cycle. Tiered memory: hot(12) + warm(288) + cold(48 epochs). **v2.0.140 EM Cycle Digestion**: each summary's keyInsight is embedded by MiniLM into a 384-dim vector. At cycle start, the current market description is queried against all historical insight vectors → top-3 similar past cycles injected into Meta-Agent context. Self-adjusting: trade win/loss outcomes are fed back to the insights retrieved when the trade was opened, with EMA-smoothed accuracy tracking. Persisted to `em-state.json` (survives restarts). Backfill script: `scripts/backfill-em-state.ts` constructs CycleSummaries from `data/exp/trades.jsonl`.
 
 **Layer 3 — GA + Pattern DB**: Survival Fitness (Profit Efficiency 35% + Return 25% + Capital Preservation 20% + Win Quality 10% + Consistency 5% + Adaptability 5%). Directional mutation toward weakest dimension. KNN pattern DB with Wilson-score 95% confidence lower bound + time-weighted win/loss (half-life 7 days).
 
