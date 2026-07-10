@@ -613,6 +613,41 @@ export function loadDebateHistory(): {
   }
 }
 
+// ─── EM State Persistence (v2.0.140) ───
+// Saves/loads CycleSummaryManager state (summaries + convergence accuracy)
+// so the EM Cycle Digestion system retains its memory across restarts.
+// Without this, every restart loses all cycle insights → EM Cycle Digestion
+// starts from 0 → MiniLM semantic retrieval has nothing to query.
+
+export function saveEMState(state: { summaries: unknown[]; convergenceAccuracy: number; convergenceChecks: number }): boolean {
+  try {
+    ensureDir();
+    const filePath = path.join(DATA_DIR, 'em-state.json');
+    lockedWrite(filePath, JSON.stringify(state, null, 2));
+    return true;
+  } catch (err) {
+    log.warn(`Failed to save EM state: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+export function loadEMState(): { summaries: unknown[]; convergenceAccuracy: number; convergenceChecks: number } | null {
+  try {
+    const filePath = path.join(DATA_DIR, 'em-state.json');
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(raw) as { summaries?: unknown[]; convergenceAccuracy?: number; convergenceChecks?: number };
+    return {
+      summaries: Array.isArray(parsed.summaries) ? parsed.summaries : [],
+      convergenceAccuracy: typeof parsed.convergenceAccuracy === 'number' ? parsed.convergenceAccuracy : 0.5,
+      convergenceChecks: typeof parsed.convergenceChecks === 'number' ? parsed.convergenceChecks : 0,
+    };
+  } catch (err) {
+    log.warn(`Failed to load EM state: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
 // ─── Market Agent Config Persistence (v2.0.78) ───
 // Saves/loads Market Agent config (tradeMode, positionSizePct, maxPortionPct,
 // leverage, selectedSymbol, hyperliquidAssetType) so user settings survive

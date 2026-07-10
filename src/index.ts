@@ -14,7 +14,7 @@ import { RiskEngine } from './risk/engine.ts';
 import { PortfolioTracker, normalizeSymbol, isThesisPlaceholder } from './trading/portfolio.ts';
 import { PaperTradingEngine, type ExecutionReport } from './trading/paper-engine.ts';
 import { EvolutionOrchestrator } from './evolution/index.ts';
-import { savePortfolio, saveDebateHistory, loadDebateHistory } from './evolution/persistence.ts';
+import { savePortfolio, saveDebateHistory, loadDebateHistory, saveEMState, loadEMState } from './evolution/persistence.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { FractalMomentumSentinel, OnChainWhisperer, OLRSentimentAnalyst, IndependentRiskAuditor, NewsReporter, SkepticsAgent, getLastFearGreedValue } from './agents/agents.ts';
@@ -43,7 +43,7 @@ import { calculateFirstPassage, estimateDrift, estimateVolatility, type FirstPas
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
 import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent, computePriceNewsTiming, normalizeBaseAsset, type TimingCandle } from './analysis/news-sentiment.ts';
-import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord } from './types/index.ts';
+import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord, CycleSummary } from './types/index.ts';
 
 const log = createLogger({ phase: 'system' });
 
@@ -270,7 +270,20 @@ class MATSSystem {
       // 3.9 Initialize EM CycleSummaryManager
       log.info('Step 3.9/8: Initializing EM CycleSummary Manager...');
       this.emManager = new CycleSummaryManager();
-      log.info('✓ EM CycleSummary Manager ready');
+      // v2.0.140: Load persisted EM state so cycle insights survive restarts.
+      // Without this, every restart loses all 4000+ cycle insights →
+      // EM Cycle Digestion starts from 0 → MiniLM retrieval has nothing to query.
+      const savedEM = loadEMState();
+      if (savedEM && savedEM.summaries.length > 0) {
+        this.emManager.load({
+          summaries: savedEM.summaries as CycleSummary[],
+          convergenceAccuracy: savedEM.convergenceAccuracy,
+          convergenceChecks: savedEM.convergenceChecks,
+        });
+        log.info(`✓ EM CycleSummary Manager loaded ${savedEM.summaries.length} summaries from disk (accuracy ${(savedEM.convergenceAccuracy * 100).toFixed(0)}%, ${savedEM.convergenceChecks} checks)`);
+      } else {
+        log.info('✓ EM CycleSummary Manager ready (no persisted state — starting fresh)');
+      }
 
       // 3.10 Initialize OLR + Shadow Trade Engine (replaces RBC)
       // OLR learns P(win) from shadow trade outcomes (TP-before-SL) + real trade outcomes.
@@ -4516,6 +4529,11 @@ class MATSSystem {
         debateRounds: result.debateRounds,
         allThoughts: result.allThoughts,
       });
+      // v2.0.140: Persist EM state (cycle summaries + convergence) so
+      // EM Cycle Digestion retains its memory across restarts.
+      if (this.emManager) {
+        saveEMState(this.emManager.getState());
+      }
 
       // 10. Print portfolio summary
       // v2.0.30: In real mode, show exchange balance instead of paper mirror
@@ -5546,10 +5564,11 @@ class MATSSystem {
   }
 
   async stop(): Promise<void> {
-    // Persist evolution state + portfolio + OLR + shadow trades before shutdown
+    // Persist evolution state + portfolio + OLR + shadow trades + EM state before shutdown
     this.evolution.persistState();
     this.persistPortfolio();
     this.persistOLR();
+    if (this.emManager) saveEMState(this.emManager.getState());
     this.stopTimers();
     await this.apiServer?.stop();
     await this.multiWs?.disconnect();
