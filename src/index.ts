@@ -1100,6 +1100,26 @@ class MATSSystem {
         directionAllowed: (sym: string, side: 'buy' | 'sell') => this.marketAgent.isDirectionAllowed(sym, side),
       });
       this.hacpEngine.setExpMemory(this.expMemory);
+      // v2.0.140: Dual-Channel Fusion — provide OLR P(win) + shadow win rate
+      // to HACP so checkThesisHistory() can cross-reference semantic vs statistical.
+      this.hacpEngine.setFusionDataCallback((symbol: string, side: 'buy' | 'sell') => {
+        const result: { olrPWin?: number; shadowWinRate?: number } = {};
+        try {
+          const sym = symbol.toLowerCase();
+          const features = this.lastCycleShadowContexts.get(sym)?.features ?? {};
+          if (Object.keys(features).length > 0) {
+            const olr = this.olrEngine.query(sym, features, side, this.totalCycles);
+            result.olrPWin = olr.pWin;
+          }
+        } catch { /* non-critical */ }
+        try {
+          const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === symbol.toLowerCase());
+          if (shadowStats) {
+            result.shadowWinRate = side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
+          }
+        } catch { /* non-critical */ }
+        return result;
+      });
       if (config.exp.enabled) {
         try {
           this.expMemory.load();

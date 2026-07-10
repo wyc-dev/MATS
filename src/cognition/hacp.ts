@@ -195,6 +195,14 @@ export class HACPEngine {
     this.expMemory = exp;
   }
 
+  /** v2.0.140: Dual-Channel Fusion — callback to fetch OLR P(win) + shadow win rate
+   *  for a symbol+side. Injected by index.ts so HACP can pass statistical channel
+   *  data to checkThesisHistory() without a direct dependency on OLR/shadow engines. */
+  private fusionDataCallback: ((symbol: string, side: 'buy' | 'sell') => { olrPWin?: number; shadowWinRate?: number }) | null = null;
+  setFusionDataCallback(cb: (symbol: string, side: 'buy' | 'sell') => { olrPWin?: number; shadowWinRate?: number }): void {
+    this.fusionDataCallback = cb;
+  }
+
   /** v2.0.138: Override the Meta-Agent thought's decision (action / thesis / rationale).
    *  Used by EXP Phase 1.8a for REJECT (→HOLD) and REVERSE_DIRECTION (→opposite side).
    *  Preserves the multiSymbolDecision + decision metadata shape that downstream
@@ -872,8 +880,18 @@ export class HACPEngine {
     if (this.expMemory && this.expMemory.getCfg().enabled
         && (metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition) {
       try {
+        // v2.0.140: Dual-Channel Fusion — fetch OLR P(win) + shadow win rate
+        // for this symbol+side and pass to checkThesisHistory. The fusion layer
+        // cross-references the semantic verdict against the statistical channels.
+        let fusionData: { olrPWin?: number; shadowWinRate?: number } = {};
+        if (this.fusionDataCallback) {
+          try {
+            fusionData = this.fusionDataCallback(metaSymbol, metaAction);
+          } catch { /* non-critical — fusion is supplementary */ }
+        }
         const expResult = await this.expMemory.checkThesisHistory({
           thesis: metaThesis, symbol: metaSymbol, side: metaAction, marketCtx: marketStateDesc,
+          ...fusionData,
         });
         const v = expResult.verdict;
         const expAction: ExpAction = {

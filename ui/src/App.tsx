@@ -2279,13 +2279,42 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
               {/* MiniLM Neural Pipeline visualization */}
               <MiniLMPipeline parsed={parsed} total={parsed.total} />
 
-              {/* Streak + PnL headline */}
-              <div className="exp-headline-row">
-                <div className="exp-headline-streak">
-                  {parsed.streak >= 3 && <span className="exp-streak-badge">{parsed.streak} losing streak</span>}
+              {/* Dual-Channel Fusion indicator */}
+              <div className="exp-fusion-banner">
+                <div className="exp-fusion-channel semantic">
+                  <div className="exp-fusion-ch-label">Semantic</div>
+                  <div className="exp-fusion-ch-value">MiniLM</div>
+                  <div className="exp-fusion-ch-desc">{parsed.total} trades · {parsed.losingClasses.length + parsed.winningClasses.length} classes</div>
                 </div>
-                <div className="exp-headline-pnl">
-                  Net PnL: <span style={{ color: parsed.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{parsed.netPnl >= 0 ? '+' : ''}{parsed.netPnl.toFixed(3)}</span>
+                <div className="exp-fusion-link" />
+                <div className="exp-fusion-channel statistical">
+                  <div className="exp-fusion-ch-label">Statistical</div>
+                  <div className="exp-fusion-ch-value">OLR + Shadow</div>
+                  <div className="exp-fusion-ch-desc">P(win) cross-reference</div>
+                </div>
+              </div>
+
+              {/* Headline stats grid */}
+              <div className="exp-stats-grid">
+                <div className="exp-stat-card">
+                  <div className="exp-stat-value" style={{ color: parsed.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                    {parsed.netPnl >= 0 ? '+' : ''}{parsed.netPnl.toFixed(3)}
+                  </div>
+                  <div className="exp-stat-label">Net PnL</div>
+                </div>
+                <div className="exp-stat-card">
+                  <div className="exp-stat-value">{parsed.wins}<span className="exp-stat-sep">/</span>{parsed.losses}</div>
+                  <div className="exp-stat-label">W / L</div>
+                </div>
+                <div className="exp-stat-card">
+                  <div className="exp-stat-value">{parsed.total}</div>
+                  <div className="exp-stat-label">Trades</div>
+                </div>
+                <div className="exp-stat-card">
+                  <div className={`exp-stat-value ${parsed.streak >= 3 ? 'streak-warn' : ''}`}>
+                    {parsed.streak}
+                  </div>
+                  <div className="exp-stat-label">Streak</div>
                 </div>
               </div>
 
@@ -2305,7 +2334,7 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
                   count={parsed.exitQuality.prematureLossCount}
                   total={parsed.losses}
                   color="var(--red)"
-                  label="Premature close (≤8min loss)"
+                  label="Premature close (loss)"
                   pnl={parsed.exitQuality.prematureLossPnl}
                   isMajor={parsed.exitQuality.isMajor}
                 />
@@ -2313,7 +2342,7 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
                   count={parsed.exitQuality.prematureWinCount}
                   total={parsed.wins}
                   color="var(--green)"
-                  label="Premature close (≤8min win)"
+                  label="Premature close (win)"
                   pnl={parsed.exitQuality.prematureWinPnl}
                 />
                 {parsed.exitQuality.longWinCount > 0 && (
@@ -2321,7 +2350,7 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
                     count={parsed.exitQuality.longWinCount}
                     total={parsed.wins}
                     color="var(--accent)"
-                    label="Long holds (>30min wins)"
+                    label="Long holds (win)"
                     pnl={parsed.exitQuality.longWinPnl}
                   />
                 )}
