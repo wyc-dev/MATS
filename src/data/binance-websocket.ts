@@ -558,6 +558,17 @@ export class MarketStateAggregator {
     // returns| underestimated diffusion by ~20% and caused ALL regimes to
     // classify as low_volatility, which led to premature closes + false
     // regime classification across the entire system.
+    //
+    // v2.0.140b: The priceHistory stores ~100 WS ticks (~10s of data at
+    // ~100ms/tick). Tick-level σ is naturally very low (0.01-0.05%). The
+    // RegimeCalibrator thresholds (volLow=0.003, volHigh=0.03) were calibrated
+    // for cycle-level (5-min) σ, not tick-level σ. This mismatch caused ALL
+    // regimes to classify as low_volatility.
+    //
+    // Fix: annualize the tick-level σ to a per-cycle (5-min) σ by multiplying
+    // by √(ticksPerCycle). With ~100 ticks stored over ~10s and a 5-min cycle,
+    // ticksPerCycle ≈ 300 (5min / 1s per tick). This scales the σ to match
+    // the threshold calibration.
     const logReturns: number[] = [];
     for (let i = 1; i < prices.length; i++) {
       const prev = prices[i - 1]!;
@@ -569,8 +580,19 @@ export class MarketStateAggregator {
     if (logReturns.length < 2) return 0;
     const mean = logReturns.reduce((a, b) => a + b, 0) / logReturns.length;
     const variance = logReturns.reduce((a, b) => a + (b - mean) ** 2, 0) / (logReturns.length - 1);
-    const sigma = Math.sqrt(Math.max(variance, 0));
-    return Number.isFinite(sigma) ? sigma : 0;
+    const tickSigma = Math.sqrt(Math.max(variance, 0));
+    if (!Number.isFinite(tickSigma)) return 0;
+    // Scale tick-level σ to per-cycle σ: σ_cycle = σ_tick × √(ticksPerCycle)
+    // ticksPerCycle ≈ cycleDuration / avgTickInterval
+    // With 100 ticks over ~10s, avgTickInterval ≈ 0.1s, cycleDuration = 300s (5min)
+    // ticksPerCycle ≈ 300 / 0.1 = 3000... but that's too aggressive.
+    // More conservative: use √(cycleDuration / historyDuration) where
+    // historyDuration ≈ 10s, cycleDuration = 300s → √(30) ≈ 5.5
+    // This scales a 0.02% tick σ to ~0.11% cycle σ — within the threshold range.
+    const historyDurationSec = prices.length * 0.1; // ~10s for 100 ticks at 100ms
+    const cycleDurationSec = 300; // 5-min decision cycle
+    const scaleFactor = Math.sqrt(Math.max(1, cycleDurationSec / Math.max(1, historyDurationSec)));
+    return tickSigma * scaleFactor;
   }
 
   private calcTrend(ticker: Ticker | undefined, volatility: number): Trend {
