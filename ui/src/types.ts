@@ -203,6 +203,8 @@ export interface APIData {
   evolution?: EvolutionData;
   /** v2.0.140: EM Cycle Digestion — MiniLM insight retrieval + self-adjustment */
   emState?: EMState;
+  /** v2.0.141: RIL Reason Intelligence Layer stats */
+  rilState?: RILState;
   /** GMM EM clustering model summary (per-symbol) — DEPRECATED, use olrState */
   emClusterState?: {
     symbols: Array<{
@@ -517,4 +519,11 @@ export interface EMState {
   latestInsight: string | null;
   latestSignal: string | null;
   insightStats?: EMInsightStats;
+}
+
+/** v2.0.141: RIL Reason Intelligence Layer state for UI display. */
+export interface RILState {
+  patternCount: number;
+  tradeCount: number;
+  isBuilt: boolean;
 }

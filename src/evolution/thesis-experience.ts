@@ -1020,6 +1020,11 @@ export class ThesisExperience {
   }
 
   /** Get all records (tests only). */
+  /** Get all records (for RIL / analytics). */
+  getRecords(): ThesisExperienceRecord[] {
+    return [...this.records];
+  }
+
   _records(): ThesisExperienceRecord[] {
     return [...this.records];
   }

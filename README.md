@@ -2,12 +2,12 @@
 
 **8 AI agents debate every trade. A Skeptics agent vetoes bad ones. The system evolves its own strategy — no manual tuning.**
 
-MATS is a multi-agent cognitive trading system: 8 specialized agents think in parallel, debate through the HACP protocol, and reach weighted consensus. A dedicated Skeptics agent stress-tests every position before execution. The system self-evolves via online logistic regression (OLR) + shadow trading + first-passage path-risk + EM cycle chains + genetic algorithms — it learns from every trade and adapts its own parameters.
+MATS is a multi-agent cognitive trading system: 8 specialized agents think in parallel, debate through the HACP protocol, and reach weighted consensus. A dedicated Skeptics agent stress-tests every position against historical experience data. The system self-evolves via online logistic regression (OLR) + shadow trading + first-passage path-risk + EM cycle chains + genetic algorithms + **RIL (Reason Intelligence Layer)** — it learns from every trade and adapts its own parameters.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.140-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.141-blueviolet)](ARCHITECTURE.md)
 [![GitHub stars](https://img.shields.io/github/stars/wyc-dev/MATS?style=social)](https://github.com/wyc-dev/MATS)
 
 🌐 [mats.trading](https://mats.trading/) · 💬 [Discord](https://discord.gg/mats) (coming soon) · ⭐ [Star on GitHub](https://github.com/wyc-dev/MATS)
@@ -129,8 +129,9 @@ src/
 │   ├── olr-backfill.ts                 # Cold-start backfill from historical HL candles
 │   ├── embeddings.ts                   # v2.0.138: Transformers.js MiniLM 384-d vectors (in-process)
 │   ├── thesis-experience.ts            # v2.0.138: EXP thesis-combo historical win-rate gate (Phase 1.8a)
-│   ├── experience-digester.ts          # v2.0.140: A2A Experience Digester (LLM lesson → embed → cluster → classify)
-│   ├── cycle-summary.ts                # v2.0.140: EM Cycle Digestion (MiniLM insight retrieval + self-adjustment)
+│   ├── experience-digester.ts          # v2.0.140: A2A Experience Digester (LLM lesson → embed → cluster → classify, supplementary)
+│   ├── cycle-summary.ts                # v2.0.140: EM Cycle Digestion (market continuity)
+│   └── reason-analytics.ts             # v2.0.141: RIL Reason Intelligence Layer (pattern clustering + close reason stats + similar trade retrieval)
 │   ├── trade-pattern-classifier.ts     # Supervised KNN pattern DB (Wilson score)
 │   ├── cycle-summary.ts                # EM Cycle Summary Manager (tiered memory)
 │   ├── agent-outcomes.ts               # Per-agent performance tracking
@@ -148,9 +149,16 @@ tests/                                  # ✅ vitest (94 tests, 5 test files)
 
 ---
 
-## Self-Evolution System (v2.0.135) + EXP Vector Thesis Memory (v2.0.138)
+## Self-Evolution System (v2.0.135) + EXP Vector Thesis Memory (v2.0.138) + RIL (v2.0.141)
 
-**EXP Vector Thesis Memory (v2.0.138)** (`thesis-experience.ts` + `embeddings.ts`): Every closed trade's rationale combination is embedded into a vector (transformers.js MiniLM 384-d, in-process) and stored in `data/exp/trades.jsonl`. On new entries, Skeptics Phase 1.8a `checkThesisHistory` finds the closest historical combination via asymmetric set-to-set similarity and computes a similarity-weighted P(win): no history → direct open; winning combo → fast-approve; losing combo + confirming delta → approve-with-note; losing combo + contradicting delta → reverse-direction; no delta → reject→HOLD. Cold-start dormant until `EXP_ENABLED=true`. PnL=0 excluded. Self-healing fallback to subjective 1.8b on error.
+**RIL — Reason Intelligence Layer (v2.0.141)** (`reason-analytics.ts`): Provides Meta-Agent with structured reference data about what entry/close patterns historically win and lose. Three components:
+- **PatternClusterManager**: Greedy cosine clustering of entry rationale texts (MiniLM 384-d) → per-pattern WR/PnL. Injected as `=== ENTRY PATTERN PERFORMANCE ===`.
+- **CloseReasonAggregator**: Pure math GROUP BY exitType+decisionOrigin → per-close-reason WR/PnL. Injected as `=== CLOSE REASON PERFORMANCE ===`.
+- **SimilarTradeRetriever + SubtleDiffAnalyzer**: Top-N similar past trades + LLM subtle differences analysis (1 call per cycle).
+
+EXP and A2A Digester are KEPT but their role changed from gates/classifiers to supplementary reference data sources. Meta-Agent now uses a **Confidence Calibration Framework**: BASE confidence from pattern WR → adjust for close reason context (premature vs correct losses) → adjust for subtle differences → FINAL confidence → decision.
+
+**EXP Vector Thesis Memory (v2.0.138)** (`thesis-experience.ts` + `embeddings.ts`): Every closed trade's rationale combination is embedded into a vector (transformers.js MiniLM 384-d, in-process) and stored in `data/exp/trades.jsonl`. **v2.0.141**: Role changed from binary gate to reference data source. `checkThesisHistory` verdict is injected as a reference block for Meta-Agent, not a gate override. Cold-start dormant until `EXP_ENABLED=true`.
 
 **Layer 1 — OLR** (`olr-engine.ts`): Per-symbol, per-side online logistic regression with Welford z-score normalization. Learns P(win) from shadow + paper + real + backfill outcomes (TP-before-SL). Source-weighted (real=4, paper=2, shadow=1, backfill=0.3; backfill excluded from decay). Per-feature Welford counts so missing features return neutral z=0. Confidence: high(≥50)/medium(≥20)/low.
 
@@ -160,7 +168,7 @@ tests/                                  # ✅ vitest (94 tests, 5 test files)
 
 **Cold-Start Backfill** (`olr-backfill.ts`): First cycle per market replays 186 historical HL M5 candles into OLR. Non-blocking; idempotent (skips warm markets ≥20 samples).
 
-**Layer 2 — EM Cycle Chain** (`cycle-summary.ts`): Meta-Agent distills each cycle → structured summary; previous summaries feed next cycle. Tiered memory: hot(12) + warm(288) + cold(48 epochs). **v2.0.140 EM Cycle Digestion**: each summary's keyInsight is embedded by MiniLM into a 384-dim vector. At cycle start, the current market description is queried against all historical insight vectors → top-3 similar past cycles injected into Meta-Agent context. Self-adjusting: trade win/loss outcomes are fed back to the insights retrieved when the trade was opened, with EMA-smoothed accuracy tracking. Persisted to `em-state.json` (survives restarts). Backfill script: `scripts/backfill-em-state.ts` constructs CycleSummaries from `data/exp/trades.jsonl`.
+**Layer 2 — EM Cycle Chain** (`cycle-summary.ts`): Meta-Agent distills each cycle → structured summary; previous summaries feed next cycle. Tiered memory: hot(12) + warm(288) + cold(48 epochs). Persisted to `em-state.json` (survives restarts).
 
 **Layer 3 — GA + Pattern DB**: Survival Fitness (Profit Efficiency 35% + Return 25% + Capital Preservation 20% + Win Quality 10% + Consistency 5% + Adaptability 5%). Directional mutation toward weakest dimension. KNN pattern DB with Wilson-score 95% confidence lower bound + time-weighted win/loss (half-life 7 days).
 

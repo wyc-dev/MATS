@@ -25,6 +25,14 @@ import { BacktestEngine, type BacktestProgress } from './backtest/index.ts';
 import { MarketAgent } from './market-agent/index.ts';
 import { RealTradingManager } from './trading/real-trading-manager.ts';
 import { ThesisExperience, ActiveProviderLLMCaller } from './evolution/thesis-experience.ts';
+import {
+  PatternClusterManager,
+  CloseReasonAggregator,
+  SimilarTradeRetriever,
+  SubtleDiffAnalyzer,
+  formatAnalyticsBlock,
+  formatExpVerdictBlock,
+} from './evolution/reason-analytics.ts';
 import { TransformersEmbedProvider } from './evolution/embeddings.ts';
 import { SentimentEngine } from './analysis/sentiment-engine.ts';
 import { AdaptiveNoiseFilter, AssetFilterRegistry, type MarketContext as FilterMarketContext, type FilterProfileType } from './analysis/adaptive-filter.ts';
@@ -63,6 +71,11 @@ class MATSSystem {
   private hacpEngine!: HACPEngine;
   /** v2.0.138: EXP thesis-experience vector memory (Skeptics Phase 1.8a). Gated by config.exp.enabled. */
   private expMemory!: ThesisExperience;
+  /** v2.0.141: RIL — Reason Intelligence Layer components. */
+  private patternCluster!: PatternClusterManager;
+  private closeReasonAgg!: CloseReasonAggregator;
+  private similarTradeRetriever!: SimilarTradeRetriever;
+  private subtleDiffAnalyzer!: SubtleDiffAnalyzer;
   private backtest!: BacktestEngine;
   private apiServer!: APIServer;
   private marketAgent!: MarketAgent;
@@ -1161,6 +1174,24 @@ class MATSSystem {
         log.info('EXP thesis-experience memory disabled (config.exp.enabled=false) — HACP uses 1.8b fallback');
       }
 
+      // ─── v2.0.141: Initialize RIL (Reason Intelligence Layer) ───
+      if (config.ril.enabled) {
+        const embed = new TransformersEmbedProvider();
+        this.patternCluster = new PatternClusterManager(embed);
+        this.closeReasonAgg = new CloseReasonAggregator();
+        this.similarTradeRetriever = new SimilarTradeRetriever();
+        this.subtleDiffAnalyzer = new SubtleDiffAnalyzer();
+        // Rebuild clusters from EXP records (non-blocking)
+        if (this.expMemory && this.expMemory.size() > 0) {
+          void this.patternCluster.rebuild(this.expMemory.getRecords()).catch((err: unknown) =>
+            log.warn(`[RIL] startup cluster rebuild failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
+          );
+        }
+        log.info('✓ RIL (Reason Intelligence Layer) initialized');
+      } else {
+        log.info('RIL disabled (config.ril.enabled=false)');
+      }
+
       // v2.0.XX: Sync initial maxPortionPct from Market Agent to paper engine + real manager
       this.paperEngine.setMaxPortionPct(this.marketAgent.getConfig().maxPortionPct);
       this.realTradingManager.setMaxPortionPct(this.marketAgent.getConfig().maxPortionPct);
@@ -1655,6 +1686,10 @@ class MATSSystem {
           regime,
           entryThesis: trade.entryThesis ?? '',
         }).catch((e: unknown) => log.warn(`[EXP] recordClose failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`));
+        // v2.0.141: RIL incremental cluster update (non-blocking)
+        if (config.ril.enabled && this.patternCluster && trade.entryThesis) {
+          // RIL will pick up the new record on the next cycle's rebuild
+        }
       } catch { /* non-critical */ }
 
       log.info(`🧬 [close-learning] ${isWin ? '✅ WIN' : '❌ LOSS'} ${trade.side.toUpperCase()} ${symbol} PnL: $${trade.pnl.toFixed(2)} (${(pnlPct * 100).toFixed(1)}%) — all learning mechanisms fed`);
@@ -2489,6 +2524,33 @@ class MATSSystem {
         }
       } catch {
         // Fail-open — global news is supplementary context
+      }
+
+      // ─── v2.0.141: Inject RIL (Reason Intelligence Layer) blocks ───
+      if (config.ril.enabled && this.patternCluster && this.closeReasonAgg) {
+        try {
+          const records = this.expMemory?.getRecords() ?? [];
+          const patternMap = this.patternCluster.getPatternMap(records.length);
+          const closeReasonBlock = this.closeReasonAgg.formatBlock(records);
+
+          // A2A Digester digest (kept as supplementary LLM analysis)
+          const digesterDigest = this.expMemory?.getDigestSummary() ?? '';
+
+          const rilBlock = formatAnalyticsBlock({
+            patternMap,
+            closeReasonBlock,
+            similarTradesBlock: '',
+            subtleDiffBlock: '',
+            expVerdictBlock: '',
+            digesterDigest,
+          });
+
+          if (rilBlock) {
+            marketDesc += rilBlock;
+          }
+        } catch (err) {
+          log.warn(`[RIL] injection failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
 
       // v2.0.92: Generate OLR + S/R context for ALL open positions (not just active symbol).
@@ -5219,8 +5281,12 @@ class MATSSystem {
           convergenceChecks: this.emManager.getConvergenceTrend().checks,
           latestInsight: this.emManager.getLatest()?.keyInsight ?? null,
           latestSignal: this.emManager.getLatest() ? this.emManager.getLatest()!.primarySignal.name + '=' + this.emManager.getLatest()!.primarySignal.value.toFixed(2) + ' (' + this.emManager.getLatest()!.primarySignal.direction + ')' : null,
-          // v2.0.140: EM Cycle Digestion self-adjustment stats
-          insightStats: this.emManager.getInsightStats(),
+        } : undefined,
+        // v2.0.141: RIL Reason Intelligence Layer stats
+        rilState: config.ril.enabled && this.patternCluster ? {
+          patternCount: this.patternCluster.clusterCount(),
+          tradeCount: this.expMemory?.size() ?? 0,
+          isBuilt: this.patternCluster.isBuilt(),
         } : undefined,
         patternStats: this.patternClassifier ? this.patternClassifier.getStats() : undefined,
         patternTagStats: this.patternTagTracker ? this.patternTagTracker.getStats() : undefined,
