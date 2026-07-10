@@ -201,6 +201,8 @@ export interface APIData {
   cycleProgress?: CycleProgress | null;
   hacpThreshold?: number;
   evolution?: EvolutionData;
+  /** v2.0.140: EM Cycle Digestion — MiniLM insight retrieval + self-adjustment */
+  emState?: EMState;
   /** GMM EM clustering model summary (per-symbol) — DEPRECATED, use olrState */
   emClusterState?: {
     symbols: Array<{
@@ -496,4 +498,23 @@ export const AGENT_ROLES = [
 // OLR/shadow-trade state lives in the top-level olrState field.
 export interface EvolutionData {
   generation: number;
+}
+
+/** v2.0.140: EM Cycle Digestion — MiniLM insight retrieval + self-adjustment */
+export interface EMInsightStats {
+  totalVectors: number;
+  accuracy: number;
+  accuracyChecks: number;
+  winCount: number;
+  lossCount: number;
+  untaggedCount: number;
+}
+
+export interface EMState {
+  summaryCount: number;
+  convergenceAccuracy: number;
+  convergenceChecks: number;
+  latestInsight: string | null;
+  latestSignal: string | null;
+  insightStats?: EMInsightStats;
 }
