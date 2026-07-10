@@ -2355,6 +2355,248 @@ body {
   border-top: 1px solid var(--glass-border);
 }
 
+/* ── v2.0.140: MiniLM Neural Pipeline ── */
+.exp-pipeline {
+  padding: var(--space-4);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.04), rgba(168, 85, 247, 0.04));
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(99, 102, 241, 0.1);
+  margin-bottom: var(--space-4);
+}
+
+.exp-pipeline-title {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: #a78bfa;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 2px;
+}
+
+.exp-pipeline-desc {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-bottom: var(--space-4);
+  font-family: var(--font-mono);
+}
+
+.exp-pipeline-flow {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  overflow-x: auto;
+  padding-bottom: var(--space-2);
+}
+
+.exp-pipeline-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 100px;
+  flex-shrink: 0;
+}
+
+.exp-pipeline-node {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition: all 0.3s ease;
+}
+
+.exp-pipeline-node.digest {
+  background: radial-gradient(circle, rgba(251, 191, 36, 0.15), rgba(251, 191, 36, 0.03));
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  box-shadow: 0 0 12px rgba(251, 191, 36, 0.08);
+}
+
+.exp-pipeline-node.embed {
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.15), rgba(99, 102, 241, 0.03));
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.08);
+}
+
+.exp-pipeline-node.cluster {
+  background: radial-gradient(circle, rgba(168, 85, 247, 0.15), rgba(168, 85, 247, 0.03));
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  box-shadow: 0 0 12px rgba(168, 85, 247, 0.08);
+}
+
+.exp-pipeline-node.classify {
+  background: radial-gradient(circle, rgba(52, 211, 153, 0.15), rgba(52, 211, 153, 0.03));
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  box-shadow: 0 0 12px rgba(52, 211, 153, 0.08);
+}
+
+.exp-pipeline-node-icon {
+  font-size: var(--fs-sm);
+  line-height: 1;
+}
+
+.exp-pipeline-node-label {
+  font-size: 9px;
+  font-weight: var(--fw-semibold);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 2px;
+}
+
+.exp-pipeline-node-value {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.exp-pipeline-node-sub {
+  font-size: 8px;
+  color: var(--text-muted);
+}
+
+.exp-pipeline-node-desc {
+  font-size: 9px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: var(--space-2);
+  max-width: 90px;
+  line-height: 1.3;
+}
+
+.exp-pipeline-arrow {
+  display: flex;
+  align-items: center;
+  margin-top: 28px;
+  flex-shrink: 0;
+}
+
+.exp-pipeline-arrow-line {
+  width: 24px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.3), rgba(168, 85, 247, 0.3));
+}
+
+.exp-pipeline-arrow-head {
+  width: 0;
+  height: 0;
+  border-left: 5px solid rgba(168, 85, 247, 0.4);
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+}
+
+/* Neural vector grid */
+.exp-neural-viz {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid rgba(99, 102, 241, 0.08);
+}
+
+.exp-neural-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+  font-family: var(--font-mono);
+}
+
+.exp-neural-grid {
+  display: grid;
+  grid-template-columns: repeat(24, 1fr);
+  gap: 2px;
+  margin-bottom: var(--space-2);
+}
+
+.exp-neural-cell {
+  height: 8px;
+  border-radius: 1px;
+  animation: neural-pulse 2s ease-in-out infinite;
+}
+
+.exp-neural-cell.dim {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.exp-neural-cell.losing {
+  background: rgba(239, 68, 68, 0.4);
+  box-shadow: 0 0 4px rgba(239, 68, 68, 0.2);
+}
+
+.exp-neural-cell.winning {
+  background: rgba(34, 197, 94, 0.4);
+  box-shadow: 0 0 4px rgba(34, 197, 94, 0.2);
+}
+
+@keyframes neural-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.exp-neural-legend {
+  display: flex;
+  gap: var(--space-4);
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.exp-neural-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.exp-neural-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.exp-neural-dot.losing { background: rgba(239, 68, 68, 0.6); }
+.exp-neural-dot.winning { background: rgba(34, 197, 94, 0.6); }
+.exp-neural-dot.dim { background: rgba(255, 255, 255, 0.1); }
+
+/* Verdicts */
+.exp-verdicts {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid rgba(99, 102, 241, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.exp-verdict-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 10px;
+}
+
+.exp-verdict-icon {
+  font-size: 11px;
+  width: 16px;
+  text-align: center;
+}
+
+.exp-verdict-label {
+  font-weight: var(--fw-semibold);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  min-width: 120px;
+}
+
+.exp-verdict-row .exp-verdict-icon.approve + .exp-verdict-label { color: var(--green); }
+.exp-verdict-row .exp-verdict-icon.reject + .exp-verdict-label { color: var(--red); }
+.exp-verdict-row .exp-verdict-icon.reverse + .exp-verdict-label { color: #a78bfa; }
+.exp-verdict-row .exp-verdict-icon.passthrough + .exp-verdict-label { color: var(--text-tertiary); }
+
+.exp-verdict-desc {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
 /* ── v2.0.140: Experience Digestion (visual) ── */
 .exp-digest-content {
   padding: var(--space-4);

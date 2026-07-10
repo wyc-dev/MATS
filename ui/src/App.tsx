@@ -2102,6 +2102,140 @@ function ClassCard({ cls, type }: { cls: ParsedClass; type: 'losing' | 'winning'
   )
 }
 
+/* ── v2.0.140: MiniLM Neural Pipeline visualization ── */
+
+function MiniLMPipeline({ parsed, total }: { parsed: ReturnType<typeof parseDigest>; total: number }) {
+  if (!parsed) return null
+  const losingCount = parsed.losingClasses.length
+  const winningCount = parsed.winningClasses.length
+  const totalClasses = losingCount + winningCount
+  const digestCount = total
+  const embedDim = 384
+  const classifyThreshold = 72
+
+  return (
+    <div className="exp-pipeline">
+      <div className="exp-pipeline-title">🧬 MiniLM Neural Pipeline</div>
+      <div className="exp-pipeline-desc">all-MiniLM-L6-v2 · 384-dim · in-process · transformers.js</div>
+
+      {/* Pipeline flow */}
+      <div className="exp-pipeline-flow">
+        {/* Stage 1: Digest */}
+        <div className="exp-pipeline-stage">
+          <div className="exp-pipeline-node digest">
+            <div className="exp-pipeline-node-icon">📝</div>
+            <div className="exp-pipeline-node-label">Digest</div>
+            <div className="exp-pipeline-node-value">{digestCount}</div>
+            <div className="exp-pipeline-node-sub">closed trades</div>
+          </div>
+          <div className="exp-pipeline-node-desc">LLM extracts root cause + exit type from each trade</div>
+        </div>
+
+        {/* Arrow */}
+        <div className="exp-pipeline-arrow">
+          <div className="exp-pipeline-arrow-line" />
+          <div className="exp-pipeline-arrow-head" />
+        </div>
+
+        {/* Stage 2: Embed */}
+        <div className="exp-pipeline-stage">
+          <div className="exp-pipeline-node embed">
+            <div className="exp-pipeline-node-icon">🔮</div>
+            <div className="exp-pipeline-node-label">Embed</div>
+            <div className="exp-pipeline-node-value">{embedDim}</div>
+            <div className="exp-pipeline-node-sub">dimensions</div>
+          </div>
+          <div className="exp-pipeline-node-desc">MiniLM compresses lesson into 384-dim vector</div>
+        </div>
+
+        {/* Arrow */}
+        <div className="exp-pipeline-arrow">
+          <div className="exp-pipeline-arrow-line" />
+          <div className="exp-pipeline-arrow-head" />
+        </div>
+
+        {/* Stage 3: Cluster */}
+        <div className="exp-pipeline-stage">
+          <div className="exp-pipeline-node cluster">
+            <div className="exp-pipeline-node-icon">🧩</div>
+            <div className="exp-pipeline-node-label">Cluster</div>
+            <div className="exp-pipeline-node-value">{totalClasses}</div>
+            <div className="exp-pipeline-node-sub">experience classes</div>
+          </div>
+          <div className="exp-pipeline-node-desc">Greedy cosine clustering (≥80% similarity)</div>
+        </div>
+
+        {/* Arrow */}
+        <div className="exp-pipeline-arrow">
+          <div className="exp-pipeline-arrow-line" />
+          <div className="exp-pipeline-arrow-head" />
+        </div>
+
+        {/* Stage 4: Classify */}
+        <div className="exp-pipeline-stage">
+          <div className="exp-pipeline-node classify">
+            <div className="exp-pipeline-node-icon">⚡</div>
+            <div className="exp-pipeline-node-label">Classify</div>
+            <div className="exp-pipeline-node-value">{classifyThreshold}%</div>
+            <div className="exp-pipeline-node-sub">threshold</div>
+          </div>
+          <div className="exp-pipeline-node-desc">New thesis vs class centroids → verdict</div>
+        </div>
+      </div>
+
+      {/* Neural vector visualization */}
+      <div className="exp-neural-viz">
+        <div className="exp-neural-label">384-dim lesson vectors → clustered into experience classes</div>
+        <div className="exp-neural-grid">
+          {Array.from({ length: 24 }, (_, i) => {
+            const isLosing = i < losingCount
+            const isWinning = i >= losingCount && i < totalClasses
+            const isActive = isLosing || isWinning
+            return (
+              <div
+                key={i}
+                className={`exp-neural-cell ${isActive ? (isLosing ? 'losing' : 'winning') : 'dim'}`}
+                style={{
+                  animationDelay: `${i * 50}ms`,
+                }}
+              />
+            )
+          })}
+        </div>
+        <div className="exp-neural-legend">
+          <span className="exp-neural-legend-item"><span className="exp-neural-dot losing" /> Losing class</span>
+          <span className="exp-neural-legend-item"><span className="exp-neural-dot winning" /> Winning class</span>
+          <span className="exp-neural-legend-item"><span className="exp-neural-dot dim" /> Unclustered</span>
+        </div>
+      </div>
+
+      {/* Classification verdicts */}
+      <div className="exp-verdicts">
+        <div className="exp-verdict-row">
+          <span className="exp-verdict-icon approve">✅</span>
+          <span className="exp-verdict-label">FAST_APPROVE</span>
+          <span className="exp-verdict-desc">winning class match + direction aligned</span>
+        </div>
+        <div className="exp-verdict-row">
+          <span className="exp-verdict-icon reject">❌</span>
+          <span className="exp-verdict-label">REJECT</span>
+          <span className="exp-verdict-desc">losing class match + direction aligned</span>
+        </div>
+        <div className="exp-verdict-row">
+          <span className="exp-verdict-icon reverse">🔄</span>
+          <span className="exp-verdict-label">REVERSE_DIRECTION</span>
+          <span className="exp-verdict-desc">losing class + opposite direction = contrarian edge</span>
+        </div>
+        <div className="exp-verdict-row">
+          <span className="exp-verdict-icon passthrough">⬇️</span>
+          <span className="exp-verdict-label">PASS_OPEN_DIRECTLY</span>
+          <span className="exp-verdict-desc">no class match (cold-start) → let it trade & learn</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: string; expActions?: Array<{ symbol: string; side: string; verdict: string; reason: string; cycle: number; ts: number }> }) {
   const [expanded, setExpanded] = useState(false)
   if (!expDigest && (!expActions || expActions.length === 0)) return null
@@ -2150,6 +2284,9 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
 
           {parsed && (
             <>
+              {/* MiniLM Neural Pipeline visualization */}
+              <MiniLMPipeline parsed={parsed} total={parsed.total} />
+
               {/* Streak + PnL headline */}
               <div className="exp-headline-row">
                 <div className="exp-headline-streak">
