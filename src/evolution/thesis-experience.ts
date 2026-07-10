@@ -222,6 +222,15 @@ export interface CheckThesisInput {
   symbol: string;
   side: 'buy' | 'sell';
   marketCtx: string;
+  /** v2.0.140: Dual-Channel Fusion — OLR P(win) for this symbol+side.
+   *  When provided, the fusion layer cross-references the semantic verdict
+   *  against the statistical P(win) to resolve disagreements (e.g. semantic
+   *  REJECT but OLR says 65% win → premature close, not bad direction). */
+  olrPWin?: number;
+  /** v2.0.140: Shadow trade win rate for this symbol+side (0-1).
+   *  Shadow trades use fixed S/R SL/TP — not affected by premature closes.
+   *  When > 0.50, it confirms the direction is statistically profitable. */
+  shadowWinRate?: number;
 }
 
 export class ThesisExperience {
@@ -233,6 +242,8 @@ export class ThesisExperience {
   private loaded = false;
   /** v2.0.140: A2A Experience Digester — lesson digestion + classification. */
   private readonly digester: ExperienceDigester;
+  /** v2.0.140: Last semantic verdict from the classification path (for fusion). */
+  private lastSemanticVerdict: ExpCheckResult | null = null;
 
   constructor(opts: {
     embed: EmbedProvider;
@@ -545,6 +556,7 @@ export class ThesisExperience {
     // class matches with enough members, emit a verdict here and skip the
     // raw-rationale similarity path. If no class matches (cold-start / sparse),
     // fall through to the existing raw similarity + delta logic.
+    this.lastSemanticVerdict = null; // reset for this check
     if (this.digester.getCfg().enabled) {
       try {
         const candCat = assetCategory(input.symbol, this.cfg.assetCategoryMap);
@@ -555,22 +567,24 @@ export class ThesisExperience {
           const c = cls.bestClass;
           const simPct = (cls.similarity * 100).toFixed(0);
           if (cls.classWinRate >= this.digester.getCfg().classWinThreshold && cls.directionAligned) {
-            return {
+            this.lastSemanticVerdict = {
               verdict: 'FAST_APPROVE',
               pWin: cls.classWinRate,
               reason: `classified to winning lesson class [${c.count} trades, win ${(c.winRate * 100).toFixed(0)}%, ${c.directionBias}] (sim ${simPct}%): ${c.lesson}`,
             };
+            return this.lastSemanticVerdict;
           }
           if (cls.classWinRate < this.digester.getCfg().classLossThreshold && cls.directionAligned) {
             // Repeating a LOSING setup class in the SAME direction — reject.
             // This directly answers Master Lord's "learn why it keeps losing":
             // the candidate matches a clustered losing pattern (e.g. quick-close
             // churn / SELL-near-resistance-FUD-misread) and keeps that direction.
-            return {
+            this.lastSemanticVerdict = {
               verdict: 'REJECT',
               matchedLossId: c.memberIds[0],
               reason: `classified to LOSING lesson class [${c.count} trades, win ${(c.winRate * 100).toFixed(0)}%, avg ${c.avgHoldMin.toFixed(0)}min, ${c.directionBias}] (sim ${simPct}%): ${c.lesson}. Avoid repeating this losing pattern.`,
             };
+            return this.lastSemanticVerdict;
           }
           // Ambiguous band OR opposite-direction match (may be a contrarian
           // edge) → let it trade; the raw path below will still run as a tie-break.
@@ -579,6 +593,49 @@ export class ThesisExperience {
         }
       } catch (err) {
         log.warn(`[EXP-digest] classification failed — falling through to raw similarity: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // v2.0.140: Dual-Channel Fusion — cross-reference semantic verdict
+    // against statistical channels (OLR P(win) + shadow win rate) to resolve
+    // disagreements. The semantic channel (MiniLM) learns from real/paper
+    // closed trades, which are polluted by premature closes — it may REJECT
+    // a setup that is actually profitable (direction correct, exit wrong).
+    // The statistical channels (OLR + shadow) use fixed SL/TP outcomes that
+    // are NOT polluted by premature closes. When they disagree with the
+    // semantic channel, the fusion layer resolves the conflict.
+    const olrPWin = input.olrPWin;
+    const shadowWR = input.shadowWinRate;
+    if (olrPWin !== undefined || shadowWR !== undefined) {
+      const lastVerdict = this.lastSemanticVerdict;
+      if (lastVerdict) {
+        const statWin = olrPWin ?? shadowWR ?? 0.5;
+        const shadowConfirm = shadowWR !== undefined && shadowWR > 0.50;
+        const olrConfirm = olrPWin !== undefined && olrPWin > 0.50;
+
+        // Rule 1: Semantic REJECT + Statistical WIN → premature close, not bad direction
+        if (lastVerdict.verdict === 'REJECT' && (olrConfirm || shadowConfirm)) {
+          log.info(`[EXP-fusion] REJECT overridden → PASS: semantic reject but OLR P(win)=${olrPWin !== undefined ? (olrPWin * 100).toFixed(0) + '%' : 'N/A'} shadow WR=${shadowWR !== undefined ? (shadowWR * 100).toFixed(0) + '%' : 'N/A'} — real-trade loss was from premature close, not bad entry`);
+          return {
+            verdict: 'PASS_OPEN_DIRECTLY',
+            reason: `Dual-Channel Fusion: semantic REJECT overridden by statistical channel (OLR P(win)=${olrPWin !== undefined ? (olrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow WR=${shadowWR !== undefined ? (shadowWR * 100).toFixed(0) + '%' : 'N/A'}). The real-trade loss was from premature close, not bad direction. Let it trade with wider SL.`,
+          };
+        }
+
+        // Rule 2: Semantic FAST_APPROVE + Statistical LOSE → semantic class may be overfitted
+        if ((lastVerdict.verdict === 'FAST_APPROVE' || lastVerdict.verdict === 'APPROVE_WITH_NOTE')
+            && olrPWin !== undefined && olrPWin < 0.40
+            && shadowWR !== undefined && shadowWR < 0.40) {
+          log.info(`[EXP-fusion] APPROVE cautioned → PASS: semantic approve but OLR P(win)=${(olrPWin * 100).toFixed(0)}% shadow WR=${(shadowWR * 100).toFixed(0)}% — winning class may be overfitted to small sample`);
+          return {
+            verdict: 'PASS_OPEN_DIRECTLY',
+            reason: `Dual-Channel Fusion: semantic APPROVE cautioned by statistical channel (OLR P(win)=${(olrPWin * 100).toFixed(0)}%, shadow WR=${(shadowWR * 100).toFixed(0)}%). The winning class may be overfitted to a small sample. Let it trade but monitor.`,
+          };
+        }
+
+        // Rule 3: Both channels agree LOSE → strong reject (no override needed)
+        // Rule 4: Both channels agree WIN → strong approve (no override needed)
+        // These fall through to the existing verdict.
       }
     }
 

@@ -2355,6 +2355,109 @@ body {
   border-top: 1px solid var(--glass-border);
 }
 
+/* Dual-Channel Fusion banner */
+.exp-fusion-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  margin-bottom: var(--space-4);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.04), rgba(52, 211, 153, 0.04));
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(99, 102, 241, 0.08);
+}
+
+.exp-fusion-channel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.exp-fusion-channel.semantic {
+  border-right: 1px solid rgba(99, 102, 241, 0.1);
+}
+
+.exp-fusion-ch-label {
+  font-size: 9px;
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.exp-fusion-ch-value {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-primary);
+}
+
+.exp-fusion-channel.semantic .exp-fusion-ch-value { color: #a78bfa; }
+.exp-fusion-channel.statistical .exp-fusion-ch-value { color: var(--green); }
+
+.exp-fusion-ch-desc {
+  font-size: 9px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.exp-fusion-link {
+  width: 20px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.3), rgba(52, 211, 153, 0.3));
+  flex-shrink: 0;
+}
+
+/* Stats grid */
+.exp-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+@media (max-width: 600px) {
+  .exp-stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.exp-stat-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-3);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+}
+
+.exp-stat-value {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.exp-stat-value.streak-warn {
+  color: var(--red);
+  animation: pulse-warning 1.5s ease-in-out infinite;
+}
+
+.exp-stat-sep {
+  color: var(--text-muted);
+  margin: 0 2px;
+  font-weight: var(--fw-normal);
+}
+
+.exp-stat-label {
+  font-size: 9px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 2px;
+}
+
 /* ── v2.0.140: MiniLM Neural Pipeline ── */
 .exp-pipeline {
   padding: var(--space-4);
