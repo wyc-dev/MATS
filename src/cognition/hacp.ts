@@ -1338,15 +1338,16 @@ export class HACPEngine {
       const origSize = finalConsensus.decision.positionSizePct;
       const origLev = finalConsensus.decision.leverage ?? 1;
 
-      // Override position size to Market Agent's target (not just clamp)
-      if (finalConsensus.decision.positionSizePct !== targetSize) {
-        finalConsensus.decision.positionSizePct = targetSize;
-        log.warn(`Market Agent constraint: position size overridden ${(origSize * 100).toFixed(1)}% → ${(targetSize * 100).toFixed(1)}%`);
-      }
-      // Override leverage to Market Agent's target
-      if ((finalConsensus.decision.leverage ?? 1) !== targetLev) {
-        finalConsensus.decision.leverage = targetLev;
-        log.warn(`Market Agent constraint: leverage overridden ${origLev}x → ${targetLev}x`);
+      // Only override position size if the decision is BUY or SELL (not HOLD)
+      if (finalConsensus.decision.action !== 'hold') {
+        if (finalConsensus.decision.positionSizePct !== targetSize) {
+          finalConsensus.decision.positionSizePct = targetSize;
+          log.warn(`Market Agent constraint: position size overridden ${(origSize * 100).toFixed(1)}% → ${(targetSize * 100).toFixed(1)}%`);
+        }
+        if ((finalConsensus.decision.leverage ?? 1) !== targetLev) {
+          finalConsensus.decision.leverage = targetLev;
+          log.warn(`Market Agent constraint: leverage overridden ${origLev}x → ${targetLev}x`);
+        }
       }
     }
 
@@ -1768,7 +1769,7 @@ Output ONLY valid JSON:
           //    The old code had no max step — SL could go from 5% away to 1% away
           //    in one cycle, causing premature stop-outs. Now it's capped at 0.5%
           //    of current price per adjustment, so narrowing takes multiple cycles.
-          const MAX_NARROW_STEP_PCT = 0.005; // 0.5% of current price per cycle
+          const MAX_NARROW_STEP_PCT = 0.01; // 1.0% of current price per cycle (was 0.5%)
           if (finalSL !== undefined && pos.stopLoss !== undefined) {
             const oldDist = Math.abs(pos.currentPrice - pos.stopLoss);
             const newDist = Math.abs(pos.currentPrice - finalSL);
