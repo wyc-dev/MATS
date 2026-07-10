@@ -254,6 +254,8 @@ export interface Position {
    *  Example: "[1h: RSI oversold + S/R bounce at $64K] [1d: Fed dovish pivot
    *  Friday + BTC ETF inflows accelerating]" */
   entryThesis?: string;
+  /** v2.0.134: Live per-cycle hold reason (updated each cycle, not re-validated). */
+  holdReason?: string;
 }
 
 // ─── Multi-Symbol Decision (v1.9.2 — each agent evaluates ALL pairs) ───

@@ -68,7 +68,7 @@ export function isThesisPlaceholder(thesis: string | undefined | null): boolean 
   const stripped = t
     .replace(/\[(1h|1d|4h|1w|1m|5m|15m)\s*:/g, ' ')
     .replace(/[\[\]():,.\-—_/\\]/g, ' ')
-    .replace(/\b(n\/a|na|hold|none|null|not applicable|tbd|todo)\b/g, ' ')
+    .replace(/\b(n\/a|na|hold|none|null|not applicable|tbd|todo|closing|close|position|no trade|no position)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   if (stripped.length === 0) return true;
@@ -637,7 +637,7 @@ export class PortfolioTracker {
     const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(sym);
     if (!pos) return;
     if (reason && reason.trim().length > 0) {
-      (pos as any).holdReason = reason.trim();
+      pos.holdReason = reason.trim();
       pos.updatedAt = Date.now();
     }
   }

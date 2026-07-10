@@ -150,6 +150,10 @@ export interface Position {
   leverage: number;
   exchange?: string;
   openedAt: number;
+  /** v2.0.134: Meta-Agent's entry thesis (frozen at open). */
+  entryThesis?: string;
+  /** v2.0.134: Live per-cycle hold reason. */
+  holdReason?: string;
 }
 
 export interface MarketState {
