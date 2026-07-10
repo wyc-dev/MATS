@@ -4072,7 +4072,25 @@ class MATSSystem {
       // can still be closed (closePosition is not a new entry).
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
         const decisionSym = finalDecision.symbol || activeSymbol;
-        if (!this.marketAgent.isDirectionAllowed(decisionSym, finalDecision.action)) {
+
+        // v2.0.141: Existing position guard — if same asset+same direction already
+        // has an open position, override to HOLD. Prevents the system from repeatedly
+        // adding to the same position every cycle (churn loop).
+        if (this.portfolio.hasPosition(decisionSym)) {
+          const existing = this.portfolio.getPosition(decisionSym);
+          if (existing && existing.side === finalDecision.action) {
+            log.warn(`🚫 [existing-position] ${decisionSym}: already has ${existing.side.toUpperCase()} position (qty=${existing.quantity?.toFixed(4) ?? '?'}). Overriding ${finalDecision.action.toUpperCase()} → HOLD.`);
+            activeAuditGates.push({ gate: 'existing-position', passed: false, reason: `${decisionSym} already has ${existing.side.toUpperCase()} position` });
+            finalDecision = {
+              ...finalDecision,
+              action: 'hold',
+              positionSizePct: 0,
+              rationale: `[EXISTING POSITION] ${decisionSym} already has ${existing.side.toUpperCase()} position. Overriding to HOLD. Original: ${finalDecision.rationale}`,
+            };
+          }
+        }
+
+        if (!this.marketAgent.isDirectionAllowed(decisionSym, finalDecision.action as 'buy' | 'sell')) {
           const allowedDir = this.marketAgent.getDirectionRestrictions()[normalizeSymbol(decisionSym)];
           log.warn(`🚫 [direction-restrict] ${decisionSym}: ${finalDecision.action.toUpperCase()} blocked — only ${allowedDir?.toUpperCase()} allowed. Overriding → HOLD.`);
           activeAuditGates.push({ gate: 'direction-restrict', passed: false, reason: `${finalDecision.action.toUpperCase()} blocked — only ${allowedDir?.toUpperCase() ?? 'unknown'} allowed` });
