@@ -97,6 +97,9 @@ class MATSSystem {
   private decisionTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private restPollTimer: ReturnType<typeof setInterval> | null = null;
+  /** v2.0.140: UI push timer — pushes portfolio + position updates every 10s
+   *  so the UI auto-refreshes Mark prices + PnL between decision cycles. */
+  private uiPushTimer: ReturnType<typeof setInterval> | null = null;
   private tradesToday = 0;
   private totalCycles = 0;
   private cycleInProgress = false;
@@ -1301,6 +1304,7 @@ class MATSSystem {
       // Start decision cycles
       this.startDecisionCycle();
       this.startHeartbeat();
+      this.startUIPush();
 
       log.info('🚀 MATS System is LIVE — trading on Hyperliquid data');
 
@@ -1388,6 +1392,16 @@ class MATSSystem {
     }, config.system.heartbeatIntervalMs);
   }
 
+  /** v2.0.140: Start periodic UI push — every 10s, refresh position Mark
+   *  prices + push to API so the Portfolio auto-updates between cycles. */
+  private startUIPush(): void {
+    this.uiPushTimer = setInterval(() => {
+      if (!isShuttingDown()) {
+        this.pushToAPI();
+      }
+    }, 10_000);
+  }
+
   private stopTimers(): void {
     if (this.decisionTimer) {
       clearInterval(this.decisionTimer);
@@ -1396,6 +1410,10 @@ class MATSSystem {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
+    }
+    if (this.uiPushTimer) {
+      clearInterval(this.uiPushTimer);
+      this.uiPushTimer = null;
     }
     if (this.restPollTimer) {
       clearInterval(this.restPollTimer);
