@@ -7,6 +7,8 @@
 // Convergence: Skeptics cross-check keyInsight vs actual price action
 
 import { createLogger } from '../observability/logger.ts';
+import type { EmbedProvider } from './embeddings.ts';
+import { cosine } from './embeddings.ts';
 import type {
   CycleSummary,
   EMState,
@@ -115,6 +117,17 @@ export class CycleSummaryManager {
   private convergenceChecks = 0;
   /** Track compaction schedule */
   private cyclesSinceCompaction = 0;
+
+  /** v2.0.140: Insight vector store for semantic retrieval.
+   *  Each entry maps a CycleSummary's keyInsight to its 384-dim embedding.
+   *  Used to find historically similar market conditions by querying the
+   *  current cycle's market description against all stored insight vectors.
+   *  Completely independent from ExperienceDigester's vector store. */
+  private insightVectors: Array<{ cycleNumber: number; vector: number[]; insight: string; outcome?: 'win' | 'loss' | 'hold' }> = [];
+  /** Embed provider — shared instance (stateless, no interference with other consumers). */
+  private embedProvider: EmbedProvider | null = null;
+  /** Whether insight vectors have been rebuilt from loaded summaries. */
+  private insightVectorsBuilt = false;
 
   /** Load from persisted EMState */
   load(state: EMState): void {
@@ -386,6 +399,124 @@ export class CycleSummaryManager {
       trend,
       warnings,
     };
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  v2.0.140: Insight Similarity Retrieval (MiniLM semantic search)
+  //  Independent vector store — does NOT share state with ExperienceDigester.
+  // ═══════════════════════════════════════════════════════════
+
+  /** Inject the EmbedProvider (shared MiniLM instance — stateless, no interference). */
+  setEmbedProvider(provider: EmbedProvider): void {
+    this.embedProvider = provider;
+  }
+
+  /**
+   * Rebuild insight vectors from all loaded summaries.
+   * Called once at startup after load() + setEmbedProvider().
+   * Fire-and-forget — non-blocking to the trading loop.
+   */
+  async rebuildInsightVectors(): Promise<void> {
+    if (!this.embedProvider || this.insightVectorsBuilt) return;
+    if (this.summaries.length === 0) {
+      this.insightVectorsBuilt = true;
+      return;
+    }
+    try {
+      const texts = this.summaries.map(s => s.keyInsight);
+      const vectors = await this.embedProvider.embed(texts);
+      this.insightVectors = this.summaries.map((s, i) => ({
+        cycleNumber: s.cycleNumber,
+        vector: vectors[i] ?? [],
+        insight: s.keyInsight,
+      }));
+      this.insightVectorsBuilt = true;
+      log.info(`[insight-retrieval] Built ${this.insightVectors.length} insight vectors from loaded summaries`);
+    } catch (err) {
+      log.warn(`[insight-retrieval] rebuildInsightVectors failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Add a new summary's insight vector to the store.
+   * Called after push() — non-blocking.
+   */
+  async addInsightVector(summary: CycleSummary): Promise<void> {
+    if (!this.embedProvider || !summary.keyInsight?.trim()) return;
+    try {
+      const vecs = await this.embedProvider.embed([summary.keyInsight]);
+      if (vecs[0] && vecs[0].length > 0) {
+        this.insightVectors.push({
+          cycleNumber: summary.cycleNumber,
+          vector: vecs[0],
+          insight: summary.keyInsight,
+        });
+        // Prune: keep last 500 insight vectors (same as summary retention)
+        if (this.insightVectors.length > 500) {
+          this.insightVectors = this.insightVectors.slice(-500);
+        }
+      }
+    } catch (err) {
+      log.warn(`[insight-retrieval] addInsightVector failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Query the insight vector store for the top-N most similar historical
+   * insights to the current market description.
+   *
+   * @param marketDesc  Current cycle's market description text
+   * @param topN        Number of similar insights to return (default 3)
+   * @param excludeRecent  Exclude the last N cycles (avoid trivial self-match)
+   * @returns Array of { cycleNumber, insight, similarity } sorted by similarity desc
+   */
+  async querySimilarInsights(
+    marketDesc: string,
+    topN: number = 3,
+    excludeRecent: number = 3,
+  ): Promise<Array<{ cycleNumber: number; insight: string; similarity: number }>> {
+    if (!this.embedProvider || this.insightVectors.length === 0) return [];
+    try {
+      const queryVecs = await this.embedProvider.embed([marketDesc.slice(0, 500)]);
+      const queryVec = queryVecs[0];
+      if (!queryVec || queryVec.length === 0) return [];
+
+      // Exclude recent cycles to avoid trivial self-match
+      const maxCycle = this.insightVectors.length > 0
+        ? Math.max(...this.insightVectors.map(v => v.cycleNumber)) - excludeRecent
+        : 0;
+
+      const scored = this.insightVectors
+        .filter(v => v.vector.length > 0 && v.cycleNumber <= maxCycle)
+        .map(v => ({
+          cycleNumber: v.cycleNumber,
+          insight: v.insight,
+          similarity: cosine(queryVec, v.vector),
+        }))
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, topN);
+
+      return scored;
+    } catch (err) {
+      log.warn(`[insight-retrieval] querySimilarInsights failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /**
+   * Format similar insights for agent context injection.
+   * Returns a string block to append to the market description.
+   */
+  formatSimilarInsights(similar: Array<{ cycleNumber: number; insight: string; similarity: number }>): string {
+    if (similar.length === 0) return '';
+    const lines: string[] = ['=== HISTORICAL SIMILAR INSIGHTS (MiniLM semantic retrieval) ==='];
+    lines.push('Past cycles with similar market conditions. Use these to avoid repeating mistakes or to reinforce winning patterns.\n');
+    for (const s of similar) {
+      const simPct = (s.similarity * 100).toFixed(0);
+      lines.push(`  Cycle #${s.cycleNumber} (sim ${simPct}%): "${s.insight}"`);
+    }
+    lines.push('---');
+    return lines.join('\n');
   }
 
   // ─── Factory: Build CycleSummary from Meta-Agent output ───

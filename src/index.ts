@@ -1134,6 +1134,13 @@ class MATSSystem {
             log.warn(`[EXP] startup class rebuild failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
           );
           log.info(`✓ EXP thesis-experience memory ready (${this.expMemory.size()} records) — embed model warming up + classes rebuilding in background`);
+          // v2.0.140: EM Cycle Chain insight retrieval — share the same
+          // TransformersEmbedProvider (stateless, no interference with
+          // ExperienceDigester). Rebuild insight vectors from loaded summaries.
+          this.emManager.setEmbedProvider(new TransformersEmbedProvider());
+          void this.emManager.rebuildInsightVectors().catch((err: unknown) =>
+            log.warn(`[insight-retrieval] startup rebuild failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
+          );
         } catch (err) {
           log.warn(`[EXP] startup load failed (will self-heal on first use): ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -2255,6 +2262,20 @@ class MATSSystem {
         : '';
       // 1c. Inject EM cycle chain (M-step immediate — previous cycle's distilled insight)
       const emContext = this.emManager?.formatForContext(3) ?? '';
+      // v2.0.140: EM Cycle Chain insight retrieval — query historical insights
+      // similar to the current market description. Non-blocking: if embed fails,
+      // the cycle proceeds without historical insights.
+      let similarInsightsContext = '';
+      if (this.emManager && config.exp.enabled) {
+        try {
+          const similar = await this.emManager.querySimilarInsights(
+            `${activeSymbol} ${combinedState.regime} ${combinedState.trend} price=${combinedState.price}`,
+            3,
+            3, // exclude last 3 cycles
+          );
+          similarInsightsContext = this.emManager.formatSimilarInsights(similar);
+        } catch { /* non-critical — cycle proceeds without historical insights */ }
+      }
 
       // 1d. Inject previous cycle's trade pattern insights (stored after last HACP cycle)
       const patternContext = this.lastPatternContext ?? '';
@@ -2425,7 +2446,7 @@ class MATSSystem {
         log.debug(`[news] Failed for ${activeSymbol}: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      let marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${olrContext}${planckChaosContext}${optionsContext}${playbookContext}${newsContext ? `\n${newsContext}` : ''}\n\n${getFeeSummary()}`;
+      let marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${similarInsightsContext ? `\n${similarInsightsContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${olrContext}${planckChaosContext}${optionsContext}${playbookContext}${newsContext ? `\n${newsContext}` : ''}\n\n${getFeeSummary()}`;
 
       // v2.0.109: Fetch global breaking news (Top 10 international headlines) for Meta-Agent
       // cross-asset correlation analysis. Meta-Agent must assess whether any headline
@@ -4458,6 +4479,8 @@ class MATSSystem {
             combinedState.trend === 'bullish' || combinedState.trend === 'bearish' ? 0.65 : 0.5,
           );
           this.emManager.push(cycleSummary);
+          // v2.0.140: Add insight vector for semantic retrieval (non-blocking)
+          void this.emManager.addInsightVector(cycleSummary).catch(() => { /* non-critical */ });
         }
       } catch (err: unknown) {
         log.warn(`[E-step] CycleSummary build failed: ${err instanceof Error ? err.message : String(err)}`);
