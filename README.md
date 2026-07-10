@@ -16,11 +16,11 @@ MATS is a multi-agent cognitive trading system: 8 specialized agents think in pa
 
 ## 📸 See It In Action
 
-<a href="https://github.com/wyc-dev/MATS/blob/main/docs/dashboard.mp4" target="_blank" title="Click to play the full 27s demo">
+<a href="https://github.com/wyc-dev/MATS/blob/main/docs/dashboard.mp4" target="_blank" title="Click to play the full 16s demo">
   <img src="docs/dashboard.gif" alt="MATS Dashboard demo — 8 AI agents debate every trade in real time" width="100%">
 </a>
 
-*10-second loop. [Click for the full 27s demo video](https://github.com/wyc-dev/MATS/blob/main/docs/dashboard.mp4) — real-time HACP debate, Skeptics validation, weighted consensus, live TP/SL on TradingView, self-evolution metrics.*
+*8-second loop. [Click for the full 16s demo video](https://github.com/wyc-dev/MATS/blob/main/docs/dashboard.mp4) — real-time HACP debate, Skeptics validation, weighted consensus, live TP/SL on TradingView, self-evolution metrics.*
 
 ### Backtest equity curve — coming soon
 
