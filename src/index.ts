@@ -1562,6 +1562,21 @@ class MATSSystem {
         log.warn(`[close-learning] Agent outcomes backfill failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
+      // v2.0.140: EM Cycle Digestion self-adjustment — feed win/loss back
+      // to the insight retrieval system so it learns which historical insights
+      // are predictive of wins vs losses.
+      try {
+        if (this.emManager && trade.openedAt > 0) {
+          // Estimate the cycle number when the trade was opened from the timestamp.
+          // The cycle number is approximate — we use the closest cycle to openedAt.
+          const cycleDurationMs = config.system.decisionIntervalMs;
+          const openCycle = Math.round((trade.openedAt - (Date.now() - this.totalCycles * cycleDurationMs)) / cycleDurationMs);
+          if (openCycle > 0 && openCycle <= this.totalCycles) {
+            this.emManager.recordTradeOutcome(openCycle, isWin ? 'win' : 'loss');
+          }
+        }
+      } catch { /* non-critical — self-adjustment is supplementary */ }
+
       // 5. Trigger Evolution — adapt strategy to the loss
       try {
         this.evolution.pressureEngine.evolve({}, this.evolution.tradeHistory);
@@ -2274,6 +2289,8 @@ class MATSSystem {
             3, // exclude last 3 cycles
           );
           similarInsightsContext = this.emManager.formatSimilarInsights(similar);
+          // v2.0.140: Record retrieval for self-adjustment (win/loss feedback)
+          this.emManager.recordRetrieval(this.totalCycles, similar);
         } catch { /* non-critical — cycle proceeds without historical insights */ }
       }
 
@@ -5184,6 +5201,8 @@ class MATSSystem {
           convergenceChecks: this.emManager.getConvergenceTrend().checks,
           latestInsight: this.emManager.getLatest()?.keyInsight ?? null,
           latestSignal: this.emManager.getLatest() ? this.emManager.getLatest()!.primarySignal.name + '=' + this.emManager.getLatest()!.primarySignal.value.toFixed(2) + ' (' + this.emManager.getLatest()!.primarySignal.direction + ')' : null,
+          // v2.0.140: EM Cycle Digestion self-adjustment stats
+          insightStats: this.emManager.getInsightStats(),
         } : undefined,
         patternStats: this.patternClassifier ? this.patternClassifier.getStats() : undefined,
         patternTagStats: this.patternTagTracker ? this.patternTagTracker.getStats() : undefined,

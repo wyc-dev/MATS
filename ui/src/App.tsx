@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import { Settings, Pause, Play, Power } from 'lucide-react'
-import type { APIData, AgentModelConfig, ModelDefinition } from './types'
+import type { APIData, AgentModelConfig, ModelDefinition, EMInsightStats } from './types'
 import { AGENT_META, AGENT_ROLES } from './types'
 import TradingViewChart from './TradingViewChart'
 
@@ -1866,8 +1866,121 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
         onReset={handleResetTradeHistory}
         resetStatus={resetStatus}
       />
+      <EMCycleDigestionSection emState={data?.emState} />
       <ExperienceDigestionSection expDigest={data?.portfolio?.expDigest} expActions={data?.expActions} />
       <OLRSection olrState={data?.olrState} openPositionSymbols={openPositionSymbols} />
+    </div>
+  )
+}
+
+/* ── v2.0.140: EM Cycle Digestion Section ── */
+
+function EMCycleDigestionSection({ emState }: { emState?: any }) {
+  const [expanded, setExpanded] = useState(false)
+  if (!emState) return null
+
+  const stats: EMInsightStats | undefined = emState.insightStats
+  const hasInsights = stats && stats.totalVectors > 0
+  const accuracyPct = stats ? (stats.accuracy * 100).toFixed(0) : '—'
+  const accuracyColor = stats && stats.accuracy > 0.6 ? 'var(--green)' : stats && stats.accuracy < 0.4 ? 'var(--red)' : 'var(--text-tertiary)'
+
+  return (
+    <div className="evo-section">
+      <div className="evo-section-header" onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer' }}>
+        <div className="evo-section-accent" />
+        <span className="evo-section-title">EM Cycle Digestion</span>
+        <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
+      </div>
+      {expanded && (
+        <div className="exp-digest-content">
+          {/* Pipeline description */}
+          <div className="exp-pipeline-desc" style={{ marginBottom: 'var(--space-4)' }}>
+            MiniLM semantic retrieval of historical cycle insights · self-adjusting via win/loss feedback
+          </div>
+
+          {/* Stats grid */}
+          <div className="exp-stats-grid">
+            <div className="exp-stat-card">
+              <div className="exp-stat-value">{emState.summaryCount ?? 0}</div>
+              <div className="exp-stat-label">Cycle Insights</div>
+            </div>
+            <div className="exp-stat-card">
+              <div className="exp-stat-value" style={{ color: accuracyColor }}>{accuracyPct}%</div>
+              <div className="exp-stat-label">Prediction Acc</div>
+            </div>
+            <div className="exp-stat-card">
+              <div className="exp-stat-value">{stats?.accuracyChecks ?? 0}</div>
+              <div className="exp-stat-label">Adjustment Checks</div>
+            </div>
+            <div className="exp-stat-card">
+              <div className="exp-stat-value">{hasInsights ? `${stats!.winCount}/${stats!.lossCount}` : '—'}</div>
+              <div className="exp-stat-label">Win / Loss Tags</div>
+            </div>
+          </div>
+
+          {/* Self-adjustment bar */}
+          {hasInsights && (
+            <div className="exp-digest-section">
+              <div className="exp-digest-subtitle">Self-Adjustment</div>
+              <div className="exp-eq-row">
+                <div className="exp-eq-label">Win-tagged insights</div>
+                <div className="exp-eq-bar-wrap">
+                  <div className="exp-eq-bar-fill" style={{ width: `${(stats!.winCount / stats!.totalVectors) * 100}%`, background: 'var(--green)' }} />
+                </div>
+                <div className="exp-eq-meta">
+                  <span className="exp-eq-count">{stats!.winCount}</span>
+                </div>
+              </div>
+              <div className="exp-eq-row">
+                <div className="exp-eq-label">Loss-tagged insights</div>
+                <div className="exp-eq-bar-wrap">
+                  <div className="exp-eq-bar-fill" style={{ width: `${(stats!.lossCount / stats!.totalVectors) * 100}%`, background: 'var(--red)' }} />
+                </div>
+                <div className="exp-eq-meta">
+                  <span className="exp-eq-count">{stats!.lossCount}</span>
+                </div>
+              </div>
+              <div className="exp-eq-row">
+                <div className="exp-eq-label">Untagged (pending)</div>
+                <div className="exp-eq-bar-wrap">
+                  <div className="exp-eq-bar-fill" style={{ width: `${(stats!.untaggedCount / stats!.totalVectors) * 100}%`, background: 'var(--text-muted)' }} />
+                </div>
+                <div className="exp-eq-meta">
+                  <span className="exp-eq-count">{stats!.untaggedCount}</span>
+                </div>
+              </div>
+              <div className="exp-lesson-item" style={{ marginTop: 'var(--space-2)' }}>
+                Each trade close feeds win/loss back to the insight vectors from the cycle when the trade was opened.
+                The EMA-smoothed accuracy tracks whether retrieved insights correctly predicted the outcome.
+                Accuracy {accuracyPct}% after {stats!.accuracyChecks} checks.
+              </div>
+            </div>
+          )}
+
+          {/* Latest insight */}
+          {emState.latestInsight && (
+            <div className="exp-digest-section">
+              <div className="exp-digest-subtitle">Latest Insight</div>
+              <div className="exp-lesson-item">{emState.latestInsight}</div>
+              {emState.latestSignal && (
+                <div className="exp-lesson-item" style={{ color: 'var(--text-muted)', marginTop: 'var(--space-1)' }}>
+                  Signal: {emState.latestSignal}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Convergence */}
+          {emState.convergenceChecks > 0 && (
+            <div className="exp-digest-section">
+              <div className="exp-digest-subtitle">Convergence</div>
+              <div className="exp-lesson-item">
+                Accuracy: {(emState.convergenceAccuracy * 100).toFixed(1)}% after {emState.convergenceChecks} checks
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

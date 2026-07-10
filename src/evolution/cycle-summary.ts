@@ -128,6 +128,16 @@ export class CycleSummaryManager {
   private embedProvider: EmbedProvider | null = null;
   /** Whether insight vectors have been rebuilt from loaded summaries. */
   private insightVectorsBuilt = false;
+  /** v2.0.140: Self-adjustment — tracks prediction accuracy of retrieved insights.
+   *  When a trade closes, we check which historical insights were retrieved
+   *  for that cycle and whether the trade won or lost. This feeds back into
+   *  the retrieval weighting: insights that consistently precede wins get
+   *  boosted, insights that precede losses get dampened. */
+  private insightAccuracy: number = 0.5;
+  private insightAccuracyChecks: number = 0;
+  /** Maps cycleNumber → the insights that were retrieved for that cycle.
+   *  Used to backfill outcomes when the trade closes. */
+  private cycleRetrievals: Map<number, Array<{ cycleNumber: number; insight: string; similarity: number }>> = new Map();
 
   /** Load from persisted EMState */
   load(state: EMState): void {
@@ -517,6 +527,103 @@ export class CycleSummaryManager {
     }
     lines.push('---');
     return lines.join('\n');
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  v2.0.140: Self-Adjustment — learn from win/loss outcomes
+  //  When a trade closes, record whether the retrieved insights correctly
+  //  predicted the outcome. Adjust retrieval confidence over time.
+  // ═══════════════════════════════════════════════════════════
+
+  /**
+   * Record which insights were retrieved for a given cycle.
+   * Called at cycle start after querySimilarInsights().
+   */
+  recordRetrieval(cycleNumber: number, retrievals: Array<{ cycleNumber: number; insight: string; similarity: number }>): void {
+    if (retrievals.length > 0) {
+      this.cycleRetrievals.set(cycleNumber, retrievals);
+    }
+  }
+
+  /**
+   * Record a trade outcome and update insight accuracy.
+   * Called when a trade opened in cycle N closes with a win/loss.
+   * Updates the outcome field on the insight vectors for that cycle,
+   * and adjusts the overall insight accuracy metric.
+   *
+   * @param openCycle  The cycle number when the trade was opened
+   * @param outcome    'win' or 'loss'
+   */
+  recordTradeOutcome(openCycle: number, outcome: 'win' | 'loss'): void {
+    const retrievals = this.cycleRetrievals.get(openCycle);
+    if (!retrievals || retrievals.length === 0) return;
+
+    // Mark the retrieved insights' source cycles with the outcome
+    for (const r of retrievals) {
+      const vec = this.insightVectors.find(v => v.cycleNumber === r.cycleNumber);
+      if (vec) {
+        vec.outcome = outcome;
+      }
+    }
+
+    // Update overall insight accuracy: did the retrieved insights' source
+    // cycles have matching outcomes? (insights from winning cycles that
+    // precede a win = correct; insights from losing cycles that precede a
+    // loss = also correct — the insight correctly described the condition)
+    let correct = 0;
+    let total = 0;
+    for (const r of retrievals) {
+      const vec = this.insightVectors.find(v => v.cycleNumber === r.cycleNumber);
+      if (vec?.outcome) {
+        total++;
+        if (vec.outcome === outcome) correct++;
+      }
+    }
+
+    if (total > 0) {
+      const cycleAccuracy = correct / total;
+      const decay = 0.9; // EMA decay
+      this.insightAccuracy = this.insightAccuracy * decay + cycleAccuracy * (1 - decay);
+      this.insightAccuracyChecks++;
+      log.info(`[insight-retrieval] Self-adjustment: cycle ${openCycle} outcome=${outcome}, retrieved ${retrievals.length} insights, ${correct}/${total} matched, accuracy=${(this.insightAccuracy * 100).toFixed(0)}% (check #${this.insightAccuracyChecks})`);
+    }
+
+    // Clean up old retrieval records (keep last 100)
+    if (this.cycleRetrievals.size > 100) {
+      const sorted = [...this.cycleRetrievals.keys()].sort((a, b) => a - b);
+      for (const key of sorted.slice(0, sorted.length - 100)) {
+        this.cycleRetrievals.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Get self-adjustment stats for UI display.
+   */
+  getInsightStats(): {
+    totalVectors: number;
+    accuracy: number;
+    accuracyChecks: number;
+    winCount: number;
+    lossCount: number;
+    untaggedCount: number;
+  } {
+    let winCount = 0;
+    let lossCount = 0;
+    let untaggedCount = 0;
+    for (const v of this.insightVectors) {
+      if (v.outcome === 'win') winCount++;
+      else if (v.outcome === 'loss') lossCount++;
+      else untaggedCount++;
+    }
+    return {
+      totalVectors: this.insightVectors.length,
+      accuracy: this.insightAccuracy,
+      accuracyChecks: this.insightAccuracyChecks,
+      winCount,
+      lossCount,
+      untaggedCount,
+    };
   }
 
   // ─── Factory: Build CycleSummary from Meta-Agent output ───
