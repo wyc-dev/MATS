@@ -160,15 +160,15 @@ export function computeATRSLTP(
   atr: number,
   side: 'buy' | 'sell',
   slMult = 1.5,
-  tpMult = 3.0,
+  tpMult = 2.0,
 ): { sl: number; tp: number } | null {
   if (atr <= 0 || entryPrice <= 0) return null;
   const slDist = slMult * atr;
   const tpDist = tpMult * atr;
   // Cap SL/TP distance to prevent unreachable levels
-  // Max SL: 5% of entry price, Max TP: 10% of entry price
-  const maxSlDist = entryPrice * 0.05;
-  const maxTpDist = entryPrice * 0.10;
+  // Max SL: 3% of entry price, Max TP: 5% of entry price
+  const maxSlDist = entryPrice * 0.03;
+  const maxTpDist = entryPrice * 0.05;
   const cappedSlDist = Math.min(slDist, maxSlDist);
   const cappedTpDist = Math.min(tpDist, maxTpDist);
   if (side === 'buy') {

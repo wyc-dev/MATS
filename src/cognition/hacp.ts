@@ -1573,8 +1573,8 @@ ADJUST TP/SL BASED ON THE REGIME:
   (mean-reversion target — choppy markets do not travel far, so a wide TP will never hit). NARROW SL
   to just outside the recent range (if the range breaks, the regime has changed — stop out immediately).
   Do NOT widen SL — a wider SL in a choppy market just means a bigger loss when the range breaks.
-- ✅ TRENDING MARKET (recent trades profitable, low reversal rate): WIDEN TP to let profits run.
-  Use a wider ATR-based SL to avoid premature stops. Trail SL in the profit direction only.
+- ✅ TRENDING MARKET (recent trades profitable, low reversal rate): HOLD TP steady — let profits run to the existing TP level.
+  Trail SL in the profit direction only. Do NOT widen SL or TP.
 
 CRITICAL RULES — FOLLOW EXACTLY:
 
