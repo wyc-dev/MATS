@@ -1719,6 +1719,19 @@ Output ONLY valid JSON:
             }
           }
 
+          // ── v2.0.141: SL must stay on the RISK side of current price ──
+          // SL must NEVER cross current price. If it does, it becomes a profit-target
+          // instead of a stop-loss, effectively disabling the protection.
+          if (finalSL !== undefined) {
+            if (isLong && finalSL > pos.currentPrice) {
+              retryError += `ERROR: LONG SL $${finalSL.toFixed(2)} is ABOVE current price $${pos.currentPrice.toFixed(2)} — this is a profit target, not a stop loss. SL must be BELOW current price to protect against downside risk. Please set SL < current price.\n`;
+              finalSL = undefined;
+            } else if (!isLong && finalSL < pos.currentPrice) {
+              retryError += `ERROR: SHORT SL $${finalSL.toFixed(2)} is BELOW current price $${pos.currentPrice.toFixed(2)} — this is a profit target, not a stop loss. SL must be ABOVE current price to protect against upside risk. Please set SL > current price.\n`;
+              finalSL = undefined;
+            }
+          }
+
           // ── No-widen enforcement for TP ──
           // TP can only move TOWARD current price (tightening). It must NEVER
           // move AWAY (widening = greedier target that may never hit).
@@ -1733,6 +1746,19 @@ Output ONLY valid JSON:
                 retryError += `ERROR: SHORT TP $${finalTP.toFixed(2)} < old TP $${pos.takeProfit.toFixed(2)} — this WIDENS the take profit (harder to hit). TP can only move UP (toward current price). Please set TP >= old TP.\n`;
                 finalTP = undefined;
               }
+            }
+          }
+
+          // ── v2.0.141: TP must stay on the PROFIT side of current price ──
+          // TP must NEVER cross current price. If it does, it becomes a stop-loss
+          // instead of a profit target, effectively disabling the take-profit.
+          if (finalTP !== undefined) {
+            if (isLong && finalTP < pos.currentPrice) {
+              retryError += `ERROR: LONG TP $${finalTP.toFixed(2)} is BELOW current price $${pos.currentPrice.toFixed(2)} — this is a stop loss, not a take profit. TP must be ABOVE current price to capture upside profit. Please set TP > current price.\n`;
+              finalTP = undefined;
+            } else if (!isLong && finalTP > pos.currentPrice) {
+              retryError += `ERROR: SHORT TP $${finalTP.toFixed(2)} is ABOVE current price $${pos.currentPrice.toFixed(2)} — this is a stop loss, not a take profit. TP must be BELOW current price to capture downside profit. Please set TP < current price.\n`;
+              finalTP = undefined;
             }
           }
 
