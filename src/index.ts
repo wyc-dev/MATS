@@ -3205,6 +3205,12 @@ class MATSSystem {
         }
       }
 
+      // v2.0.141: Block re-entry on symbols force-closed this cycle (thesis invalidation churn loop fix)
+      const thesisInvalidatedReentryBlock = new Set(result.thesisInvalidatedSymbols ?? []);
+      if (thesisInvalidatedReentryBlock.size > 0) {
+        log.warn(`🚫 Blocking re-entry on ${thesisInvalidatedReentryBlock.size} symbol(s) force-closed this cycle: ${[...thesisInvalidatedReentryBlock].join(', ')}`);
+      }
+
       // 3.1 Apply position adjustments (TP/SL) from meta-agent
       // v2.0.31: In real mode, also place native trigger orders on HL exchange
       // v2.0.60: Validate SL against implied move (options data) before applying.
@@ -4106,6 +4112,19 @@ class MATSSystem {
               rationale: `[EXISTING POSITION] ${decisionSym} already has ${existing.side.toUpperCase()} position. Overriding to HOLD. Original: ${finalDecision.rationale}`,
             };
           }
+        }
+
+        // v2.0.141: Re-entry block — if this symbol was force-closed due to thesis
+        // invalidation THIS cycle, block re-entry. Prevents the close→reopen churn loop.
+        if (finalDecision.action !== 'hold' && typeof thesisInvalidatedReentryBlock !== 'undefined' && thesisInvalidatedReentryBlock.has(decisionSym)) {
+          log.warn(`🚫 [reentry-block] ${decisionSym}: force-closed this cycle due to thesis invalidation. Blocking re-entry. Overriding ${finalDecision.action.toUpperCase()} → HOLD.`);
+          activeAuditGates.push({ gate: 'reentry-block', passed: false, reason: `${decisionSym} force-closed this cycle` });
+          finalDecision = {
+            ...finalDecision,
+            action: 'hold',
+            positionSizePct: 0,
+            rationale: `[REENTRY BLOCK] ${decisionSym} was force-closed this cycle due to thesis invalidation. Blocking re-entry to prevent churn loop. Original: ${finalDecision.rationale}`,
+          };
         }
 
         if (!this.marketAgent.isDirectionAllowed(decisionSym, finalDecision.action as 'buy' | 'sell')) {
