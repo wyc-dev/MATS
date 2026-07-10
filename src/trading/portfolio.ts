@@ -68,7 +68,7 @@ export function isThesisPlaceholder(thesis: string | undefined | null): boolean 
   const stripped = t
     .replace(/\[(1h|1d|4h|1w|1m|5m|15m)\s*:/g, ' ')
     .replace(/[\[\]():,.\-—_/\\]/g, ' ')
-    .replace(/\b(n\/a|na|hold|none|null|not applicable|tbd|todo|closing|close|position|no trade|no position)\b/g, ' ')
+    .replace(/\b(n\/a|na|hold|none|null|not applicable|tbd|todo|closing|close|position|no trade|no position|no entry|entry|open|opening|skip)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   if (stripped.length === 0) return true;
