@@ -556,6 +556,12 @@ export class RealTradingManager {
             ? actualEntryPrice * 1.005
             : actualEntryPrice * 0.995;
         }
+        if (tpDistPct > 0.10) {
+          // TP too wide — narrow to 10%
+          tpPrice = decision.action === 'buy'
+            ? actualEntryPrice * 1.10
+            : actualEntryPrice * 0.90;
+        }
         if (tpDistPct > 0.05) {
           // TP too wide — narrow to 5%
           tpPrice = decision.action === 'buy'
