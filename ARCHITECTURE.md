@@ -418,6 +418,18 @@ LOG_LEVEL=info
 
 **`expActions` action log**：HACP Phase 1.8a 每個 EXP verdict 記錄到 `HACPResult.expActions`，經 API 傳送到 UI 顯示「經驗決定」。
 
+### Dual-Channel Classification Fusion
+
+語義通道（MiniLM）學習真實/模擬平倉交易，受提早平倉污染——可能 REJECT 一個實際上會贏嘅 setup（方向正確但平倉決定錯誤）。統計通道（OLR + Shadow）用固定 SL/TP 結果，唔受提早平倉污染。
+
+**Fusion Rules**（喺 `checkThesisHistory()` classification 之後、raw similarity 之前）：
+1. Semantic REJECT + Statistical WIN（OLR P(win) > 50% 或 shadow WR > 50%）→ override 為 PASS（提早平倉，唔係壞方向）
+2. Semantic APPROVE + Statistical LOSE（OLR < 40% 且 shadow < 40%）→ caution 為 PASS（winning class 可能 overfitted）
+3. 兩者同意 LOSE → strong reject（唔需 override）
+4. 兩者同意 WIN → strong approve（唔需 override）
+
+實作：`CheckThesisInput` 加 `olrPWin` + `shadowWinRate` 可選欄位。HACP `setFusionDataCallback()` 由 index.ts 注入 callback 查詢 OLR + shadow engine。`lastSemanticVerdict` field 儲存分類結果供 fusion cross-reference。
+
 ### 提早平倉防護（PREMATURE CLOSE PREVENTION）
 
 根因：系統最大反覆問題唔係 SL/TP 太緊，係 Meta-Agent + Skeptics 無視價位提早平倉。Meta-Agent CLOSE 決策前強制 5 重檢查。Skeptics thesis re-validation（Phase 0.5）+ close validation 加入 4 重檢查，預設改為 VALID / BLOCK。
@@ -425,6 +437,15 @@ LOG_LEVEL=info
 ### 波動率計算修復
 
 `MarketStateAggregator.calcVolatility()` 從 mean of |arithmetic returns| 改為 std of log returns（同 `first-passage.ts` 一致）。舊算法低估 ~20%，導致所有 regime 永遠 `low_volatility` → SL 太緊 → premature stops → false regime classification。
+
+### 其他 v2.0.140 bug 修復
+
+- **Active-symbol conviction gate 用咗 diluted overall confidence**：`result.consensus.confidence` 係所有 symbol 嘅平均（被 HOLD symbol 稀釋），唔係 per-symbol confidence。改用 `perSymbolConsensus` 嘅 per-symbol confidence。同 v2.0.132 修復 multi-symbol path 嘅係同一個 bug，但 active-symbol path 從未修復。
+- **OLR backfill 傳 lowercase 'btc' 俾 HL candleSnapshot**：HL API case-sensitive，bare symbols 要大寫。Backfill fetcher 漏咗 normalization → BTC 從未被 backfill → 冇 OLR model → OLR panel 缺 BTC。修復：加 case normalization（btc → BTC, XYZ:SKHX → xyz:SKHX）。
+- **Shadow trade maxTotalOpen 30 太細**：4 個 trading markets × 10 = 40 > 30，第 4 個 symbol 冇 shadow → 冇 OLR model。提高到 60。
+- **`isThesisPlaceholder()` 漏判 'closing position' 同 'no entry'**：'closing'（7 字母）同 'entry'（5 字母）過到 `[a-z]{3,}` 檢查 → placeholder thesis 被接受為有效 entry thesis → 用「N/A — closing position」開倉。修復：placeholder word list 加入 closing/close/position/entry/open/opening/skip。
+- **`holdReason` 未加入 Position interface**：用 `(pos as any).holdReason` cast 設定，UI Position type 冇宣告。修復：加入 backend + UI Position interface，移除所有 cast。
+- **`parseDigest()` 讀錯行**：`getDigestSummary()` line 0 係 header，line 1 係 W/L stats。parseDigest 讀 `lines[0]` 做 regex → `parsed.total` 永遠 0。修復：讀 `lines[1]`。
 
 **檔案**：新 `src/evolution/embeddings.ts`（EmbedProvider + Transformers.js + Mock + 向量數學）、`src/evolution/thesis-experience.ts`（核心：extract/record/check/delta/reverse/repair）、`scripts/reindex-exp.ts`（換模型時重 embed）。改 `src/types/index.ts`（ThesisExperienceRecord/ExpVerdict/ExpCheckResult/ExpFallbackIncident + TradeRecord.entryThesis）、`src/config/index.ts`（exp block）、`src/trading/portfolio.ts`（close 時 capture `pos.entryThesis`→`trade.entryThesis`）、`src/index.ts`（實例化 + startup load/warmup + close hook）、`src/cognition/hacp.ts`（Phase 1.8a + `overrideMetaDecision` helper）。24 新測試（總 77）。tsc clean。
 

@@ -240,15 +240,25 @@ Restrict a symbol to BUY-only or SELL-only via API or `data/evolution/market-age
 
 ## Changelog
 
-### v2.0.140 — A2A Experience Digester + Premature Close Prevention + Volatility Fix
+### v2.0.140 — A2A Experience Digester + Dual-Channel Fusion + Premature Close Prevention + Volatility Fix + 6 Bug Fixes
 
 **A2A Experience Digester** — every closed trade is LLM-digested into a structured `LessonStatement` (OBS + ASSESS + rootCause + exitType + lesson), embedded into a condensed vector, and clustered into `ExperienceClass`. New candidate theses are classified against class centroids → verdict. The `digestTrade` LLM prompt forces 5-layer root cause diagnosis. `getDigestSummary()` produces a 7-layer structured digest injected into agent prompts. `expActions` action log wired through HACP → API → UI.
+
+**Dual-Channel Classification Fusion** — the semantic channel (MiniLM) learns from real/paper closed trades, which are polluted by premature closes. The statistical channel (OLR + Shadow) uses fixed SL/TP outcomes not affected by premature closes. Fusion rules: semantic REJECT + statistical WIN → override to PASS (premature close, not bad direction); semantic APPROVE + statistical LOSE → caution to PASS (overfitted class). Implemented via `CheckThesisInput.olrPWin` + `shadowWinRate` + `setFusionDataCallback()` in HACP.
 
 **Premature Close Prevention** — the system's biggest recurring problem is NOT tight SL/TP, it's Meta-Agent + Skeptics initiating manual closes that ignore the actual price structure. Three gatekeeper prompts rewritten with mandatory checks (price level breached? SL/TP hit? position ≥15min? digest shows premature history? direction still correct?). Skeptics defaults → VALID/BLOCK (when in doubt, keep open).
 
 **Volatility calculation fix** — `MarketStateAggregator.calcVolatility()` was using mean of |arithmetic returns| (underestimates ~20%), causing ALL regimes to classify as `low_volatility`. Fixed to std of log returns.
 
-**Visual Experience Digestion UI** — fully visual: W/L bar, exit quality bars, class cards with win-rate bars + exit-type badges, per-symbol table with PnL color coding, volatility anomaly banner, root cause diagnosis. No raw text dump.
+**6 critical bug fixes**:
+1. Active-symbol conviction gate used diluted overall confidence (same bug as v2.0.132 but never fixed for active-symbol path)
+2. OLR backfill passed lowercase 'btc' to HL candleSnapshot (case-sensitive API) → BTC never backfilled → no OLR model
+3. Shadow trade `maxTotalOpen` 30 too small for 4+ trading markets → 4th symbol got 0 shadows → raised to 60
+4. `isThesisPlaceholder()` missed 'closing position' and 'no entry' (3+ letter words passed the check) → positions opened with placeholder theses
+5. `holdReason` not on Position interface (set via `as any` cast) → added to backend + UI types
+6. `parseDigest()` read line 0 (header) instead of line 1 (stats) → `parsed.total` always 0 → MiniLM Pipeline showed 0 trades
+
+**Visual Experience Digestion UI** — MiniLM Neural Pipeline (4-stage sci-fi flow + neural grid), Dual-Channel Fusion banner, 4-card stats grid, W/L bar, exit quality bars, class cards with win-rate bars + exit-type badges, per-symbol table with PnL color coding, volatility anomaly banner, root cause diagnosis. No raw text dump.
 
 **17 new tests** (total 94). `tsc --noEmit` clean. UI build clean.
 
