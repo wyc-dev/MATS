@@ -1894,8 +1894,9 @@ function parseDigest(raw: string): {
 } | null {
   try {
     const lines = raw.split('\n').filter(l => l.trim())
-    // Headline: "🔴 Win rate: 35% (W8 L15) | Net PnL: 0.652 | Current losing streak: 10"
-    const hl = lines[0] ?? ''
+    // Headline is line 1 (line 0 is "=== EXPERIENCE DIGEST (from N closed trades) ===")
+    // The W/L stats are on line 1: "🔴 Win rate: 35% (W8 L15) | Net PnL: 0.652 | ..."
+    const hl = lines[1] ?? lines[0] ?? ''
     const streakMatch = hl.match(/losing streak:\s*(\d+)/)
     const streak = streakMatch ? parseInt(streakMatch[1]) : 0
     const pnlMatch = hl.match(/Net PnL:\s*(-?[\d.]+)/)
@@ -2232,7 +2233,7 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
   const [expanded, setExpanded] = useState(false)
   if (!expDigest && (!expActions || expActions.length === 0)) return null
 
-  const hasStreakWarning = expDigest?.includes('losing streak')
+  const hasStreakWarning = expDigest?.includes('losing streak:') && !expDigest?.includes('losing streak: 0')
   const parsed = expDigest ? parseDigest(expDigest) : null
 
   // Build action log lines
