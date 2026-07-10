@@ -4705,7 +4705,7 @@ class MATSSystem {
           exchange: pos.exchange ?? 'hyperliquid',
           // v2.0.134: Include entryThesis so UI can display the opening rationale
           entryThesis: pos.entryThesis,
-          holdReason: (pos as any).holdReason,
+          holdReason: pos.holdReason,
         };
       } else {
         positions[key] = {
@@ -4726,7 +4726,7 @@ class MATSSystem {
           exchange: pos.exchange ?? 'hyperliquid',
           // v2.0.134: Include entryThesis so UI can display the opening rationale
           entryThesis: pos.entryThesis,
-          holdReason: (pos as any).holdReason,
+          holdReason: pos.holdReason,
         };
       }
     }
@@ -4792,7 +4792,7 @@ class MATSSystem {
             exchange: 'hyperliquid',
             // v2.0.134: Include entryThesis from real position if available
             entryThesis: realPos?.entryThesis,
-            holdReason: (realPos as any)?.holdReason,
+            holdReason: realPos?.holdReason,
           };
         }
       }
