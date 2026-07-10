@@ -1867,97 +1867,50 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
         resetStatus={resetStatus}
       />
       <EMCycleDigestionSection emState={data?.emState} />
+      <RILSection rilState={data?.rilState} />
       <ExperienceDigestionSection expDigest={data?.portfolio?.expDigest} expActions={data?.expActions} />
       <OLRSection olrState={data?.olrState} openPositionSymbols={openPositionSymbols} />
     </div>
   )
 }
 
-/* ── v2.0.140: EM Cycle Digestion Section ── */
+/* ── v2.0.140: EM Cycle Digestion Section (v2.0.141: cycle chain only, insight vectors replaced by RIL) ── */
 
 function EMCycleDigestionSection({ emState }: { emState?: any }) {
   const [expanded, setExpanded] = useState(false)
   if (!emState) return null
 
-  const stats: EMInsightStats | undefined = emState.insightStats
-  const hasInsights = stats && stats.totalVectors > 0
-  const accuracyPct = stats ? (stats.accuracy * 100).toFixed(0) : '—'
-  const accuracyColor = stats && stats.accuracy > 0.6 ? 'var(--green)' : stats && stats.accuracy < 0.4 ? 'var(--red)' : 'var(--text-tertiary)'
+  const accuracyPct = emState.convergenceChecks > 0 ? (emState.convergenceAccuracy * 100).toFixed(1) : '—'
+  const accuracyColor = emState.convergenceAccuracy > 0.6 ? 'var(--green)' : emState.convergenceAccuracy < 0.4 ? 'var(--red)' : 'var(--text-tertiary)'
 
   return (
     <div className="evo-section">
       <div className="evo-section-header" onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer' }}>
         <div className="evo-section-accent" />
-        <span className="evo-section-title">EM Cycle Digestion</span>
+        <span className="evo-section-title">EM Cycle Chain</span>
         <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
       </div>
       {expanded && (
         <div className="exp-digest-content">
-          {/* Pipeline description */}
           <div className="exp-pipeline-desc" style={{ marginBottom: 'var(--space-4)' }}>
-            MiniLM semantic retrieval of historical cycle insights · self-adjusting via win/loss feedback
+            Market continuity via Meta-Agent cycle summaries · tiered memory (hot/warm/cold)
           </div>
 
-          {/* Stats grid */}
           <div className="exp-stats-grid">
             <div className="exp-stat-card">
               <div className="exp-stat-value">{emState.summaryCount ?? 0}</div>
-              <div className="exp-stat-label">Cycle Insights</div>
+              <div className="exp-stat-label">Cycle Summaries</div>
             </div>
             <div className="exp-stat-card">
               <div className="exp-stat-value" style={{ color: accuracyColor }}>{accuracyPct}%</div>
-              <div className="exp-stat-label">Prediction Acc</div>
+              <div className="exp-stat-label">Convergence Acc</div>
             </div>
             <div className="exp-stat-card">
-              <div className="exp-stat-value">{stats?.accuracyChecks ?? 0}</div>
-              <div className="exp-stat-label">Adjustment Checks</div>
-            </div>
-            <div className="exp-stat-card">
-              <div className="exp-stat-value">{hasInsights ? `${stats!.winCount}/${stats!.lossCount}` : '—'}</div>
-              <div className="exp-stat-label">Win / Loss Tags</div>
+              <div className="exp-stat-value">{emState.convergenceChecks ?? 0}</div>
+              <div className="exp-stat-label">Convergence Checks</div>
             </div>
           </div>
 
-          {/* Self-adjustment bar */}
-          {hasInsights && (
-            <div className="exp-digest-section">
-              <div className="exp-digest-subtitle">Self-Adjustment</div>
-              <div className="exp-eq-row">
-                <div className="exp-eq-label">Win-tagged insights</div>
-                <div className="exp-eq-bar-wrap">
-                  <div className="exp-eq-bar-fill" style={{ width: `${(stats!.winCount / stats!.totalVectors) * 100}%`, background: 'var(--green)' }} />
-                </div>
-                <div className="exp-eq-meta">
-                  <span className="exp-eq-count">{stats!.winCount}</span>
-                </div>
-              </div>
-              <div className="exp-eq-row">
-                <div className="exp-eq-label">Loss-tagged insights</div>
-                <div className="exp-eq-bar-wrap">
-                  <div className="exp-eq-bar-fill" style={{ width: `${(stats!.lossCount / stats!.totalVectors) * 100}%`, background: 'var(--red)' }} />
-                </div>
-                <div className="exp-eq-meta">
-                  <span className="exp-eq-count">{stats!.lossCount}</span>
-                </div>
-              </div>
-              <div className="exp-eq-row">
-                <div className="exp-eq-label">Untagged (pending)</div>
-                <div className="exp-eq-bar-wrap">
-                  <div className="exp-eq-bar-fill" style={{ width: `${(stats!.untaggedCount / stats!.totalVectors) * 100}%`, background: 'var(--text-muted)' }} />
-                </div>
-                <div className="exp-eq-meta">
-                  <span className="exp-eq-count">{stats!.untaggedCount}</span>
-                </div>
-              </div>
-              <div className="exp-lesson-item" style={{ marginTop: 'var(--space-2)' }}>
-                Each trade close feeds win/loss back to the insight vectors from the cycle when the trade was opened.
-                The EMA-smoothed accuracy tracks whether retrieved insights correctly predicted the outcome.
-                Accuracy {accuracyPct}% after {stats!.accuracyChecks} checks.
-              </div>
-            </div>
-          )}
-
-          {/* Latest insight */}
           {emState.latestInsight && (
             <div className="exp-digest-section">
               <div className="exp-digest-subtitle">Latest Insight</div>
@@ -1969,23 +1922,70 @@ function EMCycleDigestionSection({ emState }: { emState?: any }) {
               )}
             </div>
           )}
-
-          {/* Convergence */}
-          {emState.convergenceChecks > 0 && (
-            <div className="exp-digest-section">
-              <div className="exp-digest-subtitle">Convergence</div>
-              <div className="exp-lesson-item">
-                Accuracy: {(emState.convergenceAccuracy * 100).toFixed(1)}% after {emState.convergenceChecks} checks
-              </div>
-            </div>
-          )}
         </div>
       )}
     </div>
   )
 }
 
-/* ── v2.0.140: Experience Digestion Section (visual) ── */
+/* ── v2.0.141: RIL Reason Intelligence Layer Section ── */
+
+function RILSection({ rilState }: { rilState?: any }) {
+  const [expanded, setExpanded] = useState(false)
+  if (!rilState) return null
+
+  return (
+    <div className="evo-section">
+      <div className="evo-section-header" onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer' }}>
+        <div className="evo-section-accent" />
+        <span className="evo-section-title">RIL Reason Intelligence</span>
+        <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
+      </div>
+      {expanded && (
+        <div className="exp-digest-content">
+          <div className="exp-pipeline-desc" style={{ marginBottom: 'var(--space-4)' }}>
+            Structured entry/close pattern reference data for Meta-Agent · greedy cosine clustering of rationale texts
+          </div>
+
+          <div className="exp-stats-grid">
+            <div className="exp-stat-card">
+              <div className="exp-stat-value">{rilState.patternCount ?? 0}</div>
+              <div className="exp-stat-label">Pattern Clusters</div>
+            </div>
+            <div className="exp-stat-card">
+              <div className="exp-stat-value">{rilState.tradeCount ?? 0}</div>
+              <div className="exp-stat-label">Trades Analyzed</div>
+            </div>
+            <div className="exp-stat-card">
+              <div className="exp-stat-value" style={{ color: rilState.isBuilt ? 'var(--green)' : 'var(--yellow)' }}>
+                {rilState.isBuilt ? 'Active' : 'Building'}
+              </div>
+              <div className="exp-stat-label">Status</div>
+            </div>
+          </div>
+
+          <div className="exp-digest-section">
+            <div className="exp-digest-subtitle">Architecture</div>
+            <div className="exp-lesson-item">
+              <b>PatternClusterManager</b> — Greedy cosine clustering of entry rationale texts (MiniLM 384-d) → per-pattern WR/PnL. Injected as <code>ENTRY PATTERN PERFORMANCE</code>.
+            </div>
+            <div className="exp-lesson-item">
+              <b>CloseReasonAggregator</b> — Pure math GROUP BY exitType+decisionOrigin → per-close-reason WR/PnL. Injected as <code>CLOSE REASON PERFORMANCE</code>.
+            </div>
+            <div className="exp-lesson-item">
+              <b>SimilarTradeRetriever</b> — Top-N similar past trades by combination similarity. Injected as <code>SIMILAR TRADES + SUBTLE DIFFERENCES</code>.
+            </div>
+            <div className="exp-lesson-item" style={{ marginTop: 'var(--space-2)' }}>
+              EXP and A2A Digester are kept as supplementary reference sources. Meta-Agent uses a Confidence Calibration Framework: BASE WR → adjust for close context → adjust for subtle differences → FINAL confidence → decision.
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ── v2.0.140: Experience Digestion Section (v2.0.141: supplementary LLM analysis) ── */
 
 interface ParsedClass {
   count: number; winRate: number; avgHoldMin: number; directionBias: string;

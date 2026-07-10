@@ -92,6 +92,15 @@ const envSchema = z.object({
   EXP_REPAIR_ENABLED: z.coerce.boolean().default(true),
   EXP_REPAIR_MAX_RETRIES: z.coerce.number().int().positive().default(1),
   EXP_REPAIR_BACKOFF_MS: z.coerce.number().positive().default(800),
+  // ─── RIL (Reason Intelligence Layer) — v2.0.141 ───
+  RIL_ENABLED: z.coerce.boolean().default(true),
+  RIL_CLUSTER_THRESHOLD: z.coerce.number().min(0).max(1).default(0.75),
+  RIL_MIN_CLUSTER_SIZE: z.coerce.number().int().positive().default(3),
+  RIL_MAX_PATTERNS_DISPLAY: z.coerce.number().int().positive().default(10),
+  RIL_SIMILAR_TRADE_COUNT: z.coerce.number().int().positive().default(5),
+  RIL_SUBTLE_DIFF_ENABLED: z.coerce.boolean().default(true),
+  RIL_REBUILD_ON_STARTUP: z.coerce.boolean().default(true),
+  RIL_MAX_CLUSTERS: z.coerce.number().int().positive().default(100),
 });
 
 function parseEnv() {
@@ -206,6 +215,17 @@ export const config = {
       SILVER: 'commodity',
     } as Record<string, 'crypto' | 'commodity' | 'equity' | 'forex' | 'other'>,
   },
+  // ─── RIL (Reason Intelligence Layer) — v2.0.141 ───
+  ril: {
+    enabled: raw.RIL_ENABLED ?? true,
+    clusterThreshold: raw.RIL_CLUSTER_THRESHOLD ?? 0.75,
+    minClusterSize: raw.RIL_MIN_CLUSTER_SIZE ?? 3,
+    maxPatternsDisplay: raw.RIL_MAX_PATTERNS_DISPLAY ?? 10,
+    similarTradeCount: raw.RIL_SIMILAR_TRADE_COUNT ?? 5,
+    subtleDiffEnabled: raw.RIL_SUBTLE_DIFF_ENABLED ?? true,
+    rebuildOnStartup: raw.RIL_REBUILD_ON_STARTUP ?? true,
+    maxClusters: raw.RIL_MAX_CLUSTERS ?? 100,
+  } as const,
 } as const;
 
 export type AppConfig = typeof config;

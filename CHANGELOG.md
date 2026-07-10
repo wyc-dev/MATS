@@ -4,6 +4,30 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.141 — RIL Reason Intelligence Layer + Confidence Calibration Framework + Prompt Overhaul
+
+**RIL — Reason Intelligence Layer** (`src/evolution/reason-analytics.ts`): New structured reference data system providing Meta-Agent with clear, queryable stats on what entry/close patterns historically win and lose. Three components:
+- **PatternClusterManager**: Greedy cosine clustering of entry rationale texts (MiniLM 384-d) → per-pattern WR/PnL. Injected as `=== ENTRY PATTERN PERFORMANCE ===`.
+- **CloseReasonAggregator**: Pure math GROUP BY exitType+decisionOrigin → per-close-reason WR/PnL. Injected as `=== CLOSE REASON PERFORMANCE ===`.
+- **SimilarTradeRetriever + SubtleDiffAnalyzer**: Top-N similar past trades + LLM subtle differences analysis (1 call per cycle).
+
+**Role Change: EXP + A2A Digester → Reference Data Sources**
+- EXP `checkThesisHistory()` changed from binary gate to reference data block. Meta-Agent sees the verdict but makes its own decision.
+- A2A Digester `getDigestSummary()` kept as supplementary LLM analysis block, no longer used for candidate classification.
+- Both systems retain their existing code but their OUTPUT is now injected as reference data, not decision overrides.
+
+**Confidence Calibration Framework** — Meta-Agent and Skeptics prompts completely overhauled:
+- Meta-Agent: BASE confidence from pattern WR → adjust for close reason context (premature vs correct losses) → adjust for subtle differences → FINAL confidence → decision.
+- Skeptics: Audits Meta-Agent's confidence calibration, checks for premature vs correct loss distinction, flags confidence-evidence mismatches.
+- Both prompts now explicitly guide agents to weigh strengthening/weakening factors from the reference data.
+
+**Files changed**:
+- New: `src/evolution/reason-analytics.ts` (589 lines)
+- Modified: `src/types/index.ts` (new RIL types), `src/config/index.ts` (RIL config), `src/agents/meta-agent.ts` (prompt overhaul), `src/agents/agents.ts` (Skeptics prompt overhaul), `src/index.ts` (RIL init + injection), `src/evolution/thesis-experience.ts` (getRecords() getter)
+- Docs: `ARCHITECTURE.md`, `README.md`, `WL.md` updated
+
+---
+
 ## v2.0.140 — A2A Experience Digester + Dual-Channel Fusion + Premature Close Prevention + Volatility Fix + 6 Bug Fixes
 
 **A2A Experience Digester** — every closed trade is LLM-digested into a structured `LessonStatement` (OBS + ASSESS + rootCause + exitType + lesson), embedded into a condensed vector, and clustered into `ExperienceClass`. New candidate theses are classified against class centroids → verdict. The `digestTrade` LLM prompt forces 5-layer root cause diagnosis. `getDigestSummary()` produces a 7-layer structured digest injected into agent prompts. `expActions` action log wired through HACP → API → UI.

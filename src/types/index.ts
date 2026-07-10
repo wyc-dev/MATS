@@ -623,6 +623,70 @@ export interface DigestConfig {
   maxDigestCache: number;
 }
 
+// ─── RIL (Reason Intelligence Layer) — v2.0.141 ───
+
+/** A cluster of semantically similar entry rationale texts, with aggregate performance stats. */
+export interface ReasonPatternCluster {
+  id: string;
+  /** Human-readable name (nearest-to-centroid rationale text). */
+  name: string;
+  /** L2-normalised centroid of member rationale vectors (embedDim-dim). */
+  centroid: number[];
+  count: number;
+  wins: number;
+  losses: number;
+  netPnl: number;
+  winRate: number;
+  avgHoldMin: number;
+  /** Distinct symbols seen in this cluster. */
+  symbols: string[];
+  /** Distinct sides (buy/sell). */
+  sides: Array<'buy' | 'sell'>;
+  memberIds: string[];
+  /** Exit type breakdown within this pattern. */
+  exitTypeBreakdown: Record<string, { wins: number; losses: number; pnl: number }>;
+  /** Timestamp of last member added. */
+  ts: number;
+}
+
+/** Aggregated stats for one close reason type. */
+export interface CloseReasonStat {
+  exitType: string;
+  decisionOrigin: string;
+  count: number;
+  wins: number;
+  losses: number;
+  netPnl: number;
+  winRate: number;
+  avgHoldMin: number;
+  avgPnlPerTrade: number;
+}
+
+/** A similar trade result from retrieval. */
+export interface SimilarTradeResult {
+  trade: ThesisExperienceRecord;
+  similarity: number;
+}
+
+/** RIL runtime config. */
+export interface RILConfig {
+  enabled: boolean;
+  /** Cosine threshold for greedy clustering of rationale texts. */
+  clusterThreshold: number;
+  /** Minimum trades per cluster for display. */
+  minClusterSize: number;
+  /** Max patterns to show in the entry pattern map. */
+  maxPatternsDisplay: number;
+  /** Number of similar trades to retrieve per proposal. */
+  similarTradeCount: number;
+  /** Enable LLM subtle differences analysis (1 call per cycle). */
+  subtleDiffEnabled: boolean;
+  /** Rebuild clusters from tradeHistory on startup. */
+  rebuildOnStartup: boolean;
+  /** Max clusters to keep (prune smallest when over limit). */
+  maxClusters: number;
+}
+
 // ─── Risk ───
 
 export interface RiskLimits {
