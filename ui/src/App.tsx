@@ -1266,7 +1266,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
                   <tr key={`${pos.id}-thesis`} className="position-thesis-row">
                     <td colSpan={12} className="position-thesis-cell">
                       <div className="position-thesis-content">
-                        <span className="position-thesis-label">📝</span>
+                        <span className="position-thesis-label"></span>
                         <span className="position-thesis-text">{pos.entryThesis}</span>
                       </div>
                     </td>
@@ -1276,7 +1276,7 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
                   <tr key={`${pos.id}-hold`} className="position-thesis-row">
                     <td colSpan={12} className="position-thesis-cell">
                       <div className="position-thesis-content">
-                        <span className="position-thesis-label">🤔</span>
+                        <span className="position-thesis-label"></span>
                         <span className="position-thesis-text">{pos.holdReason}</span>
                       </div>
                     </td>
@@ -2070,7 +2070,7 @@ function ExitQualityBar({ count, total, color, label, pnl, isMajor }: { count: n
       <div className="exp-eq-meta">
         <span className="exp-eq-count">{count} trades</span>
         <span className="exp-eq-pnl" style={{ color: pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(3)}</span>
-        {isMajor && <span className="exp-eq-major">⚠️ MAJOR</span>}
+        {isMajor && <span className="exp-eq-major">MAJOR</span>}
       </div>
     </div>
   )
@@ -2115,7 +2115,7 @@ function MiniLMPipeline({ parsed, total }: { parsed: ReturnType<typeof parseDige
 
   return (
     <div className="exp-pipeline">
-      <div className="exp-pipeline-title">🧬 MiniLM Neural Pipeline</div>
+      <div className="exp-pipeline-title">MiniLM Neural Pipeline</div>
       <div className="exp-pipeline-desc">all-MiniLM-L6-v2 · 384-dim · in-process · transformers.js</div>
 
       {/* Pipeline flow */}
@@ -2123,7 +2123,6 @@ function MiniLMPipeline({ parsed, total }: { parsed: ReturnType<typeof parseDige
         {/* Stage 1: Digest */}
         <div className="exp-pipeline-stage">
           <div className="exp-pipeline-node digest">
-            <div className="exp-pipeline-node-icon">📝</div>
             <div className="exp-pipeline-node-label">Digest</div>
             <div className="exp-pipeline-node-value">{digestCount}</div>
             <div className="exp-pipeline-node-sub">closed trades</div>
@@ -2140,7 +2139,6 @@ function MiniLMPipeline({ parsed, total }: { parsed: ReturnType<typeof parseDige
         {/* Stage 2: Embed */}
         <div className="exp-pipeline-stage">
           <div className="exp-pipeline-node embed">
-            <div className="exp-pipeline-node-icon">🔮</div>
             <div className="exp-pipeline-node-label">Embed</div>
             <div className="exp-pipeline-node-value">{embedDim}</div>
             <div className="exp-pipeline-node-sub">dimensions</div>
@@ -2157,10 +2155,9 @@ function MiniLMPipeline({ parsed, total }: { parsed: ReturnType<typeof parseDige
         {/* Stage 3: Cluster */}
         <div className="exp-pipeline-stage">
           <div className="exp-pipeline-node cluster">
-            <div className="exp-pipeline-node-icon">🧩</div>
             <div className="exp-pipeline-node-label">Cluster</div>
             <div className="exp-pipeline-node-value">{totalClasses}</div>
-            <div className="exp-pipeline-node-sub">experience classes</div>
+            <div className="exp-pipeline-node-sub">experience</div>
           </div>
           <div className="exp-pipeline-node-desc">Greedy cosine clustering (≥80% similarity)</div>
         </div>
@@ -2174,7 +2171,6 @@ function MiniLMPipeline({ parsed, total }: { parsed: ReturnType<typeof parseDige
         {/* Stage 4: Classify */}
         <div className="exp-pipeline-stage">
           <div className="exp-pipeline-node classify">
-            <div className="exp-pipeline-node-icon">⚡</div>
             <div className="exp-pipeline-node-label">Classify</div>
             <div className="exp-pipeline-node-value">{classifyThreshold}%</div>
             <div className="exp-pipeline-node-sub">threshold</div>
@@ -2185,7 +2181,7 @@ function MiniLMPipeline({ parsed, total }: { parsed: ReturnType<typeof parseDige
 
       {/* Neural vector visualization */}
       <div className="exp-neural-viz">
-        <div className="exp-neural-label">384-dim lesson vectors → clustered into experience classes</div>
+        <div className="exp-neural-label">384-dim lesson vectors → clustered into experience</div>
         <div className="exp-neural-grid">
           {Array.from({ length: 24 }, (_, i) => {
             const isLosing = i < losingCount
@@ -2212,23 +2208,19 @@ function MiniLMPipeline({ parsed, total }: { parsed: ReturnType<typeof parseDige
       {/* Classification verdicts */}
       <div className="exp-verdicts">
         <div className="exp-verdict-row">
-          <span className="exp-verdict-icon approve">✅</span>
-          <span className="exp-verdict-label">FAST_APPROVE</span>
+          <span className="exp-verdict-label approve">FAST_APPROVE</span>
           <span className="exp-verdict-desc">winning class match + direction aligned</span>
         </div>
         <div className="exp-verdict-row">
-          <span className="exp-verdict-icon reject">❌</span>
-          <span className="exp-verdict-label">REJECT</span>
+          <span className="exp-verdict-label reject">REJECT</span>
           <span className="exp-verdict-desc">losing class match + direction aligned</span>
         </div>
         <div className="exp-verdict-row">
-          <span className="exp-verdict-icon reverse">🔄</span>
-          <span className="exp-verdict-label">REVERSE_DIRECTION</span>
+          <span className="exp-verdict-label reverse">REVERSE_DIRECTION</span>
           <span className="exp-verdict-desc">losing class + opposite direction = contrarian edge</span>
         </div>
         <div className="exp-verdict-row">
-          <span className="exp-verdict-icon passthrough">⬇️</span>
-          <span className="exp-verdict-label">PASS_OPEN_DIRECTLY</span>
+          <span className="exp-verdict-label passthrough">PASS_OPEN_DIRECTLY</span>
           <span className="exp-verdict-desc">no class match (cold-start) → let it trade & learn</span>
         </div>
       </div>
@@ -2249,13 +2241,13 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
     for (const a of expActions) {
       const sideLabel = a.side === 'buy' ? 'LONG' : 'SHORT'
       if (a.verdict === 'FAST_APPROVE' || a.verdict === 'APPROVE_WITH_NOTE' || a.verdict === 'PASS_OPEN_DIRECTLY') {
-        actionLines.push(`✅ 根據經驗之後決定落單 ${a.symbol} ${sideLabel} — ${a.reason}`)
+        actionLines.push(`根據經驗之後決定落單 ${a.symbol} ${sideLabel} — ${a.reason}`)
       } else if (a.verdict === 'REJECT') {
-        actionLines.push(`❌ 根據經驗之後決定暫時唔落單 ${a.symbol} ${sideLabel} — ${a.reason}`)
+        actionLines.push(`根據經驗之後決定暫時唔落單 ${a.symbol} ${sideLabel} — ${a.reason}`)
       } else if (a.verdict === 'REVERSE_DIRECTION') {
-        actionLines.push(`🔄 根據經驗之後決定反方向落單 ${a.symbol} — ${a.reason}`)
+        actionLines.push(`根據經驗之後決定反方向落單 ${a.symbol} — ${a.reason}`)
       } else if (a.verdict === 'EXP_DISABLED' || a.verdict === 'EXP_ERRORED') {
-        actionLines.push(`⚠️ 經驗系統未準備好，暫時唔落單 ${a.symbol} ${sideLabel} — ${a.reason}`)
+        actionLines.push(`經驗系統未準備好，暫時唔落單 ${a.symbol} ${sideLabel} — ${a.reason}`)
       }
     }
   }
@@ -2266,7 +2258,7 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
         <div className="evo-section-accent" />
         <span className="evo-section-title">
           Experience Digestion
-          {hasStreakWarning && <span className="exp-streak-warning">🔴</span>}
+          {hasStreakWarning && <span className="exp-streak-warning">●</span>}
         </span>
         <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
       </div>
@@ -2275,7 +2267,7 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
           {/* Action log */}
           {actionLines.length > 0 && (
             <div className="exp-digest-section">
-              <div className="exp-digest-subtitle">📋 經驗決定</div>
+              <div className="exp-digest-subtitle">Experience Decisions</div>
               {actionLines.map((l, i) => (
                 <div key={i} className="exp-digest-action">{l}</div>
               ))}
@@ -2290,7 +2282,7 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
               {/* Streak + PnL headline */}
               <div className="exp-headline-row">
                 <div className="exp-headline-streak">
-                  {parsed.streak >= 3 && <span className="exp-streak-badge">🔴 {parsed.streak} losing streak</span>}
+                  {parsed.streak >= 3 && <span className="exp-streak-badge">{parsed.streak} losing streak</span>}
                 </div>
                 <div className="exp-headline-pnl">
                   Net PnL: <span style={{ color: parsed.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{parsed.netPnl >= 0 ? '+' : ''}{parsed.netPnl.toFixed(3)}</span>
@@ -2308,7 +2300,7 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
 
               {/* Exit quality */}
               <div className="exp-digest-section">
-                <div className="exp-digest-subtitle">⚡ Exit Quality</div>
+                <div className="exp-digest-subtitle">Exit Quality</div>
                 <ExitQualityBar
                   count={parsed.exitQuality.prematureLossCount}
                   total={parsed.losses}
@@ -2338,7 +2330,7 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
               {/* Close discipline lessons */}
               {parsed.closeLessons.length > 0 && (
                 <div className="exp-digest-section">
-                  <div className="exp-digest-subtitle">💡 Close Discipline</div>
+                  <div className="exp-digest-subtitle">Close Discipline</div>
                   {parsed.closeLessons.map((l, i) => (
                     <div key={i} className="exp-lesson-item">{l}</div>
                   ))}
@@ -2349,13 +2341,13 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
               <div className="exp-patterns-grid">
                 {parsed.losingClasses.length > 0 && (
                   <div className="exp-patterns-col">
-                    <div className="exp-digest-subtitle">❌ Losing Patterns</div>
+                    <div className="exp-digest-subtitle">Losing Patterns</div>
                     {parsed.losingClasses.map((c, i) => <ClassCard key={i} cls={c} type="losing" />)}
                   </div>
                 )}
                 {parsed.winningClasses.length > 0 && (
                   <div className="exp-patterns-col">
-                    <div className="exp-digest-subtitle">✅ Winning Patterns</div>
+                    <div className="exp-digest-subtitle">Winning Patterns</div>
                     {parsed.winningClasses.map((c, i) => <ClassCard key={i} cls={c} type="winning" />)}
                   </div>
                 )}
@@ -2364,7 +2356,7 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
               {/* Per symbol table */}
               {parsed.perSymbol.length > 0 && (
                 <div className="exp-digest-section">
-                  <div className="exp-digest-subtitle">📊 Per Symbol</div>
+                  <div className="exp-digest-subtitle">Per Symbol</div>
                   <div className="exp-symbol-table">
                     {parsed.perSymbol.map((s, i) => {
                       const total = s.wins + s.losses
@@ -2378,7 +2370,7 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
                           </div>
                           <span className="exp-sym-wl">W{s.wins} L{s.losses}</span>
                           <span className="exp-sym-net" style={{ color: s.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{s.netPnl >= 0 ? '+' : ''}{s.netPnl.toFixed(3)}</span>
-                          <span className="exp-sym-hold">{s.avgHold}min{s.isPremature ? ' ⚠️' : ''}</span>
+                          <span className="exp-sym-hold">{s.avgHold}min{s.isPremature ? ' !' : ''}</span>
                         </div>
                       )
                     })}
@@ -2389,7 +2381,6 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
               {/* Volatility anomaly */}
               {parsed.volatilityAnomaly.isAnomaly && (
                 <div className="exp-anomaly-banner">
-                  <span className="exp-anomaly-icon">⚠️</span>
                   <div>
                     <div className="exp-anomaly-title">VOLATILITY ANOMALY</div>
                     <div className="exp-anomaly-desc">
@@ -2403,7 +2394,7 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
               {/* Root cause diagnosis */}
               {parsed.rootCause.insight && (
                 <div className="exp-digest-section">
-                  <div className="exp-digest-subtitle">🔍 Root Cause</div>
+                  <div className="exp-digest-subtitle">Root Cause</div>
                   {parsed.rootCause.quickExitCount > 0 && (
                     <div className="exp-lesson-item">
                       Quick exits: {parsed.rootCause.quickExitCount} trades — {parsed.rootCause.quickLosses} losses, {parsed.rootCause.quickWins} wins
@@ -2413,10 +2404,10 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
                     <div className="exp-lesson-item">Dominant regime: {parsed.rootCause.dominantRegime}</div>
                   )}
                   {parsed.rootCause.shallowThesis && (
-                    <div className="exp-lesson-item">⚠️ Thesis too shallow: avg {parsed.rootCause.avgThesisLen} chars — no structural anchor</div>
+                    <div className="exp-lesson-item">Thesis too shallow: avg {parsed.rootCause.avgThesisLen} chars — no structural anchor</div>
                   )}
                   {parsed.rootCause.newsFailed > 0 && (
-                    <div className="exp-lesson-item">⚠️ News/macro thesis failed ≤8min: {parsed.rootCause.newsFailed} trades</div>
+                    <div className="exp-lesson-item">News/macro thesis failed ≤8min: {parsed.rootCause.newsFailed} trades</div>
                   )}
                   <div className="exp-lesson-item exp-lesson-insight">{parsed.rootCause.insight}</div>
                 </div>

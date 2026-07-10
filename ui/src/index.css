@@ -2587,10 +2587,10 @@ body {
   min-width: 120px;
 }
 
-.exp-verdict-row .exp-verdict-icon.approve + .exp-verdict-label { color: var(--green); }
-.exp-verdict-row .exp-verdict-icon.reject + .exp-verdict-label { color: var(--red); }
-.exp-verdict-row .exp-verdict-icon.reverse + .exp-verdict-label { color: #a78bfa; }
-.exp-verdict-row .exp-verdict-icon.passthrough + .exp-verdict-label { color: var(--text-tertiary); }
+.exp-verdict-label.approve { color: var(--green); }
+.exp-verdict-label.reject { color: var(--red); }
+.exp-verdict-label.reverse { color: #a78bfa; }
+.exp-verdict-label.passthrough { color: var(--text-tertiary); }
 
 .exp-verdict-desc {
   color: var(--text-muted);
