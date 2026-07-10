@@ -1677,8 +1677,8 @@ function OptionsDataPanel({ data }: { data: APIData | null }) {
 
 /* ── Evolution Panel — Production Grade ── */
 
-function EvolutionHeader({ generation, symbolCount, onReset, resetStatus }: {
-  generation: number; symbolCount: number; onReset: () => void; resetStatus: string
+function EvolutionHeader({ generation, symbolCount }: {
+  generation: number; symbolCount: number
 }) {
   return (
     <div className="evo-header">
@@ -1688,9 +1688,6 @@ function EvolutionHeader({ generation, symbolCount, onReset, resetStatus }: {
       <div className="evo-header-right">
         <span className="evo-badge accent">Gen {generation}</span>
         {symbolCount > 0 && <span className="evo-badge">{symbolCount} sym</span>}
-        <button className="evo-action-btn" onClick={onReset} title="Reset trade history (keeps strategy + generation)">
-          {resetStatus || '🗑️'}
-        </button>
       </div>
     </div>
   )
@@ -1823,23 +1820,11 @@ function OLRSection({ olrState, openPositionSymbols }: { olrState: any; openPosi
 
 function EvolutionPanel({ data }: { data: APIData | null }) {
   const evo = data?.evolution
-  const [resetStatus, setResetStatus] = useState('')
-
-  const handleResetTradeHistory = async () => {
-    if (!confirm('Reset trade history? Strategy + generation preserved. This cannot be undone.')) return
-    try {
-      const res = await fetch(`${API_BASE}/evolution/reset-trade-history`, { method: 'POST' })
-      if ((await res.json()).success) {
-        setResetStatus('✅ Reset')
-        setTimeout(() => setResetStatus(''), 3000)
-      }
-    } catch { setResetStatus('❌ Failed') }
-  }
 
   if (!evo) {
     return (
       <div className="evo-panel evo-panel-top panel-rgb-border">
-        <EvolutionHeader generation={0} symbolCount={0} onReset={handleResetTradeHistory} resetStatus={resetStatus} />
+        <EvolutionHeader generation={0} symbolCount={0} />
         <div className="evo-empty evo-empty-top">
           <div className="evo-empty-text">Waiting for evolution data...</div>
         </div>
@@ -1863,8 +1848,6 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
       <EvolutionHeader
         generation={evo.generation}
         symbolCount={symbolCount}
-        onReset={handleResetTradeHistory}
-        resetStatus={resetStatus}
       />
       <EMCycleDigestionSection emState={data?.emState} />
       <RILSection rilState={data?.rilState} />
@@ -2939,6 +2922,27 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [envSettings, setEnvSettings] = useState<Record<string, string>>({})
   const [envSettingsLoading, setEnvSettingsLoading] = useState(false)
+  // v2.0.140: Reset trade history — moved to Settings Danger Zone with 3-step confirmation
+  const [resetStatus, setResetStatus] = useState('')
+  const [resetStep, setResetStep] = useState(0) // 0=hidden, 1=warning, 2=type confirm, 3=executing
+  const [resetConfirmText, setResetConfirmText] = useState('')
+
+  const handleResetTradeHistory = async () => {
+    setResetStep(3)
+    try {
+      const res = await fetch(`${API_BASE}/evolution/reset-trade-history`, { method: 'POST' })
+      if ((await res.json()).success) {
+        setResetStatus('Reset complete')
+        setResetStep(0)
+        setResetConfirmText('')
+        setTimeout(() => setResetStatus(''), 3000)
+      }
+    } catch {
+      setResetStatus('Reset failed')
+      setResetStep(0)
+      setResetConfirmText('')
+    }
+  }
   // v2.0.117: Shutdown confirmation modal state
   const [showShutdown, setShowShutdown] = useState(false)
   const [shutdownLoading, setShutdownLoading] = useState(false)
@@ -3292,6 +3296,69 @@ export default function App() {
                   Your Ollama subscription plan. Used for display in the header badge. Ollama API does not expose plan info, so select manually.
                   <br />💡 If unsure, leave as <strong>Auto-detect</strong> — the system will check if cloud models are available and default to Pro.
                 </p>
+              </div>
+
+              {/* v2.0.140: Danger Zone — Reset Trade History (moved from Evolution header) */}
+              <div className="settings-section danger-zone">
+                <div className="settings-section-title danger">Danger Zone</div>
+                <div className="settings-row">
+                  <div className="settings-label">
+                    <strong>Reset Trade History</strong>
+                    <p className="settings-hint">
+                      Permanently deletes all closed trade records, EXP memory, and pattern data.
+                      Strategy + generation are preserved. This cannot be undone.
+                    </p>
+                  </div>
+                  <div className="danger-zone-actions">
+                    {resetStep === 0 && (
+                      <button className="danger-btn" onClick={() => setResetStep(1)}>
+                        Reset Trade History
+                      </button>
+                    )}
+                    {resetStep === 1 && (
+                      <>
+                        <p className="danger-warning">
+                          This will permanently delete all trade history. Are you sure?
+                        </p>
+                        <div className="danger-btn-row">
+                          <button className="danger-btn-cancel" onClick={() => { setResetStep(0); setResetConfirmText('') }}>Cancel</button>
+                          <button className="danger-btn-proceed" onClick={() => setResetStep(2)}>Yes, continue</button>
+                        </div>
+                      </>
+                    )}
+                    {resetStep === 2 && (
+                      <>
+                        <p className="danger-warning">
+                          Type <code>RESET</code> to confirm. This action is irreversible.
+                        </p>
+                        <input
+                          type="text"
+                          className="danger-input"
+                          value={resetConfirmText}
+                          onChange={(e) => setResetConfirmText(e.target.value)}
+                          placeholder="Type RESET here"
+                          autoFocus
+                        />
+                        <div className="danger-btn-row">
+                          <button className="danger-btn-cancel" onClick={() => { setResetStep(0); setResetConfirmText('') }}>Cancel</button>
+                          <button
+                            className="danger-btn-confirm"
+                            disabled={resetConfirmText !== 'RESET'}
+                            onClick={handleResetTradeHistory}
+                          >
+                            Permanently Reset
+                          </button>
+                        </div>
+                      </>
+                    )}
+                    {resetStep === 3 && (
+                      <p className="danger-warning">Resetting... please wait.</p>
+                    )}
+                    {resetStatus && resetStep === 0 && (
+                      <p className="danger-status">{resetStatus}</p>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
             <div className="settings-modal-footer">
