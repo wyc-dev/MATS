@@ -1622,7 +1622,14 @@ class MATSSystem {
     // Candle fetcher bridging MarketAgent.hlFetch → HLCandle[].
     // HL candleSnapshot returns Array<Record<string,string> with t/o/h/l/c/v.
     const fetcher: CandleFetcher = async (coin, interval, startTime, endTime) => {
-      const body = { type: 'candleSnapshot', req: { coin, interval, startTime, endTime } };
+      // v2.0.140: HL candleSnapshot is case-sensitive — DEX 1-8 prefixed
+      // symbols need lowercase prefix (xyz:SKHX, not XYZ:SKHX). DEX 0 bare
+      // names (BTC, ETH, SOL) need uppercase. Without this, 'btc' (lowercase
+      // from tradingMarkets) returns empty → no backfill → no OLR model.
+      const hlCoin = coin.includes(':')
+        ? coin.replace(/^[^:]+:/, (m) => m.toLowerCase())
+        : coin.toUpperCase();
+      const body = { type: 'candleSnapshot', req: { coin: hlCoin, interval, startTime, endTime } };
       const raw = await MarketAgent.hlFetch(body);
       const arr = raw as Array<Record<string, string>>;
       if (!Array.isArray(arr)) return [];
