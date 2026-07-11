@@ -877,7 +877,7 @@ interface MemoryFragment {
 }
 
 interface EvolutionLevel {
-  level: number;            // 1-6
+  level: number;            // 1-4 (Lv4 = 爆Lv/max)
   visualStage: 'loli' | 'shoujo' | 'onee' | 'queen';  // 幼女→少女→御姐輕熟女→永生性慾女王
   stageName: string;        // 幼女/少女/御姐輕熟女/永生性慾女王
   captureThreshold: number; // 累計俘虜閾值 ($0 / $10K / $100K / $1M)
