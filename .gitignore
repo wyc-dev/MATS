@@ -28,6 +28,7 @@ Thumbs.db
 *.sublime-workspace
 
 # ─── Internal documents (not for public release) ───
+Nymph.md
 HANDOFF.md
 EXP_plan.md
 EXP_UPGRADE_PLAN.md
