@@ -494,6 +494,112 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
   )
 }
 
+/* ── Terminal Agent card — framework for terminal-side execution analysis ── */
+
+function TerminalAgentCard({ data, isExpanded, onToggleExpand }: { data: APIData | null; isExpanded: boolean; onToggleExpand: () => void }) {
+  const meta = AGENT_META['terminal_agent']
+  if (!meta) return null
+
+  // Extract selected market pairs (positions + trading markets)
+  const config = data?.marketAgent?.config
+  const isRealMode = config?.tradeMode === 'real'
+  const allPortfolioPositions = Object.values(data?.portfolio?.positions ?? {}) as any[]
+  const openPositions = isRealMode
+    ? allPortfolioPositions.filter((pos) => pos.agentId === 'hyperliquid-real')
+    : allPortfolioPositions.filter((pos) => pos.agentId !== 'hyperliquid-real')
+  const positionMap = new Map<string, 'buy' | 'sell'>()
+  for (const pos of openPositions) {
+    positionMap.set(pos.symbol, pos.side)
+  }
+  const normSym = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
+
+  const TRADING_MARKETS_KEY = 'amacrf:tradingMarkets'
+  const [tradingMarkets] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(TRADING_MARKETS_KEY)
+      const arr = raw ? JSON.parse(raw) : null
+      if (!Array.isArray(arr)) return []
+      const norm = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
+      const seen = new Set<string>()
+      const deduped: string[] = []
+      for (const s of arr) {
+        if (typeof s !== 'string') continue
+        const n = norm(s)
+        if (!seen.has(n)) { seen.add(n); deduped.push(s) }
+      }
+      return deduped.slice(0, 3)
+    } catch { return [] }
+  })
+
+  const allSelectedSyms = [
+    ...Array.from(positionMap.keys()),
+    ...tradingMarkets.filter(sym => !Array.from(positionMap.keys()).some(p => normSym(p) === normSym(sym))),
+  ]
+
+  return (
+    <div className={`agent-card ${isExpanded ? 'agent-card-expanded' : 'agent-card-collapsed'}`}>
+      <div className="agent-head" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
+        <div className="agent-name-row">
+          <span className="agent-dot" style={{ background: meta.color }} />
+          <span className="agent-name">{meta.name}</span>
+        </div>
+        {allSelectedSyms.length > 0 && (
+          <div className="agent-symbols">{allSelectedSyms.join(' , ')}</div>
+        )}
+        <span className="agent-state idle">idle</span>
+        <span className="agent-expand-chevron">{isExpanded ? '▲' : '▼'}</span>
+      </div>
+      {!isExpanded && (
+        <>
+          <div className="agent-description-collapsed">{meta.description}</div>
+          <div className="agent-footer agent-footer-collapsed">
+            <span className="agent-footer-item">⏱ —</span>
+            <span className="agent-footer-item">📋 pending</span>
+          </div>
+        </>
+      )}
+      {isExpanded && (
+        <>
+          <div className="agent-thought agent-thought-expanded">
+            Terminal Agent framework initialized. Analyzing {allSelectedSyms.length} selected market pair(s): {allSelectedSyms.join(', ') || 'none'}.
+            <br /><br />
+            Functionality to be added — this agent will process terminal-side execution signals for all Selected Market Pairs.
+          </div>
+          <div className="agent-footer">
+            <span className="agent-footer-item">⏱ —</span>
+            <span className="agent-footer-item">📋 pending</span>
+          </div>
+          <div className="agent-card-model-row">
+            <select className="model-select model-select-wide" disabled>
+              <option>Terminal Agent (no model)</option>
+            </select>
+          </div>
+          {allSelectedSyms.length > 0 && (
+            <div className="agent-per-symbol-section">
+              {allSelectedSyms.map((sym, i) => {
+                const side = positionMap.get(sym)
+                return (
+                  <div key={i} className="agent-per-symbol-group">
+                    <div className="agent-per-symbol-header">
+                      <span className="agent-decision-symbol">{sym}</span>
+                      <span className={`decision-tag ${side ? (side === 'buy' ? 'buy' : 'sell') : 'hold'} decision-tag-inner`}>
+                        {side ? side.toUpperCase() : 'HOLD'}
+                      </span>
+                    </div>
+                    <div className="agent-per-symbol-rationale agent-rationale-expanded">
+                      Pending — Terminal Agent analysis not yet implemented for {sym}.
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 /* ── Market Agent card — embedded inside Agent Cognition ── */
 
 function MarketAgentCard({ data }: { data: APIData | null }) {
@@ -1117,6 +1223,19 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   )
 }
 
+function PreferencePanel({ data }: { data: APIData | null }) {
+  return (
+    <div className="panel panel-rgb-border">
+      <div className="panel-header">
+        <span className="panel-title">Preference</span>
+      </div>
+      <div className="agent-list">
+        <MarketAgentCard data={data} />
+      </div>
+    </div>
+  )
+}
+
 function AgentPanel({ data, ollamaPlan }: { data: APIData | null; ollamaPlan?: string }) {
   const thoughts = data?.agentThoughts ?? []
   const statuses = data?.agentStatuses ?? []
@@ -1165,7 +1284,9 @@ function AgentPanel({ data, ollamaPlan }: { data: APIData | null; ollamaPlan?: s
         )}
         {AGENT_ROLES.map(role => (
           role === 'market_agent'
-            ? <MarketAgentCard key={role} data={data} />
+            ? <TerminalAgentCard key={role} data={data} isExpanded={expandedAgent === 'terminal_agent'} onToggleExpand={() => setExpandedAgent(prev => prev === 'terminal_agent' ? null : 'terminal_agent')} />
+            : role === 'terminal_agent'
+            ? null
             : <AgentCard
                 key={role}
                 role={role}
@@ -3158,6 +3279,7 @@ export default function App() {
 
   // v2.0.119: DESKTOP_PANELS defined inside App() so it can access ollamaPlan
   const DESKTOP_PANELS: Array<(data: APIData | null) => React.ReactNode> = [
+    (data) => <PreferencePanel key="preference" data={data} />,
     (data) => <AgentPanel key="agents" data={data} ollamaPlan={ollamaPlan} />,
     (data) => <DebatePanel key="debate" data={data} />,
     (data) => <PortfolioPanel key="portfolio" data={data} />,
@@ -3367,6 +3489,7 @@ export default function App() {
         {/* Mobile: original tab-based layout */}
         <div className={`col-left ${activeTab === 'agents' || activeTab === 'debate' ? 'visible' : ''}`}>
           <div className="mobile-only">
+            {activeTab === 'agents' && <PreferencePanel data={data} />}
             {activeTab === 'agents' && <AgentPanel data={data} ollamaPlan={ollamaPlan} />}
           </div>
           <div className="mobile-only">

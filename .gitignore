@@ -28,6 +28,8 @@ Thumbs.db
 *.sublime-workspace
 
 # ─── Internal documents (not for public release) ───
+KLING_LOOP_PROMPTS.md
+NYMPH_STILLS_PROMPTS.md
 Nymph.md
 HANDOFF.md
 EXP_plan.md
