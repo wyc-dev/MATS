@@ -486,16 +486,24 @@ export const AGENT_META: Record<string, { name: string; color: string; short: st
     description: 'Absolute gatekeeper with veto power over new positions. Validates entryThesis for strength, data consistency, manipulation risk, and fact distortion. When in doubt, REJECT.',
   },
   market_agent: {
-    name: 'Market Select Agent',
+    name: 'Trading Setup',
     color: '#34d399',
     hex: '52, 211, 153',
     short: 'Market',
     description: 'Scans top-volume pairs across Hyperliquid, selects the trading market, and manages exchange config (trade mode, leverage, position size, max portion). Click a pair above to manually override.',
   },
+  terminal_agent: {
+    name: 'Terminal Agent',
+    color: '#a78bfa',
+    hex: '167, 139, 250',
+    short: 'Terminal',
+    description: 'Analyzes all Selected Market Pairs for terminal-side execution signals. Framework in place — functionality to be added.',
+  },
 };
 
 export const AGENT_ROLES = [
   'market_agent',
+  'terminal_agent',
   'fractal_momentum_sentinel',
   'onchain_whisperer',
   'rbc_sentiment_analyst',
