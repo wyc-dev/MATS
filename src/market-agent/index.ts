@@ -30,6 +30,7 @@ const DEFAULT_CONFIG: MarketAgentConfig = {
   positionSizePct: 0.10,
   maxPortionPct: 0.20,
   leverage: 10,
+  cyclePeriodMinutes: 5,
   updatedAt: Date.now(),
 };
 
@@ -91,6 +92,8 @@ export class MarketAgent {
 
   // Callbacks for when the selected symbol changes
   private onSymbolChange: ((symbol: string) => void) | null = null;
+  // Callback for when topPairs are updated (e.g. background scan completed)
+  private onPairsUpdated: (() => void) | null = null;
 
   constructor() {
     // v2.0.78: Load saved config from disk so user settings survive restarts.
@@ -253,6 +256,15 @@ export class MarketAgent {
     log.info(`Leverage changed: ${clamped}x`);
   }
 
+  setCyclePeriodMinutes(minutes: number): void {
+    const clamped = Math.max(1, Math.min(10, Math.round(minutes)));
+    if (this.config.cyclePeriodMinutes === clamped) return;
+    this.config.cyclePeriodMinutes = clamped;
+    this.config.updatedAt = Date.now();
+    this.persistConfig();
+    log.info(`Cycle period changed: ${clamped}m`);
+  }
+
   // ── v2.0.122: Per-Symbol Direction Restrictions ──
 
   /** Get the current direction restrictions map (normalized symbol → allowed direction). */
@@ -313,6 +325,11 @@ export class MarketAgent {
     this.onSymbolChange = cb;
   }
 
+  /** Register callback for when topPairs are updated (background scan completed) */
+  onPairsUpdatedCallback(cb: () => void): void {
+    this.onPairsUpdated = cb;
+  }
+
   // ── Top Volume Pair Fetching ──
 
   /**
@@ -320,7 +337,9 @@ export class MarketAgent {
    * Returns the top N pairs sorted by 24h USDT volume descending.
    */
   async fetchTopPairs(limit = 30): Promise<TopVolumePair[]> {
-    if (this.fetchInProgress) {
+    // If config is dirty (asset type/exchange just changed), force a fresh fetch
+    // even if another fetch is in progress — the old fetch has stale asset type data.
+    if (this.fetchInProgress && !this.configDirty) {
       log.debug('Fetch already in progress, returning cached data');
       return this.topPairs;
     }
@@ -335,8 +354,12 @@ export class MarketAgent {
     const wasDirty = this.configDirty;
     this.configDirty = false;
 
-    // Keep old topPairs visible while fetching — don't clear them
-    const oldPairs = this.topPairs;
+    // When config is dirty (asset type changed), clear old topPairs immediately
+    // so stale data from the previous asset type doesn't bleed through.
+    if (wasDirty) {
+      this.topPairs = [];
+    }
+    const oldPairs = wasDirty ? [] : this.topPairs;
 
     try {
       if (this.config.exchange === 'binance') {
@@ -593,62 +616,75 @@ export class MarketAgent {
       return b.price - a.price;
     }).slice(0, limit);
 
-    // If config just changed (asset type), WAIT for background scan so user sees real pairs immediately.
-    // Otherwise, return DEX 0 pairs first and let background fill in later.
+    // If config just changed (asset type), return preliminary results immediately
+    // (DEX 0 pairs + asset names from metadata with volume=0). The background scan
+    // will update topPairs with real volumes and push to API when done.
+    // Previously this awaited the full background scan, causing unacceptable UI delay.
     if (wasDirty && otherAssets.length > 0) {
-      await backgroundTask;
-      const updated = this.filterHyperliquidPairs(allPairs, catMap);
-      const sorted = updated.sort((a, b) => {
+      // Add placeholder entries for DEX 1-8 assets (name only, no volume yet)
+      for (const asset of otherAssets) {
+        if (!allPairs.some(p => p.symbol === asset.coin)) {
+          allPairs.push({ symbol: asset.coin, volume24h: 0, price: 0, priceChangePercent: 0, exchange: 'hyperliquid' });
+        }
+      }
+      const preliminary = this.filterHyperliquidPairs(allPairs, catMap).sort((a, b) => {
         if (a.volume24h > 0 && b.volume24h > 0) return b.volume24h - a.volume24h;
         if (a.volume24h > 0) return -1;
         if (b.volume24h > 0) return 1;
-        return b.price - a.price;
+        return a.symbol.localeCompare(b.symbol);
       }).slice(0, limit);
-      this.topPairs = sorted;
+      this.topPairs = preliminary;
 
-      // ── Fetch real 5m volume for top 5 pairs ──
-      if (sorted.length > 0) {
-        const top5 = sorted.slice(0, 5);
-        // v2.0.XX: Use global rate limiter
-        const bgFetch = async (body: object): Promise<Response> => {
-          return hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-          });
-        };
-        await Promise.all(top5.map(async (pair) => {
-          try {
-            const res = await bgFetch({
-              type: 'candleSnapshot',
-              req: { coin: pair.symbol, interval: '5m', startTime: Date.now() - 3_600_000, endTime: Date.now() },
+      // Background scan updates topPairs + pushes to API when done
+      backgroundTask.then(async () => {
+        const updated = this.filterHyperliquidPairs(allPairs, catMap);
+        const sorted = updated.sort((a, b) => {
+          if (a.volume24h > 0 && b.volume24h > 0) return b.volume24h - a.volume24h;
+          if (a.volume24h > 0) return -1;
+          if (b.volume24h > 0) return 1;
+          return b.price - a.price;
+        }).slice(0, limit);
+        this.topPairs = sorted;
+
+        // Fetch real 5m volume for top 5 pairs
+        if (sorted.length > 0) {
+          const top5 = sorted.slice(0, 5);
+          const bgFetch = async (body: object): Promise<Response> => {
+            return hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
             });
-            if (res.ok) {
-              const data = await res.json() as Array<Record<string, string>>;
-              if (Array.isArray(data) && data.length > 0) {
-                let vol5m = 0;
-                for (const c of data) {
-                  const v = parseFloat(c['v'] ?? '0');
-                  if (!isNaN(v)) vol5m += v;
+          };
+          await Promise.all(top5.map(async (pair) => {
+            try {
+              const res = await bgFetch({
+                type: 'candleSnapshot',
+                req: { coin: pair.symbol, interval: '5m', startTime: Date.now() - 3_600_000, endTime: Date.now() },
+              });
+              if (res.ok) {
+                const data = await res.json() as Array<Record<string, string>>;
+                if (Array.isArray(data) && data.length > 0) {
+                  let vol5m = 0;
+                  for (const c of data) {
+                    const v = parseFloat(c['v'] ?? '0');
+                    if (!isNaN(v)) vol5m += v;
+                  }
+                  if (vol5m > 0 && pair.price > 0) pair.volume5m = vol5m * pair.price;
                 }
-                if (vol5m > 0 && pair.price > 0) pair.volume5m = vol5m * pair.price;
               }
-            }
-          } catch { /* 5m volume optional */ }
-        }));
-      }
-
-      // v2.0.46: Auto-select top pair after background scan — respect manual lock.
-      if (sorted.length > 0 && !this.manualSymbolLock) {
-        const top = sorted[0]!;
-        if (this.config.selectedSymbol !== top.symbol) {
-          this.config.selectedSymbol = top.symbol;
-          log.info(`Auto-selected top pair: ${top.symbol} ($${(top.volume24h / 1_000_000).toFixed(1)}M vol)`);
-          if (this.onSymbolChange) {
-            this.onSymbolChange(top.symbol);
-          }
+            } catch { /* 5m volume optional */ }
+          }));
         }
-      }
-      return sorted;
+
+        // Notify UI of updated pairs
+        if (this.onPairsUpdated) {
+          this.onPairsUpdated();
+        }
+      }).catch((err: unknown) => {
+        log.error(`Background scan after asset type change failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+
+      return preliminary;
     }
 
     // Background fill for non-dirty fetches
@@ -1208,10 +1244,12 @@ export class MarketAgent {
   getState(): {
     config: MarketAgentConfig;
     topPairs: TopVolumePair[];
+    pairsReady: boolean;
   } {
     return {
       config: { ...this.config },
       topPairs: this.topPairs.slice(0, 30),
+      pairsReady: this.topPairs.length > 0 && this.topPairs.some(p => p.volume24h > 0),
     };
   }
 }

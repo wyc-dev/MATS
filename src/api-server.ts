@@ -75,6 +75,8 @@ export interface APIData {
   marketAgent?: {
     config: MarketAgentConfig;
     topPairs: TopVolumePair[];
+    /** True when background scan has completed and topPairs have real volume data */
+    pairsReady?: boolean;
     /** v2.0.122: Pending entry theses from Meta-Agent that didn't execute. */
     pendingTheses?: Array<{ symbol: string; action: 'buy' | 'sell'; thesis: string; cycle: number; storedAt: number }>;
   };
@@ -259,6 +261,7 @@ export class APIServer {
   /** v2.0.XX: Max portion of balance for all positions combined. */
   private onMarketAgentSetMaxPortion: ((pct: number) => void) | null = null;
   private onMarketAgentSetLeverage: ((lev: number) => void) | null = null;
+  private onSetCyclePeriod: ((minutes: number) => void) | null = null;
   /** v2.0.44: Manual symbol selection from Top Volume Pairs list. */
   private onMarketAgentSelectSymbol: ((symbol: string) => void) | null = null;
   /** v2.0.79: Set trading markets list from UI pills. */
@@ -363,6 +366,11 @@ export class APIServer {
   /** Register a callback for setting leverage */
   setMarketAgentSetLeverageHandler(cb: (lev: number) => void): void {
     this.onMarketAgentSetLeverage = cb;
+  }
+
+  /** Register callback for cycle period changes (1-10 minutes) */
+  setCyclePeriodHandler(cb: (minutes: number) => void): void {
+    this.onSetCyclePeriod = cb;
   }
 
   /** v2.0.44: Register a callback for manual symbol selection from Top Volume Pairs */
@@ -883,6 +891,25 @@ export class APIServer {
             if (this.onMarketAgentSetLeverage) this.onMarketAgentSetLeverage(clamped);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: true, message: `Leverage set to ${clamped}x` }));
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // POST: set cycle period (1-10 minutes)
+      if (pathname === '/api/market-agent/cycle-period' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { minutes } = JSON.parse(body) as { minutes: number };
+            const clamped = Math.max(1, Math.min(10, Math.round(minutes)));
+            if (this.onSetCyclePeriod) this.onSetCyclePeriod(clamped);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, message: `Cycle period set to ${clamped}m` }));
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));

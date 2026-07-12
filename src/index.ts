@@ -95,6 +95,7 @@ class MATSSystem {
   private optionsDataManager = getOptionsDataManager();
 
   private decisionTimer: ReturnType<typeof setInterval> | null = null;
+  private cycleIntervalMs: number = config.system.decisionIntervalMs;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private restPollTimer: ReturnType<typeof setInterval> | null = null;
   /** v2.0.140: UI push timer — pushes portfolio + position updates every 10s
@@ -564,23 +565,9 @@ class MATSSystem {
         log.info(`Market Agent: HL asset type → ${assetType}`);
         this.marketAgent.setHyperliquidAssetType(assetType);
         await this.marketAgent.fetchTopPairs();
-        // Immediately connect WS + trigger a new decision cycle on the newly selected symbol
-        const selectedSymbol = this.marketAgent.getSelectedSymbol();
-        if (selectedSymbol) {
-          const exchange = detectExchange(selectedSymbol);
-          if (exchange === 'hyperliquid') {
-            await this.hyperliquidWs.connect(selectedSymbol);
-          }
-          await this.multiWs.connect(selectedSymbol).catch((err: Error) => {
-            log.warn(`Multi-WS connect failed for ${selectedSymbol}: ${err.message}`);
-          });
-        }
-        // Abort any running cycle and trigger a fresh one
-        log.info('Asset type changed — triggering immediate HACP cycle');
+        // Push updated pairs to UI immediately — no cycle trigger on asset type change.
+        // Cycle is triggered only when user adds a new asset to Selected Markets.
         this.pushToAPI();
-        if (!this.cycleInProgress && !isShuttingDown()) {
-          setTimeout(() => void this.runDecisionCycle(), 500);
-        }
       });
       this.apiServer.setMarketAgentFetchPairsHandler(() => {
         log.info('Market Agent: refresh top pairs');
@@ -602,6 +589,23 @@ class MATSSystem {
       this.apiServer.setMarketAgentSetLeverageHandler((lev) => {
         log.info(`Market Agent: leverage → ${lev}x`);
         this.marketAgent.setLeverage(lev);
+        this.pushToAPI();
+      });
+      this.apiServer.setCyclePeriodHandler((minutes) => {
+        const ms = minutes * 60_000;
+        log.info(`Cycle period → ${minutes}m (${ms}ms)`);
+        this.cycleIntervalMs = ms;
+        this.marketAgent.setCyclePeriodMinutes(minutes);
+        // Restart the decision timer with the new interval
+        if (this.decisionTimer) {
+          clearInterval(this.decisionTimer);
+          this.decisionTimer = null;
+        }
+        this.decisionTimer = setInterval(() => {
+          if (!isShuttingDown()) {
+            void this.runDecisionCycle();
+          }
+        }, ms);
         this.pushToAPI();
       });
 
@@ -703,7 +707,7 @@ class MATSSystem {
       // v2.0.116: Settings modal — get/update env vars
       this.apiServer.setGetEnvSettingsHandler(() => {
         const settings: Record<string, string> = {};
-        const keys = ['HYPERLIQUID_WALLET_ADDRESS', 'HYPERLIQUID_PRIVATE_KEY', 'OLLAMA_API_KEY', 'MASSIVE_API_KEY', 'OLLAMA_PLAN'];
+        const keys = ['HYPERLIQUID_WALLET_ADDRESS', 'HYPERLIQUID_PRIVATE_KEY', 'OLLAMA_API_KEY', 'MASSIVE_API_KEY', 'OLLAMA_PLAN', 'TELEGRAM_BOT_API', 'TELEGRAM_CHAT_ID'];
         for (const key of keys) {
           const val = process.env[key] ?? '';
           // Mask: show first 6 + last 6 chars if value is long enough
@@ -1115,6 +1119,9 @@ class MATSSystem {
           log.warn(`Multi-WS connect failed for ${symbol}: ${err.message}`);
         });
       });
+      this.marketAgent.onPairsUpdatedCallback(() => {
+        this.pushToAPI();
+      });
       await this.marketAgent.fetchTopPairs();
       log.info('✓ Market Agent ready');
       MarketAgent.registerSRModule();
@@ -1374,7 +1381,12 @@ class MATSSystem {
   }
 
   private startDecisionCycle(): void {
-    const intervalMs = config.system.decisionIntervalMs;
+    // Use persisted cyclePeriodMinutes from MarketAgent config if available
+    const savedMinutes = this.marketAgent?.getConfig().cyclePeriodMinutes;
+    if (savedMinutes && savedMinutes >= 1 && savedMinutes <= 10) {
+      this.cycleIntervalMs = savedMinutes * 60_000;
+    }
+    const intervalMs = this.cycleIntervalMs;
     log.info(`Decision cycle set for every ${intervalMs / 1000}s`);
 
     this.decisionTimer = setInterval(() => {

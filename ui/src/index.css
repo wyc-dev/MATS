@@ -836,7 +836,14 @@ body {
   gap: var(--space-1);
   background: var(--glass-border);
   border-radius: var(--radius-md);
-  overflow: hidden;
+  overflow-y: auto;
+  max-height: 135px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.top-pairs-list::-webkit-scrollbar {
+  display: none;
 }
 
 .top-pair-row {
@@ -1038,6 +1045,33 @@ body {
   align-items: center;
   justify-content: space-between;
   margin-bottom: var(--space-5);
+  user-select: none;
+}
+
+.agent-expand-chevron {
+  font-size: var(--fs-md);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  margin-left: var(--space-3);
+  transition: color 0.2s ease;
+}
+
+.agent-head:hover .agent-expand-chevron {
+  color: var(--text-primary);
+}
+
+.agent-footer-collapsed {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+  margin-bottom: 0;
+}
+
+.agent-description-collapsed {
+  font-size: var(--fs-sm);
+  color: var(--text-tertiary);
+  line-height: 1.5;
+  margin-bottom: var(--space-3);
 }
 
 .agent-name-row {
@@ -3841,23 +3875,31 @@ body {
   transition: max-height 0.3s ease, opacity 0.25s ease;
 }
 
-/* v2.0.84: Rationale toggle button for sub-agents */
-.agent-rationale-toggle {
-  background: none;
-  border: 1px solid var(--glass-border);
-  color: var(--text-tertiary);
-  font-size: var(--fs-xs);
-  padding: 2px var(--space-2);
+/* v2.0.107: Merged decision+reason toggle button — replaces separate decision-tag span + ▼ Reason button */
+.decision-reason-btn {
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
+  padding: var(--space-2) var(--space-5);
   border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
   cursor: pointer;
-  margin-top: var(--space-1);
-  transition: background 0.15s ease, color 0.15s ease;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  transition: color 0.2s ease, background 0.2s ease;
 }
 
-.agent-rationale-toggle:hover {
-  background: var(--glass-hover);
-  color: var(--text-secondary);
-}
+.decision-reason-btn.buy { color: var(--green); }
+.decision-reason-btn.sell { color: var(--red); }
+.decision-reason-btn.hold { color: var(--gold); }
+.decision-reason-btn.close { color: var(--red); }
+
+.decision-reason-btn.buy:hover { background: var(--green-bg); }
+.decision-reason-btn.sell:hover { background: var(--red-bg); }
+.decision-reason-btn.hold:hover { background: var(--gold-bg); }
+.decision-reason-btn.close:hover { background: var(--red-bg); }
 
 .agent-news-item {
   display: flex;
@@ -4136,6 +4178,38 @@ body {
   color: var(--text-tertiary);
   margin-bottom: var(--space-3);
   padding-right: var(--space-8);
+}
+
+.market-search-input {
+  width: 100%;
+  padding: var(--space-3) var(--space-5);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+  margin-bottom: var(--space-3);
+  outline: none;
+  transition: border-color 0.2s ease;
+  box-sizing: border-box;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  height: 28px;
+  cursor: text;
+}
+
+.market-search-input:focus {
+  border-color: var(--accent);
+}
+
+.market-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.pair-added {
+  pointer-events: none;
 }
 
 .top-pair-cell {
@@ -4856,6 +4930,27 @@ body {
   margin-top: var(--space-6);
   padding-top: var(--space-6);
   border-top: 1px solid rgba(248, 113, 113, 0.15);
+}
+
+/* Settings sections — Real Trade, AI Provider, Notice */
+.settings-section {
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.settings-section:last-child {
+  border-bottom: none;
+}
+
+.settings-section-title {
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+  font-weight: var(--fw-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-2);
 }
 
 .settings-section-title.danger {

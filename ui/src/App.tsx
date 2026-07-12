@@ -77,11 +77,13 @@ function SystemStatusPanel({ data }: { data: APIData | null }) {
   )
 }
 
-function AgentCard({ role, thought, status, progress, models, assignments, onModelChange, activeSymbol, newsHeadlines, ollamaPlan }: {
+function AgentCard({ role, thought, status, progress, models, assignments, onModelChange, activeSymbol, newsHeadlines, ollamaPlan, isExpanded, onToggleExpand }: {
   role: string; thought: any; status: any; progress?: any;
   models: ModelDefinition[]; assignments: AgentModelConfig[]; onModelChange: (role: string, model: string) => void; activeSymbol?: string
   newsHeadlines?: Array<{ symbol: string; headlines: Array<{ title: string; publisher: string; url?: string; pubDate: number | null }> }>
   ollamaPlan?: string
+  isExpanded: boolean
+  onToggleExpand: () => void
 }) {
   const meta = AGENT_META[role]
   const [thoughtExpanded, setThoughtExpanded] = useState(false)
@@ -191,8 +193,8 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
   const currentModel = currentAssignment?.model ?? ''
 
   return (
-    <div className={`agent-card ${isLive && liveProgress.status === 'thinking' ? 'agent-thinking' : ''}`}>
-      <div className="agent-head">
+    <div className={`agent-card ${isLive && liveProgress.status === 'thinking' ? 'agent-thinking' : ''} ${isExpanded ? 'agent-card-expanded' : 'agent-card-collapsed'}`}>
+      <div className="agent-head" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
         <div className="agent-name-row">
           <span className="agent-dot" style={{ background: meta.color }} />
           <span className="agent-name">{meta.name}</span>
@@ -206,7 +208,31 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
         <span className={`agent-state ${agentState}`}>
           {isLive && liveProgress.status === 'thinking' ? '💭 thinking' : agentState}
         </span>
+        <span className="agent-expand-chevron">{isExpanded ? '▲' : '▼'}</span>
       </div>
+      {/* Collapsed summary: description + latency + model */}
+      {!isExpanded && (
+        <>
+          <div className="agent-description-collapsed">{meta.description}</div>
+          <div className="agent-footer agent-footer-collapsed">
+            {latency != null && (
+              <span className="agent-footer-item">⏱ {(latency / 1000).toFixed(1)}s</span>
+            )}
+            {thought?.metadata?.model && !isLive && (
+              <span className="agent-footer-item">📋 {thought.metadata.model.split('/').pop()?.slice(0, 16)}</span>
+            )}
+            {isLive && liveProgress.status === 'thinking' && (
+              <span className="agent-footer-item thinking-pulse">⟳ thinking...</span>
+            )}
+            {thought?.metadata?.fallback && !isLive && (
+              <span className="agent-footer-item agent-footer-fallback">⚠️ Fallback</span>
+            )}
+          </div>
+        </>
+      )}
+      {/* Expanded content: thought + model row + per-symbol section */}
+      {isExpanded && (
+        <>
       {displayThought ? (
         <>
           <div className={`agent-thought ${thoughtExpanded ? 'agent-thought-expanded' : 'agent-thought-collapsed'}`}>
@@ -329,9 +355,27 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
               <div key={i} className="agent-per-symbol-group">
                 <div className="agent-per-symbol-header">
                   <span className="agent-decision-symbol">{d.symbol}</span>
-                  <span className={`decision-tag ${d.action} decision-tag-inner`}>
-                    {d.closePosition ? 'CLOSE' : d.action.toUpperCase()}
-                  </span>
+                  {(() => {
+                    const isSubAgent = role !== 'meta_agent' && role !== 'news_reporter'
+                    const actionLabel = d.closePosition ? 'CLOSE' : d.action.toUpperCase()
+                    if (isSubAgent && d.rationale) {
+                      const rExp = expandedRationales.has(d.symbol)
+                      return (
+                        <button
+                          className={`decision-reason-btn ${d.action}`}
+                          onClick={() => toggleRationale(d.symbol)}
+                          title={rExp ? 'Collapse rationale' : 'Expand rationale'}
+                        >
+                          {rExp ? '▲' : '▼'} {actionLabel} Reason
+                        </button>
+                      )
+                    }
+                    return (
+                      <span className={`decision-tag ${d.action} decision-tag-inner`}>
+                        {actionLabel}
+                      </span>
+                    )
+                  })()}
                   {d.positionSizePct > 0 && <span className="agent-decision-size">{(d.positionSizePct * 100).toFixed(1)}%</span>}
                   {/* Per-symbol confidence bar — v2.0.84: hidden for Meta-Agent (weight=0, confidence is meaningless) */}
                   {role !== 'meta_agent' && (() => {
@@ -396,21 +440,12 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                     ) : null
                   }
                   
-                  // Other sub-agents: rationale behind toggle button
+                  // Other sub-agents: rationale div only — toggle is now the decision-reason-btn in header
                   if (!d.rationale) return null
                   return (
-                    <>
-                      <button
-                        className="agent-rationale-toggle"
-                        onClick={() => toggleRationale(d.symbol)}
-                        title={rationaleExpanded ? 'Collapse rationale' : 'Expand rationale'}
-                      >
-                        {rationaleExpanded ? '▲ Reason' : '▼ Reason'}
-                      </button>
-                      <div className={`agent-per-symbol-rationale ${rationaleExpanded ? 'agent-rationale-expanded' : 'agent-rationale-collapsed'}`} title={d.rationale}>
-                        {d.rationale}
-                      </div>
-                    </>
+                    <div className={`agent-per-symbol-rationale ${rationaleExpanded ? 'agent-rationale-expanded' : 'agent-rationale-collapsed'}`} title={d.rationale}>
+                      {d.rationale}
+                    </div>
                   )
                 })()}
                 {ns && ns.headlines.length > 0 && (
@@ -453,6 +488,8 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
           ))}
         </div>
       ) : null}
+        </>
+      )}
     </div>
   )
 }
@@ -467,6 +504,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [realModeWarning, setRealModeWarning] = useState('')
   const config = ma?.config
   const topPairs = ma?.topPairs ?? []
+  const pairsReady = ma?.pairsReady ?? false
 
   // v2.0.79: Get open positions for position pills (green=BUY, red=SELL)
   const isRealMode = config?.tradeMode === 'real'
@@ -492,6 +530,25 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [positionSizePct, setPositionSizePct] = useState(config?.positionSizePct ?? 0.10)
   const [maxPortionPct, setMaxPortionPct] = useState(config?.maxPortionPct ?? 0.20)
   const [leverage, setLeverage] = useState(config?.leverage ?? 10)
+  const [assetSearch, setAssetSearch] = useState('')
+  const [cyclePeriod, setCyclePeriod] = useState(config?.cyclePeriodMinutes ?? 5)
+  const [closeConfirmSym, setCloseConfirmSym] = useState<string | null>(null)
+  const [closingSym, setClosingSym] = useState<string | null>(null)
+  const [pairsLoading, setPairsLoading] = useState(false)
+
+  // Cross-asset-type pair cache: persists volume/price data across Asset Type switches
+  // so Selected Market Pairs can show data even when the pair isn't in the current topPairs.
+  const pairCacheRef = useRef<Map<string, { volume24h: number; volume5m?: number; price: number; priceChangePercent: number }>>(new Map())
+  useEffect(() => {
+    for (const p of topPairs) {
+      pairCacheRef.current.set(normSym(p.symbol), { volume24h: p.volume24h, volume5m: p.volume5m, price: p.price, priceChangePercent: p.priceChangePercent })
+    }
+    // Clear loading state when backend signals pairs are ready (background scan done)
+    if (pairsReady) {
+      setPairsLoading(false)
+    }
+  }, [topPairs, pairsReady])
+  const getCachedPair = (sym: string) => pairCacheRef.current.get(normSym(sym))
 
   // ── Persistent "Trading Markets" pills (max 3).
   // When user clicks a Top Volume Pair, it gets added as a pill.
@@ -592,8 +649,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       setPositionSizePct(prev => Math.abs(prev - config.positionSizePct) > 0.001 ? config.positionSizePct : prev)
       setMaxPortionPct(prev => Math.abs(prev - (config.maxPortionPct ?? 0.20)) > 0.001 ? (config.maxPortionPct ?? 0.20) : prev)
       setLeverage(prev => prev !== config.leverage ? config.leverage : prev)
+      if (config.cyclePeriodMinutes) setCyclePeriod(prev => prev !== config.cyclePeriodMinutes ? config.cyclePeriodMinutes! : prev)
     }
-  }, [config?.tradeMode, config?.hyperliquidAssetType, config?.positionSizePct, config?.maxPortionPct, config?.leverage])
+  }, [config?.tradeMode, config?.hyperliquidAssetType, config?.positionSizePct, config?.maxPortionPct, config?.leverage, config?.cyclePeriodMinutes])
 
   const showStatus = (msg: string) => {
     setStatusMsg(msg)
@@ -611,6 +669,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
 
   const handleAssetTypeChange = async (assetType: string) => {
     setSelectedAssetType(assetType as any)
+    setPairsLoading(true)
     try {
       const res = await fetch(`${API_BASE}/market-agent/asset-type`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assetType }) })
       if ((await res.json()).success) showStatus(`✓ ${assetType}`)
@@ -622,11 +681,18 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   }
 
   const activeSymbol = config?.selectedSymbol ?? ''
+  // Chart symbol: prefer the first selected market pair (position or trading market),
+  // not the backend's auto-selected top pair which changes on Asset Type switch.
+  const allSelectedSyms = [
+    ...Array.from(positionMap.keys()),
+    ...tradingMarkets.filter(sym => !Array.from(positionMap.keys()).some(p => normSym(p) === normSym(sym))),
+  ]
+  const chartSymbol = allSelectedSyms[0] ?? activeSymbol
   // Use live market state price (updates every cycle) instead of topPairs snapshot
   const livePrice = s?.currentPrice ?? m?.currentPrice ?? 0
   const liveVol24h = m?.volume24h ?? 0
   const liveChange24h = m?.priceChange24h ?? 0
-  const currentPair = topPairs.find(p => p.symbol === activeSymbol)
+  const currentPair = topPairs.find(p => p.symbol === chartSymbol)
   const price = activeSymbol && livePrice > 0 ? livePrice : (currentPair?.price ?? 0)
   const volume24h = liveVol24h > 0 ? liveVol24h : (currentPair?.volume24h ?? 0)
   const change24h = liveChange24h !== 0 ? liveChange24h : (currentPair?.priceChangePercent ?? 0)
@@ -640,7 +706,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   // entry marker, not every past sell/buy which cluttered the chart with
   // multiple stale arrows.
   const portfolioPositions = (Object.values(data?.portfolio?.positions ?? {}) as any[])
-  const activePos = portfolioPositions.find((p: any) => p.symbol === activeSymbol)
+  const activePos = portfolioPositions.find((p: any) => p.symbol === chartSymbol)
   const mainChartTrades: Array<{ time: number; action: 'buy' | 'sell'; price: number; sl?: number; tp?: number; cycle: number }> = []
   // Current position's live entry + SL/TP (cycle=0 = current)
   if (activePos) {
@@ -664,7 +730,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         <span className="agent-state idle">{exchange.toUpperCase()} · {config?.tradeMode?.toUpperCase()}</span>
       </div>
 
-      {/* Trade Mode toggle only (exchange fixed to Hyperliquid) */}
+      {/* Trade Mode + Cycle Period */}
       <div className="market-control-group">
         <div className="market-control-col">
           <div className="market-control-label">Trade Mode</div>
@@ -696,19 +762,35 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           {realModeWarning && <div className="trade-mode-warning">{realModeWarning}</div>}
         </div>
         <div className="market-control-col">
-          <div className="market-control-label">Asset Type</div>
-          <div className="market-control-btns-row">
-            <select className="model-select model-select-wide" value={selectedAssetType} onChange={e => handleAssetTypeChange(e.target.value)}>
-              <option value="crypto_perps">Crypto Perps</option>
-              <option value="indices">Indices</option>
-              <option value="stocks">Stocks</option>
-              <option value="commodities">Commodities</option>
-              <option value="fx">FX / Forex</option>
-              <option value="tradfi">All TradFi</option>
-            </select>
+          <div className="market-control-label">
+            Cycle Period: <strong style={{ color: cyclePeriod <= 4 ? 'var(--red)' : 'var(--gold)' }}>{cyclePeriod}m</strong>
+            {cyclePeriod <= 4 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--red)', marginLeft: 'var(--space-3)' }}>⚠ High token cost</span>}
+          </div>
+          <div className="slider-row">
+            <input
+              type="range" min="1" max="10" value={cyclePeriod}
+              onChange={async (e) => {
+                const m = parseInt(e.target.value)
+                setCyclePeriod(m)
+                try {
+                  await fetch(`${API_BASE}/market-agent/cycle-period`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ minutes: m }),
+                  })
+                } catch { /* ignore */ }
+              }}
+              style={{ flex: 1, height: 4, accentColor: cyclePeriod <= 4 ? 'var(--red)' : 'var(--gold)' }}
+            />
+            <span className="slider-value" style={{ color: cyclePeriod <= 4 ? 'var(--red)' : 'var(--gold)' }}>{cyclePeriod}m</span>
           </div>
         </div>
       </div>
+
+      {(s?.cycles ?? 0) === 0 && cyclePeriod <= 4 && (
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--red)', marginTop: 'var(--space-2)', lineHeight: 1.4, textAlign: 'center' }}>
+          ⚠ If HACP can't finish within {cyclePeriod}m would be causing back-to-back cycles.
+        </div>
+      )}
 
       {/* Position Size & Max Portion & Leverage Controls */}
       <div className="market-control-group">
@@ -779,41 +861,240 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       {/* Status msg */}
       <div className={`model-status model-status-compact ${statusVisible ? '' : 'hidden'}`}>{statusMsg}</div>
 
-      {/* Price info + chart, with 3 persistent Saved-Market slots on the right of price */}
+      {/* Asset Type + Search bar — side by side */}
+      <div className="market-control-group">
+        <div className="market-control-col">
+          <div className="market-control-label">Asset Type</div>
+          <div className="market-control-btns-row">
+            <select className="model-select model-select-wide" value={selectedAssetType} onChange={e => handleAssetTypeChange(e.target.value)}>
+              <option value="crypto_perps">Crypto Perps</option>
+              <option value="indices">Indices</option>
+              <option value="stocks">Stocks</option>
+              <option value="commodities">Commodities</option>
+              <option value="fx">FX / Forex</option>
+              <option value="tradfi">All TradFi</option>
+            </select>
+          </div>
+        </div>
+        <div className="market-control-col" style={{ flex: 1, minWidth: 0 }}>
+          <div className="market-control-label">Custom Search</div>
+          <input
+            type="text"
+            className="market-search-input"
+            placeholder="Search symbol..."
+            value={assetSearch}
+            onChange={e => setAssetSearch(e.target.value)}
+            style={{ margin: 0, width: '100%' }}
+          />
+        </div>
+      </div>
+
+      {/* Available Pairs — below Asset Type, click to add (disabled during cycle) */}
+      <div className="market-pairs-header">
+        <div className="market-pairs-header-label" style={pairsLoading ? { color: 'var(--gold)' } : s?.cycleInProgress ? { color: 'var(--red)' } : undefined}>
+          {pairsLoading
+            ? `Loading ${selectedAssetType.replace(/_/g, ' ')} Top 30 Volume Markets ...`
+            : s?.cycleInProgress
+            ? 'Select asset after this cycle of calculations is completed:'
+            : 'Available Pairs (click to add asset to "Selected Markets"):'}
+        </div>
+        <div className="top-pairs-list" style={{ position: 'relative', overflow: pairsLoading ? 'hidden' : 'auto', ...(s?.cycleInProgress ? { pointerEvents: 'none', opacity: 0.4, background: 'rgba(248, 113, 113, 0.25)' } : {}) }}>
+          {pairsLoading && (
+            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0, 0, 0, 0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', borderRadius: 'var(--radius-md)', zIndex: 10 }}>
+              <span className="spinner" style={{ width: '24px', height: '24px', borderWidth: '3px' }} />
+            </div>
+          )}
+          {topPairs
+            .filter(pair => {
+              if (!assetSearch.trim()) return true
+              return pair.symbol.toLowerCase().includes(assetSearch.toLowerCase())
+            })
+            .map((pair, i) => {
+              const isAdded = tradingMarkets.some(s => normSym(s) === normSym(pair.symbol)) ||
+                Array.from(positionMap.keys()).some(s => normSym(s) === normSym(pair.symbol))
+              // Count unique symbols across tradingMarkets + positionMap (deduped)
+              const uniqueSymbols = new Set<string>()
+              for (const s of tradingMarkets) uniqueSymbols.add(normSym(s))
+              for (const s of positionMap.keys()) uniqueSymbols.add(normSym(s))
+              const full = uniqueSymbols.size >= 3
+              return (
+                <div
+                  key={pair.symbol}
+                  className={`top-pair-row top-pair-row-inline ${isAdded ? 'pair-added' : ''}`}
+                  onClick={() => { if (!isAdded && !full) addTradingMarket(pair.symbol) }}
+                  style={isAdded
+                    ? { opacity: 1, cursor: 'default', background: 'rgba(52, 211, 153, 0.12)', boxShadow: '0 0 8px rgba(52, 211, 153, 0.3)' }
+                    : { opacity: full ? 0.4 : 1, cursor: full ? 'default' : 'pointer' }}
+                  onMouseEnter={(e) => { if (!isAdded && !full) e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                  onMouseLeave={(e) => { if (!isAdded) e.currentTarget.style.background = ''; }}
+                >
+                  <span className="top-pair-rank top-pair-cell">#{i + 1}</span>
+                  <span className="top-pair-symbol top-pair-cell-bold">{pair.symbol}</span>
+                  <span className="top-pair-vol top-pair-cell">{pair.volume24h > 0 ? `$${(pair.volume24h / 1_000_000).toFixed(1)}M` : 'N/A'}</span>
+                  <span className="top-pair-vol top-pair-cell-tertiary">{pair.volume5m != null && pair.volume5m > 0 ? `${(pair.volume5m / 1000).toFixed(0)}K` : '-'}</span>
+                  <span className={`top-pair-chg top-pair-cell ${pair.priceChangePercent >= 0 ? 'positive' : 'negative'}`}>
+                    {pair.volume24h > 0 ? `${pair.priceChangePercent >= 0 ? '+' : ''}${pair.priceChangePercent.toFixed(2)}%` : 'N/A'}
+                  </span>
+                  <span className="top-pair-spacer" />
+                  {isAdded && <span style={{ fontSize: '24px', color: 'var(--green)', fontWeight: 'var(--fw-bold)', lineHeight: 0, display: 'inline-flex', alignItems: 'center' }}>✓</span>}
+                </div>
+              )
+            })}
+          {topPairs.filter(pair => !assetSearch.trim() || pair.symbol.toLowerCase().includes(assetSearch.toLowerCase())).length === 0 && (
+            <div className="market-slot-empty" style={{ padding: 'var(--space-4) 0' }}>
+              {assetSearch.trim() ? `No pairs match "${assetSearch}"` : 'Initiating market and assets ...'}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Selected Market Pairs — directly below Available Pairs */}
+      <div className="market-pairs-header" style={{ position: 'relative' }}>
+        <div className="market-pairs-header-label">
+          Selected Market Pairs ({(() => { const u = new Set<string>(); for (const s of tradingMarkets) u.add(normSym(s)); for (const s of positionMap.keys()) u.add(normSym(s)); return u.size })()}/3):
+        </div>
+        <div className="top-pairs-list">
+          {/* Position rows — BUY/SELL tag + ✕ for manual close confirmation */}
+          {Array.from(positionMap.entries()).map(([sym, side]) => {
+            const pair = topPairs.find(p => normSym(p.symbol) === normSym(sym))
+            const cached = getCachedPair(sym)
+            const vol24 = pair?.volume24h ?? cached?.volume24h ?? 0
+            const vol5m = pair?.volume5m ?? cached?.volume5m
+            const chg = pair?.priceChangePercent ?? cached?.priceChangePercent ?? 0
+            return (
+              <div
+                key={`pos-row-${sym}`}
+                className={`top-pair-row top-pair-row-inline ${normSym(sym) === normSym(activeSymbol) ? 'active-pair' : ''}`}
+                onClick={() => {
+                  fetch(`${API_BASE}/market-agent/select-symbol`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: sym }),
+                  }).catch(() => {})
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
+              >
+                <span className="top-pair-rank top-pair-cell" style={{ color: side === 'buy' ? 'var(--green)' : 'var(--red)', fontWeight: 'var(--fw-bold)' }}>{side === 'buy' ? 'BUY' : 'SELL'}</span>
+                <span className="top-pair-symbol top-pair-cell-bold">{sym}</span>
+                <span className="top-pair-vol top-pair-cell">{vol24 > 0 ? `$${(vol24 / 1_000_000).toFixed(1)}M` : '—'}</span>
+                <span className="top-pair-vol top-pair-cell-tertiary">{vol5m != null && vol5m > 0 ? `${(vol5m / 1000).toFixed(0)}K` : '—'}</span>
+                <span className={`top-pair-chg top-pair-cell ${chg >= 0 ? 'positive' : 'negative'}`}>
+                  {vol24 > 0 ? `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%` : '—'}
+                </span>
+                <span className="top-pair-spacer" />
+                <span
+                  className="top-pair-rank top-pair-cell"
+                  style={{ cursor: 'pointer', color: 'var(--red)', fontWeight: 'var(--fw-bold)' }}
+                  onClick={(e) => { e.stopPropagation(); setCloseConfirmSym(sym) }}
+                  title={`Close position: ${sym}`}
+                >✕</span>
+              </div>
+            )
+          })}
+          {/* Trading market rows — HOLD tag + ✕ to remove from selected markets */}
+          {tradingMarkets
+            .filter(sym => {
+              for (const [posSym] of positionMap) {
+                if (normSym(posSym) === normSym(sym)) return false
+              }
+              return true
+            })
+            .map(sym => {
+              const pair = topPairs.find(p => normSym(p.symbol) === normSym(sym))
+              const cached = getCachedPair(sym)
+              const vol24 = pair?.volume24h ?? cached?.volume24h ?? 0
+              const vol5m = pair?.volume5m ?? cached?.volume5m
+              const chg = pair?.priceChangePercent ?? cached?.priceChangePercent ?? 0
+              return (
+                <div
+                  key={`tm-row-${sym}`}
+                  className={`top-pair-row top-pair-row-inline ${normSym(sym) === normSym(activeSymbol) ? 'active-pair' : ''}`}
+                  onClick={() => {
+                    fetch(`${API_BASE}/market-agent/select-symbol`, {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ symbol: sym }),
+                    }).catch(() => {})
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
+                >
+                  <span className="top-pair-rank top-pair-cell" style={{ color: 'var(--gold)', fontWeight: 'var(--fw-bold)' }}>HOLD</span>
+                  <span className="top-pair-symbol top-pair-cell-bold">{sym}</span>
+                  <span className="top-pair-vol top-pair-cell">{vol24 > 0 ? `$${(vol24 / 1_000_000).toFixed(1)}M` : '—'}</span>
+                  <span className="top-pair-vol top-pair-cell-tertiary">{vol5m != null && vol5m > 0 ? `${(vol5m / 1000).toFixed(0)}K` : '—'}</span>
+                  <span className={`top-pair-chg top-pair-cell ${chg >= 0 ? 'positive' : 'negative'}`}>
+                    {vol24 > 0 ? `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%` : '—'}
+                  </span>
+                  <span className="top-pair-spacer" />
+                  <span
+                    className="top-pair-rank top-pair-cell"
+                    style={{ cursor: 'pointer', color: 'var(--text-tertiary)' }}
+                    onClick={(e) => { e.stopPropagation(); removeTradingMarket(sym) }}
+                    title={`Remove ${sym} from selected markets`}
+                  >✕</span>
+                </div>
+              )
+            })}
+          {tradingMarkets.length === 0 && positionMap.size === 0 && (
+            <div className="market-slot-empty" style={{ padding: 'var(--space-4) 0' }}>No markets selected — pick from the list above</div>
+          )}
+        </div>
+
+      {/* Close position confirmation — overlays the Selected Market Pairs section */}
+      {closeConfirmSym && (
+        <div onClick={() => setCloseConfirmSym(null)} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, borderRadius: 'var(--radius-md)' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: '#00000088', backdropFilter: 'var(--glass-blur-strong)', WebkitBackdropFilter: 'var(--glass-blur-strong)', border: '1px solid rgba(255, 255, 255, 0.12)', borderRadius: 'var(--radius-lg)', padding: 'var(--space-9)', maxWidth: '380px', width: '90%', boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 20px rgba(248, 113, 113, 0.2)' }}>
+            <div style={{ fontSize: 'var(--fs-lg)', fontWeight: 'var(--fw-bold)', marginBottom: 'var(--space-4)', color: 'var(--red)' }}>
+              Close Position: {closeConfirmSym}
+            </div>
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-tertiary)', marginBottom: 'var(--space-6)', lineHeight: 1.5 }}>
+              This will manually close the position on the exchange. The close thesis will record this as a user-initiated manual close.
+            </div>
+            <div style={{ display: 'flex', gap: 'var(--space-4)', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setCloseConfirmSym(null)}
+                style={{ padding: 'var(--space-3) var(--space-6)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 'var(--fs-base)' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  setClosingSym(closeConfirmSym)
+                  try {
+                    const res = await fetch(`${API_BASE}/positions/close`, {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ symbol: closeConfirmSym }),
+                    })
+                    const result = await res.json()
+                    if (result.success) {
+                      setCloseConfirmSym(null)
+                    } else {
+                      alert(`Failed to close ${closeConfirmSym}: ${result.error ?? result.message ?? 'Unknown error'}`)
+                    }
+                  } catch (err) {
+                    alert(`Failed to close ${closeConfirmSym}: ${err instanceof Error ? err.message : String(err)}`)
+                  } finally {
+                    setClosingSym(null)
+                  }
+                }}
+                disabled={closingSym === closeConfirmSym}
+                style={{ padding: 'var(--space-3) var(--space-6)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--red)', background: 'var(--red-bg)', color: 'var(--red)', cursor: 'pointer', fontSize: 'var(--fs-base)', fontWeight: 'var(--fw-bold)' }}
+              >
+                {closingSym === closeConfirmSym ? 'Closing...' : '✓ Confirm Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      </div>
+
+      {/* Price info + chart */}
       <div className="market-chart-row">
         <div className="market-chart-col">
-          {activeSymbol ? (
+          {chartSymbol ? (
             <>
-              {/* Trading Markets + Position pills — horizontal row above price */}
-              <div className="market-slot-row">
-                <span className="market-slot-label">Trading Markets (Max: 3):</span>
-                {/* Position pills — green for BUY, red for SELL */}
-                {Array.from(positionMap.entries()).map(([sym, side]) => (
-                  <span key={`pos-${sym}`} className={`trading-market-pill position-pill ${side === 'buy' ? 'position-pill-buy' : 'position-pill-sell'}`} title={`${side.toUpperCase()} position: ${sym}`}>
-                    {sym}
-                  </span>
-                ))}
-                {/* Trading market pills — orange, skip if already has a position pill */}
-                {tradingMarkets
-                  .filter(sym => {
-                    // Skip if position pill already covers this symbol
-                    for (const [posSym] of positionMap) {
-                      if (normSym(posSym) === normSym(sym)) return false
-                    }
-                    return true
-                  })
-                  .map(sym => (
-                    <span key={`tm-${sym}`} className="trading-market-pill" onClick={() => removeTradingMarket(sym)} title={`Click to remove ${sym}`}>
-                      {sym}
-                      <span className="trading-market-pill-x">✕</span>
-                    </span>
-                  ))}
-                {tradingMarkets.length === 0 && positionMap.size === 0 && (
-                  <span className="market-slot-empty">Click a pair below to add</span>
-                )}
-              </div>
               <div className="market-price market-price-top">
-                <span className="market-symbol market-symbol-lg">{activeSymbol}</span>
+                <span className="market-symbol market-symbol-lg">{chartSymbol}</span>
                 <span className="market-value market-value-sm">${price.toFixed(2)}</span>
                 <span className={`market-change market-change-sm ${change24h >= 0 ? 'text-green' : 'text-red'}`}>
                   {change24h >= 0 ? '+' : ''}{change24h.toFixed(2)}
@@ -821,7 +1102,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               </div>
               {/* Mini TradingView chart for the selected market — refreshes every cycle. */}
               <div className="market-vol-row">
-                <TradingViewChart symbol={activeSymbol} currentPrice={price} trades={mainChartTrades} refreshKey={s?.cycles ?? 0} />
+                <TradingViewChart symbol={chartSymbol} currentPrice={price} trades={mainChartTrades} refreshKey={s?.cycles ?? 0} />
               </div>
             </>
           ) : (
@@ -829,33 +1110,6 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               <div className="empty-text empty-text-sm">Waiting for market data...</div>
             </div>
           )}
-        </div>
-      </div>
-
-      {/* Top pairs list — always visible */}
-      <div className="market-pairs-header">
-        <div className="market-pairs-header-label">
-          Top Volume Pairs — click to select trading market
-        </div>
-        <div className="top-pairs-list">
-          {topPairs.slice(0, 5).map((pair, i) => (
-            <div
-              key={pair.symbol}
-              className={`top-pair-row top-pair-row-inline ${pair.symbol === activeSymbol ? 'active-pair' : ''}`}
-              onClick={() => addTradingMarket(pair.symbol)}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
-            >
-              <span className="top-pair-rank top-pair-cell">#{i + 1}</span>
-              <span className="top-pair-symbol top-pair-cell-bold">{pair.symbol}</span>
-              <span className="top-pair-vol top-pair-cell">{pair.volume24h > 0 ? `$${(pair.volume24h / 1_000_000).toFixed(1)}M` : 'N/A'}</span>
-              <span className="top-pair-vol top-pair-cell-tertiary">{pair.volume5m != null && pair.volume5m > 0 ? `${(pair.volume5m / 1000).toFixed(0)}K` : '-'}</span>
-              <span className={`top-pair-chg top-pair-cell ${pair.priceChangePercent >= 0 ? 'positive' : 'negative'}`}>
-                {pair.volume24h > 0 ? `${pair.priceChangePercent >= 0 ? '+' : ''}${pair.priceChangePercent.toFixed(2)}%` : 'N/A'}
-              </span>
-              <span className="top-pair-spacer" />
-            </div>
-          ))}
         </div>
       </div>
 
@@ -878,6 +1132,9 @@ function AgentPanel({ data, ollamaPlan }: { data: APIData | null; ollamaPlan?: s
   for (const t of thoughts) thoughtMap.set(t.agentRole, t)
   const statusMap = new Map<string, any>()
   for (const s of statuses) statusMap.set(s.role, s)
+
+  // Accordion state: only one agent expanded at a time
+  const [expandedAgent, setExpandedAgent] = useState<string | null>(null)
 
   const handleModelChange = async (role: string, modelId: string) => {
     try {
@@ -921,72 +1178,12 @@ function AgentPanel({ data, ollamaPlan }: { data: APIData | null; ollamaPlan?: s
                 activeSymbol={activeSymbol}
                 newsHeadlines={data?.newsHeadlines}
                 ollamaPlan={ollamaPlan}
+                isExpanded={expandedAgent === role}
+                onToggleExpand={() => setExpandedAgent(prev => prev === role ? null : role)}
               />
         ))}
       </div>
 
-      {/* ── Responsibility of Each Agent ── */}
-      <div className="rbc-legend">
-        <div className="rbc-legend-title">Responsibility of Each Agent</div>
-        <div className="rbc-legend-grid">
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: '#34d399', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Market Select Agent</span>
-              <span className="rbc-legend-desc">Scans top-volume pairs across Hyperliquid, selects the trading market, and manages exchange config (trade mode, leverage, position size, max portion). Click a pair above to manually override.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: '#7c8a9e', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Fractal Momentum Sentinel</span>
-              <span className="rbc-legend-desc">Detects multi-timeframe momentum patterns and fractal breakouts. Provides directional bias based on price structure. When this agent outputs BUY/SELL, Meta-Agent must pay special attention.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: '#8a9bb0', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">On-Chain Whisperer</span>
-              <span className="rbc-legend-desc">Analyses on-chain metrics (mempool, exchange flows, funding rates, macro data) to gauge institutional positioning and market sentiment. Category-aware: crypto on-chain vs TradFi macro flows.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: '#9aabb8', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">OLR &amp; Sentiment Analyst</span>
-              <span className="rbc-legend-desc">Online Logistic Regression (per-symbol, per-side) learns P(win) from shadow + paper + real trade outcomes (TP-before-SL), fused with First-Passage path-risk (Cox &amp; Miller GBM) and Fear &amp; Greed sentiment to classify market edge. P(win) is compared to the RR-aware breakeven, not a flat threshold.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: '#6b7a8e', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Independent Risk Auditor</span>
-              <span className="rbc-legend-desc">Advisory-only risk reviewer (v2.0.82). Suggests TP/SL/size adjustments and detects choppy markets. Cannot veto trades — the Meta-Agent + Skeptics thesis system is the sole gatekeeper for new positions.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: '#fbbf24', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">News Reporter</span>
-              <span className="rbc-legend-desc">Shadow Strategist news motive analyzer. Analyzes news source, conspiracy, and motive — evaluates whether news is engineered for distribution (bullish = bearish) or accumulation (FUD = bullish).</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: '#e879f9', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Skeptics</span>
-              <span className="rbc-legend-desc">Absolute gatekeeper with veto power over new positions (v2.0.80+). Validates Meta-Agent's entryThesis for strength, data consistency, dark psychology (whale manipulation?), and fact distortion. Also validates close decisions for thesis-backed positions. When in doubt, REJECT.</span>
-            </div>
-          </div>
-          <div className="rbc-legend-item">
-            <div className="rbc-legend-swatch" style={{ background: '#5b8def', opacity: 0.8 }} />
-            <div className="rbc-legend-text">
-              <span className="rbc-legend-label">Meta-Agent</span>
-              <span className="rbc-legend-desc">Detective mode (v2.0.83). Aggressively reasons from sub-agent data to find trade edges, but never distorts facts. Generates entryThesis (1h + 1d rationale) for BUY/SELL, holdReason for HOLD. Weight 0.00 — thesis system controls, not voting.</span>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
   )
 }
@@ -1693,20 +1890,22 @@ function EvolutionHeader({ generation, symbolCount }: {
   )
 }
 
-function OLRSection({ olrState, openPositionSymbols }: { olrState: any; openPositionSymbols?: Set<string> }) {
+function OLRSection({ olrState, openPositionSymbols, isExpanded, onToggleExpand }: { olrState: any; openPositionSymbols?: Set<string>; isExpanded: boolean; onToggleExpand: () => void }) {
   const hasSymbols = olrState?.symbols?.length > 0
   const hasPending = olrState?.pending?.length > 0
   const hasShadow = olrState?.shadowStats?.length > 0
+  const expanded = isExpanded
 
   return (
     <div className="evo-section">
-      <div className="evo-section-header">
+      <div className="evo-section-header" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
         <div className="evo-section-accent" />
         <span className="evo-section-title">OLR + Path Risk</span>
         {hasSymbols && <span className="evo-badge evo-badge-right">{olrState.symbols.length} symbols</span>}
+        <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
       </div>
 
-      {!hasSymbols && !hasPending ? (
+      {expanded && (!hasSymbols && !hasPending ? (
         <div className="evo-empty">
           <div className="evo-empty-icon">🧬</div>
           <div className="evo-empty-text">Waiting for shadow trade data</div>
@@ -1813,13 +2012,15 @@ function OLRSection({ olrState, openPositionSymbols }: { olrState: any; openPosi
             })
           )}
         </>
-      )}
+      ))}
     </div>
   )
 }
 
 function EvolutionPanel({ data }: { data: APIData | null }) {
   const evo = data?.evolution
+  const [expandedSection, setExpandedSection] = useState<string | null>(null)
+  const toggleSection = (id: string) => setExpandedSection(prev => prev === id ? null : id)
 
   if (!evo) {
     return (
@@ -1849,26 +2050,26 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
         generation={evo.generation}
         symbolCount={symbolCount}
       />
-      <EMCycleDigestionSection emState={data?.emState} />
-      <RILSection rilState={data?.rilState} />
-      <ExperienceDigestionSection expDigest={data?.portfolio?.expDigest} expActions={data?.expActions} />
-      <OLRSection olrState={data?.olrState} openPositionSymbols={openPositionSymbols} />
+      <EMCycleDigestionSection emState={data?.emState} isExpanded={expandedSection === 'em'} onToggleExpand={() => toggleSection('em')} />
+      <RILSection rilState={data?.rilState} isExpanded={expandedSection === 'ril'} onToggleExpand={() => toggleSection('ril')} />
+      <ExperienceDigestionSection expDigest={data?.portfolio?.expDigest} expActions={data?.expActions} isExpanded={expandedSection === 'exp'} onToggleExpand={() => toggleSection('exp')} />
+      <OLRSection olrState={data?.olrState} openPositionSymbols={openPositionSymbols} isExpanded={expandedSection === 'olr'} onToggleExpand={() => toggleSection('olr')} />
     </div>
   )
 }
 
 /* ── v2.0.140: EM Cycle Digestion Section (v2.0.141: cycle chain only, insight vectors replaced by RIL) ── */
 
-function EMCycleDigestionSection({ emState }: { emState?: any }) {
-  const [expanded, setExpanded] = useState(false)
+function EMCycleDigestionSection({ emState, isExpanded, onToggleExpand }: { emState?: any; isExpanded: boolean; onToggleExpand: () => void }) {
   if (!emState) return null
+  const expanded = isExpanded
 
   const accuracyPct = emState.convergenceChecks > 0 ? (emState.convergenceAccuracy * 100).toFixed(1) : '—'
   const accuracyColor = emState.convergenceAccuracy > 0.6 ? 'var(--green)' : emState.convergenceAccuracy < 0.4 ? 'var(--red)' : 'var(--text-tertiary)'
 
   return (
     <div className="evo-section">
-      <div className="evo-section-header" onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer' }}>
+      <div className="evo-section-header" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
         <div className="evo-section-accent" />
         <span className="evo-section-title">EM Cycle Chain</span>
         <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
@@ -1913,13 +2114,13 @@ function EMCycleDigestionSection({ emState }: { emState?: any }) {
 
 /* ── v2.0.141: RIL Reason Intelligence Layer Section ── */
 
-function RILSection({ rilState }: { rilState?: any }) {
-  const [expanded, setExpanded] = useState(false)
+function RILSection({ rilState, isExpanded, onToggleExpand }: { rilState?: any; isExpanded: boolean; onToggleExpand: () => void }) {
   if (!rilState) return null
+  const expanded = isExpanded
 
   return (
     <div className="evo-section">
-      <div className="evo-section-header" onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer' }}>
+      <div className="evo-section-header" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
         <div className="evo-section-accent" />
         <span className="evo-section-title">RIL Reason Intelligence</span>
         <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
@@ -2325,9 +2526,9 @@ function MiniLMPipeline({ parsed, total }: { parsed: ReturnType<typeof parseDige
   )
 }
 
-function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: string; expActions?: Array<{ symbol: string; side: string; verdict: string; reason: string; cycle: number; ts: number }> }) {
-  const [expanded, setExpanded] = useState(false)
+function ExperienceDigestionSection({ expDigest, expActions, isExpanded, onToggleExpand }: { expDigest?: string; expActions?: Array<{ symbol: string; side: string; verdict: string; reason: string; cycle: number; ts: number }>; isExpanded: boolean; onToggleExpand: () => void }) {
   if (!expDigest && (!expActions || expActions.length === 0)) return null
+  const expanded = isExpanded
 
   const hasStreakWarning = expDigest?.includes('losing streak:') && !expDigest?.includes('losing streak: 0')
   const parsed = expDigest ? parseDigest(expDigest) : null
@@ -2351,7 +2552,7 @@ function ExperienceDigestionSection({ expDigest, expActions }: { expDigest?: str
 
   return (
     <div className="evo-section">
-      <div className="evo-section-header" onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer' }}>
+      <div className="evo-section-header" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
         <div className="evo-section-accent" />
         <span className="evo-section-title">
           Experience Digestion
@@ -3214,88 +3415,128 @@ export default function App() {
               <button className="settings-modal-close" onClick={() => setShowSettings(false)}>✕</button>
             </div>
             <div className="settings-modal-body">
-              {/* HYPERLIQUID_WALLET_ADDRESS */}
-              <div className="settings-field">
-                <label className="settings-label">HYPERLIQUID_WALLET_ADDRESS</label>
-                <input
-                  type="text"
-                  className="settings-input"
-                  value={envSettings['HYPERLIQUID_WALLET_ADDRESS'] ?? ''}
-                  onChange={e => setEnvSettings(prev => ({ ...prev, HYPERLIQUID_WALLET_ADDRESS: e.target.value }))}
-                  placeholder="0x..."
-                />
-                <p className="settings-hint">
-                  Your Arbitrum wallet address for Hyperliquid trading. Required for real trading mode + real-time position/fill sync via WebSocket.
-                  <br />📍 Get it from <a href="https://app.hyperliquid.xyz" target="_blank" rel="noopener noreferrer" className="settings-link">Hyperliquid</a> → top-right wallet button → copy address.
-                </p>
+              {/* ── Section 1: Real Trade ── */}
+              <div className="settings-section">
+                <div className="settings-section-title">Real Trade</div>
+                {/* HYPERLIQUID_WALLET_ADDRESS */}
+                <div className="settings-field">
+                  <label className="settings-label">HYPERLIQUID_WALLET_ADDRESS</label>
+                  <input
+                    type="text"
+                    className="settings-input"
+                    value={envSettings['HYPERLIQUID_WALLET_ADDRESS'] ?? ''}
+                    onChange={e => setEnvSettings(prev => ({ ...prev, HYPERLIQUID_WALLET_ADDRESS: e.target.value }))}
+                    placeholder="0x..."
+                  />
+                  <p className="settings-hint">
+                    Your Arbitrum wallet address for Hyperliquid trading. Required for real trading mode + real-time position/fill sync via WebSocket.
+                    <br />📍 Get it from <a href="https://app.hyperliquid.xyz" target="_blank" rel="noopener noreferrer" className="settings-link">Hyperliquid</a> → top-right wallet button → copy address.
+                  </p>
+                </div>
+                {/* HYPERLIQUID_PRIVATE_KEY */}
+                <div className="settings-field">
+                  <label className="settings-label">HYPERLIQUID_PRIVATE_KEY</label>
+                  <input
+                    type="password"
+                    className="settings-input"
+                    value={envSettings['HYPERLIQUID_PRIVATE_KEY'] ?? ''}
+                    onChange={e => setEnvSettings(prev => ({ ...prev, HYPERLIQUID_PRIVATE_KEY: e.target.value }))}
+                    placeholder="64 hex chars (secp256k1)"
+                  />
+                  <p className="settings-hint">
+                    Your wallet's private key (secp256k1, 64 hex chars). Used to sign EIP-712 orders on Hyperliquid.
+                    <br />📍 Export from your wallet (MetaMask → Account Details → Show Private Key, or Rabby → Export). ⚠️ Never share this with anyone.
+                  </p>
+                </div>
               </div>
 
-              {/* HYPERLIQUID_PRIVATE_KEY */}
-              <div className="settings-field">
-                <label className="settings-label">HYPERLIQUID_PRIVATE_KEY</label>
-                <input
-                  type="password"
-                  className="settings-input"
-                  value={envSettings['HYPERLIQUID_PRIVATE_KEY'] ?? ''}
-                  onChange={e => setEnvSettings(prev => ({ ...prev, HYPERLIQUID_PRIVATE_KEY: e.target.value }))}
-                  placeholder="64 hex chars (secp256k1)"
-                />
-                <p className="settings-hint">
-                  Your wallet's private key (secp256k1, 64 hex chars). Used to sign EIP-712 orders on Hyperliquid.
-                  <br />📍 Export from your wallet (MetaMask → Account Details → Show Private Key, or Rabby → Export). ⚠️ Never share this with anyone.
-                </p>
+              {/* ── Section 2: AI Provider ── */}
+              <div className="settings-section">
+                <div className="settings-section-title">AI Provider</div>
+                {/* OLLAMA_API_KEY */}
+                <div className="settings-field">
+                  <label className="settings-label">OLLAMA_API_KEY</label>
+                  <input
+                    type="password"
+                    className="settings-input"
+                    value={envSettings['OLLAMA_API_KEY'] ?? ''}
+                    onChange={e => setEnvSettings(prev => ({ ...prev, OLLAMA_API_KEY: e.target.value }))}
+                    placeholder="ollama API key (optional)"
+                  />
+                  <p className="settings-hint">
+                    Ollama API key for cloud model access. Without this, the system uses local models only (slower, limited concurrency for personal devices).
+                    <br />📍 Get it from <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="settings-link">ollama.com</a> → Settings → API Keys.
+                    <br />💡 <strong>Recommended:</strong> Upgrade to <a href="https://ollama.com/pricing" target="_blank" rel="noopener noreferrer" className="settings-link">Ollama Pro</a> ($20/mo) for cloud models like <code>deepseek-v4-flash:cloud</code>, <code>kimi-k2.6:cloud</code>, <code>glm-5.2:cloud</code>. Pro gives faster inference, 8-agent concurrent requests, and no local GPU required — making trading decisions more reliable and timely, directly improving profitability.
+                  </p>
+                </div>
+                {/* MASSIVE_API_KEY */}
+                <div className="settings-field">
+                  <label className="settings-label">MASSIVE_API_KEY</label>
+                  <input
+                    type="password"
+                    className="settings-input"
+                    value={envSettings['MASSIVE_API_KEY'] ?? ''}
+                    onChange={e => setEnvSettings(prev => ({ ...prev, MASSIVE_API_KEY: e.target.value }))}
+                    placeholder="massive.com API key (optional)"
+                  />
+                  <p className="settings-hint">
+                    Massive.com (Polygon.io compatible) API key for options data. Provides IV Rank, Greeks, Put/Call ratio, Gamma regime, Implied Move — used for Stocks/Indices/Commodities trading to improve win rate and expectancy.
+                    <br />📍 Get it from <a href="https://massive.com" target="_blank" rel="noopener noreferrer" className="settings-link">massive.com</a> → API Keys. Optional — system works without it (agents fall back to defaults).
+                  </p>
+                </div>
+                {/* OLLAMA_PLAN */}
+                <div className="settings-field">
+                  <label className="settings-label">OLLAMA_PLAN</label>
+                  <select
+                    className="settings-input settings-select"
+                    value={envSettings['OLLAMA_PLAN'] ?? 'auto'}
+                    onChange={e => setEnvSettings(prev => ({ ...prev, OLLAMA_PLAN: e.target.value }))}
+                  >
+                    <option value="auto">Auto-detect (defaults to Pro if cloud models found)</option>
+                    <option value="Free">Free (local models only)</option>
+                    <option value="Pro">Pro (cloud models, standard rate limits)</option>
+                    <option value="Max">Max (cloud models, highest rate limits + concurrency)</option>
+                  </select>
+                  <p className="settings-hint">
+                    Your Ollama subscription plan. Used for display in the header badge. Ollama API does not expose plan info, so select manually.
+                    <br />💡 If unsure, leave as <strong>Auto-detect</strong> — the system will check if cloud models are available and default to Pro.
+                  </p>
+                </div>
               </div>
 
-              {/* OLLAMA_API_KEY */}
-              <div className="settings-field">
-                <label className="settings-label">OLLAMA_API_KEY</label>
-                <input
-                  type="password"
-                  className="settings-input"
-                  value={envSettings['OLLAMA_API_KEY'] ?? ''}
-                  onChange={e => setEnvSettings(prev => ({ ...prev, OLLAMA_API_KEY: e.target.value }))}
-                  placeholder="ollama API key (optional)"
-                />
-                <p className="settings-hint">
-                  Ollama API key for cloud model access. Without this, the system uses local models only (slower, limited concurrency for personal devices).
-                  <br />📍 Get it from <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="settings-link">ollama.com</a> → Settings → API Keys.
-                  <br />💡 <strong>Recommended:</strong> Upgrade to <a href="https://ollama.com/pricing" target="_blank" rel="noopener noreferrer" className="settings-link">Ollama Pro</a> ($20/mo) for cloud models like <code>deepseek-v4-flash:cloud</code>, <code>kimi-k2.6:cloud</code>, <code>glm-5.2:cloud</code>. Pro gives faster inference, 8-agent concurrent requests, and no local GPU required — making trading decisions more reliable and timely, directly improving profitability.
-                </p>
-              </div>
-
-              {/* MASSIVE_API_KEY */}
-              <div className="settings-field">
-                <label className="settings-label">MASSIVE_API_KEY</label>
-                <input
-                  type="password"
-                  className="settings-input"
-                  value={envSettings['MASSIVE_API_KEY'] ?? ''}
-                  onChange={e => setEnvSettings(prev => ({ ...prev, MASSIVE_API_KEY: e.target.value }))}
-                  placeholder="massive.com API key (optional)"
-                />
-                <p className="settings-hint">
-                  Massive.com (Polygon.io compatible) API key for options data. Provides IV Rank, Greeks, Put/Call ratio, Gamma regime, Implied Move — used for Stocks/Indices/Commodities trading to improve win rate and expectancy.
-                  <br />📍 Get it from <a href="https://massive.com" target="_blank" rel="noopener noreferrer" className="settings-link">massive.com</a> → API Keys. Optional — system works without it (agents fall back to defaults).
-                </p>
-              </div>
-
-              {/* OLLAMA_PLAN */}
-              <div className="settings-field">
-                <label className="settings-label">OLLAMA_PLAN</label>
-                <select
-                  className="settings-input settings-select"
-                  value={envSettings['OLLAMA_PLAN'] ?? 'auto'}
-                  onChange={e => setEnvSettings(prev => ({ ...prev, OLLAMA_PLAN: e.target.value }))}
-                >
-                  <option value="auto">Auto-detect (defaults to Pro if cloud models found)</option>
-                  <option value="Free">Free (local models only)</option>
-                  <option value="Pro">Pro (cloud models, standard rate limits)</option>
-                  <option value="Max">Max (cloud models, highest rate limits + concurrency)</option>
-                </select>
-                <p className="settings-hint">
-                  Your Ollama subscription plan. Used for display in the header badge. Ollama API does not expose plan info, so select manually.
-                  <br />💡 If unsure, leave as <strong>Auto-detect</strong> — the system will check if cloud models are available and default to Pro.
-                </p>
+              {/* ── Section 3: Notice ── */}
+              <div className="settings-section">
+                <div className="settings-section-title">Notice</div>
+                {/* TELEGRAM_BOT_API */}
+                <div className="settings-field">
+                  <label className="settings-label">TELEGRAM_BOT_API</label>
+                  <input
+                    type="password"
+                    className="settings-input"
+                    value={envSettings['TELEGRAM_BOT_API'] ?? ''}
+                    onChange={e => setEnvSettings(prev => ({ ...prev, TELEGRAM_BOT_API: e.target.value }))}
+                    placeholder="Telegram Bot API token"
+                  />
+                  <p className="settings-hint">
+                    Telegram Bot API token for sending IM notifications to the user.
+                    <br />📍 Create a bot via <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer" className="settings-link">@BotFather</a> → /newbot → copy the API token.
+                  </p>
+                </div>
+                {/* TELEGRAM_CHAT_ID */}
+                <div className="settings-field">
+                  <label className="settings-label">TELEGRAM_CHAT_ID</label>
+                  <input
+                    type="text"
+                    className="settings-input"
+                    value={envSettings['TELEGRAM_CHAT_ID'] ?? ''}
+                    onChange={e => setEnvSettings(prev => ({ ...prev, TELEGRAM_CHAT_ID: e.target.value }))}
+                    placeholder="Your Telegram Chat ID"
+                  />
+                  <p className="settings-hint">
+                    Your Telegram Chat ID where the bot will send messages.
+                    <br />📍 Get it from <a href="https://t.me/userinfobot" target="_blank" rel="noopener noreferrer" className="settings-link">@userinfobot</a> → send /start → copy the ID.
+                  </p>
+                </div>
               </div>
 
               {/* v2.0.140: Danger Zone — Reset Trade History (moved from Evolution header) */}
