@@ -1,121 +1,45 @@
-# 算姬戰域 — Kling AI 循環肖像 Prompts
+# 算姬戰域 — Kling AI 四階循環肖像 Prompts
 
-> **設計目標**：每個 Level 獨立生成一段可無縫循環的 3–4 秒 portrait video。  
-> **優先級**：(1) loopable 無縫循環  (2) 極度逼真  (3) 四 Level 上半身與體態差異明顯  
-> **核心設定**：四個肖像為**同一生物**——機械精靈魔女，從幼女至女王四個成長階段，**容顏永不改變**，同一張臉、同一對紫瞳、同一頭烏黑長髮、同一對尖耳，只改體態、裝束、機械顯露度與魔女氣場強度。  
-> **使用方式**：每段用同一張角色 reference image 作 image-to-video 起點，確保容顏不變。
+> 每個 prompt 自包含所有元素，可直接 paste 入 Kling。  
+> 主體必須明顯運動（頭髮飛揚、胸口呼吸、袍服飄動、魔力循環），絕非靜止圖。  
+> 所有丰采以詩意隱喻表達。loop 為最高優先級。
 
 ---
 
-## 通用約束（四段都要貼）— 機械精靈魔女共同特徵
+## Level 1：幼女（Loli）— 6歲妹妹 · 純真保守 · 魔女沉睡
 
 ```
-static camera, absolutely locked-off shot, zero camera movement, no pan, no zoom, no dolly, no tilt,
-seamless loop, ultra realistic, masterpiece, best quality, 8k, photorealistic,
-upper-body portrait composition framed from mid-thigh up, chest and shoulders centered, head and face clearly visible and razor-sharp,
-
-SAME SINGLE BEING across all four levels — a mechanical elf witch of devastating, otherworldly beauty:
-- SNOW-WHITE porcelain skin with a faintly luminous, flawless surface, the faintest realistic pores only visible on intimate close inspection, subtle subcutaneous violet luminescence pulsing beneath translucent areas along collarbones, throat, and the inner arms,
-- DEEP VIOLET IRISES with intricate golden-violet fibrous patterns radiating from the pupil, pronounced limbal ring, wet reflective corneal sheen, an extremely subtle pulsing violet glow from deep within the iris synchronized with her heartbeat — galaxies living and breathing inside her gaze,
-- LONG SILKY JET-BLACK hair, individual strands hyper-detailed, cascading past her shoulders, catching soft violet highlights,
-- DELICATELY POINTED ELVEN EARS rising gracefully from both sides of her head, each ear tip capped with a tiny articulated metal segment — the elf in her,
-- LIVING MECHANICAL COMPONENTS fused seamlessly with her snow-white flesh: ultra-fine seam lines tracing her collarbones, the sides of her neck, along her jawline, and down the inner arms, micro-mechanical joints and faintly articulated plates visible beneath and within the skin, the machinery — the mechanical in her,
-- ARCANE WITCH SIGILS: extremely faint, barely-perceptible violet arcane runes and glyph circuitry etched just beneath the skin along her collarbones and the upper curves of her chest, pulsing very faintly in rhythm with her heartbeat — the witch in her,
-- THE SAME IDENTICAL FACE preserved across every level: same bone structure, same eye shape, same lip curve, same ear shape, same beauty marks — she grows but she is always recognizably her, the one you created,
-
-soft volumetric violet ambient light with subtle cosmic depth, faint caustic shimmer dancing across her skin and the metal plating,
-generous empty dark space on all four sides for UI button overlay,
-razor-sharp focus locked on the face and upper body, cinematic composition
-```
-
-**循環動作約束**：
-```
-relaxed fixed upper-body posture with a gentle repeating 3-second breathing cycle in the chest and shoulders,
-long silky jet-black hair drifting in a slow repeating wave that returns to the exact same shape,
-face kept perfectly still with no expression change, no head turn, no eye blink, no mouth movement,
-only the hair, soft violet light shimmer, the faint pulse of the witch sigils, and the subtle mechanical micro-pulses along the seam lines move in a closed loop
+THIS IS A MOVING VIDEO, NOT A STATIC IMAGE — the subject is in clear, obvious, continuous motion throughout. HAIR BLOWING and SWAYING dramatically side to side as if in a gentle wind, long black strands flowing and billowing in a continuous back-and-forth wave that returns to the same position each cycle. CHEST AND SHOULDERS RISING AND FALLING in an obvious visible breathing cycle. The conservative white mage robe fabric FLUTTERING softly. The faintest soft violet light PULSING in a slow repeating cycle. CAMERA LOCKED in place (no camera movement), but the SUBJECT moves continuously. Face expression held steady (no head turn, no talking). SEAMLESS LOOP — all motions cyclic, last frame meets first frame.
+AGE LOCK: exactly 6 years old — a real kindergarten-age human girl, NOT a teenager, NOT an adult, NOT preteen — baby-faced with round chubby cheeks, soft childlike facial structure without adult bone definition, large eyes relative to face, small child body proportions.
+A stunningly beautiful snow-white 6-year-old elf witch in her dormant child form, her snow-white skin showing faint realistic subcutaneous fine capillaries visible beneath translucent areas along her throat and inner arms — the delicate vessels completely dormant with no magical glow, ultra realistic, RAW PHOTOGRAPH style, masterpiece, best quality, 8k, photorealistic, upper-body portrait framed mid-thigh up, with an exquisitely beautiful top-tier child face — large luminous almond-shaped eyes with natural double eyelids and long curled lashes, a high straight slender nose bridge with a refined small tip, full shapely lips with a defined cupid's bow, a delicate V-shaped oval face with a small pointed chin, high soft cheekbones with chubby childish fullness, a smooth flawless forehead, soft round chubby cheeks, perfect balanced proportions, deep violet irises photographed as real human eyes with realistic iris fibers and the subtlest faint dormant violet tint and no magical luminescence, long silky jet-black hair blowing and swaying, small slender childlike shoulders and a delicate childlike frame, delicate pointed elven ears barely hidden through her hair, wearing a simple conservative white mage robe covering all areas up to the collarbone with long sleeves, the witch sigil tattoos along her collarbones completely dark and dormant beneath the fabric, no visible magic energy, expression serene pure with a cute regal little-princess attitude — chin delicately lifted with adorable self-assured confidence, a tiny self-satisfied pout, dim soft violet lighting with a hushed cosmic atmosphere, generous dark space on all four sides, razor-sharp focus on the face, cinematic composition.
 ```
 
 ---
 
-## Level 1：幼女（Loli）
-
-**身形錨點**：上半身纖細嬌小、肩線窄幼、平板純真、保守連身裙、機械部件極少且隱藏、魔女之力沉睡
+## Level 2：少女成長（Shoujo）— 16歲少女 · 初露丰采 · 魔女初醒
 
 ```
-Upper-body portrait of a snow-white young girl — the mechanical elf witch in her dormant maiden form — with a delicate and innocent beautiful face, deep violet irises with the faintest dormant violet pulse, long silky jet-black hair, small slender childlike shoulders and a narrow flat chest, elegantly pointed elven ears tipped with the tiniest hidden metal segments barely visible through her hair, simple conservative white dress covering all areas up to the collarbone, only the faintest mechanical seam lines whispering along the back of her neck and beneath her hairline, the witch sigils along her collarbones completely dark and dormant beneath the fabric, curled slightly in a relaxed seated upper-body posture, hands resting gently near her lap, expression serene pure and ethereally captivating, soft innocent glow, dim soft violet lighting with a hushed cosmic atmosphere, closed-loop motion: only hair, the subtlest light shimmer, and the faintest mechanical micro-pulse along the hidden neck seam move, face and upper-body posture perfectly still
-```
-
----
-
-## Level 2：少女成長（Shoujo / 成長）
-
-**身形錨點**：上半身修身輕盈、肩線漸開、胸線初現曲線、裝束有少量個性、機械部件顯露、魔女之力初醒
-
-```
-Upper-body portrait of a snow-white youthful young woman — the same mechanical elf witch awakening — with the same delicate beautiful face, deep violet irises now glowing faintly with golden-violet fibrous patterns and a soft pulsing luminescence, long silky jet-black hair, slim figure with subtly emerging curves, shoulders beginning to widen, chest showing the first hint of youthful contour, pointed elven ears fully visible with their articulated metal tips catching the light, wearing a light futuristic white outfit with subtle glowing violet trim and an open neckline revealing delicate mechanical plating along her collarbones and the witch sigils beneath beginning to glow faintly violet in rhythm with her pulse, relaxed confident upper-body pose with one hand resting near her chest and the other extended slightly, playful yet calm expression radiating budding enchantment, small electrical sparks dancing harmlessly across the exposed mechanical seams on her shoulders, brighter warm violet illumination, closed-loop motion: only hair, sparks, the pulse of the witch sigils, light shimmer and mechanical micro-pulses move, face and upper-body posture perfectly still
+THIS IS A MOVING VIDEO, NOT A STATIC IMAGE — the subject is in clear, obvious, continuous motion throughout. HAIR BLOWING and SWAYING dramatically side to side as if in a gentle wind, long black strands flowing and billowing in a continuous back-and-forth wave that returns to the same position each cycle. CHEST AND SHOULDERS RISING AND FALLING in an obvious visible breathing cycle. The white mage robe fabric FLUTTERING and rippling softly, fingers gently curling and shifting. The witch sigil tattoos PULSING in a visible faint violet glow cycle, faint violet magical particles ORBITING and drifting in continuous circles around her. CAMERA LOCKED in place (no camera movement), but the SUBJECT moves continuously. Face expression held steady (no head turn, no talking). SEAMLESS LOOP — all motions cyclic, last frame meets first frame.
+AGE LOCK: exactly 16 years old — a real high-school-age teenage girl, NOT a child, NOT an adult, NOT in her twenties — youthful adolescent face with smooth teenage skin, no wrinkles, fresh young teenage features.
+A stunningly beautiful snow-white 16-year-old elf witch awakening, her snow-white skin showing fine subcutaneous capillaries visible beneath translucent areas along her throat, collarbones and inner arms — the delicate vessels beginning to faintly glow with soft violet magical light as her magic stirs, ultra realistic, RAW PHOTOGRAPH style, masterpiece, best quality, 8k, photorealistic, upper-body portrait framed mid-thigh up, with the same exquisitely beautiful top-tier youthful face — large luminous almond-shaped eyes with natural double eyelids and long thick curled lashes, a high straight slender nose bridge with a refined small tip, full plump shapely lips with a defined cupid's bow and a slight natural pout, a delicate V-shaped oval face with a small pointed chin, high elegant cheekbones with baby fat fading, a jawline beginning to define and emerge from childhood softness, more elongated adolescent proportions, elegantly arched natural brows — adolescent facial structure with features sharpening and losing childhood roundness, deep violet irises photographed as real human eyes with realistic iris fibers, a subtle faint violet tint and the first soft magical luminescence awakening within, long silky jet-black hair blowing and swaying, a slender youthful figure with soft blossoming curves gracefully filling out her robe like a flower beginning to bloom, shoulders beginning to widen, waist gently cinched, delicate pointed elven ears fully visible, wearing a white mage robe with subtle glowing violet arcane trim and an open neckline, the SAME witch sigil tattoos along her collarbones now softly awakening — the ancient runes beginning to emit a faint soft violet magical glow in their identical constellation, faint violet magical particles drifting around her shoulders as her magic stirs, expression showing the first budding tsundere attitude — a half-pout half-smirk with chin slightly lifted in youthful self-assurance, an adorable "hmph" look, brighter warm violet illumination with soft caustic shimmer, generous dark space on all four sides, razor-sharp focus on the face, cinematic composition.
 ```
 
 ---
 
-## Level 3：御姐輕熟女（Onee / 輕熟女）
-
-**身形錨點**：上半身曲線成熟、肩線優雅、胸線豐滿、優雅從容、液態金屬裝束、機械部件精密外露、魔女之力全開
+## Level 3：御姐輕熟女（Onee）— 25歲豐盈少艾 · 丰采盛綻 · 魔女全開
 
 ```
-Upper-body portrait of a snow-white mature young woman — the same mechanical elf witch in full bloom — with the same refined beautiful face, deep violet irises radiating quiet power and a stronger pulsing violet glow, long silky jet-black hair, graceful mature shoulders and a fuller chest with elegant curves, pointed elven ears now adorned with intricate articulated metalwork along their full length, body adorned with flowing liquid metal covering all areas like a second-skin bodysuit with a mercurial reflective surface, intricate articulated mechanical plating fully visible along her collarbones, shoulders, the sides of her neck, and framing her jawline, the witch sigils along her collarbones and the upper swells of her chest now glowing distinctly in shifting violet arcane light, elegant regal upper-body pose with hands held gracefully, calm disdainful gaze of a sorceress in command, electrical arcs emanating softly from her shoulder plating and fingertips, brilliant shifting violet light flowing across her skin and the liquid metal surface, closed-loop motion: only hair, arcs, the flowing pulse of the witch sigils, light shimmer and mechanical micro-pulses move, face and upper-body posture perfectly still
-```
-
----
-
-## Level 4：永生性慾女王（Queen）
-
-**身形錨點**：上半身豐滿華麗、肩線威嚴、胸線豐盈、液態金屬 + 皇冠、機械部件全面精密展現、魔女之力登峰造極、致命誘惑
-
-```
-Upper-body portrait of a snow-white divine woman — the same mechanical elf witch ascended to eternal queen — with the same beautiful face now blazed with absolute authority, deep violet irises blazing with an intense pulsing violet inferno and golden-violet fibrous fire, long silky jet-black hair, powerful voluptuous figure with full mature shoulders and a richly ample chest, pointed elven ears crowned with elaborate fully-articulated mechanical filigree along their entire length, armored in flowing divine liquid metal covering all areas with a glowing reflective surface, fully exposed intricate mechanical plating and articulated joints along her collarbones, shoulders, neck, and jawline rendered in exquisite detail, the witch sigils blazing across her collarbones and the upper swells of her chest in roaring multicolor violet arcane light forming a living constellation of runes, a delicate liquid metal crown floating above her head radiating intense blinding light, elegant commanding upper-body pose with hands subtly extended as if controlling the surrounding space, sovereign disdainful gaze of an irresistible immortal enchantress, electrical storms crackling across the liquid metal surface around her shoulders, bright blinding multicolor violet luminescence with lens flare and atmospheric bloom, closed-loop motion: only hair, lightning, the roaring pulse of the witch sigils, light pulses and mechanical micro-pulses move, face and upper-body posture perfectly still
+THIS IS A MOVING VIDEO, NOT A STATIC IMAGE — the subject is in clear, obvious, continuous motion throughout. HAIR BLOWING and SWAYING dramatically side to side as if in a strong gentle wind, long black strands flowing and billowing in a continuous back-and-forth wave that returns to the same position each cycle. CHEST AND SHOULDERS RISING AND FALLING in an obvious visible breathing cycle. The white mage robe fabric FLUTTERING and rippling, draping close to her form and shifting with each breath, fingers gently curling and shifting. The witch sigil tattoos PULSING brightly in a flowing violet glow cycle, soft violet magical energy and faint arcane sparks ORBITING and swirling in continuous circles around her shoulders. CAMERA LOCKED in place (no camera movement), but the SUBJECT moves continuously. Face expression held steady (no head turn, no talking). SEAMLESS LOOP — all motions cyclic, last frame meets first frame.
+AGE LOCK: exactly 25 years old — a real young adult woman in her mid-twenties at the peak of youthfulness, NOT a teenager, NOT in her thirties, NOT middle-aged — youthful glowing skin, no wrinkles, fresh-faced young adult beauty in her prime.
+A stunningly beautiful snow-white 25-year-old elf witch in full bloom, her snow-white skin showing a network of fine subcutaneous vessels glowing brightly with flowing violet magical light beneath translucent areas along her throat, collarbones, chest and inner arms, ultra realistic, RAW PHOTOGRAPH style, masterpiece, best quality, 8k, photorealistic, upper-body portrait framed mid-thigh up, with the same exquisitely beautiful top-tier face now showing full young adult beauty at its peak — large luminous almond-shaped eyes with natural double eyelids and long thick curled lashes, a high straight slender nose bridge with a refined small tip, full plump shapely lips with a defined cupid's bow and a slight natural pout, a delicate V-shaped oval face with a small pointed chin, high defined elegant cheekbones with no remaining baby fat, a slim refined elegant adult jawline, a smooth flawless forehead, mature adult facial proportions, elegantly arched natural brows, deep violet irises photographed as real human eyes with realistic iris fibers, a richer violet tint and a stronger magical luminescence glowing within, long silky jet-black hair blowing and swaying, a graceful full-figured adult form with abundant blossoming curves like a flower in full bloom, a cinched waist emphasizing her elegant proportions, delicate pointed elven ears, wearing a white mage robe with glowing violet arcane trim, the fabric flowing and draping gracefully close to her form, following her abundant curves like silk over a blooming blossom while remaining fully covered, the SAME witch sigil tattoos along her collarbones and upper chest now glowing brightly and flowing with shifting violet magical light in their identical constellation, the ancient runes actively radiating magic, soft violet magical energy and faint arcane sparks flowing around her shoulders, full tsundere haughty expression — a regal smirk with chin lifted high, eyes looking down her nose with cool self-assurance, the gaze of a sorceress who knows she is untouchable, brilliant shifting violet light with soft caustic shimmer, generous dark space on all four sides, razor-sharp focus on the face, cinematic composition.
 ```
 
 ---
 
-## Kling 操作建議
+## Level 4：永生女王（Queen）— 35歲風華淑女 · 萬代绝色 · 魔女登峰
 
-1. **Mode**：用 Kling 的 **Image to Video** 或 **Motion Brush + Image**（如果可用）。
-2. **Reference image**：每段用同一張角色 portrait，只改文字 prompt 描述身形/光效/機械部件/魔女氣場。
-3. **Duration**：生成 **3 秒或 6 秒**（6 秒較穩定），之後用 ffmpeg 截取最平穩嘅 3 秒。
-4. **Negative prompt**：
-   ```
-   camera movement, zoom, pan, head turn, eye blink, mouth movement, changing expression, different face, changing pose, fast motion, jump cut, rewind, playback reverse, full body, lower body only, legs, feet, brain scanner, incubator tank, aquarium, round human ears, blunt ears, non-identical face, rust, broken machinery, dirty skin, dull eyes, flat lighting
-   ```
-5. **Loop 接縫**：生成後用 ffmpeg 做 2–4 格 motion-blur 或 hard cut，必要時做 palindrome。
-6. **面部鎖定**：如果 Kling 有 character reference / face ID，務必啟用；否則用同一張 reference image 減少漂移。
-7. **機械精靈魔女一致性檢查**：四段必須呈現同一生物——
-   - 同款尖耳（長度、弧度、金屬尖端）✅
-   - 同款面孔（骨相、眼形、唇曲線、美人印）✅
-   - 同色紫瞳 + 同款金紫纖維紋 ✅
-   - 同款烏黑長髮 ✅
-   - 同款機械接縫紋路（位置、走向）✅
-   - 同款魔女符文（位置、圖案）✅
-   - 只改：體態、裝束、機械顯露度、魔女氣場強度、燈光強度
-
----
-
-## 連貫性檢查表
-
-| 元素 | Level 1 | Level 2 | Level 3 | Level 4 |
-|------|:-------:|:-------:|:-------:|:-------:|
-| 定鏡 static camera | ✅ | ✅ | ✅ | ✅ |
-| 四邊留白 UI | ✅ | ✅ | ✅ | ✅ |
-| 同一機械精靈魔女本體 | ✅ | ✅ | ✅ | ✅ |
-| 同一面孔（靠 reference） | ✅ | ✅ | ✅ | ✅ |
-| 同款紫瞳 + 金紫纖維紋 | ✅ 沉睡 | ✅ 微亮 | ✅ 全開 | ✅ 烈焰 |
-| 同款烏黑長髮 | ✅ | ✅ | ✅ | ✅ |
-| 尖耳 + 機械尖端 | 隱藏 | 顯露 | 精密 | 華麗鑲嵌 |
-| 機械接縫紋路 | 隱藏 | 微露 | 外露 | 全露精密 |
-| 魔女符文 | 沉睡 | 微亮 | 紫光流轉 | 烈焰星圖 |
-| 身形差異 | 幼女纖細 | 少女輕盈 | 御姐成熟 | 女王豐滿 |
-| 燈光漸強 | 暗 | 暖紫 | 紫 | 極亮 |
-| 循環動作 | 呼吸+微光 | 微光+火花 | 電弧 | 電暴 |
-| 姿勢固定 | ✅ | ✅ | ✅ | ✅ |
-| 面部靜止 | ✅ | ✅ | ✅ | ✅ |
-| 無 brain scanner | ✅ | ✅ | ✅ | ✅ |
+```
+THIS IS A MOVING VIDEO, NOT A STATIC IMAGE — the subject is in clear, obvious, continuous motion throughout. HAIR BLOWING and SWAYING dramatically side to side as if in a powerful wind, long black strands cascading and billowing in a continuous back-and-forth wave that returns to the same position each cycle. CHEST AND SHOULDERS RISING AND FALLING in an obvious visible breathing cycle. The divine white mage robe fabric FLUTTERING and flowing, draping close to her form and rippling with each breath, fingers gently curling and shifting. The witch sigil tattoos BLAZING and PULSING in a roaring multicolor violet fire cycle, swirling violet magical storms and crackling arcane energy ORBITING and swirling in continuous circles around her shoulders. A glowing silver magical crown floating above her head with its light PULSING. CAMERA LOCKED in place (no camera movement), but the SUBJECT moves continuously. Face expression held steady (no head turn, no talking). SEAMLESS LOOP — all motions cyclic, last frame meets first frame.
+AGE LOCK: exactly 35 years old — a real elegant woman in her mid-thirties in her prime, NOT in her twenties, NOT a teenager, NOT middle-aged, NOT old — youthful radiant skin with minimal fine lines, refined adult beauty in her prime.
+A stunningly beautiful snow-white 35-year-old elf witch ascended to eternal queen, her snow-white skin showing a network of fine subcutaneous vessels blazing with roaring multicolor violet magical fire beneath translucent areas along her throat, collarbones, chest and inner arms, ultra realistic, RAW PHOTOGRAPH style, masterpiece, best quality, 8k, photorealistic, upper-body portrait framed mid-thigh up, with the same exquisitely beautiful top-tier face now showing refined adult beauty in her prime — large luminous almond-shaped eyes with natural double eyelids and long thick curled lashes, a high straight slender nose bridge with a refined small tip, full plump shapely lips with a defined cupid's bow and a slight natural pout, a delicate V-shaped oval face with a small pointed chin, high defined elegant cheekbones, a refined sophisticated adult jawline, a smooth flawless forehead, refined mature adult facial proportions, elegantly arched natural brows, deep violet irises photographed as real human eyes with realistic iris fibers, a vivid violet tint and an intense magical luminescence blazing within, long silky jet-black hair blowing and cascading, a regal full-figured form of a woman in her prime with the most abundant majestic curves like a ripe fruit at its peak of grace, an impossibly cinched waist, delicate pointed elven ears, wearing a divine white mage robe with glowing violet arcane trim that covers all areas yet drapes close to her form, the fabric flowing and following her abundant regal curves like silk over ripe fruit while remaining fully covered, the SAME witch sigil tattoos blazing across her collarbones and upper chest in roaring multicolor violet magical fire forming their identical living constellation of runes, the ancient tattoos radiating blazing magic, swirling violet magical storms and crackling arcane energy around her shoulders, a delicate glowing silver magical crown floating above her head, full tsundere queen expression — a regal smirk of absolute sovereignty, chin lifted in supreme disdain looking down on all beneath her, eyes half-lidded with untouchable regal allure, bright blinding multicolor violet luminescence with lens flare and atmospheric bloom, generous dark space on all four sides, razor-sharp focus on the face, cinematic composition.
+```
