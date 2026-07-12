@@ -33,6 +33,7 @@ import type {
 } from '../types/index.ts';
 import type { BaseAgent } from '../agents/base-agent.ts';
 import type { IndependentRiskAuditor, SkepticsAgent, SkepticsReview } from '../agents/agents.ts';
+import { getAgentModel } from '../agents/agent-models.ts';
 import { buildConvergenceAuditContext } from '../evolution/cycle-summary.ts';
 import type { ThesisExperience } from '../evolution/thesis-experience.ts';
 
@@ -746,6 +747,7 @@ export class HACPEngine {
           decision: { action: 'hold', symbol: 'UNKNOWN', positionSizePct: 0, leverage: 1, rationale: 'Skeptics do not trade; they audit.', urgency: 'patient' } as TradingDecision,
           skepticsReviews,
           perSymbolAudit,
+          model: getAgentModel('skeptics'),
           latency: Math.round(performance.now() - startTime),
         },
       };

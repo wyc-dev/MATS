@@ -62,6 +62,10 @@ const envSchema = z.object({
   // v2.0.58: Massive.com Options Data API key for Stocks/RWA options data layer
   MASSIVE_API_KEY: z.string().optional().default(''),
 
+  // Telegram Bot for IM notifications
+  TELEGRAM_BOT_API: z.string().optional().default(''),
+  TELEGRAM_CHAT_ID: z.string().optional().default(''),
+
   // v2.0.138: EXP — Thesis Experience Vector Memory (Skeptics Phase 1.8a)
   EXP_ENABLED: z.coerce.boolean().default(false),
   EXP_EMBED_MODEL: z.string().default('Xenova/all-MiniLM-L6-v2'),

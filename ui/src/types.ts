@@ -175,6 +175,7 @@ export interface MarketAgentConfig {
   positionSizePct: number;
   maxPortionPct: number;
   leverage: number;
+  cyclePeriodMinutes?: number;
   updatedAt: number;
 }
 
@@ -303,6 +304,7 @@ export interface APIData {
   marketAgent?: {
     config: MarketAgentConfig;
     topPairs: TopVolumePair[];
+    pairsReady?: boolean;
   };
   systemPaused?: boolean;
   /** v2.0.128: Decision audit log */
@@ -433,54 +435,62 @@ export interface AgentModelConfig {
   label: string;
 }
 
-export const AGENT_META: Record<string, { name: string; color: string; short: string; hex: string }> = {
+export const AGENT_META: Record<string, { name: string; color: string; short: string; hex: string; description: string }> = {
   fractal_momentum_sentinel: {
     name: 'Fractal Momentum Sentinel',
     color: '#7c8a9e',
     hex: '124, 138, 158',
     short: 'Fractal',
+    description: 'Detects multi-timeframe momentum patterns and fractal breakouts. Provides directional bias based on price structure and Planck-Chaos regime classification.',
   },
   onchain_whisperer: {
     name: 'On-Chain Whisperer',
     color: '#8a9bb0',
     hex: '138, 155, 176',
     short: 'OnChain',
+    description: 'Analyses on-chain metrics (mempool, exchange flows, funding rates) for crypto and macro flow data (ETF flows, DXY, COT) for TradFi. Gauges institutional positioning and market sentiment.',
   },
   rbc_sentiment_analyst: {
     name: 'OLR & Sentiment Analyst',
     color: '#9aabb8',
     hex: '154, 171, 184',
     short: 'Regime',
+    description: 'Online Logistic Regression learns P(win) per symbol and side from shadow + paper + real trade outcomes. Fused with First-Passage path-risk and Fear & Greed sentiment to classify market edge.',
   },
   independent_risk_auditor: {
     name: 'Independent Risk Auditor',
     color: '#6b7a8e',
     hex: '107, 122, 142',
     short: 'Auditor',
+    description: 'Advisory-only risk reviewer. Suggests TP/SL/size adjustments and detects choppy markets. Cannot veto trades — the thesis system is the sole gatekeeper for new positions.',
   },
   meta_agent: {
     name: 'Meta-Agent',
     color: '#5b8def',
     hex: '91, 141, 239',
     short: 'Meta',
+    description: 'Arbitrates all sub-agent signals to produce the final trading decision. Generates entryThesis (1h + 1d rationale) for BUY/SELL, holdReason for HOLD. Weight 0.00 — thesis system controls, not voting.',
   },
   news_reporter: {
     name: 'News Reporter',
     color: '#fbbf24',
     hex: '251, 191, 36',
     short: 'News',
+    description: 'Shadow Strategist news motive analyzer. Evaluates whether news is engineered for distribution (bullish news = bearish trap) or accumulation (FUD = bullish opportunity).',
   },
   skeptics: {
     name: 'Skeptics',
     color: '#e879f9',
     hex: '232, 121, 249',
     short: 'Skeptics',
+    description: 'Absolute gatekeeper with veto power over new positions. Validates entryThesis for strength, data consistency, manipulation risk, and fact distortion. When in doubt, REJECT.',
   },
   market_agent: {
     name: 'Market Select Agent',
     color: '#34d399',
     hex: '52, 211, 153',
     short: 'Market',
+    description: 'Scans top-volume pairs across Hyperliquid, selects the trading market, and manages exchange config (trade mode, leverage, position size, max portion). Click a pair above to manually override.',
   },
 };
 

@@ -7,6 +7,7 @@ import { normalizeDecision } from '../trading/decision-utils.ts';
 // v2.0.42: Import normalizeSymbol for consistent symbol casing.
 import { normalizeSymbol } from '../trading/portfolio.ts';
 import { createLogger } from '../observability/logger.ts';
+import { getAgentModel } from './agent-models.ts';
 
 export class FractalMomentumSentinel extends BaseAgent {
   constructor() {
@@ -1103,7 +1104,6 @@ export interface SkepticsReview {
 export class SkepticsAgent {
   readonly identity: import('../types/index.ts').AgentIdentity;
   private readonly logger: ReturnType<typeof createLogger>;
-  private readonly model: string;
   /** Set by review() — holds all thoughts for cross-referencing */
   private _otherThoughts: import('../types/index.ts').AgentThought[] = [];
 
@@ -1117,7 +1117,11 @@ export class SkepticsAgent {
       modelPreference: 'fast',
     };
     this.logger = skepLog;
-    this.model = 'deepseek-v4-flash:cloud';
+  }
+
+  /** Resolve the LLM model — respects per-agent UI overrides */
+  private resolveModel(): string {
+    return getAgentModel('skeptics' as import('../types/index.ts').AgentRole);
   }
 
   /** Review all agent thoughts, returning per-agent skepticism results */
@@ -1364,7 +1368,7 @@ Be concise. Output ONLY valid JSON.`,
             },
           ],
           temperature: 0.3,
-          model: this.model,
+          model: this.resolveModel(),
           timeoutMs: 60_000,
         });
 
@@ -1715,7 +1719,7 @@ Stress-test this thesis. Start from APPROVED and only REJECT if you find a speci
           },
         ],
         temperature: 0.3,
-        model: this.model,
+        model: this.resolveModel(),
         timeoutMs: 30_000,
       });
 
@@ -1849,7 +1853,7 @@ Is this thesis STILL valid? Has the market changed in a way that invalidates the
             },
           ],
           temperature: 0.3,
-          model: this.model,
+          model: this.resolveModel(),
           timeoutMs: 30_000,
         });
 
@@ -1978,7 +1982,7 @@ Validate this close decision. Is the reasoning specific and data-driven? Is the 
           },
         ],
         temperature: 0.3,
-        model: this.model,
+        model: this.resolveModel(),
         timeoutMs: 30_000,
       });
 

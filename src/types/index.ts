@@ -929,6 +929,8 @@ export interface MarketAgentConfig {
    *  resumes with the correct markets on restart instead of falling back to
    *  auto-select with only the selectedSymbol. Max 3 symbols. */
   tradingMarkets?: string[];
+  /** Cycle period in minutes (1-10). Controls the decision cycle interval. */
+  cyclePeriodMinutes?: number;
   /** Timestamp of last config change */
   updatedAt: number;
 }
