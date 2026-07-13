@@ -36,6 +36,7 @@ import type { IndependentRiskAuditor, SkepticsAgent, SkepticsReview } from '../a
 import { getAgentModel } from '../agents/agent-models.ts';
 import { buildConvergenceAuditContext } from '../evolution/cycle-summary.ts';
 import type { ThesisExperience } from '../evolution/thesis-experience.ts';
+import { SimilarTradeRetriever, SubtleDiffAnalyzer } from '../evolution/reason-analytics.ts';
 
 const log = createLogger({ phase: 'hacp' });
 
@@ -202,6 +203,29 @@ export class HACPEngine {
   private fusionDataCallback: ((symbol: string, side: 'buy' | 'sell') => { olrPWin?: number; shadowWinRate?: number }) | null = null;
   setFusionDataCallback(cb: (symbol: string, side: 'buy' | 'sell') => { olrPWin?: number; shadowWinRate?: number }): void {
     this.fusionDataCallback = cb;
+  }
+
+  /** v2.0.143: RIL SimilarTradeRetriever — finds top-N most similar historical
+   *  trades to a candidate thesis. Injected by index.ts so HACP can produce
+   *  a "SIMILAR TRADES" context block for the Meta-Agent. */
+  private similarTradeRetriever: SimilarTradeRetriever | null = null;
+  setSimilarTradeRetriever(r: SimilarTradeRetriever): void {
+    this.similarTradeRetriever = r;
+  }
+
+  /** v2.0.143: RIL SubtleDiffAnalyzer — 1 LLM call per cycle to analyse subtle
+   *  differences between a candidate trade and its most similar past trades.
+   *  Injected by index.ts so HACP can produce a "SUBTLE DIFFERENCES" context block. */
+  private subtleDiffAnalyzer: SubtleDiffAnalyzer | null = null;
+  setSubtleDiffAnalyzer(a: SubtleDiffAnalyzer): void {
+    this.subtleDiffAnalyzer = a;
+  }
+
+  /** v2.0.143: LLM chat function for SubtleDiffAnalyzer. Injected by index.ts
+   *  so HACP can make LLM calls without a direct dependency on the LLM provider. */
+  private llmChatFn: ((messages: Array<{ role: string; content: string }>, opts?: { temperature?: number; timeoutMs?: number }) => Promise<string>) | null = null;
+  setLLMChatFn(fn: (messages: Array<{ role: string; content: string }>, opts?: { temperature?: number; timeoutMs?: number }) => Promise<string>): void {
+    this.llmChatFn = fn;
   }
 
   /** v2.0.138: Override the Meta-Agent thought's decision (action / thesis / rationale).
@@ -927,13 +951,46 @@ export class HACPEngine {
       }
     }
 
+    // v2.0.143: RIL Similar Trades + Subtle Differences injection.
+    // After EXP checkThesisHistory has computed candidate vectors, use them
+    // to find the top-N most similar historical trades. Then, if SubtleDiffAnalyzer
+    // is wired, make 1 LLM call to analyse subtle differences between the
+    // candidate and the similar winners/losers. Both blocks are appended to
+    // marketStateDesc so Skeptics sees them during thesis validation (Phase 1.8b).
+    let rilSimilarTradesBlock = '';
+    let rilSubtleDiffBlock = '';
+    if (this.similarTradeRetriever && this.expMemory && (metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition) {
+      try {
+        const candVectors = this.expMemory.getLastCandidateVectors();
+        if (candVectors.length > 0) {
+          const records = this.expMemory.getRecords();
+          const similar = this.similarTradeRetriever.findSimilar(candVectors, records, 5);
+          rilSimilarTradesBlock = this.similarTradeRetriever.formatBlock(similar, metaAction, metaSymbol);
+
+          if (this.subtleDiffAnalyzer && this.llmChatFn && similar.length > 0) {
+            try {
+              rilSubtleDiffBlock = await this.subtleDiffAnalyzer.analyze(
+                metaThesis, metaAction, metaSymbol, similar, this.llmChatFn,
+              );
+            } catch (err) {
+              log.warn(`[RIL] SubtleDiffAnalyzer failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+        }
+      } catch (err) {
+        log.warn(`[RIL] SimilarTradeRetriever failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    // Append RIL blocks to the market context used by Skeptics thesis validation
+    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}`;
+
     if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition && !expThesisGated) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);
       const thesisResult = await this.skeptics.validateEntryThesis(
         metaThesis,
         metaAction,
         metaSymbol,
-        marketStateDesc,
+        rilEnhancedMarketDesc,
         allThoughts,
       );
       if (!thesisResult.approved) {

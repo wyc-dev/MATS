@@ -845,39 +845,18 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             return { success: false, error: `No current price available for ${sym}` };
           }
 
-          // If real mode (or legacy real position), close on the exchange first
-          const isRealPosition = this.realTradingManager.getTradeMode() === 'real' ||
-            this.legacyPositionModes.get(sym) === 'real';
-
-          if (isRealPosition) {
-            const engine = this.realTradingManager.getEngineForExchange('hyperliquid');
-            if (engine) {
-              log.info(`📤 Closing ${sym} on Hyperliquid exchange...`);
-              const exchangeResult = await engine.closePosition(sym);
-              if (!exchangeResult) {
-                log.error(`❌ Exchange close failed for ${sym}`);
-                return { success: false, error: `Failed to close ${sym} on Hyperliquid` };
-              }
-              log.info(`✅ Exchange position closed for ${sym}`);
-            }
-          }
-
-          // Close in local portfolio
-          // v2.0.33: Use closeExchangePosition() for real positions —
-          // closePosition() adds margin back to paper balance (wrong for
-          // real positions where margin was never deducted from paper balance).
-          const existingPos = this.portfolio.getPosition(sym);
-          const trade = existingPos?.agentId === 'hyperliquid-real'
-            ? this.portfolio.closeExchangePosition(sym, closePrice)
-            : this.portfolio.closePosition(sym, closePrice);
-          if (trade) {
+          // v2.0.143: Route through closeTrade() — handles paper vs real
+          // separation + sets exitThesis before closing. For real positions,
+          // closeTrade() → realTradingManager.closePosition() closes on HL
+          // first, then locally. No need to close on HL separately here.
+          const closeSuccess = await this.closeTrade(sym, 'Manual close by user');
+          if (closeSuccess) {
             // Tag the trade record with manual close reason
-            trade.closeReason = 'manual';
-            log.info(`📕 Manual close completed: ${sym} PnL: $${trade.pnl.toFixed(2)} (${trade.pnl >= 0 ? 'profit' : 'loss'})`);
-
-            // Trigger learning (so the system records this trade)
-            // But the closeReason='manual' tag lets agents know this was NOT a system decision
-            this.onPositionClosedLearning(trade);
+            const recentPaper = this.paperEngine.getTrades().slice(-1)[0];
+            if (recentPaper && recentPaper.symbol === sym) {
+              recentPaper.closeReason = 'manual';
+            }
+            log.info(`📕 Manual close completed: ${sym} (${pos.unrealizedPnl >= 0 ? 'profit' : 'loss'})`);
 
             // Clean up legacy tracking
             this.legacyPositionModes.delete(sym);
@@ -916,11 +895,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             }
             // Flip: close existing first
             log.warn(`🔄 Manual flip: closing existing ${existing!.side.toUpperCase()} ${sym} first`);
-            if (existing!.agentId === 'hyperliquid-real') {
-              await this.realTradingManager.closePosition(sym);
-            } else {
-              this.portfolio.closePosition(sym, existing!.currentPrice);
-            }
+            await this.closeTrade(sym, `Manual flip: closing ${existing!.side.toUpperCase()} to open ${action.toUpperCase()}`);
           }
 
           // Fetch current price
@@ -960,11 +935,11 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             takeProfitPct: 0.05,
           };
 
-          const execResult = await this.realTradingManager.executeDecision({
+          const execResult = await this.executeTrade({
             ...decision,
             srSupport: this.lastSRContext?.nearestSupport ?? null,
             srResistance: this.lastSRContext?.nearestResistance ?? null,
-          });
+          }, []);
 
           if (execResult.success) {
             log.info(`✅ Manual trade executed: ${action.toUpperCase()} ${sym} @ $${price.toFixed(2)}`);
@@ -1269,6 +1244,20 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           );
         }
         log.info('✓ RIL (Reason Intelligence Layer) initialized');
+        // v2.0.143: Wire SimilarTradeRetriever + SubtleDiffAnalyzer + LLM chat
+        // function into HACP so the Meta-Agent sees similar historical trades
+        // + subtle differences analysis in its enhanced context.
+        this.hacpEngine.setSimilarTradeRetriever(this.similarTradeRetriever);
+        this.hacpEngine.setSubtleDiffAnalyzer(this.subtleDiffAnalyzer);
+        this.hacpEngine.setLLMChatFn(async (messages: Array<{ role: string; content: string }>, opts?: { temperature?: number; timeoutMs?: number }) => {
+          const provider = getActiveProvider();
+          const response = await provider.chat({
+            messages: messages as any,
+            temperature: opts?.temperature ?? 0,
+            timeoutMs: opts?.timeoutMs ?? 25_000,
+          });
+          return response.content;
+        });
       } else {
         log.info('RIL disabled (config.ril.enabled=false)');
       }
@@ -1786,16 +1775,200 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           holdMin,
           regime,
           entryThesis: trade.entryThesis ?? '',
+          // v2.0.143: Pass exitType so RIL CloseReasonAggregator can group by close reason
+          exitType: closeReason as any,
+        }).then((record: unknown) => {
+          // v2.0.143: RIL incremental cluster update — feed the new EXP record
+          // into the pattern cluster immediately so the next cycle's RIL injection
+          // includes this trade's rationale. Previously the comment said "RIL will
+          // pick up the new record on the next cycle's rebuild" but that rebuild
+          // never happened — clusters were only built once at startup, so RIL
+          // pattern performance was permanently stale and never learned from new
+          // trades. Now addTrade() incrementally assigns the new rationale vectors
+          // to the nearest existing cluster (or creates a new one).
+          if (config.ril.enabled && this.patternCluster && record) {
+            void this.patternCluster.addTrade(record as any).catch((e: unknown) =>
+              log.warn(`[RIL] addTrade failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`),
+            );
+          }
         }).catch((e: unknown) => log.warn(`[EXP] recordClose failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`));
-        // v2.0.141: RIL incremental cluster update (non-blocking)
-        if (config.ril.enabled && this.patternCluster && trade.entryThesis) {
-          // RIL will pick up the new record on the next cycle's rebuild
-        }
       } catch { /* non-critical */ }
+
+      // v2.0.143: LLM post-trade review — generate a short analysis of how
+      // more profit could have been made or less loss incurred. Fire-and-forget
+      // (non-blocking) so the close path is never delayed by an LLM call.
+      // The review is stored on the trade record and displayed in the Trade
+      // Incident Panel. Uses the same model as the Terminal Agent (fast, cheap).
+      void this.generatePostReview(trade, closeReason).catch((e: unknown) =>
+        log.warn(`[post-review] LLM generation failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`),
+      );
 
       log.info(`🧬 [close-learning] ${isWin ? '✅ WIN' : '❌ LOSS'} ${trade.side.toUpperCase()} ${symbol} PnL: $${trade.pnl.toFixed(2)} (${(pnlPct * 100).toFixed(1)}%) — all learning mechanisms fed`);
     } catch (err) {
       log.error(`[onPositionClosedLearning] Failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** v2.0.143: Generate an LLM post-trade review for a closed position.
+   *  Asks the LLM: "Given this trade (entry/exit/PnL/thesis/MAE/MFE),
+   *  how could more profit have been made or less loss incurred?"
+   *  Stores the review on the trade record so the Trade Incident Panel
+   *  can display it. Non-blocking — failures are logged but never throw.
+   *  Uses the Terminal Agent model (fast, cheap — DeepSeek V4 Flash). */
+  private async generatePostReview(trade: TradeRecord, closeReason: string): Promise<void> {
+    try {
+      const provider = getActiveProvider();
+      const isWin = trade.pnl >= 0;
+      const holdMin = Math.max(0, Math.round((trade.closedAt - trade.openedAt) / 60_000));
+      const mae = trade.minValueReached ?? 0;
+      const mfe = trade.maxValueReached ?? 0;
+
+      const systemPrompt = `You are a post-trade review analyst for a multi-agent quant trading system (MATS).
+Your job is to analyse a closed trade and provide a concise, actionable review.
+
+Focus on:
+1. How could MORE profit have been made? (e.g. held longer, larger size, better entry timing)
+2. How could LESS loss have been incurred? (e.g. exited earlier, tighter stop, avoided the trade)
+3. What does the MAE/MFE tell us about the trade management?
+
+MAE (Maximum Adverse Excursion) = worst unrealized PnL dip during the trade.
+MFE (Maximum Favorable Excursion) = best unrealized PnL peak during the trade.
+
+If MFE >> final PnL, the trade gave back most of its gains — exit timing was poor.
+If MAE is very negative but the trade still won, the entry was poorly timed but the thesis was right.
+If MAE ≈ final PnL (both negative), the trade never went in our favor — the thesis was wrong from the start.
+
+Respond in 2-4 sentences. Be specific and actionable. No fluff, no hedging.
+Do NOT use markdown headers or bullet points — just plain text sentences.`;
+
+      const userPrompt = `Trade Details:
+- Symbol: ${trade.symbol}
+- Side: ${trade.side.toUpperCase()}
+- Entry Price: $${trade.entryPrice.toFixed(4)}
+- Exit Price: $${trade.exitPrice.toFixed(4)}
+- Quantity: ${trade.quantity}
+- Leverage: ${trade.leverage}x
+- PnL: $${trade.pnl.toFixed(2)} (${(trade.pnlPct * 100).toFixed(1)}%)
+- Result: ${isWin ? 'WIN' : 'LOSS'}
+- Hold Duration: ${holdMin} minutes
+- Close Reason: ${closeReason}
+- Entry Thesis: ${trade.entryThesis ?? 'N/A'}
+- Exit Thesis: ${trade.exitThesis ?? 'N/A'}
+- MAE (worst dip): $${mae.toFixed(2)}
+- MFE (best peak): $${mfe.toFixed(2)}
+
+Provide your post-trade review:`;
+
+      const response = await provider.chat({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.4,
+        model: getAgentModel('terminal_agent'),
+        timeoutMs: 30_000,
+      });
+
+      const review = response.content.trim();
+      if (!review) {
+        log.warn(`[post-review] LLM returned empty response for ${trade.symbol}`);
+        return;
+      }
+
+      // Store the review on the trade record. The trade object is the same
+      // reference stored in closedRealTrades[] / paperEngine.trades[], so
+      // this mutation is visible to the API response without any extra wiring.
+      trade.postReview = review;
+      log.info(`[post-review] Generated for ${trade.symbol} (${isWin ? 'WIN' : 'LOSS'} $${trade.pnl.toFixed(2)}): ${review.slice(0, 80)}...`);
+
+      // Push updated data to the UI so the review appears immediately.
+      this.pushToAPI();
+    } catch (err) {
+      log.warn(`[post-review] Generation failed for ${trade.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * v2.0.143: Unified trade execution router.
+   *
+   * Paper mode → paperEngine.executeDecision() directly.
+   * Real mode  → realTradingManager.executeDecision() (places order on HL,
+   *              mirrors into portfolio via importExchangePosition).
+   *
+   * This replaces the old pattern where ALL trades went through
+   * realTradingManager.executeDecision(), which internally checked tradeMode
+   * and fell back to paperEngine — causing paper trades to be tagged as
+   * 'hyperliquid-real' after mirror re-tagging, and real trades to lose
+   * entryThesis when syncExchangePositions replaced the mirror.
+   *
+   * After execution, setEntryThesis() is called on the resulting position
+   * so the thesis flows into the TradeRecord at close time → EXP/RIL learning.
+   */
+  private async executeTrade(
+    decision: TradingDecision,
+    auditGates: Array<{ gate: string; passed: boolean; reason: string }>,
+  ): Promise<{ success: boolean; error?: string; paperReports?: any[] }> {
+    const isRealMode = this.realTradingManager.getTradeMode() === 'real';
+
+    if (isRealMode) {
+      // Real mode: RealTradingManager places the order on HL + mirrors via
+      // importExchangePosition. entryThesis is set after execution succeeds.
+      const execResult = await this.realTradingManager.executeDecision(decision);
+      if (execResult.success && (decision.action === 'buy' || decision.action === 'sell')) {
+        if (decision.entryThesis) {
+          this.portfolio.setEntryThesis(decision.symbol, decision.entryThesis);
+        }
+      }
+      return execResult;
+    }
+
+    // Paper mode: execute directly via PaperTradingEngine.
+    // No RealTradingManager involvement — clean separation.
+    const reports = await this.paperEngine.executeDecision(decision);
+    const success = reports.length === 0 || reports.every(r => !r.error);
+    if (success && (decision.action === 'buy' || decision.action === 'sell')) {
+      // PaperTradingEngine.openPosition already sets entryThesis from
+      // decision.entryThesis, but setEntryThesis is a belt-and-suspenders
+      // fix in case the position was re-imported without thesis.
+      if (decision.entryThesis) {
+        this.portfolio.setEntryThesis(decision.symbol, decision.entryThesis);
+      }
+    }
+    return { success, paperReports: reports };
+  }
+
+  /**
+   * v2.0.143: Unified position close router.
+   *
+   * Paper positions → portfolio.closePosition() (returns TradeRecord, fires
+   *   onPositionClosedCb → paperEngine.trades + onPositionClosedLearning).
+   * Real positions   → realTradingManager.closePosition() (closes on HL +
+   *   portfolio.closeExchangePosition() → fires onExchangeClosedLearningCb
+   *   → onPositionClosedLearning).
+   *
+   * exitThesis is set BEFORE closing so the TradeRecord captures it.
+   */
+  private async closeTrade(symbol: string, exitThesis: string): Promise<boolean> {
+    const sym = symbol.includes(':') ? symbol : symbol.toLowerCase();
+    const pos = this.portfolio.getPosition(sym);
+    if (!pos) return false;
+
+    // Set exit thesis before closing (captured in TradeRecord at close time)
+    this.portfolio.setExitThesis(sym, exitThesis);
+
+    if (pos.agentId === 'hyperliquid-real') {
+      // Real position: close on HL first, then locally
+      return await this.realTradingManager.closePosition(sym);
+    } else {
+      // Paper position: close locally
+      const state = this.marketState?.getState(sym);
+      const closePrice = state?.price ?? pos.currentPrice ?? 0;
+      if (closePrice <= 0) {
+        log.error(`closeTrade: no price available for ${sym}`);
+        return false;
+      }
+      const trade = this.portfolio.closePosition(sym, closePrice);
+      return !!trade;
     }
   }
 
@@ -2266,11 +2439,22 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           }
           if (mktPrice <= 0) continue;
 
+          // v2.0.143: Per-symbol features — previously non-active symbols used
+          // the active symbol's fundingRate and global sentiment/volumeRatio,
+          // which polluted OLR's learning signal. Now we fetch per-symbol data
+          // where available, and use neutral defaults only as last resort.
+          const mktNorm = normalizeSymbol(mktSym);
+          const isActiveSym = mktNorm === normalizeSymbol(activeSymbol);
           const mktFeatures = {
-            volatility: mktState?.volatility ?? 0,
-            srDistanceBps: 0, // S/R is only fetched for active symbol
-            obImbalance: mktState?.orderBookImbalance ?? 0,
-            fundingRate: this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
+            volatility: mktState?.volatility ?? (isActiveSym ? (combinedState.volatility ?? 0) : 0),
+            srDistanceBps: isActiveSym ? (this.lastSRContext?.distanceToSupportBps ?? 0) : 0,
+            obImbalance: mktState?.orderBookImbalance ?? (isActiveSym ? (combinedState.orderBookImbalance ?? 0) : 0),
+            // v2.0.143: Use per-symbol funding rate from HL WS mark price cache,
+            // not the global latest mark price (which is for the active symbol).
+            fundingRate: this.hyperliquidWs?.getMarkPriceForSymbol(mktSym)?.fundingRate
+              ?? this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
+            // v2.0.143: volumeRatio and sentiment are global (not per-symbol),
+            // but we note this in the feature so OLR can learn the global context.
             volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
             sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
             sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
@@ -2347,52 +2531,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
     // ── SYSTEM GUARD: Run 5-layer protection before any agent thinking ──
     // Guards A (economic calendar), B (drawdown), C (data freshness), D (agent track)
     // Guard E (liquidity) runs later after agents produce a decision
-    // v2.0.32: In real mode, drawdown/dailyPnl from paper portfolio are meaningless
-    // (paper balance is inflated by exchange position closes). Use 0 so the
-    // drawdown guard doesn't block real trading. Real risk is managed by HL's
-    // own margin/liquidation system + our SL/TP trigger orders.
-    const isRealMode = this.realTradingManager.getTradeMode() === 'real';
-    const paperPortfolio = this.portfolio.getPortfolio();
-    const guardParams = {
-      activeSymbol,
-      marketPrice,
-      // v2.0.42: Use currentDrawdownPct (decreases on recovery) instead of
-      // maxDrawdownPct (high-water mark that only increases). In real mode,
-      // drawdown is 0 (SystemGuard uses 0 for real mode — real drawdown is
-      // tracked on HL, not in paper portfolio).
-      currentDrawdownPct: isRealMode ? 0 : paperPortfolio.currentDrawdownPct,
-      maxDrawdownPct: isRealMode ? 0 : paperPortfolio.maxDrawdownPct,
-      dailyPnl: isRealMode ? 0 : paperPortfolio.dailyPnl,
-      balance: isRealMode ? (this.cachedExchangeBalance?.total ?? paperPortfolio.balance) : paperPortfolio.balance,
-      lastBookTimestamp: this.hyperliquidWs?.getLastBookTimestamp?.() ?? 0,
-      lastFetchTime: this.marketAgent.getLastFetchTime(),
-      agentWinRates: this.evolution.agentOutcomes.getAllAgentWinRates(),
-      orderBookDepth: this.hyperliquidWs?.getOrderBookLevels?.(20) ?? [],
-      proposedPositionUsd: 0,
-      proposedLeverage: 1,
-    };
-
-    const guardReport = this.systemGuard.check(guardParams);
-
-    if (guardReport.blocked) {
-      const restrictions = this.systemGuard.getActiveRestrictions(guardReport);
-      for (const line of restrictions) {
-        log.warn(`🛑 ${line}`);
-      }
-      log.warn('SystemGuard blocked this cycle.');
-      this.pushToAPI();
-      // v2.0.110: Reset cycleInProgress — we set it at the top of runDecisionCycle()
-      this.cycleInProgress = false;
-      return;
-    }
-
-    // Log guard health summary
-    const healthSummary = this.systemGuard.getHealthSummary(guardReport);
-    if (guardReport.results.some(r => r.severity === 'warn' || r.severity === 'error')) {
-      log.warn(`SystemGuard: ${healthSummary}`);
-    } else {
-      log.info(`SystemGuard: ${healthSummary}`);
-    }
+    // v2.0.142: SystemGuard drawdown/economic-calendar/data-freshness guards removed.
+    // These were paper-trade concepts that blocked real trading and caused false positives.
+    // Real risk is managed by HL's own margin/liquidation system + our SL/TP trigger orders.
+    // Agent track guard is kept (circuit breaker for agent failures).
 
     // ── PAUSE CHECK: If paused, skip agents/trading but keep OLR/shadow running ──
     if (this.paused) {
@@ -2409,8 +2551,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
     try {
       // 1. Gather market state (using Market Agent's selected symbol)
       const marketAgentDesc = this.marketAgent.getMarketDescription();
-      const guardContextLines = guardReport.contextLines.length > 0 ? `\n${guardReport.contextLines.join('\n')}` : '';
-      const baseMarketDesc = `${marketAgentDesc}\n${this.buildMarketDescription(combinedState)}${guardContextLines}`;
+      const baseMarketDesc = `${marketAgentDesc}\n${this.buildMarketDescription(combinedState)}`;
 
       // 1b. Fetch S/R zones (async, fail-open) — append to market context
       const srContext = await getSRZones(
@@ -2637,6 +2778,11 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           // A2A Digester digest (kept as supplementary LLM analysis)
           const digesterDigest = this.expMemory?.getDigestSummary() ?? '';
 
+          // v2.0.143: SimilarTradeRetriever + SubtleDiffAnalyzer are now injected
+          // inside HACP (after checkThesisHistory computes candidate vectors),
+          // not here in the pre-cycle marketDesc. This is because they need the
+          // candidate thesis (Meta-Agent's output) which doesn't exist yet at
+          // this point in the cycle.
           const rilBlock = formatAnalyticsBlock({
             patternMap,
             closeReasonBlock,
@@ -3072,7 +3218,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             if (reconciled.includes(sym)) {
               log.info(`🔒 Closing ${sym} on HL (reconciled locally but still open on exchange)`);
               try {
-                await this.realTradingManager.closePosition(sym);
+                await this.closeTrade(sym, 'Reconciliation close: position reconciled locally but still open on HL');
               } catch (err) {
                 log.error(`Failed to close ${sym} on HL: ${err instanceof Error ? err.message : String(err)}`);
               }
@@ -3269,21 +3415,18 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           if (!pos) continue;
           log.warn(`🚫 Thesis INVALIDATED for ${sym} — force-closing position (entry thesis no longer valid)`);
           this.thesisInvalidatedCloseSymbols.add(sym);
-          if (pos.agentId === 'hyperliquid-real') {
-            const success = await this.realTradingManager.closePosition(sym);
-            if (success) {
+          // v2.0.143: Route through closeTrade() with thesis-invalidation exitThesis.
+          const exitThesis = `Thesis invalidated: ${pos.entryThesis ?? 'original entry thesis no longer valid'}`;
+          const success = await this.closeTrade(sym, exitThesis);
+          if (success) {
+            if (pos.agentId === 'hyperliquid-real') {
               log.info(`  → Force-closed ${sym} (real, thesis invalidated)`);
             } else {
-              log.error(`  → Failed to force-close ${sym} on HL — position remains open`);
-              this.thesisInvalidatedCloseSymbols.delete(sym);
+              log.info(`  → Force-closed ${sym}: $${pos.unrealizedPnl.toFixed(2)} (thesis invalidated)`);
             }
           } else {
-            const trade = this.portfolio.closePosition(sym, pos.currentPrice);
-            if (trade) {
-              log.info(`  → Force-closed ${sym}: $${trade.pnl.toFixed(2)} (thesis invalidated)`);
-            } else {
-              this.thesisInvalidatedCloseSymbols.delete(sym);
-            }
+            log.error(`  → Failed to force-close ${sym} — position remains open`);
+            this.thesisInvalidatedCloseSymbols.delete(sym);
           }
         }
       }
@@ -3758,19 +3901,12 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           ? `Meta-Agent decided CLOSE`
           : `${closeVotes} agents + Meta-Agent recommend closing`;
         log.warn(`⚠️ ${closeReason} legacy position ${posSymbol} @ $${pos.currentPrice.toFixed(2)} (PnL: ${((pos.unrealizedPnlPct ?? 0)*100).toFixed(2)}%)...`);
-        if (pos.agentId === 'hyperliquid-real') {
-          const success = await this.realTradingManager.closePosition(posSymbol);
-          if (success) {
-            log.info(`  → Closed ${posSymbol} (real, legacy position)`);
-          } else {
-            log.error(`  → Failed to close ${posSymbol} on HL — position remains open`);
-          }
+        // v2.0.143: Route through closeTrade() — handles paper vs real + exitThesis.
+        const legacyCloseSuccess = await this.closeTrade(posSymbol, closeReason);
+        if (legacyCloseSuccess) {
+          log.info(`  → Closed ${posSymbol} (${pos.agentId === 'hyperliquid-real' ? 'real' : 'paper'}, legacy)`);
         } else {
-          const trade = this.portfolio.closePosition(posSymbol, pos.currentPrice);
-          if (trade) {
-            perPositionCloseReports.push({ order: {} as any, trade });
-            log.info(`  → Closed ${posSymbol}: $${trade.pnl.toFixed(2)} (legacy)`);
-          }
+          log.error(`  → Failed to close ${posSymbol} — position remains open`);
         }
       }
 
@@ -3868,15 +4004,16 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               takeProfitPct: 0.05,
             };
             try {
-              const pscExecResult = await this.realTradingManager.executeDecision({
+              const pscExecResult = await this.executeTrade({
                 ...pscEntryDecision,
                 srSupport: null,
                 srResistance: null,
-              });
+              }, auditGates);
               if (pscExecResult.success) {
                 pscFilter.recordTrade();
                 pscExecuted = true;
                 log.info(`📊 Multi-symbol entry ${psc.symbol}: ✅ — ${pscFilter.getRemainingTradeSlots()} slots remaining`);
+                // v2.0.143: entryThesis is set by executeTrade() after execution.
               } else {
                 log.info(`📊 Multi-symbol entry ${psc.symbol}: ❌ — ${pscExecResult.error ?? 'unknown'}`);
                 auditGates.push({ gate: 'execution', passed: false, reason: pscExecResult.error ?? 'execution failed' });
@@ -3898,9 +4035,12 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         //   but if consensus also says close, execute directly (legacy positions
         //   don't need Skeptics validation since they predate the thesis system)
         if (psc.closePosition) {
+          // v2.0.143: Capture the close rationale as exitThesis BEFORE closing.
+          // This must happen before closePosition()/closeExchangePosition()
+          // because those methods delete the position from the map.
+          const closeRationale = psc.rationale || 'No rationale provided.';
           if (pos.entryThesis) {
             // v2.0.90: Validate close decision with Skeptics for thesis-backed positions
-            const closeRationale = psc.rationale || 'No rationale provided.';
             const closeValidation = await this.hacpEngine.getSkeptics().validateCloseDecision(
               psc.symbol,
               pos.side as 'buy' | 'sell',
@@ -3920,21 +4060,17 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             // v2.0.91: Legacy position without entryThesis — close directly
             log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (legacy, no thesis) (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
           }
-          // v2.0.33: Route real positions through realTradingManager.closePosition()
-          // which closes on HL first. portfolio.closePosition() only closes locally.
-          if (pos.agentId === 'hyperliquid-real') {
-            const success = await this.realTradingManager.closePosition(psc.symbol);
-            if (success) {
+          // v2.0.143: Route through closeTrade() — handles paper vs real
+          // separation + sets exitThesis before closing.
+          const closeSuccess = await this.closeTrade(psc.symbol, closeRationale);
+          if (closeSuccess) {
+            if (pos.agentId === 'hyperliquid-real') {
               log.info(`  → Closed ${psc.symbol} (real, closed on HL)`);
             } else {
-              log.error(`  → Failed to close ${psc.symbol} on HL — position remains open`);
+              log.info(`  → Closed ${psc.symbol}: $${pos.unrealizedPnl.toFixed(2)}`);
             }
           } else {
-            const trade = this.portfolio.closePosition(psc.symbol, combinedState.price);
-            if (trade) {
-              perPositionCloseReports.push({ order: {} as any, trade });
-              log.info(`  → Closed ${psc.symbol}: $${trade.pnl.toFixed(2)}`);
-            }
+            log.error(`  → Failed to close ${psc.symbol} — position remains open`);
           }
           continue;
         }
@@ -4017,26 +4153,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         }
       }
 
-      // ── Guard E: Liquidity Check (Execution Feasibility) ──
-      // Runs AFTER agents produce a decision so we have the actual position size
-      if (finalDecision.action !== 'hold' && (finalDecision.positionSizePct ?? 0) > 0) {
-        const positionUsd = (finalDecision.positionSizePct ?? 0.05) * (this.portfolio.getPortfolio().balance ?? 10_000);
-        const liquidityParams = { ...guardParams, proposedPositionUsd: positionUsd, proposedLeverage: finalDecision.leverage ?? 1 };
-        const liquidityResult = await this.systemGuard.checkLiquidity(liquidityParams);
-        if (!liquidityResult.allowed) {
-          log.warn(`🛑 Liquidity guard blocked execution: ${liquidityResult.reason}`);
-          // Override to HOLD rather than executing a position that can't be filled
-          finalDecision.action = 'hold';
-          finalDecision.positionSizePct = 0;
-          finalDecision.rationale = `[LIQUIDITY BLOCKED] ${liquidityResult.reason} Original: ${finalDecision.rationale}`;
-        } else if (liquidityResult.severity === 'warn') {
-          log.warn(`⚠️ Liquidity guard warning: ${liquidityResult.reason}`);
-          // Reduce position size if flagged
-          if (liquidityResult.action === 'reduce_size') {
-            finalDecision.positionSizePct = Math.min(finalDecision.positionSizePct ?? 0.05, 0.02);
-          }
-        }
-      }
+      // v2.0.142: Liquidity guard removed — was using paper-trade guardParams
+      // and blocking real trades with false positives. Real liquidity is
+      // managed by HL's order matching engine + our aggressive pricing.
 
       // ── P0: Query trade pattern classifier for next cycle's context ──
       try {
@@ -4133,27 +4252,20 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             // Direction flip: close existing position first, then let the new
             // trade execute below. This is a conviction-based reversal.
             log.warn(`🔄 Direction flip: ${activeSym.toUpperCase()} ${existingPos.side.toUpperCase()} @ $${existingPos.averageEntryPrice.toFixed(2)} → ${finalDecision.action.toUpperCase()}. Closing existing position first.`);
-            // v2.0.33: Route real positions through realTradingManager.closePosition()
+            // v2.0.143: Route through closeTrade() — handles paper vs real + exitThesis.
             // which closes on HL first. portfolio.closePosition() only closes locally.
-            if (existingPos.agentId === 'hyperliquid-real') {
-              const success = await this.realTradingManager.closePosition(activeSym);
-              if (success) {
-                log.info(`  → Flipped ${activeSym} (real, closed on HL). Proceeding with ${finalDecision.action.toUpperCase()} order.`);
-              } else {
-                log.error(`  → Failed to close ${activeSym} on HL for flip — aborting flip`);
-                finalDecision = {
-                  ...finalDecision,
-                  action: 'hold',
-                  positionSizePct: 0,
-                  rationale: `Flip failed: could not close ${activeSym} on HL. HOLD.`,
-                };
-              }
+            // v2.0.143: Route through closeTrade() — handles paper vs real + exitThesis.
+            const flipCloseSuccess = await this.closeTrade(activeSym, `Position flip: closing ${existingPos.side.toUpperCase()} to open ${finalDecision.action.toUpperCase()}`);
+            if (flipCloseSuccess) {
+              log.info(`  → Flipped ${activeSym} (${existingPos.agentId === 'hyperliquid-real' ? 'real' : 'paper'}). Proceeding with ${finalDecision.action.toUpperCase()} order.`);
             } else {
-              const flipTrade = this.portfolio.closePosition(activeSym, combinedState.price);
-              if (flipTrade) {
-                perPositionCloseReports.push({ order: {} as any, trade: flipTrade });
-                log.info(`  → Flipped ${activeSym}: $${flipTrade.pnl.toFixed(2)} (${flipTrade.pnl >= 0 ? 'profit' : 'loss'}). Proceeding with ${finalDecision.action.toUpperCase()} order.`);
-              }
+              log.error(`  → Failed to close ${activeSym} for flip — aborting flip`);
+              finalDecision = {
+                ...finalDecision,
+                action: 'hold',
+                positionSizePct: 0,
+                rationale: `Flip failed: could not close ${activeSym}. HOLD.`,
+              };
             }
             // Continue to execute the new trade below — don't convert to HOLD
           } else {
@@ -4270,6 +4382,36 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         }
       }
 
+      // v2.0.143: Shadow trade soft gate — if shadow trades for this symbol+side
+      // have a very low win rate (< 25%) with sufficient samples (≥ 10), override
+      // to HOLD. Shadow trades use fixed S/R SL/TP (not narrowed), so a low shadow
+      // win rate means the direction is fundamentally wrong in current conditions.
+      // This is a SOFT gate — only blocks when the evidence is overwhelming.
+      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+        const shadowSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+        const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === shadowSym);
+        if (shadowStats) {
+          const shadowWR = finalDecision.action === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
+          const shadowTotal = finalDecision.action === 'buy'
+            ? shadowStats.longWins + shadowStats.longLosses
+            : shadowStats.shortWins + shadowStats.shortLosses;
+          // v2.0.143: Only gate when ≥ 10 shadow samples AND win rate < 25%.
+          // Below 10 samples = not enough data. 25-40% = ambiguous, let other gates decide.
+          if (shadowTotal >= 10 && shadowWR < 0.25) {
+            log.warn(`🛑 [shadow-gate] ${finalDecision.action.toUpperCase()} ${shadowSym}: shadow win rate ${(shadowWR * 100).toFixed(0)}% (${shadowTotal} samples) < 25% — overriding → HOLD`);
+            activeAuditGates.push({ gate: 'shadow-gate', passed: false, reason: `shadow WR ${(shadowWR * 100).toFixed(0)}% < 25% (${shadowTotal} samples)` });
+            finalDecision = {
+              ...finalDecision,
+              action: 'hold',
+              positionSizePct: 0,
+              rationale: `[SHADOW GATE] ${finalDecision.action.toUpperCase()} ${shadowSym} shadow win rate ${(shadowWR * 100).toFixed(0)}% (${shadowTotal} samples) < 25% — direction fundamentally wrong in current conditions. HOLD. Original: ${finalDecision.rationale}`,
+            };
+          } else {
+            activeAuditGates.push({ gate: 'shadow-gate', passed: true, reason: shadowTotal >= 10 ? `shadow WR ${(shadowWR * 100).toFixed(0)}% (${shadowTotal} samples)` : `insufficient samples (${shadowTotal} < 10)` });
+          }
+        }
+      }
+
       // v2.0.33: Pass S/R levels to executeDecision so SL/TP can be set at
       // v2.0.136: Set entryPrice for the active-symbol consensus decision. The
       // HACP consensus decision does not carry an entryPrice (only the
@@ -4284,7 +4426,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         srSupport: this.lastSRContext?.nearestSupport ?? null,
         srResistance: this.lastSRContext?.nearestResistance ?? null,
       };
-      const execResult = await this.realTradingManager.executeDecision(decisionWithSR);
+      // v2.0.143: Route through executeTrade() — paper mode goes directly
+      // to paperEngine, real mode goes to realTradingManager. No more
+      // realTradingManager fallback for paper trades.
+      const execResult = await this.executeTrade(decisionWithSR, activeAuditGates);
       const reports: ExecutionReport[] = execResult.paperReports ?? [];
 
       // v2.0.106: Record trade execution for per-asset frequency throttling
@@ -4293,6 +4438,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const symFilter = this.assetFilterRegistry.getFilter(tradeSym);
         symFilter.recordTrade();
         log.info(`📊 [adaptive-filter] Trade recorded for ${tradeSym} — ${symFilter.getRemainingTradeSlots()} slots remaining`);
+        // v2.0.143: entryThesis is set by executeTrade() after execution.
       }
 
       // v2.0.128: Record decision audit for the active symbol
@@ -4370,7 +4516,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // so that serializePortfolio() includes the new position in the same cycle's pushToAPI().
       // Without this, the new position won't appear in the UI until the NEXT cycle's
       // syncExchangePositions() updates the cache — causing a 1-cycle delay.
-      if (this.realTradingManager.getTradeMode() === 'real' && execResult.success && execResult.orderId) {
+      if (this.realTradingManager.getTradeMode() === 'real' && execResult.success) {
         try {
           this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
             symbol: p.symbol,
@@ -5605,117 +5751,88 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         backtestProgress: this.backtestProgress,
         tradeHistory: this.evolution.tradeHistory.getAllEntries().slice(-50),
         marketAgent: marketAgentState,
-        tradeRecords: isRealMode ? [
-          // v2.0.79: Removed the cachedExchangePositions filter — it was
-          // filtering out xyz:DEX positions when cachedExchangePositions
-          // didn't include them (timing mismatch between getPositions()
-          // and getRealPositions()). getRealPositions() already reflects
-          // the actual exchange state, so no additional filter is needed.
-          // v2.0.79: Also add any cachedExchangePositions that are missing
-          // from realPositions (e.g. syncExchangePositions missed them due
-          // to 429 on the xyz DEX fetch).
-          ...this.portfolio.getRealPositions()
-            .map(p => ({
-              id: p.id,
-              symbol: normalizeSymbol(p.symbol),
-              side: p.side,
-              entryPrice: p.averageEntryPrice,
-              exitPrice: p.currentPrice,
-              quantity: p.quantity,
-              leverage: p.leverage ?? 1,
-              investment: p.averageEntryPrice * p.quantity,
-              pnl: p.unrealizedPnl,
-              pnlPct: p.unrealizedPnlPct,
-              openedAt: p.openedAt,
-              closedAt: p.openedAt,
-              status: 'open' as const,
-            })),
-          // v2.0.79: Fallback — add exchange positions not in realPositions
-          ...(this.cachedExchangePositions ?? [])
-            .filter(ep => {
-              const sym = normalizeSymbol(ep.symbol);
-              return !this.portfolio.getRealPositions().some(rp => normalizeSymbol(rp.symbol) === sym);
-            })
-            .map(ep => ({
-              id: `hl-${ep.symbol}-${ep.openedAt}`,
-              symbol: normalizeSymbol(ep.symbol),
-              side: ep.side,
-              entryPrice: ep.averageEntryPrice,
-              exitPrice: ep.currentPrice,
-              quantity: ep.quantity,
-              leverage: ep.leverage ?? 1,
-              investment: ep.averageEntryPrice * ep.quantity,
-              pnl: ep.unrealizedPnl,
-              pnlPct: ep.unrealizedPnl / Math.max(0.01, ep.averageEntryPrice * ep.quantity / (ep.leverage ?? 1)),
-              openedAt: ep.openedAt,
-              closedAt: ep.openedAt,
-              status: 'open' as const,
-            })),
-          // Recent HL fills — ONLY closing fills shown as trade history.
-          // v2.0.79: Open fills are skipped because the corresponding open
-          // position is already displayed above from getRealPositions().
-          // Showing both would create duplicate OPEN entries (1 position +
-          // N open fills = N+1 OPEN rows for the same position).
-          // v2.0.79: Use dir field to distinguish Open vs Close fills, and
-          // look up actual leverage from cachedExchangePositions.
+        tradeRecords: [
+          // v2.0.142: Unified — always include BOTH paper + real trades, tagged by agentId
+          // Real closed trades (from portfolio, survive restarts)
+          ...this.portfolio.getClosedRealTrades().slice(-200).map(t => ({
+            id: t.id,
+            symbol: normalizeSymbol(t.symbol),
+            side: t.side,
+            entryPrice: t.entryPrice,
+            exitPrice: t.exitPrice,
+            quantity: t.quantity,
+            leverage: t.leverage,
+            investment: t.investment,
+            pnl: t.pnl,
+            pnlPct: t.pnlPct,
+            openedAt: t.openedAt,
+            closedAt: t.closedAt,
+            status: 'closed' as const,
+            agentId: t.agentId,
+            entryThesis: t.entryThesis,
+            exitThesis: t.exitThesis,
+            postReview: t.postReview,
+            minValueReached: t.minValueReached,
+            maxValueReached: t.maxValueReached,
+          })),
+          // Real open positions
+          ...this.portfolio.getRealPositions().map(p => ({
+            id: p.id,
+            symbol: normalizeSymbol(p.symbol),
+            side: p.side,
+            entryPrice: p.averageEntryPrice,
+            exitPrice: p.currentPrice,
+            quantity: p.quantity,
+            leverage: p.leverage ?? 1,
+            investment: p.averageEntryPrice * p.quantity,
+            pnl: p.unrealizedPnl,
+            pnlPct: p.unrealizedPnlPct,
+            openedAt: p.openedAt,
+            closedAt: p.openedAt,
+            status: 'open' as const,
+            agentId: p.agentId ?? 'hyperliquid-real',
+            entryThesis: p.entryThesis,
+            minValueReached: p.minValueReached,
+            maxValueReached: p.maxValueReached,
+          })),
+          // Recent HL fills (closing fills only)
           ...this.cachedHLFills
             .filter(f => !f.dir.toLowerCase().includes('open'))
             .map(f => {
-              // v2.0.133: Extract position side from dir ("Close Short" → sell,
-              // "Close Long" → buy). Previously used f.side which is the ORDER
-              // side (buy to close short), not the POSITION side (sell/short).
               const positionSide: 'buy' | 'sell' = f.dir.toLowerCase().includes('short') ? 'sell' : 'buy';
-
-              // v2.0.133: Find the matching open fill to get the entry price.
-              // HL fills are sorted newest-first in cachedHLFills. Look for an
-              // "Open Short" or "Open Long" fill for the same symbol with the
-              // same size, before this close fill.
               const openFill = this.cachedHLFills.find(of =>
                 of.dir.toLowerCase().includes('open') &&
                 of.symbol === f.symbol &&
                 Math.abs(of.size - f.size) < 0.0001 &&
                 of.timestamp < f.timestamp
               );
-              const entryPrice = openFill?.price ?? f.price;
-              const exitPrice = f.price;
-
-              // Look up leverage from cached exchange positions (for still-open positions)
-              const posMatch = this.cachedExchangePositions?.find(ep => {
-                const epSym = ep.symbol.replace(/^xyz:/i, '').toLowerCase();
-                const fSym = f.symbol.replace(/^xyz:/i, '').toLowerCase();
-                return epSym === fSym;
-              });
-              // v2.0.79: For closed positions, posMatch is undefined (position
-              // no longer on HL). Default to 10x — the system's standard leverage.
-              // Previously defaulted to 1x, making PnL% look wrong.
               return {
                 id: `hl-fill-${f.timestamp}-${f.symbol}`,
                 symbol: normalizeSymbol(f.symbol),
                 side: positionSide,
-                entryPrice,
-                exitPrice,
+                entryPrice: openFill?.price ?? f.price,
+                exitPrice: f.price,
                 quantity: f.size,
-                leverage: posMatch?.leverage ?? this.lastKnownLeverage.get(f.symbol.replace(/^xyz:/i, '').toLowerCase()) ?? this.marketAgent.getConfig().leverage,
-                investment: entryPrice * f.size,
+                leverage: this.lastKnownLeverage.get(f.symbol.replace(/^xyz:/i, '').toLowerCase()) ?? this.marketAgent.getConfig().leverage,
+                investment: (openFill?.price ?? f.price) * f.size,
                 pnl: f.closedPnl - f.fee,
-                pnlPct: entryPrice * f.size > 0 ? (f.closedPnl - f.fee) / (entryPrice * f.size) : 0,
+                pnlPct: (openFill?.price ?? f.price) * f.size > 0 ? (f.closedPnl - f.fee) / ((openFill?.price ?? f.price) * f.size) : 0,
                 openedAt: openFill?.timestamp ?? f.timestamp,
                 closedAt: f.timestamp,
                 status: 'closed' as const,
+                agentId: 'hyperliquid-real',
+                // v2.0.143: HL fills don't have thesis/MAE/MFE (raw exchange data)
+                entryThesis: undefined,
+                exitThesis: undefined,
+                postReview: undefined,
+                minValueReached: undefined,
+                maxValueReached: undefined,
               };
             }),
-        ] : [
-          // Paper mode: paper engine trades + paper open positions
-          // v2.0.79: Relaxed filter — only filter out truly phantom trades
-          // (entry ≈ exit AND PnL ≈ 0). Previous filter was too aggressive,
-          // hiding real trades with small price movements.
+          // Paper trades
           ...this.paperEngine.getTrades().slice(-50).filter(t => {
-            // Only filter out trades where NOTHING happened — no price
-            // movement AND no PnL. These are phantom reconciliation trades.
             const priceMovedPct = Math.abs(t.exitPrice - t.entryPrice) / (t.entryPrice || 1);
-            const priceMoved = priceMovedPct > 0.0001; // >0.01% = 1 bps
-            const hasPnl = Math.abs(t.pnl) > 0.005; // >$0.005
-            return priceMoved || hasPnl;
+            return priceMovedPct > 0.0001 || Math.abs(t.pnl) > 0.005;
           }).map(t => ({
             id: t.id,
             symbol: t.symbol,
@@ -5730,24 +5847,35 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             openedAt: t.openedAt,
             closedAt: t.closedAt,
             status: t.status,
+            agentId: 'paper',
+            entryThesis: t.entryThesis,
+            exitThesis: t.exitThesis,
+            postReview: t.postReview,
+            minValueReached: t.minValueReached,
+            maxValueReached: t.maxValueReached,
           })),
-          // Open paper positions only (real positions hidden in paper mode)
+          // Paper open positions
           ...Array.from(this.portfolio.getPortfolio().positions.values())
+            .filter(p => p.agentId !== 'hyperliquid-real')
             .map(p => ({
-            id: p.id,
-            symbol: p.symbol,
-            side: p.side,
-            entryPrice: p.averageEntryPrice,
-            exitPrice: p.currentPrice,
-            quantity: p.quantity,
-            leverage: p.leverage ?? 1,
-            investment: p.averageEntryPrice * p.quantity,
-            pnl: p.unrealizedPnl,
-            pnlPct: p.unrealizedPnlPct,
-            openedAt: p.openedAt,
-            closedAt: p.openedAt,
-            status: 'open' as const,
-          })),
+              id: p.id,
+              symbol: p.symbol,
+              side: p.side,
+              entryPrice: p.averageEntryPrice,
+              exitPrice: p.currentPrice,
+              quantity: p.quantity,
+              leverage: p.leverage ?? 1,
+              investment: p.averageEntryPrice * p.quantity,
+              pnl: p.unrealizedPnl,
+              pnlPct: p.unrealizedPnlPct,
+              openedAt: p.openedAt,
+              closedAt: p.openedAt,
+              status: 'open' as const,
+              agentId: p.agentId ?? 'paper',
+              entryThesis: p.entryThesis,
+              minValueReached: p.minValueReached,
+              maxValueReached: p.maxValueReached,
+            })),
         ],
       };
       // v2.0.140: EXP action log for the UI ExperienceDigestionSection

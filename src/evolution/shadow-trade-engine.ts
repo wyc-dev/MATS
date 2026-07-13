@@ -54,6 +54,21 @@ export interface ShadowPosition {
   highSinceOpen: number;
   /** Lowest price observed since open */
   lowSinceOpen: number;
+  /** v2.0.143: Maximum Favorable Excursion — best unrealized PnL (as fraction
+   *  of entry price) reached during the shadow trade's lifetime.
+   *  For LONG: (highSinceOpen - entryPrice) / entryPrice
+   *  For SHORT: (entryPrice - lowSinceOpen) / entryPrice
+   *  Used to detect "TP was close but not hit" — if MFE was 4.5% but TP was
+   *  at 5%, the trade nearly won but the SL was hit first. This is valuable
+   *  path-risk information that a binary win/loss label loses. */
+  mfePct: number;
+  /** v2.0.143: Maximum Adverse Excursion — worst unrealized PnL (as fraction
+   *  of entry price) reached during the shadow trade's lifetime.
+   *  For LONG: (entryPrice - lowSinceOpen) / entryPrice
+   *  For SHORT: (highSinceOpen - entryPrice) / entryPrice
+   *  Used to detect "SL was nearly avoided" — if MAE was 1.9% but SL was at
+   *  2%, the trade nearly survived the dip and could have reached TP. */
+  maePct: number;
 }
 
 export interface ShadowTradeStats {
@@ -67,6 +82,14 @@ export interface ShadowTradeStats {
   longWinRate: number;
   shortWinRate: number;
   avgHoldCycles: number;
+  /** v2.0.143: Average MFE across all resolved trades (how far trades
+   *  went in favor before resolving). High MFE + low win rate = trades
+   *  give back gains (exit timing problem). */
+  avgMfePct: number;
+  /** v2.0.143: Average MAE across all resolved trades (how far trades
+   *  went against before resolving). Low MAE + high win rate = clean
+   *  entries. High MAE = poor entry timing. */
+  avgMaePct: number;
 }
 
 export interface ShadowTradeContext {
@@ -167,6 +190,8 @@ export class ShadowTradeEngine {
       originalTP: longTP,
       highSinceOpen: entryPrice,
       lowSinceOpen: entryPrice,
+      mfePct: 0,
+      maePct: 0,
     });
 
     // Open shadow SHORT
@@ -187,6 +212,8 @@ export class ShadowTradeEngine {
       originalTP: shortTP,
       highSinceOpen: entryPrice,
       lowSinceOpen: entryPrice,
+      mfePct: 0,
+      maePct: 0,
     });
 
     // Prune old resolved positions (keep all open + last 100 resolved).
@@ -232,6 +259,17 @@ export class ShadowTradeEngine {
       // Update intra-cycle extremes observed since open.
       pos.highSinceOpen = Math.max(pos.highSinceOpen, hi);
       pos.lowSinceOpen = Math.min(pos.lowSinceOpen, lo);
+
+      // v2.0.143: Update MAE/MFE from path extremes.
+      // MFE = best unrealized PnL (how far the trade went in our favor).
+      // MAE = worst unrealized PnL (how far the trade went against us).
+      if (pos.side === 'buy') {
+        pos.mfePct = (pos.highSinceOpen - pos.entryPrice) / pos.entryPrice;
+        pos.maePct = (pos.entryPrice - pos.lowSinceOpen) / pos.entryPrice;
+      } else {
+        pos.mfePct = (pos.entryPrice - pos.lowSinceOpen) / pos.entryPrice;
+        pos.maePct = (pos.highSinceOpen - pos.entryPrice) / pos.entryPrice;
+      }
 
       let outcome: 'win' | 'loss' | null = null;
       let exitPrice = 0;
@@ -295,7 +333,7 @@ export class ShadowTradeEngine {
         const outcomeNum: 1 | 0 = outcome === 'win' ? 1 : 0;
 
         try {
-          this.olrEngine.feedTrade(sym, pos.features, outcomeNum, pos.side, 'shadow', cycle, pos.slNarrowed);
+          this.olrEngine.feedTrade(sym, pos.features, outcomeNum, pos.side, 'shadow', cycle);
           log.info(`[shadow] ${outcome.toUpperCase()} ${pos.side.toUpperCase()} ${sym} held ${holdCycles} cycles (entry=$${pos.entryPrice.toFixed(2)} exit=$${exitPrice.toFixed(2)}, slNarrowed=${pos.slNarrowed}) → OLR fed`);
         } catch (err) {
           log.warn(`[shadow] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -342,6 +380,17 @@ export class ShadowTradeEngine {
       if (shortResults.length > 0) {
         parts.push(`SHORT win rate: ${shortWins}/${shortResults.length} (${((shortWins / shortResults.length) * 100).toFixed(0)}%)`);
       }
+
+      // v2.0.143: Include MAE/MFE path-risk stats so agents can see not just
+      // win/loss but HOW trades resolved — e.g. "trades go up 3% then reverse
+      // to SL" means exit timing is the problem, not the direction.
+      const allStats = this.getStats();
+      for (const s of allStats) {
+        const totalResolved = s.longWins + s.longLosses + s.shortWins + s.shortLosses;
+        if (totalResolved >= 5) {
+          parts.push(`${s.symbol}: avg MFE=${(s.avgMfePct * 100).toFixed(1)}% avg MAE=${(s.avgMaePct * 100).toFixed(1)}%`);
+        }
+      }
     } else {
       parts.push('  (no shadow trades resolved yet)');
     }
@@ -373,6 +422,8 @@ export class ShadowTradeEngine {
           longWinRate: 0,
           shortWinRate: 0,
           avgHoldCycles: 0,
+          avgMfePct: 0,
+          avgMaePct: 0,
         };
         symbolMap.set(pos.symbol, stats);
       }
@@ -383,6 +434,9 @@ export class ShadowTradeEngine {
       } else {
         const holdCycles = (pos.resolvedCycle ?? pos.openCycle) - pos.openCycle;
         stats.avgHoldCycles = (stats.avgHoldCycles * (stats.totalOpened - 1) + holdCycles) / stats.totalOpened;
+        // v2.0.143: Accumulate MAE/MFE across resolved trades.
+        stats.avgMfePct = (stats.avgMfePct * (stats.totalOpened - 1) + pos.mfePct) / stats.totalOpened;
+        stats.avgMaePct = (stats.avgMaePct * (stats.totalOpened - 1) + pos.maePct) / stats.totalOpened;
 
         if (pos.side === 'buy') {
           if (pos.status === 'win') stats.longWins++;
@@ -453,6 +507,9 @@ export class ShadowTradeEngine {
           // Backfill H/L fields for positions persisted before the H1 fix.
           highSinceOpen: p.highSinceOpen ?? p.entryPrice,
           lowSinceOpen: p.lowSinceOpen ?? p.entryPrice,
+          // v2.0.143: Backfill MAE/MFE for positions persisted before the path-risk fix.
+          mfePct: p.mfePct ?? 0,
+          maePct: p.maePct ?? 0,
         }));
       }
       if (data.recentResults) {

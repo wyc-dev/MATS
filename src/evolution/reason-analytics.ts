@@ -284,8 +284,10 @@ export class CloseReasonAggregator {
     }>();
 
     for (const r of records) {
-      // Derive exit type from available data
-      const exitType = (r as any).exitType ?? 'unknown';
+      // v2.0.143: Use the exitType field stored on the record (sl_tp, consensus,
+      // manual, thesis_invalidation, reconciliation, exchange_closed).
+      // Fall back to 'unknown' for old records that predate the exitType field.
+      const exitType = r.exitType ?? 'unknown';
       const origin = r.decisionOrigin ?? 'unknown';
       const key = `${exitType}__${origin}`;
 

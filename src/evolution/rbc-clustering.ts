@@ -686,6 +686,13 @@ export interface OLRModel {
   weights: number[];
   /** Number of training samples for this model */
   nSamples: number;
+  /** v2.0.143: Per-source sample counts — shadow, paper, real.
+   *  Used to weight the model's reliability and detect when a model
+   *  is trained mostly on shadow data (fixed SL/TP) vs real data
+   *  (potentially narrowed SL/TP). */
+  shadowSamples: number;
+  paperSamples: number;
+  realSamples: number;
   /** Welford running stats for feature normalization */
   mean: number[];
   m2: number[];
@@ -748,6 +755,9 @@ function makeEmptyModel(): OLRModel {
   return {
     weights: new Array(D + 1).fill(0), // bias + D features
     nSamples: 0,
+    shadowSamples: 0,
+    paperSamples: 0,
+    realSamples: 0,
     mean: new Array(D).fill(0),
     m2: new Array(D).fill(0),
     welfordCount: 0,
@@ -796,6 +806,9 @@ export class OLREngine {
     return {
       weights: weights.slice(0, D + 1),
       nSamples: m.nSamples ?? 0,
+      shadowSamples: m.shadowSamples ?? 0,
+      paperSamples: m.paperSamples ?? m.nSamples ?? 0, // old models: assume all paper
+      realSamples: m.realSamples ?? 0,
       mean: Array.isArray(m.mean) ? m.mean.slice(0, D) : new Array(D).fill(0),
       m2: Array.isArray(m.m2) ? m.m2.slice(0, D) : new Array(D).fill(0),
       welfordCount: m.welfordCount ?? 0,
@@ -930,12 +943,25 @@ export class OLREngine {
   /**
    * Feed a trade outcome into the per-symbol OLR models.
    *
+   * v2.0.143: Now accepts `source` ('shadow' | 'paper' | 'real') and `cycle`
+   * to track per-source sample counts. This lets the query method report
+   * the data composition and weight reliability accordingly.
+   *
    * @param symbol   Trade symbol
-   * @param features Feature vector (8 dimensions, same as RBC)
+   * @param features Feature vector (9 dimensions)
    * @param outcome  1 = win, 0 = loss
    * @param side     'buy' (LONG) or 'sell' (SHORT) — determines which model(s) to update
+   * @param source   'shadow' (simulated, fixed SL/TP), 'paper' (paper trade), 'real' (HL trade)
+   * @param cycle    Cycle number when the trade was resolved (for logging/diagnostics)
    */
-  feedTrade(symbol: string, features: Record<string, number>, outcome: 1 | 0, side?: 'buy' | 'sell'): void {
+  feedTrade(
+    symbol: string,
+    features: Record<string, number>,
+    outcome: 1 | 0,
+    side?: 'buy' | 'sell',
+    source?: 'shadow' | 'paper' | 'real',
+    _cycle?: number,
+  ): void {
     const models = this.getOrCreate(symbol);
     const vec = this.contextToVector(features);
 
@@ -944,20 +970,27 @@ export class OLREngine {
     this.updateWelford(models.short, vec);
 
     const xNorm = this.normalize(models.long, vec);
+    const src = source ?? 'paper';
 
     if (side === 'sell') {
       // SHORT trade: outcome directly applies to short model
       this.sgdUpdate(models.short, xNorm, outcome);
       models.short.nSamples++;
+      if (src === 'shadow') models.short.shadowSamples++;
+      else if (src === 'real') models.short.realSamples++;
+      else models.short.paperSamples++;
     } else if (side === 'buy') {
       // LONG trade: outcome directly applies to long model
       this.sgdUpdate(models.long, xNorm, outcome);
       models.long.nSamples++;
+      if (src === 'shadow') models.long.shadowSamples++;
+      else if (src === 'real') models.long.realSamples++;
+      else models.long.paperSamples++;
     } else {
       // No side specified (legacy hypothetical training) — update long model only
-      // (old RBC trained on price direction: price up = LONG win)
       this.sgdUpdate(models.long, xNorm, outcome);
       models.long.nSamples++;
+      models.long.paperSamples++;
     }
   }
 
@@ -1132,7 +1165,7 @@ export class OLREngine {
         : longS >= OLR_CONFIG.mediumConfidenceSamples ? 'medium' : 'low';
       const shortConf = shortS >= OLR_CONFIG.highConfidenceSamples ? 'high'
         : shortS >= OLR_CONFIG.mediumConfidenceSamples ? 'medium' : 'low';
-      parts.push(`${sym}: BUY P(win)=${(longP * 100).toFixed(0)}% (${longS} samples, ${longConf}) | SELL P(win)=${(shortP * 100).toFixed(0)}% (${shortS} samples, ${shortConf})`);
+      parts.push(`${sym}: BUY P(win)=${(longP * 100).toFixed(0)}% (${longS} samples, ${longConf} | shadow=${models.long.shadowSamples} paper=${models.long.paperSamples} real=${models.long.realSamples}) | SELL P(win)=${(shortP * 100).toFixed(0)}% (${shortS} samples, ${shortConf} | shadow=${models.short.shadowSamples} paper=${models.short.paperSamples} real=${models.short.realSamples})`);
     }
     if (!hasData) parts.push('  (no OLR data yet)');
     return parts.join('\n');

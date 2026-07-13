@@ -257,6 +257,31 @@ export interface Position {
   entryThesis?: string;
   /** v2.0.134: Live per-cycle hold reason (updated each cycle, not re-validated). */
   holdReason?: string;
+  /** v2.0.143: Minimum position VALUE reached during the trade's lifetime.
+   *  Position value = margin + unrealized PnL. Tracks the worst dip
+   *  (MAE — Maximum Adverse Excursion) in dollar terms.
+   *  e.g. if margin=$10 and worst unrealized PnL=-$0.55, minValueReached=$9.45.
+   *  Used by the Trade Incident Panel to show how far the trade went against us. */
+  minValueReached?: number;
+  /** v2.0.143: Maximum position VALUE reached during the trade's lifetime.
+   *  Position value = margin + unrealized PnL. Tracks the best peak
+   *  (MFE — Maximum Favorable Excursion) in dollar terms.
+   *  e.g. if margin=$10 and best unrealized PnL=+$0.60, maxValueReached=$10.60.
+   *  Used by the Trade Incident Panel to show how far the trade went in our favor. */
+  maxValueReached?: number;
+  /** v2.0.143: Original stop-loss price set at position open. Used in exitThesis
+   *  to compare against the final SL at close time — detects whether the SL
+   *  was narrowed (tightened) or widened during the trade's lifetime. */
+  originalStopLossPrice?: number;
+  /** v2.0.143: Original take-profit price set at position open. Used in exitThesis
+   *  to compare against the final TP at close time — detects whether the TP
+   *  was narrowed (tightened) or widened during the trade's lifetime. */
+  originalTakeProfitPrice?: number;
+  /** v2.0.143: Exit thesis — the rationale for closing the position.
+   *  Set by setExitThesis() BEFORE closePosition() is called, so the close
+   *  trade record can capture it. Transient: not persisted on positions
+   *  (only on the closed TradeRecord). */
+  exitThesis?: string;
 }
 
 // ─── Multi-Symbol Decision (v1.9.2 — each agent evaluates ALL pairs) ───
@@ -462,6 +487,20 @@ export interface TradeRecord {
    *  combinations against historical win/loss outcomes. Source: pos.entryThesis
    *  (which is set-if-absent per v2.0.137, so this is the ORIGINAL open thesis). */
   entryThesis?: string;
+  /** v2.0.143: The rationale for closing the position — captured from the
+   *  Meta-Agent/Skeptics close decision or the closeReason context. Empty
+   *  for SL/TP auto-triggered closes (no agent rationale involved). */
+  exitThesis?: string;
+  /** v2.0.143: LLM-generated post-trade review analysing how more profit
+   *  could have been made or less loss incurred. Generated asynchronously
+   *  after the position closes. May be empty if the LLM call fails. */
+  postReview?: string;
+  /** v2.0.143: Minimum unrealized PnL reached during the trade's lifetime (MAE).
+   *  Captured from the position's minValueReached at close time. */
+  minValueReached?: number;
+  /** v2.0.143: Maximum unrealized PnL reached during the trade's lifetime (MFE).
+   *  Captured from the position's maxValueReached at close time. */
+  maxValueReached?: number;
 }
 
 // ─── EXP: Thesis Experience Vector Memory (v2.0.138) ───
@@ -482,6 +521,10 @@ export type AssetCategory = 'crypto' | 'commodity' | 'equity' | 'forex' | 'other
 export type TradeOutcome = 'WIN' | 'LOSS';
 
 export type DecisionOrigin = 'meta-agent' | 'skeptics-reverse';
+
+/** v2.0.143: How the position was closed — used by RIL CloseReasonAggregator
+ *  to group trades by exit type and compute per-type win rates. */
+export type ExitType = 'sl_tp' | 'consensus' | 'manual' | 'thesis_invalidation' | 'reconciliation' | 'exchange_closed';
 
 /** One closed trade = one record in the EXP memory (data/exp/trades.jsonl). */
 export interface ThesisExperienceRecord {
@@ -504,6 +547,10 @@ export interface ThesisExperienceRecord {
   rationales: string[];          // extracted rationale points
   rationaleCats: RationaleCategory[];
   rationaleVectors: number[][];  // one vector per rationale (embedDim-dim); [] if embed failed
+  /** v2.0.143: How the position was closed. Used by RIL CloseReasonAggregator
+   *  to group trades by exit type (SL/TP, consensus, manual, thesis invalidation)
+   *  and compute per-type win rates + avg PnL. */
+  exitType?: ExitType;
 }
 
 /** Verdict returned by checkThesisHistory() (Skeptics Phase 1.8a). */
@@ -528,6 +575,9 @@ export interface ExpCheckResult {
   /** Diagnostics when verdict = EXP_ERRORED */
   errorType?: string;
   error?: string;
+  /** v2.0.143: Candidate rationale vectors extracted from the thesis.
+   *  Used by HACP to feed SimilarTradeRetriever without re-embedding. */
+  candidateVectors?: number[][];
 }
 
 /** Fallback incident record (data/exp/incidents.jsonl) — §8.6 self-healing audit trail. */
