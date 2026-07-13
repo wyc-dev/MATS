@@ -29,6 +29,7 @@ import { isThesisPlaceholder } from '../trading/portfolio.ts';
 import {
   type AssetCategory,
   type DecisionOrigin,
+  type ExitType,
   type ExpCheckResult,
   type ExpFallbackIncident,
   type ExpVerdict,
@@ -215,6 +216,9 @@ export interface RecordCloseInput {
   holdMin: number;
   regime: string;
   entryThesis: string;
+  /** v2.0.143: How the position was closed (SL/TP, consensus, manual, etc.).
+   *  Stored on the ThesisExperienceRecord and used by RIL CloseReasonAggregator. */
+  exitType?: ExitType;
 }
 
 export interface CheckThesisInput {
@@ -234,6 +238,9 @@ export interface CheckThesisInput {
 }
 
 export class ThesisExperience {
+  /** v2.0.143: Last candidate vectors from checkThesisHistory — used by HACP
+   *  to feed SimilarTradeRetriever without re-embedding the candidate thesis. */
+  private lastCandidateVectors: number[][] = [];
   private records: ThesisExperienceRecord[] = [];
   private cfg: ExpRuntimeConfig;
   private readonly embed: EmbedProvider;
@@ -328,6 +335,12 @@ export class ThesisExperience {
   /** Number of records currently in memory. */
   size(): number {
     return this.records.length;
+  }
+
+  /** v2.0.143: Get the candidate vectors from the last checkThesisHistory call.
+   *  Used by HACP to feed SimilarTradeRetriever without re-embedding. */
+  getLastCandidateVectors(): number[][] {
+    return this.lastCandidateVectors;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -469,11 +482,11 @@ export class ThesisExperience {
   //  Write path — recordClose (§6)
   // ═══════════════════════════════════════════════════════════
 
-  async recordClose(input: RecordCloseInput): Promise<void> {
-    if (!this.cfg.enabled) return;
-    if (isThesisPlaceholder(input.entryThesis)) return;
+  async recordClose(input: RecordCloseInput): Promise<ThesisExperienceRecord | null> {
+    if (!this.cfg.enabled) return null;
+    if (isThesisPlaceholder(input.entryThesis)) return null;
     // breakeven exclude (Master Lord 漏問一)
-    if (this.cfg.breakevenIs === 'exclude' && input.pnl === 0) return;
+    if (this.cfg.breakevenIs === 'exclude' && input.pnl === 0) return null;
     try {
       let outcome: TradeOutcome;
       if (input.pnl === 0) {
@@ -513,6 +526,8 @@ export class ThesisExperience {
         rationales: rationales.map((r) => r.point),
         rationaleCats: rationales.map((r) => r.category),
         rationaleVectors,
+        // v2.0.143: Store exit type for RIL CloseReasonAggregator
+        exitType: input.exitType,
       };
 
       this.appendRecordToDisk(record);
@@ -529,9 +544,11 @@ export class ThesisExperience {
         log.warn(`[EXP-digest] addRecord failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
       );
       log.info(`[EXP] recorded ${outcome} ${input.symbol} ${input.side.toUpperCase()} (${rationales.length} rationales) — memory ${this.records.length}`);
+      return record;
     } catch (err) {
       // NEVER block the close path
       log.warn(`[EXP] recordClose failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+      return null;
     }
   }
 
@@ -666,6 +683,10 @@ export class ThesisExperience {
     }
 
     const candCategory = assetCategory(input.symbol, this.cfg.assetCategoryMap);
+
+    // v2.0.143: Store candidate vectors for SimilarTradeRetriever (HACP reads
+    // them via getLastCandidateVectors() after checkThesisHistory returns).
+    this.lastCandidateVectors = candVectors;
 
     // Combination similarity vs every historical record
     const matches: Array<{ rec: ThesisExperienceRecord; sim: number }> = [];

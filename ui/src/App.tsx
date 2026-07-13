@@ -60,11 +60,8 @@ function SystemStatusPanel({ data }: { data: APIData | null }) {
         <StatCell label="Cycles" value={String(s.cycles ?? 0)} />
         <StatCell label="Balance" value={balance === null ? '--' : `$${balance.toFixed(0)}`} />
         <StatCell label="Equity" value={equity === null ? '--' : `$${equity.toFixed(0)}`} cls={totalPnl === null ? 'neutral' : (totalPnl >= 0 ? 'positive' : 'negative')} />
-        <StatCell label="Drawdown" value={drawdownPct === null ? '--' : `${(drawdownPct * 100).toFixed(1)}%`} cls={drawdownPct === null ? 'neutral' : (drawdownPct > 0.1 ? 'negative' : 'neutral')} />
-        <StatCell label="Trades" value={String(s.tradeCount ?? 0)} sub={`W:${s.winCount ?? 0} L:${s.lossCount ?? 0}`} />
         <StatCell label="Positions" value={String(s.positions ?? 0)} />
         <StatCell label="WS" value={s.wsConnected ? 'Connected' : 'Disconnected'} cls={s.wsConnected ? 'positive' : 'negative'} />
-        <StatCell label="Total PnL" value={totalPnl === null ? '--' : `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`} cls={totalPnl === null ? 'neutral' : (totalPnl >= 0 ? 'positive' : 'negative')} />
       </div>
 
       {s.cycleInProgress && (
@@ -1609,26 +1606,14 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
     }
   }
 
-  // v2.0.30: In real mode, balance/equity are null when exchange balance
-  // hasn't been fetched yet. Use explicit null check — ?? would fallback
-  // from null to status.balance (which might be stale paper data).
+  // v2.0.142: Simplified — in real mode, use exchange balance/equity only.
+  // In paper mode, use paper engine balance/equity. No cross-mode leakage.
   const balance: number | null = isRealMode
-    ? (p?.balance !== null && p?.balance !== undefined ? p.balance : (s.balance !== null && s.balance !== undefined ? s.balance : null))
+    ? (p?.totalEquity !== null && p?.totalEquity !== undefined ? p.totalEquity : null)
     : (p?.balance ?? s.balance ?? 0)
   const equity: number | null = isRealMode
-    ? (p?.totalEquity !== null && p?.totalEquity !== undefined ? p.totalEquity : (s.equity !== null && s.equity !== undefined ? s.equity : null))
+    ? (p?.totalEquity !== null && p?.totalEquity !== undefined ? p.totalEquity : null)
     : (p?.totalEquity ?? s.equity ?? 0)
-  // totalPnl / drawdownPct are null in real-trade mode (v2.0.17) — UI shows '--'.
-  // v2.0.74: Use explicit null check (like balance/equity above) — `??` would
-  // fall through null to s.totalPnl (stale paper data), leaking paper PnL
-  // (+278.50) into the real-mode UI.
-  const totalPnl: number | null = isRealMode
-    ? (p?.totalPnl !== null && p?.totalPnl !== undefined ? p.totalPnl : null)
-    : (p?.totalPnl ?? s.totalPnl ?? null)
-  const drawdownPct: number | null = isRealMode
-    ? (p?.maxDrawdownPct !== null && p?.maxDrawdownPct !== undefined ? p.maxDrawdownPct : null)
-    : (p?.maxDrawdownPct ?? s.drawdownPct ?? null)
-  const initialBalance = p?.initialBalance ?? 1000
   const displaySymbol = chartSymbol ?? ''
 
   // Get current price for chart symbol from positions or market state
@@ -1688,232 +1673,101 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
         </div>
         <div className="portfolio-cell">
           <span className="stat-label">Equity</span>
-          <span className={`stat-number ${equity === null ? 'neutral' : (equity >= initialBalance ? 'positive' : 'negative')}`}>
-            {equity === null ? '--' : `$${equity.toFixed(2)}`}
-          </span>
+          <span className="stat-number neutral">{equity === null ? '--' : `$${equity.toFixed(2)}`}</span>
         </div>
-        {/* v2.0.78: In real mode, hide paper-only stats (Total PnL, Drawdown,
-            Win Rate, Trades) — they're paper-trade concepts that don't map to
-            the real exchange account. Only Balance + Equity are shown. */}
-        {!isRealMode && (
-          <div className="portfolio-cell">
-            <span className="stat-label">Total PnL</span>
-            <span className={`stat-number ${totalPnl === null ? 'neutral' : (totalPnl >= 0 ? 'positive' : 'negative')}`}>
-              {totalPnl === null ? '--' : `${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}`}
-            </span>
-          </div>
-        )}
-        {!isRealMode && (
-          <div className="portfolio-cell drawdown-cell">
-            <div className="drawdown-left">
-              <span className="stat-label">Drawdown</span>
-              <span className={`stat-number ${drawdownPct === null ? 'neutral' : (drawdownPct > 0.1 ? 'negative' : 'neutral')}`}>
-                {drawdownPct === null ? '--' : `${(drawdownPct * 100).toFixed(2)}%`}
-              </span>
-            </div>
-            {/* v2.0.45: Clear Drawdown button — resets drawdown data and relaunches trading.
-                When drawdown ≥ 15%, the SystemGuard blocks all cycles. This button
-                clears the drawdown so the next cycle can resume. */}
-            {drawdownPct !== null && drawdownPct >= 0.15 && (
-              <div className="drawdown-right">
-                <button
-                  onClick={async () => {
-                    try {
-                      await fetch(`${API_BASE}/clear-drawdown`, { method: 'POST' });
-                    } catch (err) {
-                      console.error('Failed to clear drawdown:', err);
-                    }
-                  }}
-                  className="clear-drawdown-btn"
-                >
-                  Clear Drawdown
-                </button>
-                <span className="stat-sub">
-                  Drawdown ≥ 15% — trading halted. Clear to relaunch.
-                </span>
-              </div>
-            )}
-          </div>
-        )}
-        {!isRealMode && (
-          <div className="portfolio-cell">
-            <span className="stat-label">Win Rate</span>
-            <span className="stat-number positive">
-              {((s.recent20WinRate ?? 0) * 100).toFixed(1)}%
-            </span>
-            {/* v2.0.42: Shows win rate from the most recent 20 trades only */}
-            <span className="stat-sub">
-              (lastest 20 trades)
-            </span>
-          </div>
-        )}
-        {!isRealMode && (
-          <div className="portfolio-cell">
-            <span className="stat-label">Trades</span>
-            <span className="stat-number neutral">
-              {s.tradeCount}
-            </span>
-            <span className="stat-sub">W:{s.winCount} L:{s.lossCount}</span>
-          </div>
-        )}
       </div>
 
-      {positions.length > 0 ? (
-        <div className="positions-table-wrap">
-          <table className="positions-table">
-            <thead>
-              <tr>
-                <th></th>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Qty</th>
-                <th>Value</th>
-                <th>Entry</th>
-                <th>Mark</th>
-                <th>Unrealized PnL</th>
-                <th>SL</th>
-                <th>TP</th>
-                <th>Lev</th>
-                <th>Opened</th>
-              </tr>
-            </thead>
-            <tbody>
-              {positions.map((pos: any) => {
-                return (
-                <>
-                <tr key={pos.id} onClick={() => setChartSymbol(pos.symbol)} className={`position-row-clickable ${chartSymbol === pos.symbol ? 'selected-position' : ''}`}>
-                  <td className="td-action-cell" onClick={(e) => e.stopPropagation()}>
-                    {closeConfirmSymbol === pos.symbol ? (
-                      <span className="action-btns-row">
-                        <button
-                          onClick={() => handleManualClose(pos.symbol)}
-                          disabled={closingSymbol === pos.symbol}
-                          className="close-btn-action"
-                        >
-                          {closingSymbol === pos.symbol ? '...' : '✓'}
-                        </button>
-                        <button
-                          onClick={() => setCloseConfirmSymbol(null)}
-                          disabled={closingSymbol === pos.symbol}
-                          className="close-btn-cancel"
-                        >
-                          ✗
-                        </button>
-                      </span>
-                    ) : (
-                      <button
-                        onClick={() => setCloseConfirmSymbol(pos.symbol)}
-                        title="Close position"
-                        className="close-btn-trigger"
-                        onMouseEnter={(e) => { e.currentTarget.style.opacity = '1' }}
-                        onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.6' }}
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </td>
-                  <td className="td-symbol-cell">{pos.symbol}</td>
-                  <td><span className={`side-tag ${pos.side}`}>{pos.side.toUpperCase()}</span></td>
-                  <td>{pos.quantity.toFixed(6)}</td>
-                  <td className="td-price-cell">
-                    ${(pos.quantity * pos.currentPrice).toFixed(2)}
-                  </td>
-                  <td>${pos.averageEntryPrice.toFixed(2)}</td>
-                  <td>${pos.currentPrice.toFixed(2)}</td>
-                  <td className={`td-pnl-cell ${pos.unrealizedPnl >= 0 ? 'td-pnl-positive' : 'td-pnl-negative'}`}>
-                    ${pos.unrealizedPnl.toFixed(2)} ({(pos.unrealizedPnlPct * 100).toFixed(2)}%)
-                  </td>
-                  <td>{pos.stopLossPrice ? `$${pos.stopLossPrice.toFixed(2)}` : '-'}</td>
-                  <td>{pos.takeProfitPrice ? `$${pos.takeProfitPrice.toFixed(2)}` : '-'}</td>
-                  <td>{pos.leverage ?? 1}x</td>
-                  <td className="td-time-cell">
-                    {formatHKTime(pos.openedAt)}
-                  </td>
-                </tr>
-                {pos.entryThesis && (
-                  <tr key={`${pos.id}-thesis`} className="position-thesis-row">
-                    <td colSpan={12} className="position-thesis-cell">
-                      <div className="position-thesis-content">
-                        <span className="position-thesis-label"></span>
-                        <span className="position-thesis-text">{pos.entryThesis}</span>
-                      </div>
-                    </td>
-                  </tr>
-                )}
-                {!pos.entryThesis && pos.holdReason && (
-                  <tr key={`${pos.id}-hold`} className="position-thesis-row">
-                    <td colSpan={12} className="position-thesis-cell">
-                      <div className="position-thesis-content">
-                        <span className="position-thesis-label"></span>
-                        <span className="position-thesis-text">{pos.holdReason}</span>
-                      </div>
-                    </td>
-                  </tr>
-                )}
-                </>
-              );
-            })}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="empty-state">
-          <div className="empty-icon">💼</div>
-          <div className="empty-text">No Open Positions</div>
-          <div className="empty-hint">All capital in cash — capital preservation mode</div>
-        </div>
-      )}
-
-      {/* History Panel */}
-      <div className="trade-history-section">
-        <HistoryPanel data={data} />
-      </div>
+      {/* Trade Incident Panel — replaces Positions table + Trade Records */}
+      <TradeIncidentPanel data={data} positions={positions} />
     </div>
   )
 }
 
-function HistoryPanel({ data }: { data: APIData | null }) {
-  // Show all trade records — both open and closed positions
+/* ── Trade Incident Panel — unified card-based trade view ── */
+
+function TradeIncidentPanel({ data, positions }: { data: APIData | null; positions: any[] }) {
   const tradeRecords = data?.tradeRecords ?? []
   const [page, setPage] = useState(0)
-  const pageSize = 10
-  const isRealMode = data?.marketAgent?.config?.tradeMode === 'real'
+  const [expandedCard, setExpandedCard] = useState<string | null>(null)
+  const pageSize = 6
 
-  // Sort newest first by close/open timestamp
-  const sorted = [...tradeRecords].sort((a: any, b: any) => {
+  // Merge open positions + closed trades into unified list
+  const openTrades = positions.map((pos: any) => ({
+    id: pos.id ?? `pos-${pos.symbol}`,
+    symbol: pos.symbol,
+    side: pos.side,
+    status: 'open' as const,
+    agentId: pos.agentId ?? 'paper',
+    entryPrice: pos.averageEntryPrice ?? 0,
+    exitPrice: null as number | null,
+    pnl: pos.unrealizedPnl ?? 0,
+    pnlPct: pos.unrealizedPnlPct ?? 0,
+    investment: (pos.quantity ?? 0) * (pos.averageEntryPrice ?? 0),
+    leverage: pos.leverage ?? 1,
+    openedAt: pos.openedAt ?? Date.now(),
+    closedAt: null as number | null,
+    entryThesis: pos.entryThesis ?? null,
+    exitThesis: null as string | null,
+    minValueReached: null as number | null,
+    maxValueReached: null as number | null,
+    postReview: null as string | null,
+    quantity: pos.quantity ?? 0,
+    currentPrice: pos.currentPrice ?? 0,
+    stopLossPrice: pos.stopLossPrice ?? null,
+    takeProfitPrice: pos.takeProfitPrice ?? null,
+  }))
+
+  const closedTrades = tradeRecords.map((t: any) => ({
+    id: t.id ?? `trade-${t.symbol}-${t.openedAt}`,
+    symbol: t.symbol,
+    side: t.side,
+    status: (t.status === 'open' ? 'open' : 'closed') as 'open' | 'closed',
+    agentId: t.agentId ?? 'paper',
+    entryPrice: t.entryPrice ?? 0,
+    exitPrice: t.exitPrice ?? null,
+    pnl: t.pnl ?? 0,
+    pnlPct: t.pnlPct ?? 0,
+    investment: t.investment ?? 0,
+    leverage: t.leverage ?? 1,
+    openedAt: t.openedAt ?? 0,
+    closedAt: t.closedAt ?? null,
+    entryThesis: t.entryThesis ?? null,
+    exitThesis: t.exitThesis ?? null,
+    minValueReached: t.minValueReached ?? null,
+    maxValueReached: t.maxValueReached ?? null,
+    postReview: t.postReview ?? null,
+    quantity: t.quantity ?? 0,
+    currentPrice: t.currentPrice ?? t.entryPrice ?? 0,
+    stopLossPrice: t.stopLossPrice ?? null,
+    takeProfitPrice: t.takeProfitPrice ?? null,
+  }))
+
+  // Dedupe: remove closed trades that have matching open positions (same symbol + close timestamp)
+  const openIds = new Set(openTrades.map(t => t.id))
+  const merged = [...openTrades, ...closedTrades.filter(t => !openIds.has(t.id))]
+
+  // Sort newest first
+  const sorted = merged.sort((a, b) => {
     const ta = a.closedAt ?? a.openedAt ?? 0
     const tb = b.closedAt ?? b.openedAt ?? 0
     return tb - ta
   })
+
   const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize))
   const safePage = Math.min(page, totalPages - 1)
   const visible = sorted.slice(safePage * pageSize, (safePage + 1) * pageSize)
 
-  const openCount = sorted.filter((t: any) => t.status === 'open').length
-  const closedCount = sorted.filter((t: any) => t.status === 'closed').length
-
-  useEffect(() => { setPage(0) }, [tradeRecords.length])
-
-  const handleResetTrades = async () => {
-    if (!confirm('Reset all paper trade records? This clears the trade history and cannot be undone.')) return
-    try {
-      await fetch(`${API_BASE}/evolution/reset-trade-history`, { method: 'POST' })
-      // Also reset paper engine trades via a new endpoint
-      await fetch(`${API_BASE}/paper/reset-trades`, { method: 'POST' })
-    } catch (err) {
-      console.error('Failed to reset trades:', err)
-    }
-  }
+  useEffect(() => { setPage(0) }, [sorted.length])
 
   if (sorted.length === 0) {
     return (
       <div className="panel">
         <div className="panel-header">
-          <span className="panel-title">Trade Records</span>
+          <span className="panel-title">Trade Incident</span>
           <span className="panel-badge">0 trades</span>
         </div>
-        <div className="empty-state trade-history-empty">
-          <div className="empty-text empty-text-sm">No trades yet</div>
+        <div className="empty-state">
+          <div className="empty-text empty-text-sm">No trade incidents yet</div>
         </div>
       </div>
     )
@@ -1922,75 +1776,135 @@ function HistoryPanel({ data }: { data: APIData | null }) {
   return (
     <div className="panel">
       <div className="panel-header">
-        <span className="panel-title">Trade Records</span>
-        <div className="trade-filter-row">
-          {!isRealMode && (
-            <button className="header-btn trade-reset-btn" onClick={handleResetTrades} title="Reset paper trade records">
-              🗑️
-            </button>
-          )}
-          <span className="panel-badge trade-filter-badge">
-            {openCount > 0 && <span>{openCount} open</span>}
-            {closedCount > 0 && <span>{closedCount} closed</span>}
-          </span>
-          <div className="trade-filter-btns">
-            <button className="header-btn trade-page-btn"
-              disabled={safePage === 0} onClick={() => setPage(p => Math.max(0, p - 1))}>◀</button>
-            <span className="trade-page-sep">
-              {safePage + 1}/{totalPages}
-            </span>
-            <button className="header-btn trade-page-btn"
-              disabled={safePage >= totalPages - 1} onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}>▶</button>
-          </div>
-        </div>
+        <span className="panel-title">Trade Incident</span>
+        <span className="panel-badge">{sorted.length} trades · Page {safePage + 1}/{totalPages}</span>
       </div>
-      <div className="trade-list">
-        {visible.map((t: any, i: number) => {
+
+      {/* Up button */}
+      <div style={{ display: 'flex', justifyContent: 'center', padding: 'var(--space-2) 0' }}>
+        <button
+          disabled={safePage === 0}
+          onClick={() => setPage(p => Math.max(0, p - 1))}
+          className="agent-thought-toggle-btn"
+          style={{ opacity: safePage === 0 ? 0.3 : 1, cursor: safePage === 0 ? 'default' : 'pointer' }}
+        >
+          ▲ Prev
+        </button>
+      </div>
+
+      {/* 1×6 card grid */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+        {visible.map((t, i) => {
+          const isReal = t.agentId === 'hyperliquid-real' || t.agentId?.includes('real')
           const isOpen = t.status === 'open'
+          const cardId = t.id ?? `card-${i}`
+          const isExpanded = expandedCard === cardId
+
           return (
-            <div key={t.id ?? i} className="trade-record-card" style={{
-              background: isOpen ? 'rgba(255, 215, 0, 0.04)' : 'var(--surface-elevated)',
-              border: isOpen ? '1px solid rgba(255, 215, 0, 0.15)' : '1px solid var(--glass-border)',
-            }}>
-              <div className="trade-card-row">
-                <span className={`side-tag trade-card-side-tag ${t.side}`}>
+            <div
+              key={cardId}
+              onClick={() => setExpandedCard(prev => prev === cardId ? null : cardId)}
+              style={{
+                background: isOpen ? 'rgba(255, 215, 0, 0.04)' : 'var(--surface-elevated)',
+                border: isOpen ? '1px solid rgba(255, 215, 0, 0.2)' : '1px solid var(--glass-border)',
+                borderRadius: 'var(--radius-md)',
+                padding: 'var(--space-3) var(--space-4)',
+                cursor: 'pointer',
+                transition: 'border-color 0.2s ease, background 0.2s ease',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = isOpen ? 'rgba(255, 215, 0, 0.4)' : 'var(--glass-border-hover)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = isOpen ? 'rgba(255, 215, 0, 0.2)' : 'var(--glass-border)' }}
+            >
+              {/* Summary row */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+                <span style={{
+                  padding: '2px 8px',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: 'var(--fs-xs)',
+                  fontWeight: 'var(--fw-bold)',
+                  background: t.side === 'buy' ? 'var(--green-bg)' : 'var(--red-bg)',
+                  color: t.side === 'buy' ? 'var(--green)' : 'var(--red)',
+                }}>
                   {t.side.toUpperCase()}
                 </span>
-                <span className="trade-card-symbol">{t.symbol}</span>
-                {isOpen && (
-                  <span className="trade-badge-open">
-                    OPEN
-                  </span>
-                )}
-                {!isOpen && (
-                  <span className="trade-badge-closed">
-                    CLOSE
-                  </span>
-                )}
-                <span className="trade-card-meta">
-                  Invest ${t.investment?.toFixed(2) ?? '—'} × {t.leverage ?? 1}x
+                <span style={{ fontWeight: 'var(--fw-semibold)', fontSize: 'var(--fs-base)' }}>{t.symbol}</span>
+                <span style={{
+                  padding: '1px 6px',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: 'var(--fs-xs)',
+                  fontWeight: 'var(--fw-bold)',
+                  background: isReal ? 'rgba(52, 211, 153, 0.15)' : 'rgba(120, 128, 160, 0.15)',
+                  color: isReal ? 'var(--green)' : 'var(--text-tertiary)',
+                }}>
+                  {isReal ? 'REAL' : 'PAPER'}
                 </span>
-                <span className="trade-card-meta">
-                  {isOpen
-                    ? `Entry $${t.entryPrice?.toFixed(2)}`
-                    : `Entry $${t.entryPrice?.toFixed(2)} → Exit $${t.exitPrice?.toFixed(2)}`
-                  }
+                <span style={{
+                  padding: '1px 6px',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: 'var(--fs-xs)',
+                  fontWeight: 'var(--fw-bold)',
+                  background: isOpen ? 'rgba(255, 215, 0, 0.15)' : 'rgba(255, 255, 255, 0.05)',
+                  color: isOpen ? 'var(--gold)' : 'var(--text-tertiary)',
+                }}>
+                  {isOpen ? 'OPEN' : 'CLOSED'}
                 </span>
-                {!isOpen && (
-                  <span className="trade-pnl-value" style={{
-                    color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                    {t.pnl >= 0 ? '+' : ''}${t.pnl?.toFixed(2) ?? '0.00'} ({(t.pnlPct != null ? (t.pnlPct * 100) : 0).toFixed(1)}%)
-                  </span>
-                )}
+                <span style={{
+                  fontSize: 'var(--fs-sm)',
+                  fontWeight: 'var(--fw-bold)',
+                  color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)',
+                  marginLeft: 'auto',
+                }}>
+                  {t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)} ({(t.pnlPct * 100).toFixed(1)}%)
+                </span>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                  {isExpanded ? '▲' : '▼'}
+                </span>
               </div>
-              <div className="trade-card-footer">
-                <span>Open: {formatHKTime(t.openedAt)}</span>
-                {!isOpen && <span>Close: {formatHKTime(t.closedAt)}</span>}
-              </div>
+
+              {/* Expanded details */}
+              {isExpanded && (
+                <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                  <IncidentField label="Direction" value={t.side.toUpperCase()} />
+                  <IncidentField label="Entry Price" value={`$${t.entryPrice.toFixed(2)}`} />
+                  <IncidentField label="Exit Price" value={t.exitPrice != null ? `$${t.exitPrice.toFixed(2)}` : '— (still open)'} />
+                  <IncidentField label="Min Value Reached" value={t.minValueReached != null ? `$${t.minValueReached.toFixed(2)}` : '— (tracking started after open)'} pending={t.minValueReached == null} />
+                  <IncidentField label="Max Value Reached" value={t.maxValueReached != null ? `$${t.maxValueReached.toFixed(2)}` : '— (tracking started after open)'} pending={t.maxValueReached == null} />
+                  <IncidentField label="Leverage" value={`${t.leverage}x`} />
+                  <IncidentField label="Investment" value={`$${t.investment.toFixed(2)}`} />
+                  <IncidentField label="Opened" value={formatHKTime(t.openedAt)} />
+                  {t.closedAt && <IncidentField label="Closed" value={formatHKTime(t.closedAt)} />}
+                  {t.stopLossPrice && <IncidentField label="Stop Loss" value={`$${t.stopLossPrice.toFixed(2)}`} />}
+                  {t.takeProfitPrice && <IncidentField label="Take Profit" value={`$${t.takeProfitPrice.toFixed(2)}`} />}
+                  <IncidentField label="Entry Thesis" value={t.entryThesis ?? '— (no thesis recorded)'} pending={t.entryThesis == null} />
+                  <IncidentField label="Exit Thesis" value={t.exitThesis ?? '— (no exit rationale recorded)'} pending={t.exitThesis == null} />
+                  <IncidentField label="Post-Review" value={t.postReview ?? '— (generating… or no review available)'} pending={t.postReview == null} />
+                </div>
+              )}
             </div>
           )
         })}
       </div>
+
+      {/* Down button */}
+      <div style={{ display: 'flex', justifyContent: 'center', padding: 'var(--space-2) 0' }}>
+        <button
+          disabled={safePage >= totalPages - 1}
+          onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+          className="agent-thought-toggle-btn"
+          style={{ opacity: safePage >= totalPages - 1 ? 0.3 : 1, cursor: safePage >= totalPages - 1 ? 'default' : 'pointer' }}
+        >
+          ▼ Next
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function IncidentField({ label, value, pending }: { label: string; value: string; pending?: boolean }) {
+  return (
+    <div style={{ display: 'flex', gap: 'var(--space-3)', fontSize: 'var(--fs-sm)' }}>
+      <span style={{ color: 'var(--text-tertiary)', minWidth: '140px', flexShrink: 0 }}>{label}</span>
+      <span style={{ color: pending ? 'var(--text-muted)' : 'var(--text-secondary)', fontStyle: pending ? 'italic' : 'normal' }}>{value}</span>
     </div>
   )
 }

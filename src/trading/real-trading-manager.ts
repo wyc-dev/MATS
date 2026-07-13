@@ -664,14 +664,16 @@ export class RealTradingManager {
         orderId: result.orderId,
         error: result.error,
       };
-    } else {
-      // Paper trading mode
-      const reports = await this.paperEngine.executeDecision(decision);
-      return {
-        success: reports.length === 0 || reports.every(r => !r.error),
-        paperReports: reports,
-      };
     }
+
+    // v2.0.143: Paper mode is no longer handled here. index.ts routes
+    // paper trades directly to paperEngine.executeDecision(), and real
+    // trades to this method. This ensures clean separation:
+    //   - Paper trades never get tagged as 'hyperliquid-real'
+    //   - Real trades never lose entryThesis from paper mirror re-imports
+    //   - The trade execution pipeline is deterministic by trade mode
+    log.warn(`⚠️ RealTradingManager.executeDecision called but no active engine (tradeMode=${this.config.tradeMode}). Paper trades should go through paperEngine directly.`);
+    return { success: false, error: 'No active exchange engine — paper trades should use paperEngine directly' };
   }
 
   /**
@@ -874,7 +876,14 @@ export class RealTradingManager {
                   : exPos.averageEntryPrice * (1 - tpPct);
                 log.info(`  → Exchange mirror updated in-place (no trade record)`);
               } else {
-                // Paper position — close properly + re-import as exchange position
+                // Paper position — close properly + re-import as exchange position.
+                // v2.0.143: Preserve entryThesis + MAE/MFE from the paper mirror
+                // so the system doesn't lose the learning context when the mirror
+                // is replaced. Previously the re-import created a blank position
+                // with no thesis, causing RIL/EXP to skip the trade entirely.
+                const preservedThesis = localPos.entryThesis;
+                const preservedMinValue = localPos.minValueReached;
+                const preservedMaxValue = localPos.maxValueReached;
                 this.portfolio.closePosition(sym, localPos.currentPrice);
                 log.info(`  → Paper mirror closed: ${localPos.side.toUpperCase()} ${sym} PnL: ${(localPos.unrealizedPnl).toFixed(2)}`);
                 // v2.0.50: If exPos.openedAt is 0 (fill not found), preserve
@@ -887,6 +896,14 @@ export class RealTradingManager {
                   exPos.leverage,
                   exPos.openedAt > 0 ? exPos.openedAt : (localPos.openedAt > 0 ? localPos.openedAt : Date.now()),
                 );
+                // v2.0.143: Restore preserved fields onto the re-imported position.
+                const reimportedPos = this.portfolio.getPosition(sym);
+                if (reimportedPos && preservedThesis) {
+                  reimportedPos.entryThesis = preservedThesis;
+                  reimportedPos.minValueReached = preservedMinValue;
+                  reimportedPos.maxValueReached = preservedMaxValue;
+                  log.info(`  → Preserved entryThesis + MAE/MFE on re-imported ${sym}`);
+                }
               }
             } else {
               // Only price changed — soft update
@@ -959,6 +976,9 @@ export class RealTradingManager {
           if (pos.agentId === 'hyperliquid-real') {
             this.portfolio.closeExchangePosition(symbol, pos.currentPrice);
           } else {
+            // v2.0.143: This should not happen in real mode — paper positions
+            // are closed via closeTrade() → portfolio.closePosition() directly.
+            // But if a paper mirror exists in real mode, close it properly.
             this.portfolio.closePosition(symbol, pos.currentPrice);
           }
         }
@@ -966,12 +986,9 @@ export class RealTradingManager {
       return success;
     }
 
-    // Paper: close via portfolio
-    const pos = this.portfolio.getPosition(symbol);
-    if (pos) {
-      this.portfolio.closePosition(symbol, pos.currentPrice);
-      return true;
-    }
+    // v2.0.143: Paper mode is no longer handled here. index.ts routes
+    // paper position closes directly to portfolio.closePosition().
+    log.warn(`⚠️ RealTradingManager.closePosition called but no active engine (tradeMode=${this.config.tradeMode}). Paper positions should be closed via portfolio.closePosition() directly.`);
     return false;
   }
 

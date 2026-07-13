@@ -117,6 +117,14 @@ export interface PortfolioSnapshot {
     exchange?: string;
     /** v2.0.80: Entry thesis for Skeptics re-validation */
     entryThesis?: string;
+    /** v2.0.143: MAE — minimum position value reached during the trade's lifetime */
+    minValueReached?: number;
+    /** v2.0.143: MFE — maximum position value reached during the trade's lifetime */
+    maxValueReached?: number;
+    /** v2.0.143: Original SL at open — for exitThesis narrowing detection */
+    originalStopLossPrice?: number;
+    /** v2.0.143: Original TP at open — for exitThesis narrowing detection */
+    originalTakeProfitPrice?: number;
   }>;
   /** Persisted paper trades (TradeRecord[]) */
   trades?: Array<{
@@ -134,6 +142,11 @@ export interface PortfolioSnapshot {
     closedAt: number;
     agentId?: string;
     status?: 'open' | 'closed';
+    entryThesis?: string;
+    exitThesis?: string;
+    postReview?: string;
+    minValueReached?: number;
+    maxValueReached?: number;
   }>;
   /** v2.0.38: Persisted real (exchange) trades — stored separately from
    *  paper trades so they survive restarts but don't pollute paper stats.
@@ -153,6 +166,11 @@ export interface PortfolioSnapshot {
     closedAt: number;
     agentId?: string;
     status?: 'open' | 'closed';
+    entryThesis?: string;
+    exitThesis?: string;
+    postReview?: string;
+    minValueReached?: number;
+    maxValueReached?: number;
   }>;
 }
 
@@ -302,6 +320,12 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       agentId: p.agentId,      exchange: (p as any).exchange,
       // v2.0.80: Persist entryThesis so it survives restarts
       entryThesis: (p as any).entryThesis,
+      // v2.0.143: Persist MAE/MFE tracking so they survive restarts
+      minValueReached: (p as any).minValueReached,
+      maxValueReached: (p as any).maxValueReached,
+      // v2.0.143: Persist original SL/TP for exitThesis narrowing analysis
+      originalStopLossPrice: (p as any).originalStopLossPrice,
+      originalTakeProfitPrice: (p as any).originalTakeProfitPrice,
     }));
 
     const serializedTrades = trades ? Array.from(trades).map(t => ({
@@ -319,6 +343,12 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       closedAt: t.closedAt,
       agentId: t.agentId,
       status: t.status,
+      // v2.0.143: Persist new Trade Incident fields
+      entryThesis: (t as any).entryThesis,
+      exitThesis: (t as any).exitThesis,
+      postReview: (t as any).postReview,
+      minValueReached: (t as any).minValueReached,
+      maxValueReached: (t as any).maxValueReached,
     })) : undefined;
 
     // v2.0.38: Serialize real (exchange) trades separately so they survive
@@ -338,6 +368,12 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       closedAt: t.closedAt,
       agentId: t.agentId,
       status: t.status,
+      // v2.0.143: Persist new Trade Incident fields
+      entryThesis: (t as any).entryThesis,
+      exitThesis: (t as any).exitThesis,
+      postReview: (t as any).postReview,
+      minValueReached: (t as any).minValueReached,
+      maxValueReached: (t as any).maxValueReached,
     })) : undefined;
 
     const snapshot: PortfolioSnapshot = {

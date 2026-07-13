@@ -177,6 +177,10 @@ export class HyperliquidWebSocketManager {
 
   // Latest mark price data
   private latestMarkPrice: HLMarkPrice | null = null;
+  /** v2.0.143: Per-symbol mark price cache — keyed by normalized symbol.
+   *  Used by shadow trades to get per-symbol funding rates instead of
+   *  using the active symbol's funding rate for all symbols. */
+  private markPriceMap: Map<string, HLMarkPrice> = new Map();
 
   // Large trade tracking (for whale detection)
   private recentLargeTrades: HLTrade[] = [];
@@ -200,6 +204,14 @@ export class HyperliquidWebSocketManager {
 
   getLatestMarkPrice(): HLMarkPrice | null {
     return this.latestMarkPrice;
+  }
+
+  /** v2.0.143: Get mark price for a specific symbol (funding rate, OI, etc.).
+   *  Falls back to the latest mark price (active symbol) if the requested
+   *  symbol is not in the per-symbol cache. */
+  getMarkPriceForSymbol(symbol: string): HLMarkPrice | null {
+    const sym = symbol.includes(':') ? symbol : symbol.toLowerCase();
+    return this.markPriceMap.get(sym) ?? this.latestMarkPrice;
   }
 
   /**
@@ -803,6 +815,8 @@ export class HyperliquidWebSocketManager {
     };
 
     this.latestMarkPrice = markPrice;
+    // v2.0.143: Update per-symbol cache for shadow trade funding rate lookup.
+    this.markPriceMap.set(markPrice.symbol, markPrice);
 
     // Notify callbacks
     for (const cb of this.priceCallbacks) {

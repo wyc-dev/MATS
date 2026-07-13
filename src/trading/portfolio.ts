@@ -175,6 +175,12 @@ export class PortfolioTracker {
           exchange: p.exchange,
           // v2.0.80: Restore entryThesis from saved state
           entryThesis: (p as any).entryThesis,
+          // v2.0.143: Restore MAE/MFE tracking from saved state
+          minValueReached: (p as any).minValueReached,
+          maxValueReached: (p as any).maxValueReached,
+          // v2.0.143: Restore original SL/TP for exitThesis narrowing analysis
+          originalStopLossPrice: (p as any).originalStopLossPrice,
+          originalTakeProfitPrice: (p as any).originalTakeProfitPrice,
         };
         // v2.0.72: route real positions to realPositions, paper to portfolio.positions
         if (p.agentId === 'hyperliquid-real') {
@@ -200,6 +206,12 @@ export class PortfolioTracker {
         closedAt: t.closedAt,
         agentId: t.agentId ?? '',
         status: (t as any).status ?? 'closed',
+        // v2.0.143: Restore new Trade Incident fields
+        entryThesis: (t as any).entryThesis,
+        exitThesis: (t as any).exitThesis,
+        postReview: (t as any).postReview,
+        minValueReached: (t as any).minValueReached,
+        maxValueReached: (t as any).maxValueReached,
       }));
 
       // v2.0.38: Restore real (exchange) trades — these are HL SL/TP-triggered
@@ -220,6 +232,12 @@ export class PortfolioTracker {
         closedAt: t.closedAt,
         agentId: t.agentId ?? '',
         status: (t as any).status ?? 'closed',
+        // v2.0.143: Restore new Trade Incident fields
+        entryThesis: (t as any).entryThesis,
+        exitThesis: (t as any).exitThesis,
+        postReview: (t as any).postReview,
+        minValueReached: (t as any).minValueReached,
+        maxValueReached: (t as any).maxValueReached,
       }));
       this.closedRealTrades.push(...restoredRealTrades);
       if (restoredRealTrades.length > 0) {
@@ -313,6 +331,9 @@ export class PortfolioTracker {
       updatedAt: p.updatedAt,
       agentId: p.agentId,
       exchange: p.exchange,
+      // v2.0.143: Include MAE/MFE in snapshot
+      minValueReached: (p as any).minValueReached,
+      maxValueReached: (p as any).maxValueReached,
     }));
 
     return {
@@ -493,6 +514,10 @@ export class PortfolioTracker {
       entryFee,
       // v2.0.80: Store Meta-Agent's entry thesis for Skeptics re-validation
       entryThesis,
+      // v2.0.143: Initialize MAE/MFE tracking as position VALUE (margin + unrealized PnL).
+      // At open, unrealized PnL = -entryFee, so value = margin - entryFee.
+      minValueReached: margin - entryFee,
+      maxValueReached: margin - entryFee,
     };
 
     // Set stop-loss and take-profit
@@ -503,6 +528,9 @@ export class PortfolioTracker {
       position.stopLossPrice = entryPrice * (1 + config.risk.stopLossPct);
       position.takeProfitPrice = entryPrice * (1 - config.risk.takeProfitPct);
     }
+    // v2.0.143: Record original SL/TP at open so exitThesis can detect narrowing/widening.
+    position.originalStopLossPrice = position.stopLossPrice;
+    position.originalTakeProfitPrice = position.takeProfitPrice;
 
     this.portfolio.positions.set(symbol, position);
     this.portfolio.lastUpdated = Date.now();
@@ -566,6 +594,19 @@ export class PortfolioTracker {
     } else {
       pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee;
       pos.unrealizedPnlPct = margin > 0 ? ((pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee) / margin : 0;
+    }
+
+    // v2.0.143: Track MAE (min) and MFE (max) of position VALUE over the
+    // position's lifetime. Position value = margin + unrealized PnL.
+    // This shows the actual dollar value of the position at its worst/best,
+    // e.g. $10 margin - $0.55 dip = $9.45 minimum value reached.
+    const trackMargin = (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
+    const posValue = trackMargin + pos.unrealizedPnl;
+    if (pos.minValueReached === undefined || posValue < pos.minValueReached) {
+      pos.minValueReached = posValue;
+    }
+    if (pos.maxValueReached === undefined || posValue > pos.maxValueReached) {
+      pos.maxValueReached = posValue;
     }
 
     // Recalculate total equity so it reflects latest unrealized PnL
@@ -642,6 +683,21 @@ export class PortfolioTracker {
     }
   }
 
+  /** v2.0.143: Set exit thesis on a position BEFORE closing it.
+   *  Called by index.ts when consensus/Skeptics decides to close a position,
+   *  so the rationale is captured in the TradeRecord at close time.
+   *  Must be called BEFORE closePosition()/closeExchangePosition() because
+   *  those methods delete the position from the map. */
+  setExitThesis(symbol: string, thesis: string): void {
+    const sym = normalizeSymbol(symbol);
+    const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(sym);
+    if (!pos) return;
+    if (thesis && thesis.trim().length > 0) {
+      pos.exitThesis = thesis.trim();
+      pos.updatedAt = Date.now();
+    }
+  }
+
   softUpdatePosition(symbol: string, currentPrice: number): void {
     // v2.0.72: check real positions first, then paper
     const sym = normalizeSymbol(symbol);
@@ -662,6 +718,16 @@ export class PortfolioTracker {
     } else {
       pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee;
       pos.unrealizedPnlPct = margin > 0 ? ((pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee) / margin : 0;
+    }
+
+    // v2.0.143: Track MAE (min) and MFE (max) of position VALUE — same as updatePosition.
+    const trackMarginSoft = (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
+    const posValueSoft = trackMarginSoft + pos.unrealizedPnl;
+    if (pos.minValueReached === undefined || posValueSoft < pos.minValueReached) {
+      pos.minValueReached = posValueSoft;
+    }
+    if (pos.maxValueReached === undefined || posValueSoft > pos.maxValueReached) {
+      pos.maxValueReached = posValueSoft;
     }
 
     this.recalculateEquity();
@@ -749,6 +815,13 @@ export class PortfolioTracker {
       exchange,
       stopLossPrice,
       takeProfitPrice,
+      // v2.0.143: Initialize MAE/MFE tracking at import.
+      // Position value = margin (notional / leverage) + unrealized PnL (0 at import).
+      minValueReached: (entryPrice * quantity) / leverage,
+      maxValueReached: (entryPrice * quantity) / leverage,
+      // v2.0.143: Record original SL/TP at import.
+      originalStopLossPrice: stopLossPrice,
+      originalTakeProfitPrice: takeProfitPrice,
     };
 
     // v2.0.72: Store in realPositions (separate from paper positions).
@@ -1191,6 +1264,43 @@ export class PortfolioTracker {
     // Track P&L as a percentage of margin used (return on capital at risk)
     const marginUsed = margin;
 
+    // v2.0.143: If no exitThesis was set by setExitThesis() or checkPositionExits
+    // (e.g. reconciliation close, paper mode cleanup), generate a fallback.
+    if (!pos.exitThesis) {
+      const isWin = realizedPnl >= 0;
+      const slTpGapPct = (pos.stopLossPrice !== undefined && pos.takeProfitPrice !== undefined && pos.currentPrice > 0)
+        ? Math.abs(pos.takeProfitPrice - pos.stopLossPrice) / pos.currentPrice
+        : 0;
+      const origGapPct = (pos.originalStopLossPrice !== undefined && pos.originalTakeProfitPrice !== undefined && pos.averageEntryPrice > 0)
+        ? Math.abs(pos.originalTakeProfitPrice - pos.originalStopLossPrice) / pos.averageEntryPrice
+        : 0;
+      let gapNote = '';
+      if (slTpGapPct > 0 && slTpGapPct < 0.03) {
+        gapNote = ` ⚠️ SL/TP gap was only ${(slTpGapPct * 100).toFixed(1)}% at close`;
+        if (origGapPct > slTpGapPct) {
+          gapNote += ` (narrowed from original ${(origGapPct * 100).toFixed(1)}%) — unreasonably tight.`;
+        } else {
+          gapNote += ` — unreasonably tight.`;
+        }
+      }
+      // SL/TP change detection
+      let slChange = '';
+      if (pos.originalStopLossPrice !== undefined && pos.stopLossPrice !== undefined && pos.originalStopLossPrice !== pos.stopLossPrice) {
+        slChange = ` SL: $${pos.originalStopLossPrice.toFixed(2)}→$${pos.stopLossPrice.toFixed(2)}.`;
+      }
+      let tpChange = '';
+      if (pos.originalTakeProfitPrice !== undefined && pos.takeProfitPrice !== undefined && pos.originalTakeProfitPrice !== pos.takeProfitPrice) {
+        tpChange = ` TP: $${pos.originalTakeProfitPrice.toFixed(2)}→$${pos.takeProfitPrice.toFixed(2)}.`;
+      }
+      if (pos.stopLossPrice && ((pos.side === 'buy' && exitPrice <= pos.stopLossPrice) || (pos.side === 'sell' && exitPrice >= pos.stopLossPrice))) {
+        pos.exitThesis = `Stop-loss triggered @ $${exitPrice.toFixed(2)} (SL=$${pos.stopLossPrice.toFixed(2)}).${slChange}${gapNote}`;
+      } else if (pos.takeProfitPrice && ((pos.side === 'buy' && exitPrice >= pos.takeProfitPrice) || (pos.side === 'sell' && exitPrice <= pos.takeProfitPrice))) {
+        pos.exitThesis = `Take-profit triggered @ $${exitPrice.toFixed(2)} (TP=$${pos.takeProfitPrice.toFixed(2)}).${tpChange}${gapNote}`;
+      } else {
+        pos.exitThesis = `Position closed @ $${exitPrice.toFixed(2)} (${isWin ? 'profit' : 'loss'} $${realizedPnl.toFixed(2)}).${slChange}${tpChange}${gapNote}`;
+      }
+    }
+
     const trade: TradeRecord = {
       id: uuidv4(),
       symbol: pos.symbol,
@@ -1208,6 +1318,11 @@ export class PortfolioTracker {
       status: 'closed',
       // v2.0.138: capture frozen entryThesis for EXP thesis-experience memory
       entryThesis: pos.entryThesis,
+      // v2.0.143: capture exit thesis (set by setExitThesis before close)
+      exitThesis: pos.exitThesis,
+      // v2.0.143: capture MAE/MFE from position lifetime tracking
+      minValueReached: pos.minValueReached,
+      maxValueReached: pos.maxValueReached,
     };
 
     // Update portfolio stats
@@ -1295,6 +1410,51 @@ export class PortfolioTracker {
     // Adding it here would inflate the paper balance with real trade PnL.
     // The trade record is still produced for learning + UI display.
 
+    // v2.0.143: If no exitThesis was set by setExitThesis() (e.g. HL SL/TP
+    // triggered, not a consensus close), generate one from the close context.
+    // Include original vs final SL/TP comparison to detect narrowing/widening.
+    if (!pos.exitThesis) {
+      const isWin = realizedPnl >= 0;
+      const slDistPct = pos.stopLossPrice !== undefined && pos.currentPrice > 0
+        ? Math.abs(pos.currentPrice - pos.stopLossPrice) / pos.currentPrice
+        : 0;
+      const tpDistPct = pos.takeProfitPrice !== undefined && pos.currentPrice > 0
+        ? Math.abs(pos.currentPrice - pos.takeProfitPrice) / pos.currentPrice
+        : 0;
+      const slTpGapPct = (pos.stopLossPrice !== undefined && pos.takeProfitPrice !== undefined && pos.currentPrice > 0)
+        ? Math.abs(pos.takeProfitPrice - pos.stopLossPrice) / pos.currentPrice
+        : 0;
+      const origGapPct = (pos.originalStopLossPrice !== undefined && pos.originalTakeProfitPrice !== undefined && pos.averageEntryPrice > 0)
+        ? Math.abs(pos.originalTakeProfitPrice - pos.originalStopLossPrice) / pos.averageEntryPrice
+        : 0;
+      let gapNote = '';
+      if (slTpGapPct > 0 && slTpGapPct < 0.03) {
+        gapNote = ` ⚠️ SL/TP gap was only ${(slTpGapPct * 100).toFixed(1)}% at close`;
+        if (origGapPct > slTpGapPct) {
+          gapNote += ` (narrowed from original ${(origGapPct * 100).toFixed(1)}%) — unreasonably tight.`;
+        } else {
+          gapNote += ` — unreasonably tight.`;
+        }
+      }
+      let slChange = '';
+      if (pos.originalStopLossPrice !== undefined && pos.stopLossPrice !== undefined && pos.originalStopLossPrice !== pos.stopLossPrice) {
+        slChange = ` SL: $${pos.originalStopLossPrice.toFixed(2)}→$${pos.stopLossPrice.toFixed(2)}.`;
+      }
+      let tpChange = '';
+      if (pos.originalTakeProfitPrice !== undefined && pos.takeProfitPrice !== undefined && pos.originalTakeProfitPrice !== pos.takeProfitPrice) {
+        tpChange = ` TP: $${pos.originalTakeProfitPrice.toFixed(2)}→$${pos.takeProfitPrice.toFixed(2)}.`;
+      }
+      if (hlRealizedPnl !== undefined) {
+        pos.exitThesis = `Exchange close @ $${exitPrice.toFixed(2)} (${isWin ? 'profit' : 'loss'} $${realizedPnl.toFixed(2)}).${slChange}${tpChange}${gapNote}`;
+      } else if (pos.stopLossPrice && ((pos.side === 'buy' && exitPrice <= pos.stopLossPrice) || (pos.side === 'sell' && exitPrice >= pos.stopLossPrice))) {
+        pos.exitThesis = `Stop-loss triggered @ $${exitPrice.toFixed(2)} (SL=$${pos.stopLossPrice.toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChange}${gapNote}`;
+      } else if (pos.takeProfitPrice && ((pos.side === 'buy' && exitPrice >= pos.takeProfitPrice) || (pos.side === 'sell' && exitPrice <= pos.takeProfitPrice))) {
+        pos.exitThesis = `Take-profit triggered @ $${exitPrice.toFixed(2)} (TP=$${pos.takeProfitPrice.toFixed(2)}, ${(tpDistPct * 100).toFixed(1)}% from entry).${tpChange}${gapNote}`;
+      } else {
+        pos.exitThesis = `Exchange position closed @ $${exitPrice.toFixed(2)} (${isWin ? 'profit' : 'loss'} $${realizedPnl.toFixed(2)}).${slChange}${tpChange}${gapNote}`;
+      }
+    }
+
     const trade: TradeRecord = {
       id: uuidv4(),
       symbol: pos.symbol,
@@ -1312,6 +1472,11 @@ export class PortfolioTracker {
       status: 'closed',
       // v2.0.138: capture frozen entryThesis for EXP thesis-experience memory
       entryThesis: pos.entryThesis,
+      // v2.0.143: capture exit thesis (set by setExitThesis before close)
+      exitThesis: pos.exitThesis,
+      // v2.0.143: capture MAE/MFE from position lifetime tracking
+      minValueReached: pos.minValueReached,
+      maxValueReached: pos.maxValueReached,
     };
 
     // v2.0.32: Do NOT update paper portfolio stats (totalPnl, winCount,
@@ -1358,25 +1523,91 @@ export class PortfolioTracker {
   }
 
   private checkPositionExits(pos: Position): void {
+    // v2.0.143: Set exitThesis BEFORE closing so the TradeRecord captures it.
+    // Include SL/TP narrowing analysis: compare original SL/TP (at open) vs
+    // current SL/TP (at close) to detect whether the system tightened them
+    // to an unreasonable degree.
+    const slDistPct = pos.stopLossPrice !== undefined && pos.currentPrice > 0
+      ? Math.abs(pos.currentPrice - pos.stopLossPrice) / pos.currentPrice
+      : 0;
+    const tpDistPct = pos.takeProfitPrice !== undefined && pos.currentPrice > 0
+      ? Math.abs(pos.currentPrice - pos.takeProfitPrice) / pos.currentPrice
+      : 0;
+    const slTpGapPct = (pos.stopLossPrice !== undefined && pos.takeProfitPrice !== undefined && pos.currentPrice > 0)
+      ? Math.abs(pos.takeProfitPrice - pos.stopLossPrice) / pos.currentPrice
+      : 0;
+
+    // v2.0.143: Compare original vs current SL/TP to detect narrowing/widening.
+    const origSL = pos.originalStopLossPrice;
+    const origTP = pos.originalTakeProfitPrice;
+    const currSL = pos.stopLossPrice;
+    const currTP = pos.takeProfitPrice;
+    const isLong = pos.side === 'buy';
+
+    // SL narrowing: SL moved closer to entry (tighter stop = more risk of noise stop-out)
+    // SL widening: SL moved further from entry (wider stop = more risk) — blocked by no-widen, but check anyway
+    let slChangeNote = '';
+    if (origSL !== undefined && currSL !== undefined && origSL !== currSL) {
+      const origSlDist = Math.abs(pos.averageEntryPrice - origSL);
+      const currSlDist = Math.abs(pos.averageEntryPrice - currSL);
+      const slNarrowedPct = origSlDist > 0 ? ((origSlDist - currSlDist) / origSlDist * 100) : 0;
+      if (currSlDist < origSlDist) {
+        slChangeNote = ` SL was tightened by ${Math.abs(slNarrowedPct).toFixed(1)}% (original SL=$${origSL.toFixed(2)} → final SL=$${currSL.toFixed(2)}).`;
+      } else {
+        slChangeNote = ` SL was widened by ${Math.abs(slNarrowedPct).toFixed(1)}% (original SL=$${origSL.toFixed(2)} → final SL=$${currSL.toFixed(2)}).`;
+      }
+    }
+
+    // TP narrowing: TP moved closer to entry (tighter target = less profit)
+    let tpChangeNote = '';
+    if (origTP !== undefined && currTP !== undefined && origTP !== currTP) {
+      const origTpDist = Math.abs(pos.averageEntryPrice - origTP);
+      const currTpDist = Math.abs(pos.averageEntryPrice - currTP);
+      const tpNarrowedPct = origTpDist > 0 ? ((origTpDist - currTpDist) / origTpDist * 100) : 0;
+      if (currTpDist < origTpDist) {
+        tpChangeNote = ` TP was tightened by ${Math.abs(tpNarrowedPct).toFixed(1)}% (original TP=$${origTP.toFixed(2)} → final TP=$${currTP.toFixed(2)}).`;
+      } else {
+        tpChangeNote = ` TP was widened by ${Math.abs(tpNarrowedPct).toFixed(1)}% (original TP=$${origTP.toFixed(2)} → final TP=$${currTP.toFixed(2)}).`;
+      }
+    }
+
+    // SL/TP gap analysis
+    const origGapPct = (origSL !== undefined && origTP !== undefined && pos.averageEntryPrice > 0)
+      ? Math.abs(origTP - origSL) / pos.averageEntryPrice
+      : 0;
+    let gapNote = '';
+    if (slTpGapPct > 0 && slTpGapPct < 0.03) {
+      gapNote = ` ⚠️ SL/TP gap was only ${(slTpGapPct * 100).toFixed(1)}% at close`;
+      if (origGapPct > 0 && origGapPct > slTpGapPct) {
+        gapNote += ` (narrowed from original ${(origGapPct * 100).toFixed(1)}%) — unreasonably tight, likely noise stop-out.`;
+      } else {
+        gapNote += ` — unreasonably tight, likely noise stop-out.`;
+      }
+    }
+
     if (pos.side === 'buy') {
       if (pos.stopLossPrice && pos.currentPrice <= pos.stopLossPrice) {
         log.warn(`Stop-loss triggered for ${pos.symbol} @ ${pos.currentPrice}`);
+        pos.exitThesis = `Stop-loss triggered @ $${pos.currentPrice.toFixed(2)} (SL=$${pos.stopLossPrice.toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChangeNote}${gapNote}`;
         this.closePosition(pos.symbol, pos.currentPrice);
         return;
       }
       if (pos.takeProfitPrice && pos.currentPrice >= pos.takeProfitPrice) {
         log.info(`Take-profit triggered for ${pos.symbol} @ ${pos.currentPrice}`);
+        pos.exitThesis = `Take-profit triggered @ $${pos.currentPrice.toFixed(2)} (TP=$${pos.takeProfitPrice.toFixed(2)}, ${(tpDistPct * 100).toFixed(1)}% from entry).${tpChangeNote}${gapNote}`;
         this.closePosition(pos.symbol, pos.currentPrice);
         return;
       }
     } else {
       if (pos.stopLossPrice && pos.currentPrice >= pos.stopLossPrice) {
         log.warn(`Stop-loss triggered for ${pos.symbol} @ ${pos.currentPrice}`);
+        pos.exitThesis = `Stop-loss triggered @ $${pos.currentPrice.toFixed(2)} (SL=$${pos.stopLossPrice.toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChangeNote}${gapNote}`;
         this.closePosition(pos.symbol, pos.currentPrice);
         return;
       }
       if (pos.takeProfitPrice && pos.currentPrice <= pos.takeProfitPrice) {
         log.info(`Take-profit triggered for ${pos.symbol} @ ${pos.currentPrice}`);
+        pos.exitThesis = `Take-profit triggered @ $${pos.currentPrice.toFixed(2)} (TP=$${pos.takeProfitPrice.toFixed(2)}, ${(tpDistPct * 100).toFixed(1)}% from entry).${tpChangeNote}${gapNote}`;
         this.closePosition(pos.symbol, pos.currentPrice);
         return;
       }

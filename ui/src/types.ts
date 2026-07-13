@@ -260,6 +260,8 @@ export interface APIData {
       longWinRate: number;
       shortWinRate: number;
       avgHoldCycles: number;
+      avgMfePct: number;
+      avgMaePct: number;
     }>;
     shadowOpen?: Array<{
       symbol: string;
