@@ -630,7 +630,10 @@ export class HACPEngine {
     // We cap the per-agent thinking window at 60s so a single slow/timed-out
     // agent (e.g. Ollama during a WS reconnect storm) cannot block the whole
     // cycle for 120s. Agents that miss the deadline get a graceful HOLD.
-    const phase1DeadlineMs = 60_000;
+    // v2.0.143: Increased from 60s to 90s to match the per-agent LLM timeout
+    // (90s). Cloud models sometimes take 50-70s for complex multi-symbol
+    // analysis. 60s deadline was causing premature timeout fallbacks.
+    const phase1DeadlineMs = 90_000;
 
     const thinkingPromises = this.subAgents.map(async (agent, idx) => {
       if (idx > 0) {

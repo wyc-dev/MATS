@@ -181,12 +181,12 @@ conviction gate, and trade frequency status. You MUST factor this into your conf
         ],
         temperature: this.identity.temperature,
         model: this.resolveModel(),
-        // Tiered timeout: 45s for the LLM call, leaving a 15s buffer under the
-        // HACP Phase 1 deadline race (60s). Previously 120s, which meant a
-        // single stalled agent (e.g. Ollama during HL WS reconnect) blocked
-        // the entire HACP cycle for 2 minutes. The HACP deadline race now
-        // catches any overflow and degrades to a graceful HOLD.
-        timeoutMs: 45_000,
+        // v2.0.143: Increased from 45s to 90s — cloud models (DeepSeek V4 Flash)
+        // sometimes take 50-70s for complex multi-symbol analysis with news
+        // context. 45s was too tight, causing frequent timeout fallbacks.
+        // The HACP Phase 1 deadline race (60s) catches overflow, but we
+        // also raised that to 90s to match (see hacp.ts).
+        timeoutMs: 90_000,
       });
 
       const parsed = this.parseMultiSymbolResponse(response.content);
