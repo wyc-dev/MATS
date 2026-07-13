@@ -46,13 +46,13 @@ function getDefaultModelMap(): Record<AgentRole, string> {
 
   // Ollama is the only provider
   defaultModelMap = {
-    // Sub-agents use glm-5.2:cloud — balanced speed/capability for parallel inference
+    // Sub-agents use kimi-k2.6:cloud — balanced speed/capability for parallel inference
     // Meta-agent uses deepseek-v4-flash:cloud — faster for arbitration/synthesis
     // Risk Auditor uses deepseek-v4-flash:cloud — fast + analytical for risk veto decisions
     // Regime guardian uses 2048 maxTokens (set in agents.ts) for verbose JSON
-    fractal_momentum_sentinel: 'glm-5.2:cloud',
-    onchain_whisperer: 'glm-5.2:cloud',
-    rbc_sentiment_analyst: 'glm-5.2:cloud',
+    fractal_momentum_sentinel: 'kimi-k2.6:cloud',
+    onchain_whisperer: 'kimi-k2.6:cloud',
+    rbc_sentiment_analyst: 'kimi-k2.6:cloud',
     independent_risk_auditor: 'deepseek-v4-flash:cloud',
     meta_agent: 'deepseek-v4-flash:cloud',
     // v2.0.76: News Reporter uses DeepSeek V4 Flash — cold, analytical, fast.
@@ -61,7 +61,8 @@ function getDefaultModelMap(): Record<AgentRole, string> {
     // Phase 1 within budget.
     news_reporter: 'deepseek-v4-flash:cloud',
     skeptics: 'deepseek-v4-flash:cloud',
-    market_agent: 'glm-5.2:cloud',
+    market_agent: 'kimi-k2.6:cloud',
+    terminal_agent: 'deepseek-v4-flash:cloud',
   };
   return defaultModelMap;
 }
@@ -98,6 +99,7 @@ export function getAllAgentModels(): AgentModelConfig[] {
     'market_agent',
     'news_reporter',
     'skeptics',
+    'terminal_agent',
   ];
   return roles.map(role => {
     const model = getAgentModel(role);

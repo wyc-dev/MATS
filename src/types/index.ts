@@ -81,7 +81,8 @@ export type AgentRole =
   | 'meta_agent'
   | 'news_reporter'
   | 'skeptics'
-  | 'market_agent';
+  | 'market_agent'
+  | 'terminal_agent';
 
 export interface AgentIdentity {
   id: UUID;

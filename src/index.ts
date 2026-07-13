@@ -7,6 +7,7 @@ import { setupShutdownHandlers, registerShutdownHandler, isShuttingDown } from '
 import { hlRateLimitedFetch } from './utils/hl-global-limiter.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
 import { getActiveProvider } from './llm/index.ts';
+import { getAgentModel } from './agents/agent-models.ts';
 import { BinanceWebSocketManager, MarketStateAggregator, type AggregatedMarketState } from './data/binance-websocket.ts';
 import { HyperliquidWebSocketManager } from './data/hyperliquid-websocket.ts';
 import { MultiExchangeWebSocketManager, detectExchange, type UnifiedPrice, type UnifiedOrderBook } from './data/multi-exchange-ws.ts';
@@ -662,7 +663,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               { role: 'user', content: input },
             ],
             temperature: 0.3,
-            model: 'deepseek-v4-flash:cloud',
+            model: getAgentModel('terminal_agent'),
             timeoutMs: 30_000,
           });
 
