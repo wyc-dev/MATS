@@ -497,7 +497,7 @@ export const AGENT_META: Record<string, { name: string; color: string; short: st
     color: '#a78bfa',
     hex: '167, 139, 250',
     short: 'Terminal',
-    description: 'Analyzes all Selected Market Pairs for terminal-side execution signals. Framework in place — functionality to be added.',
+    description: 'User trading preference input terminal. Accepts natural language instructions and integrates them into Root Command Prompt for the trading system.',
   },
 };
 

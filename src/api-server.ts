@@ -282,6 +282,8 @@ export class APIServer {
   /** v2.0.116: Settings modal — get/update env vars */
   private onGetEnvSettings: (() => Record<string, string>) | null = null;
   private onUpdateEnvSettings: ((settings: Record<string, string>) => Promise<{ success: boolean; error?: string }>) | null = null;
+  /** Terminal Agent — user input → LLM integration → Root Command Prompt */
+  private onTerminalAgentInput: ((input: string, currentPrompt: string) => Promise<{ success: boolean; prompt?: string; error?: string }>) | null = null;
 
   constructor(port = 3456) {
     this.port = port;
@@ -406,6 +408,11 @@ export class APIServer {
   /** Register a callback for fetching candle data */
   setCandlesRequestHandler(cb: (symbol: string, interval: string, limit: number) => Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>>): void {
     this.onCandlesRequest = cb;
+  }
+
+  /** Register callback for Terminal Agent user input → Root Command Prompt */
+  setTerminalAgentInputHandler(cb: (input: string, currentPrompt: string) => Promise<{ success: boolean; prompt?: string; error?: string }>): void {
+    this.onTerminalAgentInput = cb;
   }
 
   /** Register a callback for resetting trade history */
@@ -923,6 +930,34 @@ export class APIServer {
         if (this.onMarketAgentFetchPairs) this.onMarketAgentFetchPairs();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, message: 'Refreshing top pairs...' }));
+        return;
+      }
+
+      // POST: Terminal Agent — user input → LLM integration → Root Command Prompt
+      if (pathname === '/api/terminal-agent/input' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', async () => {
+          try {
+            const { input, currentPrompt } = JSON.parse(body) as { input: string; currentPrompt?: string };
+            if (!input || typeof input !== 'string' || input.length > 5000) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'Invalid input. Must be a non-empty string (max 5000 chars).' }));
+              return;
+            }
+            if (this.onTerminalAgentInput) {
+              const result = await this.onTerminalAgentInput(input, currentPrompt ?? '');
+              res.writeHead(result.success ? 200 : 500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify(result));
+            } else {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'Terminal Agent handler not registered' }));
+            }
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
+          }
+        });
         return;
       }
 

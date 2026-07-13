@@ -6,6 +6,7 @@ import { rootLogger, createLogger } from './observability/logger.ts';
 import { setupShutdownHandlers, registerShutdownHandler, isShuttingDown } from './utils/shutdown.ts';
 import { hlRateLimitedFetch } from './utils/hl-global-limiter.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
+import { getActiveProvider } from './llm/index.ts';
 import { BinanceWebSocketManager, MarketStateAggregator, type AggregatedMarketState } from './data/binance-websocket.ts';
 import { HyperliquidWebSocketManager } from './data/hyperliquid-websocket.ts';
 import { MultiExchangeWebSocketManager, detectExchange, type UnifiedPrice, type UnifiedOrderBook } from './data/multi-exchange-ws.ts';
@@ -607,6 +608,75 @@ class MATSSystem {
           }
         }, ms);
         this.pushToAPI();
+      });
+
+      // Terminal Agent — user input → LLM integration → Root Command Prompt
+      this.apiServer.setTerminalAgentInputHandler(async (input: string, currentPrompt: string) => {
+        try {
+          const provider = getActiveProvider();
+          const systemPrompt = `You are the Terminal Agent for a multi-agent quant trading system (MATS).
+Your job is to maintain a "Root Command Prompt" — a consolidated set of behavioral trading preferences derived from user inputs.
+
+CRITICAL RULE: You must NEVER write ambiguous or incomplete instructions into the Root Command Prompt. When the user's input lacks specificity (e.g. "only trade on Monday" without timezone, exact hours, or session definition), you MUST ask clarifying questions FIRST. Only write to the Root Command Prompt when the instruction is fully concrete and unambiguous.
+
+CONFIG REJECTION: Root Command Prompt only accepts BEHAVIORAL directives (decision style, trading bias, time/condition rules, execution preferences). It does NOT accept config-level settings. If the user's input involves any of these, REJECT it and tell them to use Trading Setup instead:
+- Position size (e.g. "set position size to 20%") → reject: "Adjust in Trading Setup"
+- Leverage (e.g. "set leverage to 15x") → reject: "Adjust in Trading Setup"
+- Max portion (e.g. "max portion 50%") → reject: "Adjust in Trading Setup"
+- Cycle period (e.g. "change cycle to 3 minutes") → reject: "Adjust in Trading Setup"
+- Trade mode (e.g. "switch to real trading") → reject: "Adjust in Trading Setup"
+- Asset type (e.g. "trade stocks only") → reject: "Adjust in Trading Setup"
+Do NOT write these to the Root Command Prompt. Instead, respond in the Side Guide: "This is a config setting — please adjust it in Trading Setup above."
+
+Output format — two sections separated by a line containing only "---":
+
+1. Root Command Prompt: The actual trading instructions. Only include concrete, fully-specified behavioral rules. Each rule on its own line starting with "- ". If no complete rules exist yet (pending clarification or all input was config-rejected), output nothing for this section — leave it empty.
+
+2. Side Guide: Below the "---" separator, output "Side Guide:" followed by either:
+   - Clarification questions for the user (prefixed with "? ") — ask SHORT, DIRECT questions one per line. Be concise. Don't write paragraphs or long explanations. Just ask the specific missing detail.
+     BAD: "The user has specified a single day restriction. They may want to clarify whether this applies to all trades or only certain strategies, and whether any exceptions or additional conditions (e.g., time of day, market conditions) should be considered."
+     GOOD: "? Which timezone? (e.g. GMT, HKT, ET)"
+     GOOD: "? Full 24 hours or specific hours?"
+     GOOD: "? Open new positions only, or also close existing ones?"
+   - OR config rejection notices — tell the user to adjust config settings in Trading Setup.
+   - OR confirmation if everything is clear — one line summary of what was integrated.
+   This section is for user interaction, NOT instructions for the trading system.
+
+Rules:
+1. Read the user's new input and the current Root Command Prompt (if any).
+2. If the input is a config-level setting, reject it (see CONFIG REJECTION above). Do NOT write to Root Command Prompt.
+3. If the input is ambiguous or incomplete, ask clarification questions in the Side Guide. Do NOT write to the Root Command Prompt yet.
+4. If the input is a response to previous clarification questions and now fully specifies the instruction, write it to the Root Command Prompt.
+5. Integrate new complete instructions into the existing prompt — merge, refine, deduplicate.
+6. If the user's input contradicts an existing instruction, the newer instruction takes priority.
+7. Preserve all valid prior instructions that are not contradicted.
+8. Do NOT invent trading rules the user hasn't stated.
+9. No JSON, no markdown fences, no commentary outside the two sections.
+
+Current Root Command Prompt:
+${currentPrompt || '(empty — this is the first input)'}`;
+
+          const response = await provider.chat({
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: input },
+            ],
+            temperature: 0.3,
+            model: 'deepseek-v4-flash:cloud',
+            timeoutMs: 30_000,
+          });
+
+          const updatedPrompt = response.content.trim();
+          if (!updatedPrompt) {
+            return { success: false, error: 'LLM returned empty response' };
+          }
+          log.info(`Terminal Agent: Root Command Prompt updated (${updatedPrompt.length} chars)`);
+          return { success: true, prompt: updatedPrompt };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.error(`Terminal Agent input failed: ${msg}`);
+          return { success: false, error: msg };
+        }
       });
 
       // v2.0.44: Manual symbol selection from Top Volume Pairs list.
