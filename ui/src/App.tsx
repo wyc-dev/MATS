@@ -494,7 +494,9 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
   )
 }
 
-/* ── Terminal Agent card — framework for terminal-side execution analysis ── */
+/* ── Terminal Agent card — user trading preference input + Root Command Prompt ── */
+
+const TERMINAL_PROMPT_KEY = 'amacrf:terminalSinglePrompt'
 
 function TerminalAgentCard({ data, isExpanded, onToggleExpand }: { data: APIData | null; isExpanded: boolean; onToggleExpand: () => void }) {
   const meta = AGENT_META['terminal_agent']
@@ -536,6 +538,62 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand }: { data: APIData
     ...tradingMarkets.filter(sym => !Array.from(positionMap.keys()).some(p => normSym(p) === normSym(sym))),
   ]
 
+  // ── Terminal Agent state: user input + integrated Root Command Prompt ──
+  const [userInput, setUserInput] = useState('')
+  const [singlePrompt, setSinglePrompt] = useState<string>(() => {
+    try { return localStorage.getItem(TERMINAL_PROMPT_KEY) ?? '' } catch { return '' }
+  })
+  const [processing, setProcessing] = useState(false)
+  const [resetConfirm, setResetConfirm] = useState(false)
+
+  const handleUserSubmit = async () => {
+    const input = userInput.trim()
+    if (!input) return
+    setProcessing(true)
+    try {
+      const res = await fetch(`${API_BASE}/terminal-agent/input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input, currentPrompt: singlePrompt }),
+      })
+      const result = await res.json() as { success: boolean; prompt?: string; error?: string }
+      if (result.success && result.prompt != null) {
+        setSinglePrompt(result.prompt)
+        try { localStorage.setItem(TERMINAL_PROMPT_KEY, result.prompt) } catch { /* ignore */ }
+      } else {
+        alert(`Failed to process input: ${result.error ?? 'Unknown error'}`)
+      }
+      setUserInput('')
+    } catch (err) {
+      alert(`Failed to connect to Terminal Agent: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setProcessing(false)
+    }
+  }
+
+  const handleClearPrompt = () => {
+    setSinglePrompt('')
+    try { localStorage.removeItem(TERMINAL_PROMPT_KEY) } catch { /* ignore */ }
+    setResetConfirm(false)
+  }
+
+  // Parse LLM output: split on 'Side Guide:' keyword
+  const parsePrompt = (raw: string) => {
+    const rawText = raw.trim()
+    const guideMatch = rawText.match(/^Side Guide:\s*/im)
+    let promptPart = ''
+    let guidePart = ''
+    if (guideMatch && guideMatch.index != null) {
+      promptPart = rawText.slice(0, guideMatch.index).replace(/^Root Command Prompt:\s*/i, '').replace(/^ONE Single Prompt:\s*/i, '').replace(/^---\s*$/m, '').trim()
+      guidePart = rawText.slice(guideMatch.index + guideMatch[0].length).trim()
+    } else {
+      promptPart = rawText.replace(/^Root Command Prompt:\s*/i, '').replace(/^ONE Single Prompt:\s*/i, '').replace(/^---\s*$/m, '').trim()
+    }
+    return { promptPart, guidePart }
+  }
+
+  const { promptPart, guidePart } = parsePrompt(singlePrompt)
+
   return (
     <div className={`agent-card ${isExpanded ? 'agent-card-expanded' : 'agent-card-collapsed'}`}>
       <div className="agent-head" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
@@ -546,7 +604,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand }: { data: APIData
         {allSelectedSyms.length > 0 && (
           <div className="agent-symbols">{allSelectedSyms.join(' , ')}</div>
         )}
-        <span className="agent-state idle">idle</span>
+        <span className="agent-state idle">{processing ? '💭 processing' : 'idle'}</span>
         <span className="agent-expand-chevron">{isExpanded ? '▲' : '▼'}</span>
       </div>
       {!isExpanded && (
@@ -554,46 +612,213 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand }: { data: APIData
           <div className="agent-description-collapsed">{meta.description}</div>
           <div className="agent-footer agent-footer-collapsed">
             <span className="agent-footer-item">⏱ —</span>
-            <span className="agent-footer-item">📋 pending</span>
+            <span className="agent-footer-item">{promptPart ? `📋 ${promptPart.length} chars` : '📋 empty'}</span>
           </div>
         </>
       )}
       {isExpanded && (
         <>
-          <div className="agent-thought agent-thought-expanded">
-            Terminal Agent framework initialized. Analyzing {allSelectedSyms.length} selected market pair(s): {allSelectedSyms.join(', ') || 'none'}.
-            <br /><br />
-            Functionality to be added — this agent will process terminal-side execution signals for all Selected Market Pairs.
-          </div>
-          <div className="agent-footer">
-            <span className="agent-footer-item">⏱ —</span>
-            <span className="agent-footer-item">📋 pending</span>
-          </div>
-          <div className="agent-card-model-row">
-            <select className="model-select model-select-wide" disabled>
-              <option>Terminal Agent (no model)</option>
-            </select>
-          </div>
-          {allSelectedSyms.length > 0 && (
-            <div className="agent-per-symbol-section">
-              {allSelectedSyms.map((sym, i) => {
-                const side = positionMap.get(sym)
-                return (
-                  <div key={i} className="agent-per-symbol-group">
-                    <div className="agent-per-symbol-header">
-                      <span className="agent-decision-symbol">{sym}</span>
-                      <span className={`decision-tag ${side ? (side === 'buy' ? 'buy' : 'sell') : 'hold'} decision-tag-inner`}>
-                        {side ? side.toUpperCase() : 'HOLD'}
-                      </span>
+          <style>{`@keyframes terminal-breathe { 0%, 100% { box-shadow: inset 0 0 20px rgba(52, 211, 153, 0.05), 0 0 8px rgba(52, 211, 153, 0.1); border-color: rgba(52, 211, 153, 0.3); } 50% { box-shadow: inset 0 0 20px rgba(52, 211, 153, 0.08), 0 0 16px rgba(52, 211, 153, 0.25); border-color: rgba(52, 211, 153, 0.5); } } @keyframes terminal-input-breathe { 0%, 100% { box-shadow: 0 0 8px rgba(167, 139, 250, 0.1); border-color: rgba(167, 139, 250, 0.3); } 50% { box-shadow: 0 0 16px rgba(167, 139, 250, 0.25); border-color: rgba(167, 139, 250, 0.5); } } @keyframes terminal-prompt-breathe { 0%, 100% { box-shadow: 0 0 8px rgba(245, 166, 35, 0.1); border-color: rgba(245, 166, 35, 0.3); } 50% { box-shadow: 0 0 16px rgba(245, 166, 35, 0.25); border-color: rgba(245, 166, 35, 0.5); } }`}</style>
+
+          {/* Terminal response area — sci-fi terminal style, above input */}
+          <div style={{
+            marginTop: 'var(--space-4)',
+            background: 'rgba(0, 0, 0, 0.4)',
+            border: '1px solid rgba(52, 211, 153, 0.3)',
+            borderRadius: 'var(--radius-md)',
+            padding: 'var(--space-4)',
+            minHeight: '60px',
+            maxHeight: '200px',
+            overflowY: 'auto',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 'var(--fs-sm)',
+            lineHeight: 1.6,
+            scrollbarWidth: 'none',
+            animation: 'terminal-breathe 4s ease-in-out infinite',
+          }} className="terminal-response">
+            <style>{`.terminal-response::-webkit-scrollbar { display: none; }`}</style>
+            {processing && (
+              <div style={{ color: 'rgba(52, 211, 153, 0.8)' }}>
+                <span className="spinner" style={{ width: '12px', height: '12px', borderWidth: '2px', display: 'inline-block', marginRight: 'var(--space-2)', verticalAlign: 'middle' }} />
+                Processing input...
+              </div>
+            )}
+            {!processing && guidePart && (
+              <div style={{ whiteSpace: 'pre-wrap' }}>
+                {guidePart.split('\n').map((line, i) => {
+                  const isQuestion = line.trim().startsWith('?')
+                  return (
+                    <div key={i} style={{ display: 'flex', gap: 'var(--space-2)', color: isQuestion ? 'var(--green)' : 'var(--text-tertiary)' }}>
+                      <span style={{ color: isQuestion ? 'rgba(52, 211, 153, 0.5)' : 'var(--text-muted)', flexShrink: 0 }}>&gt;</span>
+                      <span>{line}</span>
                     </div>
-                    <div className="agent-per-symbol-rationale agent-rationale-expanded">
-                      Pending — Terminal Agent analysis not yet implemented for {sym}.
-                    </div>
-                  </div>
-                )
-              })}
+                  )
+                })}
+              </div>
+            )}
+            {!processing && !guidePart && (
+              <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                Awaiting input — type your trading preference below.
+              </div>
+            )}
+          </div>
+
+          {/* User input area */}
+          <div style={{ marginTop: 'var(--space-4)' }}>
+            <div className="market-control-label" style={{ marginBottom: 'var(--space-2)' }}>
+              Communicate with the agent
             </div>
-          )}
+            <textarea
+              className="market-search-input terminal-input"
+              placeholder={processing ? 'Processing — please wait...' : 'Type your trading preference or instruction...'}
+              value={userInput}
+              onChange={e => { if (!processing) setUserInput(e.target.value) }}
+              disabled={processing}
+              style={{
+                width: '100%',
+                minHeight: '60px',
+                resize: 'vertical',
+                margin: 0,
+                fontFamily: 'var(--font-sans)',
+                lineHeight: 1.5,
+                opacity: processing ? 0.5 : 1,
+                border: '1px solid rgba(167, 139, 250, 0.3)',
+                animation: 'terminal-input-breathe 4s ease-in-out infinite',
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  void handleUserSubmit()
+                }
+              }}
+            />
+            <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-2)' }}>
+              <button
+                onClick={() => void handleUserSubmit()}
+                disabled={processing || !userInput.trim()}
+                className="agent-thought-toggle-btn"
+                style={{
+                  border: '1px solid rgba(167, 139, 250, 0.3)',
+                  background: processing ? 'var(--glass-border)' : 'rgba(167, 139, 250, 0.15)',
+                  color: 'var(--text-primary)',
+                  cursor: processing || !userInput.trim() ? 'not-allowed' : 'pointer',
+                  opacity: processing || !userInput.trim() ? 0.5 : 1,
+                  animation: 'terminal-input-breathe 4s ease-in-out infinite',
+                }}
+              >
+                {processing ? 'Processing...' : '✓ Submit'}
+              </button>
+              {singlePrompt && (
+                resetConfirm ? (
+                  <span style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
+                    <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--red)' }}>Clear prompt?</span>
+                    <button
+                      onClick={handleClearPrompt}
+                      style={{
+                        padding: 'var(--space-2) var(--space-4)',
+                        borderRadius: 'var(--radius-sm)',
+                        border: '1px solid var(--red)',
+                        background: 'var(--red-bg)',
+                        color: 'var(--red)',
+                        cursor: 'pointer',
+                        fontSize: 'var(--fs-sm)',
+                        fontWeight: 'var(--fw-bold)',
+                      }}
+                    >
+                      ✓ Yes
+                    </button>
+                    <button
+                      onClick={() => setResetConfirm(false)}
+                      style={{
+                        padding: 'var(--space-2) var(--space-4)',
+                        borderRadius: 'var(--radius-sm)',
+                        border: '1px solid var(--glass-border)',
+                        background: 'transparent',
+                        color: 'var(--text-secondary)',
+                        cursor: 'pointer',
+                        fontSize: 'var(--fs-sm)',
+                      }}
+                    >
+                      ✗ No
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => setResetConfirm(true)}
+                    className="agent-thought-toggle-btn"
+                    style={{
+                      border: '1px solid rgba(167, 139, 250, 0.3)',
+                      background: 'transparent',
+                      color: 'var(--text-tertiary)',
+                      cursor: 'pointer',
+                      animation: 'terminal-input-breathe 4s ease-in-out infinite',
+                    }}
+                  >
+                    Reset
+                  </button>
+                )
+              )}
+            </div>
+          </div>
+
+          {/* Root Command Prompt display — terminal style box */}
+          <div style={{ marginTop: 'var(--space-5)' }}>
+            <div className="market-control-label" style={{ marginBottom: 'var(--space-2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span>Root Command Prompt</span>
+              {promptPart && (
+                <button
+                  onClick={() => navigator.clipboard.writeText(promptPart)}
+                  className="agent-thought-toggle-btn"
+                  style={{
+                    border: '1px solid rgba(245, 166, 35, 0.3)',
+                    background: 'transparent',
+                    color: 'var(--text-tertiary)',
+                    cursor: 'pointer',
+                    animation: 'terminal-prompt-breathe 4s ease-in-out infinite',
+                  }}
+                  title="Copy prompt"
+                >
+                  Copy Prompt
+                </button>
+              )}
+            </div>
+            <div
+              style={{
+                background: 'rgba(0, 0, 0, 0.4)',
+                border: '1px solid rgba(245, 166, 35, 0.3)',
+                borderRadius: 'var(--radius-md)',
+                padding: 'var(--space-4)',
+                minHeight: '40px',
+                maxHeight: '200px',
+                overflowY: 'auto',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'var(--fs-sm)',
+                lineHeight: 1.6,
+                whiteSpace: 'pre-wrap',
+                scrollbarWidth: 'none',
+                animation: 'terminal-prompt-breathe 4s ease-in-out infinite',
+              }}
+              className="terminal-prompt-display"
+            >
+              <style>{`.terminal-prompt-display::-webkit-scrollbar { display: none; }`}</style>
+              {promptPart ? (
+                promptPart.split('\n').map((line, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 'var(--space-2)', color: 'var(--gold)' }}>
+                    <span style={{ color: 'rgba(245, 166, 35, 0.5)', flexShrink: 0 }}>$</span>
+                    <span>{line}</span>
+                  </div>
+                ))
+              ) : (
+                <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                  No prompt yet — type your trading preference above and submit.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="agent-footer">
+            <span className="agent-footer-item">{promptPart ? `📋 ${promptPart.length} chars` : '📋 empty'}</span>
+          </div>
         </>
       )}
     </div>
