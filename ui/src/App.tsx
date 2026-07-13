@@ -222,7 +222,14 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
               <span className="agent-footer-item thinking-pulse">⟳ thinking...</span>
             )}
             {thought?.metadata?.fallback && !isLive && (
-              <span className="agent-footer-item agent-footer-fallback">⚠️ Fallback</span>
+              <span className="agent-footer-item agent-footer-fallback" title={thought.metadata?.digestedReason || thought.metadata?.error || 'Unknown error'}>
+                ⚠️ Fallback
+                {thought.metadata?.digestedReason && (
+                  <span style={{ fontSize: 'var(--fs-xs)', opacity: 0.8, marginLeft: '4px' }}>
+                    {thought.metadata.digestedReason.slice(0, 60)}{thought.metadata.digestedReason.length > 60 ? '...' : ''}
+                  </span>
+                )}
+              </span>
             )}
           </div>
         </>
@@ -246,7 +253,14 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
               <span className="agent-footer-item thinking-pulse">⟳ thinking...</span>
             )}
             {thought?.metadata?.fallback && !isLive && (
-              <span className="agent-footer-item agent-footer-fallback">⚠️ Fallback</span>
+              <span className="agent-footer-item agent-footer-fallback" title={thought.metadata?.digestedReason || thought.metadata?.error || 'Unknown error'}>
+                ⚠️ Fallback
+                {thought.metadata?.digestedReason && (
+                  <span style={{ fontSize: 'var(--fs-xs)', opacity: 0.8, marginLeft: '4px' }}>
+                    {thought.metadata.digestedReason.slice(0, 60)}{thought.metadata.digestedReason.length > 60 ? '...' : ''}
+                  </span>
+                )}
+              </span>
             )}
           </div>
         </>
@@ -499,6 +513,15 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
   const meta = AGENT_META['terminal_agent']
   if (!meta) return null
 
+  // v2.0.143: Read Terminal Agent thought from agentThoughts (injected by backend)
+  const taThought = data?.agentThoughts?.find(t => t.agentRole === 'terminal_agent')
+  const taLatency = taThought?.metadata?.latency
+  const taModel = taThought?.metadata?.model
+  const taModelShort = taModel ? taModel.split('/').pop()?.slice(0, 16) : undefined
+  // v2.0.143: Read Root Command Prompt from API data (stored on backend)
+  const apiRootPrompt = (data as any)?.rootCommandPrompt as string | undefined
+  const apiSideGuide = (data as any)?.terminalSideGuide as string | undefined
+
   // Extract selected market pairs (positions + trading markets)
   const config = data?.marketAgent?.config
   const isRealMode = config?.tradeMode === 'real'
@@ -537,9 +560,13 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
 
   // ── Terminal Agent state: user input + integrated Root Command Prompt ──
   const [userInput, setUserInput] = useState('')
+  // v2.0.143: Prefer backend-stored Root Command Prompt (survives UI refresh),
+  // fall back to localStorage for backward compat.
   const [singlePrompt, setSinglePrompt] = useState<string>(() => {
     try { return localStorage.getItem(TERMINAL_PROMPT_KEY) ?? '' } catch { return '' }
   })
+  // v2.0.143: Sync from backend API data when available
+  const effectivePrompt = apiRootPrompt ?? singlePrompt
   const [processing, setProcessing] = useState(false)
   const [resetConfirm, setResetConfirm] = useState(false)
 
@@ -551,7 +578,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
       const res = await fetch(`${API_BASE}/terminal-agent/input`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input, currentPrompt: singlePrompt }),
+        body: JSON.stringify({ input, currentPrompt: effectivePrompt }),
       })
       const result = await res.json() as { success: boolean; prompt?: string; error?: string }
       if (result.success && result.prompt != null) {
@@ -589,7 +616,11 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
     return { promptPart, guidePart }
   }
 
-  const { promptPart, guidePart } = parsePrompt(singlePrompt)
+  // v2.0.143: Parse from effectivePrompt (backend API or localStorage)
+  // Also use apiSideGuide if available (from backend)
+  const { promptPart: parsedPromptPart, guidePart: parsedGuidePart } = parsePrompt(effectivePrompt)
+  const promptPart = apiRootPrompt ?? parsedPromptPart
+  const guidePart = apiSideGuide ?? parsedGuidePart
 
   return (
     <div className={`agent-card ${isExpanded ? 'agent-card-expanded' : 'agent-card-collapsed'}`}>
@@ -601,15 +632,23 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
         {allSelectedSyms.length > 0 && (
           <div className="agent-symbols">{allSelectedSyms.join(' , ')}</div>
         )}
-        <span className="agent-state idle">{processing ? '💭 processing' : 'idle'}</span>
+        <span className="agent-state idle">{processing ? '💭 processing' : (promptPart ? 'active' : 'idle')}</span>
         <span className="agent-expand-chevron">{isExpanded ? '▲' : '▼'}</span>
       </div>
       {!isExpanded && (
         <>
           <div className="agent-description-collapsed">{meta.description}</div>
           <div className="agent-footer agent-footer-collapsed">
-            <span className="agent-footer-item">⏱ —</span>
-            <span className="agent-footer-item">{promptPart ? `📋 ${promptPart.length} chars` : '📋 empty'}</span>
+            {taLatency != null && taLatency > 0 ? (
+              <span className="agent-footer-item">⏱ {(taLatency / 1000).toFixed(1)}s</span>
+            ) : (
+              <span className="agent-footer-item">⏱ ready</span>
+            )}
+            {taModelShort ? (
+              <span className="agent-footer-item">📋 {taModelShort}</span>
+            ) : (
+              <span className="agent-footer-item">{promptPart ? `📋 ${promptPart.length} chars` : '📋 empty'}</span>
+            )}
           </div>
         </>
       )}

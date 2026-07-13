@@ -39,6 +39,8 @@ export interface AgentThought {
     decision?: TradingDecision;
     error?: string;
     fallback?: boolean;
+    /** v2.0.143: User-friendly digested error reason (categorized + concise) */
+    digestedReason?: string;
   };
 }
 
