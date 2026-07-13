@@ -225,8 +225,8 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
               <span className="agent-footer-item agent-footer-fallback" title={thought.metadata?.digestedReason || thought.metadata?.error || 'Unknown error'}>
                 ⚠️ Fallback
                 {thought.metadata?.digestedReason && (
-                  <span style={{ fontSize: 'var(--fs-xs)', opacity: 0.8, marginLeft: '4px' }}>
-                    {thought.metadata.digestedReason.slice(0, 60)}{thought.metadata.digestedReason.length > 60 ? '...' : ''}
+                  <span style={{ fontSize: 'var(--fs-xs)', opacity: 0.8, marginLeft: '4px', whiteSpace: 'normal', overflow: 'hidden' }}>
+                    {thought.metadata.digestedReason}
                   </span>
                 )}
               </span>
@@ -256,8 +256,8 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
               <span className="agent-footer-item agent-footer-fallback" title={thought.metadata?.digestedReason || thought.metadata?.error || 'Unknown error'}>
                 ⚠️ Fallback
                 {thought.metadata?.digestedReason && (
-                  <span style={{ fontSize: 'var(--fs-xs)', opacity: 0.8, marginLeft: '4px' }}>
-                    {thought.metadata.digestedReason.slice(0, 60)}{thought.metadata.digestedReason.length > 60 ? '...' : ''}
+                  <span style={{ fontSize: 'var(--fs-xs)', opacity: 0.8, marginLeft: '4px', whiteSpace: 'normal', overflow: 'hidden' }}>
+                    {thought.metadata.digestedReason}
                   </span>
                 )}
               </span>
@@ -517,7 +517,10 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
   const taThought = data?.agentThoughts?.find(t => t.agentRole === 'terminal_agent')
   const taLatency = taThought?.metadata?.latency
   const taModel = taThought?.metadata?.model
-  const taModelShort = taModel ? taModel.split('/').pop()?.slice(0, 16) : undefined
+  // v2.0.143: Always show the assigned model name — fall back to assignments
+  // if the thought hasn't been injected yet (e.g. no Root Command Prompt set).
+  const taAssignedModel = assignments.find((a: AgentModelConfig) => a.role === 'terminal_agent')?.model
+  const taModelShort = (taModel ?? taAssignedModel ?? 'deepseek-v4-flash:cloud').split('/').pop()?.slice(0, 16)
   // v2.0.143: Read Root Command Prompt from API data (stored on backend)
   const apiRootPrompt = (data as any)?.rootCommandPrompt as string | undefined
   const apiSideGuide = (data as any)?.terminalSideGuide as string | undefined
@@ -644,10 +647,9 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
             ) : (
               <span className="agent-footer-item">⏱ ready</span>
             )}
-            {taModelShort ? (
-              <span className="agent-footer-item">📋 {taModelShort}</span>
-            ) : (
-              <span className="agent-footer-item">{promptPart ? `📋 ${promptPart.length} chars` : '📋 empty'}</span>
+            <span className="agent-footer-item">📋 {taModelShort}</span>
+            {promptPart && (
+              <span className="agent-footer-item" style={{ opacity: 0.7 }}>{promptPart.length} chars</span>
             )}
           </div>
         </>
