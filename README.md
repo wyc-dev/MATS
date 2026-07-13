@@ -1,13 +1,13 @@
 # MATS — The First Self-Evolving AI Trading Brain
 
-**8 AI agents debate every trade. A Skeptics agent vetoes bad ones. The system evolves its own strategy — no manual tuning.**
+**Terminal Agent + 6 AI agents debate every trade. A Skeptics agent vetoes bad ones. The system evolves its own strategy — no manual tuning.**
 
-MATS is a multi-agent cognitive trading system: 8 specialized agents think in parallel, debate through the HACP protocol, and reach weighted consensus. A dedicated Skeptics agent stress-tests every position against historical experience data. The system self-evolves via online logistic regression (OLR) + shadow trading + first-passage path-risk + EM cycle chains + genetic algorithms + **RIL (Reason Intelligence Layer)** — it learns from every trade and adapts its own parameters.
+MATS is a multi-agent cognitive trading system: Terminal Agent enforces user-defined trading rules via Root Command Prompt, 6 specialized agents think in parallel, debate through the HACP protocol, and reach weighted consensus. A dedicated Skeptics agent stress-tests every position against historical experience data. The system self-evolves via online logistic regression (OLR) + shadow trading + first-passage path-risk + EM cycle chains + genetic algorithms + **RIL (Reason Intelligence Layer)** — it learns from every trade and adapts its own parameters.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-2.0.141-blueviolet)](ARCHITECTURE.md)
+[![Version](https://img.shields.io/badge/version-2.0.142-blueviolet)](ARCHITECTURE.md)
 [![GitHub stars](https://img.shields.io/github/stars/wyc-dev/MATS?style=social)](https://github.com/wyc-dev/MATS)
 
 🌐 [mats.trading](https://mats.trading/) · 💬 [Discord](https://discord.gg/mats) (coming soon) · ⭐ [Star on GitHub](https://github.com/wyc-dev/MATS)
@@ -70,11 +70,13 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 
 ## Why MATS is Different
 
+- **🧠 Terminal Agent + Root Command Prompt** — users type natural language trading preferences (e.g. "only trade on Monday GMT"). LLM integrates them into a Root Command Prompt. Before each cycle, rules are checked — if a rule fails, the entire cycle is aborted (no token cost). After Meta-Agent decides, Terminal Agent verifies the decision matches user preferences.
 - **🧠 Entry Thesis System** — every trade needs a validated `[1h: ...] [1d: ...]` rationale. Meta-Agent generates it; Skeptics stress-tests it. No thesis → no trade.
 - **🛡️ Skeptics veto** — an AI stress-tests every position's logic, data consistency, and dark-psychology (whale manipulation?) before execution. Approve-first: rejects only on concrete money-losing flaws.
 - **🧬 Self-evolving** — OLR learns P(win) per side from shadow + paper + real trade outcomes. First-Passage gives instant path-risk. GA mutates strategy parameters by weakest fitness dimension. EM cycle chain carries insights across cycles.
-- **⚡ HACP protocol** — 5 sub-agents think in parallel (staggered, 60s deadline race), Skeptics audits, Meta-Agent arbitrates, weighted voting consensus. 120s hard timeout → HOLD on expiry.
+- **⚡ HACP protocol** — Terminal Agent checks rules → 5 sub-agents think in parallel (staggered, 60s deadline race), Skeptics audits, Meta-Agent arbitrates, weighted voting consensus, Terminal Agent verifies. 120s hard timeout → HOLD on expiry.
 - **💰 Capital preservation first** — every error path defaults to HOLD. SystemGuard (5 layers). Notional-based fees. SL/TP hard safety layers. Configurable max portion + drawdown + daily-loss limits.
+- **⚙️ Trading Setup** — UI config panel for trade mode, cycle period (1-10m), position size, max portion, leverage, asset type, and market selection. Separate from Root Command Prompt (behavioral rules only).
 
 ---
 
@@ -82,12 +84,14 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│   Layer 1: Strategic (PI Agent)                              │
-│   • System start/stop · performance review · manual override  │
+│   Layer 1: Strategic (PI Agent + Terminal Agent)            │
+│   • Terminal Agent: user preferences → Root Command Prompt  │
+│   • System start/stop · performance review · manual override │
 ├──────────────────────────────────────────────────────────────┤
 │   Layer 2: Cognitive (TypeScript + LLM)                      │
 │   • HACP protocol (parallel multi-model inference)            │
-│   • 8-agent system + Meta-Agent arbitration                   │
+│   • Terminal Agent: pre-cycle rule check + post-cycle verify  │
+│   • 6-agent system + Meta-Agent arbitration                   │
 │   • Entry Thesis System (Meta-Agent → Skeptics validation)    │
 │   • Self-evolution (OLR + Shadow + First-Passage + EM + GA)   │
 │   • SystemGuard (5-layer protection)                          │
@@ -108,41 +112,33 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 
 ```
 src/
-├── agents/                             # 🧠 8 agents + Meta-Agent
+├── agents/                             # 🧠 6 LLM agents + Meta-Agent + Skeptics + Terminal Agent
 │   ├── base-agent.ts                   # Base agent (LLM call + retry + confidence)
 │   ├── meta-agent.ts                   # Meta-Agent (arbitration + entryThesis)
 │   ├── skeptics.ts                     # Skeptics (logic audit + thesis validation)
-│   └── agents.ts                       # 5 sub-agents (Fractal/OnChain/OLR/News/Risk)
+│   ├── agents.ts                       # 5 sub-agents (Fractal/OnChain/OLR/News/Risk) + SkepticsAgent
+│   └── agent-models.ts                 # Per-agent model assignment (UI-selectable)
 ├── cognition/                          # 🧠 Inter-agent cognition
-│   ├── hacp.ts                         # HACP protocol (Phase 0-5 + thesis gates)
-│   ├── a2a-utils.ts                    # A2A inter-agent signal exchange
-│   └── A2A-PROTOCOL.md
+│   ├── hacp.ts                         # HACP protocol (Phase -1 to 6)
+│   └── a2a-utils.ts                    # A2A inter-agent signal exchange
 ├── llm/                                # 🔌 LLM abstraction (provider + circuit breaker)
 ├── trading/                            # 💹 Portfolio · paper/real engines · cost model
 ├── risk/                               # 🛡️ Risk engine + correlation budget
 ├── system-guard/                       # 🛡️ SystemGuard (calendar/drawdown/freshness/track/liquidity)
-├── evolution/                          # 🧬 Self-evolution + EXP vector thesis memory
-│   ├── index.ts                        # GA orchestrator (directional mutation)
-│   ├── olr-engine.ts                   # OLR (Online Logistic Regression, per-symbol/side)
-│   ├── shadow-trade-engine.ts          # Shadow trades (simulated TP-before-SL)
-│   ├── first-passage.ts                # First-Passage P(TP before SL) — Cox & Miller GBM
-│   ├── olr-backfill.ts                 # Cold-start backfill from historical HL candles
-│   ├── embeddings.ts                   # v2.0.138: Transformers.js MiniLM 384-d vectors (in-process)
-│   ├── thesis-experience.ts            # v2.0.138: EXP thesis-combo historical win-rate gate (Phase 1.8a)
-│   ├── experience-digester.ts          # v2.0.140: A2A Experience Digester (LLM lesson → embed → cluster → classify, supplementary)
-│   ├── cycle-summary.ts                # v2.0.140: EM Cycle Digestion (market continuity)
-│   └── reason-analytics.ts             # v2.0.141: RIL Reason Intelligence Layer (pattern clustering + close reason stats + similar trade retrieval)
-│   ├── trade-pattern-classifier.ts     # Supervised KNN pattern DB (Wilson score)
-│   ├── cycle-summary.ts                # EM Cycle Summary Manager (tiered memory)
-│   ├── agent-outcomes.ts               # Per-agent performance tracking
-│   └── agent-evolution.ts              # Dynamic voting weights by regime win rate
+├── evolution/                          # 🧬 Self-evolution + EXP vector thesis memory + RIL
 ├── analysis/                           # 📊 Sentiment · S/R · ATR · Planck-Chaos · options · news
-├── market-agent/                       # 🎯 Auto pair selection (9 HL DEXs, 416 assets)
+├── market-agent/                       # 🎯 Auto pair selection (9 HL DEXs, 416 assets) + Trading Setup config
 ├── data/                               # 📡 Hyperliquid + Binance WebSocket feeds
-├── api-server.ts                       # 🌐 REST + SSE (port 3456) + static UI
-└── index.ts                            # 🚀 System orchestrator (decision cycle)
+├── api-server.ts                       # 🌐 REST + SSE (port 3456) + static UI + Terminal Agent endpoint
+└── index.ts                            # 🚀 System orchestrator (decision cycle + Terminal Agent handler)
 
-ui/                                     # 🖥️ React + Vite dashboard (:5173)
+ui/                                     # 🖥️ React + Vite dashboard
+├── src/App.tsx                         # Preference panel + Agent Cognition + Terminal Agent + Evolution
+├── src/types.ts                        # AGENT_META + AGENT_ROLES (includes terminal_agent)
+└── src/index.css                       # Liquid glass UI + terminal breathing animations
+
+TA_PROMPT.md                            # 📋 Terminal Agent cycle injection & execution spec
+TERMINAL_AGENT_PROMPT.md                # 📋 Terminal Agent development guide
 data/evolution/                         # 💾 olr-state · shadow-state · patterns · GA state
 tests/                                  # ✅ vitest (94 tests, 5 test files)
 ```
@@ -174,18 +170,21 @@ EXP and A2A Digester are KEPT but their role changed from gates/classifiers to s
 
 ---
 
-## 8-Agent System
+## Agent System
 
 | # | Agent | Temp | Weight | Role |
 |:-:|:------|:----:|:------:|:-----|
-| 1 | **Market Agent** | — | — | Auto-selects highest-volume pair across 9 HL DEXs / 416 assets, by category. Blocks cycle until selected. |
-| 2 | **Fractal Momentum Sentinel** | 0.85 | 0.10 | Multi-timeframe fractal breakout detection. Early trend acceleration. |
-| 3 | **On-Chain Whisperer** | 0.50 | 0.10 | Category-aware on-chain: crypto (mempool, flows, supply) + TradFi (DXY, COT, commodities). |
-| 4 | **OLR & Sentiment Analyst** | 0.25 | 0.10 | OLR P(win) per side + First-Passage path-risk + Fear & Greed. RR-aware edge vs breakeven. |
-| 5 | **News Reporter** | 0.40 | 0.20 | **Institutional Narrative Decoder (v2.0.139)**. 5-part framework: information-asymmetry prior, price-news timing matrix, 6-bucket motive taxonomy, power-map, net institutional-adjusted signal. L3 Meta-Agent decisive override when named motive + price confirmation. Weight 0.10→0.20. |
-| 6 | **Independent Risk Auditor** | 0.10 | 0.25 | Advisory-only (no veto). TP/SL/size suggestions + hard-coded loss-streak/choppy-market limits. |
-| 7 | **Skeptics** | 0.30 | 0.00 | Logic auditor + thesis stress-tester. Approve-first; rejects only on concrete flaws. Validates entryThesis (Phase 1.8) + re-validates held positions (Phase 0.5). |
-| 8 | **Meta-Agent** | 0.45 | 0.00 | Arbitration chairman. Detective mode — reasons from facts to find edges, never distorts. Generates entryThesis. Weight 0.00 (thesis system controls, not voting). |
+| 0 | **Terminal Agent** | 0.30 | — | User natural language preference input → LLM integration → Root Command Prompt. Pre-cycle rule check (abort if rule fails) + post-cycle decision verification. Default: DeepSeek V4 Flash. |
+| — | **Trading Setup** | — | — | UI config panel (not an LLM agent). Trade mode, cycle period (1-10m), position size, leverage, asset type, market selection. |
+| 1 | **Fractal Momentum Sentinel** | 0.85 | 0.10 | Multi-timeframe fractal breakout detection. Early trend acceleration. Default: Kimi K2.6. |
+| 2 | **On-Chain Whisperer** | 0.50 | 0.10 | Category-aware on-chain: crypto (mempool, flows, supply) + TradFi (DXY, COT, commodities). Default: Kimi K2.6. |
+| 3 | **OLR & Sentiment Analyst** | 0.25 | 0.10 | OLR P(win) per side + First-Passage path-risk + Fear & Greed. RR-aware edge vs breakeven. Default: Kimi K2.6. |
+| 4 | **News Reporter** | 0.40 | 0.20 | **Institutional Narrative Decoder**. 5-part framework: information-asymmetry prior, price-news timing matrix, 6-bucket motive taxonomy, power-map, net institutional-adjusted signal. Default: DeepSeek V4 Flash. |
+| 5 | **Independent Risk Auditor** | 0.10 | 0.25 | Advisory-only (no veto). TP/SL/size suggestions + hard-coded loss-streak/choppy-market limits. Default: DeepSeek V4 Flash. |
+| 6 | **Skeptics** | 0.30 | 0.00 | Logic auditor + thesis stress-tester. Approve-first; rejects only on concrete flaws. Validates entryThesis (Phase 1.8) + re-validates held positions (Phase 0.5). Default: DeepSeek V4 Flash. |
+| 7 | **Meta-Agent** | 0.45 | 0.00 | Arbitration chairman. Detective mode — reasons from facts to find edges, never distorts. Generates entryThesis. Weight 0.00 (thesis system controls, not voting). Default: DeepSeek V4 Flash. |
+
+> All agents have user-selectable model dropdowns in the UI. Terminal Agent uses DeepSeek V4 Flash by default for Root Command Prompt integration.
 
 ---
 

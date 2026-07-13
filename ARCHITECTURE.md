@@ -1,8 +1,8 @@
 # {MATS} — Multi Agent Trading System
 
-> **作者**: YC Wong · **版本**: 2.0.141
+> **作者**: YC Wong · **版本**: 2.0.142
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **代碼量**: ~42,600 行 TypeScript（嚴格模式，零類型錯誤）+ React UI
+> **代碼量**: ~43,000 行 TypeScript（嚴格模式，零類型錯誤）+ React UI
 
 ---
 
@@ -29,12 +29,14 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│   Layer 1: 戰略層 (PI Agent)                                  │
+│   Layer 1: 戰略層 (PI Agent + Terminal Agent)                  │
+│   • Terminal Agent：用戶自然語言偏好 → Root Command Prompt      │
 │   • 啟動/停止系統 · 績效審查 & 參數調整 · 人工干預入口         │
 ├──────────────────────────────────────────────────────────────┤
 │   Layer 2: 認知層 (TypeScript + Ollama)                       │
 │   • HACP 多模型平行推理（僅關鍵決策點觸發 LLM）                 │
-│   • 8 智能體 + Meta-Agent 仲裁 + Skeptics 邏輯審查             │
+│   • Terminal Agent Cycle 前置規則檢查 + 後置決策核實             │
+│   • 6 智能體 + Meta-Agent 仲裁 + Skeptics 邏輯審查             │
 │   • Entry Thesis System + 暗黑心理學 + 結構化辯論 + 加權投票    │
 │   • Self-Evolution（OLR + Shadow + First-Passage + EM + GA）   │
 │   • RIL Reason Intelligence Layer（pattern clustering + close reason stats）│
@@ -85,46 +87,60 @@ tests/                       # vitest（94 tests）
 
 ---
 
-## 八智能體系統
+## 智能體系統
 
 | # | Agent | 溫度 | 權重 | 角色描述 |
 |:-:|:------|:----:|:----:|:---------|
-| 1 | **Market Agent** | — | — | 自動選取最高 24h 交易量 pair。9 個 HL DEX，416 assets，按類別過濾（Indices/Stocks/Commodities/FX）。HACP 週期前執行，阻塞其餘 Agent。 |
-| 2 | **Fractal Momentum Sentinel** | 0.85 | 0.10 | 多時間框架碎形自相似模式檢測。趨勢加速早期信號。極端逆向，中間趨勢追隨。 |
-| 3 | **On-Chain Whisperer** | 0.50 | 0.10 | 類別感知鏈上分析。Crypto: mempool/flows/supply。TradFi: DXY/COT/商品/COT 持倉。5 分鐘緩存。 |
-| 4 | **OLR & Sentiment Analyst** | 0.25 | 0.10 | OLR P(win) per side + First-Passage path-risk + Fear & Greed。RR-aware：P(win) 對 breakevenP 計 edge。PRIMARY factor。 |
-| 5 | **News Reporter** | 0.40 | 0.20 | **Institutional Narrative Decoder**。5 部分框架：信息不對稱先驗、價格-新聞時機矩陣、6 桶動機分類（front-run/accumulation-FUD/distribution-hype/narrative-pivot/decoy-smoke/paradigm shift）、權力圖、淨機構調整信號。L3 Meta-Agent 決定性權重（命名動機 + 時機確認時可覆蓋 HOLD 多數）。 |
-| 6 | **Independent Risk Auditor** | 0.10 | 0.25 | **advisory-only（不可 veto）**。TP/SL/size 建議 + 硬性代碼限制（震盪市減倉、loss-streak 漸進減倉、虧損冷卻期）。近期 10 trade 模式分析。 |
-| 7 | **Skeptics** | 0.30 | 0.00 | 邏輯審計員 + 壓力測試員。**Approve-First**——預設 APPROVE，只係喺搵到具體會導致輸錢嘅 material flaw 時先 REJECT。Phase 1.5 審查 5 sub-agents；Phase 1.8 驗證 entryThesis；Phase 0.5 每循環重新驗證持倉 thesis → 失效即強制平倉。使用 RIL reference data 做 data-backed audit。 |
-| 8 | **Meta-Agent** | 0.45 | 0.00 | 仲裁主席。偵探模式——積極從事實推理蛛絲馬跡嘗試開倉，絕不歪曲事實。生成 entryThesis。使用 Confidence Calibration Framework：BASE WR → adjust for close context → adjust for subtle differences → FINAL confidence → decision。權重 0.00（理據系統控制，唔靠投票）。HOLD 時必須提供 holdReason。 |
+| 0 | **Terminal Agent** | 0.30 | — | 用戶自然語言偏好入口。接受交易偏好指令 → LLM 整合 → Root Command Prompt。Cycle 開始前檢查規則（時間/條件/資產），不符合即 abort cycle。Meta-Agent 決策後核實是否符合 Root Command Prompt。預設 DeepSeek V4 Flash。 |
+| 1 | **Trading Setup** | — | — | 交易配置管理（非 LLM agent）。Trade Mode、Cycle Period（1-10m）、Position Size、Max Portion、Leverage、Asset Type、Available Pairs、Selected Market Pairs。UI 控件直接連接後端。 |
+| 2 | **Fractal Momentum Sentinel** | 0.85 | 0.10 | 多時間框架碎形自相似模式檢測。趨勢加速早期信號。極端逆向，中間趨勢追隨。預設 Kimi K2.6。 |
+| 3 | **On-Chain Whisperer** | 0.50 | 0.10 | 類別感知鏈上分析。Crypto: mempool/flows/supply。TradFi: DXY/COT/商品/COT 持倉。5 分鐘緩存。預設 Kimi K2.6。 |
+| 4 | **OLR & Sentiment Analyst** | 0.25 | 0.10 | OLR P(win) per side + First-Passage path-risk + Fear & Greed。RR-aware：P(win) 對 breakevenP 計 edge。PRIMARY factor。預設 Kimi K2.6。 |
+| 5 | **News Reporter** | 0.40 | 0.20 | **Institutional Narrative Decoder**。5 部分框架：信息不對稱先驗、價格-新聞時機矩陣、6 桶動機分類、權力圖、淨機構調整信號。L3 Meta-Agent 決定性權重。預設 DeepSeek V4 Flash。 |
+| 6 | **Independent Risk Auditor** | 0.10 | 0.25 | **advisory-only（不可 veto）**。TP/SL/size 建議 + 硬性代碼限制。預設 DeepSeek V4 Flash。 |
+| 7 | **Skeptics** | 0.30 | 0.00 | 邏輯審計員 + 壓力測試員。**Approve-First**。Phase 1.5 審查 5 sub-agents；Phase 1.8 驗證 entryThesis；Phase 0.5 每循環重新驗證持倉 thesis。預設 DeepSeek V4 Flash。 |
+| 8 | **Meta-Agent** | 0.45 | 0.00 | 仲裁主席。偵探模式。生成 entryThesis。使用 Confidence Calibration Framework。權重 0.00（理據系統控制，唔靠投票）。預設 DeepSeek V4 Flash。 |
 
-> **權重說明**：Meta-Agent + Skeptics 權重 0.00 — 佢哋透過 thesis 系統控制決策，唔參與投票。5 個 sub-agent 加權投票，consensus threshold 50%（由 Evolution 動態調整，floor 0.49）。
+> **權重說明**：Meta-Agent + Skeptics 權重 0.00 — 佢哋透過 thesis 系統控制決策，唔參與投票。5 個 sub-agent 加權投票，consensus threshold 50%（由 Evolution 動態調整，floor 0.49）。Terminal Agent 不參與投票，只做規則檢查 + 決策核實。Trading Setup 不是 LLM agent，是 UI 配置管理。
 
 ---
 
 ## HACP 高速認知協議
 
-每 **300 秒**（`DECISION_INTERVAL_MS`）觸發一次決策循環。
+每 **1-10 分鐘**（用戶可調整 Cycle Period）觸發一次決策循環。
 
 ```
-PHASE 0   Market Agent auto-select + Position Reconciliation
+PHASE -1  Terminal Agent 規則檢查（Cycle 開始前）
+          • 載入 Root Command Prompt → 逐條評估規則（時間/條件/資產/方向）
+          • 任一規則失敗 → abort cycle（不跑任何 agent，不花 token）
+          • 全部通過 → 注入 Root Command Prompt directive 到所有 agent context
+PHASE 0   Trading Setup 市場選擇 + Position Reconciliation
           • 選取最高 volume pair · real mode 同步 exchange 倉位
 PHASE 0.5 Skeptics 入場理據重新驗證（每個持倉）
-          • thesis 失效（catalyst spent / structure broken / direction contradicted）→ 強制平倉
+          • thesis 失效 → 強制平倉
 PHASE 1   平行思考（5 sub-agents, 60s deadline race, staggered 6s）
-          • Promise.all 收集所有思路
-PHASE 1.5 Skeptics 邏輯審查（逐一審查 5 sub-agent 決策 + 跨 Agent 交叉對比）
+          • 每個 agent 收到 Root Command Prompt directive（行為約束 + 風格調整）
+PHASE 1.5 Skeptics 邏輯審查（逐一審查 5 sub-agent 決策）
           • 參考每個 Agent 歷史 track record · Approve-First
-PHASE 1.75 Meta-Agent 仲裁（接收 Skeptics 結果後做最終判斷）
+PHASE 1.75 Meta-Agent 仲裁
           • 生成 entryThesis / holdReason / closePosition
-          • 接收 RIL reference data（ENTRY PATTERN MAP + CLOSE REASON STATS + SIMILAR TRADES）
-          • 使用 Confidence Calibration Framework 做最終決定
-PHASE 1.8 Skeptics 驗證 Meta-Agent entryThesis（強而有力、數據驅動、暗黑心理學、事實扭曲）
-          • 使用 RIL reference data 做 data-backed audit
+          • 接收 RIL reference data
+          • 使用 Confidence Calibration Framework
+PHASE 1.8 Skeptics 驗證 Meta-Agent entryThesis
           • 拒絕即 HOLD
 PHASE 2-4 結構化辯論（1-3 rounds，unanimous 可跳過）
-PHASE 5   加權投票共識（50% threshold，動態調整，floor 0.49）+ 執行
+PHASE 5   加權投票共識（50% threshold，動態調整）+ 執行
+PHASE 6   Terminal Agent 決策核實（Meta-Agent 決策後）
+          • 核實決策是否符合 Root Command Prompt 要求
+          • 核實是否符合用戶指定的交易風格
+          • 不符合 → 覆蓋為 HOLD（不執行）
 ```
+
+**Terminal Agent 雙重角色**：
+1. **Cycle 前置**（Phase -1）：檢查 Root Command Prompt 規則，不符合 abort
+2. **Cycle 後置**（Phase 6）：核實 Meta-Agent 決策是否符合用戶偏好
+
+**Root Command Prompt**：用戶透過 Terminal Agent UI 輸入自然語言交易偏好，LLM（DeepSeek V4 Flash）整合成結構化指令。只接受行為指令（決策風格、交易偏好、時間規則），不接受 config 設定（position size、leverage 等由 Trading Setup 管理）。
 
 **時間預算**：Phase 1 平行 ~60s · Skeptics ~10s · Meta-Agent ~10s · 辯論 ~30s · 120s hard timeout → HOLD。
 
