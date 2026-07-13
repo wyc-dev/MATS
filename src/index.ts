@@ -126,6 +126,13 @@ class MATSSystem {
   private lastSRContext: { formatted: string; regime: string; zoneCount: number; strongZones: number; nearestSupport: number | null; nearestResistance: number | null; distanceToSupportBps: number; distanceToResistanceBps: number; degradedReason: string | null } | null = null;
   /** v2.0.79: Cached news headlines per symbol for UI display in News Reporter card. */
   private cachedNewsHeadlines: Array<{ symbol: string; headlines: Array<{ title: string; publisher: string; url?: string; pubDate: number | null }> }> = [];
+  /** v2.0.143: Cached news context from the last successful fetch — reused
+   *  when news fetching fails so the News Reporter agent still has data to
+   *  work with instead of getting an empty context and falling back. */
+  private lastSuccessfulNewsContext = '';
+  private lastSuccessfulNewsHeadlines: Array<{ symbol: string; headlines: Array<{ title: string; publisher: string; url?: string; pubDate: number | null }> }> = [];
+  /** v2.0.143: Last news fetch error reason (for UI display + LLM digestion). */
+  private lastNewsFetchError = '';
   // v2.0.139: 5-min cache for 1h candles fetched for price-news timing analysis
   // (avoids re-fetching the same asset's chart every cycle; 80 candles ≈ 3.3d).
   private candleTimingCache: Map<string, { candles: TimingCandle[]; ts: number }> = new Map();
@@ -162,6 +169,13 @@ class MATSSystem {
   /** Last first-passage probability result (for agent context + UI). */
   private lastFirstPassage: FirstPassageResult | null = null;
   private lastPatternContext = '';
+  /** v2.0.143: Terminal Agent Root Command Prompt — stored on backend so it
+   *  survives UI refreshes and is available for cycle enforcement (Phase -1
+   *  rule checking + Phase 6 decision verification + injection into all agents). */
+  private rootCommandPrompt = '';
+  /** v2.0.143: Terminal Agent Side Guide — the latest LLM response's Side Guide
+   *  section, sent to UI for user interaction (clarification questions etc). */
+  private terminalSideGuide = '';
   /** Per-symbol previous cycle context for shadow trade opening — Map<symbol, context> */
   private lastCycleShadowContexts = new Map<string, { symbol: string; price: number; features: Record<string, number> }>();
   /** v2.0.122: Pending entry theses from Meta-Agent that didn't execute.
@@ -671,8 +685,70 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           if (!updatedPrompt) {
             return { success: false, error: 'LLM returned empty response' };
           }
-          log.info(`Terminal Agent: Root Command Prompt updated (${updatedPrompt.length} chars)`);
-          return { success: true, prompt: updatedPrompt };
+
+          // v2.0.143: Parse the LLM output into Root Command Prompt + Side Guide.
+          // The LLM output format is: "Root Command Prompt section\n---\nSide Guide: ..."
+          const guideMatch = updatedPrompt.match(/^Side Guide:\s*/im);
+          let promptPart = '';
+          let guidePart = '';
+          if (guideMatch && guideMatch.index != null) {
+            promptPart = updatedPrompt.slice(0, guideMatch.index)
+              .replace(/^Root Command Prompt:\s*/i, '')
+              .replace(/^---\s*$/m, '')
+              .trim();
+            guidePart = updatedPrompt.slice(guideMatch.index + guideMatch[0].length).trim();
+          } else {
+            promptPart = updatedPrompt
+              .replace(/^Root Command Prompt:\s*/i, '')
+              .replace(/^---\s*$/m, '')
+              .trim();
+          }
+
+          // v2.0.143: Enforce 300-char limit on Root Command Prompt.
+          // If exceeded, ask the LLM to condense it. If still exceeded after
+          // condensing, tell the user to remove less important rules.
+          const MAX_PROMPT_CHARS = 300;
+          if (promptPart.length > MAX_PROMPT_CHARS) {
+            log.info(`Terminal Agent: Prompt ${promptPart.length} chars > ${MAX_PROMPT_CHARS} — auto-condensing...`);
+            try {
+              const condenseResponse = await provider.chat({
+                messages: [
+                  { role: 'system', content: 'You condense trading rules into fewer characters while preserving ALL rules. Keep each rule on one line starting with "- ". Remove redundant words, merge overlapping rules. Output ONLY the condensed rules, no commentary.' },
+                  { role: 'user', content: `Condense these trading rules to under ${MAX_PROMPT_CHARS} characters. Preserve every rule's meaning:\n\n${promptPart}` },
+                ],
+                temperature: 0.2,
+                model: getAgentModel('terminal_agent'),
+                timeoutMs: 15_000,
+              });
+              const condensed = condenseResponse.content.trim();
+              if (condensed.length <= MAX_PROMPT_CHARS) {
+                promptPart = condensed;
+                guidePart = `Side Guide: Prompt was auto-condensed from ${updatedPrompt.length} to ${condensed.length} chars to stay within the 300-char limit.`;
+                log.info(`Terminal Agent: Auto-condensed to ${condensed.length} chars`);
+              } else {
+                // Still too long — ask user to取舍
+                promptPart = condensed.slice(0, MAX_PROMPT_CHARS);
+                guidePart = `Side Guide: ⚠️ Root Command Prompt exceeds ${MAX_PROMPT_CHARS} chars even after condensing (${condensed.length} chars). Please remove less important rules to stay within the limit. Current rules have been truncated.`;
+                log.warn(`Terminal Agent: Prompt still ${condensed.length} chars after condensing — truncated + user notified`);
+              }
+            } catch (condenseErr) {
+              log.warn(`Terminal Agent: Auto-condense failed: ${condenseErr instanceof Error ? condenseErr.message : String(condenseErr)} — truncating`);
+              promptPart = promptPart.slice(0, MAX_PROMPT_CHARS);
+              guidePart = `Side Guide: ⚠️ Auto-condense failed. Prompt truncated to ${MAX_PROMPT_CHARS} chars. Please review and remove unnecessary rules.`;
+            }
+          }
+
+          // Store on backend
+          this.rootCommandPrompt = promptPart;
+          this.terminalSideGuide = guidePart;
+
+          // Return the full LLM output (prompt + guide) to the UI
+          const fullOutput = guidePart
+            ? `${promptPart}\n---\nSide Guide: ${guidePart}`
+            : promptPart;
+
+          log.info(`Terminal Agent: Root Command Prompt stored (${promptPart.length} chars) + Side Guide (${guidePart.length} chars)`);
+          return { success: true, prompt: fullOutput };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           log.error(`Terminal Agent input failed: ${msg}`);
@@ -1972,6 +2048,211 @@ Provide your post-trade review:`;
     }
   }
 
+  /**
+   * v2.0.143: Terminal Agent Phase -1 — Root Command Prompt rule checking.
+   *
+   * Evaluates ALL rules in the Root Command Prompt against current real-world
+   * conditions before any agent thinking begins. If ANY rule fails, the cycle
+   * is aborted immediately (no LLM calls, no debate — saves tokens + respects
+   * user intent).
+   *
+   * Rule types:
+   * - Time-based: "only trade on Monday GMT", "no trading after 22:00 HKT"
+   * - Asset-based: "only trade BTC", "exclude xyz:SILVER"
+   * - Direction-based: "BUY only", "no SELL on commodities"
+   * - Condition-based: "no trading during high volatility"
+   * - Unknown: log warning, skip (don't block on unknown rules)
+   *
+   * @returns { passed: boolean, reason?: string, rulesChecked: number }
+   */
+  private checkRootCommandPromptRules(prompt: string): { passed: boolean; reason?: string; rulesChecked: number } {
+    const rules = prompt.split('\n')
+      .map(l => l.trim())
+      .filter(l => l.startsWith('- '))
+      .map(l => l.slice(2).trim());
+
+    if (rules.length === 0) return { passed: true, rulesChecked: 0 };
+
+    let rulesChecked = 0;
+    const now = new Date();
+    const activeSymbol = this.marketAgent?.getSelectedSymbol() ?? '';
+    const tradingMarkets = this.tradingMarkets ?? [];
+    const allSymbols = [...new Set([activeSymbol, ...tradingMarkets])].filter(s => s);
+
+    for (const rule of rules) {
+      rulesChecked++;
+      const ruleLower = rule.toLowerCase();
+
+      // ── Time-based rules ──
+      // Pattern: "only trade on [day] [timezone]" or "no trading [time] [timezone]"
+      const dayMatch = ruleLower.match(/only.*trade.*on\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/);
+      if (dayMatch) {
+        const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+        const allowedDay = dayMatch[1]!;
+        const currentDay = days[now.getDay()];
+        if (currentDay !== allowedDay) {
+          return { passed: false, reason: `Time rule: only trade on ${allowedDay}, today is ${currentDay}`, rulesChecked };
+        }
+        continue;
+      }
+
+      // Pattern: "no trading after HH:MM [timezone]" or "only trade HH:MM-HH:MM [timezone]"
+      const timeRangeMatch = ruleLower.match(/(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})/);
+      const afterMatch = ruleLower.match(/(?:after|before)\s+(\d{1,2}):(\d{2})/);
+      const tzMatch = ruleLower.match(/(gmt|utc|hkt|et|est|pst|jst|cst)/);
+      const tz: string = tzMatch?.[1] ?? 'gmt';
+
+      if (timeRangeMatch) {
+        const startH = parseInt(timeRangeMatch[1]!);
+        const startM = parseInt(timeRangeMatch[2]!);
+        const endH = parseInt(timeRangeMatch[3]!);
+        const endM = parseInt(timeRangeMatch[4]!);
+        const currentH = this.getCurrentHourInTZ(now, tz);
+        const currentM = now.getUTCMinutes();
+        const currentTotalMin = currentH * 60 + currentM;
+        const startTotalMin = startH * 60 + startM;
+        const endTotalMin = endH * 60 + endM;
+        if (currentTotalMin < startTotalMin || currentTotalMin > endTotalMin) {
+          return { passed: false, reason: `Time rule: only trade ${startH}:${String(startM).padStart(2,'0')}-${endH}:${String(endM).padStart(2,'0')} ${tz.toUpperCase()}, current is ${currentH}:${String(currentM).padStart(2,'0')} ${tz.toUpperCase()}`, rulesChecked };
+        }
+        continue;
+      }
+
+      if (afterMatch) {
+        const targetH = parseInt(afterMatch[1]!);
+        const targetM = parseInt(afterMatch[2]!);
+        const isAfter = ruleLower.includes('after');
+        const currentH = this.getCurrentHourInTZ(now, tz);
+        const currentM = now.getUTCMinutes();
+        const currentTotalMin = currentH * 60 + currentM;
+        const targetTotalMin = targetH * 60 + targetM;
+        if (isAfter && currentTotalMin > targetTotalMin) {
+          return { passed: false, reason: `Time rule: no trading after ${targetH}:${String(targetM).padStart(2,'0')} ${tz.toUpperCase()}, current is ${currentH}:${String(currentM).padStart(2,'0')} ${tz.toUpperCase()}`, rulesChecked };
+        }
+        if (!isAfter && currentTotalMin < targetTotalMin) {
+          return { passed: false, reason: `Time rule: no trading before ${targetH}:${String(targetM).padStart(2,'0')} ${tz.toUpperCase()}, current is ${currentH}:${String(currentM).padStart(2,'0')} ${tz.toUpperCase()}`, rulesChecked };
+        }
+        continue;
+      }
+
+      // ── Asset-based rules ──
+      // Pattern: "only trade [asset]" or "exclude [asset]" or "no [asset]"
+      const excludeMatch = ruleLower.match(/(?:exclude|no)\s+([a-z:]+)/);
+      if (excludeMatch) {
+        const excludedAsset = excludeMatch[1]!.trim();
+        const isExcluded = allSymbols.some(s => normalizeSymbol(s).includes(excludedAsset));
+        if (isExcluded) {
+          return { passed: false, reason: `Asset rule: ${excludedAsset} is excluded but is in current trading markets`, rulesChecked };
+        }
+        continue;
+      }
+
+      const onlyMatch = ruleLower.match(/only.*trade\s+([a-z:,\s]+)/);
+      if (onlyMatch && !dayMatch) {
+        const allowedAssets = onlyMatch[1]!.split(/[,\s]+/).map(a => a.trim()).filter(a => a.length > 0);
+        const hasDisallowed = allSymbols.some(s => {
+          const norm = normalizeSymbol(s).toLowerCase();
+          return !allowedAssets.some(a => norm.includes(a));
+        });
+        if (hasDisallowed && allowedAssets.length > 0) {
+          return { passed: false, reason: `Asset rule: only trade ${allowedAssets.join(', ')}, but current markets include other assets`, rulesChecked };
+        }
+        continue;
+      }
+
+      // ── Direction-based rules ──
+      // Pattern: "buy only" or "no sell" or "sell only"
+      if (ruleLower.includes('buy only') || ruleLower.includes('no sell') || ruleLower.includes('no short')) {
+        // This is a soft rule — we don't abort the cycle, but the directive
+        // is injected into agent context (via marketDesc) so agents respect it.
+        // The hard enforcement happens at Phase 6 (decision verification).
+        continue;
+      }
+      if (ruleLower.includes('sell only') || ruleLower.includes('no buy') || ruleLower.includes('no long')) {
+        continue;
+      }
+
+      // ── Condition-based rules ──
+      // Pattern: "no trading during high volatility" etc.
+      // These are soft rules — injected into agent context, not hard gates.
+      // The agents read the Root Command Prompt and are expected to respect it.
+      continue;
+    }
+
+    return { passed: true, rulesChecked };
+  }
+
+  /** v2.0.143: Get current hour in a specific timezone (for time-based rules). */
+  private getCurrentHourInTZ(now: Date, tz: string): number {
+    try {
+      const tzMap: Record<string, string> = {
+        gmt: 'Europe/London',
+        utc: 'UTC',
+        hkt: 'Asia/Hong_Kong',
+        et: 'America/New_York',
+        est: 'America/New_York',
+        pst: 'America/Los_Angeles',
+        jst: 'Asia/Tokyo',
+        cst: 'America/Chicago',
+      };
+      const ianaTz = tzMap[tz] ?? 'UTC';
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: ianaTz,
+        hour: 'numeric',
+        hour12: false,
+      });
+      return parseInt(formatter.format(now));
+    } catch {
+      // Fallback: use UTC hour
+      return now.getUTCHours();
+    }
+  }
+
+  /**
+   * v2.0.143: Terminal Agent Phase 6 — Decision verification.
+   *
+   * After Meta-Agent produces a decision, verify it against the Root Command
+   * Prompt. If the decision violates a user directive (e.g. "BUY only" but
+   * Meta-Agent says SELL), override to HOLD.
+   *
+   * @returns true if decision is allowed, false if overridden to HOLD
+   */
+  private verifyDecisionAgainstRootPrompt(
+    action: 'buy' | 'sell' | 'hold',
+    symbol: string,
+  ): { allowed: boolean; reason?: string } {
+    if (!this.rootCommandPrompt || this.rootCommandPrompt.trim().length === 0) {
+      return { allowed: true };
+    }
+    if (action === 'hold') return { allowed: true };
+
+    const rules = this.rootCommandPrompt.split('\n')
+      .map(l => l.trim())
+      .filter(l => l.startsWith('- '))
+      .map(l => l.slice(2).trim().toLowerCase());
+
+    for (const rule of rules) {
+      // Direction restrictions
+      if ((rule.includes('buy only') || rule.includes('no sell') || rule.includes('no short')) && action === 'sell') {
+        return { allowed: false, reason: `Root Command Prompt directive violated: "${rule}" — SELL blocked` };
+      }
+      if ((rule.includes('sell only') || rule.includes('no buy') || rule.includes('no long')) && action === 'buy') {
+        return { allowed: false, reason: `Root Command Prompt directive violated: "${rule}" — BUY blocked` };
+      }
+
+      // Asset restrictions
+      const excludeMatch = rule.match(/(?:exclude|no)\s+([a-z:]+)/);
+      if (excludeMatch) {
+        const excludedAsset = excludeMatch[1]!.trim();
+        if (normalizeSymbol(symbol).toLowerCase().includes(excludedAsset)) {
+          return { allowed: false, reason: `Root Command Prompt directive violated: "${rule}" — ${symbol} is excluded` };
+        }
+      }
+    }
+
+    return { allowed: true };
+  }
+
   /** Cold-start backfill: replay historical HL candles as shadow trades
    *  to seed the OLR prior. Uses MarketAgent.hlFetch (rate-limited) to pull
    *  candleSnapshot data. Only backfills symbols that are still cold (below
@@ -2544,6 +2825,22 @@ Provide your post-trade review:`;
       return;
     }
 
+    // ── PHASE -1: Terminal Agent Root Command Prompt rule checking ──
+    // v2.0.143: Before any agent thinking, evaluate ALL rules in the Root
+    // Command Prompt against current conditions. If ANY rule fails, abort
+    // the entire cycle — no agent thinking, no LLM calls, no debate.
+    // This saves token cost and respects user intent.
+    if (this.rootCommandPrompt && this.rootCommandPrompt.trim().length > 0) {
+      const ruleCheck = this.checkRootCommandPromptRules(this.rootCommandPrompt);
+      if (!ruleCheck.passed) {
+        log.warn(`🚫 Terminal Agent: Cycle aborted — rule check failed: ${ruleCheck.reason}`);
+        this.cycleInProgress = false;
+        this.pushToAPI();
+        return;
+      }
+      log.info(`✅ Terminal Agent: All Root Command Prompt rules passed (${ruleCheck.rulesChecked} rules checked)`);
+    }
+
     // v2.0.110: cycleInProgress was already set at the top of runDecisionCycle()
     this.totalCycles++;
     const cycleStart = performance.now();
@@ -2749,11 +3046,41 @@ Provide your post-trade review:`;
               pubDate: h.pubDate ? h.pubDate.getTime() : null,
             })),
           }));
+        // v2.0.143: Cache the successful news context + headlines for reuse
+        // on fetch failure in subsequent cycles.
+        this.lastSuccessfulNewsContext = newsContext;
+        this.lastSuccessfulNewsHeadlines = this.cachedNewsHeadlines;
+        this.lastNewsFetchError = ''; // clear error on success
       } catch (err) {
-        log.debug(`[news] Failed for ${activeSymbol}: ${err instanceof Error ? err.message : String(err)}`);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.lastNewsFetchError = errMsg;
+        log.warn(`[news] Fetch failed: ${errMsg}`);
+
+        // v2.0.143: Reuse last successful news context so the News Reporter
+        // agent still has data to work with. Previously, a fetch failure left
+        // newsContext empty, causing the agent to operate without any news
+        // data and triggering a fallback.
+        if (this.lastSuccessfulNewsContext) {
+          newsContext = this.lastSuccessfulNewsContext;
+          this.cachedNewsHeadlines = this.lastSuccessfulNewsHeadlines;
+          // Mark the context as stale so the agent knows this isn't fresh data
+          newsContext = newsContext.replace('=== NEWS SENTIMENT ===', '=== NEWS SENTIMENT (STALE — last successful fetch reused) ===');
+          log.info(`📰 [news] Reusing last successful news context (${newsContext.length} chars) — fresh fetch failed: ${errMsg}`);
+        } else {
+          log.warn(`📰 [news] No cached news context available — agent will operate without news data this cycle`);
+        }
       }
 
       let marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${similarInsightsContext ? `\n${similarInsightsContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${olrContext}${planckChaosContext}${optionsContext}${playbookContext}${newsContext ? `\n${newsContext}` : ''}\n\n${getFeeSummary()}`;
+
+      // v2.0.143: Inject Root Command Prompt into marketDesc so ALL 7 agents
+      // (5 sub-agents + Skeptics + Meta-Agent) see the user's behavioral rules
+      // in their think() context. This ensures every agent's reasoning is
+      // constrained by the user's directives (e.g. "only trade on Monday GMT",
+      // "avoid SELL on commodities", "be more aggressive in trending markets").
+      if (this.rootCommandPrompt && this.rootCommandPrompt.trim().length > 0) {
+        marketDesc += `\n\n=== ROOT COMMAND PROMPT (USER DIRECTIVES) ===\n${this.rootCommandPrompt}\n---`;
+      }
 
       // v2.0.109: Fetch global breaking news (Top 10 international headlines) for Meta-Agent
       // cross-asset correlation analysis. Meta-Agent must assess whether any headline
@@ -4426,6 +4753,30 @@ Provide your post-trade review:`;
         srSupport: this.lastSRContext?.nearestSupport ?? null,
         srResistance: this.lastSRContext?.nearestResistance ?? null,
       };
+
+      // v2.0.143: PHASE 6 — Terminal Agent decision verification.
+      // After Meta-Agent decides BUY/SELL, verify the decision against the
+      // Root Command Prompt. If it violates a user directive (e.g. "BUY only"
+      // but Meta-Agent says SELL), override to HOLD.
+      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+        const verification = this.verifyDecisionAgainstRootPrompt(
+          finalDecision.action,
+          finalDecision.symbol || activeSymbol,
+        );
+        if (!verification.allowed) {
+          log.warn(`🚫 Terminal Agent Phase 6: ${verification.reason} → overriding to HOLD`);
+          activeAuditGates.push({ gate: 'terminal-agent-verify', passed: false, reason: verification.reason ?? 'directive violated' });
+          finalDecision = {
+            ...finalDecision,
+            action: 'hold',
+            positionSizePct: 0,
+            rationale: `[TERMINAL AGENT] ${verification.reason}. HOLD. Original: ${finalDecision.rationale}`,
+          };
+        } else {
+          activeAuditGates.push({ gate: 'terminal-agent-verify', passed: true, reason: 'compliant with Root Command Prompt' });
+        }
+      }
+
       // v2.0.143: Route through executeTrade() — paper mode goes directly
       // to paperEngine, real mode goes to realTradingManager. No more
       // realTradingManager fallback for paper trades.
@@ -5469,6 +5820,29 @@ Provide your post-trade review:`;
         }
       } catch { /* skip */ }
     }
+
+    // v2.0.143: Also update PAPER positions' mark prices + MAE/MFE tracking.
+    // Previously only real positions were refreshed — paper positions for
+    // non-active trading markets never got price updates between cycles,
+    // so their minValueReached/maxValueReached stayed at the open value.
+    // Now we update ALL paper positions each pushToAPI() call so MAE/MFE
+    // is tracked continuously (every cycle, not just when the symbol is active).
+    const paperPositions = this.portfolio.getPaperPositions();
+    for (const pos of paperPositions) {
+      try {
+        // Try cached price map first (populated each cycle)
+        let livePrice = this.cachedPriceMap.get(pos.symbol.toLowerCase()) ?? 0;
+        if (!livePrice) livePrice = this.cachedPriceMap.get(base(pos.symbol).toLowerCase()) ?? 0;
+        // Fallback: marketState
+        if (!livePrice) {
+          const mktState = this.marketState?.getState(pos.symbol);
+          livePrice = mktState?.price ?? 0;
+        }
+        if (livePrice > 0) {
+          this.portfolio.softUpdatePosition(pos.symbol, livePrice);
+        }
+      } catch { /* skip */ }
+    }
   }
 
   private pushToAPI(): void {
@@ -5545,7 +5919,27 @@ Provide your post-trade review:`;
           cycleInProgress: this.cycleInProgress,
           lastCycleDuration: this.lastCycleDuration,
         },
-        agentThoughts: this.lastHACPResult?.allThoughts ?? [],
+        agentThoughts: [
+          // v2.0.143: Inject Terminal Agent thought so the UI shows it as
+          // "thinking" with model info + latency, same as other agents.
+          // Terminal Agent doesn't make LLM calls during cycles (it does
+          // pure code rule checking), but we synthesize a thought entry so
+          // the UI Agent Cognition panel displays it consistently.
+          ...(this.rootCommandPrompt || this.terminalSideGuide ? [{
+            agentId: 'terminal-agent',
+            agentRole: 'terminal_agent' as const,
+            thought: this.rootCommandPrompt
+              ? `Root Command Prompt (${this.rootCommandPrompt.length} chars):\n${this.rootCommandPrompt}`
+              : 'No Root Command Prompt set — cycle runs without user directives.',
+            confidence: 1.0,
+            timestamp: Date.now(),
+            metadata: {
+              model: getAgentModel('terminal_agent'),
+              latency: 0,
+            },
+          }] : []),
+          ...(this.lastHACPResult?.allThoughts ?? []),
+        ],
         agentStatuses,
         consensus: this.lastHACPResult?.consensus ?? null,
         debateRounds: this.lastHACPResult?.debateRounds ?? [],
@@ -5880,6 +6274,11 @@ Provide your post-trade review:`;
       };
       // v2.0.140: EXP action log for the UI ExperienceDigestionSection
       (apiData as any).expActions = this.lastExpActions;
+      // v2.0.143: Terminal Agent Root Command Prompt + Side Guide for UI
+      (apiData as any).rootCommandPrompt = this.rootCommandPrompt;
+      (apiData as any).terminalSideGuide = this.terminalSideGuide;
+      // v2.0.143: News fetch error for UI display (News Reporter fallback reason)
+      (apiData as any).newsFetchError = this.lastNewsFetchError;
       // v2.0.79: Dedup trade records by ID — prevents duplicate entries
       if (apiData.tradeRecords && Array.isArray(apiData.tradeRecords)) {
         const seenIds = new Set<string>();

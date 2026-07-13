@@ -230,16 +230,45 @@ conviction gate, and trade frequency status. You MUST factor this into your conf
       return thought;
     } catch (err) {
       this.status = 'error';
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Agent think() failed: ${errorMsg}`);
+      const rawError = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Agent think() failed: ${rawError}`);
+
+      // v2.0.143: Digest the error into a user-friendly reason instead of
+      // dumping the raw error log. Categorize common failure modes so the
+      // UI can show a concise, actionable reason alongside the ⚠️ Fallback badge.
+      const digestError = (error: string): string => {
+        const e = error.toLowerCase();
+        if (e.includes('timeout') || e.includes('timed out')) {
+          return 'LLM response timeout — the model took too long to respond. The system will retry next cycle.';
+        }
+        if (e.includes('connection') || e.includes('econnrefused') || e.includes('fetch failed')) {
+          return 'Connection to LLM provider failed — check if Ollama is running. Using cached data from last successful cycle.';
+        }
+        if (e.includes('rate limit') || e.includes('429') || e.includes('too many requests')) {
+          return 'LLM rate limit hit — too many requests. The system will back off and retry next cycle.';
+        }
+        if (e.includes('model') && (e.includes('not found') || e.includes('not available'))) {
+          return `LLM model not available — check if the assigned model is pulled in Ollama. Using fallback HOLD for safety.`;
+        }
+        if (e.includes('json') || e.includes('parse') || e.includes('syntax')) {
+          return 'LLM returned malformed response — could not parse the output. The system will retry next cycle.';
+        }
+        if (e.includes('context length') || e.includes('token limit') || e.includes('too long')) {
+          return 'Input context too long for the model — the market description was too large. The system will truncate and retry.';
+        }
+        // Generic: show first 100 chars of error as a concise reason
+        return `LLM call failed: ${error.slice(0, 100)}${error.length > 100 ? '...' : ''}`;
+      };
+
+      const digestedReason = digestError(rawError);
 
       return {
         agentId: this.identity.id,
         agentRole: this.identity.role,
-        thought: `ERROR: ${errorMsg}. Defaulting to HOLD for capital preservation.`,
+        thought: `${digestedReason} Defaulting to HOLD for capital preservation.`,
         confidence: 0.0,
         timestamp: Date.now(),
-        metadata: { error: errorMsg, fallback: true },
+        metadata: { error: rawError, fallback: true, digestedReason },
       };
     }
   }

@@ -4,6 +4,99 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.143 — Trade Incident Panel + Trade Execution Refactoring + RIL Complete + Shadow Trade Overhaul + Terminal Agent Cycle Enforcement
+
+### Trade Incident Panel (Phase 2)
+
+Replaces the old Positions table + Trade Records with a unified card-based view. Each trade (paper + real, open + closed) is a card showing:
+
+- **MAE/MFE (Min/Max Value Reached)**: Tracks position VALUE (margin + unrealized PnL) at its worst/best during the trade's lifetime. Updated on every price tick via `updatePosition()` + `softUpdatePosition()`. Persisted to `portfolio-state.json` with `originalStopLossPrice` / `originalTakeProfitPrice` for narrowing detection.
+- **Entry Thesis**: Meta-Agent's frozen rationale, captured at open via `setEntryThesis()` after execution succeeds (timing bug fix — previously `setEntryThesis()` ran before the position existed, silently dropping the thesis).
+- **Exit Thesis**: Close rationale with SL/TP narrowing analysis. Compares original SL/TP (at open) vs final SL/TP (at close) — detects tightening/widening percentage + SL/TP gap narrowing. Example: `SL was tightened by 45.0% (original SL=$1275.50 → final SL=$1262.00). ⚠️ SL/TP gap was only 1.2% at close (narrowed from original 4.0%) — unreasonably tight, likely noise stop-out.`
+- **Post-Review**: LLM auto-generated post-trade review (DeepSeek V4 Flash, fire-and-forget). Analyses MAE/MFE + entry/exit thesis + close reason, proposes how more profit could have been made or less loss incurred. Stored on `trade.postReview`, pushed to UI immediately via `pushToAPI()`.
+
+**SL/TP triggered closes** now set `exitThesis` in `checkPositionExits()` BEFORE calling `closePosition()`, including SL/TP gap analysis + narrowing detection. Fallback `exitThesis` generated in `closePosition()` + `closeExchangePosition()` for reconciliation/manual closes.
+
+**Paper positions MAE/MFE fix**: `refreshPositionMarkPrices()` now updates ALL paper positions (not just real positions) every `pushToAPI()` call, using `cachedPriceMap` + `marketState` fallback. Previously non-active trading markets' paper positions never received price updates between cycles, so MAE/MFE stayed at the open value.
+
+### Trade Execution Refactoring
+
+Clean separation of paper vs real trade execution — the core architectural issue causing entryThesis loss, agentId confusion, and double-close bugs.
+
+- **`executeTrade()`** — unified entry router in `index.ts`. Paper mode → `paperEngine.executeDecision()` directly. Real mode → `realTradingManager.executeDecision()` (HL order + mirror). `setEntryThesis()` called after execution succeeds. Replaces 3 scattered `realTradingManager.executeDecision()` call sites.
+- **`closeTrade()`** — unified close router. Paper → `portfolio.closePosition()`. Real → `realTradingManager.closePosition()`. `setExitThesis()` called before closing. Replaces 6 scattered close path call sites (consensus, thesis-invalidation, manual, flip, reconciliation, legacy).
+- **`RealTradingManager.executeDecision()`** — removed paper fallback. Paper mode is no longer handled here. Returns error if called without active engine.
+- **`RealTradingManager.closePosition()`** — removed paper fallback. Same clean separation.
+- **`syncExchangePositions()`** — preserves `entryThesis` + `minValueReached` + `maxValueReached` when close+reimport path is taken (paper position replaced by exchange position). Previously the reimport created a blank position with no thesis, causing RIL/EXP to skip the trade entirely.
+- **Manual close double-close fix** — manual close handler was closing on HL first, then `closeTrade()` would close on HL again. Now `closeTrade()` handles everything.
+
+### RIL Reason Intelligence Layer — Complete
+
+All four RIL sub-layers now fully wired and operational:
+
+- **PatternClusterManager**: `addTrade()` called after `recordClose()` returns the record (was never called before — clusters were only built once at startup, permanently stale). Now incrementally updated on every trade close.
+- **CloseReasonAggregator**: Uses real `exitType` field (`sl_tp` / `consensus` / `manual` / `thesis_invalidation` / `reconciliation` / `exchange_closed`) instead of always `'unknown'`. New `ExitType` type added to `ThesisExperienceRecord` + `RecordCloseInput`. `exitType` passed from `onPositionClosedLearning` via `closeReason`.
+- **SimilarTradeRetriever**: Wired into HACP — after EXP `checkThesisHistory` computes candidate vectors, `findSimilar()` retrieves top-5 most similar historical trades. `formatBlock()` produces `=== SIMILAR TRADES TO YOUR PROPOSED ... ===` block injected into Skeptics validation context. `checkThesisHistory` stores candidate vectors via `getLastCandidateVectors()` for reuse.
+- **SubtleDiffAnalyzer**: Wired into HACP — 1 LLM call per cycle comparing candidate trade vs similar historical winners/losers. Identifies subtle differences (volume, RSI, regime, S/R proximity). `setLLMChatFn()` injects the LLM provider. Output: `=== SUBTLE DIFFERENCES ANALYSIS ===` block injected into Skeptics context.
+
+**RIL injection timing fix**: SimilarTradeRetriever + SubtleDiffAnalyzer are injected AFTER EXP gate (which computes candidate vectors) but BEFORE Skeptics thesis validation — so Skeptics sees similar trades + subtle diff analysis when validating the entryThesis. Previously they were injected in the pre-cycle `marketDesc` build (before Meta-Agent thought), where no candidate thesis existed yet.
+
+### Shadow Trade Overhaul
+
+- **OLR `feedTrade` signature fix**: Now accepts `source` ('shadow' / 'paper' / 'real') + `cycle` parameters. Previously shadow engine and `index.ts` passed 5-7 args but OLR only accepted 4 — `source` and `cycle` were silently discarded. All sources were mixed into the same SGD update with no way to distinguish them.
+- **Per-source sample tracking**: `OLRModel` now has `shadowSamples` / `paperSamples` / `realSamples` counters. Agent context shows data composition: `BUY P(win)=60% (30 samples, medium | shadow=15 paper=10 real=5)`. If a model is trained mostly on shadow data (fixed SL/TP), agents can lower trust.
+- **Per-symbol funding rate fix**: Non-active symbols no longer use the active symbol's funding rate. New `markPriceMap` (per-symbol HL WS mark price cache) + `getMarkPriceForSymbol()` in `hyperliquid-websocket.ts`. Shadow trade features now use correct per-symbol funding rates.
+- **MAE/MFE path-risk tracking**: Each shadow trade records `mfePct` (Maximum Favorable Excursion) + `maePct` (Maximum Adverse Excursion) as fraction of entry price. Agent context shows `avg MFE=3.2% avg MAE=1.8%` — reveals "trades go up 3% then reverse to SL" = exit timing problem, not direction problem.
+- **Shadow soft gate**: When shadow samples ≥ 10 and win rate < 25%, override entry to HOLD. The direction is fundamentally wrong in current conditions. Only triggers with overwhelming evidence (conservative soft gate).
+- **ShadowTradeStats**: New `avgMfePct` + `avgMaePct` fields. UI types updated.
+
+### Terminal Agent Cycle Enforcement
+
+Terminal Agent now does its full job — not just user input → LLM → Root Command Prompt integration, but also cycle-level enforcement:
+
+- **Phase -1 (Rule Checking)**: Before any HACP cycle begins, `checkRootCommandPromptRules()` evaluates ALL rules in the Root Command Prompt against current conditions. Time-based rules (day of week, time range, before/after) use `Intl.DateTimeFormat` for timezone conversion. Asset-based rules (exclude, only-trade) check current trading markets. If ANY hard rule fails → cycle aborted immediately (no LLM calls, no debate — saves tokens + respects user intent). Direction-based + condition-based rules are soft (injected into agent context).
+- **Phase 6 (Decision Verification)**: After Meta-Agent decides BUY/SELL, `verifyDecisionAgainstRootPrompt()` checks the decision against Root Command Prompt directives. "BUY only" + Meta-Agent says SELL → override to HOLD. "Exclude xyz:SILVER" + Meta-Agent trades SILVER → override to HOLD. Recorded in `auditGates`.
+- **Root Command Prompt injection**: All 7 agents (5 sub-agents + Skeptics + Meta-Agent) see `=== ROOT COMMAND PROMPT (USER DIRECTIVES) ===` in their `think()` context via `marketDesc`. Every agent's reasoning is constrained by user directives.
+- **300-char limit + auto-condense**: If Root Command Prompt exceeds 300 chars, LLM is asked to condense it (temperature 0.2, 15s timeout). If still exceeds, truncated + user notified via Side Guide to remove less important rules.
+- **Backend storage**: `rootCommandPrompt` + `terminalSideGuide` stored on backend (survives UI refresh). API response includes both for UI display. Terminal Agent thought injected into `agentThoughts` so UI shows model + latency consistently with other agents.
+- **UI updates**: `TerminalAgentCard` reads from `data.agentThoughts` + `data.rootCommandPrompt`. Shows `⏱ ready` / `📋 deepseek-v4-flas` / `active` (when prompt set) instead of `⏱ —` / `📋 63 chars` / `idle`.
+
+### News Reporter Fallback Fix
+
+- **Stale news reuse**: When `fetchNewsForSymbols` fails, the last successful news context is reused (marked `=== NEWS SENTIMENT (STALE — last successful fetch reused) ===`). Previously a fetch failure left `newsContext` empty, causing the News Reporter to operate without any news data and triggering fallback.
+- **Error digestion**: `BaseAgent.think()` catch block now digests errors into user-friendly reasons via `digestError()` — categorizes timeout / connection / rate-limit / model-not-found / JSON-parse / context-length / generic. The raw error is still in `metadata.error` but `metadata.digestedReason` provides a concise, actionable reason.
+- **UI fallback badge**: `⚠️ Fallback` now shows the digested reason inline (truncated to 60 chars) + full reason in tooltip. No more raw error log dumped to the user.
+
+### Persistence Updates
+
+All new fields persisted to `portfolio-state.json` via `savePortfolio()` + restored on startup:
+- Positions: `minValueReached`, `maxValueReached`, `originalStopLossPrice`, `originalTakeProfitPrice`, `exitThesis`
+- Trades (paper + real): `entryThesis`, `exitThesis`, `postReview`, `minValueReached`, `maxValueReached`
+- `PortfolioSnapshot` type updated with all new fields
+- `migrateModel()` backward-compatible (old models assume all paper, new fields default to 0/undefined)
+
+### Files Changed
+
+- `src/types/index.ts` — `ExitType`, `Position` new fields, `TradeRecord` new fields, `ThesisExperienceRecord.exitType`, `ExpCheckResult.candidateVectors`
+- `src/trading/portfolio.ts` — MAE/MFE tracking in `updatePosition` + `softUpdatePosition`, `setExitThesis()`, `checkPositionExits` exitThesis with SL/TP narrowing analysis, `closePosition` + `closeExchangePosition` fallback exitThesis, `originalStopLossPrice`/`originalTakeProfitPrice` at open
+- `src/trading/real-trading-manager.ts` — removed paper fallback from `executeDecision` + `closePosition`, `syncExchangePositions` preserves entryThesis + MAE/MFE on reimport
+- `src/evolution/rbc-clustering.ts` — `OLRModel` per-source counters, `feedTrade` accepts `source` + `cycle`, `formatForAgentContext` shows source breakdown
+- `src/evolution/shadow-trade-engine.ts` — `mfePct`/`maePct` tracking, `ShadowTradeStats` new fields, `getContext` shows MAE/MFE
+- `src/evolution/thesis-experience.ts` — `RecordCloseInput.exitType`, `recordClose` stores exitType + returns record, `getLastCandidateVectors()`
+- `src/evolution/reason-analytics.ts` — `CloseReasonAggregator` uses real exitType, `SimilarTradeRetriever` + `SubtleDiffAnalyzer` (already existed, now wired)
+- `src/evolution/persistence.ts` — `PortfolioSnapshot` new fields, `savePortfolio` serializes all new fields
+- `src/cognition/hacp.ts` — `setSimilarTradeRetriever` + `setSubtleDiffAnalyzer` + `setLLMChatFn` setters, RIL injection after EXP gate before Skeptics, `rilEnhancedMarketDesc` passed to Skeptics
+- `src/data/hyperliquid-websocket.ts` — `markPriceMap` per-symbol cache, `getMarkPriceForSymbol()`
+- `src/agents/base-agent.ts` — `digestError()` in catch block, `metadata.digestedReason`
+- `src/index.ts` — `executeTrade()` + `closeTrade()` routers, `checkRootCommandPromptRules()` + `verifyDecisionAgainstRootPrompt()`, Root Command Prompt storage + injection, 300-char limit + auto-condense, Terminal Agent thought in `agentThoughts`, paper positions MAE/MFE refresh, stale news reuse, `newsFetchError` in API
+- `src/api-server.ts` — (no changes, existing `setTerminalAgentInputHandler` used)
+- `ui/src/App.tsx` — `TerminalAgentCard` reads from `agentThoughts` + API data, fallback badge shows digested reason, Trade Incident Panel fields, paper trades API mapping with all new fields
+- `ui/src/types.ts` — `AgentThought.digestedReason`, `ShadowTradeStats.avgMfePct`/`avgMaePct`
+
+**Build**: `tsc --noEmit` clean. `vite build` clean (435KB gzipped 131KB).
+
+---
+
 ## v2.0.141 — RIL Reason Intelligence Layer + Confidence Calibration Framework + Prompt Overhaul
 
 **RIL — Reason Intelligence Layer** (`src/evolution/reason-analytics.ts`): New structured reference data system providing Meta-Agent with clear, queryable stats on what entry/close patterns historically win and lose. Three components:
