@@ -474,7 +474,7 @@ body {
   background: transparent;
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-border);
+  border: 1px solid #000000;
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-glass-sm);
   padding: var(--space-10);
@@ -482,100 +482,39 @@ body {
 }
 
 .panel:hover {
-  border-color: transparent;
-  /* v2.0.78: Liquid glass hover — frosted glass with rotating RGB color bleed.
-     A faint conic-gradient (same rotation as the border) sits behind the
-     frosted glass so the RGB colors glow through the blur. */
-  background: conic-gradient(
-    from var(--rgb-angle, 0deg),
-    rgba(255, 0, 128, 0.04),
-    rgba(255, 140, 0, 0.04),
-    rgba(255, 215, 0, 0.04),
-    rgba(0, 255, 127, 0.04),
-    rgba(0, 191, 255, 0.04),
-    rgba(138, 43, 226, 0.04),
-    rgba(255, 0, 128, 0.04)
-  );
+  border-color: #aaaaaa;
   backdrop-filter: var(--glass-blur-strong);
   -webkit-backdrop-filter: var(--glass-blur-strong);
-  animation: rgb-rotate 10s linear infinite;
 }
 
-/* ── RGB Light Strip Border (e-sports rotating marquee) ── */
-/* A conic-gradient rotates around the panel's border ring. The gradient
-   contains the full RGB spectrum + a dark "lights off" segment. As the
-   angle animates 0→360°, the colors travel around all four edges
-   (top→right→bottom→left→top) continuously. A dot-pattern mask makes
-   the gradient appear as individual "bulbs" instead of a solid strip. */
-
-/* Register animatable custom properties for smooth interpolation */
-@property --rgb-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
+/* ── Enterprise panel border — clean, professional, no animation ── */
 
 .panel-rgb-border {
   position: relative;
-  border: 4px solid transparent;
+  border: 1px solid #aaaaaa;
   border-radius: var(--radius-xl);
 }
 
-/* ::before = the rotating RGB conic-gradient, masked to border ring */
+.panel-rgb-border:hover {
+  border-color: #000000;
+}
+
 .panel-rgb-border::before {
   content: '';
   position: absolute;
   inset: 0;
   border-radius: var(--radius-xl);
-  padding: 4px;
-  /* Mask: only show the 4px border ring, not the interior */
-  -webkit-mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  mask-composite: exclude;
-  /* The conic gradient: rainbow + dark segment, rotating around the border.
-     The gradient travels around all 4 edges (top→right→bottom→left→top)
-     as the angle animates 0→360°. */
-  background: conic-gradient(
-    from var(--rgb-angle, 0deg),
-    #ff0080 0deg,
-    #ff8c00 40deg,
-    #ffd700 80deg,
-    #00ff7f 120deg,
-    #00bfff 160deg,
-    #8a2be2 200deg,
-    #ff0080 240deg,
-    #ff8c00 280deg,
-    #0a0a14 300deg,   /* dark "lights off" segment */
-    #0a0a14 330deg,
-    #ff0080 360deg
-  );
-  /* v2.0.78: Subtle drop shadow so the RGB border glows off the panel */
-  filter: drop-shadow(0 0 3px rgba(255, 0, 128, 0.3));
-  animation: rgb-rotate 10s linear infinite;
   pointer-events: none;
   z-index: 1;
 }
 
-/* ::after = dashed border overlaid on the conic gradient to create
-   individual "bulb" separation. CSS dashed border auto-aligns on all
-   4 edges with proper corner gaps — symmetric left/right/top/bottom. */
 .panel-rgb-border::after {
   content: '';
   position: absolute;
   inset: 0;
   border-radius: var(--radius-xl);
-  border: 4px dashed var(--surface-deepest);
   pointer-events: none;
   z-index: 2;
-}
-
-@keyframes rgb-rotate {
-  to { --rgb-angle: 360deg; }
 }
 
 .panel-header {
@@ -586,10 +525,9 @@ body {
 }
 
 .panel-title {
-  font-size: var(--fs-lg);
+  font-size: var(--fs-2xl);
   font-family: var(--font-mono);
   font-weight: var(--fw-semibold);
-  /* v2.0.78: RGB gradient text — softened to near-white pastel tones */
   background: linear-gradient(
     90deg,
     #ffb3cf, #ffd9b3, #fff0b3, #b3ffcc, #b3e0ff, #d4b3ff, #ffb3cf
@@ -1002,14 +940,14 @@ body {
 
 .agent-card {
   background: var(--surface-elevated);
-  border: 1px solid var(--glass-border);
+  border: 1px solid #000000;
   border-radius: var(--radius-lg);
   padding: var(--space-9);
   transition: border-color var(--transition), background var(--transition);
 }
 
 .agent-card:hover {
-  border-color: var(--glass-border-hover);
+  border-color: #aaaaaa;
   background: var(--glass-bg-hover);
 }
 
@@ -1092,6 +1030,22 @@ body {
   font-size: var(--fs-lg);
   font-weight: var(--fw-semibold);
   color: var(--text-primary);
+}
+
+/* v2.0.153: RGB gradient text for Trading Terminal title */
+.agent-name-gradient {
+  font-family: var(--font-mono);
+  background: linear-gradient(
+    90deg,
+    #ffb3cf, #ffd9b3, #fff0b3, #b3ffcc, #b3e0ff, #d4b3ff, #ffb3cf
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: rgb-text-shimmer 4s linear infinite;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .agent-state {
@@ -2371,7 +2325,6 @@ body {
   font-size: var(--fs-lg);
   font-family: var(--font-mono);
   font-weight: var(--fw-semibold);
-  /* v2.0.78: RGB gradient text — softened to near-white pastel tones */
   background: linear-gradient(
     90deg,
     #ffb3cf, #ffd9b3, #fff0b3, #b3ffcc, #b3e0ff, #d4b3ff, #ffb3cf

@@ -277,6 +277,8 @@ export class APIServer {
   private onResetTradeHistory: (() => void) | null = null;
   /** v2.0.79: Reset paper engine trades */
   private onResetPaperTrades: (() => void) | null = null;
+  /** v2.0.153: Delete a single trade by ID (from paper or real records) */
+  private onDeleteTrade: ((tradeId: string) => Promise<boolean>) | null = null;
   private onPause: (() => void) | null = null;
   private onResume: (() => void) | null = null;
   /** v2.0.116: Settings modal — get/update env vars */
@@ -429,6 +431,11 @@ export class APIServer {
   /** v2.0.79: Register a callback for resetting paper engine trades */
   setResetPaperTradesHandler(cb: () => void): void {
     this.onResetPaperTrades = cb;
+  }
+
+  /** v2.0.153: Register a callback for deleting a single trade by ID */
+  setDeleteTradeHandler(cb: (tradeId: string) => Promise<boolean>): void {
+    this.onDeleteTrade = cb;
   }
 
   /** Register a callback for pausing the system (RBC only mode) */
@@ -720,6 +727,34 @@ export class APIServer {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, message: 'Paper trades reset' }));
         if (this.onResetPaperTrades) this.onResetPaperTrades();
+        return;
+      }
+
+      // v2.0.153: POST — delete a single trade by ID
+      if (pathname === '/api/trades/delete' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        req.on('end', async () => {
+          try {
+            const { tradeId } = JSON.parse(body) as { tradeId: string };
+            if (!tradeId) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'tradeId required' }));
+              return;
+            }
+            if (this.onDeleteTrade) {
+              const deleted = await this.onDeleteTrade(tradeId);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: deleted, message: deleted ? 'Trade deleted' : 'Trade not found' }));
+            } else {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'Delete handler not registered' }));
+            }
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: err instanceof Error ? err.message : String(err) }));
+          }
+        });
         return;
       }
 

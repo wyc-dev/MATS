@@ -1128,11 +1128,10 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   }
 
   return (
-    <div className="agent-card">
+    <div className="panel">
       <div className="agent-head">
         <div className="agent-name-row">
-          <span className="agent-dot" style={{ background: meta?.color }} />
-          <span className="agent-name">{meta?.name ?? 'Market Agent'}</span>
+          <span className="agent-name agent-name-gradient">{meta?.name ?? 'Market Agent'}</span>
         </div>
         <span className="agent-state idle">{exchange.toUpperCase()} · {config?.tradeMode?.toUpperCase()}</span>
       </div>
@@ -1754,7 +1753,28 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
   const tradeRecords = data?.tradeRecords ?? []
   const [page, setPage] = useState(0)
   const [expandedCard, setExpandedCard] = useState<string | null>(null)
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const pageSize = 10
+
+  // v2.0.153: Delete a trade by ID — calls backend API to remove from paper/real records
+  const handleDeleteTrade = async (tradeId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/trades/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tradeId }),
+      })
+      const result = await res.json()
+      if (result.success) {
+        setDeleteConfirm(null)
+        setExpandedCard(null)
+      } else {
+        alert(`Failed to delete trade: ${result.error ?? 'Unknown error'}`)
+      }
+    } catch (err) {
+      alert(`Failed to delete trade: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
 
   // Merge open positions + closed trades into unified list
   const openTrades = positions.map((pos: any) => ({
@@ -1811,8 +1831,10 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
   const openIds = new Set(openTrades.map(t => t.id))
   const merged = [...openTrades, ...closedTrades.filter(t => !openIds.has(t.id))]
 
-  // Sort newest first
+  // v2.0.153: Open positions always at top, then closed trades newest first
   const sorted = merged.sort((a, b) => {
+    if (a.status === 'open' && b.status !== 'open') return -1
+    if (a.status !== 'open' && b.status === 'open') return 1
     const ta = a.closedAt ?? a.openedAt ?? 0
     const tb = b.closedAt ?? b.openedAt ?? 0
     return tb - ta
@@ -1828,7 +1850,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
     return (
       <div className="panel">
         <div className="panel-header">
-          <span className="panel-title">Trade Incident</span>
+          <span className="evo-title">Trade Incident</span>
           <span className="panel-badge">0 trades</span>
         </div>
         <div className="empty-state">
@@ -1841,7 +1863,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
   return (
     <div className="panel">
       <div className="panel-header">
-        <span className="panel-title">Trade Incident</span>
+        <span className="evo-title">Trade Incident</span>
         <span className="panel-badge">{sorted.length} trades · Page {safePage + 1}/{totalPages}</span>
       </div>
 
@@ -1937,6 +1959,35 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
               {/* Expanded details */}
               {isExpanded && (
                 <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                  {/* v2.0.153: Delete trade button — removes erroneous/bug trades */}
+                  {!isOpen && (
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 'var(--space-2)' }}>
+                      {deleteConfirm === cardId ? (
+                        <span style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
+                          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--red)' }}>Delete this trade?</span>
+                          <button
+                                onClick={(e) => { e.stopPropagation(); handleDeleteTrade(cardId) }}
+                                style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--red)', background: 'var(--red-bg)', color: 'var(--red)', cursor: 'pointer', fontSize: 'var(--fs-xs)', fontWeight: 'var(--fw-bold)' }}
+                          >
+                            <Check size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Yes
+                          </button>
+                          <button
+                                onClick={(e) => { e.stopPropagation(); setDeleteConfirm(null) }}
+                                style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}
+                          >
+                            <X size={12} color="var(--text-secondary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />No
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setDeleteConfirm(cardId) }}
+                          style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(248, 113, 113, 0.3)', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}
+                        >
+                          <X size={12} color="var(--text-tertiary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Delete
+                        </button>
+                      )}
+                    </div>
+                  )}
                   {isOpen && (
                     <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--gold)', opacity: 0.8, marginBottom: 'var(--space-1)' }}>
                       <BarChart3 size={12} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Chart switched to Trading Setup — entry @ ${t.entryPrice.toFixed(2)}{t.stopLossPrice != null ? ` · SL $${t.stopLossPrice.toFixed(2)}` : ''}{t.takeProfitPrice != null ? ` · TP $${t.takeProfitPrice.toFixed(2)}` : ''}

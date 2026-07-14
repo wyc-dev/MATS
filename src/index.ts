@@ -497,6 +497,38 @@ class MATSSystem {
         this.pushToAPI();
       });
 
+      // v2.0.153: Delete a single trade by ID — removes from paper engine trades,
+      // closed real trades, and EXP trades.jsonl. Keeps evolution data pure.
+      this.apiServer.setDeleteTradeHandler(async (tradeId: string): Promise<boolean> => {
+        log.info(`🗑️ Trade delete requested: ${tradeId}`);
+        let deleted = false;
+
+        // Delete from paper engine trades
+        const paperTrades = this.paperEngine.getTrades();
+        const paperIdx = paperTrades.findIndex(t => t.id === tradeId);
+        if (paperIdx >= 0) {
+          this.paperEngine.deleteTrade(tradeId);
+          deleted = true;
+          log.info(`  → Deleted from paper engine trades`);
+        }
+
+        // Delete from closed real trades
+        const realTrades = this.portfolio.getClosedRealTrades();
+        const realIdx = realTrades.findIndex(t => t.id === tradeId);
+        if (realIdx >= 0) {
+          this.portfolio.deleteClosedRealTrade(tradeId);
+          deleted = true;
+          log.info(`  → Deleted from closed real trades`);
+        }
+
+        if (deleted) {
+          this.persistPortfolio();
+          this.pushToAPI();
+        }
+
+        return deleted;
+      });
+
       // Wire up Market Agent API handlers
       this.apiServer.setMarketAgentSetTradeModeHandler(async (mode) => {
         log.info(`Market Agent: trade mode → ${mode}`);
@@ -4425,11 +4457,19 @@ ${recentExamples}
       const perSymbolConsensus = result.consensus.perSymbolConsensus ?? [];
       for (const psc of perSymbolConsensus) {
         const pos = this.portfolio.getPosition(psc.symbol);
+        // v2.0.153: Also check cachedExchangePositions — the live HL position
+        // cache. If a position was just opened on HL but syncExchangePositions
+        // hasn't imported it into portfolio yet (REST lag 2-5s), this cache
+        // catches it and prevents opening a duplicate position.
+        const pscNorm = normalizeSymbol(psc.symbol);
+        const hasExchangePos = (this.cachedExchangePositions ?? []).some(
+          ep => normalizeSymbol(ep.symbol) === pscNorm && ep.quantity > 0
+        );
 
         // v2.0.104: If no real position exists, this might be a trading market
         // without position (injected for multi-symbol single-cycle analysis).
         // If consensus says BUY/SELL, execute the entry decision for this symbol.
-        if (!pos) {
+        if (!pos && !hasExchangePos) {
           // Skip the activeSymbol — it's handled by the main marketTicker flow
           if (normalizeSymbol(psc.symbol) === normalizeSymbol(activeSymbol)) continue;
 
@@ -4544,14 +4584,14 @@ ${recentExamples}
           // This must happen before closePosition()/closeExchangePosition()
           // because those methods delete the position from the map.
           const closeRationale = psc.rationale || 'No rationale provided.';
-          if (pos.entryThesis) {
+          if (pos!.entryThesis) {
             // v2.0.90: Validate close decision with Skeptics for thesis-backed positions
             const closeValidation = await this.hacpEngine.getSkeptics().validateCloseDecision(
               psc.symbol,
-              pos.side as 'buy' | 'sell',
-              pos.averageEntryPrice,
-              pos.currentPrice,
-              pos.unrealizedPnlPct ?? 0,
+              pos!.side as 'buy' | 'sell',
+              pos!.averageEntryPrice,
+              pos!.currentPrice,
+              pos!.unrealizedPnlPct ?? 0,
               closeRationale,
               `${marketDesc}\n\n${adjustedEvolutionContext}`,
               allThoughts,
@@ -4560,19 +4600,19 @@ ${recentExamples}
               log.warn(`🚫 Skeptics BLOCKED close for ${psc.symbol}: ${closeValidation.rationale} — position remains open`);
               continue;
             }
-            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale} [Skeptics: ✅ ${closeValidation.rationale}]`);
+            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos!.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale} [Skeptics: ✅ ${closeValidation.rationale}]`);
           } else {
             // v2.0.91: Legacy position without entryThesis — close directly
-            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (legacy, no thesis) (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
+            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (legacy, no thesis) (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos!.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
           }
           // v2.0.143: Route through closeTrade() — handles paper vs real
           // separation + sets exitThesis before closing.
           const closeSuccess = await this.closeTrade(psc.symbol, closeRationale);
           if (closeSuccess) {
-            if (pos.agentId === 'hyperliquid-real') {
+            if (pos!.agentId === 'hyperliquid-real') {
               log.info(`  → Closed ${psc.symbol} (real, closed on HL)`);
             } else {
-              log.info(`  → Closed ${psc.symbol}: $${pos.unrealizedPnl.toFixed(2)}`);
+              log.info(`  → Closed ${psc.symbol}: $${pos!.unrealizedPnl.toFixed(2)}`);
             }
           } else {
             log.error(`  → Failed to close ${psc.symbol} — position remains open`);
@@ -4587,15 +4627,15 @@ ${recentExamples}
         // this cycle — HACP's MFE-aware trailing SL takes priority over
         // agent-suggested averaged SL/TP. The agent suggestions are blind to
         // MFE/giveback patterns; HACP's adaptive trail is data-driven.
-        const hacpAdjusted = result.positionAdjustments?.some(a => a.positionId === pos.id);
+        const hacpAdjusted = result.positionAdjustments?.some(a => a.positionId === pos!.id);
         if (hacpAdjusted) {
           log.info(`📐 Per-symbol consensus SL/TP for ${psc.symbol} skipped — HACP adaptive SL already applied this cycle`);
         } else if (psc.suggestedStopLoss !== undefined || psc.suggestedTakeProfit !== undefined) {
           let validSL = psc.suggestedStopLoss;
           let validTP = psc.suggestedTakeProfit;
-          const isLong = pos.side === 'buy';
-          const currentPrice = pos.currentPrice;
-          const entryPrice = pos.averageEntryPrice;
+          const isLong = pos!.side === 'buy';
+          const currentPrice = pos!.currentPrice;
+          const entryPrice = pos!.averageEntryPrice;
 
           // v2.0.54: Validate SL — must be on correct side of current price
           if (validSL !== undefined) {
@@ -4617,7 +4657,7 @@ ${recentExamples}
           }
 
           if (validSL !== undefined || validTP !== undefined) {
-            await this.realTradingManager.adjustPosition(pos.id, validSL, validTP);
+            await this.realTradingManager.adjustPosition(pos!.id, validSL, validTP);
             log.info(`📐 Per-symbol consensus: ADJUST ${psc.symbol} SL=${validSL?.toFixed(2) ?? '-'} TP=${validTP?.toFixed(2) ?? '-'}`);
           } else {
             log.warn(`📐 Per-symbol consensus: ADJUST ${psc.symbol} — all SL/TP rejected by direction validation, skipping`);
@@ -4631,7 +4671,7 @@ ${recentExamples}
         // didn't vote to close it. Without this audit, the UI shows the agent's
         // analysis (e.g. "BUY 55%") with no explanation for why nothing happened.
         if ((psc.action === 'buy' || psc.action === 'sell') && !psc.closePosition) {
-          const posSide = pos.side;
+          const posSide = pos!.side;
           const wantsSameDirection = (psc.action === 'buy' && posSide === 'buy') || (psc.action === 'sell' && posSide === 'sell');
           if (!wantsSameDirection) {
             this.recordDecisionAudit(
@@ -4772,8 +4812,14 @@ ${recentExamples}
       // v2.0.42: Use normalizeSymbol instead of .toLowerCase() — colon symbols
       // (xyz:MU) must preserve case to match portfolio storage.
       const activeSym = finalDecision.symbol ? normalizeSymbol(finalDecision.symbol) : '';
-      if (activeSym && this.portfolio.hasPosition(activeSym)) {
-        const existingPos = this.portfolio.getPosition(activeSym);
+      // v2.0.153: Check both portfolio AND cachedExchangePositions for existing position
+      const activeHasPortfolioPos = activeSym && this.portfolio.hasPosition(activeSym);
+      const activeHasExchangePos = activeSym && (this.cachedExchangePositions ?? []).some(
+        ep => normalizeSymbol(ep.symbol) === activeSym && ep.quantity > 0
+      );
+      if (activeSym && (activeHasPortfolioPos || activeHasExchangePos)) {
+        const existingPos = this.portfolio.getPosition(activeSym) ??
+          (activeHasExchangePos ? (this.cachedExchangePositions ?? []).find(ep => normalizeSymbol(ep.symbol) === activeSym) : undefined);
         if (existingPos && finalDecision.action !== 'hold') {
           const isFlip = (existingPos.side === 'buy' && finalDecision.action === 'sell') ||
                          (existingPos.side === 'sell' && finalDecision.action === 'buy');
@@ -4786,7 +4832,7 @@ ${recentExamples}
             // v2.0.143: Route through closeTrade() — handles paper vs real + exitThesis.
             const flipCloseSuccess = await this.closeTrade(activeSym, `Position flip: closing ${existingPos.side.toUpperCase()} to open ${finalDecision.action.toUpperCase()}`);
             if (flipCloseSuccess) {
-              log.info(`  → Flipped ${activeSym} (${existingPos.agentId === 'hyperliquid-real' ? 'real' : 'paper'}). Proceeding with ${finalDecision.action.toUpperCase()} order.`);
+              log.info(`  → Flipped ${activeSym}. Proceeding with ${finalDecision.action.toUpperCase()} order.`);
             } else {
               log.error(`  → Failed to close ${activeSym} for flip — aborting flip`);
               finalDecision = {
@@ -4821,26 +4867,15 @@ ${recentExamples}
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
         const decisionSym = finalDecision.symbol || activeSymbol;
 
-        // v2.0.141: Existing position guard — if same asset+same direction already
-        // has an open position, override to HOLD. Prevents the system from repeatedly
-        // adding to the same position every cycle (churn loop).
-        if (this.portfolio.hasPosition(decisionSym)) {
-          const existing = this.portfolio.getPosition(decisionSym);
-          if (existing && existing.side === finalDecision.action) {
-            log.warn(`🚫 [existing-position] ${decisionSym}: already has ${existing.side.toUpperCase()} position (qty=${existing.quantity?.toFixed(4) ?? '?'}). Overriding ${finalDecision.action.toUpperCase()} → HOLD.`);
-            activeAuditGates.push({ gate: 'existing-position', passed: false, reason: `${decisionSym} already has ${existing.side.toUpperCase()} position` });
-            finalDecision = {
-              ...finalDecision,
-              action: 'hold',
-              positionSizePct: 0,
-              rationale: `[EXISTING POSITION] ${decisionSym} already has ${existing.side.toUpperCase()} position. Overriding to HOLD. Original: ${finalDecision.rationale}`,
-            };
-          }
-        }
+        // v2.0.153: Existing position guard removed — the Symbol Overlap Guard
+        // above (line ~4768) already handles same-direction blocking + flip logic,
+        // and now also checks cachedExchangePositions for REST lag. This redundant
+        // check was causing confusion with two separate gates logging different
+        // messages for the same condition.
 
         // v2.0.141: Re-entry block — if this symbol was force-closed due to thesis
         // invalidation THIS cycle, block re-entry. Prevents the close→reopen churn loop.
-        if (finalDecision.action !== 'hold' && typeof thesisInvalidatedReentryBlock !== 'undefined' && thesisInvalidatedReentryBlock.has(decisionSym)) {
+        if ((finalDecision.action as string) !== 'hold' && typeof thesisInvalidatedReentryBlock !== 'undefined' && thesisInvalidatedReentryBlock.has(decisionSym)) {
           log.warn(`🚫 [reentry-block] ${decisionSym}: force-closed this cycle due to thesis invalidation. Blocking re-entry. Overriding ${finalDecision.action.toUpperCase()} → HOLD.`);
           activeAuditGates.push({ gate: 'reentry-block', passed: false, reason: `${decisionSym} force-closed this cycle` });
           finalDecision = {

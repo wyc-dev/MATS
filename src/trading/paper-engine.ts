@@ -110,6 +110,15 @@ export class PaperTradingEngine {
     log.info('🗑️ Paper trades reset — all trade records cleared');
   }
 
+  /** v2.0.153: Delete a single trade by ID */
+  deleteTrade(tradeId: string): void {
+    const idx = this.trades.findIndex(t => t.id === tradeId);
+    if (idx >= 0) {
+      this.trades.splice(idx, 1);
+      log.info(`🗑️ Paper trade deleted: ${tradeId}`);
+    }
+  }
+
   /**
    * v2.0.42: Get win/loss stats for the most recent N trades.
    * Used by UI + heartbeat to show a RECENT win rate that reflects
