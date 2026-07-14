@@ -2044,6 +2044,8 @@ Provide your post-trade review:`;
       trade.postReview = review;
       log.info(`[post-review] Generated for ${trade.symbol} (${isWin ? 'WIN' : 'LOSS'} $${trade.pnl.toFixed(2)}): ${review.slice(0, 80)}...`);
 
+      // v2.0.160: Persist immediately so postReview survives restart
+      this.persistPortfolio();
       // Push updated data to the UI so the review appears immediately.
       this.pushToAPI();
     } catch (err) {
@@ -5910,9 +5912,8 @@ ${recentExamples}
 
   private persistPortfolio(): void {
     try {
-      // v2.0.38: Pass closedRealTrades so real exchange trades survive restarts.
-      // They're stored separately from paper trades and don't affect paper stats.
-      savePortfolio(this.portfolio.getPortfolio(), this.paperEngine.getTrades(), this.portfolio.getClosedRealTrades());
+      // v2.0.160: Pass realPositions so they survive restart with thesis + MAE/MFE
+      savePortfolio(this.portfolio.getPortfolio(), this.paperEngine.getTrades(), this.portfolio.getClosedRealTrades(), this.portfolio.getRealPositions());
     } catch (err) {
       // Best-effort
     }
