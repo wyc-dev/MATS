@@ -5481,6 +5481,9 @@ Provide your post-trade review:`;
           // v2.0.134: Include entryThesis so UI can display the opening rationale
           entryThesis: pos.entryThesis,
           holdReason: pos.holdReason,
+          // v2.0.143: Include MAE/MFE tracking for Trade Incident Panel
+          minValueReached: pos.minValueReached,
+          maxValueReached: pos.maxValueReached,
         };
       } else {
         positions[key] = {
@@ -5502,6 +5505,9 @@ Provide your post-trade review:`;
           // v2.0.134: Include entryThesis so UI can display the opening rationale
           entryThesis: pos.entryThesis,
           holdReason: pos.holdReason,
+          // v2.0.143: Include MAE/MFE tracking for Trade Incident Panel
+          minValueReached: pos.minValueReached,
+          maxValueReached: pos.maxValueReached,
         };
       }
     }
