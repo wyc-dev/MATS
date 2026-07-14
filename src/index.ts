@@ -2263,6 +2263,47 @@ Provide your post-trade review:`;
     return { allowed: true };
   }
 
+  /**
+   * v2.0.143: Parse risk preference from Root Command Prompt.
+   *
+   * Detects natural language risk preference keywords and maps them to
+   * minConfidenceForTrade values that override the evolution engine's default.
+   *
+   * Supported keywords (case-insensitive, English + Chinese):
+   * - Aggressive: "激進" "aggressive" "高風險" "high risk" "進取" "bold" → 0.20
+   * - Conservative: "保守" "conservative" "低風險" "low risk" "謹慎" "cautious" → 0.60
+   * - Balanced: "平衡" "balanced" "moderate" "適中" → 0.40
+   *
+   * If no risk preference keyword is found, returns null (no override).
+   *
+   * @returns { preference, minConfidenceForTrade } or null
+   */
+  private parseRiskPreference(prompt: string): { preference: string; minConfidenceForTrade: number } | null {
+    const p = prompt.toLowerCase();
+
+    // Aggressive — lower the bar, let low-confidence trades through
+    if (p.includes('激進') || p.includes('aggressive') || p.includes('高風險') ||
+        p.includes('high risk') || p.includes('進取') || p.includes('bold') ||
+        p.includes('攻擊') || p.includes('attack')) {
+      return { preference: 'aggressive', minConfidenceForTrade: 0.20 };
+    }
+
+    // Conservative — raise the bar, only high-confidence trades
+    if (p.includes('保守') || p.includes('conservative') || p.includes('低風險') ||
+        p.includes('low risk') || p.includes('謹慎') || p.includes('cautious') ||
+        p.includes('防守') || p.includes('defensive')) {
+      return { preference: 'conservative', minConfidenceForTrade: 0.60 };
+    }
+
+    // Balanced — moderate
+    if (p.includes('平衡') || p.includes('balanced') || p.includes('moderate') ||
+        p.includes('適中') || p.includes('neutral')) {
+      return { preference: 'balanced', minConfidenceForTrade: 0.40 };
+    }
+
+    return null;
+  }
+
   /** Cold-start backfill: replay historical HL candles as shadow trades
    *  to seed the OLR prior. Uses MarketAgent.hlFetch (rate-limited) to pull
    *  candleSnapshot data. Only backfills symbols that are still cold (below
@@ -3268,6 +3309,34 @@ Provide your post-trade review:`;
       const backtestContext = this.backtest.getBacktestSummary();
       const portfolioDesc = this.paperEngine.getPortfolioSummary();
 
+      // v2.0.143: Root Command Prompt risk preference override.
+      // The user can express risk preference in natural language:
+      //   "激進" / "aggressive" / "高風險" → lower minConfidenceForTrade (0.20)
+      //   "保守" / "conservative" / "低風險" → raise minConfidenceForTrade (0.60)
+      //   "平衡" / "balanced" / "moderate" → default (0.40)
+      // This adjusts the hard constraint that Skeptics enforces on sub-agents.
+      let adjustedEvolutionContext = evolutionContext;
+      if (this.rootCommandPrompt && this.rootCommandPrompt.trim().length > 0) {
+        const riskOverride = this.parseRiskPreference(this.rootCommandPrompt);
+        if (riskOverride) {
+          // Override minConfidenceForTrade in the evolution context
+          if (riskOverride.minConfidenceForTrade !== undefined) {
+            const currentMatch = evolutionContext.match(/minConfidenceForTrade=([\d.]+)/);
+            if (currentMatch) {
+              adjustedEvolutionContext = evolutionContext.replace(
+                currentMatch[0],
+                `minConfidenceForTrade=${riskOverride.minConfidenceForTrade.toFixed(2)}  (OVERRIDDEN by Root Command Prompt: ${riskOverride.preference})`
+              );
+              log.info(`🎯 Terminal Agent: Risk preference "${riskOverride.preference}" → minConfidenceForTrade ${riskOverride.minConfidenceForTrade.toFixed(2)} (was ${currentMatch[1]})`);
+            } else {
+              // No existing minConfidenceForTrade — append it
+              adjustedEvolutionContext += `\n  minConfidenceForTrade=${riskOverride.minConfidenceForTrade.toFixed(2)}  (OVERRIDDEN by Root Command Prompt: ${riskOverride.preference})\n`;
+              log.info(`🎯 Terminal Agent: Risk preference "${riskOverride.preference}" → minConfidenceForTrade ${riskOverride.minConfidenceForTrade.toFixed(2)} (was default)`);
+            }
+          }
+        }
+      }
+
       // v2.0.139: Evolution signalThreshold override REMOVED. The consensus
       // threshold is now purely config (HACP_CONSENSUS_THRESHOLD) + adjustThreshold
       // (loss-streak/idle/regime). The EvolutionaryPressureEngine strategy pool
@@ -3701,7 +3770,7 @@ Provide your post-trade review:`;
       log.info(`📊 currentPositions after injection=${currentPositions.length} (symbols: ${currentPositions.map(p => p.symbol).join(', ')})`);
 
       const result = await this.hacpEngine.executeDecisionCycle(
-        `${marketDesc}\n\n${evolutionContext}${backtestContext}`,
+        `${marketDesc}\n\n${adjustedEvolutionContext}${backtestContext}`,
         portfolioDesc,
         currentPositions.length > 0 ? currentPositions : undefined,
         emContext,
@@ -4385,7 +4454,7 @@ Provide your post-trade review:`;
               pos.currentPrice,
               pos.unrealizedPnlPct ?? 0,
               closeRationale,
-              `${marketDesc}\n\n${evolutionContext}`,
+              `${marketDesc}\n\n${adjustedEvolutionContext}`,
               allThoughts,
             );
             if (!closeValidation.approved) {
