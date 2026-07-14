@@ -4,6 +4,79 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.160 — Real Position Persistence + Phantom Close Root Cause + Fill Direction Matching + Trade Dedup
+
+### Real Position Persistence — thesis + MAE/MFE + postReview survive restart
+
+Three persistence fixes that together ensure real trade data is never lost on restart:
+
+**1. Real positions persisted**: `savePortfolio` now accepts a `realPositions` parameter. `PortfolioSnapshot` has a new `realPositions` field. On startup, real positions are restored with `entryThesis`, `holdReason`, `minValueReached`, `maxValueReached`, `originalStopLossPrice`, `originalTakeProfitPrice` — all intact. Previously real positions were re-imported from HL on restart with NO thesis/MAE/MFE — all learning data was lost.
+
+**2. PostReview persisted immediately**: `generatePostReview` now calls `persistPortfolio()` after storing the review on the trade record. Previously postReview was fire-and-forget — the trade was persisted BEFORE the LLM generated the review, so postReview was lost on restart.
+
+**3. `persistPortfolio` passes `realPositions`**: Every `persistPortfolio()` call now includes `this.portfolio.getRealPositions()` so real positions are saved to disk after close, after postReview, after trade execution, and on shutdown.
+
+### Phantom Close Root Cause — syncExchangePositions no longer assumes closed
+
+**Root cause**: `syncExchangePositions` was assuming positions were closed when HL API didn't return them (API failure/rate limit). This created phantom close records every cycle, then the next cycle re-imported the position from HL → close again → infinite loop of duplicate trades.
+
+**Three fixes**:
+1. **"Uncertain" path**: NEVER assume closed without a confirmed closing fill on HL. Old code assumed closed if position was >1h old and not in `exMap` — but `exMap` can be empty due to API failure, not because the position is actually closed.
+2. **"Not in exMap" path**: Only close if there's a confirmed matching closing fill. Old code closed with fallback `exitPrice` even when no fill was found.
+3. **`checkPositionExits`**: Skip local SL/TP monitoring for real positions (`agentId === 'hyperliquid-real'`). Real positions have SL/TP as trigger orders on HL — the exchange handles the close. Local monitoring was creating phantom close records when local price hit SL/TP but the HL trigger hadn't filled yet.
+
+### Fill Direction Matching — prevents fake closes from wrong-direction fills
+
+**Root cause**: `syncExchangePositions` matched closing fills to positions using only `symbol + timestamp >= openedAt`. A closing fill from a PREVIOUS position (e.g. SELL CL closed → fill has `dir='sell'`) was matched to a NEW BUY CL position because both have the same symbol and the fill timestamp was after the new position's `openedAt`. This created a fake close record ~25min after the new position opened, while the position was still open on HL.
+
+**Fix**: Fill matching now also checks that the fill direction matches the closing side of the position:
+- BUY position → only matches fills with `dir` starting with "sell" (closing a long)
+- SELL position → only matches fills with `dir` starting with "buy" (closing a short)
+
+Applied to both the `genuinelyClosed` path (exMap empty) and the `not in exMap` path (exMap non-empty but symbol missing).
+
+### Trade Record Dedup
+
+Both `paperEngine.onPositionClosed` and `portfolio.closeExchangePosition` now check if a trade with the same `symbol + side + openedAt` (within 1 minute) already exists before adding. Prevents double-recording when multiple close paths fire for the same position in the same cycle.
+
+### Startup Purge — removes phantom trades without thesis
+
+On startup, `purgeTradesWithoutThesis()` removes all trades from `paperEngine.trades` and `closedRealTrades` that have no `entryThesis`. These were created by the old mirror bug (paperEngine.executeDecision mirror path) which stored positions without thesis. 210 phantom trades purged on first restart after fix.
+
+### Paper Balance Root Cause Fix (from v2.0.155, consolidated)
+
+`RealTradingManager.executeDecision()` now uses `portfolio.importExchangePosition()` instead of `paperEngine.executeDecision(decisionWithLev, true)`. The old mirror path went through `openPosition()` which deducted margin from paper balance. `importExchangePosition` stores in `realPositions` without touching paper balance.
+
+### Duplicate Position Guard (from v2.0.155, consolidated)
+
+Both the multi-symbol entry path and the active symbol overlap guard now check `cachedExchangePositions` (the live HL position cache) in addition to `portfolio.getPosition()`. Catches HL REST lag where a position exists on HL but hasn't been imported into the portfolio yet.
+
+### Position Count Fix
+
+`status.positions` now uses a `Set`-based deduped count across all three position sources: `p.positions` (paper map) + `realPositions` (importExchangePosition) + `cachedExchangePositions` (HL API cache). No double-counting.
+
+### Real Position UI Visibility (from v2.0.154, consolidated)
+
+`serializePortfolio()` now includes `realPositions` map so real positions show immediately after `executeTrade`, without waiting for `syncExchangePositions`. `pushToAPI()` called immediately after both active symbol and multi-symbol trade execution.
+
+### Files Changed
+
+- `src/index.ts` — Real position persistence, postReview persistence, startup purge, position count dedup, pushToAPI after trade, serializePortfolio realPositions, duplicate position guard, cycle crash fix (posDef narrowing)
+- `src/trading/real-trading-manager.ts` — Replaced paperEngine mirror with importExchangePosition, fill direction matching, no phantom close assumption, removed mirrorReports
+- `src/trading/portfolio.ts` — importExchangePosition realPositions guard, deleteClosedRealTrade, purgeClosedRealTradesWithoutThesis, closeExchangePosition dedup, checkPositionExits skip real, realPositions restore on startup, made trades/closedRealTrades mutable
+- `src/trading/paper-engine.ts` — deleteTrade, purgeTradesWithoutThesis, onPositionClosed dedup, made trades mutable
+- `src/evolution/persistence.ts` — PortfolioSnapshot realPositions field, savePortfolio accepts realPositions, Position type import
+- `src/api-server.ts` — Delete trade API endpoint + handler
+- `src/cognition/hacp.ts` — MFE-aware adaptive trailing SL, debate context per-symbol decisions
+- `src/agents/base-agent.ts` — Debate prompts require asset naming
+- `ui/src/App.tsx` — Full UI restructure, delete trade button, Selected Market Pairs cards, Lucide icons, Clear Prompt fix, border colors
+- `ui/src/index.css` — Enterprise borders, RGB gradient text, panel title sizes, SMP card styles
+- `ui/src/types.ts` — Trading Setup → Trading Terminal rename
+
+**Build**: `tsc --noEmit` clean. `vite build` clean (442KB gzipped 132KB). 94 tests pass.
+
+---
+
 ## v2.0.155 — Paper Balance Root Cause Fix + MFE-Aware SL/TP + UI Restructure + Delete Trade + Duplicate Position Guard
 
 ### Paper Balance Contamination — ROOT CAUSE FIX
