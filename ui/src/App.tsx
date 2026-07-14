@@ -728,7 +728,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
 
           {/* Buttons — outside the fused container */}
           <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-4)', marginBottom: 'var(--space-4)', alignItems: 'center' }}>
-              {singlePrompt && (
+              {(singlePrompt || (apiRootPrompt && apiRootPrompt.trim().length > 0)) && (
                 resetConfirm ? (
                   <span style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
                     <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--red)' }}>Clear prompt?</span>
