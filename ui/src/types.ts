@@ -503,6 +503,13 @@ export const AGENT_META: Record<string, { name: string; color: string; short: st
     short: 'Terminal',
     description: 'User trading preference input terminal. Accepts natural language instructions and integrates them into Root Command Prompt for the trading system.',
   },
+  options_data_layer: {
+    name: 'Options Data',
+    color: '#f97316',
+    hex: '249, 115, 22',
+    short: 'Options',
+    description: 'Options data layer vote (IV Rank, Gamma regime, P/C ratio, event risk). Injected for stocks/indices trading.',
+  },
 };
 
 export const AGENT_ROLES = [

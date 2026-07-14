@@ -63,6 +63,7 @@ function getDefaultModelMap(): Record<AgentRole, string> {
     skeptics: 'deepseek-v4-flash:cloud',
     market_agent: 'kimi-k2.6:cloud',
     terminal_agent: 'deepseek-v4-flash:cloud',
+    options_data_layer: 'deepseek-v4-flash:cloud',
   };
   return defaultModelMap;
 }
