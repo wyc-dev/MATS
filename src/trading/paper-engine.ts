@@ -24,7 +24,7 @@ export class PaperTradingEngine {
   private readonly portfolio: PortfolioTracker;
   private readonly riskEngine: RiskEngine;
   private readonly orders: Map<string, Order> = new Map();
-  private readonly trades: TradeRecord[] = [];
+  private trades: TradeRecord[] = [];
   private lastPrices: Map<string, number> = new Map();
   /** v2.0.XX: Max portion of balance for all positions combined. Set by
    *  index.ts from MarketAgent config. Default 0.20 (20%) — the old hardcoded value. */
@@ -46,6 +46,16 @@ export class PaperTradingEngine {
     this.riskEngine = riskEngine;
     // Capture trades from SL/TP auto-closes and reconciliations
     this.portfolio.setOnPositionClosed((trade) => {
+      // v2.0.158: Dedup — skip if a trade with same symbol+side+openedAt already exists
+      const isDup = this.trades.some(existing =>
+        existing.symbol === trade.symbol &&
+        existing.side === trade.side &&
+        Math.abs((existing.openedAt ?? 0) - (trade.openedAt ?? 0)) < 60_000
+      );
+      if (isDup) {
+        log.info(`⏭️ Duplicate trade record skipped: ${trade.side.toUpperCase()} ${trade.symbol} (already exists)`);
+        return;
+      }
       this.trades.push(trade);
       log.info(`Trade captured from SL/TP/reconciliation: ${trade.side.toUpperCase()} ${trade.symbol} PnL: $${trade.pnl.toFixed(2)}`);
       // v2.0.25: trigger learning hooks so SL/TP closes are fed to RBC,
@@ -117,6 +127,18 @@ export class PaperTradingEngine {
       this.trades.splice(idx, 1);
       log.info(`🗑️ Paper trade deleted: ${tradeId}`);
     }
+  }
+
+  /** v2.0.158: Purge all trades without entry thesis — removes bug-generated
+   *  phantom trades from the old mirror path that had no entryThesis. */
+  purgeTradesWithoutThesis(): number {
+    const before = this.trades.length;
+    this.trades = this.trades.filter(t => t.entryThesis && t.entryThesis.trim().length > 0);
+    const purged = before - this.trades.length;
+    if (purged > 0) {
+      log.info(`🗑️ Purged ${purged} trades without entry thesis (${before} → ${this.trades.length})`);
+    }
+    return purged;
   }
 
   /**

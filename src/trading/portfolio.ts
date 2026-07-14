@@ -101,7 +101,7 @@ export class PortfolioTracker {
    *  closes (SL/TP triggered on exchange) with accurate exit price + PnL.
    *  Previously closeExchangePosition() created a TradeRecord but it was only
    *  used for learning — never stored, so the UI never showed the close. */
-  private readonly closedRealTrades: TradeRecord[] = [];
+  private closedRealTrades: TradeRecord[] = [];
   /** v2.0.66: Dedup set — symbols that were recently closed via closeExchangePosition().
    *  Prevents duplicate trade records when reconciliation fires multiple times
    *  for the same position. TTL: 60 seconds (long enough to cover a full cycle). */
@@ -300,6 +300,13 @@ export class PortfolioTracker {
     if (idx >= 0) {
       this.closedRealTrades.splice(idx, 1);
     }
+  }
+
+  /** v2.0.158: Purge all closed real trades without entry thesis */
+  purgeClosedRealTradesWithoutThesis(): number {
+    const before = this.closedRealTrades.length;
+    this.closedRealTrades = this.closedRealTrades.filter(t => t.entryThesis && t.entryThesis.trim().length > 0);
+    return before - this.closedRealTrades.length;
   }
 
   /** Register a callback for position opens (used by PaperTradingEngine to capture open trades) */
@@ -1499,7 +1506,19 @@ export class PortfolioTracker {
     // can display it with accurate exit price + PnL. Previously this trade
     // was only used for learning — never stored, so the UI never showed
     // the close (the position just disappeared with no trace).
-    this.closedRealTrades.push(trade);
+    // v2.0.158: Dedup — check if a trade with the same symbol + side + openedAt
+    // already exists. This prevents double-recording when syncExchangePositions
+    // and another close path both fire for the same position.
+    const isDuplicate = this.closedRealTrades.some(existing =>
+      existing.symbol === trade.symbol &&
+      existing.side === trade.side &&
+      Math.abs((existing.openedAt ?? 0) - (trade.openedAt ?? 0)) < 60_000 // within 1 min = same position
+    );
+    if (!isDuplicate) {
+      this.closedRealTrades.push(trade);
+    } else {
+      log.info(`⏭️ closeExchangePosition: duplicate trade record skipped for ${symbol} (same symbol+side+openedAt already exists)`);
+    }
     // Cap at 200 to avoid unbounded memory growth
     if (this.closedRealTrades.length > 200) {
       this.closedRealTrades.splice(0, this.closedRealTrades.length - 200);
