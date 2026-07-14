@@ -6221,7 +6221,15 @@ ${recentExamples}
           totalPnl: isRealMode ? null as unknown as number : p.totalPnl,
           totalPnlPct: isRealMode ? null as unknown as number : p.totalPnlPct,
           drawdownPct: isRealMode ? null as unknown as number : p.maxDrawdownPct,
-          positions: p.positions.size + this.portfolio.getRealPositions().length,
+          // v2.0.157: Deduped position count — paper positions + real positions
+          // + cached exchange positions (HL API), deduped by normalized symbol
+          positions: (() => {
+            const syms = new Set<string>();
+            for (const [k] of p.positions) syms.add(k);
+            for (const r of this.portfolio.getRealPositions()) syms.add(normalizeSymbol(r.symbol));
+            for (const e of (this.cachedExchangePositions ?? [])) { if (e.quantity > 0) syms.add(normalizeSymbol(e.symbol)); }
+            return syms.size;
+          })(),
           wsConnected: this.multiWs?.isConnected?.() ?? false,
           tradeCount: p.tradeCount,
           winCount: p.winCount,
