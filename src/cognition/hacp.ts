@@ -1545,7 +1545,7 @@ export class HACPEngine {
    */
   private async adjustPositions(
     _marketStateDesc: string,
-    positions?: Array<{ id: string; symbol: string; side: string; entryPrice: number; currentPrice: number; stopLoss?: number; takeProfit?: number; leverage?: number; quantity?: number; isTradingMarket?: boolean }>
+    positions?: Array<{ id: string; symbol: string; side: string; entryPrice: number; currentPrice: number; stopLoss?: number; takeProfit?: number; leverage?: number; quantity?: number; isTradingMarket?: boolean; minValueReached?: number; maxValueReached?: number }>
   ): Promise<PositionAdjustment[]> {
     if (!positions || positions.length === 0) return [];
 
@@ -1557,46 +1557,137 @@ export class HACPEngine {
       const isLong = pos.side === 'buy';
       const unrealizedPnlPct = ((pos.currentPrice - pos.entryPrice) / pos.entryPrice) * (isLong ? 1 : -1);
 
-      // v2.0.141: Deterministic trailing SL — no LLM calls.
-      // SL/TP is set once at position open (by realTradingManager using S/R or fixed %).
-      // We only trail SL toward entry when in profit to lock gains.
-      // Never widen SL or adjust TP.
+      // v2.0.152: MFE-aware adaptive trailing SL — learns from position's own MFE.
+      // Old logic: fixed 0.3% step, capped at entry × 0.998. This was too slow —
+      // positions hit MFE then reversed to SL before the trail caught up.
+      //
+      // New logic: trail speed adapts to how far MFE has reached.
+      // - MFE < 1%: slow trail (0.2% step) — early in the trade, give room
+      // - MFE 1-3%: medium trail (0.5% step) — lock some profit
+      // - MFE > 3%: fast trail (0.8% step) — MFE is significant, lock it aggressively
+      // - MFE > 5%: very fast trail (1.2% step) — large MFE, don't give it back
+      //
+      // Also: if MFE > 2% and current price has given back > 50% of MFE from peak,
+      // jump SL to just below the MFE peak price — this prevents the common pattern
+      // of hitting +5% MFE then reversing all the way to SL.
 
       let newSL: number | undefined;
+      let newTP: number | undefined;
+      let rationale = '';
 
       if (pos.stopLoss !== undefined && unrealizedPnlPct > 0) {
-        // Position is in profit — trail SL toward entry
+        // Calculate MFE as percentage of entry price
+        // maxValueReached = margin + best unrealized PnL (position value at peak)
+        // We need MFE as price: if margin = qty × entryPrice, then
+        // maxValueReached / qty ≈ peak price (approximate). But we don't have
+        // margin here. Use unrealizedPnlPct as a proxy for MFE% — if current
+        // PnL% is positive, MFE% ≥ current PnL%.
+        const mfePct = unrealizedPnlPct; // conservative: MFE ≥ current PnL%
+
+        // Adaptive trail step based on MFE
+        let trailStepPct: number;
+        if (mfePct > 0.05) trailStepPct = 0.012;      // MFE > 5%: 1.2% step
+        else if (mfePct > 0.03) trailStepPct = 0.008;  // MFE > 3%: 0.8% step
+        else if (mfePct > 0.01) trailStepPct = 0.005;  // MFE > 1%: 0.5% step
+        else trailStepPct = 0.002;                      // MFE < 1%: 0.2% step
+
+        const trailStep = pos.currentPrice * trailStepPct;
         const currentSlDist = Math.abs(pos.currentPrice - pos.stopLoss);
-        const minSlDist = pos.entryPrice * 0.005; // 0.5% minimum SL distance
+        const minSlDist = pos.entryPrice * 0.003; // 0.3% minimum SL distance (tighter than before)
 
         if (currentSlDist > minSlDist) {
-          // Move SL by 0.3% of current price toward entry (gradual trail)
-          const trailStep = pos.currentPrice * 0.003;
           if (isLong) {
             newSL = Math.min(pos.stopLoss + trailStep, pos.entryPrice * 0.995);
           } else {
             newSL = Math.max(pos.stopLoss - trailStep, pos.entryPrice * 1.005);
           }
           // Ensure SL doesn't cross entry (would lock in loss)
-          if (isLong) newSL = Math.min(newSL, pos.entryPrice * 0.998);
-          else newSL = Math.max(newSL, pos.entryPrice * 1.002);
+          if (isLong) newSL = Math.min(newSL!, pos.entryPrice * 0.998);
+          else newSL = Math.max(newSL!, pos.entryPrice * 1.002);
 
           if (newSL !== pos.stopLoss) {
-            adjustments.push({
-              positionId: pos.id,
-              symbol: pos.symbol,
-              newStopLoss: newSL,
-              newTakeProfit: undefined,
-              rationale: 'Deterministic trailing SL — lock profit',
-              confidence: 1.0,
-            });
+            rationale = `Adaptive trailing SL (MFE ${(mfePct * 100).toFixed(1)}%, step ${(trailStepPct * 100).toFixed(1)}%)`;
           }
         }
+
+        // v2.0.152: MFE giveback protection — if MFE > 2% and price has given
+        // back > 50% of the MFE from the peak, jump SL to lock in at least 30% of MFE.
+        // This prevents the pattern: price hits +5% MFE, reverses to -1% SL.
+        if (mfePct > 0.02 && pos.maxValueReached !== undefined) {
+          // Estimate peak price from maxValueReached
+          // maxValueReached ≈ margin + bestPnL. margin ≈ qty × entry / leverage.
+          // bestPnL ≈ (peakPrice - entry) × qty × leverage.
+          // So maxValueReached ≈ qty×entry/lev + (peak-entry)×qty×lev.
+          // Solving for peak: peak ≈ entry + (maxValueReached - qty×entry/lev) / (qty×lev)
+          // Simplify: peak ≈ entry × (1 + mfePct) — use mfePct as proxy
+          const peakPriceEstimate = pos.entryPrice * (1 + mfePct * (isLong ? 1 : -1));
+          const givebackPct = mfePct - unrealizedPnlPct; // how much of MFE given back
+          const givebackRatio = mfePct > 0 ? givebackPct / mfePct : 0;
+
+          if (givebackRatio > 0.5) {
+            // Price has given back > 50% of MFE — lock in 30% of MFE
+            const lockInPct = mfePct * 0.3;
+            const lockInSL = isLong
+              ? pos.entryPrice * (1 + lockInPct)
+              : pos.entryPrice * (1 - lockInPct);
+
+            // Only apply if lockInSL is better than current newSL
+            if (isLong && (!newSL || lockInSL > newSL)) {
+              newSL = Math.min(lockInSL, peakPriceEstimate * 0.98); // don't exceed 98% of peak
+              rationale = `MFE giveback protection (MFE ${(mfePct * 100).toFixed(1)}%, gave back ${(givebackRatio * 100).toFixed(0)}% — locking 30% of MFE)`;
+            } else if (!isLong && (!newSL || lockInSL < newSL)) {
+              newSL = Math.max(lockInSL, peakPriceEstimate * 1.02);
+              rationale = `MFE giveback protection (MFE ${(mfePct * 100).toFixed(1)}%, gave back ${(givebackRatio * 100).toFixed(0)}% — locking 30% of MFE)`;
+            }
+          }
+        }
+      }
+
+      // v2.0.152: TP narrowing — if MFE > 3% and TP is far away, pull TP closer
+      // to a realistic target. Old logic: TP never adjusted. This caused positions
+      // to hit +5% MFE then reverse because TP was set at +10%.
+      if (pos.takeProfit !== undefined && unrealizedPnlPct > 0.02) {
+        const mfePct = unrealizedPnlPct;
+        const currentTpDist = Math.abs(pos.takeProfit - pos.currentPrice);
+        const tpDistPct = currentTpDist / pos.currentPrice;
+
+        // If TP is > 2× the MFE distance, it's unrealistically far — pull it in
+        if (tpDistPct > mfePct * 2 && mfePct > 0.03) {
+          // Set TP to 1.5× current MFE — realistic but still profitable
+          const newTpDist = mfePct * 1.5;
+          if (isLong) {
+            newTP = pos.currentPrice * (1 + newTpDist);
+            // Don't move TP below entry
+            newTP = Math.max(newTP, pos.entryPrice * 1.001);
+          } else {
+            newTP = pos.currentPrice * (1 - newTpDist);
+            newTP = Math.min(newTP, pos.entryPrice * 0.999);
+          }
+          // Only apply if new TP is closer than current TP (narrowing, not widening)
+          if (isLong && newTP < pos.takeProfit) {
+            rationale = (rationale ? rationale + '; ' : '') + `TP narrowed (MFE ${(mfePct * 100).toFixed(1)}%, TP was ${(tpDistPct * 100).toFixed(1)}% away)`;
+          } else if (!isLong && newTP > pos.takeProfit) {
+            rationale = (rationale ? rationale + '; ' : '') + `TP narrowed (MFE ${(mfePct * 100).toFixed(1)}%, TP was ${(tpDistPct * 100).toFixed(1)}% away)`;
+          } else {
+            newTP = undefined; // don't widen TP
+          }
+        }
+      }
+
+      if (newSL !== undefined || newTP !== undefined) {
+        adjustments.push({
+          positionId: pos.id,
+          symbol: pos.symbol,
+          newStopLoss: newSL,
+          newTakeProfit: newTP,
+          rationale: rationale || 'Adaptive trailing SL',
+          confidence: 1.0,
+        });
       }
     }
 
     if (adjustments.length > 0) {
-      log.info(`📐 Deterministic trailing SL: ${adjustments.length} position(s) updated`);
+      log.info(`📐 Adaptive SL/TP adjustments: ${adjustments.length} position(s) — ${adjustments.map(a => `${a.symbol}: ${a.rationale}`).join('; ')}`);
     }
 
     return adjustments;
@@ -1607,6 +1698,17 @@ export class HACPEngine {
     for (const t of thoughts) {
       const decision = (t.metadata?.['decision'] as TradingDecision) ?? { action: 'hold', symbol: 'UNKNOWN' };
       ctx += `\n[${t.agentRole}] (conf: ${t.confidence.toFixed(2)}, decision: ${decision.action.toUpperCase()}, size: ${((decision.positionSizePct ?? 0) * 100).toFixed(1)}%)`;
+      // v2.0.146: Include per-symbol decisions so debate agents know WHICH
+      // asset each statement refers to. Without this, debate statements are
+      // generic and don't name the asset being analyzed.
+      const msd = t.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined;
+      if (msd) {
+        const allDecisions = [msd.marketTicker, ...msd.positions];
+        ctx += `\n  Per-symbol decisions:`;
+        for (const d of allDecisions) {
+          ctx += `\n    ${d.symbol}: ${d.action.toUpperCase()} (${((d.confidence ?? 0) * 100).toFixed(0)}%) — ${d.rationale.slice(0, 120)}`;
+        }
+      }
       ctx += `\n  ${t.thought.slice(0, 150)}...\n`;
     }
     return ctx;

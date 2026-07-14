@@ -50,13 +50,15 @@ const CONFIG = {
 
 // ─── Feature Dimensions (same as GMM EM) ───
 
+// v2.0.152: Added mfePct, maePct, mfeToPnlRatio for SL/TP learning
 const FEATURE_NAMES = [
   'volatility', 'srDistanceBps', 'obImbalance',
   'sentiment', 'signalAgreement', 'fundingRate',
   'volumeRatio', 'sentimentConviction',
+  'mfePct', 'maePct', 'mfeToPnlRatio',
 ] as const;
 
-const D = FEATURE_NAMES.length; // 8
+const D = FEATURE_NAMES.length; // 11
 
 // ─── Types ───
 

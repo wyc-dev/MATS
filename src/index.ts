@@ -646,9 +646,17 @@ CONFIG REJECTION: Root Command Prompt only accepts BEHAVIORAL directives (decisi
 - Asset type (e.g. "trade stocks only") → reject: "Adjust in Trading Setup"
 Do NOT write these to the Root Command Prompt. Instead, respond in the Side Guide: "This is a config setting — please adjust it in Trading Setup above."
 
+CONTENT FILTER: The Root Command Prompt must contain ONLY trading directives — rules that directly affect how the system trades. Before writing any line to the Root Command Prompt, ask yourself: "Does this line tell the trading system HOW to make a trading decision?" If the answer is NO, do NOT write it. Specifically:
+- NEVER write UI state notes (e.g. "Clear Prompt button always visible", "Root Command Prompt currently empty", "Button resets prompt when used"). These are NOT trading directives.
+- NEVER write system status descriptions (e.g. "Prompt was auto-condensed", "No prompt yet"). These belong in the Side Guide, not the Root Command Prompt.
+- NEVER write meta-commentary about the prompt itself (e.g. "This prompt contains 3 rules", "The prompt was updated"). Only write the actual rules.
+- NEVER write empty lines, dashes, or separator markers as content.
+- If the user's input is NOT about trading behavior (e.g. "what does this button do", "how does the system work", general questions, UI feedback), do NOT write anything to the Root Command Prompt. Respond in the Side Guide only.
+- ONLY write lines that start with "- " and contain a concrete, actionable trading rule (e.g. "- Only open BUY positions when OLR win rate > 60%", "- Avoid trading during FOMC announcements", "- Close all positions before weekend").
+
 Output format — two sections separated by a line containing only "---":
 
-1. Root Command Prompt: The actual trading instructions. Only include concrete, fully-specified behavioral rules. Each rule on its own line starting with "- ". If no complete rules exist yet (pending clarification or all input was config-rejected), output nothing for this section — leave it empty.
+1. Root Command Prompt: The actual trading instructions. Only include concrete, fully-specified behavioral rules that directly affect trading decisions. Each rule on its own line starting with "- ". If no complete trading rules exist yet (pending clarification, all input was config-rejected, or input was non-trading), output NOTHING for this section — leave it completely empty. Do NOT write placeholder text, status notes, or any non-rule content.
 
 2. Side Guide: Below the "---" separator, output "Side Guide:" followed by either:
    - Clarification questions for the user (prefixed with "? ") — ask SHORT, DIRECT questions one per line. Be concise. Don't write paragraphs or long explanations. Just ask the specific missing detail.
@@ -658,18 +666,20 @@ Output format — two sections separated by a line containing only "---":
      GOOD: "? Open new positions only, or also close existing ones?"
    - OR config rejection notices — tell the user to adjust config settings in Trading Setup.
    - OR confirmation if everything is clear — one line summary of what was integrated.
+   - OR if the input was non-trading (questions, UI feedback, etc.), respond to the user here.
    This section is for user interaction, NOT instructions for the trading system.
 
 Rules:
 1. Read the user's new input and the current Root Command Prompt (if any).
 2. If the input is a config-level setting, reject it (see CONFIG REJECTION above). Do NOT write to Root Command Prompt.
-3. If the input is ambiguous or incomplete, ask clarification questions in the Side Guide. Do NOT write to the Root Command Prompt yet.
-4. If the input is a response to previous clarification questions and now fully specifies the instruction, write it to the Root Command Prompt.
-5. Integrate new complete instructions into the existing prompt — merge, refine, deduplicate.
-6. If the user's input contradicts an existing instruction, the newer instruction takes priority.
-7. Preserve all valid prior instructions that are not contradicted.
-8. Do NOT invent trading rules the user hasn't stated.
-9. No JSON, no markdown fences, no commentary outside the two sections.
+3. If the input is NOT about trading behavior (questions, UI feedback, general chat), do NOT write to Root Command Prompt. Respond in Side Guide only.
+4. If the input is ambiguous or incomplete, ask clarification questions in the Side Guide. Do NOT write to the Root Command Prompt yet.
+5. If the input is a response to previous clarification questions and now fully specifies the instruction, write it to the Root Command Prompt.
+6. Integrate new complete instructions into the existing prompt — merge, refine, deduplicate.
+7. If the user's input contradicts an existing instruction, the newer instruction takes priority.
+8. Preserve all valid prior instructions that are not contradicted.
+9. Do NOT invent trading rules the user hasn't stated.
+10. No JSON, no markdown fences, no commentary outside the two sections.
 
 Current Root Command Prompt:
 ${currentPrompt || '(empty — this is the first input)'}`;
@@ -763,11 +773,19 @@ ${currentPrompt || '(empty — this is the first input)'}`;
 
       // v2.0.143: Register sync handler — UI sends localStorage prompt to backend
       // on mount when backend has lost it (e.g. after restart).
+      // v2.0.151: Also accepts empty string to CLEAR the prompt (from Clear Prompt button).
       this.apiServer.setTerminalAgentSyncPromptHandler((prompt: string) => {
         if (prompt && prompt.trim().length > 0) {
           this.rootCommandPrompt = prompt.trim();
           this.persistRootCommandPrompt();
           log.info(`Terminal Agent: Root Command Prompt synced from UI localStorage (${this.rootCommandPrompt.length} chars)`);
+          this.pushToAPI();
+        } else if (prompt !== undefined && prompt.trim().length === 0) {
+          // v2.0.151: Clear prompt from backend when UI sends empty string
+          this.rootCommandPrompt = '';
+          this.terminalSideGuide = '';
+          this.persistRootCommandPrompt();
+          log.info('Terminal Agent: Root Command Prompt cleared by UI');
           this.pushToAPI();
         }
       });
@@ -1721,6 +1739,13 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // 2. Feed OLR — learn "these conditions → LONG/SHORT wins/loses" from trade outcome
       // Source type: 'real' if exchange trade (agentId='hyperliquid-real'), 'paper' otherwise
       try {
+        // v2.0.152: Add MAE/MFE to OLR features so the model learns
+        // which SL/TP distances and MFE patterns lead to wins vs losses.
+        const mae = trade.minValueReached ?? 0;
+        const mfe = trade.maxValueReached ?? 0;
+        const margin = trade.investment > 0 ? trade.investment / (trade.leverage ?? 1) : 0;
+        const maePct = margin > 0 ? (margin - mae) / margin : 0;
+        const mfePct = margin > 0 ? (mfe - margin) / margin : 0;
         const features = {
           volatility,
           srDistanceBps,
@@ -1730,10 +1755,14 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           fundingRate,
           volumeRatio,
           sentimentConviction,
+          // v2.0.152: MFE/MAE features for SL/TP learning
+          mfePct,
+          maePct,
+          mfeToPnlRatio: mfePct > 0 ? (mfePct - pnlPct) / mfePct : 0, // 0 = perfect exit, 1 = gave back everything
         };
         const tradeSource: 'paper' | 'real' = trade.agentId === 'hyperliquid-real' ? 'real' : 'paper';
         this.olrEngine.feedTrade(symbol, features, outcome, trade.side === 'buy' ? 'buy' : 'sell', tradeSource, this.totalCycles);
-        log.info(`🧬 [close-learning] OLR fed (${tradeSource}): ${symbol} ${trade.side.toUpperCase()} ${isWin ? 'WIN' : 'LOSS'} (pnl=${(pnlPct * 100).toFixed(1)}%)`);
+        log.info(`🧬 [close-learning] OLR fed (${tradeSource}): ${symbol} ${trade.side.toUpperCase()} ${isWin ? 'WIN' : 'LOSS'} (pnl=${(pnlPct * 100).toFixed(1)}%, MFE=${(mfePct * 100).toFixed(1)}%, MAE=${(maePct * 100).toFixed(1)}%)`);
       } catch (err) {
         log.warn(`[close-learning] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -1978,6 +2007,56 @@ Provide your post-trade review:`;
     } catch (err) {
       log.warn(`[post-review] Generation failed for ${trade.symbol}: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /** v2.0.152: Build MFE/PnL performance block for agent context.
+   *  Analyses recent closed trades and highlights where MFE was high but
+   *  final PnL was negative (profit given back). Agents see this and learn
+   *  to set tighter TP and trail SL more aggressively. */
+  private buildMfePerformanceBlock(): string {
+    try {
+      const trades = [...this.paperEngine.getTrades(), ...this.portfolio.getClosedRealTrades()].slice(-10);
+      if (trades.length === 0) return '';
+
+      const mfeGivebacks: Array<{ symbol: string; side: string; mfePct: number; pnlPct: number; givebackRatio: number }> = [];
+      let totalTrades = 0;
+      let givebackTrades = 0;
+
+      for (const t of trades) {
+        if (t.status !== 'closed') continue;
+        totalTrades++;
+        const mfe = t.maxValueReached ?? 0;
+        const margin = (t.quantity ?? 0) * (t.entryPrice ?? 0) / (t.leverage ?? 1);
+        if (margin <= 0 || mfe <= 0) continue;
+        const mfePnl = mfe - margin;
+        if (mfePnl <= 0) continue;
+        const mfePct = mfePnl / margin;
+        const pnlPct = t.pnlPct ?? 0;
+        if (pnlPct >= 0) continue; // only look at losses
+        const givebackRatio = (mfePct - pnlPct) / mfePct; // 1.0 = gave back everything
+        if (givebackRatio > 0.5) {
+          givebackTrades++;
+          mfeGivebacks.push({ symbol: t.symbol, side: t.side, mfePct, pnlPct, givebackRatio });
+        }
+      }
+
+      if (mfeGivebacks.length === 0) return '';
+
+      const avgMfe = mfeGivebacks.reduce((s, t) => s + t.mfePct, 0) / mfeGivebacks.length;
+      const avgGiveback = mfeGivebacks.reduce((s, t) => s + t.givebackRatio, 0) / mfeGivebacks.length;
+      const recentExamples = mfeGivebacks.slice(0, 3).map(t =>
+        `  ${t.side.toUpperCase()} ${t.symbol}: MFE +${(t.mfePct * 100).toFixed(1)}% → PnL ${(t.pnlPct * 100).toFixed(1)}% (gave back ${(t.givebackRatio * 100).toFixed(0)}% of MFE)`
+      ).join('\n');
+
+      return `=== MFE PROFIT GIVEBACK ANALYSIS ===
+${givebackTrades}/${totalTrades} recent trades hit positive MFE but closed at a loss.
+Average MFE: +${(avgMfe * 100).toFixed(1)}% → Average giveback: ${(avgGiveback * 100).toFixed(0)}% of MFE.
+This means TP is set too far and SL trailing is too slow — positions reach profit then reverse to SL.
+LESSON: Set TP closer to realistic targets (1.5-2× current MFE, not 5×). Trail SL faster when MFE > 2%.
+Recent examples:
+${recentExamples}
+=== END MFE ANALYSIS ===`;
+    } catch { return ''; }
   }
 
   /**
@@ -3130,6 +3209,15 @@ Provide your post-trade review:`;
 
       let marketDesc = `${baseMarketDesc}${srLines}${emContext ? `\n${emContext}` : ''}${similarInsightsContext ? `\n${similarInsightsContext}` : ''}${patternContext ? `\n${patternContext}` : ''}${patternTagContext ? `\n${patternTagContext}` : ''}${olrContext}${planckChaosContext}${optionsContext}${playbookContext}${newsContext ? `\n${newsContext}` : ''}\n\n${getFeeSummary()}`;
 
+      // v2.0.152: Inject MFE/PnL performance history so agents learn from
+      // past SL/TP mistakes. Shows recent trades where MFE was high but
+      // final PnL was negative — agents should set tighter TP and trail SL
+      // more aggressively when they see this pattern.
+      const mfePerformanceBlock = this.buildMfePerformanceBlock();
+      if (mfePerformanceBlock) {
+        marketDesc += `\n\n${mfePerformanceBlock}`;
+      }
+
       // v2.0.143: Inject Root Command Prompt into marketDesc so ALL 7 agents
       // (5 sub-agents + Skeptics + Meta-Agent) see the user's behavioral rules
       // in their think() context. This ensures every agent's reasoning is
@@ -3690,6 +3778,9 @@ Provide your post-trade review:`;
         entryThesis: (p as any).entryThesis,
         // v2.0.104: Forward isTradingMarket flag (undefined for real positions)
         isTradingMarket: (p as any).isTradingMarket as boolean | undefined,
+        // v2.0.152: Forward MAE/MFE so adjustPositions can use MFE-aware trailing SL
+        minValueReached: (p as any).minValueReached as number | undefined,
+        maxValueReached: (p as any).maxValueReached as number | undefined,
       }))
       // v2.0.96: Do NOT remove the activeSymbol from positions list.
       // Previously, activeSymbol was filtered out to avoid UI duplication
@@ -3745,6 +3836,8 @@ Provide your post-trade review:`;
             exchange: 'hyperliquid' as const,
             entryThesis: undefined,
             isTradingMarket: true, // v2.0.104: flag for agent context + execution
+            minValueReached: undefined,
+            maxValueReached: undefined,
           });
         }
         log.info(`📊 Injected ${additionalMarkets.length} trading market(s) for multi-symbol single-cycle analysis: ${additionalMarkets.join(', ')}`);
@@ -4490,11 +4583,14 @@ Provide your post-trade review:`;
         // Adjust TP/SL if suggested
         // v2.0.31: In real mode, also place native trigger orders on HL exchange
         // v2.0.54: Validate per-symbol consensus SL/TP direction BEFORE applying.
-        // The consensus averages SL/TP from all agents — if agents disagree on
-        // direction, the averaged SL/TP can end up on the wrong side of current
-        // price. We must validate and skip invalid values rather than sending
-        // them to adjustPosition() which would place them on HL.
-        if (psc.suggestedStopLoss !== undefined || psc.suggestedTakeProfit !== undefined) {
+        // v2.0.152: Skip if HACP adjustPositions already adjusted this position
+        // this cycle — HACP's MFE-aware trailing SL takes priority over
+        // agent-suggested averaged SL/TP. The agent suggestions are blind to
+        // MFE/giveback patterns; HACP's adaptive trail is data-driven.
+        const hacpAdjusted = result.positionAdjustments?.some(a => a.positionId === pos.id);
+        if (hacpAdjusted) {
+          log.info(`📐 Per-symbol consensus SL/TP for ${psc.symbol} skipped — HACP adaptive SL already applied this cycle`);
+        } else if (psc.suggestedStopLoss !== undefined || psc.suggestedTakeProfit !== undefined) {
           let validSL = psc.suggestedStopLoss;
           let validTP = psc.suggestedTakeProfit;
           const isLong = pos.side === 'buy';
@@ -4525,6 +4621,27 @@ Provide your post-trade review:`;
             log.info(`📐 Per-symbol consensus: ADJUST ${psc.symbol} SL=${validSL?.toFixed(2) ?? '-'} TP=${validTP?.toFixed(2) ?? '-'}`);
           } else {
             log.warn(`📐 Per-symbol consensus: ADJUST ${psc.symbol} — all SL/TP rejected by direction validation, skipping`);
+          }
+        }
+
+        // v2.0.146: Record audit when agent suggests a direction that conflicts
+        // with the existing position but closePosition is false. This explains
+        // WHY the agent's BUY/SELL analysis didn't result in execution — the
+        // position is still open in the opposite direction and the consensus
+        // didn't vote to close it. Without this audit, the UI shows the agent's
+        // analysis (e.g. "BUY 55%") with no explanation for why nothing happened.
+        if ((psc.action === 'buy' || psc.action === 'sell') && !psc.closePosition) {
+          const posSide = pos.side;
+          const wantsSameDirection = (psc.action === 'buy' && posSide === 'buy') || (psc.action === 'sell' && posSide === 'sell');
+          if (!wantsSameDirection) {
+            this.recordDecisionAudit(
+              psc.symbol,
+              psc.action as 'buy' | 'sell',
+              psc.confidence,
+              psc.entryThesis ?? psc.rationale ?? '',
+              [{ gate: 'existing-position', passed: false, reason: `${psc.action.toUpperCase()} suggested but ${posSide.toUpperCase()} position open — consensus did not vote to close` }],
+              false,
+            );
           }
         }
 
