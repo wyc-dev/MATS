@@ -753,21 +753,14 @@ export class RealTradingManager {
           }
         }
         if (uncertain.length > 0) {
-          // v2.0.37: Don't just skip — if the position is old (> 1h), it's very
-          // likely been closed on HL (positions don't stay empty for hours if
-          // genuinely open). Close the local mirror to prevent perpetual errors.
+          // v2.0.156: NEVER assume a position is closed just because the API
+          // didn't return it. HL API failures (429/500/timeout) cause exMap
+          // to be empty even when positions are still open. Assuming closed
+          // creates phantom close records, then the next cycle re-imports the
+          // position → close again → infinite loop of duplicate trades.
+          // Only close if there's a confirmed closing fill on HL.
           for (const localSym of uncertain) {
-            const localPos = this.portfolio.getPosition(localSym);
-            if (!localPos) continue;
-            const ageMs = Date.now() - localPos.openedAt;
-            if (ageMs > 3_600_000) {
-              // Position is old and not on HL — assume closed
-              const exitPrice = localPos.currentPrice;
-              log.info(`📉 syncExchangePositions: ${localSym} (age ${Math.round(ageMs / 3_600_000)}h) not on HL and no closing fill — assuming closed, cleaning up local mirror`);
-              this.portfolio.closeExchangePosition(localSym, exitPrice);
-            } else {
-              log.warn(`⚠️ syncExchangePositions: ${localSym} (age ${Math.round(ageMs / 60_000)}min) not on HL and no closing fill — recent, might be API failure, skipping`);
-            }
+            log.warn(`⚠️ syncExchangePositions: ${localSym} not on HL and no closing fill — NOT closing (could be API failure, position may still be open)`);
           }
         }
         // If all positions were either closed or uncertain, return (no exMap to iterate)
@@ -805,15 +798,22 @@ export class RealTradingManager {
           // opened (openedAt). Previously matched ANY closing fill for the same
           // coin, which could match a stale fill from a previous close — creating
           // duplicate close records for positions that were never closed.
+          // v2.0.156: Only close if there's a confirmed closing fill. Without a
+          // fill, the position may still be open on HL — the DEX fetch may have
+          // partially failed (returned some symbols but not others).
           const matchingFill = recentFills.find(f =>
             f.symbol.toLowerCase() === localSym.toLowerCase() &&
             !f.dir.toLowerCase().startsWith('open') && // only closing fills
             f.timestamp >= localPos.openedAt // must be after this position opened
           );
-          const hlPnl = matchingFill?.closedPnl;
-          const exitPrice = matchingFill?.price ?? localPos.currentPrice;
-          log.info(`📉 Exchange position closed on HL: ${localSym} — closing local mirror (HL PnL: ${hlPnl !== undefined ? '$'+hlPnl.toFixed(2) : 'N/A'})`);
-          this.portfolio.closeExchangePosition(localSym, exitPrice, hlPnl);
+          if (matchingFill) {
+            const hlPnl = matchingFill.closedPnl;
+            const exitPrice = matchingFill.price;
+            log.info(`📉 Exchange position closed on HL: ${localSym} — closing local mirror (HL PnL: $${hlPnl.toFixed(2)})`);
+            this.portfolio.closeExchangePosition(localSym, exitPrice, hlPnl);
+          } else {
+            log.warn(`⚠️ syncExchangePositions: ${localSym} not in exMap but no closing fill found — NOT closing (position may still be open on HL)`);
+          }
         }
       }
 

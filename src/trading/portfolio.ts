@@ -1531,6 +1531,12 @@ export class PortfolioTracker {
   }
 
   private checkPositionExits(pos: Position): void {
+    // v2.0.156: Skip local SL/TP monitoring for real exchange positions.
+    // Real positions have SL/TP placed as trigger orders on HL — the exchange
+    // handles the close. Local monitoring creates phantom close records when
+    // the local price hits SL/TP but the HL trigger order hasn't filled yet
+    // (or the local price is stale/different from HL's mark price).
+    if (pos.agentId === 'hyperliquid-real') return;
     // v2.0.143: Set exitThesis BEFORE closing so the TradeRecord captures it.
     // Include SL/TP narrowing analysis: compare original SL/TP (at open) vs
     // current SL/TP (at close) to detect whether the system tightened them
