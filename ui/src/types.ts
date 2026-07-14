@@ -490,7 +490,7 @@ export const AGENT_META: Record<string, { name: string; color: string; short: st
     description: 'Absolute gatekeeper with veto power over new positions. Validates entryThesis for strength, data consistency, manipulation risk, and fact distortion. When in doubt, REJECT.',
   },
   market_agent: {
-    name: 'Trading Setup',
+    name: 'Trading Terminal',
     color: '#34d399',
     hex: '52, 211, 153',
     short: 'Market',

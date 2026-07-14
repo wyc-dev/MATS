@@ -472,16 +472,20 @@ conviction gate, and trade frequency status. You MUST factor this into your conf
     phase: 'argument' | 'attack' | 'synthesis',
     target?: AgentThought
   ): string {
+    // v2.0.146: All debate statements MUST name the asset being analyzed.
+    // Without this, agents produce generic statements that don't specify
+    // which symbol they're arguing about, making the debate useless for
+    // per-symbol consensus.
     switch (phase) {
       case 'argument':
-        return '\n**A2A FORMAT**: State your strongest argument using A2A keywords. Use one of: "ASSESS: [type] [state] [confidence]", "OBS: [keyword] [metric]", "PROP: [action] [size]% [urgency]". Keep to 1-2 sentences max. **CRITICAL: Respond with ONLY valid JSON. No ellipsis (...) or placeholders.** Respond: {"content":"Your strongest argument here","confidence":0.75}';
+        return '\n**A2A FORMAT**: State your strongest argument using A2A keywords. Use one of: "ASSESS: [type] [state] [confidence]", "OBS: [keyword] [metric]", "PROP: [action] [size]% [urgency]". Keep to 1-2 sentences max. **CRITICAL: You MUST name the specific asset/symbol you are analyzing (e.g. BTC, xyz:SILVER) in your argument. Generic arguments without naming the asset are useless.** Respond with ONLY valid JSON. No ellipsis (...) or placeholders.** Respond: {"content":"[ASSET_NAME]: Your strongest argument here","confidence":0.75}';
       case 'attack': {
         const t = target?.thought ?? 'N/A';
         const c = target?.confidence?.toFixed(2) ?? '?';
-        return `\n**A2A FORMAT**: Attack weakest point using keywords. Respond with "DIS: [level] [reason] | evidence" or "CONCERN: [type] [severity] [trigger]". Target thought: "${t}" (conf: ${c}). **CRITICAL: Respond with ONLY valid JSON. No ellipsis (...) or placeholders.** Respond: {"content":"Your attack argument here","confidence":0.65}`;
+        return `\n**A2A FORMAT**: Attack weakest point using keywords. Respond with "DIS: [level] [reason] | evidence" or "CONCERN: [type] [severity] [trigger]". Target thought: "${t}" (conf: ${c}). **CRITICAL: You MUST name the specific asset/symbol you are attacking about. Generic attacks without naming the asset are useless.** Respond with ONLY valid JSON. No ellipsis (...) or placeholders.** Respond: {"content":"[ASSET_NAME]: Your attack argument here","confidence":0.65}`;
       }
       case 'synthesis':
-        return '\n**A2A FORMAT**: Synthesize debate using minimal keywords. Format: "CONSENSUS: [action] [confidence] | FINAL_PROP: [action] [size]% [urgency]". Focus on data, not opinion. **CRITICAL: Respond with ONLY valid JSON. No ellipsis (...) or placeholders.** Respond: {"content":"Your synthesis here","confidence":0.80}';
+        return '\n**A2A FORMAT**: Synthesize debate using minimal keywords. Format: "CONSENSUS: [action] [confidence] | FINAL_PROP: [action] [size]% [urgency]". Focus on data, not opinion. **CRITICAL: You MUST name the specific asset/symbol in your synthesis. If multiple assets were debated, address each one explicitly. Generic synthesis without naming assets is useless.** Respond with ONLY valid JSON. No ellipsis (...) or placeholders.** Respond: {"content":"[ASSET_NAME]: Your synthesis here","confidence":0.80}';
     }
   }
 }

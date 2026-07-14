@@ -1104,6 +1104,9 @@ body {
   background: var(--surface-elevated);
   border: 1px solid var(--glass-border);
   color: var(--text-tertiary);
+  flex-shrink: 0;
+  min-width: 60px;
+  text-align: center;
 }
 
 .agent-state.thinking { background: var(--gold-bg); color: var(--gold); border-color: rgba(251, 191, 36, 0.2); animation: pulse-dot 1s ease-in-out infinite; }
@@ -1658,6 +1661,181 @@ body {
   padding: var(--space-1) var(--space-3);
   margin-top: var(--space-1);
   opacity: 0.8;
+}
+
+/* ── v2.0.146: Selected Market Pairs — professional card layout ── */
+.smp-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.smp-card {
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface-elevated);
+}
+
+/* v2.0.147: Border color by position status, not consensus action */
+.smp-card.pos-buy { border-left: 3px solid var(--green); }
+.smp-card.pos-sell { border-left: 3px solid var(--red); }
+.smp-card.pos-none { border-left: 3px solid #888888; }
+
+.smp-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  transition: background 0.15s;
+}
+
+.smp-card-header:hover {
+  background: var(--glass-bg-hover);
+}
+
+.smp-side-tag {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+  flex: 1;
+  text-align: center;
+}
+
+.smp-side-tag.buy { color: var(--green); }
+.smp-side-tag.sell { color: var(--red); }
+.smp-side-tag.hold { color: var(--gold); }
+
+.smp-symbol {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
+  flex: 1;
+  text-align: center;
+}
+
+.smp-data {
+  font-size: var(--fs-lg);
+  color: var(--text-secondary);
+  flex: 1;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.smp-data.positive { color: var(--green); }
+.smp-data.negative { color: var(--red); }
+
+.smp-spacer {
+  width: 24px;
+  flex-shrink: 0;
+}
+
+.smp-close-btn {
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  flex-shrink: 0;
+  padding: var(--space-1);
+  line-height: 1;
+}
+
+.smp-close-btn:hover {
+  color: var(--red);
+}
+
+.smp-consensus-body {
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--glass-border);
+  background: rgba(255,255,255,0.015);
+}
+
+.smp-consensus-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-2);
+}
+
+.smp-conf {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* v2.0.147: Consensus body action tags — grey, not colored */
+.smp-consensus-top .vote-action-tag {
+  background: rgba(255,255,255,0.04);
+  color: var(--text-muted);
+}
+
+.smp-sl-tp {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.smp-rationale {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.smp-options {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: var(--space-1);
+}
+
+/* ── v2.0.146: Decision audit gate status ── */
+.smp-audit {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+}
+
+.smp-audit.executed {
+  background: rgba(52, 211, 153, 0.06);
+  border: 1px solid rgba(52, 211, 153, 0.15);
+}
+
+.smp-audit.blocked {
+  background: rgba(248, 113, 113, 0.06);
+  border: 1px solid rgba(248, 113, 113, 0.15);
+}
+
+.smp-audit-status {
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-xs);
+}
+
+.smp-audit.executed .smp-audit-status { color: var(--green); }
+.smp-audit.blocked .smp-audit-status { color: var(--red); }
+
+.smp-audit-gates {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.smp-audit-gate-passed {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+
+.smp-audit-gate-failed {
+  color: var(--red);
+  font-size: var(--fs-xs);
 }
 
 /* ── Round cards ── */
@@ -3726,7 +3904,11 @@ body {
 .agent-symbols {
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
-  margin-left: var(--space-4);
+  flex: 1;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .decision-tag-inner {

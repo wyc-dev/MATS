@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
-import { Settings, Pause, Play, Power } from 'lucide-react'
+import { Settings, Pause, Play, Power, Ban, StickyNote, Check, X, AlertTriangle, CheckCircle, OctagonX, XCircle, BarChart3, MessagesSquare, Circle, Dna, Scroll, RotateCw, Square, SatelliteDish, MapPin, Lightbulb, TrendingUp, TrendingDown, Save, ChevronDown, ChevronRight } from 'lucide-react'
 import type { APIData, AgentModelConfig, ModelDefinition, EMInsightStats } from './types'
 import { AGENT_META, AGENT_ROLES } from './types'
 import TradingViewChart from './TradingViewChart'
@@ -44,10 +44,10 @@ function SystemStatusPanel({ data }: { data: APIData | null }) {
   const balance: number | null = s.balance ?? null
   const equity: number | null = s.equity ?? null
   const progress = data?.cycleProgress
-  const phaseLabel = progress?.phase === 'thinking' ? '💭 Agents Thinking'
-    : progress?.phase === 'debating' ? `🗣️ Debate Round ${progress.round}/${progress.totalRounds}`
-    : progress?.phase === 'voting' ? '🗳️ Consensus Voting'
-    : progress?.phase === 'auditing' ? '🔍 Risk Audit'
+  const phaseLabel = progress?.phase === 'thinking' ? 'Agents Thinking'
+    : progress?.phase === 'debating' ? `Debate Round ${progress.round}/${progress.totalRounds}`
+    : progress?.phase === 'voting' ? 'Consensus Voting'
+    : progress?.phase === 'auditing' ? 'Risk Audit'
     : ''
 
   return (
@@ -203,36 +203,14 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
           </div>
         )}
         <span className={`agent-state ${agentState}`}>
-          {isLive && liveProgress.status === 'thinking' ? '💭 thinking' : agentState}
+          {isLive && liveProgress.status === 'thinking' ? 'thinking' : agentState === 'idle' && latency != null ? `${(latency / 1000).toFixed(1)}s` : agentState}
         </span>
         <span className="agent-expand-chevron">{isExpanded ? '▲' : '▼'}</span>
       </div>
-      {/* Collapsed summary: description + latency + model */}
+      {/* v2.0.149: Collapsed view shows description only — no footer.
+          Latency is in the state badge, model is selectable when expanded. */}
       {!isExpanded && (
-        <>
-          <div className="agent-description-collapsed">{meta.description}</div>
-          <div className="agent-footer agent-footer-collapsed">
-            {latency != null && (
-              <span className="agent-footer-item">⏱ {(latency / 1000).toFixed(1)}s</span>
-            )}
-            {thought?.metadata?.model && !isLive && (
-              <span className="agent-footer-item">📋 {thought.metadata.model.split('/').pop()?.slice(0, 16)}</span>
-            )}
-            {isLive && liveProgress.status === 'thinking' && (
-              <span className="agent-footer-item thinking-pulse">⟳ thinking...</span>
-            )}
-            {thought?.metadata?.fallback && !isLive && (
-              <span className="agent-footer-item agent-footer-fallback" title={thought.metadata?.digestedReason || thought.metadata?.error || 'Unknown error'}>
-                ⚠️ Fallback
-                {thought.metadata?.digestedReason && (
-                  <span style={{ fontSize: 'var(--fs-xs)', opacity: 0.8, marginLeft: '4px', whiteSpace: 'normal', overflow: 'hidden' }}>
-                    {thought.metadata.digestedReason}
-                  </span>
-                )}
-              </span>
-            )}
-          </div>
-        </>
+        <div className="agent-description-collapsed">{meta.description}</div>
       )}
       {/* Expanded content: thought + model row + per-symbol section */}
       {isExpanded && (
@@ -242,31 +220,22 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
           <div className={`agent-thought ${thoughtExpanded ? 'agent-thought-expanded' : 'agent-thought-collapsed'}`}>
             {displayThought}
           </div>
-          <div className="agent-footer">
-            {latency != null && (
-              <span className="agent-footer-item">⏱ {(latency / 1000).toFixed(1)}s</span>
-            )}
-            {thought?.metadata?.model && !isLive && (
-              <span className="agent-footer-item">📋 {thought.metadata.model.split('/').pop()?.slice(0, 16)}</span>
-            )}
-            {isLive && liveProgress.status === 'thinking' && (
-              <span className="agent-footer-item thinking-pulse">⟳ thinking...</span>
-            )}
-            {thought?.metadata?.fallback && !isLive && (
+          {thought?.metadata?.fallback && !isLive && (
+            <div className="agent-footer">
               <span className="agent-footer-item agent-footer-fallback" title={thought.metadata?.digestedReason || thought.metadata?.error || 'Unknown error'}>
-                ⚠️ Fallback
+                Fallback
                 {thought.metadata?.digestedReason && (
                   <span style={{ fontSize: 'var(--fs-xs)', opacity: 0.8, marginLeft: '4px', whiteSpace: 'normal', overflow: 'hidden' }}>
                     {thought.metadata.digestedReason}
                   </span>
                 )}
               </span>
-            )}
-          </div>
+            </div>
+          )}
         </>
       ) : (
         <div className="agent-empty">
-          {isLive && liveProgress.status === 'thinking' ? '⟳ Thinking...' : 'Waiting for first thought...'}
+          {isLive && liveProgress.status === 'thinking' ? 'Thinking...' : 'Waiting for first thought...'}
         </div>
       )}
       {/* Expand/Copy buttons + Model selector on same row */}
@@ -285,7 +254,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
               onClick={() => navigator.clipboard.writeText(displayThought)}
               title="Copy thought"
             >
-              📋 Copy
+              Copy
             </button>
           </>
         )}
@@ -313,7 +282,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                 <div className="agent-per-symbol-header">
                   <span className="agent-decision-symbol">{a.symbol}</span>
                   <span className={`decision-tag ${a.modified > 0 ? 'sell' : 'hold'} decision-tag-inner`}>
-                    {a.modified > 0 ? `⚠ ${a.modified} MOD` : `✓ ${a.approved} OK`}
+                    {a.modified > 0 ? <><AlertTriangle size={12} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />{a.modified} MOD</> : <><Check size={12} color="var(--green)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />{a.approved} OK</>}
                   </span>
                 </div>
                 {rejection && (
@@ -333,7 +302,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                       {rejExpanded ? '▲ Rejection' : '▼ Rejection'}
                     </button>
                     <div className={`agent-per-symbol-rationale ${rejExpanded ? 'agent-rationale-expanded' : 'agent-rationale-collapsed'}`} style={{ fontSize: 'var(--fs-sm)', lineHeight: 1.5, color: 'var(--red)' }}>
-                      🚫 REJECTED {rejection.action.toUpperCase()}: {rejection.rationale}
+                      <Ban size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />REJECTED {rejection.action.toUpperCase()}: {rejection.rationale}
                     </div>
                   </>
                 )}
@@ -345,7 +314,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
             <div key={`rej-${i}`} className="agent-per-symbol-group">
               <div className="agent-per-symbol-header">
                 <span className="agent-decision-symbol">{r.symbol}</span>
-                <span className="decision-tag sell decision-tag-inner">🚫 REJ</span>
+                <span className="decision-tag sell decision-tag-inner"><Ban size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />REJ</span>
               </div>
               <div className="agent-per-symbol-rationale agent-rationale-expanded" style={{ fontSize: 'var(--fs-sm)', lineHeight: 1.5, color: 'var(--red)' }}>
                 {r.rationale}
@@ -427,7 +396,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                     if ((d.action === 'buy' || d.action === 'sell') && d.entryThesis) {
                       return (
                         <div className="agent-entry-thesis agent-entry-thesis-expanded" title={d.entryThesis}>
-                          📝 {d.entryThesis}
+                          <StickyNote size={12} color="var(--text-secondary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />{d.entryThesis}
                         </div>
                       )
                     }
@@ -621,6 +590,14 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
     setSinglePrompt('')
     try { localStorage.removeItem(TERMINAL_PROMPT_KEY) } catch { /* ignore */ }
     setResetConfirm(false)
+    // v2.0.151: Also clear the backend Root Command Prompt — otherwise
+    // the SSE pushes the old prompt back as apiRootPrompt, which keeps
+    // effectivePrompt/promptPart populated and the Copy button visible.
+    fetch(`${API_BASE}/terminal-agent/sync-prompt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: '' }),
+    }).catch(() => { /* non-critical */ })
   }
 
   // Parse LLM output: split on 'Side Guide:' keyword
@@ -654,24 +631,11 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
         {allSelectedSyms.length > 0 && (
           <div className="agent-symbols">{allSelectedSyms.join(' , ')}</div>
         )}
-        <span className="agent-state idle">{processing ? '💭 processing' : (promptPart ? 'active' : 'idle')}</span>
+        <span className="agent-state idle">{processing ? 'processing' : (promptPart ? 'active' : 'idle')}</span>
         <span className="agent-expand-chevron">{isExpanded ? '▲' : '▼'}</span>
       </div>
       {!isExpanded && (
-        <>
-          <div className="agent-description-collapsed">{meta.description}</div>
-          <div className="agent-footer agent-footer-collapsed">
-            {taLatency != null && taLatency > 0 ? (
-              <span className="agent-footer-item">⏱ {(taLatency / 1000).toFixed(1)}s</span>
-            ) : (
-              <span className="agent-footer-item">⏱ ready</span>
-            )}
-            <span className="agent-footer-item">📋 {taModelShort}</span>
-            {promptPart && (
-              <span className="agent-footer-item" style={{ opacity: 0.7 }}>{promptPart.length} chars</span>
-            )}
-          </div>
-        </>
+        <div className="agent-description-collapsed">{meta.description}</div>
       )}
       {isExpanded && (
         <>
@@ -781,7 +745,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
                         fontWeight: 'var(--fw-bold)',
                       }}
                     >
-                      ✓ Yes
+                      <Check size={14} color="var(--green)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Yes
                     </button>
                     <button
                       onClick={() => setResetConfirm(false)}
@@ -795,7 +759,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
                         fontSize: 'var(--fs-sm)',
                       }}
                     >
-                      ✗ No
+                      <X size={14} color="var(--text-secondary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />No
                     </button>
                   </span>
                 ) : (
@@ -887,9 +851,6 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
             </div>
           </div>
 
-          <div className="agent-footer">
-            <span className="agent-footer-item">{promptPart ? `📋 ${promptPart.length} chars` : '📋 empty'}</span>
-          </div>
           <div className="agent-card-model-row">
             <select
               className="model-select model-select-wide"
@@ -913,6 +874,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const s = data?.status
   const m = data?.marketState
   const ma = data?.marketAgent
+  const p = data?.portfolio
   // v2.0.117: Warning when switching to Real mode without wallet/private key
   const [realModeWarning, setRealModeWarning] = useState('')
   const config = ma?.config
@@ -1028,13 +990,20 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
     // v2.0.79: Normalize symbol before adding — prevents BTC + btc coexistence.
     const norm = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
     const normalizedSymbol = norm(symbol)
-    const positionCount = positionMap.size
     setTradingMarkets(prev => {
       if (prev.some(s => norm(s) === normalizedSymbol)) return prev
       for (const [posSym] of positionMap) {
         if (norm(posSym) === normalizedSymbol) return prev
       }
-      if (prev.length + positionCount >= 3) return prev
+      // v2.0.150: Use deduped count, not prev.length + positionMap.size.
+      // If a trading market overlaps with a position, prev.length + positionCount
+      // double-counts it, blocking the 3rd slot even when only 2 unique exist.
+      const uniqueCount = new Set<string>([
+        ...prev.map(s => norm(s)),
+        ...Array.from(positionMap.keys()).map(s => norm(s)),
+        normalizedSymbol,
+      ]).size
+      if (uniqueCount > 3) return prev
       return [...prev, normalizedSymbol]
     })
     // Also select the symbol as active for chart display
@@ -1076,8 +1045,8 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
     setSelectedTradeMode(mode as any)
     try {
       const res = await fetch(`${API_BASE}/market-agent/trade-mode`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
-      if ((await res.json()).success) showStatus(`✓ ${mode}`)
-    } catch { showStatus('✗ Failed') }
+      if ((await res.json()).success) showStatus(mode)
+    } catch { showStatus('Failed') }
   }
 
   const handleAssetTypeChange = async (assetType: string) => {
@@ -1085,8 +1054,8 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
     setPairsLoading(true)
     try {
       const res = await fetch(`${API_BASE}/market-agent/asset-type`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assetType }) })
-      if ((await res.json()).success) showStatus(`✓ ${assetType}`)
-    } catch { showStatus('✗ Failed') }
+      if ((await res.json()).success) showStatus(assetType)
+    } catch { showStatus('Failed') }
   }
   // Exchange is fixed to hyperliquid — no-op handler for the dropdown
   const handleExchangeChange = async (_exchange: string) => {
@@ -1094,22 +1063,47 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   }
 
   const activeSymbol = config?.selectedSymbol ?? ''
-  // Chart symbol: prefer the first selected market pair (position or trading market),
-  // not the backend's auto-selected top pair which changes on Asset Type switch.
+  // Chart symbol: prefer the backend-selected symbol (updated when user clicks
+  // a Selected Market Pairs card OR a Trade Incident card). Falls back to
+  // the first selected pair only when no backend symbol is set.
   const allSelectedSyms = [
     ...Array.from(positionMap.keys()),
     ...tradingMarkets.filter(sym => !Array.from(positionMap.keys()).some(p => normSym(p) === normSym(sym))),
   ]
-  const chartSymbol = allSelectedSyms[0] ?? activeSymbol
+  const chartSymbol = activeSymbol || (allSelectedSyms[0] ?? '')
   // Use live market state price (updates every cycle) instead of topPairs snapshot
   const livePrice = s?.currentPrice ?? m?.currentPrice ?? 0
   const liveVol24h = m?.volume24h ?? 0
   const liveChange24h = m?.priceChange24h ?? 0
-  const currentPair = topPairs.find(p => p.symbol === chartSymbol)
+  const currentPair = topPairs.find(p => normSym(p.symbol) === normSym(chartSymbol))
   const price = activeSymbol && livePrice > 0 ? livePrice : (currentPair?.price ?? 0)
   const volume24h = liveVol24h > 0 ? liveVol24h : (currentPair?.volume24h ?? 0)
   const change24h = liveChange24h !== 0 ? liveChange24h : (currentPair?.priceChangePercent ?? 0)
   const meta = AGENT_META['market_agent']
+
+  // v2.0.144: Per-symbol consensus data for Selected Market Pairs integration
+  const consensus = data?.consensus
+  const perSymbolConsensus = consensus?.perSymbolConsensus ?? []
+  const odData = data?.optionsData
+  const odArr = odData ? (Array.isArray(odData) ? odData : [odData]) : []
+  const normSymForOd = (s: string) => s.replace(/^xyz:/i, '').toLowerCase()
+  const getPscForSym = (sym: string) => {
+    const n = normSymForOd(sym)
+    return perSymbolConsensus.find((psc: any) => normSymForOd(psc.symbol) === n)
+  }
+  const getOdForSym = (sym: string) => {
+    const n = normSymForOd(sym)
+    return odArr.find((o: any) => normSymForOd(o.symbol) === n)
+  }
+  // v2.0.146: Decision audit — shows which gate blocked or allowed the trade
+  const decisionAudit = data?.decisionAudit ?? []
+  const getAuditForSym = (sym: string) => {
+    const n = normSymForOd(sym)
+    // Find the most recent audit entry for this symbol
+    return decisionAudit
+      .filter((a: any) => normSymForOd(a.symbol) === n)
+      .sort((a: any, b: any) => b.timestamp - a.timestamp)[0]
+  }
 
   // Build trade markers for the active symbol so the main TradingView chart
   // shows the current position's entry point + live SL/TP (v2.0.16).
@@ -1119,7 +1113,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   // entry marker, not every past sell/buy which cluttered the chart with
   // multiple stale arrows.
   const portfolioPositions = (Object.values(data?.portfolio?.positions ?? {}) as any[])
-  const activePos = portfolioPositions.find((p: any) => p.symbol === chartSymbol)
+  const activePos = portfolioPositions.find((p: any) => normSym(p.symbol) === normSym(chartSymbol))
   const mainChartTrades: Array<{ time: number; action: 'buy' | 'sell'; price: number; sl?: number; tp?: number; cycle: number }> = []
   // Current position's live entry + SL/TP (cycle=0 = current)
   if (activePos) {
@@ -1143,6 +1137,28 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         <span className="agent-state idle">{exchange.toUpperCase()} · {config?.tradeMode?.toUpperCase()}</span>
       </div>
 
+      {/* v2.0.151: Balance/Equity moved from Hippocampus to top of Trading Terminal */}
+      <div className="portfolio-grid">
+        <div className="portfolio-cell">
+          <span className="stat-label">{isRealMode ? 'Genuine Balance' : 'Simulated Balance'}</span>
+          <span className="stat-number neutral">{(() => {
+            const bal = isRealMode
+              ? (p?.totalEquity !== null && p?.totalEquity !== undefined ? p.totalEquity : null)
+              : (p?.balance ?? s?.balance ?? 0)
+            return bal === null ? '--' : `$${bal.toFixed(2)}`
+          })()}</span>
+        </div>
+        <div className="portfolio-cell">
+          <span className="stat-label">{isRealMode ? 'Genuine Equity' : 'Simulated Equity'}</span>
+          <span className="stat-number neutral">{(() => {
+            const eq = isRealMode
+              ? (p?.totalEquity !== null && p?.totalEquity !== undefined ? p.totalEquity : null)
+              : (p?.totalEquity ?? s?.equity ?? 0)
+            return eq === null ? '--' : `$${eq.toFixed(2)}`
+          })()}</span>
+        </div>
+      </div>
+
       {/* Trade Mode + Cycle Period */}
       <div className="market-control-group">
         <div className="market-control-col">
@@ -1161,7 +1177,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                   if (!wallet || !privKey || wallet.includes('••••') && !privKey.includes('••••')) {
                     // Has wallet but no private key (or vice versa)
                     if (!wallet || !privKey) {
-                      setRealModeWarning('⚠️ Hyperliquid wallet address and/or private key not configured. Go to Settings ⚙️ to set them before trading in Real mode.')
+                      setRealModeWarning('Hyperliquid wallet address and/or private key not configured. Go to Settings to set them before trading in Real mode.')
                       return
                     }
                   }
@@ -1177,7 +1193,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         <div className="market-control-col">
           <div className="market-control-label">
             Cycle Period: <strong style={{ color: cyclePeriod <= 4 ? 'var(--red)' : 'var(--gold)' }}>{cyclePeriod}m</strong>
-            {cyclePeriod <= 4 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--red)', marginLeft: 'var(--space-3)' }}>⚠ High token cost</span>}
+            {cyclePeriod <= 4 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--red)', marginLeft: 'var(--space-3)' }}><AlertTriangle size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />High token cost</span>}
           </div>
           <div className="slider-row">
             <input
@@ -1201,7 +1217,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
 
       {(s?.cycles ?? 0) === 0 && cyclePeriod <= 4 && (
         <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--red)', marginTop: 'var(--space-2)', lineHeight: 1.4, textAlign: 'center' }}>
-          ⚠ If HACP can't finish within {cyclePeriod}m would be causing back-to-back cycles.
+          <AlertTriangle size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />If HACP can't finish within {cyclePeriod}m would be causing back-to-back cycles.
         </div>
       )}
 
@@ -1219,8 +1235,8 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                 setPositionSizePct(pct)
                 try {
                   const res = await fetch(`${API_BASE}/market-agent/position-size`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pct }) })
-                  if ((await res.json()).success) showStatus(`✓ ${(pct * 100).toFixed(0)}%`)
-                } catch { showStatus('✗ Failed') }
+                  if ((await res.json()).success) showStatus(`${(pct * 100).toFixed(0)}%`)
+                } catch { showStatus('Failed') }
               }}
               style={{ flex: 1, height: 4, accentColor: 'var(--accent)' }}
             />
@@ -1241,8 +1257,8 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                 if (positionSizePct > pct) setPositionSizePct(pct)
                 try {
                   const res = await fetch(`${API_BASE}/market-agent/max-portion`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pct }) })
-                  if ((await res.json()).success) showStatus(`✓ Max ${(pct * 100).toFixed(0)}%`)
-                } catch { showStatus('✗ Failed') }
+                  if ((await res.json()).success) showStatus(`Max ${(pct * 100).toFixed(0)}%`)
+                } catch { showStatus('Failed') }
               }}
               style={{ flex: 1, height: 4, accentColor: 'var(--accent)' }}
             />
@@ -1261,8 +1277,8 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                 setLeverage(lev)
                 try {
                   const res = await fetch(`${API_BASE}/market-agent/leverage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ leverage: lev }) })
-                  if ((await res.json()).success) showStatus(`✓ ${lev}x`)
-                } catch { showStatus('✗ Failed') }
+                  if ((await res.json()).success) showStatus(`${lev}x`)
+                } catch { showStatus('Failed') }
               }}
               style={{ flex: 1, height: 4, accentColor: 'var(--accent)' }}
             />
@@ -1349,7 +1365,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                     {pair.volume24h > 0 ? `${pair.priceChangePercent >= 0 ? '+' : ''}${pair.priceChangePercent.toFixed(2)}%` : 'N/A'}
                   </span>
                   <span className="top-pair-spacer" />
-                  {isAdded && <span style={{ fontSize: '24px', color: 'var(--green)', fontWeight: 'var(--fw-bold)', lineHeight: 0, display: 'inline-flex', alignItems: 'center' }}>✓</span>}
+                  {isAdded && <span style={{ fontSize: '24px', color: 'var(--green)', fontWeight: 'var(--fw-bold)', lineHeight: 0, display: 'inline-flex', alignItems: 'center' }}><Check size={20} color="var(--green)" /></span>}
                 </div>
               )
             })}
@@ -1361,46 +1377,105 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         </div>
       </div>
 
-      {/* Selected Market Pairs — directly below Available Pairs */}
+      {/* v2.0.151: TradingView chart above Selected Market Pairs.
+          Price info bar removed — chart is self-contained. */}
+      {chartSymbol ? (
+        <div className="market-chart-row">
+          <div className="market-chart-col">
+            <TradingViewChart symbol={chartSymbol} currentPrice={price} trades={mainChartTrades} refreshKey={s?.cycles ?? 0} />
+          </div>
+        </div>
+      ) : (
+        <div className="empty-state empty-state-compact">
+          <div className="empty-text empty-text-sm">Waiting for market data...</div>
+        </div>
+      )}
+
+{/* Selected Market Pairs — v2.0.146: Professional card layout with
+          integrated market data + per-symbol consensus + options info. */}
       <div className="market-pairs-header" style={{ position: 'relative' }}>
         <div className="market-pairs-header-label">
           Selected Market Pairs ({(() => { const u = new Set<string>(); for (const s of tradingMarkets) u.add(normSym(s)); for (const s of positionMap.keys()) u.add(normSym(s)); return u.size })()}/3):
         </div>
-        <div className="top-pairs-list">
+        <div className="smp-card-list">
           {/* Position rows — BUY/SELL tag + ✕ for manual close confirmation */}
           {Array.from(positionMap.entries()).map(([sym, side]) => {
             const pair = topPairs.find(p => normSym(p.symbol) === normSym(sym))
             const cached = getCachedPair(sym)
-            const vol24 = pair?.volume24h ?? cached?.volume24h ?? 0
-            const vol5m = pair?.volume5m ?? cached?.volume5m
             const chg = pair?.priceChangePercent ?? cached?.priceChangePercent ?? 0
+            const psc = getPscForSym(sym)
+            const symOd = getOdForSym(sym)
+            const actionClass = psc ? (psc.action === 'close' ? 'sell' : psc.action) : (side === 'buy' ? 'buy' : 'sell')
+            // v2.0.147: Border color by position status, not consensus action
+            const cardColorClass = side === 'buy' ? 'pos-buy' : 'pos-sell'
+            // v2.0.148: Get full position object for price/PnL
+            const posData = openPositions.find((p: any) => normSym(p.symbol) === normSym(sym))
+            const posPrice = posData?.currentPrice ?? 0
+            const posEntry = posData?.averageEntryPrice ?? 0
+            const posPnl = posData?.unrealizedPnl ?? 0
             return (
-              <div
-                key={`pos-row-${sym}`}
-                className={`top-pair-row top-pair-row-inline ${normSym(sym) === normSym(activeSymbol) ? 'active-pair' : ''}`}
-                onClick={() => {
+              <div key={`pos-row-${sym}`} className={`smp-card ${cardColorClass}`}>
+                <div className="smp-card-header" onClick={() => {
                   fetch(`${API_BASE}/market-agent/select-symbol`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ symbol: sym }),
                   }).catch(() => {})
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
-              >
-                <span className="top-pair-rank top-pair-cell" style={{ color: side === 'buy' ? 'var(--green)' : 'var(--red)', fontWeight: 'var(--fw-bold)' }}>{side === 'buy' ? 'BUY' : 'SELL'}</span>
-                <span className="top-pair-symbol top-pair-cell-bold">{sym}</span>
-                <span className="top-pair-vol top-pair-cell">{vol24 > 0 ? `$${(vol24 / 1_000_000).toFixed(1)}M` : '—'}</span>
-                <span className="top-pair-vol top-pair-cell-tertiary">{vol5m != null && vol5m > 0 ? `${(vol5m / 1000).toFixed(0)}K` : '—'}</span>
-                <span className={`top-pair-chg top-pair-cell ${chg >= 0 ? 'positive' : 'negative'}`}>
-                  {vol24 > 0 ? `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%` : '—'}
-                </span>
-                <span className="top-pair-spacer" />
-                <span
-                  className="top-pair-rank top-pair-cell"
-                  style={{ cursor: 'pointer', color: 'var(--red)', fontWeight: 'var(--fw-bold)' }}
-                  onClick={(e) => { e.stopPropagation(); setCloseConfirmSym(sym) }}
-                  title={`Close position: ${sym}`}
-                >✕</span>
+                }}>
+                  <span className={`smp-side-tag ${side === 'buy' ? 'buy' : 'sell'}`}>{side === 'buy' ? 'BUY' : 'SELL'} {posEntry > 0 ? `$${posEntry.toFixed(2)}` : '—'}</span>
+                  <span className="smp-symbol">{(sym.includes(':') ? sym.split(':').pop() : sym).toUpperCase()}</span>
+                  <span className="smp-data">{posPrice > 0 ? `$${posPrice.toFixed(2)}` : '—'}</span>
+                  <span className={`smp-data ${posPnl >= 0 ? 'positive' : 'negative'}`}>
+                    {posPnl >= 0 ? '+' : ''}${posPnl.toFixed(2)}
+                  </span>
+                  <span className="smp-spacer" />
+                  <span
+                    className="smp-close-btn"
+                    onClick={(e) => { e.stopPropagation(); setCloseConfirmSym(sym) }}
+                    title={`Close position: ${sym}`}
+                  ><X size={18} style={{ cursor: 'pointer' }} /></span>
+                </div>
+                {psc && (
+                  <div className="smp-consensus-body">
+                    <div className="smp-consensus-top">
+                      <span className={`vote-action-tag ${actionClass}`}>{psc.action.toUpperCase()}</span>
+                      <span className="smp-conf">{(psc.confidence * 100).toFixed(0)}%</span>
+                      {psc.suggestedStopLoss != null && psc.suggestedStopLoss > 0 && (
+                        <span className="smp-sl-tp">SL:$${psc.suggestedStopLoss.toFixed(1)}</span>
+                      )}
+                      {psc.suggestedTakeProfit != null && psc.suggestedTakeProfit > 0 && (
+                        <span className="smp-sl-tp">TP:$${psc.suggestedTakeProfit.toFixed(1)}</span>
+                      )}
+                    </div>
+                    <div className="smp-rationale">{psc.rationale}</div>
+                    {symOd && symOd.playbook && (
+                      <div className="smp-options">{symOd.playbook.playbook} — IV:{(symOd.impliedVolatility * 100).toFixed(0)}% IVR:{symOd.ivRank.toFixed(0)} γ:{symOd.gammaRegime.toUpperCase()} P/C:{symOd.putCallRatio.toFixed(2)}</div>
+                    )}
+                    {(() => {
+                      const audit = getAuditForSym(sym)
+                      if (!audit) return null
+                      const failedGates = audit.gates.filter((g: any) => !g.passed)
+                      const passedGates = audit.gates.filter((g: any) => g.passed)
+                      return (
+                        <div className={`smp-audit ${audit.executed ? 'executed' : 'blocked'}`}>
+                          <span className="smp-audit-status">{audit.executed ? <><CheckCircle size={12} color="var(--green)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Executed</> : <><OctagonX size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Not Executed</>}</span>
+                          {failedGates.length > 0 ? (
+                            <span className="smp-audit-gates">
+                              {failedGates.map((g: any, i: number) => (
+                                <span key={i} className="smp-audit-gate-failed"><XCircle size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />{g.gate}: {g.reason}</span>
+                              ))}
+                            </span>
+                          ) : (
+                            <span className="smp-audit-gates">
+                              {passedGates.map((g: any, i: number) => (
+                                <span key={i} className="smp-audit-gate-passed"><CheckCircle size={12} color="var(--green)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />{g.gate}</span>
+                              ))}
+                            </span>
+                          )}
+                        </div>
+                      )
+                    })()}
+                  </div>
+                )}
               </div>
             )
           })}
@@ -1415,36 +1490,73 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
             .map(sym => {
               const pair = topPairs.find(p => normSym(p.symbol) === normSym(sym))
               const cached = getCachedPair(sym)
-              const vol24 = pair?.volume24h ?? cached?.volume24h ?? 0
-              const vol5m = pair?.volume5m ?? cached?.volume5m
               const chg = pair?.priceChangePercent ?? cached?.priceChangePercent ?? 0
+              const psc = getPscForSym(sym)
+              const symOd = getOdForSym(sym)
+              const actionClass = psc ? (psc.action === 'close' ? 'sell' : psc.action) : 'hold'
+              // v2.0.147: No position → grey border
+              const cardColorClass = 'pos-none'
               return (
-                <div
-                  key={`tm-row-${sym}`}
-                  className={`top-pair-row top-pair-row-inline ${normSym(sym) === normSym(activeSymbol) ? 'active-pair' : ''}`}
-                  onClick={() => {
+                <div key={`tm-row-${sym}`} className={`smp-card ${cardColorClass}`}>
+                  <div className="smp-card-header" onClick={() => {
                     fetch(`${API_BASE}/market-agent/select-symbol`, {
                       method: 'POST', headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ symbol: sym }),
                     }).catch(() => {})
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
-                >
-                  <span className="top-pair-rank top-pair-cell" style={{ color: 'var(--gold)', fontWeight: 'var(--fw-bold)' }}>HOLD</span>
-                  <span className="top-pair-symbol top-pair-cell-bold">{sym}</span>
-                  <span className="top-pair-vol top-pair-cell">{vol24 > 0 ? `$${(vol24 / 1_000_000).toFixed(1)}M` : '—'}</span>
-                  <span className="top-pair-vol top-pair-cell-tertiary">{vol5m != null && vol5m > 0 ? `${(vol5m / 1000).toFixed(0)}K` : '—'}</span>
-                  <span className={`top-pair-chg top-pair-cell ${chg >= 0 ? 'positive' : 'negative'}`}>
-                    {vol24 > 0 ? `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%` : '—'}
-                  </span>
-                  <span className="top-pair-spacer" />
-                  <span
-                    className="top-pair-rank top-pair-cell"
-                    style={{ cursor: 'pointer', color: 'var(--text-tertiary)' }}
-                    onClick={(e) => { e.stopPropagation(); removeTradingMarket(sym) }}
-                    title={`Remove ${sym} from selected markets`}
-                  >✕</span>
+                  }}>
+                    <span className="smp-side-tag hold">HOLD</span>
+                    <span className="smp-symbol">{(sym.includes(':') ? sym.split(':').pop() : sym).toUpperCase()}</span>
+                    <span className="smp-data">—</span>
+                    <span className="smp-data">—</span>
+                    <span className="smp-spacer" />
+                    <span
+                      className="smp-close-btn"
+                      onClick={(e) => { e.stopPropagation(); removeTradingMarket(sym) }}
+                      title={`Remove ${sym} from selected markets`}
+                    ><X size={18} style={{ cursor: 'pointer' }} /></span>
+                  </div>
+                  {psc && (
+                    <div className="smp-consensus-body">
+                      <div className="smp-consensus-top">
+                        <span className={`vote-action-tag ${actionClass}`}>{psc.action.toUpperCase()}</span>
+                        <span className="smp-conf">{(psc.confidence * 100).toFixed(0)}%</span>
+                        {psc.suggestedStopLoss != null && psc.suggestedStopLoss > 0 && (
+                          <span className="smp-sl-tp">SL:$${psc.suggestedStopLoss.toFixed(1)}</span>
+                        )}
+                        {psc.suggestedTakeProfit != null && psc.suggestedTakeProfit > 0 && (
+                          <span className="smp-sl-tp">TP:$${psc.suggestedTakeProfit.toFixed(1)}</span>
+                        )}
+                      </div>
+                      <div className="smp-rationale">{psc.rationale}</div>
+                      {symOd && symOd.playbook && (
+                        <div className="smp-options">{symOd.playbook.playbook} — IV:{(symOd.impliedVolatility * 100).toFixed(0)}% IVR:{symOd.ivRank.toFixed(0)} γ:{symOd.gammaRegime.toUpperCase()} P/C:{symOd.putCallRatio.toFixed(2)}</div>
+                      )}
+                      {(() => {
+                        const audit = getAuditForSym(sym)
+                        if (!audit) return null
+                        const failedGates = audit.gates.filter((g: any) => !g.passed)
+                        const passedGates = audit.gates.filter((g: any) => g.passed)
+                        return (
+                          <div className={`smp-audit ${audit.executed ? 'executed' : 'blocked'}`}>
+                            <span className="smp-audit-status">{audit.executed ? <><CheckCircle size={12} color="var(--green)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Executed</> : <><OctagonX size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Not Executed</>}</span>
+                            {failedGates.length > 0 ? (
+                              <span className="smp-audit-gates">
+                                {failedGates.map((g: any, i: number) => (
+                                  <span key={i} className="smp-audit-gate-failed"><XCircle size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />{g.gate}: {g.reason}</span>
+                                ))}
+                              </span>
+                            ) : (
+                              <span className="smp-audit-gates">
+                                {passedGates.map((g: any, i: number) => (
+                                  <span key={i} className="smp-audit-gate-passed"><CheckCircle size={12} color="var(--green)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />{g.gate}</span>
+                                ))}
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -1493,37 +1605,12 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                 disabled={closingSym === closeConfirmSym}
                 style={{ padding: 'var(--space-3) var(--space-6)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--red)', background: 'var(--red-bg)', color: 'var(--red)', cursor: 'pointer', fontSize: 'var(--fs-base)', fontWeight: 'var(--fw-bold)' }}
               >
-                {closingSym === closeConfirmSym ? 'Closing...' : '✓ Confirm Close'}
+                {closingSym === closeConfirmSym ? 'Closing...' : <><Check size={14} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Confirm Close</>}
               </button>
             </div>
           </div>
         </div>
       )}
-      </div>
-
-      {/* Price info + chart */}
-      <div className="market-chart-row">
-        <div className="market-chart-col">
-          {chartSymbol ? (
-            <>
-              <div className="market-price market-price-top">
-                <span className="market-symbol market-symbol-lg">{chartSymbol}</span>
-                <span className="market-value market-value-sm">${price.toFixed(2)}</span>
-                <span className={`market-change market-change-sm ${change24h >= 0 ? 'text-green' : 'text-red'}`}>
-                  {change24h >= 0 ? '+' : ''}{change24h.toFixed(2)}
-                </span>
-              </div>
-              {/* Mini TradingView chart for the selected market — refreshes every cycle. */}
-              <div className="market-vol-row">
-                <TradingViewChart symbol={chartSymbol} currentPrice={price} trades={mainChartTrades} refreshKey={s?.cycles ?? 0} />
-              </div>
-            </>
-          ) : (
-            <div className="empty-state empty-state-compact">
-              <div className="empty-text empty-text-sm">Waiting for market data...</div>
-            </div>
-          )}
-        </div>
       </div>
 
     </div>
@@ -1534,7 +1621,7 @@ function PreferencePanel({ data }: { data: APIData | null }) {
   return (
     <div className="panel panel-rgb-border">
       <div className="panel-header">
-        <span className="panel-title">Preference</span>
+        <span className="panel-title">HACP Prefrontal</span>
       </div>
       <div className="agent-list">
         <MarketAgentCard data={data} />
@@ -1572,20 +1659,26 @@ function AgentPanel({ data, ollamaPlan }: { data: APIData | null; ollamaPlan?: s
     } catch { /* ignore */ }
   }
 
+  // v2.0.144: Top-level consensus summary fused into header
+  // v2.0.145: No overall action tag — each asset runs independently.
+  // Badge alternates: active phase → "Phase: X", complete/idle → "Cycle #N".
+  // v2.0.146: Per-symbol consensus moved to Selected Market Pairs.
+  const cycleNum = data?.status?.cycles ?? 0
+  const isPhaseActive = progress && progress.phase !== 'complete'
+
   return (
     <div className="panel panel-rgb-border">
       <div className="panel-header">
-        <span className="panel-title">Agent Cognition</span>
+        <span className="panel-title">HACP Consciousness</span>
         <span className="panel-badge">
-          {progress ? `Phase: ${progress.phase}` : ''}
+          {isPhaseActive ? `Phase: ${progress!.phase}` : `Cycle #${cycleNum}`}
         </span>
       </div>
       <div className="agent-list">
         {ollamaPlan === 'None' && (
           <div className="ollama-warning-banner">
-            <span className="ollama-warning-icon">⚠️</span>
             <span className="ollama-warning-text">
-              <strong>Ollama not connected.</strong> The trading system is paused. Please open the Ollama desktop app or enter an API key in <strong>Settings ⚙️</strong> to start trading.
+              <strong>Ollama not connected.</strong> The trading system is paused. Please open the Ollama desktop app or enter an API key in <strong>Settings</strong> to start trading.
             </span>
           </div>
         )}
@@ -1619,7 +1712,6 @@ function AgentPanel({ data, ollamaPlan }: { data: APIData | null; ollamaPlan?: s
 function PortfolioPanel({ data }: { data: APIData | null }) {
   const s = data?.status
   const p = data?.portfolio
-  const th = data?.tradeHistory ?? []
   // v2.0.78: Filter positions by trade mode — paper mode shows only paper
   // positions, real mode shows only real (exchange) positions. Prevents
   // cross-mode contamination in the positions table.
@@ -1629,123 +1721,36 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
   const positions = isRealMode
     ? allPositions.filter((pos) => pos.agentId === 'hyperliquid-real')
     : allPositions.filter((pos) => pos.agentId !== 'hyperliquid-real')
-  const [chartSymbol, setChartSymbol] = useState<string | null>(
-    positions.length > 0 ? positions[0]?.symbol ?? null : null
-  )
   // v2.0.30: Manual close confirmation state
   const [closeConfirmSymbol, setCloseConfirmSymbol] = useState<string | null>(null)
   const [closingSymbol, setClosingSymbol] = useState<string | null>(null)
 
-  // Clear chartSymbol when all positions are closed
-  useEffect(() => {
-    if (positions.length === 0 && chartSymbol !== null) {
-      setChartSymbol(null)
-    }
-  }, [positions.length])
   if (!s) return null
-
-  // v2.0.30: Manual close position handler
-  const handleManualClose = async (symbol: string) => {
-    setClosingSymbol(symbol)
-    try {
-      const res = await fetch(`${API_BASE}/positions/close`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol }),
-      })
-      const result = await res.json()
-      if (result.success) {
-        setCloseConfirmSymbol(null)
-      } else {
-        alert(`Failed to close ${symbol}: ${result.error ?? result.message ?? 'Unknown error'}`)
-      }
-    } catch (err) {
-      alert(`Failed to close ${symbol}: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setClosingSymbol(null)
-    }
-  }
-
-  // v2.0.142: Simplified — in real mode, use exchange balance/equity only.
-  // In paper mode, use paper engine balance/equity. No cross-mode leakage.
-  const balance: number | null = isRealMode
-    ? (p?.totalEquity !== null && p?.totalEquity !== undefined ? p.totalEquity : null)
-    : (p?.balance ?? s.balance ?? 0)
-  const equity: number | null = isRealMode
-    ? (p?.totalEquity !== null && p?.totalEquity !== undefined ? p.totalEquity : null)
-    : (p?.totalEquity ?? s.equity ?? 0)
-  const displaySymbol = chartSymbol ?? ''
-
-  // Get current price for chart symbol from positions or market state
-  const selectedPos = positions.find((pos: any) => pos.symbol === displaySymbol)
-  const chartPrice = selectedPos?.currentPrice ?? 0
-
-  // v2.0.32: Portfolio chart only shows the CURRENT position marker + live SL/TP.
-  // Historical trade markers are NOT shown here (they belong in the Market Agent chart).
-  // This prevents multiple buy markers from erroneous/old trade records.
-  const tradeMarkers: Array<{ time: number; action: 'buy' | 'sell'; price: number; sl?: number; tp?: number; cycle: number }> = []
-
-  // Add CURRENT position's live SL/TP as a marker (cycle=0 = current)
-  if (selectedPos) {
-    tradeMarkers.push({
-      time: Math.floor((selectedPos.openedAt ?? Date.now()) / 1000),
-      action: selectedPos.side === 'buy' ? 'buy' : 'sell',
-      price: selectedPos.averageEntryPrice,
-      sl: selectedPos.stopLossPrice,
-      tp: selectedPos.takeProfitPrice,
-      cycle: 0, // 0 = current position
-    })
-  }
 
   return (
     <div className="panel panel-rgb-border">
       <div className="panel-header">
-        <span className="panel-title">Portfolio</span>
+        <span className="panel-title">HACP Hippocampus</span>
         <span className="panel-badge">{s.positions} positions</span>
       </div>
 
-      {/* TradingView Chart — only shows when user clicks a position row */}
-      {displaySymbol ? (
-        <div className="portfolio-section-header">
-          <div className="portfolio-section-top">
-            <span className="portfolio-section-label">
-              Chart: {displaySymbol}
-              {positions.length > 0 && !chartSymbol && <span className="portfolio-click-hint">(click a position row)</span>}
-            </span>
-          </div>
-          <TradingViewChart
-            symbol={displaySymbol}
-            currentPrice={chartPrice}
-            trades={tradeMarkers}
-            refreshKey={s?.cycles ?? 0}
-          />
-        </div>
-      ) : (
-        <div className="empty-state chart-empty-state">
-          <div className="empty-text empty-text-sm">Click a position row to view chart</div>
-        </div>
-      )}
+      {/* v2.0.151: Balance/Equity moved to Trading Terminal */}
 
-      <div className="portfolio-grid">
-        <div className="portfolio-cell">
-          <span className="stat-label">Balance</span>
-          <span className="stat-number neutral">{balance === null ? '--' : `$${balance.toFixed(2)}`}</span>
-        </div>
-        <div className="portfolio-cell">
-          <span className="stat-label">Equity</span>
-          <span className="stat-number neutral">{equity === null ? '--' : `$${equity.toFixed(2)}`}</span>
-        </div>
-      </div>
+      {/* Evolution Panel — embedded as module inside Hippocampus */}
+      <EvolutionPanel data={data} />
 
-      {/* Trade Incident Panel — replaces Positions table + Trade Records */}
-      <TradeIncidentPanel data={data} positions={positions} onChartSymbol={setChartSymbol} chartSymbol={chartSymbol} />
+      {/* v2.0.151: Standard margin between Evolution and Trade Incident */}
+      <div style={{ height: 'var(--space-6)' }} />
+
+      {/* Trade Incident Panel — card click switches Trading Setup chart */}
+      <TradeIncidentPanel data={data} positions={positions} />
     </div>
   )
 }
 
 /* ── Trade Incident Panel — unified card-based trade view ── */
 
-function TradeIncidentPanel({ data, positions, onChartSymbol, chartSymbol }: { data: APIData | null; positions: any[]; onChartSymbol?: (sym: string) => void; chartSymbol?: string | null }) {
+function TradeIncidentPanel({ data, positions }: { data: APIData | null; positions: any[] }) {
   const tradeRecords = data?.tradeRecords ?? []
   const [page, setPage] = useState(0)
   const [expandedCard, setExpandedCard] = useState<string | null>(null)
@@ -1840,8 +1845,8 @@ function TradeIncidentPanel({ data, positions, onChartSymbol, chartSymbol }: { d
         <span className="panel-badge">{sorted.length} trades · Page {safePage + 1}/{totalPages}</span>
       </div>
 
-      {/* Up button */}
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 'var(--space-2) 0' }}>
+      {/* Up button — no top padding for cleaner look */}
+      <div style={{ display: 'flex', justifyContent: 'center', padding: '0 0 var(--space-2) 0' }}>
         <button
           disabled={safePage === 0}
           onClick={() => setPage(p => Math.max(0, p - 1))}
@@ -1865,11 +1870,12 @@ function TradeIncidentPanel({ data, positions, onChartSymbol, chartSymbol }: { d
               key={cardId}
               onClick={() => {
                 setExpandedCard(prev => prev === cardId ? null : cardId)
-                // v2.0.143: When expanding an OPEN position, set the chart symbol
-                // so the TradingView chart shows the entry point + SL/TP lines.
-                if (isOpen && onChartSymbol) {
-                  onChartSymbol(t.symbol)
-                }
+                // v2.0.150: Card click switches the Trading Setup chart via
+                // backend select-symbol API → config.selectedSymbol → MarketAgentCard chartSymbol.
+                fetch(`${API_BASE}/market-agent/select-symbol`, {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ symbol: t.symbol }),
+                }).catch(() => {})
               }}
               style={{
                 background: isOpen ? 'rgba(255, 215, 0, 0.04)' : 'var(--surface-elevated)',
@@ -1894,7 +1900,7 @@ function TradeIncidentPanel({ data, positions, onChartSymbol, chartSymbol }: { d
                 }}>
                   {t.side.toUpperCase()}
                 </span>
-                <span style={{ fontWeight: 'var(--fw-semibold)', fontSize: 'var(--fs-base)' }}>{t.symbol}</span>
+                <span style={{ fontWeight: 'var(--fw-semibold)', fontSize: 'var(--fs-base)' }}>{(t.symbol.includes(':') ? t.symbol.split(':').pop() : t.symbol).toUpperCase()}</span>
                 <span style={{
                   padding: '1px 6px',
                   borderRadius: 'var(--radius-sm)',
@@ -1931,9 +1937,9 @@ function TradeIncidentPanel({ data, positions, onChartSymbol, chartSymbol }: { d
               {/* Expanded details */}
               {isExpanded && (
                 <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-                  {isOpen && onChartSymbol && (
+                  {isOpen && (
                     <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--gold)', opacity: 0.8, marginBottom: 'var(--space-1)' }}>
-                      📊 Chart loaded above — entry @ ${t.entryPrice.toFixed(2)}{t.stopLossPrice != null ? ` · SL $${t.stopLossPrice.toFixed(2)}` : ''}{t.takeProfitPrice != null ? ` · TP $${t.takeProfitPrice.toFixed(2)}` : ''}
+                      <BarChart3 size={12} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Chart switched to Trading Setup — entry @ ${t.entryPrice.toFixed(2)}{t.stopLossPrice != null ? ` · SL $${t.stopLossPrice.toFixed(2)}` : ''}{t.takeProfitPrice != null ? ` · TP $${t.takeProfitPrice.toFixed(2)}` : ''}
                     </div>
                   )}
                   <IncidentField label="Direction" value={t.side.toUpperCase()} />
@@ -1977,175 +1983,6 @@ function IncidentField({ label, value, pending }: { label: string; value: string
     <div style={{ display: 'flex', gap: 'var(--space-3)', fontSize: 'var(--fs-sm)' }}>
       <span style={{ color: 'var(--text-tertiary)', minWidth: '140px', flexShrink: 0 }}>{label}</span>
       <span style={{ color: pending ? 'var(--text-muted)' : 'var(--text-secondary)', fontStyle: pending ? 'italic' : 'normal' }}>{value}</span>
-    </div>
-  )
-}
-
-function DebatePanel({ data }: { data: APIData | null }) {
-  const consensus = data?.consensus
-  const rounds = data?.debateRounds ?? []
-  const cycleNum = data?.status?.cycles ?? 0
-  const progress = data?.cycleProgress
-  const od = data?.optionsData
-  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set())
-
-  const toggleRound = (roundNum: number) => {
-    setExpandedRounds(prev => {
-      const next = new Set(prev)
-      if (next.has(roundNum)) {
-        next.delete(roundNum)
-      } else {
-        next.add(roundNum)
-      }
-      return next
-    })
-  }
-
-  if (!consensus && rounds.length === 0) {
-    return (
-      <div className="panel panel-rgb-border">
-        <div className="panel-header"><span className="panel-title">HACP Debate</span></div>
-        <div className="empty-state">
-          <div className="empty-icon">🗣️</div>
-          <div className="empty-text">Waiting for first debate cycle...</div>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="panel panel-rgb-border">
-      <div className="panel-header">
-        <span className="panel-title">HACP Debate</span>
-        {consensus && <span className="panel-badge">Cycle #{cycleNum} · {consensus.roundsUsed} round{consensus.roundsUsed !== 1 ? 's' : ''}</span>}
-      </div>
-
-      {progress && progress.phase === 'thinking' && (
-        <div className="cycle-spinner evo-cycle-spinner">
-          <span className="spinner" />
-          <span>💭 Agents Thinking</span>
-        </div>
-      )}
-
-      {consensus && (
-        <div className={`consensus-banner ${consensus.decision.action}`}>
-          <div className="consensus-top">
-            <span className="consensus-label">Consensus</span>
-            <span className={`consensus-action ${consensus.decision.action}`}>
-              {consensus.decision.action.toUpperCase()}
-            </span>
-            <span className="consensus-pct">{(consensus.confidence * 100).toFixed(0)}% confidence</span>
-          </div>
-          <div className="consensus-text">{consensus.decision.rationale}</div>
-          <div className="consensus-meta">
-            <span>Rounds: {consensus.roundsUsed}</span>
-            <span>Deadlock: {consensus.deadlockResolved ? '⚠️ Resolved' : '✓ None'}</span>
-            {consensus.metaAgentOverridden && <span className="veto-tag">🚨 Risk Veto</span>}
-          </div>
-
-          {consensus.votes.length > 0 && (
-            <div className="votes-grid">
-              {consensus.votes.map((v: any) => {
-                const meta = AGENT_META[v.agentRole]
-                return (
-                  <div key={v.agentId} className="vote-chip" style={{borderLeftColor: meta?.color ?? '#666'}}>
-                    <span className="vote-agent" style={{color: meta?.color}}>{meta?.short ?? v.agentRole}</span>
-                    <span className={`vote-action-tag ${v.decision.action}`}>{v.decision.action.toUpperCase()}</span>
-                    <span className="vote-pct">{(v.confidence * 100).toFixed(0)}%</span>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-
-          {/* Per-symbol consensus cards — deduped by normalized symbol */}
-          {consensus.perSymbolConsensus?.length > 1 && (() => {
-            const normSym = (s: string) => s.replace(/^xyz:/i, '').toLowerCase()
-            const seen = new Set<string>()
-            const deduped = consensus.perSymbolConsensus.filter((psc: any) => {
-              const n = normSym(psc.symbol)
-              if (seen.has(n)) return false
-              seen.add(n)
-              return true
-            })
-            return (
-            <div className="per-symbol-consensus">
-              {deduped.map((psc: any) => {
-                // v2.0.136: Derive position/market label from the ACTUAL portfolio
-                // positions, not psc.hasPosition. The backend's hasPosition field
-                // is documented UNRELIABLE (buildConsensus hardcodes false;
-                // metaAgentArbitration marks every positions[] entry true, but
-                // positions[] also contains injected trading markets with no real
-                // position). This caused MU/SILVER to flicker between '● position'
-                // and '(market)' cycle-to-cycle depending on which consensus path
-                // ran. Use the real portfolio positions as the source of truth.
-                const pfPositions = (Object.values(data?.portfolio?.positions ?? {}) as any[])
-                const pscSymNorm = psc.symbol.replace(/^xyz:/i, '').toLowerCase()
-                const isPosition = pfPositions.some((p: any) =>
-                  (p.symbol ?? '').replace(/^xyz:/i, '').toLowerCase() === pscSymNorm)
-                const isMkt = !isPosition
-                const actionClass = psc.action === 'close' ? 'sell' : psc.action
-                const odArr = od ? (Array.isArray(od) ? od : [od]) : []
-                const symOd = odArr.find((o: any) => normSym(o.symbol) === normSym(psc.symbol))
-                return (
-                  <div key={psc.symbol} className={`consensus-banner consensus-banner-compact ${actionClass}`}>
-                    <div className="consensus-row">
-                      <span className="consensus-symbol">
-                        {psc.symbol.toUpperCase()}
-                        {isMkt && <span className="consensus-meta-tag">(market)</span>}
-                        {isPosition && <span className="consensus-meta-green">● position</span>}
-                      </span>
-                      <span className={`vote-action-tag ${actionClass}`}>{psc.action.toUpperCase()}</span>
-                      <span className="consensus-conf-pct">{(psc.confidence * 100).toFixed(0)}%</span>
-                      {psc.closePosition && <span className="consensus-meta-red">🔴 CLOSE</span>}
-                      {psc.suggestedStopLoss && <span className="consensus-meta-muted">SL:$${psc.suggestedStopLoss.toFixed(1)}</span>}
-                      {psc.suggestedTakeProfit && <span className="consensus-meta-muted">TP:$${psc.suggestedTakeProfit.toFixed(1)}</span>}
-                    </div>
-                    <div className="consensus-rationale">{psc.rationale}</div>
-                    {symOd && symOd.playbook && (
-                      <div className="consensus-options-info">
-                        📊 {symOd.playbook.playbook} — IV:{(symOd.impliedVolatility * 100).toFixed(0)}% IVR:{symOd.ivRank.toFixed(0)} γ:{symOd.gammaRegime.toUpperCase()} P/C:{symOd.putCallRatio.toFixed(2)}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-            )
-          })()}
-        </div>
-      )}
-
-      {rounds.map((round: any) => {
-        const isExpanded = expandedRounds.has(round.roundNumber)
-        return (
-          <div key={round.roundNumber} className="round-card">
-            <div
-              className="round-head debate-toggle-clickable"
-              onClick={() => toggleRound(round.roundNumber)}
-            >
-              <span className="round-num">Round {round.roundNumber}</span>
-              <span className={`round-phase-tag ${round.phase}`}>{round.phase.toUpperCase()}</span>
-              <span className="round-toggle round-toggle-right">
-                {isExpanded ? '▼' : '▶'} {round.statements.length} statement{round.statements.length !== 1 ? 's' : ''}
-              </span>
-            </div>
-            {isExpanded && round.statements.map((stmt: any, i: number) => {
-              const meta = AGENT_META[stmt.agentRole]
-              return (
-                <div key={i} className="statement" style={{borderLeftColor: meta?.color ?? '#666'}}>
-                  <div className="statement-head">
-                    <span className="statement-agent" style={{color: meta?.color}}>{meta?.name ?? stmt.agentRole}</span>
-                    <span className="statement-conf">{(stmt.confidence * 100).toFixed(0)}%</span>
-                  </div>
-                  <div className="statement-body">{stmt.content}</div>
-                </div>
-              )
-            })}
-          </div>
-        )
-      })}
-
     </div>
   )
 }
@@ -2264,7 +2101,7 @@ function OLRSection({ olrState, openPositionSymbols, isExpanded, onToggleExpand 
 
       {expanded && (!hasSymbols && !hasPending ? (
         <div className="evo-empty">
-          <div className="evo-empty-icon">🧬</div>
+          <div className="evo-empty-icon"><Dna size={48} color="var(--text-muted)" /></div>
           <div className="evo-empty-text">Waiting for shadow trade data</div>
           <div className="evo-empty-hint">Shadow trades open every cycle — outcomes feed OLR after SL/TP hit</div>
         </div>
@@ -2308,8 +2145,8 @@ function OLRSection({ olrState, openPositionSymbols, isExpanded, onToggleExpand 
           {hasSymbols && (
             olrState.symbols.map((symState: any) => {
               const hasPosition = openPositionSymbols?.has(symState.symbol.toLowerCase())
-              const longIcon = symState.longPWin > 0.6 ? '🟢' : symState.longPWin < 0.4 ? '🔴' : '🟡'
-              const shortIcon = symState.shortPWin > 0.6 ? '🟢' : symState.shortPWin < 0.4 ? '🔴' : '🟡'
+              const longIconColor = symState.longPWin > 0.6 ? 'var(--green)' : symState.longPWin < 0.4 ? 'var(--red)' : 'var(--gold)'
+              const shortIconColor = symState.shortPWin > 0.6 ? 'var(--green)' : symState.shortPWin < 0.4 ? 'var(--red)' : 'var(--gold)'
               return (
                 <div key={symState.symbol} className="evo-cluster-symbol">
                   <div className="evo-cluster-symbol-header">
@@ -2319,11 +2156,11 @@ function OLRSection({ olrState, openPositionSymbols, isExpanded, onToggleExpand 
                   </div>
                   <div style={{ padding: '4px 16px 8px', display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
                     <span style={{ fontSize: '0.8rem' }}>
-                      {longIcon} BUY P(win)=<b style={{ color: symState.longPWin > 0.6 ? 'var(--green)' : symState.longPWin < 0.4 ? 'var(--red)' : 'var(--text-muted)' }}>{(symState.longPWin * 100).toFixed(0)}%</b>
+                      <Circle size={10} color={longIconColor} fill={longIconColor} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />BUY P(win)=<b style={{ color: symState.longPWin > 0.6 ? 'var(--green)' : symState.longPWin < 0.4 ? 'var(--red)' : 'var(--text-muted)' }}>{(symState.longPWin * 100).toFixed(0)}%</b>
                       <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>({symState.longConfidence})</span>
                     </span>
                     <span style={{ fontSize: '0.8rem' }}>
-                      {shortIcon} SELL P(win)=<b style={{ color: symState.shortPWin > 0.6 ? 'var(--green)' : symState.shortPWin < 0.4 ? 'var(--red)' : 'var(--text-muted)' }}>{(symState.shortPWin * 100).toFixed(0)}%</b>
+                      <Circle size={10} color={shortIconColor} fill={shortIconColor} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />SELL P(win)=<b style={{ color: symState.shortPWin > 0.6 ? 'var(--green)' : symState.shortPWin < 0.4 ? 'var(--red)' : 'var(--text-muted)' }}>{(symState.shortPWin * 100).toFixed(0)}%</b>
                       <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>({symState.shortConfidence})</span>
                     </span>
                   </div>
@@ -2381,7 +2218,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
 
   if (!evo) {
     return (
-      <div className="evo-panel evo-panel-top panel-rgb-border">
+      <div className="panel">
         <EvolutionHeader generation={0} symbolCount={0} />
         <div className="evo-empty evo-empty-top">
           <div className="evo-empty-text">Waiting for evolution data...</div>
@@ -2402,7 +2239,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
   }
 
   return (
-    <div className="evo-panel evo-panel-top panel-rgb-border">
+    <div className="panel">
       <EvolutionHeader
         generation={evo.generation}
         symbolCount={symbolCount}
@@ -3129,7 +2966,7 @@ function ModelConfigPanel({ data, onUpdate }: { data: APIData | null; onUpdate: 
       })
       const result = await res.json()
       if (result.success) {
-        setStatusMsg(`✓ ${role} → ${modelId.split('/').pop()}`)
+        setStatusMsg(`${role} → ${modelId.split('/').pop()}`)
         setStatusVisible(true)
         setTimeout(() => setStatusVisible(false), 2000)
         onUpdate()
@@ -3144,7 +2981,7 @@ function ModelConfigPanel({ data, onUpdate }: { data: APIData | null; onUpdate: 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ role }),
       })
-      setStatusMsg(`✓ ${role} reset to default`)
+      setStatusMsg(`${role} reset to default`)
       setStatusVisible(true)
       setTimeout(() => setStatusVisible(false), 2000)
       onUpdate()
@@ -3214,13 +3051,13 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
     try { await fetch('/api/backtest/stop', { method: 'POST' }) } catch {}
   }
 
-  const phaseIcon = bp?.phase === 'fetching' ? '📡' : bp?.phase === 'processing' ? '⚙️' : bp?.phase === 'evolving' ? '🧬' : bp?.phase === 'error' ? '❌' : bp?.phase === 'paused' ? '⏸️' : '▶'
+  const phaseIcon = bp?.phase === 'fetching' ? <SatelliteDish size={14} color="var(--text-secondary)" style={{ display: 'inline', verticalAlign: 'middle' }} /> : bp?.phase === 'processing' ? <Settings size={14} color="var(--text-secondary)" style={{ display: 'inline', verticalAlign: 'middle' }} /> : bp?.phase === 'evolving' ? <Dna size={14} color="var(--text-secondary)" style={{ display: 'inline', verticalAlign: 'middle' }} /> : bp?.phase === 'error' ? <XCircle size={14} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle' }} /> : bp?.phase === 'paused' ? <Pause size={14} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle' }} /> : <Play size={14} color="var(--green)" style={{ display: 'inline', verticalAlign: 'middle' }} />
 
   return (
     <div className="panel">
       <div className="panel-header">
-        <span className="panel-title">📜 Backtest</span>
-        {bt && !isRunning && <span className="panel-badge">{bt.years}yr · {bt.interval ?? selectedInterval} · {bt.candlesProcessed} candles{reverseMode ? ' 🔄' : ''}</span>}
+        <span className="panel-title"><Scroll size={16} color="var(--text-secondary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Backtest</span>
+        {bt && !isRunning && <span className="panel-badge">{bt.years}yr · {bt.interval ?? selectedInterval} · {bt.candlesProcessed} candles{reverseMode ? <RotateCw size={10} color="var(--text-tertiary)" style={{ display: 'inline', verticalAlign: 'middle', marginLeft: '4px' }} /> : ''}</span>}
         {isRunning && <span className="panel-badge backtest-phase-badge">{phaseIcon} {bp!.phase}</span>}
       </div>
 
@@ -3265,7 +3102,7 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
           disabled={isRunning}
           title="Reverse mode: process newest → oldest (contrarian analysis)"
         >
-          <span className="btn-label">🔄</span>
+          <span className="btn-label"><RotateCw size={16} /></span>
         </button>
         {isRunning && !isPaused && (
           <button
@@ -3273,7 +3110,7 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
             onClick={handlePause}
             title="Pause backtest"
           >
-            <span className="btn-label">⏸️</span>
+            <span className="btn-label"><Pause size={16} /></span>
           </button>
         )}
         {isRunning && (
@@ -3282,7 +3119,7 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
             onClick={handleStop}
             title="Stop/cancel backtest"
           >
-            <span className="btn-label">⏹️</span>
+            <span className="btn-label"><Square size={16} /></span>
           </button>
         )}
         {isPaused && (
@@ -3291,7 +3128,7 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
             onClick={handleResume}
             title="Resume backtest"
           >
-            <span className="btn-label">▶️</span>
+            <span className="btn-label"><Play size={16} /></span>
           </button>
         )}
         <button
@@ -3300,7 +3137,7 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
           disabled={isRunning}
           style={{ opacity: isRunning ? 0.5 : 1 }}
         >
-          <span className="btn-icon">{isRunning ? '⟳' : '▶'}</span>
+          <span className="btn-icon">{isRunning ? <RotateCw size={14} /> : <Play size={14} />}</span>
           <span className="btn-label">{isRunning ? 'Running...' : 'Run'}</span>
         </button>
       </div>
@@ -3330,7 +3167,7 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
       {/* Error state */}
       {bp?.phase === 'error' && !bt && (
         <div className="empty-state">
-          <div className="empty-icon">❌</div>
+          <div className="empty-icon"><XCircle size={48} color="var(--text-muted)" /></div>
           <div className="empty-text">Backtest Failed</div>
           <div className="empty-hint">{bp.message}</div>
         </div>
@@ -3453,7 +3290,7 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
         </>
       ) : (
         <div className="empty-state">
-          <div className="empty-icon">📜</div>
+          <div className="empty-icon"><Scroll size={48} color="var(--text-muted)" /></div>
           <div className="empty-text">No backtest data yet</div>
           <div className="empty-hint">Select years above and click "Run Backtest" to analyze historical data</div>
         </div>
@@ -3471,7 +3308,7 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
 export default function App() {
   const [data, setData] = useState<APIData | null>(null)
   const [connected, setConnected] = useState(false)
-  const [activeTab, setActiveTab] = useState<'status' | 'agents' | 'portfolio' | 'debate' | 'evolution' | 'backtest'>('agents')
+  const [activeTab, setActiveTab] = useState<'status' | 'agents' | 'portfolio' | 'consciousness' | 'backtest'>('agents')
   const esRef = useRef<EventSource | null>(null)
   // v2.0.78: Masonry — measure all panels, assign to shorter column
   const [colAssignments, setColAssignments] = useState<number[]>([])
@@ -3516,10 +3353,8 @@ export default function App() {
   // v2.0.119: DESKTOP_PANELS defined inside App() so it can access ollamaPlan
   const DESKTOP_PANELS: Array<(data: APIData | null) => React.ReactNode> = [
     (data) => <PreferencePanel key="preference" data={data} />,
-    (data) => <AgentPanel key="agents" data={data} ollamaPlan={ollamaPlan} />,
-    (data) => <DebatePanel key="debate" data={data} />,
     (data) => <PortfolioPanel key="portfolio" data={data} />,
-    (data) => <EvolutionPanel key="evolution" data={data} />,
+    (data) => <AgentPanel key="agents" data={data} ollamaPlan={ollamaPlan} />,
   ]
 
   const connectSSE = useCallback(() => {
@@ -3710,11 +3545,11 @@ export default function App() {
 
       {/* Mobile Tab Bar — hidden on desktop */}
       <div className="tab-bar">
-        {(['agents','portfolio','debate','evolution'] as const).map(tab => {
+        {(['agents','portfolio','consciousness'] as const).map(tab => {
           const posCount = tab === 'portfolio' ? (data?.status?.positions ?? 0) : 0
           return (
             <button key={tab} className={`tab-btn ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
-              {tab === 'agents' ? 'Agents' : tab === 'portfolio' ? (posCount > 0 ? <><span className="tab-badge">{posCount}</span>Portfolio</> : 'Portfolio') : tab === 'debate' ? 'Debate' : 'Evolution'}
+              {tab === 'agents' ? 'Prefrontal' : tab === 'portfolio' ? (posCount > 0 ? <><span className="tab-badge">{posCount}</span>Hippocampus</> : 'Hippocampus') : 'Consciousness'}
             </button>
           )
         })}
@@ -3722,20 +3557,16 @@ export default function App() {
 
       {/* Main Grid — desktop: JS masonry; mobile: tab-based */}
       <div className="main-grid">
-        {/* Mobile: original tab-based layout */}
-        <div className={`col-left ${activeTab === 'agents' || activeTab === 'debate' ? 'visible' : ''}`}>
+        {/* Mobile: tab-based layout */}
+        <div className={`col-left ${activeTab === 'agents' || activeTab === 'consciousness' ? 'visible' : ''}`}>
           <div className="mobile-only">
             {activeTab === 'agents' && <PreferencePanel data={data} />}
-            {activeTab === 'agents' && <AgentPanel data={data} ollamaPlan={ollamaPlan} />}
-          </div>
-          <div className="mobile-only">
-            {activeTab === 'debate' && <DebatePanel data={data} />}
+            {activeTab === 'consciousness' && <AgentPanel data={data} ollamaPlan={ollamaPlan} />}
           </div>
         </div>
-        <div className={`col-right ${activeTab === 'portfolio' || activeTab === 'evolution' ? 'visible' : ''}`}>
+        <div className={`col-right ${activeTab === 'portfolio' ? 'visible' : ''}`}>
           <div className="mobile-only">
             {activeTab === 'portfolio' && <PortfolioPanel data={data} />}
-            {activeTab === 'evolution' && <EvolutionPanel data={data} />}
           </div>
         </div>
 
@@ -3770,8 +3601,8 @@ export default function App() {
         <div className="settings-overlay" onClick={() => setShowSettings(false)}>
           <div className="settings-modal" onClick={e => e.stopPropagation()}>
             <div className="settings-modal-header">
-              <span className="settings-modal-title">⚙️ Settings</span>
-              <button className="settings-modal-close" onClick={() => setShowSettings(false)}>✕</button>
+              <span className="settings-modal-title"><Settings size={18} color="var(--text-secondary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '6px' }} />Settings</span>
+              <button className="settings-modal-close" onClick={() => setShowSettings(false)}><X size={18} style={{ cursor: 'pointer' }} /></button>
             </div>
             <div className="settings-modal-body">
               {/* ── Section 1: Real Trade ── */}
@@ -3789,7 +3620,7 @@ export default function App() {
                   />
                   <p className="settings-hint">
                     Your Arbitrum wallet address for Hyperliquid trading. Required for real trading mode + real-time position/fill sync via WebSocket.
-                    <br />📍 Get it from <a href="https://app.hyperliquid.xyz" target="_blank" rel="noopener noreferrer" className="settings-link">Hyperliquid</a> → top-right wallet button → copy address.
+                    <br /><MapPin size={12} color="var(--text-tertiary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Get it from <a href="https://app.hyperliquid.xyz" target="_blank" rel="noopener noreferrer" className="settings-link">Hyperliquid</a> → top-right wallet button → copy address.
                   </p>
                 </div>
                 {/* HYPERLIQUID_PRIVATE_KEY */}
@@ -3804,7 +3635,7 @@ export default function App() {
                   />
                   <p className="settings-hint">
                     Your wallet's private key (secp256k1, 64 hex chars). Used to sign EIP-712 orders on Hyperliquid.
-                    <br />📍 Export from your wallet (MetaMask → Account Details → Show Private Key, or Rabby → Export). ⚠️ Never share this with anyone.
+                    <br /><MapPin size={12} color="var(--text-tertiary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Export from your wallet (MetaMask → Account Details → Show Private Key, or Rabby → Export). <AlertTriangle size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Never share this with anyone.
                   </p>
                 </div>
               </div>
@@ -3824,8 +3655,8 @@ export default function App() {
                   />
                   <p className="settings-hint">
                     Ollama API key for cloud model access. Without this, the system uses local models only (slower, limited concurrency for personal devices).
-                    <br />📍 Get it from <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="settings-link">ollama.com</a> → Settings → API Keys.
-                    <br />💡 <strong>Recommended:</strong> Upgrade to <a href="https://ollama.com/pricing" target="_blank" rel="noopener noreferrer" className="settings-link">Ollama Pro</a> ($20/mo) for cloud models like <code>deepseek-v4-flash:cloud</code>, <code>kimi-k2.6:cloud</code>, <code>glm-5.2:cloud</code>. Pro gives faster inference, 8-agent concurrent requests, and no local GPU required — making trading decisions more reliable and timely, directly improving profitability.
+                    <br /><MapPin size={12} color="var(--text-tertiary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Get it from <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="settings-link">ollama.com</a> → Settings → API Keys.
+                    <br /><Lightbulb size={12} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} /><strong>Recommended:</strong> Upgrade to <a href="https://ollama.com/pricing" target="_blank" rel="noopener noreferrer" className="settings-link">Ollama Pro</a> ($20/mo) for cloud models like <code>deepseek-v4-flash:cloud</code>, <code>kimi-k2.6:cloud</code>, <code>glm-5.2:cloud</code>. Pro gives faster inference, 8-agent concurrent requests, and no local GPU required — making trading decisions more reliable and timely, directly improving profitability.
                   </p>
                 </div>
                 {/* MASSIVE_API_KEY */}
@@ -3840,7 +3671,7 @@ export default function App() {
                   />
                   <p className="settings-hint">
                     Massive.com (Polygon.io compatible) API key for options data. Provides IV Rank, Greeks, Put/Call ratio, Gamma regime, Implied Move — used for Stocks/Indices/Commodities trading to improve win rate and expectancy.
-                    <br />📍 Get it from <a href="https://massive.com" target="_blank" rel="noopener noreferrer" className="settings-link">massive.com</a> → API Keys. Optional — system works without it (agents fall back to defaults).
+                    <br /><MapPin size={12} color="var(--text-tertiary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Get it from <a href="https://massive.com" target="_blank" rel="noopener noreferrer" className="settings-link">massive.com</a> → API Keys. Optional — system works without it (agents fall back to defaults).
                   </p>
                 </div>
                 {/* OLLAMA_PLAN */}
@@ -3858,7 +3689,7 @@ export default function App() {
                   </select>
                   <p className="settings-hint">
                     Your Ollama subscription plan. Used for display in the header badge. Ollama API does not expose plan info, so select manually.
-                    <br />💡 If unsure, leave as <strong>Auto-detect</strong> — the system will check if cloud models are available and default to Pro.
+                    <br /><Lightbulb size={12} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />If unsure, leave as <strong>Auto-detect</strong> — the system will check if cloud models are available and default to Pro.
                   </p>
                 </div>
               </div>
@@ -3878,7 +3709,7 @@ export default function App() {
                   />
                   <p className="settings-hint">
                     Telegram Bot API token for sending IM notifications to the user.
-                    <br />📍 Create a bot via <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer" className="settings-link">@BotFather</a> → /newbot → copy the API token.
+                    <br /><MapPin size={12} color="var(--text-tertiary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Create a bot via <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer" className="settings-link">@BotFather</a> → /newbot → copy the API token.
                   </p>
                 </div>
                 {/* TELEGRAM_CHAT_ID */}
@@ -3893,7 +3724,7 @@ export default function App() {
                   />
                   <p className="settings-hint">
                     Your Telegram Chat ID where the bot will send messages.
-                    <br />📍 Get it from <a href="https://t.me/userinfobot" target="_blank" rel="noopener noreferrer" className="settings-link">@userinfobot</a> → send /start → copy the ID.
+                    <br /><MapPin size={12} color="var(--text-tertiary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Get it from <a href="https://t.me/userinfobot" target="_blank" rel="noopener noreferrer" className="settings-link">@userinfobot</a> → send /start → copy the ID.
                   </p>
                 </div>
               </div>
@@ -3985,8 +3816,8 @@ export default function App() {
         <div className="settings-overlay" onClick={() => !shutdownLoading && setShowShutdown(false)}>
           <div className="settings-modal shutdown-modal" onClick={e => e.stopPropagation()}>
             <div className="settings-modal-header">
-              <span className="settings-modal-title shutdown-title">⚠️ Shutdown System</span>
-              <button className="settings-modal-close" onClick={() => !shutdownLoading && setShowShutdown(false)} disabled={shutdownLoading}>✕</button>
+              <span className="settings-modal-title shutdown-title"><AlertTriangle size={18} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '6px' }} />Shutdown System</span>
+              <button className="settings-modal-close" onClick={() => !shutdownLoading && setShowShutdown(false)} disabled={shutdownLoading}><X size={18} style={{ cursor: 'pointer' }} /></button>
             </div>
             <div className="settings-modal-body">
               <p className="shutdown-warning">
@@ -3994,15 +3825,15 @@ export default function App() {
               </p>
               <div className="shutdown-info-box">
                 <p className="shutdown-info-row">
-                  <span className="shutdown-info-icon">📈</span>
+                  <span className="shutdown-info-icon"><TrendingUp size={20} color="var(--green)" /></span>
                   <span><strong>Real trade positions</strong> on Hyperliquid will remain open. They are managed by HL's native trigger orders (SL/TP) and will continue to be tracked on the exchange.</span>
                 </p>
                 <p className="shutdown-info-row">
-                  <span className="shutdown-info-icon">📉</span>
+                  <span className="shutdown-info-icon"><TrendingDown size={20} color="var(--red)" /></span>
                   <span><strong>Paper trade positions</strong> will be automatically closed at the last known market price before shutdown.</span>
                 </p>
                 <p className="shutdown-info-row">
-                  <span className="shutdown-info-icon">💾</span>
+                  <span className="shutdown-info-icon"><Save size={20} color="var(--text-secondary)" /></span>
                   <span>All evolution data, portfolio state, and trade history are persisted to disk and will be restored on next startup.</span>
                 </p>
               </div>
