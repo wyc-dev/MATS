@@ -158,7 +158,7 @@ export class HACPEngine {
   setOptionsVote(action: 'buy' | 'sell' | 'hold', confidence: number, weight: number, rationale: string): void {
     this.optionsVote = {
       agentId: 'options-data-layer' as UUID,
-      agentRole: 'meta_agent' as AgentRole,
+      agentRole: 'options_data_layer' as AgentRole,
       weight,
       decision: {
         action,

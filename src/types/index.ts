@@ -82,7 +82,8 @@ export type AgentRole =
   | 'news_reporter'
   | 'skeptics'
   | 'market_agent'
-  | 'terminal_agent';
+  | 'terminal_agent'
+  | 'options_data_layer';
 
 export interface AgentIdentity {
   id: UUID;
