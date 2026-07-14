@@ -4819,24 +4819,14 @@ Provide your post-trade review:`;
       }
 
       // v2.0.33: Pass S/R levels to executeDecision so SL/TP can be set at
-      // v2.0.136: Set entryPrice for the active-symbol consensus decision. The
-      // HACP consensus decision does not carry an entryPrice (only the
-      // multi-symbol entry path and exploration path set it). Without this,
-      // realTradingManager.executeDecision() received price=0 and silently
-      // returned "No price available for real trade" -> execution FAILED even
-      // after every gate (thesis, conviction, direction, frequency) passed.
-      // This was the direct cause of "BTC SELL shown but never opens".
-      const decisionWithSR: TradingDecision = {
-        ...finalDecision,
-        entryPrice: finalDecision.entryPrice ?? combinedState.price ?? marketPrice,
-        srSupport: this.lastSRContext?.nearestSupport ?? null,
-        srResistance: this.lastSRContext?.nearestResistance ?? null,
-      };
+      // v2.0.136: Set entryPrice for the active-symbol consensus decision.
 
       // v2.0.143: PHASE 6 — Terminal Agent decision verification.
       // After Meta-Agent decides BUY/SELL, verify the decision against the
       // Root Command Prompt. If it violates a user directive (e.g. "BUY only"
       // but Meta-Agent says SELL), override to HOLD.
+      // NOTE: This must run BEFORE building decisionWithSR, so the override
+      // to HOLD is reflected in the decision that gets executed.
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
         const verification = this.verifyDecisionAgainstRootPrompt(
           finalDecision.action,
@@ -4855,6 +4845,13 @@ Provide your post-trade review:`;
           activeAuditGates.push({ gate: 'terminal-agent-verify', passed: true, reason: 'compliant with Root Command Prompt' });
         }
       }
+
+      const decisionWithSR: TradingDecision = {
+        ...finalDecision,
+        entryPrice: finalDecision.entryPrice ?? combinedState.price ?? marketPrice,
+        srSupport: this.lastSRContext?.nearestSupport ?? null,
+        srResistance: this.lastSRContext?.nearestResistance ?? null,
+      };
 
       // v2.0.143: Route through executeTrade() — paper mode goes directly
       // to paperEngine, real mode goes to realTradingManager. No more
