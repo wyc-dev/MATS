@@ -4456,7 +4456,7 @@ ${recentExamples}
       // Instead, check the portfolio directly for the actual position.
       const perSymbolConsensus = result.consensus.perSymbolConsensus ?? [];
       for (const psc of perSymbolConsensus) {
-        const pos = this.portfolio.getPosition(psc.symbol);
+        let pos = this.portfolio.getPosition(psc.symbol);
         // v2.0.153: Also check cachedExchangePositions — the live HL position
         // cache. If a position was just opened on HL but syncExchangePositions
         // hasn't imported it into portfolio yet (REST lag 2-5s), this cache
@@ -4465,6 +4465,16 @@ ${recentExamples}
         const hasExchangePos = (this.cachedExchangePositions ?? []).some(
           ep => normalizeSymbol(ep.symbol) === pscNorm && ep.quantity > 0
         );
+
+        // v2.0.155: If pos is undefined but hasExchangePos is true, the position
+        // exists on HL but not in the local portfolio. Skip management (close/adjust)
+        // for this position — it will be imported by syncExchangePositions on the
+        // next cycle. Trying to manage a position we don't have locally causes
+        // "Cannot read properties of undefined" crashes.
+        if (!pos && hasExchangePos) {
+          log.info(`⏭️ ${psc.symbol}: position exists on HL but not yet imported — skipping per-symbol consensus management this cycle`);
+          continue;
+        }
 
         // v2.0.104: If no real position exists, this might be a trading market
         // without position (injected for multi-symbol single-cycle analysis).
@@ -4575,7 +4585,11 @@ ${recentExamples}
           continue;
         }
 
-        // Close position if consensus says so
+        // v2.0.155: At this point, pos is guaranteed to be defined (both
+        // !pos && hasExchangePos and !pos && !hasExchangePos paths continue above).
+        // But TypeScript can't narrow through continue, so we assert here.
+        if (!pos) continue;
+        const posDef = pos;
         // v2.0.91: Close validation depends on whether the position has an entryThesis.
         // - WITH entryThesis: Meta-Agent → Skeptics validateCloseDecision → execute
         // - WITHOUT entryThesis (legacy): sub-agent voting already handled above,
@@ -4586,14 +4600,14 @@ ${recentExamples}
           // This must happen before closePosition()/closeExchangePosition()
           // because those methods delete the position from the map.
           const closeRationale = psc.rationale || 'No rationale provided.';
-          if (pos!.entryThesis) {
+          if (pos.entryThesis) {
             // v2.0.90: Validate close decision with Skeptics for thesis-backed positions
             const closeValidation = await this.hacpEngine.getSkeptics().validateCloseDecision(
               psc.symbol,
-              pos!.side as 'buy' | 'sell',
-              pos!.averageEntryPrice,
-              pos!.currentPrice,
-              pos!.unrealizedPnlPct ?? 0,
+              pos.side as 'buy' | 'sell',
+              pos.averageEntryPrice,
+              pos.currentPrice,
+              pos.unrealizedPnlPct ?? 0,
               closeRationale,
               `${marketDesc}\n\n${adjustedEvolutionContext}`,
               allThoughts,
@@ -4602,19 +4616,19 @@ ${recentExamples}
               log.warn(`🚫 Skeptics BLOCKED close for ${psc.symbol}: ${closeValidation.rationale} — position remains open`);
               continue;
             }
-            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos!.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale} [Skeptics: ✅ ${closeValidation.rationale}]`);
+            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale} [Skeptics: ✅ ${closeValidation.rationale}]`);
           } else {
             // v2.0.91: Legacy position without entryThesis — close directly
-            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (legacy, no thesis) (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos!.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
+            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (legacy, no thesis) (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
           }
           // v2.0.143: Route through closeTrade() — handles paper vs real
           // separation + sets exitThesis before closing.
           const closeSuccess = await this.closeTrade(psc.symbol, closeRationale);
           if (closeSuccess) {
-            if (pos!.agentId === 'hyperliquid-real') {
+            if (pos.agentId === 'hyperliquid-real') {
               log.info(`  → Closed ${psc.symbol} (real, closed on HL)`);
             } else {
-              log.info(`  → Closed ${psc.symbol}: $${pos!.unrealizedPnl.toFixed(2)}`);
+              log.info(`  → Closed ${psc.symbol}: $${pos.unrealizedPnl.toFixed(2)}`);
             }
           } else {
             log.error(`  → Failed to close ${psc.symbol} — position remains open`);
@@ -4629,15 +4643,15 @@ ${recentExamples}
         // this cycle — HACP's MFE-aware trailing SL takes priority over
         // agent-suggested averaged SL/TP. The agent suggestions are blind to
         // MFE/giveback patterns; HACP's adaptive trail is data-driven.
-        const hacpAdjusted = result.positionAdjustments?.some(a => a.positionId === pos!.id);
+        const hacpAdjusted = result.positionAdjustments?.some(a => a.positionId === pos.id);
         if (hacpAdjusted) {
           log.info(`📐 Per-symbol consensus SL/TP for ${psc.symbol} skipped — HACP adaptive SL already applied this cycle`);
         } else if (psc.suggestedStopLoss !== undefined || psc.suggestedTakeProfit !== undefined) {
           let validSL = psc.suggestedStopLoss;
           let validTP = psc.suggestedTakeProfit;
-          const isLong = pos!.side === 'buy';
-          const currentPrice = pos!.currentPrice;
-          const entryPrice = pos!.averageEntryPrice;
+          const isLong = pos.side === 'buy';
+          const currentPrice = pos.currentPrice;
+          const entryPrice = pos.averageEntryPrice;
 
           // v2.0.54: Validate SL — must be on correct side of current price
           if (validSL !== undefined) {
@@ -4659,7 +4673,7 @@ ${recentExamples}
           }
 
           if (validSL !== undefined || validTP !== undefined) {
-            await this.realTradingManager.adjustPosition(pos!.id, validSL, validTP);
+            await this.realTradingManager.adjustPosition(pos.id, validSL, validTP);
             log.info(`📐 Per-symbol consensus: ADJUST ${psc.symbol} SL=${validSL?.toFixed(2) ?? '-'} TP=${validTP?.toFixed(2) ?? '-'}`);
           } else {
             log.warn(`📐 Per-symbol consensus: ADJUST ${psc.symbol} — all SL/TP rejected by direction validation, skipping`);
@@ -4673,7 +4687,7 @@ ${recentExamples}
         // didn't vote to close it. Without this audit, the UI shows the agent's
         // analysis (e.g. "BUY 55%") with no explanation for why nothing happened.
         if ((psc.action === 'buy' || psc.action === 'sell') && !psc.closePosition) {
-          const posSide = pos!.side;
+          const posSide = pos.side;
           const wantsSameDirection = (psc.action === 'buy' && posSide === 'buy') || (psc.action === 'sell' && posSide === 'sell');
           if (!wantsSameDirection) {
             this.recordDecisionAudit(
@@ -6207,7 +6221,7 @@ ${recentExamples}
           totalPnl: isRealMode ? null as unknown as number : p.totalPnl,
           totalPnlPct: isRealMode ? null as unknown as number : p.totalPnlPct,
           drawdownPct: isRealMode ? null as unknown as number : p.maxDrawdownPct,
-          positions: p.positions.size,
+          positions: p.positions.size + this.portfolio.getRealPositions().length,
           wsConnected: this.multiWs?.isConnected?.() ?? false,
           tradeCount: p.tradeCount,
           winCount: p.winCount,
