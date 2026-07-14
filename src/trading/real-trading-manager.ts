@@ -724,10 +724,12 @@ export class RealTradingManager {
         for (const localSym of localExchangePositions) {
           const localPos = this.portfolio.getPosition(localSym);
           if (!localPos) continue;
-          // Look for a closing fill (not "Open *") after this position was opened
+          // v2.0.159: Check closing direction matches — BUY position closed by SELL fill, etc.
+          const expectedCloseDir = localPos.side === 'buy' ? 'sell' : 'buy';
           const closingFill = recentFillsForCheck.find(f =>
             f.symbol.toLowerCase() === localSym.toLowerCase() &&
             !f.dir.toLowerCase().startsWith('open') &&
+            f.dir.toLowerCase().startsWith(expectedCloseDir) &&
             f.timestamp >= localPos.openedAt
           );
           if (closingFill) {
@@ -741,8 +743,11 @@ export class RealTradingManager {
           for (const localSym of genuinelyClosed) {
             const localPos = this.portfolio.getPosition(localSym);
             if (!localPos) continue;
+            const expectedCloseDir2 = localPos.side === 'buy' ? 'sell' : 'buy';
             const closingFill = recentFillsForCheck.find(f =>
               f.symbol.toLowerCase() === localSym.toLowerCase() &&
+              !f.dir.toLowerCase().startsWith('open') &&
+              f.dir.toLowerCase().startsWith(expectedCloseDir2) &&
               !f.dir.toLowerCase().startsWith('open') &&
               f.timestamp >= localPos.openedAt
             );
@@ -801,9 +806,16 @@ export class RealTradingManager {
           // v2.0.156: Only close if there's a confirmed closing fill. Without a
           // fill, the position may still be open on HL — the DEX fetch may have
           // partially failed (returned some symbols but not others).
+          // v2.0.159: Also check that the fill direction matches the closing side
+          // of this position. A BUY position is closed by a SELL fill, and vice
+          // versa. Without this check, a closing fill from a PREVIOUS position
+          // (e.g. SELL CL closed → fill matches new BUY CL position) creates a
+          // fake close record for the new position.
+          const expectedCloseDir = localPos.side === 'buy' ? 'sell' : 'buy';
           const matchingFill = recentFills.find(f =>
             f.symbol.toLowerCase() === localSym.toLowerCase() &&
             !f.dir.toLowerCase().startsWith('open') && // only closing fills
+            f.dir.toLowerCase().startsWith(expectedCloseDir) && // must match closing direction
             f.timestamp >= localPos.openedAt // must be after this position opened
           );
           if (matchingFill) {
