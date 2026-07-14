@@ -1719,18 +1719,18 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
       </div>
 
       {/* Trade Incident Panel — replaces Positions table + Trade Records */}
-      <TradeIncidentPanel data={data} positions={positions} />
+      <TradeIncidentPanel data={data} positions={positions} onChartSymbol={setChartSymbol} chartSymbol={chartSymbol} />
     </div>
   )
 }
 
 /* ── Trade Incident Panel — unified card-based trade view ── */
 
-function TradeIncidentPanel({ data, positions }: { data: APIData | null; positions: any[] }) {
+function TradeIncidentPanel({ data, positions, onChartSymbol, chartSymbol }: { data: APIData | null; positions: any[]; onChartSymbol?: (sym: string) => void; chartSymbol?: string | null }) {
   const tradeRecords = data?.tradeRecords ?? []
   const [page, setPage] = useState(0)
   const [expandedCard, setExpandedCard] = useState<string | null>(null)
-  const pageSize = 6
+  const pageSize = 10
 
   // Merge open positions + closed trades into unified list
   const openTrades = positions.map((pos: any) => ({
@@ -1749,8 +1749,8 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
     closedAt: null as number | null,
     entryThesis: pos.entryThesis ?? null,
     exitThesis: null as string | null,
-    minValueReached: null as number | null,
-    maxValueReached: null as number | null,
+    minValueReached: pos.minValueReached ?? null,
+    maxValueReached: pos.maxValueReached ?? null,
     postReview: null as string | null,
     quantity: pos.quantity ?? 0,
     currentPrice: pos.currentPrice ?? 0,
@@ -1844,7 +1844,14 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
           return (
             <div
               key={cardId}
-              onClick={() => setExpandedCard(prev => prev === cardId ? null : cardId)}
+              onClick={() => {
+                setExpandedCard(prev => prev === cardId ? null : cardId)
+                // v2.0.143: When expanding an OPEN position, set the chart symbol
+                // so the TradingView chart shows the entry point + SL/TP lines.
+                if (isOpen && onChartSymbol) {
+                  onChartSymbol(t.symbol)
+                }
+              }}
               style={{
                 background: isOpen ? 'rgba(255, 215, 0, 0.04)' : 'var(--surface-elevated)',
                 border: isOpen ? '1px solid rgba(255, 215, 0, 0.2)' : '1px solid var(--glass-border)',
@@ -1905,6 +1912,11 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
               {/* Expanded details */}
               {isExpanded && (
                 <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                  {isOpen && onChartSymbol && (
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--gold)', opacity: 0.8, marginBottom: 'var(--space-1)' }}>
+                      📊 Chart loaded above — entry @ ${t.entryPrice.toFixed(2)}{t.stopLossPrice != null ? ` · SL $${t.stopLossPrice.toFixed(2)}` : ''}{t.takeProfitPrice != null ? ` · TP $${t.takeProfitPrice.toFixed(2)}` : ''}
+                    </div>
+                  )}
                   <IncidentField label="Direction" value={t.side.toUpperCase()} />
                   <IncidentField label="Entry Price" value={`$${t.entryPrice.toFixed(2)}`} />
                   <IncidentField label="Exit Price" value={t.exitPrice != null ? `$${t.exitPrice.toFixed(2)}` : '— (still open)'} />
