@@ -12,7 +12,7 @@ import path from 'node:path';
 import { createLogger } from '../observability/logger.ts';
 import type { MemoryEntry, EvolutionaryStrategy, Portfolio, ConsensusResult, AgentThought, DebateRound, MarketAgentConfig } from '../types/index.ts';
 import type { TradeHistoryEntry } from './trade-history.ts';
-import type { GAPopulation, TradeRecord } from '../types/index.ts';
+import type { GAPopulation, TradeRecord, Position } from '../types/index.ts';
 
 const log = createLogger({ phase: 'persistence' });
 
@@ -172,6 +172,31 @@ export interface PortfolioSnapshot {
     minValueReached?: number;
     maxValueReached?: number;
   }>;
+  /** v2.0.160: Persisted real positions — survive restart with thesis + MAE/MFE */
+  realPositions?: Array<{
+    id: string;
+    symbol: string;
+    side: 'buy' | 'sell';
+    quantity: number;
+    averageEntryPrice: number;
+    currentPrice: number;
+    unrealizedPnl: number;
+    unrealizedPnlPct: number;
+    realizedPnl: number;
+    stopLossPrice?: number;
+    takeProfitPrice?: number;
+    leverage: number;
+    openedAt: number;
+    updatedAt: number;
+    agentId: string;
+    exchange?: string;
+    entryThesis?: string;
+    holdReason?: string;
+    minValueReached?: number;
+    maxValueReached?: number;
+    originalStopLossPrice?: number;
+    originalTakeProfitPrice?: number;
+  }>;
 }
 
 interface DebateHistorySnapshot {
@@ -298,7 +323,7 @@ const PORTFOLIO_FIELDS: Record<string, SchemaField> = {
 };
 
 /** Serialize portfolio to JSON-safe format (atomic write) */
-export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly TradeRecord[], realTrades?: readonly TradeRecord[]
+export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly TradeRecord[], realTrades?: readonly TradeRecord[], realPositions?: readonly Position[]
 ): boolean {
   try {
     ensureDir();
@@ -376,6 +401,32 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       maxValueReached: (t as any).maxValueReached,
     })) : undefined;
 
+    // v2.0.160: Serialize real positions so they survive restart with thesis + MAE/MFE
+    const serializedRealPositions = realPositions ? realPositions.map(p => ({
+      id: p.id,
+      symbol: p.symbol,
+      side: p.side,
+      quantity: p.quantity,
+      averageEntryPrice: p.averageEntryPrice,
+      currentPrice: p.currentPrice,
+      unrealizedPnl: p.unrealizedPnl,
+      unrealizedPnlPct: p.unrealizedPnlPct,
+      realizedPnl: p.realizedPnl,
+      stopLossPrice: p.stopLossPrice,
+      takeProfitPrice: p.takeProfitPrice,
+      leverage: p.leverage,
+      openedAt: p.openedAt,
+      updatedAt: p.updatedAt,
+      agentId: p.agentId,
+      exchange: (p as any).exchange,
+      entryThesis: (p as any).entryThesis,
+      holdReason: (p as any).holdReason,
+      minValueReached: (p as any).minValueReached,
+      maxValueReached: (p as any).maxValueReached,
+      originalStopLossPrice: (p as any).originalStopLossPrice,
+      originalTakeProfitPrice: (p as any).originalTakeProfitPrice,
+    })) : undefined;
+
     const snapshot: PortfolioSnapshot = {
       version: 1,
       balance: portfolio.balance,
@@ -390,9 +441,6 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       dailyPnl: portfolio.dailyPnl,
       dailyLossLimit: portfolio.dailyLossLimit,
       dailyPnlResetDate: portfolio.dailyPnlResetDate,
-      // tradeCount = total unique trades (closed + real open, no ghost duplicates).
-      // IMPORTANT: winCount + lossCount already equals the number of closed trades.
-      // Do NOT add positions.size — that inflates the count with phantom opens.
       tradeCount: portfolio.winCount + portfolio.lossCount,
       winCount: portfolio.winCount,
       lossCount: portfolio.lossCount,
@@ -400,6 +448,7 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       positions,
       trades: serializedTrades,
       realTrades: serializedRealTrades,
+      realPositions: serializedRealPositions,
     };
 
     const filePath = path.join(DATA_DIR, 'portfolio-state.json');

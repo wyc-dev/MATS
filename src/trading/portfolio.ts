@@ -244,7 +244,43 @@ export class PortfolioTracker {
         log.info(`📋 Restored ${restoredRealTrades.length} real (exchange) trade records`);
       }
 
-      log.info(`Portfolio restored: balance=${saved.balance.toFixed(2)}, ${saved.positions?.length ?? 0} positions, ${saved.tradeCount} trades, ${restoredRealTrades.length} real trades`);
+      // v2.0.160: Restore real positions with thesis + MAE/MFE + SL/TP
+      const restoredRealPositions = saved.realPositions ?? [];
+      for (const rp of restoredRealPositions) {
+        const sym = normalizeSymbol(rp.symbol);
+        // Only restore if not already in realPositions (syncExchangePositions may have imported it)
+        if (!this.realPositions.has(sym)) {
+          this.realPositions.set(sym, {
+            id: rp.id,
+            symbol: sym,
+            side: rp.side as 'buy' | 'sell',
+            quantity: rp.quantity,
+            averageEntryPrice: rp.averageEntryPrice,
+            currentPrice: rp.currentPrice,
+            unrealizedPnl: rp.unrealizedPnl,
+            unrealizedPnlPct: rp.unrealizedPnlPct,
+            realizedPnl: rp.realizedPnl ?? 0,
+            stopLossPrice: rp.stopLossPrice,
+            takeProfitPrice: rp.takeProfitPrice,
+            leverage: rp.leverage,
+            openedAt: rp.openedAt,
+            updatedAt: rp.updatedAt ?? Date.now(),
+            agentId: rp.agentId ?? 'hyperliquid-real',
+            exchange: rp.exchange,
+            entryThesis: rp.entryThesis,
+            holdReason: rp.holdReason,
+            minValueReached: rp.minValueReached,
+            maxValueReached: rp.maxValueReached,
+            originalStopLossPrice: rp.originalStopLossPrice,
+            originalTakeProfitPrice: rp.originalTakeProfitPrice,
+          } as any);
+        }
+      }
+      if (restoredRealPositions.length > 0) {
+        log.info(`📋 Restored ${restoredRealPositions.length} real positions with thesis + MAE/MFE`);
+      }
+
+      log.info(`Portfolio restored: balance=${saved.balance.toFixed(2)}, ${saved.positions?.length ?? 0} positions, ${saved.tradeCount} trades, ${restoredRealTrades.length} real trades, ${restoredRealPositions.length} real positions`);
     } else {
       this.portfolio = {
         balance: initialBalance,
