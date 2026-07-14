@@ -294,6 +294,14 @@ export class PortfolioTracker {
     return this.closedRealTrades;
   }
 
+  /** v2.0.153: Delete a single closed real trade by ID */
+  deleteClosedRealTrade(tradeId: string): void {
+    const idx = this.closedRealTrades.findIndex(t => t.id === tradeId);
+    if (idx >= 0) {
+      this.closedRealTrades.splice(idx, 1);
+    }
+  }
+
   /** Register a callback for position opens (used by PaperTradingEngine to capture open trades) */
   setOnPositionOpened(cb: OnPositionOpened): void {
     this.onPositionOpenedCb = cb;
@@ -750,8 +758,8 @@ export class PortfolioTracker {
     // v2.0.31: Use normalizeSymbol for case-sensitive colon symbol support
     const sym = normalizeSymbol(symbol);
 
-    // Don't import if already exists
-    if (this.portfolio.positions.has(sym)) return;
+    // Don't import if already exists in either map
+    if (this.portfolio.positions.has(sym) || this.realPositions.has(sym)) return;
 
     // v2.0.72: BLOCK re-import if this position was recently closed.
     // syncExchangePositions() runs every cycle and re-imports positions
