@@ -568,10 +568,29 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
   const [singlePrompt, setSinglePrompt] = useState<string>(() => {
     try { return localStorage.getItem(TERMINAL_PROMPT_KEY) ?? '' } catch { return '' }
   })
-  // v2.0.143: Sync from backend API data when available
-  const effectivePrompt = apiRootPrompt ?? singlePrompt
+  // v2.0.143: Sync from backend API data when available.
+  // Use backend prompt if it's non-empty, otherwise fall back to localStorage.
+  // The ?? operator doesn't work here because "" is not null/undefined —
+  // we need explicit empty-string check.
+  const effectivePrompt = (apiRootPrompt && apiRootPrompt.trim().length > 0) ? apiRootPrompt : singlePrompt
   const [processing, setProcessing] = useState(false)
   const [resetConfirm, setResetConfirm] = useState(false)
+
+  // v2.0.143: On mount, if localStorage has a prompt but backend doesn't
+  // (e.g. after backend restart), sync the localStorage prompt to backend
+  // so cycle enforcement (Phase -1 + Phase 6) can use it.
+  useEffect(() => {
+    const localPrompt = singlePrompt.trim()
+    const backendPrompt = (apiRootPrompt ?? '').trim()
+    if (localPrompt.length > 0 && backendPrompt.length === 0) {
+      console.log('Terminal Agent: Syncing localStorage prompt to backend after restart')
+      fetch(`${API_BASE}/terminal-agent/sync-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: localPrompt }),
+      }).catch(() => { /* non-critical — will retry next user input */ })
+    }
+  }, []) // run once on mount
 
   const handleUserSubmit = async () => {
     const input = userInput.trim()

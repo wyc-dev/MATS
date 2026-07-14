@@ -415,6 +415,12 @@ export class APIServer {
     this.onTerminalAgentInput = cb;
   }
 
+  /** v2.0.143: Register callback for syncing Root Command Prompt from UI to backend */
+  private onTerminalAgentSyncPrompt: ((prompt: string) => void) | null = null;
+  setTerminalAgentSyncPromptHandler(cb: (prompt: string) => void): void {
+    this.onTerminalAgentSyncPrompt = cb;
+  }
+
   /** Register a callback for resetting trade history */
   setResetTradeHistoryHandler(cb: () => void): void {
     this.onResetTradeHistory = cb;
@@ -953,6 +959,33 @@ export class APIServer {
               res.writeHead(500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ success: false, error: 'Terminal Agent handler not registered' }));
             }
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // v2.0.143: POST — sync Root Command Prompt from UI localStorage to backend.
+      // Used when the backend restarts and loses its in-memory rootCommandPrompt,
+      // but the UI still has it in localStorage. The UI sends it on mount.
+      if (pathname === '/api/terminal-agent/sync-prompt' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { prompt } = JSON.parse(body) as { prompt: string };
+            if (typeof prompt !== 'string' || prompt.length > 500) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'Invalid prompt. Must be a string (max 500 chars).' }));
+              return;
+            }
+            if (this.onTerminalAgentSyncPrompt) {
+              this.onTerminalAgentSyncPrompt(prompt);
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true }));
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));

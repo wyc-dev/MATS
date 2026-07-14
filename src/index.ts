@@ -756,6 +756,16 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         }
       });
 
+      // v2.0.143: Register sync handler — UI sends localStorage prompt to backend
+      // on mount when backend has lost it (e.g. after restart).
+      this.apiServer.setTerminalAgentSyncPromptHandler((prompt: string) => {
+        if (prompt && prompt.trim().length > 0) {
+          this.rootCommandPrompt = prompt.trim();
+          log.info(`Terminal Agent: Root Command Prompt synced from UI localStorage (${this.rootCommandPrompt.length} chars)`);
+          this.pushToAPI();
+        }
+      });
+
       // v2.0.44: Manual symbol selection from Top Volume Pairs list.
       // Sets the manual lock so autoSelectTopPair() doesn't override it.
       // v2.0.110: Do NOT trigger a cycle here — the trading-markets handler
