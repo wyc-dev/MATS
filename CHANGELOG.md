@@ -4,6 +4,126 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.155 — Paper Balance Root Cause Fix + MFE-Aware SL/TP + UI Restructure + Delete Trade + Duplicate Position Guard
+
+### Paper Balance Contamination — ROOT CAUSE FIX
+
+The most persistent bug in MATS history — real trades deducting from paper (simulated) balance — is finally fixed at the root cause.
+
+**Root cause**: `RealTradingManager.executeDecision()` placed the real order on HL, then mirrored the trade into the paper portfolio by calling `paperEngine.executeDecision(decisionWithLev, true)`. This went through `PaperTradingEngine.executeOrder()` → `PortfolioTracker.openPosition()`, which **deducted margin + entry fee from `portfolio.balance`** (the paper balance). When the position later closed via `closeExchangePosition()`, the margin was NOT returned (correct for real positions). The asymmetry — deduct at open, don't return at close — permanently reduced paper balance by `margin + entryFee` per real trade.
+
+**Fix**: Replaced `paperEngine.executeDecision(decisionWithLev, true)` with `portfolio.importExchangePosition()`. This stores the position in `realPositions` (separate from paper positions) WITHOUT touching paper balance. The position is immediately tagged `agentId: 'hyperliquid-real'`. Entry thesis is set by `setEntryThesis()` after execution, which checks `realPositions` first.
+
+**Why this also fixes entry thesis loss**: The old mirror path stored positions in `portfolio.positions` with `agentId=''`. `syncExchangePositions` then saw `agentId !== 'hyperliquid-real'` and took the close+reimport path, replacing the thesis-bearing mirror with a fresh `importExchangePosition()` that had no thesis. Now `importExchangePosition` stores directly in `realPositions` with `agentId='hyperliquid-real'`, so `syncExchangePositions` uses the in-place update path that preserves `entryThesis`.
+
+### MFE-Aware Adaptive SL/TP System
+
+The system now learns from its own MFE (Maximum Favorable Excursion) mistakes — the pattern where positions hit +5% MFE then reverse to SL because TP was too far and trailing SL was too slow.
+
+**Layer 1 — Adaptive trailing SL** (`hacp.ts adjustPositions()`): Trail speed adapts to MFE magnitude. MFE < 1% → 0.2% step (give room). MFE 1-3% → 0.5% step. MFE 3-5% → 0.8% step. MFE > 5% → 1.2% step (lock aggressively). Old logic was fixed 0.3% step — too slow, positions reversed before the trail caught up.
+
+**Layer 2 — MFE giveback protection**: If MFE > 2% and price has given back > 50% of MFE from peak, SL jumps to lock in 30% of MFE. Prevents the "+5% MFE → -1% SL" pattern.
+
+**Layer 3 — TP narrowing**: If MFE > 3% and TP is > 2× MFE distance, TP is pulled to 1.5× current MFE. Old logic never adjusted TP — positions hit +5% MFE then reversed because TP was at +10%.
+
+**Layer 4 — HACP priority**: HACP's MFE-aware `adjustPositions` takes priority over agent-suggested averaged SL/TP. The agent suggestions are blind to MFE/giveback patterns; HACP's adaptive trail is data-driven.
+
+**Layer 5 — MFE performance injection**: `buildMfePerformanceBlock()` analyses recent 10 closed trades. If any hit positive MFE but closed at a loss (profit giveback), a block is injected into ALL 7 agents' context showing the pattern + lesson. Agents see their TP/SL mistakes and adjust future suggestions.
+
+**Layer 6 — OLR learns from MAE/MFE**: 3 new OLR features: `mfePct`, `maePct`, `mfeToPnlRatio`. OLR now learns which MFE/MAE patterns lead to wins vs losses. `FEATURE_NAMES` expanded from 8 to 11 dimensions.
+
+### Duplicate Position Guard
+
+**Root cause**: `getPosition()` only checked the local portfolio. During HL REST lag (2-5s after a fill), the position exists on HL but hasn't been imported into the portfolio yet. `getPosition()` returns `undefined`, so the system opens a second position on the same asset.
+
+**Fix**: Both the multi-symbol entry path and the active symbol overlap guard now check `cachedExchangePositions` (the live HL position cache) in addition to `portfolio.getPosition()`. If a position exists on HL but not locally, the trade is blocked.
+
+**Cycle crash fix**: When `getPosition()` returns `undefined` but `cachedExchangePositions` shows a position exists on HL, the per-symbol consensus management (close/adjust) is skipped for that position this cycle. Previously, the code used `pos!` non-null assertions which crashed with "Cannot read properties of undefined (reading 'id'/'side')". Now uses type-safe `posDef` narrowing.
+
+### Delete Trade Feature
+
+Users can now delete erroneous/bug-generated trades from the Trade Incident panel to keep the evolution system's reference data pure.
+
+- **Backend**: `POST /api/trades/delete` endpoint. `paperEngine.deleteTrade()` removes from paper trades array. `portfolio.deleteClosedRealTrade()` removes from closed real trades. Persists to disk.
+- **UI**: Delete button (X) in expanded Trade Incident cards with Yes/No confirmation. Only shows for CLOSED trades (not OPEN). Uses Lucide `X` + `Check` icons.
+
+### UI Restructure — HACP Brain Architecture
+
+The three-panel layout is renamed and restructured to reflect the HACP cognitive architecture:
+
+| Old Name | New Name | Content |
+|----------|----------|---------|
+| Preference / DASHBOARD | HACP Prefrontal | Trading Terminal (controls + chart + Selected Market Pairs) |
+| Portfolio | HACP Hippocampus | Evolution + Trade Incident (embedded as modules) |
+| Agent Cognition | HACP Consciousness | 8 agent cards (Terminal Agent + 5 sub-agents + Skeptics + Meta-Agent) |
+
+**Panel order**: HACP Prefrontal → HACP Hippocampus → HACP Consciousness (desktop masonry + mobile tabs).
+
+**Mobile**: 3 tabs — Prefrontal / Hippocampus / Consciousness (previously 2 tabs with Prefrontal + Consciousness merged).
+
+### Selected Market Pairs — Professional Card Layout
+
+Replaced the old inline row layout with professional cards:
+
+- **Card border by position status**: green (BUY position), red (SELL position), grey `#888888` (no position) — not by consensus action
+- **Header row**: side tag (BUY/SELL/HOLD) + entry price + symbol (uppercase, exchange prefix stripped) + current price + PnL + close button
+- **Consensus body**: action tag + confidence + SL/TP + full rationale (no truncation) + options info + decision audit gate status
+- **Audit gates**: Shows executed/blocked status with gate names + reasons (e.g. "conviction-gate: 50% < 55%")
+- **Existing position audit**: Records when agent suggests a direction that conflicts with existing position but consensus didn't vote to close
+
+### Other UI Changes
+
+- **HACP Debate panel removed**: Consensus data integrated into Selected Market Pairs. `debateRounds` still generated by HACP engine but not rendered in UI.
+- **TradingView chart moved**: Above Selected Market Pairs in Trading Terminal. Price info bar removed (chart is self-contained).
+- **Balance/Equity moved**: From HACP Hippocampus to top of Trading Terminal. Labels switch by mode: "Simulated Balance/Equity" (paper) / "Genuine Balance/Equity" (real).
+- **Trade Incident card click**: Switches Trading Terminal chart via backend `select-symbol` API.
+- **Open positions at top**: Trade Incident sort puts open positions first, then closed trades by newest.
+- **All emojis replaced with Lucide icons**: 23 new icon imports. String-parsing emojis (e.g. `l.includes('❌')`) left untouched.
+- **Agent state badge**: Latency replaces IDLE ("18.6s" instead of "idle"). Collapsed agent footer removed.
+- **Enterprise panel borders**: `.panel` normal `#000000` hover `#aaaaaa`. `.panel-rgb-border` normal `#aaaaaa` hover `#000000`. `.agent-card` normal `#000000` hover `#aaaaaa`. RGB rotating border animation removed.
+- **RGB gradient text**: Restored on panel titles (`.panel-title`), sub-panel titles (`.evo-title`), and Trading Terminal title (`.agent-name-gradient`).
+- **Panel title font size**: Increased 2 steps (`fs-lg` → `fs-2xl`) to distinguish main titles from sub-titles.
+- **Symbol display**: Strip exchange prefix (`xyz:SKHX` → `SKHX`) + uppercase everywhere (Selected Market Pairs + Trade Incident).
+- **`addTradingMarket` dedup fix**: Uses `Set`-based deduped count instead of `prev.length + positionCount`, which double-counted overlapping symbols and blocked the 3rd slot.
+
+### Terminal Agent Content Filter
+
+System prompt now includes a CONTENT FILTER section that prevents non-trading content from being written to the Root Command Prompt. Explicitly bans UI state notes, system status descriptions, meta-commentary, and non-trading input. Only concrete, actionable trading rules starting with "- " are allowed.
+
+### Clear Prompt Fix
+
+`handleClearPrompt` now sends `{ prompt: '' }` to the backend `sync-prompt` API, which clears `rootCommandPrompt` + `terminalSideGuide` + persists to disk + pushes to UI via SSE. Previously, clearing only cleared local state + localStorage but the backend kept the old prompt, so it reappeared on next SSE push.
+
+### Real Position UI Visibility
+
+`serializePortfolio()` now includes `realPositions` map (stored by `importExchangePosition`) so real positions show immediately after `executeTrade`, without waiting for `syncExchangePositions` to copy them to `p.positions`. `pushToAPI()` called immediately after both active symbol and multi-symbol trade execution.
+
+### Position Count Fix
+
+`status.positions` now counts `realPositions` in addition to `p.positions`. Previously showed "0 positions" in real mode because all positions were in `realPositions` (not `p.positions`).
+
+### Debate Context Enhancement
+
+`buildDebateContext()` now includes per-symbol decisions from `multiSymbolDecision` so debate agents know WHICH asset each statement refers to. Debate prompts now require agents to name the specific asset in their statements.
+
+### Files Changed
+
+- `src/index.ts` — Paper balance fix (importExchangePosition), MFE performance block, OLR MAE/MFE features, duplicate position guard, delete trade handler, Clear Prompt sync, serializePortfolio realPositions, pushToAPI after trade, position count fix, Terminal Agent content filter, debate context enhancement, `addTradingMarket` dedup fix
+- `src/trading/real-trading-manager.ts` — Replaced `paperEngine.executeDecision` mirror with `importExchangePosition`, removed `mirrorReports` return
+- `src/trading/portfolio.ts` — `importExchangePosition` realPositions guard, `deleteClosedRealTrade()` method
+- `src/trading/paper-engine.ts` — `deleteTrade()` method
+- `src/cognition/hacp.ts` — MFE-aware adaptive trailing SL, MFE giveback protection, TP narrowing, debate context per-symbol decisions, debate prompts asset naming
+- `src/evolution/rbc-clustering.ts` — `FEATURE_NAMES` expanded 8→11 (mfePct, maePct, mfeToPnlRatio)
+- `src/agents/base-agent.ts` — Debate prompts require asset naming
+- `src/api-server.ts` — Delete trade API endpoint + handler
+- `ui/src/App.tsx` — Full UI restructure, delete trade button, Selected Market Pairs cards, consensus integration, Trade Incident card click, open positions sort, symbol display, Clear Prompt fix, agent state badge, Lucide icons
+- `ui/src/index.css` — Enterprise borders, RGB gradient text, panel title sizes, SMP card styles, agent-name-gradient, agent-symbols flex centering
+- `ui/src/types.ts` — Trading Setup → Trading Terminal rename
+
+**Build**: `tsc --noEmit` clean. `vite build` clean (442KB gzipped 132KB). 94 tests pass.
+
+---
+
 ## v2.0.143 — Trade Incident Panel + Trade Execution Refactoring + RIL Complete + Shadow Trade Overhaul + Terminal Agent Cycle Enforcement
 
 ### Trade Incident Panel (Phase 2)
