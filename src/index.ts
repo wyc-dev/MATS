@@ -258,6 +258,16 @@ class MATSSystem {
         this.paperEngine.restoreTrades(this.portfolio.restoredTrades);
         log.info(`📋 ${this.portfolio.restoredTrades.length} historical trades restored from disk`);
       }
+      // v2.0.158: Purge phantom trades without entry thesis — these were created
+      // by the old mirror bug (paperEngine.executeDecision mirror path) which
+      // stored positions without thesis. They pollute the evolution system's
+      // reference data and must be removed.
+      const purgedPaper = this.paperEngine.purgeTradesWithoutThesis();
+      const purgedReal = this.portfolio.purgeClosedRealTradesWithoutThesis();
+      if (purgedPaper > 0 || purgedReal > 0) {
+        log.info(`🧹 Purged ${purgedPaper} paper + ${purgedReal} real trades without entry thesis`);
+        this.persistPortfolio();
+      }
       log.info('✓ Trading systems ready');
 
       // 3.5 Initialize Sigmoid·GA Sentiment Engine + Adaptive Noise Filter
