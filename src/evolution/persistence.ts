@@ -699,6 +699,8 @@ interface MarketAgentConfigSnapshot {
   positionSizePct: number;
   maxPortionPct: number;
   leverage: number;
+  /** v2.0.143: Cycle period in minutes (1-10). Persisted so user settings survive restarts. */
+  cyclePeriodMinutes?: number;
   directionRestrictions?: Record<string, string>;
   tradingMarkets?: string[];
   updatedAt: number;
@@ -713,6 +715,7 @@ const MARKET_AGENT_CONFIG_FIELDS: Record<string, SchemaField> = {
   positionSizePct: { type: 'number', required: true },
   maxPortionPct: { type: 'number', required: false },
   leverage: { type: 'number', required: true },
+  cyclePeriodMinutes: { type: 'number', required: false },
   directionRestrictions: { type: 'object', required: false },
   tradingMarkets: { type: 'array', required: false },
   updatedAt: { type: 'number', required: true },
@@ -732,6 +735,7 @@ export function saveMarketAgentConfig(cfg: MarketAgentConfig): boolean {
       positionSizePct: cfg.positionSizePct,
       maxPortionPct: cfg.maxPortionPct ?? 0.20,
       leverage: cfg.leverage,
+      ...(cfg.cyclePeriodMinutes ? { cyclePeriodMinutes: cfg.cyclePeriodMinutes } : {}),
       ...(cfg.directionRestrictions ? { directionRestrictions: cfg.directionRestrictions } : {}),
       ...(cfg.tradingMarkets && cfg.tradingMarkets.length > 0 ? { tradingMarkets: cfg.tradingMarkets } : {}),
       updatedAt: cfg.updatedAt,
@@ -787,6 +791,7 @@ export function loadMarketAgentConfig(): Partial<MarketAgentConfig> | null {
       positionSizePct: snapshot.positionSizePct,
       maxPortionPct: snapshot.maxPortionPct ?? 0.20,
       leverage: snapshot.leverage,
+      ...(snapshot.cyclePeriodMinutes ? { cyclePeriodMinutes: snapshot.cyclePeriodMinutes } : {}),
       ...(directionRestrictions ? { directionRestrictions } : {}),
       ...(tradingMarkets && tradingMarkets.length > 0 ? { tradingMarkets } : {}),
       updatedAt: snapshot.updatedAt,
