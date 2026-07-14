@@ -507,8 +507,6 @@ class MATSSystem {
         this.pushToAPI();
       });
 
-      // v2.0.153: Delete a single trade by ID — removes from paper engine trades,
-      // closed real trades, and EXP trades.jsonl. Keeps evolution data pure.
       this.apiServer.setDeleteTradeHandler(async (tradeId: string): Promise<boolean> => {
         log.info(`🗑️ Trade delete requested: ${tradeId}`);
         let deleted = false;
@@ -538,6 +536,10 @@ class MATSSystem {
 
         return deleted;
       });
+
+      // v2.0.153: Delete a single trade by ID — removes from paper engine trades,
+      // closed real trades, and EXP trades.jsonl. Keeps evolution data pure.
+      // v2.0.161: Re-registered with better error handling
 
       // Wire up Market Agent API handlers
       this.apiServer.setMarketAgentSetTradeModeHandler(async (mode) => {
