@@ -339,6 +339,9 @@ class MATSSystem {
       } catch { /* start fresh */ }
       log.info('✓ OLR + Shadow Trade Engine ready');
 
+      // v2.0.143: Load persisted Root Command Prompt so it survives backend restarts.
+      this.loadRootCommandPrompt();
+
       // 3.10b: Cold-start OLR backfill helper — defined here, invoked lazily
       // on the first decision cycle with non-empty trading markets (markets
       // may arrive from UI or persistence after init completes).
@@ -741,6 +744,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           // Store on backend
           this.rootCommandPrompt = promptPart;
           this.terminalSideGuide = guidePart;
+          // v2.0.143: Persist to disk so it survives backend restarts
+          this.persistRootCommandPrompt();
 
           // Return the full LLM output (prompt + guide) to the UI
           const fullOutput = guidePart
@@ -761,6 +766,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       this.apiServer.setTerminalAgentSyncPromptHandler((prompt: string) => {
         if (prompt && prompt.trim().length > 0) {
           this.rootCommandPrompt = prompt.trim();
+          this.persistRootCommandPrompt();
           log.info(`Terminal Agent: Root Command Prompt synced from UI localStorage (${this.rootCommandPrompt.length} chars)`);
           this.pushToAPI();
         }
@@ -5702,6 +5708,35 @@ Provide your post-trade review:`;
     }
   }
 
+  /** v2.0.143: Persist Root Command Prompt to disk so it survives backend restarts. */
+  private persistRootCommandPrompt(): void {
+    try {
+      const dir = path.join(process.cwd(), 'data/evolution');
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const filePath = path.join(dir, 'root-command-prompt.json');
+      fs.writeFileSync(filePath, JSON.stringify({
+        prompt: this.rootCommandPrompt,
+        sideGuide: this.terminalSideGuide,
+        savedAt: Date.now(),
+      }, null, 2), 'utf-8');
+    } catch { /* best-effort */ }
+  }
+
+  /** v2.0.143: Load Root Command Prompt from disk on startup. */
+  private loadRootCommandPrompt(): void {
+    try {
+      const filePath = path.join(process.cwd(), 'data/evolution', 'root-command-prompt.json');
+      if (fs.existsSync(filePath)) {
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        if (data.prompt && typeof data.prompt === 'string') {
+          this.rootCommandPrompt = data.prompt;
+          this.terminalSideGuide = data.sideGuide ?? '';
+          log.info(`Terminal Agent: Root Command Prompt loaded from disk (${this.rootCommandPrompt.length} chars)`);
+        }
+      }
+    } catch { /* best-effort — start fresh */ }
+  }
+
   private persistOLR(): void {
     try {
       const dir = path.join(process.cwd(), 'data/evolution');
@@ -6377,10 +6412,11 @@ Provide your post-trade review:`;
   }
 
   async stop(): Promise<void> {
-    // Persist evolution state + portfolio + OLR + shadow trades + EM state before shutdown
+    // Persist evolution state + portfolio + OLR + shadow trades + EM state + Root Command Prompt before shutdown
     this.evolution.persistState();
     this.persistPortfolio();
     this.persistOLR();
+    this.persistRootCommandPrompt();
     if (this.emManager) saveEMState(this.emManager.getState());
     this.stopTimers();
     await this.apiServer?.stop();
