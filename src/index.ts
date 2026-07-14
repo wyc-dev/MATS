@@ -4569,6 +4569,8 @@ ${recentExamples}
             }
             if (pscExecuted) auditGates.push({ gate: 'execution', passed: true, reason: 'executed on HL' });
             this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, pscExecuted);
+            // v2.0.153: Push to UI immediately
+            if (pscExecuted) this.pushToAPI();
           }
           continue;
         }
@@ -5024,6 +5026,8 @@ ${recentExamples}
         symFilter.recordTrade();
         log.info(`📊 [adaptive-filter] Trade recorded for ${tradeSym} — ${symFilter.getRemainingTradeSlots()} slots remaining`);
         // v2.0.143: entryThesis is set by executeTrade() after execution.
+        // v2.0.153: Push to UI immediately so position appears without waiting for next cycle
+        this.pushToAPI();
       }
 
       // v2.0.128: Record decision audit for the active symbol
@@ -5740,6 +5744,36 @@ ${recentExamples}
           entryThesis: pos.entryThesis,
           holdReason: pos.holdReason,
           // v2.0.143: Include MAE/MFE tracking for Trade Incident Panel
+          minValueReached: pos.minValueReached,
+          maxValueReached: pos.maxValueReached,
+        };
+      }
+    }
+
+    // v2.0.153: Also include realPositions (stored by importExchangePosition)
+    // so the UI shows real positions immediately after executeTrade, without
+    // waiting for syncExchangePositions to copy them to p.positions.
+    if (isRealMode) {
+      for (const [key, pos] of this.portfolio['realPositions'] as Map<string, any>) {
+        if (positions[key]) continue; // already shown from p.positions or cachedExchangePositions
+        positions[key] = {
+          id: pos.id,
+          symbol: pos.symbol,
+          side: pos.side,
+          quantity: pos.quantity,
+          averageEntryPrice: pos.averageEntryPrice,
+          currentPrice: pos.currentPrice,
+          unrealizedPnl: pos.unrealizedPnl,
+          unrealizedPnlPct: pos.unrealizedPnlPct,
+          stopLossPrice: pos.stopLossPrice,
+          takeProfitPrice: pos.takeProfitPrice,
+          leverage: pos.leverage,
+          openedAt: pos.openedAt,
+          updatedAt: pos.updatedAt ?? Date.now(),
+          agentId: pos.agentId ?? 'hyperliquid-real',
+          exchange: pos.exchange ?? 'hyperliquid',
+          entryThesis: pos.entryThesis,
+          holdReason: pos.holdReason,
           minValueReached: pos.minValueReached,
           maxValueReached: pos.maxValueReached,
         };
