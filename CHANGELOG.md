@@ -4,6 +4,76 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.168 — Remove hl-fill-* Records from UI + Phantom Close Root Cause (5 Paths) + Post-Review PnL Conversion + Delete Handler Fix
+
+### hl-fill-* Records Removed from UI — Root Cause of Phantom Closes + Delete Failures
+
+**Root cause**: `serializePortfolio()` emitted `hl-fill-*` records synthesized from raw HL fill data (`cachedHLFills`). These records had no thesis/MAE/MFE/postReview and caused three persistent problems:
+
+1. **Duplicate CLOSED entries**: One complete record from `closedRealTrades` + one incomplete from `hl-fill-*` for the same close
+2. **Phantom close records**: Closing fills from previous positions matched new positions (same symbol, fill timestamp after new position's `openedAt`)
+3. **Delete failures**: `hl-fill-*` IDs are ephemeral — not stored in any persistent array. `cachedHLFills` is overwritten every cycle by `getRecentFills(20)`, so deleting a fill has no lasting effect. The record reappears on next refresh.
+
+**Fix**: Completely removed `hl-fill-*` records from `serializePortfolio()`. `closedRealTrades` is now the single source of truth for closed real trades. If a close hasn't been captured by `closeExchangePosition` yet, the next `syncExchangePositions` cycle will capture it — no need for raw fill display.
+
+### Phantom Close Root Cause — 5 Close Paths Lacked Fill Verification
+
+**Root cause**: There were 5 separate code paths that could close a real position, but only 1 (`syncExchangePositions` non-empty exMap path) had proper fill verification. The other 4 paths closed positions based on position disappearance or stale fills, creating phantom close records for positions that were still open on HL.
+
+| # | Path | Problem | Fix |
+|---|------|---------|-----|
+| 1 | HL WS position disappeared (index.ts) | WS push can be partial — missing positions assumed closed | **Removed close logic entirely** — only log, let REST `syncExchangePositions` handle real closes |
+| 2 | HL WS closing fill (index.ts) | No fill direction check — old position's close fill could match new position | Added `fill.side` direction verification (`B`=buy / `A`=sell) |
+| 3 | Paper mode stale position check (index.ts) | No fill direction check | Added `f.side` direction verification |
+| 4 | Paper mode stale position >1h (index.ts) | No fill verification at all — assumed closed | Kept (>1h old positions reasonably assumed closed) |
+| 5 | Paper mode normal sync (index.ts) | Closed based on position absence alone, no fill check | Added fill verification — no closing fill = no close |
+
+### syncExchangePositions `dir` Field Bug
+
+v2.0.159's fill direction matching used `f.dir.startsWith('buy')` / `f.dir.startsWith('sell')`, but HL's `dir` field values are `"open long"` / `"open short"` / `"close long"` / `"close short"` — **never** starting with `'buy'` or `'sell'`. The check always returned `false`, silently blocking ALL legitimate closes. Fixed to use `f.side` (`'buy'` / `'sell'`) field instead.
+
+### Post-Review MAE/MFE PnL Conversion
+
+**Root cause**: MAE/MFE are tracked as **position value** (margin + unrealized PnL), not as PnL itself. But the Post-Review system prompt said "MFE = best unrealized PnL peak" and passed the raw position value ($11.72) to the LLM. The LLM interpreted $11.72 as the peak profit, when the actual peak profit was only $1.74 ($11.72 - $9.98 margin). This caused absurd analysis like "gave back 88% of peak gains" when the actual giveback was 22%.
+
+**Fix**: Convert MAE/MFE to actual PnL before passing to the LLM:
+- `maePnl = minValueReached - margin` (actual worst PnL dip)
+- `mfePnl = maxValueReached - margin` (actual best PnL peak)
+- System prompt updated with explicit explanation + worked example
+- User prompt now includes margin + corrected MAE/MFE labels ("worst PnL dip" / "best PnL peak")
+
+### Delete Handler Robustness
+
+- Case-insensitive symbol matching with `xyz:` prefix stripping
+- Detailed logging when match fails (logs all cached fills for debugging)
+- API response now includes `error` field on failure (UI was showing "Unknown error" because it checked `result.error` but API returned `result.message`)
+
+### Audit Message Clarity (v2.0.165)
+
+When a gate (conviction, pattern classifier, Terminal Agent) blocks a new entry but a position is still open, the audit message now says "entry blocked by gate — existing position remains under SL/TP management" instead of the confusing "overridden to HOLD by gate".
+
+### Direction Flip Order Fix (v2.0.164)
+
+Moved the per-symbol direction flip check to BEFORE the SL/TP adjustment block. Previously, when agents suggested the opposite direction, the code would adjust SL/TP on the existing position (wasted HL API call, stale trigger orders) before closing it via flip. Now the flip closes first, no SL/TP adjustment is wasted.
+
+### Reimport Field Preservation (v2.0.162)
+
+`syncExchangePositions` close+reimport path now preserves `holdReason`, `originalStopLossPrice`, `originalTakeProfitPrice` in addition to `entryThesis` + `minValueReached` + `maxValueReached`.
+
+### Per-Symbol Direction Flip (v2.0.163)
+
+When per-symbol consensus suggests the OPPOSITE direction of an existing position, the system now closes the existing position instead of just recording an audit log. The new trade executes on the next cycle.
+
+### Files Changed
+
+- `src/index.ts` — Removed hl-fill-* from serializePortfolio, 5 close path fixes (WS position disappeared, WS closing fill direction check, paper mode stale position direction check, paper mode normal sync fill verification), Post-Review PnL conversion, delete handler robustness, audit message clarity, direction flip order fix
+- `src/trading/real-trading-manager.ts` — `syncExchangePositions` fill direction matching fixed (f.side instead of f.dir.startsWith), reimport field preservation
+- `src/api-server.ts` — Delete API response includes error field on failure
+
+**Build**: `tsc --noEmit` clean. `vite build` clean (442KB gzipped 132KB). 94 tests pass.
+
+---
+
 ## v2.0.164 — Duplicate Close Record Root Cause + Direction Flip Order Fix + Reimport Field Preservation
 
 ### Duplicate "CLOSED" Records in UI — Root Cause Fix
