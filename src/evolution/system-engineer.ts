@@ -275,12 +275,13 @@ ZERO HALLUCINATION. If you're not sure, say "No issues found".`;
     log.info(`🔧 [system-engineer] Running tsc --noEmit...`);
     let tscPassed = false;
     try {
-      execSync('npx tsc --noEmit', { cwd: PROJECT_ROOT, timeout: 30_000, stdio: 'pipe' });
+      const tscOutput = execSync('npx tsc --noEmit 2>&1', { cwd: PROJECT_ROOT, timeout: 30_000, stdio: 'pipe', encoding: 'utf-8' });
       tscPassed = true;
       log.info(`✅ [system-engineer] tsc passed`);
-    } catch (err) {
-      const stderr = err instanceof Error ? err.message : String(err);
-      log.warn(`❌ [system-engineer] tsc FAILED: ${stderr.slice(0, 200)}`);
+    } catch (err: any) {
+      // v2.0.199: Capture actual tsc error output, not just "Command failed"
+      const tscErrors = err?.stdout ?? err?.stderr ?? err?.message ?? String(err);
+      log.warn(`❌ [system-engineer] tsc FAILED: ${String(tscErrors).slice(0, 500)}`);
     }
 
     // Run safety net: npm test
