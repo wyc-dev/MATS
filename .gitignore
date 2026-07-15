@@ -52,6 +52,8 @@ scripts/loop-engineering-memory.md
 scripts/loop-engineering.sh
 scripts/loop-engineering-deep.sh
 scripts/*.log
+# v2.0.208: System Engineer feedback log (local-only, records every SE run)
+SYSTEM_ENGINEER_FEEDBACK.md
 
 # ─── Runtime data (generated state, trade history, backtest results) ───
 data/evolution/
