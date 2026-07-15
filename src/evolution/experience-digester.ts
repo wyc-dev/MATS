@@ -375,7 +375,11 @@ export class ExperienceDigester {
     }
     const classes: ExperienceClass[] = [];
     for (const rec of records) {
-      const lesson = await this.digestTrade(rec);
+      // v2.0.197: Use heuristic digestion for rebuild (no LLM calls).
+      // LLM digestion is too slow for 98 records at startup (25s timeout × 98 = 40min).
+      // Heuristic generates a lesson from the trade data without LLM — fast + reliable.
+      // LLM digestion happens incrementally via addRecord() on each new trade close.
+      const lesson = this.heuristicTradeLesson(rec);
       const vec = await this.embedLesson(lesson);
       if (vec.length === 0) continue; // embed failed — skip (can't classify)
       // find nearest class
