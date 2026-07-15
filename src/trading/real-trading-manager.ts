@@ -1,14 +1,12 @@
 // ─── Real Trading Manager ───
-// Orchestrates between paper trading, Binance real, and Hyperliquid real engines.
-// Provides a unified interface for the HACP system to execute trades regardless
-// of the underlying exchange or trade mode.
+// Orchestrates paper trading and Hyperliquid real engine.
+// Provides a unified interface for the HACP system to execute trades.
 
 import { createLogger } from '../observability/logger.ts';
 import { config } from '../config/index.ts';
 import { PortfolioTracker, normalizeSymbol } from './portfolio.ts';
 import { RiskEngine } from '../risk/engine.ts';
 import { PaperTradingEngine } from './paper-engine.ts';
-import { BinanceRealEngine } from './binance-real-engine.ts';
 import { HyperliquidRealEngine } from './hyperliquid-real-engine.ts';
 import { getATR, computeATRSLTP } from '../analysis/atr.ts';
 import type {
@@ -27,8 +25,6 @@ const log = createLogger({ phase: 'real-trading' });
 export interface TradingManagerConfig {
   tradeMode: TradeMode;
   exchange: ExchangeType;
-  binanceApiKey: string;
-  binanceSecretKey: string;
   hyperliquidWalletAddress: string;
   hyperliquidPrivateKey: string;
 }
@@ -38,7 +34,6 @@ export class RealTradingManager {
   private paperEngine: PaperTradingEngine;
   private portfolio: PortfolioTracker;
   private riskEngine: RiskEngine;
-  private binanceEngine: BinanceRealEngine | null = null;
   private hyperliquidEngine: HyperliquidRealEngine | null = null;
   /** v2.0.XX: Max portion of TOTAL equity for all positions combined (10%-100%).
    *  Synced from MarketAgent config via setMaxPortionPct(). Checked BEFORE
@@ -66,15 +61,7 @@ export class RealTradingManager {
     this.riskEngine = riskEngine;
     this.paperEngine = paperEngine;
 
-    // Initialize real engines if keys are provided
-    if (config.binanceApiKey && config.binanceSecretKey) {
-      this.binanceEngine = new BinanceRealEngine(
-        config.binanceApiKey,
-        config.binanceSecretKey,
-        true, // use futures
-      );
-    }
-
+    // Initialize Hyperliquid engine if keys are provided
     if (config.hyperliquidWalletAddress && config.hyperliquidPrivateKey) {
       this.hyperliquidEngine = new HyperliquidRealEngine(
         config.hyperliquidWalletAddress,
@@ -85,7 +72,6 @@ export class RealTradingManager {
     log.info('Real Trading Manager initialized', {
       tradeMode: config.tradeMode,
       exchange: config.exchange,
-      binanceReady: !!this.binanceEngine,
       hyperliquidReady: !!this.hyperliquidEngine,
     });
   }
@@ -93,27 +79,12 @@ export class RealTradingManager {
   /** Get the active engine based on current config */
   private getActiveEngine(): RealTradingEngine | null {
     if (this.config.tradeMode === 'paper') return null;
-
-    switch (this.config.exchange) {
-      case 'binance':
-        return this.binanceEngine;
-      case 'hyperliquid':
-        return this.hyperliquidEngine;
-      default:
-        return null;
-    }
+    return this.hyperliquidEngine;
   }
 
   /** Get the engine for a specific exchange (for data fetching regardless of trade mode) */
   getEngineForExchange(exchange: ExchangeType): RealTradingEngine | null {
-    switch (exchange) {
-      case 'binance':
-        return this.binanceEngine;
-      case 'hyperliquid':
-        return this.hyperliquidEngine;
-      default:
-        return null;
-    }
+    return this.hyperliquidEngine;
   }
 
   // ── Config Management ──
@@ -206,7 +177,7 @@ export class RealTradingManager {
 
   /**
    * Get the user's most recent N fills from the active exchange (v2.0.19).
-   * Only HyperliquidRealEngine supports this; returns [] for paper/Binance.
+   * Only HyperliquidRealEngine supports this; returns [] for paper mode.
    * Used to sync the UI Trade Records panel with the real exchange.
    */
   async getRecentFills(limit = 5): Promise<Array<{
@@ -545,12 +516,6 @@ export class RealTradingManager {
             ? actualEntryPrice * 1.05
             : actualEntryPrice * 0.95;
         }
-        if (tpDistPct > 0.05) {
-          // TP too wide — narrow to 5%
-          tpPrice = decision.action === 'buy'
-            ? actualEntryPrice * 1.05
-            : actualEntryPrice * 0.95;
-        }
 
         // Risk:Reward — TP must be >= SL distance (never risk more than reward)
         const finalSlDist = Math.abs(slPrice - actualEntryPrice);
@@ -604,19 +569,6 @@ export class RealTradingManager {
             } catch (closeErr) {
               log.error(`🚨🚨 SAFETY CLOSE ALSO FAILED: ${closeErr instanceof Error ? closeErr.message : String(closeErr)} — POSITION IS UNPROTECTED ON HL!`);
             }
-          }
-        } else if (engine instanceof BinanceRealEngine) {
-          try {
-            await engine.setStopLossTakeProfit(
-              decision.symbol,
-              decision.action as OrderSide,
-              quantity,
-              slPrice,
-              tpPrice,
-            );
-            log.info(`✅ SL/TP placed on Binance: ${decision.symbol} SL=$${slPrice.toFixed(2)} TP=$${tpPrice.toFixed(2)}`);
-          } catch (sltpErr) {
-            log.error(`❌ Binance SL/TP placement failed: ${sltpErr instanceof Error ? sltpErr.message : String(sltpErr)}`);
           }
         }
 
@@ -1410,38 +1362,4 @@ export class RealTradingManager {
     }
   }
 
-  /**
-   * Get current mark price from the active exchange.
-   */
-  async getMarkPrice(symbol: string): Promise<number> {
-    const engine = this.getActiveEngine();
-    if (engine) {
-      try {
-        if (engine instanceof BinanceRealEngine) {
-          return await engine.getMarkPrice(symbol);
-        }
-      } catch { /* fallback */ }
-    }
-    return 0;
-  }
-
-  /**
-   * Get exchange-specific account info for display.
-   */
-  async getExchangeAccountInfo(): Promise<{
-    exchange: ExchangeType;
-    tradeMode: TradeMode;
-    balance: ExchangeAccountInfo;
-    positions: Position[];
-  }> {
-    const balance = await this.getBalance();
-    const positions = await this.getPositions();
-
-    return {
-      exchange: this.config.exchange,
-      tradeMode: this.config.tradeMode,
-      balance,
-      positions,
-    };
-  }
 }

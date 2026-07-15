@@ -440,8 +440,6 @@ class MATSSystem {
         {
           tradeMode: 'paper',
           exchange: 'hyperliquid',
-          binanceApiKey: config.binance.apiKey,
-          binanceSecretKey: config.realTrading.binanceSecretKey,
           hyperliquidWalletAddress: config.realTrading.hyperliquidWalletAddress,
           hyperliquidPrivateKey: config.realTrading.hyperliquidPrivateKey,
         },
