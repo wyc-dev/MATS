@@ -531,6 +531,9 @@ class MATSSystem {
 
         // v2.0.163: Delete from cachedHLFills (hl-fill-* IDs are synthesized
         // from raw HL fill data, not stored in any persistent array)
+        // v2.0.167: Case-insensitive symbol matching — HL coin field may be
+        // uppercase (SKHX) while the ID was built from the raw coin. Also
+        // try matching with xyz: prefix stripped.
         if (tradeId.startsWith('hl-fill-')) {
           // Extract timestamp from ID: hl-fill-{timestamp}-{symbol}
           const parts = tradeId.split('-');
@@ -538,12 +541,18 @@ class MATSSystem {
           const sym = parts.slice(3).join('-');
           if (ts > 0) {
             const fillIdx = this.cachedHLFills.findIndex(f =>
-              f.timestamp === ts && f.symbol === sym
+              f.timestamp === ts && (
+                f.symbol === sym ||
+                f.symbol.toLowerCase() === sym.toLowerCase() ||
+                f.symbol.toLowerCase() === sym.toLowerCase().replace(/^xyz:/, '')
+              )
             );
             if (fillIdx >= 0) {
               this.cachedHLFills.splice(fillIdx, 1);
               deleted = true;
               log.info(`  → Deleted from cachedHLFills (ts=${ts}, sym=${sym})`);
+            } else {
+              log.warn(`  → hl-fill not found in cachedHLFills (ts=${ts}, sym=${sym}, fills=${this.cachedHLFills.length})`);
             }
           }
         }
@@ -2011,8 +2020,15 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       const provider = getActiveProvider();
       const isWin = trade.pnl >= 0;
       const holdMin = Math.max(0, Math.round((trade.closedAt - trade.openedAt) / 60_000));
-      const mae = trade.minValueReached ?? 0;
-      const mfe = trade.maxValueReached ?? 0;
+      // v2.0.167: MAE/MFE are tracked as POSITION VALUE (margin + unrealized PnL),
+      // NOT as raw PnL. Convert to actual PnL for the LLM so it doesn't confuse
+      // $11.72 position value with $11.72 profit. The margin (capital required
+      // to open the position) = entryPrice × quantity / leverage.
+      const margin = (trade.entryPrice * trade.quantity) / (trade.leverage ?? 1);
+      const maeValue = trade.minValueReached ?? 0;
+      const mfeValue = trade.maxValueReached ?? 0;
+      const maePnl = maeValue - margin; // actual worst PnL dip
+      const mfePnl = mfeValue - margin; // actual best PnL peak
 
       const systemPrompt = `You are a post-trade review analyst for a multi-agent quant trading system (MATS).
 Your job is to analyse a closed trade and provide a concise, actionable review.
@@ -2022,12 +2038,16 @@ Focus on:
 2. How could LESS loss have been incurred? (e.g. exited earlier, tighter stop, avoided the trade)
 3. What does the MAE/MFE tell us about the trade management?
 
-MAE (Maximum Adverse Excursion) = worst unrealized PnL dip during the trade.
-MFE (Maximum Favorable Excursion) = best unrealized PnL peak during the trade.
+MAE (Maximum Adverse Excursion) = worst unrealized PnL (dollar loss) during the trade. Negative = position was underwater.
+MFE (Maximum Favorable Excursion) = best unrealized PnL (dollar profit) during the trade. Positive = position was in profit.
 
 If MFE >> final PnL, the trade gave back most of its gains — exit timing was poor.
 If MAE is very negative but the trade still won, the entry was poorly timed but the thesis was right.
 If MAE ≈ final PnL (both negative), the trade never went in our favor — the thesis was wrong from the start.
+
+IMPORTANT: MAE and MFE are actual PnL values (profit/loss in dollars), NOT position value.
+For example, MFE=$1.74 means the position was up $1.74 at its best point. If final PnL=$1.35,
+the trade gave back $0.39 of the $1.74 peak — about 22% giveback, NOT 88%.
 
 Respond in 2-4 sentences. Be specific and actionable. No fluff, no hedging.
 Do NOT use markdown headers or bullet points — just plain text sentences.`;
@@ -2039,14 +2059,15 @@ Do NOT use markdown headers or bullet points — just plain text sentences.`;
 - Exit Price: $${trade.exitPrice.toFixed(4)}
 - Quantity: ${trade.quantity}
 - Leverage: ${trade.leverage}x
+- Margin (capital used): $${margin.toFixed(2)}
 - PnL: $${trade.pnl.toFixed(2)} (${(trade.pnlPct * 100).toFixed(1)}%)
 - Result: ${isWin ? 'WIN' : 'LOSS'}
 - Hold Duration: ${holdMin} minutes
 - Close Reason: ${closeReason}
 - Entry Thesis: ${trade.entryThesis ?? 'N/A'}
 - Exit Thesis: ${trade.exitThesis ?? 'N/A'}
-- MAE (worst dip): $${mae.toFixed(2)}
-- MFE (best peak): $${mfe.toFixed(2)}
+- MAE (worst PnL dip): $${maePnl.toFixed(2)}
+- MFE (best PnL peak): $${mfePnl.toFixed(2)}
 
 Provide your post-trade review:`;
 
