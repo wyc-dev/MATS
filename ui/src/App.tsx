@@ -1992,9 +1992,9 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
               {/* Expanded details */}
               {isExpanded && (
                 <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-                  {/* v2.0.153: Delete trade button — removes erroneous/bug trades */}
+                  {/* v2.0.192: Delete + Correct buttons on same row, aligned right */}
                   {!isOpen && (
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 'var(--space-2)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
                       {deleteConfirm === cardId ? (
                         <span style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
                           <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--red)' }}>Delete this trade?</span>
@@ -2012,12 +2012,22 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                           </button>
                         </span>
                       ) : (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setDeleteConfirm(cardId) }}
-                          style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(248, 113, 113, 0.3)', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}
-                        >
-                          <X size={12} color="var(--text-tertiary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Delete
-                        </button>
+                        <>
+                          {correctingTrade !== cardId && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setCorrectingTrade(cardId); setCorrectHistory([]) }}
+                              style={{ padding: '4px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: 'var(--fs-xs)', display: 'flex', alignItems: 'center', gap: '4px' }}
+                            >
+                              <MessagesSquare size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />Correct via System Engineer
+                            </button>
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setDeleteConfirm(cardId) }}
+                            style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(248, 113, 113, 0.3)', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}
+                          >
+                            <X size={12} color="var(--text-tertiary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Delete
+                          </button>
+                        </>
                       )}
                     </div>
                   )}
@@ -2128,14 +2138,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                           </button>
                         </div>
                       </>
-                    ) : (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setCorrectingTrade(cardId); setCorrectHistory([]) }}
-                        style={{ padding: '4px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: 'var(--fs-xs)', display: 'flex', alignItems: 'center', gap: '4px', alignSelf: 'flex-start' }}
-                      >
-                        <MessagesSquare size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />Correct via System Engineer
-                      </button>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               )}
