@@ -751,7 +751,16 @@ export class ThesisExperience {
     const signals: DeltaSignal[] = [];
 
     for (const d of deltaItems) {
-      const containing = this.records.filter((h) =>
+      // v2.0.176: Filter by direction — delta win rates must be same-direction.
+      // A delta rationale that wins as BUY but loses as SELL must not produce
+      // an approve signal for a SELL candidate.
+      // Fall back to all records if no same-direction records exist (cold-start
+      // for this direction — same logic as pWin fallback above).
+      const sameDirContaining = this.records.filter((h) =>
+        h.side === input.side &&
+        h.rationaleVectors.some((hv) => cosine(d.vec, hv) >= this.cfg.matchThreshold),
+      );
+      const containing = sameDirContaining.length > 0 ? sameDirContaining : this.records.filter((h) =>
         h.rationaleVectors.some((hv) => cosine(d.vec, hv) >= this.cfg.matchThreshold),
       );
       if (containing.length < this.cfg.minDeltaSamples) {

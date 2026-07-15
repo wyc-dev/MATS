@@ -967,7 +967,9 @@ export class HACPEngine {
         const candVectors = this.expMemory.getLastCandidateVectors();
         if (candVectors.length > 0) {
           const records = this.expMemory.getRecords();
-          const similar = this.similarTradeRetriever.findSimilar(candVectors, records, 5);
+          // v2.0.176: Pass metaAction as side filter — SELL candidates should
+          // only match historical SELL trades, not BUY wins.
+          const similar = this.similarTradeRetriever.findSimilar(candVectors, records, 5, undefined, metaAction);
           rilSimilarTradesBlock = this.similarTradeRetriever.formatBlock(similar, metaAction, metaSymbol);
 
           if (this.subtleDiffAnalyzer && this.llmChatFn && similar.length > 0) {

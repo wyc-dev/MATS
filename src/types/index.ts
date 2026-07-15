@@ -637,6 +637,11 @@ export interface ExperienceClass {
   symbols: string[];
   /** Distinct sides (buy/sell) — reveals direction bias. */
   sides: Array<'buy' | 'sell'>;
+  /** v2.0.176: Per-direction win/loss counts — prevents direction-mixing in winRate. */
+  buyWins: number;
+  buyLosses: number;
+  sellWins: number;
+  sellLosses: number;
   /** Distinct regimes. */
   regimes: string[];
   avgHoldMin: number;
@@ -694,6 +699,11 @@ export interface ReasonPatternCluster {
   symbols: string[];
   /** Distinct sides (buy/sell). */
   sides: Array<'buy' | 'sell'>;
+  /** v2.0.176: Per-direction win/loss counts — prevents direction-mixing in winRate. */
+  buyWins: number;
+  buyLosses: number;
+  sellWins: number;
+  sellLosses: number;
   memberIds: string[];
   /** Exit type breakdown within this pattern. */
   exitTypeBreakdown: Record<string, { wins: number; losses: number; pnl: number }>;
