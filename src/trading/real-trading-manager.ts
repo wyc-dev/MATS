@@ -725,11 +725,12 @@ export class RealTradingManager {
           const localPos = this.portfolio.getPosition(localSym);
           if (!localPos) continue;
           // v2.0.159: Check closing direction matches — BUY position closed by SELL fill, etc.
-          const expectedCloseDir = localPos.side === 'buy' ? 'sell' : 'buy';
+          // v2.0.166: Use f.side not f.dir.startsWith() — see comment below.
+          const expectedCloseSide = localPos.side === 'buy' ? 'sell' : 'buy';
           const closingFill = recentFillsForCheck.find(f =>
             f.symbol.toLowerCase() === localSym.toLowerCase() &&
             !f.dir.toLowerCase().startsWith('open') &&
-            f.dir.toLowerCase().startsWith(expectedCloseDir) &&
+            f.side === expectedCloseSide &&
             f.timestamp >= localPos.openedAt
           );
           if (closingFill) {
@@ -743,12 +744,11 @@ export class RealTradingManager {
           for (const localSym of genuinelyClosed) {
             const localPos = this.portfolio.getPosition(localSym);
             if (!localPos) continue;
-            const expectedCloseDir2 = localPos.side === 'buy' ? 'sell' : 'buy';
+            const expectedCloseSide2 = localPos.side === 'buy' ? 'sell' : 'buy';
             const closingFill = recentFillsForCheck.find(f =>
               f.symbol.toLowerCase() === localSym.toLowerCase() &&
               !f.dir.toLowerCase().startsWith('open') &&
-              f.dir.toLowerCase().startsWith(expectedCloseDir2) &&
-              !f.dir.toLowerCase().startsWith('open') &&
+              f.side === expectedCloseSide2 &&
               f.timestamp >= localPos.openedAt
             );
             const hlPnl = closingFill?.closedPnl;
@@ -811,11 +811,15 @@ export class RealTradingManager {
           // versa. Without this check, a closing fill from a PREVIOUS position
           // (e.g. SELL CL closed → fill matches new BUY CL position) creates a
           // fake close record for the new position.
-          const expectedCloseDir = localPos.side === 'buy' ? 'sell' : 'buy';
+          // v2.0.166: Use f.side ("buy"/"sell") not f.dir.startsWith() — HL's dir
+          // field is "close long"/"close short"/"open long"/"open short", which
+          // never starts with "buy" or "sell". The old check always returned false,
+          // silently blocking ALL legitimate closes. Use f.side instead.
+          const expectedCloseSide = localPos.side === 'buy' ? 'sell' : 'buy';
           const matchingFill = recentFills.find(f =>
             f.symbol.toLowerCase() === localSym.toLowerCase() &&
             !f.dir.toLowerCase().startsWith('open') && // only closing fills
-            f.dir.toLowerCase().startsWith(expectedCloseDir) && // must match closing direction
+            f.side === expectedCloseSide && // must match closing direction (buy/sell)
             f.timestamp >= localPos.openedAt // must be after this position opened
           );
           if (matchingFill) {
