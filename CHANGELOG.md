@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.181: OLR learning rate decay now uses live samples only (excludes backfill) — prevents model freezing from stale backfill data
+
+
 ## v2.0.202: Fix OLR backfill Welford contamination — backfill no longer updates normalization stats, preventing feature explosion on first live sample and restoring OLR learning system effectiveness
 
 
