@@ -1138,7 +1138,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
 
       {/* v2.0.151: Balance/Equity moved from Hippocampus to top of Trading Terminal */}
       <div className="portfolio-grid">
-        <div className="portfolio-cell">
+        <div className={`portfolio-cell ${isRealMode ? 'balance-real' : 'balance-paper'}`}>
           <span className="stat-label">{isRealMode ? 'Genuine Balance' : 'Simulated Balance'}</span>
           <span className="stat-number neutral">{(() => {
             const bal = isRealMode
@@ -1147,7 +1147,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
             return bal === null ? '--' : `$${bal.toFixed(2)}`
           })()}</span>
         </div>
-        <div className="portfolio-cell">
+        <div className={`portfolio-cell ${isRealMode ? 'balance-real' : 'balance-paper'}`}>
           <span className="stat-label">{isRealMode ? 'Genuine Equity' : 'Simulated Equity'}</span>
           <span className="stat-number neutral">{(() => {
             const eq = isRealMode
