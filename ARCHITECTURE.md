@@ -1,8 +1,8 @@
 # {MATS} — Multi Agent Trading System
 
-> **作者**: YC Wong · **版本**: 2.0.143
+> **作者**: YC Wong · **版本**: 2.0.182
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **代碼量**: ~44,000 行 TypeScript（嚴格模式，零類型錯誤）+ React UI
+> **代碼量**: ~55,000 行 TypeScript（嚴格模式，零類型錯誤）+ React UI
 
 ---
 
@@ -68,17 +68,21 @@ src/
 │   ├── hacp.ts              # HACP 協議（Phase 0-5）
 │   └── a2a-utils.ts         # A2A 信號交換
 ├── llm/                     # LLM 抽象層（provider + circuit breaker + concurrency 4）
-├── trading/                 # portfolio · paper-engine · real-trading-manager · cost-model
-│   │   v2.0.143: executeTrade() / closeTrade() 統一路由 — paper 直接走
-│   │   paperEngine，real 走 realTradingManager，不再混在一起
+├── trading/                 # portfolio · paper-engine · trading-manager · hyperliquid-engine · position-utils · cost-model
+│   │   v2.0.172: real-trading-manager → trading-manager, hyperliquid-real-engine → hyperliquid-engine
+│   │   v2.0.173: position-utils.ts 共享 helper（computeSLTP, recomputePnL, trackMAEMFE）
+│   │   v2.0.143: executeTrade() / closeTrade() 統一路由
 ├── risk/                    # 風險引擎 + correlation-budget
 ├── system-guard/            # 5 層保護閘門
 ├── evolution/               # 自我演化（OLR + Shadow + First-Passage + EM + GA + RIL + EXP）
 │   ├── embeddings.ts        # Transformers.js MiniLM 384-d 向量（in-process）
-│   ├── thesis-experience.ts # EXP 理據組合歷史勝率（Phase 1.8a reference data）
-│   ├── experience-digester.ts # A2A 經驗消化（LLM lesson → embed → cluster → classify，supplementary）
+│   ├── thesis-experience.ts # EXP 理據組合歷史勝率（方向過濾 v2.0.175）
+│   ├── experience-digester.ts # A2A 經驗消化（per-direction winRate v2.0.176）
 │   ├── cycle-summary.ts     # EM Cycle Chain（market continuity）
-│   └── reason-analytics.ts  # RIL Reason Intelligence Layer（pattern clustering + close reason stats + similar trade retrieval）
+│   ├── reason-analytics.ts  # RIL（per-direction win rates + direction-filtered similar trades v2.0.176）
+│   ├── evolution-utils.ts   # 共享 utils（wilsonScore, extractJSON, categoriseRationale v2.0.174）
+│   ├── direction-audit.ts   # LLM 交易記錄審計（v2.0.180）
+│   └── system-engineer.ts   # 自主代碼工程師 Agent（v2.0.182）
 ├── analysis/                # sentiment · S/R · ATR · planck-chaos · options · news
 ├── market-agent/            # 自動 pair 選擇（9 DEX, 416 assets, 類別過濾）
 ├── data/                    # Hyperliquid + Binance WebSocket
@@ -88,6 +92,25 @@ ui/                          # React + Vite dashboard (:5173)
 data/evolution/              # olr-state · shadow-state · patterns · GA state · em-state
 tests/                       # vitest（94 tests）
 ```
+
+### System Engineer Agent（v2.0.182）
+
+第 9 個 agent — 自主代碼工程師。每 2 個 cycle 運行一次。
+
+**流程**：
+1. 吞沒 SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md + loop-engineering-memory.md
+2. 審查最近 20 筆交易記錄 + per-symbol direction summary
+3. 讀取相關源代碼片段
+4. LLM 生成一個修復方案（oldCode → newCode + reason + test + changelog）
+5. 驗證目標文件在允許範圍內 + oldCode 精確匹配（防幻覺）
+6. 應用修改 → tsc --noEmit → npm test
+7. 全部通過 → 更新 CHANGELOG + ARCHITECTURE + git commit
+8. 任何失敗 → 自動 rollback + 記錄失敗原因
+
+**可修改範圍**：`src/evolution/` + `src/cognition/` + `src/analysis/` + `src/agents/` + `tests/`
+**禁止修改**：`src/trading/` + `src/config/` + `src/index.ts` + `.env` + `src/api-server.ts` + `src/data/`
+**安全網**：tsc --noEmit + npm test 必須全部通過，否則自動 rollback
+**模型**：GLM-5.2（預設）
 
 ---
 
@@ -104,8 +127,9 @@ tests/                       # vitest（94 tests）
 | 6 | **Independent Risk Auditor** | 0.10 | 0.25 | **advisory-only（不可 veto）**。TP/SL/size 建議 + 硬性代碼限制。預設 DeepSeek V4 Flash。 |
 | 7 | **Skeptics** | 0.30 | 0.00 | 邏輯審計員 + 壓力測試員。**Approve-First**。Phase 1.5 審查 5 sub-agents；Phase 1.8 驗證 entryThesis；Phase 0.5 每循環重新驗證持倉 thesis。預設 DeepSeek V4 Flash。 |
 | 8 | **Meta-Agent** | 0.45 | 0.00 | 仲裁主席。偵探模式。生成 entryThesis。使用 Confidence Calibration Framework。權重 0.00（理據系統控制，唔靠投票）。預設 DeepSeek V4 Flash。 |
+| 9 | **System Engineer** | 0.20 | — | 自主代碼工程師。每 2 個 cycle 審查交易記錄 + 源代碼，檢測學習系統漏洞，自動修復並通過 tsc+test 安全網。讀取 SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md。可修改 src/evolution/ + src/cognition/ + src/analysis/ + src/agents/ + tests/。禁止觸碰 src/trading/ + src/config/。預設 GLM-5.2。 |
 
-> **權重說明**：Meta-Agent + Skeptics 權重 0.00 — 佢哋透過 thesis 系統控制決策，唔參與投票。5 個 sub-agent 加權投票，consensus threshold 50%（由 Evolution 動態調整，floor 0.49）。Terminal Agent 不參與投票，只做規則檢查 + 決策核實。Trading Setup 不是 LLM agent，是 UI 配置管理。
+> **權重說明**：Meta-Agent + Skeptics 權重 0.00 — 佢哋透過 thesis 系統控制決策，唔參與投票。5 個 sub-agent 加權投票，consensus threshold 50%（由 Evolution 動態調整，floor 0.49）。Terminal Agent 不參與投票，只做規則檢查 + 決策核實。System Engineer 不參與投票，只做代碼審查 + 自主修復。Trading Setup 不是 LLM agent，是 UI 配置管理。
 
 ---
 

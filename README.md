@@ -1,6 +1,6 @@
 # MATS — The First Self-Evolving AI Trading Brain
 
-**Terminal Agent + 6 AI agents debate every trade. A Skeptics agent vetoes bad ones. The system evolves its own strategy — no manual tuning.**
+**Terminal Agent + 7 AI agents debate every trade. A Skeptics agent vetoes bad ones. A System Engineer agent autonomously fixes learning system bugs. The system evolves its own strategy — no manual tuning.**
 
 MATS is a multi-agent cognitive trading system: Terminal Agent enforces user-defined trading rules via Root Command Prompt, 6 specialized agents think in parallel, debate through the HACP protocol, and reach weighted consensus. A dedicated Skeptics agent stress-tests every position against historical experience data. The system self-evolves via online logistic regression (OLR) + shadow trading + first-passage path-risk + EM cycle chains + genetic algorithms + **RIL (Reason Intelligence Layer)** — it learns from every trade and adapts its own parameters.
 
@@ -68,7 +68,8 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 - **🧠 Terminal Agent + Root Command Prompt** — users type natural language trading preferences (e.g. "only trade on Monday GMT"). LLM integrates them into a Root Command Prompt. Before each cycle, rules are checked — if a rule fails, the entire cycle is aborted (no token cost). After Meta-Agent decides, Terminal Agent verifies the decision matches user preferences.
 - **🧠 Entry Thesis System** — every trade needs a validated `[1h: ...] [1d: ...]` rationale. Meta-Agent generates it; Skeptics stress-tests it. No thesis → no trade.
 - **🛡️ Skeptics veto** — an AI stress-tests every position's logic, data consistency, and dark-psychology (whale manipulation?) before execution. Approve-first: rejects only on concrete money-losing flaws.
-- **🧬 Self-evolving** — OLR learns P(win) per side from shadow + paper + real trade outcomes. First-Passage gives instant path-risk. GA mutates strategy parameters by weakest fitness dimension. EM cycle chain carries insights across cycles. RIL clusters entry rationales by historical win rate.
+- **🧬 Self-evolving** — OLR learns P(win) per side from shadow + paper + real trade outcomes. First-Passage gives instant path-risk. GA mutates strategy parameters by weakest fitness dimension. EM cycle chain carries insights across cycles. RIL clusters entry rationales by historical win rate. **System Engineer agent** (v2.0.182) autonomously detects and fixes learning system bugs every 2 cycles with tsc+test safety net.
+- **🧠 Direction-aware learning** — All learning systems filter by direction (v2.0.175-176): SELL candidates only match SELL history, BUY candidates only match BUY history. Per-direction win rates tracked in PatternClusterManager + ExperienceClass. LLM-powered trade audit detects suspicious patterns every 2 cycles.
 - **⚡ HACP protocol** — Terminal Agent checks rules → 5 sub-agents think in parallel (staggered, 60s deadline race), Skeptics audits, Meta-Agent arbitrates, weighted voting consensus, Terminal Agent verifies. 120s hard timeout → HOLD on expiry.
 - **💰 Capital preservation first** — every error path defaults to HOLD. SystemGuard (5 layers). Notional-based fees. SL/TP hard safety layers. Configurable max portion + drawdown + daily-loss limits.
 - **⚙️ Trading Setup** — UI config panel for trade mode, cycle period (1-10m), position size, max portion, leverage, asset type, and market selection. Separate from Root Command Prompt (behavioral rules only).
@@ -119,6 +120,7 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 | 5 | **Independent Risk Auditor** | Advisory-only (no veto). TP/SL/size suggestions + hard-coded loss-streak/choppy-market limits. |
 | 6 | **Skeptics** | Logic auditor + thesis stress-tester. Approve-first; rejects only on concrete flaws. Validates entryThesis + re-validates held positions each cycle. |
 | 7 | **Meta-Agent** | Arbitration chairman. Detective mode. Generates entryThesis. Uses Confidence Calibration Framework. Weight 0.00 (thesis system controls, not voting). |
+| 8 | **System Engineer** | Autonomous code engineer. Every 2 cycles: audits trade records + source code, detects learning system bugs, auto-fixes with tsc+test safety net. Reads SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md. Can modify src/evolution/ + src/cognition/ + src/analysis/ + src/agents/ + tests/. Forbidden: src/trading/ + src/config/. Default GLM-5.2. |
 
 > All agents have user-selectable model dropdowns in the UI.
 
@@ -131,11 +133,15 @@ Each cycle (1-10 min, user-configurable): Terminal Agent checks rules → 5 sub-
 | Component | File | What it does |
 |:----------|:-----|:-------------|
 | **OLR** | `olr-engine.ts` | Per-symbol, per-side online logistic regression. Learns P(win) from shadow + paper + real trade outcomes (TP-before-SL). Tracks per-source sample counts (shadow/paper/real) so agents know data composition. |
-| **Shadow Trading** | `shadow-trade-engine.ts` | Opens simulated LONG + SHORT every cycle with fixed S/R SL/TP. Tracks intra-cycle high/low for correct TP-before-SL resolution. Records MAE/MFE path-risk per trade. Feeds outcomes to OLR with source='shadow'. |
+| **Shadow Trading** | `shadow-trade-engine.ts` | Opens simulated LONG + SHORT every cycle with fixed S/R SL/TP. Tracks intra-cycle high/low for correct TP-before-SL resolution. Records MAE/MFE path-risk per trade. Feeds outcomes to OLR with source='shadow'. `getStats()` includes `recentResults` (survives restart). |
 | **First-Passage** | `first-passage.ts` | Instant P(TP before SL) from volatility (σ) + log-drift (ν) + SL/TP distances. Cox & Miller GBM formula. RR-aware: compares to breakeven P, not 50%. |
 | **EM Cycle Chain** | `cycle-summary.ts` | Meta-Agent distills each cycle into a key insight. Previous insights injected into next cycle's context. Semantic retrieval of similar historical cycles. Tiered memory: hot(12) + warm(288) + cold(48 epochs). |
 | **Cold-Start Backfill** | `olr-backfill.ts` | First cycle per market replays 186 historical HL M5 candles into OLR. Non-blocking, idempotent. |
 | **GA + Pattern DB** | `sigmoid-ga.ts` + `trade-pattern-classifier.ts` | GA evolves sigmoid sentiment function by weakest fitness dimension. KNN pattern DB with Wilson-score confidence + time-weighted win/loss. |
+| **EXP** | `thesis-experience.ts` | Vector thesis memory. `checkThesisHistory` uses direction-filtered pWin (v2.0.175) — SELL candidates only match SELL history. `recordClose` stores market conditions + OLR/shadow predictions (v2.0.178). `rebuildClasses` awaits embed warmup (v2.0.178). |
+| **Experience Digester** | `experience-digester.ts` | LLM digests each trade into a lesson → embed → cluster. `classifyCandidate` uses per-direction winRate (v2.0.176). |
+| **Trade Audit** | `direction-audit.ts` | LLM-powered trade record audit. Every 2 cycles, examines recent trades for ANY suspicious pattern (not limited to hardcoded rules). |
+| **System Engineer** | `system-engineer.ts` | Autonomous LLM code engineer (v2.0.182). Every 2 cycles: reads SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md + trade records + source code, generates fix, applies it, runs tsc+test, auto-rollbacks on failure, auto-commits on success. |
 
 ### RIL — Reason Intelligence Layer
 
@@ -143,10 +149,10 @@ Each cycle (1-10 min, user-configurable): Terminal Agent checks rules → 5 sub-
 |:----------|:-------------|
 | **PatternClusterManager** | Greedy cosine clustering of entry rationale texts (MiniLM 384-d). Shows per-pattern win rate + PnL. Incrementally updated on every trade close. |
 | **CloseReasonAggregator** | Groups closed trades by exit type (SL/TP, consensus, manual, thesis invalidation) × decision origin. Shows per-close-reason win rate + avg PnL. |
-| **SimilarTradeRetriever** | Finds top-N most similar historical trades to a candidate thesis using cosine similarity on rationale vectors. Injected before Skeptics validation. |
+| **SimilarTradeRetriever** | Finds top-N most similar historical trades to a candidate thesis using cosine similarity on rationale vectors. **Direction-filtered** (v2.0.176) — SELL candidates only match SELL history. Injected before Skeptics validation. |
 | **SubtleDiffAnalyzer** | 1 LLM call per cycle. Compares candidate trade vs similar historical winners/losers. Identifies subtle differences (volume, RSI, regime, S/R proximity). |
-| **EXP checkThesisHistory** | Candidate thesis → extract rationales → embed → cosine similarity vs all historical records → similarity-weighted P(win) → PASS/REJECT/REVERSE verdict. Dual-Channel Fusion with OLR + shadow win rate. |
-| **Experience Digester** | LLM digests each trade into a lesson statement → embed → cluster into lesson classes. Classifies candidates against winning/losing lesson classes. |
+| **EXP checkThesisHistory** | Candidate thesis → extract rationales → embed → cosine similarity vs **same-direction** historical records → similarity-weighted P(win) → PASS/REJECT/REVERSE verdict. Dual-Channel Fusion with OLR + shadow win rate. Direction-filtered (v2.0.175). |
+| **Experience Digester** | LLM digests each trade into a lesson statement → embed → cluster into lesson classes. Classifies candidates against winning/losing lesson classes using **per-direction winRate** (v2.0.176). |
 
 ### Trade Incident Panel
 
