@@ -25,7 +25,7 @@ import { APIServer } from './api-server.ts';
 import { getAllAgentModels, getAvailableModels } from './agents/agent-models.ts';
 import { BacktestEngine, type BacktestProgress } from './backtest/index.ts';
 import { MarketAgent } from './market-agent/index.ts';
-import { RealTradingManager } from './trading/real-trading-manager.ts';
+import { TradingManager } from './trading/trading-manager.ts';
 import { ThesisExperience, ActiveProviderLLMCaller } from './evolution/thesis-experience.ts';
 import {
   PatternClusterManager,
@@ -81,7 +81,7 @@ class MATSSystem {
   private backtest!: BacktestEngine;
   private apiServer!: APIServer;
   private marketAgent!: MarketAgent;
-  private realTradingManager!: RealTradingManager;
+  private tradingManager!: TradingManager;
   private sentimentEngine!: SentimentEngine;
   /** v2.0.105: Adaptive noise filter — sigmoid+EMA with per-cycle auto-tuning */
   private adaptiveFilter!: AdaptiveNoiseFilter;
@@ -112,11 +112,11 @@ class MATSSystem {
   private lastExpActions: import('./cognition/hacp.ts').ExpAction[] = [];
   private cycleProgress: CycleProgress | null = null;
   /** Cached real-exchange balance (v2.0.17). Refreshed each cycle in real mode
-   *  via realTradingManager.getBalance(); used by pushToAPI() so the UI shows
+   *  via tradingManager.getBalance(); used by pushToAPI() so the UI shows
    *  the actual Hyperliquid account value instead of the local mirror. */
   private cachedExchangeBalance: ExchangeAccountInfo | null = null;
   /** Cached recent HL fills (v2.0.19). Refreshed each cycle in real mode via
-   *  realTradingManager.getRecentFills(5); merged into tradeRecords so the UI
+   *  tradingManager.getRecentFills(5); merged into tradeRecords so the UI
    *  Trade Records panel shows the real Hyperliquid trade history. */
   private cachedHLFills: Array<{ symbol: string; side: 'buy' | 'sell'; price: number; size: number; timestamp: number; closedPnl: number; fee: number; dir: string }> = [];
   // v2.0.169: Track which positions have already been logged as "missing from WS push"
@@ -436,7 +436,7 @@ class MATSSystem {
 
       // 5.6 Initialize Real Trading Manager
       log.info('Step 5.6/8: Initializing Real Trading Manager...');
-      this.realTradingManager = new RealTradingManager(
+      this.tradingManager = new TradingManager(
         {
           tradeMode: 'paper',
           exchange: 'hyperliquid',
@@ -609,9 +609,9 @@ class MATSSystem {
       // Wire up Market Agent API handlers
       this.apiServer.setMarketAgentSetTradeModeHandler(async (mode) => {
         log.info(`Market Agent: trade mode → ${mode}`);
-        const previousMode = this.realTradingManager.getTradeMode();
+        const previousMode = this.tradingManager.getTradeMode();
         this.marketAgent.setTradeMode(mode);
-        this.realTradingManager.setTradeMode(mode);
+        this.tradingManager.setTradeMode(mode);
 
         // v2.0.29: Mark existing positions as legacy so they continue to be
         // managed (SL/TP, per-symbol consensus, price updates) until they
@@ -648,9 +648,9 @@ class MATSSystem {
 
           // Immediately fetch real balance + positions + fills
           try {
-            this.cachedExchangeBalance = await this.realTradingManager.getBalance();
-            this.cachedHLFills = await this.realTradingManager.getRecentFills(20);
-            this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
+            this.cachedExchangeBalance = await this.tradingManager.getBalance();
+            this.cachedHLFills = await this.tradingManager.getRecentFills(20);
+            this.cachedExchangePositions = (await this.tradingManager.getPositions()).map(p => ({
               symbol: p.symbol,
               side: p.side,
               quantity: p.quantity,
@@ -685,7 +685,7 @@ class MATSSystem {
       this.apiServer.setMarketAgentSetExchangeHandler(async (exchange) => {
         log.info(`Market Agent: exchange → ${exchange}`);
         this.marketAgent.setExchange(exchange);
-        this.realTradingManager.setExchange(exchange);
+        this.tradingManager.setExchange(exchange);
         await this.marketAgent.fetchTopPairs();
         this.pushToAPI();
       });
@@ -711,7 +711,7 @@ class MATSSystem {
         log.info(`Market Agent: max portion → ${(pct * 100).toFixed(0)}%`);
         this.marketAgent.setMaxPortionPct(pct);
         this.paperEngine.setMaxPortionPct(pct);
-        this.realTradingManager.setMaxPortionPct(pct);
+        this.tradingManager.setMaxPortionPct(pct);
         this.pushToAPI();
       });
       this.apiServer.setMarketAgentSetLeverageHandler((lev) => {
@@ -1066,7 +1066,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
 
           // v2.0.143: Route through closeTrade() — handles paper vs real
           // separation + sets exitThesis before closing. For real positions,
-          // closeTrade() → realTradingManager.closePosition() closes on HL
+          // closeTrade() → tradingManager.closePosition() closes on HL
           // first, then locally. No need to close on HL separately here.
           const closeSuccess = await this.closeTrade(sym, 'Manual close by user');
           if (closeSuccess) {
@@ -1515,7 +1515,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
 
       // v2.0.XX: Sync initial maxPortionPct from Market Agent to paper engine + real manager
       this.paperEngine.setMaxPortionPct(this.marketAgent.getConfig().maxPortionPct);
-      this.realTradingManager.setMaxPortionPct(this.marketAgent.getConfig().maxPortionPct);
+      this.tradingManager.setMaxPortionPct(this.marketAgent.getConfig().maxPortionPct);
 
       // v2.0.124: Restore trading markets from persisted config so the system
       // starts with the correct markets instead of falling back to auto-select.
@@ -1528,17 +1528,17 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       }
 
       // v2.0.78: Sync tradeMode + exchange from restored Market Agent config to
-      // RealTradingManager. The RTM was created with hardcoded 'paper' in step 5.6
+      // TradingManager. The RTM was created with hardcoded 'paper' in step 5.6
       // because MarketAgent didn't exist yet. Now that MarketAgent has loaded its
       // saved config from disk (which may be 'real'), we must sync RTM to match.
       const restoredTradeMode = this.marketAgent.getTradeMode();
       const restoredExchange = this.marketAgent.getExchange();
-      if (restoredTradeMode !== this.realTradingManager.getTradeMode()) {
-        log.info(`🔄 Syncing restored trade mode to Real Trading Manager: ${this.realTradingManager.getTradeMode()} → ${restoredTradeMode}`);
-        this.realTradingManager.setTradeMode(restoredTradeMode);
+      if (restoredTradeMode !== this.tradingManager.getTradeMode()) {
+        log.info(`🔄 Syncing restored trade mode to Real Trading Manager: ${this.tradingManager.getTradeMode()} → ${restoredTradeMode}`);
+        this.tradingManager.setTradeMode(restoredTradeMode);
       }
-      if (restoredExchange !== this.realTradingManager.getExchange()) {
-        this.realTradingManager.setExchange(restoredExchange);
+      if (restoredExchange !== this.tradingManager.getExchange()) {
+        this.tradingManager.setExchange(restoredExchange);
       }
 
       // v2.0.78: If restored trade mode is 'real', perform the same real-mode
@@ -1552,9 +1552,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           this.hyperliquidWs.setWalletAddress(hlWallet.trim());
           log.info('📡 HL WS wallet address set for user-level feeds (restored real mode)');
           try {
-            this.cachedExchangeBalance = await this.realTradingManager.getBalance();
-            this.cachedHLFills = await this.realTradingManager.getRecentFills(20);
-            this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
+            this.cachedExchangeBalance = await this.tradingManager.getBalance();
+            this.cachedHLFills = await this.tradingManager.getRecentFills(20);
+            this.cachedExchangePositions = (await this.tradingManager.getPositions()).map(p => ({
               symbol: p.symbol,
               side: p.side,
               quantity: p.quantity,
@@ -1584,7 +1584,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // Without this, the UI shows stale SL/TP until the first decision cycle
       // runs syncSLTP() (which can take 5+ seconds after startup).
       try {
-        const engine = this.realTradingManager.getEngineForExchange('hyperliquid');
+        const engine = this.tradingManager.getEngineForExchange('hyperliquid');
         if (engine) {
           const hlPositions = await engine.getPositions();
           if (hlPositions.length > 0) {
@@ -1599,9 +1599,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             // so agents see all open positions in the first HACP cycle.
             // Without this, the first cycle only sees positions restored
             // from portfolio-state.json (which may be stale or incomplete).
-            await this.realTradingManager.syncExchangePositions();
+            await this.tradingManager.syncExchangePositions();
             // Sync SL/TP from HL trigger orders → local mirror
-            await this.realTradingManager.syncSLTP();
+            await this.tradingManager.syncSLTP();
             log.info(`📡 Startup HL sync: ${hlPositions.length} positions, SL/TP synced from exchange`);
           }
         }
@@ -2218,11 +2218,11 @@ ${recentExamples}
    * v2.0.143: Unified trade execution router.
    *
    * Paper mode → paperEngine.executeDecision() directly.
-   * Real mode  → realTradingManager.executeDecision() (places order on HL,
+   * Real mode  → tradingManager.executeDecision() (places order on HL,
    *              mirrors into portfolio via importExchangePosition).
    *
    * This replaces the old pattern where ALL trades went through
-   * realTradingManager.executeDecision(), which internally checked tradeMode
+   * tradingManager.executeDecision(), which internally checked tradeMode
    * and fell back to paperEngine — causing paper trades to be tagged as
    * 'hyperliquid-real' after mirror re-tagging, and real trades to lose
    * entryThesis when syncExchangePositions replaced the mirror.
@@ -2234,12 +2234,12 @@ ${recentExamples}
     decision: TradingDecision,
     auditGates: Array<{ gate: string; passed: boolean; reason: string }>,
   ): Promise<{ success: boolean; error?: string; paperReports?: any[] }> {
-    const isRealMode = this.realTradingManager.getTradeMode() === 'real';
+    const isRealMode = this.tradingManager.getTradeMode() === 'real';
 
     if (isRealMode) {
-      // Real mode: RealTradingManager places the order on HL + mirrors via
+      // Real mode: TradingManager places the order on HL + mirrors via
       // importExchangePosition. entryThesis is set after execution succeeds.
-      const execResult = await this.realTradingManager.executeDecision(decision);
+      const execResult = await this.tradingManager.executeDecision(decision);
       if (execResult.success && (decision.action === 'buy' || decision.action === 'sell')) {
         if (decision.entryThesis) {
           this.portfolio.setEntryThesis(decision.symbol, decision.entryThesis);
@@ -2249,7 +2249,7 @@ ${recentExamples}
     }
 
     // Paper mode: execute directly via PaperTradingEngine.
-    // No RealTradingManager involvement — clean separation.
+    // No TradingManager involvement — clean separation.
     const reports = await this.paperEngine.executeDecision(decision);
     const success = reports.length === 0 || reports.every(r => !r.error);
     if (success && (decision.action === 'buy' || decision.action === 'sell')) {
@@ -2268,7 +2268,7 @@ ${recentExamples}
    *
    * Paper positions → portfolio.closePosition() (returns TradeRecord, fires
    *   onPositionClosedCb → paperEngine.trades + onPositionClosedLearning).
-   * Real positions   → realTradingManager.closePosition() (closes on HL +
+   * Real positions   → tradingManager.closePosition() (closes on HL +
    *   portfolio.closeExchangePosition() → fires onExchangeClosedLearningCb
    *   → onPositionClosedLearning).
    *
@@ -2284,7 +2284,7 @@ ${recentExamples}
 
     if (pos.agentId === 'hyperliquid-real') {
       // Real position: close on HL first, then locally
-      return await this.realTradingManager.closePosition(sym);
+      return await this.tradingManager.closePosition(sym);
     } else {
       // Paper position: close locally
       const state = this.marketState?.getState(sym);
@@ -3596,17 +3596,17 @@ ${recentExamples}
       log.info('🤖 HACP: Starting multi-agent cognition...');
 
       // Sync real exchange positions into local portfolio before agents think
-      if (this.realTradingManager.getTradeMode() === 'real') {
-        await this.realTradingManager.syncExchangePositions();
+      if (this.tradingManager.getTradeMode() === 'real') {
+        await this.tradingManager.syncExchangePositions();
         // Cache the real exchange balance so pushToAPI() can show the actual
         // Hyperliquid account value (not the local mirror) in the UI (v2.0.17).
         try {
-          this.cachedExchangeBalance = await this.realTradingManager.getBalance();
+          this.cachedExchangeBalance = await this.tradingManager.getBalance();
           // v2.0.19: also cache recent HL fills (last 5) + exchange positions
           // so the UI Trade Records + Portfolio positions modules show real
           // Hyperliquid data, not just the local mirror.
-          this.cachedHLFills = await this.realTradingManager.getRecentFills(20);
-          this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
+          this.cachedHLFills = await this.tradingManager.getRecentFills(20);
+          this.cachedExchangePositions = (await this.tradingManager.getPositions()).map(p => ({
             symbol: p.symbol,
             side: p.side,
             quantity: p.quantity,
@@ -3643,7 +3643,7 @@ ${recentExamples}
         // v2.0.32: Sync SL/TP to HL — check every cycle if HL has the trigger
         // orders that the local mirror expects. If missing, place them.
         try {
-          await this.realTradingManager.syncSLTP();
+          await this.tradingManager.syncSLTP();
         } catch (err) {
           log.warn(`SL/TP sync failed: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -3659,7 +3659,7 @@ ${recentExamples}
       // imported via syncExchangePositions while in real mode then the user
       // switched to paper). Previously these were orphaned — no code path
       // managed them, causing perpetual errors (syncSLTP, closePosition, etc.).
-      if (this.realTradingManager.getTradeMode() === 'paper') {
+      if (this.tradingManager.getTradeMode() === 'paper') {
         // v2.0.37: Process ALL real positions — both legacy-tracked AND orphaned
         const allRealSymbols = this.portfolio.getOpenSymbols().filter(sym => {
           const pos = this.portfolio.getPosition(sym);
@@ -3667,7 +3667,7 @@ ${recentExamples}
         });
         if (allRealSymbols.length > 0) {
           try {
-            const engine = this.realTradingManager.getEngineForExchange('hyperliquid');
+            const engine = this.tradingManager.getEngineForExchange('hyperliquid');
             if (engine) {
               const exchangePositions = await engine.getPositions();
               // v2.0.37: If getPositions() returned empty, we can't verify —
@@ -3786,7 +3786,7 @@ ${recentExamples}
             // SL/TP drifts from HL (HL rounds prices, user can manually adjust on HL).
             // Also pushes any missing SL/TP from the local mirror to HL.
             try {
-              await this.realTradingManager.syncSLTP();
+              await this.tradingManager.syncSLTP();
             } catch (err) {
               log.warn(`SL/TP sync (paper mode legacy) failed: ${err instanceof Error ? err.message : String(err)}`);
             }
@@ -3804,12 +3804,12 @@ ${recentExamples}
       {
         let externalSymbols: string[];
 
-        if (this.realTradingManager.getTradeMode() === 'real') {
+        if (this.tradingManager.getTradeMode() === 'real') {
           // Real mode: ask the exchange what positions it has open.
           // Any local mirror without a matching exchange position was
           // manually closed on the exchange.
           // BUT: legacy paper positions are not on the exchange — keep them.
-          const exchangeSymbols = await this.realTradingManager.getOpenPositionSymbols();
+          const exchangeSymbols = await this.tradingManager.getOpenPositionSymbols();
           const legacySymbols = this.portfolio.getOpenSymbols().filter(sym =>
             this.legacyPositionModes.get(sym) === 'paper'
           );
@@ -3876,7 +3876,7 @@ ${recentExamples}
         // we can close them on HL afterwards. reconcilePositions() deletes
         // the local position, so we can't check agentId after it runs.
         const exchangeSymbolsToClose: string[] = [];
-        if (this.realTradingManager.getTradeMode() === 'real') {
+        if (this.tradingManager.getTradeMode() === 'real') {
           for (const sym of this.portfolio.getOpenSymbols()) {
             const pos = this.portfolio.getPosition(sym);
             if (pos && pos.agentId === 'hyperliquid-real' && !externalSymbols.includes(sym)) {
@@ -4140,7 +4140,7 @@ ${recentExamples}
               }
             }
           }
-          await this.realTradingManager.adjustPosition(adj.positionId, effectiveSL, effectiveTP);
+          await this.tradingManager.adjustPosition(adj.positionId, effectiveSL, effectiveTP);
           log.info(`📐 Position ${adj.positionId.slice(0, 8)} adjusted: SL=${effectiveSL?.toFixed(2) ?? '-'} TP=${effectiveTP?.toFixed(2) ?? '-'}`);
         }
       }
@@ -4665,7 +4665,7 @@ ${recentExamples}
 
             // v2.0.135 fix: fetch entry price for this trading market — the
             // multi-symbol entry path previously omitted entryPrice, so
-            // realTradingManager.executeDecision() got price=0 → "No price
+            // tradingManager.executeDecision() got price=0 → "No price
             // available for real trade" even though all gates passed.
             let pscPrice = this.marketState.getState(psc.symbol)?.price ?? 0;
             if (pscPrice <= 0) {
@@ -4852,7 +4852,7 @@ ${recentExamples}
           }
 
           if (validSL !== undefined || validTP !== undefined) {
-            await this.realTradingManager.adjustPosition(pos.id, validSL, validTP);
+            await this.tradingManager.adjustPosition(pos.id, validSL, validTP);
             log.info(`📐 Per-symbol consensus: ADJUST ${psc.symbol} SL=${validSL?.toFixed(2) ?? '-'} TP=${validTP?.toFixed(2) ?? '-'}`);
           } else {
             log.warn(`📐 Per-symbol consensus: ADJUST ${psc.symbol} — all SL/TP rejected by direction validation, skipping`);
@@ -5029,7 +5029,7 @@ ${recentExamples}
           }
         }
       }
-      log.info(`💼 Executing ${this.realTradingManager.getTradeMode().toUpperCase()} trading decision...`);
+      log.info(`💼 Executing ${this.tradingManager.getTradeMode().toUpperCase()} trading decision...`);
 
       // v2.0.128: Decision audit for the active symbol — track gates
       const activeAuditGates: Array<{ gate: string; passed: boolean; reason: string }> = [];
@@ -5186,8 +5186,8 @@ ${recentExamples}
       };
 
       // v2.0.143: Route through executeTrade() — paper mode goes directly
-      // to paperEngine, real mode goes to realTradingManager. No more
-      // realTradingManager fallback for paper trades.
+      // to paperEngine, real mode goes to tradingManager. No more
+      // tradingManager fallback for paper trades.
       const execResult = await this.executeTrade(decisionWithSR, activeAuditGates);
       const reports: ExecutionReport[] = execResult.paperReports ?? [];
 
@@ -5290,9 +5290,9 @@ ${recentExamples}
       // so that serializePortfolio() includes the new position in the same cycle's pushToAPI().
       // Without this, the new position won't appear in the UI until the NEXT cycle's
       // syncExchangePositions() updates the cache — causing a 1-cycle delay.
-      if (this.realTradingManager.getTradeMode() === 'real' && execResult.success) {
+      if (this.tradingManager.getTradeMode() === 'real' && execResult.success) {
         try {
-          this.cachedExchangePositions = (await this.realTradingManager.getPositions()).map(p => ({
+          this.cachedExchangePositions = (await this.tradingManager.getPositions()).map(p => ({
             symbol: p.symbol,
             side: p.side,
             quantity: p.quantity,
@@ -5332,7 +5332,7 @@ ${recentExamples}
             notional,
             decisionAt: cycleStart,
             filledAt: Date.now(),
-            mode: this.realTradingManager.getTradeMode() === 'real' ? 'real' : 'paper',
+            mode: this.tradingManager.getTradeMode() === 'real' ? 'real' : 'paper',
           });
 
           // ── P0: Snapshot trade context for pattern classifier ──
@@ -5657,14 +5657,14 @@ ${recentExamples}
 
       // 10. Print portfolio summary
       // v2.0.30: In real mode, show exchange balance instead of paper mirror
-      if (this.realTradingManager.getTradeMode() === 'real' && this.cachedExchangeBalance) {
+      if (this.tradingManager.getTradeMode() === 'real' && this.cachedExchangeBalance) {
         log.info(`\n📊 🟢 Real Portfolio (HL):`, {
           balance: this.cachedExchangeBalance.total.toFixed(2),
           free: this.cachedExchangeBalance.free.toFixed(2),
           marginUsed: this.cachedExchangeBalance.marginUsed.toFixed(2),
           positions: this.cachedExchangePositions?.length ?? 0,
         });
-      } else if (this.realTradingManager.getTradeMode() === 'real') {
+      } else if (this.tradingManager.getTradeMode() === 'real') {
         log.info(`\n📊 ⏳ Real mode: exchange balance not yet fetched`);
       } else {
         log.info(`\n📊 ${this.portfolio.getPortfolio().totalPnl >= 0 ? '🟢' : '🔴'} Portfolio:`, {
@@ -5833,7 +5833,7 @@ ${recentExamples}
   /** Serialize portfolio (Map → plain object) for JSON transmission */
   private serializePortfolio(p: Readonly<import('./types/index.ts').Portfolio>): Record<string, unknown> {
     const positions: Record<string, unknown> = {};
-    const isRealMode = this.realTradingManager?.getTradeMode() === 'real';
+    const isRealMode = this.tradingManager?.getTradeMode() === 'real';
 
     // v2.0.32: In real mode, build a set of symbols that actually exist on HL.
     // Any local mirror not on HL is stale (closed on exchange) and must NOT
@@ -6240,8 +6240,8 @@ ${recentExamples}
    * appears in Trade Records without waiting for the next cycle. */
   private async refreshHLFillsAndPush(): Promise<void> {
     try {
-      if (this.realTradingManager?.getTradeMode() === 'real') {
-        const engine = this.realTradingManager.getEngineForExchange('hyperliquid') as any;
+      if (this.tradingManager?.getTradeMode() === 'real') {
+        const engine = this.tradingManager.getEngineForExchange('hyperliquid') as any;
         if (engine) {
           // v2.0.79: Clear caches so we get FRESH data after a position close.
           // Without this, getPositions() returns cached data that still has
@@ -6372,7 +6372,7 @@ ${recentExamples}
       // because they're paper-trade concepts that don't map cleanly to the
       // real account. Win rate / trade count stay local (paper + real mixed).
       // v2.0.31: Balance = free (available to trade), Equity = total (account value)
-      const isRealMode = this.realTradingManager.getTradeMode() === 'real';
+      const isRealMode = this.tradingManager.getTradeMode() === 'real';
       const exBal = isRealMode ? this.cachedExchangeBalance : null;
       // v2.0.42: Recent 20 trades win rate — reflects current performance.
       const recent20 = this.paperEngine.getRecentWinLoss(20);

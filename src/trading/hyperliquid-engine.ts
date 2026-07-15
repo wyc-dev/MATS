@@ -275,7 +275,7 @@ async function getAssetIndex(symbol: string): Promise<AssetMeta | null> {
 
 // ─── Hyperliquid Real Engine ───
 
-export class HyperliquidRealEngine implements RealTradingEngine {
+export class HyperliquidEngine implements RealTradingEngine {
   readonly name = 'hyperliquid';
   private walletAddress: string;
   private privateKeyHex: string;
@@ -329,7 +329,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
   async getBalance(): Promise<ExchangeAccountInfo> {
     // v2.0.79: Return cached balance if fresh (< 10s old)
-    if (this.balanceCache && (Date.now() - this.balanceCache.ts) < HyperliquidRealEngine.BALANCE_CACHE_TTL_MS) {
+    if (this.balanceCache && (Date.now() - this.balanceCache.ts) < HyperliquidEngine.BALANCE_CACHE_TTL_MS) {
       return this.balanceCache.value;
     }
     // v2.0.79: If a fetch is already in flight, await it instead of starting a new one
@@ -353,7 +353,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       let totalUnrealizedPnl = 0;
 
       // Query each perp DEX clearinghouse
-      for (const dex of HyperliquidRealEngine.PERP_DEX_NAMES) {
+      for (const dex of HyperliquidEngine.PERP_DEX_NAMES) {
         try {
           // v2.0.32: Omit dex field for default DEX ('') — HL API rejects dex: 0 or dex: ''
           const body: Record<string, unknown> = { type: 'clearinghouseState', user: this.walletAddress };
@@ -441,7 +441,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
   async getPositions(): Promise<Position[]> {
     // v2.0.79: Return cached positions if fresh
-    if (this.positionsCache && (Date.now() - this.positionsCache.ts) < HyperliquidRealEngine.POSITIONS_CACHE_TTL_MS) {
+    if (this.positionsCache && (Date.now() - this.positionsCache.ts) < HyperliquidEngine.POSITIONS_CACHE_TTL_MS) {
       return this.positionsCache.value;
     }
     // v2.0.79: If a fetch is already in flight, await it
@@ -486,7 +486,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
       } catch { /* non-critical */ }
 
       // Query each perp DEX clearinghouse
-      for (const dex of HyperliquidRealEngine.PERP_DEX_NAMES) {
+      for (const dex of HyperliquidEngine.PERP_DEX_NAMES) {
         try {
           // v2.0.32: Omit dex field for default DEX ('') — HL API rejects dex: 0 or dex: ''
           const body: Record<string, unknown> = { type: 'clearinghouseState', user: this.walletAddress };
@@ -623,7 +623,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     dir: string;
   }>> {
     // v2.0.79: Return cached fills if fresh and same limit
-    if (this.fillsCache && this.fillsCache.limit >= limit && (Date.now() - this.fillsCache.ts) < HyperliquidRealEngine.FILLS_CACHE_TTL_MS) {
+    if (this.fillsCache && this.fillsCache.limit >= limit && (Date.now() - this.fillsCache.ts) < HyperliquidEngine.FILLS_CACHE_TTL_MS) {
       return this.fillsCache.value.slice(0, limit);
     }
     // v2.0.79: If a fetch is already in flight, await it
@@ -996,7 +996,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
 
   /**
    * v2.0.32: Get the asset index for a given symbol (public method).
-   * Used by realTradingManager to get the correct asset index for cancelling orders.
+   * Used by tradingManager to get the correct asset index for cancelling orders.
    */
   async getAssetIndexForSymbol(symbol: string): Promise<number> {
     const asset = await getAssetIndex(symbol);
@@ -1104,7 +1104,7 @@ export class HyperliquidRealEngine implements RealTradingEngine {
     // HL supports native trigger orders — place them if we have the position details
     try {
       const positions = await this.getPositions();
-      // v2.0.31: Match by symbol (passed from realTradingManager) or by positionId
+      // v2.0.31: Match by symbol (passed from tradingManager) or by positionId
       let pos = positions.find(p => p.id === positionId)
         ?? positions.find(p => p.symbol.toLowerCase() === positionId.toLowerCase());
       if (!pos) {

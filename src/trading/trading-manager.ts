@@ -7,7 +7,7 @@ import { config } from '../config/index.ts';
 import { PortfolioTracker, normalizeSymbol } from './portfolio.ts';
 import { RiskEngine } from '../risk/engine.ts';
 import { PaperTradingEngine } from './paper-engine.ts';
-import { HyperliquidRealEngine } from './hyperliquid-real-engine.ts';
+import { HyperliquidEngine } from './hyperliquid-engine.ts';
 import { getATR, computeATRSLTP } from '../analysis/atr.ts';
 import type {
   TradeMode,
@@ -29,12 +29,12 @@ export interface TradingManagerConfig {
   hyperliquidPrivateKey: string;
 }
 
-export class RealTradingManager {
+export class TradingManager {
   private config: TradingManagerConfig;
   private paperEngine: PaperTradingEngine;
   private portfolio: PortfolioTracker;
   private riskEngine: RiskEngine;
-  private hyperliquidEngine: HyperliquidRealEngine | null = null;
+  private hyperliquidEngine: HyperliquidEngine | null = null;
   /** v2.0.XX: Max portion of TOTAL equity for all positions combined (10%-100%).
    *  Synced from MarketAgent config via setMaxPortionPct(). Checked BEFORE
    *  placing real orders so we don't send a trade to HL that exceeds the cap.
@@ -63,7 +63,7 @@ export class RealTradingManager {
 
     // Initialize Hyperliquid engine if keys are provided
     if (config.hyperliquidWalletAddress && config.hyperliquidPrivateKey) {
-      this.hyperliquidEngine = new HyperliquidRealEngine(
+      this.hyperliquidEngine = new HyperliquidEngine(
         config.hyperliquidWalletAddress,
         config.hyperliquidPrivateKey,
       );
@@ -108,7 +108,7 @@ export class RealTradingManager {
       return false;
     }
 
-    this.hyperliquidEngine = new HyperliquidRealEngine(wallet, privKey);
+    this.hyperliquidEngine = new HyperliquidEngine(wallet, privKey);
     log.info('✓ Hyperliquid real engine initialized on demand', {
       wallet: `${wallet.slice(0, 6)}...${wallet.slice(-4)}`,
     });
@@ -177,7 +177,7 @@ export class RealTradingManager {
 
   /**
    * Get the user's most recent N fills from the active exchange (v2.0.19).
-   * Only HyperliquidRealEngine supports this; returns [] for paper mode.
+   * Only HyperliquidEngine supports this; returns [] for paper mode.
    * Used to sync the UI Trade Records panel with the real exchange.
    */
   async getRecentFills(limit = 5): Promise<Array<{
@@ -191,7 +191,7 @@ export class RealTradingManager {
     dir: string;
   }>> {
     const engine = this.getActiveEngine();
-    if (engine instanceof HyperliquidRealEngine) {
+    if (engine instanceof HyperliquidEngine) {
       try {
         return await engine.getRecentFills(limit);
       } catch (err) {
@@ -532,7 +532,7 @@ export class RealTradingManager {
         log.info(`🎯 SL/TP from S/R: ${decision.symbol} entry=$${actualEntryPrice.toFixed(2)} SL=$${slPrice.toFixed(2)} (${(slPctActual*100).toFixed(2)}%) TP=$${tpPrice.toFixed(2)} (${(tpPctActual*100).toFixed(2)}%) S/R: support=${srSupport ?? 'N/A'} resistance=${srResistance ?? 'N/A'}`);
 
         // Step 3: Place SL/TP on the exchange with retry logic
-        if (engine instanceof HyperliquidRealEngine) {
+        if (engine instanceof HyperliquidEngine) {
           let sltpSuccess = false;
           for (let attempt = 1; attempt <= 3; attempt++) {
             try {
@@ -606,7 +606,7 @@ export class RealTradingManager {
     //   - Paper trades never get tagged as 'hyperliquid-real'
     //   - Real trades never lose entryThesis from paper mirror re-imports
     //   - The trade execution pipeline is deterministic by trade mode
-    log.warn(`⚠️ RealTradingManager.executeDecision called but no active engine (tradeMode=${this.config.tradeMode}). Paper trades should go through paperEngine directly.`);
+    log.warn(`⚠️ TradingManager.executeDecision called but no active engine (tradeMode=${this.config.tradeMode}). Paper trades should go through paperEngine directly.`);
     return { success: false, error: 'No active exchange engine — paper trades should use paperEngine directly' };
   }
 
@@ -666,7 +666,7 @@ export class RealTradingManager {
         // was actually closed on HL. If there's a closing fill after openedAt,
         // it's a genuine close, not an API failure.
         let recentFillsForCheck: Array<{ symbol: string; closedPnl: number; side: string; price: number; size: number; timestamp: number; fee: number; dir: string }> = [];
-        if (engine instanceof HyperliquidRealEngine) {
+        if (engine instanceof HyperliquidEngine) {
           try {
             recentFillsForCheck = await engine.getRecentFills(50);
           } catch { /* non-critical */ }
@@ -727,7 +727,7 @@ export class RealTradingManager {
       // v2.0.32: Fetch recent HL fills to get actual realized PnL for closed positions.
       // HL's closedPnl is the real money gained/lost (not leveraged), already includes fees.
       let recentFills: Array<{ symbol: string; closedPnl: number; side: string; price: number; size: number; timestamp: number; fee: number; dir: string }> = [];
-      if (engine instanceof HyperliquidRealEngine) {
+      if (engine instanceof HyperliquidEngine) {
         try {
           recentFills = await engine.getRecentFills(20);
         } catch { /* non-critical */ }
@@ -944,7 +944,7 @@ export class RealTradingManager {
 
     // v2.0.143: Paper mode is no longer handled here. index.ts routes
     // paper position closes directly to portfolio.closePosition().
-    log.warn(`⚠️ RealTradingManager.closePosition called but no active engine (tradeMode=${this.config.tradeMode}). Paper positions should be closed via portfolio.closePosition() directly.`);
+    log.warn(`⚠️ TradingManager.closePosition called but no active engine (tradeMode=${this.config.tradeMode}). Paper positions should be closed via portfolio.closePosition() directly.`);
     return false;
   }
 
@@ -982,9 +982,9 @@ export class RealTradingManager {
    *      (direction, no-widen, min-distance, min-gap, max-narrow-step)
    *   2. portfolio.ts adjustPosition() — hard safety layer
    *      (direction, no-widen, not-too-tight, min-gap, max-narrow-step)
-   *   3. real-trading-manager.ts adjustPosition() — debounce + HL placement
+   *   3. trading-manager.ts adjustPosition() — debounce + HL placement
    *      (uses validated values from layer 2, or existing if rejected)
-   *   4. hyperliquid-real-engine.ts adjustPosition() — HL trigger orders
+   *   4. hyperliquid-engine.ts adjustPosition() — HL trigger orders
    *      (cancel existing + place fresh SL + TP)
    */
   async adjustPosition(positionId: string, sl?: number, tp?: number): Promise<void> {
@@ -1055,7 +1055,7 @@ export class RealTradingManager {
     // v2.0.51: Use getEngineForExchange so this works in paper mode too
     // (for legacy real positions that need SL/TP sync).
     const engine = this.getEngineForExchange('hyperliquid');
-    if (!engine || !(engine instanceof HyperliquidRealEngine)) return;
+    if (!engine || !(engine instanceof HyperliquidEngine)) return;
 
     try {
       // Get all open orders on HL (both DEX 0 + xyz)
