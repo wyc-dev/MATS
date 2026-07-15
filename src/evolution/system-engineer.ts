@@ -422,29 +422,57 @@ function buildDirectionSummary(records: ThesisExperienceRecord[]): string {
 }
 
 function readRelevantSourceCode(): string {
-  const files = [
-    'src/evolution/thesis-experience.ts:660:730',
-    'src/evolution/experience-digester.ts:495:525',
-    'src/evolution/reason-analytics.ts:372:420',
-    'src/evolution/shadow-trade-engine.ts:220:360',
-    'src/evolution/shadow-trade-engine.ts:408:480',
-    'src/evolution/olr-engine.ts:360:380',
-    'src/cognition/hacp.ts:905:960',
-  ];
-  // v2.0.188: Also read test files so the LLM understands what behavior
-  // the tests expect — prevents proposing fixes that break tests.
-  const testFiles = [
-    'tests/evolution-memory.test.ts:224:300',
-  ];
-  const parts: string[] = [];
-  for (const spec of [...files, ...testFiles]) {
-    const [file, start, end] = spec.split(':');
+  // v2.0.193: Read ALL files in allowed scope — let the LLM see everything
+  // it's allowed to modify. This prevents oldCode hallucination caused by
+  // only seeing partial snippets.
+  const { readdirSync, statSync } = require('node:fs') as typeof import('node:fs');
+  const files: string[] = [];
+
+  // Recursively collect all .ts files from allowed directories
+  const collectFiles = (dir: string) => {
     try {
-      const content = readFileSync(join(PROJECT_ROOT, file!), 'utf-8');
+      const entries = readdirSync(join(PROJECT_ROOT, dir));
+      for (const entry of entries) {
+        const fullPath = join(dir, entry);
+        const absPath = join(PROJECT_ROOT, fullPath);
+        const stat = statSync(absPath);
+        if (stat.isDirectory()) {
+          collectFiles(fullPath);
+        } else if (entry.endsWith('.ts')) {
+          files.push(fullPath);
+        }
+      }
+    } catch { /* skip unreadable dirs */ }
+  };
+
+  collectFiles('src/evolution');
+  collectFiles('src/cognition');
+  collectFiles('src/analysis');
+  collectFiles('src/agents');
+  collectFiles('tests');
+
+  // Also read test files
+  const testFiles = files.filter(f => f.startsWith('tests/'));
+  const srcFiles = files.filter(f => !f.startsWith('tests/'));
+
+  const parts: string[] = [];
+  // Read source files (truncate each to 200 lines max to stay within token budget)
+  for (const file of srcFiles) {
+    try {
+      const content = readFileSync(join(PROJECT_ROOT, file), 'utf-8');
       const lines = content.split('\n');
-      const s = parseInt(start ?? '0') - 1;
-      const e = parseInt(end ?? String(lines.length));
-      parts.push(`### ${file} (lines ${start}-${end})\n\`\`\`typescript\n${lines.slice(s, e).join('\n')}\n\`\`\``);
+      const maxLines = 200;
+      const truncated = lines.length > maxLines
+        ? lines.slice(0, maxLines).join('\n') + `\n// ... (${lines.length - maxLines} more lines)`
+        : lines.join('\n');
+      parts.push(`### ${file} (${lines.length} lines${lines.length > maxLines ? `, showing first ${maxLines}` : ''})\n\`\`\`typescript\n${truncated}\n\`\`\``);
+    } catch { /* skip */ }
+  }
+  // Read test files (full — they're short)
+  for (const file of testFiles) {
+    try {
+      const content = readFileSync(join(PROJECT_ROOT, file), 'utf-8');
+      parts.push(`### ${file}\n\`\`\`typescript\n${content}\n\`\`\``);
     } catch { /* skip */ }
   }
   return parts.join('\n\n');
