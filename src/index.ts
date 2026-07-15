@@ -50,7 +50,7 @@ import { OLREngine, type OLRQueryResult } from './evolution/olr-engine.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
-import { auditDirectionIntegrity } from './evolution/direction-audit.ts';
+import { auditTradeRecords } from './evolution/direction-audit.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
 import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent, computePriceNewsTiming, normalizeBaseAsset, type TimingCandle } from './analysis/news-sentiment.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord, CycleSummary } from './types/index.ts';
@@ -1823,21 +1823,23 @@ ${currentPrompt || '(empty — this is the first input)'}`;
    *  4. Agent Outcomes — so the system knows which agents were wrong
    *  5. Evolution — so the strategy adapts to the loss
    */
-  /** v2.0.178: Direction integrity self-audit — verifies that all learning
-   *  systems correctly separate BUY and SELL records. Runs at startup and
-   *  every 10 cycles. Detects direction-mixing regressions before they
-   *  silently corrupt the learning system. */
+  /** v2.0.179: Trade record integrity audit — runs at startup and every 2
+   *  cycles. Examines every EXP record for suspicious patterns: direction
+   *  losing streaks, win rate divergence, missing market conditions, PnL
+   *  inconsistencies, premature SL patterns, MFE giveback, missing fusion
+   *  data, and invalid side fields. */
   private runDirectionAudit(): void {
     try {
       if (!this.expMemory) return;
       const records = this.expMemory.getRecords();
       if (records.length === 0) return;
-      const result = auditDirectionIntegrity(records);
-      if (!result.passed) {
-        log.warn(`🚨 [direction-audit] Direction integrity issues detected — check learning system for direction-mixing bugs`);
+      const result = auditTradeRecords(records);
+      const critical = result.incidents.filter(i => i.severity === 'critical');
+      if (critical.length > 0) {
+        log.warn(`🚨 [trade-audit] ${critical.length} CRITICAL issues detected — investigate immediately`);
       }
     } catch (err) {
-      log.warn(`[direction-audit] failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(`[trade-audit] failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -2762,8 +2764,8 @@ ${recentExamples}
     // This caused multiple HACP cycles to run simultaneously.
     this.cycleInProgress = true;
 
-    // v2.0.178: Direction integrity audit every 10 cycles
-    if (this.totalCycles > 0 && this.totalCycles % 10 === 0) {
+    // v2.0.179: Trade record integrity audit every 2 cycles
+    if (this.totalCycles > 0 && this.totalCycles % 2 === 0) {
       void this.runDirectionAudit();
     }
 
