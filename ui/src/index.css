@@ -491,12 +491,12 @@ body {
 
 .panel-rgb-border {
   position: relative;
-  border: 1px solid #aaaaaa;
+  border: 1px solid #333333;
   border-radius: var(--radius-xl);
 }
 
 .panel-rgb-border:hover {
-  border-color: #000000;
+  border-color: #666666;
 }
 
 .panel-rgb-border::before {
