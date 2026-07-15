@@ -607,6 +607,116 @@ class MATSSystem {
         return updated;
       });
 
+      // v2.0.189: System Engineer corrects trade record via LLM
+      // User sends instruction (e.g. "Post-Review is wrong, MFE $11.72 is position value not profit")
+      // → LLM reads the trade + instruction → rewrites entryThesis/exitThesis/postReview → saves
+      this.apiServer.setCorrectTradeHandler(async (tradeId: string, instruction: string): Promise<{ success: boolean; correctedFields: Record<string, string>; reason: string }> => {
+        log.info(`🔧 [correct-trade] System Engineer correction requested: ${tradeId} — "${instruction.slice(0, 80)}"`);
+        try {
+          // Find the trade in closed real trades or paper trades
+          const realTrades = this.portfolio.getClosedRealTrades();
+          const paperTrades = this.paperEngine.getTrades();
+          const trade = realTrades.find(t => t.id === tradeId) ?? paperTrades.find(t => t.id === tradeId);
+          if (!trade) {
+            return { success: false, correctedFields: {}, reason: `Trade ${tradeId} not found` };
+          }
+
+          // Build context for the LLM
+          const margin = (trade.entryPrice * trade.quantity) / (trade.leverage ?? 1);
+          const maePnl = (trade.minValueReached ?? 0) - margin;
+          const mfePnl = (trade.maxValueReached ?? 0) - margin;
+          const tradeContext = `Trade: ${trade.side.toUpperCase()} ${trade.symbol}
+PnL: $${trade.pnl.toFixed(2)} (${(trade.pnlPct * 100).toFixed(1)}%)
+Entry: $${trade.entryPrice.toFixed(2)} Exit: $${trade.exitPrice?.toFixed(2) ?? 'N/A'}
+Hold: ${Math.max(0, Math.round((trade.closedAt - trade.openedAt) / 60_000))}min
+MAE (worst PnL dip): $${maePnl.toFixed(2)}
+MFE (best PnL peak): $${mfePnl.toFixed(2)}
+Margin: $${margin.toFixed(2)}
+
+Current Entry Thesis: ${trade.entryThesis ?? '—'}
+Current Exit Thesis: ${trade.exitThesis ?? '—'}
+Current Post-Review: ${trade.postReview ?? '—'}
+
+User instruction: ${instruction}`;
+
+          const provider = getActiveProvider();
+          const response = await provider.chat({
+            messages: [
+              {
+                role: 'system',
+                content: `You are the System Engineer of MATS, a multi-agent quant trading system. A user has identified an error in a trade record's thesis or post-review. Your job is to rewrite the incorrect fields based on the user's instruction.
+
+You understand the learning system deeply:
+- MAE/MFE are position VALUE (margin + unrealized PnL), NOT PnL. MFE=$11.72 with margin=$9.98 means peak profit was $1.74, not $11.72.
+- Entry Thesis is the frozen rationale at open. Only rewrite if the user says it's wrong.
+- Exit Thesis is the close rationale. Only rewrite if the user says it's wrong.
+- Post-Review is the LLM-generated post-trade analysis. Rewrite if the user says it contains errors.
+
+Rules:
+- Only rewrite fields the user's instruction implies need correction.
+- Keep fields the user didn't mention unchanged.
+- Maintain the [1h: ...] [1d: ...] format for thesis fields.
+- Post-Review should be 2-4 sentences, plain text, no markdown.
+- The corrected data must be accurate — MATS learns from this.
+
+Respond ONLY with JSON:
+{"entryThesis": "corrected text or null to keep unchanged", "exitThesis": "corrected text or null to keep unchanged", "postReview": "corrected text or null to keep unchanged", "reason": "brief explanation of what you changed and why"}`,
+              },
+              { role: 'user', content: tradeContext },
+            ],
+            temperature: 0.2,
+            model: getAgentModel('terminal_agent'),
+            timeoutMs: 30_000,
+          });
+
+          // Parse response
+          let corrected: { entryThesis?: string | null; exitThesis?: string | null; postReview?: string | null; reason?: string };
+          try {
+            let s = response.content.trim();
+            const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+            if (fence && fence[1]) s = fence[1].trim();
+            const start = s.indexOf('{');
+            if (start < 0) throw new Error('no JSON');
+            let depth = 0; let end = -1;
+            for (let i = start; i < s.length; i++) {
+              if (s[i] === '{') depth++;
+              else if (s[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+            }
+            if (end < 0) throw new Error('unbalanced');
+            corrected = JSON.parse(s.slice(start, end + 1));
+          } catch {
+            return { success: false, correctedFields: {}, reason: 'Failed to parse LLM response' };
+          }
+
+          // Apply corrections
+          const correctedFields: Record<string, string> = {};
+          if (corrected.entryThesis && corrected.entryThesis.trim()) {
+            this.portfolio.updateClosedRealTradeField(tradeId, 'entryThesis', corrected.entryThesis.trim());
+            this.paperEngine.updateTradeField(tradeId, 'entryThesis', corrected.entryThesis.trim());
+            correctedFields['entryThesis'] = corrected.entryThesis.trim();
+          }
+          if (corrected.exitThesis && corrected.exitThesis.trim()) {
+            this.portfolio.updateClosedRealTradeField(tradeId, 'exitThesis', corrected.exitThesis.trim());
+            this.paperEngine.updateTradeField(tradeId, 'exitThesis', corrected.exitThesis.trim());
+            correctedFields['exitThesis'] = corrected.exitThesis.trim();
+          }
+          if (corrected.postReview && corrected.postReview.trim()) {
+            this.portfolio.updateClosedRealTradeField(tradeId, 'postReview', corrected.postReview.trim());
+            this.paperEngine.updateTradeField(tradeId, 'postReview', corrected.postReview.trim());
+            correctedFields['postReview'] = corrected.postReview.trim();
+          }
+
+          this.persistPortfolio();
+          this.pushToAPI();
+          log.info(`✅ [correct-trade] Corrected ${tradeId}: ${Object.keys(correctedFields).join(', ')} — ${corrected.reason ?? ''}`);
+
+          return { success: true, correctedFields, reason: corrected.reason ?? 'Corrections applied' };
+        } catch (err) {
+          log.warn(`[correct-trade] failed: ${err instanceof Error ? err.message : String(err)}`);
+          return { success: false, correctedFields: {}, reason: err instanceof Error ? err.message : String(err) };
+        }
+      });
+
       // Wire up Market Agent API handlers
       this.apiServer.setMarketAgentSetTradeModeHandler(async (mode) => {
         log.info(`Market Agent: trade mode → ${mode}`);
