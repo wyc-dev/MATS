@@ -251,8 +251,9 @@ export class OllamaProvider implements LLMProvider {
             // v2.0.208: Pass maxTokens as num_predict (Ollama's output token limit).
             // Without this, Ollama uses its default (often 128 or 2048) which
             // truncates long JSON responses from System Engineer (oldCode/newCode
-            // can be 50+ lines each). Default to -1 (unlimited) if not specified.
-            num_predict: request.maxTokens ?? -1,
+            // can be 50+ lines each). Use a large default when not specified.
+            // Note: Ollama cloud API rejects -1 (unlimited) — must be positive.
+            num_predict: request.maxTokens ?? 8192,
           },
           stream: false,
         };
