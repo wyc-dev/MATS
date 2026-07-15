@@ -168,10 +168,6 @@ export class PaperTradingEngine {
     return { wins, losses, total, winRate: total > 0 ? wins / total : 0 };
   }
 
-  getOrders(): readonly Order[] {
-    return Array.from(this.orders.values());
-  }
-
   updatePrice(symbol: string, price: number): void {
     // v2.0.31: Use case-preserving normalization for colon-prefixed symbols
     const sym = symbol.includes(':') ? symbol : symbol.toLowerCase();

@@ -78,15 +78,11 @@ export function isThesisPlaceholder(thesis: string | undefined | null): boolean 
 
 /** Callback fired when a position is closed (SL/TP, reconciliation, or explicit close) */
 export type OnPositionClosed = (trade: TradeRecord) => void;
-/** Callback fired when a position is opened */
-export type OnPositionOpened = (trade: TradeRecord) => void;
 
 export class PortfolioTracker {
   private portfolio: Portfolio;
   /** Callback so PaperTradingEngine can capture trades from SL/TP closes */
   private onPositionClosedCb: OnPositionClosed | null = null;
-  /** Callback so PaperTradingEngine can capture open trades */
-  private onPositionOpenedCb: OnPositionOpened | null = null;
   /** v2.0.32: Separate callback for exchange position closes — triggers
    * learning WITHOUT adding to paperEngine.trades[] (real trades should
    * not appear in paper trade list). */
@@ -356,16 +352,6 @@ export class PortfolioTracker {
     return before - this.closedRealTrades.length;
   }
 
-  /** Register a callback for position opens (used by PaperTradingEngine to capture open trades) */
-  setOnPositionOpened(cb: OnPositionOpened): void {
-    this.onPositionOpenedCb = cb;
-  }
-
-  /** Get restored trades from disk (for PaperTradingEngine to consume) */
-  getRestoredTrades(): readonly import('../types/index.ts').TradeRecord[] {
-    return this.restoredTrades;
-  }
-
   getPortfolio(): Readonly<Portfolio> {
     return this.portfolio;
   }
@@ -454,10 +440,6 @@ export class PortfolioTracker {
       ...this.portfolio.positions.keys(),
       ...this.realPositions.keys(),
     ]));
-  }
-
-  getPositionCount(): number {
-    return this.portfolio.positions.size + this.realPositions.size;
   }
 
   /** v2.0.72: Get all real (exchange) positions — completely separate from paper. */
@@ -615,9 +597,6 @@ export class PortfolioTracker {
       agentId: order.agentId,
       status: 'open',
     };
-    if (this.onPositionOpenedCb) {
-      this.onPositionOpenedCb(openTrade);
-    }
 
     log.info(`Position opened: ${order.side.toUpperCase()} ${quantity.toFixed(6)} ${symbol} @ ${entryPrice}`, {
       cost: margin.toFixed(2),
@@ -1591,11 +1570,6 @@ export class PortfolioTracker {
     return trade;
   }
 
-  getAllTrades(): TradeRecord[] {
-    // In a real system, store trades in a DB. For now, return empty.
-    return [];
-  }
-
   private checkPositionExits(pos: Position): void {
     // v2.0.156: Skip local SL/TP monitoring for real exchange positions.
     // Real positions have SL/TP placed as trigger orders on HL — the exchange
@@ -1731,11 +1705,6 @@ export class PortfolioTracker {
     }
 
     this.portfolio.lastUpdated = Date.now();
-  }
-
-  resetDailyPnl(): void {
-    this.portfolio.dailyPnl = 0;
-    this.portfolio.dailyPnlResetDate = this.todayString();
   }
 
   /**

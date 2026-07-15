@@ -17,15 +17,6 @@ import type { TradingDecision, PerSymbolDecision, MultiSymbolDecision } from '..
 // stores them as xyz:MU → hasPosition() fails → duplicate opens + false closes.
 import { normalizeSymbol } from './portfolio.ts';
 
-/** Default TradingDecision with safe fallback values */
-export const DEFAULT_TRADING_DECISION: TradingDecision = {
-  action: 'hold',
-  symbol: 'BTCUSDT',
-  positionSizePct: 0,
-  rationale: 'Default rationale — required field missing from LLM output.',
-  urgency: 'patient',
-};
-
 // ═══════════════════════════════════════════════════════════════
 // v2.0.41: MAX_POSITION_PCT REMOVED — Market Agent controls position size.
 //
@@ -131,21 +122,6 @@ export function normalizeDecision(raw: Partial<TradingDecision> | undefined | nu
     ...(srSupport !== undefined ? { srSupport } : {}),
     ...(srResistance !== undefined ? { srResistance } : {}),
   } as TradingDecision;
-}
-
-/**
- * Check if a decision is effectively "do nothing" (HOLD with no position).
- */
-export function isHoldDecision(decision: TradingDecision): boolean {
-  return decision.action === 'hold' || decision.positionSizePct <= 0;
-}
-
-/**
- * Get human-readable summary of a decision for logging.
- */
-export function summarizeDecision(decision: TradingDecision): string {
-  const size = (decision.positionSizePct * 100).toFixed(1);
-  return `${decision.action.toUpperCase()} ${decision.symbol} ${size}% — ${decision.rationale.slice(0, 60)}`;
 }
 
 // ─── Multi-Symbol Decision Utilities (v1.9.2) ───
