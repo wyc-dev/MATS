@@ -1262,6 +1262,22 @@ body {
   min-height: 80px;
 }
 
+/* v2.0.196: Balance/Equity cell breathing animations */
+@keyframes balance-real-breathe {
+  0%, 100% { box-shadow: 0 0 8px rgba(91, 141, 239, 0.1); border-color: rgba(91, 141, 239, 0.3); }
+  50% { box-shadow: 0 0 16px rgba(91, 141, 239, 0.25); border-color: rgba(91, 141, 239, 0.5); }
+}
+@keyframes balance-paper-breathe {
+  0%, 100% { box-shadow: 0 0 8px rgba(136, 136, 136, 0.1); border-color: rgba(136, 136, 136, 0.3); }
+  50% { box-shadow: 0 0 16px rgba(136, 136, 136, 0.25); border-color: rgba(136, 136, 136, 0.5); }
+}
+.portfolio-cell.balance-real {
+  animation: balance-real-breathe 4s ease-in-out infinite;
+}
+.portfolio-cell.balance-paper {
+  animation: balance-paper-breathe 4s ease-in-out infinite;
+}
+
 .portfolio-cell .stat-label {
   margin-bottom: var(--space-1);
   font-size: var(--fs-sm);
@@ -2062,6 +2078,27 @@ body {
   background: var(--accent-bg);
   color: var(--accent);
   border-color: rgba(245, 166, 35, 0.3);
+}
+
+/* v2.0.196: Trade Mode button breathing animations */
+@keyframes paper-breathe {
+  0%, 100% { box-shadow: 0 0 8px rgba(136, 136, 136, 0.1); border-color: rgba(136, 136, 136, 0.3); }
+  50% { box-shadow: 0 0 16px rgba(136, 136, 136, 0.25); border-color: rgba(136, 136, 136, 0.5); }
+}
+@keyframes real-breathe {
+  0%, 100% { box-shadow: 0 0 8px rgba(91, 141, 239, 0.1); border-color: rgba(91, 141, 239, 0.3); }
+  50% { box-shadow: 0 0 16px rgba(91, 141, 239, 0.25); border-color: rgba(91, 141, 239, 0.5); }
+}
+.year-btn-wide.active {
+  animation: real-breathe 4s ease-in-out infinite;
+  background: rgba(91, 141, 239, 0.15);
+  color: rgb(91, 141, 239);
+  border-color: rgba(91, 141, 239, 0.3);
+}
+.year-btn-wide:not(.active) {
+  animation: paper-breathe 4s ease-in-out infinite;
+  border-color: rgba(136, 136, 136, 0.3);
+  color: #888888;
 }
 
 /* ── Backtest Progress Bar ── */
