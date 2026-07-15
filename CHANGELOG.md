@@ -4,6 +4,47 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.164 — Duplicate Close Record Root Cause + Direction Flip Order Fix + Reimport Field Preservation
+
+### Duplicate "CLOSED" Records in UI — Root Cause Fix
+
+**Root cause**: `serializePortfolio()` merged two independent data sources into one `tradeRecords` array sent to the UI:
+1. `closedRealTrades` — from portfolio, with full thesis/MAE/MFE/postReview
+2. `cachedHLFills` — raw HL fill data from `getRecentFills(20)`, with all thesis/MAE/MFE/postReview fields set to `undefined`
+
+When a closing fill existed in both (which it always did — `closeExchangePosition` creates a `closedRealTrade`, and the raw fill stays in `cachedHLFills` until it scrolls out of HL's 20-fill window), the UI showed two records for the same close: one complete, one incomplete.
+
+**Fix**: Added a dedup filter in `serializePortfolio()` on the `cachedHLFills` mapping. For each closing fill, checks if a `closedRealTrade` already exists with the same `symbol + side + close timestamp` (within 1 minute). If so, the `hl-fill-*` record is skipped — the complete record wins. The incomplete duplicate disappears from the UI automatically on next refresh.
+
+### Direction Flip Order Fix
+
+**Root cause**: The v2.0.163 direction flip check ran AFTER the SL/TP adjustment block. When agents suggested the opposite direction, the code would:
+1. Adjust SL/TP on the existing position (wasted HL API call, leaves stale trigger orders)
+2. Then close the position via direction flip
+
+**Fix**: Moved the direction flip check to BEFORE the SL/TP adjustment block. Now when agents suggest opposite direction, the position is closed immediately without wasting an SL/TP adjustment call on a doomed position. Also added `continue` after the flip close to prevent accessing `pos.*` (which is deleted by `closeTrade`) in the thesis sync code below.
+
+### Reimport Field Preservation (v2.0.162)
+
+`syncExchangePositions` close+reimport path now preserves `holdReason`, `originalStopLossPrice`, `originalTakeProfitPrice` in addition to the already-preserved `entryThesis` + `minValueReached` + `maxValueReached`. Previously these fields were lost when a paper mirror position was replaced by an exchange-imported position, causing SL/TP narrowing detection to break (no original SL/TP to compare against).
+
+### Delete Handler for hl-fill-* IDs (v2.0.163)
+
+The delete trade handler now supports `hl-fill-*` trade IDs (synthesized from raw HL fill data, not stored in any persistent array). Extracts timestamp + symbol from the ID and removes the matching fill from `cachedHLFills`. Also fixed duplicate `setDeleteTradeHandler` registration (v2.0.161) where a second empty handler overwrote the first, making delete always return "Unknown error".
+
+### Per-Symbol Direction Flip (v2.0.163)
+
+When per-symbol consensus suggests the OPPOSITE direction of an existing position (e.g. agents say SELL but a BUY position is open), the system now closes the existing position instead of just recording an audit log. The new trade executes on the next cycle (close needs to settle on HL first). This matches the active symbol overlap guard's conviction-based reversal logic.
+
+### Files Changed
+
+- `src/index.ts` — serializePortfolio hl-fill dedup filter, direction flip moved before SL/TP, `continue` after flip close, delete handler for hl-fill-* IDs, MAE/MFE in agent context for real positions
+- `src/trading/real-trading-manager.ts` — Preserve holdReason + originalSL/TP on close+reimport
+
+**Build**: `tsc --noEmit` clean. `vite build` clean (442KB gzipped 132KB). 94 tests pass.
+
+---
+
 ## v2.0.160 — Real Position Persistence + Phantom Close Root Cause + Fill Direction Matching + Trade Dedup
 
 ### Real Position Persistence — thesis + MAE/MFE + postReview survive restart

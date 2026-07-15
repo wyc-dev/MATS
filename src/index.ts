@@ -4665,6 +4665,40 @@ ${recentExamples}
           continue;
         }
 
+        // v2.0.163: Direction flip check — MUST run before SL/TP adjustment.
+        // If agents suggest the OPPOSITE direction (not same), treat it as a
+        // direction flip — close the existing position and let the new trade
+        // execute next cycle. This is the same conviction-based reversal logic
+        // as the active symbol overlap guard.
+        // CRITICAL: This must run BEFORE SL/TP adjustment — otherwise we waste
+        // an HL API call adjusting SL/TP on a position we're about to close,
+        // and may leave stale trigger orders on a closed position.
+        if ((psc.action === 'buy' || psc.action === 'sell') && !psc.closePosition) {
+          const posSide = pos.side;
+          const wantsSameDirection = (psc.action === 'buy' && posSide === 'buy') || (psc.action === 'sell' && posSide === 'sell');
+          if (!wantsSameDirection) {
+            // Direction flip: close existing position first
+            log.warn(`🔄 Per-symbol flip: ${psc.symbol} ${posSide.toUpperCase()} → ${psc.action.toUpperCase()}. Closing existing position first.`);
+            const flipCloseSuccess = await this.closeTrade(psc.symbol, `Position flip: closing ${posSide.toUpperCase()} to open ${psc.action.toUpperCase()}`);
+            if (flipCloseSuccess) {
+              log.info(`  → Flipped ${psc.symbol}. Position will be re-evaluated next cycle for ${psc.action.toUpperCase()} entry.`);
+            } else {
+              log.error(`  → Failed to close ${psc.symbol} for flip — position remains ${posSide.toUpperCase()}`);
+            }
+            this.recordDecisionAudit(
+              psc.symbol,
+              psc.action as 'buy' | 'sell',
+              psc.confidence,
+              psc.entryThesis ?? psc.rationale ?? '',
+              [{ gate: 'direction-flip', passed: flipCloseSuccess, reason: `${psc.action.toUpperCase()} suggested but ${posSide.toUpperCase()} position open — closing for flip` }],
+              flipCloseSuccess,
+            );
+            // CRITICAL: continue — pos is deleted by closeTrade, must not
+            // access pos.* below (SL/TP adjust, thesis sync would crash)
+            continue;
+          }
+        }
+
         // Adjust TP/SL if suggested
         // v2.0.31: In real mode, also place native trigger orders on HL exchange
         // v2.0.54: Validate per-symbol consensus SL/TP direction BEFORE applying.
@@ -4706,37 +4740,6 @@ ${recentExamples}
             log.info(`📐 Per-symbol consensus: ADJUST ${psc.symbol} SL=${validSL?.toFixed(2) ?? '-'} TP=${validTP?.toFixed(2) ?? '-'}`);
           } else {
             log.warn(`📐 Per-symbol consensus: ADJUST ${psc.symbol} — all SL/TP rejected by direction validation, skipping`);
-          }
-        }
-
-        // v2.0.146: Record audit when agent suggests a direction that conflicts
-        // with the existing position but closePosition is false.
-        // v2.0.163: If agents suggest the OPPOSITE direction (not same), treat it
-        // as a direction flip — close the existing position and let the new
-        // trade execute. This is the same conviction-based reversal logic as
-        // the active symbol overlap guard.
-        if ((psc.action === 'buy' || psc.action === 'sell') && !psc.closePosition) {
-          const posSide = pos.side;
-          const wantsSameDirection = (psc.action === 'buy' && posSide === 'buy') || (psc.action === 'sell' && posSide === 'sell');
-          if (!wantsSameDirection) {
-            // Direction flip: close existing position first
-            log.warn(`🔄 Per-symbol flip: ${psc.symbol} ${posSide.toUpperCase()} → ${psc.action.toUpperCase()}. Closing existing position first.`);
-            const flipCloseSuccess = await this.closeTrade(psc.symbol, `Position flip: closing ${posSide.toUpperCase()} to open ${psc.action.toUpperCase()}`);
-            if (flipCloseSuccess) {
-              log.info(`  → Flipped ${psc.symbol}. Position will be re-evaluated next cycle for ${psc.action.toUpperCase()} entry.`);
-              // Don't execute the new trade this cycle — the close needs to settle
-              // on HL first. The next cycle will see no position and can enter.
-            } else {
-              log.error(`  → Failed to close ${psc.symbol} for flip — position remains ${posSide.toUpperCase()}`);
-            }
-            this.recordDecisionAudit(
-              psc.symbol,
-              psc.action as 'buy' | 'sell',
-              psc.confidence,
-              psc.entryThesis ?? psc.rationale ?? '',
-              [{ gate: 'direction-flip', passed: flipCloseSuccess, reason: `${psc.action.toUpperCase()} suggested but ${posSide.toUpperCase()} position open — closing for flip` }],
-              flipCloseSuccess,
-            );
           }
         }
 
@@ -6556,8 +6559,26 @@ ${recentExamples}
             maxValueReached: p.maxValueReached,
           })),
           // Recent HL fills (closing fills only)
+          // v2.0.164: Dedup against closedRealTrades — if a fill already has a
+          // proper trade record (with thesis/MAE/MFE/postReview), don't emit a
+          // second incomplete hl-fill-* record for the same close. This was
+          // causing duplicate "CLOSED" entries in the UI: one with full data
+          // (from closedRealTrades) and one with no thesis/MAE/MFE (from fills).
           ...this.cachedHLFills
             .filter(f => !f.dir.toLowerCase().includes('open'))
+            .filter(f => {
+              // Check if this fill's close is already represented in closedRealTrades
+              const fillSide: 'buy' | 'sell' = f.dir.toLowerCase().includes('short') ? 'sell' : 'buy';
+              const alreadyInClosedTrades = this.portfolio.getClosedRealTrades().some(ct =>
+                normalizeSymbol(ct.symbol) === normalizeSymbol(f.symbol) &&
+                ct.side === fillSide &&
+                Math.abs((ct.closedAt ?? 0) - f.timestamp) < 60_000 // within 1 min = same close
+              );
+              if (alreadyInClosedTrades) {
+                log.debug(`⏭️ serializePortfolio: hl-fill for ${f.symbol} @ ${f.timestamp} already in closedRealTrades — skipping to avoid duplicate`);
+              }
+              return !alreadyInClosedTrades;
+            })
             .map(f => {
               const positionSide: 'buy' | 'sell' = f.dir.toLowerCase().includes('short') ? 'sell' : 'buy';
               const openFill = this.cachedHLFills.find(of =>
