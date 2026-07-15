@@ -2041,77 +2041,85 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                   <IncidentField label="Exit Thesis" value={t.exitThesis ?? '— (no exit rationale recorded)'} pending={t.exitThesis == null} />
                   <IncidentField label="Post-Review" value={t.postReview ?? '— (generating… or no review available)'} pending={t.postReview == null} />
 
-                  {/* v2.0.190: System Engineer chat dialog — terminal-style like HACP Reception */}
-                  <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                  {/* v2.0.191: System Engineer chat dialog — fused terminal with breathing drop shadow */}
+                  <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)' }}>
                     {correctingTrade === cardId ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-                        {/* Chat history — terminal style */}
+                      <>
+                        <style>{`@keyframes se-breathe { 0%, 100% { box-shadow: inset 0 0 20px rgba(52, 211, 153, 0.05), 0 0 8px rgba(52, 211, 153, 0.1); border-color: rgba(52, 211, 153, 0.3); } 50% { box-shadow: inset 0 0 20px rgba(52, 211, 153, 0.08), 0 0 16px rgba(52, 211, 153, 0.25); border-color: rgba(52, 211, 153, 0.5); } }`}</style>
                         <div style={{
-                          maxHeight: '200px',
-                          overflowY: 'auto',
-                          padding: 'var(--space-3)',
-                          borderRadius: 'var(--radius-sm)',
-                          background: 'rgba(0, 0, 0, 0.3)',
-                          border: '1px solid rgba(52, 211, 153, 0.15)',
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: 'var(--fs-xs)',
-                          lineHeight: 1.6,
-                          scrollbarWidth: 'none',
+                          background: 'rgba(0, 0, 0, 0.4)',
+                          border: '1px solid rgba(52, 211, 153, 0.3)',
+                          borderRadius: 'var(--radius-md)',
+                          overflow: 'hidden',
+                          animation: 'se-breathe 4s ease-in-out infinite',
                         }}>
-                          <style>{`.correct-chat::-webkit-scrollbar { display: none; }`}</style>
-                          <div style={{ textAlign: 'center', color: 'var(--green)', fontWeight: 'var(--fw-bold)', marginBottom: 'var(--space-2)', paddingBottom: 'var(--space-1)', borderBottom: '1px solid rgba(52, 211, 153, 0.15)' }}>
-                            System Engineer
-                          </div>
-                          {correctHistory.length === 0 && (
-                            <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                              Describe what's wrong with this trade record. The System Engineer will correct it.
-                            </div>
-                          )}
-                          {correctHistory.map((msg, i) => (
-                            <div key={i} style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-1)', color: msg.role === 'user' ? 'var(--text-secondary)' : 'var(--green)' }}>
-                              <span style={{ color: msg.role === 'user' ? 'var(--text-muted)' : 'rgba(52, 211, 153, 0.5)', flexShrink: 0 }}>{msg.role === 'user' ? '>' : '⚙'}</span>
-                              <span style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</span>
-                            </div>
-                          ))}
-                          {correcting && (
-                            <div style={{ color: 'rgba(52, 211, 153, 0.8)', marginTop: 'var(--space-1)' }}>
-                              <span className="spinner" style={{ width: '10px', height: '10px', borderWidth: '2px', display: 'inline-block', marginRight: 'var(--space-2)', verticalAlign: 'middle' }} />
-                              Analyzing...
-                            </div>
-                          )}
-                        </div>
-                        {/* Input area */}
-                        <textarea
-                          className="market-search-input"
-                          placeholder={correcting ? 'Processing — please wait...' : 'Describe what needs correction...'}
-                          value={correctInput}
-                          onChange={e => { if (!correcting) setCorrectInput(e.target.value) }}
-                          disabled={correcting}
-                          onClick={(e) => e.stopPropagation()}
-                          style={{
-                            width: '100%',
-                            minHeight: '40px',
-                            resize: 'vertical',
-                            padding: 'var(--space-2)',
+                          {/* Chat history — terminal style */}
+                          <div style={{
+                            padding: 'var(--space-3)',
+                            minHeight: '50px',
+                            maxHeight: '200px',
+                            overflowY: 'auto',
                             fontFamily: 'var(--font-mono)',
                             fontSize: 'var(--fs-xs)',
-                            lineHeight: 1.5,
-                            opacity: correcting ? 0.5 : 1,
-                            border: '1px solid var(--glass-border)',
-                            borderRadius: 'var(--radius-sm)',
-                            background: 'transparent',
-                            color: 'var(--text-primary)',
-                            outline: 'none',
-                          }}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter' && !e.shiftKey) {
-                              e.preventDefault()
-                              e.stopPropagation()
-                              void handleCorrectTrade()
-                            }
-                          }}
-                        />
-                        <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
+                            lineHeight: 1.6,
+                            scrollbarWidth: 'none',
+                            borderBottom: '1px solid rgba(52, 211, 153, 0.15)',
+                          }}>
+                            <style>{`.se-chat::-webkit-scrollbar { display: none; }`}</style>
+                            <div style={{ textAlign: 'center', color: 'var(--green)', fontWeight: 'var(--fw-bold)', marginBottom: 'var(--space-2)', paddingBottom: 'var(--space-1)', borderBottom: '1px solid rgba(52, 211, 153, 0.15)' }}>
+                              System Engineer
+                            </div>
+                            {correctHistory.length === 0 && (
+                              <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                                Describe what's wrong with this trade record. The System Engineer will correct it.
+                              </div>
+                            )}
+                            {correctHistory.map((msg, i) => (
+                              <div key={i} style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-1)', color: msg.role === 'user' ? 'var(--text-secondary)' : 'var(--green)' }}>
+                                <span style={{ color: msg.role === 'user' ? 'var(--text-muted)' : 'rgba(52, 211, 153, 0.5)', flexShrink: 0 }}>{msg.role === 'user' ? '>' : '⚙'}</span>
+                                <span style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</span>
+                              </div>
+                            ))}
+                            {correcting && (
+                              <div style={{ color: 'rgba(52, 211, 153, 0.8)', marginTop: 'var(--space-1)' }}>
+                                <span className="spinner" style={{ width: '10px', height: '10px', borderWidth: '2px', display: 'inline-block', marginRight: 'var(--space-2)', verticalAlign: 'middle' }} />
+                                Analyzing...
+                              </div>
+                            )}
+                          </div>
+                          {/* Input area — fused bottom */}
+                          <textarea
+                            className="market-search-input"
+                            placeholder={correcting ? 'Processing — please wait...' : 'Describe what needs correction...'}
+                            value={correctInput}
+                            onChange={e => { if (!correcting) setCorrectInput(e.target.value) }}
+                            disabled={correcting}
+                            onClick={(e) => e.stopPropagation()}
+                            style={{
+                              width: '100%',
+                              minHeight: '40px',
+                              resize: 'vertical',
+                              padding: 'var(--space-3)',
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: 'var(--fs-xs)',
+                              lineHeight: 1.5,
+                              opacity: correcting ? 0.5 : 1,
+                              border: 'none',
+                              borderRadius: 0,
+                              background: 'transparent',
+                              color: 'var(--text-primary)',
+                              outline: 'none',
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                void handleCorrectTrade()
+                              }
+                            }}
+                          />
+                        </div>
+                        <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end', marginTop: 'var(--space-2)' }}>
                           <button
                             onClick={(e) => { e.stopPropagation(); setCorrectingTrade(null); setCorrectInput(''); setCorrectHistory([]) }}
                             style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 'var(--fs-xs)', display: 'flex', alignItems: 'center', gap: '3px' }}
@@ -2119,7 +2127,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                             <X size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />Close
                           </button>
                         </div>
-                      </div>
+                      </>
                     ) : (
                       <button
                         onClick={(e) => { e.stopPropagation(); setCorrectingTrade(cardId); setCorrectHistory([]) }}
