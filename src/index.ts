@@ -51,6 +51,7 @@ import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
 import { auditTradeRecordsLLM } from './evolution/direction-audit.ts';
+import { runSystemEngineer } from './evolution/system-engineer.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
 import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent, computePriceNewsTiming, normalizeBaseAsset, type TimingCandle } from './analysis/news-sentiment.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord, CycleSummary } from './types/index.ts';
@@ -1823,18 +1824,20 @@ ${currentPrompt || '(empty — this is the first input)'}`;
    *  4. Agent Outcomes — so the system knows which agents were wrong
    *  5. Evolution — so the strategy adapts to the loss
    */
-  /** v2.0.180: LLM-powered trade record audit — runs at startup and every 2
-   *  cycles. Feeds recent trade records to an LLM agent that examines them
-   *  for ANY suspicious pattern — not limited to a predefined checklist.
-   *  The LLM can detect issues that hardcoded rules would miss. */
+  /** v2.0.181: System Engineer agent — LLM-powered code review that reads
+   *  SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md + trade records +
+   *  relevant source code, detects issues, and generates fix proposals
+   *  (with code diffs + tests + changelog) written to audit-recommendations.jsonl.
+   *  Runs at startup and every 2 cycles. Has suggestion power, not execution power. */
   private async runDirectionAudit(): Promise<void> {
     try {
       if (!this.expMemory) return;
       const records = this.expMemory.getRecords();
       if (records.length === 0) return;
-      await auditTradeRecordsLLM(records);
+      // v2.0.181: Run the System Engineer agent (reads SystemEngineer.md + code + trades)
+      await runSystemEngineer(records);
     } catch (err) {
-      log.warn(`[trade-audit] failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(`[system-engineer] failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
