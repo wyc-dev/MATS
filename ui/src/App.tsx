@@ -1193,7 +1193,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           <div className="market-control-label">
             Cycle Period: <strong style={{ color: cyclePeriod <= 4 ? 'var(--red)' : 'var(--green)' }}>{cyclePeriod}m</strong>
             {cyclePeriod <= 4 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--red)', marginLeft: 'var(--space-3)' }}><AlertTriangle size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />High token cost</span>}
-            {cyclePeriod >= 5 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--green)', marginLeft: 'var(--space-3)' }}><CheckCircle size={12} color="var(--green)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />System Engineer active</span>}
+            {cyclePeriod >= 5 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--green)', marginLeft: 'var(--space-3)' }}><CheckCircle size={12} color="var(--green)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />System Engineer</span>}
           </div>
           <div className="slider-row">
             <input
