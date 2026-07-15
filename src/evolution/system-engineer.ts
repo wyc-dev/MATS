@@ -124,6 +124,7 @@ export async function runSystemEngineer(records: ThesisExperienceRecord[]): Prom
     return null;
   }
   engineerRunning = true;
+  try {
   const timestamp = Date.now();
   log.info(`🔧 [system-engineer] Starting autonomous audit (${records.length} trade records)`);
 
@@ -363,6 +364,15 @@ ZERO HALLUCINATION. If you're not sure, say "No issues found".`;
     return null;
   } finally {
     // v2.0.183: Release the lock so the next run can proceed
+    engineerRunning = false;
+  }
+  } catch (outerErr) {
+    // v2.0.198: Outer catch — if anything before the inner try fails, release the lock
+    log.warn(`[system-engineer] outer error: ${outerErr instanceof Error ? outerErr.message : String(outerErr)}`);
+    return null;
+  } finally {
+    // v2.0.198: Guarantee the lock is ALWAYS released, even if the inner
+    // finally somehow doesn't execute (e.g. process.exit(42) in the success path)
     engineerRunning = false;
   }
 }
