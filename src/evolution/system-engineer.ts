@@ -172,6 +172,11 @@ ${dirSummary}
 ## Relevant Source Code (you can modify files under src/evolution/ and src/cognition/hacp.ts)
 ${relevantCode}
 
+## Known Good Code (DO NOT attempt to "fix" these — they are already correct)
+- shadow-trade-engine.ts getStats(): The dedup logic (step 3: `if (this.positions.some(p => p.id === r.id && p.status !== 'open')) continue`) correctly prevents double-counting between positions[] and recentResults[]. This has been verified. Do NOT propose changes to this method.
+- thesis-experience.ts checkThesisHistory(): Direction-filtered pWin (sameDirMatches) is correct. Do NOT remove the direction filter.
+- reason-analytics.ts SimilarTradeRetriever.findSimilar(): The `side` parameter filter is correct. Do NOT remove it.
+
 ## Your Task
 Find the SINGLE MOST IMPACTFUL issue in the learning/decision system that is causing losses or preventing the system from learning correctly. Generate ONE fix with exact code replacement.
 
@@ -428,7 +433,7 @@ function readRelevantSourceCode(): string {
   // v2.0.188: Also read test files so the LLM understands what behavior
   // the tests expect — prevents proposing fixes that break tests.
   const testFiles = [
-    'tests/evolution-memory.test.ts:224:280',
+    'tests/evolution-memory.test.ts:224:300',
   ];
   const parts: string[] = [];
   for (const spec of [...files, ...testFiles]) {
