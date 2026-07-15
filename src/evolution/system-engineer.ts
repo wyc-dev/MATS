@@ -113,11 +113,11 @@ export interface AutoFixResult {
  */
 let engineerRunning = false;
 
-// v2.0.188: Failed fix memory — prevents retrying the same fix that already failed.
-// v2.0.202: Keyed by file path only (was file:title — LLM could bypass by changing title).
-// Expires after 1 hour (in case the underlying issue changes).
-const failedFixes = new Map<string, number>(); // file path → timestamp of failure
-const FAILED_FIX_TTL_MS = 3600_000; // 1 hour
+// v2.0.210: Failure memory — NOT a cooldown. We don't block files.
+// Instead, we track what specific approaches failed (title + error) and feed
+// that back to the LLM in Phase 1 so it tries a DIFFERENT approach.
+// The SE must be a persistent problem-solver, not a quitter.
+const failedAttempts = new Map<string, { title: string; error: string; timestamp: number }[]>();
 
 // v2.0.202: Hard block list — methods/patterns the SE must NEVER modify.
 // These have been verified correct and repeatedly targeted by the SE.
@@ -178,10 +178,13 @@ export async function runSystemEngineer(records: ThesisExperienceRecord[]): Prom
   const provider = getActiveProvider();
 
   // v2.0.202: Build list of recently failed files to warn the LLM
-  const failedFiles: string[] = [];
-  for (const [file, ts] of failedFixes) {
-    if ((timestamp - ts) < FAILED_FIX_TTL_MS) {
-      failedFiles.push(file);
+  // v2.0.210: Changed from "block" to "feedback" — tell the LLM what failed
+  // and WHY, so it can try a different approach instead of being blocked.
+  const failedFileEntries: { file: string; attempts: { title: string; error: string }[] }[] = [];
+  for (const [file, attempts] of failedAttempts) {
+    const recent = attempts.filter(a => (timestamp - a.timestamp) < 3600_000);
+    if (recent.length > 0) {
+      failedFileEntries.push({ file, attempts: recent.map(a => ({ title: a.title, error: a.error })) });
     }
   }
 
@@ -212,8 +215,10 @@ ${changelogTail}
 ### Loop Engineering Memory (known bugs)
 ${loopMemory.slice(0, 1500)}
 
-${failedFiles.length > 0 ? `## ⚠️ Recently Failed Files (DO NOT propose fixes for these — they failed within the last hour)
-${failedFiles.map(f => `- ${f}`).join('\n')}
+${failedFileEntries.length > 0 ? `## 📋 Previous Failed Attempts (learn from these — try a DIFFERENT approach)
+${failedFileEntries.map(f => `### ${f.file}\n${f.attempts.map(a => `- ❌ "${a.title}" — ${a.error}`).join('\n')}`).join('\n\n')}
+
+These fixes were attempted but failed. Do NOT repeat the same approach. Try a different method, different code block, or a different root cause analysis.
 
 ` : ''}## Recently Applied Fixes (these issues are ALREADY FIXED — do not re-diagnose)
 ${recentlyFixed.map(f => `- ${f}`).join('\n')}
@@ -247,7 +252,7 @@ IMPORTANT: Look at ALL files in the File Summaries above — do not fixate on sh
 - src/agents/meta-agent.ts (Meta-Agent arbitration + entryThesis)
 - src/analysis/ (sentiment, S/R, ATR, chaos, options, news)
 
-If a file is listed in "Recently Failed Files" above, DO NOT propose a fix for it.
+If a file appears in "Previous Failed Attempts" above, you MAY still propose a fix for it — but you MUST try a DIFFERENT approach than what failed. Read the error messages to understand why the previous attempt failed and avoid the same mistake.
 If an issue is listed in "Recently Applied Fixes" above, it is ALREADY FIXED — find a DIFFERENT issue.
 
 Identify the file and describe the issue. In Phase 2, you will see the FULL file content and be asked to provide exact oldCode/newCode.
@@ -292,17 +297,10 @@ If you find NO issues worth fixing, respond with:
     }
   }
 
-  // v2.0.202: Check if this FILE had any failed fix recently.
-  // Previous file:title key allowed the LLM to retry the same file with a
-  // slightly different title, causing repeated failures on the same file.
-  // Now: if ANY fix on a file failed within the cooldown, skip that file.
-  const fixKey = diagnosis.affectedFile; // file-only key
-  const lastFailed = failedFixes.get(fixKey);
-  if (lastFailed && (timestamp - lastFailed) < FAILED_FIX_TTL_MS) {
-    log.info(`🔧 [system-engineer] Skipping "${diagnosis.title}" — ${diagnosis.affectedFile} had a failed fix ${Math.round((timestamp - lastFailed) / 1000)}s ago, will retry in ${Math.round(FAILED_FIX_TTL_MS / 60000)}min`);
-    logFeedback('Phase 1', 'COOLDOWN', diagnosis.title, diagnosis.affectedFile, `File failed ${Math.round((timestamp - lastFailed) / 1000)}s ago, cooldown ${Math.round(FAILED_FIX_TTL_MS / 60000)}min`);
-    return null;
-  }
+  // v2.0.210: No more file-level cooldown. Instead, collect failed attempts
+  // for this file and feed them to the LLM so it tries a DIFFERENT approach.
+  const fileFailures = failedAttempts.get(diagnosis.affectedFile) ?? [];
+  const recentFailures = fileFailures.filter(f => (timestamp - f.timestamp) < 3600_000); // last 1h context
 
   // Validate scope
   if (!isFileAllowed(diagnosis.affectedFile)) {
@@ -607,8 +605,10 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
       if (finalContent === originalContent) {
         log.warn(`🚫 [system-engineer] NO-OP DETECTED: fix produced identical file content — rejecting as false positive`);
         log.warn(`   This means the SE replaced code with identical text. The issue may require changes outside the SE's allowed scope.`);
-        // Record as failed so this file gets cooldown
-        failedFixes.set(targetFile, timestamp);
+        // v2.0.210: Record for feedback, not cooldown
+        const prev0 = failedAttempts.get(targetFile) ?? [];
+        prev0.push({ title: proposal.title, error: 'no-op: fix produced identical content', timestamp });
+        failedAttempts.set(targetFile, prev0);
         const result: AutoFixResult = {
           applied: false, title: proposal.title, file: targetFile,
           reason: 'No-op fix — file content unchanged (false positive)',
@@ -637,7 +637,10 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
         if (originalTestContent && testFile) {
           writeFileSync(join(PROJECT_ROOT, testFile), originalTestContent, 'utf-8');
         }
-        failedFixes.set(targetFile, timestamp);
+        // v2.0.210: Record for feedback, not cooldown
+        const prev1 = failedAttempts.get(targetFile) ?? [];
+        prev1.push({ title: proposal.title, error: 'comment-only: no code logic changed', timestamp });
+        failedAttempts.set(targetFile, prev1);
         const result: AutoFixResult = {
           applied: false, title: proposal.title, file: targetFile,
           reason: 'Comment-only fix — no code logic changed (false positive)',
@@ -701,9 +704,12 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
         error: `tsc=${tscPassed} tests=${testsPassed}`, timestamp,
       };
       appendRecommendation(result, false);
-      // v2.0.188: Record this failure so we don't retry the same fix for 1 hour
-      failedFixes.set(fixKey, timestamp); // file-only key (v2.0.202)
-      log.warn(`🔄 [system-engineer] Fix rolled back: ${proposal.title} (tsc=${tscPassed} tests=${testsPassed}) — ${targetFile} will not retry for ${FAILED_FIX_TTL_MS / 60000}min`);
+      // v2.0.210: Record failure for feedback (NOT cooldown). The LLM will see
+      // this failure in the next Phase 1 and try a different approach.
+      const prev = failedAttempts.get(targetFile) ?? [];
+      prev.push({ title: proposal.title, error: `tsc=${tscPassed} tests=${testsPassed}`, timestamp });
+      failedAttempts.set(targetFile, prev);
+      log.warn(`🔄 [system-engineer] Fix rolled back: ${proposal.title} (tsc=${tscPassed} tests=${testsPassed}) — recorded for feedback, will try different approach next time`);
       logFeedback('Phase 2', 'ROLLED_BACK', proposal.title, targetFile, `tsc=${tscPassed} tests=${testsPassed} | ${proposal.proposedFix.reason.slice(0, 200)}`);
       return result;
     }
