@@ -426,7 +426,8 @@ function readRelevantSourceCode(): string {
     'src/evolution/thesis-experience.ts:660:730',
     'src/evolution/experience-digester.ts:495:525',
     'src/evolution/reason-analytics.ts:372:420',
-    'src/evolution/shadow-trade-engine.ts:408:470',
+    'src/evolution/shadow-trade-engine.ts:220:360',
+    'src/evolution/shadow-trade-engine.ts:408:480',
     'src/evolution/olr-engine.ts:360:380',
     'src/cognition/hacp.ts:905:960',
   ];
