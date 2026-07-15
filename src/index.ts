@@ -529,6 +529,25 @@ class MATSSystem {
           log.info(`  → Deleted from closed real trades`);
         }
 
+        // v2.0.163: Delete from cachedHLFills (hl-fill-* IDs are synthesized
+        // from raw HL fill data, not stored in any persistent array)
+        if (tradeId.startsWith('hl-fill-')) {
+          // Extract timestamp from ID: hl-fill-{timestamp}-{symbol}
+          const parts = tradeId.split('-');
+          const ts = parseInt(parts[2] ?? '0');
+          const sym = parts.slice(3).join('-');
+          if (ts > 0) {
+            const fillIdx = this.cachedHLFills.findIndex(f =>
+              f.timestamp === ts && f.symbol === sym
+            );
+            if (fillIdx >= 0) {
+              this.cachedHLFills.splice(fillIdx, 1);
+              deleted = true;
+              log.info(`  → Deleted from cachedHLFills (ts=${ts}, sym=${sym})`);
+            }
+          }
+        }
+
         if (deleted) {
           this.persistPortfolio();
           this.pushToAPI();
@@ -536,10 +555,6 @@ class MATSSystem {
 
         return deleted;
       });
-
-      // v2.0.153: Delete a single trade by ID — removes from paper engine trades,
-      // closed real trades, and EXP trades.jsonl. Keeps evolution data pure.
-      // v2.0.161: Re-registered with better error handling
 
       // Wire up Market Agent API handlers
       this.apiServer.setMarketAgentSetTradeModeHandler(async (mode) => {
@@ -4695,22 +4710,32 @@ ${recentExamples}
         }
 
         // v2.0.146: Record audit when agent suggests a direction that conflicts
-        // with the existing position but closePosition is false. This explains
-        // WHY the agent's BUY/SELL analysis didn't result in execution — the
-        // position is still open in the opposite direction and the consensus
-        // didn't vote to close it. Without this audit, the UI shows the agent's
-        // analysis (e.g. "BUY 55%") with no explanation for why nothing happened.
+        // with the existing position but closePosition is false.
+        // v2.0.163: If agents suggest the OPPOSITE direction (not same), treat it
+        // as a direction flip — close the existing position and let the new
+        // trade execute. This is the same conviction-based reversal logic as
+        // the active symbol overlap guard.
         if ((psc.action === 'buy' || psc.action === 'sell') && !psc.closePosition) {
           const posSide = pos.side;
           const wantsSameDirection = (psc.action === 'buy' && posSide === 'buy') || (psc.action === 'sell' && posSide === 'sell');
           if (!wantsSameDirection) {
+            // Direction flip: close existing position first
+            log.warn(`🔄 Per-symbol flip: ${psc.symbol} ${posSide.toUpperCase()} → ${psc.action.toUpperCase()}. Closing existing position first.`);
+            const flipCloseSuccess = await this.closeTrade(psc.symbol, `Position flip: closing ${posSide.toUpperCase()} to open ${psc.action.toUpperCase()}`);
+            if (flipCloseSuccess) {
+              log.info(`  → Flipped ${psc.symbol}. Position will be re-evaluated next cycle for ${psc.action.toUpperCase()} entry.`);
+              // Don't execute the new trade this cycle — the close needs to settle
+              // on HL first. The next cycle will see no position and can enter.
+            } else {
+              log.error(`  → Failed to close ${psc.symbol} for flip — position remains ${posSide.toUpperCase()}`);
+            }
             this.recordDecisionAudit(
               psc.symbol,
               psc.action as 'buy' | 'sell',
               psc.confidence,
               psc.entryThesis ?? psc.rationale ?? '',
-              [{ gate: 'existing-position', passed: false, reason: `${psc.action.toUpperCase()} suggested but ${posSide.toUpperCase()} position open — consensus did not vote to close` }],
-              false,
+              [{ gate: 'direction-flip', passed: flipCloseSuccess, reason: `${psc.action.toUpperCase()} suggested but ${posSide.toUpperCase()} position open — closing for flip` }],
+              flipCloseSuccess,
             );
           }
         }
