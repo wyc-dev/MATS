@@ -745,7 +745,7 @@ export class APIServer {
             if (this.onDeleteTrade) {
               const deleted = await this.onDeleteTrade(tradeId);
               res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ success: deleted, message: deleted ? 'Trade deleted' : 'Trade not found' }));
+              res.end(JSON.stringify({ success: deleted, message: deleted ? 'Trade deleted' : 'Trade not found', error: deleted ? undefined : 'Trade not found in any records (paper, real, or HL fills)' }));
             } else {
               res.writeHead(500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ success: false, error: 'Delete handler not registered' }));
