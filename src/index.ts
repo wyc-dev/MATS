@@ -5780,7 +5780,11 @@ ${recentExamples}
       // v2.0.184: System Engineer runs AFTER cycle completes, not during.
       // This ensures file modifications + tsx watch restart happen in the
       // gap between cycles, never interrupting an in-progress trade.
-      if (this.totalCycles > 0 && this.totalCycles % 2 === 0 && !isShuttingDown()) {
+      // v2.0.185: Only run when cycle period > 5 min — System Engineer needs
+      // enough time between cycles for LLM analysis + tsc + test + git commit.
+      // With a 1-min cycle, the next cycle would start before the fix is done.
+      const cycleMinutes = this.cycleIntervalMs / 60_000;
+      if (this.totalCycles > 0 && this.totalCycles % 2 === 0 && !isShuttingDown() && cycleMinutes > 5) {
         void this.runDirectionAudit();
       }
 
