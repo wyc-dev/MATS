@@ -445,6 +445,12 @@ export class APIServer {
     this.onUpdateTradeField = cb;
   }
 
+  /** v2.0.189: Register a callback for System Engineer to correct trade records via LLM */
+  private onCorrectTrade: ((tradeId: string, instruction: string) => Promise<{ success: boolean; correctedFields: Record<string, string>; reason: string }>) | null = null;
+  setCorrectTradeHandler(cb: (tradeId: string, instruction: string) => Promise<{ success: boolean; correctedFields: Record<string, string>; reason: string }>): void {
+    this.onCorrectTrade = cb;
+  }
+
   /** Register a callback for pausing the system (RBC only mode) */
   setPauseHandler(cb: () => void): void {
     this.onPause = cb;
@@ -789,6 +795,34 @@ export class APIServer {
             } else {
               res.writeHead(500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ success: false, error: 'Update handler not registered' }));
+            }
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: err instanceof Error ? err.message : String(err) }));
+          }
+        });
+        return;
+      }
+
+      // v2.0.189: POST — System Engineer corrects trade record via LLM
+      if (pathname === '/api/trades/correct' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        req.on('end', async () => {
+          try {
+            const { tradeId, instruction } = JSON.parse(body) as { tradeId: string; instruction: string };
+            if (!tradeId || !instruction) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'tradeId and instruction required' }));
+              return;
+            }
+            if (this.onCorrectTrade) {
+              const result = await this.onCorrectTrade(tradeId, instruction);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify(result));
+            } else {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'Correct trade handler not registered' }));
             }
           } catch (err) {
             res.writeHead(500, { 'Content-Type': 'application/json' });

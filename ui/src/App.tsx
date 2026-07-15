@@ -1777,41 +1777,31 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
     }
   }
 
-  // v2.0.170: Update a trade field (entryThesis / exitThesis / postReview)
-  const [editingField, setEditingField] = useState<{ tradeId: string; field: 'entryThesis' | 'exitThesis' | 'postReview' } | null>(null)
-  const [editValue, setEditValue] = useState('')
-  const [editSaving, setEditSaving] = useState(false)
+  // v2.0.189: System Engineer correction — user sends instruction, LLM rewrites fields
+  const [correctingTrade, setCorrectingTrade] = useState<string | null>(null)
+  const [correctInstruction, setCorrectInstruction] = useState('')
+  const [correcting, setCorrecting] = useState(false)
+  const [correctResult, setCorrectResult] = useState<{ success: boolean; reason: string } | null>(null)
 
-  const handleStartEdit = (tradeId: string, field: 'entryThesis' | 'exitThesis' | 'postReview', currentValue: string) => {
-    setEditingField({ tradeId, field })
-    setEditValue(currentValue)
-  }
-
-  const handleSaveEdit = async () => {
-    if (!editingField) return
-    setEditSaving(true)
+  const handleCorrectTrade = async () => {
+    if (!correctingTrade || !correctInstruction.trim()) return
+    setCorrecting(true)
+    setCorrectResult(null)
     try {
-      const res = await fetch(`${API_BASE}/trades/update-field`, {
+      const res = await fetch(`${API_BASE}/trades/correct`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tradeId: editingField.tradeId, field: editingField.field, value: editValue }),
+        body: JSON.stringify({ tradeId: correctingTrade, instruction: correctInstruction }),
       })
       const result = await res.json()
+      setCorrectResult({ success: result.success, reason: result.reason ?? (result.success ? 'Corrections applied' : 'Failed') })
       if (result.success) {
-        setEditingField(null)
-        setEditValue('')
-      } else {
-        alert(`Failed to update: ${result.error ?? 'Unknown error'}`)
+        setCorrectInstruction('')
       }
     } catch (err) {
-      alert(`Failed to update: ${err instanceof Error ? err.message : String(err)}`)
+      setCorrectResult({ success: false, reason: err instanceof Error ? err.message : String(err) })
     }
-    setEditSaving(false)
-  }
-
-  const handleCancelEdit = () => {
-    setEditingField(null)
-    setEditValue('')
+    setCorrecting(false)
   }
 
   // Merge open positions + closed trades into unified list
@@ -2046,64 +2036,52 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                   <IncidentField label="Exit Thesis" value={t.exitThesis ?? '— (no exit rationale recorded)'} pending={t.exitThesis == null} />
                   <IncidentField label="Post-Review" value={t.postReview ?? '— (generating… or no review available)'} pending={t.postReview == null} />
 
-                  {/* v2.0.170: Editable fields — user can correct Entry Thesis / Exit Thesis / Post-Review */}
+                  {/* v2.0.189: System Engineer correction dialog — user instructs, LLM rewrites */}
                   <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
                     <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      <Pencil size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />
-                      <span>Edit trade records to correct agent mistakes — MATS learns from accurate data</span>
+                      <MessagesSquare size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />
+                      <span>Instruct System Engineer to correct inaccurate trade records</span>
                     </div>
-                    {(['entryThesis', 'exitThesis', 'postReview'] as const).map((field) => {
-                      const fieldLabel = field === 'entryThesis' ? 'Entry Thesis' : field === 'exitThesis' ? 'Exit Thesis' : 'Post-Review'
-                      const currentValue = (t as any)[field] as string | undefined
-                      const isEditing = editingField?.tradeId === cardId && editingField?.field === field
-                      return (
-                        <div key={field} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-tertiary)', fontWeight: 'var(--fw-medium)' }}>{fieldLabel}</span>
-                            {!isEditing && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleStartEdit(cardId, field, currentValue ?? '') }}
-                                style={{ padding: '1px 6px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: 'var(--fs-xs)', display: 'flex', alignItems: 'center', gap: '3px' }}
-                              >
-                                <Pencil size={10} style={{ display: 'inline', verticalAlign: 'middle' }} />Edit
-                              </button>
-                            )}
-                          </div>
-                          {isEditing ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
-                              <textarea
-                                value={editValue}
-                                onChange={(e) => setEditValue(e.target.value)}
-                                onClick={(e) => e.stopPropagation()}
-                                autoFocus
-                                rows={4}
-                                style={{ width: '100%', padding: 'var(--space-2)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: 'var(--fs-sm)', fontFamily: 'inherit', resize: 'vertical', outline: 'none' }}
-                                placeholder={`Enter corrected ${fieldLabel}...`}
-                              />
-                              <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); handleSaveEdit() }}
-                                  disabled={editSaving}
-                                  style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--green)', background: 'var(--green-bg)', color: 'var(--green)', cursor: editSaving ? 'default' : 'pointer', fontSize: 'var(--fs-xs)', fontWeight: 'var(--fw-bold)', opacity: editSaving ? 0.5 : 1, display: 'flex', alignItems: 'center', gap: '3px' }}
-                                >
-                                  <Save size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />{editSaving ? 'Saving...' : 'Save'}
-                                </button>
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); handleCancelEdit() }}
-                                  style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 'var(--fs-xs)', display: 'flex', alignItems: 'center', gap: '3px' }}
-                                >
-                                  <X size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />Cancel
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div style={{ fontSize: 'var(--fs-xs)', color: currentValue ? 'var(--text-secondary)' : 'var(--text-muted)', fontStyle: currentValue ? 'normal' : 'italic', lineHeight: '1.4' }}>
-                              {currentValue ?? '— (empty)'}
-                            </div>
+                    {correctingTrade === cardId ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                        <textarea
+                          value={correctInstruction}
+                          onChange={(e) => setCorrectInstruction(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          autoFocus
+                          rows={3}
+                          style={{ width: '100%', padding: 'var(--space-2)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: 'var(--fs-sm)', fontFamily: 'inherit', resize: 'vertical', outline: 'none' }}
+                          placeholder="e.g. Post-Review is wrong — MFE $11.72 is position value not profit. Actual peak profit was $1.74. Rewrite the post-review with correct numbers."
+                        />
+                        <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end', alignItems: 'center' }}>
+                          {correctResult && (
+                            <span style={{ fontSize: 'var(--fs-xs)', color: correctResult.success ? 'var(--green)' : 'var(--red)', marginRight: 'auto' }}>
+                              {correctResult.success ? '✅' : '❌'} {correctResult.reason}
+                            </span>
                           )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleCorrectTrade() }}
+                            disabled={correcting || !correctInstruction.trim()}
+                            style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--green)', background: 'var(--green-bg)', color: 'var(--green)', cursor: correcting ? 'default' : 'pointer', fontSize: 'var(--fs-xs)', fontWeight: 'var(--fw-bold)', opacity: correcting || !correctInstruction.trim() ? 0.5 : 1, display: 'flex', alignItems: 'center', gap: '3px' }}
+                          >
+                            <Save size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />{correcting ? 'Correcting...' : 'Correct'}
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setCorrectingTrade(null); setCorrectInstruction(''); setCorrectResult(null) }}
+                            style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 'var(--fs-xs)', display: 'flex', alignItems: 'center', gap: '3px' }}
+                          >
+                            <X size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />Close
+                          </button>
                         </div>
-                      )
-                    })}
+                      </div>
+                    ) : (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setCorrectingTrade(cardId); setCorrectResult(null) }}
+                        style={{ padding: '4px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: 'var(--fs-xs)', display: 'flex', alignItems: 'center', gap: '4px', alignSelf: 'flex-start' }}
+                      >
+                        <MessagesSquare size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />Correct via System Engineer
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
