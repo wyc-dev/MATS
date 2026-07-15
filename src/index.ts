@@ -2762,11 +2762,6 @@ ${recentExamples}
     // This caused multiple HACP cycles to run simultaneously.
     this.cycleInProgress = true;
 
-    // v2.0.179: Trade record integrity audit every 2 cycles
-    if (this.totalCycles > 0 && this.totalCycles % 2 === 0) {
-      void this.runDirectionAudit();
-    }
-
     // ── Cold-start OLR backfill (once per process) ──
     // On the first cycle with non-empty trading markets, backfill the OLR
     // prior from historical HL candles so P(win) is usable immediately
@@ -5781,6 +5776,14 @@ ${recentExamples}
       this.cycleInProgress = false;
       this.cycleProgress = null;
       this.pushToAPI();
+
+      // v2.0.184: System Engineer runs AFTER cycle completes, not during.
+      // This ensures file modifications + tsx watch restart happen in the
+      // gap between cycles, never interrupting an in-progress trade.
+      if (this.totalCycles > 0 && this.totalCycles % 2 === 0 && !isShuttingDown()) {
+        void this.runDirectionAudit();
+      }
+
       // v2.0.108: Post-cycle market drift check. If tradingMarkets changed
       // during the cycle (e.g. UI re-POSTed 3 markets while cycle only had 1),
       // trigger an immediate cycle to analyze the full set. Without this,
