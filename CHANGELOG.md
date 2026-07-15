@@ -4,6 +4,27 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.201 — System Engineer Two-Phase Audit + Test Detection Fix + Fuzzy oldCode Matching
+
+### Two-Phase Audit (fixes oldCode hallucination)
+- **Phase 1 (Diagnosis)**: LLM sees file summaries (50-line previews) + trade data, identifies which file + issue
+- **Phase 2 (Exact Fix)**: Full file content sent to LLM, asks for exact oldCode/newCode replacement
+- Previous single-phase approach showed only 150 lines per file — LLM couldn't see code beyond line 150 (e.g. `recordClose` at line 472), causing hallucinated oldCode
+
+### Test Pass/Fail Detection Fix
+- Was: `output.includes('passed') && !output.includes('failed')` — false negative because log output contains "failed" (e.g. "digestTrade LLM failed")
+- Now: Parses vitest summary line (`Tests  X passed (Y)`) instead of scanning entire output
+
+### Fuzzy oldCode Matching
+- If exact `oldCode` match fails, tries whitespace-normalized match (trim + collapse spaces)
+- If normalized match succeeds, extracts exact text from file using line-by-line trimmed comparison
+- Prevents false "hallucination" rejections when LLM gets indentation slightly wrong
+
+### SE-Generated Fix (v2.0.183 in SE commit)
+- `shadow-trade-engine.ts`: Added optional `srProvider` parameter to `openShadowTrades()` for fresh S/R zones each cycle
+- `olr-engine.ts`: Updated comment clarifying `liveSamples` usage in SGD decay
+- `tests/evolution-memory.test.ts`: Added test verifying `liveSamples = nSamples - backfillSamples`
+
 ## v2.0.183: Fix shadow trade SL/TP staleness — compute S/R levels fresh each cycle via optional srProvider instead of using cached zones, improving OLR training label quality
 
 
