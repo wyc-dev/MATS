@@ -185,6 +185,16 @@ export async function runSystemEngineer(records: ThesisExperienceRecord[]): Prom
     }
   }
 
+  // v2.0.209: Build list of recently fixed files from CHANGELOG to prevent
+  // the LLM from re-diagnosing the same issue that was already fixed.
+  // The LLM keeps targeting shadow-trade-engine.ts because it doesn't know
+  // that stale S/R levels and stale features were ALREADY fixed in previous runs.
+  const recentlyFixed = changelogTail
+    .split('\n')
+    .filter(l => l.startsWith('## v2.0.'))
+    .map(l => l.slice(4))
+    .slice(0, 10); // last 10 changelog entries
+
   // ─── Phase 1: Diagnosis ───
   const fileSummaries = readFileSummaries();
 
@@ -205,7 +215,10 @@ ${loopMemory.slice(0, 1500)}
 ${failedFiles.length > 0 ? `## ⚠️ Recently Failed Files (DO NOT propose fixes for these — they failed within the last hour)
 ${failedFiles.map(f => `- ${f}`).join('\n')}
 
-` : ''}## Trade Records (last 20 of ${records.length})
+` : ''}## Recently Applied Fixes (these issues are ALREADY FIXED — do not re-diagnose)
+${recentlyFixed.map(f => `- ${f}`).join('\n')}
+
+## Trade Records (last 20 of ${records.length})
 ${tradeSummary}
 
 ## Per-Symbol Direction Summary
@@ -221,6 +234,21 @@ ${fileSummaries}
 
 ## Your Task (Phase 1: Diagnosis)
 Find the SINGLE MOST IMPACTFUL issue in the learning/decision system that is causing losses or preventing the system from learning correctly.
+
+IMPORTANT: Look at ALL files in the File Summaries above — do not fixate on shadow-trade-engine.ts. The system has many components (OLR, EXP, RIL, EM Cycle, HACP, agents, analysis). Consider issues in:
+- src/evolution/thesis-experience.ts (EXP memory — thesis win rates)
+- src/evolution/experience-digester.ts (experience classification)
+- src/evolution/reason-analytics.ts (RIL — pattern clustering, similar trades)
+- src/evolution/olr-engine.ts (online logistic regression)
+- src/evolution/em-clustering.ts (EM pattern clustering)
+- src/evolution/cycle-summary.ts (EM Cycle Chain — market continuity)
+- src/cognition/hacp.ts (HACP decision protocol)
+- src/agents/base-agent.ts (agent LLM call + confidence)
+- src/agents/meta-agent.ts (Meta-Agent arbitration + entryThesis)
+- src/analysis/ (sentiment, S/R, ATR, chaos, options, news)
+
+If a file is listed in "Recently Failed Files" above, DO NOT propose a fix for it.
+If an issue is listed in "Recently Applied Fixes" above, it is ALREADY FIXED — find a DIFFERENT issue.
 
 Identify the file and describe the issue. In Phase 2, you will see the FULL file content and be asked to provide exact oldCode/newCode.
 
@@ -245,6 +273,7 @@ If you find NO issues worth fixing, respond with:
   const diagnosis = parseDiagnosis(phase1Response.content);
   if (!diagnosis || !diagnosis.affectedFile || diagnosis.affectedFile === '') {
     log.info(`🔧 [system-engineer] No actionable issue identified in Phase 1`);
+    logFeedback('Phase 1', 'NO_ISSUE', 'No issue found', '', 'LLM found no actionable issue');
     return null;
   }
 
@@ -257,6 +286,7 @@ If you find NO issues worth fixing, respond with:
       const textToCheck = `${diagnosis.title} ${diagnosis.rootCause} ${diagnosis.diagnosis}`;
       if (block.pattern.test(textToCheck)) {
         log.warn(`🚫 [system-engineer] BLOCKED: "${diagnosis.title}" targets ${block.reason}`);
+        logFeedback('Phase 1', 'BLOCKED', diagnosis.title, diagnosis.affectedFile, block.reason);
         return null;
       }
     }
@@ -270,6 +300,7 @@ If you find NO issues worth fixing, respond with:
   const lastFailed = failedFixes.get(fixKey);
   if (lastFailed && (timestamp - lastFailed) < FAILED_FIX_TTL_MS) {
     log.info(`🔧 [system-engineer] Skipping "${diagnosis.title}" — ${diagnosis.affectedFile} had a failed fix ${Math.round((timestamp - lastFailed) / 1000)}s ago, will retry in ${Math.round(FAILED_FIX_TTL_MS / 60000)}min`);
+    logFeedback('Phase 1', 'COOLDOWN', diagnosis.title, diagnosis.affectedFile, `File failed ${Math.round((timestamp - lastFailed) / 1000)}s ago, cooldown ${Math.round(FAILED_FIX_TTL_MS / 60000)}min`);
     return null;
   }
 
@@ -330,6 +361,7 @@ Respond with EXACTLY ONE JSON object:
   let proposal = parseProposal(phase2Response.content);
   if (!proposal || !proposal.proposedFix.oldCode || !proposal.proposedFix.newCode) {
     log.info(`🔧 [system-engineer] No actionable fix proposed in Phase 2`);
+    logFeedback('Phase 2', 'NO_FIX', diagnosis.title, diagnosis.affectedFile, 'LLM did not produce valid oldCode/newCode');
     return null;
   }
 
@@ -584,6 +616,7 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
           changelogEntry: '', error: 'no-op detected', timestamp,
         };
         appendRecommendation(result, false);
+        logFeedback('Phase 2', 'NO_OP', proposal.title, targetFile, 'Fix produced identical file content — false positive');
         return result;
       }
 
@@ -612,6 +645,7 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
           changelogEntry: '', error: 'comment-only detected', timestamp,
         };
         appendRecommendation(result, false);
+        logFeedback('Phase 2', 'COMMENT_ONLY', proposal.title, targetFile, 'Fix only changed comments/whitespace — no code logic changed');
         return result;
       }
 
@@ -641,6 +675,7 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
       };
       appendRecommendation(result, true);
       log.info(`✅ [system-engineer] Fix applied successfully: ${proposal.title}`);
+      logFeedback('Phase 2', 'SUCCESS', proposal.title, targetFile, `tsc=${tscPassed} tests=${testsPassed} | ${proposal.proposedFix.reason.slice(0, 200)}`);
       log.info(`✅ [system-engineer] Triggering restart to load new code (exit code 42)...`);
       // v2.0.187: Exit with code 42 so engineer-loop.sh restarts the process
       // with the new code. Only do this if running under SYSTEM_ENGINEER_ENABLED
@@ -669,6 +704,7 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
       // v2.0.188: Record this failure so we don't retry the same fix for 1 hour
       failedFixes.set(fixKey, timestamp); // file-only key (v2.0.202)
       log.warn(`🔄 [system-engineer] Fix rolled back: ${proposal.title} (tsc=${tscPassed} tests=${testsPassed}) — ${targetFile} will not retry for ${FAILED_FIX_TTL_MS / 60000}min`);
+      logFeedback('Phase 2', 'ROLLED_BACK', proposal.title, targetFile, `tsc=${tscPassed} tests=${testsPassed} | ${proposal.proposedFix.reason.slice(0, 200)}`);
       return result;
     }
   } catch (err) {
@@ -752,11 +788,19 @@ function readFileSummaries(): string {
     'src/evolution/reason-analytics.ts',
     'src/evolution/shadow-trade-engine.ts',
     'src/evolution/olr-engine.ts',
+    'src/evolution/em-clustering.ts',
+    'src/evolution/cycle-summary.ts',
+    'src/evolution/first-passage.ts',
     'src/evolution/evolution-utils.ts',
     'src/evolution/direction-audit.ts',
+    'src/evolution/pattern-tag-tracker.ts',
     'src/cognition/hacp.ts',
     'src/agents/base-agent.ts',
     'src/agents/meta-agent.ts',
+    'src/analysis/sentiment-engine.ts',
+    'src/analysis/support-resistance.ts',
+    'src/analysis/atr.ts',
+    'src/analysis/planck-chaos.ts',
   ];
 
   const parts: string[] = [];
