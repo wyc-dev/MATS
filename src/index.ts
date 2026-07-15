@@ -119,6 +119,10 @@ class MATSSystem {
    *  realTradingManager.getRecentFills(5); merged into tradeRecords so the UI
    *  Trade Records panel shows the real Hyperliquid trade history. */
   private cachedHLFills: Array<{ symbol: string; side: 'buy' | 'sell'; price: number; size: number; timestamp: number; closedPnl: number; fee: number; dir: string }> = [];
+  // v2.0.169: Track which positions have already been logged as "missing from WS push"
+  // to prevent spamming the log every 5s for DEX positions (xyz:*) that are never
+  // in the WS clearinghouseState push.
+  private wsMissingLogged: Set<string> = new Set();
   /** Cached real-exchange positions (v2.0.19). Refreshed each cycle in real
    *  mode so the UI Portfolio positions module shows the actual Hyperliquid
    *  positions, not just the local mirror. */
@@ -1259,7 +1263,28 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               // duplicate trades with no thesis/MAE/MFE.
               // Instead, just log a warning. The REST-based syncExchangePositions
               // (which runs every cycle with fill verification) handles real closes.
-              log.info(`📡 HL WS position not in push: ${sym} — will verify via REST syncExchangePositions (not closing — WS push may be partial)`);
+              // v2.0.169: Suppress repeated logging — DEX positions (xyz:*) are
+              // NEVER in the WS clearinghouseState push (it only covers the main
+              // clearinghouse). Logging every 5s for these is pure spam. Only log
+              // once per position per session, and use debug level for DEX symbols.
+              const isDexSymbol = sym.includes(':');
+              if (isDexSymbol) {
+                // DEX positions expected to be absent from WS — debug only, once
+                if (!this.wsMissingLogged.has(sym)) {
+                  log.debug(`📡 HL WS position not in push (DEX, expected): ${sym} — managed via REST syncExchangePositions`);
+                  this.wsMissingLogged.add(sym);
+                }
+              } else {
+                // Main clearinghouse position missing — could be a real close
+                if (!this.wsMissingLogged.has(sym)) {
+                  log.info(`📡 HL WS position not in push: ${sym} — will verify via REST syncExchangePositions (not closing — WS push may be partial)`);
+                  this.wsMissingLogged.add(sym);
+                }
+              }
+            } else {
+              // Position is in the push — reset the "missing" flag so if it
+              // disappears later we log again
+              this.wsMissingLogged.delete(sym);
             }
           }
         });
