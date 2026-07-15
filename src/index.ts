@@ -1437,15 +1437,21 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       this.hacpEngine.setFusionDataCallback((symbol: string, side: 'buy' | 'sell') => {
         const result: { olrPWin?: number; shadowWinRate?: number } = {};
         try {
-          const sym = symbol.toLowerCase();
-          const features = this.lastCycleShadowContexts.get(sym)?.features ?? {};
+          // v2.0.177: Use normalizeSymbol for consistent key matching with
+          // lastCycleShadowContexts. The old code used symbol.toLowerCase()
+          // which doesn't match DEX symbols (xyz:SKHX → xyz:skhx ≠ xyz:SKHX).
+          const sym = normalizeSymbol(symbol);
+          const features = this.lastCycleShadowContexts.get(sym)?.features
+            ?? this.lastCycleShadowContexts.get(symbol.toLowerCase())?.features
+            ?? this.lastCycleShadowContexts.get(symbol)?.features
+            ?? {};
           if (Object.keys(features).length > 0) {
             const olr = this.olrEngine.query(sym, features, side, this.totalCycles);
             result.olrPWin = olr.pWin;
           }
         } catch { /* non-critical */ }
         try {
-          const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === symbol.toLowerCase());
+          const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === normalizeSymbol(symbol) || s.symbol === symbol.toLowerCase());
           if (shadowStats) {
             result.shadowWinRate = side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
           }
