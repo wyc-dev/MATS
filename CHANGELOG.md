@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.183: Fix shadow trade SL/TP staleness — compute S/R levels fresh each cycle via optional srProvider instead of using cached zones, improving OLR training label quality
+
+
 ## v2.0.168 — Remove hl-fill-* Records from UI + Phantom Close Root Cause (5 Paths) + Post-Review PnL Conversion + Delete Handler Fix
 
 ### hl-fill-* Records Removed from UI — Root Cause of Phantom Closes + Delete Failures

@@ -105,9 +105,10 @@ export interface OLRSymbolStats {
 const OLR_CONFIG = {
   learningRate: 0.05,
   l2Regularization: 0.001,
-  /** SGD learning-rate decay: η_t = learningRate / (1 + decayRate × nSamples).
-   *  Prevents late samples from dominating a mature model and reduces
-   *  noise overfitting as the sample count grows. */
+  /** SGD learning-rate decay: η_t = learningRate / (1 + decayRate × liveSamples).
+   *  liveSamples = nSamples - backfillSamples, so backfill (weight=0.3) does NOT
+   *  freeze the model against live adaptation. Prevents late samples from
+   *  dominating a mature model and reduces noise overfitting. */
   decayRate: 0.01,
   /** Source-type weights for weighted SGD. Shadow trades are simulated
    *  (no slippage/fee/funding/liquidity), so they carry less evidence

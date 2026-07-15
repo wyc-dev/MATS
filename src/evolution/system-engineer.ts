@@ -147,10 +147,18 @@ export async function runSystemEngineer(records: ThesisExperienceRecord[]): Prom
 
   const dirSummary = buildDirectionSummary(records);
 
-  // Phase 3: Read relevant source code
-  const relevantCode = readRelevantSourceCode();
+  // v2.0.201: Two-phase approach — Phase 1 diagnoses which file+issue,
+  // Phase 2 reads the FULL file and asks for exact oldCode/newCode.
+  // Previous single-phase approach showed only 150 lines per file, causing
+  // the LLM to hallucinate oldCode for code it couldn't see (e.g. recordClose
+  // at line 472 was beyond the 150-line limit).
 
-  const userPrompt = `## System Context
+  const provider = getActiveProvider();
+
+  // ─── Phase 1: Diagnosis ───
+  const fileSummaries = readFileSummaries();
+
+  const phase1Prompt = `## System Context
 
 ### SystemEngineer.md (your operating manual)
 ${systemEngineerMd.slice(0, 2000)}
@@ -170,50 +178,109 @@ ${tradeSummary}
 ## Per-Symbol Direction Summary
 ${dirSummary}
 
-## Relevant Source Code (you can modify files under src/evolution/ and src/cognition/hacp.ts)
-${relevantCode}
+## File Summaries (you can modify files under src/evolution/, src/cognition/, src/analysis/, src/agents/, tests/)
+${fileSummaries}
 
 ## Known Good Code (DO NOT attempt to "fix" these — they are already correct)
 - shadow-trade-engine.ts getStats(): The dedup logic (step 3 checks p.id === r.id) correctly prevents double-counting between positions[] and recentResults[]. This has been verified. Do NOT propose changes to this method.
 - thesis-experience.ts checkThesisHistory(): Direction-filtered pWin (sameDirMatches) is correct. Do NOT remove the direction filter.
 - reason-analytics.ts SimilarTradeRetriever.findSimilar(): The side parameter filter is correct. Do NOT remove it.
 
+## Your Task (Phase 1: Diagnosis)
+Find the SINGLE MOST IMPACTFUL issue in the learning/decision system that is causing losses or preventing the system from learning correctly.
+
+Identify the file and describe the issue. In Phase 2, you will see the FULL file content and be asked to provide exact oldCode/newCode.
+
+Respond with EXACTLY ONE JSON object:
+{"severity":"critical|warning|info","category":"...","title":"...","rootCause":"specific description of what's wrong and why","affectedFile":"src/evolution/...","diagnosis":"what the fix should do","changelogEntry":"v2.0.XXX: description"}
+
+If you find NO issues worth fixing, respond with:
+{"severity":"info","category":"none","title":"No issues found","rootCause":"","affectedFile":"","diagnosis":"","changelogEntry":""}`;
+
+  log.info(`🔧 [system-engineer] Phase 1: Diagnosis (sending trade data + file summaries)...`);
+  const phase1Response = await provider.chat({
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: phase1Prompt },
+    ],
+    temperature: 0.2,
+    model: getAgentModel('terminal_agent'),
+    timeoutMs: 60_000,
+  });
+
+  const diagnosis = parseDiagnosis(phase1Response.content);
+  if (!diagnosis || !diagnosis.affectedFile || diagnosis.affectedFile === '') {
+    log.info(`🔧 [system-engineer] No actionable issue identified in Phase 1`);
+    return null;
+  }
+
+  log.info(`🔧 [system-engineer] Phase 1 complete: ${diagnosis.title} → ${diagnosis.affectedFile}`);
+
+  // v2.0.188: Check if this exact fix was already tried and failed recently.
+  const fixKey = `${diagnosis.affectedFile}:${diagnosis.title}`;
+  const lastFailed = failedFixes.get(fixKey);
+  if (lastFailed && (timestamp - lastFailed) < FAILED_FIX_TTL_MS) {
+    log.info(`🔧 [system-engineer] Skipping "${diagnosis.title}" — same fix failed ${Math.round((timestamp - lastFailed) / 1000)}s ago, will retry in ${Math.round(FAILED_FIX_TTL_MS / 60000)}min`);
+    return null;
+  }
+
+  // Validate scope
+  if (!isFileAllowed(diagnosis.affectedFile)) {
+    log.warn(`🚫 [system-engineer] REJECTED: ${diagnosis.affectedFile} is outside allowed scope`);
+    return null;
+  }
+
+  // ─── Phase 2: Exact Fix ───
+  const fullFileContent = readFileSafe(diagnosis.affectedFile);
+  if (fullFileContent.startsWith('(file not found') || fullFileContent.startsWith('(read failed')) {
+    log.warn(`🚫 [system-engineer] Could not read ${diagnosis.affectedFile}`);
+    return null;
+  }
+
+  const phase2Prompt = `## Phase 2: Exact Code Fix
+
+You identified this issue in Phase 1:
+- **Title**: ${diagnosis.title}
+- **File**: ${diagnosis.affectedFile}
+- **Root Cause**: ${diagnosis.rootCause}
+- **Diagnosis**: ${diagnosis.diagnosis}
+
+## Full Source Code of ${diagnosis.affectedFile}
+\`\`\`typescript
+${fullFileContent}
+\`\`\`
+
 ## Your Task
-Find the SINGLE MOST IMPACTFUL issue in the learning/decision system that is causing losses or preventing the system from learning correctly. Generate ONE fix with exact code replacement.
+Provide the EXACT code replacement to fix this issue.
 
-The fix must be in a file under src/evolution/ or src/cognition/hacp.ts or tests/.
-The oldCode must EXACTLY match text in the file (copy it from the source code shown above).
-The newCode must be the complete replacement.
+Rules:
+1. oldCode must be EXACT text from the file above (copy-paste, including whitespace and indentation)
+2. newCode must be the complete replacement for oldCode
+3. Keep changes minimal — only fix the identified issue
+4. Do not break any existing tests
+5. If your fix changes behavior, include a testUpdate
 
-ZERO HALLUCINATION. If you're not sure, say "No issues found".`;
+Respond with EXACTLY ONE JSON object:
+{"severity":"${diagnosis.severity}","category":"${diagnosis.category}","title":"${diagnosis.title}","rootCause":"${diagnosis.rootCause}","affectedFile":"${diagnosis.affectedFile}","proposedFix":{"oldCode":"EXACT text from the file","newCode":"replacement text","reason":"why this fix is correct"},"testUpdate":{"file":"tests/...","oldCode":"...","newCode":"..."},"changelogEntry":"${diagnosis.changelogEntry}"}`;
+
+  log.info(`🔧 [system-engineer] Phase 2: Generating exact fix for ${diagnosis.affectedFile} (${fullFileContent.split('\n').length} lines)...`);
+  const phase2Response = await provider.chat({
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: phase2Prompt },
+    ],
+    temperature: 0.1,
+    model: getAgentModel('terminal_agent'),
+    timeoutMs: 60_000,
+  });
+
+  const proposal = parseProposal(phase2Response.content);
+  if (!proposal || !proposal.proposedFix.oldCode || !proposal.proposedFix.newCode) {
+    log.info(`🔧 [system-engineer] No actionable fix proposed in Phase 2`);
+    return null;
+  }
 
   try {
-    const provider = getActiveProvider();
-    const response = await provider.chat({
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.2,
-      model: getAgentModel('terminal_agent'),
-      timeoutMs: 60_000,
-    });
-
-    const proposal = parseProposal(response.content);
-    if (!proposal || !proposal.proposedFix.oldCode || !proposal.proposedFix.newCode) {
-      log.info(`🔧 [system-engineer] No actionable fix proposed`);
-      return null;
-    }
-
-    // v2.0.188: Check if this exact fix was already tried and failed recently.
-    // Prevents infinite retry loop of the same failing fix.
-    const fixKey = `${proposal.affectedFile}:${proposal.title}`;
-    const lastFailed = failedFixes.get(fixKey);
-    if (lastFailed && (timestamp - lastFailed) < FAILED_FIX_TTL_MS) {
-      log.info(`🔧 [system-engineer] Skipping "${proposal.title}" — same fix failed ${Math.round((timestamp - lastFailed) / 1000)}s ago, will retry in ${Math.round(FAILED_FIX_TTL_MS / 60000)}min`);
-      return null;
-    }
-
     // Validate scope
     const targetFile = proposal.affectedFile;
     if (!isFileAllowed(targetFile)) {
@@ -235,14 +302,66 @@ ZERO HALLUCINATION. If you're not sure, say "No issues found".`;
 
     // Check if oldCode exists in the file
     if (!originalContent.includes(proposal.proposedFix.oldCode)) {
-      log.warn(`🚫 [system-engineer] oldCode not found in ${targetFile} — LLM may have hallucinated the exact text`);
-      // Log first 100 chars of oldCode for debugging
-      log.warn(`   oldCode preview: "${proposal.proposedFix.oldCode.slice(0, 100)}..."`);
-      return {
-        applied: false, title: proposal.title, file: targetFile, reason: 'oldCode not found (hallucination detected)',
-        tscPassed: false, testsPassed: false, rolledBack: false,
-        changelogEntry: '', error: 'oldCode mismatch', timestamp,
-      };
+      // v2.0.201: Try whitespace-normalized match — LLMs often get leading/trailing
+      // whitespace wrong but the actual code is correct. If normalized match works,
+      // find the exact text in the file and replace it.
+      const normalizedOld = proposal.proposedFix.oldCode.trim().replace(/\s+/g, ' ');
+      const normalizedFile = originalContent.replace(/\s+/g, ' ');
+      if (normalizedFile.includes(normalizedOld)) {
+        // Find the actual text in the original file that corresponds to the normalized match
+        // Use a sliding window to find the exact substring
+        const fileLines = originalContent.split('\n');
+        const oldLines = proposal.proposedFix.oldCode.trim().split('\n');
+        const oldFirstLine = oldLines[0]!.trim();
+        const oldLastLine = oldLines[oldLines.length - 1]!.trim();
+        
+        // Search for the block in the file
+        let foundStart = -1;
+        for (let i = 0; i < fileLines.length; i++) {
+          if (fileLines[i]!.trim() === oldFirstLine) {
+            // Check if subsequent lines match (trimmed)
+            let match = true;
+            for (let j = 1; j < oldLines.length; j++) {
+              if (i + j >= fileLines.length) { match = false; break; }
+              if (fileLines[i + j]!.trim() !== oldLines[j]!.trim()) { match = false; break; }
+            }
+            if (match && i + oldLines.length <= fileLines.length) {
+              // Verify the last line matches too
+              if (fileLines[i + oldLines.length - 1]!.trim() === oldLastLine) {
+                foundStart = i;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (foundStart >= 0) {
+          // Extract the exact text from the file
+          const exactOldCode = fileLines.slice(foundStart, foundStart + oldLines.length).join('\n');
+          log.info(`🔧 [system-engineer] Whitespace-normalized match found at line ${foundStart + 1} — using exact file text`);
+          // Replace oldCode with the exact text from the file
+          proposal.proposedFix.oldCode = exactOldCode;
+        } else {
+          log.warn(`🚫 [system-engineer] oldCode not found in ${targetFile} — normalized match also failed`);
+          log.warn(`   oldCode first line: "${oldFirstLine}"`);
+          log.warn(`   oldCode last line: "${oldLastLine}"`);
+          log.warn(`   oldCode lines: ${oldLines.length}`);
+          return {
+            applied: false, title: proposal.title, file: targetFile, reason: 'oldCode not found (hallucination detected)',
+            tscPassed: false, testsPassed: false, rolledBack: false,
+            changelogEntry: '', error: 'oldCode mismatch', timestamp,
+          };
+        }
+      } else {
+        log.warn(`🚫 [system-engineer] oldCode not found in ${targetFile} — LLM may have hallucinated the exact text`);
+        // Log first 100 chars of oldCode for debugging
+        log.warn(`   oldCode preview: "${proposal.proposedFix.oldCode.slice(0, 100)}..."`);
+        return {
+          applied: false, title: proposal.title, file: targetFile, reason: 'oldCode not found (hallucination detected)',
+          tscPassed: false, testsPassed: false, rolledBack: false,
+          changelogEntry: '', error: 'oldCode mismatch', timestamp,
+        };
+      }
     }
 
     // Apply the fix
@@ -290,15 +409,27 @@ ZERO HALLUCINATION. If you're not sure, say "No issues found".`;
       log.info(`🔧 [system-engineer] Running npm test...`);
       try {
         const output = execSync('npm test 2>&1', { cwd: PROJECT_ROOT, timeout: 60_000, stdio: 'pipe', encoding: 'utf-8' });
-        testsPassed = output.includes('passed') && !output.includes('failed');
+        // v2.0.201: Parse the vitest summary line, not the entire output.
+        // The output contains log messages with "failed" (e.g. "digestTrade LLM failed")
+        // which caused false negatives with the old `!output.includes('failed')` check.
+        // Look for the actual test summary: "Tests  X passed (Y)" or "Tests  X failed (Y)"
+        const testSummaryLine = output.split('\n').find(l => /^\s*Tests\s+/.test(l));
+        if (testSummaryLine) {
+          testsPassed = testSummaryLine.includes('passed') && !testSummaryLine.includes('failed');
+        } else {
+          // Fallback: if no summary line found, check exit code (execSync throws on non-zero)
+          testsPassed = true;
+        }
         if (testsPassed) {
           log.info(`✅ [system-engineer] tests passed`);
         } else {
-          log.warn(`❌ [system-engineer] tests FAILED`);
+          log.warn(`❌ [system-engineer] tests FAILED: ${testSummaryLine?.trim() ?? 'no summary line'}`);
         }
-      } catch (err) {
-        const stderr = err instanceof Error ? err.message : String(err);
-        log.warn(`❌ [system-engineer] tests FAILED: ${stderr.slice(0, 200)}`);
+      } catch (err: any) {
+        // execSync throws on non-zero exit code — test runner returns non-zero on failure
+        const output = err?.stdout ?? err?.message ?? String(err);
+        const testSummaryLine = String(output).split('\n').find(l => /^\s*Tests\s+/.test(l));
+        log.warn(`❌ [system-engineer] tests FAILED: ${testSummaryLine?.trim() ?? output.slice(0, 200)}`);
       }
     }
 
@@ -432,14 +563,36 @@ function buildDirectionSummary(records: ThesisExperienceRecord[]): string {
   return lines.join('\n');
 }
 
-function readRelevantSourceCode(): string {
-  // v2.0.193: Read ALL files in allowed scope — let the LLM see everything
-  // it's allowed to modify. This prevents oldCode hallucination caused by
-  // only seeing partial snippets.
-  const files: string[] = [];
+function readFileSummaries(): string {
+  // v2.0.201: Show file name + line count + first 50 lines as a summary.
+  // The full file is read in Phase 2 after the LLM identifies which file to fix.
+  const keyFiles = [
+    'src/evolution/thesis-experience.ts',
+    'src/evolution/experience-digester.ts',
+    'src/evolution/reason-analytics.ts',
+    'src/evolution/shadow-trade-engine.ts',
+    'src/evolution/olr-engine.ts',
+    'src/evolution/evolution-utils.ts',
+    'src/evolution/direction-audit.ts',
+    'src/cognition/hacp.ts',
+    'src/agents/base-agent.ts',
+    'src/agents/meta-agent.ts',
+  ];
 
-  // Recursively collect all .ts files from allowed directories
-  const collectFiles = (dir: string) => {
+  const parts: string[] = [];
+  for (const file of keyFiles) {
+    try {
+      const content = readFileSync(join(PROJECT_ROOT, file), 'utf-8');
+      const lines = content.split('\n');
+      const previewLines = 50;
+      const preview = lines.slice(0, previewLines).join('\n');
+      parts.push(`### ${file} (${lines.length} lines total, showing first ${previewLines})\n\`\`\`typescript\n${preview}\n\`\`\``);
+    } catch { /* skip */ }
+  }
+
+  // Also list test files (names only — they're short and will be read in Phase 2 if needed)
+  const testFiles: string[] = [];
+  const collectTests = (dir: string) => {
     try {
       const entries = readdirSync(join(PROJECT_ROOT, dir));
       for (const entry of entries) {
@@ -447,45 +600,54 @@ function readRelevantSourceCode(): string {
         const absPath = join(PROJECT_ROOT, fullPath);
         const stat = statSync(absPath);
         if (stat.isDirectory()) {
-          collectFiles(fullPath);
+          collectTests(fullPath);
         } else if (entry.endsWith('.ts')) {
-          files.push(fullPath);
+          testFiles.push(fullPath);
         }
       }
-    } catch { /* skip unreadable dirs */ }
+    } catch { /* skip */ }
   };
-
-  collectFiles('src/evolution');
-  collectFiles('src/cognition');
-  collectFiles('src/analysis');
-  collectFiles('src/agents');
-  collectFiles('tests');
-
-  // Also read test files
-  const testFiles = files.filter(f => f.startsWith('tests/'));
-  const srcFiles = files.filter(f => !f.startsWith('tests/'));
-
-  const parts: string[] = [];
-  // Read source files (truncate each to 200 lines max to stay within token budget)
-  for (const file of srcFiles) {
-    try {
-      const content = readFileSync(join(PROJECT_ROOT, file), 'utf-8');
-      const lines = content.split('\n');
-      const maxLines = 200;
-      const truncated = lines.length > maxLines
-        ? lines.slice(0, maxLines).join('\n') + `\n// ... (${lines.length - maxLines} more lines)`
-        : lines.join('\n');
-      parts.push(`### ${file} (${lines.length} lines${lines.length > maxLines ? `, showing first ${maxLines}` : ''})\n\`\`\`typescript\n${truncated}\n\`\`\``);
-    } catch { /* skip */ }
+  collectTests('tests');
+  if (testFiles.length > 0) {
+    parts.push(`### Test Files\n${testFiles.map(f => `- ${f}`).join('\n')}`);
   }
-  // Read test files (full — they're short)
-  for (const file of testFiles) {
-    try {
-      const content = readFileSync(join(PROJECT_ROOT, file), 'utf-8');
-      parts.push(`### ${file}\n\`\`\`typescript\n${content}\n\`\`\``);
-    } catch { /* skip */ }
-  }
+
   return parts.join('\n\n');
+}
+
+function parseDiagnosis(content: string): {
+  severity: string; category: string; title: string; rootCause: string;
+  affectedFile: string; diagnosis: string; changelogEntry: string;
+} | null {
+  try {
+    let s = content.trim();
+    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence && fence[1]) s = fence[1].trim();
+
+    const start = s.indexOf('{');
+    if (start < 0) return null;
+    let depth = 0;
+    let end = -1;
+    for (let i = start; i < s.length; i++) {
+      if (s[i] === '{') depth++;
+      else if (s[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+    }
+    if (end < 0) return null;
+
+    const p = JSON.parse(s.slice(start, end + 1)) as any;
+    return {
+      severity: p.severity ?? 'info',
+      category: p.category ?? 'unknown',
+      title: p.title ?? 'Untitled',
+      rootCause: p.rootCause ?? '',
+      affectedFile: p.affectedFile ?? '',
+      diagnosis: p.diagnosis ?? '',
+      changelogEntry: p.changelogEntry ?? '',
+    };
+  } catch {
+    log.warn('[system-engineer] Failed to parse diagnosis');
+    return null;
+  }
 }
 
 function parseProposal(content: string): {

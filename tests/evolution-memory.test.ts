@@ -349,6 +349,17 @@ describe('Cold-start backfill', () => {
       for (let i = 0; i < 30; i++) olr.feedTrade('btc', feats, 1, 'buy', 'real', i);
       const pAfterLive = olr.query('btc', feats, 'buy', 30).pWin;
       expect(pAfterLive).toBeGreaterThan(pAfterBackfill);
+      // Also verify that the decay rate is not artificially low due to backfill samples
+      const model = (olr as any).symbols.get('btc')?.long;
+      if (model) {
+        // liveSamples = nSamples - backfillSamples should be 30
+        const liveSamples = model.nSamples - model.backfillSamples;
+        expect(liveSamples).toBeGreaterThanOrEqual(30);
+        // The effective learning rate should be higher than if backfill counted
+        const effectiveLR = 0.05 / (1 + 0.01 * liveSamples);
+        const frozenLR = 0.05 / (1 + 0.01 * model.nSamples);
+        expect(effectiveLR).toBeGreaterThan(frozenLR);
+      }
     });
   });
 
