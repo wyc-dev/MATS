@@ -548,6 +548,55 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
 
     // Decision: apply or rollback
     if (tscPassed && testsPassed) {
+      // v2.0.204: No-op detection — if the fix didn't actually change the file
+      // content (oldCode === newCode, or the replacement produced identical output),
+      // reject it as a false positive. The SE sometimes "fixes" issues by replacing
+      // code with identical or equivalent code, passing tsc+test trivially, and
+      // claiming success without doing anything.
+      const finalContent = readFileSync(fullPath, 'utf-8');
+      if (finalContent === originalContent) {
+        log.warn(`🚫 [system-engineer] NO-OP DETECTED: fix produced identical file content — rejecting as false positive`);
+        log.warn(`   This means the SE replaced code with identical text. The issue may require changes outside the SE's allowed scope.`);
+        // Record as failed so this file gets cooldown
+        failedFixes.set(targetFile, timestamp);
+        const result: AutoFixResult = {
+          applied: false, title: proposal.title, file: targetFile,
+          reason: 'No-op fix — file content unchanged (false positive)',
+          tscPassed, testsPassed, rolledBack: false,
+          changelogEntry: '', error: 'no-op detected', timestamp,
+        };
+        appendRecommendation(result, false);
+        return result;
+      }
+
+      // v2.0.204: Comment-only detection — if the fix only added/changed comments
+      // (no actual code logic changed), reject it. Strip comments + whitespace and
+      // compare. This catches SE fixes that add a clarifying comment and claim
+      // success without fixing the actual issue.
+      const stripNonCode = (s: string) => s
+        .replace(/\/\/[^\n]*/g, '')     // strip line comments
+        .replace(/\/\*[\s\S]*?\*\//g, '') // strip block comments
+        .replace(/\s+/g, ' ')           // collapse whitespace
+        .trim();
+      if (stripNonCode(finalContent) === stripNonCode(originalContent)) {
+        log.warn(`🚫 [system-engineer] COMMENT-ONLY DETECTED: fix only changed comments/whitespace, no code logic changed — rejecting as false positive`);
+        log.warn(`   The SE added a comment but didn't fix the actual issue. The issue may require changes outside the SE's allowed scope.`);
+        // Rollback the comment-only change
+        writeFileSync(fullPath, originalContent, 'utf-8');
+        if (originalTestContent && testFile) {
+          writeFileSync(join(PROJECT_ROOT, testFile), originalTestContent, 'utf-8');
+        }
+        failedFixes.set(targetFile, timestamp);
+        const result: AutoFixResult = {
+          applied: false, title: proposal.title, file: targetFile,
+          reason: 'Comment-only fix — no code logic changed (false positive)',
+          tscPassed, testsPassed, rolledBack: true,
+          changelogEntry: '', error: 'comment-only detected', timestamp,
+        };
+        appendRecommendation(result, false);
+        return result;
+      }
+
       // SUCCESS: Update CHANGELOG.md
       updateChangelog(proposal.changelogEntry);
 
