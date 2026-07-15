@@ -1421,7 +1421,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                   }).catch(() => {})
                 }}>
                   <span className={`smp-side-tag ${side === 'buy' ? 'buy' : 'sell'}`}>{side === 'buy' ? 'BUY' : 'SELL'} {posEntry > 0 ? `$${posEntry.toFixed(2)}` : '—'}</span>
-                  <span className="smp-symbol">{(sym.includes(':') ? sym.split(':').pop() : sym).toUpperCase()}</span>
+                  <span className="smp-symbol">{(sym.includes(':') ? (sym.split(':').pop() ?? sym) : sym).toUpperCase()}</span>
                   <span className="smp-data">{posPrice > 0 ? `$${posPrice.toFixed(2)}` : '—'}</span>
                   <span className={`smp-data ${posPnl >= 0 ? 'positive' : 'negative'}`}>
                     {posPnl >= 0 ? '+' : ''}${posPnl.toFixed(2)}
@@ -1504,7 +1504,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                     }).catch(() => {})
                   }}>
                     <span className="smp-side-tag hold">HOLD</span>
-                    <span className="smp-symbol">{(sym.includes(':') ? sym.split(':').pop() : sym).toUpperCase()}</span>
+                    <span className="smp-symbol">{(sym.includes(':') ? (sym.split(':').pop() ?? sym) : sym).toUpperCase()}</span>
                     <span className="smp-data">—</span>
                     <span className="smp-data">—</span>
                     <span className="smp-spacer" />
