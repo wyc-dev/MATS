@@ -146,6 +146,7 @@ export class ShadowTradeEngine {
    * @param tpPrice      TP price (from S/R) — if null, use default distance
    * @param cycle        Current cycle number
    * @param features     Feature snapshot at entry time
+   * @param srProvider   Optional S/R zone provider to fetch fresh zones each cycle
    */
   openShadowTrades(
     symbol: string,
@@ -156,6 +157,7 @@ export class ShadowTradeEngine {
     tpPriceShort: number | null,
     cycle: number,
     features: Record<string, number>,
+    srProvider?: { getZones: (symbol: string, price: number) => { support: number; resistance: number } | null },
   ): void {
     if (entryPrice <= 0) return;
 
@@ -168,11 +170,37 @@ export class ShadowTradeEngine {
     const sym = symbol.toLowerCase();
     const ts = Date.now();
 
-    // Calculate SL/TP prices
-    const longSL = slPriceLong && slPriceLong > 0 ? slPriceLong : entryPrice * (1 - SHADOW_CONFIG.defaultSLDistance);
-    const longTP = tpPriceLong && tpPriceLong > 0 ? tpPriceLong : entryPrice * (1 + SHADOW_CONFIG.defaultTPDistance);
-    const shortSL = slPriceShort && slPriceShort > 0 ? slPriceShort : entryPrice * (1 + SHADOW_CONFIG.defaultSLDistance);
-    const shortTP = tpPriceShort && tpPriceShort > 0 ? tpPriceShort : entryPrice * (1 - SHADOW_CONFIG.defaultTPDistance);
+    // v2.0.183: Fetch fresh S/R zones each cycle to avoid stale levels.
+    // If srProvider is available, use it to get the latest support/resistance
+    // for the current price. This ensures shadow trades reflect current market
+    // structure, producing cleaner training labels for OLR.
+    let freshSLPriceLong = slPriceLong;
+    let freshTPPriceLong = tpPriceLong;
+    let freshSLPriceShort = slPriceShort;
+    let freshTPPriceShort = tpPriceShort;
+    if (srProvider) {
+      try {
+        const zones = srProvider.getZones(sym, entryPrice);
+        if (zones) {
+          // For LONG: SL at support (below), TP at resistance (above)
+          freshSLPriceLong = zones.support;
+          freshTPPriceLong = zones.resistance;
+          // For SHORT: SL at resistance (above), TP at support (below)
+          freshSLPriceShort = zones.resistance;
+          freshTPPriceShort = zones.support;
+          log.debug(`[shadow] Fresh S/R zones for ${sym}: support=${zones.support.toFixed(2)}, resistance=${zones.resistance.toFixed(2)}`);
+        }
+      } catch (err) {
+        log.warn(`[shadow] Failed to fetch fresh S/R zones: ${err instanceof Error ? err.message : String(err)}`);
+        // Fall back to provided levels (may be stale, but better than nothing)
+      }
+    }
+
+    // Calculate SL/TP prices using fresh levels if available, else provided levels, else defaults
+    const longSL = freshSLPriceLong && freshSLPriceLong > 0 ? freshSLPriceLong : entryPrice * (1 - SHADOW_CONFIG.defaultSLDistance);
+    const longTP = freshTPPriceLong && freshTPPriceLong > 0 ? freshTPPriceLong : entryPrice * (1 + SHADOW_CONFIG.defaultTPDistance);
+    const shortSL = freshSLPriceShort && freshSLPriceShort > 0 ? freshSLPriceShort : entryPrice * (1 + SHADOW_CONFIG.defaultSLDistance);
+    const shortTP = freshTPPriceShort && freshTPPriceShort > 0 ? freshTPPriceShort : entryPrice * (1 - SHADOW_CONFIG.defaultTPDistance);
 
     // Open shadow LONG
     const longId = `shadow_${++this.idCounter}`;
