@@ -1475,8 +1475,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           );
           log.info(`✓ EXP thesis-experience memory ready (${this.expMemory.size()} records) — embed model warming up + classes rebuilding in background`);
 
-          // v2.0.180: Run LLM-powered trade audit at startup
-          void this.runDirectionAudit();
+          // v2.0.186: System Engineer startup audit — only when explicitly enabled
+          if (process.env['SYSTEM_ENGINEER_ENABLED'] === 'true') {
+            void this.runDirectionAudit();
+          }
           // v2.0.140: EM Cycle Chain insight retrieval — share the same
           // TransformersEmbedProvider (stateless, no interference with
           // ExperienceDigester). Rebuild insight vectors from loaded summaries.
@@ -5778,13 +5780,14 @@ ${recentExamples}
       this.pushToAPI();
 
       // v2.0.184: System Engineer runs AFTER cycle completes, not during.
-      // This ensures file modifications + tsx watch restart happen in the
-      // gap between cycles, never interrupting an in-progress trade.
-      // v2.0.185: Only run when cycle period >= 5 min — System Engineer needs
-      // enough time between cycles for LLM analysis + tsc + test + git commit.
-      // With a <5-min cycle, the next cycle would start before the fix is done.
+      // v2.0.185: Only run when cycle period >= 5 min.
+      // v2.0.186: Only run when SYSTEM_ENGINEER_ENABLED=true (npm run engineer).
+      // Under `tsx watch` (npm run dev), file modifications trigger immediate
+      // restart before tsc/test can validate the fix — so System Engineer is
+      // disabled in watch mode. Use `npm run engineer` for autonomous fixes.
       const cycleMinutes = this.cycleIntervalMs / 60_000;
-      if (this.totalCycles > 0 && this.totalCycles % 2 === 0 && !isShuttingDown() && cycleMinutes >= 5) {
+      const engineerEnabled = process.env['SYSTEM_ENGINEER_ENABLED'] === 'true';
+      if (engineerEnabled && this.totalCycles > 0 && this.totalCycles % 2 === 0 && !isShuttingDown() && cycleMinutes >= 5) {
         void this.runDirectionAudit();
       }
 
