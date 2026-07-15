@@ -275,6 +275,9 @@ export class OLREngine {
     // excluding backfill. This prevents 200 backfill samples from freezing the model
     // against live adaptation. The decay counter starts at 0 for live samples and
     // increments only when a non-backfill sample is fed.
+    // CRITICAL: The decay counter must be based on live samples only, not total nSamples.
+    // Backfill samples are used for cold-start prior but should NOT count toward
+    // learning rate decay, otherwise the model freezes before any live trading occurs.
     const eta = (OLR_CONFIG.learningRate / (1 + OLR_CONFIG.decayRate * safeLiveSamples)) * sourceWeight;
     for (let i = 0; i <= D; i++) {
       const reg = i > 0 ? OLR_CONFIG.l2Regularization * model.weights[i]! : 0;
