@@ -12,6 +12,7 @@
 
 import { createLogger } from '../observability/logger.ts';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { wilsonScore } from './evolution-utils.ts';
 
 const log = createLogger({ phase: 'pattern_tag_tracker' });
 
@@ -64,19 +65,7 @@ export interface PatternTagSummary {
   uniqueTags: number;
 }
 
-// ─── Wilson Score ───
-
-function wilsonScore(wins: number, total: number): number {
-  if (total === 0) return 0;
-  const p = wins / total;
-  const z = 1.96;
-  const denominator = 1 + (z * z) / total;
-  const centre = p + (z * z) / (2 * total);
-  const adjusted =
-    (centre - z * Math.sqrt((centre * (1 - centre)) / total + (z * z) / (4 * total * total))) /
-    denominator;
-  return Math.max(0, adjusted);
-}
+// v2.0.174: wilsonScore extracted to evolution-utils.ts
 
 // ─── Tracker ───
 

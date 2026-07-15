@@ -44,6 +44,7 @@ import {
   cosine,
 } from './embeddings.ts';
 import { ExperienceDigester } from './experience-digester.ts';
+import { extractJSON, categoriseRationale, normaliseCategory } from './evolution-utils.ts';
 
 const log = rootLogger;
 
@@ -147,29 +148,7 @@ export function assetCategory(symbol: string, map?: Record<string, AssetCategory
   return 'other';
 }
 
-// ─── JSON extraction (robust against markdown fences) ───
-
-function extractJSON(raw: string): unknown {
-  let s = raw.trim();
-  // Strip ```json ... ``` fences
-  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence && fence[1]) s = fence[1].trim();
-  // Find the first balanced {…}
-  const start = s.indexOf('{');
-  if (start < 0) throw new Error('no JSON object found');
-  let depth = 0;
-  let end = -1;
-  for (let i = start; i < s.length; i++) {
-    const ch = s[i]!;
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) { end = i; break; }
-    }
-  }
-  if (end < 0) throw new Error('unbalanced JSON');
-  return JSON.parse(s.slice(start, end + 1));
-}
+// v2.0.174: extractJSON extracted to evolution-utils.ts
 
 // ─── Heuristic rationale split (fallback when LLM fails) ───
 
@@ -181,25 +160,15 @@ function heuristicSplit(thesis: string): RationaleItem[] {
   for (const p of parts) {
     // Sub-split by sentence if a part is long
     const sentences = p.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter((s) => s.length > 0);
-    for (const s of sentences) items.push({ point: s, category: categorise(s) });
+    for (const s of sentences) items.push({ point: s, category: categoriseRationale(s) });
   }
   if (items.length === 0 && thesis.trim().length > 0) {
-    items.push({ point: thesis.trim(), category: categorise(thesis) });
+    items.push({ point: thesis.trim(), category: categoriseRationale(thesis) });
   }
   return items;
 }
 
-function categorise(text: string): RationaleCategory {
-  const t = text.toLowerCase();
-  if (/(resistance|support|breakout|rsi|macd|moving average|ema|sma|trendline|fib|volume|vol |ob |order book|imbalance|bps|retest)/.test(t)) return 'technical';
-  if (/(capex|earnings|revenue|ai |secular|tailwind|fundamental|valuation|pe |margin)/.test(t)) return 'fundamental';
-  if (/(news|fud|announcement|headline|ceasefire|geopolit|tweet|statement)/.test(t)) return 'news';
-  if (/(fed|rate|interest|inflation|cpi|macro|liquidity|qt|qe|yield)/.test(t)) return 'macro';
-  if (/(flow|inflow|outflow|etf|fund flow|whale|onchain|on-chain|funding rate)/.test(t)) return 'flow';
-  if (/(sentiment|fear|greed|conviction|social)/.test(t)) return 'sentiment';
-  if (/(pattern|flag|triangle|wedge|double top|double bottom|reversal|continuation)/.test(t)) return 'pattern';
-  return 'other';
-}
+// v2.0.174: categorise + normaliseCat extracted to evolution-utils.ts
 
 // ─── Core class ───
 
@@ -468,7 +437,7 @@ export class ThesisExperience {
         .filter((x) => x && typeof x.point === 'string' && x.point!.trim().length > 0)
         .map((x) => ({
           point: x.point!.trim(),
-          category: normaliseCat(x.category),
+          category: normaliseCategory(x.category),
         }));
       if (items.length === 0) throw new Error('extractor returned no rationales');
       return items;
@@ -1053,11 +1022,7 @@ export class ThesisExperience {
 
 // ─── helpers ───
 
-function normaliseCat(c?: string): RationaleCategory {
-  const valid: RationaleCategory[] = ['technical', 'fundamental', 'news', 'macro', 'flow', 'sentiment', 'pattern', 'other'];
-  const lower = (c ?? 'other').toLowerCase().trim() as RationaleCategory;
-  return valid.includes(lower) ? lower : 'other';
-}
+// v2.0.174: normaliseCat extracted to evolution-utils.ts
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
