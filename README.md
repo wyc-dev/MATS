@@ -57,9 +57,11 @@ cp .env.example .env
 
 ### 4. Launch
 ```bash
-npm run dev    # concurrently: tsx watch (API :3456) + vite (UI :5173)
+npm run engineer    # Autonomous mode: trading + System Engineer self-repair + auto-restart on code fix
 ```
 Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
+
+`npm run engineer` runs MATS with the System Engineer agent enabled. Every 2 cycles (when cycle period ≥ 5 min), the System Engineer examines trade records + source code, detects learning system bugs, and autonomously fixes them. The fix is validated via `tsc --noEmit` + `npm test` — if either fails, the change is automatically rolled back. If both pass, the fix is committed and the process restarts to load the new code. This is the only supported production launch mode.
 
 ---
 
