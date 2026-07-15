@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.181: Fix shadow trade OLR training to use weighted combination of entry and resolution features (0.3/0.7) instead of stale entry features — prevents learning spurious correlations from outdated market conditions
+
+
 ## v2.0.203: No change needed — current code at line 380 is correct
 
 

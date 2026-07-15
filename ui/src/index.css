@@ -994,6 +994,44 @@ body {
   transition: color 0.2s ease;
 }
 
+/* v2.0.207: Universal expand/collapse slide animation — ease-in-out slide up/down.
+   Applied to all expandable sections in HACP Consciousness + HACP Hippocampus. */
+@keyframes slide-expand {
+  from {
+    opacity: 0;
+    max-height: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    max-height: 5000px;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-collapse {
+  from {
+    opacity: 1;
+    max-height: 5000px;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    max-height: 0;
+    transform: translateY(-8px);
+  }
+}
+
+.slide-expand-content {
+  animation: slide-expand 0.3s ease-in-out forwards;
+  overflow: hidden;
+}
+
+.slide-collapse-content {
+  animation: slide-collapse 0.25s ease-in-out forwards;
+  overflow: hidden;
+}
+
 .agent-head:hover .agent-expand-chevron {
   color: var(--text-primary);
 }
