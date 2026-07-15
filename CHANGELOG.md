@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.202: Fix OLR backfill Welford contamination — backfill no longer updates normalization stats, preventing feature explosion on first live sample and restoring OLR learning system effectiveness
+
+
 ## v2.0.181: Fix OLR learning rate decay to exclude backfill samples — prevents model freezing from 200 simulated trades, enabling continuous adaptation to live market conditions
 
 
