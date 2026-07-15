@@ -24,6 +24,7 @@ import type {
   TradeOutcome,
 } from '../types/index.ts';
 import { type EmbedProvider, cosine } from './embeddings.ts';
+import { extractJSON, categoriseRationale, normaliseCategory } from './evolution-utils.ts';
 
 const log = rootLogger;
 
@@ -68,41 +69,7 @@ function defaultDigestCfg(): DigestRuntimeConfig {
   };
 }
 
-// ─── JSON extraction (shared with thesis-experience) ───
-
-function extractJSON(raw: string): unknown {
-  let s = raw.trim();
-  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence && fence[1]) s = fence[1].trim();
-  const start = s.indexOf('{');
-  if (start < 0) throw new Error('no JSON object found');
-  let depth = 0;
-  let end = -1;
-  for (let i = start; i < s.length; i++) {
-    const ch = s[i]!;
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) { end = i; break; }
-    }
-  }
-  if (end < 0) throw new Error('unbalanced JSON');
-  return JSON.parse(s.slice(start, end + 1));
-}
-
-// ─── Heuristic category (fallback, mirrors thesis-experience.categorise) ───
-
-function categorise(text: string): RationaleCategory {
-  const t = text.toLowerCase();
-  if (/(resistance|support|breakout|rsi|macd|moving average|ema|sma|trendline|fib|volume|vol |ob |order book|imbalance|bps|retest)/.test(t)) return 'technical';
-  if (/(capex|earnings|revenue|ai |secular|tailwind|fundamental|valuation|pe |margin)/.test(t)) return 'fundamental';
-  if (/(news|fud|announcement|headline|ceasefire|geopolit|tweet|statement|front-run|accumulation|distribution)/.test(t)) return 'news';
-  if (/(fed|rate|interest|inflation|cpi|macro|liquidity|qt|qe|yield|risk-off|risk off)/.test(t)) return 'macro';
-  if (/(flow|inflow|outflow|etf|fund flow|whale|onchain|on-chain|funding rate)/.test(t)) return 'flow';
-  if (/(sentiment|fear|greed|conviction|social)/.test(t)) return 'sentiment';
-  if (/(pattern|flag|triangle|wedge|double top|double bottom|reversal|continuation|mean reversion)/.test(t)) return 'pattern';
-  return 'other';
-}
+// v2.0.174: extractJSON + categorise + normaliseCat extracted to evolution-utils.ts
 
 // ─── Core class ───
 
@@ -243,7 +210,7 @@ export class ExperienceDigester {
     const typedExit = validExitTypes.includes(exitType as typeof validExitTypes[number]) ? exitType as typeof validExitTypes[number] : undefined;
     const lesson = typeof p['lesson'] === 'string' && p['lesson'].trim() ? (p['lesson'] as string).trim() : '';
     const cats = Array.isArray(p['categories'])
-      ? (p['categories'] as unknown[]).filter((x): x is string => typeof x === 'string').map((c) => normaliseCat(c))
+      ? (p['categories'] as unknown[]).filter((x): x is string => typeof x === 'string').map((c) => normaliseCategory(c))
       : rec.rationaleCats.slice(0, 3);
     return {
       obs,
@@ -342,7 +309,7 @@ export class ExperienceDigester {
       : 0.5;
     const lesson = typeof p['lesson'] === 'string' && p['lesson'].trim() ? (p['lesson'] as string).trim() : '';
     const cats = Array.isArray(p['categories'])
-      ? (p['categories'] as unknown[]).filter((x): x is string => typeof x === 'string').map((c) => normaliseCat(c))
+      ? (p['categories'] as unknown[]).filter((x): x is string => typeof x === 'string').map((c) => normaliseCategory(c))
       : [];
     return {
       obs,
@@ -749,8 +716,4 @@ function clamp01(x: number): number {
   return Math.max(0, Math.min(1, x));
 }
 
-function normaliseCat(c: string): RationaleCategory {
-  const valid: RationaleCategory[] = ['technical', 'fundamental', 'news', 'macro', 'flow', 'sentiment', 'pattern', 'other'];
-  const lower = (c ?? 'other').toLowerCase().trim() as RationaleCategory;
-  return valid.includes(lower) ? lower : 'other';
-}
+// v2.0.174: normaliseCat extracted to evolution-utils.ts

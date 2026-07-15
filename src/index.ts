@@ -33,7 +33,6 @@ import {
   SimilarTradeRetriever,
   SubtleDiffAnalyzer,
   formatAnalyticsBlock,
-  formatExpVerdictBlock,
 } from './evolution/reason-analytics.ts';
 import { TransformersEmbedProvider } from './evolution/embeddings.ts';
 import { SentimentEngine } from './analysis/sentiment-engine.ts';

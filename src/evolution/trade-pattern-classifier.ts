@@ -17,6 +17,7 @@ import { createLogger } from '../observability/logger.ts';
 import type { MarketRegime, AgentRole } from '../types/index.ts';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { EMClusteringEngine, type EMQueryResult } from './em-clustering.ts';
+import { wilsonScore } from './evolution-utils.ts';
 
 const log = createLogger({ phase: 'pattern_classifier' });
 
@@ -156,18 +157,7 @@ const NUMERICAL_FEATURES: FeatureDef[] = [
 
 // ─── Manager ───
 
-/** Wilson score interval lower bound (95% confidence).
- *  Penalises small sample sizes — 3/5 = 60% becomes ~25%, 30/50 = 60% stays ~47%.
- *  This prevents overfitting on tiny match counts. */
-function wilsonScore(wins: number, total: number): number {
-  if (total <= 0) return 0;
-  const p = Math.min(1, Math.max(0, wins / total));
-  const z = 1.96; // 95% confidence
-  const denominator = 1 + z * z / total;
-  const centre = p + z * z / (2 * total);
-  const adjusted = (centre - z * Math.sqrt(centre * (1 - centre) / total + z * z / (4 * total * total))) / denominator;
-  return Math.max(0, adjusted);
-}
+/** v2.0.174: wilsonScore extracted to evolution-utils.ts */
 
 /** v2.0.38: Time-weight decay factor for a pattern.
  *  weight = 0.5^(age / halfLife). A pattern from 7 days ago has half the
