@@ -5870,6 +5870,9 @@ ${recentExamples}
             // v2.0.134: Include entryThesis from real position if available
             entryThesis: realPos?.entryThesis,
             holdReason: realPos?.holdReason,
+            // v2.0.162: Include MAE/MFE from real position if available
+            minValueReached: realPos?.minValueReached,
+            maxValueReached: realPos?.maxValueReached,
           };
         }
       }

@@ -878,6 +878,9 @@ export class RealTradingManager {
                 const preservedThesis = localPos.entryThesis;
                 const preservedMinValue = localPos.minValueReached;
                 const preservedMaxValue = localPos.maxValueReached;
+                const preservedHoldReason = localPos.holdReason;
+                const preservedOriginalSL = localPos.originalStopLossPrice;
+                const preservedOriginalTP = localPos.originalTakeProfitPrice;
                 this.portfolio.closePosition(sym, localPos.currentPrice);
                 log.info(`  → Paper mirror closed: ${localPos.side.toUpperCase()} ${sym} PnL: ${(localPos.unrealizedPnl).toFixed(2)}`);
                 // v2.0.50: If exPos.openedAt is 0 (fill not found), preserve
@@ -892,11 +895,14 @@ export class RealTradingManager {
                 );
                 // v2.0.143: Restore preserved fields onto the re-imported position.
                 const reimportedPos = this.portfolio.getPosition(sym);
-                if (reimportedPos && preservedThesis) {
-                  reimportedPos.entryThesis = preservedThesis;
-                  reimportedPos.minValueReached = preservedMinValue;
-                  reimportedPos.maxValueReached = preservedMaxValue;
-                  log.info(`  → Preserved entryThesis + MAE/MFE on re-imported ${sym}`);
+                if (reimportedPos) {
+                  if (preservedThesis) reimportedPos.entryThesis = preservedThesis;
+                  if (preservedMinValue !== undefined) reimportedPos.minValueReached = preservedMinValue;
+                  if (preservedMaxValue !== undefined) reimportedPos.maxValueReached = preservedMaxValue;
+                  if (preservedHoldReason) reimportedPos.holdReason = preservedHoldReason;
+                  if (preservedOriginalSL !== undefined) reimportedPos.originalStopLossPrice = preservedOriginalSL;
+                  if (preservedOriginalTP !== undefined) reimportedPos.originalTakeProfitPrice = preservedOriginalTP;
+                  log.info(`  → Preserved entryThesis + MAE/MFE + holdReason on re-imported ${sym}`);
                 }
               }
             } else {
