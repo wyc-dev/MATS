@@ -408,11 +408,30 @@ export class ShadowTradeEngine {
   getStats(): ShadowTradeStats[] {
     const symbolMap = new Map<string, ShadowTradeStats>();
 
-    for (const pos of this.positions) {
-      let stats = symbolMap.get(pos.symbol);
+    // v2.0.175: Include recentResults in stats calculation. Previously only
+    // this.positions was used, but resolved positions are moved to
+    // recentResults and pruned from positions. After restart, save() only
+    // persists open positions, so all resolved positions are lost. This
+    // meant getStats() returned empty/incomplete stats after restart, and
+    // the EXP fusion callback couldn't get shadowWinRate.
+    const allRecords: Array<{ symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; mfePct?: number; maePct?: number }> = [
+      // Current positions (open + recently resolved in memory)
+      ...this.positions.map(p => ({
+        symbol: p.symbol, side: p.side, outcome: p.status === 'open' ? 'win' : p.status, // open positions don't count as win/loss
+        holdCycles: (p.resolvedCycle ?? p.openCycle) - p.openCycle,
+        mfePct: p.mfePct, maePct: p.maePct,
+      })),
+      // Historical results (survive restart via save/load)
+      ...this.recentResults.map(r => ({
+        symbol: r.symbol, side: r.side, outcome: r.outcome, holdCycles: r.holdCycles,
+      })),
+    ];
+
+    for (const rec of allRecords) {
+      let stats = symbolMap.get(rec.symbol);
       if (!stats) {
         stats = {
-          symbol: pos.symbol,
+          symbol: rec.symbol,
           totalOpened: 0,
           openCount: 0,
           longWins: 0,
@@ -425,26 +444,28 @@ export class ShadowTradeEngine {
           avgMfePct: 0,
           avgMaePct: 0,
         };
-        symbolMap.set(pos.symbol, stats);
+        symbolMap.set(rec.symbol, stats);
       }
       stats.totalOpened++;
 
-      if (pos.status === 'open') {
+      // Skip open positions for win/loss counting
+      const isOpen = this.positions.some(p => p.symbol === rec.symbol && p.status === 'open' && p.side === rec.side && p.openCycle === rec.holdCycles + p.openCycle);
+      if (isOpen) {
         stats.openCount++;
-      } else {
-        const holdCycles = (pos.resolvedCycle ?? pos.openCycle) - pos.openCycle;
-        stats.avgHoldCycles = (stats.avgHoldCycles * (stats.totalOpened - 1) + holdCycles) / stats.totalOpened;
-        // v2.0.143: Accumulate MAE/MFE across resolved trades.
-        stats.avgMfePct = (stats.avgMfePct * (stats.totalOpened - 1) + pos.mfePct) / stats.totalOpened;
-        stats.avgMaePct = (stats.avgMaePct * (stats.totalOpened - 1) + pos.maePct) / stats.totalOpened;
+        continue;
+      }
 
-        if (pos.side === 'buy') {
-          if (pos.status === 'win') stats.longWins++;
-          else stats.longLosses++;
-        } else {
-          if (pos.status === 'win') stats.shortWins++;
-          else stats.shortLosses++;
-        }
+      const holdCycles = rec.holdCycles;
+      stats.avgHoldCycles = (stats.avgHoldCycles * (stats.totalOpened - 1) + holdCycles) / stats.totalOpened;
+      if (rec.mfePct !== undefined) stats.avgMfePct = (stats.avgMfePct * (stats.totalOpened - 1) + rec.mfePct) / stats.totalOpened;
+      if (rec.maePct !== undefined) stats.avgMaePct = (stats.avgMaePct * (stats.totalOpened - 1) + rec.maePct) / stats.totalOpened;
+
+      if (rec.side === 'buy') {
+        if (rec.outcome === 'win') stats.longWins++;
+        else stats.longLosses++;
+      } else {
+        if (rec.outcome === 'win') stats.shortWins++;
+        else stats.shortLosses++;
       }
     }
 
