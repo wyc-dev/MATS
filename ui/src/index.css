@@ -1173,13 +1173,15 @@ body {
   overflow: hidden;
   opacity: 0;
   margin: 0;
-  transition: max-height 0.25s ease, opacity 0.2s ease;
+  transform: translateY(-8px);
+  transition: max-height 0.3s ease-in-out, opacity 0.25s ease-in-out, transform 0.3s ease-in-out;
 }
 
 .agent-thought-expanded {
   max-height: none;
   opacity: 1;
-  transition: max-height 0.3s ease, opacity 0.25s ease;
+  transform: translateY(0);
+  transition: max-height 0.3s ease-in-out, opacity 0.25s ease-in-out, transform 0.3s ease-in-out;
 }
 
 .agent-thought-actions {
@@ -2948,6 +2950,8 @@ body {
   border-radius: var(--radius-md);
   font-size: var(--fs-xs);
   line-height: 1.6;
+  animation: slide-expand 0.3s ease-in-out forwards;
+  overflow: hidden;
 }
 
 .exp-digest-section {
@@ -4035,6 +4039,7 @@ body {
   -webkit-line-clamp: unset;
   display: block;
   overflow: visible;
+  animation: slide-expand 0.3s ease-in-out forwards;
 }
 
 /* v2.0.80: Meta-Agent entryThesis — why price reaches TP */
@@ -4057,6 +4062,7 @@ body {
   -webkit-line-clamp: unset;
   display: block;
   overflow: visible;
+  animation: slide-expand 0.3s ease-in-out forwards;
 }
 
 /* v2.0.84: Per-symbol rationale — collapsed by default for sub-agents */
@@ -4077,13 +4083,15 @@ body {
   opacity: 0;
   padding: 0;
   margin: 0;
-  transition: max-height 0.25s ease, opacity 0.2s ease;
+  transform: translateY(-8px);
+  transition: max-height 0.3s ease-in-out, opacity 0.25s ease-in-out, transform 0.3s ease-in-out;
 }
 
 .agent-rationale-expanded {
   max-height: none;
   opacity: 1;
-  transition: max-height 0.3s ease, opacity 0.25s ease;
+  transform: translateY(0);
+  transition: max-height 0.3s ease-in-out, opacity 0.25s ease-in-out, transform 0.3s ease-in-out;
 }
 
 /* v2.0.107: Merged decision+reason toggle button — replaces separate decision-tag span + ▼ Reason button */
