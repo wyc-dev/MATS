@@ -1,17 +1,19 @@
-// ─── System Engineer Agent ───
-// v2.0.181: LLM-powered self-improving code review agent.
-// Reads SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md + trade records,
-// detects issues, generates code fix proposals (with diffs + tests + changelog),
-// writes them to audit-recommendations.jsonl for human approval.
+// ─── System Engineer Agent (Autonomous) ───
+// v2.0.182: LLM-powered self-improving code agent with AUTONOMOUS execution.
+// Reads SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md + trade records +
+// source code, detects issues, generates fixes, APPLIES them, runs tests,
+// auto-rollbacks on failure, commits on success.
 //
-// The agent has SUGGESTION power but NOT EXECUTION power.
-// All fixes require human approval before being applied.
+// Safety net: tsc --noEmit + npm test must pass. If either fails → rollback.
+// Scope: src/evolution/ + src/cognition/hacp.ts only (learning + decision logic).
+// Forbidden: src/trading/ (order execution + SL/TP + signing) + src/config/ (risk).
 
 import { createLogger } from '../observability/logger.ts';
 import { getActiveProvider } from '../llm/index.ts';
 import { getAgentModel } from '../agents/agent-models.ts';
-import { readFileSync, existsSync, appendFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { execSync } from 'node:child_process';
 import type { ThesisExperienceRecord } from '../types/index.ts';
 
 const log = createLogger({ phase: 'system-engineer' });
@@ -19,67 +21,88 @@ const log = createLogger({ phase: 'system-engineer' });
 const PROJECT_ROOT = process.cwd();
 const RECOMMENDATIONS_FILE = join(PROJECT_ROOT, 'data/evolution/audit-recommendations.jsonl');
 
+// Files the agent is ALLOWED to modify (learning + decision logic only)
+const ALLOWED_PREFIXES = [
+  'src/evolution/',
+  'src/cognition/hacp.ts',
+  'tests/',
+];
+
+// Files the agent is FORBIDDEN from modifying (trading execution + risk config)
+const FORBIDDEN_PREFIXES = [
+  'src/trading/',
+  'src/config/',
+  'src/data/',
+  'src/api-server.ts',
+  'src/index.ts',
+  '.env',
+];
+
 const SYSTEM_PROMPT = `You are the System Engineer of MATS, a multi-agent quant trading system on Hyperliquid DEX.
 Your mission: achieve maximum profit efficiency while approaching complete capital preservation.
 
-You have SUGGESTION power but NOT EXECUTION power. You generate fix proposals; a human approves them.
+You have AUTONOMOUS EXECUTION power. Your fixes will be applied directly to the codebase.
+A safety net runs after each fix: tsc --noEmit + npm test. If either fails, your change is automatically rolled back.
+
+## What You CAN Modify
+- src/evolution/*.ts — learning systems (EXP, OLR, shadow, pattern classifier, digester, etc.)
+- src/cognition/hacp.ts — HACP decision protocol (consensus, debate, Skeptics validation)
+- tests/*.ts — test files (you own these, keep them updated with your changes)
+
+## What You CANNOT Modify (STRICTLY FORBIDDEN)
+- src/trading/*.ts — order execution, SL/TP, position management, signing
+- src/config/*.ts — risk parameters, leverage, trade mode
+- src/index.ts — main orchestrator
+- .env — environment configuration
+- src/api-server.ts — API server
+- src/data/*.ts — WebSocket data feeds
 
 ## Core Principles
 
-1. ZERO HALLUCINATION — Only modify code you fully understand. Read the actual implementation before proposing changes. Never invent APIs or guess types.
-2. CODE SEMANTICS — Before proposing a fix, read the full function + all callers. Update function descriptions to match implementation.
-3. SUBTLE BUG PREVENTION — Trading system bugs = real money loss. Watch for: direction mixing (BUY vs SELL), symbol matching (xyz:SKHX vs skhx), precision issues, race conditions.
-4. CAPITAL PRESERVATION FIRST — Every fix must align with "capital preservation is the absolute first priority."
-5. CONTINUOUS TRACKING — After each fix, update CHANGELOG.md (mandatory) and ARCHITECTURE.md (if architecture changed).
-
-## Audit Process
-
-1. Examine the trade records for suspicious patterns (repeated losses, direction confusion, missing data, premature exits)
-2. Locate the relevant source code
-3. Analyze the root cause — is it a code bug, logic error, or config issue?
-4. Generate a specific fix proposal with: file path, old code, new code, reason, test update, changelog entry
-5. Verify the fix won't break existing functionality
+1. ZERO HALLUCINATION — Only modify code you fully understand. You see the actual source code in the context. Read it carefully before proposing changes.
+2. ONE FIX AT A TIME — Propose at most ONE fix per run. Multiple simultaneous changes make rollback impossible if one fails.
+3. COMPLETE CODE BLOCKS — Your oldCode must match the EXACT text in the file (including whitespace). Your newCode must be the complete replacement.
+4. CAPITAL PRESERVATION FIRST — Never propose a change that could increase risk of capital loss.
+5. DIRECTION SAFETY — Never propose a change that could mix BUY and SELL logic or remove direction filtering.
+6. TEST UPDATE — If your fix changes behavior, include a testUpdate that verifies the new behavior.
+7. CHANGELOG + ARCHITECTURE — Your fix MUST include a changelogEntry. If architecture changes, include architectureUpdate.
 
 ## Output Format
 
-Respond ONLY with JSON array of recommendations:
-[{"severity":"critical|warning|info","category":"...","title":"...","rootCause":"...","affectedFiles":["..."],"proposedFix":{"file":"...","oldCode":"...","newCode":"...","reason":"..."},"testUpdate":{"file":"...","newTest":"..."},"changelogEntry":"v2.0.XXX: ..."}]
+Respond with EXACTLY ONE JSON object (not an array):
+{"severity":"critical|warning|info","category":"...","title":"...","rootCause":"specific code lines and why they're wrong","affectedFile":"src/evolution/...","proposedFix":{"oldCode":"EXACT text from the file","newCode":"replacement text","reason":"why this fix is correct"},"testUpdate":{"file":"tests/...","oldCode":"...","newCode":"..."},"changelogEntry":"v2.0.XXX: description","architectureUpdate":"optional architecture description"}
 
-If no issues found, return: []`;
+If you find NO issues worth fixing, respond with:
+{"severity":"info","category":"none","title":"No issues found","rootCause":"","affectedFile":"","proposedFix":{"oldCode":"","newCode":"","reason":""},"testUpdate":null,"changelogEntry":""}`;
 
-export interface Recommendation {
-  id: string;
-  ts: number;
-  severity: 'critical' | 'warning' | 'info';
-  category: string;
+export interface AutoFixResult {
+  applied: boolean;
   title: string;
-  rootCause: string;
-  affectedFiles: string[];
-  proposedFix: {
-    file: string;
-    oldCode: string;
-    newCode: string;
-    reason: string;
-  };
-  testUpdate?: {
-    file: string;
-    newTest: string;
-  };
+  file: string;
+  reason: string;
+  tscPassed: boolean;
+  testsPassed: boolean;
+  rolledBack: boolean;
   changelogEntry: string;
-  architectureUpdate?: string;
-  approved: boolean;
-  appliedAt: number | null;
+  error?: string;
+  timestamp: number;
 }
 
 /**
- * Run the System Engineer agent: read context files, examine trade records,
- * generate fix proposals, write to audit-recommendations.jsonl.
+ * Run the System Engineer agent with autonomous execution.
+ * 1. Read context (SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md + trades + code)
+ * 2. LLM generates ONE fix proposal
+ * 3. Validate: is the file in the allowed scope?
+ * 4. Apply: replace oldCode with newCode in the file
+ * 5. Test: run tsc --noEmit + npm test
+ * 6. If pass: update CHANGELOG.md + git commit + log success
+ * 7. If fail: rollback (restore original file) + log failure
  */
-export async function runSystemEngineer(records: ThesisExperienceRecord[]): Promise<Recommendation[]> {
-  const ts = Date.now();
-  log.info(`🔧 [system-engineer] Starting audit (${records.length} trade records)`);
+export async function runSystemEngineer(records: ThesisExperienceRecord[]): Promise<AutoFixResult | null> {
+  const timestamp = Date.now();
+  log.info(`🔧 [system-engineer] Starting autonomous audit (${records.length} trade records)`);
 
-  // Phase 1: Read context files
+  // Phase 1: Read context
   const systemEngineerMd = readFileSafe('SystemEngineer.md');
   const architectureMd = readFileSafe('ARCHITECTURE.md');
   const changelogTail = readChangelogTail(3);
@@ -96,25 +119,24 @@ export async function runSystemEngineer(records: ThesisExperienceRecord[]): Prom
     return `#${i + 1} ${r.side.toUpperCase()} ${r.symbol} ${r.outcome} pnl=$${r.pnl.toFixed(2)} (${(r.pnlPct * 100).toFixed(1)}%) hold=${r.holdMin}min exit=${r.exitType ?? '?'} regime=${r.regime} ${features} ${olr} ${shadow} | ${r.entryThesis.slice(0, 100)}`;
   }).join('\n');
 
-  // Per-symbol direction summary
   const dirSummary = buildDirectionSummary(records);
 
-  // Phase 3: Read relevant source code (based on common problem areas)
+  // Phase 3: Read relevant source code
   const relevantCode = readRelevantSourceCode();
 
   const userPrompt = `## System Context
 
 ### SystemEngineer.md (your operating manual)
-${systemEngineerMd.slice(0, 3000)}
+${systemEngineerMd.slice(0, 2000)}
 
 ### ARCHITECTURE.md (system architecture)
-${architectureMd.slice(0, 3000)}
+${architectureMd.slice(0, 2000)}
 
 ### CHANGELOG.md (last 3 versions)
 ${changelogTail}
 
-### Loop Engineering Memory (known bugs to avoid repeating)
-${loopMemory.slice(0, 2000)}
+### Loop Engineering Memory (known bugs)
+${loopMemory.slice(0, 1500)}
 
 ## Trade Records (last 20 of ${records.length})
 ${tradeSummary}
@@ -122,13 +144,17 @@ ${tradeSummary}
 ## Per-Symbol Direction Summary
 ${dirSummary}
 
-## Relevant Source Code
+## Relevant Source Code (you can modify files under src/evolution/ and src/cognition/hacp.ts)
 ${relevantCode}
 
 ## Your Task
-Examine the trade records and source code. Detect ANY issues that could cause losses or learning system corruption. For each issue, generate a specific fix proposal with code diff, test update, and changelog entry.
+Find the SINGLE MOST IMPACTFUL issue in the learning/decision system that is causing losses or preventing the system from learning correctly. Generate ONE fix with exact code replacement.
 
-Remember: ZERO HALLUCINATION. Only propose fixes for code you fully understand. Read the actual implementation shown above.`;
+The fix must be in a file under src/evolution/ or src/cognition/hacp.ts or tests/.
+The oldCode must EXACTLY match text in the file (copy it from the source code shown above).
+The newCode must be the complete replacement.
+
+ZERO HALLUCINATION. If you're not sure, say "No issues found".`;
 
   try {
     const provider = getActiveProvider();
@@ -142,32 +168,164 @@ Remember: ZERO HALLUCINATION. Only propose fixes for code you fully understand. 
       timeoutMs: 60_000,
     });
 
-    const recommendations = parseRecommendations(response.content, ts);
-
-    // Write to audit-recommendations.jsonl
-    for (const rec of recommendations) {
-      appendFileSync(RECOMMENDATIONS_FILE, JSON.stringify(rec) + '\n');
+    const proposal = parseProposal(response.content);
+    if (!proposal || !proposal.proposedFix.oldCode || !proposal.proposedFix.newCode) {
+      log.info(`🔧 [system-engineer] No actionable fix proposed`);
+      return null;
     }
 
-    // Log results
-    const critical = recommendations.filter(r => r.severity === 'critical');
-    const warnings = recommendations.filter(r => r.severity === 'warning');
-
-    for (const rec of critical) {
-      log.warn(`🚨 [system-engineer] ${rec.title}: ${rec.rootCause}`);
-      log.warn(`🚨 [system-engineer] Proposed fix: ${rec.proposedFix.file} — ${rec.proposedFix.reason}`);
+    // Validate scope
+    const targetFile = proposal.affectedFile;
+    if (!isFileAllowed(targetFile)) {
+      log.warn(`🚫 [system-engineer] REJECTED: ${targetFile} is outside allowed scope (src/evolution/ + src/cognition/hacp.ts + tests/)`);
+      return {
+        applied: false, title: proposal.title, file: targetFile, reason: 'File outside allowed scope',
+        tscPassed: false, testsPassed: false, rolledBack: false,
+        changelogEntry: '', error: 'Scope violation', timestamp,
+      };
     }
-    for (const rec of warnings) {
-      log.warn(`⚠️ [system-engineer] ${rec.title}: ${rec.rootCause}`);
+
+    // Read the target file
+    const fullPath = join(PROJECT_ROOT, targetFile);
+    if (!existsSync(fullPath)) {
+      log.warn(`🚫 [system-engineer] File not found: ${targetFile}`);
+      return null;
+    }
+    const originalContent = readFileSync(fullPath, 'utf-8');
+
+    // Check if oldCode exists in the file
+    if (!originalContent.includes(proposal.proposedFix.oldCode)) {
+      log.warn(`🚫 [system-engineer] oldCode not found in ${targetFile} — LLM may have hallucinated the exact text`);
+      // Log first 100 chars of oldCode for debugging
+      log.warn(`   oldCode preview: "${proposal.proposedFix.oldCode.slice(0, 100)}..."`);
+      return {
+        applied: false, title: proposal.title, file: targetFile, reason: 'oldCode not found (hallucination detected)',
+        tscPassed: false, testsPassed: false, rolledBack: false,
+        changelogEntry: '', error: 'oldCode mismatch', timestamp,
+      };
     }
 
-    log.info(`🔧 [system-engineer] Generated ${recommendations.length} recommendations (${critical.length} critical, ${warnings.length} warning) → ${RECOMMENDATIONS_FILE}`);
+    // Apply the fix
+    log.info(`🔧 [system-engineer] Applying fix: ${proposal.title} → ${targetFile}`);
+    const newContent = originalContent.replace(proposal.proposedFix.oldCode, proposal.proposedFix.newCode);
+    writeFileSync(fullPath, newContent, 'utf-8');
 
-    return recommendations;
+    // Apply test update if provided
+    let originalTestContent: string | null = null;
+    let testFile: string | null = null;
+    if (proposal.testUpdate?.file && proposal.testUpdate.oldCode && proposal.testUpdate.newCode) {
+      testFile = proposal.testUpdate.file;
+      if (isFileAllowed(testFile)) {
+        const testPath = join(PROJECT_ROOT, testFile);
+        if (existsSync(testPath)) {
+          originalTestContent = readFileSync(testPath, 'utf-8');
+          if (originalTestContent.includes(proposal.testUpdate.oldCode)) {
+            const newTestContent = originalTestContent.replace(proposal.testUpdate.oldCode, proposal.testUpdate.newCode);
+            writeFileSync(testPath, newTestContent, 'utf-8');
+            log.info(`🔧 [system-engineer] Test updated: ${testFile}`);
+          } else {
+            log.warn(`⚠️ [system-engineer] Test oldCode not found — skipping test update`);
+            originalTestContent = null;
+          }
+        }
+      }
+    }
+
+    // Run safety net: tsc --noEmit
+    log.info(`🔧 [system-engineer] Running tsc --noEmit...`);
+    let tscPassed = false;
+    try {
+      execSync('npx tsc --noEmit', { cwd: PROJECT_ROOT, timeout: 30_000, stdio: 'pipe' });
+      tscPassed = true;
+      log.info(`✅ [system-engineer] tsc passed`);
+    } catch (err) {
+      const stderr = err instanceof Error ? err.message : String(err);
+      log.warn(`❌ [system-engineer] tsc FAILED: ${stderr.slice(0, 200)}`);
+    }
+
+    // Run safety net: npm test
+    let testsPassed = false;
+    if (tscPassed) {
+      log.info(`🔧 [system-engineer] Running npm test...`);
+      try {
+        const output = execSync('npm test 2>&1', { cwd: PROJECT_ROOT, timeout: 60_000, stdio: 'pipe', encoding: 'utf-8' });
+        testsPassed = output.includes('passed') && !output.includes('failed');
+        if (testsPassed) {
+          log.info(`✅ [system-engineer] tests passed`);
+        } else {
+          log.warn(`❌ [system-engineer] tests FAILED`);
+        }
+      } catch (err) {
+        const stderr = err instanceof Error ? err.message : String(err);
+        log.warn(`❌ [system-engineer] tests FAILED: ${stderr.slice(0, 200)}`);
+      }
+    }
+
+    // Decision: apply or rollback
+    if (tscPassed && testsPassed) {
+      // SUCCESS: Update CHANGELOG.md
+      updateChangelog(proposal.changelogEntry);
+
+      // Update ARCHITECTURE.md if needed
+      if (proposal.architectureUpdate) {
+        updateArchitecture(proposal.architectureUpdate);
+      }
+
+      // Git commit
+      try {
+        execSync(`git add -A && git commit -m "${proposal.changelogEntry.replace(/"/g, '\\"')}"`, {
+          cwd: PROJECT_ROOT, timeout: 15_000, stdio: 'pipe',
+        });
+        log.info(`✅ [system-engineer] Git committed: ${proposal.changelogEntry}`);
+      } catch (err) {
+        log.warn(`⚠️ [system-engineer] Git commit failed: ${err instanceof Error ? err.message.slice(0, 100) : String(err)}`);
+      }
+
+      // Record success
+      const result: AutoFixResult = {
+        applied: true, title: proposal.title, file: targetFile,
+        reason: proposal.proposedFix.reason, tscPassed, testsPassed,
+        rolledBack: false, changelogEntry: proposal.changelogEntry, timestamp,
+      };
+      appendRecommendation(result, true);
+      log.info(`✅ [system-engineer] Fix applied successfully: ${proposal.title}`);
+      return result;
+    } else {
+      // FAILURE: Rollback
+      log.warn(`🔄 [system-engineer] Rolling back: tsc=${tscPassed} tests=${testsPassed}`);
+      writeFileSync(fullPath, originalContent, 'utf-8');
+      if (originalTestContent && testFile) {
+        writeFileSync(join(PROJECT_ROOT, testFile), originalTestContent, 'utf-8');
+      }
+
+      const result: AutoFixResult = {
+        applied: false, title: proposal.title, file: targetFile,
+        reason: proposal.proposedFix.reason, tscPassed, testsPassed,
+        rolledBack: true, changelogEntry: proposal.changelogEntry,
+        error: `tsc=${tscPassed} tests=${testsPassed}`, timestamp,
+      };
+      appendRecommendation(result, false);
+      log.warn(`🔄 [system-engineer] Fix rolled back: ${proposal.title} (tsc=${tscPassed} tests=${testsPassed})`);
+      return result;
+    }
   } catch (err) {
     log.warn(`[system-engineer] failed: ${err instanceof Error ? err.message : String(err)}`);
-    return [];
+    return null;
   }
+}
+
+// ─── Helpers ───
+
+function isFileAllowed(filePath: string): boolean {
+  // Check forbidden first
+  for (const prefix of FORBIDDEN_PREFIXES) {
+    if (filePath.startsWith(prefix)) return false;
+  }
+  // Check allowed
+  for (const prefix of ALLOWED_PREFIXES) {
+    if (filePath.startsWith(prefix)) return true;
+  }
+  return false;
 }
 
 function readFileSafe(relPath: string): string {
@@ -181,14 +339,13 @@ function readFileSafe(relPath: string): string {
 function readChangelogTail(versions: number): string {
   try {
     const content = readFileSafe('CHANGELOG.md');
-    // Find last N version headers
     const lines = content.split('\n');
     const versionLines: number[] = [];
     for (let i = 0; i < lines.length; i++) {
       if (lines[i]!.startsWith('## v2.0.')) versionLines.push(i);
     }
     const start = versionLines.length >= versions ? versionLines[versionLines.length - versions]! : 0;
-    return lines.slice(start, start + 100).join('\n');
+    return lines.slice(start, start + 80).join('\n');
   } catch { return '(changelog read failed)'; }
 }
 
@@ -212,12 +369,13 @@ function buildDirectionSummary(records: ThesisExperienceRecord[]): string {
 }
 
 function readRelevantSourceCode(): string {
-  // Read key files that are common sources of trading bugs
   const files = [
-    'src/evolution/thesis-experience.ts:660:730',  // checkThesisHistory pWin + delta
-    'src/evolution/direction-audit.ts:1:50',       // audit system
-    'src/trading/portfolio.ts:560:580',            // openPosition SL/TP
-    'src/trading/trading-manager.ts:480:530',      // executeDecision SL/TP
+    'src/evolution/thesis-experience.ts:660:730',
+    'src/evolution/experience-digester.ts:495:525',
+    'src/evolution/reason-analytics.ts:372:420',
+    'src/evolution/shadow-trade-engine.ts:408:470',
+    'src/evolution/olr-engine.ts:360:380',
+    'src/cognition/hacp.ts:905:960',
   ];
   const parts: string[] = [];
   for (const spec of files) {
@@ -228,57 +386,91 @@ function readRelevantSourceCode(): string {
       const s = parseInt(start ?? '0') - 1;
       const e = parseInt(end ?? String(lines.length));
       parts.push(`### ${file} (lines ${start}-${end})\n\`\`\`typescript\n${lines.slice(s, e).join('\n')}\n\`\`\``);
-    } catch { /* skip unreadable files */ }
+    } catch { /* skip */ }
   }
   return parts.join('\n\n');
 }
 
-function parseRecommendations(content: string, ts: number): Recommendation[] {
+function parseProposal(content: string): {
+  severity: string; category: string; title: string; rootCause: string;
+  affectedFile: string;
+  proposedFix: { oldCode: string; newCode: string; reason: string };
+  testUpdate: { file: string; oldCode: string; newCode: string } | null;
+  changelogEntry: string; architectureUpdate?: string;
+} | null {
   try {
     let s = content.trim();
     const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
     if (fence && fence[1]) s = fence[1].trim();
 
-    // Find JSON array
-    const start = s.indexOf('[');
-    if (start < 0) return [];
+    const start = s.indexOf('{');
+    if (start < 0) return null;
     let depth = 0;
     let end = -1;
     for (let i = start; i < s.length; i++) {
-      if (s[i] === '[') depth++;
-      else if (s[i] === ']') { depth--; if (depth === 0) { end = i; break; } }
+      if (s[i] === '{') depth++;
+      else if (s[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
     }
-    if (end < 0) return [];
+    if (end < 0) return null;
 
-    const parsed = JSON.parse(s.slice(start, end + 1)) as Array<{
-      severity?: string; category?: string; title?: string; rootCause?: string;
-      affectedFiles?: string[]; proposedFix?: { file?: string; oldCode?: string; newCode?: string; reason?: string };
-      testUpdate?: { file?: string; newTest?: string };
-      changelogEntry?: string; architectureUpdate?: string;
-    }>;
-
-    return parsed.map((p, i) => ({
-      id: `audit-${ts}-${i}`,
-      ts,
-      severity: (p.severity === 'critical' || p.severity === 'warning') ? p.severity : 'info',
+    const p = JSON.parse(s.slice(start, end + 1)) as any;
+    return {
+      severity: p.severity ?? 'info',
       category: p.category ?? 'unknown',
       title: p.title ?? 'Untitled',
       rootCause: p.rootCause ?? '',
-      affectedFiles: p.affectedFiles ?? [],
+      affectedFile: p.affectedFile ?? p.proposedFix?.file ?? '',
       proposedFix: {
-        file: p.proposedFix?.file ?? '',
         oldCode: p.proposedFix?.oldCode ?? '',
         newCode: p.proposedFix?.newCode ?? '',
         reason: p.proposedFix?.reason ?? '',
       },
-      testUpdate: p.testUpdate ? { file: p.testUpdate.file ?? '', newTest: p.testUpdate.newTest ?? '' } : undefined,
+      testUpdate: p.testUpdate ? {
+        file: p.testUpdate.file ?? '',
+        oldCode: p.testUpdate.oldCode ?? '',
+        newCode: p.testUpdate.newCode ?? '',
+      } : null,
       changelogEntry: p.changelogEntry ?? '',
       architectureUpdate: p.architectureUpdate,
-      approved: false,
-      appliedAt: null,
-    }));
+    };
   } catch {
-    log.warn('[system-engineer] Failed to parse recommendations');
-    return [];
+    log.warn('[system-engineer] Failed to parse proposal');
+    return null;
   }
+}
+
+function updateChangelog(entry: string): void {
+  try {
+    const changelogPath = join(PROJECT_ROOT, 'CHANGELOG.md');
+    const content = readFileSync(changelogPath, 'utf-8');
+    // Insert after the "---\n" that follows the header, before the first version
+    const insertPoint = content.indexOf('\n---\n');
+    if (insertPoint > 0) {
+      const after = content.slice(insertPoint + 5); // after "---\n"
+      const newContent = content.slice(0, insertPoint + 5) + '\n## ' + entry + '\n\n' + after;
+      writeFileSync(changelogPath, newContent, 'utf-8');
+      log.info(`📝 [system-engineer] CHANGELOG.md updated: ${entry}`);
+    }
+  } catch (err) {
+    log.warn(`[system-engineer] CHANGELOG update failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function updateArchitecture(update: string): void {
+  try {
+    const archPath = join(PROJECT_ROOT, 'ARCHITECTURE.md');
+    const content = readFileSync(archPath, 'utf-8');
+    // Append to end of file
+    writeFileSync(archPath, content + '\n\n## System Engineer Update\n' + update + '\n', 'utf-8');
+    log.info(`📝 [system-engineer] ARCHITECTURE.md updated`);
+  } catch (err) {
+    log.warn(`[system-engineer] ARCHITECTURE update failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function appendRecommendation(result: AutoFixResult, applied: boolean): void {
+  try {
+    mkdirSync(join(PROJECT_ROOT, 'data/evolution'), { recursive: true });
+    appendFileSync(RECOMMENDATIONS_FILE, JSON.stringify({ ...result, applied }) + '\n');
+  } catch { /* non-critical */ }
 }
