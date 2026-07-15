@@ -658,24 +658,48 @@ export class ThesisExperience {
     this.lastCandidateVectors = candVectors;
 
     // Combination similarity vs every historical record
-    const matches: Array<{ rec: ThesisExperienceRecord; sim: number }> = [];
+    // v2.0.175: Split matches by direction — a SELL candidate should be
+    // compared against historical SELL records, not BUY records. Previously
+    // all matches were pooled together, so a SELL "distribution-hype" thesis
+    // could match a BUY "accumulation" thesis (both mention ETF, price, SKHX)
+    // and the BUY wins would inflate pWin, masking the SELL losses.
+    const sameDirMatches: Array<{ rec: ThesisExperienceRecord; sim: number }> = [];
+    const allMatches: Array<{ rec: ThesisExperienceRecord; sim: number }> = [];
     for (const h of this.records) {
       if (h.rationaleVectors.length === 0) continue;
       const sim = combinationSimilarity(candVectors, h.rationaleVectors, this.cfg.similarityMode);
-      if (sim >= this.cfg.matchThreshold) matches.push({ rec: h, sim });
+      if (sim >= this.cfg.matchThreshold) {
+        allMatches.push({ rec: h, sim });
+        if (h.side === input.side) {
+          sameDirMatches.push({ rec: h, sim });
+        }
+      }
     }
 
-    if (matches.length === 0) {
+    if (allMatches.length === 0) {
       return { verdict: 'PASS_OPEN_DIRECTLY', reason: 'no historical combination above match threshold — let it trade & learn' };
     }
 
-    // Similarity-weighted P(win)
-    const totalW = matches.reduce((s, m) => s + m.sim, 0);
-    const winW = matches.filter((m) => m.rec.outcome === 'WIN').reduce((s, m) => s + m.sim, 0);
+    // v2.0.175: Use same-direction matches for pWin calculation. If there are
+    // same-direction matches, they are more predictive than cross-direction
+    // matches. Fall back to all matches only if no same-direction matches exist
+    // (cold-start for this direction).
+    const pWinMatches = sameDirMatches.length > 0 ? sameDirMatches : allMatches;
+
+    // Similarity-weighted P(win) — same direction only
+    const totalW = pWinMatches.reduce((s, m) => s + m.sim, 0);
+    const winW = pWinMatches.filter((m) => m.rec.outcome === 'WIN').reduce((s, m) => s + m.sim, 0);
     const pWin = totalW > 0 ? winW / totalW : 0.5;
 
+    // v2.0.175: Log the direction-specific stats for debugging
+    if (sameDirMatches.length > 0) {
+      const sameDirWins = sameDirMatches.filter((m) => m.rec.outcome === 'WIN').length;
+      const sameDirLosses = sameDirMatches.filter((m) => m.rec.outcome === 'LOSS').length;
+      log.info(`[EXP] ${input.side.toUpperCase()} ${input.symbol}: ${sameDirMatches.length} same-dir matches (${sameDirWins}W/${sameDirLosses}L, pWin=${pWin.toFixed(2)}) vs ${allMatches.length} total matches`);
+    }
+
     if (pWin >= this.cfg.winProbThreshold) {
-      return { verdict: 'FAST_APPROVE', pWin, reason: `history skews WIN (pWin=${pWin.toFixed(2)})` };
+      return { verdict: 'FAST_APPROVE', pWin, reason: `history skews WIN (pWin=${pWin.toFixed(2)}, ${sameDirMatches.length} same-dir matches)` };
     }
     if (pWin > this.cfg.lossProbThreshold) {
       // Ambiguous band → 直出
@@ -683,7 +707,8 @@ export class ThesisExperience {
     }
 
     // P(loss) > P(win) → delta check (§8.4)
-    const lossMatches = matches.filter((m) => m.rec.outcome === 'LOSS').sort((a, b) => b.sim - a.sim);
+    // v2.0.175: Use same-direction loss matches for delta check
+    const lossMatches = pWinMatches.filter((m) => m.rec.outcome === 'LOSS').sort((a, b) => b.sim - a.sim);
     return this.assessExtraRationale(candRationales, candVectors, candCategory, lossMatches, input);
   }
 
