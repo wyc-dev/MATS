@@ -224,7 +224,13 @@ export class OLREngine {
    *  to an explosive z-score. The mask restricts Welford updates to
    *  features the caller actually has data for; missing features keep a
    *  live-only Welford distribution. undefined mask = update all (live).
-   *  Counts are per-feature so masked-out features stay at count=0. */
+   *  Counts are per-feature so masked-out features stay at count=0.
+   *  
+   *  CRITICAL: Backfill source MUST pass a mask with only the 3 features
+   *  it has real data for (volatility=0, srDistanceBps=1, volumeRatio=6).
+   *  If no mask is provided (live sources), ALL features are updated.
+   *  This prevents backfill zeros from collapsing the Welford distribution
+   *  for features that only have non-zero values at runtime. */
   private updateWelford(model: OLRModel, x: number[], mask?: Set<number>): void {
     for (let i = 0; i < D; i++) {
       if (mask !== undefined && !mask.has(i)) continue;
@@ -265,6 +271,10 @@ export class OLREngine {
     // real/paper outcomes outweigh the high-volume shadow stream (H2 fix).
     // liveSamples is guaranteed >= 0 because it's computed as nSamples - backfillSamples
     const safeLiveSamples = Math.max(0, liveSamples);
+    // Use a separate decay counter that only counts live samples (shadow + paper + real),
+    // excluding backfill. This prevents 200 backfill samples from freezing the model
+    // against live adaptation. The decay counter starts at 0 for live samples and
+    // increments only when a non-backfill sample is fed.
     const eta = (OLR_CONFIG.learningRate / (1 + OLR_CONFIG.decayRate * safeLiveSamples)) * sourceWeight;
     for (let i = 0; i <= D; i++) {
       const reg = i > 0 ? OLR_CONFIG.l2Regularization * model.weights[i]! : 0;
