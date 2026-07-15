@@ -8,7 +8,7 @@
 
 ## Scope
 
-ALLOW: `src/evolution/*.ts`, `src/cognition/hacp.ts`, `tests/*.ts`
+ALLOW: `src/evolution/*.ts`, `src/cognition/*.ts`, `src/analysis/*.ts`, `src/agents/*.ts`, `tests/*.ts`
 FORBIDDEN: `src/trading/*`, `src/config/*`, `src/index.ts`, `.env`, `src/api-server.ts`, `src/data/*`
 
 ## Identity

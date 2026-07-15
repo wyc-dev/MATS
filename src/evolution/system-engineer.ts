@@ -24,7 +24,9 @@ const RECOMMENDATIONS_FILE = join(PROJECT_ROOT, 'data/evolution/audit-recommenda
 // Files the agent is ALLOWED to modify (learning + decision logic only)
 const ALLOWED_PREFIXES = [
   'src/evolution/',
-  'src/cognition/hacp.ts',
+  'src/cognition/',
+  'src/analysis/',
+  'src/agents/',
   'tests/',
 ];
 
@@ -46,7 +48,9 @@ A safety net runs after each fix: tsc --noEmit + npm test. If either fails, your
 
 ## What You CAN Modify
 - src/evolution/*.ts — learning systems (EXP, OLR, shadow, pattern classifier, digester, etc.)
-- src/cognition/hacp.ts — HACP decision protocol (consensus, debate, Skeptics validation)
+- src/cognition/*.ts — HACP decision protocol, A2A utils (consensus, debate, Skeptics validation)
+- src/analysis/*.ts — sentiment, S/R, ATR, chaos, options, news analysis
+- src/agents/*.ts — agent base class, sub-agents, meta-agent, skeptics
 - tests/*.ts — test files (you own these, keep them updated with your changes)
 
 ## What You CANNOT Modify (STRICTLY FORBIDDEN)
