@@ -63,13 +63,15 @@ A safety net runs after each fix: tsc --noEmit + npm test. If either fails, your
 
 ## Core Principles
 
-1. ZERO HALLUCINATION — Only modify code you fully understand. You see the actual source code in the context. Read it carefully before proposing changes.
+1. ZERO HALLUCINATION — Only modify code you fully understand. You see the actual source code AND test files in the context. Read BOTH before proposing changes. Your fix must not break any existing test.
 2. ONE FIX AT A TIME — Propose at most ONE fix per run. Multiple simultaneous changes make rollback impossible if one fails.
 3. COMPLETE CODE BLOCKS — Your oldCode must match the EXACT text in the file (including whitespace). Your newCode must be the complete replacement.
 4. CAPITAL PRESERVATION FIRST — Never propose a change that could increase risk of capital loss.
 5. DIRECTION SAFETY — Never propose a change that could mix BUY and SELL logic or remove direction filtering.
 6. TEST UPDATE — If your fix changes behavior, include a testUpdate that verifies the new behavior.
 7. CHANGELOG + ARCHITECTURE — Your fix MUST include a changelogEntry. If architecture changes, include architectureUpdate.
+8. READ THE TESTS — Before proposing a fix, read the test files shown in context. Understand what the tests assert. Your fix must keep all tests passing. If a test is wrong, fix the test too — but explain why the test was wrong.
+9. TOP TIER PRODUCTION GRADE — Every modification must be production-grade: explicit types, complete error handling, no silent failures, no hardcoded magic numbers, match existing codebase conventions.
 
 ## Output Format
 
@@ -109,6 +111,11 @@ export interface AutoFixResult {
  * and acceptable (the fix is already applied + committed before restart).
  */
 let engineerRunning = false;
+
+// v2.0.188: Failed fix memory — prevents retrying the same fix that already failed.
+// Keyed by `${file}:${title}`, expires after 1 hour (in case the underlying issue changes).
+const failedFixes = new Map<string, number>(); // key → timestamp of failure
+const FAILED_FIX_TTL_MS = 3600_000; // 1 hour
 
 export async function runSystemEngineer(records: ThesisExperienceRecord[]): Promise<AutoFixResult | null> {
   // v2.0.183: Prevent overlapping runs
@@ -189,6 +196,15 @@ ZERO HALLUCINATION. If you're not sure, say "No issues found".`;
     const proposal = parseProposal(response.content);
     if (!proposal || !proposal.proposedFix.oldCode || !proposal.proposedFix.newCode) {
       log.info(`🔧 [system-engineer] No actionable fix proposed`);
+      return null;
+    }
+
+    // v2.0.188: Check if this exact fix was already tried and failed recently.
+    // Prevents infinite retry loop of the same failing fix.
+    const fixKey = `${proposal.affectedFile}:${proposal.title}`;
+    const lastFailed = failedFixes.get(fixKey);
+    if (lastFailed && (timestamp - lastFailed) < FAILED_FIX_TTL_MS) {
+      log.info(`🔧 [system-engineer] Skipping "${proposal.title}" — same fix failed ${Math.round((timestamp - lastFailed) / 1000)}s ago, will retry in ${Math.round(FAILED_FIX_TTL_MS / 60000)}min`);
       return null;
     }
 
@@ -332,7 +348,9 @@ ZERO HALLUCINATION. If you're not sure, say "No issues found".`;
         error: `tsc=${tscPassed} tests=${testsPassed}`, timestamp,
       };
       appendRecommendation(result, false);
-      log.warn(`🔄 [system-engineer] Fix rolled back: ${proposal.title} (tsc=${tscPassed} tests=${testsPassed})`);
+      // v2.0.188: Record this failure so we don't retry the same fix for 1 hour
+      failedFixes.set(fixKey, timestamp);
+      log.warn(`🔄 [system-engineer] Fix rolled back: ${proposal.title} (tsc=${tscPassed} tests=${testsPassed}) — will not retry for ${FAILED_FIX_TTL_MS / 60000}min`);
       return result;
     }
   } catch (err) {
@@ -407,8 +425,13 @@ function readRelevantSourceCode(): string {
     'src/evolution/olr-engine.ts:360:380',
     'src/cognition/hacp.ts:905:960',
   ];
+  // v2.0.188: Also read test files so the LLM understands what behavior
+  // the tests expect — prevents proposing fixes that break tests.
+  const testFiles = [
+    'tests/evolution-memory.test.ts:224:280',
+  ];
   const parts: string[] = [];
-  for (const spec of files) {
+  for (const spec of [...files, ...testFiles]) {
     const [file, start, end] = spec.split(':');
     try {
       const content = readFileSync(join(PROJECT_ROOT, file!), 'utf-8');
