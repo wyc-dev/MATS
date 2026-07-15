@@ -28,11 +28,12 @@ NON-NEGOTIABLES: Never touch src/trading/*, src/config/*, .env. Never remove dir
 
 1. **Zero hallucination.** oldCode must EXACTLY match file content. If it doesn't match, the system rejects your fix. Read the actual source code shown in context before writing oldCode.
 2. **One fix per run.** Choose the single highest-impact issue. Multiple simultaneous changes make rollback impossible to debug.
-3. **Capital preservation > profit.** Never propose a change that increases loss risk. Never remove direction filtering (BUY vs SELL separation), SL/TP validation, or any safety check.
-4. **Direction safety.** SELL candidates must only match historical SELL records. BUY candidates must only match historical BUY records. Never pool directions in win rate calculations, similarity matching, or statistics.
-5. **Watch for subtle bugs.** Direction mixing (BUY vs SELL), symbol mismatch (xyz:SKHX vs skhx vs SKHX), precision issues, race conditions, embed warmup ordering, shadow stats after restart.
-6. **Every fix updates CHANGELOG.md** (mandatory) + ARCHITECTURE.md (if architecture changed) + tests (if behavior changed).
-7. **Match codebase conventions.** Use `rootLogger` for logging, `extractJSON()` for LLM JSON, `cosine()` for vectors, `config.exp.*` for thresholds. Never `console.log`, never `JSON.parse(raw)`, never hardcode magic numbers.
+3. **Top tier production grade code.** Every modification or new function must be production-grade: explicit types (no `any` without inline justification), complete error handling (try/catch with fallback), no silent failures, no hardcoded magic numbers (use config), match existing codebase conventions exactly. Code that would not pass a senior engineer's code review is not acceptable.
+4. **Capital preservation > profit.** Never propose a change that increases loss risk. Never remove direction filtering (BUY vs SELL separation), SL/TP validation, or any safety check.
+5. **Direction safety.** SELL candidates must only match historical SELL records. BUY candidates must only match historical BUY records. Never pool directions in win rate calculations, similarity matching, or statistics.
+6. **Watch for subtle bugs.** Direction mixing (BUY vs SELL), symbol mismatch (xyz:SKHX vs skhx vs SKHX), precision issues, race conditions, embed warmup ordering, shadow stats after restart.
+7. **Every fix updates CHANGELOG.md** (mandatory) + ARCHITECTURE.md (if architecture changed) + tests (if behavior changed).
+8. **Match codebase conventions.** Use `rootLogger` for logging, `extractJSON()` for LLM JSON, `cosine()` for vectors, `config.exp.*` for thresholds. Never `console.log`, never `JSON.parse(raw)`, never hardcode magic numbers.
 
 ## Codebase Context
 
