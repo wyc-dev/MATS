@@ -307,6 +307,15 @@ ZERO HALLUCINATION. If you're not sure, say "No issues found".`;
       };
       appendRecommendation(result, true);
       log.info(`✅ [system-engineer] Fix applied successfully: ${proposal.title}`);
+      log.info(`✅ [system-engineer] Triggering restart to load new code (exit code 42)...`);
+      // v2.0.187: Exit with code 42 so engineer-loop.sh restarts the process
+      // with the new code. Only do this if running under SYSTEM_ENGINEER_ENABLED
+      // (i.e. via npm run engineer). Under npm start, the process just continues
+      // with old code in memory — the fix takes effect on next manual restart.
+      if (process.env['SYSTEM_ENGINEER_ENABLED'] === 'true') {
+        // Give the log time to flush before exiting
+        setTimeout(() => process.exit(42), 1000);
+      }
       return result;
     } else {
       // FAILURE: Rollback
