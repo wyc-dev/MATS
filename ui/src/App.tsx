@@ -1954,20 +1954,20 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
               {/* Summary row */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
                 <span style={{
-                  padding: '2px 8px',
+                  padding: '3px 10px',
                   borderRadius: 'var(--radius-sm)',
-                  fontSize: 'var(--fs-xs)',
+                  fontSize: 'var(--fs-sm)',
                   fontWeight: 'var(--fw-bold)',
                   background: t.side === 'buy' ? 'var(--green-bg)' : 'var(--red-bg)',
                   color: t.side === 'buy' ? 'var(--green)' : 'var(--red)',
                 }}>
                   {t.side.toUpperCase()}
                 </span>
-                <span style={{ fontWeight: 'var(--fw-semibold)', fontSize: 'var(--fs-base)' }}>{(t.symbol.includes(':') ? t.symbol.split(':').pop() : t.symbol).toUpperCase()}</span>
+                <span style={{ fontWeight: 'var(--fw-semibold)', fontSize: 'var(--fs-lg)' }}>{(t.symbol.includes(':') ? t.symbol.split(':').pop() : t.symbol).toUpperCase()}</span>
                 <span style={{
-                  padding: '1px 6px',
+                  padding: '2px 8px',
                   borderRadius: 'var(--radius-sm)',
-                  fontSize: 'var(--fs-xs)',
+                  fontSize: 'var(--fs-sm)',
                   fontWeight: 'var(--fw-bold)',
                   background: isReal ? 'rgba(52, 211, 153, 0.15)' : 'rgba(120, 128, 160, 0.15)',
                   color: isReal ? 'var(--green)' : 'var(--text-tertiary)',
@@ -1975,9 +1975,9 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                   {isReal ? 'REAL' : 'PAPER'}
                 </span>
                 <span style={{
-                  padding: '1px 6px',
+                  padding: '2px 8px',
                   borderRadius: 'var(--radius-sm)',
-                  fontSize: 'var(--fs-xs)',
+                  fontSize: 'var(--fs-sm)',
                   fontWeight: 'var(--fw-bold)',
                   background: isOpen ? 'rgba(255, 215, 0, 0.15)' : 'rgba(255, 255, 255, 0.05)',
                   color: isOpen ? 'var(--gold)' : 'var(--text-tertiary)',
@@ -1985,14 +1985,14 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                   {isOpen ? 'OPEN' : 'CLOSED'}
                 </span>
                 <span style={{
-                  fontSize: 'var(--fs-sm)',
+                  fontSize: 'var(--fs-base)',
                   fontWeight: 'var(--fw-bold)',
                   color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)',
                   marginLeft: 'auto',
                 }}>
                   {t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)} ({(t.pnlPct * 100).toFixed(1)}%)
                 </span>
-                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
                   {isExpanded ? '▲' : '▼'}
                 </span>
               </div>
