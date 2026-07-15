@@ -159,6 +159,11 @@ export class PatternClusterManager {
       avgHoldMin: rec.holdMin,
       symbols: [rec.symbol],
       sides: [rec.side],
+      // v2.0.176: Per-direction tracking
+      buyWins: rec.side === 'buy' && outcome === 'WIN' ? 1 : 0,
+      buyLosses: rec.side === 'buy' && outcome === 'LOSS' ? 1 : 0,
+      sellWins: rec.side === 'sell' && outcome === 'WIN' ? 1 : 0,
+      sellLosses: rec.side === 'sell' && outcome === 'LOSS' ? 1 : 0,
       memberIds: [rec.id],
       exitTypeBreakdown: {},
       ts: rec.ts,
@@ -187,6 +192,14 @@ export class PatternClusterManager {
 
     if (!c.symbols.includes(rec.symbol)) c.symbols.push(rec.symbol);
     if (!c.sides.includes(rec.side)) c.sides.push(rec.side);
+    // v2.0.176: Per-direction tracking
+    if (rec.side === 'buy') {
+      if (rec.outcome === 'WIN') c.buyWins++;
+      else c.buyLosses++;
+    } else {
+      if (rec.outcome === 'WIN') c.sellWins++;
+      else c.sellLosses++;
+    }
     if (!c.memberIds.includes(rec.id)) c.memberIds.push(rec.id);
     c.ts = Math.max(c.ts, rec.ts);
 
@@ -232,8 +245,17 @@ export class PatternClusterManager {
       const icon = c.winRate >= 0.6 ? '🟢' : c.winRate <= 0.4 ? '🔴' : '🟡';
       const pnlStr = c.netPnl >= 0 ? '+' + c.netPnl.toFixed(2) : c.netPnl.toFixed(2);
       const name = c.name.length > 50 ? c.name.slice(0, 50) + '…' : c.name;
+      // v2.0.176: Show per-direction win rates when both directions exist
+      const buyTotal = c.buyWins + c.buyLosses;
+      const sellTotal = c.sellWins + c.sellLosses;
+      let dirStr = '';
+      if (buyTotal > 0 && sellTotal > 0) {
+        const buyWR = buyTotal > 0 ? (c.buyWins / buyTotal * 100).toFixed(0) : '0';
+        const sellWR = sellTotal > 0 ? (c.sellWins / sellTotal * 100).toFixed(0) : '0';
+        dirStr = ` [BUY ${buyWR}% (W${c.buyWins} L${c.buyLosses}) | SELL ${sellWR}% (W${c.sellWins} L${c.sellLosses})]`;
+      }
       lines.push(
-        `${icon} ${name.padEnd(52)} W${c.wins} L${c.losses}  ${pnlStr}  (${(c.winRate * 100).toFixed(0)}%, ${c.count}t, avg ${c.avgHoldMin.toFixed(0)}min)`,
+        `${icon} ${name.padEnd(52)} W${c.wins} L${c.losses}  ${pnlStr}  (${(c.winRate * 100).toFixed(0)}%, ${c.count}t, avg ${c.avgHoldMin.toFixed(0)}min)${dirStr}`,
       );
     }
 
@@ -375,6 +397,10 @@ export class SimilarTradeRetriever {
     records: ThesisExperienceRecord[],
     topN: number = 5,
     excludeIds?: Set<string>,
+    /** v2.0.176: Filter by direction — a SELL candidate should only match
+     *  historical SELL trades, not BUY trades. Without this, BUY wins inflate
+     *  the similar-trade win rate and mislead Skeptics into approving bad SELLs. */
+    side?: 'buy' | 'sell',
   ): SimilarTradeResult[] {
     if (candidateVectors.length === 0 || records.length === 0) return [];
 
@@ -383,6 +409,8 @@ export class SimilarTradeRetriever {
     for (const rec of records) {
       if (excludeIds?.has(rec.id)) continue;
       if (rec.rationaleVectors.length === 0) continue;
+      // v2.0.176: Skip records of the opposite direction
+      if (side && rec.side !== side) continue;
 
       const sim = combinationSimilarity(candidateVectors, rec.rationaleVectors, 'asymmetric');
       if (sim > 0) {

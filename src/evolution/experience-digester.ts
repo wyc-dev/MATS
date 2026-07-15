@@ -411,6 +411,11 @@ export class ExperienceDigester {
       winRate: rec.outcome === 'WIN' ? 1 : 0,
       symbols: [rec.symbol],
       sides: [rec.side],
+      // v2.0.176: Per-direction tracking
+      buyWins: rec.side === 'buy' && rec.outcome === 'WIN' ? 1 : 0,
+      buyLosses: rec.side === 'buy' && rec.outcome === 'LOSS' ? 1 : 0,
+      sellWins: rec.side === 'sell' && rec.outcome === 'WIN' ? 1 : 0,
+      sellLosses: rec.side === 'sell' && rec.outcome === 'LOSS' ? 1 : 0,
       regimes: [rec.regime],
       avgHoldMin: rec.holdMin,
       memberIds: [rec.id],
@@ -439,6 +444,12 @@ export class ExperienceDigester {
     c.winRate = c.wins / c.count;
     if (!c.symbols.includes(rec.symbol)) c.symbols.push(rec.symbol);
     if (!c.sides.includes(rec.side)) c.sides.push(rec.side);
+    // v2.0.176: Per-direction tracking
+    if (rec.side === 'buy') {
+      if (rec.outcome === 'WIN') c.buyWins++; else c.buyLosses++;
+    } else {
+      if (rec.outcome === 'WIN') c.sellWins++; else c.sellLosses++;
+    }
     if (!c.regimes.includes(rec.regime)) c.regimes.push(rec.regime);
     c.avgHoldMin = (c.avgHoldMin * n + rec.holdMin) / c.count;
     c.memberIds.push(rec.id);
@@ -506,10 +517,16 @@ export class ExperienceDigester {
     }
     const directionAligned =
       best.directionBias === 'mixed' || best.directionBias === side;
+    // v2.0.176: Use per-direction winRate instead of pooled winRate.
+    // A mixed class with 80% BUY wins and 20% SELL wins should show 20% for
+    // a SELL candidate, not the pooled 50%.
+    const dirWinRate = side === 'buy'
+      ? (best.buyWins + best.buyLosses > 0 ? best.buyWins / (best.buyWins + best.buyLosses) : best.winRate)
+      : (best.sellWins + best.sellLosses > 0 ? best.sellWins / (best.sellWins + best.sellLosses) : best.winRate);
     return {
       bestClass: best,
       similarity: bestSim,
-      classWinRate: best.winRate,
+      classWinRate: dirWinRate,
       directionAligned,
     };
   }
