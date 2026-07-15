@@ -248,6 +248,11 @@ export class OllamaProvider implements LLMProvider {
             // models get 256k (their typical max). Local/small models keep 8192
             // to avoid OOM on modest hardware.
             num_ctx: getNumCtxForModel(model),
+            // v2.0.208: Pass maxTokens as num_predict (Ollama's output token limit).
+            // Without this, Ollama uses its default (often 128 or 2048) which
+            // truncates long JSON responses from System Engineer (oldCode/newCode
+            // can be 50+ lines each). Default to -1 (unlimited) if not specified.
+            num_predict: request.maxTokens ?? -1,
           },
           stream: false,
         };

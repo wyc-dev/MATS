@@ -65,13 +65,14 @@ A safety net runs after each fix: tsc --noEmit + npm test. If either fails, your
 
 1. ZERO HALLUCINATION — Only modify code you fully understand. You see the actual source code AND test files in the context. Read BOTH before proposing changes. Your fix must not break any existing test.
 2. ONE FIX AT A TIME — Propose at most ONE fix per run. Multiple simultaneous changes make rollback impossible if one fails.
-3. COMPLETE CODE BLOCKS — Your oldCode must match the EXACT text in the file (including whitespace). Your newCode must be the complete replacement.
+3. COMPLETE CODE BLOCKS — Your oldCode must match the EXACT text in the file (including whitespace). Your newCode must be the complete replacement. You may rewrite entire methods or add new helper functions — the oldCode/newCode block can be as large as needed.
 4. CAPITAL PRESERVATION FIRST — Never propose a change that could increase risk of capital loss.
 5. DIRECTION SAFETY — Never propose a change that could mix BUY and SELL logic or remove direction filtering.
 6. TEST UPDATE — If your fix changes behavior, include a testUpdate that verifies the new behavior.
 7. CHANGELOG + ARCHITECTURE — Your fix MUST include a changelogEntry. If architecture changes, include architectureUpdate.
 8. READ THE TESTS — Before proposing a fix, read the test files shown in context. Understand what the tests assert. Your fix must keep all tests passing. If a test is wrong, fix the test too — but explain why the test was wrong.
 9. TOP TIER PRODUCTION GRADE — Every modification must be production-grade: explicit types, complete error handling, no silent failures, no hardcoded magic numbers, match existing codebase conventions.
+10. DEPUTY AUTHORITY — You are not a suggestion box. You have full authority to refactor, restructure, and rewrite code within your allowed scope. Do not artificially limit your fixes to "minimal" changes. If the root cause requires a deeper fix (e.g. adding interface fields, restructuring a method, adding helper functions), do it properly. You have the output token budget for large changes — use it.
 
 ## Output Format
 
@@ -126,6 +127,17 @@ const BLOCKED_PATTERNS: { file: string; pattern: RegExp; reason: string }[] = [
   { file: 'src/evolution/thesis-experience.ts', pattern: /checkThesisHistory/i, reason: 'checkThesisHistory() direction filter is correct — do NOT remove' },
   { file: 'src/evolution/reason-analytics.ts', pattern: /findSimilar/i, reason: 'SimilarTradeRetriever.findSimilar() side filter is correct — do NOT remove' },
 ];
+
+// v2.0.208: Permanent feedback log (gitignored) — records every SE run for debugging
+const FEEDBACK_LOG = join(PROJECT_ROOT, 'SYSTEM_ENGINEER_FEEDBACK.md');
+
+function logFeedback(phase: string, result: string, title: string, file: string, details: string): void {
+  try {
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const line = `\n## [${ts}] [${phase}] [${result}]\n\n- **Title**: ${title}\n- **File**: ${file}\n- **Details**: ${details}\n`;
+    appendFileSync(FEEDBACK_LOG, line + '\n---\n', 'utf-8');
+  } catch { /* non-critical */ }
+}
 
 export async function runSystemEngineer(records: ThesisExperienceRecord[]): Promise<AutoFixResult | null> {
   // v2.0.183: Prevent overlapping runs
@@ -226,7 +238,8 @@ If you find NO issues worth fixing, respond with:
     ],
     temperature: 0.2,
     model: getAgentModel('terminal_agent'),
-    timeoutMs: 60_000,
+    timeoutMs: 120_000,
+    maxTokens: 8192, // Deputy-level: diagnosis JSON can be detailed
   });
 
   const diagnosis = parseDiagnosis(phase1Response.content);
@@ -289,12 +302,15 @@ ${fullFileContent}
 ## Your Task
 Provide the EXACT code replacement to fix this issue.
 
+You are a deputy with full authority to refactor. You may rewrite entire methods, add new helper functions, update interfaces, or restructure code — as long as the fix is correct and all tests pass.
+
 Rules:
 1. oldCode must be EXACT text from the file above (copy-paste, including whitespace and indentation)
 2. newCode must be the complete replacement for oldCode
-3. Keep changes minimal — only fix the identified issue
-4. Do not break any existing tests
-5. If your fix changes behavior, include a testUpdate
+3. You may make large changes — do not artificially limit your fix to "minimal" changes if the issue requires a deeper fix
+4. Do not break any existing tests — if your fix changes behavior, include a testUpdate
+5. If you add new fields to an interface, update ALL places that construct objects of that type
+6. If your fix spans multiple methods, include all of them in oldCode/newCode as one contiguous block
 
 Respond with EXACTLY ONE JSON object:
 {"severity":"${diagnosis.severity}","category":"${diagnosis.category}","title":"${diagnosis.title}","rootCause":"${diagnosis.rootCause}","affectedFile":"${diagnosis.affectedFile}","proposedFix":{"oldCode":"EXACT text from the file","newCode":"replacement text","reason":"why this fix is correct"},"testUpdate":{"file":"tests/...","oldCode":"...","newCode":"..."},"changelogEntry":"${diagnosis.changelogEntry}"}`;
@@ -307,7 +323,8 @@ Respond with EXACTLY ONE JSON object:
     ],
     temperature: 0.1,
     model: getAgentModel('terminal_agent'),
-    timeoutMs: 60_000,
+    timeoutMs: 120_000,
+    maxTokens: 16384, // Deputy-level: large refactors need room to breathe
   });
 
   let proposal = parseProposal(phase2Response.content);
@@ -481,7 +498,8 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
           ],
           temperature: 0.1,
           model: getAgentModel('terminal_agent'),
-          timeoutMs: 60_000,
+          timeoutMs: 120_000,
+          maxTokens: 16384, // Deputy-level: corrected fix may be as large as original
         });
 
         const retryProposal = parseProposal(retryResponse.content);
