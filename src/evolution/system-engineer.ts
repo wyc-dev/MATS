@@ -825,16 +825,39 @@ function parseProposal(content: string): {
     if (fence && fence[1]) s = fence[1].trim();
 
     const start = s.indexOf('{');
-    if (start < 0) return null;
+    if (start < 0) {
+      log.warn('[system-engineer] Failed to parse proposal: no JSON object found');
+      log.warn(`   Response preview: "${content.slice(0, 200)}..."`);
+      return null;
+    }
     let depth = 0;
     let end = -1;
     for (let i = start; i < s.length; i++) {
       if (s[i] === '{') depth++;
       else if (s[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
     }
-    if (end < 0) return null;
+    if (end < 0) {
+      log.warn('[system-engineer] Failed to parse proposal: JSON object not closed (truncated response)');
+      log.warn(`   Response preview: "${content.slice(0, 200)}..."`);
+      return null;
+    }
 
-    const p = JSON.parse(s.slice(start, end + 1)) as any;
+    let jsonStr = s.slice(start, end + 1);
+    let p: any;
+    try {
+      p = JSON.parse(jsonStr);
+    } catch (parseErr) {
+      // v2.0.205: Try to fix common JSON issues from LLM output
+      // 1. Remove trailing commas before } or ]
+      jsonStr = jsonStr.replace(/,\s*([}\]])/g, '$1');
+      try {
+        p = JSON.parse(jsonStr);
+      } catch (parseErr2) {
+        log.warn(`[system-engineer] Failed to parse proposal: JSON.parse failed — ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+        log.warn(`   JSON preview: "${jsonStr.slice(0, 300)}..."`);
+        return null;
+      }
+    }
     return {
       severity: p.severity ?? 'info',
       category: p.category ?? 'unknown',

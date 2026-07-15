@@ -3151,11 +3151,33 @@ ${recentExamples}
     // 2. Open new shadow LONG + SHORT for each trading market
     // This replaces RBC's hypothetical training — shadow trades learn TP-before-SL,
     // not 5-minute price direction.
+
+    // v2.0.205: Build current feature vector for a symbol at resolution time.
+    // This is passed to checkPositions() so OLR trains on P(win | current conditions)
+    // instead of P(win | entry conditions), which was stale and taught the wrong mapping.
+    const buildCurrentFeaturesForSymbol = (sym: string, combined: any): Record<string, number> => {
+      const symState = this.marketState.getState(sym);
+      const isActiveSym = normalizeSymbol(sym) === normalizeSymbol(activeSymbol);
+      return {
+        volatility: symState?.volatility ?? (isActiveSym ? (combined.volatility ?? 0) : 0),
+        srDistanceBps: isActiveSym ? (this.lastSRContext?.distanceToSupportBps ?? 0) : 0,
+        obImbalance: symState?.orderBookImbalance ?? (isActiveSym ? (combined.orderBookImbalance ?? 0) : 0),
+        fundingRate: this.hyperliquidWs?.getMarkPriceForSymbol(sym)?.fundingRate
+          ?? this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
+        volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
+        sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+        sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+        signalAgreement: 0.5,
+      };
+    };
+
     if (marketPrice > 0) {
       try {
         // Check + resolve existing shadow positions for active symbol (H1: pass intra-cycle high/low)
+        // v2.0.205: Pass currentFeatures so OLR trains on resolution-time features, not stale entry-time features
         const activeHL = this.marketState.getHighLow(activeSymbol);
-        const resolved = this.shadowEngine.checkPositions(activeSymbol, marketPrice, this.totalCycles, activeHL.high, activeHL.low);
+        const activeCurrentFeatures = buildCurrentFeaturesForSymbol(activeSymbol, combinedState);
+        const resolved = this.shadowEngine.checkPositions(activeSymbol, marketPrice, this.totalCycles, activeHL.high, activeHL.low, activeCurrentFeatures);
         if (resolved > 0) {
           log.info(`🧬 [shadow] ${activeSymbol}: ${resolved} shadow trades resolved (cycle #${this.totalCycles})`);
         }
@@ -3173,7 +3195,9 @@ ${recentExamples}
           }
           if (mktChkPrice > 0) {
             const mktHL = this.marketState.getHighLow(mktSym);
-            const mktResolved = this.shadowEngine.checkPositions(mktSym, mktChkPrice, this.totalCycles, mktHL.high, mktHL.low);
+            // v2.0.205: Pass currentFeatures so OLR trains on resolution-time features
+            const mktCurrentFeatures = buildCurrentFeaturesForSymbol(mktSym, combinedState);
+            const mktResolved = this.shadowEngine.checkPositions(mktSym, mktChkPrice, this.totalCycles, mktHL.high, mktHL.low, mktCurrentFeatures);
             if (mktResolved > 0) {
               log.info(`🧬 [shadow] ${mktSym}: ${mktResolved} shadow trades resolved (cycle #${this.totalCycles})`);
             }
