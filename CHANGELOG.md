@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.181: Fix OLR SGD decay to use live sample count instead of total (backfill-inflated) nSamples — prevents model freezing and enables continuous adaptation to market changes
+
+
 ## v2.0.202: Fix shadow trade OLR training — use resolution-time features instead of entry-time features for correct P(win | current conditions) learning
 
 

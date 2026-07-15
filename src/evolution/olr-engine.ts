@@ -263,7 +263,9 @@ export class OLREngine {
     // so a cold-start backfill prior does not freeze the model against live
     // adaptation (M2 fix extended for backfill). Scaled by source weight so
     // real/paper outcomes outweigh the high-volume shadow stream (H2 fix).
-    const eta = (OLR_CONFIG.learningRate / (1 + OLR_CONFIG.decayRate * liveSamples)) * sourceWeight;
+    // liveSamples is guaranteed >= 0 because it's computed as nSamples - backfillSamples
+    const safeLiveSamples = Math.max(0, liveSamples);
+    const eta = (OLR_CONFIG.learningRate / (1 + OLR_CONFIG.decayRate * safeLiveSamples)) * sourceWeight;
     for (let i = 0; i <= D; i++) {
       const reg = i > 0 ? OLR_CONFIG.l2Regularization * model.weights[i]! : 0;
       model.weights[i]! -= eta * (error * xFull[i]! + reg);
