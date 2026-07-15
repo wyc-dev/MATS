@@ -451,6 +451,12 @@ export class APIServer {
     this.onCorrectTrade = cb;
   }
 
+  /** v2.0.198: Register a callback for closing all positions (mode switch safety) */
+  private onCloseAllPositions: (() => Promise<{ success: boolean; closed: number; errors: string[] }>) | null = null;
+  setCloseAllPositionsHandler(cb: () => Promise<{ success: boolean; closed: number; errors: string[] }>): void {
+    this.onCloseAllPositions = cb;
+  }
+
   /** Register a callback for pausing the system (RBC only mode) */
   setPauseHandler(cb: () => void): void {
     this.onPause = cb;
@@ -961,6 +967,24 @@ export class APIServer {
             res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
           }
         });
+        return;
+      }
+
+      // v2.0.198: POST — close all positions (used before Trade Mode switch)
+      if (pathname === '/api/positions/close-all' && req.method === 'POST') {
+        if (this.onCloseAllPositions) {
+          try {
+            const result = await this.onCloseAllPositions();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, closed: 0, errors: [err instanceof Error ? err.message : String(err)] }));
+          }
+        } else {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, closed: 0, errors: ['Close-all handler not registered'] }));
+        }
         return;
       }
 

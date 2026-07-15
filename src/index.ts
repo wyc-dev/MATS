@@ -1204,6 +1204,31 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         }
       });
 
+      // v2.0.198: Close all positions — used before Trade Mode switch
+      this.apiServer.setCloseAllPositionsHandler(async (): Promise<{ success: boolean; closed: number; errors: string[] }> => {
+        const allSymbols = this.portfolio.getOpenSymbols();
+        let closed = 0;
+        const errors: string[] = [];
+        log.info(`📕 Close-all requested: ${allSymbols.length} open positions`);
+        for (const sym of allSymbols) {
+          try {
+            const closeSuccess = await this.closeTrade(sym, 'Close-all before Trade Mode switch');
+            if (closeSuccess) {
+              closed++;
+              this.legacyPositionModes.delete(sym);
+              this.pendingTheses.delete(normalizeSymbol(sym));
+            } else {
+              errors.push(`Failed to close ${sym}`);
+            }
+          } catch (err) {
+            errors.push(`${sym}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        this.pushToAPI();
+        log.info(`📕 Close-all completed: ${closed}/${allSymbols.length} closed${errors.length > 0 ? `, errors: ${errors.join('; ')}` : ''}`);
+        return { success: errors.length === 0, closed, errors };
+      });
+
       // v2.0.127: Manual trade execution — bypasses conviction gate + thesis validation.
       // Used when the user wants to force a trade that the system's gates blocked.
       this.apiServer.setManualTradeHandler(async (action, symbol, positionSizePct, leverage) => {

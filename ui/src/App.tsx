@@ -1041,12 +1041,39 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
     setTimeout(() => setStatusVisible(false), 2000)
   }
 
+  // v2.0.198: Trade Mode switch with confirmation + close-all
+  const [modeSwitchConfirm, setModeSwitchConfirm] = useState<string | null>(null)
+  const [modeSwitching, setModeSwitching] = useState(false)
+
   const handleTradeModeChange = async (mode: string) => {
+    if (mode === selectedTradeMode) return // no change
+    setModeSwitchConfirm(mode)
+  }
+
+  const confirmModeSwitch = async () => {
+    if (!modeSwitchConfirm) return
+    const mode = modeSwitchConfirm
+    setModeSwitching(true)
+    setModeSwitchConfirm(null)
+
+    // v2.0.198: Close all positions before switching mode
+    try {
+      const closeRes = await fetch(`${API_BASE}/positions/close-all`, { method: 'POST' })
+      const closeResult = await closeRes.json()
+      if (closeResult.errors?.length > 0) {
+        showStatus(`Closed ${closeResult.closed}, errors: ${closeResult.errors.join(', ')}`)
+      } else if (closeResult.closed > 0) {
+        showStatus(`Closed ${closeResult.closed} positions`)
+      }
+    } catch { /* non-critical — proceed with switch */ }
+
+    // Now switch mode
     setSelectedTradeMode(mode as any)
     try {
       const res = await fetch(`${API_BASE}/market-agent/trade-mode`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
-      if ((await res.json()).success) showStatus(mode)
+      if ((await res.json()).success) showStatus(mode === 'real' ? 'Real mode' : 'Paper mode')
     } catch { showStatus('Failed') }
+    setModeSwitching(false)
   }
 
   const handleAssetTypeChange = async (assetType: string) => {
@@ -1163,8 +1190,8 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         <div className="market-control-col">
           <div className="market-control-label">Trade Mode</div>
           <div className="market-agent-selector-btns">
-            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'paper' ? 'active' : ''}`} onClick={() => handleTradeModeChange('paper')}>Paper</button>
-            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'real' ? 'active' : ''}`} onClick={async () => {
+            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'paper' ? 'active' : ''}`} onClick={() => handleTradeModeChange('paper')} disabled={modeSwitching}>Paper</button>
+            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'real' ? 'active' : ''}`} disabled={modeSwitching} onClick={async () => {
               // v2.0.117: Check wallet + private key before switching to Real mode
               try {
                 const res = await fetch(`${API_BASE}/settings/env`)
@@ -1173,17 +1200,13 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                   const settings = json.settings as Record<string, string>
                   const wallet = settings['HYPERLIQUID_WALLET_ADDRESS'] ?? ''
                   const privKey = settings['HYPERLIQUID_PRIVATE_KEY'] ?? ''
-                  if (!wallet || !privKey || wallet.includes('••••') && !privKey.includes('••••')) {
-                    // Has wallet but no private key (or vice versa)
-                    if (!wallet || !privKey) {
-                      setRealModeWarning('Hyperliquid wallet address and/or private key not configured. Go to Settings to set them before trading in Real mode.')
-                      return
-                    }
+                  if (!wallet || !privKey) {
+                    setRealModeWarning('Hyperliquid wallet address and/or private key not configured. Go to Settings to set them before trading in Real mode.')
+                    return
                   }
-                  // Both exist (even if masked) — allow switch
-                  setRealModeWarning('')
                 }
               } catch { /* ignore — allow switch if fetch fails */ }
+              setRealModeWarning('')
               handleTradeModeChange('real')
             }}>Real</button>
           </div>
@@ -1289,6 +1312,29 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
 
       {/* Status msg */}
       <div className={`model-status model-status-compact ${statusVisible ? '' : 'hidden'}`}>{statusMsg}</div>
+
+      {/* v2.0.198: Trade Mode switch confirmation */}
+      {modeSwitchConfirm && (
+        <div style={{ marginTop: 'var(--space-3)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', border: '1px solid var(--gold)', background: 'rgba(255, 215, 0, 0.08)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--gold)', fontWeight: 'var(--fw-bold)' }}>
+            <AlertTriangle size={14} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '6px' }} />
+            Switch to {modeSwitchConfirm === 'real' ? 'Real' : 'Paper'} mode?
+          </div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
+            All open positions will be closed before switching. This action cannot be undone.
+          </div>
+          <div style={{ display: 'flex', gap: 'var(--space-3)', justifyContent: 'flex-end' }}>
+            <button
+              onClick={() => setModeSwitchConfirm(null)}
+              style={{ padding: '4px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 'var(--fs-sm)' }}
+            >Cancel</button>
+            <button
+              onClick={() => confirmModeSwitch()}
+              style={{ padding: '4px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--gold)', background: 'rgba(255, 215, 0, 0.15)', color: 'var(--gold)', cursor: 'pointer', fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-bold)' }}
+            >Confirm & Close All</button>
+          </div>
+        </div>
+      )}
 
       {/* Asset Type + Search bar — side by side */}
       <div className="market-control-group">
