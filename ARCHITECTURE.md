@@ -456,11 +456,23 @@ RIL_SUBTLE_DIFF_ENABLED=true
 ## 啟動
 
 ```bash
-npm run dev    # concurrently: tsx watch (API :3456) + vite (UI :5173)
+npm run engineer    # 自主進化模式：交易 + System Engineer 自主修復 + 修復後自動重啟
 ```
 Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/api/status**
 
-UI 開發模式由 Vite serve（:5173），`/api` proxy → :3456。Prod 模式（`tsx src/index.ts` + `ui/dist` built）:3456 同時 serve API + static UI。
+`npm run engineer` 是唯一支援的生產啟動模式。流程：
+1. `engineer-loop.sh` 啟動 `tsx src/index.ts`（`SYSTEM_ENGINEER_ENABLED=true`）
+2. 交易系統正常運行，每 2 個 cycle（cycle period ≥ 5 min 時）觸發 System Engineer
+3. System Engineer 審查交易記錄 + 源代碼 → 生成修復 → `tsc --noEmit` + `npm test` 驗證
+4. 全部通過 → git commit → `process.exit(42)` → `engineer-loop.sh` 偵測 exit code 42 → 重啟進程
+5. 任何失敗 → 自動 rollback（恢復原始文件）→ 繼續運行
+6. 重啟後加載新代碼 → 繼續交易 → 2 個 cycle 後再檢查 → 循環
+
+**安全設計**：
+- System Engineer 只可修改 `src/evolution/` + `src/cognition/` + `src/analysis/` + `src/agents/` + `tests/`
+- 禁止觸碰 `src/trading/`（下單/SL/TP/簽名）+ `src/config/`（風險設置）+ `src/index.ts` + `.env`
+- tsc + test 安全網：任何失敗 → 自動 rollback，不會應用未驗證的代碼
+- 重啟期間持倉由 HL 交易所的 SL/TP trigger orders 保護，不依賴本地進程
 
 ---
 
