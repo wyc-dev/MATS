@@ -5092,7 +5092,20 @@ ${recentExamples}
         if (execResult.success && activeExecuted) {
           activeAuditGates.push({ gate: 'execution', passed: true, reason: 'executed on HL' });
         } else if (!activeExecuted) {
-          activeAuditGates.push({ gate: 'execution', passed: false, reason: finalDecision.action === 'hold' ? 'overridden to HOLD by gate' : (execResult.error ?? 'execution failed') });
+          // v2.0.165: Clarify the audit reason — distinguish between "gate blocked
+          // new entry" (existing position stays open under SL/TP management) vs
+          // "execution failed" (actual error). The old message "overridden to HOLD
+          // by gate" was confusing when a position was still open — users thought
+          // the system failed to act, when in fact it correctly chose not to enter
+          // a new trade while the existing position is managed by per-symbol
+          // consensus + SL/TP.
+          const hasOpenPos = activeSym && (this.portfolio.hasPosition(activeSym) || (this.cachedExchangePositions ?? []).some(ep => normalizeSymbol(ep.symbol) === activeSym && ep.quantity > 0));
+          const holdReason = finalDecision.action === 'hold'
+            ? (hasOpenPos
+              ? `entry blocked by gate — existing position remains under SL/TP management`
+              : 'overridden to HOLD by gate')
+            : (execResult.error ?? 'execution failed');
+          activeAuditGates.push({ gate: 'execution', passed: false, reason: holdReason });
         }
         this.recordDecisionAudit(
           finalDecision.symbol || activeSymbol,
