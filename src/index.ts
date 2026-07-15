@@ -1230,16 +1230,15 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           });
           for (const sym of realPositions) {
             if (!hlSymbols.has(sym)) {
-              // Position was on HL but is now gone — closed by SL/TP
-              // Only close if we have at least one HL position (proving the
-              // clearinghouseState push is valid, not an empty failure)
-              if (positions.length > 0 || hlSymbols.size > 0) {
-                const pos = this.portfolio.getPosition(sym);
-                if (pos) {
-                  log.info(`📡 HL WS position disappeared: ${sym} — closing local mirror (SL/TP triggered on HL)`);
-                  this.portfolio.closeExchangePosition(sym, pos.currentPrice);
-                }
-              }
+              // v2.0.166: DO NOT close based on WS position disappearance alone.
+              // The HL WS clearinghouseState push can be partial (missing some
+              // positions due to WS lag, subscription delay, or incremental updates).
+              // Closing here created phantom close records for positions that were
+              // still open on HL — the next cycle re-imported them, creating
+              // duplicate trades with no thesis/MAE/MFE.
+              // Instead, just log a warning. The REST-based syncExchangePositions
+              // (which runs every cycle with fill verification) handles real closes.
+              log.info(`📡 HL WS position not in push: ${sym} — will verify via REST syncExchangePositions (not closing — WS push may be partial)`);
             }
           }
         });
@@ -1261,10 +1260,22 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           if (isClosingFill && this.portfolio.hasPosition(sym)) {
             const pos = this.portfolio.getPosition(sym);
             if (pos && pos.agentId === 'hyperliquid-real') {
-              log.info(`📡 HL WS closing fill: ${fill.symbol} ${fill.side} ${fill.size} @ ${fill.price} dir=${fill.dir} closedPnl=${fill.closedPnl} — closing local mirror immediately`);
-              // Close the local mirror with the actual HL fill price + realized PnL
-              this.portfolio.closeExchangePosition(sym, fill.price, fill.closedPnl);
-              return;
+              // v2.0.166: Check that the fill's side matches the closing side
+              // of this position. A SELL position is closed by a BUY fill, and
+              // vice versa. Without this check, a closing fill from a PREVIOUS
+              // position (e.g. old SELL SKHX closed → "close short" fill with
+              // side=buy) could match a NEW SELL SKHX position and create a
+              // phantom close record.
+              // HL WS fills use 'B' (buy) / 'A' (ask=sell) for side.
+              const expectedCloseSideRaw = pos.side === 'buy' ? 'A' : 'B';
+              if (fill.side !== expectedCloseSideRaw) {
+                log.info(`📡 HL WS closing fill ${fill.symbol} side=${fill.side} doesn't match closing side ${expectedCloseSideRaw} for ${pos.side} position — skipping (may be from a previous position)`);
+              } else {
+                log.info(`📡 HL WS closing fill: ${fill.symbol} ${fill.side} ${fill.size} @ ${fill.price} dir=${fill.dir} closedPnl=${fill.closedPnl} — closing local mirror immediately`);
+                // Close the local mirror with the actual HL fill price + realized PnL
+                this.portfolio.closeExchangePosition(sym, fill.price, fill.closedPnl);
+                return;
+              }
             }
           }
           // Opening fill or non-closing fill — just soft-update the mirror price
@@ -3581,16 +3592,21 @@ ${recentExamples}
               // closed on HL). Check if any closing fills exist.
               if (exchangePositions.length === 0) {
                 // Try to get recent fills to confirm the position was closed
-                let recentFills: Array<{ symbol: string; closedPnl: number; price: number; timestamp: number; dir: string }> = [];
+                let recentFills: Array<{ symbol: string; closedPnl: number; price: number; timestamp: number; dir: string; side: string }> = [];
                 if (typeof (engine as any).getRecentFills === 'function') {
                   try { recentFills = await (engine as any).getRecentFills(50); } catch { /* non-critical */ }
                 }
                 for (const sym of allRealSymbols) {
                   const pos = this.portfolio.getPosition(sym);
                   if (!pos) continue;
+                  // v2.0.166: Check fill direction matches closing side — same fix
+                  // as syncExchangePositions. A SELL position is closed by a BUY
+                  // fill (side='buy'), and vice versa.
+                  const expectedCloseSide = pos.side === 'buy' ? 'sell' : 'buy';
                   const closingFill = recentFills.find(f =>
                     f.symbol.toLowerCase() === sym.toLowerCase() &&
                     !f.dir.toLowerCase().startsWith('open') &&
+                    f.side === expectedCloseSide &&
                     f.timestamp >= pos.openedAt
                   );
                   if (closingFill) {
@@ -3643,21 +3659,38 @@ ${recentExamples}
                   }
                 }
                 // Check if any real positions were closed on the exchange
+                // v2.0.166: Don't close based on position absence alone — the
+                // exchange API may have partially failed (returned some symbols
+                // but not others). Only close if there's a confirmed closing fill.
                 const exchangeSyms = exchangePositions.map(p => p.symbol.includes(':') ? p.symbol : p.symbol.toLowerCase());
+                let paperModeRecentFills: Array<{ symbol: string; closedPnl: number; price: number; timestamp: number; dir: string; side: string }> = [];
                 for (const sym of allRealSymbols) {
                   if (!exchangeSyms.includes(sym) && this.portfolio.hasPosition(sym)) {
-                    const state = this.marketState.getState(sym);
-                    const closePrice = state?.price ?? this.portfolio.getPosition(sym)?.currentPrice ?? 0;
-                    if (closePrice > 0) {
-                      const pos = this.portfolio.getPosition(sym);
-                      const trade = pos?.agentId === 'hyperliquid-real'
-                        ? this.portfolio.closeExchangePosition(sym, closePrice)
+                    const pos = this.portfolio.getPosition(sym);
+                    if (!pos) continue;
+                    // v2.0.166: Verify with closing fill before closing
+                    if (paperModeRecentFills.length === 0 && typeof (engine as any).getRecentFills === 'function') {
+                      try { paperModeRecentFills = await (engine as any).getRecentFills(50); } catch { /* non-critical */ }
+                    }
+                    const expectedCloseSide = pos.side === 'buy' ? 'sell' : 'buy';
+                    const closingFill = paperModeRecentFills.find(f =>
+                      f.symbol.toLowerCase() === sym.toLowerCase() &&
+                      !f.dir.toLowerCase().startsWith('open') &&
+                      f.side === expectedCloseSide &&
+                      f.timestamp >= pos.openedAt
+                    );
+                    if (closingFill) {
+                      const closePrice = closingFill.price;
+                      const trade = pos.agentId === 'hyperliquid-real'
+                        ? this.portfolio.closeExchangePosition(sym, closePrice, closingFill.closedPnl)
                         : this.portfolio.closePosition(sym, closePrice);
                       if (trade) {
-                        log.info(`📋 Real position ${sym} closed on exchange: PnL $${trade.pnl.toFixed(2)} — syncing local mirror`);
+                        log.info(`📋 Real position ${sym} confirmed closed via HL fill: PnL $${trade.pnl.toFixed(2)} — syncing local mirror`);
                         this.legacyPositionModes.delete(sym);
                         this.onPositionClosedLearning(trade);
                       }
+                    } else {
+                      log.warn(`⚠️ Paper mode: ${sym} not in exchange positions but no closing fill found — NOT closing (may be API partial failure)`);
                     }
                   }
                 }
