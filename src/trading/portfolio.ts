@@ -338,6 +338,17 @@ export class PortfolioTracker {
     }
   }
 
+  /** v2.0.170: Update a single field on a closed real trade by ID.
+   *  Allows the user to correct Entry Thesis / Exit Thesis / Post-Review
+   *  so the evolution system learns from accurate data, not LLM mistakes. */
+  updateClosedRealTradeField(tradeId: string, field: 'entryThesis' | 'exitThesis' | 'postReview', value: string): boolean {
+    const trade = this.closedRealTrades.find(t => t.id === tradeId);
+    if (!trade) return false;
+    (trade as any)[field] = value;
+    log.info(`✏️ Closed real trade ${tradeId} field '${field}' updated (${value.length} chars)`);
+    return true;
+  }
+
   /** v2.0.158: Purge all closed real trades without entry thesis */
   purgeClosedRealTradesWithoutThesis(): number {
     const before = this.closedRealTrades.length;
