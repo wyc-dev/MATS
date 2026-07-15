@@ -884,7 +884,7 @@ export class PortfolioTracker {
    *   7. Max narrow step: SL/TP can only move 0.5% of current price per cycle
    *
    * Returns true if accepted (values applied to local mirror), false if rejected.
-   * RealTradingManager uses this return value to decide what to send to HL.
+   * TradingManager uses this return value to decide what to send to HL.
    *
    * ⚠️ MAINTENANCE NOTE: If you change validation logic, update BOTH this layer
    * AND hacp.ts adjustPositions() (the LLM retry loop layer).
