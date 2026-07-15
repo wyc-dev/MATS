@@ -113,9 +113,19 @@ export interface AutoFixResult {
 let engineerRunning = false;
 
 // v2.0.188: Failed fix memory — prevents retrying the same fix that already failed.
-// Keyed by `${file}:${title}`, expires after 1 hour (in case the underlying issue changes).
-const failedFixes = new Map<string, number>(); // key → timestamp of failure
+// v2.0.202: Keyed by file path only (was file:title — LLM could bypass by changing title).
+// Expires after 1 hour (in case the underlying issue changes).
+const failedFixes = new Map<string, number>(); // file path → timestamp of failure
 const FAILED_FIX_TTL_MS = 3600_000; // 1 hour
+
+// v2.0.202: Hard block list — methods/patterns the SE must NEVER modify.
+// These have been verified correct and repeatedly targeted by the SE.
+// If the diagnosis mentions these, reject immediately without calling Phase 2.
+const BLOCKED_PATTERNS: { file: string; pattern: RegExp; reason: string }[] = [
+  { file: 'src/evolution/shadow-trade-engine.ts', pattern: /getStats/i, reason: 'getStats() dedup logic is verified correct — do NOT modify' },
+  { file: 'src/evolution/thesis-experience.ts', pattern: /checkThesisHistory/i, reason: 'checkThesisHistory() direction filter is correct — do NOT remove' },
+  { file: 'src/evolution/reason-analytics.ts', pattern: /findSimilar/i, reason: 'SimilarTradeRetriever.findSimilar() side filter is correct — do NOT remove' },
+];
 
 export async function runSystemEngineer(records: ThesisExperienceRecord[]): Promise<AutoFixResult | null> {
   // v2.0.183: Prevent overlapping runs
@@ -155,6 +165,14 @@ export async function runSystemEngineer(records: ThesisExperienceRecord[]): Prom
 
   const provider = getActiveProvider();
 
+  // v2.0.202: Build list of recently failed files to warn the LLM
+  const failedFiles: string[] = [];
+  for (const [file, ts] of failedFixes) {
+    if ((timestamp - ts) < FAILED_FIX_TTL_MS) {
+      failedFiles.push(file);
+    }
+  }
+
   // ─── Phase 1: Diagnosis ───
   const fileSummaries = readFileSummaries();
 
@@ -172,7 +190,10 @@ ${changelogTail}
 ### Loop Engineering Memory (known bugs)
 ${loopMemory.slice(0, 1500)}
 
-## Trade Records (last 20 of ${records.length})
+${failedFiles.length > 0 ? `## ⚠️ Recently Failed Files (DO NOT propose fixes for these — they failed within the last hour)
+${failedFiles.map(f => `- ${f}`).join('\n')}
+
+` : ''}## Trade Records (last 20 of ${records.length})
 ${tradeSummary}
 
 ## Per-Symbol Direction Summary
@@ -216,11 +237,26 @@ If you find NO issues worth fixing, respond with:
 
   log.info(`🔧 [system-engineer] Phase 1 complete: ${diagnosis.title} → ${diagnosis.affectedFile}`);
 
-  // v2.0.188: Check if this exact fix was already tried and failed recently.
-  const fixKey = `${diagnosis.affectedFile}:${diagnosis.title}`;
+  // v2.0.202: Hard block list — check if the diagnosis targets a known-good method.
+  // This prevents wasting a Phase 2 LLM call on methods that have been verified correct.
+  for (const block of BLOCKED_PATTERNS) {
+    if (diagnosis.affectedFile === block.file) {
+      const textToCheck = `${diagnosis.title} ${diagnosis.rootCause} ${diagnosis.diagnosis}`;
+      if (block.pattern.test(textToCheck)) {
+        log.warn(`🚫 [system-engineer] BLOCKED: "${diagnosis.title}" targets ${block.reason}`);
+        return null;
+      }
+    }
+  }
+
+  // v2.0.202: Check if this FILE had any failed fix recently.
+  // Previous file:title key allowed the LLM to retry the same file with a
+  // slightly different title, causing repeated failures on the same file.
+  // Now: if ANY fix on a file failed within the cooldown, skip that file.
+  const fixKey = diagnosis.affectedFile; // file-only key
   const lastFailed = failedFixes.get(fixKey);
   if (lastFailed && (timestamp - lastFailed) < FAILED_FIX_TTL_MS) {
-    log.info(`🔧 [system-engineer] Skipping "${diagnosis.title}" — same fix failed ${Math.round((timestamp - lastFailed) / 1000)}s ago, will retry in ${Math.round(FAILED_FIX_TTL_MS / 60000)}min`);
+    log.info(`🔧 [system-engineer] Skipping "${diagnosis.title}" — ${diagnosis.affectedFile} had a failed fix ${Math.round((timestamp - lastFailed) / 1000)}s ago, will retry in ${Math.round(FAILED_FIX_TTL_MS / 60000)}min`);
     return null;
   }
 
@@ -274,7 +310,7 @@ Respond with EXACTLY ONE JSON object:
     timeoutMs: 60_000,
   });
 
-  const proposal = parseProposal(phase2Response.content);
+  let proposal = parseProposal(phase2Response.content);
   if (!proposal || !proposal.proposedFix.oldCode || !proposal.proposedFix.newCode) {
     log.info(`🔧 [system-engineer] No actionable fix proposed in Phase 2`);
     return null;
@@ -393,14 +429,91 @@ Respond with EXACTLY ONE JSON object:
     // Run safety net: tsc --noEmit
     log.info(`🔧 [system-engineer] Running tsc --noEmit...`);
     let tscPassed = false;
+    let tscErrorOutput = '';
     try {
       const tscOutput = execSync('npx tsc --noEmit 2>&1', { cwd: PROJECT_ROOT, timeout: 30_000, stdio: 'pipe', encoding: 'utf-8' });
       tscPassed = true;
       log.info(`✅ [system-engineer] tsc passed`);
     } catch (err: any) {
       // v2.0.199: Capture actual tsc error output, not just "Command failed"
-      const tscErrors = err?.stdout ?? err?.stderr ?? err?.message ?? String(err);
-      log.warn(`❌ [system-engineer] tsc FAILED: ${String(tscErrors).slice(0, 500)}`);
+      tscErrorOutput = String(err?.stdout ?? err?.stderr ?? err?.message ?? String(err));
+      log.warn(`❌ [system-engineer] tsc FAILED: ${tscErrorOutput.slice(0, 500)}`);
+    }
+
+    // v2.0.202: If tsc failed, try ONE retry — send the tsc error back to the LLM
+    // so it can fix the type error. This handles cases where the fix is conceptually
+    // correct but has a type mismatch (e.g. missing interface field).
+    if (!tscPassed && tscErrorOutput) {
+      log.info(`🔧 [system-engineer] Phase 2b: tsc error retry — sending error to LLM for correction...`);
+      // Rollback first to get the original file content
+      writeFileSync(fullPath, originalContent, 'utf-8');
+      if (originalTestContent && testFile) {
+        writeFileSync(join(PROJECT_ROOT, testFile), originalTestContent, 'utf-8');
+      }
+
+      const retryPrompt = `## Phase 2b: Fix tsc Error
+
+Your previous fix for ${targetFile} failed tsc --noEmit with this error:
+
+\`\`\`
+${tscErrorOutput.slice(0, 2000)}
+\`\`\`
+
+## Your previous fix
+- oldCode: \`${proposal.proposedFix.oldCode.slice(0, 200)}...\`
+- newCode: \`${proposal.proposedFix.newCode.slice(0, 200)}...\`
+
+## Full Source Code of ${targetFile}
+\`\`\`typescript
+${originalContent}
+\`\`\`
+
+Fix the tsc error. The issue is likely a type mismatch — you may need to update an interface, add a missing field, or fix a type annotation.
+
+Respond with EXACTLY ONE JSON object with the CORRECTED fix:
+{"severity":"${proposal.severity ?? 'warning'}","category":"${proposal.category ?? 'fix'}","title":"${proposal.title}","rootCause":"${proposal.rootCause ?? ''}","affectedFile":"${targetFile}","proposedFix":{"oldCode":"EXACT text from the file","newCode":"corrected replacement text","reason":"why this fix is correct"},"testUpdate":null,"changelogEntry":"${proposal.changelogEntry ?? ''}"}`;
+
+      try {
+        const retryResponse = await provider.chat({
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: retryPrompt },
+          ],
+          temperature: 0.1,
+          model: getAgentModel('terminal_agent'),
+          timeoutMs: 60_000,
+        });
+
+        const retryProposal = parseProposal(retryResponse.content);
+        if (retryProposal && retryProposal.proposedFix.oldCode && retryProposal.proposedFix.newCode) {
+          // Check if the retry oldCode matches the original file
+          if (originalContent.includes(retryProposal.proposedFix.oldCode)) {
+            log.info(`🔧 [system-engineer] Retry fix accepted — applying corrected fix...`);
+            const retryContent = originalContent.replace(retryProposal.proposedFix.oldCode, retryProposal.proposedFix.newCode);
+            writeFileSync(fullPath, retryContent, 'utf-8');
+
+            // Re-run tsc
+            try {
+              execSync('npx tsc --noEmit 2>&1', { cwd: PROJECT_ROOT, timeout: 30_000, stdio: 'pipe', encoding: 'utf-8' });
+              tscPassed = true;
+              log.info(`✅ [system-engineer] tsc passed (retry)`);
+              // Update proposal for the test/changelog steps
+              proposal = retryProposal;
+            } catch (retryErr: any) {
+              const retryTscErrors = String(retryErr?.stdout ?? retryErr?.stderr ?? retryErr?.message ?? String(retryErr));
+              log.warn(`❌ [system-engineer] tsc FAILED (retry): ${retryTscErrors.slice(0, 500)}`);
+              // Rollback retry
+              writeFileSync(fullPath, originalContent, 'utf-8');
+            }
+          } else {
+            log.warn(`🚫 [system-engineer] Retry oldCode not found in file — giving up`);
+          }
+        } else {
+          log.warn(`🚫 [system-engineer] Retry did not produce a valid fix — giving up`);
+        }
+      } catch (retryErr) {
+        log.warn(`❌ [system-engineer] Retry LLM call failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+      }
     }
 
     // Run safety net: npm test
@@ -487,8 +600,8 @@ Respond with EXACTLY ONE JSON object:
       };
       appendRecommendation(result, false);
       // v2.0.188: Record this failure so we don't retry the same fix for 1 hour
-      failedFixes.set(fixKey, timestamp);
-      log.warn(`🔄 [system-engineer] Fix rolled back: ${proposal.title} (tsc=${tscPassed} tests=${testsPassed}) — will not retry for ${FAILED_FIX_TTL_MS / 60000}min`);
+      failedFixes.set(fixKey, timestamp); // file-only key (v2.0.202)
+      log.warn(`🔄 [system-engineer] Fix rolled back: ${proposal.title} (tsc=${tscPassed} tests=${testsPassed}) — ${targetFile} will not retry for ${FAILED_FIX_TTL_MS / 60000}min`);
       return result;
     }
   } catch (err) {

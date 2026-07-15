@@ -273,9 +273,14 @@ export class ShadowTradeEngine {
    * @param cycle      Current cycle number
    * @param cycleHigh  Highest price observed this cycle (optional)
    * @param cycleLow   Lowest price observed this cycle (optional)
+   * @param currentFeatures  Fresh feature vector at resolution time (optional).
+   *                         If provided, used for OLR training instead of the
+   *                         stale entry-time features. This ensures the OLR
+   *                         learns P(win | current market conditions), which is
+   *                         the correct mapping for predicting trade outcomes.
    * @returns Number of positions resolved this call
    */
-  checkPositions(symbol: string, price: number, cycle: number, cycleHigh?: number, cycleLow?: number): number {
+  checkPositions(symbol: string, price: number, cycle: number, cycleHigh?: number, cycleLow?: number, currentFeatures?: Record<string, number>): number {
     if (price <= 0) return 0;
     const sym = symbol.toLowerCase();
     let resolved = 0;
@@ -362,9 +367,16 @@ export class ShadowTradeEngine {
         const holdCycles = cycle - pos.openCycle;
         const outcomeNum: 1 | 0 = outcome === 'win' ? 1 : 0;
 
+        // v2.0.202: Use resolution-time features for OLR training instead of
+        // entry-time features. The OLR model predicts P(win | current market
+        // conditions), so training on stale entry features teaches the wrong
+        // mapping. If currentFeatures is provided, use it; otherwise fall back
+        // to entry features (better than nothing, but suboptimal).
+        const trainingFeatures = currentFeatures ?? pos.features;
+
         try {
-          this.olrEngine.feedTrade(sym, pos.features, outcomeNum, pos.side, 'shadow', cycle);
-          log.info(`[shadow] ${outcome.toUpperCase()} ${pos.side.toUpperCase()} ${sym} held ${holdCycles} cycles (entry=$${pos.entryPrice.toFixed(2)} exit=$${exitPrice.toFixed(2)}, slNarrowed=${pos.slNarrowed}) → OLR fed`);
+          this.olrEngine.feedTrade(sym, trainingFeatures, outcomeNum, pos.side, 'shadow', cycle);
+          log.info(`[shadow] ${outcome.toUpperCase()} ${pos.side.toUpperCase()} ${sym} held ${holdCycles} cycles (entry=${pos.entryPrice.toFixed(2)} exit=${exitPrice.toFixed(2)}, slNarrowed=${pos.slNarrowed}) → OLR fed with ${currentFeatures ? 'resolution-time' : 'entry-time'} features`);
         } catch (err) {
           log.warn(`[shadow] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
         }

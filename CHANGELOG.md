@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.202: Fix shadow trade OLR training — use resolution-time features instead of entry-time features for correct P(win | current conditions) learning
+
+
 ## v2.0.201 — System Engineer Two-Phase Audit + Test Detection Fix + Fuzzy oldCode Matching
 
 ### Two-Phase Audit (fixes oldCode hallucination)
