@@ -8,6 +8,7 @@ import { PortfolioTracker, normalizeSymbol } from './portfolio.ts';
 import { RiskEngine } from '../risk/engine.ts';
 import { PaperTradingEngine } from './paper-engine.ts';
 import { HyperliquidEngine } from './hyperliquid-engine.ts';
+import { computeSLTP } from './position-utils.ts';
 import { getATR, computeATRSLTP } from '../analysis/atr.ts';
 import type {
   TradeMode,
@@ -815,15 +816,10 @@ export class TradingManager {
                 if (exPos.openedAt > 0) {
                   localPos.openedAt = exPos.openedAt;
                 }
-                // Recalculate SL/TP based on new entry
-                const slPct = 0.02;
-                const tpPct = 0.05;
-                localPos.stopLossPrice = exPos.side === 'buy'
-                  ? exPos.averageEntryPrice * (1 - slPct)
-                  : exPos.averageEntryPrice * (1 + slPct);
-                localPos.takeProfitPrice = exPos.side === 'buy'
-                  ? exPos.averageEntryPrice * (1 + tpPct)
-                  : exPos.averageEntryPrice * (1 - tpPct);
+                // Recalculate SL/TP based on new entry (uses config.risk defaults)
+                const { sl: newSL, tp: newTP } = computeSLTP(exPos.averageEntryPrice, exPos.side);
+                localPos.stopLossPrice = newSL;
+                localPos.takeProfitPrice = newTP;
                 log.info(`  → Exchange mirror updated in-place (no trade record)`);
               } else {
                 // Paper position — close properly + re-import as exchange position.
