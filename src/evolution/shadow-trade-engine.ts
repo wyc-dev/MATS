@@ -372,11 +372,27 @@ export class ShadowTradeEngine {
         // conditions), so training on stale entry features teaches the wrong
         // mapping. If currentFeatures is provided, use it; otherwise fall back
         // to entry features (better than nothing, but suboptimal).
-        const trainingFeatures = currentFeatures ?? pos.features;
+        //
+        // v2.0.181: Weighted training — combine entry and resolution features
+        // with a recency bias. The resolution features get higher weight (0.7)
+        // because they represent the market conditions that actually caused the
+        // outcome. Entry features get lower weight (0.3) to retain some signal
+        // about the initial conditions. This prevents the OLR from learning
+        // spurious correlations from stale features while still preserving
+        // information about the full trade lifecycle.
+        const trainingFeatures: Record<string, number> = {};
+        const entryWeight = 0.3;
+        const resolutionWeight = 0.7;
+        const allKeys = new Set([...Object.keys(pos.features), ...Object.keys(currentFeatures ?? {})]);
+        for (const key of allKeys) {
+          const entryVal = pos.features[key] ?? 0;
+          const resolutionVal = currentFeatures?.[key] ?? entryVal;
+          trainingFeatures[key] = entryWeight * entryVal + resolutionWeight * resolutionVal;
+        }
 
         try {
           this.olrEngine.feedTrade(sym, trainingFeatures, outcomeNum, pos.side, 'shadow', cycle);
-          log.info(`[shadow] ${outcome.toUpperCase()} ${pos.side.toUpperCase()} ${sym} held ${holdCycles} cycles (entry=${pos.entryPrice.toFixed(2)} exit=${exitPrice.toFixed(2)}, slNarrowed=${pos.slNarrowed}) → OLR fed with ${currentFeatures ? 'resolution-time' : 'entry-time'} features`);
+          log.info(`[shadow] ${outcome.toUpperCase()} ${pos.side.toUpperCase()} ${sym} held ${holdCycles} cycles (entry=${pos.entryPrice.toFixed(2)} exit=${exitPrice.toFixed(2)}, slNarrowed=${pos.slNarrowed}) → OLR fed with weighted features (entry=${entryWeight}, resolution=${resolutionWeight})`);
         } catch (err) {
           log.warn(`[shadow] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
         }
