@@ -173,9 +173,9 @@ ${dirSummary}
 ${relevantCode}
 
 ## Known Good Code (DO NOT attempt to "fix" these — they are already correct)
-- shadow-trade-engine.ts getStats(): The dedup logic (step 3: `if (this.positions.some(p => p.id === r.id && p.status !== 'open')) continue`) correctly prevents double-counting between positions[] and recentResults[]. This has been verified. Do NOT propose changes to this method.
+- shadow-trade-engine.ts getStats(): The dedup logic (step 3 checks p.id === r.id) correctly prevents double-counting between positions[] and recentResults[]. This has been verified. Do NOT propose changes to this method.
 - thesis-experience.ts checkThesisHistory(): Direction-filtered pWin (sameDirMatches) is correct. Do NOT remove the direction filter.
-- reason-analytics.ts SimilarTradeRetriever.findSimilar(): The `side` parameter filter is correct. Do NOT remove it.
+- reason-analytics.ts SimilarTradeRetriever.findSimilar(): The side parameter filter is correct. Do NOT remove it.
 
 ## Your Task
 Find the SINGLE MOST IMPACTFUL issue in the learning/decision system that is causing losses or preventing the system from learning correctly. Generate ONE fix with exact code replacement.
