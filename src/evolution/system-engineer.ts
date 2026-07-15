@@ -11,7 +11,7 @@
 import { createLogger } from '../observability/logger.ts';
 import { getActiveProvider } from '../llm/index.ts';
 import { getAgentModel } from '../agents/agent-models.ts';
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import type { ThesisExperienceRecord } from '../types/index.ts';
@@ -435,7 +435,6 @@ function readRelevantSourceCode(): string {
   // v2.0.193: Read ALL files in allowed scope — let the LLM see everything
   // it's allowed to modify. This prevents oldCode hallucination caused by
   // only seeing partial snippets.
-  const { readdirSync, statSync } = require('node:fs') as typeof import('node:fs');
   const files: string[] = [];
 
   // Recursively collect all .ts files from allowed directories
