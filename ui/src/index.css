@@ -2098,7 +2098,8 @@ body {
 .year-btn-wide:not(.active) {
   animation: paper-breathe 4s ease-in-out infinite;
   border-color: rgba(136, 136, 136, 0.3);
-  color: #888888;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 /* ── Backtest Progress Bar ── */
