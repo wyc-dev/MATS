@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System
 
-> **作者**: YC Wong · **版本**: 2.0.182
+> **作者**: YC Wong · **版本**: 2.0.201
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **代碼量**: ~55,000 行 TypeScript（嚴格模式，零類型錯誤）+ React UI
 
@@ -93,24 +93,107 @@ data/evolution/              # olr-state · shadow-state · patterns · GA state
 tests/                       # vitest（94 tests）
 ```
 
-### System Engineer Agent（v2.0.182）
+### System Engineer Agent（v2.0.201）
 
 第 9 個 agent — 自主代碼工程師。每 2 個 cycle 運行一次。
 
-**流程**：
-1. 吞沒 SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md + loop-engineering-memory.md
-2. 審查最近 20 筆交易記錄 + per-symbol direction summary
-3. 讀取相關源代碼片段
-4. LLM 生成一個修復方案（oldCode → newCode + reason + test + changelog）
-5. 驗證目標文件在允許範圍內 + oldCode 精確匹配（防幻覺）
-6. 應用修改 → tsc --noEmit → npm test
-7. 全部通過 → 更新 CHANGELOG + ARCHITECTURE + git commit
-8. 任何失敗 → 自動 rollback + 記錄失敗原因
+### `runSystemEngineer()` 方法（v2.0.201 兩階段審計）
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  runSystemEngineer(records: ThesisExperienceRecord[])               │
+│                                                                     │
+│  ┌─ 並發保護 ─────────────────────────────────────────────────────┐ │
+│  │ if (engineerRunning) → skip（防止重疊運行）                      │ │
+│  │ engineerRunning = true（module-level lock）                      │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ┌─ 載入上下文 ───────────────────────────────────────────────────┐ │
+│  │ • SystemEngineer.md（操作手冊，截取前 2000 字）                   │ │
+│  │ • ARCHITECTURE.md（系統架構，截取前 2000 字）                     │ │
+│  │ • CHANGELOG.md（最近 3 個版本）                                   │ │
+│  │ • loop-engineering-memory.md（已知 bug，截取前 1500 字）          │ │
+│  │ • 最近 20 筆交易記錄摘要（side/symbol/outcome/pnl/hold/regime/   │ │
+│  │   marketFeatures/olrPWin/shadowWinRate/entryThesis）              │ │
+│  │ • Per-Symbol Direction Summary（BUY/SELL 各自勝率）               │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ┌─ Phase 1: 診斷（Diagnosis）────────────────────────────────────┐ │
+│  │ • readFileSummaries()：10 個關鍵文件各取前 50 行 + test 文件列表  │ │
+│  │ • LLM 收到：上下文 + 交易摘要 + 文件摘要 + Known Good Code 警告   │ │
+│  │ • LLM 回傳 JSON：{ title, rootCause, affectedFile, diagnosis }   │ │
+│  │ • 溫度 0.2 · timeout 60s · model = terminal_agent                │ │
+│  │ • 無 actionable issue → return null                              │ │
+│  │ • 失敗記憶檢查：同 file+title 1 小時內失敗過 → skip              │ │
+│  │ • 範圍驗證：isFileAllowed() → 不在 ALLOWED_PREFIXES → REJECT     │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ┌─ Phase 2: 精確修復（Exact Fix）────────────────────────────────┐ │
+│  │ • 讀取目標文件完整內容（全部行數，不截斷）                        │ │
+│  │ • LLM 收到：Phase 1 診斷結果 + 完整源代碼                        │ │
+│  │ • LLM 回傳 JSON：{ proposedFix: { oldCode, newCode, reason },    │ │
+│  │   testUpdate: { file, oldCode, newCode }, changelogEntry }       │ │
+│  │ • 溫度 0.1（更精確）· timeout 60s                                │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ┌─ oldCode 匹配（三層防幻覺）─────────────────────────────────────┐ │
+│  │ 1. 精確匹配：originalContent.includes(oldCode)                   │ │
+│  │ 2. 模糊匹配（v2.0.201）：trim + collapse whitespace →            │ │
+│  │    逐行 trimmed 比較找到精確位置 → 用文件實際文本替換 oldCode     │ │
+│  │ 3. 全部失敗 → 標記 "hallucination detected" → return null        │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ┌─ 應用修改 ─────────────────────────────────────────────────────┐ │
+│  │ • writeFileSync(targetFile, newContent)                          │ │
+│  │ • 如有 testUpdate → 同樣精確匹配 + 寫入測試文件                   │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ┌─ 安全網驗證 ───────────────────────────────────────────────────┐ │
+│  │ 1. tsc --noEmit（timeout 30s）                                   │ │
+│  │    → 失敗：捕獲 stdout/stderr 錯誤輸出（v2.0.199）                │ │
+│  │ 2. npm test（timeout 60s，僅在 tsc 通過後運行）                   │ │
+│  │    → 解析 vitest 摘要行 "Tests  X passed (Y)"（v2.0.201）         │ │
+│  │    → 舊邏輯 !output.includes('failed') 會被 log 警告誤判          │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ┌─ 決策分支 ─────────────────────────────────────────────────────┐ │
+│  │ tsc ✓ + test ✓ → SUCCESS:                                       │ │
+│  │   • updateChangelog(changelogEntry)                              │ │
+│  │   • updateArchitecture(architectureUpdate)（如有）                │ │
+│  │   • git add -A && git commit                                     │ │
+│  │   • appendRecommendation(result, true)                           │ │
+│  │   • process.exit(42) → engineer-loop.sh 重啟進程                  │ │
+│  │                                                                   │ │
+│  │ tsc ✗ 或 test ✗ → ROLLBACK:                                     │ │
+│  │   • 恢復原始文件內容（writeFileSync 原始內容）                     │ │
+│  │   • 恢復原始測試文件內容                                          │ │
+│  │   • failedFixes.set(key, timestamp) → 1 小時冷卻                 │ │
+│  │   • appendRecommendation(result, false)                           │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ┌─ 鎖釋放 ───────────────────────────────────────────────────────┐ │
+│  │ finally: engineerRunning = false（雙層 try/finally 保證釋放）    │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**關鍵設計決策**：
+
+| 決策 | 原因 |
+|:-----|:-----|
+| **兩階段而非單階段** | 單階段只展示 150 行/文件，LLM 看不到 line 472 的 `recordClose` → 幻覺 oldCode。Phase 1 用 50 行摘要診斷，Phase 2 發送完整文件生成精確 oldCode |
+| **模糊 oldCode 匹配** | LLM 常把縮排/空格弄錯但代碼正確。trim + collapse whitespace 後逐行 trimmed 比較，找到精確位置後用文件實際文本替換 |
+| **vitest 摘要行解析** | 舊邏輯 `!output.includes('failed')` 被 log 警告（"digestTrade LLM failed"）誤判為測試失敗。改為解析 `Tests  X passed (Y)` 摘要行 |
+| **失敗記憶 1h 冷卻** | 同一 file+title 修復失敗後 1 小時內不重試，避免無限循環 |
+| **雙層 try/finally** | 外層 finally 保證 `engineerRunning = false` 即使 `process.exit(42)` 也能釋放鎖 |
+| **溫度 Phase 1 = 0.2 / Phase 2 = 0.1** | 診斷需要些許創意，精確修復需要高度確定性 |
 
 **可修改範圍**：`src/evolution/` + `src/cognition/` + `src/analysis/` + `src/agents/` + `tests/`
 **禁止修改**：`src/trading/` + `src/config/` + `src/index.ts` + `.env` + `src/api-server.ts` + `src/data/`
 **安全網**：tsc --noEmit + npm test 必須全部通過，否則自動 rollback
 **模型**：GLM-5.2（預設）
+**並發保護**：module-level `engineerRunning` lock，防止重疊運行
+**失敗冷卻**：同一修復失敗後 1 小時內不重試（`FAILED_FIX_TTL_MS = 3600_000`）
 
 ---
 
@@ -127,7 +210,7 @@ tests/                       # vitest（94 tests）
 | 6 | **Independent Risk Auditor** | 0.10 | 0.25 | **advisory-only（不可 veto）**。TP/SL/size 建議 + 硬性代碼限制。預設 DeepSeek V4 Flash。 |
 | 7 | **Skeptics** | 0.30 | 0.00 | 邏輯審計員 + 壓力測試員。**Approve-First**。Phase 1.5 審查 5 sub-agents；Phase 1.8 驗證 entryThesis；Phase 0.5 每循環重新驗證持倉 thesis。預設 DeepSeek V4 Flash。 |
 | 8 | **Meta-Agent** | 0.45 | 0.00 | 仲裁主席。偵探模式。生成 entryThesis。使用 Confidence Calibration Framework。權重 0.00（理據系統控制，唔靠投票）。預設 DeepSeek V4 Flash。 |
-| 9 | **System Engineer** | 0.20 | — | 自主代碼工程師。每 2 個 cycle 審查交易記錄 + 源代碼，檢測學習系統漏洞，自動修復並通過 tsc+test 安全網。讀取 SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md。可修改 src/evolution/ + src/cognition/ + src/analysis/ + src/agents/ + tests/。禁止觸碰 src/trading/ + src/config/。預設 GLM-5.2。 |
+| 9 | **System Engineer** | 0.20 | — | 自主代碼工程師。每 2 個 cycle 審查交易記錄 + 源代碼，檢測學習系統漏洞，自動修復並通過 tsc+test 安全網。v2.0.201 兩階段審計：Phase 1 診斷（文件摘要 50 行 + 交易數據 → LLM 識別 file+issue），Phase 2 精確修復（完整文件內容 → LLM 生成 exact oldCode/newCode）。模糊 oldCode 匹配（trim + collapse whitespace）。vitest 摘要行解析測試結果。讀取 SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md。可修改 src/evolution/ + src/cognition/ + src/analysis/ + src/agents/ + tests/。禁止觸碰 src/trading/ + src/config/。預設 GLM-5.2。 |
 
 > **權重說明**：Meta-Agent + Skeptics 權重 0.00 — 佢哋透過 thesis 系統控制決策，唔參與投票。5 個 sub-agent 加權投票，consensus threshold 50%（由 Evolution 動態調整，floor 0.49）。Terminal Agent 不參與投票，只做規則檢查 + 決策核實。System Engineer 不參與投票，只做代碼審查 + 自主修復。Trading Setup 不是 LLM agent，是 UI 配置管理。
 
