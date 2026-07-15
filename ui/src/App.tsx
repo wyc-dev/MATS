@@ -1191,8 +1191,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         </div>
         <div className="market-control-col">
           <div className="market-control-label">
-            Cycle Period: <strong style={{ color: cyclePeriod <= 4 ? 'var(--red)' : 'var(--gold)' }}>{cyclePeriod}m</strong>
+            Cycle Period: <strong style={{ color: cyclePeriod <= 4 ? 'var(--red)' : 'var(--green)' }}>{cyclePeriod}m</strong>
             {cyclePeriod <= 4 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--red)', marginLeft: 'var(--space-3)' }}><AlertTriangle size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />High token cost</span>}
+            {cyclePeriod >= 5 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--green)', marginLeft: 'var(--space-3)' }}><CheckCircle size={12} color="var(--green)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />System Engineer active</span>}
           </div>
           <div className="slider-row">
             <input
@@ -1207,9 +1208,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                   })
                 } catch { /* ignore */ }
               }}
-              style={{ flex: 1, height: 4, accentColor: cyclePeriod <= 4 ? 'var(--red)' : 'var(--gold)' }}
+              style={{ flex: 1, height: 4, accentColor: cyclePeriod <= 4 ? 'var(--red)' : 'var(--green)' }}
             />
-            <span className="slider-value" style={{ color: cyclePeriod <= 4 ? 'var(--red)' : 'var(--gold)' }}>{cyclePeriod}m</span>
+            <span className="slider-value" style={{ color: cyclePeriod <= 4 ? 'var(--red)' : 'var(--green)' }}>{cyclePeriod}m</span>
           </div>
         </div>
       </div>
