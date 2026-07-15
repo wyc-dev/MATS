@@ -1782,6 +1782,14 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
   const [correctInput, setCorrectInput] = useState('')
   const [correcting, setCorrecting] = useState(false)
   const [correctHistory, setCorrectHistory] = useState<Array<{ role: 'user' | 'engineer'; text: string }>>([])
+  const correctChatRef = useRef<HTMLDivElement | null>(null)
+
+  // v2.0.195: Auto-scroll chat to bottom when new messages arrive
+  useEffect(() => {
+    if (correctChatRef.current) {
+      correctChatRef.current.scrollTop = correctChatRef.current.scrollHeight
+    }
+  }, [correctHistory, correcting])
 
   const handleCorrectTrade = async () => {
     if (!correctingTrade || !correctInput.trim()) return
@@ -2014,7 +2022,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                   <IncidentField label="Post-Review" value={t.postReview ?? '— (generating… or no review available)'} pending={t.postReview == null} />
 
                   {/* v2.0.194: System Engineer + Delete buttons at bottom with breathing drop shadows */}
-                  <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)' }}>
+                  <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)' }} onClick={(e) => e.stopPropagation()}>
                     <style>{`@keyframes se-breathe { 0%, 100% { box-shadow: inset 0 0 20px rgba(52, 211, 153, 0.05), 0 0 8px rgba(52, 211, 153, 0.1); border-color: rgba(52, 211, 153, 0.3); } 50% { box-shadow: inset 0 0 20px rgba(52, 211, 153, 0.08), 0 0 16px rgba(52, 211, 153, 0.25); border-color: rgba(52, 211, 153, 0.5); } } @keyframes del-breathe { 0%, 100% { box-shadow: 0 0 8px rgba(248, 113, 113, 0.1); border-color: rgba(248, 113, 113, 0.3); } 50% { box-shadow: 0 0 16px rgba(248, 113, 113, 0.25); border-color: rgba(248, 113, 113, 0.5); } }`}</style>
                     {correctingTrade === cardId ? (
                       <>
@@ -2026,7 +2034,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                           animation: 'se-breathe 4s ease-in-out infinite',
                         }}>
                           {/* Chat history — terminal style */}
-                          <div style={{
+                          <div ref={correctChatRef} style={{
                             padding: 'var(--space-3)',
                             minHeight: '50px',
                             maxHeight: '200px',
