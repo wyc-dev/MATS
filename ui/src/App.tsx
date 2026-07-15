@@ -1777,29 +1777,34 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
     }
   }
 
-  // v2.0.189: System Engineer correction — user sends instruction, LLM rewrites fields
+  // v2.0.190: System Engineer correction — full chat dialog like HACP Reception
   const [correctingTrade, setCorrectingTrade] = useState<string | null>(null)
-  const [correctInstruction, setCorrectInstruction] = useState('')
+  const [correctInput, setCorrectInput] = useState('')
   const [correcting, setCorrecting] = useState(false)
-  const [correctResult, setCorrectResult] = useState<{ success: boolean; reason: string } | null>(null)
+  const [correctHistory, setCorrectHistory] = useState<Array<{ role: 'user' | 'engineer'; text: string }>>([])
 
   const handleCorrectTrade = async () => {
-    if (!correctingTrade || !correctInstruction.trim()) return
+    if (!correctingTrade || !correctInput.trim()) return
+    const instruction = correctInput.trim()
     setCorrecting(true)
-    setCorrectResult(null)
+    setCorrectHistory(prev => [...prev, { role: 'user', text: instruction }])
+    setCorrectInput('')
     try {
       const res = await fetch(`${API_BASE}/trades/correct`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tradeId: correctingTrade, instruction: correctInstruction }),
+        body: JSON.stringify({ tradeId: correctingTrade, instruction }),
       })
       const result = await res.json()
-      setCorrectResult({ success: result.success, reason: result.reason ?? (result.success ? 'Corrections applied' : 'Failed') })
       if (result.success) {
-        setCorrectInstruction('')
+        const fields = Object.keys(result.correctedFields ?? {})
+        const fieldStr = fields.length > 0 ? fields.join(', ') : 'no fields'
+        setCorrectHistory(prev => [...prev, { role: 'engineer', text: `✅ Corrected: ${fieldStr}\n${result.reason ?? ''}` }])
+      } else {
+        setCorrectHistory(prev => [...prev, { role: 'engineer', text: `❌ ${result.reason ?? result.error ?? 'Failed'}` }])
       }
     } catch (err) {
-      setCorrectResult({ success: false, reason: err instanceof Error ? err.message : String(err) })
+      setCorrectHistory(prev => [...prev, { role: 'engineer', text: `❌ ${err instanceof Error ? err.message : String(err)}` }])
     }
     setCorrecting(false)
   }
@@ -2036,38 +2041,79 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                   <IncidentField label="Exit Thesis" value={t.exitThesis ?? '— (no exit rationale recorded)'} pending={t.exitThesis == null} />
                   <IncidentField label="Post-Review" value={t.postReview ?? '— (generating… or no review available)'} pending={t.postReview == null} />
 
-                  {/* v2.0.189: System Engineer correction dialog — user instructs, LLM rewrites */}
+                  {/* v2.0.190: System Engineer chat dialog — terminal-style like HACP Reception */}
                   <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      <MessagesSquare size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />
-                      <span>Instruct System Engineer to correct inaccurate trade records</span>
-                    </div>
                     {correctingTrade === cardId ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-                        <textarea
-                          value={correctInstruction}
-                          onChange={(e) => setCorrectInstruction(e.target.value)}
-                          onClick={(e) => e.stopPropagation()}
-                          autoFocus
-                          rows={3}
-                          style={{ width: '100%', padding: 'var(--space-2)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: 'var(--fs-sm)', fontFamily: 'inherit', resize: 'vertical', outline: 'none' }}
-                          placeholder="e.g. Post-Review is wrong — MFE $11.72 is position value not profit. Actual peak profit was $1.74. Rewrite the post-review with correct numbers."
-                        />
-                        <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end', alignItems: 'center' }}>
-                          {correctResult && (
-                            <span style={{ fontSize: 'var(--fs-xs)', color: correctResult.success ? 'var(--green)' : 'var(--red)', marginRight: 'auto' }}>
-                              {correctResult.success ? '✅' : '❌'} {correctResult.reason}
-                            </span>
+                        {/* Chat history — terminal style */}
+                        <div style={{
+                          maxHeight: '200px',
+                          overflowY: 'auto',
+                          padding: 'var(--space-3)',
+                          borderRadius: 'var(--radius-sm)',
+                          background: 'rgba(0, 0, 0, 0.3)',
+                          border: '1px solid rgba(52, 211, 153, 0.15)',
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 'var(--fs-xs)',
+                          lineHeight: 1.6,
+                          scrollbarWidth: 'none',
+                        }}>
+                          <style>{`.correct-chat::-webkit-scrollbar { display: none; }`}</style>
+                          <div style={{ textAlign: 'center', color: 'var(--green)', fontWeight: 'var(--fw-bold)', marginBottom: 'var(--space-2)', paddingBottom: 'var(--space-1)', borderBottom: '1px solid rgba(52, 211, 153, 0.15)' }}>
+                            System Engineer
+                          </div>
+                          {correctHistory.length === 0 && (
+                            <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                              Describe what's wrong with this trade record. The System Engineer will correct it.
+                            </div>
                           )}
+                          {correctHistory.map((msg, i) => (
+                            <div key={i} style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-1)', color: msg.role === 'user' ? 'var(--text-secondary)' : 'var(--green)' }}>
+                              <span style={{ color: msg.role === 'user' ? 'var(--text-muted)' : 'rgba(52, 211, 153, 0.5)', flexShrink: 0 }}>{msg.role === 'user' ? '>' : '⚙'}</span>
+                              <span style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</span>
+                            </div>
+                          ))}
+                          {correcting && (
+                            <div style={{ color: 'rgba(52, 211, 153, 0.8)', marginTop: 'var(--space-1)' }}>
+                              <span className="spinner" style={{ width: '10px', height: '10px', borderWidth: '2px', display: 'inline-block', marginRight: 'var(--space-2)', verticalAlign: 'middle' }} />
+                              Analyzing...
+                            </div>
+                          )}
+                        </div>
+                        {/* Input area */}
+                        <textarea
+                          className="market-search-input"
+                          placeholder={correcting ? 'Processing — please wait...' : 'Describe what needs correction...'}
+                          value={correctInput}
+                          onChange={e => { if (!correcting) setCorrectInput(e.target.value) }}
+                          disabled={correcting}
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            width: '100%',
+                            minHeight: '40px',
+                            resize: 'vertical',
+                            padding: 'var(--space-2)',
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: 'var(--fs-xs)',
+                            lineHeight: 1.5,
+                            opacity: correcting ? 0.5 : 1,
+                            border: '1px solid var(--glass-border)',
+                            borderRadius: 'var(--radius-sm)',
+                            background: 'transparent',
+                            color: 'var(--text-primary)',
+                            outline: 'none',
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              void handleCorrectTrade()
+                            }
+                          }}
+                        />
+                        <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
                           <button
-                            onClick={(e) => { e.stopPropagation(); handleCorrectTrade() }}
-                            disabled={correcting || !correctInstruction.trim()}
-                            style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--green)', background: 'var(--green-bg)', color: 'var(--green)', cursor: correcting ? 'default' : 'pointer', fontSize: 'var(--fs-xs)', fontWeight: 'var(--fw-bold)', opacity: correcting || !correctInstruction.trim() ? 0.5 : 1, display: 'flex', alignItems: 'center', gap: '3px' }}
-                          >
-                            <Save size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />{correcting ? 'Correcting...' : 'Correct'}
-                          </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setCorrectingTrade(null); setCorrectInstruction(''); setCorrectResult(null) }}
+                            onClick={(e) => { e.stopPropagation(); setCorrectingTrade(null); setCorrectInput(''); setCorrectHistory([]) }}
                             style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 'var(--fs-xs)', display: 'flex', alignItems: 'center', gap: '3px' }}
                           >
                             <X size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />Close
@@ -2076,7 +2122,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                       </div>
                     ) : (
                       <button
-                        onClick={(e) => { e.stopPropagation(); setCorrectingTrade(cardId); setCorrectResult(null) }}
+                        onClick={(e) => { e.stopPropagation(); setCorrectingTrade(cardId); setCorrectHistory([]) }}
                         style={{ padding: '4px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: 'var(--fs-xs)', display: 'flex', alignItems: 'center', gap: '4px', alignSelf: 'flex-start' }}
                       >
                         <MessagesSquare size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />Correct via System Engineer
