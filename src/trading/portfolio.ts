@@ -6,6 +6,7 @@ import { createLogger } from '../observability/logger.ts';
 import { config } from '../config/index.ts';
 import { loadPortfolio, type PortfolioSnapshot } from '../evolution/persistence.ts';
 import { calculateTakerFee } from './cost-model.ts';
+import { computeSLTP, recomputePnL, trackMAEMFE } from './position-utils.ts';
 import type {
   Portfolio,
   Position,
@@ -565,13 +566,9 @@ export class PortfolioTracker {
     };
 
     // Set stop-loss and take-profit
-    if (order.side === 'buy') {
-      position.stopLossPrice = entryPrice * (1 - config.risk.stopLossPct);
-      position.takeProfitPrice = entryPrice * (1 + config.risk.takeProfitPct);
-    } else {
-      position.stopLossPrice = entryPrice * (1 + config.risk.stopLossPct);
-      position.takeProfitPrice = entryPrice * (1 - config.risk.takeProfitPct);
-    }
+    const sltp = computeSLTP(entryPrice, order.side);
+    position.stopLossPrice = sltp.sl;
+    position.takeProfitPrice = sltp.tp;
     // v2.0.143: Record original SL/TP at open so exitThesis can detect narrowing/widening.
     position.originalStopLossPrice = position.stopLossPrice;
     position.originalTakeProfitPrice = position.takeProfitPrice;
@@ -620,35 +617,11 @@ export class PortfolioTracker {
     // v2.0.48: FIX — removed `* (pos.leverage ?? 1)` from PnL calculation.
     // v2.0.48: FIX — removed `* (pos.leverage ?? 1)` from PnL calculation.
     // PnL = priceDelta * quantity (NOT priceDelta * quantity * leverage).
-    // Leverage affects margin (capital required to open), not PnL per
-    // contract. With 10x leverage, a $786 price move on 0.00154 BTC =
-    // $1.21 PnL (not $12.10). The old formula inflated PnL by leverage,
-    // causing the UI to show $12.10 in paper mode while HL showed $1.21.
-    // v2.0.63: unrealizedPnlPct is PnL / MARGIN (return on capital at risk),
-    // not PnL / notional. At 10x leverage, a 1% price move = 10% return
-    // on margin — this is the leveraged return the UI should show.
-    const entryFee = pos.entryFee ?? 0;
-    const margin = (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
-    if (pos.side === 'buy') {
-      pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee;
-      pos.unrealizedPnlPct = margin > 0 ? ((currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee) / margin : 0;
-    } else {
-      pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee;
-      pos.unrealizedPnlPct = margin > 0 ? ((pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee) / margin : 0;
-    }
-
-    // v2.0.143: Track MAE (min) and MFE (max) of position VALUE over the
-    // position's lifetime. Position value = margin + unrealized PnL.
-    // This shows the actual dollar value of the position at its worst/best,
-    // e.g. $10 margin - $0.55 dip = $9.45 minimum value reached.
-    const trackMargin = (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
-    const posValue = trackMargin + pos.unrealizedPnl;
-    if (pos.minValueReached === undefined || posValue < pos.minValueReached) {
-      pos.minValueReached = posValue;
-    }
-    if (pos.maxValueReached === undefined || posValue > pos.maxValueReached) {
-      pos.maxValueReached = posValue;
-    }
+    // v2.0.48: PnL = priceDelta × quantity (no leverage multiplier).
+    // v2.0.63: PnL% = PnL / margin (leveraged return on capital).
+    // v2.0.173: Extracted to shared helpers (recomputePnL + trackMAEMFE)
+    recomputePnL(pos, currentPrice);
+    trackMAEMFE(pos);
 
     // Recalculate total equity so it reflects latest unrealized PnL
     this.recalculateEquity();
@@ -748,28 +721,9 @@ export class PortfolioTracker {
     pos.currentPrice = currentPrice;
     pos.updatedAt = Date.now();
 
-    // v2.0.19: include the entry fee already paid (same as updatePosition).
-    // v2.0.48: PnL = priceDelta * quantity (no leverage multiplier).
-    // v2.0.63: unrealizedPnlPct = PnL / margin (leveraged return on capital).
-    const entryFee = pos.entryFee ?? 0;
-    const margin = (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
-    if (pos.side === 'buy') {
-      pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee;
-      pos.unrealizedPnlPct = margin > 0 ? ((currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee) / margin : 0;
-    } else {
-      pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee;
-      pos.unrealizedPnlPct = margin > 0 ? ((pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee) / margin : 0;
-    }
-
-    // v2.0.143: Track MAE (min) and MFE (max) of position VALUE — same as updatePosition.
-    const trackMarginSoft = (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
-    const posValueSoft = trackMarginSoft + pos.unrealizedPnl;
-    if (pos.minValueReached === undefined || posValueSoft < pos.minValueReached) {
-      pos.minValueReached = posValueSoft;
-    }
-    if (pos.maxValueReached === undefined || posValueSoft > pos.maxValueReached) {
-      pos.maxValueReached = posValueSoft;
-    }
+    // v2.0.173: Extracted to shared helpers (same as updatePosition, minus SL/TP check)
+    recomputePnL(pos, currentPrice);
+    trackMAEMFE(pos);
 
     this.recalculateEquity();
   }
@@ -829,15 +783,8 @@ export class PortfolioTracker {
     //   - UI display (TradingView SL/TP lines)
     //   - Per-position close voting (agents see SL/TP in context)
     //   - Portfolio exit monitoring (checkPositionExits)
-    // Default: SL = 2% from entry, TP = 5% from entry (aligned with risk config)
-    const slPct = 0.02;
-    const tpPct = 0.05;
-    const stopLossPrice = side === 'buy'
-      ? entryPrice * (1 - slPct)
-      : entryPrice * (1 + slPct);
-    const takeProfitPrice = side === 'buy'
-      ? entryPrice * (1 + tpPct)
-      : entryPrice * (1 - tpPct);
+    // Uses config.risk defaults via computeSLTP (no more hardcoded 0.02/0.05)
+    const { sl: stopLossPrice, tp: takeProfitPrice } = computeSLTP(entryPrice, side);
 
     const position: Position = {
       id: `hl-${sym}-${Date.now()}`,
@@ -1148,8 +1095,6 @@ export class PortfolioTracker {
 
     const isLong = pos.side === 'buy';
     let needsCorrection = false;
-    const slPct = config.risk.stopLossPct;
-    const tpPct = config.risk.takeProfitPct;
 
     // v2.0.58: Check if SL is MISSING — real positions must always have SL/TP.
     // This happens when a position is restored from portfolio-state.json without
@@ -1181,12 +1126,7 @@ export class PortfolioTracker {
 
     if (needsCorrection) {
       // Recalculate correct SL/TP from config percentages
-      const newSL = isLong
-        ? pos.averageEntryPrice * (1 - slPct)
-        : pos.averageEntryPrice * (1 + slPct);
-      const newTP = isLong
-        ? pos.averageEntryPrice * (1 + tpPct)
-        : pos.averageEntryPrice * (1 - tpPct);
+      const { sl: newSL, tp: newTP } = computeSLTP(pos.averageEntryPrice, pos.side);
 
       pos.stopLossPrice = newSL;
       pos.takeProfitPrice = newTP;
