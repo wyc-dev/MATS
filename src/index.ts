@@ -534,25 +534,37 @@ class MATSSystem {
         // v2.0.167: Case-insensitive symbol matching — HL coin field may be
         // uppercase (SKHX) while the ID was built from the raw coin. Also
         // try matching with xyz: prefix stripped.
+        // v2.0.168: More robust matching — try multiple symbol formats + log
+        // all cached fills for debugging when match fails.
         if (tradeId.startsWith('hl-fill-')) {
-          // Extract timestamp from ID: hl-fill-{timestamp}-{symbol}
-          const parts = tradeId.split('-');
-          const ts = parseInt(parts[2] ?? '0');
-          const sym = parts.slice(3).join('-');
-          if (ts > 0) {
-            const fillIdx = this.cachedHLFills.findIndex(f =>
-              f.timestamp === ts && (
-                f.symbol === sym ||
-                f.symbol.toLowerCase() === sym.toLowerCase() ||
-                f.symbol.toLowerCase() === sym.toLowerCase().replace(/^xyz:/, '')
-              )
-            );
-            if (fillIdx >= 0) {
-              this.cachedHLFills.splice(fillIdx, 1);
-              deleted = true;
-              log.info(`  → Deleted from cachedHLFills (ts=${ts}, sym=${sym})`);
-            } else {
-              log.warn(`  → hl-fill not found in cachedHLFills (ts=${ts}, sym=${sym}, fills=${this.cachedHLFills.length})`);
+          // Extract timestamp + symbol from ID: hl-fill-{timestamp}-{symbol}
+          // The symbol is everything after the third dash. HL coin names don't
+          // contain dashes, so this is safe. But use indexOf for robustness.
+          const rest = tradeId.slice('hl-fill-'.length); // "{timestamp}-{symbol}"
+          const dashIdx = rest.indexOf('-');
+          if (dashIdx > 0) {
+            const ts = parseInt(rest.slice(0, dashIdx));
+            const sym = rest.slice(dashIdx + 1);
+            if (ts > 0 && sym) {
+              const symLower = sym.toLowerCase();
+              const symNoPrefix = symLower.replace(/^xyz:/, '');
+              log.info(`  → Searching cachedHLFills for ts=${ts}, sym=${sym} (lower=${symLower}, noPrefix=${symNoPrefix}), fills count=${this.cachedHLFills.length}`);
+              const fillIdx = this.cachedHLFills.findIndex(f =>
+                f.timestamp === ts && (
+                  f.symbol.toLowerCase() === symLower ||
+                  f.symbol.toLowerCase() === symNoPrefix ||
+                  f.symbol.toLowerCase() === `xyz:${symNoPrefix}`
+                )
+              );
+              if (fillIdx >= 0) {
+                this.cachedHLFills.splice(fillIdx, 1);
+                deleted = true;
+                log.info(`  → Deleted from cachedHLFills (ts=${ts}, sym=${sym})`);
+              } else {
+                // Log all fills for debugging
+                const fillSummary = this.cachedHLFills.map(f => `${f.symbol}@${f.timestamp}`).join(', ');
+                log.warn(`  → hl-fill not found in cachedHLFills (ts=${ts}, sym=${sym}). Cached fills: ${fillSummary}`);
+              }
             }
           }
         }
@@ -6625,58 +6637,14 @@ ${recentExamples}
             minValueReached: p.minValueReached,
             maxValueReached: p.maxValueReached,
           })),
-          // Recent HL fills (closing fills only)
-          // v2.0.164: Dedup against closedRealTrades — if a fill already has a
-          // proper trade record (with thesis/MAE/MFE/postReview), don't emit a
-          // second incomplete hl-fill-* record for the same close. This was
-          // causing duplicate "CLOSED" entries in the UI: one with full data
-          // (from closedRealTrades) and one with no thesis/MAE/MFE (from fills).
-          ...this.cachedHLFills
-            .filter(f => !f.dir.toLowerCase().includes('open'))
-            .filter(f => {
-              // Check if this fill's close is already represented in closedRealTrades
-              const fillSide: 'buy' | 'sell' = f.dir.toLowerCase().includes('short') ? 'sell' : 'buy';
-              const alreadyInClosedTrades = this.portfolio.getClosedRealTrades().some(ct =>
-                normalizeSymbol(ct.symbol) === normalizeSymbol(f.symbol) &&
-                ct.side === fillSide &&
-                Math.abs((ct.closedAt ?? 0) - f.timestamp) < 60_000 // within 1 min = same close
-              );
-              if (alreadyInClosedTrades) {
-                log.debug(`⏭️ serializePortfolio: hl-fill for ${f.symbol} @ ${f.timestamp} already in closedRealTrades — skipping to avoid duplicate`);
-              }
-              return !alreadyInClosedTrades;
-            })
-            .map(f => {
-              const positionSide: 'buy' | 'sell' = f.dir.toLowerCase().includes('short') ? 'sell' : 'buy';
-              const openFill = this.cachedHLFills.find(of =>
-                of.dir.toLowerCase().includes('open') &&
-                of.symbol === f.symbol &&
-                Math.abs(of.size - f.size) < 0.0001 &&
-                of.timestamp < f.timestamp
-              );
-              return {
-                id: `hl-fill-${f.timestamp}-${f.symbol}`,
-                symbol: normalizeSymbol(f.symbol),
-                side: positionSide,
-                entryPrice: openFill?.price ?? f.price,
-                exitPrice: f.price,
-                quantity: f.size,
-                leverage: this.lastKnownLeverage.get(f.symbol.replace(/^xyz:/i, '').toLowerCase()) ?? this.marketAgent.getConfig().leverage,
-                investment: (openFill?.price ?? f.price) * f.size,
-                pnl: f.closedPnl - f.fee,
-                pnlPct: (openFill?.price ?? f.price) * f.size > 0 ? (f.closedPnl - f.fee) / ((openFill?.price ?? f.price) * f.size) : 0,
-                openedAt: openFill?.timestamp ?? f.timestamp,
-                closedAt: f.timestamp,
-                status: 'closed' as const,
-                agentId: 'hyperliquid-real',
-                // v2.0.143: HL fills don't have thesis/MAE/MFE (raw exchange data)
-                entryThesis: undefined,
-                exitThesis: undefined,
-                postReview: undefined,
-                minValueReached: undefined,
-                maxValueReached: undefined,
-              };
-            }),
+          // v2.0.168: REMOVED hl-fill-* records from tradeRecords. These raw HL
+          // fill records had no thesis/MAE/MFE/postReview and caused:
+          // 1. Duplicate "CLOSED" entries (one from closedRealTrades, one from fills)
+          // 2. Phantom close records (fills from previous positions matching new positions)
+          // 3. Delete failures (hl-fill-* IDs are ephemeral, not in any persistent store)
+          // closedRealTrades is the single source of truth for closed real trades.
+          // If a close hasn't been captured by closeExchangePosition yet, it will be
+          // on the next syncExchangePositions cycle — no need for raw fill display.
           // Paper trades
           ...this.paperEngine.getTrades().slice(-50).filter(t => {
             const priceMovedPct = Math.abs(t.exitPrice - t.entryPrice) / (t.entryPrice || 1);
