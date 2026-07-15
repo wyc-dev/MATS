@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.181: Fix OLR learning rate decay to exclude backfill samples — prevents model freezing from 200 simulated trades, enabling continuous adaptation to live market conditions
+
+
 ## v2.0.181: Fix OLR SGD decay to use live sample count instead of total (backfill-inflated) nSamples — prevents model freezing and enables continuous adaptation to market changes
 
 
