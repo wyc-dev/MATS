@@ -1,19 +1,15 @@
-// ─── Trade Record Integrity Self-Audit ───
-// v2.0.179: Suspicious trade record detection — runs every 2 cycles.
-// Examines EVERY trade record for patterns that indicate learning system
-// corruption or missed signals.
+// ─── LLM-Powered Trade Record Audit ───
+// v2.0.180: Instead of hardcoded rules, an LLM agent examines recent trade
+// records and detects ANY suspicious pattern — including ones humans never
+// thought of. The LLM sees the actual trade data (thesis, PnL, direction,
+// market conditions, hold time, exit type) and reasons about what went wrong.
 //
-// Detection categories:
-//   1. Direction losing streaks — same symbol+side losing N times consecutively
-//   2. Direction win rate divergence — BUY 67% vs SELL 14% for same symbol
-//   3. Missing market conditions — recent records without marketFeatures
-//   4. PnL/outcome inconsistency — pnl>0 but outcome=LOSS or vice versa
-//   5. Premature SL pattern — hold time ≤2min + loss (SL too tight)
-//   6. MFE giveback — MFE >> final PnL (exit timing problem)
-//   7. Fusion data missing — olrPWinAtEntry/shadowWinRateAtEntry undefined
-//   8. Side field validation — records with invalid side field
+// Runs every 2 cycles. Uses the Terminal Agent model (fast, cheap).
+// Results are logged + stored for the UI to display.
 
 import { createLogger } from '../observability/logger.ts';
+import { getActiveProvider } from '../llm/index.ts';
+import { getAgentModel } from '../agents/agent-models.ts';
 import type { ThesisExperienceRecord } from '../types/index.ts';
 
 const log = createLogger({ phase: 'trade-audit' });
@@ -23,169 +19,165 @@ export interface AuditIncident {
   category: string;
   symbol: string;
   detail: string;
-  records?: string[];
 }
 
 export interface AuditResult {
   incidents: AuditIncident[];
   summary: string;
+  llmAnalysis: string;
   timestamp: number;
 }
 
-export function auditTradeRecords(records: ThesisExperienceRecord[]): AuditResult {
-  const incidents: AuditIncident[] = [];
+const SYSTEM_PROMPT = `You are the Trade Record Auditor of MATS, a multi-agent quant trading system on Hyperliquid.
+Your job: examine recent closed trade records and detect ANY suspicious patterns, anomalies, or learning system failures.
+
+You are NOT limited to a checklist. You can detect ANYTHING suspicious, including patterns no human has thought of.
+
+Think about:
+1. Is the system repeatedly making the same mistake? (same symbol, same direction, same thesis type, same loss)
+2. Is the system ignoring its own learning data? (opening trades that historical data says will lose)
+3. Are there data quality issues? (missing fields, inconsistent outcomes, corrupted records)
+4. Are there exit timing problems? (MFE >> final PnL, premature SL, holding too long)
+5. Are there direction confusion issues? (system opens SELL when all evidence favors BUY, or vice versa)
+6. Are there thesis quality issues? (thesis too vague, thesis contradicts the action, thesis doesn't match market conditions)
+7. Are there market condition patterns? (certain volatility/regime/OB conditions consistently producing losses)
+8. Are there temporal patterns? (losses clustering at certain times, after certain events)
+9. Is the system overtrading? (too many trades in a short period, churning)
+10. Is there any OTHER pattern you find suspicious that isn't listed above?
+
+For each issue found, specify:
+- severity: "critical" (will cause repeated losses), "warning" (degrades performance), "info" (worth monitoring)
+- category: a short name for the pattern (e.g. "direction-repetition", "thesis-contradicts-action", "sl-too-tight-for-volatility")
+- symbol: the affected symbol(s)
+- detail: specific explanation with numbers from the data
+
+If you find NO issues, say so explicitly. Do not fabricate problems.
+
+Respond ONLY with JSON:
+{"incidents":[{"severity":"critical|warning|info","category":"...","symbol":"...","detail":"..."}],"analysis":"one paragraph summary of your findings"}`;
+
+/**
+ * LLM-powered audit of recent trade records.
+ * Feeds the last N closed trades to the LLM and asks it to detect any
+ * suspicious patterns — not limited to a predefined checklist.
+ */
+export async function auditTradeRecordsLLM(records: ThesisExperienceRecord[]): Promise<AuditResult> {
   const timestamp = Date.now();
 
   if (records.length === 0) {
-    return { incidents, summary: 'No records to audit', timestamp };
+    return { incidents: [], summary: 'No records to audit', llmAnalysis: '', timestamp };
   }
 
-  const sorted = [...records].sort((a, b) => a.ts - b.ts);
+  // Take last 20 records (most recent + most relevant)
+  const recent = records.slice(-20);
 
-  // ── 1. Direction losing streaks ──
-  const streakMap = new Map<string, ThesisExperienceRecord[]>();
-  for (const r of sorted) {
-    const key = `${r.symbol}_${r.side}`;
-    let arr = streakMap.get(key);
-    if (!arr) { arr = []; streakMap.set(key, arr); }
-    arr.push(r);
-  }
-  for (const [key, recs] of streakMap) {
-    let currentStreak = 0;
-    let maxStreak = 0;
-    let streakStart = 0;
-    let worstStreakStart = 0;
-    for (let i = 0; i < recs.length; i++) {
-      if (recs[i]!.outcome === 'LOSS') {
-        if (currentStreak === 0) streakStart = i;
-        currentStreak++;
-        if (currentStreak > maxStreak) { maxStreak = currentStreak; worstStreakStart = streakStart; }
-      } else { currentStreak = 0; }
-    }
-    if (maxStreak >= 2) {
-      const [sym, side] = key.split('_');
-      const wins = recs.filter(r => r.outcome === 'WIN').length;
-      const losses = recs.filter(r => r.outcome === 'LOSS').length;
-      const streakRecs = recs.slice(worstStreakStart, worstStreakStart + maxStreak);
-      const severity = maxStreak >= 4 ? 'critical' : maxStreak >= 3 ? 'warning' : 'info';
-      incidents.push({
-        severity, category: 'direction-losing-streak', symbol: sym ?? '?',
-        detail: `${side?.toUpperCase()} ${sym} — ${maxStreak} consecutive losses (${wins}W/${losses}L total). Streak: ${streakRecs.map(r => `$${r.pnl.toFixed(2)}`).join(', ')}`,
-        records: streakRecs.map(r => r.id),
-      });
-    }
-  }
-
-  // ── 2. Direction win rate divergence ──
-  const symbolDirStats = new Map<string, { buy: { w: number; l: number }; sell: { w: number; l: number } }>();
-  for (const r of sorted) {
-    let entry = symbolDirStats.get(r.symbol);
-    if (!entry) { entry = { buy: { w: 0, l: 0 }, sell: { w: 0, l: 0 } }; symbolDirStats.set(r.symbol, entry); }
-    if (r.side === 'buy') { if (r.outcome === 'WIN') entry.buy.w++; else entry.buy.l++; }
-    else { if (r.outcome === 'WIN') entry.sell.w++; else entry.sell.l++; }
-  }
-  for (const [sym, stats] of symbolDirStats) {
-    const buyTotal = stats.buy.w + stats.buy.l;
-    const sellTotal = stats.sell.w + stats.sell.l;
-    if (buyTotal >= 2 && sellTotal >= 2) {
-      const buyWR = stats.buy.w / buyTotal;
-      const sellWR = stats.sell.w / sellTotal;
-      const divergence = Math.abs(buyWR - sellWR);
-      if (divergence >= 0.3) {
-        const betterSide = buyWR > sellWR ? 'BUY' : 'SELL';
-        const worseSide = buyWR > sellWR ? 'SELL' : 'BUY';
-        const severity = divergence >= 0.5 ? 'critical' : 'warning';
-        incidents.push({
-          severity, category: 'direction-win-rate-divergence', symbol: sym,
-          detail: `${sym}: ${betterSide} ${(Math.max(buyWR, sellWR) * 100).toFixed(0)}% vs ${worseSide} ${(Math.min(buyWR, sellWR) * 100).toFixed(0)}% — ${divergence >= 0.5 ? 'EXTREME' : 'significant'} divergence. System should prefer ${betterSide}.`,
-        });
-      }
-    }
-  }
-
-  // ── 3. Missing market conditions (recent only) ──
-  const recentMissing = sorted.filter(r =>
-    r.ts > timestamp - 3600_000 &&
-    (!r.marketFeatures || Object.keys(r.marketFeatures).length === 0)
-  );
-  if (recentMissing.length > 0) {
-    incidents.push({
-      severity: 'warning', category: 'missing-market-features', symbol: 'ALL',
-      detail: `${recentMissing.length} recent records (last 1h) missing marketFeatures — cannot match by market state`,
-      records: recentMissing.map(r => r.id),
-    });
-  }
-
-  // ── 4. PnL/outcome inconsistency ──
-  for (const r of sorted) {
-    if ((r.pnl > 0 && r.outcome === 'LOSS') || (r.pnl < 0 && r.outcome === 'WIN')) {
-      incidents.push({
-        severity: 'critical', category: 'pnl-outcome-inconsistency', symbol: r.symbol,
-        detail: `${r.side.toUpperCase()} ${r.symbol}: pnl=$${r.pnl.toFixed(2)} but outcome=${r.outcome} — data corruption`,
-        records: [r.id],
-      });
-    }
-  }
-
-  // ── 5. Premature SL pattern ──
-  const prematureSL = sorted.filter(r => r.outcome === 'LOSS' && r.holdMin <= 2 && r.exitType === 'sl_tp');
-  if (prematureSL.length >= 3) {
-    const symbols = new Set(prematureSL.map(r => r.symbol));
-    incidents.push({
-      severity: 'warning', category: 'premature-sl-pattern', symbol: Array.from(symbols).join(', '),
-      detail: `${prematureSL.length} trades lost within 2min via SL — recurring premature stop-out. SL too tight or entries poorly timed.`,
-      records: prematureSL.map(r => r.id),
-    });
-  }
-
-  // ── 6. MFE giveback ──
-  const giveback = sorted.filter(r => {
-    if (!r.marketFeatures) return false;
-    const mfe = r.marketFeatures['mfePct'] as number | undefined;
-    return mfe !== undefined && mfe > 0.03 && Math.abs(r.pnlPct) < 0.01;
+  // Build a compact data summary for the LLM
+  const dataLines = recent.map((r, i) => {
+    const features = r.marketFeatures
+      ? `vol=${(r.marketFeatures['volatility'] ?? 0).toFixed(4)} ob=${(r.marketFeatures['obImbalance'] ?? 0).toFixed(2)} funding=${(r.marketFeatures['fundingRate'] ?? 0).toFixed(5)} srDist=${(r.marketFeatures['srDistanceBps'] ?? 0).toFixed(0)}bps`
+      : 'NO_MARKET_DATA';
+    const olr = r.olrPWinAtEntry !== undefined ? `OLR_PWin=${(r.olrPWinAtEntry * 100).toFixed(0)}%` : 'NO_OLR';
+    const shadow = r.shadowWinRateAtEntry !== undefined ? `shadowWR=${(r.shadowWinRateAtEntry * 100).toFixed(0)}%` : 'NO_SHADOW';
+    return `#${i + 1} ${r.side.toUpperCase()} ${r.symbol} ${r.outcome} pnl=$${r.pnl.toFixed(2)} (${(r.pnlPct * 100).toFixed(1)}%) hold=${r.holdMin}min exit=${r.exitType ?? '?'} regime=${r.regime} ${features} ${olr} ${shadow} | thesis: ${r.entryThesis.slice(0, 120)}`;
   });
-  if (giveback.length >= 2) {
-    incidents.push({
-      severity: 'info', category: 'mfe-giveback', symbol: 'ALL',
-      detail: `${giveback.length} trades had MFE >3% but closed with |PnL| <1% — exit timing problem`,
-      records: giveback.map(r => r.id),
-    });
-  }
 
-  // ── 7. Fusion data missing (recent only) ──
-  const missingFusion = sorted.filter(r =>
-    r.ts > timestamp - 3600_000 &&
-    r.olrPWinAtEntry === undefined && r.shadowWinRateAtEntry === undefined
-  );
-  if (missingFusion.length > 0) {
-    incidents.push({
-      severity: 'warning', category: 'missing-fusion-data', symbol: 'ALL',
-      detail: `${missingFusion.length} recent records missing both olrPWinAtEntry and shadowWinRateAtEntry — fusion was unavailable at entry`,
-      records: missingFusion.map(r => r.id),
-    });
-  }
+  const userPrompt = `Recent closed trades (${recent.length} of ${records.length} total):
+${dataLines.join('\n')}
 
-  // ── 8. Side field validation ──
-  for (const r of sorted) {
-    if (r.side !== 'buy' && r.side !== 'sell') {
-      incidents.push({
-        severity: 'critical', category: 'invalid-side-field', symbol: r.symbol,
-        detail: `Record ${r.id} has invalid side="${r.side}"`,
-        records: [r.id],
-      });
+Also, per-symbol per-direction summary:
+${buildSymbolDirectionSummary(records)}
+
+Examine these trade records for ANY suspicious patterns. Detect issues that hardcoded rules would miss.`;
+
+  try {
+    const provider = getActiveProvider();
+    const response = await provider.chat({
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.3,
+      model: getAgentModel('terminal_agent'),
+      timeoutMs: 30_000,
+    });
+
+    const content = response.content.trim();
+    const parsed = parseAuditResponse(content);
+
+    // Log results
+    const critical = parsed.incidents.filter(i => i.severity === 'critical');
+    const warnings = parsed.incidents.filter(i => i.severity === 'warning');
+    const info = parsed.incidents.filter(i => i.severity === 'info');
+
+    for (const inc of critical) log.warn(`🚨 [trade-audit] ${inc.category}: ${inc.detail}`);
+    for (const inc of warnings) log.warn(`⚠️ [trade-audit] ${inc.category}: ${inc.detail}`);
+    if (info.length > 0) log.info(`[trade-audit] ${info.length} info items`);
+    log.info(`[trade-audit] LLM analysis: ${parsed.analysis}`);
+    log.info(`[trade-audit] ${parsed.incidents.length} incidents: ${critical.length} critical, ${warnings.length} warning, ${info.length} info`);
+
+    return {
+      incidents: parsed.incidents,
+      summary: `${parsed.incidents.length} incidents: ${critical.length} critical, ${warnings.length} warning, ${info.length} info`,
+      llmAnalysis: parsed.analysis,
+      timestamp,
+    };
+  } catch (err) {
+    log.warn(`[trade-audit] LLM audit failed: ${err instanceof Error ? err.message : String(err)}`);
+    return { incidents: [], summary: 'LLM audit failed', llmAnalysis: '', timestamp };
+  }
+}
+
+function buildSymbolDirectionSummary(records: ThesisExperienceRecord[]): string {
+  const map = new Map<string, { buy: { w: number; l: number }; sell: { w: number; l: number } }>();
+  for (const r of records) {
+    let e = map.get(r.symbol);
+    if (!e) { e = { buy: { w: 0, l: 0 }, sell: { w: 0, l: 0 } }; map.set(r.symbol, e); }
+    if (r.side === 'buy') { if (r.outcome === 'WIN') e.buy.w++; else e.buy.l++; }
+    else { if (r.outcome === 'WIN') e.sell.w++; else e.sell.l++; }
+  }
+  const lines: string[] = [];
+  for (const [sym, s] of map) {
+    const bt = s.buy.w + s.buy.l;
+    const st = s.sell.w + s.sell.l;
+    const bwr = bt > 0 ? `${(s.buy.w / bt * 100).toFixed(0)}%` : '-';
+    const swr = st > 0 ? `${(s.sell.w / st * 100).toFixed(0)}%` : '-';
+    lines.push(`  ${sym}: BUY ${bwr} (${s.buy.w}W/${s.buy.l}L) | SELL ${swr} (${s.sell.w}W/${s.sell.l}L)`);
+  }
+  return lines.join('\n');
+}
+
+function parseAuditResponse(content: string): { incidents: AuditIncident[]; analysis: string } {
+  try {
+    // Strip markdown fences
+    let s = content.trim();
+    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence && fence[1]) s = fence[1].trim();
+
+    // Find balanced JSON
+    const start = s.indexOf('{');
+    if (start < 0) return { incidents: [], analysis: content.slice(0, 200) };
+    let depth = 0;
+    let end = -1;
+    for (let i = start; i < s.length; i++) {
+      if (s[i] === '{') depth++;
+      else if (s[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
     }
+    if (end < 0) return { incidents: [], analysis: content.slice(0, 200) };
+
+    const parsed = JSON.parse(s.slice(start, end + 1)) as {
+      incidents?: Array<{ severity?: string; category?: string; symbol?: string; detail?: string }>;
+      analysis?: string;
+    };
+
+    const incidents: AuditIncident[] = (parsed.incidents ?? []).map(i => ({
+      severity: (i.severity === 'critical' || i.severity === 'warning' || i.severity === 'info') ? i.severity : 'info',
+      category: i.category ?? 'unknown',
+      symbol: i.symbol ?? 'ALL',
+      detail: i.detail ?? '',
+    }));
+
+    return { incidents, analysis: parsed.analysis ?? '' };
+  } catch {
+    return { incidents: [], analysis: content.slice(0, 200) };
   }
-
-  // ── Summary + logging ──
-  const critical = incidents.filter(i => i.severity === 'critical');
-  const warnings = incidents.filter(i => i.severity === 'warning');
-  const info = incidents.filter(i => i.severity === 'info');
-  const summary = `${incidents.length} incidents: ${critical.length} critical, ${warnings.length} warning, ${info.length} info (from ${sorted.length} records)`;
-
-  for (const inc of critical) log.warn(`🚨 [trade-audit] ${inc.category}: ${inc.detail}`);
-  for (const inc of warnings) log.warn(`⚠️ [trade-audit] ${inc.category}: ${inc.detail}`);
-  if (info.length > 0) log.info(`[trade-audit] ${info.length} info items`);
-  log.info(`[trade-audit] ${summary}`);
-
-  return { incidents, summary, timestamp };
 }
