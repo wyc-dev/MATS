@@ -638,7 +638,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
         <div className="agent-description-collapsed">{meta.description}</div>
       )}
       {isExpanded && (
-        <>
+        <div className="slide-expand-content">
           <style>{`@keyframes terminal-breathe { 0%, 100% { box-shadow: inset 0 0 20px rgba(52, 211, 153, 0.05), 0 0 8px rgba(52, 211, 153, 0.1); border-color: rgba(52, 211, 153, 0.3); } 50% { box-shadow: inset 0 0 20px rgba(52, 211, 153, 0.08), 0 0 16px rgba(52, 211, 153, 0.25); border-color: rgba(52, 211, 153, 0.5); } } @keyframes terminal-input-breathe { 0%, 100% { box-shadow: 0 0 8px rgba(167, 139, 250, 0.1); border-color: rgba(167, 139, 250, 0.3); } 50% { box-shadow: 0 0 16px rgba(167, 139, 250, 0.25); border-color: rgba(167, 139, 250, 0.5); } } @keyframes terminal-prompt-breathe { 0%, 100% { box-shadow: 0 0 8px rgba(245, 166, 35, 0.1); border-color: rgba(245, 166, 35, 0.3); } 50% { box-shadow: 0 0 16px rgba(245, 166, 35, 0.25); border-color: rgba(245, 166, 35, 0.5); } }`}</style>
 
           {/* Terminal response + input — fused as one unit */}
@@ -862,7 +862,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
               ))}
             </select>
           </div>
-        </>
+        </div>
       )}
     </div>
   )
@@ -2045,7 +2045,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
 
               {/* Expanded details */}
               {isExpanded && (
-                <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                <div className="slide-expand-content" style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
                   {/* v2.0.153: Delete trade confirmation (moved to bottom row v2.0.194) */}
                   {isOpen && (
                     <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--gold)', opacity: 0.8, marginBottom: 'var(--space-1)' }}>
@@ -2338,7 +2338,9 @@ function OLRSection({ olrState, openPositionSymbols, isExpanded, onToggleExpand 
         <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
       </div>
 
-      {expanded && (!hasSymbols && !hasPending ? (
+      {expanded && (
+        <div className="slide-expand-content">
+        {!hasSymbols && !hasPending ? (
         <div className="evo-empty">
           <div className="evo-empty-icon"><Dna size={48} color="var(--text-muted)" /></div>
           <div className="evo-empty-text">Waiting for shadow trade data</div>
@@ -2445,7 +2447,9 @@ function OLRSection({ olrState, openPositionSymbols, isExpanded, onToggleExpand 
             })
           )}
         </>
-      ))}
+      )}
+        </div>
+      )}
     </div>
   )
 }
