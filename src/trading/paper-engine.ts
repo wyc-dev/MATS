@@ -129,6 +129,16 @@ export class PaperTradingEngine {
     }
   }
 
+  /** v2.0.170: Update a single field on a paper trade by ID.
+   *  Allows the user to correct Entry Thesis / Exit Thesis / Post-Review. */
+  updateTradeField(tradeId: string, field: 'entryThesis' | 'exitThesis' | 'postReview', value: string): boolean {
+    const trade = this.trades.find(t => t.id === tradeId);
+    if (!trade) return false;
+    (trade as any)[field] = value;
+    log.info(`✏️ Paper trade ${tradeId} field '${field}' updated (${value.length} chars)`);
+    return true;
+  }
+
   /** v2.0.158: Purge all trades without entry thesis — removes bug-generated
    *  phantom trades from the old mirror path that had no entryThesis. */
   purgeTradesWithoutThesis(): number {

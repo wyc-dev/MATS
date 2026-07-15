@@ -581,6 +581,33 @@ class MATSSystem {
         return deleted;
       });
 
+      // v2.0.170: Update a trade field (entryThesis / exitThesis / postReview)
+      this.apiServer.setUpdateTradeFieldHandler(async (tradeId: string, field: 'entryThesis' | 'exitThesis' | 'postReview', value: string): Promise<boolean> => {
+        log.info(`✏️ Trade field update requested: ${tradeId} field=${field} (${value.length} chars)`);
+        let updated = false;
+
+        // Update in closed real trades
+        if (this.portfolio.updateClosedRealTradeField(tradeId, field, value)) {
+          updated = true;
+          log.info(`  → Updated in closed real trades`);
+        }
+
+        // Update in paper engine trades
+        if (this.paperEngine.updateTradeField(tradeId, field, value)) {
+          updated = true;
+          log.info(`  → Updated in paper engine trades`);
+        }
+
+        if (updated) {
+          this.persistPortfolio();
+          this.pushToAPI();
+        } else {
+          log.warn(`  → Trade ${tradeId} not found in any records`);
+        }
+
+        return updated;
+      });
+
       // Wire up Market Agent API handlers
       this.apiServer.setMarketAgentSetTradeModeHandler(async (mode) => {
         log.info(`Market Agent: trade mode → ${mode}`);

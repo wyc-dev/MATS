@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
-import { Settings, Pause, Play, Power, Ban, StickyNote, Check, X, AlertTriangle, CheckCircle, OctagonX, XCircle, BarChart3, MessagesSquare, Circle, Dna, Scroll, RotateCw, Square, SatelliteDish, MapPin, Lightbulb, TrendingUp, TrendingDown, Save, ChevronDown, ChevronRight } from 'lucide-react'
+import { Settings, Pause, Play, Power, Ban, StickyNote, Check, X, AlertTriangle, CheckCircle, OctagonX, XCircle, BarChart3, MessagesSquare, Circle, Dna, Scroll, RotateCw, Square, SatelliteDish, MapPin, Lightbulb, TrendingUp, TrendingDown, Save, ChevronDown, ChevronRight, Pencil } from 'lucide-react'
 import type { APIData, AgentModelConfig, ModelDefinition, EMInsightStats } from './types'
 import { AGENT_META, AGENT_ROLES } from './types'
 import TradingViewChart from './TradingViewChart'
@@ -1776,6 +1776,43 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
     }
   }
 
+  // v2.0.170: Update a trade field (entryThesis / exitThesis / postReview)
+  const [editingField, setEditingField] = useState<{ tradeId: string; field: 'entryThesis' | 'exitThesis' | 'postReview' } | null>(null)
+  const [editValue, setEditValue] = useState('')
+  const [editSaving, setEditSaving] = useState(false)
+
+  const handleStartEdit = (tradeId: string, field: 'entryThesis' | 'exitThesis' | 'postReview', currentValue: string) => {
+    setEditingField({ tradeId, field })
+    setEditValue(currentValue)
+  }
+
+  const handleSaveEdit = async () => {
+    if (!editingField) return
+    setEditSaving(true)
+    try {
+      const res = await fetch(`${API_BASE}/trades/update-field`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tradeId: editingField.tradeId, field: editingField.field, value: editValue }),
+      })
+      const result = await res.json()
+      if (result.success) {
+        setEditingField(null)
+        setEditValue('')
+      } else {
+        alert(`Failed to update: ${result.error ?? 'Unknown error'}`)
+      }
+    } catch (err) {
+      alert(`Failed to update: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    setEditSaving(false)
+  }
+
+  const handleCancelEdit = () => {
+    setEditingField(null)
+    setEditValue('')
+  }
+
   // Merge open positions + closed trades into unified list
   const openTrades = positions.map((pos: any) => ({
     id: pos.id ?? `pos-${pos.symbol}`,
@@ -2007,6 +2044,66 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                   <IncidentField label="Entry Thesis" value={t.entryThesis ?? '— (no thesis recorded)'} pending={t.entryThesis == null} />
                   <IncidentField label="Exit Thesis" value={t.exitThesis ?? '— (no exit rationale recorded)'} pending={t.exitThesis == null} />
                   <IncidentField label="Post-Review" value={t.postReview ?? '— (generating… or no review available)'} pending={t.postReview == null} />
+
+                  {/* v2.0.170: Editable fields — user can correct Entry Thesis / Exit Thesis / Post-Review */}
+                  <div style={{ marginTop: 'var(--space-3)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <Pencil size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />
+                      <span>Edit trade records to correct agent mistakes — MATS learns from accurate data</span>
+                    </div>
+                    {(['entryThesis', 'exitThesis', 'postReview'] as const).map((field) => {
+                      const fieldLabel = field === 'entryThesis' ? 'Entry Thesis' : field === 'exitThesis' ? 'Exit Thesis' : 'Post-Review'
+                      const currentValue = (t as any)[field] as string | undefined
+                      const isEditing = editingField?.tradeId === cardId && editingField?.field === field
+                      return (
+                        <div key={field} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-tertiary)', fontWeight: 'var(--fw-medium)' }}>{fieldLabel}</span>
+                            {!isEditing && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleStartEdit(cardId, field, currentValue ?? '') }}
+                                style={{ padding: '1px 6px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: 'var(--fs-xs)', display: 'flex', alignItems: 'center', gap: '3px' }}
+                              >
+                                <Pencil size={10} style={{ display: 'inline', verticalAlign: 'middle' }} />Edit
+                              </button>
+                            )}
+                          </div>
+                          {isEditing ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+                              <textarea
+                                value={editValue}
+                                onChange={(e) => setEditValue(e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                                autoFocus
+                                rows={4}
+                                style={{ width: '100%', padding: 'var(--space-2)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: 'var(--fs-sm)', fontFamily: 'inherit', resize: 'vertical', outline: 'none' }}
+                                placeholder={`Enter corrected ${fieldLabel}...`}
+                              />
+                              <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleSaveEdit() }}
+                                  disabled={editSaving}
+                                  style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--green)', background: 'var(--green-bg)', color: 'var(--green)', cursor: editSaving ? 'default' : 'pointer', fontSize: 'var(--fs-xs)', fontWeight: 'var(--fw-bold)', opacity: editSaving ? 0.5 : 1, display: 'flex', alignItems: 'center', gap: '3px' }}
+                                >
+                                  <Save size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />{editSaving ? 'Saving...' : 'Save'}
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleCancelEdit() }}
+                                  style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 'var(--fs-xs)', display: 'flex', alignItems: 'center', gap: '3px' }}
+                                >
+                                  <X size={11} style={{ display: 'inline', verticalAlign: 'middle' }} />Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: 'var(--fs-xs)', color: currentValue ? 'var(--text-secondary)' : 'var(--text-muted)', fontStyle: currentValue ? 'normal' : 'italic', lineHeight: '1.4' }}>
+                              {currentValue ?? '— (empty)'}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
               )}
             </div>

@@ -279,6 +279,8 @@ export class APIServer {
   private onResetPaperTrades: (() => void) | null = null;
   /** v2.0.153: Delete a single trade by ID (from paper or real records) */
   private onDeleteTrade: ((tradeId: string) => Promise<boolean>) | null = null;
+  /** v2.0.170: Callback for updating a trade field (entryThesis/exitThesis/postReview) */
+  private onUpdateTradeField: ((tradeId: string, field: 'entryThesis' | 'exitThesis' | 'postReview', value: string) => Promise<boolean>) | null = null;
   private onPause: (() => void) | null = null;
   private onResume: (() => void) | null = null;
   /** v2.0.116: Settings modal — get/update env vars */
@@ -436,6 +438,11 @@ export class APIServer {
   /** v2.0.153: Register a callback for deleting a single trade by ID */
   setDeleteTradeHandler(cb: (tradeId: string) => Promise<boolean>): void {
     this.onDeleteTrade = cb;
+  }
+
+  /** v2.0.170: Register a callback for updating a trade field by ID */
+  setUpdateTradeFieldHandler(cb: (tradeId: string, field: 'entryThesis' | 'exitThesis' | 'postReview', value: string) => Promise<boolean>): void {
+    this.onUpdateTradeField = cb;
   }
 
   /** Register a callback for pausing the system (RBC only mode) */
@@ -749,6 +756,39 @@ export class APIServer {
             } else {
               res.writeHead(500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ success: false, error: 'Delete handler not registered' }));
+            }
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: err instanceof Error ? err.message : String(err) }));
+          }
+        });
+        return;
+      }
+
+      // v2.0.170: POST — update a trade field (entryThesis / exitThesis / postReview)
+      if (pathname === '/api/trades/update-field' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        req.on('end', async () => {
+          try {
+            const { tradeId, field, value } = JSON.parse(body) as { tradeId: string; field: 'entryThesis' | 'exitThesis' | 'postReview'; value: string };
+            if (!tradeId || !field) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'tradeId and field required' }));
+              return;
+            }
+            if (!['entryThesis', 'exitThesis', 'postReview'].includes(field)) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'field must be entryThesis, exitThesis, or postReview' }));
+              return;
+            }
+            if (this.onUpdateTradeField) {
+              const updated = await this.onUpdateTradeField(tradeId, field, value ?? '');
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: updated, message: updated ? 'Trade field updated' : 'Trade not found' }));
+            } else {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'Update handler not registered' }));
             }
           } catch (err) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
