@@ -552,6 +552,14 @@ export interface ThesisExperienceRecord {
    *  to group trades by exit type (SL/TP, consensus, manual, thesis invalidation)
    *  and compute per-type win rates + avg PnL. */
   exitType?: ExitType;
+  /** v2.0.178: Market conditions at trade open time — the actual numerical state
+   *  (volatility, OB imbalance, funding rate, S/R distance, etc.) that produced
+   *  this outcome. Enables condition-based similarity matching, not just text-based. */
+  marketFeatures?: Record<string, number>;
+  /** v2.0.178: OLR P(win) prediction at entry time. */
+  olrPWinAtEntry?: number;
+  /** v2.0.178: Shadow win rate at entry time. */
+  shadowWinRateAtEntry?: number;
 }
 
 /** Verdict returned by checkThesisHistory() (Skeptics Phase 1.8a). */

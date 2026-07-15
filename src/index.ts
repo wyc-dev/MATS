@@ -50,6 +50,7 @@ import { OLREngine, type OLRQueryResult } from './evolution/olr-engine.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
+import { auditDirectionIntegrity } from './evolution/direction-audit.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
 import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent, computePriceNewsTiming, normalizeBaseAsset, type TimingCandle } from './analysis/news-sentiment.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord, CycleSummary } from './types/index.ts';
@@ -1472,6 +1473,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             log.warn(`[EXP] startup class rebuild failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
           );
           log.info(`✓ EXP thesis-experience memory ready (${this.expMemory.size()} records) — embed model warming up + classes rebuilding in background`);
+
+          // v2.0.178: Run direction integrity audit at startup
+          void this.runDirectionAudit();
           // v2.0.140: EM Cycle Chain insight retrieval — share the same
           // TransformersEmbedProvider (stateless, no interference with
           // ExperienceDigester). Rebuild insight vectors from loaded summaries.
@@ -1819,6 +1823,24 @@ ${currentPrompt || '(empty — this is the first input)'}`;
    *  4. Agent Outcomes — so the system knows which agents were wrong
    *  5. Evolution — so the strategy adapts to the loss
    */
+  /** v2.0.178: Direction integrity self-audit — verifies that all learning
+   *  systems correctly separate BUY and SELL records. Runs at startup and
+   *  every 10 cycles. Detects direction-mixing regressions before they
+   *  silently corrupt the learning system. */
+  private runDirectionAudit(): void {
+    try {
+      if (!this.expMemory) return;
+      const records = this.expMemory.getRecords();
+      if (records.length === 0) return;
+      const result = auditDirectionIntegrity(records);
+      if (!result.passed) {
+        log.warn(`🚨 [direction-audit] Direction integrity issues detected — check learning system for direction-mixing bugs`);
+      }
+    } catch (err) {
+      log.warn(`[direction-audit] failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private onPositionClosedLearning(trade: TradeRecord): void {
     try {
       const symbol = trade.symbol;
@@ -2044,6 +2066,37 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           entryThesis: trade.entryThesis ?? '',
           // v2.0.143: Pass exitType so RIL CloseReasonAggregator can group by close reason
           exitType: closeReason as any,
+          // v2.0.178: Store market conditions at close time (best available proxy
+          // for open-time conditions — the position was open during this regime).
+          // These features let future checkThesisHistory calls match by ACTUAL
+          // market state, not just thesis text similarity.
+          marketFeatures: {
+            volatility,
+            srDistanceBps,
+            obImbalance,
+            sentiment,
+            fundingRate,
+            volumeRatio,
+            sentimentConviction,
+          },
+          // v2.0.178: Store OLR + shadow predictions at close time for post-hoc analysis
+          olrPWinAtEntry: (() => {
+            try {
+              const sym = normalizeSymbol(symbol);
+              const feats = this.lastCycleShadowContexts.get(sym)?.features ?? {};
+              if (Object.keys(feats).length > 0) {
+                return this.olrEngine.query(sym, feats, trade.side === 'buy' ? 'buy' : 'sell', this.totalCycles).pWin;
+              }
+            } catch { /* non-critical */ }
+            return undefined;
+          })(),
+          shadowWinRateAtEntry: (() => {
+            try {
+              const stats = this.shadowEngine.getStats().find(s => s.symbol === normalizeSymbol(symbol) || s.symbol === symbol.toLowerCase());
+              if (stats) return trade.side === 'buy' ? stats.longWinRate : stats.shortWinRate;
+            } catch { /* non-critical */ }
+            return undefined;
+          })(),
         }).then((record: unknown) => {
           // v2.0.143: RIL incremental cluster update — feed the new EXP record
           // into the pattern cluster immediately so the next cycle's RIL injection
@@ -2708,6 +2761,11 @@ ${recentExamples}
     // ALL passed the guard because none had reached the `= true` line yet.
     // This caused multiple HACP cycles to run simultaneously.
     this.cycleInProgress = true;
+
+    // v2.0.178: Direction integrity audit every 10 cycles
+    if (this.totalCycles > 0 && this.totalCycles % 10 === 0) {
+      void this.runDirectionAudit();
+    }
 
     // ── Cold-start OLR backfill (once per process) ──
     // On the first cycle with non-empty trading markets, backfill the OLR

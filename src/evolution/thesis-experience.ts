@@ -188,6 +188,17 @@ export interface RecordCloseInput {
   /** v2.0.143: How the position was closed (SL/TP, consensus, manual, etc.).
    *  Stored on the ThesisExperienceRecord and used by RIL CloseReasonAggregator. */
   exitType?: ExitType;
+  /** v2.0.178: Market conditions at trade open time — the ACTUAL state that
+   *  produced this outcome, not just the Meta-Agent's textual interpretation.
+   *  Used for condition-based similarity matching in future checkThesisHistory
+   *  calls, so the system learns "these market conditions + this thesis → WIN/LOSS"
+   *  rather than just "this thesis text → WIN/LOSS". */
+  marketFeatures?: Record<string, number>;
+  /** v2.0.178: OLR P(win) at entry time — what the statistical model predicted.
+   *  Stored so future analysis can compare predicted vs actual outcome. */
+  olrPWinAtEntry?: number;
+  /** v2.0.178: Shadow win rate at entry time — what the shadow engine predicted. */
+  shadowWinRateAtEntry?: number;
 }
 
 export interface CheckThesisInput {
@@ -274,10 +285,17 @@ export class ThesisExperience {
   }
 
   /** v2.0.140: rebuild experience classes from all loaded records. Call after
-   *  load() at startup (non-blocking to the trading loop). */
+   *  load() at startup (non-blocking to the trading loop).
+   *  v2.0.178: Wait for embed warmup BEFORE digesting — previously warmup()
+   *  and rebuildClasses() were both fire-and-forget, so rebuildClasses would
+   *  try to embed 93 lessons before the model was ready → all embeds failed
+   *  → 0 experience classes → semantic classification path never worked. */
   async rebuildClasses(): Promise<void> {
     if (!this.cfg.enabled || !this.digester.getCfg().enabled) return;
     try {
+      // v2.0.178: Ensure embed model is ready before digesting
+      await this.embed.warmup();
+      log.info(`[EXP] embed model ready, rebuilding classes from ${this.records.length} records...`);
       await this.digester.rebuildClasses(this.records);
     } catch (err) {
       log.warn(`[EXP] rebuildClasses failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
@@ -497,6 +515,10 @@ export class ThesisExperience {
         rationaleVectors,
         // v2.0.143: Store exit type for RIL CloseReasonAggregator
         exitType: input.exitType,
+        // v2.0.178: Store market conditions + fusion predictions at entry time
+        marketFeatures: input.marketFeatures,
+        olrPWinAtEntry: input.olrPWinAtEntry,
+        shadowWinRateAtEntry: input.shadowWinRateAtEntry,
       };
 
       this.appendRecordToDisk(record);
