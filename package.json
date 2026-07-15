@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "concurrently -n api,ui -c blue,green \"tsx watch src/index.ts\" \"cd ui && npm run dev\"",
     "start": "cd ui && npm run build && cd .. && tsx src/index.ts",
+    "engineer": "cd ui && npm run build && cd .. && SYSTEM_ENGINEER_ENABLED=true tsx src/index.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
