@@ -214,7 +214,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
       )}
       {/* Expanded content: thought + model row + per-symbol section */}
       {isExpanded && (
-        <>
+        <div className="slide-expand-content">
       {displayThought ? (
         <>
           <div className={`agent-thought ${thoughtExpanded ? 'agent-thought-expanded' : 'agent-thought-collapsed'}`}>
@@ -468,7 +468,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
           ))}
         </div>
       ) : null}
-        </>
+        </div>
       )}
     </div>
   )

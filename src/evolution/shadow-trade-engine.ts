@@ -389,6 +389,14 @@ export class ShadowTradeEngine {
           const resolutionVal = currentFeatures?.[key] ?? entryVal;
           trainingFeatures[key] = entryWeight * entryVal + resolutionWeight * resolutionVal;
         }
+        // v2.0.202: Log the feature composition for debugging — helps verify
+        // that resolution-time features are actually being used and not just
+        // falling back to stale entry features.
+        if (currentFeatures) {
+          const resolutionKeys = Object.keys(currentFeatures);
+          const overlapKeys = allKeys.size > 0 ? Array.from(allKeys).filter(k => currentFeatures[k] !== undefined && pos.features[k] !== undefined).length : 0;
+          log.debug(`[shadow] OLR training features: ${allKeys.size} total keys, ${resolutionKeys.length} from resolution, ${overlapKeys} overlapping — resolution weight=${resolutionWeight}`);
+        }
 
         try {
           this.olrEngine.feedTrade(sym, trainingFeatures, outcomeNum, pos.side, 'shadow', cycle);

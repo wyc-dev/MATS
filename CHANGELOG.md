@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.202: Add debug logging to verify resolution-time features are used in OLR training — helps diagnose stale feature problem in shadow trade engine
+
+
 ## v2.0.181: Fix shadow trade OLR training to use weighted combination of entry and resolution features (0.3/0.7) instead of stale entry features — prevents learning spurious correlations from outdated market conditions
 
 
