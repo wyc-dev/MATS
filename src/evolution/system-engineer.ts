@@ -101,8 +101,22 @@ export interface AutoFixResult {
  * 5. Test: run tsc --noEmit + npm test
  * 6. If pass: update CHANGELOG.md + git commit + log success
  * 7. If fail: rollback (restore original file) + log failure
+ *
+ * v2.0.183: Concurrency safety — uses a module-level lock to prevent
+ * overlapping runs. The run is fire-and-forget from the trading cycle
+ * (via `void`), so it doesn't block trading. But file modifications
+ * while tsx watch is active will trigger a restart — this is expected
+ * and acceptable (the fix is already applied + committed before restart).
  */
+let engineerRunning = false;
+
 export async function runSystemEngineer(records: ThesisExperienceRecord[]): Promise<AutoFixResult | null> {
+  // v2.0.183: Prevent overlapping runs
+  if (engineerRunning) {
+    log.info(`🔧 [system-engineer] Previous run still in progress — skipping`);
+    return null;
+  }
+  engineerRunning = true;
   const timestamp = Date.now();
   log.info(`🔧 [system-engineer] Starting autonomous audit (${records.length} trade records)`);
 
@@ -315,6 +329,9 @@ ZERO HALLUCINATION. If you're not sure, say "No issues found".`;
   } catch (err) {
     log.warn(`[system-engineer] failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
+  } finally {
+    // v2.0.183: Release the lock so the next run can proceed
+    engineerRunning = false;
   }
 }
 
