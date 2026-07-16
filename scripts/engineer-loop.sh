@@ -18,6 +18,20 @@ set -uo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
+# v2.0.216: Auto git pull — ensure latest version before starting
+echo "[engineer-loop] Checking for updates..."
+GIT_CHANGES=$(git fetch origin 2>&1)
+LOCAL_HASH=$(git rev-parse HEAD)
+REMOTE_HASH=$(git rev-parse origin/main 2>/dev/null || echo "")
+if [ -n "$REMOTE_HASH" ] && [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
+  echo "[engineer-loop] Update available: $LOCAL_HASH → $REMOTE_HASH"
+  echo "[engineer-loop] Pulling latest code..."
+  git pull --ff-only origin main 2>&1 | head -20
+  echo "[engineer-loop] Update complete."
+else
+  echo "[engineer-loop] Already up to date ($LOCAL_HASH)."
+fi
+
 echo "[engineer-loop] Starting MATS with System Engineer enabled..."
 echo "[engineer-loop] Press Ctrl+C to stop."
 
