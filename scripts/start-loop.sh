@@ -17,6 +17,21 @@ set -uo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
+# v2.0.216: Auto git pull — ensure latest version before starting
+# This helps beta testers always run the newest code without manual git pull.
+echo "[start-loop] Checking for updates..."
+GIT_CHANGES=$(git fetch origin 2>&1)
+LOCAL_HASH=$(git rev-parse HEAD)
+REMOTE_HASH=$(git rev-parse origin/main 2>/dev/null || echo "")
+if [ -n "$REMOTE_HASH" ] && [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
+  echo "[start-loop] Update available: $LOCAL_HASH → $REMOTE_HASH"
+  echo "[start-loop] Pulling latest code..."
+  git pull --ff-only origin main 2>&1 | head -20
+  echo "[start-loop] Update complete."
+else
+  echo "[start-loop] Already up to date ($LOCAL_HASH)."
+fi
+
 echo "[start-loop] Starting MATS (no System Engineer)..."
 echo "[start-loop] Press Ctrl+C to stop."
 
