@@ -5973,6 +5973,104 @@ ${recentExamples}
           }
         }, 1000);
       }
+
+      // v2.0.214: Send Telegram notification after each cycle
+      void this.sendTelegramCycleReport();
+    }
+  }
+
+  /** v2.0.214: Send cycle report via Telegram after each cycle completes */
+  private async sendTelegramCycleReport(): Promise<void> {
+    try {
+      const botApi = config.telegram.botApi;
+      const chatId = config.telegram.chatId;
+      if (!botApi || !chatId) return; // Telegram not configured
+
+      const isReal = this.tradingManager.getTradeMode() === 'real';
+      const cycleNum = this.totalCycles;
+
+      // Build portfolio summary
+      let portfolioLine: string;
+      if (isReal && this.cachedExchangeBalance) {
+        portfolioLine = `💰 Balance: $${this.cachedExchangeBalance.total.toFixed(2)} | Free: $${this.cachedExchangeBalance.free.toFixed(2)} | Margin: $${this.cachedExchangeBalance.marginUsed.toFixed(2)}`;
+      } else if (isReal) {
+        portfolioLine = `💰 Balance: fetching...`;
+      } else {
+        const p = this.portfolio.getPortfolio();
+        portfolioLine = `💰 Balance: $${p.balance.toFixed(2)} | Equity: $${p.totalEquity.toFixed(2)} | PnL: ${p.totalPnl >= 0 ? '+' : ''}$${p.totalPnl.toFixed(2)}`;
+      }
+
+      // Build positions list
+      let positionsText = '';
+      if (isReal && this.cachedExchangePositions && this.cachedExchangePositions.length > 0) {
+        positionsText = this.cachedExchangePositions.map(p => {
+          const sym = p.symbol.includes(':') ? p.symbol.split(':').pop() : p.symbol;
+          const side = p.side.toUpperCase();
+          const entry = p.averageEntryPrice.toFixed(2);
+          const cur = p.currentPrice.toFixed(2);
+          const pnl = p.unrealizedPnl >= 0 ? `+$${p.unrealizedPnl.toFixed(2)}` : `-$${Math.abs(p.unrealizedPnl).toFixed(2)}`;
+          const lev = `${p.leverage}x`;
+          const qty = p.quantity.toFixed(4);
+          return `  ${side} ${sym} ${lev} qty=${qty} entry=$${entry} cur=$${cur} PnL=${pnl}`;
+        }).join('\n');
+      } else {
+        const paperPositions = Array.from(this.portfolio.getPortfolio().positions.values()) as any[];
+        const realPositions = this.portfolio.getRealPositions();
+        const allPositions = [...paperPositions, ...realPositions];
+        if (allPositions.length > 0) {
+          positionsText = allPositions.map(p => {
+            const sym = (p.symbol ?? '').includes(':') ? (p.symbol ?? '').split(':').pop() : (p.symbol ?? '');
+            const side = (p.side ?? 'unknown').toUpperCase();
+            const entry = (p.entryPrice ?? 0).toFixed(2);
+            const pnl = (p.unrealizedPnl ?? p.pnl ?? 0) >= 0 ? `+$${(p.unrealizedPnl ?? p.pnl ?? 0).toFixed(2)}` : `-$${Math.abs(p.unrealizedPnl ?? p.pnl ?? 0).toFixed(2)}`;
+            return `  ${side} ${sym} entry=$${entry} PnL=${pnl}`;
+          }).join('\n');
+        }
+      }
+
+      // Build last decision
+      const lastConsensus = this.lastHACPResult?.consensus;
+      let decisionLine = 'Decision: HOLD';
+      if (lastConsensus) {
+        const perSym = (lastConsensus as any)?.perSymbolConsensus as any[] | undefined;
+        if (perSym && perSym.length > 0) {
+          const decisions = perSym.map(p => {
+            const sym = (p.symbol ?? '').includes(':') ? (p.symbol ?? '').split(':').pop() : (p.symbol ?? '');
+            return `${p.action.toUpperCase()} ${sym}`;
+          });
+          decisionLine = `Decision: ${decisions.join(', ')}`;
+        } else if ((lastConsensus as any)?.decision) {
+          const d = (lastConsensus as any).decision;
+          const sym = (d.symbol ?? '').includes(':') ? (d.symbol ?? '').split(':').pop() : (d.symbol ?? '');
+          decisionLine = `Decision: ${d.action.toUpperCase()} ${sym}`;
+        }
+      }
+
+      const mode = isReal ? '🔴 REAL' : '🟢 PAPER';
+      const posCount = isReal ? (this.cachedExchangePositions?.length ?? 0) : (this.portfolio.getPortfolio().positions.size + this.portfolio.getRealPositions().length);
+      const timestamp = new Date().toLocaleTimeString('en-HK', { timeZone: 'Asia/Hong_Kong' });
+
+      const message = `📊 MATS Cycle #${cycleNum} | ${mode} | ${timestamp}\n\n${portfolioLine}\n📍 Positions: ${posCount}\n${decisionLine}\n${positionsText ? '\n' + positionsText : ''}`;
+
+      // Send via Telegram Bot API
+      const url = `https://api.telegram.org/bot${botApi}/sendMessage`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: message,
+          parse_mode: 'HTML',
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (!res.ok) {
+        log.warn(`[telegram] Send failed: ${res.status} ${res.statusText}`);
+      }
+    } catch (err) {
+      // Non-critical — don't let Telegram errors affect trading
+      log.debug(`[telegram] Cycle report failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
