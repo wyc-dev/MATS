@@ -280,6 +280,9 @@ class MATSSystem {
       this.sentimentEngine = new SentimentEngine();
       this.adaptiveFilter = new AdaptiveNoiseFilter({}, 'global');
       this.assetFilterRegistry = new AssetFilterRegistry();
+      // v2.0.211: Set decision interval for time-based trade frequency pruning
+      this.assetFilterRegistry.setDecisionInterval(this.cycleIntervalMs);
+      this.adaptiveFilter.setDecisionInterval(this.cycleIntervalMs);
       log.info('✓ Sentiment Engine + Adaptive Filter ready');
 
       // 3.5b Initialize Planck-Chaos Resonance Engine
