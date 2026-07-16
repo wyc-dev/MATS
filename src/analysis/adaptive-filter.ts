@@ -337,6 +337,8 @@ export class AdaptiveNoiseFilter {
   private currentConvictionThreshold: number;
   private tradeTimestamps: number[] = [];
   private lastAdaptationLog = 0;
+  /** v2.0.211: Decision interval in ms — used for time-based trade frequency pruning */
+  private decisionIntervalMs: number = 300_000; // default 5 min, updated via setDecisionInterval
 
   /** v2.0.106: Create from a filter profile for a specific asset */
   static fromProfile(symbol: string, profile: FilterProfile): AdaptiveNoiseFilter {
@@ -370,6 +372,11 @@ export class AdaptiveNoiseFilter {
   /** v2.0.106: Get the symbol this filter is for */
   getSymbol(): string {
     return this.symbol;
+  }
+
+  /** v2.0.211: Set the decision interval for time-based trade frequency pruning */
+  setDecisionInterval(ms: number): void {
+    this.decisionIntervalMs = ms;
   }
 
   /** v2.0.106: Get the filter profile type */
@@ -597,16 +604,23 @@ export class AdaptiveNoiseFilter {
   /** Record a trade execution for frequency throttling */
   recordTrade(): void {
     this.tradeTimestamps.push(Date.now());
-    // Prune old timestamps (older than tradeFrequencyWindow cycles * decisionInterval)
-    // We use a simple count-based window: keep last N timestamps
-    if (this.tradeTimestamps.length > this.config.tradeFrequencyWindow * 2) {
-      this.tradeTimestamps = this.tradeTimestamps.slice(-this.config.tradeFrequencyWindow);
-    }
+    // v2.0.211: Time-based pruning — remove timestamps older than
+    // tradeFrequencyWindow * decisionIntervalMs. Previous count-based pruning
+    // never expired old trades, so after maxTradesPerWindow trades the throttle
+    // was permanent (timestamps only pruned at 2x window, kept last window count
+    // which was still >= maxTradesPerWindow). This caused the system to stop
+    // trading permanently after 3 trades.
+    const windowMs = this.config.tradeFrequencyWindow * this.decisionIntervalMs;
+    const cutoff = Date.now() - windowMs;
+    this.tradeTimestamps = this.tradeTimestamps.filter(ts => ts > cutoff);
   }
 
   /** Count trades in the recent frequency window */
   private countRecentTradesInWindow(): number {
-    return this.tradeTimestamps.length;
+    // v2.0.211: Only count timestamps within the time window
+    const windowMs = this.config.tradeFrequencyWindow * this.decisionIntervalMs;
+    const cutoff = Date.now() - windowMs;
+    return this.tradeTimestamps.filter(ts => ts > cutoff).length;
   }
 
   /** Check if trade frequency limit is reached */
@@ -744,6 +758,16 @@ export class AssetFilterRegistry {
   private filters: Map<string, AdaptiveNoiseFilter> = new Map();
   /** Map of symbol → profile type (assigned by Market Agent) */
   private profileAssignments: Map<string, FilterProfileType> = new Map();
+  /** v2.0.211: Decision interval for all filters (set from index.ts) */
+  private decisionIntervalMs: number = 300_000;
+
+  /** v2.0.211: Set decision interval for all current and future filters */
+  setDecisionInterval(ms: number): void {
+    this.decisionIntervalMs = ms;
+    for (const filter of this.filters.values()) {
+      filter.setDecisionInterval(ms);
+    }
+  }
 
   /**
    * Assign a filter profile to an asset.
@@ -773,12 +797,14 @@ export class AssetFilterRegistry {
         tradeTimestamps: oldState.tradeTimestamps,
       });
       this.filters.set(symbol, newFilter);
+      newFilter.setDecisionInterval(this.decisionIntervalMs);
       log.info(`AssetFilterRegistry: reassigned ${symbol} → ${profileType}`);
       return newFilter;
     }
 
     // Create new filter from profile
     const filter = AdaptiveNoiseFilter.fromProfile(symbol, profile);
+    filter.setDecisionInterval(this.decisionIntervalMs);
     this.filters.set(symbol, filter);
     log.info(`AssetFilterRegistry: assigned ${symbol} → ${profileType}`);
     return filter;
