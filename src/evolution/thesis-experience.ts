@@ -894,32 +894,17 @@ export class ThesisExperience {
     bestLoss: ThesisExperienceRecord,
     input: CheckThesisInput,
   ): Promise<ExpCheckResult> {
-    if (!this.cfg.allowReverse) {
-      return { verdict: 'REJECT', reason: 'reverse disabled (exp.allowReverse=false)', matchedLossId: bestLoss.id };
-    }
-    try {
-      const riskFactors = await this.skepticsFindFurtherNegativeAndRisk(negDelta, input);
-      if (!riskFactors.strong) {
-        return { verdict: 'REJECT', reason: 'negative delta but no further risk factors', matchedLossId: bestLoss.id };
-      }
-      const reversedSide: 'buy' | 'sell' = input.side === 'buy' ? 'sell' : 'buy';
-      // §8.4d: reverse direction must respect directionRestrictions
-      if (!this.directionAllowed(input.symbol, reversedSide)) {
-        return { verdict: 'REJECT', reason: `reverse direction ${reversedSide.toUpperCase()} restricted on ${input.symbol}`, matchedLossId: bestLoss.id };
-      }
-      const reversedThesis = await this.skepticsBuildContrarianThesis(input, reversedSide, riskFactors);
-      return {
-        verdict: 'REVERSE_DIRECTION',
-        reversedSide,
-        reversedThesis,
-        riskFactors: [...riskFactors.furtherNegative, ...riskFactors.riskFactors],
-        reason: `delta negative + further risk factors → reverse ${input.side.toUpperCase()}→${reversedSide.toUpperCase()}`,
-        matchedLossId: bestLoss.id,
-      };
-    } catch (err) {
-      log.warn(`[EXP] assessReverseDirection failed → REJECT: ${err instanceof Error ? err.message : String(err)}`);
-      return { verdict: 'REJECT', reason: `assessReverseDirection error: ${err instanceof Error ? err.message : String(err)}` };
-    }
+    // v2.0.215: REVERSE_DIRECTION disabled — flipping BUY↔SELL based on historical
+    // losses creates a dangerous feedback loop: lose in one direction → flip → lose
+    // again → flip again → continuous flipping without learning. Instead, when delta
+    // is negative, REJECT (→HOLD) and let the system wait for a better setup.
+    // The direction filter and delta check remain intact — only the reverse action
+    // is removed.
+    return {
+      verdict: 'REJECT',
+      reason: `delta negative (losing rationale: "${negDelta.point.slice(0, 80)}") → REJECT instead of reverse (v2.0.215: reverse disabled to prevent direction-flipping feedback loop)`,
+      matchedLossId: bestLoss.id,
+    };
   }
 
   private async skepticsFindFurtherNegativeAndRisk(
