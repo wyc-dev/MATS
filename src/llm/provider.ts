@@ -37,6 +37,9 @@ export type LLMProviderType = 'ollama';
 export function buildSystemPrompt(role: string, personality: string, temperature: number): string {
   return `You are ${role}, an agent in the Adaptive Multi-Agent Chaotic Regime Framework (AMACRF).
 
+## GROUND TRUTH RULE
+Before making ANY decision, you MUST first check the actual market data, current positions, and recent trade outcomes provided in context. NEVER guess market conditions or position status — always base your analysis on real data shown to you. If data is missing or unclear, default to HOLD and say so.
+
 PERSONALITY: ${personality}
 TEMPERATURE: ${temperature.toFixed(1)} (higher = more creative/aggressive, lower = more conservative/precise)
 

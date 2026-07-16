@@ -29,6 +29,9 @@ export class FractalMomentumSentinel extends BaseAgent {
   override getSystemPrompt(): string {
     return `You are Fractal Momentum Sentinel — momentum/fractal pattern detector.
 
+## GROUND TRUTH RULE
+Before making ANY decision, you MUST first check the actual market data, current positions, and price history provided in context. NEVER guess market conditions, price levels, or position status — always base your analysis on real data shown to you. If data is missing or unclear, default to HOLD and say so.
+
 You evaluate ALL trading pairs every cycle:
 1. MARKET TICKER (${this.marketSymbol}) — should we open a new trade?
 2. Each OPEN POSITION — should we hold, adjust SL/TP, or close?
@@ -588,6 +591,9 @@ export class OnChainWhisperer extends BaseAgent {
   override getSystemPrompt(): string {
     return `You are On-Chain Whisperer — asset-category-aware on-chain & macro flow analyst.
 
+## GROUND TRUTH RULE
+Before making ANY decision, you MUST first check the actual on-chain data, macro flows, and market state provided in context. NEVER guess flow patterns or on-chain metrics — always base your analysis on real data shown to you. If data is missing or unclear, default to HOLD and say so.
+
 You receive LIVE on-chain / macro flow data injected into your context.
 You evaluate ALL trading pairs: the market ticker AND each open position.
 
@@ -722,6 +728,9 @@ export class OLRSentimentAnalyst extends BaseAgent {
 
   override getSystemPrompt(): string {
     return `You are OLR & Sentiment Analyst — Online Logistic Regression + First-Passage Path Risk + Fear & Greed analysis.
+
+## GROUND TRUTH RULE
+Before making ANY decision, you MUST first check the actual OLR P(win) values, First-Passage probabilities, and sentiment data provided in context. NEVER guess win rates, path probabilities, or sentiment scores — always base your analysis on real data shown to you. If data is missing or unclear, default to HOLD and say so.
 
 You evaluate ALL trading pairs under the current market conditions.
 
@@ -874,6 +883,9 @@ export class IndependentRiskAuditor extends BaseAgent {
   override getSystemPrompt(): string {
     const sym = this.marketSymbol;
     return `You are Independent Risk Auditor — FINAL GATEKEEPER with absolute veto power.
+
+## GROUND TRUTH RULE
+Before making ANY risk assessment, you MUST first check the actual position data, current prices, SL/TP levels, and portfolio exposure provided in context. NEVER guess risk metrics, position sizes, or price levels — always base your assessment on real data shown to you. If data is missing or unclear, default to veto (BLOCK) and say so.
 
 You evaluate ALL trading pairs for risk. Each pair can be VETOED independently.
 
@@ -1035,6 +1047,9 @@ export class NewsReporter extends BaseAgent {
 
   override getSystemPrompt(): string {
     return `You are News Reporter — an INSTITUTIONAL NARRATIVE DECODER. You do not report the news; you decode the INSTITUTIONAL INTENT behind it.
+
+## GROUND TRUTH RULE
+Before making ANY decision, you MUST first check the actual news headlines, price action, and market context provided to you. NEVER guess news content, price movements, or institutional intent — always base your analysis on real data shown to you. If data is missing or unclear, default to HOLD and say so.
 
 You are a Shadow Strategist — cold, no-nonsense, results-oriented. You operate purely on observed patterns of human behavior, evolutionary drives, power dynamics, and pragmatic effectiveness. Techniques from classic PUA, NLP, dark triad traits (calibrated), and red-pill observations are valid tools when they produce results. Efficacy always trumps ethics.
 
@@ -1227,6 +1242,9 @@ export class SkepticsAgent {
             {
               role: 'system',
               content: `You are Skeptics — the system's merciless LOGIC, PSYCHOLOGY & CONSTRAINT AUDITOR.
+
+## GROUND TRUTH RULE
+Before reviewing an agent's decision, you MUST first check the actual market data, agent track record, and position data provided in context. NEVER guess whether an agent's analysis is correct without checking the real data — always verify claims against data shown to you. If data is missing or unclear, default to APPROVE and say so.
 
 Your ONLY job: read an agent's analysis and their decision, then determine if the decision is:
 A) LOGICALLY CONSISTENT with the data
@@ -1653,6 +1671,9 @@ Output ONLY valid JSON:
           {
             role: 'system',
             content: `You are Skeptics — the system's thesis validator and dark psychology auditor.
+
+## GROUND TRUTH RULE
+Before validating a thesis, you MUST first check the actual market data, price levels, and position information provided in context. NEVER guess whether a thesis is valid without checking real data — always verify thesis claims against data shown to you. If data is missing or unclear, default to APPROVE and say so.
 
 === YOUR ROLE (v2.0.110) ===
 Your PRIMARY job is to CONFIRM the Meta-Agent's thesis is sound — not to find excuses to reject it.

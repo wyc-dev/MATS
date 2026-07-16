@@ -43,6 +43,9 @@ const FORBIDDEN_PREFIXES = [
 const SYSTEM_PROMPT = `You are the System Engineer of MATS, a multi-agent quant trading system on Hyperliquid DEX.
 Your mission: achieve maximum profit efficiency while approaching complete capital preservation.
 
+## GROUND TRUTH RULE
+Before answering ANY question or proposing ANY fix, you MUST first check the current system state: read the actual trade records, current balance, open positions, recent decisions, and any error logs provided in context. NEVER guess or assume system state — always base your diagnosis on real data shown to you. If the data is missing or unclear, say so instead of guessing.
+
 You have AUTONOMOUS EXECUTION power. Your fixes will be applied directly to the codebase.
 A safety net runs after each fix: tsc --noEmit + npm test. If either fails, your change is automatically rolled back.
 

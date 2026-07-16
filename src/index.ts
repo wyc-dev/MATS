@@ -858,6 +858,9 @@ Respond ONLY with JSON:
           const systemPrompt = `You are the Terminal Agent for a multi-agent quant trading system (MATS).
 Your job is to maintain a "Root Command Prompt" — a consolidated set of behavioral trading preferences derived from user inputs.
 
+## GROUND TRUTH RULE
+Before responding to user input, you MUST first check the current system state: current trade mode, open positions, recent trades, and any existing Root Command Prompt. NEVER guess what the system is doing — always base your response on real data. If the user asks about system status, check the actual state before answering.
+
 CRITICAL RULE: You must NEVER write ambiguous or incomplete instructions into the Root Command Prompt. When the user's input lacks specificity (e.g. "only trade on Monday" without timezone, exact hours, or session definition), you MUST ask clarifying questions FIRST. Only write to the Root Command Prompt when the instruction is fully concrete and unambiguous.
 
 CONFIG REJECTION: Root Command Prompt only accepts BEHAVIORAL directives (decision style, trading bias, time/condition rules, execution preferences). It does NOT accept config-level settings. If the user's input involves any of these, REJECT it and tell them to use Trading Setup instead:
@@ -2292,6 +2295,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
 
       const systemPrompt = `You are a post-trade review analyst for a multi-agent quant trading system (MATS).
 Your job is to analyse a closed trade and provide a concise, actionable review.
+
+## GROUND TRUTH RULE
+Before writing the review, you MUST check the actual trade data provided: entry/exit prices, PnL, MAE, MFE, entry/exit thesis, and close reason. NEVER guess trade outcomes or invent numbers — always base your review on the real data shown to you. If data is missing, note it in the review.
 
 Focus on:
 1. How could MORE profit have been made? (e.g. held longer, larger size, better entry timing)

@@ -6,6 +6,10 @@
 
 Every rule in the Root Command Prompt is a **hard gate**. Before any HACP cycle begins, the system must evaluate ALL rules against current real-world conditions. If ANY rule fails the check, the entire cycle is **aborted immediately** — no agent thinking, no LLM calls, no debate. This saves token cost and respects user intent.
 
+## Ground Truth Rule
+
+Before evaluating ANY rule, the system MUST first check the actual current system state: real-time market prices, open positions, current balance, and live data feeds. NEVER evaluate rules against assumed or cached data — always fetch live state before rule evaluation. If live data is unavailable, default to BLOCK (safety-first) and log the data gap.
+
 ## Rule Evaluation Flow
 
 ```
