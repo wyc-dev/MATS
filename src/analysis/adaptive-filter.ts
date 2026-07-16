@@ -72,8 +72,11 @@ export interface FilterProfile {
   convictionCeiling: number;
   /** Max trades per frequency window */
   maxTradesPerWindow: number;
-  /** Trade frequency window size (cycles) */
+  /** Trade frequency window size (cycles) — legacy, used as fallback */
   tradeFrequencyWindow: number;
+  /** v2.0.213: Trade frequency window in milliseconds — overrides tradeFrequencyWindow * decisionIntervalMs.
+   *  Default: 10 minutes (600_000ms). Set to 0 to fall back to legacy calculation. */
+  frequencyWindowMs: number;
   /** Adaptation rate (how fast params adjust per cycle) */
   adaptationRate: number;
 }
@@ -93,6 +96,7 @@ export const FILTER_PROFILES: Record<FilterProfileType, FilterProfile> = {
     convictionCeiling: 0.70,
     maxTradesPerWindow: 3,
     tradeFrequencyWindow: 10,
+    frequencyWindowMs: 600_000, // v2.0.213: 10 minutes
     adaptationRate: 0.15,
   },
   // Low-vol crypto: low noise, stable
@@ -108,6 +112,7 @@ export const FILTER_PROFILES: Record<FilterProfileType, FilterProfile> = {
     convictionCeiling: 0.65,
     maxTradesPerWindow: 4,
     tradeFrequencyWindow: 10,
+    frequencyWindowMs: 600_000, // v2.0.213: 10 minutes
     adaptationRate: 0.12,
   },
   // High-vol alt (meme coins, small caps): extreme noise, low liquidity
@@ -123,6 +128,7 @@ export const FILTER_PROFILES: Record<FilterProfileType, FilterProfile> = {
     convictionCeiling: 0.85,
     maxTradesPerWindow: 2,
     tradeFrequencyWindow: 15,
+    frequencyWindowMs: 600_000, // v2.0.213: 10 minutes
     adaptationRate: 0.20,
   },
   // DEX perps (xyz:SKHX, xyz:SP500): moderate vol, DEX-specific microstructure
@@ -138,6 +144,7 @@ export const FILTER_PROFILES: Record<FilterProfileType, FilterProfile> = {
     convictionCeiling: 0.75,
     maxTradesPerWindow: 3,
     tradeFrequencyWindow: 12,
+    frequencyWindowMs: 600_000, // v2.0.213: 10 minutes
     adaptationRate: 0.15,
   },
   // Forex/indices (xyz:EURUSD, xyz:NI225): low vol, high liquidity, trending
@@ -153,6 +160,7 @@ export const FILTER_PROFILES: Record<FilterProfileType, FilterProfile> = {
     convictionCeiling: 0.70,
     maxTradesPerWindow: 3,
     tradeFrequencyWindow: 10,
+    frequencyWindowMs: 600_000, // v2.0.213: 10 minutes
     adaptationRate: 0.12,
   },
   // Commodities (xyz:XAU, xyz:OIL): moderate vol, cyclical
@@ -168,6 +176,7 @@ export const FILTER_PROFILES: Record<FilterProfileType, FilterProfile> = {
     convictionCeiling: 0.72,
     maxTradesPerWindow: 3,
     tradeFrequencyWindow: 11,
+    frequencyWindowMs: 600_000, // v2.0.213: 10 minutes
     adaptationRate: 0.14,
   },
   // Default fallback
@@ -182,6 +191,7 @@ export const FILTER_PROFILES: Record<FilterProfileType, FilterProfile> = {
     convictionCeiling: 0.75,
     maxTradesPerWindow: 3,
     tradeFrequencyWindow: 10,
+    frequencyWindowMs: 600_000, // v2.0.213: 10 minutes
     adaptationRate: 0.15,
   },
 };
@@ -242,6 +252,8 @@ export interface AdaptiveFilterConfig {
   /** Max trades per N cycles (frequency throttle) */
   maxTradesPerWindow: number;
   tradeFrequencyWindow: number;
+  /** v2.0.213: Frequency window in ms (overrides tradeFrequencyWindow * decisionIntervalMs when > 0) */
+  frequencyWindowMs: number;
 }
 
 // ─── Default Config ───
@@ -258,6 +270,7 @@ export const DEFAULT_FILTER_CONFIG: AdaptiveFilterConfig = {
   convictionCeiling: 0.75,
   maxTradesPerWindow: 3,
   tradeFrequencyWindow: 10,
+  frequencyWindowMs: 600_000, // v2.0.213: 10 minutes in ms
 };
 
 /** Create a filter config from a profile */
@@ -272,6 +285,7 @@ export function configFromProfile(profile: FilterProfile): AdaptiveFilterConfig 
     convictionCeiling: profile.convictionCeiling,
     maxTradesPerWindow: profile.maxTradesPerWindow,
     tradeFrequencyWindow: profile.tradeFrequencyWindow,
+    frequencyWindowMs: 600_000, // v2.0.213: 10 minutes — overrides legacy cycle-based window
     adaptationRate: profile.adaptationRate,
     snrWindowSize: 20,
   };
@@ -601,24 +615,32 @@ export class AdaptiveNoiseFilter {
 
   // ─── Trade Frequency Tracking ───
 
+  /** v2.0.213: Get the effective frequency window in ms.
+   *  Uses frequencyWindowMs if set (>0), otherwise falls back to
+   *  tradeFrequencyWindow * decisionIntervalMs (legacy). */
+  private getFrequencyWindowMs(): number {
+    if (this.config.frequencyWindowMs > 0) return this.config.frequencyWindowMs;
+    return this.config.tradeFrequencyWindow * this.decisionIntervalMs;
+  }
+
   /** Record a trade execution for frequency throttling */
   recordTrade(): void {
     this.tradeTimestamps.push(Date.now());
-    // v2.0.211: Time-based pruning — remove timestamps older than
-    // tradeFrequencyWindow * decisionIntervalMs. Previous count-based pruning
-    // never expired old trades, so after maxTradesPerWindow trades the throttle
-    // was permanent (timestamps only pruned at 2x window, kept last window count
-    // which was still >= maxTradesPerWindow). This caused the system to stop
-    // trading permanently after 3 trades.
-    const windowMs = this.config.tradeFrequencyWindow * this.decisionIntervalMs;
+    // v2.0.213: Time-based pruning using frequencyWindowMs (default 10 min).
+    // Previous count-based pruning never expired old trades, so after
+    // maxTradesPerWindow trades the throttle was permanent.
+    const windowMs = this.getFrequencyWindowMs();
     const cutoff = Date.now() - windowMs;
     this.tradeTimestamps = this.tradeTimestamps.filter(ts => ts > cutoff);
+    const remaining = this.tradeTimestamps.length;
+    const max = this.config.maxTradesPerWindow;
+    log.info(`[adaptive-filter] Trade recorded for ${this.symbol}: ${remaining}/${max} in last ${Math.round(windowMs / 60000)}min${remaining >= max ? ' — THROTTLED' : ''}`);
   }
 
   /** Count trades in the recent frequency window */
   private countRecentTradesInWindow(): number {
-    // v2.0.211: Only count timestamps within the time window
-    const windowMs = this.config.tradeFrequencyWindow * this.decisionIntervalMs;
+    // v2.0.213: Only count timestamps within the time window
+    const windowMs = this.getFrequencyWindowMs();
     const cutoff = Date.now() - windowMs;
     return this.tradeTimestamps.filter(ts => ts > cutoff).length;
   }
