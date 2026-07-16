@@ -78,7 +78,7 @@ const envSchema = z.object({
   EXP_MIN_DELTA_SAMPLES: z.coerce.number().int().positive().default(2),
   EXP_DELTA_WIN_RATE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.6),
   EXP_DELTA_LOSS_RATE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.4),
-  EXP_ALLOW_REVERSE: z.coerce.boolean().default(true),
+  EXP_ALLOW_REVERSE: z.coerce.boolean().default(false), // v2.0.215: disabled — reverse direction creates feedback loop
   EXP_BREAKEVEN_IS: z.enum(['win', 'loss', 'exclude']).default('exclude'),
   EXP_SIMILARITY_MODE: z.enum(['asymmetric', 'symmetric']).default('asymmetric'),
 

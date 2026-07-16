@@ -330,7 +330,7 @@ describe('EXP checkThesisHistory — decision branches', () => {
     expect(r.extraRationale).toBe('BTC funding reversal');
   });
 
-  it('REVERSE_DIRECTION when delta negative + strong risk factors + reverse allowed', async () => {
+  it('REJECT when delta negative + strong risk factors (v2.0.215: reverse disabled)', async () => {
     const llm = makeLLM((msgs) => {
       const sys = msgs.find((m) => m.role === 'system')?.content ?? '';
       if (sys.includes('atomic rationales')) return JSON.stringify({ rationales: [{ point: 'B', category: 'technical' }, { point: 'V', category: 'flow' }] });
@@ -344,9 +344,9 @@ describe('EXP checkThesisHistory — decision branches', () => {
     injectRecord(e, embed, { rationales: ['V', 'F1'], outcome: 'LOSS', symbol: 'BTC' });
     injectRecord(e, embed, { rationales: ['V', 'F2'], outcome: 'LOSS', symbol: 'BTC' });
     const r = await e.checkThesisHistory({ thesis: 'B|V', symbol: 'BTC', side: 'buy', marketCtx: 'OB -15%, funding reversing' });
-    expect(r.verdict).toBe('REVERSE_DIRECTION');
-    expect(r.reversedSide).toBe('sell');
-    expect(r.reversedThesis).toBeDefined();
+    // v2.0.215: REVERSE_DIRECTION disabled — should REJECT instead
+    expect(r.verdict).toBe('REJECT');
+    expect(r.reason).toContain('reverse disabled');
   });
 
   it('REJECT when reverse direction is restricted (SILVER SELL-only, reverse to BUY blocked)', async () => {
@@ -364,7 +364,8 @@ describe('EXP checkThesisHistory — decision branches', () => {
     injectRecord(e, embed, { rationales: ['V', 'F2'], outcome: 'LOSS', symbol: 'xyz:SILVER', assetCategory: 'commodity' });
     const r = await e.checkThesisHistory({ thesis: 'B|V', symbol: 'xyz:SILVER', side: 'sell', marketCtx: 'risk' });
     expect(r.verdict).toBe('REJECT');
-    expect(r.reason).toContain('restricted');
+    // v2.0.215: reverse disabled — reason contains 'reverse disabled' instead of 'restricted'
+    expect(r.reason).toContain('reverse disabled');
   });
 
   it('REJECT when delta negative but no further risk factors (strong=false)', async () => {
@@ -419,9 +420,9 @@ describe('EXP multi-delta conflict (§15-5) — most extreme wins', () => {
     injectRecord(e, embed, { rationales: ['Dneg', 'Fn1'], outcome: 'LOSS', symbol: 'BTC', assetCategory: 'crypto' });
     injectRecord(e, embed, { rationales: ['Dneg', 'Fn2'], outcome: 'LOSS', symbol: 'BTC', assetCategory: 'crypto' });
     const r = await e.checkThesisHistory({ thesis: 'B|Dpos|Dneg', symbol: 'BTC', side: 'buy', marketCtx: 'risk-off' });
-    // Dneg extremeness (0.5) > Dpos extremeness (0.1) → reverse path wins
-    expect(r.verdict).toBe('REVERSE_DIRECTION');
-    expect(r.reversedSide).toBe('sell');
+    // v2.0.215: REVERSE_DIRECTION disabled — Dneg extremeness (0.5) > Dpos extremeness (0.1) but now REJECT
+    expect(r.verdict).toBe('REJECT');
+    expect(r.reason).toContain('reverse disabled');
   });
 
   it('picks the positive delta when it is more extreme than a milder negative', async () => {
