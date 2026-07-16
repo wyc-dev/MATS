@@ -230,6 +230,11 @@ export const config = {
     rebuildOnStartup: raw.RIL_REBUILD_ON_STARTUP ?? true,
     maxClusters: raw.RIL_MAX_CLUSTERS ?? 100,
   } as const,
+  // ─── Telegram (IM notifications) — v2.0.214 ───
+  telegram: {
+    botApi: raw.TELEGRAM_BOT_API ?? '',
+    chatId: raw.TELEGRAM_CHAT_ID ?? '',
+  } as const,
 } as const;
 
 export type AppConfig = typeof config;
