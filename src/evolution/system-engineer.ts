@@ -130,6 +130,8 @@ const BLOCKED_PATTERNS: { file: string; pattern: RegExp; reason: string }[] = [
   { file: 'src/evolution/shadow-trade-engine.ts', pattern: /getStats/i, reason: 'getStats() dedup logic is verified correct — do NOT modify' },
   { file: 'src/evolution/thesis-experience.ts', pattern: /checkThesisHistory/i, reason: 'checkThesisHistory() direction filter is correct — do NOT remove' },
   { file: 'src/evolution/reason-analytics.ts', pattern: /findSimilar/i, reason: 'SimilarTradeRetriever.findSimilar() side filter is correct — do NOT remove' },
+  { file: 'src/index.ts', pattern: /loss.?streak|lossStreak|checkLossStreak|updateLossStreak|systematic.?loser/i, reason: 'Loss streak guard is already implemented — do NOT re-add or modify' },
+  { file: 'src/analysis/adaptive-filter.ts', pattern: /recordTrade|countRecentTrades|frequencyWindow/i, reason: 'Trade frequency throttle is already fixed (time-based) — do NOT revert to count-based' },
 ];
 
 // v2.0.208: Permanent feedback log (gitignored) — records every SE run for debugging
@@ -247,6 +249,9 @@ ${fileSummaries}
 - shadow-trade-engine.ts getStats(): The dedup logic (step 3 checks p.id === r.id) correctly prevents double-counting between positions[] and recentResults[]. This has been verified. Do NOT propose changes to this method.
 - thesis-experience.ts checkThesisHistory(): Direction-filtered pWin (sameDirMatches) is correct. Do NOT remove the direction filter.
 - reason-analytics.ts SimilarTradeRetriever.findSimilar(): The side parameter filter is correct. Do NOT remove it.
+- index.ts checkLossStreakGate(): The per-symbol-per-direction loss streak guard is already implemented with consecutive loss blocking (3+ losses → 12 cycle block) and systematic loser gate (10+ trades, WR<35% → block with decay). Do NOT re-add or modify this guard — it is working correctly.
+- index.ts updateLossStreakTracker(): The loss streak tracker update logic is correct. Do NOT modify it.
+- adaptive-filter.ts recordTrade()/countRecentTradesInWindow(): Time-based trade frequency pruning is correct (10-min window, 3 trades max). Do NOT revert to count-based pruning.
 
 ## Your Task (Phase 1: Diagnosis)
 Find the SINGLE MOST IMPACTFUL issue in the learning/decision system that is causing losses or preventing the system from learning correctly.
