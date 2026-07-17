@@ -195,6 +195,13 @@ body {
   opacity: 0.6;
 }
 
+/* v2.0.217: Brand logo SVG — inline with panel-title gradient colors */
+.brand-logo {
+  height: 36px;
+  width: auto;
+  flex-shrink: 0;
+}
+
 .brand-name {
   font-family: var(--font-mono);
   font-size: 2.1rem;
