@@ -347,6 +347,34 @@ class MATSSystem {
       }
     }
   }
+
+  /**
+   * v2.0.202: Call the loss streak gate in the decision cycle BEFORE executing
+   * any BUY/SELL decision. This is the injection point that was missing.
+   * Called from the main decision cycle for the active symbol AND for each
+   * per-symbol consensus entry.
+   */
+  private applyLossStreakGateToDecision(
+    decision: TradingDecision,
+    symbol: string,
+    action: 'buy' | 'sell',
+    auditGates: Array<{ gate: string; passed: boolean; reason: string }>,
+  ): TradingDecision {
+    // Check loss streak gate (consecutive losses + systematic loser)
+    const gateResult = this.checkLossStreakGate(symbol, action);
+    if (gateResult.blocked) {
+      log.warn(`🚫 [loss-streak-gate] ${action.toUpperCase()} ${symbol} blocked: ${gateResult.reason}`);
+      auditGates.push({ gate: 'loss-streak', passed: false, reason: gateResult.reason ?? 'blocked by loss streak gate' });
+      return {
+        ...decision,
+        action: 'hold',
+        positionSizePct: 0,
+        rationale: `[LOSS STREAK GATE] ${gateResult.reason}. HOLD. Original: ${decision.rationale}`,
+      };
+    }
+    auditGates.push({ gate: 'loss-streak', passed: true, reason: 'no loss streak detected' });
+    return decision;
+  }
   /** v2.0.128: Decision audit log — tracks every Meta-Agent BUY/SELL decision
    *  and which gate blocked or allowed it. Kept to the last 50 entries. */
   private decisionAudit: Array<{

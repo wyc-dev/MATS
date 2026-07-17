@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.202: Add per-symbol-per-direction loss streak guard to block systematically losing patterns
+
+
 ## v2.0.202: Add per-symbol-per-direction systematic loser gate to prevent continued losses on patterns like BUY xyz:SKHX (14 trades, 29% WR, -$3.05 PnL). The gate blocks a (symbol, direction) pair when totalTrades >= 10 AND winRate < 0.35, with a decay mechanism that halves the trade count after 24 cycles to prevent permanent deadlock. Also added comprehensive test suite covering all edge cases.
 
 

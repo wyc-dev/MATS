@@ -560,3 +560,7 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/api/status
 ---
 
 > 完整版本歷史請見 [CHANGELOG.md](CHANGELOG.md)。
+
+
+## System Engineer Update
+Added `applyLossStreakGateToDecision()` method to MATSSystem class that calls the existing `checkLossStreakGate()` method in the decision cycle. This is the missing injection point — the guard existed but was never invoked. The new method is called for the active symbol's final decision and for each per-symbol consensus entry decision, blocking BUY/SELL when the loss streak or systematic loser threshold is exceeded.
