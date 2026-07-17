@@ -227,10 +227,10 @@ ${changelogTail}
 ### Loop Engineering Memory (known bugs)
 ${loopMemory.slice(0, 1500)}
 
-### System Engineer Feedback Log (your own history — what you already tried)
-${feedbackLog.slice(0, 3000)}
+### System Engineer Feedback Log (your own history — latest first, read until you find similar issues then stop)
+${feedbackLog.split('\n').reverse().join('\n').slice(0, 3000)}
 
-This is your own audit history. Read it to understand what you already tried, what succeeded, and what failed. Do NOT re-diagnose issues that are already marked SUCCESS or BLOCKED. Focus on finding NEW issues.
+This is your own audit history (reversed — latest entries first). Read from the top to see your most recent actions. Do NOT re-diagnose issues that are already marked SUCCESS or BLOCKED. Focus on finding NEW issues.
 
 ${failedFileEntries.length > 0 ? `## 📋 Previous Failed Attempts (learn from these — try a DIFFERENT approach)
 ${failedFileEntries.map(f => `### ${f.file}\n${f.attempts.map(a => `- ❌ "${a.title}" — ${a.error}`).join('\n')}`).join('\n\n')}
