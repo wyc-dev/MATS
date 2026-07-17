@@ -21,12 +21,13 @@ const log = createLogger({ phase: 'system-engineer' });
 const PROJECT_ROOT = process.cwd();
 const RECOMMENDATIONS_FILE = join(PROJECT_ROOT, 'data/evolution/audit-recommendations.jsonl');
 
-// Files the agent is ALLOWED to modify (learning + decision logic only)
+// Files the agent is ALLOWED to modify (learning + decision logic + orchestrator)
 const ALLOWED_PREFIXES = [
   'src/evolution/',
   'src/cognition/',
   'src/analysis/',
   'src/agents/',
+  'src/index.ts',
   'tests/',
 ];
 
@@ -36,9 +37,8 @@ const FORBIDDEN_PREFIXES = [
   'src/config/',
   'src/data/',
   'src/api-server.ts',
-  'src/index.ts',
   '.env',
-];
+];;
 
 const SYSTEM_PROMPT = `You are the System Engineer of MATS, a multi-agent quant trading system on Hyperliquid DEX.
 Your mission: achieve maximum profit efficiency while approaching complete capital preservation.
@@ -54,6 +54,7 @@ A safety net runs after each fix: tsc --noEmit + npm test. If either fails, your
 - src/cognition/*.ts — HACP decision protocol, A2A utils (consensus, debate, Skeptics validation)
 - src/analysis/*.ts — sentiment, S/R, ATR, chaos, options, news analysis
 - src/agents/*.ts — agent base class, sub-agents, meta-agent, skeptics
+- src/index.ts — main orchestrator (decision cycle, trade execution routing, adaptive filter, OLR injection)
 - tests/*.ts — test files (you own these, keep them updated with your changes)
 
 ## What You CANNOT Modify (STRICTLY FORBIDDEN)
@@ -172,6 +173,10 @@ export async function runSystemEngineer(records: ThesisExperienceRecord[]): Prom
 
   const dirSummary = buildDirectionSummary(records);
 
+  // v2.0.225: Trade pattern analysis — group last 30 trades by symbol+side
+  // to detect systematically losing patterns that need intervention
+  const patternAnalysis = buildTradePatternAnalysis(records);
+
   // v2.0.201: Two-phase approach — Phase 1 diagnoses which file+issue,
   // Phase 2 reads the FULL file and asks for exact oldCode/newCode.
   // Previous single-phase approach showed only 150 lines per file, causing
@@ -232,7 +237,10 @@ ${tradeSummary}
 ## Per-Symbol Direction Summary
 ${dirSummary}
 
-## File Summaries (you can modify files under src/evolution/, src/cognition/, src/analysis/, src/agents/, tests/)
+## Trade Pattern Analysis (last 30 trades — detect systematically losing patterns)
+${patternAnalysis}
+
+## File Summaries (you can modify files under src/evolution/, src/cognition/, src/analysis/, src/agents/, src/index.ts, tests/)
 ${fileSummaries}
 
 ## Known Good Code (DO NOT attempt to "fix" these — they are already correct)
@@ -243,7 +251,7 @@ ${fileSummaries}
 ## Your Task (Phase 1: Diagnosis)
 Find the SINGLE MOST IMPACTFUL issue in the learning/decision system that is causing losses or preventing the system from learning correctly.
 
-IMPORTANT: Look at ALL files in the File Summaries above — do not fixate on shadow-trade-engine.ts. The system has many components (OLR, EXP, RIL, EM Cycle, HACP, agents, analysis). Consider issues in:
+IMPORTANT: Look at ALL files in the File Summaries above — do not fixate on shadow-trade-engine.ts. The system has many components (OLR, EXP, RIL, EM Cycle, HACP, agents, analysis, adaptive filter, orchestrator). Consider issues in:
 - src/evolution/thesis-experience.ts (EXP memory — thesis win rates)
 - src/evolution/experience-digester.ts (experience classification)
 - src/evolution/reason-analytics.ts (RIL — pattern clustering, similar trades)
@@ -253,7 +261,18 @@ IMPORTANT: Look at ALL files in the File Summaries above — do not fixate on sh
 - src/cognition/hacp.ts (HACP decision protocol)
 - src/agents/base-agent.ts (agent LLM call + confidence)
 - src/agents/meta-agent.ts (Meta-Agent arbitration + entryThesis)
+- src/analysis/adaptive-filter.ts (trade frequency throttle, conviction gate)
 - src/analysis/ (sentiment, S/R, ATR, chaos, options, news)
+- src/index.ts (orchestrator — decision cycle, trade execution routing, OLR injection, adaptive filter gates)
+
+## Trade Pattern Review (MANDATORY)
+Review the "Trade Pattern Analysis" section above. If any pattern is flagged as ⚠️ SYSTEMATIC LOSER (5+ trades, WR < 40%), you MUST consider whether the system should block or restrict that pattern. If a pattern is ✅ PROFITABLE PATTERN (5+ trades, WR >= 60%), consider whether the system should prioritize it.
+
+Examples of valid fixes:
+- Add a per-symbol-per-direction loss streak guard in src/index.ts that overrides to HOLD after N consecutive losses
+- Add a soft gate in the adaptive filter that increases conviction threshold for systematically losing patterns
+- Adjust OLR source weighting if shadow trades are polluting the model
+- Fix the trade frequency throttle if it's blocking profitable patterns
 
 If a file appears in "Previous Failed Attempts" above, you MAY still propose a fix for it — but you MUST try a DIFFERENT approach than what failed. Read the error messages to understand why the previous attempt failed and avoid the same mistake.
 If an issue is listed in "Recently Applied Fixes" above, it is ALREADY FIXED — find a DIFFERENT issue.
@@ -788,6 +807,33 @@ function buildDirectionSummary(records: ThesisExperienceRecord[]): string {
   return lines.join('\n');
 }
 
+// v2.0.225: Trade pattern analysis — detect systematically losing patterns
+// Groups last 30 trades by symbol+side, computes win rate + total PnL,
+// and flags patterns that are statistically significant losers (WR < 40% with 5+ trades)
+function buildTradePatternAnalysis(records: ThesisExperienceRecord[]): string {
+  const recent30 = records.slice(-30);
+  const map = new Map<string, { wins: number; losses: number; totalPnl: number; trades: number; avgHold: number }>();
+  for (const r of recent30) {
+    const key = `${r.side.toUpperCase()} ${r.symbol}`;
+    let e = map.get(key);
+    if (!e) { e = { wins: 0, losses: 0, totalPnl: 0, trades: 0, avgHold: 0 }; map.set(key, e); }
+    e.trades++;
+    e.totalPnl += r.pnl;
+    e.avgHold += r.holdMin;
+    if (r.outcome === 'WIN') e.wins++; else e.losses++;
+  }
+  const lines: string[] = [];
+  const sorted = [...map.entries()].sort((a, b) => a[1].totalPnl - b[1].totalPnl);
+  for (const [key, v] of sorted) {
+    const wr = v.trades > 0 ? (v.wins / v.trades * 100).toFixed(0) : '-';
+    const avgHold = v.trades > 0 ? (v.avgHold / v.trades).toFixed(0) : '-';
+    const flag = v.trades >= 5 && (v.wins / v.trades) < 0.40 ? ' ⚠️ SYSTEMATIC LOSER' : '';
+    const profitFlag = v.trades >= 5 && (v.wins / v.trades) >= 0.60 ? ' ✅ PROFITABLE PATTERN' : '';
+    lines.push(`  ${key}: ${v.trades} trades, WR=${wr}%, PnL=$${v.totalPnl.toFixed(2)}, avgHold=${avgHold}min${flag}${profitFlag}`);
+  }
+  return lines.join('\n');
+}
+
 function readFileSummaries(): string {
   // v2.0.201: Show file name + line count + first 50 lines as a summary.
   // The full file is read in Phase 2 after the LLM identifies which file to fix.
@@ -810,6 +856,7 @@ function readFileSummaries(): string {
     'src/analysis/support-resistance.ts',
     'src/analysis/atr.ts',
     'src/analysis/planck-chaos.ts',
+    'src/analysis/adaptive-filter.ts',
   ];
 
   const parts: string[] = [];
