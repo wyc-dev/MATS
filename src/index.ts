@@ -240,7 +240,24 @@ class MATSSystem {
     if (entry.totalTrades >= 10) {
       const winRate = entry.totalWins / entry.totalTrades;
       if (winRate < 0.35) {
-        return { blocked: true, reason: `Systematic loser gate: ${direction.toUpperCase()} ${symbol} has ${entry.totalTrades} trades with ${(winRate * 100).toFixed(0)}% win rate (threshold: 35%) — blocked until win rate recovers above 40%` };
+        // v2.0.226: Decay mechanism — if the pair has been blocked for 24+ cycles
+        // (2 hours at 5-min cycle), halve the totalTrades and totalWins. This
+        // gradually forgets old losses and allows the pair to be retried.
+        // Without this, a systematic loser is blocked FOREVER because no new
+        // trades can be placed to improve the win rate (dead lock).
+        if (entry.blockedUntilCycle > 0 && this.totalCycles >= entry.blockedUntilCycle + 24) {
+          entry.totalTrades = Math.floor(entry.totalTrades / 2);
+          entry.totalWins = Math.floor(entry.totalWins / 2);
+          entry.consecutiveLosses = 0;
+          entry.blockedUntilCycle = 0;
+          const newWinRate = entry.totalTrades > 0 ? (entry.totalWins / entry.totalTrades * 100).toFixed(0) : '0';
+          log.info(`🔄 [loss-streak] ${direction.toUpperCase()} ${symbol}: decay applied — totalTrades halved to ${entry.totalTrades}, winRate now ${newWinRate}% — retry allowed`);
+          // Re-check after decay
+          if (entry.totalTrades < 10 || (entry.totalWins / entry.totalTrades) >= 0.40) {
+            return { blocked: false };
+          }
+        }
+        return { blocked: true, reason: `Systematic loser gate: ${direction.toUpperCase()} ${symbol} has ${entry.totalTrades} trades with ${(winRate * 100).toFixed(0)}% win rate (threshold: 35%) — blocked until win rate recovers above 40% (decay in ${Math.max(0, (entry.blockedUntilCycle + 24 - this.totalCycles))} cycles)` };
       }
     }
 
@@ -277,11 +294,16 @@ class MATSSystem {
       }
     }
 
-    // Log systematic loser detection
+    // Log systematic loser detection + set blockedUntilCycle for decay timer
     if (entry.totalTrades >= 10) {
       const winRate = entry.totalWins / entry.totalTrades;
       if (winRate < 0.35) {
-        log.warn(`🚫 [systematic-loser] ${direction.toUpperCase()} ${symbol}: ${entry.totalTrades} trades, ${(winRate * 100).toFixed(0)}% win rate — blocked until win rate recovers above 40%`);
+        // v2.0.226: Set blockedUntilCycle so the decay mechanism in checkLossStreakGate
+        // can count 24 cycles from this point and then halve the stats (forget old losses)
+        if (entry.blockedUntilCycle === 0) {
+          entry.blockedUntilCycle = this.totalCycles;
+        }
+        log.warn(`🚫 [systematic-loser] ${direction.toUpperCase()} ${symbol}: ${entry.totalTrades} trades, ${(winRate * 100).toFixed(0)}% win rate — blocked (decay in 24 cycles)`);
       }
     }
   }
