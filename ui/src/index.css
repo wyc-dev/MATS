@@ -345,11 +345,6 @@ body {
   box-shadow: 0 0 var(--space-6) rgba(52, 211, 153, 0.15);
 }
 
-.pause-btn:not(.paused):hover {
-  border-color: var(--gold);
-  color: var(--gold);
-}
-
 .btn-icon { font-size: 1.6rem; line-height: 1; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex-shrink: 0; }
 .btn-label { font-size: 1.4rem; white-space: nowrap; line-height: 1; display: flex; align-items: center; }
 
