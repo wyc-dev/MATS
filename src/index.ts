@@ -265,6 +265,46 @@ class MATSSystem {
   }
 
   /**
+   * v2.0.202: Check the per-symbol-per-direction systematic loser gate.
+   * This is a SEPARATE gate from the consecutive loss streak guard.
+   * It checks if a (symbol, direction) pair has >= 10 total trades AND win rate < 0.35.
+   * If so, it blocks that pair until the win rate recovers above 0.40.
+   *
+   * This catches patterns like BUY xyz:SKHX (14 trades, 29% WR) where losses
+   * are NOT consecutive but the direction is systematically wrong.
+   *
+   * The decay mechanism (v2.0.226) prevents permanent deadlock: after 24 cycles
+   * of being blocked, the trade count is halved so the pair can be retried.
+   */
+  private checkSystematicLoserGate(symbol: string, direction: 'buy' | 'sell'): { blocked: boolean; reason?: string } {
+    const key = `${normalizeSymbol(symbol)}:${direction}`;
+    const entry = this.lossStreakTracker.get(key);
+    if (!entry) return { blocked: false };
+
+    // Only check if we have enough data
+    if (entry.totalTrades < 10) return { blocked: false };
+
+    const winRate = entry.totalWins / entry.totalTrades;
+    if (winRate >= 0.35) return { blocked: false };
+
+    // Systematic loser detected — check decay
+    if (entry.blockedUntilCycle > 0 && this.totalCycles >= entry.blockedUntilCycle + 24) {
+      entry.totalTrades = Math.floor(entry.totalTrades / 2);
+      entry.totalWins = Math.floor(entry.totalWins / 2);
+      entry.consecutiveLosses = 0;
+      entry.blockedUntilCycle = 0;
+      const newWinRate = entry.totalTrades > 0 ? (entry.totalWins / entry.totalTrades * 100).toFixed(0) : '0';
+      log.info(`🔄 [systematic-loser] ${direction.toUpperCase()} ${symbol}: decay applied — totalTrades halved to ${entry.totalTrades}, winRate now ${newWinRate}% — retry allowed`);
+      // Re-check after decay
+      if (entry.totalTrades < 10 || (entry.totalWins / entry.totalTrades) >= 0.40) {
+        return { blocked: false };
+      }
+    }
+
+    return { blocked: true, reason: `Systematic loser gate: ${direction.toUpperCase()} ${symbol} has ${entry.totalTrades} trades with ${(winRate * 100).toFixed(0)}% win rate (threshold: 35%) — blocked until win rate recovers above 40% (decay in ${Math.max(0, (entry.blockedUntilCycle + 24 - this.totalCycles))} cycles)` };
+  }
+
+  /**
    * v2.0.181: Update the loss streak tracker when a trade closes.
    * Called from onPositionClosedLearning() for EVERY closed trade.
    * - Win: reset consecutiveLosses to 0, increment totalWins
