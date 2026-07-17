@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.202: Add per-symbol-per-direction loss streak guard in orchestrator — blocks BUY xyz:SKHX after 3 consecutive losses OR when totalTrades >= 10 with winRate < 0.35. The guard tracks totalTrades and totalWins per (symbol, direction) pair, and blocks the pair until win rate recovers above 0.40. This prevents the system from repeatedly making the same losing bet even when losses are not consecutive.
+
+
 ## v2.0.202: Add per-symbol-per-direction loss streak guard — BUY xyz:SKHX blocked after 3 consecutive losses (WR=29% over 14 trades)
 
 

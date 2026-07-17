@@ -191,12 +191,18 @@ class MATSSystem {
    *  Cleared when a position actually opens for that symbol.
    *  Map: normalized symbol → { thesis, action, storedAt, cycle } */
   private pendingTheses = new Map<string, { thesis: string; action: 'buy' | 'sell'; storedAt: number; cycle: number }>();
-  /** v2.0.202: Per-symbol-per-direction loss streak tracker.
+  /** v2.0.202: Per-symbol-per-direction loss streak guard.
    *  Tracks consecutive losses for each (symbol, direction) pair.
    *  After 3 consecutive losses, the pair is blocked (force HOLD) for 12 cycles (60 min).
    *  The counter resets on any win for that pair.
-   *  Map: "symbol:direction" → { consecutiveLosses, blockedUntilCycle } */
-  private lossStreakTracker = new Map<string, { consecutiveLosses: number; blockedUntilCycle: number }>();
+   *  Map: "symbol:direction" → { consecutiveLosses, blockedUntilCycle }
+   *
+   *  v2.0.202: Also tracks the total trade count per pair so we can detect
+   *  systematic losers even without consecutive losses (e.g. 14 trades, 29% WR).
+   *  If totalTrades >= 10 AND winRate < 0.35, the pair is blocked until
+   *  the win rate recovers above 0.40. This catches the BUY xyz:SKHX pattern
+   *  where losses are not consecutive but the direction is systematically wrong. */
+  private lossStreakTracker = new Map<string, { consecutiveLosses: number; blockedUntilCycle: number; totalTrades: number; totalWins: number }>();
   /** v2.0.128: Decision audit log — tracks every Meta-Agent BUY/SELL decision
    *  and which gate blocked or allowed it. Kept to the last 50 entries. */
   private decisionAudit: Array<{
