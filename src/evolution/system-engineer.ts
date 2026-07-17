@@ -161,6 +161,8 @@ export async function runSystemEngineer(records: ThesisExperienceRecord[]): Prom
   const architectureMd = readFileSafe('ARCHITECTURE.md');
   const changelogTail = readChangelogTail(3);
   const loopMemory = readFileSafe('scripts/loop-engineering-memory.md');
+  // v2.0.228: Read own feedback log so SE knows what it already tried
+  const feedbackLog = readFileSafe('SYSTEM_ENGINEER_FEEDBACK.md');
 
   // Phase 2: Build trade record summary
   const recent = records.slice(-20);
@@ -224,6 +226,11 @@ ${changelogTail}
 
 ### Loop Engineering Memory (known bugs)
 ${loopMemory.slice(0, 1500)}
+
+### System Engineer Feedback Log (your own history — what you already tried)
+${feedbackLog.slice(0, 3000)}
+
+This is your own audit history. Read it to understand what you already tried, what succeeded, and what failed. Do NOT re-diagnose issues that are already marked SUCCESS or BLOCKED. Focus on finding NEW issues.
 
 ${failedFileEntries.length > 0 ? `## 📋 Previous Failed Attempts (learn from these — try a DIFFERENT approach)
 ${failedFileEntries.map(f => `### ${f.file}\n${f.attempts.map(a => `- ❌ "${a.title}" — ${a.error}`).join('\n')}`).join('\n\n')}
