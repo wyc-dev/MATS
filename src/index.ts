@@ -201,8 +201,90 @@ class MATSSystem {
    *  systematic losers even without consecutive losses (e.g. 14 trades, 29% WR).
    *  If totalTrades >= 10 AND winRate < 0.35, the pair is blocked until
    *  the win rate recovers above 0.40. This catches the BUY xyz:SKHX pattern
-   *  where losses are not consecutive but the direction is systematically wrong. */
+   *  where losses are not consecutive but the direction is systematically wrong.
+   *
+   *  v2.0.181: Added checkLossStreakGate() method that checks BOTH the
+   *  consecutive loss streak AND the systematic loser threshold (totalTrades >= 10
+   *  AND winRate < 0.35). Returns { blocked: boolean, reason?: string }.
+   *  Called in the decision cycle before executing any BUY/SELL decision.
+   *  Also called in onPositionClosedLearning() to update the tracker on every close. */
   private lossStreakTracker = new Map<string, { consecutiveLosses: number; blockedUntilCycle: number; totalTrades: number; totalWins: number }>();
+
+  /**
+   * v2.0.181: Check the per-symbol-per-direction loss streak gate.
+   * Returns { blocked: true, reason } if the pair should be blocked, or { blocked: false } if allowed.
+   *
+   * Two conditions block a pair:
+   * 1. Consecutive loss streak >= 3 (blocked for 12 cycles, resets on any win)
+   * 2. Systematic loser: totalTrades >= 10 AND winRate < 0.35 (blocked until winRate > 0.40)
+   *
+   * This is called in the decision cycle BEFORE executing any BUY/SELL decision.
+   */
+  private checkLossStreakGate(symbol: string, direction: 'buy' | 'sell'): { blocked: boolean; reason?: string } {
+    const key = `${normalizeSymbol(symbol)}:${direction}`;
+    const entry = this.lossStreakTracker.get(key);
+    if (!entry) return { blocked: false };
+
+    // Condition 1: Consecutive loss streak
+    if (entry.consecutiveLosses >= 3) {
+      if (this.totalCycles < entry.blockedUntilCycle) {
+        const remaining = entry.blockedUntilCycle - this.totalCycles;
+        return { blocked: true, reason: `Loss streak gate: ${entry.consecutiveLosses} consecutive losses in ${direction.toUpperCase()} ${symbol} — blocked for ${remaining} more cycle(s)` };
+      }
+      // Cooldown expired — reset the streak counter but keep totalTrades/totalWins
+      entry.consecutiveLosses = 0;
+      entry.blockedUntilCycle = 0;
+    }
+
+    // Condition 2: Systematic loser (totalTrades >= 10 AND winRate < 0.35)
+    if (entry.totalTrades >= 10) {
+      const winRate = entry.totalWins / entry.totalTrades;
+      if (winRate < 0.35) {
+        return { blocked: true, reason: `Systematic loser gate: ${direction.toUpperCase()} ${symbol} has ${entry.totalTrades} trades with ${(winRate * 100).toFixed(0)}% win rate (threshold: 35%) — blocked until win rate recovers above 40%` };
+      }
+    }
+
+    return { blocked: false };
+  }
+
+  /**
+   * v2.0.181: Update the loss streak tracker when a trade closes.
+   * Called from onPositionClosedLearning() for EVERY closed trade.
+   * - Win: reset consecutiveLosses to 0, increment totalWins
+   * - Loss: increment consecutiveLosses, set blockedUntilCycle if >= 3
+   * Always increments totalTrades.
+   */
+  private updateLossStreakTracker(symbol: string, direction: 'buy' | 'sell', isWin: boolean): void {
+    const key = `${normalizeSymbol(symbol)}:${direction}`;
+    let entry = this.lossStreakTracker.get(key);
+    if (!entry) {
+      entry = { consecutiveLosses: 0, blockedUntilCycle: 0, totalTrades: 0, totalWins: 0 };
+      this.lossStreakTracker.set(key, entry);
+    }
+
+    entry.totalTrades++;
+
+    if (isWin) {
+      entry.consecutiveLosses = 0;
+      entry.totalWins++;
+      entry.blockedUntilCycle = 0;
+    } else {
+      entry.consecutiveLosses++;
+      if (entry.consecutiveLosses >= 3) {
+        // Block for 12 cycles (60 min at 5-min cycle)
+        entry.blockedUntilCycle = this.totalCycles + 12;
+        log.warn(`🚫 [loss-streak] ${direction.toUpperCase()} ${symbol}: ${entry.consecutiveLosses} consecutive losses — blocked for 12 cycles (until cycle #${entry.blockedUntilCycle})`);
+      }
+    }
+
+    // Log systematic loser detection
+    if (entry.totalTrades >= 10) {
+      const winRate = entry.totalWins / entry.totalTrades;
+      if (winRate < 0.35) {
+        log.warn(`🚫 [systematic-loser] ${direction.toUpperCase()} ${symbol}: ${entry.totalTrades} trades, ${(winRate * 100).toFixed(0)}% win rate — blocked until win rate recovers above 40%`);
+      }
+    }
+  }
   /** v2.0.128: Decision audit log — tracks every Meta-Agent BUY/SELL decision
    *  and which gate blocked or allowed it. Kept to the last 50 entries. */
   private decisionAudit: Array<{
