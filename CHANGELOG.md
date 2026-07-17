@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.202: Add per-symbol-per-direction loss streak guard — BUY xyz:SKHX blocked after 3 consecutive losses (WR=29% over 14 trades)
+
+
 ## v2.0.202: Add debug logging to verify resolution-time features are used in OLR training — helps diagnose stale feature problem in shadow trade engine
 
 
