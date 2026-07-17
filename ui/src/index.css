@@ -294,7 +294,7 @@ body {
   border: 2px solid transparent;
   position: relative;
   background: transparent;
-  color: var(--accent);
+  color: #fff;
 }
 
 .header-btn.icon-btn::before {
@@ -310,6 +310,11 @@ body {
   mask-composite: exclude;
   animation: rgb-text-shimmer 4s linear infinite;
   pointer-events: none;
+}
+
+.header-btn.icon-btn:hover {
+  color: #fff0b3;
+  box-shadow: 0 0 var(--space-8) rgba(255, 179, 207, 0.3);
 }
 
 .header-btn:hover {
@@ -328,17 +333,6 @@ body {
   border-color: var(--accent);
   color: var(--accent);
   box-shadow: 0 0 var(--space-8) var(--accent-glow);
-}
-
-.shutdown-btn:hover {
-  border-color: var(--red);
-  color: var(--red);
-}
-
-.settings-btn:hover {
-  border-color: transparent;
-  color: #fff0b3;
-  box-shadow: 0 0 var(--space-8) rgba(255, 179, 207, 0.3);
 }
 
 .pause-btn {
