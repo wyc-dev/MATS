@@ -3789,7 +3789,6 @@ export default function App() {
               <path d="M 450 33 L 444 39 L 443 43 L 442 44 L 442 51 L 443 52 L 444 56 L 449 61 L 453 62 L 454 63 L 462 63 L 463 62 L 467 61 L 471 57 L 473 53 L 473 51 L 474 50 L 474 45 L 473 44 L 473 41 L 472 39 L 467 34 L 463 32 L 453 32 L 452 33 Z" fill="url(#brandGradient)" fill-rule="evenodd" stroke="none" />
             </svg>
           </div>
-          <div className="glow-line" />
         </div>
         <div className="topbar-right">
           <button className="header-btn icon-btn settings-btn" title="Settings" onClick={async () => {
