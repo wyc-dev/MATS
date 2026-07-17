@@ -197,7 +197,7 @@ body {
 
 /* v2.0.217: Brand logo SVG — inline with panel-title gradient colors */
 .brand-logo {
-  height: 36px;
+  height: 54px;
   width: auto;
   flex-shrink: 0;
 }
