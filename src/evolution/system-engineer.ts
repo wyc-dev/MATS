@@ -155,6 +155,63 @@ function logFeedback(phase: string, result: string, title: string, file: string,
   } catch { /* non-critical */ }
 }
 
+// v2.0.231: Parse feedback log into compact summary — dedup by file, latest result per file
+// Shows only the most recent entry per file to save tokens. Format:
+//   ✅ src/index.ts — "title..." (SUCCESS, 2026-07-17 16:10)
+//   🚫 src/evolution/thesis-experience.ts — "title..." (BLOCKED, 2026-07-17 15:51)
+function parseFeedbackLog(raw: string): string {
+  if (!raw || raw.startsWith('(file not found') || raw.startsWith('(read failed')) {
+    return '(no feedback history)';
+  }
+  // Parse entries: ## [timestamp] [phase] [result] followed by Title/File/Details
+  const entries: { ts: string; phase: string; result: string; title: string; file: string }[] = [];
+  const lines = raw.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    const match = line.match(/^## \[([^\]]+)\] \[([^\]]+)\] \[([^\]]+)\]/);
+    if (match) {
+      const ts = match[1]!;
+      const phase = match[2]!;
+      const result = match[3]!;
+      // Next lines: Title and File
+      let title = '';
+      let file = '';
+      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+        const tm = lines[j]!.match(/^\- \*\*Title\*\*: (.+)$/);
+        if (tm) title = tm[1]!.slice(0, 80);
+        const fm = lines[j]!.match(/^\- \*\*File\*\*: (.+)$/);
+        if (fm) file = fm[1]!;
+      }
+      entries.push({ ts, phase, result, title, file });
+    }
+    i++;
+  }
+  if (entries.length === 0) return '(no feedback entries found)';
+
+  // Dedup by file — keep only the latest entry per file
+  const seen = new Map<string, { ts: string; phase: string; result: string; title: string; file: string }>();
+  for (const e of entries) {
+    if (!seen.has(e.file)) {
+      seen.set(e.file, e);
+    }
+  }
+
+  // Format compactly
+  const icon = (result: string) => {
+    if (result === 'SUCCESS') return '✅';
+    if (result === 'BLOCKED') return '🚫';
+    if (result === 'NO_OP' || result === 'COMMENT_ONLY') return '⚠️';
+    if (result === 'ROLLED_BACK') return '❌';
+    return '📋';
+  };
+  const lines_out: string[] = [];
+  for (const e of seen.values()) {
+    lines_out.push(`${icon(e.result)} ${e.file} — "${e.title}" (${e.result}, ${e.ts})`);
+  }
+  return lines_out.join('\n');
+}
+
 export async function runSystemEngineer(records: ThesisExperienceRecord[]): Promise<AutoFixResult | null> {
   // v2.0.183: Prevent overlapping runs
   if (engineerRunning) {
@@ -172,7 +229,9 @@ export async function runSystemEngineer(records: ThesisExperienceRecord[]): Prom
   const changelogTail = readChangelogTail(3);
   const loopMemory = readFileSafe('scripts/loop-engineering-memory.md');
   // v2.0.228: Read own feedback log so SE knows what it already tried
-  const feedbackLog = readFileSafe('SYSTEM_ENGINEER_FEEDBACK.md');
+  // v2.0.231: Parse feedback log into structured entries — only show recent
+  // unique entries (dedup by file), not raw 3000 chars. This saves tokens.
+  const feedbackEntries = parseFeedbackLog(readFileSafe('SYSTEM_ENGINEER_FEEDBACK.md'));
 
   // Phase 2: Build trade record summary
   const recent = records.slice(-20);
@@ -237,10 +296,10 @@ ${changelogTail}
 ### Loop Engineering Memory (known bugs)
 ${loopMemory.slice(0, 1500)}
 
-### System Engineer Feedback Log (your own history — latest first, read until you find similar issues then stop)
-${feedbackLog.slice(0, 3000)}
+### System Engineer Feedback Log (your own history — latest first)
+${feedbackEntries}
 
-This is your own audit history (latest entries at top). Read from the top to see your most recent actions. Do NOT re-diagnose issues that are already marked SUCCESS or BLOCKED. Focus on finding NEW issues.
+This is your own audit history (latest entries at top). Each entry shows what you already tried for each file. Do NOT re-diagnose issues that are already marked SUCCESS or BLOCKED. Focus on finding NEW issues in files NOT listed here.
 
 ${failedFileEntries.length > 0 ? `## 📋 Previous Failed Attempts (learn from these — try a DIFFERENT approach)
 ${failedFileEntries.map(f => `### ${f.file}\n${f.attempts.map(a => `- ❌ "${a.title}" — ${a.error}`).join('\n')}`).join('\n\n')}
