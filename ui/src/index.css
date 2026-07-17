@@ -964,17 +964,42 @@ body {
   background: var(--glass-bg-hover);
 }
 
+/* v2.0.224: Thinking state — gradient border + white glow replaces orange */
 .agent-card.agent-thinking {
-  border-color: var(--accent);
-  box-shadow: 0 0 var(--space-12) var(--accent-glow);
+  border: 2px solid transparent;
+  position: relative;
+}
+
+.agent-card.agent-thinking::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: var(--radius-lg);
+  padding: 2px;
+  background: linear-gradient(90deg, #ffb3cf, #ffd9b3, #fff0b3, #b3ffcc, #b3e0ff, #d4b3ff, #ffb3cf);
+  background-size: 200% 100%;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: rgb-text-shimmer 4s linear infinite;
+  pointer-events: none;
+  box-shadow: 0 0 var(--space-12) rgba(255, 255, 255, 0.15);
+}
+
+@keyframes white-breathe {
+  0%, 100% { box-shadow: 0 0 var(--space-6) rgba(255, 255, 255, 0.1); }
+  50% { box-shadow: 0 0 var(--space-12) rgba(255, 255, 255, 0.25); }
+}
+
+/* v2.0.224: Thinking dot — left agent-dot turns white + breathing, replaces right live-dot */
+.agent-card.agent-thinking .agent-dot {
+  opacity: 1;
+  background: #fff !important;
+  animation: white-breathe 1.5s ease-in-out infinite;
 }
 
 .live-dot {
-  width: var(--space-3);
-  height: var(--space-3);
-  border-radius: 50%;
-  background: var(--accent);
-  animation: pulse-dot 0.8s ease-in-out infinite;
+  display: none;
 }
 
 .conf-animate {
