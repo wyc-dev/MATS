@@ -1663,11 +1663,12 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   )
 }
 
-function PreferencePanel({ data }: { data: APIData | null }) {
+function PreferencePanel({ data, ollamaPlan }: { data: APIData | null; ollamaPlan?: string }) {
   return (
     <div className="panel panel-rgb-border">
       <div className="panel-header">
         <span className="panel-title">HACP Prefrontal</span>
+        {ollamaPlan && <span className={`brand-plan brand-plan-${ollamaPlan.toLowerCase()}`}>Ollama {ollamaPlan}</span>}
       </div>
       <div className="agent-list">
         <MarketAgentCard data={data} />
@@ -3595,7 +3596,7 @@ export default function App() {
 
   // v2.0.119: DESKTOP_PANELS defined inside App() so it can access ollamaPlan
   const DESKTOP_PANELS: Array<(data: APIData | null) => React.ReactNode> = [
-    (data) => <PreferencePanel key="preference" data={data} />,
+    (data) => <PreferencePanel key="preference" data={data} ollamaPlan={ollamaPlan} />,
     (data) => <PortfolioPanel key="portfolio" data={data} />,
     (data) => <AgentPanel key="agents" data={data} ollamaPlan={ollamaPlan} />,
   ]
@@ -3787,7 +3788,6 @@ export default function App() {
               <path d="M 246 47 L 246 77 L 249 77 L 249 47 Z" fill="url(#brandGradient)" fill-rule="evenodd" stroke="none" />
               <path d="M 450 33 L 444 39 L 443 43 L 442 44 L 442 51 L 443 52 L 444 56 L 449 61 L 453 62 L 454 63 L 462 63 L 463 62 L 467 61 L 471 57 L 473 53 L 473 51 L 474 50 L 474 45 L 473 44 L 473 41 L 472 39 L 467 34 L 463 32 L 453 32 L 452 33 Z" fill="url(#brandGradient)" fill-rule="evenodd" stroke="none" />
             </svg>
-            {ollamaPlan && <span className={`brand-plan brand-plan-${ollamaPlan.toLowerCase()}`}>Ollama {ollamaPlan}</span>}
           </div>
           <div className="glow-line" />
         </div>
@@ -3845,7 +3845,7 @@ export default function App() {
         {/* Mobile: tab-based layout */}
         <div className={`col-left ${activeTab === 'agents' || activeTab === 'consciousness' ? 'visible' : ''}`}>
           <div className="mobile-only">
-            {activeTab === 'agents' && <PreferencePanel data={data} />}
+            {activeTab === 'agents' && <PreferencePanel data={data} ollamaPlan={ollamaPlan} />}
             {activeTab === 'consciousness' && <AgentPanel data={data} ollamaPlan={ollamaPlan} />}
           </div>
         </div>
