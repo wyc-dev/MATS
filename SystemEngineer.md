@@ -8,8 +8,8 @@
 
 ## Scope
 
-ALLOW: `src/evolution/*.ts`, `src/cognition/*.ts`, `src/analysis/*.ts`, `src/agents/*.ts`, `tests/*.ts`
-FORBIDDEN: `src/trading/*`, `src/config/*`, `src/index.ts`, `.env`, `src/api-server.ts`, `src/data/*`
+ALLOW: `src/evolution/*.ts`, `src/cognition/*.ts`, `src/analysis/*.ts`, `src/agents/*.ts`, `src/index.ts`, `tests/*.ts`
+FORBIDDEN: `src/trading/*`, `src/config/*`, `.env`, `src/api-server.ts`, `src/data/*`
 
 ## Ground Truth Rule
 
