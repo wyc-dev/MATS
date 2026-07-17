@@ -140,8 +140,18 @@ const FEEDBACK_LOG = join(PROJECT_ROOT, 'SYSTEM_ENGINEER_FEEDBACK.md');
 function logFeedback(phase: string, result: string, title: string, file: string, details: string): void {
   try {
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    const line = `\n## [${ts}] [${phase}] [${result}]\n\n- **Title**: ${title}\n- **File**: ${file}\n- **Details**: ${details}\n`;
-    appendFileSync(FEEDBACK_LOG, line + '\n---\n', 'utf-8');
+    const entry = `\n## [${ts}] [${phase}] [${result}]\n\n- **Title**: ${title}\n- **File**: ${file}\n- **Details**: ${details}\n\n---\n`;
+    // v2.0.230: Prepend new entries after the header (latest at top)
+    const existing = readFileSync(FEEDBACK_LOG, 'utf-8');
+    const headerEnd = existing.indexOf('\n---\n');
+    if (headerEnd > 0) {
+      const header = existing.slice(0, headerEnd + 5);
+      const rest = existing.slice(headerEnd + 5);
+      writeFileSync(FEEDBACK_LOG, header + entry + rest, 'utf-8');
+    } else {
+      // Fallback: append if header not found
+      appendFileSync(FEEDBACK_LOG, entry, 'utf-8');
+    }
   } catch { /* non-critical */ }
 }
 
@@ -228,9 +238,9 @@ ${changelogTail}
 ${loopMemory.slice(0, 1500)}
 
 ### System Engineer Feedback Log (your own history — latest first, read until you find similar issues then stop)
-${feedbackLog.split('\n').reverse().join('\n').slice(0, 3000)}
+${feedbackLog.slice(0, 3000)}
 
-This is your own audit history (reversed — latest entries first). Read from the top to see your most recent actions. Do NOT re-diagnose issues that are already marked SUCCESS or BLOCKED. Focus on finding NEW issues.
+This is your own audit history (latest entries at top). Read from the top to see your most recent actions. Do NOT re-diagnose issues that are already marked SUCCESS or BLOCKED. Focus on finding NEW issues.
 
 ${failedFileEntries.length > 0 ? `## 📋 Previous Failed Attempts (learn from these — try a DIFFERENT approach)
 ${failedFileEntries.map(f => `### ${f.file}\n${f.attempts.map(a => `- ❌ "${a.title}" — ${a.error}`).join('\n')}`).join('\n\n')}
