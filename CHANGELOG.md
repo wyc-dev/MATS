@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.202: Add per-symbol-per-direction systematic loser gate to prevent continued losses on patterns like BUY xyz:SKHX (14 trades, 29% WR, -$3.05 PnL). The gate blocks a (symbol, direction) pair when totalTrades >= 10 AND winRate < 0.35, with a decay mechanism that halves the trade count after 24 cycles to prevent permanent deadlock. Also added comprehensive test suite covering all edge cases.
+
+
 ## v2.0.181: Add per-symbol-per-direction loss streak guard — block BUY xyz:SKHX after 3 consecutive losses (systematic loser: 29% WR, -$3.05 PnL over 14 trades). Two conditions: (1) 3+ consecutive losses blocks for 12 cycles, (2) totalTrades >= 10 AND winRate < 0.35 blocks until winRate > 0.40. checkLossStreakGate() called in decision cycle before executing any BUY/SELL. updateLossStreakTracker() called from onPositionClosedLearning() for every closed trade. New test file tests/loss-streak-guard.test.ts with 10 test cases.
 
 
