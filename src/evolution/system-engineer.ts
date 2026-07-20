@@ -415,9 +415,34 @@ ${fileSummaries}
 - adaptive-filter.ts recordTrade()/countRecentTradesInWindow(): Time-based trade frequency pruning is correct (10-min window, 3 trades max). Do NOT revert to count-based pruning.
 
 ## Your Task (Phase 1: Diagnosis)
-Find the SINGLE MOST IMPACTFUL issue in the learning/decision system that is causing losses or preventing the system from learning correctly.
+Find the SINGLE MOST IMPACTFUL issue that is **PREVENTING THE SYSTEM FROM WINNING**.
 
-IMPORTANT: Look at ALL files in the File Summaries above — do not fixate on shadow-trade-engine.ts. The system has many components (OLR, EXP, RIL, EM Cycle, HACP, agents, analysis, adaptive filter, orchestrator). Consider issues in:
+### ⚠️ CRITICAL MINDSET (v2.0.752 — OWNER'S DIRECTIVE)
+
+**Do NOT ask "why is the system losing?" — ask "why can't the system WIN?"**
+
+These are fundamentally different questions:
+- ❌ "Why is it losing?" → leads to hard blocks, trade prevention, capital preservation (FORBIDDEN)
+- ✅ "Why can't it win?" → leads to signal quality improvement, better entry timing, better SL/TP placement, better thesis generation (CORRECT)
+
+When you see losing trades, do NOT think "how do I stop these trades?" Instead think:
+1. **Why did the system enter this trade?** Was the signal genuine or noise? If noise, fix the signal generation (OLR, pattern classifier, sentiment).
+2. **Why did the trade lose?** Was it SL too tight? Bad entry timing? Wrong direction? Fix the root cause of the loss, not the symptom.
+3. **Why can't the system find winning trades?** Is OLR overconfident (100% P(win) but loses)? Is the pattern classifier broken? Is the thesis too vague to identify real edges? Fix the signal quality.
+4. **What would make the next trade WIN?** Better SL/TP placement? Better entry price? Stronger thesis with specific price levels? Fix the winning factors.
+
+**FORBIDDEN thought patterns:**
+- "The system keeps losing on BUY SKHX → block BUY SKHX" (WRONG — this prevents future wins)
+- "Low win rate → stop trading" (WRONG — this guarantees zero profit)
+- "Past losses → future losses → hard block" (WRONG — gambler's fallacy)
+
+**CORRECT thought patterns:**
+- "OLR says 100% P(win) but trade lost → OLR is miscalibrated → fix OLR calibration" (CORRECT)
+- "SL triggered prematurely → SL too tight for volatility → fix SL/TP scaling" (CORRECT)
+- "Thesis says 'pattern classifier suggests buy' → thesis too vague to identify real edge → fix thesis quality requirements" (CORRECT)
+- "Trade entered at bad price → entry timing poor → fix entry timing logic" (CORRECT)
+
+IMPORTANT: Look at ALL files in the File Summaries above — do not fixate on one file. The system has many components (OLR, EXP, RIL, EM Cycle, HACP, agents, analysis, adaptive filter, orchestrator). Consider issues in:
 - src/evolution/thesis-experience.ts (EXP memory — thesis win rates)
 - src/evolution/experience-digester.ts (experience classification)
 - src/evolution/reason-analytics.ts (RIL — pattern clustering, similar trades)
@@ -432,13 +457,21 @@ IMPORTANT: Look at ALL files in the File Summaries above — do not fixate on sh
 - src/index.ts (orchestrator — decision cycle, trade execution routing, OLR injection, adaptive filter gates)
 
 ## Trade Pattern Review (MANDATORY)
-Review the "Trade Pattern Analysis" section above. If any pattern is flagged as ⚠️ SYSTEMATIC LOSER (5+ trades, WR < 40%), you MUST consider whether the system should block or restrict that pattern. If a pattern is ✅ PROFITABLE PATTERN (5+ trades, WR >= 60%), consider whether the system should prioritize it.
+Review the "Trade Pattern Analysis" section above. When you see losing patterns, ask "WHY can't these trades win?" not "how do I stop them?"
 
-Examples of valid fixes:
-- Add a per-symbol-per-direction loss streak guard in src/index.ts that overrides to HOLD after N consecutive losses
-- Add a soft gate in the adaptive filter that increases conviction threshold for systematically losing patterns
-- Adjust OLR source weighting if shadow trades are polluting the model
-- Fix the trade frequency throttle if it's blocking profitable patterns
+Examples of PROFIT-MAXIMIZING fixes (CORRECT approach):
+- Fix OLR calibration so P(win) predictions are accurate (not 0%/100%)
+- Fix SL/TP placement to use volatility-scaled distances (prevent premature SL)
+- Fix thesis quality requirements so trades have genuine, specific edges
+- Fix entry timing so trades enter at better prices (near S/R, not mid-range)
+- Fix agent evolution weights so better-performing agents have more influence
+- Fix pattern classifier thresholds so noise doesn't drive direction
+
+Examples of CAPITAL-PRESERVATION fixes (FORBIDDEN — will be reverted):
+- Add hard block for losing patterns
+- Add systematic loser gate
+- Raise conviction threshold so high that no trades can enter
+- Block specific symbols or directions
 
 If a file appears in "Previous Failed Attempts" above, you MAY still propose a fix for it — but you MUST try a DIFFERENT approach than what failed. Read the error messages to understand why the previous attempt failed and avoid the same mistake.
 If an issue is listed in "Recently Applied Fixes" above, it is ALREADY FIXED — find a DIFFERENT issue.
