@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.722: EXP thesis-experience.ts — apply Wilson score to direction-filtered pWin in checkThesisHistory() to penalize small sample sizes and prevent overconfidence from statistically insignificant patterns. Added rawPWin variable to preserve the similarity-weighted win rate for the delta check (which has its own sample size guard via minDeltaSamples). Verdict thresholds (winProbThreshold, lossProbThreshold) now use Wilson LB instead of raw pWin. Added two new tests: one verifying 2/2 matches do NOT trigger FAST_APPROVE (Wilson LB ~0.22 < 0.65), and one verifying 20/20 matches DO trigger FAST_APPROVE (Wilson LB ~0.84 > 0.65).
+
+
 ## v2.0.722: EXP thesis-experience.ts — direction-filtered pWin now uses Wilson score lower bound instead of raw winRate, penalizing small sample sizes to prevent overconfidence on patterns with few historical trades
 
 
