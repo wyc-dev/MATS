@@ -46,10 +46,11 @@ import { getSRZones } from './analysis/support-resistance.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
 import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
-import { OLREngine, type OLRQueryResult } from './evolution/olr-engine.ts';
+import { OLREngine, type OLRQueryResult, regimeToOrdinal } from './evolution/olr-engine.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
+import { wilsonScore } from './evolution/evolution-utils.ts';
 import { auditTradeRecordsLLM, type AuditResult } from './evolution/direction-audit.ts';
 import { runSystemEngineer } from './evolution/system-engineer.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
@@ -2214,7 +2215,11 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       const sentimentAgg = this.sentimentEngine?.getSentiment();
       const sentiment = sentimentAgg?.overallSentiment ?? 0;
       const sentimentConviction = sentimentAgg?.conviction ?? 0.5;
-      const signalAgreement = 0.5; // unknown at close time
+      // v2.0.721: Use last HACP consensus confidence instead of hardcoded 0.5.
+      // This fixes a train/test mismatch — query-time features use real consensus
+      // confidence (index.ts:5370+), but close-learning was always 0.5, so OLR
+      // trained on a constant feature that varied at query time.
+      const signalAgreement = this.lastHACPResult?.consensus?.confidence ?? 0.5;
 
       // 1. Record to Trade History so getRecentTradeAnalysis() sees it
       try {
@@ -2266,6 +2271,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           mfePct,
           maePct,
           mfeToPnlRatio: mfePct > 0 ? (mfePct - pnlPct) / mfePct : 0, // 0 = perfect exit, 1 = gave back everything
+          // v2.0.721: Regime as ordinal feature (H1)
+          regimeOrdinal: regimeToOrdinal(regime),
         };
         const tradeSource: 'paper' | 'real' = trade.agentId === 'hyperliquid-real' ? 'real' : 'paper';
         this.olrEngine.feedTrade(symbol, features, outcome, trade.side === 'buy' ? 'buy' : 'sell', tradeSource, this.totalCycles);
@@ -4724,6 +4731,8 @@ ${recentExamples}
                 signalAgreement: 0.5,
                 sentiment: sentimentData?.overallSentiment ?? 0,
                 sentimentConviction: sentimentData?.conviction ?? 0.5,
+                // v2.0.721: Regime ordinal (H1)
+                regimeOrdinal: regimeToOrdinal(combinedState.regime),
               };
               const olrBuy = this.olrEngine.query(combinedState.primarySymbol, { ...olrCtx }, 'buy', this.totalCycles);
               const olrSell = this.olrEngine.query(combinedState.primarySymbol, { ...olrCtx }, 'sell', this.totalCycles);
@@ -4773,7 +4782,10 @@ ${recentExamples}
               const sellResult = this.patternClassifier.queryEntry(patternCtx, combinedState.primarySymbol, 'sell', combinedState.price);
               const buyWr = buyResult.totalMatches >= 3 ? buyResult.adjustedWinRate : 0;
               const sellWr = sellResult.totalMatches >= 3 ? sellResult.adjustedWinRate : 0;
-              if (buyWr > 0 || sellWr > 0) {
+              // v2.0.721: Raise direction threshold from >0 to >0.3 with min spread.
+              // adjustedWinRate is already Wilson-scored, so 0.3 LB ≈ 5/8 raw WR (62.5%).
+              // The old `>0` let 1/3 (Wilson LB ~10%) drive direction — pure noise.
+              if (Math.max(buyWr, sellWr) > 0.3 && Math.abs(buyWr - sellWr) > 0.1) {
                 direction = sellWr > buyWr ? 'sell' : 'buy';
                 log.info(`🧪 Pattern-guided: BUY adjWR=${(buyWr*100).toFixed(0)}% SELL adjWR=${(sellWr*100).toFixed(0)}% → ${direction.toUpperCase()}`);
               }
@@ -4956,6 +4968,51 @@ ${recentExamples}
             log.info(`🧪 All signals neutral — skipping exploration (no edge detected)`);
             finalDecision = result.consensus.decision; // keep HOLD
           } else {
+            // v2.0.722: Rich exploration thesis — includes actual market data
+            // so the digester can learn from condition-specific outcomes.
+            // The old template ("pattern classifier suggests buy") was identical
+            // for all exploration trades, making EXP embeddings useless.
+            const expVol = (combinedState.volatility ?? 0).toFixed(4);
+            const expRegime = combinedState.regime ?? 'unknown';
+            const expOB = (combinedState.orderBookImbalance ?? 0).toFixed(2);
+            const expFunding = (this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0).toFixed(5);
+            const expSrDist = this.lastSRContext?.distanceToSupportBps ?? 0;
+            const expSrResist = this.lastSRContext?.distanceToResistanceBps ?? 0;
+            const expChange24h = (combinedState.change24h ?? 0).toFixed(2);
+            const expPrice = combinedState.price?.toFixed(2) ?? '?';
+            const expSentiment = (this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0).toFixed(2);
+            const expVolumeRatio = (this.sentimentEngine?.getVolumeRatio() ?? 1).toFixed(2);
+            // OLR + shadow context (if available)
+            let expOlr = 'N/A';
+            let expShadow = 'N/A';
+            try {
+              const olrCtx2 = {
+                volatility: combinedState.volatility ?? 0,
+                srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+                obImbalance: combinedState.orderBookImbalance ?? 0,
+                fundingRate: this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
+                volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
+                signalAgreement: 0.5,
+                sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
+                sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+                regimeOrdinal: regimeToOrdinal(combinedState.regime),
+              };
+              const olrQ = this.olrEngine.query(activeSymbol, olrCtx2, direction as 'buy' | 'sell', this.totalCycles);
+              expOlr = `${(olrQ.pWin * 100).toFixed(0)}% (${olrQ.nSamples} samples)`;
+              const shadowSym = normalizeSymbol(activeSymbol);
+              const shadowStat = this.shadowEngine.getStats().find(s => s.symbol === shadowSym);
+              if (shadowStat) {
+                const swr = direction === 'buy' ? shadowStat.longWinRate : shadowStat.shortWinRate;
+                const stot = direction === 'buy' ? shadowStat.longWins + shadowStat.longLosses : shadowStat.shortWins + shadowStat.shortLosses;
+                expShadow = `${(swr * 100).toFixed(0)}% (${stot} samples)`;
+              }
+            } catch { /* non-critical — thesis still has market data */ }
+
+            const entryThesis = [
+              `[1h: ${direction} exploration on ${activeSymbolUpper} @ ${expPrice} — regime=${expRegime}, vol=${expVol}, OB=${expOB}, funding=${expFunding}, 24h=${expChange24h}%, S/R: support=${expSrDist}bps/resistance=${expSrResist}bps, sentiment=${expSentiment}, volRatio=${expVolumeRatio}, OLR_pWin=${expOlr}, shadowWR=${expShadow}]`,
+              `[1d: exploration trade (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) — system needs trade data for evolution; ${direction} selected by multi-signal priority chain]`,
+            ].join(' ');
+
             finalDecision = {
               action: direction as 'buy' | 'sell',
               symbol: activeSymbolUpper,
@@ -4964,12 +5021,12 @@ ${recentExamples}
               stopLossPct: 0.02,
               takeProfitPct: 0.05,
               leverage: exploreLev,
-              rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — ${direction} exploration.`,
+              rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — regime=${expRegime}, vol=${expVol}, OLR=${expOlr}, shadow=${expShadow}.`,
               urgency: 'immediate',
-              // v2.0.80: Exploration trades also require an entry thesis
-              entryThesis: `[1h: ${direction} exploration — pattern classifier suggests ${direction} has higher historical win rate in current regime] [1d: system needs trade data for evolution; ${direction} direction selected by pattern win-rate query]`,
+              // v2.0.722: Rich thesis with actual market data for EXP learning
+              entryThesis,
             };
-            log.info(`🧪 Exploration trade triggered: ${direction.toUpperCase()} ${(exploreSize * 100).toFixed(1)}% ${activeSymbolUpper} @ ${exploreLev}x (cycle #${this.totalCycles})`);
+            log.info(`🧪 Exploration trade triggered: ${direction.toUpperCase()} ${(exploreSize * 100).toFixed(1)}% ${activeSymbolUpper} @ ${exploreLev}x (cycle #${this.totalCycles}) — regime=${expRegime}, OLR=${expOlr}, shadow=${expShadow}`);
           }
         }
       }
@@ -5577,27 +5634,42 @@ ${recentExamples}
       // to HOLD. Shadow trades use fixed S/R SL/TP (not narrowed), so a low shadow
       // win rate means the direction is fundamentally wrong in current conditions.
       // This is a SOFT gate — only blocks when the evidence is overwhelming.
+      // v2.0.721: Use Wilson 95% lower bound instead of raw WR for gating,
+      // and add symmetric boost (position size ×1.2) when shadow WR is high.
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
         const shadowSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
         const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === shadowSym);
         if (shadowStats) {
           const shadowWR = finalDecision.action === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
+          const shadowWins = finalDecision.action === 'buy' ? shadowStats.longWins : shadowStats.shortWins;
           const shadowTotal = finalDecision.action === 'buy'
             ? shadowStats.longWins + shadowStats.longLosses
             : shadowStats.shortWins + shadowStats.shortLosses;
-          // v2.0.143: Only gate when ≥ 10 shadow samples AND win rate < 25%.
-          // Below 10 samples = not enough data. 25-40% = ambiguous, let other gates decide.
-          if (shadowTotal >= 10 && shadowWR < 0.25) {
-            log.warn(`🛑 [shadow-gate] ${finalDecision.action.toUpperCase()} ${shadowSym}: shadow win rate ${(shadowWR * 100).toFixed(0)}% (${shadowTotal} samples) < 25% — overriding → HOLD`);
-            activeAuditGates.push({ gate: 'shadow-gate', passed: false, reason: `shadow WR ${(shadowWR * 100).toFixed(0)}% < 25% (${shadowTotal} samples)` });
+          // v2.0.721: Wilson 95% lower bound — more conservative than raw WR.
+          // Requires >= 20 samples for gate to fire (was 10).
+          const shadowWilsonLB = wilsonScore(shadowWins, shadowTotal);
+          if (shadowTotal >= 20 && shadowWilsonLB < 0.30) {
+            log.warn(`🛑 [shadow-gate] ${finalDecision.action.toUpperCase()} ${shadowSym}: shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowWins}W/${shadowTotal} samples) < 30% — overriding → HOLD`);
+            activeAuditGates.push({ gate: 'shadow-gate', passed: false, reason: `shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% < 30% (${shadowTotal} samples)` });
             finalDecision = {
               ...finalDecision,
               action: 'hold',
               positionSizePct: 0,
-              rationale: `[SHADOW GATE] ${finalDecision.action.toUpperCase()} ${shadowSym} shadow win rate ${(shadowWR * 100).toFixed(0)}% (${shadowTotal} samples) < 25% — direction fundamentally wrong in current conditions. HOLD. Original: ${finalDecision.rationale}`,
+              rationale: `[SHADOW GATE] ${finalDecision.action.toUpperCase()} ${shadowSym} shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowTotal} samples) < 30% — direction fundamentally wrong. HOLD. Original: ${finalDecision.rationale}`,
+            };
+          } else if (shadowTotal >= 20 && shadowWilsonLB > 0.65) {
+            // v2.0.721: Symmetric boost — high shadow WR means direction is
+            // statistically strong. Boost position size (not conviction threshold)
+            // to avoid feedback loops with the adaptive filter.
+            const boostedSize = Math.min(0.20, (finalDecision.positionSizePct ?? 0) * 1.2);
+            log.info(`🟢 [shadow-boost] ${finalDecision.action.toUpperCase()} ${shadowSym}: shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowTotal} samples) > 65% — boosting size ${(finalDecision.positionSizePct * 100).toFixed(0)}% → ${(boostedSize * 100).toFixed(0)}%`);
+            activeAuditGates.push({ gate: 'shadow-gate', passed: true, reason: `shadow WR ${(shadowWR * 100).toFixed(0)}% (Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}%, ${shadowTotal} samples) → size boost` });
+            finalDecision = {
+              ...finalDecision,
+              positionSizePct: boostedSize,
             };
           } else {
-            activeAuditGates.push({ gate: 'shadow-gate', passed: true, reason: shadowTotal >= 10 ? `shadow WR ${(shadowWR * 100).toFixed(0)}% (${shadowTotal} samples)` : `insufficient samples (${shadowTotal} < 10)` });
+            activeAuditGates.push({ gate: 'shadow-gate', passed: true, reason: shadowTotal >= 20 ? `shadow WR ${(shadowWR * 100).toFixed(0)}% (Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}%, ${shadowTotal} samples)` : `insufficient samples (${shadowTotal} < 20)` });
           }
         }
       }

@@ -226,6 +226,8 @@ function featuresFromCandle(
   // unavailable historically → left at 0; Welford NOT updated for them (#1).
   features['signalAgreement'] = 0.5;
   features['sentimentConviction'] = 0.5;
+  // v2.0.721: regimeOrdinal — unknown for historical candles, use neutral 0.5
+  features['regimeOrdinal'] = 0.5;
   return features;
 }
 

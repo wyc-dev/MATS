@@ -44,7 +44,7 @@ import {
   cosine,
 } from './embeddings.ts';
 import { ExperienceDigester } from './experience-digester.ts';
-import { extractJSON, categoriseRationale, normaliseCategory } from './evolution-utils.ts';
+import { extractJSON, categoriseRationale, normaliseCategory, wilsonScore } from './evolution-utils.ts';
 
 const log = rootLogger;
 
@@ -220,6 +220,14 @@ export interface CheckThesisInput {
    *  Shadow trades use fixed S/R SL/TP — not affected by premature closes.
    *  When > 0.50, it confirms the direction is statistically profitable. */
   shadowWinRate?: number;
+  /** v2.0.721: Candidate's market regime — used to filter historical matches
+   *  by regime. When provided, only same-regime records are matched (with
+   *  fallback to all records if no same-regime matches exist). */
+  regime?: string;
+  /** v2.0.721: Candidate's volatility — used to filter historical matches
+   *  by volatility band (±50% of candidate volatility). When provided with
+   *  regime, enables condition-based matching instead of text-only. */
+  volatility?: number;
 }
 
 export class ThesisExperience {
@@ -603,12 +611,21 @@ export class ThesisExperience {
           const c = cls.bestClass;
           const simPct = (cls.similarity * 100).toFixed(0);
           if (cls.classWinRate >= this.digester.getCfg().classWinThreshold && cls.directionAligned) {
-            this.lastSemanticVerdict = {
-              verdict: 'FAST_APPROVE',
-              pWin: cls.classWinRate,
-              reason: `classified to winning lesson class [${c.count} trades, win ${(c.winRate * 100).toFixed(0)}%, ${c.directionBias}] (sim ${simPct}%): ${c.lesson}`,
-            };
-            return this.lastSemanticVerdict;
+            // v2.0.721: Gate FAST_APPROVE on Wilson 95% lower bound, not raw classWinRate.
+            // A 2/2 class (raw 1.0) has Wilson LB ~0.45 — not enough to trust.
+            // This prevents small-sample overconfidence from auto-approving trades.
+            const wilsonLB = wilsonScore(c.wins, c.count);
+            if (wilsonLB < this.digester.getCfg().classWinThreshold) {
+              // Wilson says not enough evidence — fall through to raw similarity path
+              log.info(`[EXP] Semantic class matched but Wilson LB=${(wilsonLB * 100).toFixed(0)}% < threshold ${(this.digester.getCfg().classWinThreshold * 100).toFixed(0)}% (${c.wins}W/${c.count} total) — deferring to raw similarity`);
+            } else {
+              this.lastSemanticVerdict = {
+                verdict: 'FAST_APPROVE',
+                pWin: cls.classWinRate,
+                reason: `classified to winning lesson class [${c.count} trades, win ${(c.winRate * 100).toFixed(0)}%, Wilson LB ${(wilsonLB * 100).toFixed(0)}%, ${c.directionBias}] (sim ${simPct}%): ${c.lesson}`,
+              };
+              return this.lastSemanticVerdict;
+            }
           }
           if (cls.classWinRate < this.digester.getCfg().classLossThreshold && cls.directionAligned) {
             // Repeating a LOSING setup class in the SAME direction — reject.
@@ -715,6 +732,12 @@ export class ThesisExperience {
     // and the BUY wins would inflate pWin, masking the SELL losses.
     const sameDirMatches: Array<{ rec: ThesisExperienceRecord; sim: number }> = [];
     const allMatches: Array<{ rec: ThesisExperienceRecord; sim: number }> = [];
+    // v2.0.721: Condition-based filtering — if candidate provides regime and/or
+    // volatility, filter historical records to similar market conditions.
+    // Falls back to all records if no condition-matched records exist (zero regression).
+    const candRegime = input.regime;
+    const candVol = input.volatility;
+    const conditionMatched: Array<{ rec: ThesisExperienceRecord; sim: number }> = [];
     for (const h of this.records) {
       if (h.rationaleVectors.length === 0) continue;
       const sim = combinationSimilarity(candVectors, h.rationaleVectors, this.cfg.similarityMode);
@@ -723,10 +746,32 @@ export class ThesisExperience {
         if (h.side === input.side) {
           sameDirMatches.push({ rec: h, sim });
         }
+        // v2.0.721: Track condition-matched records separately
+        if (candRegime || (candVol !== undefined && candVol > 0)) {
+          let conditionOk = true;
+          if (candRegime && h.regime !== candRegime) conditionOk = false;
+          if (candVol !== undefined && candVol > 0 && h.marketFeatures) {
+            const histVol = h.marketFeatures['volatility'] ?? 0;
+            if (histVol > 0) {
+              // ±50% volatility band — allows some variation while excluding
+              // radically different regimes (e.g. 0.01 vs 0.05 volatility)
+              const volRatio = Math.abs(histVol - candVol) / Math.max(candVol, histVol);
+              if (volRatio > 0.5) conditionOk = false;
+            }
+          }
+          if (conditionOk) {
+            conditionMatched.push({ rec: h, sim });
+          }
+        }
       }
     }
 
-    if (allMatches.length === 0) {
+    // v2.0.721: Use condition-matched records if available, otherwise fall back
+    // to all matches (preserves existing behavior when no condition data provided).
+    const effectiveAllMatches = conditionMatched.length > 0 ? conditionMatched : allMatches;
+    const effectiveSameDir = effectiveAllMatches.filter((m) => m.rec.side === input.side);
+
+    if (effectiveAllMatches.length === 0) {
       return { verdict: 'PASS_OPEN_DIRECTLY', reason: 'no historical combination above match threshold — let it trade & learn' };
     }
 
@@ -734,22 +779,44 @@ export class ThesisExperience {
     // same-direction matches, they are more predictive than cross-direction
     // matches. Fall back to all matches only if no same-direction matches exist
     // (cold-start for this direction).
-    const pWinMatches = sameDirMatches.length > 0 ? sameDirMatches : allMatches;
+    // v2.0.721: Use effective (condition-filtered) matches.
+    const pWinMatches = effectiveSameDir.length > 0 ? effectiveSameDir : effectiveAllMatches;
 
     // Similarity-weighted P(win) — same direction only
-    const totalW = pWinMatches.reduce((s, m) => s + m.sim, 0);
-    const winW = pWinMatches.filter((m) => m.rec.outcome === 'WIN').reduce((s, m) => s + m.sim, 0);
+    // v2.0.721: Soft asset-category weighting — same-category matches get 1.2×
+    // weight, cross-category get 0.8×. This reduces cross-asset pollution
+    // (BTC thesis matching XAU records) without hard-filtering (which would
+    // return empty for small categories).
+    const SAME_CAT_WEIGHT = 1.2;
+    const CROSS_CAT_WEIGHT = 0.8;
+    let totalW = 0;
+    let winW = 0;
+    for (const m of pWinMatches) {
+      const isSameCat = m.rec.assetCategory === candCategory;
+      const catWeight = isSameCat ? SAME_CAT_WEIGHT : CROSS_CAT_WEIGHT;
+      const weightedSim = m.sim * catWeight;
+      totalW += weightedSim;
+      if (m.rec.outcome === 'WIN') winW += weightedSim;
+    }
     const pWin = totalW > 0 ? winW / totalW : 0.5;
 
     // v2.0.175: Log the direction-specific stats for debugging
-    if (sameDirMatches.length > 0) {
-      const sameDirWins = sameDirMatches.filter((m) => m.rec.outcome === 'WIN').length;
-      const sameDirLosses = sameDirMatches.filter((m) => m.rec.outcome === 'LOSS').length;
-      log.info(`[EXP] ${input.side.toUpperCase()} ${input.symbol}: ${sameDirMatches.length} same-dir matches (${sameDirWins}W/${sameDirLosses}L, pWin=${pWin.toFixed(2)}) vs ${allMatches.length} total matches`);
+    if (effectiveSameDir.length > 0) {
+      const sameDirWins = effectiveSameDir.filter((m) => m.rec.outcome === 'WIN').length;
+      const sameDirLosses = effectiveSameDir.filter((m) => m.rec.outcome === 'LOSS').length;
+      const condStr = conditionMatched.length > 0 ? ` (condition-filtered: ${conditionMatched.length}/${allMatches.length})` : '';
+      log.info(`[EXP] ${input.side.toUpperCase()} ${input.symbol}: ${effectiveSameDir.length} same-dir matches (${sameDirWins}W/${sameDirLosses}L, pWin=${pWin.toFixed(2)}) vs ${effectiveAllMatches.length} total matches${condStr}`);
     }
 
-    if (pWin >= this.cfg.winProbThreshold) {
-      return { verdict: 'FAST_APPROVE', pWin, reason: `history skews WIN (pWin=${pWin.toFixed(2)}, ${sameDirMatches.length} same-dir matches)` };
+    // v2.0.721: Gate FAST_APPROVE on Wilson 95% lower bound, not raw pWin.
+    // A 5/5 match set (raw pWin=1.0) has Wilson LB ~0.48 — not enough to trust.
+    // This prevents small-sample overconfidence from auto-approving trades.
+    const pWinWins = pWinMatches.filter((m) => m.rec.outcome === 'WIN').length;
+    const pWinTotal = pWinMatches.length;
+    const pWinWilsonLB = wilsonScore(pWinWins, pWinTotal);
+
+    if (pWinWilsonLB >= this.cfg.winProbThreshold) {
+      return { verdict: 'FAST_APPROVE', pWin, reason: `history skews WIN (pWin=${pWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
     }
     if (pWin > this.cfg.lossProbThreshold) {
       // Ambiguous band → 直出

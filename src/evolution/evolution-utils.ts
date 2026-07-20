@@ -14,10 +14,13 @@ export function wilsonScore(wins: number, total: number): number {
   const z = 1.96; // 95% confidence
   const denominator = 1 + (z * z) / total;
   const centre = p + (z * z) / (2 * total);
-  const adjusted =
-    (centre - z * Math.sqrt((centre * (1 - centre)) / total + (z * z) / (4 * total * total))) /
-    denominator;
-  return Math.max(0, adjusted);
+  // v2.0.721: Use p (not centre) in the variance term — the standard Wilson
+  // formula uses p(1-p)/n. Using centre caused NaN when p=1.0 (centre > 1
+  // → centre*(1-centre) < 0 → sqrt of negative). This is the correct formula.
+  const variance = (p * (1 - p)) / total + (z * z) / (4 * total * total);
+  const margin = z * Math.sqrt(Math.max(0, variance));
+  const adjusted = (centre - margin) / denominator;
+  return Math.max(0, Math.min(1, adjusted));
 }
 
 // ─── JSON extraction (robust against markdown fences) ───

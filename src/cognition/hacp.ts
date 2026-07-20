@@ -921,6 +921,9 @@ export class HACPEngine {
         const expResult = await this.expMemory.checkThesisHistory({
           thesis: metaThesis, symbol: metaSymbol, side: metaAction, marketCtx: marketStateDesc,
           ...fusionData,
+          // v2.0.721: Pass regime for condition-based matching (H3).
+          // Filters historical matches to same-regime records with fallback.
+          regime: this.currentRegime,
         });
         const v = expResult.verdict;
         const expAction: ExpAction = {
