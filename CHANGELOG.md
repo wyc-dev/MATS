@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.722: Add hard block for systematically losing patterns (>=20 trades, WR<35%) in orchestrator decision cycle — checkSystematicLoserGate() was defined but never called, causing BUY xyz:SKHX (31% WR over 32 trades) to keep executing. Now called after loss streak gate but before conviction gate so hard block takes priority over adaptive threshold adjustments.
+
+
 ## v2.0.732 — Loss streak gate: condition-aware soft gate (B+C) + SE notification
 
 ### Philosophy Change
