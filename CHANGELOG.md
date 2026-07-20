@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.754: HACP SL distance — regime-adaptive multiplier for actual SL/TP placement (not just HACP distance). low_vol/mean_reverting → 3.0×ATR (1.5% SL distance), trending/high_vol → 2.0×ATR (1.0% SL distance). FIXED v2.0.749 bug: formula was `0.005 * slMultiplier / 2.0` which cancelled out the multiplier change. Now `0.005 * slMultiplier` — no division by 2.0. Prevents premature SL exits on xyz:SKHX (0% WR over 8 trades, all SL exits) and other low-vol assets.
+
+
 ## v2.0.749: HACP SL distance — regime-adaptive multiplier: 3.0×ATR for low_vol/mean_reverting, 2.0×ATR for trending/high_vol. Prevents premature SL exits on BTC and SKHX in quiet markets where 2.0×ATR is too tight (vol=0.0003 → $39 SL on $65K BTC).
 
 

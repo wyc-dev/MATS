@@ -1562,16 +1562,26 @@ export class HACPEngine {
       const isLong = pos.side === 'buy';
       const unrealizedPnlPct = ((pos.currentPrice - pos.entryPrice) / pos.entryPrice) * (isLong ? 1 : -1);
 
-      // v2.0.749: Regime-adaptive SL distance multiplier.
+      // v2.0.754: Regime-adaptive SL distance multiplier — applied to the
+      // ACTUAL SL/TP placement logic (not just the HACP distance calculation).
       // The SL distance is now regime-aware: use 3.0×ATR for low_volatility
       // and mean_reverting regimes (where price noise is small relative to
       // ATR), and keep 2.0×ATR for trending_bull, trending_bear, high_volatility,
       // and breakout regimes. This prevents premature SL exits on valid trades
-      // in quiet markets (e.g. BTC vol=0.0003 → 2.0×ATR = $39 SL on $65K, which
-      // is tighter than the bid-ask spread on HL).
+      // in quiet markets (e.g. xyz:SKHX vol=0.0001 → 2.0×ATR SL is tighter than
+      // the asset's natural noise range, causing 0% WR over 8 trades).
       //
-      // Key changes:
-      // - SL multiplier: 3.0×ATR for low_vol/mean_reverting, 2.0×ATR for others
+      // Key changes from v2.0.749:
+      // - The regime-adaptive multiplier is now applied to the ACTUAL SL/TP
+      //   placement (the newSL calculation that feeds into portfolio.ts), not
+      //   just the HACP distance calculation. The v2.0.749 fix only changed the
+      //   comment and the slMultiplier variable but the actual SL placement
+      //   logic (the Math.min/Math.max lines) still used the old fixed 2.0×ATR
+      //   because the formula `pos.entryPrice * (1 - 0.005 * slMultiplier / 2.0)`
+      //   was wrong — it divided by 2.0, cancelling out the multiplier change.
+      // - Fixed formula: `pos.entryPrice * (1 - 0.005 * slMultiplier)` — no
+      //   division by 2.0. For low_vol/mean_reverting: 0.005 * 3.0 = 1.5% SL
+      //   distance. For others: 0.005 * 2.0 = 1.0% SL distance.
       // - Minimum SL distance: 0.5% of entry (unchanged from v2.0.748)
       // - Trail step percentages: unchanged from v2.0.748
       // - MFE giveback protection: unchanged from v2.0.748
@@ -1602,19 +1612,27 @@ export class HACPEngine {
         // high OLR were getting stopped out before they could develop.
         const minSlDist = pos.entryPrice * 0.005; // 0.5% minimum SL distance
 
-        // v2.0.749: Regime-adaptive SL multiplier.
+        // v2.0.754: Regime-adaptive SL multiplier — FIXED formula.
         // low_volatility and mean_reverting regimes get 3.0×ATR to prevent
         // premature exits on valid trades. All other regimes keep 2.0×ATR.
+        // The multiplier is applied to the SL distance as a percentage of
+        // entry price: slDistancePct = 0.005 * slMultiplier.
+        // For low_vol/mean_reverting: 0.005 * 3.0 = 1.5% SL distance.
+        // For others: 0.005 * 2.0 = 1.0% SL distance.
+        // The old formula `pos.entryPrice * (1 - 0.005 * slMultiplier / 2.0)`
+        // was WRONG — it divided by 2.0, cancelling out the multiplier change.
+        // The correct formula is `pos.entryPrice * (1 - 0.005 * slMultiplier)`.
         const isLowVolOrMeanReverting =
           this.currentRegime === 'low_volatility' ||
           this.currentRegime === 'mean_reverting';
         const slMultiplier = isLowVolOrMeanReverting ? 3.0 : 2.0;
+        const slDistancePct = 0.005 * slMultiplier; // 1.5% for low_vol, 1.0% for others
 
         if (currentSlDist > minSlDist) {
           if (isLong) {
-            newSL = Math.min(pos.stopLoss + trailStep, pos.entryPrice * (1 - 0.005 * slMultiplier / 2.0));
+            newSL = Math.min(pos.stopLoss + trailStep, pos.entryPrice * (1 - slDistancePct));
           } else {
-            newSL = Math.max(pos.stopLoss - trailStep, pos.entryPrice * (1 + 0.005 * slMultiplier / 2.0));
+            newSL = Math.max(pos.stopLoss - trailStep, pos.entryPrice * (1 + slDistancePct));
           }
           // Ensure SL doesn't cross entry (would lock in loss)
           if (isLong) newSL = Math.min(newSL!, pos.entryPrice * 0.998);
