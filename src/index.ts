@@ -5683,18 +5683,42 @@ ${recentExamples}
         const auditSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
         const auditDir = finalDecision.action;
         if (this.lastAuditResult && this.lastAuditResult.incidents.length > 0) {
+          // v2.0.724: Tightened audit gate matching — only block when the
+          // incident is specifically about THIS symbol+direction combination.
+          // Previous logic used `detail.includes('sell')` which matched ANY
+          // incident mentioning "sell" (e.g. "OLR 99% win rate on SELL"),
+          // causing false positives that blocked all SELL decisions.
           const criticalMatch = this.lastAuditResult.incidents.find(inc => {
             if (inc.severity !== 'critical') return false;
-            // Match by symbol (exact or normalized) — "ALL" means any symbol
+            // Symbol match: must match exactly (normalized) or be "ALL"
             const incSym = inc.symbol.trim().toUpperCase();
             if (incSym !== 'ALL' && incSym !== '' && normalizeSymbol(incSym) !== auditSym) return false;
-            // Check if the incident detail mentions the candidate direction
-            const detailLower = inc.detail.toLowerCase();
-            const dirMentioned = detailLower.includes(auditDir) || detailLower.includes(auditDir === 'buy' ? 'long' : 'short');
-            // For category-based matching (e.g. "direction-repetition" with specific direction)
+            // v2.0.724: Direction match — only block if the incident category
+            // explicitly names the direction (e.g. "direction-repetition-buy",
+            // "sell-bias-on-symbol"). Do NOT match on detail text containing
+            // the direction word, because details often mention the direction
+            // in passing (e.g. "OLR 99% on SELL") without meaning "block all SELLs".
+            // Exception: "direction-repetition" + "direction-confusion" categories
+            // are inherently directional — check if the detail specifically
+            // describes a LOSING pattern for this direction.
             const catLower = inc.category.toLowerCase();
-            const catDirMentioned = catDirMentionDirection(catLower, auditDir);
-            return dirMentioned || catDirMentioned;
+            // Category-based: only match if category contains the direction
+            const catHasDir = catDirMentionDirection(catLower, auditDir);
+            if (catHasDir) return true;
+            // Detail-based: only match if the detail describes a REPEATED LOSING
+            // pattern for this specific direction (not just mentioning it).
+            // Look for patterns like "5 of 6 BUY trades are losses" or
+            // "SELL trades have a 31% win rate" — these indicate the direction
+            // itself is the problem, not just a passing mention.
+            const detailLower = inc.detail.toLowerCase();
+            const dirWord = auditDir; // 'buy' or 'sell'
+            const dirSynonym = auditDir === 'buy' ? 'long' : 'short';
+            // Must mention the direction AND a losing indicator (loss/losing/losses/low win rate)
+            const mentionsDir = detailLower.includes(dirWord) || detailLower.includes(dirSynonym);
+            const mentionsLosing = detailLower.includes('loss') || detailLower.includes('losing')
+              || detailLower.includes('low win') || detailLower.includes('wrong direction')
+              || detailLower.includes('ignoring') || detailLower.includes('failure to learn');
+            return mentionsDir && mentionsLosing;
           });
           if (criticalMatch) {
             log.warn(`🛑 [audit-gate] ${auditDir.toUpperCase()} ${auditSym}: critical audit incident "${criticalMatch.category}" — overriding → HOLD`);
