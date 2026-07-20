@@ -75,7 +75,7 @@ function makeEXP(
     cfg: {
       enabled: true,
       embedDim: 384,
-      maxRecords: 200,
+      maxRecords: 1000,
       matchThreshold: 0.55,
       winProbThreshold: 0.6,
       lossProbThreshold: 0.4,
