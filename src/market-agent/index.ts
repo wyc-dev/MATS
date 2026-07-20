@@ -90,6 +90,11 @@ export class MarketAgent {
   /** Caches previous prices per symbol to compute 24h change for DEX 1-8 assets */
   private previousPriceCache = new Map<string, { price: number; prevDay: number }>();
 
+  /** v2.0.727: Internal cycle counter for direction restriction auto-expiry. */
+  private currentCycle = 0;
+  /** v2.0.727: Direction restrictions auto-expire after 2 cycles. */
+  private static readonly DIRECTION_RESTRICTION_EXPIRY_CYCLES = 2;
+
   // Callbacks for when the selected symbol changes
   private onSymbolChange: ((symbol: string) => void) | null = null;
   // Callback for when topPairs are updated (e.g. background scan completed)
@@ -267,13 +272,46 @@ export class MarketAgent {
 
   // ── v2.0.122: Per-Symbol Direction Restrictions ──
 
-  /** Get the current direction restrictions map (normalized symbol → allowed direction). */
+  /** v2.0.727: Update internal cycle counter (called from index.ts each cycle).
+   *  Used for direction restriction auto-expiry. */
+  updateCycle(cycle: number): void {
+    this.currentCycle = cycle;
+    // Auto-expire direction restrictions after 2 cycles
+    if (this.config.directionRestrictions && this.config.directionRestrictionsSetCycle !== undefined) {
+      // v2.0.727: Handle restart case — if setCycle > currentCycle (stale config
+      // from a previous process), treat as expired immediately
+      const age = this.currentCycle >= this.config.directionRestrictionsSetCycle
+        ? this.currentCycle - this.config.directionRestrictionsSetCycle
+        : MarketAgent.DIRECTION_RESTRICTION_EXPIRY_CYCLES; // force expire on restart
+      if (age >= MarketAgent.DIRECTION_RESTRICTION_EXPIRY_CYCLES) {
+        log.info(`[market-agent] Direction restrictions auto-expired (age=${age} cycles) — clearing`);
+        this.config.directionRestrictions = undefined;
+        this.config.directionRestrictionsSetCycle = undefined;
+        this.persistConfig();
+      }
+    }
+  }
+
+  /** Get the current direction restrictions map (normalized symbol → allowed direction).
+   *  v2.0.727: Auto-expires after 2 cycles — returns empty if expired. */
   getDirectionRestrictions(): Record<string, 'buy' | 'sell'> {
+    // Check expiry
+    if (this.config.directionRestrictions && this.config.directionRestrictionsSetCycle !== undefined) {
+      const age = this.currentCycle >= this.config.directionRestrictionsSetCycle
+        ? this.currentCycle - this.config.directionRestrictionsSetCycle
+        : MarketAgent.DIRECTION_RESTRICTION_EXPIRY_CYCLES; // force expire on restart
+      if (age >= MarketAgent.DIRECTION_RESTRICTION_EXPIRY_CYCLES) {
+        this.config.directionRestrictions = undefined;
+        this.config.directionRestrictionsSetCycle = undefined;
+        return {};
+      }
+    }
     return { ...(this.config.directionRestrictions ?? {}) };
   }
 
   /** Set direction restrictions for symbols. Replaces the entire map.
-   *  Keys are normalized internally. Values must be 'buy' or 'sell'. */
+   *  Keys are normalized internally. Values must be 'buy' or 'sell'.
+   *  v2.0.727: Restrictions auto-expire after 2 cycles. */
   setDirectionRestrictions(restrictions: Record<string, 'buy' | 'sell'>): void {
     const normalized: Record<string, 'buy' | 'sell'> = {};
     for (const [sym, dir] of Object.entries(restrictions)) {
@@ -284,9 +322,11 @@ export class MarketAgent {
       normalized[normSym] = dir;
     }
     this.config.directionRestrictions = Object.keys(normalized).length > 0 ? normalized : undefined;
+    // v2.0.727: Record the cycle when restrictions were set (for auto-expiry)
+    this.config.directionRestrictionsSetCycle = Object.keys(normalized).length > 0 ? this.currentCycle : undefined;
     this.config.updatedAt = Date.now();
     this.persistConfig();
-    log.info(`Direction restrictions set: ${JSON.stringify(this.config.directionRestrictions ?? {})}`);
+    log.info(`Direction restrictions set: ${JSON.stringify(this.config.directionRestrictions ?? {})} (will auto-expire after ${MarketAgent.DIRECTION_RESTRICTION_EXPIRY_CYCLES} cycles)`);
   }
 
   // ── v2.0.124: Trading Markets Persistence ──

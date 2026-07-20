@@ -721,31 +721,163 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
 
     // Run safety net: npm test
     let testsPassed = false;
+    let testErrorOutput = '';
     if (tscPassed) {
       log.info(`🔧 [system-engineer] Running npm test...`);
       try {
         const output = execSync('npm test 2>&1', { cwd: PROJECT_ROOT, timeout: 60_000, stdio: 'pipe', encoding: 'utf-8' });
         // v2.0.201: Parse the vitest summary line, not the entire output.
-        // The output contains log messages with "failed" (e.g. "digestTrade LLM failed")
-        // which caused false negatives with the old `!output.includes('failed')` check.
-        // Look for the actual test summary: "Tests  X passed (Y)" or "Tests  X failed (Y)"
         const testSummaryLine = output.split('\n').find(l => /^\s*Tests\s+/.test(l));
         if (testSummaryLine) {
           testsPassed = testSummaryLine.includes('passed') && !testSummaryLine.includes('failed');
         } else {
-          // Fallback: if no summary line found, check exit code (execSync throws on non-zero)
           testsPassed = true;
         }
         if (testsPassed) {
           log.info(`✅ [system-engineer] tests passed`);
         } else {
+          testErrorOutput = output;
           log.warn(`❌ [system-engineer] tests FAILED: ${testSummaryLine?.trim() ?? 'no summary line'}`);
         }
       } catch (err: any) {
         // execSync throws on non-zero exit code — test runner returns non-zero on failure
-        const output = err?.stdout ?? err?.message ?? String(err);
-        const testSummaryLine = String(output).split('\n').find(l => /^\s*Tests\s+/.test(l));
+        const output = String(err?.stdout ?? err?.message ?? String(err));
+        testErrorOutput = output;
+        const testSummaryLine = output.split('\n').find(l => /^\s*Tests\s+/.test(l));
         log.warn(`❌ [system-engineer] tests FAILED: ${testSummaryLine?.trim() ?? output.slice(0, 200)}`);
+      }
+    }
+
+    // v2.0.727: Test failure retry — if tsc passed but tests failed, send the
+    // test error output back to the LLM so it can fix the failing tests.
+    // This handles cases where the code fix is conceptually correct but breaks
+    // existing test expectations (e.g. Wilson score gates require more test records).
+    if (tscPassed && !testsPassed && testErrorOutput) {
+      log.info(`🔧 [system-engineer] Phase 2c: Test failure retry — sending test errors to LLM for correction...`);
+
+      // Extract the failing test details from the output (not the entire output)
+      const failLines = testErrorOutput.split('\n').filter(l =>
+        l.includes('FAIL') || l.includes('expected') || l.includes('AssertionError') ||
+        l.includes('⎯') || l.includes('Error:')
+      ).slice(0, 30);
+      const failSummary = failLines.join('\n').slice(0, 3000);
+
+      // Read the current file content (with the fix applied)
+      const currentFileContent = readFileSync(fullPath, 'utf-8');
+
+      const testRetryPrompt = `## Phase 2c: Fix Failing Tests
+
+Your code fix for ${targetFile} passed tsc --noEmit but FAILED ${testFile ? `tests in ${testFile}` : 'tests'}:
+
+\`\`\`
+${failSummary}
+\`\`\`
+
+## Your current fix (already applied to the file)
+- newCode: \`${proposal.proposedFix.newCode.slice(0, 300)}...\`
+
+## Full Source Code of ${targetFile} (with your fix applied)
+\`\`\`typescript
+${currentFileContent}
+\`\`\`
+
+${testFile && originalTestContent ? `## Current Test File: ${testFile}
+\`\`\`typescript
+${originalTestContent}
+\`\`\`
+` : ''}
+
+Fix the failing tests. The issue is likely that your code fix changed behavior that existing tests depend on. You have two options:
+1. Update the test expectations to match the new (correct) behavior
+2. Adjust your code fix to preserve backward compatibility
+
+You may provide BOTH a code fix (for the source file) AND a test update.
+
+Respond with EXACTLY ONE JSON object:
+{"severity":"${proposal.severity ?? 'warning'}","category":"${proposal.category ?? 'fix'}","title":"${proposal.title}","rootCause":"${proposal.rootCause ?? ''}","affectedFile":"${targetFile}","proposedFix":{"oldCode":"EXACT text from the file above","newCode":"corrected replacement text","reason":"why this fix is correct"},"testUpdate":{"file":"${testFile ?? 'tests/evolution-memory.test.ts'}","oldCode":"EXACT text from the test file","newCode":"corrected test text"},"changelogEntry":"${proposal.changelogEntry ?? ''}"}`;
+
+      try {
+        const testRetryResponse = await provider.chat({
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: testRetryPrompt },
+          ],
+          temperature: 0.1,
+          model: getAgentModel('terminal_agent'),
+          timeoutMs: 120_000,
+          maxTokens: 16384,
+        });
+
+        const testRetryProposal = parseProposal(testRetryResponse.content);
+        if (testRetryProposal && testRetryProposal.proposedFix.oldCode && testRetryProposal.proposedFix.newCode) {
+          // Check if the retry oldCode matches the current file (with fix applied)
+          if (currentFileContent.includes(testRetryProposal.proposedFix.oldCode)) {
+            log.info(`🔧 [system-engineer] Test retry fix accepted — applying corrected fix...`);
+            const retryContent = currentFileContent.replace(testRetryProposal.proposedFix.oldCode, testRetryProposal.proposedFix.newCode);
+            writeFileSync(fullPath, retryContent, 'utf-8');
+
+            // Apply test update if provided
+            if (testRetryProposal.testUpdate?.file && testRetryProposal.testUpdate.oldCode && testRetryProposal.testUpdate.newCode) {
+              const retryTestPath = join(PROJECT_ROOT, testRetryProposal.testUpdate.file);
+              if (existsSync(retryTestPath)) {
+                const retryTestContent = readFileSync(retryTestPath, 'utf-8');
+                if (retryTestContent.includes(testRetryProposal.testUpdate.oldCode)) {
+                  const newTestContent = retryTestContent.replace(testRetryProposal.testUpdate.oldCode, testRetryProposal.testUpdate.newCode);
+                  writeFileSync(retryTestPath, newTestContent, 'utf-8');
+                  log.info(`🔧 [system-engineer] Test file updated: ${testRetryProposal.testUpdate.file}`);
+                  // Update originalTestContent for rollback tracking
+                  if (!originalTestContent) {
+                    originalTestContent = retryTestContent;
+                    testFile = testRetryProposal.testUpdate.file;
+                  }
+                }
+              }
+            }
+
+            // Re-run tsc + tests
+            try {
+              execSync('npx tsc --noEmit 2>&1', { cwd: PROJECT_ROOT, timeout: 30_000, stdio: 'pipe', encoding: 'utf-8' });
+              log.info(`✅ [system-engineer] tsc passed (test retry)`);
+              try {
+                const retryTestOutput = execSync('npm test 2>&1', { cwd: PROJECT_ROOT, timeout: 60_000, stdio: 'pipe', encoding: 'utf-8' });
+                const retrySummary = retryTestOutput.split('\n').find(l => /^\s*Tests\s+/.test(l));
+                testsPassed = retrySummary ? retrySummary.includes('passed') && !retrySummary.includes('failed') : true;
+                if (testsPassed) {
+                  log.info(`✅ [system-engineer] tests passed (test retry)`);
+                  proposal = testRetryProposal;
+                } else {
+                  log.warn(`❌ [system-engineer] tests FAILED (test retry): ${retrySummary?.trim() ?? 'no summary'}`);
+                  // Rollback to original
+                  writeFileSync(fullPath, originalContent, 'utf-8');
+                  if (originalTestContent && testFile) {
+                    writeFileSync(join(PROJECT_ROOT, testFile), originalTestContent, 'utf-8');
+                  }
+                }
+              } catch (retryTestErr: any) {
+                const retryTestOut = String(retryTestErr?.stdout ?? retryTestErr?.message ?? String(retryTestErr));
+                log.warn(`❌ [system-engineer] tests FAILED (test retry): ${retryTestOut.slice(0, 300)}`);
+                // Rollback to original
+                writeFileSync(fullPath, originalContent, 'utf-8');
+                if (originalTestContent && testFile) {
+                  writeFileSync(join(PROJECT_ROOT, testFile), originalTestContent, 'utf-8');
+                }
+              }
+            } catch (retryTscErr: any) {
+              log.warn(`❌ [system-engineer] tsc FAILED (test retry): ${String(retryTscErr?.stdout ?? retryTscErr?.message ?? String(retryTscErr)).slice(0, 300)}`);
+              // Rollback to original
+              writeFileSync(fullPath, originalContent, 'utf-8');
+              if (originalTestContent && testFile) {
+                writeFileSync(join(PROJECT_ROOT, testFile), originalTestContent, 'utf-8');
+              }
+            }
+          } else {
+            log.warn(`🚫 [system-engineer] Test retry oldCode not found in file — giving up`);
+          }
+        } else {
+          log.warn(`🚫 [system-engineer] Test retry did not produce a valid fix — giving up`);
+        }
+      } catch (testRetryErr) {
+        log.warn(`❌ [system-engineer] Test retry LLM call failed: ${testRetryErr instanceof Error ? testRetryErr.message : String(testRetryErr)}`);
       }
     }
 
