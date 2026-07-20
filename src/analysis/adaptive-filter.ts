@@ -597,10 +597,13 @@ export class AdaptiveNoiseFilter {
       Math.min(this.config.convictionCeiling, this.currentConvictionThreshold),
     );
 
-    // Log adaptation every 5 cycles
+    // v2.0.729: Suppress per-filter adapt log — the caller now merges all
+    // filter summaries into a single log line to reduce noise.
+    // Log adaptation every 5 cycles (only if caller hasn't merged)
     if (ctx.totalCycles - this.lastAdaptationLog >= 5 || ctx.totalCycles === 0) {
       this.lastAdaptationLog = ctx.totalCycles;
-      log.info('Adaptive filter adjusted', {
+      // v2.0.729: Changed from log.info to log.debug — caller merges summaries
+      log.debug('Adaptive filter adjusted', {
         cycle: ctx.totalCycles,
         vol: `${(ctx.volatility * 100).toFixed(2)}%`,
         regime: ctx.regime,
