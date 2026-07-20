@@ -4,6 +4,55 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.720 — Learning Engine Accuracy Overhaul: 3 Critical Bug Fixes + premature_sl Dead Code Fix
+
+### C1: MFE/MAE Features Silently Discarded by OLR (Critical Bug)
+
+**Root cause**: `index.ts:2244-2257` (v2.0.152) added `mfePct` / `maePct` / `mfeToPnlRatio` to the features object passed to `olrEngine.feedTrade()`, but `olr-engine.ts:288` `contextToVector()` only maps `FEATURE_NAMES` (8 names). The 3 new features were silently discarded — the v2.0.152 comment "Add MAE/MFE to OLR features" was never actually implemented. MFE/MAE are among the strongest predictors of trade outcome (a trade that reached +4.5% MFE then hit -2% SL is very different from one that went straight to -2%).
+
+**Fix**: Added `mfePct`, `maePct`, `mfeToPnlRatio` to `FEATURE_NAMES` (8 → 11 features). Shadow trade engine now computes these at resolution time and adds them to `trainingFeatures`. `migrateModel()` pads old models with 0 weights for backward compatibility. `olr-backfill.ts` auto-initializes new features to 0 with Welford mask (no contamination).
+
+**Expected accuracy impact**: +5-15%.
+
+### C2: Agent-Outcomes Backfill Contamination (Critical Bug)
+
+**Root cause**: `agent-outcomes.ts:102-110` `backfillOutcome()` marked ALL records for a symbol as win/loss when a position closed — including agents that recommended HOLD. Agent A says HOLD, Agent B says BUY, BUY loses → Agent A's HOLD is also marked LOSS. This silently corrupted every agent's win rate, which propagated into HACP voting weights via `agent-evolution.ts`.
+
+**Fix**: `backfillOutcome()` now takes an optional `positionSide` parameter. It skips `hold` and `close` recommendations, and only backfills `buy`/`sell` recommendations that match the closed position's side. Both call sites in `index.ts` updated to pass `trade.side`.
+
+### C3: Direction Audit Completely Disconnected (Free Win)
+
+**Root cause**: `direction-audit.ts` implements an LLM-powered trade record audit that detects suspicious patterns (repeated direction errors, SL-too-tight, thesis-contradicts-action, etc.). It was imported in `index.ts:53` but **never called** anywhere in the decision pipeline.
+
+**Fix**: Added audit trigger (every 2 cycles, non-blocking async, guarded by `auditRunning` flag). Cached `AuditResult` is checked by a new audit gate in the decision pipeline: if a critical incident matches the candidate symbol+direction, the decision is overridden to HOLD. The gate uses both detail-text matching and category-based direction matching. LLM failure returns empty incidents (safe fallback — gate doesn't fire).
+
+### P0-A: premature_sl Dead Code Fix (ExitType Reflux)
+
+**Root cause**: `CloseReasonAggregator` (`reason-analytics.ts:367`) has logic to flag `premature_sl` exits with WR < 0.3 → ⚠️ "Premature closes cost X". But `recordClose()` writes coarse `exitType` (`sl_tp` / `consensus` / `manual` / etc.), never `premature_sl`. The fine-grained classification (`premature_sl` / `correct_sl` / etc.) only exists in `LessonStatement.exitType` (A2A digester layer) and never flows back to RIL. The premature warning was dead code.
+
+**Fix**:
+1. Extended `ExitType` union with `premature_sl` | `premature_tp` | `correct_sl` | `correct_tp`
+2. `RecordCloseInput` gains `lessonExitType?: ExitType` — if provided, overrides coarse `exitType` on the record
+3. `ExperienceDigester.addRecord()` gains `onLessonDigest` callback — after LLM digestion, the derived `exitType` is written back to the in-memory record (not disk, avoiding JSONL duplication)
+4. `thesis_invalidated` (LessonStatement) → `thesis_invalidation` (ExitType) mapping in callback
+5. `coarseTypes` guard prevents re-overwriting already-fine-grained exitType
+6. `CloseReasonAggregator` requires no changes — `premature_sl` now appears in `exitType`, the warning fires naturally
+
+### Files Changed
+
+- `src/evolution/olr-engine.ts` — `FEATURE_NAMES` 8 → 11 (add MFE/MAE/mfeToPnlRatio)
+- `src/evolution/shadow-trade-engine.ts` — Add MFE/MAE to shadow `trainingFeatures` at resolution
+- `src/evolution/agent-outcomes.ts` — `backfillOutcome()` skip HOLD/close, match positionSide
+- `src/evolution/experience-digester.ts` — `addRecord()` gains `onLessonDigest` callback
+- `src/evolution/thesis-experience.ts` — `RecordCloseInput` gains `lessonExitType`, callback writes back exitType
+- `src/types/index.ts` — `ExitType` union extended with fine-grained types
+- `src/index.ts` — Audit trigger (every 2 cycles), audit gate, `catDirMentionDirection` helper, `backfillOutcome` call sites pass `positionSide`
+- `720upgrade.md` — P0-A + P0-B (C1/C2/C3) + P1-P3 (H1-H8 roadmap)
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
 ## v2.0.202: Add per-symbol-per-direction loss streak guard to block systematically losing patterns
 
 

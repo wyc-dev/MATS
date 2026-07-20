@@ -50,13 +50,20 @@ import { OLREngine, type OLRQueryResult } from './evolution/olr-engine.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
-import { auditTradeRecordsLLM } from './evolution/direction-audit.ts';
+import { auditTradeRecordsLLM, type AuditResult } from './evolution/direction-audit.ts';
 import { runSystemEngineer } from './evolution/system-engineer.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
 import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent, computePriceNewsTiming, normalizeBaseAsset, type TimingCandle } from './analysis/news-sentiment.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord, CycleSummary } from './types/index.ts';
 
 const log = createLogger({ phase: 'system' });
+
+/** v2.0.720: Check if an audit category string mentions a specific direction.
+ *  Used by the audit gate to match critical incidents to candidate decisions. */
+function catDirMentionDirection(category: string, dir: 'buy' | 'sell'): boolean {
+  if (dir === 'buy') return category.includes('buy') || category.includes('long');
+  return category.includes('sell') || category.includes('short');
+}
 
 class MATSSystem {
   private marketState!: MarketStateAggregator;
@@ -174,6 +181,11 @@ class MATSSystem {
   /** Last first-passage probability result (for agent context + UI). */
   private lastFirstPassage: FirstPassageResult | null = null;
   private lastPatternContext = '';
+  /** v2.0.720: Cached trade record audit result — runs every 2 cycles via LLM.
+   *  Critical incidents matching the candidate symbol+direction override to HOLD. */
+  private lastAuditResult: AuditResult | null = null;
+  private auditCycleCounter = 0;
+  private auditRunning = false;
   /** v2.0.143: Terminal Agent Root Command Prompt — stored on backend so it
    *  survives UI refreshes and is available for cycle enforcement (Phase -1
    *  rule checking + Phase 6 decision verification + injection into all agents). */
@@ -2305,9 +2317,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       }
 
       // 4. Backfill Agent Outcomes — mark all agents that recommended on this symbol
+      // v2.0.720: Pass positionSide so only matching directional recommendations are scored.
       try {
-        this.evolution.agentOutcomes.backfillOutcome(symbol, pnlPct);
-        log.info(`🧬 [close-learning] Agent outcomes backfilled: ${symbol} ${isWin ? 'WIN' : 'LOSS'}`);
+        this.evolution.agentOutcomes.backfillOutcome(symbol, pnlPct, trade.side === 'buy' ? 'buy' : 'sell');
+        log.info(`🧬 [close-learning] Agent outcomes backfilled: ${symbol} ${isWin ? 'WIN' : 'LOSS'} (side=${trade.side})`);
       } catch (err) {
         log.warn(`[close-learning] Agent outcomes backfill failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -3547,6 +3560,33 @@ ${recentExamples}
     // v2.0.110: cycleInProgress was already set at the top of runDecisionCycle()
     this.totalCycles++;
     const cycleStart = performance.now();
+
+    // v2.0.720: Trade Record Audit — run every 2 cycles (non-blocking async).
+    // The LLM examines recent closed trades and detects suspicious patterns.
+    // Critical incidents are cached and checked by the audit gate in the
+    // decision pipeline. Guarded by auditRunning flag to prevent overlap.
+    this.auditCycleCounter++;
+    if (this.auditCycleCounter >= 2 && !this.auditRunning) {
+      this.auditCycleCounter = 0;
+      this.auditRunning = true;
+      const records = this.expMemory?.getRecords() ?? [];
+      if (records.length > 0) {
+        void auditTradeRecordsLLM(records)
+          .then((result: AuditResult) => {
+            this.lastAuditResult = result;
+            this.auditRunning = false;
+            if (result.incidents.length > 0) {
+              log.info(`[audit] Cached ${result.incidents.length} incidents (${result.incidents.filter(i => i.severity === 'critical').length} critical) — will gate next decisions`);
+            }
+          })
+          .catch((err: unknown) => {
+            this.auditRunning = false;
+            log.warn(`[audit] LLM audit failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+          });
+      } else {
+        this.auditRunning = false;
+      }
+    }
 
     try {
       // 1. Gather market state (using Market Agent's selected symbol)
@@ -5562,6 +5602,45 @@ ${recentExamples}
         }
       }
 
+      // v2.0.720: Trade Record Audit Gate — LLM-powered direction audit.
+      // Runs every 2 cycles (non-blocking, async). If the cached audit result
+      // contains a critical incident matching the candidate symbol+direction,
+      // override to HOLD. This catches patterns that hardcoded gates miss:
+      // repeated direction errors, thesis-contradicts-action, SL-too-tight, etc.
+      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+        const auditSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+        const auditDir = finalDecision.action;
+        if (this.lastAuditResult && this.lastAuditResult.incidents.length > 0) {
+          const criticalMatch = this.lastAuditResult.incidents.find(inc => {
+            if (inc.severity !== 'critical') return false;
+            // Match by symbol (exact or normalized) — "ALL" means any symbol
+            const incSym = inc.symbol.trim().toUpperCase();
+            if (incSym !== 'ALL' && incSym !== '' && normalizeSymbol(incSym) !== auditSym) return false;
+            // Check if the incident detail mentions the candidate direction
+            const detailLower = inc.detail.toLowerCase();
+            const dirMentioned = detailLower.includes(auditDir) || detailLower.includes(auditDir === 'buy' ? 'long' : 'short');
+            // For category-based matching (e.g. "direction-repetition" with specific direction)
+            const catLower = inc.category.toLowerCase();
+            const catDirMentioned = catDirMentionDirection(catLower, auditDir);
+            return dirMentioned || catDirMentioned;
+          });
+          if (criticalMatch) {
+            log.warn(`🛑 [audit-gate] ${auditDir.toUpperCase()} ${auditSym}: critical audit incident "${criticalMatch.category}" — overriding → HOLD`);
+            activeAuditGates.push({ gate: 'audit-gate', passed: false, reason: `critical: ${criticalMatch.category} — ${criticalMatch.detail.slice(0, 80)}` });
+            finalDecision = {
+              ...finalDecision,
+              action: 'hold',
+              positionSizePct: 0,
+              rationale: `[AUDIT GATE] ${auditDir.toUpperCase()} ${auditSym}: critical audit incident "${criticalMatch.category}" — ${criticalMatch.detail.slice(0, 120)}. HOLD. Original: ${finalDecision.rationale}`,
+            };
+          } else {
+            activeAuditGates.push({ gate: 'audit-gate', passed: true, reason: `${this.lastAuditResult.incidents.length} incidents (no critical match)` });
+          }
+        } else {
+          activeAuditGates.push({ gate: 'audit-gate', passed: true, reason: 'no audit data' });
+        }
+      }
+
       // v2.0.33: Pass S/R levels to executeDecision so SL/TP can be set at
       // v2.0.136: Set entryPrice for the active-symbol consensus decision.
 
@@ -5941,6 +6020,7 @@ ${recentExamples}
             this.evolution.agentOutcomes.backfillOutcome(
               report.trade.symbol,
               report.trade.pnlPct,
+              report.trade.side === 'buy' ? 'buy' : 'sell',
             );
 
             // ── P0: Backfill pattern classifier with exit context ──

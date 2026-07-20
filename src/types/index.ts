@@ -524,8 +524,15 @@ export type TradeOutcome = 'WIN' | 'LOSS';
 export type DecisionOrigin = 'meta-agent' | 'skeptics-reverse';
 
 /** v2.0.143: How the position was closed — used by RIL CloseReasonAggregator
- *  to group trades by exit type and compute per-type win rates. */
-export type ExitType = 'sl_tp' | 'consensus' | 'manual' | 'thesis_invalidation' | 'reconciliation' | 'exchange_closed';
+ *  to group trades by exit type and compute per-type win rates.
+ *  v2.0.720: Extended with fine-grained exit types from A2A digester
+ *  (premature_sl, premature_tp, correct_sl, correct_tp) so the
+ *  CloseReasonAggregator's premature warning logic actually fires.
+ *  These are written back to the record via recordClose()'s lessonExitType
+ *  parameter after the digester processes the trade. */
+export type ExitType =
+  | 'sl_tp' | 'consensus' | 'manual' | 'thesis_invalidation' | 'reconciliation' | 'exchange_closed'
+  | 'premature_sl' | 'premature_tp' | 'correct_sl' | 'correct_tp';
 
 /** One closed trade = one record in the EXP memory (data/exp/trades.jsonl). */
 export interface ThesisExperienceRecord {

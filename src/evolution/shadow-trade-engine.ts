@@ -389,6 +389,17 @@ export class ShadowTradeEngine {
           const resolutionVal = currentFeatures?.[key] ?? entryVal;
           trainingFeatures[key] = entryWeight * entryVal + resolutionWeight * resolutionVal;
         }
+        // v2.0.720: Add MFE/MAE features to training features so OLR can learn
+        // from shadow trade exit quality. These are only known at resolution
+        // time (not entry), so they bypass the entry/resolution blend.
+        trainingFeatures['mfePct'] = pos.mfePct ?? 0;
+        trainingFeatures['maePct'] = pos.maePct ?? 0;
+        const shadowPnlPct = pos.side === 'buy'
+          ? (exitPrice - pos.entryPrice) / pos.entryPrice
+          : (pos.entryPrice - exitPrice) / pos.entryPrice;
+        trainingFeatures['mfeToPnlRatio'] = (pos.mfePct ?? 0) > 0
+          ? ((pos.mfePct ?? 0) - shadowPnlPct) / (pos.mfePct ?? 0)
+          : 0;
         // v2.0.202: Log the feature composition for debugging — helps verify
         // that resolution-time features are actually being used and not just
         // falling back to stale entry features.
