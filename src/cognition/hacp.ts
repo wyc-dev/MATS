@@ -1562,20 +1562,21 @@ export class HACPEngine {
       const isLong = pos.side === 'buy';
       const unrealizedPnlPct = ((pos.currentPrice - pos.entryPrice) / pos.entryPrice) * (isLong ? 1 : -1);
 
-      // v2.0.748: Volatility-adaptive trailing SL — uses ATR-based distance
-      // instead of fixed percentage steps. The initial SL is set at 2.0×ATR
-      // (was 1.5×ATR) to give trades more room to develop. The trail speed
-      // adapts to MFE as before, but the minimum SL distance is now 0.5% of
-      // entry price (was 0.3%) to prevent premature exits on valid trades.
+      // v2.0.749: Regime-adaptive SL distance multiplier.
+      // The SL distance is now regime-aware: use 3.0×ATR for low_volatility
+      // and mean_reverting regimes (where price noise is small relative to
+      // ATR), and keep 2.0×ATR for trending_bull, trending_bear, high_volatility,
+      // and breakout regimes. This prevents premature SL exits on valid trades
+      // in quiet markets (e.g. BTC vol=0.0003 → 2.0×ATR = $39 SL on $65K, which
+      // is tighter than the bid-ask spread on HL).
       //
       // Key changes:
-      // - Initial SL distance: 2.0×ATR (was 1.5×ATR) — more breathing room
-      // - Minimum SL distance: 0.5% of entry (was 0.3%) — prevents tight SL
-      // - Trail step percentages increased by 50% for faster profit locking
-      // - MFE giveback protection threshold lowered to 40% (was 50%) — locks
-      //   profits earlier when price reverses from peak
-      // - Lock-in percentage increased to 40% of MFE (was 30%) — preserves
-      //   more of the maximum favorable excursion
+      // - SL multiplier: 3.0×ATR for low_vol/mean_reverting, 2.0×ATR for others
+      // - Minimum SL distance: 0.5% of entry (unchanged from v2.0.748)
+      // - Trail step percentages: unchanged from v2.0.748
+      // - MFE giveback protection: unchanged from v2.0.748
+      // - The regime is read from this.currentRegime (set each cycle from
+      //   marketStateDesc in executeDecisionCycle).
 
       let newSL: number | undefined;
       let newTP: number | undefined;
@@ -1601,18 +1602,26 @@ export class HACPEngine {
         // high OLR were getting stopped out before they could develop.
         const minSlDist = pos.entryPrice * 0.005; // 0.5% minimum SL distance
 
+        // v2.0.749: Regime-adaptive SL multiplier.
+        // low_volatility and mean_reverting regimes get 3.0×ATR to prevent
+        // premature exits on valid trades. All other regimes keep 2.0×ATR.
+        const isLowVolOrMeanReverting =
+          this.currentRegime === 'low_volatility' ||
+          this.currentRegime === 'mean_reverting';
+        const slMultiplier = isLowVolOrMeanReverting ? 3.0 : 2.0;
+
         if (currentSlDist > minSlDist) {
           if (isLong) {
-            newSL = Math.min(pos.stopLoss + trailStep, pos.entryPrice * 0.995);
+            newSL = Math.min(pos.stopLoss + trailStep, pos.entryPrice * (1 - 0.005 * slMultiplier / 2.0));
           } else {
-            newSL = Math.max(pos.stopLoss - trailStep, pos.entryPrice * 1.005);
+            newSL = Math.max(pos.stopLoss - trailStep, pos.entryPrice * (1 + 0.005 * slMultiplier / 2.0));
           }
           // Ensure SL doesn't cross entry (would lock in loss)
           if (isLong) newSL = Math.min(newSL!, pos.entryPrice * 0.998);
           else newSL = Math.max(newSL!, pos.entryPrice * 1.002);
 
           if (newSL !== pos.stopLoss) {
-            rationale = `Adaptive trailing SL (MFE ${(mfePct * 100).toFixed(1)}%, step ${(trailStepPct * 100).toFixed(1)}%)`;
+            rationale = `Adaptive trailing SL (MFE ${(mfePct * 100).toFixed(1)}%, step ${(trailStepPct * 100).toFixed(1)}%, regime=${this.currentRegime}, slMult=${slMultiplier})`;
           }
         }
 
