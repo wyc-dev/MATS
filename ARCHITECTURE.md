@@ -564,3 +564,7 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/api/status
 
 ## System Engineer Update
 Added `applyLossStreakGateToDecision()` method to MATSSystem class that calls the existing `checkLossStreakGate()` method in the decision cycle. This is the missing injection point — the guard existed but was never invoked. The new method is called for the active symbol's final decision and for each per-symbol consensus entry decision, blocking BUY/SELL when the loss streak or systematic loser threshold is exceeded.
+
+
+## System Engineer Update
+LossStreakTracker now has three layers: (1) SOFT gate at 3 consecutive losses in same regime → +50% conviction penalty. (2) HARD gate at 5 consecutive losses in any regime → block for 12 cycles. (3) SYSTEMATIC LOSER gate at >= 10 trades with WR < 35% → block until WR recovers above 40%. The HARD and SYSTEMATIC LOSER gates are checked BEFORE the SOFT gate returns, so they take priority. The SOFT gate no longer returns early, allowing the HARD gate to be reached.

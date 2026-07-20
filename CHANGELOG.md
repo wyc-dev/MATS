@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.733: Fix per-symbol-per-direction loss streak guard — SOFT gate now raises conviction by 50% (was 15%), HARD gate blocks at 5 consecutive losses (new), SYSTEMATIC LOSER gate blocks at >= 10 trades with WR < 35% (was >= 20). This prevents BUY xyz:SKHX systematic loser pattern (32 trades, 31% WR) from continuing to lose capital.
+
+
 ## v2.0.202: Add systematic loser HARD BLOCK to checkLossStreakGate — blocks (symbol, direction) pairs with >=20 trades and WR<35% (e.g. BUY xyz:SKHX 31% WR over 32 trades). Soft gate (conviction penalty) still applies to moderate cases (5-19 trades).
 
 
