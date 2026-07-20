@@ -801,15 +801,7 @@ export class ThesisExperience {
       totalW += weightedSim;
       if (m.rec.outcome === 'WIN') winW += weightedSim;
     }
-    const pWin = totalW > 0 ? winW / totalW : 0.5;
-
-    // v2.0.175: Log the direction-specific stats for debugging
-    if (effectiveSameDir.length > 0) {
-      const sameDirWins = effectiveSameDir.filter((m) => m.rec.outcome === 'WIN').length;
-      const sameDirLosses = effectiveSameDir.filter((m) => m.rec.outcome === 'LOSS').length;
-      const condStr = conditionMatched.length > 0 ? ` (condition-filtered: ${conditionMatched.length}/${allMatches.length})` : '';
-      log.info(`[EXP] ${input.side.toUpperCase()} ${input.symbol}: ${effectiveSameDir.length} same-dir matches (${sameDirWins}W/${sameDirLosses}L, pWin=${pWin.toFixed(2)}) vs ${effectiveAllMatches.length} total matches${condStr}`);
-    }
+    const rawPWin = totalW > 0 ? winW / totalW : 0.5;
 
     // v2.0.722: Use Wilson score lower bound for pWin, not raw winRate.
     // The raw pWin (similarity-weighted win rate) is still computed for logging
@@ -828,12 +820,13 @@ export class ThesisExperience {
     // and penalizes small samples naturally.
     const verdictPWin = pWinWilsonLB;
 
-    // v2.0.722: Also compute the raw pWin for the delta check below — the delta
-    // check uses raw winRate (not Wilson LB) because it's comparing individual
-    // rationale win rates, not the overall match set. The delta check has its
-    // own minDeltaSamples guard (minimum 3 samples) which provides the sample
-    // size protection there.
-    const rawPWin = totalW > 0 ? winW / totalW : 0.5;
+    // v2.0.175: Log the direction-specific stats for debugging
+    if (effectiveSameDir.length > 0) {
+      const sameDirWins = effectiveSameDir.filter((m) => m.rec.outcome === 'WIN').length;
+      const sameDirLosses = effectiveSameDir.filter((m) => m.rec.outcome === 'LOSS').length;
+      const condStr = conditionMatched.length > 0 ? ` (condition-filtered: ${conditionMatched.length}/${allMatches.length})` : '';
+      log.info(`[EXP] ${input.side.toUpperCase()} ${input.symbol}: ${effectiveSameDir.length} same-dir matches (${sameDirWins}W/${sameDirLosses}L, rawPWin=${rawPWin.toFixed(2)}, WilsonLB=${pWinWilsonLB.toFixed(2)}) vs ${effectiveAllMatches.length} total matches${condStr}`);
+    }
 
     if (verdictPWin >= this.cfg.winProbThreshold) {
       return { verdict: 'FAST_APPROVE', pWin: verdictPWin, reason: `history skews WIN (raw pWin=${rawPWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
