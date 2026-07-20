@@ -194,6 +194,9 @@ class MATSSystem {
   private lastAuditResult: AuditResult | null = null;
   private auditCycleCounter = 0;
   private auditRunning = false;
+  /** v2.0.736: Flag set when audit completes with incidents — triggers SE
+   *  to run after the current cycle completes. SE follows audit, not a schedule. */
+  private auditTriggeredSE = false;
   /** v2.0.143: Terminal Agent Root Command Prompt — stored on backend so it
    *  survives UI refreshes and is available for cycle enforcement (Phase -1
    *  rule checking + Phase 6 decision verification + injection into all agents). */
@@ -3723,6 +3726,8 @@ ${recentExamples}
     // The LLM examines recent closed trades and detects suspicious patterns.
     // Critical incidents are cached and checked by the audit gate in the
     // decision pipeline. Guarded by auditRunning flag to prevent overlap.
+    // v2.0.736: When audit completes with incidents, trigger SE to fix them.
+    // SE no longer runs on a fixed schedule — it follows the audit.
     this.auditCycleCounter++;
     if (this.auditCycleCounter >= 2 && !this.auditRunning) {
       this.auditCycleCounter = 0;
@@ -3735,6 +3740,10 @@ ${recentExamples}
             this.auditRunning = false;
             if (result.incidents.length > 0) {
               log.info(`[audit] Cached ${result.incidents.length} incidents (${result.incidents.filter(i => i.severity === 'critical').length} critical) — will gate next decisions`);
+              // v2.0.736: Trigger SE when audit has incidents — SE follows audit, not a fixed schedule
+              this.auditTriggeredSE = true;
+            } else {
+              log.info(`[audit] No incidents — SE will not run this cycle`);
             }
           })
           .catch((err: unknown) => {
@@ -6550,22 +6559,24 @@ ${recentExamples}
 
       // v2.0.728: SE runs synchronously (awaited) so the next cycle waits for
       // SE to finish before starting. This prevents code changes mid-cycle.
-      // v2.0.735: Removed cycleMinutes >= 5 restriction — SE should run regardless
-      // of cycle period. The 1-min cycle period is valid and SE should still audit.
+      // v2.0.735: Removed cycleMinutes >= 5 restriction.
+      // v2.0.736: SE follows audit — only runs when audit detects incidents.
+      // No more fixed schedule (every 2 cycles). SE triggers from audit results.
       if (engineerEnabled && !isShuttingDown()) {
         const shouldRunNoTrade = this.cyclesSinceLastTrade >= 3;
-        const shouldRunAudit = this.totalCycles > 0 && this.totalCycles % 2 === 0;
+        const shouldRunSE = this.auditTriggeredSE;
         if (shouldRunNoTrade) {
           log.warn(`🔧 [no-trade] ${this.cyclesSinceLastTrade} cycles since last trade — triggering SE investigation (blocking next cycle)`);
-          this.cycleInProgress = true; // block next cycle from starting
+          this.cycleInProgress = true;
           try {
             await this.runNoTradeInvestigation();
           } finally {
             this.cycleInProgress = false;
           }
-        } else if (shouldRunAudit) {
-          log.info(`🔧 [system-engineer] Starting SE audit (blocking next cycle)`);
-          this.cycleInProgress = true; // block next cycle from starting
+        } else if (shouldRunSE) {
+          this.auditTriggeredSE = false; // consume the trigger
+          log.info(`🔧 [system-engineer] Audit triggered SE — starting fix cycle (blocking next cycle)`);
+          this.cycleInProgress = true;
           try {
             await this.runDirectionAudit();
           } finally {
