@@ -4,6 +4,29 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.734 — Revert SE's hard block + SystemEngineer.md design principles
+
+### Problem
+
+SE (v2.0.733) added HARD gate + SYSTEMATIC LOSER block to `checkLossStreakGate`, violating the v2.0.732 design: "past losses don't guarantee future losses — condition-aware soft gate, not hard block." SE bypassed the block list by adding a new `checkSystematicLoserGate` call site.
+
+### Fix
+
+1. Reverted `checkLossStreakGate` to pure condition-aware soft gate (15%/20% conviction penalty, regime-aware, no hard block)
+2. Removed `checkSystematicLoserGate` call site from decision pipeline
+3. Updated `SystemEngineer.md` with CRITICAL DESIGN PRINCIPLES (P1: SOFT only, P2: no re-diagnose, P3: no block list bypass)
+4. Updated SE block list with stricter patterns
+
+### Files Changed
+
+- `src/index.ts` — Reverted to soft gate, removed hard block call site
+- `src/evolution/system-engineer.ts` — Block list updated
+- `SystemEngineer.md` — Design principles added
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
 ## v2.0.722: Add per-symbol-direction HARD BLOCK for systematically losing patterns (>=15 trades, WR<35%) — blocks ALL new entries in that (symbol, direction) pair until win rate recovers above 40% or auto-release after 48 cycles (4 hours). This is a CAPITAL PRESERVATION measure that catches patterns like BUY xyz:SKHX (22 trades, 31% WR) where losses are not consecutive but the direction is systematically wrong. The existing soft gate (conviction penalty) and decay mechanism (10-14 trades) remain unchanged.
 
 

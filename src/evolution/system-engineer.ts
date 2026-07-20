@@ -133,10 +133,10 @@ const BLOCKED_PATTERNS: { file: string; pattern: RegExp; reason: string }[] = [
   // gates, condition filtering, and category weighting are already applied (v2.0.721).
   { file: 'src/evolution/thesis-experience.ts', pattern: /remove.*direction.*filter|delete.*sameDir|remove.*sameDir/i, reason: 'checkThesisHistory() direction filter (sameDirMatches) is correct — do NOT remove it. Wilson score gates and condition filtering are already applied.' },
   { file: 'src/evolution/reason-analytics.ts', pattern: /findSimilar/i, reason: 'SimilarTradeRetriever.findSimilar() side filter is correct — do NOT remove' },
-  // v2.0.732: Loss streak gate is now a condition-aware SOFT gate (raises
-  // conviction threshold, not hard block). Past losses in different regimes
-  // are ignored. This is the correct behavior — do NOT revert to hard block.
-  { file: 'src/index.ts', pattern: /remove.*lossStreak|delete.*lossStreakTracker|remove.*checkLossStreak|revert.*hard.*block/i, reason: 'Loss streak gate is now condition-aware soft gate (v2.0.732) — raises conviction threshold in same regime, ignores past losses in different regimes. Do NOT revert to hard block or remove the tracker.' },
+  // v2.0.734: Loss streak gate is SOFT only. SE must NOT add hard block,
+  // systematic loser block, or call checkSystematicLoserGate from the pipeline.
+  // See SystemEngineer.md P1 for rationale.
+  { file: 'src/index.ts', pattern: /remove.*lossStreak|delete.*lossStreakTracker|remove.*checkLossStreak|revert.*hard.*block|add.*hard.*block|add.*systematic.*loser.*block|checkSystematicLoserGate.*call|call.*checkSystematicLoserGate/i, reason: 'Loss streak gate is SOFT only (v2.0.732/734) — raises conviction threshold in same regime, never hard blocks. Do NOT add hard block, systematic loser block, or call checkSystematicLoserGate from the pipeline. See SystemEngineer.md P1.' },
   { file: 'src/analysis/adaptive-filter.ts', pattern: /recordTrade|countRecentTrades|frequencyWindow/i, reason: 'Trade frequency throttle is already fixed (time-based) — do NOT revert to count-based' },
 ];
 
