@@ -137,15 +137,25 @@ export class ShadowTradeEngine {
   }
 
   /**
-   * Open a shadow LONG + SHORT for the given symbol.
+   * Open shadow positions for the given symbol in BOTH directions.
    * Called every cycle for the active symbol.
+   *
+   * Opens both LONG and SHORT shadow positions each cycle so that OLR
+   * receives training data for both directions. This is necessary for
+   * the system to learn which direction has an edge under current
+   * conditions. The OLR model is designed to handle contradictory
+   * training data — it learns P(win | direction, features) separately
+   * for each side via the side parameter in feedTrade().
    *
    * @param symbol       Symbol name
    * @param entryPrice   Current price
-   * @param slPrice      SL price (from S/R) — if null, use default distance
-   * @param tpPrice      TP price (from S/R) — if null, use default distance
+   * @param slPriceLong  SL price for LONG (from S/R) — if null, use default distance
+   * @param tpPriceLong  TP price for LONG (from S/R) — if null, use default distance
+   * @param slPriceShort SL price for SHORT (from S/R) — if null, use default distance
+   * @param tpPriceShort TP price for SHORT (from S/R) — if null, use default distance
    * @param cycle        Current cycle number
    * @param features     Feature snapshot at entry time
+   * @param thesisDirection  Ignored — both directions are always opened
    * @param srProvider   Optional S/R zone provider to fetch fresh zones each cycle
    */
   openShadowTrades(
@@ -157,17 +167,18 @@ export class ShadowTradeEngine {
     tpPriceShort: number | null,
     cycle: number,
     features: Record<string, number>,
+    thesisDirection: 'buy' | 'sell' | null = null,
     srProvider?: { getZones: (symbol: string, price: number) => { support: number; resistance: number } | null },
   ): void {
     if (entryPrice <= 0) return;
 
     // Check limits
-    const symOpen = this.positions.filter(p => p.symbol === symbol.toLowerCase() && p.status === 'open').length;
+    const sym = symbol.toLowerCase();
+    const symOpen = this.positions.filter(p => p.symbol === sym && p.status === 'open').length;
     if (symOpen >= SHADOW_CONFIG.maxOpenPerSymbol) return;
     const totalOpen = this.positions.filter(p => p.status === 'open').length;
     if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) return;
 
-    const sym = symbol.toLowerCase();
     const ts = Date.now();
 
     // v2.0.183: Fetch fresh S/R zones each cycle to avoid stale levels.
@@ -223,6 +234,7 @@ export class ShadowTradeEngine {
       mfePct: 0,
       maePct: 0,
     });
+    log.debug(`[shadow] Opened LONG ${sym} at ${entryPrice.toFixed(2)} (SL=${longSL.toFixed(2)}, TP=${longTP.toFixed(2)})`);
 
     // Open shadow SHORT
     const shortId = `shadow_${++this.idCounter}`;
@@ -245,6 +257,7 @@ export class ShadowTradeEngine {
       mfePct: 0,
       maePct: 0,
     });
+    log.debug(`[shadow] Opened SHORT ${sym} at ${entryPrice.toFixed(2)} (SL=${shortSL.toFixed(2)}, TP=${shortTP.toFixed(2)})`);
 
     // Prune old resolved positions (keep all open + last 100 resolved).
     // O(n) single-pass (L3 fix) — the previous indexOf-based filter was O(n²).

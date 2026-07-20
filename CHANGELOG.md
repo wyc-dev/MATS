@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.756: Revert shadow trade engine to open both LONG and SHORT each cycle. The OLR model correctly handles contradictory training data via the side parameter — it learns separate weights for each direction. Opening both directions is necessary for the system to learn which direction has an edge.
+
+
 ## v2.0.754: HACP SL distance — regime-adaptive multiplier for actual SL/TP placement (not just HACP distance). low_vol/mean_reverting → 3.0×ATR (1.5% SL distance), trending/high_vol → 2.0×ATR (1.0% SL distance). FIXED v2.0.749 bug: formula was `0.005 * slMultiplier / 2.0` which cancelled out the multiplier change. Now `0.005 * slMultiplier` — no division by 2.0. Prevents premature SL exits on xyz:SKHX (0% WR over 8 trades, all SL exits) and other low-vol assets.
 
 
