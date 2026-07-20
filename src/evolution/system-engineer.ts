@@ -354,6 +354,17 @@ ${auditResults.incidents.map(inc => `- [${inc.severity.toUpperCase()}] ${inc.cat
 **Audit Summary**: ${auditResults.summary}
 
 These audit incidents are the HIGHEST PRIORITY issues to fix. Each incident has a category, symbol, and detail explaining what went wrong. Focus on fixing the ROOT CAUSE of these incidents — not just the symptoms.
+
+**⚠️ IMPORTANT — Which audit categories to fix vs skip:**
+- ✅ FIX: olr-overconfidence, olr-model-overconfidence, olr-pwin-mismatch — fix OLR calibration/regularization in olr-engine.ts
+- ✅ FIX: premature-sl, premature-exit, exit-timing — fix SL/TP logic in hacp.ts or portfolio.ts
+- ✅ FIX: thesis-contradicts-action (when about OLR data quality) — fix OLR data pipeline
+- ✅ FIX: data-quality-issue — fix data recording in index.ts
+- ✅ FIX: vague-thesis, thesis-quality-issue — fix thesis generation in meta-agent.ts
+- ❌ SKIP: direction-repetition, low-win-rate-symbol — these are handled by the condition-aware SOFT gate (see Known Good Code). Do NOT diagnose or fix these.
+- ❌ SKIP: thesis-contradicts-action (when about "OLR says 100% but trade lost") — this is an OLR calibration issue, fix the OLR model not the thesis
+
+**Priority order**: Fix OLR overconfidence FIRST (it causes most other issues). Then fix premature SL. Then fix thesis quality. Do NOT fix direction-repetition or low-win-rate patterns.
 ` : ''}${noTradeInvestigation ? `
 ## 🚫 No-Trade Investigation — System hasn't traded for ${noTradeInvestigation.cyclesSinceLastTrade} cycles
 
