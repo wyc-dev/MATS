@@ -5706,6 +5706,33 @@ ${recentExamples}
         );
       }
 
+      // v2.0.722: HARD BLOCK for systematically losing patterns.
+      // If a (symbol, direction) pair has >= 20 total trades AND win rate < 35%,
+      // block ALL new entries in that direction until the win rate recovers
+      // above 40% (decay mechanism in checkSystematicLoserGate handles this).
+      // This is a CAPITAL PRESERVATION measure — the system should not keep
+      // trading a pattern that loses 2 out of 3 times.
+      // Placed AFTER loss streak gate (soft penalty) but BEFORE conviction gate
+      // so the hard block takes priority over adaptive threshold adjustments.
+      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+        const sysLoserResult = this.checkSystematicLoserGate(
+          finalDecision.symbol || activeSymbol,
+          finalDecision.action as 'buy' | 'sell',
+        );
+        if (sysLoserResult.blocked) {
+          log.warn(`🛑 [systematic-loser] HARD BLOCK: ${finalDecision.action.toUpperCase()} ${finalDecision.symbol || activeSymbol} — ${sysLoserResult.reason}`);
+          activeAuditGates.push({ gate: 'systematic-loser', passed: false, reason: sysLoserResult.reason ?? 'systematic loser blocked' });
+          finalDecision = {
+            ...finalDecision,
+            action: 'hold',
+            positionSizePct: 0,
+            rationale: `[SYSTEMATIC LOSER BLOCK] ${sysLoserResult.reason}. HOLD. Original: ${finalDecision.rationale}`,
+          };
+        } else {
+          activeAuditGates.push({ gate: 'systematic-loser', passed: true, reason: 'no systematic loser detected' });
+        }
+      }
+
       // v2.0.106: Adaptive conviction gate + trade frequency throttle.
       // Uses the ACTIVE symbol's per-asset filter — each asset has its own
       // conviction threshold and trade frequency limit based on Market Agent's
