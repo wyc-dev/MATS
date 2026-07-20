@@ -4,6 +4,44 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.724 — Fix audit gate false positive blocking all SELL signals
+
+### Problem
+
+The audit gate (C3, v2.0.720) used `detailLower.includes(auditDir)` to match critical incidents to candidate decisions. For SELL decisions, this meant **any critical incident whose detail text contained the word "sell"** would block ALL SELL signals — regardless of symbol or context.
+
+This caused a persistent false positive: the `thesis-contradicts-action` incident (detail: *"Trade #18: thesis states 'OLR 99% win rate on SELL' but the OLR_PWin field shows..."*) contained the word "SELL" in passing, so the gate blocked every subsequent SELL decision on every symbol. SILVER SELL signals were consistently overridden to HOLD.
+
+### Root Cause
+
+The matching logic had two layers:
+1. **Symbol match** (correct): `normalizeSymbol(incSym) !== auditSym` — only matches the specific symbol
+2. **Direction match** (buggy): `detailLower.includes('sell')` — matches ANY detail mentioning "sell", even in passing
+
+The direction match was far too broad. An incident saying "OLR 99% on SELL" is **not** saying "block all SELLs" — it's describing a specific trade's thesis contradiction. But the gate interpreted any mention of "sell" as a directional block signal.
+
+### Fix
+
+Tightened the matching logic to require **both** direction mention AND a losing indicator:
+
+1. **Category-based match**: Only if the category name explicitly contains the direction (e.g. `direction-repetition-buy`, `sell-bias`). This is the strongest signal — the LLM named the category after the direction.
+
+2. **Detail-based match**: Only if the detail mentions the direction **AND** a losing indicator (`loss`, `losing`, `low win`, `wrong direction`, `ignoring`, `failure to learn`). This filters out passing mentions like "OLR 99% on SELL" while still catching "5 of 6 SELL trades are losses" or "SELL has a 31% win rate".
+
+### Impact
+
+- SILVER SELL signals will no longer be blocked by unrelated `thesis-contradicts-action` incidents
+- The audit gate still blocks genuinely dangerous patterns (e.g. `direction-repetition` on a symbol with 31% WR)
+- False positive rate dramatically reduced — only incidents that specifically describe a **repeated losing pattern** for the candidate direction will trigger the gate
+
+### Files Changed
+
+- `src/index.ts` — Audit gate matching logic tightened (direction + losing indicator required)
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
 ## v2.0.723 — Vulnerability Defense: 4 fixes from code challenge
 
 ### V5: Shadow boost log NaN guard
