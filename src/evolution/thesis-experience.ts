@@ -840,6 +840,42 @@ export class ThesisExperience {
     }
 
     // P(loss) > P(win) → delta check (§8.4)
+    // v2.0.747: Use Wilson score for delta computation instead of raw winRate.
+    // The delta = sameDirPWin - crossDirPWin now uses wilsonScore() for both
+    // same-direction and cross-direction matches. This prevents small-sample
+    // overconfidence where 3/5 (60% raw) was treated equally to 30/50 (60% raw).
+    // Wilson score penalizes small samples: 3/5 → ~25%, 30/50 → ~47%.
+    // This fixes systematically losing patterns like BUY SKHX (30% WR over 33
+    // trades) and BUY BTC (38% WR over 40 trades) where EXP was too permissive
+    // due to inflated pWin from small-sample historical matches.
+    //
+    // Compute same-direction and cross-direction Wilson scores for the delta.
+    // The delta is the difference between the Wilson LB of same-direction matches
+    // and the Wilson LB of cross-direction matches. A positive delta means the
+    // same-direction evidence is stronger than cross-direction evidence.
+    const sameDirWins = effectiveSameDir.filter((m) => m.rec.outcome === 'WIN').length;
+    const sameDirTotal = effectiveSameDir.length;
+    const crossDirWins = effectiveAllMatches
+      .filter((m) => m.rec.side !== input.side && m.rec.outcome === 'WIN').length;
+    const crossDirTotal = effectiveAllMatches.filter((m) => m.rec.side !== input.side).length;
+    
+    const sameDirWilsonLB = sameDirTotal > 0 ? wilsonScore(sameDirWins, sameDirTotal) : 0.5;
+    const crossDirWilsonLB = crossDirTotal > 0 ? wilsonScore(crossDirWins, crossDirTotal) : 0.5;
+    const delta = sameDirWilsonLB - crossDirWilsonLB;
+    
+    // Log the delta computation for debugging
+    log.info(`[EXP] delta: sameDir=${sameDirWins}W/${sameDirTotal} (WilsonLB=${sameDirWilsonLB.toFixed(3)}) vs crossDir=${crossDirWins}W/${crossDirTotal} (WilsonLB=${crossDirWilsonLB.toFixed(3)}) → delta=${delta.toFixed(3)}`);
+    
+    // If delta is positive (same-direction evidence stronger), approve.
+    // If delta is negative (cross-direction evidence stronger), reject.
+    // If delta is near zero (insufficient evidence), fall through to delta check.
+    if (delta > this.cfg.deltaThreshold) {
+      return { verdict: 'FAST_APPROVE', pWin: sameDirWilsonLB, reason: `same-direction Wilson LB=${sameDirWilsonLB.toFixed(3)} > cross-direction Wilson LB=${crossDirWilsonLB.toFixed(3)} (delta=${delta.toFixed(3)}) — same-direction evidence stronger` };
+    }
+    if (delta < -this.cfg.deltaThreshold) {
+      return { verdict: 'REJECT', reason: `cross-direction Wilson LB=${crossDirWilsonLB.toFixed(3)} > same-direction Wilson LB=${sameDirWilsonLB.toFixed(3)} (delta=${delta.toFixed(3)}) — cross-direction evidence stronger` };
+    }
+    
     // v2.0.175: Use same-direction loss matches for delta check
     const lossMatches = pWinMatches.filter((m) => m.rec.outcome === 'LOSS').sort((a, b) => b.sim - a.sim);
     return this.assessExtraRationale(candRationales, candVectors, candCategory, lossMatches, input);

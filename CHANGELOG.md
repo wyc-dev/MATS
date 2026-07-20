@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.747: EXP checkThesisHistory() — use wilsonScore() instead of raw winRate for delta computation. Prevents small-sample overconfidence where 3/5 (60% raw) was treated equally to 30/50 (60% raw). Wilson score penalizes small samples: 3/5 → ~25%, 30/50 → ~47%. This fixes systematically losing patterns like BUY SKHX (30% WR over 33 trades) and BUY BTC (38% WR over 40 trades) where EXP was too permissive due to inflated pWin from small-sample historical matches.
+
+
 ## v2.0.746: OLR — add Bayesian prior to sigmoid computation to prevent 0%/100% P(win) on small-sample models. Prior pulls extreme values toward 0.5 when effective sample count < 50, preventing sigmoid saturation from overriding safety gates. Hard clamp sigmoid output to [0.01, 0.99] as safety net. This fixes the root cause of OLR overconfidence (Trade #1: 100%→loss, #5: 0%→win, #6: 100%→loss, #10: 0%→loss).
 
 
