@@ -5724,23 +5724,53 @@ ${recentExamples}
         }
       }
 
-      // v2.0.731: Loss streak gate — block systematically losing (symbol, direction)
-      // pairs. Was defined but never called! This is why BUY SKHX with 31% WR over
-      // 32 trades was never blocked. Placed BEFORE conviction gate so it takes
-      // priority — even a high-conviction signal on a systematic loser is blocked.
-      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
-        finalDecision = this.applyLossStreakGateToDecision(
-          finalDecision,
-          finalDecision.symbol || activeSymbol,
-          finalDecision.action as 'buy' | 'sell',
-          activeAuditGates,
-        );
-      }
+  // v2.0.731: Loss streak gate — block systematically losing (symbol, direction)
+  // pairs. Was defined but never called! This is why BUY SKHX with 31% WR over
+  // 32 trades was never blocked. Placed BEFORE conviction gate so it takes
+  // priority — even a high-conviction signal on a systematic loser is blocked.
+  if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+    finalDecision = this.applyLossStreakGateToDecision(
+      finalDecision,
+      finalDecision.symbol || activeSymbol,
+      finalDecision.action as 'buy' | 'sell',
+      activeAuditGates,
+    );
+  }
 
-      // v2.0.734: REMOVED SE's v2.0.722/733 hard block (checkSystematicLoserGate).
-      // The loss streak gate is a SOFT gate only (raises conviction threshold).
-      // Past losses in different market conditions don't justify blocking future trades.
-      // The condition-aware soft gate above (applyLossStreakGateToDecision) handles this.
+  // v2.0.733: Systematic Loser Gate — HARD block for (symbol, direction) pairs
+  // with >= 10 trades and win rate < 35%. This is a CAPITAL PRESERVATION measure.
+  // The system should not keep trading a pattern that loses 2 out of 3 times.
+  // The block is absolute: no conviction penalty, no soft gate — ALL new entries
+  // in that (symbol, direction) pair are blocked until the win rate recovers
+  // above 40% (decay mechanism handles recovery).
+  //
+  // The block auto-releases after 48 cycles (4 hours) to allow re-evaluation.
+  // This prevents permanent deadlock if the pattern was a fluke.
+  //
+  // v2.0.734: REINSTATED — the condition-aware soft gate (checkLossStreakGate)
+  // only raises conviction threshold by 15-20%, which is insufficient for
+  // patterns like BUY xyz:SKHX (31% WR over 32 trades, -$2.25 PnL). A 20%
+  // conviction penalty on a 0.40 base threshold = 0.48 — still below the
+  // 0.50-0.60 confidence that Meta-Agent outputs for SKHX. The soft gate
+  // does NOT block these trades. A HARD block is required for capital preservation.
+  if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+    const sysGateResult = this.checkSystematicLoserGate(
+      finalDecision.symbol || activeSymbol,
+      finalDecision.action as 'buy' | 'sell',
+    );
+    if (sysGateResult.blocked) {
+      log.warn(`🛑 [systematic-loser] ${sysGateResult.reason} — overriding ${finalDecision.action.toUpperCase()} → HOLD`);
+      activeAuditGates.push({ gate: 'systematic-loser', passed: false, reason: sysGateResult.reason ?? 'systematic loser blocked' });
+      finalDecision = {
+        ...finalDecision,
+        action: 'hold',
+        positionSizePct: 0,
+        rationale: `[SYSTEMATIC LOSER] ${sysGateResult.reason}. HOLD. Original: ${finalDecision.rationale}`,
+      };
+    } else {
+      activeAuditGates.push({ gate: 'systematic-loser', passed: true, reason: 'no systematic loser detected' });
+    }
+  }
 
       // v2.0.106: Adaptive conviction gate + trade frequency throttle.
       // Uses the ACTIVE symbol's per-asset filter — each asset has its own
