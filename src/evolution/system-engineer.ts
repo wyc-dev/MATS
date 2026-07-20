@@ -133,10 +133,10 @@ const BLOCKED_PATTERNS: { file: string; pattern: RegExp; reason: string }[] = [
   // gates, condition filtering, and category weighting are already applied (v2.0.721).
   { file: 'src/evolution/thesis-experience.ts', pattern: /remove.*direction.*filter|delete.*sameDir|remove.*sameDir/i, reason: 'checkThesisHistory() direction filter (sameDirMatches) is correct — do NOT remove it. Wilson score gates and condition filtering are already applied.' },
   { file: 'src/evolution/reason-analytics.ts', pattern: /findSimilar/i, reason: 'SimilarTradeRetriever.findSimilar() side filter is correct — do NOT remove' },
-  // v2.0.731: Removed loss-streak/systematic-loser from block list — the gate
-  // is now properly wired (was dead code before v2.0.731). SE can propose
-  // improvements to the threshold or decay mechanism.
-  { file: 'src/index.ts', pattern: /remove.*lossStreak|delete.*lossStreakTracker|remove.*checkLossStreak/i, reason: 'Loss streak tracker + gate is now wired (v2.0.731) — do NOT remove it, but improvements to threshold/decay are allowed' },
+  // v2.0.732: Loss streak gate is now a condition-aware SOFT gate (raises
+  // conviction threshold, not hard block). Past losses in different regimes
+  // are ignored. This is the correct behavior — do NOT revert to hard block.
+  { file: 'src/index.ts', pattern: /remove.*lossStreak|delete.*lossStreakTracker|remove.*checkLossStreak|revert.*hard.*block/i, reason: 'Loss streak gate is now condition-aware soft gate (v2.0.732) — raises conviction threshold in same regime, ignores past losses in different regimes. Do NOT revert to hard block or remove the tracker.' },
   { file: 'src/analysis/adaptive-filter.ts', pattern: /recordTrade|countRecentTrades|frequencyWindow/i, reason: 'Trade frequency throttle is already fixed (time-based) — do NOT revert to count-based' },
 ];
 
@@ -380,7 +380,7 @@ ${fileSummaries}
 - shadow-trade-engine.ts getStats(): The dedup logic (step 3 checks p.id === r.id) correctly prevents double-counting between positions[] and recentResults[]. This has been verified. Do NOT propose changes to this method.
 - thesis-experience.ts checkThesisHistory(): Direction-filtered pWin (sameDirMatches) is correct. Do NOT remove the direction filter.
 - reason-analytics.ts SimilarTradeRetriever.findSimilar(): The side parameter filter is correct. Do NOT remove it.
-- index.ts checkLossStreakGate(): The per-symbol-per-direction loss streak guard is already implemented with consecutive loss blocking (3+ losses → 12 cycle block) and systematic loser gate (10+ trades, WR<35% → block with decay). Do NOT re-add or modify this guard — it is working correctly.
+- index.ts checkLossStreakGate(): v2.0.732 — condition-aware SOFT gate. Raises conviction threshold by 15-20% when the (symbol, direction) pair has a poor track record in the CURRENT regime. Past losses in a DIFFERENT regime are ignored (market conditions changed). Does NOT hard block — strong signals can still enter. Do NOT revert to hard block.
 - index.ts updateLossStreakTracker(): The loss streak tracker update logic is correct. Do NOT modify it.
 - adaptive-filter.ts recordTrade()/countRecentTradesInWindow(): Time-based trade frequency pruning is correct (10-min window, 3 trades max). Do NOT revert to count-based pruning.
 

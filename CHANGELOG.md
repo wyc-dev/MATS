@@ -4,6 +4,40 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.732 — Loss streak gate: condition-aware soft gate (B+C) + SE notification
+
+### Philosophy Change
+
+**Old**: "Past losses → future losses → hard block" (gambler's fallacy bias)
+**New**: "Past losses in SAME regime → require stronger signal" (condition-aware)
+
+Past losses in a **different** regime are irrelevant — market conditions changed. The gate only penalizes when the **current** regime has a losing track record.
+
+### Implementation (Option B + C)
+
+**Option B — Condition-aware**: `lossStreakTracker` now tracks per-regime win/loss stats. `checkLossStreakGate()` only applies a penalty when the current regime has ≥5 trades with <35% WR. If the regime changed (e.g. was `low_volatility`, now `trending_bull`), no penalty.
+
+**Option C — Soft gate**: Instead of hard-blocking (override to HOLD), the gate raises the effective conviction threshold:
+- Consecutive 3+ losses in same regime → conviction +15%
+- Systematic loser in same regime (5+ trades, <35% WR) → conviction +20%
+- Penalty is added to the adaptive filter's conviction threshold (capped at 85%)
+- Strong signals can still enter — they just need to be stronger
+
+### SE Notification
+
+Updated SE block list + Phase 1 prompt "Known Good Code" section:
+- Block list: blocks removal/revert, allows threshold improvements
+- Phase 1 prompt: "v2.0.732 — condition-aware SOFT gate. Raises conviction threshold. Past losses in DIFFERENT regime are ignored. Does NOT hard block. Do NOT revert to hard block."
+
+### Files Changed
+
+- `src/index.ts` — `lossStreakTracker` gains `regimeStats`, `checkLossStreakGate` returns `convictionPenalty` instead of `blocked`, `updateLossStreakTracker` tracks per-regime stats, `applyLossStreakGateToDecision` stores penalty, conviction gate reads `_lossStreakPenalty`, multi-symbol path updated
+- `src/evolution/system-engineer.ts` — Block list + Known Good Code updated
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
 ## v2.0.731 — Wire loss streak gate (was dead code!) + SE block list fix
 
 ### Critical Bug: Loss Streak Guard Was Never Called

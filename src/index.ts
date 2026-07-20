@@ -228,56 +228,72 @@ class MATSSystem {
    *  AND winRate < 0.35). Returns { blocked: boolean, reason?: string }.
    *  Called in the decision cycle before executing any BUY/SELL decision.
    *  Also called in onPositionClosedLearning() to update the tracker on every close. */
-  private lossStreakTracker = new Map<string, { consecutiveLosses: number; blockedUntilCycle: number; totalTrades: number; totalWins: number }>();
+  private lossStreakTracker = new Map<string, {
+    consecutiveLosses: number;
+    blockedUntilCycle: number;
+    totalTrades: number;
+    totalWins: number;
+    /** v2.0.732: Per-regime win/loss tracking for condition-aware gating. */
+    regimeStats: Map<string, { trades: number; wins: number; volatility: number }>;
+  }>();
 
   /**
    * v2.0.181: Check the per-symbol-per-direction loss streak gate.
-   * Returns { blocked: true, reason } if the pair should be blocked, or { blocked: false } if allowed.
+   * v2.0.732: Changed from hard block to condition-aware SOFT gate.
    *
-   * Two conditions block a pair:
-   * 1. Consecutive loss streak >= 3 (blocked for 12 cycles, resets on any win)
-   * 2. Systematic loser: totalTrades >= 10 AND winRate < 0.35 (blocked until winRate > 0.40)
+   * Philosophy: "Past losses don't guarantee future losses" — but if the
+   * SAME market conditions (regime + volatility band) keep producing losses,
+   * we raise the conviction threshold (require stronger signal), not hard block.
    *
-   * This is called in the decision cycle BEFORE executing any BUY/SELL decision.
+   * Two conditions:
+   * 1. Consecutive loss streak >= 3 in SAME regime → raise conviction by 15%
+   * 2. Systematic loser in SAME regime: >= 5 trades, WR < 35% → raise conviction by 20%
+   *
+   * If current regime differs from the losing regime → no penalty (market changed).
+   *
+   * Returns { blocked: false, convictionPenalty?: number, reason?: string }
    */
-  private checkLossStreakGate(symbol: string, direction: 'buy' | 'sell'): { blocked: boolean; reason?: string } {
+  private checkLossStreakGate(symbol: string, direction: 'buy' | 'sell'): { blocked: boolean; convictionPenalty?: number; reason?: string } {
     const key = `${normalizeSymbol(symbol)}:${direction}`;
     const entry = this.lossStreakTracker.get(key);
     if (!entry) return { blocked: false };
 
-    // Condition 1: Consecutive loss streak
+    // v2.0.732: Get current market regime for condition-aware check
+    const currentRegime = this.marketState.getState(symbol)?.regime
+      ?? this.marketState.getState(this.marketAgent.getConfig().selectedSymbol)?.regime
+      ?? 'unknown';
+
+    // v2.0.732: Condition 1 — consecutive loss streak (still a short cooldown,
+    // but only blocks in the SAME regime where losses occurred)
     if (entry.consecutiveLosses >= 3) {
       if (this.totalCycles < entry.blockedUntilCycle) {
-        const remaining = entry.blockedUntilCycle - this.totalCycles;
-        return { blocked: true, reason: `Loss streak gate: ${entry.consecutiveLosses} consecutive losses in ${direction.toUpperCase()} ${symbol} — blocked for ${remaining} more cycle(s)` };
-      }
-      // Cooldown expired — reset the streak counter but keep totalTrades/totalWins
-      entry.consecutiveLosses = 0;
-      entry.blockedUntilCycle = 0;
-    }
-
-    // Condition 2: Systematic loser (totalTrades >= 10 AND winRate < 0.35)
-    if (entry.totalTrades >= 10) {
-      const winRate = entry.totalWins / entry.totalTrades;
-      if (winRate < 0.35) {
-        // v2.0.226: Decay mechanism — if the pair has been blocked for 24+ cycles
-        // (2 hours at 5-min cycle), halve the totalTrades and totalWins. This
-        // gradually forgets old losses and allows the pair to be retried.
-        // Without this, a systematic loser is blocked FOREVER because no new
-        // trades can be placed to improve the win rate (dead lock).
-        if (entry.blockedUntilCycle > 0 && this.totalCycles >= entry.blockedUntilCycle + 24) {
-          entry.totalTrades = Math.floor(entry.totalTrades / 2);
-          entry.totalWins = Math.floor(entry.totalWins / 2);
-          entry.consecutiveLosses = 0;
-          entry.blockedUntilCycle = 0;
-          const newWinRate = entry.totalTrades > 0 ? (entry.totalWins / entry.totalTrades * 100).toFixed(0) : '0';
-          log.info(`🔄 [loss-streak] ${direction.toUpperCase()} ${symbol}: decay applied — totalTrades halved to ${entry.totalTrades}, winRate now ${newWinRate}% — retry allowed`);
-          // Re-check after decay
-          if (entry.totalTrades < 10 || (entry.totalWins / entry.totalTrades) >= 0.40) {
-            return { blocked: false };
+        // Check if current regime matches where the losses happened
+        const regimeStats = entry.regimeStats.get(currentRegime);
+        if (regimeStats && regimeStats.trades >= 3) {
+          const regimeWR = regimeStats.wins / regimeStats.trades;
+          if (regimeWR < 0.35) {
+            const remaining = entry.blockedUntilCycle - this.totalCycles;
+            return { blocked: false, convictionPenalty: 0.15, reason: `Loss streak: ${entry.consecutiveLosses} consecutive losses in ${currentRegime} regime — conviction +15% (cooldown ${remaining} cycles)` };
           }
         }
-        return { blocked: true, reason: `Systematic loser gate: ${direction.toUpperCase()} ${symbol} has ${entry.totalTrades} trades with ${(winRate * 100).toFixed(0)}% win rate (threshold: 35%) — blocked until win rate recovers above 40% (decay in ${Math.max(0, (entry.blockedUntilCycle + 24 - this.totalCycles))} cycles)` };
+        // Regime changed — no penalty, let it trade
+        entry.consecutiveLosses = 0;
+        entry.blockedUntilCycle = 0;
+      } else {
+        entry.consecutiveLosses = 0;
+        entry.blockedUntilCycle = 0;
+      }
+    }
+
+    // v2.0.732: Condition 2 — condition-aware systematic loser (SOFT gate)
+    // Only penalize if the CURRENT regime has a losing track record.
+    // If the regime changed, past losses are irrelevant.
+    const regimeStats = entry.regimeStats.get(currentRegime);
+    if (regimeStats && regimeStats.trades >= 5) {
+      const regimeWR = regimeStats.wins / regimeStats.trades;
+      if (regimeWR < 0.35) {
+        // v2.0.732: Soft gate — raise conviction threshold by 20% instead of hard block
+        return { blocked: false, convictionPenalty: 0.20, reason: `Condition-aware soft gate: ${direction.toUpperCase()} ${symbol} in ${currentRegime} regime has ${(regimeWR * 100).toFixed(0)}% WR over ${regimeStats.trades} trades — conviction +20% (stronger signal required, not blocked)` };
       }
     }
 
@@ -335,11 +351,25 @@ class MATSSystem {
     const key = `${normalizeSymbol(symbol)}:${direction}`;
     let entry = this.lossStreakTracker.get(key);
     if (!entry) {
-      entry = { consecutiveLosses: 0, blockedUntilCycle: 0, totalTrades: 0, totalWins: 0 };
+      entry = { consecutiveLosses: 0, blockedUntilCycle: 0, totalTrades: 0, totalWins: 0, regimeStats: new Map() };
       this.lossStreakTracker.set(key, entry);
     }
 
     entry.totalTrades++;
+
+    // v2.0.732: Track per-regime stats for condition-aware gating
+    const regime = this.marketState.getState(symbol)?.regime
+      ?? this.marketState.getState(this.marketAgent.getConfig().selectedSymbol)?.regime
+      ?? 'unknown';
+    const volatility = this.marketState.getState(symbol)?.volatility ?? 0;
+    let regimeStat = entry.regimeStats.get(regime);
+    if (!regimeStat) {
+      regimeStat = { trades: 0, wins: 0, volatility: 0 };
+      entry.regimeStats.set(regime, regimeStat);
+    }
+    regimeStat.trades++;
+    regimeStat.volatility = volatility; // latest volatility for this regime
+    if (isWin) regimeStat.wins++;
 
     if (isWin) {
       entry.consecutiveLosses = 0;
@@ -348,22 +378,18 @@ class MATSSystem {
     } else {
       entry.consecutiveLosses++;
       if (entry.consecutiveLosses >= 3) {
-        // Block for 12 cycles (60 min at 5-min cycle)
-        entry.blockedUntilCycle = this.totalCycles + 12;
-        log.warn(`🚫 [loss-streak] ${direction.toUpperCase()} ${symbol}: ${entry.consecutiveLosses} consecutive losses — blocked for 12 cycles (until cycle #${entry.blockedUntilCycle})`);
+        // v2.0.732: Short cooldown (6 cycles, was 12) — just a breather,
+        // not a hard block. The condition-aware soft gate handles the rest.
+        entry.blockedUntilCycle = this.totalCycles + 6;
+        log.warn(`🚡 [loss-streak] ${direction.toUpperCase()} ${symbol}: ${entry.consecutiveLosses} consecutive losses in ${regime} regime — conviction penalty for 6 cycles`);
       }
     }
 
-    // Log systematic loser detection + set blockedUntilCycle for decay timer
-    if (entry.totalTrades >= 10) {
-      const winRate = entry.totalWins / entry.totalTrades;
-      if (winRate < 0.35) {
-        // v2.0.226: Set blockedUntilCycle so the decay mechanism in checkLossStreakGate
-        // can count 24 cycles from this point and then halve the stats (forget old losses)
-        if (entry.blockedUntilCycle === 0) {
-          entry.blockedUntilCycle = this.totalCycles;
-        }
-        log.warn(`🚫 [systematic-loser] ${direction.toUpperCase()} ${symbol}: ${entry.totalTrades} trades, ${(winRate * 100).toFixed(0)}% win rate — blocked (decay in 24 cycles)`);
+    // v2.0.732: Log condition-aware systematic loser detection
+    if (regimeStat.trades >= 5) {
+      const regimeWR = regimeStat.wins / regimeStat.trades;
+      if (regimeWR < 0.35) {
+        log.warn(`🚡 [condition-aware] ${direction.toUpperCase()} ${symbol} in ${regime} regime: ${(regimeWR * 100).toFixed(0)}% WR over ${regimeStat.trades} trades — conviction +20% (soft gate, not blocked)`);
       }
     }
   }
@@ -380,19 +406,21 @@ class MATSSystem {
     action: 'buy' | 'sell',
     auditGates: Array<{ gate: string; passed: boolean; reason: string }>,
   ): TradingDecision {
-    // Check loss streak gate (consecutive losses + systematic loser)
+    // v2.0.732: Condition-aware soft gate — raises conviction threshold instead
+    // of hard blocking. Past losses in a DIFFERENT regime are irrelevant.
     const gateResult = this.checkLossStreakGate(symbol, action);
-    if (gateResult.blocked) {
-      log.warn(`🚫 [loss-streak-gate] ${action.toUpperCase()} ${symbol} blocked: ${gateResult.reason}`);
-      auditGates.push({ gate: 'loss-streak', passed: false, reason: gateResult.reason ?? 'blocked by loss streak gate' });
-      return {
-        ...decision,
-        action: 'hold',
-        positionSizePct: 0,
-        rationale: `[LOSS STREAK GATE] ${gateResult.reason}. HOLD. Original: ${decision.rationale}`,
-      };
+    if (gateResult.convictionPenalty && gateResult.convictionPenalty > 0) {
+      // v2.0.732: Soft gate — store penalty for the conviction gate to pick up.
+      // We don't block here; instead we raise the effective conviction threshold
+      // by storing the penalty on the decision's rationale (the conviction gate
+      // reads this._lossStreakPenalty and adds it to the threshold).
+      (this as any)._lossStreakPenalty = gateResult.convictionPenalty;
+      log.info(`🚡 [loss-streak-soft] ${action.toUpperCase()} ${symbol}: ${gateResult.reason} — conviction threshold +${(gateResult.convictionPenalty * 100).toFixed(0)}%`);
+      auditGates.push({ gate: 'loss-streak', passed: true, reason: `soft gate: conviction +${(gateResult.convictionPenalty * 100).toFixed(0)}% (${gateResult.reason?.slice(0, 60)})` });
+    } else {
+      (this as any)._lossStreakPenalty = 0;
+      auditGates.push({ gate: 'loss-streak', passed: true, reason: 'no penalty' });
     }
-    auditGates.push({ gate: 'loss-streak', passed: true, reason: 'no loss streak detected' });
     return decision;
   }
   /** v2.0.128: Decision audit log — tracks every Meta-Agent BUY/SELL decision
@@ -5225,14 +5253,15 @@ ${recentExamples}
             auditGates.push({ gate: 'direction-restrict', passed: true, reason: 'allowed' });
 
             // v2.0.731: Loss streak gate for multi-symbol path
+            // v2.0.732: Condition-aware soft gate — raises conviction threshold
+            // instead of hard blocking. Past losses in different regimes are ignored.
             const lossStreakResult = this.checkLossStreakGate(psc.symbol, psc.action as 'buy' | 'sell');
-            if (lossStreakResult.blocked) {
-              log.warn(`🚫 [loss-streak-gate] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol} blocked: ${lossStreakResult.reason}`);
-              auditGates.push({ gate: 'loss-streak', passed: false, reason: lossStreakResult.reason ?? 'blocked' });
-              this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
-              continue;
+            if (lossStreakResult.convictionPenalty && lossStreakResult.convictionPenalty > 0) {
+              log.info(`🚡 [loss-streak-soft] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol}: ${lossStreakResult.reason} — conviction +${(lossStreakResult.convictionPenalty * 100).toFixed(0)}%`);
+              auditGates.push({ gate: 'loss-streak', passed: true, reason: `soft: conviction +${(lossStreakResult.convictionPenalty * 100).toFixed(0)}%` });
+            } else {
+              auditGates.push({ gate: 'loss-streak', passed: true, reason: 'no penalty' });
             }
-            auditGates.push({ gate: 'loss-streak', passed: true, reason: 'no loss streak detected' });
 
             // v2.0.106: Check per-asset filter gate
             const pscFilter = this.assetFilterRegistry.getFilter(psc.symbol);
@@ -5693,14 +5722,20 @@ ${recentExamples}
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
         const symFilter = this.assetFilterRegistry.getFilter(finalDecision.symbol || activeSymbol);
         const convictionThreshold = symFilter.getConvictionThreshold();
+        // v2.0.732: Apply loss streak soft penalty — raises effective threshold
+        // when the (symbol, direction) pair has a poor track record in the
+        // CURRENT regime. Past losses in a different regime are ignored.
+        const lossStreakPenalty = (this as any)._lossStreakPenalty ?? 0;
+        const effectiveThreshold = Math.min(0.85, convictionThreshold + lossStreakPenalty);
         // v2.0.140: Use per-symbol confidence if available, fall back to overall
         const activePscForGate = (result.consensus.perSymbolConsensus ?? []).find(
           psc => normalizeSymbol(psc.symbol) === normalizeSymbol(finalDecision.symbol || activeSymbol),
         );
         const consensusConfidence = activePscForGate?.confidence ?? result.consensus.confidence;
-        if (consensusConfidence < convictionThreshold) {
-          log.warn(`🛑 [adaptive-filter] Conviction gate [${finalDecision.symbol || activeSymbol}]: ${(consensusConfidence * 100).toFixed(0)}% < threshold ${(convictionThreshold * 100).toFixed(0)}% — overriding ${finalDecision.action.toUpperCase()} → HOLD (signal below noise floor)`);
-          activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(consensusConfidence * 100).toFixed(0)}% < ${(convictionThreshold * 100).toFixed(0)}%` });
+        if (consensusConfidence < effectiveThreshold) {
+          const penaltyStr = lossStreakPenalty > 0 ? ` (base ${(convictionThreshold * 100).toFixed(0)}% + loss-streak ${(lossStreakPenalty * 100).toFixed(0)}%)` : '';
+          log.warn(`🛑 [adaptive-filter] Conviction gate [${finalDecision.symbol || activeSymbol}]: ${(consensusConfidence * 100).toFixed(0)}% < threshold ${(effectiveThreshold * 100).toFixed(0)}%${penaltyStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD (signal below noise floor)`);
+          activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(consensusConfidence * 100).toFixed(0)}% < ${(effectiveThreshold * 100).toFixed(0)}%${lossStreakPenalty > 0 ? ` (+${(lossStreakPenalty * 100).toFixed(0)}% loss-streak)` : ''}` });
           finalDecision = {
             ...finalDecision,
             action: 'hold',
