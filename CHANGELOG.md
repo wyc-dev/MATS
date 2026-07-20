@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.749: HACP SL distance — regime-adaptive multiplier: 3.0×ATR for low_vol/mean_reverting, 2.0×ATR for trending/high_vol. Prevents premature SL exits on BTC and SKHX in quiet markets where 2.0×ATR is too tight (vol=0.0003 → $39 SL on $65K BTC).
+
+
 ## v2.0.748: HACP SL distance — increase SL multiplier from 1.5×ATR to 2.0×ATR to prevent premature exits on valid trades. SILVER SELL has 60% WR in last 30 trades but 3/10 recent trades lost via premature SL/thesis_invalidation. BTC BUY trade #20 lost -$0.22 after 29min despite shadowWR=86%. Volatility-adaptive SL gives trades more room to develop while maintaining R:R ≥ 1.5:1.
 
 
