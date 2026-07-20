@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.761: OLR predict() — accept optional currentFeatures parameter to use fresh market data instead of stale shadow-entry features. Prevents P(win) miscalibration where OLR predicts 100%/0% based on 30-minute-old volatility/OB/funding data that no longer reflects current market conditions.
+
+
 ## v2.0.760: OLR predict() — add L2 regularization (λ=0.01) to SGD weight update to prevent unbounded weight growth and sigmoid saturation. Add sigmoid temperature T=2.0 in predict() to soften output. Reduce maxWeight from 5.0 to 3.0. Fixes systematic P(win) miscalibration where OLR outputs 0%/100% but actual win rate is ~30-50%.
 
 

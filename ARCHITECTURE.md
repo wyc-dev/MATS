@@ -576,3 +576,7 @@ The OLR query() method now applies applyConfidencePenalty() to the calibrated pW
 
 ## System Engineer Update
 The OLR engine's query() method now applies a three-layer safety net: (1) existing Bayesian confidence penalty for low-sample models, (2) NEW inverse-sample-count confidence penalty applied to ALL queries regardless of sample count, which scales the pull toward 0.5 with the inverse of effective sample size, and (3) NEW hard clamp that prevents sigmoid saturation to exactly 0% or 100%. The clamp ranges are [0.05, 0.95] for models with <50 samples and [0.01, 0.99] for models with >=50 samples. This ensures that even well-trained models with 100+ samples cannot output extreme values that override safety gates, while preserving the model's signal when it has strong evidence.
+
+
+## System Engineer Update
+The query() method now accepts an optional 5th parameter `currentFeatures: Record<string, number> | undefined`. When provided, these fresh market features are used for the sigmoid computation (logit → pWin) instead of the features passed to query(). The currentFeatures are NOT fed into Welford normalization or SGD training — those still use the original features from feedTrade(). This ensures the model trains on the features that were actually present at trade entry, but predicts using the features that reflect current market conditions. The shadow trade engine's getStats() method should pass current cycle features when computing P(win) for the active symbol.
