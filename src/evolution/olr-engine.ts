@@ -486,6 +486,34 @@ export class OLREngine {
     }
   }
 
+  /**
+   * v2.0.722: Apply a confidence penalty to the raw pWin when the model has
+   * insufficient evidence. This prevents extreme predictions (near 0 or 1)
+   * when the total training samples for this symbol+side are below a threshold.
+   * 
+   * The penalty pulls predictions toward 0.5 using a Bayesian prior:
+   *   calibratedPWin = (rawPWin * nSamples + 0.5 * priorStrength) / (nSamples + priorStrength)
+   * 
+   * Where priorStrength = max(0, CONFIDENCE_PENALTY_THRESHOLD - nSamples)
+   * This means: when nSamples < threshold, the prediction is pulled toward 0.5
+   * proportionally to how far below the threshold we are. At nSamples=0, the
+   * prediction is exactly 0.5. At nSamples=threshold, the prediction is unchanged.
+   * 
+   * This is applied AFTER the 5-bin calibration map, so calibration still works
+   * on the raw sigmoid output, but the final output is tempered by sample count.
+   */
+  private applyConfidencePenalty(rawPWin: number, nSamples: number): number {
+    const threshold = OLR_CONFIG.highConfidenceSamples; // 50
+    if (nSamples >= threshold) return rawPWin;
+    const priorStrength = threshold - nSamples;
+    // Bayesian smoothing: (rawPWin * nSamples + 0.5 * priorStrength) / (nSamples + priorStrength)
+    const denominator = nSamples + priorStrength;
+    if (denominator <= 0) return 0.5;
+    const calibrated = (rawPWin * nSamples + 0.5 * priorStrength) / denominator;
+    // Clamp to [0, 1] for safety
+    return Math.max(0, Math.min(1, calibrated));
+  }
+
   private contextToVector(features: Record<string, number>): number[] {
     return FEATURE_NAMES.map(name => {
       const val = features[name];

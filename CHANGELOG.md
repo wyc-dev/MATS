@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.722: Add OLR confidence penalty — Bayesian prior pulls extreme predictions toward 0.5 when sample count < 50. Prevents 0%/100% overconfidence from imbalanced shadow trade training data. Applied after 5-bin calibration map in query().
+
+
 ## v2.0.730 — Fix direction restriction surviving restart (persistence gap)
 
 ### Problem
