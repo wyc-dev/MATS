@@ -4,6 +4,29 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.728 — SE cycle blocking + test retry loop (3 attempts)
+
+### Problem 1: SE modifying files while cycle is running
+
+SE was triggered with `void` (fire-and-forget) in the `finally` block after cycle completion. The next cycle's timer would start counting down immediately, so SE's LLM calls (20-30s) + tsc + tests could overlap with the next HACP cycle. This caused code changes mid-cycle.
+
+**Fix**: SE now runs **synchronously** (`await`) with `cycleInProgress = true` set before SE starts and `false` after SE finishes. The next cycle cannot start while SE is running.
+
+### Problem 2: SE test retry only had 1 attempt
+
+Phase 2c (test failure retry) only tried once. If the LLM's first test fix was wrong, SE immediately rolled back and gave up.
+
+**Fix**: Phase 2c now retries up to **3 times** in a loop. Each retry sends the latest test error output to the LLM. Improved error capture from both `err.stdout` and `err.stderr`.
+
+### Files Changed
+
+- `src/index.ts` — SE runs `await` (synchronous) with `cycleInProgress = true` blocking
+- `src/evolution/system-engineer.ts` — Phase 2c retry loop (3 attempts), improved error capture
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
 ## v2.0.202: Fix tsc error in thesis-experience.ts — add explicit type annotation for winRateSame variable
 
 

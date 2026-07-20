@@ -750,22 +750,27 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
 
     // v2.0.727: Test failure retry — if tsc passed but tests failed, send the
     // test error output back to the LLM so it can fix the failing tests.
-    // This handles cases where the code fix is conceptually correct but breaks
-    // existing test expectations (e.g. Wilson score gates require more test records).
+    // v2.0.728: Retry up to 3 times until ALL tests pass.
     if (tscPassed && !testsPassed && testErrorOutput) {
-      log.info(`🔧 [system-engineer] Phase 2c: Test failure retry — sending test errors to LLM for correction...`);
+      const MAX_TEST_RETRIES = 3;
+      for (let testRetryNum = 1; testRetryNum <= MAX_TEST_RETRIES && !testsPassed; testRetryNum++) {
+        log.info(`🔧 [system-engineer] Phase 2c: Test failure retry ${testRetryNum}/${MAX_TEST_RETRIES} — sending test errors to LLM for correction...`);
 
-      // Extract the failing test details from the output (not the entire output)
-      const failLines = testErrorOutput.split('\n').filter(l =>
-        l.includes('FAIL') || l.includes('expected') || l.includes('AssertionError') ||
-        l.includes('⎯') || l.includes('Error:')
-      ).slice(0, 30);
-      const failSummary = failLines.join('\n').slice(0, 3000);
+        // Extract the failing test details from the output
+        const failLines = testErrorOutput.split('\n').filter(l =>
+          l.includes('FAIL') || l.includes('expected') || l.includes('AssertionError') ||
+          l.includes('⎯') || l.includes('Error:') || l.includes('Tests ')
+        ).slice(0, 30);
+        const failSummary = failLines.join('\n').slice(0, 3000);
 
-      // Read the current file content (with the fix applied)
-      const currentFileContent = readFileSync(fullPath, 'utf-8');
+        // Read the current file content (with the fix applied)
+        const currentFileContent = readFileSync(fullPath, 'utf-8');
+        // Read the current test file content (may have been updated by previous retry)
+        const currentTestContent = (testFile && existsSync(join(PROJECT_ROOT, testFile)))
+          ? readFileSync(join(PROJECT_ROOT, testFile), 'utf-8')
+          : originalTestContent;
 
-      const testRetryPrompt = `## Phase 2c: Fix Failing Tests
+        const testRetryPrompt = `## Phase 2c: Fix Failing Tests (attempt ${testRetryNum}/${MAX_TEST_RETRIES})
 
 Your code fix for ${targetFile} passed tsc --noEmit but FAILED ${testFile ? `tests in ${testFile}` : 'tests'}:
 
@@ -781,9 +786,9 @@ ${failSummary}
 ${currentFileContent}
 \`\`\`
 
-${testFile && originalTestContent ? `## Current Test File: ${testFile}
+${testFile && currentTestContent ? `## Current Test File: ${testFile}
 \`\`\`typescript
-${originalTestContent}
+${currentTestContent}
 \`\`\`
 ` : ''}
 
@@ -796,88 +801,106 @@ You may provide BOTH a code fix (for the source file) AND a test update.
 Respond with EXACTLY ONE JSON object:
 {"severity":"${proposal.severity ?? 'warning'}","category":"${proposal.category ?? 'fix'}","title":"${proposal.title}","rootCause":"${proposal.rootCause ?? ''}","affectedFile":"${targetFile}","proposedFix":{"oldCode":"EXACT text from the file above","newCode":"corrected replacement text","reason":"why this fix is correct"},"testUpdate":{"file":"${testFile ?? 'tests/evolution-memory.test.ts'}","oldCode":"EXACT text from the test file","newCode":"corrected test text"},"changelogEntry":"${proposal.changelogEntry ?? ''}"}`;
 
-      try {
-        const testRetryResponse = await provider.chat({
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: testRetryPrompt },
-          ],
-          temperature: 0.1,
-          model: getAgentModel('terminal_agent'),
-          timeoutMs: 120_000,
-          maxTokens: 16384,
-        });
+        try {
+          const testRetryResponse = await provider.chat({
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: testRetryPrompt },
+            ],
+            temperature: 0.1,
+            model: getAgentModel('terminal_agent'),
+            timeoutMs: 120_000,
+            maxTokens: 16384,
+          });
 
-        const testRetryProposal = parseProposal(testRetryResponse.content);
-        if (testRetryProposal && testRetryProposal.proposedFix.oldCode && testRetryProposal.proposedFix.newCode) {
-          // Check if the retry oldCode matches the current file (with fix applied)
-          if (currentFileContent.includes(testRetryProposal.proposedFix.oldCode)) {
-            log.info(`🔧 [system-engineer] Test retry fix accepted — applying corrected fix...`);
-            const retryContent = currentFileContent.replace(testRetryProposal.proposedFix.oldCode, testRetryProposal.proposedFix.newCode);
-            writeFileSync(fullPath, retryContent, 'utf-8');
-
-            // Apply test update if provided
-            if (testRetryProposal.testUpdate?.file && testRetryProposal.testUpdate.oldCode && testRetryProposal.testUpdate.newCode) {
-              const retryTestPath = join(PROJECT_ROOT, testRetryProposal.testUpdate.file);
-              if (existsSync(retryTestPath)) {
-                const retryTestContent = readFileSync(retryTestPath, 'utf-8');
-                if (retryTestContent.includes(testRetryProposal.testUpdate.oldCode)) {
-                  const newTestContent = retryTestContent.replace(testRetryProposal.testUpdate.oldCode, testRetryProposal.testUpdate.newCode);
-                  writeFileSync(retryTestPath, newTestContent, 'utf-8');
-                  log.info(`🔧 [system-engineer] Test file updated: ${testRetryProposal.testUpdate.file}`);
-                  // Update originalTestContent for rollback tracking
-                  if (!originalTestContent) {
-                    originalTestContent = retryTestContent;
-                    testFile = testRetryProposal.testUpdate.file;
-                  }
-                }
-              }
-            }
-
-            // Re-run tsc + tests
-            try {
-              execSync('npx tsc --noEmit 2>&1', { cwd: PROJECT_ROOT, timeout: 30_000, stdio: 'pipe', encoding: 'utf-8' });
-              log.info(`✅ [system-engineer] tsc passed (test retry)`);
-              try {
-                const retryTestOutput = execSync('npm test 2>&1', { cwd: PROJECT_ROOT, timeout: 60_000, stdio: 'pipe', encoding: 'utf-8' });
-                const retrySummary = retryTestOutput.split('\n').find(l => /^\s*Tests\s+/.test(l));
-                testsPassed = retrySummary ? retrySummary.includes('passed') && !retrySummary.includes('failed') : true;
-                if (testsPassed) {
-                  log.info(`✅ [system-engineer] tests passed (test retry)`);
-                  proposal = testRetryProposal;
-                } else {
-                  log.warn(`❌ [system-engineer] tests FAILED (test retry): ${retrySummary?.trim() ?? 'no summary'}`);
-                  // Rollback to original
-                  writeFileSync(fullPath, originalContent, 'utf-8');
-                  if (originalTestContent && testFile) {
-                    writeFileSync(join(PROJECT_ROOT, testFile), originalTestContent, 'utf-8');
-                  }
-                }
-              } catch (retryTestErr: any) {
-                const retryTestOut = String(retryTestErr?.stdout ?? retryTestErr?.message ?? String(retryTestErr));
-                log.warn(`❌ [system-engineer] tests FAILED (test retry): ${retryTestOut.slice(0, 300)}`);
-                // Rollback to original
-                writeFileSync(fullPath, originalContent, 'utf-8');
-                if (originalTestContent && testFile) {
-                  writeFileSync(join(PROJECT_ROOT, testFile), originalTestContent, 'utf-8');
-                }
-              }
-            } catch (retryTscErr: any) {
-              log.warn(`❌ [system-engineer] tsc FAILED (test retry): ${String(retryTscErr?.stdout ?? retryTscErr?.message ?? String(retryTscErr)).slice(0, 300)}`);
-              // Rollback to original
-              writeFileSync(fullPath, originalContent, 'utf-8');
-              if (originalTestContent && testFile) {
-                writeFileSync(join(PROJECT_ROOT, testFile), originalTestContent, 'utf-8');
-              }
-            }
-          } else {
-            log.warn(`🚫 [system-engineer] Test retry oldCode not found in file — giving up`);
+          const testRetryProposal = parseProposal(testRetryResponse.content);
+          if (!testRetryProposal || !testRetryProposal.proposedFix.oldCode || !testRetryProposal.proposedFix.newCode) {
+            log.warn(`🚫 [system-engineer] Test retry ${testRetryNum} did not produce a valid fix — ${testRetryNum < MAX_TEST_RETRIES ? 'trying again' : 'giving up'}`);
+            continue;
           }
-        } else {
-          log.warn(`🚫 [system-engineer] Test retry did not produce a valid fix — giving up`);
+          if (!currentFileContent.includes(testRetryProposal.proposedFix.oldCode)) {
+            log.warn(`🚫 [system-engineer] Test retry ${testRetryNum} oldCode not found in file — ${testRetryNum < MAX_TEST_RETRIES ? 'trying again' : 'giving up'}`);
+            continue;
+          }
+
+          log.info(`🔧 [system-engineer] Test retry ${testRetryNum} fix accepted — applying corrected fix...`);
+          const retryContent = currentFileContent.replace(testRetryProposal.proposedFix.oldCode, testRetryProposal.proposedFix.newCode);
+          writeFileSync(fullPath, retryContent, 'utf-8');
+
+          // Apply test update if provided
+          if (testRetryProposal.testUpdate?.file && testRetryProposal.testUpdate.oldCode && testRetryProposal.testUpdate.newCode) {
+            const retryTestPath = join(PROJECT_ROOT, testRetryProposal.testUpdate.file);
+            if (existsSync(retryTestPath)) {
+              const retryTestContent = readFileSync(retryTestPath, 'utf-8');
+              if (retryTestContent.includes(testRetryProposal.testUpdate.oldCode)) {
+                const newTestContent = retryTestContent.replace(testRetryProposal.testUpdate.oldCode, testRetryProposal.testUpdate.newCode);
+                writeFileSync(retryTestPath, newTestContent, 'utf-8');
+                log.info(`🔧 [system-engineer] Test file updated: ${testRetryProposal.testUpdate.file}`);
+                if (!originalTestContent) {
+                  originalTestContent = retryTestContent;
+                  testFile = testRetryProposal.testUpdate.file;
+                }
+              }
+            }
+          }
+
+          // Re-run tsc + tests
+          try {
+            execSync('npx tsc --noEmit 2>&1', { cwd: PROJECT_ROOT, timeout: 30_000, stdio: 'pipe', encoding: 'utf-8' });
+            log.info(`✅ [system-engineer] tsc passed (test retry ${testRetryNum})`);
+          } catch (retryTscErr: any) {
+            log.warn(`❌ [system-engineer] tsc FAILED (test retry ${testRetryNum}): ${String(retryTscErr?.stdout ?? retryTscErr?.message ?? String(retryTscErr)).slice(0, 300)}`);
+            // Rollback this retry's changes and continue to next retry
+            writeFileSync(fullPath, currentFileContent, 'utf-8');
+            if (testFile && currentTestContent) {
+              writeFileSync(join(PROJECT_ROOT, testFile), currentTestContent, 'utf-8');
+            }
+            testErrorOutput = String(retryTscErr?.stdout ?? '');
+            continue;
+          }
+
+          try {
+            const retryTestOutput = execSync('npm test 2>&1', { cwd: PROJECT_ROOT, timeout: 60_000, stdio: 'pipe', encoding: 'utf-8' });
+            const retrySummary = retryTestOutput.split('\n').find(l => /^\s*Tests\s+/.test(l));
+            testsPassed = retrySummary ? retrySummary.includes('passed') && !retrySummary.includes('failed') : true;
+            if (testsPassed) {
+              log.info(`✅ [system-engineer] tests passed (test retry ${testRetryNum})`);
+              proposal = testRetryProposal;
+            } else {
+              log.warn(`❌ [system-engineer] tests FAILED (test retry ${testRetryNum}): ${retrySummary?.trim() ?? 'no summary'}`);
+              testErrorOutput = retryTestOutput;
+              // Rollback this retry's changes and continue to next retry
+              writeFileSync(fullPath, currentFileContent, 'utf-8');
+              if (testFile && currentTestContent) {
+                writeFileSync(join(PROJECT_ROOT, testFile), currentTestContent, 'utf-8');
+              }
+            }
+          } catch (retryTestErr: any) {
+            // v2.0.728: Capture full test output from both stdout and stderr
+            const retryTestOut = String((retryTestErr?.stdout ?? '') + '\n' + (retryTestErr?.stderr ?? '') + '\n' + (retryTestErr?.message ?? String(retryTestErr)));
+            const retryFailLines = retryTestOut.split('\n').filter(l =>
+              l.includes('FAIL') || l.includes('expected') || l.includes('AssertionError') ||
+              l.includes('⎯') || l.includes('Error:') || l.includes('Tests ')
+            ).slice(0, 20);
+            log.warn(`❌ [system-engineer] tests FAILED (test retry ${testRetryNum}): ${retryFailLines.join('; ').slice(0, 500) || retryTestOut.slice(0, 300)}`);
+            testErrorOutput = retryTestOut;
+            // Rollback this retry's changes and continue to next retry
+            writeFileSync(fullPath, currentFileContent, 'utf-8');
+            if (testFile && currentTestContent) {
+              writeFileSync(join(PROJECT_ROOT, testFile), currentTestContent, 'utf-8');
+            }
+          }
+        } catch (testRetryErr) {
+          log.warn(`❌ [system-engineer] Test retry ${testRetryNum} LLM call failed: ${testRetryErr instanceof Error ? testRetryErr.message : String(testRetryErr)}`);
         }
-      } catch (testRetryErr) {
-        log.warn(`❌ [system-engineer] Test retry LLM call failed: ${testRetryErr instanceof Error ? testRetryErr.message : String(testRetryErr)}`);
+      }
+
+      // v2.0.728: If all test retries failed, ensure original content is restored
+      if (!testsPassed) {
+        writeFileSync(fullPath, originalContent, 'utf-8');
+        if (originalTestContent && testFile) {
+          writeFileSync(join(PROJECT_ROOT, testFile), originalTestContent, 'utf-8');
+        }
       }
     }
 
