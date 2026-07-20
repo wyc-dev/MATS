@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.202: EXP checkThesisHistory() now uses Wilson score lower bound for ambiguous band gate — prevents small-sample overconfidence from driving repeated trades in systematically losing patterns (e.g., BUY xyz:SKHX 31% WR). Previously, raw pWin of 0.60 (3/5 matches) would pass through ambiguous band and get PASS_OPEN_DIRECTLY; now Wilson LB (~0.23) < lossProbThreshold causes fall-through to delta check, which is more conservative.
+
+
 ## v2.0.722: OLR — add L2 regularization (0.01) + maxWeight reduction (5.0) + confidence penalty (Bayesian prior toward 0.5 when nSamples < 50) to prevent extreme P(win) overconfidence from insufficient training data
 
 
