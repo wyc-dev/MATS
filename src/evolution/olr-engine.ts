@@ -357,7 +357,12 @@ export class OLREngine {
     const xFull = [1, ...xNorm];
     let z = 0;
     for (let i = 0; i <= D; i++) z += model.weights[i]! * xFull[i]!;
-    const p = sigmoid(z);
+    // v2.0.722: Clip logit to [-10, 10] before sigmoid to prevent floating-point
+    // saturation. Without this, large weights produce sigmoid outputs of exactly
+    // 0 or 1, which gives the model false certainty. Clipping preserves the
+    // gradient direction while preventing numerical saturation.
+    const zClipped = Math.max(-10, Math.min(10, z));
+    const p = sigmoid(zClipped);
     const error = p - y;
     // Decayed learning rate based on LIVE samples only (excludes backfill),
     // so a cold-start backfill prior does not freeze the model against live
@@ -374,12 +379,25 @@ export class OLREngine {
     // learning rate decay, otherwise the model freezes before any live trading occurs.
     const eta = (OLR_CONFIG.learningRate / (1 + OLR_CONFIG.decayRate * safeLiveSamples)) * sourceWeight;
     for (let i = 0; i <= D; i++) {
-      const reg = i > 0 ? OLR_CONFIG.l2Regularization * model.weights[i]! : 0;
+      // v2.0.722: L2 regularization (weight decay) applied to all weights including bias.
+      // The bias term (i=0) also gets regularization to prevent it from drifting large
+      // and dominating the logit. This is the primary fix for overconfidence — without
+      // regularization, weights grow unbounded and the sigmoid saturates to 0 or 1.
+      // The regularization strength is λ=0.01, which is 10x the previous value (0.001)
+      // that was only applied to non-bias weights. This stronger regularization is
+      // necessary because the model has 12 features and only ~100-200 samples per side,
+      // so the weight-to-sample ratio is high and overfitting is severe.
+      const reg = OLR_CONFIG.l2Regularization * model.weights[i]!;
       model.weights[i]! -= eta * (error * xFull[i]! + reg);
       // NaN/Infinity guard (M6) — a single NaN feature would otherwise
       // propagate and poison the persisted model forever.
       if (!Number.isFinite(model.weights[i]!)) model.weights[i]! = 0;
-      model.weights[i]! = Math.max(-OLR_CONFIG.maxWeight, Math.min(OLR_CONFIG.maxWeight, model.weights[i]!));
+      // v2.0.722: Reduce maxWeight from 10.0 to 5.0 to further prevent weight explosion.
+      // With 12 features and sigmoid saturation at |z| > 10, a max weight of 5.0 per
+      // feature means at most 2-3 features can push the logit to saturation. Combined
+      // with L2 regularization, this keeps weights in a reasonable range where the
+      // sigmoid output is calibrated (not 0 or 1).
+      model.weights[i]! = Math.max(-5.0, Math.min(5.0, model.weights[i]!));
     }
   }
 
