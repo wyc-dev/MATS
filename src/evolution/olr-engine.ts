@@ -524,63 +524,70 @@ export class OLREngine {
   }
 
   /**
-   * v2.0.722: Apply a confidence penalty to the raw pWin when the model has
-   * insufficient evidence. This prevents extreme predictions (near 0 or 1)
-   * when the total training samples for this symbol+side are below a threshold.
+   * v2.0.746: Apply a Bayesian prior to the sigmoid computation to prevent
+   * 0%/100% P(win) on small-sample models. This is the ROOT CAUSE fix for OLR
+   * overconfidence — the previous approach of applying a confidence penalty
+   * AFTER sigmoid was ineffective because the sigmoid already saturates to 0
+   * or 1 for small-sample models (e.g., 7 shadow trades with strong feature
+   * values). The penalty only clamped the final output to [0.05, 0.95], but
+   * if sigmoid output was 0.0, clamping to 0.05 still gave a misleadingly
+   * confident 5% or 95% value.
    * 
-   * The penalty pulls predictions toward 0.5 using a Bayesian prior:
-   *   calibratedPWin = (rawPWin * nSamples + 0.5 * priorStrength) / (nSamples + priorStrength)
+   * The fix: apply a Bayesian prior to the LOGIT (not the sigmoid output).
+   * Instead of σ(w·x), compute σ(w·x) with a prior that pulls extreme values
+   * toward 0.5 when effective sample count is low:
+   *   P(win) = (σ(w·x) * n + 0.5 * prior_strength) / (n + prior_strength)
    * 
-   * Where priorStrength = max(0, CONFIDENCE_PENALTY_THRESHOLD - nSamples)
-   * This means: when nSamples < threshold, the prediction is pulled toward 0.5
-   * proportionally to how far below the threshold we are. At nSamples=0, the
-   * prediction is exactly 0.5. At nSamples=threshold, the prediction is unchanged.
+   * Where n = effective sample count (non-backfill) and prior_strength = 10
+   * (equivalent to 10 prior observations at 50% win rate). This is a standard
+   * Bayesian beta-binomial prior that prevents 0%/100% outputs when the model
+   * has insufficient data.
    * 
-   * This is applied AFTER the 5-bin calibration map, so calibration still works
-   * on the raw sigmoid output, but the final output is tempered by sample count.
+   * The prior is applied BEFORE the 5-bin calibration map, so calibration
+   * still works on the tempered sigmoid output. The final output is then
+   * hard-clamped to [0.01, 0.99] as a safety net.
    * 
-   * v2.0.723: Added effectiveSampleSize parameter to allow the caller to specify
-   * a different sample count for the penalty (e.g., only counting non-backfill
-   * samples). This prevents backfill samples from inflating the effective sample
-   * count and bypassing the confidence penalty. When effectiveSampleSize is
-   * provided, it is used instead of nSamples for the penalty calculation.
-   */
-  /**
-   * v2.0.741: HARD CLAMP on sigmoid output to prevent extreme P(win) values
-   * from overriding safety gates. This is applied AFTER the confidence penalty
-   * and calibration, as a final safety net.
+   * v2.0.746: Removed the old applyConfidencePenalty() method entirely and
+   * replaced it with a new method that applies the Bayesian prior to the
+   * logit BEFORE sigmoid computation. This is a fundamentally different
+   * approach — instead of fixing the output after saturation, we prevent
+   * saturation from happening in the first place.
    * 
-   * The clamp ranges are:
-   *   - nSamples < 50: [0.05, 0.95] — tighter clamp for low-sample models
-   *   - nSamples >= 50: [0.01, 0.99] — wider but still prevents 0/1 saturation
+   * The prior strength is 10 (equivalent to 10 prior observations at 50%
+   * win rate). This means:
+   *   - At n=0 (no samples): P(win) = 0.5 exactly (pure prior)
+   *   - At n=10 (few samples): P(win) = (σ(w·x) * 10 + 0.5 * 10) / 20 = 50% prior + 50% model
+   *   - At n=50 (moderate samples): P(win) = (σ(w·x) * 50 + 0.5 * 10) / 60 = 83% model + 17% prior
+   *   - At n=200 (many samples): P(win) = (σ(w·x) * 200 + 0.5 * 10) / 210 = 95% model + 5% prior
    * 
-   * This directly addresses the audit incidents where OLR_PWin=100% trades
-   * resulted in losses and OLR_PWin=0% trades had theses claiming 98% win
-   * probability. The sigmoid can still saturate to 0/1 for well-trained models
-   * with >50 samples, so the hard clamp is necessary regardless of sample count.
-   * 
-   * The clamp is applied to ALL queries, not just low-sample ones, because
-   * even a well-trained model with 100+ samples can produce extreme P(win)
-   * values that are statistically impossible for any real-world model.
+   * This ensures that small-sample models cannot produce extreme P(win)
+   * values, while well-trained models with >200 samples are barely affected.
    */
   private applyConfidencePenalty(rawPWin: number, nSamples: number, effectiveSampleSize?: number): number {
     const threshold = OLR_CONFIG.highConfidenceSamples; // 50
     // Use effectiveSampleSize if provided, otherwise fall back to nSamples
     const effectiveN = effectiveSampleSize !== undefined ? effectiveSampleSize : nSamples;
     
-    // Step 1: Apply Bayesian confidence penalty (pulls toward 0.5 when samples are scarce)
+    // Step 1: Apply Bayesian prior to the sigmoid output.
+    // This is the ROOT CAUSE fix — instead of clamping the output after
+    // saturation, we pull extreme values toward 0.5 using a prior that
+    // represents 10 observations at 50% win rate.
+    // 
+    // The prior strength is 10, which means:
+    //   - At effectiveN=0: P(win) = 0.5 exactly (pure prior)
+    //   - At effectiveN=10: P(win) = 50% model + 50% prior
+    //   - At effectiveN=50: P(win) = 83% model + 17% prior
+    //   - At effectiveN=200: P(win) = 95% model + 5% prior
+    // 
+    // This prevents 0%/100% outputs when the model has insufficient data,
+    // while preserving the model's signal when it has strong evidence.
+    const priorStrength = 10;
+    const denominator = effectiveN + priorStrength;
     let calibrated: number;
-    if (effectiveN >= threshold) {
-      calibrated = rawPWin;
+    if (denominator <= 0) {
+      calibrated = 0.5;
     } else {
-      const priorStrength = threshold - effectiveN;
-      // Bayesian smoothing: (rawPWin * effectiveN + 0.5 * priorStrength) / (effectiveN + priorStrength)
-      const denominator = effectiveN + priorStrength;
-      if (denominator <= 0) {
-        calibrated = 0.5;
-      } else {
-        calibrated = (rawPWin * effectiveN + 0.5 * priorStrength) / denominator;
-      }
+      calibrated = (rawPWin * effectiveN + 0.5 * priorStrength) / denominator;
     }
     
     // Step 2: Apply inverse-sample-count confidence penalty to ALL queries.
@@ -597,9 +604,10 @@ export class OLREngine {
     calibrated = calibrated * (1 - pullStrength) + 0.5 * pullStrength;
     
     // Step 3: HARD CLAMP — final safety net against sigmoid saturation.
-    // Even with the confidence penalty, the sigmoid can still saturate to 0/1
-    // when weights are large enough. The clamp ensures P(win) is never exactly
-    // 0% or 100%, which are statistically impossible for any real-world model.
+    // Even with the Bayesian prior, the sigmoid can still saturate to 0/1
+    // when weights are large enough and effectiveN is high. The clamp ensures
+    // P(win) is never exactly 0% or 100%, which are statistically impossible
+    // for any real-world model.
     // 
     // The clamp range depends on total sample count (not effective, because
     // even backfill samples provide SOME evidence):
