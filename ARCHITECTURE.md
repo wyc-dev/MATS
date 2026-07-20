@@ -572,3 +572,7 @@ LossStreakTracker now has three layers: (1) SOFT gate at 3 consecutive losses in
 
 ## System Engineer Update
 The OLR query() method now applies applyConfidencePenalty() to the calibrated pWin before returning it to agents. The effective sample size (excluding backfill) is used for the penalty calculation, preventing backfill samples from inflating the sample count and bypassing the penalty. This ensures agents see calibrated probabilities that reflect true model uncertainty, preventing extreme P(win) values (0% or 100%) from overriding safety gates.
+
+
+## System Engineer Update
+The OLR engine's query() method now applies a three-layer safety net: (1) existing Bayesian confidence penalty for low-sample models, (2) NEW inverse-sample-count confidence penalty applied to ALL queries regardless of sample count, which scales the pull toward 0.5 with the inverse of effective sample size, and (3) NEW hard clamp that prevents sigmoid saturation to exactly 0% or 100%. The clamp ranges are [0.05, 0.95] for models with <50 samples and [0.01, 0.99] for models with >=50 samples. This ensures that even well-trained models with 100+ samples cannot output extreme values that override safety gates, while preserving the model's signal when it has strong evidence.

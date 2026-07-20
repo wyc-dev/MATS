@@ -545,18 +545,71 @@ export class OLREngine {
    * count and bypassing the confidence penalty. When effectiveSampleSize is
    * provided, it is used instead of nSamples for the penalty calculation.
    */
+  /**
+   * v2.0.741: HARD CLAMP on sigmoid output to prevent extreme P(win) values
+   * from overriding safety gates. This is applied AFTER the confidence penalty
+   * and calibration, as a final safety net.
+   * 
+   * The clamp ranges are:
+   *   - nSamples < 50: [0.05, 0.95] — tighter clamp for low-sample models
+   *   - nSamples >= 50: [0.01, 0.99] — wider but still prevents 0/1 saturation
+   * 
+   * This directly addresses the audit incidents where OLR_PWin=100% trades
+   * resulted in losses and OLR_PWin=0% trades had theses claiming 98% win
+   * probability. The sigmoid can still saturate to 0/1 for well-trained models
+   * with >50 samples, so the hard clamp is necessary regardless of sample count.
+   * 
+   * The clamp is applied to ALL queries, not just low-sample ones, because
+   * even a well-trained model with 100+ samples can produce extreme P(win)
+   * values that are statistically impossible for any real-world model.
+   */
   private applyConfidencePenalty(rawPWin: number, nSamples: number, effectiveSampleSize?: number): number {
     const threshold = OLR_CONFIG.highConfidenceSamples; // 50
     // Use effectiveSampleSize if provided, otherwise fall back to nSamples
     const effectiveN = effectiveSampleSize !== undefined ? effectiveSampleSize : nSamples;
-    if (effectiveN >= threshold) return rawPWin;
-    const priorStrength = threshold - effectiveN;
-    // Bayesian smoothing: (rawPWin * effectiveN + 0.5 * priorStrength) / (effectiveN + priorStrength)
-    const denominator = effectiveN + priorStrength;
-    if (denominator <= 0) return 0.5;
-    const calibrated = (rawPWin * effectiveN + 0.5 * priorStrength) / denominator;
-    // Clamp to [0, 1] for safety
-    return Math.max(0, Math.min(1, calibrated));
+    
+    // Step 1: Apply Bayesian confidence penalty (pulls toward 0.5 when samples are scarce)
+    let calibrated: number;
+    if (effectiveN >= threshold) {
+      calibrated = rawPWin;
+    } else {
+      const priorStrength = threshold - effectiveN;
+      // Bayesian smoothing: (rawPWin * effectiveN + 0.5 * priorStrength) / (effectiveN + priorStrength)
+      const denominator = effectiveN + priorStrength;
+      if (denominator <= 0) {
+        calibrated = 0.5;
+      } else {
+        calibrated = (rawPWin * effectiveN + 0.5 * priorStrength) / denominator;
+      }
+    }
+    
+    // Step 2: Apply inverse-sample-count confidence penalty to ALL queries.
+    // This scales the penalty with the inverse of sample count, so even models
+    // with >50 samples get a small pull toward 0.5. The pull strength is:
+    //   pull = 0.5 * (1 / (1 + effectiveN / 10))
+    // At effectiveN=10: pull ≈ 0.25 (strong pull toward 0.5)
+    // At effectiveN=50: pull ≈ 0.08 (moderate pull)
+    // At effectiveN=200: pull ≈ 0.02 (negligible pull)
+    // At effectiveN=1000: pull ≈ 0.005 (barely noticeable)
+    // This prevents extreme values even for well-trained models while preserving
+    // the model's signal when it has strong evidence.
+    const pullStrength = 0.5 * (1 / (1 + effectiveN / 10));
+    calibrated = calibrated * (1 - pullStrength) + 0.5 * pullStrength;
+    
+    // Step 3: HARD CLAMP — final safety net against sigmoid saturation.
+    // Even with the confidence penalty, the sigmoid can still saturate to 0/1
+    // when weights are large enough. The clamp ensures P(win) is never exactly
+    // 0% or 100%, which are statistically impossible for any real-world model.
+    // 
+    // The clamp range depends on total sample count (not effective, because
+    // even backfill samples provide SOME evidence):
+    //   - nSamples < 50: [0.05, 0.95] — tighter clamp for low-sample models
+    //   - nSamples >= 50: [0.01, 0.99] — wider but still prevents 0/1 saturation
+    const clampLo = nSamples < threshold ? 0.05 : 0.01;
+    const clampHi = nSamples < threshold ? 0.95 : 0.99;
+    calibrated = Math.max(clampLo, Math.min(clampHi, calibrated));
+    
+    return calibrated;
   }
 
   private contextToVector(features: Record<string, number>): number[] {
