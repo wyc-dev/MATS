@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.722: EXP thesis-experience.ts — direction-filtered pWin now uses Wilson score lower bound instead of raw winRate, penalizing small sample sizes to prevent overconfidence on patterns with few historical trades
+
+
 ## v2.0.202: EXP checkThesisHistory() now uses Wilson score lower bound for ambiguous band gate — prevents small-sample overconfidence from driving repeated trades in systematically losing patterns (e.g., BUY xyz:SKHX 31% WR). Previously, raw pWin of 0.60 (3/5 matches) would pass through ambiguous band and get PASS_OPEN_DIRECTLY; now Wilson LB (~0.23) < lossProbThreshold causes fall-through to delta check, which is more conservative.
 
 

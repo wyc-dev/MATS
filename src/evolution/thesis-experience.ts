@@ -811,22 +811,32 @@ export class ThesisExperience {
       log.info(`[EXP] ${input.side.toUpperCase()} ${input.symbol}: ${effectiveSameDir.length} same-dir matches (${sameDirWins}W/${sameDirLosses}L, pWin=${pWin.toFixed(2)}) vs ${effectiveAllMatches.length} total matches${condStr}`);
     }
 
-    // v2.0.721: Gate FAST_APPROVE on Wilson 95% lower bound, not raw pWin.
-    // A 5/5 match set (raw pWin=1.0) has Wilson LB ~0.48 — not enough to trust.
-    // This prevents small-sample overconfidence from auto-approving trades.
+    // v2.0.722: Use Wilson score lower bound for pWin, not raw winRate.
+    // The raw pWin (similarity-weighted win rate) is still computed for logging
+    // and for the delta check, but the verdict thresholds are gated on the
+    // Wilson 95% lower bound of the direction-filtered match count.
+    // This prevents small-sample overconfidence: 2/3 matches (raw 66.7%) has
+    // Wilson LB ~0.12 — far below any threshold, so the system will fall through
+    // to the delta check instead of emitting a false positive FAST_APPROVE.
     const pWinWins = pWinMatches.filter((m) => m.rec.outcome === 'WIN').length;
     const pWinTotal = pWinMatches.length;
     const pWinWilsonLB = wilsonScore(pWinWins, pWinTotal);
 
-    if (pWinWilsonLB >= this.cfg.winProbThreshold) {
-      return { verdict: 'FAST_APPROVE', pWin, reason: `history skews WIN (pWin=${pWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
+    // v2.0.722: Use Wilson LB as the primary pWin for verdict decisions.
+    // The raw pWin is still returned for logging/analytics but the verdict
+    // thresholds are applied to the Wilson LB, which is always <= raw pWin
+    // and penalizes small samples naturally.
+    const verdictPWin = pWinWilsonLB;
+
+    if (verdictPWin >= this.cfg.winProbThreshold) {
+      return { verdict: 'FAST_APPROVE', pWin: verdictPWin, reason: `history skews WIN (raw pWin=${pWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
     }
-    if (pWinWilsonLB >= this.cfg.lossProbThreshold) {
+    if (verdictPWin >= this.cfg.lossProbThreshold) {
       // Ambiguous band → 直出 — use Wilson LB instead of raw pWin to avoid
       // small-sample overconfidence in the ambiguous band. A raw pWin of 0.60
       // with 3/5 matches (Wilson LB ~0.23) should not be treated as ambiguous
       // — it should be treated as insufficient evidence (fall through to delta).
-      return { verdict: 'PASS_OPEN_DIRECTLY', pWin, reason: `ambiguous (pWin=${pWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
+      return { verdict: 'PASS_OPEN_DIRECTLY', pWin: verdictPWin, reason: `ambiguous (raw pWin=${pWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
     }
 
     // P(loss) > P(win) → delta check (§8.4)
