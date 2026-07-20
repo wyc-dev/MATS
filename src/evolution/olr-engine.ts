@@ -376,11 +376,21 @@ export class OLREngine {
     const xFull = [1, ...xNorm];
     let z = 0;
     for (let i = 0; i <= D; i++) z += model.weights[i]! * xFull[i]!;
+    // v2.0.760: Apply sigmoid temperature T=2.0 to soften the output.
+    // Instead of σ(z), compute σ(z / T) where T=2.0. This reduces the
+    // effective logit magnitude, preventing sigmoid saturation at 0 or 1.
+    // The temperature is applied BEFORE the sigmoid, so the gradient
+    // flows through the temperature-scaled logit during training.
+    // This is a standard technique in knowledge distillation and
+    // probability calibration — it spreads the sigmoid curve, making
+    // the model less confident in its predictions.
+    const TEMPERATURE = 2.0;
+    const zScaled = z / TEMPERATURE;
     // v2.0.722: Clip logit to [-10, 10] before sigmoid to prevent floating-point
     // saturation. Without this, large weights produce sigmoid outputs of exactly
     // 0 or 1, which gives the model false certainty. Clipping preserves the
     // gradient direction while preventing numerical saturation.
-    const zClipped = Math.max(-10, Math.min(10, z));
+    const zClipped = Math.max(-10, Math.min(10, zScaled));
     const p = sigmoid(zClipped);
     const error = p - y;
     // Decayed learning rate based on LIVE samples only (excludes backfill),
@@ -398,25 +408,30 @@ export class OLREngine {
     // learning rate decay, otherwise the model freezes before any live trading occurs.
     const eta = (OLR_CONFIG.learningRate / (1 + OLR_CONFIG.decayRate * safeLiveSamples)) * sourceWeight;
     for (let i = 0; i <= D; i++) {
-      // v2.0.722: L2 regularization (weight decay) applied to all weights including bias.
-      // The bias term (i=0) also gets regularization to prevent it from drifting large
-      // and dominating the logit. This is the primary fix for overconfidence — without
-      // regularization, weights grow unbounded and the sigmoid saturates to 0 or 1.
-      // The regularization strength is λ=0.01, which is 10x the previous value (0.001)
-      // that was only applied to non-bias weights. This stronger regularization is
-      // necessary because the model has 12 features and only ~100-200 samples per side,
-      // so the weight-to-sample ratio is high and overfitting is severe.
+      // v2.0.760: L2 regularization (weight decay) applied to all weights including bias.
+      // The regularization strength is λ=0.01, which is appropriate for a model with
+      // 12 features and ~100-300 total samples. The weight decay term is:
+      //   w ← w - η * (error * x + λ * w)
+      // This prevents weights from growing unbounded, which is the ROOT CAUSE of
+      // sigmoid saturation. Without regularization, weights can grow to ±100+ after
+      // many updates, causing w·x to be ±50+ and sigmoid output to saturate to
+      // exactly 0.0 or 1.0. With λ=0.01, weights are pulled toward zero at each
+      // update, keeping them in a range where the sigmoid output is calibrated.
+      // The bias term (i=0) also gets regularization to prevent it from drifting
+      // large and dominating the logit.
       const reg = OLR_CONFIG.l2Regularization * model.weights[i]!;
       model.weights[i]! -= eta * (error * xFull[i]! + reg);
       // NaN/Infinity guard (M6) — a single NaN feature would otherwise
       // propagate and poison the persisted model forever.
       if (!Number.isFinite(model.weights[i]!)) model.weights[i]! = 0;
-      // v2.0.722: Reduce maxWeight from 10.0 to 5.0 to further prevent weight explosion.
-      // With 12 features and sigmoid saturation at |z| > 10, a max weight of 5.0 per
-      // feature means at most 2-3 features can push the logit to saturation. Combined
-      // with L2 regularization, this keeps weights in a reasonable range where the
-      // sigmoid output is calibrated (not 0 or 1).
-      model.weights[i]! = Math.max(-5.0, Math.min(5.0, model.weights[i]!));
+      // v2.0.760: Reduce maxWeight from 5.0 to 3.0 to further prevent weight explosion.
+      // With 12 features and sigmoid saturation at |z| > 10, a max weight of 3.0 per
+      // feature means at most 3-4 features can push the logit to saturation. Combined
+      // with L2 regularization (λ=0.01) and temperature scaling (T=2.0), this keeps
+      // weights in a reasonable range where the sigmoid output is calibrated (not 0 or 1).
+      // The previous 5.0 limit was still too high — with 12 features, 5.0 * 12 = 60 logit,
+      // which saturates the sigmoid even with temperature scaling.
+      model.weights[i]! = Math.max(-3.0, Math.min(3.0, model.weights[i]!));
     }
   }
 
