@@ -188,10 +188,13 @@ export interface OLRSymbolStats {
 const OLR_CONFIG = {
   learningRate: 0.05,
   /** L2 regularization strength (ridge penalty). Applied to all weights including bias.
-   *  v2.0.722: Increased from 0.001 to 0.01 to prevent weight explosion when training
+   *  v2.0.739: Increased from 0.01 to 0.1 to further prevent weight explosion when training
    *  samples are scarce (12 features, ~100 samples per side). The stronger penalty
-   *  shrinks weights toward zero, preventing sigmoid saturation at 0 or 1. */
-  l2Regularization: 0.01,
+   *  shrinks weights toward zero, preventing sigmoid saturation at 0 or 1. The 0.01 value
+   *  was insufficient — with 200 backfill samples and consistent outcomes, weights still
+   *  grew large enough to saturate the sigmoid. 0.1 provides 10x stronger regularization,
+   *  which is appropriate for a model with 12 features and ~100-300 total samples. */
+  l2Regularization: 0.1,
   /** SGD learning-rate decay: η_t = learningRate / (1 + decayRate × liveSamples).
    *  liveSamples = nSamples - backfillSamples, so backfill (weight=0.3) does NOT
    *  freeze the model against live adaptation. Prevents late samples from
@@ -207,12 +210,13 @@ const OLR_CONFIG = {
   highConfidenceSamples: 50,
   mediumConfidenceSamples: 20,
   welfordEpsilon: 1e-8,
-  /** v2.0.722: Reduced from 10.0 to 5.0 to prevent weight explosion.
-   *  With 12 features and sigmoid saturation at |z| > 10, a max weight of 5.0 per
-   *  feature means at most 2-3 features can push the logit to saturation. Combined
-   *  with L2 regularization, this keeps weights in a reasonable range where the
-   *  sigmoid output is calibrated (not 0 or 1). */
-  maxWeight: 5.0,
+  /** v2.0.739: Reduced from 5.0 to 3.0 to further prevent weight explosion.
+   *  With 12 features and sigmoid saturation at |z| > 10, a max weight of 3.0 per
+   *  feature means at most 3-4 features can push the logit to saturation. Combined
+   *  with L2 regularization (0.1), this keeps weights in a reasonable range where the
+   *  sigmoid output is calibrated (not 0 or 1). The previous 5.0 limit was still too
+   *  high — with 12 features, 5.0 * 12 = 60 logit, which saturates the sigmoid. */
+  maxWeight: 3.0,
   /** v2.0.722: Confidence penalty threshold. When nSamples < this value, the
    *  prediction is pulled toward 0.5 using a Bayesian prior. This prevents
    *  extreme P(win) values (near 0 or 1) when the model has insufficient evidence.
