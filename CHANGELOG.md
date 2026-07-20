@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.738: Meta-Agent entryThesis quality gate — require specific, falsifiable reasoning (price level, S/R zone, volatility edge, OLR edge with magnitude, or first-passage probability) in every entryThesis. Explicitly forbid vague tautological theses like 'pattern classifier suggests buy has higher historical win rate' that lack a real edge. This prevents systematically losing patterns like BTC BUY (38% WR over 37 trades) from being opened without genuine market insight. The Skeptics agent now has clear criteria to reject invalid theses.
+
+
 ## v2.0.723: OLR Bayesian smoothing — add effectiveSampleSize parameter to applyConfidencePenalty to exclude backfill samples from penalty calculation; update query() to pass live-only sample count; add tests for 100% P(win) prevention
 
 
