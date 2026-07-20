@@ -4807,12 +4807,15 @@ ${recentExamples}
       const originalMetaAction = finalDecision.action;
       const originalMetaThesis = finalDecision.entryThesis;
       if (finalDecision.action === 'hold' && this.totalCycles > 2 && this.totalCycles % 3 === 0) {
-        // Independent exploration: only block if the ACTIVE symbol has a position.
-        // Previously checked p.positions.size === 0 which blocked exploration on
-        // xyz:SPCX when BTC had an open position. Now we check per-symbol, so
-        // exploration can fire on the Market Agent's symbol independently of
-        // other positions being managed by per-symbol consensus.
-        if (!this.portfolio.hasPosition(activeSymbol)) {
+        // v2.0.750: Don't override Meta-Agent's HOLD if the thesis explicitly says
+        // to wait or not to enter. This prevents thesis-contradicts-action incidents.
+        const metaThesisLower = (originalMetaThesis ?? '').toLowerCase();
+        const explicitWait = metaThesisLower.includes('wait for') || metaThesisLower.includes('no entry')
+          || metaThesisLower.includes('do not enter') || metaThesisLower.includes('hold for')
+          || metaThesisLower.includes('wait until') || metaThesisLower.includes('no trade');
+        if (explicitWait) {
+          log.info(`🧪 Exploration skipped — Meta-Agent thesis explicitly says to wait: "${originalMetaThesis?.slice(0, 80)}..."`);
+        } else if (!this.portfolio.hasPosition(activeSymbol)) {
           const maConfig = this.marketAgent.getConfig();
           const exploreSize = maConfig.positionSizePct;
           // Use Market Agent's configured leverage directly.
