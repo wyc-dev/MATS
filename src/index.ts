@@ -2175,7 +2175,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       const records = this.expMemory.getRecords();
       if (records.length === 0) return;
       // v2.0.181: Run the System Engineer agent (reads SystemEngineer.md + code + trades)
-      await runSystemEngineer(records);
+      // v2.0.725: Pass audit results so SE can directly fix issues detected by the audit
+      await runSystemEngineer(records, this.lastAuditResult ?? undefined);
     } catch (err) {
       log.warn(`[system-engineer] failed: ${err instanceof Error ? err.message : String(err)}`);
     }

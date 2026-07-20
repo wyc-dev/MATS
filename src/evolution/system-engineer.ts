@@ -128,7 +128,10 @@ const failedAttempts = new Map<string, { title: string; error: string; timestamp
 // If the diagnosis mentions these, reject immediately without calling Phase 2.
 const BLOCKED_PATTERNS: { file: string; pattern: RegExp; reason: string }[] = [
   { file: 'src/evolution/shadow-trade-engine.ts', pattern: /getStats/i, reason: 'getStats() dedup logic is verified correct — do NOT modify' },
-  { file: 'src/evolution/thesis-experience.ts', pattern: /checkThesisHistory/i, reason: 'checkThesisHistory() direction filter is correct — do NOT remove' },
+  // v2.0.725: Tightened checkThesisHistory block — only block removal of the
+  // direction filter (sameDirMatches), not ALL modifications. Wilson score
+  // gates, condition filtering, and category weighting are already applied (v2.0.721).
+  { file: 'src/evolution/thesis-experience.ts', pattern: /remove.*direction.*filter|delete.*sameDir|remove.*sameDir/i, reason: 'checkThesisHistory() direction filter (sameDirMatches) is correct — do NOT remove it. Wilson score gates and condition filtering are already applied.' },
   { file: 'src/evolution/reason-analytics.ts', pattern: /findSimilar/i, reason: 'SimilarTradeRetriever.findSimilar() side filter is correct — do NOT remove' },
   { file: 'src/index.ts', pattern: /loss.?streak|lossStreak|checkLossStreak|updateLossStreak|systematic.?loser/i, reason: 'Loss streak guard is already implemented — do NOT re-add or modify' },
   { file: 'src/analysis/adaptive-filter.ts', pattern: /recordTrade|countRecentTrades|frequencyWindow/i, reason: 'Trade frequency throttle is already fixed (time-based) — do NOT revert to count-based' },
@@ -212,7 +215,10 @@ function parseFeedbackLog(raw: string): string {
   return lines_out.join('\n');
 }
 
-export async function runSystemEngineer(records: ThesisExperienceRecord[]): Promise<AutoFixResult | null> {
+export async function runSystemEngineer(
+  records: ThesisExperienceRecord[],
+  auditResults?: { incidents: Array<{ severity: string; category: string; symbol: string; detail: string }>; summary: string },
+): Promise<AutoFixResult | null> {
   // v2.0.183: Prevent overlapping runs
   if (engineerRunning) {
     log.info(`🔧 [system-engineer] Previous run still in progress — skipping`);
@@ -308,7 +314,14 @@ These fixes were attempted but failed. Do NOT repeat the same approach. Try a di
 
 ` : ''}## Recently Applied Fixes (these issues are ALREADY FIXED — do not re-diagnose)
 ${recentlyFixed.map(f => `- ${f}`).join('\n')}
+${auditResults ? `
+## 🔍 Trade Record Audit Results (LLM-powered audit — these are REAL issues detected from trade data)
+${auditResults.incidents.map(inc => `- [${inc.severity.toUpperCase()}] ${inc.category} (${inc.symbol}): ${inc.detail.slice(0, 200)}`).join('\n')}
 
+**Audit Summary**: ${auditResults.summary}
+
+These audit incidents are the HIGHEST PRIORITY issues to fix. Each incident has a category, symbol, and detail explaining what went wrong. Focus on fixing the ROOT CAUSE of these incidents — not just the symptoms.
+` : ''}
 ## Trade Records (last 20 of ${records.length})
 ${tradeSummary}
 
