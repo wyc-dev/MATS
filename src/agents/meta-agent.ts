@@ -527,7 +527,7 @@ pile up. Before deciding CLOSE, you MUST verify ALL of the following:
 
 These 5 checks are MANDATORY before any CLOSE decision. If ANY check fails → HOLD.
 
-=== ENTRY THESIS (v2.0.738 — QUALITY GATE — SPECIFIC, FALSIFIABLE REASONING REQUIRED) ===
+=== ENTRY THESIS (v2.0.758 — QUALITY GATE — SPECIFIC, FALSIFIABLE REASONING REQUIRED) ===
 When your marketTicker OR positions[] trading market decision is BUY or SELL (opening a new position),
 you MUST provide "entryThesis". This is the SINGLE MOST IMPORTANT field in your output. It is a
 condensed, powerful rationale for why this position will reach its Take Profit target:
@@ -561,25 +561,47 @@ and the Skeptics agent will REJECT it:
      - "Path risk: P(SL before TP)=38% → acceptable given 2:1 reward:risk"
      - Must include the actual probability and the breakeven comparison
 
-🚫 FORBIDDEN THESES (will be REJECTED by Skeptics):
+  5. A FUNDING RATE / ORDER BOOK IMBALANCE EDGE:
+     - "Funding rate flipped negative (perp below spot) → shorts paying longs → squeeze potential"
+     - "Order book shows 3x bid vs ask depth at $64K → strong support wall"
+     - "CVD (Cumulative Volume Delta) diverging from price → hidden buying pressure"
+     - Must cite the actual metric value and direction, not just "funding is bullish"
+
+  6. A VOLUME PROFILE / LIQUIDATION CLUSTER EDGE:
+     - "Volume profile shows high-volume node at $63.5K → price likely to revert to VWAP"
+     - "Liquidation cluster at $65.5K (longs) → price targeting liquidity above"
+     - "Open interest spike + price consolidation → breakout imminent"
+     - Must cite the actual level and metric, not just "volume is high"
+
+🚫 FORBIDDEN THESES (will be REJECTED by Skeptics — HARD BLOCK, NO EXCEPTIONS):
   - "pattern classifier suggests buy has higher historical win rate" — this is a
     self-referential tautology. The pattern classifier's win rate IS the system's
     win rate. Citing it as a reason to trade is circular. You must explain WHY the
     pattern has that win rate (specific market conditions, S/R levels, regime).
+    ⚠️ HARD RULE: If your thesis contains ONLY a pattern classifier reference with
+    NO specific price level, S/R zone, OLR edge magnitude, funding rate, volume
+    profile, or order book imbalance → the thesis is AUTOMATICALLY INVALID.
+    The Skeptics agent will REJECT it. You MUST output HOLD instead.
   - "momentum suggests continued move" — without naming the price level or timeframe
   - "sentiment is bullish" — without citing the actual sentiment value and threshold
   - "OLR is favorable" — without citing the actual P(win) and edge magnitude
+  - "exploration" or "exploratory trade" — exploration is NOT a thesis. Every trade
+    must have a specific, falsifiable edge. If you cannot articulate one → HOLD.
   - Any thesis that could be copied verbatim to the opposite direction (e.g. "the
     market might go up" is equally valid for "the market might go down" — invalid)
+  - "historical win rate" or "backtest shows" without citing the actual conditions
+    that produced that win rate (regime, volume, S/R proximity, etc.)
 
 ✅ VALID THESIS EXAMPLES:
   - "[1h: Fractal Momentum detects ascending triangle breakout at $65K + OLR P(win)=72% (edge +18pp)] [1d: On-Chain shows ETF inflows accelerating + News Reporter flags dovish Fed pivot Friday]"
   - "[1h: Price at $64.2K support (S/R zone $63.8K-$64.2K) + RSI oversold at 28] [1d: First-passage P(TP)=65% given 2% SL and 4% TP, ATR=1.5%]"
   - "[1h: Lyapunov λ = -0.3 (laminar) + resonance 55% at cycle bottom → mean-reversion BUY from $63.5K] [1d: OLR BUY P(win)=68% (edge +14pp, high confidence, 45 real trades)]"
+  - "[1h: Funding rate -0.005% (shorts paying) + order book 3x bid depth at $64K support] [1d: Volume profile shows high-volume node at $63.5K, price reverting to VWAP]"
+  - "[1h: Liquidation cluster at $65.5K (longs) + OI spike 15% in 1h → price targeting liquidity] [1d: OLR BUY P(win)=65% (edge +12pp, medium confidence, 30 real trades)]"
 
 Rules:
-- The 1h reason explains why price will move toward TP within the next hour (e.g. momentum, S/R bounce, funding flip).
-- The 1d reason explains why price will reach TP within the next 24 hours (e.g. macro catalyst, regime shift, structural break).
+- The 1h reason explains why price will move toward TP within the next hour (e.g. momentum, S/R bounce, funding flip, order book imbalance).
+- The 1d reason explains why price will reach TP within the next 24 hours (e.g. macro catalyst, regime shift, structural break, volume profile).
 - Both reasons must be SPECIFIC and DATA-DRIVEN, not generic ("it will go up" is invalid).
 - You MUST reference data from the sub-agents' thoughts (Fractal Momentum, On-Chain, OLR & Sentiment, News) to support your thesis.
   The sub-agents gather the raw data — your thesis synthesizes their findings into a coherent directional argument.
@@ -587,6 +609,14 @@ Rules:
 - The Skeptics agent will validate this thesis. If it is weak, vague, or contradicts the data, the trade will be REJECTED.
 - This thesis is stored on the position and re-validated EVERY CYCLE. If it becomes invalid, the position is force-closed.
 - For HOLD decisions, entryThesis is not required (omit or null).
+
+⚠️ v2.0.758 HARD GATE — PATTERN-CLASSIFIER-ONLY THESES ARE BLOCKED:
+If your entryThesis relies SOLELY on a pattern classifier signal (e.g. "pattern classifier
+suggests buy has higher win rate") without ANY of the 6 specific elements above (price level,
+S/R zone, OLR edge magnitude, funding rate, volume profile, order book imbalance), you MUST
+output HOLD. The Skeptics agent will enforce this gate. This is a HARD RULE — no exceptions.
+The pattern classifier is a SUPPLEMENTARY signal, never a PRIMARY thesis. It can confirm
+a thesis built on specific market structure, but it CANNOT be the thesis itself.
 
 === DARK PSYCHOLOGY DATA INTERROGATION (v2.0.81 — MANDATORY) ===
 Before accepting any sub-agent's data at face value, you MUST question whether the data is genuine market
