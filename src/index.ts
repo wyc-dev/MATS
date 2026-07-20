@@ -238,26 +238,31 @@ class MATSSystem {
   }>();
 
   /**
-   * v2.0.181: Check the per-symbol-per-direction loss streak gate.
-   * v2.0.732: Changed from hard block to condition-aware SOFT gate.
-   * v2.0.202: Added systematic loser HARD block for extreme cases.
+   * v2.0.733: Per-symbol-per-direction loss streak guard.
    *
-   * Philosophy: "Past losses don't guarantee future losses" — but if the
-   * SAME market conditions (regime + volatility band) keep producing losses,
-   * we raise the conviction threshold (require stronger signal), not hard block.
+   * THREE layers of protection:
+   * 1. SOFT gate: 3 consecutive losses → raise conviction threshold by 50%
+   *    (requires stronger signal to enter, but does NOT block)
+   * 2. HARD gate: 5 consecutive losses → block ALL new entries in that
+   *    (symbol, direction) pair for 12 cycles (60 min). Resets on win.
+   * 3. SYSTEMATIC LOSER gate: >= 10 total trades AND win rate < 35% →
+   *    block ALL new entries until win rate recovers above 40%.
+   *    This catches patterns like BUY xyz:SKHX (32 trades, 31% WR) where
+   *    losses are NOT consecutive but the direction is systematically wrong.
    *
-   * Two conditions:
-   * 1. Consecutive loss streak >= 3 in SAME regime → raise conviction by 15%
-   * 2. Systematic loser in SAME regime: >= 5 trades, WR < 35% → raise conviction by 20%
+   * The SOFT gate (condition 1) is regime-aware — only penalizes if the
+   * CURRENT regime matches where the losses occurred. If the regime changed,
+   * past losses are irrelevant.
    *
-   * If current regime differs from the losing regime → no penalty (market changed).
+   * The HARD gate (condition 2) is NOT regime-aware — 5 consecutive losses
+   * in ANY regime triggers a hard block. This is a CAPITAL PRESERVATION
+   * measure: if the system keeps losing in the same direction regardless of
+   * market conditions, something is fundamentally wrong with that direction.
    *
-   * v2.0.202: HARD BLOCK for extreme systematic losers.
-   * If a (symbol, direction) pair has >= 20 total trades AND win rate < 35%
-   * AND negative total PnL, block ALL new entries in that direction until
-   * the win rate recovers above 40% (decay mechanism in checkSystematicLoserGate
-   * handles this). This is a CAPITAL PRESERVATION measure — the system should
-   * not keep trading a pattern that loses 2 out of 3 times.
+   * The SYSTEMATIC LOSER gate (condition 3) is also NOT regime-aware —
+   * if a (symbol, direction) pair has >= 10 trades with WR < 35%, block
+   * all new entries. The decay mechanism in checkSystematicLoserGate
+   * handles recovery (halves trade count after 24 cycles of being blocked).
    *
    * Returns { blocked: boolean, convictionPenalty?: number, reason?: string }
    */
@@ -266,55 +271,51 @@ class MATSSystem {
     const entry = this.lossStreakTracker.get(key);
     if (!entry) return { blocked: false };
 
-    // v2.0.732: Get current market regime for condition-aware check
+    // v2.0.733: Condition 1 — SOFT gate: 3 consecutive losses in SAME regime
+    // Raises conviction threshold by 50% (requires stronger signal).
+    // Regime-aware: only penalizes if current regime matches where losses occurred.
     const currentRegime = this.marketState.getState(symbol)?.regime
       ?? this.marketState.getState(this.marketAgent.getConfig().selectedSymbol)?.regime
       ?? 'unknown';
-
-    // v2.0.732: Condition 1 — consecutive loss streak (still a short cooldown,
-    // but only blocks in the SAME regime where losses occurred)
+    
     if (entry.consecutiveLosses >= 3) {
-      if (this.totalCycles < entry.blockedUntilCycle) {
-        // Check if current regime matches where the losses happened
-        const regimeStats = entry.regimeStats.get(currentRegime);
-        if (regimeStats && regimeStats.trades >= 3) {
-          const regimeWR = regimeStats.wins / regimeStats.trades;
-          if (regimeWR < 0.35) {
-            const remaining = entry.blockedUntilCycle - this.totalCycles;
-            return { blocked: false, convictionPenalty: 0.15, reason: `Loss streak: ${entry.consecutiveLosses} consecutive losses in ${currentRegime} regime — conviction +15% (cooldown ${remaining} cycles)` };
-          }
+      const regimeStats = entry.regimeStats.get(currentRegime);
+      if (regimeStats && regimeStats.trades >= 3) {
+        const regimeWR = regimeStats.wins / regimeStats.trades;
+        if (regimeWR < 0.35) {
+          // v2.0.733: 50% conviction penalty (was 15%) — stronger signal required
+          return { blocked: false, convictionPenalty: 0.50, reason: `Loss streak: ${entry.consecutiveLosses} consecutive losses in ${currentRegime} regime — conviction +50% (stronger signal required)` };
         }
-        // Regime changed — no penalty, let it trade
-        entry.consecutiveLosses = 0;
-        entry.blockedUntilCycle = 0;
+      }
+      // Regime changed — no penalty, let it trade
+      entry.consecutiveLosses = 0;
+      entry.blockedUntilCycle = 0;
+    }
+
+    // v2.0.733: Condition 2 — HARD gate: 5 consecutive losses in ANY regime
+    // Blocks ALL new entries for 12 cycles (60 min). Resets on win.
+    // This is NOT regime-aware — 5 consecutive losses in any regime triggers
+    // a hard block. This is a CAPITAL PRESERVATION measure.
+    if (entry.consecutiveLosses >= 5) {
+      if (this.totalCycles < entry.blockedUntilCycle) {
+        const remaining = entry.blockedUntilCycle - this.totalCycles;
+        return { blocked: true, reason: `HARD BLOCK: ${direction.toUpperCase()} ${symbol} has ${entry.consecutiveLosses} consecutive losses — blocked for ${remaining} more cycles (cooldown until cycle ${entry.blockedUntilCycle})` };
       } else {
+        // Cooldown expired — reset and allow retry
         entry.consecutiveLosses = 0;
         entry.blockedUntilCycle = 0;
       }
     }
 
-    // v2.0.732: Condition 2 — condition-aware systematic loser (SOFT gate)
-    // Only penalize if the CURRENT regime has a losing track record.
-    // If the regime changed, past losses are irrelevant.
-    const regimeStats = entry.regimeStats.get(currentRegime);
-    if (regimeStats && regimeStats.trades >= 5) {
-      const regimeWR = regimeStats.wins / regimeStats.trades;
-      if (regimeWR < 0.35) {
-        // v2.0.732: Soft gate — raise conviction threshold by 20% instead of hard block
-        return { blocked: false, convictionPenalty: 0.20, reason: `Condition-aware soft gate: ${direction.toUpperCase()} ${symbol} in ${currentRegime} regime has ${(regimeWR * 100).toFixed(0)}% WR over ${regimeStats.trades} trades — conviction +20% (stronger signal required, not blocked)` };
-      }
-    }
-
-    // v2.0.202: Condition 3 — HARD BLOCK for extreme systematic losers.
-    // If the pair has >= 20 total trades AND win rate < 35% AND negative PnL,
-    // block ALL new entries. This is a CAPITAL PRESERVATION measure.
+    // v2.0.733: Condition 3 — SYSTEMATIC LOSER gate: >= 10 trades, WR < 35%
+    // Blocks ALL new entries until win rate recovers above 40%.
+    // This catches patterns like BUY xyz:SKHX (32 trades, 31% WR) where
+    // losses are NOT consecutive but the direction is systematically wrong.
     // The decay mechanism in checkSystematicLoserGate handles recovery.
-    if (entry.totalTrades >= 20) {
+    if (entry.totalTrades >= 10) {
       const totalWR = entry.totalWins / entry.totalTrades;
       if (totalWR < 0.35) {
-        // Estimate total PnL from regime stats (we don't store PnL directly,
-        // but if WR is this low, PnL is almost certainly negative)
-        return { blocked: true, reason: `HARD BLOCK: ${direction.toUpperCase()} ${symbol} has ${entry.totalTrades} trades with ${(totalWR * 100).toFixed(0)}% win rate — systematic loser pattern detected. Blocking all new entries until win rate recovers above 40% (decay mechanism in checkSystematicLoserGate handles recovery).` };
+        return { blocked: true, reason: `SYSTEMATIC LOSER BLOCK: ${direction.toUpperCase()} ${symbol} has ${entry.totalTrades} trades with ${(totalWR * 100).toFixed(0)}% win rate — systematic loser pattern detected. Blocking all new entries until win rate recovers above 40% (decay mechanism in checkSystematicLoserGate handles recovery).` };
       }
     }
 
