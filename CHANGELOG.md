@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.757: First-Passage probability — add volatility freshness check. If volatility is >2 cycles old (10 min), recompute from latest price data before computing P(TP before SL). Prevents OLR from using stale volatility features that cause systematic P(win) miscalibration (100%→loss, 0%→win patterns).
+
+
 ## v2.0.756: Revert shadow trade engine to open both LONG and SHORT each cycle. The OLR model correctly handles contradictory training data via the side parameter — it learns separate weights for each direction. Opening both directions is necessary for the system to learn which direction has an edge.
 
 
