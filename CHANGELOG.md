@@ -4,6 +4,31 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.725 — SE Block List Fix + Audit Integration (stop wasting tokens)
+
+### Problem 1: SE Block List Too Broad — Wasting Tokens on Repeated Blocked Diagnoses
+
+The System Engineer (SE) repeatedly diagnosed "EXP checkThesisHistory() uses raw win rate instead of Wilson score" — a **real issue** — but was blocked by `BLOCKED_PATTERNS` which matched `/checkThesisHistory/i` (any mention of the method name). The block was intended to prevent removal of the direction filter, but it also blocked Wilson score improvements, condition filtering, and any other modification to the method.
+
+**Fix**: Tightened the block pattern from `/checkThesisHistory/i` to `/remove.*direction.*filter|delete.*sameDir|remove.*sameDir/i` — only blocks removal of the direction filter, not all modifications. The Wilson score gates (H4) and condition filtering (H3) are already applied, so the SE can now propose further improvements without being blocked.
+
+### Problem 2: SE Has No Audit Integration — Duplicates Work
+
+The trade record audit (C3, v2.0.720) and the System Engineer (SE) both analyze trade records independently. The audit detects specific incidents (e.g. `olr-pwin-mismatch`, `exit-timing`, `thesis-contradicts-action`), but the SE doesn't see these results — it re-analyzes the same trade data from scratch, often diagnosing the same issues the audit already found.
+
+**Fix**: `runSystemEngineer()` now accepts an optional `auditResults` parameter. When provided, audit incidents are injected into the Phase 1 prompt as "🔍 Trade Record Audit Results" — marked as HIGHEST PRIORITY issues. The SE can now directly fix the root causes identified by the audit instead of re-diagnosing from scratch.
+
+The call site in `index.ts` passes `this.lastAuditResult` to `runSystemEngineer()`, so the SE always sees the latest audit findings.
+
+### Files Changed
+
+- `src/evolution/system-engineer.ts` — `BLOCKED_PATTERNS` checkThesisHistory pattern tightened, `runSystemEngineer()` accepts `auditResults?`, Phase 1 prompt injects audit incidents
+- `src/index.ts` — `runDirectionAudit()` passes `this.lastAuditResult` to `runSystemEngineer()`
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
 ## v2.0.724 — Fix audit gate false positive blocking all SELL signals
 
 ### Problem
