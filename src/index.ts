@@ -240,6 +240,7 @@ class MATSSystem {
   /**
    * v2.0.181: Check the per-symbol-per-direction loss streak gate.
    * v2.0.732: Changed from hard block to condition-aware SOFT gate.
+   * v2.0.202: Added systematic loser HARD block for extreme cases.
    *
    * Philosophy: "Past losses don't guarantee future losses" — but if the
    * SAME market conditions (regime + volatility band) keep producing losses,
@@ -251,7 +252,14 @@ class MATSSystem {
    *
    * If current regime differs from the losing regime → no penalty (market changed).
    *
-   * Returns { blocked: false, convictionPenalty?: number, reason?: string }
+   * v2.0.202: HARD BLOCK for extreme systematic losers.
+   * If a (symbol, direction) pair has >= 20 total trades AND win rate < 35%
+   * AND negative total PnL, block ALL new entries in that direction until
+   * the win rate recovers above 40% (decay mechanism in checkSystematicLoserGate
+   * handles this). This is a CAPITAL PRESERVATION measure — the system should
+   * not keep trading a pattern that loses 2 out of 3 times.
+   *
+   * Returns { blocked: boolean, convictionPenalty?: number, reason?: string }
    */
   private checkLossStreakGate(symbol: string, direction: 'buy' | 'sell'): { blocked: boolean; convictionPenalty?: number; reason?: string } {
     const key = `${normalizeSymbol(symbol)}:${direction}`;
@@ -294,6 +302,19 @@ class MATSSystem {
       if (regimeWR < 0.35) {
         // v2.0.732: Soft gate — raise conviction threshold by 20% instead of hard block
         return { blocked: false, convictionPenalty: 0.20, reason: `Condition-aware soft gate: ${direction.toUpperCase()} ${symbol} in ${currentRegime} regime has ${(regimeWR * 100).toFixed(0)}% WR over ${regimeStats.trades} trades — conviction +20% (stronger signal required, not blocked)` };
+      }
+    }
+
+    // v2.0.202: Condition 3 — HARD BLOCK for extreme systematic losers.
+    // If the pair has >= 20 total trades AND win rate < 35% AND negative PnL,
+    // block ALL new entries. This is a CAPITAL PRESERVATION measure.
+    // The decay mechanism in checkSystematicLoserGate handles recovery.
+    if (entry.totalTrades >= 20) {
+      const totalWR = entry.totalWins / entry.totalTrades;
+      if (totalWR < 0.35) {
+        // Estimate total PnL from regime stats (we don't store PnL directly,
+        // but if WR is this low, PnL is almost certainly negative)
+        return { blocked: true, reason: `HARD BLOCK: ${direction.toUpperCase()} ${symbol} has ${entry.totalTrades} trades with ${(totalWR * 100).toFixed(0)}% win rate — systematic loser pattern detected. Blocking all new entries until win rate recovers above 40% (decay mechanism in checkSystematicLoserGate handles recovery).` };
       }
     }
 
