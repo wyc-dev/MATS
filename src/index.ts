@@ -5662,7 +5662,7 @@ ${recentExamples}
             // statistically strong. Boost position size (not conviction threshold)
             // to avoid feedback loops with the adaptive filter.
             const boostedSize = Math.min(0.20, (finalDecision.positionSizePct ?? 0) * 1.2);
-            log.info(`🟢 [shadow-boost] ${finalDecision.action.toUpperCase()} ${shadowSym}: shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowTotal} samples) > 65% — boosting size ${(finalDecision.positionSizePct * 100).toFixed(0)}% → ${(boostedSize * 100).toFixed(0)}%`);
+            log.info(`🟢 [shadow-boost] ${finalDecision.action.toUpperCase()} ${shadowSym}: shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowTotal} samples) > 65% — boosting size ${((finalDecision.positionSizePct ?? 0) * 100).toFixed(0)}% → ${(boostedSize * 100).toFixed(0)}%`);
             activeAuditGates.push({ gate: 'shadow-gate', passed: true, reason: `shadow WR ${(shadowWR * 100).toFixed(0)}% (Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}%, ${shadowTotal} samples) → size boost` });
             finalDecision = {
               ...finalDecision,

@@ -485,7 +485,7 @@ export class OLREngine {
   private contextToVector(features: Record<string, number>): number[] {
     return FEATURE_NAMES.map(name => {
       const val = features[name];
-      if (val === undefined) {
+      if (val === undefined || val === null) {
         // v2.0.721: regimeOrdinal fallback to 0.5 (neutral/unknown) when missing.
         // 0 = chaotic (a meaningful value), so we use 0.5 as the missing sentinel.
         // NaN/Infinity are passed through so feedTrade's NaN guard can reject them.

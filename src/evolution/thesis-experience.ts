@@ -48,6 +48,10 @@ import { extractJSON, categoriseRationale, normaliseCategory, wilsonScore } from
 
 const log = rootLogger;
 
+/** v2.0.720: Coarse exit types — used to check if a record's exitType is
+ *  still the original coarse classification (not yet overridden by digester). */
+const COARSE_EXIT_TYPES = new Set(['sl_tp', 'consensus', 'manual', 'thesis_invalidation', 'reconciliation', 'exchange_closed']);
+
 // ─── LLM caller abstraction (mockable for tests) ───
 
 export interface ExpLLMMessage {
@@ -563,8 +567,7 @@ export class ThesisExperience {
           ? 'thesis_invalidation'
           : (lessonExitType as ExitType);
         // Only override if the record currently has a coarse exitType (not already fine-grained)
-        const coarseTypes = ['sl_tp', 'consensus', 'manual', 'thesis_invalidation', 'reconciliation', 'exchange_closed'];
-        if (record.exitType && !coarseTypes.includes(record.exitType)) return;
+        if (record.exitType && !COARSE_EXIT_TYPES.has(record.exitType)) return;
         record.exitType = mappedExitType;
         log.info(`[EXP-digest] Wrote back fine-grained exitType="${mappedExitType}" for ${record.symbol} ${record.side} (in-memory only)`);
       }).catch((err: unknown) =>
@@ -749,7 +752,7 @@ export class ThesisExperience {
         // v2.0.721: Track condition-matched records separately
         if (candRegime || (candVol !== undefined && candVol > 0)) {
           let conditionOk = true;
-          if (candRegime && h.regime !== candRegime) conditionOk = false;
+          if (candRegime && h.regime.toLowerCase() !== candRegime.toLowerCase()) conditionOk = false;
           if (candVol !== undefined && candVol > 0 && h.marketFeatures) {
             const histVol = h.marketFeatures['volatility'] ?? 0;
             if (histVol > 0) {
