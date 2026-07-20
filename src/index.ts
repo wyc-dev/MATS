@@ -5693,15 +5693,15 @@ ${recentExamples}
             // Symbol match: must match exactly (normalized) or be "ALL"
             const incSym = inc.symbol.trim().toUpperCase();
             if (incSym !== 'ALL' && incSym !== '' && normalizeSymbol(incSym) !== auditSym) return false;
-            // v2.0.724: Direction match — only block if the incident category
-            // explicitly names the direction (e.g. "direction-repetition-buy",
-            // "sell-bias-on-symbol"). Do NOT match on detail text containing
-            // the direction word, because details often mention the direction
-            // in passing (e.g. "OLR 99% on SELL") without meaning "block all SELLs".
-            // Exception: "direction-repetition" + "direction-confusion" categories
-            // are inherently directional — check if the detail specifically
-            // describes a LOSING pattern for this direction.
+            // v2.0.724: Skip one-off observation categories that don't indicate
+            // a REPEATED directional problem. "thesis-contradicts-action" is
+            // about a single trade where the thesis didn't match the signal —
+            // it's not a pattern of repeated losses in that direction.
+            // Only categories that indicate a SYSTEMIC directional problem
+            // should trigger the gate.
             const catLower = inc.category.toLowerCase();
+            const ONE_OFF_CATEGORIES = ['thesis-contradicts-action', 'olr-signal-misuse', 'exit-timing-premature', 'vague-thesis'];
+            if (ONE_OFF_CATEGORIES.some(c => catLower.includes(c))) return false;
             // Category-based: only match if category contains the direction
             const catHasDir = catDirMentionDirection(catLower, auditDir);
             if (catHasDir) return true;
