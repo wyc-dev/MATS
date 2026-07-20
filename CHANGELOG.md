@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.202: Fix tsc error in thesis-experience.ts — add explicit type annotation for winRateSame variable
+
+
 ## v2.0.727 — Direction restriction auto-expiry (2 cycles) + SE test failure retry
 
 ### Direction Restriction Auto-Expiry
