@@ -458,11 +458,15 @@ If you find NO issues worth fixing, respond with:
   let diagnosis: any = null;
 
   for (let attempt = 1; attempt <= MAX_DIAGNOSIS_RETRIES; attempt++) {
+  // v2.0.748: On retry, append a notice telling LLM to find a DIFFERENT issue
+  const retryNotice = attempt > 1
+    ? `\n\n## ⚠️ RETRY NOTICE (attempt ${attempt}/${MAX_DIAGNOSIS_RETRIES})\nYour previous diagnosis was rejected (duplicate or blocked). You MUST find a DIFFERENT issue to fix. Do NOT diagnose the same issue again. Look at the audit incidents above and pick a DIFFERENT one to fix. Temperature has been increased to ${0.2 + (attempt - 1) * 0.1} to encourage diversity.`
+    : '';
   log.info(`🔧 [system-engineer] Phase 1: Diagnosis attempt ${attempt}/${MAX_DIAGNOSIS_RETRIES} (sending trade data + file summaries)...`);
   const phase1Response = await provider.chat({
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: phase1Prompt },
+      { role: 'user', content: phase1Prompt + retryNotice },
     ],
     temperature: 0.2 + (attempt - 1) * 0.1, // increase temperature on retry for diversity
     model: getAgentModel('terminal_agent'),
@@ -525,25 +529,34 @@ If you find NO issues worth fixing, respond with:
     return null;
   }
 
+  // v2.0.747: Diagnosis passed all checks — validate scope + file readability
+  // v2.0.748: Moved scope check + file read INSIDE the retry loop so SE
+  // can retry if the diagnosed file is out of scope or unreadable.
+  if (!isFileAllowed(diagnosis.affectedFile)) {
+    log.warn(`🚫 [system-engineer] REJECTED (attempt ${attempt}): ${diagnosis.affectedFile} is outside allowed scope — ${attempt < MAX_DIAGNOSIS_RETRIES ? 'retrying' : 'giving up'}`);
+    if (attempt < MAX_DIAGNOSIS_RETRIES) continue;
+    return null;
+  }
+
+  const fullFileContent = readFileSafe(diagnosis.affectedFile);
+  if (fullFileContent.startsWith('(file not found') || fullFileContent.startsWith('(read failed')) {
+    log.warn(`🚫 [system-engineer] Could not read ${diagnosis.affectedFile} (attempt ${attempt}) — ${attempt < MAX_DIAGNOSIS_RETRIES ? 'retrying' : 'giving up'}`);
+    if (attempt < MAX_DIAGNOSIS_RETRIES) continue;
+    return null;
+  }
+
   // v2.0.747: Diagnosis passed all checks — break out of retry loop
   break;
   } // end of diagnosis retry loop
 
-  // v2.0.210: No more file-level cooldown. Instead, collect failed attempts
-  // for this file and feed them to the LLM so it tries a DIFFERENT approach.
+  // v2.0.210: Collect failed attempts for this file to feed back to LLM
   const fileFailures = failedAttempts.get(diagnosis.affectedFile) ?? [];
-  const recentFailures = fileFailures.filter(f => (timestamp - f.timestamp) < 3600_000); // last 1h context
+  const recentFailures = fileFailures.filter(f => (timestamp - f.timestamp) < 3600_000);
 
-  // Validate scope
-  if (!isFileAllowed(diagnosis.affectedFile)) {
-    log.warn(`🚫 [system-engineer] REJECTED: ${diagnosis.affectedFile} is outside allowed scope`);
-    return null;
-  }
-
-  // ─── Phase 2: Exact Fix ───
+  // v2.0.748: Re-read file content for Phase 2 (was read inside retry loop)
   const fullFileContent = readFileSafe(diagnosis.affectedFile);
   if (fullFileContent.startsWith('(file not found') || fullFileContent.startsWith('(read failed')) {
-    log.warn(`🚫 [system-engineer] Could not read ${diagnosis.affectedFile}`);
+    log.warn(`🚫 [system-engineer] Could not read ${diagnosis.affectedFile} for Phase 2`);
     return null;
   }
 

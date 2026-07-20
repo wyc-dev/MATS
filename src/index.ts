@@ -5173,13 +5173,24 @@ ${recentExamples}
               `[1d: exploration trade (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) — system needs trade data for evolution; ${direction} selected by multi-signal priority chain]`,
             ].join(' ');
 
+            // v2.0.748: Volatility-scaled SL/TP for exploration trades.
+            // Previously hardcoded 0.02/0.05 — too tight when volatility is low
+            // (SL triggered by noise), too loose when volatility is high.
+            // Now: base 2%/5% scaled by volatility relative to 0.02 (typical).
+            // vol=0.02 → scale=1.0 (2%/5%), vol=0.01 → scale=0.5 (1%/2.5%),
+            // vol=0.04 → scale=2.0 (4%/10%, capped at 3%/5%).
+            const expVolRaw = combinedState.volatility ?? 0;
+            const volScale = expVolRaw > 0 ? Math.max(0.5, Math.min(2.0, expVolRaw / 0.02)) : 1.0;
+            const expSL = Math.min(0.03, 0.02 * volScale);
+            const expTP = Math.min(0.05, 0.05 * volScale);
+
             finalDecision = {
               action: direction as 'buy' | 'sell',
               symbol: activeSymbolUpper,
               entryPrice: combinedState.price,
               positionSizePct: exploreSize,
-              stopLossPct: 0.02,
-              takeProfitPct: 0.05,
+              stopLossPct: expSL,
+              takeProfitPct: expTP,
               leverage: exploreLev,
               rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — regime=${expRegime}, vol=${expVol}, OLR=${expOlr}, shadow=${expShadow}.`,
               urgency: 'immediate',
