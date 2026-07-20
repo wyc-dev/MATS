@@ -538,8 +538,10 @@ If you find NO issues worth fixing, respond with:
     return null;
   }
 
-  const fullFileContent = readFileSafe(diagnosis.affectedFile);
-  if (fullFileContent.startsWith('(file not found') || fullFileContent.startsWith('(read failed')) {
+  // v2.0.748: Check file readability inside retry loop (but don't store content here —
+  // it's read again below for Phase 2 to ensure fresh content after any retry modifications)
+  const fileCheck = readFileSafe(diagnosis.affectedFile);
+  if (fileCheck.startsWith('(file not found') || fileCheck.startsWith('(read failed')) {
     log.warn(`🚫 [system-engineer] Could not read ${diagnosis.affectedFile} (attempt ${attempt}) — ${attempt < MAX_DIAGNOSIS_RETRIES ? 'retrying' : 'giving up'}`);
     if (attempt < MAX_DIAGNOSIS_RETRIES) continue;
     return null;
@@ -553,7 +555,7 @@ If you find NO issues worth fixing, respond with:
   const fileFailures = failedAttempts.get(diagnosis.affectedFile) ?? [];
   const recentFailures = fileFailures.filter(f => (timestamp - f.timestamp) < 3600_000);
 
-  // v2.0.748: Re-read file content for Phase 2 (was read inside retry loop)
+  // v2.0.748: Read file content for Phase 2
   const fullFileContent = readFileSafe(diagnosis.affectedFile);
   if (fullFileContent.startsWith('(file not found') || fullFileContent.startsWith('(read failed')) {
     log.warn(`🚫 [system-engineer] Could not read ${diagnosis.affectedFile} for Phase 2`);

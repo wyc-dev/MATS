@@ -116,6 +116,9 @@ class MATSSystem {
   /** v2.0.726: Cycles since last trade execution — used to trigger SE
    *  investigation when the system hasn't traded for 3+ cycles. */
   private cyclesSinceLastTrade = 0;
+  /** v2.0.749: Global consecutive loss counter — triggers SE investigation
+   *  when the system loses N trades in a row, regardless of symbol/direction. */
+  private globalConsecutiveLosses = 0;
   /** v2.0.726: Last cycle's gate results — for SE no-trade investigation. */
   private lastGateResults: Array<{ gate: string; passed: boolean; reason: string }> = [];
   /** v2.0.726: Recent market conditions — for SE no-trade investigation. */
@@ -2595,7 +2598,19 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         log.warn(`[close-learning] Loss streak tracker update failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      log.info(`🧬 [close-learning] ${isWin ? '✅ WIN' : '❌ LOSS'} ${trade.side.toUpperCase()} ${symbol} PnL: $${trade.pnl.toFixed(2)} (${(pnlPct * 100).toFixed(1)}%) — all learning mechanisms fed`);
+      // v2.0.749: Update global consecutive loss counter — triggers SE investigation
+      // when the system loses too many trades in a row.
+      if (isWin) {
+        this.globalConsecutiveLosses = 0;
+      } else {
+        this.globalConsecutiveLosses++;
+        if (this.globalConsecutiveLosses >= 5) {
+          log.warn(`🚨 [loss-streak] ${this.globalConsecutiveLosses} consecutive losses — SE will investigate on next cycle`);
+          this.auditTriggeredSE = true; // trigger SE to investigate
+        }
+      }
+
+      log.info(`🧬 [close-learning] ${isWin ? '✅ WIN' : '❌ LOSS'} ${trade.side.toUpperCase()} ${symbol} PnL: $${trade.pnl.toFixed(2)} (${(pnlPct * 100).toFixed(1)}%) — all learning mechanisms fed${this.globalConsecutiveLosses > 0 ? ` (consecutive losses: ${this.globalConsecutiveLosses})` : ''}`);
     } catch (err) {
       log.error(`[onPositionClosedLearning] Failed: ${err instanceof Error ? err.message : String(err)}`);
     }
