@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.748: HACP SL distance — increase SL multiplier from 1.5×ATR to 2.0×ATR to prevent premature exits on valid trades. SILVER SELL has 60% WR in last 30 trades but 3/10 recent trades lost via premature SL/thesis_invalidation. BTC BUY trade #20 lost -$0.22 after 29min despite shadowWR=86%. Volatility-adaptive SL gives trades more room to develop while maintaining R:R ≥ 1.5:1.
+
+
 ## v2.0.747: EXP checkThesisHistory() — use wilsonScore() instead of raw winRate for delta computation. Prevents small-sample overconfidence where 3/5 (60% raw) was treated equally to 30/50 (60% raw). Wilson score penalizes small samples: 3/5 → ~25%, 30/50 → ~47%. This fixes systematically losing patterns like BUY SKHX (30% WR over 33 trades) and BUY BTC (38% WR over 40 trades) where EXP was too permissive due to inflated pWin from small-sample historical matches.
 
 

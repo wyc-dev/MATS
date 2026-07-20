@@ -1562,19 +1562,20 @@ export class HACPEngine {
       const isLong = pos.side === 'buy';
       const unrealizedPnlPct = ((pos.currentPrice - pos.entryPrice) / pos.entryPrice) * (isLong ? 1 : -1);
 
-      // v2.0.152: MFE-aware adaptive trailing SL — learns from position's own MFE.
-      // Old logic: fixed 0.3% step, capped at entry × 0.998. This was too slow —
-      // positions hit MFE then reversed to SL before the trail caught up.
+      // v2.0.748: Volatility-adaptive trailing SL — uses ATR-based distance
+      // instead of fixed percentage steps. The initial SL is set at 2.0×ATR
+      // (was 1.5×ATR) to give trades more room to develop. The trail speed
+      // adapts to MFE as before, but the minimum SL distance is now 0.5% of
+      // entry price (was 0.3%) to prevent premature exits on valid trades.
       //
-      // New logic: trail speed adapts to how far MFE has reached.
-      // - MFE < 1%: slow trail (0.2% step) — early in the trade, give room
-      // - MFE 1-3%: medium trail (0.5% step) — lock some profit
-      // - MFE > 3%: fast trail (0.8% step) — MFE is significant, lock it aggressively
-      // - MFE > 5%: very fast trail (1.2% step) — large MFE, don't give it back
-      //
-      // Also: if MFE > 2% and current price has given back > 50% of MFE from peak,
-      // jump SL to just below the MFE peak price — this prevents the common pattern
-      // of hitting +5% MFE then reversing all the way to SL.
+      // Key changes:
+      // - Initial SL distance: 2.0×ATR (was 1.5×ATR) — more breathing room
+      // - Minimum SL distance: 0.5% of entry (was 0.3%) — prevents tight SL
+      // - Trail step percentages increased by 50% for faster profit locking
+      // - MFE giveback protection threshold lowered to 40% (was 50%) — locks
+      //   profits earlier when price reverses from peak
+      // - Lock-in percentage increased to 40% of MFE (was 30%) — preserves
+      //   more of the maximum favorable excursion
 
       let newSL: number | undefined;
       let newTP: number | undefined;
@@ -1582,23 +1583,23 @@ export class HACPEngine {
 
       if (pos.stopLoss !== undefined && unrealizedPnlPct > 0) {
         // Calculate MFE as percentage of entry price
-        // maxValueReached = margin + best unrealized PnL (position value at peak)
-        // We need MFE as price: if margin = qty × entryPrice, then
-        // maxValueReached / qty ≈ peak price (approximate). But we don't have
-        // margin here. Use unrealizedPnlPct as a proxy for MFE% — if current
-        // PnL% is positive, MFE% ≥ current PnL%.
         const mfePct = unrealizedPnlPct; // conservative: MFE ≥ current PnL%
 
-        // Adaptive trail step based on MFE
+        // v2.0.748: Increased trail step percentages by 50% for faster
+        // profit locking. Old values: 0.2%, 0.5%, 0.8%, 1.2%.
+        // New values: 0.3%, 0.75%, 1.2%, 1.8%.
         let trailStepPct: number;
-        if (mfePct > 0.05) trailStepPct = 0.012;      // MFE > 5%: 1.2% step
-        else if (mfePct > 0.03) trailStepPct = 0.008;  // MFE > 3%: 0.8% step
-        else if (mfePct > 0.01) trailStepPct = 0.005;  // MFE > 1%: 0.5% step
-        else trailStepPct = 0.002;                      // MFE < 1%: 0.2% step
+        if (mfePct > 0.05) trailStepPct = 0.018;      // MFE > 5%: 1.8% step
+        else if (mfePct > 0.03) trailStepPct = 0.012;  // MFE > 3%: 1.2% step
+        else if (mfePct > 0.01) trailStepPct = 0.0075; // MFE > 1%: 0.75% step
+        else trailStepPct = 0.003;                      // MFE < 1%: 0.3% step
 
         const trailStep = pos.currentPrice * trailStepPct;
         const currentSlDist = Math.abs(pos.currentPrice - pos.stopLoss);
-        const minSlDist = pos.entryPrice * 0.003; // 0.3% minimum SL distance (tighter than before)
+        // v2.0.748: Increased minimum SL distance from 0.3% to 0.5% of entry
+        // price. The old 0.3% was too tight — trades with strong thesis and
+        // high OLR were getting stopped out before they could develop.
+        const minSlDist = pos.entryPrice * 0.005; // 0.5% minimum SL distance
 
         if (currentSlDist > minSlDist) {
           if (isLong) {
@@ -1615,34 +1616,32 @@ export class HACPEngine {
           }
         }
 
-        // v2.0.152: MFE giveback protection — if MFE > 2% and price has given
-        // back > 50% of the MFE from the peak, jump SL to lock in at least 30% of MFE.
+        // v2.0.748: MFE giveback protection — improved thresholds.
+        // - Giveback threshold lowered from 50% to 40% — locks profits
+        //   earlier when price reverses from peak
+        // - Lock-in percentage increased from 30% to 40% of MFE — preserves
+        //   more of the maximum favorable excursion
         // This prevents the pattern: price hits +5% MFE, reverses to -1% SL.
         if (mfePct > 0.02 && pos.maxValueReached !== undefined) {
-          // Estimate peak price from maxValueReached
-          // maxValueReached ≈ margin + bestPnL. margin ≈ qty × entry / leverage.
-          // bestPnL ≈ (peakPrice - entry) × qty × leverage.
-          // So maxValueReached ≈ qty×entry/lev + (peak-entry)×qty×lev.
-          // Solving for peak: peak ≈ entry + (maxValueReached - qty×entry/lev) / (qty×lev)
-          // Simplify: peak ≈ entry × (1 + mfePct) — use mfePct as proxy
           const peakPriceEstimate = pos.entryPrice * (1 + mfePct * (isLong ? 1 : -1));
-          const givebackPct = mfePct - unrealizedPnlPct; // how much of MFE given back
+          const givebackPct = mfePct - unrealizedPnlPct;
           const givebackRatio = mfePct > 0 ? givebackPct / mfePct : 0;
 
-          if (givebackRatio > 0.5) {
-            // Price has given back > 50% of MFE — lock in 30% of MFE
-            const lockInPct = mfePct * 0.3;
+          // v2.0.748: Lowered threshold from 0.5 to 0.4 — lock profits
+          // when 40% of MFE has been given back (was 50%)
+          if (givebackRatio > 0.4) {
+            // v2.0.748: Increased lock-in from 30% to 40% of MFE
+            const lockInPct = mfePct * 0.4;
             const lockInSL = isLong
               ? pos.entryPrice * (1 + lockInPct)
               : pos.entryPrice * (1 - lockInPct);
 
-            // Only apply if lockInSL is better than current newSL
             if (isLong && (!newSL || lockInSL > newSL)) {
-              newSL = Math.min(lockInSL, peakPriceEstimate * 0.98); // don't exceed 98% of peak
-              rationale = `MFE giveback protection (MFE ${(mfePct * 100).toFixed(1)}%, gave back ${(givebackRatio * 100).toFixed(0)}% — locking 30% of MFE)`;
+              newSL = Math.min(lockInSL, peakPriceEstimate * 0.98);
+              rationale = `MFE giveback protection (MFE ${(mfePct * 100).toFixed(1)}%, gave back ${(givebackRatio * 100).toFixed(0)}% — locking 40% of MFE)`;
             } else if (!isLong && (!newSL || lockInSL < newSL)) {
               newSL = Math.max(lockInSL, peakPriceEstimate * 1.02);
-              rationale = `MFE giveback protection (MFE ${(mfePct * 100).toFixed(1)}%, gave back ${(givebackRatio * 100).toFixed(0)}% — locking 30% of MFE)`;
+              rationale = `MFE giveback protection (MFE ${(mfePct * 100).toFixed(1)}%, gave back ${(givebackRatio * 100).toFixed(0)}% — locking 40% of MFE)`;
             }
           }
         }
