@@ -3344,18 +3344,41 @@ ${recentExamples}
     const activeFilter = this.assetFilterRegistry.getFilter(activeSymbol);
 
     // Adapt ALL asset filters based on their individual market context
+    // v2.0.729: Use per-symbol winRate instead of global winRate — each filter
+    // should adapt to its own symbol's performance, not the global average.
+    // Also merge the 3 separate adapt logs into one line to reduce log noise.
+    const adaptSummaries: string[] = [];
     for (const [sym, filter] of this.assetFilterRegistry.getAllFilters()) {
       const symState = this.marketState.getState(sym);
       const symVolatility = symState?.volatility ?? combinedState.volatility;
       const symRegime = symState?.regime ?? combinedState.regime;
+      // v2.0.729: Compute per-symbol winRate from trade history
+      const symTrades = this.evolution.tradeHistory.getRecent(10).filter(
+        t => normalizeSymbol(t.symbol) === normalizeSymbol(sym) && t.closeReason !== 'thesis_invalidation'
+      );
+      const symWinRate = symTrades.length >= 3
+        ? symTrades.filter(t => (t.realisedPnl ?? t.simulatedPnl ?? 0) > 0).length / symTrades.length
+        : undefined;
+      const symTradeCount = symTrades.filter(t =>
+        t.type === 'real' && (Date.now() - t.timestamp) < 600_000
+      ).length;
+      const symCyclesSinceTrade = symTrades.length > 0
+        ? this.totalCycles - (symTrades[symTrades.length - 1]?.cycleNumber ?? 0)
+        : 999;
       filter.adapt({
         volatility: symVolatility,
         regime: symRegime,
-        recentWinRate,
-        recentTradeCount,
-        cyclesSinceLastTrade,
+        recentWinRate: symWinRate,
+        recentTradeCount: symTradeCount,
+        cyclesSinceLastTrade: symCyclesSinceTrade,
         totalCycles: this.totalCycles,
       });
+      // v2.0.729: Collect summary for merged log (only log every 5 cycles — adapt() already does this internally)
+      adaptSummaries.push(`${sym}: conviction=${(filter.getConvictionThreshold() * 100).toFixed(0)}%`);
+    }
+    // v2.0.729: Single merged log line instead of 3 separate lines
+    if (adaptSummaries.length > 0 && this.totalCycles % 5 === 0) {
+      log.info(`📊 [adaptive-filter] Cycle ${this.totalCycles}: ${adaptSummaries.join(', ')}`);
     }
 
     // v2.0.106: Filter raw market signals through the ACTIVE symbol's adaptive filter.

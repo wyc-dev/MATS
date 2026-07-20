@@ -4,6 +4,26 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.729 — Adaptive filter per-symbol winRate + merged log
+
+### Problem
+
+The adaptive filter `adapt()` loop used **global** `recentWinRate` for ALL filters — BTC, SILVER, and SKHX all adapted to the same win rate instead of their own performance. Additionally, each filter logged a separate "Adaptive filter adjusted" line, producing 3 nearly-identical log lines.
+
+### Fix
+
+1. **Per-symbol winRate**: Each filter computes its own winRate from `tradeHistory` filtered by symbol
+2. **Merged log**: 3 separate log lines replaced by 1 merged line; per-filter log downgraded to `debug`
+
+### Files Changed
+
+- `src/index.ts` — Per-symbol winRate in adapt loop, merged log
+- `src/analysis/adaptive-filter.ts` — `adapt()` log `info` → `debug`
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
 ## v2.0.722: Fix OLR extreme probability overconfidence — add low_volatility regime ordinal mapping (0.2) to distinguish from mean_reverting (0.5), preventing regime confusion that contributed to 0%/100% P(win) predictions
 
 
