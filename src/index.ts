@@ -6550,9 +6550,11 @@ ${recentExamples}
 
       // v2.0.728: SE runs synchronously (awaited) so the next cycle waits for
       // SE to finish before starting. This prevents code changes mid-cycle.
-      if (engineerEnabled && !isShuttingDown() && cycleMinutes >= 1) {
+      // v2.0.735: Removed cycleMinutes >= 5 restriction — SE should run regardless
+      // of cycle period. The 1-min cycle period is valid and SE should still audit.
+      if (engineerEnabled && !isShuttingDown()) {
         const shouldRunNoTrade = this.cyclesSinceLastTrade >= 3;
-        const shouldRunAudit = this.totalCycles > 0 && this.totalCycles % 2 === 0 && cycleMinutes >= 5;
+        const shouldRunAudit = this.totalCycles > 0 && this.totalCycles % 2 === 0;
         if (shouldRunNoTrade) {
           log.warn(`🔧 [no-trade] ${this.cyclesSinceLastTrade} cycles since last trade — triggering SE investigation (blocking next cycle)`);
           this.cycleInProgress = true; // block next cycle from starting
