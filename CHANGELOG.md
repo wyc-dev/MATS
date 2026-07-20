@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.733: Add systematicLoserGate() — hard block BUY xyz:SKHX (31% WR over 32 trades) and any other (symbol,direction) with >=10 trades and WR < 35%. Prevents continued losses on systematically losing patterns.
+
+
 ## v2.0.734 — Revert SE's hard block + SystemEngineer.md design principles
 
 ### Problem
