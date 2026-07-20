@@ -113,6 +113,13 @@ class MATSSystem {
    *  so the UI auto-refreshes Mark prices + PnL between decision cycles. */
   private uiPushTimer: ReturnType<typeof setInterval> | null = null;
   private tradesToday = 0;
+  /** v2.0.726: Cycles since last trade execution — used to trigger SE
+   *  investigation when the system hasn't traded for 3+ cycles. */
+  private cyclesSinceLastTrade = 0;
+  /** v2.0.726: Last cycle's gate results — for SE no-trade investigation. */
+  private lastGateResults: Array<{ gate: string; passed: boolean; reason: string }> = [];
+  /** v2.0.726: Recent market conditions — for SE no-trade investigation. */
+  private recentMarketConditions: Array<{ cycle: number; regime: string; volatility: number; price: number }> = [];
   private totalCycles = 0;
   private cycleInProgress = false;
   private lastCycleDuration = 0;
@@ -2182,6 +2189,31 @@ ${currentPrompt || '(empty — this is the first input)'}`;
     }
   }
 
+  /** v2.0.726: No-trade investigation — SE investigates why the system hasn't
+   *  traded for 3+ cycles. Passes gate results + market conditions so SE can
+   *  determine if it's a genuine quiet market or a mechanism blocking trades. */
+  private async runNoTradeInvestigation(): Promise<void> {
+    try {
+      if (!this.expMemory) return;
+      const records = this.expMemory.getRecords();
+      // Reset counter so SE doesn't re-trigger every cycle
+      const cyclesIdle = this.cyclesSinceLastTrade;
+      this.cyclesSinceLastTrade = 0;
+      log.info(`🔧 [no-trade] Starting SE investigation (${cyclesIdle} cycles idle, ${this.lastGateResults.length} gate results, ${this.recentMarketConditions.length} market snapshots)`);
+      await runSystemEngineer(
+        records,
+        this.lastAuditResult ?? undefined,
+        {
+          cyclesSinceLastTrade: cyclesIdle,
+          lastGateResults: this.lastGateResults,
+          marketConditions: this.recentMarketConditions,
+        },
+      );
+    } catch (err) {
+      log.warn(`[no-trade] SE investigation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private onPositionClosedLearning(trade: TradeRecord): void {
     try {
       const symbol = trade.symbol;
@@ -2653,6 +2685,8 @@ ${recentExamples}
         if (decision.entryThesis) {
           this.portfolio.setEntryThesis(decision.symbol, decision.entryThesis);
         }
+        // v2.0.726: Reset cycles-since-last-trade counter
+        this.cyclesSinceLastTrade = 0;
       }
       return execResult;
     }
@@ -2668,6 +2702,8 @@ ${recentExamples}
       if (decision.entryThesis) {
         this.portfolio.setEntryThesis(decision.symbol, decision.entryThesis);
       }
+      // v2.0.726: Reset cycles-since-last-trade counter
+      this.cyclesSinceLastTrade = 0;
     }
     return { success, paperReports: reports };
   }
@@ -5819,6 +5855,8 @@ ${recentExamples}
           activeAuditGates,
           activeExecuted,
         );
+        // v2.0.726: Save gate results for no-trade investigation
+        this.lastGateResults = [...activeAuditGates];
       }
 
       // v2.0.122: Pending thesis management for the active symbol.
@@ -6316,7 +6354,23 @@ ${recentExamples}
       // disabled in watch mode. Use `npm run engineer` for autonomous fixes.
       const cycleMinutes = this.cycleIntervalMs / 60_000;
       const engineerEnabled = process.env['SYSTEM_ENGINEER_ENABLED'] === 'true';
-      if (engineerEnabled && this.totalCycles > 0 && this.totalCycles % 2 === 0 && !isShuttingDown() && cycleMinutes >= 5) {
+
+      // v2.0.726: Track cycles since last trade + market conditions for no-trade investigation
+      this.cyclesSinceLastTrade++;
+      this.recentMarketConditions.push({
+        cycle: this.totalCycles,
+        regime: combinedState.regime ?? 'unknown',
+        volatility: combinedState.volatility ?? 0,
+        price: combinedState.price ?? 0,
+      });
+      if (this.recentMarketConditions.length > 5) this.recentMarketConditions.shift();
+
+      // v2.0.726: No-trade investigation — if 3+ cycles without a trade, trigger SE
+      // to investigate which mechanism is blocking trades (or confirm market is quiet).
+      if (engineerEnabled && this.cyclesSinceLastTrade >= 3 && !isShuttingDown() && cycleMinutes >= 1) {
+        log.warn(`🔧 [no-trade] ${this.cyclesSinceLastTrade} cycles since last trade — triggering SE investigation`);
+        void this.runNoTradeInvestigation();
+      } else if (engineerEnabled && this.totalCycles > 0 && this.totalCycles % 2 === 0 && !isShuttingDown() && cycleMinutes >= 5) {
         void this.runDirectionAudit();
       }
 
