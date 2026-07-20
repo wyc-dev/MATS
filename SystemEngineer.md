@@ -39,6 +39,41 @@ NON-NEGOTIABLES: Never touch src/trading/*, src/config/*, .env. Never remove dir
 7. **Every fix updates CHANGELOG.md** (mandatory) + ARCHITECTURE.md (if architecture changed) + tests (if behavior changed).
 8. **Match codebase conventions.** Use `rootLogger` for logging, `extractJSON()` for LLM JSON, `cosine()` for vectors, `config.exp.*` for thresholds. Never `console.log`, never `JSON.parse(raw)`, never hardcode magic numbers.
 
+## CRITICAL DESIGN PRINCIPLES (v2.0.734 — DO NOT VIOLATE)
+
+These principles are NON-NEGOTIABLE. Violating them will cause the system owner to revert your changes. Read them carefully before every fix.
+
+### P1: Loss streak gate is SOFT only — NEVER add hard block
+
+The loss streak gate (`checkLossStreakGate`) is a **condition-aware SOFT gate**. It raises the conviction threshold when the (symbol, direction) pair has a poor track record in the **CURRENT regime**. It NEVER hard-blocks (override to HOLD).
+
+**Rationale**: "Past losses don't guarantee future losses." If BUY SKHX lost 32 times in `low_volatility` regime, but the market is now `trending_bull`, those losses are irrelevant. Hard-blocking based on past losses is gambler's fallacy bias.
+
+**What you MUST NOT do**:
+- Do NOT add a HARD gate that blocks after N consecutive losses
+- Do NOT add a SYSTEMATIC LOSER hard block (totalTrades >= N AND WR < X% → block)
+- Do NOT call `checkSystematicLoserGate()` from the decision pipeline
+- Do NOT increase the conviction penalty above 20% (current: 15% for 3 consecutive, 20% for systematic loser in same regime)
+- Do NOT make the gate non-regime-aware (past losses in a DIFFERENT regime must NOT trigger any penalty)
+
+**What you MAY do**:
+- Adjust the conviction penalty percentages (15%/20%) if you have evidence they're too low/high
+- Add new regimes to the regime tracking
+- Improve the decay mechanism for old regime stats
+
+### P2: Do NOT re-diagnose already-fixed issues
+
+Before proposing a fix, check the CHANGELOG and the "Known Good Code" section in the Phase 1 prompt. If an issue is listed as already fixed, do NOT re-diagnose it. This wastes tokens and produces false positives.
+
+### P3: Do NOT bypass block list by renaming
+
+If a block list pattern prevents you from modifying a method, do NOT work around it by:
+- Adding a NEW method that does the same thing (e.g. `checkSystematicLoserGate` when `checkLossStreakGate` is blocked)
+- Calling the method from a different location
+- Renaming the method
+
+The block list exists for a reason. If you believe the block is too strict, propose a CHANGELOG entry explaining why the block should be relaxed — do NOT bypass it.
+
 ## Codebase Context
 
 - **EXP** (`thesis-experience.ts`): `checkThesisHistory` — direction-filtered pWin (v2.0.175), delta check (v2.0.176), `recordClose` stores `marketFeatures` + `olrPWinAtEntry` + `shadowWinRateAtEntry` (v2.0.178), `rebuildClasses` awaits embed warmup (v2.0.178).
