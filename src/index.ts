@@ -6354,6 +6354,10 @@ ${recentExamples}
       // Under `tsx watch` (npm run dev), file modifications trigger immediate
       // restart before tsc/test can validate the fix — so System Engineer is
       // disabled in watch mode. Use `npm run engineer` for autonomous fixes.
+      // v2.0.728: SE must WAIT for cycle to fully complete (cycleInProgress=false)
+      // AND block the next cycle from starting while SE is running. Previously
+      // SE was fire-and-forget (void), so the next cycle could start while SE
+      // was modifying files — causing code changes mid-cycle.
       const cycleMinutes = this.cycleIntervalMs / 60_000;
       const engineerEnabled = process.env['SYSTEM_ENGINEER_ENABLED'] === 'true';
 
@@ -6367,13 +6371,28 @@ ${recentExamples}
       });
       if (this.recentMarketConditions.length > 5) this.recentMarketConditions.shift();
 
-      // v2.0.726: No-trade investigation — if 3+ cycles without a trade, trigger SE
-      // to investigate which mechanism is blocking trades (or confirm market is quiet).
-      if (engineerEnabled && this.cyclesSinceLastTrade >= 3 && !isShuttingDown() && cycleMinutes >= 1) {
-        log.warn(`🔧 [no-trade] ${this.cyclesSinceLastTrade} cycles since last trade — triggering SE investigation`);
-        void this.runNoTradeInvestigation();
-      } else if (engineerEnabled && this.totalCycles > 0 && this.totalCycles % 2 === 0 && !isShuttingDown() && cycleMinutes >= 5) {
-        void this.runDirectionAudit();
+      // v2.0.728: SE runs synchronously (awaited) so the next cycle waits for
+      // SE to finish before starting. This prevents code changes mid-cycle.
+      if (engineerEnabled && !isShuttingDown() && cycleMinutes >= 1) {
+        const shouldRunNoTrade = this.cyclesSinceLastTrade >= 3;
+        const shouldRunAudit = this.totalCycles > 0 && this.totalCycles % 2 === 0 && cycleMinutes >= 5;
+        if (shouldRunNoTrade) {
+          log.warn(`🔧 [no-trade] ${this.cyclesSinceLastTrade} cycles since last trade — triggering SE investigation (blocking next cycle)`);
+          this.cycleInProgress = true; // block next cycle from starting
+          try {
+            await this.runNoTradeInvestigation();
+          } finally {
+            this.cycleInProgress = false;
+          }
+        } else if (shouldRunAudit) {
+          log.info(`🔧 [system-engineer] Starting SE audit (blocking next cycle)`);
+          this.cycleInProgress = true; // block next cycle from starting
+          try {
+            await this.runDirectionAudit();
+          } finally {
+            this.cycleInProgress = false;
+          }
+        }
       }
 
       // v2.0.108: Post-cycle market drift check. If tradingMarkets changed
