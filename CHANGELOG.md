@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.722: Fix OLR extreme probability overconfidence — add low_volatility regime ordinal mapping (0.2) to distinguish from mean_reverting (0.5), preventing regime confusion that contributed to 0%/100% P(win) predictions
+
+
 ## v2.0.728 — SE cycle blocking + test retry loop (3 attempts)
 
 ### Problem 1: SE modifying files while cycle is running

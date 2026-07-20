@@ -28,7 +28,7 @@ export const FEATURE_NAMES = [
   // value (trending vs mean-reverting is the biggest interaction effect)
   // without the dimensionality cost of polynomial features.
   // Mapping: trending_bull=1.0, trending_bear=0.8, mean_reverting=0.5,
-  // high_volatility=0.3, breakout=0.6, chaotic=0.1, unknown=0.5
+  // high_volatility=0.3, low_volatility=0.2, breakout=0.6, chaotic=0.1, unknown=0.5
   'regimeOrdinal',
 ] as const;
 
@@ -36,8 +36,11 @@ const D = FEATURE_NAMES.length; // 12
 
 // ─── Types ───
 
-/** v2.0.721: Map regime string to ordinal value for OLR feature.
- *  Captures the directional bias of each regime in a single dimension. */
+/** v2.0.722: Map regime string to ordinal value for OLR feature.
+ *  Captures the directional bias of each regime in a single dimension.
+ *  v2.0.722: Added 'low_volatility' mapping (0.2) to distinguish from
+ *  mean_reverting (0.5) — previously both defaulted to 0.5, losing the
+ *  distinction between low-vol ranging and mean-reverting regimes. */
 export function regimeToOrdinal(regime: string | undefined): number {
   if (!regime) return 0.5; // unknown → neutral
   const r = regime.toLowerCase();
@@ -46,6 +49,7 @@ export function regimeToOrdinal(regime: string | undefined): number {
   if (r.includes('breakout')) return 0.6;
   if (r.includes('mean_revert') || r.includes('ranging')) return 0.5;
   if (r.includes('high_vol') || r.includes('volatile')) return 0.3;
+  if (r.includes('low_vol') || r.includes('low_volatility')) return 0.2;
   if (r.includes('chaotic')) return 0.1;
   return 0.5; // unknown → neutral
 }
