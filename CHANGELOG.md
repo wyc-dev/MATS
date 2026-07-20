@@ -4,6 +4,35 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.730 — Fix direction restriction surviving restart (persistence gap)
+
+### Problem
+
+Direction restrictions auto-expire after 2 cycles (v2.0.727), but `directionRestrictionsSetCycle` was **not persisted** to `market-agent-config.json`. On restart:
+1. Config loaded with `directionRestrictions: { "xyz:SILVER": "sell" }`
+2. `directionRestrictionsSetCycle` was `undefined` (not in config file)
+3. `updateCycle()` checked `directionRestrictionsSetCycle !== undefined` → false → **never expired**
+4. Restrictions persisted forever across restarts
+
+This caused SILVER BUY signals to be blocked by a stale `sell-only` restriction that should have expired 2 cycles after it was set.
+
+### Fix
+
+1. **Persist `directionRestrictionsSetCycle`**: `saveMarketAgentConfig()` now writes `directionRestrictionsSetCycle` to the config file. `loadMarketAgentConfig()` restores it.
+
+2. **Stale config expiry**: If `directionRestrictions` exists but `directionRestrictionsSetCycle` is missing (old config from before v2.0.730), it's set to `-999` — which triggers immediate expiry on the first `updateCycle()` call.
+
+3. **Cleared current config**: Removed the stale `xyz:SILVER: sell` restriction from `market-agent-config.json`.
+
+### Files Changed
+
+- `src/evolution/persistence.ts` — `MarketAgentConfigSnapshot` gains `directionRestrictionsSetCycle`, save + restore + stale config handling
+- `data/evolution/market-agent-config.json` — `directionRestrictions` cleared
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
 ## v2.0.729 — Adaptive filter per-symbol winRate + merged log
 
 ### Problem

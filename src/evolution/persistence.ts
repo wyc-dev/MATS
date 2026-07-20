@@ -751,6 +751,8 @@ interface MarketAgentConfigSnapshot {
   /** v2.0.143: Cycle period in minutes (1-10). Persisted so user settings survive restarts. */
   cyclePeriodMinutes?: number;
   directionRestrictions?: Record<string, string>;
+  /** v2.0.730: Cycle when direction restrictions were set (for auto-expiry). */
+  directionRestrictionsSetCycle?: number;
   tradingMarkets?: string[];
   updatedAt: number;
 }
@@ -786,6 +788,7 @@ export function saveMarketAgentConfig(cfg: MarketAgentConfig): boolean {
       leverage: cfg.leverage,
       ...(cfg.cyclePeriodMinutes ? { cyclePeriodMinutes: cfg.cyclePeriodMinutes } : {}),
       ...(cfg.directionRestrictions ? { directionRestrictions: cfg.directionRestrictions } : {}),
+      ...(cfg.directionRestrictionsSetCycle !== undefined ? { directionRestrictionsSetCycle: cfg.directionRestrictionsSetCycle } : {}),
       ...(cfg.tradingMarkets && cfg.tradingMarkets.length > 0 ? { tradingMarkets: cfg.tradingMarkets } : {}),
       updatedAt: cfg.updatedAt,
     };
@@ -842,6 +845,9 @@ export function loadMarketAgentConfig(): Partial<MarketAgentConfig> | null {
       leverage: snapshot.leverage,
       ...(snapshot.cyclePeriodMinutes ? { cyclePeriodMinutes: snapshot.cyclePeriodMinutes } : {}),
       ...(directionRestrictions ? { directionRestrictions } : {}),
+      // v2.0.730: Restore directionRestrictionsSetCycle for auto-expiry.
+      // If missing (old config), set to -999 so it expires immediately on first cycle.
+      ...(directionRestrictions ? { directionRestrictionsSetCycle: snapshot.directionRestrictionsSetCycle ?? -999 } : {}),
       ...(tradingMarkets && tradingMarkets.length > 0 ? { tradingMarkets } : {}),
       updatedAt: snapshot.updatedAt,
     };
