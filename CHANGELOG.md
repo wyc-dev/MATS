@@ -4,6 +4,42 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.723 — Vulnerability Defense: 4 fixes from code challenge
+
+### V5: Shadow boost log NaN guard
+
+**Problem**: Shadow boost log line used `finalDecision.positionSizePct * 100` without null guard — if `positionSizePct` was undefined, the log would display `NaN%`.
+
+**Fix**: Added `?? 0` guard: `((finalDecision.positionSizePct ?? 0) * 100).toFixed(0)`.
+
+### V6: H3 regime filter case-insensitive
+
+**Problem**: Condition-based matching used `h.regime !== candRegime` (exact string match). If candidate regime was `'trending_bull'` but record regime was `'TRENDING_BULL'` (different case), the filter would reject all records — silently disabling condition matching.
+
+**Fix**: Changed to `h.regime.toLowerCase() !== candRegime.toLowerCase()`.
+
+### V11: `contextToVector` null fallback
+
+**Problem**: `contextToVector` only checked `val === undefined` for fallback. If a JSON-parsed feature value was `null` (possible from corrupted state files), it would pass through as `null`, then `Number.isFinite(null)` = false → NaN guard rejects the entire sample. This would silently skip valid training samples.
+
+**Fix**: Added `val === null` to the fallback condition: `if (val === undefined || val === null)`.
+
+### V15: `coarseTypes` extracted to module-level Set
+
+**Problem**: The digester callback created a new `coarseTypes` array on every invocation (every trade close). Micro-inefficiency, but also fragile — if the array contents drifted from the actual `ExitType` union, the guard would silently break.
+
+**Fix**: Extracted to module-level `COARSE_EXIT_TYPES = new Set([...])` with `O(1)` lookup via `.has()` instead of `O(n)` `.includes()`.
+
+### Files Changed
+
+- `src/index.ts` — V5: shadow boost log `?? 0` guard
+- `src/evolution/thesis-experience.ts` — V6: regime filter `.toLowerCase()`, V15: `COARSE_EXIT_TYPES` Set
+- `src/evolution/olr-engine.ts` — V11: `contextToVector` null check
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
 ## v2.0.722 — Rich Exploration Thesis (vague-thesis fix)
 
 ### Problem
