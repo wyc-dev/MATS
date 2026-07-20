@@ -2599,15 +2599,15 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       }
 
       // v2.0.749: Update global consecutive loss counter — triggers SE investigation
-      // when the system loses too many trades in a row.
+      // v2.0.761: Trigger SE on EVERY loss, not just 5+ consecutive. The owner wants
+      // immediate investigation after every losing trade — "why can't the system WIN?"
       if (isWin) {
         this.globalConsecutiveLosses = 0;
       } else {
         this.globalConsecutiveLosses++;
-        if (this.globalConsecutiveLosses >= 5) {
-          log.warn(`🚨 [loss-streak] ${this.globalConsecutiveLosses} consecutive losses — SE will investigate on next cycle`);
-          this.auditTriggeredSE = true; // trigger SE to investigate
-        }
+        // v2.0.761: Every loss triggers SE — immediate investigation
+        log.warn(`🚨 [loss-streak] Loss #${this.globalConsecutiveLosses} — triggering SE to investigate why this trade lost`);
+        this.auditTriggeredSE = true;
       }
 
       log.info(`🧬 [close-learning] ${isWin ? '✅ WIN' : '❌ LOSS'} ${trade.side.toUpperCase()} ${symbol} PnL: $${trade.pnl.toFixed(2)} (${(pnlPct * 100).toFixed(1)}%) — all learning mechanisms fed${this.globalConsecutiveLosses > 0 ? ` (consecutive losses: ${this.globalConsecutiveLosses})` : ''}`);
