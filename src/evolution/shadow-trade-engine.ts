@@ -116,6 +116,27 @@ const SHADOW_CONFIG = {
   maxHoldCycles: 50,
   /** How many recent results to include in agent context */
   contextRecentCount: 5,
+  /**
+   * v2.0.759: Max cycles before a shadow trade is force-resolved even if SL/TP
+   * was not hit. In low-volatility regimes, shadow trades can remain open for
+   * many cycles without resolution, causing the OLR model to receive no new
+   * training data while the feature space drifts. This leads to stale model
+   * weights and systematic P(win) miscalibration.
+   *
+   * Set to 12 cycles (60 minutes at 5-min cycles) — long enough for most
+   * trades to resolve naturally, but short enough to prevent stale data
+   * accumulation. The force-resolved outcome is recorded with a reduced
+   * learning weight (0.3× normal) to prevent stale data from dominating
+   * the model.
+   */
+  maxAgeCycles: 12,
+  /**
+   * v2.0.759: Learning weight multiplier for force-resolved shadow trades.
+   * Force-resolved outcomes are less reliable than natural SL/TP hits because
+   * they use the current price rather than a true barrier touch. A reduced
+   * weight prevents these less-reliable labels from dominating the OLR model.
+   */
+  staleLearningWeight: 0.3,
 } as const;
 
 // ─── Shadow Trade Engine ───
