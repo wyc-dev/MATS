@@ -534,15 +534,23 @@ export class OLREngine {
    * 
    * This is applied AFTER the 5-bin calibration map, so calibration still works
    * on the raw sigmoid output, but the final output is tempered by sample count.
+   * 
+   * v2.0.723: Added effectiveSampleSize parameter to allow the caller to specify
+   * a different sample count for the penalty (e.g., only counting non-backfill
+   * samples). This prevents backfill samples from inflating the effective sample
+   * count and bypassing the confidence penalty. When effectiveSampleSize is
+   * provided, it is used instead of nSamples for the penalty calculation.
    */
-  private applyConfidencePenalty(rawPWin: number, nSamples: number): number {
+  private applyConfidencePenalty(rawPWin: number, nSamples: number, effectiveSampleSize?: number): number {
     const threshold = OLR_CONFIG.highConfidenceSamples; // 50
-    if (nSamples >= threshold) return rawPWin;
-    const priorStrength = threshold - nSamples;
-    // Bayesian smoothing: (rawPWin * nSamples + 0.5 * priorStrength) / (nSamples + priorStrength)
-    const denominator = nSamples + priorStrength;
+    // Use effectiveSampleSize if provided, otherwise fall back to nSamples
+    const effectiveN = effectiveSampleSize !== undefined ? effectiveSampleSize : nSamples;
+    if (effectiveN >= threshold) return rawPWin;
+    const priorStrength = threshold - effectiveN;
+    // Bayesian smoothing: (rawPWin * effectiveN + 0.5 * priorStrength) / (effectiveN + priorStrength)
+    const denominator = effectiveN + priorStrength;
     if (denominator <= 0) return 0.5;
-    const calibrated = (rawPWin * nSamples + 0.5 * priorStrength) / denominator;
+    const calibrated = (rawPWin * effectiveN + 0.5 * priorStrength) / denominator;
     // Clamp to [0, 1] for safety
     return Math.max(0, Math.min(1, calibrated));
   }
