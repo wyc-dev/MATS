@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.741: OLR — hard clamp sigmoid output to [0.05, 0.95] when samples < 50, [0.01, 0.99] otherwise, plus inverse-sample-count confidence penalty applied to ALL queries. Prevents extreme P(win) values from overriding safety gates and causing thesis-text-to-record contradictions.
+
+
 ## v2.0.740: OLR — apply confidence penalty to query() output so agents see calibrated P(win) instead of raw sigmoid saturation. Prevents 0%/100% extreme values from overriding safety gates.
 
 
