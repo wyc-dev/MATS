@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.740: OLR — apply confidence penalty to query() output so agents see calibrated P(win) instead of raw sigmoid saturation. Prevents 0%/100% extreme values from overriding safety gates.
+
+
 ## v2.0.739: OLR — fix applyConfidencePenalty to use live-only sample count (exclude backfill), increase L2 regularization to 0.1, reduce maxWeight to 3.0, add hard P(win) clamp [0.05, 0.95] when total samples < 50
 
 

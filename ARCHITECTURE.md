@@ -568,3 +568,7 @@ Added `applyLossStreakGateToDecision()` method to MATSSystem class that calls th
 
 ## System Engineer Update
 LossStreakTracker now has three layers: (1) SOFT gate at 3 consecutive losses in same regime → +50% conviction penalty. (2) HARD gate at 5 consecutive losses in any regime → block for 12 cycles. (3) SYSTEMATIC LOSER gate at >= 10 trades with WR < 35% → block until WR recovers above 40%. The HARD and SYSTEMATIC LOSER gates are checked BEFORE the SOFT gate returns, so they take priority. The SOFT gate no longer returns early, allowing the HARD gate to be reached.
+
+
+## System Engineer Update
+The OLR query() method now applies applyConfidencePenalty() to the calibrated pWin before returning it to agents. The effective sample size (excluding backfill) is used for the penalty calculation, preventing backfill samples from inflating the sample count and bypassing the penalty. This ensures agents see calibrated probabilities that reflect true model uncertainty, preventing extreme P(win) values (0% or 100%) from overriding safety gates.

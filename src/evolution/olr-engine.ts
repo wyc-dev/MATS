@@ -616,7 +616,14 @@ export class OLREngine {
     // v2.0.721: Apply 5-bin calibration map. If the corresponding bin has
     // enough samples (>= 5), replace raw sigmoid with empirical win rate.
     // Falls back to raw pWin when bins are empty or insufficient (identity).
-    const pWin = applyCalibration(model.calibrationBins, pWinRaw);
+    const pWinCalibrated = applyCalibration(model.calibrationBins, pWinRaw);
+    // v2.0.740: Apply confidence penalty to the calibrated pWin. This pulls
+    // predictions toward 0.5 when the model has insufficient evidence (nSamples < 50),
+    // preventing extreme values (0% or 100%) from overriding safety gates.
+    // The effective sample size excludes backfill samples so that a cold-start
+    // backfill prior doesn't bypass the penalty.
+    const effectiveSamples = model.nSamples - model.backfillSamples;
+    const pWin = this.applyConfidencePenalty(pWinCalibrated, model.nSamples, effectiveSamples);
     const confLabel: 'high' | 'medium' | 'low' =
       model.nSamples >= OLR_CONFIG.highConfidenceSamples ? 'high'
       : model.nSamples >= OLR_CONFIG.mediumConfidenceSamples ? 'medium'
