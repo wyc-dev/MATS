@@ -2503,6 +2503,14 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         log.warn(`[post-review] LLM generation failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`),
       );
 
+      // v2.0.731: Update loss streak tracker — was defined but never called!
+      // This is why BUY SKHX with 31% WR over 32 trades was never blocked.
+      try {
+        this.updateLossStreakTracker(symbol, trade.side === 'buy' ? 'buy' : 'sell', isWin);
+      } catch (err) {
+        log.warn(`[close-learning] Loss streak tracker update failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
       log.info(`🧬 [close-learning] ${isWin ? '✅ WIN' : '❌ LOSS'} ${trade.side.toUpperCase()} ${symbol} PnL: $${trade.pnl.toFixed(2)} (${(pnlPct * 100).toFixed(1)}%) — all learning mechanisms fed`);
     } catch (err) {
       log.error(`[onPositionClosedLearning] Failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -5216,6 +5224,16 @@ ${recentExamples}
             }
             auditGates.push({ gate: 'direction-restrict', passed: true, reason: 'allowed' });
 
+            // v2.0.731: Loss streak gate for multi-symbol path
+            const lossStreakResult = this.checkLossStreakGate(psc.symbol, psc.action as 'buy' | 'sell');
+            if (lossStreakResult.blocked) {
+              log.warn(`🚫 [loss-streak-gate] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol} blocked: ${lossStreakResult.reason}`);
+              auditGates.push({ gate: 'loss-streak', passed: false, reason: lossStreakResult.reason ?? 'blocked' });
+              this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
+              continue;
+            }
+            auditGates.push({ gate: 'loss-streak', passed: true, reason: 'no loss streak detected' });
+
             // v2.0.106: Check per-asset filter gate
             const pscFilter = this.assetFilterRegistry.getFilter(psc.symbol);
             if (psc.confidence < pscFilter.getConvictionThreshold()) {
@@ -5644,6 +5662,19 @@ ${recentExamples}
         } else {
           activeAuditGates.push({ gate: 'direction-restrict', passed: true, reason: 'allowed' });
         }
+      }
+
+      // v2.0.731: Loss streak gate — block systematically losing (symbol, direction)
+      // pairs. Was defined but never called! This is why BUY SKHX with 31% WR over
+      // 32 trades was never blocked. Placed BEFORE conviction gate so it takes
+      // priority — even a high-conviction signal on a systematic loser is blocked.
+      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+        finalDecision = this.applyLossStreakGateToDecision(
+          finalDecision,
+          finalDecision.symbol || activeSymbol,
+          finalDecision.action as 'buy' | 'sell',
+          activeAuditGates,
+        );
       }
 
       // v2.0.106: Adaptive conviction gate + trade frequency throttle.

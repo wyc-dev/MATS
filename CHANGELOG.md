@@ -4,6 +4,27 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.731 — Wire loss streak gate (was dead code!) + SE block list fix
+
+### Critical Bug: Loss Streak Guard Was Never Called
+
+**Problem**: The loss streak guard was fully implemented but **never called** from the decision pipeline. `applyLossStreakGateToDecision` and `updateLossStreakTracker` had zero call sites. This is why BUY xyz:SKHX with 31% WR over 32 trades was never blocked.
+
+**Fix**:
+1. `updateLossStreakTracker` called from `onPositionClosedLearning()` for every closed trade
+2. `applyLossStreakGateToDecision` called in active-symbol pipeline BEFORE conviction gate
+3. `checkLossStreakGate` called in multi-symbol pipeline
+4. SE block list updated — allows improvements to threshold/decay, blocks removal
+
+### Files Changed
+
+- `src/index.ts` — Loss streak gate wired into both decision pipelines + close learning
+- `src/evolution/system-engineer.ts` — Block list updated
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
 ## v2.0.722: Add OLR confidence penalty — Bayesian prior pulls extreme predictions toward 0.5 when sample count < 50. Prevents 0%/100% overconfidence from imbalanced shadow trade training data. Applied after 5-bin calibration map in query().
 
 

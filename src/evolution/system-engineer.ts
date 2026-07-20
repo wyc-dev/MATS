@@ -133,7 +133,10 @@ const BLOCKED_PATTERNS: { file: string; pattern: RegExp; reason: string }[] = [
   // gates, condition filtering, and category weighting are already applied (v2.0.721).
   { file: 'src/evolution/thesis-experience.ts', pattern: /remove.*direction.*filter|delete.*sameDir|remove.*sameDir/i, reason: 'checkThesisHistory() direction filter (sameDirMatches) is correct — do NOT remove it. Wilson score gates and condition filtering are already applied.' },
   { file: 'src/evolution/reason-analytics.ts', pattern: /findSimilar/i, reason: 'SimilarTradeRetriever.findSimilar() side filter is correct — do NOT remove' },
-  { file: 'src/index.ts', pattern: /loss.?streak|lossStreak|checkLossStreak|updateLossStreak|systematic.?loser/i, reason: 'Loss streak guard is already implemented — do NOT re-add or modify' },
+  // v2.0.731: Removed loss-streak/systematic-loser from block list — the gate
+  // is now properly wired (was dead code before v2.0.731). SE can propose
+  // improvements to the threshold or decay mechanism.
+  { file: 'src/index.ts', pattern: /remove.*lossStreak|delete.*lossStreakTracker|remove.*checkLossStreak/i, reason: 'Loss streak tracker + gate is now wired (v2.0.731) — do NOT remove it, but improvements to threshold/decay are allowed' },
   { file: 'src/analysis/adaptive-filter.ts', pattern: /recordTrade|countRecentTrades|frequencyWindow/i, reason: 'Trade frequency throttle is already fixed (time-based) — do NOT revert to count-based' },
 ];
 
