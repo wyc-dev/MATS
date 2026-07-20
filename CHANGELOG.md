@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.722: Add per-symbol-direction HARD BLOCK for systematically losing patterns (>=15 trades, WR<35%) — blocks ALL new entries in that (symbol, direction) pair until win rate recovers above 40% or auto-release after 48 cycles (4 hours). This is a CAPITAL PRESERVATION measure that catches patterns like BUY xyz:SKHX (22 trades, 31% WR) where losses are not consecutive but the direction is systematically wrong. The existing soft gate (conviction penalty) and decay mechanism (10-14 trades) remain unchanged.
+
+
 ## v2.0.733: Fix per-symbol-per-direction loss streak guard — SOFT gate now raises conviction by 50% (was 15%), HARD gate blocks at 5 consecutive losses (new), SYSTEMATIC LOSER gate blocks at >= 10 trades with WR < 35% (was >= 20). This prevents BUY xyz:SKHX systematic loser pattern (32 trades, 31% WR) from continuing to lose capital.
 
 

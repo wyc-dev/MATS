@@ -333,6 +333,16 @@ class MATSSystem {
    *
    * The decay mechanism (v2.0.226) prevents permanent deadlock: after 24 cycles
    * of being blocked, the trade count is halved so the pair can be retried.
+   *
+   * v2.0.722: HARD BLOCK for systematically losing patterns with >= 15 trades
+   * and WR < 35%. This is a CAPITAL PRESERVATION measure — the system should
+   * not keep trading a pattern that loses 2 out of 3 times. The block is
+   * absolute: no conviction penalty, no soft gate — ALL new entries in that
+   * (symbol, direction) pair are blocked until the win rate recovers above 40%
+   * (decay mechanism handles recovery).
+   *
+   * The block auto-releases after 48 cycles (4 hours) to allow re-evaluation.
+   * This prevents permanent deadlock if the pattern was a fluke.
    */
   private checkSystematicLoserGate(symbol: string, direction: 'buy' | 'sell'): { blocked: boolean; reason?: string } {
     const key = `${normalizeSymbol(symbol)}:${direction}`;
@@ -357,6 +367,30 @@ class MATSSystem {
       if (entry.totalTrades < 10 || (entry.totalWins / entry.totalTrades) >= 0.40) {
         return { blocked: false };
       }
+    }
+
+    // v2.0.722: HARD BLOCK for patterns with >= 15 trades and WR < 35%.
+    // This is a CAPITAL PRESERVATION measure — the system should not keep
+    // trading a pattern that loses 2 out of 3 times. The block is absolute:
+    // no conviction penalty, no soft gate — ALL new entries in that
+    // (symbol, direction) pair are blocked until the win rate recovers above 40%.
+    // The block auto-releases after 48 cycles (4 hours) to allow re-evaluation.
+    if (entry.totalTrades >= 15 && winRate < 0.35) {
+      // Check if the block has expired (48 cycles = 4 hours at 5-min cycle)
+      if (entry.blockedUntilCycle > 0 && this.totalCycles >= entry.blockedUntilCycle + 48) {
+        // Auto-release: allow re-evaluation after 48 cycles
+        entry.blockedUntilCycle = 0;
+        log.info(`🔄 [systematic-loser] ${direction.toUpperCase()} ${symbol}: auto-release after 48 cycles — retry allowed`);
+        return { blocked: false };
+      }
+      
+      // Set the block expiry if not already set
+      if (entry.blockedUntilCycle === 0) {
+        entry.blockedUntilCycle = this.totalCycles + 48;
+      }
+      
+      const remaining = entry.blockedUntilCycle - this.totalCycles;
+      return { blocked: true, reason: `HARD BLOCK: ${direction.toUpperCase()} ${symbol} has ${entry.totalTrades} trades with ${(winRate * 100).toFixed(0)}% win rate (threshold: 35%) — systematic loser pattern detected. Blocking all new entries until win rate recovers above 40% or auto-release in ${remaining} cycles (${(remaining * 5).toFixed(0)} min).` };
     }
 
     return { blocked: true, reason: `Systematic loser gate: ${direction.toUpperCase()} ${symbol} has ${entry.totalTrades} trades with ${(winRate * 100).toFixed(0)}% win rate (threshold: 35%) — blocked until win rate recovers above 40% (decay in ${Math.max(0, (entry.blockedUntilCycle + 24 - this.totalCycles))} cycles)` };
