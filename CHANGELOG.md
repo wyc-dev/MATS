@@ -4,9 +4,6 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
-## v2.0.743: Add per-symbol-per-direction loss streak HARD gate — after 15+ trades with <35% WR in the same regime, force HOLD for 48 cycles to prevent systematically losing patterns from draining capital (auto-releases after 4 hours)
-
-
 ## v2.0.741: OLR — hard clamp sigmoid output to [0.05, 0.95] when samples < 50, [0.01, 0.99] otherwise, plus inverse-sample-count confidence penalty applied to ALL queries. Prevents extreme P(win) values from overriding safety gates and causing thesis-text-to-record contradictions.
 
 
