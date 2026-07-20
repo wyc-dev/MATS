@@ -134,13 +134,11 @@ const BLOCKED_PATTERNS: { file: string; pattern: RegExp; reason: string }[] = [
   // gates, condition filtering, and category weighting are already applied (v2.0.721).
   { file: 'src/evolution/thesis-experience.ts', pattern: /remove.*direction.*filter|delete.*sameDir|remove.*sameDir/i, reason: 'checkThesisHistory() direction filter (sameDirMatches) is correct — do NOT remove it. Wilson score gates and condition filtering are already applied.' },
   { file: 'src/evolution/reason-analytics.ts', pattern: /findSimilar/i, reason: 'SimilarTradeRetriever.findSimilar() side filter is correct — do NOT remove' },
-  // v2.0.734: Loss streak gate is SOFT only. SE must NOT add hard block,
-  // systematic loser block, or call checkSystematicLoserGate from the pipeline.
-  // See SystemEngineer.md P1 for rationale.
-  // v2.0.741: Also block diagnoses that describe "low WR + keeps trading" patterns —
-  // SE always tries to add hard block for these, which violates P1. The soft gate
-  // already handles this by raising conviction threshold in the same regime.
-  { file: 'src/index.ts', pattern: /remove.*lossStreak|delete.*lossStreakTracker|remove.*checkLossStreak|revert.*hard.*block|add.*hard.*block|add.*systematic.*loser.*block|checkSystematicLoserGate.*call|call.*checkSystematicLoserGate|keeps.*opening|keeps.*trading|keeps.*opening.*sell|keeps.*opening.*buy|repeatedly.*opens|ignoring.*own.*learning|ignoring.*historical/i, reason: 'Loss streak gate is SOFT only (v2.0.732/734) — raises conviction threshold in same regime, never hard blocks. Low win rate + keeps trading is NOT a bug — the soft gate handles it. Do NOT add hard block, systematic loser block, or call checkSystematicLoserGate. See SystemEngineer.md P1.' },
+  // v2.0.744: OWNER'S DIRECTIVE — profit maximization is #1 priority.
+  // NEVER add hard block. The system owner said: "If I wanted absolute capital
+  // preservation, I wouldn't need this system." Hard blocks have been reverted
+  // MULTIPLE times. STOP PROPOSING THEM.
+  { file: 'src/index.ts', pattern: /remove.*lossStreak|delete.*lossStreakTracker|remove.*checkLossStreak|revert.*hard.*block|add.*hard.*block|add.*systematic.*loser.*block|checkSystematicLoserGate.*call|call.*checkSystematicLoserGate|keeps.*opening|keeps.*trading|keeps.*opening.*sell|keeps.*opening.*buy|repeatedly.*opens|ignoring.*own.*learning|ignoring.*historical|soft.*gate.*not.*block|soft.*gate.*insufficient|soft.*gate.*too.*low/i, reason: 'OWNER DIRECTIVE (v2.0.744): Profit maximization is #1 priority. NEVER add hard block. Past losses do NOT guarantee future losses. Soft gate (conviction +15-20%) is the MAXIMUM allowed intervention. The owner has reverted hard block commits MULTIPLE times. See SystemEngineer.md P1.' },
   { file: 'src/analysis/adaptive-filter.ts', pattern: /recordTrade|countRecentTrades|frequencyWindow/i, reason: 'Trade frequency throttle is already fixed (time-based) — do NOT revert to count-based' },
 ];
 
@@ -412,7 +410,7 @@ ${fileSummaries}
 - shadow-trade-engine.ts getStats(): The dedup logic (step 3 checks p.id === r.id) correctly prevents double-counting between positions[] and recentResults[]. This has been verified. Do NOT propose changes to this method.
 - thesis-experience.ts checkThesisHistory(): Direction-filtered pWin (sameDirMatches) is correct. Do NOT remove the direction filter.
 - reason-analytics.ts SimilarTradeRetriever.findSimilar(): The side parameter filter is correct. Do NOT remove it.
-- index.ts checkLossStreakGate(): v2.0.732/734 — condition-aware SOFT gate. Raises conviction threshold by 15-20% when the (symbol, direction) pair has a poor track record in the CURRENT regime. Past losses in a DIFFERENT regime are ignored (market conditions changed). Does NOT hard block — strong signals can still enter. Do NOT revert to hard block. Do NOT add systematic loser hard block. Do NOT call checkSystematicLoserGate from the pipeline. This is a DELIBERATE DESIGN DECISION by the system owner — "past losses don't guarantee future losses." If you see a (symbol, direction) pair with low win rate (e.g. BUY SKHX 31% WR, SELL SILVER 49% WR, BUY BTC 38% WR), this is NOT a bug — the soft gate handles it by raising conviction threshold in the same regime. Do NOT diagnose "low WR + keeps trading" as an issue. Do NOT propose any fix for this pattern.
+- index.ts checkLossStreakGate(): v2.0.744 OWNER DIRECTIVE — condition-aware SOFT gate ONLY. Raises conviction threshold by 15-20% in same regime. NEVER hard blocks. The owner said: "If I wanted absolute capital preservation, I wouldn't need this system." Hard blocks have been reverted MULTIPLE times. If you see low WR (BUY SKHX 30%, BUY BTC 38%, SELL SILVER 49%), this is NOT a bug. Do NOT diagnose it. Do NOT propose hard block. Do NOT propose any fix for "low WR + keeps trading" patterns. Move on to OTHER issues: OLR overconfidence, premature SL, thesis quality, data quality.
 - index.ts updateLossStreakTracker(): The loss streak tracker update logic is correct. Do NOT modify it.
 - adaptive-filter.ts recordTrade()/countRecentTradesInWindow(): Time-based trade frequency pruning is correct (10-min window, 3 trades max). Do NOT revert to count-based pruning.
 
