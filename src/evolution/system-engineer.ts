@@ -14,6 +14,7 @@ import { getAgentModel } from '../agents/agent-models.ts';
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
+import { extractJSON } from './evolution-utils.ts';
 import type { ThesisExperienceRecord } from '../types/index.ts';
 
 const log = createLogger({ phase: 'system-engineer' });
@@ -1299,12 +1300,29 @@ function parseProposal(content: string): {
       // v2.0.205: Try to fix common JSON issues from LLM output
       // 1. Remove trailing commas before } or ]
       jsonStr = jsonStr.replace(/,\s*([}\]])/g, '$1');
+      // v2.0.738: Fix bad control characters in string literals.
+      // LLMs sometimes include raw newlines/tabs in JSON string values
+      // (especially in oldCode/newCode which contain code with newlines).
+      // JSON.parse requires these to be escaped as \\n, \\t etc.
+      // Replace raw control chars inside string values with their escaped forms.
+      jsonStr = jsonStr.replace(/[\x00-\x1f]/g, (ch) => {
+        const code = ch.charCodeAt(0);
+        if (code === 10) return '\\n';   // newline
+        if (code === 13) return '\\r';   // carriage return
+        if (code === 9) return '\\t';    // tab
+        return '\\u' + code.toString(16).padStart(4, '0');
+      });
       try {
         p = JSON.parse(jsonStr);
       } catch (parseErr2) {
-        log.warn(`[system-engineer] Failed to parse proposal: JSON.parse failed — ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
-        log.warn(`   JSON preview: "${jsonStr.slice(0, 300)}..."`);
-        return null;
+        // v2.0.738: Last resort — try extractJSON which handles more edge cases
+        try {
+          p = extractJSON(jsonStr);
+        } catch {
+          log.warn(`[system-engineer] Failed to parse proposal: JSON.parse failed — ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+          log.warn(`   JSON preview: "${jsonStr.slice(0, 300)}..."`);
+          return null;
+        }
       }
     }
     return {

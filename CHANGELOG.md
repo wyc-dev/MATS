@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.723: OLR Bayesian smoothing — add effectiveSampleSize parameter to applyConfidencePenalty to exclude backfill samples from penalty calculation; update query() to pass live-only sample count; add tests for 100% P(win) prevention
+
+
 ## v2.0.142: EXP direction-filtered pWin now uses wilsonScore() instead of raw winRate — penalizes small sample sizes to prevent overconfidence on statistically insignificant historical patterns
 
 
