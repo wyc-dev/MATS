@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.746: OLR — add Bayesian prior to sigmoid computation to prevent 0%/100% P(win) on small-sample models. Prior pulls extreme values toward 0.5 when effective sample count < 50, preventing sigmoid saturation from overriding safety gates. Hard clamp sigmoid output to [0.01, 0.99] as safety net. This fixes the root cause of OLR overconfidence (Trade #1: 100%→loss, #5: 0%→win, #6: 100%→loss, #10: 0%→loss).
+
+
 ## v2.0.741: OLR — hard clamp sigmoid output to [0.05, 0.95] when samples < 50, [0.01, 0.99] otherwise, plus inverse-sample-count confidence penalty applied to ALL queries. Prevents extreme P(win) values from overriding safety gates and causing thesis-text-to-record contradictions.
 
 
