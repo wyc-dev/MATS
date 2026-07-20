@@ -889,7 +889,7 @@ export class ThesisExperience {
       }
       const sameCat = containing.filter((h) => h.assetCategory === candCategory);
       const winRateAll = containing.filter((h) => h.outcome === 'WIN').length / containing.length;
-      const winRateSame = sameCat.length >= this.cfg.minDeltaSamples
+      const winRateSame: number | null = sameCat.length >= this.cfg.minDeltaSamples
         ? sameCat.filter((h) => h.outcome === 'WIN').length / sameCat.length
         : null;
 
