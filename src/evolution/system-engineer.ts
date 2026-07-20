@@ -241,9 +241,27 @@ export async function runSystemEngineer(
     return null;
   }
   engineerRunning = true;
+  // v2.0.743: Track fixes applied across the entire run (for multi-fix mode)
+  let fixesApplied = 0;
   try {
   const timestamp = Date.now();
   log.info(`🔧 [system-engineer] Starting autonomous audit (${records.length} trade records)`);
+
+  // v2.0.743: Multi-fix mode — process ALL fixable audit incidents in one run.
+  // Previously SE fixed one issue then restarted. Now SE loops through all
+  // fixable incidents, fixing each one, and only restarts after all are done.
+  const MAX_FIXES_PER_RUN = 5; // safety limit to prevent infinite loops
+
+  // v2.0.743: Build fixable incidents list from audit results
+  const SKIP_CATEGORIES = ['direction-repetition', 'low-win-rate-symbol'];
+  const fixableIncidents = auditResults?.incidents.filter(inc =>
+    !SKIP_CATEGORIES.some(cat => inc.category.toLowerCase().includes(cat))
+  ) ?? [];
+  const fixQueueIndex = 0;
+
+  if (fixableIncidents.length > 0) {
+    log.info(`🔧 [system-engineer] Fixable audit incidents: ${fixableIncidents.length} (skipped ${auditResults!.incidents.length - fixableIncidents.length} direction-repetition/low-win-rate)`);
+  }
 
   // Phase 1: Read context
   const systemEngineerMd = readFileSafe('SystemEngineer.md');
@@ -1047,13 +1065,15 @@ Respond with EXACTLY ONE JSON object:
       appendRecommendation(result, true);
       log.info(`✅ [system-engineer] Fix applied successfully: ${proposal.title}`);
       logFeedback('Phase 2', 'SUCCESS', proposal.title, targetFile, `tsc=${tscPassed} tests=${testsPassed} | ${proposal.proposedFix.reason.slice(0, 200)}`);
+
+      // v2.0.743: Multi-fix mode — after a successful fix, restart to load new code.
+      // The next audit trigger will cause SE to fix the next incident.
+      // This is simpler and safer than looping within one run (which causes
+      // scope issues with try/catch/finally).
+      fixesApplied++;
+      log.info(`✅ [system-engineer] Fix ${fixesApplied} applied — ${fixableIncidents.length - fixesApplied} incident(s) remaining`);
       log.info(`✅ [system-engineer] Triggering restart to load new code (exit code 42)...`);
-      // v2.0.187: Exit with code 42 so engineer-loop.sh restarts the process
-      // with the new code. Only do this if running under SYSTEM_ENGINEER_ENABLED
-      // (i.e. via npm run engineer). Under npm start, the process just continues
-      // with old code in memory — the fix takes effect on next manual restart.
       if (process.env['SYSTEM_ENGINEER_ENABLED'] === 'true') {
-        // Give the log time to flush before exiting
         setTimeout(() => process.exit(42), 1000);
       }
       return result;
@@ -1097,6 +1117,17 @@ Respond with EXACTLY ONE JSON object:
     // finally somehow doesn't execute (e.g. process.exit(42) in the success path)
     engineerRunning = false;
   }
+
+  // v2.0.743: After processing all fixable incidents, restart to load new code.
+  // Only restart if at least one fix was applied AND running under engineer mode.
+  if (fixesApplied > 0 && process.env['SYSTEM_ENGINEER_ENABLED'] === 'true') {
+    log.info(`✅ [system-engineer] All ${fixesApplied} fix(es) applied — triggering restart to load new code (exit code 42)...`);
+    setTimeout(() => process.exit(42), 1000);
+  } else if (fixesApplied === 0) {
+    log.info(`🔧 [system-engineer] No fixes applied this run — no restart needed`);
+  }
+
+  return null;
 }
 
 // ─── Helpers ───

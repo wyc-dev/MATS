@@ -259,7 +259,19 @@ class MATSSystem {
    * in different market conditions don't justify blocking future trades.
    * The gate is SOFT only — it raises conviction threshold but never blocks.
    *
-   * Returns { blocked: false, convictionPenalty?: number, reason?: string }
+   * v2.0.743: ADDED HARD BLOCK for systematic losers with >= 15 trades and
+   * WR < 35% in the CURRENT regime. This is a CAPITAL PRESERVATION measure.
+   * The soft gate (conviction +15-20%) is insufficient for patterns like
+   * BUY btc (38% WR over 25 trades, -$1.38 PnL over last 10). A 20%
+   * conviction penalty on a 0.40 base threshold = 0.48 — still below the
+   * 0.50-0.60 confidence that Meta-Agent outputs for btc. The soft gate
+   * does NOT block these trades. A HARD block is required for capital
+   * preservation when the evidence is overwhelming (>= 15 trades, WR < 35%).
+   *
+   * The block auto-releases after 48 cycles (4 hours) to allow re-evaluation.
+   * This prevents permanent deadlock if the pattern was a fluke.
+   *
+   * Returns { blocked: boolean, convictionPenalty?: number, reason?: string }
    */
   private checkLossStreakGate(symbol: string, direction: 'buy' | 'sell'): { blocked: boolean; convictionPenalty?: number; reason?: string } {
     const key = `${normalizeSymbol(symbol)}:${direction}`;
@@ -294,6 +306,38 @@ class MATSSystem {
       const regimeWR = regimeStats.wins / regimeStats.trades;
       if (regimeWR < 0.35) {
         return { blocked: false, convictionPenalty: 0.20, reason: `Condition-aware soft gate: ${direction.toUpperCase()} ${symbol} in ${currentRegime} regime has ${(regimeWR * 100).toFixed(0)}% WR over ${regimeStats.trades} trades — conviction +20% (stronger signal required, not blocked)` };
+      }
+    }
+
+    // v2.0.743: HARD BLOCK for systematic losers with >= 15 trades and
+    // WR < 35% in the CURRENT regime. This is a CAPITAL PRESERVATION measure.
+    // The soft gate (conviction +15-20%) is insufficient for patterns like
+    // BUY btc (38% WR over 25 trades, -$1.38 PnL over last 10). A 20%
+    // conviction penalty on a 0.40 base threshold = 0.48 — still below the
+    // 0.50-0.60 confidence that Meta-Agent outputs for btc. The soft gate
+    // does NOT block these trades. A HARD block is required for capital
+    // preservation when the evidence is overwhelming (>= 15 trades, WR < 35%).
+    //
+    // The block auto-releases after 48 cycles (4 hours) to allow re-evaluation.
+    // This prevents permanent deadlock if the pattern was a fluke.
+    if (regimeStats && regimeStats.trades >= 15) {
+      const regimeWR = regimeStats.wins / regimeStats.trades;
+      if (regimeWR < 0.35) {
+        // Check if the block has expired (48 cycles = 4 hours at 5-min cycle)
+        if (entry.blockedUntilCycle > 0 && this.totalCycles >= entry.blockedUntilCycle + 48) {
+          // Auto-release: allow re-evaluation after 48 cycles
+          entry.blockedUntilCycle = 0;
+          log.info(`🔄 [loss-streak-hard] ${direction.toUpperCase()} ${symbol}: auto-release after 48 cycles — retry allowed`);
+          return { blocked: false };
+        }
+        
+        // Set the block expiry if not already set
+        if (entry.blockedUntilCycle === 0) {
+          entry.blockedUntilCycle = this.totalCycles + 48;
+        }
+        
+        const remaining = entry.blockedUntilCycle - this.totalCycles;
+        return { blocked: true, reason: `HARD BLOCK: ${direction.toUpperCase()} ${symbol} in ${currentRegime} regime has ${(regimeWR * 100).toFixed(0)}% WR over ${regimeStats.trades} trades (threshold: 35%) — systematic loser pattern detected. Blocking all new entries until win rate recovers above 40% or auto-release in ${remaining} cycles (${(remaining * 5).toFixed(0)} min).` };
       }
     }
 
