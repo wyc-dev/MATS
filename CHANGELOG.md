@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.759: Shadow trade engine — force-resolve stale shadow positions after 12 cycles (60 min) with reduced learning weight (0.3×). Prevents OLR model from training on stale feature distributions in low-vol regimes where shadow trades rarely hit SL/TP naturally. Fixes systematic P(win) miscalibration where OLR predicts 100%/0% but actual outcome is opposite.
+
+
 ## v2.0.758: Meta-Agent entryThesis — reject pattern-classifier-only theses. Trades must have specific price levels (S/R, volume, OB, funding) to enter. Prevents noise-driven exploration trades that systematically lose (BUY btc 30% WR, 10/10 recent losses). Added 2 new valid thesis categories (funding rate/order book imbalance, volume profile/liquidation clusters). Added explicit forbidden patterns: 'exploration', 'historical win rate' without context. Added HARD GATE rule: pattern-classifier-only theses are automatically invalid — system must output HOLD. Skeptics agent enforces this gate.
 
 
