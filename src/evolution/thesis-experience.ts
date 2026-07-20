@@ -821,9 +821,12 @@ export class ThesisExperience {
     if (pWinWilsonLB >= this.cfg.winProbThreshold) {
       return { verdict: 'FAST_APPROVE', pWin, reason: `history skews WIN (pWin=${pWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
     }
-    if (pWin > this.cfg.lossProbThreshold) {
-      // Ambiguous band → 直出
-      return { verdict: 'PASS_OPEN_DIRECTLY', pWin, reason: `ambiguous (pWin=${pWin.toFixed(2)})` };
+    if (pWinWilsonLB >= this.cfg.lossProbThreshold) {
+      // Ambiguous band → 直出 — use Wilson LB instead of raw pWin to avoid
+      // small-sample overconfidence in the ambiguous band. A raw pWin of 0.60
+      // with 3/5 matches (Wilson LB ~0.23) should not be treated as ambiguous
+      // — it should be treated as insufficient evidence (fall through to delta).
+      return { verdict: 'PASS_OPEN_DIRECTLY', pWin, reason: `ambiguous (pWin=${pWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
     }
 
     // P(loss) > P(win) → delta check (§8.4)
