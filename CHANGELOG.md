@@ -4,6 +4,105 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.722 — Rich Exploration Thesis (vague-thesis fix)
+
+### Problem
+
+The audit log flagged `vague-thesis` as a warning: exploration trades used a hardcoded template `"buy exploration — pattern classifier suggests buy has higher historical win rate in current regime"` that was **identical for every exploration trade**. This made EXP embeddings useless for exploration trades — all exploration theses produced nearly identical MiniLM vectors, so the system couldn't learn condition-specific outcomes from exploration data.
+
+### Fix
+
+Exploration `entryThesis` now includes **actual market data** at entry time:
+- Price level, regime, volatility, OB imbalance, funding rate
+- 24h change, S/R distances (support + resistance in bps)
+- Sentiment, volume ratio
+- OLR P(win) + sample count for the selected direction
+- Shadow win rate + sample count for the selected direction
+
+**Example old thesis**: `[1h: buy exploration — pattern classifier suggests buy has higher historical win rate in current regime]`
+
+**Example new thesis**: `[1h: buy exploration on BTC @ 68432.50 — regime=trending_bull, vol=0.0234, OB=0.15, funding=0.00012, 24h=2.50%, S/R: support=150bps/resistance=320bps, sentiment=0.30, volRatio=1.20, OLR_pWin=62% (15 samples), shadowWR=58% (22 samples)]`
+
+This gives the digester's MiniLM embeddings **condition-specific signal** — two exploration trades in different regimes/volatilities will produce different vectors, enabling EXP to learn "exploration buys in trending_bull + low vol win" vs "exploration buys in mean_reverting + high vol lose."
+
+### Files Changed
+
+- `src/index.ts` — Exploration `entryThesis` + `rationale` + log now include 12 market data fields + OLR/shadow context
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
+## v2.0.721 — H1-H8 Learning Engine Accuracy Improvements + wilsonScore Bug Fix
+
+### H2: OLR 5-Bin Calibration Map (Highest ROI)
+
+**Problem**: `query()` returned raw `sigmoid(z)` as `pWin` with no calibration. Agent prompts use hardcoded thresholds (`>60% → increase conviction`, `<40% → bias against`), and the fusion layer uses `olrPWin > 0.50 / < 0.40` — all assume calibration that doesn't exist.
+
+**Fix**: Added 5-bin empirical calibration map per `(symbol, side)` model. Each bin tracks `[0.0-0.2)`, `[0.2-0.4)`, `[0.4-0.6)`, `[0.6-0.8)`, `[0.8-1.0]`. `feedTrade()` records `(rawPWin, actualOutcome)` pairs before SGD update. `query()` replaces raw sigmoid with empirical win rate when the corresponding bin has ≥5 samples. Falls back to identity (raw pWin) when bins are insufficient — zero risk at small N.
+
+### H4: Wilson 95% Lower Bound for FAST_APPROVE Gates + wilsonScore Bug Fix
+
+**Problem**: `wilsonScore()` existed but was never used in EXP's FAST_APPROVE gates. A 2/2 class (raw 100%) would auto-approve — pure small-sample overconfidence. Additionally, `wilsonScore()` had a **NaN bug**: used `centre*(1-centre)` in the variance term instead of `p*(1-p)`, causing NaN when `p=1.0` (centre > 1 → negative under sqrt).
+
+**Fix**: 
+1. **Bug fix**: `wilsonScore()` now uses `p*(1-p)` in variance + `Math.max(0, variance)` guard. Wilson LB for 10/10 = 0.72 (was NaN).
+2. Semantic class FAST_APPROVE gate: checks `wilsonScore(c.wins, c.count) >= classWinThreshold` — falls through to raw similarity if insufficient.
+3. pWin FAST_APPROVE gate: checks `wilsonScore(pWinWins, pWinTotal) >= winProbThreshold`.
+4. Agent-evolution weights and EM `weightedWinRate` left as raw winRate (Wilson would crush small-sample agents too aggressively).
+
+### H5: Pattern Classifier Direction Threshold 0 → 0.3
+
+**Problem**: `index.ts` used `buyWr > 0 || sellWr > 0` to let pattern classifier drive direction. Since `adjustedWinRate` is Wilson-scored, 1/3 = Wilson LB ~10% > 0 — noise was driving direction.
+
+**Fix**: Changed to `Math.max(buyWr, sellWr) > 0.3 && Math.abs(buyWr - sellWr) > 0.1`. Wilson LB 0.3 ≈ 5/8 raw WR (62.5%) — reasonable minimum for direction signal.
+
+### H3: Condition-Based Matching (Regime + Volatility Band)
+
+**Problem**: `marketFeatures` (volatility, OB imbalance, funding rate, S/R distance) stored on every record since v2.0.178 but never read by `checkThesisHistory()`. Two trades with identical thesis text but opposite volatility regimes were treated as identical.
+
+**Fix**: `CheckThesisInput` gains optional `regime?` and `volatility?` fields. Matching loop filters historical records to same-regime + ±50% volatility band. Falls back to all matches when no condition-matched records exist (zero regression). HACP passes `this.currentRegime` to `checkThesisHistory()`.
+
+### H7: Close-Learning signalAgreement Train/Test Mismatch
+
+**Problem**: `signalAgreement` was hardcoded to `0.5` at close-learning time (training), but query-time features used `result.consensus.confidence` (real values). This train/test mismatch meant OLR trained on a constant feature that varied at query time.
+
+**Fix**: Close-learning now uses `this.lastHACPResult?.consensus?.confidence ?? 0.5` — same source as query-time features.
+
+### H8: Soft Asset-Category Weighting in pWin
+
+**Problem**: pWin calculation pooled all same-direction matches across asset categories. A BTC thesis could match XAU records, polluting pWin with cross-asset outcomes.
+
+**Fix**: Same-category matches get 1.2× weight, cross-category get 0.8× weight in the similarity-weighted pWin calculation. Soft weighting (not hard filter) ensures small categories always have matches.
+
+### H6: Shadow Gate Wilson + Symmetric Size Boost
+
+**Problem**: Shadow soft gate used static `shadowWR < 0.25 && total >= 10`. No symmetric boost for high shadow WR — the positive tail was wasted.
+
+**Fix**: Gate now uses `wilsonScore(shadowWins, shadowTotal) < 0.30 && total >= 20` (more conservative, sample-size aware). Symmetric boost: `wilsonScore > 0.65 && total >= 20` → `positionSizePct *= 1.2` (boosts size, not conviction threshold — avoids feedback loop with adaptive filter).
+
+### H1: Regime as OLR Feature (Not Interactions)
+
+**Problem**: OLR is purely linear — cannot capture feature interactions like `volatility × sentiment`. But with ~30-50 samples per side, adding 3-5 continuous interaction features (14 total) would overfit. Polynomial features (39) were completely infeasible.
+
+**Fix**: Added `regimeOrdinal` as a single feature (D: 11 → 12). Maps regime string to ordinal: `trending_bull=1.0`, `trending_bear=0.8`, `breakout=0.6`, `mean_reverting=0.5`, `high_volatility=0.3`, `chaotic=0.1`, `unknown=0.5`. Captures 80% of the interaction value (trending vs mean-reverting is the biggest effect) at 1/5 the dimensionality cost. `contextToVector` falls back to 0.5 for missing `regimeOrdinal` (not 0, which means `chaotic`).
+
+### Files Changed
+
+- `src/evolution/olr-engine.ts` — `FEATURE_NAMES` 11→12 (regimeOrdinal), `OLRModel.calibrationBins`, `regimeToOrdinal()`, calibration helpers, `feedTrade` records calibration, `query()` applies calibration, `contextToVector` regimeOrdinal fallback
+- `src/evolution/evolution-utils.ts` — `wilsonScore()` bug fix (p*(1-p) variance, NaN guard)
+- `src/evolution/thesis-experience.ts` — Import `wilsonScore`, `CheckThesisInput` gains `regime?`/`volatility?`, matching loop condition filter, FAST_APPROVE Wilson gates, soft category weighting in pWin
+- `src/evolution/olr-backfill.ts` — `featuresFromCandle` adds `regimeOrdinal: 0.5`
+- `src/cognition/hacp.ts` — `checkThesisHistory` call passes `regime: this.currentRegime`
+- `src/index.ts` — Import `wilsonScore` + `regimeToOrdinal`, pattern threshold 0→0.3, shadow gate Wilson + size boost, close-learning `signalAgreement` fix, OLR features add `regimeOrdinal`
+- `tests/evolution-memory.test.ts` — `zeroFeatures` adds 4 new features, source weighting test `>` → `>=`
+- `tests/thesis-experience.test.ts` — 2 FAST_APPROVE tests increase records 1→8 (Wilson gate)
+- `720upgrade.md` — H1-H8 修正方案取代原方案
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
 ## v2.0.720 — Learning Engine Accuracy Overhaul: 3 Critical Bug Fixes + premature_sl Dead Code Fix
 
 ### C1: MFE/MAE Features Silently Discarded by OLR (Critical Bug)

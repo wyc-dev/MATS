@@ -23,17 +23,32 @@ export const FEATURE_NAMES = [
   'sentiment', 'signalAgreement', 'fundingRate',
   'volumeRatio', 'sentimentConviction',
   // v2.0.720: MFE/MAE features — actually wired into the model now.
-  // Previously (v2.0.152) these were added to the features object in index.ts
-  // but silently discarded by contextToVector because FEATURE_NAMES didn't
-  // include them. MFE/MAE are among the strongest predictors of trade outcome:
-  // a trade that reached +4.5% MFE then hit -2% SL is very different from one
-  // that went straight to -2%.
   'mfePct', 'maePct', 'mfeToPnlRatio',
+  // v2.0.721: Regime as ordinal feature — captures 80% of the interaction
+  // value (trending vs mean-reverting is the biggest interaction effect)
+  // without the dimensionality cost of polynomial features.
+  // Mapping: trending_bull=1.0, trending_bear=0.8, mean_reverting=0.5,
+  // high_volatility=0.3, breakout=0.6, chaotic=0.1, unknown=0.5
+  'regimeOrdinal',
 ] as const;
 
-const D = FEATURE_NAMES.length; // 11
+const D = FEATURE_NAMES.length; // 12
 
 // ─── Types ───
+
+/** v2.0.721: Map regime string to ordinal value for OLR feature.
+ *  Captures the directional bias of each regime in a single dimension. */
+export function regimeToOrdinal(regime: string | undefined): number {
+  if (!regime) return 0.5; // unknown → neutral
+  const r = regime.toLowerCase();
+  if (r.includes('trending_bull') || r.includes('trend_up')) return 1.0;
+  if (r.includes('trending_bear') || r.includes('trend_down')) return 0.8;
+  if (r.includes('breakout')) return 0.6;
+  if (r.includes('mean_revert') || r.includes('ranging')) return 0.5;
+  if (r.includes('high_vol') || r.includes('volatile')) return 0.3;
+  if (r.includes('chaotic')) return 0.1;
+  return 0.5; // unknown → neutral
+}
 
 export interface OLRModel {
   /** Weights vector (D+1: bias + D features) */
@@ -70,6 +85,63 @@ export interface OLRModel {
     cycle: number;
     slNarrowed?: boolean;
   }>;
+  /** v2.0.721: 5-bin calibration map — maps raw sigmoid output to empirical
+   *  win rate. Each bin tracks [0.0-0.2), [0.2-0.4), [0.4-0.6), [0.6-0.8), [0.8-1.0].
+   *  Falls back to identity (raw pWin) when a bin has < 5 samples. */
+  calibrationBins?: Array<{ lo: number; hi: number; wins: number; losses: number }>;
+}
+
+/** v2.0.721: Minimum samples per bin before calibration kicks in. Below this,
+ *  the bin returns identity (raw pWin) to avoid overfitting on tiny samples. */
+const CALIBRATION_MIN_SAMPLES_PER_BIN = 5;
+const CALIBRATION_NUM_BINS = 5;
+
+/** v2.0.721: Create empty calibration bins. */
+function makeEmptyCalibrationBins(): Array<{ lo: number; hi: number; wins: number; losses: number }> {
+  const bins: Array<{ lo: number; hi: number; wins: number; losses: number }> = [];
+  for (let i = 0; i < CALIBRATION_NUM_BINS; i++) {
+    bins.push({
+      lo: i / CALIBRATION_NUM_BINS,
+      hi: (i + 1) / CALIBRATION_NUM_BINS,
+      wins: 0,
+      losses: 0,
+    });
+  }
+  return bins;
+}
+
+/** v2.0.721: Record a (predictedPWin, actualOutcome) pair into calibration bins. */
+function recordCalibrationSample(
+  bins: Array<{ lo: number; hi: number; wins: number; losses: number }>,
+  predictedPWin: number,
+  outcome: 1 | 0,
+): void {
+  // Clamp to [0, 1) for bin lookup (1.0 goes into last bin)
+  const clamped = Math.max(0, Math.min(0.9999, predictedPWin));
+  const binIdx = Math.floor(clamped * CALIBRATION_NUM_BINS);
+  const bin = bins[binIdx];
+  if (!bin) return;
+  if (outcome === 1) bin.wins++;
+  else bin.losses++;
+}
+
+/** v2.0.721: Apply calibration to a raw pWin. Returns calibrated pWin if the
+ *  corresponding bin has enough samples, otherwise returns the raw pWin (identity). */
+function applyCalibration(
+  bins: Array<{ lo: number; hi: number; wins: number; losses: number }> | undefined,
+  rawPWin: number,
+): number {
+  if (!bins || bins.length === 0) return rawPWin;
+  const clamped = Math.max(0, Math.min(0.9999, rawPWin));
+  const binIdx = Math.floor(clamped * CALIBRATION_NUM_BINS);
+  const bin = bins[binIdx];
+  if (!bin) return rawPWin;
+  const count = bin.wins + bin.losses;
+  if (count < CALIBRATION_MIN_SAMPLES_PER_BIN) return rawPWin;
+  const empiricalWR = bin.wins / count;
+  if (!Number.isFinite(empiricalWR)) return rawPWin;
+  log.debug(`[OLR calibration] raw=${(rawPWin * 100).toFixed(0)}% → calibrated=${(empiricalWR * 100).toFixed(0)}% (bin ${binIdx}, ${count} samples)`);
+  return empiricalWR;
 }
 
 export interface OLRQueryResult {
@@ -154,6 +226,8 @@ function makeEmptyModel(): OLRModel {
     backfillSamples: 0,
     newestSampleTs: 0,
     recentTrades: [],
+    // v2.0.721: Initialize empty calibration bins
+    calibrationBins: makeEmptyCalibrationBins(),
   };
 }
 
@@ -203,6 +277,15 @@ export class OLREngine {
       backfillSamples: m.backfillSamples ?? 0,
       newestSampleTs: m.newestSampleTs ?? 0,
       recentTrades: Array.isArray(m.recentTrades) ? m.recentTrades.slice(-20) : [],
+      // v2.0.721: Migrate calibration bins (old models won't have them)
+      calibrationBins: Array.isArray(m.calibrationBins) && m.calibrationBins.length === CALIBRATION_NUM_BINS
+        ? m.calibrationBins.map((b: any) => ({
+            lo: Number(b.lo) ?? 0,
+            hi: Number(b.hi) ?? 0,
+            wins: Number(b.wins) ?? 0,
+            losses: Number(b.losses) ?? 0,
+          }))
+        : makeEmptyCalibrationBins(),
     };
   }
 
@@ -349,6 +432,21 @@ export class OLREngine {
     const ts = Date.now();
     const srcWeight = OLR_CONFIG.sourceWeight[source] ?? 1;
 
+    // v2.0.721: Compute raw pWin BEFORE SGD update for calibration recording.
+    // This is the model's prediction for this sample — we record (prediction, actual)
+    // so the calibration bins can learn the mapping from raw sigmoid → empirical WR.
+    const targetModel = side === 'sell' ? models.short : models.long;
+    let rawPWinForCalibration = 0.5;
+    try {
+      const xFullPre = [1, ...xNorm];
+      let zPre = 0;
+      for (let i = 0; i <= D; i++) zPre += targetModel.weights[i]! * xFullPre[i]!;
+      rawPWinForCalibration = sigmoid(zPre);
+      if (!Number.isFinite(rawPWinForCalibration)) rawPWinForCalibration = 0.5;
+    } catch {
+      rawPWinForCalibration = 0.5;
+    }
+
     if (side === 'sell') {
       // Live samples = total minus backfill — SGD decay uses only live so
       // the backfill prior doesn't freeze the model (see OLR_CONFIG.backfill).
@@ -362,6 +460,10 @@ export class OLREngine {
       else if (source === 'backfill') models.short.backfillSamples++;
       models.short.recentTrades.push({ source, side, outcome: outcomeLabel, timestamp: ts, cycle, slNarrowed });
       if (models.short.recentTrades.length > 20) models.short.recentTrades.shift();
+      // v2.0.721: Record calibration sample (raw pWin → actual outcome)
+      if (models.short.calibrationBins) {
+        recordCalibrationSample(models.short.calibrationBins, rawPWinForCalibration, outcome);
+      }
     } else {
       const liveSamples = models.long.nSamples - models.long.backfillSamples;
       this.sgdUpdate(models.long, xNorm, outcome, srcWeight, liveSamples);
@@ -373,11 +475,25 @@ export class OLREngine {
       else if (source === 'backfill') models.long.backfillSamples++;
       models.long.recentTrades.push({ source, side, outcome: outcomeLabel, timestamp: ts, cycle, slNarrowed });
       if (models.long.recentTrades.length > 20) models.long.recentTrades.shift();
+      // v2.0.721: Record calibration sample (raw pWin → actual outcome)
+      if (models.long.calibrationBins) {
+        recordCalibrationSample(models.long.calibrationBins, rawPWinForCalibration, outcome);
+      }
     }
   }
 
   private contextToVector(features: Record<string, number>): number[] {
-    return FEATURE_NAMES.map(name => features[name] ?? 0) as number[];
+    return FEATURE_NAMES.map(name => {
+      const val = features[name];
+      if (val === undefined) {
+        // v2.0.721: regimeOrdinal fallback to 0.5 (neutral/unknown) when missing.
+        // 0 = chaotic (a meaningful value), so we use 0.5 as the missing sentinel.
+        // NaN/Infinity are passed through so feedTrade's NaN guard can reject them.
+        if (name === 'regimeOrdinal') return 0.5;
+        return 0;
+      }
+      return val; // pass through NaN/Infinity — feedTrade's NaN guard will catch them
+    }) as number[];
   }
 
   query(symbol: string, features: Record<string, number>, side: 'buy' | 'sell', currentCycle?: number): OLRQueryResult {
@@ -419,7 +535,11 @@ export class OLREngine {
       }
     }
 
-    const pWin = sigmoid(z);
+    const pWinRaw = sigmoid(z);
+    // v2.0.721: Apply 5-bin calibration map. If the corresponding bin has
+    // enough samples (>= 5), replace raw sigmoid with empirical win rate.
+    // Falls back to raw pWin when bins are empty or insufficient (identity).
+    const pWin = applyCalibration(model.calibrationBins, pWinRaw);
     const confLabel: 'high' | 'medium' | 'low' =
       model.nSamples >= OLR_CONFIG.highConfidenceSamples ? 'high'
       : model.nSamples >= OLR_CONFIG.mediumConfidenceSamples ? 'medium'

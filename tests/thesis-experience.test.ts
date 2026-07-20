@@ -263,7 +263,11 @@ describe('EXP checkThesisHistory — decision branches', () => {
   });
 
   it('FAST_APPROVE when history skews WIN (B+Z ≈ B+Y WIN)', async () => {
-    injectRecord(exp, embed, { rationales: ['B', 'Y'], outcome: 'WIN' });
+    // v2.0.721: Wilson gate requires >= 8 wins for Wilson LB >= 0.6.
+    // Inject 8 WIN records with similar rationales so Wilson LB passes.
+    for (let i = 0; i < 8; i++) {
+      injectRecord(exp, embed, { rationales: ['B', 'Y'], outcome: 'WIN' });
+    }
     const r = await exp.checkThesisHistory({ thesis: 'B|Z', symbol: 'BTC', side: 'buy', marketCtx: '' });
     expect(r.verdict).toBe('FAST_APPROVE');
     expect(r.pWin).toBeGreaterThan(0.6);
@@ -502,7 +506,10 @@ describe('EXP fallback + self-heal (§8.6)', () => {
     plant(failingEmbed, 'Z', [0, 0.05, 0.99]);
     const llm = makeLLM(extractHandler);
     const e = makeEXP(wrappedEmbed as never, llm, { repair: { enabled: true, maxRetries: 1, backoffMs: 1 } });
-    injectRecord(e, failingEmbed, { rationales: ['B', 'Y'], outcome: 'WIN' });
+    // v2.0.721: Wilson gate requires >= 8 wins for Wilson LB >= 0.6.
+    for (let i = 0; i < 8; i++) {
+      injectRecord(e, failingEmbed, { rationales: ['B', 'Y'], outcome: 'WIN' });
+    }
     // First embed throws → diagnose embed-load-fail → warmup() recovers → retry → FAST_APPROVE
     const r = await e.checkThesisHistory({ thesis: 'B|Z', symbol: 'BTC', side: 'buy', marketCtx: '' });
     expect(r.verdict).toBe('FAST_APPROVE');
