@@ -828,15 +828,22 @@ export class ThesisExperience {
     // and penalizes small samples naturally.
     const verdictPWin = pWinWilsonLB;
 
+    // v2.0.722: Also compute the raw pWin for the delta check below — the delta
+    // check uses raw winRate (not Wilson LB) because it's comparing individual
+    // rationale win rates, not the overall match set. The delta check has its
+    // own minDeltaSamples guard (minimum 3 samples) which provides the sample
+    // size protection there.
+    const rawPWin = totalW > 0 ? winW / totalW : 0.5;
+
     if (verdictPWin >= this.cfg.winProbThreshold) {
-      return { verdict: 'FAST_APPROVE', pWin: verdictPWin, reason: `history skews WIN (raw pWin=${pWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
+      return { verdict: 'FAST_APPROVE', pWin: verdictPWin, reason: `history skews WIN (raw pWin=${rawPWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
     }
     if (verdictPWin >= this.cfg.lossProbThreshold) {
       // Ambiguous band → 直出 — use Wilson LB instead of raw pWin to avoid
       // small-sample overconfidence in the ambiguous band. A raw pWin of 0.60
       // with 3/5 matches (Wilson LB ~0.23) should not be treated as ambiguous
       // — it should be treated as insufficient evidence (fall through to delta).
-      return { verdict: 'PASS_OPEN_DIRECTLY', pWin: verdictPWin, reason: `ambiguous (raw pWin=${pWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
+      return { verdict: 'PASS_OPEN_DIRECTLY', pWin: verdictPWin, reason: `ambiguous (raw pWin=${rawPWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
     }
 
     // P(loss) > P(win) → delta check (§8.4)
