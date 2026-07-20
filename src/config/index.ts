@@ -70,7 +70,7 @@ const envSchema = z.object({
   EXP_ENABLED: z.coerce.boolean().default(false),
   EXP_EMBED_MODEL: z.string().default('Xenova/all-MiniLM-L6-v2'),
   EXP_EMBED_DIM: z.coerce.number().int().positive().default(384),
-  EXP_MAX_RECORDS: z.coerce.number().int().positive().default(200),
+  EXP_MAX_RECORDS: z.coerce.number().int().positive().default(1000),
   EXP_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.55),
   EXP_WIN_PROB_THRESHOLD: z.coerce.number().min(0).max(1).default(0.6),
   EXP_LOSS_PROB_THRESHOLD: z.coerce.number().min(0).max(1).default(0.4),
