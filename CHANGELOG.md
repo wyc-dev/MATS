@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.722: OLR — add L2 regularization (0.01) + maxWeight reduction (5.0) + confidence penalty (Bayesian prior toward 0.5 when nSamples < 50) to prevent extreme P(win) overconfidence from insufficient training data
+
+
 ## v2.0.202: Add per-symbol-direction pattern-based soft gate to block systematically losing patterns (WR<40% over 5+ trades) by raising conviction threshold 25-30%
 
 

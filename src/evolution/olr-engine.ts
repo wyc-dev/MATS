@@ -187,7 +187,11 @@ export interface OLRSymbolStats {
 
 const OLR_CONFIG = {
   learningRate: 0.05,
-  l2Regularization: 0.001,
+  /** L2 regularization strength (ridge penalty). Applied to all weights including bias.
+   *  v2.0.722: Increased from 0.001 to 0.01 to prevent weight explosion when training
+   *  samples are scarce (12 features, ~100 samples per side). The stronger penalty
+   *  shrinks weights toward zero, preventing sigmoid saturation at 0 or 1. */
+  l2Regularization: 0.01,
   /** SGD learning-rate decay: η_t = learningRate / (1 + decayRate × liveSamples).
    *  liveSamples = nSamples - backfillSamples, so backfill (weight=0.3) does NOT
    *  freeze the model against live adaptation. Prevents late samples from
@@ -203,7 +207,18 @@ const OLR_CONFIG = {
   highConfidenceSamples: 50,
   mediumConfidenceSamples: 20,
   welfordEpsilon: 1e-8,
-  maxWeight: 10.0,
+  /** v2.0.722: Reduced from 10.0 to 5.0 to prevent weight explosion.
+   *  With 12 features and sigmoid saturation at |z| > 10, a max weight of 5.0 per
+   *  feature means at most 2-3 features can push the logit to saturation. Combined
+   *  with L2 regularization, this keeps weights in a reasonable range where the
+   *  sigmoid output is calibrated (not 0 or 1). */
+  maxWeight: 5.0,
+  /** v2.0.722: Confidence penalty threshold. When nSamples < this value, the
+   *  prediction is pulled toward 0.5 using a Bayesian prior. This prevents
+   *  extreme P(win) values (near 0 or 1) when the model has insufficient evidence.
+   *  Set to highConfidenceSamples (50) so that only models with >50 samples
+   *  can output extreme probabilities. */
+  confidencePenaltyThreshold: 50,
 } as const;
 
 // ─── Helpers ───
