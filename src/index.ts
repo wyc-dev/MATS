@@ -318,8 +318,18 @@ class MATSSystem {
    *
    * The block auto-releases after 48 cycles (4 hours) to allow re-evaluation.
    * This prevents permanent deadlock if the pattern was a fluke.
+   *
+   * v2.0.202: ADDED per-symbol-per-direction pattern-based soft gate that raises
+   * conviction threshold when a pattern has <40% WR over 5+ trades. This is a
+   * SOFT gate — strong signals can still override it, but it prevents the system
+   * from blindly repeating a losing pattern. The gate raises the conviction
+   * threshold by 25-30% for that specific (symbol, direction) combination.
+   *
+   * v2.0.202: The soft gate is checked in the decision cycle before executing
+   * any BUY/SELL decision, similar to how checkLossStreakGate works but using
+   * aggregate WR instead of consecutive losses.
    */
-  private checkSystematicLoserGate(symbol: string, direction: 'buy' | 'sell'): { blocked: boolean; reason?: string } {
+  private checkSystematicLoserGate(symbol: string, direction: 'buy' | 'sell'): { blocked: boolean; reason?: string; convictionPenalty?: number } {
     const key = `${normalizeSymbol(symbol)}:${direction}`;
     const entry = this.lossStreakTracker.get(key);
     if (!entry) return { blocked: false };
@@ -366,6 +376,18 @@ class MATSSystem {
       
       const remaining = entry.blockedUntilCycle - this.totalCycles;
       return { blocked: true, reason: `HARD BLOCK: ${direction.toUpperCase()} ${symbol} has ${entry.totalTrades} trades with ${(winRate * 100).toFixed(0)}% win rate (threshold: 35%) — systematic loser pattern detected. Blocking all new entries until win rate recovers above 40% or auto-release in ${remaining} cycles (${(remaining * 5).toFixed(0)} min).` };
+    }
+
+    // v2.0.202: SOFT GATE for patterns with >= 5 trades and WR < 40%.
+    // This raises the conviction threshold by 25-30% for this specific
+    // (symbol, direction) combination. Strong signals can still override it.
+    // The penalty is proportional to how far below 40% the win rate is:
+    // - WR 35-40%: +25% conviction penalty
+    // - WR 30-35%: +28% conviction penalty
+    // - WR < 30%: +30% conviction penalty
+    if (entry.totalTrades >= 5 && winRate < 0.40) {
+      const penalty = winRate < 0.30 ? 0.30 : winRate < 0.35 ? 0.28 : 0.25;
+      return { blocked: false, convictionPenalty: penalty, reason: `SOFT GATE: ${direction.toUpperCase()} ${symbol} has ${entry.totalTrades} trades with ${(winRate * 100).toFixed(0)}% win rate (threshold: 40%) — raising conviction threshold by ${(penalty * 100).toFixed(0)}% (strong signals can still override)` };
     }
 
     return { blocked: true, reason: `Systematic loser gate: ${direction.toUpperCase()} ${symbol} has ${entry.totalTrades} trades with ${(winRate * 100).toFixed(0)}% win rate (threshold: 35%) — blocked until win rate recovers above 40% (decay in ${Math.max(0, (entry.blockedUntilCycle + 24 - this.totalCycles))} cycles)` };
