@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.760: OLR predict() — add L2 regularization (λ=0.01) to SGD weight update to prevent unbounded weight growth and sigmoid saturation. Add sigmoid temperature T=2.0 in predict() to soften output. Reduce maxWeight from 5.0 to 3.0. Fixes systematic P(win) miscalibration where OLR outputs 0%/100% but actual win rate is ~30-50%.
+
+
 ## v2.0.759: Shadow trade engine — force-resolve stale shadow positions after 12 cycles (60 min) with reduced learning weight (0.3×). Prevents OLR model from training on stale feature distributions in low-vol regimes where shadow trades rarely hit SL/TP naturally. Fixes systematic P(win) miscalibration where OLR predicts 100%/0% but actual outcome is opposite.
 
 
