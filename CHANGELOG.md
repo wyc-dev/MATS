@@ -4,6 +4,40 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.726 — No-Trade Investigation: SE auto-investigates 3+ idle cycles
+
+### Problem
+
+When the system hasn't traded for 3+ cycles, there's no automated investigation. The System Engineer (SE) only runs every 2 cycles to analyze trade records — but if there are no new trades, it re-analyzes the same stale data. Meanwhile, the user has no visibility into WHY trades aren't happening (gate blocking? market quiet? consensus too low?).
+
+### Fix
+
+**No-trade detection**: Added `cyclesSinceLastTrade` counter, incremented every cycle and reset to 0 when `executeTrade()` succeeds. After 3+ idle cycles, SE is triggered with a special **no-trade investigation mode**.
+
+**Investigation context**: SE receives:
+- `cyclesSinceLastTrade`: How many cycles since last trade
+- `lastGateResults`: Which gates passed/blocked in the last cycle (conviction-gate, shadow-gate, audit-gate, frequency-throttle, etc.)
+- `marketConditions`: Last 5 cycles' regime + volatility + price
+
+**Investigation decision tree** (in SE Phase 1 prompt):
+1. All gates passed but HOLD → normal in quiet markets
+2. A gate blocked → identify which gate + whether threshold is too aggressive
+3. Market genuinely quiet (low vol, no edge) → valid reason, report "market-quiet" (no fix needed)
+4. Mechanism overly conservative → propose fix to loosen threshold
+
+**Market-quiet escape hatch**: If SE concludes the market is simply quiet, it reports `{"category":"market-quiet"}` and does NOT force trades or propose unnecessary fixes.
+
+**Gate results tracking**: `activeAuditGates` from the decision pipeline are now saved to `this.lastGateResults` after each cycle, so SE can see exactly which gate blocked the trade.
+
+### Files Changed
+
+- `src/index.ts` — `cyclesSinceLastTrade` counter, `lastGateResults` + `recentMarketConditions` tracking, `runNoTradeInvestigation()` method, gate results saved after decision pipeline, 3-cycle trigger logic
+- `src/evolution/system-engineer.ts` — `runSystemEngineer()` accepts `noTradeInvestigation?` parameter, Phase 1 prompt includes investigation context + decision tree + market-quiet escape hatch
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
 ## v2.0.725 — SE Block List Fix + Audit Integration (stop wasting tokens)
 
 ### Problem 1: SE Block List Too Broad — Wasting Tokens on Repeated Blocked Diagnoses

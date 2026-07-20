@@ -218,6 +218,15 @@ function parseFeedbackLog(raw: string): string {
 export async function runSystemEngineer(
   records: ThesisExperienceRecord[],
   auditResults?: { incidents: Array<{ severity: string; category: string; symbol: string; detail: string }>; summary: string },
+  /** v2.0.726: No-trade investigation — when the system hasn't traded for 3+
+   *  cycles, SE investigates which mechanism is blocking trades. */
+  noTradeInvestigation?: {
+    cyclesSinceLastTrade: number;
+    /** Last cycle's gate results — which gates passed/blocked */
+    lastGateResults: Array<{ gate: string; passed: boolean; reason: string }>;
+    /** Market conditions in recent cycles (volatility, regime, volume) */
+    marketConditions: Array<{ cycle: number; regime: string; volatility: number; price: number }>;
+  },
 ): Promise<AutoFixResult | null> {
   // v2.0.183: Prevent overlapping runs
   if (engineerRunning) {
@@ -321,6 +330,36 @@ ${auditResults.incidents.map(inc => `- [${inc.severity.toUpperCase()}] ${inc.cat
 **Audit Summary**: ${auditResults.summary}
 
 These audit incidents are the HIGHEST PRIORITY issues to fix. Each incident has a category, symbol, and detail explaining what went wrong. Focus on fixing the ROOT CAUSE of these incidents — not just the symptoms.
+` : ''}${noTradeInvestigation ? `
+## 🚫 No-Trade Investigation — System hasn't traded for ${noTradeInvestigation.cyclesSinceLastTrade} cycles
+
+This is a HIGH PRIORITY investigation. The system has not executed any trades (BUY or SELL) for ${noTradeInvestigation.cyclesSinceLastTrade} consecutive cycles. You must determine WHY.
+
+### Last Cycle Gate Results
+${noTradeInvestigation.lastGateResults.length > 0
+  ? noTradeInvestigation.lastGateResults.map(g => `${g.passed ? '✅' : '🛑'} ${g.gate}: ${g.reason}`).join('\n')
+  : '(no gate data available — gates may not have been reached)'}
+
+### Recent Market Conditions
+${noTradeInvestigation.marketConditions.length > 0
+  ? noTradeInvestigation.marketConditions.map(m => `  Cycle ${m.cycle}: regime=${m.regime}, vol=${m.volatility.toFixed(4)}, price=${m.price.toFixed(2)}`).join('\n')
+  : '(no market data available)'}
+
+### Investigation Decision Tree
+1. **If all gates passed but no trade was executed**: Check if the decision was HOLD (consensus below threshold, or Meta-Agent chose HOLD). This is normal in quiet markets.
+2. **If a gate blocked the trade**: Identify WHICH gate blocked it and whether the gate threshold is too aggressive. Common culprits:
+   - conviction-gate: Threshold too high for current market conditions
+   - shadow-gate: Wilson LB < 0.30 blocking all signals (may need sample threshold adjustment)
+   - audit-gate: Critical audit incident blocking direction (check if false positive)
+   - frequency-throttle: Over-trading prevention firing too aggressively
+   - pattern-circuit-breaker: Low win rate pattern blocking entries
+3. **If market is genuinely quiet** (low volatility, no clear regime, no S/R proximity): This is a VALID reason for no trades. Report it as "market quiet — no actionable edge" and do NOT force trades.
+4. **If a mechanism is overly conservative**: Propose a fix to loosen the threshold or add a bypass condition.
+
+If the investigation concludes that the market is simply quiet (low volatility, no edge), report:
+{"severity":"info","category":"market-quiet","title":"No trades due to quiet market conditions","rootCause":"Market volatility is low and no clear directional edge exists","affectedFile":"","diagnosis":"No fix needed — system is correctly holding in quiet conditions","changelogEntry":""}
+
+Otherwise, identify the blocking mechanism and propose a fix as usual.
 ` : ''}
 ## Trade Records (last 20 of ${records.length})
 ${tradeSummary}
