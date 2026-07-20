@@ -65,11 +65,17 @@ export interface FirstPassageResult {
   confidence: 'high' | 'low';
   /** Human-readable explanation */
   explanation: string;
+  /** Timestamp (ms) when the volatility was last computed */
+  volatilityTimestamp: number;
 }
 
 /** Numerical guard: exponents can overflow for large 2νa/σ². Clamp the
  *  argument to avoid Infinity propagating into a NaN ratio. */
 const MAX_EXP_ARG = 50;
+
+/** Maximum age of volatility data (in ms) before a freshness recompute is triggered.
+ *  Default 2 cycles = 10 minutes (assuming 5-minute cycles). */
+const MAX_VOLATILITY_AGE_MS = 10 * 60 * 1000;
 
 function safeExp(x: number): number {
   if (!Number.isFinite(x)) return 0;
@@ -89,6 +95,11 @@ function safeExp(x: number): number {
  *                        (SHORT's SL sits at resistance = LONG's TP level).
  * @param tpDistanceShort SHORT TP distance as fraction of price (below entry). Defaults to slDistanceLong
  *                        (SHORT's TP sits at support = LONG's SL level).
+ * @param prices          Optional array of recent prices for volatility freshness recompute.
+ *                        If provided and the volatility is stale (>MAX_VOLATILITY_AGE_MS old),
+ *                        the function recomputes volatility from the latest prices.
+ * @param volatilityTimestamp Timestamp (ms) when the volatility was last computed. If 0 or undefined,
+ *                        freshness check is skipped (assumes fresh).
  */
 export function calculateFirstPassage(
   volatility: number,
@@ -97,6 +108,8 @@ export function calculateFirstPassage(
   tpDistanceLong: number,
   slDistanceShort?: number,
   tpDistanceShort?: number,
+  prices?: number[],
+  volatilityTimestamp?: number,
 ): FirstPassageResult {
   const aLong = Math.max(slDistanceLong, 1e-6);
   const bLong = Math.max(tpDistanceLong, 1e-6);
@@ -110,17 +123,40 @@ export function calculateFirstPassage(
   const breakevenPLong = aLong / (aLong + bLong);
   const breakevenPShort = aShort / (aShort + bShort);
 
+  // ── Volatility freshness check ──
+  // If the provided volatility is stale (>MAX_VOLATILITY_AGE_MS old) and we have
+  // price data to recompute, do so. This prevents OLR from using a volatility
+  // snapshot from shadow-open time (5-15 minutes stale) when computing the
+  // first-passage probability at real trade entry.
+  let effectiveVol = volatility;
+  let effectiveVolTimestamp = volatilityTimestamp ?? Date.now();
+  if (
+    prices !== undefined &&
+    prices.length >= 3 &&
+    volatilityTimestamp !== undefined &&
+    Date.now() - volatilityTimestamp > MAX_VOLATILITY_AGE_MS
+  ) {
+    const recomputedVol = estimateVolatility(prices, 20);
+    if (recomputedVol > 0 && Number.isFinite(recomputedVol)) {
+      effectiveVol = recomputedVol;
+      effectiveVolTimestamp = Date.now();
+      log.warn(
+        `Volatility freshness recompute: stale vol ${(volatility * 100).toFixed(4)}% (age ${((Date.now() - volatilityTimestamp) / 1000).toFixed(0)}s) → recomputed ${(recomputedVol * 100).toFixed(4)}%`
+      );
+    }
+  }
+
   // Volatility too low (< 0.1%/cycle): the diffusion model is not
   // meaningful — returns are dominated by quantisation/measurement noise.
   // Return the zero-drift breakeven a/(a+b) (NOT a flat 50%, which is
   // wrong whenever SL ≠ TP distance) and flag low confidence so agents
   // weight the signal less.
-  if (!Number.isFinite(volatility) || volatility < 0.001) {
+  if (!Number.isFinite(effectiveVol) || effectiveVol < 0.001) {
     return {
       longPWin: breakevenPLong,
       shortPWin: breakevenPShort,
       drift: nu,
-      volatility,
+      volatility: effectiveVol,
       slDistanceLong: aLong,
       tpDistanceLong: bLong,
       slDistanceShort: aShort,
@@ -128,11 +164,12 @@ export function calculateFirstPassage(
       breakevenPLong,
       breakevenPShort,
       confidence: 'low',
-      explanation: `First-Passage P(TP before SL): vol too low (${(volatility * 100).toFixed(4)}%) — using zero-drift breakeven a/(a+b) (LONG=${(breakevenPLong * 100).toFixed(0)}%, SHORT=${(breakevenPShort * 100).toFixed(0)}%). Low confidence — weight path-risk signal less.`,
+      volatilityTimestamp: effectiveVolTimestamp,
+      explanation: `First-Passage P(TP before SL): vol too low (${(effectiveVol * 100).toFixed(4)}%) — using zero-drift breakeven a/(a+b) (LONG=${(breakevenPLong * 100).toFixed(0)}%, SHORT=${(breakevenPShort * 100).toFixed(0)}%). Low confidence — weight path-risk signal less.`,
     };
   }
 
-  const vol = volatility;
+  const vol = effectiveVol;
   const volSq = vol * vol;
 
   // LONG: P(hit +b before −a) = (e^(2νa/σ²) − 1) / (e^(2νa/σ²) − e^(−2νb/σ²))
@@ -174,6 +211,7 @@ export function calculateFirstPassage(
     breakevenPLong,
     breakevenPShort,
     confidence: 'high',
+    volatilityTimestamp: effectiveVolTimestamp,
     explanation,
   };
 }
