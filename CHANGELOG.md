@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.722: Add L2 regularization + logit clipping to OLR to prevent extreme overconfidence (0%/100% P(win)) that was overriding other safety checks. Three changes: (1) Clip logit to [-10, 10] before sigmoid to prevent floating-point saturation. (2) Apply L2 regularization (λ=0.01) to ALL weights including bias (previously only non-bias with λ=0.001). (3) Reduce maxWeight from 10.0 to 5.0 to further constrain weight magnitude. Together these prevent the sigmoid from saturating to exactly 0 or 1, producing calibrated probabilities that reflect true uncertainty.
+
+
 ## v2.0.733: Add systematicLoserGate() — hard block BUY xyz:SKHX (31% WR over 32 trades) and any other (symbol,direction) with >=10 trades and WR < 35%. Prevents continued losses on systematically losing patterns.
 
 
