@@ -251,6 +251,18 @@ export async function runSystemEngineer(
   // unique entries (dedup by file), not raw 3000 chars. This saves tokens.
   const feedbackEntries = parseFeedbackLog(readFileSafe('SYSTEM_ENGINEER_FEEDBACK.md'));
 
+  // v2.0.737: Read recent git commits so SE knows what it already committed.
+  // This prevents SE from re-diagnosing issues it already fixed in recent commits.
+  // SE was repeatedly fixing "pWin uses raw winRate instead of Wilson" across
+  // 3 separate commits because it didn't check git history.
+  let recentGitCommits = '(git log unavailable)';
+  try {
+    const gitOutput = execSync('git log --oneline -15', { cwd: PROJECT_ROOT, timeout: 5_000, stdio: 'pipe', encoding: 'utf-8' });
+    recentGitCommits = gitOutput.trim();
+  } catch {
+    // non-critical — SE can still run without git history
+  }
+
   // Phase 2: Build trade record summary
   const recent = records.slice(-20);
   const tradeSummary = recent.map((r, i) => {
@@ -318,6 +330,11 @@ ${loopMemory.slice(0, 1500)}
 ${feedbackEntries}
 
 This is your own audit history (latest entries at top). Each entry shows what you already tried for each file. Do NOT re-diagnose issues that are already marked SUCCESS or BLOCKED. Focus on finding NEW issues in files NOT listed here.
+
+### Recent Git Commits (what you already committed — DO NOT re-fix these)
+${recentGitCommits}
+
+**CRITICAL**: Before proposing a fix, check the git commits above AND the feedback log. If you already committed a fix for the same issue (e.g. "Wilson score for pWin"), do NOT propose the same fix again. Each issue should only be fixed ONCE. If you see multiple commits with similar titles (e.g. "Wilson score" appearing 3 times), that means you are re-diagnosing the same issue — STOP and find a DIFFERENT issue.
 
 ${failedFileEntries.length > 0 ? `## 📋 Previous Failed Attempts (learn from these — try a DIFFERENT approach)
 ${failedFileEntries.map(f => `### ${f.file}\n${f.attempts.map(a => `- ❌ "${a.title}" — ${a.error}`).join('\n')}`).join('\n\n')}
@@ -441,6 +458,29 @@ If you find NO issues worth fixing, respond with:
   }
 
   log.info(`🔧 [system-engineer] Phase 1 complete: ${diagnosis.title} → ${diagnosis.affectedFile}`);
+
+  // v2.0.737: Duplicate diagnosis check — if the diagnosis title is similar to
+  // a recent git commit message, reject it. SE was repeatedly fixing the same
+  // issue (e.g. "Wilson score for pWin") across 3 commits because it didn't
+  // check git history. This programmatic check prevents that.
+  try {
+    const gitLog = execSync('git log --oneline -15 --format=%s', { cwd: PROJECT_ROOT, timeout: 5_000, stdio: 'pipe', encoding: 'utf-8' });
+    const commitMessages = gitLog.trim().split('\n').map(m => m.toLowerCase());
+    const diagTitleLower = diagnosis.title.toLowerCase();
+    // Check if any recent commit message contains key words from the diagnosis title
+    const diagWords = diagTitleLower.split(/\s+/).filter(w => w.length > 4 && !['thesis', 'experience', 'direction', 'filtered', 'without', 'instead'].includes(w));
+    for (const msg of commitMessages) {
+      const matchCount = diagWords.filter(w => msg.includes(w)).length;
+      // If >50% of significant words match a recent commit, it's a duplicate
+      if (diagWords.length > 0 && matchCount / diagWords.length >= 0.5) {
+        log.warn(`🚫 [system-engineer] DUPLICATE DIAGNOSIS: "${diagnosis.title}" matches recent commit "${msg.slice(0, 80)}" (${matchCount}/${diagWords.length} words match) — skipping to prevent re-fixing the same issue`);
+        logFeedback('Phase 1', 'DUPLICATE', diagnosis.title, diagnosis.affectedFile, `Matches recent git commit: ${msg.slice(0, 80)}`);
+        return null;
+      }
+    }
+  } catch {
+    // non-critical — continue without duplicate check
+  }
 
   // v2.0.202: Hard block list — check if the diagnosis targets a known-good method.
   // This prevents wasting a Phase 2 LLM call on methods that have been verified correct.
