@@ -456,12 +456,16 @@ If you find NO issues worth fixing, respond with:
   // give up after one blocked diagnosis, leaving other audit incidents unfixed.
   const MAX_DIAGNOSIS_RETRIES = 3;
   let diagnosis: any = null;
+  // v2.0.751: Track rejected diagnoses so we can tell LLM exactly what NOT to diagnose again
+  const rejectedDiagnoses: string[] = [];
 
   for (let attempt = 1; attempt <= MAX_DIAGNOSIS_RETRIES; attempt++) {
-  // v2.0.748: On retry, append a notice telling LLM to find a DIFFERENT issue
-  const retryNotice = attempt > 1
-    ? `\n\n## ⚠️ RETRY NOTICE (attempt ${attempt}/${MAX_DIAGNOSIS_RETRIES})\nYour previous diagnosis was rejected (duplicate or blocked). You MUST find a DIFFERENT issue to fix. Do NOT diagnose the same issue again. Look at the audit incidents above and pick a DIFFERENT one to fix. Temperature has been increased to ${0.2 + (attempt - 1) * 0.1} to encourage diversity.`
-    : '';
+  // v2.0.751: On retry, list the EXACT titles that were rejected so LLM doesn't repeat them
+  let retryNotice = '';
+  if (attempt > 1 && rejectedDiagnoses.length > 0) {
+    const rejectedList = rejectedDiagnoses.map((t, i) => `  ${i + 1}. "${t}"`).join('\n');
+    retryNotice = `\n\n## ⚠️ RETRY NOTICE (attempt ${attempt}/${MAX_DIAGNOSIS_RETRIES})\nYour previous diagnosis was REJECTED. You MUST find a COMPLETELY DIFFERENT issue.\n\n**Do NOT diagnose any of these issues again (they were already rejected):**\n${rejectedList}\n\n**Do NOT diagnose anything related to:**\n- "raw winRate instead of Wilson score" (already fixed in multiple commits)\n- "low win rate + keeps trading" (handled by soft gate, NOT a bug)\n- "systematic loser pattern" (handled by soft gate, NOT a bug)\n- "hard block" (FORBIDDEN by owner directive)\n\n**Instead, look at the audit incidents and fix one of these:**\n- OLR overconfidence / calibration\n- Premature SL / exit timing\n- Thesis quality / vague thesis\n- Data quality issues\n- HACP consensus / debate logic\n- Agent evolution / voting weights\n\nTemperature has been increased to ${0.2 + (attempt - 1) * 0.1} to encourage diversity.`;
+  }
   log.info(`🔧 [system-engineer] Phase 1: Diagnosis attempt ${attempt}/${MAX_DIAGNOSIS_RETRIES} (sending trade data + file summaries)...`);
   const phase1Response = await provider.chat({
     messages: [
@@ -499,6 +503,7 @@ If you find NO issues worth fixing, respond with:
       if (diagWords.length > 0 && matchCount / diagWords.length >= 0.5) {
         log.warn(`🚫 [system-engineer] DUPLICATE DIAGNOSIS (attempt ${attempt}): "${diagnosis.title}" matches recent commit — ${attempt < MAX_DIAGNOSIS_RETRIES ? 'retrying with different temperature' : 'giving up'}`);
         logFeedback('Phase 1', 'DUPLICATE', diagnosis.title, diagnosis.affectedFile, `Matches recent git commit: ${msg.slice(0, 80)}`);
+        rejectedDiagnoses.push(diagnosis.title); // v2.0.751: track for retry notice
         isDuplicate = true;
         break;
       }
@@ -519,6 +524,7 @@ If you find NO issues worth fixing, respond with:
       if (block.pattern.test(textToCheck)) {
         log.warn(`🚫 [system-engineer] BLOCKED (attempt ${attempt}): "${diagnosis.title}" targets ${block.reason} — ${attempt < MAX_DIAGNOSIS_RETRIES ? 'retrying' : 'giving up'}`);
         logFeedback('Phase 1', 'BLOCKED', diagnosis.title, diagnosis.affectedFile, block.reason);
+        rejectedDiagnoses.push(diagnosis.title); // v2.0.751: track for retry notice
         isBlocked = true;
         break;
       }
