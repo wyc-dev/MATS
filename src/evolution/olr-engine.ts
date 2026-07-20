@@ -649,7 +649,23 @@ export class OLREngine {
     }) as number[];
   }
 
-  query(symbol: string, features: Record<string, number>, side: 'buy' | 'sell', currentCycle?: number): OLRQueryResult {
+  /**
+   * v2.0.761: Accept optional currentFeatures parameter. When provided, these
+   * fresh market features (volatility, OB, funding, regime) are used for the
+   * prediction instead of the stale features captured at shadow entry time.
+   * This prevents P(win) miscalibration where OLR predicts 100%/0% based on
+   * 30-minute-old data that no longer reflects current market conditions.
+   * 
+   * The currentFeatures are used ONLY for the sigmoid computation (logit → pWin).
+   * They are NOT fed into Welford normalization or SGD training — those still
+   * use the original features from feedTrade(). This ensures the model trains
+   * on the features that were actually present at trade entry, but predicts
+   * using the features that reflect current market conditions.
+   * 
+   * If currentFeatures is not provided, falls back to the original behavior
+   * (using the features passed to query()).
+   */
+  query(symbol: string, features: Record<string, number>, side: 'buy' | 'sell', currentCycle?: number, currentFeatures?: Record<string, number>): OLRQueryResult {
     const empty = (reason: string): OLRQueryResult => ({
       pWin: 0.5,
       nSamples: 0,
@@ -668,7 +684,12 @@ export class OLREngine {
       return empty(`Only ${model.nSamples} samples for ${symbol} ${side.toUpperCase()} (need ${OLR_CONFIG.minSamplesForQuery})`);
     }
 
-    const vec = this.contextToVector(features);
+    // v2.0.761: Use currentFeatures for prediction if provided, otherwise fall back
+    // to the features passed to query(). This ensures the sigmoid computation uses
+    // fresh market data (volatility, OB, funding, regime) rather than stale features
+    // captured at shadow entry time that may be 5-60 minutes old.
+    const predictionFeatures = currentFeatures ?? features;
+    const vec = this.contextToVector(predictionFeatures);
     const xNorm = this.normalize(model, vec);
     const xFull = [1, ...xNorm];
 
