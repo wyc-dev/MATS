@@ -4,6 +4,47 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.727 — Direction restriction auto-expiry (2 cycles) + SE test failure retry
+
+### Direction Restriction Auto-Expiry
+
+**Problem**: Direction restrictions (e.g. `xyz:SILVER: sell-only`) persist indefinitely in `market-agent-config.json`. Users can forget they set a restriction, and it silently blocks all opposite-direction trades. The exploration logic wastes entire cycles computing a direction only to have it blocked by the gate.
+
+**Fix**: Direction restrictions now **auto-expire after 2 cycles**:
+- `setDirectionRestrictions()` records the current cycle number (`directionRestrictionsSetCycle`)
+- `updateCycle()` (called every cycle from `index.ts`) checks expiry and clears restrictions after 2 cycles
+- `getDirectionRestrictions()` also checks expiry (belt-and-suspenders)
+- **Restart case**: If `directionRestrictionsSetCycle > currentCycle` (stale config from previous process), restrictions expire immediately on first cycle
+- Log message includes "will auto-expire after 2 cycles" when set, and "auto-expired (age=N cycles)" when cleared
+
+### SE Test Failure Retry (Phase 2c)
+
+**Problem**: SE had a tsc error retry (Phase 2b) but **no test failure retry**. When tsc passed but tests failed (e.g. Wilson score gates required more test records), SE immediately rolled back and gave up — wasting the entire Phase 1 + Phase 2 LLM calls.
+
+**Fix**: Added **Phase 2c: Test failure retry**:
+- When tsc passes but tests fail, SE extracts the failing test details (FAIL lines, AssertionError, expected/received)
+- Sends the test errors + current file content + test file content to the LLM
+- LLM can provide BOTH a code fix (for the source file) AND a test update (for the test file)
+- Re-runs tsc + tests after applying the retry fix
+- If retry also fails, rolls back to original content
+
+This means SE now has **3 retry layers**:
+1. Phase 2: Initial fix
+2. Phase 2b: tsc error retry (fix type errors)
+3. Phase 2c: Test failure retry (fix failing tests)
+
+### Files Changed
+
+- `src/types/index.ts` — `MarketAgentConfig` gains `directionRestrictionsSetCycle?`
+- `src/market-agent/index.ts` — `updateCycle()` method, auto-expiry in `getDirectionRestrictions()` + `setDirectionRestrictions()` + `updateCycle()`, restart case handling
+- `src/index.ts` — `marketAgent.updateCycle(this.totalCycles)` called every cycle
+- `src/evolution/system-engineer.ts` — Phase 2c test failure retry (extract fail details, send to LLM, re-run tsc+tests)
+- `data/evolution/market-agent-config.json` — `directionRestrictions` cleared (was `{ "xyz:SILVER": "sell" }`)
+
+**Build**: `tsc --noEmit` clean. 94 tests pass.
+
+---
+
 ## v2.0.726 — No-Trade Investigation: SE auto-investigates 3+ idle cycles
 
 ### Problem

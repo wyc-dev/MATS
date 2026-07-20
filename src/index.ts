@@ -3603,6 +3603,8 @@ ${recentExamples}
 
     // v2.0.110: cycleInProgress was already set at the top of runDecisionCycle()
     this.totalCycles++;
+    // v2.0.727: Update Market Agent cycle counter for direction restriction auto-expiry
+    this.marketAgent.updateCycle(this.totalCycles);
     const cycleStart = performance.now();
 
     // v2.0.720: Trade Record Audit — run every 2 cycles (non-blocking async).

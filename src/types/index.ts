@@ -1000,8 +1000,12 @@ export interface MarketAgentConfig {
    *  only the specified direction is allowed for new entries; the opposite
    *  direction is blocked at execution time. Existing positions can still
    *  be closed. Example: { "xyz:silver": "sell" } means SILVER can only be
-   *  shorted, never bought. */
+   *  shorted, never bought.
+   *  v2.0.727: Auto-expires after 2 cycles (directionRestrictionsSetCycle). */
   directionRestrictions?: Record<string, 'buy' | 'sell'>;
+  /** v2.0.727: Cycle number when direction restrictions were set. Used for
+   *  auto-expiry after 2 cycles. */
+  directionRestrictionsSetCycle?: number;
   /** v2.0.124: Trading markets list (from UI pills). Persisted so the system
    *  resumes with the correct markets on restart instead of falling back to
    *  auto-select with only the selectedSymbol. Max 3 symbols. */
