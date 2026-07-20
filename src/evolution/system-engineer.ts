@@ -451,62 +451,83 @@ Respond with EXACTLY ONE JSON object:
 If you find NO issues worth fixing, respond with:
 {"severity":"info","category":"none","title":"No issues found","rootCause":"","affectedFile":"","diagnosis":"","changelogEntry":""}`;
 
-  log.info(`🔧 [system-engineer] Phase 1: Diagnosis (sending trade data + file summaries)...`);
+  // v2.0.747: Multi-diagnosis retry — if Phase 1 diagnosis is blocked/duplicate,
+  // retry Phase 1 up to 3 times to find a fixable issue. Previously SE would
+  // give up after one blocked diagnosis, leaving other audit incidents unfixed.
+  const MAX_DIAGNOSIS_RETRIES = 3;
+  let diagnosis: any = null;
+
+  for (let attempt = 1; attempt <= MAX_DIAGNOSIS_RETRIES; attempt++) {
+  log.info(`🔧 [system-engineer] Phase 1: Diagnosis attempt ${attempt}/${MAX_DIAGNOSIS_RETRIES} (sending trade data + file summaries)...`);
   const phase1Response = await provider.chat({
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: phase1Prompt },
     ],
-    temperature: 0.2,
+    temperature: 0.2 + (attempt - 1) * 0.1, // increase temperature on retry for diversity
     model: getAgentModel('terminal_agent'),
     timeoutMs: 120_000,
-    maxTokens: 8192, // Deputy-level: diagnosis JSON can be detailed
+    maxTokens: 8192,
   });
 
-  const diagnosis = parseDiagnosis(phase1Response.content);
+  diagnosis = parseDiagnosis(phase1Response.content);
   if (!diagnosis || !diagnosis.affectedFile || diagnosis.affectedFile === '') {
-    log.info(`🔧 [system-engineer] No actionable issue identified in Phase 1`);
+    log.info(`🔧 [system-engineer] No actionable issue identified in Phase 1 (attempt ${attempt})`);
+    if (attempt < MAX_DIAGNOSIS_RETRIES) {
+      log.info(`🔧 [system-engineer] Retrying Phase 1 with different temperature...`);
+      continue;
+    }
     logFeedback('Phase 1', 'NO_ISSUE', 'No issue found', '', 'LLM found no actionable issue');
     return null;
   }
 
-  log.info(`🔧 [system-engineer] Phase 1 complete: ${diagnosis.title} → ${diagnosis.affectedFile}`);
+  log.info(`🔧 [system-engineer] Phase 1 complete (attempt ${attempt}): ${diagnosis.title} → ${diagnosis.affectedFile}`);
 
-  // v2.0.737: Duplicate diagnosis check — if the diagnosis title is similar to
-  // a recent git commit message, reject it. SE was repeatedly fixing the same
-  // issue (e.g. "Wilson score for pWin") across 3 commits because it didn't
-  // check git history. This programmatic check prevents that.
+  // v2.0.737: Duplicate diagnosis check
+  let isDuplicate = false;
   try {
     const gitLog = execSync('git log --oneline -15 --format=%s', { cwd: PROJECT_ROOT, timeout: 5_000, stdio: 'pipe', encoding: 'utf-8' });
     const commitMessages = gitLog.trim().split('\n').map(m => m.toLowerCase());
-    const diagTitleLower = diagnosis.title.toLowerCase();
-    // Check if any recent commit message contains key words from the diagnosis title
-    const diagWords = diagTitleLower.split(/\s+/).filter(w => w.length > 4 && !['thesis', 'experience', 'direction', 'filtered', 'without', 'instead'].includes(w));
+    const diagTitleLower = (diagnosis.title as string).toLowerCase();
+    const diagWords = diagTitleLower.split(/\s+/).filter((w: string) => w.length > 4 && !['thesis', 'experience', 'direction', 'filtered', 'without', 'instead'].includes(w));
     for (const msg of commitMessages) {
-      const matchCount = diagWords.filter(w => msg.includes(w)).length;
-      // If >50% of significant words match a recent commit, it's a duplicate
+      const matchCount = diagWords.filter((w: string) => msg.includes(w)).length;
       if (diagWords.length > 0 && matchCount / diagWords.length >= 0.5) {
-        log.warn(`🚫 [system-engineer] DUPLICATE DIAGNOSIS: "${diagnosis.title}" matches recent commit "${msg.slice(0, 80)}" (${matchCount}/${diagWords.length} words match) — skipping to prevent re-fixing the same issue`);
+        log.warn(`🚫 [system-engineer] DUPLICATE DIAGNOSIS (attempt ${attempt}): "${diagnosis.title}" matches recent commit — ${attempt < MAX_DIAGNOSIS_RETRIES ? 'retrying with different temperature' : 'giving up'}`);
         logFeedback('Phase 1', 'DUPLICATE', diagnosis.title, diagnosis.affectedFile, `Matches recent git commit: ${msg.slice(0, 80)}`);
-        return null;
+        isDuplicate = true;
+        break;
       }
     }
   } catch {
     // non-critical — continue without duplicate check
   }
+  if (isDuplicate) {
+    if (attempt < MAX_DIAGNOSIS_RETRIES) continue;
+    return null;
+  }
 
-  // v2.0.202: Hard block list — check if the diagnosis targets a known-good method.
-  // This prevents wasting a Phase 2 LLM call on methods that have been verified correct.
+  // v2.0.202: Hard block list check
+  let isBlocked = false;
   for (const block of BLOCKED_PATTERNS) {
     if (diagnosis.affectedFile === block.file) {
       const textToCheck = `${diagnosis.title} ${diagnosis.rootCause} ${diagnosis.diagnosis}`;
       if (block.pattern.test(textToCheck)) {
-        log.warn(`🚫 [system-engineer] BLOCKED: "${diagnosis.title}" targets ${block.reason}`);
+        log.warn(`🚫 [system-engineer] BLOCKED (attempt ${attempt}): "${diagnosis.title}" targets ${block.reason} — ${attempt < MAX_DIAGNOSIS_RETRIES ? 'retrying' : 'giving up'}`);
         logFeedback('Phase 1', 'BLOCKED', diagnosis.title, diagnosis.affectedFile, block.reason);
-        return null;
+        isBlocked = true;
+        break;
       }
     }
   }
+  if (isBlocked) {
+    if (attempt < MAX_DIAGNOSIS_RETRIES) continue;
+    return null;
+  }
+
+  // v2.0.747: Diagnosis passed all checks — break out of retry loop
+  break;
+  } // end of diagnosis retry loop
 
   // v2.0.210: No more file-level cooldown. Instead, collect failed attempts
   // for this file and feed them to the LLM so it tries a DIFFERENT approach.
