@@ -20,13 +20,17 @@ The matching logic had two layers:
 
 The direction match was far too broad. An incident saying "OLR 99% on SELL" is **not** saying "block all SELLs" — it's describing a specific trade's thesis contradiction. But the gate interpreted any mention of "sell" as a directional block signal.
 
-### Fix
+### Fix (two layers)
 
-Tightened the matching logic to require **both** direction mention AND a losing indicator:
+**Layer 1: Tightened direction matching** — Detail-based match now requires both direction mention AND a losing indicator (`loss`, `losing`, `low win`, `wrong direction`, `ignoring`, `failure to learn`). Passing mentions like "OLR 99% on SELL" no longer trigger the gate.
 
-1. **Category-based match**: Only if the category name explicitly contains the direction (e.g. `direction-repetition-buy`, `sell-bias`). This is the strongest signal — the LLM named the category after the direction.
+**Layer 2: One-off category allowlist** — Categories that describe **single-trade observations** (not repeated directional patterns) are excluded from the gate entirely:
+- `thesis-contradicts-action` — one trade where thesis didn't match signal
+- `olr-signal-misuse` — observation about OLR reliability
+- `exit-timing-premature` — single trade exit timing
+- `vague-thesis` — thesis quality observation
 
-2. **Detail-based match**: Only if the detail mentions the direction **AND** a losing indicator (`loss`, `losing`, `low win`, `wrong direction`, `ignoring`, `failure to learn`). This filters out passing mentions like "OLR 99% on SELL" while still catching "5 of 6 SELL trades are losses" or "SELL has a 31% win rate".
+Only categories indicating a **systemic directional problem** (e.g. `direction-repetition`, `direction-confusion`) trigger the gate. This applies to both BUY and SELL equally.
 
 ### Impact
 
