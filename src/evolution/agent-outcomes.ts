@@ -107,16 +107,30 @@ export class AgentOutcomeTracker {
     log.info(`Agent outcomes recorded: ${allAgentDecisions.length} agents × decisions for cycle ${cycleNumber}`);
   }
 
-  /** After a position closes, backfill the outcome for all agents that recommended on it */
-  backfillOutcome(symbol: string, closePnlPct: number): void {
+  /** After a position closes, backfill the outcome for all agents that recommended on it.
+   *  v2.0.720: Only backfill records where the agent recommended a directional
+   *  action (buy/sell) that matches the closed position's side. Previously,
+   *  ALL records for the symbol (including HOLD recommendations) were marked
+   *  as win/loss, which silently corrupted every agent's win rate — a HOLD
+   *  that wasn't acted on has no outcome. This contamination propagated into
+   *  HACP voting weights via agent-evolution.ts. */
+  backfillOutcome(symbol: string, closePnlPct: number, positionSide?: 'buy' | 'sell'): void {
     const isWin = closePnlPct >= 0;
+    let backfilled = 0;
     for (const r of this.records) {
-      if (r.symbol === symbol && !r.outcome) {
-        r.outcome = isWin ? 'win' : 'loss';
-        r.pnlPct = closePnlPct;
-      }
+      if (r.symbol !== symbol || r.outcome) continue;
+      // v2.0.720: Skip HOLD and close recommendations — they have no directional
+      // outcome. Only buy/sell recommendations that match the position side
+      // can be meaningfully scored.
+      if (r.recommendedAction === 'hold' || r.recommendedAction === 'close') continue;
+      // If we know the position side, only backfill matching recommendations.
+      // A BUY recommendation when the position was SELL is not a valid outcome.
+      if (positionSide && r.recommendedAction !== positionSide) continue;
+      r.outcome = isWin ? 'win' : 'loss';
+      r.pnlPct = closePnlPct;
+      backfilled++;
     }
-    log.info(`Backfilled outcome for ${symbol}: ${isWin ? 'WIN' : 'LOSS'} (${(closePnlPct * 100).toFixed(2)}%)`);
+    log.info(`Backfilled outcome for ${symbol}: ${isWin ? 'WIN' : 'LOSS'} (${(closePnlPct * 100).toFixed(2)}%) — ${backfilled} directional records updated (${positionSide ?? 'unknown side'})`);
   }
 
   /** Get performance snapshot for a specific agent + symbol + regime combo.

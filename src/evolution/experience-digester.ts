@@ -468,11 +468,28 @@ export class ExperienceDigester {
   }
 
   /** Incremental: add a single freshly-closed record to the existing classes
-   *  without a full rebuild. Falls back to new class if no cluster matches. */
-  async addRecord(rec: ThesisExperienceRecord): Promise<void> {
+   *  without a full rebuild. Falls back to new class if no cluster matches.
+   *  v2.0.720: Added onLessonDigest callback — after the trade is digested into
+   *  a lesson, the callback is invoked with the derived exitType so the caller
+   *  can write it back to the record (e.g. premature_sl → record.exitType). */
+  async addRecord(
+    rec: ThesisExperienceRecord,
+    onLessonDigest?: (exitType: NonNullable<LessonStatement['exitType']>) => void,
+  ): Promise<void> {
     if (!this.cfg.enabled) return;
     if (!this.classesBuilt) return; // not yet built — rebuild will pick it up
     const lesson = await this.digestTrade(rec);
+    // v2.0.720: If the digester derived a fine-grained exitType, invoke the
+    // callback so the caller can write it back to the record. This bridges
+    // the A2A digester's premature_sl/correct_sl classification into RIL's
+    // CloseReasonAggregator, which was previously dead code.
+    if (onLessonDigest && lesson.exitType) {
+      try {
+        onLessonDigest(lesson.exitType);
+      } catch (err: unknown) {
+        log.warn(`[digester] onLessonDigest callback failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     const vec = await this.embedLesson(lesson);
     if (vec.length === 0) return;
     let best: ExperienceClass | null = null;

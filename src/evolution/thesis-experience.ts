@@ -188,6 +188,11 @@ export interface RecordCloseInput {
   /** v2.0.143: How the position was closed (SL/TP, consensus, manual, etc.).
    *  Stored on the ThesisExperienceRecord and used by RIL CloseReasonAggregator. */
   exitType?: ExitType;
+  /** v2.0.720: Fine-grained exit type from A2A digester (premature_sl, correct_sl, etc.).
+   *  If provided, overrides the coarse exitType on the record so
+   *  CloseReasonAggregator's premature warning logic actually fires.
+   *  Falls back to coarse exitType if digester hasn't run or failed. */
+  lessonExitType?: ExitType;
   /** v2.0.178: Market conditions at trade open time — the ACTUAL state that
    *  produced this outcome, not just the Meta-Agent's textual interpretation.
    *  Used for condition-based similarity matching in future checkThesisHistory
@@ -514,7 +519,11 @@ export class ThesisExperience {
         rationaleCats: rationales.map((r) => r.category),
         rationaleVectors,
         // v2.0.143: Store exit type for RIL CloseReasonAggregator
-        exitType: input.exitType,
+        // v2.0.720: If lessonExitType (fine-grained from digester) is provided,
+        // use it to override the coarse exitType. This ensures premature_sl /
+        // correct_sl etc. flow into CloseReasonAggregator so its premature
+        // warning logic actually fires. Falls back to coarse exitType if absent.
+        exitType: input.lessonExitType ?? input.exitType,
         // v2.0.178: Store market conditions + fusion predictions at entry time
         marketFeatures: input.marketFeatures,
         olrPWinAtEntry: input.olrPWinAtEntry,
@@ -531,7 +540,26 @@ export class ThesisExperience {
       // v2.0.140: incremental class update (non-blocking) — digest + embed the
       // new trade into its lesson class so the next checkThesisHistory can
       // classify against it.
-      void this.digester.addRecord(record).catch((err: unknown) =>
+      // v2.0.720: Pass a callback that writes the digester's fine-grained
+      // exitType (premature_sl, correct_sl, etc.) back to the in-memory record.
+      // This bridges the A2A digester into RIL's CloseReasonAggregator.
+      // Note: we only update the in-memory record (not disk) because JSONL is
+      // append-only — on restart, the digester's rebuildClasses will re-digest
+      // and re-derive the fine-grained exitType. This avoids duplicate JSONL lines.
+      void this.digester.addRecord(record, (lessonExitType) => {
+        if (!lessonExitType) return;
+        // Map LessonStatement.exitType → ExitType
+        // 'thesis_invalidated' (LessonStatement) → 'thesis_invalidation' (ExitType)
+        // The other 4 values (premature_sl, premature_tp, correct_sl, correct_tp) are shared.
+        const mappedExitType: ExitType | undefined = lessonExitType === 'thesis_invalidated'
+          ? 'thesis_invalidation'
+          : (lessonExitType as ExitType);
+        // Only override if the record currently has a coarse exitType (not already fine-grained)
+        const coarseTypes = ['sl_tp', 'consensus', 'manual', 'thesis_invalidation', 'reconciliation', 'exchange_closed'];
+        if (record.exitType && !coarseTypes.includes(record.exitType)) return;
+        record.exitType = mappedExitType;
+        log.info(`[EXP-digest] Wrote back fine-grained exitType="${mappedExitType}" for ${record.symbol} ${record.side} (in-memory only)`);
+      }).catch((err: unknown) =>
         log.warn(`[EXP-digest] addRecord failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
       );
       log.info(`[EXP] recorded ${outcome} ${input.symbol} ${input.side.toUpperCase()} (${rationales.length} rationales) — memory ${this.records.length}`);

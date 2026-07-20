@@ -22,9 +22,16 @@ export const FEATURE_NAMES = [
   'volatility', 'srDistanceBps', 'obImbalance',
   'sentiment', 'signalAgreement', 'fundingRate',
   'volumeRatio', 'sentimentConviction',
+  // v2.0.720: MFE/MAE features — actually wired into the model now.
+  // Previously (v2.0.152) these were added to the features object in index.ts
+  // but silently discarded by contextToVector because FEATURE_NAMES didn't
+  // include them. MFE/MAE are among the strongest predictors of trade outcome:
+  // a trade that reached +4.5% MFE then hit -2% SL is very different from one
+  // that went straight to -2%.
+  'mfePct', 'maePct', 'mfeToPnlRatio',
 ] as const;
 
-const D = FEATURE_NAMES.length; // 8
+const D = FEATURE_NAMES.length; // 11
 
 // ─── Types ───
 
