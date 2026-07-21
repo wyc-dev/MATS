@@ -2308,237 +2308,417 @@ function OptionsDataPanel({ data }: { data: APIData | null }) {
 
 /* ── Evolution Panel — Production Grade ── */
 
-function EvolutionHeader({ generation, symbolCount }: {
-  generation: number; symbolCount: number
+// ─── v2.0.219: Professional Evolution Engine Panel ──────────────────
+// Replaces the old 4-section layout with a 19-layer system display.
+// Shows ALL trading record digestion, memory, and agent decision data.
+// Style: evo-* / exp-* CSS classes preserved.
+
+function EvolutionHeader({ generation, symbolCount, systemsReady, systemsTotal }: {
+  generation: number; symbolCount: number; systemsReady: number; systemsTotal: number
 }) {
   return (
     <div className="evo-header">
       <div className="evo-header-left">
-        <span className="evo-title">Evolution</span>
+        <span className="evo-title">Evolution Engine</span>
       </div>
       <div className="evo-header-right">
-        <span className="evo-badge accent">Gen {generation}</span>
+        <span className="evo-badge accent">{systemsReady}/{systemsTotal} systems</span>
         {symbolCount > 0 && <span className="evo-badge">{symbolCount} sym</span>}
       </div>
     </div>
   )
 }
 
-function OLRSection({ olrState, openPositionSymbols, isExpanded, onToggleExpand }: { olrState: any; openPositionSymbols?: Set<string>; isExpanded: boolean; onToggleExpand: () => void }) {
+// ─── System Status Grid ─────────────────────────────────────────────
+// Compact grid showing all 19 learning systems with ready/training/cold states.
+
+function SystemStatusGrid({ al, olrState, emState, rilState }: {
+  al?: APIData['advancedLearning']; olrState?: any; emState?: any; rilState?: any
+}) {
+  type SysState = 'ready' | 'training' | 'cold' | 'disabled'
+  interface SysEntry { name: string; state: SysState; detail: string }
+
+  const systems: SysEntry[] = []
+
+  // OLR
+  const olrSyms = olrState?.symbols ?? []
+  const olrReady = olrSyms.filter((s: any) => s.longSamples + s.shortSamples >= 10).length
+  systems.push({ name: 'OLR', state: olrReady > 0 ? 'ready' : 'cold', detail: `${olrSyms.length} symbols, ${olrReady} ready` })
+
+  // Shadow Trades
+  const shadowOpen = olrState?.shadowOpen?.length ?? 0
+  const shadowResolved = olrState?.shadowStats?.reduce((a: number, s: any) => a + s.longWins + s.longLosses + s.shortWins + s.shortLosses, 0) ?? 0
+  systems.push({ name: 'Shadow', state: shadowOpen > 0 || shadowResolved > 0 ? 'ready' : 'cold', detail: `${shadowOpen} open, ${shadowResolved} resolved` })
+
+  // NA
+  const naReady = al?.na?.ready ?? false
+  const naSamples = al?.na?.sampleCount ?? 0
+  systems.push({ name: 'NA', state: naReady ? 'ready' : naSamples > 0 ? 'training' : 'cold', detail: `${naSamples} samples${naReady ? ' ✓' : `/${200}`}` })
+
+  // AttnRes Trade Embedder
+  const attnUpdates = al?.attnres?.updateCount ?? 0
+  systems.push({ name: 'AttnRes', state: attnUpdates > 0 ? 'ready' : 'cold', detail: `${attnUpdates} updates, |w|=${(al?.attnres?.wNorm ?? 0).toFixed(3)}` })
+
+  // CHR
+  const chrSyms = al?.chr?.symbols ?? {}
+  const chrCount = Object.keys(chrSyms).length
+  systems.push({ name: 'CHR', state: chrCount > 0 ? 'ready' : 'cold', detail: `${chrCount} symbols` })
+
+  // Anti-Pattern
+  systems.push({ name: 'Anti-Pattern', state: (al?.antiPattern?.clusterCount ?? 0) > 0 ? 'ready' : 'cold', detail: `${al?.antiPattern?.clusterCount ?? 0} clusters` })
+
+  // Replay Buffer
+  const rbTotal = al?.replay?.totalSamples ?? 0
+  systems.push({ name: 'Replay', state: rbTotal >= 10 ? 'ready' : rbTotal > 0 ? 'training' : 'cold', detail: `${rbTotal} samples, ${al?.replay?.totalReplays ?? 0} replays` })
+
+  // Bayesian OLR
+  const bayesApplied = al?.bayesian?.buy?.applied ?? false
+  systems.push({ name: 'Bayesian', state: bayesApplied ? 'ready' : 'cold', detail: bayesApplied ? `σ=${(al!.bayesian!.buy.std * 100).toFixed(1)}%` : 'cold-start' })
+
+  // Temporal Attention
+  const taUpdates = al?.temporal?.updateCount ?? 0
+  systems.push({ name: 'Temporal', state: taUpdates > 0 ? 'ready' : 'cold', detail: `${al?.temporal?.historyLen ?? 0} trades, ${taUpdates} updates` })
+
+  // Cross-Symbol
+  const csSyms = al?.crossSymbol ?? []
+  systems.push({ name: 'Cross-Symbol', state: csSyms.length > 0 ? 'ready' : 'cold', detail: `${csSyms.length} symbols` })
+
+  // Reward Shaper
+  systems.push({ name: 'Reward', state: 'ready', detail: '5-component' })
+
+  // Active Exploration
+  systems.push({ name: 'Exploration', state: (al?.exploration?.enabled ?? false) ? 'ready' : 'disabled', detail: `UCB c=${al?.exploration?.ucbConstant ?? 0}` })
+
+  // World Model
+  const wmReady = al?.worldModel?.ready ?? false
+  systems.push({ name: 'World Model', state: wmReady ? 'ready' : (al?.worldModel?.sampleCount ?? 0) > 0 ? 'training' : 'cold', detail: `${al?.worldModel?.sampleCount ?? 0} samples` })
+
+  // EM Cycle Chain
+  systems.push({ name: 'EM Chain', state: (emState?.summaryCount ?? 0) > 0 ? 'ready' : 'cold', detail: `${emState?.summaryCount ?? 0} summaries` })
+
+  // RIL
+  systems.push({ name: 'RIL', state: rilState?.isBuilt ? 'ready' : 'cold', detail: `${rilState?.patternCount ?? 0} patterns` })
+
+  // Conditional WR Gate
+  systems.push({ name: 'Cond WR Gate', state: 'ready', detail: 'soft gate' })
+
+  // Execution Lens
+  systems.push({ name: 'Exec Lens', state: attnUpdates > 0 ? 'ready' : 'cold', detail: attnUpdates > 0 ? 'wExecution active' : 'cold-start' })
+
+  const stateColor = (s: SysState) => s === 'ready' ? 'var(--green)' : s === 'training' ? 'var(--gold)' : s === 'disabled' ? 'var(--text-muted)' : 'var(--red)'
+  const stateLabel = (s: SysState) => s === 'ready' ? '●' : s === 'training' ? '◐' : s === 'disabled' ? '○' : '○'
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '6px', padding: '8px 12px' }}>
+      {systems.map(sys => (
+        <div key={sys.name} style={{
+          display: 'flex', flexDirection: 'column', padding: '6px 8px',
+          background: 'rgba(255,255,255,0.02)', borderRadius: 'var(--radius-sm)',
+          border: '1px solid var(--glass-border)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <span style={{ color: stateColor(sys.state), fontSize: '0.7rem' }}>{stateLabel(sys.state)}</span>
+            <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-secondary)' }}>{sys.name}</span>
+          </div>
+          <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '2px' }}>{sys.detail}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ─── OLR + Bayesian Section ─────────────────────────────────────────
+// Per-symbol P(win) with source breakdown + feature weights + Bayesian CI
+
+function OLRBayesianSection({ olrState, al, openPositionSymbols, isExpanded, onToggleExpand }: {
+  olrState: any; al?: APIData['advancedLearning']; openPositionSymbols?: Set<string>;
+  isExpanded: boolean; onToggleExpand: () => void
+}) {
   const hasSymbols = olrState?.symbols?.length > 0
-  const hasPending = olrState?.pending?.length > 0
   const hasShadow = olrState?.shadowStats?.length > 0
   const expanded = isExpanded
+  const bayes = al?.bayesian
 
   return (
     <div className="evo-section">
       <div className="evo-section-header" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
         <div className="evo-section-accent" />
-        <span className="evo-section-title">OLR + Path Risk</span>
+        <span className="evo-section-title">OLR + Bayesian Uncertainty</span>
         {hasSymbols && <span className="evo-badge evo-badge-right">{olrState.symbols.length} symbols</span>}
         <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
       </div>
-
       {expanded && (
         <div className="slide-expand-content">
-        {!hasSymbols && !hasPending ? (
-        <div className="evo-empty">
-          <div className="evo-empty-icon"><Dna size={48} color="var(--text-muted)" /></div>
-          <div className="evo-empty-text">Waiting for shadow trade data</div>
-          <div className="evo-empty-hint">Shadow trades open every cycle — outcomes feed OLR after SL/TP hit</div>
-        </div>
-      ) : (
-        <>
-          {hasShadow && (
-            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                Shadow Trade Results (TP-before-SL)
-              </div>
-              {olrState.shadowStats.map((ss: any) => (
-                <div key={ss.symbol} style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '4px' }}>
-                  <span style={{ fontWeight: 600, fontSize: '0.8rem' }}>{ss.symbol.toUpperCase()}</span>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{ss.openCount} open</span>
-                  <span style={{ fontSize: '0.7rem', color: ss.longWinRate > 0.5 ? 'var(--green)' : 'var(--red)' }}>
-                    LONG {ss.longWins}W/{ss.longLosses}L ({(ss.longWinRate * 100).toFixed(0)}%)
-                  </span>
-                  <span style={{ fontSize: '0.7rem', color: ss.shortWinRate > 0.5 ? 'var(--green)' : 'var(--red)' }}>
-                    SHORT {ss.shortWins}W/{ss.shortLosses}L ({(ss.shortWinRate * 100).toFixed(0)}%)
-                  </span>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>avg {ss.avgHoldCycles.toFixed(0)} cycles</span>
-                </div>
-              ))}
+          {!hasSymbols ? (
+            <div className="evo-empty">
+              <div className="evo-empty-text">Waiting for OLR data...</div>
+              <div className="evo-empty-hint">Shadow trades feed OLR after SL/TP resolution</div>
             </div>
-          )}
-
-          {hasPending && (
-            <div className="evo-pending-section">
-              {olrState.pending.map((p: any) => (
-                <div key={p.symbol} className="evo-pending-row">
-                  <span className="evo-pending-symbol">{p.symbol.toUpperCase()}</span>
-                  <div className="evo-pending-track">
-                    <div className="evo-pending-fill" style={{ width: `${p.pct}%` }} />
+          ) : (
+            <>
+              {/* Shadow Trade Results */}
+              {hasShadow && (
+                <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)' }}>
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    Shadow Trades (TP-before-SL)
                   </div>
-                  <span className="evo-pending-meta">{p.pending}/{p.needed} ({p.pct}%)</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {hasSymbols && (
-            olrState.symbols.map((symState: any) => {
-              const hasPosition = openPositionSymbols?.has(symState.symbol.toLowerCase())
-              const longIconColor = symState.longPWin > 0.6 ? 'var(--green)' : symState.longPWin < 0.4 ? 'var(--red)' : 'var(--gold)'
-              const shortIconColor = symState.shortPWin > 0.6 ? 'var(--green)' : symState.shortPWin < 0.4 ? 'var(--red)' : 'var(--gold)'
-              return (
-                <div key={symState.symbol} className="evo-cluster-symbol">
-                  <div className="evo-cluster-symbol-header">
-                    <span className="evo-cluster-symbol-name">{symState.symbol.toUpperCase()}</span>
-                    {hasPosition && <span className="evo-badge evo-badge-position">POSITION</span>}
-                    <span className="evo-badge">{symState.longSamples}L / {symState.shortSamples}S samples</span>
-                  </div>
-                  <div style={{ padding: '4px 16px 8px', display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: '0.8rem' }}>
-                      <Circle size={10} color={longIconColor} fill={longIconColor} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />BUY P(win)=<b style={{ color: symState.longPWin > 0.6 ? 'var(--green)' : symState.longPWin < 0.4 ? 'var(--red)' : 'var(--text-muted)' }}>{(symState.longPWin * 100).toFixed(0)}%</b>
-                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>({symState.longConfidence})</span>
-                    </span>
-                    <span style={{ fontSize: '0.8rem' }}>
-                      <Circle size={10} color={shortIconColor} fill={shortIconColor} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />SELL P(win)=<b style={{ color: symState.shortPWin > 0.6 ? 'var(--green)' : symState.shortPWin < 0.4 ? 'var(--red)' : 'var(--text-muted)' }}>{(symState.shortPWin * 100).toFixed(0)}%</b>
-                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>({symState.shortConfidence})</span>
-                    </span>
-                  </div>
-                  {(symState.longSource || symState.shortSource) && (() => {
-                    const ls = symState.longSource ?? { shadow: 0, paper: 0, real: 0, backfill: 0 };
-                    const ss = symState.shortSource ?? { shadow: 0, paper: 0, real: 0, backfill: 0 };
-                    const srcRow = (label: string, s: { shadow: number; paper: number; real: number; backfill: number }) => (
-                      <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>
-                        {label}: <b style={{ color: 'var(--text)' }}>{s.shadow}</b> sh · <b style={{ color: 'var(--text)' }}>{s.paper}</b> pa · <b style={{ color: 'var(--text)' }}>{s.real}</b> re · <b style={{ color: 'var(--accent, #a78bfa)' }}>{s.backfill}</b> bf
+                  {olrState.shadowStats.map((ss: any) => (
+                    <div key={ss.symbol} style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '2px', fontSize: '0.7rem' }}>
+                      <span style={{ fontWeight: 600 }}>{ss.symbol.toUpperCase()}</span>
+                      <span style={{ color: 'var(--text-muted)' }}>{ss.openCount} open</span>
+                      <span style={{ color: ss.longWinRate > 0.5 ? 'var(--green)' : 'var(--red)' }}>
+                        L {ss.longWins}W/{ss.longLosses}L ({(ss.longWinRate * 100).toFixed(0)}%)
                       </span>
-                    );
-                    return (
-                      <div style={{ padding: '0 16px 4px', display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-                        {srcRow('LONG', ls)}
-                        {srcRow('SHORT', ss)}
-                      </div>
-                    );
-                  })()}
-                  {symState.featureWeights && symState.featureWeights.length > 0 && (
-                    <div style={{ padding: '0 16px 8px' }}>
-                      {symState.featureWeights.map((fw: any) => {
-                        const maxAbs = Math.max(...symState.featureWeights.map((w: any) => Math.max(Math.abs(w.longWeight), Math.abs(w.shortWeight))), 0.1)
-                        const longPct = Math.abs(fw.longWeight) / maxAbs * 50
-                        const shortPct = Math.abs(fw.shortWeight) / maxAbs * 50
-                        return (
-                          <div key={fw.name} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
-                            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', width: '100px', textAlign: 'right' }}>{fw.name}</span>
-                            <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '2px' }}>
-                              <div style={{ width: `${longPct}%`, height: '6px', background: fw.longWeight > 0 ? 'var(--green)' : 'var(--red)', borderRadius: '2px', opacity: 0.7 }} />
-                              <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>{fw.longWeight.toFixed(2)}</span>
-                            </div>
-                            <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '2px', flexDirection: 'row-reverse' }}>
-                              <div style={{ width: `${shortPct}%`, height: '6px', background: fw.shortWeight > 0 ? 'var(--green)' : 'var(--red)', borderRadius: '2px', opacity: 0.7 }} />
-                              <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>{fw.shortWeight.toFixed(2)}</span>
-                            </div>
-                          </div>
-                        )
-                      })}
+                      <span style={{ color: ss.shortWinRate > 0.5 ? 'var(--green)' : 'var(--red)' }}>
+                        S {ss.shortWins}W/{ss.shortLosses}L ({(ss.shortWinRate * 100).toFixed(0)}%)
+                      </span>
+                      <span style={{ color: 'var(--text-muted)' }}>MFE {(ss.avgMfePct * 100).toFixed(1)}% MAE {(ss.avgMaePct * 100).toFixed(1)}%</span>
                     </div>
-                  )}
+                  ))}
                 </div>
-              )
-            })
+              )}
+
+              {/* Per-symbol OLR predictions */}
+              {olrState.symbols.map((symState: any) => {
+                const hasPosition = openPositionSymbols?.has(symState.symbol.toLowerCase())
+                const longColor = symState.longPWin > 0.6 ? 'var(--green)' : symState.longPWin < 0.4 ? 'var(--red)' : 'var(--gold)'
+                const shortColor = symState.shortPWin > 0.6 ? 'var(--green)' : symState.shortPWin < 0.4 ? 'var(--red)' : 'var(--gold)'
+                const isBayesSymbol = bayes?.symbol === symState.symbol.toLowerCase()
+                return (
+                  <div key={symState.symbol} className="evo-cluster-symbol">
+                    <div className="evo-cluster-symbol-header">
+                      <span className="evo-cluster-symbol-name">{symState.symbol.toUpperCase()}</span>
+                      {hasPosition && <span className="evo-badge evo-badge-position">POSITION</span>}
+                      <span className="evo-badge">{symState.longSamples}L / {symState.shortSamples}S</span>
+                    </div>
+                    <div style={{ padding: '4px 12px 6px', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '0.78rem' }}>
+                        <Circle size={10} color={longColor} fill={longColor} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />
+                        BUY P(win)=<b style={{ color: longColor }}>{(symState.longPWin * 100).toFixed(0)}%</b>
+                        <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginLeft: '4px' }}>({symState.longConfidence})</span>
+                      </span>
+                      <span style={{ fontSize: '0.78rem' }}>
+                        <Circle size={10} color={shortColor} fill={shortColor} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />
+                        SELL P(win)=<b style={{ color: shortColor }}>{(symState.shortPWin * 100).toFixed(0)}%</b>
+                        <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginLeft: '4px' }}>({symState.shortConfidence})</span>
+                      </span>
+                      {/* Bayesian CI for active symbol */}
+                      {isBayesSymbol && bayes?.buy?.applied && (
+                        <span style={{ fontSize: '0.72rem', color: 'var(--accent, #a78bfa)' }}>
+                          σ_buy={((bayes.buy.uncertainty) * 100).toFixed(0)}% CI[{(bayes.buy.low * 100).toFixed(0)}-{(bayes.buy.high * 100).toFixed(0)}]
+                        </span>
+                      )}
+                    </div>
+                    {/* Source breakdown */}
+                    {(symState.longSource || symState.shortSource) && (() => {
+                      const ls = symState.longSource ?? { shadow: 0, paper: 0, real: 0, backfill: 0 }
+                      const ss = symState.shortSource ?? { shadow: 0, paper: 0, real: 0, backfill: 0 }
+                      const srcRow = (label: string, s: any) => (
+                        <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>
+                          {label}: <b style={{ color: 'var(--text)' }}>{s.shadow}</b>sh · <b style={{ color: 'var(--text)' }}>{s.paper}</b>pa · <b style={{ color: 'var(--green)' }}>{s.real}</b>re · <b style={{ color: 'var(--accent, #a78bfa)' }}>{s.backfill}</b>bf
+                        </span>
+                      )
+                      return (
+                        <div style={{ padding: '0 12px 4px', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                          {srcRow('L', ls)} {srcRow('S', ss)}
+                        </div>
+                      )
+                    })()}
+                    {/* Feature weights */}
+                    {symState.featureWeights && symState.featureWeights.length > 0 && (
+                      <div style={{ padding: '0 12px 8px' }}>
+                        {symState.featureWeights.map((fw: any) => {
+                          const maxAbs = Math.max(...symState.featureWeights.map((w: any) => Math.max(Math.abs(w.longWeight), Math.abs(w.shortWeight))), 0.1)
+                          const longPct = Math.abs(fw.longWeight) / maxAbs * 50
+                          const shortPct = Math.abs(fw.shortWeight) / maxAbs * 50
+                          return (
+                            <div key={fw.name} style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
+                              <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', width: '90px', textAlign: 'right' }}>{fw.name}</span>
+                              <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '2px' }}>
+                                <div style={{ width: `${longPct}%`, height: '5px', background: fw.longWeight > 0 ? 'var(--green)' : 'var(--red)', borderRadius: '2px', opacity: 0.7 }} />
+                                <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)' }}>{fw.longWeight.toFixed(2)}</span>
+                              </div>
+                              <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '2px', flexDirection: 'row-reverse' }}>
+                                <div style={{ width: `${shortPct}%`, height: '5px', background: fw.shortWeight > 0 ? 'var(--green)' : 'var(--red)', borderRadius: '2px', opacity: 0.7 }} />
+                                <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)' }}>{fw.shortWeight.toFixed(2)}</span>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </>
           )}
-        </>
-      )}
         </div>
       )}
     </div>
   )
 }
 
-function EvolutionPanel({ data }: { data: APIData | null }) {
-  const evo = data?.evolution
-  const [expandedSection, setExpandedSection] = useState<string | null>(null)
-  const toggleSection = (id: string) => setExpandedSection(prev => prev === id ? null : id)
+// ─── Experience Digestion Section (simplified, professional) ───────
+// Keeps parseDigest for W/L + lessons, removes decorative MiniLM pipeline.
 
-  if (!evo) {
-    return (
-      <div className="panel">
-        <EvolutionHeader generation={0} symbolCount={0} />
-        <div className="evo-empty evo-empty-top">
-          <div className="evo-empty-text">Waiting for evolution data...</div>
-        </div>
-      </div>
-    )
-  }
+function ExperienceDigestionSection({ expDigest, expActions, isExpanded, onToggleExpand }: {
+  expDigest?: string; expActions?: Array<{ symbol: string; side: string; verdict: string; reason: string; cycle: number; ts: number }>;
+  isExpanded: boolean; onToggleExpand: () => void
+}) {
+  if (!expDigest && (!expActions || expActions.length === 0)) return null
+  const expanded = isExpanded
+  const parsed = expDigest ? parseDigest(expDigest) : null
 
-  const symbolCount = data?.olrState?.symbols?.length ?? 0
-
-  // Build set of open position symbols (lowercased for matching)
-  const openPositionSymbols = new Set<string>()
-  const portfolioPositions = data?.portfolio?.positions
-  if (portfolioPositions) {
-    for (const pos of Object.values(portfolioPositions) as any[]) {
-      if (pos.symbol) openPositionSymbols.add(pos.symbol.toLowerCase())
+  const actionLines: string[] = []
+  if (expActions && expActions.length > 0) {
+    for (const a of expActions) {
+      const sideLabel = a.side === 'buy' ? 'LONG' : 'SHORT'
+      if (a.verdict === 'FAST_APPROVE' || a.verdict === 'APPROVE_WITH_NOTE' || a.verdict === 'PASS_OPEN_DIRECTLY') {
+        actionLines.push(`✓ ${a.symbol} ${sideLabel} — ${a.reason}`)
+      } else if (a.verdict === 'REJECT') {
+        actionLines.push(`✗ ${a.symbol} ${sideLabel} — ${a.reason}`)
+      } else if (a.verdict === 'REVERSE_DIRECTION') {
+        actionLines.push(`↔ ${a.symbol} — ${a.reason}`)
+      }
     }
   }
 
   return (
-    <div className="panel">
-      <EvolutionHeader
-        generation={evo.generation}
-        symbolCount={symbolCount}
-      />
-      <EMCycleDigestionSection emState={data?.emState} isExpanded={expandedSection === 'em'} onToggleExpand={() => toggleSection('em')} />
-      <RILSection rilState={data?.rilState} isExpanded={expandedSection === 'ril'} onToggleExpand={() => toggleSection('ril')} />
-      <ExperienceDigestionSection expDigest={data?.portfolio?.expDigest} expActions={data?.expActions} isExpanded={expandedSection === 'exp'} onToggleExpand={() => toggleSection('exp')} />
-      <OLRSection olrState={data?.olrState} openPositionSymbols={openPositionSymbols} isExpanded={expandedSection === 'olr'} onToggleExpand={() => toggleSection('olr')} />
+    <div className="evo-section">
+      <div className="evo-section-header" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
+        <div className="evo-section-accent" />
+        <span className="evo-section-title">
+          Experience Digestion
+          {parsed && parsed.streak >= 3 && <span className="exp-streak-warning"> ●</span>}
+        </span>
+        {parsed && <span className="evo-badge evo-badge-right">{parsed.wins}W/{parsed.losses}L</span>}
+        <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
+      </div>
+      {expanded && (
+        <div className="exp-digest-content">
+          {/* Action log */}
+          {actionLines.length > 0 && (
+            <div className="exp-digest-section">
+              <div className="exp-digest-subtitle">EXP Decisions (this cycle)</div>
+              {actionLines.map((l, i) => (
+                <div key={i} className="exp-digest-action">{l}</div>
+              ))}
+            </div>
+          )}
+
+          {parsed && (
+            <>
+              {/* Headline stats */}
+              <div className="exp-stats-grid">
+                <div className="exp-stat-card">
+                  <div className="exp-stat-value" style={{ color: parsed.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                    {parsed.netPnl >= 0 ? '+' : ''}{parsed.netPnl.toFixed(3)}
+                  </div>
+                  <div className="exp-stat-label">Net PnL</div>
+                </div>
+                <div className="exp-stat-card">
+                  <div className="exp-stat-value">{parsed.wins}<span className="exp-stat-sep">/</span>{parsed.losses}</div>
+                  <div className="exp-stat-label">W / L</div>
+                </div>
+                <div className="exp-stat-card">
+                  <div className="exp-stat-value">{parsed.total > 0 ? ((parsed.wins / parsed.total) * 100).toFixed(0) : '—'}%</div>
+                  <div className="exp-stat-label">Win Rate</div>
+                </div>
+                <div className="exp-stat-card">
+                  <div className={`exp-stat-value ${parsed.streak >= 3 ? 'streak-warn' : ''}`}>{parsed.streak}</div>
+                  <div className="exp-stat-label">Streak</div>
+                </div>
+              </div>
+
+              {/* Losing patterns */}
+              {parsed.losingClasses.length > 0 && (
+                <div className="exp-digest-section">
+                  <div className="exp-digest-subtitle">Losing Patterns ({parsed.losingClasses.length})</div>
+                  {parsed.losingClasses.slice(0, 5).map((cls, i) => (
+                    <ClassCard key={i} cls={cls} type="losing" />
+                  ))}
+                </div>
+              )}
+
+              {/* Winning patterns */}
+              {parsed.winningClasses.length > 0 && (
+                <div className="exp-digest-section">
+                  <div className="exp-digest-subtitle">Winning Patterns ({parsed.winningClasses.length})</div>
+                  {parsed.winningClasses.slice(0, 5).map((cls, i) => (
+                    <ClassCard key={i} cls={cls} type="winning" />
+                  ))}
+                </div>
+              )}
+
+              {/* Per-symbol breakdown */}
+              {parsed.perSymbol.length > 0 && (
+                <div className="exp-digest-section">
+                  <div className="exp-digest-subtitle">Per Symbol / Side</div>
+                  {parsed.perSymbol.map((ps, i) => (
+                    <div key={i} style={{ display: 'flex', gap: '12px', fontSize: '0.72rem', marginBottom: '2px', alignItems: 'center' }}>
+                      <span style={{ fontWeight: 600 }}>{ps.symbol}</span>
+                      <span style={{ color: ps.side === 'BUY' ? 'var(--green)' : 'var(--red)' }}>{ps.side}</span>
+                      <span style={{ color: 'var(--text-muted)' }}>{ps.wins}W/{ps.losses}L</span>
+                      <span style={{ color: ps.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{ps.netPnl >= 0 ? '+' : ''}{ps.netPnl.toFixed(3)}</span>
+                      <span style={{ color: 'var(--text-muted)' }}>{ps.avgHold}min</span>
+                      {ps.isPremature && <span style={{ color: 'var(--gold)' }}>⚠ premature</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Root cause insight */}
+              {parsed.rootCause.insight && (
+                <div className="exp-digest-section">
+                  <div className="exp-digest-subtitle">Key Insight</div>
+                  <div className="exp-lesson-item">{parsed.rootCause.insight}</div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
 
-/* ── v2.0.140: EM Cycle Digestion Section (v2.0.141: cycle chain only, insight vectors replaced by RIL) ── */
+// ─── EM Cycle Chain Section (simplified) ─────────────────────────────
 
 function EMCycleDigestionSection({ emState, isExpanded, onToggleExpand }: { emState?: any; isExpanded: boolean; onToggleExpand: () => void }) {
   if (!emState) return null
   const expanded = isExpanded
-
   const accuracyPct = emState.convergenceChecks > 0 ? (emState.convergenceAccuracy * 100).toFixed(1) : '—'
-  const accuracyColor = emState.convergenceAccuracy > 0.6 ? 'var(--green)' : emState.convergenceAccuracy < 0.4 ? 'var(--red)' : 'var(--text-tertiary)'
 
   return (
     <div className="evo-section">
       <div className="evo-section-header" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
         <div className="evo-section-accent" />
         <span className="evo-section-title">EM Cycle Chain</span>
+        {emState.summaryCount > 0 && <span className="evo-badge evo-badge-right">{emState.summaryCount} summaries</span>}
         <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
       </div>
       {expanded && (
         <div className="exp-digest-content">
-          <div className="exp-pipeline-desc" style={{ marginBottom: 'var(--space-4)' }}>
-            Market continuity via Meta-Agent cycle summaries · tiered memory (hot/warm/cold)
-          </div>
-
           <div className="exp-stats-grid">
             <div className="exp-stat-card">
               <div className="exp-stat-value">{emState.summaryCount ?? 0}</div>
-              <div className="exp-stat-label">Cycle Summaries</div>
+              <div className="exp-stat-label">Summaries</div>
             </div>
             <div className="exp-stat-card">
-              <div className="exp-stat-value" style={{ color: accuracyColor }}>{accuracyPct}%</div>
-              <div className="exp-stat-label">Convergence Acc</div>
+              <div className="exp-stat-value" style={{ color: emState.convergenceAccuracy > 0.6 ? 'var(--green)' : 'var(--text-muted)' }}>{accuracyPct}%</div>
+              <div className="exp-stat-label">Conv Acc</div>
             </div>
             <div className="exp-stat-card">
               <div className="exp-stat-value">{emState.convergenceChecks ?? 0}</div>
-              <div className="exp-stat-label">Convergence Checks</div>
+              <div className="exp-stat-label">Checks</div>
             </div>
           </div>
-
           {emState.latestInsight && (
             <div className="exp-digest-section">
               <div className="exp-digest-subtitle">Latest Insight</div>
               <div className="exp-lesson-item">{emState.latestInsight}</div>
               {emState.latestSignal && (
-                <div className="exp-lesson-item" style={{ color: 'var(--text-muted)', marginTop: 'var(--space-1)' }}>
+                <div className="exp-lesson-item" style={{ color: 'var(--text-muted)', marginTop: '4px', fontSize: '0.7rem' }}>
                   Signal: {emState.latestSignal}
                 </div>
               )}
@@ -2550,7 +2730,7 @@ function EMCycleDigestionSection({ emState, isExpanded, onToggleExpand }: { emSt
   )
 }
 
-/* ── v2.0.141: RIL Reason Intelligence Layer Section ── */
+// ─── RIL Section (live data, no static architecture text) ───────────
 
 function RILSection({ rilState, isExpanded, onToggleExpand }: { rilState?: any; isExpanded: boolean; onToggleExpand: () => void }) {
   if (!rilState) return null
@@ -2560,15 +2740,12 @@ function RILSection({ rilState, isExpanded, onToggleExpand }: { rilState?: any; 
     <div className="evo-section">
       <div className="evo-section-header" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
         <div className="evo-section-accent" />
-        <span className="evo-section-title">RIL Reason Intelligence</span>
+        <span className="evo-section-title">RIL Pattern Intelligence</span>
+        <span className="evo-badge evo-badge-right">{rilState.patternCount ?? 0} clusters</span>
         <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
       </div>
       {expanded && (
         <div className="exp-digest-content">
-          <div className="exp-pipeline-desc" style={{ marginBottom: 'var(--space-4)' }}>
-            Structured entry/close pattern reference data for Meta-Agent · greedy cosine clustering of rationale texts
-          </div>
-
           <div className="exp-stats-grid">
             <div className="exp-stat-card">
               <div className="exp-stat-value">{rilState.patternCount ?? 0}</div>
@@ -2579,26 +2756,10 @@ function RILSection({ rilState, isExpanded, onToggleExpand }: { rilState?: any; 
               <div className="exp-stat-label">Trades Analyzed</div>
             </div>
             <div className="exp-stat-card">
-              <div className="exp-stat-value" style={{ color: rilState.isBuilt ? 'var(--green)' : 'var(--yellow)' }}>
+              <div className="exp-stat-value" style={{ color: rilState.isBuilt ? 'var(--green)' : 'var(--gold)' }}>
                 {rilState.isBuilt ? 'Active' : 'Building'}
               </div>
               <div className="exp-stat-label">Status</div>
-            </div>
-          </div>
-
-          <div className="exp-digest-section">
-            <div className="exp-digest-subtitle">Architecture</div>
-            <div className="exp-lesson-item">
-              <b>PatternClusterManager</b> — Greedy cosine clustering of entry rationale texts (MiniLM 384-d) → per-pattern WR/PnL. Injected as <code>ENTRY PATTERN PERFORMANCE</code>.
-            </div>
-            <div className="exp-lesson-item">
-              <b>CloseReasonAggregator</b> — Pure math GROUP BY exitType+decisionOrigin → per-close-reason WR/PnL. Injected as <code>CLOSE REASON PERFORMANCE</code>.
-            </div>
-            <div className="exp-lesson-item">
-              <b>SimilarTradeRetriever</b> — Top-N similar past trades by combination similarity. Injected as <code>SIMILAR TRADES + SUBTLE DIFFERENCES</code>.
-            </div>
-            <div className="exp-lesson-item" style={{ marginTop: 'var(--space-2)' }}>
-              EXP and A2A Digester are kept as supplementary reference sources. Meta-Agent uses a Confidence Calibration Framework: BASE WR → adjust for close context → adjust for subtle differences → FINAL confidence → decision.
             </div>
           </div>
         </div>
@@ -2607,7 +2768,107 @@ function RILSection({ rilState, isExpanded, onToggleExpand }: { rilState?: any; 
   )
 }
 
-/* ── v2.0.140: Experience Digestion Section (v2.0.141: supplementary LLM analysis) ── */
+// ─── Main EvolutionPanel ────────────────────────────────────────────
+
+function EvolutionPanel({ data }: { data: APIData | null }) {
+  const evo = data?.evolution
+  const [expandedSection, setExpandedSection] = useState<string | null>(null)
+  const toggleSection = (id: string) => setExpandedSection(prev => prev === id ? null : id)
+
+  const olrState = data?.olrState
+  const al = data?.advancedLearning
+  const symbolCount = olrState?.symbols?.length ?? 0
+
+  // Count ready systems
+  const systemsReady = (() => {
+    let count = 0
+    if ((olrState?.symbols?.length ?? 0) > 0) count++
+    if ((olrState?.shadowStats?.length ?? 0) > 0 || (olrState?.shadowOpen?.length ?? 0) > 0) count++
+    if (al?.na?.ready) count++
+    if ((al?.attnres?.updateCount ?? 0) > 0) count++
+    if (al?.chr && Object.keys(al.chr.symbols).length > 0) count++
+    if ((al?.antiPattern?.clusterCount ?? 0) > 0) count++
+    if ((al?.replay?.totalSamples ?? 0) >= 10) count++
+    if (al?.bayesian?.buy?.applied) count++
+    if ((al?.temporal?.updateCount ?? 0) > 0) count++
+    if ((al?.crossSymbol?.length ?? 0) > 0) count++
+    if (al?.rewardShaper) count++
+    if (al?.exploration?.enabled) count++
+    if (al?.worldModel?.ready) count++
+    if ((data?.emState?.summaryCount ?? 0) > 0) count++
+    if (data?.rilState?.isBuilt) count++
+    count++ // Cond WR Gate (always ready)
+    if ((al?.attnres?.updateCount ?? 0) > 0) count++ // Exec Lens
+    return count
+  })()
+  const systemsTotal = 19
+
+  // Build set of open position symbols
+  const openPositionSymbols = new Set<string>()
+  const portfolioPositions = data?.portfolio?.positions
+  if (portfolioPositions) {
+    for (const pos of Object.values(portfolioPositions) as any[]) {
+      if (pos.symbol) openPositionSymbols.add(pos.symbol.toLowerCase())
+    }
+  }
+
+  if (!evo && !olrState && !al) {
+    return (
+      <div className="panel">
+        <EvolutionHeader generation={0} symbolCount={0} systemsReady={0} systemsTotal={systemsTotal} />
+        <div className="evo-empty evo-empty-top">
+          <div className="evo-empty-text">Waiting for evolution data...</div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="panel">
+      <EvolutionHeader
+        generation={evo?.generation ?? 0}
+        symbolCount={symbolCount}
+        systemsReady={systemsReady}
+        systemsTotal={systemsTotal}
+      />
+
+      {/* System Status Grid — compact overview of all 19 systems */}
+      <SystemStatusGrid al={al} olrState={olrState} emState={data?.emState} rilState={data?.rilState} />
+
+      {/* OLR + Bayesian — per-symbol P(win), source, feature weights, uncertainty */}
+      <OLRBayesianSection
+        olrState={olrState}
+        al={al}
+        openPositionSymbols={openPositionSymbols}
+        isExpanded={expandedSection === 'olr'}
+        onToggleExpand={() => toggleSection('olr')}
+      />
+
+      {/* Experience Digestion — W/L, lessons, patterns */}
+      <ExperienceDigestionSection
+        expDigest={data?.portfolio?.expDigest}
+        expActions={data?.expActions}
+        isExpanded={expandedSection === 'exp'}
+        onToggleExpand={() => toggleSection('exp')}
+      />
+
+      {/* EM Cycle Chain — latest insights */}
+      <EMCycleDigestionSection
+        emState={data?.emState}
+        isExpanded={expandedSection === 'em'}
+        onToggleExpand={() => toggleSection('em')}
+      />
+
+      {/* RIL Pattern Intelligence */}
+      <RILSection
+        rilState={data?.rilState}
+        isExpanded={expandedSection === 'ril'}
+        onToggleExpand={() => toggleSection('ril')}
+      />
+    </div>
+  )
+}
+
 
 interface ParsedClass {
   count: number; winRate: number; avgHoldMin: number; directionBias: string;
@@ -2782,36 +3043,6 @@ function parseDigest(raw: string): {
   } catch { return null }
 }
 
-function WinRateBar({ wins, losses }: { wins: number; losses: number }) {
-  const total = wins + losses
-  if (total === 0) return null
-  const winPct = (wins / total) * 100
-  return (
-    <div className="exp-bar-container">
-      <div className="exp-bar-wins" style={{ width: `${winPct}%` }} />
-      <div className="exp-bar-losses" style={{ width: `${100 - winPct}%` }} />
-    </div>
-  )
-}
-
-function ExitQualityBar({ count, total, color, label, pnl, isMajor }: { count: number; total: number; color: string; label: string; pnl: number; isMajor?: boolean }) {
-  if (total === 0) return null
-  const pct = (count / total) * 100
-  return (
-    <div className="exp-eq-row">
-      <div className="exp-eq-label">{label}</div>
-      <div className="exp-eq-bar-wrap">
-        <div className="exp-eq-bar-fill" style={{ width: `${pct}%`, background: color }} />
-      </div>
-      <div className="exp-eq-meta">
-        <span className="exp-eq-count">{count} trades</span>
-        <span className="exp-eq-pnl" style={{ color: pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(3)}</span>
-        {isMajor && <span className="exp-eq-major">MAJOR</span>}
-      </div>
-    </div>
-  )
-}
-
 function ClassCard({ cls, type }: { cls: ParsedClass; type: 'losing' | 'winning' }) {
   const winPct = (cls.winRate * 100).toFixed(0)
   const isPremature = cls.exitNote.includes('PREMATURE')
@@ -2834,362 +3065,6 @@ function ClassCard({ cls, type }: { cls: ParsedClass; type: 'losing' | 'winning'
         {type === 'losing' && <span style={{ color: cls.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>· net {cls.netPnl >= 0 ? '+' : ''}{cls.netPnl.toFixed(3)}</span>}
       </div>
       <div className="exp-class-lesson">{cls.lesson}</div>
-    </div>
-  )
-}
-
-/* ── v2.0.140: MiniLM Neural Pipeline visualization ── */
-
-function MiniLMPipeline({ parsed, total }: { parsed: ReturnType<typeof parseDigest>; total: number }) {
-  if (!parsed) return null
-  const losingCount = parsed.losingClasses.length
-  const winningCount = parsed.winningClasses.length
-  const totalClasses = losingCount + winningCount
-  const digestCount = total
-  const embedDim = 384
-  const classifyThreshold = 72
-
-  return (
-    <div className="exp-pipeline">
-      <div className="exp-pipeline-title">MiniLM Neural Pipeline</div>
-      <div className="exp-pipeline-desc">all-MiniLM-L6-v2 · 384-dim · in-process · transformers.js</div>
-
-      {/* Pipeline flow */}
-      <div className="exp-pipeline-flow">
-        {/* Stage 1: Digest */}
-        <div className="exp-pipeline-stage">
-          <div className="exp-pipeline-node digest">
-            <div className="exp-pipeline-node-label">Digest</div>
-            <div className="exp-pipeline-node-value">{digestCount}</div>
-            <div className="exp-pipeline-node-sub">closed trades</div>
-          </div>
-          <div className="exp-pipeline-node-desc">LLM extracts root cause + exit type from each trade</div>
-        </div>
-
-        {/* Arrow */}
-        <div className="exp-pipeline-arrow">
-          <div className="exp-pipeline-arrow-line" />
-          <div className="exp-pipeline-arrow-head" />
-        </div>
-
-        {/* Stage 2: Embed */}
-        <div className="exp-pipeline-stage">
-          <div className="exp-pipeline-node embed">
-            <div className="exp-pipeline-node-label">Embed</div>
-            <div className="exp-pipeline-node-value">{embedDim}</div>
-            <div className="exp-pipeline-node-sub">dimensions</div>
-          </div>
-          <div className="exp-pipeline-node-desc">MiniLM compresses lesson into 384-dim vector</div>
-        </div>
-
-        {/* Arrow */}
-        <div className="exp-pipeline-arrow">
-          <div className="exp-pipeline-arrow-line" />
-          <div className="exp-pipeline-arrow-head" />
-        </div>
-
-        {/* Stage 3: Cluster */}
-        <div className="exp-pipeline-stage">
-          <div className="exp-pipeline-node cluster">
-            <div className="exp-pipeline-node-label">Cluster</div>
-            <div className="exp-pipeline-node-value">{totalClasses}</div>
-            <div className="exp-pipeline-node-sub">experience</div>
-          </div>
-          <div className="exp-pipeline-node-desc">Greedy cosine clustering (≥80% similarity)</div>
-        </div>
-
-        {/* Arrow */}
-        <div className="exp-pipeline-arrow">
-          <div className="exp-pipeline-arrow-line" />
-          <div className="exp-pipeline-arrow-head" />
-        </div>
-
-        {/* Stage 4: Classify */}
-        <div className="exp-pipeline-stage">
-          <div className="exp-pipeline-node classify">
-            <div className="exp-pipeline-node-label">Classify</div>
-            <div className="exp-pipeline-node-value">{classifyThreshold}%</div>
-            <div className="exp-pipeline-node-sub">threshold</div>
-          </div>
-          <div className="exp-pipeline-node-desc">New thesis vs class centroids → verdict</div>
-        </div>
-      </div>
-
-      {/* Neural vector visualization */}
-      <div className="exp-neural-viz">
-        <div className="exp-neural-label">384-dim lesson vectors → clustered into experience</div>
-        <div className="exp-neural-grid">
-          {Array.from({ length: 24 }, (_, i) => {
-            const isLosing = i < losingCount
-            const isWinning = i >= losingCount && i < totalClasses
-            const isActive = isLosing || isWinning
-            return (
-              <div
-                key={i}
-                className={`exp-neural-cell ${isActive ? (isLosing ? 'losing' : 'winning') : 'dim'}`}
-                style={{
-                  animationDelay: `${i * 50}ms`,
-                }}
-              />
-            )
-          })}
-        </div>
-        <div className="exp-neural-legend">
-          <span className="exp-neural-legend-item"><span className="exp-neural-dot losing" /> Losing class</span>
-          <span className="exp-neural-legend-item"><span className="exp-neural-dot winning" /> Winning class</span>
-          <span className="exp-neural-legend-item"><span className="exp-neural-dot dim" /> Unclustered</span>
-        </div>
-      </div>
-
-      {/* Classification verdicts */}
-      <div className="exp-verdicts">
-        <div className="exp-verdict-row">
-          <span className="exp-verdict-label approve">FAST_APPROVE</span>
-          <span className="exp-verdict-desc">winning class match + direction aligned</span>
-        </div>
-        <div className="exp-verdict-row">
-          <span className="exp-verdict-label reject">REJECT</span>
-          <span className="exp-verdict-desc">losing class match + direction aligned</span>
-        </div>
-        <div className="exp-verdict-row">
-          <span className="exp-verdict-label reverse">REVERSE_DIRECTION</span>
-          <span className="exp-verdict-desc">losing class + opposite direction = contrarian edge</span>
-        </div>
-        <div className="exp-verdict-row">
-          <span className="exp-verdict-label passthrough">PASS_OPEN_DIRECTLY</span>
-          <span className="exp-verdict-desc">no class match (cold-start) → let it trade & learn</span>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ExperienceDigestionSection({ expDigest, expActions, isExpanded, onToggleExpand }: { expDigest?: string; expActions?: Array<{ symbol: string; side: string; verdict: string; reason: string; cycle: number; ts: number }>; isExpanded: boolean; onToggleExpand: () => void }) {
-  if (!expDigest && (!expActions || expActions.length === 0)) return null
-  const expanded = isExpanded
-
-  const hasStreakWarning = expDigest?.includes('losing streak:') && !expDigest?.includes('losing streak: 0')
-  const parsed = expDigest ? parseDigest(expDigest) : null
-
-  // Build action log lines
-  const actionLines: string[] = []
-  if (expActions && expActions.length > 0) {
-    for (const a of expActions) {
-      const sideLabel = a.side === 'buy' ? 'LONG' : 'SHORT'
-      if (a.verdict === 'FAST_APPROVE' || a.verdict === 'APPROVE_WITH_NOTE' || a.verdict === 'PASS_OPEN_DIRECTLY') {
-        actionLines.push(`根據經驗之後決定落單 ${a.symbol} ${sideLabel} — ${a.reason}`)
-      } else if (a.verdict === 'REJECT') {
-        actionLines.push(`根據經驗之後決定暫時唔落單 ${a.symbol} ${sideLabel} — ${a.reason}`)
-      } else if (a.verdict === 'REVERSE_DIRECTION') {
-        actionLines.push(`根據經驗之後決定反方向落單 ${a.symbol} — ${a.reason}`)
-      } else if (a.verdict === 'EXP_DISABLED' || a.verdict === 'EXP_ERRORED') {
-        actionLines.push(`經驗系統未準備好，暫時唔落單 ${a.symbol} ${sideLabel} — ${a.reason}`)
-      }
-    }
-  }
-
-  return (
-    <div className="evo-section">
-      <div className="evo-section-header" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
-        <div className="evo-section-accent" />
-        <span className="evo-section-title">
-          Experience Digestion
-          {hasStreakWarning && <span className="exp-streak-warning">●</span>}
-        </span>
-        <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
-      </div>
-      {expanded && (
-        <div className="exp-digest-content">
-          {/* Action log */}
-          {actionLines.length > 0 && (
-            <div className="exp-digest-section">
-              <div className="exp-digest-subtitle">Experience Decisions</div>
-              {actionLines.map((l, i) => (
-                <div key={i} className="exp-digest-action">{l}</div>
-              ))}
-            </div>
-          )}
-
-          {parsed && (
-            <>
-              {/* MiniLM Neural Pipeline visualization */}
-              <MiniLMPipeline parsed={parsed} total={parsed.total} />
-
-              {/* Dual-Channel Fusion indicator */}
-              <div className="exp-fusion-banner">
-                <div className="exp-fusion-channel semantic">
-                  <div className="exp-fusion-ch-label">Semantic</div>
-                  <div className="exp-fusion-ch-value">MiniLM</div>
-                  <div className="exp-fusion-ch-desc">{parsed.total} trades · {parsed.losingClasses.length + parsed.winningClasses.length} classes</div>
-                </div>
-                <div className="exp-fusion-link" />
-                <div className="exp-fusion-channel statistical">
-                  <div className="exp-fusion-ch-label">Statistical</div>
-                  <div className="exp-fusion-ch-value">OLR + Shadow</div>
-                  <div className="exp-fusion-ch-desc">P(win) cross-reference</div>
-                </div>
-              </div>
-
-              {/* Headline stats grid */}
-              <div className="exp-stats-grid">
-                <div className="exp-stat-card">
-                  <div className="exp-stat-value" style={{ color: parsed.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                    {parsed.netPnl >= 0 ? '+' : ''}{parsed.netPnl.toFixed(3)}
-                  </div>
-                  <div className="exp-stat-label">Net PnL</div>
-                </div>
-                <div className="exp-stat-card">
-                  <div className="exp-stat-value">{parsed.wins}<span className="exp-stat-sep">/</span>{parsed.losses}</div>
-                  <div className="exp-stat-label">W / L</div>
-                </div>
-                <div className="exp-stat-card">
-                  <div className="exp-stat-value">{parsed.total}</div>
-                  <div className="exp-stat-label">Trades</div>
-                </div>
-                <div className="exp-stat-card">
-                  <div className={`exp-stat-value ${parsed.streak >= 3 ? 'streak-warn' : ''}`}>
-                    {parsed.streak}
-                  </div>
-                  <div className="exp-stat-label">Streak</div>
-                </div>
-              </div>
-
-              {/* W/L bar */}
-              <div className="exp-wl-bar-section">
-                <WinRateBar wins={parsed.wins} losses={parsed.losses} />
-                <div className="exp-wl-labels">
-                  <span className="exp-wl-win">W {parsed.wins}</span>
-                  <span className="exp-wl-loss">L {parsed.losses}</span>
-                </div>
-              </div>
-
-              {/* Exit quality */}
-              <div className="exp-digest-section">
-                <div className="exp-digest-subtitle">Exit Quality</div>
-                <ExitQualityBar
-                  count={parsed.exitQuality.prematureLossCount}
-                  total={parsed.losses}
-                  color="var(--red)"
-                  label="Premature close (loss)"
-                  pnl={parsed.exitQuality.prematureLossPnl}
-                  isMajor={parsed.exitQuality.isMajor}
-                />
-                <ExitQualityBar
-                  count={parsed.exitQuality.prematureWinCount}
-                  total={parsed.wins}
-                  color="var(--green)"
-                  label="Premature close (win)"
-                  pnl={parsed.exitQuality.prematureWinPnl}
-                />
-                {parsed.exitQuality.longWinCount > 0 && (
-                  <ExitQualityBar
-                    count={parsed.exitQuality.longWinCount}
-                    total={parsed.wins}
-                    color="var(--accent)"
-                    label="Long holds (win)"
-                    pnl={parsed.exitQuality.longWinPnl}
-                  />
-                )}
-              </div>
-
-              {/* Close discipline lessons */}
-              {parsed.closeLessons.length > 0 && (
-                <div className="exp-digest-section">
-                  <div className="exp-digest-subtitle">Close Discipline</div>
-                  {parsed.closeLessons.map((l, i) => (
-                    <div key={i} className="exp-lesson-item">{l}</div>
-                  ))}
-                </div>
-              )}
-
-              {/* Losing + Winning patterns side by side */}
-              <div className="exp-patterns-grid">
-                {parsed.losingClasses.length > 0 && (
-                  <div className="exp-patterns-col">
-                    <div className="exp-digest-subtitle">Losing Patterns</div>
-                    {parsed.losingClasses.map((c, i) => <ClassCard key={i} cls={c} type="losing" />)}
-                  </div>
-                )}
-                {parsed.winningClasses.length > 0 && (
-                  <div className="exp-patterns-col">
-                    <div className="exp-digest-subtitle">Winning Patterns</div>
-                    {parsed.winningClasses.map((c, i) => <ClassCard key={i} cls={c} type="winning" />)}
-                  </div>
-                )}
-              </div>
-
-              {/* Per symbol table */}
-              {parsed.perSymbol.length > 0 && (
-                <div className="exp-digest-section">
-                  <div className="exp-digest-subtitle">Per Symbol</div>
-                  <div className="exp-symbol-table">
-                    {parsed.perSymbol.map((s, i) => {
-                      const total = s.wins + s.losses
-                      const winPct = total > 0 ? (s.wins / total) * 100 : 0
-                      return (
-                        <div key={i} className="exp-symbol-row">
-                          <span className="exp-sym-name">{s.symbol}</span>
-                          <span className={`exp-sym-side ${s.side.toLowerCase()}`}>{s.side}</span>
-                          <div className="exp-sym-bar-wrap">
-                            <div className="exp-sym-bar-fill" style={{ width: `${winPct}%`, background: s.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }} />
-                          </div>
-                          <span className="exp-sym-wl">W{s.wins} L{s.losses}</span>
-                          <span className="exp-sym-net" style={{ color: s.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{s.netPnl >= 0 ? '+' : ''}{s.netPnl.toFixed(3)}</span>
-                          <span className="exp-sym-hold">{s.avgHold}min{s.isPremature ? ' !' : ''}</span>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* Volatility anomaly */}
-              {parsed.volatilityAnomaly.isAnomaly && (
-                <div className="exp-anomaly-banner">
-                  <div>
-                    <div className="exp-anomaly-title">VOLATILITY ANOMALY</div>
-                    <div className="exp-anomaly-desc">
-                      {parsed.volatilityAnomaly.lowVolCount}/{parsed.volatilityAnomaly.total} trades ({(parsed.volatilityAnomaly.pct * 100).toFixed(0)}%) show low_volatility — NO normal/high.
-                      Volatility calculation likely broken.
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Root cause diagnosis */}
-              {parsed.rootCause.insight && (
-                <div className="exp-digest-section">
-                  <div className="exp-digest-subtitle">Root Cause</div>
-                  {parsed.rootCause.quickExitCount > 0 && (
-                    <div className="exp-lesson-item">
-                      Quick exits: {parsed.rootCause.quickExitCount} trades — {parsed.rootCause.quickLosses} losses, {parsed.rootCause.quickWins} wins
-                    </div>
-                  )}
-                  {parsed.rootCause.dominantRegime && (
-                    <div className="exp-lesson-item">Dominant regime: {parsed.rootCause.dominantRegime}</div>
-                  )}
-                  {parsed.rootCause.shallowThesis && (
-                    <div className="exp-lesson-item">Thesis too shallow: avg {parsed.rootCause.avgThesisLen} chars — no structural anchor</div>
-                  )}
-                  {parsed.rootCause.newsFailed > 0 && (
-                    <div className="exp-lesson-item">News/macro thesis failed ≤8min: {parsed.rootCause.newsFailed} trades</div>
-                  )}
-                  <div className="exp-lesson-item exp-lesson-insight">{parsed.rootCause.insight}</div>
-                </div>
-              )}
-            </>
-          )}
-
-          {/* Fallback: raw text if parse failed */}
-          {!parsed && expDigest && (
-            <div className="exp-digest-raw">
-              {expDigest.split('\n').filter(l => l.trim()).map((l, i) => (
-                <div key={i} className="exp-digest-detail">{l}</div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }
