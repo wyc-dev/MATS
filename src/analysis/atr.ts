@@ -12,6 +12,67 @@ import { createLogger } from '../observability/logger.ts';
 
 const log = createLogger({ phase: 'atr' });
 
+// ─── v2.0.213: Execution Lens integration (K.md #7) ───
+//
+// The AttnRes wExecution pseudo-query is trained on SL/TP stop-out outcomes.
+// Its blend (retrieveBlend(sym, 'execution')) provides a stop-out-aware view
+// of the recent regime. computeATRSLTP uses this as the PRIMARY SL/TP signal:
+//
+//   1. execAdverseMomentum — from hBlend.momentumShort, filtered through
+//      wExecution's stop-out learning. Replaces raw getMomentum as primary.
+//   2. execVolatilityScaling — if hBlend.volatility is elevated (the
+//      execution lens "sees" a volatile stop-out-prone regime), widen SL.
+//   3. entropyConfidence — low entropy = wExecution confident in its pattern
+//      → trust the widening more. High entropy = uncertain → dampen.
+//
+// Module-level state: index.ts calls prepareExecutionLens(sym) before each
+// trade, computeATRSLTP reads it, clearExecutionLens() after. No changes to
+// trading-manager.ts (the caller) — the lens is picked up automatically.
+
+/** Execution lens snapshot — the data computeATRSLTP needs from the
+ *  execution-mode AttnRes blend. */
+export interface ExecutionLensData {
+  /** Blended volatility (0-1 fraction) from execution-mode AttnRes. */
+  volatility: number;
+  /** Blended short-term momentum (fraction, e.g. 0.03 = +3%) from exec AttnRes. */
+  momentumShort: number;
+  /** Blended long-term momentum (fraction) from exec AttnRes. */
+  momentumLong: number;
+  /** Attention distribution entropy (bits). Low = confident pattern. */
+  entropy: number;
+  /** Whether blending was active (false = cold-start fallback). */
+  blended: boolean;
+  /** wExecution update count (0 = cold-start, never trained). */
+  updateCount: number;
+}
+
+/** Provider callback: index.ts wires this to cycleHistory.retrieveBlend(sym, 'execution'). */
+type ExecutionLensProvider = (symbol: string) => ExecutionLensData | null;
+
+let executionLensProvider: ExecutionLensProvider | null = null;
+let pendingExecutionLens: ExecutionLensData | null = null;
+
+/** Wire the execution lens provider (called once at init by index.ts). */
+export function setExecutionLensProvider(fn: ExecutionLensProvider | null): void {
+  executionLensProvider = fn;
+}
+
+/** Fetch + cache the execution lens for a symbol before a trade (called by
+ *  index.ts executeTrade before tradingManager.executeDecision). */
+export function prepareExecutionLens(symbol: string): void {
+  if (!executionLensProvider) { pendingExecutionLens = null; return; }
+  try {
+    pendingExecutionLens = executionLensProvider(symbol);
+  } catch {
+    pendingExecutionLens = null;
+  }
+}
+
+/** Clear the pending execution lens after a trade (called by index.ts). */
+export function clearExecutionLens(): void {
+  pendingExecutionLens = null;
+}
+
 export interface Candle {
   timestamp: number;
   open: number;
@@ -207,30 +268,96 @@ export function computeATRSLTP(
   adverseMomentum?: number,
 ): { sl: number; tp: number } | null {
   if (atr <= 0 || entryPrice <= 0) return null;
+
+  // ── v2.0.213 (#7): Execution lens as PRIMARY SL/TP signal ──
+  // The execution lens provides a stop-out-trained view of the recent regime.
+  // When available + blended + wExecution has been trained (updateCount > 0),
+  // it takes priority over the raw ATR + adverseMomentum logic. The raw
+  // adverseMomentum parameter is still used as a FLOOR (we never narrow below
+  // what raw momentum suggests). When the lens is unavailable (cold-start,
+  // not blended, or provider not wired), we fall back to the original logic.
+  const execLens = pendingExecutionLens;
+  const useExecLens = execLens && execLens.blended && execLens.updateCount > 0;
+
   let slDist = slMult * atr;
-  // v2.0.207 (#C): Momentum-adaptive SL — widen to cover adverse push.
-  if (adverseMomentum && adverseMomentum > 0) {
-    const momentumSlDist = adverseMomentum * entryPrice * 2.5;
-    slDist = Math.max(slDist, momentumSlDist);
+  let execWidening = 0; // log how much the execution lens added
+
+  if (useExecLens) {
+    // PRIMARY: execution-lens-adjusted SL.
+    //
+    // 1. Execution adverse momentum — filtered through wExecution's stop-out
+    //    learning. This replaces raw adverseMomentum as the primary signal.
+    const execMom = execLens!.momentumShort;
+    const execAdverse = side === 'buy' ? Math.max(0, -execMom) : Math.max(0, execMom);
+    if (execAdverse > 0) {
+      const execMomSlDist = execAdverse * entryPrice * 2.5;
+      slDist = Math.max(slDist, execMomSlDist);
+      execWidening = Math.max(execWidening, execMomSlDist - slMult * atr);
+    }
+
+    // 2. Execution volatility scaling — if the execution lens sees elevated
+    //    volatility through the stop-out filter, widen SL proportionally.
+    //    The blend's volatility is a 0-1 fraction; ATR/entryPrice is the
+    //    current implied vol. If exec vol > 1.5× current implied vol, the
+    //    regime is stop-out-prone → widen SL by up to 40%.
+    const currentImpliedVol = atr / entryPrice;
+    if (execLens!.volatility > currentImpliedVol * 1.5 && currentImpliedVol > 0) {
+      const volRatio = Math.min(execLens!.volatility / currentImpliedVol, 3.0); // cap at 3×
+      const volWidenFactor = 1.0 + Math.min((volRatio - 1.0) * 0.2, 0.4); // up to +40%
+      const volSlDist = slMult * atr * volWidenFactor;
+      if (volSlDist > slDist) {
+        execWidening = Math.max(execWidening, volSlDist - slDist);
+        slDist = volSlDist;
+      }
+    }
+
+    // 3. Entropy confidence — low entropy = wExecution is confidently
+    //    attending to specific stop-out patterns → trust the widening.
+    //    High entropy = uncertain → dampen the widening back toward ATR.
+    //    Entropy range: 0 (one-hot) to log2(n) (uniform). For 9 sources,
+    //    log2(9) ≈ 3.17. Below 1.0 = confident, above 2.0 = uncertain.
+    if (execLens!.entropy > 2.0) {
+      // Uncertain — dampen any execution-lens widening by 50%.
+      const dampedSl = slMult * atr + execWidening * 0.5;
+      slDist = Math.max(slMult * atr, dampedSl);
+    }
+
+    // 4. Raw adverseMomentum FLOOR — never narrow below what the raw
+    //    getMomentum signal suggests (the execution lens supplements, not
+    //    replaces, the raw signal).
+    if (adverseMomentum && adverseMomentum > 0) {
+      const rawMomSlDist = adverseMomentum * entryPrice * 2.5;
+      slDist = Math.max(slDist, rawMomSlDist);
+    }
+  } else {
+    // FALLBACK: original v2.0.207 (#C) logic — ATR + raw adverseMomentum.
+    if (adverseMomentum && adverseMomentum > 0) {
+      const momentumSlDist = adverseMomentum * entryPrice * 2.5;
+      slDist = Math.max(slDist, momentumSlDist);
+    }
   }
-  // v2.0.210 (Fix 2): Momentum-adaptive TP — ensure R:R ≥ 1.5:1 even when SL
-  // was widened by momentum. Fixes audit 'premature-exit-mfe-mismatch': a
-  // 59-hour hold for 0.1% gain happened because TP was too near (2×ATR) while
-  // SL was wider — R:R < 1, so the trade needed a tiny move to TP but the
-  // market wandered. Now tpDist = max(tpMult×ATR, 1.6×slDist) so the reward
-  // always justifies the risk.
+
+  // v2.0.210 (Fix 2): TP — ensure R:R ≥ 1.6:1 even when SL was widened.
   let tpDist = tpMult * atr;
   if (tpDist < slDist * 1.6) tpDist = slDist * 1.6;
-  // Cap SL/TP distance to prevent unreachable levels
-  // v2.0.207 (#C): raise SL cap to 5% when momentum-adaptive (was 3%) — a 2.5×
-  // momentum SL can legitimately exceed 3% in a strong push; capping at 3%
-  // would re-introduce the stop-out problem the momentum SL is solving.
-  const maxSlDist = (adverseMomentum && adverseMomentum > 0) ? entryPrice * 0.05 : entryPrice * 0.03;
-  // v2.0.210 (Fix 2): raise TP cap to 8% when momentum-adaptive so the R:R
-  // guarantee isn't undone by the cap (was 5%). A 5% SL × 1.6 R:R = 8% TP.
-  const maxTpDist = (adverseMomentum && adverseMomentum > 0) ? entryPrice * 0.08 : entryPrice * 0.05;
-  const cappedSlDist = Math.min(slDist, maxSlDist);
-  const cappedTpDist = Math.min(tpDist, maxTpDist);
+
+  // Cap SL/TP distance to prevent unreachable levels.
+  // v2.0.213: execution lens gets widest caps (6%/10%) because the
+  // stop-out-trained lens has evidence for wider stops; raw momentum gets
+  // medium (5%/8%); baseline gets tightest (3%/5%).
+  const finalMaxSlDist = useExecLens
+    ? entryPrice * 0.06
+    : (adverseMomentum && adverseMomentum > 0)
+      ? entryPrice * 0.05
+      : entryPrice * 0.03;
+  const finalMaxTpDist = useExecLens
+    ? entryPrice * 0.10
+    : (adverseMomentum && adverseMomentum > 0)
+      ? entryPrice * 0.08
+      : entryPrice * 0.05;
+
+  const cappedSlDist = Math.min(slDist, finalMaxSlDist);
+  const cappedTpDist = Math.min(tpDist, finalMaxTpDist);
   if (side === 'buy') {
     return {
       sl: entryPrice - cappedSlDist,
