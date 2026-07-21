@@ -1,9 +1,12 @@
-// ─── RIL — Reason Intelligence Layer (v2.0.141) ───
+// ─── RIL — Reason Intelligence Layer (v2.0.767) ───
 // Provides Meta-Agent with structured reference data about what entry/close
 // patterns historically win and lose. Three data sources:
 //
 //   1. PatternClusterManager — greedy clustering of entry rationale texts
 //      (MiniLM embeddings + cosine similarity) → per-pattern WR/PnL
+//      v2.0.767: Added periodic rebuild (every 12 cycles) to keep clusters fresh.
+//      Added lastRebuildCycle counter to avoid rebuilding every cycle.
+//      Added rebuildPromise for non-blocking background rebuild.
 //   2. CloseReasonAggregator — pure math GROUP BY exitType+decisionOrigin
 //      → per-close-reason WR/PnL
 //   3. SimilarTradeRetriever + SubtleDiffAnalyzer — top-N similar past trades
@@ -42,12 +45,23 @@ const log = rootLogger;
  *
  * O(n × k) where n = number of rationales, k = number of clusters.
  * For 1000 trades × ~3 rationales each × ~50 clusters = ~150k cosine comparisons — trivial.
+ *
+ * v2.0.767: Added periodic rebuild support. The rebuild() method is called from
+ * the main decision cycle every N cycles (e.g., every 12 cycles = 1 hour).
+ * A background promise (rebuildPromise) prevents blocking the decision cycle.
+ * The lastRebuildCycle counter ensures we don't rebuild every cycle.
  */
 export class PatternClusterManager {
   private clusters: ReasonPatternCluster[] = [];
   private readonly cfg: RILConfig;
   private readonly embed: EmbedProvider;
   private built = false;
+  /** v2.0.767: Track the last cycle when a full rebuild was triggered. */
+  private lastRebuildCycle = -1;
+  /** v2.0.767: Background rebuild promise to avoid blocking the decision cycle. */
+  private rebuildPromise: Promise<void> | null = null;
+  /** v2.0.767: How many decision cycles between full rebuilds. Default 12 = ~1 hour. */
+  private readonly rebuildInterval: number;
 
   constructor(embed: EmbedProvider, cfg?: Partial<RILConfig>) {
     this.embed = embed;
@@ -62,6 +76,8 @@ export class PatternClusterManager {
       maxClusters: config.ril.maxClusters,
       ...cfg,
     };
+    // v2.0.767: Default rebuild interval = 12 cycles (configurable via cfg.rebuildInterval)
+    this.rebuildInterval = (cfg as any)?.rebuildInterval ?? 12;
   }
 
   isBuilt(): boolean {
@@ -122,6 +138,33 @@ export class PatternClusterManager {
       const rationale = rec.rationales[i] ?? `rationale-${i}`;
       this.assignToCluster(rec, rationale, vec);
     }
+  }
+
+  // ─── v2.0.767: Periodic rebuild trigger ───
+
+  /**
+   * Called from the main decision cycle every N cycles.
+   * Triggers a background rebuild if enough cycles have passed since the last one.
+   * Returns immediately — the rebuild runs asynchronously and does not block.
+   *
+   * @param records - All closed trade records (for full reclustering)
+   * @param currentCycle - The current decision cycle number
+   */
+  triggerPeriodicRebuild(records: ThesisExperienceRecord[], currentCycle: number): void {
+    if (!this.cfg.enabled) return;
+    if (currentCycle - this.lastRebuildCycle < this.rebuildInterval) return;
+    // If a rebuild is already in progress, don't start another
+    if (this.rebuildPromise !== null) return;
+
+    this.lastRebuildCycle = currentCycle;
+    log.info(`[RIL] triggering periodic cluster rebuild at cycle ${currentCycle}`);
+
+    // Fire-and-forget: rebuild in background, catch errors silently
+    this.rebuildPromise = this.rebuild(records).catch((err) => {
+      log.warn(`[RIL] periodic rebuild failed: ${err instanceof Error ? err.message : String(err)}`);
+    }).finally(() => {
+      this.rebuildPromise = null;
+    });
   }
 
   // ─── Internal: assign a rationale vector to nearest cluster ───

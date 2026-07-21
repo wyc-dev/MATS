@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.767: PatternClusterManager — add periodic cluster rebuild every 12 cycles to keep pattern statistics fresh. Prevents stale cluster centroids from driving decisions with outdated win rate data. Added triggerPeriodicRebuild() method, lastRebuildCycle counter, rebuildPromise for non-blocking background rebuild, and rebuildInterval config option.
+
+
 ## v2.0.761: OLR predict() — accept optional currentFeatures parameter to use fresh market data instead of stale shadow-entry features. Prevents P(win) miscalibration where OLR predicts 100%/0% based on 30-minute-old volatility/OB/funding data that no longer reflects current market conditions.
 
 
