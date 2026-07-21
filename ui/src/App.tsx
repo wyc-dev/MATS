@@ -2365,7 +2365,9 @@ function SystemStatusGrid({ al, olrState, emState, rilState }: {
   systems.push({ name: 'CHR', state: chrCount > 0 ? 'ready' : 'cold', detail: `${chrCount} symbols` })
 
   // Anti-Pattern
-  systems.push({ name: 'Anti-Pattern', state: (al?.antiPattern?.clusterCount ?? 0) > 0 ? 'ready' : 'cold', detail: `${al?.antiPattern?.clusterCount ?? 0} clusters` })
+  const apClusters = al?.antiPattern?.clusterCount ?? 0;
+  const apIngested = al?.antiPattern?.ingestedCount ?? 0;
+  systems.push({ name: 'Anti-Pattern', state: apClusters > 0 ? 'ready' : apIngested > 0 ? 'training' : 'cold', detail: `${apClusters} clusters, ${apIngested} losses` })
 
   // Replay Buffer
   const rbTotal = al?.replay?.totalSamples ?? 0

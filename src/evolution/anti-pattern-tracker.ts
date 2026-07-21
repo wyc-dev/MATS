@@ -188,6 +188,25 @@ export class AntiPatternTracker {
     }
   }
 
+  /** Number of anti-pattern classes (clusters) learned from loss corpus. */
+  getClusterCount(): number {
+    return this.classes.length;
+  }
+
+  /** Total ingested loss records (dedup count). */
+  getIngestedCount(): number {
+    return this.ingested.size;
+  }
+
+  /** Summary stats for monitoring / API display. */
+  getStats(): { clusterCount: number; ingestedCount: number; totalMembers: number } {
+    return {
+      clusterCount: this.classes.length,
+      ingestedCount: this.ingested.size,
+      totalMembers: this.classes.reduce((sum, c) => sum + c.memberIds.length, 0),
+    };
+  }
+
   /** Format matches into a Skeptics context block. */
   formatBlock(matches: AntiPatternMatch[]): string {
     if (matches.length === 0) return '';

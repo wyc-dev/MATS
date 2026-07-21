@@ -2660,6 +2660,23 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         } catch (err) {
           log.warn(`[close-learning] NA addSample failed: ${err instanceof Error ? err.message : String(err)}`);
         }
+
+        // v2.0.219: Feed advanced learning systems (replay, temporal, cross-symbol, world model)
+        try {
+          this.feedAdvancedLearning({
+            symbol,
+            side: trade.side === 'buy' ? 'buy' : 'sell',
+            features,
+            outcome: isWin ? 1 : 0,
+            pnl: trade.pnl ?? 0,
+            pnlPct: safeNum(pnlPct, 0),
+            source: tradeSource,
+            cycle: this.totalCycles,
+            regime,
+          });
+        } catch (err) {
+          log.warn(`[close-learning] Advanced learning feed failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       } catch (err) {
         log.warn(`[close-learning] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -3539,6 +3556,86 @@ ${recentExamples}
   // Idempotent: runs at most once per process via the .exp-backfill-done flag.
   private expBackfillDone = false;
 
+  // ── v2.0.219: Unified advanced learning feeder ──
+  // Feeds the 4 "dead-initialized" systems that were created in v2.0.219 but
+  // never connected to a data pipeline:
+  //   1. Replay Buffer     — PER sample for experience replay
+  //   2. Temporal Attention — cross-trade sequence for attention learning
+  //   3. Cross-Symbol      — shared + per-symbol residual backbone
+  //   4. World Model       — latent dynamics + reward predictor
+  //
+  // All feeds are individually try-catch'd — one system failure never blocks
+  // the others. Cold-start safe: each system internally guards against
+  // insufficient samples.
+  private feedAdvancedLearning(params: {
+    symbol: string;
+    side: 'buy' | 'sell';
+    features: Record<string, number>;
+    outcome: 0 | 1;
+    pnl: number;
+    pnlPct: number;
+    source: 'shadow' | 'paper' | 'real' | 'backfill';
+    cycle: number;
+    regime?: string;
+  }): void {
+    const sym = params.symbol.toLowerCase();
+    const ts = Date.now();
+
+    // 1. Replay Buffer — Prioritized Experience Replay
+    try {
+      this.replayBuffer?.add({
+        symbol: sym,
+        features: params.features,
+        outcome: params.outcome,
+        side: params.side,
+        source: params.source,
+        cycle: params.cycle,
+        ts,
+        pnl: params.pnl,
+      });
+    } catch (err) {
+      log.warn(`[advanced-learning] ReplayBuffer.add failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // 2. Temporal Attention — cross-trade attention learning
+    try {
+      this.temporalAttention?.addTrade({
+        symbol: sym,
+        side: params.side,
+        features: params.features,
+        outcome: params.outcome,
+        pnl: params.pnl,
+        pnlPct: params.pnlPct,
+        ts,
+        regime: params.regime ?? 'unknown',
+      });
+      // Update pseudo-query from outcome (reward-weighted regression)
+      this.temporalAttention?.updateOnOutcome(params.pnl);
+    } catch (err) {
+      log.warn(`[advanced-learning] TemporalAttention failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // 3. Cross-Symbol Backbone — shared + per-symbol residual
+    try {
+      this.crossSymbolBackbone?.feedTrade(sym, params.features, params.outcome, params.side);
+    } catch (err) {
+      log.warn(`[advanced-learning] CrossSymbolBackbone.feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // 4. World Model — latent dynamics + reward predictor
+    //    Uses close-time features as both current and next state. The transition
+    //    model learns a degenerate (identity-ish) mapping, but the encoder +
+    //    reward head still learn a useful latent representation of market
+    //    conditions → outcome. This is a pragmatic cold-start choice; a full
+    //    implementation would store entry-time features separately.
+    try {
+      const action = params.side === 'buy' ? 1 : 0;
+      this.worldModel?.addSample(params.features, action, params.features, params.outcome);
+    } catch (err) {
+      log.warn(`[advanced-learning] WorldModel.addSample failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private async backfillFromExpRecords(): Promise<void> {
     if (this.expBackfillDone) return;
     this.expBackfillDone = true;
@@ -3552,7 +3649,7 @@ ${recentExamples}
     try {
       const raw = fs.readFileSync(expPath, 'utf-8');
       const lines = raw.trim().split('\n').filter(l => l.trim());
-      let olrFed = 0, naFed = 0, attnresFed = 0, clusterFed = 0, chrFed = 0;
+      let olrFed = 0, naFed = 0, attnresFed = 0, clusterFed = 0, chrFed = 0, advancedFed = 0;
       let skipped = 0;
 
       for (const line of lines) {
@@ -3661,9 +3758,43 @@ ${recentExamples}
             chrFed++;
           } catch { /* non-critical */ }
         }
+
+        // 6. v2.0.219: Advanced learning systems (replay, temporal, cross-symbol, world model)
+        //    Uses the same features object built for OLR above.
+        if (mf && typeof mf === 'object' && Object.keys(mf).length > 0) {
+          try {
+            this.feedAdvancedLearning({
+              symbol: sym,
+              side,
+              features: {
+                volatility: safeNum(mf.volatility, 0),
+                srDistanceBps: safeNum(mf.srDistanceBps, 0),
+                obImbalance: safeNum(mf.obImbalance, 0),
+                sentiment: safeNum(mf.sentiment, 0),
+                signalAgreement: 0.5,
+                fundingRate: safeNum(mf.fundingRate, 0),
+                volumeRatio: safeNum(mf.volumeRatio, 0),
+                sentimentConviction: safeNum(mf.sentimentConviction, 0.5),
+                mfePct: 0,
+                maePct: 0,
+                mfeToPnlRatio: 0,
+                regimeOrdinal: regimeToOrdinal(rec.regime),
+                momentumShort: 0,
+                momentumLong: 0,
+              },
+              outcome,
+              pnl,
+              pnlPct,
+              source: 'backfill',
+              cycle: 0,
+              regime: rec.regime ?? 'unknown',
+            });
+            advancedFed++;
+          } catch { /* non-critical */ }
+        }
       }
 
-      log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, skipped=${skipped}`);
+      log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, skipped=${skipped}`);
 
       // Persist all updated state
       this.persistOLR();
@@ -4124,6 +4255,42 @@ ${recentExamples}
           ...this.tradingMarkets,
           ...this.portfolio.getOpenSymbols(),
         ]);
+
+        // v2.0.219: Feed advanced learning systems from shadow trade resolutions.
+        // Shadow trades resolve via SL/TP or stale force-resolve — each resolution
+        // is a learning signal. drainRecentResults() returns results accumulated
+        // since the last call and clears the buffer (each resolution fed exactly once).
+        // Uses per-symbol resolution-time features from buildCurrentFeaturesForSymbol.
+        try {
+          const shadowResults = this.shadowEngine.drainRecentResults();
+          for (const sr of shadowResults) {
+            const srFeatures = buildCurrentFeaturesForSymbol(sr.symbol, combinedState);
+            // Add MFE/MAE from the shadow result itself
+            srFeatures['mfePct'] = sr.mfePct;
+            srFeatures['maePct'] = sr.maePct;
+            srFeatures['mfeToPnlRatio'] = sr.mfePct > 0 ? (sr.mfePct - sr.pnlPct) / sr.mfePct : 0;
+            const srSymState = this.marketState.getState(sr.symbol);
+            srFeatures['regimeOrdinal'] = regimeToOrdinal(srSymState?.regime ?? 'unknown');
+            srFeatures['momentumShort'] = 0;
+            srFeatures['momentumLong'] = 0;
+            this.feedAdvancedLearning({
+              symbol: sr.symbol,
+              side: sr.side,
+              features: srFeatures,
+              outcome: sr.outcome === 'win' ? 1 : 0,
+              pnl: sr.pnlPct,
+              pnlPct: sr.pnlPct,
+              source: 'shadow',
+              cycle: sr.cycle,
+              regime: srSymState?.regime ?? 'unknown',
+            });
+          }
+          if (shadowResults.length > 0) {
+            log.info(`🧬 [shadow] Fed ${shadowResults.length} shadow resolutions to advanced learning (replay/temporal/cross-symbol/world-model)`);
+          }
+        } catch (err) {
+          log.warn(`[shadow] Advanced learning feed failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+        }
         // Open new shadow trades for ALL trading markets
         const allMarkets = [...new Set([normalizeSymbol(activeSymbol), ...this.tradingMarkets.map(m => normalizeSymbol(m))])];
         for (const mktSym of allMarkets) {
@@ -7100,6 +7267,21 @@ ${recentExamples}
       this.patternClassifier?.persist();
       this.patternTagTracker?.persist();
       this.persistOLR();
+
+      // v2.0.219: Replay buffer epoch — re-feed high-priority trades to OLR
+      // to break temporal correlations. Runs every 5 cycles (enough buffer
+      // accumulation between epochs). Cold-start safe: replayEpoch() is a no-op
+      // if buffer has < 10 samples.
+      try {
+        if (this.totalCycles % 5 === 0 && this.replayBuffer) {
+          const fed = this.replayBuffer.replayEpoch();
+          if (fed > 0) {
+            log.debug(`[replay] Cycle ${this.totalCycles}: replayed ${fed} samples to OLR (buffer=${this.replayBuffer.getStats().totalSamples})`);
+          }
+        }
+      } catch (err) {
+        log.warn(`[replay] replayEpoch failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+      }
       // v2.0.204: Train + validate + persist Numeric Autoencoder every NA train interval.
       // Cold-start safe: trainBatch() is a no-op until replay buffer ≥ minSamplesTrain;
       // validate() returns not-passed until ≥ minSamplesReady samples. isReady() gates
@@ -8319,7 +8501,7 @@ ${recentExamples}
           })() : undefined,
           // Anti-Pattern Tracker
           antiPattern: this.antiPatternTracker ? {
-            clusterCount: 0, // matchCandidate is async; count not exposed
+            ...this.antiPatternTracker.getStats(),
           } : undefined,
           // Replay Buffer
           replay: this.replayBuffer ? this.replayBuffer.getStats() : undefined,
