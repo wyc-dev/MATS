@@ -2,7 +2,7 @@
 
 > Created: 2026-07-13
 > Status: Phase 1 (UI framework) — not yet started
-> Parent file: TERMINAL_AGENT_PROMPT.md (reference for conventions)
+> Parent file: TERMINAL_AGENT.md (reference for conventions)
 
 ## 🎯 Goal
 
