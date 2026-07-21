@@ -9,7 +9,7 @@ import { RiskEngine } from '../risk/engine.ts';
 import { PaperTradingEngine } from './paper-engine.ts';
 import { HyperliquidEngine } from './hyperliquid-engine.ts';
 import { computeSLTP } from './position-utils.ts';
-import { getATR, computeATRSLTP } from '../analysis/atr.ts';
+import { getATR, computeATRSLTP, getMomentum } from '../analysis/atr.ts';
 import type {
   TradeMode,
   ExchangeType,
@@ -444,9 +444,21 @@ export class TradingManager {
         try {
           const atr = await getATR(decision.symbol);
           if (atr > 0) {
-            atrSLTP = computeATRSLTP(actualEntryPrice, atr, decision.action as 'buy' | 'sell');
+            // v2.0.207 (#C): Momentum-adaptive SL — widen SL against adverse
+            // short-term momentum so a continued push doesn't stop the position
+            // out before the thesis plays out. adverseMomentum > 0 = price is
+            // moving AGAINST this position.
+            let adverseMomentum: number | undefined;
+            try {
+              const mom = await getMomentum(decision.symbol, 5);
+              if (mom !== 0) {
+                adverseMomentum = decision.action === 'sell' ? Math.max(0, mom) : Math.max(0, -mom);
+              }
+            } catch { /* non-critical — ATR-only SL */ }
+            atrSLTP = computeATRSLTP(actualEntryPrice, atr, decision.action as 'buy' | 'sell', 1.5, 2.0, adverseMomentum);
             if (atrSLTP) {
-              log.info(`📐 ATR SL/TP: ${decision.symbol} entry=$${actualEntryPrice.toFixed(2)} ATR=$${atr.toFixed(2)} SL=$${atrSLTP.sl.toFixed(2)} TP=$${atrSLTP.tp.toFixed(2)}`);
+              const momTag = adverseMomentum && adverseMomentum > 0 ? ` adverseMomentum=${(adverseMomentum * 100).toFixed(1)}%` : '';
+              log.info(`📐 ATR SL/TP: ${decision.symbol} entry=$${actualEntryPrice.toFixed(2)} ATR=$${atr.toFixed(2)} SL=$${atrSLTP.sl.toFixed(2)} TP=$${atrSLTP.tp.toFixed(2)}${momTag}`);
             }
           }
         } catch { /* fall back below */ }

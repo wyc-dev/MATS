@@ -1732,11 +1732,10 @@ Only reject if you can articulate a SPECIFIC, HIGH-PROBABILITY loss scenario:
 
 If you cannot articulate a specific loss scenario, APPROVE the trade.
 
-=== DARK PSYCHOLOGY CHECK (LIGHTWEIGHT) ===
-Ask ONE question: "Is there SPECIFIC evidence in the sub-agent data that this trade is a whale trap?"
-- If yes → explain what the evidence is and REJECT
-- If no → note "no specific manipulation evidence found" and APPROVE
-Do NOT reject just because manipulation is theoretically possible — it's always possible.
+=== DARK PSYCHOLOGY CHECK (CONTEXT-DEPENDENT) ===
+DEFAULT (no momentum alert): Ask ONE question — "Is there SPECIFIC evidence this is a whale trap?" If no → "no specific manipulation evidence found" + APPROVE. Do NOT reject just because manipulation is theoretically possible.
+
+MANDATORY (when a "SHORT-TERM MOMENTUM ALERT" block is present in the context): The market is being PUSHED in one direction. A counter-momentum trade here is the #1 historical stop-out pattern. You MUST articulate a SPECIFIC, CONCRETE reversal catalyst visible in the sub-agent data (e.g. "funding rate hit +0.05% extreme — short squeeze imminent", "on-chain whale moved 500 BTC to exchange — distribution confirmed", "price hit documented resistance $X with declining volume — rejection underway"). "Could reverse" / "mean-reverting regime" / "OLR edge" ALONE are NOT sufficient — these are the exact rationales that lost 11 trades in a row. If you cannot name a specific catalyst, REJECT the counter-momentum trade. This is NOT lightweight when momentum is strong — the data demands it.
 
 Output ONLY valid JSON:
 {"approved": true/false, "rationale": "1-3 sentence explanation. If approved, state why the thesis is sound. If rejected, state the SPECIFIC loss scenario."}`,

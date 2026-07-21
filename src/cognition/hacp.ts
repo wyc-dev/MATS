@@ -39,6 +39,7 @@ import type { ThesisExperience } from '../evolution/thesis-experience.ts';
 import { SimilarTradeRetriever, SubtleDiffAnalyzer } from '../evolution/reason-analytics.ts';
 import type { NumericEmbedProvider } from '../evolution/numeric-autoencoder.ts';
 import { computeVectorConditionalWinRate, formatVectorConditional } from '../evolution/evolution-utils.ts';
+import type { AntiPatternTracker } from '../evolution/anti-pattern-tracker.ts';
 
 const log = createLogger({ phase: 'hacp' });
 
@@ -224,6 +225,10 @@ export class HACPEngine {
   setNaCandidateFeaturesProvider(cb: () => Record<string, number> | null): void {
     this.naCandidateFeaturesProvider = cb;
   }
+  /** v2.0.207 (#F): Anti-pattern tracker — matches candidate against known
+   *  failure clusters so Skeptics sees "you have lost this way N times before". */
+  private antiPatternTracker: AntiPatternTracker | null = null;
+  setAntiPatternTracker(t: AntiPatternTracker | null): void { this.antiPatternTracker = t; }
 
   /** v2.0.143: RIL SimilarTradeRetriever — finds top-N most similar historical
    *  trades to a candidate thesis. Injected by index.ts so HACP can produce
@@ -870,8 +875,42 @@ export class HACPEngine {
     if (metaIdx >= 0) { metaProgress[metaIdx]!.status = 'thinking'; metaProgress[metaIdx]!.startedAt = Date.now(); }
     this.emitProgress('thinking', metaProgress);
 
-    // Build enhanced market context that includes skeptics findings + EM chain
-    const enhancedMetaContext = `${marketStateDesc}${skepticsContextStr}${emContext ? `\n${emContext}` : ''}`;
+    // v2.0.207 (#G): Inject vector-conditional WR into Meta-Agent thesis GENERATION
+    // (not just Skeptics validation). Meta-Agent sees "in YOUR market conditions,
+    // BUY conditional WR = X%, SELL conditional WR = Y%" BEFORE it writes the
+    // thesis — so weak-edge directions are discouraged at generation time, not
+    // just vetoed downstream. Falls back to min-max when NA not ready.
+    let metaConditionalWRBlock = '';
+    if (this.naEmbeddingProvider && this.naCandidateFeaturesProvider && this.expMemory) {
+      try {
+        const candidateFeatures = this.naCandidateFeaturesProvider();
+        if (candidateFeatures && Object.keys(candidateFeatures).length > 0) {
+          const records = this.expMemory.getRecords();
+          // Provide BOTH directions so Meta-Agent can calibrate conviction pre-thesis.
+          const sides: Array<'buy' | 'sell'> = ['buy', 'sell'];
+          const blocks: string[] = [];
+          for (const side of sides) {
+            const cond = computeVectorConditionalWinRate(
+              candidateFeatures,
+              records,
+              { side, minSamples: 3, threshold: 0.75, topN: 20, embeddingProvider: this.naEmbeddingProvider ?? undefined },
+            );
+            if (cond.confidence !== 'none') {
+              blocks.push(`  ${side.toUpperCase()}: ${(cond.conditionalWinRate * 100).toFixed(0)}% (n=${cond.sampleSize}, ${cond.confidence}) — ${cond.explanation}`);
+            } else if (cond.sampleSize > 0) {
+              blocks.push(`  ${side.toUpperCase()}: ${cond.explanation}`);
+            }
+          }
+          if (blocks.length > 0) {
+            metaConditionalWRBlock = `\n=== CONDITIONAL WIN RATE (your market conditions, for thesis generation) ===\n${blocks.join('\n')}\nUse this to CALIBRATE conviction: high conditional WR → strong thesis OK; low conditional WR → require stronger justification or HOLD.\n---`;
+          }
+        }
+      } catch (err) {
+        log.warn(`[NA #G] Meta-Agent conditional WR block failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    // Build enhanced market context that includes skeptics findings + EM chain + conditional WR
+    const enhancedMetaContext = `${marketStateDesc}${skepticsContextStr}${emContext ? `\n${emContext}` : ''}${metaConditionalWRBlock}`;
     const metaThought = await this.metaAgent.think(enhancedMetaContext, portfolioDesc, posCtx);
 
     const metaProg2 = this.makeAgentProgressList();
@@ -1040,7 +1079,59 @@ export class HACPEngine {
       }
     }
     // Append RIL + NA blocks to the market context used by Skeptics thesis validation
-    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}`;
+    // v2.0.207 (#E): Failure-lesson retrieval — find the most similar HISTORICAL
+    // LOSSES (by rationale + market conditions) and inject their distilled lessons
+    // so Skeptics sees "the last time we tried something like this in conditions
+    // like this, we lost because {rootCause}". This is the core of "learn from
+    // mistakes" — per-candidate, not aggregate stats.
+    let failureLessonBlock = '';
+    if (this.expMemory && this.naCandidateFeaturesProvider && (metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition) {
+      try {
+        const cf = this.naCandidateFeaturesProvider();
+        if (cf && Object.keys(cf).length > 0) {
+          const lessons = await this.expMemory.retrieveSimilarFailureLessons(
+            cf, metaThesis, 3, this.naEmbeddingProvider ?? undefined,
+          );
+          if (lessons.length > 0) {
+            const lines = lessons.map(l =>
+              `  • [${(l.similarity * 100).toFixed(0)}% match, ${l.symbol} ${l.side.toUpperCase()} ${l.outcome}] ${l.lesson}${l.rootCause ? ` (rootCause: ${l.rootCause})` : ''}`,
+            );
+            failureLessonBlock = `\n=== ⚠️ MOST SIMILAR HISTORICAL FAILURES (learn from these) ===\n${lines.join('\n')}\nIf this candidate resembles the above failures, you MUST explain how it differs — or REJECT. Repeating the same anti-pattern is the #1 cause of the 11-trade losing streak.\n---`;
+          }
+        }
+      } catch (err) {
+        log.warn(`[EXP #E] failure-lesson block failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    // v2.0.207 (#F): Anti-pattern match — does this candidate resemble a
+    // KNOWN failure cluster? If so, Skeptics sees "you have lost this way N
+    // times before, avg -X%" — the strongest possible "learn from mistakes" signal.
+    let antiPatternBlock = '';
+    if (this.antiPatternTracker && (metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition) {
+      try {
+        const matches = await this.antiPatternTracker.matchCandidate(metaThesis, 3);
+        antiPatternBlock = this.antiPatternTracker.formatBlock(matches);
+      } catch (err) {
+        log.warn(`[anti-pattern #F] matchCandidate failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    // v2.0.207 (#B): Momentum-aware dark-psychology block. When short-term
+    // momentum is strong (|momentumShort| > 2%), inject a MANDATORY warning so
+    // Skeptics' dark-psychology check is NOT lightweight — it must articulate
+    // specific evidence why a counter-momentum trade won't be stopped out.
+    let momentumWarningBlock = '';
+    if (this.naCandidateFeaturesProvider) {
+      try {
+        const cf = this.naCandidateFeaturesProvider();
+        const momShort = cf?.['momentumShort'];
+        if (momShort !== undefined && Math.abs(momShort) > 0.02) {
+          const dir = momShort > 0 ? 'UP' : 'DOWN';
+          const against = momShort > 0 ? 'SELL' : 'BUY';
+          momentumWarningBlock = `\n=== ⚠️ SHORT-TERM MOMENTUM ALERT (dark-psychology MANDATORY) ===\n  Price moved ${(Math.abs(momShort) * 100).toFixed(1)}% ${dir} over the last 5 cycles — the market is being PUSHED in one direction.\n  A ${against} here is a COUNTER-MOMENTUM trade. Before approving, you MUST articulate SPECIFIC evidence why this push will reverse (e.g. on-chain distribution, funding extreme, resistance level being sold into) — "could reverse" is NOT sufficient. If you cannot articulate a specific reversal catalyst, REJECT ${against}.\n  This is NOT lightweight: counter-momentum trades have historically been the #1 stop-out pattern.\n---`;
+        }
+      } catch { /* non-critical */ }
+    }
+    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}`;
 
     if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition && !expThesisGated) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);

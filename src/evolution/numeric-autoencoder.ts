@@ -368,6 +368,15 @@ export class NumericAutoencoder implements NumericEmbedProvider {
     if (parsed.version > NA_MODEL_VERSION) {
       log.warn(`[NA] model version ${parsed.version} > supported ${NA_MODEL_VERSION} — loading anyway (forward-compat)`);
     }
+    // v2.0.207 (#D): Feature-dimension guard — if the persisted model was
+    // trained with a different inputDim (e.g. 9 → 11 after adding momentum
+    // features), the encoder weights are incompatible. Reset to fresh instead
+    // of crashing on forward pass. Cold-start fallback (min-max) covers the
+    // gap until enough new samples retrain the model.
+    if (parsed.inputDim && parsed.inputDim !== this.inputDim) {
+      log.warn(`[NA] inputDim mismatch (persisted=${parsed.inputDim}, current=${this.inputDim}) — resetting to fresh (feature set changed)`);
+      throw new Error(`inputDim mismatch ${parsed.inputDim}→${this.inputDim}`);
+    }
     this.encoderL1 = parsed.encoderL1;
     this.encoderL2 = parsed.encoderL2;
     this.decoderL1 = parsed.decoderL1;

@@ -44,6 +44,7 @@ import {
   cosine,
 } from './embeddings.ts';
 import { ExperienceDigester } from './experience-digester.ts';
+import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
 import { extractJSON, categoriseRationale, normaliseCategory, wilsonScore } from './evolution-utils.ts';
 
 const log = rootLogger;
@@ -558,18 +559,25 @@ export class ThesisExperience {
       // Note: we only update the in-memory record (not disk) because JSONL is
       // append-only — on restart, the digester's rebuildClasses will re-digest
       // and re-derive the fine-grained exitType. This avoids duplicate JSONL lines.
-      void this.digester.addRecord(record, (lessonExitType) => {
-        if (!lessonExitType) return;
-        // Map LessonStatement.exitType → ExitType
-        // 'thesis_invalidated' (LessonStatement) → 'thesis_invalidation' (ExitType)
-        // The other 4 values (premature_sl, premature_tp, correct_sl, correct_tp) are shared.
-        const mappedExitType: ExitType | undefined = lessonExitType === 'thesis_invalidated'
+      void this.digester.addRecord(record, (lessonStmt) => {
+        // v2.0.207 (#E): Persist the full lesson onto the record so it survives
+        // restart and can be retrieved for similar future candidates.
+        record.lesson = lessonStmt.lesson;
+        record.rootCause = lessonStmt.rootCause;
+        record.lessonCategories = lessonStmt.categories;
+        // Map LessonStatement.exitType → ExitType (preserved v2.0.720 behaviour)
+        const et = lessonStmt.exitType;
+        const mappedExitType: ExitType | undefined = et === 'thesis_invalidated'
           ? 'thesis_invalidation'
-          : (lessonExitType as ExitType);
-        // Only override if the record currently has a coarse exitType (not already fine-grained)
-        if (record.exitType && !COARSE_EXIT_TYPES.has(record.exitType)) return;
-        record.exitType = mappedExitType;
-        log.info(`[EXP-digest] Wrote back fine-grained exitType="${mappedExitType}" for ${record.symbol} ${record.side} (in-memory only)`);
+          : (et as ExitType);
+        if (mappedExitType && (!record.exitType || COARSE_EXIT_TYPES.has(record.exitType))) {
+          record.exitType = mappedExitType;
+        }
+        // v2.0.207 (#E): Re-persist the record to disk so the lesson survives restart.
+        // appendRecordToDisk is append-only JSONL; re-appending the same record with
+        // the lesson filled is acceptable (load-dedup keeps the latest by id).
+        try { this.appendRecordToDisk(record); } catch { /* non-critical */ }
+        log.info(`[EXP-digest] Wrote back lesson for ${record.symbol} ${record.side}: "${lessonStmt.lesson.slice(0, 80)}" (in-memory + disk)`);
       }).catch((err: unknown) =>
         log.warn(`[EXP-digest] addRecord failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
       );
@@ -1232,6 +1240,82 @@ export class ThesisExperience {
 
   /** Get all records (tests only). */
   /** Get all records (for RIL / analytics). */
+  /**
+   * v2.0.207 (#E): Retrieve the most relevant HISTORICAL FAILURE lessons for a
+   * candidate thesis. Dual-channel: text-embedding cosine (rationale similarity)
+   * + NA-embedding cosine (market-condition similarity) when provider is ready.
+   * Returns the lesson/rootCause/categories of the top-N most similar LOSING
+   * trades so Meta-Agent / Skeptics can see "the last time we tried something
+   * like this in conditions like this, we lost because {rootCause}".
+   */
+  async retrieveSimilarFailureLessons(
+    candidateFeatures: Record<string, number>,
+    candidateThesis: string,
+    topN = 3,
+    embeddingProvider?: NumericEmbedProvider,
+  ): Promise<Array<{ lesson: string; rootCause?: string; categories?: string[]; similarity: number; symbol: string; side: string; outcome: string }>> {
+    const losses = this.records.filter(r => r.outcome === 'LOSS' && r.lesson && r.lesson.trim().length > 0);
+    if (losses.length === 0) return [];
+    try {
+      // Text channel: embed candidate thesis + each loss thesis.
+      const candVecs = await this.embed.embed([candidateThesis.slice(0, 500)]);
+      const candVec = candVecs[0];
+      if (!candVec || candVec.length === 0) return [];
+      // NA channel (optional): embed candidate features + each loss features.
+      let naCandVec: number[] | null = null;
+      let naLossVecs = new Map<string, number[]>();
+      if (embeddingProvider && embeddingProvider.isReady()) {
+        try {
+          const feats = losses.filter(r => r.marketFeatures && Object.keys(r.marketFeatures).length > 0);
+          if (feats.length > 0 && candidateFeatures && Object.keys(candidateFeatures).length > 0) {
+            const allFeats = [candidateFeatures, ...feats.map(r => r.marketFeatures!)];
+            const naVecs = embeddingProvider.embed(allFeats);
+            naCandVec = naVecs[0] ?? null;
+            for (let i = 0; i < feats.length; i++) {
+              naLossVecs.set(feats[i]!.id, naVecs[i + 1] ?? []);
+            }
+          }
+        } catch { /* non-critical — text-only */ }
+      }
+      const scored = losses.map(r => {
+        // Text similarity: max cosine over the record's rationale vectors.
+        let textSim = 0;
+        if (r.rationaleVectors && r.rationaleVectors.length > 0) {
+          for (const rv of r.rationaleVectors) {
+            const c = cosine(candVec, rv);
+            if (c > textSim) textSim = c;
+          }
+        } else {
+          // No stored rationale vectors — embed entryThesis on the fly.
+          // (Rare; only for records pre-dating rationale extraction.)
+          textSim = 0.3; // neutral-low
+        }
+        // NA similarity (market conditions) when available.
+        let naSim = 0.5; // neutral
+        const naVec = naLossVecs.get(r.id);
+        if (naCandVec && naVec && naVec.length > 0) {
+          let c = 0;
+          for (let k = 0; k < naCandVec.length; k++) c += naCandVec[k]! * naVec[k]!;
+          naSim = (c + 1) / 2; // [-1,1] → [0,1]
+        }
+        const sim = naLossVecs.has(r.id) ? textSim * 0.45 + naSim * 0.55 : textSim * 0.7 + naSim * 0.3;
+        return {
+          lesson: r.lesson!,
+          rootCause: r.rootCause,
+          categories: r.lessonCategories,
+          similarity: sim,
+          symbol: r.symbol,
+          side: r.side,
+          outcome: r.outcome,
+        };
+      });
+      return scored.sort((a, b) => b.similarity - a.similarity).slice(0, topN);
+    } catch (err) {
+      log.warn(`[EXP #E] retrieveSimilarFailureLessons failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
   getRecords(): ThesisExperienceRecord[] {
     return [...this.records];
   }

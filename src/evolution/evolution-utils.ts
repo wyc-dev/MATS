@@ -158,6 +158,8 @@ export const ENTRY_CONDITION_FEATURES = [
   'sentiment',
   'sentimentConviction',
   'regimeOrdinal',
+  'momentumShort',
+  'momentumLong',
 ] as const;
 
 export interface VectorConditionalOptions {

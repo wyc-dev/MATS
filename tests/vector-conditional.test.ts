@@ -179,8 +179,8 @@ describe('formatVectorConditional', () => {
 });
 
 describe('ENTRY_CONDITION_FEATURES', () => {
-  it('has 9 canonical entry-condition features', () => {
-    expect(ENTRY_CONDITION_FEATURES.length).toBe(9);
+  it('has 11 canonical entry-condition features (9 base + 2 momentum, v2.0.207)', () => {
+    expect(ENTRY_CONDITION_FEATURES.length).toBe(11);
     expect(ENTRY_CONDITION_FEATURES).toContain('volatility');
     expect(ENTRY_CONDITION_FEATURES).toContain('regimeOrdinal');
     // Must NOT contain outcome-only features

@@ -475,18 +475,18 @@ export class ExperienceDigester {
    *  can write it back to the record (e.g. premature_sl → record.exitType). */
   async addRecord(
     rec: ThesisExperienceRecord,
-    onLessonDigest?: (exitType: NonNullable<LessonStatement['exitType']>) => void,
+    /** v2.0.207 (#E): Callback now receives the FULL LessonStatement (not just
+     *  exitType) so the caller can persist lesson/rootCause/categories onto the
+     *  record for later failure-lesson retrieval. Backward compat: old callers
+     *  that only used exitType still work — the lesson.exitType is a field. */
+    onLessonDigest?: (lesson: LessonStatement) => void,
   ): Promise<void> {
     if (!this.cfg.enabled) return;
     if (!this.classesBuilt) return; // not yet built — rebuild will pick it up
     const lesson = await this.digestTrade(rec);
-    // v2.0.720: If the digester derived a fine-grained exitType, invoke the
-    // callback so the caller can write it back to the record. This bridges
-    // the A2A digester's premature_sl/correct_sl classification into RIL's
-    // CloseReasonAggregator, which was previously dead code.
-    if (onLessonDigest && lesson.exitType) {
+    if (onLessonDigest) {
       try {
-        onLessonDigest(lesson.exitType);
+        onLessonDigest(lesson);
       } catch (err: unknown) {
         log.warn(`[digester] onLessonDigest callback failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
       }
