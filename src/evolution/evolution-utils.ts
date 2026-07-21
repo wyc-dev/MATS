@@ -107,3 +107,377 @@ export function computeWinLossStats(
     avgPnl: pnlSum / total,
   };
 }
+
+// ─── Vector-Conditional Win Rate (v2.0.203) ───────────────────────────
+//
+// Computes win rate CONDITIONED on marketFeatures vector similarity,
+// NOT raw per-symbol / per-direction win rate.
+//
+// PROBLEM: A symbol's raw BUY win rate of 0% (0W/1L) is meaningless when
+// current market conditions differ entirely from that single losing
+// trade. Trade-audit and experience-digester used raw per-symbol WR to
+// accuse the system of "ignoring learning data" — but the learning data
+// was collected under completely different market conditions.
+//
+// SOLUTION: Retrieve historically similar MARKET-CONDITION trades
+// (cosine similarity on normalised entry features, cross-symbol by
+// default so a thin single-symbol sample is backed by the broader
+// feature-space population) and compute their win rate. This is the
+// true conditional edge P(win | similar market state), not P(win | symbol).
+//
+// Design:
+//   - 9 canonical entry-condition features (aligned with TradePatternContext):
+//     volatility, srDistanceBps, obImbalance, fundingRate, volumeRatio,
+//     signalAgreement, sentiment, sentimentConviction, regimeOrdinal.
+//   - Z-score normalisation using the records' own running mean/std
+//     (candidate is normalised against the SAME stats, never included).
+//   - Missing feature → that dimension is SKIPPED (contributes nothing),
+//     NOT zero-filled. This is more robust than forcing a false neutral.
+//   - Cosine similarity on the shared-dimension sub-vector.
+//   - Wilson score lower bound penalises small similar-sample sizes.
+//   - minSamples guard: insufficient similar trades → return neutral 0.5
+//     with confidence='none' so agents are NOT misled.
+//   - Side filter: a BUY candidate only matches historical BUY trades
+//     (v2.0.176 proved mixing directions inflates win rate).
+//   - Bounded: O(records × features), no allocation explosion.
+//
+// Used by: direction-audit.ts, experience-digester.ts, pattern-tag-tracker.ts.
+
+/** Canonical entry-condition feature set for vector-conditional matching.
+ *  Aligned with TradePatternContext (trade-pattern-classifier.ts) and the
+ *  first 8 OLR features + regimeOrdinal. Excludes outcome-only features
+ *  (mfePct/maePct/mfeToPnlRatio) which are not known at entry time. */
+export const ENTRY_CONDITION_FEATURES = [
+  'volatility',
+  'srDistanceBps',
+  'obImbalance',
+  'fundingRate',
+  'volumeRatio',
+  'signalAgreement',
+  'sentiment',
+  'sentimentConviction',
+  'regimeOrdinal',
+] as const;
+
+export interface VectorConditionalOptions {
+  /** Cosine similarity threshold for "similar" (default 0.80).
+   *  Higher = stricter matching (fewer but more similar trades). */
+  threshold?: number;
+  /** Minimum similar trades to return a non-neutral result (default 3).
+   *  Below this → return 0.5 + confidence='none' to avoid misleading. */
+  minSamples?: number;
+  /** Filter by side — v2.0.176: direction must match (BUY ↔ BUY). */
+  side?: 'buy' | 'sell';
+  /** Filter by symbol (optional). Default: cross-symbol, because a thin
+   *  per-symbol sample is exactly the failure mode this utility fixes. */
+  symbol?: string;
+  /** Max similar trades to keep for display (default 20). */
+  topN?: number;
+  /** Feature names to use (default: ENTRY_CONDITION_FEATURES). */
+  featureNames?: readonly string[];
+  /** Welford epsilon to avoid division by zero (default 1e-8). */
+  epsilon?: number;
+}
+
+export interface VectorConditionalMatch {
+  similarity: number;
+  outcome: 'win' | 'loss';
+  symbol: string;
+  side: 'buy' | 'sell';
+  pnl: number;
+}
+
+export interface VectorConditionalWinRateResult {
+  /** Conditional win rate ∈ [0,1]. 0.5 when insufficient similar trades. */
+  conditionalWinRate: number;
+  /** Wilson score 95% lower bound — penalises small similar-sample sizes. */
+  wilsonWinRate: number;
+  /** Number of similar trades found above threshold. */
+  sampleSize: number;
+  wins: number;
+  losses: number;
+  /** Average cosine similarity of matched trades (0..1). */
+  avgSimilarity: number;
+  /** Confidence based on sample size: high(≥30) / medium(≥10) / low(≥minSamples) / none. */
+  confidence: 'high' | 'medium' | 'low' | 'none';
+  /** Matched trades (top-N by similarity), for display/debugging. */
+  matched: VectorConditionalMatch[];
+  /** Features actually used (some may be skipped if all-missing on one side). */
+  usedFeatures: string[];
+  /** Human-readable explanation. */
+  explanation: string;
+}
+
+/** Internal: extract a numeric feature vector, keeping track of which
+ *  dimensions are present (non-undefined, finite). Returns the vector
+ *  plus a mask of present-dimension indices. */
+function extractFeatureVector(
+  features: Record<string, number> | undefined,
+  names: readonly string[],
+): { vec: number[]; present: boolean[] } {
+  const vec = new Array<number>(names.length);
+  const present = new Array<boolean>(names.length);
+  for (let i = 0; i < names.length; i++) {
+    const v = features?.[names[i]!];
+    if (v !== undefined && v !== null && Number.isFinite(v)) {
+      vec[i] = v;
+      present[i] = true;
+    } else {
+      vec[i] = 0;
+      present[i] = false;
+    }
+  }
+  return { vec, present };
+}
+
+/** Internal: compute min/max per dimension over a set of records,
+ *  only over PRESENT dimensions (missing dimensions keep count=0 and are
+ *  skipped during similarity — they do not collapse the range).
+ *
+ *  Min-max is used instead of z-score because cosine similarity on
+ *  z-scored vectors degenerates when the candidate equals the mean (the
+ *  z-score vector becomes all-zero, and cosine of a zero vector is
+ *  undefined / 0). Min-max normalisation keeps every non-degenerate
+ *  dimension in [0,1], giving cosine a well-defined value. */
+function computeMinMax(
+  records: Array<{ marketFeatures?: Record<string, number> }>,
+  names: readonly string[],
+): { min: number[]; max: number[]; count: number[] } {
+  const D = names.length;
+  const min = new Array<number>(D).fill(Infinity);
+  const max = new Array<number>(D).fill(-Infinity);
+  const count = new Array<number>(D).fill(0);
+  for (const rec of records) {
+    const { vec, present } = extractFeatureVector(rec.marketFeatures, names);
+    for (let i = 0; i < D; i++) {
+      if (!present[i]) continue;
+      count[i]!++;
+      if (vec[i]! < min[i]!) min[i] = vec[i]!;
+      if (vec[i]! > max[i]!) max[i] = vec[i]!;
+    }
+  }
+  return { min, max, count };
+}
+
+/** Internal: min-max normalise a candidate vector against the records' range.
+ *  - Missing candidate value or insufficient samples (count < 2) → NaN (skip).
+ *  - Zero range (max == min, i.e. all historical values identical) → 0.5
+ *    (neutral midpoint). This is critical: when a candidate equals the
+ *    historical values on a dimension, that dimension should signal
+ *    *similarity*, not be dropped. Mapping to 0.5 (rather than NaN) keeps
+ *    the dimension in the cosine computation so identical records yield
+ *    cosine = 1.0, while still letting other dimensions discriminate.
+ *  - Otherwise maps to [0,1] where 0 = historical min, 1 = historical max. */
+function normaliseCandidate(
+  vec: number[],
+  present: boolean[],
+  min: number[],
+  max: number[],
+  count: number[],
+  _epsilon: number,
+): number[] {
+  const D = vec.length;
+  const out = new Array<number>(D);
+  for (let i = 0; i < D; i++) {
+    if (!present[i] || count[i]! < 2) {
+      out[i] = NaN; // skip — insufficient data or candidate missing
+      continue;
+    }
+    const range = max[i]! - min[i]!;
+    if (range <= 1e-12) {
+      out[i] = 0.5; // zero range — neutral midpoint (no discriminative power,
+      // but contributes a non-zero component so identical records match)
+      continue;
+    }
+    out[i] = (vec[i]! - min[i]!) / range;
+  }
+  return out;
+}
+
+/** Internal: cosine similarity on the SHARED present dimensions (where both
+ *  candidate and historical record have finite normalised values).
+ *  When BOTH vectors are the zero vector on the shared dims (identical
+ *  post-normalisation, e.g. both equal the min), similarity is defined as
+ *  1.0 — they are maximally similar. A single zero vector vs a non-zero
+ *  vector yields 0 (perpendicular in the degenerate sense). */
+function sharedCosine(a: number[], b: number[]): { sim: number; sharedDims: number } {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  let shared = 0;
+  for (let i = 0; i < a.length; i++) {
+    const ai = a[i]!;
+    const bi = b[i]!;
+    if (Number.isNaN(ai) || Number.isNaN(bi)) continue;
+    dot += ai * bi;
+    normA += ai * ai;
+    normB += bi * bi;
+    shared++;
+  }
+  if (shared === 0) return { sim: 0, sharedDims: 0 };
+  // Both zero vectors on shared dims → identical (maximally similar).
+  if (normA === 0 && normB === 0) return { sim: 1.0, sharedDims: shared };
+  if (normA === 0 || normB === 0) return { sim: 0, sharedDims: shared };
+  return { sim: dot / (Math.sqrt(normA) * Math.sqrt(normB)), sharedDims: shared };
+}
+
+/** Normalise an outcome string case-insensitively to win/loss. */
+function normaliseOutcome(o: string): 'win' | 'loss' | null {
+  const s = String(o ?? '').toLowerCase();
+  if (s === 'win' || s === 'w') return 'win';
+  if (s === 'loss' || s === 'lose' || s === 'l') return 'loss';
+  return null;
+}
+
+/**
+ * Compute win rate conditioned on marketFeatures vector similarity.
+ *
+ * @param candidateFeatures  Current market conditions (entry-time features)
+ * @param records             Historical trades with marketFeatures + outcome
+ * @param options             threshold / minSamples / side / symbol / topN
+ * @returns Conditional win rate + sample size + confidence + matched trades
+ */
+export function computeVectorConditionalWinRate(
+  candidateFeatures: Record<string, number>,
+  records: Array<{
+    marketFeatures?: Record<string, number>;
+    outcome: string;
+    symbol: string;
+    side: 'buy' | 'sell';
+    pnl?: number;
+  }>,
+  options?: VectorConditionalOptions,
+): VectorConditionalWinRateResult {
+  const names = options?.featureNames ?? ENTRY_CONDITION_FEATURES;
+  const threshold = options?.threshold ?? 0.80;
+  const minSamples = options?.minSamples ?? 3;
+  const topN = options?.topN ?? 20;
+  const epsilon = options?.epsilon ?? 1e-8;
+
+  const neutral: VectorConditionalWinRateResult = {
+    conditionalWinRate: 0.5,
+    wilsonWinRate: 0.5,
+    sampleSize: 0,
+    wins: 0,
+    losses: 0,
+    avgSimilarity: 0,
+    confidence: 'none',
+    matched: [],
+    usedFeatures: [...names],
+    explanation: 'No similar market-condition trades found (insufficient data).',
+  };
+
+  // Filter records: side + symbol + has marketFeatures + resolvable outcome.
+  const filtered = records.filter((r) => {
+    if (!r.marketFeatures) return false;
+    if (options?.side && r.side !== options.side) return false;
+    if (options?.symbol && r.symbol.toLowerCase() !== options.symbol.toLowerCase()) return false;
+    return normaliseOutcome(r.outcome) !== null;
+  });
+  if (filtered.length === 0) return neutral;
+
+  // Min-max stats over filtered records (for normalisation).
+  const stats = computeMinMax(filtered, names);
+
+  // Normalise candidate against those stats.
+  const cand = extractFeatureVector(candidateFeatures, names);
+  const candNorm = normaliseCandidate(cand.vec, cand.present, stats.min, stats.max, stats.count, epsilon);
+
+  // Determine which dimensions are usable (candidate present + stats have ≥2 samples).
+  const usableDims: number[] = [];
+  for (let i = 0; i < names.length; i++) {
+    if (cand.present[i] && stats.count[i]! >= 2) usableDims.push(i);
+  }
+  const usedFeatures = usableDims.map((i) => names[i]!);
+  if (usableDims.length === 0) {
+    return { ...neutral, usedFeatures: [], explanation: 'No usable feature dimensions (candidate has no matching features with ≥2 historical samples).' };
+  }
+
+  // Score every filtered record.
+  const scored: Array<{ rec: typeof filtered[number]; sim: number; shared: number }> = [];
+  for (const rec of filtered) {
+    const rv = extractFeatureVector(rec.marketFeatures, names);
+    const rNorm = normaliseCandidate(rv.vec, rv.present, stats.min, stats.max, stats.count, epsilon);
+    const { sim, sharedDims } = sharedCosine(candNorm, rNorm);
+    // Require a minimum overlap of shared dimensions to trust the similarity.
+    if (sharedDims >= Math.max(2, Math.ceil(usableDims.length / 2)) && sim >= threshold) {
+      scored.push({ rec, sim, shared: sharedDims });
+    }
+  }
+
+  if (scored.length === 0) {
+    return {
+      ...neutral,
+      usedFeatures,
+      explanation: `No trades matched (threshold=${threshold}, ${usableDims.length}/${names.length} usable dims).`,
+    };
+  }
+
+  scored.sort((a, b) => b.sim - a.sim);
+  const matched = scored.slice(0, topN);
+
+  let wins = 0;
+  let losses = 0;
+  let simSum = 0;
+  const matches: VectorConditionalMatch[] = [];
+  for (const m of matched) {
+    const o = normaliseOutcome(m.rec.outcome)!;
+    if (o === 'win') wins++;
+    else losses++;
+    simSum += m.sim;
+    matches.push({
+      similarity: m.sim,
+      outcome: o,
+      symbol: m.rec.symbol,
+      side: m.rec.side,
+      pnl: m.rec.pnl ?? 0,
+    });
+  }
+
+  const sampleSize = matched.length;
+  const conditionalWinRate = sampleSize > 0 ? wins / sampleSize : 0.5;
+  const wilsonWinRate = wilsonScore(wins, sampleSize);
+  const avgSimilarity = sampleSize > 0 ? simSum / sampleSize : 0;
+
+  const confidence: VectorConditionalWinRateResult['confidence'] =
+    sampleSize >= 30 ? 'high' : sampleSize >= 10 ? 'medium' : sampleSize >= minSamples ? 'low' : 'none';
+
+  if (sampleSize < minSamples) {
+    return {
+      conditionalWinRate: 0.5,
+      wilsonWinRate: 0.5,
+      sampleSize,
+      wins,
+      losses,
+      avgSimilarity,
+      confidence: 'none',
+      matched: matches,
+      usedFeatures,
+      explanation: `Only ${sampleSize} similar trades (need ≥${minSamples}). Insufficient — returning neutral 0.5 to avoid misleading.`,
+    };
+  }
+
+  const explanation = `Vector-conditional: ${wins}/${sampleSize} won (${(conditionalWinRate * 100).toFixed(0)}%, wilson ${(wilsonWinRate * 100).toFixed(0)}%, avg sim ${(avgSimilarity * 100).toFixed(0)}%, ${confidence} conf, ${usableDims.length}/${names.length} features).`;
+
+  return {
+    conditionalWinRate,
+    wilsonWinRate,
+    sampleSize,
+    wins,
+    losses,
+    avgSimilarity,
+    confidence,
+    matched: matches,
+    usedFeatures,
+    explanation,
+  };
+}
+
+/** Format a VectorConditionalWinRateResult as a compact agent-context line. */
+export function formatVectorConditional(
+  result: VectorConditionalWinRateResult,
+  label: string,
+): string {
+  if (result.confidence === 'none') return `${label}: ${result.explanation}`;
+  return `${label}: ${result.wins}/${result.sampleSize} won (${(result.conditionalWinRate * 100).toFixed(0)}%, wilson ${(result.wilsonWinRate * 100).toFixed(0)}%, sim ${(result.avgSimilarity * 100).toFixed(0)}%, ${result.confidence})`;
+}

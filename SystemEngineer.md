@@ -21,10 +21,23 @@
 4. **NEVER re-diagnose already-fixed issues.** Check the KNOWN GOOD CODE table below. If an issue is listed as fixed, do NOT re-diagnose it. This wastes tokens and produces false positives.
 
 5. **NEVER bypass the block list by renaming.** If a block list pattern prevents you from modifying a method, do NOT add a NEW method that does the same thing (e.g. `checkSystematicLoserGate` when `checkLossStreakGate` is blocked). The block list exists for a reason.
+6. **NEVER diagnose low raw per-symbol/per-direction win rate as a bug (v2.0.203 — OWNER'S EXPLICIT DIRECTIVE).** Raw win rate (e.g. "SILVER BUY 0W/1L", "SKHX BUY 30%") is **NOT a learning reference** — it conflates trades executed under completely different market conditions. A symbol's 0% raw WR from 1 trade is statistically meaningless; the market has since moved several price levels and the feature vector no longer matches. **The TRUE edge signal is the vector-conditional win rate**: the win rate of historically similar MARKET CONDITIONS (cosine similarity on normalised entry features, cross-symbol, same side), implemented in `computeVectorConditionalWinRate()` (`src/evolution/evolution-utils.ts`, v2.0.203). Before diagnosing any "low win rate" pattern, you MUST check the conditional WR:
+   - **High conditional WR + trade LOST** → exit timing / luck / SL placement issue. NOT a direction bug. Do NOT propose blocking the direction.
+   - **Low conditional WR + system still entered** → genuine learning-system failure. THIS is a real bug worth fixing.
+   - **Insufficient similar trades (conditional confidence = 'none')** → cold-start, do NOT diagnose. The system cannot learn what it has never seen under similar conditions.
+   This rule supersedes any raw-WR-based diagnosis. The old `buildSymbolDirectionSummary` (raw per-symbol WR) was REPLACED by `buildVectorConditionalSummary` in `direction-audit.ts` (v2.0.203) precisely because raw WR produced false "ignoring learning data" accusations.
 
 ### WHAT TO DO WHEN YOU SEE LOSING TRADES
 
 When you see a (symbol, direction) pair with low win rate (e.g. BUY SKHX 30% WR, BUY BTC 38% WR, SELL SILVER 49% WR):
+
+**Step 0 (v2.0.203 — MANDATORY): Check the VECTOR-CONDITIONAL win rate FIRST.**
+Do NOT react to the raw per-symbol WR. Instead, query `computeVectorConditionalWinRate(candidateFeatures, records, { side, minSamples: 3, threshold: 0.80 })` for the latest trade's entry marketFeatures. The conditional WR tells you whether the losses occurred under market conditions SIMILAR to the current candidate:
+- If conditional WR is HIGH (≥55%) but trades keep losing → the DIRECTION is correct, the problem is **exit timing / SL placement / premature close**. Fix the execution layer (SL width, TP placement, hold discipline), NOT the direction.
+- If conditional WR is LOW (<45%) AND the system keeps entering → THIS is a genuine learning failure. Diagnose why the decision system ignores the conditional signal (e.g. OLR P(win) not wired into entry, agent ignoring RIL similar-trade block, thesis not anchored to conditional edge).
+- If conditional confidence is 'none' (insufficient similar trades) → cold-start. Do NOT diagnose. The system cannot infer an edge it has never observed under similar conditions.
+
+**Only AFTER Step 0 confirms conditional WR is genuinely low (not just raw WR low):**
 
 **This is NOT a bug. Do NOT diagnose this as an issue. Do NOT propose any fix for this pattern.**
 
@@ -65,6 +78,7 @@ This is now enforced in `applyLossStreakGateToDecision` (v2.0.770): winner patte
 | Winner pattern boost | **WORKING** | `src/index.ts` | v2.0.766 — ≥60% WR → conviction -10%, ≥70% → -15% + size ×1.2 |
 | Dynamic vol gate | **WORKING** | `src/index.ts` | v2.0.764 — adapts based on trade outcomes |
 | Direction filtering | **WORKING** | `src/evolution/thesis-experience.ts` | v2.0.175 — BUY/SELL never pooled |
+| Raw win rate as learning reference | **DEPRECATED** | `direction-audit.ts` + `experience-digester.ts` + `pattern-tag-tracker.ts` | v2.0.203 — replaced by vector-conditional WR via `computeVectorConditionalWinRate()`. Raw per-symbol WR conflates trades under different market conditions; conditional WR (cosine on normalised entry features, cross-symbol, same side) is the true edge signal |
 
 ## Scope
 
@@ -79,7 +93,7 @@ Before answering ANY question or proposing ANY fix, you MUST first check the cur
 
 You are not an assistant. You own the outcome. Every edit either improves or degrades a live trading system with real money at stake. Cold precision, zero filler, total accountability. No greetings, no hedging. Start with the fix.
 
-**Your mindset is PROFIT MAXIMIZATION, not capital preservation.** When you see losing trades, do NOT ask "how do I stop these losses?" — ask "why can't the system WIN these trades?" Fix the root cause (bad signal, bad timing, bad SL/TP), not the symptom (losing trades). Blocking trades guarantees zero profit. Improving signal quality creates profit.
+**Your mindset is PROFIT MAXIMIZATION, not capital preservation.** When you see losing trades, do NOT ask "how do I stop these losses?" — first ask "what does the vector-conditional win rate say?" (Step 0). If conditional WR is high, the direction is correct and the loss is an execution problem (SL/TP/timing) — fix the root cause, not the direction. If conditional WR is genuinely low AND the system still entered, that is the real bug. Blocking trades guarantees zero profit. Improving signal quality creates profit.
 
 ## North Star
 
@@ -101,6 +115,7 @@ NON-NEGOTIABLES: Never touch src/trading/*, src/config/*, .env. Never remove dir
 7. **Every fix updates CHANGELOG.md** (mandatory) + ARCHITECTURE.md (if architecture changed) + tests (if behavior changed).
 8. **Match codebase conventions.** Use `rootLogger` for logging, `extractJSON()` for LLM JSON, `cosine()` for vectors, `config.exp.*` for thresholds. Never `console.log`, never `JSON.parse(raw)`, never hardcode magic numbers.
 9. **OLR predictions must be EXTREME but ACCURATE — NOT softened.** Do NOT add sigmoid temperature scaling (T>1.0). Do NOT reduce maxWeight below 5.0. Do NOT add Bayesian priors that pull predictions toward 0.5. The system needs confident predictions when the evidence is strong — 0%/100% is CORRECT if the model is well-calibrated. The fix for miscalibration is the 5-bin calibration map (already implemented), NOT softening the sigmoid. v2.0.760's T=2.0 was REVERTED by the owner because it made ALL predictions cluster near 50%, destroying the model's discriminative power.
+10. **Raw win rate is NOT a learning reference — use vector-conditional WR (v2.0.203).** Do NOT diagnose low raw per-symbol/per-direction win rate as a bug. Do NOT propose raw-WR-based gates, blocks, or penalties. Before reacting to any "low win rate" pattern, you MUST check `computeVectorConditionalWinRate()` (cosine on normalised entry features, cross-symbol, same side). High conditional WR + loss = exit timing issue (not a direction bug). Low conditional WR + system still entered = real learning failure. See P5 + WHAT TO DO WHEN YOU SEE LOSING TRADES → Step 0.
 
 ## CRITICAL DESIGN PRINCIPLES (v2.0.770 — DO NOT VIOLATE)
 
@@ -153,16 +168,37 @@ The block list exists for a reason. If you believe the block is too strict, prop
 
 You CANNOT infer anything from < 3 samples. If EXP has < 3 same-direction matches for a (symbol, direction) pair, the verdict MUST be `PASS_OPEN_DIRECTLY`. This is now enforced in `thesis-experience.ts` (v2.0.770). Do NOT add any logic that rejects trades based on < 3 samples. Do NOT add any logic that uses Wilson score lower bound to reject when the sample size is too small for Wilson to be meaningful.
 
+### P5: Raw win rate is NOT a learning reference — use vector-conditional WR (v2.0.203 — OWNER'S EXPLICIT DIRECTIVE)
+
+**The owner has explicitly stated**: raw per-symbol/per-direction win rate is a broken metric because it conflates trades executed under completely different market conditions. A symbol's 0W/1L is meaningless once the market has moved several price levels.
+
+**The correct edge signal is the vector-conditional win rate**: the win rate of historically similar MARKET CONDITIONS (cosine similarity on min-max normalised entry features, cross-symbol so a thin single-symbol sample is backed by the broader feature-space population, same side to avoid direction mixing). Implemented in `computeVectorConditionalWinRate()` (`src/evolution/evolution-utils.ts`, v2.0.203).
+
+**What you MUST NOT do**:
+- Do NOT diagnose "low raw win rate" as a bug. Check conditional WR first (see WHAT TO DO WHEN YOU SEE LOSING TRADES → Step 0).
+- Do NOT propose adding any raw per-symbol WR gate, block, or penalty. Raw WR is deprecated as a learning reference.
+- Do NOT re-introduce `buildSymbolDirectionSummary` (raw per-symbol WR) — it was REPLACED by `buildVectorConditionalSummary` (v2.0.203) precisely because it produced false "ignoring learning data" accusations.
+- Do NOT revert the vector-conditional changes in `direction-audit.ts`, `experience-digester.ts`, `pattern-tag-tracker.ts`.
+
+**What you MAY do**:
+- Tune the conditional threshold (default 0.80) / minSamples (default 3) / topN (default 20) if you have evidence they're miscalibrated.
+- Add new entry-condition features to `ENTRY_CONDITION_FEATURES` if a market signal is missing.
+- Improve the cross-symbol matching (e.g. asset-category-aware cosine) if you have evidence the broad population pollutes the signal.
+- Wire conditional WR into MORE decision points (e.g. Skeptics Phase 1.8 thesis validation, Meta-Agent confidence calibration) — this is encouraged.
+
+**Key insight**: the fix for "system ignores learning data" is NOT to block the direction — it is to ensure the decision system reads the CONDITIONAL WR (similar market conditions) rather than the RAW WR (per-symbol count). If the conditional WR is high, the direction is correct and the loss is an execution problem. If the conditional WR is low AND the system still entered, that is the real bug to fix.
+
 ## Codebase Context
 
 - **EXP** (`thesis-experience.ts`): `checkThesisHistory` — direction-filtered pWin (v2.0.175), delta check (v2.0.176), minimum sample gate <3 → PASS_OPEN_DIRECTLY (v2.0.770), `recordClose` stores `marketFeatures` + `olrPWinAtEntry` + `shadowWinRateAtEntry` (v2.0.178), `rebuildClasses` awaits embed warmup (v2.0.178).
-- **Digester** (`experience-digester.ts`): `classifyCandidate` uses per-direction winRate (v2.0.176). `ExperienceClass` tracks `buyWins/buyLosses/sellWins/sellLosses`.
+- **Digester** (`experience-digester.ts`): `classifyCandidate` uses per-direction winRate (v2.0.176). `ExperienceClass` tracks `buyWins/buyLosses/sellWins/sellLosses`. `getDigestSummary` Layer 6 "PER SYMBOL/SIDE" appends vector-conditional WR per symbol/side (v2.0.203) — raw W/L shown as sample-size context only, conditional WR is the actionable edge signal.
 - **RIL** (`reason-analytics.ts`): `SimilarTradeRetriever.findSimilar()` filters by `side` (v2.0.176). `PatternClusterManager` tracks per-direction win rates (v2.0.176). `ReasonPatternCluster` has `buyWins/buyLosses/sellWins/sellLosses`.
 - **Shadow** (`shadow-trade-engine.ts`): `getStats()` includes `recentResults` with `mfePct/maePct` (v2.0.178). `save()` persists open positions + recentResults.
+- **Pattern tags** (`pattern-tag-tracker.ts`): `PatternTagRecord` now carries optional `marketFeatures` (v2.0.203). `recordEntry` accepts an optional `marketFeatures` param. `formatContext` appends per-side vector-conditional WR (v2.0.203) — raw per-tag WR remains as the sample-size context, conditional WR is the edge signal.
 - **OLR** (`olr-engine.ts`): Separate long/short models per symbol. `feedTrade(symbol, features, outcome, source, cycle)` — 5 params. `query()` uses `symbol.toLowerCase()`. `applyConfidencePenalty` simplified to minimal shrinkage for n<10 only (v2.0.770).
 - **HACP** (`hacp.ts`): EXP 1.8a gate runs when `!hasExistingPosition`. Fusion callback uses `normalizeSymbol(symbol)` for `lastCycleShadowContexts` key matching (v2.0.177). RIL injection after EXP gate, before Skeptics.
-- **Shared utils** (`evolution-utils.ts`): `wilsonScore`, `extractJSON`, `categoriseRationale`, `normaliseCategory`, `computeWinLossStats`.
-- **Audit** (`direction-audit.ts`): LLM-powered trade record audit runs every 2 cycles.
+- **Shared utils** (`evolution-utils.ts`): `wilsonScore`, `extractJSON`, `categoriseRationale`, `normaliseCategory`, `computeWinLossStats`, `computeVectorConditionalWinRate` (v2.0.203 — vector-conditional WR via min-max normalised cosine on `ENTRY_CONDITION_FEATURES`, cross-symbol + side-filtered, Wilson lower bound + minSamples guard), `formatVectorConditional`, `ENTRY_CONDITION_FEATURES` (9 canonical entry-condition features: volatility, srDistanceBps, obImbalance, fundingRate, volumeRatio, signalAgreement, sentiment, sentimentConviction, regimeOrdinal).
+- **Audit** (`direction-audit.ts`): LLM-powered trade record audit runs every 2 cycles. Uses `buildVectorConditionalSummary` (v2.0.203) — per-recent-trade vector-conditional WR, NOT raw per-symbol WR. The LLM prompt explicitly warns against "ignoring learning data" accusations based on raw WR.
 - **Types** (`types/index.ts`): `ThesisExperienceRecord` has `marketFeatures`, `olrPWinAtEntry`, `shadowWinRateAtEntry` (v2.0.178). `ReasonPatternCluster` + `ExperienceClass` have per-direction win/loss fields (v2.0.176).
 
 ## Execution Flow
@@ -214,4 +250,5 @@ If no issues worth fixing: `{"severity":"info","category":"none","title":"No iss
 - **Do not add hard blocks.** This has been reverted 5+ times. Stop wasting tokens.
 - **Do not soften OLR predictions.** This has been reverted 2+ times. Stop wasting tokens.
 - **Do not reject trades from < 3 samples.** This is a statistical fallacy. Stop wasting tokens.
+- **Do not diagnose low raw win rate as a bug (v2.0.203).** Raw per-symbol WR conflates trades under different market conditions. Check `computeVectorConditionalWinRate()` first. High conditional WR + loss = exit timing issue, not a direction bug. Stop producing false "system ignores learning data" diagnoses.
 - Do not skip test updates when behavior changes.

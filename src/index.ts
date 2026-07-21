@@ -249,8 +249,10 @@ class MATSSystem {
     blockedUntilCycle: number;
     totalTrades: number;
     totalWins: number;
+    /** v2.0.770: Total PnL for this (symbol, direction) pair — used for PnL-aware winner detection. */
+    totalPnl: number;
     /** v2.0.732: Per-regime win/loss tracking for condition-aware gating. */
-    regimeStats: Map<string, { trades: number; wins: number; volatility: number }>;
+    regimeStats: Map<string, { trades: number; wins: number; volatility: number; pnl: number }>;
   }>();
 
   /**
@@ -330,15 +332,16 @@ class MATSSystem {
    * - Loss: increment consecutiveLosses, set blockedUntilCycle if >= 3
    * Always increments totalTrades.
    */
-  private updateLossStreakTracker(symbol: string, direction: 'buy' | 'sell', isWin: boolean): void {
+  private updateLossStreakTracker(symbol: string, direction: 'buy' | 'sell', isWin: boolean, pnl: number = 0): void {
     const key = `${normalizeSymbol(symbol)}:${direction}`;
     let entry = this.lossStreakTracker.get(key);
     if (!entry) {
-      entry = { consecutiveLosses: 0, blockedUntilCycle: 0, totalTrades: 0, totalWins: 0, regimeStats: new Map() };
+      entry = { consecutiveLosses: 0, blockedUntilCycle: 0, totalTrades: 0, totalWins: 0, totalPnl: 0, regimeStats: new Map() };
       this.lossStreakTracker.set(key, entry);
     }
 
     entry.totalTrades++;
+    entry.totalPnl += pnl;
 
     // v2.0.732: Track per-regime stats for condition-aware gating
     const regime = this.marketState.getState(symbol)?.regime
@@ -347,11 +350,12 @@ class MATSSystem {
     const volatility = this.marketState.getState(symbol)?.volatility ?? 0;
     let regimeStat = entry.regimeStats.get(regime);
     if (!regimeStat) {
-      regimeStat = { trades: 0, wins: 0, volatility: 0 };
+      regimeStat = { trades: 0, wins: 0, volatility: 0, pnl: 0 };
       entry.regimeStats.set(regime, regimeStat);
     }
     regimeStat.trades++;
-    regimeStat.volatility = volatility; // latest volatility for this regime
+    regimeStat.volatility = volatility;
+    regimeStat.pnl += pnl;
     if (isWin) regimeStat.wins++;
 
     if (isWin) {
@@ -2608,7 +2612,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // v2.0.731: Update loss streak tracker — was defined but never called!
       // This is why BUY SKHX with 31% WR over 32 trades was never blocked.
       try {
-        this.updateLossStreakTracker(symbol, trade.side === 'buy' ? 'buy' : 'sell', isWin);
+        this.updateLossStreakTracker(symbol, trade.side === 'buy' ? 'buy' : 'sell', isWin, trade.pnl);
       } catch (err) {
         log.warn(`[close-learning] Loss streak tracker update failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -6263,6 +6267,18 @@ ${recentExamples}
             // Extract patternTag from the final decision (meta-agent's tag)
             const patternTag = finalDecision.patternTag;
             if (patternTag) {
+              // v2.0.203: Capture entry-time marketFeatures so pattern-tag
+              // win rates can be conditioned on similar market states, not
+              // just raw per-tag counts. Aligned with the vector-conditional
+              // utility's ENTRY_CONDITION_FEATURES (best-effort — missing
+              // fields are skipped by the similarity computation).
+              const entryMarketFeatures: Record<string, number> = {
+                volatility: combinedState.volatility ?? 0,
+                srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+                obImbalance: combinedState.orderBookImbalance ?? 0,
+                signalAgreement: result.consensus.confidence ?? 0.5,
+                regimeOrdinal: regimeToOrdinal(combinedState.regime),
+              };
               this.patternTagTracker.recordEntry(
                 tradeId,
                 patternTag,
@@ -6270,6 +6286,7 @@ ${recentExamples}
                 report.trade.symbol,
                 this.totalCycles,
                 'meta_agent',
+                entryMarketFeatures,
               );
             }
           } catch (err) {

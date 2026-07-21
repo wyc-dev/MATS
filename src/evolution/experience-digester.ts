@@ -24,7 +24,7 @@ import type {
   TradeOutcome,
 } from '../types/index.ts';
 import { type EmbedProvider, cosine } from './embeddings.ts';
-import { extractJSON, categoriseRationale, normaliseCategory } from './evolution-utils.ts';
+import { extractJSON, categoriseRationale, normaliseCategory, computeVectorConditionalWinRate, formatVectorConditional } from './evolution-utils.ts';
 
 const log = rootLogger;
 
@@ -720,9 +720,15 @@ export class ExperienceDigester {
     }
 
     // ── Layer 6: Per symbol/side (compact) ──
+    // v2.0.203: Raw W/L is retained as SAMPLE-SIZE context only. The actionable
+    // edge signal is the VECTOR-CONDITIONAL win rate — the win rate of
+    // historically similar MARKET CONDITIONS (cross-symbol, same side),
+    // not the raw per-symbol count. A symbol with 0W/1L is not evidence of a
+    // bad setup if that single trade occurred under totally different
+    // market conditions than the current candidate.
     lines.push('');
-    lines.push('PER SYMBOL/SIDE:');
-    const byKey = new Map<string, { w: number; l: number; pnl: number; avgHold: number; count: number }>();
+    lines.push('PER SYMBOL/SIDE (raw = sample context; conditional = true edge signal):');
+    const byKey = new Map<string, { w: number; l: number; pnl: number; avgHold: number; count: number; latestFeatures?: Record<string, number>; latestSide?: 'buy' | 'sell' }>();
     for (const r of records) {
       const k = `${r.symbol} ${r.side.toUpperCase()}`;
       const e = byKey.get(k) ?? { w: 0, l: 0, pnl: 0, avgHold: 0, count: 0 };
@@ -730,13 +736,32 @@ export class ExperienceDigester {
       e.pnl += r.pnl;
       e.avgHold += r.holdMin;
       e.count++;
+      // Keep the LATEST trade's marketFeatures for this symbol/side
+      if (r.marketFeatures && Object.keys(r.marketFeatures).length > 0) {
+        e.latestFeatures = r.marketFeatures;
+        e.latestSide = r.side;
+      }
       byKey.set(k, e);
     }
     for (const [k, e] of byKey) {
       const tag = e.pnl >= 0 ? '+' : '';
       const avgH = e.count > 0 ? (e.avgHold / e.count).toFixed(0) : '0';
       const exitFlag = Number(avgH) <= 8 ? ' ⚠️premature' : '';
-      lines.push(`  ${k}: W${e.w} L${e.l} net ${tag}${e.pnl.toFixed(3)} avg ${avgH}min${exitFlag}`);
+      const rawLine = `  ${k}: W${e.w} L${e.l} net ${tag}${e.pnl.toFixed(3)} avg ${avgH}min${exitFlag}`;
+      // Compute vector-conditional WR using the latest trade's features as
+      // the candidate, cross-symbol (so a thin single-symbol sample is backed
+      // by the broader feature-space population), same side.
+      if (e.latestFeatures && e.latestSide) {
+        const result = computeVectorConditionalWinRate(
+          e.latestFeatures,
+          records,
+          { side: e.latestSide, minSamples: 3, threshold: 0.80, topN: 20 },
+        );
+        const condLine = formatVectorConditional(result, '    conditional');
+        lines.push(`${rawLine} | ${condLine}`);
+      } else {
+        lines.push(`${rawLine} | (no marketFeatures — conditional N/A)`);
+      }
     }
 
     return lines.join('\n');
