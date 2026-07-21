@@ -1329,6 +1329,12 @@ CONFIDENCE CALIBRATION AUDIT:
 
 BLOCK 1: ENTRY PATTERN PERFORMANCE
   - Does Meta-Agent's proposed entry match a pattern in the map?
+  - v2.0.214: If the pattern shows "cond X%" (conditional WR), verify Meta-Agent
+    used it as the BASE confidence instead of raw WR. If cond WR and raw WR
+    disagree (e.g. raw 67% but cond 30%) and Meta-Agent used the higher raw WR
+    without justification -> flag: "Pattern raw WR is X% but conditional WR is
+    Y% — current market conditions are unfavorable. You used the higher raw WR
+    without addressing why conditions are different now."
   - If pattern has HIGH WR (>=60%): Meta-Agent's thesis is historically sound.
     Check: did Meta-Agent acknowledge subtle differences? If not, flag it:
     "Pattern X has Y% WR but you didn't address why this time might differ."
@@ -1363,6 +1369,12 @@ BLOCK 2: CLOSE REASON PERFORMANCE
 BLOCK 3: SIMILAR TRADES + SUBTLE DIFFERENCES
   - Review the top-5 similar trades. Does Meta-Agent's proposal resemble
     past winners or past losers more?
+  - v2.0.214: If the aggregate shows "sim-weighted" WR alongside raw WR,
+    check for divergence. If sim-weighted is LOWER than raw (e.g. raw 60%
+    but sim-weighted 35%), the closest matches are LOSERS — the less similar
+    trades inflated the raw WR. If Meta-Agent used the higher raw WR without
+    addressing this -> flag: "Similar trades raw WR is X% but sim-weighted is
+    Y% — the closest historical matches LOST. You didn't address this divergence."
   - If it resembles past losers: challenge Meta-Agent to explain the critical
     difference. If explanation is weak -> REJECT.
   - If it resembles past winners: check for subtle differences Meta-Agent
