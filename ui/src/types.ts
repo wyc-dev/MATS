@@ -203,6 +203,24 @@ export interface APIData {
   agentModels?: { available: ModelDefinition[]; assignments: AgentModelConfig[] };
   cycleProgress?: CycleProgress | null;
   hacpThreshold?: number;
+  /** v2.0.219: Advanced learning systems state */
+  advancedLearning?: {
+    na?: { ready: boolean; sampleCount: number; inputDim: number };
+    attnres?: { updateCount: number; wNorm: number; temperature: number };
+    chr?: { symbols: Record<string, { cycleCount: number }> };
+    antiPattern?: { clusterCount: number };
+    replay?: { totalSamples: number; capacity: number; symbolsTracked: number; totalReplays: number; lastBatchSize: number; avgPriority: number };
+    bayesian?: {
+      symbol: string;
+      buy: { pWin: number; std: number; low: number; high: number; uncertainty: number; applied: boolean };
+      sell: { pWin: number; std: number; low: number; high: number; uncertainty: number; applied: boolean };
+    };
+    temporal?: { historyLen: number; updateCount: number; temperature: number; wNorm: number };
+    crossSymbol?: Array<{ symbol: string; samples: number; residualNorm: number; sharedNorm: number }>;
+    rewardShaper?: { config: Record<string, number> };
+    exploration?: { ucbConstant: number; enabled: boolean; infoGainThreshold: number };
+    worldModel?: { sampleCount: number; ready: boolean; latentDim: number };
+  };
   evolution?: EvolutionData;
   /** v2.0.140: EM Cycle Digestion — MiniLM insight retrieval + self-adjustment */
   emState?: EMState;

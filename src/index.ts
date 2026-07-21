@@ -8292,6 +8292,64 @@ ${recentExamples}
         cycleProgress: this.cycleProgress,
         hacpThreshold: this.hacpEngine.getCurrentThreshold(),
         evolution: this.evolution.getEvolutionData(),
+        // v2.0.219: Advanced learning systems state for professional UI
+        advancedLearning: {
+          // NA (Numeric Autoencoder)
+          na: this.naEngine ? {
+            ready: this.naEngine.isReady(),
+            sampleCount: this.naEngine.sampleCount(),
+            inputDim: this.naEngine.inputDim,
+          } : undefined,
+          // AttnRes Trade Embedder
+          attnres: this.attnResTradeEmbedder ? {
+            updateCount: this.attnResTradeEmbedder.getUpdateCount(),
+            wNorm: this.attnResTradeEmbedder.getWeightNorm(),
+            temperature: this.attnResTradeEmbedder.getTemperature(),
+          } : undefined,
+          // CHR (Cycle History Retrieval) — use public API
+          chr: this.cycleHistory ? (() => {
+            const syms = [...new Set([...this.tradingMarkets, ...this.portfolio.getOpenSymbols()])];
+            const perSym: Record<string, unknown> = {};
+            for (const s of syms) {
+              const sn = normalizeSymbol(s);
+              const cc = this.cycleHistory.cycleCount(sn);
+              if (cc > 0) perSym[sn] = { cycleCount: cc };
+            }
+            return { symbols: perSym };
+          })() : undefined,
+          // Anti-Pattern Tracker
+          antiPattern: this.antiPatternTracker ? {
+            clusterCount: 0, // matchCandidate is async; count not exposed
+          } : undefined,
+          // Replay Buffer
+          replay: this.replayBuffer ? this.replayBuffer.getStats() : undefined,
+          // Bayesian OLR (sample query for active symbol)
+          bayesian: (() => {
+            const sym = this.marketAgent.getSelectedSymbol();
+            if (!sym) return undefined;
+            const ctx = this.lastCycleShadowContexts.get(normalizeSymbol(sym));
+            if (!ctx?.features) return undefined;
+            try {
+              const buyResult = this.bayesianOLR.query(sym, ctx.features, 'buy', this.totalCycles);
+              const sellResult = this.bayesianOLR.query(sym, ctx.features, 'sell', this.totalCycles);
+              return {
+                symbol: normalizeSymbol(sym),
+                buy: { pWin: buyResult.pWin_mean, std: buyResult.pWin_std, low: buyResult.pWin_low, high: buyResult.pWin_high, uncertainty: buyResult.uncertainty, applied: buyResult.applied },
+                sell: { pWin: sellResult.pWin_mean, std: sellResult.pWin_std, low: sellResult.pWin_low, high: sellResult.pWin_high, uncertainty: sellResult.uncertainty, applied: sellResult.applied },
+              };
+            } catch { return undefined; }
+          })(),
+          // Temporal Attention
+          temporal: this.temporalAttention ? this.temporalAttention.getState() : undefined,
+          // Cross-Symbol Backbone
+          crossSymbol: this.crossSymbolBackbone ? this.crossSymbolBackbone.getStats() : undefined,
+          // Reward Shaper
+          rewardShaper: this.rewardShaper ? { config: this.rewardShaper.getConfig() } : undefined,
+          // Active Exploration
+          exploration: this.activeExploration ? this.activeExploration.getConfig() : undefined,
+          // World Model
+          worldModel: this.worldModel ? this.worldModel.getState() : undefined,
+        },
         backtest: this.lastBacktestResult,
         backtestProgress: this.backtestProgress,
         tradeHistory: this.evolution.tradeHistory.getAllEntries().slice(-50),
