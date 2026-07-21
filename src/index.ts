@@ -34,6 +34,7 @@ import {
   SubtleDiffAnalyzer,
   formatAnalyticsBlock,
 } from './evolution/reason-analytics.ts';
+import { AttnResTradeEmbedder } from './evolution/attnres-trade-embedder.ts';
 import { TransformersEmbedProvider } from './evolution/embeddings.ts';
 import { SentimentEngine } from './analysis/sentiment-engine.ts';
 import { AdaptiveNoiseFilter, AssetFilterRegistry, type MarketContext as FilterMarketContext, type FilterProfileType } from './analysis/adaptive-filter.ts';
@@ -217,6 +218,8 @@ class MATSSystem {
    *  single current-snapshot. Entry-time regime retains persistent weight
    *  (K3 embedding persistence). */
   private cycleHistory!: CycleHistoryRetriever;
+  /** v2.0.215: AttnRes trade embedder — learned blend of MiniLM rationale vectors. */
+  private attnResTradeEmbedder!: AttnResTradeEmbedder;
   /** One-shot cold-start OLR backfill guard — ensures backfill runs at most
    *  once per process, on the first cycle that has non-empty trading markets. */
   private olrBackfillDone = false;
@@ -2081,7 +2084,20 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         this.closeReasonAgg = new CloseReasonAggregator();
         this.similarTradeRetriever = new SimilarTradeRetriever();
         this.subtleDiffAnalyzer = new SubtleDiffAnalyzer();
-        // Rebuild clusters from EXP records (non-blocking)
+
+        // v2.0.215: Initialize AttnRes trade embedder (learned MiniLM rationale blend).
+        // Applies K3 AttnRes theory at the rationale level: learned softmax attention
+        // over rationale vectors replaces fixed combinationSimilarity.
+        // Cold-start safe: w=0 → uniform → mean ≈ current behavior.
+        // Backward compatible: when not trained, blend = mean of rationales.
+        this.attnResTradeEmbedder = new AttnResTradeEmbedder({ embedDim: config.exp.embedDim });
+        await this.attnResTradeEmbedder.load('data/evolution/attnres-embed-state.json');
+        this.patternCluster.setAttnResTradeEmbedder(this.attnResTradeEmbedder);
+        this.similarTradeRetriever.setAttnResTradeEmbedder(this.attnResTradeEmbedder);
+        log.info(`✓ AttnRes trade embedder ready (${this.attnResTradeEmbedder.getUpdateCount()} updates, |w|=${this.attnResTradeEmbedder.getWeightNorm().toFixed(4)})`);
+
+        // Rebuild clusters from EXP records (non-blocking). When AttnRes embedder
+        // is present, rebuild uses blended vectors for cluster assignment.
         if (this.expMemory && this.expMemory.size() > 0) {
           void this.patternCluster.rebuild(this.expMemory.getRecords()).catch((err: unknown) =>
             log.warn(`[RIL] startup cluster rebuild failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
@@ -2794,6 +2810,15 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             void this.patternCluster.addTrade(record as any).catch((e: unknown) =>
               log.warn(`[RIL] addTrade failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`),
             );
+            // v2.0.215: Update AttnRes trade embedder with trade outcome.
+            // Learns which rationale blend directions predict winning trades.
+            // Cold-start safe: only updates when trade has 2+ rationale vectors.
+            if (this.attnResTradeEmbedder && (record as any).rationaleVectors?.length >= 2) {
+              this.attnResTradeEmbedder.updateOnOutcome(
+                (record as any).rationaleVectors,
+                (record as any).pnl ?? 0,
+              );
+            }
           }
           // v2.0.207 (#F): Feed the loss into the anti-pattern tracker so its
           // lesson joins a known anti-pattern class. Only losses carry lessons
@@ -7530,6 +7555,10 @@ ${recentExamples}
       // v2.0.211 (K.md #1): Persist AttnRes cycle-history state (w vectors,
       // per-symbol history, entry-time features).
       this.cycleHistory?.persist();
+      // v2.0.215: Persist AttnRes trade embedder state (learned w vector).
+      if (this.attnResTradeEmbedder) {
+        void this.attnResTradeEmbedder.save('data/evolution/attnres-embed-state.json').catch(() => {});
+      }
     } catch { /* best-effort */ }
   }
 
