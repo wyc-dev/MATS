@@ -641,7 +641,7 @@ export class OLREngine {
   }
 
   /**
-   * v2.0.761: Accept optional currentFeatures parameter. When provided, these
+   * v2.0.768: Accept optional currentFeatures parameter. When provided, these
    * fresh market features (volatility, OB, funding, regime) are used for the
    * prediction instead of the stale features captured at shadow entry time.
    * This prevents P(win) miscalibration where OLR predicts 100%/0% based on
@@ -655,6 +655,10 @@ export class OLREngine {
    * 
    * If currentFeatures is not provided, falls back to the original behavior
    * (using the features passed to query()).
+   * 
+   * v2.0.768: The feature contributions in the result now reflect the CURRENT
+   * features (not the stored ones), so the explanation accurately describes
+   * which market conditions are driving the prediction RIGHT NOW.
    */
   query(symbol: string, features: Record<string, number>, side: 'buy' | 'sell', currentCycle?: number, currentFeatures?: Record<string, number>): OLRQueryResult {
     const empty = (reason: string): OLRQueryResult => ({
@@ -675,7 +679,7 @@ export class OLREngine {
       return empty(`Only ${model.nSamples} samples for ${symbol} ${side.toUpperCase()} (need ${OLR_CONFIG.minSamplesForQuery})`);
     }
 
-    // v2.0.761: Use currentFeatures for prediction if provided, otherwise fall back
+    // v2.0.768: Use currentFeatures for prediction if provided, otherwise fall back
     // to the features passed to query(). This ensures the sigmoid computation uses
     // fresh market data (volatility, OB, funding, regime) rather than stale features
     // captured at shadow entry time that may be 5-60 minutes old.
@@ -740,7 +744,10 @@ export class OLREngine {
     };
 
     const sourceStr = `shadow=${sourceBreakdown.shadow} paper=${sourceBreakdown.paper} real=${sourceBreakdown.real} backfill=${sourceBreakdown.backfill}`;
-    const explanation = `P(win)=${(pWin * 100).toFixed(0)}% (${model.nSamples} samples [${sourceStr}], conf=${confLabel}) | Key: ${topFeatures}`;
+    
+    // v2.0.768: Include whether current features were used in the explanation
+    const featureSource = currentFeatures ? ' (fresh market data)' : ' (stored entry features)';
+    const explanation = `P(win)=${(pWin * 100).toFixed(0)}%${featureSource} (${model.nSamples} samples [${sourceStr}], conf=${confLabel}) | Key: ${topFeatures}`;
 
     return { pWin, nSamples: model.nSamples, confidence: confLabel, featureContributions: contributions, explanation, sourceBreakdown, recentTrades };
   }
