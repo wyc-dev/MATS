@@ -607,6 +607,16 @@ export class PortfolioTracker {
     const pos = this.portfolio.positions.get(symbol);
     if (!pos) return;
 
+    // v2.0.219: Price sanity check — same as softUpdatePosition.
+    if (!Number.isFinite(currentPrice) || currentPrice <= 0) return;
+    if (pos.currentPrice > 0) {
+      const deviation = Math.abs(currentPrice - pos.currentPrice) / pos.currentPrice;
+      if (deviation > 0.25) {
+        log.warn(`[updatePosition] Rejected corrupt price ${currentPrice.toFixed(2)} for ${symbol} (deviation ${(deviation * 100).toFixed(1)}% from last ${pos.currentPrice.toFixed(2)})`);
+        return;
+      }
+    }
+
     pos.currentPrice = currentPrice;
     pos.updatedAt = Date.now();
 
@@ -717,6 +727,22 @@ export class PortfolioTracker {
     const sym = normalizeSymbol(symbol);
     const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(symbol);
     if (!pos) return;
+
+    // v2.0.219: Price sanity check — reject corrupt/stale prices that deviate
+    // too far from the last known price. A 10%+ move in a single update is
+    // almost certainly a data glitch (wrong symbol, stale REST response, WS
+    // desync). Accepting it permanently corrupts minValueReached/maxValueReached.
+    // Threshold: 25% — generous enough for real flash crashes, tight enough to
+    // catch data corruption (the SKHX bug had a 10% fake drop → minValue=$7.82
+    // on a $15.73 margin position where SL was 0.8% away).
+    if (!Number.isFinite(currentPrice) || currentPrice <= 0) return;
+    if (pos.currentPrice > 0) {
+      const deviation = Math.abs(currentPrice - pos.currentPrice) / pos.currentPrice;
+      if (deviation > 0.25) {
+        log.warn(`[softUpdatePosition] Rejected corrupt price ${currentPrice.toFixed(2)} for ${sym} (deviation ${(deviation * 100).toFixed(1)}% from last ${pos.currentPrice.toFixed(2)}) — keeping MAE/MFE clean`);
+        return;
+      }
+    }
 
     pos.currentPrice = currentPrice;
     pos.updatedAt = Date.now();
