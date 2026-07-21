@@ -37,6 +37,8 @@ import { getAgentModel } from '../agents/agent-models.ts';
 import { buildConvergenceAuditContext } from '../evolution/cycle-summary.ts';
 import type { ThesisExperience } from '../evolution/thesis-experience.ts';
 import { SimilarTradeRetriever, SubtleDiffAnalyzer } from '../evolution/reason-analytics.ts';
+import type { NumericEmbedProvider } from '../evolution/numeric-autoencoder.ts';
+import { computeVectorConditionalWinRate, formatVectorConditional } from '../evolution/evolution-utils.ts';
 
 const log = createLogger({ phase: 'hacp' });
 
@@ -203,6 +205,24 @@ export class HACPEngine {
   private fusionDataCallback: ((symbol: string, side: 'buy' | 'sell') => { olrPWin?: number; shadowWinRate?: number }) | null = null;
   setFusionDataCallback(cb: (symbol: string, side: 'buy' | 'sell') => { olrPWin?: number; shadowWinRate?: number }): void {
     this.fusionDataCallback = cb;
+  }
+
+  /** v2.0.204: Numeric embedding provider (NumericAutoencoder) — enables the
+   *  vector-conditional win-rate block injected into Skeptics Phase 1.8b so the
+   *  thesis validator sees "historically similar MARKET CONDITIONS win rate"
+   *  (learned non-linear embedding, cross-symbol, same side) alongside the
+   *  RIL similar-trades block. Injected by index.ts. */
+  private naEmbeddingProvider: NumericEmbedProvider | null = null;
+  setNaEmbeddingProvider(p: NumericEmbedProvider): void {
+    this.naEmbeddingProvider = p;
+  }
+  /** v2.0.204: Candidate market-features provider — returns the current cycle's
+   *  entry-condition features so the Phase 1.8b conditional-WR block can query
+   *  the numeric autoencoder for similar historical market conditions. Injected
+   *  by index.ts (returns the active symbol's current marketFeatures). */
+  private naCandidateFeaturesProvider: (() => Record<string, number> | null) | null = null;
+  setNaCandidateFeaturesProvider(cb: () => Record<string, number> | null): void {
+    this.naCandidateFeaturesProvider = cb;
   }
 
   /** v2.0.143: RIL SimilarTradeRetriever — finds top-N most similar historical
@@ -989,8 +1009,36 @@ export class HACPEngine {
         log.warn(`[RIL] SimilarTradeRetriever failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    // Append RIL blocks to the market context used by Skeptics thesis validation
-    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}`;
+    // v2.0.204: Vector-conditional win-rate block (learned market-condition embedding).
+    // Queries the NumericAutoencoder for the win rate of historically similar
+    // MARKET CONDITIONS (cross-symbol, same side) and appends it to the Skeptics
+    // 1.8b context. This is the TRUE edge signal — "similar market states won X%"
+    // — not raw per-symbol WR. Falls back to min-max + cosine when the autoencoder
+    // is absent/not ready (cold-start). Supersedes the false "ignoring learning
+    // data" diagnosis that raw per-symbol WR produced.
+    let naConditionalBlock = '';
+    if (this.naEmbeddingProvider && this.naCandidateFeaturesProvider && this.expMemory && (metaAction === 'buy' || metaAction === 'sell') && !hasExistingPosition) {
+      try {
+        const candidateFeatures = this.naCandidateFeaturesProvider();
+        if (candidateFeatures && Object.keys(candidateFeatures).length > 0) {
+          const records = this.expMemory.getRecords();
+          const cond = computeVectorConditionalWinRate(
+            candidateFeatures,
+            records,
+            { side: metaAction, minSamples: 3, threshold: 0.80, topN: 20, embeddingProvider: this.naEmbeddingProvider ?? undefined },
+          );
+          if (cond.confidence !== 'none') {
+            naConditionalBlock = `\n=== VECTOR-CONDITIONAL WIN RATE (similar market conditions, ${metaAction.toUpperCase()}) ===\n${formatVectorConditional(cond, '  conditional')}\nInterpretation: HIGH conditional WR + you reject = you are blocking a real edge (exit-timing issue, not direction). LOW conditional WR + thesis weak = genuine learning failure, reject is correct.\n---`;
+          } else if (cond.sampleSize > 0) {
+            naConditionalBlock = `\n=== VECTOR-CONDITIONAL WIN RATE ===\n  ${cond.explanation}\n---`;
+          }
+        }
+      } catch (err) {
+        log.warn(`[NA 1.8b] conditional WR block failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    // Append RIL + NA blocks to the market context used by Skeptics thesis validation
+    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}`;
 
     if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition && !expThesisGated) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);
