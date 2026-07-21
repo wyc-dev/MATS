@@ -324,15 +324,13 @@ NA embeds the blended representation. The two are composable:
 
 ## 9. Version History
 
-- v2.0.212 (#7): Pre-Decision vs Pre-Execution Specialization implemented.
-  - Two pseudo-queries per symbol: wDecision (broad, PnL reward) + wExecution
-    (sharp/recent-biased, SL/TP stop-out reward).
-  - retrieveBlend(mode) selects w + recency prior by mode.
-  - wExecution reward: SL hit (loss+sl_tp) → negative; TP hit (win+sl_tp) →
-    positive; manual/thesis/consensus → skip.
-  - Execution-lens context block injected into hacp Skeptics context.
-  - 10 new #7 tests (40 total in cycle-history-retrieval.test.ts).
-  - Attack results: see §10
+- v2.0.213 (#7 execution lens in SL/TP): computeATRSLTP now uses execution-mode
+  AttnRes blend as PRIMARY SL/TP signal. wExecution (trained on stop-out
+  outcomes) provides stop-out-aware adverse momentum + volatility scaling +
+  entropy confidence. Falls back to ATR + raw momentum when wExecution
+  untrained (cold-start). Module-level provider pattern — no trading-manager
+  changes. SL cap widened to 6% / TP cap to 10% for exec lens (vs 5%/8% raw).
+  15 new tests in tests/execution-lens-sltp.test.ts.
 
 ---
 

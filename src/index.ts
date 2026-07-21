@@ -43,6 +43,7 @@ import { ExecutionTracker } from './trading/execution-tracker.ts';
 import { CorrelationBudget } from './risk/correlation-budget.ts';
 import { calculateTakerFee, calculateFundingCost, getFeeSummary } from './trading/cost-model.ts';
 import { getSRZones } from './analysis/support-resistance.ts';
+import { setExecutionLensProvider, prepareExecutionLens, clearExecutionLens, type ExecutionLensData } from './analysis/atr.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
@@ -760,6 +761,29 @@ class MATSSystem {
       this.cycleHistory = new CycleHistoryRetriever({ featureNames: ENTRY_CONDITION_FEATURES });
       this.cycleHistory.load();
       log.info(`✓ Cycle-History Retriever ready (${this.cycleHistory.size()} symbols tracked)`);
+
+      // v2.0.213 (#7): Wire execution lens provider for computeATRSLTP.
+      // When a trade is opened, index.ts calls prepareExecutionLens(sym) so
+      // computeATRSLTP (called by trading-manager) picks up the execution-mode
+      // AttnRes blend as the PRIMARY SL/TP signal. Cold-start safe: when
+      // wExecution hasn't been trained (updateCount=0), computeATRSLTP falls
+      // back to the original ATR + momentum logic.
+      setExecutionLensProvider((symbol: string): ExecutionLensData | null => {
+        if (!this.cycleHistory) return null;
+        try {
+          const blend = this.cycleHistory.retrieveBlend(symbol, 'execution');
+          if (!blend.blended) return null;
+          return {
+            volatility: blend.hBlend['volatility'] ?? 0,
+            momentumShort: blend.hBlend['momentumShort'] ?? 0,
+            momentumLong: blend.hBlend['momentumLong'] ?? 0,
+            entropy: blend.entropy,
+            blended: blend.blended,
+            updateCount: this.cycleHistory.getQuery(symbol, 'execution').some((v) => v !== 0) ? 1 : 0,
+          };
+        } catch { return null; }
+      });
+      log.info('✓ Execution lens provider wired for computeATRSLTP');
 
       // v2.0.143: Load persisted Root Command Prompt so it survives backend restarts.
       this.loadRootCommandPrompt();
@@ -3021,6 +3045,16 @@ ${recentExamples}
   ): Promise<{ success: boolean; error?: string; paperReports?: any[] }> {
     const isRealMode = this.tradingManager.getTradeMode() === 'real';
 
+    // v2.0.213 (#7): Prepare execution lens for computeATRSLTP. This caches
+    // the execution-mode AttnRes blend so computeATRSLTP (called inside
+    // tradingManager.executeDecision / paperEngine.executeDecision) uses it
+    // as the PRIMARY SL/TP signal. Cleared after execution. Cold-start safe:
+    // when wExecution hasn't been trained, computeATRSLTP falls back to ATR.
+    if (decision.action === 'buy' || decision.action === 'sell') {
+      try { prepareExecutionLens(normalizeSymbol(decision.symbol)); } catch { /* non-critical */ }
+    }
+
+    try {
     if (isRealMode) {
       // Real mode: TradingManager places the order on HL + mirrors via
       // importExchangePosition. entryThesis is set after execution succeeds.
@@ -3072,6 +3106,11 @@ ${recentExamples}
       this.cyclesSinceLastTrade = 0;
     }
     return { success, paperReports: reports };
+    } finally {
+      // v2.0.213 (#7): Always clear the execution lens after trade execution
+      // so it doesn't leak into the next trade's computeATRSLTP call.
+      clearExecutionLens();
+    }
   }
 
   /**
