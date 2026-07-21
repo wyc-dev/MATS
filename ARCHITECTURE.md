@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System
 
-> **作者**: YC Wong · **版本**: 2.0.212
+> **作者**: YC Wong · **版本**: 2.0.219
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **代碼量**: ~58,000 行 TypeScript（嚴格模式，零類型錯誤）+ React UI
 
@@ -46,6 +46,13 @@
 │   │  query: wDecision + wExecution, v2.0.211-v2.0.212）          │
 │   • Anti-Pattern Tracker（failure lesson clustering）           │
 │   • Conditional WR Soft Gate（code-level conviction penalty）    │
+│   • Replay Buffer（PER, mini-batch retrain, v2.0.219）         │
+│   • Bayesian OLR（MC Dropout uncertainty, v2.0.219）          │
+│   • Temporal Attention（cross-trade regime learning, v2.0.219）│
+│   • Cross-Symbol Backbone（shared+residual transfer, v2.0.219）│
+│   • Reward Shaping（5-component risk-adjusted reward, v2.0.219）│
+│   • Active Exploration（UCB + info gain + annealing, v2.0.219） │
+│   • World Model（latent dynamics + rollout planning, v2.0.219）│
 │   • Trade Incident Panel（MAE/MFE + exitThesis + post-review）  │
 │   • SystemGuard（5 層系統級保護）                               │
 ├──────────────────────────────────────────────────────────────┤
@@ -79,16 +86,24 @@ src/
 │   │   v2.0.143: executeTrade() / closeTrade() 統一路由
 ├── risk/                    # 風險引擎 + correlation-budget
 ├── system-guard/            # 5 層保護閘門
-├── evolution/               # 自我演化（OLR + Shadow + First-Passage + EM + GA + RIL + EXP + NA + AttnRes + Anti-Pattern）
-│   ├── embeddings.ts        # Transformers.js MiniLM 384-d 向量（in-process）
+├── evolution/               # 自我演化（OLR + Shadow + First-Passage + EM + GA + RIL + EXP + NA + AttnRes + Anti-Pattern + 7 advanced systems v2.0.219）
+│   ├── embeddings.ts        # Transformers.js MiniLM 384-d 向量（in-process, singleton v2.0.216）
 │   ├── thesis-experience.ts # EXP 理據組合歷史勝率（方向過濾 + lesson persistence v2.0.207 #E）
 │   ├── experience-digester.ts # A2A 經驗消化（per-direction winRate + LessonStatement v2.0.207）
 │   ├── cycle-summary.ts     # EM Cycle Chain（market continuity, dual-channel v2.0.206 #6）
 │   ├── numeric-autoencoder.ts # Numeric Autoencoder（11→16→8 learned embedding, v2.0.204）
 │   ├── cycle-history-retrieval.ts # AttnRes Cycle-History（dual pseudo-query, v2.0.211-v2.0.212）
+│   ├── attnres-trade-embedder.ts # AttnRes trade embedder（anti-collapse v2.0.217）
 │   ├── anti-pattern-tracker.ts # Anti-Pattern clustering（failure lessons, v2.0.207 #F）
+│   ├── replay-buffer.ts     # Experience Replay Buffer（PER, mini-batch retrain, v2.0.219）
+│   ├── bayesian-olr.ts     # Bayesian OLR wrapper（MC Dropout uncertainty, v2.0.219）
+│   ├── temporal-attention.ts # Temporal Attention（cross-trade regime learning, v2.0.219）
+│   ├── cross-symbol-backbone.ts # Cross-Symbol shared+residual（transfer learning, v2.0.219）
+│   ├── reward-shaping.ts   # Reward Shaping（5-component risk-adjusted, v2.0.219）
+│   ├── active-exploration.ts # Active Exploration（UCB + info gain, v2.0.219）
+│   ├── world-model.ts     # World Model（latent dynamics + rollout, v2.0.219）
 │   ├── reason-analytics.ts  # RIL（per-direction win rates + direction-filtered similar trades v2.0.176）
-│   ├── evolution-utils.ts   # 共享 utils（wilsonScore, computeVectorConditionalWinRate + rmsNormKeys + softmaxWeightedWR v2.0.211）
+│   ├── evolution-utils.ts   # 共享 utils（safeNum v2.0.218, wilsonScore, computeVectorConditionalWinRate + rmsNormKeys + softmaxWeightedWR v2.0.211）
 │   ├── direction-audit.ts   # LLM 交易記錄審計（v2.0.180）
 │   └── system-engineer.ts   # 自主代碼工程師 Agent（v2.0.182）
 ├── analysis/                # sentiment · S/R · ATR（momentum-adaptive SL v2.0.207 #C）· planck-chaos · options · news
