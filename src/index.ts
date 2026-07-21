@@ -35,7 +35,7 @@ import {
   formatAnalyticsBlock,
 } from './evolution/reason-analytics.ts';
 import { AttnResTradeEmbedder } from './evolution/attnres-trade-embedder.ts';
-import { TransformersEmbedProvider } from './evolution/embeddings.ts';
+import { TransformersEmbedProvider, getSharedEmbedProvider } from './evolution/embeddings.ts';
 import { SentimentEngine } from './analysis/sentiment-engine.ts';
 import { AdaptiveNoiseFilter, AssetFilterRegistry, type MarketContext as FilterMarketContext, type FilterProfileType } from './analysis/adaptive-filter.ts';
 import { PlanckChaosEngine } from './analysis/planck-chaos.ts';
@@ -2006,7 +2006,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // Gated by config.exp.enabled — when false, checkThesisHistory returns
       // EXP_DISABLED and HACP falls back to the existing 1.8b strength check.
       this.expMemory = new ThesisExperience({
-        embed: new TransformersEmbedProvider(),
+        embed: getSharedEmbedProvider(),
         llm: new ActiveProviderLLMCaller(),
         directionAllowed: (sym: string, side: 'buy' | 'sell') => this.marketAgent.isDirectionAllowed(sym, side),
       });
@@ -2059,11 +2059,11 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           // v2.0.140: EM Cycle Chain insight retrieval — share the same
           // TransformersEmbedProvider (stateless, no interference with
           // ExperienceDigester). Rebuild insight vectors from loaded summaries.
-          this.emManager.setEmbedProvider(new TransformersEmbedProvider());
+          this.emManager.setEmbedProvider(getSharedEmbedProvider());
           // v2.0.206 (#6): Wire NA provider for dual-channel (text + market-condition) retrieval.
           this.emManager.setNaEmbeddingProvider(this.naEngine);
           // v2.0.207 (#F): Wire embed provider for anti-pattern clustering + rebuild from corpus.
-          this.antiPatternTracker.setEmbedProvider(new TransformersEmbedProvider());
+          this.antiPatternTracker.setEmbedProvider(getSharedEmbedProvider());
           void this.antiPatternTracker.rebuild(this.expMemory?.getRecords() ?? []).catch((err: unknown) =>
             log.warn(`[anti-pattern] startup rebuild failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
           );
@@ -2079,7 +2079,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
 
       // ─── v2.0.141: Initialize RIL (Reason Intelligence Layer) ───
       if (config.ril.enabled) {
-        const embed = new TransformersEmbedProvider();
+        const embed = getSharedEmbedProvider();
         this.patternCluster = new PatternClusterManager(embed);
         this.closeReasonAgg = new CloseReasonAggregator();
         this.similarTradeRetriever = new SimilarTradeRetriever();
