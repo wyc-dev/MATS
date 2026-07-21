@@ -119,6 +119,12 @@ class MATSSystem {
   /** v2.0.749: Global consecutive loss counter — triggers SE investigation
    *  when the system loses N trades in a row, regardless of symbol/direction. */
   private globalConsecutiveLosses = 0;
+  /** v2.0.764: Dynamic minimum volatility threshold — adapts based on recent
+   *  trade outcomes. If low-volatility trades keep losing, the threshold rises
+   *  (require higher vol to enter). If high-vol trades win, threshold stays low. */
+  private dynamicMinVolatility = 0.001; // start conservative
+  /** v2.0.764: Track recent trade volatilities + outcomes for dynamic adjustment. */
+  private recentVolOutcomes: Array<{ vol: number; win: boolean }> = [];
   /** v2.0.726: Last cycle's gate results — for SE no-trade investigation. */
   private lastGateResults: Array<{ gate: string; passed: boolean; reason: string }> = [];
   /** v2.0.726: Recent market conditions — for SE no-trade investigation. */
@@ -2608,6 +2614,42 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // v2.0.761: Every loss triggers SE — immediate investigation
         log.warn(`🚨 [loss-streak] Loss #${this.globalConsecutiveLosses} — triggering SE to investigate why this trade lost`);
         this.auditTriggeredSE = true;
+      }
+
+      // v2.0.764: Update dynamic minimum volatility threshold.
+      // Track recent trade volatilities + outcomes. If low-vol trades keep losing,
+      // raise the threshold. If they win, lower it. This adapts to market conditions.
+      try {
+        const tradeVol = trade.entryPrice > 0 && trade.exitPrice > 0
+          ? Math.abs(trade.exitPrice - trade.entryPrice) / trade.entryPrice
+          : 0;
+        this.recentVolOutcomes.push({ vol: tradeVol, win: isWin });
+        if (this.recentVolOutcomes.length > 20) this.recentVolOutcomes.shift();
+
+        // v2.0.764: Recalculate dynamic threshold every 5 trades
+        if (this.recentVolOutcomes.length >= 5) {
+          const lowVolTrades = this.recentVolOutcomes.filter(t => t.vol < this.dynamicMinVolatility);
+          if (lowVolTrades.length >= 3) {
+            const lowVolWR = lowVolTrades.filter(t => t.win).length / lowVolTrades.length;
+            if (lowVolWR < 0.35) {
+              // Low-vol trades are losing → raise threshold
+              const newThreshold = Math.min(0.01, this.dynamicMinVolatility * 1.5);
+              if (newThreshold > this.dynamicMinVolatility) {
+                log.info(`📊 [vol-gate] Dynamic min volatility raised: ${this.dynamicMinVolatility.toFixed(4)} → ${newThreshold.toFixed(4)} (low-vol WR=${(lowVolWR * 100).toFixed(0)}% over ${lowVolTrades.length} trades)`);
+                this.dynamicMinVolatility = newThreshold;
+              }
+            } else if (lowVolWR > 0.55) {
+              // Low-vol trades are winning → lower threshold
+              const newThreshold = Math.max(0.0005, this.dynamicMinVolatility * 0.8);
+              if (newThreshold < this.dynamicMinVolatility) {
+                log.info(`📊 [vol-gate] Dynamic min volatility lowered: ${this.dynamicMinVolatility.toFixed(4)} → ${newThreshold.toFixed(4)} (low-vol WR=${(lowVolWR * 100).toFixed(0)}% over ${lowVolTrades.length} trades)`);
+                this.dynamicMinVolatility = newThreshold;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        log.warn(`[close-learning] Dynamic vol threshold update failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       log.info(`🧬 [close-learning] ${isWin ? '✅ WIN' : '❌ LOSS'} ${trade.side.toUpperCase()} ${symbol} PnL: $${trade.pnl.toFixed(2)} (${(pnlPct * 100).toFixed(1)}%) — all learning mechanisms fed${this.globalConsecutiveLosses > 0 ? ` (consecutive losses: ${this.globalConsecutiveLosses})` : ''}`);
@@ -5343,6 +5385,16 @@ ${recentExamples}
             }
             auditGates.push({ gate: 'direction-restrict', passed: true, reason: 'allowed' });
 
+            // v2.0.764: Dynamic minimum volatility gate for multi-symbol path
+            const pscVol = this.marketState.getState(psc.symbol)?.volatility ?? combinedState.volatility ?? 0;
+            if (pscVol < this.dynamicMinVolatility) {
+              log.warn(`🛑 [vol-gate] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol}: volatility ${pscVol.toFixed(4)} < dynamic threshold ${this.dynamicMinVolatility.toFixed(4)} — market too quiet, skipping`);
+              auditGates.push({ gate: 'vol-gate', passed: false, reason: `vol=${pscVol.toFixed(4)} < threshold=${this.dynamicMinVolatility.toFixed(4)}` });
+              this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
+              continue;
+            }
+            auditGates.push({ gate: 'vol-gate', passed: true, reason: `vol=${pscVol.toFixed(4)} ≥ threshold=${this.dynamicMinVolatility.toFixed(4)}` });
+
             // v2.0.731: Loss streak gate for multi-symbol path
             // v2.0.732: Condition-aware soft gate — raises conviction threshold
             // instead of hard blocking. Past losses in different regimes are ignored.
@@ -5831,6 +5883,27 @@ ${recentExamples}
       activeAuditGates.push({ gate: 'systematic-loser', passed: true, reason: 'no systematic loser detected' });
     }
   }
+
+      // v2.0.764: Dynamic minimum volatility gate — if current volatility is below
+      // the dynamic threshold, HOLD. This prevents trading in dead markets where
+      // SL gets triggered by noise. The threshold adapts based on recent trade outcomes.
+      // This is NOT a hard block on symbols/directions — it's a market condition gate
+      // (like conviction gate). When volatility returns, trades resume automatically.
+      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+        const currentVol = combinedState.volatility ?? 0;
+        if (currentVol < this.dynamicMinVolatility) {
+          log.warn(`🛑 [vol-gate] ${finalDecision.action.toUpperCase()} ${finalDecision.symbol || activeSymbol}: volatility ${currentVol.toFixed(4)} < dynamic threshold ${this.dynamicMinVolatility.toFixed(4)} — market too quiet, HOLD`);
+          activeAuditGates.push({ gate: 'vol-gate', passed: false, reason: `vol=${currentVol.toFixed(4)} < threshold=${this.dynamicMinVolatility.toFixed(4)} (market too quiet)` });
+          finalDecision = {
+            ...finalDecision,
+            action: 'hold',
+            positionSizePct: 0,
+            rationale: `[VOL GATE] Volatility ${currentVol.toFixed(4)} below dynamic threshold ${this.dynamicMinVolatility.toFixed(4)} — market too quiet for profitable trading. HOLD. Original: ${finalDecision.rationale}`,
+          };
+        } else {
+          activeAuditGates.push({ gate: 'vol-gate', passed: true, reason: `vol=${currentVol.toFixed(4)} ≥ threshold=${this.dynamicMinVolatility.toFixed(4)}` });
+        }
+      }
 
       // v2.0.106: Adaptive conviction gate + trade frequency throttle.
       // Uses the ACTIVE symbol's per-asset filter — each asset has its own
