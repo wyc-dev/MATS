@@ -50,6 +50,7 @@ import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
 import { OLREngine, type OLRQueryResult, regimeToOrdinal } from './evolution/olr-engine.ts';
 import { NumericAutoencoder } from './evolution/numeric-autoencoder.ts';
 import { ENTRY_CONDITION_FEATURES, computeVectorConditionalWinRate } from './evolution/evolution-utils.ts';
+import { CycleHistoryRetriever } from './evolution/cycle-history-retrieval.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, computeMomentum, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
@@ -208,6 +209,13 @@ class MATSSystem {
   private shadowEngine!: ShadowTradeEngine;
   /** v2.0.204: Numeric Autoencoder — learns non-linear market-condition embedding for vector-conditional WR. */
   private naEngine!: NumericAutoencoder;
+  /** v2.0.211 (K.md #1): Cycle-History Selective Retrieval (AttnRes transfer).
+   *  Per-symbol rolling cycle history + entry-time features + learned
+   *  pseudo-query. Provides h_blend (softmax-weighted blend over cycle
+   *  history + entry state) as the conditional-WR candidate, replacing the
+   *  single current-snapshot. Entry-time regime retains persistent weight
+   *  (K3 embedding persistence). */
+  private cycleHistory!: CycleHistoryRetriever;
   /** One-shot cold-start OLR backfill guard — ensures backfill runs at most
    *  once per process, on the first cycle that has non-empty trading markets. */
   private olrBackfillDone = false;
@@ -343,14 +351,19 @@ class MATSSystem {
   private checkConditionalWRGate(symbol: string, direction: 'buy' | 'sell'): { blocked: boolean; convictionPenalty?: number; reason?: string } {
     try {
       const sym = normalizeSymbol(symbol);
-      const feats = this.lastCycleShadowContexts.get(sym)?.features;
+      // v2.0.211 (K.md #1): Use AttnRes h_blend (softmax blend over cycle
+      // history + entry-time state) as the conditional-WR candidate instead
+      // of the single current snapshot. Cold-start safe: when history <
+      // minHistoryToBlend, retrieveBlend returns the current snapshot unchanged.
+      const blend = this.cycleHistory?.retrieveBlend(sym);
+      const feats = blend?.hBlend ?? this.lastCycleShadowContexts.get(sym)?.features;
       if (!feats || Object.keys(feats).length === 0) return { blocked: false };
       const records = this.expMemory?.getRecords() ?? [];
       if (records.length < 5) return { blocked: false };
       const cond = computeVectorConditionalWinRate(
         feats,
         records,
-        { side: direction, minSamples: 5, threshold: 0.75, topN: 20, embeddingProvider: this.naEngine ?? undefined },
+        { side: direction, minSamples: 5, threshold: 0.75, topN: 20, embeddingProvider: this.naEngine ?? undefined, rmsNormKeys: true, softmaxWeightedWR: true, softmaxTemperature: 0.1 },
       );
       if (cond.confidence === 'none' || cond.sampleSize < 5) return { blocked: false };
       const wr = cond.conditionalWinRate;
@@ -737,6 +750,16 @@ class MATSSystem {
       this.naEngine = new NumericAutoencoder({}, ENTRY_CONDITION_FEATURES);
       this.naEngine.load();
       log.info(`✓ Numeric Autoencoder ready (${this.naEngine.sampleCount()} samples, ${this.naEngine.isReady() ? 'LEARNED-embed active' : 'cold-start → min-max fallback'})`);
+
+      // 3.10c v2.0.211 (K.md #1): Cycle-History Selective Retrieval (AttnRes transfer).
+      // Per-symbol rolling cycle history + entry-time features + learned pseudo-query.
+      // Provides h_blend for conditional WR (replaces single current-snapshot).
+      // Cold-start safe: zero-init w + recency prior → starts as recency-weighted
+      // mean of history (≈ current snapshot when recent cycles dominate).
+      log.info('Step 3.10c: Initializing Cycle-History Retriever (AttnRes)...');
+      this.cycleHistory = new CycleHistoryRetriever({ featureNames: ENTRY_CONDITION_FEATURES });
+      this.cycleHistory.load();
+      log.info(`✓ Cycle-History Retriever ready (${this.cycleHistory.size()} symbols tracked)`);
 
       // v2.0.143: Load persisted Root Command Prompt so it survives backend restarts.
       this.loadRootCommandPrompt();
@@ -2053,8 +2076,15 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // v2.0.207 (#F): Wire anti-pattern tracker for Skeptics candidate matching.
         this.hacpEngine.setAntiPatternTracker(this.antiPatternTracker);
         this.hacpEngine.setNaCandidateFeaturesProvider(() => {
-          // Return the active symbol's current entry-condition features.
+          // v2.0.211 (K.md #1): Use AttnRes h_blend (softmax blend over cycle
+          // history + entry-time state) as the candidate features instead of
+          // the single current snapshot. Cold-start safe: retrieveBlend returns
+          // the current snapshot when history < minHistoryToBlend.
           const sym = normalizeSymbol(this.marketAgent.getConfig().selectedSymbol ?? '');
+          if (this.cycleHistory) {
+            const blend = this.cycleHistory.retrieveBlend(sym);
+            if (blend.hBlend && Object.keys(blend.hBlend).length > 0) return blend.hBlend;
+          }
           const ctx = this.lastCycleShadowContexts.get(sym);
           if (ctx && ctx.features && Object.keys(ctx.features).length > 0) return ctx.features;
           // Fallback: build from current market state if shadow context not ready.
@@ -2653,6 +2683,16 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         this.persistPortfolio();
       } catch { /* non-critical */ }
 
+      // v2.0.211 (K.md #1): Update AttnRes cycle-history pseudo-query from
+      // trade outcome (reward-weighted key direction). Pairs with recordEntry
+      // called at trade open. Guarded internally (no-entry → skip, noise → skip,
+      // side-mismatch → skip). Fire-and-forget — never blocks close path.
+      try {
+        this.cycleHistory?.updateOnOutcome(normalizeSymbol(symbol), trade.side === 'buy' ? 'buy' : 'sell', pnlPct);
+      } catch (err) {
+        log.warn(`[close-learning] AttnRes w update failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+      }
+
       // v2.0.138: Feed EXP thesis-experience memory (Skeptics Phase 1.8a).
       // Fire-and-forget — recordClose is async but must NEVER block the close path.
       // It honours config.exp.enabled, breakeven-exclude, and placeholder-thesis internally.
@@ -2994,6 +3034,10 @@ ${recentExamples}
           if (feats && Object.keys(feats).length > 0) {
             const olr = this.olrEngine.query(sym, feats, decision.action, this.totalCycles);
             this.entryOlrPWinCache.set(sym, olr.pWin);
+            // v2.0.211 (K.md #1): Capture entry-time features for AttnRes
+            // embedding persistence (v_0) + compute the blend snapshot for
+            // outcome-paired w update.
+            this.cycleHistory?.recordEntry(sym, decision.action === 'buy' ? 'buy' : 'sell', feats);
           }
         } catch { /* non-critical */ }
         // v2.0.726: Reset cycles-since-last-trade counter
@@ -3917,6 +3961,10 @@ ${recentExamples}
           price: mktPrice,
           features: mktFeatures,
         });
+        // v2.0.211 (K.md #1): Push this cycle's features into the AttnRes
+        // cycle-history retriever so future conditional-WR can blend over
+        // history + entry-time state.
+        this.cycleHistory?.pushCycle(mktSym, mktFeatures);
       }
     } catch { /* non-critical */ }
 
@@ -6786,6 +6834,8 @@ ${recentExamples}
         log.warn(`[NA] train/validate failed: ${err instanceof Error ? err.message : String(err)}`);
       }
       this.naEngine.persist();
+      // v2.0.211 (K.md #1): Persist AttnRes cycle-history state every cycle.
+      this.cycleHistory?.persist();
       this.persistPortfolio();
       saveDebateHistory({
         totalCycles: this.totalCycles,
@@ -7427,6 +7477,9 @@ ${recentExamples}
       this.naEngine.persist();
       // v2.0.207 (#F): Persist anti-pattern classes.
       this.antiPatternTracker?.persist();
+      // v2.0.211 (K.md #1): Persist AttnRes cycle-history state (w vectors,
+      // per-symbol history, entry-time features).
+      this.cycleHistory?.persist();
     } catch { /* best-effort */ }
   }
 
