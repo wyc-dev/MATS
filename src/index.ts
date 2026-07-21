@@ -119,6 +119,10 @@ class MATSSystem {
   /** v2.0.749: Global consecutive loss counter — triggers SE investigation
    *  when the system loses N trades in a row, regardless of symbol/direction. */
   private globalConsecutiveLosses = 0;
+  /** v2.0.770: Last SE run cycle — throttle SE to at most once every 10 cycles
+   *  to prevent slot starvation when SE competes with 8 trading agents. */
+  private lastSECycle = -999;
+  private static readonly SE_MIN_CYCLE_GAP = 10;
   /** v2.0.764: Dynamic minimum volatility threshold — adapts based on recent
    *  trade outcomes. If low-volatility trades keep losing, the threshold rises
    *  (require higher vol to enter). If high-vol trades win, threshold stays low. */
@@ -6639,9 +6643,12 @@ ${recentExamples}
       // No more fixed schedule (every 2 cycles). SE triggers from audit results.
       if (engineerEnabled && !isShuttingDown()) {
         const shouldRunNoTrade = this.cyclesSinceLastTrade >= 3;
-        const shouldRunSE = this.auditTriggeredSE;
+        // v2.0.770: Throttle SE to at most once every 10 cycles to prevent
+        // slot starvation when SE competes with 8 trading agents for Ollama slots.
+        const shouldRunSE = this.auditTriggeredSE && (this.totalCycles - this.lastSECycle) >= MATSSystem.SE_MIN_CYCLE_GAP;
         if (shouldRunNoTrade) {
           log.warn(`🔧 [no-trade] ${this.cyclesSinceLastTrade} cycles since last trade — triggering SE investigation (blocking next cycle)`);
+          this.lastSECycle = this.totalCycles;
           this.cycleInProgress = true;
           try {
             await this.runNoTradeInvestigation();
@@ -6650,6 +6657,7 @@ ${recentExamples}
           }
         } else if (shouldRunSE) {
           this.auditTriggeredSE = false; // consume the trigger
+          this.lastSECycle = this.totalCycles;
           log.info(`🔧 [system-engineer] Audit triggered SE — starting fix cycle (blocking next cycle)`);
           this.cycleInProgress = true;
           try {

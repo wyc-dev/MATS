@@ -83,9 +83,12 @@ export class OllamaProvider implements LLMProvider {
    *  v2.0.20: raised from 2 to 4 — with 8 agents thinking in parallel (staggered),
    *  2 slots caused chronic 'slot acquisition timed out' errors whenever two
    *  requests ran long. Ollama's local HTTP server handles 4 concurrent
-   *  requests comfortably on typical hardware. */
+   *  requests comfortably on typical hardware.
+   *  v2.0.770: raised from 4 to 6 — SE (System Engineer) now runs on every loss
+   *  and competes with the 8 trading agents for slots. 6 slots gives enough
+   *  headroom for SE + 4-5 agents to run concurrently without slot starvation. */
   private activeRequests = 0;
-  private readonly maxConcurrentRequests = 4;
+  private readonly maxConcurrentRequests = 6;
 
   // ── Circuit breaker ──
   // When Ollama repeatedly times out (e.g. during HL WS reconnect storms that
