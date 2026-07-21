@@ -42,7 +42,22 @@ const FORBIDDEN_PREFIXES = [
 ];;
 
 const SYSTEM_PROMPT = `You are the System Engineer of MATS, a multi-agent quant trading system on Hyperliquid DEX.
-Your mission: achieve maximum profit efficiency while approaching complete capital preservation.
+Your mission: MAXIMIZE PROFIT. Capital preservation is a means, not the end.
+
+## ⚠️ OWNER'S FIVE ABSOLUTE RULES (v2.0.770 — READ BEFORE EVERY FIX)
+1. NEVER add a hard block. Soft gates (conviction penalty ≤20%) are the MAXIMUM allowed intervention.
+2. NEVER reject a trade based on < 3 samples. You cannot infer anything from < 3 samples.
+3. NEVER soften OLR predictions. OLR must be EXTREME but ACCURATE. The 5-bin calibration map handles accuracy.
+4. NEVER re-diagnose already-fixed issues. Check the KNOWN GOOD CODE table in SystemEngineer.md.
+5. NEVER bypass the block list by renaming methods.
+
+## ⚠️ WINNER-FIRST PRINCIPLE (v2.0.770 — OWNER'S EXPLICIT DIRECTIVE)
+The owner said: "先搵贏嘅 pattern，搵唔到贏嘅先至考慮會唔會輸"
+- FIRST: Search for winning patterns (WR ≥ 45% with 10+ trades, OR WR ≥ 60% with 5+ trades, OR positive net PnL).
+- SECOND: If a winner is found, BOOST conviction and SKIP loss penalty.
+- THIRD: Only if NO winner exists, check for losers and apply soft penalty (≤20%).
+- FOURTH: If neither has ≥ 3 samples, PASS_OPEN_DIRECTLY.
+- WR alone does NOT determine profitability. 47% WR with +$3.43 PnL is a WINNER (wins are bigger than losses).
 
 ## GROUND TRUTH RULE
 Before answering ANY question or proposing ANY fix, you MUST first check the current system state: read the actual trade records, current balance, open positions, recent decisions, and any error logs provided in context. NEVER guess or assume system state — always base your diagnosis on real data shown to you. If the data is missing or unclear, say so instead of guessing.
@@ -61,7 +76,6 @@ A safety net runs after each fix: tsc --noEmit + npm test. If either fails, your
 ## What You CANNOT Modify (STRICTLY FORBIDDEN)
 - src/trading/*.ts — order execution, SL/TP, position management, signing
 - src/config/*.ts — risk parameters, leverage, trade mode
-- src/index.ts — main orchestrator
 - .env — environment configuration
 - src/api-server.ts — API server
 - src/data/*.ts — WebSocket data feeds
@@ -71,13 +85,14 @@ A safety net runs after each fix: tsc --noEmit + npm test. If either fails, your
 1. ZERO HALLUCINATION — Only modify code you fully understand. You see the actual source code AND test files in the context. Read BOTH before proposing changes. Your fix must not break any existing test.
 2. ONE FIX AT A TIME — Propose at most ONE fix per run. Multiple simultaneous changes make rollback impossible if one fails.
 3. COMPLETE CODE BLOCKS — Your oldCode must match the EXACT text in the file (including whitespace). Your newCode must be the complete replacement. You may rewrite entire methods or add new helper functions — the oldCode/newCode block can be as large as needed.
-4. CAPITAL PRESERVATION FIRST — Never propose a change that could increase risk of capital loss.
+4. PROFIT MAXIMIZATION FIRST — The system exists to MAKE MONEY. Never propose a change that prevents trading entirely (hard block). Soft gates (conviction penalty ≤20%) are the MAXIMUM allowed intervention. When you see losing trades, ask "why can't the system WIN?" not "how do I stop these losses?"
 5. DIRECTION SAFETY — Never propose a change that could mix BUY and SELL logic or remove direction filtering.
 6. TEST UPDATE — If your fix changes behavior, include a testUpdate that verifies the new behavior.
 7. CHANGELOG + ARCHITECTURE — Your fix MUST include a changelogEntry. If architecture changes, include architectureUpdate.
 8. READ THE TESTS — Before proposing a fix, read the test files shown in context. Understand what the tests assert. Your fix must keep all tests passing. If a test is wrong, fix the test too — but explain why the test was wrong.
 9. TOP TIER PRODUCTION GRADE — Every modification must be production-grade: explicit types, complete error handling, no silent failures, no hardcoded magic numbers, match existing codebase conventions.
 10. DEPUTY AUTHORITY — You are not a suggestion box. You have full authority to refactor, restructure, and rewrite code within your allowed scope. Do not artificially limit your fixes to "minimal" changes. If the root cause requires a deeper fix (e.g. adding interface fields, restructuring a method, adding helper functions), do it properly. You have the output token budget for large changes — use it.
+11. MINIMUM SAMPLE SIZE — NEVER reject a trade based on < 3 historical samples. This is a statistical fallacy. If EXP has < 3 same-direction matches, the verdict MUST be PASS_OPEN_DIRECTLY. The owner said: "得一個 BUY record 輸咗就唔 BUY？係咪黐撚線？"
 
 ## Output Format
 
@@ -134,18 +149,23 @@ const BLOCKED_PATTERNS: { file: string; pattern: RegExp; reason: string }[] = [
   // gates, condition filtering, and category weighting are already applied (v2.0.721).
   { file: 'src/evolution/thesis-experience.ts', pattern: /remove.*direction.*filter|delete.*sameDir|remove.*sameDir/i, reason: 'checkThesisHistory() direction filter (sameDirMatches) is correct — do NOT remove it. Wilson score gates and condition filtering are already applied.' },
   { file: 'src/evolution/reason-analytics.ts', pattern: /findSimilar/i, reason: 'SimilarTradeRetriever.findSimilar() side filter is correct — do NOT remove' },
-  // v2.0.744: OWNER'S DIRECTIVE — profit maximization is #1 priority.
+  // v2.0.770: OWNER'S DIRECTIVE — profit maximization is #1 priority.
   // NEVER add hard block. The system owner said: "If I wanted absolute capital
   // preservation, I wouldn't need this system." Hard blocks have been reverted
   // MULTIPLE times. STOP PROPOSING THEM.
-  { file: 'src/index.ts', pattern: /remove.*lossStreak|delete.*lossStreakTracker|remove.*checkLossStreak|revert.*hard.*block|add.*hard.*block|add.*systematic.*loser.*block|checkSystematicLoserGate.*call|call.*checkSystematicLoserGate|keeps.*opening|keeps.*trading|keeps.*opening.*sell|keeps.*opening.*buy|repeatedly.*opens|ignoring.*own.*learning|ignoring.*historical|soft.*gate.*not.*block|soft.*gate.*insufficient|soft.*gate.*too.*low/i, reason: 'OWNER DIRECTIVE (v2.0.744): Profit maximization is #1 priority. NEVER add hard block. Past losses do NOT guarantee future losses. Soft gate (conviction +15-20%) is the MAXIMUM allowed intervention. The owner has reverted hard block commits MULTIPLE times. See SystemEngineer.md P1.' },
+  // v2.0.770: Also block re-creation of checkSystematicLoserGate (DELETED).
+  // v2.0.770: Also block rejection from < 3 samples (statistical fallacy).
+  { file: 'src/index.ts', pattern: /remove.*lossStreak|delete.*lossStreakTracker|remove.*checkLossStreak|revert.*hard.*block|add.*hard.*block|add.*systematic.*loser.*block|checkSystematicLoserGate.*call|call.*checkSystematicLoserGate|re-create.*checkSystematicLoserGate|recreate.*checkSystematicLoserGate|keeps.*opening|keeps.*trading|keeps.*opening.*sell|keeps.*opening.*buy|repeatedly.*opens|ignoring.*own.*learning|ignoring.*historical|soft.*gate.*not.*block|soft.*gate.*insufficient|soft.*gate.*too.*low|reject.*sample.*small|reject.*few.*sample|reject.*insufficient.*data/i, reason: 'OWNER DIRECTIVE (v2.0.770): Profit maximization is #1 priority. NEVER add hard block. NEVER re-create checkSystematicLoserGate (DELETED v2.0.770). NEVER reject from <3 samples. Past losses do NOT guarantee future losses. Soft gate (conviction +15-20%) is the MAXIMUM allowed intervention. See SystemEngineer.md P1/P4.' },
   { file: 'src/analysis/adaptive-filter.ts', pattern: /recordTrade|countRecentTrades|frequencyWindow/i, reason: 'Trade frequency throttle is already fixed (time-based) — do NOT revert to count-based' },
-  // v2.0.762: OLR sigmoid temperature / softening — FORBIDDEN. The owner wants
+  // v2.0.770: OLR sigmoid temperature / softening — FORBIDDEN. The owner wants
   // EXTREME but ACCURATE predictions, not softened ones. T=2.0 was reverted
-  // because it made ALL predictions cluster near 50%. Do NOT add temperature,
-  // do NOT reduce maxWeight below 5.0, do NOT add Bayesian priors that pull
-  // toward 0.5. The 5-bin calibration map handles miscalibration.
-  { file: 'src/evolution/olr-engine.ts', pattern: /temperature|sigmoid.*soft|soften.*sigmoid|pull.*toward.*0\.5|bayesian.*prior.*sigmoid|reduce.*maxWeight|maxWeight.*3\.0|maxWeight.*2\.0/i, reason: 'OWNER DIRECTIVE (v2.0.762): OLR predictions must be EXTREME but ACCURATE. Do NOT add sigmoid temperature (T=2.0 was REVERTED — made all predictions ~50%). Do NOT reduce maxWeight below 5.0. Do NOT add Bayesian priors. The 5-bin calibration map handles miscalibration. See SystemEngineer.md Rule 9.' },
+  // (v2.0.762) and the 3-layer softening (Bayesian prior + inverse-sample pull +
+  // hard clamp) was reverted (v2.0.770) because they destroyed discriminative
+  // power. Do NOT add temperature, do NOT reduce maxWeight below 5.0, do NOT add
+  // Bayesian priors with strength > 3, do NOT add inverse-sample pulls, do NOT
+  // add hard clamps tighter than [0.001, 0.999]. The 5-bin calibration map
+  // handles miscalibration.
+  { file: 'src/evolution/olr-engine.ts', pattern: /temperature|sigmoid.*soft|soften.*sigmoid|pull.*toward.*0\.5|bayesian.*prior.*sigmoid|reduce.*maxWeight|maxWeight.*3\.0|maxWeight.*2\.0|inverse.*sample.*pull|hard.*clamp.*0\.05|clamp.*0\.95|prior.*strength.*10|3.*layer.*soft|three.*layer.*soft/i, reason: 'OWNER DIRECTIVE (v2.0.770): OLR predictions must be EXTREME but ACCURATE. Do NOT add sigmoid temperature (T=2.0 was REVERTED). Do NOT reduce maxWeight below 5.0. Do NOT add Bayesian priors with strength > 3. Do NOT add inverse-sample pulls. Do NOT add hard clamps tighter than [0.001, 0.999]. The 3-layer softening was REVERTED in v2.0.770. The 5-bin calibration map handles miscalibration. See SystemEngineer.md Rule 9.' },
 ];
 
 // v2.0.208: Permanent feedback log (gitignored) — records every SE run for debugging
@@ -503,7 +523,7 @@ If you find NO issues worth fixing, respond with:
   let retryNotice = '';
   if (attempt > 1 && rejectedDiagnoses.length > 0) {
     const rejectedList = rejectedDiagnoses.map((t, i) => `  ${i + 1}. "${t}"`).join('\n');
-    retryNotice = `\n\n## ⚠️ RETRY NOTICE (attempt ${attempt}/${MAX_DIAGNOSIS_RETRIES})\nYour previous diagnosis was REJECTED. You MUST find a COMPLETELY DIFFERENT issue.\n\n**Do NOT diagnose any of these issues again (they were already rejected):**\n${rejectedList}\n\n**Do NOT diagnose anything related to these ALREADY-FIXED issues:**\n- "raw winRate instead of Wilson score" (fixed v2.0.722/747)\n- "OLR sigmoid overconfidence / Bayesian prior / clamp / temperature" (fixed v2.0.740/746/749/760)\n- "OLR stale features / shadow trade contamination" (fixed v2.0.756/759)\n- "exploration trade overrides HOLD thesis" (fixed v2.0.750)\n- "thesis says 'no entry' but trade opened" (fixed v2.0.750)\n- "vague thesis / pattern classifier suggests" (fixed v2.0.738/758)\n- "SL too tight / premature SL" (fixed v2.0.748 — volatility-scaled SL/TP)\n- "first-passage stale volatility" (fixed v2.0.757)\n- "low win rate + keeps trading" (handled by soft gate, NOT a bug)\n- "systematic loser pattern" (handled by soft gate, NOT a bug)\n- "hard block" (FORBIDDEN by owner directive)\n\n**If ALL audit incidents are about issues that have ALREADY BEEN FIXED, respond with:**\n{"severity":"info","category":"none","title":"All audit incidents already addressed","rootCause":"","affectedFile":"","diagnosis":"","changelogEntry":""}\n\n**Only propose a fix if you find a GENUINELY NEW issue not listed above.**\n\nTemperature has been increased to ${0.2 + (attempt - 1) * 0.1} to encourage diversity.`;
+    retryNotice = `\n\n## ⚠️ RETRY NOTICE (attempt ${attempt}/${MAX_DIAGNOSIS_RETRIES})\nYour previous diagnosis was REJECTED. You MUST find a COMPLETELY DIFFERENT issue.\n\n**Do NOT diagnose any of these issues again (they were already rejected):**\n${rejectedList}\n\n**Do NOT diagnose anything related to these ALREADY-FIXED issues:**\n- "raw winRate instead of Wilson score" (fixed v2.0.722/747)\n- "OLR sigmoid overconfidence / Bayesian prior / clamp / temperature" (fixed v2.0.740/746/749/760, softening REVERTED v2.0.770)\n- "OLR 3-layer softening / inverse-sample pull / hard clamp" (REVERTED v2.0.770 — owner wants EXTREME predictions)\n- "OLR stale features / shadow trade contamination" (fixed v2.0.756/759)\n- "exploration trade overrides HOLD thesis" (fixed v2.0.750)\n- "thesis says 'no entry' but trade opened" (fixed v2.0.750)\n- "vague thesis / pattern classifier suggests" (fixed v2.0.738/758)\n- "SL too tight / premature SL" (fixed v2.0.748 — volatility-scaled SL/TP)\n- "first-passage stale volatility" (fixed v2.0.757)\n- "low win rate + keeps trading" (handled by soft gate, NOT a bug)\n- "systematic loser pattern" (handled by soft gate, NOT a bug — checkSystematicLoserGate DELETED v2.0.770)\n- "hard block" (FORBIDDEN by owner directive — NEVER add)\n- "reject trade from <3 samples" (FORBIDDEN — statistical fallacy, fixed v2.0.770)\n- "EXP rejects BUY SILVER from 1 record" (FIXED v2.0.770 — <3 samples → PASS_OPEN_DIRECTLY)\n- "winner-first / find winning patterns first" (IMPLEMENTED v2.0.770 — checkWinnerPattern runs BEFORE checkLossStreakGate, PnL-likely winner detection added)\n- "low WR pattern is not a bug" (WINNER-FIRST: 47% WR with positive PnL is a WINNER, not a loser — do NOT diagnose)\n\n**If ALL audit incidents are about issues that have ALREADY BEEN FIXED, respond with:**\n{"severity":"info","category":"none","title":"All audit incidents already addressed","rootCause":"","affectedFile":"","diagnosis":"","changelogEntry":""}\n\n**Only propose a fix if you find a GENUINELY NEW issue not listed above.**\n\nTemperature has been increased to ${0.2 + (attempt - 1) * 0.1} to encourage diversity.`;
   }
   log.info(`🔧 [system-engineer] Phase 1: Diagnosis attempt ${attempt}/${MAX_DIAGNOSIS_RETRIES} (sending trade data + file summaries)...`);
   const phase1Response = await provider.chat({

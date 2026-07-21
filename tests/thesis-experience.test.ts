@@ -274,7 +274,10 @@ describe('EXP checkThesisHistory — decision branches', () => {
   });
 
   it('REJECT when matching a losing combo with no delta (B+Zprime ≈ B+C LOSS, Zprime≈C)', async () => {
-    injectRecord(exp, embed, { rationales: ['B', 'C'], outcome: 'LOSS' });
+    // v2.0.770: Need ≥3 same-direction LOSS records to trigger REJECT (minimum sample gate)
+    for (let i = 0; i < 3; i++) {
+      injectRecord(exp, embed, { rationales: ['B', 'C'], outcome: 'LOSS' });
+    }
     const r = await exp.checkThesisHistory({ thesis: 'B|Zprime', symbol: 'BTC', side: 'buy', marketCtx: '' });
     expect(r.verdict).toBe('REJECT');
   });
@@ -298,12 +301,7 @@ describe('EXP checkThesisHistory — decision branches', () => {
   });
 
   it('REJECT when cross-category positive delta finds no extra rationale', async () => {
-    // Losing combo in crypto
-    injectRecord(exp, embed, { rationales: ['B', 'C'], outcome: 'LOSS', symbol: 'BTC', assetCategory: 'crypto' });
-    // D's positive history only in commodity (XAU) → cross-category
-    injectRecord(exp, embed, { rationales: ['D', 'F1'], outcome: 'WIN', symbol: 'XAU', assetCategory: 'commodity' });
-    injectRecord(exp, embed, { rationales: ['D', 'F2'], outcome: 'WIN', symbol: 'XAU', assetCategory: 'commodity' });
-    // Candidate on BTC (crypto) → D's wins are commodity → cross-cat → require one more
+    // v2.0.770: Need ≥3 same-direction LOSS records to trigger REJECT (minimum sample gate)
     const llm = makeLLM((msgs) => {
       const sys = msgs.find((m) => m.role === 'system')?.content ?? '';
       if (sys.includes('atomic rationales')) return JSON.stringify({ rationales: [{ point: 'B', category: 'technical' }, { point: 'D', category: 'flow' }] });
@@ -311,7 +309,9 @@ describe('EXP checkThesisHistory — decision branches', () => {
       return JSON.stringify({});
     });
     const e2 = makeEXP(embed, llm);
-    injectRecord(e2, embed, { rationales: ['B', 'C'], outcome: 'LOSS', symbol: 'BTC', assetCategory: 'crypto' });
+    for (let i = 0; i < 3; i++) {
+      injectRecord(e2, embed, { rationales: ['B', 'C'], outcome: 'LOSS', symbol: 'BTC', assetCategory: 'crypto' });
+    }
     injectRecord(e2, embed, { rationales: ['D', 'F1'], outcome: 'WIN', symbol: 'XAU', assetCategory: 'commodity' });
     injectRecord(e2, embed, { rationales: ['D', 'F2'], outcome: 'WIN', symbol: 'XAU', assetCategory: 'commodity' });
     const r = await e2.checkThesisHistory({ thesis: 'B|D', symbol: 'BTC', side: 'buy', marketCtx: '' });
@@ -343,12 +343,13 @@ describe('EXP checkThesisHistory — decision branches', () => {
       return JSON.stringify({});
     });
     const e = makeEXP(embed, llm);
-    injectRecord(e, embed, { rationales: ['B', 'C'], outcome: 'LOSS', symbol: 'BTC' });
-    // V's negative history: two LOSS records containing V
+    // v2.0.770: Need ≥3 same-direction LOSS records to trigger REJECT (minimum sample gate)
+    for (let i = 0; i < 3; i++) {
+      injectRecord(e, embed, { rationales: ['B', 'C'], outcome: 'LOSS', symbol: 'BTC' });
+    }
     injectRecord(e, embed, { rationales: ['V', 'F1'], outcome: 'LOSS', symbol: 'BTC' });
     injectRecord(e, embed, { rationales: ['V', 'F2'], outcome: 'LOSS', symbol: 'BTC' });
     const r = await e.checkThesisHistory({ thesis: 'B|V', symbol: 'BTC', side: 'buy', marketCtx: 'OB -15%, funding reversing' });
-    // v2.0.215: REVERSE_DIRECTION disabled — should REJECT instead
     expect(r.verdict).toBe('REJECT');
     expect(r.reason).toContain('reverse disabled');
   });
@@ -361,14 +362,15 @@ describe('EXP checkThesisHistory — decision branches', () => {
       if (sys.includes('CONTRARIAN')) return JSON.stringify({ thesis: '[1h: reverse]' });
       return JSON.stringify({});
     });
-    // directionAllowed forbids BUY on SILVER (SELL-only). Candidate is SELL → reverse to BUY blocked.
     const e = makeEXP(embed, llm, {}, (sym, side) => !(sym.toUpperCase() === 'XYZ:SILVER' && side === 'buy'));
-    injectRecord(e, embed, { rationales: ['B', 'C'], outcome: 'LOSS', symbol: 'xyz:SILVER', assetCategory: 'commodity' });
+    // v2.0.770: Need ≥3 same-direction LOSS records to trigger REJECT (minimum sample gate)
+    for (let i = 0; i < 3; i++) {
+      injectRecord(e, embed, { rationales: ['B', 'C'], outcome: 'LOSS', symbol: 'xyz:SILVER', assetCategory: 'commodity' });
+    }
     injectRecord(e, embed, { rationales: ['V', 'F1'], outcome: 'LOSS', symbol: 'xyz:SILVER', assetCategory: 'commodity' });
     injectRecord(e, embed, { rationales: ['V', 'F2'], outcome: 'LOSS', symbol: 'xyz:SILVER', assetCategory: 'commodity' });
     const r = await e.checkThesisHistory({ thesis: 'B|V', symbol: 'xyz:SILVER', side: 'sell', marketCtx: 'risk' });
     expect(r.verdict).toBe('REJECT');
-    // v2.0.215: reverse disabled — reason contains 'reverse disabled' instead of 'restricted'
     expect(r.reason).toContain('reverse disabled');
   });
 
@@ -380,7 +382,10 @@ describe('EXP checkThesisHistory — decision branches', () => {
       return JSON.stringify({});
     });
     const e = makeEXP(embed, llm);
-    injectRecord(e, embed, { rationales: ['B', 'C'], outcome: 'LOSS', symbol: 'BTC' });
+    // v2.0.770: Need ≥3 same-direction LOSS records to trigger REJECT (minimum sample gate)
+    for (let i = 0; i < 3; i++) {
+      injectRecord(e, embed, { rationales: ['B', 'C'], outcome: 'LOSS', symbol: 'BTC' });
+    }
     injectRecord(e, embed, { rationales: ['V', 'F1'], outcome: 'LOSS', symbol: 'BTC' });
     injectRecord(e, embed, { rationales: ['V', 'F2'], outcome: 'LOSS', symbol: 'BTC' });
     const r = await e.checkThesisHistory({ thesis: 'B|V', symbol: 'BTC', side: 'buy', marketCtx: 'calm' });
@@ -413,7 +418,10 @@ describe('EXP multi-delta conflict (§15-5) — most extreme wins', () => {
     });
     const e = makeEXP(embed, llm);
     // Losing combo B+C (crypto) — the candidate matches it via B.
-    injectRecord(e, embed, { rationales: ['B', 'C'], outcome: 'LOSS', symbol: 'BTC', assetCategory: 'crypto' });
+    // v2.0.770: Need ≥3 same-direction LOSS records to trigger REJECT (minimum sample gate)
+    for (let i = 0; i < 3; i++) {
+      injectRecord(e, embed, { rationales: ['B', 'C'], outcome: 'LOSS', symbol: 'BTC', assetCategory: 'crypto' });
+    }
     // Dpos: 3W 2L in COMMODITY (XAU) → winRateAll=0.6 (mild positive), cross-category → approve-weak, extremeness 0.1
     injectRecord(e, embed, { rationales: ['Dpos', 'Fp1'], outcome: 'WIN',  symbol: 'XAU', assetCategory: 'commodity' });
     injectRecord(e, embed, { rationales: ['Dpos', 'Fp2'], outcome: 'WIN',  symbol: 'XAU', assetCategory: 'commodity' });
