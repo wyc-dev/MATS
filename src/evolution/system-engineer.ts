@@ -140,6 +140,12 @@ const BLOCKED_PATTERNS: { file: string; pattern: RegExp; reason: string }[] = [
   // MULTIPLE times. STOP PROPOSING THEM.
   { file: 'src/index.ts', pattern: /remove.*lossStreak|delete.*lossStreakTracker|remove.*checkLossStreak|revert.*hard.*block|add.*hard.*block|add.*systematic.*loser.*block|checkSystematicLoserGate.*call|call.*checkSystematicLoserGate|keeps.*opening|keeps.*trading|keeps.*opening.*sell|keeps.*opening.*buy|repeatedly.*opens|ignoring.*own.*learning|ignoring.*historical|soft.*gate.*not.*block|soft.*gate.*insufficient|soft.*gate.*too.*low/i, reason: 'OWNER DIRECTIVE (v2.0.744): Profit maximization is #1 priority. NEVER add hard block. Past losses do NOT guarantee future losses. Soft gate (conviction +15-20%) is the MAXIMUM allowed intervention. The owner has reverted hard block commits MULTIPLE times. See SystemEngineer.md P1.' },
   { file: 'src/analysis/adaptive-filter.ts', pattern: /recordTrade|countRecentTrades|frequencyWindow/i, reason: 'Trade frequency throttle is already fixed (time-based) — do NOT revert to count-based' },
+  // v2.0.762: OLR sigmoid temperature / softening — FORBIDDEN. The owner wants
+  // EXTREME but ACCURATE predictions, not softened ones. T=2.0 was reverted
+  // because it made ALL predictions cluster near 50%. Do NOT add temperature,
+  // do NOT reduce maxWeight below 5.0, do NOT add Bayesian priors that pull
+  // toward 0.5. The 5-bin calibration map handles miscalibration.
+  { file: 'src/evolution/olr-engine.ts', pattern: /temperature|sigmoid.*soft|soften.*sigmoid|pull.*toward.*0\.5|bayesian.*prior.*sigmoid|reduce.*maxWeight|maxWeight.*3\.0|maxWeight.*2\.0/i, reason: 'OWNER DIRECTIVE (v2.0.762): OLR predictions must be EXTREME but ACCURATE. Do NOT add sigmoid temperature (T=2.0 was REVERTED — made all predictions ~50%). Do NOT reduce maxWeight below 5.0. Do NOT add Bayesian priors. The 5-bin calibration map handles miscalibration. See SystemEngineer.md Rule 9.' },
 ];
 
 // v2.0.208: Permanent feedback log (gitignored) — records every SE run for debugging
