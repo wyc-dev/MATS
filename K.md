@@ -2,7 +2,8 @@
 
 > Synthesized from Kimi K3 / arXiv 2603.15031 (Moonshot AI, 2026).
 > MATS analog: K3 layer-depth ≡ MATS cycle-history depth.
-> Version: v2.0.211 (K-series). Status: design + implementation.
+> Version: v2.0.212 (K-series). Status: design + implementation + attack-tested.
+> All 7 transfers implemented. 179/179 tests pass.
 
 ---
 
@@ -87,15 +88,25 @@ At entry time, record: `α_entry` (attention distribution), `v_i_entry`
 
 At close, outcome reward: `r = sign(pnl) · min(1, |pnlPct| / 0.05)` ∈ [-1, +1].
 
-**Score-function gradient** (softmax policy gradient):
+**Reward-weighted key direction** (Peters & Schaal 2008 reward-weighted
+regression, adapted for deterministic attention):
 ```
-∇_w log α_i = α_i · (key_i − Σ_j α_j · key_j)   = α_i · (key_i − mean_key)
-w ← w + lr · r · Σ_i α_i · (key_i − mean_key)
+mean_key = Σ α_i · key_i               (attention-weighted key direction)
+w ← w + lr · r · mean_key               (then EMA + clip)
 ```
 
-Intuition: win → reinforce the attention direction that produced h_blend;
-loss → push away. This is the standard REINFORCE estimator for a softmax
-policy, with trade outcome as reward.
+**Why NOT REINFORCE**: the score-function gradient `Σα_i·(key_i − mean_key)`
+is **identically zero** for a deterministic softmax blend — because
+`mean_key = Σα·key` and `Σα = 1`, so `Σα·(key−mean) = mean − mean = 0`.
+K3 uses backprop so doesn't hit this; MATS uses outcome-based gradient.
+The reward-weighted key direction directly associates the attention-weighted
+key direction with the outcome: win → w shifts toward the blend direction
+that won; loss → away.
+
+**v2.0.212 (#7)**: two pseudo-queries with different reward shaping:
+- `wDecision`: reward = trade PnL (always update on non-noise outcomes)
+- `wExecution`: reward = SL/TP survival (only on closeReason='sl_tp':
+  SL hit → negative, TP hit → positive, manual/thesis → skip)
 
 ### 2.3 Stability guards
 
@@ -170,52 +181,81 @@ policy, with trade outcome as reward.
   layer's output is relevant, it is relevant as a whole."
 
 ### #7 Pre-Decision vs Pre-Execution Specialization
+- **IMPLEMENTED v2.0.212** (not Phase 2 — full dual pseudo-query).
 - Two pseudo-queries per symbol:
-  - `w_decision` — broad receptive field, used for conditional WR +
-    Meta-Agent thesis context (analogous to K3 pre-attention layers).
-  - `w_execution` — sharp/recent-biased, used for SL/TP momentum context
-    (analogous to K3 pre-MLP layers).
-- Both learned via the same policy-gradient mechanism but with different
-  reward shaping: w_decision rewards on trade outcome; w_execution rewards
-  on whether SL/TP placement avoided stop-out.
-- Phase 2 refinement — initial implementation uses a single w with a
-  recency bias term for execution contexts.
+  - `wDecision` — broad receptive field (base recency prior 0.5), used for
+    conditional WR + Meta-Agent thesis context (analogous to K3 pre-attention
+    layers — broad receptive field across all depths).
+  - `wExecution` — sharp/recent-biased (recency prior × 2.0 = 1.0), used for
+    SL/TP survival context (analogous to K3 pre-MLP layers — sharp diagonal
+    dominance, attending to immediate predecessor).
+- Both learned via reward-weighted key direction (same mechanism, different
+  reward):
+  - `wDecision` reward = trade PnL (did the thesis play out?). Updates on
+    every non-noise trade outcome.
+  - `wExecution` reward = SL/TP placement quality. Updates ONLY on
+    closeReason='sl_tp': SL hit (loss) → negative; TP hit (win) → positive.
+    manual/thesis_invalidation/consensus → skip (can't judge SL/TP).
+- `retrieveBlend(symbol, mode)` selects w + recency prior by mode.
+- `recordEntry` captures BOTH mode blends at entry (each w updates from its
+   own entry-time attention snapshot).
+- Execution-lens context block injected into hacp Skeptics context: shows
+  recent regime through SL/TP survival lens so Meta-Agent can calibrate
+  conviction / SL adequacy against learned stop-out patterns.
+- Separate temperature + update counter per mode (may collapse/flocculate
+  independently).
+- Backward compat: old single-w state migrates to wDecision + wExecution on
+  load (both = old w).
 
 ---
 
 ## 4. Architecture
 
 ```
-src/evolution/cycle-history-retrieval.ts   (NEW, ~500 lines)
+src/evolution/cycle-history-retrieval.ts   (NEW, ~650 lines, v2.0.211+v2.0.212)
   CycleHistoryRetriever
-    - per-symbol: CycleHistoryStore { entryFeatures, blocks[8], w, wEMA, ... }
-    - retrieveBlend(symbol) → BlendedRepresentation
-    - recordEntry(symbol, side, blend, alphaDist, sources)
-    - updateOnOutcome(symbol, side, pnlPct)
-    - persist() / load()  (data/evolution/cycle-history.json)
+    - per-symbol: CycleHistoryState { entryFeatures, cycles[80],
+        wDecision, wExecution, pendingEntry, featMean/M2/count, ... }
+    - retrieveBlend(symbol, mode='decision'|'execution') → BlendedRepresentation
+    - recordEntry(symbol, side, entryFeatures) — captures BOTH mode blends
+    - updateOnOutcome(symbol, side, pnlPct, closeReason?) — dual reward
+    - updateW() — shared core: reward-weighted key direction
+    - persist() / load()  (data/evolution/cycle-history.json, atomic)
+    - Block AttnRes (#2): 8 blocks of 10 cycles, intra-block mean, inter-block softmax
+    - RMSNorm keys (#3) with per-feature Welford z-score (#11.2 adaptation)
+    - Fixed recency prior (#11.1 — breaks REINFORCE deadlock)
+    - Entropy floor + temperature warmup (per-mode)
   RMSNorm helper (shared)
-  softmaxMixture helper (shared)
+  softmax helper (shared)
+  entropy helper
 
-src/evolution/evolution-utils.ts           (MODIFY)
+src/evolution/evolution-utils.ts           (MODIFIED, v2.0.211)
   - computeVectorConditionalWinRate: add rmsNormKeys option (#3)
-  - add softmaxMixtureWinRate helper (#4) — optional weighted WR
+  - add softmaxWeightedWinRate helper (#4) — optional weighted WR
+  - add rmsNormFeatures helper — z-score + RMSNorm for retrieval keys
   - both opt-in, default behavior unchanged (cold-start safe)
 
-src/index.ts                                (MODIFY)
+src/index.ts                                (MODIFIED, v2.0.211+v2.0.212)
   - instantiate CycleHistoryRetriever
-  - every cycle: push current features into history (after lastCycleShadowContexts)
-  - executeTrade: recordEntry (snapshot blend + alpha + sources)
-  - recordClose: updateOnOutcome (policy gradient)
-  - checkConditionalWRGate: use retrieveBlend instead of current snapshot
+  - every cycle: pushCycle (after lastCycleShadowContexts)
+  - executeTrade: recordEntry (entry-time features + both mode blends)
+  - recordClose: updateOnOutcome(sym, side, pnlPct, closeReason)
+  - checkConditionalWRGate: use retrieveBlend(sym, 'decision') + #3/#4
+  - hacp candidate provider: use retrieveBlend(sym, 'decision')
   - wire retriever into hacp (setCycleHistoryRetriever)
+  - persist every cycle + in saveEvolutionState
 
-src/cognition/hacp.ts                       (MODIFY)
+src/cognition/hacp.ts                       (MODIFIED, v2.0.211+v2.0.212)
   - setCycleHistoryRetriever
   - Phase 1.8b + Meta-Agent context: use h_blend as candidate features
-  - inject ATTNRES BLEND block (alpha distribution explanation)
+  - inject ATTENTION-RESIDUAL BLEND block (alpha distribution explanation)
+  - inject EXECUTION REGIME LENS block (#7 — wExecution blend context)
 
-tests/cycle-history-retrieval.test.ts       (NEW)
-  - cold-start, retrieval, online learning, block memory, attacks
+tests/cycle-history-retrieval.test.ts       (NEW, 40 tests)
+  - cold-start, retrieval, online learning, block memory, #7 specialization
+
+tests/attack-cycle-history.test.ts          (NEW, 21 tests)
+  - Q7.1-Q7.5: numerical, state, cold-start, concurrency, injection attacks
 ```
 
 ---

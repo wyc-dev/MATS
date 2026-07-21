@@ -1,9 +1,9 @@
 # NA.md — Numeric Autoencoder for MATS Market-Condition Embedding
 
-> **Version**: 1.0 (implemented)
-> **Status**: ✅ COMPLETE
+> **Version**: 1.3 (v2.0.212)
+> **Status**: ✅ COMPLETE + AttnRes integration
 > **Owner**: Yuki (autonomous, per Master Lord directive)
-> **Parent**: v2.0.203 vector-conditional win rate
+> **Parent**: v2.0.203 vector-conditional win rate → v2.0.204 NA → v2.0.207 brain evolution → v2.0.211 AttnRes → v2.0.212 dual pseudo-query
 
 ---
 
@@ -22,7 +22,7 @@ v2.0.203 嘅 `computeVectorConditionalWinRate()` 用 **min-max normalize + cosin
 
 建一個 **in-process numeric autoencoder + contrastive embedding**，學習 marketFeatures 嘅非線性 representation，令「似嘅市況」=「歷史上 lead 似 outcome 嘅市況」。
 
-- **輸入**: 9 個 entry-condition features（同 `ENTRY_CONDITION_FEATURES` 對齊）
+- **輸入**: 11 個 entry-condition features（9 base + 2 momentum，同 `ENTRY_CONDITION_FEATURES` 對齊）
 - **輸出**: 8 維 learned embedding → cosine 檢索
 - **訓練**: reconstruction loss + contrastive loss（同 outcome 拉近 / 唔同推開）
 - **部署**: 純 TypeScript MLP，in-process，<1MB weight，唔依賴外部 ML 庫
@@ -44,18 +44,18 @@ v2.0.203 嘅 `computeVectorConditionalWinRate()` 用 **min-max normalize + cosin
 
 ```
 Encoder:
-  input  (9)  ──┐
+  input  (11) ──┐   (9 base + 2 momentum, v2.0.207 #D)
   z-score norm  │  (running mean/std, 同 OLR Welford 一致)
                 │
-  dense 9→16   ReLU  + He init
+  dense 11→16  ReLU  + He init
   dense 16→8   linear  ──→ embedding (8-d, L2-normalised)
 
 Decoder (訓練時用，推理時唔使):
   dense 8→16   ReLU
-  dense 16→9   linear  ──→ reconstruction
+  dense 16→11  linear  ──→ reconstruction
 ```
 
-**Bottleneck 8 < 9**：強制壓縮，防止 network 學成 identity（reconstruction collapse）。8 維足夠表達 9 個 feature 嘅非線性組合，但唔夠維度做完美還原 → 網絡被迫學 feature 之間嘅關連。
+**Bottleneck 8 < 11**：強制壓縮，防止 network 學成 identity（reconstruction collapse）。8 維足夠表達 11 個 feature 嘅非線性組合，但唔夠維度做完美還原 → 網絡被迫學 feature 之間嘅關連。
 
 ### 2.2 Loss
 
@@ -256,11 +256,16 @@ Feature drift 嘅 time-weighting 已接入訓練——`sampleBatch` 用 `weight 
 | 1.1 | v2.0.205 | V12 完成：time-weighted training sampling（30-day half-life）+ Skeptics Phase 1.8 vector-conditional block |
 | 1.2 | v2.0.206 | #3/#5/#6/#8：RT OLR exit + classifier NA cosine + EM dual-channel + agent conditional WR |
 | 1.3 | v2.0.207 | #B/#C/#D/#E/#F/#G：dark-psych hard gate + momentum SL + momentum features + lesson persistence + anti-pattern clustering + conditional WR in thesis generation |
+| 1.4 | v2.0.208 | NA.md 完整大腦進化圖譜 + Meta-Agent 深層思維提示詞（5 個學習上下文塊）|
+| 1.5 | v2.0.209 | 條件勝率軟門控（code-level `checkConditionalWRGate()`：condWR <20% → +35% conviction penalty）|
+| 1.6 | v2.0.210 | 3 個審計發現修復（olrPWinAtEntry 緩存 + TP R:R≥1.6 + thesis-action 一致性檢查）+ 審計 KNOWN-FIXED 列表 |
+| 1.6 | v2.0.211 | AttnRes 7 transfers（K.md）：cycle-history selective retrieval + block AttnRes + RMSNorm keys + softmax mixture + zero-init pseudo-query + single-head + reward-weighted key direction online learning |
+| 1.7 | v2.0.212 | #7 Pre-Decision vs Pre-Execution Specialization：wDecision（broad, PnL reward）+ wExecution（sharp, SL/TP stop-out reward）|
 ---
 
-## 10. 大腦進化系統完整圖譜（v2.0.203 → v2.0.207）
+## 10. 大腦進化系統完整圖譜（v2.0.203 → v2.0.212）
 
-> **此 section 係留畀之後 agent / 開發者嘅完整參考**。記錄成個自我演化系統由 raw win rate → vector-conditional → learned embedding → momentum-aware → lesson persistence → anti-pattern memory 嘅完整進化鏈。一睇就明白每個 module 點解存在、點互動。
+> **此 section 係留畀之後 agent / 開發者嘅完整參考**。記錄成個自我演化系統由 raw win rate → vector-conditional → learned embedding → momentum-aware → lesson persistence → anti-pattern memory → AttnRes cycle-history → dual pseudo-query 嘅完整進化鏈。一睇就明白每個 module 點解存在、點互動。
 
 ### 10.1 進化時間線
 
@@ -271,6 +276,11 @@ Feature drift 嘅 time-weighting 已接入訓練——`sampleBatch` 用 `weight 
 | v2.0.205 | V12 time-weighted sampling + Skeptics Phase 1.8 conditional block | Feature drift 令舊 sample 污染 model；Skeptics 見唔到 conditional WR |
 | v2.0.206 | #3 RT OLR exit + #5 classifier NA cosine + #6 EM dual-channel + #8 agent conditional WR | 持倉時冇 real-time edge；兩個 similarity metric 唔一致；cycle memory 冇市況通道；agent weight 用 raw WR |
 | v2.0.207 | #B dark-psych hard gate + #C momentum SL + #D momentum features + #E lesson persistence + #F anti-pattern clustering + #G conditional WR in thesis | 11-trade losing streak：counter-momentum SELL、SL 太窄、lesson 冇持久化、冇 anti-pattern memory、dark psychology 係裝飾 |
+| v2.0.208 | NA.md 完整大腦進化圖譜 + Meta-Agent DEEP LEARNING CONTEXT 提示詞 | LLM 見唔到學習信號；5 個學習上下文塊未教 |
+| v2.0.209 | `checkConditionalWRGate()` code-level 軟門控 | Prompt 唔夠：Meta-Agent 忽略低條件勝率學習塊 |
+| v2.0.210 | olrPWinAtEntry 緩存 + TP R:R≥1.6 + thesis-action 一致性 + 審計 KNOWN-FIXED 列表 | 論文與行為矛盾誤報 + TP 太窄 0.1% 收益 + 論文 HOLD 但交易 |
+| v2.0.211 | AttnRes 7 transfers（K.md）：cycle-history selective retrieval + block AttnRes + RMSNorm keys + softmax mixture + zero-init pseudo-query + reward-weighted key direction | 條件勝率 candidate 只用 current snapshot，entry-time regime 丟失；min-max magnitude bias；argmax 最近鄰唔夠 softmax 加權 |
+| v2.0.212 | #7 Pre-Decision vs Pre-Execution Specialization：wDecision（broad, PnL reward）+ wExecution（sharp/recent-biased, SL/TP stop-out reward）| 單一 pseudo-query 唔能同時服務決策（broad）同執行（sharp）；SL/TP 放置適當性冇獨立學習信號 |
 
 ### 10.2 系統架構圖
 
@@ -282,6 +292,15 @@ Feature drift 嘅 time-weighting 已接入訓練——`sampleBatch` 用 `weight 
                     │  momentumShort (5-cycle), momentumLong (24h)  │ ← v2.0.207 #D
                     └────────────────────┬────────────────────────────┘
                                          │
+                    ┌────────────────────▼────────────────────────────┐
+                    │   CYCLE-HISTORY RETRIEVAL (AttnRes, v2.0.211)    │ ← v2.0.211 #1
+                    │   per-symbol 80-cycle rolling history            │
+                    │   + entry-time features (persistent, v_0)        │
+                    │   + wDecision (broad, PnL reward)   ← v2.0.212 #7│
+                    │   + wExecution (sharp, SL/TP reward)← v2.0.212 #7│
+                    │   → h_blend (softmax blend) replaces snapshot    │
+                    └────────────────────┬────────────────────────────┘
+                                         │ h_blend (decision mode)
                     ┌────────────────────▼────────────────────────────┐
                     │   ENTRY-TIME FEATURES (lastCycleShadowContexts)  │
                     │   11 features (9 base + 2 momentum)              │
@@ -299,18 +318,22 @@ Feature drift 嘅 time-weighting 已接入訓練——`sampleBatch` 用 `weight 
                     │  Meta-Agent thesis generation:                    │
                     │    • Conditional WR (BUY + SELL)  ← #G           │
                     │    • Real-time OLR edge (positions) ← #3          │
+                    │    • DEEP LEARNING CONTEXT (5 blocks) ← v2.0.208  │
                     │                                                   │
                     │  Skeptics Phase 1.8b validation:                  │
                     │    • Conditional WR block         ← v2.0.205      │
                     │    • Failure-lesson block          ← #E           │
                     │    • Anti-pattern match block      ← #F           │
                     │    • Momentum alert (dark-psych)   ← #B           │
+                    │    • AttnRes blend block           ← v2.0.211 #1  │
+                    │    • Execution regime lens         ← v2.0.212 #7  │
                     │    • RIL similar trades + subtle diff             │
                     └────────────────────┬──────────────────────────────┘
                                          │
                     ┌────────────────────▼────────────────────────────┐
                     │              TRADE OUTCOME (close)               │
                     │  WIN/LOSS + pnlPct + MFE/MAE + exitType          │
+                    │  + closeReason (sl_tp/manual/thesis)             │
                     └────┬──────────┬──────────┬──────────┬───────────┘
                          │          │          │          │
                     ┌────▼────┐ ┌───▼───┐ ┌────▼────┐ ┌───▼────────────┐
@@ -319,6 +342,13 @@ Feature drift 嘅 time-weighting 已接入訓練——`sampleBatch` 用 `weight 
                     │         │ │ ple   │ │ Close+  │ │ → cluster      │
                     │         │ │       │ │ lesson  │ │                │
                     └─────────┘ └───────┘ └─────────┘ └────────────────┘
+                         │
+                    ┌────▼─────────────────────────────────────────────┐
+                    │  AttnRes w update (v2.0.211 + v2.0.212):          │
+                    │    wDecision += lr · PnL_reward · mean_key        │
+                    │    wExecution += lr · SL_TP_reward · mean_key     │
+                    │    (reward-weighted key direction, Peters & Schaal)│
+                    └──────────────────────────────────────────────────┘
 ```
 
 ### 10.3 各 module 職責 + 冷啟動行為
@@ -334,6 +364,8 @@ Feature drift 嘅 time-weighting 已接入訓練——`sampleBatch` 用 `weight 
 | **Pattern Classifier** (`trade-pattern-classifier.ts`) | entry/position pattern win rate | weighted-diff fallback | NA ready → cosine |
 | **EM Cycle Chain** (`cycle-summary.ts`) | cycle memory，text + market dual-channel | text-only | NA ready → dual |
 | **Agent Evolution** (`agent-evolution.ts`) | agent 權重，conditional WR | raw WR | NA ready + features |
+| **AttnRes Cycle-History** (`cycle-history-retrieval.ts`) | per-symbol cycle history blend + dual pseudo-query | h_blend = current snapshot | history ≥ 3 cycles |
+| **Conditional WR Gate** (`index.ts`) | code-level conviction penalty on low condWR | no gate (prompt-only) | condWR computed (≥5 samples) |
 
 ### 10.4 學習閉環（關鍵：點解系統會越嚟越叻）
 
@@ -347,17 +379,23 @@ Trade close →
   │         └─ lessonExitType 寫回 record
   ├─ AntiPattern.addLoss(record)          → 失敗聚類 (#F)
   ├─ PatternClassifier.backfillOutcome    → pattern WR 更新
-  └─ AgentOutcome.recordCycle outcome     → agent 權重更新
+  ├─ AgentOutcome.recordCycle outcome     → agent 權重更新
+  └─ AttnRes.updateOnOutcome(sym, side, pnlPct, closeReason) ← v2.0.211+#7
+       ├─ wDecision += lr · PnL_reward · mean_key    (every non-noise trade)
+       └─ wExecution += lr · SL_TP_reward · mean_key (only closeReason='sl_tp')
 
 Next cycle entry →
   ├─ OLR.query(features) → P(win)
-  ├─ NA.embed(features) → conditional WR (#G 注入 Meta-Agent)
+  ├─ AttnRes.retrieveBlend(sym, 'decision') → h_blend ← v2.0.211 #1
+  │    └─ NA.embed(h_blend) → conditional WR (#G 注入 Meta-Agent)
+  ├─ AttnRes.retrieveBlend(sym, 'execution') → execution lens ← v2.0.212 #7
   ├─ EXP.checkThesisHistory → verdict (相似 rationale 歷史)
   ├─ EXP.retrieveSimilarFailureLessons → 失敗教訓 (#E 注入 Skeptics)
   ├─ AntiPattern.matchCandidate → anti-pattern match (#F 注入 Skeptics)
   ├─ RIL.findSimilar → similar trades block
   ├─ PatternClassifier.queryEntry → pattern WR
   ├─ momentum check → dark-psych alert (#B 注入 Skeptics)
+  ├─ checkConditionalWRGate → conviction penalty ← v2.0.209
   └─ Real-time OLR (positions) → edge collapse warning (#3)
 ```
 
@@ -382,19 +420,24 @@ Next cycle entry →
 ### 10.6 給之後 agent 嘅關鍵守則
 
 1. **Raw win rate 係 DEPRECATED**。所有學習參考必須用 `computeVectorConditionalWinRate()`（cosine on normalised entry features，cross-symbol，same side）。
-2. ** momentum 係 first-class signal**。`momentumShort` + `momentumLong` 已入 OLR/NA。Counter-momentum trade 要 specific catalyst。
+2. **Momentum 係 first-class signal**。`momentumShort` + `momentumLong` 已入 OLR/NA。Counter-momentum trade 要 specific catalyst。
 3. **Lesson 係持久化嘅**。`ThesisExperienceRecord.lesson/rootCause/lessonCategories` 喺 close 時由 LLM 提煉並寫入 disk。唔好 re-derive，要 retrieve。
 4. **Anti-pattern 係聚類嘅**。`AntiPatternTracker.matchCandidate()` 係最快嘅 "have I lost this way before?" check。
-5. **Cold-start 安全**。所有 learned path 有 fallback：NA not ready → min-max；anti-pattern empty → no block；lesson absent → skip。唔好假設 learned model 一定 ready。
+5. **Cold-start 安全**。所有 learned path 有 fallback：NA not ready → min-max；anti-pattern empty → no block；lesson absent → skip；AttnRes history < 3 → current snapshot。唔好假設 learned model 一定 ready。
 6. **唔好硬禁方向**。SELL 喺跌市有 edge。問題係 counter-momentum，唔係 SELL。任何方向性 circuit breaker 係戇鳥（主神原話）。
 7. **Dark psychology 喺 momentum 強時係 MANDATORY**。LIGHTWEIGHT 只適用於冇 momentum alert 嘅情況。
+8. **Conditional WR 有 code-level 軟門控**（v2.0.209）。condWR < 20% → +35% conviction penalty。唔係 hard block，係軟懲罰。
+9. **AttnRes h_blend 取代 current snapshot**（v2.0.211）。條件勝率 candidate 係 softmax blend over cycle history + entry-time state，唔係單一 snapshot。Entry-time regime 持續保留權重（K3 embedding persistence）。
+10. **兩個 pseudo-query 各司其職**（v2.0.212 #7）。wDecision（broad, PnL reward）服務 conditional WR + thesis；wExecution（sharp, SL/TP stop-out reward）服務 execution context。wExecution 只喺 closeReason='sl_tp' 時更新。
+11. **RMSNorm keys + softmax mixture 係 opt-in**（v2.0.211 #3/#4）。`rmsNormKeys: true` + `softmaxWeightedWR: true` 喺 `computeVectorConditionalWinRate`。Default 保留 min-max + equal-weight。
 
-### 10.7 檔案清單（v2.0.207）
+### 10.7 檔案清單（v2.0.212）
 
 | 檔案 | 角色 |
 |---|---|
-| `src/evolution/numeric-autoencoder.ts` | NA engine（learned embedding）|
-| `src/evolution/evolution-utils.ts` | `computeVectorConditionalWinRate` + `ENTRY_CONDITION_FEATURES`（11）|
+| `src/evolution/numeric-autoencoder.ts` | NA engine（learned embedding, 11→16→8）|
+| `src/evolution/cycle-history-retrieval.ts` | AttnRes cycle-history + dual pseudo-query (NEW v2.0.211, #7 v2.0.212) |
+| `src/evolution/evolution-utils.ts` | `computeVectorConditionalWinRate` + `ENTRY_CONDITION_FEATURES`（11）+ `rmsNormKeys` + `softmaxWeightedWR` (v2.0.211 #3/#4) |
 | `src/evolution/olr-engine.ts` | OLR P(win)（14 features）|
 | `src/evolution/thesis-experience.ts` | thesis memory + lesson + `retrieveSimilarFailureLessons` |
 | `src/evolution/experience-digester.ts` | LLM lesson 提煉 |
@@ -403,9 +446,13 @@ Next cycle entry →
 | `src/evolution/cycle-summary.ts` | EM cycle memory（dual-channel）|
 | `src/evolution/agent-evolution.ts` | agent 權重（conditional WR）|
 | `src/evolution/first-passage.ts` | `computeMomentum` + ATR/drift helpers |
-| `src/analysis/atr.ts` | `computeATRSLTP`（momentum-adaptive）+ `getMomentum` |
-| `src/cognition/hacp.ts` | context injection hub（#3/#B/#E/#F/#G blocks）|
-| `src/agents/meta-agent.ts` | Meta-Agent system prompt（深層思維）|
+| `src/analysis/atr.ts` | `computeATRSLTP`（momentum-adaptive, R:R≥1.6）+ `getMomentum` |
+| `src/cognition/hacp.ts` | context injection hub（#3/#B/#E/#F/#G + AttnRes blend + execution lens blocks）|
+| `src/agents/meta-agent.ts` | Meta-Agent system prompt（DEEP LEARNING CONTEXT v2.0.208）|
 | `src/agents/agents.ts` | Skeptics prompt（dark-psych hard gate）|
 | `src/trading/trading-manager.ts` | SL 計算（momentum-adaptive）|
-| `src/index.ts` | wiring hub（features build + injection + persistence）|
+| `src/index.ts` | wiring hub（features build + AttnRes push/entry/outcome + injection + persistence + condWR gate）|
+| `tests/cycle-history-retrieval.test.ts` | AttnRes unit tests (40 tests, v2.0.211+#7) |
+| `tests/attack-cycle-history.test.ts` | AttnRes attack harness (21 tests, v2.0.211) |
+| `tests/numeric-autoencoder.test.ts` | NA tests (12 tests) |
+| `tests/vector-conditional.test.ts` | conditional WR tests (12 tests, +rmsNorm/softmax) |
