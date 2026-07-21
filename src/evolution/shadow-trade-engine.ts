@@ -375,19 +375,55 @@ export class ShadowTradeEngine {
       }
 
       // Force-resolve if held too long (stale shadow trade).
-      // M5 fix: a mark-to-current PnL label is NOT a TP-before-SL outcome
-      // and would poison OLR's learning signal. We resolve the position
-      // for stats/UI but DO NOT feed the fabricated label to OLR — better
-      // to lose one training sample than teach the model noise.
-      if (!outcome && cycle - pos.openCycle >= SHADOW_CONFIG.maxHoldCycles) {
+      // v2.0.219: FIXED — was using maxHoldCycles=50 (4+ hours) instead of
+      // maxAgeCycles=12 (60 min). Also was NOT feeding OLR (continue skipped
+      // feedTrade). Now feeds OLR with staleLearningWeight so the label signal
+      // is retained but weighted lower than natural SL/TP resolution.
+      if (!outcome && cycle - pos.openCycle >= SHADOW_CONFIG.maxAgeCycles) {
         const pnl = pos.side === 'buy'
           ? (price - pos.entryPrice) / pos.entryPrice
           : (pos.entryPrice - price) / pos.entryPrice;
         pos.status = pnl >= 0 ? 'win' : 'loss';
         pos.resolvedCycle = cycle;
         pos.exitPrice = price;
-        log.info(`[shadow] Force-resolved ${pos.id} (${pos.side} ${sym}) after ${cycle - pos.openCycle} cycles — pnl=${(pnl * 100).toFixed(2)}% (NOT fed to OLR: stale label unreliable)`);
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles: cycle - pos.openCycle, cycle, mfePct: pos.mfePct, maePct: pos.maePct });
+        const holdCycles = cycle - pos.openCycle;
+        const outcomeNum: 1 | 0 = pos.status === 'win' ? 1 : 0;
+
+        // v2.0.219: Feed stale-resolved trades to OLR with reduced weight.
+        // The label (pnl direction at the age cutoff) is still a meaningful
+        // signal — it tells OLR "given these conditions, the trade didn't
+        // resolve quickly, and the current direction is X." This is better
+        // than discarding the sample entirely (old behavior).
+        //
+        // We use the staleLearningWeight (0.3) to reduce the gradient
+        // contribution, so stale labels don't dominate natural SL/TP outcomes.
+        const trainingFeaturesStale: Record<string, number> = {};
+        const allKeys = new Set([...Object.keys(pos.features), ...Object.keys(currentFeatures ?? {})]);
+        for (const key of allKeys) {
+          const entryVal = pos.features[key] ?? 0;
+          const resolutionVal = currentFeatures?.[key] ?? entryVal;
+          trainingFeaturesStale[key] = 0.3 * entryVal + 0.7 * resolutionVal;
+        }
+        trainingFeaturesStale['mfePct'] = pos.mfePct ?? 0;
+        trainingFeaturesStale['maePct'] = pos.maePct ?? 0;
+        const stalePnlPct = pos.side === 'buy'
+          ? (price - pos.entryPrice) / pos.entryPrice
+          : (pos.entryPrice - price) / pos.entryPrice;
+        trainingFeaturesStale['mfeToPnlRatio'] = (pos.mfePct ?? 0) > 0
+          ? ((pos.mfePct ?? 0) - stalePnlPct) / (pos.mfePct ?? 0)
+          : 0;
+
+        try {
+          this.olrEngine.feedTrade(
+            sym, trainingFeaturesStale, outcomeNum, pos.side, 'shadow', cycle,
+            false, undefined, SHADOW_CONFIG.staleLearningWeight,
+          );
+          log.info(`[shadow] Force-resolved ${pos.id} (${pos.side} ${sym}) after ${holdCycles} cycles — pnl=${(pnl * 100).toFixed(2)}% → OLR fed with stale weight=${SHADOW_CONFIG.staleLearningWeight}`);
+        } catch (err) {
+          log.warn(`[shadow] OLR feedTrade (stale) failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct });
         if (this.recentResults.length > 50) this.recentResults.shift();
         resolved++;
         continue;

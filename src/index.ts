@@ -49,11 +49,18 @@ import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
 import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
-import { OLREngine, type OLRQueryResult, regimeToOrdinal } from './evolution/olr-engine.ts';
+import { OLREngine, type OLRQueryResult, regimeToOrdinal, FEATURE_NAMES } from './evolution/olr-engine.ts';
 import { NumericAutoencoder } from './evolution/numeric-autoencoder.ts';
 import { ENTRY_CONDITION_FEATURES, computeVectorConditionalWinRate, safeNum } from './evolution/evolution-utils.ts';
 import { CycleHistoryRetriever } from './evolution/cycle-history-retrieval.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
+import { ReplayBuffer } from './evolution/replay-buffer.ts';
+import { BayesianOLR } from './evolution/bayesian-olr.ts';
+import { TemporalAttention } from './evolution/temporal-attention.ts';
+import { CrossSymbolBackbone } from './evolution/cross-symbol-backbone.ts';
+import { RewardShaper } from './evolution/reward-shaping.ts';
+import { ActiveExploration } from './evolution/active-exploration.ts';
+import { WorldModel } from './evolution/world-model.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, computeMomentum, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
 import { wilsonScore } from './evolution/evolution-utils.ts';
@@ -209,6 +216,14 @@ class MATSSystem {
   private olrEngine!: OLREngine;
   /** Shadow Trade Engine — opens simulated LONG+SHORT each cycle, tracks TP-before-SL outcomes. */
   private shadowEngine!: ShadowTradeEngine;
+  /** v2.0.219: Advanced learning systems */
+  private replayBuffer!: ReplayBuffer;
+  private bayesianOLR!: BayesianOLR;
+  private temporalAttention!: TemporalAttention;
+  private crossSymbolBackbone!: CrossSymbolBackbone;
+  private rewardShaper!: RewardShaper;
+  private activeExploration!: ActiveExploration;
+  private worldModel!: WorldModel;
   /** v2.0.204: Numeric Autoencoder — learns non-linear market-condition embedding for vector-conditional WR. */
   private naEngine!: NumericAutoencoder;
   /** v2.0.211 (K.md #1): Cycle-History Selective Retrieval (AttnRes transfer).
@@ -730,6 +745,14 @@ class MATSSystem {
       log.info('Step 3.10/8: Initializing OLR + Shadow Trade Engine...');
       this.olrEngine = new OLREngine();
       this.shadowEngine = new ShadowTradeEngine(this.olrEngine);
+      // v2.0.219: Initialize advanced learning systems
+      this.replayBuffer = new ReplayBuffer(this.olrEngine);
+      this.bayesianOLR = new BayesianOLR(this.olrEngine);
+      this.temporalAttention = new TemporalAttention();
+      this.crossSymbolBackbone = new CrossSymbolBackbone(this.olrEngine);
+      this.rewardShaper = new RewardShaper();
+      this.activeExploration = new ActiveExploration();
+      this.worldModel = new WorldModel([...FEATURE_NAMES]);
       // Load persisted OLR + shadow state
       try {
         const olrPath = path.join(process.cwd(), 'data/evolution/olr-state.json');
@@ -742,6 +765,20 @@ class MATSSystem {
           const data = fs.readFileSync(shadowPath, 'utf-8');
           this.shadowEngine.load(data);
         }
+        // v2.0.219: Load advanced system states
+        const loadAdv = (name: string, loadFn: (json: string) => void) => {
+          const p = path.join(process.cwd(), `data/evolution/${name}`);
+          if (fs.existsSync(p)) {
+            try { loadFn(fs.readFileSync(p, 'utf-8')); } catch { /* fresh */ }
+          }
+        };
+        loadAdv('replay-buffer.json', (j) => this.replayBuffer.load(j));
+        loadAdv('temporal-attention.json', (j) => this.temporalAttention.load(j));
+        loadAdv('cross-symbol.json', (j) => this.crossSymbolBackbone.load(j));
+        loadAdv('reward-shaper.json', (j) => this.rewardShaper.load(j));
+        loadAdv('exploration.json', (j) => this.activeExploration.load(j));
+        loadAdv('world-model.json', (j) => this.worldModel.load(j));
+        log.info('✓ Advanced learning systems initialized (replay buffer, Bayesian OLR, temporal attention, cross-symbol, reward shaping, exploration, world model)');
       } catch { /* start fresh */ }
       log.info('✓ OLR + Shadow Trade Engine ready');
 
@@ -7716,6 +7753,19 @@ ${recentExamples}
       const shadowFinal = path.join(dir, 'shadow-state.json');
       fs.writeFileSync(shadowTmp, this.shadowEngine.save(), 'utf-8');
       fs.renameSync(shadowTmp, shadowFinal);
+      // v2.0.219: Save advanced learning system states
+      const saveAdv = (name: string, data: string) => {
+        const p = path.join(dir, name);
+        const t = p + '.tmp';
+        fs.writeFileSync(t, data, 'utf-8');
+        fs.renameSync(t, p);
+      };
+      saveAdv('replay-buffer.json', this.replayBuffer.save());
+      saveAdv('temporal-attention.json', this.temporalAttention.save());
+      saveAdv('cross-symbol.json', this.crossSymbolBackbone.save());
+      saveAdv('reward-shaper.json', this.rewardShaper.save());
+      saveAdv('exploration.json', this.activeExploration.save());
+      saveAdv('world-model.json', this.worldModel.save());
       // v2.0.204: Save Numeric Autoencoder model
       this.naEngine.persist();
       // v2.0.207 (#F): Persist anti-pattern classes.
