@@ -21,6 +21,8 @@
 import { createLogger } from '../observability/logger.ts';
 import type { AgentRole, MarketRegime } from '../types/index.ts';
 import type { AgentOutcomeTracker } from './agent-outcomes.ts';
+import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
+import { computeVectorConditionalWinRate } from './evolution-utils.ts';
 
 const log = createLogger({ phase: 'agent-evolution' });
 
@@ -33,6 +35,11 @@ const MIN_MULTIPLIER = 0.5;
 const MAX_MULTIPLIER = 1.5;
 
 export class AgentEvolutionEngine {
+  /** v2.0.206 (#8): NA provider — when ready + currentFeatures provided,
+   *  updateMultiplier uses conditional WR (agent perf in similar market conditions)
+   *  instead of raw win rate. Falls back to raw WR during cold-start. */
+  private naEmbeddingProvider: NumericEmbedProvider | null = null;
+  setNaEmbeddingProvider(p: NumericEmbedProvider | null): void { this.naEmbeddingProvider = p; }
   /** EMA-smoothed multiplier per (role, regime) — persists across cycles. */
   private multipliers = new Map<string, number>();
   private readonly outcomeTracker: AgentOutcomeTracker;
@@ -69,30 +76,72 @@ export class AgentEvolutionEngine {
    *
    * @param currentRegime the active market regime (for logging context)
    */
-  updateWeights(currentRegime: MarketRegime): void {
+  updateWeights(currentRegime: MarketRegime, /** v2.0.206 (#8): current cycle
+   *  market features — when provided + NA ready, agent multipliers use conditional
+   *  WR (performance in similar market conditions) instead of raw win rate. */
+    currentFeatures?: Record<string, number>,
+  ): void {
     try {
       // Collect all roles that have base weights registered
       for (const role of this.baseWeights.keys()) {
         // Update the multiplier for the current regime (most relevant).
         // Other regimes keep their last-smoothed value (they'll update when
         // the market shifts back to them).
-        this.updateMultiplier(role, currentRegime);
+        this.updateMultiplier(role, currentRegime, currentFeatures);
       }
     } catch (err) {
       log.error(`[updateWeights] Failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  private updateMultiplier(role: AgentRole, regime: MarketRegime): void {
+  private updateMultiplier(role: AgentRole, regime: MarketRegime, currentFeatures?: Record<string, number>): void {
     const perf = this.outcomeTracker.getAgentPerformance(role, undefined, regime);
     // Need enough samples to trust the win rate; otherwise leave the base weight.
     if (perf.totalDecisions < MIN_SAMPLES_FOR_ADJUSTMENT) return;
+
+    // v2.0.206 (#8): Use conditional WR (agent performance in similar MARKET
+    // CONDITIONS) instead of raw win rate. Raw WR conflates regimes — an agent
+    // that wins 80% in trending_bull but 20% in high_volatility looks "50%" raw.
+    // Conditional WR isolates "how does this agent do WHEN the market looks like
+    // RIGHT NOW?". Falls back to raw WR when NA not ready or no features / no
+    // records with marketFeatures.
+    let effectiveWinRate = perf.winRate;
+    let wrSource = 'raw';
+    if (this.naEmbeddingProvider && currentFeatures && Object.keys(currentFeatures).length > 0) {
+      try {
+        const allRecords = this.outcomeTracker.getAllRecords();
+        const recs = allRecords
+          .filter(r => r.agentRole === role && r.regime === regime && r.outcome && r.outcome !== 'pending'
+            && (r.recommendedAction === 'buy' || r.recommendedAction === 'sell')
+            && r.marketFeatures && Object.keys(r.marketFeatures).length > 0)
+          .map(r => ({
+            marketFeatures: r.marketFeatures!,
+            outcome: r.outcome === 'win' ? 'WIN' : 'LOSS',
+            symbol: r.symbol,
+            side: r.recommendedAction as 'buy' | 'sell',
+            pnl: r.pnlPct ?? (r.outcome === 'win' ? 1 : -1),
+          }));
+        if (recs.length >= MIN_SAMPLES_FOR_ADJUSTMENT) {
+          const cond = computeVectorConditionalWinRate(
+            currentFeatures,
+            recs,
+            { minSamples: MIN_SAMPLES_FOR_ADJUSTMENT, threshold: 0.75, topN: 20, embeddingProvider: this.naEmbeddingProvider ?? undefined },
+          );
+          if (cond.confidence !== 'none' && cond.sampleSize >= MIN_SAMPLES_FOR_ADJUSTMENT) {
+            effectiveWinRate = cond.conditionalWinRate;
+            wrSource = 'conditional';
+          }
+        }
+      } catch (err) {
+        log.warn(`[agent-evolution] conditional WR failed for ${role}@${regime}: ${err instanceof Error ? err.message : String(err)} — using raw WR`);
+      }
+    }
 
     // Map win rate to a multiplier around 1.0.
     // winRate 0.5 → ×1.0 (neutral), 0.8 → ×1.6 (capped 1.5), 0.2 → ×0.7 (floored 0.5).
     const rawMultiplier = Math.max(
       MIN_MULTIPLIER,
-      Math.min(MAX_MULTIPLIER, 0.5 + (perf.winRate - 0.5) * 2),
+      Math.min(MAX_MULTIPLIER, 0.5 + (effectiveWinRate - 0.5) * 2),
     );
 
     const key = this.key(role, regime);
@@ -106,7 +155,7 @@ export class AgentEvolutionEngine {
     // Log only when the multiplier meaningfully changes (>5% delta from prev)
     if (prev === undefined || Math.abs(smoothed - prev) > 0.05) {
       log.info(
-        `🧬 agent weight: ${role} @ ${regime} winRate=${(perf.winRate * 100).toFixed(0)}% (n=${perf.totalDecisions}) → ×${smoothed.toFixed(2)} (base ${(this.baseWeights.get(role) ?? 0).toFixed(2)} → dyn ${(this.baseWeights.get(role)! * smoothed).toFixed(2)})`,
+        `🧬 agent weight: ${role} @ ${regime} ${wrSource}WR=${(effectiveWinRate * 100).toFixed(0)}% (n=${perf.totalDecisions}) → ×${smoothed.toFixed(2)} (base ${(this.baseWeights.get(role) ?? 0).toFixed(2)} → dyn ${(this.baseWeights.get(role)! * smoothed).toFixed(2)})`,
       );
     }
   }

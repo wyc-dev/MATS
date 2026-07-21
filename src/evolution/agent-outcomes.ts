@@ -74,6 +74,9 @@ export class AgentOutcomeTracker {
       confidence: number;
     }>,
     currentRegime: MarketRegime,
+    /** v2.0.206 (#8): Per-symbol market features at decision time — stored on
+     *  each record so agent weights can be computed via conditional WR. */
+    marketFeaturesProvider?: (symbol: string) => Record<string, number> | undefined,
   ): void {
     for (const agent of allAgentDecisions) {
       const { agentRole, multiSymbolDecision, confidence } = agent;
@@ -88,6 +91,7 @@ export class AgentOutcomeTracker {
         confidence,
         isPositionRecommendation: false,
         regime: currentRegime,
+        marketFeatures: marketFeaturesProvider?.(mt.symbol),
       });
 
       // Per-position recommendations (includes trading markets without position)
@@ -100,6 +104,7 @@ export class AgentOutcomeTracker {
           confidence,
           isPositionRecommendation: true,
           regime: currentRegime,
+          marketFeatures: marketFeaturesProvider?.(pos.symbol),
         });
       }
     }

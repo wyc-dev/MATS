@@ -532,7 +532,9 @@ export class HACPEngine {
     // This reads per-agent win rates from AgentOutcomeTracker and EMA-smooths
     // the multipliers so consensus votes reflect each agent's recent performance.
     if (this.agentEvolution) {
-      this.agentEvolution.updateWeights(this.currentRegime);
+      // v2.0.206 (#8): Pass current market features so agent multipliers use
+      // conditional WR (performance in similar conditions) instead of raw WR.
+      this.agentEvolution.updateWeights(this.currentRegime, this.naCandidateFeaturesProvider?.() ?? undefined);
     }
 
     // Inject Market Agent constraints into the market description
