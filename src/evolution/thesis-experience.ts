@@ -321,10 +321,10 @@ export class ThesisExperience {
 
   /** v2.0.140: layered digest summary for agent context + UI. Falls back to
    *  simple stats when the digester is dormant. */
-  getDigestSummary(): string {
+  getDigestSummary(embeddingProvider?: import('./numeric-autoencoder.ts').NumericEmbedProvider): string {
     if (this.records.length === 0) return '';
     if (this.digester.getCfg().enabled && this.digester.classCount() >= 0) {
-      return this.digester.getDigestSummary(this.records);
+      return this.digester.getDigestSummary(this.records, embeddingProvider);
     }
     return this.simpleDigestSummary();
   }
