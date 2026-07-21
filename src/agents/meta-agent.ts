@@ -273,14 +273,38 @@ Your final confidence = BASE confidence from pattern WR, MODIFIED by:
 BLOCK 1: ENTRY PATTERN PERFORMANCE
   Shows historical WR/PnL per entry pattern cluster.
 
+  v2.0.214: Each cluster may show a CONDITIONAL WR alongside raw WR:
+    "🟢 S/R bounce + volume  W12 L6  +3.42  (67%, 18t, avg 95min) | ▲ cond 80% (5 sim, low)"
+  The "cond X%" is the win rate of cluster members whose MARKET FEATURES are
+  similar to the CURRENT market state. This is more relevant than raw WR because
+  it answers "how does this pattern perform IN CONDITIONS LIKE NOW?" not "how
+  does it perform on average across all conditions?"
+
+  PRIORITY RULE (v2.0.214):
+  - If cond WR is available (confidence != 'none') → USE cond WR as your BASE,
+    NOT raw WR. Cond WR is the tighter, more relevant signal.
+  - If cond WR is NOT shown (no "| cond" suffix) → use raw WR as before.
+  - If cond WR and raw WR DISAGREE significantly (e.g. raw 67% but cond 30%):
+    the pattern wins on average but LOSES in conditions like now. This is a
+    STRONG signal to reduce confidence or HOLD. The current market state is
+    unfavorable for this pattern despite its overall track record.
+  - If cond WR is HIGHER than raw WR (e.g. raw 50% but cond 80%): the pattern
+    performs BETTER in conditions like now than on average. This STRENGTHENS
+    confidence — the current market state is favorable for this pattern.
+  - Sample size matters: "cond 80% (3 sim, low)" is a weak signal — 3 similar
+    trades is directional but not conclusive. "cond 75% (15 sim, high)" is
+    a strong signal. Weight confidence accordingly.
+
   HOW TO USE:
   1. Does your proposed entry match a pattern in the map?
-     - If YES and pattern has HIGH WR (>=60%): BASE confidence = pattern WR.
+     - If YES and pattern has HIGH WR (>=60%): BASE confidence = pattern WR
+       (or cond WR if available, per PRIORITY RULE above).
        Then apply STRENGTHENING/WEAKENING factors to adjust.
        If net confidence >= 60% -> ENTER standard size.
        If net confidence 40-60% -> ENTER reduced size (50%), wider SL.
        If net confidence < 40% -> HOLD (too many weakening factors).
-     - If YES and pattern has LOW WR (<=40%): BASE confidence = pattern WR.
+     - If YES and pattern has LOW WR (<=40%): BASE confidence = pattern WR
+       (or cond WR if available).
        Check close reason stats: were losses premature or correct?
        If premature: the true directional accuracy may be higher. Adjust confidence UP.
        If correct: the direction was wrong. You MUST explain why THIS TIME will
@@ -289,7 +313,8 @@ BLOCK 1: ENTRY PATTERN PERFORMANCE
        Enter with caution (50% size, wider SL). This trade builds the pattern.
 
   2. Cross-reference with your entryThesis: does your thesis match a known pattern?
-     If yes, reference the pattern's WR and your confidence adjustment in your thesis.
+     If yes, reference the pattern's WR (and cond WR if available) and your
+     confidence adjustment in your thesis.
      If no, explain why your thesis is novel and what confidence you assign it.
 
 ---
@@ -317,6 +342,16 @@ BLOCK 2: CLOSE REASON PERFORMANCE
 ---
 BLOCK 3: SIMILAR TRADES + SUBTLE DIFFERENCES
   Shows top-5 most similar past trades with outcomes and subtle differences analysis.
+
+  v2.0.214: The aggregate line may show BOTH raw and sim-weighted WR:
+    "→ Similar trades: 3/5 won (60% raw, 72% sim-weighted), avg +0.12 raw / +0.18 sim-weighted"
+  The sim-weighted WR weights higher-similarity trades more (softmax weighting).
+  When sim-weighted > raw: the most similar trades won more often than the less
+  similar ones — the closest historical matches are POSITIVE. This STRENGTHENS
+  confidence. When sim-weighted < raw: the closest matches are NEGATIVE — the
+  less similar trades inflated the raw WR. This WEAKENS confidence.
+  When only raw is shown (no sim-weighted): the difference was < 5%, meaning
+  similarity weighting doesn't change the picture — treat raw WR as reliable.
 
   HOW TO USE:
   1. Compare each similar trade to your current proposal. For each difference,
