@@ -44,13 +44,14 @@ import { CorrelationBudget } from './risk/correlation-budget.ts';
 import { calculateTakerFee, calculateFundingCost, getFeeSummary } from './trading/cost-model.ts';
 import { getSRZones } from './analysis/support-resistance.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
+import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
 import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
 import { OLREngine, type OLRQueryResult, regimeToOrdinal } from './evolution/olr-engine.ts';
 import { NumericAutoencoder } from './evolution/numeric-autoencoder.ts';
 import { ENTRY_CONDITION_FEATURES } from './evolution/evolution-utils.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
-import { calculateFirstPassage, estimateDrift, estimateVolatility, type FirstPassageResult } from './evolution/first-passage.ts';
+import { calculateFirstPassage, estimateDrift, estimateVolatility, computeMomentum, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
 import { wilsonScore } from './evolution/evolution-utils.ts';
 import { auditTradeRecordsLLM, type AuditResult } from './evolution/direction-audit.ts';
@@ -192,6 +193,8 @@ class MATSSystem {
    *  agents analyze (combined with open positions). Replaces auto-select. */
   private tradingMarkets: string[] = [];
   private emManager!: CycleSummaryManager;
+  /** v2.0.207 (#F): Anti-pattern tracker — clusters historical failure lessons. */
+  private antiPatternTracker!: AntiPatternTracker;
   private patternClassifier!: TradePatternClassifier;
   private patternTagTracker!: PatternTagTracker;
   /** OLR (Online Logistic Regression) engine — learns P(win) from shadow + real trade outcomes. */
@@ -635,6 +638,9 @@ class MATSSystem {
       // 3.9 Initialize EM CycleSummaryManager
       log.info('Step 3.9/8: Initializing EM CycleSummary Manager...');
       this.emManager = new CycleSummaryManager();
+      // v2.0.207 (#F): Anti-pattern tracker init + load.
+      this.antiPatternTracker = new AntiPatternTracker();
+      this.antiPatternTracker.load();
       // v2.0.140: Load persisted EM state so cycle insights survive restarts.
       // Without this, every restart loses all 4000+ cycle insights →
       // EM Cycle Digestion starts from 0 → MiniLM retrieval has nothing to query.
@@ -1955,6 +1961,11 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           this.emManager.setEmbedProvider(new TransformersEmbedProvider());
           // v2.0.206 (#6): Wire NA provider for dual-channel (text + market-condition) retrieval.
           this.emManager.setNaEmbeddingProvider(this.naEngine);
+          // v2.0.207 (#F): Wire embed provider for anti-pattern clustering + rebuild from corpus.
+          this.antiPatternTracker.setEmbedProvider(new TransformersEmbedProvider());
+          void this.antiPatternTracker.rebuild(this.expMemory?.getRecords() ?? []).catch((err: unknown) =>
+            log.warn(`[anti-pattern] startup rebuild failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
+          );
           void this.emManager.rebuildInsightVectors().catch((err: unknown) =>
             log.warn(`[insight-retrieval] startup rebuild failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
           );
@@ -1988,6 +1999,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // HACP so Skeptics Phase 1.8b sees the vector-conditional win-rate block
         // (learned market-condition embedding) alongside the RIL similar-trades block.
         this.hacpEngine.setNaEmbeddingProvider(this.naEngine);
+        // v2.0.207 (#F): Wire anti-pattern tracker for Skeptics candidate matching.
+        this.hacpEngine.setAntiPatternTracker(this.antiPatternTracker);
         this.hacpEngine.setNaCandidateFeaturesProvider(() => {
           // Return the active symbol's current entry-condition features.
           const sym = normalizeSymbol(this.marketAgent.getConfig().selectedSymbol ?? '');
@@ -2437,6 +2450,12 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const margin = trade.investment > 0 ? trade.investment / (trade.leverage ?? 1) : 0;
         const maePct = margin > 0 ? (margin - mae) / margin : 0;
         const mfePct = margin > 0 ? (mfe - margin) / margin : 0;
+        // v2.0.207 (#D): Momentum at close time — use the trade's symbol price history.
+        let closeMomentum = { momentumShort: 0, momentumLong: 0 };
+        try {
+          const closePh = this.marketState.getPriceHistory(symbol);
+          if (closePh && closePh.length >= 2) closeMomentum = computeMomentum(closePh);
+        } catch { /* non-critical */ }
         const features = {
           volatility,
           srDistanceBps,
@@ -2446,6 +2465,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           fundingRate,
           volumeRatio,
           sentimentConviction,
+          momentumShort: closeMomentum.momentumShort,
+          momentumLong: closeMomentum.momentumLong,
           // v2.0.152: MFE/MAE features for SL/TP learning
           mfePct,
           maePct,
@@ -2645,6 +2666,14 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           if (config.ril.enabled && this.patternCluster && record) {
             void this.patternCluster.addTrade(record as any).catch((e: unknown) =>
               log.warn(`[RIL] addTrade failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`),
+            );
+          }
+          // v2.0.207 (#F): Feed the loss into the anti-pattern tracker so its
+          // lesson joins a known anti-pattern class. Only losses carry lessons
+          // that form anti-patterns (wins are not anti-patterns).
+          if (record && this.antiPatternTracker) {
+            void this.antiPatternTracker.addLoss(record as any).catch((e: unknown) =>
+              log.warn(`[anti-pattern] addLoss failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`),
             );
           }
         }).catch((e: unknown) => log.warn(`[EXP] recordClose failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`));
@@ -3785,6 +3814,12 @@ ${recentExamples}
       const allMarkets = [...new Set([activeSymbol, ...this.tradingMarkets.map(m => normalizeSymbol(m))])];
       for (const mktSym of allMarkets) {
         const mktState = this.marketState.getState(mktSym);
+        // v2.0.207 (#D): Momentum features — short (5-cycle) + long (288-cycle) % change.
+        let mktMomentum = { momentumShort: 0, momentumLong: 0 };
+        try {
+          const mktPh = this.marketState.getPriceHistory(mktSym);
+          if (mktPh && mktPh.length >= 2) mktMomentum = computeMomentum(mktPh);
+        } catch { /* non-critical */ }
         const mktFeatures = {
           volatility: mktState?.volatility ?? (normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? (combinedState.volatility ?? 0) : 0),
           srDistanceBps: normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? (this.lastSRContext?.distanceToSupportBps ?? 0) : 0,
@@ -3794,6 +3829,8 @@ ${recentExamples}
           sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
           sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
           signalAgreement: 0.5,
+          momentumShort: mktMomentum.momentumShort,
+          momentumLong: mktMomentum.momentumLong,
         };
         const mktPrice = normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? combinedState.price : (mktState?.price ?? 0);
         this.lastCycleShadowContexts.set(mktSym, {
@@ -7309,6 +7346,8 @@ ${recentExamples}
       fs.renameSync(shadowTmp, shadowFinal);
       // v2.0.204: Save Numeric Autoencoder model
       this.naEngine.persist();
+      // v2.0.207 (#F): Persist anti-pattern classes.
+      this.antiPatternTracker?.persist();
     } catch { /* best-effort */ }
   }
 

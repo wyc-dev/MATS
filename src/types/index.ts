@@ -570,6 +570,14 @@ export interface ThesisExperienceRecord {
   olrPWinAtEntry?: number;
   /** v2.0.178: Shadow win rate at entry time. */
   shadowWinRateAtEntry?: number;
+  /** v2.0.207 (#E): Distilled lesson (WHY this trade won/lost) — written back
+   *  asynchronously by the digester after LLM post-mortem. Persisted so the
+   *  lesson survives restart and can be retrieved for similar future candidates. */
+  lesson?: string;
+  /** v2.0.207 (#E): Root cause category (e.g. "counter-momentum stop-out"). */
+  rootCause?: string;
+  /** v2.0.207 (#E): Failure-mode categories (e.g. ["technical","momentum","timing"]). */
+  lessonCategories?: string[];
 }
 
 /** Verdict returned by checkThesisHistory() (Skeptics Phase 1.8a). */

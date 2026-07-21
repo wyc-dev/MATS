@@ -140,6 +140,42 @@ export async function getATR(symbol: string, period = 14): Promise<number> {
 }
 
 /**
+ * v2.0.207 (#C/#D): Fetch short-term momentum (% price change over last `n`
+ * 1h candles) from Hyperliquid. Returns a fraction (0.03 = +3%). 0 on failure.
+ * This is the SAME data source as getATR (1h candleSnapshot) so the momentum
+ * is consistent with the ATR-based SL. Used by trading-manager to widen SL
+ * against adverse momentum and by Skeptics to flag "price is being pushed".
+ */
+export async function getMomentum(symbol: string, n = 5): Promise<number> {
+  if (!hlFetchFn) return 0;
+  try {
+    const coin = symbol.includes(':') ? symbol : symbol.toUpperCase();
+    const endTime = Date.now();
+    const intervalMs = 3_600_000;
+    const startTime = endTime - (n + 2) * intervalMs;
+    const data = await hlFetchFn({
+      type: 'candleSnapshot',
+      req: { coin, interval: '1h', startTime, endTime },
+    }) as Array<{ t?: string; c?: string }>;
+    if (!Array.isArray(data) || data.length < 2) return 0;
+    const closes = data
+      .map(c => parseFloat(c['c'] ?? '0'))
+      .filter(c => c > 0)
+      .sort((a, b) => a - b);
+    if (closes.length < 2) return 0;
+    const recent = closes.slice(-Math.min(n, closes.length));
+    if (recent.length < 2) return 0;
+    const first = recent[0]!;
+    const last = recent[recent.length - 1]!;
+    if (first <= 0) return 0;
+    const mom = (last - first) / first;
+    return Math.max(-0.5, Math.min(0.5, mom));
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * v2.0.73 S2.3: Compute volatility-adaptive SL/TP from ATR.
  *
  *   LONG:  SL = entry - 1.5×ATR   TP = entry + 3×ATR
@@ -161,13 +197,28 @@ export function computeATRSLTP(
   side: 'buy' | 'sell',
   slMult = 1.5,
   tpMult = 2.0,
+  /** v2.0.207 (#C): Adverse short-term momentum (fraction, e.g. 0.03 = +3%
+   *  AGAINST this position). When provided and > 0, the SL distance is widened
+   *  to cover 2.5× the adverse momentum range so a continuation of the push
+   *  doesn't stop the position out before the thesis plays out. This is the
+   *  fix for "SL $59.40 (+0.8%) gets blown by continued push" — the SL adapts
+   *  to "the market is being pushed RIGHT NOW" instead of relying on
+   *  historical ATR alone. */
+  adverseMomentum?: number,
 ): { sl: number; tp: number } | null {
   if (atr <= 0 || entryPrice <= 0) return null;
-  const slDist = slMult * atr;
+  let slDist = slMult * atr;
+  // v2.0.207 (#C): Momentum-adaptive SL — widen to cover adverse push.
+  if (adverseMomentum && adverseMomentum > 0) {
+    const momentumSlDist = adverseMomentum * entryPrice * 2.5;
+    slDist = Math.max(slDist, momentumSlDist);
+  }
   const tpDist = tpMult * atr;
   // Cap SL/TP distance to prevent unreachable levels
-  // Max SL: 3% of entry price, Max TP: 5% of entry price
-  const maxSlDist = entryPrice * 0.03;
+  // v2.0.207 (#C): raise SL cap to 5% when momentum-adaptive (was 3%) — a 2.5×
+  // momentum SL can legitimately exceed 3% in a strong push; capping at 3%
+  // would re-introduce the stop-out problem the momentum SL is solving.
+  const maxSlDist = (adverseMomentum && adverseMomentum > 0) ? entryPrice * 0.05 : entryPrice * 0.03;
   const maxTpDist = entryPrice * 0.05;
   const cappedSlDist = Math.min(slDist, maxSlDist);
   const cappedTpDist = Math.min(tpDist, maxTpDist);

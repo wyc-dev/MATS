@@ -312,3 +312,28 @@ export function estimateDrift(prices: number[], n: number = 20): number {
   if (!Number.isFinite(ewma)) return 0;
   return ewma;
 }
+
+/**
+ * v2.0.207 (#D): Compute short-term + long-term momentum (% price change).
+ * Short = last `shortN` cycles (default 5 ≈ 25min on 5-min cycles).
+ * Long  = last `longN` cycles (default 288 ≈ 24h on 5-min cycles).
+ * Returns { momentumShort, momentumLong } as fractions (0.02 = +2%).
+ * Guards: <2 prices → 0; clamps to [-0.5, 0.5] to avoid outlier poisoning.
+ * This captures "is the market being pushed in one direction RIGHT NOW?" —
+ * the signal that raw volatility + regime ordinal cannot express. It lets
+ * OLR/NA learn "SELL against a +3% short-momentum spike loses 70%" without
+ * needing a separate gate.
+ */
+export function computeMomentum(prices: number[], shortN = 5, longN = 288): { momentumShort: number; momentumLong: number } {
+  const clamp = (x: number) => Math.max(-0.5, Math.min(0.5, x));
+  const pct = (n: number): number => {
+    if (prices.length < 2) return 0;
+    const recent = prices.slice(-Math.min(n, prices.length));
+    if (recent.length < 2) return 0;
+    const first = recent[0]!;
+    const last = recent[recent.length - 1]!;
+    if (first <= 0 || last <= 0 || !Number.isFinite(first) || !Number.isFinite(last)) return 0;
+    return clamp((last - first) / first);
+  };
+  return { momentumShort: pct(shortN), momentumLong: pct(longN) };
+}

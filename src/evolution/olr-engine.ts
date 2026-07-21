@@ -30,6 +30,12 @@ export const FEATURE_NAMES = [
   // Mapping: trending_bull=1.0, trending_bear=0.8, mean_reverting=0.5,
   // high_volatility=0.3, low_volatility=0.2, breakout=0.6, chaotic=0.1, unknown=0.5
   'regimeOrdinal',
+  // v2.0.207 (#D): Momentum features — captures "is price being pushed in one
+  // direction RIGHT NOW?" which volatility + regime cannot express. Lets the
+  // model learn "SELL against +3% short-momentum loses 70%". Backward compat:
+  // migrateModel pads old weights to 0 (neutral) for these new dims.
+  'momentumShort',
+  'momentumLong',
 ] as const;
 
 const D = FEATURE_NAMES.length; // 12
