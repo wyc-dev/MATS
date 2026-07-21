@@ -21,6 +21,8 @@ import { config } from '../config/index.ts';
 import { rootLogger } from '../observability/logger.ts';
 import { cosine, combinationSimilarity, type EmbedProvider } from './embeddings.ts';
 import { computeVectorConditionalWinRate, ENTRY_CONDITION_FEATURES } from './evolution-utils.ts';
+import type { AttnResTradeEmbedder } from './attnres-trade-embedder.ts';
+
 import type {
   ThesisExperienceRecord,
   ReasonPatternCluster,
@@ -57,6 +59,8 @@ export class PatternClusterManager {
   private readonly cfg: RILConfig;
   private readonly embed: EmbedProvider;
   private built = false;
+  /** v2.0.215: Optional AttnRes trade embedder for learned rationale blending. */
+  private attnResEmbedder: AttnResTradeEmbedder | null = null;
   /** v2.0.767: Track the last cycle when a full rebuild was triggered. */
   private lastRebuildCycle = -1;
   /** v2.0.767: Background rebuild promise to avoid blocking the decision cycle. */
@@ -89,6 +93,16 @@ export class PatternClusterManager {
     return this.clusters.length;
   }
 
+  /** v2.0.215: Inject AttnRes trade embedder for learned rationale blending. */
+  setAttnResTradeEmbedder(e: AttnResTradeEmbedder | null): void {
+    this.attnResEmbedder = e;
+  }
+
+  /** v2.0.215: Get the AttnRes embedder (for index.ts to call updateOnOutcome). */
+  getAttnResTradeEmbedder(): AttnResTradeEmbedder | null {
+    return this.attnResEmbedder;
+  }
+
   // ─── Full rebuild from all records (startup) ───
 
   async rebuild(records: ThesisExperienceRecord[]): Promise<void> {
@@ -105,6 +119,22 @@ export class PatternClusterManager {
         skipped++;
         continue;
       }
+
+      // v2.0.215: AttnRes blend path — when embedder is present, blend all
+      // rationale vectors into a single trade representation and assign to one
+      // cluster. This replaces the per-rationale approach with a learned blend.
+      // Cold-start safe: w=0 → uniform → mean ≈ current behavior.
+      if (this.attnResEmbedder) {
+        const blended = this.attnResEmbedder.blend(rec.rationaleVectors);
+        if (blended.length > 0) {
+          const rationale = rec.rationales[0] ?? `trade-${rec.id}`;
+          this.assignToCluster(rec, rationale, blended);
+          added++;
+        }
+        continue;
+      }
+
+      // Default path: per-rationale clustering (backward compatible)
       for (let i = 0; i < rec.rationaleVectors.length; i++) {
         const vec = rec.rationaleVectors[i]!;
         if (vec.length === 0) continue;
@@ -133,6 +163,17 @@ export class PatternClusterManager {
     if (!this.cfg.enabled || !this.built) return;
     if (rec.rationaleVectors.length === 0) return;
 
+    // v2.0.215: AttnRes blend path
+    if (this.attnResEmbedder) {
+      const blended = this.attnResEmbedder.blend(rec.rationaleVectors);
+      if (blended.length > 0) {
+        const rationale = rec.rationales[0] ?? `trade-${rec.id}`;
+        this.assignToCluster(rec, rationale, blended);
+      }
+      return;
+    }
+
+    // Default path: per-rationale clustering (backward compatible)
     for (let i = 0; i < rec.rationaleVectors.length; i++) {
       const vec = rec.rationaleVectors[i]!;
       if (vec.length === 0) continue;
@@ -640,6 +681,19 @@ export function softmaxWeightedSimilarAggregate(
  * using combinationSimilarity on rationale vectors.
  */
 export class SimilarTradeRetriever {
+  /** v2.0.215: Optional AttnRes trade embedder for learned rationale blending. */
+  private attnResEmbedder: AttnResTradeEmbedder | null = null;
+
+  /** v2.0.215: Inject AttnRes embedder. When set, findSimilar blends rationale
+   *  vectors via learned softmax attention instead of combinationSimilarity. */
+  setAttnResTradeEmbedder(e: AttnResTradeEmbedder | null): void {
+    this.attnResEmbedder = e;
+  }
+
+  /** v2.0.215: Get the AttnRes embedder (for index.ts to access). */
+  getAttnResTradeEmbedder(): AttnResTradeEmbedder | null {
+    return this.attnResEmbedder;
+  }
   findSimilar(
     candidateVectors: number[][],
     records: ThesisExperienceRecord[],
@@ -654,15 +708,33 @@ export class SimilarTradeRetriever {
 
     const scored: SimilarTradeResult[] = [];
 
-    for (const rec of records) {
-      if (excludeIds?.has(rec.id)) continue;
-      if (rec.rationaleVectors.length === 0) continue;
-      // v2.0.176: Skip records of the opposite direction
-      if (side && rec.side !== side) continue;
-
-      const sim = combinationSimilarity(candidateVectors, rec.rationaleVectors, 'asymmetric');
-      if (sim > 0) {
-        scored.push({ trade: rec, similarity: sim });
+    // v2.0.215: AttnRes blend path — blend candidate + historical rationale
+    // vectors via learned softmax attention, then cosine compare blended vectors.
+    // Cold-start safe: w=0 → uniform → mean ≈ combinationSimilarity behavior.
+    if (this.attnResEmbedder) {
+      const candBlended = this.attnResEmbedder.blend(candidateVectors);
+      if (candBlended.length === 0) return [];
+      for (const rec of records) {
+        if (excludeIds?.has(rec.id)) continue;
+        if (rec.rationaleVectors.length === 0) continue;
+        if (side && rec.side !== side) continue;
+        const histBlended = this.attnResEmbedder.blend(rec.rationaleVectors);
+        if (histBlended.length === 0) continue;
+        const sim = cosine(candBlended, histBlended);
+        if (sim > 0) {
+          scored.push({ trade: rec, similarity: sim });
+        }
+      }
+    } else {
+      // Default path: combinationSimilarity (backward compatible)
+      for (const rec of records) {
+        if (excludeIds?.has(rec.id)) continue;
+        if (rec.rationaleVectors.length === 0) continue;
+        if (side && rec.side !== side) continue;
+        const sim = combinationSimilarity(candidateVectors, rec.rationaleVectors, 'asymmetric');
+        if (sim > 0) {
+          scored.push({ trade: rec, similarity: sim });
+        }
       }
     }
 
