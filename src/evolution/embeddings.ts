@@ -39,6 +39,10 @@ export class TransformersEmbedProvider implements EmbedProvider {
   private extractor: FeatureExtractionFn | null = null;
   private ready = false;
   private readonly model: string;
+  /** v2.0.216: Warmup promise guard — prevents concurrent warmup() calls
+   *  from both running the full model download + prime. When warmup is in
+   *  progress, subsequent calls await the same promise instead of re-entering. */
+  private warmupPromise: Promise<void> | null = null;
 
   constructor(model?: string, dim?: number) {
     this.model = model ?? config.exp.embedModel;
@@ -51,6 +55,24 @@ export class TransformersEmbedProvider implements EmbedProvider {
 
   async warmup(): Promise<void> {
     if (this.ready) return;
+    // v2.0.216: Concurrent warmup guard — if warmup is already in progress,
+    // await the existing promise instead of re-entering. Prevents redundant
+    // model downloads + prime calls when multiple consumers call warmup()
+    // simultaneously on the shared singleton.
+    if (this.warmupPromise) {
+      await this.warmupPromise;
+      return;
+    }
+    this.warmupPromise = this._doWarmup();
+    try {
+      await this.warmupPromise;
+    } finally {
+      this.warmupPromise = null;
+    }
+  }
+
+  /** v2.0.216: Internal warmup implementation (extracted for the promise guard). */
+  private async _doWarmup(): Promise<void> {
     try {
       const transformers = await import('@xenova/transformers');
       // Suppress remote model download warnings in prod; allow local cache.
@@ -220,4 +242,49 @@ export function combinationSimilarity(
   return mode === 'symmetric'
     ? combinationSimilaritySymmetric(cand, hist)
     : combinationSimilarityAsymmetric(cand, hist);
+}
+
+// ─── v2.0.216: Shared singleton TransformersEmbedProvider ───────────────────
+//
+// All consumers (EXP, RIL PatternClusterManager, EM Cycle Chain, Anti-pattern
+// Tracker) share ONE TransformersEmbedProvider instance. This eliminates
+// redundant model loading (4 warmup calls → 1) and ensures all consumers
+// have the same ready state (no race condition where one is ready and another
+// isn't).
+//
+// The singleton is lazily created on first getSharedEmbedProvider() call.
+// warmup() is called once (the warmup promise guard prevents concurrent
+// re-entry). All consumers get the same instance with the same ready state.
+//
+// For tests: resetSharedEmbedProvider() clears the singleton so test cases
+// are isolated.
+
+let sharedProvider: TransformersEmbedProvider | null = null;
+
+/**
+ * Get the shared singleton TransformersEmbedProvider.
+ *
+ * Creates on first call, returns the same instance on all subsequent calls.
+ * The model is loaded lazily on first warmup()/embed() call.
+ *
+ * All consumers should use this instead of `new TransformersEmbedProvider()`
+ * to avoid redundant model loading and ensure consistent ready state.
+ */
+export function getSharedEmbedProvider(): TransformersEmbedProvider {
+  if (!sharedProvider) {
+    sharedProvider = new TransformersEmbedProvider();
+    log.info('[EXP-embed] shared singleton created — all consumers will use this instance');
+  }
+  return sharedProvider;
+}
+
+/**
+ * Reset the shared singleton. For testing only — clears the cached instance
+ * so the next getSharedEmbedProvider() call creates a fresh one.
+ *
+ * WARNING: Do NOT call this in production code. It would cause consumers
+ * that already hold a reference to the old singleton to use a stale instance.
+ */
+export function resetSharedEmbedProvider(): void {
+  sharedProvider = null;
 }
