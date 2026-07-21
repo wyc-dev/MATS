@@ -376,21 +376,15 @@ export class OLREngine {
     const xFull = [1, ...xNorm];
     let z = 0;
     for (let i = 0; i <= D; i++) z += model.weights[i]! * xFull[i]!;
-    // v2.0.760: Apply sigmoid temperature T=2.0 to soften the output.
-    // Instead of σ(z), compute σ(z / T) where T=2.0. This reduces the
-    // effective logit magnitude, preventing sigmoid saturation at 0 or 1.
-    // The temperature is applied BEFORE the sigmoid, so the gradient
-    // flows through the temperature-scaled logit during training.
-    // This is a standard technique in knowledge distillation and
-    // probability calibration — it spreads the sigmoid curve, making
-    // the model less confident in its predictions.
-    const TEMPERATURE = 2.0;
-    const zScaled = z / TEMPERATURE;
+    // v2.0.762: REVERTED v2.0.760 sigmoid temperature T=2.0 — it made ALL predictions
+    // cluster near 50%, destroying the model's discriminative power. The system needs
+    // EXTREME but ACCURATE predictions, not softened ones. The fix for 0%/100% is
+    // better calibration (5-bin map) + L2 regularization, NOT temperature scaling.
     // v2.0.722: Clip logit to [-10, 10] before sigmoid to prevent floating-point
     // saturation. Without this, large weights produce sigmoid outputs of exactly
     // 0 or 1, which gives the model false certainty. Clipping preserves the
     // gradient direction while preventing numerical saturation.
-    const zClipped = Math.max(-10, Math.min(10, zScaled));
+    const zClipped = Math.max(-10, Math.min(10, z));
     const p = sigmoid(zClipped);
     const error = p - y;
     // Decayed learning rate based on LIVE samples only (excludes backfill),
@@ -424,14 +418,11 @@ export class OLREngine {
       // NaN/Infinity guard (M6) — a single NaN feature would otherwise
       // propagate and poison the persisted model forever.
       if (!Number.isFinite(model.weights[i]!)) model.weights[i]! = 0;
-      // v2.0.760: Reduce maxWeight from 5.0 to 3.0 to further prevent weight explosion.
-      // With 12 features and sigmoid saturation at |z| > 10, a max weight of 3.0 per
-      // feature means at most 3-4 features can push the logit to saturation. Combined
-      // with L2 regularization (λ=0.01) and temperature scaling (T=2.0), this keeps
-      // weights in a reasonable range where the sigmoid output is calibrated (not 0 or 1).
-      // The previous 5.0 limit was still too high — with 12 features, 5.0 * 12 = 60 logit,
-      // which saturates the sigmoid even with temperature scaling.
-      model.weights[i]! = Math.max(-3.0, Math.min(3.0, model.weights[i]!));
+      // v2.0.762: REVERTED maxWeight from 3.0 back to 5.0 — 3.0 was too restrictive,
+      // preventing the model from learning strong signals. The system needs EXTREME
+      // predictions when the evidence is strong — 5.0 allows that while L2=0.01
+      // prevents unbounded growth.
+      model.weights[i]! = Math.max(-5.0, Math.min(5.0, model.weights[i]!));
     }
   }
 

@@ -53,6 +53,7 @@ NON-NEGOTIABLES: Never touch src/trading/*, src/config/*, .env. Never remove dir
 6. **Watch for subtle bugs.** Direction mixing (BUY vs SELL), symbol mismatch (xyz:SKHX vs skhx vs SKHX), precision issues, race conditions, embed warmup ordering, shadow stats after restart.
 7. **Every fix updates CHANGELOG.md** (mandatory) + ARCHITECTURE.md (if architecture changed) + tests (if behavior changed).
 8. **Match codebase conventions.** Use `rootLogger` for logging, `extractJSON()` for LLM JSON, `cosine()` for vectors, `config.exp.*` for thresholds. Never `console.log`, never `JSON.parse(raw)`, never hardcode magic numbers.
+9. **OLR predictions must be EXTREME but ACCURATE — NOT softened.** Do NOT add sigmoid temperature scaling (T>1.0). Do NOT reduce maxWeight below 5.0. Do NOT add Bayesian priors that pull predictions toward 0.5. The system needs confident predictions when the evidence is strong — 0%/100% is CORRECT if the model is well-calibrated. The fix for miscalibration is the 5-bin calibration map (already implemented), NOT softening the sigmoid. v2.0.760's T=2.0 was REVERTED by the owner because it made ALL predictions cluster near 50%, destroying the model's discriminative power.
 
 ## CRITICAL DESIGN PRINCIPLES (v2.0.734 — DO NOT VIOLATE)
 
