@@ -12,7 +12,7 @@
 
 import { createLogger } from '../observability/logger.ts';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
-import { wilsonScore } from './evolution-utils.ts';
+import { wilsonScore, computeVectorConditionalWinRate, formatVectorConditional } from './evolution-utils.ts';
 
 const log = createLogger({ phase: 'pattern_tag_tracker' });
 
@@ -42,6 +42,10 @@ export interface PatternTagRecord {
   pnlPct: number;
   /** Which agent identified this pattern */
   agentRole: string;
+  /** v2.0.203: Market conditions at entry time. Enables vector-conditional
+   *  win rate (win rate of similar MARKET CONDITIONS, not raw per-tag counts).
+   *  Optional for backward compat with older persisted records. */
+  marketFeatures?: Record<string, number>;
 }
 
 export interface PatternTagStats {
@@ -112,6 +116,10 @@ export class PatternTagTracker {
   /**
    * Record a pattern tag when a trade OPENS.
    * The outcome is 'pending' until backfillOutcome is called on close.
+   *
+   * v2.0.203: `marketFeatures` captures entry-time market conditions so the
+   * tag's win rate can later be conditioned on similar market states, not
+   * just raw per-tag counts. Optional — older callers still work.
    */
   recordEntry(
     id: string,
@@ -120,6 +128,7 @@ export class PatternTagTracker {
     symbol: string,
     cycleNumber: number,
     agentRole: string,
+    marketFeatures?: Record<string, number>,
   ): void {
     try {
       // Sanitize tag: lowercase, snake_case, max 80 chars
@@ -136,6 +145,7 @@ export class PatternTagTracker {
         outcome: 'pending',
         pnlPct: 0,
         agentRole,
+        marketFeatures: marketFeatures ? { ...marketFeatures } : undefined,
       });
 
       // Bound memory
@@ -317,6 +327,23 @@ export class PatternTagTracker {
         }
         if (parts.length > 0) {
           lines.push(`  ${tag}: ${parts.join(' | ')}`);
+          // v2.0.203: Append vector-conditional win rate for each side that has
+          // a recent record with marketFeatures. This is the TRUE edge signal —
+          // raw per-tag WR conflates trades under different market conditions.
+          for (const side of ['buy', 'sell'] as const) {
+            const latestWithFeatures = this.records
+              .filter(r => r.tag === tag && r.side === side && r.outcome !== 'pending' && r.marketFeatures)
+              .sort((a, b) => b.entryTimestamp - a.entryTimestamp)[0];
+            if (!latestWithFeatures) continue;
+            const result = computeVectorConditionalWinRate(
+              latestWithFeatures.marketFeatures!,
+              this.records.map(r => ({ marketFeatures: r.marketFeatures, outcome: r.outcome, symbol: r.symbol, side: r.side, pnl: r.pnlPct })),
+              { side, minSamples: 3, threshold: 0.80, topN: 20 },
+            );
+            if (result.confidence !== 'none') {
+              lines.push(`    ${side.toUpperCase()} conditional: ${formatVectorConditional(result, '').trim()}`);
+            }
+          }
         }
       }
 

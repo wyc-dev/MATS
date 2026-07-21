@@ -11,6 +11,7 @@ import { createLogger } from '../observability/logger.ts';
 import { getActiveProvider } from '../llm/index.ts';
 import { getAgentModel } from '../agents/agent-models.ts';
 import type { ThesisExperienceRecord } from '../types/index.ts';
+import { computeVectorConditionalWinRate, formatVectorConditional } from './evolution-utils.ts';
 
 const log = createLogger({ phase: 'trade-audit' });
 
@@ -87,8 +88,10 @@ export async function auditTradeRecordsLLM(records: ThesisExperienceRecord[]): P
   const userPrompt = `Recent closed trades (${recent.length} of ${records.length} total):
 ${dataLines.join('\n')}
 
-Also, per-symbol per-direction summary:
-${buildSymbolDirectionSummary(records)}
+Also, VECTOR-CONDITIONAL win rate per recent trade (win rate of historically similar MARKET CONDITIONS, not raw per-symbol counts — a symbol's 0W/1L is meaningless when current conditions differ from that single trade):
+${buildVectorConditionalSummary(records)}
+
+IMPORTANT: Do NOT accuse the system of "ignoring learning data" based on raw per-symbol win rates alone. A symbol with 0% raw WR may have only 1 trade under totally different market conditions. The VECTOR-CONDITIONAL win rate above is the correct signal — if conditional WR is high but the trade lost, the issue is exit timing / luck, not direction. If conditional WR is low and the system still entered, THAT is a real learning failure.
 
 Examine these trade records for ANY suspicious patterns. Detect issues that hardcoded rules would miss.`;
 
@@ -130,21 +133,41 @@ Examine these trade records for ANY suspicious patterns. Detect issues that hard
   }
 }
 
-function buildSymbolDirectionSummary(records: ThesisExperienceRecord[]): string {
-  const map = new Map<string, { buy: { w: number; l: number }; sell: { w: number; l: number } }>();
-  for (const r of records) {
-    let e = map.get(r.symbol);
-    if (!e) { e = { buy: { w: 0, l: 0 }, sell: { w: 0, l: 0 } }; map.set(r.symbol, e); }
-    if (r.side === 'buy') { if (r.outcome === 'WIN') e.buy.w++; else e.buy.l++; }
-    else { if (r.outcome === 'WIN') e.sell.w++; else e.sell.l++; }
+/**
+ * v2.0.203: Vector-conditional win rate per recent trade.
+ * For each of the most recent trades, retrieves the historical win rate of
+ * trades that had SIMILAR MARKET CONDITIONS at entry (cosine similarity on
+ * normalised entry features, same direction, cross-symbol) and compares it
+ * to the actual outcome. This replaces the old raw per-symbol win-rate
+ * summary which falsely accused the system of ignoring learning data when
+ * the learning data was collected under entirely different market conditions.
+ *
+ * Interpretation for the LLM auditor:
+ *   - conditional WR HIGH + trade LOST  → exit timing / luck issue, NOT direction
+ *   - conditional WR LOW  + trade OPENED → genuine learning-system failure
+ *   - conditional WR ≈ actual outcome → system is well-calibrated
+ */
+function buildVectorConditionalSummary(records: ThesisExperienceRecord[]): string {
+  // Use the most recent 15 trades that have marketFeatures.
+  const recent = records
+    .filter((r) => r.marketFeatures && Object.keys(r.marketFeatures).length > 0)
+    .slice(-15);
+  if (recent.length === 0) {
+    return '  (no trades with marketFeatures — cannot compute conditional win rate)';
   }
+
   const lines: string[] = [];
-  for (const [sym, s] of map) {
-    const bt = s.buy.w + s.buy.l;
-    const st = s.sell.w + s.sell.l;
-    const bwr = bt > 0 ? `${(s.buy.w / bt * 100).toFixed(0)}%` : '-';
-    const swr = st > 0 ? `${(s.sell.w / st * 100).toFixed(0)}%` : '-';
-    lines.push(`  ${sym}: BUY ${bwr} (${s.buy.w}W/${s.buy.l}L) | SELL ${swr} (${s.sell.w}W/${s.sell.l}L)`);
+  for (const r of recent) {
+    // Exclude the trade itself from its own similarity set.
+    const others = records.filter((x) => x.id !== r.id);
+    const result = computeVectorConditionalWinRate(
+      r.marketFeatures!,
+      others,
+      { side: r.side, minSamples: 3, threshold: 0.80, topN: 20 },
+    );
+    const actualIcon = r.outcome === 'WIN' ? '✅' : '❌';
+    const condLine = formatVectorConditional(result, `  ${r.side.toUpperCase()} ${r.symbol}`);
+    lines.push(`${actualIcon} actual=${r.outcome} | ${condLine}`);
   }
   return lines.join('\n');
 }
