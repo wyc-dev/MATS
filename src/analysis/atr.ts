@@ -213,13 +213,22 @@ export function computeATRSLTP(
     const momentumSlDist = adverseMomentum * entryPrice * 2.5;
     slDist = Math.max(slDist, momentumSlDist);
   }
-  const tpDist = tpMult * atr;
+  // v2.0.210 (Fix 2): Momentum-adaptive TP — ensure R:R ≥ 1.5:1 even when SL
+  // was widened by momentum. Fixes audit 'premature-exit-mfe-mismatch': a
+  // 59-hour hold for 0.1% gain happened because TP was too near (2×ATR) while
+  // SL was wider — R:R < 1, so the trade needed a tiny move to TP but the
+  // market wandered. Now tpDist = max(tpMult×ATR, 1.6×slDist) so the reward
+  // always justifies the risk.
+  let tpDist = tpMult * atr;
+  if (tpDist < slDist * 1.6) tpDist = slDist * 1.6;
   // Cap SL/TP distance to prevent unreachable levels
   // v2.0.207 (#C): raise SL cap to 5% when momentum-adaptive (was 3%) — a 2.5×
   // momentum SL can legitimately exceed 3% in a strong push; capping at 3%
   // would re-introduce the stop-out problem the momentum SL is solving.
   const maxSlDist = (adverseMomentum && adverseMomentum > 0) ? entryPrice * 0.05 : entryPrice * 0.03;
-  const maxTpDist = entryPrice * 0.05;
+  // v2.0.210 (Fix 2): raise TP cap to 8% when momentum-adaptive so the R:R
+  // guarantee isn't undone by the cap (was 5%). A 5% SL × 1.6 R:R = 8% TP.
+  const maxTpDist = (adverseMomentum && adverseMomentum > 0) ? entryPrice * 0.08 : entryPrice * 0.05;
   const cappedSlDist = Math.min(slDist, maxSlDist);
   const cappedTpDist = Math.min(tpDist, maxTpDist);
   if (side === 'buy') {

@@ -58,6 +58,19 @@ For each issue found, specify:
 
 If you find NO issues, say so explicitly. Do not fabricate problems.
 
+## KNOWN-FIXED ISSUES (v2.0.210 — DO NOT re-report these unless you have NEW evidence the fix failed)
+These issues have CODE-LEVEL fixes already deployed. Reporting them again wastes the owner's attention. Only re-report if you see concrete evidence the fix is NOT working (e.g. the fix's log line is absent AND the pattern persists in trades opened AFTER the fix version).
+
+1. "sl-too-tight-for-volatility" / "stop too tight" → FIXED v2.0.207 #C: SL = max(1.5×ATR, 2.5×adverseMomentum), cap raised 3%→5%. Look for "📐 ATR SL/TP ... adverseMomentum=" in logs. Only re-report if SL still < 1% on NEW trades.
+2. "tp-too-tight" / "premature-exit-mfe-mismatch" / "long hold small gain" → FIXED v2.0.210: TP = max(2×ATR, 1.6×SL), cap raised 5%→8% (R:R ≥ 1.6:1). Only re-report if R:R < 1.5 on NEW trades.
+3. "thesis-contradicts-action" (thesis says OLR 99% but OLR_PWin field shows 0%) → FIXED v2.0.210: olrPWinAtEntry now uses CACHED entry-time OLR, not close-time recompute. Only re-report if the contradiction appears in trades opened AFTER v2.0.210.
+4. "low-conditional-win-rate-ignored" (entered with conditional WR < 30%) → FIXED v2.0.209: conditional-WR soft gate applies +25-35% conviction penalty. Look for "[soft-gate] ... conviction +25%" in logs. Only re-report if trades with conditional WR < 30% STILL pass the gate on NEW cycles.
+5. "repeated-direction-loss" / "counter-momentum SELL" → FIXED v2.0.207 #B: when |momentumShort|>2%, Skeptics dark-psych check is MANDATORY (needs specific catalyst). #D: momentum features in OLR/NA. Only re-report if counter-momentum trades with NO catalyst still pass on NEW cycles.
+6. "thesis-quality-issue: N/A but traded" → FIXED v2.0.210: thesis-action consistency check overrides BUY/SELL to HOLD when thesis says "no entry"/"N/A". Look for "[thesis-consistency] ... overriding to HOLD" in logs. Only re-report if N/A theses still produce trades on NEW cycles.
+7. "ignoring learning data" based on RAW per-symbol WR → NOT A BUG (v2.0.203): raw per-symbol WR is DEPRECATED. The vector-conditional WR is the true signal. Do NOT flag "SILVER SELL 0W/1L" as a learning failure — 1 trade under different conditions is meaningless. Only flag if CONDITIONAL WR is low AND the system still enters (see #4).
+
+When you report an issue, state whether it is a NEW occurrence (trades after the fix) or a STALE one (trades before the fix). STALE findings on pre-fix trades are NOT actionable — the fix only applies to new trades.
+
 Respond ONLY with JSON:
 {"incidents":[{"severity":"critical|warning|info","category":"...","symbol":"...","detail":"..."}],"analysis":"one paragraph summary of your findings"}`;
 
