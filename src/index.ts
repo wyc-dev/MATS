@@ -460,6 +460,56 @@ class MATSSystem {
   }
 
   /**
+   * v2.0.766: Check for systematic WINNER patterns — (symbol, direction) pairs
+   * that have a strong winning track record in the CURRENT regime. If found,
+   * return a conviction BOOST (lower the threshold so winning patterns enter
+   * more easily). This is the profit-maximizing counterpart to the loss streak gate.
+   *
+   * The owner's directive: "Find winning patterns — blocking losing patterns is secondary."
+   *
+   * Two boost levels:
+   * 1. 5+ trades with ≥60% WR in SAME regime → conviction -10% (easier entry)
+   * 2. 5+ trades with ≥70% WR in SAME regime → conviction -15% + position size ×1.2
+   *
+   * Returns { convictionBoost?: number, sizeBoost?: number, reason?: string }
+   */
+  private checkWinnerPattern(symbol: string, direction: 'buy' | 'sell'): { convictionBoost?: number; sizeBoost?: number; reason?: string } {
+    const key = `${normalizeSymbol(symbol)}:${direction}`;
+    const entry = this.lossStreakTracker.get(key);
+    if (!entry) return {};
+
+    const currentRegime = this.marketState.getState(symbol)?.regime
+      ?? this.marketState.getState(this.marketAgent.getConfig().selectedSymbol)?.regime
+      ?? 'unknown';
+
+    const regimeStats = entry.regimeStats.get(currentRegime);
+    if (!regimeStats || regimeStats.trades < 5) return {};
+
+    const regimeWR = regimeStats.wins / regimeStats.trades;
+
+    // v2.0.766: Level 2 — strong winner (≥70% WR, 5+ trades in same regime)
+    if (regimeWR >= 0.70) {
+      log.info(`🟢 [winner-pattern] ${direction.toUpperCase()} ${symbol} in ${currentRegime}: ${(regimeWR * 100).toFixed(0)}% WR over ${regimeStats.trades} trades — conviction -15% + size ×1.2`);
+      return {
+        convictionBoost: 0.15,
+        sizeBoost: 1.2,
+        reason: `Winner pattern: ${direction.toUpperCase()} ${symbol} in ${currentRegime} has ${(regimeWR * 100).toFixed(0)}% WR over ${regimeStats.trades} trades — conviction -15%, size ×1.2`,
+      };
+    }
+
+    // v2.0.766: Level 1 — moderate winner (≥60% WR, 5+ trades in same regime)
+    if (regimeWR >= 0.60) {
+      log.info(`🟢 [winner-pattern] ${direction.toUpperCase()} ${symbol} in ${currentRegime}: ${(regimeWR * 100).toFixed(0)}% WR over ${regimeStats.trades} trades — conviction -10%`);
+      return {
+        convictionBoost: 0.10,
+        reason: `Winner pattern: ${direction.toUpperCase()} ${symbol} in ${currentRegime} has ${(regimeWR * 100).toFixed(0)}% WR over ${regimeStats.trades} trades — conviction -10%`,
+      };
+    }
+
+    return {};
+  }
+
+  /**
    * v2.0.202: Call the loss streak gate in the decision cycle BEFORE executing
    * any BUY/SELL decision. This is the injection point that was missing.
    * Called from the main decision cycle for the active symbol AND for each
@@ -471,20 +521,34 @@ class MATSSystem {
     action: 'buy' | 'sell',
     auditGates: Array<{ gate: string; passed: boolean; reason: string }>,
   ): TradingDecision {
-    // v2.0.732: Condition-aware soft gate — raises conviction threshold instead
-    // of hard blocking. Past losses in a DIFFERENT regime are irrelevant.
+    // v2.0.732: Condition-aware soft gate — raises conviction threshold for losers
     const gateResult = this.checkLossStreakGate(symbol, action);
-    if (gateResult.convictionPenalty && gateResult.convictionPenalty > 0) {
-      // v2.0.732: Soft gate — store penalty for the conviction gate to pick up.
-      // We don't block here; instead we raise the effective conviction threshold
-      // by storing the penalty on the decision's rationale (the conviction gate
-      // reads this._lossStreakPenalty and adds it to the threshold).
-      (this as any)._lossStreakPenalty = gateResult.convictionPenalty;
-      log.info(`🚡 [loss-streak-soft] ${action.toUpperCase()} ${symbol}: ${gateResult.reason} — conviction threshold +${(gateResult.convictionPenalty * 100).toFixed(0)}%`);
-      auditGates.push({ gate: 'loss-streak', passed: true, reason: `soft gate: conviction +${(gateResult.convictionPenalty * 100).toFixed(0)}% (${gateResult.reason?.slice(0, 60)})` });
+    // v2.0.766: Winner pattern boost — lowers conviction threshold for winners
+    const winnerResult = this.checkWinnerPattern(symbol, action);
+
+    // Net penalty = loss penalty - winner boost (can be negative = easier entry)
+    const lossPenalty = gateResult.convictionPenalty ?? 0;
+    const winnerBoost = winnerResult.convictionBoost ?? 0;
+    const netPenalty = Math.max(-0.15, lossPenalty - winnerBoost); // cap boost at -15%
+
+    (this as any)._lossStreakPenalty = netPenalty;
+
+    // v2.0.766: Apply size boost for strong winners
+    if (winnerResult.sizeBoost && winnerResult.sizeBoost > 1) {
+      const boostedSize = Math.min(0.20, (decision.positionSizePct ?? 0) * winnerResult.sizeBoost);
+      log.info(`🟢 [winner-boost] ${action.toUpperCase()} ${symbol}: size ${(decision.positionSizePct * 100).toFixed(0)}% → ${(boostedSize * 100).toFixed(0)}% (${winnerResult.reason})`);
+      auditGates.push({ gate: 'winner-pattern', passed: true, reason: `winner boost: conviction -${(winnerBoost * 100).toFixed(0)}%, size ×${winnerResult.sizeBoost}` });
+      return { ...decision, positionSizePct: boostedSize };
+    }
+
+    if (netPenalty > 0) {
+      log.info(`🚡 [loss-streak-soft] ${action.toUpperCase()} ${symbol}: conviction +${(netPenalty * 100).toFixed(0)}% (${gateResult.reason?.slice(0, 60)})`);
+      auditGates.push({ gate: 'loss-streak', passed: true, reason: `soft: conviction +${(netPenalty * 100).toFixed(0)}%` });
+    } else if (netPenalty < 0) {
+      log.info(`🟢 [winner-soft] ${action.toUpperCase()} ${symbol}: conviction -${(-netPenalty * 100).toFixed(0)}% (${winnerResult.reason?.slice(0, 60)})`);
+      auditGates.push({ gate: 'winner-pattern', passed: true, reason: `winner: conviction -${(-netPenalty * 100).toFixed(0)}%` });
     } else {
-      (this as any)._lossStreakPenalty = 0;
-      auditGates.push({ gate: 'loss-streak', passed: true, reason: 'no penalty' });
+      auditGates.push({ gate: 'loss-streak', passed: true, reason: 'no penalty/boost' });
     }
     return decision;
   }
@@ -5849,40 +5913,8 @@ ${recentExamples}
     );
   }
 
-  // v2.0.733: Systematic Loser Gate — HARD block for (symbol, direction) pairs
-  // with >= 10 trades and win rate < 35%. This is a CAPITAL PRESERVATION measure.
-  // The system should not keep trading a pattern that loses 2 out of 3 times.
-  // The block is absolute: no conviction penalty, no soft gate — ALL new entries
-  // in that (symbol, direction) pair are blocked until the win rate recovers
-  // above 40% (decay mechanism handles recovery).
-  //
-  // The block auto-releases after 48 cycles (4 hours) to allow re-evaluation.
-  // This prevents permanent deadlock if the pattern was a fluke.
-  //
-  // v2.0.734: REINSTATED — the condition-aware soft gate (checkLossStreakGate)
-  // only raises conviction threshold by 15-20%, which is insufficient for
-  // patterns like BUY xyz:SKHX (31% WR over 32 trades, -$2.25 PnL). A 20%
-  // conviction penalty on a 0.40 base threshold = 0.48 — still below the
-  // 0.50-0.60 confidence that Meta-Agent outputs for SKHX. The soft gate
-  // does NOT block these trades. A HARD block is required for capital preservation.
-  if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
-    const sysGateResult = this.checkSystematicLoserGate(
-      finalDecision.symbol || activeSymbol,
-      finalDecision.action as 'buy' | 'sell',
-    );
-    if (sysGateResult.blocked) {
-      log.warn(`🛑 [systematic-loser] ${sysGateResult.reason} — overriding ${finalDecision.action.toUpperCase()} → HOLD`);
-      activeAuditGates.push({ gate: 'systematic-loser', passed: false, reason: sysGateResult.reason ?? 'systematic loser blocked' });
-      finalDecision = {
-        ...finalDecision,
-        action: 'hold',
-        positionSizePct: 0,
-        rationale: `[SYSTEMATIC LOSER] ${sysGateResult.reason}. HOLD. Original: ${finalDecision.rationale}`,
-      };
-    } else {
-      activeAuditGates.push({ gate: 'systematic-loser', passed: true, reason: 'no systematic loser detected' });
-    }
-  }
+  // v2.0.765: REMOVED systematic loser hard block — OWNER DIRECTIVE: NEVER hard block.
+  // The dynamic volatility gate (v2.0.764) handles the root cause — low-vol noise trading.
 
       // v2.0.764: Dynamic minimum volatility gate — if current volatility is below
       // the dynamic threshold, HOLD. This prevents trading in dead markets where
@@ -5922,17 +5954,17 @@ ${recentExamples}
         const symFilter = this.assetFilterRegistry.getFilter(finalDecision.symbol || activeSymbol);
         const convictionThreshold = symFilter.getConvictionThreshold();
         // v2.0.732: Apply loss streak soft penalty — raises effective threshold
-        // when the (symbol, direction) pair has a poor track record in the
-        // CURRENT regime. Past losses in a different regime are ignored.
+        // v2.0.766: Apply winner pattern boost — lowers effective threshold
+        // Net penalty can be negative (winner boost > loss penalty = easier entry)
         const lossStreakPenalty = (this as any)._lossStreakPenalty ?? 0;
-        const effectiveThreshold = Math.min(0.85, convictionThreshold + lossStreakPenalty);
+        const effectiveThreshold = Math.max(0.25, Math.min(0.85, convictionThreshold + lossStreakPenalty));
         // v2.0.140: Use per-symbol confidence if available, fall back to overall
         const activePscForGate = (result.consensus.perSymbolConsensus ?? []).find(
           psc => normalizeSymbol(psc.symbol) === normalizeSymbol(finalDecision.symbol || activeSymbol),
         );
         const consensusConfidence = activePscForGate?.confidence ?? result.consensus.confidence;
         if (consensusConfidence < effectiveThreshold) {
-          const penaltyStr = lossStreakPenalty > 0 ? ` (base ${(convictionThreshold * 100).toFixed(0)}% + loss-streak ${(lossStreakPenalty * 100).toFixed(0)}%)` : '';
+          const penaltyStr = lossStreakPenalty > 0 ? ` (base ${(convictionThreshold * 100).toFixed(0)}% + loss-streak ${(lossStreakPenalty * 100).toFixed(0)}%)` : lossStreakPenalty < 0 ? ` (base ${(convictionThreshold * 100).toFixed(0)}% - winner ${(-lossStreakPenalty * 100).toFixed(0)}%)` : '';
           log.warn(`🛑 [adaptive-filter] Conviction gate [${finalDecision.symbol || activeSymbol}]: ${(consensusConfidence * 100).toFixed(0)}% < threshold ${(effectiveThreshold * 100).toFixed(0)}%${penaltyStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD (signal below noise floor)`);
           activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(consensusConfidence * 100).toFixed(0)}% < ${(effectiveThreshold * 100).toFixed(0)}%${lossStreakPenalty > 0 ? ` (+${(lossStreakPenalty * 100).toFixed(0)}% loss-streak)` : ''}` });
           finalDecision = {
