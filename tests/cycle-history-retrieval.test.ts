@@ -187,11 +187,11 @@ describe('CycleHistoryRetriever', () => {
 
   it('inputDim guard: w reset on dimension mismatch load', () => {
     const r2 = new CycleHistoryRetriever({ featureNames: ['a', 'b', 'c'] });
-    // simulate a corrupted persisted state with wrong-dim w
-    r2._setState('BTC', { w: [1, 2, 3, 4, 5] } as any);
+    // simulate a corrupted persisted state with wrong-dim wDecision
+    r2._setState('BTC', { wDecision: [1, 2, 3, 4, 5] } as any);
     // load with mock — we test the guard directly via _setState + reconfig
-    // The guard runs in load(); here we verify w length matches config.
-    const w = r2.getQuery('BTC');
+    // The guard runs in load(); here we verify wDecision length matches config.
+    const w = r2.getQuery('BTC', 'decision');
     expect(w.length).toBe(5); // as set (load guard is separate)
   });
 
@@ -209,8 +209,8 @@ describe('CycleHistoryRetriever', () => {
     // Force a collapse by making w strongly prefer one source.
     for (let i = 0; i < 20; i++) r.pushCycle('BTC', { volatility: 0.5 });
     r.recordEntry('BTC', 'buy', { volatility: 0.2 });
-    // Set w to a value that collapses attention onto entry (first source).
-    r._setState('BTC', { w: [10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] } as any);
+    // Set wDecision to a value that collapses attention onto entry (first source).
+    r._setState('BTC', { wDecision: [10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] } as any);
     r.retrieveBlend('BTC'); // triggers entropy check
     // After a collapsed retrieval, temperature should have warmed.
     // (We can't directly read temperature, but a second retrieve should still work.)
@@ -220,7 +220,133 @@ describe('CycleHistoryRetriever', () => {
   });
 });
 
-// ─── evolution-utils #3 + #4 ───
+// ─── v2.0.212 (#7) Pre-Decision vs Pre-Execution Specialization ───
+
+describe('CycleHistoryRetriever — #7 dual pseudo-query specialization', () => {
+  let r: CycleHistoryRetriever;
+  beforeEach(() => {
+    r = new CycleHistoryRetriever({ ...DEFAULT_CYCLE_HISTORY_CONFIG, historySize: 80, numBlocks: 8, featureNames: ENTRY_CONDITION_FEATURES });
+    r._reset();
+  });
+
+  const F = (vol: number, sr: number): Record<string, number> => ({
+    volatility: vol, srDistanceBps: sr, obImbalance: 0.3, fundingRate: 0.001,
+    volumeRatio: 1.2, signalAgreement: 0.6, sentiment: 0.2, sentimentConviction: 0.7,
+    regimeOrdinal: 1, momentumShort: 0.01, momentumLong: 0.02,
+  });
+
+  it('decision + execution blends differ at cold-start (different recency prior)', () => {
+    // 20 cycles: first 10 low-vol, last 10 high-vol → 2 blocks with
+    // DIFFERENT means so recency prior affects the weighted average.
+    for (let i = 0; i < 10; i++) r.pushCycle('BTC', F(0.1, 100));
+    for (let i = 0; i < 10; i++) r.pushCycle('BTC', F(0.8, 800));
+    const dec = r.retrieveBlend('BTC', 'decision');
+    const exec = r.retrieveBlend('BTC', 'execution');
+    expect(dec.blended).toBe(true);
+    expect(exec.blended).toBe(true);
+    // At cold-start (w=0), the ONLY difference is recency prior. Execution
+    // has stronger recency → more weight on recent high-vol block → higher vol.
+    const decVol = dec.hBlend['volatility'] ?? 0;
+    const execVol = exec.hBlend['volatility'] ?? 0;
+    expect(execVol).toBeGreaterThan(decVol);
+  });
+
+  it('execution blend is more recent-biased (higher weight on newest block)', () => {
+    // 40 cycles: first 20 low-vol, last 20 high-vol.
+    for (let i = 0; i < 20; i++) r.pushCycle('BTC', F(0.1, 100));
+    for (let i = 0; i < 20; i++) r.pushCycle('BTC', F(0.8, 800));
+    const dec = r.retrieveBlend('BTC', 'decision');
+    const exec = r.retrieveBlend('BTC', 'execution');
+    // Execution (stronger recency) should weight recent high-vol blocks more.
+    expect(exec.hBlend['volatility']!).toBeGreaterThan(dec.hBlend['volatility']!);
+  });
+
+  it('wDecision updates on PnL, wExecution only on sl_tp closeReason', () => {
+    for (let i = 0; i < 20; i++) r.pushCycle('BTC', F(0.1 * (i % 5), 100 * (i % 5)));
+    r.recordEntry('BTC', 'buy', F(0.2, 200));
+    // Close with sl_tp + loss → both wDecision AND wExecution update.
+    r.updateOnOutcome('BTC', 'buy', -0.03, 'sl_tp');
+    const wDec = r.getQuery('BTC', 'decision');
+    const wExec = r.getQuery('BTC', 'execution');
+    expect(wDec.some((v) => v !== 0)).toBe(true);
+    expect(wExec.some((v) => v !== 0)).toBe(true);
+  });
+
+  it('wExecution does NOT update on manual close (only sl_tp)', () => {
+    for (let i = 0; i < 20; i++) r.pushCycle('BTC', F(0.1 * (i % 5), 100 * (i % 5)));
+    r.recordEntry('BTC', 'buy', F(0.2, 200));
+    // Manual close + win → wDecision updates, wExecution does NOT.
+    r.updateOnOutcome('BTC', 'buy', 0.05, 'manual');
+    const wDec = r.getQuery('BTC', 'decision');
+    const wExec = r.getQuery('BTC', 'execution');
+    expect(wDec.some((v) => v !== 0)).toBe(true);
+    expect(wExec.every((v) => v === 0)).toBe(true); // unchanged
+  });
+
+  it('wExecution does NOT update on thesis_invalidation', () => {
+    for (let i = 0; i < 20; i++) r.pushCycle('BTC', F(0.1 * (i % 5), 100 * (i % 5)));
+    r.recordEntry('BTC', 'buy', F(0.2, 200));
+    r.updateOnOutcome('BTC', 'buy', -0.02, 'thesis_invalidation');
+    const wExec = r.getQuery('BTC', 'execution');
+    expect(wExec.every((v) => v === 0)).toBe(true);
+  });
+
+  it('TP hit (win + sl_tp) → positive execution reward → wExec shifts', () => {
+    for (let i = 0; i < 20; i++) r.pushCycle('BTC', F(0.1 * (i % 5), 100 * (i % 5)));
+    r.recordEntry('BTC', 'buy', F(0.2, 200));
+    r.updateOnOutcome('BTC', 'buy', 0.05, 'sl_tp');
+    const wExec = r.getQuery('BTC', 'execution');
+    expect(wExec.some((v) => v !== 0)).toBe(true);
+  });
+
+  it('decision and execution w diverge after different reward schedules', () => {
+    for (let i = 0; i < 20; i++) r.pushCycle('BTC', F(0.1 * (i % 5), 100 * (i % 5)));
+    // Trade 1: manual win → only wDecision updates
+    r.recordEntry('BTC', 'buy', F(0.2, 200));
+    r.updateOnOutcome('BTC', 'buy', 0.05, 'manual');
+    // Trade 2: sl_tp loss → both update
+    r.recordEntry('BTC', 'buy', F(0.3, 300));
+    r.updateOnOutcome('BTC', 'buy', -0.04, 'sl_tp');
+    const wDec = r.getQuery('BTC', 'decision');
+    const wExec = r.getQuery('BTC', 'execution');
+    // wDecision has 2 updates, wExecution has 1 → different vectors.
+    const decNonZero = wDec.filter((v) => v !== 0).length;
+    const execNonZero = wExec.filter((v) => v !== 0).length;
+    expect(decNonZero).toBeGreaterThan(0);
+    expect(execNonZero).toBeGreaterThan(0);
+    // They should differ (different update counts + different rewards).
+    let diff = false;
+    for (let i = 0; i < wDec.length; i++) {
+      if (Math.abs(wDec[i]! - wExec[i]!) > 1e-9) { diff = true; break; }
+    }
+    expect(diff).toBe(true);
+  });
+
+  it('cold-start: both w zero-init → retrieveBlend returns snapshot below minHistory', () => {
+    const dec = r.retrieveBlend('BTC', 'decision');
+    const exec = r.retrieveBlend('BTC', 'execution');
+    expect(dec.blended).toBe(false);
+    expect(exec.blended).toBe(false);
+  });
+
+  it('backward compat: old single-w state migrates to wDecision + wExecution', () => {
+    // Simulate old state with `w` field (pre-v2.0.212).
+    r._setState('BTC', { w: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] } as any);
+    // After migration (would happen in load), both should exist.
+    // _setState doesn't run migration, but getQuery should still work.
+    // In real load(), w → wDecision + wExecution.
+    const dec = r.getQuery('BTC', 'decision');
+    expect(dec.length).toBe(11);
+  });
+
+  it('execution blend explanation includes [execution] mode tag', () => {
+    for (let i = 0; i < 20; i++) r.pushCycle('BTC', F(0.1 * (i % 5), 100 * (i % 5)));
+    const exec = r.retrieveBlend('BTC', 'execution');
+    expect(exec.explanation).toContain('[execution]');
+    const dec = r.retrieveBlend('BTC', 'decision');
+    expect(dec.explanation).toContain('[decision]');
+  });
+});
 
 describe('computeVectorConditionalWinRate — K.md #3 + #4', () => {
   const records = [

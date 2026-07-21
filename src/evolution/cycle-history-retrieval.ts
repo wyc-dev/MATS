@@ -1,10 +1,24 @@
 // ─── Cycle-History Selective Retrieval (AttnRes Transfer, K.md #1, v2.0.211) ───
+// ─── #7 Pre-Decision vs Pre-Execution Specialization (v2.0.212) ───────────────
 //
 // MATS analog of Kimi K3 Attention Residuals (arXiv 2603.15031):
 //   K3 layer-depth  ≡  MATS cycle-history depth
 //   K3 layer output  ≡  MATS per-cycle market-feature snapshot
 //   K3 embedding v0  ≡  MATS entry-time market features (persistent)
 //   K3 pseudo-query  ≡  learned per-symbol retrieval query w
+//
+// #7 SPECIALIZATION: Two pseudo-queries per symbol (K3 pre-attention vs pre-MLP):
+//   wDecision — broad receptive field (base recency prior), used for
+//     conditional WR + Meta-Agent thesis context (K3 pre-attention layers
+//     have broad receptive fields across all depths).
+//   wExecution — sharp/recent-biased (recency prior × boost), used for
+//     SL/TP survival context (K3 pre-MLP layers have sharp diagonal dominance,
+//     attending to immediate predecessor).
+//   wDecision reward = trade PnL (did the thesis play out?).
+//   wExecution reward = SL/TP placement quality (SL hit → negative,
+//     TP hit → positive, manual/thesis → skip). This teaches wExecution to
+//     recognise regime patterns that precede stop-outs, so the Meta-Agent
+//     can calibrate conviction / SL adequacy accordingly.
 //
 // CORE: the candidate fed to computeVectorConditionalWinRate is no longer the
 // current cycle's snapshot — it is a softmax-weighted blend over cycle history
@@ -76,6 +90,10 @@ export interface CycleHistoryConfig {
    *  recency-biased (non-uniform) policy, so the gradient is non-zero and w
    *  can learn. Mirrors K3's locality observation (diagonal dominance). */
   recencyPrior: number;
+  /** v2.0.212 (#7): Multiplier on recencyPrior for the execution pseudo-query.
+   *  wExecution attends more sharply to recent cycles (K3 pre-MLP diagonal
+   *  dominance). Default 2.0 → execution recency = 2× decision recency. */
+  executionRecencyBoost: number;
   /** Persist path. */
   persistPath: string;
 }
@@ -99,6 +117,7 @@ export const DEFAULT_CYCLE_HISTORY_CONFIG: CycleHistoryConfig = {
   pnlScale: 0.05,
   lrDecay: 0.01,
   recencyPrior: 0.5,
+  executionRecencyBoost: 2.0,
   persistPath: 'data/evolution/cycle-history.json',
 };
 
@@ -124,11 +143,25 @@ export interface CycleHistoryState {
   cycles: CycleSnapshot[];
   entryFeatures: Record<string, number> | null;
   entryTs: number | null;
-  w: number[];
+  /** v2.0.212 (#7): Decision pseudo-query — broad receptive field for
+   *  conditional WR + Meta-Agent thesis context. */
+  wDecision: number[];
+  /** v2.0.212 (#7): Execution pseudo-query — sharp/recent-biased for
+   *  SL/TP survival context. */
+  wExecution: number[];
+  /** Backward compat: old persisted states have `w` (single query). On load,
+   *  migrated to wDecision + wExecution (both = old w). */
+  w?: number[];
   pendingEntry: PendingEntry | null;
   updateCount: number;
+  /** v2.0.212 (#7): Separate update counter for execution w (different
+   *  reward schedule — only SL/TP hits, not all trades). */
+  execUpdateCount: number;
   temperature: number;
+  /** v2.0.212 (#7): Separate temperature for execution attention. */
+  execTemperature: number;
   lastEntropy: number;
+  lastExecEntropy: number;
   /** Per-feature Welford stats for z-score before RMSNorm. Raw MATS features
    *  span vastly different magnitudes (srDistanceBps 50-900 vs volatility
    *  0.1-0.8). Without per-feature standardisation RMSNorm is dominated by
@@ -139,8 +172,10 @@ export interface CycleHistoryState {
   featCount: number[];
 }
 
-interface PendingEntry {
-  side: 'buy' | 'sell';
+/** v2.0.212 (#7): Per-mode pending entry — stores the attention snapshot
+ *  at entry for one pseudo-query mode, so the w update can compute the
+ *  gradient using the EXACT alpha/keys that were active at entry time. */
+interface PendingModeEntry {
   /** Attention distribution at entry (over block summaries + entry). */
   alphaDist: number[];
   /** Keys (RMSNorm'd) at entry — for gradient computation. */
@@ -149,6 +184,14 @@ interface PendingEntry {
   hBlend: number[];
   /** Block values (original space) at entry — for gradient. */
   values: number[][];
+}
+
+interface PendingEntry {
+  side: 'buy' | 'sell';
+  /** v2.0.212 (#7): Decision-mode snapshot (broad). */
+  decision: PendingModeEntry;
+  /** v2.0.212 (#7): Execution-mode snapshot (sharp/recent). */
+  execution: PendingModeEntry;
   ts: number;
 }
 
@@ -273,11 +316,27 @@ export class CycleHistoryRetriever {
       this.states = new Map();
       for (const s of parsed.states) {
         if (!s || typeof s !== 'object' || !s.symbol) continue;
-        // Dimension guard: if feature set changed, reset w.
-        if (s.w && s.w.length !== this.cfg.featureNames.length) {
-          log.warn(`[cycle-history] w dim mismatch for ${s.symbol} (${s.w.length}→${this.cfg.featureNames.length}) — resetting w`);
-          s.w = new Array<number>(this.cfg.featureNames.length).fill(0);
+        // v2.0.212 (#7): Migrate old single-w state → wDecision + wExecution.
+        const wLen = this.cfg.featureNames.length;
+        if (s.w && !s.wDecision) {
+          s.wDecision = s.w;
+          s.wExecution = s.w.slice();
         }
+        // Dimension guard: if feature set changed, reset both w's.
+        if (s.wDecision && s.wDecision.length !== wLen) {
+          log.warn(`[cycle-history] wDecision dim mismatch for ${s.symbol} (${s.wDecision.length}→${wLen}) — resetting`);
+          s.wDecision = new Array<number>(wLen).fill(0);
+        }
+        if (s.wExecution && s.wExecution.length !== wLen) {
+          s.wExecution = new Array<number>(wLen).fill(0);
+        }
+        if (!s.wDecision) s.wDecision = new Array<number>(wLen).fill(0);
+        if (!s.wExecution) s.wExecution = new Array<number>(wLen).fill(0);
+        if (!s.execUpdateCount) s.execUpdateCount = 0;
+        if (!s.execTemperature) s.execTemperature = 1;
+        if (!s.lastExecEntropy) s.lastExecEntropy = 0;
+        // Clear stale pendingEntry (can't pair across restart).
+        s.pendingEntry = null;
         this.states.set(s.symbol, s);
       }
       this.lastGood = this.snapshotStates();
@@ -321,11 +380,15 @@ export class CycleHistoryRetriever {
         cycles: [],
         entryFeatures: null,
         entryTs: null,
-        w: new Array<number>(this.cfg.featureNames.length).fill(0),
+        wDecision: new Array<number>(this.cfg.featureNames.length).fill(0),
+        wExecution: new Array<number>(this.cfg.featureNames.length).fill(0),
         pendingEntry: null,
         updateCount: 0,
+        execUpdateCount: 0,
         temperature: 1,
+        execTemperature: 1,
         lastEntropy: 0,
+        lastExecEntropy: 0,
         featMean: new Array<number>(this.cfg.featureNames.length).fill(0),
         featM2: new Array<number>(this.cfg.featureNames.length).fill(0),
         featCount: new Array<number>(this.cfg.featureNames.length).fill(0),
@@ -369,16 +432,26 @@ export class CycleHistoryRetriever {
       }
       s.entryFeatures = clean;
       s.entryTs = Date.now();
-      // Compute + cache the blend at entry for outcome pairing.
-      const blend = this.retrieveBlend(symbol);
-      if (blend.blended && blend.alphaDist.length > 0) {
-        const { keys, values, ages: _ages } = this.buildKeysAndValues(s);
+      // v2.0.212 (#7): Capture BOTH decision + execution blends at entry
+      // so each w can be updated from its own entry-time attention snapshot.
+      const decBlend = this.retrieveBlend(symbol, 'decision');
+      const execBlend = this.retrieveBlend(symbol, 'execution');
+      const { keys, values, ages: _ages } = this.buildKeysAndValues(s);
+      if (decBlend.blended && decBlend.alphaDist.length > 0 && execBlend.blended && execBlend.alphaDist.length > 0) {
         s.pendingEntry = {
           side,
-          alphaDist: blend.alphaDist,
-          keys,
-          values,
-          hBlend: featureVector(blend.hBlend, this.cfg.featureNames),
+          decision: {
+            alphaDist: decBlend.alphaDist,
+            keys,
+            hBlend: featureVector(decBlend.hBlend, this.cfg.featureNames),
+            values,
+          },
+          execution: {
+            alphaDist: execBlend.alphaDist,
+            keys,
+            hBlend: featureVector(execBlend.hBlend, this.cfg.featureNames),
+            values,
+          },
           ts: s.entryTs,
         };
       } else {
@@ -455,8 +528,11 @@ export class CycleHistoryRetriever {
   // ─── Retrieval (#1 + #2 + #3) ───
 
   /** Retrieve the AttnRes-blended representation for a symbol.
+   *  v2.0.212 (#7): mode selects pseudo-query + recency prior:
+   *    'decision' (default) — wDecision, broad recency (conditional WR + thesis)
+   *    'execution'           — wExecution, sharp recency × boost (SL/TP context)
    *  Returns current snapshot unchanged when history < minHistoryToBlend. */
-  retrieveBlend(symbol: string): BlendedRepresentation {
+  retrieveBlend(symbol: string, mode: 'decision' | 'execution' = 'decision'): BlendedRepresentation {
     if (!this.cfg.enabled) {
       return this.currentSnapshotResult(symbol);
     }
@@ -474,27 +550,37 @@ export class CycleHistoryRetriever {
         return this.currentSnapshotResult(symbol);
       }
 
+      // v2.0.212 (#7): Select pseudo-query + recency prior by mode.
+      const w = mode === 'execution' ? s.wExecution : s.wDecision;
+      const recencyPrior = mode === 'execution'
+        ? this.cfg.recencyPrior * this.cfg.executionRecencyBoost
+        : this.cfg.recencyPrior;
+      const temperature = mode === 'execution' ? s.execTemperature : s.temperature;
+
       // Softmax attention with learned pseudo-query w (#1) + fixed recency prior.
-      // α_i = softmax((w·key_i + recencyPrior·(−age_i)) / temperature)
-      // The recency prior breaks the uniform-policy deadlock (REINFORCE grad = 0
-      // when α uniform) and mirrors K3's locality observation (diagonal dominance).
-      const w = s.w;
       const logits = keys.map((k, i) => {
         let dot = 0;
         for (let j = 0; j < k.length && j < w.length; j++) dot += w[j]! * k[j]!;
-        return dot + this.cfg.recencyPrior * (-ages[i]!);
+        return dot + recencyPrior * (-ages[i]!);
       });
-      const alpha = softmax(logits, s.temperature);
+      const alpha = softmax(logits, temperature);
       const ent = entropy(alpha);
 
-      // Entropy floor (#anti-collapse): if collapsed, warm temperature for next time.
+      // Entropy floor (#anti-collapse): mode-specific temperature management.
       if (ent < this.cfg.entropyFloor && values.length > 1) {
-        s.temperature = Math.min(s.temperature * this.cfg.warmupFactor, 5);
-      } else if (ent > this.cfg.entropyFloor * 1.5 && s.temperature > 1) {
-        // Recover temperature once entropy is healthy.
-        s.temperature = Math.max(s.temperature / this.cfg.warmupFactor, 1);
+        if (mode === 'execution') {
+          s.execTemperature = Math.min(s.execTemperature * this.cfg.warmupFactor, 5);
+        } else {
+          s.temperature = Math.min(s.temperature * this.cfg.warmupFactor, 5);
+        }
+      } else if (ent > this.cfg.entropyFloor * 1.5 && temperature > 1) {
+        if (mode === 'execution') {
+          s.execTemperature = Math.max(s.execTemperature / this.cfg.warmupFactor, 1);
+        } else {
+          s.temperature = Math.max(s.temperature / this.cfg.warmupFactor, 1);
+        }
       }
-      s.lastEntropy = ent;
+      if (mode === 'execution') s.lastExecEntropy = ent; else s.lastEntropy = ent;
 
       // Blended representation: h = Σ α_i · v_i (original feature space).
       const D = values[0]!.length;
@@ -507,7 +593,8 @@ export class CycleHistoryRetriever {
 
       const labels = this.buildLabels(s);
       const hRecord = vectorToRecord(hBlend, names);
-      const explanation = `AttnRes blend: ${values.length} sources (entry + ${values.length - (s.entryFeatures ? 1 : 0)} blocks), entropy=${ent.toFixed(2)} bits, temperature=${s.temperature.toFixed(2)}, top source=${labels[alpha.indexOf(Math.max(...alpha))] ?? 'n/a'}`;
+      const tempUsed = mode === 'execution' ? s.execTemperature : s.temperature;
+      const explanation = `AttnRes[${mode}] blend: ${values.length} sources (entry + ${values.length - (s.entryFeatures ? 1 : 0)} blocks), entropy=${ent.toFixed(2)} bits, temperature=${tempUsed.toFixed(2)}, top source=${labels[alpha.indexOf(Math.max(...alpha))] ?? 'n/a'}`;
 
       return {
         hBlend: hRecord,
@@ -548,11 +635,16 @@ export class CycleHistoryRetriever {
     };
   }
 
-  // ─── Online learning (#1 policy gradient) ───
+  // ─── Online learning (#1 policy gradient + #7 dual reward) ───
 
-  /** Update pseudo-query w from a trade outcome (REINFORCE policy gradient).
-   *  No-op if no pending entry (close without recordEntry) or |pnlPct| below noise. */
-  updateOnOutcome(symbol: string, side: 'buy' | 'sell', pnlPct: number): void {
+  /** Update pseudo-queries from a trade outcome.
+   *  v2.0.212 (#7): wDecision updated with PnL reward (thesis played out?).
+   *  wExecution updated with SL/TP survival reward (stop-out avoidance):
+   *    - SL hit (loss + closeReason='sl_tp') → negative (SL was wrong for regime)
+   *    - TP hit (win + closeReason='sl_tp')  → positive (TP was appropriate)
+   *    - manual/thesis_invalidation/consensus → skip (can't judge SL/TP)
+   *  No-op if no pending entry or |pnlPct| below noise. */
+  updateOnOutcome(symbol: string, side: 'buy' | 'sell', pnlPct: number, closeReason?: string): void {
     if (!this.cfg.enabled) return;
     try {
       const s = this.getState(symbol);
@@ -561,67 +653,82 @@ export class CycleHistoryRetriever {
         // Entry-close mismatch or no entry record → skip (guard).
         return;
       }
-      if (Math.abs(pnlPct) < this.cfg.rewardNoiseThreshold) {
-        // Noise threshold — skip update (flat outcome).
-        s.pendingEntry = null;
-        return;
+
+      // ── wDecision: PnL reward (always update on non-noise outcomes) ──
+      if (Math.abs(pnlPct) >= this.cfg.rewardNoiseThreshold) {
+        const decReward = Math.sign(pnlPct) * Math.min(1, Math.abs(pnlPct) / this.cfg.pnlScale);
+        if (Number.isFinite(decReward) && decReward !== 0) {
+          this.updateW(s, pending.decision, decReward, 'decision');
+        }
       }
 
-      // Reward: sign(pnl) · min(1, |pnlPct|/scale).
-      const reward = Math.sign(pnlPct) * Math.min(1, Math.abs(pnlPct) / this.cfg.pnlScale);
-      if (!Number.isFinite(reward) || reward === 0) {
-        s.pendingEntry = null;
-        return;
+      // ── wExecution: SL/TP survival reward (only on exchange SL/TP hits) ──
+      // closeReason='sl_tp' means the exchange hit SL or TP. If win → TP hit
+      // (positive). If loss → SL hit (negative). Other reasons → skip
+      // (manual, thesis_invalidation, consensus, exchange_closed — can't
+      // judge whether SL/TP placement was appropriate).
+      if (closeReason === 'sl_tp' && Math.abs(pnlPct) >= this.cfg.rewardNoiseThreshold) {
+        const execReward = Math.sign(pnlPct) * Math.min(1, Math.abs(pnlPct) / this.cfg.pnlScale);
+        if (Number.isFinite(execReward) && execReward !== 0) {
+          this.updateW(s, pending.execution, execReward, 'execution');
+        }
       }
 
-      // Online update via reward-weighted key direction (Peters & Schaal
-      // 2008 reward-weighted regression, adapted for deterministic attention).
-      // REINFORCE's score-function gradient Σα_i·(key_i − mean_key) is
-      // identically zero for a deterministic softmax blend (Σα·key = mean →
-      // Σα·(key−mean) = 0). Instead, move w toward the attention-weighted key
-      // direction when reward > 0 (reinforce the blend that won), away when < 0:
-      //   w ← w + lr · reward · mean_key   (mean_key = Σα_i · key_i)
-      // This is a direct outcome-to-attention association: if a regime-block's
-      // key direction preceded a win, w shifts to attend it more next time.
-      const { alphaDist, keys } = pending;
-      const n = keys.length;
-      if (n === 0) { s.pendingEntry = null; return; }
-      const D = keys[0]!.length;
-
-      // mean_key = Σ α_i · key_i (the attention-weighted key direction).
-      const meanKey = new Array<number>(D).fill(0);
-      for (let i = 0; i < n; i++) {
-        for (let j = 0; j < D; j++) meanKey[j]! += alphaDist[i]! * keys[i]![j]!;
-      }
-
-      // LR with decay.
-      const lr = this.cfg.learningRate / (1 + this.cfg.lrDecay * s.updateCount);
-
-      // Reward-weighted update + EMA smoothing.
-      const wNew = s.w.slice();
-      for (let j = 0; j < D; j++) {
-        const update = lr * reward * meanKey[j]!;
-        const target = wNew[j]! + update;
-        wNew[j] = (1 - this.cfg.emaBeta) * wNew[j]! + this.cfg.emaBeta * target;
-        wNew[j] = Math.max(-this.cfg.weightClip, Math.min(this.cfg.weightClip, wNew[j]!));
-        if (!Number.isFinite(wNew[j]!)) wNew[j] = 0;
-      }
-      s.w = wNew;
-      s.updateCount++;
       s.pendingEntry = null;
       this.dirty = true;
-      log.debug(`[cycle-history] ${symbol} ${side} w updated: reward=${reward.toFixed(3)}, updates=${s.updateCount}, entropy=${s.lastEntropy.toFixed(2)}`);
     } catch (err) {
       log.warn(`[cycle-history] updateOnOutcome failed for ${symbol}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
+  /** Core w update: reward-weighted key direction (Peters & Schaal 2008).
+   *  w ← w + lr · reward · mean_key, then EMA + clip.
+   *  Mode selects which w + update counter to use. */
+  private updateW(s: CycleHistoryState, pending: PendingModeEntry, reward: number, mode: 'decision' | 'execution'): void {
+    const { alphaDist, keys } = pending;
+    const n = keys.length;
+    if (n === 0) return;
+    const D = keys[0]!.length;
+
+    // mean_key = Σ α_i · key_i (the attention-weighted key direction).
+    const meanKey = new Array<number>(D).fill(0);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < D; j++) meanKey[j]! += alphaDist[i]! * keys[i]![j]!;
+    }
+
+    // LR with decay (mode-specific counter).
+    const count = mode === 'execution' ? s.execUpdateCount : s.updateCount;
+    const lr = this.cfg.learningRate / (1 + this.cfg.lrDecay * count);
+
+    // Reward-weighted update + EMA smoothing.
+    const wCur = mode === 'execution' ? s.wExecution : s.wDecision;
+    const wNew = wCur.slice();
+    for (let j = 0; j < D; j++) {
+      const update = lr * reward * meanKey[j]!;
+      const target = wNew[j]! + update;
+      wNew[j] = (1 - this.cfg.emaBeta) * wNew[j]! + this.cfg.emaBeta * target;
+      wNew[j] = Math.max(-this.cfg.weightClip, Math.min(this.cfg.weightClip, wNew[j]!));
+      if (!Number.isFinite(wNew[j]!)) wNew[j] = 0;
+    }
+    if (mode === 'execution') {
+      s.wExecution = wNew;
+      s.execUpdateCount++;
+    } else {
+      s.wDecision = wNew;
+      s.updateCount++;
+    }
+    const ent = mode === 'execution' ? s.lastExecEntropy : s.lastEntropy;
+    log.debug(`[cycle-history] ${s.symbol} ${mode} w updated: reward=${reward.toFixed(3)}, updates=${mode === 'execution' ? s.execUpdateCount : s.updateCount}, entropy=${ent.toFixed(2)}`);
+  }
+
   // ─── Public introspection ───
 
-  /** Get the w vector for a symbol (for debugging / display). */
-  getQuery(symbol: string): number[] {
+  /** Get the w vector for a symbol (for debugging / display).
+   *  v2.0.212 (#7): mode selects which pseudo-query to return. */
+  getQuery(symbol: string, mode: 'decision' | 'execution' = 'decision'): number[] {
     const s = this.states.get(symbol);
-    return s ? s.w.slice() : new Array<number>(this.cfg.featureNames.length).fill(0);
+    if (!s) return new Array<number>(this.cfg.featureNames.length).fill(0);
+    return mode === 'execution' ? s.wExecution.slice() : s.wDecision.slice();
   }
 
   /** Get cycle count for a symbol. */

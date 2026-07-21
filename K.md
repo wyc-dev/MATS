@@ -284,12 +284,14 @@ NA embeds the blended representation. The two are composable:
 
 ## 9. Version History
 
-- v2.0.211 (K-series): AttnRes 7 transfers designed + implemented. K.md created.
-  - New: `cycle-history-retrieval.ts`, `tests/cycle-history-retrieval.test.ts`,
-    `tests/attack-cycle-history.test.ts`
-  - Modified: `evolution-utils.ts` (#3 RMSNorm keys + #4 softmax mixture),
-    `index.ts` (wiring: pushCycle, recordEntry, updateOnOutcome, gate, hacp),
-    `hacp.ts` (AttnRes blend context block)
+- v2.0.212 (#7): Pre-Decision vs Pre-Execution Specialization implemented.
+  - Two pseudo-queries per symbol: wDecision (broad, PnL reward) + wExecution
+    (sharp/recent-biased, SL/TP stop-out reward).
+  - retrieveBlend(mode) selects w + recency prior by mode.
+  - wExecution reward: SL hit (loss+sl_tp) → negative; TP hit (win+sl_tp) →
+    positive; manual/thesis/consensus → skip.
+  - Execution-lens context block injected into hacp Skeptics context.
+  - 10 new #7 tests (40 total in cycle-history-retrieval.test.ts).
   - Attack results: see §10
 
 ---

@@ -230,6 +230,13 @@ export class HACPEngine {
   private antiPatternTracker: AntiPatternTracker | null = null;
   setAntiPatternTracker(t: AntiPatternTracker | null): void { this.antiPatternTracker = t; }
 
+  /** v2.0.212 (#7): Cycle-history retriever for execution-lens context.
+   *  Provides the execution-mode AttnRes blend (sharp/recent-biased) so
+   *  Skeptics/Meta-Agent can calibrate SL/TP adequacy against the learned
+   *  stop-out regime patterns. */
+  private cycleHistoryRetriever: { retrieveBlend: (sym: string, mode: 'decision' | 'execution') => { hBlend: Record<string, number>; blended: boolean; explanation: string; entropy: number } } | null = null;
+  setCycleHistoryRetriever(r: typeof this.cycleHistoryRetriever): void { this.cycleHistoryRetriever = r; }
+
   /** v2.0.143: RIL SimilarTradeRetriever — finds top-N most similar historical
    *  trades to a candidate thesis. Injected by index.ts so HACP can produce
    *  a "SIMILAR TRADES" context block for the Meta-Agent. */
@@ -1169,7 +1176,24 @@ export class HACPEngine {
         }
       } catch { /* non-critical */ }
     }
-    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}`;
+
+    // v2.0.212 (#7): Execution-lens context — the execution-mode AttnRes blend
+    // (sharp/recent-biased, wExecution trained on SL/TP stop-out outcomes).
+    // Shows Skeptics/Meta-Agent the recent regime through the SL/TP survival
+    // lens: if wExecution has learned that this regime pattern precedes stop-
+    // outs, the blend highlights that pattern so conviction can be calibrated.
+    let executionLensBlock = '';
+    if (this.cycleHistoryRetriever && (metaAction === 'buy' || metaAction === 'sell') && !hasExistingPosition) {
+      try {
+        const execBlend = this.cycleHistoryRetriever.retrieveBlend(normalizeSymbol(metaSymbol), 'execution');
+        if (execBlend.blended) {
+          const execMomentum = execBlend.hBlend['momentumShort'] ?? 0;
+          const execVol = execBlend.hBlend['volatility'] ?? 0;
+          executionLensBlock = `\n=== EXECUTION REGIME LENS (K.md #7) ===\n  Recent regime through the SL/TP survival lens (sharp/recent-biased AttnRes, trained on stop-out outcomes):\n    volatility=${execVol.toFixed(3)}, momentumShort=${(execMomentum * 100).toFixed(2)}%, entropy=${execBlend.entropy.toFixed(2)} bits\n  If this regime pattern historically precedes stop-outs, consider widening SL or lowering conviction. This lens is EARNED through trade outcomes (cold-start = current snapshot).\n---`;
+        }
+      } catch { /* non-critical */ }
+    }
+    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}${executionLensBlock}`;
 
     if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition && !expThesisGated) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);
