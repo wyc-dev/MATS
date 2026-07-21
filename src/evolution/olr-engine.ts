@@ -456,6 +456,10 @@ export class OLREngine {
     cycle: number = 0,
     slNarrowed: boolean = false,
     welfordMask?: Set<number>,
+    // v2.0.219: Per-sample weight multiplier (default 1.0). Scales the
+    // gradient update — used by shadow trade engine for stale-resolved
+    // trades (weight=0.3) so they contribute less than natural SL/TP hits.
+    weightMultiplier: number = 1.0,
   ): void {
     const models = this.getOrCreate(symbol);
     const vec = this.contextToVector(features);
@@ -493,7 +497,7 @@ export class OLREngine {
 
     const outcomeLabel: 'win' | 'loss' = outcome === 1 ? 'win' : 'loss';
     const ts = Date.now();
-    const srcWeight = OLR_CONFIG.sourceWeight[source] ?? 1;
+    const srcWeight = (OLR_CONFIG.sourceWeight[source] ?? 1) * weightMultiplier;
 
     // v2.0.721: Compute raw pWin BEFORE SGD update for calibration recording.
     // This is the model's prediction for this sample — we record (prediction, actual)
