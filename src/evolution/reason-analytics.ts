@@ -20,6 +20,7 @@
 import { config } from '../config/index.ts';
 import { rootLogger } from '../observability/logger.ts';
 import { cosine, combinationSimilarity, type EmbedProvider } from './embeddings.ts';
+import { computeVectorConditionalWinRate, ENTRY_CONDITION_FEATURES } from './evolution-utils.ts';
 import type {
   ThesisExperienceRecord,
   ReasonPatternCluster,
@@ -210,6 +211,14 @@ export class PatternClusterManager {
       memberIds: [rec.id],
       exitTypeBreakdown: {},
       ts: rec.ts,
+      // v2.0.214: Store per-member market data for conditional WR
+      memberMarketData: [{
+        marketFeatures: rec.marketFeatures,
+        outcome: outcome ?? 'LOSS',
+        symbol: rec.symbol,
+        side: rec.side,
+        pnl: rec.pnl,
+      }],
     });
   }
 
@@ -246,6 +255,17 @@ export class PatternClusterManager {
     if (!c.memberIds.includes(rec.id)) c.memberIds.push(rec.id);
     c.ts = Math.max(c.ts, rec.ts);
 
+    // v2.0.214: Append per-member market data for conditional WR computation.
+    // Guard against undefined (clusters created before v2.0.214).
+    if (!c.memberMarketData) c.memberMarketData = [];
+    c.memberMarketData.push({
+      marketFeatures: rec.marketFeatures,
+      outcome: rec.outcome ?? 'LOSS',
+      symbol: rec.symbol,
+      side: rec.side,
+      pnl: rec.pnl,
+    });
+
     // Update exit type breakdown
     const exitKey = `${rec.decisionOrigin ?? 'unknown'}__${(rec as any).exitType ?? 'unknown'}`;
     if (!c.exitTypeBreakdown[exitKey]) {
@@ -267,7 +287,29 @@ export class PatternClusterManager {
 
   // ─── Get pattern map for agent context ───
 
-  getPatternMap(totalTrades: number): string {
+  /**
+   * Formats the entry pattern performance map for agent context injection.
+   *
+   * v2.0.214: When `currentFeatures` is provided, each cluster also shows a
+   * conditional win rate — the WR of cluster members whose market features
+   * are similar to the current market state. This is computed via
+   * `computeVectorConditionalWinRate` within each cluster's memberMarketData.
+   *
+   * Falls back to raw WR only when:
+   * - `currentFeatures` is not provided (backward compatible)
+   * - cluster has no `memberMarketData` (created before v2.0.214)
+   * - cluster has < 3 members with market features (insufficient for conditional WR)
+   * - conditional WR returns confidence='none'
+   *
+   * @param totalTrades - Total closed trade count (for header)
+   * @param currentFeatures - Current market features for conditional WR (optional)
+   * @param side - Filter conditional WR by direction (optional, e.g. 'buy' or 'sell')
+   */
+  getPatternMap(
+    totalTrades: number,
+    currentFeatures?: Record<string, number>,
+    side?: 'buy' | 'sell',
+  ): string {
     if (!this.built || this.clusters.length === 0) return '';
 
     const lines: string[] = [];
@@ -284,6 +326,15 @@ export class PatternClusterManager {
       return lines.join('\n');
     }
 
+    // v2.0.214: Pre-compute conditional WR for each cluster if currentFeatures provided.
+    const condMap = new Map<string, { wr: number; sampleSize: number; confidence: string } | null>();
+    if (currentFeatures && Object.keys(currentFeatures).length > 0) {
+      for (const c of display) {
+        const cond = this.computeClusterConditionalWR(c, currentFeatures, side);
+        condMap.set(c.id, cond);
+      }
+    }
+
     for (const c of display) {
       const icon = c.winRate >= 0.6 ? '🟢' : c.winRate <= 0.4 ? '🔴' : '🟡';
       const pnlStr = c.netPnl >= 0 ? '+' + c.netPnl.toFixed(2) : c.netPnl.toFixed(2);
@@ -297,13 +348,74 @@ export class PatternClusterManager {
         const sellWR = sellTotal > 0 ? (c.sellWins / sellTotal * 100).toFixed(0) : '0';
         dirStr = ` [BUY ${buyWR}% (W${c.buyWins} L${c.buyLosses}) | SELL ${sellWR}% (W${c.sellWins} L${c.sellLosses})]`;
       }
+
+      // v2.0.214: Show conditional WR alongside raw WR when available
+      const cond = condMap.get(c.id);
+      let condStr = '';
+      if (cond && cond.confidence !== 'none') {
+        const condIcon = cond.wr >= 0.6 ? '▲' : cond.wr <= 0.4 ? '▼' : '◆';
+        condStr = ` | ${condIcon} cond ${(cond.wr * 100).toFixed(0)}% (${cond.sampleSize} sim, ${cond.confidence})`;
+      }
+
       lines.push(
-        `${icon} ${name.padEnd(52)} W${c.wins} L${c.losses}  ${pnlStr}  (${(c.winRate * 100).toFixed(0)}%, ${c.count}t, avg ${c.avgHoldMin.toFixed(0)}min)${dirStr}`,
+        `${icon} ${name.padEnd(52)} W${c.wins} L${c.losses}  ${pnlStr}  (${(c.winRate * 100).toFixed(0)}%, ${c.count}t, avg ${c.avgHoldMin.toFixed(0)}min)${dirStr}${condStr}`,
       );
     }
 
     lines.push('---');
     return lines.join('\n');
+  }
+
+  /**
+   * v2.0.214: Compute conditional win rate within a single pattern cluster.
+   * Uses `computeVectorConditionalWinRate` on the cluster's memberMarketData,
+   * filtered by the current market features. Falls back to null when:
+   * - cluster has no memberMarketData
+   * - fewer than 3 members with market features
+   * - conditional WR returns confidence='none'
+   *
+   * This is the RIL analog of the AttnRes conditional WR — instead of asking
+   * "what is the win rate of ALL similar market conditions?", we ask "what is
+   * the win rate of THIS pattern in similar market conditions?" The pattern
+   * narrows the population to semantically similar trades, then the market
+   * features narrow it further to conditionally similar trades.
+   */
+  private computeClusterConditionalWR(
+    cluster: ReasonPatternCluster,
+    currentFeatures: Record<string, number>,
+    side?: 'buy' | 'sell',
+  ): { wr: number; sampleSize: number; confidence: string } | null {
+    if (!cluster.memberMarketData || cluster.memberMarketData.length === 0) return null;
+
+    // Filter to members that have marketFeatures
+    const membersWithFeatures = cluster.memberMarketData.filter(
+      (m) => m.marketFeatures && Object.keys(m.marketFeatures).length > 0,
+    );
+    if (membersWithFeatures.length < 3) return null; // insufficient for conditional WR
+
+    try {
+      const result = computeVectorConditionalWinRate(
+        currentFeatures,
+        membersWithFeatures,
+        {
+          featureNames: ENTRY_CONDITION_FEATURES,
+          side,
+          minSamples: 3,
+          threshold: 0.80,
+          topN: 20,
+          softmaxWeightedWR: true,
+          softmaxTemperature: 0.1,
+        },
+      );
+      if (result.confidence === 'none') return null;
+      return {
+        wr: result.conditionalWinRate,
+        sampleSize: result.sampleSize,
+        confidence: result.confidence,
+      };
+    } catch {
+      return null; // fail-open: fall back to raw WR
+    }
   }
 
   /** Find the pattern cluster most similar to a set of rationale vectors. */
@@ -426,6 +538,99 @@ export class CloseReasonAggregator {
   }
 }
 
+// ─── v2.0.214: Softmax-weighted aggregate for SimilarTradeRetriever ────────
+//
+// K.md #4 transfer to RIL: instead of equal-weight win rate (each similar
+// trade = 1/N), weight each trade by softmax(similarity / temperature) so
+// high-similarity trades contribute more. K3 ablation: softmax > sigmoid
+// (competitive normalization forces sharper selection).
+//
+// Numerically stable (max-subtraction). Handles NaN/Infinity in similarity
+// by clamping to finite range. Returns 0.5 WR for empty input.
+
+/**
+ * @param similar - Array of { similarity, isWin, pnl } objects
+ * @param temperature - Softmax temperature (default 0.1). Lower = sharper.
+ *   Clamped to minimum 1e-4 to prevent division by zero.
+ * @returns weightedWR, weightedAvgPnl, rawWR, rawAvgPnl, maxWeight
+ */
+export function softmaxWeightedSimilarAggregate(
+  similar: Array<{ similarity: number; isWin: boolean; pnl: number }>,
+  temperature: number = 0.1,
+): { weightedWR: number; weightedAvgPnl: number; rawWR: number; rawAvgPnl: number; maxWeight: number } {
+  const n = similar.length;
+  if (n === 0) {
+    return { weightedWR: 0.5, weightedAvgPnl: 0, rawWR: 0.5, rawAvgPnl: 0, maxWeight: 0 };
+  }
+  if (n === 1) {
+    const wr = similar[0]!.isWin ? 1 : 0;
+    return { weightedWR: wr, weightedAvgPnl: similar[0]!.pnl, rawWR: wr, rawAvgPnl: similar[0]!.pnl, maxWeight: 1 };
+  }
+
+  // Clamp temperature to prevent division by zero. Use abs() so negative
+  // temperatures are treated as positive (negative τ inverts the weighting,
+  // which is meaningless for similarity-based retrieval).
+  const tau = Math.max(Math.abs(temperature), 1e-4);
+
+  // Compute logits. No clamping needed — max-subtraction below ensures
+  // numerical stability (exp(l - max) is always ≤ 1, underflow to 0 is safe).
+  // Non-finite sims: NaN -> 0 (neutral), Infinity -> 1 (max sim),
+  // -Infinity -> -1 (min sim). Assumes similarity in [-1, 1] (cosine range).
+  const logits = similar.map((s) => {
+    let sim = s.similarity;
+    if (!Number.isFinite(sim)) {
+      if (sim === Infinity) sim = 1;
+      else if (sim === -Infinity) sim = -1;
+      else sim = 0; // NaN
+    }
+    return sim / tau;
+  });
+
+  // Numerically stable softmax (max-subtraction)
+  let maxLogit = -Infinity;
+  for (const l of logits) if (l > maxLogit) maxLogit = l;
+  if (!Number.isFinite(maxLogit)) maxLogit = 0;
+
+  let sumExp = 0;
+  const exps = logits.map((l) => {
+    const e = Math.exp(l - maxLogit);
+    sumExp += e;
+    return e;
+  });
+
+  if (sumExp <= 0 || !Number.isFinite(sumExp)) {
+    // Degenerate: all logits overflow or all NaN. Fall back to equal weight.
+    const rawWins = similar.filter((s) => s.isWin).length;
+    const rawWR = rawWins / n;
+    const rawAvgPnl = similar.reduce((sum, s) => sum + s.pnl, 0) / n;
+    return { weightedWR: rawWR, weightedAvgPnl: rawAvgPnl, rawWR, rawAvgPnl, maxWeight: 1 / n };
+  }
+
+  // Weighted WR + PnL
+  let weightedWR = 0;
+  let weightedAvgPnl = 0;
+  let maxWeight = 0;
+  for (let i = 0; i < n; i++) {
+    const w = exps[i]! / sumExp;
+    if (w > maxWeight) maxWeight = w;
+    if (similar[i]!.isWin) weightedWR += w;
+    weightedAvgPnl += w * similar[i]!.pnl;
+  }
+
+  // Raw stats for comparison
+  const rawWins = similar.filter((s) => s.isWin).length;
+  const rawWR = rawWins / n;
+  const rawAvgPnl = similar.reduce((sum, s) => sum + s.pnl, 0) / n;
+
+  return {
+    weightedWR: Math.max(0, Math.min(1, weightedWR)),
+    weightedAvgPnl,
+    rawWR,
+    rawAvgPnl,
+    maxWeight,
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  SimilarTradeRetriever
 // ═══════════════════════════════════════════════════════════════
@@ -484,15 +689,26 @@ export class SimilarTradeRetriever {
       );
     }
 
-    // Aggregate stats
+    // v2.0.214: Softmax-weighted aggregate stats (K.md #4 transfer to RIL).
+    // High-similarity trades weight more than low-similarity ones.
+    // Shows both raw (equal-weight) and sim-weighted for comparison.
+    const agg = softmaxWeightedSimilarAggregate(
+      similar.map((s) => ({ similarity: s.similarity, isWin: s.trade.outcome === 'WIN', pnl: s.trade.pnl })),
+    );
     const wins = similar.filter((s) => s.trade.outcome === 'WIN').length;
     const losses = similar.length - wins;
-    const winRate = similar.length > 0 ? (wins / similar.length * 100).toFixed(0) : '0';
-    const avgPnl = similar.length > 0
-      ? similar.reduce((sum, s) => sum + s.trade.pnl, 0) / similar.length
-      : 0;
-    const avgPnlStr = avgPnl >= 0 ? '+' + avgPnl.toFixed(3) : avgPnl.toFixed(3);
-    lines.push(`  → Similar trades: ${wins}/${similar.length} won (${winRate}%), avg ${avgPnlStr}`);
+    const rawWRPct = (agg.rawWR * 100).toFixed(0);
+    const weightedWRPct = (agg.weightedWR * 100).toFixed(0);
+    const rawAvgPnlStr = agg.rawAvgPnl >= 0 ? '+' + agg.rawAvgPnl.toFixed(3) : agg.rawAvgPnl.toFixed(3);
+    const weightedAvgPnlStr = agg.weightedAvgPnl >= 0 ? '+' + agg.weightedAvgPnl.toFixed(3) : agg.weightedAvgPnl.toFixed(3);
+
+    // Show both metrics when they differ significantly (otherwise just raw)
+    const wrDiff = Math.abs(agg.weightedWR - agg.rawWR);
+    if (wrDiff > 0.05) {
+      lines.push(`  → Similar trades: ${wins}/${similar.length} won (${rawWRPct}% raw, ${weightedWRPct}% sim-weighted), avg ${rawAvgPnlStr} raw / ${weightedAvgPnlStr} sim-weighted`);
+    } else {
+      lines.push(`  → Similar trades: ${wins}/${similar.length} won (${rawWRPct}%), avg ${rawAvgPnlStr}`);
+    }
 
     lines.push('---');
     return lines.join('\n');
