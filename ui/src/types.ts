@@ -208,7 +208,7 @@ export interface APIData {
     na?: { ready: boolean; sampleCount: number; inputDim: number };
     attnres?: { updateCount: number; wNorm: number; temperature: number };
     chr?: { symbols: Record<string, { cycleCount: number }> };
-    antiPattern?: { clusterCount: number };
+    antiPattern?: { clusterCount: number; ingestedCount: number; totalMembers: number };
     replay?: { totalSamples: number; capacity: number; symbolsTracked: number; totalReplays: number; lastBatchSize: number; avgPriority: number };
     bayesian?: {
       symbol: string;
