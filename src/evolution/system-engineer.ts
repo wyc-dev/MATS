@@ -128,7 +128,7 @@ const failedAttempts = new Map<string, { title: string; error: string; timestamp
 // These have been verified correct and repeatedly targeted by the SE.
 // If the diagnosis mentions these, reject immediately without calling Phase 2.
 const BLOCKED_PATTERNS: { file: string; pattern: RegExp; reason: string }[] = [
-  { file: 'src/evolution/shadow-trade-engine.ts', pattern: /getStats/i, reason: 'getStats() dedup logic is verified correct — do NOT modify' },
+  { file: 'src/evolution/shadow-trade-engine.ts', pattern: /getStats|stale.*feature|stale.*shadow|stale.*entry|both.*directions.*stale|shadow.*contaminat/i, reason: 'Shadow trade engine is verified correct (v2.0.756/759). Stale features and both-directions opening are already fixed. Do NOT modify shadow trade engine.' },
   // v2.0.725: Tightened checkThesisHistory block — only block removal of the
   // direction filter (sameDirMatches), not ALL modifications. Wilson score
   // gates, condition filtering, and category weighting are already applied (v2.0.721).
