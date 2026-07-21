@@ -2075,6 +2075,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         this.hacpEngine.setNaEmbeddingProvider(this.naEngine);
         // v2.0.207 (#F): Wire anti-pattern tracker for Skeptics candidate matching.
         this.hacpEngine.setAntiPatternTracker(this.antiPatternTracker);
+        // v2.0.212 (#7): Wire cycle-history retriever for execution-lens context.
+        this.hacpEngine.setCycleHistoryRetriever(this.cycleHistory);
         this.hacpEngine.setNaCandidateFeaturesProvider(() => {
           // v2.0.211 (K.md #1): Use AttnRes h_blend (softmax blend over cycle
           // history + entry-time state) as the candidate features instead of
@@ -2684,11 +2686,11 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       } catch { /* non-critical */ }
 
       // v2.0.211 (K.md #1): Update AttnRes cycle-history pseudo-query from
-      // trade outcome (reward-weighted key direction). Pairs with recordEntry
-      // called at trade open. Guarded internally (no-entry → skip, noise → skip,
-      // side-mismatch → skip). Fire-and-forget — never blocks close path.
+      // trade outcome (reward-weighted key direction). v2.0.212 (#7): passes
+      // closeReason so wExecution gets SL/TP survival reward (only on
+      // closeReason='sl_tp'). Pairs with recordEntry at trade open.
       try {
-        this.cycleHistory?.updateOnOutcome(normalizeSymbol(symbol), trade.side === 'buy' ? 'buy' : 'sell', pnlPct);
+        this.cycleHistory?.updateOnOutcome(normalizeSymbol(symbol), trade.side === 'buy' ? 'buy' : 'sell', pnlPct, closeReason);
       } catch (err) {
         log.warn(`[close-learning] AttnRes w update failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
       }
