@@ -51,7 +51,7 @@ import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts'
 import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
 import { OLREngine, type OLRQueryResult, regimeToOrdinal } from './evolution/olr-engine.ts';
 import { NumericAutoencoder } from './evolution/numeric-autoencoder.ts';
-import { ENTRY_CONDITION_FEATURES, computeVectorConditionalWinRate } from './evolution/evolution-utils.ts';
+import { ENTRY_CONDITION_FEATURES, computeVectorConditionalWinRate, safeNum } from './evolution/evolution-utils.ts';
 import { CycleHistoryRetriever } from './evolution/cycle-history-retrieval.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, computeMomentum, type FirstPassageResult } from './evolution/first-passage.ts';
@@ -2132,10 +2132,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           // Fallback: build from current market state if shadow context not ready.
           const state = this.marketState?.getState(sym);
           return {
-            volatility: state?.volatility ?? 0,
-            srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
-            obImbalance: state?.orderBookImbalance ?? 0,
-            signalAgreement: this.lastHACPResult?.consensus?.confidence ?? 0.5,
+            volatility: safeNum(state?.volatility, 0),
+            srDistanceBps: safeNum(this.lastSRContext?.distanceToSupportBps, 0),
+            obImbalance: safeNum(state?.orderBookImbalance, 0),
+            signalAgreement: safeNum(this.lastHACPResult?.consensus?.confidence, 0.5),
             regimeOrdinal: regimeToOrdinal(state?.regime),
           };
         });
@@ -2519,22 +2519,32 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       }
 
       // Get current market context for learning
+      // v2.0.218: Use safeNum() instead of ?? for ALL market features.
+      // The ?? operator only catches null/undefined, NOT NaN/Infinity.
+      // If a WS returns { fundingRate: NaN }, NaN ?? 0 = NaN (not 0), which
+      // triggered the OLR NaN guard and caused the ENTIRE sample to be rejected.
+      // safeNum() catches ALL non-finite values and returns the fallback.
       const activeSymbol = this.marketAgent?.getSelectedSymbol()?.toLowerCase() ?? symbol;
       const state = this.marketState?.getState(activeSymbol) ?? null;
       const regime = state?.regime ?? 'unknown';
-      const volatility = state?.volatility ?? 0;
-      const srDistanceBps = this.lastSRContext?.distanceToSupportBps ?? 0;
-      const obImbalance = state?.orderBookImbalance ?? 0;
-      const fundingRate = this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0;
-      const volumeRatio = this.sentimentEngine?.getVolumeRatio() ?? 1;
+      const volatility = safeNum(state?.volatility, 0);
+      const srDistanceBps = safeNum(this.lastSRContext?.distanceToSupportBps, 0);
+      const obImbalance = safeNum(state?.orderBookImbalance, 0);
+      const fundingRate = safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0);
+      // v2.0.218: Use safeNum() instead of ?? for ALL feature values.
+      // The ?? operator only catches null/undefined, NOT NaN/Infinity.
+      // If a WS returns { fundingRate: NaN }, NaN ?? 0 = NaN (not 0), which
+      // triggered the OLR NaN guard and caused the ENTIRE sample to be rejected.
+      // safeNum() catches ALL non-finite values and returns the fallback.
+      const volumeRatio = safeNum(this.sentimentEngine?.getVolumeRatio(), 1);
       const sentimentAgg = this.sentimentEngine?.getSentiment();
-      const sentiment = sentimentAgg?.overallSentiment ?? 0;
-      const sentimentConviction = sentimentAgg?.conviction ?? 0.5;
+      const sentiment = safeNum(sentimentAgg?.overallSentiment, 0);
+      const sentimentConviction = safeNum(sentimentAgg?.conviction, 0.5);
       // v2.0.721: Use last HACP consensus confidence instead of hardcoded 0.5.
       // This fixes a train/test mismatch — query-time features use real consensus
       // confidence (index.ts:5370+), but close-learning was always 0.5, so OLR
       // trained on a constant feature that varied at query time.
-      const signalAgreement = this.lastHACPResult?.consensus?.confidence ?? 0.5;
+      const signalAgreement = safeNum(this.lastHACPResult?.consensus?.confidence, 0.5);
 
       // 1. Record to Trade History so getRecentTradeAnalysis() sees it
       try {
@@ -2568,11 +2578,14 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       try {
         // v2.0.152: Add MAE/MFE to OLR features so the model learns
         // which SL/TP distances and MFE patterns lead to wins vs losses.
-        const mae = trade.minValueReached ?? 0;
-        const mfe = trade.maxValueReached ?? 0;
+        // v2.0.218: Use safeNum for MAE/MFE/margin — trade fields may be NaN.
+        const mae = safeNum(trade.minValueReached, 0);
+        const mfe = safeNum(trade.maxValueReached, 0);
         const margin = trade.investment > 0 ? trade.investment / (trade.leverage ?? 1) : 0;
-        const maePct = margin > 0 ? (margin - mae) / margin : 0;
-        const mfePct = margin > 0 ? (mfe - margin) / margin : 0;
+        const safeMargin = safeNum(margin, 0);
+        const maePct = safeMargin > 0 ? (safeMargin - mae) / safeMargin : 0;
+        const mfePct = safeMargin > 0 ? (mfe - safeMargin) / safeMargin : 0;
+        const safePnlPct = safeNum(pnlPct, 0);
         // v2.0.207 (#D): Momentum at close time — use the trade's symbol price history.
         let closeMomentum = { momentumShort: 0, momentumLong: 0 };
         try {
@@ -2580,20 +2593,20 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           if (closePh && closePh.length >= 2) closeMomentum = computeMomentum(closePh);
         } catch { /* non-critical */ }
         const features = {
-          volatility,
-          srDistanceBps,
-          obImbalance,
+          volatility: safeNum(volatility, 0),
+          srDistanceBps: safeNum(srDistanceBps, 0),
+          obImbalance: safeNum(obImbalance, 0),
           sentiment,
           signalAgreement,
-          fundingRate,
+          fundingRate: safeNum(fundingRate, 0),
           volumeRatio,
           sentimentConviction,
-          momentumShort: closeMomentum.momentumShort,
-          momentumLong: closeMomentum.momentumLong,
+          momentumShort: safeNum(closeMomentum.momentumShort, 0),
+          momentumLong: safeNum(closeMomentum.momentumLong, 0),
           // v2.0.152: MFE/MAE features for SL/TP learning
           mfePct,
           maePct,
-          mfeToPnlRatio: mfePct > 0 ? (mfePct - pnlPct) / mfePct : 0, // 0 = perfect exit, 1 = gave back everything
+          mfeToPnlRatio: mfePct > 0 ? (mfePct - safePnlPct) / mfePct : 0, // 0 = perfect exit, 1 = gave back everything
           // v2.0.721: Regime as ordinal feature (H1)
           regimeOrdinal: regimeToOrdinal(regime),
         };
@@ -3862,14 +3875,14 @@ ${recentExamples}
       const symState = this.marketState.getState(sym);
       const isActiveSym = normalizeSymbol(sym) === normalizeSymbol(activeSymbol);
       return {
-        volatility: symState?.volatility ?? (isActiveSym ? (combined.volatility ?? 0) : 0),
-        srDistanceBps: isActiveSym ? (this.lastSRContext?.distanceToSupportBps ?? 0) : 0,
-        obImbalance: symState?.orderBookImbalance ?? (isActiveSym ? (combined.orderBookImbalance ?? 0) : 0),
-        fundingRate: this.hyperliquidWs?.getMarkPriceForSymbol(sym)?.fundingRate
-          ?? this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
-        volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
-        sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
-        sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+        // v2.0.218: safeNum everywhere — ?? doesn't catch NaN
+        volatility: safeNum(symState?.volatility, isActiveSym ? safeNum(combined.volatility, 0) : 0),
+        srDistanceBps: isActiveSym ? safeNum(this.lastSRContext?.distanceToSupportBps, 0) : 0,
+        obImbalance: safeNum(symState?.orderBookImbalance, isActiveSym ? safeNum(combined.orderBookImbalance, 0) : 0),
+        fundingRate: safeNum(this.hyperliquidWs?.getMarkPriceForSymbol(sym)?.fundingRate, safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0)),
+        volumeRatio: safeNum(this.sentimentEngine?.getVolumeRatio(), 1),
+        sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
+        sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
         signalAgreement: 0.5,
       };
     };
@@ -3940,18 +3953,14 @@ ${recentExamples}
           const mktNorm = normalizeSymbol(mktSym);
           const isActiveSym = mktNorm === normalizeSymbol(activeSymbol);
           const mktFeatures = {
-            volatility: mktState?.volatility ?? (isActiveSym ? (combinedState.volatility ?? 0) : 0),
-            srDistanceBps: isActiveSym ? (this.lastSRContext?.distanceToSupportBps ?? 0) : 0,
-            obImbalance: mktState?.orderBookImbalance ?? (isActiveSym ? (combinedState.orderBookImbalance ?? 0) : 0),
-            // v2.0.143: Use per-symbol funding rate from HL WS mark price cache,
-            // not the global latest mark price (which is for the active symbol).
-            fundingRate: this.hyperliquidWs?.getMarkPriceForSymbol(mktSym)?.fundingRate
-              ?? this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
-            // v2.0.143: volumeRatio and sentiment are global (not per-symbol),
-            // but we note this in the feature so OLR can learn the global context.
-            volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
-            sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
-            sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+            // v2.0.218: safeNum everywhere
+            volatility: safeNum(mktState?.volatility, isActiveSym ? safeNum(combinedState.volatility, 0) : 0),
+            srDistanceBps: isActiveSym ? safeNum(this.lastSRContext?.distanceToSupportBps, 0) : 0,
+            obImbalance: safeNum(mktState?.orderBookImbalance, isActiveSym ? safeNum(combinedState.orderBookImbalance, 0) : 0),
+            fundingRate: safeNum(this.hyperliquidWs?.getMarkPriceForSymbol(mktSym)?.fundingRate, safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0)),
+            volumeRatio: safeNum(this.sentimentEngine?.getVolumeRatio(), 1),
+            sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
+            sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
             signalAgreement: 0.5,
           };
 
@@ -4011,15 +4020,15 @@ ${recentExamples}
         } catch { /* non-critical */ }
         const mktFeatures = {
           volatility: mktState?.volatility ?? (normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? (combinedState.volatility ?? 0) : 0),
-          srDistanceBps: normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? (this.lastSRContext?.distanceToSupportBps ?? 0) : 0,
-          obImbalance: mktState?.orderBookImbalance ?? (normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? (combinedState.orderBookImbalance ?? 0) : 0),
-          fundingRate: this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
-          volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
-          sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
-          sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
+          srDistanceBps: normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? safeNum(this.lastSRContext?.distanceToSupportBps, 0) : 0,
+          obImbalance: safeNum(mktState?.orderBookImbalance, normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? safeNum(combinedState.orderBookImbalance, 0) : 0),
+          fundingRate: safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0),
+          volumeRatio: safeNum(this.sentimentEngine?.getVolumeRatio(), 1),
+          sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
+          sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
           signalAgreement: 0.5,
-          momentumShort: mktMomentum.momentumShort,
-          momentumLong: mktMomentum.momentumLong,
+          momentumShort: safeNum(mktMomentum.momentumShort, 0),
+          momentumLong: safeNum(mktMomentum.momentumLong, 0),
         };
         const mktPrice = normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? combinedState.price : (mktState?.price ?? 0);
         this.lastCycleShadowContexts.set(mktSym, {
