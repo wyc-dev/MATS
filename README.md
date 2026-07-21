@@ -1,8 +1,8 @@
 # MATS — The First Self-Evolving AI Trading Brain
 
-**Terminal Agent + 7 AI agents debate every trade. A Skeptics agent vetoes bad ones. A System Engineer agent autonomously fixes learning system bugs. The system evolves its own strategy — no manual tuning.**
+**9 AI agents debate every trade. A Skeptics agent vetoes bad ones. A System Engineer agent autonomously fixes its own bugs. The system learns from every trade outcome — not just whether it won or lost, but WHY it won or lost, under WHAT market conditions, and feeds that back into the next decision.**
 
-MATS is a multi-agent cognitive trading system: Terminal Agent enforces user-defined trading rules via Root Command Prompt, 6 specialized agents think in parallel, debate through the HACP protocol, and reach weighted consensus. A dedicated Skeptics agent stress-tests every position against historical experience data. The system self-evolves via online logistic regression (OLR) + shadow trading + first-passage path-risk + EM cycle chains + genetic algorithms + **RIL (Reason Intelligence Layer)** — it learns from every trade and adapts its own parameters.
+MATS is a multi-agent cognitive trading system: Terminal Agent enforces user-defined trading rules via Root Command Prompt, 6 specialized agents think in parallel, debate through the HACP protocol, and reach weighted consensus. A dedicated Skeptics agent stress-tests every position against historical experience data. The system self-evolves via a **12-layer cognitive evolution pipeline**: online logistic regression (OLR) → shadow trading → first-passage path-risk → EM cycle chains → genetic algorithms → RIL pattern clustering → **Numeric Autoencoder** (learned non-linear market embedding) → **AttnRes cycle-history retrieval** (Kimi K3 attention residual transfer) → **dual pseudo-query specialization** (decision vs execution) → **anti-pattern memory** (failure lesson clustering) → **conditional WR soft gate** (code-level enforcement) → **execution-lens SL/TP** (stop-out-trained direct SL/TP control).
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -69,10 +69,16 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 
 - **🧠 Terminal Agent + Root Command Prompt** — users type natural language trading preferences (e.g. "only trade on Monday GMT"). LLM integrates them into a Root Command Prompt. Before each cycle, rules are checked — if a rule fails, the entire cycle is aborted (no token cost). After Meta-Agent decides, Terminal Agent verifies the decision matches user preferences.
 - **🧠 Entry Thesis System** — every trade needs a validated `[1h: ...] [1d: ...]` rationale. Meta-Agent generates it; Skeptics stress-tests it. No thesis → no trade.
-- **🛡️ Skeptics veto** — an AI stress-tests every position's logic, data consistency, and dark-psychology (whale manipulation?) before execution. Approve-first: rejects only on concrete money-losing flaws.
-- **🧬 Self-evolving** — OLR learns P(win) per side from shadow + paper + real trade outcomes. First-Passage gives instant path-risk. GA mutates strategy parameters by weakest fitness dimension. EM cycle chain carries insights across cycles. RIL clusters entry rationales by historical win rate. **System Engineer agent** (v2.0.182) autonomously detects and fixes learning system bugs every 2 cycles with tsc+test safety net.
-- **🧠 Direction-aware learning** — All learning systems filter by direction (v2.0.175-176): SELL candidates only match SELL history, BUY candidates only match BUY history. Per-direction win rates tracked in PatternClusterManager + ExperienceClass. LLM-powered trade audit detects suspicious patterns every 2 cycles.
-- **⚡ HACP protocol** — Terminal Agent checks rules → 5 sub-agents think in parallel (staggered, 60s deadline race), Skeptics audits, Meta-Agent arbitrates, weighted voting consensus, Terminal Agent verifies. 120s hard timeout → HOLD on expiry.
+- **🛡️ Skeptics veto** — an AI stress-tests every position's logic, data consistency, and dark-psychology (whale manipulation?) before execution. Approve-first: rejects only on concrete money-losing flaws. Dark-psychology check escalates from LIGHTWEIGHT to **MANDATORY** when |momentum| > 2% — must articulate a specific reversal catalyst or reject.
+- **🧬 12-Layer Cognitive Evolution** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, and **which historical cycles** are most relevant right now — through a stack of learned representations (see below).
+- **🔬 Numeric Autoencoder** — a pure-TypeScript MLP (11→16→8 encoder + contrastive loss) learns a non-linear embedding of market conditions. "Similar market conditions" is no longer handcrafted min-max cosine — it's a learned representation where "similar" means "historically led to similar outcomes." Cold-start safe: min-max fallback until 200+ samples + validation pass.
+- **🌀 AttnRes Cycle-History Retrieval** — transferred from Kimi K3's Attention Residuals (arXiv 2603.15031). The conditional win-rate candidate is no longer a single current snapshot — it's a **softmax-weighted blend over 80 cycles of history + entry-time state**, with a learned pseudo-query deciding which historical periods matter most right now. Entry-time regime retains persistent weight (K3 embedding persistence). Block AttnRes compresses 80 cycles → 8 blocks for O(Nd) memory.
+- **⚔️ Dual Pseudo-Query Specialization** — two learned queries per symbol, inspired by K3's pre-attention vs pre-MLP layer specialization: **wDecision** (broad receptive field, trained on trade PnL) for conditional win-rate + thesis context; **wExecution** (sharp/recent-biased, trained on SL/TP stop-out outcomes) for SL/TP survival context.
+- **🎯 Execution-Lens SL/TP** — `computeATRSLTP` uses the execution-mode AttnRes blend as the **PRIMARY** SL/TP signal. wExecution has learned which regime patterns precede stop-outs — when the current regime matches, SL widens automatically (up to 6%), with volatility scaling + entropy confidence damping. Falls back to ATR + raw momentum when wExecution is untrained (cold-start).
+- **🚨 Anti-Pattern Memory** — failed trade lessons are clustered (cosine 0.78) into anti-pattern classes. When a new candidate matches a known failure cluster, Skeptics sees: "Anti-pattern #3 [78% match]: counter-momentum SELL stop-out — 6 losses, avg -7.2%." Repeating a known failure pattern is worse than a novel loss.
+- **🔒 Conditional WR Soft Gate** — code-level conviction penalty: if the conditional win-rate (learned embedding + AttnRes blend) is < 20%, conviction is penalized +35%. This runs even if the LLM ignores the prompt — **the code enforces what the prompt suggests**.
+- **🧠 Direction-aware learning** — all learning systems filter by direction: SELL candidates only match SELL history, BUY only matches BUY. Per-direction win rates tracked everywhere. Counter-momentum trades require a specific named catalyst — "could reverse" is not enough.
+- **⚡ HACP protocol** — Terminal Agent checks rules → 5 sub-agents think in parallel (staggered, 60s deadline race), Skeptics audits, Meta-Agent arbitrates, weighted voting consensus, Terminal Agent verifies. 120s hard timeout → HOLD.
 - **💰 Capital preservation first** — every error path defaults to HOLD. SystemGuard (5 layers). Notional-based fees. SL/TP hard safety layers. Configurable max portion + drawdown + daily-loss limits.
 - **⚙️ Trading Setup** — UI config panel for trade mode, cycle period (1-10m), position size, max portion, leverage, asset type, and market selection. Separate from Root Command Prompt (behavioral rules only).
 
@@ -90,7 +96,12 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 │   • HACP protocol (parallel multi-model inference)            │
 │   • 6-agent system + Meta-Agent arbitration + Skeptics gate   │
 │   • Entry Thesis System + dark psychology + weighted voting   │
-│   • Self-evolution (OLR + Shadow + First-Passage + EM + GA)   │
+│   • Self-evolution (12-layer cognitive evolution pipeline)    │
+│   • Numeric Autoencoder (learned market-condition embedding)  │
+│   • AttnRes cycle-history retrieval (K3 dual pseudo-query)    │
+│   • Anti-pattern memory (failure lesson clustering)           │
+│   • Conditional WR soft gate (code-level enforcement)         │
+│   • Execution-lens SL/TP (stop-out-trained direct control)    │
 │   • RIL Reason Intelligence (pattern clustering + similar     │
 │     trade retrieval + subtle diff LLM analysis)               │
 │   • Trade Incident Panel (MAE/MFE + exitThesis + post-review) │
@@ -134,16 +145,63 @@ Each cycle (1-10 min, user-configurable): Terminal Agent checks rules → 5 sub-
 
 | Component | File | What it does |
 |:----------|:-----|:-------------|
-| **OLR** | `olr-engine.ts` | Per-symbol, per-side online logistic regression. Learns P(win) from shadow + paper + real trade outcomes (TP-before-SL). Tracks per-source sample counts (shadow/paper/real) so agents know data composition. |
-| **Shadow Trading** | `shadow-trade-engine.ts` | Opens simulated LONG + SHORT every cycle with fixed S/R SL/TP. Tracks intra-cycle high/low for correct TP-before-SL resolution. Records MAE/MFE path-risk per trade. Feeds outcomes to OLR with source='shadow'. `getStats()` includes `recentResults` (survives restart). |
-| **First-Passage** | `first-passage.ts` | Instant P(TP before SL) from volatility (σ) + log-drift (ν) + SL/TP distances. Cox & Miller GBM formula. RR-aware: compares to breakeven P, not 50%. |
-| **EM Cycle Chain** | `cycle-summary.ts` | Meta-Agent distills each cycle into a key insight. Previous insights injected into next cycle's context. Semantic retrieval of similar historical cycles. Tiered memory: hot(12) + warm(288) + cold(48 epochs). |
+| **OLR** | `olr-engine.ts` | Per-symbol, per-side online logistic regression. 14 features (12 base + 2 momentum). Learns P(win) from shadow + paper + real trade outcomes (TP-before-SL). Source-weighted SGD (real=4, paper=2, shadow=1). Confidence penalty for low-sample models. |
+| **Shadow Trading** | `shadow-trade-engine.ts` | Opens simulated LONG + SHORT every cycle with fixed S/R SL/TP. Tracks intra-cycle high/low for correct TP-before-SL resolution. Records MAE/MFE path-risk per trade. Feeds outcomes to OLR with source='shadow'. |
+| **First-Passage** | `first-passage.ts` | Instant P(TP before SL) from volatility (σ) + log-drift (ν) + SL/TP distances. Cox & Miller GBM formula. RR-aware: compares to breakeven P, not 50%. Also provides `computeMomentum()` for 5-cycle short-term momentum. |
+| **Numeric Autoencoder** | `numeric-autoencoder.ts` | Pure-TypeScript MLP (11→16→8 encoder + 8→16→11 decoder). Learns non-linear market-condition embedding via reconstruction loss + contrastive loss (same outcome pulled together, different pushed apart) + diversity penalty. Adam optimizer (self-implemented), gradient clip, weight clip, LR decay, seeded RNG, replay buffer, time-weighted sampling (30-day half-life). Cold-start safe: min-max cosine fallback until 200+ samples + validation pass (MSE<0.1, acc>60%, diversity>0.01). |
+| **AttnRes Cycle-History** | `cycle-history-retrieval.ts` | Kimi K3 Attention Residuals transfer (arXiv 2603.15031). K3 layer-depth ≡ MATS cycle-history depth. Conditional WR candidate = softmax-weighted blend over 80-cycle history + entry-time state (persistent). Block AttnRes: 8 blocks of 10 cycles, intra-block mean, inter-block softmax attention. Per-feature Welford z-score + RMSNorm keys. Online learning via reward-weighted key direction (Peters & Schaal 2008) — NOT REINFORCE (identically zero for deterministic softmax). Fixed recency prior breaks uniform-policy deadlock. |
+| **Dual Pseudo-Query** | `cycle-history-retrieval.ts` | Two learned queries per symbol (K3 pre-attention vs pre-MLP): **wDecision** (broad, base recency 0.5, PnL reward) for conditional WR + thesis; **wExecution** (sharp, recency × 2.0, SL/TP stop-out reward) for SL/TP survival. wExecution only updates on closeReason='sl_tp' (SL hit → negative, TP hit → positive). Separate temperature + update counter per mode. Backward compat: old single-w state migrates on load. |
+| **Execution-Lens SL/TP** | `analysis/atr.ts` | `computeATRSLTP` uses wExecution blend as **PRIMARY** SL/TP signal: (1) execAdverseMomentum from hBlend.momentumShort, (2) volatility scaling when exec vol > 1.5× ATR-implied, (3) entropy confidence damping. Falls back to ATR + raw momentum when wExecution untrained. SL cap 6% / TP cap 10% for exec lens (vs 5%/8% raw). Module-level provider — no trading-manager changes. |
+| **Anti-Pattern Tracker** | `anti-pattern-tracker.ts` | Clusters failed trade LessonStatements (cosine 0.78, min 2 members). `matchCandidate(thesis)` returns matching classes + count + avgPnl. Skeptics sees: "you've lost this way N times before." Persisted to `anti-patterns.json`. |
+| **Conditional WR Gate** | `index.ts` | Code-level conviction penalty: condWR < 20% → +35%, < 30% → +25%, < 40% → +15%. Uses AttnRes h_blend + NA embedding + RMSNorm keys + softmax mixture. Soft gate (penalty, never hard block). minSamples=5 guard. |
+| **EM Cycle Chain** | `cycle-summary.ts` | Meta-Agent distills each cycle into a key insight. Previous insights injected into next cycle's context. Dual-channel retrieval (text cosine 50% + NA market-condition cosine 50%). Tiered memory: hot(12) + warm(288) + cold(48 epochs). |
 | **Cold-Start Backfill** | `olr-backfill.ts` | First cycle per market replays 186 historical HL M5 candles into OLR. Non-blocking, idempotent. |
-| **GA + Pattern DB** | `sigmoid-ga.ts` + `trade-pattern-classifier.ts` | GA evolves sigmoid sentiment function by weakest fitness dimension. KNN pattern DB with Wilson-score confidence + time-weighted win/loss. |
-| **EXP** | `thesis-experience.ts` | Vector thesis memory. `checkThesisHistory` uses direction-filtered pWin (v2.0.175) — SELL candidates only match SELL history. `recordClose` stores market conditions + OLR/shadow predictions (v2.0.178). `rebuildClasses` awaits embed warmup (v2.0.178). |
-| **Experience Digester** | `experience-digester.ts` | LLM digests each trade into a lesson → embed → cluster. `classifyCandidate` uses per-direction winRate (v2.0.176). |
-| **Trade Audit** | `direction-audit.ts` | LLM-powered trade record audit. Every 2 cycles, examines recent trades for ANY suspicious pattern (not limited to hardcoded rules). |
-| **System Engineer** | `system-engineer.ts` | Autonomous LLM code engineer (v2.0.182). Every 2 cycles: reads SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md + trade records + source code, generates fix, applies it, runs tsc+test, auto-rollbacks on failure, auto-commits on success. |
+| **GA + Pattern DB** | `sigmoid-ga.ts` + `trade-pattern-classifier.ts` | GA evolves sigmoid sentiment function by weakest fitness dimension. KNN pattern DB with Wilson-score confidence + time-weighted win/loss. Uses NA learned cosine when ready (falls back to handcrafted weighted-diff). |
+| **EXP** | `thesis-experience.ts` | Vector thesis memory. Direction-filtered (SELL only matches SELL). `recordClose` stores market conditions + OLR/shadow predictions + LLM-distilled LessonStatement (rootCause + lesson + categories). `retrieveSimilarFailureLessons()` — dual-channel (text + NA market-condition) retrieval of most similar LOSSES, injected into Skeptics. |
+| **Experience Digester** | `experience-digester.ts` | LLM digests each trade into a LessonStatement (rootCause + lesson + categories). Lesson persists to ThesisExperienceRecord. `classifyCandidate` uses per-direction winRate. |
+| **Trade Audit** | `direction-audit.ts` | LLM-powered trade record audit. Every 2 cycles. Uses vector-conditional win rate (not raw per-symbol WR). Known-fixed issues list prevents repeat diagnosis. |
+| **System Engineer** | `system-engineer.ts` | Autonomous LLM code engineer. Every 2 cycles: reads SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md + trade records + source code, generates fix, applies it, runs tsc+test, auto-rollbacks on failure, auto-commits on success. |
+
+### Cognitive Evolution Pipeline
+
+The system's learning stack evolved through 12 versions, each addressing a structural limitation of the previous:
+
+```
+ v2.0.203  Raw WR → Vector-Conditional WR (min-max + cosine, cross-symbol, same side)
+     ↓     "SILVER BUY 0W/1L" doesn't mean BUY is wrong — different market conditions
+ v2.0.204  Min-max → Numeric Autoencoder (learned non-linear 11→16→8 embedding)
+     ↓     Linear min-max can't capture volatility × regime × funding interactions
+ v2.0.205  Uniform sampling → Time-weighted (30-day half-life) + Skeptics conditional block
+     ↓     Old samples pollute model; Skeptics couldn't see conditional WR
+ v2.0.206  Single similarity → Unified NA cosine across classifier + EM + agent weights
+     ↓     Multiple similarity metrics disagreed; agent weights used raw WR
+ v2.0.207  6 upgrades fixing 11-trade losing streak:
+           #B dark-psych MANDATORY on |momentum|>2% + #C momentum-adaptive SL
+           + #D momentum features + #E lesson persistence + #F anti-pattern clustering
+           + #G conditional WR in thesis generation
+     ↓     Counter-momentum SELL, SL too narrow, lessons not persisted, no anti-pattern memory
+ v2.0.208  Meta-Agent DEEP LEARNING CONTEXT (5 learned-context blocks as first-class signals)
+     ↓     LLM couldn't see learned signals; treated them as footnotes
+ v2.0.209  Prompt-only → Code-level conditional WR soft gate (conviction penalty)
+     ↓     LLM ignored prompt-level learning blocks; code enforces what prompt suggests
+ v2.0.210  3 audit fixes: olrPWinAtEntry cache + TP R:R≥1.6 + thesis-action consistency
+     ↓     Thesis contradicted action; TP too narrow; audit repeat-diagnosed fixed issues
+ v2.0.211  AttnRes 7 transfers from Kimi K3 (cycle-history selective retrieval + block
+           AttnRes + RMSNorm keys + softmax mixture + zero-init cold-start + single-head)
+     ↓     Conditional WR used single current snapshot; entry-time regime lost
+ v2.0.212  #7 Dual pseudo-query (wDecision broad + wExecution sharp, different reward)
+     ↓     Single query couldn't serve both decision (broad) and execution (sharp)
+ v2.0.213  Execution lens as PRIMARY computeATRSLTP signal (stop-out-trained SL/TP)
+           Full circle: wExecution learns from stop-outs → directly controls SL/TP
+```
+
+**Key design principles:**
+- **Cold-start safe everywhere**: every learned path has a deterministic fallback (NA → min-max, AttnRes → current snapshot, anti-pattern → no block, wExecution → ATR). The system never degrades below baseline on first deploy.
+- **Selectivity is EARNED**: zero-init pseudo-queries start as uniform/recency-weighted. The system must trade and observe outcomes to learn which historical patterns matter. No unearned assumptions.
+- **Code enforces what prompt suggests**: the conditional WR soft gate runs at code level — even if the LLM completely ignores the DEEP LEARNING CONTEXT prompt, conviction is still penalized. Belt and suspenders.
+- **Outcome-driven, not gradient-driven**: MATS has no backprop loop. All learning is from trade outcomes (win/loss + PnL + closeReason). The reward-weighted key direction update (Peters & Schaal 2008) is the correct rule for deterministic attention — REINFORCE is identically zero.
+
+→ Full evolution map in [NA.md](NA.md) · AttnRes design in [K.md](K.md)
 
 ### RIL — Reason Intelligence Layer
 
@@ -223,7 +281,7 @@ Restrict a symbol to BUY-only or SELL-only via API or `data/evolution/market-age
 | **Frontend** | React 18 + Vite + TradingView Chart |
 | **Config** | Zod schema validation |
 | **Logging** | Winston (structured + file rotation) |
-| **Testing** | vitest |
+| **Testing** | vitest (194 tests, 10 test files) |
 | **Crypto** | `@noble/curves` (HL phantom agent signing) |
 | **Vector Embedding** | Transformers.js MiniLM L6 v2 (384-dim, in-process, CPU) |
 
