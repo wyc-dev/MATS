@@ -9,6 +9,7 @@
 import { createLogger } from '../observability/logger.ts';
 import type { EmbedProvider } from './embeddings.ts';
 import { cosine } from './embeddings.ts';
+import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
 import type {
   CycleSummary,
   EMState,
@@ -123,7 +124,10 @@ export class CycleSummaryManager {
    *  Used to find historically similar market conditions by querying the
    *  current cycle's market description against all stored insight vectors.
    *  Completely independent from ExperienceDigester's vector store. */
-  private insightVectors: Array<{ cycleNumber: number; vector: number[]; insight: string; outcome?: 'win' | 'loss' | 'hold' }> = [];
+  private insightVectors: Array<{ cycleNumber: number; vector: number[]; insight: string; outcome?: 'win' | 'loss' | 'hold'; marketFeatures?: Record<string, number>; naVector?: number[] }> = [];
+  /** v2.0.206 (#6): NA provider — dual-channel (text + market-condition) retrieval. */
+  private naEmbeddingProvider: NumericEmbedProvider | null = null;
+  setNaEmbeddingProvider(p: NumericEmbedProvider | null): void { this.naEmbeddingProvider = p; }
   /** Embed provider — shared instance (stateless, no interference with other consumers). */
   private embedProvider: EmbedProvider | null = null;
   /** Whether insight vectors have been rebuilt from loaded summaries. */
@@ -451,15 +455,25 @@ export class CycleSummaryManager {
    * Add a new summary's insight vector to the store.
    * Called after push() — non-blocking.
    */
-  async addInsightVector(summary: CycleSummary): Promise<void> {
+  async addInsightVector(summary: CycleSummary, marketFeatures?: Record<string, number>): Promise<void> {
     if (!this.embedProvider || !summary.keyInsight?.trim()) return;
     try {
       const vecs = await this.embedProvider.embed([summary.keyInsight]);
       if (vecs[0] && vecs[0].length > 0) {
+        // v2.0.206 (#6): Compute NA market-condition embedding for dual-channel retrieval.
+        let naVector: number[] | undefined;
+        if (this.naEmbeddingProvider && this.naEmbeddingProvider.isReady() && marketFeatures && Object.keys(marketFeatures).length > 0) {
+          try {
+            const naVecs = this.naEmbeddingProvider.embed([marketFeatures]);
+            if (naVecs[0] && naVecs[0].length > 0) naVector = naVecs[0];
+          } catch { /* non-critical */ }
+        }
         this.insightVectors.push({
           cycleNumber: summary.cycleNumber,
           vector: vecs[0],
           insight: summary.keyInsight,
+          marketFeatures,
+          naVector,
         });
         // Prune: keep last 500 insight vectors (same as summary retention)
         if (this.insightVectors.length > 500) {
@@ -484,12 +498,27 @@ export class CycleSummaryManager {
     marketDesc: string,
     topN: number = 3,
     excludeRecent: number = 3,
+    /** v2.0.206 (#6): Current cycle's market features — when provided AND the NA
+     *  provider is ready, retrieval fuses text-cosine (semantic insight) with
+     *  NA-cosine (market-condition) so a returned historical cycle matches BOTH
+     *  "similar insight was uttered" AND "similar market regime was present". */
+    marketFeatures?: Record<string, number>,
   ): Promise<Array<{ cycleNumber: number; insight: string; similarity: number }>> {
     if (!this.embedProvider || this.insightVectors.length === 0) return [];
     try {
       const queryVecs = await this.embedProvider.embed([marketDesc.slice(0, 500)]);
       const queryVec = queryVecs[0];
       if (!queryVec || queryVec.length === 0) return [];
+
+      // v2.0.206 (#6): Compute NA query embedding for market-condition channel.
+      let queryNaVec: number[] | null = null;
+      if (this.naEmbeddingProvider && this.naEmbeddingProvider.isReady() && marketFeatures && Object.keys(marketFeatures).length > 0) {
+        try {
+          const naVecs = this.naEmbeddingProvider.embed([marketFeatures]);
+          if (naVecs[0] && naVecs[0].length > 0) queryNaVec = naVecs[0];
+        } catch { /* non-critical — text-only retrieval */ }
+      }
+      const useDual = queryNaVec !== null;
 
       // Exclude recent cycles to avoid trivial self-match
       const maxCycle = this.insightVectors.length > 0
@@ -498,11 +527,26 @@ export class CycleSummaryManager {
 
       const scored = this.insightVectors
         .filter(v => v.vector.length > 0 && v.cycleNumber <= maxCycle)
-        .map(v => ({
-          cycleNumber: v.cycleNumber,
-          insight: v.insight,
-          similarity: cosine(queryVec, v.vector),
-        }))
+        .map(v => {
+          const textSim = cosine(queryVec, v.vector);
+          // v2.0.206 (#6): Dual-channel fusion — when both query + stored NA
+          // vectors exist, blend text (semantic) 50% + market (conditions) 50%.
+          // Text-only cycles (no naVector) get textSim alone (market weight 0
+          // but text bumped to compensate so they aren't unfairly deprioritised).
+          let sim = textSim;
+          if (useDual) {
+            if (v.naVector && v.naVector.length > 0) {
+              let cosNa = 0;
+              for (let k = 0; k < queryNaVec!.length; k++) cosNa += queryNaVec![k]! * v.naVector[k]!;
+              const naSim = (cosNa + 1) / 2; // [-1,1] → [0,1]
+              sim = textSim * 0.50 + naSim * 0.50;
+            } else {
+              // No stored NA vector (older cycle) — weight text fully.
+              sim = textSim;
+            }
+          }
+          return { cycleNumber: v.cycleNumber, insight: v.insight, similarity: sim };
+        })
         .sort((a, b) => b.similarity - a.similarity)
         .slice(0, topN);
 

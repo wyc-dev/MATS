@@ -18,6 +18,8 @@ import type { MarketRegime, AgentRole } from '../types/index.ts';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { EMClusteringEngine, type EMQueryResult } from './em-clustering.ts';
 import { wilsonScore } from './evolution-utils.ts';
+import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
+import { regimeToOrdinal } from './olr-engine.ts';
 
 const log = createLogger({ phase: 'pattern_classifier' });
 
@@ -176,6 +178,11 @@ export class TradePatternClassifier {
   private dirty = false;
   /** GMM EM clustering engine for unsupervised pattern discovery */
   readonly em: EMClusteringEngine = new EMClusteringEngine();
+  /** v2.0.206 (#5): Optional NA embedding provider — when ready, computeSimilarity
+   *  uses learned cosine similarity instead of handcrafted weighted-diff, so the
+   *  whole system shares one data-driven definition of "similar market conditions". */
+  private naEmbeddingProvider: NumericEmbedProvider | null = null;
+  setNaEmbeddingProvider(p: NumericEmbedProvider | null): void { this.naEmbeddingProvider = p; }
 
   // ─── Lifecycle ───
 
@@ -690,9 +697,38 @@ export class TradePatternClassifier {
   // ─── Similarity Engines ───
 
   /** Similarity between two single contexts (for entry matching) */
+  private contextToFeatures(ctx: TradePatternContext): Record<string, number> {
+    return {
+      volatility: ctx.volatility,
+      srDistanceBps: ctx.srDistanceBps,
+      obImbalance: ctx.obImbalance,
+      sentiment: ctx.sentiment,
+      signalAgreement: ctx.signalAgreement,
+      fundingRate: ctx.fundingRate,
+      volumeRatio: ctx.volumeRatio,
+      sentimentConviction: ctx.sentimentConviction,
+      regimeOrdinal: regimeToOrdinal(ctx.regime),
+    };
+  }
+
   private computeSimilarity(a: TradePatternContext, b: TradePatternContext): number {
     try {
       const regimeScore = a.regime === b.regime ? 1.0 : 0.25;
+      // v2.0.206 (#5): When the Numeric Autoencoder is ready, use learned cosine
+      // similarity (data-driven, non-linear, cross-symbol) instead of the
+      // handcrafted weighted-diff. Falls back to weighted-diff during cold-start.
+      if (this.naEmbeddingProvider && this.naEmbeddingProvider.isReady()) {
+        try {
+          const emb = this.naEmbeddingProvider.embed([this.contextToFeatures(a), this.contextToFeatures(b)]);
+          if (emb.length === 2 && emb[0]!.length > 0 && emb[1]!.length > 0) {
+            let cos = 0;
+            for (let k = 0; k < emb[0]!.length; k++) cos += emb[0]![k]! * emb[1]![k]!;
+            // Map cosine ∈ [-1,1] → [0,1] similarity.
+            const naSim = (cos + 1) / 2;
+            return regimeScore * 0.30 + naSim * 0.70;
+          }
+        } catch { /* fall through to weighted-diff */ }
+      }
       let numScore = 0, totalW = 0;
       for (const f of NUMERICAL_FEATURES) {
         const diff = Math.abs((a[f.key] as number) - (b[f.key] as number));

@@ -693,6 +693,9 @@ class MATSSystem {
       log.info('Step 3.11/8: Initializing Trade Pattern Classifier...');
       this.patternClassifier = new TradePatternClassifier();
       this.patternClassifier.load();
+      // v2.0.206 (#5): Wire NA embedding provider so computeSimilarity uses
+      // learned cosine (data-driven) instead of handcrafted weighted-diff.
+      this.patternClassifier.setNaEmbeddingProvider(this.naEngine);
       log.info('✓ Trade Pattern Classifier ready');
 
       // 3.12 Initialize Pattern Tag Tracker (v2.0.28)
@@ -730,6 +733,8 @@ class MATSSystem {
       ae.registerBaseWeight(this.riskAuditor.identity.role, this.riskAuditor.identity.weight);
       ae.registerBaseWeight(this.metaAgent.identity.role, this.metaAgent.identity.weight);
       this.hacpEngine.setAgentEvolution(ae);
+      // v2.0.206 (#8): Wire NA provider so agent multipliers use conditional WR.
+      ae.setNaEmbeddingProvider(this.naEngine);
       // Wire real-time progress updates to API
       this.hacpEngine.setProgressCallback((progress) => {
         this.cycleProgress = progress;
@@ -1948,6 +1953,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           // TransformersEmbedProvider (stateless, no interference with
           // ExperienceDigester). Rebuild insight vectors from loaded summaries.
           this.emManager.setEmbedProvider(new TransformersEmbedProvider());
+          // v2.0.206 (#6): Wire NA provider for dual-channel (text + market-condition) retrieval.
+          this.emManager.setNaEmbeddingProvider(this.naEngine);
           void this.emManager.rebuildInsightVectors().catch((err: unknown) =>
             log.warn(`[insight-retrieval] startup rebuild failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`),
           );
@@ -3893,10 +3900,17 @@ ${recentExamples}
       let similarInsightsContext = '';
       if (this.emManager && config.exp.enabled) {
         try {
+          // v2.0.206 (#6): Pass current market features for dual-channel retrieval.
+          const emQueryFeatures = (() => {
+            const sym = normalizeSymbol(activeSymbol);
+            const ctx = this.lastCycleShadowContexts.get(sym);
+            return ctx?.features ?? {};
+          })();
           const similar = await this.emManager.querySimilarInsights(
             `${activeSymbol} ${combinedState.regime} ${combinedState.trend} price=${combinedState.price}`,
             3,
             3, // exclude last 3 cycles
+            Object.keys(emQueryFeatures).length > 0 ? emQueryFeatures : undefined,
           );
           similarInsightsContext = this.emManager.formatSimilarInsights(similar);
           // v2.0.140: Record retrieval for self-adjustment (win/loss feedback)
@@ -4777,8 +4791,41 @@ ${recentExamples}
       }
       log.info(`📊 currentPositions after injection=${currentPositions.length} (symbols: ${currentPositions.map(p => p.symbol).join(', ')})`);
 
+      // v2.0.206 (#3): Real-time OLR P(win) exit trigger for open positions.
+      // For each REAL open position (quantity > 0), recompute OLR P(win) using
+      // the CURRENT cycle's market features (not entry features). If the edge
+      // has collapsed (P(win) < 40%), inject a warning block so Meta-Agent /
+      // Skeptics re-evaluate the exit decision with the degraded statistical
+      // edge in mind. This is NOT a hard veto — it enriches the context so the
+      // thesis-invalidation rule can factor in the real-time statistical edge.
+      let olrRealtimeBlock = '';
+      try {
+        const realPositions = currentPositions.filter(p => (p.quantity ?? 0) > 0 && !p.isTradingMarket);
+        if (realPositions.length > 0) {
+          const lines: string[] = [];
+          for (const pos of realPositions) {
+            const sym = normalizeSymbol(pos.symbol);
+            const side = pos.side === 'buy' ? 'buy' : 'sell';
+            const ctx = this.lastCycleShadowContexts.get(sym);
+            if (ctx && ctx.features && Object.keys(ctx.features).length > 0) {
+              const olr = this.olrEngine.query(sym, ctx.features, side, this.totalCycles);
+              const pWin = olr.pWin;
+              let flag = '';
+              if (pWin < 0.35) flag = ' ⚠️ EDGE COLLAPSED — statistical win probability now below 35%. Strongly consider CLOSE unless thesis is still clearly valid.';
+              else if (pWin < 0.45) flag = ' ⚠️ EDGE WEAKENING — statistical win probability now below 45%. Re-evaluate hold vs close.';
+              lines.push(`  ${pos.symbol} (${side.toUpperCase()}): real-time OLR P(win)=${(pWin * 100).toFixed(0)}%${flag}`);
+            }
+          }
+          if (lines.length > 0) {
+            olrRealtimeBlock = `\n=== REAL-TIME OLR EDGE (open positions, current market features) ===\n${lines.join('\n')}\nInterpretation: These are the CURRENT statistical win probabilities, recomputed every cycle from live market features. If P(win) has collapsed since entry, the original entry edge may no longer hold — weigh this alongside thesis validity when deciding HOLD vs CLOSE.\n---\n`;
+          }
+        }
+      } catch (err) {
+        log.warn(`[OLR-RT] real-time exit-trigger block failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
+
       const result = await this.hacpEngine.executeDecisionCycle(
-        `${marketDesc}\n\n${adjustedEvolutionContext}${backtestContext}`,
+        `${marketDesc}${olrRealtimeBlock}\n\n${adjustedEvolutionContext}${backtestContext}`,
         portfolioDesc,
         currentPositions.length > 0 ? currentPositions : undefined,
         emContext,
@@ -6470,10 +6517,17 @@ ${recentExamples}
           }
         }
 
+        // v2.0.206 (#8): Pass per-symbol market features so agent outcome records
+        // carry marketFeatures for conditional WR computation.
         this.evolution.agentOutcomes.recordCycle(
           this.totalCycles,
           allAgentDecisions,
           combinedState.regime,
+          (symbol: string) => {
+            const sym = normalizeSymbol(symbol);
+            const ctx = this.lastCycleShadowContexts.get(sym);
+            return ctx?.features;
+          },
         );
 
         // If a position was closed, backfill outcomes for affected agents
@@ -6584,7 +6638,14 @@ ${recentExamples}
           );
           this.emManager.push(cycleSummary);
           // v2.0.140: Add insight vector for semantic retrieval (non-blocking)
-          void this.emManager.addInsightVector(cycleSummary).catch(() => { /* non-critical */ });
+          // v2.0.206 (#6): Pass cycle's market features so the NA vector is stored
+          // alongside the text vector for dual-channel retrieval.
+          const emCycleFeatures = (() => {
+            const sym = normalizeSymbol(cycleSummary.primarySignal?.name ?? this.marketAgent.getConfig().selectedSymbol ?? '');
+            const ctx = this.lastCycleShadowContexts.get(sym);
+            return ctx?.features;
+          })();
+          void this.emManager.addInsightVector(cycleSummary, emCycleFeatures).catch(() => { /* non-critical */ });
         }
       } catch (err: unknown) {
         log.warn(`[E-step] CycleSummary build failed: ${err instanceof Error ? err.message : String(err)}`);

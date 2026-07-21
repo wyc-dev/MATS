@@ -79,6 +79,10 @@ This is now enforced in `applyLossStreakGateToDecision` (v2.0.770): winner patte
 | Dynamic vol gate | **WORKING** | `src/index.ts` | v2.0.764 — adapts based on trade outcomes |
 | Direction filtering | **WORKING** | `src/evolution/thesis-experience.ts` | v2.0.175 — BUY/SELL never pooled |
 | Raw win rate as learning reference | **DEPRECATED** | `direction-audit.ts` + `experience-digester.ts` + `pattern-tag-tracker.ts` | v2.0.203 — replaced by vector-conditional WR via `computeVectorConditionalWinRate()`. Raw per-symbol WR conflates trades under different market conditions; conditional WR (cosine on normalised entry features, cross-symbol, same side) is the true edge signal |
+| Handcrafted weighted-diff similarity (classifier) | **DEPRECATED** | `trade-pattern-classifier.ts` `computeSimilarity` | v2.0.206 (#5) — when NA provider ready, uses learned cosine embedding (data-driven, non-linear) instead of handcrafted `NUMERICAL_FEATURES` weighted-diff. Falls back to weighted-diff during cold-start. System now shares ONE definition of "similar market conditions" |
+| Agent weight from raw win rate | **UPGRADED** | `agent-evolution.ts` `updateMultiplier` | v2.0.206 (#8) — when NA ready + currentFeatures provided, uses conditional WR (agent performance in similar MARKET CONDITIONS) instead of raw win rate. Raw WR conflates regimes; conditional WR isolates "how does this agent do WHEN the market looks like RIGHT NOW?" |
+| EM Cycle Chain text-only retrieval | **UPGRADED** | `cycle-summary.ts` `querySimilarInsights` | v2.0.206 (#6) — dual-channel: text-cosine (semantic insight) 50% + NA-cosine (market-condition) 50% when NA ready. Matches BOTH "similar insight was uttered" AND "similar market regime was present" |
+| Exit decision without real-time edge | **UPGRADED** | `index.ts` executeDecisionCycle context | v2.0.206 (#3) — open positions get real-time OLR P(win) recomputed from current features, injected into Meta-Agent/Skeptics context. P(win)<35% → "EDGE COLLAPSED" warning; <45% → "EDGE WEAKENING". NOT a hard veto — enriches thesis-invalidation rule with live statistical edge |
 
 ## Scope
 

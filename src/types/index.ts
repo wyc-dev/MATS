@@ -386,6 +386,9 @@ export interface AgentOutcomeRecord {
   pnlPct?: number;
   /** Market regime at decision time */
   regime: MarketRegime;
+  /** v2.0.206 (#8): Market features at decision time — enables conditional WR
+   *  (agent performance in similar market conditions) instead of raw win rate. */
+  marketFeatures?: Record<string, number>;
   /** Timestamp */
   timestamp: number;
 }
