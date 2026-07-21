@@ -735,6 +735,18 @@ export interface ReasonPatternCluster {
   exitTypeBreakdown: Record<string, { wins: number; losses: number; pnl: number }>;
   /** Timestamp of last member added. */
   ts: number;
+  /** v2.0.214: Per-member market data for conditional WR computation within clusters.
+   *  Stores minimal record shape compatible with computeVectorConditionalWinRate.
+   *  Populated during rebuild() and addTrade(). Not persisted (clusters are rebuilt
+   *  from records on startup). Undefined for clusters created before v2.0.214 —
+   *  code must handle undefined gracefully (fall back to raw WR). */
+  memberMarketData?: Array<{
+    marketFeatures?: Record<string, number>;
+    outcome: string;
+    symbol: string;
+    side: 'buy' | 'sell';
+    pnl?: number;
+  }>;
 }
 
 /** Aggregated stats for one close reason type. */

@@ -4350,7 +4350,16 @@ ${recentExamples}
       if (config.ril.enabled && this.patternCluster && this.closeReasonAgg) {
         try {
           const records = this.expMemory?.getRecords() ?? [];
-          const patternMap = this.patternCluster.getPatternMap(records.length);
+          // v2.0.214: Pass current market features to getPatternMap for
+          // conditional WR within pattern clusters (K.md #4 transfer to RIL).
+          // Falls back to raw WR when features unavailable or insufficient data.
+          let currentFeatures: Record<string, number> | undefined;
+          try {
+            currentFeatures = buildCurrentFeaturesForSymbol(activeSymbol, filteredState);
+          } catch {
+            currentFeatures = undefined; // fail-open: raw WR only
+          }
+          const patternMap = this.patternCluster.getPatternMap(records.length, currentFeatures);
           const closeReasonBlock = this.closeReasonAgg.formatBlock(records);
 
           // A2A Digester digest (kept as supplementary LLM analysis)
