@@ -1153,7 +1153,23 @@ export class HACPEngine {
         }
       } catch { /* non-critical */ }
     }
-    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}`;
+    // v2.0.211 (K.md #1): AttnRes blend context — explain the h_blend
+    // candidate so Skeptics/Meta-Agent understand the candidate is a
+    // softmax blend over cycle history + entry-time state (not a single
+    // snapshot). This teaches the LLM that conditional WR is conditioned on
+    // a trajectory-aware representation.
+    let attnResBlock = '';
+    if (this.naCandidateFeaturesProvider) {
+      try {
+        const cf = this.naCandidateFeaturesProvider();
+        if (cf && (metaAction === 'buy' || metaAction === 'sell') && !hasExistingPosition) {
+          // The provider already returns h_blend (wired in index.ts); we add
+          // an explanatory note so the LLM knows the candidate is blended.
+          attnResBlock = `\n=== ATTENTION-RESIDUAL BLEND (K.md #1) ===\n  The market-condition candidate for conditional WR is a softmax-weighted blend over recent cycle history + entry-time state (AttnRes transfer from Kimi K3). Entry-time regime retains persistent weight. When conditional WR references 'similar market conditions', it means conditions similar to this BLENDED trajectory, not a single snapshot.\n---`;
+        }
+      } catch { /* non-critical */ }
+    }
+    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}`;
 
     if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition && !expThesisGated) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);

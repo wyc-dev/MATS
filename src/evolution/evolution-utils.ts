@@ -186,6 +186,19 @@ export interface VectorConditionalOptions {
    *  metric) instead of min-max + cosine. Falls back to min-max when the
    *  provider is not ready (cold-start / validation failed). */
   embeddingProvider?: NumericEmbedProvider;
+  /** v2.0.211 (K.md #3): RMSNorm retrieval keys before cosine — competition
+   *  on direction not magnitude (high-volatility periods no longer dominate
+   *  similarity). Default false (preserve min-max behavior for cold-start).
+   *  When true, records + candidate are RMSNorm'd instead of min-max'd. */
+  rmsNormKeys?: boolean;
+  /** v2.0.211 (K.md #4): Softmax-weighted win rate instead of equal-weight.
+   *  winRate = Σ softmax(sim_i/τ) · [win_i]. High-similarity records weight
+   *  more (competitive normalization, K3 ablation: softmax > sigmoid).
+   *  Default false (equal-weight, current behavior). */
+  softmaxWeightedWR?: boolean;
+  /** v2.0.211 (K.md #4): Temperature for softmax-weighted WR (default 0.1).
+   *  Lower = sharper (top match dominates), higher = more uniform. */
+  softmaxTemperature?: number;
 }
 
 export interface VectorConditionalMatch {
@@ -461,6 +474,16 @@ export function computeVectorConditionalWinRate(
     // caller still gets a neutral result with a meaningful explanation.
   }
 
+  // v2.0.211 (K.md #3): RMSNorm-keys path — when rmsNormKeys is set, both
+  // candidate and records are RMSNorm'd (competition on direction not
+  // magnitude). This is the AttnRes key normalisation, applied to the
+  // min-max fallback path. The NA-learned path is unaffected (embeddings are
+  // already L2-normalised). When false (default), the original min-max path
+  // runs unchanged (cold-start safe).
+  if (options?.rmsNormKeys) {
+    return computeVectorConditionalWinRateRMSNorm(candidateFeatures, filtered, names, threshold, minSamples, topN, options);
+  }
+
   // Min-max stats over filtered records (for normalisation).
   const stats = computeMinMax(filtered, names);
 
@@ -520,7 +543,14 @@ export function computeVectorConditionalWinRate(
   }
 
   const sampleSize = matched.length;
-  const conditionalWinRate = sampleSize > 0 ? wins / sampleSize : 0.5;
+  // v2.0.211 (K.md #4): Softmax-weighted win rate option.
+  let conditionalWinRate: number;
+  if (options?.softmaxWeightedWR && sampleSize > 0) {
+    conditionalWinRate = softmaxWeightedWinRate(matches, options.softmaxTemperature ?? 0.1);
+    // Wilson still uses raw wins/total for the lower bound (penalises small n).
+  } else {
+    conditionalWinRate = sampleSize > 0 ? wins / sampleSize : 0.5;
+  }
   const wilsonWinRate = wilsonScore(wins, sampleSize);
   const avgSimilarity = sampleSize > 0 ? simSum / sampleSize : 0;
 
@@ -542,7 +572,8 @@ export function computeVectorConditionalWinRate(
     };
   }
 
-  const explanation = `Vector-conditional: ${wins}/${sampleSize} won (${(conditionalWinRate * 100).toFixed(0)}%, wilson ${(wilsonWinRate * 100).toFixed(0)}%, avg sim ${(avgSimilarity * 100).toFixed(0)}%, ${confidence} conf, ${usableDims.length}/${names.length} features).`;
+  const wrLabel = options?.softmaxWeightedWR ? 'softmax-WR' : 'WR';
+  const explanation = `Vector-conditional (${wrLabel}): ${wins}/${sampleSize} won (${(conditionalWinRate * 100).toFixed(0)}%, wilson ${(wilsonWinRate * 100).toFixed(0)}%, avg sim ${(avgSimilarity * 100).toFixed(0)}%, ${confidence} conf, ${usableDims.length}/${names.length} features).`;
 
   return {
     conditionalWinRate,
@@ -565,4 +596,151 @@ export function formatVectorConditional(
 ): string {
   if (result.confidence === 'none') return `${label}: ${result.explanation}`;
   return `${label}: ${result.wins}/${result.sampleSize} won (${(result.conditionalWinRate * 100).toFixed(0)}%, wilson ${(result.wilsonWinRate * 100).toFixed(0)}%, sim ${(result.avgSimilarity * 100).toFixed(0)}%, ${result.confidence})`;
+}
+
+// ─── v2.0.211 (K.md #3): RMSNorm-keys conditional WR path ──────────────────
+//
+// AttnRes key normalisation applied to the min-max fallback: records +
+// candidate are RMSNorm'd (direction competition, not magnitude). This
+// prevents high-volatility periods (large feature magnitudes) from dominating
+// cosine similarity. Gated by `rmsNormKeys: true` in options — default is the
+// original min-max path (cold-start safe).
+
+/** RMSNorm a feature vector: x / sqrt(mean(x²) + eps). Zero / all-missing →
+ *  uniform unit vector (well-defined cosine, no degenerate zero-vector). */
+export function rmsNormFeatures(
+  features: Record<string, number>,
+  names: readonly string[],
+): { vec: number[]; present: boolean[] } {
+  const vec = new Array<number>(names.length);
+  const present = new Array<boolean>(names.length);
+  let sumSq = 0;
+  let finiteCount = 0;
+  for (let i = 0; i < names.length; i++) {
+    const v = features?.[names[i]!];
+    if (v !== undefined && v !== null && Number.isFinite(v)) {
+      vec[i] = v;
+      present[i] = true;
+      sumSq += v * v;
+      finiteCount++;
+    } else {
+      vec[i] = 0;
+      present[i] = false;
+    }
+  }
+  if (finiteCount === 0) {
+    // All-missing → uniform unit vector (neutral contribution, well-defined cosine).
+    const u = 1 / Math.sqrt(names.length);
+    return { vec: vec.map(() => u), present };
+  }
+  const rms = Math.sqrt(sumSq / finiteCount + 1e-8);
+  for (let i = 0; i < names.length; i++) {
+    if (present[i]) vec[i] = vec[i]! / rms;
+  }
+  return { vec, present };
+}
+
+/** Internal: RMSNorm-keys conditional WR computation (the #3 path).
+ *  Shares the scoring/explanation structure with the min-max path but
+ *  normalises via RMSNorm instead of min-max. */
+function computeVectorConditionalWinRateRMSNorm(
+  candidateFeatures: Record<string, number>,
+  filtered: Array<{ marketFeatures?: Record<string, number>; outcome: string; symbol: string; side: 'buy' | 'sell'; pnl?: number }>,
+  names: readonly string[],
+  threshold: number,
+  minSamples: number,
+  topN: number,
+  options: VectorConditionalOptions,
+): VectorConditionalWinRateResult {
+  const neutral: VectorConditionalWinRateResult = {
+    conditionalWinRate: 0.5, wilsonWinRate: 0.5, sampleSize: 0, wins: 0, losses: 0,
+    avgSimilarity: 0, confidence: 'none', matched: [], usedFeatures: [...names],
+    explanation: 'No similar market-condition trades found (RMSNorm path, insufficient data).',
+  };
+
+  // RMSNorm candidate + every record.
+  const cand = rmsNormFeatures(candidateFeatures, names);
+  const usableDims: number[] = [];
+  for (let i = 0; i < names.length; i++) if (cand.present[i]) usableDims.push(i);
+  const usedFeatures = usableDims.map((i) => names[i]!);
+  if (usableDims.length === 0) return { ...neutral, explanation: 'No usable feature dimensions (candidate has no present features).' };
+
+  const scored: Array<{ rec: typeof filtered[number]; sim: number; shared: number }> = [];
+  for (const rec of filtered) {
+    const r = rmsNormFeatures(rec.marketFeatures ?? {}, names);
+    const { sim, sharedDims } = sharedCosine(cand.vec, r.vec);
+    if (sharedDims >= Math.max(2, Math.ceil(usableDims.length / 2)) && sim >= threshold) {
+      scored.push({ rec, sim, shared: sharedDims });
+    }
+  }
+  if (scored.length === 0) {
+    return { ...neutral, usedFeatures, explanation: `No trades matched (RMSNorm, threshold=${threshold}, ${usableDims.length}/${names.length} usable dims).` };
+  }
+  scored.sort((a, b) => b.sim - a.sim);
+  const matched = scored.slice(0, topN);
+
+  let wins = 0;
+  let losses = 0;
+  let simSum = 0;
+  const matches: VectorConditionalMatch[] = [];
+  for (const m of matched) {
+    const o = normaliseOutcome(m.rec.outcome)!;
+    if (o === 'win') wins++; else losses++;
+    simSum += m.sim;
+    matches.push({ similarity: m.sim, outcome: o, symbol: m.rec.symbol, side: m.rec.side, pnl: m.rec.pnl ?? 0 });
+  }
+  const sampleSize = matched.length;
+  let conditionalWinRate: number;
+  if (options.softmaxWeightedWR && sampleSize > 0) {
+    conditionalWinRate = softmaxWeightedWinRate(matches, options.softmaxTemperature ?? 0.1);
+  } else {
+    conditionalWinRate = sampleSize > 0 ? wins / sampleSize : 0.5;
+  }
+  const wilsonWinRate = wilsonScore(wins, sampleSize);
+  const avgSimilarity = sampleSize > 0 ? simSum / sampleSize : 0;
+  const confidence: VectorConditionalWinRateResult['confidence'] =
+    sampleSize >= 30 ? 'high' : sampleSize >= 10 ? 'medium' : sampleSize >= minSamples ? 'low' : 'none';
+  if (sampleSize < minSamples) {
+    return { conditionalWinRate: 0.5, wilsonWinRate: 0.5, sampleSize, wins, losses, avgSimilarity, confidence: 'none', matched: matches, usedFeatures, explanation: `Only ${sampleSize} similar (RMSNorm, need ≥${minSamples}). Neutral 0.5.` };
+  }
+  const wrLabel = options.softmaxWeightedWR ? 'softmax-WR' : 'WR';
+  return {
+    conditionalWinRate, wilsonWinRate, sampleSize, wins, losses, avgSimilarity, confidence, matched: matches, usedFeatures,
+    explanation: `Vector-conditional (RMSNorm, ${wrLabel}): ${wins}/${sampleSize} won (${(conditionalWinRate * 100).toFixed(0)}%, wilson ${(wilsonWinRate * 100).toFixed(0)}%, sim ${(avgSimilarity * 100).toFixed(0)}%, ${confidence}, ${usableDims.length}/${names.length} features).`,
+  };
+}
+
+// ─── v2.0.211 (K.md #4): Softmax-weighted win rate ──────────────────────────
+//
+// K3 ablation: softmax > sigmoid (competitive normalization forces sharper
+// selection). Instead of equal-weight win rate (wins/sampleSize), weight each
+// matched record by softmax(similarity/temperature) so high-similarity records
+// contribute more. Temperature controls sharpness (low = top match dominates).
+
+/** Compute softmax-weighted win rate over matched trades.
+ *  winRate = Σ softmax(sim_i / τ) · [outcome_i == win]
+ *  Numerically stable (max-subtraction). Returns 0.5 for empty matches. */
+export function softmaxWeightedWinRate(
+  matches: VectorConditionalMatch[],
+  temperature: number = 0.1,
+): number {
+  if (matches.length === 0) return 0.5;
+  const logits = matches.map((m) => m.similarity / temperature);
+  let max = -Infinity;
+  for (const l of logits) if (Number.isFinite(l) && l > max) max = l;
+  if (!Number.isFinite(max)) max = 0;
+  let sumExp = 0;
+  const exps = logits.map((l) => {
+    if (!Number.isFinite(l)) return 0;
+    const e = Math.exp(l - max);
+    sumExp += e;
+    return e;
+  });
+  if (sumExp <= 0) return matches.filter((m) => m.outcome === 'win').length / matches.length;
+  let wr = 0;
+  for (let i = 0; i < matches.length; i++) {
+    const w = exps[i]! / sumExp;
+    if (matches[i]!.outcome === 'win') wr += w;
+  }
+  return Math.max(0, Math.min(1, wr));
 }
