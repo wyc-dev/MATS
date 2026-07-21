@@ -47,6 +47,8 @@ import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
 import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
 import { OLREngine, type OLRQueryResult, regimeToOrdinal } from './evolution/olr-engine.ts';
+import { NumericAutoencoder } from './evolution/numeric-autoencoder.ts';
+import { ENTRY_CONDITION_FEATURES } from './evolution/evolution-utils.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
@@ -196,6 +198,8 @@ class MATSSystem {
   private olrEngine!: OLREngine;
   /** Shadow Trade Engine — opens simulated LONG+SHORT each cycle, tracks TP-before-SL outcomes. */
   private shadowEngine!: ShadowTradeEngine;
+  /** v2.0.204: Numeric Autoencoder — learns non-linear market-condition embedding for vector-conditional WR. */
+  private naEngine!: NumericAutoencoder;
   /** One-shot cold-start OLR backfill guard — ensures backfill runs at most
    *  once per process, on the first cycle that has non-empty trading markets. */
   private olrBackfillDone = false;
@@ -666,6 +670,16 @@ class MATSSystem {
         }
       } catch { /* start fresh */ }
       log.info('✓ OLR + Shadow Trade Engine ready');
+
+      // 3.10b v2.0.204: Initialize Numeric Autoencoder (market-condition embedding).
+      // Learns a non-linear 8-d representation of entry features for vector-conditional
+      // WR. Coexists with v2.0.203 min-max + cosine (cold-start fallback). Only takes
+      // over once ≥200 samples AND validation passes (reconstruction MSE < 0.1,
+      // contrastive acc > 60%).
+      log.info('Step 3.10b: Initializing Numeric Autoencoder...');
+      this.naEngine = new NumericAutoencoder({}, ENTRY_CONDITION_FEATURES);
+      this.naEngine.load();
+      log.info(`✓ Numeric Autoencoder ready (${this.naEngine.sampleCount()} samples, ${this.naEngine.isReady() ? 'LEARNED-embed active' : 'cold-start → min-max fallback'})`);
 
       // v2.0.143: Load persisted Root Command Prompt so it survives backend restarts.
       this.loadRootCommandPrompt();
@@ -2416,6 +2430,16 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const tradeSource: 'paper' | 'real' = trade.agentId === 'hyperliquid-real' ? 'real' : 'paper';
         this.olrEngine.feedTrade(symbol, features, outcome, trade.side === 'buy' ? 'buy' : 'sell', tradeSource, this.totalCycles);
         log.info(`🧬 [close-learning] OLR fed (${tradeSource}): ${symbol} ${trade.side.toUpperCase()} ${isWin ? 'WIN' : 'LOSS'} (pnl=${(pnlPct * 100).toFixed(1)}%, MFE=${(mfePct * 100).toFixed(1)}%, MAE=${(maePct * 100).toFixed(1)}%)`);
+
+        // v2.0.204: Feed closed trade to Numeric Autoencoder (market-condition embedding).
+        // Uses the entry-time features object above (in scope here). Only the 9
+        // ENTRY_CONDITION_FEATURES are consumed; outcome provides contrastive label.
+        try {
+          const presentFeatures = ['volatility', 'srDistanceBps', 'obImbalance', 'fundingRate', 'volumeRatio', 'signalAgreement', 'sentiment', 'sentimentConviction', 'regimeOrdinal'].filter((k) => (features as Record<string, number>)[k] !== undefined);
+          this.naEngine.addSample({ features, outcome: isWin ? 1 : 0, presentFeatures, ts: trade.closedAt ?? Date.now() });
+        } catch (err) {
+          log.warn(`[close-learning] NA addSample failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       } catch (err) {
         log.warn(`[close-learning] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -3804,7 +3828,7 @@ ${recentExamples}
       this.auditRunning = true;
       const records = this.expMemory?.getRecords() ?? [];
       if (records.length > 0) {
-        void auditTradeRecordsLLM(records)
+        void auditTradeRecordsLLM(records, this.naEngine)
           .then((result: AuditResult) => {
             this.lastAuditResult = result;
             this.auditRunning = false;
@@ -3865,7 +3889,7 @@ ${recentExamples}
       const patternContext = this.lastPatternContext ?? '';
 
       // 1d.2 v2.0.28: Inject pattern tag win rates (LLM-identified chart patterns)
-      const patternTagContext = this.patternTagTracker?.formatContext(8) ?? '';
+      const patternTagContext = this.patternTagTracker?.formatContext(8, this.naEngine) ?? '';
 
       // 1e. Inject OLR assessment + First-Passage probability + Shadow trade results
       // OLR: P(win) per side from shadow + paper + real trade outcomes (TP-before-SL learning)
@@ -3892,7 +3916,7 @@ ${recentExamples}
         };
         // v2.0.140: inject EXP digest for the active symbol only (avoids per-symbol
         // duplication in agent context). Non-blocking — if digest fails, OLR still runs.
-        const expDigest = this.expMemory?.getDigestSummary() ?? '';
+        const expDigest = this.expMemory?.getDigestSummary(this.naEngine) ?? '';
         olrContext = this.buildOLRBlock(activeSymbol, olrFeatures, 'OLR + PATH RISK ASSESSMENT', undefined, srD, expDigest);
         // Shadow trade results (active-symbol global — supplementary reality check)
         const shadowCtx = this.shadowEngine.getContext();
@@ -4092,7 +4116,7 @@ ${recentExamples}
           const closeReasonBlock = this.closeReasonAgg.formatBlock(records);
 
           // A2A Digester digest (kept as supplementary LLM analysis)
-          const digesterDigest = this.expMemory?.getDigestSummary() ?? '';
+          const digesterDigest = this.expMemory?.getDigestSummary(this.naEngine) ?? '';
 
           // v2.0.143: SimilarTradeRetriever + SubtleDiffAnalyzer are now injected
           // inside HACP (after checkThesisHistory computes candidate vectors),
@@ -6552,6 +6576,20 @@ ${recentExamples}
       this.patternClassifier?.persist();
       this.patternTagTracker?.persist();
       this.persistOLR();
+      // v2.0.204: Train + validate + persist Numeric Autoencoder every NA train interval.
+      // Cold-start safe: trainBatch() is a no-op until replay buffer ≥ minSamplesTrain;
+      // validate() returns not-passed until ≥ minSamplesReady samples. isReady() gates
+      // the learned-embedding path in computeVectorConditionalWinRate.
+      try {
+        if (this.totalCycles % 5 === 0) {
+          const loss = this.naEngine.trainBatch();
+          if (this.naEngine.sampleCount() >= 200) this.naEngine.validate();
+          if (loss > 0) log.debug(`[NA] cycle ${this.totalCycles}: train loss=${loss.toFixed(4)}, samples=${this.naEngine.sampleCount()}, ready=${this.naEngine.isReady()}`);
+        }
+      } catch (err) {
+        log.warn(`[NA] train/validate failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      this.naEngine.persist();
       this.persistPortfolio();
       saveDebateHistory({
         totalCycles: this.totalCycles,
@@ -7189,6 +7227,8 @@ ${recentExamples}
       const shadowFinal = path.join(dir, 'shadow-state.json');
       fs.writeFileSync(shadowTmp, this.shadowEngine.save(), 'utf-8');
       fs.renameSync(shadowTmp, shadowFinal);
+      // v2.0.204: Save Numeric Autoencoder model
+      this.naEngine.persist();
     } catch { /* best-effort */ }
   }
 

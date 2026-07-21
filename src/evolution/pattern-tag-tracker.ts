@@ -13,6 +13,7 @@
 import { createLogger } from '../observability/logger.ts';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { wilsonScore, computeVectorConditionalWinRate, formatVectorConditional } from './evolution-utils.ts';
+import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
 
 const log = createLogger({ phase: 'pattern_tag_tracker' });
 
@@ -287,7 +288,7 @@ export class PatternTagTracker {
    *
    * Only includes tags with enough samples (≥ minSamplesForReport).
    */
-  formatContext(maxTags: number = 8): string {
+  formatContext(maxTags: number = 8, embeddingProvider?: NumericEmbedProvider): string {
     try {
       const summary = this.getSummary();
       const reportable = summary.stats.filter(s => s.total >= CONFIG.minSamplesForReport);
@@ -338,7 +339,7 @@ export class PatternTagTracker {
             const result = computeVectorConditionalWinRate(
               latestWithFeatures.marketFeatures!,
               this.records.map(r => ({ marketFeatures: r.marketFeatures, outcome: r.outcome, symbol: r.symbol, side: r.side, pnl: r.pnlPct })),
-              { side, minSamples: 3, threshold: 0.80, topN: 20 },
+              { side, minSamples: 3, threshold: 0.80, topN: 20, embeddingProvider },
             );
             if (result.confidence !== 'none') {
               lines.push(`    ${side.toUpperCase()} conditional: ${formatVectorConditional(result, '').trim()}`);

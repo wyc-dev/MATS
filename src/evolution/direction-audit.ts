@@ -12,6 +12,7 @@ import { getActiveProvider } from '../llm/index.ts';
 import { getAgentModel } from '../agents/agent-models.ts';
 import type { ThesisExperienceRecord } from '../types/index.ts';
 import { computeVectorConditionalWinRate, formatVectorConditional } from './evolution-utils.ts';
+import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
 
 const log = createLogger({ phase: 'trade-audit' });
 
@@ -65,7 +66,7 @@ Respond ONLY with JSON:
  * Feeds the last N closed trades to the LLM and asks it to detect any
  * suspicious patterns — not limited to a predefined checklist.
  */
-export async function auditTradeRecordsLLM(records: ThesisExperienceRecord[]): Promise<AuditResult> {
+export async function auditTradeRecordsLLM(records: ThesisExperienceRecord[], embeddingProvider?: NumericEmbedProvider): Promise<AuditResult> {
   const timestamp = Date.now();
 
   if (records.length === 0) {
@@ -89,7 +90,7 @@ export async function auditTradeRecordsLLM(records: ThesisExperienceRecord[]): P
 ${dataLines.join('\n')}
 
 Also, VECTOR-CONDITIONAL win rate per recent trade (win rate of historically similar MARKET CONDITIONS, not raw per-symbol counts — a symbol's 0W/1L is meaningless when current conditions differ from that single trade):
-${buildVectorConditionalSummary(records)}
+${buildVectorConditionalSummary(records, embeddingProvider)}
 
 IMPORTANT: Do NOT accuse the system of "ignoring learning data" based on raw per-symbol win rates alone. A symbol with 0% raw WR may have only 1 trade under totally different market conditions. The VECTOR-CONDITIONAL win rate above is the correct signal — if conditional WR is high but the trade lost, the issue is exit timing / luck, not direction. If conditional WR is low and the system still entered, THAT is a real learning failure.
 
@@ -147,7 +148,7 @@ Examine these trade records for ANY suspicious patterns. Detect issues that hard
  *   - conditional WR LOW  + trade OPENED → genuine learning-system failure
  *   - conditional WR ≈ actual outcome → system is well-calibrated
  */
-function buildVectorConditionalSummary(records: ThesisExperienceRecord[]): string {
+function buildVectorConditionalSummary(records: ThesisExperienceRecord[], embeddingProvider?: NumericEmbedProvider): string {
   // Use the most recent 15 trades that have marketFeatures.
   const recent = records
     .filter((r) => r.marketFeatures && Object.keys(r.marketFeatures).length > 0)
@@ -163,7 +164,7 @@ function buildVectorConditionalSummary(records: ThesisExperienceRecord[]): strin
     const result = computeVectorConditionalWinRate(
       r.marketFeatures!,
       others,
-      { side: r.side, minSamples: 3, threshold: 0.80, topN: 20 },
+      { side: r.side, minSamples: 3, threshold: 0.80, topN: 20, embeddingProvider },
     );
     const actualIcon = r.outcome === 'WIN' ? '✅' : '❌';
     const condLine = formatVectorConditional(result, `  ${r.side.toUpperCase()} ${r.symbol}`);

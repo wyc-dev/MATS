@@ -25,6 +25,7 @@ import type {
 } from '../types/index.ts';
 import { type EmbedProvider, cosine } from './embeddings.ts';
 import { extractJSON, categoriseRationale, normaliseCategory, computeVectorConditionalWinRate, formatVectorConditional } from './evolution-utils.ts';
+import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
 
 const log = rootLogger;
 
@@ -575,7 +576,7 @@ export class ExperienceDigester {
    *   7. Winning classes (top 1, with exit-type breakdown)
    *   8. Per symbol/side (compact)
    */
-  getDigestSummary(records: ThesisExperienceRecord[]): string {
+  getDigestSummary(records: ThesisExperienceRecord[], embeddingProvider?: NumericEmbedProvider): string {
     if (records.length === 0) return '';
     const lines: string[] = [];
 
@@ -755,7 +756,7 @@ export class ExperienceDigester {
         const result = computeVectorConditionalWinRate(
           e.latestFeatures,
           records,
-          { side: e.latestSide, minSamples: 3, threshold: 0.80, topN: 20 },
+          { side: e.latestSide, minSamples: 3, threshold: 0.80, topN: 20, embeddingProvider },
         );
         const condLine = formatVectorConditional(result, '    conditional');
         lines.push(`${rawLine} | ${condLine}`);

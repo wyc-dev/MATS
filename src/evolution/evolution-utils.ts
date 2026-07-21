@@ -3,6 +3,7 @@
 // thesis-experience, and experience-digester to eliminate duplication.
 
 import type { RationaleCategory } from '../types/index.ts';
+import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
 
 // ─── Wilson Score (95% confidence lower bound) ───
 // Penalises small sample sizes — 3/5 = 60% becomes ~25%, 30/50 = 60% stays ~47%.
@@ -177,6 +178,12 @@ export interface VectorConditionalOptions {
   featureNames?: readonly string[];
   /** Welford epsilon to avoid division by zero (default 1e-8). */
   epsilon?: number;
+  /** v2.0.204: Optional learned numeric embedding provider (NumericAutoencoder).
+   *  When provided AND `isReady()`, similarity is computed on the learned
+   *  8-d embedding (captures non-linear feature interactions + outcome-aware
+   *  metric) instead of min-max + cosine. Falls back to min-max when the
+   *  provider is not ready (cold-start / validation failed). */
+  embeddingProvider?: NumericEmbedProvider;
 }
 
 export interface VectorConditionalMatch {
@@ -337,6 +344,69 @@ function normaliseOutcome(o: string): 'win' | 'loss' | null {
  * @param options             threshold / minSamples / side / symbol / topN
  * @returns Conditional win rate + sample size + confidence + matched trades
  */
+/** v2.0.204: Score records using a learned numeric embedding (NumericAutoencoder).
+ *  Returns null when no trades match the threshold (so the caller can fall
+ *  through to min-max + cosine). Embeddings are L2-normalised by the provider,
+ *  so cosine = dot product. */
+function scoreWithLearnedEmbedding(
+  candidateFeatures: Record<string, number>,
+  filtered: Array<{ marketFeatures?: Record<string, number>; outcome: string; symbol: string; side: 'buy' | 'sell'; pnl?: number }>,
+  provider: NumericEmbedProvider,
+  threshold: number,
+  minSamples: number,
+  topN: number,
+): VectorConditionalWinRateResult | null {
+  // Embed the candidate + every filtered record. The provider handles
+  // missing features by substituting the running mean (neutral).
+  const candVec = provider.embed([candidateFeatures])[0]!;
+  const recVecs = provider.embed(filtered.map((r) => r.marketFeatures ?? {}));
+  const scored: Array<{ rec: typeof filtered[number]; sim: number }> = [];
+  for (let i = 0; i < filtered.length; i++) {
+    const rv = recVecs[i]!;
+    let dot = 0;
+    let nA = 0;
+    let nB = 0;
+    for (let k = 0; k < candVec.length; k++) {
+      dot += candVec[k]! * rv[k]!;
+      nA += candVec[k]! * candVec[k]!;
+      nB += rv[k]! * rv[k]!;
+    }
+    const sim = nA > 0 && nB > 0 ? dot / (Math.sqrt(nA) * Math.sqrt(nB)) : 0;
+    if (sim >= threshold) scored.push({ rec: filtered[i]!, sim });
+  }
+  if (scored.length === 0) return null;
+  scored.sort((a, b) => b.sim - a.sim);
+  const matched = scored.slice(0, topN);
+  let wins = 0;
+  let losses = 0;
+  let simSum = 0;
+  const matches: VectorConditionalMatch[] = [];
+  for (const m of matched) {
+    const o = normaliseOutcome(m.rec.outcome)!;
+    if (o === 'win') wins++; else losses++;
+    simSum += m.sim;
+    matches.push({ similarity: m.sim, outcome: o, symbol: m.rec.symbol, side: m.rec.side, pnl: m.rec.pnl ?? 0 });
+  }
+  const sampleSize = matched.length;
+  const conditionalWinRate = sampleSize > 0 ? wins / sampleSize : 0.5;
+  const wilsonWinRate = wilsonScore(wins, sampleSize);
+  const avgSimilarity = sampleSize > 0 ? simSum / sampleSize : 0;
+  const confidence: VectorConditionalWinRateResult['confidence'] =
+    sampleSize >= 30 ? 'high' : sampleSize >= 10 ? 'medium' : sampleSize >= minSamples ? 'low' : 'none';
+  if (sampleSize < minSamples) {
+    return {
+      conditionalWinRate: 0.5, wilsonWinRate: 0.5, sampleSize, wins, losses,
+      avgSimilarity, confidence: 'none', matched: matches, usedFeatures: [],
+      explanation: `Learned-embed: only ${sampleSize} similar (need ≥${minSamples}). Neutral 0.5.`,
+    };
+  }
+  return {
+    conditionalWinRate, wilsonWinRate, sampleSize, wins, losses, avgSimilarity,
+    confidence, matched: matches, usedFeatures: [],
+    explanation: `Learned-embed: ${wins}/${sampleSize} won (${(conditionalWinRate * 100).toFixed(0)}%, wilson ${(wilsonWinRate * 100).toFixed(0)}%, sim ${(avgSimilarity * 100).toFixed(0)}%, ${confidence}).`,
+  };
+}
+
 export function computeVectorConditionalWinRate(
   candidateFeatures: Record<string, number>,
   records: Array<{
@@ -375,6 +445,19 @@ export function computeVectorConditionalWinRate(
     return normaliseOutcome(r.outcome) !== null;
   });
   if (filtered.length === 0) return neutral;
+
+  // v2.0.204: Learned-embedding path. When a NumericAutoencoder is provided
+  // AND has passed validation, compute similarity on the learned 8-d embedding
+  // (captures non-linear feature interactions + outcome-aware metric). This
+  // supersedes min-max + cosine for ready models. Falls back to min-max when
+  // the provider is absent or not yet ready (cold-start / validation failed).
+  const provider = options?.embeddingProvider;
+  if (provider && provider.isReady()) {
+    const learnedResult = scoreWithLearnedEmbedding(candidateFeatures, filtered, provider, threshold, minSamples, topN);
+    if (learnedResult !== null) return learnedResult;
+    // If learned scoring yielded no matches, fall through to min-max so the
+    // caller still gets a neutral result with a meaningful explanation.
+  }
 
   // Min-max stats over filtered records (for normalisation).
   const stats = computeMinMax(filtered, names);
