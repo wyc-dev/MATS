@@ -147,7 +147,7 @@ const BLOCKED_PATTERNS: { file: string; pattern: RegExp; reason: string }[] = [
   // v2.0.725: Tightened checkThesisHistory block — only block removal of the
   // direction filter (sameDirMatches), not ALL modifications. Wilson score
   // gates, condition filtering, and category weighting are already applied (v2.0.721).
-  { file: 'src/evolution/thesis-experience.ts', pattern: /remove.*direction.*filter|delete.*sameDir|remove.*sameDir/i, reason: 'checkThesisHistory() direction filter (sameDirMatches) is correct — do NOT remove it. Wilson score gates and condition filtering are already applied.' },
+  { file: 'src/evolution/thesis-experience.ts', pattern: /remove.*direction.*filter|delete.*sameDir|remove.*sameDir|stale.*wilson|cached.*wilson|cached.*cluster.*stats|stale.*cluster/i, reason: 'checkThesisHistory() direction filter (sameDirMatches) is correct — do NOT remove it. Wilson score is computed FRESH from actual same-direction match counts every call, NOT cached. Do NOT diagnose "stale wilsonScore" — it is a hallucination.' },
   { file: 'src/evolution/reason-analytics.ts', pattern: /findSimilar/i, reason: 'SimilarTradeRetriever.findSimilar() side filter is correct — do NOT remove' },
   // v2.0.770: OWNER'S DIRECTIVE — profit maximization is #1 priority.
   // NEVER add hard block. The system owner said: "If I wanted absolute capital
