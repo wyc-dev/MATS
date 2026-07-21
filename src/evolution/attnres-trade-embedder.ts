@@ -1,4 +1,4 @@
-// ─── v2.0.215: AttnRes Trade Embedder ──────────────────────────────────────
+// ─── v2.0.217: AttnRes Trade Embedder — anti-collapse fix ──────────────────
 //
 // Applies Kimi K3 AttnRes theory (arXiv 2603.15031) to the MiniLM embedding
 // pipeline. Instead of accessing MiniLM's internal layers (impossible — the
@@ -17,14 +17,28 @@
 //   w += lr · reward · mean_key  where  mean_key = Σ α_i · RMSNorm(v_i)
 //   REINFORCE score-function gradient Σα·(key−mean) ≡ 0 for deterministic softmax.
 //
+// v2.0.217 anti-collapse: triple mechanism prevents mode collapse.
+//   1. Adaptive temperature entropy floor (mirrors CycleHistoryRetriever):
+//      When H(α) < entropyFloor bits, temperature *= warmupFactor (soften).
+//      When H(α) > entropyFloor * 1.5, temperature /= warmupFactor (sharpen).
+//      Hysteresis band prevents oscillation. Temperature clamped [1, max].
+//   2. Label smoothing (hard floor, belt-and-suspenders):
+//      α_i = α_i * (1 - smoothMix) + smoothMix / N
+//      Ensures no rationale gets less than smoothMix/N weight. Prevents
+//      winner-takes-all even when temperature adaptation can't keep up.
+//   3. Config clamping:
+//      smoothMix ∈ [0, 0.5], warmupFactor ∈ [1.0, 10.0], temperature ∈ [1, 10].
+//
 // Cold-start safety:
 //   w = 0 (zero-init) → uniform softmax → h = mean(v_i) ≈ current behavior.
 //   The system must EARN selectivity through observed trade outcomes.
+//   Anti-collapse ensures selectivity is SELECTIVE, not EXCLUSIVE.
 //
 // Backward compatible:
 //   When not injected into PatternClusterManager / SimilarTradeRetriever,
 //   they use existing combinationSimilarity (exact current behavior).
 //   When injected, trades are represented by their blended vector.
+//   Old state files without new fields → defaults applied (safe).
 
 import { rootLogger } from '../observability/logger.ts';
 import { promises as fs } from 'node:fs';
@@ -40,6 +54,17 @@ const DEFAULT_EMA_ALPHA = 0.1;
 const MIN_LR = 1e-6;
 const MAX_W = 5.0; // weight clipping (K3 does this too)
 
+// ─── v2.0.217 anti-collapse defaults ───
+const DEFAULT_ENTROPY_FLOOR = 0.5; // bits — minimum attention entropy
+const DEFAULT_WARMUP_FACTOR = 1.5; // temperature multiplier when entropy too low
+const DEFAULT_MAX_TEMPERATURE = 10.0; // cap to prevent runaway
+const DEFAULT_MIN_TEMPERATURE = 1.0; // floor (never softer than this baseline)
+const DEFAULT_SMOOTH_MIX = 0.1; // 10% uniform blend in attention weights
+const MIN_SMOOTH_MIX = 0.0;
+const MAX_SMOOTH_MIX = 0.5; // never smooth more than 50% (would kill learning)
+const MIN_WARMUP_FACTOR = 1.0;
+const MAX_WARMUP_FACTOR = 10.0;
+
 export interface AttnResEmbedState {
   w: number[];
   emaW: number[];
@@ -49,6 +74,12 @@ export interface AttnResEmbedState {
   lr: number;
   lrDecay: number;
   emaAlpha: number;
+  // v2.0.217 fields (optional for backward compat with old state files)
+  entropyFloor?: number;
+  warmupFactor?: number;
+  maxTemperature?: number;
+  minTemperature?: number;
+  smoothMix?: number;
 }
 
 /**
@@ -67,6 +98,11 @@ export interface AttnResEmbedState {
  *   - EMA smoothing on w (stable inference between updates)
  *   - LR decay (prevents oscillation in late training)
  *   - Weight clipping (prevents unbounded growth)
+ *
+ * v2.0.217 anti-collapse:
+ *   - Adaptive temperature entropy floor (softens softmax when collapsing)
+ *   - Label smoothing (hard floor, no rationale gets < smoothMix/N weight)
+ *   - Config clamping (prevents misconfiguration from breaking safety)
  */
 export class AttnResTradeEmbedder {
   /** Learned pseudo-query — determines which rationale directions matter. */
@@ -77,7 +113,7 @@ export class AttnResTradeEmbedder {
   private updateCount = 0;
   /** Embedding dimension (384 for MiniLM). */
   readonly embedDim: number;
-  /** Softmax temperature (lower = sharper). */
+  /** Softmax temperature (lower = sharper, higher = softer). Adaptive. */
   private temperature: number;
   /** Initial learning rate. */
   private lr: number;
@@ -85,6 +121,17 @@ export class AttnResTradeEmbedder {
   private lrDecay: number;
   /** EMA smoothing factor for w (0-1, lower = smoother). */
   private emaAlpha: number;
+  // ─── v2.0.217 anti-collapse fields ───
+  /** Minimum attention entropy in bits. Below this → temperature increases. */
+  private entropyFloor: number;
+  /** Temperature multiplier when entropy < floor (must be ≥ 1.0). */
+  private warmupFactor: number;
+  /** Maximum temperature cap (prevents runaway softening). */
+  private maxTemperature: number;
+  /** Minimum temperature (never go below this baseline, prevents over-sharpening). */
+  private minTemperature: number;
+  /** Label smoothing factor: α_i = α_i * (1 - smoothMix) + smoothMix / N. */
+  private smoothMix: number;
 
   constructor(opts?: {
     embedDim?: number;
@@ -92,12 +139,28 @@ export class AttnResTradeEmbedder {
     lr?: number;
     lrDecay?: number;
     emaAlpha?: number;
+    entropyFloor?: number;
+    warmupFactor?: number;
+    maxTemperature?: number;
+    minTemperature?: number;
+    smoothMix?: number;
   }) {
     this.embedDim = opts?.embedDim ?? DEFAULT_EMBED_DIM;
     this.temperature = opts?.temperature ?? DEFAULT_TEMPERATURE;
     this.lr = opts?.lr ?? DEFAULT_LR;
     this.lrDecay = opts?.lrDecay ?? DEFAULT_LR_DECAY;
     this.emaAlpha = opts?.emaAlpha ?? DEFAULT_EMA_ALPHA;
+
+    // v2.0.217 anti-collapse config with clamping (minTemperature first — maxTemperature depends on it)
+    this.minTemperature = Math.max(0.1, opts?.minTemperature ?? DEFAULT_MIN_TEMPERATURE);
+    this.maxTemperature = Math.max(this.minTemperature, opts?.maxTemperature ?? DEFAULT_MAX_TEMPERATURE);
+    this.entropyFloor = Math.max(0, opts?.entropyFloor ?? DEFAULT_ENTROPY_FLOOR);
+    this.warmupFactor = clamp(opts?.warmupFactor ?? DEFAULT_WARMUP_FACTOR, MIN_WARMUP_FACTOR, MAX_WARMUP_FACTOR);
+    this.smoothMix = clamp(opts?.smoothMix ?? DEFAULT_SMOOTH_MIX, MIN_SMOOTH_MIX, MAX_SMOOTH_MIX);
+
+    // Ensure temperature starts within [min, max]
+    this.temperature = clamp(this.temperature, this.minTemperature, this.maxTemperature);
+
     this.w = new Array(this.embedDim).fill(0);
     this.emaW = new Array(this.embedDim).fill(0);
   }
@@ -112,6 +175,7 @@ export class AttnResTradeEmbedder {
    *
    * Cold-start (w=0): uniform softmax → mean of vectors ≈ current behavior.
    * Trained: learned softmax weights rationales by predictive value.
+   * Anti-collapse: label smoothing ensures no rationale gets < smoothMix/N.
    */
   blend(rationaleVectors: number[][]): number[] {
     const n = rationaleVectors.length;
@@ -125,8 +189,11 @@ export class AttnResTradeEmbedder {
     // w=0 → all logits = 0 → uniform softmax → mean (backward compatible)
     const logits = keys.map((k) => this.dot(this.emaW, k) / this.temperature);
 
-    // Numerically stable softmax (max-subtraction)
-    const α = this.softmax(logits);
+    // Raw softmax
+    const rawAlpha = this.softmax(logits);
+
+    // v2.0.217: label smoothing (hard floor, prevents winner-takes-all)
+    const α = this.smoothAttention(rawAlpha, n);
 
     // Weighted blend
     const h = new Array(this.embedDim).fill(0);
@@ -151,16 +218,28 @@ export class AttnResTradeEmbedder {
    * Learning rule: w += lr · reward · mean_key
    *   where reward = sign(pnl), mean_key = Σ α_i · RMSNorm(v_i)
    *
-   * When the trade wins, w shifts toward the blend direction that won.
-   * When the trade loses, w shifts away from that direction.
+   * v2.0.217: After computing α, adapt temperature based on entropy.
+   * Low entropy → increase temperature (soften). High entropy → decrease.
+   * Label smoothing applied to α for both learning and entropy check.
    */
   updateOnOutcome(rationaleVectors: number[][], pnl: number): void {
     // Need 2+ rationales to learn a meaningful blend
     if (rationaleVectors.length < 2) return;
 
+    const n = rationaleVectors.length;
     const keys = rationaleVectors.map((v) => this.rmsNorm(v));
     const logits = keys.map((k) => this.dot(this.w, k) / this.temperature);
-    const α = this.softmax(logits);
+
+    // Raw softmax (for entropy check)
+    const rawAlpha = this.softmax(logits);
+
+    // v2.0.217: adapt temperature based on RAW entropy (before smoothing)
+    // This ensures temperature responds to the actual attention sharpness,
+    // not the artificially raised entropy from smoothing.
+    this.adaptTemperature(rawAlpha, n);
+
+    // v2.0.217: label smoothing for learning (same as blend)
+    const α = this.smoothAttention(rawAlpha, n);
 
     // mean_key = Σ α_i · key_i (attention-weighted key direction)
     const meanKey = new Array(this.embedDim).fill(0);
@@ -209,6 +288,11 @@ export class AttnResTradeEmbedder {
     return Math.sqrt(sum);
   }
 
+  /** Current adaptive temperature (for diagnostics). */
+  getTemperature(): number {
+    return this.temperature;
+  }
+
   // ─── Persistence ───
 
   getState(): AttnResEmbedState {
@@ -221,6 +305,11 @@ export class AttnResTradeEmbedder {
       lr: this.lr,
       lrDecay: this.lrDecay,
       emaAlpha: this.emaAlpha,
+      entropyFloor: this.entropyFloor,
+      warmupFactor: this.warmupFactor,
+      maxTemperature: this.maxTemperature,
+      minTemperature: this.minTemperature,
+      smoothMix: this.smoothMix,
     };
   }
 
@@ -236,6 +325,14 @@ export class AttnResTradeEmbedder {
     this.lr = state.lr ?? this.lr;
     this.lrDecay = state.lrDecay ?? this.lrDecay;
     this.emaAlpha = state.emaAlpha ?? this.emaAlpha;
+    // v2.0.217: load new fields with fallback to current config
+    this.entropyFloor = state.entropyFloor ?? this.entropyFloor;
+    this.warmupFactor = state.warmupFactor ?? this.warmupFactor;
+    this.maxTemperature = state.maxTemperature ?? this.maxTemperature;
+    this.minTemperature = state.minTemperature ?? this.minTemperature;
+    this.smoothMix = state.smoothMix ?? this.smoothMix;
+    // Ensure loaded temperature is within bounds
+    this.temperature = clamp(this.temperature, this.minTemperature, this.maxTemperature);
   }
 
   async save(filePath: string): Promise<void> {
@@ -243,7 +340,7 @@ export class AttnResTradeEmbedder {
       const state = JSON.stringify(this.getState());
       await fs.mkdir(dirname(filePath), { recursive: true });
       await fs.writeFile(filePath, state, 'utf-8');
-      log.info(`[attnres-embed] state saved (${this.updateCount} updates, |w|=${this.getWeightNorm().toFixed(4)})`);
+      log.info(`[attnres-embed] state saved (${this.updateCount} updates, |w|=${this.getWeightNorm().toFixed(4)}, T=${this.temperature.toFixed(2)})`);
     } catch (err) {
       log.warn(`[attnres-embed] save failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -254,9 +351,63 @@ export class AttnResTradeEmbedder {
       const raw = await fs.readFile(filePath, 'utf-8');
       const state = JSON.parse(raw) as AttnResEmbedState;
       this.loadState(state);
-      log.info(`[attnres-embed] state loaded (${this.updateCount} updates, |w|=${this.getWeightNorm().toFixed(4)})`);
+      log.info(`[attnres-embed] state loaded (${this.updateCount} updates, |w|=${this.getWeightNorm().toFixed(4)}, T=${this.temperature.toFixed(2)})`);
     } catch {
       log.info('[attnres-embed] no saved state — cold-start (zero-init w)');
+    }
+  }
+
+  // ─── v2.0.217 anti-collapse helpers ───
+
+  /**
+   * Shannon entropy in bits. Returns 0 for empty/single-element arrays.
+   * Guards against NaN/Infinity in input probabilities.
+   */
+  private entropy(α: number[]): number {
+    let h = 0;
+    for (const p of α) {
+      if (p > 0 && Number.isFinite(p)) {
+        h -= p * Math.log2(p);
+      }
+    }
+    // If all entries were non-finite, h stays 0 (will trigger temperature warmup)
+    return Number.isFinite(h) ? h : 0;
+  }
+
+  /**
+   * Label smoothing: blends attention weights toward uniform.
+   * α_i = α_i * (1 - smoothMix) + smoothMix / N
+   *
+   * This ensures no rationale gets less than smoothMix/N weight, preventing
+   * winner-takes-all collapse even when adaptive temperature can't keep up.
+   *
+   * For N=3, smoothMix=0.1: min weight = 0.033 (vs 0.0 without smoothing)
+   */
+  private smoothAttention(α: number[], n: number): number[] {
+    if (n <= 1 || this.smoothMix <= 0) return α;
+    const uniform = this.smoothMix / n;
+    const keep = 1 - this.smoothMix;
+    return α.map((a) => (Number.isFinite(a) ? a * keep + uniform : uniform));
+  }
+
+  /**
+   * Adaptive temperature: increases when entropy too low, decreases when recovered.
+   * Hysteresis band [entropyFloor, entropyFloor * 1.5] prevents oscillation.
+   *
+   * - H(α) < entropyFloor: temperature *= warmupFactor (soften softmax)
+   * - H(α) > entropyFloor * 1.5: temperature /= warmupFactor (allow sharpening)
+   * - Temperature clamped to [minTemperature, maxTemperature]
+   */
+  private adaptTemperature(α: number[], n: number): void {
+    if (n <= 1) return;
+    const ent = this.entropy(α);
+
+    if (ent < this.entropyFloor) {
+      // Entropy too low → soften softmax
+      this.temperature = Math.min(this.temperature * this.warmupFactor, this.maxTemperature);
+    } else if (ent > this.entropyFloor * 1.5 && this.temperature > this.minTemperature) {
+      // Entropy recovered → allow sharpening (but not below min)
+      this.temperature = Math.max(this.temperature / this.warmupFactor, this.minTemperature);
     }
   }
 
@@ -337,4 +488,12 @@ export class AttnResTradeEmbedder {
     }
     return vec.map((v) => (Number.isFinite(v) ? v / norm : 0));
   }
+}
+
+// ─── Utility ───
+
+/** Clamp a value to [min, max]. Handles NaN (returns min). */
+function clamp(val: number, min: number, max: number): number {
+  if (!Number.isFinite(val)) return min;
+  return Math.max(min, Math.min(max, val));
 }
