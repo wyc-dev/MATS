@@ -553,77 +553,42 @@ export class OLREngine {
    * still works on the tempered sigmoid output. The final output is then
    * hard-clamped to [0.01, 0.99] as a safety net.
    * 
-   * v2.0.746: Removed the old applyConfidencePenalty() method entirely and
-   * replaced it with a new method that applies the Bayesian prior to the
-   * logit BEFORE sigmoid computation. This is a fundamentally different
-   * approach — instead of fixing the output after saturation, we prevent
-   * saturation from happening in the first place.
+   * v2.0.770: SIMPLIFIED — removed 3 layers of softening (Bayesian prior,
+   * inverse-sample pull, hard clamp). These contradicted the OWNER DIRECTIVE:
+   * "OLR predictions must be EXTREME but ACCURATE — NOT softened." The old
+   * method pulled ALL predictions toward 0.5, destroying discriminative power.
    * 
-   * The prior strength is 10 (equivalent to 10 prior observations at 50%
-   * win rate). This means:
-   *   - At n=0 (no samples): P(win) = 0.5 exactly (pure prior)
-   *   - At n=10 (few samples): P(win) = (σ(w·x) * 10 + 0.5 * 10) / 20 = 50% prior + 50% model
-   *   - At n=50 (moderate samples): P(win) = (σ(w·x) * 50 + 0.5 * 10) / 60 = 83% model + 17% prior
-   *   - At n=200 (many samples): P(win) = (σ(w·x) * 200 + 0.5 * 10) / 210 = 95% model + 5% prior
+   * The new approach: use ONLY the 5-bin calibration map (already applied
+   * before this function) for accuracy. Apply a minimal Bayesian shrinkage
+   * ONLY when effectiveN < 10 (truly insufficient data). For n >= 10, the
+   * model's raw calibrated output is trusted as-is — 0%/100% is CORRECT if
+   * the model is well-calibrated.
    * 
-   * This ensures that small-sample models cannot produce extreme P(win)
-   * values, while well-trained models with >200 samples are barely affected.
+   * The fix for miscalibration is the 5-bin calibration map, NOT softening.
    */
   private applyConfidencePenalty(rawPWin: number, nSamples: number, effectiveSampleSize?: number): number {
-    const threshold = OLR_CONFIG.highConfidenceSamples; // 50
-    // Use effectiveSampleSize if provided, otherwise fall back to nSamples
     const effectiveN = effectiveSampleSize !== undefined ? effectiveSampleSize : nSamples;
     
-    // Step 1: Apply Bayesian prior to the sigmoid output.
-    // This is the ROOT CAUSE fix — instead of clamping the output after
-    // saturation, we pull extreme values toward 0.5 using a prior that
-    // represents 10 observations at 50% win rate.
-    // 
-    // The prior strength is 10, which means:
-    //   - At effectiveN=0: P(win) = 0.5 exactly (pure prior)
-    //   - At effectiveN=10: P(win) = 50% model + 50% prior
-    //   - At effectiveN=50: P(win) = 83% model + 17% prior
-    //   - At effectiveN=200: P(win) = 95% model + 5% prior
-    // 
-    // This prevents 0%/100% outputs when the model has insufficient data,
-    // while preserving the model's signal when it has strong evidence.
-    const priorStrength = 10;
-    const denominator = effectiveN + priorStrength;
-    let calibrated: number;
-    if (denominator <= 0) {
-      calibrated = 0.5;
-    } else {
-      calibrated = (rawPWin * effectiveN + 0.5 * priorStrength) / denominator;
+    // v2.0.770: Minimal Bayesian shrinkage — ONLY for truly insufficient data.
+    // Prior strength = 3 (was 10 — too aggressive). This means:
+    //   - At effectiveN=0: P(win) = 0.5 (pure prior, no data)
+    //   - At effectiveN=3: P(win) = 50% prior + 50% model
+    //   - At effectiveN=10: P(win) = 77% model + 23% prior (barely noticeable)
+    //   - At effectiveN=30+: P(win) = 91%+ model (essentially raw output)
+    // For n >= 10, the model has enough data to be trusted — no shrinkage.
+    if (effectiveN < 10) {
+      const priorStrength = 3;
+      const denominator = effectiveN + priorStrength;
+      if (denominator <= 0) return 0.5;
+      return (rawPWin * effectiveN + 0.5 * priorStrength) / denominator;
     }
     
-    // Step 2: Apply inverse-sample-count confidence penalty to ALL queries.
-    // This scales the penalty with the inverse of sample count, so even models
-    // with >50 samples get a small pull toward 0.5. The pull strength is:
-    //   pull = 0.5 * (1 / (1 + effectiveN / 10))
-    // At effectiveN=10: pull ≈ 0.25 (strong pull toward 0.5)
-    // At effectiveN=50: pull ≈ 0.08 (moderate pull)
-    // At effectiveN=200: pull ≈ 0.02 (negligible pull)
-    // At effectiveN=1000: pull ≈ 0.005 (barely noticeable)
-    // This prevents extreme values even for well-trained models while preserving
-    // the model's signal when it has strong evidence.
-    const pullStrength = 0.5 * (1 / (1 + effectiveN / 10));
-    calibrated = calibrated * (1 - pullStrength) + 0.5 * pullStrength;
-    
-    // Step 3: HARD CLAMP — final safety net against sigmoid saturation.
-    // Even with the Bayesian prior, the sigmoid can still saturate to 0/1
-    // when weights are large enough and effectiveN is high. The clamp ensures
-    // P(win) is never exactly 0% or 100%, which are statistically impossible
-    // for any real-world model.
-    // 
-    // The clamp range depends on total sample count (not effective, because
-    // even backfill samples provide SOME evidence):
-    //   - nSamples < 50: [0.05, 0.95] — tighter clamp for low-sample models
-    //   - nSamples >= 50: [0.01, 0.99] — wider but still prevents 0/1 saturation
-    const clampLo = nSamples < threshold ? 0.05 : 0.01;
-    const clampHi = nSamples < threshold ? 0.95 : 0.99;
-    calibrated = Math.max(clampLo, Math.min(clampHi, calibrated));
-    
-    return calibrated;
+    // v2.0.770: For n >= 10, trust the calibrated output. No pull toward 0.5.
+    // No hard clamp. The 5-bin calibration map handles accuracy.
+    // Only prevent exact 0.0 or 1.0 (statistically impossible, breaks downstream math).
+    if (rawPWin <= 0) return 0.001;
+    if (rawPWin >= 1) return 0.999;
+    return rawPWin;
   }
 
   private contextToVector(features: Record<string, number>): number[] {

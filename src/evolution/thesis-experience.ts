@@ -828,6 +828,14 @@ export class ThesisExperience {
       log.info(`[EXP] ${input.side.toUpperCase()} ${input.symbol}: ${effectiveSameDir.length} same-dir matches (${sameDirWins}W/${sameDirLosses}L, rawPWin=${rawPWin.toFixed(2)}, WilsonLB=${pWinWilsonLB.toFixed(2)}) vs ${effectiveAllMatches.length} total matches${condStr}`);
     }
 
+    // v2.0.770: Track whether we have enough same-direction samples to REJECT.
+    // If < 3 same-direction matches, we CANNOT reject — you cannot infer anything
+    // from < 3 samples. This is the OWNER'S EXPLICIT DIRECTIVE:
+    // "得一個 BUY record 輸咗就唔 BUY？係咪黐撚線？"
+    // However, we CAN still FAST_APPROVE if there are enough winning samples.
+    const MIN_SAMPLES_FOR_REJECT = 3;
+    const canReject = pWinTotal >= MIN_SAMPLES_FOR_REJECT;
+
     if (verdictPWin >= this.cfg.winProbThreshold) {
       return { verdict: 'FAST_APPROVE', pWin: verdictPWin, reason: `history skews WIN (raw pWin=${rawPWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
     }
@@ -866,19 +874,28 @@ export class ThesisExperience {
     // Log the delta computation for debugging
     log.info(`[EXP] delta: sameDir=${sameDirWins}W/${sameDirTotal} (WilsonLB=${sameDirWilsonLB.toFixed(3)}) vs crossDir=${crossDirWins}W/${crossDirTotal} (WilsonLB=${crossDirWilsonLB.toFixed(3)}) → delta=${delta.toFixed(3)}`);
     
-    // If delta is positive (same-direction evidence stronger), approve.
-    // If delta is negative (cross-direction evidence stronger), reject.
-    // If delta is near zero (insufficient evidence), fall through to delta check.
-    if (delta > this.cfg.deltaThreshold) {
-      return { verdict: 'FAST_APPROVE', pWin: sameDirWilsonLB, reason: `same-direction Wilson LB=${sameDirWilsonLB.toFixed(3)} > cross-direction Wilson LB=${crossDirWilsonLB.toFixed(3)} (delta=${delta.toFixed(3)}) — same-direction evidence stronger` };
-    }
-    if (delta < -this.cfg.deltaThreshold) {
-      return { verdict: 'REJECT', reason: `cross-direction Wilson LB=${crossDirWilsonLB.toFixed(3)} > same-direction Wilson LB=${sameDirWilsonLB.toFixed(3)} (delta=${delta.toFixed(3)}) — cross-direction evidence stronger` };
+    // v2.0.770: Require minimum samples on BOTH sides before using delta to REJECT.
+    // If same-direction has < 3 samples, the Wilson LB is near 0 regardless of actual
+    // edge — this makes the delta artificially negative and triggers false REJECT.
+    // Only reject when we have ENOUGH data on both sides to make a meaningful comparison.
+    const MIN_DELTA_SAMPLES = 3;
+    if (sameDirTotal >= MIN_DELTA_SAMPLES && crossDirTotal >= MIN_DELTA_SAMPLES) {
+      if (delta > this.cfg.deltaThreshold) {
+        return { verdict: 'FAST_APPROVE', pWin: sameDirWilsonLB, reason: `same-direction Wilson LB=${sameDirWilsonLB.toFixed(3)} > cross-direction Wilson LB=${crossDirWilsonLB.toFixed(3)} (delta=${delta.toFixed(3)}) — same-direction evidence stronger` };
+      }
+      if (delta < -this.cfg.deltaThreshold) {
+        return { verdict: 'REJECT', reason: `cross-direction Wilson LB=${crossDirWilsonLB.toFixed(3)} > same-direction Wilson LB=${sameDirWilsonLB.toFixed(3)} (delta=${delta.toFixed(3)}) — cross-direction evidence stronger` };
+      }
+    } else if (!canReject) {
+      // v2.0.770: Not enough same-direction samples to reject — but still fall
+      // through to assessExtraRationale, which can APPROVE_WITH_NOTE (not just REJECT).
+      // We only skip the delta REJECT here; assessExtraRationale runs below.
+      log.info(`[EXP] delta reject skipped: sameDir=${sameDirTotal} crossDir=${crossDirTotal} (< ${MIN_DELTA_SAMPLES} on one side) — insufficient data for delta rejection, falling through to assessExtraRationale`);
     }
     
     // v2.0.175: Use same-direction loss matches for delta check
     const lossMatches = pWinMatches.filter((m) => m.rec.outcome === 'LOSS').sort((a, b) => b.sim - a.sim);
-    return this.assessExtraRationale(candRationales, candVectors, candCategory, lossMatches, input);
+    return this.assessExtraRationale(candRationales, candVectors, candCategory, lossMatches, input, canReject);
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -891,6 +908,7 @@ export class ThesisExperience {
     candCategory: AssetCategory,
     lossMatches: Array<{ rec: ThesisExperienceRecord; sim: number }>,
     input: CheckThesisInput,
+    canReject: boolean = true,
   ): Promise<ExpCheckResult> {
     if (lossMatches.length === 0) {
       return { verdict: 'PASS_OPEN_DIRECTLY', reason: 'no losing match' };
@@ -911,6 +929,11 @@ export class ThesisExperience {
     }
 
     if (deltaItems.length === 0) {
+      // v2.0.770: If we don't have enough same-direction samples to reject,
+      // PASS_OPEN_DIRECTLY instead of REJECT.
+      if (!canReject) {
+        return { verdict: 'PASS_OPEN_DIRECTLY', reason: `same losing combo, no delta rationale, but insufficient same-direction samples (<3) to reject` };
+      }
       return { verdict: 'REJECT', reason: 'same losing combo, no delta rationale', matchedLossId: bestLoss.id };
     }
 
@@ -973,10 +996,20 @@ export class ThesisExperience {
     }
     if (top.signal === 'approve-weak') {
       // cross-cat positive → require one more rationale (§8.4a)
-      return this.requireOneMoreRationale(candRationales, top.item, input);
+      const result = await this.requireOneMoreRationale(candRationales, top.item, input);
+      // v2.0.770: If not enough same-direction samples to reject, convert REJECT to PASS_OPEN_DIRECTLY
+      if (result.verdict === 'REJECT' && !canReject) {
+        return { verdict: 'PASS_OPEN_DIRECTLY', reason: `${result.reason} — but insufficient same-direction samples (<3) to reject, let trade execute` };
+      }
+      return result;
     }
     // reverse
-    return this.assessReverseDirection(top.item, bestLoss, input);
+    const reverseResult = await this.assessReverseDirection(top.item, bestLoss, input);
+    // v2.0.770: If not enough same-direction samples to reject, convert REJECT to PASS_OPEN_DIRECTLY
+    if (reverseResult.verdict === 'REJECT' && !canReject) {
+      return { verdict: 'PASS_OPEN_DIRECTLY', reason: `${reverseResult.reason} — but insufficient same-direction samples (<3) to reject, let trade execute` };
+    }
+    return reverseResult;
   }
 
   // ═══════════════════════════════════════════════════════════

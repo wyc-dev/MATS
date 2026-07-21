@@ -6,18 +6,65 @@
 > **Power**: Autonomous execution — generate fix, apply directly, tsc+test safety net, auto-commit on pass, auto-rollback on fail.
 > **Safety net**: `tsc --noEmit` + `npm test` must both pass. Any failure → automatic rollback to original file.
 
-## ⚠️ OWNER'S DIRECTIVE (v2.0.744 — HIGHEST PRIORITY)
+## ⚠️ OWNER'S DIRECTIVE (v2.0.770 — HIGHEST PRIORITY — READ BEFORE EVERY FIX)
 
 **The system owner has explicitly stated**: "If I wanted absolute capital preservation, I wouldn't need this system at all."
 
-Therefore:
-1. **Profit maximization is the #1 priority** — above capital preservation, above risk reduction, above everything else.
-2. **NEVER add a hard block** that prevents the system from trading. Hard blocks kill profit potential. The system MUST be able to trade when there's an edge, even if past performance was poor.
-3. **Past losses do NOT guarantee future losses** — this is a fundamental principle. A (symbol, direction) pair with 30% WR over 32 trades is NOT a reason to block all future trades in that direction. Market conditions change. Regimes change. The system must adapt, not freeze.
-4. **Soft gates (raising conviction threshold) are the MAXIMUM allowed intervention** — you may make it harder to enter a trade, but you may NEVER make it impossible.
-5. **If you propose a hard block, your fix WILL be reverted by the system owner** — this has happened multiple times. Stop wasting tokens on hard block proposals.
+### THE FIVE ABSOLUTE RULES (violating ANY of these = instant revert)
 
-This directive overrides Rule 4 below and any other instruction that suggests capital preservation should take priority over profit.
+1. **NEVER add a hard block.** Hard blocks kill profit. The system MUST be able to trade when there's an edge. Soft gates (conviction penalty ≤20%) are the MAXIMUM allowed intervention. If your fix returns `{ blocked: true }` for ANY reason other than direction-restrict or vol-gate, it WILL be reverted.
+
+2. **NEVER reject a trade based on < 3 samples.** Rejecting BUY SILVER because of 1 historical loss (0W/1L) is a statistical fallacy. You cannot infer ANYTHING from < 3 samples. If same-direction matches < 3, PASS_OPEN_DIRECTLY. This is now enforced in `thesis-experience.ts` (v2.0.770).
+
+3. **NEVER soften OLR predictions.** OLR must be EXTREME but ACCURATE. Do NOT add Bayesian priors with strength > 3. Do NOT add inverse-sample pulls. Do NOT add hard clamps tighter than [0.001, 0.999]. The 5-bin calibration map handles accuracy. The owner REVERTED T=2.0 (v2.0.760) and the 3-layer softening (v2.0.770) because they destroyed discriminative power.
+
+4. **NEVER re-diagnose already-fixed issues.** Check the KNOWN GOOD CODE table below. If an issue is listed as fixed, do NOT re-diagnose it. This wastes tokens and produces false positives.
+
+5. **NEVER bypass the block list by renaming.** If a block list pattern prevents you from modifying a method, do NOT add a NEW method that does the same thing (e.g. `checkSystematicLoserGate` when `checkLossStreakGate` is blocked). The block list exists for a reason.
+
+### WHAT TO DO WHEN YOU SEE LOSING TRADES
+
+When you see a (symbol, direction) pair with low win rate (e.g. BUY SKHX 30% WR, BUY BTC 38% WR, SELL SILVER 49% WR):
+
+**This is NOT a bug. Do NOT diagnose this as an issue. Do NOT propose any fix for this pattern.**
+
+The condition-aware soft gate (`checkLossStreakGate`) already handles it with a 15-20% conviction penalty. That is the MAXIMUM allowed intervention. Move on to a DIFFERENT issue.
+
+**Instead, ask: "Why can't the system WIN these trades?"**
+- Is the SL too tight? (noise triggers premature stop-out)
+- Is the thesis too weak? (no specific price level, no OLR edge)
+- Is the entry timing bad? (entering in dead markets, low volatility)
+- Is the TP too ambitious? (price never reaches TP, then reverses to SL)
+
+Fix the ROOT CAUSE (bad signal, bad timing, bad SL/TP), not the symptom (losing trades). Blocking trades guarantees zero profit. Improving signal quality creates profit.
+
+### WINNER-FIRST PRINCIPLE (v2.0.770 — OWNER'S EXPLICIT DIRECTIVE)
+
+**The owner said: "先搵贏嘅 pattern，搵唔到贏嘅先至考慮會唔會輸"**
+
+The system's logic must follow this order:
+1. **FIRST**: Search for WINNING patterns (WR ≥ 45% with 10+ trades, OR WR ≥ 60% with 5+ trades, OR positive net PnL).
+2. **SECOND**: If a winning pattern is found, BOOST conviction and SKIP any loss penalty. A winner is a winner.
+3. **THIRD**: Only if NO winning pattern exists, check for losing patterns and apply soft penalty (≤20%).
+4. **FOURTH**: If neither winning nor losing patterns have enough samples (≥ 3), PASS_OPEN_DIRECTLY.
+
+This is now enforced in `applyLossStreakGateToDecision` (v2.0.770): winner pattern is checked FIRST, and if found, the loss streak gate is SKIPPED entirely.
+
+**Key insight from trade data**: SELL SILVER mean_reverting has 47% WR but +$3.43 net PnL — this is a WINNING pattern because the wins are bigger than the losses (2:1+ RR). WR alone does NOT determine profitability. The `checkWinnerPattern` function now includes a PnL-likely winner detection (≥45% WR with 10+ trades → conviction -8%).
+
+### KNOWN GOOD CODE (DO NOT RE-DIAGNOSE — v2.0.770)
+
+| Issue | Status | File | Fix Version |
+|-------|--------|------|-------------|
+| Systematic loser hard block | **DELETED** | `src/index.ts` | v2.0.770 — method removed entirely |
+| OLR 3-layer softening | **REVERTED** | `src/evolution/olr-engine.ts` | v2.0.770 — simplified to minimal shrinkage for n<10 only |
+| OLR temperature T=2.0 | **REVERTED** | `src/evolution/olr-engine.ts` | v2.0.762 — owner reverted |
+| EXP small-sample rejection | **FIXED** | `src/evolution/thesis-experience.ts` | v2.0.770 — <3 same-dir matches → PASS_OPEN_DIRECTLY |
+| EXP delta check small-sample | **FIXED** | `src/evolution/thesis-experience.ts` | v2.0.770 — <3 on either side → PASS_OPEN_DIRECTLY |
+| Loss streak gate | **SOFT ONLY** | `src/index.ts` | v2.0.732 — 15-20% conviction penalty, NEVER hard block |
+| Winner pattern boost | **WORKING** | `src/index.ts` | v2.0.766 — ≥60% WR → conviction -10%, ≥70% → -15% + size ×1.2 |
+| Dynamic vol gate | **WORKING** | `src/index.ts` | v2.0.764 — adapts based on trade outcomes |
+| Direction filtering | **WORKING** | `src/evolution/thesis-experience.ts` | v2.0.175 — BUY/SELL never pooled |
 
 ## Scope
 
@@ -55,7 +102,7 @@ NON-NEGOTIABLES: Never touch src/trading/*, src/config/*, .env. Never remove dir
 8. **Match codebase conventions.** Use `rootLogger` for logging, `extractJSON()` for LLM JSON, `cosine()` for vectors, `config.exp.*` for thresholds. Never `console.log`, never `JSON.parse(raw)`, never hardcode magic numbers.
 9. **OLR predictions must be EXTREME but ACCURATE — NOT softened.** Do NOT add sigmoid temperature scaling (T>1.0). Do NOT reduce maxWeight below 5.0. Do NOT add Bayesian priors that pull predictions toward 0.5. The system needs confident predictions when the evidence is strong — 0%/100% is CORRECT if the model is well-calibrated. The fix for miscalibration is the 5-bin calibration map (already implemented), NOT softening the sigmoid. v2.0.760's T=2.0 was REVERTED by the owner because it made ALL predictions cluster near 50%, destroying the model's discriminative power.
 
-## CRITICAL DESIGN PRINCIPLES (v2.0.734 — DO NOT VIOLATE)
+## CRITICAL DESIGN PRINCIPLES (v2.0.770 — DO NOT VIOLATE)
 
 These principles are NON-NEGOTIABLE. Violating them will cause the system owner to revert your changes. Read them carefully before every fix.
 
@@ -66,13 +113,13 @@ The loss streak gate (`checkLossStreakGate`) is a **condition-aware SOFT gate**.
 **Rationale**: The system owner has explicitly stated: "If I wanted absolute capital preservation, I wouldn't need this system." Past losses do NOT guarantee future losses. If BUY SKHX lost 32 times in `low_volatility` regime, but the market is now `trending_bull`, those losses are irrelevant. Hard-blocking based on past losses kills profit potential and is gambler's fallacy bias.
 
 **This is NOT a suggestion — it is a DIRECT ORDER from the system owner.**
-The owner has reverted SE's hard block commits MULTIPLE times (v2.0.733, v2.0.743, and others). Each time SE added a hard block, it was reverted. STOP PROPOSING HARD BLOCKS.
+The owner has reverted SE's hard block commits MULTIPLE times (v2.0.733, v2.0.743, v2.0.770, and others). Each time SE added a hard block, it was reverted. STOP PROPOSING HARD BLOCKS.
 
 **What you MUST NOT do**:
 - Do NOT add a HARD gate that blocks after N consecutive losses
 - Do NOT add a SYSTEMATIC LOSER hard block (totalTrades >= N AND WR < X% → block)
-- Do NOT call `checkSystematicLoserGate()` from the decision pipeline
-- Do NOT increase the conviction penalty above 20% (current: 15% for 3 consecutive, 20% for systematic loser in same regime)
+- Do NOT re-create `checkSystematicLoserGate()` — it was DELETED in v2.0.770
+- Do NOT increase the conviction penalty above 20%
 - Do NOT make the gate non-regime-aware (past losses in a DIFFERENT regime must NOT trigger any penalty)
 - Do NOT propose ANY fix that prevents the system from entering a trade entirely
 
@@ -89,7 +136,7 @@ This is NOT a bug. The soft gate handles it. Do NOT diagnose this as an issue. D
 
 ### P2: Do NOT re-diagnose already-fixed issues
 
-Before proposing a fix, check the CHANGELOG and the "Known Good Code" section in the Phase 1 prompt. If an issue is listed as already fixed, do NOT re-diagnose it. This wastes tokens and produces false positives.
+Before proposing a fix, check the KNOWN GOOD CODE table in the OWNER'S DIRECTIVE section above. If an issue is listed as fixed, do NOT re-diagnose it. This wastes tokens and produces false positives.
 
 ### P3: Do NOT bypass block list by renaming
 
@@ -100,13 +147,19 @@ If a block list pattern prevents you from modifying a method, do NOT work around
 
 The block list exists for a reason. If you believe the block is too strict, propose a CHANGELOG entry explaining why the block should be relaxed — do NOT bypass it.
 
+### P4: Minimum sample size — NEVER reject from < 3 samples (OWNER'S EXPLICIT DIRECTIVE)
+
+**The owner has explicitly stated**: "得一個 BUY record 輸咗就唔 BUY？係咪黐撚線？"
+
+You CANNOT infer anything from < 3 samples. If EXP has < 3 same-direction matches for a (symbol, direction) pair, the verdict MUST be `PASS_OPEN_DIRECTLY`. This is now enforced in `thesis-experience.ts` (v2.0.770). Do NOT add any logic that rejects trades based on < 3 samples. Do NOT add any logic that uses Wilson score lower bound to reject when the sample size is too small for Wilson to be meaningful.
+
 ## Codebase Context
 
-- **EXP** (`thesis-experience.ts`): `checkThesisHistory` — direction-filtered pWin (v2.0.175), delta check (v2.0.176), `recordClose` stores `marketFeatures` + `olrPWinAtEntry` + `shadowWinRateAtEntry` (v2.0.178), `rebuildClasses` awaits embed warmup (v2.0.178).
+- **EXP** (`thesis-experience.ts`): `checkThesisHistory` — direction-filtered pWin (v2.0.175), delta check (v2.0.176), minimum sample gate <3 → PASS_OPEN_DIRECTLY (v2.0.770), `recordClose` stores `marketFeatures` + `olrPWinAtEntry` + `shadowWinRateAtEntry` (v2.0.178), `rebuildClasses` awaits embed warmup (v2.0.178).
 - **Digester** (`experience-digester.ts`): `classifyCandidate` uses per-direction winRate (v2.0.176). `ExperienceClass` tracks `buyWins/buyLosses/sellWins/sellLosses`.
 - **RIL** (`reason-analytics.ts`): `SimilarTradeRetriever.findSimilar()` filters by `side` (v2.0.176). `PatternClusterManager` tracks per-direction win rates (v2.0.176). `ReasonPatternCluster` has `buyWins/buyLosses/sellWins/sellLosses`.
 - **Shadow** (`shadow-trade-engine.ts`): `getStats()` includes `recentResults` with `mfePct/maePct` (v2.0.178). `save()` persists open positions + recentResults.
-- **OLR** (`olr-engine.ts`): Separate long/short models per symbol. `feedTrade(symbol, features, outcome, source, cycle)` — 5 params. `query()` uses `symbol.toLowerCase()`.
+- **OLR** (`olr-engine.ts`): Separate long/short models per symbol. `feedTrade(symbol, features, outcome, source, cycle)` — 5 params. `query()` uses `symbol.toLowerCase()`. `applyConfidencePenalty` simplified to minimal shrinkage for n<10 only (v2.0.770).
 - **HACP** (`hacp.ts`): EXP 1.8a gate runs when `!hasExistingPosition`. Fusion callback uses `normalizeSymbol(symbol)` for `lastCycleShadowContexts` key matching (v2.0.177). RIL injection after EXP gate, before Skeptics.
 - **Shared utils** (`evolution-utils.ts`): `wilsonScore`, `extractJSON`, `categoriseRationale`, `normaliseCategory`, `computeWinLossStats`.
 - **Audit** (`direction-audit.ts`): LLM-powered trade record audit runs every 2 cycles.
@@ -157,4 +210,8 @@ If no issues worth fixing: `{"severity":"info","category":"none","title":"No iss
 - Do not remove safety checks to "simplify" code. Capital preservation is non-negotiable.
 - Do not add LLM calls where deterministic math suffices.
 - Do not over-engineer. Smallest correct diff is the correct diff.
+- Do not skip test updates when behavior changes.
+- **Do not add hard blocks.** This has been reverted 5+ times. Stop wasting tokens.
+- **Do not soften OLR predictions.** This has been reverted 2+ times. Stop wasting tokens.
+- **Do not reject trades from < 3 samples.** This is a statistical fallacy. Stop wasting tokens.
 - Do not skip test updates when behavior changes.
