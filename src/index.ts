@@ -3488,6 +3488,159 @@ ${recentExamples}
     }
   }
 
+  // ── v2.0.218: Backfill learning systems from EXP trade records ────
+  //
+  // Reads all historical trade records from data/exp/trades.jsonl and replays
+  // them through OLR, NA, AttnRes, PatternCluster, and CHR. This populates
+  // the learning systems with REAL trade outcomes immediately, instead of
+  // waiting for new trades to accumulate.
+  //
+  // This is critical because the v2.0.218 NaN bug caused 102 real trades to
+  // produce 0 OLR samples for BTC. Even after the code fix, the historical
+  // trades are lost unless we explicitly replay them.
+  //
+  // Idempotent: runs at most once per process via the .exp-backfill-done flag.
+  private expBackfillDone = false;
+
+  private async backfillFromExpRecords(): Promise<void> {
+    if (this.expBackfillDone) return;
+    this.expBackfillDone = true;
+
+    const expPath = path.join(process.cwd(), 'data/exp/trades.jsonl');
+    if (!fs.existsSync(expPath)) {
+      log.info('[exp-backfill] No trades.jsonl found — skipping');
+      return;
+    }
+
+    try {
+      const raw = fs.readFileSync(expPath, 'utf-8');
+      const lines = raw.trim().split('\n').filter(l => l.trim());
+      let olrFed = 0, naFed = 0, attnresFed = 0, clusterFed = 0, chrFed = 0;
+      let skipped = 0;
+
+      for (const line of lines) {
+        let rec: any;
+        try { rec = JSON.parse(line); } catch { skipped++; continue; }
+        if (!rec.outcome || !rec.symbol) { skipped++; continue; }
+
+        const sym = rec.symbol.includes(':') ? rec.symbol : rec.symbol.toLowerCase();
+        const side = rec.side === 'buy' ? 'buy' : 'sell' as 'buy' | 'sell';
+        const isWin = rec.outcome === 'WIN';
+        const outcome: 0 | 1 = isWin ? 1 : 0;
+        const pnl = safeNum(rec.pnl, 0);
+        const pnlPct = safeNum(rec.pnlPct, 0);
+        const source = rec.source === 'real' ? 'real' : 'paper' as 'real' | 'paper';
+        const closeReason = rec.exitType ?? 'sl_tp';
+
+        // 1. OLR — feed trade with marketFeatures (if available)
+        const mf = rec.marketFeatures;
+        if (mf && typeof mf === 'object' && Object.keys(mf).length > 0) {
+          const features = {
+            volatility: safeNum(mf.volatility, 0),
+            srDistanceBps: safeNum(mf.srDistanceBps, 0),
+            obImbalance: safeNum(mf.obImbalance, 0),
+            sentiment: safeNum(mf.sentiment, 0),
+            signalAgreement: 0.5, // not stored in EXP — neutral
+            fundingRate: safeNum(mf.fundingRate, 0),
+            volumeRatio: safeNum(mf.volumeRatio, 0),
+            sentimentConviction: safeNum(mf.sentimentConviction, 0.5),
+            mfePct: 0, // not stored in EXP — neutral
+            maePct: 0, // not stored in EXP — neutral
+            mfeToPnlRatio: 0, // not stored in EXP — neutral
+            regimeOrdinal: regimeToOrdinal(rec.regime),
+            momentumShort: 0, // not stored in EXP — neutral
+            momentumLong: 0, // not stored in EXP — neutral
+          };
+          try {
+            this.olrEngine.feedTrade(sym, features, outcome, side, source, 0);
+            olrFed++;
+          } catch { /* non-critical */ }
+        }
+
+        // 2. NA — feed market-condition embedding sample
+        if (mf && typeof mf === 'object' && Object.keys(mf).length > 0) {
+          try {
+            const presentFeatures = Object.keys(mf).filter(k =>
+              mf[k] !== null && mf[k] !== undefined && Number.isFinite(mf[k]),
+            );
+            this.naEngine.addSample({
+              features: mf,
+              outcome: isWin ? 1 : 0,
+              presentFeatures,
+              ts: rec.ts ?? rec.closedAt ?? Date.now(),
+            });
+            naFed++;
+          } catch { /* non-critical */ }
+        }
+
+        // 3. AttnRes — feed rationale blend learning
+        const rv = rec.rationaleVectors;
+        if (this.attnResTradeEmbedder && Array.isArray(rv) && rv.length >= 2) {
+          try {
+            this.attnResTradeEmbedder.updateOnOutcome(rv, pnl);
+            attnresFed++;
+          } catch { /* non-critical */ }
+        }
+
+        // 4. PatternCluster — feed rationale clustering
+        if (this.patternCluster && Array.isArray(rv) && rv.length > 0) {
+          try {
+            // Construct a minimal ThesisExperienceRecord for addTrade
+            const fakeRecord = {
+              id: rec.id ?? `exp-${lines.indexOf(line)}`,
+              symbol: rec.symbol,
+              side: rec.side,
+              source: rec.source === 'real' ? 'real' : 'paper',
+              decisionOrigin: rec.decisionOrigin ?? 'meta-agent',
+              outcome: rec.outcome,
+              pnl: pnl,
+              pnlPct: pnlPct,
+              entry: safeNum(rec.entry, 0),
+              exit: safeNum(rec.exit, 0),
+              leverage: safeNum(rec.leverage, 1),
+              holdMin: safeNum(rec.holdMin, 0),
+              regime: rec.regime ?? 'unknown',
+              assetCategory: rec.assetCategory ?? '',
+              entryThesis: rec.entryThesis ?? '',
+              rationales: rec.rationales ?? [],
+              rationaleCats: rec.rationaleCats ?? [],
+              rationaleVectors: rv,
+              exitType: rec.exitType ?? 'sl_tp',
+              closeReason: rec.exitType ?? 'sl_tp',
+              marketFeatures: mf ?? {},
+              olrPWinAtEntry: rec.olrPWinAtEntry,
+              shadowWinRateAtEntry: rec.shadowWinRateAtEntry,
+              ts: rec.ts ?? 0,
+            } as any;
+            await this.patternCluster.addTrade(fakeRecord);
+            clusterFed++;
+          } catch { /* non-critical */ }
+        }
+
+        // 5. CHR — feed cycle-history outcome learning
+        if (this.cycleHistory && mf && typeof mf === 'object') {
+          try {
+            this.cycleHistory.updateOnOutcome(sym, side, pnlPct, closeReason);
+            chrFed++;
+          } catch { /* non-critical */ }
+        }
+      }
+
+      log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, skipped=${skipped}`);
+
+      // Persist all updated state
+      this.persistOLR();
+      if (this.attnResTradeEmbedder) {
+        await this.attnResTradeEmbedder.save('data/evolution/attnres-embed-state.json');
+      }
+      // NA state is persisted by the normal cycle persist path.
+      // CHR state is persisted by the normal cycle persist path.
+      // PatternCluster state is in-memory (rebuilt from EXP on next startup).
+    } catch (err) {
+      log.warn(`[exp-backfill] Failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // ── v2.0.135: Shared OLR + First-Passage context builder ──
   // Produces a COMPLETE evolution-data block for any symbol, so the OLR &
   // Sentiment Analyst AND Meta-Agent can extract the full potential of the
@@ -3604,6 +3757,12 @@ ${recentExamples}
       this.olrBackfillDone = true; // set first — idempotent even if the call throws
       void this.backfillOLRPrior(this.tradingMarkets).catch((err: Error) =>
         log.warn(`[backfill] Cold-start backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`),
+      );
+      // v2.0.218: Backfill learning systems from EXP trade records.
+      // Replays all historical trades through OLR/NA/AttnRes/CHR/PatternCluster.
+      // Runs after OLR candle backfill so real-trade samples are layered on top.
+      void this.backfillFromExpRecords().catch((err: Error) =>
+        log.warn(`[exp-backfill] Failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`),
       );
     }
 
