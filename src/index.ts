@@ -49,7 +49,7 @@ import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts'
 import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
 import { OLREngine, type OLRQueryResult, regimeToOrdinal } from './evolution/olr-engine.ts';
 import { NumericAutoencoder } from './evolution/numeric-autoencoder.ts';
-import { ENTRY_CONDITION_FEATURES } from './evolution/evolution-utils.ts';
+import { ENTRY_CONDITION_FEATURES, computeVectorConditionalWinRate } from './evolution/evolution-utils.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, computeMomentum, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
@@ -322,6 +322,48 @@ class MATSSystem {
     return { blocked: false };
   }
 
+  /**
+   * v2.0.209: Conditional-WR soft gate — the VECTOR-CONDITIONAL win rate is the
+   * TRUE edge signal (not raw per-symbol WR). When the conditional WR for the
+   * candidate direction is very low (similar market conditions historically
+   * lost), apply a conviction penalty so low-conviction entries are gated.
+   * This is SOFT (never hard block) and stacks with the loss-streak gate.
+   *
+   * This directly fixes the audit finding "low-conditional-win-rate-ignored":
+   * trades were entered with conditional WR 10-25%. Now conditional WR < 30%
+   * applies a +25-35% conviction penalty, so only very-high-conviction entries
+   * can pass — and those require the Meta-Agent to articulate a specific
+   * catalyst the historical sample didn't capture.
+   */
+  private checkConditionalWRGate(symbol: string, direction: 'buy' | 'sell'): { blocked: boolean; convictionPenalty?: number; reason?: string } {
+    try {
+      const sym = normalizeSymbol(symbol);
+      const feats = this.lastCycleShadowContexts.get(sym)?.features;
+      if (!feats || Object.keys(feats).length === 0) return { blocked: false };
+      const records = this.expMemory?.getRecords() ?? [];
+      if (records.length < 5) return { blocked: false };
+      const cond = computeVectorConditionalWinRate(
+        feats,
+        records,
+        { side: direction, minSamples: 5, threshold: 0.75, topN: 20, embeddingProvider: this.naEngine ?? undefined },
+      );
+      if (cond.confidence === 'none' || cond.sampleSize < 5) return { blocked: false };
+      const wr = cond.conditionalWinRate;
+      if (wr < 0.20) {
+        return { blocked: false, convictionPenalty: 0.35, reason: `Conditional WR ${(wr * 100).toFixed(0)}% (n=${cond.sampleSize}) — similar market conditions lost ${((1 - wr) * 100).toFixed(0)}% of the time. Conviction +35% (very strong signal required).` };
+      }
+      if (wr < 0.30) {
+        return { blocked: false, convictionPenalty: 0.25, reason: `Conditional WR ${(wr * 100).toFixed(0)}% (n=${cond.sampleSize}) — similar market conditions lost ${((1 - wr) * 100).toFixed(0)}% of the time. Conviction +25% (stronger signal required).` };
+      }
+      if (wr < 0.40) {
+        return { blocked: false, convictionPenalty: 0.15, reason: `Conditional WR ${(wr * 100).toFixed(0)}% (n=${cond.sampleSize}) — similar market conditions favour the opposite direction. Conviction +15%.` };
+      }
+      return { blocked: false };
+    } catch {
+      return { blocked: false };
+    }
+  }
+
   // v2.0.770: checkSystematicLoserGate DELETED ENTIRELY — OWNER DIRECTIVE.
   // This method contained a HARD BLOCK that prevented trading based on past
   // win rates. The owner has explicitly stated: "NEVER hard block" and has
@@ -496,12 +538,16 @@ class MATSSystem {
     // v2.0.770: Only if NO winner pattern found, check loss streak gate
     const gateResult = this.checkLossStreakGate(symbol, action);
     const lossPenalty = gateResult.convictionPenalty ?? 0;
-    const netPenalty = lossPenalty;
+    // v2.0.209: Stack conditional-WR soft gate (vector-conditional, the TRUE edge signal).
+    const condWRResult = this.checkConditionalWRGate(symbol, action);
+    const condPenalty = condWRResult.convictionPenalty ?? 0;
+    const netPenalty = lossPenalty + condPenalty;
 
     (this as any)._lossStreakPenalty = netPenalty;
 
     if (netPenalty > 0) {
-      log.info(`🚡 [loss-streak-soft] ${action.toUpperCase()} ${symbol}: conviction +${(netPenalty * 100).toFixed(0)}% (${gateResult.reason?.slice(0, 60)}) — no winner pattern found, applying loss penalty`);
+      const reasons = [gateResult.reason, condWRResult.reason].filter(Boolean).join(' | ');
+      log.info(`🚡 [soft-gate] ${action.toUpperCase()} ${symbol}: conviction +${(netPenalty * 100).toFixed(0)}% (${reasons?.slice(0, 100)}) — no winner pattern found, applying penalty`);
       auditGates.push({ gate: 'loss-streak', passed: true, reason: `soft: conviction +${(netPenalty * 100).toFixed(0)}% (no winner found)` });
     } else {
       auditGates.push({ gate: 'loss-streak', passed: true, reason: 'no penalty/boost' });
