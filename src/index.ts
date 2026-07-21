@@ -195,6 +195,11 @@ class MATSSystem {
   private emManager!: CycleSummaryManager;
   /** v2.0.207 (#F): Anti-pattern tracker — clusters historical failure lessons. */
   private antiPatternTracker!: AntiPatternTracker;
+  /** v2.0.210 (Fix 1): Cache entry-time OLR P(win) per symbol so recordClose
+   *  stores the TRUE entry-time OLR, not a close-time recompute. Fixes the
+   *  audit 'thesis-contradicts-action' false positive (thesis says OLR 99%,
+   *  field shows 0% because it was recomputed at close with different features). */
+  private entryOlrPWinCache = new Map<string, number>();
   private patternClassifier!: TradePatternClassifier;
   private patternTagTracker!: PatternTagTracker;
   /** OLR (Online Logistic Regression) engine — learns P(win) from shadow + real trade outcomes. */
@@ -2683,9 +2688,19 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             sentimentConviction,
           },
           // v2.0.178: Store OLR + shadow predictions at close time for post-hoc analysis
+          // v2.0.210 (Fix 1): Use the CACHED entry-time OLR P(win) (set at open),
+          // not a close-time recompute. Falls back to close-time only if cache
+          // missed (e.g. position opened before v2.0.210). Fixes the audit
+          // 'thesis-contradicts-action' false positive.
           olrPWinAtEntry: (() => {
             try {
               const sym = normalizeSymbol(symbol);
+              const cached = this.entryOlrPWinCache.get(sym);
+              if (cached !== undefined) {
+                this.entryOlrPWinCache.delete(sym);
+                return cached;
+              }
+              // Fallback for pre-v2.0.210 positions: close-time recompute.
               const feats = this.lastCycleShadowContexts.get(sym)?.features ?? {};
               if (Object.keys(feats).length > 0) {
                 return this.olrEngine.query(sym, feats, trade.side === 'buy' ? 'buy' : 'sell', this.totalCycles).pWin;
@@ -2972,6 +2987,15 @@ ${recentExamples}
         if (decision.entryThesis) {
           this.portfolio.setEntryThesis(decision.symbol, decision.entryThesis);
         }
+        // v2.0.210 (Fix 1): Cache entry-time OLR P(win) for this symbol.
+        try {
+          const sym = normalizeSymbol(decision.symbol);
+          const feats = this.lastCycleShadowContexts.get(sym)?.features;
+          if (feats && Object.keys(feats).length > 0) {
+            const olr = this.olrEngine.query(sym, feats, decision.action, this.totalCycles);
+            this.entryOlrPWinCache.set(sym, olr.pWin);
+          }
+        } catch { /* non-critical */ }
         // v2.0.726: Reset cycles-since-last-trade counter
         this.cyclesSinceLastTrade = 0;
       }
@@ -2989,6 +3013,15 @@ ${recentExamples}
       if (decision.entryThesis) {
         this.portfolio.setEntryThesis(decision.symbol, decision.entryThesis);
       }
+      // v2.0.210 (Fix 1): Cache entry-time OLR P(win) for paper trades.
+      try {
+        const sym = normalizeSymbol(decision.symbol);
+        const feats = this.lastCycleShadowContexts.get(sym)?.features;
+        if (feats && Object.keys(feats).length > 0) {
+          const olr = this.olrEngine.query(sym, feats, decision.action, this.totalCycles);
+          this.entryOlrPWinCache.set(sym, olr.pWin);
+        }
+      } catch { /* non-critical */ }
       // v2.0.726: Reset cycles-since-last-trade counter
       this.cyclesSinceLastTrade = 0;
     }

@@ -948,6 +948,28 @@ export class HACPEngine {
     const metaThesis = metaDecision?.entryThesis ?? metaMultiDec?.marketTicker.entryThesis;
     const metaSymbol = metaDecision?.symbol ?? metaMultiDec?.marketTicker.symbol ?? '';
 
+    // v2.0.210 (Fix 3): Thesis-action consistency check. If the Meta-Agent
+    // outputs BUY/SELL but the thesis says "no entry" / "N/A" / "no signal" /
+    // "insufficient data" / "hold", the decision is self-contradictory (audit
+    // found "thesis says N/A — no entry, yet a trade was opened"). Override to
+    // HOLD + log so the system doesn't act on a thesis that doesn't support
+    // the action. This is a data-quality gate, not a directional veto.
+    if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis) {
+      const t = metaThesis.toLowerCase();
+      const contradictionPatterns = [
+        /\bno entry\b/, /\bn\/a\b/, /\bno signal\b/, /\binsufficient data\b/,
+        /\bno clear (direction|signal|edge)\b/, /\bunable to determine\b/,
+        /\bno actionable\b/, /\bnothing to (do|trade)\b/,
+      ];
+      const contradicted = contradictionPatterns.some(re => re.test(t));
+      if (contradicted) {
+        log.warn(`🚫 [thesis-consistency] Meta-Agent output ${metaAction.toUpperCase()} ${metaSymbol} but thesis says no-entry/N/A — overriding to HOLD. Thesis: "${metaThesis.slice(0, 100)}"`);
+        // Override the decision action to HOLD in-place.
+        if (metaDecision) { (metaDecision as any).action = 'hold'; }
+        if (metaMultiDec) { (metaMultiDec.marketTicker as any).action = 'hold'; }
+      }
+    }
+
     // v2.0.94: Check if this symbol already has an open position.
     // IMPORTANT: Check currentPositions (the RAW parameter, before active-symbol
     // filtering) — not posCtx (which has the active symbol removed). Otherwise
