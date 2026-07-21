@@ -181,16 +181,21 @@ describe('OLR Engine — H2/M2/M3/M6/L1', () => {
     expect(pAfterReal).toBeGreaterThanOrEqual(pAfterShadow);
   });
 
-  it('NaN feature is rejected and does not poison weights (M6)', () => {
+  it('NaN feature is sanitized (not rejected) so the sample is retained (v2.0.218)', () => {
     const good = { ...zeroFeatures(), volatility: 0.02 };
     for (let i = 0; i < 15; i++) olr.feedTrade('btc', good, 1, 'buy', 'shadow', i);
-    const before = olr.getFeatureWeights('btc', 'buy')!;
-    // Feed a NaN feature — must be skipped, not persisted into weights.
+    const beforeCount = olr.getAllModelStats().find(s => s.symbol === 'btc')?.longSamples ?? 0;
+    // Feed a NaN feature — v2.0.218: sanitized to 0 instead of rejected.
+    // The sample MUST be retained (count increases) and weights stay finite.
     olr.feedTrade('btc', { ...zeroFeatures(), volatility: NaN }, 1, 'buy', 'shadow', 99);
+    const afterCount = olr.getAllModelStats().find(s => s.symbol === 'btc')?.longSamples ?? 0;
     const after = olr.getFeatureWeights('btc', 'buy')!;
+    // Weights must stay finite (no NaN poisoning).
     expect(after.every(w => Number.isFinite(w.weight))).toBe(true);
-    // Weights unchanged (sample skipped).
-    expect(after).toEqual(before);
+    // Sample count MUST increase (sample was NOT rejected).
+    // v2.0.218: Previously the sample was skipped (count unchanged), causing
+    // 102 real trades to produce 0 OLR samples for BTC. Now it's sanitized.
+    expect(afterCount).toBe(beforeCount + 1);
   });
 
   it('load() resets non-finite weights to 0 (M6)', () => {

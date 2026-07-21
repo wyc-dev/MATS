@@ -460,12 +460,22 @@ export class OLREngine {
     const models = this.getOrCreate(symbol);
     const vec = this.contextToVector(features);
 
-    // NaN guard (M6): reject features that would poison the model.
+    // v2.0.218: NaN guard — sanitize instead of reject.
+    // Previously: if ANY feature was NaN/Infinity, the ENTIRE sample was
+    // skipped (return). This caused 102 real trades to produce 0 OLR samples
+    // for BTC, because fundingRate was NaN (WS returned { fundingRate: NaN })
+    // and the `?? 0` fallback only catches null/undefined, not NaN.
+    // Now: replace non-finite values with 0 (neutral) and continue training.
+    // Losing one feature's signal is far better than losing the entire trade.
+    let sanitizedCount = 0;
     for (let i = 0; i < D; i++) {
       if (!Number.isFinite(vec[i]!)) {
-        log.warn(`[OLR feedTrade] Non-finite feature ${FEATURE_NAMES[i]} for ${symbol} — sample skipped`);
-        return;
+        vec[i] = 0; // neutral value — Welford normalization handles 0 gracefully
+        sanitizedCount++;
       }
+    }
+    if (sanitizedCount > 0) {
+      log.warn(`[OLR feedTrade] ${sanitizedCount} non-finite feature(s) sanitized to 0 for ${symbol} ${side} (source=${source}) — sample retained`);
     }
 
     // Normalise with PRE-update Welford stats (M3 fix): the current sample
@@ -600,14 +610,15 @@ export class OLREngine {
   private contextToVector(features: Record<string, number>): number[] {
     return FEATURE_NAMES.map(name => {
       const val = features[name];
-      if (val === undefined || val === null) {
-        // v2.0.721: regimeOrdinal fallback to 0.5 (neutral/unknown) when missing.
-        // 0 = chaotic (a meaningful value), so we use 0.5 as the missing sentinel.
-        // NaN/Infinity are passed through so feedTrade's NaN guard can reject them.
+      // v2.0.218: Sanitize NaN/Infinity to default instead of passing through.
+      // Previously passed NaN through so feedTrade's NaN guard would catch it,
+      // but that guard REJECTED the entire sample (causing 0 real OLR samples
+      // for BTC). Now both contextToVector and feedTrade sanitize NaN to 0.
+      if (val === undefined || val === null || !Number.isFinite(val)) {
         if (name === 'regimeOrdinal') return 0.5;
         return 0;
       }
-      return val; // pass through NaN/Infinity — feedTrade's NaN guard will catch them
+      return val;
     }) as number[];
   }
 

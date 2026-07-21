@@ -5,6 +5,56 @@
 import type { RationaleCategory } from '../types/index.ts';
 import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
 
+// ─── v2.0.218: NaN-safe number coercion ───
+//
+// The `??` (nullish coalescing) operator ONLY catches null/undefined — it does
+// NOT catch NaN or Infinity. This caused a critical bug where features like
+// `fundingRate = getLatestMarkPrice()?.fundingRate ?? 0` resolved to NaN
+// (because the WS returned `{ fundingRate: NaN }`), bypassed the `?? 0` fallback,
+// and triggered the OLR NaN guard which REJECTED THE ENTIRE SAMPLE. Result:
+// 102 real trades → 0 real OLR samples for BTC, 5 for SKHX, 1 for SILVER.
+//
+// `safeNum()` catches ALL non-finite values (null, undefined, NaN, ±Infinity)
+// and returns the provided default. Use this instead of `?? 0` for ALL
+// feature computations that feed into learning systems (OLR, NA, CHR, AttnRes).
+
+/** Coerce a value to a finite number, returning `fallback` for any non-finite input. */
+export function safeNum(val: number | null | undefined, fallback: number): number {
+  return val !== null && val !== undefined && Number.isFinite(val) ? val : fallback;
+}
+
+/**
+ * Sanitize a features object: replace any non-finite value with its fallback.
+ * Returns a new object — does not mutate the input.
+ * @param features - Raw feature object (may contain NaN/Infinity/null/undefined)
+ * @param defaults - Default values for each feature key
+ * @returns Sanitized feature object with all values finite
+ */
+export function sanitizeFeatures(
+  features: Record<string, number>,
+  defaults: Record<string, number>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  const allKeys = new Set([...Object.keys(features), ...Object.keys(defaults)]);
+  let sanitized = 0;
+  const sanitizedKeys: string[] = [];
+  for (const k of allKeys) {
+    const raw = features[k];
+    const def = defaults[k] ?? 0;
+    const safe = raw !== null && raw !== undefined && Number.isFinite(raw) ? raw : def;
+    if (safe !== raw) {
+      sanitized++;
+      sanitizedKeys.push(k);
+    }
+    out[k] = safe;
+  }
+  if (sanitized > 0) {
+    // Return sanitized info via a property for logging (non-enumerable to avoid serialization)
+    Object.defineProperty(out, '_sanitized', { value: sanitizedKeys, enumerable: false });
+  }
+  return out;
+}
+
 // ─── Wilson Score (95% confidence lower bound) ───
 // Penalises small sample sizes — 3/5 = 60% becomes ~25%, 30/50 = 60% stays ~47%.
 // Prevents overfitting on tiny match counts.
