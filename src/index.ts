@@ -1977,6 +1977,25 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // + subtle differences analysis in its enhanced context.
         this.hacpEngine.setSimilarTradeRetriever(this.similarTradeRetriever);
         this.hacpEngine.setSubtleDiffAnalyzer(this.subtleDiffAnalyzer);
+        // v2.0.204: Wire Numeric Autoencoder + candidate-features provider into
+        // HACP so Skeptics Phase 1.8b sees the vector-conditional win-rate block
+        // (learned market-condition embedding) alongside the RIL similar-trades block.
+        this.hacpEngine.setNaEmbeddingProvider(this.naEngine);
+        this.hacpEngine.setNaCandidateFeaturesProvider(() => {
+          // Return the active symbol's current entry-condition features.
+          const sym = normalizeSymbol(this.marketAgent.getConfig().selectedSymbol ?? '');
+          const ctx = this.lastCycleShadowContexts.get(sym);
+          if (ctx && ctx.features && Object.keys(ctx.features).length > 0) return ctx.features;
+          // Fallback: build from current market state if shadow context not ready.
+          const state = this.marketState?.getState(sym);
+          return {
+            volatility: state?.volatility ?? 0,
+            srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
+            obImbalance: state?.orderBookImbalance ?? 0,
+            signalAgreement: this.lastHACPResult?.consensus?.confidence ?? 0.5,
+            regimeOrdinal: regimeToOrdinal(state?.regime),
+          };
+        });
         this.hacpEngine.setLLMChatFn(async (messages: Array<{ role: string; content: string }>, opts?: { temperature?: number; timeoutMs?: number }) => {
           const provider = getActiveProvider();
           const response = await provider.chat({

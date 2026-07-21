@@ -64,6 +64,11 @@ export interface NAConfig {
   modelPath: string;
   /** Max samples kept in the replay buffer (catastrophic-forgetting defence). */
   replayBufferSize: number;
+  /** V12: half-life for time-weighted training sampling (ms). Recent samples
+   *  are sampled with exponentially higher probability, so the model adapts
+   *  to feature drift instead of being anchored by stale market regimes.
+   *  Default 30 days. weight = 0.5^(age / halfLife). */
+  replayHalfLifeMs: number;
   /** Batch size for training. */
   batchSize: number;
   /** Training epochs per trainBatch() call. */
@@ -87,6 +92,7 @@ export const DEFAULT_NA_CONFIG: NAConfig = {
   diversityLossWeight: 0.01,
   modelPath: 'data/evolution/na-model.json',
   replayBufferSize: 1000,
+  replayHalfLifeMs: 30 * 24 * 60 * 60 * 1000,
   batchSize: 32,
   epochsPerTrain: 5,
 };
@@ -523,15 +529,48 @@ export class NumericAutoencoder implements NumericEmbedProvider {
   }
 
   /** Sample up to `n` random samples from the replay buffer. */
+  /** V12: time-weighted sampling. Recent samples get exponentially higher
+   *  selection probability (weight = 0.5^(age/halfLife)), so the model adapts
+   *  to feature drift instead of being anchored by stale market regimes.
+   *  Without-replacement via the `used` set (same as before). */
   private sampleBatch(n: number): NATrainingSample[] {
     const n2 = Math.min(n, this.replay.length);
     const out: NATrainingSample[] = [];
     const used = new Set<number>();
+    const now = Date.now();
+    const halfLife = this.cfg.replayHalfLifeMs;
+    // Precompute weights + total for weighted selection.
+    const weights = this.replay.map((s) => Math.pow(0.5, (now - s.ts) / halfLife));
+    let totalWeight = 0;
+    for (const w of weights) totalWeight += w;
+    if (totalWeight <= 0) {
+      // Degenerate (all weights 0 / overflow) → uniform fallback.
+      while (out.length < n2 && used.size < this.replay.length) {
+        const idx = Math.floor(this.rng() * this.replay.length);
+        if (used.has(idx)) continue;
+        used.add(idx);
+        out.push(this.replay[idx]!);
+      }
+      return out;
+    }
     while (out.length < n2 && used.size < this.replay.length) {
-      const idx = Math.floor(this.rng() * this.replay.length);
-      if (used.has(idx)) continue;
-      used.add(idx);
-      out.push(this.replay[idx]!);
+      // Weighted pick: draw r ∈ [0, totalWeight), walk cumulative sum.
+      let r = this.rng() * totalWeight;
+      let picked = -1;
+      for (let i = 0; i < this.replay.length; i++) {
+        if (used.has(i)) continue;
+        r -= weights[i]!;
+        if (r <= 0) { picked = i; break; }
+      }
+      if (picked < 0) {
+        // Fallback (floating-point edge): pick first unused.
+        for (let i = 0; i < this.replay.length; i++) { if (!used.has(i)) { picked = i; break; } }
+      }
+      if (picked < 0) break;
+      used.add(picked);
+      out.push(this.replay[picked]!);
+      // Without-replacement: subtract picked weight from total.
+      totalWeight -= weights[picked]!;
     }
     return out;
   }
