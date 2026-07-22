@@ -2,7 +2,7 @@
 
 **9 AI agents debate every trade. A Skeptics agent vetoes bad ones. A System Engineer agent autonomously fixes its own bugs. The system learns from every trade outcome — not just whether it won or lost, but WHY it won or lost, under WHAT market conditions, and feeds that back into the next decision.**
 
-: A dedicated Skeptics agent stress-tests every position against historical experience data. The system self-evolves via a **21-layer cognitive evolution pipeline**: online logistic regression (OLR) → shadow trading → first-passage path-risk → EM cycle chains → genetic algorithms → RIL pattern clustering → **Numeric Autoencoder** (learned non-linear market embedding) → **AttnRes cycle-history retrieval** (Kimi K3 attention residual transfer) → **dual pseudo-query specialization** (decision vs execution) → **anti-pattern memory** (failure lesson clustering) → **conditional WR soft gate** (code-level enforcement) → **combo WR gate** (symbol×side×regime Wilson LB) → **OLR P(win) × consensus discount** (multiplicative confidence scaling) → **execution-lens SL/TP** (stop-out-trained direct SL/TP control) → **experience replay buffer** (prioritized mini-batch retrain) → **Bayesian OLR** (MC Dropout uncertainty quantification) → **temporal attention** (cross-trade regime learning) → **cross-symbol shared backbone** (transfer learning) → **reward shaping** (5-component risk-adjusted reward) → **active exploration** (UCB + information gain) → **world model** (latent dynamics + rollout planning).
+A dedicated Skeptics agent stress-tests every position against historical experience data. The system self-evolves via a **21-layer cognitive evolution pipeline**: online logistic regression (OLR) → shadow trading → first-passage path-risk → EM cycle chains → genetic algorithms → RIL pattern clustering → **Numeric Autoencoder** (learned non-linear market embedding) → **AttnRes cycle-history retrieval** (Kimi K3 attention residual transfer) → **dual pseudo-query specialization** (decision vs execution) → **anti-pattern memory** (failure lesson clustering) → **conditional WR soft gate** (code-level enforcement) → **combo WR gate** (symbol×side×regime Wilson LB) → **OLR P(win) × consensus discount** (multiplicative confidence scaling) → **execution-lens SL/TP** (stop-out-trained direct SL/TP control) → **experience replay buffer** (prioritized mini-batch retrain) → **Bayesian OLR** (MC Dropout uncertainty quantification) → **temporal attention** (cross-trade regime learning) → **cross-symbol shared backbone** (transfer learning) → **reward shaping** (5-component risk-adjusted reward) → **active exploration** (UCB + information gain) → **world model** (latent dynamics + rollout planning).
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -16,7 +16,7 @@
 ## 📸 See It In Action
 
 <a href="https://github.com/wyc-dev/MATS/blob/main/docs/dashboard.mp4" target="_blank" title="Click to play the full 16s demo">
-  <img src="docs/dashboard.gif" alt="MATS Dashboard demo — 8 AI agents debate every trade in real time" width="100%">
+  <img src="docs/dashboard.gif" alt=" MATS Dashboard demo — 8 AI agents debate every trade in real time" width="100%">
 </a>
 
 *8-second loop. [Click for the full 16s demo video](https://github.com/wyc-dev/MATS/blob/main/docs/dashboard.mp4) — real-time HACP debate, Skeptics validation, weighted consensus, live TP/SL on TradingView, self-evolution metrics.*
@@ -67,8 +67,8 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 
 ## Why MATS is Different
 
-- **🧠 Terminal Agent + Root Command Prompt** — users type natural language trading preferences (e.g. "only trade on Monday GMT"). LLM integrates them into a Root Command Prompt. Before each cycle, rules are checked — if a rule fails, the entire cycle is aborted (no token cost). After Meta-Agent decides, Terminal Agent verifies the decision matches user preferences.
-- **🧠 Entry Thesis System** — every trade needs a validated `[1h: ...] [1d: ...]` rationale. Meta-Agent generates it; Skeptics stress-tests it. No thesis → no trade.
+- **🤖 Terminal Agent + Root Command Prompt** — users type natural language trading preferences (e.g., "only trade on Monday GMT"). LLM integrates them into a Root Command Prompt. Before each cycle, rules are checked — if a rule fails, the entire cycle is aborted (no token cost). After the Meta-Agent decides, the Terminal Agent verifies that the decision matches user preferences.
+- **🧠 Entry Thesis System** — every trade needs a validated `[1h: ...] [1d: ...]` rationale. Meta-Agent generates it; Skeptics stress-test it.  No thesis → no trade.
 - **🛡️ Skeptics veto** — an AI stress-tests every position's logic, data consistency, and dark-psychology (whale manipulation?) before execution. Approve-first: rejects only on concrete money-losing flaws. Dark-psychology check escalates from LIGHTWEIGHT to **MANDATORY** when |momentum| > 2% — must articulate a specific reversal catalyst or reject.
 - **🧬 19-Layer Cognitive Evolution** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, **which historical cycles** are most relevant right now, and **what the next market state will look like** — through a stack of learned representations (see below).
 - **🔬 Numeric Autoencoder** — a pure-TypeScript MLP (11→16→8 encoder + contrastive loss) learns a non-linear embedding of market conditions. "Similar market conditions" is no longer handcrafted min-max cosine — it's a learned representation where "similar" means "historically led to similar outcomes." Cold-start safe: min-max fallback until 200+ samples + validation pass.
@@ -95,33 +95,33 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 │   • Pre-cycle rule check + post-cycle decision verification  │
 ├──────────────────────────────────────────────────────────────┤
 │   Layer 2: Cognitive (TypeScript + LLM)                      │
-│   • HACP protocol (parallel multi-model inference)            │
-│   • 6-agent system + Meta-Agent arbitration + Skeptics gate   │
-│   • Entry Thesis System + dark psychology + weighted voting   │
-│   • Self-evolution (21-layer cognitive evolution pipeline)    │
-│   • Numeric Autoencoder (learned market-condition embedding)  │
-│   • AttnRes cycle-history retrieval (K3 dual pseudo-query)    │
-│   • Anti-pattern memory (failure lesson clustering)           │
-│   • Conditional WR soft gate (code-level enforcement)         │
-│   • Combo WR gate (symbol×side×regime Wilson LB, v2.0.221)    │
+│   • HACP protocol (parallel multi-model inference)           │
+│   • 6-agent system + Meta-Agent arbitration + Skeptics gate  │
+│   • Entry Thesis System + dark psychology + weighted voting  │
+│   • Self-evolution (21-layer cognitive evolution pipeline)   │
+│   • Numeric Autoencoder (learned market-condition embedding) │
+│   • AttnRes cycle-history retrieval (K3 dual pseudo-query)   │
+│   • Anti-pattern memory (failure lesson clustering)          │
+│   • Conditional WR soft gate (code-level enforcement)        │
+│   • Combo WR gate (symbol×side×regime Wilson LB, v2.0.221)   │
 │   • OLR P(win)×consensus discount (multiplicative, v2.0.224) │
-│   • Execution-lens SL/TP (stop-out-trained direct control)    │
-   • Replay buffer (PER mini-batch retrain, v2.0.219)          │
-   • Bayesian OLR (MC Dropout uncertainty, v2.0.219)           │
-   • Temporal attention (cross-trade regime, v2.0.219)        │
-   • Cross-symbol backbone (shared+residual, v2.0.219)        │
-   • Reward shaping (5-component risk-adjusted, v2.0.219)     │
-   • Active exploration (UCB + info gain, v2.0.219)           │
-   • World model (latent dynamics + rollout, v2.0.219)        │
-│   • RIL Reason Intelligence (pattern clustering + similar     │
-│     trade retrieval + subtle diff LLM analysis)               │
-│   • Trade Incident Panel (MAE/MFE + exitThesis + post-review) │
+│   • Execution-lens SL/TP (stop-out-trained direct control)   │
+│   • Replay buffer (PER mini-batch retrain, v2.0.219)         │
+│   • Bayesian OLR (MC Dropout uncertainty, v2.0.219)          │
+│   • Temporal attention (cross-trade regime, v2.0.219)        │
+│   • Cross-symbol backbone (shared+residual, v2.0.219)        │
+│   • Reward shaping (5-component risk-adjusted, v2.0.219)     │
+│   • Active exploration (UCB + info gain, v2.0.219)           │
+│   • World model (latent dynamics + rollout, v2.0.219)        │
+│   • RIL Reason Intelligence (pattern clustering + similar    │
+│     trade retrieval + subtle diff LLM analysis)              │
+│   • Trade Incident Panel (MAE/MFE + exitThesis + post-review)│
 ├──────────────────────────────────────────────────────────────┤
-│   Layer 3: Execution (TypeScript Runtime)                     │
-│   • Hyperliquid WebSocket + REST (9 perpetual DEXs)           │
-│   • Risk engine (millisecond, no LLM)                         │
-│   • Paper/Real trading with unified execute/close routing     │
-│   • Position tracking & SL/TP · persistence · observability   │
+│   Layer 3: Execution (TypeScript Runtime)                    │
+│   • Hyperliquid WebSocket + REST (9 perpetual DEXs)          │
+│   • Risk engine (millisecond, no LLM)                        │
+│   • Paper/Real trading with unified execute/close routing    │
+│   • Position tracking & SL/TP · persistence · observability  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -338,7 +338,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full version history.
 
 ## Commercial Licensing
 
-**Pantha AI Labs** holds a perpetual, irrevocable commercial license. For all other use, MATS is open source under **Apache License 2.0**. Contact YC Wong for commercial licensing.
+** MATS is open source under **Apache License 2.0**. Contact YC Wong for commercial licensing.
 
 ## License
 
