@@ -64,6 +64,7 @@ import { WorldModel } from './evolution/world-model.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, computeMomentum, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
 import { wilsonScore } from './evolution/evolution-utils.ts';
+import { ComboWinRateTracker, type ComboGateResult } from './evolution/combo-win-rate-tracker.ts';
 import { auditTradeRecordsLLM, type AuditResult } from './evolution/direction-audit.ts';
 import { runSystemEngineer } from './evolution/system-engineer.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
@@ -77,6 +78,22 @@ const log = createLogger({ phase: 'system' });
 function catDirMentionDirection(category: string, dir: 'buy' | 'sell'): boolean {
   if (dir === 'buy') return category.includes('buy') || category.includes('long');
   return category.includes('sell') || category.includes('short');
+}
+
+/** v2.0.221 (Fix 1): Extract hour-of-day from a timestamp (epoch ms) and
+ *  normalise to 0-1 (hour/23). Returns 0.5 (noon) when ts is missing or invalid.
+ *  This feeds the new OLR `hourOfDay` feature so the model can learn time-of-day
+ *  patterns like "SKHX BUY at 16:00 loses 100%". */
+function hourOfDayFromTs(ts?: number): number {
+  if (!ts || !Number.isFinite(ts) || ts <= 0) return 0.5; // noon — neutral default
+  const hour = new Date(ts).getHours(); // 0-23 local time
+  return hour / 23;
+}
+
+/** v2.0.221 (Fix 1): Current hour-of-day normalised to 0-1. Used for live
+ *  feature extraction where no explicit timestamp is available. */
+function currentHourOfDay(): number {
+  return new Date().getHours() / 23;
 }
 
 class MATSSystem {
@@ -224,6 +241,8 @@ class MATSSystem {
   private rewardShaper!: RewardShaper;
   private activeExploration!: ActiveExploration;
   private worldModel!: WorldModel;
+  /** v2.0.221 (Fix 3+4): Combo Win Rate Tracker — (symbol × side × regime) WR tracking + soft gate. */
+  private comboTracker!: ComboWinRateTracker;
   /** v2.0.204: Numeric Autoencoder — learns non-linear market-condition embedding for vector-conditional WR. */
   private naEngine!: NumericAutoencoder;
   /** v2.0.211 (K.md #1): Cycle-History Selective Retrieval (AttnRes transfer).
@@ -578,13 +597,19 @@ class MATSSystem {
     // v2.0.209: Stack conditional-WR soft gate (vector-conditional, the TRUE edge signal).
     const condWRResult = this.checkConditionalWRGate(symbol, action);
     const condPenalty = condWRResult.convictionPenalty ?? 0;
-    const netPenalty = lossPenalty + condPenalty;
+    // v2.0.221 (Fix 4): Stack combo WR gate — (symbol × side × regime) specific penalty.
+    // This is the targeted fix: SKHX SELL low_volatility = 12% WR → 50% penalty
+    // (was only 35% from conditional WR, which was insufficient).
+    const comboRegime = this.marketState?.getState(symbol)?.regime ?? 'unknown';
+    const comboResult = this.comboTracker.checkComboGate(symbol, action, comboRegime);
+    const comboPenalty = comboResult.convictionPenalty ?? 0;
+    const netPenalty = lossPenalty + condPenalty + comboPenalty;
 
     (this as any)._lossStreakPenalty = netPenalty;
 
     if (netPenalty > 0) {
-      const reasons = [gateResult.reason, condWRResult.reason].filter(Boolean).join(' | ');
-      log.info(`🚡 [soft-gate] ${action.toUpperCase()} ${symbol}: conviction +${(netPenalty * 100).toFixed(0)}% (${reasons?.slice(0, 100)}) — no winner pattern found, applying penalty`);
+      const reasons = [gateResult.reason, condWRResult.reason, comboResult.reason].filter(Boolean).join(' | ');
+      log.info(`🚡 [soft-gate] ${action.toUpperCase()} ${symbol}: conviction +${(netPenalty * 100).toFixed(0)}% (${reasons?.slice(0, 120)}) — no winner pattern found, applying penalty`);
       auditGates.push({ gate: 'loss-streak', passed: true, reason: `soft: conviction +${(netPenalty * 100).toFixed(0)}% (no winner found)` });
     } else {
       auditGates.push({ gate: 'loss-streak', passed: true, reason: 'no penalty/boost' });
@@ -753,6 +778,17 @@ class MATSSystem {
       this.rewardShaper = new RewardShaper();
       this.activeExploration = new ActiveExploration();
       this.worldModel = new WorldModel([...FEATURE_NAMES]);
+      // v2.0.221 (Fix 3+4): Combo Win Rate Tracker — (symbol × side × regime) WR
+      this.comboTracker = new ComboWinRateTracker(path.join(process.cwd(), 'data'));
+      try {
+        const comboPath = path.join(process.cwd(), 'data/evolution/combo-win-rates.json');
+        if (fs.existsSync(comboPath)) {
+          this.comboTracker.load(fs.readFileSync(comboPath, 'utf-8'));
+          log.info(`✓ ComboWinRateTracker loaded (${this.comboTracker.getComboCount()} combos, ${this.comboTracker.getTotalTrades()} trades)`);
+        }
+      } catch (e) {
+        log.warn(`[combo-tracker] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+      }
       // Load persisted OLR + shadow state
       try {
         const olrPath = path.join(process.cwd(), 'data/evolution/olr-state.json');
@@ -2174,6 +2210,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             obImbalance: safeNum(state?.orderBookImbalance, 0),
             signalAgreement: safeNum(this.lastHACPResult?.consensus?.confidence, 0.5),
             regimeOrdinal: regimeToOrdinal(state?.regime),
+            hourOfDay: currentHourOfDay(),
           };
         });
         this.hacpEngine.setLLMChatFn(async (messages: Array<{ role: string; content: string }>, opts?: { temperature?: number; timeoutMs?: number }) => {
@@ -2646,6 +2683,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           mfeToPnlRatio: mfePct > 0 ? (mfePct - safePnlPct) / mfePct : 0, // 0 = perfect exit, 1 = gave back everything
           // v2.0.721: Regime as ordinal feature (H1)
           regimeOrdinal: regimeToOrdinal(regime),
+          // v2.0.221 (Fix 1): Hour-of-day for time-of-day pattern learning
+          hourOfDay: hourOfDayFromTs((trade as any)?.openedAt) ?? currentHourOfDay(),
         };
         const tradeSource: 'paper' | 'real' = trade.agentId === 'hyperliquid-real' ? 'real' : 'paper';
         this.olrEngine.feedTrade(symbol, features, outcome, trade.side === 'buy' ? 'buy' : 'sell', tradeSource, this.totalCycles);
@@ -2677,6 +2716,20 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         } catch (err) {
           log.warn(`[close-learning] Advanced learning feed failed: ${err instanceof Error ? err.message : String(err)}`);
         }
+
+        // v2.0.221 (Fix 3): Track combo (symbol × side × regime) WR for pattern avoidance.
+        try {
+          this.comboTracker.trackTrade(
+            symbol,
+            trade.side === 'buy' ? 'buy' : 'sell',
+            regime,
+            isWin ? 'WIN' : 'LOSS',
+            trade.pnl ?? 0,
+            safeNum(pnlPct, 0),
+            this.totalCycles,
+            (trade as any)?.id ?? `live-${symbol}-${trade.openedAt ?? this.totalCycles}`, // v2.0.221 dedup
+          );
+        } catch { /* non-critical */ }
       } catch (err) {
         log.warn(`[close-learning] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -3649,7 +3702,7 @@ ${recentExamples}
     try {
       const raw = fs.readFileSync(expPath, 'utf-8');
       const lines = raw.trim().split('\n').filter(l => l.trim());
-      let olrFed = 0, naFed = 0, attnresFed = 0, clusterFed = 0, chrFed = 0, advancedFed = 0;
+      let olrFed = 0, naFed = 0, attnresFed = 0, clusterFed = 0, chrFed = 0, advancedFed = 0, comboFed = 0;
       let skipped = 0;
 
       for (const line of lines) {
@@ -3684,6 +3737,7 @@ ${recentExamples}
             regimeOrdinal: regimeToOrdinal(rec.regime),
             momentumShort: 0, // not stored in EXP — neutral
             momentumLong: 0, // not stored in EXP — neutral
+            hourOfDay: hourOfDayFromTs(rec.ts), // v2.0.221 Fix 1
           };
           try {
             this.olrEngine.feedTrade(sym, features, outcome, side, source, 0);
@@ -3759,6 +3813,13 @@ ${recentExamples}
           } catch { /* non-critical */ }
         }
 
+        // v2.0.221 (Fix 3): Backfill combo tracker from EXP records
+        try {
+          this.comboTracker.trackTrade(sym, side, rec.regime ?? 'unknown',
+            outcome === 1 ? 'WIN' : 'LOSS', pnl, pnlPct, 0, rec.id); // v2.0.221 dedup
+          comboFed++;
+        } catch { /* non-critical */ }
+
         // 6. v2.0.219: Advanced learning systems (replay, temporal, cross-symbol, world model)
         //    Uses the same features object built for OLR above.
         if (mf && typeof mf === 'object' && Object.keys(mf).length > 0) {
@@ -3781,6 +3842,7 @@ ${recentExamples}
                 regimeOrdinal: regimeToOrdinal(rec.regime),
                 momentumShort: 0,
                 momentumLong: 0,
+                hourOfDay: hourOfDayFromTs(rec.ts), // v2.0.221 Fix 1
               },
               outcome,
               pnl,
@@ -3794,7 +3856,7 @@ ${recentExamples}
         }
       }
 
-      log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, skipped=${skipped}`);
+      log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, Combo=${comboFed}, skipped=${skipped}`);
 
       // Persist all updated state
       this.persistOLR();
@@ -4541,6 +4603,7 @@ ${recentExamples}
           sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
           sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
           signalAgreement: 0.5,
+          hourOfDay: currentHourOfDay(), // v2.0.221 Fix 1
         };
         // v2.0.135: use shared helper — injects full OLR + First-Passage + edge
         const srD = {
@@ -4558,6 +4621,12 @@ ${recentExamples}
         if (shadowCtx.openCount > 0 || shadowCtx.recentResults.length > 0) {
           olrContext += '\n' + shadowCtx.contextString;
         }
+        // v2.0.221 (Fix 3): Inject combo WR block so Meta-Agent sees explicit
+        // (symbol × side × regime) win rates BEFORE generating a thesis.
+        try {
+          const comboBlock = this.comboTracker.getComboBlock(activeSymbol);
+          if (comboBlock) olrContext += `\n${comboBlock}`;
+        } catch { /* non-critical */ }
       } catch { /* non-critical */ }
 
       // v2.0.32: Run Planck-Chaos Resonance analysis and inject context
@@ -5667,6 +5736,8 @@ ${recentExamples}
                 sentimentConviction: sentimentData?.conviction ?? 0.5,
                 // v2.0.721: Regime ordinal (H1)
                 regimeOrdinal: regimeToOrdinal(combinedState.regime),
+                // v2.0.221 (Fix 1): Hour-of-day
+                hourOfDay: currentHourOfDay(),
               };
               const olrBuy = this.olrEngine.query(combinedState.primarySymbol, { ...olrCtx }, 'buy', this.totalCycles);
               const olrSell = this.olrEngine.query(combinedState.primarySymbol, { ...olrCtx }, 'sell', this.totalCycles);
@@ -5930,6 +6001,7 @@ ${recentExamples}
                 sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
                 sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
                 regimeOrdinal: regimeToOrdinal(combinedState.regime),
+                hourOfDay: currentHourOfDay(), // v2.0.221 Fix 1
               };
               const olrQ = this.olrEngine.query(activeSymbol, olrCtx2, direction as 'buy' | 'sell', this.totalCycles);
               expOlr = `${(olrQ.pWin * 100).toFixed(0)}% (${olrQ.nSamples} samples)`;
@@ -6979,6 +7051,7 @@ ${recentExamples}
                 obImbalance: combinedState.orderBookImbalance ?? 0,
                 signalAgreement: result.consensus.confidence ?? 0.5,
                 regimeOrdinal: regimeToOrdinal(combinedState.regime),
+                hourOfDay: currentHourOfDay(), // v2.0.221 Fix 1
               };
               this.patternTagTracker.recordEntry(
                 tradeId,
@@ -7948,6 +8021,10 @@ ${recentExamples}
       saveAdv('reward-shaper.json', this.rewardShaper.save());
       saveAdv('exploration.json', this.activeExploration.save());
       saveAdv('world-model.json', this.worldModel.save());
+      // v2.0.221 (Fix 3): Save combo win rate tracker state
+      if (this.comboTracker.isDirty()) {
+        saveAdv('combo-win-rates.json', this.comboTracker.save());
+      }
       // v2.0.204: Save Numeric Autoencoder model
       this.naEngine.persist();
       // v2.0.207 (#F): Persist anti-pattern classes.

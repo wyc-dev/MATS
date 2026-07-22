@@ -223,7 +223,7 @@ describe('TemporalAttention', () => {
     ta.addTrade({ symbol: 'btc', side: 'buy', features: goodFeatures(), outcome: 1, pnl: 1, pnlPct: 0.01, ts: 1, regime: 'trending_bull' });
     const result = ta.retrieveBlend();
     expect(result.applied).toBe(false);
-    expect(result.hBlend.length).toBe(14);
+    expect(result.hBlend.length).toBe(15); // v2.0.221: was 14, +1 for hourOfDay
   });
 
   it('T2: with enough history, produces attention weights', () => {

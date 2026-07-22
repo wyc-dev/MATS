@@ -36,9 +36,16 @@ export const FEATURE_NAMES = [
   // migrateModel pads old weights to 0 (neutral) for these new dims.
   'momentumShort',
   'momentumLong',
+  // v2.0.221 (Fix 1): Hour-of-day feature — the SKHX investigation revealed
+  // strong time-of-day patterns (13:00 = 75% WR, 16:00 = 0% WR) that the model
+  // could NOT learn because hour was absent from the feature space. Adding
+  // hourOfDay (normalised 0-1: hour/23) lets OLR learn "SKHX BUY at 16:00 loses".
+  // Backward compat: migrateModel pads old weights to 0 (neutral) for this dim.
+  // Default neutral = 0.5 (noon) when hour unavailable.
+  'hourOfDay',
 ] as const;
 
-const D = FEATURE_NAMES.length; // 12
+const D = FEATURE_NAMES.length; // 15 (was 14)
 
 // ─── Types ───
 
@@ -293,13 +300,22 @@ export class OLREngine {
     // would otherwise resurrect NaN weights. Reset any non-finite weight to 0.
     const weights = rawWeights.slice(0, D + 1).map((w: number) => (Number.isFinite(w) ? w : 0));
     while (weights.length < D + 1) weights.push(0);
+    // v2.0.221 Fix: PAD mean/m2/welfordCount to D (was slice(0, D) which TRUNCATES
+    // instead of padding — old 14-element arrays stayed at 14, causing NaN when
+    // the new 15th feature (hourOfDay) tried to normalize against undefined mean).
+    const padArray = (arr: any[] | undefined, val: number) => {
+      if (!Array.isArray(arr)) return new Array(D).fill(val);
+      const out = arr.slice(0, D).map((x: number) => (Number.isFinite(x) ? x : val));
+      while (out.length < D) out.push(val);
+      return out;
+    };
     return {
       weights,
       nSamples: m.nSamples ?? 0,
-      mean: Array.isArray(m.mean) ? m.mean.slice(0, D) : new Array(D).fill(0),
-      m2: Array.isArray(m.m2) ? m.m2.slice(0, D) : new Array(D).fill(0),
+      mean: padArray(m.mean, 0),
+      m2: padArray(m.m2, 0),
       // Backward compat: old state stored a single number; broadcast to all features.
-      welfordCount: Array.isArray(m.welfordCount) ? m.welfordCount.slice(0, D) : new Array(D).fill(typeof m.welfordCount === 'number' ? m.welfordCount : 0),
+      welfordCount: padArray(m.welfordCount, typeof m.welfordCount === 'number' ? m.welfordCount : 0),
       shadowSamples: m.shadowSamples ?? 0,
       paperSamples: m.paperSamples ?? 0,
       realSamples: m.realSamples ?? 0,
@@ -620,6 +636,7 @@ export class OLREngine {
       // for BTC). Now both contextToVector and feedTrade sanitize NaN to 0.
       if (val === undefined || val === null || !Number.isFinite(val)) {
         if (name === 'regimeOrdinal') return 0.5;
+        if (name === 'hourOfDay') return 0.5; // noon — neutral default
         return 0;
       }
       return val;

@@ -23,6 +23,7 @@
 // - NaN sanitization throughout
 
 import { createLogger } from '../observability/logger.ts';
+import { FEATURE_NAMES } from './olr-engine.ts';
 import { safeNum } from './evolution-utils.ts';
 
 const log = createLogger({ phase: 'temporal-attn' });
@@ -95,7 +96,7 @@ export class TemporalAttention {
   constructor(config?: Partial<TemporalAttentionConfig>) {
     this.config = {
       seqLen: 50,
-      featureDim: 14, // OLR feature count
+      featureDim: FEATURE_NAMES.length, // v2.0.221: dynamic — was hardcoded 14
       learningRate: 0.01,
       minTemperature: 1.0,
       maxTemperature: 10.0,
