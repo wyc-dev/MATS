@@ -23,6 +23,7 @@ import { createLogger } from '../observability/logger.ts';
 import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { cosine, type EmbedProvider } from './embeddings.ts';
 import type { ThesisExperienceRecord } from '../types/index.ts';
+import { ComboWinRateTracker } from './combo-win-rate-tracker.ts'; // v2.0.221 Fix 2: autoGenerateLesson
 
 const log = createLogger({ phase: 'anti-pattern' });
 
@@ -69,16 +70,37 @@ export class AntiPatternTracker {
    */
   async rebuild(records: ThesisExperienceRecord[]): Promise<void> {
     if (!this.embedProvider) return;
-    const losses = records.filter(r => r.outcome === 'LOSS' && r.lesson && r.lesson.trim().length > 0);
+    // v2.0.221 (Fix 2): Auto-generate structural lessons for losses that have
+    // no LLM-generated lesson. Previously 130/138 losses had no lesson → only
+    // 8 qualified → 0 anti-pattern clusters. Now every loss gets at least a
+    // structural lesson, so clustering actually works.
+    const losses = records.filter(r => r.outcome === 'LOSS');
     if (losses.length === 0) { this.classes = []; this.dirty = true; return; }
+    // Build lesson texts: use LLM lesson if present, else auto-generate structural.
+    const lessonTexts = losses.map(r => {
+      if (r.lesson && r.lesson.trim().length > 0) return r.lesson.slice(0, 500);
+      return ComboWinRateTracker.autoGenerateLesson({
+        symbol: r.symbol,
+        side: r.side,
+        regime: r.regime ?? 'unknown',
+        holdMin: r.holdMin ?? 0,
+        closeReason: (r as any).exitType ?? (r as any).closeReason ?? null,
+        pnlPct: r.pnlPct ?? 0,
+        hourOfDay: r.ts ? new Date(r.ts).getHours() : undefined,
+      });
+    });
     try {
-      const vecs = await this.embedProvider.embed(losses.map(r => r.lesson!.slice(0, 500)));
+      const vecs = await this.embedProvider.embed(lessonTexts);
       this.classes = [];
       this.ingested = new Set();
       for (let i = 0; i < losses.length; i++) {
         const rec = losses[i]!;
         const vec = vecs[i] ?? [];
         if (vec.length === 0) continue;
+        // Ensure the record has a lesson for downstream use (matchCandidate display).
+        if (!rec.lesson || rec.lesson.trim().length === 0) {
+          rec.lesson = lessonTexts[i]!;
+        }
         this.ingest(rec.id, vec, rec);
       }
       // Drop classes below min size (noise).
@@ -86,7 +108,8 @@ export class AntiPatternTracker {
       // Re-id.
       this.classes.forEach((c, i) => { c.id = i + 1; });
       this.dirty = true;
-      log.info(`[anti-pattern] Rebuilt ${this.classes.length} anti-pattern classes from ${losses.length} losses`);
+      const autoGen = losses.filter(r => !r.lesson || r.lesson.trim().length === 0).length;
+      log.info(`[anti-pattern] Rebuilt ${this.classes.length} anti-pattern classes from ${losses.length} losses (${autoGen} auto-generated structural lessons)`);
     } catch (err) {
       log.warn(`[anti-pattern] rebuild failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -95,10 +118,25 @@ export class AntiPatternTracker {
   /** Ingest one loss record incrementally (after a trade closes). */
   async addLoss(rec: ThesisExperienceRecord): Promise<void> {
     if (!this.embedProvider) return;
-    if (rec.outcome !== 'LOSS' || !rec.lesson || rec.lesson.trim().length === 0) return;
+    if (rec.outcome !== 'LOSS') return;
     if (this.ingested.has(rec.id)) return;
+    // v2.0.221 (Fix 2): Auto-generate structural lesson when LLM lesson is missing.
+    let lessonText = rec.lesson && rec.lesson.trim().length > 0
+      ? rec.lesson.slice(0, 500)
+      : ComboWinRateTracker.autoGenerateLesson({
+          symbol: rec.symbol,
+          side: rec.side,
+          regime: rec.regime ?? 'unknown',
+          holdMin: rec.holdMin ?? 0,
+          closeReason: (rec as any).exitType ?? (rec as any).closeReason ?? null,
+          pnlPct: rec.pnlPct ?? 0,
+          hourOfDay: rec.ts ? new Date(rec.ts).getHours() : undefined,
+        });
+    if (!rec.lesson || rec.lesson.trim().length === 0) {
+      rec.lesson = lessonText; // persist for downstream display
+    }
     try {
-      const v = await this.embedProvider.embed([rec.lesson.slice(0, 500)]);
+      const v = await this.embedProvider.embed([lessonText]);
       const vec = v[0] ?? [];
       if (vec.length === 0) return;
       this.ingest(rec.id, vec, rec);

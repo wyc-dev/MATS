@@ -79,3 +79,9 @@ data/EXP.md
 # ─── Agent instructions (private) ───
 .github/instructions/PI.instructions.md
 NEWS_DECODER_PLAN.md
+
+# ─── Private investor materials (never commit) ───
+investMATS.md
+investor/
+*.investor.md
+pitch-deck-private/
