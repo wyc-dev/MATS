@@ -505,6 +505,24 @@ export interface TradeRecord {
   /** v2.0.143: Maximum unrealized PnL reached during the trade's lifetime (MFE).
    *  Captured from the position's maxValueReached at close time. */
   maxValueReached?: number;
+  /** v2.0.226: Original stop-loss price set at position open. Used to detect
+   *  post-entry SL narrowing (trailing stop, MFE giveback) that caused
+   *  premature stop-outs. When finalStopLossPrice differs from this, the
+   *  loss is likely an EXECUTION problem (SL too tight), not an ENTRY
+   *  problem — the learning system downweights such losses. */
+  originalStopLossPrice?: number;
+  /** v2.0.226: Final stop-loss price at close time. May differ from
+   *  originalStopLossPrice if the SL was narrowed post-entry. */
+  finalStopLossPrice?: number;
+  /** v2.0.226: Original take-profit price set at position open. */
+  originalTakeProfitPrice?: number;
+  /** v2.0.226: Final take-profit price at close time. */
+  finalTakeProfitPrice?: number;
+  /** v2.0.226: Whether the SL was narrowed post-entry (trailing stop, MFE
+   *  giveback, TP narrowing). Detected by comparing originalStopLossPrice
+   *  vs finalStopLossPrice. Used to downweight learning from execution-caused
+   *  losses — the entry may have been fine, the SL was just too tight. */
+  slNarrowed?: boolean;
 }
 
 // ─── EXP: Thesis Experience Vector Memory (v2.0.138) ───

@@ -4,23 +4,32 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
-## v2.0.225: Disable trailing stop + MFE giveback + remove auto-close — two-layer exit protection only. Owner directive: post-entry SL narrowing caused premature stop-outs (most SKHX SELL losses hit SL at 0.27-1.72% distance — too tight for normal volatility) + UI/Hyperliquid SL desync (narrowed SL couldn't be pushed to exchange when price already past it → exchange keeps original wider SL, UI shows narrowed local mirror).
+## v2.0.226: Close-context-aware learning weight — how a position is closed is an important factor in the loss. Owner insight: "點樣平倉/用乜嘢形式平倉其實都係一個蝕錢嘅重要因素". Previously, ALL learning systems (OLR, AttnRes, combo WR, anti-patterns, replay buffer, temporal attention, cross-symbol backbone, world model) received only binary win/loss outcome — they had no concept of WHY the trade lost. A tight-SL loss (SL narrowed by trailing stop, then hit by normal volatility) was treated identically to a bad-entry loss, contaminating the systems with "these market conditions → loss" when the entry was actually fine.
 
-**Disabled (post-entry SL/TP modifications):**
-- **#2 Trailing stop** (`hacp.ts adjustPositions`): trailing SL that moved SL toward entry every cycle (0.3-1.8% step). Now returns `[]` (no SL/TP modifications).
-- **#3 MFE giveback protection**: locked in 40% of MFE when 40% given back. Caused premature profit-cutting.
-- **TP narrowing**: pulled TP closer when MFE > 3% and TP was > 2× MFE away.
-- **Per-symbol consensus SL/TP**: agents could suggest post-entry SL/TP changes. Now skipped (`hacpAdjusted = true` always).
+**Root cause**: `slNarrowed` parameter existed in `feedTrade()` but index.ts never passed it (defaulted to `false`). Even if passed, it was only stored in `recentTrades` for agent display, not used to scale the gradient update. The `originalStopLossPrice` was recorded at position open (v2.0.143) but never compared to the final SL at close time for learning purposes.
 
-**Removed (deterministic auto-close block):**
-- **v2.0.225b**: condition (a) OLR P(win) < 25% — dead code. Calibration map SNAP effect (raw 40-60% → snapped to Bin 2 empirical 56.9%) made P(win) unreachable for open SKHX SHORT trades. OLR trained on entry features (maePct=0 at entry), not mid-trade features — conceptually wrong for exit. Backfill poisoning (76% non-real) caused backwards weights.
-- **v2.0.225c**: condition (b) adverse momentum > 3% — removed. Analysis of proposed PnL% + momentumShort replacement revealed a fundamental contradiction: if PnL threshold < SL distance, it's a tighter SL (contradicts anti-narrowing directive); if > SL distance, it's dead code (SL always triggers first). No third possibility. The entire pre-HACP auto-close loop (60 lines) deleted from `index.ts`.
+**Fix — 4 changes:**
 
-**Final exit protection design (two layers only):**
-- **Layer 1: Initial SL/TP** (`trading-manager.ts`): ATR-based (1.5×ATR SL, 2.0×ATR TP) or S/R-aligned. Set at entry, never modified post-entry. Exchange-level trigger (Hyperliquid native orders). Portfolio safety layer enforces 1% min SL, 1.5% min TP, 2% min gap.
-- **Layer 2: LLM thesis invalidation** (Skeptics Phase 0.5, `hacp.ts`): Each cycle, Skeptics re-validates open positions' entry theses against current market state. If the fundamental thesis breaks (regime change, catalyst invalidation), the position is force-closed via `thesisInvalidatedSymbols`.
+1. **TradeRecord captures close context** (`types/index.ts`): Added `originalStopLossPrice`, `finalStopLossPrice`, `originalTakeProfitPrice`, `finalTakeProfitPrice`, `slNarrowed` fields. Both close paths (`closePosition` paper + `closeExchangePosition` real in `portfolio.ts`) now capture these from the position object.
 
-**Preserved:** Real-time OLR edge block (injects P(win) context for agents to re-evaluate HOLD vs CLOSE — advisory only, never a hard trigger).
+2. **`computeLearningWeight()` function** (`index.ts`): Pure function that assigns learning weight [0.3, 1.0] based on close context:
+   - Win → 1.0 (always full positive signal)
+   - SL hit at original wide SL → 1.0 (real market loss)
+   - SL hit after SL was narrowed → 0.3 (execution loss, entry may be fine)
+   - Thesis invalidation → 0.3 (system LLM decision, not pure market)
+   - Manual close → 0.5 (user decision, partial market signal)
+   - Consensus close → 0.5 (agent vote, partial signal)
+   - Reconciliation/exchange_closed → 1.0 (extreme market event)
+
+3. **OLR `feedTrade()` now receives `slNarrowed` + `weightMultiplier`**: The 7th parameter (`slNarrowed`) and 9th parameter (`weightMultiplier`) are now properly passed. `weightMultiplier` scales `srcWeight` → scales the SGD gradient update. Tight-SL losses contribute 30% to the gradient, reducing contamination.
+
+4. **Combo WR gate skips execution losses**: `comboTracker.trackTrade()` is only called when `isWin || learningWeight >= 0.5`. Tight-SL losses (weight=0.3) and thesis-invalidation losses (weight=0.3) are excluded from the combo WR — they don't drag down the (symbol×side×regime) win rate for valid entries.
+
+5. **`feedAdvancedLearning()` scales PnL reward**: `pnl` and `pnlPct` are multiplied by `learningWeight` before feeding to replay buffer, temporal attention, cross-symbol backbone, and world model. AttnRes reward-weighted regression learns less from execution-caused losses.
+
+**Effect**: Future tight-SL losses (if any SL management is re-enabled) will contribute 30% to learning instead of 100%. Past contamination remains in existing weights/patterns but will be gradually diluted by clean full-weight data. The `slNarrowed` flag is now correctly recorded for all future trades.
+
+**Self-attack (24 tests, all passed):** wins always full weight ✓, real SL losses full weight ✓, tight-SL losses downweighted to 0.3 ✓, thesis invalidation 0.3 ✓, manual 0.5 ✓, combo WR skip logic ✓, SL narrowing detection (undefined-safe) ✓, boundary [0.3, 1.0] ✓.
 
  Confidence Multiplicative Discount — Detection/Implementation Gap Fix
 
