@@ -18,7 +18,7 @@
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + Pattern DB + RIL，從每筆交易學習 |
+| **自我演化** | 21 層認知演化管線 — OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + 7 advanced systems v2.0.219，從每筆交易學習 |
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
 | **生產級標準** | 完整型別（Zod 驗證）、結構化日誌（Winston）、優雅關閉、指數退避重連 |
@@ -88,7 +88,7 @@ src/
 │   │   v2.0.143: executeTrade() / closeTrade() 統一路由
 ├── risk/                    # 風險引擎 + correlation-budget
 ├── system-guard/            # 5 層保護閘門
-├── evolution/               # 自我演化（OLR + Shadow + First-Passage + EM + GA + RIL + EXP + NA + AttnRes + Anti-Pattern + 7 advanced systems v2.0.219）
+├── evolution/               # 自我演化（21 層認知演化管線：OLR + Shadow + First-Passage + EM + GA + RIL + EXP + NA + AttnRes + Anti-Pattern + Combo WR + P(win) Discount + 7 advanced systems v2.0.219）
 │   ├── embeddings.ts        # Transformers.js MiniLM 384-d 向量（in-process, singleton v2.0.216）
 │   ├── thesis-experience.ts # EXP 理據組合歷史勝率（方向過濾 + lesson persistence v2.0.207 #E）
 │   ├── experience-digester.ts # A2A 經驗消化（per-direction winRate + LessonStatement v2.0.207）
@@ -372,6 +372,8 @@ FINAL CONFIDENCE:
 ---
 
 ## 自我演化系統
+
+MATS 嘅核心競爭力係 **21 層認知演化管線**——每筆交易結果都會餵回 21 個獨立學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。以下逐層詳述：
 
 ### OLR — Online Logistic Regression（`olr-engine.ts`）
 
