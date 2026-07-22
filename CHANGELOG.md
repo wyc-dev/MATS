@@ -4,7 +4,7 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
-## v2.0.225: Disable trailing stop + MFE giveback — keep initial SL/TP + auto-close on adverse conditions. Owner directive: post-entry SL narrowing caused premature stop-outs (most SKHX SELL losses hit SL at 0.27-1.72% distance — too tight for normal volatility) + UI/Hyperliquid SL desync (narrowed SL couldn't be pushed to exchange when price already past it → exchange keeps original wider SL, UI shows narrowed local mirror).
+## v2.0.225: Disable trailing stop + MFE giveback — keep initial SL/TP + auto-close on adverse momentum. Owner directive: post-entry SL narrowing caused premature stop-outs (most SKHX SELL losses hit SL at 0.27-1.72% distance — too tight for normal volatility) + UI/Hyperliquid SL desync (narrowed SL couldn't be pushed to exchange when price already past it → exchange keeps original wider SL, UI shows narrowed local mirror).
 
 **Disabled:**
 - **#2 Trailing stop** (`hacp.ts adjustPositions`): trailing SL that moved SL toward entry every cycle (0.3-1.8% step). Now returns `[]` (no SL/TP modifications).
@@ -18,11 +18,15 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 - **Real-time OLR edge block**: injects P(win) warning for agents to re-evaluate.
 
 **New: Deterministic auto-close** (`index.ts`, pre-HACP): "MATS 認為好唔對路 → 即時平倉". Hard-close when:
-- (a) OLR P(win) < 25% with sufficient samples (≥10, confidence≠'low') — statistical edge collapsed
 - (b) Severe adverse momentum > 3% against position — price being pushed hard against trade
-Cold-start safe: uncalibrated OLR → no close. Routes through `closeTrade()` with `thesisInvalidatedCloseSymbols` (same path as Skeptics invalidation).
 
-**Self-attack (10 vectors, all passed):** edge collapse ✓, cold-start safe ✓, adverse momentum ✓, normal not over-blocked ✓, BUY+SELL both directions ✓, boundary (25% P(win), 3% momentum) ✓, NaN safe ✓, both conditions ✓.
+**v2.0.225b: REMOVED condition (a) OLR P(win) < 25%** — data analysis showed it was dead code:
+1. **Calibration map SNAP effect**: SKHX SHORT raw sigmoid 40-60% → snapped to Bin 2 empirical WR 56.9%. P(win) can NEVER drop below 56.9% for open SKHX SHORT trades, even under catastrophic conditions (-5%, +5% adverse momentum). The 25% threshold was unreachable.
+2. **Entry-feature vs mid-trade feature mismatch**: OLR trained on entry-time features (maePct=0, mfePct=0 at entry). Recomputing P(win) during a trade uses features in a different semantic context — conceptually wrong for exit decisions.
+3. **Backfill poisoning**: SKHX SHORT is 76% non-real data. OLR weights learned backfill patterns (momentumShort=+0.42 for SELL = rising price increases P(win)) — backwards for held SHORTs where rising price = losing position.
+4. For BTC/CL the 25% threshold CAN trigger (Bin 1 = 0-24% actual WR), but the conceptual flaw (entry features for exit) makes it unreliable.
+
+**Final auto-close design**: only condition (b) adverse momentum > 3% remains — deterministic, calibration-independent, reliable across all symbols. Combined with LLM thesis invalidation + initial SL/TP as three-layer exit protection.
 
  Confidence Multiplicative Discount — Detection/Implementation Gap Fix
 
