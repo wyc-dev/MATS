@@ -31,7 +31,7 @@ pwinFloor = 0.3                                       // never kills completely
 
 **Self-attack (15 vectors, all passed):** SKHX scenario blocked ✓, good trades not over-blocked ✓, cold-start not over-blocked ✓, P(win)=0 blocks even 100% consensus ✓, NaN/Infinity injection safe ✓, monotonicity (higher P(win) never harder to trade) ✓, floor bound (P(win)=0 → 0.3, never 0) ✓, threshold clamp [0.25, 0.85] ✓, production scenario (29 losing trades would be blocked) ✓.
 
- — backfill train 50 epochs + diversity anti-collapse + linear layer init + relaxed thresholds. v2.0.222 fixed replay persistence but the UI still showed ◐ because the model itself was poorly trained: mse=1.22, diversity=0 (collapsed). Investigation revealed 4 blind spots:
+## v2.0.223: Fix NA training quality — backfill train 50 epochs + diversity anti-collapse + linear layer init + relaxed thresholds. v2.0.222 fixed replay persistence but the UI still showed ◐ because the model itself was poorly trained: mse=1.22, diversity=0 (collapsed). Investigation revealed 4 blind spots:
 
 **BS1 (critical): Diversity collapse symmetry trap.** `diversityLoss()` used variance-from-mean. At collapse, all embeddings identical → variance=0 → gradient=0 → CANNOT escape. The model was permanently stuck. **Fix:** Added pairwise repulsion with margin (0.5). At collapse, all cosines=1 > 0.5 → every pair gets non-zero gradient pushing apart. As embeddings spread, cosines drop below margin → penalty disappears (soft). Embeddings are L2-normalised so cosine = dot product. Tested: gradNorm at collapse = 1.414 (was 0).
 
