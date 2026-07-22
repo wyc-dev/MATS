@@ -96,6 +96,83 @@ function currentHourOfDay(): number {
   return new Date().getHours() / 23;
 }
 
+/**
+ * v2.0.226: Compute learning weight based on close context.
+ *
+ * The close mechanism is an important factor in whether a loss reflects a
+ * bad ENTRY decision or a bad EXECUTION decision. This function assigns a
+ * weight [0, 1] that scales how much the learning systems (OLR, AttnRes,
+ * replay buffer, temporal attention, combo WR, etc.) should learn from
+ * each closed trade:
+ *
+ *   - SL hit at ORIGINAL (wide) SL → 1.0  (real market loss, full signal)
+ *   - SL hit after SL was NARROWED   → 0.3  (execution loss, entry may be fine)
+ *   - Thesis invalidation            → 0.3  (system LLM decision, not pure market)
+ *   - Manual close                   → 0.5  (user decision, partial market signal)
+ *   - Reconciliation / exchange      → 1.0  (exchange-side event, full market)
+ *   - WINS                           → 1.0  (a win is always a full positive signal)
+ *
+ * This prevents tight-SL losses from contaminating OLR weights, AttnRes
+ * key directions, combo WR, and anti-patterns with "these market conditions
+ * → loss" when the entry was actually correct and only the SL was too tight.
+ *
+ * @param closeReason  How the position was closed
+ * @param slNarrowed   Whether SL was narrowed post-entry
+ * @param isWin        Whether the trade was profitable
+ * @returns Learning weight multiplier [0.3, 1.0]
+ */
+function computeLearningWeight(
+  closeReason: string,
+  slNarrowed: boolean,
+  isWin: boolean,
+): number {
+  // Wins always get full weight — a win is a win regardless of how closed.
+  // The market confirmed the entry thesis, and that positive signal should
+  // not be discounted.
+  if (isWin) return 1.0;
+
+  // Losses: weight depends on whether the loss was caused by the market
+  // (real signal) or by execution/system decisions (contaminated signal).
+  switch (closeReason) {
+    case 'thesis_invalidation':
+      // System LLM decision — not a pure market-risk loss. The LLM judged
+      // the thesis broke, which may reflect regime change or may be a
+      // false alarm. Discount to 0.3 — learn from it but don't let it
+      // dominate (consistent with v2.0.139 conviction-gate exclusion).
+      return 0.3;
+    case 'manual':
+      // User decision — partial market signal. The user may have closed
+      // for risk management, inside knowledge, or emotional reasons.
+      // Discount to 0.5 — it carries some market information but is not
+      // a clean SL/TP market trigger.
+      return 0.5;
+    case 'sl_tp':
+      if (slNarrowed) {
+        // SL was narrowed post-entry (trailing stop, MFE giveback, TP
+        // narrowing) and then hit. This is an EXECUTION loss, not an ENTRY
+        // loss — the entry may have been fine, but the SL was tightened
+        // to within normal volatility noise. Discount to 0.3 so the
+        // learning systems don't learn "these market conditions → loss"
+        // from what was really "SL too tight → loss".
+        return 0.3;
+      }
+      // SL hit at the ORIGINAL (wide) SL — genuine market loss. The price
+      // moved against the thesis by the full SL distance. Full weight.
+      return 1.0;
+    case 'reconciliation':
+    case 'exchange_closed':
+      // Exchange-side event (liquidation, delisting, etc.) — full market
+      // signal. These are extreme market events.
+      return 1.0;
+    case 'consensus':
+      // Agent consensus close — the system voted to close. Similar to
+      // thesis invalidation but via the HACP vote. Discount to 0.5.
+      return 0.5;
+    default:
+      return 1.0;
+  }
+}
+
 class MATSSystem {
   private marketState!: MarketStateAggregator;
   private fractalAgent!: FractalMomentumSentinel;
@@ -2585,6 +2662,21 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       const isThesisInvalidation = this.thesisInvalidatedCloseSymbols.delete(symbol);
       const closeReason = isThesisInvalidation ? 'thesis_invalidation' : (trade.closeReason ?? 'sl_tp');
 
+      // v2.0.226: Close-context-aware learning weight.
+      // The close mechanism is an important factor in the loss:
+      //   - SL hit at original (wide) SL → real market loss → full weight (1.0)
+      //   - SL hit after SL was narrowed → execution loss → discounted (0.3)
+      //   - Thesis invalidation → system decision → discounted (0.3)
+      //   - Manual close → user decision → partial (0.5)
+      //   - Wins → always full weight (a win is a win regardless of how closed)
+      // This prevents tight-SL losses from contaminating the learning systems
+      // with "these market conditions → loss" when the entry was actually fine.
+      const slNarrowed = trade.slNarrowed ?? false;
+      const learningWeight = computeLearningWeight(closeReason, slNarrowed, isWin);
+      if (learningWeight < 1.0) {
+        log.info(`🔬 [close-learning] ${symbol} ${trade.side.toUpperCase()} ${isWin ? 'WIN' : 'LOSS'} closeReason=${closeReason} slNarrowed=${slNarrowed} → learningWeight=${learningWeight}`);
+      }
+
       // v2.0.29: Clean up legacy position tracking when a position closes
       if (this.legacyPositionModes.has(symbol)) {
         const origMode = this.legacyPositionModes.get(symbol);
@@ -2687,8 +2779,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           hourOfDay: hourOfDayFromTs((trade as any)?.openedAt) ?? currentHourOfDay(),
         };
         const tradeSource: 'paper' | 'real' = trade.agentId === 'hyperliquid-real' ? 'real' : 'paper';
-        this.olrEngine.feedTrade(symbol, features, outcome, trade.side === 'buy' ? 'buy' : 'sell', tradeSource, this.totalCycles);
-        log.info(`🧬 [close-learning] OLR fed (${tradeSource}): ${symbol} ${trade.side.toUpperCase()} ${isWin ? 'WIN' : 'LOSS'} (pnl=${(pnlPct * 100).toFixed(1)}%, MFE=${(mfePct * 100).toFixed(1)}%, MAE=${(maePct * 100).toFixed(1)}%)`);
+        // v2.0.226: Pass slNarrowed + learningWeight so OLR downweights tight-SL
+        // losses (execution problem) vs real market losses (entry problem).
+        this.olrEngine.feedTrade(symbol, features, outcome, trade.side === 'buy' ? 'buy' : 'sell', tradeSource, this.totalCycles, slNarrowed, undefined, learningWeight);
+        log.info(`🧬 [close-learning] OLR fed (${tradeSource}): ${symbol} ${trade.side.toUpperCase()} ${isWin ? 'WIN' : 'LOSS'} (pnl=${(pnlPct * 100).toFixed(1)}%, MFE=${(mfePct * 100).toFixed(1)}%, MAE=${(maePct * 100).toFixed(1)}%, weight=${learningWeight})`);
 
         // v2.0.204: Feed closed trade to Numeric Autoencoder (market-condition embedding).
         // Uses the entry-time features object above (in scope here). Only the 9
@@ -2707,29 +2801,39 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             side: trade.side === 'buy' ? 'buy' : 'sell',
             features,
             outcome: isWin ? 1 : 0,
-            pnl: trade.pnl ?? 0,
-            pnlPct: safeNum(pnlPct, 0),
+            pnl: (trade.pnl ?? 0) * learningWeight,
+            pnlPct: safeNum(pnlPct, 0) * learningWeight,
             source: tradeSource,
             cycle: this.totalCycles,
             regime,
+            learningWeight,
           });
         } catch (err) {
           log.warn(`[close-learning] Advanced learning feed failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
         // v2.0.221 (Fix 3): Track combo (symbol × side × regime) WR for pattern avoidance.
-        try {
-          this.comboTracker.trackTrade(
-            symbol,
-            trade.side === 'buy' ? 'buy' : 'sell',
-            regime,
-            isWin ? 'WIN' : 'LOSS',
-            trade.pnl ?? 0,
-            safeNum(pnlPct, 0),
-            this.totalCycles,
-            (trade as any)?.id ?? `live-${symbol}-${trade.openedAt ?? this.totalCycles}`, // v2.0.221 dedup
-          );
-        } catch { /* non-critical */ }
+        // v2.0.226: Skip execution-caused losses (tight SL, thesis invalidation)
+        // from combo WR — they're not entry-problem losses and would drag down
+        // the combo WR for valid entries. Only real market losses (weight=1.0)
+        // and partial-signal losses (weight≥0.5, e.g. manual/consensus close)
+        // are tracked. Wins are always tracked.
+        if (isWin || learningWeight >= 0.5) {
+          try {
+            this.comboTracker.trackTrade(
+              symbol,
+              trade.side === 'buy' ? 'buy' : 'sell',
+              regime,
+              isWin ? 'WIN' : 'LOSS',
+              trade.pnl ?? 0,
+              safeNum(pnlPct, 0),
+              this.totalCycles,
+              (trade as any)?.id ?? `live-${symbol}-${trade.openedAt ?? this.totalCycles}`, // v2.0.221 dedup
+            );
+          } catch { /* non-critical */ }
+        } else {
+          log.info(`🔬 [combo-WR] Skipped ${symbol} ${trade.side.toUpperCase()} LOSS (closeReason=${closeReason}, slNarrowed=${slNarrowed}) — execution loss excluded from combo WR`);
+        }
       } catch (err) {
         log.warn(`[close-learning] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -3630,6 +3734,10 @@ ${recentExamples}
     source: 'shadow' | 'paper' | 'real' | 'backfill';
     cycle: number;
     regime?: string;
+    /** v2.0.226: Learning weight from close context. Scales the PnL reward
+     *  so execution-caused losses (tight SL, thesis invalidation) contribute
+     *  less to AttnRes reward-weighted regression + temporal attention. */
+    learningWeight?: number;
   }): void {
     const sym = params.symbol.toLowerCase();
     const ts = Date.now();

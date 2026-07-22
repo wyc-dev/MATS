@@ -1330,6 +1330,12 @@ export class PortfolioTracker {
       // v2.0.143: capture MAE/MFE from position lifetime tracking
       minValueReached: pos.minValueReached,
       maxValueReached: pos.maxValueReached,
+      // v2.0.226: Capture original + final SL/TP for close-context learning.
+      originalStopLossPrice: pos.originalStopLossPrice,
+      finalStopLossPrice: pos.stopLossPrice,
+      originalTakeProfitPrice: pos.originalTakeProfitPrice,
+      finalTakeProfitPrice: pos.takeProfitPrice,
+      slNarrowed: pos.originalStopLossPrice !== undefined && pos.stopLossPrice !== undefined && pos.originalStopLossPrice !== pos.stopLossPrice,
     };
 
     // Update portfolio stats
@@ -1484,6 +1490,12 @@ export class PortfolioTracker {
       // v2.0.143: capture MAE/MFE from position lifetime tracking
       minValueReached: pos.minValueReached,
       maxValueReached: pos.maxValueReached,
+      // v2.0.226: Capture original + final SL/TP for close-context learning.
+      originalStopLossPrice: pos.originalStopLossPrice,
+      finalStopLossPrice: pos.stopLossPrice,
+      originalTakeProfitPrice: pos.originalTakeProfitPrice,
+      finalTakeProfitPrice: pos.takeProfitPrice,
+      slNarrowed: pos.originalStopLossPrice !== undefined && pos.stopLossPrice !== undefined && pos.originalStopLossPrice !== pos.stopLossPrice,
     };
 
     // v2.0.32: Do NOT update paper portfolio stats (totalPnl, winCount,
