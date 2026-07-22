@@ -490,7 +490,7 @@ riskPct = maxPositionSizePct × volatilityFactor × confidenceFactor
 quantity = (equity × riskPct) / (entryPrice × priceRisk)
 ```
 
-**TP/SL 三層安全**：no-widen + not-too-tight（SL ≥ 1%, TP ≥ 1.5%）+ min-gap + max-narrow-step。
+**TP/SL 設定於入場時，入場後永不修改（v2.0.225）**：ATR（1.5×）或 S/R 計算，入場後不再收窄。Trailing stop、MFE giveback、TP narrowing、per-symbol consensus SL/TP 全部停用——入場後收窄導致提前止蝕 + UI/交易所 SL desync。兩層退出保護：(1) 初始 SL/TP 交易所層面觸發，(2) LLM thesis invalidation（Skeptics Phase 0.5 強制平倉）。Portfolio 安全層：no-widen + not-too-tight（SL ≥ 1%, TP ≥ 1.5%）+ min-gap 2%。
 
 **累計 Margin 上限 20%**：所有持倉 margin 總和 ≤ 20% balance（基於 margin 而非 notional）。
 
@@ -520,11 +520,11 @@ quantity = (equity × riskPct) / (entryPrice × priceRisk)
 | Entry / Exit Price | 進出場價格 |
 | Min/Max Value Reached | MAE/MFE — 部位價值的最低/最高點（margin + unrealized PnL）|
 | Entry Thesis | Meta-Agent 的進場理據（凍結在開倉時）|
-| Exit Thesis | 平倉理據，含 SL/TP 收窄分析（原始 vs 最終 SL/TP 比較）|
+| Exit Thesis | 平倉理據（v2.0.225：SL/TP 不再收窄，只記錄平倉原因）|
 | Post-Review | LLM 自動生成的賽後檢討（如何賺多啲/蝕少啲）|
 | Leverage / Investment / Opened / Closed | 交易參數 |
 
-**Exit Thesis SL/TP 收窄分析**：如果 SL/TP 被系統調窄，exitThesis 會記錄：`SL was tightened by 45.0% (original SL=$1275.50 → final SL=$1262.00). ⚠️ SL/TP gap was only 1.2% at close (narrowed from original 4.0%) — unreasonably tight, likely noise stop-out.`
+**Exit Thesis**：平倉理據記錄平倉原因（SL 觸發 / TP 觸發 / thesis invalidation / 手動平倉）。v2.0.225 起 SL/TP 入場後不再收窄，不再有 narrowing 分析。
 
 **Post-Review LLM**：每筆交易關閉後，fire-and-forget 調用 DeepSeek V4 Flash 生成 2-4 句賽後檢討，分析 MAE/MFE + entry/exit thesis + close reason，提出如何改善。
 
