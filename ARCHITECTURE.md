@@ -18,7 +18,7 @@
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 21 層認知演化管線 — OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + 7 advanced systems v2.0.219，從每筆交易學習 |
+| **自我演化** | 22 層認知演化管線 — OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + 7 advanced systems v2.0.219 + Close-Context Learning v2.0.226，從每筆交易學習 |
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
 | **生產級標準** | 完整型別（Zod 驗證）、結構化日誌（Winston）、優雅關閉、指數退避重連 |
@@ -55,6 +55,7 @@
 │   • Reward Shaping（5-component risk-adjusted reward, v2.0.219）│
 │   • Active Exploration（UCB + info gain + annealing, v2.0.219） │
 │   • World Model（latent dynamics + rollout planning, v2.0.219）│
+│   • Close-Context Learning（closeReason+slNarrowed 加權, v2.0.226）│
 │   • Trade Incident Panel（MAE/MFE + exitThesis + post-review）  │
 │   • SystemGuard（5 層系統級保護）                               │
 ├──────────────────────────────────────────────────────────────┤
@@ -88,7 +89,7 @@ src/
 │   │   v2.0.143: executeTrade() / closeTrade() 統一路由
 ├── risk/                    # 風險引擎 + correlation-budget
 ├── system-guard/            # 5 層保護閘門
-├── evolution/               # 自我演化（21 層認知演化管線：OLR + Shadow + First-Passage + EM + GA + RIL + EXP + NA + AttnRes + Anti-Pattern + Combo WR + P(win) Discount + 7 advanced systems v2.0.219）
+├── evolution/               # 自我演化（22 層認知演化管線：OLR + Shadow + First-Passage + EM + GA + RIL + EXP + NA + AttnRes + Anti-Pattern + Combo WR + P(win) Discount + 7 advanced systems v2.0.219 + Close-Context Learning v2.0.226）
 │   ├── embeddings.ts        # Transformers.js MiniLM 384-d 向量（in-process, singleton v2.0.216）
 │   ├── thesis-experience.ts # EXP 理據組合歷史勝率（方向過濾 + lesson persistence v2.0.207 #E）
 │   ├── experience-digester.ts # A2A 經驗消化（per-direction winRate + LessonStatement v2.0.207）
@@ -373,7 +374,7 @@ FINAL CONFIDENCE:
 
 ## 自我演化系統
 
-MATS 嘅核心競爭力係 **21 層認知演化管線**——每筆交易結果都會餵回 21 個獨立學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。以下逐層詳述：
+MATS 嘅核心競爭力係 **22 層認知演化管線**——每筆交易結果都會餵回 22 個獨立學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。以下逐層詳述：
 
 ### OLR — Online Logistic Regression（`olr-engine.ts`）
 
@@ -493,6 +494,32 @@ quantity = (equity × riskPct) / (entryPrice × priceRisk)
 **TP/SL 設定於入場時，入場後永不修改（v2.0.225）**：ATR（1.5×）或 S/R 計算，入場後不再收窄。Trailing stop、MFE giveback、TP narrowing、per-symbol consensus SL/TP 全部停用——入場後收窄導致提前止蝕 + UI/交易所 SL desync。兩層退出保護：(1) 初始 SL/TP 交易所層面觸發，(2) LLM thesis invalidation（Skeptics Phase 0.5 強制平倉）。Portfolio 安全層：no-widen + not-too-tight（SL ≥ 1%, TP ≥ 1.5%）+ min-gap 2%。
 
 **累計 Margin 上限 20%**：所有持倉 margin 總和 ≤ 20% balance（基於 margin 而非 notional）。
+
+---
+
+## Close-Context-Aware Learning（v2.0.226）
+
+**核心洞察**：點樣平倉 / 用乜嘢形式平倉係蝕錢嘅重要因素。之前所有學習系統只收到 binary win/loss，冇概念知道點解蝕。Tight-SL loss（SL 被 trailing stop 收窄後被正常波動觸發）被當成「呢個情況入市=蝕」，污染 OLR / AttnRes / Combo WR / Anti-Pattern。
+
+**`computeLearningWeight(closeReason, slNarrowed, isWin)`** — 純函數，按平倉 context 計算學習權重 [0.3, 1.0]：
+
+| 平倉情況 | 權重 | 原因 |
+|:---------|:----:|:-----|
+| 贏（任何方式） | 1.0 | 市場確認咗入場論點，正面信號唔應折扣 |
+| SL 觸發 @ 原始闊 SL | 1.0 | 真正嘅市場 loss — 價格真正逆向論點 |
+| SL 觸發 @ 被收窄 SL | 0.3 | 執行 loss — 入場可能冇問題，SL 太緊 |
+| Thesis 無效 | 0.3 | 系統 LLM 決定，唔係純市場信號 |
+| 手動平倉 | 0.5 | 用戶決定，部分市場信號 |
+| 共識平倉 | 0.5 | Agent 投票，部分信號 |
+| Reconciliation / Exchange closed | 1.0 | 極端市場事件 |
+
+**TradeRecord 捕捉平倉 context**：`originalStopLossPrice`（入場時 SL）+ `finalStopLossPrice`（平倉時 SL）+ `slNarrowed`（兩者唔同=true）。兩條 close path（paper `closePosition` + real `closeExchangePosition`）都從 position 捕捉。
+
+**OLR `feedTrade` 加權**：第 7 參 `slNarrowed` + 第 9 參 `weightMultiplier` 正確傳入。`srcWeight = sourceWeight × weightMultiplier`，梯度更新按權重縮放。Tight-SL loss 只貢獻 30% 梯度。
+
+**Combo WR 跳過執行 loss**：`comboTracker.trackTrade()` 只喺 `isWin || learningWeight ≥ 0.5` 時調用。Tight-SL loss + thesis invalidation loss（weight=0.3）被排除，唔拖低 (symbol×side×regime) 嘅 combo WR。
+
+**Advanced learning PnL 縮放**：`feedAdvancedLearning` 嘅 `pnl` + `pnlPct` 乘以 `learningWeight`。AttnRes reward-weighted regression、temporal attention、cross-symbol backbone、world model 都按權重學習。
 
 ---
 
