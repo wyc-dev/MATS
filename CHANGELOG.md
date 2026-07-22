@@ -4,29 +4,23 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
-## v2.0.225: Disable trailing stop + MFE giveback — keep initial SL/TP + auto-close on adverse momentum. Owner directive: post-entry SL narrowing caused premature stop-outs (most SKHX SELL losses hit SL at 0.27-1.72% distance — too tight for normal volatility) + UI/Hyperliquid SL desync (narrowed SL couldn't be pushed to exchange when price already past it → exchange keeps original wider SL, UI shows narrowed local mirror).
+## v2.0.225: Disable trailing stop + MFE giveback + remove auto-close — two-layer exit protection only. Owner directive: post-entry SL narrowing caused premature stop-outs (most SKHX SELL losses hit SL at 0.27-1.72% distance — too tight for normal volatility) + UI/Hyperliquid SL desync (narrowed SL couldn't be pushed to exchange when price already past it → exchange keeps original wider SL, UI shows narrowed local mirror).
 
-**Disabled:**
+**Disabled (post-entry SL/TP modifications):**
 - **#2 Trailing stop** (`hacp.ts adjustPositions`): trailing SL that moved SL toward entry every cycle (0.3-1.8% step). Now returns `[]` (no SL/TP modifications).
 - **#3 MFE giveback protection**: locked in 40% of MFE when 40% given back. Caused premature profit-cutting.
 - **TP narrowing**: pulled TP closer when MFE > 3% and TP was > 2× MFE away.
 - **Per-symbol consensus SL/TP**: agents could suggest post-entry SL/TP changes. Now skipped (`hacpAdjusted = true` always).
 
-**Preserved:**
-- **#1 Initial SL/TP** (`trading-manager.ts`): ATR-based (1.5×ATR SL, 2.0×ATR TP) or S/R-aligned. Clamped [0.5%, 5%]. R:R ≥ 1:1. Portfolio safety layer enforces 1% min SL, 1.5% min TP, 2% min gap.
-- **LLM thesis invalidation** (Skeptics Phase 0.5): catches fundamental thesis breakdown (regime change, catalyst invalidation) → force-close.
-- **Real-time OLR edge block**: injects P(win) warning for agents to re-evaluate.
+**Removed (deterministic auto-close block):**
+- **v2.0.225b**: condition (a) OLR P(win) < 25% — dead code. Calibration map SNAP effect (raw 40-60% → snapped to Bin 2 empirical 56.9%) made P(win) unreachable for open SKHX SHORT trades. OLR trained on entry features (maePct=0 at entry), not mid-trade features — conceptually wrong for exit. Backfill poisoning (76% non-real) caused backwards weights.
+- **v2.0.225c**: condition (b) adverse momentum > 3% — removed. Analysis of proposed PnL% + momentumShort replacement revealed a fundamental contradiction: if PnL threshold < SL distance, it's a tighter SL (contradicts anti-narrowing directive); if > SL distance, it's dead code (SL always triggers first). No third possibility. The entire pre-HACP auto-close loop (60 lines) deleted from `index.ts`.
 
-**New: Deterministic auto-close** (`index.ts`, pre-HACP): "MATS 認為好唔對路 → 即時平倉". Hard-close when:
-- (b) Severe adverse momentum > 3% against position — price being pushed hard against trade
+**Final exit protection design (two layers only):**
+- **Layer 1: Initial SL/TP** (`trading-manager.ts`): ATR-based (1.5×ATR SL, 2.0×ATR TP) or S/R-aligned. Set at entry, never modified post-entry. Exchange-level trigger (Hyperliquid native orders). Portfolio safety layer enforces 1% min SL, 1.5% min TP, 2% min gap.
+- **Layer 2: LLM thesis invalidation** (Skeptics Phase 0.5, `hacp.ts`): Each cycle, Skeptics re-validates open positions' entry theses against current market state. If the fundamental thesis breaks (regime change, catalyst invalidation), the position is force-closed via `thesisInvalidatedSymbols`.
 
-**v2.0.225b: REMOVED condition (a) OLR P(win) < 25%** — data analysis showed it was dead code:
-1. **Calibration map SNAP effect**: SKHX SHORT raw sigmoid 40-60% → snapped to Bin 2 empirical WR 56.9%. P(win) can NEVER drop below 56.9% for open SKHX SHORT trades, even under catastrophic conditions (-5%, +5% adverse momentum). The 25% threshold was unreachable.
-2. **Entry-feature vs mid-trade feature mismatch**: OLR trained on entry-time features (maePct=0, mfePct=0 at entry). Recomputing P(win) during a trade uses features in a different semantic context — conceptually wrong for exit decisions.
-3. **Backfill poisoning**: SKHX SHORT is 76% non-real data. OLR weights learned backfill patterns (momentumShort=+0.42 for SELL = rising price increases P(win)) — backwards for held SHORTs where rising price = losing position.
-4. For BTC/CL the 25% threshold CAN trigger (Bin 1 = 0-24% actual WR), but the conceptual flaw (entry features for exit) makes it unreliable.
-
-**Final auto-close design**: only condition (b) adverse momentum > 3% remains — deterministic, calibration-independent, reliable across all symbols. Combined with LLM thesis invalidation + initial SL/TP as three-layer exit protection.
+**Preserved:** Real-time OLR edge block (injects P(win) context for agents to re-evaluate HOLD vs CLOSE — advisory only, never a hard trigger).
 
  Confidence Multiplicative Discount — Detection/Implementation Gap Fix
 
