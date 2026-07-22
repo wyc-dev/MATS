@@ -1755,176 +1755,23 @@ export class HACPEngine {
     _marketStateDesc: string,
     positions?: Array<{ id: string; symbol: string; side: string; entryPrice: number; currentPrice: number; stopLoss?: number; takeProfit?: number; leverage?: number; quantity?: number; isTradingMarket?: boolean; minValueReached?: number; maxValueReached?: number }>
   ): Promise<PositionAdjustment[]> {
+    // v2.0.225: DISABLED trailing stop (#2) + MFE giveback (#3) + TP narrowing.
+    // Owner directive: initial SL/TP (#1) + manual close is sufficient.
+    // Post-entry SL narrowing caused premature stop-outs (most SKHX SELL
+    // losses hit SL at 0.27-1.72% distance — too tight for normal volatility).
+    // Also caused UI/Hyperliquid SL desync (narrowed SL couldn't be pushed
+    // to exchange when price already past it → exchange keeps original SL).
+    //
+    // This method now returns [] (NO SL/TP modifications). Auto-close on
+    // adverse conditions is handled deterministically in index.ts via
+    // OLR edge-collapse + severe adverse momentum checks.
+    //
+    // The LLM-based thesis invalidation (Phase 0.5, Skeptics
+    // validateOpenPositionTheses) is PRESERVED — it catches fundamental
+    // thesis breakdown (regime change, catalyst invalidation) that the
+    // user wants as the "MATS 認為好唔對路 → 即時平倉" mechanism.
     if (!positions || positions.length === 0) return [];
-
-    const adjustments: PositionAdjustment[] = [];
-
-    for (const pos of positions) {
-      if ((pos.quantity ?? 0) === 0 || pos.isTradingMarket === true) continue;
-
-      const isLong = pos.side === 'buy';
-      const unrealizedPnlPct = ((pos.currentPrice - pos.entryPrice) / pos.entryPrice) * (isLong ? 1 : -1);
-
-      // v2.0.754: Regime-adaptive SL distance multiplier — applied to the
-      // ACTUAL SL/TP placement logic (not just the HACP distance calculation).
-      // The SL distance is now regime-aware: use 3.0×ATR for low_volatility
-      // and mean_reverting regimes (where price noise is small relative to
-      // ATR), and keep 2.0×ATR for trending_bull, trending_bear, high_volatility,
-      // and breakout regimes. This prevents premature SL exits on valid trades
-      // in quiet markets (e.g. xyz:SKHX vol=0.0001 → 2.0×ATR SL is tighter than
-      // the asset's natural noise range, causing 0% WR over 8 trades).
-      //
-      // Key changes from v2.0.749:
-      // - The regime-adaptive multiplier is now applied to the ACTUAL SL/TP
-      //   placement (the newSL calculation that feeds into portfolio.ts), not
-      //   just the HACP distance calculation. The v2.0.749 fix only changed the
-      //   comment and the slMultiplier variable but the actual SL placement
-      //   logic (the Math.min/Math.max lines) still used the old fixed 2.0×ATR
-      //   because the formula `pos.entryPrice * (1 - 0.005 * slMultiplier / 2.0)`
-      //   was wrong — it divided by 2.0, cancelling out the multiplier change.
-      // - Fixed formula: `pos.entryPrice * (1 - 0.005 * slMultiplier)` — no
-      //   division by 2.0. For low_vol/mean_reverting: 0.005 * 3.0 = 1.5% SL
-      //   distance. For others: 0.005 * 2.0 = 1.0% SL distance.
-      // - Minimum SL distance: 0.5% of entry (unchanged from v2.0.748)
-      // - Trail step percentages: unchanged from v2.0.748
-      // - MFE giveback protection: unchanged from v2.0.748
-      // - The regime is read from this.currentRegime (set each cycle from
-      //   marketStateDesc in executeDecisionCycle).
-
-      let newSL: number | undefined;
-      let newTP: number | undefined;
-      let rationale = '';
-
-      if (pos.stopLoss !== undefined && unrealizedPnlPct > 0) {
-        // Calculate MFE as percentage of entry price
-        const mfePct = unrealizedPnlPct; // conservative: MFE ≥ current PnL%
-
-        // v2.0.748: Increased trail step percentages by 50% for faster
-        // profit locking. Old values: 0.2%, 0.5%, 0.8%, 1.2%.
-        // New values: 0.3%, 0.75%, 1.2%, 1.8%.
-        let trailStepPct: number;
-        if (mfePct > 0.05) trailStepPct = 0.018;      // MFE > 5%: 1.8% step
-        else if (mfePct > 0.03) trailStepPct = 0.012;  // MFE > 3%: 1.2% step
-        else if (mfePct > 0.01) trailStepPct = 0.0075; // MFE > 1%: 0.75% step
-        else trailStepPct = 0.003;                      // MFE < 1%: 0.3% step
-
-        const trailStep = pos.currentPrice * trailStepPct;
-        const currentSlDist = Math.abs(pos.currentPrice - pos.stopLoss);
-        // v2.0.748: Increased minimum SL distance from 0.3% to 0.5% of entry
-        // price. The old 0.3% was too tight — trades with strong thesis and
-        // high OLR were getting stopped out before they could develop.
-        const minSlDist = pos.entryPrice * 0.005; // 0.5% minimum SL distance
-
-        // v2.0.754: Regime-adaptive SL multiplier — FIXED formula.
-        // low_volatility and mean_reverting regimes get 3.0×ATR to prevent
-        // premature exits on valid trades. All other regimes keep 2.0×ATR.
-        // The multiplier is applied to the SL distance as a percentage of
-        // entry price: slDistancePct = 0.005 * slMultiplier.
-        // For low_vol/mean_reverting: 0.005 * 3.0 = 1.5% SL distance.
-        // For others: 0.005 * 2.0 = 1.0% SL distance.
-        // The old formula `pos.entryPrice * (1 - 0.005 * slMultiplier / 2.0)`
-        // was WRONG — it divided by 2.0, cancelling out the multiplier change.
-        // The correct formula is `pos.entryPrice * (1 - 0.005 * slMultiplier)`.
-        const isLowVolOrMeanReverting =
-          this.currentRegime === 'low_volatility' ||
-          this.currentRegime === 'mean_reverting';
-        const slMultiplier = isLowVolOrMeanReverting ? 3.0 : 2.0;
-        const slDistancePct = 0.005 * slMultiplier; // 1.5% for low_vol, 1.0% for others
-
-        if (currentSlDist > minSlDist) {
-          if (isLong) {
-            newSL = Math.min(pos.stopLoss + trailStep, pos.entryPrice * (1 - slDistancePct));
-          } else {
-            newSL = Math.max(pos.stopLoss - trailStep, pos.entryPrice * (1 + slDistancePct));
-          }
-          // Ensure SL doesn't cross entry (would lock in loss)
-          if (isLong) newSL = Math.min(newSL!, pos.entryPrice * 0.998);
-          else newSL = Math.max(newSL!, pos.entryPrice * 1.002);
-
-          if (newSL !== pos.stopLoss) {
-            rationale = `Adaptive trailing SL (MFE ${(mfePct * 100).toFixed(1)}%, step ${(trailStepPct * 100).toFixed(1)}%, regime=${this.currentRegime}, slMult=${slMultiplier})`;
-          }
-        }
-
-        // v2.0.748: MFE giveback protection — improved thresholds.
-        // - Giveback threshold lowered from 50% to 40% — locks profits
-        //   earlier when price reverses from peak
-        // - Lock-in percentage increased from 30% to 40% of MFE — preserves
-        //   more of the maximum favorable excursion
-        // This prevents the pattern: price hits +5% MFE, reverses to -1% SL.
-        if (mfePct > 0.02 && pos.maxValueReached !== undefined) {
-          const peakPriceEstimate = pos.entryPrice * (1 + mfePct * (isLong ? 1 : -1));
-          const givebackPct = mfePct - unrealizedPnlPct;
-          const givebackRatio = mfePct > 0 ? givebackPct / mfePct : 0;
-
-          // v2.0.748: Lowered threshold from 0.5 to 0.4 — lock profits
-          // when 40% of MFE has been given back (was 50%)
-          if (givebackRatio > 0.4) {
-            // v2.0.748: Increased lock-in from 30% to 40% of MFE
-            const lockInPct = mfePct * 0.4;
-            const lockInSL = isLong
-              ? pos.entryPrice * (1 + lockInPct)
-              : pos.entryPrice * (1 - lockInPct);
-
-            if (isLong && (!newSL || lockInSL > newSL)) {
-              newSL = Math.min(lockInSL, peakPriceEstimate * 0.98);
-              rationale = `MFE giveback protection (MFE ${(mfePct * 100).toFixed(1)}%, gave back ${(givebackRatio * 100).toFixed(0)}% — locking 40% of MFE)`;
-            } else if (!isLong && (!newSL || lockInSL < newSL)) {
-              newSL = Math.max(lockInSL, peakPriceEstimate * 1.02);
-              rationale = `MFE giveback protection (MFE ${(mfePct * 100).toFixed(1)}%, gave back ${(givebackRatio * 100).toFixed(0)}% — locking 40% of MFE)`;
-            }
-          }
-        }
-      }
-
-      // v2.0.152: TP narrowing — if MFE > 3% and TP is far away, pull TP closer
-      // to a realistic target. Old logic: TP never adjusted. This caused positions
-      // to hit +5% MFE then reverse because TP was set at +10%.
-      if (pos.takeProfit !== undefined && unrealizedPnlPct > 0.02) {
-        const mfePct = unrealizedPnlPct;
-        const currentTpDist = Math.abs(pos.takeProfit - pos.currentPrice);
-        const tpDistPct = currentTpDist / pos.currentPrice;
-
-        // If TP is > 2× the MFE distance, it's unrealistically far — pull it in
-        if (tpDistPct > mfePct * 2 && mfePct > 0.03) {
-          // Set TP to 1.5× current MFE — realistic but still profitable
-          const newTpDist = mfePct * 1.5;
-          if (isLong) {
-            newTP = pos.currentPrice * (1 + newTpDist);
-            // Don't move TP below entry
-            newTP = Math.max(newTP, pos.entryPrice * 1.001);
-          } else {
-            newTP = pos.currentPrice * (1 - newTpDist);
-            newTP = Math.min(newTP, pos.entryPrice * 0.999);
-          }
-          // Only apply if new TP is closer than current TP (narrowing, not widening)
-          if (isLong && newTP < pos.takeProfit) {
-            rationale = (rationale ? rationale + '; ' : '') + `TP narrowed (MFE ${(mfePct * 100).toFixed(1)}%, TP was ${(tpDistPct * 100).toFixed(1)}% away)`;
-          } else if (!isLong && newTP > pos.takeProfit) {
-            rationale = (rationale ? rationale + '; ' : '') + `TP narrowed (MFE ${(mfePct * 100).toFixed(1)}%, TP was ${(tpDistPct * 100).toFixed(1)}% away)`;
-          } else {
-            newTP = undefined; // don't widen TP
-          }
-        }
-      }
-
-      if (newSL !== undefined || newTP !== undefined) {
-        adjustments.push({
-          positionId: pos.id,
-          symbol: pos.symbol,
-          newStopLoss: newSL,
-          newTakeProfit: newTP,
-          rationale: rationale || 'Adaptive trailing SL',
-          confidence: 1.0,
-        });
-      }
-    }
-
-    if (adjustments.length > 0) {
-      log.info(`📐 Adaptive SL/TP adjustments: ${adjustments.length} position(s) — ${adjustments.map(a => `${a.symbol}: ${a.rationale}`).join('; ')}`);
-    }
-
-    return adjustments;
+    return [];
   }
 
   private buildDebateContext(thoughts: AgentThought[]): string {

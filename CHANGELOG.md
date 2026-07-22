@@ -4,6 +4,28 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.225: Disable trailing stop + MFE giveback — keep initial SL/TP + auto-close on adverse conditions. Owner directive: post-entry SL narrowing caused premature stop-outs (most SKHX SELL losses hit SL at 0.27-1.72% distance — too tight for normal volatility) + UI/Hyperliquid SL desync (narrowed SL couldn't be pushed to exchange when price already past it → exchange keeps original wider SL, UI shows narrowed local mirror).
+
+**Disabled:**
+- **#2 Trailing stop** (`hacp.ts adjustPositions`): trailing SL that moved SL toward entry every cycle (0.3-1.8% step). Now returns `[]` (no SL/TP modifications).
+- **#3 MFE giveback protection**: locked in 40% of MFE when 40% given back. Caused premature profit-cutting.
+- **TP narrowing**: pulled TP closer when MFE > 3% and TP was > 2× MFE away.
+- **Per-symbol consensus SL/TP**: agents could suggest post-entry SL/TP changes. Now skipped (`hacpAdjusted = true` always).
+
+**Preserved:**
+- **#1 Initial SL/TP** (`trading-manager.ts`): ATR-based (1.5×ATR SL, 2.0×ATR TP) or S/R-aligned. Clamped [0.5%, 5%]. R:R ≥ 1:1. Portfolio safety layer enforces 1% min SL, 1.5% min TP, 2% min gap.
+- **LLM thesis invalidation** (Skeptics Phase 0.5): catches fundamental thesis breakdown (regime change, catalyst invalidation) → force-close.
+- **Real-time OLR edge block**: injects P(win) warning for agents to re-evaluate.
+
+**New: Deterministic auto-close** (`index.ts`, pre-HACP): "MATS 認為好唔對路 → 即時平倉". Hard-close when:
+- (a) OLR P(win) < 25% with sufficient samples (≥10, confidence≠'low') — statistical edge collapsed
+- (b) Severe adverse momentum > 3% against position — price being pushed hard against trade
+Cold-start safe: uncalibrated OLR → no close. Routes through `closeTrade()` with `thesisInvalidatedCloseSymbols` (same path as Skeptics invalidation).
+
+**Self-attack (10 vectors, all passed):** edge collapse ✓, cold-start safe ✓, adverse momentum ✓, normal not over-blocked ✓, BUY+SELL both directions ✓, boundary (25% P(win), 3% momentum) ✓, NaN safe ✓, both conditions ✓.
+
+ Confidence Multiplicative Discount — Detection/Implementation Gap Fix
+
 ## v2.0.224: OLR P(win) × Consensus Confidence Multiplicative Discount — Detection/Implementation Gap Fix
 
 **Root cause discovered:** OLR correctly detected losing patterns (29% P(win) for SKHX, 72% accurate — 21 of 29 low-P(win) trades actually lost), but all 29 were still executed. The conviction penalty only RAISED the threshold (additive: base 50% + penalty 55% = 85%), which overconfident agents (90% consensus) could still cross. The detection was real; the implementation had a gap.
