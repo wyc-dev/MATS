@@ -250,7 +250,7 @@ Replaces the old Positions table + Trade Records with a unified card-based view.
 - **Entry/Exit Price**: With SL/TP levels
 - **Min/Max Value Reached**: MAE/MFE — position value (margin + unrealized PnL) at its worst/best
 - **Entry Thesis**: Meta-Agent's frozen rationale at open
-- **Exit Thesis**: Close rationale with SL/TP narrowing analysis (original vs final SL/TP comparison)
+- **Exit Thesis**: Close rationale (v2.0.225: SL/TP no longer narrowed post-entry — exit thesis records close reason only, no narrowing analysis)
 - **Post-Review**: LLM auto-generated post-trade review analysing how more profit could have been made or less loss incurred
 
 ### Risk Management
@@ -265,7 +265,7 @@ Replaces the old Positions table + Trade Records with a unified card-based view.
 | Take profit | 5% | Per trade (un-leveraged) |
 | Cumulative margin | 20% | All positions' margin ≤ 20% balance |
 
-SL/TP three-layer safety: no-widen + not-too-tight (SL ≥ 1%, TP ≥ 1.5%) + min-gap + max-narrow-step. Original SL/TP recorded at open for exit-thesis narrowing detection.
+SL/TP set at entry via ATR (1.5×) / S/R levels, never modified post-entry (v2.0.225: trailing stop + MFE giveback + TP narrowing + per-symbol consensus SL/TP all DISABLED — post-entry narrowing caused premature stop-outs + UI/exchange SL desync). Two-layer exit protection: (1) initial SL/TP at exchange level, (2) LLM thesis invalidation (Skeptics Phase 0.5 force-close). Portfolio safety layer: no-widen + not-too-tight (SL ≥ 1%, TP ≥ 1.5%) + min-gap 2%. Original SL/TP recorded at open for exit-thesis analysis.
 
 ---
 
