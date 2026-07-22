@@ -281,6 +281,10 @@ interface NAModelState {
   seed: number;
   validation: NAValidationResult | null;
   featureNames: string[];
+  // v2.0.222: Persist replay buffer so validation survives restart.
+  // Previously replay was in-memory only → wiped on restart → validate()
+  // always failed ("insufficient samples") until 200+ new trades accumulated.
+  replay?: NATrainingSample[];
 }
 
 const NA_MODEL_VERSION = 1;
@@ -392,6 +396,54 @@ export class NumericAutoencoder implements NumericEmbedProvider {
     this.rng = mulberry32(this.seed ^ (this.trainStep + 1)); // advance RNG past init
     // NaN guard on load (V1): a poisoned state file would resurrect NaN weights.
     this.sanitiseWeights();
+    // v2.0.222: Restore replay buffer from persisted state.
+    // Edge cases handled:
+    //   - Missing replay (old state files) → replay = [], cold-start fallback
+    //   - Corrupt entries (non-object, missing features) → skipped
+    //   - NaN/Infinity in feature values → sanitized to 0
+    //   - Replay larger than buffer size → truncated to most recent
+    //   - Entries with mismatched feature names → accepted (featuresToVector maps by name)
+    //   - ts=0 (cold-start samples) → accepted
+    this.replay = this.restoreReplay(parsed.replay);
+    // v2.0.222: Re-validate immediately if we have enough restored samples.
+    // This avoids the stale "insufficient samples" validation result after restart.
+    if (this.replay.length >= this.cfg.minSamplesReady) {
+      log.info(`[NA] Re-validating with ${this.replay.length} restored replay samples...`);
+      this.validate();
+    } else if (this.replay.length > 0) {
+      log.info(`[NA] Restored ${this.replay.length} replay samples (need ${this.cfg.minSamplesReady} for validation)`);
+    }
+  }
+
+  /** v2.0.222: Restore replay buffer from persisted state with full edge-case handling. */
+  private restoreReplay(raw: NATrainingSample[] | undefined): NATrainingSample[] {
+    if (!Array.isArray(raw)) return [];
+    const valid: NATrainingSample[] = [];
+    let skipped = 0;
+    for (const s of raw) {
+      // Skip non-object entries
+      if (!s || typeof s !== 'object') { skipped++; continue; }
+      // Skip entries without features object
+      if (!s.features || typeof s.features !== 'object') { skipped++; continue; }
+      // Sanitize feature values: NaN/Infinity → 0 (prevent poisoning)
+      const cleanFeatures: Record<string, number> = {};
+      for (const [k, v] of Object.entries(s.features)) {
+        const num = Number(v);
+        cleanFeatures[k] = Number.isFinite(num) ? num : 0;
+      }
+      // Ensure presentFeatures is an array
+      const presentFeatures = Array.isArray(s.presentFeatures) ? s.presentFeatures.filter((f: any) => typeof f === 'string') : [];
+      // Ensure outcome is 0 or 1
+      const outcome: 1 | 0 = s.outcome === 1 ? 1 : 0;
+      // Ensure ts is a finite number (0 is acceptable for cold-start samples)
+      const ts = Number.isFinite(s.ts) ? s.ts : 0;
+      valid.push({ features: cleanFeatures, outcome, presentFeatures, ts });
+    }
+    if (skipped > 0) {
+      log.warn(`[NA] Skipped ${skipped} corrupt replay entries during restore`);
+    }
+    // Truncate to buffer size (keep most recent — assumes raw is ordered by ts ascending)
+    return valid.slice(-this.cfg.replayBufferSize);
   }
 
   private snapshotState(): NAModelState {
@@ -412,6 +464,8 @@ export class NumericAutoencoder implements NumericEmbedProvider {
       seed: this.seed,
       validation: this.validation,
       featureNames: this.featureNames,
+      // v2.0.222: Persist replay buffer so validation survives restart.
+      replay: this.replay.slice(-this.cfg.replayBufferSize),
     };
   }
 
