@@ -5521,15 +5521,23 @@ ${recentExamples}
 
       // v2.0.225: Deterministic auto-close — "MATS 認為好唔對路 → 即時平倉".
       // Owner directive: replace trailing stop (#2) + MFE giveback (#3) with
-      // a clean hard-close when conditions are clearly adverse. This does NOT
-      // narrow SL/TP — it CLOSES the position outright when:
-      //   (a) OLR P(win) < 25% — statistical edge collapsed (the original entry
-      //       thesis no longer holds under current market features)
-      //   (b) Severe adverse momentum > 3% against position — price is being
-      //       pushed hard against the trade and continues to deteriorate
-      // Cold-start safe: OLR with < 10 samples or confidence='low' → skip (no
-      // close on uncalibrated data). The LLM-based thesis invalidation (Skeptics
-      // Phase 0.5) is preserved for fundamental thesis breakdown.
+      // a clean hard-close when conditions are clearly adverse.
+      //
+      // v2.0.225b: REMOVED condition (a) OLR P(win) < 25% — analysis showed:
+      //   1. Calibration map SNAP effect: raw sigmoid 40-60% → snapped to Bin 2
+      //      empirical WR (56.9% for SKHX SHORT). P(win) can NEVER drop below
+      //      56.9% for open SKHX SHORT trades, even under catastrophic conditions.
+      //   2. OLR trained on ENTRY features (maePct=0, mfePct=0 at entry), not
+      //      mid-trade features. Recomputing P(win) during a trade uses features
+      //      in a different semantic context → conceptually wrong for exit.
+      //   3. Backfill poisoning: SKHX SHORT is 76% non-real data. OLR weights
+      //      learned backfill patterns (e.g. momentumShort=+0.42 for SELL =
+      //      rising price increases P(win)), which is backwards for held SHORTs.
+      //   Condition (a) was dead code for SKHX and conceptually flawed for all.
+      //
+      // NOW: only condition (b) severe adverse momentum remains — deterministic,
+      //   calibration-independent, reliable across all symbols.
+      // The LLM-based thesis invalidation (Skeptics Phase 0.5) is PRESERVED.
       const autoCloseSymbols = new Set<string>();
       try {
         const openRealPositions = currentPositions.filter(p => (p.quantity ?? 0) > 0 && !p.isTradingMarket);
@@ -5538,19 +5546,6 @@ ${recentExamples}
           const side = pos.side === 'buy' ? 'buy' : 'sell';
           const ctx = this.lastCycleShadowContexts.get(sym);
           if (!ctx?.features || Object.keys(ctx.features).length === 0) continue;
-
-          // Condition (a): OLR edge collapse
-          let olrPWin: number | null = null;
-          let olrNSamples = 0;
-          let olrConfidence = 'low';
-          try {
-            const olrR = this.olrEngine.query(sym, ctx.features, side, this.totalCycles);
-            olrPWin = olrR.pWin;
-            olrNSamples = safeNum((olrR as any)?.nSamples, 0);
-            olrConfidence = (olrR as any)?.confidence ?? 'low';
-          } catch { /* skip */ }
-          const olrCalibrated = olrNSamples >= 10 && olrConfidence !== 'low';
-          const edgeCollapsed = olrCalibrated && olrPWin !== null && olrPWin < 0.25;
 
           // Condition (b): Severe adverse momentum
           const momShort = ctx.features['momentumShort'] ?? 0;
@@ -5562,10 +5557,7 @@ ${recentExamples}
             ? (momShort < -0.03 || momLong < -0.03)
             : (momShort > 0.03 || momLong > 0.03);
 
-          if (edgeCollapsed) {
-            log.warn(`🔴 [auto-close] ${sym} ${side.toUpperCase()}: OLR P(win)=${(olrPWin! * 100).toFixed(0)}% < 25% — edge collapsed, force-closing`);
-            autoCloseSymbols.add(sym);
-          } else if (adverseMomentum) {
+          if (adverseMomentum) {
             log.warn(`🔴 [auto-close] ${sym} ${side.toUpperCase()}: severe adverse momentum (short=${(momShort * 100).toFixed(1)}%, long=${(momLong * 100).toFixed(1)}%) — force-closing`);
             autoCloseSymbols.add(sym);
           }
@@ -5575,10 +5567,10 @@ ${recentExamples}
           const pos = this.portfolio.getPosition(sym);
           if (!pos) continue;
           this.thesisInvalidatedCloseSymbols.add(sym);
-          const exitThesis = `Auto-close: MATS detected adverse conditions — statistical edge collapsed or severe adverse momentum`;
+          const exitThesis = `Auto-close: MATS detected severe adverse momentum — price being pushed hard against position`;
           const success = await this.closeTrade(sym, exitThesis);
           if (success) {
-            log.info(`  → Auto-closed ${sym} (adverse conditions detected)`);
+            log.info(`  → Auto-closed ${sym} (adverse momentum detected)`);
           } else {
             log.error(`  → Failed to auto-close ${sym} — position remains open`);
             this.thesisInvalidatedCloseSymbols.delete(sym);
