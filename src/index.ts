@@ -6700,15 +6700,67 @@ ${recentExamples}
           psc => normalizeSymbol(psc.symbol) === normalizeSymbol(finalDecision.symbol || activeSymbol),
         );
         const consensusConfidence = activePscForGate?.confidence ?? result.consensus.confidence;
-        if (consensusConfidence < effectiveThreshold) {
+
+        // v2.0.224: OLR P(win) multiplicative discount — THE KEY FIX for the
+        // detection/implementation gap. Previously, the conviction penalty only
+        // RAISED the threshold (additive), which overconfident agents could still
+        // cross (90% consensus > 85% threshold → trade despite 29% P(win)). Now,
+        // OLR P(win) directly DISCOUNTS the consensus confidence (multiplicative),
+        // ensuring statistical reality cannot be overridden by agent overconfidence.
+        //
+        //   effectiveConfidence = consensusConfidence × blendFactor
+        //   blendFactor = pwinFloor + (1 - pwinFloor) × P(win)
+        //     pwinFloor = 0.3 — never kills confidence completely (preserves
+        //     operation space per owner directive; a truly exceptional agent
+        //     consensus can still pass even with low P(win) if threshold is low).
+        //
+        // Examples (base threshold 50%):
+        //   P(win)=29% × consensus=90% → factor=0.503 → 45% < 50% → HOLD ✓
+        //   P(win)=80% × consensus=60% → factor=0.86  → 52% ≥ 50% → trade ✓
+        //   P(win)=50% × consensus=90% → factor=0.65  → 58% ≥ 50% → trade ✓
+        //   P(win)=0%  × consensus=90% → factor=0.30  → 27% < 50% → HOLD ✓
+        //
+        // Cold-start safe: OLR unavailable / insufficient samples → P(win)=0.5
+        // → factor=0.65 (mild discount, does not block trading). As OLR accumulates
+        // samples, the discount sharpens automatically.
+        const pwinFloor = 0.3;
+        const pwinSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+        const pwinCtx = this.lastCycleShadowContexts.get(pwinSym);
+        let olrPWin = 1.0; // cold-start default: NO discount (preserves operation space)
+        let olrHasData = false; // true only when OLR has sufficient samples
+        if (pwinCtx?.features && Object.keys(pwinCtx.features).length > 0) {
+          try {
+            const olrResult = this.olrEngine.query(pwinSym, pwinCtx.features, finalDecision.action, this.totalCycles);
+            // v2.0.224 cold-start guard: only discount when OLR has sufficient samples.
+            // OLR returns confidence='low' & nSamples=0 when it has no data → skip discount.
+            // This prevents over-blocking trades on new symbols where OLR hasn't learned yet.
+            const olrNSamples = safeNum((olrResult as any)?.nSamples, 0);
+            const olrConfidence = (olrResult as any)?.confidence ?? 'low';
+            if (olrNSamples >= 10 && olrConfidence !== 'low' &&
+                Number.isFinite(olrResult.pWin) && olrResult.pWin >= 0 && olrResult.pWin <= 1) {
+              olrPWin = olrResult.pWin;
+              olrHasData = true;
+            }
+          } catch { /* cold-start safe: keep default 1.0 (no discount) */ }
+        }
+        // blendFactor: 1.0 when no OLR data (cold-start safe), otherwise
+        // pwinFloor + (1 - pwinFloor) × P(win) — discounts confidence toward floor.
+        const pwinBlendFactor = olrHasData
+          ? (pwinFloor + (1 - pwinFloor) * olrPWin)
+          : 1.0;
+        const effectiveConfidence = safeNum(consensusConfidence, 0) * pwinBlendFactor;
+        if (effectiveConfidence < effectiveThreshold) {
+          const pwinStr = olrHasData
+            ? ` (P(win)=${(olrPWin * 100).toFixed(0)}% × consensus=${(consensusConfidence * 100).toFixed(0)}% → effective=${(effectiveConfidence * 100).toFixed(0)}%)`
+            : ` (consensus=${(consensusConfidence * 100).toFixed(0)}%, OLR cold-start — no P(win) discount)`;
           const penaltyStr = lossStreakPenalty > 0 ? ` (base ${(convictionThreshold * 100).toFixed(0)}% + loss-streak ${(lossStreakPenalty * 100).toFixed(0)}%)` : lossStreakPenalty < 0 ? ` (base ${(convictionThreshold * 100).toFixed(0)}% - winner ${(-lossStreakPenalty * 100).toFixed(0)}%)` : '';
-          log.warn(`🛑 [adaptive-filter] Conviction gate [${finalDecision.symbol || activeSymbol}]: ${(consensusConfidence * 100).toFixed(0)}% < threshold ${(effectiveThreshold * 100).toFixed(0)}%${penaltyStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD (signal below noise floor)`);
-          activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(consensusConfidence * 100).toFixed(0)}% < ${(effectiveThreshold * 100).toFixed(0)}%${lossStreakPenalty > 0 ? ` (+${(lossStreakPenalty * 100).toFixed(0)}% loss-streak)` : ''}` });
+          log.warn(`🛑 [adaptive-filter] Conviction gate [${finalDecision.symbol || activeSymbol}]: effective ${(effectiveConfidence * 100).toFixed(0)}% < threshold ${(effectiveThreshold * 100).toFixed(0)}%${penaltyStr}${pwinStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD (signal below noise floor)`);
+          activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(effectiveConfidence * 100).toFixed(0)}% < ${(effectiveThreshold * 100).toFixed(0)}%${pwinStr}${lossStreakPenalty > 0 ? ` (+${(lossStreakPenalty * 100).toFixed(0)}% loss-streak)` : ''}` });
           finalDecision = {
             ...finalDecision,
             action: 'hold',
             positionSizePct: 0,
-            rationale: `[ADAPTIVE FILTER ${finalDecision.symbol || activeSymbol}] Conviction ${(consensusConfidence * 100).toFixed(0)}% below threshold ${(convictionThreshold * 100).toFixed(0)}%. Signal is noise-dominated — HOLD. Original: ${finalDecision.rationale}`,
+            rationale: `[ADAPTIVE FILTER ${finalDecision.symbol || activeSymbol}] Effective confidence ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × consensus=${(consensusConfidence * 100).toFixed(0)}%) below threshold ${(effectiveThreshold * 100).toFixed(0)}%. Signal is noise-dominated — HOLD. Original: ${finalDecision.rationale}`,
           };
         } else if (symFilter.isTradeFrequencyLimited()) {
           log.warn(`🛑 [adaptive-filter] Trade frequency throttle [${finalDecision.symbol || activeSymbol}]: limit reached — overriding ${finalDecision.action.toUpperCase()} → HOLD (over-trading prevention)`);
@@ -6720,7 +6772,9 @@ ${recentExamples}
             rationale: `[ADAPTIVE FILTER ${finalDecision.symbol || activeSymbol}] Trade frequency limit reached. Over-trading prevention — HOLD. Original: ${finalDecision.rationale}`,
           };
         } else {
-          activeAuditGates.push({ gate: 'conviction-gate', passed: true, reason: `${(consensusConfidence * 100).toFixed(0)}% ≥ ${(convictionThreshold * 100).toFixed(0)}%` });
+          activeAuditGates.push({ gate: 'conviction-gate', passed: true, reason: olrHasData
+            ? `effective ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × ${(consensusConfidence * 100).toFixed(0)}%) ≥ ${(effectiveThreshold * 100).toFixed(0)}%`
+            : `${(consensusConfidence * 100).toFixed(0)}% ≥ ${(effectiveThreshold * 100).toFixed(0)}% (OLR cold-start — no P(win) discount)` });
           activeAuditGates.push({ gate: 'frequency-throttle', passed: true, reason: 'OK' });
         }
       }
