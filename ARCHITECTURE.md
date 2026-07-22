@@ -46,6 +46,8 @@
 │   │  query: wDecision + wExecution, v2.0.211-v2.0.212）          │
 │   • Anti-Pattern Tracker（failure lesson clustering）           │
 │   • Conditional WR Soft Gate（code-level conviction penalty）    │
+│   • Combo WR Gate（symbol×side×regime WR, Wilson LB, v2.0.221） │
+│   • OLR P(win)×Consensus Discount（multiplicative, v2.0.224）   │
 │   • Replay Buffer（PER, mini-batch retrain, v2.0.219）         │
 │   • Bayesian OLR（MC Dropout uncertainty, v2.0.219）          │
 │   • Temporal Attention（cross-trade regime learning, v2.0.219）│
@@ -91,7 +93,8 @@ src/
 │   ├── thesis-experience.ts # EXP 理據組合歷史勝率（方向過濾 + lesson persistence v2.0.207 #E）
 │   ├── experience-digester.ts # A2A 經驗消化（per-direction winRate + LessonStatement v2.0.207）
 │   ├── cycle-summary.ts     # EM Cycle Chain（market continuity, dual-channel v2.0.206 #6）
-│   ├── numeric-autoencoder.ts # Numeric Autoencoder（11→16→8 learned embedding, v2.0.204）
+│   ├── numeric-autoencoder.ts # Numeric Autoencoder（11→16→8 learned embedding, v2.0.204+v2.0.223 anti-collapse）
+│   ├── combo-win-rate-tracker.ts # (symbol×side×regime) WR tracker（Wilson LB, v2.0.221）
 │   ├── cycle-history-retrieval.ts # AttnRes Cycle-History（dual pseudo-query, v2.0.211-v2.0.212）
 │   ├── attnres-trade-embedder.ts # AttnRes trade embedder（anti-collapse v2.0.217）
 │   ├── anti-pattern-tracker.ts # Anti-Pattern clustering（failure lessons, v2.0.207 #F）
@@ -406,11 +409,15 @@ Meta-Agent 每循環蒸餾結構化 `CycleSummary`（E-step）；previous summar
 
 GA 演化 sigmoid 函數將 raw sentiment score → 0-1 conviction。Volume ratio + sentiment + conviction 注入 OLR features。
 
-### Numeric Autoencoder（`numeric-autoencoder.ts`，v2.0.204）
+### Numeric Autoencoder（`numeric-autoencoder.ts`，v2.0.204+v2.0.222+v2.0.223）
 
 純 TypeScript MLP（11→16→8 encoder + 8→16→11 decoder），學習 market-condition 嘅非線性 representation。Reconstruction loss + contrastive loss（同 outcome 拉近/唔同推開）+ diversity penalty。Adam optimizer（自實現）+ gradient clip + weight clip + LR decay + seeded RNG + replay buffer + time-weighted sampling（v2.0.205, 30-day half-life）。
 
-**冷啟動 → 學習切換**：sampleCount < 50 → min-max fallback；50-200 → 訓練中仍用 min-max；≥200 + validation pass（MSE<0.1, acc>60%, diversity>0.01）→ `isReady()=true` → learned 8-d cosine 取代 min-max。
+**v2.0.222：Replay 持久化**。Replay buffer 存入 `NAModelState`，重啟後 `restoreReplay()` 處理腐敗/NaN/截斷等 edge cases，即時 re-validate。
+
+**v2.0.223：訓練品質修復（4 個盲點）**。(1) Diversity collapse symmetry trap — variance-from-mean 梯度喺塌縮時=0，改用 pairwise repulsion + margin。(2) 線性層零初始化 → bottleneck 死亡，改用 small He init。(3) diversityLossWeight 0.01→0.1。(4) Validation thresholds 放寬：mse<1.5, acc≥55%。Backfill 後 trainEpochs(50) + early stop。
+
+**冷啟動 → 學習切換**：sampleCount < 50 → min-max fallback；50-200 → 訓練中仍用 min-max；≥200 + validation pass（MSE<1.5, acc>55%, diversity>0.01）→ `isReady()=true` → learned 8-d cosine 取代 min-max。
 
 **整合**：`computeVectorConditionalWinRate` 嘅 `embeddingProvider` option；`trade-pattern-classifier.ts` `computeSimilarity`；`cycle-summary.ts` dual-channel retrieval；`agent-evolution.ts` agent 權重。
 
@@ -443,6 +450,23 @@ Kimi K3 Attention Residuals transfer（arXiv 2603.15031）。K3 layer-depth ≡ 
 ### Conditional WR Soft Gate（`index.ts`，v2.0.209）
 
 Code-level conviction penalty：condWR < 20% → +35% conviction penalty；< 30% → +25%；< 40% → +15%。使用 AttnRes h_blend + NA embedding + RMSNorm keys + softmax mixture。minSamples=5 guard。軟門控（懲罰，永不 hard block）。
+
+### Combo WR Gate（`index.ts`，v2.0.221）
+
+三層 soft gate 疊加：`netPenalty = lossPenalty + condPenalty + comboPenalty`。ComboWinRateTracker 追蹤 (symbol × side × regime) 組合 WR，Wilson score lower bound 信心。WR<25% & n≥5 → 0.50 penalty；< 35% → 0.30；< 45% → 0.15。注入 Meta-Agent marketDesc PRE-thesis。永不 hard block。
+
+### OLR P(win) × Consensus Confidence Multiplicative Discount（`index.ts`，v2.0.224）
+
+**偵測→實施斷裂修復**。v2.0.224 之前：OLR 正確偵測到 29% P(win)，但信念懲罰只加高門檻（additive 50%→85%），90% agent 共識仍可跨過 → 仍然交易。修復後 OLR P(win) 直接折扣共識 confidence（multiplicative）：
+
+```
+effectiveConfidence = consensusConfidence × blendFactor
+blendFactor = pwinFloor + (1 - pwinFloor) × P(win)   // OLR has data
+blendFactor = 1.0                                     // cold-start
+pwinFloor = 0.3
+```
+
+P(win)=29% × 90%共識 = 45% < 85% → HOLD ✓。雙重防禦：加法（加高門檻 catch 中等過度自信）+ 乘法（折扣 confidence catch 極端過度自信）。冷啟動安全：OLR confidence='low' 或 nSamples<10 → blendFactor=1.0（唔折扣）。
 
 ---
 
