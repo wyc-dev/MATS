@@ -4,6 +4,26 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.222: Fix NA replay buffer persistence — validation survived restart. Root cause: NA's replay buffer was in-memory only → wiped on every restart. `sampleCount` was persisted (loaded as 1085) but `replay.length` started at 0. `validate()` checks `replay.length` (not `sampleCount`) → always failed with "insufficient samples (114 < 200)" until 200+ new trades accumulated post-restart. The UI showed `◐ NA 857 samples/200` indefinitely.
+
+**Fix:** `NAModelState` interface gains optional `replay?: NATrainingSample[]` field. `snapshotState()` now includes `replay: this.replay.slice(-replayBufferSize)`. `migrate()` calls new `restoreReplay()` method with full edge-case handling:
+- Missing replay (old state files) → empty array (backward compatible)
+- Corrupt entries (non-object, missing features) → skipped with warning count
+- NaN/Infinity in feature values → sanitized to 0
+- Invalid outcome (not 0/1) → coerced to 0
+- Missing presentFeatures → defaulted to []
+- Replay larger than buffer size → truncated to most recent
+- ts=0 (cold-start samples) → accepted
+- Mismatched feature names → accepted (featuresToVector maps by name, missing → inputMean fallback)
+
+**Immediate re-validation:** After replay restore, if `replay.length >= minSamplesReady`, `validate()` runs immediately — no more stale "insufficient samples" result after restart. The UI will show `●` (ready) as soon as the restored replay passes validation.
+
+**Self-attack phase (7 attacks, all passed):** (1) Mismatched feature names in replay → accepted. (2) 10000 samples with buffer=100 → truncated to 100 most recent. (3) Nonexistent file → cold start. (4) Corrupt JSON → cold start. (5) Truncated JSON → cold start. (6) Very large finite values (1e15) → preserved (not sanitized, only NaN/Infinity sanitized). (7) Read-only directory → persist catches error, no crash. (8) `enabled=false` → `isReady()` returns false.
+
+**File size impact:** na-model.json grows from 62KB to ~124KB (114 replay samples × 9 features). Capped at `replayBufferSize=1000` → max ~1MB. Acceptable.
+
+**Test coverage:** 15 new attack tests (na-replay-persistence-attack.test.ts): P1 round-trip, P2 backward compat, P3 corrupt entries, P4 NaN/Infinity, P5 invalid outcome, P6 missing presentFeatures, P7 truncation, P8 re-validation, P9 inputDim mismatch, P10 ts=0, P11 stale validation, P11b stale PASS + large sampleCount, P12 train after restore. 446 total tests, 20 test files.
+
 ## v2.0.221: 4 SKHX pattern-recognition defects fixed — hourOfDay feature + AntiPattern structural lessons + Combo WR tracker + enhanced conviction penalty. Investigation of 52 SKHX trades (14W/38L = 27% WR) revealed the system tagged patterns but Meta-Agent couldn't effectively avoid losing combos. 4 root causes fixed with top-tier production code + self-attack testing:
 
 **Fix 1 — hourOfDay OLR feature (was: no time-of-day learning):** OLR had 14 features with NO hour-of-day. SKHX data showed 13:00 = 75% WR vs 16:00 = 0% WR — the strongest signal in the dataset was invisible to the model. Added `hourOfDay` (normalised 0-1: hour/23) to FEATURE_NAMES (now 15). Populated at all 8 feature-extraction points in index.ts (live + close-learning + backfill). TemporalAttention featureDim changed from hardcoded 14 to dynamic `FEATURE_NAMES.length`. CRITICAL attack-fix: `migrateModel` was using `slice(0, D)` which TRUNCATES instead of PADDING old 14-element mean/m2/welfordCount arrays → hourOfDay normalised against `undefined` → NaN pWin. Fixed with `padArray()` helper that pads to D with neutral defaults. Verified: all 6 live symbols (skhx/cl/mu/silver/btc/xyz100) migrate cleanly with 15 features, no NaN.
