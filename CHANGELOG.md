@@ -4,7 +4,34 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
-## v2.0.223: Fix NA training quality — backfill train 50 epochs + diversity anti-collapse + linear layer init + relaxed thresholds. v2.0.222 fixed replay persistence but the UI still showed ◐ because the model itself was poorly trained: mse=1.22, diversity=0 (collapsed). Investigation revealed 4 blind spots:
+## v2.0.224: OLR P(win) × Consensus Confidence Multiplicative Discount — Detection/Implementation Gap Fix
+
+**Root cause discovered:** OLR correctly detected losing patterns (29% P(win) for SKHX, 72% accurate — 21 of 29 low-P(win) trades actually lost), but all 29 were still executed. The conviction penalty only RAISED the threshold (additive: base 50% + penalty 55% = 85%), which overconfident agents (90% consensus) could still cross. The detection was real; the implementation had a gap.
+
+**The fix:** OLR P(win) now directly DISCOUNTS the consensus confidence (multiplicative), not just raises the threshold:
+
+```typescript
+effectiveConfidence = consensusConfidence × blendFactor
+blendFactor = pwinFloor + (1 - pwinFloor) × P(win)   // when OLR has data
+blendFactor = 1.0                                     // cold-start, no OLR data
+pwinFloor = 0.3                                       // never kills completely
+```
+
+**Examples (base threshold 50%, max penalty → 85% threshold):**
+- P(win)=29% × consensus=90% → factor=0.503 → 45% < 85% → **HOLD ✓** (was TRADE ✗)
+- P(win)=80% × consensus=60% → factor=0.86 → 52% ≥ 50% → **TRADE ✓** (not over-blocked)
+- P(win)=50% × consensus=90% → factor=0.65 → 59% < 85% → **HOLD ✓** (50% WR blocked)
+- P(win)=0% × consensus=100% → factor=0.30 → 30% < 85% → **HOLD ✓** (even 100% blocked)
+
+**Cold-start guard:** OLR returns `confidence='low'` & `nSamples=0` when it has no data → `blendFactor=1.0` (no discount). A 70% consensus on a new symbol → TRADE (not over-blocked). Discount sharpens automatically as OLR accumulates samples (nSamples ≥ 10 + confidence ≠ 'low').
+
+**Why multiplicative, not just higher threshold?** The additive threshold raise has a hard cap at 85%. An agent producing 90%+ consensus bypasses it. The multiplicative discount scales the confidence directly — no matter how confident the agents are, a 29% P(win) cuts their effective confidence to 45%, which can't cross any reasonable threshold. This is a Bayesian update: agent consensus = prior belief, OLR P(win) = statistical evidence, product = posterior.
+
+**Defense-in-depth:** Both mechanisms work together — additive penalty raises the threshold (catches moderate overconfidence), multiplicative P(win) discounts the confidence (catches extreme overconfidence). A trade must pass BOTH the raised threshold AND the discounted confidence.
+
+**Self-attack (15 vectors, all passed):** SKHX scenario blocked ✓, good trades not over-blocked ✓, cold-start not over-blocked ✓, P(win)=0 blocks even 100% consensus ✓, NaN/Infinity injection safe ✓, monotonicity (higher P(win) never harder to trade) ✓, floor bound (P(win)=0 → 0.3, never 0) ✓, threshold clamp [0.25, 0.85] ✓, production scenario (29 losing trades would be blocked) ✓.
+
+ — backfill train 50 epochs + diversity anti-collapse + linear layer init + relaxed thresholds. v2.0.222 fixed replay persistence but the UI still showed ◐ because the model itself was poorly trained: mse=1.22, diversity=0 (collapsed). Investigation revealed 4 blind spots:
 
 **BS1 (critical): Diversity collapse symmetry trap.** `diversityLoss()` used variance-from-mean. At collapse, all embeddings identical → variance=0 → gradient=0 → CANNOT escape. The model was permanently stuck. **Fix:** Added pairwise repulsion with margin (0.5). At collapse, all cosines=1 > 0.5 → every pair gets non-zero gradient pushing apart. As embeddings spread, cosines drop below margin → penalty disappears (soft). Embeddings are L2-normalised so cosine = dot product. Tested: gradNorm at collapse = 1.414 (was 0).
 
