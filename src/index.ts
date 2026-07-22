@@ -3858,6 +3858,21 @@ ${recentExamples}
 
       log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, Combo=${comboFed}, skipped=${skipped}`);
 
+      // v2.0.223: Train + validate NA immediately after backfill. Previously only
+      // validated, which meant the model had 228 samples but only 230 training
+      // steps — mse=1.22, diversity=0 (collapsed). Now we train 50 epochs first
+      // (8000 gradient steps) to escape cold-start, then validate. Early stop
+      // if loss plateaus (patience=10).
+      try {
+        if (this.naEngine.sampleCount() >= 200) {
+          const trainResult = this.naEngine.trainEpochs(50);
+          log.info(`[exp-backfill] NA trained ${trainResult.roundsRun} rounds${trainResult.earlyStopped ? ' (early stopped)' : ''}: finalLoss=${trainResult.finalLoss.toFixed(4)}`);
+          const val = this.naEngine.validate();
+          log.info(`[exp-backfill] NA validated: ${val.passed ? 'PASS ✓' : 'FAIL'} — ${val.reason?.slice(0, 100)}`);
+          this.naEngine.persist();
+        }
+      } catch { /* non-critical */ }
+
       // Persist all updated state
       this.persistOLR();
       if (this.attnResTradeEmbedder) {
