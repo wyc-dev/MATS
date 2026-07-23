@@ -132,7 +132,14 @@ function recordCalibrationSample(
   bins: Array<{ lo: number; hi: number; wins: number; losses: number }>,
   predictedPWin: number,
   outcome: 1 | 0,
+  /** v2.0.228: If true, this sample is from backfill and is excluded from
+   * calibration bins to prevent poisoning. Backfill data does not reflect
+   * real-time market microstructure and inflates calibration bin counts,
+   * causing the calibration map to map raw P(win) → wrong empirical WR. */
+  isBackfill: boolean = false,
 ): void {
+  // v2.0.228: Exclude backfill from calibration — it pollutes the raw→empirical WR mapping
+  if (isBackfill) return;
   // Clamp to [0, 1) for bin lookup (1.0 goes into last bin)
   const clamped = Math.max(0, Math.min(0.9999, predictedPWin));
   const binIdx = Math.floor(clamped * CALIBRATION_NUM_BINS);
@@ -545,7 +552,7 @@ export class OLREngine {
       if (models.short.recentTrades.length > 20) models.short.recentTrades.shift();
       // v2.0.721: Record calibration sample (raw pWin → actual outcome)
       if (models.short.calibrationBins) {
-        recordCalibrationSample(models.short.calibrationBins, rawPWinForCalibration, outcome);
+        recordCalibrationSample(models.short.calibrationBins, rawPWinForCalibration, outcome, source === 'backfill');
       }
     } else {
       const liveSamples = models.long.nSamples - models.long.backfillSamples;
@@ -560,7 +567,7 @@ export class OLREngine {
       if (models.long.recentTrades.length > 20) models.long.recentTrades.shift();
       // v2.0.721: Record calibration sample (raw pWin → actual outcome)
       if (models.long.calibrationBins) {
-        recordCalibrationSample(models.long.calibrationBins, rawPWinForCalibration, outcome);
+        recordCalibrationSample(models.long.calibrationBins, rawPWinForCalibration, outcome, source === 'backfill');
       }
     }
   }

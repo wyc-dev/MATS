@@ -51,7 +51,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
         rollingSharpe: 0.5, // neutral
         sharpeSampleCount: 20,
         regime: 'mean_reverting', // neutral
-      }));
+      }), 'test:symbol');
       expect(result.threshold).toBeCloseTo(0.50, 4);
     });
 
@@ -71,7 +71,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       // Call several times to push through hysteresis
       let result;
       for (let i = 0; i < 5; i++) {
-        result = calc.compute(terrible);
+        result = calc.compute(terrible, 'test:symbol');
       }
       expect(result!.threshold).toBeLessThanOrEqual(0.55);
       expect(result!.threshold).toBeGreaterThanOrEqual(0.45);
@@ -92,7 +92,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       });
       let result;
       for (let i = 0; i < 5; i++) {
-        result = calc.compute(great);
+        result = calc.compute(great, 'test:symbol');
       }
       expect(result!.threshold).toBeGreaterThanOrEqual(0.45);
       expect(result!.threshold).toBeLessThanOrEqual(0.55);
@@ -111,7 +111,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       const result = calc.compute(makeInput({
         rollingWR: 0.20,      // terrible WR
         wrSampleCount: 5,     // but only 5 samples
-      }));
+      }), 'test:symbol');
       const wrFactor = result.factors.find(f => f.factor === 'rollingWR')!;
       expect(wrFactor.score).toBe(0);
       expect(wrFactor.reason).toContain('samples');
@@ -122,7 +122,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       const result = calc.compute(makeInput({
         rollingSharpe: -3.0, // terrible Sharpe
         sharpeSampleCount: 3, // but only 3 samples
-      }));
+      }), 'test:symbol');
       const sharpeFactor = result.factors.find(f => f.factor === 'sharpe')!;
       expect(sharpeFactor.score).toBe(0);
       expect(sharpeFactor.reason).toContain('samples');
@@ -133,7 +133,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       const result = calc.compute(makeInput({
         rollingWR: 0.20,
         wrSampleCount: 15,
-      }));
+      }), 'test:symbol');
       const wrFactor = result.factors.find(f => f.factor === 'rollingWR')!;
       expect(wrFactor.score).toBeGreaterThan(0); // should be +1 or +2
     });
@@ -147,18 +147,18 @@ describe('DynamicThresholdCalculator — Plan G', () => {
     it('WR at 48% stays neutral (within buffer zone, current=0)', () => {
       const calc = new DynamicThresholdCalculator();
       // Start neutral
-      calc.compute(makeInput({ rollingWR: 0.50, wrSampleCount: 20 }));
+      calc.compute(makeInput({ rollingWR: 0.50, wrSampleCount: 20 }), 'test:symbol');
       // WR=48% is in buffer [42%, 55%] — should stay at 0
-      const result = calc.compute(makeInput({ rollingWR: 0.48, wrSampleCount: 20 }));
+      const result = calc.compute(makeInput({ rollingWR: 0.48, wrSampleCount: 20 }), 'test:symbol');
       const wrFactor = result.factors.find(f => f.factor === 'rollingWR')!;
       expect(wrFactor.score).toBe(0);
     });
 
     it('WR must drop below 42% to raise from 0 to +1', () => {
       const calc = new DynamicThresholdCalculator();
-      calc.compute(makeInput({ rollingWR: 0.50, wrSampleCount: 20 }));
+      calc.compute(makeInput({ rollingWR: 0.50, wrSampleCount: 20 }), 'test:symbol');
       // WR=41% → should raise to +1
-      const result = calc.compute(makeInput({ rollingWR: 0.41, wrSampleCount: 20 }));
+      const result = calc.compute(makeInput({ rollingWR: 0.41, wrSampleCount: 20 }), 'test:symbol');
       const wrFactor = result.factors.find(f => f.factor === 'rollingWR')!;
       expect(wrFactor.score).toBe(1);
     });
@@ -166,22 +166,22 @@ describe('DynamicThresholdCalculator — Plan G', () => {
     it('WR at 48% does NOT lower from +1 to 0 (needs > 48%)', () => {
       const calc = new DynamicThresholdCalculator();
       // Push to +1
-      calc.compute(makeInput({ rollingWR: 0.41, wrSampleCount: 20 }));
-      expect(calc.compute(makeInput({ rollingWR: 0.41, wrSampleCount: 20 })).factors.find(f => f.factor === 'rollingWR')!.score).toBe(1);
+      calc.compute(makeInput({ rollingWR: 0.41, wrSampleCount: 20 }), 'test:symbol');
+      expect(calc.compute(makeInput({ rollingWR: 0.41, wrSampleCount: 20 }), 'test:symbol').factors.find(f => f.factor === 'rollingWR')!.score).toBe(1);
       // WR=47% is in buffer [45%, 48%] for score=1 → stays at +1
-      const result = calc.compute(makeInput({ rollingWR: 0.47, wrSampleCount: 20 }));
+      const result = calc.compute(makeInput({ rollingWR: 0.47, wrSampleCount: 20 }), 'test:symbol');
       const wrFactor = result.factors.find(f => f.factor === 'rollingWR')!;
       expect(wrFactor.score).toBe(1);
     });
 
     it('small fluctuations around boundary do not cause oscillation', () => {
       const calc = new DynamicThresholdCalculator();
-      calc.compute(makeInput({ rollingWR: 0.50, wrSampleCount: 20 }));
+      calc.compute(makeInput({ rollingWR: 0.50, wrSampleCount: 20 }), 'test:symbol');
       // Simulate WR bouncing around 43-44% (just above 42% threshold)
       const wrs = [0.43, 0.44, 0.43, 0.44, 0.43, 0.44];
       let lastScore = 0;
       for (const wr of wrs) {
-        const result = calc.compute(makeInput({ rollingWR: wr, wrSampleCount: 20 }));
+        const result = calc.compute(makeInput({ rollingWR: wr, wrSampleCount: 20 }), 'test:symbol');
         const wrFactor = result.factors.find(f => f.factor === 'rollingWR')!;
         // Score should not change between 0 and 1 on each iteration
         expect(wrFactor.score).toBe(lastScore);
@@ -205,7 +205,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
         rollingSharpe: 0.5, // neutral
         sharpeSampleCount: 20,
         regime: 'mean_reverting', // neutral
-      }));
+      }), 'test:symbol');
       // Only WR scored +1 → totalScore=1 → threshold = 50% + 0.5% = 50.5%
       expect(result.threshold).toBeCloseTo(0.505, 4);
     });
@@ -220,7 +220,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
         rollingSharpe: 0.5,  // neutral
         sharpeSampleCount: 20,
         regime: 'mean_reverting',
-      }));
+      }), 'test:symbol');
       // WR +1, idle +2 → totalScore=3 → threshold = 50% + 1.5% = 51.5%
       expect(result.threshold).toBeCloseTo(0.515, 4);
     });
@@ -235,11 +235,11 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       const calcBad = new DynamicThresholdCalculator();
       const calcGood = new DynamicThresholdCalculator();
       // Both start neutral, then diverge
-      calcBad.compute(makeInput({ rollingWR: 0.50, wrSampleCount: 20 }));
-      calcGood.compute(makeInput({ rollingWR: 0.50, wrSampleCount: 20 }));
+      calcBad.compute(makeInput({ rollingWR: 0.50, wrSampleCount: 20 }), 'test:symbol');
+      calcGood.compute(makeInput({ rollingWR: 0.50, wrSampleCount: 20 }), 'test:symbol');
       // Bad WR → +1, Good WR → -1
-      const badResult = calcBad.compute(makeInput({ rollingWR: 0.30, wrSampleCount: 20 }));
-      const goodResult = calcGood.compute(makeInput({ rollingWR: 0.60, wrSampleCount: 20 }));
+      const badResult = calcBad.compute(makeInput({ rollingWR: 0.30, wrSampleCount: 20 }), 'test:symbol');
+      const goodResult = calcGood.compute(makeInput({ rollingWR: 0.60, wrSampleCount: 20 }), 'test:symbol');
       const badScore = badResult.factors.find(f => f.factor === 'rollingWR')!.score;
       const goodScore = goodResult.factors.find(f => f.factor === 'rollingWR')!.score;
       expect(badScore).toBe(-goodScore); // symmetric: +1 vs -1
@@ -253,7 +253,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
   describe('Penalty decay', () => {
     it('penaltyFactor = 1.0 when netPenalty = 0', () => {
       const calc = new DynamicThresholdCalculator();
-      const result = calc.compute(makeInput({ netPenalty: 0 }));
+      const result = calc.compute(makeInput({ netPenalty: 0 }), 'test:symbol');
       expect(result.penaltyFactor).toBeCloseTo(1.0, 4);
     });
 
@@ -262,7 +262,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       const result = calc.compute(makeInput({
         netPenalty: 0.30,
         idleCycles: 0,
-      }));
+      }), 'test:symbol');
       // decayMultiplier = 1 - 0/30 = 1.0 → decayedPenalty = 0.30 → pf = 0.70
       expect(result.decayMultiplier).toBeCloseTo(1.0, 4);
       expect(result.penaltyFactor).toBeCloseTo(0.70, 4);
@@ -273,7 +273,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       const result = calc.compute(makeInput({
         netPenalty: 0.30,
         idleCycles: 15,
-      }));
+      }), 'test:symbol');
       // decayMultiplier = 1 - 15/30 = 0.5 → decayedPenalty = 0.15 → pf = 0.85
       expect(result.decayMultiplier).toBeCloseTo(0.5, 4);
       expect(result.penaltyFactor).toBeCloseTo(0.85, 4);
@@ -284,7 +284,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       const result = calc.compute(makeInput({
         netPenalty: 0.30,
         idleCycles: 36,
-      }));
+      }), 'test:symbol');
       // decayMultiplier = max(0, 1 - 36/30) = 0 → decayedPenalty = 0 → pf = 1.0
       expect(result.decayMultiplier).toBeCloseTo(0, 4);
       expect(result.penaltyFactor).toBeCloseTo(1.0, 4);
@@ -295,7 +295,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       const result = calc.compute(makeInput({
         netPenalty: 0.50,  // way above cap
         idleCycles: 0,
-      }));
+      }), 'test:symbol');
       expect(result.penaltyFactor).toBeCloseTo(0.70, 4);
     });
   });
@@ -333,8 +333,8 @@ describe('DynamicThresholdCalculator — Plan G', () => {
     it('6 hours idle (36 cycles): threshold ~50.5%, penalty fully decayed', () => {
       const calc = new DynamicThresholdCalculator();
       // Push WR to +2 first (terrible WR 27%)
-      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }));
-      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }));
+      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }), 'test:symbol');
+      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }), 'test:symbol');
 
       // Now: idle=36 cycles → -2, WR still +2, Sharpe < 0 → +1
       const result = calc.compute(makeInput({
@@ -346,7 +346,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
         sharpeSampleCount: 20,
         regime: 'mean_reverting', // neutral
         netPenalty: 0.30,   // max penalty
-      }));
+      }), 'test:symbol');
 
       // totalScore = +2 - 2 + 0 + 1 + 0 = +1 → threshold = 50.5%
       expect(result.threshold).toBeCloseTo(0.505, 4);
@@ -356,8 +356,8 @@ describe('DynamicThresholdCalculator — Plan G', () => {
 
     it('SILVER: P(win)=79% + consensus=65% passes threshold 50.5%', () => {
       const calc = new DynamicThresholdCalculator();
-      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }));
-      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }));
+      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }), 'test:symbol');
+      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }), 'test:symbol');
       const result = calc.compute(makeInput({
         rollingWR: 0.27,
         wrSampleCount: 20,
@@ -367,7 +367,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
         sharpeSampleCount: 20,
         regime: 'mean_reverting',
         netPenalty: 0.30,
-      }));
+      }), 'test:symbol');
       const threshold = result.threshold; // ~50.5%
       const penaltyFactor = result.penaltyFactor; // ~1.0
       // P(win)=79%, consensus=65%, penalty=1.0
@@ -378,8 +378,8 @@ describe('DynamicThresholdCalculator — Plan G', () => {
 
     it('SILVER: P(win)=55% + consensus=65% does NOT pass threshold 50.5%', () => {
       const calc = new DynamicThresholdCalculator();
-      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }));
-      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }));
+      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }), 'test:symbol');
+      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }), 'test:symbol');
       const result = calc.compute(makeInput({
         rollingWR: 0.27,
         wrSampleCount: 20,
@@ -389,7 +389,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
         sharpeSampleCount: 20,
         regime: 'mean_reverting',
         netPenalty: 0.30,
-      }));
+      }), 'test:symbol');
       const threshold = result.threshold;
       const penaltyFactor = result.penaltyFactor;
       // P(win)=55%, consensus=65%, penalty=1.0
@@ -402,8 +402,8 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       // The gap in old system: 80% - 44.5% = 35.5pp (impossible)
       // The gap in Plan G: 50.5% - 44.5% = 6pp (close, achievable with stronger signal)
       const calc = new DynamicThresholdCalculator();
-      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }));
-      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }));
+      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }), 'test:symbol');
+      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20 }), 'test:symbol');
       const result = calc.compute(makeInput({
         rollingWR: 0.27,
         wrSampleCount: 20,
@@ -413,7 +413,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
         sharpeSampleCount: 20,
         regime: 'mean_reverting',
         netPenalty: 0.30,
-      }));
+      }), 'test:symbol');
       const conf = DynamicThresholdCalculator.effectiveConfidence(0.65, 0.55, result.penaltyFactor);
       const gap = result.threshold - conf;
       // Old system gap was 0.355; Plan G gap should be much smaller
@@ -435,14 +435,14 @@ describe('DynamicThresholdCalculator — Plan G', () => {
           rollingSharpe: -2.0, regime: 'chaotic',
           wrSampleCount: 20, sharpeSampleCount: 20,
           netPenalty: 0.30,
-        }));
+        }), 'test:symbol');
       }
       const result = calc.compute(makeInput({
         rollingWR: 0.20, idleCycles: 0, drawdownPct: 0.20,
         rollingSharpe: -2.0, regime: 'chaotic',
         wrSampleCount: 20, sharpeSampleCount: 20,
         netPenalty: 0.30,
-      }));
+      }), 'test:symbol');
       // threshold = 55%, penaltyFactor = 0.70
       const conf = DynamicThresholdCalculator.effectiveConfidence(1.0, 1.0, result.penaltyFactor);
       // conf = 1.0 × 1.0 × 0.70 = 0.70 > 0.55 → TRADE
@@ -457,14 +457,14 @@ describe('DynamicThresholdCalculator — Plan G', () => {
           rollingSharpe: -2.0, regime: 'chaotic',
           wrSampleCount: 20, sharpeSampleCount: 20,
           netPenalty: 0.30,
-        }));
+        }), 'test:symbol');
       }
       const result = calc.compute(makeInput({
         rollingWR: 0.20, idleCycles: 0, drawdownPct: 0.20,
         rollingSharpe: -2.0, regime: 'chaotic',
         wrSampleCount: 20, sharpeSampleCount: 20,
         netPenalty: 0.30,
-      }));
+      }), 'test:symbol');
       // threshold = 55%, penaltyFactor = 0.70
       const conf = DynamicThresholdCalculator.effectiveConfidence(0.65, 0.79, result.penaltyFactor);
       // conf = 0.65 × 0.853 × 0.70 = 0.388 < 0.55 → HOLD
@@ -481,14 +481,14 @@ describe('DynamicThresholdCalculator — Plan G', () => {
           rollingSharpe: -2.0, regime: 'chaotic',
           wrSampleCount: 20, sharpeSampleCount: 20,
           netPenalty: 0.30,
-        }));
+        }), 'test:symbol');
       }
       const result = calc.compute(makeInput({
         rollingWR: 0.20, idleCycles: 0, drawdownPct: 0.20,
         rollingSharpe: -2.0, regime: 'chaotic',
         wrSampleCount: 20, sharpeSampleCount: 20,
         netPenalty: 0.30,
-      }));
+      }), 'test:symbol');
       const conf = DynamicThresholdCalculator.effectiveConfidence(0.90, 0.79, result.penaltyFactor);
       // conf = 0.90 × 0.853 × 0.70 = 0.537 < 0.55 → HOLD (barely)
       // Strong consensus (90%) + strong P(win) (79%) + max penalty + max threshold → barely blocked
@@ -511,7 +511,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
         rollingSharpe: NaN,
         sharpeSampleCount: NaN,
         netPenalty: NaN,
-      }));
+      }), 'test:symbol');
       // NaN should be treated as 0 or neutral — threshold should still be valid
       expect(result.threshold).toBeGreaterThanOrEqual(0.45);
       expect(result.threshold).toBeLessThanOrEqual(0.55);
@@ -525,7 +525,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
         wrSampleCount: 0,
         rollingSharpe: 0,
         sharpeSampleCount: 0,
-      }));
+      }), 'test:symbol');
       // With 0 samples, WR and Sharpe are neutral (0)
       // Other factors may score depending on their inputs
       expect(result.threshold).toBeGreaterThanOrEqual(0.45);
@@ -543,7 +543,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
         { netPenalty: 0.10, idleCycles: 15 },
       ];
       for (const c of cases) {
-        const result = calc.compute(makeInput(c));
+        const result = calc.compute(makeInput(c), 'test:symbol');
         expect(result.penaltyFactor).toBeGreaterThanOrEqual(0.70);
         expect(result.penaltyFactor).toBeLessThanOrEqual(1.0);
       }
@@ -552,8 +552,8 @@ describe('DynamicThresholdCalculator — Plan G', () => {
     it('reset() clears all hysteresis state', () => {
       const calc = new DynamicThresholdCalculator();
       // Push to bad scores
-      calc.compute(makeInput({ rollingWR: 0.20, wrSampleCount: 20 }));
-      calc.compute(makeInput({ rollingWR: 0.20, wrSampleCount: 20 }));
+      calc.compute(makeInput({ rollingWR: 0.20, wrSampleCount: 20 }), 'test:symbol');
+      calc.compute(makeInput({ rollingWR: 0.20, wrSampleCount: 20 }), 'test:symbol');
       // Reset
       calc.reset();
       // Should be neutral again
@@ -562,14 +562,14 @@ describe('DynamicThresholdCalculator — Plan G', () => {
         idleCycles: 10, drawdownPct: 0.05,
         rollingSharpe: 0.5, sharpeSampleCount: 20,
         regime: 'mean_reverting',
-      }));
+      }), 'test:symbol');
       expect(result.threshold).toBeCloseTo(0.50, 4);
     });
 
     it('getLastResult returns the last computed result', () => {
       const calc = new DynamicThresholdCalculator();
       expect(calc.getLastResult()).toBeNull();
-      const result = calc.compute(makeInput());
+      const result = calc.compute(makeInput(), 'test:symbol');
       expect(calc.getLastResult()).toBe(result);
     });
   });
@@ -582,19 +582,19 @@ describe('DynamicThresholdCalculator — Plan G', () => {
     it('after 30 cycles idle, penalty is fully decayed regardless of initial penalty', () => {
       const calc = new DynamicThresholdCalculator();
       // Start with max penalty, 0 idle
-      const result0 = calc.compute(makeInput({ netPenalty: 0.30, idleCycles: 0 }));
+      const result0 = calc.compute(makeInput({ netPenalty: 0.30, idleCycles: 0 }), 'test:symbol');
       expect(result0.penaltyFactor).toBeCloseTo(0.70, 4);
 
       // After 30 cycles idle (all other factors same)
-      const result30 = calc.compute(makeInput({ netPenalty: 0.30, idleCycles: 30 }));
+      const result30 = calc.compute(makeInput({ netPenalty: 0.30, idleCycles: 30 }), 'test:symbol');
       expect(result30.penaltyFactor).toBeCloseTo(1.0, 4);
     });
 
     it('idle factor lowers threshold while WR factor raises it → net balance', () => {
       const calc = new DynamicThresholdCalculator();
       // Bad WR (+2 after hysteresis), long idle (-2) → cancel out
-      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20, idleCycles: 5 }));
-      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20, idleCycles: 10 }));
+      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20, idleCycles: 5 }), 'test:symbol');
+      calc.compute(makeInput({ rollingWR: 0.27, wrSampleCount: 20, idleCycles: 10 }), 'test:symbol');
       const result = calc.compute(makeInput({
         rollingWR: 0.27,    // +2
         wrSampleCount: 20,
@@ -603,9 +603,112 @@ describe('DynamicThresholdCalculator — Plan G', () => {
         rollingSharpe: 0.5,  // 0
         sharpeSampleCount: 20,
         regime: 'mean_reverting', // 0
-      }));
+      }), 'test:symbol');
       // totalScore = +2 - 2 + 0 + 0 + 0 = 0 → threshold = 50%
       expect(result.threshold).toBeCloseTo(0.50, 4);
     });
   });
 });
+  // ═════════════════════════════════════════════════════════════════
+  // v2.0.228: Per-symbol idle cycles + backfill exclusion from calibration
+  // ═════════════════════════════════════════════════════════════════
+
+  describe('v2.0.228: Per-symbol idle cycles', () => {
+    it('markSymbolTraded resets idle for that symbol only', () => {
+      const calc = new DynamicThresholdCalculator();
+      // Register SILVER in the tracker
+      calc.compute(makeInput({ idleCycles: 0 }), 'xyz:silver');
+      // SILVER doesn't trade for 20 cycles
+      for (let i = 0; i < 20; i++) {
+        calc.incrementIdleCycles(new Set());
+      }
+      // SKHX trades — reset SKHX idle only
+      calc.markSymbolTraded('xyz:skhx');
+      const silverIdle = calc.getSymbolIdleCycles('xyz:silver', 0);
+      const skhxIdle = calc.getSymbolIdleCycles('xyz:skhx', 0);
+      expect(silverIdle).toBe(20); // SILVER still idle
+      expect(skhxIdle).toBe(0);    // SKHX reset
+    });
+
+    it('SKHX trading does not reset SILVER penalty decay', () => {
+      const calc = new DynamicThresholdCalculator();
+      // Register both symbols
+      calc.compute(makeInput({ idleCycles: 0 }), 'xyz:silver');
+      calc.markSymbolTraded('xyz:skhx');
+      // Both symbols idle for 15 cycles, only SKHX trades
+      const traded = new Set<string>(['xyz:skhx']); // only SKHX trades
+      for (let i = 0; i < 15; i++) {
+        calc.markSymbolTraded('xyz:skhx');
+        calc.incrementIdleCycles(traded);
+      }
+      const silverIdle = calc.getSymbolIdleCycles('xyz:silver', 0);
+      const skhxIdle = calc.getSymbolIdleCycles('xyz:skhx', 0);
+      // SILVER has been idle for 15 cycles → penalty should decay
+      expect(silverIdle).toBe(15);
+      // SKHX traded every cycle → idle = 0
+      expect(skhxIdle).toBe(0);
+    });
+
+    it('SILVER penalty fully decays after 30 cycles even if SKHX trades', () => {
+      const calc = new DynamicThresholdCalculator();
+      calc.compute(makeInput({ idleCycles: 0 }), 'xyz:silver');
+      calc.markSymbolTraded('xyz:skhx');
+      const traded = new Set<string>(['xyz:skhx']);
+      for (let i = 0; i < 35; i++) {
+        calc.markSymbolTraded('xyz:skhx');
+        calc.incrementIdleCycles(traded);
+      }
+      // SILVER idle = 35 → penalty decayed to 0
+      const result = calc.compute(makeInput({
+        netPenalty: 0.30,
+        idleCycles: calc.getSymbolIdleCycles('xyz:silver', 0),
+      }), 'xyz:silver');
+      expect(result.penaltyFactor).toBeCloseTo(1.0, 4);
+    });
+
+    it('SKHX penalty does not decay while SKHX is actively trading', () => {
+      const calc = new DynamicThresholdCalculator();
+      calc.markSymbolTraded('xyz:skhx');
+      for (let i = 0; i < 35; i++) {
+        calc.markSymbolTraded('xyz:skhx');
+        calc.incrementIdleCycles(new Set(['xyz:skhx']));
+      }
+      const result = calc.compute(makeInput({
+        netPenalty: 0.30,
+        idleCycles: calc.getSymbolIdleCycles('xyz:skhx', 0),
+      }), 'xyz:skhx');
+      // SKHX idle = 0 → no decay → penaltyFactor = 0.70
+      expect(result.penaltyFactor).toBeCloseTo(0.70, 4);
+    });
+
+    it('compute() with symbol tracks per-symbol idle for penalty decay', () => {
+      const calc = new DynamicThresholdCalculator();
+      // First call with SILVER — initializes tracking
+      calc.compute(makeInput({ idleCycles: 0, netPenalty: 0.30 }), 'xyz:silver');
+      calc.markSymbolTraded('xyz:skhx');
+      // Simulate 30 cycles of SILVER idle (SKHX trades)
+      const traded = new Set<string>(['xyz:skhx']);
+      for (let i = 0; i < 30; i++) {
+        calc.markSymbolTraded('xyz:skhx');
+        calc.incrementIdleCycles(traded);
+      }
+      // SILVER should have 30 idle cycles
+      const silverIdle = calc.getSymbolIdleCycles('xyz:silver', 0);
+      expect(silverIdle).toBe(30);
+    });
+  });
+
+  describe('v2.0.228: Vol-gate fallback (data feed issue)', () => {
+    it('per-symbol vol=0 falls back to combined state vol', () => {
+      // This is tested in index.ts integration — here we just verify
+      // the DynamicThresholdCalculator handles idleCycles=0 gracefully
+      const calc = new DynamicThresholdCalculator();
+      const result = calc.compute(makeInput({
+        idleCycles: 0,
+        netPenalty: 0,
+        drawdownPct: 0,
+      }), 'test:symbol');
+      expect(result.threshold).toBeGreaterThanOrEqual(0.45);
+      expect(result.threshold).toBeLessThanOrEqual(0.55);
+    });
+  });

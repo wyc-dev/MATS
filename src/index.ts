@@ -206,6 +206,8 @@ class MATSSystem {
   private assetFilterRegistry!: AssetFilterRegistry;
   /** v2.0.227: Dynamic threshold calculator — Plan G unified multiplicative gate */
   private dynamicThresholdCalc!: DynamicThresholdCalculator;
+  /** v2.0.228: Symbols that traded this cycle — for per-symbol idle tracking */
+  private _symbolsTradedThisCycle: Set<string> | null = null;
   private planckChaos!: PlanckChaosEngine;
   private hyperliquidWs!: HyperliquidWebSocketManager;
   private multiWs!: MultiExchangeWebSocketManager;
@@ -4630,6 +4632,8 @@ ${recentExamples}
 
     // v2.0.110: cycleInProgress was already set at the top of runDecisionCycle()
     this.totalCycles++;
+    // v2.0.228: Initialize per-symbol traded set for idle tracking
+    this._symbolsTradedThisCycle = new Set();
     // v2.0.727: Update Market Agent cycle counter for direction restriction auto-expiry
     this.marketAgent.updateCycle(this.totalCycles);
     const cycleStart = performance.now();
@@ -6300,10 +6304,16 @@ ${recentExamples}
             auditGates.push({ gate: 'direction-restrict', passed: true, reason: 'allowed' });
 
             // v2.0.764: Dynamic minimum volatility gate for multi-symbol path
-            const pscVol = this.marketState.getState(psc.symbol)?.volatility ?? combinedState.volatility ?? 0;
+            // v2.0.228: When per-symbol volatility is 0 (data feed broken/dead market),
+            // fall back to combined-state volatility. If that's also 0, use a minimum
+            // floor (0.0005) so the gate doesn't hard-block on missing data — the
+            // conviction gate handles signal quality assessment.
+            const pscVolRaw = this.marketState.getState(psc.symbol)?.volatility ?? 0;
+            const pscVol = pscVolRaw > 0 ? pscVolRaw : (combinedState.volatility > 0 ? combinedState.volatility : 0.0005);
             if (pscVol < this.dynamicMinVolatility) {
-              log.warn(`🛑 [vol-gate] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol}: volatility ${pscVol.toFixed(4)} < dynamic threshold ${this.dynamicMinVolatility.toFixed(4)} — market too quiet, skipping`);
-              auditGates.push({ gate: 'vol-gate', passed: false, reason: `vol=${pscVol.toFixed(4)} < threshold=${this.dynamicMinVolatility.toFixed(4)}` });
+              const isDataIssue = pscVolRaw === 0;
+              log.warn(`🛑 [vol-gate] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol}: volatility ${pscVol.toFixed(4)} < dynamic threshold ${this.dynamicMinVolatility.toFixed(4)}${isDataIssue ? ' (⚠️ data feed issue — vol=0)' : ' — market too quiet'}, skipping`);
+              auditGates.push({ gate: 'vol-gate', passed: false, reason: `vol=${pscVol.toFixed(4)} < threshold=${this.dynamicMinVolatility.toFixed(4)}${isDataIssue ? ' (data issue)' : ''}` });
               this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
               continue;
             }
@@ -6398,6 +6408,8 @@ ${recentExamples}
               auditGates.push({ gate: 'execution', passed: false, reason: err instanceof Error ? err.message : String(err) });
             }
             if (pscExecuted) auditGates.push({ gate: 'execution', passed: true, reason: 'executed on HL' });
+            // v2.0.228: Mark per-symbol idle reset for penalty decay
+            if (pscExecuted) { this.dynamicThresholdCalc.markSymbolTraded(psc.symbol); this._symbolsTradedThisCycle?.add(psc.symbol.toLowerCase()); }
             this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, pscExecuted);
             // v2.0.153: Push to UI immediately
             if (pscExecuted) this.pushToAPI();
@@ -6775,9 +6787,19 @@ ${recentExamples}
       // This is NOT a hard block on symbols/directions — it's a market condition gate
       // (like conviction gate). When volatility returns, trades resume automatically.
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
-        const currentVol = combinedState.volatility ?? 0;
+        // v2.0.228: Use per-symbol volatility from marketState, not combinedState.
+        // When per-symbol vol is 0 (data feed broken/dead market), fall back to
+        // combined-state volatility. If that's also 0, use a minimum floor (0.0005)
+        // so the gate doesn't hard-block on missing data — the conviction gate
+        // handles signal quality assessment.
+        const activeSymForVol = normalizeSymbol(finalDecision.symbol || activeSymbol);
+        const perSymVol = this.marketState.getState(activeSymForVol)?.volatility ?? 0;
+        const currentVol = perSymVol > 0
+          ? perSymVol
+          : (combinedState.volatility > 0 ? combinedState.volatility : 0.0005);
         if (currentVol < this.dynamicMinVolatility) {
-          log.warn(`🛑 [vol-gate] ${finalDecision.action.toUpperCase()} ${finalDecision.symbol || activeSymbol}: volatility ${currentVol.toFixed(4)} < dynamic threshold ${this.dynamicMinVolatility.toFixed(4)} — market too quiet, HOLD`);
+          const isDataIssue = perSymVol === 0;
+          log.warn(`🛑 [vol-gate] ${finalDecision.action.toUpperCase()} ${finalDecision.symbol || activeSymbol}: volatility ${currentVol.toFixed(4)} < dynamic threshold ${this.dynamicMinVolatility.toFixed(4)}${isDataIssue ? ' (⚠️ data feed issue — vol=0)' : ' — market too quiet'}, HOLD`);
           activeAuditGates.push({ gate: 'vol-gate', passed: false, reason: `vol=${currentVol.toFixed(4)} < threshold=${this.dynamicMinVolatility.toFixed(4)} (market too quiet)` });
           finalDecision = {
             ...finalDecision,
@@ -6858,8 +6880,12 @@ ${recentExamples}
           }
         } catch { /* cold-start safe: keep defaults */ }
 
-        // Idle cycles from HACP engine
-        const idleCycles = this.hacpEngine.getCyclesWithoutTrade();
+        // v2.0.228: Per-symbol idle cycles — uses DynamicThresholdCalculator's
+        // per-symbol tracker instead of the global HACP idle counter. This ensures
+        // each symbol's penalty decays independently (SKHX trading doesn't reset
+        // SILVER's penalty decay clock).
+        const gateSymbol = normalizeSymbol(finalDecision.symbol || activeSymbol);
+        const idleCycles = this.dynamicThresholdCalc.getSymbolIdleCycles(gateSymbol, this.hacpEngine.getCyclesWithoutTrade());
         // Drawdown from portfolio
         const drawdownPct = safeNum(this.portfolio.getPortfolio().currentDrawdownPct, 0);
         // Regime from market state
@@ -6876,7 +6902,7 @@ ${recentExamples}
           regime,
           netPenalty: Math.max(0, safeNum(netPenalty, 0)),
         };
-        const dtcResult = this.dynamicThresholdCalc.compute(dtcInput);
+        const dtcResult = this.dynamicThresholdCalc.compute(dtcInput, gateSymbol);
         const effectiveThreshold = dtcResult.threshold;
         const penaltyFactor = dtcResult.penaltyFactor;
 
@@ -7090,6 +7116,8 @@ ${recentExamples}
         const tradeSym = finalDecision.symbol || activeSymbol;
         const symFilter = this.assetFilterRegistry.getFilter(tradeSym);
         symFilter.recordTrade();
+        // v2.0.228: Mark per-symbol idle reset for penalty decay
+        this.dynamicThresholdCalc.markSymbolTraded(tradeSym); this._symbolsTradedThisCycle?.add(tradeSym.toLowerCase());
         log.info(`📊 [adaptive-filter] Trade recorded for ${tradeSym} — ${symFilter.getRemainingTradeSlots()} slots remaining`);
         // v2.0.143: entryThesis is set by executeTrade() after execution.
         // v2.0.153: Push to UI immediately so position appears without waiting for next cycle
@@ -7504,6 +7532,10 @@ ${recentExamples}
         hadRealTradeThisCycle,
         lastTradePnl >= 0
       );
+      // v2.0.228: Increment per-symbol idle cycles for symbols that didn't trade this cycle.
+      // This enables independent penalty decay per symbol (e.g. SILVER's penalty decays
+      // even while SKHX is actively trading).
+      this.dynamicThresholdCalc.incrementIdleCycles(this._symbolsTradedThisCycle ?? new Set());
 
       // 8.5 Run Sigmoid·GA evolution every cycle (feed trade PnL as fitness signal)
       try {

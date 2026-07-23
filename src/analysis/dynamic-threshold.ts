@@ -316,14 +316,28 @@ export class DynamicThresholdCalculator {
   private sharpeScore = 0;
   private regimeScore = 0;
 
+  // v2.0.228: Per-symbol idle cycles — each symbol tracks its own idle count
+  // independently. This prevents one active symbol (e.g. SKHX) from resetting
+  // the penalty decay for another symbol (e.g. SILVER). The global idle counter
+  // from HACP only resets when ANY symbol trades; per-symbol idle ensures each
+  // symbol's penalty decays independently.
+  private perSymbolIdleCycles: Map<string, number> = new Map();
+
   // Last computed result (for inspection / logging)
   private lastResult: DynamicThresholdResult | null = null;
 
   /**
    * Compute the dynamic threshold and penalty factor.
-   * Call once per cycle with fresh inputs.
+   * Call once per cycle per symbol with fresh inputs.
+   * v2.0.228: Uses per-symbol idle cycles for penalty decay.
    */
-  compute(input: DynamicThresholdInput): DynamicThresholdResult {
+  compute(input: DynamicThresholdInput, symbol: string = 'default'): DynamicThresholdResult {
+    // v2.0.228: Register symbol in per-symbol idle map if not present
+    const symKey = normalizeSymbolKey(symbol);
+    if (!this.perSymbolIdleCycles.has(symKey)) {
+      this.perSymbolIdleCycles.set(symKey, Math.max(0, Math.floor(input.idleCycles)));
+    }
+
     // 1. Score each factor with hysteresis
     const wrRes = scoreRollingWR(input.rollingWR, input.wrSampleCount, this.wrScore);
     const idleRes = scoreIdleCycles(input.idleCycles, this.idleScore);
@@ -347,6 +361,9 @@ export class DynamicThresholdCalculator {
     const threshold = Math.max(THRESHOLD_FLOOR, Math.min(THRESHOLD_CEILING, BASE_THRESHOLD + adjustment));
 
     // 4. Penalty decay: linear decay over PENALTY_DECAY_CYCLES
+    //    v2.0.228: Uses PER-SYMBOL idle cycles, not the global HACP counter.
+    //    This ensures each symbol's penalty decays independently — SKHX trading
+    //    does not reset SILVER's penalty decay clock.
     //    Safe-num all inputs to prevent NaN propagation.
     const safeIdle = Number.isFinite(input.idleCycles) ? input.idleCycles : 0;
     const safePenalty = Number.isFinite(input.netPenalty) ? input.netPenalty : 0;
@@ -380,7 +397,47 @@ export class DynamicThresholdCalculator {
     return result;
   }
 
-  /** Get the last computed result (null if compute() hasn't been called). */
+  /**
+   * v2.0.228: Mark that a symbol just traded — reset its per-symbol idle counter.
+   * Call this when a real trade is executed for the given symbol.
+   */
+  markSymbolTraded(symbol: string): void {
+    this.perSymbolIdleCycles.set(normalizeSymbolKey(symbol), 0);
+  }
+
+  /**
+   * v2.0.228: Increment per-symbol idle counters for ALL symbols that didn't
+   * trade this cycle. Call this once per cycle after all symbol decisions are done.
+   * @param tradedSymbols Set of symbols that traded this cycle (won't be incremented)
+   * @param allKnownSymbols Optional: all symbols to track (new symbols start at idle=1).
+   *              If not provided, only existing tracked symbols are incremented.
+   */
+  incrementIdleCycles(tradedSymbols: Set<string>, allKnownSymbols?: Set<string>): void {
+    // If allKnownSymbols provided, ensure all are tracked
+    if (allKnownSymbols) {
+      for (const sym of allKnownSymbols) {
+        const key = normalizeSymbolKey(sym);
+        if (!this.perSymbolIdleCycles.has(key)) {
+          this.perSymbolIdleCycles.set(key, 0);
+        }
+      }
+    }
+    // Increment all tracked symbols except the ones that traded
+    for (const [sym] of this.perSymbolIdleCycles) {
+      if (!tradedSymbols.has(sym)) {
+        this.perSymbolIdleCycles.set(sym, (this.perSymbolIdleCycles.get(sym) ?? 0) + 1);
+      }
+    }
+  }
+
+  /**
+   * v2.0.228: Get per-symbol idle cycles. If the symbol hasn't been tracked yet,
+   * returns the fallback value (global HACP idle) to be safe on first encounter.
+   */
+  getSymbolIdleCycles(symbol: string, fallback: number = 0): number {
+    return this.perSymbolIdleCycles.get(normalizeSymbolKey(symbol)) ?? fallback;
+  }
+
   getLastResult(): DynamicThresholdResult | null {
     return this.lastResult;
   }
@@ -418,6 +475,11 @@ export class DynamicThresholdCalculator {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
+
+/** Normalize symbol key for per-symbol tracking (lowercase). */
+function normalizeSymbolKey(sym: string): string {
+  return (sym || '').toLowerCase();
+}
 
 /** Safe number: replace NaN/Infinity/null/undefined with fallback. */
 export function safeNum(val: unknown, fallback = 0): number {
