@@ -70,7 +70,7 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 - **🤖 Terminal Agent + Root Command Prompt** — users type natural language trading preferences (e.g., "only trade on Monday GMT"). LLM integrates them into a Root Command Prompt. Before each cycle, rules are checked — if a rule fails, the entire cycle is aborted (no token cost). After the Meta-Agent decides, the Terminal Agent verifies that the decision matches user preferences.
 - **🧠 Entry Thesis System** — every trade needs a validated `[1h: ...] [1d: ...]` rationale. Meta-Agent generates it; Skeptics stress-test it.  No thesis → no trade.
 - **🛡️ Skeptics veto** — an AI stress-tests every position's logic, data consistency, and dark-psychology (whale manipulation?) before execution. Approve-first: rejects only on concrete money-losing flaws. Dark-psychology check escalates from LIGHTWEIGHT to **MANDATORY** when |momentum| > 2% — must articulate a specific reversal catalyst or reject.
-- **🧬 21-Layer Cognitive Evolution** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, **which historical cycles** are most relevant right now, and **what the next market state will look like** — through a stack of learned representations (see below).
+- **🧬 23-Layer Cognitive Evolution** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, **which historical cycles** are most relevant right now, and **what the next market state will look like** — through a stack of learned representations (see below).
 - **🔬 Numeric Autoencoder** — a pure-TypeScript MLP (11→16→8 encoder + contrastive loss) learns a non-linear embedding of market conditions. "Similar market conditions" is no longer handcrafted min-max cosine — it's a learned representation where "similar" means "historically led to similar outcomes." Cold-start safe: min-max fallback until 200+ samples + validation pass.
 - **🌀 AttnRes Cycle-History Retrieval** — transferred from Kimi K3's Attention Residuals (arXiv 2603.15031). The conditional win-rate candidate is no longer a single current snapshot — it's a **softmax-weighted blend over 80 cycles of history + entry-time state**, with a learned pseudo-query deciding which historical periods matter most right now. Entry-time regime retains persistent weight (K3 embedding persistence). Block AttnRes compresses 80 cycles → 8 blocks for O(Nd) memory.
 - **⚔️ Dual Pseudo-Query Specialization** — two learned queries per symbol, inspired by K3's pre-attention vs pre-MLP layer specialization: **wDecision** (broad receptive field, trained on trade PnL) for conditional win-rate + thesis context; **wExecution** (sharp/recent-biased, trained on SL/TP stop-out outcomes) for SL/TP survival context.
@@ -79,6 +79,7 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 - **🔒 Conditional WR Soft Gate** — code-level conviction penalty: if the conditional win-rate (learned embedding + AttnRes blend) is < 20%, conviction is penalized +35%. This runs even if the LLM ignores the prompt — **the code enforces what the prompt suggests**.
 - **🎯 Combo WR Gate** (v2.0.221) — tracks (symbol × side × regime) win rate with Wilson score lower bound. Injects PRE-thesis warning into Meta-Agent. WR<25% → +50% conviction penalty. Stacks with conditional WR + loss-streak gates.
 - **🔢 OLR P(win) × Consensus Discount** (v2.0.224) — multiplicative confidence discount: `effectiveConfidence = consensus × (0.3 + 0.7 × P(win))`. P(win)=29% × 90% consensus = 45% → HOLD. Fixes the gap where overconfident agents bypassed the additive threshold raise. Cold-start safe (no OLR data → no discount).
+- **🎯 Plan G Dynamic Threshold** (v2.0.227) — the conviction gate's threshold dynamically adjusts [45-55%] based on 5 objective performance factors (rolling WR, idle cycles, drawdown, rolling Sharpe, regime) with hysteresis. Penalties are **multiplicative** (not additive to threshold) with automatic idle-based decay over 30 cycles. Fixes the death spiral where additive penalties (+30%) stacked with P(win) discount to make trading mathematically impossible (44.5% vs 80%). 6 fairness guarantees: multi-factor balance, symmetric design, sample-size requirement, hysteresis, hard cap, fact-driven.
 - **🧠 Direction-aware learning** — all learning systems filter by direction: SELL candidates only match SELL history, BUY only matches BUY. Per-direction win rates tracked everywhere. Counter-momentum trades require a specific named catalyst — "could reverse" is not enough.
 - **⚡ HACP protocol** — Terminal Agent checks rules → 5 sub-agents think in parallel (staggered, 60s deadline race), Skeptics audits, Meta-Agent arbitrates, weighted voting consensus, Terminal Agent verifies. 120s hard timeout → HOLD.
 - **💰 Capital preservation first** — every error path defaults to HOLD. SystemGuard (5 layers). Notional-based fees. SL/TP hard safety layers. Configurable max portion + drawdown + daily-loss limits.
@@ -113,6 +114,9 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 │   • Reward shaping (5-component risk-adjusted, v2.0.219)     │
 │   • Active exploration (UCB + info gain, v2.0.219)           │
 │   • World model (latent dynamics + rollout, v2.0.219)        │
+│   • Close-Context Learning (closeReason+slNarrowed, v2.0.226)│
+│   • Plan G dynamic threshold (5-factor [45-55%] + penalty   │
+│     decay, v2.0.227)                                        │
 │   • RIL Reason Intelligence (pattern clustering + similar    │
 │     trade retrieval + subtle diff LLM analysis)              │
 │   • Trade Incident Panel (MAE/MFE + exitThesis + post-review)│
@@ -182,6 +186,7 @@ Each cycle (1-10 min, user-configurable): Terminal Agent checks rules → 5 sub-
 | **Active Exploration** | `active-exploration.ts` | v2.0.219: UCB exploration — `score = pWin + c·sqrt(ln(N_total)/N_symbol)`. Information-gain bonus when Bayesian uncertainty high. Annealing: exploration decays as system matures. Soft gating (never hard-blocks — preserves user operation space). Under-sampled symbols get exploration boost. |
 | **World Model** | `world-model.ts` | v2.0.219: Lightweight Dreamer-style latent dynamics. 14→8-d encoder (tanh bounded) + transition model (predict next latent from current + action) + reward predictor (predict pWin). Rollout N steps forward for "latent imagination" planning — simulate entry decisions without actually trading. Cold-start safe (< 50 samples → 0.5 defaults). |
 | **Close-Context Learning** | `index.ts` computeLearningWeight + `portfolio.ts` | v2.0.226: How a position is closed is an important factor in the loss. `computeLearningWeight(closeReason, slNarrowed, isWin)` scales learning by close context: wins=1.0, real SL hit=1.0, tight-SL loss (SL narrowed post-entry)=0.3, thesis invalidation=0.3, manual=0.5, consensus=0.5. OLR `feedTrade` receives `slNarrowed`+`weightMultiplier` to scale gradient. Combo WR skips execution-caused losses (weight<0.5). TradeRecord captures `originalStopLossPrice`/`finalStopLossPrice`/`slNarrowed`. Prevents tight-SL losses from contaminating learning with "these market conditions→loss" when the entry was fine. |
+| **Plan G Dynamic Threshold** | `analysis/dynamic-threshold.ts` | v2.0.227: `DynamicThresholdCalculator` replaces the additive penalty-on-threshold model with a unified multiplicative system. `effectiveConfidence = consensus × pwinBlendFactor × penaltyFactor`, `dynamicThreshold = 50% + (totalScore × 0.5%)` → [45%, 55%]. 5-factor hysteresis scoring (Rolling WR, Idle cycles, Drawdown, Rolling Sharpe, Regime), each [-2,+2], capped at [-10,+10]. Penalty decay: `penaltyFactor = 1.0 - min(decayedPenalty, 0.30)`, linear decay over 30 idle cycles → system self-recovers. 6 fairness guarantees: multi-factor balance, symmetric design, sample-size requirement (≥10), hysteresis, hard cap [45-55%], fact-driven. Fixes death spiral (44.5% vs 80% = 35.5pp gap → impossible). 36 attack tests. |
 
 ### Cognitive Evolution Pipeline
 
@@ -222,6 +227,28 @@ The system's learning stack evolved through 12 versions, each addressing a struc
            reward shaping (5-component) + active exploration (UCB) + world model
            (latent rollout). Shadow trade engine fix (maxAgeCycles 50→12, stale
            trades now fed to OLR). 397 tests total.
+ v2.0.221  Combo WR Gate fixes: hourOfDay feature fix + AntiPattern feed fix +
+           Combo WR tracker (symbol×side×regime Wilson LB) + hardened penalties
+ v2.0.222  NA replay buffer persistence — validation survives restart
+ v2.0.223  NA training quality: 4 blind spots (diversity collapse symmetry trap +
+           zero-init bottleneck + diversityLossWeight 0.01→0.1 + validation thresholds)
+ v2.0.224  OLR P(win) × consensus multiplicative discount (defense-in-depth:
+           additive threshold raise + multiplicative confidence discount)
+ v2.0.225  Two-layer exit protection: trailing stop + MFE giveback + TP narrowing +
+           per-symbol consensus SL/TP all DISABLED. SL/TP set at entry, never modified.
+           LLM thesis invalidation (Skeptics Phase 0.5) force-close is the only
+           active exit path. Removes entire auto-close block (61 lines).
+ v2.0.226  Close-context-aware learning: computeLearningWeight(closeReason,
+           slNarrowed, isWin) scales learning by close context [0.3, 1.0].
+           OLR feedTrade receives slNarrowed + weightMultiplier. Combo WR skips
+           execution-caused losses (weight < 0.5). 485 tests total.
+ v2.0.227  Plan G: dynamic threshold [45-55%] + multiplicative penalty decay.
+           DynamicThresholdCalculator: 5-factor hysteresis scoring (Rolling WR,
+           Idle, Drawdown, Sharpe, Regime), each [-2,+2], capped [-10,+10].
+           Penalty decay over 30 idle cycles → system self-recovers. 6 fairness
+           guarantees: multi-factor balance, symmetric, sample-size req, hysteresis,
+           hard cap, fact-driven. Fixes death spiral (44.5% vs 80% = impossible).
+           521 tests total.
 ```
 
 **Key design principles:**
@@ -230,6 +257,7 @@ The system's learning stack evolved through 12 versions, each addressing a struc
 - **Code enforces what prompt suggests**: the conditional WR soft gate runs at code level — even if the LLM completely ignores the DEEP LEARNING CONTEXT prompt, conviction is still penalized. Belt and suspenders.
 - **Outcome-driven, not gradient-driven**: MATS has no backprop loop. All learning is from trade outcomes (win/loss + PnL + closeReason). The reward-weighted key direction update (Peters & Schaal 2008) is the correct rule for deterministic attention — REINFORCE is identically zero.
 - **Close-context-aware learning (v2.0.226)**: How a position is closed is an important factor in the loss. `computeLearningWeight(closeReason, slNarrowed, isWin)` scales learning by close context: wins = 1.0, real SL hit = 1.0, tight-SL loss (SL narrowed post-entry) = 0.3, thesis invalidation = 0.3, manual close = 0.5, consensus close = 0.5. OLR `feedTrade` receives `slNarrowed` + `weightMultiplier` to scale gradient updates. Combo WR skips execution-caused losses (weight < 0.5). This prevents tight-SL losses from contaminating the learning systems with "these market conditions → loss" when the entry was actually fine.
+- **Dynamic threshold with fairness (v2.0.227)**: The conviction gate threshold is dynamic [45-55%], driven by 5 objective performance factors (Rolling WR, Idle cycles, Drawdown, Rolling Sharpe, Regime) with hysteresis. Penalties are multiplicative (not additive to threshold) with idle-based decay over 30 cycles. 6 fairness guarantees ensure the calculation is公正: multi-factor balance (no single factor dominates), symmetric design (good = bad influence), sample-size requirement (≥10 trades), hysteresis (no boundary oscillation), hard cap (mathematical [45-55%] guarantee), fact-driven (all inputs are measured, settled outcomes — not predictions).
 
 → Full evolution map in [NA.md](NA.md) · AttnRes design in [K.md](K.md)
 
@@ -311,7 +339,7 @@ Restrict a symbol to BUY-only or SELL-only via API or `data/evolution/market-age
 | **Frontend** | React 18 + Vite + TradingView Chart |
 | **Config** | Zod schema validation |
 | **Logging** | Winston (structured + file rotation) |
-| **Testing** | vitest (397 tests, 17 test files) |
+| **Testing** | vitest (521 tests, 23 test files) |
 | **Crypto** | `@noble/curves` (HL phantom agent signing) |
 | **Vector Embedding** | Transformers.js MiniLM L6 v2 (384-dim, in-process, CPU) |
 
