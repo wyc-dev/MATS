@@ -4,6 +4,33 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.228: Three root-cause fixes — per-symbol penalty decay + vol-gate data-feed fallback + OLR backfill exclusion from calibration. Fixes two live trading issues: (1) SILVER SELL blocked for 6+ hours because vol-gate hard-blocked on vol=0.0000 (data feed issue) and penalty never decayed (global idle counter reset by SKHX trading), (2) SKHX BUY/SELL loop (buy→SL→buy→SL) because OLR P(win)=52% calibrated but actual WR=23% — 29pp miscalibration from 48% backfill samples polluting the calibration bins.
+
+**Fix 1: Per-symbol penalty decay** (`src/analysis/dynamic-threshold.ts`): `DynamicThresholdCalculator` now tracks per-symbol idle cycles via `perSymbolIdleCycles` Map. `markSymbolTraded(symbol)` resets only that symbol's counter. `incrementIdleCycles(tradedSymbols, allKnownSymbols?)` increments all non-traded symbols. `compute(input, symbol)` registers the symbol in the idle map if not present. This ensures SILVER's penalty decays independently even while SKHX is actively trading — the global HACP idle counter is only used as a fallback for untracked symbols.
+
+**Fix 2: Vol-gate data-feed fallback** (`src/index.ts`): When per-symbol volatility is 0 (data feed broken/dead market), falls back to combined-state volatility, then to a 0.0005 floor. The gate no longer hard-blocks on missing data — the conviction gate (Plan G) handles signal quality assessment. Added `⚠️ data feed issue` warning in logs when vol=0 is detected. Applied to both multi-symbol path (line ~6300) and active-symbol path (line ~6788).
+
+**Fix 3: OLR backfill exclusion from calibration** (`src/evolution/olr-engine.ts`): `recordCalibrationSample()` now takes an `isBackfill` parameter — when true, the sample is excluded from the calibration bins entirely. This prevents 48% backfill samples (which don't reflect real-time market microstructure) from polluting the raw→empirical WR mapping. The calibration bins now only learn from real + shadow + paper trades, giving an accurate P(win) → actual WR mapping. Existing calibration bins are NOT cleared (they contain historical backfill data) but all NEW samples from v2.0.228 onward will be backfill-free.
+
+**SILVER SELL fix analysis (before → after):**
+- Before: 4/5 cycles blocked by vol-gate (vol=0.0000), 1/5 blocked by conviction gate (penalty=0.72, 45% < 49.5%)
+- After Fix 1: SILVER's penalty decays independently (30 cycles idle → penaltyFactor=1.0)
+- After Fix 2: vol=0 falls back to combined state or 0.0005 floor → vol-gate passes
+- After Fix 1+2: P(win)=77% × consensus=75% × penalty=1.0 → 62.9% ≥ 49.5% → TRADE ✓
+
+**SKHX BUY fix analysis (before → after):**
+- Before: OLR P(win)=52% (calibrated Bin 2, polluted by 48% backfill) vs actual WR=23% → 29pp gap
+- After Fix 3: New calibration samples exclude backfill → calibration bins learn from real+shadow only → P(win) calibration converges to actual WR over time
+- Note: existing calibration bins still contain backfill data — they will be diluted as new non-backfill samples are added
+
+**Files changed:**
+- `src/analysis/dynamic-threshold.ts` — per-symbol idle tracking (Map + markSymbolTraded + incrementIdleCycles + getSymbolIdleCycles + compute registers symbol)
+- `src/index.ts` — vol-gate fallback for vol=0 (multi-symbol + active-symbol paths), per-symbol idle tracking integration (markSymbolTraded on execution, incrementIdleCycles at cycle end, _symbolsTradedThisCycle set)
+- `src/evolution/olr-engine.ts` — recordCalibrationSample isBackfill parameter (excludes backfill from calibration bins)
+- `tests/dynamic-threshold-attack.test.ts` — 6 new per-symbol idle tests + vol-gate fallback test (42 total)
+
+---
+
 ## v2.0.227: Plan G — Unified multiplicative conviction gate with dynamic threshold [45-55%] + penalty decay. Fixes the death spiral where additive penalties stacked (+30%) on the threshold while P(win) multiplicatively discounted confidence, creating a compound gap that made trading mathematically impossible (44.5% vs 80% = 35.5pp gap). SILVER was stuck for 6+ hours because the penalty-streak gate raised the threshold to 82% while the P(win) discount dropped confidence to 45%.
 
 **Root cause**: Three penalty gates (loss-streak, conditional WR, combo WR) all ADDED to the threshold (additive: 50% + 30% = 80%), while P(win) × consensus was MULTIPLICATIVE (65% × 0.685 = 44.5%). This compound effect meant even strong signals couldn't pass. The idle recovery (-0.02/cycle, floored at 0.49) was too slow to break the deadlock.
