@@ -52,7 +52,7 @@ import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts'
 import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
 import { OLREngine, type OLRQueryResult, regimeToOrdinal, FEATURE_NAMES } from './evolution/olr-engine.ts';
 import { NumericAutoencoder } from './evolution/numeric-autoencoder.ts';
-import { ENTRY_CONDITION_FEATURES, computeVectorConditionalWinRate, safeNum } from './evolution/evolution-utils.ts';
+import { ENTRY_CONDITION_FEATURES, computeVectorConditionalWinRate, entryDecisionCondWROptions, safeNum } from './evolution/evolution-utils.ts';
 import { CycleHistoryRetriever } from './evolution/cycle-history-retrieval.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { ReplayBuffer } from './evolution/replay-buffer.ts';
@@ -97,82 +97,11 @@ function currentHourOfDay(): number {
   return new Date().getHours() / 23;
 }
 
-/**
- * v2.0.226: Compute learning weight based on close context.
- *
- * The close mechanism is an important factor in whether a loss reflects a
- * bad ENTRY decision or a bad EXECUTION decision. This function assigns a
- * weight [0, 1] that scales how much the learning systems (OLR, AttnRes,
- * replay buffer, temporal attention, combo WR, etc.) should learn from
- * each closed trade:
- *
- *   - SL hit at ORIGINAL (wide) SL → 1.0  (real market loss, full signal)
- *   - SL hit after SL was NARROWED   → 0.3  (execution loss, entry may be fine)
- *   - Thesis invalidation            → 0.3  (system LLM decision, not pure market)
- *   - Manual close                   → 0.5  (user decision, partial market signal)
- *   - Reconciliation / exchange      → 1.0  (exchange-side event, full market)
- *   - WINS                           → 1.0  (a win is always a full positive signal)
- *
- * This prevents tight-SL losses from contaminating OLR weights, AttnRes
- * key directions, combo WR, and anti-patterns with "these market conditions
- * → loss" when the entry was actually correct and only the SL was too tight.
- *
- * @param closeReason  How the position was closed
- * @param slNarrowed   Whether SL was narrowed post-entry
- * @param isWin        Whether the trade was profitable
- * @returns Learning weight multiplier [0.3, 1.0]
- */
-function computeLearningWeight(
-  closeReason: string,
-  slNarrowed: boolean,
-  isWin: boolean,
-): number {
-  // Wins always get full weight — a win is a win regardless of how closed.
-  // The market confirmed the entry thesis, and that positive signal should
-  // not be discounted.
-  if (isWin) return 1.0;
-
-  // Losses: weight depends on whether the loss was caused by the market
-  // (real signal) or by execution/system decisions (contaminated signal).
-  switch (closeReason) {
-    case 'thesis_invalidation':
-      // System LLM decision — not a pure market-risk loss. The LLM judged
-      // the thesis broke, which may reflect regime change or may be a
-      // false alarm. Discount to 0.3 — learn from it but don't let it
-      // dominate (consistent with v2.0.139 conviction-gate exclusion).
-      return 0.3;
-    case 'manual':
-      // User decision — partial market signal. The user may have closed
-      // for risk management, inside knowledge, or emotional reasons.
-      // Discount to 0.5 — it carries some market information but is not
-      // a clean SL/TP market trigger.
-      return 0.5;
-    case 'sl_tp':
-      if (slNarrowed) {
-        // SL was narrowed post-entry (trailing stop, MFE giveback, TP
-        // narrowing) and then hit. This is an EXECUTION loss, not an ENTRY
-        // loss — the entry may have been fine, but the SL was tightened
-        // to within normal volatility noise. Discount to 0.3 so the
-        // learning systems don't learn "these market conditions → loss"
-        // from what was really "SL too tight → loss".
-        return 0.3;
-      }
-      // SL hit at the ORIGINAL (wide) SL — genuine market loss. The price
-      // moved against the thesis by the full SL distance. Full weight.
-      return 1.0;
-    case 'reconciliation':
-    case 'exchange_closed':
-      // Exchange-side event (liquidation, delisting, etc.) — full market
-      // signal. These are extreme market events.
-      return 1.0;
-    case 'consensus':
-      // Agent consensus close — the system voted to close. Similar to
-      // thesis invalidation but via the HACP vote. Discount to 0.5.
-      return 0.5;
-    default:
-      return 1.0;
-  }
-}
+/** v2.0.226 / v2.0.211: Compute learning weight based on close context.
+ *  Extracted to src/evolution/learning-weight.ts for unit testability.
+ *  See learning-weight.ts for the full decision table + v2.0.211 fix notes
+ *  (system-decision closes now discounted regardless of profitability). */
+import { computeLearningWeight } from './evolution/learning-weight.ts';
 
 class MATSSystem {
   private marketState!: MarketStateAggregator;
@@ -483,7 +412,11 @@ class MATSSystem {
       const cond = computeVectorConditionalWinRate(
         feats,
         records,
-        { side: direction, minSamples: 5, threshold: 0.75, topN: 20, embeddingProvider: this.naEngine ?? undefined, rmsNormKeys: true, softmaxWeightedWR: true, softmaxTemperature: 0.1 },
+        // v2.0.211: entry-decision gate — exclude system-decision closes so the
+        // WR reflects only clean market-risk outcomes (SL/TP). Helper enforces
+        // the exclusion contract shared with all entry-decision callers.
+        entryDecisionCondWROptions(direction, this.naEngine ?? undefined,
+          { minSamples: 5, threshold: 0.75, rmsNormKeys: true, softmaxWeightedWR: true, softmaxTemperature: 0.1 }),
       );
       if (cond.confidence === 'none' || cond.sampleSize < 5) return { blocked: false };
       const wr = cond.conditionalWinRate;

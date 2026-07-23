@@ -336,6 +336,10 @@ export class PatternTagTracker {
               .filter(r => r.tag === tag && r.side === side && r.outcome !== 'pending' && r.marketFeatures)
               .sort((a, b) => b.entryTimestamp - a.entryTimestamp)[0];
             if (!latestWithFeatures) continue;
+            // NOTE: PatternTagRecord has no `exitType` field, so system-decision
+            // closes (thesis_invalidation) cannot be excluded here — the
+            // record schema would need extending to carry the close mechanism.
+            // Follow-up if this per-tag conditional WR should be market-clean.
             const result = computeVectorConditionalWinRate(
               latestWithFeatures.marketFeatures!,
               this.records.map(r => ({ marketFeatures: r.marketFeatures, outcome: r.outcome, symbol: r.symbol, side: r.side, pnl: r.pnlPct })),

@@ -24,7 +24,7 @@ import type {
   TradeOutcome,
 } from '../types/index.ts';
 import { type EmbedProvider, cosine } from './embeddings.ts';
-import { extractJSON, categoriseRationale, normaliseCategory, computeVectorConditionalWinRate, formatVectorConditional } from './evolution-utils.ts';
+import { extractJSON, categoriseRationale, normaliseCategory, computeVectorConditionalWinRate, entryDecisionCondWROptions, formatVectorConditional } from './evolution-utils.ts';
 import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
 
 const log = rootLogger;
@@ -756,7 +756,10 @@ export class ExperienceDigester {
         const result = computeVectorConditionalWinRate(
           e.latestFeatures,
           records,
-          { side: e.latestSide, minSamples: 3, threshold: 0.80, topN: 20, embeddingProvider },
+          // v2.0.211: per-symbol conditional WR report informs agent context — use
+          // the shared entry-decision helper so system-decision closes don't
+          // inflate the displayed edge signal (consistency with gate/audit/hacp).
+          entryDecisionCondWROptions(e.latestSide, embeddingProvider, { threshold: 0.80 }),
         );
         const condLine = formatVectorConditional(result, '    conditional');
         lines.push(`${rawLine} | ${condLine}`);

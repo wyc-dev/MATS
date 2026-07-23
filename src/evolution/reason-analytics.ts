@@ -435,6 +435,10 @@ export class PatternClusterManager {
     if (membersWithFeatures.length < 3) return null; // insufficient for conditional WR
 
     try {
+      // NOTE: cluster `memberMarketData` has no `exitType`, so system-decision
+      // closes cannot be excluded here. Follow-up: add `exitType` to the
+      // memberMarketData schema + populate it on push (reason-analytics.ts ~302)
+      // if this cluster conditional WR should be market-clean.
       const result = computeVectorConditionalWinRate(
         currentFeatures,
         membersWithFeatures,

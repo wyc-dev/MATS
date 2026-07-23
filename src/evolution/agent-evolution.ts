@@ -122,6 +122,9 @@ export class AgentEvolutionEngine {
             pnl: r.pnlPct ?? (r.outcome === 'win' ? 1 : -1),
           }));
         if (recs.length >= MIN_SAMPLES_FOR_ADJUSTMENT) {
+          // NOTE: outcomeTracker records have no `exitType`, so system-decision
+          // closes cannot be excluded here — these are agent decision outcomes
+          // (recommendedAction + outcome), not trade closes with a close mechanism.
           const cond = computeVectorConditionalWinRate(
             currentFeatures,
             recs,

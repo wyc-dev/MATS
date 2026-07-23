@@ -11,10 +11,17 @@ import { createLogger } from '../observability/logger.ts';
 import { getActiveProvider } from '../llm/index.ts';
 import { getAgentModel } from '../agents/agent-models.ts';
 import type { ThesisExperienceRecord } from '../types/index.ts';
-import { computeVectorConditionalWinRate, formatVectorConditional } from './evolution-utils.ts';
+import { computeVectorConditionalWinRate, entryDecisionCondWROptions, formatVectorConditional } from './evolution-utils.ts';
 import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
 
 const log = createLogger({ phase: 'trade-audit' });
+
+// v2.0.211: System-decision close exitTypes — their PnL is partial/noisy (a
+// system force-close was not taken to SL/TP by the market), so the audit
+// dataLines mark them [SYS-CLOSE] to stop the LLM misflagging invalidation+
+// small-positive-PnL as a data-quality bug. Hoisted to module scope (was
+// recreated per-record inside the .map() callback — O(n) allocations).
+const SYS_CLOSE_EXIT_TYPES = new Set(['thesis_invalidation', 'manual', 'consensus']);
 
 export interface AuditIncident {
   severity: 'critical' | 'warning' | 'info';
@@ -68,6 +75,8 @@ These issues have CODE-LEVEL fixes already deployed. Reporting them again wastes
 5. "repeated-direction-loss" / "counter-momentum SELL" → FIXED v2.0.207 #B: when |momentumShort|>2%, Skeptics dark-psych check is MANDATORY (needs specific catalyst). #D: momentum features in OLR/NA. Only re-report if counter-momentum trades with NO catalyst still pass on NEW cycles.
 6. "thesis-quality-issue: N/A but traded" → FIXED v2.0.210: thesis-action consistency check overrides BUY/SELL to HOLD when thesis says "no entry"/"N/A". Look for "[thesis-consistency] ... overriding to HOLD" in logs. Only re-report if N/A theses still produce trades on NEW cycles.
 7. "ignoring learning data" based on RAW per-symbol WR → NOT A BUG (v2.0.203): raw per-symbol WR is DEPRECATED. The vector-conditional WR is the true signal. Do NOT flag "SILVER SELL 0W/1L" as a learning failure — 1 trade under different conditions is meaningless. Only flag if CONDITIONAL WR is low AND the system still enters (see #4).
+8. "thesis-quality-issue: $0.00 WIN despite thesis_invalidation" → NOT A BUG (v2.0.211): a thesis_invalidation close is a SYSTEM force-close (LLM judged the thesis broke), NOT a clean market SL/TP outcome. Its PnL (positive OR negative, including a $0.00-displayed $0.004 residual) is partial/noisy info. The outcome=WIN label is factually correct (pnl > 0). These closes are now marked [SYS-CLOSE] in the data above AND excluded from the vector-conditional WR pool (so they cannot inflate it). Do NOT flag invalidation+positive-PnL as a data-quality issue. Only flag if a [SYS-CLOSE] trade's exitType is missing/contradicts its closeKind marker.
+9. "ignoring-conditional-win-rate" when the soft gate IS firing → NOT A BUG (by owner directive, system-engineer.ts: NEVER hard-block). checkConditionalWRGate returns blocked:false always; it only applies a conviction penalty (WR<20%→0.35, <30%→0.25, <40%→0.15). If a low-WR BUY still entered, that means conviction overcame the penalty — which is the intended soft-gate behaviour, NOT a learning failure. Only re-report if you can show the penalty was NOT applied (no "[soft-gate]" log line) on a NEW cycle with conditional WR < 30%.
 
 When you report an issue, state whether it is a NEW occurrence (trades after the fix) or a STALE one (trades before the fix). STALE findings on pre-fix trades are NOT actionable — the fix only applies to new trades.
 
@@ -96,7 +105,16 @@ export async function auditTradeRecordsLLM(records: ThesisExperienceRecord[], em
       : 'NO_MARKET_DATA';
     const olr = r.olrPWinAtEntry !== undefined ? `OLR_PWin=${(r.olrPWinAtEntry * 100).toFixed(0)}%` : 'NO_OLR';
     const shadow = r.shadowWinRateAtEntry !== undefined ? `shadowWR=${(r.shadowWinRateAtEntry * 100).toFixed(0)}%` : 'NO_SHADOW';
-    return `#${i + 1} ${r.side.toUpperCase()} ${r.symbol} ${r.outcome} pnl=$${r.pnl.toFixed(2)} (${(r.pnlPct * 100).toFixed(1)}%) hold=${r.holdMin}min exit=${r.exitType ?? '?'} regime=${r.regime} ${features} ${olr} ${shadow} | thesis: ${r.entryThesis.slice(0, 120)}`;
+    // v2.0.211: Mark system-decision closes so the LLM auditor does not treat
+    // their PnL as a clean market WIN/LOSS. thesis_invalidation / manual /
+    // consensus are system/user decisions — the position was NOT taken to
+    // SL/TP by the market, so the PnL (positive OR negative, incl. a $0.00-
+    // displayed $0.004 residual) is partial/noisy information. Without this
+    // marker the LLM misflags invalidation+small-positive-PnL as a "data
+    // quality issue: $0.00 WIN despite invalidation" — but the WIN label is
+    // factually correct (pnl > 0); only the close mechanism is non-market.
+    const closeKind = r.exitType && SYS_CLOSE_EXIT_TYPES.has(r.exitType) ? ' [SYS-CLOSE: PnL is partial/noisy, not a clean market SL/TP outcome]' : '';
+    return `#${i + 1} ${r.side.toUpperCase()} ${r.symbol} ${r.outcome} pnl=$${r.pnl.toFixed(2)} (${(r.pnlPct * 100).toFixed(1)}%) hold=${r.holdMin}min exit=${r.exitType ?? '?'}${closeKind} regime=${r.regime} ${features} ${olr} ${shadow} | thesis: ${r.entryThesis.slice(0, 120)}`;
   });
 
   const userPrompt = `Recent closed trades (${recent.length} of ${records.length} total):
@@ -177,7 +195,11 @@ function buildVectorConditionalSummary(records: ThesisExperienceRecord[], embedd
     const result = computeVectorConditionalWinRate(
       r.marketFeatures!,
       others,
-      { side: r.side, minSamples: 3, threshold: 0.80, topN: 20, embeddingProvider },
+      // v2.0.211: audit per-trade conditional WR — same market-clean basis as the
+      // entry gate (via shared helper) so the LLM auditor sees the SAME WR the
+      // gate used. Prevents $0.00-noise invalidation closes from inflating the WR
+      // shown to the LLM (root cause of false 'ignoring-conditional-win-rate').
+      entryDecisionCondWROptions(r.side, embeddingProvider, { threshold: 0.80 }),
     );
     const actualIcon = r.outcome === 'WIN' ? '✅' : '❌';
     const condLine = formatVectorConditional(result, `  ${r.side.toUpperCase()} ${r.symbol}`);
