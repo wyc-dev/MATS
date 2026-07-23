@@ -38,6 +38,7 @@ import { AttnResTradeEmbedder } from './evolution/attnres-trade-embedder.ts';
 import { TransformersEmbedProvider, getSharedEmbedProvider } from './evolution/embeddings.ts';
 import { SentimentEngine } from './analysis/sentiment-engine.ts';
 import { AdaptiveNoiseFilter, AssetFilterRegistry, type MarketContext as FilterMarketContext, type FilterProfileType } from './analysis/adaptive-filter.ts';
+import { DynamicThresholdCalculator, type DynamicThresholdInput, type DynamicThresholdResult } from './analysis/dynamic-threshold.ts';
 import { PlanckChaosEngine } from './analysis/planck-chaos.ts';
 import { SystemGuard } from './system-guard/index.ts';
 import { ExecutionTracker } from './trading/execution-tracker.ts';
@@ -203,6 +204,8 @@ class MATSSystem {
   private adaptiveFilter!: AdaptiveNoiseFilter;
   /** v2.0.106: Per-asset filter registry — each asset gets its own filter */
   private assetFilterRegistry!: AssetFilterRegistry;
+  /** v2.0.227: Dynamic threshold calculator — Plan G unified multiplicative gate */
+  private dynamicThresholdCalc!: DynamicThresholdCalculator;
   private planckChaos!: PlanckChaosEngine;
   private hyperliquidWs!: HyperliquidWebSocketManager;
   private multiWs!: MultiExchangeWebSocketManager;
@@ -782,6 +785,8 @@ class MATSSystem {
       this.sentimentEngine = new SentimentEngine();
       this.adaptiveFilter = new AdaptiveNoiseFilter({}, 'global');
       this.assetFilterRegistry = new AssetFilterRegistry();
+      // v2.0.227: Plan G dynamic threshold calculator
+      this.dynamicThresholdCalc = new DynamicThresholdCalculator();
       // v2.0.211: Set decision interval for time-based trade frequency pruning
       this.assetFilterRegistry.setDecisionInterval(this.cycleIntervalMs);
       this.adaptiveFilter.setDecisionInterval(this.cycleIntervalMs);
@@ -6800,41 +6805,82 @@ ${recentExamples}
       // entries when other symbols were HOLD.
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
         const symFilter = this.assetFilterRegistry.getFilter(finalDecision.symbol || activeSymbol);
-        const convictionThreshold = symFilter.getConvictionThreshold();
-        // v2.0.732: Apply loss streak soft penalty — raises effective threshold
-        // v2.0.766: Apply winner pattern boost — lowers effective threshold
-        // Net penalty can be negative (winner boost > loss penalty = easier entry)
-        const lossStreakPenalty = (this as any)._lossStreakPenalty ?? 0;
-        const effectiveThreshold = Math.max(0.25, Math.min(0.85, convictionThreshold + lossStreakPenalty));
         // v2.0.140: Use per-symbol confidence if available, fall back to overall
         const activePscForGate = (result.consensus.perSymbolConsensus ?? []).find(
           psc => normalizeSymbol(psc.symbol) === normalizeSymbol(finalDecision.symbol || activeSymbol),
         );
         const consensusConfidence = activePscForGate?.confidence ?? result.consensus.confidence;
 
-        // v2.0.224: OLR P(win) multiplicative discount — THE KEY FIX for the
-        // detection/implementation gap. Previously, the conviction penalty only
-        // RAISED the threshold (additive), which overconfident agents could still
-        // cross (90% consensus > 85% threshold → trade despite 29% P(win)). Now,
-        // OLR P(win) directly DISCOUNTS the consensus confidence (multiplicative),
-        // ensuring statistical reality cannot be overridden by agent overconfidence.
+        // ── v2.0.227: Plan G — Unified Multiplicative Conviction Gate ──────
+        // Replaces the old additive penalty-on-threshold model that caused the
+        // death spiral: penalties raised the threshold (+30%) while P(win)
+        // discounted the confidence (×0.685), creating a compound gap that made
+        // trading mathematically impossible (44.5% vs 80% = 35.5pp gap).
         //
-        //   effectiveConfidence = consensusConfidence × blendFactor
-        //   blendFactor = pwinFloor + (1 - pwinFloor) × P(win)
-        //     pwinFloor = 0.3 — never kills confidence completely (preserves
-        //     operation space per owner directive; a truly exceptional agent
-        //     consensus can still pass even with low P(win) if threshold is low).
+        // Plan G replaces this with a 3-layer multiplicative model:
+        //   effectiveConfidence = consensus × pwinBlendFactor × penaltyFactor
+        //   dynamicThreshold = 50% + (totalScore × 0.5%)  →  [45%, 55%]
         //
-        // Examples (base threshold 50%):
-        //   P(win)=29% × consensus=90% → factor=0.503 → 45% < 50% → HOLD ✓
-        //   P(win)=80% × consensus=60% → factor=0.86  → 52% ≥ 50% → trade ✓
-        //   P(win)=50% × consensus=90% → factor=0.65  → 58% ≥ 50% → trade ✓
-        //   P(win)=0%  × consensus=90% → factor=0.30  → 27% < 50% → HOLD ✓
+        // The threshold is dynamic (driven by 5 objective performance factors with
+        // hysteresis) but capped at [45%, 55%]. Penalties are multiplicative (not
+        // additive to threshold), with automatic idle-based decay.
         //
-        // Cold-start safe: OLR unavailable / insufficient samples → P(win)=0.5
-        // → factor=0.65 (mild discount, does not block trading). As OLR accumulates
-        // samples, the discount sharpens automatically.
-        const pwinFloor = 0.3;
+        // 6 fairness guarantees: multi-factor balance, symmetric design,
+        // sample-size requirement, hysteresis, hard cap, fact-driven.
+        // See: src/analysis/dynamic-threshold.ts for full documentation.
+
+        // v2.0.732/v2.0.766: Net penalty from loss-streak + conditional WR +
+        // combo WR gates. Can be negative (winner boost > loss penalty).
+        const netPenalty = (this as any)._lossStreakPenalty ?? 0;
+
+        // ── Gather inputs for DynamicThresholdCalculator ──────────────────
+        // Rolling WR + sample count from last 20 trade-history entries
+        let rollingWR = 0.5;
+        let wrSampleCount = 0;
+        let rollingSharpe = 0;
+        let sharpeSampleCount = 0;
+        try {
+          const recent20 = this.evolution.tradeHistory.getRecent(20);
+          const directional = recent20.filter(e => e.decision.action === 'buy' || e.decision.action === 'sell');
+          wrSampleCount = directional.length;
+          if (wrSampleCount > 0) {
+            const wins = directional.filter(e => (e.realisedPnl ?? e.simulatedPnl ?? 0) > 0).length;
+            rollingWR = wins / wrSampleCount;
+          }
+          // Rolling Sharpe from the same window
+          const pnls = directional.map(e => e.realisedPnl ?? e.simulatedPnl ?? 0).filter(p => p !== 0);
+          sharpeSampleCount = pnls.length;
+          if (pnls.length >= 2) {
+            const mean = pnls.reduce((a, b) => a + b, 0) / pnls.length;
+            const variance = pnls.reduce((s, p) => s + (p - mean) ** 2, 0) / pnls.length;
+            const std = Math.sqrt(variance);
+            rollingSharpe = std > 0 ? (mean / std) * Math.sqrt(pnls.length) : 0;
+          }
+        } catch { /* cold-start safe: keep defaults */ }
+
+        // Idle cycles from HACP engine
+        const idleCycles = this.hacpEngine.getCyclesWithoutTrade();
+        // Drawdown from portfolio
+        const drawdownPct = safeNum(this.portfolio.getPortfolio().currentDrawdownPct, 0);
+        // Regime from market state
+        const regime = combinedState.regime || 'unknown';
+
+        // ── Compute dynamic threshold + penalty factor ─────────────────────
+        const dtcInput: DynamicThresholdInput = {
+          rollingWR: safeNum(rollingWR, 0.5),
+          wrSampleCount,
+          idleCycles: safeNum(idleCycles, 0),
+          drawdownPct: safeNum(drawdownPct, 0),
+          rollingSharpe: safeNum(rollingSharpe, 0),
+          sharpeSampleCount,
+          regime,
+          netPenalty: Math.max(0, safeNum(netPenalty, 0)),
+        };
+        const dtcResult = this.dynamicThresholdCalc.compute(dtcInput);
+        const effectiveThreshold = dtcResult.threshold;
+        const penaltyFactor = dtcResult.penaltyFactor;
+
+        // ── OLR P(win) multiplicative discount (v2.0.224, preserved) ──────
         const pwinSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
         const pwinCtx = this.lastCycleShadowContexts.get(pwinSym);
         let olrPWin = 1.0; // cold-start default: NO discount (preserves operation space)
@@ -6842,9 +6888,6 @@ ${recentExamples}
         if (pwinCtx?.features && Object.keys(pwinCtx.features).length > 0) {
           try {
             const olrResult = this.olrEngine.query(pwinSym, pwinCtx.features, finalDecision.action, this.totalCycles);
-            // v2.0.224 cold-start guard: only discount when OLR has sufficient samples.
-            // OLR returns confidence='low' & nSamples=0 when it has no data → skip discount.
-            // This prevents over-blocking trades on new symbols where OLR hasn't learned yet.
             const olrNSamples = safeNum((olrResult as any)?.nSamples, 0);
             const olrConfidence = (olrResult as any)?.confidence ?? 'low';
             if (olrNSamples >= 10 && olrConfidence !== 'low' &&
@@ -6854,24 +6897,26 @@ ${recentExamples}
             }
           } catch { /* cold-start safe: keep default 1.0 (no discount) */ }
         }
-        // blendFactor: 1.0 when no OLR data (cold-start safe), otherwise
-        // pwinFloor + (1 - pwinFloor) × P(win) — discounts confidence toward floor.
         const pwinBlendFactor = olrHasData
-          ? (pwinFloor + (1 - pwinFloor) * olrPWin)
+          ? DynamicThresholdCalculator.pwinBlendFactor(olrPWin)
           : 1.0;
-        const effectiveConfidence = safeNum(consensusConfidence, 0) * pwinBlendFactor;
+
+        // ── Final effective confidence: consensus × P(win) × penalty ──────
+        const effectiveConfidence = safeNum(consensusConfidence, 0) * pwinBlendFactor * penaltyFactor;
+
+        // ── Gate decision ─────────────────────────────────────────────────
         if (effectiveConfidence < effectiveThreshold) {
           const pwinStr = olrHasData
-            ? ` (P(win)=${(olrPWin * 100).toFixed(0)}% × consensus=${(consensusConfidence * 100).toFixed(0)}% → effective=${(effectiveConfidence * 100).toFixed(0)}%)`
-            : ` (consensus=${(consensusConfidence * 100).toFixed(0)}%, OLR cold-start — no P(win) discount)`;
-          const penaltyStr = lossStreakPenalty > 0 ? ` (base ${(convictionThreshold * 100).toFixed(0)}% + loss-streak ${(lossStreakPenalty * 100).toFixed(0)}%)` : lossStreakPenalty < 0 ? ` (base ${(convictionThreshold * 100).toFixed(0)}% - winner ${(-lossStreakPenalty * 100).toFixed(0)}%)` : '';
-          log.warn(`🛑 [adaptive-filter] Conviction gate [${finalDecision.symbol || activeSymbol}]: effective ${(effectiveConfidence * 100).toFixed(0)}% < threshold ${(effectiveThreshold * 100).toFixed(0)}%${penaltyStr}${pwinStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD (signal below noise floor)`);
-          activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(effectiveConfidence * 100).toFixed(0)}% < ${(effectiveThreshold * 100).toFixed(0)}%${pwinStr}${lossStreakPenalty > 0 ? ` (+${(lossStreakPenalty * 100).toFixed(0)}% loss-streak)` : ''}` });
+            ? ` (P(win)=${(olrPWin * 100).toFixed(0)}% × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%)`
+            : ` (consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%, OLR cold-start)`;
+          const factorStr = dtcResult.factors.map(f => `${f.factor}=${f.score > 0 ? '+' : ''}${f.score}`).join(' ');
+          log.warn(`🛑 [Plan-G] Conviction gate [${finalDecision.symbol || activeSymbol}]: effective ${(effectiveConfidence * 100).toFixed(0)}% < threshold ${(effectiveThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, penalty=${penaltyFactor.toFixed(2)})${pwinStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD`);
+          activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(effectiveConfidence * 100).toFixed(0)}% < ${(effectiveThreshold * 100).toFixed(1)}%${pwinStr} [${factorStr}]` });
           finalDecision = {
             ...finalDecision,
             action: 'hold',
             positionSizePct: 0,
-            rationale: `[ADAPTIVE FILTER ${finalDecision.symbol || activeSymbol}] Effective confidence ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × consensus=${(consensusConfidence * 100).toFixed(0)}%) below threshold ${(effectiveThreshold * 100).toFixed(0)}%. Signal is noise-dominated — HOLD. Original: ${finalDecision.rationale}`,
+            rationale: `[Plan-G ${finalDecision.symbol || activeSymbol}] Effective confidence ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)}) below dynamic threshold ${(effectiveThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}). HOLD. Original: ${finalDecision.rationale}`,
           };
         } else if (symFilter.isTradeFrequencyLimited()) {
           log.warn(`🛑 [adaptive-filter] Trade frequency throttle [${finalDecision.symbol || activeSymbol}]: limit reached — overriding ${finalDecision.action.toUpperCase()} → HOLD (over-trading prevention)`);
@@ -6883,9 +6928,10 @@ ${recentExamples}
             rationale: `[ADAPTIVE FILTER ${finalDecision.symbol || activeSymbol}] Trade frequency limit reached. Over-trading prevention — HOLD. Original: ${finalDecision.rationale}`,
           };
         } else {
+          const factorStr = dtcResult.factors.map(f => `${f.factor}=${f.score > 0 ? '+' : ''}${f.score}`).join(' ');
           activeAuditGates.push({ gate: 'conviction-gate', passed: true, reason: olrHasData
-            ? `effective ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × ${(consensusConfidence * 100).toFixed(0)}%) ≥ ${(effectiveThreshold * 100).toFixed(0)}%`
-            : `${(consensusConfidence * 100).toFixed(0)}% ≥ ${(effectiveThreshold * 100).toFixed(0)}% (OLR cold-start — no P(win) discount)` });
+            ? `effective ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × ${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)}) ≥ ${(effectiveThreshold * 100).toFixed(1)}% [${factorStr}]`
+            : `${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} = ${(effectiveConfidence * 100).toFixed(0)}% ≥ ${(effectiveThreshold * 100).toFixed(1)}% (OLR cold-start) [${factorStr}]` });
           activeAuditGates.push({ gate: 'frequency-throttle', passed: true, reason: 'OK' });
         }
       }

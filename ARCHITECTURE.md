@@ -694,3 +694,54 @@ The OLR engine's query() method now applies a three-layer safety net: (1) existi
 
 ## System Engineer Update
 The query() method now accepts an optional 5th parameter `currentFeatures: Record<string, number> | undefined`. When provided, these fresh market features are used for the sigmoid computation (logit → pWin) instead of the features passed to query(). The currentFeatures are NOT fed into Welford normalization or SGD training — those still use the original features from feedTrade(). This ensures the model trains on the features that were actually present at trade entry, but predicts using the features that reflect current market conditions. The shadow trade engine's getStats() method should pass current cycle features when computing P(win) for the active symbol.
+
+
+## v2.0.227: Plan G — Dynamic Threshold [45-55%] + Multiplicative Penalty with Decay
+
+### Problem: Death Spiral
+
+The conviction gate had a compound punishment design:
+- **Additive threshold raise**: 3 penalty gates (loss-streak, conditional WR, combo WR) added to the threshold (50% + 30% = 80%)
+- **Multiplicative confidence discount**: P(win) × consensus (65% × 0.685 = 44.5%)
+- **Result**: 44.5% vs 80% = 35.5pp gap → trading mathematically impossible → no new trades → penalty never resets → permanent STUCK
+
+### Solution: Plan G — Unified Multiplicative Model
+
+```
+effectiveConfidence = consensus × pwinBlendFactor × penaltyFactor
+dynamicThreshold     = 50% + (totalScore × 0.5%)  →  [45%, 55%]
+
+if effectiveConfidence ≥ dynamicThreshold → TRADE
+if effectiveConfidence < dynamicThreshold → HOLD
+```
+
+**5-factor dynamic threshold** (each factor [-2, +2] with hysteresis):
+| Factor | -2 (relax) | 0 (neutral) | +2 (tighten) | Sample req |
+|--------|-----------|-------------|-------------|------------|
+| Rolling WR | ≥55% | 40-55% | <35% | ≥10 |
+| Idle cycles | ≥20 | 5-20 | <2 | — |
+| Drawdown | <3% | 3-10% | >15% | — |
+| Rolling Sharpe | >1.5 | 0-1.0 | <-1.0 | ≥10 |
+| Regime | trending | normal/mr | chaotic | — |
+
+**Penalty decay**: `penaltyFactor = 1.0 - min(decayedPenalty, 0.30)` where `decayedPenalty = netPenalty × max(0, 1 - cyclesIdle/30)`. After 30 idle cycles (2.5h), penalty fully decays → system self-recovers.
+
+**6 fairness guarantees**:
+1. Multi-factor balance — no single factor dominates (each ±1%)
+2. Symmetric design — good = bad influence
+3. Sample-size requirement — WR/Sharpe need ≥10 trades, else neutral
+4. Hysteresis — buffer zones prevent boundary oscillation
+5. Hard cap — threshold [45%, 55%], mathematical guarantee
+6. Fact-driven — all inputs are measured, settled outcomes
+
+**SILVER SELL simulation**:
+- Old system: threshold=80%, confidence=44.5% → gap=35.5pp → HOLD (impossible)
+- Plan G (idle 36 cycles): threshold=50.5%, penaltyFactor=1.0 (decayed)
+  - P(win)=55%, consensus=65% → 44.5% < 50.5% → HOLD (close, 6pp gap)
+  - P(win)=79%, consensus=65% → 55.4% ≥ 50.5% → TRADE ✓ (strong signal always passes)
+
+### Files
+- `src/analysis/dynamic-threshold.ts` — DynamicThresholdCalculator (5-factor hysteresis + penalty decay)
+- `src/index.ts` — Conviction gate replaced: additive → multiplicative + dynamic threshold
+- `src/cognition/hacp.ts` — Added `getCyclesWithoutTrade()` getter
+- `tests/dynamic-threshold-attack.test.ts` — 36 attack tests

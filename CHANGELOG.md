@@ -4,6 +4,39 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.227: Plan G — Unified multiplicative conviction gate with dynamic threshold [45-55%] + penalty decay. Fixes the death spiral where additive penalties stacked (+30%) on the threshold while P(win) multiplicatively discounted confidence, creating a compound gap that made trading mathematically impossible (44.5% vs 80% = 35.5pp gap). SILVER was stuck for 6+ hours because the penalty-streak gate raised the threshold to 82% while the P(win) discount dropped confidence to 45%.
+
+**Root cause**: Three penalty gates (loss-streak, conditional WR, combo WR) all ADDED to the threshold (additive: 50% + 30% = 80%), while P(win) × consensus was MULTIPLICATIVE (65% × 0.685 = 44.5%). This compound effect meant even strong signals couldn't pass. The idle recovery (-0.02/cycle, floored at 0.49) was too slow to break the deadlock.
+
+**Fix — Plan G with 6 fairness guarantees:**
+
+1. **Dynamic threshold [45-55%]** (`src/analysis/dynamic-threshold.ts`, ~300 lines): New `DynamicThresholdCalculator` module replaces the old additive penalty model. Threshold = 50% + (totalScore × 0.5%), where totalScore is the sum of 5 independently-scored factors, each [-2, +2] with hysteresis:
+   - **Rolling WR** (last 20 trades, ≥10 samples required): ≥55% → -2, <35% → +2
+   - **Idle cycles** (self-recovery): ≥20 cycles → -2, <2 → +2
+   - **Drawdown** (capital protection): <3% → -2, >15% → +2
+   - **Rolling Sharpe** (risk-adjusted return, ≥10 samples): >1.5 → -2, <-1.0 → +2
+   - **Regime** (market state): trending → -2, chaotic → +2
+   - Total score capped at [-10, +10] → threshold always [45%, 55%] (hard mathematical guarantee)
+
+2. **Multiplicative penalty with decay** (replaces additive threshold raise): `penaltyFactor = 1.0 - min(decayedPenalty, 0.30)`, where `decayedPenalty = netPenalty × decayMultiplier` and `decayMultiplier = max(0, 1 - cyclesIdle/30)`. After 30 idle cycles (2.5h), penalty fully decays to 0 — system self-recovers.
+
+3. **Unified effective confidence**: `effectiveConfidence = consensus × pwinBlendFactor × penaltyFactor`. All three discounts are multiplicative — no more compound punishment. Strong signals (P(win)=79%, consensus=65%) pass at 50.5% threshold even with bad performance scores.
+
+4. **6 fairness guarantees**: (1) multi-factor balance (no single factor dominates, each ±1%), (2) symmetric design (good = bad influence), (3) sample-size requirement (WR/Sharpe need ≥10 trades, else neutral), (4) hysteresis (buffer zones prevent boundary oscillation), (5) hard cap (threshold [45%, 55%], mathematical guarantee), (6) fact-driven (all inputs are measured, settled outcomes — not predictions).
+
+**SILVER SELL simulation (6h idle, WR=27%, Sharpe<0, max penalty):**
+- Old system: threshold=80%, confidence=44.5% → gap=35.5pp → HOLD (impossible)
+- Plan G: threshold=50.5%, confidence=44.5% (penalty decayed) → gap=6pp → HOLD (close)
+- Plan G + P(win)=79%: confidence=55.4% → 55.4% ≥ 50.5% → TRADE ✓ (strong signal always has a path)
+
+**Files changed:**
+- `src/analysis/dynamic-threshold.ts` — NEW: DynamicThresholdCalculator with 5-factor hysteresis scoring + penalty decay
+- `src/index.ts` — Conviction gate replaced: additive penalty-on-threshold → multiplicative penaltyFactor + dynamic threshold [45%, 55%]; rolling WR/Sharpe computed from trade history; idle cycles from HACP; drawdown from portfolio
+- `src/cognition/hacp.ts` — Added `getCyclesWithoutTrade()` getter for DynamicThresholdCalculator
+- `tests/dynamic-threshold-attack.test.ts` — NEW: 36 attack tests covering all 6 fairness guarantees + death spiral prevention + edge cases
+
+---
+
 ## v2.0.226: Close-context-aware learning weight — how a position is closed is an important factor in the loss. Owner insight: "點樣平倉/用乜嘢形式平倉其實都係一個蝕錢嘅重要因素". Previously, ALL learning systems (OLR, AttnRes, combo WR, anti-patterns, replay buffer, temporal attention, cross-symbol backbone, world model) received only binary win/loss outcome — they had no concept of WHY the trade lost. A tight-SL loss (SL narrowed by trailing stop, then hit by normal volatility) was treated identically to a bad-entry loss, contaminating the systems with "these market conditions → loss" when the entry was actually fine.
 
 **Root cause**: `slNarrowed` parameter existed in `feedTrade()` but index.ts never passed it (defaulted to `false`). Even if passed, it was only stored in `recentTrades` for agent display, not used to scale the gradient update. The `originalStopLossPrice` was recorded at position open (v2.0.143) but never compared to the final SL at close time for learning purposes.
