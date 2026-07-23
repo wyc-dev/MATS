@@ -171,9 +171,13 @@ function applyCalibration(
 export interface OLRQueryResult {
   /** P(win) ∈ (0,1) — probability of winning for this side */
   pWin: number;
-  /** Number of samples backing this model */
+  /** Total number of samples (includes backfill) — for backward compat + UI */
   nSamples: number;
-  /** Confidence label: high (>50 samples), medium (20-50), low (<20) */
+  /** v2.0.229 Fix B: Effective (live) samples excluding backfill. Used for
+   *  confidence label. A model with 200 backfill + 5 real has effectiveSamples=5,
+   *  so confidence='low' even though nSamples=205. */
+  effectiveSamples: number;
+  /** Confidence label: high (>50 EFFECTIVE samples), medium (20-50), low (<20) */
   confidence: 'high' | 'medium' | 'low';
   /** Per-feature contribution to the logit (w_i × x_i), for explainability */
   featureContributions: Array<{ name: string; weight: number; value: number; contribution: number }>;
@@ -216,7 +220,7 @@ const OLR_CONFIG = {
    *  which is appropriate for a model with 12 features and ~100-300 total samples. */
   l2Regularization: 0.1,
   /** SGD learning-rate decay: η_t = learningRate / (1 + decayRate × liveSamples).
-   *  liveSamples = nSamples - backfillSamples, so backfill (weight=0.3) does NOT
+   *  liveSamples = nSamples - backfillSamples, so backfill (weight=0.1, v2.0.229) does NOT
    *  freeze the model against live adaptation. Prevents late samples from
    *  dominating a mature model and reduces noise overfitting. */
   decayRate: 0.01,
@@ -225,7 +229,13 @@ const OLR_CONFIG = {
    *  about REAL trade profitability than paper/real outcomes. Weighting
    *  prevents the high-volume shadow stream from drowning out the
    *  scarcer, higher-fidelity paper/real signal. */
-  sourceWeight: { shadow: 1, paper: 2, real: 4, backfill: 0.3 } as Record<'shadow' | 'paper' | 'real' | 'backfill', number>,
+  // v2.0.229 Fix D: Reduced backfill weight from 0.3 → 0.1. Backfill data does not
+  // reflect real-time market microstructure (no slippage, no funding, no OB).
+  // 0.3 was still too high — 1387 backfill samples at 0.3 weight = 416 effective,
+  // which is 30% of 1393 real samples. At 0.1, the same 1387 backfill = 139
+  // effective, only 10% of real — backfill can cold-start the prior without
+  // drowning out the live signal.
+  sourceWeight: { shadow: 1, paper: 2, real: 4, backfill: 0.1 } as Record<'shadow' | 'paper' | 'real' | 'backfill', number>,
   minSamplesForQuery: 10,
   highConfidenceSamples: 50,
   mediumConfidenceSamples: 20,
@@ -329,15 +339,27 @@ export class OLREngine {
       backfillSamples: m.backfillSamples ?? 0,
       newestSampleTs: m.newestSampleTs ?? 0,
       recentTrades: Array.isArray(m.recentTrades) ? m.recentTrades.slice(-20) : [],
-      // v2.0.721: Migrate calibration bins (old models won't have them)
-      calibrationBins: Array.isArray(m.calibrationBins) && m.calibrationBins.length === CALIBRATION_NUM_BINS
-        ? m.calibrationBins.map((b: any) => ({
-            lo: Number(b.lo) ?? 0,
-            hi: Number(b.hi) ?? 0,
-            wins: Number(b.wins) ?? 0,
-            losses: Number(b.losses) ?? 0,
-          }))
-        : makeEmptyCalibrationBins(),
+      // v2.0.229 Fix A: Purge backfill-poisoned calibration bins.
+      // v2.0.228 stopped NEW backfill from entering bins, but OLD backfill data
+      // remains in persisted bins. Clear them entirely — they'll rebuild from
+      // real+shadow+paper going forward. The identity fallback (raw pWin) is
+      // safer than poisoned bins that map raw P(win) → false empirical WR.
+      // One-time migration: after this, bins only accumulate non-backfill samples.
+      //
+      // Why not partially discount? Bins store aggregate wins/losses without
+      // per-source tagging, so we cannot separate backfill from real. A full
+      // purge is the only honest option — the cost (temporary identity fallback)
+      // is far less than the cost (false 86% P(win) from poisoned bins).
+      calibrationBins: (m.backfillSamples ?? 0) > 0
+        ? makeEmptyCalibrationBins()  // purge — backfill poisoned the bins
+        : (Array.isArray(m.calibrationBins) && m.calibrationBins.length === CALIBRATION_NUM_BINS
+          ? m.calibrationBins.map((b: any) => ({
+              lo: Number(b.lo) ?? 0,
+              hi: Number(b.hi) ?? 0,
+              wins: Number(b.wins) ?? 0,
+              losses: Number(b.losses) ?? 0,
+            }))
+          : makeEmptyCalibrationBins()),
     };
   }
 
@@ -548,8 +570,14 @@ export class OLREngine {
       else if (source === 'paper') models.short.paperSamples++;
       else if (source === 'real') models.short.realSamples++;
       else if (source === 'backfill') models.short.backfillSamples++;
-      models.short.recentTrades.push({ source, side, outcome: outcomeLabel, timestamp: ts, cycle, slNarrowed });
-      if (models.short.recentTrades.length > 20) models.short.recentTrades.shift();
+      // v2.0.229 Fix C: Exclude backfill from recentTrades — the agent must see
+      // real/shadow/paper trading performance, not synthetic backfill history.
+      // Previously, 15 of 20 recentTrades were backfill (cycle=0), pushing real
+      // trades out of the agent's view. The agent couldn't see it was losing.
+      if (source !== 'backfill') {
+        models.short.recentTrades.push({ source, side, outcome: outcomeLabel, timestamp: ts, cycle, slNarrowed });
+        if (models.short.recentTrades.length > 20) models.short.recentTrades.shift();
+      }
       // v2.0.721: Record calibration sample (raw pWin → actual outcome)
       if (models.short.calibrationBins) {
         recordCalibrationSample(models.short.calibrationBins, rawPWinForCalibration, outcome, source === 'backfill');
@@ -563,8 +591,11 @@ export class OLREngine {
       else if (source === 'paper') models.long.paperSamples++;
       else if (source === 'real') models.long.realSamples++;
       else if (source === 'backfill') models.long.backfillSamples++;
-      models.long.recentTrades.push({ source, side, outcome: outcomeLabel, timestamp: ts, cycle, slNarrowed });
-      if (models.long.recentTrades.length > 20) models.long.recentTrades.shift();
+      // v2.0.229 Fix C: Exclude backfill from recentTrades (same as short side above).
+      if (source !== 'backfill') {
+        models.long.recentTrades.push({ source, side, outcome: outcomeLabel, timestamp: ts, cycle, slNarrowed });
+        if (models.long.recentTrades.length > 20) models.long.recentTrades.shift();
+      }
       // v2.0.721: Record calibration sample (raw pWin → actual outcome)
       if (models.long.calibrationBins) {
         recordCalibrationSample(models.long.calibrationBins, rawPWinForCalibration, outcome, source === 'backfill');
@@ -674,6 +705,7 @@ export class OLREngine {
     const empty = (reason: string): OLRQueryResult => ({
       pWin: 0.5,
       nSamples: 0,
+      effectiveSamples: 0,
       confidence: 'low',
       featureContributions: [],
       explanation: reason,
@@ -726,9 +758,14 @@ export class OLREngine {
     // backfill prior doesn't bypass the penalty.
     const effectiveSamples = model.nSamples - model.backfillSamples;
     const pWin = this.applyConfidencePenalty(pWinCalibrated, model.nSamples, effectiveSamples);
+    // v2.0.229 Fix B: Confidence label uses EFFECTIVE samples (excludes backfill).
+    // A model with 200 backfill + 5 real samples has effectiveSamples=5, so
+    // confidence='low' — the agent knows not to trust the P(win) prediction.
+    // Previously, nSamples=205 >= 50 gave 'high', causing the agent to trust
+    // a backfill-inflated 86% P(win). This is the core fix for SKHX overconfidence.
     const confLabel: 'high' | 'medium' | 'low' =
-      model.nSamples >= OLR_CONFIG.highConfidenceSamples ? 'high'
-      : model.nSamples >= OLR_CONFIG.mediumConfidenceSamples ? 'medium'
+      effectiveSamples >= OLR_CONFIG.highConfidenceSamples ? 'high'
+      : effectiveSamples >= OLR_CONFIG.mediumConfidenceSamples ? 'medium'
       : 'low';
 
     contributions.sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution));
@@ -757,9 +794,11 @@ export class OLREngine {
     
     // v2.0.768: Include whether current features were used in the explanation
     const featureSource = currentFeatures ? ' (fresh market data)' : ' (stored entry features)';
-    const explanation = `P(win)=${(pWin * 100).toFixed(0)}%${featureSource} (${model.nSamples} samples [${sourceStr}], conf=${confLabel}) | Key: ${topFeatures}`;
+    // v2.0.229 Fix B: Show effective (live) samples first, total second — so the
+    // agent sees "1700 live / 3097 total" and knows 1397 are unreliable backfill.
+    const explanation = `P(win)=${(pWin * 100).toFixed(0)}%${featureSource} (${effectiveSamples} live / ${model.nSamples} total samples [${sourceStr}], conf=${confLabel}) | Key: ${topFeatures}`;
 
-    return { pWin, nSamples: model.nSamples, confidence: confLabel, featureContributions: contributions, explanation, sourceBreakdown, recentTrades };
+    return { pWin, nSamples: model.nSamples, effectiveSamples, confidence: confLabel, featureContributions: contributions, explanation, sourceBreakdown, recentTrades };
   }
 
   // ─── Stats (for UI) ───
@@ -875,11 +914,14 @@ export class OLREngine {
       const shortP = shortS >= OLR_CONFIG.minSamplesForQuery
         ? sigmoid(this.computeLogit(models.short, this.zeroFeatures()))
         : 0.5;
-      const longConf = longS >= OLR_CONFIG.highConfidenceSamples ? 'high'
-        : longS >= OLR_CONFIG.mediumConfidenceSamples ? 'medium' : 'low';
-      const shortConf = shortS >= OLR_CONFIG.highConfidenceSamples ? 'high'
-        : shortS >= OLR_CONFIG.mediumConfidenceSamples ? 'medium' : 'low';
-      parts.push(`${sym}: BUY P(win)=${(longP * 100).toFixed(0)}% (${longS} samples, ${longConf}) | SELL P(win)=${(shortP * 100).toFixed(0)}% (${shortS} samples, ${shortConf})`);
+      // v2.0.229 Fix B: Use effective (live) samples for confidence labels in agent context.
+      const longEff = longS - models.long.backfillSamples;
+      const shortEff = shortS - models.short.backfillSamples;
+      const longConf = longEff >= OLR_CONFIG.highConfidenceSamples ? 'high'
+        : longEff >= OLR_CONFIG.mediumConfidenceSamples ? 'medium' : 'low';
+      const shortConf = shortEff >= OLR_CONFIG.highConfidenceSamples ? 'high'
+        : shortEff >= OLR_CONFIG.mediumConfidenceSamples ? 'medium' : 'low';
+      parts.push(`${sym}: BUY P(win)=${(longP * 100).toFixed(0)}% (${longEff} live samples, ${longConf}) | SELL P(win)=${(shortP * 100).toFixed(0)}% (${shortEff} live samples, ${shortConf})`);
     }
     if (!hasData) parts.push('  (no OLR data yet)');
     return parts.join('\n');

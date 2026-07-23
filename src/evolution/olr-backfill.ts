@@ -8,8 +8,8 @@
 // trading market it fetches N 5m candles from Hyperliquid and replays them
 // as shadow LONG+SHORT positions, resolving each against the real candle
 // high/low path (multi-candle hold, #4 fix). Outcomes are fed to OLR with
-// source='backfill' (weighted 0.3, excluded from the SGD decay counter so
-// the prior does not freeze the model against live adaptation).
+// source='backfill' (weighted 0.1 per v2.0.229 Fix D, excluded from the SGD
+// decay counter so the prior does not freeze the model against live adaptation).
 //
 // Production hardening (v2):
 //  #1 — Welford mask: backfill updates Welford ONLY for features it has real

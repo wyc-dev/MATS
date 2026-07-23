@@ -4,6 +4,20 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.229: OLR backfill purge — 4 fixes (A+B+C+D) to eliminate backfill pollution that caused SKHX 3 consecutive BUY losses. v2.0.228 only stopped NEW backfill from entering calibration bins; OLD backfill data remained, producing false 86% P(win) from poisoned bin [0.8-1) = 86.7% empirical WR (built from 1387 backfill samples = 44.8% of nSamples). Additionally, nSamples was inflated by backfill (giving false 'high' confidence), recentTrades was 75% backfill (agent couldn't see real losses), and sourceWeight=0.3 was too high.
+
+**Fix A: Purge backfill-poisoned calibration bins on migration** (`src/evolution/olr-engine.ts`): `migrateModel()` now resets `calibrationBins` to empty when `backfillSamples > 0`. This is a one-time purge — bins rebuild from real+shadow+paper going forward (v2.0.228 already prevents new backfill). Why full purge not partial? Bins store aggregate wins/losses without per-source tagging, so backfill cannot be separated from real. The identity fallback (raw pWin) is safer than poisoned bins. Verified: SKHX BUY P(win) dropped from 86% (poisoned) → 62% (raw sigmoid, honest).
+
+**Fix B: Confidence label uses effectiveSamples** (`src/evolution/olr-engine.ts`): `query()` and `formatForAgentContext()` now use `effectiveSamples = nSamples - backfillSamples` for the confidence label (high/medium/low). A model with 200 backfill + 5 real → confidence='low' (not 'high'). Added `effectiveSamples` field to `OLRQueryResult`. Explanation now shows "1760 live / 3163 total samples" so the agent sees the real evidence level. The `applyConfidencePenalty()` already used effectiveSamples (v2.0.224); this extends it to the confidence label and display.
+
+**Fix C: Backfill excluded from recentTrades** (`src/evolution/olr-engine.ts`): `feedTrade()` now only pushes to `recentTrades` when `source !== 'backfill'`. Previously, 15 of 20 recentTrades were backfill (cycle=0), pushing real trades out of the agent's view. The agent couldn't see it was losing real trades. Now recentTrades contains only real+shadow+paper — the agent sees actual trading performance.
+
+**Fix D: sourceWeight.backfill 0.3 → 0.1** (`src/evolution/olr-engine.ts`): Reduced backfill SGD weight from 0.3 to 0.1. At 0.3, 1387 backfill samples = 416 effective weight (30% of 1393 real). At 0.1, same 1387 backfill = 139 effective (10% of real) — backfill can cold-start the prior without drowning out the live signal.
+
+**Attack tests** (`tests/olr-backfill-purge-attack.test.ts`): 20 tests covering Fix A (bin purge on migration, zero-backfill preservation, rebuild from real), Fix B (confidence by effectiveSamples, explanation format), Fix C (recentTrades exclusion, mixed sources, backfill-only), Fix D (weight magnitude comparison, dominance prevention), and combined attacks (SKHX scenario simulation, persistence round-trip, poisoned state cleanup). All 547 tests pass.
+
+---
+
 ## v2.0.228: Three root-cause fixes — per-symbol penalty decay + vol-gate data-feed fallback + OLR backfill exclusion from calibration. Fixes two live trading issues: (1) SILVER SELL blocked for 6+ hours because vol-gate hard-blocked on vol=0.0000 (data feed issue) and penalty never decayed (global idle counter reset by SKHX trading), (2) SKHX BUY/SELL loop (buy→SL→buy→SL) because OLR P(win)=52% calibrated but actual WR=23% — 29pp miscalibration from 48% backfill samples polluting the calibration bins.
 
 **Fix 1: Per-symbol penalty decay** (`src/analysis/dynamic-threshold.ts`): `DynamicThresholdCalculator` now tracks per-symbol idle cycles via `perSymbolIdleCycles` Map. `markSymbolTraded(symbol)` resets only that symbol's counter. `incrementIdleCycles(tradedSymbols, allKnownSymbols?)` increments all non-traded symbols. `compute(input, symbol)` registers the symbol in the idle map if not present. This ensures SILVER's penalty decays independently even while SKHX is actively trading — the global HACP idle counter is only used as a fallback for untracked symbols.
