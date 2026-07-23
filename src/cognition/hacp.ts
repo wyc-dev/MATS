@@ -452,6 +452,14 @@ export class HACPEngine {
   }
 
   /**
+   * v2.0.227: Get the idle cycle count (cycles without a real trade).
+   * Used by DynamicThresholdCalculator for idle-factor scoring and penalty decay.
+   */
+  getCyclesWithoutTrade(): number {
+    return this.cyclesWithoutTrade;
+  }
+
+  /**
    * Dynamically adjust the consensus threshold based on market conditions.
    * Adjusts this.consensusThreshold (the config base): lowers on idle cycles
    * (encourage trades), raises on consecutive losses (capital protection),
