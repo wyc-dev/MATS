@@ -4036,8 +4036,8 @@ ${recentExamples}
       // ── OLR probabilities with FULL source breakdown (incl. backfill) ──
       lines.push(`OLR (learned from TP-before-SL outcomes — per-side logistic regression):`);
       const sb = (q: OLRQueryResult) => `shadow=${q.sourceBreakdown.shadow} paper=${q.sourceBreakdown.paper} real=${q.sourceBreakdown.real} backfill=${q.sourceBreakdown.backfill}`;
-      lines.push(`  BUY  P(win)=${(olrBuy.pWin * 100).toFixed(0)}% (${olrBuy.nSamples} samples [${sb(olrBuy)}], conf=${olrBuy.confidence})`);
-      lines.push(`  SELL P(win)=${(olrSell.pWin * 100).toFixed(0)}% (${olrSell.nSamples} samples [${sb(olrSell)}], conf=${olrSell.confidence})`);
+      lines.push(`  BUY  P(win)=${(olrBuy.pWin * 100).toFixed(0)}% (${olrBuy.effectiveSamples} live / ${olrBuy.nSamples} total [${sb(olrBuy)}], conf=${olrBuy.confidence})`);
+      lines.push(`  SELL P(win)=${(olrSell.pWin * 100).toFixed(0)}% (${olrSell.effectiveSamples} live / ${olrSell.nSamples} total [${sb(olrSell)}], conf=${olrSell.confidence})`);
 
       // Feature contributions — BOTH sides (what drives each probability)
       const fmtFeatures = (c: OLRQueryResult['featureContributions']) =>
