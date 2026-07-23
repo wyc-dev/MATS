@@ -1,8 +1,8 @@
 # {MATS} — Multi Agent Trading System
 
-> **作者**: YC Wong · **版本**: 2.0.219
+> **作者**: YC Wong · **版本**: 2.0.227
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **代碼量**: ~58,000 行 TypeScript（嚴格模式，零類型錯誤）+ React UI
+> **代碼量**: ~59,000 行 TypeScript（嚴格模式，零類型錯誤）+ React UI
 
 ---
 
@@ -18,7 +18,7 @@
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 22 層認知演化管線 — OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + 7 advanced systems v2.0.219 + Close-Context Learning v2.0.226，從每筆交易學習 |
+| **自我演化** | 23 層認知演化管線 — OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + 7 advanced systems v2.0.219 + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227，從每筆交易學習 |
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
 | **生產級標準** | 完整型別（Zod 驗證）、結構化日誌（Winston）、優雅關閉、指數退避重連 |
@@ -56,6 +56,8 @@
 │   • Active Exploration（UCB + info gain + annealing, v2.0.219） │
 │   • World Model（latent dynamics + rollout planning, v2.0.219）│
 │   • Close-Context Learning（closeReason+slNarrowed 加權, v2.0.226）│
+│   • Plan G Dynamic Threshold（5-factor hysteresis [45-55%] + │
+│     multiplicative penalty decay, v2.0.227）                    │
 │   • Trade Incident Panel（MAE/MFE + exitThesis + post-review）  │
 │   • SystemGuard（5 層系統級保護）                               │
 ├──────────────────────────────────────────────────────────────┤
@@ -89,7 +91,7 @@ src/
 │   │   v2.0.143: executeTrade() / closeTrade() 統一路由
 ├── risk/                    # 風險引擎 + correlation-budget
 ├── system-guard/            # 5 層保護閘門
-├── evolution/               # 自我演化（22 層認知演化管線：OLR + Shadow + First-Passage + EM + GA + RIL + EXP + NA + AttnRes + Anti-Pattern + Combo WR + P(win) Discount + 7 advanced systems v2.0.219 + Close-Context Learning v2.0.226）
+├── evolution/               # 自我演化（23 層認知演化管線：OLR + Shadow + First-Passage + EM + GA + RIL + EXP + NA + AttnRes + Anti-Pattern + Combo WR + P(win) Discount + 7 advanced systems v2.0.219 + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227）
 │   ├── embeddings.ts        # Transformers.js MiniLM 384-d 向量（in-process, singleton v2.0.216）
 │   ├── thesis-experience.ts # EXP 理據組合歷史勝率（方向過濾 + lesson persistence v2.0.207 #E）
 │   ├── experience-digester.ts # A2A 經驗消化（per-direction winRate + LessonStatement v2.0.207）
@@ -374,7 +376,7 @@ FINAL CONFIDENCE:
 
 ## 自我演化系統
 
-MATS 嘅核心競爭力係 **22 層認知演化管線**——每筆交易結果都會餵回 22 個獨立學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。以下逐層詳述：
+MATS 嘅核心競爭力係 **23 層認知演化管線**——每筆交易結果都會餵回 23 個獨立學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。以下逐層詳述：
 
 ### OLR — Online Logistic Regression（`olr-engine.ts`）
 
@@ -520,6 +522,92 @@ quantity = (equity × riskPct) / (entryPrice × priceRisk)
 **Combo WR 跳過執行 loss**：`comboTracker.trackTrade()` 只喺 `isWin || learningWeight ≥ 0.5` 時調用。Tight-SL loss + thesis invalidation loss（weight=0.3）被排除，唔拖低 (symbol×side×regime) 嘅 combo WR。
 
 **Advanced learning PnL 縮放**：`feedAdvancedLearning` 嘅 `pnl` + `pnlPct` 乘以 `learningWeight`。AttnRes reward-weighted regression、temporal attention、cross-symbol backbone、world model 都按權重學習。
+
+---
+
+## Plan G — 動態 Threshold [45-55%] + 乘法 Penalty 衰減（v2.0.227）
+
+### 問題：Penalty 死循環
+
+ conviction gate 有一個複合懲罰設計缺陷：
+- **加法 threshold 提升**：3 個 penalty gate（loss-streak、conditional WR、combo WR）疊加到 threshold（50% + 30% = 80%）
+- **乘法 confidence 折扣**：P(win) × consensus（65% × 0.685 = 44.5%）
+- **結果**：44.5% vs 80% = 35.5pp 差距 → 數學上不可能交易 → 冇新交易 → penalty 永遠唔 reset → 永久 STUCK
+
+SILVER SELL 實測被卡 6+ 小時就係呢個死循環。
+
+### 解決方案：統一乘法模型
+
+```
+effectiveConfidence = consensus × pwinBlendFactor × penaltyFactor
+dynamicThreshold = 50% + (totalScore × 0.5%)  →  [45%, 55%]
+
+if effectiveConfidence ≥ dynamicThreshold → TRADE
+if effectiveConfidence < dynamicThreshold → HOLD
+```
+
+### `DynamicThresholdCalculator`（`src/analysis/dynamic-threshold.ts`）
+
+**5 因素 hysteresis 計分**（每個因素 [-2, +2] 分，hysteresis 防止邊界跳動）：
+
+| 因素 | -2 分（放鬆） | 0 分（中性） | +2 分（收緊） | 樣本要求 |
+|:-----|:-------------|:-------------|:-------------|:--------:|
+| Rolling WR | ≥55% | 40-55% | <35% | ≥10 筆 |
+| Idle cycles | ≥20 cycles | 5-20 cycles | <2 cycles | — |
+| Drawdown | <3% | 3-10% | >15% | — |
+| Rolling Sharpe | >1.5 | 0-1.0 | <-1.0 | ≥10 筆 |
+| Regime | trending | normal/mr | chaotic | — |
+
+- `totalScore = WR分 + Idle分 + Drawdown分 + Sharpe分 + Regime分`，capped at [-10, +10]
+- `threshold = 50% + totalScore × 0.5%` → 數學保證 [45%, 55%]
+
+**Penalty 衰減**：`penaltyFactor = 1.0 - min(decayedPenalty, 0.30)`，其中 `decayedPenalty = netPenalty × max(0, 1 - cyclesIdle/30)`。30 cycles idle（2.5 小時）後 penalty 完全歸零 → 系統自我恢復。
+
+**P(win) blendFactor**（v2.0.224 保留）：`pwinBlendFactor = 0.3 + 0.7 × P(win)`，cold-start 時 = 1.0（唔折扣）。
+
+### 6 重公正保障
+
+1. **多因素平衡** — 5 個因素各自獨立，每個最多 ±1%，冇單一因素可以主導
+2. **對稱設計** — 好同差嘅影響力相同（±2 分對稱）
+3. **樣本數要求** — WR + Sharpe 要 ≥10 筆先計分，唔夠 = 中性（0 分）
+4. **Hysteresis** — 每個因素有 buffer zone，唔會因為 49.9% vs 50.1% 來回跳
+5. **Hard cap** — totalScore capped [-10, +10] → threshold [45%, 55%]，數學保證
+6. **事實驅動** — 全部用已發生嘅事實（WR = 已結算勝率、Idle = 計時器、Drawdown = 已實現回撤、Sharpe = 已計算、Regime = 已觀測）
+
+### SILVER SELL 模擬
+
+```
+舊系統（死循環）：
+  threshold = 50% + 30% penalty = 80%
+  confidence = 65% × 0.685 = 44.5%
+  44.5% < 80% → 差 35.5pp → HOLD（不可能）
+
+Plan G（6 小時 idle 後）：
+  WR=27% → +2 分, Idle=36 cycles → -2 分, Sharpe<0 → +1 分
+  totalScore = +1 → threshold = 50.5%
+  penalty 衰減到 0（36 > 30 cycles）→ penaltyFactor = 1.0
+
+  P(win)=55% + consensus=65% → 44.5% < 50.5% → HOLD（接近，差 6pp）
+  P(win)=79% + consensus=65% → 55.4% ≥ 50.5% → TRADE ✓
+  consensus=75% + P(win)=55% → 51.4% ≥ 50.5% → TRADE ✓
+  → 強信號永遠有路過，中等信號要更高共識先過 = 公正
+```
+
+### 設計原則
+
+- **Penalty 乘法唔加法**：懲罰折扣 confidence（乘法），唔提升 threshold（加法）。消除雙重懲罰。
+- **Idle 衰減打破死循環**：越耐冇交易，penalty 越細。30 cycles 後歸零。系統永遠可以自我恢復。
+- **Threshold 動態但有 cap**：用實際表現驅動（WR、Idle、Drawdown、Sharpe、Regime），但 capped [45%, 55%]。表現好時放鬆（入多啲），表現差時收緊（保護），但永遠唔會卡死。
+- **強信號永遠有路過**：P(win)=79% + consensus=65% = 55.4% ≥ 50.5% → 即使系統表現差，強信號仍然可以入場。
+
+### 整合
+
+- `DynamicThresholdCalculator` 喺 conviction gate（`index.ts` line ~6803）取代舊嘅 `convictionThreshold + lossStreakPenalty`（加法）路徑
+- `_lossStreakPenalty`（loss + cond + combo 三 gate 嘅 net penalty）改為傳入 calculator 嘅 `netPenalty`，計算 `penaltyFactor`（乘法）
+- HACP `getCyclesWithoutTrade()` 提供 idle cycle 數
+- Portfolio `currentDrawdownPct` 提供 drawdown
+- TradeHistory `getRecent(20)` 計算 rolling WR + Sharpe
+- `combinedState.regime` 提供 regime
 
 ---
 
