@@ -38,7 +38,7 @@ import { buildConvergenceAuditContext } from '../evolution/cycle-summary.ts';
 import type { ThesisExperience } from '../evolution/thesis-experience.ts';
 import { SimilarTradeRetriever, SubtleDiffAnalyzer } from '../evolution/reason-analytics.ts';
 import type { NumericEmbedProvider } from '../evolution/numeric-autoencoder.ts';
-import { computeVectorConditionalWinRate, formatVectorConditional } from '../evolution/evolution-utils.ts';
+import { computeVectorConditionalWinRate, entryDecisionCondWROptions, formatVectorConditional } from '../evolution/evolution-utils.ts';
 import type { AntiPatternTracker } from '../evolution/anti-pattern-tracker.ts';
 
 const log = createLogger({ phase: 'hacp' });
@@ -908,7 +908,12 @@ export class HACPEngine {
             const cond = computeVectorConditionalWinRate(
               candidateFeatures,
               records,
-              { side, minSamples: 3, threshold: 0.75, topN: 20, embeddingProvider: this.naEmbeddingProvider ?? undefined },
+              // v2.0.211: Meta-Agent conviction calibration is an entry-decision
+              // signal — exclude system-decision closes so the WR the Meta-Agent
+              // calibrates against matches the gate's market-clean basis (otherwise
+              // the Meta-Agent sees an inflated WR while the gate sees the true
+              // lower WR — the two signals would disagree).
+              entryDecisionCondWROptions(side, this.naEmbeddingProvider ?? undefined),
             );
             if (cond.confidence !== 'none') {
               blocks.push(`  ${side.toUpperCase()}: ${(cond.conditionalWinRate * 100).toFixed(0)}% (n=${cond.sampleSize}, ${cond.confidence}) — ${cond.explanation}`);
@@ -1103,7 +1108,10 @@ export class HACPEngine {
           const cond = computeVectorConditionalWinRate(
             candidateFeatures,
             records,
-            { side: metaAction, minSamples: 3, threshold: 0.80, topN: 20, embeddingProvider: this.naEmbeddingProvider ?? undefined },
+            // v2.0.211: Skeptics 1.8b entry-rejection signal — exclude system-decision
+            // closes for the same market-clean-basis reason as the gate + Meta-Agent
+            // calibration block above (consistency across all entry-decision callers).
+            entryDecisionCondWROptions(metaAction, this.naEmbeddingProvider ?? undefined, { threshold: 0.80 }),
           );
           if (cond.confidence !== 'none') {
             naConditionalBlock = `\n=== VECTOR-CONDITIONAL WIN RATE (similar market conditions, ${metaAction.toUpperCase()}) ===\n${formatVectorConditional(cond, '  conditional')}\nInterpretation: HIGH conditional WR + you reject = you are blocking a real edge (exit-timing issue, not direction). LOW conditional WR + thesis weak = genuine learning failure, reject is correct.\n---`;

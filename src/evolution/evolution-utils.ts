@@ -249,6 +249,52 @@ export interface VectorConditionalOptions {
   /** v2.0.211 (K.md #4): Temperature for softmax-weighted WR (default 0.1).
    *  Lower = sharper (top match dominates), higher = more uniform. */
   softmaxTemperature?: number;
+  /** v2.0.211: Exclude records whose exitType is in this set BEFORE computing
+   *  the conditional WR. Use to remove system-decision closes (e.g.
+   *  ['thesis_invalidation']) so the market-conditional WR only reflects clean
+   *  market-risk closes (SL/TP), not system force-closes whose PnL is partial/
+   *  noisy information. Consistent with the conviction-gate exclusion at
+   *  index.ts (~'closeReason !== thesis_invalidation'). Default: no exclusion. */
+  excludeExitTypes?: string[];
+}
+
+/** v2.0.211: Exit types that are SYSTEM decisions, not clean market SL/TP
+ *  outcomes. Records closed via these mechanisms carry partial/noisy PnL info
+ *  (a system force-close was not taken to SL/TP by the market), so they pollute
+ *  the market-conditional edge signal in either direction. All entry-decision
+ *  callers of `computeVectorConditionalWinRate` should exclude these via
+ *  `entryDecisionCondWROptions` (below) so the contract is enforced in one
+ *  place. Consistent with the conviction-gate exclusion at index.ts
+ *  (~'closeReason !== thesis_invalidation'). */
+export const SYSTEM_DECISION_EXIT_TYPES = ['thesis_invalidation'] as const;
+
+/** v2.0.211: Build the standard conditional-WR options for ENTRY-DECISION
+ *  contexts (the entry soft gate, Skeptics 1.8b block, Meta-Agent conviction
+ *  calibration block, audit per-trade summary, digester per-symbol report).
+ *  Encapsulates the shared defaults + the system-close exclusion so every
+ *  entry-decision caller reflects only clean market-risk outcomes — and so
+ *  future callers cannot forget the exclusion. Callers pass `overrides` for
+ *  context-specific tuning (minSamples, threshold, rmsNormKeys, softmax).
+ *
+ *  NOTE: only callers whose records carry an `exitType` field benefit from the
+ *  exclusion (ThesisExperienceRecord does; PatternTagRecord, outcomeTracker
+ *  records, and cluster `memberMarketData` currently do NOT — adding exitType
+ *  to those schemas is a follow-up if their conditional WR should be
+ *  market-clean). */
+export function entryDecisionCondWROptions(
+  side: 'buy' | 'sell',
+  embeddingProvider: NumericEmbedProvider | undefined,
+  overrides: Partial<VectorConditionalOptions> = {},
+): VectorConditionalOptions {
+  return {
+    side,
+    minSamples: 3,
+    threshold: 0.75,
+    topN: 20,
+    embeddingProvider,
+    excludeExitTypes: [...SYSTEM_DECISION_EXIT_TYPES],
+    ...overrides,
+  };
 }
 
 export interface VectorConditionalMatch {
@@ -480,6 +526,7 @@ export function computeVectorConditionalWinRate(
     symbol: string;
     side: 'buy' | 'sell';
     pnl?: number;
+    exitType?: string;
   }>,
   options?: VectorConditionalOptions,
 ): VectorConditionalWinRateResult {
@@ -503,10 +550,16 @@ export function computeVectorConditionalWinRate(
   };
 
   // Filter records: side + symbol + has marketFeatures + resolvable outcome.
+  // v2.0.211: Also exclude system-decision closes (e.g. thesis_invalidation)
+  // when excludeExitTypes is set — these are not clean market-risk outcomes
+  // and their PnL (positive OR negative) is partial/noisy information that
+  // pollutes the market-conditional WR. See options.excludeExitTypes.
+  const excludeExit = options?.excludeExitTypes;
   const filtered = records.filter((r) => {
     if (!r.marketFeatures) return false;
     if (options?.side && r.side !== options.side) return false;
     if (options?.symbol && r.symbol.toLowerCase() !== options.symbol.toLowerCase()) return false;
+    if (excludeExit && r.exitType && excludeExit.includes(r.exitType)) return false;
     return normaliseOutcome(r.outcome) !== null;
   });
   if (filtered.length === 0) return neutral;
