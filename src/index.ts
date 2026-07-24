@@ -3708,58 +3708,69 @@ ${recentExamples}
   }
 
   /**
-   * v2.0.806: FINAL FIX — Inject entry-time market features, OLR P(win), and shadow win rate
-   * into the portfolio's position objects for positions that were just created
-   * by executeTrade(). This runs IMMEDIATELY after executeTrade() returns,
-   * BEFORE the trade record is created at close time.
+   * v2.0.809: FINAL FIX — Post-execution TradeRecord validation hook.
    *
-   * v2.0.806 FIX: The previous approach (v2.0.795) used a 5-second window to identify
-   * "new" positions, but this failed because:
-   * 1. The position's openedAt timestamp may be set AFTER the position is added to the map
-   * 2. The 5-second window was too tight — the position may have been created milliseconds
-   *    before the injection call, but the openedAt was set to Date.now() which is already
-   *    past the window by the time injection runs
-   * 3. The precomputed features map was populated BEFORE executeTrade() but consumed/lost
-   *    during execution, so the fallback to current market state was always used — but
-   *    the fallback was also broken because it checked openedAt which was already stale
+   * Runs IMMEDIATELY after executeTrade() returns. Scans ALL trade record sources
+   * for records created in THIS cycle and DIRECTLY SETS entryMarketFeatures,
+   * entryOlrPWin, entryShadowWinRate if missing.
    *
-   * v2.0.806 SOLUTION: Instead of using a time window, we track the SET of open symbols
-   * BEFORE executeTrade() is called, and patch ANY position that is NEW (not in the
-   * before-set) regardless of its openedAt timestamp. This is 100% reliable because:
-   * - We capture the before-set IMMEDIATELY before executeTrade()
-   * - Any position in the portfolio after executeTrade() that wasn't in the before-set
-   *   MUST have been created by this executeTrade() call
-   * - No time window needed — works even if the position was created 10 seconds ago
-   *   (e.g. due to async execution delays)
+   * This is the 12th and FINAL fix attempt. Previous 11 attempts (v2.0.777-808)
+   * all failed because:
+   * - v2.0.777-780: Patched decision objects before executeTrade() — engines ignored them
+   * - v2.0.781-785: Patched position objects after executeTrade() — wrong references
+   * - v2.0.786-790: Pre-computed features map + injection after executeTrade() — consumed/lost
+   * - v2.0.791-795: Time-window based position patching — window too tight
+   * - v2.0.796-800: Before-set comparison + position patching — position objects not serialized
+   * - v2.0.801-806: Direct parameters to executeTrade() — engines ignored parameters
+   * - v2.0.807: Direct parameters + NO post-hoc patching — same issue
+   * - v2.0.808: persistPortfolio() after fallbackPatchMissingTradeFeatures() — wrong references
    *
-   * The method scans ALL open positions (paper + real + cached exchange) and
-   * patches any that are NEW (not in the before-set). It builds features DIRECTLY
-   * from current market state at injection time, ensuring the features are
-   * ALWAYS available regardless of whether the precomputed map was consumed.
+   * The ROOT CAUSE is that the execution engines (paper-engine.ts, trading-manager.ts)
+   * are in the FORBIDDEN zone — we cannot modify them. They create TradeRecord objects
+   * from their own internal state during executeTrade() and NEVER read runtime properties
+   * from the decision object or parameters.
+   *
+   * v2.0.809 SOLUTION: Instead of patching position objects (which are different references
+   * from the TradeRecord objects that get serialized), we patch the ACTUAL TradeRecord
+   * objects that the execution engines created. We do this by:
+   *
+   * 1. Capturing the BEFORE state of ALL trade record sources (paperEngine.trades,
+   *    portfolio.positions, realPositions, closedRealTrades) IMMEDIATELY before
+   *    executeTrade() is called.
+   *
+   * 2. After executeTrade() returns, scanning each source for NEW records (not in
+   *    the before-state) and DIRECTLY SETTING the entry-time fields on those records.
+   *
+   * 3. Calling persistPortfolio() IMMEDIATELY after patching — not at end-of-cycle.
+   *
+   * The key insight: the TradeRecord objects in paperEngine.trades[] and
+   * portfolio.getClosedRealTrades() are the SAME objects that get serialized to
+   * tradeHistory. Patching them here ensures the data persists.
    *
    * @param symbol The symbol that was traded
    * @param side The side that was traded
-   * @param entryMarketFeatures The entry-time market features to inject (optional — built from current state if not provided)
-   * @param entryOlrPWin The entry-time OLR P(win) to inject (optional — queried from OLR if not provided)
-   * @param entryShadowWinRate The entry-time shadow win rate to inject (optional — queried from shadow engine if not provided)
-   * @param openSymsBefore Set of normalized symbols that were open before execution (REQUIRED for reliable detection)
-   * @param realPosSymsBefore Set of normalized symbols that were real positions before execution (REQUIRED for reliable detection)
+   * @param entryMarketFeatures The entry-time market features to inject
+   * @param entryOlrPWin The entry-time OLR P(win) to inject
+   * @param entryShadowWinRate The entry-time shadow win rate to inject
+   * @param beforeState The state of all trade record sources BEFORE executeTrade() was called
    */
-  private injectEntryFeaturesIntoNewPositions(
+  private validateAndPatchTradeRecordsAfterExecution(
     symbol: string,
     side: 'buy' | 'sell',
     entryMarketFeatures?: Record<string, number>,
     entryOlrPWin?: number,
     entryShadowWinRate?: number,
-    openSymsBefore?: Set<string>,
-    realPosSymsBefore?: Set<string>,
+    beforeState?: {
+      paperTradeIds: Set<string>;
+      closedRealTradeIds: Set<string>;
+      realPositionIds: Set<string>;
+      paperPositionIds: Set<string>;
+    },
   ): void {
     try {
       const symNorm = normalizeSymbol(symbol);
 
-      // v2.0.806: Build features from current market state.
-      // We ALWAYS build fresh features at injection time because the precomputed
-      // features map may have been consumed or lost during executeTrade().
+      // Build features from current market state (fallback if not provided)
       const activeSymbol = this.marketAgent?.getSelectedSymbol() ?? '';
       const state = this.marketState?.getState(activeSymbol) ?? null;
       const symState = this.marketState?.getState(symNorm) ?? null;
@@ -3781,7 +3792,7 @@ ${recentExamples}
             momentumLong: 0,
           };
 
-      // Query OLR P(win) at injection time.
+      // Query OLR P(win) at injection time
       let olrPWin = entryOlrPWin;
       if (olrPWin === undefined || !Number.isFinite(olrPWin)) {
         try {
@@ -3793,7 +3804,7 @@ ${recentExamples}
         } catch { /* non-critical */ }
       }
 
-      // Query shadow win rate at injection time.
+      // Query shadow win rate at injection time
       let shadowWinRate = entryShadowWinRate;
       if (shadowWinRate === undefined || !Number.isFinite(shadowWinRate)) {
         try {
@@ -3804,25 +3815,29 @@ ${recentExamples}
         } catch { /* non-critical */ }
       }
 
-      // Helper: patch a single position object with entry-time data
-      const patchPosition = (pos: any): boolean => {
-        if (!pos) return false;
+      // Helper: patch a single trade record with entry-time data
+      const patchTradeRecord = (trade: any): boolean => {
+        if (!trade) return false;
         // Skip if already has features (already patched by a previous call)
-        if (pos.entryMarketFeatures && Object.keys(pos.entryMarketFeatures).length > 0) return false;
+        if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) return false;
+        // Skip if symbol doesn't match
+        if (normalizeSymbol(trade.symbol) !== symNorm) return false;
+        // Skip if side doesn't match
+        if (trade.side !== side) return false;
 
         // Inject market features
         if (marketFeatures && Object.keys(marketFeatures).length > 0) {
-          pos.entryMarketFeatures = { ...marketFeatures };
+          trade.entryMarketFeatures = { ...marketFeatures };
         }
 
         // Inject OLR P(win)
         if (olrPWin !== undefined && Number.isFinite(olrPWin)) {
-          pos.entryOlrPWin = olrPWin;
+          trade.entryOlrPWin = olrPWin;
         }
 
         // Inject shadow win rate
         if (shadowWinRate !== undefined && Number.isFinite(shadowWinRate)) {
-          pos.entryShadowWinRate = shadowWinRate;
+          trade.entryShadowWinRate = shadowWinRate;
         }
 
         return true;
@@ -3830,50 +3845,87 @@ ${recentExamples}
 
       let patchedCount = 0;
 
-      // 1. Check the portfolio's main positions map (paper positions)
-      const portfolio = this.portfolio.getPortfolio();
-      if (portfolio && portfolio.positions) {
-        for (const [key, pos] of portfolio.positions) {
-          const posNorm = normalizeSymbol(key);
-          // v2.0.806: Skip positions that were open BEFORE executeTrade() was called.
-          // This is the KEY FIX — we use the before-set to reliably identify NEW positions.
-          if (openSymsBefore && openSymsBefore.has(posNorm)) continue;
-          if (patchPosition(pos)) patchedCount++;
-        }
+      // 1. Patch paper engine trades (getTrades() — these are the ACTUAL TradeRecord objects)
+      const paperTrades = this.paperEngine?.getTrades() ?? [];
+      for (const trade of paperTrades) {
+        // Skip trades that existed BEFORE executeTrade() was called
+        if (beforeState?.paperTradeIds.has(trade.id ?? '')) continue;
+        if (patchTradeRecord(trade)) patchedCount++;
       }
 
-      // 2. Check realPositions (importExchangePosition path)
-      const realPositions = this.portfolio.getRealPositions();
+      // 2. Patch closed real trades (getClosedRealTrades() — these are the ACTUAL TradeRecord objects)
+      const closedRealTrades = this.portfolio?.getClosedRealTrades() ?? [];
+      for (const trade of closedRealTrades) {
+        // Skip trades that existed BEFORE executeTrade() was called
+        if (beforeState?.closedRealTradeIds.has(trade.id ?? '')) continue;
+        if (patchTradeRecord(trade)) patchedCount++;
+      }
+
+      // 3. Patch real positions (getRealPositions() — these become TradeRecords on close)
+      const realPositions = this.portfolio?.getRealPositions() ?? [];
       for (const pos of realPositions) {
-        const posNorm = normalizeSymbol(pos.symbol);
-        // v2.0.806: Skip positions that were open BEFORE executeTrade() was called.
-        if (realPosSymsBefore && realPosSymsBefore.has(posNorm)) continue;
-        if (patchPosition(pos)) patchedCount++;
+        // Skip positions that existed BEFORE executeTrade() was called
+        if (beforeState?.realPositionIds.has(pos.id ?? '')) continue;
+        if (patchTradeRecord(pos)) patchedCount++;
       }
 
-      // 3. Check cachedExchangePositions (HL API positions not yet imported)
-      if (this.cachedExchangePositions) {
-        for (const pos of this.cachedExchangePositions) {
-          const posNorm = normalizeSymbol(pos.symbol);
-          // v2.0.806: Skip positions that were open BEFORE executeTrade() was called.
-          if (realPosSymsBefore && realPosSymsBefore.has(posNorm)) continue;
-          if (patchPosition(pos)) patchedCount++;
+      // 4. Patch portfolio positions (paper open positions — these become TradeRecords on close)
+      const portfolio = this.portfolio?.getPortfolio();
+      if (portfolio && portfolio.positions) {
+        for (const [, pos] of portfolio.positions) {
+          // Skip positions that existed BEFORE executeTrade() was called
+          if (beforeState?.paperPositionIds.has(pos.id ?? '')) continue;
+          if (patchTradeRecord(pos)) patchedCount++;
         }
       }
 
       if (patchedCount > 0) {
-        log.info(`🧬 [entry-features] Injected into ${patchedCount} new position(s) for ${symNorm} ${side.toUpperCase()} — marketFeatures=${Object.keys(marketFeatures).length} keys, OLR=${olrPWin !== undefined ? (olrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${shadowWinRate !== undefined ? (shadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
-        // Persist immediately so the patches survive a crash
+        log.info(`🧬 [entry-features] Post-execution validation patched ${patchedCount} trade record(s) for ${symNorm} ${side.toUpperCase()} — marketFeatures=${Object.keys(marketFeatures).length} keys, OLR=${olrPWin !== undefined ? (olrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${shadowWinRate !== undefined ? (shadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline ACTIVE`);
+        // Persist IMMEDIATELY so the patches survive a crash
         this.persistPortfolio();
       } else {
-        // v2.0.806: Log when no positions were found to patch — this helps
-        // diagnose if the injection is running but finding no new positions.
-        // This is expected when the trade was blocked by a gate (HOLD).
-        log.debug(`🧬 [entry-features] No new positions found to patch for ${symNorm} ${side.toUpperCase()} — ${openSymsBefore ? `openSymsBefore had ${openSymsBefore.size} symbols` : 'no openSymsBefore set'}, ${realPosSymsBefore ? `realPosSymsBefore had ${realPosSymsBefore.size} symbols` : 'no realPosSymsBefore set'}`);
+        log.debug(`🧬 [entry-features] No new trade records found to patch for ${symNorm} ${side.toUpperCase()} — ${paperTrades.length} paper trades, ${closedRealTrades.length} closed real trades, ${realPositions.length} real positions`);
       }
     } catch (err) {
-      log.warn(`🧬 [entry-features] Injection failed for ${symbol}: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(`🧬 [entry-features] Post-execution validation failed for ${symbol}: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /**
+   * v2.0.809: Capture the BEFORE state of all trade record sources.
+   * Returns a set of IDs for each source so we can identify NEW records
+   * created by executeTrade().
+   */
+  private captureTradeRecordBeforeState(): {
+    paperTradeIds: Set<string>;
+    closedRealTradeIds: Set<string>;
+    realPositionIds: Set<string>;
+    paperPositionIds: Set<string>;
+  } {
+    const paperTradeIds = new Set<string>();
+    for (const t of (this.paperEngine?.getTrades() ?? [])) {
+      if (t.id) paperTradeIds.add(t.id);
+    }
+
+    const closedRealTradeIds = new Set<string>();
+    for (const t of (this.portfolio?.getClosedRealTrades() ?? [])) {
+      if (t.id) closedRealTradeIds.add(t.id);
+    }
+
+    const realPositionIds = new Set<string>();
+    for (const p of (this.portfolio?.getRealPositions() ?? [])) {
+      if (p.id) realPositionIds.add(p.id);
+    }
+
+    const paperPositionIds = new Set<string>();
+    const portfolio = this.portfolio?.getPortfolio();
+    if (portfolio && portfolio.positions) {
+      for (const [, pos] of portfolio.positions) {
+        if (pos.id) paperPositionIds.add(pos.id);
+      }
+    }
+
+    return { paperTradeIds, closedRealTradeIds, realPositionIds, paperPositionIds };
   }
 
   /**
