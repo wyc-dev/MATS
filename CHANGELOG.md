@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.781: Fix TS18048 — add non-null assertion on report.trade in patchTradeRecordWithEntryFeatures to satisfy TypeScript's control flow analysis.
+
+
 ## v2.0.780: Fix data pipeline — ensure OLR P(win), shadow win rate, and market features are actually persisted to trade records. Previous v2.0.777-779 only attached properties to the decision object but execution engines never read them. Now we modify executeTrade() to accept entry-time features as explicit parameters and patch the trade records in the ExecutionReport before returning. This ensures 100% of trades have OLR, shadow, and market data for the learning pipeline from the moment the trade record is created.
 
 
