@@ -837,3 +837,7 @@ if effectiveConfidence < dynamicThreshold → HOLD
 
 ## System Engineer Update
 Added entryMarketFeatures collection in the main decision cycle (before executeTrade) for ALL trade entries, not just exploration. The features are attached to the decision as a runtime property and read by executeTrade() to store on the trade record. OLR P(win) is now queried at entry time for every trade and cached in entryOlrPWinCache. This ensures the learning pipeline (OLR, EXP, NA, AttnRes) always has real market data to train on.
+
+
+## System Engineer Update
+The fix requires a corresponding change in src/index.ts: before calling executeTrade(), collect market features (volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction, mfePct, maePct, mfeToPnlRatio, regimeOrdinal, momentumShort, momentumLong, hourOfDay) into a Record<string, number> and pass this snapshot as the 5th argument to OLR.query(). The same snapshot must be stored in the trade record so that when the trade resolves, feedTrade() receives the same features. This ensures the P(win) prediction uses the SAME features that will be recorded at entry time, eliminating the distribution shift.

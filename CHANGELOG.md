@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.784: Fix OLR query() to use entry-time feature snapshot instead of live cycle-time features — rename currentFeatures parameter to entryFeatures to clarify its purpose. When entryFeatures is provided, the sigmoid computation uses the SAME features that will be recorded at trade entry time, eliminating the systematic distribution shift between training (entry-time features) and inference (cycle-time features) that caused OLR to be miscalibrated for real trades. The caller (index.ts) now snapshots market features at decision time and passes them as entryFeatures to both OLR.query() and the trade record creation. Backward compatible: when entryFeatures is not provided (e.g., shadow trade engine), falls back to cycle-time features.
+
+
 ## v2.0.783: Fix OLR/shadow data pipeline — patch position object in portfolio AFTER executeTrade() instead of patching ExecutionReport. Previous v2.0.773-780 failed because execution engines (paper-engine.ts, trading-manager.ts) are in the forbidden modification zone and never read the decision object's runtime properties. The CORRECT fix patches the position object in the portfolio (which is the same reference used when creating the TradeRecord at close time), ensuring entry-time features, OLR P(win), and shadow win rate are available when the trade record is created. This works for BOTH paper and real trades because both execution paths call portfolio.openPosition() or importExchangePosition().
 
 
