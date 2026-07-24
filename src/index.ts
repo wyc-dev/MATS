@@ -72,6 +72,17 @@ import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } 
 import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent, computePriceNewsTiming, normalizeBaseAsset, type TimingCandle } from './analysis/news-sentiment.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord, CycleSummary } from './types/index.ts';
 
+// v2.0.787: Extend TradeRecord with entry-time data fields that are patched
+// at trade creation time by the OLR/Shadow data pipeline. These fields are
+// set by executeTrade() after the trade record is created in the ExecutionReport.
+// They are consumed by onPositionClosedLearning() at close time to store the
+// TRUE entry-time OLR P(win) and shadow win rate, not close-time recomputes.
+interface PatchedTradeRecord extends TradeRecord {
+  entryMarketFeatures?: Record<string, number>;
+  entryOlrPWin?: number;
+  entryShadowWinRate?: number;
+}
+
 const log = createLogger({ phase: 'system' });
 
 /** v2.0.720: Check if an audit category string mentions a specific direction.
