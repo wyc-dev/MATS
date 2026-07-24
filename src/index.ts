@@ -8497,8 +8497,8 @@ ${recentExamples}
         }
       }
 
-      // v2.0.803: END-OF-CYCLE trade record patching — the 10th attempt.
-      // Previous 9 attempts (v2.0.777-802) all failed because they patched
+      // v2.0.808: END-OF-CYCLE trade record patching — the 11th attempt.
+      // Previous 10 attempts (v2.0.777-807) all failed because they patched
       // BEFORE or DURING execution engine work, and the engines overwrote
       // the patches. This approach patches AFTER ALL engines are done,
       // ensuring patches persist.
@@ -8517,7 +8517,17 @@ ${recentExamples}
       // reference used when creating the TradeRecord at close time. Patching
       // the position object here ensures the data flows through to the
       // trade record automatically when it's created at close time.
+      //
+      // v2.0.808: CRITICAL FIX — the fallbackPatchMissingTradeFeatures() method
+      // was patching trade records but the patches were NOT being persisted
+      // because persistPortfolio() was called BEFORE fallbackPatchMissingTradeFeatures().
+      // The fix: call persistPortfolio() AFTER the fallback patch so the
+      // patched data survives to the next cycle and is available for learning.
       this.fallbackPatchMissingTradeFeatures();
+      // v2.0.808: Persist AFTER patching so the patches survive restart.
+      // Without this, the patched entryMarketFeatures/entryOlrPWin/entryShadowWinRate
+      // are lost on the next cycle — the learning systems never see them.
+      this.persistPortfolio();
 
       // v2.0.108: Post-cycle market drift check. If tradingMarkets changed
       // during the cycle (e.g. UI re-POSTed 3 markets while cycle only had 1),
