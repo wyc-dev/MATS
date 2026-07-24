@@ -757,10 +757,41 @@ export class HACPEngine {
                   }
                 }
                 
+                // v2.0.793: FINAL PROFIT GUARD — even if the pre-check and post-check
+                // guards passed, re-fetch the CURRENT price to check profitability at
+                // the MOMENT of invalidation (not at cycle start). The 59-minute timer
+                // pattern (trades #3, #9, #13, #16 all at +1.9%) proves that positions
+                // become profitable BETWEEN the pre-check and the invalidation decision.
+                // This guard catches that case by fetching the live price NOW.
+                let finalPnlPct = position?.unrealizedPnlPct ?? 0;
+                if (fetchPriceForSymbol && position) {
+                  try {
+                    const livePrice = await fetchPriceForSymbol(symbol);
+                    if (livePrice !== null && livePrice > 0) {
+                      const side = position.side;
+                      const entryPrice = position.averageEntryPrice;
+                      const lev = position.leverage ?? 1;
+                      if (side === 'buy') {
+                        finalPnlPct = ((livePrice - entryPrice) / entryPrice) * lev;
+                      } else {
+                        finalPnlPct = ((entryPrice - livePrice) / entryPrice) * lev;
+                      }
+                    }
+                  } catch {
+                    // If fetch fails, use the stale pnlPct (conservative — may miss
+                    // a profitable position, but better than force-closing a winner)
+                  }
+                }
+                
+                if (finalPnlPct > 0) {
+                  log.warn(`🚫 [v2.0.793 FINAL PROFIT GUARD] Thesis INVALIDATION for ${symbol} SKIPPED — position is PROFITABLE at invalidation time (+${(finalPnlPct * 100).toFixed(2)}%). The 59-minute timer pattern proves positions become profitable between pre-check and invalidation. Thesis is working, not invalid. ${result.rationale}`);
+                  continue; // Skip this symbol — do NOT add to thesisInvalidatedSymbols
+                }
+                
                 // Position is losing money with significant adverse move — genuine
                 // thesis invalidation is appropriate.
                 thesisInvalidatedSymbols.add(symbol);
-                log.warn(`🚫 Thesis INVALIDATED for ${symbol}: ${result.rationale} — flagging for force-close (PnL: ${(position?.unrealizedPnlPct ?? 0 * 100).toFixed(2)}%)`);
+                log.warn(`🚫 Thesis INVALIDATED for ${symbol}: ${result.rationale} — flagging for force-close (PnL: ${(finalPnlPct * 100).toFixed(2)}%)`);
               }
             }
           } catch (err: unknown) {

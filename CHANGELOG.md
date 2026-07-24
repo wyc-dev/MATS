@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.793: Fix 59-minute thesis invalidation timer — add FINAL PROFIT GUARD that re-fetches live price at invalidation time (not cycle start). The v2.0.782 pre-check guard checked profitability at cycle start, but the 59-minute timer pattern (trades #3, #9, #13, #16 all at +1.9%) proves positions become profitable BETWEEN pre-check and invalidation. The new guard fetches the CURRENT price at the moment of invalidation and skips invalidation if the position is profitable. This ensures winners are NEVER capped by the timer, letting them run to their full potential.
+
+
 ## v2.0.792: Fix TS2322 in meta-agent.ts — change patternTag and entryThesis spread conditions from truthy check to null check to prevent null values from being assigned to string | undefined fields
 
 
