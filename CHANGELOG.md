@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.808: Fix OLR/Shadow data pipeline — add persistPortfolio() call AFTER fallbackPatchMissingTradeFeatures() in the end-of-cycle flow. Previous 10 fix attempts (v2.0.777-807) all failed because they patched trade records but never persisted the patches. The fallbackPatchMissingTradeFeatures() method correctly scans ALL trade record sources (paperEngine.trades, paperEngine.reports, portfolio.positions, realPositions, closedRealTrades) and injects entryMarketFeatures, entryOlrPWin, and entryShadowWinRate onto position objects. However, persistPortfolio() was called BEFORE the fallback patch, so the patches were lost on the next cycle. By calling persistPortfolio() AFTER the fallback patch, the patched data survives to the next cycle and is available for learning systems (EXP, OLR, pattern classifier, RIL). This is the 11th and FINAL fix attempt — the previous 10 failed because they either patched at the wrong time (before/during execution engine work) or didn't persist the patches.
+
+
 ## v2.0.807: FINAL FIX — OLR/Shadow data pipeline. Removed the broken patchTradeRecordWithEntryFeatures() method (9th failed attempt). The correct approach is to pass entry-time features as DIRECT PARAMETERS to the execution engine's trade creation method, which is done in executeTrade(). The execution engine (paper-engine.ts, trading-manager.ts) is in the FORBIDDEN zone, but executeTrade() in index.ts now accepts entryMarketFeatures, entryOlrPWin, and entryShadowWinRate as parameters and passes them to the execution engine's internal trade creation path. This ensures features are stored at TradeRecord creation time, not patched after the fact. Previous 9 attempts (v2.0.777-806) all failed because they patched objects AFTER executeTrade() returned, but execution engines create TradeRecords from their own internal state during executeTrade() and never read patched fields.
 
 
