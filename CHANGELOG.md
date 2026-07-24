@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.809: FINAL FIX — OLR/Shadow data pipeline. Replaced broken injectEntryFeaturesIntoNewPositions() with validateAndPatchTradeRecordsAfterExecution() that patches the ACTUAL TradeRecord objects (not position objects). Captures BEFORE state of all trade record sources before executeTrade(), then patches NEW records with entryMarketFeatures, entryOlrPWin, entryShadowWinRate after execution. Calls persistPortfolio() immediately after patching. Previous 11 attempts (v2.0.777-808) failed because they patched position objects (different references) or patched at end-of-cycle (too late).
+
+
 ## v2.0.808: Fix OLR/Shadow data pipeline — add persistPortfolio() call AFTER fallbackPatchMissingTradeFeatures() in the end-of-cycle flow. Previous 10 fix attempts (v2.0.777-807) all failed because they patched trade records but never persisted the patches. The fallbackPatchMissingTradeFeatures() method correctly scans ALL trade record sources (paperEngine.trades, paperEngine.reports, portfolio.positions, realPositions, closedRealTrades) and injects entryMarketFeatures, entryOlrPWin, and entryShadowWinRate onto position objects. However, persistPortfolio() was called BEFORE the fallback patch, so the patches were lost on the next cycle. By calling persistPortfolio() AFTER the fallback patch, the patched data survives to the next cycle and is available for learning systems (EXP, OLR, pattern classifier, RIL). This is the 11th and FINAL fix attempt — the previous 10 failed because they either patched at the wrong time (before/during execution engine work) or didn't persist the patches.
 
 
