@@ -3228,9 +3228,81 @@ ${recentExamples}
    * After execution, setEntryThesis() is called on the resulting position
    * so the thesis flows into the TradeRecord at close time → EXP/RIL learning.
    */
+  /**
+   * v2.0.780: Patch trade records in an ExecutionReport with entry-time
+   * market features, OLR P(win), and shadow win rate. This is the ONLY
+   * place where trade records are patched — the execution engines
+   * (paper-engine.ts, trading-manager.ts) do NOT read runtime properties
+   * from the decision object, so we must patch the records here after
+   * execution, before they are returned to the caller.
+   *
+   * The patching is done by finding the trade record in the report that
+   * matches the executed symbol+side. We use the most recent trade for
+   * that symbol+side combination (the one just created by execution).
+   */
+  private patchTradeRecordWithEntryFeatures(
+    reports: any[],
+    symbol: string,
+    side: 'buy' | 'sell',
+    entryMarketFeatures: Record<string, number>,
+    entryOlrPWin?: number,
+    entryShadowWinRate?: number,
+  ): void {
+    if (!reports || reports.length === 0) return;
+    const sym = normalizeSymbol(symbol);
+    // Find the most recent trade record for this symbol+side
+    // The execution engine creates a new trade record and appends it to
+    // the reports array. We look for the last report with a matching
+    // trade record that has the correct symbol and side.
+    for (let i = reports.length - 1; i >= 0; i--) {
+      const report = reports[i];
+      if (!report || !report.trade) continue;
+      const trade = report.trade;
+      if (normalizeSymbol(trade.symbol) !== sym) continue;
+      if (trade.side !== side) continue;
+      // Found the matching trade record — patch it
+      if (entryMarketFeatures && Object.keys(entryMarketFeatures).length > 0) {
+        trade.entryMarketFeatures = { ...entryMarketFeatures };
+      }
+      if (entryOlrPWin !== undefined && Number.isFinite(entryOlrPWin)) {
+        trade.entryOlrPWin = entryOlrPWin;
+      }
+      if (entryShadowWinRate !== undefined && Number.isFinite(entryShadowWinRate)) {
+        trade.entryShadowWinRate = entryShadowWinRate;
+      }
+      return; // patched the first matching trade — done
+    }
+  }
+
+  /**
+   * v2.0.780: Unified trade execution router with entry-time data pipeline.
+   *
+   * Paper mode → paperEngine.executeDecision() directly.
+   * Real mode  → tradingManager.executeDecision() (places order on HL,
+   *              mirrors into portfolio via importExchangePosition).
+   *
+   * After execution, patches the trade records in the ExecutionReport with
+   * entry-time market features, OLR P(win), and shadow win rate. This is
+   * the critical fix — the execution engines do NOT read runtime properties
+   * from the decision object, so we must patch the records here.
+   *
+   * The entry-time features are passed as a parameter (not read from the
+   * decision object) to ensure they are always available regardless of
+   * how the decision was constructed.
+   */
   private async executeTrade(
     decision: TradingDecision,
     auditGates: Array<{ gate: string; passed: boolean; reason: string }>,
+    /** v2.0.780: Entry-time market features to patch onto the trade record.
+     *  These are the SAME features used by OLR query and shadow trade
+     *  opening — they must be consistent so the learning pipeline works. */
+    entryMarketFeatures?: Record<string, number>,
+    /** v2.0.780: Entry-time OLR P(win) to patch onto the trade record.
+     *  This is the TRUE entry-time OLR, not a close-time recompute. */
+    entryOlrPWin?: number,
+    /** v2.0.780: Entry-time shadow win rate to patch onto the trade record.
+     *  This is the TRUE entry-time shadow WR, not a close-time recompute. */
+    entryShadowWinRate?: number,
   ): Promise<{ success: boolean; error?: string; paperReports?: any[] }> {
     const isRealMode = this.tradingManager.getTradeMode() === 'real';
 
@@ -3265,6 +3337,20 @@ ${recentExamples}
             this.cycleHistory?.recordEntry(sym, decision.action === 'buy' ? 'buy' : 'sell', feats);
           }
         } catch { /* non-critical */ }
+        // v2.0.780: Patch the trade record with entry-time features
+        // The execResult may contain a trade record in its response.
+        // tradingManager.executeDecision() returns { success, error, trade? }
+        // We patch the trade record if it exists.
+        if ((execResult as any).trade) {
+          this.patchTradeRecordWithEntryFeatures(
+            [(execResult as any).trade],
+            decision.symbol,
+            decision.action as 'buy' | 'sell',
+            entryMarketFeatures ?? {},
+            entryOlrPWin,
+            entryShadowWinRate,
+          );
+        }
         // v2.0.726: Reset cycles-since-last-trade counter
         this.cyclesSinceLastTrade = 0;
       }
@@ -3291,6 +3377,15 @@ ${recentExamples}
           this.entryOlrPWinCache.set(sym, olr.pWin);
         }
       } catch { /* non-critical */ }
+      // v2.0.780: Patch ALL trade records in the reports with entry-time features
+      this.patchTradeRecordWithEntryFeatures(
+        reports,
+        decision.symbol,
+        decision.action as 'buy' | 'sell',
+        entryMarketFeatures ?? {},
+        entryOlrPWin,
+        entryShadowWinRate,
+      );
       // v2.0.726: Reset cycles-since-last-trade counter
       this.cyclesSinceLastTrade = 0;
     }
