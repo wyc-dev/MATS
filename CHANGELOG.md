@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.774: Fix incomplete data pipeline — ensure market features collected at entry are actually persisted to the trade record that EXP stores. v2.0.773 only attached features to the decision object but not to the TradeRecord, causing 50% of trades to still have NO_MARKET_DATA. This fix attaches entryMarketFeatures, entryOlrPWin, and entryShadowWinRate to the decision object before executeTrade() is called. The execution engines (paper-engine.ts, trading-manager.ts) must be updated separately to read these runtime properties and store them on the TradeRecord.
+
+
 ## v2.0.773: Fix critical data pipeline — ensure market data features (volatility, S/R distance, OB imbalance, funding rate, volume ratio, sentiment, signal agreement, regime ordinal, hour of day) are collected at EVERY trade entry and passed to the trade record. Previously these features were only collected for exploration trades, causing 50% of trades to have NO_MARKET_DATA, NO_OLR, NO_SHADOW — the entire learning pipeline was bypassed. Now OLR P(win) is queried and cached at entry time for ALL trades, and market features are attached to the decision before execution.
 
 
