@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.780: Fix data pipeline — ensure OLR P(win), shadow win rate, and market features are actually persisted to trade records. Previous v2.0.777-779 only attached properties to the decision object but execution engines never read them. Now we modify executeTrade() to accept entry-time features as a parameter and patch the trade records in the ExecutionReport before returning. This ensures 100% of trades have OLR, shadow, and market data for the learning pipeline from the moment the trade record is created.
+
+
 ## v2.0.779: Fix data pipeline — ensure ALL executed trade records (not just the last one) receive entry-time market features, OLR P(win), and shadow win rate. The old code only patched the last trade record, missing multi-symbol entries from perSymbolConsensus. Now iterates all executed symbols and patches each matching trade record. Also added fallback to closedRealTrades for trades that open and close within the same cycle (SL/TP hit immediately). This completes the fix started in v2.0.773-777 which only attached properties to the decision object but never ensured all trade records were patched.
 
 
