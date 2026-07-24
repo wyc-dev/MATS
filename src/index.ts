@@ -3415,16 +3415,24 @@ ${recentExamples}
   }
 
   /**
-   * v2.0.780: Unified trade execution router with entry-time data pipeline.
+   * v2.0.789: Unified trade execution router with entry-time data pipeline.
    *
    * Paper mode → paperEngine.executeDecision() directly.
    * Real mode  → tradingManager.executeDecision() (places order on HL,
    *              mirrors into portfolio via importExchangePosition).
    *
-   * After execution, patches the trade records in the ExecutionReport with
-   * entry-time market features, OLR P(win), and shadow win rate. This is
-   * the critical fix — the execution engines do NOT read runtime properties
-   * from the decision object, so we must patch the records here.
+   * v2.0.789 FIX: Inject entry-time market features, OLR P(win), and shadow
+   * win rate into the portfolio's position object IMMEDIATELY after position
+   * creation, BEFORE the trade record is created at close time. The previous
+   * approach (v2.0.777-788) patched trade records AFTER executeTrade() returned,
+   * but trade records are created DURING execution (inside forbidden execution
+   * engines) — the patch never ran in time.
+   *
+   * New approach: pre-compute features before executeTrade(), then scan the
+   * portfolio's positions map for newly created positions right after
+   * executeTrade() returns. The position object in the portfolio is the SAME
+   * reference used when creating the TradeRecord at close time — patching it
+   * here ensures the data flows through automatically.
    *
    * The entry-time features are passed as a parameter (not read from the
    * decision object) to ensure they are always available regardless of
@@ -3433,14 +3441,14 @@ ${recentExamples}
   private async executeTrade(
     decision: TradingDecision,
     auditGates: Array<{ gate: string; passed: boolean; reason: string }>,
-    /** v2.0.780: Entry-time market features to patch onto the trade record.
+    /** v2.0.789: Entry-time market features to inject into the position object.
      *  These are the SAME features used by OLR query and shadow trade
      *  opening — they must be consistent so the learning pipeline works. */
     entryMarketFeatures?: Record<string, number>,
-    /** v2.0.780: Entry-time OLR P(win) to patch onto the trade record.
+    /** v2.0.789: Entry-time OLR P(win) to inject into the position object.
      *  This is the TRUE entry-time OLR, not a close-time recompute. */
     entryOlrPWin?: number,
-    /** v2.0.780: Entry-time shadow win rate to patch onto the trade record.
+    /** v2.0.789: Entry-time shadow win rate to inject into the position object.
      *  This is the TRUE entry-time shadow WR, not a close-time recompute. */
     entryShadowWinRate?: number,
   ): Promise<{ success: boolean; error?: string; paperReports?: any[] }> {
@@ -3454,6 +3462,11 @@ ${recentExamples}
     if (decision.action === 'buy' || decision.action === 'sell') {
       try { prepareExecutionLens(normalizeSymbol(decision.symbol)); } catch { /* non-critical */ }
     }
+
+    // v2.0.789: Record the number of open positions BEFORE execution so we can
+    // detect newly created positions after execution returns.
+    const openSymsBefore = new Set(this.portfolio.getOpenSymbols().map(s => normalizeSymbol(s)));
+    const realPosSymsBefore = new Set(this.portfolio.getRealPositions().map(p => normalizeSymbol(p.symbol)));
 
     try {
     if (isRealMode) {
@@ -3477,20 +3490,18 @@ ${recentExamples}
             this.cycleHistory?.recordEntry(sym, decision.action === 'buy' ? 'buy' : 'sell', feats);
           }
         } catch { /* non-critical */ }
-        // v2.0.780: Patch the trade record with entry-time features
-        // The execResult may contain a trade record in its response.
-        // tradingManager.executeDecision() returns { success, error, trade? }
-        // We patch the trade record if it exists.
-        if ((execResult as any).trade) {
-          this.patchTradeRecordWithEntryFeatures(
-            [(execResult as any).trade],
-            decision.symbol,
-            decision.action as 'buy' | 'sell',
-            entryMarketFeatures ?? {},
-            entryOlrPWin,
-            entryShadowWinRate,
-          );
-        }
+        // v2.0.789: Inject entry-time features into the position object IMMEDIATELY
+        // after position creation. Scan the portfolio for newly created positions
+        // (those that weren't open before executeTrade() was called).
+        this.injectEntryFeaturesIntoNewPositions(
+          decision.symbol,
+          decision.action as 'buy' | 'sell',
+          entryMarketFeatures ?? {},
+          entryOlrPWin,
+          entryShadowWinRate,
+          openSymsBefore,
+          realPosSymsBefore,
+        );
         // v2.0.726: Reset cycles-since-last-trade counter
         this.cyclesSinceLastTrade = 0;
       }
@@ -3517,14 +3528,16 @@ ${recentExamples}
           this.entryOlrPWinCache.set(sym, olr.pWin);
         }
       } catch { /* non-critical */ }
-      // v2.0.780: Patch ALL trade records in the reports with entry-time features
-      this.patchTradeRecordWithEntryFeatures(
-        reports,
+      // v2.0.789: Inject entry-time features into the position object IMMEDIATELY
+      // after position creation. Scan the portfolio for newly created positions.
+      this.injectEntryFeaturesIntoNewPositions(
         decision.symbol,
         decision.action as 'buy' | 'sell',
         entryMarketFeatures ?? {},
         entryOlrPWin,
         entryShadowWinRate,
+        openSymsBefore,
+        realPosSymsBefore,
       );
       // v2.0.726: Reset cycles-since-last-trade counter
       this.cyclesSinceLastTrade = 0;
@@ -3534,6 +3547,112 @@ ${recentExamples}
       // v2.0.213 (#7): Always clear the execution lens after trade execution
       // so it doesn't leak into the next trade's computeATRSLTP call.
       clearExecutionLens();
+    }
+  }
+
+  /**
+   * v2.0.789: Inject entry-time market features, OLR P(win), and shadow win rate
+   * into the portfolio's position objects for positions that were just created
+   * by executeTrade(). This runs IMMEDIATELY after executeTrade() returns,
+   * BEFORE the trade record is created at close time.
+   *
+   * Why this works:
+   * - The position object in the portfolio is the SAME reference used when
+   *   creating the TradeRecord at close time (onPositionClosedLearning).
+   * - Patching the position object here means the data flows through to
+   *   the trade record automatically when it's created at close time.
+   * - The execution engines (paper-engine.ts, trading-manager.ts) are in the
+   *   FORBIDDEN zone — we cannot modify them to read runtime properties.
+   * - This approach works for BOTH paper and real trades because both
+   *   execution paths use the same portfolio position objects.
+   *
+   * @param symbol The symbol that was traded
+   * @param side The side that was traded
+   * @param entryMarketFeatures The entry-time market features to inject
+   * @param entryOlrPWin The entry-time OLR P(win) to inject
+   * @param entryShadowWinRate The entry-time shadow win rate to inject
+   * @param openSymsBefore Set of normalized symbols that were open before execution
+   * @param realPosSymsBefore Set of normalized symbols that were real positions before execution
+   */
+  private injectEntryFeaturesIntoNewPositions(
+    symbol: string,
+    side: 'buy' | 'sell',
+    entryMarketFeatures: Record<string, number>,
+    entryOlrPWin?: number,
+    entryShadowWinRate?: number,
+    openSymsBefore?: Set<string>,
+    realPosSymsBefore?: Set<string>,
+  ): void {
+    try {
+      const symNorm = normalizeSymbol(symbol);
+      const now = Date.now();
+      const recentWindow = 5000; // 5 seconds — positions created within this window are "new"
+
+      // Helper: patch a single position object with entry-time data
+      const patchPosition = (pos: any): boolean => {
+        if (!pos) return false;
+        // Skip if already has features (already patched by a previous call)
+        if (pos.entryMarketFeatures && Object.keys(pos.entryMarketFeatures).length > 0) return false;
+        // Skip if position was opened too long ago (not created by this executeTrade call)
+        if (pos.openedAt && (now - pos.openedAt) > recentWindow) return false;
+
+        // Inject market features
+        if (entryMarketFeatures && Object.keys(entryMarketFeatures).length > 0) {
+          pos.entryMarketFeatures = { ...entryMarketFeatures };
+        }
+
+        // Inject OLR P(win)
+        if (entryOlrPWin !== undefined && Number.isFinite(entryOlrPWin)) {
+          pos.entryOlrPWin = entryOlrPWin;
+        }
+
+        // Inject shadow win rate
+        if (entryShadowWinRate !== undefined && Number.isFinite(entryShadowWinRate)) {
+          pos.entryShadowWinRate = entryShadowWinRate;
+        }
+
+        return true;
+      };
+
+      let patchedCount = 0;
+
+      // 1. Check the portfolio's main positions map (paper positions)
+      const portfolio = this.portfolio.getPortfolio();
+      if (portfolio && portfolio.positions) {
+        for (const [key, pos] of portfolio.positions) {
+          const posNorm = normalizeSymbol(key);
+          // Skip positions that were open before executeTrade() was called
+          if (openSymsBefore && openSymsBefore.has(posNorm)) continue;
+          if (patchPosition(pos)) patchedCount++;
+        }
+      }
+
+      // 2. Check realPositions (importExchangePosition path)
+      const realPositions = this.portfolio.getRealPositions();
+      for (const pos of realPositions) {
+        const posNorm = normalizeSymbol(pos.symbol);
+        // Skip positions that were open before executeTrade() was called
+        if (realPosSymsBefore && realPosSymsBefore.has(posNorm)) continue;
+        if (patchPosition(pos)) patchedCount++;
+      }
+
+      // 3. Check cachedExchangePositions (HL API positions not yet imported)
+      if (this.cachedExchangePositions) {
+        for (const pos of this.cachedExchangePositions) {
+          const posNorm = normalizeSymbol(pos.symbol);
+          // Skip positions that were open before executeTrade() was called
+          if (realPosSymsBefore && realPosSymsBefore.has(posNorm)) continue;
+          if (patchPosition(pos)) patchedCount++;
+        }
+      }
+
+      if (patchedCount > 0) {
+        log.info(`🧬 [entry-features] Injected into ${patchedCount} new position(s) for ${symNorm} ${side.toUpperCase()} — marketFeatures=${Object.keys(entryMarketFeatures).length} keys, OLR=${entryOlrPWin !== undefined ? (entryOlrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadowWinRate !== undefined ? (entryShadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
+        // Persist immediately so the patches survive a crash
+        this.persistPortfolio();
+      }
+    } catch (err) {
+      log.warn(`🧬 [entry-features] Injection failed for ${symbol}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
