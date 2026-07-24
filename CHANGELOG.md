@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.810: FINAL FIX — OLR/Shadow data pipeline. Replace end-of-cycle patching with IMMEDIATE post-execution patching. Capture entry features (OLR P(win), shadow win rate, market features) BEFORE executeTrade() call, then scan ALL trade record sources IMMEDIATELY after executeTrade() returns for the newly created trade record (identified by symbol+side+cycleNumber). Patch the trade record with captured features and call persistPortfolio() immediately. This ensures entry-time features are stored on the trade record BEFORE any UI/logging code reads it. Previous 11 attempts (v2.0.777-809) all failed because they patched at end-of-cycle, after trade records were already consumed.
+
+
 ## v2.0.809: FINAL FIX — OLR/Shadow data pipeline. Replaced broken injectEntryFeaturesIntoNewPositions() with validateAndPatchTradeRecordsAfterExecution() that patches the ACTUAL TradeRecord objects (not position objects). Captures BEFORE state of all trade record sources before executeTrade(), then patches NEW records with entryMarketFeatures, entryOlrPWin, entryShadowWinRate after execution. Calls persistPortfolio() immediately after patching. Previous 11 attempts (v2.0.777-808) failed because they patched position objects (different references) or patched at end-of-cycle (too late).
 
 
