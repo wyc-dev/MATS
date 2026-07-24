@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.795: Fix OLR/Shadow data pipeline — injectEntryFeaturesIntoNewPositions() now builds features DIRECTLY from current market state at injection time instead of relying on the precomputed features map (which may be consumed/lost during executeTrade()). The method queries OLR P(win) and shadow win rate directly from the engines, ensuring features are ALWAYS available for injection regardless of execution path. Added debug logging when no positions are found to patch, helping diagnose injection timing issues.
+
+
 ## v2.0.794: Fix OLR/Shadow data pipeline — inject entry features into the decision object BEFORE executeTrade() so execution engines can read them during trade record creation. Previous 8 attempts (v2.0.777-790) all failed because they patched position objects AFTER executeTrade() returned, but the trade record is created DURING executeTrade() using a different reference. The decision object is the ONLY data structure that flows through to the execution engines during trade creation. By attaching entryMarketFeatures, entryOlrPWin, and entryShadowWinRate to the decision object before calling executeTrade(), the execution engines can read these values when creating the TradeRecord. This ensures 100% of trades have learning data from the moment the trade record is created.
 
 

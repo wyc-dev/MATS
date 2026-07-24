@@ -3728,7 +3728,7 @@ ${recentExamples}
   }
 
   /**
-   * v2.0.789: Inject entry-time market features, OLR P(win), and shadow win rate
+   * v2.0.795: Inject entry-time market features, OLR P(win), and shadow win rate
    * into the portfolio's position objects for positions that were just created
    * by executeTrade(). This runs IMMEDIATELY after executeTrade() returns,
    * BEFORE the trade record is created at close time.
@@ -3743,18 +3743,28 @@ ${recentExamples}
    * - This approach works for BOTH paper and real trades because both
    *   execution paths use the same portfolio position objects.
    *
+   * v2.0.795 FIX: Instead of relying on the precomputed features map (which
+   * was populated BEFORE executeTrade() but may have been consumed or lost
+   * during execution), this method now builds the features DIRECTLY from
+   * current market state at injection time. This ensures the features are
+   * ALWAYS available, regardless of whether the precomputed map was consumed.
+   *
+   * The method scans ALL open positions (paper + real + cached exchange) and
+   * patches any that are missing entry-time data. It uses a 5-second window
+   * to identify "new" positions (created by the current executeTrade call).
+   *
    * @param symbol The symbol that was traded
    * @param side The side that was traded
-   * @param entryMarketFeatures The entry-time market features to inject
-   * @param entryOlrPWin The entry-time OLR P(win) to inject
-   * @param entryShadowWinRate The entry-time shadow win rate to inject
+   * @param entryMarketFeatures The entry-time market features to inject (optional — built from current state if not provided)
+   * @param entryOlrPWin The entry-time OLR P(win) to inject (optional — queried from OLR if not provided)
+   * @param entryShadowWinRate The entry-time shadow win rate to inject (optional — queried from shadow engine if not provided)
    * @param openSymsBefore Set of normalized symbols that were open before execution
    * @param realPosSymsBefore Set of normalized symbols that were real positions before execution
    */
   private injectEntryFeaturesIntoNewPositions(
     symbol: string,
     side: 'buy' | 'sell',
-    entryMarketFeatures: Record<string, number>,
+    entryMarketFeatures?: Record<string, number>,
     entryOlrPWin?: number,
     entryShadowWinRate?: number,
     openSymsBefore?: Set<string>,
@@ -3765,6 +3775,56 @@ ${recentExamples}
       const now = Date.now();
       const recentWindow = 5000; // 5 seconds — positions created within this window are "new"
 
+      // v2.0.795: Build features from current market state if not provided.
+      // This is the critical fix — the precomputed features map may have been
+      // consumed or lost during executeTrade(), so we ALWAYS build fresh features
+      // at injection time as a fallback.
+      const activeSymbol = this.marketAgent?.getSelectedSymbol() ?? '';
+      const state = this.marketState?.getState(activeSymbol) ?? null;
+      const symState = this.marketState?.getState(symNorm) ?? null;
+      
+      const marketFeatures: Record<string, number> = entryMarketFeatures && Object.keys(entryMarketFeatures).length > 0
+        ? entryMarketFeatures
+        : {
+            volatility: safeNum(symState?.volatility, safeNum(state?.volatility, 0)),
+            srDistanceBps: safeNum(this.lastSRContext?.distanceToSupportBps, 0),
+            obImbalance: safeNum(symState?.orderBookImbalance, safeNum(state?.orderBookImbalance, 0)),
+            fundingRate: safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0),
+            volumeRatio: safeNum(this.sentimentEngine?.getVolumeRatio(), 1),
+            sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
+            sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
+            signalAgreement: safeNum(this.lastHACPResult?.consensus?.confidence, 0.5),
+            regimeOrdinal: regimeToOrdinal(state?.regime),
+            hourOfDay: currentHourOfDay(),
+            momentumShort: 0,
+            momentumLong: 0,
+          };
+
+      // v2.0.795: Query OLR P(win) at injection time if not provided.
+      // This ensures the trade record always has OLR data, even if the
+      // precomputed map was lost during executeTrade().
+      let olrPWin = entryOlrPWin;
+      if (olrPWin === undefined || !Number.isFinite(olrPWin)) {
+        try {
+          const olr = this.olrEngine.query(symNorm, marketFeatures, side, this.totalCycles);
+          if (Number.isFinite(olr.pWin)) {
+            olrPWin = olr.pWin;
+            this.entryOlrPWinCache.set(symNorm, olr.pWin);
+          }
+        } catch { /* non-critical */ }
+      }
+
+      // v2.0.795: Query shadow win rate at injection time if not provided.
+      let shadowWinRate = entryShadowWinRate;
+      if (shadowWinRate === undefined || !Number.isFinite(shadowWinRate)) {
+        try {
+          const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === symNorm);
+          if (shadowStats) {
+            shadowWinRate = side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
+          }
+        } catch { /* non-critical */ }
+      }
+
       // Helper: patch a single position object with entry-time data
       const patchPosition = (pos: any): boolean => {
         if (!pos) return false;
@@ -3774,18 +3834,18 @@ ${recentExamples}
         if (pos.openedAt && (now - pos.openedAt) > recentWindow) return false;
 
         // Inject market features
-        if (entryMarketFeatures && Object.keys(entryMarketFeatures).length > 0) {
-          pos.entryMarketFeatures = { ...entryMarketFeatures };
+        if (marketFeatures && Object.keys(marketFeatures).length > 0) {
+          pos.entryMarketFeatures = { ...marketFeatures };
         }
 
         // Inject OLR P(win)
-        if (entryOlrPWin !== undefined && Number.isFinite(entryOlrPWin)) {
-          pos.entryOlrPWin = entryOlrPWin;
+        if (olrPWin !== undefined && Number.isFinite(olrPWin)) {
+          pos.entryOlrPWin = olrPWin;
         }
 
         // Inject shadow win rate
-        if (entryShadowWinRate !== undefined && Number.isFinite(entryShadowWinRate)) {
-          pos.entryShadowWinRate = entryShadowWinRate;
+        if (shadowWinRate !== undefined && Number.isFinite(shadowWinRate)) {
+          pos.entryShadowWinRate = shadowWinRate;
         }
 
         return true;
@@ -3824,9 +3884,13 @@ ${recentExamples}
       }
 
       if (patchedCount > 0) {
-        log.info(`🧬 [entry-features] Injected into ${patchedCount} new position(s) for ${symNorm} ${side.toUpperCase()} — marketFeatures=${Object.keys(entryMarketFeatures).length} keys, OLR=${entryOlrPWin !== undefined ? (entryOlrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadowWinRate !== undefined ? (entryShadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
+        log.info(`🧬 [entry-features] Injected into ${patchedCount} new position(s) for ${symNorm} ${side.toUpperCase()} — marketFeatures=${Object.keys(marketFeatures).length} keys, OLR=${olrPWin !== undefined ? (olrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${shadowWinRate !== undefined ? (shadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
         // Persist immediately so the patches survive a crash
         this.persistPortfolio();
+      } else {
+        // v2.0.795: Log when no positions were found to patch — this helps
+        // diagnose if the injection is running but finding no new positions.
+        log.debug(`🧬 [entry-features] No new positions found to patch for ${symNorm} ${side.toUpperCase()} — ${openSymsBefore ? `openSymsBefore had ${openSymsBefore.size} symbols` : 'no openSymsBefore set'}, ${realPosSymsBefore ? `realPosSymsBefore had ${realPosSymsBefore.size} symbols` : 'no realPosSymsBefore set'}`);
       }
     } catch (err) {
       log.warn(`🧬 [entry-features] Injection failed for ${symbol}: ${err instanceof Error ? err.message : String(err)}`);
