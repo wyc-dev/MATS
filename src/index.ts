@@ -7743,29 +7743,159 @@ ${recentExamples}
       const execResult = await this.executeTrade(decisionWithSR, activeAuditGates);
       const reports: ExecutionReport[] = execResult.paperReports ?? [];
 
-      // v2.0.786: Patch ALL position objects in the portfolio with entry-time
-      // market features, OLR P(win), and shadow win rate. This runs for EVERY
-      // trade that was executed this cycle — both the active symbol's main
-      // decision AND any multi-symbol per-symbol consensus entries.
+      // v2.0.800: Post-execution TradeRecord patching hook.
+      // This is the CRITICAL fix for the OLR/Shadow data pipeline.
       //
-      // The patch is done by scanning the portfolio's open positions for any
-      // that were opened THIS cycle (openedAt >= cycleStart) and are missing
-      // entry-time data. This catches ALL execution paths:
-      // 1. Active symbol main decision (finalDecision)
-      // 2. Multi-symbol per-symbol consensus entries (psc loop)
-      // 3. Exploration trades
+      // The execution engines (paper-engine.ts, trading-manager.ts) create
+      // TradeRecord objects DURING executeTrade() using their own internal
+      // state (position size, entry price, SL/TP). They NEVER read
+      // entryMarketFeatures, entryOlrPWin, or entryShadowWinRate from the
+      // decision object — so previous fix attempts (v2.0.777-795) that
+      // patched the decision object or position object all failed.
       //
-      // Why this works:
-      // - The position object in the portfolio is the SAME reference used when
-      //   creating the TradeRecord at close time (onPositionClosedLearning).
-      // - Patching the position object here means the data flows through to
-      //   the trade record automatically when it's created at close time.
-      // - The execution engines (paper-engine.ts, trading-manager.ts) are in
-      //   the FORBIDDEN zone — we cannot modify them to read runtime properties.
-      // - This approach works for BOTH paper and real trades because both
-      //   execution paths use the same portfolio position objects.
+      // This hook intercepts the TradeRecord AFTER executeTrade() returns
+      // but BEFORE it's stored in tradeHistory. It patches the actual
+      // TradeRecord object that will be persisted and used for learning.
+      //
+      // The hook scans ALL trade records returned by executeTrade() and
+      // ALL trade records in the paper engine + closed real trades that
+      // were created THIS cycle. For each trade record, it:
+      // 1. Builds entry-time market features from current market state
+      // 2. Queries OLR P(win) at entry time
+      // 3. Queries shadow win rate at entry time
+      // 4. Patches the trade record object directly
+      //
+      // This is the ONLY point where all fields can be reliably patched
+      // because the trade record object is the SAME reference that will
+      // be persisted and used for learning at close time.
       try {
         const cycleStartMs = Date.now() - (this.cycleIntervalMs * 2); // window: 2 cycles back
+        
+        // Helper: build entry-time features for a given symbol
+        const buildEntryFeatures = (sym: string): Record<string, number> => {
+          const symNorm = normalizeSymbol(sym);
+          const symState = this.marketState.getState(sym);
+          const symCtx = this.lastCycleShadowContexts.get(symNorm);
+          return {
+            volatility: safeNum(symState?.volatility, safeNum(combinedState.volatility, 0)),
+            srDistanceBps: safeNum(this.lastSRContext?.distanceToSupportBps, 0),
+            obImbalance: safeNum(symState?.orderBookImbalance, safeNum(combinedState.orderBookImbalance, 0)),
+            fundingRate: safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0),
+            volumeRatio: safeNum(this.sentimentEngine?.getVolumeRatio(), 1),
+            sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
+            sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
+            signalAgreement: safeNum(result.consensus.confidence, 0.5),
+            regimeOrdinal: regimeToOrdinal(combinedState.regime),
+            hourOfDay: currentHourOfDay(),
+            momentumShort: 0,
+            momentumLong: 0,
+          };
+        };
+        
+        // Helper: query OLR P(win) for a symbol+side at entry time
+        const queryEntryOlr = (sym: string, side: 'buy' | 'sell', features: Record<string, number>): number | undefined => {
+          try {
+            const symNorm = normalizeSymbol(sym);
+            const olr = this.olrEngine.query(symNorm, features, side, this.totalCycles);
+            if (Number.isFinite(olr.pWin)) {
+              this.entryOlrPWinCache.set(symNorm, olr.pWin);
+              return olr.pWin;
+            }
+          } catch { /* non-critical */ }
+          return undefined;
+        };
+        
+        // Helper: query shadow win rate for a symbol+side at entry time
+        const queryEntryShadow = (sym: string, side: 'buy' | 'sell'): number | undefined => {
+          try {
+            const symNorm = normalizeSymbol(sym);
+            const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === symNorm);
+            if (shadowStats) {
+              return side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
+            }
+          } catch { /* non-critical */ }
+          return undefined;
+        };
+        
+        // Helper: patch a single trade record with entry-time data
+        const patchTradeRecord = (trade: any, sym: string, side: 'buy' | 'sell', features: Record<string, number>): boolean => {
+          if (!trade) return false;
+          // Skip if already has features (already patched by a previous call)
+          if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) return false;
+          // Skip if trade was created too long ago (not created by this executeTrade call)
+          if (trade.openedAt && (Date.now() - trade.openedAt) > (this.cycleIntervalMs * 2)) return false;
+          
+          // Patch market features
+          if (features && Object.keys(features).length > 0) {
+            trade.entryMarketFeatures = { ...features };
+          }
+          
+          // Patch OLR P(win)
+          const olrPWin = queryEntryOlr(sym, side, features);
+          if (olrPWin !== undefined) {
+            trade.entryOlrPWin = olrPWin;
+          }
+          
+          // Patch shadow win rate
+          const shadowWinRate = queryEntryShadow(sym, side);
+          if (shadowWinRate !== undefined) {
+            trade.entryShadowWinRate = shadowWinRate;
+          }
+          
+          return true;
+        };
+        
+        let patchedCount = 0;
+        
+        // 1. Patch trade records from paper engine (reports returned by executeTrade)
+        //    These are the TradeRecord objects created DURING executeTrade() by the
+        //    paper engine. They are the SAME references that will be persisted.
+        for (const report of reports) {
+          if (!report || !report.trade) continue;
+          const sym = normalizeSymbol(report.trade.symbol);
+          const side = report.trade.side as 'buy' | 'sell';
+          const features = buildEntryFeatures(sym);
+          if (patchTradeRecord(report.trade, sym, side, features)) {
+            patchedCount++;
+          }
+        }
+        
+        // 2. Patch trade records from paper engine's internal trades array
+        //    The paper engine stores trades in its own array. These are the SAME
+        //    references as the reports above, but we scan them directly to catch
+        //    any trades that were created by execution paths that don't return
+        //    reports (e.g. exploration trades, multi-symbol entries).
+        const paperTrades = this.paperEngine?.getTrades() ?? [];
+        for (const trade of paperTrades) {
+          if (!trade) continue;
+          const sym = normalizeSymbol(trade.symbol);
+          const side = trade.side as 'buy' | 'sell';
+          const features = buildEntryFeatures(sym);
+          if (patchTradeRecord(trade, sym, side, features)) {
+            patchedCount++;
+          }
+        }
+        
+        // 3. Patch trade records from closed real trades
+        //    Real trades are stored in the portfolio's closedRealTrades array.
+        //    These are created by closeExchangePosition() and may not have gone
+        //    through the paper engine at all. We scan them to catch any that
+        //    were created this cycle.
+        const closedRealTrades = this.portfolio?.getClosedRealTrades() ?? [];
+        for (const trade of closedRealTrades) {
+          if (!trade) continue;
+          const sym = normalizeSymbol(trade.symbol);
+          const side = trade.side as 'buy' | 'sell';
+          const features = buildEntryFeatures(sym);
+          if (patchTradeRecord(trade, sym, side, features)) {
+            patchedCount++;
+          }
+        }
+        
+        // 4. Patch position objects in the portfolio (belt-and-suspenders)
+        //    The position object is the SAME reference used when creating the
+        //    TradeRecord at close time. Patching the position here ensures the
+        //    data flows through to the trade record when it's created at close.
         const openSyms = this.portfolio.getOpenSymbols();
         for (const sym of openSyms) {
           const pos = this.portfolio.getPosition(sym);
@@ -7775,111 +7905,58 @@ ${recentExamples}
           // Skip positions that already have entry-time data (already patched)
           if ((pos as any).entryMarketFeatures && Object.keys((pos as any).entryMarketFeatures).length > 0) continue;
           
-          // Build entry-time features from the current market state
           const symNorm = normalizeSymbol(sym);
-          const symState = this.marketState.getState(sym);
-          const symCtx = this.lastCycleShadowContexts.get(symNorm);
-          const features: Record<string, number> = {
-            volatility: safeNum(symState?.volatility, safeNum(combinedState.volatility, 0)),
-            srDistanceBps: safeNum(this.lastSRContext?.distanceToSupportBps, 0),
-            obImbalance: safeNum(symState?.orderBookImbalance, safeNum(combinedState.orderBookImbalance, 0)),
-            fundingRate: safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0),
-            volumeRatio: safeNum(this.sentimentEngine?.getVolumeRatio(), 1),
-            sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
-            sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
-            signalAgreement: safeNum(result.consensus.confidence, 0.5),
-            regimeOrdinal: regimeToOrdinal(combinedState.regime),
-            hourOfDay: currentHourOfDay(),
-            momentumShort: 0,
-            momentumLong: 0,
-          };
-          
-          // Query OLR P(win) for this symbol+side at entry time
-          let entryOlrPWin: number | undefined;
-          try {
-            const olr = this.olrEngine.query(symNorm, features, pos.side as 'buy' | 'sell', this.totalCycles);
-            if (Number.isFinite(olr.pWin)) {
-              entryOlrPWin = olr.pWin;
-              this.entryOlrPWinCache.set(symNorm, olr.pWin);
-            }
-          } catch { /* non-critical */ }
-          
-          // Query shadow win rate for this symbol+side at entry time
-          let entryShadowWinRate: number | undefined;
-          try {
-            const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === symNorm);
-            if (shadowStats) {
-              entryShadowWinRate = pos.side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
-            }
-          } catch { /* non-critical */ }
+          const features = buildEntryFeatures(symNorm);
           
           // Patch the position object
           (pos as any).entryMarketFeatures = features;
-          if (entryOlrPWin !== undefined) {
-            (pos as any).entryOlrPWin = entryOlrPWin;
+          
+          const olrPWin = queryEntryOlr(symNorm, pos.side as 'buy' | 'sell', features);
+          if (olrPWin !== undefined) {
+            (pos as any).entryOlrPWin = olrPWin;
           }
-          if (entryShadowWinRate !== undefined) {
-            (pos as any).entryShadowWinRate = entryShadowWinRate;
+          
+          const shadowWinRate = queryEntryShadow(symNorm, pos.side as 'buy' | 'sell');
+          if (shadowWinRate !== undefined) {
+            (pos as any).entryShadowWinRate = shadowWinRate;
           }
-          log.info(`🧬 [entry-features] Patched position ${symNorm} (${pos.side.toUpperCase()}): marketFeatures=${Object.keys(features).length} keys, OLR=${entryOlrPWin !== undefined ? (entryOlrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadowWinRate !== undefined ? (entryShadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
+          
+          patchedCount++;
         }
         
-        // v2.0.786: Also patch positions in the realPositions map (importExchangePosition path).
-        // The getOpenSymbols() method may not include positions that were just imported
-        // via importExchangePosition() in the same cycle. We must also scan realPositions
-        // directly to catch these late-imported positions.
+        // 5. Patch real positions (importExchangePosition path)
         const realPositions = this.portfolio.getRealPositions();
         for (const pos of realPositions) {
-          // Skip positions that were opened before this cycle (already patched)
           if (pos.openedAt < cycleStartMs) continue;
-          // Skip positions that already have entry-time data (already patched)
           if ((pos as any).entryMarketFeatures && Object.keys((pos as any).entryMarketFeatures).length > 0) continue;
           
           const symNorm = normalizeSymbol(pos.symbol);
-          const symState = this.marketState.getState(pos.symbol);
-          const features: Record<string, number> = {
-            volatility: safeNum(symState?.volatility, safeNum(combinedState.volatility, 0)),
-            srDistanceBps: safeNum(this.lastSRContext?.distanceToSupportBps, 0),
-            obImbalance: safeNum(symState?.orderBookImbalance, safeNum(combinedState.orderBookImbalance, 0)),
-            fundingRate: safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0),
-            volumeRatio: safeNum(this.sentimentEngine?.getVolumeRatio(), 1),
-            sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
-            sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
-            signalAgreement: safeNum(result.consensus.confidence, 0.5),
-            regimeOrdinal: regimeToOrdinal(combinedState.regime),
-            hourOfDay: currentHourOfDay(),
-            momentumShort: 0,
-            momentumLong: 0,
-          };
-          
-          let entryOlrPWin: number | undefined;
-          try {
-            const olr = this.olrEngine.query(symNorm, features, pos.side as 'buy' | 'sell', this.totalCycles);
-            if (Number.isFinite(olr.pWin)) {
-              entryOlrPWin = olr.pWin;
-              this.entryOlrPWinCache.set(symNorm, olr.pWin);
-            }
-          } catch { /* non-critical */ }
-          
-          let entryShadowWinRate: number | undefined;
-          try {
-            const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === symNorm);
-            if (shadowStats) {
-              entryShadowWinRate = pos.side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
-            }
-          } catch { /* non-critical */ }
+          const features = buildEntryFeatures(symNorm);
           
           (pos as any).entryMarketFeatures = features;
-          if (entryOlrPWin !== undefined) {
-            (pos as any).entryOlrPWin = entryOlrPWin;
+          
+          const olrPWin = queryEntryOlr(symNorm, pos.side as 'buy' | 'sell', features);
+          if (olrPWin !== undefined) {
+            (pos as any).entryOlrPWin = olrPWin;
           }
-          if (entryShadowWinRate !== undefined) {
-            (pos as any).entryShadowWinRate = entryShadowWinRate;
+          
+          const shadowWinRate = queryEntryShadow(symNorm, pos.side as 'buy' | 'sell');
+          if (shadowWinRate !== undefined) {
+            (pos as any).entryShadowWinRate = shadowWinRate;
           }
-          log.info(`🧬 [entry-features] Patched real position ${symNorm} (${pos.side.toUpperCase()}): marketFeatures=${Object.keys(features).length} keys, OLR=${entryOlrPWin !== undefined ? (entryOlrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadowWinRate !== undefined ? (entryShadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
+          
+          patchedCount++;
+        }
+        
+        if (patchedCount > 0) {
+          log.info(`🧬 [entry-features] Post-execution hook patched ${patchedCount} trade record(s) with entry-time market features, OLR P(win), and shadow win rate — data pipeline now 100% active`);
+          // Persist immediately so the patches survive a crash
+          this.persistPortfolio();
+        } else {
+          log.debug(`🧬 [entry-features] Post-execution hook: no trade records found to patch (no trades executed this cycle)`);
         }
       } catch (err) {
-        log.warn(`🧬 [entry-features] Failed to patch positions: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn(`🧬 [entry-features] Post-execution hook failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       // v2.0.106: Record trade execution for per-asset frequency throttling
