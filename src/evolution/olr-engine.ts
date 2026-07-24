@@ -808,26 +808,41 @@ export class OLREngine {
   }
 
   /**
-   * v2.0.768: Accept optional currentFeatures parameter. When provided, these
-   * fresh market features (volatility, OB, funding, regime) are used for the
-   * prediction instead of the stale features captured at shadow entry time.
-   * This prevents P(win) miscalibration where OLR predicts 100%/0% based on
-   * 30-minute-old data that no longer reflects current market conditions.
+   * v2.0.784: Accept optional entryFeatures parameter. When provided, these
+   * features are used for the sigmoid computation (logit → pWin) INSTEAD of
+   * the features passed to query(). This is the ROOT CAUSE fix for OLR
+   * miscalibration on real trades:
    * 
-   * The currentFeatures are used ONLY for the sigmoid computation (logit → pWin).
+   * PROBLEM: The model was trained on features SNAPSHOTTED at trade entry time
+   * (via feedTrade()), but query() was called with features from the CURRENT
+   * decision cycle — which may be 1-5 minutes OLDER than the actual entry time.
+   * Market conditions change between the decision cycle and the actual entry
+   * (which happens in the next cycle after execution). This creates a systematic
+   * distribution shift between training (entry-time features) and inference
+   * (cycle-time features), destroying calibration accuracy.
+   * 
+   * FIX: The caller (index.ts) now collects market features ONCE at the point
+   * where the trade decision is made, and passes them as entryFeatures to BOTH
+   * OLR.query() and the trade record creation. This ensures the P(win) prediction
+   * uses the SAME features that will be recorded at entry time, eliminating the
+   * distribution shift.
+   * 
+   * The entryFeatures are used ONLY for the sigmoid computation (logit → pWin).
    * They are NOT fed into Welford normalization or SGD training — those still
    * use the original features from feedTrade(). This ensures the model trains
    * on the features that were actually present at trade entry, but predicts
-   * using the features that reflect current market conditions.
+   * using the features that reflect the conditions at decision time (which are
+   * the same as entry time because the caller snapshots them at decision time).
    * 
-   * If currentFeatures is not provided, falls back to the original behavior
-   * (using the features passed to query()).
+   * If entryFeatures is not provided, falls back to the original behavior
+   * (using the features passed to query()). This maintains backward compatibility
+   * with the shadow trade engine and any other callers that don't snapshot.
    * 
-   * v2.0.768: The feature contributions in the result now reflect the CURRENT
-   * features (not the stored ones), so the explanation accurately describes
-   * which market conditions are driving the prediction RIGHT NOW.
+   * v2.0.784: The feature contributions in the result now reflect the ENTRY
+   * features (not the cycle-time features), so the explanation accurately
+   * describes which market conditions were present when the trade was decided.
    */
-  query(symbol: string, features: Record<string, number>, side: 'buy' | 'sell', currentCycle?: number, currentFeatures?: Record<string, number>): OLRQueryResult {
+  query(symbol: string, features: Record<string, number>, side: 'buy' | 'sell', currentCycle?: number, entryFeatures?: Record<string, number>): OLRQueryResult {
     const empty = (reason: string): OLRQueryResult => ({
       pWin: 0.5,
       nSamples: 0,
@@ -847,11 +862,16 @@ export class OLREngine {
       return empty(`Only ${model.nSamples} samples for ${symbol} ${side.toUpperCase()} (need ${OLR_CONFIG.minSamplesForQuery})`);
     }
 
-    // v2.0.768: Use currentFeatures for prediction if provided, otherwise fall back
+    // v2.0.784: Use entryFeatures for prediction if provided, otherwise fall back
     // to the features passed to query(). This ensures the sigmoid computation uses
-    // fresh market data (volatility, OB, funding, regime) rather than stale features
-    // captured at shadow entry time that may be 5-60 minutes old.
-    const predictionFeatures = currentFeatures ?? features;
+    // the SAME features that will be recorded at trade entry time, eliminating the
+    // systematic distribution shift between training (entry-time features) and
+    // inference (cycle-time features) that caused OLR to be miscalibrated.
+    //
+    // The caller (index.ts) snapshots market features at decision time and passes
+    // them as entryFeatures. This is the same snapshot that gets recorded in the
+    // trade record and later passed to feedTrade() when the trade resolves.
+    const predictionFeatures = entryFeatures ?? features;
     const vec = this.contextToVector(predictionFeatures);
     const xNorm = this.normalize(model, vec);
     const xFull = [1, ...xNorm];
@@ -918,8 +938,8 @@ export class OLREngine {
 
     const sourceStr = `shadow=${sourceBreakdown.shadow} paper=${sourceBreakdown.paper} real=${sourceBreakdown.real} backfill=${sourceBreakdown.backfill}`;
     
-    // v2.0.768: Include whether current features were used in the explanation
-    const featureSource = currentFeatures ? ' (fresh market data)' : ' (stored entry features)';
+    // v2.0.784: Include whether entry features were used in the explanation
+    const featureSource = entryFeatures ? ' (entry-time snapshot)' : ' (cycle-time features)';
     // v2.0.229 Fix B: Show effective (live) samples first, total second — so the
     // agent sees "1700 live / 3097 total" and knows 1397 are unreliable backfill.
     const explanation = `P(win)=${(pWin * 100).toFixed(0)}%${featureSource} (${effectiveSamples} live / ${model.nSamples} total samples [${sourceStr}], conf=${confLabel}) | Key: ${topFeatures}`;
