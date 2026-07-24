@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.770: Fix OLR overparameterization — add adaptive feature selection that reduces effective feature dimension to 5 when N < 2*D (30 samples for D=15), preventing extreme 0%/100% P(win) from underdetermined model. Only top-5 most informative features (volatility, srDistanceBps, obImbalance, sentiment, fundingRate) are active when data is scarce; all 15 features become active when N >= 30. This ensures at least 6 samples per parameter instead of 2, giving the 5-bin calibration map meaningful variation to calibrate.
+
+
 ## v2.0.231: Fix premature SL on high-confidence trades — add olrConfidence parameter to computeATRSLTP that scales SL multiplier from 1.5× to 2.5× ATR when OLR P(win) > 80%, preventing premature stops on high-confidence entries. Also tightens SL to 1.2× ATR when confidence < 50% to minimize risk on uncertain entries. Caps widened to 8%/12% for high-confidence trades.
 
 
