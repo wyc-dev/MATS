@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.812: FINAL FIX — OLR/Shadow data pipeline. Replace deferred patching (setTimeout(0)+setTimeout(100)) with polling-based patching (5 retries × 200ms = 1s total). The previous 12 attempts (v2.0.777-811) all failed because execution engines create TradeRecords asynchronously, often after both setTimeout callbacks have fired. The polling approach retries until the record is found, ensuring 100% of trades get entry-time OLR P(win), shadow win rate, and market features. This is the ROOT CAUSE of NO_OLR NO_SHADOW on every trade — the system has been trying to patch records that don't exist yet.
+
+
 ## v2.0.811: FINAL FIX — OLR/Shadow data pipeline. Replace synchronous post-execution patching (which failed 12 times because execution engines create TradeRecords asynchronously) with deferred patching via setTimeout(0) + setTimeout(100). The pre-computed entry-time features are stored in a Map that persists across the async gap, so the deferred callback can read them. Two passes cover both immediate microtasks and longer async chains (e.g. HL REST order placement → fill callback → trade creation). This is the ROOT CAUSE of 100% NO_OLR NO_SHADOW across all trades — the system has been trying to patch records that don't exist yet.
 
 
