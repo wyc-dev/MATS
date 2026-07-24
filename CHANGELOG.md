@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.814: CRITICAL — Fix thesis_invalidation force-close profitability guard. The 59-minute timer systematically exits winning trades at +1.9% (trades #3, #9, #13, #16). Previous v2.0.799/798 guard failed because it checked profitability at closePosition() call time but the timer fires between cycles. New guard checks portfolio's unrealizedPnl (updated by WS price feed every tick) BEFORE calling closeTrade(). If position is profitable, skip close entirely. Secondary guard re-fetches current price from market state as fallback for stale unrealizedPnl. This prevents the system from capping its own winners at +1.9% while letting losers run to -2.0%.
+
+
 ## v2.0.813: CRITICAL — OLR/Shadow data pipeline FINAL FIX. Replaced polling-based post-execution patching (5 retries × 200ms) with DIRECT INJECTION into TradeRecord creation path. The polling approach failed because execution engines create TradeRecords asynchronously, often after >1 second delays. New approach: (1) stores pre-computed features in a map BEFORE executeTrade(), (2) monkey-patches portfolio's openPosition/importExchangePosition methods to inject features DIRECTLY onto TradeRecord objects at creation time (synchronous, no async gap), (3) runs post-execution validation as belt-and-suspenders. This ensures 100% of trade records have entry-time features, OLR P(win), and shadow win rate — ALL learning systems (EXP, OLR training, pattern classifier, RIL) now receive training data.
 
 

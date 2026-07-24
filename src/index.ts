@@ -6250,14 +6250,36 @@ ${recentExamples}
       // moment, but the timer fires BETWEEN these checks. This guard is the LAST
       // line of defense — at the actual closePosition() call — ensuring NO code
       // path can force-close a winning position.
+      //
+      // v2.0.814: CRITICAL FIX — The profitability guard was checking PnL at
+      // closePosition() call time, but the 59-minute timer fires BETWEEN cycles
+      // and the guard was not intercepting the force-close path correctly.
+      // The fix: re-fetch current price at the moment of position closure and
+      // skip the close if the position is profitable. This catches positions that
+      // became profitable BETWEEN the invalidation check and this close call.
+      // Additionally, we now check the position's UNREALIZED PnL from the
+      // portfolio (which is updated by the WS price feed every tick) BEFORE
+      // calling closeTrade(). If the position is profitable, we skip the close
+      // entirely and log the guard activation.
       if (result.thesisInvalidatedSymbols && result.thesisInvalidatedSymbols.length > 0) {
         for (const sym of result.thesisInvalidatedSymbols) {
           const pos = this.portfolio.getPosition(sym);
           if (!pos) continue;
           
-          // v2.0.798: FINAL PROFITABILITY GUARD — re-fetch current price and
-          // compute unrealized PnL. If the position is profitable, SKIP the close
-          // and log the guard activation. This catches positions that became
+          // v2.0.814: CRITICAL FIX — Check unrealized PnL from the portfolio
+          // (updated by WS price feed every tick) BEFORE calling closeTrade().
+          // The portfolio's unrealizedPnl is the most up-to-date PnL because
+          // the WS price feed updates it in real-time between cycles.
+          // If the position is profitable, skip the close entirely.
+          if (pos.unrealizedPnl > 0) {
+            log.warn(`🛡️ [PROFIT GUARD v2] ${sym}: position is profitable (unrealized PnL=${pos.unrealizedPnl.toFixed(2)}) — BLOCKING force-close. Thesis was invalidated but position is winning. Keeping position open.`);
+            this.thesisInvalidatedCloseSymbols.delete(sym);
+            continue;
+          }
+          
+          // v2.0.814: SECONDARY GUARD — Re-fetch current price from market state
+          // as a fallback. The portfolio's unrealizedPnl may be stale if the WS
+          // price feed hasn't updated recently. This catches positions that became
           // profitable BETWEEN the invalidation check and this close call.
           const guardPrice = this.marketState?.getState(sym)?.price ?? pos.currentPrice ?? 0;
           if (guardPrice > 0) {
@@ -6265,7 +6287,7 @@ ${recentExamples}
               ? (guardPrice - pos.averageEntryPrice) / pos.averageEntryPrice
               : (pos.averageEntryPrice - guardPrice) / pos.averageEntryPrice;
             if (guardPnl > 0) {
-              log.warn(`🛡️ [PROFIT GUARD] ${sym}: position is profitable (PnL=${(guardPnl * 100).toFixed(1)}%) at close time — BLOCKING force-close. Thesis was invalidated but position is winning. Keeping position open.`);
+              log.warn(`🛡️ [PROFIT GUARD v2] ${sym}: position is profitable (PnL=${(guardPnl * 100).toFixed(1)}%) at close time — BLOCKING force-close. Thesis was invalidated but position is winning. Keeping position open.`);
               this.thesisInvalidatedCloseSymbols.delete(sym);
               continue;
             }
