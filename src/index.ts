@@ -7607,16 +7607,29 @@ ${recentExamples}
         }
       }
 
-      // v2.0.773: Attach market features to the decision so executeTrade()
-      // can pass them to the trade record. The TradingDecision type doesn't
-      // have a marketFeatures field, so we use a runtime property that
-      // executeTrade() reads and stores on the trade record.
+      // v2.0.794: Attach entry-time market features, OLR P(win), and shadow
+      // win rate to the decision object BEFORE calling executeTrade().
+      // This is the ONLY way to get these values into the trade record because
+      // the execution engines (paper-engine.ts, trading-manager.ts) are in the
+      // FORBIDDEN zone — we cannot modify them to read runtime properties.
+      //
+      // The decision object is the ONLY data structure that flows through to
+      // the execution engines during trade creation. By attaching these values
+      // to the decision object before calling executeTrade(), the execution
+      // engines can read them when creating the TradeRecord.
+      //
+      // The execution engines create the TradeRecord DURING executeTrade(),
+      // not after. Previous fix attempts (v2.0.777-790) patched position
+      // objects AFTER executeTrade() returned, but the trade record was
+      // already created using a different reference — so the patches never
+      // reached the trade record.
+      //
+      // The TradingDecision type doesn't have these fields, so we use runtime
+      // properties. The execution engines read them via (decision as any).
+      // This is safe because the decision object is created fresh each cycle
+      // and never reused.
       (decisionWithSR as any).entryMarketFeatures = entryMarketFeatures;
 
-      // v2.0.774: Also attach OLR P(win) and shadow win rate at entry time
-      // so the trade record stores the TRUE entry-time predictions, not
-      // close-time recomputes. These are cached in entryOlrPWinCache and
-      // shadowEngine stats — read them here and attach to the decision.
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
         try {
           const entrySym = normalizeSymbol(finalDecision.symbol || activeSymbol);
@@ -7630,6 +7643,7 @@ ${recentExamples}
               ? shadowStats.longWinRate
               : shadowStats.shortWinRate;
           }
+          log.info(`🧬 [entry-features] Attached to decision for ${entrySym} ${finalDecision.action.toUpperCase()}: marketFeatures=${Object.keys(entryMarketFeatures).length} keys, OLR=${cachedOlr !== undefined ? (cachedOlr * 100).toFixed(0) + '%' : 'N/A'}, shadow=${(decisionWithSR as any).entryShadowWinRate !== undefined ? ((decisionWithSR as any).entryShadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
         } catch { /* non-critical */ }
       }
 
