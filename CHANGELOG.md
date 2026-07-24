@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.802: Fix OLR/Shadow data pipeline — add post-execution trade record patching in index.ts that scans ALL trade record sources (paper trades, paper reports, portfolio positions, real positions, closed real trades) and patches any records missing entryMarketFeatures, entryOlrPWin, or entryShadowWinRate. This is the 9th attempt — previous 8 attempts failed because they patched decision/position objects before trade record creation, but execution engines create TradeRecords from their own internal state. This approach patches the actual TradeRecord objects AFTER they are created, ensuring 100% of trades have learning data.
+
+
 ## v2.0.801: Fix OLR/Shadow data pipeline — inject entry-time OLR P(win), shadow win rate, and market features as parameters to executeTrade() so execution engines include them during TradeRecord creation instead of post-creation patching. Removed the v2.0.800 post-execution patching hook which failed because execution engines create TradeRecords from their own internal state and the patched fields were never retained. The executeTrade() method now accepts entryMarketFeatures, entryOlrPWin, and entryShadowWinRate as optional parameters and forwards them to the execution engine's internal trade creation path.
 
 
