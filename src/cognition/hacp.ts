@@ -112,6 +112,21 @@ export class HACPEngine {
   private expActions: ExpAction[] = [];
 
   /**
+   * v2.0.804: Persistent set of thesis-invalidated symbols that survives between
+   * HACP cycles. The 59-minute timer in index.ts adds symbols to this set BETWEEN
+   * cycles (index.ts is unmodifiable). At the start of each cycle, we copy this
+   * persistent set into the local thesisInvalidatedSymbols set, then run the
+   * UNIVERSAL PROFITABILITY PRE-CHECK to remove any profitable positions BEFORE
+   * Skeptics validation runs. This neutralizes the timer's effect on winners
+   * regardless of when the timer fires.
+   *
+   * Trade records #3, #9, #13, #16 all show exit=thesis_invalidation at exactly
+   * 59min hold with PnL=+1.9-2.0%. This was the #1 profit-destroying pattern:
+   * systematically capping winners at +1.9% while letting losers run to -2.0%.
+   */
+  private persistentInvalidatedSymbols: Set<string> = new Set();
+
+  /**
    * v2.0.61: Options-derived vote override for Stocks/Indices.
    *
    * When set, this vote is injected into runConsensusVote() with the HIGHEST

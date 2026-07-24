@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.805: Fix tsc error TS2339 — add missing `persistentInvalidatedSymbols: Set<string>` class field declaration to HACPEngine. The v2.0.804 changelog described adding this field but the actual declaration was omitted from the class definition, causing 4 TypeScript errors.
+
+
 ## v2.0.803: Fix OLR/Shadow data pipeline — add END-OF-CYCLE trade record patching in index.ts that runs AFTER all execution engines have finished creating TradeRecords. Scans ALL trade record sources (paperEngine.trades, paperEngine.reports, portfolio.positions, realPositions, closedRealTrades) and patches any records missing entryMarketFeatures, entryOlrPWin, or entryShadowWinRate using a pre-computed entry features map. This is the 10th attempt — previous 9 failed because they patched before or during execution engine work, and the engines overwrote the patches. This approach patches AFTER all engines are done, ensuring patches persist.
 
 
