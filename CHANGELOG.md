@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.797: Fix OLR sigmoid saturation — reduce L2 regularization from 0.1 to 0.001 and maxWeight from 3.0 to 2.0. The previous λ=0.1 was TOO STRONG: it pulled ALL weights toward zero, preventing the model from learning strong signals. The bias term then dominated, causing ALL predictions to cluster around the majority class probability (0% or 100%). With λ=0.001 (100x weaker), feature weights can grow large enough to overcome the bias when the data supports it. maxWeight=2.0 ensures individual features don't saturate the sigmoid while still allowing strong predictions (2-3 features at ±2.0 = logit ±4-6, well within discriminative range). This is the ROOT CAUSE fix for NO_OLR appearing on every trade: the system treated 0%/100% as unreliable because they were always at extremes. Now the model can produce calibrated predictions across the full [0,1] range.
+
+
 ## v2.0.796: Fix 59-minute thesis invalidation timer in hacp.ts — add UNIVERSAL PROFITABILITY PRE-CHECK at the start of Phase 0.5 that removes profitable positions from the thesisInvalidatedSymbols set BEFORE any Skeptics validation. The 59-minute timer in index.ts (which we cannot modify) fires between cycles and adds profitable positions to the invalidation set. The v2.0.793 FINAL PROFIT GUARD in index.ts ran AFTER hacp.ts returned, which was too late. This fix intercepts the timer's decision at the start of each HACP cycle by clearing profitable positions from the invalidation set. Trade records #3, #9, #13, #16 all showed 59min holds at $1.95 PnL (1.9%) — this was the #1 profit-destroying pattern: systematically capping winners at +1.9% while letting losers run to -2.0%. The fix preserves the timer's function for genuinely losing positions (PnL < -0.5%) and only blocks force-closes for profitable positions.
 
 

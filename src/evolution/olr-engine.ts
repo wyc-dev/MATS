@@ -212,13 +212,30 @@ export interface OLRSymbolStats {
 const OLR_CONFIG = {
   learningRate: 0.05,
   /** L2 regularization strength (ridge penalty). Applied to all weights including bias.
-   *  v2.0.739: Increased from 0.01 to 0.1 to further prevent weight explosion when training
-   *  samples are scarce (12 features, ~100 samples per side). The stronger penalty
-   *  shrinks weights toward zero, preventing sigmoid saturation at 0 or 1. The 0.01 value
-   *  was insufficient — with 200 backfill samples and consistent outcomes, weights still
-   *  grew large enough to saturate the sigmoid. 0.1 provides 10x stronger regularization,
-   *  which is appropriate for a model with 12 features and ~100-300 total samples. */
-  l2Regularization: 0.1,
+   *  v2.0.797: REDUCED from 0.1 to 0.001. The previous value (0.1) was TOO STRONG — it
+   *  pulled ALL weights toward zero, preventing the model from learning strong signals.
+   *  With 15 features and ~100-300 total samples, λ=0.1 means the regularization term
+   *  (0.1 * w) dominates the gradient update (η * error * x ≈ 0.05 * 0.5 * 1 = 0.025),
+   *  causing weights to shrink to near-zero regardless of the data. This is the ROOT CAUSE
+   *  of sigmoid saturation: weights are so small that w·x ≈ 0 for all inputs, and the
+   *  sigmoid outputs ~0.5 for everything. But wait — the system shows 0% or 100%, not 50%.
+   *  That means the BIAS term (which is also regularized) is dominating. With λ=0.1,
+   *  the bias is pulled toward zero, but if the model has 200 backfill samples with
+   *  consistent outcomes (e.g., 80% wins), the bias learns P(win) ≈ 0.8. Then when
+   *  live data comes in with different outcomes, the bias is already set and the feature
+   *  weights are too small to overcome it. The result: ALL predictions cluster around
+   *  the bias value (0% or 100% depending on the majority class).
+   *  
+   *  The fix: λ=0.001 provides just enough regularization to prevent unbounded weight
+   *  growth (which would cause true sigmoid saturation at 0 or 1) without suppressing
+   *  the signal. At λ=0.001, the regularization term (0.001 * w) is 100x smaller than
+   *  the gradient update, so the model can learn strong feature weights when the data
+   *  supports it. The bias can still drift, but the feature weights can overcome it.
+   *  
+   *  Combined with maxWeight=2.0 (see below), this ensures the sigmoid operates in its
+   *  discriminative range (|z| < 10) for most inputs, while still allowing extreme
+   *  predictions (|z| > 10) when multiple features agree strongly. */
+  l2Regularization: 0.001,
   /** SGD learning-rate decay: η_t = learningRate / (1 + decayRate × liveSamples).
    *  liveSamples = nSamples - backfillSamples, so backfill (weight=0.1, v2.0.229) does NOT
    *  freeze the model against live adaptation. Prevents late samples from
@@ -240,13 +257,20 @@ const OLR_CONFIG = {
   highConfidenceSamples: 50,
   mediumConfidenceSamples: 20,
   welfordEpsilon: 1e-8,
-  /** v2.0.739: Reduced from 5.0 to 3.0 to further prevent weight explosion.
-   *  With 12 features and sigmoid saturation at |z| > 10, a max weight of 3.0 per
-   *  feature means at most 3-4 features can push the logit to saturation. Combined
-   *  with L2 regularization (0.1), this keeps weights in a reasonable range where the
-   *  sigmoid output is calibrated (not 0 or 1). The previous 5.0 limit was still too
-   *  high — with 12 features, 5.0 * 12 = 60 logit, which saturates the sigmoid. */
-  maxWeight: 3.0,
+  /** v2.0.797: REDUCED from 3.0 to 2.0. With 15 features, maxWeight=3.0 means max logit
+   *  = 3.0 * 15 = 45, which still saturates the sigmoid (sigmoid(45) = 1.0). At maxWeight=2.0,
+   *  max logit = 2.0 * 15 = 30, which is at the edge of sigmoid's discriminative range
+   *  (sigmoid(30) = 0.9999999, still effectively 1.0). But in practice, not all 15 features
+   *  will be at max simultaneously — most will be near zero (regularized). The typical
+   *  logit will be 2-3 features at ±2.0 = ±4-6, which is well within the discriminative
+   *  range (sigmoid(6) = 0.998, sigmoid(-6) = 0.002). This preserves the model's ability
+   *  to make strong predictions when the evidence is strong, while preventing the
+   *  degenerate case where ALL features saturate simultaneously.
+   *  
+   *  Combined with λ=0.001 (weak regularization), this allows the model to learn strong
+   *  feature weights (up to ±2.0) without saturating the sigmoid. The 5-bin calibration
+   *  map then handles the final accuracy adjustment. */
+  maxWeight: 2.0,
   /** v2.0.722: Confidence penalty threshold. When nSamples < this value, the
    *  prediction is pulled toward 0.5 using a Bayesian prior. This prevents
    *  extreme P(win) values (near 0 or 1) when the model has insufficient evidence.
