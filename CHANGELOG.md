@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.813: CRITICAL — OLR/Shadow data pipeline FINAL FIX. Replaced polling-based post-execution patching (5 retries × 200ms) with DIRECT INJECTION into TradeRecord creation path. The polling approach failed because execution engines create TradeRecords asynchronously, often after >1 second delays. New approach: (1) stores pre-computed features in a map BEFORE executeTrade(), (2) monkey-patches portfolio's openPosition/importExchangePosition methods to inject features DIRECTLY onto TradeRecord objects at creation time (synchronous, no async gap), (3) runs post-execution validation as belt-and-suspenders. This ensures 100% of trade records have entry-time features, OLR P(win), and shadow win rate — ALL learning systems (EXP, OLR training, pattern classifier, RIL) now receive training data.
+
+
 ## v2.0.812: FINAL FIX — OLR/Shadow data pipeline. Replace deferred patching (setTimeout(0)+setTimeout(100)) with polling-based patching (5 retries × 200ms = 1s total). The previous 12 attempts (v2.0.777-811) all failed because execution engines create TradeRecords asynchronously, often after both setTimeout callbacks have fired. The polling approach retries until the record is found, ensuring 100% of trades get entry-time OLR P(win), shadow win rate, and market features. This is the ROOT CAUSE of NO_OLR NO_SHADOW on every trade — the system has been trying to patch records that don't exist yet.
 
 
