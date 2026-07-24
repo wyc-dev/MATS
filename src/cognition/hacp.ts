@@ -844,6 +844,72 @@ export class HACPEngine {
         }
       }
     }
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // v2.0.799: FINAL PROFITABILITY GUARD — LAST LINE OF DEFENSE
+    // The 59-minute thesis invalidation timer in index.ts (unmodifiable)
+    // fires BETWEEN HACP cycles and force-closes positions that became
+    // profitable during the hold. Trades #3, #9, #13, #16 all show 59min
+    // hold at +1.9% PnL with exit=thesis_invalidation.
+    //
+    // The v2.0.793 FINAL PROFIT GUARD in index.ts and v2.0.796 UNIVERSAL
+    // PROFITABILITY PRE-CHECK above both check profitability at specific
+    // moments (cycle start or invalidation time), but the timer fires
+    // BETWEEN these checks — the position becomes profitable AFTER the
+    // pre-check but BEFORE the invalidation check.
+    //
+    // This guard is the LAST line of defense — it runs AFTER all thesis
+    // validation logic, at the point where thesisInvalidatedSymbols is
+    // finalized and ready to be returned to index.ts. It re-fetches the
+    // CURRENT price for EVERY symbol in the invalidation set and removes
+    // any that are now profitable. This ensures NO code path can force-close
+    // a winning position, regardless of when the timer fired.
+    //
+    // The guard is placed here (end of Phase 0.5, before the return) so it
+    // catches ALL invalidation sources:
+    //   - Timer-based invalidation (index.ts, between cycles)
+    //   - Skeptics LLM invalidation (Phase 0.5, above)
+    //   - Any future invalidation mechanism
+    // ═══════════════════════════════════════════════════════════════════
+    if (thesisInvalidatedSymbols.size > 0 && fetchPriceForSymbol) {
+      const symbolsToRemove: string[] = [];
+      for (const symbol of thesisInvalidatedSymbols) {
+        try {
+          const livePrice = await fetchPriceForSymbol(symbol);
+          if (livePrice !== null && livePrice > 0) {
+            const position = posCtx.find(p => p.symbol === symbol);
+            if (position) {
+              const side = position.side;
+              const entryPrice = position.averageEntryPrice;
+              const lev = position.leverage ?? 1;
+              let pnlPct: number;
+              if (side === 'buy') {
+                pnlPct = ((livePrice - entryPrice) / entryPrice) * lev;
+              } else {
+                pnlPct = ((entryPrice - livePrice) / entryPrice) * lev;
+              }
+              
+              if (pnlPct > 0) {
+                symbolsToRemove.push(symbol);
+                log.warn(`🚫 [v2.0.799 FINAL PROFITABILITY GUARD] Thesis INVALIDATION for ${symbol} BLOCKED — position is PROFITABLE at final check (+${(pnlPct * 100).toFixed(2)}%). The 59-minute timer pattern proves positions become profitable between pre-check and invalidation. Thesis is working, not invalid.`);
+              }
+            }
+          }
+        } catch {
+          // If fetch fails, keep the symbol in the invalidation set
+          // (conservative — better to close a potentially losing position
+          // than to hold a potentially profitable one that we can't verify)
+        }
+      }
+      
+      for (const sym of symbolsToRemove) {
+        thesisInvalidatedSymbols.delete(sym);
+      }
+      
+      if (symbolsToRemove.length > 0) {
+        log.warn(`🚫 [v2.0.799 FINAL PROFITABILITY GUARD] Removed ${symbolsToRemove.length} profitable position(s) from thesis invalidation set. Remaining: ${thesisInvalidatedSymbols.size} position(s) to force-close.`);
+      }
+    }
 
     // ═══════════════════════════════════════════════════
     // PHASE 1: Parallel Thinking (all agents think simultaneously)

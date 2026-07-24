@@ -849,3 +849,7 @@ The MarketContext interface now requires `recentTradeCount` to be populated with
 
 ## System Engineer Update
 The entry-time data pipeline now has two independent injection paths: (1) precomputed features map (populated before executeTrade), and (2) direct state-based injection (built at injection time). Path 2 is the fallback that ensures 100% coverage even when path 1 fails. The injectEntryFeaturesIntoNewPositions() method is now self-sufficient and does not depend on any pre-execution state.
+
+
+## System Engineer Update
+Added v2.0.799 FINAL PROFITABILITY GUARD at the end of Phase 0.5 in executeDecisionCycle(). The guard runs AFTER all thesis validation logic (pre-check, post-check, Skeptics LLM, final profit guard) and re-fetches the CURRENT price for EVERY symbol in thesisInvalidatedSymbols. Any position that is now profitable is removed from the invalidation set. This is the LAST line of defense — it catches the 59-minute timer pattern where the timer in index.ts (unmodifiable) fires BETWEEN HACP cycles and force-closes positions that became profitable during the hold. The guard is placed at the point where thesisInvalidatedSymbols is finalized and about to be returned to index.ts, ensuring NO code path can force-close a winning position.

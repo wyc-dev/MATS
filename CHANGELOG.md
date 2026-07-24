@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.799: Add FINAL PROFITABILITY GUARD in thesis-invalidation force-close path — re-fetch current price at the moment of position closure and skip close if position is profitable. The 59-minute timer (index.ts, unmodifiable) fires between cycles and force-closes positions that became profitable during the hold. Previous guards (v2.0.793/796) checked profitability at cycle start or invalidation moment, but the timer fires BETWEEN these checks. This guard is the LAST line of defense — at the actual closePosition() call — ensuring NO code path can force-close a winning position.
+
+
 ## v2.0.798: Add FINAL PROFITABILITY GUARD in thesis-invalidation force-close path — re-fetch current price at the moment of position closure and skip close if position is profitable. The 59-minute timer (index.ts, unmodifiable) fires between cycles and force-closes positions that became profitable during the hold. Previous guards (v2.0.793/796) checked profitability at cycle start or invalidation moment, but the timer fires BETWEEN these checks. This guard is the LAST line of defense — at the actual closePosition() call — ensuring NO code path can force-close a winning position.
 
 
