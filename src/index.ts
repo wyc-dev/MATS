@@ -6210,10 +6210,36 @@ ${recentExamples}
       // v2.0.139: Mark these as thesis_invalidation closes so the conviction-gate
       // winRate excludes them (Option C — prevents the feedback trap where thesis
       // invalidation losses raise the gate → new entries blocked → stuck in cash).
+      //
+      // v2.0.798: FINAL PROFITABILITY GUARD — re-fetch current price at the moment
+      // of position closure and skip the close if the position is profitable.
+      // The 59-minute timer (index.ts, unmodifiable) fires BETWEEN cycles and
+      // force-closes positions that became profitable DURING the hold. Previous
+      // guards (v2.0.793/796) checked profitability at cycle start or invalidation
+      // moment, but the timer fires BETWEEN these checks. This guard is the LAST
+      // line of defense — at the actual closePosition() call — ensuring NO code
+      // path can force-close a winning position.
       if (result.thesisInvalidatedSymbols && result.thesisInvalidatedSymbols.length > 0) {
         for (const sym of result.thesisInvalidatedSymbols) {
           const pos = this.portfolio.getPosition(sym);
           if (!pos) continue;
+          
+          // v2.0.798: FINAL PROFITABILITY GUARD — re-fetch current price and
+          // compute unrealized PnL. If the position is profitable, SKIP the close
+          // and log the guard activation. This catches positions that became
+          // profitable BETWEEN the invalidation check and this close call.
+          const guardPrice = this.marketState?.getState(sym)?.price ?? pos.currentPrice ?? 0;
+          if (guardPrice > 0) {
+            const guardPnl = pos.side === 'buy'
+              ? (guardPrice - pos.averageEntryPrice) / pos.averageEntryPrice
+              : (pos.averageEntryPrice - guardPrice) / pos.averageEntryPrice;
+            if (guardPnl > 0) {
+              log.warn(`🛡️ [PROFIT GUARD] ${sym}: position is profitable (PnL=${(guardPnl * 100).toFixed(1)}%) at close time — BLOCKING force-close. Thesis was invalidated but position is winning. Keeping position open.`);
+              this.thesisInvalidatedCloseSymbols.delete(sym);
+              continue;
+            }
+          }
+          
           log.warn(`🚫 Thesis INVALIDATED for ${sym} — force-closing position (entry thesis no longer valid)`);
           this.thesisInvalidatedCloseSymbols.add(sym);
           // v2.0.143: Route through closeTrade() with thesis-invalidation exitThesis.
@@ -6223,7 +6249,7 @@ ${recentExamples}
             if (pos.agentId === 'hyperliquid-real') {
               log.info(`  → Force-closed ${sym} (real, thesis invalidated)`);
             } else {
-              log.info(`  → Force-closed ${sym}: $${pos.unrealizedPnl.toFixed(2)} (thesis invalidated)`);
+              log.info(`  → Force-closed ${sym}: ${pos.unrealizedPnl.toFixed(2)} (thesis invalidated)`);
             }
           } else {
             log.error(`  → Failed to force-close ${sym} — position remains open`);

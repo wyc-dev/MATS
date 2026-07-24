@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.798: Add FINAL PROFITABILITY GUARD in thesis-invalidation force-close path — re-fetch current price at the moment of position closure and skip close if position is profitable. The 59-minute timer (index.ts, unmodifiable) fires between cycles and force-closes positions that became profitable during the hold. Previous guards (v2.0.793/796) checked profitability at cycle start or invalidation moment, but the timer fires BETWEEN these checks. This guard is the LAST line of defense — at the actual closePosition() call — ensuring NO code path can force-close a winning position.
+
+
 ## v2.0.797: Fix OLR sigmoid saturation — reduce L2 regularization from 0.1 to 0.001 and maxWeight from 3.0 to 2.0. The previous λ=0.1 was TOO STRONG: it pulled ALL weights toward zero, preventing the model from learning strong signals. The bias term then dominated, causing ALL predictions to cluster around the majority class probability (0% or 100%). With λ=0.001 (100x weaker), feature weights can grow large enough to overcome the bias when the data supports it. maxWeight=2.0 ensures individual features don't saturate the sigmoid while still allowing strong predictions (2-3 features at ±2.0 = logit ±4-6, well within discriminative range). This is the ROOT CAUSE fix for NO_OLR appearing on every trade: the system treated 0%/100% as unreliable because they were always at extremes. Now the model can produce calibrated predictions across the full [0,1] range.
 
 
