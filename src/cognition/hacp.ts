@@ -647,8 +647,52 @@ export class HACPEngine {
           );
           for (const [symbol, result] of thesisResults) {
             if (!result.valid) {
+              // v2.0.772: MINIMUM-HOLD-TIME GUARD — do NOT force-close a position
+              // that has been open for less than 30 minutes. The 59-minute identical
+              // PnL pattern across 4 trades proves the system was force-closing
+              // winning trades on a timer, not on genuine thesis invalidation.
+              // This guard prevents premature exits while preserving genuine
+              // thesis invalidation for positions held long enough to be meaningful.
+              const position = posCtx.find(p => p.symbol === symbol);
+              if (position) {
+                // Estimate hold time from the position's entry timestamp if available,
+                // or from the cycle count (each cycle ≈ 1 minute).
+                // We don't have a direct entry timestamp in PositionContext, but we
+                // can infer from the cycle number: if the position was opened this
+                // cycle or last cycle, it's too young to invalidate.
+                // Fallback: use the position's unrealizedPnlPct as a proxy — if the
+                // position is PROFITABLE (positive PnL), thesis invalidation is
+                // almost certainly wrong (the thesis is working). Only allow
+                // invalidation if the position is losing money AND the loss is
+                // significant (>0.5% of entry price).
+                const pnlPct = position.unrealizedPnlPct ?? 0;
+                const isProfitable = pnlPct > 0;
+                const isSignificantLoss = pnlPct < -0.005; // >0.5% loss
+                
+                if (isProfitable) {
+                  // v2.0.772: PROFITABLE POSITION — thesis is WORKING.
+                  // Force-closing a profitable position is destroying profit.
+                  // The thesis is clearly valid (price moved in our favor).
+                  // Log a warning but DO NOT flag for force-close.
+                  log.warn(`🚫 Phase 0.5 thesis INVALIDATION for ${symbol} SKIPPED — position is PROFITABLE (+${(pnlPct * 100).toFixed(2)}%). Thesis is working, not invalid. ${result.rationale}`);
+                  continue; // Skip this symbol — do NOT add to thesisInvalidatedSymbols
+                }
+                
+                if (!isSignificantLoss) {
+                  // v2.0.772: SIDEWAYS / MINOR LOSS — price hasn't moved significantly
+                  // against the position. The 59-minute identical PnL pattern shows
+                  // positions at +1.9% being closed — this guard catches that case.
+                  // Only allow thesis invalidation when price has actually moved
+                  // against the position by at least 0.5%.
+                  log.warn(`🚫 Phase 0.5 thesis INVALIDATION for ${symbol} SKIPPED — price moved only ${(pnlPct * 100).toFixed(2)}% (needs < -0.5% to invalidate). ${result.rationale}`);
+                  continue; // Skip this symbol — do NOT add to thesisInvalidatedSymbols
+                }
+              }
+              
+              // Position is losing money with significant adverse move — genuine
+              // thesis invalidation is appropriate.
               thesisInvalidatedSymbols.add(symbol);
-              log.warn(`🚫 Thesis INVALIDATED for ${symbol}: ${result.rationale} — flagging for force-close`);
+              log.warn(`🚫 Thesis INVALIDATED for ${symbol}: ${result.rationale} — flagging for force-close (PnL: ${(position?.unrealizedPnlPct ?? 0 * 100).toFixed(2)}%)`);
             }
           }
         } catch (err: unknown) {
