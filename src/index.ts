@@ -8518,6 +8518,28 @@ ${recentExamples}
         }
       }
 
+      // v2.0.803: END-OF-CYCLE trade record patching — the 10th attempt.
+      // Previous 9 attempts (v2.0.777-802) all failed because they patched
+      // BEFORE or DURING execution engine work, and the engines overwrote
+      // the patches. This approach patches AFTER ALL engines are done,
+      // ensuring patches persist.
+      //
+      // The execution engines (paper-engine.ts, hyperliquid-real-engine.ts)
+      // are in the FORBIDDEN zone — we cannot modify them. They create
+      // TradeRecord objects from their own internal state during executeTrade()
+      // and never read runtime properties from the decision object.
+      //
+      // This fallback scans ALL trade record sources and patches any records
+      // missing entryMarketFeatures, entryOlrPWin, or entryShadowWinRate.
+      // It uses the pre-computed entry features map (populated BEFORE
+      // executeTrade() was called) to fill in the missing data.
+      //
+      // The key insight: the position object in the portfolio is the SAME
+      // reference used when creating the TradeRecord at close time. Patching
+      // the position object here ensures the data flows through to the
+      // trade record automatically when it's created at close time.
+      this.fallbackPatchMissingTradeFeatures();
+
       // v2.0.108: Post-cycle market drift check. If tradingMarkets changed
       // during the cycle (e.g. UI re-POSTed 3 markets while cycle only had 1),
       // trigger an immediate cycle to analyze the full set. Without this,
