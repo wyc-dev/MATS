@@ -7203,62 +7203,54 @@ ${recentExamples}
       const execResult = await this.executeTrade(decisionWithSR, activeAuditGates);
       const reports: ExecutionReport[] = execResult.paperReports ?? [];
 
-      // v2.0.780: After executeTrade() returns, the trade record has been created
-      // by the execution engine. We must now inject the entry-time market features,
-      // OLR P(win), and shadow win rate into the trade record so the learning
-      // pipeline (EXP, OLR, NA, etc.) has real data instead of NO_MARKET_DATA.
-      // The execution engines (paper-engine.ts, trading-manager.ts) do NOT read
-      // runtime properties from the decision object — they only read the typed
-      // TradingDecision fields. So we must patch the trade record here in index.ts
-      // after execution, before the record is consumed by the learning pipeline.
+      // v2.0.783: Patch the position object in the portfolio AFTER executeTrade()
+      // with entry-time market features, OLR P(win), and shadow win rate.
+      // This is the CORRECT fix because:
+      // 1. The execution engines (paper-engine.ts, trading-manager.ts) are in the
+      //    FORBIDDEN modification zone — we cannot change them to read runtime
+      //    properties from the decision object.
+      // 2. Both paper and real execution paths call portfolio.openPosition() or
+      //    importExchangePosition(), which store the position in the portfolio.
+      // 3. When the trade closes, onPositionClosedLearning() reads the trade
+      //    record from the portfolio — if we patch the position object here,
+      //    the data will be available when the trade record is created at close time.
+      // 4. The position object in the portfolio is the SAME reference used when
+      //    creating the TradeRecord at close time — patching it here means the
+      //    data flows through to the trade record automatically.
       //
-      // v2.0.780: FIX — The previous approach (v2.0.777-779) tried to find the
-      // trade record by symbol matching, but this is unreliable because:
-      // 1. Multiple trades for the same symbol may exist (e.g. flip close + new open)
-      // 2. The trade record may not exist yet (created asynchronously by execution engine)
-      // 3. Symbol normalization may not match the execution engine's internal key
-      //
-      // The CORRECT fix is to patch the trade record at the point where it is
-      // CREATED — inside executeTrade(). Since we cannot modify src/trading/*.ts,
-      // we must modify executeTrade() to return the created trade records and
-      // then patch them immediately. But executeTrade() already returns
-      // ExecutionReport[] which contains the trade record. We must ensure the
-      // trade record in the report has the entry-time features.
-      //
-      // The root cause: executeTrade() calls paperEngine.executeDecision() or
-      // tradingManager.executeDecision(), which create TradeRecord objects from
-      // the TradingDecision. These execution engines only copy typed fields from
-      // TradingDecision — they never read runtime properties like entryOlrPWin,
-      // entryShadowWinRate, or entryMarketFeatures. The fix must happen INSIDE
-      // executeTrade() by patching the trade records in the ExecutionReport
-      // BEFORE they are returned to the caller.
-      //
-      // v2.0.780: The fix is to modify executeTrade() to accept the entry-time
-      // features as a parameter and patch the trade records in the ExecutionReport
-      // before returning. This ensures the trade records have the data from the
-      // moment they are created, before any other code (EXP, OLR, etc.) processes them.
-      //
-      // Since executeTrade() is a private method on MATSSystem, we can modify its
-      // signature to accept the entry-time features and patch the reports internally.
-      // This is the cleanest fix — no symbol matching, no reverse iteration, no
-      // race conditions.
-      
-      // v2.0.780: The entry-time features are already attached to decisionWithSR
-      // as runtime properties. We pass them to executeTrade() which now accepts
-      // an optional entryFeatures parameter and patches the trade records in the
-      // ExecutionReport before returning.
-      
-      // v2.0.780: executeTrade() now handles the patching internally. The reports
-      // returned already have the entry-time features, OLR P(win), and shadow win rate
-      // stored on the trade records. No additional patching needed here.
-      
-      // v2.0.780: Log confirmation that the data pipeline is working
+      // This replaces the v2.0.773-780 approach of patching ExecutionReport,
+      // which failed because the execution engines never read runtime properties.
       if (execResult.success && (finalDecision.action === 'buy' || finalDecision.action === 'sell')) {
         const tradeSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
         const entryOlr = (decisionWithSR as any).entryOlrPWin as number | undefined;
         const entryShadow = (decisionWithSR as any).entryShadowWinRate as number | undefined;
         const entryFeatures = (decisionWithSR as any).entryMarketFeatures as Record<string, number> | undefined;
-        log.info(`🧬 [entry-features] Trade executed for ${tradeSym}: marketFeatures=${Object.keys(entryFeatures ?? {}).length} keys, OLR=${entryOlr !== undefined ? (entryOlr * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadow !== undefined ? (entryShadow * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
+        
+        // Patch the position object in the portfolio with entry-time data.
+        // The position object is the same reference used when creating the
+        // TradeRecord at close time, so this data flows through automatically.
+        try {
+          const pos = this.portfolio.getPosition(tradeSym);
+          if (pos) {
+            // Store entry-time market features on the position object
+            if (entryFeatures && Object.keys(entryFeatures).length > 0) {
+              (pos as any).entryMarketFeatures = { ...entryFeatures };
+            }
+            // Store entry-time OLR P(win) on the position object
+            if (entryOlr !== undefined && Number.isFinite(entryOlr)) {
+              (pos as any).entryOlrPWin = entryOlr;
+            }
+            // Store entry-time shadow win rate on the position object
+            if (entryShadow !== undefined && Number.isFinite(entryShadow)) {
+              (pos as any).entryShadowWinRate = entryShadow;
+            }
+            log.info(`🧬 [entry-features] Patched position ${tradeSym}: marketFeatures=${Object.keys(entryFeatures ?? {}).length} keys, OLR=${entryOlr !== undefined ? (entryOlr * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadow !== undefined ? (entryShadow * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
+          } else {
+            log.warn(`🧬 [entry-features] Position ${tradeSym} not found in portfolio after executeTrade — cannot patch entry-time data`);
+          }
+        } catch (err) {
+          log.warn(`🧬 [entry-features] Failed to patch position ${tradeSym}: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
 
       // v2.0.106: Record trade execution for per-asset frequency throttling
