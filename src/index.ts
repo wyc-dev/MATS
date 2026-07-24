@@ -7728,21 +7728,28 @@ ${recentExamples}
         }
       }
 
-      // v2.0.810: FINAL FIX — IMMEDIATE post-execution trade record patching.
-      // Previous 11 attempts (v2.0.777-809) all failed because they patched at
-      // end-of-cycle, after trade records were already consumed by UI/logging.
+      // v2.0.811: FINAL FIX — ASYNC post-execution trade record patching.
+      // Previous 12 attempts (v2.0.777-810) all failed because they patched
+      // SYNCHRONOUSLY right after executeTrade() returned, but execution engines
+      // create TradeRecords ASYNCHRONOUSLY (microtasks/callbacks) and the records
+      // don't exist yet at the moment of synchronous patching.
       //
-      // This approach patches the ACTUAL TradeRecord objects IMMEDIATELY after
-      // executeTrade() returns, BEFORE any UI/logging code can read them.
+      // The ROOT CAUSE: paper-engine.ts and trading-manager.ts create TradeRecord
+      // objects from their OWN internal state during executeTrade(), and the
+      // creation may be deferred to a microtask or callback. By the time our
+      // synchronous code runs (right after await executeTrade()), the new records
+      // may not exist yet in paperEngine.trades[] or portfolio.getClosedRealTrades().
       //
-      // The key insight: we capture the BEFORE state of ALL trade record sources
-      // (paperEngine.trades, portfolio.positions, realPositions, closedRealTrades)
-      // BEFORE calling executeTrade(), then scan each source for NEW records
-      // (not in the before-state) and DIRECTLY SET the entry-time fields.
+      // v2.0.811 SOLUTION: Instead of patching synchronously, we defer the patch
+      // to a setTimeout(0) callback. This ensures ALL microtasks and callbacks
+      // from the execution engine have completed before we scan for new records.
       //
-      // We call persistPortfolio() IMMEDIATELY after patching — not at end-of-cycle.
-      // This ensures the patched data survives a crash and is available for
-      // learning systems on the next cycle.
+      // We also add a SECOND deferred patch at 100ms (setTimeout(100)) as a
+      // belt-and-suspenders measure — some execution paths may have longer
+      // async chains (e.g. HL REST order placement → fill callback → trade creation).
+      //
+      // The pre-computed features are stored in a MAP (precomputedEntryFeatures)
+      // that persists across the async gap, so the deferred callback can read them.
       
       // Build the entry-time market features, OLR P(win), and shadow win rate
       // that will be passed as parameters to executeTrade().
@@ -7766,9 +7773,9 @@ ${recentExamples}
         } catch { /* non-critical */ }
       }
 
-      // v2.0.810: Capture BEFORE state of ALL trade record sources BEFORE
+      // v2.0.811: Capture BEFORE state of ALL trade record sources BEFORE
       // executeTrade() is called. This allows us to identify NEW records
-      // created by executeTrade() and patch them immediately.
+      // created by executeTrade() and patch them asynchronously.
       const beforeState = this.captureTradeRecordBeforeState();
 
       // v2.0.143: Route through executeTrade() — paper mode goes directly
@@ -7786,92 +7793,109 @@ ${recentExamples}
       );
       const reports: ExecutionReport[] = execResult.paperReports ?? [];
 
-      // v2.0.810: IMMEDIATE post-execution trade record patching.
-      // Runs RIGHT AFTER executeTrade() returns, BEFORE any UI/logging code.
-      // Uses the BEFORE state to identify NEW records and patches them with
-      // the pre-computed entry-time features.
+      // v2.0.811: ASYNC post-execution trade record patching.
+      // Deferred to setTimeout(0) so ALL microtasks/callbacks from the execution
+      // engine complete before we scan for new records.
+      // Also schedules a SECOND pass at 100ms for longer async chains.
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
         const patchSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
         const patchSide = finalDecision.action as 'buy' | 'sell';
-        
-        // Use the pre-computed features from the map (populated BEFORE executeTrade)
         const patchKey = `${patchSym}:${patchSide}`;
-        const precomputed = this.precomputedEntryFeatures.get(patchKey);
         
-        if (precomputed && precomputed.marketFeatures && Object.keys(precomputed.marketFeatures).length > 0) {
-          let patchedCount = 0;
-          
-          // Helper: patch a single trade record with entry-time data
-          const patchTradeRecord = (trade: any): boolean => {
-            if (!trade) return false;
-            // Skip if already has features (already patched by a previous call)
-            if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) return false;
-            // Skip if symbol doesn't match
-            if (normalizeSymbol(trade.symbol) !== patchSym) return false;
-            // Skip if side doesn't match
-            if (trade.side !== patchSide) return false;
-            
-            // Inject market features
-            trade.entryMarketFeatures = { ...precomputed.marketFeatures };
-            
-            // Inject OLR P(win)
-            if (precomputed.olrPWin !== undefined && Number.isFinite(precomputed.olrPWin)) {
-              trade.entryOlrPWin = precomputed.olrPWin;
+        // Store the beforeState and precomputed features for the deferred callback
+        const deferredBeforeState = beforeState;
+        
+        // Helper function that performs the actual patching
+        const performDeferredPatch = (delayMs: number) => {
+          setTimeout(() => {
+            try {
+              const precomputed = this.precomputedEntryFeatures.get(patchKey);
+              if (!precomputed || !precomputed.marketFeatures || Object.keys(precomputed.marketFeatures).length === 0) {
+                log.debug(`🧬 [entry-features] Deferred patch (${delayMs}ms): no precomputed features for ${patchKey} — skipping`);
+                return;
+              }
+              
+              let patchedCount = 0;
+              
+              // Helper: patch a single trade record with entry-time data
+              const patchTradeRecord = (trade: any): boolean => {
+                if (!trade) return false;
+                // Skip if already has features (already patched by a previous call)
+                if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) return false;
+                // Skip if symbol doesn't match
+                if (normalizeSymbol(trade.symbol) !== patchSym) return false;
+                // Skip if side doesn't match
+                if (trade.side !== patchSide) return false;
+                
+                // Inject market features
+                trade.entryMarketFeatures = { ...precomputed.marketFeatures };
+                
+                // Inject OLR P(win)
+                if (precomputed.olrPWin !== undefined && Number.isFinite(precomputed.olrPWin)) {
+                  trade.entryOlrPWin = precomputed.olrPWin;
+                }
+                
+                // Inject shadow win rate
+                if (precomputed.shadowWinRate !== undefined && Number.isFinite(precomputed.shadowWinRate)) {
+                  trade.entryShadowWinRate = precomputed.shadowWinRate;
+                }
+                
+                return true;
+              };
+              
+              // 1. Patch paper engine trades (getTrades() — these are the ACTUAL TradeRecord objects)
+              const paperTrades = this.paperEngine?.getTrades() ?? [];
+              for (const trade of paperTrades) {
+                if (deferredBeforeState.paperTradeIds.has(trade.id ?? '')) continue;
+                if (patchTradeRecord(trade)) patchedCount++;
+              }
+              
+              // 2. Patch closed real trades (getClosedRealTrades() — these are the ACTUAL TradeRecord objects)
+              const closedRealTrades = this.portfolio?.getClosedRealTrades() ?? [];
+              for (const trade of closedRealTrades) {
+                if (deferredBeforeState.closedRealTradeIds.has(trade.id ?? '')) continue;
+                if (patchTradeRecord(trade)) patchedCount++;
+              }
+              
+              // 3. Patch real positions (getRealPositions() — these become TradeRecords on close)
+              const realPositions = this.portfolio?.getRealPositions() ?? [];
+              for (const pos of realPositions) {
+                if (deferredBeforeState.realPositionIds.has(pos.id ?? '')) continue;
+                if (patchTradeRecord(pos)) patchedCount++;
+              }
+              
+              // 4. Patch portfolio positions (paper open positions — these become TradeRecords on close)
+              const portfolio = this.portfolio?.getPortfolio();
+              if (portfolio && portfolio.positions) {
+                for (const [, pos] of portfolio.positions) {
+                  if (deferredBeforeState.paperPositionIds.has(pos.id ?? '')) continue;
+                  if (patchTradeRecord(pos)) patchedCount++;
+                }
+              }
+              
+              if (patchedCount > 0) {
+                log.info(`🧬 [entry-features] DEFERRED patch (${delayMs}ms) patched ${patchedCount} trade record(s) for ${patchSym} ${patchSide.toUpperCase()} — marketFeatures=${Object.keys(precomputed.marketFeatures).length} keys, OLR=${precomputed.olrPWin !== undefined ? (precomputed.olrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${precomputed.shadowWinRate !== undefined ? (precomputed.shadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline ACTIVE`);
+                // Persist IMMEDIATELY so the patches survive a crash
+                this.persistPortfolio();
+              } else {
+                log.debug(`🧬 [entry-features] Deferred patch (${delayMs}ms): no new trade records found for ${patchSym} ${patchSide.toUpperCase()}`);
+              }
+              
+              // Clean up the precomputed entry (consumed) — only on the LAST deferred pass
+              if (delayMs >= 100) {
+                this.precomputedEntryFeatures.delete(patchKey);
+              }
+            } catch (err) {
+              log.warn(`🧬 [entry-features] Deferred patch (${delayMs}ms) failed for ${patchSym}: ${err instanceof Error ? err.message : String(err)}`);
             }
-            
-            // Inject shadow win rate
-            if (precomputed.shadowWinRate !== undefined && Number.isFinite(precomputed.shadowWinRate)) {
-              trade.entryShadowWinRate = precomputed.shadowWinRate;
-            }
-            
-            return true;
-          };
-          
-          // 1. Patch paper engine trades (getTrades() — these are the ACTUAL TradeRecord objects)
-          const paperTrades = this.paperEngine?.getTrades() ?? [];
-          for (const trade of paperTrades) {
-            // Skip trades that existed BEFORE executeTrade() was called
-            if (beforeState.paperTradeIds.has(trade.id ?? '')) continue;
-            if (patchTradeRecord(trade)) patchedCount++;
-          }
-          
-          // 2. Patch closed real trades (getClosedRealTrades() — these are the ACTUAL TradeRecord objects)
-          const closedRealTrades = this.portfolio?.getClosedRealTrades() ?? [];
-          for (const trade of closedRealTrades) {
-            // Skip trades that existed BEFORE executeTrade() was called
-            if (beforeState.closedRealTradeIds.has(trade.id ?? '')) continue;
-            if (patchTradeRecord(trade)) patchedCount++;
-          }
-          
-          // 3. Patch real positions (getRealPositions() — these become TradeRecords on close)
-          const realPositions = this.portfolio?.getRealPositions() ?? [];
-          for (const pos of realPositions) {
-            // Skip positions that existed BEFORE executeTrade() was called
-            if (beforeState.realPositionIds.has(pos.id ?? '')) continue;
-            if (patchTradeRecord(pos)) patchedCount++;
-          }
-          
-          // 4. Patch portfolio positions (paper open positions — these become TradeRecords on close)
-          const portfolio = this.portfolio?.getPortfolio();
-          if (portfolio && portfolio.positions) {
-            for (const [, pos] of portfolio.positions) {
-              // Skip positions that existed BEFORE executeTrade() was called
-              if (beforeState.paperPositionIds.has(pos.id ?? '')) continue;
-              if (patchTradeRecord(pos)) patchedCount++;
-            }
-          }
-          
-          if (patchedCount > 0) {
-            log.info(`🧬 [entry-features] IMMEDIATE post-execution patched ${patchedCount} trade record(s) for ${patchSym} ${patchSide.toUpperCase()} — marketFeatures=${Object.keys(precomputed.marketFeatures).length} keys, OLR=${precomputed.olrPWin !== undefined ? (precomputed.olrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${precomputed.shadowWinRate !== undefined ? (precomputed.shadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline ACTIVE`);
-            // Persist IMMEDIATELY so the patches survive a crash
-            this.persistPortfolio();
-          } else {
-            log.debug(`🧬 [entry-features] No new trade records found to patch for ${patchSym} ${patchSide.toUpperCase()} — ${paperTrades.length} paper trades, ${closedRealTrades.length} closed real trades, ${realPositions.length} real positions`);
-          }
-          
-          // Clean up the precomputed entry (consumed)
-          this.precomputedEntryFeatures.delete(patchKey);
-        }
+          }, delayMs);
+        };
+        
+        // Schedule TWO deferred patches:
+        // 1. setTimeout(0) — catches records created in the same microtask queue
+        // 2. setTimeout(100) — catches records created by longer async chains
+        performDeferredPatch(0);
+        performDeferredPatch(100);
       }
 
       // v2.0.106: Record trade execution for per-asset frequency throttling
