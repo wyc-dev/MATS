@@ -828,11 +828,11 @@ Your decisions carry the highest authority — the thesis system is the sole gat
         rationale: `Meta-Agent: ${result.multiSymbolDecision.marketTicker.rationale} | Positions: ${result.multiSymbolDecision.positions.map(p => `${p.symbol}=${p.closePosition ? 'CLOSE' : 'HOLD'}`).join(', ')}`,
         urgency: 'patient',
         // v2.0.28: Forward patternTag from meta-agent's market ticker decision
-        ...(result.multiSymbolDecision.marketTicker.patternTag
+        ...(result.multiSymbolDecision.marketTicker.patternTag != null
           ? { patternTag: result.multiSymbolDecision.marketTicker.patternTag }
           : {}),
         // v2.0.80: Forward entryThesis from meta-agent's market ticker decision
-        ...(result.multiSymbolDecision.marketTicker.entryThesis
+        ...(result.multiSymbolDecision.marketTicker.entryThesis != null
           ? { entryThesis: result.multiSymbolDecision.marketTicker.entryThesis }
           : {}),
       },
