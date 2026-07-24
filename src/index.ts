@@ -7121,6 +7121,20 @@ ${recentExamples}
       // missed multi-symbol entries (perSymbolConsensus entries for non-active
       // trading markets). Now we iterate ALL per-symbol consensus entries that
       // executed successfully and patch each one's trade record.
+      //
+      // v2.0.779: FIX — the old code only patched paper trades and real positions,
+      // but the execution engines (paper-engine.ts, trading-manager.ts) do NOT
+      // read runtime properties from the decision object. They only read typed
+      // TradingDecision fields. The fix must happen in executeTrade() itself —
+      // we must pass the market features, OLR P(win), and shadow win rate as
+      // typed fields on the TradingDecision object so the execution engines
+      // can store them on the TradeRecord. Since we cannot modify src/trading/*.ts,
+      // we must patch the trade record AFTER executeTrade() returns, directly
+      // in index.ts. The patch must iterate ALL executed symbols from
+      // perSymbolConsensus and patch each matching trade record. Additionally,
+      // the patch must be done IMMEDIATELY after executeTrade() returns, before
+      // any other code runs, to ensure the trade record is updated before EXP
+      // processes it.
       if (execResult.success) {
         // Collect all symbols that were executed this cycle
         const executedSymbols = new Set<string>();
@@ -7179,7 +7193,28 @@ ${recentExamples}
               }
               log.info(`🧬 [entry-features] Patched real position record for ${tradeSym}: marketFeatures=${Object.keys(entryFeatures ?? {}).length} keys, OLR=${entryOlr !== undefined ? (entryOlr * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadow !== undefined ? (entryShadow * 100).toFixed(0) + '%' : 'N/A'}`);
             } else {
-              log.warn(`🧬 [entry-features] Could not find trade record for ${tradeSym} to patch — may be a multi-symbol entry that was handled differently`);
+              // v2.0.779: Also check closed real trades — the position may have
+              // been opened and closed within the same cycle (e.g. SL/TP hit
+              // immediately). In that case, the trade record is in closedRealTrades,
+              // not in realPositions or paperTrades.
+              const closedRealTrades = this.portfolio.getClosedRealTrades();
+              const matchingClosedTrade = closedRealTrades.length > 0
+                ? closedRealTrades.slice().reverse().find(t => normalizeSymbol(t.symbol) === tradeSym)
+                : null;
+              if (matchingClosedTrade) {
+                if (entryFeatures) {
+                  (matchingClosedTrade as any).entryMarketFeatures = entryFeatures;
+                }
+                if (entryOlr !== undefined) {
+                  (matchingClosedTrade as any).entryOlrPWin = entryOlr;
+                }
+                if (entryShadow !== undefined) {
+                  (matchingClosedTrade as any).entryShadowWinRate = entryShadow;
+                }
+                log.info(`🧬 [entry-features] Patched closed real trade record for ${tradeSym}: marketFeatures=${Object.keys(entryFeatures ?? {}).length} keys, OLR=${entryOlr !== undefined ? (entryOlr * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadow !== undefined ? (entryShadow * 100).toFixed(0) + '%' : 'N/A'}`);
+              } else {
+                log.warn(`🧬 [entry-features] Could not find trade record for ${tradeSym} to patch — may be a multi-symbol entry that was handled differently`);
+              }
             }
           }
         }
