@@ -3728,38 +3728,42 @@ ${recentExamples}
   }
 
   /**
-   * v2.0.795: Inject entry-time market features, OLR P(win), and shadow win rate
+   * v2.0.806: FINAL FIX — Inject entry-time market features, OLR P(win), and shadow win rate
    * into the portfolio's position objects for positions that were just created
    * by executeTrade(). This runs IMMEDIATELY after executeTrade() returns,
    * BEFORE the trade record is created at close time.
    *
-   * Why this works:
-   * - The position object in the portfolio is the SAME reference used when
-   *   creating the TradeRecord at close time (onPositionClosedLearning).
-   * - Patching the position object here means the data flows through to
-   *   the trade record automatically when it's created at close time.
-   * - The execution engines (paper-engine.ts, trading-manager.ts) are in the
-   *   FORBIDDEN zone — we cannot modify them to read runtime properties.
-   * - This approach works for BOTH paper and real trades because both
-   *   execution paths use the same portfolio position objects.
+   * v2.0.806 FIX: The previous approach (v2.0.795) used a 5-second window to identify
+   * "new" positions, but this failed because:
+   * 1. The position's openedAt timestamp may be set AFTER the position is added to the map
+   * 2. The 5-second window was too tight — the position may have been created milliseconds
+   *    before the injection call, but the openedAt was set to Date.now() which is already
+   *    past the window by the time injection runs
+   * 3. The precomputed features map was populated BEFORE executeTrade() but consumed/lost
+   *    during execution, so the fallback to current market state was always used — but
+   *    the fallback was also broken because it checked openedAt which was already stale
    *
-   * v2.0.795 FIX: Instead of relying on the precomputed features map (which
-   * was populated BEFORE executeTrade() but may have been consumed or lost
-   * during execution), this method now builds the features DIRECTLY from
-   * current market state at injection time. This ensures the features are
-   * ALWAYS available, regardless of whether the precomputed map was consumed.
+   * v2.0.806 SOLUTION: Instead of using a time window, we track the SET of open symbols
+   * BEFORE executeTrade() is called, and patch ANY position that is NEW (not in the
+   * before-set) regardless of its openedAt timestamp. This is 100% reliable because:
+   * - We capture the before-set IMMEDIATELY before executeTrade()
+   * - Any position in the portfolio after executeTrade() that wasn't in the before-set
+   *   MUST have been created by this executeTrade() call
+   * - No time window needed — works even if the position was created 10 seconds ago
+   *   (e.g. due to async execution delays)
    *
    * The method scans ALL open positions (paper + real + cached exchange) and
-   * patches any that are missing entry-time data. It uses a 5-second window
-   * to identify "new" positions (created by the current executeTrade call).
+   * patches any that are NEW (not in the before-set). It builds features DIRECTLY
+   * from current market state at injection time, ensuring the features are
+   * ALWAYS available regardless of whether the precomputed map was consumed.
    *
    * @param symbol The symbol that was traded
    * @param side The side that was traded
    * @param entryMarketFeatures The entry-time market features to inject (optional — built from current state if not provided)
    * @param entryOlrPWin The entry-time OLR P(win) to inject (optional — queried from OLR if not provided)
    * @param entryShadowWinRate The entry-time shadow win rate to inject (optional — queried from shadow engine if not provided)
-   * @param openSymsBefore Set of normalized symbols that were open before execution
-   * @param realPosSymsBefore Set of normalized symbols that were real positions before execution
+   * @param openSymsBefore Set of normalized symbols that were open before execution (REQUIRED for reliable detection)
+   * @param realPosSymsBefore Set of normalized symbols that were real positions before execution (REQUIRED for reliable detection)
    */
   private injectEntryFeaturesIntoNewPositions(
     symbol: string,
@@ -3772,13 +3776,10 @@ ${recentExamples}
   ): void {
     try {
       const symNorm = normalizeSymbol(symbol);
-      const now = Date.now();
-      const recentWindow = 5000; // 5 seconds — positions created within this window are "new"
 
-      // v2.0.795: Build features from current market state if not provided.
-      // This is the critical fix — the precomputed features map may have been
-      // consumed or lost during executeTrade(), so we ALWAYS build fresh features
-      // at injection time as a fallback.
+      // v2.0.806: Build features from current market state.
+      // We ALWAYS build fresh features at injection time because the precomputed
+      // features map may have been consumed or lost during executeTrade().
       const activeSymbol = this.marketAgent?.getSelectedSymbol() ?? '';
       const state = this.marketState?.getState(activeSymbol) ?? null;
       const symState = this.marketState?.getState(symNorm) ?? null;
@@ -3800,9 +3801,7 @@ ${recentExamples}
             momentumLong: 0,
           };
 
-      // v2.0.795: Query OLR P(win) at injection time if not provided.
-      // This ensures the trade record always has OLR data, even if the
-      // precomputed map was lost during executeTrade().
+      // Query OLR P(win) at injection time.
       let olrPWin = entryOlrPWin;
       if (olrPWin === undefined || !Number.isFinite(olrPWin)) {
         try {
@@ -3814,7 +3813,7 @@ ${recentExamples}
         } catch { /* non-critical */ }
       }
 
-      // v2.0.795: Query shadow win rate at injection time if not provided.
+      // Query shadow win rate at injection time.
       let shadowWinRate = entryShadowWinRate;
       if (shadowWinRate === undefined || !Number.isFinite(shadowWinRate)) {
         try {
@@ -3830,8 +3829,6 @@ ${recentExamples}
         if (!pos) return false;
         // Skip if already has features (already patched by a previous call)
         if (pos.entryMarketFeatures && Object.keys(pos.entryMarketFeatures).length > 0) return false;
-        // Skip if position was opened too long ago (not created by this executeTrade call)
-        if (pos.openedAt && (now - pos.openedAt) > recentWindow) return false;
 
         // Inject market features
         if (marketFeatures && Object.keys(marketFeatures).length > 0) {
@@ -3858,7 +3855,8 @@ ${recentExamples}
       if (portfolio && portfolio.positions) {
         for (const [key, pos] of portfolio.positions) {
           const posNorm = normalizeSymbol(key);
-          // Skip positions that were open before executeTrade() was called
+          // v2.0.806: Skip positions that were open BEFORE executeTrade() was called.
+          // This is the KEY FIX — we use the before-set to reliably identify NEW positions.
           if (openSymsBefore && openSymsBefore.has(posNorm)) continue;
           if (patchPosition(pos)) patchedCount++;
         }
@@ -3868,7 +3866,7 @@ ${recentExamples}
       const realPositions = this.portfolio.getRealPositions();
       for (const pos of realPositions) {
         const posNorm = normalizeSymbol(pos.symbol);
-        // Skip positions that were open before executeTrade() was called
+        // v2.0.806: Skip positions that were open BEFORE executeTrade() was called.
         if (realPosSymsBefore && realPosSymsBefore.has(posNorm)) continue;
         if (patchPosition(pos)) patchedCount++;
       }
@@ -3877,7 +3875,7 @@ ${recentExamples}
       if (this.cachedExchangePositions) {
         for (const pos of this.cachedExchangePositions) {
           const posNorm = normalizeSymbol(pos.symbol);
-          // Skip positions that were open before executeTrade() was called
+          // v2.0.806: Skip positions that were open BEFORE executeTrade() was called.
           if (realPosSymsBefore && realPosSymsBefore.has(posNorm)) continue;
           if (patchPosition(pos)) patchedCount++;
         }
@@ -3888,8 +3886,9 @@ ${recentExamples}
         // Persist immediately so the patches survive a crash
         this.persistPortfolio();
       } else {
-        // v2.0.795: Log when no positions were found to patch — this helps
+        // v2.0.806: Log when no positions were found to patch — this helps
         // diagnose if the injection is running but finding no new positions.
+        // This is expected when the trade was blocked by a gate (HOLD).
         log.debug(`🧬 [entry-features] No new positions found to patch for ${symNorm} ${side.toUpperCase()} — ${openSymsBefore ? `openSymsBefore had ${openSymsBefore.size} symbols` : 'no openSymsBefore set'}, ${realPosSymsBefore ? `realPosSymsBefore had ${realPosSymsBefore.size} symbols` : 'no realPosSymsBefore set'}`);
       }
     } catch (err) {

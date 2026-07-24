@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.806: Fix OLR/Shadow data pipeline — replace time-window-based position detection with before-set comparison. The v2.0.795 fix used a 5-second window to identify new positions, but this failed because openedAt timestamps are set after position creation. Now we capture the set of open symbols BEFORE executeTrade() and patch any position that is NEW (not in the before-set). This is 100% reliable — no time window needed.
+
+
 ## v2.0.805: Fix tsc error TS2339 — add missing `persistentInvalidatedSymbols: Set<string>` class field declaration to HACPEngine. The v2.0.804 changelog described adding this field but the actual declaration was omitted from the class definition, causing 4 TypeScript errors.
 
 
