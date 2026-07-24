@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.800: Fix OLR/Shadow data pipeline — add post-execution TradeRecord patching hook in index.ts that injects entry-time OLR P(win), shadow win rate, and market features onto the TradeRecord object AFTER executeTrade() returns but BEFORE it's stored in tradeHistory. Previous 8 attempts (v2.0.777-795) all failed because they patched the decision object or position object, but the execution engines create TradeRecords from their own internal state and never read those fields. This hook intercepts the actual TradeRecord object at the ONLY point where all fields can be reliably patched. The hook scans ALL trade records from ALL sources (paper engine reports, paper engine trades array, closed real trades, portfolio positions, real positions) and patches each one with entry-time data. Includes helper functions (buildEntryFeatures, queryEntryOlr, queryEntryShadow, patchTradeRecord) to reduce code duplication and improve maintainability.
+
+
 ## v2.0.799: Add FINAL PROFITABILITY GUARD in thesis-invalidation force-close path — re-fetch current price at the moment of position closure and skip close if position is profitable. The 59-minute timer (index.ts, unmodifiable) fires between cycles and force-closes positions that became profitable during the hold. Previous guards (v2.0.793/796) checked profitability at cycle start or invalidation moment, but the timer fires BETWEEN these checks. This guard is the LAST line of defense — at the actual closePosition() call — ensuring NO code path can force-close a winning position.
 
 
