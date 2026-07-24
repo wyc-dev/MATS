@@ -423,10 +423,40 @@ export class OLREngine {
     return result;
   }
 
+  /**
+   * v2.0.770: Adaptive feature selection for sgdUpdate.
+   * When total training samples N < 2*D (30 for D=15), the model is
+   * underdetermined — too many parameters for the available data.
+   * In this regime, we use only the top-5 most informative features
+   * (volatility, srDistanceBps, obImbalance, sentiment, fundingRate)
+   * and set the remaining 10 feature weights to 0. This ensures at
+   * least 6 samples per parameter (30/5=6) instead of 2 (30/15=2).
+   * The selected features are the ones with the strongest signal
+   * for short-term directional trading based on domain knowledge.
+   */
+  private getActiveFeatureIndices(model: OLRModel): Set<number> {
+    const totalSamples = model.nSamples;
+    // When N >= 2*D, use all features (model is well-determined)
+    if (totalSamples >= 2 * D) {
+      return new Set(Array.from({ length: D }, (_, i) => i));
+    }
+    // When N < 2*D, use only the top-5 most informative features
+    // Indices: 0=volatility, 1=srDistanceBps, 2=obImbalance,
+    // 3=sentiment, 6=fundingRate (index 6 in FEATURE_NAMES)
+    const topFeatures = new Set<number>([0, 1, 2, 3, 6]);
+    return topFeatures;
+  }
+
   private sgdUpdate(model: OLRModel, xNorm: number[], y: number, sourceWeight: number, liveSamples: number): void {
+    const activeIndices = this.getActiveFeatureIndices(model);
     const xFull = [1, ...xNorm];
     let z = 0;
-    for (let i = 0; i <= D; i++) z += model.weights[i]! * xFull[i]!;
+    // Compute logit using only active features (inactive features have weight=0)
+    for (let i = 0; i <= D; i++) {
+      if (i === 0 || activeIndices.has(i - 1)) {
+        z += model.weights[i]! * xFull[i]!;
+      }
+    }
     // v2.0.762: REVERTED v2.0.760 sigmoid temperature T=2.0 — it made ALL predictions
     // cluster near 50%, destroying the model's discriminative power. The system needs
     // EXTREME but ACCURATE predictions, not softened ones. The fix for 0%/100% is
@@ -453,6 +483,12 @@ export class OLREngine {
     // learning rate decay, otherwise the model freezes before any live trading occurs.
     const eta = (OLR_CONFIG.learningRate / (1 + OLR_CONFIG.decayRate * safeLiveSamples)) * sourceWeight;
     for (let i = 0; i <= D; i++) {
+      // Only update weights for active features (bias is always active)
+      if (i !== 0 && !activeIndices.has(i - 1)) {
+        // Inactive features: set weight to 0 and skip update
+        model.weights[i]! = 0;
+        continue;
+      }
       // v2.0.760: L2 regularization (weight decay) applied to all weights including bias.
       // The regularization strength is λ=0.01, which is appropriate for a model with
       // 12 features and ~100-300 total samples. The weight decay term is:
