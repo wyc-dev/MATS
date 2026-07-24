@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.803: Fix OLR/Shadow data pipeline — add END-OF-CYCLE trade record patching in index.ts that runs AFTER all execution engines have finished creating TradeRecords. Scans ALL trade record sources (paperEngine.trades, paperEngine.reports, portfolio.positions, realPositions, closedRealTrades) and patches any records missing entryMarketFeatures, entryOlrPWin, or entryShadowWinRate using a pre-computed entry features map. This is the 10th attempt — previous 9 failed because they patched before or during execution engine work, and the engines overwrote the patches. This approach patches AFTER all engines are done, ensuring patches persist.
+
+
 ## v2.0.802: Fix OLR/Shadow data pipeline — add post-execution trade record patching in index.ts that scans ALL trade record sources (paper trades, paper reports, portfolio positions, real positions, closed real trades) and patches any records missing entryMarketFeatures, entryOlrPWin, or entryShadowWinRate. This is the 9th attempt — previous 8 attempts failed because they patched decision/position objects before trade record creation, but execution engines create TradeRecords from their own internal state. This approach patches the actual TradeRecord objects AFTER they are created, ensuring 100% of trades have learning data.
 
 
