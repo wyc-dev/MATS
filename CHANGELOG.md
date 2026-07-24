@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.792: Fix TS2322 in meta-agent.ts — change patternTag and entryThesis spread conditions from truthy check to null check to prevent null values from being assigned to string | undefined fields
+
+
 ## v2.0.791: Fix adaptive filter conviction gate — pattern-aware threshold that BOOSTS proven winners (WR>=60%, 10+ trades) instead of blocking them. BTC BUY 74% WR now gets lower conviction threshold (floor+0.05) to let winning trades through. This is a PROFIT-MAXIMIZATION fix: the filter was designed to prevent over-trading but was paradoxically blocking the system's best-performing pattern. Added WINNER-FIRST logic: (1) WR>=60% with 10+ trades → LOWER threshold to floor+0.05, (2) WR<40% with 10+ trades → RAISE threshold (soft penalty, max 20% above floor), (3) <3 samples → PASS_OPEN_DIRECTLY (no change), (4) over-trading fallback only when no proven winner exists. Updated tests to verify pattern-aware behavior.
 
 
