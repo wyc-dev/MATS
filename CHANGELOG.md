@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.776: Force Meta-Agent to generate specific, actionable thesis — raise quality gate from 'at least ONE' to 'at least TWO' of 7 specific elements (price level, S/R zone, OLR edge, funding rate, volume profile, order book imbalance, technical pattern), explicitly forbid placeholder theses like '[1h: thesis]', add new 'technical pattern / market structure observation' element category, add placeholder hard gate section
+
+
 ## v2.0.775: Add distribution-shift penalty to OLR predict() — when current market features deviate >2σ from training distribution on key features (volatility, srDistanceBps, obImbalance, fundingRate), reduce P(win) confidence by up to 20% toward 0.5. Prevents false 100% P(win) on out-of-distribution regimes while preserving discriminative power for in-distribution trades. Soft gate only — no hard block.
 
 
