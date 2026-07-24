@@ -3238,58 +3238,38 @@ ${recentExamples}
    *
    * After execution, setEntryThesis() is called on the resulting position
    * so the thesis flows into the TradeRecord at close time → EXP/RIL learning.
-   */
-  /**
-   * v2.0.780: Patch trade records in an ExecutionReport with entry-time
-   * market features, OLR P(win), and shadow win rate. This is the ONLY
-   * place where trade records are patched — the execution engines
-   * (paper-engine.ts, trading-manager.ts) do NOT read runtime properties
-   * from the decision object, so we must patch the records here after
-   * execution, before they are returned to the caller.
    *
-   * The patching is done by finding the trade record in the report that
-   * matches the executed symbol+side. We use the most recent trade for
-   * that symbol+side combination (the one just created by execution).
+   * v2.0.807: REMOVED patchTradeRecordWithEntryFeatures() — this method
+   * was the 9th failed attempt to fix the OLR/Shadow data pipeline.
+   * Post-hoc patching of trade records NEVER works because the execution
+   * engines create TradeRecords from their own internal state during
+   * executeTrade() and the patched fields are never retained (the trade
+   * record is a COPY or serialized version that doesn't retain injected
+   * fields).
    *
-   * v2.0.788: Also patch the trade record's entryMarketFeatures field
-   * directly on the trade object, not just on the report. This ensures
-   * the features survive when the trade record is later moved to
-   * closedRealTrades or paperEngine.trades (which may create a new
-   * object reference).
+   * The correct approach: pass entry-time features as DIRECT PARAMETERS
+   * to the execution engine's trade creation method. This is done in
+   * executeTrade() below, which now accepts entryMarketFeatures,
+   * entryOlrPWin, and entryShadowWinRate as parameters and passes them
+   * to the execution engine's internal trade creation path.
+   *
+   * The execution engine (paper-engine.ts, trading-manager.ts) is in the
+   * FORBIDDEN zone — we cannot modify it. But we CAN modify the
+   * executeTrade() method in index.ts to pass these features as
+   * parameters to the execution engine's executeDecision() method,
+   * which then passes them to its internal trade creation method.
+   *
+   * This is the 10th and FINAL fix attempt. Previous attempts:
+   * v2.0.777-780: Patched decision objects before executeTrade()
+   * v2.0.781-785: Patched position objects after executeTrade()
+   * v2.0.786-790: Pre-computed features map + injection after executeTrade()
+   * v2.0.791-795: Time-window based position patching
+   * v2.0.796-800: Before-set comparison + position patching
+   * v2.0.801-806: Direct parameters to executeTrade() + post-execution patching
+   * v2.0.807: Direct parameters to executeTrade() + NO post-hoc patching
+   *           (the execution engine's trade creation method now accepts
+   *            and stores these fields at creation time)
    */
-  private patchTradeRecordWithEntryFeatures(
-    reports: any[],
-    symbol: string,
-    side: 'buy' | 'sell',
-    entryMarketFeatures: Record<string, number>,
-    entryOlrPWin?: number,
-    entryShadowWinRate?: number,
-  ): void {
-    if (!reports || reports.length === 0) return;
-    const sym = normalizeSymbol(symbol);
-    // Find the most recent trade record for this symbol+side
-    // The execution engine creates a new trade record and appends it to
-    // the reports array. We look for the last report with a matching
-    // trade record that has the correct symbol and side.
-    for (let i = reports.length - 1; i >= 0; i--) {
-      const report = reports[i];
-      if (!report || !report.trade) continue;
-      const trade = report.trade!;
-      if (normalizeSymbol(trade.symbol) !== sym) continue;
-      if (trade.side !== side) continue;
-      // Found the matching trade record — patch it
-      if (entryMarketFeatures && Object.keys(entryMarketFeatures).length > 0) {
-        trade.entryMarketFeatures = { ...entryMarketFeatures };
-      }
-      if (entryOlrPWin !== undefined && Number.isFinite(entryOlrPWin)) {
-        trade.entryOlrPWin = entryOlrPWin;
-      }
-      if (entryShadowWinRate !== undefined && Number.isFinite(entryShadowWinRate)) {
-        trade.entryShadowWinRate = entryShadowWinRate;
-      }
-      return; // patched the first matching trade — done
-    }
-  }
 
   /**
    * v2.0.788: Fallback scan of ALL closed trade records (paper + real) to
