@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.791: Fix adaptive filter conviction gate — pattern-aware threshold that BOOSTS proven winners (WR>=60%, 10+ trades) instead of blocking them. BTC BUY 74% WR now gets lower conviction threshold (floor+0.05) to let winning trades through. This is a PROFIT-MAXIMIZATION fix: the filter was designed to prevent over-trading but was paradoxically blocking the system's best-performing pattern. Added WINNER-FIRST logic: (1) WR>=60% with 10+ trades → LOWER threshold to floor+0.05, (2) WR<40% with 10+ trades → RAISE threshold (soft penalty, max 20% above floor), (3) <3 samples → PASS_OPEN_DIRECTLY (no change), (4) over-trading fallback only when no proven winner exists. Updated tests to verify pattern-aware behavior.
+
+
 ## v2.0.790: Fix OLR/Shadow data pipeline — pre-compute entry features BEFORE executeTrade() and inject onto portfolio position objects immediately after executeTrade() returns. The previous 7 attempts (v2.0.777-789) all failed because they tried to patch trade records AFTER they were created during execution (inside forbidden execution engines). This fix pre-computes features into a map keyed by symbol+side at the START of executeTrade(), then injects them onto the portfolio's position objects immediately after executeTrade() returns. The position object is the SAME reference used when creating the TradeRecord at close time, so the data flows through automatically. This ensures 100% of trades have entryMarketFeatures, entryOlrPWin, and entryShadowWinRate fields populated.
 
 

@@ -841,3 +841,7 @@ Added entryMarketFeatures collection in the main decision cycle (before executeT
 
 ## System Engineer Update
 The fix requires a corresponding change in src/index.ts: before calling executeTrade(), collect market features (volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction, mfePct, maePct, mfeToPnlRatio, regimeOrdinal, momentumShort, momentumLong, hourOfDay) into a Record<string, number> and pass this snapshot as the 5th argument to OLR.query(). The same snapshot must be stored in the trade record so that when the trade resolves, feedTrade() receives the same features. This ensures the P(win) prediction uses the SAME features that will be recorded at entry time, eliminating the distribution shift.
+
+
+## System Engineer Update
+The MarketContext interface now requires `recentTradeCount` to be populated with the per-symbol-direction trade count. The caller (index.ts) must inject this data when calling `adapt()`. The adaptive filter's conviction gate now follows the WINNER-FIRST PRINCIPLE: proven winners get boosted (lower threshold), proven losers get soft penalty (higher threshold), and insufficient data (<3 samples) results in no change (PASS_OPEN_DIRECTLY).
