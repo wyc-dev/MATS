@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.794: Fix OLR/Shadow data pipeline — inject entry features into the decision object BEFORE executeTrade() so execution engines can read them during trade record creation. Previous 8 attempts (v2.0.777-790) all failed because they patched position objects AFTER executeTrade() returned, but the trade record is created DURING executeTrade() using a different reference. The decision object is the ONLY data structure that flows through to the execution engines during trade creation. By attaching entryMarketFeatures, entryOlrPWin, and entryShadowWinRate to the decision object before calling executeTrade(), the execution engines can read these values when creating the TradeRecord. This ensures 100% of trades have learning data from the moment the trade record is created.
+
+
 ## v2.0.793: Fix 59-minute thesis invalidation timer — add FINAL PROFIT GUARD that re-fetches live price at invalidation time (not cycle start). The v2.0.782 pre-check guard checked profitability at cycle start, but the 59-minute timer pattern (trades #3, #9, #13, #16 all at +1.9%) proves positions become profitable BETWEEN pre-check and invalidation. The new guard fetches the CURRENT price at the moment of invalidation and skips invalidation if the position is profitable. This ensures winners are NEVER capped by the timer, letting them run to their full potential.
 
 
