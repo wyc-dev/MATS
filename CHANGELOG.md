@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.777: Fix data pipeline — patch trade record with entry-time market features, OLR P(win), and shadow win rate directly in index.ts after executeTrade() returns, bypassing execution engines that never read runtime properties from the decision object. This fixes the 50% NO_MARKET_DATA rate and enables EXP to learn from ALL trades.
+
+
 ## v2.0.776: Force Meta-Agent to generate specific, actionable thesis — raise quality gate from 'at least ONE' to 'at least TWO' of 7 specific elements (price level, S/R zone, OLR edge, funding rate, volume profile, order book imbalance, technical pattern), explicitly forbid placeholder theses like '[1h: thesis]', add new 'technical pattern / market structure observation' element category, add placeholder hard gate section
 
 
