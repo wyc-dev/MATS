@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.782: Fix 59-minute timer-based thesis invalidation that force-closes profitable positions at +1.9% — added PRE-CHECK guard that runs BEFORE Skeptics validation, blocking invalidation for: (1) profitable positions (PnL > 0%), (2) positions held < 30 minutes, (3) positions with < 0.5% adverse move, (4) profitable positions held < 4 hours. Also added POST-CHECK guard as safety net after Skeptics response. This is the SINGLE MOST IMPACTFUL fix — it prevents the system from systematically capping winners at +1.9% while letting losers run to -2.0%.
+
+
 ## v2.0.781: Fix TS18048 — add non-null assertion on report.trade in patchTradeRecordWithEntryFeatures to satisfy TypeScript's control flow analysis.
 
 

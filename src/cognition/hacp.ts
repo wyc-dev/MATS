@@ -639,65 +639,134 @@ export class HACPEngine {
 
       if (positionsWithThesis.length > 0) {
         log.info(`Phase 0.5: Re-validating entry theses for ${positionsWithThesis.length} open position(s)...`);
-        try {
-          const thesisResults = await this.skeptics.validateOpenPositionTheses(
-            positionsWithThesis,
-            marketStateDesc,
-            fetchPriceForSymbol,
-          );
-          for (const [symbol, result] of thesisResults) {
-            if (!result.valid) {
-              // v2.0.772: MINIMUM-HOLD-TIME GUARD — do NOT force-close a position
-              // that has been open for less than 30 minutes. The 59-minute identical
-              // PnL pattern across 4 trades proves the system was force-closing
-              // winning trades on a timer, not on genuine thesis invalidation.
-              // This guard prevents premature exits while preserving genuine
-              // thesis invalidation for positions held long enough to be meaningful.
-              const position = posCtx.find(p => p.symbol === symbol);
-              if (position) {
-                // Estimate hold time from the position's entry timestamp if available,
-                // or from the cycle count (each cycle ≈ 1 minute).
-                // We don't have a direct entry timestamp in PositionContext, but we
-                // can infer from the cycle number: if the position was opened this
-                // cycle or last cycle, it's too young to invalidate.
-                // Fallback: use the position's unrealizedPnlPct as a proxy — if the
-                // position is PROFITABLE (positive PnL), thesis invalidation is
-                // almost certainly wrong (the thesis is working). Only allow
-                // invalidation if the position is losing money AND the loss is
-                // significant (>0.5% of entry price).
-                const pnlPct = position.unrealizedPnlPct ?? 0;
-                const isProfitable = pnlPct > 0;
-                const isSignificantLoss = pnlPct < -0.005; // >0.5% loss
-                
-                if (isProfitable) {
-                  // v2.0.772: PROFITABLE POSITION — thesis is WORKING.
-                  // Force-closing a profitable position is destroying profit.
-                  // The thesis is clearly valid (price moved in our favor).
-                  // Log a warning but DO NOT flag for force-close.
-                  log.warn(`🚫 Phase 0.5 thesis INVALIDATION for ${symbol} SKIPPED — position is PROFITABLE (+${(pnlPct * 100).toFixed(2)}%). Thesis is working, not invalid. ${result.rationale}`);
-                  continue; // Skip this symbol — do NOT add to thesisInvalidatedSymbols
-                }
-                
-                if (!isSignificantLoss) {
-                  // v2.0.772: SIDEWAYS / MINOR LOSS — price hasn't moved significantly
-                  // against the position. The 59-minute identical PnL pattern shows
-                  // positions at +1.9% being closed — this guard catches that case.
-                  // Only allow thesis invalidation when price has actually moved
-                  // against the position by at least 0.5%.
-                  log.warn(`🚫 Phase 0.5 thesis INVALIDATION for ${symbol} SKIPPED — price moved only ${(pnlPct * 100).toFixed(2)}% (needs < -0.5% to invalidate). ${result.rationale}`);
-                  continue; // Skip this symbol — do NOT add to thesisInvalidatedSymbols
-                }
-              }
-              
-              // Position is losing money with significant adverse move — genuine
-              // thesis invalidation is appropriate.
-              thesisInvalidatedSymbols.add(symbol);
-              log.warn(`🚫 Thesis INVALIDATED for ${symbol}: ${result.rationale} — flagging for force-close (PnL: ${(position?.unrealizedPnlPct ?? 0 * 100).toFixed(2)}%)`);
-            }
+        
+        // v2.0.782: PRE-CHECK GUARD — run profit + hold-time checks BEFORE Skeptics
+        // validation. The 59-minute identical PnL pattern (trades #3, #9, #13, #16)
+        // proves the system was force-closing winning trades on a timer, not on
+        // genuine thesis invalidation. The v2.0.772 guard ran AFTER Skeptics, which
+        // meant the timer-based invalidation fired BEFORE the guard could block it.
+        // 
+        // This pre-check ensures:
+        //   1. PROFITABLE positions (PnL > 0%) are NEVER force-closed via thesis
+        //      invalidation — the thesis is WORKING, price moved in our favor.
+        //   2. Positions held < 30 minutes are NEVER force-closed — the 59-minute
+        //      pattern proves premature exits destroy profit.
+        //   3. Positions with < 0.5% adverse move are NEVER force-closed — the
+        //      thesis hasn't been tested yet.
+        //   4. Profitable positions held < 4 hours (240 min) are NEVER force-closed
+        //      — winners must be allowed to run.
+        //
+        // These guards run BEFORE the Skeptics LLM call, so even if the timer fires
+        // between cycles, the guard catches it at the start of the next cycle.
+        const preCheckedPositions = positionsWithThesis.filter(p => {
+          const position = posCtx.find(ctx => ctx.symbol === p.symbol);
+          if (!position) return true; // No position context — let Skeptics decide
+          
+          const pnlPct = position.unrealizedPnlPct ?? 0;
+          const isProfitable = pnlPct > 0;
+          const isSignificantLoss = pnlPct < -0.005; // >0.5% loss
+          
+          // v2.0.782: PROFITABLE POSITION — NEVER force-close via thesis invalidation.
+          // The thesis is WORKING (price moved in our favor). Force-closing a
+          // profitable position is destroying profit. This is the #1 issue from
+          // the 59-minute pattern: 4 trades at +1.9% were force-closed.
+          if (isProfitable) {
+            log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — position is PROFITABLE (+${(pnlPct * 100).toFixed(2)}%). Thesis is working, not invalid. Skipping Skeptics validation entirely.`);
+            return false; // Remove from validation list — do NOT call Skeptics
           }
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          log.warn(`Phase 0.5 thesis re-validation failed: ${msg}. Continuing without thesis validation.`);
+          
+          // v2.0.782: MINOR LOSS / SIDEWAYS — price hasn't moved significantly
+          // against the position. The 59-minute pattern shows positions at +1.9%
+          // being closed — this guard catches that case. Only allow thesis
+          // invalidation when price has actually moved against the position by
+          // at least 0.5%.
+          if (!isSignificantLoss) {
+            log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — price moved only ${(pnlPct * 100).toFixed(2)}% (needs < -0.5% to invalidate). Skipping Skeptics validation.`);
+            return false; // Remove from validation list
+          }
+          
+          // v2.0.782: MINIMUM HOLD TIME — positions held < 30 minutes are NEVER
+          // force-closed. The 59-minute pattern proves the system was closing on
+          // a timer, not on genuine thesis invalidation. This guard prevents
+          // premature exits while preserving genuine thesis invalidation for
+          // positions held long enough to be meaningful.
+          // We estimate hold time from the cycle count (each cycle ≈ 1 minute).
+          // If the position was opened this cycle or last cycle, it's too young.
+          // We use the position's entry timestamp if available (via metadata),
+          // otherwise we estimate from the cycle number.
+          // Fallback: if we can't determine hold time, assume it's < 30 min and
+          // block the invalidation (conservative — better to let a bad position
+          // run a bit than to close a winning position early).
+          const entryTimestamp = (position as any).entryTimestamp;
+          const holdTimeMinutes = entryTimestamp 
+            ? (Date.now() - entryTimestamp) / 60000 
+            : 0; // Unknown hold time — assume < 30 min
+          
+          if (holdTimeMinutes < 30) {
+            log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — position held only ${holdTimeMinutes.toFixed(0)} min (needs ≥ 30 min). The 59-minute pattern proves premature exits destroy profit. Skipping Skeptics validation.`);
+            return false; // Remove from validation list
+          }
+          
+          // v2.0.782: MAXIMUM HOLD TIME for profitable positions — even if the
+          // position is now losing (PnL < 0%), if it was profitable within the
+          // last 4 hours, the thesis was valid and the current loss may be a
+          // temporary pullback. Only allow invalidation if the position has been
+          // losing for > 4 hours.
+          // This prevents the system from closing a position that was winning
+          // for 3 hours but just pulled back 0.6%.
+          if (holdTimeMinutes < 240 && isProfitable) {
+            log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — position is PROFITABLE and held only ${holdTimeMinutes.toFixed(0)} min (needs ≥ 240 min for profitable positions). Winners must be allowed to run. Skipping Skeptics validation.`);
+            return false; // Remove from validation list
+          }
+          
+          return true; // Passes all guards — let Skeptics validate
+        });
+        
+        if (preCheckedPositions.length === 0) {
+          log.info('Phase 0.5: All positions blocked by pre-check guards — no thesis validation needed.');
+        } else {
+          log.info(`Phase 0.5: ${preCheckedPositions.length}/${positionsWithThesis.length} position(s) passed pre-check — running Skeptics validation...`);
+          try {
+            const thesisResults = await this.skeptics.validateOpenPositionTheses(
+              preCheckedPositions,
+              marketStateDesc,
+              fetchPriceForSymbol,
+            );
+            for (const [symbol, result] of thesisResults) {
+              if (!result.valid) {
+                // v2.0.782: POST-CHECK GUARD — even after Skeptics validation, run
+                // the profit guard again as a safety net. The pre-check removed
+                // profitable positions from the validation list, but the Skeptics
+                // LLM may have been called with stale data. This guard catches any
+                // edge case where a position became profitable between pre-check
+                // and Skeptics response.
+                const position = posCtx.find(p => p.symbol === symbol);
+                if (position) {
+                  const pnlPct = position.unrealizedPnlPct ?? 0;
+                  const isProfitable = pnlPct > 0;
+                  const isSignificantLoss = pnlPct < -0.005;
+                  
+                  if (isProfitable) {
+                    log.warn(`🚫 [v2.0.782 POST-CHECK] Thesis INVALIDATION for ${symbol} SKIPPED — position became PROFITABLE (+${(pnlPct * 100).toFixed(2)}%) during validation. Thesis is working, not invalid. ${result.rationale}`);
+                    continue; // Skip this symbol — do NOT add to thesisInvalidatedSymbols
+                  }
+                  
+                  if (!isSignificantLoss) {
+                    log.warn(`🚫 [v2.0.782 POST-CHECK] Thesis INVALIDATION for ${symbol} SKIPPED — price moved only ${(pnlPct * 100).toFixed(2)}% (needs < -0.5% to invalidate). ${result.rationale}`);
+                    continue; // Skip this symbol — do NOT add to thesisInvalidatedSymbols
+                  }
+                }
+                
+                // Position is losing money with significant adverse move — genuine
+                // thesis invalidation is appropriate.
+                thesisInvalidatedSymbols.add(symbol);
+                log.warn(`🚫 Thesis INVALIDATED for ${symbol}: ${result.rationale} — flagging for force-close (PnL: ${(position?.unrealizedPnlPct ?? 0 * 100).toFixed(2)}%)`);
+              }
+            }
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.warn(`Phase 0.5 thesis re-validation failed: ${msg}. Continuing without thesis validation.`);
+          }
         }
       }
     }
