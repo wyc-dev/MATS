@@ -1358,6 +1358,17 @@ export class HACPEngine {
     // PHASE 2: Structured Rapid Debate (up to 3 rounds)
     // ═══════════════════════════════════════════════════
 
+    // v2.0.771: Build a mutable map of agent thoughts keyed by agentId.
+    // Each round, agents generate new statements that update their entry
+    // in this map. Subsequent agents in the same round see the LATEST
+    // thoughts from all agents (including those who already spoke this round).
+    // This makes multi-round debate truly iterative — agents can respond
+    // to each other's evolving reasoning, improving consensus quality.
+    const agentThoughtMap = new Map<string, AgentThought>();
+    for (const t of allThoughts) {
+      agentThoughtMap.set(t.agentId, t);
+    }
+
     let currentContext = this.buildDebateContext(allThoughts);
     let consensusReached = false;
     let finalConsensus: ConsensusResult | null = null;
@@ -1391,8 +1402,13 @@ export class HACPEngine {
 
       // In parallel, each agent generates their statement
       const statementPromises = this.subAgents.map(async (agent, idx) => {
+        // v2.0.771: Use the LATEST thought from the agentThoughtMap for this
+        // agent, not the stale allThoughts entry. This ensures the agent's
+        // debate statement reflects its most recent reasoning (which may
+        // have been updated by a previous round's statement).
+        const latestThought = agentThoughtMap.get(agent.identity.id);
         const targetThought = phase === 'attack'
-          ? this.findWeakestThought(idx, allThoughts)
+          ? this.findWeakestThought(idx, Array.from(agentThoughtMap.values()))
           : undefined;
 
         // Emit: agent debating
@@ -1410,6 +1426,25 @@ export class HACPEngine {
             currentContext,
             targetThought
           );
+
+          // v2.0.771: Update the agentThoughtMap with the new statement.
+          // This creates a new AgentThought that merges the agent's original
+          // thought with the debate statement content, so subsequent agents
+          // in the same round see the latest reasoning.
+          if (latestThought) {
+            const updatedThought: AgentThought = {
+              ...latestThought,
+              thought: `[Round ${round}] ${result.content}\n---\n${latestThought.thought}`,
+              confidence: result.confidence,
+              timestamp: Date.now(),
+              metadata: {
+                ...latestThought.metadata,
+                debateRound: round,
+                debatePhase: phase,
+              },
+            };
+            agentThoughtMap.set(agent.identity.id, updatedThought);
+          }
 
           // Emit: agent done debating
           const debateProg2 = this.makeAgentProgressList();
@@ -1475,7 +1510,7 @@ export class HACPEngine {
 
       // After Round 1 (argument): if all agents agree on same action, skip attack/synthesis
       if (round === 1) {
-        const actions = allThoughts
+        const actions = Array.from(agentThoughtMap.values())
           .filter(t => t.agentRole !== 'meta_agent' && t.agentRole !== 'market_agent' && t.agentRole !== 'skeptics' && t.agentRole !== 'independent_risk_auditor')
           .map(t => {
             const d = t.metadata?.['decision'] as TradingDecision | undefined;
@@ -1484,16 +1519,16 @@ export class HACPEngine {
         const uniqueActions = new Set(actions);
         if (uniqueActions.size === 1 && actions.length >= 3) {
           log.info(`Unanimous action "${actions[0]}" after Round 1 — skipping attack/synthesis rounds (saved ${this.maxRounds - 1} rounds)`);
-          const voteResults = await this.runConsensusVote(allThoughts);
+          const voteResults = await this.runConsensusVote(Array.from(agentThoughtMap.values()));
           consensusReached = true;
-          finalConsensus = this.buildConsensus(allThoughts, debateRounds, true, false, voteResults, currentPositions);
+          finalConsensus = this.buildConsensus(Array.from(agentThoughtMap.values()), debateRounds, true, false, voteResults, currentPositions);
           break;
         }
       }
 
       // Check for consensus after each round
       if (round >= 2) {
-        const voteResults = await this.runConsensusVote(allThoughts);
+        const voteResults = await this.runConsensusVote(Array.from(agentThoughtMap.values()));
         const weightedScore = this.calcWeightedConsensus(voteResults);
 
         // v2.0.41: Use effective threshold (Evolution signalThreshold override
@@ -1503,7 +1538,7 @@ export class HACPEngine {
           log.info(`Consensus reached at round ${round} (weighted: ${weightedScore.toFixed(3)}, threshold: ${effectiveThreshold.toFixed(3)})`);
           consensusReached = true;
           finalConsensus = this.buildConsensus(
-            allThoughts,
+            Array.from(agentThoughtMap.values()),
             debateRounds,
             true,
             false,
@@ -1519,7 +1554,7 @@ export class HACPEngine {
           if (polarizing) {
             log.info('Debate polarizing — invoking meta-agent arbitration.');
             finalConsensus = await this.metaAgentArbitration(
-              allThoughts,
+              Array.from(agentThoughtMap.values()),
               debateRounds,
               voteResults
             );
@@ -1535,6 +1570,20 @@ export class HACPEngine {
         currentContext += `[${st.agentRole}] (${st.confidence.toFixed(2)}): ${st.content}\n`;
       }
     }
+
+    // v2.0.771: After debate, update allThoughts with the latest agentThoughtMap
+    // so downstream phases (consensus, risk audit) see the evolved thoughts.
+    // This ensures the final consensus reflects the full iterative debate.
+    const updatedAllThoughts = Array.from(agentThoughtMap.values());
+    // Preserve any thoughts that were not in the map (e.g. Skeptics, Risk Auditor)
+    for (const t of allThoughts) {
+      if (!agentThoughtMap.has(t.agentId)) {
+        updatedAllThoughts.push(t);
+      }
+    }
+    // Replace allThoughts with the updated array
+    allThoughts.length = 0;
+    allThoughts.push(...updatedAllThoughts);
 
     // ═══════════════════════════════════════════════════
     // PHASE 3: Consensus & Conclusion Lock

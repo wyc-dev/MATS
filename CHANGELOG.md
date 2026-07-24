@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.771: Fix HACP debate loop — update agentThoughts map after each agent think() call so subsequent agents see latest thoughts. Multi-round debate now actually iterates, improving consensus quality and conviction accuracy.
+
+
 ## v2.0.770: Fix OLR overparameterization — add adaptive feature selection that reduces effective feature dimension to 5 when N < 2*D (30 samples for D=15), preventing extreme 0%/100% P(win) from underdetermined model. Only top-5 most informative features (volatility, srDistanceBps, obImbalance, sentiment, fundingRate) are active when data is scarce; all 15 features become active when N >= 30. This ensures at least 6 samples per parameter instead of 2, giving the 5-bin calibration map meaningful variation to calibrate.
 
 
