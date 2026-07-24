@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.231: Fix premature SL on high-confidence trades — add olrConfidence parameter to computeATRSLTP that scales SL multiplier from 1.5× to 2.5× ATR when OLR P(win) > 80%, preventing premature stops on high-confidence entries. Also tightens SL to 1.2× ATR when confidence < 50% to minimize risk on uncertain entries. Caps widened to 8%/12% for high-confidence trades.
+
+
 ## v2.0.229: OLR backfill purge — 4 fixes (A+B+C+D) to eliminate backfill pollution that caused SKHX 3 consecutive BUY losses. v2.0.228 only stopped NEW backfill from entering calibration bins; OLD backfill data remained, producing false 86% P(win) from poisoned bin [0.8-1) = 86.7% empirical WR (built from 1387 backfill samples = 44.8% of nSamples). Additionally, nSamples was inflated by backfill (giving false 'high' confidence), recentTrades was 75% backfill (agent couldn't see real losses), and sourceWeight=0.3 was too high.
 
 **Fix A: Purge backfill-poisoned calibration bins on migration** (`src/evolution/olr-engine.ts`): `migrateModel()` now resets `calibrationBins` to empty when `backfillSamples > 0`. This is a one-time purge — bins rebuild from real+shadow+paper going forward (v2.0.228 already prevents new backfill). Why full purge not partial? Bins store aggregate wins/losses without per-source tagging, so backfill cannot be separated from real. The identity fallback (raw pWin) is safer than poisoned bins. Verified: SKHX BUY P(win) dropped from 86% (poisoned) → 62% (raw sigmoid, honest).

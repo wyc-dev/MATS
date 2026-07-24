@@ -266,8 +266,30 @@ export function computeATRSLTP(
    *  to "the market is being pushed RIGHT NOW" instead of relying on
    *  historical ATR alone. */
   adverseMomentum?: number,
+  /** v2.0.231: OLR P(win) confidence score (0-1). When > 0.8, the SL multiplier
+   *  is increased to 2.5× ATR to give high-confidence trades more room to breathe.
+   *  This prevents premature stops on trades with strong directional conviction.
+   *  When confidence is low (< 0.5), the SL is tightened to 1.2× ATR to minimize
+   *  risk on uncertain entries. */
+  olrConfidence?: number,
 ): { sl: number; tp: number } | null {
   if (atr <= 0 || entryPrice <= 0) return null;
+
+  // ── v2.0.231: Confidence-based SL scaling ──
+  // High-confidence trades (OLR P(win) > 80%) get wider SL to avoid premature stops.
+  // Low-confidence trades (< 50%) get tighter SL to minimize risk.
+  // Medium-confidence trades use the default multiplier.
+  let effectiveSlMult = slMult;
+  if (olrConfidence !== undefined) {
+    if (olrConfidence > 0.8) {
+      // High confidence: give the trade room to breathe — 2.5× ATR
+      effectiveSlMult = 2.5;
+    } else if (olrConfidence < 0.5) {
+      // Low confidence: tighten SL to minimize risk — 1.2× ATR
+      effectiveSlMult = 1.2;
+    }
+    // else: medium confidence, use default slMult (1.5×)
+  }
 
   // ── v2.0.213 (#7): Execution lens as PRIMARY SL/TP signal ──
   // The execution lens provides a stop-out-trained view of the recent regime.
@@ -279,7 +301,7 @@ export function computeATRSLTP(
   const execLens = pendingExecutionLens;
   const useExecLens = execLens && execLens.blended && execLens.updateCount > 0;
 
-  let slDist = slMult * atr;
+  let slDist = effectiveSlMult * atr;
   let execWidening = 0; // log how much the execution lens added
 
   if (useExecLens) {
@@ -292,7 +314,7 @@ export function computeATRSLTP(
     if (execAdverse > 0) {
       const execMomSlDist = execAdverse * entryPrice * 2.5;
       slDist = Math.max(slDist, execMomSlDist);
-      execWidening = Math.max(execWidening, execMomSlDist - slMult * atr);
+      execWidening = Math.max(execWidening, execMomSlDist - effectiveSlMult * atr);
     }
 
     // 2. Execution volatility scaling — if the execution lens sees elevated
@@ -304,7 +326,7 @@ export function computeATRSLTP(
     if (execLens!.volatility > currentImpliedVol * 1.5 && currentImpliedVol > 0) {
       const volRatio = Math.min(execLens!.volatility / currentImpliedVol, 3.0); // cap at 3×
       const volWidenFactor = 1.0 + Math.min((volRatio - 1.0) * 0.2, 0.4); // up to +40%
-      const volSlDist = slMult * atr * volWidenFactor;
+      const volSlDist = effectiveSlMult * atr * volWidenFactor;
       if (volSlDist > slDist) {
         execWidening = Math.max(execWidening, volSlDist - slDist);
         slDist = volSlDist;
@@ -318,8 +340,8 @@ export function computeATRSLTP(
     //    log2(9) ≈ 3.17. Below 1.0 = confident, above 2.0 = uncertain.
     if (execLens!.entropy > 2.0) {
       // Uncertain — dampen any execution-lens widening by 50%.
-      const dampedSl = slMult * atr + execWidening * 0.5;
-      slDist = Math.max(slMult * atr, dampedSl);
+      const dampedSl = effectiveSlMult * atr + execWidening * 0.5;
+      slDist = Math.max(effectiveSlMult * atr, dampedSl);
     }
 
     // 4. Raw adverseMomentum FLOOR — never narrow below what the raw
@@ -345,16 +367,23 @@ export function computeATRSLTP(
   // v2.0.213: execution lens gets widest caps (6%/10%) because the
   // stop-out-trained lens has evidence for wider stops; raw momentum gets
   // medium (5%/8%); baseline gets tightest (3%/5%).
+  // v2.0.231: high-confidence trades (OLR > 0.8) get wider caps (8%/12%)
+  // to match the wider SL multiplier.
+  const isHighConfidence = olrConfidence !== undefined && olrConfidence > 0.8;
   const finalMaxSlDist = useExecLens
     ? entryPrice * 0.06
-    : (adverseMomentum && adverseMomentum > 0)
-      ? entryPrice * 0.05
-      : entryPrice * 0.03;
+    : isHighConfidence
+      ? entryPrice * 0.08
+      : (adverseMomentum && adverseMomentum > 0)
+        ? entryPrice * 0.05
+        : entryPrice * 0.03;
   const finalMaxTpDist = useExecLens
     ? entryPrice * 0.10
-    : (adverseMomentum && adverseMomentum > 0)
-      ? entryPrice * 0.08
-      : entryPrice * 0.05;
+    : isHighConfidence
+      ? entryPrice * 0.12
+      : (adverseMomentum && adverseMomentum > 0)
+        ? entryPrice * 0.08
+        : entryPrice * 0.05;
 
   const cappedSlDist = Math.min(slDist, finalMaxSlDist);
   const cappedTpDist = Math.min(tpDist, finalMaxTpDist);
