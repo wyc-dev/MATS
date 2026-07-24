@@ -7108,6 +7108,61 @@ ${recentExamples}
       const execResult = await this.executeTrade(decisionWithSR, activeAuditGates);
       const reports: ExecutionReport[] = execResult.paperReports ?? [];
 
+      // v2.0.777: After executeTrade() returns, the trade record has been created
+      // by the execution engine. We must now inject the entry-time market features,
+      // OLR P(win), and shadow win rate into the trade record so the learning
+      // pipeline (EXP, OLR, NA, etc.) has real data instead of NO_MARKET_DATA.
+      // The execution engines (paper-engine.ts, trading-manager.ts) do NOT read
+      // runtime properties from the decision object — they only read the typed
+      // TradingDecision fields. So we must patch the trade record here in index.ts
+      // after execution, before the record is consumed by the learning pipeline.
+      if (execResult.success && (finalDecision.action === 'buy' || finalDecision.action === 'sell')) {
+        const tradeSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+        // Find the trade record that was just created — it's the last entry in
+        // either paperEngine.trades or portfolio.closedRealTrades (for paper) or
+        // portfolio.realPositions (for real, still open). We need to patch it
+        // with the entry-time market features, OLR, and shadow data.
+        const entryFeatures = (decisionWithSR as any).entryMarketFeatures as Record<string, number> | undefined;
+        const entryOlr = (decisionWithSR as any).entryOlrPWin as number | undefined;
+        const entryShadow = (decisionWithSR as any).entryShadowWinRate as number | undefined;
+        if (entryFeatures || entryOlr !== undefined || entryShadow !== undefined) {
+          // Try to find the trade record in paper engine trades (most recent)
+          const paperTrades = this.paperEngine.getTrades();
+          const lastPaperTrade = paperTrades.length > 0 ? paperTrades[paperTrades.length - 1] : null;
+          if (lastPaperTrade && normalizeSymbol(lastPaperTrade.symbol) === tradeSym) {
+            // Patch the paper trade record with market features
+            if (entryFeatures) {
+              (lastPaperTrade as any).entryMarketFeatures = entryFeatures;
+            }
+            if (entryOlr !== undefined) {
+              (lastPaperTrade as any).entryOlrPWin = entryOlr;
+            }
+            if (entryShadow !== undefined) {
+              (lastPaperTrade as any).entryShadowWinRate = entryShadow;
+            }
+            log.info(`🧬 [entry-features] Patched paper trade record for ${tradeSym}: marketFeatures=${Object.keys(entryFeatures ?? {}).length} keys, OLR=${entryOlr !== undefined ? (entryOlr * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadow !== undefined ? (entryShadow * 100).toFixed(0) + '%' : 'N/A'}`);
+          } else {
+            // Try real positions (just opened, still open)
+            const realPositions = this.portfolio.getRealPositions();
+            const lastRealPos = realPositions.length > 0 ? realPositions[realPositions.length - 1] : null;
+            if (lastRealPos && normalizeSymbol(lastRealPos.symbol) === tradeSym) {
+              if (entryFeatures) {
+                (lastRealPos as any).entryMarketFeatures = entryFeatures;
+              }
+              if (entryOlr !== undefined) {
+                (lastRealPos as any).entryOlrPWin = entryOlr;
+              }
+              if (entryShadow !== undefined) {
+                (lastRealPos as any).entryShadowWinRate = entryShadow;
+              }
+              log.info(`🧬 [entry-features] Patched real position record for ${tradeSym}: marketFeatures=${Object.keys(entryFeatures ?? {}).length} keys, OLR=${entryOlr !== undefined ? (entryOlr * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadow !== undefined ? (entryShadow * 100).toFixed(0) + '%' : 'N/A'}`);
+            } else {
+              log.warn(`🧬 [entry-features] Could not find trade record for ${tradeSym} to patch — may be a multi-symbol entry that was handled differently`);
+            }
+          }
+        }
+      }
+
       // v2.0.106: Record trade execution for per-asset frequency throttling
       if (execResult.success && (finalDecision.action === 'buy' || finalDecision.action === 'sell')) {
         const tradeSym = finalDecision.symbol || activeSymbol;
