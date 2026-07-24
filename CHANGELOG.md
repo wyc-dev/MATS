@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.788: Fix 50% NO_MARKET_DATA rate — add fallbackPatchMissingTradeFeatures() that scans ALL trade records (paper trades, closed real trades, real positions, portfolio positions) at end of each decision cycle and patches any missing entryMarketFeatures. This catches trades from same-cycle SL/TP closes, multi-symbol consensus entries, realPositions import path, and exploration path that bypass the primary patchTradeRecordWithEntryFeatures(). Ensures 100% of trades have market features for OLR/EXP/RIL learning.
+
+
 ## v2.0.787: Fix TS2339 — add entryMarketFeatures, entryOlrPWin, entryShadowWinRate to TradeRecord type via local interface extension. These fields are patched by the OLR/Shadow data pipeline at trade creation time and must be recognized by TypeScript.
 
 

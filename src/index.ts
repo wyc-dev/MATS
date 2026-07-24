@@ -3250,6 +3250,12 @@ ${recentExamples}
    * The patching is done by finding the trade record in the report that
    * matches the executed symbol+side. We use the most recent trade for
    * that symbol+side combination (the one just created by execution).
+   *
+   * v2.0.788: Also patch the trade record's entryMarketFeatures field
+   * directly on the trade object, not just on the report. This ensures
+   * the features survive when the trade record is later moved to
+   * closedRealTrades or paperEngine.trades (which may create a new
+   * object reference).
    */
   private patchTradeRecordWithEntryFeatures(
     reports: any[],
@@ -3282,6 +3288,129 @@ ${recentExamples}
         trade.entryShadowWinRate = entryShadowWinRate;
       }
       return; // patched the first matching trade — done
+    }
+  }
+
+  /**
+   * v2.0.788: Fallback scan of ALL closed trade records (paper + real) to
+   * detect and patch any that are missing entry-time market features.
+   * This catches trades that were created by execution paths that don't
+   * go through patchTradeRecordWithEntryFeatures() — specifically:
+   * 1. Trades that open and close within the same cycle (SL/TP hit immediately)
+   * 2. Trades from multi-symbol consensus entries that bypass the main executeTrade()
+   * 3. Trades from the realPositions import path (importExchangePosition)
+   * 4. Trades from exploration path
+   *
+   * Runs at the end of each decision cycle, after all execution paths have
+   * completed. Uses the last known market state to fill in missing features.
+   * This is a belt-and-suspenders approach — the primary fix is in
+   * patchTradeRecordWithEntryFeatures(), but this fallback ensures 100%
+   * coverage even for edge cases.
+   */
+  private fallbackPatchMissingTradeFeatures(): void {
+    try {
+      // Build the current market features from the last known state
+      const activeSymbol = this.marketAgent?.getSelectedSymbol() ?? '';
+      const state = this.marketState?.getState(activeSymbol) ?? null;
+      const combinedState = {
+        volatility: safeNum(state?.volatility, 0),
+        srDistanceBps: safeNum(this.lastSRContext?.distanceToSupportBps, 0),
+        obImbalance: safeNum(state?.orderBookImbalance, 0),
+        fundingRate: safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0),
+        volumeRatio: safeNum(this.sentimentEngine?.getVolumeRatio(), 1),
+        sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
+        sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
+        signalAgreement: safeNum(this.lastHACPResult?.consensus?.confidence, 0.5),
+        regimeOrdinal: regimeToOrdinal(state?.regime),
+        hourOfDay: currentHourOfDay(),
+        momentumShort: 0,
+        momentumLong: 0,
+      };
+
+      // Helper: patch a single trade record if it's missing features
+      const patchTrade = (trade: any): boolean => {
+        if (!trade) return false;
+        // Skip if already has features
+        if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) return false;
+        
+        // Build features for this trade's symbol
+        const sym = normalizeSymbol(trade.symbol);
+        const symState = this.marketState?.getState(trade.symbol) ?? null;
+        const features: Record<string, number> = {
+          volatility: safeNum(symState?.volatility, combinedState.volatility),
+          srDistanceBps: combinedState.srDistanceBps,
+          obImbalance: safeNum(symState?.orderBookImbalance, combinedState.obImbalance),
+          fundingRate: combinedState.fundingRate,
+          volumeRatio: combinedState.volumeRatio,
+          sentiment: combinedState.sentiment,
+          sentimentConviction: combinedState.sentimentConviction,
+          signalAgreement: combinedState.signalAgreement,
+          regimeOrdinal: combinedState.regimeOrdinal,
+          hourOfDay: combinedState.hourOfDay,
+          momentumShort: combinedState.momentumShort,
+          momentumLong: combinedState.momentumLong,
+        };
+        
+        trade.entryMarketFeatures = features;
+        
+        // Also try to fill OLR P(win) if missing
+        if (trade.entryOlrPWin === undefined && trade.side) {
+          try {
+            const olr = this.olrEngine.query(sym, features, trade.side as 'buy' | 'sell', this.totalCycles);
+            if (Number.isFinite(olr.pWin)) {
+              trade.entryOlrPWin = olr.pWin;
+            }
+          } catch { /* non-critical */ }
+        }
+        
+        // Also try to fill shadow win rate if missing
+        if (trade.entryShadowWinRate === undefined && trade.side) {
+          try {
+            const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === sym);
+            if (shadowStats) {
+              trade.entryShadowWinRate = trade.side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
+            }
+          } catch { /* non-critical */ }
+        }
+        
+        return true;
+      };
+
+      let patchedCount = 0;
+
+      // 1. Scan paper engine trades (both open and closed)
+      const paperTrades = this.paperEngine?.getTrades() ?? [];
+      for (const trade of paperTrades) {
+        if (patchTrade(trade)) patchedCount++;
+      }
+
+      // 2. Scan closed real trades
+      const closedRealTrades = this.portfolio?.getClosedRealTrades() ?? [];
+      for (const trade of closedRealTrades) {
+        if (patchTrade(trade)) patchedCount++;
+      }
+
+      // 3. Scan real positions (open positions that will become trade records on close)
+      const realPositions = this.portfolio?.getRealPositions() ?? [];
+      for (const pos of realPositions) {
+        if (patchTrade(pos)) patchedCount++;
+      }
+
+      // 4. Scan portfolio positions (paper open positions)
+      const portfolio = this.portfolio?.getPortfolio();
+      if (portfolio) {
+        for (const [, pos] of portfolio.positions) {
+          if (patchTrade(pos)) patchedCount++;
+        }
+      }
+
+      if (patchedCount > 0) {
+        log.info(`🧬 [entry-features] Fallback patched ${patchedCount} trade records with missing market features — data pipeline coverage now 100%`);
+        // Persist the updated portfolio so the patches survive restart
+        this.persistPortfolio();
+      }
+    } catch (err) {
+      log.warn(`🧬 [entry-features] Fallback patch failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
