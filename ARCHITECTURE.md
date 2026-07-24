@@ -845,3 +845,7 @@ The fix requires a corresponding change in src/index.ts: before calling executeT
 
 ## System Engineer Update
 The MarketContext interface now requires `recentTradeCount` to be populated with the per-symbol-direction trade count. The caller (index.ts) must inject this data when calling `adapt()`. The adaptive filter's conviction gate now follows the WINNER-FIRST PRINCIPLE: proven winners get boosted (lower threshold), proven losers get soft penalty (higher threshold), and insufficient data (<3 samples) results in no change (PASS_OPEN_DIRECTLY).
+
+
+## System Engineer Update
+The entry-time data pipeline now has two independent injection paths: (1) precomputed features map (populated before executeTrade), and (2) direct state-based injection (built at injection time). Path 2 is the fallback that ensures 100% coverage even when path 1 fails. The injectEntryFeaturesIntoNewPositions() method is now self-sufficient and does not depend on any pre-execution state.
