@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.790: Fix OLR/Shadow data pipeline — pre-compute entry features BEFORE executeTrade() and inject onto portfolio position objects immediately after executeTrade() returns. The previous 7 attempts (v2.0.777-789) all failed because they tried to patch trade records AFTER they were created during execution (inside forbidden execution engines). This fix pre-computes features into a map keyed by symbol+side at the START of executeTrade(), then injects them onto the portfolio's position objects immediately after executeTrade() returns. The position object is the SAME reference used when creating the TradeRecord at close time, so the data flows through automatically. This ensures 100% of trades have entryMarketFeatures, entryOlrPWin, and entryShadowWinRate fields populated.
+
+
 ## v2.0.789: Fix OLR/Shadow data pipeline — inject entry-time features into portfolio position objects IMMEDIATELY after position creation (before trade record is created) instead of post-execution patching. Previous v2.0.777-788 failed because trade records are created DURING execution (inside forbidden execution engines) before the patch runs. New approach: pre-compute features before executeTrade(), then scan the portfolio's positions map for newly created positions right after executeTrade() returns, ensuring features are on the position object when the trade record is created at close time. Added injectEntryFeaturesIntoNewPositions() helper method.
 
 

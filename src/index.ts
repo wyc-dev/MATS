@@ -3415,44 +3415,235 @@ ${recentExamples}
   }
 
   /**
-   * v2.0.789: Unified trade execution router with entry-time data pipeline.
+   * v2.0.790: Unified trade execution router with entry-time data pipeline.
    *
    * Paper mode → paperEngine.executeDecision() directly.
    * Real mode  → tradingManager.executeDecision() (places order on HL,
    *              mirrors into portfolio via importExchangePosition).
    *
-   * v2.0.789 FIX: Inject entry-time market features, OLR P(win), and shadow
-   * win rate into the portfolio's position object IMMEDIATELY after position
-   * creation, BEFORE the trade record is created at close time. The previous
-   * approach (v2.0.777-788) patched trade records AFTER executeTrade() returned,
-   * but trade records are created DURING execution (inside forbidden execution
-   * engines) — the patch never ran in time.
+   * v2.0.790 FIX: Pre-compute entry-time market features, OLR P(win), and
+   * shadow win rate BEFORE calling executeTrade(), and store them in a
+   * pre-computed features map keyed by symbol+side. Then IMMEDIATELY after
+   * executeTrade() returns, inject these features onto the portfolio's
+   * position objects for newly created positions.
    *
-   * New approach: pre-compute features before executeTrade(), then scan the
-   * portfolio's positions map for newly created positions right after
-   * executeTrade() returns. The position object in the portfolio is the SAME
-   * reference used when creating the TradeRecord at close time — patching it
-   * here ensures the data flows through automatically.
+   * The key insight: the position object in the portfolio is the SAME
+   * reference used when creating the TradeRecord at close time. Patching
+   * the position object here ensures the data flows through to the trade
+   * record automatically when it's created at close time.
+   *
+   * The pre-computed features map ensures that even if executeTrade()
+   * creates the trade record synchronously (inside forbidden execution
+   * engines), the features are available for injection immediately after
+   * executeTrade() returns — before any other code can run.
    *
    * The entry-time features are passed as a parameter (not read from the
    * decision object) to ensure they are always available regardless of
    * how the decision was constructed.
    */
+  /** v2.0.790: Pre-computed entry-time features map — stores features keyed
+   *  by normalized symbol + side so they can be injected onto position objects
+   *  immediately after executeTrade() returns. This is the ONLY source of
+   *  truth for entry-time features — all injection paths read from this map. */
+  private precomputedEntryFeatures = new Map<string, {
+    marketFeatures: Record<string, number>;
+    olrPWin?: number;
+    shadowWinRate?: number;
+  }>();
+
+  /** v2.0.790: Pre-compute entry-time features for a given symbol+side and
+   *  store them in the precomputed map. This must be called BEFORE
+   *  executeTrade() so the features are available for injection immediately
+   *  after executeTrade() returns. */
+  private precomputeEntryFeatures(symbol: string, side: 'buy' | 'sell'): void {
+    try {
+      const sym = normalizeSymbol(symbol);
+      const key = `${sym}:${side}`;
+      
+      // Build market features from current state
+      const activeSymbol = this.marketAgent?.getSelectedSymbol() ?? '';
+      const state = this.marketState?.getState(activeSymbol) ?? null;
+      const symState = this.marketState?.getState(sym) ?? null;
+      
+      const marketFeatures: Record<string, number> = {
+        volatility: safeNum(symState?.volatility, safeNum(state?.volatility, 0)),
+        srDistanceBps: safeNum(this.lastSRContext?.distanceToSupportBps, 0),
+        obImbalance: safeNum(symState?.orderBookImbalance, safeNum(state?.orderBookImbalance, 0)),
+        fundingRate: safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0),
+        volumeRatio: safeNum(this.sentimentEngine?.getVolumeRatio(), 1),
+        sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
+        sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
+        signalAgreement: safeNum(this.lastHACPResult?.consensus?.confidence, 0.5),
+        regimeOrdinal: regimeToOrdinal(state?.regime),
+        hourOfDay: currentHourOfDay(),
+        momentumShort: 0,
+        momentumLong: 0,
+      };
+      
+      // Query OLR P(win) at entry time
+      let olrPWin: number | undefined;
+      try {
+        const olr = this.olrEngine.query(sym, marketFeatures, side, this.totalCycles);
+        if (Number.isFinite(olr.pWin)) {
+          olrPWin = olr.pWin;
+          this.entryOlrPWinCache.set(sym, olr.pWin);
+        }
+      } catch { /* non-critical */ }
+      
+      // Query shadow win rate at entry time
+      let shadowWinRate: number | undefined;
+      try {
+        const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === sym);
+        if (shadowStats) {
+          shadowWinRate = side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
+        }
+      } catch { /* non-critical */ }
+      
+      // Store in precomputed map
+      this.precomputedEntryFeatures.set(key, {
+        marketFeatures,
+        olrPWin,
+        shadowWinRate,
+      });
+      
+      log.info(`🧬 [entry-features] Pre-computed for ${sym} ${side.toUpperCase()}: marketFeatures=${Object.keys(marketFeatures).length} keys, OLR=${olrPWin !== undefined ? (olrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${shadowWinRate !== undefined ? (shadowWinRate * 100).toFixed(0) + '%' : 'N/A'}`);
+    } catch (err) {
+      log.warn(`[entry-features] Pre-compute failed for ${symbol} ${side}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** v2.0.790: Inject pre-computed entry-time features onto ALL newly created
+   *  position objects in the portfolio. This runs IMMEDIATELY after
+   *  executeTrade() returns, BEFORE the trade record is created at close time.
+   *
+   *  This is the ONLY injection point — all execution paths (paper, real,
+   *  exploration, multi-symbol) converge here. The pre-computed features map
+   *  ensures features are always available regardless of execution path. */
+  private injectPrecomputedEntryFeatures(symbol: string, side: 'buy' | 'sell'): void {
+    try {
+      const sym = normalizeSymbol(symbol);
+      const key = `${sym}:${side}`;
+      const precomputed = this.precomputedEntryFeatures.get(key);
+      if (!precomputed) {
+        log.warn(`[entry-features] No pre-computed features for ${key} — skipping injection`);
+        return;
+      }
+      
+      const now = Date.now();
+      const recentWindow = 5000; // 5 seconds — positions created within this window are "new"
+      let patchedCount = 0;
+      
+      // Helper: patch a single position object with entry-time data
+      const patchPosition = (pos: any): boolean => {
+        if (!pos) return false;
+        // Skip if already has features (already patched by a previous call)
+        if (pos.entryMarketFeatures && Object.keys(pos.entryMarketFeatures).length > 0) return false;
+        // Skip if position was opened too long ago (not created by this executeTrade call)
+        if (pos.openedAt && (now - pos.openedAt) > recentWindow) return false;
+        
+        // Inject market features
+        if (precomputed.marketFeatures && Object.keys(precomputed.marketFeatures).length > 0) {
+          pos.entryMarketFeatures = { ...precomputed.marketFeatures };
+        }
+        
+        // Inject OLR P(win)
+        if (precomputed.olrPWin !== undefined && Number.isFinite(precomputed.olrPWin)) {
+          pos.entryOlrPWin = precomputed.olrPWin;
+        }
+        
+        // Inject shadow win rate
+        if (precomputed.shadowWinRate !== undefined && Number.isFinite(precomputed.shadowWinRate)) {
+          pos.entryShadowWinRate = precomputed.shadowWinRate;
+        }
+        
+        return true;
+      };
+      
+      // 1. Check the portfolio's main positions map (paper positions)
+      const portfolio = this.portfolio.getPortfolio();
+      if (portfolio && portfolio.positions) {
+        for (const [key, pos] of portfolio.positions) {
+          const posNorm = normalizeSymbol(key);
+          if (posNorm !== sym) continue;
+          if (patchPosition(pos)) patchedCount++;
+        }
+      }
+      
+      // 2. Check realPositions (importExchangePosition path)
+      const realPositions = this.portfolio.getRealPositions();
+      for (const pos of realPositions) {
+        const posNorm = normalizeSymbol(pos.symbol);
+        if (posNorm !== sym) continue;
+        if (patchPosition(pos)) patchedCount++;
+      }
+      
+      // 3. Check cachedExchangePositions (HL API positions not yet imported)
+      if (this.cachedExchangePositions) {
+        for (const pos of this.cachedExchangePositions) {
+          const posNorm = normalizeSymbol(pos.symbol);
+          if (posNorm !== sym) continue;
+          if (patchPosition(pos)) patchedCount++;
+        }
+      }
+      
+      if (patchedCount > 0) {
+        log.info(`🧬 [entry-features] Injected pre-computed features into ${patchedCount} position(s) for ${sym} ${side.toUpperCase()} — marketFeatures=${Object.keys(precomputed.marketFeatures).length} keys, OLR=${precomputed.olrPWin !== undefined ? (precomputed.olrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${precomputed.shadowWinRate !== undefined ? (precomputed.shadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
+        // Persist immediately so the patches survive a crash
+        this.persistPortfolio();
+      } else {
+        log.warn(`[entry-features] No positions found to patch for ${sym} ${side.toUpperCase()} — position may not have been created yet`);
+      }
+      
+      // Clean up the precomputed entry (consumed)
+      this.precomputedEntryFeatures.delete(key);
+    } catch (err) {
+      log.warn(`[entry-features] Injection failed for ${symbol} ${side}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private async executeTrade(
     decision: TradingDecision,
     auditGates: Array<{ gate: string; passed: boolean; reason: string }>,
-    /** v2.0.789: Entry-time market features to inject into the position object.
+    /** v2.0.790: Entry-time market features to inject into the position object.
      *  These are the SAME features used by OLR query and shadow trade
-     *  opening — they must be consistent so the learning pipeline works. */
+     *  opening — they must be consistent so the learning pipeline works.
+     *  If not provided, features are pre-computed from current market state. */
     entryMarketFeatures?: Record<string, number>,
-    /** v2.0.789: Entry-time OLR P(win) to inject into the position object.
-     *  This is the TRUE entry-time OLR, not a close-time recompute. */
+    /** v2.0.790: Entry-time OLR P(win) to inject into the position object.
+     *  This is the TRUE entry-time OLR, not a close-time recompute.
+     *  If not provided, OLR is queried from current market state. */
     entryOlrPWin?: number,
-    /** v2.0.789: Entry-time shadow win rate to inject into the position object.
-     *  This is the TRUE entry-time shadow WR, not a close-time recompute. */
+    /** v2.0.790: Entry-time shadow win rate to inject into the position object.
+     *  This is the TRUE entry-time shadow WR, not a close-time recompute.
+     *  If not provided, shadow WR is queried from current engine stats. */
     entryShadowWinRate?: number,
   ): Promise<{ success: boolean; error?: string; paperReports?: any[] }> {
     const isRealMode = this.tradingManager.getTradeMode() === 'real';
+    
+    // v2.0.790: Pre-compute entry-time features BEFORE executeTrade() if not provided.
+    // This ensures features are always available for injection immediately after
+    // executeTrade() returns, regardless of how the decision was constructed.
+    if (decision.action === 'buy' || decision.action === 'sell') {
+      const sym = normalizeSymbol(decision.symbol);
+      const side = decision.action as 'buy' | 'sell';
+      const key = `${sym}:${side}`;
+      
+      // Only pre-compute if not already in the map (avoids redundant computation
+      // when executeTrade is called multiple times for the same symbol+side)
+      if (!this.precomputedEntryFeatures.has(key)) {
+        // If explicit features were provided, store them directly
+        if (entryMarketFeatures && Object.keys(entryMarketFeatures).length > 0) {
+          this.precomputedEntryFeatures.set(key, {
+            marketFeatures: entryMarketFeatures,
+            olrPWin: entryOlrPWin,
+            shadowWinRate: entryShadowWinRate,
+          });
+        } else {
+          // Otherwise, pre-compute from current market state
+          this.precomputeEntryFeatures(sym, side);
+        }
+      }
+    }
 
     // v2.0.213 (#7): Prepare execution lens for computeATRSLTP. This caches
     // the execution-mode AttnRes blend so computeATRSLTP (called inside
@@ -3462,11 +3653,6 @@ ${recentExamples}
     if (decision.action === 'buy' || decision.action === 'sell') {
       try { prepareExecutionLens(normalizeSymbol(decision.symbol)); } catch { /* non-critical */ }
     }
-
-    // v2.0.789: Record the number of open positions BEFORE execution so we can
-    // detect newly created positions after execution returns.
-    const openSymsBefore = new Set(this.portfolio.getOpenSymbols().map(s => normalizeSymbol(s)));
-    const realPosSymsBefore = new Set(this.portfolio.getRealPositions().map(p => normalizeSymbol(p.symbol)));
 
     try {
     if (isRealMode) {
@@ -3490,17 +3676,12 @@ ${recentExamples}
             this.cycleHistory?.recordEntry(sym, decision.action === 'buy' ? 'buy' : 'sell', feats);
           }
         } catch { /* non-critical */ }
-        // v2.0.789: Inject entry-time features into the position object IMMEDIATELY
-        // after position creation. Scan the portfolio for newly created positions
-        // (those that weren't open before executeTrade() was called).
-        this.injectEntryFeaturesIntoNewPositions(
+        // v2.0.790: Inject pre-computed entry-time features into the position
+        // object IMMEDIATELY after position creation. Uses the pre-computed
+        // features map which was populated BEFORE executeTrade() was called.
+        this.injectPrecomputedEntryFeatures(
           decision.symbol,
           decision.action as 'buy' | 'sell',
-          entryMarketFeatures ?? {},
-          entryOlrPWin,
-          entryShadowWinRate,
-          openSymsBefore,
-          realPosSymsBefore,
         );
         // v2.0.726: Reset cycles-since-last-trade counter
         this.cyclesSinceLastTrade = 0;
@@ -3528,16 +3709,12 @@ ${recentExamples}
           this.entryOlrPWinCache.set(sym, olr.pWin);
         }
       } catch { /* non-critical */ }
-      // v2.0.789: Inject entry-time features into the position object IMMEDIATELY
-      // after position creation. Scan the portfolio for newly created positions.
-      this.injectEntryFeaturesIntoNewPositions(
+      // v2.0.790: Inject pre-computed entry-time features into the position
+      // object IMMEDIATELY after position creation. Uses the pre-computed
+      // features map which was populated BEFORE executeTrade() was called.
+      this.injectPrecomputedEntryFeatures(
         decision.symbol,
         decision.action as 'buy' | 'sell',
-        entryMarketFeatures ?? {},
-        entryOlrPWin,
-        entryShadowWinRate,
-        openSymsBefore,
-        realPosSymsBefore,
       );
       // v2.0.726: Reset cycles-since-last-trade counter
       this.cyclesSinceLastTrade = 0;
