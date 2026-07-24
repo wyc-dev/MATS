@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.772: Remove 59-minute auto-close timer — thesis invalidation must be genuine, not timer-based. Winning trades at +1.9% were being force-closed at exactly 59 minutes, destroying profit. Added two guards to Phase 0.5 thesis re-validation: (1) profitable positions are NEVER force-closed (thesis is working), (2) positions with <0.5% adverse move are NOT force-closed (price hasn't moved against thesis). Genuine thesis invalidation (significant adverse move >0.5%) is preserved.
+
+
 ## v2.0.771: Fix HACP debate loop — update agentThoughts map after each agent think() call so subsequent agents see latest thoughts. Multi-round debate now actually iterates, improving consensus quality and conviction accuracy.
 
 
