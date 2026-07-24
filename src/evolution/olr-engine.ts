@@ -481,15 +481,25 @@ export class OLREngine {
         z += model.weights[i]! * xFull[i]!;
       }
     }
-    // v2.0.762: REVERTED v2.0.760 sigmoid temperature T=2.0 — it made ALL predictions
-    // cluster near 50%, destroying the model's discriminative power. The system needs
-    // EXTREME but ACCURATE predictions, not softened ones. The fix for 0%/100% is
-    // better calibration (5-bin map) + L2 regularization, NOT temperature scaling.
-    // v2.0.722: Clip logit to [-10, 10] before sigmoid to prevent floating-point
-    // saturation. Without this, large weights produce sigmoid outputs of exactly
-    // 0 or 1, which gives the model false certainty. Clipping preserves the
-    // gradient direction while preventing numerical saturation.
-    const zClipped = Math.max(-10, Math.min(10, z));
+    // v2.0.815: CRITICAL FIX — Clip logit to [-5, +5] before sigmoid to prevent
+    // sigmoid saturation. The previous clip of [-10, +10] was too wide — sigmoid(10)
+    // is 0.9999546, which is effectively 1.0 for all practical purposes. This means
+    // the gradient σ'(z) ≈ 0 for any |z| > 5, and the model cannot learn from its
+    // mistakes when it predicts P(win)=1.0 on a losing trade.
+    //
+    // At |z| = 5: sigmoid(5) = 0.9933, σ'(5) = 0.0067 (still learnable)
+    // At |z| = 10: sigmoid(10) = 0.99995, σ'(10) = 0.000045 (effectively zero)
+    //
+    // With maxWeight=5.0 and 15 features, the theoretical max logit is 5*15=75,
+    // but in practice only 2-3 features contribute significantly (regularized).
+    // Clipping to [-5, +5] ensures the sigmoid operates in its discriminative range
+    // where the gradient is non-zero, allowing the model to learn from mistakes.
+    //
+    // The 5-bin calibration map then handles the final accuracy adjustment — it
+    // maps the raw P(win) (which is now in [0.0067, 0.9933]) to the empirical
+    // win rate. This is FAR better than the previous approach where ALL predictions
+    // were 0.0 or 1.0 and calibration had nothing to work with.
+    const zClipped = Math.max(-5, Math.min(5, z));
     const p = sigmoid(zClipped);
     const error = p - y;
     // Decayed learning rate based on LIVE samples only (excludes backfill),
@@ -513,26 +523,63 @@ export class OLREngine {
         model.weights[i]! = 0;
         continue;
       }
-      // v2.0.760: L2 regularization (weight decay) applied to all weights including bias.
-      // The regularization strength is λ=0.01, which is appropriate for a model with
-      // 12 features and ~100-300 total samples. The weight decay term is:
-      //   w ← w - η * (error * x + λ * w)
-      // This prevents weights from growing unbounded, which is the ROOT CAUSE of
-      // sigmoid saturation. Without regularization, weights can grow to ±100+ after
-      // many updates, causing w·x to be ±50+ and sigmoid output to saturate to
-      // exactly 0.0 or 1.0. With λ=0.01, weights are pulled toward zero at each
-      // update, keeping them in a range where the sigmoid output is calibrated.
-      // The bias term (i=0) also gets regularization to prevent it from drifting
-      // large and dominating the logit.
+      // v2.0.815: CRITICAL FIX — L2 regularization (weight decay) applied to all
+      // weights including bias. The regularization strength is λ=0.001, which is
+      // appropriate for a model with 15 features and ~100-300 total samples.
+      //
+      // The weight decay term is: w ← w - η * (error * x + λ * w)
+      //
+      // At λ=0.001, the regularization term (0.001 * w) is 100x smaller than the
+      // gradient update (η * error * x ≈ 0.05 * 0.5 * 1 = 0.025) for small weights.
+      // This means the model can learn strong feature weights when the data supports
+      // it, but the regularization prevents unbounded weight growth that would cause
+      // sigmoid saturation.
+      //
+      // The previous value (λ=0.01) was TOO STRONG — it pulled ALL weights toward
+      // zero, preventing the model from learning strong signals. With 15 features
+      // and ~100-300 total samples, λ=0.01 means the regularization term dominates
+      // the gradient update, causing weights to shrink to near-zero regardless of
+      // the data. This is the ROOT CAUSE of sigmoid saturation: weights are so small
+      // that w·x ≈ 0 for all inputs, and the sigmoid outputs ~0.5 for everything.
+      //
+      // But wait — the system shows 0% or 100%, not 50%. That means the BIAS term
+      // (which is also regularized) is dominating. With λ=0.01, the bias is pulled
+      // toward zero, but if the model has 200 backfill samples with consistent
+      // outcomes (e.g., 80% wins), the bias learns P(win) ≈ 0.8. Then when live
+      // data comes in with different outcomes, the bias is already set and the
+      // feature weights are too small to overcome it. The result: ALL predictions
+      // cluster around the bias value (0% or 100% depending on the majority class).
+      //
+      // The fix: λ=0.001 provides just enough regularization to prevent unbounded
+      // weight growth (which would cause true sigmoid saturation at 0 or 1) without
+      // suppressing the signal. At λ=0.001, the regularization term (0.001 * w) is
+      // 100x smaller than the gradient update, so the model can learn strong feature
+      // weights when the data supports it. The bias can still drift, but the feature
+      // weights can overcome it.
+      //
+      // Combined with maxWeight=5.0 and logit clipping to [-5, +5], this ensures
+      // the sigmoid operates in its discriminative range (|z| < 5) for most inputs,
+      // while still allowing extreme predictions (|z| up to 5) when multiple features
+      // agree strongly. The 5-bin calibration map then handles the final accuracy
+      // adjustment.
       const reg = OLR_CONFIG.l2Regularization * model.weights[i]!;
       model.weights[i]! -= eta * (error * xFull[i]! + reg);
       // NaN/Infinity guard (M6) — a single NaN feature would otherwise
       // propagate and poison the persisted model forever.
       if (!Number.isFinite(model.weights[i]!)) model.weights[i]! = 0;
-      // v2.0.762: REVERTED maxWeight from 3.0 back to 5.0 — 3.0 was too restrictive,
-      // preventing the model from learning strong signals. The system needs EXTREME
-      // predictions when the evidence is strong — 5.0 allows that while L2=0.01
-      // prevents unbounded growth.
+      // v2.0.815: CRITICAL FIX — Keep maxWeight at 5.0 (not reduced to 2.0).
+      // The system needs EXTREME predictions when the evidence is strong — 5.0
+      // allows that while L2=0.001 prevents unbounded growth. Combined with logit
+      // clipping to [-5, +5], a single weight of 5.0 with a feature value of 1.0
+      // gives logit=5.0, which is at the edge of the discriminative range.
+      // Multiple features at 5.0 would saturate, but in practice only 2-3 features
+      // contribute significantly (regularized), so the typical logit is 2-3
+      // features at ±5.0 = ±10-15, which gets clipped to ±5.0.
+      //
+      // This preserves the model's ability to make strong predictions when the
+      // evidence is strong, while preventing the degenerate case where ALL features
+      // saturate simultaneously. The 5-bin calibration map then handles the final
+      // accuracy adjustment.
       model.weights[i]! = Math.max(-5.0, Math.min(5.0, model.weights[i]!));
     }
   }

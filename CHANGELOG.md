@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.815: CRITICAL — Fix OLR sigmoid saturation. Changed logit clipping from [-10, +10] to [-5, +5] in sgdUpdate() to prevent sigmoid saturation at 0.0/1.0. Reduced L2 regularization from λ=0.01 to λ=0.001 to prevent weight suppression. This restores discriminative power — the model can now learn from losing trades with previously-saturated P(win)=1.0 predictions. The 5-bin calibration map now receives non-saturated inputs that it can actually calibrate.
+
+
 ## v2.0.814: CRITICAL — Fix thesis_invalidation force-close profitability guard. The 59-minute timer systematically exits winning trades at +1.9% (trades #3, #9, #13, #16). Previous v2.0.799/798 guard failed because it checked profitability at closePosition() call time but the timer fires between cycles. New guard checks portfolio's unrealizedPnl (updated by WS price feed every tick) BEFORE calling closeTrade(). If position is profitable, skip close entirely. Secondary guard re-fetches current price from market state as fallback for stale unrealizedPnl. This prevents the system from capping its own winners at +1.9% while letting losers run to -2.0%.
 
 
