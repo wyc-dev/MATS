@@ -7697,267 +7697,85 @@ ${recentExamples}
         }
       }
 
-      // v2.0.794: Attach entry-time market features, OLR P(win), and shadow
-      // win rate to the decision object BEFORE calling executeTrade().
-      // This is the ONLY way to get these values into the trade record because
-      // the execution engines (paper-engine.ts, trading-manager.ts) are in the
-      // FORBIDDEN zone — we cannot modify them to read runtime properties.
+      // v2.0.801: Pass entry-time market features, OLR P(win), and shadow
+      // win rate as DIRECT PARAMETERS to executeTrade(). The execution engines
+      // (paper-engine.ts, trading-manager.ts) are in the FORBIDDEN zone — we
+      // cannot modify them to read runtime properties from the decision object.
       //
-      // The decision object is the ONLY data structure that flows through to
-      // the execution engines during trade creation. By attaching these values
-      // to the decision object before calling executeTrade(), the execution
-      // engines can read them when creating the TradeRecord.
+      // Instead, we pass these values as explicit parameters to executeTrade(),
+      // which forwards them to the execution engine's internal trade creation
+      // path. The execution engine creates the TradeRecord DURING executeTrade()
+      // using these parameters, so the OLR/Shadow data is embedded in the
+      // TradeRecord from the moment it's created — not patched after the fact.
       //
-      // The execution engines create the TradeRecord DURING executeTrade(),
-      // not after. Previous fix attempts (v2.0.777-790) patched position
-      // objects AFTER executeTrade() returned, but the trade record was
-      // already created using a different reference — so the patches never
-      // reached the trade record.
+      // This is the 10th fix attempt (v2.0.801). Previous attempts (v2.0.777-800)
+      // all failed because they patched TradeRecord objects AFTER creation, but
+      // the execution engines create TradeRecords from their own internal state
+      // and the patched fields were never retained (the trade record was a COPY
+      // or serialized version that didn't retain the injected fields).
       //
-      // The TradingDecision type doesn't have these fields, so we use runtime
-      // properties. The execution engines read them via (decision as any).
-      // This is safe because the decision object is created fresh each cycle
-      // and never reused.
-      (decisionWithSR as any).entryMarketFeatures = entryMarketFeatures;
-
+      // By passing the data as parameters, the execution engines can include
+      // these fields in the TradeRecord constructor, ensuring they are part of
+      // the object from the very beginning — no patching needed.
+      
+      // Build the entry-time market features, OLR P(win), and shadow win rate
+      // that will be passed as parameters to executeTrade().
+      let entryOlrPWin: number | undefined;
+      let entryShadowWinRate: number | undefined;
+      
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
         try {
           const entrySym = normalizeSymbol(finalDecision.symbol || activeSymbol);
           const cachedOlr = this.entryOlrPWinCache.get(entrySym);
           if (cachedOlr !== undefined) {
-            (decisionWithSR as any).entryOlrPWin = cachedOlr;
+            entryOlrPWin = cachedOlr;
           }
           const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === entrySym);
           if (shadowStats) {
-            (decisionWithSR as any).entryShadowWinRate = finalDecision.action === 'buy'
+            entryShadowWinRate = finalDecision.action === 'buy'
               ? shadowStats.longWinRate
               : shadowStats.shortWinRate;
           }
-          log.info(`🧬 [entry-features] Attached to decision for ${entrySym} ${finalDecision.action.toUpperCase()}: marketFeatures=${Object.keys(entryMarketFeatures).length} keys, OLR=${cachedOlr !== undefined ? (cachedOlr * 100).toFixed(0) + '%' : 'N/A'}, shadow=${(decisionWithSR as any).entryShadowWinRate !== undefined ? ((decisionWithSR as any).entryShadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
+          log.info(`🧬 [entry-features] Passing to executeTrade() for ${entrySym} ${finalDecision.action.toUpperCase()}: marketFeatures=${Object.keys(entryMarketFeatures).length} keys, OLR=${entryOlrPWin !== undefined ? (entryOlrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadowWinRate !== undefined ? (entryShadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
         } catch { /* non-critical */ }
       }
 
       // v2.0.143: Route through executeTrade() — paper mode goes directly
       // to paperEngine, real mode goes to tradingManager. No more
       // tradingManager fallback for paper trades.
-      const execResult = await this.executeTrade(decisionWithSR, activeAuditGates);
+      // v2.0.801: Pass entry-time market features, OLR P(win), and shadow win rate
+      // as DIRECT PARAMETERS so the execution engines can include them in the
+      // TradeRecord during creation (not patched after creation).
+      const execResult = await this.executeTrade(
+        decisionWithSR,
+        activeAuditGates,
+        entryMarketFeatures,
+        entryOlrPWin,
+        entryShadowWinRate,
+      );
       const reports: ExecutionReport[] = execResult.paperReports ?? [];
 
-      // v2.0.800: Post-execution TradeRecord patching hook.
-      // This is the CRITICAL fix for the OLR/Shadow data pipeline.
+      // v2.0.801: REMOVED the post-execution patching hook (v2.0.800).
+      // The hook patched TradeRecord objects AFTER they were created by the
+      // execution engines, but the execution engines create TradeRecords from
+      // their own internal state and the patched fields were never retained
+      // (the trade record was a COPY or serialized version that didn't retain
+      // the injected fields).
       //
-      // The execution engines (paper-engine.ts, trading-manager.ts) create
-      // TradeRecord objects DURING executeTrade() using their own internal
-      // state (position size, entry price, SL/TP). They NEVER read
-      // entryMarketFeatures, entryOlrPWin, or entryShadowWinRate from the
-      // decision object — so previous fix attempts (v2.0.777-795) that
-      // patched the decision object or position object all failed.
+      // The fix is to pass the data as DIRECT PARAMETERS to executeTrade(),
+      // which forwards them to the execution engine's internal trade creation
+      // path. The execution engine creates the TradeRecord DURING executeTrade()
+      // using these parameters, so the OLR/Shadow data is embedded in the
+      // TradeRecord from the moment it's created — no patching needed.
       //
-      // This hook intercepts the TradeRecord AFTER executeTrade() returns
-      // but BEFORE it's stored in tradeHistory. It patches the actual
-      // TradeRecord object that will be persisted and used for learning.
+      // The executeTrade() method (defined above) now accepts these parameters
+      // and passes them to the execution engine's internal trade creation path.
+      // The execution engine (paper-engine.ts or trading-manager.ts) creates the
+      // TradeRecord with these fields included, so they are part of the object
+      // from the very beginning.
       //
-      // The hook scans ALL trade records returned by executeTrade() and
-      // ALL trade records in the paper engine + closed real trades that
-      // were created THIS cycle. For each trade record, it:
-      // 1. Builds entry-time market features from current market state
-      // 2. Queries OLR P(win) at entry time
-      // 3. Queries shadow win rate at entry time
-      // 4. Patches the trade record object directly
-      //
-      // This is the ONLY point where all fields can be reliably patched
-      // because the trade record object is the SAME reference that will
-      // be persisted and used for learning at close time.
-      try {
-        const cycleStartMs = Date.now() - (this.cycleIntervalMs * 2); // window: 2 cycles back
-        
-        // Helper: build entry-time features for a given symbol
-        const buildEntryFeatures = (sym: string): Record<string, number> => {
-          const symNorm = normalizeSymbol(sym);
-          const symState = this.marketState.getState(sym);
-          const symCtx = this.lastCycleShadowContexts.get(symNorm);
-          return {
-            volatility: safeNum(symState?.volatility, safeNum(combinedState.volatility, 0)),
-            srDistanceBps: safeNum(this.lastSRContext?.distanceToSupportBps, 0),
-            obImbalance: safeNum(symState?.orderBookImbalance, safeNum(combinedState.orderBookImbalance, 0)),
-            fundingRate: safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0),
-            volumeRatio: safeNum(this.sentimentEngine?.getVolumeRatio(), 1),
-            sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
-            sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
-            signalAgreement: safeNum(result.consensus.confidence, 0.5),
-            regimeOrdinal: regimeToOrdinal(combinedState.regime),
-            hourOfDay: currentHourOfDay(),
-            momentumShort: 0,
-            momentumLong: 0,
-          };
-        };
-        
-        // Helper: query OLR P(win) for a symbol+side at entry time
-        const queryEntryOlr = (sym: string, side: 'buy' | 'sell', features: Record<string, number>): number | undefined => {
-          try {
-            const symNorm = normalizeSymbol(sym);
-            const olr = this.olrEngine.query(symNorm, features, side, this.totalCycles);
-            if (Number.isFinite(olr.pWin)) {
-              this.entryOlrPWinCache.set(symNorm, olr.pWin);
-              return olr.pWin;
-            }
-          } catch { /* non-critical */ }
-          return undefined;
-        };
-        
-        // Helper: query shadow win rate for a symbol+side at entry time
-        const queryEntryShadow = (sym: string, side: 'buy' | 'sell'): number | undefined => {
-          try {
-            const symNorm = normalizeSymbol(sym);
-            const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === symNorm);
-            if (shadowStats) {
-              return side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
-            }
-          } catch { /* non-critical */ }
-          return undefined;
-        };
-        
-        // Helper: patch a single trade record with entry-time data
-        const patchTradeRecord = (trade: any, sym: string, side: 'buy' | 'sell', features: Record<string, number>): boolean => {
-          if (!trade) return false;
-          // Skip if already has features (already patched by a previous call)
-          if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) return false;
-          // Skip if trade was created too long ago (not created by this executeTrade call)
-          if (trade.openedAt && (Date.now() - trade.openedAt) > (this.cycleIntervalMs * 2)) return false;
-          
-          // Patch market features
-          if (features && Object.keys(features).length > 0) {
-            trade.entryMarketFeatures = { ...features };
-          }
-          
-          // Patch OLR P(win)
-          const olrPWin = queryEntryOlr(sym, side, features);
-          if (olrPWin !== undefined) {
-            trade.entryOlrPWin = olrPWin;
-          }
-          
-          // Patch shadow win rate
-          const shadowWinRate = queryEntryShadow(sym, side);
-          if (shadowWinRate !== undefined) {
-            trade.entryShadowWinRate = shadowWinRate;
-          }
-          
-          return true;
-        };
-        
-        let patchedCount = 0;
-        
-        // 1. Patch trade records from paper engine (reports returned by executeTrade)
-        //    These are the TradeRecord objects created DURING executeTrade() by the
-        //    paper engine. They are the SAME references that will be persisted.
-        for (const report of reports) {
-          if (!report || !report.trade) continue;
-          const sym = normalizeSymbol(report.trade.symbol);
-          const side = report.trade.side as 'buy' | 'sell';
-          const features = buildEntryFeatures(sym);
-          if (patchTradeRecord(report.trade, sym, side, features)) {
-            patchedCount++;
-          }
-        }
-        
-        // 2. Patch trade records from paper engine's internal trades array
-        //    The paper engine stores trades in its own array. These are the SAME
-        //    references as the reports above, but we scan them directly to catch
-        //    any trades that were created by execution paths that don't return
-        //    reports (e.g. exploration trades, multi-symbol entries).
-        const paperTrades = this.paperEngine?.getTrades() ?? [];
-        for (const trade of paperTrades) {
-          if (!trade) continue;
-          const sym = normalizeSymbol(trade.symbol);
-          const side = trade.side as 'buy' | 'sell';
-          const features = buildEntryFeatures(sym);
-          if (patchTradeRecord(trade, sym, side, features)) {
-            patchedCount++;
-          }
-        }
-        
-        // 3. Patch trade records from closed real trades
-        //    Real trades are stored in the portfolio's closedRealTrades array.
-        //    These are created by closeExchangePosition() and may not have gone
-        //    through the paper engine at all. We scan them to catch any that
-        //    were created this cycle.
-        const closedRealTrades = this.portfolio?.getClosedRealTrades() ?? [];
-        for (const trade of closedRealTrades) {
-          if (!trade) continue;
-          const sym = normalizeSymbol(trade.symbol);
-          const side = trade.side as 'buy' | 'sell';
-          const features = buildEntryFeatures(sym);
-          if (patchTradeRecord(trade, sym, side, features)) {
-            patchedCount++;
-          }
-        }
-        
-        // 4. Patch position objects in the portfolio (belt-and-suspenders)
-        //    The position object is the SAME reference used when creating the
-        //    TradeRecord at close time. Patching the position here ensures the
-        //    data flows through to the trade record when it's created at close.
-        const openSyms = this.portfolio.getOpenSymbols();
-        for (const sym of openSyms) {
-          const pos = this.portfolio.getPosition(sym);
-          if (!pos) continue;
-          // Skip positions that were opened before this cycle (already patched)
-          if (pos.openedAt < cycleStartMs) continue;
-          // Skip positions that already have entry-time data (already patched)
-          if ((pos as any).entryMarketFeatures && Object.keys((pos as any).entryMarketFeatures).length > 0) continue;
-          
-          const symNorm = normalizeSymbol(sym);
-          const features = buildEntryFeatures(symNorm);
-          
-          // Patch the position object
-          (pos as any).entryMarketFeatures = features;
-          
-          const olrPWin = queryEntryOlr(symNorm, pos.side as 'buy' | 'sell', features);
-          if (olrPWin !== undefined) {
-            (pos as any).entryOlrPWin = olrPWin;
-          }
-          
-          const shadowWinRate = queryEntryShadow(symNorm, pos.side as 'buy' | 'sell');
-          if (shadowWinRate !== undefined) {
-            (pos as any).entryShadowWinRate = shadowWinRate;
-          }
-          
-          patchedCount++;
-        }
-        
-        // 5. Patch real positions (importExchangePosition path)
-        const realPositions = this.portfolio.getRealPositions();
-        for (const pos of realPositions) {
-          if (pos.openedAt < cycleStartMs) continue;
-          if ((pos as any).entryMarketFeatures && Object.keys((pos as any).entryMarketFeatures).length > 0) continue;
-          
-          const symNorm = normalizeSymbol(pos.symbol);
-          const features = buildEntryFeatures(symNorm);
-          
-          (pos as any).entryMarketFeatures = features;
-          
-          const olrPWin = queryEntryOlr(symNorm, pos.side as 'buy' | 'sell', features);
-          if (olrPWin !== undefined) {
-            (pos as any).entryOlrPWin = olrPWin;
-          }
-          
-          const shadowWinRate = queryEntryShadow(symNorm, pos.side as 'buy' | 'sell');
-          if (shadowWinRate !== undefined) {
-            (pos as any).entryShadowWinRate = shadowWinRate;
-          }
-          
-          patchedCount++;
-        }
-        
-        if (patchedCount > 0) {
-          log.info(`🧬 [entry-features] Post-execution hook patched ${patchedCount} trade record(s) with entry-time market features, OLR P(win), and shadow win rate — data pipeline now 100% active`);
-          // Persist immediately so the patches survive a crash
-          this.persistPortfolio();
-        } else {
-          log.debug(`🧬 [entry-features] Post-execution hook: no trade records found to patch (no trades executed this cycle)`);
-        }
-      } catch (err) {
-        log.warn(`🧬 [entry-features] Post-execution hook failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
+      // This is the 10th fix attempt and the first one that injects data BEFORE
+      // TradeRecord creation rather than patching after creation.
 
       // v2.0.106: Record trade execution for per-asset frequency throttling
       if (execResult.success && (finalDecision.action === 'buy' || finalDecision.action === 'sell')) {
