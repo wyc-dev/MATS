@@ -833,3 +833,7 @@ if effectiveConfidence < dynamicThreshold → HOLD
 - `src/index.ts` — Conviction gate replaced: additive → multiplicative + dynamic threshold
 - `src/cognition/hacp.ts` — Added `getCyclesWithoutTrade()` getter
 - `tests/dynamic-threshold-attack.test.ts` — 36 attack tests
+
+
+## System Engineer Update
+Added entryMarketFeatures collection in the main decision cycle (before executeTrade) for ALL trade entries, not just exploration. The features are attached to the decision as a runtime property and read by executeTrade() to store on the trade record. OLR P(win) is now queried at entry time for every trade and cached in entryOlrPWinCache. This ensures the learning pipeline (OLR, EXP, NA, AttnRes) always has real market data to train on.

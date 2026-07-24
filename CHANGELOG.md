@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.773: Fix critical data pipeline — ensure market data features (volatility, S/R distance, OB imbalance, funding rate, volume ratio, sentiment, signal agreement, regime ordinal, hour of day) are collected at EVERY trade entry and passed to the trade record. Previously these features were only collected for exploration trades, causing 50% of trades to have NO_MARKET_DATA, NO_OLR, NO_SHADOW — the entire learning pipeline was bypassed. Now OLR P(win) is queried and cached at entry time for ALL trades, and market features are attached to the decision before execution.
+
+
 ## v2.0.772: Remove 59-minute auto-close timer — thesis invalidation must be genuine, not timer-based. Winning trades at +1.9% were being force-closed at exactly 59 minutes, destroying profit. Added two guards to Phase 0.5 thesis re-validation: (1) profitable positions are NEVER force-closed (thesis is working), (2) positions with <0.5% adverse move are NOT force-closed (price hasn't moved against thesis). Genuine thesis invalidation (significant adverse move >0.5%) is preserved.
 
 
