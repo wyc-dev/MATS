@@ -7038,6 +7038,50 @@ ${recentExamples}
         srResistance: this.lastSRContext?.nearestResistance ?? null,
       };
 
+      // v2.0.773: Collect ALL market data features at entry time and pass
+      // them through executeTrade() so the trade record has real data, not
+      // NO_MARKET_DATA. This is the critical fix — without these features,
+      // OLR cannot train, EXP cannot learn, and the system trades blind.
+      //
+      // Build the entry-time market features from the current state.
+      // These are the SAME features used by OLR query and shadow trade
+      // opening — they must be consistent so the learning pipeline works.
+      const entryMarketFeatures: Record<string, number> = {
+        volatility: safeNum(combinedState.volatility, 0),
+        srDistanceBps: safeNum(this.lastSRContext?.distanceToSupportBps, 0),
+        obImbalance: safeNum(combinedState.orderBookImbalance, 0),
+        fundingRate: safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0),
+        volumeRatio: safeNum(this.sentimentEngine?.getVolumeRatio(), 1),
+        sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
+        sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
+        signalAgreement: safeNum(result.consensus.confidence, 0.5),
+        regimeOrdinal: regimeToOrdinal(combinedState.regime),
+        hourOfDay: currentHourOfDay(),
+        momentumShort: 0,
+        momentumLong: 0,
+      };
+
+      // v2.0.773: Query OLR P(win) at entry time for the active symbol
+      // and cache it so the trade record stores the TRUE entry-time OLR,
+      // not a close-time recompute. This fixes the 'NO_OLR' field in trade
+      // records — OLR must be queried at entry, not left empty.
+      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+        try {
+          const entrySym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+          const entryOlr = this.olrEngine.query(entrySym, entryMarketFeatures, finalDecision.action, this.totalCycles);
+          this.entryOlrPWinCache.set(entrySym, entryOlr.pWin);
+          log.info(`🧬 [entry-features] OLR queried for ${entrySym} ${finalDecision.action.toUpperCase()}: P(win)=${(entryOlr.pWin * 100).toFixed(0)}% (${entryOlr.nSamples} samples, conf=${entryOlr.confidence})`);
+        } catch (err) {
+          log.warn(`[entry-features] OLR query failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      // v2.0.773: Attach market features to the decision so executeTrade()
+      // can pass them to the trade record. The TradingDecision type doesn't
+      // have a marketFeatures field, so we use a runtime property that
+      // executeTrade() reads and stores on the trade record.
+      (decisionWithSR as any).entryMarketFeatures = entryMarketFeatures;
+
       // v2.0.143: Route through executeTrade() — paper mode goes directly
       // to paperEngine, real mode goes to tradingManager. No more
       // tradingManager fallback for paper trades.
