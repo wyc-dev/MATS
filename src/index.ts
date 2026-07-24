@@ -7082,6 +7082,26 @@ ${recentExamples}
       // executeTrade() reads and stores on the trade record.
       (decisionWithSR as any).entryMarketFeatures = entryMarketFeatures;
 
+      // v2.0.774: Also attach OLR P(win) and shadow win rate at entry time
+      // so the trade record stores the TRUE entry-time predictions, not
+      // close-time recomputes. These are cached in entryOlrPWinCache and
+      // shadowEngine stats — read them here and attach to the decision.
+      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+        try {
+          const entrySym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+          const cachedOlr = this.entryOlrPWinCache.get(entrySym);
+          if (cachedOlr !== undefined) {
+            (decisionWithSR as any).entryOlrPWin = cachedOlr;
+          }
+          const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === entrySym);
+          if (shadowStats) {
+            (decisionWithSR as any).entryShadowWinRate = finalDecision.action === 'buy'
+              ? shadowStats.longWinRate
+              : shadowStats.shortWinRate;
+          }
+        } catch { /* non-critical */ }
+      }
+
       // v2.0.143: Route through executeTrade() — paper mode goes directly
       // to paperEngine, real mode goes to tradingManager. No more
       // tradingManager fallback for paper trades.
