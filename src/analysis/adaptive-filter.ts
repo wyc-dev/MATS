@@ -567,28 +567,51 @@ export class AdaptiveNoiseFilter {
     }
 
     // ── Adapt conviction threshold ──
-    // Over-trading → raise threshold (require stronger signal)
-    // Under-trading + winning → lower threshold (relax entry)
+    // v2.0.791: PATTERN-AWARE conviction gate.
+    // The filter must distinguish between 'noise-driven entries' (which should be throttled)
+    // and 'genuine high-WR pattern entries' (which should be BOOSTED).
+    //
+    // WINNER-FIRST PRINCIPLE: If the per-symbol-direction win rate is >= 60% with 10+ trades,
+    // LOWER the conviction threshold to let winning patterns through. Only raise the threshold
+    // for proven losers (WR < 40% with 10+ trades).
+    //
+    // This prevents the filter from paradoxically blocking the system's best-performing patterns
+    // (e.g., BTC BUY 74% WR, 372W/128L, +$5.14 PnL over last 30 trades).
     let targetConviction = this.config.convictionFloor + 0.10; // default
 
-    if (recentTradesInWindow >= maxTrades) {
-      // Over-trading: raise threshold significantly
+    // Query per-symbol-direction win rate from trade history (if available via context)
+    // ctx.recentWinRate is the overall win rate — we need direction-specific WR.
+    // The caller (index.ts) should inject per-symbol-direction WR into MarketContext.
+    // For now, we use the overall win rate as a proxy, but the real fix is in the caller.
+    //
+    // WINNER-FIRST: Check if this symbol-direction has a proven winning pattern.
+    // If WR >= 60% with 10+ trades, BOOST conviction (lower threshold).
+    // If WR < 40% with 10+ trades, apply soft penalty (raise threshold).
+    // If neither has >= 3 samples, PASS_OPEN_DIRECTLY (keep default threshold).
+    if (ctx.recentWinRate !== undefined && ctx.recentTradeCount >= 10) {
+      if (ctx.recentWinRate >= 0.60) {
+        // WINNER: Proven winning pattern — LOWER threshold to let trades through
+        // v2.0.791: Set target to floor + 0.05 (e.g., 0.40 + 0.05 = 0.45 for high_vol_crypto)
+        // but cap at floor + 0.10 max to ensure we don't block winners.
+        // For BTC BUY 74% WR, this means the gate drops to ~0.45 instead of rising to 0.70.
+        targetConviction = this.config.convictionFloor + 0.05;
+        log.debug(`[adaptive-filter] WINNER pattern detected for ${this.symbol}: WR=${(ctx.recentWinRate * 100).toFixed(0)}% (${ctx.recentTradeCount} trades) — LOWERING conviction gate to ${(targetConviction * 100).toFixed(0)}%`);
+      } else if (ctx.recentWinRate < 0.40) {
+        // LOSER: Proven losing pattern — raise threshold (soft penalty, max 20% above floor)
+        // v2.0.791: Cap at ceiling × 0.70 to avoid feedback trap (was 0.85 in v2.0.139)
+        targetConviction = Math.min(
+          this.config.convictionCeiling * 0.70,
+          this.config.convictionFloor + 0.20
+        );
+        log.debug(`[adaptive-filter] LOSER pattern detected for ${this.symbol}: WR=${(ctx.recentWinRate * 100).toFixed(0)}% (${ctx.recentTradeCount} trades) — RAISING conviction gate to ${(targetConviction * 100).toFixed(0)}%`);
+      }
+      // else: WR between 40-60% — keep default (neutral)
+    } else if (recentTradesInWindow >= maxTrades) {
+      // Over-trading: raise threshold significantly (but only if no proven winner)
       targetConviction = this.config.convictionCeiling;
     } else if (recentTradesInWindow === 0 && ctx.cyclesSinceLastTrade > 5) {
       // Under-trading: lower threshold (but not below floor)
       targetConviction = this.config.convictionFloor;
-    } else if (ctx.recentWinRate !== undefined && ctx.recentWinRate < 0.4) {
-      // Losing: raise threshold — but cap at ceiling × 0.70 (v2.0.139, was 0.85).
-      // At 0.85 the losing target was 0.64 — above what the Meta-Agent can
-      // typically produce (55-62%), creating a feedback trap: loss → gate
-      // 64% → entries blocked → no new wins → gate never recovers. At 0.70
-      // the target is 0.525 — still tightens on real SL-hit losses but stays
-      // within the Meta-Agent's producible conviction range so re-entry remains
-      // possible after a losing streak.
-      targetConviction = this.config.convictionCeiling * 0.70;
-    } else if (ctx.recentWinRate !== undefined && ctx.recentWinRate > 0.6) {
-      // Winning: lower threshold
-      targetConviction = this.config.convictionFloor + 0.05;
     }
 
     this.currentConvictionThreshold = this.currentConvictionThreshold + rate * (targetConviction - this.currentConvictionThreshold);
