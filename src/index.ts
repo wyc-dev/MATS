@@ -3257,7 +3257,7 @@ ${recentExamples}
     for (let i = reports.length - 1; i >= 0; i--) {
       const report = reports[i];
       if (!report || !report.trade) continue;
-      const trade = report.trade;
+      const trade = report.trade!;
       if (normalizeSymbol(trade.symbol) !== sym) continue;
       if (trade.side !== side) continue;
       // Found the matching trade record — patch it
