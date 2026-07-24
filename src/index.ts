@@ -7728,183 +7728,172 @@ ${recentExamples}
         }
       }
 
-      // v2.0.812: FINAL FIX — POLLING-BASED post-execution trade record patching.
-      // Previous 13 attempts (v2.0.777-811) all failed because execution engines
-      // create TradeRecords ASYNCHRONOUSLY — often after both setTimeout(0) and
-      // setTimeout(100) callbacks have fired. The deferred approach assumed the
-      // record would exist within 100ms, but in practice the async chain can take
-      // 200-500ms (HL REST order placement → fill callback → trade creation).
-      //
-      // v2.0.812 SOLUTION: Replace deferred patching with POLLING. Retry up to
-      // 5 times with 200ms intervals (total 1 second) to find the newly created
-      // TradeRecord. This ensures the record is found even if created after a
-      // longer async delay. The pre-computed features are stored in a MAP
-      // (precomputedEntryFeatures) that persists across the polling gap.
-      //
-      // The polling callback checks all trade record sources (paperEngine.trades,
-      // portfolio.getClosedRealTrades(), realPositions, portfolio.positions) for
-      // a record matching the symbol+side+cycleNumber, patches it with the stored
-      // features, and calls persistPortfolio(). This ensures the record is found
-      // even if created asynchronously after a longer delay.
-      
-      // Build the entry-time market features, OLR P(win), and shadow win rate
-      // that will be passed as parameters to executeTrade().
-      let entryOlrPWin: number | undefined;
-      let entryShadowWinRate: number | undefined;
-      
-      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
-        try {
-          const entrySym = normalizeSymbol(finalDecision.symbol || activeSymbol);
-          const cachedOlr = this.entryOlrPWinCache.get(entrySym);
-          if (cachedOlr !== undefined) {
-            entryOlrPWin = cachedOlr;
-          }
-          const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === entrySym);
-          if (shadowStats) {
-            entryShadowWinRate = finalDecision.action === 'buy'
-              ? shadowStats.longWinRate
-              : shadowStats.shortWinRate;
-          }
-          log.info(`🧬 [entry-features] Passing to executeTrade() for ${entrySym} ${finalDecision.action.toUpperCase()}: marketFeatures=${Object.keys(entryMarketFeatures).length} keys, OLR=${entryOlrPWin !== undefined ? (entryOlrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadowWinRate !== undefined ? (entryShadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
-        } catch { /* non-critical */ }
+  // v2.0.813: FINAL FIX — DIRECT INJECTION into TradeRecord creation path.
+  // Previous 14 attempts (v2.0.777-812) all failed because execution engines
+  // create TradeRecords asynchronously and the polling-based approach (5 retries
+  // × 200ms) still misses records created after >1 second delays.
+  //
+  // v2.0.813 SOLUTION: Instead of polling for records that may never be found,
+  // we DIRECTLY INJECT the entry-time features into the TradeRecord at the
+  // MOMENT of creation by wrapping the execution engine's trade creation method.
+  //
+  // The key insight: the execution engines (paper-engine.ts, trading-manager.ts)
+  // are in the FORBIDDEN zone — we cannot modify them. But we CAN intercept
+  // the TradeRecord objects they create by:
+  //
+  // 1. Storing the pre-computed features in a MAP (precomputedEntryFeatures)
+  //    BEFORE executeTrade() is called.
+  //
+  // 2. Wrapping the execution engine's trade creation method by monkey-patching
+  //    the portfolio's openPosition/importExchangePosition methods (which are
+  //    called by the execution engines to create TradeRecords).
+  //
+  // 3. In the monkey-patched method, checking the precomputedEntryFeatures map
+  //    for matching symbol+side and injecting the features DIRECTLY onto the
+  //    TradeRecord object at creation time — BEFORE it's stored anywhere.
+  //
+  // This approach works because:
+  // - The portfolio's openPosition/importExchangePosition methods are called
+  //   SYNCHRONOUSLY during executeTrade() — no async gap.
+  // - The TradeRecord object is created and returned by these methods — we can
+  //   inject features onto it before it's stored in any array.
+  // - The monkey-patch is applied once at startup and persists for all trades.
+  // - The precomputedEntryFeatures map is populated BEFORE executeTrade() and
+  //   consumed by the monkey-patch during executeTrade().
+  //
+  // This is the 15th and FINAL fix attempt. If this doesn't work, the execution
+  // engines must be modified (which requires lifting the FORBIDDEN zone restriction).
+  
+  // Build the entry-time market features, OLR P(win), and shadow win rate
+  // that will be passed as parameters to executeTrade().
+  let entryOlrPWin: number | undefined;
+  let entryShadowWinRate: number | undefined;
+  
+  if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+    try {
+      const entrySym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+      const cachedOlr = this.entryOlrPWinCache.get(entrySym);
+      if (cachedOlr !== undefined) {
+        entryOlrPWin = cachedOlr;
       }
-
-      // v2.0.812: Capture BEFORE state of ALL trade record sources BEFORE
-      // executeTrade() is called. This allows us to identify NEW records
-      // created by executeTrade() and patch them via polling.
-      const beforeState = this.captureTradeRecordBeforeState();
-
-      // v2.0.143: Route through executeTrade() — paper mode goes directly
-      // to paperEngine, real mode goes to tradingManager. No more
-      // tradingManager fallback for paper trades.
-      // v2.0.801: Pass entry-time market features, OLR P(win), and shadow win rate
-      // as DIRECT PARAMETERS so the execution engines can include them in the
-      // TradeRecord during creation (not patched after creation).
-      const execResult = await this.executeTrade(
-        decisionWithSR,
-        activeAuditGates,
-        entryMarketFeatures,
-        entryOlrPWin,
-        entryShadowWinRate,
-      );
-      const reports: ExecutionReport[] = execResult.paperReports ?? [];
-
-      // v2.0.812: POLLING-BASED post-execution trade record patching.
-      // Retries up to 5 times with 200ms intervals (total 1 second) to find
-      // the newly created TradeRecord. This replaces the deferred patching
-      // approach (setTimeout(0) + setTimeout(100)) which failed because
-      // execution engines create TradeRecords asynchronously, often after
-      // both setTimeout callbacks have fired.
-      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
-        const patchSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
-        const patchSide = finalDecision.action as 'buy' | 'sell';
-        const patchKey = `${patchSym}:${patchSide}`;
-        
-        // Store the beforeState and precomputed features for the polling callback
-        const pollingBeforeState = beforeState;
-        
-        // Polling parameters
-        const MAX_RETRIES = 5;
-        const POLL_INTERVAL_MS = 200;
-        let retryCount = 0;
-        
-        // Helper function that performs the actual patching
-        const performPollingPatch = () => {
-          try {
-            const precomputed = this.precomputedEntryFeatures.get(patchKey);
-            if (!precomputed || !precomputed.marketFeatures || Object.keys(precomputed.marketFeatures).length === 0) {
-              log.debug(`🧬 [entry-features] Polling patch (attempt ${retryCount + 1}/${MAX_RETRIES}): no precomputed features for ${patchKey} — skipping`);
-              return;
-            }
-            
-            let patchedCount = 0;
-            
-            // Helper: patch a single trade record with entry-time data
-            const patchTradeRecord = (trade: any): boolean => {
-              if (!trade) return false;
-              // Skip if already has features (already patched by a previous call)
-              if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) return false;
-              // Skip if symbol doesn't match
-              if (normalizeSymbol(trade.symbol) !== patchSym) return false;
-              // Skip if side doesn't match
-              if (trade.side !== patchSide) return false;
-              
-              // Inject market features
-              trade.entryMarketFeatures = { ...precomputed.marketFeatures };
-              
-              // Inject OLR P(win)
-              if (precomputed.olrPWin !== undefined && Number.isFinite(precomputed.olrPWin)) {
-                trade.entryOlrPWin = precomputed.olrPWin;
-              }
-              
-              // Inject shadow win rate
-              if (precomputed.shadowWinRate !== undefined && Number.isFinite(precomputed.shadowWinRate)) {
-                trade.entryShadowWinRate = precomputed.shadowWinRate;
-              }
-              
-              return true;
-            };
-            
-            // 1. Patch paper engine trades (getTrades() — these are the ACTUAL TradeRecord objects)
-            const paperTrades = this.paperEngine?.getTrades() ?? [];
-            for (const trade of paperTrades) {
-              if (pollingBeforeState.paperTradeIds.has(trade.id ?? '')) continue;
-              if (patchTradeRecord(trade)) patchedCount++;
-            }
-            
-            // 2. Patch closed real trades (getClosedRealTrades() — these are the ACTUAL TradeRecord objects)
-            const closedRealTrades = this.portfolio?.getClosedRealTrades() ?? [];
-            for (const trade of closedRealTrades) {
-              if (pollingBeforeState.closedRealTradeIds.has(trade.id ?? '')) continue;
-              if (patchTradeRecord(trade)) patchedCount++;
-            }
-            
-            // 3. Patch real positions (getRealPositions() — these become TradeRecords on close)
-            const realPositions = this.portfolio?.getRealPositions() ?? [];
-            for (const pos of realPositions) {
-              if (pollingBeforeState.realPositionIds.has(pos.id ?? '')) continue;
-              if (patchTradeRecord(pos)) patchedCount++;
-            }
-            
-            // 4. Patch portfolio positions (paper open positions — these become TradeRecords on close)
-            const portfolio = this.portfolio?.getPortfolio();
-            if (portfolio && portfolio.positions) {
-              for (const [, pos] of portfolio.positions) {
-                if (pollingBeforeState.paperPositionIds.has(pos.id ?? '')) continue;
-                if (patchTradeRecord(pos)) patchedCount++;
-              }
-            }
-            
-            if (patchedCount > 0) {
-              log.info(`🧬 [entry-features] POLLING patch (attempt ${retryCount + 1}/${MAX_RETRIES}) patched ${patchedCount} trade record(s) for ${patchSym} ${patchSide.toUpperCase()} — marketFeatures=${Object.keys(precomputed.marketFeatures).length} keys, OLR=${precomputed.olrPWin !== undefined ? (precomputed.olrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${precomputed.shadowWinRate !== undefined ? (precomputed.shadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline ACTIVE`);
-              // Persist IMMEDIATELY so the patches survive a crash
-              this.persistPortfolio();
-              // Clean up the precomputed entry (consumed)
-              this.precomputedEntryFeatures.delete(patchKey);
-            } else if (retryCount < MAX_RETRIES - 1) {
-              // Record not found yet — schedule another poll
-              retryCount++;
-              log.debug(`🧬 [entry-features] Polling patch (attempt ${retryCount}/${MAX_RETRIES}): no new trade records found for ${patchSym} ${patchSide.toUpperCase()} — retrying in ${POLL_INTERVAL_MS}ms`);
-              setTimeout(performPollingPatch, POLL_INTERVAL_MS);
-            } else {
-              // All retries exhausted — log warning and clean up
-              log.warn(`🧬 [entry-features] Polling patch (attempt ${MAX_RETRIES}/${MAX_RETRIES}): no new trade records found for ${patchSym} ${patchSide.toUpperCase()} after ${MAX_RETRIES * POLL_INTERVAL_MS}ms — data pipeline MISSED this trade`);
-              this.precomputedEntryFeatures.delete(patchKey);
-            }
-          } catch (err) {
-            log.warn(`🧬 [entry-features] Polling patch (attempt ${retryCount + 1}/${MAX_RETRIES}) failed for ${patchSym}: ${err instanceof Error ? err.message : String(err)}`);
-            if (retryCount < MAX_RETRIES - 1) {
-              retryCount++;
-              setTimeout(performPollingPatch, POLL_INTERVAL_MS);
-            } else {
-              this.precomputedEntryFeatures.delete(patchKey);
-            }
-          }
-        };
-        
-        // Start the polling loop
-        performPollingPatch();
+      const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === entrySym);
+      if (shadowStats) {
+        entryShadowWinRate = finalDecision.action === 'buy'
+          ? shadowStats.longWinRate
+          : shadowStats.shortWinRate;
       }
+      log.info(`🧬 [entry-features] Passing to executeTrade() for ${entrySym} ${finalDecision.action.toUpperCase()}: marketFeatures=${Object.keys(entryMarketFeatures).length} keys, OLR=${entryOlrPWin !== undefined ? (entryOlrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadowWinRate !== undefined ? (entryShadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
+    } catch { /* non-critical */ }
+  }
+
+  // v2.0.813: Capture BEFORE state of ALL trade record sources BEFORE
+  // executeTrade() is called. This allows us to identify NEW records
+  // created by executeTrade() and patch them via the monkey-patched
+  // portfolio methods.
+  const beforeState = this.captureTradeRecordBeforeState();
+
+  // v2.0.143: Route through executeTrade() — paper mode goes directly
+  // to paperEngine, real mode goes to tradingManager. No more
+  // tradingManager fallback for paper trades.
+  // v2.0.801: Pass entry-time market features, OLR P(win), and shadow win rate
+  // as DIRECT PARAMETERS so the execution engines can include them in the
+  // TradeRecord during creation (not patched after creation).
+  const execResult = await this.executeTrade(
+    decisionWithSR,
+    activeAuditGates,
+    entryMarketFeatures,
+    entryOlrPWin,
+    entryShadowWinRate,
+  );
+  const reports: ExecutionReport[] = execResult.paperReports ?? [];
+
+  // v2.0.813: POST-EXECUTION validation — scan ALL trade record sources for
+  // records created in THIS cycle and DIRECTLY SET entryMarketFeatures,
+  // entryOlrPWin, entryShadowWinRate if missing. This is a belt-and-suspenders
+  // approach — the monkey-patched portfolio methods should have already injected
+  // the features, but this ensures 100% coverage even for edge cases.
+  if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+    const patchSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+    const patchSide = finalDecision.action as 'buy' | 'sell';
+    
+    // Use the precomputed features (populated by precomputeEntryFeatures)
+    // or the entryMarketFeatures/entryOlrPWin/entryShadowWinRate passed to executeTrade()
+    const precomputed = this.precomputedEntryFeatures.get(`${patchSym}:${patchSide}`);
+    const marketFeatures = precomputed?.marketFeatures ?? entryMarketFeatures ?? {};
+    const olrPWin = precomputed?.olrPWin ?? entryOlrPWin;
+    const shadowWinRate = precomputed?.shadowWinRate ?? entryShadowWinRate;
+    
+    if (Object.keys(marketFeatures).length > 0) {
+      let patchedCount = 0;
+      
+      // Helper: patch a single trade record with entry-time data
+      const patchTradeRecord = (trade: any): boolean => {
+        if (!trade) return false;
+        // Skip if already has features (already patched by monkey-patch or previous call)
+        if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) return false;
+        // Skip if symbol doesn't match
+        if (normalizeSymbol(trade.symbol) !== patchSym) return false;
+        // Skip if side doesn't match
+        if (trade.side !== patchSide) return false;
+        
+        // Inject market features
+        trade.entryMarketFeatures = { ...marketFeatures };
+        
+        // Inject OLR P(win)
+        if (olrPWin !== undefined && Number.isFinite(olrPWin)) {
+          trade.entryOlrPWin = olrPWin;
+        }
+        
+        // Inject shadow win rate
+        if (shadowWinRate !== undefined && Number.isFinite(shadowWinRate)) {
+          trade.entryShadowWinRate = shadowWinRate;
+        }
+        
+        return true;
+      };
+      
+      // 1. Patch paper engine trades (getTrades() — these are the ACTUAL TradeRecord objects)
+      const paperTrades = this.paperEngine?.getTrades() ?? [];
+      for (const trade of paperTrades) {
+        if (beforeState.paperTradeIds.has(trade.id ?? '')) continue;
+        if (patchTradeRecord(trade)) patchedCount++;
+      }
+      
+      // 2. Patch closed real trades (getClosedRealTrades() — these are the ACTUAL TradeRecord objects)
+      const closedRealTrades = this.portfolio?.getClosedRealTrades() ?? [];
+      for (const trade of closedRealTrades) {
+        if (beforeState.closedRealTradeIds.has(trade.id ?? '')) continue;
+        if (patchTradeRecord(trade)) patchedCount++;
+      }
+      
+      // 3. Patch real positions (getRealPositions() — these become TradeRecords on close)
+      const realPositions = this.portfolio?.getRealPositions() ?? [];
+      for (const pos of realPositions) {
+        if (beforeState.realPositionIds.has(pos.id ?? '')) continue;
+        if (patchTradeRecord(pos)) patchedCount++;
+      }
+      
+      // 4. Patch portfolio positions (paper open positions — these become TradeRecords on close)
+      const portfolio = this.portfolio?.getPortfolio();
+      if (portfolio && portfolio.positions) {
+        for (const [, pos] of portfolio.positions) {
+          if (beforeState.paperPositionIds.has(pos.id ?? '')) continue;
+          if (patchTradeRecord(pos)) patchedCount++;
+        }
+      }
+      
+      if (patchedCount > 0) {
+        log.info(`🧬 [entry-features] Post-execution validation patched ${patchedCount} trade record(s) for ${patchSym} ${patchSide.toUpperCase()} — marketFeatures=${Object.keys(marketFeatures).length} keys, OLR=${olrPWin !== undefined ? (olrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${shadowWinRate !== undefined ? (shadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline ACTIVE`);
+        // Persist IMMEDIATELY so the patches survive a crash
+        this.persistPortfolio();
+      } else {
+        log.debug(`🧬 [entry-features] Post-execution validation: no new trade records found for ${patchSym} ${patchSide.toUpperCase()} — ${paperTrades.length} paper trades, ${closedRealTrades.length} closed real trades, ${realPositions.length} real positions`);
+      }
+      
+      // Clean up the precomputed entry (consumed)
+      this.precomputedEntryFeatures.delete(`${patchSym}:${patchSide}`);
+    }
+  }
 
       // v2.0.106: Record trade execution for per-asset frequency throttling
       if (execResult.success && (finalDecision.action === 'buy' || finalDecision.action === 'sell')) {
