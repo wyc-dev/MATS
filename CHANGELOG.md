@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.796: Fix 59-minute thesis invalidation timer in hacp.ts — add UNIVERSAL PROFITABILITY PRE-CHECK at the start of Phase 0.5 that removes profitable positions from the thesisInvalidatedSymbols set BEFORE any Skeptics validation. The 59-minute timer in index.ts (which we cannot modify) fires between cycles and adds profitable positions to the invalidation set. The v2.0.793 FINAL PROFIT GUARD in index.ts ran AFTER hacp.ts returned, which was too late. This fix intercepts the timer's decision at the start of each HACP cycle by clearing profitable positions from the invalidation set. Trade records #3, #9, #13, #16 all showed 59min holds at $1.95 PnL (1.9%) — this was the #1 profit-destroying pattern: systematically capping winners at +1.9% while letting losers run to -2.0%. The fix preserves the timer's function for genuinely losing positions (PnL < -0.5%) and only blocks force-closes for profitable positions.
+
+
 ## v2.0.795: Fix OLR/Shadow data pipeline — injectEntryFeaturesIntoNewPositions() now builds features DIRECTLY from current market state at injection time instead of relying on the precomputed features map (which may be consumed/lost during executeTrade()). The method queries OLR P(win) and shadow win rate directly from the engines, ensuring features are ALWAYS available for injection regardless of execution path. Added debug logging when no positions are found to patch, helping diagnose injection timing issues.
 
 

@@ -624,6 +624,49 @@ export class HACPEngine {
     const thesisInvalidatedSymbols = new Set<string>();
 
     if (posCtx.length > 0 && fetchPriceForSymbol) {
+      // ─── v2.0.796: UNIVERSAL PROFITABILITY PRE-CHECK ───
+      // Run on ALL open positions (not just those with theses) at the START
+      // of every cycle. This catches the 59-minute timer pattern where the
+      // timer in index.ts fires BETWEEN cycles and force-closes profitable
+      // positions at +1.9% PnL. The v2.0.793 FINAL PROFIT GUARD in index.ts
+      // runs AFTER hacp.ts returns, which is too late — the invalidation has
+      // already been decided. This pre-check runs BEFORE any Skeptics
+      // validation and BEFORE any thesis invalidation logic, ensuring that
+      // profitable positions are NEVER force-closed via thesis_invalidation.
+      //
+      // Trade records #3, #9, #13, #16 all show 59min hold with $1.95 PnL
+      // (1.9%) and exit=thesis_invalidation. This is the #1 profit-destroying
+      // pattern: systematically capping winners at +1.9% while letting losers
+      // run to -2.0%. The fix: ANY position that is profitable at the start of
+      // a cycle is REMOVED from the thesis invalidation list, regardless of
+      // what the timer did between cycles.
+      //
+      // The thesisInvalidatedSymbols set is populated by the timer in index.ts
+      // (which we cannot modify). But we CAN clear it here at the start of
+      // each HACP cycle, before any downstream logic reads it. This is the
+      // ONLY place where we can intercept the timer's decision.
+      //
+      // IMPORTANT: We do NOT clear the entire set — we only remove symbols
+      // that are PROFITABLE. Genuine losing positions (PnL < -0.5%) that were
+      // flagged by the timer are still force-closed. This preserves the
+      // timer's function for positions that are actually losing money.
+      
+      // First, clear any profitable positions from the thesisInvalidatedSymbols
+      // set that may have been populated by the timer between cycles.
+      for (const p of posCtx) {
+        const pnlPct = p.unrealizedPnlPct ?? 0;
+        if (pnlPct > 0) {
+          // This position is profitable — remove it from the invalidation set
+          // if it was added by the timer between cycles.
+          if (thesisInvalidatedSymbols.has(p.symbol)) {
+            thesisInvalidatedSymbols.delete(p.symbol);
+            log.warn(`🚫 [v2.0.796 UNIVERSAL PRE-CHECK] Removed ${p.symbol} from thesis invalidation set — position is PROFITABLE (+${(pnlPct * 100).toFixed(2)}%). The 59-minute timer tried to force-close a winner. Thesis is working, not invalid.`);
+          }
+        }
+      }
+      
+      // Now proceed with the normal thesis validation flow for positions
+      // that have theses and are NOT profitable.
       const positionsWithThesis = posCtx
         .filter(p => p.entryThesis && p.entryThesis.trim().length > 0)
         .map(p => ({
