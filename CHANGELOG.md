@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.785: Fix OLR/Shadow data pipeline — comprehensive position patching for ALL execution paths. The v2.0.783 fix only patched the active symbol's position after executeTrade(), missing multi-symbol per-symbol consensus entries and exploration trades. This fix replaces the single-symbol patch with a scan of ALL open positions opened this cycle, building entry-time features from current market state, querying OLR P(win) and shadow win rate for each symbol+side, and storing them on the position object. When the trade closes, these fields flow through to the TradeRecord automatically. Fixes the root cause: 100% of trades showing NO_OLR NO_SHADOW NO_MARKET_DATA.
+
+
 ## v2.0.784: Fix OLR query() to use entry-time feature snapshot instead of live cycle-time features — rename currentFeatures parameter to entryFeatures to clarify its purpose. When entryFeatures is provided, the sigmoid computation uses the SAME features that will be recorded at trade entry time, eliminating the systematic distribution shift between training (entry-time features) and inference (cycle-time features) that caused OLR to be miscalibrated for real trades. The caller (index.ts) now snapshots market features at decision time and passes them as entryFeatures to both OLR.query() and the trade record creation. Backward compatible: when entryFeatures is not provided (e.g., shadow trade engine), falls back to cycle-time features.
 
 

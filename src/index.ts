@@ -7203,54 +7203,88 @@ ${recentExamples}
       const execResult = await this.executeTrade(decisionWithSR, activeAuditGates);
       const reports: ExecutionReport[] = execResult.paperReports ?? [];
 
-      // v2.0.783: Patch the position object in the portfolio AFTER executeTrade()
-      // with entry-time market features, OLR P(win), and shadow win rate.
-      // This is the CORRECT fix because:
-      // 1. The execution engines (paper-engine.ts, trading-manager.ts) are in the
-      //    FORBIDDEN modification zone — we cannot change them to read runtime
-      //    properties from the decision object.
-      // 2. Both paper and real execution paths call portfolio.openPosition() or
-      //    importExchangePosition(), which store the position in the portfolio.
-      // 3. When the trade closes, onPositionClosedLearning() reads the trade
-      //    record from the portfolio — if we patch the position object here,
-      //    the data will be available when the trade record is created at close time.
-      // 4. The position object in the portfolio is the SAME reference used when
-      //    creating the TradeRecord at close time — patching it here means the
-      //    data flows through to the trade record automatically.
+      // v2.0.785: Patch ALL position objects in the portfolio with entry-time
+      // market features, OLR P(win), and shadow win rate. This runs for EVERY
+      // trade that was executed this cycle — both the active symbol's main
+      // decision AND any multi-symbol per-symbol consensus entries.
       //
-      // This replaces the v2.0.773-780 approach of patching ExecutionReport,
-      // which failed because the execution engines never read runtime properties.
-      if (execResult.success && (finalDecision.action === 'buy' || finalDecision.action === 'sell')) {
-        const tradeSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
-        const entryOlr = (decisionWithSR as any).entryOlrPWin as number | undefined;
-        const entryShadow = (decisionWithSR as any).entryShadowWinRate as number | undefined;
-        const entryFeatures = (decisionWithSR as any).entryMarketFeatures as Record<string, number> | undefined;
-        
-        // Patch the position object in the portfolio with entry-time data.
-        // The position object is the same reference used when creating the
-        // TradeRecord at close time, so this data flows through automatically.
-        try {
-          const pos = this.portfolio.getPosition(tradeSym);
-          if (pos) {
-            // Store entry-time market features on the position object
-            if (entryFeatures && Object.keys(entryFeatures).length > 0) {
-              (pos as any).entryMarketFeatures = { ...entryFeatures };
+      // The patch is done by scanning the portfolio's open positions for any
+      // that were opened THIS cycle (openedAt >= cycleStart) and are missing
+      // entry-time data. This catches ALL execution paths:
+      // 1. Active symbol main decision (finalDecision)
+      // 2. Multi-symbol per-symbol consensus entries (psc loop)
+      // 3. Exploration trades
+      //
+      // Why this works:
+      // - The position object in the portfolio is the SAME reference used when
+      //   creating the TradeRecord at close time (onPositionClosedLearning).
+      // - Patching the position object here means the data flows through to
+      //   the trade record automatically when it's created at close time.
+      // - The execution engines (paper-engine.ts, trading-manager.ts) are in
+      //   the FORBIDDEN zone — we cannot modify them to read runtime properties.
+      // - This approach works for BOTH paper and real trades because both
+      //   execution paths use the same portfolio position objects.
+      try {
+        const cycleStartMs = Date.now() - (this.cycleIntervalMs * 2); // window: 2 cycles back
+        const openSyms = this.portfolio.getOpenSymbols();
+        for (const sym of openSyms) {
+          const pos = this.portfolio.getPosition(sym);
+          if (!pos) continue;
+          // Skip positions that were opened before this cycle (already patched)
+          if (pos.openedAt < cycleStartMs) continue;
+          // Skip positions that already have entry-time data (already patched)
+          if ((pos as any).entryMarketFeatures && Object.keys((pos as any).entryMarketFeatures).length > 0) continue;
+          
+          // Build entry-time features from the current market state
+          const symNorm = normalizeSymbol(sym);
+          const symState = this.marketState.getState(sym);
+          const symCtx = this.lastCycleShadowContexts.get(symNorm);
+          const features: Record<string, number> = {
+            volatility: safeNum(symState?.volatility, safeNum(combinedState.volatility, 0)),
+            srDistanceBps: safeNum(this.lastSRContext?.distanceToSupportBps, 0),
+            obImbalance: safeNum(symState?.orderBookImbalance, safeNum(combinedState.orderBookImbalance, 0)),
+            fundingRate: safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0),
+            volumeRatio: safeNum(this.sentimentEngine?.getVolumeRatio(), 1),
+            sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
+            sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
+            signalAgreement: safeNum(result.consensus.confidence, 0.5),
+            regimeOrdinal: regimeToOrdinal(combinedState.regime),
+            hourOfDay: currentHourOfDay(),
+            momentumShort: 0,
+            momentumLong: 0,
+          };
+          
+          // Query OLR P(win) for this symbol+side at entry time
+          let entryOlrPWin: number | undefined;
+          try {
+            const olr = this.olrEngine.query(symNorm, features, pos.side as 'buy' | 'sell', this.totalCycles);
+            if (Number.isFinite(olr.pWin)) {
+              entryOlrPWin = olr.pWin;
+              this.entryOlrPWinCache.set(symNorm, olr.pWin);
             }
-            // Store entry-time OLR P(win) on the position object
-            if (entryOlr !== undefined && Number.isFinite(entryOlr)) {
-              (pos as any).entryOlrPWin = entryOlr;
+          } catch { /* non-critical */ }
+          
+          // Query shadow win rate for this symbol+side at entry time
+          let entryShadowWinRate: number | undefined;
+          try {
+            const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === symNorm);
+            if (shadowStats) {
+              entryShadowWinRate = pos.side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
             }
-            // Store entry-time shadow win rate on the position object
-            if (entryShadow !== undefined && Number.isFinite(entryShadow)) {
-              (pos as any).entryShadowWinRate = entryShadow;
-            }
-            log.info(`🧬 [entry-features] Patched position ${tradeSym}: marketFeatures=${Object.keys(entryFeatures ?? {}).length} keys, OLR=${entryOlr !== undefined ? (entryOlr * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadow !== undefined ? (entryShadow * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
-          } else {
-            log.warn(`🧬 [entry-features] Position ${tradeSym} not found in portfolio after executeTrade — cannot patch entry-time data`);
+          } catch { /* non-critical */ }
+          
+          // Patch the position object
+          (pos as any).entryMarketFeatures = features;
+          if (entryOlrPWin !== undefined) {
+            (pos as any).entryOlrPWin = entryOlrPWin;
           }
-        } catch (err) {
-          log.warn(`🧬 [entry-features] Failed to patch position ${tradeSym}: ${err instanceof Error ? err.message : String(err)}`);
+          if (entryShadowWinRate !== undefined) {
+            (pos as any).entryShadowWinRate = entryShadowWinRate;
+          }
+          log.info(`🧬 [entry-features] Patched position ${symNorm} (${pos.side.toUpperCase()}): marketFeatures=${Object.keys(features).length} keys, OLR=${entryOlrPWin !== undefined ? (entryOlrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadowWinRate !== undefined ? (entryShadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
         }
+      } catch (err) {
+        log.warn(`🧬 [entry-features] Failed to patch positions: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       // v2.0.106: Record trade execution for per-asset frequency throttling
