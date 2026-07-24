@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.775: Add distribution-shift penalty to OLR predict() — when current market features deviate >2σ from training distribution on key features (volatility, srDistanceBps, obImbalance, fundingRate), reduce P(win) confidence by up to 20% toward 0.5. Prevents false 100% P(win) on out-of-distribution regimes while preserving discriminative power for in-distribution trades. Soft gate only — no hard block.
+
+
 ## v2.0.774: Fix incomplete data pipeline — ensure market features collected at entry are actually persisted to the trade record that EXP stores. v2.0.773 only attached features to the decision object but not to the TradeRecord, causing 50% of trades to still have NO_MARKET_DATA. This fix attaches entryMarketFeatures, entryOlrPWin, and entryShadowWinRate to the decision object before executeTrade() is called. The execution engines (paper-engine.ts, trading-manager.ts) must be updated separately to read these runtime properties and store them on the TradeRecord.
 
 

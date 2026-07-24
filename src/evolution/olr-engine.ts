@@ -640,6 +640,90 @@ export class OLREngine {
   }
 
   /**
+   * v2.0.775: Distribution-shift penalty for OLR predictions.
+   * 
+   * When the current market features deviate significantly from the training
+   * distribution, the model's P(win) prediction is unreliable — it's making
+   * an out-of-distribution (OOD) inference. This is the ROOT CAUSE of false
+   * 100% P(win) predictions: the model was trained on entry-time features
+   * (e.g., volatility=0.5, srDistanceBps=0.3) but queried on current features
+   * (e.g., volatility=2.1, srDistanceBps=-0.8) that are >2σ from the training
+   * mean. The sigmoid saturates to 0 or 1 because the normalized features
+   * produce extreme logit values.
+   * 
+   * The fix: compute a distribution-shift penalty per key feature. For each
+   * key feature (volatility, srDistanceBps, obImbalance, fundingRate), compute
+   * the z-score of the current feature value relative to the training
+   * distribution (mean/std from Welford stats). If any key feature has
+   * |z| > 2.0, reduce P(win) toward 0.5 by up to 20% (soft gate).
+   * 
+   * The penalty is proportional to the maximum deviation:
+   *   penalty = min(0.20, 0.05 * (maxZ - 2.0))
+   *   pWin = pWin * (1 - penalty) + 0.5 * penalty
+   * 
+   * This means:
+   *   - At |z| = 2.0: no penalty (in-distribution, trust the model)
+   *   - At |z| = 3.0: 5% pull toward 0.5 (barely noticeable)
+   *   - At |z| = 6.0: 20% pull toward 0.5 (max penalty)
+   *   - At |z| > 6.0: capped at 20% (soft gate, never a hard block)
+   * 
+   * The penalty is applied AFTER the 5-bin calibration map, so calibration
+   * still works on the raw sigmoid output. The final output is then passed
+   * through the existing Bayesian shrinkage for small-sample protection.
+   * 
+   * Key features for distribution-shift detection (indices in FEATURE_NAMES):
+   *   0 = volatility
+   *   1 = srDistanceBps
+   *   2 = obImbalance
+   *   6 = fundingRate
+   * 
+   * These are the features most likely to shift between market regimes and
+   * cause OOD predictions. Sentiment and signal agreement are more stable
+   * and less likely to cause extreme logit values.
+   */
+  private applyDistributionShiftPenalty(
+    rawPWin: number,
+    model: OLRModel,
+    currentFeatures: Record<string, number>,
+  ): number {
+    // Key feature indices for distribution-shift detection
+    const KEY_FEATURE_INDICES = new Set([0, 1, 2, 6]); // volatility, srDistanceBps, obImbalance, fundingRate
+    
+    let maxZ = 0;
+    
+    for (const idx of KEY_FEATURE_INDICES) {
+      const n = model.welfordCount[idx]!;
+      if (n < 3) continue; // Need at least 3 samples for meaningful std
+      
+      const mean = model.mean[idx]!;
+      const variance = model.m2[idx]! / (n - 1);
+      const std = Math.sqrt(Math.max(variance, OLR_CONFIG.welfordEpsilon));
+      
+      if (std < 1e-10) continue; // No variance → no distribution to compare against
+      
+      const featureName = FEATURE_NAMES[idx]!;
+      const currentVal = currentFeatures[featureName];
+      if (currentVal === undefined || currentVal === null || !Number.isFinite(currentVal)) continue;
+      
+      const z = Math.abs((currentVal - mean) / std);
+      if (z > maxZ) maxZ = z;
+    }
+    
+    // No distribution-shift detected (all key features within 2σ)
+    if (maxZ <= 2.0) return rawPWin;
+    
+    // Compute penalty: 5% per σ above 2.0, capped at 20%
+    const penalty = Math.min(0.20, 0.05 * (maxZ - 2.0));
+    
+    // Apply soft gate: pull P(win) toward 0.5
+    const adjustedPWin = rawPWin * (1 - penalty) + 0.5 * penalty;
+    
+    log.debug(`[OLR distribution-shift] maxZ=${maxZ.toFixed(2)} penalty=${(penalty * 100).toFixed(0)}% raw=${(rawPWin * 100).toFixed(0)}% → adjusted=${(adjustedPWin * 100).toFixed(0)}%`);
+    
+    return adjustedPWin;
+  }
+
+  /**
    * v2.0.746: Apply a Bayesian prior to the sigmoid computation to prevent
    * 0%/100% P(win) on small-sample models. This is the ROOT CAUSE fix for OLR
    * overconfidence — the previous approach of applying a confidence penalty
@@ -675,6 +759,12 @@ export class OLREngine {
    * the model is well-calibrated.
    * 
    * The fix for miscalibration is the 5-bin calibration map, NOT softening.
+   * 
+   * v2.0.775: Added distribution-shift penalty call BEFORE this function.
+   * The distribution-shift penalty handles OOD predictions (current market
+   * state differs from training distribution). This function handles
+   * small-sample protection (insufficient training data). They are
+   * complementary and both needed.
    */
   private applyConfidencePenalty(rawPWin: number, nSamples: number, effectiveSampleSize?: number): number {
     const effectiveN = effectiveSampleSize !== undefined ? effectiveSampleSize : nSamples;
