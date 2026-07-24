@@ -7203,7 +7203,7 @@ ${recentExamples}
       const execResult = await this.executeTrade(decisionWithSR, activeAuditGates);
       const reports: ExecutionReport[] = execResult.paperReports ?? [];
 
-      // v2.0.785: Patch ALL position objects in the portfolio with entry-time
+      // v2.0.786: Patch ALL position objects in the portfolio with entry-time
       // market features, OLR P(win), and shadow win rate. This runs for EVERY
       // trade that was executed this cycle — both the active symbol's main
       // decision AND any multi-symbol per-symbol consensus entries.
@@ -7282,6 +7282,61 @@ ${recentExamples}
             (pos as any).entryShadowWinRate = entryShadowWinRate;
           }
           log.info(`🧬 [entry-features] Patched position ${symNorm} (${pos.side.toUpperCase()}): marketFeatures=${Object.keys(features).length} keys, OLR=${entryOlrPWin !== undefined ? (entryOlrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadowWinRate !== undefined ? (entryShadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
+        }
+        
+        // v2.0.786: Also patch positions in the realPositions map (importExchangePosition path).
+        // The getOpenSymbols() method may not include positions that were just imported
+        // via importExchangePosition() in the same cycle. We must also scan realPositions
+        // directly to catch these late-imported positions.
+        const realPositions = this.portfolio.getRealPositions();
+        for (const pos of realPositions) {
+          // Skip positions that were opened before this cycle (already patched)
+          if (pos.openedAt < cycleStartMs) continue;
+          // Skip positions that already have entry-time data (already patched)
+          if ((pos as any).entryMarketFeatures && Object.keys((pos as any).entryMarketFeatures).length > 0) continue;
+          
+          const symNorm = normalizeSymbol(pos.symbol);
+          const symState = this.marketState.getState(pos.symbol);
+          const features: Record<string, number> = {
+            volatility: safeNum(symState?.volatility, safeNum(combinedState.volatility, 0)),
+            srDistanceBps: safeNum(this.lastSRContext?.distanceToSupportBps, 0),
+            obImbalance: safeNum(symState?.orderBookImbalance, safeNum(combinedState.orderBookImbalance, 0)),
+            fundingRate: safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0),
+            volumeRatio: safeNum(this.sentimentEngine?.getVolumeRatio(), 1),
+            sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
+            sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
+            signalAgreement: safeNum(result.consensus.confidence, 0.5),
+            regimeOrdinal: regimeToOrdinal(combinedState.regime),
+            hourOfDay: currentHourOfDay(),
+            momentumShort: 0,
+            momentumLong: 0,
+          };
+          
+          let entryOlrPWin: number | undefined;
+          try {
+            const olr = this.olrEngine.query(symNorm, features, pos.side as 'buy' | 'sell', this.totalCycles);
+            if (Number.isFinite(olr.pWin)) {
+              entryOlrPWin = olr.pWin;
+              this.entryOlrPWinCache.set(symNorm, olr.pWin);
+            }
+          } catch { /* non-critical */ }
+          
+          let entryShadowWinRate: number | undefined;
+          try {
+            const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === symNorm);
+            if (shadowStats) {
+              entryShadowWinRate = pos.side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
+            }
+          } catch { /* non-critical */ }
+          
+          (pos as any).entryMarketFeatures = features;
+          if (entryOlrPWin !== undefined) {
+            (pos as any).entryOlrPWin = entryOlrPWin;
+          }
+          if (entryShadowWinRate !== undefined) {
+            (pos as any).entryShadowWinRate = entryShadowWinRate;
+          }
+          log.info(`🧬 [entry-features] Patched real position ${symNorm} (${pos.side.toUpperCase()}): marketFeatures=${Object.keys(features).length} keys, OLR=${entryOlrPWin !== undefined ? (entryOlrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${entryShadowWinRate !== undefined ? (entryShadowWinRate * 100).toFixed(0) + '%' : 'N/A'} — data pipeline active`);
         }
       } catch (err) {
         log.warn(`🧬 [entry-features] Failed to patch positions: ${err instanceof Error ? err.message : String(err)}`);
