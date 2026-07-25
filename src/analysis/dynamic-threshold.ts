@@ -59,6 +59,11 @@ const PENALTY_CAP = 0.30;
 const PENALTY_DECAY_CYCLES = 30;
 /** P(win) floor: blendFactor never drops below this. */
 const PWIN_FLOOR = 0.3;
+/** v2.0.819: WINNER-FIRST — maximum multiplicative boost from the
+ *  lossStreakTracker winner pattern. Cap prevents an over-aggressive winner
+ *  signal from letting garbage through; the combo blend factor (separate,
+ *  sample-guarded) handles the large overrides. */
+const BOOST_CAP = 0.20;
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -88,6 +93,12 @@ export interface DynamicThresholdResult {
   decayMultiplier: number;
   /** Per-factor breakdown for logging/UI. */
   factors: ThresholdFactorScore[];
+  /** v2.0.819: WINNER-FIRST multiplicative boost factor [1.0, 1.0 + BOOST_CAP].
+   *  Applied as effectiveConfidence = consensus × pwinBlend × penalty × boost.
+   *  1.0 when no winner pattern is present. */
+  boostFactor: number;
+  /** Raw winner boost input (clamped to ≥ 0). */
+  winnerBoost: number;
 }
 
 export interface DynamicThresholdInput {
@@ -107,6 +118,11 @@ export interface DynamicThresholdInput {
   regime: string;
   /** Net penalty from loss-streak + conditional WR + combo WR gates [0, 1+]. */
   netPenalty: number;
+  /** v2.0.819: WINNER-FIRST boost from the lossStreakTracker winner pattern
+   *  (≥ 0). A strong regime-specific winner (≥70% WR, 5+ trades) contributes
+   *  up to 0.15; a PnL-likely winner contributes up to 0.08. Capped at
+   *  BOOST_CAP in the resulting boostFactor. */
+  winnerBoost?: number;
 }
 
 // ─── Hysteresis Scoring ────────────────────────────────────────────────────
@@ -372,6 +388,17 @@ export class DynamicThresholdCalculator {
     const penaltyFactor = 1.0 - Math.min(decayedPenalty, PENALTY_CAP);
 
     // 5. Build result
+    // v2.0.819: WINNER-FIRST multiplicative boost. The lossStreakTracker
+    // winner pattern (checkWinnerPattern) contributes a positive boost that
+    // lifts effective confidence — previously this was stored as a NEGATIVE
+    // netPenalty and silently clipped to 0 by Math.max(0, netPenalty), so the
+    // WINNER-FIRST directive never reached the gate. Now it flows as a
+    // separate multiplicative factor capped at BOOST_CAP.
+    const rawBoost = Number.isFinite(input.winnerBoost) && (input.winnerBoost as number) > 0
+      ? (input.winnerBoost as number)
+      : 0;
+    const boostFactor = 1.0 + Math.min(rawBoost, BOOST_CAP);
+
     const result: DynamicThresholdResult = {
       threshold,
       baseThreshold: BASE_THRESHOLD,
@@ -381,6 +408,8 @@ export class DynamicThresholdCalculator {
       netPenalty: safePenalty,
       decayedPenalty,
       decayMultiplier,
+      boostFactor,
+      winnerBoost: rawBoost,
       factors: [
         { factor: 'rollingWR', score: this.wrScore, rawValue: input.rollingWR, reason: wrRes.reason },
         { factor: 'idleCycles', score: this.idleScore, rawValue: input.idleCycles, reason: idleRes.reason },
@@ -392,7 +421,7 @@ export class DynamicThresholdCalculator {
 
     this.lastResult = result;
 
-    log.info(`[Plan-G] threshold=${(threshold * 100).toFixed(1)}% (score=${totalScore > 0 ? '+' : ''}${totalScore}, adj=${(adjustment * 100).toFixed(1)}%), penaltyFactor=${penaltyFactor.toFixed(3)} (net=${(input.netPenalty * 100).toFixed(0)}%, decay=${(decayMultiplier * 100).toFixed(0)}%)`);
+    log.info(`[Plan-G] threshold=${(threshold * 100).toFixed(1)}% (score=${totalScore > 0 ? '+' : ''}${totalScore}, adj=${(adjustment * 100).toFixed(1)}%), penaltyFactor=${penaltyFactor.toFixed(3)} (net=${(input.netPenalty * 100).toFixed(0)}%, decay=${(decayMultiplier * 100).toFixed(0)}%), boostFactor=${boostFactor.toFixed(3)} (winnerBoost=${(rawBoost * 100).toFixed(0)}%)`);
 
     return result;
   }
@@ -451,16 +480,19 @@ export class DynamicThresholdCalculator {
   }
 
   /**
-   * Compute the final effective confidence: consensus × pwinBlend × penaltyFactor.
+   * Compute the final effective confidence: consensus × pwinBlend × penaltyFactor × boostFactor.
    * This is the single value compared against the dynamic threshold.
+   * v2.0.819: Added optional boostFactor (WINNER-FIRST) — defaults to 1.0 so
+   * existing callers/tests are unchanged.
    */
   static effectiveConfidence(
     consensus: number,
     pwin: number,
     penaltyFactor: number,
+    boostFactor: number = 1.0,
   ): number {
     const blend = DynamicThresholdCalculator.pwinBlendFactor(pwin);
-    return consensus * blend * penaltyFactor;
+    return consensus * blend * penaltyFactor * boostFactor;
   }
 
   /** Reset all hysteresis state (for testing). */

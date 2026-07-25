@@ -214,3 +214,79 @@ describe('setEntryThesis freeze (v2.0.137 Root Cause B fix)', () => {
     expect(tracker.getPosition('btc')?.entryThesis).toBe('second thesis');
   });
 });
+
+// ─── v2.0.819: Entry-features data pipeline (Fix #3) ─────────────────
+//
+// The close path previously reconstructed the TradeRecord WITHOUT copying
+// entryMarketFeatures / entryOlrPWin / entryShadowWinRate / regime from the
+// position — root cause of 100% NO_OLR / NO_SHADOW on every real trade. These
+// tests verify the fields now flow open → position → closed trade record.
+
+describe('PortfolioTracker — v2.0.819 entry-features pipeline', () => {
+  let tracker: PortfolioTracker;
+  beforeEach(() => {
+    tracker = new PortfolioTracker();
+  });
+
+  it('openPosition stores entryData on the position object', () => {
+    const order = makeOrder('btc', 'buy', 1);
+    const entryData = {
+      marketFeatures: { volatility: 0.012, srDistanceBps: 88 },
+      olrPWin: 0.62,
+      shadowWinRate: 0.71,
+      regime: 'mean_reverting',
+    };
+    tracker.openPosition(order, 60000, 1, 'thesis', entryData);
+    const pos = tracker.getPosition('btc');
+    expect(pos).not.toBeNull();
+    expect(pos!.entryMarketFeatures).toEqual({ volatility: 0.012, srDistanceBps: 88 });
+    expect(pos!.entryOlrPWin).toBeCloseTo(0.62, 6);
+    expect(pos!.entryShadowWinRate).toBeCloseTo(0.71, 6);
+    expect(pos!.regime).toBe('mean_reverting');
+  });
+
+  it('closePosition copies entry fields onto the closed TradeRecord', () => {
+    const order = makeOrder('btc', 'buy', 1);
+    const entryData = {
+      marketFeatures: { volatility: 0.012, srDistanceBps: 88, sentiment: -0.4 },
+      olrPWin: 0.62,
+      shadowWinRate: 0.71,
+      regime: 'mean_reverting',
+    };
+    tracker.openPosition(order, 60000, 1, 'thesis', entryData);
+    const trade = tracker.closePosition('btc', 61000);
+    expect(trade).not.toBeNull();
+    // ROOT FIX: these were silently dropped before v2.0.819.
+    expect(trade!.entryMarketFeatures).toEqual({ volatility: 0.012, srDistanceBps: 88, sentiment: -0.4 });
+    expect(trade!.entryOlrPWin).toBeCloseTo(0.62, 6);
+    expect(trade!.entryShadowWinRate).toBeCloseTo(0.71, 6);
+    expect(trade!.regime).toBe('mean_reverting');
+  });
+
+  it('importExchangePosition stores entryData on the real position', () => {
+    const entryData = {
+      marketFeatures: { volatility: 0.009 },
+      olrPWin: 0.55,
+      shadowWinRate: 0.6,
+      regime: 'low_volatility',
+    };
+    tracker.importExchangePosition('xyz:silver', 'sell', 2, 58.27, 10, Date.now(), entryData);
+    const pos = tracker.getRealPositions().find(p => p.symbol === 'xyz:silver');
+    expect(pos).not.toBeUndefined();
+    expect(pos!.entryMarketFeatures).toEqual({ volatility: 0.009 });
+    expect(pos!.entryOlrPWin).toBeCloseTo(0.55, 6);
+    expect(pos!.entryShadowWinRate).toBeCloseTo(0.6, 6);
+    expect(pos!.regime).toBe('low_volatility');
+  });
+
+  it('openPosition without entryData leaves fields undefined (backward compatible)', () => {
+    const order = makeOrder('btc', 'buy', 1);
+    tracker.openPosition(order, 60000, 1, 'thesis');
+    const pos = tracker.getPosition('btc');
+    expect(pos!.entryMarketFeatures).toBeUndefined();
+    expect(pos!.entryOlrPWin).toBeUndefined();
+    expect(pos!.regime).toBeUndefined();
+    const trade = tracker.closePosition('btc', 61000);
+    expect(trade!.entryMarketFeatures).toBeUndefined();
+  });
+});

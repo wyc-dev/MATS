@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../observability/logger.ts';
 import { PortfolioTracker } from './portfolio.ts';
 import { RiskEngine } from '../risk/engine.ts';
-import type { Order, OrderSide, OrderStatus, Ticker, TradingDecision, TradeRecord } from '../types/index.ts';
+import type { Order, OrderSide, OrderStatus, Ticker, TradingDecision, TradeRecord, EntryFeatures } from '../types/index.ts';
 
 const log = createLogger({ phase: 'trading' });
 
@@ -198,7 +198,7 @@ export class PaperTradingEngine {
    *   - TradingManager.executeDecision() → forceMirror=true (real trade mirror)
    *   - Manual trade API → forceMirror=true (user-initiated, bypasses gates)
    */
-  async executeDecision(decision: TradingDecision, forceMirror = false): Promise<ExecutionReport[]> {
+  async executeDecision(decision: TradingDecision, forceMirror = false, entryData?: EntryFeatures): Promise<ExecutionReport[]> {
     const reports: ExecutionReport[] = [];
 
     if (decision.action === 'hold') {
@@ -303,7 +303,7 @@ export class PaperTradingEngine {
           ? HL_MIN_NOTIONAL_USD / price
           : scaledQuantity;
         log.info(`Position scaled down: ${effectiveQuantity.toFixed(6)} → ${finalScaled.toFixed(6)} (cumulative margin ${((totalMarginAfter / portfolio.balance) * 100).toFixed(1)}% > 20%)`);
-        return [await this.executeOrder(decision, finalScaled, price)];
+        return [await this.executeOrder(decision, finalScaled, price, entryData)];
       } else {
         const err = `Cumulative margin $${totalMarginAfter.toFixed(2)} exceeds ${(this.maxPortionPct * 100).toFixed(0)}% of balance $${portfolio.balance.toFixed(2)}. Cannot open new position.`;
         log.warn(err);
@@ -342,7 +342,7 @@ export class PaperTradingEngine {
           const adjustedQuantity = (riskAssessment.adjustedPositionSize * equity) / price;
           if (adjustedQuantity > 0) {
             log.info(`Retrying with adjusted size: ${(riskAssessment.adjustedPositionSize! * 100).toFixed(1)}%`);
-            return [await this.executeOrder(decision, adjustedQuantity, price)];
+            return [await this.executeOrder(decision, adjustedQuantity, price, entryData)];
           }
         }
 
@@ -354,7 +354,7 @@ export class PaperTradingEngine {
     }
 
     // Execute the order (use effectiveQuantity which honours the HL min notional floor)
-    const report = await this.executeOrder(decision, effectiveQuantity, price);
+    const report = await this.executeOrder(decision, effectiveQuantity, price, entryData);
 
     // Log execution summary
     if (report.trade) {
@@ -371,7 +371,8 @@ export class PaperTradingEngine {
   private async executeOrder(
     decision: TradingDecision,
     quantity: number,
-    price: number
+    price: number,
+    entryData?: EntryFeatures,
   ): Promise<ExecutionReport> {
     const safeSymbol = decision.symbol.includes(':') ? decision.symbol : decision.symbol.toLowerCase();
     const order: Order = {
@@ -401,14 +402,14 @@ export class PaperTradingEngine {
           this.portfolio.closePosition(safeSymbol, price);
         }
       }
-      this.portfolio.openPosition(order, price, decision.leverage ?? 1, decision.entryThesis);
+      this.portfolio.openPosition(order, price, decision.leverage ?? 1, decision.entryThesis, entryData);
     } else if (decision.action === 'sell') {
       // Close long position
       if (this.portfolio.hasPosition(safeSymbol)) {
         this.portfolio.closePosition(safeSymbol, price);
       } else {
         // Open short position (paper)
-        this.portfolio.openPosition(order, price, decision.leverage ?? 1, decision.entryThesis);
+        this.portfolio.openPosition(order, price, decision.leverage ?? 1, decision.entryThesis, entryData);
       }
     }
 

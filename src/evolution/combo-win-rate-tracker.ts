@@ -90,6 +90,30 @@ const SEVERE_WR = 0.25;       // WR below this with enough samples → 0.50 pena
 const MODERATE_WR = 0.35;    // WR below this with enough samples → 0.30 penalty
 const MILD_WR = 0.45;        // WR below this with enough samples → 0.15 penalty
 
+// ── v2.0.819: WINNER-FIRST combo blend factor ───────────────────────────
+// Stricter than the penalty tiers: a combo may only OVERRIDE the OLR P(win)
+// multiplicative discount when the evidence is overwhelming. This implements
+// the owner's WINNER-FIRST directive (“先搵贏嘅 pattern … NEVER hard block …
+// Profit maximization is #1 priority”) inside the Plan G conviction gate.
+//   pwinBlendFactor = max(olrBlendFactor, comboBlendFactor)
+// so a statistically strong winner lifts the blend floor even when OLR
+// (trained mostly on stale paper data) reports a low P(win).
+const BOOST_MIN_SAMPLES = 20;   // need solid evidence to override OLR
+const BOOST_WILSON_LB = 0.55;   // Wilson 95% LB ≥ 55% = confident winner
+const PWIN_FLOOR = 0.3;          // mirror DTC pwinFloor (never kills completely)
+
+/** v2.0.819: Result of the WINNER-FIRST combo blend lookup. */
+export interface ComboBlendResult {
+  /** pwinFloor + (1 - pwinFloor) × wilsonLB — drop-in replacement for the
+   *  OLR pwinBlendFactor when it is higher. */
+  blendFactor: number;
+  wr: number;
+  wilsonLB: number;
+  count: number;
+  netPnl: number;
+  reason: string;
+}
+
 function comboKeyToString(symbol: string, side: string, regime: string): string {
   return `${symbol}|${side}|${regime}`;
 }
@@ -300,6 +324,52 @@ export class ComboWinRateTracker {
       };
     }
     return { blocked: false, convictionPenalty: 0, reason: '', comboWR: r.wr, comboCount: r.count };
+  }
+
+  // ── WINNER-FIRST blend factor (v2.0.819) ───────────────────────────
+
+  /**
+   * v2.0.819: WINNER-FIRST — return a combo-derived blend factor that can
+   * OVERRIDE the OLR P(win) multiplicative discount in the Plan G conviction
+   * gate. The owner directive states: “先搵贏嘅 pattern，搵唔到贏嘅先至考慮
+   * 會唔會輸 … NEVER hard block … Profit maximization is #1 priority.”
+   *
+   * Before this fix, the combo WR tracker could only PENALISE losers
+   * (convictionPenalty > 0 → penaltyFactor < 1). It could never BOOST a
+   * winner. Meanwhile OLR P(win) (trained mostly on 15,532 stale paper
+   * samples) held a unilateral multiplicative veto: P(win)=13% → blendFactor
+   * 0.39 → even 100% consensus < 45% threshold → permanent HOLD. BTC sat
+   * untraded for 4 days despite a 77% WR (556W/164L, +$375) buy/low_vol
+   * combo because the winner signal was mathematically unable to override
+   * the OLR veto.
+   *
+   * This method returns a blend factor built from the combo's Wilson 95%
+   * lower bound, usable as `pwinBlendFactor = max(olrBlend, comboBlend)`.
+   * Stricter gates than the penalty path (n ≥ 20, Wilson LB ≥ 0.55) ensure
+   * only statistically confident winners can override OLR — a 3/4 combo
+   * cannot.
+   *
+   * Returns null when the combo is unknown, has insufficient samples, or is
+   * not a confident winner — leaving the OLR blend factor untouched.
+   */
+  getComboBlendFactor(symbol: string, side: 'buy' | 'sell', regime: string): ComboBlendResult | null {
+    const r = this.getComboWR(symbol, side, regime);
+    // Need solid evidence — small samples must NOT override the OLR model.
+    if (r.count < BOOST_MIN_SAMPLES) return null;
+    // Wilson 95% lower bound is the conservative bar (accounts for sample
+    // size — 556/720 → LB ~0.77, while 6/8 → LB ~0.40 even at 75% raw WR).
+    if (r.wilsonLB < BOOST_WILSON_LB) return null;
+    // Only trust medium/high confidence buckets (excludes the 'low' bucket).
+    if (r.confidence === 'none' || r.confidence === 'low') return null;
+    const blendFactor = PWIN_FLOOR + (1 - PWIN_FLOOR) * r.wilsonLB;
+    return {
+      blendFactor,
+      wr: r.wr,
+      wilsonLB: r.wilsonLB,
+      count: r.count,
+      netPnl: r.netPnl,
+      reason: `WINNER-FIRST combo: ${side.toUpperCase()} ${symbol} ${regime} = ${(r.wr * 100).toFixed(0)}% WR (Wilson LB ${(r.wilsonLB * 100).toFixed(0)}%, n=${r.count}, net ${r.netPnl >= 0 ? '+' : ''}${r.netPnl.toFixed(2)}) → blendFactor ${blendFactor.toFixed(3)} overrides OLR`,
+    };
   }
 
   // ─── Structural lesson auto-generation ────────────────────────

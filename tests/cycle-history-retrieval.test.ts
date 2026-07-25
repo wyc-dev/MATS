@@ -428,3 +428,66 @@ describe('computeVectorConditionalWinRate — K.md #3 + #4', () => {
     expect(vec[1]!).toBeCloseTo(4 / Math.sqrt(12.5 + 1e-8), 4);
   });
 });
+
+// ─── v2.0.819: Symbol-key normalisation + cold-start pendingEntry (Fix #4) ──
+
+describe('CycleHistoryRetriever — v2.0.819 key normalisation + cold-start', () => {
+  const F = (vol: number, sr: number) => ({
+    volatility: vol, srDistanceBps: sr, obImbalance: 0, sentiment: 0,
+    sentimentConviction: 0.5, fundingRate: 0, volumeRatio: 1,
+    signalAgreement: 0.5, regimeOrdinal: 0.5, hourOfDay: 0.5,
+    momentumShort: 0, momentumLong: 0,
+  });
+
+  it('pushCycle + getQuery with different casing collapse to the same state', () => {
+    const r = new CycleHistoryRetriever({ ...DEFAULT_CYCLE_HISTORY_CONFIG, historySize: 20, numBlocks: 4 });
+    r.pushCycle('BTC', F(0.1, 100));
+    r.pushCycle('btc', F(0.2, 200));
+    r.pushCycle('Btc', F(0.3, 300));
+    // All three should land in ONE state keyed 'btc' — no orphans.
+    expect(r.size()).toBe(1);
+    expect(r.cycleCount('BTC')).toBe(3);
+    expect(r.cycleCount('btc')).toBe(3);
+  });
+
+  it('colon-symbol normalisation preserves the asset name (xyz:SILVER == XYZ:SILVER)', () => {
+    const r = new CycleHistoryRetriever({ ...DEFAULT_CYCLE_HISTORY_CONFIG, historySize: 20, numBlocks: 4 });
+    r.pushCycle('XYZ:SILVER', F(0.1, 100));
+    r.pushCycle('xyz:SILVER', F(0.2, 200));
+    expect(r.size()).toBe(1);
+    expect(r.cycleCount('xyz:SILVER')).toBe(2);
+  });
+
+  it('cold-start recordEntry seeds a pendingEntry so the first outcome updates w', () => {
+    // 0 cycles of history → retrieveBlend returns not-blended → cold-start fallback.
+    const r = new CycleHistoryRetriever({ ...DEFAULT_CYCLE_HISTORY_CONFIG, historySize: 20, numBlocks: 4 });
+    r.recordEntry('btc', 'buy', F(0.2, 200));
+    // Before v2.0.819 this left w at all-zeros forever (pendingEntry=null).
+    // Now a single uniform-attention pendingEntry is seeded.
+    r.updateOnOutcome('btc', 'buy', 0.05, 'sl_tp');
+    const wDec = r.getQuery('btc', 'decision');
+    expect(wDec.some((v) => v !== 0)).toBe(true);
+    const wExec = r.getQuery('btc', 'execution');
+    expect(wExec.some((v) => v !== 0)).toBe(true);
+  });
+
+  it('load() drops corrupted symbol states (xyz:SILVER**)', () => {
+    const tmp = `/tmp/mats-ch-load-${Date.now()}.json`;
+    const fs = require('fs') as typeof import('fs');
+    const validState = {
+      symbol: 'btc', cycles: [{ features: F(0.1, 100), ts: 1 }], entryFeatures: null,
+      entryTs: null, wDecision: [0,0,0,0,0,0,0,0,0,0,0], wExecution: [0,0,0,0,0,0,0,0,0,0,0],
+      pendingEntry: null, updateCount: 0, execUpdateCount: 0, temperature: 1,
+      execTemperature: 1, lastEntropy: 0, lastExecEntropy: 0,
+      featMean: [0,0,0,0,0,0,0,0,0,0,0], featM2: [0,0,0,0,0,0,0,0,0,0,0], featCount: [0,0,0,0,0,0,0,0,0,0,0],
+    };
+    const corrupted = { ...validState, symbol: 'xyz:SILVER**' };
+    fs.writeFileSync(tmp, JSON.stringify({ version: 1, states: [validState, corrupted] }));
+    const r = new CycleHistoryRetriever({ ...DEFAULT_CYCLE_HISTORY_CONFIG, persistPath: tmp });
+    r.load();
+    // Corrupted state dropped, valid one kept.
+    expect(r.size()).toBe(1);
+    expect(r.cycleCount('btc')).toBe(1);
+    fs.unlinkSync(tmp);
+  });
+});

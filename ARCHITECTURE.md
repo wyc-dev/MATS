@@ -499,6 +499,17 @@ quantity = (equity × riskPct) / (entryPrice × priceRisk)
 
 ---
 
+## Entry-Time Data Pipeline（v2.0.819）
+
+**核心洞察**：所有學習系統（OLR / EXP / Pattern Classifier / RIL / AttnRes）需要入場時嘅真實 market features + OLR P(win) + shadow WR，而唔係 close 時 recompute。v2.0.777-818 嘅 12 次 patch 嘗試全部失敗，根因係 `closePosition()` / `closeExchangePosition()` 重建 closed TradeRecord 時 **冇 copy** position 上面嘅 `entryMarketFeatures` / `entryOlrPWin` / `entryShadowWinRate` / `regime`——patch 設喺 position 上但 close 時靜默丟棄，導致 100% real trade 顯示 NO_OLR / NO_SHADOW / NO_MARKET_DATA。
+
+**修復**：
+- `Position` + `TradeRecord` interface 正式宣告 `entryMarketFeatures` / `entryOlrPWin` / `entryShadowWinRate` / `regime`（取代 `PatchedTradeRecord` duck-typing）。
+- `openPosition(order, entryPrice, leverage, entryThesis, entryData?)` 同 `importExchangePosition(..., entryData?)` 喺 construction 時同步設定（Position object literal）。
+- `closePosition` / `closeExchangePosition` 喺 closed TradeRecord **copy** 呢四個 field。
+- `entryData` 由 `executeTrade` 從 precomputed features map 構建，threading through `paperEngine.executeDecision` → `executeOrder` → `openPosition`，同 `tradingManager.executeDecision` → `importExchangePosition`。
+- Fallback `injectPrecomputedEntryFeatures` 保留 for sync/reimport 路徑，而家佢嘅 patch 亦會 flow through 到 TradeRecord。
+
 ## Close-Context-Aware Learning（v2.0.226）
 
 **核心洞察**：點樣平倉 / 用乜嘢形式平倉係蝕錢嘅重要因素。之前所有學習系統只收到 binary win/loss，冇概念知道點解蝕。Tight-SL loss（SL 被 trailing stop 收窄後被正常波動觸發）被當成「呢個情況入市=蝕」，污染 OLR / AttnRes / Combo WR / Anti-Pattern。
@@ -539,11 +550,16 @@ SILVER SELL 實測被卡 6+ 小時就係呢個死循環。
 ### 解決方案：統一乘法模型
 
 ```
-effectiveConfidence = consensus × pwinBlendFactor × penaltyFactor
+effectiveConfidence = consensus × pwinBlendFactor × penaltyFactor × boostFactor
 dynamicThreshold = 50% + (totalScore × 0.5%)  →  [45%, 55%]
 
 if effectiveConfidence ≥ dynamicThreshold → TRADE
 if effectiveConfidence < dynamicThreshold → HOLD
+
+// v2.0.819 WINNER-FIRST:
+//   pwinBlendFactor = max(olrBlendFactor, comboBlendFactor)
+//   comboBlendFactor = 0.3 + 0.7 × comboWilsonLB   (only when n ≥ 20 AND Wilson LB ≥ 0.55)
+//   boostFactor = 1.0 + min(winnerBoost, 0.20)      (lossStreakTracker winner pattern)
 ```
 
 ### `DynamicThresholdCalculator`（`src/analysis/dynamic-threshold.ts`）
@@ -563,7 +579,9 @@ if effectiveConfidence < dynamicThreshold → HOLD
 
 **Penalty 衰減**：`penaltyFactor = 1.0 - min(decayedPenalty, 0.30)`，其中 `decayedPenalty = netPenalty × max(0, 1 - cyclesIdle/30)`。30 cycles idle（2.5 小時）後 penalty 完全歸零 → 系統自我恢復。
 
-**P(win) blendFactor**（v2.0.224 保留）：`pwinBlendFactor = 0.3 + 0.7 × P(win)`，cold-start 時 = 1.0（唔折扣）。
+**P(win) blendFactor**（v2.0.224 保留 + v2.0.819 WINNER-FIRST 擴展）：`pwinBlendFactor = max(olrBlendFactor, comboBlendFactor)`。`olrBlendFactor = 0.3 + 0.7 × P(win)`，cold-start 時 = 1.0。`comboBlendFactor = 0.3 + 0.7 × comboWilsonLB`，僅當 combo (symbol×side×regime) 達 n ≥ 20 AND Wilson 95% LB ≥ 0.55 時先 applicable——令統計上強烈嘅 winner（例如 BTC buy/low_vol 77% WR, 556W/164L）可以 override OLR 嘅乘法否決。之前 combo WR 只可以 penalty 輸家，永遠唔可以 boost 贏家，導致 BTC 被 OLR P(win)=6.6% 否決 4 日。
+
+**BoostFactor**（v2.0.819 WINNER-FIRST）：`boostFactor = 1.0 + min(winnerBoost, 0.20)`。`winnerBoost` 來自 lossStreakTracker 嘅 checkWinnerPattern（8–15%）。之前 boost 被編碼為負數 `_lossStreakPenalty` 並被 `Math.max(0, netPenalty)` 靜默裁剪為 0——WINNER-FIRST directive 從未到達閘門。
 
 ### 6 重公正保障
 

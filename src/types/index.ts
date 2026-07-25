@@ -3,6 +3,23 @@
 
 export type UUID = string;
 
+// ─── Entry-Time Features (v2.0.819) ───────────────────────────────────
+// Captured at position OPEN time and carried through to the closed TradeRecord
+// so every learning system (OLR, EXP, pattern classifier, RIL, AttnRes) receives
+// the TRUE entry-time market conditions — not a close-time recompute. Previously
+// these were patched post-execution via duck-typing on `any`, which the close
+// path silently dropped (root cause of 100% NO_OLR / NO_SHADOW on real trades).
+export interface EntryFeatures {
+  /** OLR 15-feature market snapshot at entry (volatility, srDistanceBps, …). */
+  marketFeatures?: Record<string, number>;
+  /** OLR P(win) queried at entry time with entry-time features. */
+  olrPWin?: number;
+  /** Shadow-engine per-side win rate at entry time. */
+  shadowWinRate?: number;
+  /** Market regime at entry (low_volatility / mean_reverting / trending_bull / …). */
+  regime?: string;
+}
+
 // ─── Market Data ───
 
 export interface Ticker {
@@ -283,6 +300,17 @@ export interface Position {
    *  trade record can capture it. Transient: not persisted on positions
    *  (only on the closed TradeRecord). */
   exitThesis?: string;
+  // ── v2.0.819: Entry-time data pipeline (synchronous at open) ──
+  /** Entry-time OLR 15-feature market snapshot. Set at openPosition /
+   *  importExchangePosition so the closed TradeRecord carries the TRUE
+   *  entry conditions for every learning system. */
+  entryMarketFeatures?: Record<string, number>;
+  /** Entry-time OLR P(win) (queried with entryMarketFeatures at open). */
+  entryOlrPWin?: number;
+  /** Entry-time shadow-engine per-side win rate. */
+  entryShadowWinRate?: number;
+  /** Entry-time market regime. */
+  regime?: string;
 }
 
 // ─── Multi-Symbol Decision (v1.9.2 — each agent evaluates ALL pairs) ───
@@ -523,6 +551,15 @@ export interface TradeRecord {
    *  vs finalStopLossPrice. Used to downweight learning from execution-caused
    *  losses — the entry may have been fine, the SL was just too tight. */
   slNarrowed?: boolean;
+  // ── v2.0.819: Entry-time data pipeline (copied from Position at close) ──
+  /** Entry-time OLR 15-feature market snapshot (copied from pos at close). */
+  entryMarketFeatures?: Record<string, number>;
+  /** Entry-time OLR P(win) (copied from pos at close). */
+  entryOlrPWin?: number;
+  /** Entry-time shadow-engine per-side win rate (copied from pos at close). */
+  entryShadowWinRate?: number;
+  /** Entry-time market regime (copied from pos at close). */
+  regime?: string;
 }
 
 // ─── EXP: Thesis Experience Vector Memory (v2.0.138) ───

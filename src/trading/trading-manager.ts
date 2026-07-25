@@ -19,6 +19,7 @@ import type {
   Position,
   ExchangeAccountInfo,
   RealTradingEngine,
+  EntryFeatures,
 } from '../types/index.ts';
 
 const log = createLogger({ phase: 'real-trading' });
@@ -247,7 +248,7 @@ export class TradingManager {
    *   7. Post-trade sync (fetch actual fill price + leverage from HL)
    *   8. SL/TP placement (using actual fill price, not decision price)
    */
-  async executeDecision(decision: TradingDecision): Promise<{
+  async executeDecision(decision: TradingDecision, entryData?: EntryFeatures): Promise<{
     success: boolean;
     orderId?: string;
     error?: string;
@@ -381,6 +382,7 @@ export class TradingManager {
           price,
           decision.leverage ?? 1,
           Date.now(),
+          entryData,
         );
 
         // v2.0.136: Tag is already set by importExchangePosition (agentId='hyperliquid-real').
