@@ -257,20 +257,19 @@ const OLR_CONFIG = {
   highConfidenceSamples: 50,
   mediumConfidenceSamples: 20,
   welfordEpsilon: 1e-8,
-  /** v2.0.797: REDUCED from 3.0 to 2.0. With 15 features, maxWeight=3.0 means max logit
-   *  = 3.0 * 15 = 45, which still saturates the sigmoid (sigmoid(45) = 1.0). At maxWeight=2.0,
-   *  max logit = 2.0 * 15 = 30, which is at the edge of sigmoid's discriminative range
-   *  (sigmoid(30) = 0.9999999, still effectively 1.0). But in practice, not all 15 features
-   *  will be at max simultaneously — most will be near zero (regularized). The typical
-   *  logit will be 2-3 features at ±2.0 = ±4-6, which is well within the discriminative
-   *  range (sigmoid(6) = 0.998, sigmoid(-6) = 0.002). This preserves the model's ability
-   *  to make strong predictions when the evidence is strong, while preventing the
-   *  degenerate case where ALL features saturate simultaneously.
+  /** v2.0.818: INCREASED from 2.0 to 5.0. The previous maxWeight=2.0 was too restrictive —
+   *  with 15 features, max logit = 2.0 * 15 = 30, which still saturates the sigmoid
+   *  (sigmoid(30) = 0.9999999). But more importantly, the L2 regularization (λ=0.0001)
+   *  now prevents unbounded weight growth, so maxWeight=5.0 is safe. A single weight of
+   *  5.0 with a feature value of 1.0 gives logit=5.0, which is at the edge of the
+   *  discriminative range. Multiple features at 5.0 would saturate, but in practice only
+   *  2-3 features contribute significantly (regularized), so the typical logit is 2-3
+   *  features at ±5.0 = ±10-15, which gets clipped to ±10.0 by the logit clipping.
    *  
-   *  Combined with λ=0.001 (weak regularization), this allows the model to learn strong
-   *  feature weights (up to ±2.0) without saturating the sigmoid. The 5-bin calibration
-   *  map then handles the final accuracy adjustment. */
-  maxWeight: 2.0,
+   *  Combined with λ=0.0001 (very weak regularization) and logit clipping to [-10,+10],
+   *  this allows the model to learn strong feature weights (up to ±5.0) without saturating
+   *  the sigmoid. The 5-bin calibration map then handles the final accuracy adjustment. */
+  maxWeight: 5.0,
   /** v2.0.722: Confidence penalty threshold. When nSamples < this value, the
    *  prediction is pulled toward 0.5 using a Bayesian prior. This prevents
    *  extreme P(win) values (near 0 or 1) when the model has insufficient evidence.
