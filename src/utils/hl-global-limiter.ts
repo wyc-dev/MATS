@@ -132,15 +132,3 @@ export async function hlRateLimitedFetch(
  * Rate-limited fetch that returns parsed JSON.
  * Convenience wrapper for the common pattern: fetch → json.
  */
-export async function hlRateLimitedFetchJson<T>(
-  url: string,
-  body: unknown,
-): Promise<T> {
-  const res = await hlRateLimitedFetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`HL ${res.status} ${res.statusText}`);
-  return res.json() as Promise<T>;
-}

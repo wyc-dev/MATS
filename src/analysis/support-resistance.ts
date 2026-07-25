@@ -718,9 +718,3 @@ export function clearSRCache(symbol?: string): void {
 
 // ─── Health Check ───
 
-export function getSRHealth(): { cacheEntries: number; hlFetchFnSet: boolean } {
-  return {
-    cacheEntries: dailyCandleCache.size + hourlyCandleCache.size,
-    hlFetchFnSet: hlFetchFn !== null,
-  };
-}

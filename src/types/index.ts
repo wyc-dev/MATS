@@ -1040,15 +1040,6 @@ export interface A2ADebateContext {
   portfolioContext: string;
 }
 
-export type A2AKeywordGroup = 
-  | 'regime' // trending_bull, trending_bear, ranging, chaotic, etc.
-  | 'momentum' // MOMENTUM, EXHAUSTION, FRACTAL, DECAY
-  | 'volatility' // ARCH_VOL, EARNING_VOL, VOL_SPIKE, FORECAST
-  | 'risk' // POSITION, LEVERAGE, CORRELATION, VETO_THRESHOLD
-  | 'flow' // ORDERBOOK, VOLUME, WHALE, IMBALANCE
-  | 'hmm' // HMM_STATE, HMM_TRANSITION, PERSISTENCE, PROBABILITY
-  | 'sentiment'; // bullish, bearish, uncertain, neutral
-
 // ─── Cycle Progress (real-time) ───
 
 // ─── Market Agent / Exchange Config ───

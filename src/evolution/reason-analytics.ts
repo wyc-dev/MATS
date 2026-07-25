@@ -923,32 +923,3 @@ export function formatAnalyticsBlock(params: {
  * Formats the EXP checkThesisHistory verdict as a reference block for Meta-Agent.
  * This is NOT a gate — Meta-Agent sees the verdict but makes its own decision.
  */
-export function formatExpVerdictBlock(
-  verdict: string,
-  pWin?: number,
-  reason?: string,
-  olrPWin?: number,
-  shadowWR?: number,
-): string {
-  const lines: string[] = [];
-  lines.push('=== EXP VERDICT (reference — not a gate) ===');
-
-  const icon = verdict === 'FAST_APPROVE' ? '🟢' :
-    verdict === 'REJECT' ? '🔴' :
-    verdict === 'REVERSE_DIRECTION' ? '🟠' : '⚪';
-  lines.push(`  ${icon} Verdict: ${verdict}`);
-  if (pWin !== undefined) lines.push(`  Historical P(win): ${(pWin * 100).toFixed(0)}%`);
-  if (reason) lines.push(`  Reason: ${reason}`);
-
-  // Dual-Channel Fusion info
-  if (olrPWin !== undefined || shadowWR !== undefined) {
-    const parts: string[] = [];
-    if (olrPWin !== undefined) parts.push(`OLR P(win)=${(olrPWin * 100).toFixed(0)}%`);
-    if (shadowWR !== undefined) parts.push(`Shadow WR=${(shadowWR * 100).toFixed(0)}%`);
-    lines.push(`  Fusion: ${parts.join(', ')}`);
-  }
-
-  lines.push('  → This is REFERENCE data. Meta-Agent makes the final decision.');
-  lines.push('---');
-  return lines.join('\n');
-}

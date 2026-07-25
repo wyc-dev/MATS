@@ -488,24 +488,6 @@ export function loadPortfolio(): PortfolioSnapshot | null {
 }
 
 /** Delete saved evolution state (for reset) */
-export function clearEvolution(): boolean {
-  try {
-    const filePath = path.join(DATA_DIR, 'evolution-state.json');
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-      log.info('Evolution state cleared');
-    }
-    const tmpPath = filePath + '.tmp';
-    if (fs.existsSync(tmpPath)) {
-      fs.unlinkSync(tmpPath);
-    }
-    return true;
-  } catch (err) {
-    log.error(`Failed to clear evolution state: ${err instanceof Error ? err.message : String(err)}`);
-    return false;
-  }
-}
-
 // ─── Backtest Result Persistence ───
 
 interface BacktestResultSnapshot {
@@ -536,91 +518,7 @@ const BACKTEST_RESULT_FIELDS: Record<string, SchemaField> = {
 };
 
 /** Save backtest result to persistent history (atomic write) */
-export function saveBacktestResult(result: {
-  symbol: string;
-  years: number;
-  interval: string;
-  candlesProcessed: number;
-  finalReturnPct: number;
-  maxDrawdownPct: number;
-  sharpeRatio: number;
-  winRate: number;
-  totalTrades: number;
-  buySignals: number;
-  sellSignals: number;
-  holdSignals: number;
-  durationMs: number;
-}): boolean {
-  try {
-    ensureDir();
-    const filePath = path.join(DATA_DIR, 'backtest-results.json');
-
-    // Load existing results
-    let existing: BacktestResultSnapshot = { version: 1, savedAt: '', results: [] };
-    if (fs.existsSync(filePath)) {
-      try {
-        const raw = fs.readFileSync(filePath, 'utf-8');
-        existing = JSON.parse(raw) as BacktestResultSnapshot;
-      } catch { /* start fresh if corrupt */ }
-    }
-
-    existing.savedAt = new Date().toISOString();
-    existing.results.push({
-      ...result,
-      completedAt: new Date().toISOString(),
-    });
-
-    // Keep last 50 results
-    if (existing.results.length > 50) {
-      existing.results = existing.results.slice(-50);
-    }
-
-    lockedWrite(filePath, JSON.stringify(existing, null, 2));
-    log.info(`Backtest result saved: ${result.years}yr ${result.symbol} ${result.interval} (Sharpe=${result.sharpeRatio.toFixed(2)})`);
-    return true;
-  } catch (err) {
-    log.error(`Failed to save backtest result: ${err instanceof Error ? err.message : String(err)}`);
-    return false;
-  }
-}
-
 /** Load all historical backtest results */
-export function loadBacktestResults(): Array<{
-  symbol: string;
-  years: number;
-  interval: string;
-  candlesProcessed: number;
-  finalReturnPct: number;
-  maxDrawdownPct: number;
-  sharpeRatio: number;
-  winRate: number;
-  totalTrades: number;
-  buySignals: number;
-  sellSignals: number;
-  holdSignals: number;
-  durationMs: number;
-  completedAt: string;
-}> {
-  try {
-    const filePath = path.join(DATA_DIR, 'backtest-results.json');
-    if (!fs.existsSync(filePath)) return [];
-
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    const snapshot = JSON.parse(raw) as BacktestResultSnapshot;
-
-    const schemaErr = validateSnapshot(snapshot, BACKTEST_RESULT_FIELDS);
-    if (schemaErr) {
-      log.warn(`Corrupt backtest results file (${schemaErr}) — ignoring`);
-      return [];
-    }
-
-    return snapshot.results ?? [];
-  } catch (err) {
-    log.warn(`Failed to load backtest results: ${err instanceof Error ? err.message : String(err)}`);
-    return [];
-  }
-}
-
 // ─── Debate / HACP History Persistence ───
 
 const DEBATE_FIELDS: Record<string, SchemaField> = {

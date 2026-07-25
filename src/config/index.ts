@@ -237,4 +237,3 @@ export const config = {
   } as const,
 } as const;
 
-export type AppConfig = typeof config;
