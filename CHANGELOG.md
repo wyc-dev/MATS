@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.816: FIX — Meta-Agent parseResponse TS2532 errors. Added optional chaining and null-safe property access for `result.multiSymbolDecision.marketTicker` which is typed as possibly undefined. Replaced spread operators with explicit property assignment to satisfy TypeScript strict null checks. All existing behavior preserved.
+
+
 ## v2.0.815: CRITICAL — Fix OLR sigmoid saturation. Changed logit clipping from [-10, +10] to [-5, +5] in sgdUpdate() to prevent sigmoid saturation at 0.0/1.0. Reduced L2 regularization from λ=0.01 to λ=0.001 to prevent weight suppression. This restores discriminative power — the model can now learn from losing trades with previously-saturated P(win)=1.0 predictions. The 5-bin calibration map now receives non-saturated inputs that it can actually calibrate.
 
 

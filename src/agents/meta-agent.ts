@@ -817,25 +817,33 @@ Your decisions carry the highest authority — the thesis system is the sole gat
   } {
     // Use multi-symbol parser from base class
     const result = this.parseMultiSymbolResponse(content);
+    
+    // Safely extract market ticker decision with null guards
+    const marketTicker = result.multiSymbolDecision?.marketTicker;
+    const positions = result.multiSymbolDecision?.positions ?? [];
+    
+    // Build the decision object with proper null safety
+    const decision: TradingDecision = {
+      action: marketTicker?.action ?? 'hold',
+      symbol: marketTicker?.symbol ?? '',
+      positionSizePct: marketTicker?.positionSizePct,
+      leverage: marketTicker?.leverage,
+      rationale: `Meta-Agent: ${marketTicker?.rationale ?? 'No rationale'} | Positions: ${positions.map(p => `${p.symbol}=${p.closePosition ? 'CLOSE' : 'HOLD'}`).join(', ')}`,
+      urgency: 'patient',
+    };
+    
+    // Conditionally add optional fields with null safety
+    if (marketTicker?.patternTag != null) {
+      decision.patternTag = marketTicker.patternTag;
+    }
+    if (marketTicker?.entryThesis != null) {
+      decision.entryThesis = marketTicker.entryThesis;
+    }
+    
     return {
       thought: result.thought,
       confidence: result.overallConfidence,
-      decision: {
-        action: result.multiSymbolDecision.marketTicker.action,
-        symbol: result.multiSymbolDecision.marketTicker.symbol,
-        positionSizePct: result.multiSymbolDecision.marketTicker.positionSizePct,
-        leverage: result.multiSymbolDecision.marketTicker.leverage,
-        rationale: `Meta-Agent: ${result.multiSymbolDecision.marketTicker.rationale} | Positions: ${result.multiSymbolDecision.positions.map(p => `${p.symbol}=${p.closePosition ? 'CLOSE' : 'HOLD'}`).join(', ')}`,
-        urgency: 'patient',
-        // v2.0.28: Forward patternTag from meta-agent's market ticker decision
-        ...(result.multiSymbolDecision.marketTicker.patternTag != null
-          ? { patternTag: result.multiSymbolDecision.marketTicker.patternTag }
-          : {}),
-        // v2.0.80: Forward entryThesis from meta-agent's market ticker decision
-        ...(result.multiSymbolDecision.marketTicker.entryThesis != null
-          ? { entryThesis: result.multiSymbolDecision.marketTicker.entryThesis }
-          : {}),
-      },
+      decision,
     };
   }
 }
