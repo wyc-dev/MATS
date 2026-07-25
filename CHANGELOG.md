@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.818: CRITICAL — Fix OLR sigmoid saturation. Widened logit clipping from [-5,+5] to [-10,+10] and reduced L2 regularization from λ=0.001 to λ=0.0001. The previous [-5,+5] clip still saturates at σ(5)=0.993, making all confident predictions indistinguishable. With [-10,+10], the sigmoid has full dynamic range (σ(10)=0.99995) and the 5-bin calibration map receives meaningful variation to calibrate.
+
+
 ## v2.0.817: CRITICAL — Fix NO_MARKET_DATA on 50% of trades. Market features (vol, ob, funding, srDist) are now captured from the latest available market data at decision time and injected into TradeRecord creation synchronously. This ensures ALL learning systems receive complete training data with entry-time market conditions. The fix now also handles trade records with DIFFERENT symbols/sides than the final decision (e.g. multi-symbol consensus entries, exploration trades) by looking up the precomputed features map for each record's own symbol+side.
 
 
