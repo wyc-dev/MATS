@@ -6,6 +6,9 @@ import { rootLogger, createLogger } from './observability/logger.ts';
 import { setupShutdownHandlers, registerShutdownHandler, isShuttingDown } from './utils/shutdown.ts';
 import { hlRateLimitedFetch } from './utils/hl-global-limiter.ts';
 import { withTimeout } from './utils/with-timeout.ts';
+import { SupabaseAnalysisWriter } from './services/supabase-writer.ts';
+import { buildAssetAnalysis } from './services/analysis-matrix.ts';
+import type { AssetAnalysis } from './types/index.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
 import { getActiveProvider } from './llm/index.ts';
 import { getAgentModel } from './agents/agent-models.ts';
@@ -136,6 +139,10 @@ class MATSSystem {
   private apiServer!: APIServer;
   private marketAgent!: MarketAgent;
   private tradingManager!: TradingManager;
+  /** v2.0.822: Analysis mode — write per-asset matrices to Supabase instead of
+   *  placing orders. Set via ANALYSIS_MODE env (default true for mats_backend). */
+  private analysisMode = (process.env['ANALYSIS_MODE'] ?? 'true') !== 'false';
+  private analysisWriter!: SupabaseAnalysisWriter;
   private sentimentEngine!: SentimentEngine;
   /** v2.0.105: Adaptive noise filter — sigmoid+EMA with per-cycle auto-tuning */
   private adaptiveFilter!: AdaptiveNoiseFilter;
@@ -1033,6 +1040,10 @@ class MATSSystem {
       // 6. Start API Server
       log.info('Step 6/7: Starting API server...');
       this.apiServer = new APIServer(config.system.apiPort ?? 3456);
+      // v2.0.822: Analysis writer — writes per-asset matrices to Supabase.
+      // Disabled (local-only) if SUPABASE_URL/SERVICE_ROLE_KEY are absent.
+      this.analysisWriter = new SupabaseAnalysisWriter();
+      log.info(`Analysis mode: ${this.analysisMode ? 'ON (write to DB, no orders)' : 'OFF (execute orders)'}`);
       this.apiServer.setShutdownHandler(() => {
         log.info('Shutdown handler called from API');
         void this.stop();
@@ -1374,6 +1385,11 @@ Respond ONLY with JSON:
       this.apiServer.setMarketAgentFetchPairsHandler(() => {
         log.info('Market Agent: refresh top pairs');
         void this.marketAgent.fetchTopPairs().then(() => this.pushToAPI());
+      });
+      // v2.0.821: Fast symbol universe — instant market selection without
+      // waiting for the volume background scan.
+      this.apiServer.setMarketAgentGetAllSymbolsHandler(async () => {
+        return this.marketAgent.getAllSymbols();
       });
       this.apiServer.setMarketAgentSetPositionSizeHandler((pct) => {
         log.info(`Market Agent: position size → ${(pct * 100).toFixed(1)}%`);
@@ -3726,6 +3742,15 @@ ${recentExamples}
   ): Promise<{ success: boolean; error?: string; paperReports?: any[] }> {
     const isRealMode = this.tradingManager.getTradeMode() === 'real';
     
+    // v2.0.822: Analysis mode — do NOT place orders. The consensus has already
+    // been expanded into a per-asset matrix and written to Supabase; the user's
+    // client reads the matrix and decides execution. Return success so the
+    // cycle's downstream bookkeeping (portfolio sync, pushToAPI) stays consistent.
+    if (this.analysisMode) {
+      log.info(`📊 [analysis-mode] ${decision.action.toUpperCase()} ${decision.symbol} — NOT executing (analysis written to DB). conviction=${(decision.positionSizePct * 100).toFixed(1)}%`);
+      return { success: true };
+    }
+    
     // v2.0.790: Pre-compute entry-time features BEFORE executeTrade() if not provided.
     // This ensures features are always available for injection immediately after
     // executeTrade() returns, regardless of how the decision was constructed.
@@ -4089,6 +4114,13 @@ ${recentExamples}
     const sym = symbol.includes(':') ? symbol : symbol.toLowerCase();
     const pos = this.portfolio.getPosition(sym);
     if (!pos) return false;
+
+    // v2.0.822: Analysis mode — do NOT close positions. The matrix already
+    // encodes the close/flip recommendation for the user's client to act on.
+    if (this.analysisMode) {
+      log.info(`📊 [analysis-mode] CLOSE ${sym} skipped — recommendation written to DB. thesis: ${exitThesis.slice(0, 60)}`);
+      return true;
+    }
 
     // Set exit thesis before closing (captured in TradeRecord at close time)
     this.portfolio.setExitThesis(sym, exitThesis);
@@ -6396,6 +6428,42 @@ ${recentExamples}
 
       // v2.0.32: Debug log for consensus result
       log.info(`🎯 HACP consensus: ${result.consensus.decision.action.toUpperCase()} ${result.consensus.decision.symbol} size=${(result.consensus.decision.positionSizePct * 100).toFixed(1)}% conf=${(result.consensus.confidence * 100).toFixed(0)}% metaOverride=${result.consensus.metaAgentOverridden} cooldown=${this.hacpEngine.isCooldownActive(this.totalCycles)}`);
+
+      // v2.0.822: Analysis mode — build the per-asset recommendation matrix
+      // from the consensus + market state, then write to Supabase. The backend
+      // does NOT place orders in analysis mode; the app reads the matrix and
+      // the user's client decides execution. One row per trading market.
+      if (this.analysisMode) {
+        try {
+          const pscList = result.consensus.perSymbolConsensus ?? [];
+          // Build the universe of symbols to analyse: active symbol + all
+          // trading markets + any symbol the consensus produced a psc for.
+          const symSet = new Set<string>([normalizeSymbol(activeSymbol)]);
+          for (const m of (this.tradingMarkets ?? [])) symSet.add(normalizeSymbol(m));
+          for (const psc of pscList) symSet.add(normalizeSymbol(psc.symbol));
+          const analyses: AssetAnalysis[] = [];
+          for (const sym of symSet) {
+            const psc = pscList.find(p => normalizeSymbol(p.symbol) === sym);
+            const ms = this.marketState.getState(sym);
+            // OLR P(win) for this symbol (best-effort; 0.5 cold-start default).
+            let pwin = 0.5;
+            try {
+              const ctx = this.lastCycleShadowContexts.get(sym);
+              if (ctx?.features && Object.keys(ctx.features).length > 0) {
+                const olrRes = this.olrEngine.query(sym, ctx.features, psc?.action === 'sell' ? 'sell' : 'buy', this.totalCycles);
+                if (Number.isFinite(olrRes.pWin)) pwin = olrRes.pWin;
+              }
+            } catch { /* cold-start safe */ }
+            const votes = result.consensus.votes ?? [];
+            const aligned = votes.filter(v => (v.decision?.action as string) === (psc?.action ?? 'hold')).length;
+            const analysis = buildAssetAnalysis(sym, psc, ms, this.totalCycles, pwin, aligned, votes.length);
+            if (analysis) analyses.push(analysis);
+          }
+          await this.analysisWriter.writeCycle(analyses);
+        } catch (err) {
+          log.warn(`[analysis-write] failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
 
       // v2.0.60: Options Playbook deterministic veto.
       // If the Regime → Playbook says vetoNewPositions (Stand Aside regime),

@@ -13,6 +13,7 @@ import { loadMarketAgentConfig, saveMarketAgentConfig } from '../evolution/persi
 import type {
   MarketAgentConfig,
   TopVolumePair,
+  AllSymbolEntry,
   TradeMode,
   ExchangeType,
   HyperliquidAssetType,
@@ -144,8 +145,97 @@ export class MarketAgent {
     return this.config.selectedSymbol;
   }
 
+
   getTopPairs(): readonly TopVolumePair[] {
     return this.topPairs;
+  }
+
+  /** FAST symbol universe — returns all selectable markets (name + category)
+   *  from cached metadata ONLY, with NO volume/price scan. This lets the admin
+   *  pick trading markets instantly without waiting for the DEX 1-8 background
+   *  volume scan that `fetchTopPairs` triggers. Uses the 5-min metaCache; on a
+   *  cache miss it fetches just `allPerpMetas` + `perpCategories` (2 REST calls,
+   *  no per-asset volume) then returns. Results are filtered by the current
+   *  `hyperliquidAssetType` so the picker only shows relevant markets. */
+  async getAllSymbols(): Promise<AllSymbolEntry[]> {
+    const hlFetch = async (body: object): Promise<Response> => {
+      return hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    };
+
+    // ── Ensure metadata cache is fresh (5-min TTL) ──
+    let allMetas: Array<{ universe: Array<{ name: string; szDecimals: number }> }>;
+    let categories: Array<[string, string]>;
+    const now = Date.now();
+    if (MarketAgent.metaCache && now - MarketAgent.metaCache.ts < MarketAgent.META_CACHE_TTL) {
+      allMetas = MarketAgent.metaCache.metas as typeof allMetas;
+      categories = MarketAgent.metaCache.categories as typeof categories;
+    } else {
+      const [metaRes, catRes] = await Promise.all([
+        hlFetch({ type: 'allPerpMetas' }),
+        hlFetch({ type: 'perpCategories' }),
+      ]);
+      if (!metaRes.ok) throw new Error(`allPerpMetas returned ${metaRes.status}`);
+      allMetas = await metaRes.json() as typeof allMetas;
+      categories = catRes.ok ? await catRes.json() as typeof categories : [];
+      MarketAgent.metaCache = { metas: allMetas, categories, ts: now };
+    }
+
+    // ── Build category lookup: bareName → category, prefixedSymbol → category ──
+    const catMap = new Map<string, string>();      // keyed by prefixed symbol OR bare name
+    const bareCat = new Map<string, string>();     // keyed by bare name only
+    for (const [asset, cat] of categories) {
+      catMap.set(asset, cat);
+      const bare = asset.includes(':') ? asset.split(':').slice(1).join(':') : asset;
+      bareCat.set(bare, cat);
+    }
+
+    // ── Build the symbol universe across all DEXs ──
+    const entries: AllSymbolEntry[] = [];
+    const seen = new Set<string>();  // dedup by tradeable symbol
+    for (let d = 0; d < allMetas.length; d++) {
+      const dex = d;
+      for (const u of allMetas[d]!.universe) {
+        const bareName = u.name;
+        // DEX 0 = bare symbol (BTC); DEX 1-8 = prefixed (find the prefixed key in catMap)
+        let symbol = bareName;
+        if (dex > 0) {
+          for (const [catKey] of catMap) {
+            if (catKey.endsWith(':' + bareName)) { symbol = catKey; break; }
+          }
+        }
+        if (seen.has(symbol)) continue;
+        seen.add(symbol);
+        const category = catMap.get(symbol) ?? bareCat.get(bareName) ?? 'unknown';
+        entries.push({ symbol, name: bareName, category, dex });
+      }
+    }
+
+    // ── Filter by current asset type (mirrors filterHyperliquidPairs) ──
+    const assetType = this.config.hyperliquidAssetType ?? 'crypto_perps';
+    const filtered = entries.filter(e => {
+      switch (assetType) {
+        case 'crypto_perps':
+          if (!e.symbol.includes(':')) return true;  // DEX 0 bare = crypto
+          return e.category === 'crypto';
+        case 'tradfi':
+          return ['indices', 'stocks', 'commodities', 'FX', 'fx', 'preipo'].includes(e.category);
+        case 'indices':   return e.category === 'indices';
+        case 'stocks':    return e.category === 'stocks';
+        case 'commodities': return e.category === 'commodities';
+        case 'fx':        return e.category === 'FX' || e.category === 'fx';
+        default:          return true;
+      }
+    });
+
+    // Sort: DEX 0 first (real perps), then by name for stable ordering.
+    filtered.sort((a, b) =>
+      a.dex - b.dex || a.symbol.localeCompare(b.symbol)
+    );
+    return filtered;
   }
 
   /** Returns the timestamp (ms epoch) of the last successful REST fetch */

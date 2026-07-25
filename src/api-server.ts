@@ -8,7 +8,7 @@ import { createLogger } from './observability/logger.ts';
 // v2.0.42: Import normalizeSymbol for manual close symbol normalization.
 import { normalizeSymbol } from './trading/portfolio.ts';
 import { getAllAgentModels, getAvailableModels, getDynamicAvailableModels, setAgentModel, resetAgentModel, type AgentModelConfig, type ModelDefinition } from './agents/agent-models.ts';
-import type { AgentThought, ConsensusResult, DebateRound, Portfolio, MarketState, AgentStatus, CycleProgress, MarketAgentConfig, TopVolumePair, TradeMode, ExchangeType, HyperliquidAssetType } from './types/index.ts';
+import type { AgentThought, ConsensusResult, DebateRound, Portfolio, MarketState, AgentStatus, CycleProgress, MarketAgentConfig, TopVolumePair, AllSymbolEntry, TradeMode, ExchangeType, HyperliquidAssetType } from './types/index.ts';
 import type { BacktestResult, BacktestProgress } from './backtest/index.ts';
 
 const log = createLogger({ phase: 'api' });
@@ -77,6 +77,9 @@ export interface APIData {
     topPairs: TopVolumePair[];
     /** True when background scan has completed and topPairs have real volume data */
     pairsReady?: boolean;
+    /** v2.0.821: Fast symbol universe (name + category, NO volume) for instant
+     *  market selection. Populated lazily by getAllSymbols(). */
+    allSymbols?: AllSymbolEntry[];
     /** v2.0.122: Pending entry theses from Meta-Agent that didn't execute. */
     pendingTheses?: Array<{ symbol: string; action: 'buy' | 'sell'; thesis: string; cycle: number; storedAt: number }>;
   };
@@ -257,6 +260,8 @@ export class APIServer {
   private onMarketAgentSetExchange: ((exchange: ExchangeType) => void) | null = null;
   private onMarketAgentSetAssetType: ((assetType: HyperliquidAssetType) => void) | null = null;
   private onMarketAgentFetchPairs: (() => void) | null = null;
+  /** v2.0.821: async handler returning the fast symbol universe (no volume scan). */
+  private onMarketAgentGetAllSymbols: (() => Promise<AllSymbolEntry[]>) | null = null;
   private onMarketAgentSetPositionSize: ((pct: number) => void) | null = null;
   /** v2.0.XX: Max portion of balance for all positions combined. */
   private onMarketAgentSetMaxPortion: ((pct: number) => void) | null = null;
@@ -347,6 +352,10 @@ export class APIServer {
   /** Register a callback for fetching top pairs */
   setMarketAgentFetchPairsHandler(cb: () => void): void {
     this.onMarketAgentFetchPairs = cb;
+  }
+  /** v2.0.821: Register the fast symbol-universe provider for instant market selection. */
+  setMarketAgentGetAllSymbolsHandler(cb: () => Promise<AllSymbolEntry[]>): void {
+    this.onMarketAgentGetAllSymbols = cb;
   }
 
   /** Register a callback for setting position size */
@@ -1157,6 +1166,30 @@ export class APIServer {
         return;
       }
 
+      // v2.0.821: GET — fast symbol universe for instant market selection.
+      // Returns all selectable markets (symbol + name + category + dex) from
+      // cached metadata ONLY — NO volume/price background scan. The admin can
+      // pick up to 10 trading markets immediately without waiting for the
+      // DEX 1-8 volume scan that fetchTopPairs triggers. Volume data still
+      // loads in the background via topPairs and enriches the display, but
+      // selection is never gated on it.
+      if (pathname === '/api/market-agent/all-symbols' && req.method === 'GET') {
+        try {
+          if (!this.onMarketAgentGetAllSymbols) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Handler not registered' }));
+            return;
+          }
+          const symbols = await this.onMarketAgentGetAllSymbols();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, symbols }));
+        } catch (err) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: `Failed to load symbols: ${err instanceof Error ? err.message : String(err)}` }));
+        }
+        return;
+      }
+
       // v2.0.79: POST — set trading markets list (from UI pills).
       // The backend uses this list + open positions to determine which
       // symbols agents should analyze, instead of auto-selecting top pair.
@@ -1171,7 +1204,7 @@ export class APIServer {
               res.end(JSON.stringify({ success: false, message: 'markets must be an array' }));
               return;
             }
-            const valid = markets.filter(s => typeof s === 'string' && s.length > 0 && s.length <= 50).slice(0, 3);
+            const valid = markets.filter(s => typeof s === 'string' && s.length > 0 && s.length <= 50).slice(0, 10);
             if (this.onSetTradingMarkets) {
               this.onSetTradingMarkets(valid);
               res.writeHead(200, { 'Content-Type': 'application/json' });

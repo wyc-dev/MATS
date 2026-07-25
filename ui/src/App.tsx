@@ -1,8 +1,11 @@
+import React from 'react'
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
+import type { AllSymbolEntry } from './types'
 import { Settings, Pause, Play, Power, Ban, StickyNote, Check, X, AlertTriangle, CheckCircle, OctagonX, XCircle, BarChart3, MessagesSquare, Circle, Dna, Scroll, RotateCw, Square, SatelliteDish, MapPin, Lightbulb, TrendingUp, TrendingDown, Save, ChevronDown, ChevronRight, Pencil } from 'lucide-react'
 import type { APIData, AgentModelConfig, ModelDefinition, EMInsightStats } from './types'
 import { AGENT_META, AGENT_ROLES } from './types'
 import TradingViewChart from './TradingViewChart'
+import { fetchAssetAnalyses, supabaseEnabled, type AssetAnalysisRow } from './lib/supabase'
 
 const API_BASE = '/api'
 
@@ -521,7 +524,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
         const n = norm(s)
         if (!seen.has(n)) { seen.add(n); deduped.push(s) }
       }
-      return deduped.slice(0, 3)
+      return deduped.slice(0, 10)
     } catch { return [] }
   })
 
@@ -880,6 +883,95 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const config = ma?.config
   const topPairs = ma?.topPairs ?? []
   const pairsReady = ma?.pairsReady ?? false
+  // v2.0.821: Fast symbol universe (instant, no volume scan) for the market picker.
+  const [allSymbols, setAllSymbols] = useState<AllSymbolEntry[]>([])
+  const [symbolsLoading, setSymbolsLoading] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    const fetchSymbols = async () => {
+      setSymbolsLoading(true)
+      try {
+        const res = await fetch(`${API_BASE}/market-agent/all-symbols`)
+        if (res.ok) {
+          const json = await res.json() as { success: boolean; symbols: AllSymbolEntry[] }
+          if (!cancelled && json.success && Array.isArray(json.symbols)) {
+            setAllSymbols(json.symbols)
+          }
+        }
+      } catch { /* best-effort — picker falls back to topPairs */ }
+      finally { if (!cancelled) setSymbolsLoading(false) }
+    }
+    void fetchSymbols()
+    // Refetch when asset type changes (different universe per type).
+    return () => { cancelled = true }
+  }, [config?.hyperliquidAssetType])
+
+  // v2.0.822: Read per-asset analyses from Supabase (the backend writes the
+  // 3×3 recommendation matrix each cycle). This is the AUTHORITATIVE data
+  // source for the Selected Market Pairs cards — the user can verify accuracy
+  // directly against the database. Polls every 5s.
+  const [assetAnalyses, setAssetAnalyses] = useState<AssetAnalysisRow[]>([])
+  const [analysisLastFetch, setAnalysisLastFetch] = useState(0)
+  useEffect(() => {
+    if (!supabaseEnabled) return
+    let cancelled = false
+    const poll = async () => {
+      const rows = await fetchAssetAnalyses()
+      if (!cancelled && rows.length > 0) {
+        setAssetAnalyses(rows)
+        setAnalysisLastFetch(Date.now())
+      }
+    }
+    void poll()
+    const id = setInterval(poll, 5_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+  // Helper: get the Supabase analysis row for a symbol (normalized match).
+  const normSymForAna = (sym: string) => sym.replace(/^xyz:/i, '').toLowerCase()
+  const getAnalysisForSym = (sym: string): AssetAnalysisRow | undefined => {
+    const n = normSymForAna(sym)
+    return assetAnalyses.find(a => normSymForAna(a.symbol) === n)
+  }
+
+  // v2.0.822: Render the 3×3 analysis matrix (risk profile × position state).
+  // Shows the recommendation grid from Supabase so the user can verify the
+  // backend's analysis directly against the database.
+  const PROFILES = ['aggressive', 'moderate', 'conservative'] as const
+  const STATES = ['long', 'short', 'flat'] as const
+  const renderAnalysisMatrix = (ana: AssetAnalysisRow) => (
+    <div className="smp-matrix">
+      <div className="smp-matrix-title">
+        <span>Analysis Matrix</span>
+        <span className="smp-matrix-db-badge" title={`Supabase cycle #${ana.cycle_id} · ${ana.updated_at ? new Date(ana.updated_at).toLocaleTimeString() : '—'}`}>DB ✓</span>
+        <span style={{ opacity: 0.6 }}>pwin {((ana.consensus?.pwin ?? 0) * 100).toFixed(0)}% · {ana.consensus?.agentsAligned ?? 0}/{ana.consensus?.agentsTotal ?? 0} agents</span>
+      </div>
+      <div className="smp-matrix-grid">
+        <div className="smp-matrix-hdr" />
+        {STATES.map(st => <div key={st} className="smp-matrix-hdr">{st}</div>)}
+        {PROFILES.map(prof => (
+          <React.Fragment key={prof}>
+            <div className="smp-matrix-row-label">{prof.slice(0, 4)}</div>
+            {STATES.map(st => {
+              const cell = ana.matrix[prof]?.[st]
+              if (!cell) return <div key={`${prof}-${st}`} className="smp-matrix-cell hold" />
+              return (
+                <div key={`${prof}-${st}`} className={`smp-matrix-cell ${cell.action} ${!cell.calibrated ? 'uncalibrated' : ''}`} title={cell.rationale}>
+                  <span className="smp-matrix-cell-act">{cell.action}</span>
+                  <span className="smp-matrix-cell-conv">{(cell.conviction * 100).toFixed(0)}%</span>
+                </div>
+              )
+            })}
+          </React.Fragment>
+        ))}
+      </div>
+      <div className="smp-matrix-market">
+        <span>price <strong>${(ana.market_data?.price ?? 0).toFixed(2)}</strong></span>
+        <span>vol {((ana.market_data?.volatility ?? 0) * 100).toFixed(2)}%</span>
+        <span>regime {ana.market_data?.regime ?? 'unknown'}</span>
+        <span>24h {(ana.market_data?.change24h ?? 0) >= 0 ? '+' : ''}{(ana.market_data?.change24h ?? 0).toFixed(2)}%</span>
+      </div>
+    </div>
+  )
 
   // v2.0.79: Get open positions for position pills (green=BUY, red=SELL)
   const isRealMode = config?.tradeMode === 'real'
@@ -909,8 +1001,6 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [cyclePeriod, setCyclePeriod] = useState(config?.cyclePeriodMinutes ?? 5)
   const [closeConfirmSym, setCloseConfirmSym] = useState<string | null>(null)
   const [closingSym, setClosingSym] = useState<string | null>(null)
-  const [pairsLoading, setPairsLoading] = useState(false)
-
   // Cross-asset-type pair cache: persists volume/price data across Asset Type switches
   // so Selected Market Pairs can show data even when the pair isn't in the current topPairs.
   const pairCacheRef = useRef<Map<string, { volume24h: number; volume5m?: number; price: number; priceChangePercent: number }>>(new Map())
@@ -918,14 +1008,10 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
     for (const p of topPairs) {
       pairCacheRef.current.set(normSym(p.symbol), { volume24h: p.volume24h, volume5m: p.volume5m, price: p.price, priceChangePercent: p.priceChangePercent })
     }
-    // Clear loading state when backend signals pairs are ready (background scan done)
-    if (pairsReady) {
-      setPairsLoading(false)
-    }
   }, [topPairs, pairsReady])
   const getCachedPair = (sym: string) => pairCacheRef.current.get(normSym(sym))
 
-  // ── Persistent "Trading Markets" pills (max 3).
+  // ── Persistent "Trading Markets" pills (max 10).
   // When user clicks a Top Volume Pair, it gets added as a pill.
   // Deduped — same symbol only appears once. Persisted to localStorage
   // with a single key so it survives Trade Mode / Asset Type switches.
@@ -948,7 +1034,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           deduped.push(s)
         }
       }
-      return deduped.slice(0, 3)
+      return deduped.slice(0, 10)
     } catch { return [] }
   })
 
@@ -997,13 +1083,13 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       }
       // v2.0.150: Use deduped count, not prev.length + positionMap.size.
       // If a trading market overlaps with a position, prev.length + positionCount
-      // double-counts it, blocking the 3rd slot even when only 2 unique exist.
+      // double-counts it, blocking the 10th slot when fewer unique exist.
       const uniqueCount = new Set<string>([
         ...prev.map(s => norm(s)),
         ...Array.from(positionMap.keys()).map(s => norm(s)),
         normalizedSymbol,
       ]).size
-      if (uniqueCount > 3) return prev
+      if (uniqueCount > 10) return prev
       return [...prev, normalizedSymbol]
     })
     // Also select the symbol as active for chart display
@@ -1078,7 +1164,6 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
 
   const handleAssetTypeChange = async (assetType: string) => {
     setSelectedAssetType(assetType as any)
-    setPairsLoading(true)
     try {
       const res = await fetch(`${API_BASE}/market-agent/asset-type`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assetType }) })
       if ((await res.json()).success) showStatus(assetType)
@@ -1364,39 +1449,43 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         </div>
       </div>
 
-      {/* Available Pairs — below Asset Type, click to add (disabled during cycle) */}
+      {/* v2.0.821: Instant Market Picker — uses the fast all-symbols endpoint
+          (metadata only, NO volume scan) so the admin can pick up to 10 markets
+          immediately. Volume/change data from topPairs enriches the display in
+          the background but selection is never gated on it. */}
       <div className="market-pairs-header">
-        <div className="market-pairs-header-label" style={pairsLoading ? { color: 'var(--gold)' } : s?.cycleInProgress ? { color: 'var(--red)' } : undefined}>
-          {pairsLoading
-            ? `Loading ${selectedAssetType.replace(/_/g, ' ')} Top 30 Volume Markets ...`
+        <div className="market-pairs-header-label" style={symbolsLoading ? { color: 'var(--gold)' } : s?.cycleInProgress ? { color: 'var(--red)' } : undefined}>
+          {symbolsLoading
+            ? `Loading ${selectedAssetType.replace(/_/g, ' ')} markets ...`
             : s?.cycleInProgress
             ? 'Select asset after this cycle of calculations is completed:'
-            : 'Available Pairs (click to add asset to "Selected Markets"):'}
+            : `Available Markets — click to add (up to 10):`}
         </div>
-        <div className="top-pairs-list" style={{ position: 'relative', overflow: pairsLoading ? 'hidden' : 'auto', ...(s?.cycleInProgress ? { pointerEvents: 'none', opacity: 0.4, background: 'rgba(248, 113, 113, 0.25)' } : {}) }}>
-          {pairsLoading && (
+        <div className="top-pairs-list" style={{ position: 'relative', overflow: symbolsLoading ? 'hidden' : 'auto', ...(s?.cycleInProgress ? { pointerEvents: 'none', opacity: 0.4, background: 'rgba(248, 113, 113, 0.25)' } : {}) }}>
+          {symbolsLoading && (
             <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0, 0, 0, 0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', borderRadius: 'var(--radius-md)', zIndex: 10 }}>
               <span className="spinner" style={{ width: '24px', height: '24px', borderWidth: '3px' }} />
             </div>
           )}
-          {topPairs
-            .filter(pair => {
+          {/* Use the instant symbol universe; fall back to topPairs if all-symbols
+              hasn't loaded yet (keeps the picker functional during cold start). */}
+          {(allSymbols.length > 0 ? allSymbols.map(e => ({ symbol: e.symbol, category: e.category, volume24h: topPairs.find(p => normSym(p.symbol) === normSym(e.symbol))?.volume24h ?? 0, priceChangePercent: topPairs.find(p => normSym(p.symbol) === normSym(e.symbol))?.priceChangePercent ?? 0 })) : topPairs.map(p => ({ symbol: p.symbol, category: '', volume24h: p.volume24h, priceChangePercent: p.priceChangePercent })))
+            .filter(entry => {
               if (!assetSearch.trim()) return true
-              return pair.symbol.toLowerCase().includes(assetSearch.toLowerCase())
+              return entry.symbol.toLowerCase().includes(assetSearch.toLowerCase())
             })
-            .map((pair, i) => {
-              const isAdded = tradingMarkets.some(s => normSym(s) === normSym(pair.symbol)) ||
-                Array.from(positionMap.keys()).some(s => normSym(s) === normSym(pair.symbol))
-              // Count unique symbols across tradingMarkets + positionMap (deduped)
+            .map((entry, i) => {
+              const isAdded = tradingMarkets.some(s => normSym(s) === normSym(entry.symbol)) ||
+                Array.from(positionMap.keys()).some(s => normSym(s) === normSym(entry.symbol))
               const uniqueSymbols = new Set<string>()
               for (const s of tradingMarkets) uniqueSymbols.add(normSym(s))
               for (const s of positionMap.keys()) uniqueSymbols.add(normSym(s))
-              const full = uniqueSymbols.size >= 3
+              const full = uniqueSymbols.size >= 10
               return (
                 <div
-                  key={pair.symbol}
+                  key={entry.symbol}
                   className={`top-pair-row top-pair-row-inline ${isAdded ? 'pair-added' : ''}`}
-                  onClick={() => { if (!isAdded && !full) addTradingMarket(pair.symbol) }}
+                  onClick={() => { if (!isAdded && !full) addTradingMarket(entry.symbol) }}
                   style={isAdded
                     ? { opacity: 1, cursor: 'default', background: 'rgba(52, 211, 153, 0.12)', boxShadow: '0 0 8px rgba(52, 211, 153, 0.3)' }
                     : { opacity: full ? 0.4 : 1, cursor: full ? 'default' : 'pointer' }}
@@ -1404,20 +1493,20 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                   onMouseLeave={(e) => { if (!isAdded) e.currentTarget.style.background = ''; }}
                 >
                   <span className="top-pair-rank top-pair-cell">#{i + 1}</span>
-                  <span className="top-pair-symbol top-pair-cell-bold">{pair.symbol}</span>
-                  <span className="top-pair-vol top-pair-cell">{pair.volume24h > 0 ? `$${(pair.volume24h / 1_000_000).toFixed(1)}M` : 'N/A'}</span>
-                  <span className="top-pair-vol top-pair-cell-tertiary">{pair.volume5m != null && pair.volume5m > 0 ? `${(pair.volume5m / 1000).toFixed(0)}K` : '-'}</span>
-                  <span className={`top-pair-chg top-pair-cell ${pair.priceChangePercent >= 0 ? 'positive' : 'negative'}`}>
-                    {pair.volume24h > 0 ? `${pair.priceChangePercent >= 0 ? '+' : ''}${pair.priceChangePercent.toFixed(2)}%` : 'N/A'}
+                  <span className="top-pair-symbol top-pair-cell-bold">{entry.symbol}</span>
+                  {entry.category && <span className="top-pair-vol top-pair-cell-tertiary" style={{ textTransform: 'capitalize', fontSize: 'var(--fs-xs)' }}>{entry.category}</span>}
+                  <span className="top-pair-vol top-pair-cell">{entry.volume24h > 0 ? `$${(entry.volume24h / 1_000_000).toFixed(1)}M` : '-'}</span>
+                  <span className={`top-pair-chg top-pair-cell ${entry.priceChangePercent >= 0 ? 'positive' : 'negative'}`}>
+                    {entry.volume24h > 0 ? `${entry.priceChangePercent >= 0 ? '+' : ''}${entry.priceChangePercent.toFixed(2)}%` : '-'}
                   </span>
                   <span className="top-pair-spacer" />
                   {isAdded && <span style={{ fontSize: '24px', color: 'var(--green)', fontWeight: 'var(--fw-bold)', lineHeight: 0, display: 'inline-flex', alignItems: 'center' }}><Check size={20} color="var(--green)" /></span>}
                 </div>
               )
             })}
-          {topPairs.filter(pair => !assetSearch.trim() || pair.symbol.toLowerCase().includes(assetSearch.toLowerCase())).length === 0 && (
+          {(allSymbols.length > 0 ? allSymbols : topPairs).filter(entry => !assetSearch.trim() || entry.symbol.toLowerCase().includes(assetSearch.toLowerCase())).length === 0 && (
             <div className="market-slot-empty" style={{ padding: 'var(--space-4) 0' }}>
-              {assetSearch.trim() ? `No pairs match "${assetSearch}"` : 'Initiating market and assets ...'}
+              {assetSearch.trim() ? `No markets match "${assetSearch}"` : 'No markets available — check exchange connection.'}
             </div>
           )}
         </div>
@@ -1441,7 +1530,10 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           integrated market data + per-symbol consensus + options info. */}
       <div className="market-pairs-header" style={{ position: 'relative' }}>
         <div className="market-pairs-header-label">
-          Selected Market Pairs ({(() => { const u = new Set<string>(); for (const s of tradingMarkets) u.add(normSym(s)); for (const s of positionMap.keys()) u.add(normSym(s)); return u.size })()}/3):
+          Selected Market Pairs ({(() => { const u = new Set<string>(); for (const s of tradingMarkets) u.add(normSym(s)); for (const s of positionMap.keys()) u.add(normSym(s)); return u.size })()}/10):{' '}
+          <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 400, color: supabaseEnabled ? 'var(--green)' : 'var(--text-muted)' }} title={supabaseEnabled ? `Supabase connected · ${assetAnalyses.length} analyses · last ${analysisLastFetch ? new Date(analysisLastFetch).toLocaleTimeString() : '—'}` : 'Supabase not configured'}>
+            {supabaseEnabled ? `📊 DB ${assetAnalyses.length}` : '📊 DB off'}
+          </span>
         </div>
         <div className="smp-card-list">
           {/* Position rows — BUY/SELL tag + ✕ for manual close confirmation */}
@@ -1451,6 +1543,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
             const chg = pair?.priceChangePercent ?? cached?.priceChangePercent ?? 0
             const psc = getPscForSym(sym)
             const symOd = getOdForSym(sym)
+            const ana = getAnalysisForSym(sym)
             const actionClass = psc ? (psc.action === 'close' ? 'sell' : psc.action) : (side === 'buy' ? 'buy' : 'sell')
             // v2.0.147: Border color by position status, not consensus action
             const cardColorClass = side === 'buy' ? 'pos-buy' : 'pos-sell'
@@ -1522,6 +1615,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                     })()}
                   </div>
                 )}
+                {ana && renderAnalysisMatrix(ana)}
               </div>
             )
           })}
@@ -1539,6 +1633,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               const chg = pair?.priceChangePercent ?? cached?.priceChangePercent ?? 0
               const psc = getPscForSym(sym)
               const symOd = getOdForSym(sym)
+              const ana = getAnalysisForSym(sym)
               const actionClass = psc ? (psc.action === 'close' ? 'sell' : psc.action) : 'hold'
               // v2.0.147: No position → grey border
               const cardColorClass = 'pos-none'
@@ -1552,8 +1647,8 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                   }}>
                     <span className="smp-side-tag hold">HOLD</span>
                     <span className="smp-symbol">{(sym.includes(':') ? (sym.split(':').pop() ?? sym) : sym).toUpperCase()}</span>
-                    <span className="smp-data">—</span>
-                    <span className="smp-data">—</span>
+                    <span className="smp-data">{ana ? `$${(ana.market_data?.price ?? 0).toFixed(2)}` : '—'}</span>
+                    <span className="smp-data">{ana ? `${(ana.market_data?.change24h ?? 0) >= 0 ? '+' : ''}${(ana.market_data?.change24h ?? 0).toFixed(2)}%` : '—'}</span>
                     <span className="smp-spacer" />
                     <span
                       className="smp-close-btn"
@@ -1603,6 +1698,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                       })()}
                     </div>
                   )}
+                  {ana && renderAnalysisMatrix(ana)}
                 </div>
               )
             })}

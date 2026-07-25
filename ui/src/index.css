@@ -5497,3 +5497,79 @@ body {
   border-left: 2px solid var(--red);
   line-height: 1.4;
 }
+
+/* ── v2.0.822: Analysis Matrix grid (3 risk profiles × 3 position states) ── */
+.smp-matrix {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: rgba(168, 85, 247, 0.06);
+  border: 1px solid rgba(168, 85, 247, 0.15);
+}
+.smp-matrix-title {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-bottom: var(--space-1);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.smp-matrix-db-badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(52, 211, 153, 0.18);
+  color: var(--green);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+.smp-matrix-grid {
+  display: grid;
+  grid-template-columns: 56px repeat(3, 1fr);
+  gap: 2px;
+  font-size: 10px;
+}
+.smp-matrix-hdr {
+  font-weight: 700;
+  text-align: center;
+  padding: 2px 4px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.smp-matrix-row-label {
+  font-weight: 600;
+  padding: 2px 4px;
+  color: var(--text-muted);
+  text-transform: capitalize;
+}
+.smp-matrix-cell {
+  padding: 3px 5px;
+  border-radius: 3px;
+  text-align: center;
+  font-weight: 600;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-height: 32px;
+  justify-content: center;
+}
+.smp-matrix-cell-act { font-size: 10px; text-transform: uppercase; }
+.smp-matrix-cell-conv { font-size: 9px; opacity: 0.7; }
+.smp-matrix-cell.buy  { background: rgba(52, 211, 153, 0.12); color: var(--green); }
+.smp-matrix-cell.sell { background: rgba(248, 113, 113, 0.12); color: var(--red); }
+.smp-matrix-cell.hold { background: rgba(148, 163, 184, 0.10); color: var(--text-muted); }
+.smp-matrix-cell.close{ background: rgba(251, 191, 36, 0.12); color: var(--gold); }
+.smp-matrix-cell.flip { background: rgba(168, 85, 247, 0.12); color: #a855f7; }
+.smp-matrix-cell.uncalibrated { opacity: 0.55; font-style: italic; }
+.smp-matrix-market {
+  margin-top: var(--space-1);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.smp-matrix-market span { color: var(--text-secondary); }
