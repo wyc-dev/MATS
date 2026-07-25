@@ -131,29 +131,6 @@ export function formatA2ASignal(signal: A2ASignal): string {
  * @param content Content/description
  * @param options Additional options
  * @returns Constructed A2A signal
- */
-export function buildA2ASignal(
-  type: A2AMessageType,
-  keyword: string,
-  content: string,
-  options: {
-    metrics?: Record<string, number>;
-    confidence?: number;
-    severity?: 'low' | 'medium' | 'high' | 'critical';
-    urgency?: 'immediate' | 'soon' | 'patient';
-  } = {}
-): A2ASignal {
-  return {
-    type,
-    keyword,
-    content,
-    metrics: options.metrics,
-    confidence: options.confidence,
-    severity: options.severity,
-    urgency: options.urgency,
-  };
-}
-
 /**
  * Merge multiple A2A signals for consensus
  * Useful when multiple agents contribute to one consensus statement
