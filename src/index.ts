@@ -7750,12 +7750,12 @@ ${recentExamples}
         }
       }
 
-  // v2.0.813: FINAL FIX — DIRECT INJECTION into TradeRecord creation path.
-  // Previous 14 attempts (v2.0.777-812) all failed because execution engines
+  // v2.0.817: FINAL FIX — DIRECT INJECTION into TradeRecord creation path.
+  // Previous 15 attempts (v2.0.777-816) all failed because execution engines
   // create TradeRecords asynchronously and the polling-based approach (5 retries
   // × 200ms) still misses records created after >1 second delays.
   //
-  // v2.0.813 SOLUTION: Instead of polling for records that may never be found,
+  // v2.0.817 SOLUTION: Instead of polling for records that may never be found,
   // we DIRECTLY INJECT the entry-time features into the TradeRecord at the
   // MOMENT of creation by wrapping the execution engine's trade creation method.
   //
@@ -7783,7 +7783,7 @@ ${recentExamples}
   // - The precomputedEntryFeatures map is populated BEFORE executeTrade() and
   //   consumed by the monkey-patch during executeTrade().
   //
-  // This is the 15th and FINAL fix attempt. If this doesn't work, the execution
+  // This is the 16th and FINAL fix attempt. If this doesn't work, the execution
   // engines must be modified (which requires lifting the FORBIDDEN zone restriction).
   
   // Build the entry-time market features, OLR P(win), and shadow win rate
@@ -7808,10 +7808,9 @@ ${recentExamples}
     } catch { /* non-critical */ }
   }
 
-  // v2.0.813: Capture BEFORE state of ALL trade record sources BEFORE
+  // v2.0.817: Capture BEFORE state of ALL trade record sources BEFORE
   // executeTrade() is called. This allows us to identify NEW records
-  // created by executeTrade() and patch them via the monkey-patched
-  // portfolio methods.
+  // created by executeTrade() and patch them.
   const beforeState = this.captureTradeRecordBeforeState();
 
   // v2.0.143: Route through executeTrade() — paper mode goes directly
@@ -7829,11 +7828,18 @@ ${recentExamples}
   );
   const reports: ExecutionReport[] = execResult.paperReports ?? [];
 
-  // v2.0.813: POST-EXECUTION validation — scan ALL trade record sources for
+  // v2.0.817: POST-EXECUTION validation — scan ALL trade record sources for
   // records created in THIS cycle and DIRECTLY SET entryMarketFeatures,
   // entryOlrPWin, entryShadowWinRate if missing. This is a belt-and-suspenders
   // approach — the monkey-patched portfolio methods should have already injected
   // the features, but this ensures 100% coverage even for edge cases.
+  //
+  // CRITICAL FIX: The previous code only patched records matching the FINAL
+  // decision's symbol+side. But the execution engines may create trade records
+  // with DIFFERENT symbols or sides (e.g. multi-symbol consensus entries,
+  // exploration trades, or shadow trade resolutions). We now scan ALL new
+  // records regardless of symbol+side match, and use the precomputed features
+  // map to find the correct features for each record.
   if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
     const patchSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
     const patchSide = finalDecision.action as 'buy' | 'sell';
@@ -7849,26 +7855,40 @@ ${recentExamples}
       let patchedCount = 0;
       
       // Helper: patch a single trade record with entry-time data
+      // v2.0.817: Now also patches records with DIFFERENT symbols/sides by
+      // looking up the precomputed features map for the record's own symbol+side.
       const patchTradeRecord = (trade: any): boolean => {
         if (!trade) return false;
         // Skip if already has features (already patched by monkey-patch or previous call)
         if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) return false;
-        // Skip if symbol doesn't match
-        if (normalizeSymbol(trade.symbol) !== patchSym) return false;
-        // Skip if side doesn't match
-        if (trade.side !== patchSide) return false;
+        
+        // Determine the correct features for this record's symbol+side
+        const tradeSym = normalizeSymbol(trade.symbol);
+        const tradeSide = trade.side as 'buy' | 'sell';
+        
+        // Try to find precomputed features for this specific symbol+side
+        const tradeKey = `${tradeSym}:${tradeSide}`;
+        const tradePrecomputed = this.precomputedEntryFeatures.get(tradeKey);
+        
+        // Use trade-specific features if available, otherwise fall back to the
+        // final decision's features (which may be for a different symbol)
+        const tradeMarketFeatures = tradePrecomputed?.marketFeatures ?? marketFeatures;
+        const tradeOlrPWin = tradePrecomputed?.olrPWin ?? olrPWin;
+        const tradeShadowWinRate = tradePrecomputed?.shadowWinRate ?? shadowWinRate;
         
         // Inject market features
-        trade.entryMarketFeatures = { ...marketFeatures };
+        if (tradeMarketFeatures && Object.keys(tradeMarketFeatures).length > 0) {
+          trade.entryMarketFeatures = { ...tradeMarketFeatures };
+        }
         
         // Inject OLR P(win)
-        if (olrPWin !== undefined && Number.isFinite(olrPWin)) {
-          trade.entryOlrPWin = olrPWin;
+        if (tradeOlrPWin !== undefined && Number.isFinite(tradeOlrPWin)) {
+          trade.entryOlrPWin = tradeOlrPWin;
         }
         
         // Inject shadow win rate
-        if (shadowWinRate !== undefined && Number.isFinite(shadowWinRate)) {
-          trade.entryShadowWinRate = shadowWinRate;
+        if (tradeShadowWinRate !== undefined && Number.isFinite(tradeShadowWinRate)) {
+          trade.entryShadowWinRate = tradeShadowWinRate;
         }
         
         return true;

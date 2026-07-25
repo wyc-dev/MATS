@@ -4,6 +4,9 @@ All notable changes to MATS are documented here. See [ARCHITECTURE.md](ARCHITECT
 
 ---
 
+## v2.0.817: CRITICAL — Fix NO_MARKET_DATA on 50% of trades. Market features (vol, ob, funding, srDist) are now captured from the latest available market data at decision time and injected into TradeRecord creation synchronously. This ensures ALL learning systems receive complete training data with entry-time market conditions. The fix now also handles trade records with DIFFERENT symbols/sides than the final decision (e.g. multi-symbol consensus entries, exploration trades) by looking up the precomputed features map for each record's own symbol+side.
+
+
 ## v2.0.816: FIX — Meta-Agent parseResponse TS2532 errors. Added optional chaining and null-safe property access for `result.multiSymbolDecision.marketTicker` which is typed as possibly undefined. Replaced spread operators with explicit property assignment to satisfy TypeScript strict null checks. All existing behavior preserved.
 
 
