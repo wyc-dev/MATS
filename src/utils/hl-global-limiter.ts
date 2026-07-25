@@ -75,12 +75,29 @@ async function processQueue(): Promise<void> {
 export async function hlRateLimitedFetch(
   url: string,
   options?: RequestInit,
+  /** Per-attempt timeout (ms). Bounds each fetch so a hung TCP connection
+   *  (connected but no response) fails fast instead of hanging forever.
+   *  Default 15s — generous for HL orders (typically <2s) yet bounds the
+   *  worst case. The retry loop (MAX_RETRIES) then re-attempts with a fresh
+   *  connection. Pass a larger value for deliberately slow endpoints. */
+  timeoutMs: number = 15000,
 ): Promise<Response> {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     await acquire();
     let res: Response;
     try {
-      res = await fetch(url, options);
+      // v2.0.820: Per-attempt AbortController timeout. A hung connection
+      // (TCP alive, no HTTP response) never throws on its own — without this
+      // guard a single stuck fetch would block the entire decision cycle.
+      // The abort fires an AbortError which the catch below treats as a
+      // transient network error and retries with backoff + a fresh socket.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        res = await fetch(url, { ...options, signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
     } catch (err) {
       // Network-level error (DNS failure, connection refused, timeout).
       // Retry with backoff — the network may recover.
@@ -94,7 +111,8 @@ export async function hlRateLimitedFetch(
         // Throw immediately so callers can handle it (REST polling backs off).
         throw err;
       } else {
-        log.warn(`HL fetch error: ${err instanceof Error ? err.message : String(err)}, retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
+        const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message.includes('aborted'));
+        log.warn(`HL fetch ${isAbort ? 'timeout' : 'error'}: ${err instanceof Error ? err.message : String(err)}, retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
       }
       await new Promise(r => setTimeout(r, delay));
       continue;

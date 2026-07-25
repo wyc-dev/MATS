@@ -14,6 +14,7 @@ import type {
   TradeRecord,
   OrderSide,
   Ticker,
+  EntryFeatures,
 } from '../types/index.ts';
 
 const log = createLogger({ phase: 'portfolio' });
@@ -503,7 +504,7 @@ export class PortfolioTracker {
     return { allowed: true };
   }
 
-  openPosition(order: Order, entryPrice: number, leverage = 1, entryThesis?: string): Position {
+  openPosition(order: Order, entryPrice: number, leverage = 1, entryThesis?: string, entryData?: EntryFeatures): Position {
     const symbol = normalizeSymbol(order.symbol);
     const quantity = order.filledQuantity > 0 ? order.filledQuantity : order.quantity;
     const notional = quantity * entryPrice;
@@ -563,6 +564,14 @@ export class PortfolioTracker {
       // At open, unrealized PnL = -entryFee, so value = margin - entryFee.
       minValueReached: margin - entryFee,
       maxValueReached: margin - entryFee,
+      // v2.0.819: Entry-time data pipeline — set SYNCHRONOUSLY at construction
+      // so the closed TradeRecord inherits the TRUE entry conditions. This
+      // replaces the flaky post-execution patching that the close path silently
+      // dropped (root cause of 100% NO_OLR / NO_SHADOW on real trades).
+      entryMarketFeatures: entryData?.marketFeatures,
+      entryOlrPWin: entryData?.olrPWin,
+      entryShadowWinRate: entryData?.shadowWinRate,
+      regime: entryData?.regime,
     };
 
     // Set stop-loss and take-profit
@@ -593,6 +602,12 @@ export class PortfolioTracker {
       closedAt: position.openedAt,
       agentId: order.agentId,
       status: 'open',
+      // v2.0.819: Carry entry-time data onto the open record too so any
+      // consumer reading open trades sees the same features as the position.
+      entryMarketFeatures: entryData?.marketFeatures,
+      entryOlrPWin: entryData?.olrPWin,
+      entryShadowWinRate: entryData?.shadowWinRate,
+      regime: entryData?.regime,
     };
 
     log.info(`Position opened: ${order.side.toUpperCase()} ${quantity.toFixed(6)} ${symbol} @ ${entryPrice}`, {
@@ -767,6 +782,10 @@ export class PortfolioTracker {
     entryPrice: number,
     leverage: number,
     openedAt: number,
+    /** v2.0.819: Entry-time data pipeline — set synchronously at import so
+     *  the real-position mirror carries the TRUE entry conditions through to
+     *  the closed TradeRecord. */
+    entryData?: EntryFeatures,
   ): void {
     // v2.0.31: Use normalizeSymbol for case-sensitive colon symbol support
     const sym = normalizeSymbol(symbol);
@@ -836,6 +855,14 @@ export class PortfolioTracker {
       // v2.0.143: Record original SL/TP at import.
       originalStopLossPrice: stopLossPrice,
       originalTakeProfitPrice: takeProfitPrice,
+      // v2.0.819: Entry-time data pipeline — set synchronously at import so
+      // closeExchangePosition() inherits the TRUE entry conditions. This is
+      // the fix for the 12 failed v2.0.777-818 patch attempts: features are
+      // now part of the Position object literal, not a post-hoc monkey-patch.
+      entryMarketFeatures: entryData?.marketFeatures,
+      entryOlrPWin: entryData?.olrPWin,
+      entryShadowWinRate: entryData?.shadowWinRate,
+      regime: entryData?.regime,
     };
 
     // v2.0.72: Store in realPositions (separate from paper positions).
@@ -1336,6 +1363,15 @@ export class PortfolioTracker {
       originalTakeProfitPrice: pos.originalTakeProfitPrice,
       finalTakeProfitPrice: pos.takeProfitPrice,
       slNarrowed: pos.originalStopLossPrice !== undefined && pos.stopLossPrice !== undefined && pos.originalStopLossPrice !== pos.stopLossPrice,
+      // v2.0.819: Copy entry-time data from the position onto the closed
+      // trade record. ROOT FIX for NO_OLR / NO_SHADOW on every trade: the
+      // close path previously reconstructed the TradeRecord WITHOUT these
+      // fields, so entry features set at open were silently dropped and every
+      // learning system (OLR/EXP/RIL/AttnRes) starved.
+      entryMarketFeatures: pos.entryMarketFeatures,
+      entryOlrPWin: pos.entryOlrPWin,
+      entryShadowWinRate: pos.entryShadowWinRate,
+      regime: pos.regime,
     };
 
     // Update portfolio stats
@@ -1496,6 +1532,15 @@ export class PortfolioTracker {
       originalTakeProfitPrice: pos.originalTakeProfitPrice,
       finalTakeProfitPrice: pos.takeProfitPrice,
       slNarrowed: pos.originalStopLossPrice !== undefined && pos.stopLossPrice !== undefined && pos.originalStopLossPrice !== pos.stopLossPrice,
+      // v2.0.819: Copy entry-time data from the real position onto the closed
+      // trade record. Same root fix as closePosition() — without this, the 12
+      // prior patch attempts (v2.0.777-818) set features on the position object
+      // but the close path dropped them, so 100% of real trades had
+      // NO_OLR / NO_SHADOW / NO_MARKET_DATA.
+      entryMarketFeatures: pos.entryMarketFeatures,
+      entryOlrPWin: pos.entryOlrPWin,
+      entryShadowWinRate: pos.entryShadowWinRate,
+      regime: pos.regime,
     };
 
     // v2.0.32: Do NOT update paper portfolio stats (totalPnl, winCount,

@@ -5,6 +5,7 @@ import { config } from './config/index.ts';
 import { rootLogger, createLogger } from './observability/logger.ts';
 import { setupShutdownHandlers, registerShutdownHandler, isShuttingDown } from './utils/shutdown.ts';
 import { hlRateLimitedFetch } from './utils/hl-global-limiter.ts';
+import { withTimeout } from './utils/with-timeout.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
 import { getActiveProvider } from './llm/index.ts';
 import { getAgentModel } from './agents/agent-models.ts';
@@ -72,16 +73,12 @@ import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } 
 import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent, computePriceNewsTiming, normalizeBaseAsset, type TimingCandle } from './analysis/news-sentiment.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord, CycleSummary } from './types/index.ts';
 
-// v2.0.787: Extend TradeRecord with entry-time data fields that are patched
-// at trade creation time by the OLR/Shadow data pipeline. These fields are
-// set by executeTrade() after the trade record is created in the ExecutionReport.
-// They are consumed by onPositionClosedLearning() at close time to store the
-// TRUE entry-time OLR P(win) and shadow win rate, not close-time recomputes.
-interface PatchedTradeRecord extends TradeRecord {
-  entryMarketFeatures?: Record<string, number>;
-  entryOlrPWin?: number;
-  entryShadowWinRate?: number;
-}
+// v2.0.819: entryMarketFeatures / entryOlrPWin / entryShadowWinRate / regime
+// are now declared natively on TradeRecord (src/types/index.ts) and set
+// synchronously at openPosition / importExchangePosition, then copied onto
+// the closed record by closePosition / closeExchangePosition. The old
+// PatchedTradeRecord duck-type shim is removed — the close path no longer
+// silently drops these fields (root cause of 100% NO_OLR / NO_SHADOW).
 
 const log = createLogger({ phase: 'system' });
 
@@ -265,6 +262,24 @@ class MATSSystem {
   private worldModel!: WorldModel;
   /** v2.0.221 (Fix 3+4): Combo Win Rate Tracker — (symbol × side × regime) WR tracking + soft gate. */
   private comboTracker!: ComboWinRateTracker;
+
+  /** v2.0.819: WINNER-FIRST — positive boost from the lossStreakTracker
+   *  winner pattern (checkWinnerPattern). Set by applyLossStreakGateToDecision
+   *  when a winner is found, consumed by the Plan G conviction gate as a
+   *  multiplicative boostFactor. Previously this was encoded as a NEGATIVE
+   *  _lossStreakPenalty and silently clipped to 0 by Math.max(0, netPenalty),
+   *  so the WINNER-FIRST directive never reached the gate. */
+  private _winnerBoost = 0;
+
+  /** v2.0.820: Stale-feed watchdog state. Tracks the last time we forced a
+   *  WS reconnect for the selected symbol so we don't spam reconnect attempts
+   *  every cycle when the feed is genuinely down (e.g. exchange maintenance).
+   *  Also tracks per-symbol consecutive fetch failures for non-active markets. */
+  private lastWsReconnectAttempt = 0;
+  private readonly WS_RECONNECT_THROTTLE_MS = 60_000; // min 60s between forced reconnects
+  private readonly STALE_FEED_THRESHOLD_MS = 60_000; // feed stale if no update for 60s
+  private nonActiveFetchFailures = new Map<string, number>();
+  private readonly NON_ACTIVE_FAIL_WARN = 5; // log after N consecutive failures
   /** v2.0.204: Numeric Autoencoder — learns non-linear market-condition embedding for vector-conditional WR. */
   private naEngine!: NumericAutoencoder;
   /** v2.0.211 (K.md #1): Cycle-History Selective Retrieval (AttnRes transfer).
@@ -602,7 +617,12 @@ class MATSSystem {
     // v2.0.770: If winner pattern found, apply boost and skip loss penalty
     if (winnerResult.convictionBoost) {
       const winnerBoost = winnerResult.convictionBoost;
-      (this as any)._lossStreakPenalty = -winnerBoost;
+      // v2.0.819: Track the winner boost as a POSITIVE value for the Plan G
+      // multiplicative boostFactor. The old code stored -winnerBoost in
+      // _lossStreakPenalty, which Math.max(0, netPenalty) in the gate then
+      // clipped to 0 — so the WINNER-FIRST directive was silently discarded.
+      this._winnerBoost = winnerBoost;
+      (this as any)._lossStreakPenalty = 0;
 
       // v2.0.766: Apply size boost for strong winners
       if (winnerResult.sizeBoost && winnerResult.sizeBoost > 1) {
@@ -631,6 +651,9 @@ class MATSSystem {
     const comboPenalty = comboResult.convictionPenalty ?? 0;
     const netPenalty = lossPenalty + condPenalty + comboPenalty;
 
+    // v2.0.819: No winner found — clear the boost and record the net penalty
+    // for the Plan G penaltyFactor path.
+    this._winnerBoost = 0;
     (this as any)._lossStreakPenalty = netPenalty;
 
     if (netPenalty > 0) {
@@ -1799,8 +1822,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           // Fetch current price
           let price = 0;
           try {
-            const priceData = await this.marketAgent.fetchPriceForSymbol(sym);
-            price = priceData.price;
+            const priceData = await withTimeout(this.marketAgent.fetchPriceForSymbol(sym), 10_000, `manual-price ${sym}`);
+            if (priceData) price = priceData.price;
           } catch {
             // fallback 1: marketState
             const state = this.marketState.getState(sym);
@@ -1811,8 +1834,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             try {
               const selected = this.marketAgent.getSelectedSymbol();
               if (selected && normalizeSymbol(selected) === normalizeSymbol(sym)) {
-                const priceData2 = await this.marketAgent.fetchPriceForSymbol(selected);
-                price = priceData2.price;
+                const priceData2 = await withTimeout(this.marketAgent.fetchPriceForSymbol(selected), 10_000, `manual-price2 ${selected}`);
+                if (priceData2) price = priceData2.price;
               }
             } catch { /* best-effort */ }
           }
@@ -3431,6 +3454,109 @@ ${recentExamples}
     shadowWinRate?: number;
   }>();
 
+  /** v2.0.820: Stale-feed watchdog + auto-reconnect.
+   *
+   *  Detects when the selected symbol's live feed has gone silent (WS dropped,
+   *  REST polling stalled) and forces a `multiWs.connect()` reconnect — the
+   *  manual-restart requirement (fix D) is replaced by self-healing. Also
+   *  tracks per-symbol consecutive fetch failures for non-active trading
+   *  markets so a persistently broken REST source is visible in the logs
+   *  instead of silently producing $0.00 prices.
+   *
+   *  Throttled to one forced reconnect per minute per symbol to avoid
+   *  hammering the exchange during an outage. Cold-start safe: a fresh
+   *  marketState with no ticker yet is treated as stale (reconnect tried).
+   *  Never throws. */
+  private checkStaleFeedsAndReconnect(activeSymbol: string): void {
+    try {
+      const state = this.marketState.getState(activeSymbol);
+      const now = Date.now();
+      const ageMs = now - (state.updatedAt ?? 0);
+      if (ageMs < this.STALE_FEED_THRESHOLD_MS) {
+        // Feed is fresh — clear any failure counter for the active symbol.
+        this.nonActiveFetchFailures.delete(normalizeSymbol(activeSymbol));
+        return;
+      }
+      // Feed is stale. Throttle reconnect attempts.
+      if (now - this.lastWsReconnectAttempt < this.WS_RECONNECT_THROTTLE_MS) return;
+      this.lastWsReconnectAttempt = now;
+      log.warn(`🔄 [stale-feed] ${activeSymbol} feed stale for ${(ageMs / 1000).toFixed(0)}s — forcing multiWs reconnect`);
+      // Fire-and-forget; multiWs.connect is async and internally idempotent.
+      this.multiWs.connect(activeSymbol).catch((err: Error) => {
+        log.warn(`🔄 [stale-feed] reconnect failed for ${activeSymbol}: ${err.message}`);
+      });
+    } catch {
+      // Watchdog must never crash the decision cycle.
+    }
+  }
+
+  /** v2.0.820: Per-cycle marketState backfill for every trading market that
+   *  is NOT the currently-selected symbol.
+   *
+   *  Architecture gap being fixed: `marketState.update()` is only wired to
+   *  `multiWs.onPrice`, and multiWs connects to a SINGLE symbol (the selected
+   *  one). Non-active trading markets therefore had no live priceHistory →
+   *  vol=0 → permanent low_volatility regime → vol-gate HOLD + blind agent
+   *  context. Switching the selected symbol instantly blinded the previous
+   *  one (BTC went to $0.00 after the 10:13 btc → xyz:SILVER switch).
+   *
+   *  This method fetches each non-active trading market's price via the
+   *  Market Agent REST layer and feeds it into marketState.update() so the
+   *  aggregator's priceHistory (now timestamp-backed) produces a real per-cycle
+   *  σ, regime, and price for every symbol the system trades. Idempotent,
+   *  cold-start safe, and never throws — a failed fetch just leaves that
+   *  symbol's marketState unchanged for this cycle (the watchdog in
+   *  `checkStaleFeedsAndReconnect` handles persistent failures). */
+  private async backfillMarketStateForTradingMarkets(activeSymbol: string): Promise<void> {
+    const markets = this.tradingMarkets ?? [];
+    if (markets.length === 0) return;
+    const activeNorm = normalizeSymbol(activeSymbol);
+    for (const mkt of markets) {
+      const mktNorm = normalizeSymbol(mkt);
+      if (mktNorm === activeNorm) continue; // active symbol is WS-fed already
+      try {
+        // v2.0.820: Bound the backfill fetch with an 8s budget (shared
+        // withTimeout utility). The dex0CtxsCache makes this instant in steady
+        // state; the budget only binds on a cache-miss + hung HL connection —
+        // in which case we abandon THIS symbol's backfill (the cycle proceeds;
+        // the stale-feed watchdog handles persistent failures).
+        const data = await withTimeout(
+          this.marketAgent.fetchPriceForSymbol(mkt),
+          8_000,
+          `backfill ${mkt}`,
+        );
+        if (data && data.price > 0 && Number.isFinite(data.price)) {
+          this.marketState.update({
+            symbol: mkt,
+            price: data.price,
+            volume: data.volume24h ?? 0,
+            quoteVolume: 0,
+            priceChange: 0,
+            priceChangePercent: data.change24h ?? 0,
+            high24h: 0,
+            low24h: 0,
+            timestamp: Date.now(),
+          });
+          this.nonActiveFetchFailures.delete(mktNorm);
+        } else {
+          // fetchPriceForSymbol returned 0 / invalid — track consecutive failures.
+          const fails = (this.nonActiveFetchFailures.get(mktNorm) ?? 0) + 1;
+          this.nonActiveFetchFailures.set(mktNorm, fails);
+          if (fails === this.NON_ACTIVE_FAIL_WARN) {
+            log.warn(`🔄 [stale-feed] ${mkt} REST backfill returned no price for ${fails} consecutive cycles — feed may be broken`);
+          }
+        }
+      } catch {
+        const fails = (this.nonActiveFetchFailures.get(mktNorm) ?? 0) + 1;
+        this.nonActiveFetchFailures.set(mktNorm, fails);
+        if (fails === this.NON_ACTIVE_FAIL_WARN) {
+          log.warn(`🔄 [stale-feed] ${mkt} REST backfill threw for ${fails} consecutive cycles — feed may be broken`);
+        }
+        // Non-critical: the stale-feed watchdog tracks persistent failures.
+      }
+    }
+  }
+
   /** v2.0.790: Pre-compute entry-time features for a given symbol+side and
    *  store them in the precomputed map. This must be called BEFORE
    *  executeTrade() so the features are available for injection immediately
@@ -3625,6 +3751,26 @@ ${recentExamples}
       }
     }
 
+    // v2.0.819: Build the synchronous entry-data payload from the pre-computed
+    // features map. This is passed DIRECTLY into openPosition / importExchangePosition
+    // at construction time so entry features become part of the Position object
+    // literal — eliminating the flaky post-execution patching that the close path
+    // silently dropped (root cause of 100% NO_OLR / NO_SHADOW on real trades).
+    let entryDataPayload: import('./types/index.ts').EntryFeatures | undefined;
+    if (decision.action === 'buy' || decision.action === 'sell') {
+      const sym = normalizeSymbol(decision.symbol);
+      const side = decision.action as 'buy' | 'sell';
+      const pre = this.precomputedEntryFeatures.get(`${sym}:${side}`);
+      if (pre) {
+        entryDataPayload = {
+          marketFeatures: pre.marketFeatures,
+          olrPWin: pre.olrPWin,
+          shadowWinRate: pre.shadowWinRate,
+          regime: this.marketState?.getState(sym)?.regime ?? this.marketState?.getState(this.marketAgent?.getSelectedSymbol() ?? '')?.regime,
+        };
+      }
+    }
+
     // v2.0.213 (#7): Prepare execution lens for computeATRSLTP. This caches
     // the execution-mode AttnRes blend so computeATRSLTP (called inside
     // tradingManager.executeDecision / paperEngine.executeDecision) uses it
@@ -3638,7 +3784,7 @@ ${recentExamples}
     if (isRealMode) {
       // Real mode: TradingManager places the order on HL + mirrors via
       // importExchangePosition. entryThesis is set after execution succeeds.
-      const execResult = await this.tradingManager.executeDecision(decision);
+      const execResult = await this.tradingManager.executeDecision(decision, entryDataPayload);
       if (execResult.success && (decision.action === 'buy' || decision.action === 'sell')) {
         if (decision.entryThesis) {
           this.portfolio.setEntryThesis(decision.symbol, decision.entryThesis);
@@ -3671,7 +3817,7 @@ ${recentExamples}
 
     // Paper mode: execute directly via PaperTradingEngine.
     // No TradingManager involvement — clean separation.
-    const reports = await this.paperEngine.executeDecision(decision);
+    const reports = await this.paperEngine.executeDecision(decision, false, entryDataPayload);
     const success = reports.length === 0 || reports.every(r => !r.error);
     if (success && (decision.action === 'buy' || decision.action === 'sell')) {
       // PaperTradingEngine.openPosition already sets entryThesis from
@@ -4384,7 +4530,7 @@ ${recentExamples}
         try { rec = JSON.parse(line); } catch { skipped++; continue; }
         if (!rec.outcome || !rec.symbol) { skipped++; continue; }
 
-        const sym = rec.symbol.includes(':') ? rec.symbol : rec.symbol.toLowerCase();
+        const sym = normalizeSymbol(rec.symbol);
         const side = rec.side === 'buy' ? 'buy' : 'sell' as 'buy' | 'sell';
         const isWin = rec.outcome === 'WIN';
         const outcome: 0 | 1 = isWin ? 1 : 0;
@@ -4793,16 +4939,44 @@ ${recentExamples}
       marketChange24h = state.change24h;
     }
 
-    // Fill in volume/change from cached REST data (dex0CtxsCache, no REST call)
-    // fetchPriceForSymbol checks internal cache first, falls back to REST only on cache miss
-    const priceData = await this.marketAgent.fetchPriceForSymbol(activeSymbol);
-    if (priceData.volume24h > 0 && marketVolume24h === 0) {
-      marketVolume24h = priceData.volume24h;
+    // Fill in volume/change from cached REST data (dex0CtxsCache, no REST call).
+    // fetchPriceForSymbol checks internal cache first, falls back to REST only on cache miss.
+    // v2.0.820: Bound the fetch with a 10s budget. In steady state the dex0CtxsCache
+    // is a hit (instant, no REST); the budget only binds on a cache-miss + hung HL API.
+    // On timeout we keep the WS-fed marketState price (always available for the active
+    // symbol) and just lose volume24h/change24h for this cycle — not catastrophic.
+    // This is the critical unblock: previously a hung fetch froze the whole cycle AND
+    // stopped paperEngine.updatePrice (SL/TP monitoring) for every open position.
+    const priceData = await withTimeout(
+      this.marketAgent.fetchPriceForSymbol(activeSymbol),
+      10_000,
+      `active-price ${activeSymbol}`,
+    );
+    if (priceData) {
+      if (priceData.volume24h > 0 && marketVolume24h === 0) {
+        marketVolume24h = priceData.volume24h;
+      }
+      if (marketPrice <= 0 && priceData.price > 0) {
+        marketPrice = priceData.price; // REST price as fallback if WS price not available
+      }
+      marketChange24h = marketChange24h || priceData.change24h;
+    } else {
+      log.warn(`⏱️ [active-fetch] ${activeSymbol} price fetch timed out — proceeding with WS marketState price (${marketPrice.toFixed(2)}), volume/change24h may be stale`);
     }
-    if (marketPrice <= 0 && priceData.price > 0) {
-      marketPrice = priceData.price; // REST price as fallback if WS price not available
-    }
-    marketChange24h = marketChange24h || priceData.change24h;
+
+    // v2.0.820: Backfill marketState for ALL non-active trading markets.
+    // Before this fix, only the selectedSymbol received marketState.update()
+    // (via multiWs.onPrice); every other trading market had an empty/frozen
+    // priceHistory → vol=0 → permanent low_volatility regime → vol-gate HOLD
+    // + blind agent context. When the selectedSymbol switched (e.g. btc →
+    // xyz:SILVER at 10:13), the previously-active market went instantly blind.
+    // This per-cycle REST backfill feeds every trading market's priceHistory so
+    // vol/regime/price are live for all symbols the system actually trades.
+    await this.backfillMarketStateForTradingMarkets(activeSymbol);
+    // v2.0.820: Stale-feed watchdog — auto-reconnect the WS when the selected
+    // symbol's feed goes silent (the 10:13 BTC $0.00 breakage would have
+    // self-healed with this). Runs every cycle; throttled internally.
+    this.checkStaleFeedsAndReconnect(activeSymbol);
 
     // Build a combined market state for agents
     const combinedState = {
@@ -4985,7 +5159,7 @@ ${recentExamples}
           // marketState has no price, so shadows for non-active trading markets
           // actually get checked for SL/TP resolution each cycle.
           if (mktChkPrice <= 0) {
-            try { mktChkPrice = (await this.marketAgent.fetchPriceForSymbol(mktSym)).price; } catch { /* keep 0 */ }
+            try { const _d = await withTimeout(this.marketAgent.fetchPriceForSymbol(mktSym), 8_000, `shadow-resolve ${mktSym}`); mktChkPrice = _d?.price ?? 0; } catch { /* keep 0 */ }
           }
           if (mktChkPrice > 0) {
             const mktHL = this.marketState.getHighLow(mktSym);
@@ -5055,7 +5229,8 @@ ${recentExamples}
           // the others.
           if (mktPrice <= 0 && normalizeSymbol(mktSym) !== normalizeSymbol(activeSymbol)) {
             try {
-              mktPrice = (await this.marketAgent.fetchPriceForSymbol(mktSym)).price;
+              const _sd = await withTimeout(this.marketAgent.fetchPriceForSymbol(mktSym), 8_000, `shadow-open ${mktSym}`);
+              mktPrice = _sd?.price ?? 0;
             } catch { /* keep 0 */ }
           }
           if (mktPrice <= 0) continue;
@@ -5592,10 +5767,12 @@ ${recentExamples}
         let mktChange24h = 0;
         let mktVolume24h = 0;
         try {
-          const priceData = await this.marketAgent.fetchPriceForSymbol(mktSym);
-          mktPrice = priceData.price;
-          mktChange24h = priceData.change24h;
-          mktVolume24h = priceData.volume24h;
+          const priceData = await withTimeout(this.marketAgent.fetchPriceForSymbol(mktSym), 8_000, `addl-ctx ${mktSym}`);
+          if (priceData) {
+            mktPrice = priceData.price;
+            mktChange24h = priceData.change24h;
+            mktVolume24h = priceData.volume24h;
+          }
           // v2.0.107: Cache for injection code
           additionalMarketsPrices.set(mktSym, { price: mktPrice, change24h: mktChange24h, volume24h: mktVolume24h });
         } catch {
@@ -6103,8 +6280,8 @@ ${recentExamples}
           let mktPrice = cachedPrices?.get(mktSym)?.price ?? 0;
           if (mktPrice <= 0) {
             try {
-              const priceData = await this.marketAgent.fetchPriceForSymbol(mktSym);
-              mktPrice = priceData.price;
+              const priceData = await withTimeout(this.marketAgent.fetchPriceForSymbol(mktSym), 8_000, `inject-price ${mktSym}`);
+              mktPrice = priceData?.price ?? 0;
             } catch {
               log.warn(`Failed to fetch price for trading market ${mktSym} — injecting with price=0 (agents will have limited context)`);
               // v2.0.107: Don't skip — still inject so agents see the market.
@@ -6209,8 +6386,8 @@ ${recentExamples}
         // v2.0.80: Pass price fetcher for Skeptics thesis re-validation
         async (symbol: string): Promise<number | null> => {
           try {
-            const result = await this.marketAgent.fetchPriceForSymbol(symbol);
-            return result.price;
+            const result = await withTimeout(this.marketAgent.fetchPriceForSymbol(symbol), 8_000, `skeptic-price ${symbol}`);
+            return result ? result.price : null;
           } catch {
             return null;
           }
@@ -6910,21 +7087,41 @@ ${recentExamples}
             }
             auditGates.push({ gate: 'direction-restrict', passed: true, reason: 'allowed' });
 
-            // v2.0.764: Dynamic minimum volatility gate for multi-symbol path
-            // v2.0.228: When per-symbol volatility is 0 (data feed broken/dead market),
-            // fall back to combined-state volatility. If that's also 0, use a minimum
-            // floor (0.0005) so the gate doesn't hard-block on missing data — the
-            // conviction gate handles signal quality assessment.
+            // v2.0.764 → v2.0.820: Dynamic minimum volatility gate (multi-symbol) — SOFTENED.
+            // vol === 0 → hard skip (feed broken, can't trade on phantom prices).
+            // 0 < vol < threshold → soft: proportional confidence penalty so a
+            // strong WINNER-FIRST winner can still pass. Previously this
+            // hard-skipped every calm symbol (SILVER/BTC) permanently.
             const pscVolRaw = this.marketState.getState(psc.symbol)?.volatility ?? 0;
-            const pscVol = pscVolRaw > 0 ? pscVolRaw : (combinedState.volatility > 0 ? combinedState.volatility : 0.0005);
-            if (pscVol < this.dynamicMinVolatility) {
-              const isDataIssue = pscVolRaw === 0;
-              log.warn(`🛑 [vol-gate] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol}: volatility ${pscVol.toFixed(4)} < dynamic threshold ${this.dynamicMinVolatility.toFixed(4)}${isDataIssue ? ' (⚠️ data feed issue — vol=0)' : ' — market too quiet'}, skipping`);
-              auditGates.push({ gate: 'vol-gate', passed: false, reason: `vol=${pscVol.toFixed(4)} < threshold=${this.dynamicMinVolatility.toFixed(4)}${isDataIssue ? ' (data issue)' : ''}` });
+            const pscVol = pscVolRaw > 0 ? pscVolRaw : (combinedState.volatility > 0 ? combinedState.volatility : 0);
+            if (pscVol === 0) {
+              log.warn(`🛑 [vol-gate] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol}: volatility 0 — feed broken/stale, skipping`);
+              auditGates.push({ gate: 'vol-gate', passed: false, reason: `vol=0 (feed broken)` });
               this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
               continue;
             }
-            auditGates.push({ gate: 'vol-gate', passed: true, reason: `vol=${pscVol.toFixed(4)} ≥ threshold=${this.dynamicMinVolatility.toFixed(4)}` });
+            if (pscVol < this.dynamicMinVolatility) {
+              // WINNER-FIRST exemption (mirrors the active path): a confident
+              // combo winner's track record is regime-keyed, so it already
+              // reflects low-vol performance — skip the penalty to avoid
+              // double-counting. Only non-winner psc's take the soft penalty.
+              const pscRegime = this.marketState.getState(psc.symbol)?.regime ?? 'unknown';
+              const pscAction = (psc.action === 'buy' || psc.action === 'sell')
+                ? (psc.action as 'buy' | 'sell') : 'buy';
+              const pscComboWinner = this.comboTracker.getComboBlendFactor(psc.symbol, pscAction, pscRegime);
+              if (pscComboWinner) {
+                log.info(`🟢 [vol-gate] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol}: vol ${pscVol.toFixed(5)} < threshold but WINNER-FIRST combo (${(pscComboWinner.wr * 100).toFixed(0)}% WR, n=${pscComboWinner.count}) overrides — no penalty`);
+                auditGates.push({ gate: 'vol-gate', passed: true, reason: `vol<threshold but WINNER combo ${(pscComboWinner.wr * 100).toFixed(0)}% (n=${pscComboWinner.count}) exempts penalty` });
+              } else {
+                const ratio = pscVol / this.dynamicMinVolatility;
+                const volSoftPenalty = 0.15 * (1 - Math.min(1, Math.max(0, ratio)));
+                psc.confidence = psc.confidence * (1 - Math.min(0.15, volSoftPenalty));
+                log.info(`🟡 [vol-gate] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol}: vol ${pscVol.toFixed(5)} < threshold ${this.dynamicMinVolatility.toFixed(4)} — soft penalty -${(volSoftPenalty * 100).toFixed(0)}% conf`);
+                auditGates.push({ gate: 'vol-gate', passed: true, reason: `vol=${pscVol.toFixed(5)} < threshold (soft -${(volSoftPenalty * 100).toFixed(0)}%, no winner combo)` });
+              }
+            } else {
+              auditGates.push({ gate: 'vol-gate', passed: true, reason: `vol=${pscVol.toFixed(4)} ≥ threshold=${this.dynamicMinVolatility.toFixed(4)}` });
+            }
 
             // v2.0.731: Loss streak gate for multi-symbol path
             // v2.0.732: Condition-aware soft gate — raises conviction threshold
@@ -6964,7 +7161,8 @@ ${recentExamples}
               // Fallback: fetch via Market Agent (same source as the trading-
               // market price fetch earlier in the cycle).
               try {
-                pscPrice = (await this.marketAgent.fetchPriceForSymbol(psc.symbol)).price;
+                const _ed = await withTimeout(this.marketAgent.fetchPriceForSymbol(psc.symbol), 8_000, `entry-price ${psc.symbol}`);
+                pscPrice = _ed?.price ?? 0;
               } catch { /* keep 0 */ }
             }
             if (pscPrice <= 0) {
@@ -7388,32 +7586,58 @@ ${recentExamples}
   // v2.0.765: REMOVED systematic loser hard block — OWNER DIRECTIVE: NEVER hard block.
   // The dynamic volatility gate (v2.0.764) handles the root cause — low-vol noise trading.
 
-      // v2.0.764: Dynamic minimum volatility gate — if current volatility is below
-      // the dynamic threshold, HOLD. This prevents trading in dead markets where
-      // SL gets triggered by noise. The threshold adapts based on recent trade outcomes.
-      // This is NOT a hard block on symbols/directions — it's a market condition gate
-      // (like conviction gate). When volatility returns, trades resume automatically.
+      // v2.0.764 → v2.0.820: Dynamic minimum volatility gate — SOFTENED.
+      // The owner WINNER-FIRST directive states "NEVER hard block". The old
+      // vol-gate hard-HOLDed any symbol below `dynamicMinVolatility`, which —
+      // combined with the ~30× understated calcVolatility — permanently blocked
+      // every calm symbol (SILVER, BTC) even when a strong combo WR winner
+      // signal existed. v2.0.820 splits the gate into two regimes:
+      //   • vol === 0  → HARD HOLD. The feed is broken / no data (fix B/D).
+      //     Trading on phantom prices is never safe — this stays a hard block.
+      //   • 0 < vol < threshold → SOFT. Apply a conviction penalty proportional
+      //     to how far below threshold (so dead-but-live markets need a stronger
+      //     signal) but let a strong WINNER-FIRST combo override pass. The
+      //     penalty is added to _lossStreakPenalty so the Plan G conviction
+      //     gate's penaltyFactor absorbs it.
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
-        // v2.0.228: Use per-symbol volatility from marketState, not combinedState.
-        // When per-symbol vol is 0 (data feed broken/dead market), fall back to
-        // combined-state volatility. If that's also 0, use a minimum floor (0.0005)
-        // so the gate doesn't hard-block on missing data — the conviction gate
-        // handles signal quality assessment.
         const activeSymForVol = normalizeSymbol(finalDecision.symbol || activeSymbol);
         const perSymVol = this.marketState.getState(activeSymForVol)?.volatility ?? 0;
         const currentVol = perSymVol > 0
           ? perSymVol
-          : (combinedState.volatility > 0 ? combinedState.volatility : 0.0005);
-        if (currentVol < this.dynamicMinVolatility) {
-          const isDataIssue = perSymVol === 0;
-          log.warn(`🛑 [vol-gate] ${finalDecision.action.toUpperCase()} ${finalDecision.symbol || activeSymbol}: volatility ${currentVol.toFixed(4)} < dynamic threshold ${this.dynamicMinVolatility.toFixed(4)}${isDataIssue ? ' (⚠️ data feed issue — vol=0)' : ' — market too quiet'}, HOLD`);
-          activeAuditGates.push({ gate: 'vol-gate', passed: false, reason: `vol=${currentVol.toFixed(4)} < threshold=${this.dynamicMinVolatility.toFixed(4)} (market too quiet)` });
+          : (combinedState.volatility > 0 ? combinedState.volatility : 0);
+        if (currentVol === 0) {
+          // Hard block: no data at all — feed broken. Never trade on phantom prices.
+          log.warn(`🛑 [vol-gate] ${finalDecision.action.toUpperCase()} ${finalDecision.symbol || activeSymbol}: volatility 0 — data feed broken/stale, HARD HOLD`);
+          activeAuditGates.push({ gate: 'vol-gate', passed: false, reason: `vol=0 (feed broken — hard block)` });
           finalDecision = {
             ...finalDecision,
             action: 'hold',
             positionSizePct: 0,
-            rationale: `[VOL GATE] Volatility ${currentVol.toFixed(4)} below dynamic threshold ${this.dynamicMinVolatility.toFixed(4)} — market too quiet for profitable trading. HOLD. Original: ${finalDecision.rationale}`,
+            rationale: `[VOL GATE] Volatility 0 — data feed broken/stale. Cannot trade on phantom prices. HOLD. Original: ${finalDecision.rationale}`,
           };
+        } else if (currentVol < this.dynamicMinVolatility) {
+          // Soft: low volatility but live data — proportional conviction penalty.
+          // WINNER-FIRST exemption: if a confident combo winner exists for this
+          // (symbol × side × regime), SKIP the vol penalty. The combo WR is
+          // keyed by regime (incl. low_volatility), so its track record ALREADY
+          // reflects low-vol performance — penalising again double-counts the
+          // risk and violates the owner's "NEVER hard block / profit first"
+          // directive. Only non-winner (OLR-only) decisions take the soft penalty.
+          const volRegime = this.marketState.getState(activeSymForVol)?.regime ?? 'unknown';
+          const volAction = (finalDecision.action === 'buy' || finalDecision.action === 'sell')
+            ? (finalDecision.action as 'buy' | 'sell') : 'buy';
+          const volComboWinner = this.comboTracker.getComboBlendFactor(activeSymForVol, volAction, volRegime);
+          if (volComboWinner) {
+            log.info(`🟢 [vol-gate] ${finalDecision.action.toUpperCase()} ${finalDecision.symbol || activeSymbol}: vol ${currentVol.toFixed(5)} < threshold but WINNER-FIRST combo (${(volComboWinner.wr * 100).toFixed(0)}% WR, n=${volComboWinner.count}) overrides — no penalty`);
+            activeAuditGates.push({ gate: 'vol-gate', passed: true, reason: `vol<threshold but WINNER combo ${(volComboWinner.wr * 100).toFixed(0)}% (n=${volComboWinner.count}) exempts penalty` });
+          } else {
+            const ratio = currentVol / this.dynamicMinVolatility;
+            const volSoftPenalty = 0.15 * (1 - Math.min(1, Math.max(0, ratio)));
+            const prevPenalty = (this as any)._lossStreakPenalty ?? 0;
+            (this as any)._lossStreakPenalty = Math.max(0, prevPenalty) + volSoftPenalty;
+            log.info(`🟡 [vol-gate] ${finalDecision.action.toUpperCase()} ${finalDecision.symbol || activeSymbol}: vol ${currentVol.toFixed(5)} < threshold ${this.dynamicMinVolatility.toFixed(4)} — soft penalty +${(volSoftPenalty * 100).toFixed(0)}%`);
+            activeAuditGates.push({ gate: 'vol-gate', passed: true, reason: `vol=${currentVol.toFixed(5)} < threshold (soft +${(volSoftPenalty * 100).toFixed(0)}%, no winner combo)` });
+          }
         } else {
           activeAuditGates.push({ gate: 'vol-gate', passed: true, reason: `vol=${currentVol.toFixed(4)} ≥ threshold=${this.dynamicMinVolatility.toFixed(4)}` });
         }
@@ -7446,9 +7670,15 @@ ${recentExamples}
         // discounted the confidence (×0.685), creating a compound gap that made
         // trading mathematically impossible (44.5% vs 80% = 35.5pp gap).
         //
-        // Plan G replaces this with a 3-layer multiplicative model:
-        //   effectiveConfidence = consensus × pwinBlendFactor × penaltyFactor
+        // Plan G replaces this with a 4-layer multiplicative model (v2.0.819):
+        //   effectiveConfidence = consensus × pwinBlendFactor × penaltyFactor × boostFactor
         //   dynamicThreshold = 50% + (totalScore × 0.5%)  →  [45%, 55%]
+        //
+        // v2.0.819 WINNER-FIRST: pwinBlendFactor = max(olrBlend, comboBlend),
+        // letting a statistically strong combo WR (e.g. BTC buy/low_vol 77%,
+        // 556W/164L) override the OLR P(win) multiplicative veto that kept BTC
+        // untraded for 4 days. boostFactor carries the lossStreakTracker winner
+        // pattern (up to +20%). Both are sample-guarded so garbage cannot pass.
         //
         // The threshold is dynamic (driven by 5 objective performance factors with
         // hysteresis) but capped at [45%, 55%]. Penalties are multiplicative (not
@@ -7508,10 +7738,15 @@ ${recentExamples}
           sharpeSampleCount,
           regime,
           netPenalty: Math.max(0, safeNum(netPenalty, 0)),
+          // v2.0.819: WINNER-FIRST — flow the lossStreakTracker winner boost
+          // into the Plan G multiplicative boostFactor. Previously this value
+          // was stored as a negative _lossStreakPenalty and clipped to 0 here.
+          winnerBoost: Math.max(0, safeNum(this._winnerBoost, 0)),
         };
         const dtcResult = this.dynamicThresholdCalc.compute(dtcInput, gateSymbol);
         const effectiveThreshold = dtcResult.threshold;
         const penaltyFactor = dtcResult.penaltyFactor;
+        const boostFactor = dtcResult.boostFactor;
 
         // ── OLR P(win) multiplicative discount (v2.0.224, preserved) ──────
         const pwinSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
@@ -7530,26 +7765,50 @@ ${recentExamples}
             }
           } catch { /* cold-start safe: keep default 1.0 (no discount) */ }
         }
-        const pwinBlendFactor = olrHasData
+        const olrBlendFactor = olrHasData
           ? DynamicThresholdCalculator.pwinBlendFactor(olrPWin)
           : 1.0;
 
-        // ── Final effective confidence: consensus × P(win) × penalty ──────
-        const effectiveConfidence = safeNum(consensusConfidence, 0) * pwinBlendFactor * penaltyFactor;
+        // ── v2.0.819: WINNER-FIRST combo blend override ───────────────────
+        // The combo WR tracker stores per-(symbol×side×regime) win rates that
+        // the OLR model (continuous-feature sigmoid, trained mostly on stale
+        // paper data) cannot express. When a combo is a statistically
+        // confident winner (n ≥ 20, Wilson 95% LB ≥ 0.55), its blend factor
+        // overrides the OLR blend so a strong winner can trade even when OLR
+        // reports a low P(win). This implements the owner's WINNER-FIRST
+        // directive inside the gate math — previously combo WR could only
+        // penalise losers, never boost winners.
+        const gateAction = (finalDecision.action === 'buy' || finalDecision.action === 'sell')
+          ? (finalDecision.action as 'buy' | 'sell')
+          : 'buy';
+        const comboBlend = this.comboTracker.getComboBlendFactor(pwinSym, gateAction, regime);
+        let pwinBlendFactor = olrBlendFactor;
+        let comboBlendUsed: { blendFactor: number; reason: string } | null = null;
+        if (comboBlend && comboBlend.blendFactor > olrBlendFactor) {
+          pwinBlendFactor = comboBlend.blendFactor;
+          comboBlendUsed = { blendFactor: comboBlend.blendFactor, reason: comboBlend.reason };
+          log.info(`🟢 [winner-first] ${gateAction.toUpperCase()} ${pwinSym}: combo blend ${comboBlend.blendFactor.toFixed(3)} overrides OLR blend ${olrBlendFactor.toFixed(3)} — ${comboBlend.reason}`);
+        }
+
+        // ── Final effective confidence: consensus × P(win) × penalty × boost ──
+        const effectiveConfidence = safeNum(consensusConfidence, 0) * pwinBlendFactor * penaltyFactor * boostFactor;
 
         // ── Gate decision ─────────────────────────────────────────────────
         if (effectiveConfidence < effectiveThreshold) {
+          const blendStr = comboBlendUsed
+            ? ` blend=${pwinBlendFactor.toFixed(3)} (combo override: ${comboBlendUsed.reason.slice(0, 80)})`
+            : ` blend=${pwinBlendFactor.toFixed(3)}`;
           const pwinStr = olrHasData
-            ? ` (P(win)=${(olrPWin * 100).toFixed(0)}% × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%)`
-            : ` (consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%, OLR cold-start)`;
+            ? ` (P(win)=${(olrPWin * 100).toFixed(0)}%${blendStr} × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%)`
+            : ` (consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%, OLR cold-start)`;
           const factorStr = dtcResult.factors.map(f => `${f.factor}=${f.score > 0 ? '+' : ''}${f.score}`).join(' ');
-          log.warn(`🛑 [Plan-G] Conviction gate [${finalDecision.symbol || activeSymbol}]: effective ${(effectiveConfidence * 100).toFixed(0)}% < threshold ${(effectiveThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, penalty=${penaltyFactor.toFixed(2)})${pwinStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD`);
+          log.warn(`🛑 [Plan-G] Conviction gate [${finalDecision.symbol || activeSymbol}]: effective ${(effectiveConfidence * 100).toFixed(0)}% < threshold ${(effectiveThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, penalty=${penaltyFactor.toFixed(2)}, boost=${boostFactor.toFixed(2)})${pwinStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD`);
           activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(effectiveConfidence * 100).toFixed(0)}% < ${(effectiveThreshold * 100).toFixed(1)}%${pwinStr} [${factorStr}]` });
           finalDecision = {
             ...finalDecision,
             action: 'hold',
             positionSizePct: 0,
-            rationale: `[Plan-G ${finalDecision.symbol || activeSymbol}] Effective confidence ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)}) below dynamic threshold ${(effectiveThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}). HOLD. Original: ${finalDecision.rationale}`,
+            rationale: `[Plan-G ${finalDecision.symbol || activeSymbol}] Effective confidence ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × blend=${pwinBlendFactor.toFixed(3)} × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)}) below dynamic threshold ${(effectiveThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}). HOLD. Original: ${finalDecision.rationale}`,
           };
         } else if (symFilter.isTradeFrequencyLimited()) {
           log.warn(`🛑 [adaptive-filter] Trade frequency throttle [${finalDecision.symbol || activeSymbol}]: limit reached — overriding ${finalDecision.action.toUpperCase()} → HOLD (over-trading prevention)`);
@@ -7563,8 +7822,8 @@ ${recentExamples}
         } else {
           const factorStr = dtcResult.factors.map(f => `${f.factor}=${f.score > 0 ? '+' : ''}${f.score}`).join(' ');
           activeAuditGates.push({ gate: 'conviction-gate', passed: true, reason: olrHasData
-            ? `effective ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × ${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)}) ≥ ${(effectiveThreshold * 100).toFixed(1)}% [${factorStr}]`
-            : `${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} = ${(effectiveConfidence * 100).toFixed(0)}% ≥ ${(effectiveThreshold * 100).toFixed(1)}% (OLR cold-start) [${factorStr}]` });
+            ? `effective ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × blend=${pwinBlendFactor.toFixed(3)}${comboBlendUsed ? ' [combo override]' : ''} × ${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)}) ≥ ${(effectiveThreshold * 100).toFixed(1)}% [${factorStr}]`
+            : `${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} = ${(effectiveConfidence * 100).toFixed(0)}% ≥ ${(effectiveThreshold * 100).toFixed(1)}% (OLR cold-start) [${factorStr}]` });
           activeAuditGates.push({ gate: 'frequency-throttle', passed: true, reason: 'OK' });
         }
       }

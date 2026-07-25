@@ -288,6 +288,42 @@ function vectorToRecord(v: number[], names: readonly string[]): Record<string, n
   return rec;
 }
 
+// ─── v2.0.819: Symbol-key normalisation & orphan sanitisation ────────────
+//
+// The states Map is keyed by the raw `symbol` string passed to pushCycle /
+// recordEntry / updateOnOutcome / retrieveBlend. These callers all use
+// normalizeSymbol() (lowercase prefix before ':', preserve asset name after).
+// BUT the close-learning backfill path (index.ts) previously used an ad-hoc
+// `rec.symbol.includes(':') ? rec.symbol : rec.symbol.toLowerCase()` that
+// diverged for any colon-symbol whose EXP record stored a non-normalised form
+// — creating orphan states like `xyz:SILVER**` that accumulated 0 cycles and
+// wasted memory. Worse, if a caller ever passed a mixed-case key (`BTC` vs
+// `btc`), pushCycle and updateOnOutcome would write to DIFFERENT states and
+// the w update for a trade would land on an empty state (updateCount=0 on the
+// real one).
+//
+// Fix: getState() normalises the key defensively so an orphan can NEVER be
+// created by casing/whitespace mismatch, and load() sanitises/migrates any
+// orphans already on disk.
+
+/** Mirror of trading/portfolio.ts normalizeSymbol — kept local to avoid a
+ *  cross-package dependency from evolution/ → trading/. MUST stay in sync. */
+function normKey(symbol: string): string {
+  const s = (symbol ?? '').trim();
+  if (s.length === 0) return s;
+  const colonIdx = s.indexOf(':');
+  if (colonIdx >= 0) {
+    return s.slice(0, colonIdx).toLowerCase() + s.slice(colonIdx);
+  }
+  return s.toLowerCase();
+}
+
+/** A valid symbol key contains only [a-z0-9:_-] after normalisation.
+ *  Catches corrupted keys like `xyz:SILVER**` (markdown / wildcard leak). */
+function isValidSymbolKey(symbol: string): boolean {
+  return /^[a-z0-9:_-]+$/.test(symbol);
+}
+
 // ─── CycleHistoryRetriever ───
 
 export class CycleHistoryRetriever {
@@ -314,8 +350,26 @@ export class CycleHistoryRetriever {
       const parsed = JSON.parse(data) as { states: CycleHistoryState[]; version: number };
       if (!parsed || !Array.isArray(parsed.states)) throw new Error('invalid state');
       this.states = new Map();
-      for (const s of parsed.states) {
-        if (!s || typeof s !== 'object' || !s.symbol) continue;
+      let migrated = 0;
+      let dropped = 0;
+      for (const raw of parsed.states) {
+        if (!raw || typeof raw !== 'object' || !raw.symbol) continue;
+        // v2.0.819: Normalise + sanitize the symbol key. Corrupted keys
+        // (e.g. `xyz:SILVER**` from a prior divergent caller) are dropped or
+        // merged into the canonical state so they stop wasting memory and
+        // polluting retrieval. A valid key that merely had wrong casing is
+        // migrated to the normalised key.
+        const canonical = normKey(raw.symbol);
+        if (!isValidSymbolKey(canonical)) {
+          log.warn(`[cycle-history] dropping corrupted symbol state '${raw.symbol}' — invalid characters`);
+          dropped++;
+          continue;
+        }
+        const s = raw as CycleHistoryState;
+        if (s.symbol !== canonical) {
+          migrated++;
+          s.symbol = canonical;
+        }
         // v2.0.212 (#7): Migrate old single-w state → wDecision + wExecution.
         const wLen = this.cfg.featureNames.length;
         if (s.w && !s.wDecision) {
@@ -337,10 +391,26 @@ export class CycleHistoryRetriever {
         if (!s.lastExecEntropy) s.lastExecEntropy = 0;
         // Clear stale pendingEntry (can't pair across restart).
         s.pendingEntry = null;
-        this.states.set(s.symbol, s);
+        // v2.0.819: Dedup on canonical key. If two persisted states collapse
+        // to the same normalised symbol (e.g. `XYZ:SILVER` + `xyz:SILVER`),
+        // keep the richer state (more cycles) and merge the other's cycles in
+        // so no market history is lost.
+        const existing = this.states.get(s.symbol);
+        if (existing) {
+          if ((s.cycles?.length ?? 0) > (existing.cycles?.length ?? 0)) {
+            // incoming is richer — fold existing cycles into incoming, then replace
+            existing.cycles.forEach(c => s.cycles.push(c));
+            this.states.set(s.symbol, s);
+          } else {
+            s.cycles?.forEach(c => existing.cycles.push(c));
+          }
+          migrated++;
+        } else {
+          this.states.set(s.symbol, s);
+        }
       }
       this.lastGood = this.snapshotStates();
-      log.info(`[cycle-history] Loaded ${this.states.size} symbol states`);
+      log.info(`[cycle-history] Loaded ${this.states.size} symbol states${migrated ? ` (${migrated} migrated, ${dropped} dropped)` : ''}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn(`[cycle-history] load failed (${msg}) — starting fresh`);
@@ -372,7 +442,11 @@ export class CycleHistoryRetriever {
   // ─── State access ───
 
   private getState(symbol: string): CycleHistoryState {
-    const sym = symbol;
+    // v2.0.819: Normalise the key so a casing/whitespace mismatch can never
+    // create an orphan state. All callers already use normalizeSymbol, but
+    // this is the defensive last line — a single divergent caller (e.g. the
+    // old backfill path) previously created `xyz:SILVER**` orphans.
+    const sym = normKey(symbol);
     let s = this.states.get(sym);
     if (!s) {
       s = {
@@ -455,7 +529,44 @@ export class CycleHistoryRetriever {
           ts: s.entryTs,
         };
       } else {
-        s.pendingEntry = null;
+        // v2.0.819: Cold-start fallback. Previously this branch set
+        // pendingEntry=null, which meant updateOnOutcome() could never pair
+        // the first trade with an entry snapshot → w stayed at 0 forever for
+        // rarely-trading symbols (BTC went 4 days with updateCount=0). Now we
+        // seed a uniform-attention pendingEntry from the current snapshot so
+        // the FIRST trade outcome can update w (reward-weighted key
+        // direction). The mean_key is just the entry vector itself, which is
+        // the correct cold-start signal: “this feature direction paid off”.
+        //
+        // NOTE: we use rmsNorm(entryVec) directly — NOT zScore — because with
+        // < 2 cycles of history featStats are empty and zScore returns the zero
+        // vector, which would produce a zero gradient (w would never move).
+        // rmsNorm preserves the raw feature DIRECTION (relative proportions),
+        // giving a non-zero key for the reward-weighted update. Once enough
+        // history accumulates the blended path takes over and uses z-scored keys.
+        const names = this.cfg.featureNames;
+        const entryVec = featureVector(clean, names);
+        const coldKey = rmsNorm(entryVec);
+        const coldKeys = [coldKey];
+        const coldValues = [entryVec];
+        const coldAlpha = [1.0];
+        s.pendingEntry = {
+          side,
+          decision: {
+            alphaDist: coldAlpha,
+            keys: coldKeys,
+            hBlend: entryVec,
+            values: coldValues,
+          },
+          execution: {
+            alphaDist: coldAlpha,
+            keys: coldKeys,
+            hBlend: entryVec,
+            values: coldValues,
+          },
+          ts: s.entryTs,
+        };
+        log.info(`[cycle-history] ${s.symbol} recordEntry cold-start — seeded uniform pendingEntry (history=${s.cycles.length}) so first outcome can update w`);
       }
       this.dirty = true;
     } catch (err) {
@@ -726,14 +837,17 @@ export class CycleHistoryRetriever {
   /** Get the w vector for a symbol (for debugging / display).
    *  v2.0.212 (#7): mode selects which pseudo-query to return. */
   getQuery(symbol: string, mode: 'decision' | 'execution' = 'decision'): number[] {
-    const s = this.states.get(symbol);
+    // v2.0.819: Normalise the lookup key — states are now keyed by normKey
+    // (getState normalises on insert). Without this, getQuery('BTC') would
+    // miss the state stored under 'btc' and return a zero vector.
+    const s = this.states.get(normKey(symbol));
     if (!s) return new Array<number>(this.cfg.featureNames.length).fill(0);
     return mode === 'execution' ? s.wExecution.slice() : s.wDecision.slice();
   }
 
   /** Get cycle count for a symbol. */
   cycleCount(symbol: string): number {
-    return this.states.get(symbol)?.cycles.length ?? 0;
+    return this.states.get(normKey(symbol))?.cycles.length ?? 0;
   }
 
   /** Total symbols tracked. */

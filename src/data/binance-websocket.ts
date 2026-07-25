@@ -471,6 +471,12 @@ export class RegimeCalibrator {
 
 export class MarketStateAggregator {
   private priceHistory: Map<string, number[]> = new Map();
+  /** v2.0.820: Parallel timestamp store for calcVolatility — lets us compute
+   *  the ACTUAL history time span instead of assuming 100ms/tick. The previous
+   *  hardcoded 0.1s assumption understated σ by ~30× when ticks arrived slower
+   *  (e.g. REST-polled non-active markets at 1 tick/4min), permanently
+   *  classifying every calm symbol as low_volatility and tripping the vol-gate. */
+  private priceHistoryTs: Map<string, number[]> = new Map();
   private readonly historySize = 100;
   private tickers: Map<string, Ticker> = new Map();
   private orderBookImbalance = 0;
@@ -483,11 +489,26 @@ export class MarketStateAggregator {
     this.tickers.set(sym, ticker);
     if (!this.priceHistory.has(sym)) {
       this.priceHistory.set(sym, []);
+      this.priceHistoryTs.set(sym, []);
     }
     const history = this.priceHistory.get(sym)!;
+    const tsHistory = this.priceHistoryTs.get(sym)!;
+    // v2.0.820: Use the ticker's own timestamp when available, else Date.now().
+    // This keeps the time span accurate for both WS ticks (fast) and REST
+    // backfills (slow, ~1 per cycle) — critical for correct σ scaling.
+    let ts = ticker.timestamp ?? Date.now();
+    // De-duplicate identical consecutive ticks (REST backfill often returns
+    // the same price multiple times — would deflate σ with zero log-returns).
+    const lastTs = tsHistory[tsHistory.length - 1];
+    if (lastTs !== undefined && ts <= lastTs) {
+      // Out-of-order / duplicate timestamp — bump to lastTs + 1ms to preserve order.
+      ts = lastTs + 1;
+    }
     history.push(ticker.price);
+    tsHistory.push(ts);
     if (history.length > this.historySize) {
       history.shift();
+      tsHistory.shift();
     }
   }
 
@@ -530,8 +551,9 @@ export class MarketStateAggregator {
     const sym = symbol.toLowerCase();
     const ticker = this.tickers.get(sym);
     const history = this.priceHistory.get(sym) ?? [];
+    const tsHistory = this.priceHistoryTs.get(sym) ?? [];
 
-    const volatility = this.calcVolatility(history);
+    const volatility = this.calcVolatility(history, tsHistory);
     const trend = this.calcTrend(ticker, volatility);
     const regime = this.calcRegime(trend, volatility);
 
@@ -551,24 +573,29 @@ export class MarketStateAggregator {
     };
   }
 
-  private calcVolatility(prices: number[]): number {
+  /** v2.0.820: Compute per-cycle volatility (σ) from tick log-returns,
+   *  scaled by the ACTUAL history time span (not a hardcoded 0.1s/tick).
+   *
+   *  Root cause of the v2.0.820 fix: the previous scaling assumed ~100 ticks
+   *  over ~10s (100ms/tick WS feed) and multiplied tick σ by √(300/10)≈5.5
+   *  to estimate a 5-min cycle σ. But non-active trading markets are REST-
+   *  polled at ~1 tick/4min, so 100 ticks span ~400min — the real history
+   *  duration is 2400× longer than assumed, and the correct scaling factor is
+   *  √(300/24000)≈0.11, not 5.5. The 50× error meant every calm symbol
+   *  reported vol ~30× too low → permanent vol-gate + permanent
+   *  low_volatility regime classification.
+   *
+   *  The fix uses the actual first→last timestamp span. When timestamps are
+   *  unavailable (legacy callers), it falls back to the old 0.1s assumption
+   *  so behaviour is preserved for any path that hasn't been migrated.
+   *
+   *  @param prices  Recent tick prices (oldest → newest).
+   *  @param ts      Parallel timestamp array (ms epochs). Optional for compat.
+   *  @returns Per-cycle σ (fraction, e.g. 0.003 = 0.3%). 0 when < 3 prices. */
+  private calcVolatility(prices: number[], ts?: number[]): number {
     if (prices.length < 3) return 0;
     // v2.0.140: Use std of log returns (true σ) — same algorithm as
-    // first-passage.ts estimateVolatility(). The previous mean-of-|arithmetic
-    // returns| underestimated diffusion by ~20% and caused ALL regimes to
-    // classify as low_volatility, which led to premature closes + false
-    // regime classification across the entire system.
-    //
-    // v2.0.140b: The priceHistory stores ~100 WS ticks (~10s of data at
-    // ~100ms/tick). Tick-level σ is naturally very low (0.01-0.05%). The
-    // RegimeCalibrator thresholds (volLow=0.003, volHigh=0.03) were calibrated
-    // for cycle-level (5-min) σ, not tick-level σ. This mismatch caused ALL
-    // regimes to classify as low_volatility.
-    //
-    // Fix: annualize the tick-level σ to a per-cycle (5-min) σ by multiplying
-    // by √(ticksPerCycle). With ~100 ticks stored over ~10s and a 5-min cycle,
-    // ticksPerCycle ≈ 300 (5min / 1s per tick). This scales the σ to match
-    // the threshold calibration.
+    // first-passage.ts estimateVolatility().
     const logReturns: number[] = [];
     for (let i = 1; i < prices.length; i++) {
       const prev = prices[i - 1]!;
@@ -582,17 +609,34 @@ export class MarketStateAggregator {
     const variance = logReturns.reduce((a, b) => a + (b - mean) ** 2, 0) / (logReturns.length - 1);
     const tickSigma = Math.sqrt(Math.max(variance, 0));
     if (!Number.isFinite(tickSigma)) return 0;
-    // Scale tick-level σ to per-cycle σ: σ_cycle = σ_tick × √(ticksPerCycle)
-    // ticksPerCycle ≈ cycleDuration / avgTickInterval
-    // With 100 ticks over ~10s, avgTickInterval ≈ 0.1s, cycleDuration = 300s (5min)
-    // ticksPerCycle ≈ 300 / 0.1 = 3000... but that's too aggressive.
-    // More conservative: use √(cycleDuration / historyDuration) where
-    // historyDuration ≈ 10s, cycleDuration = 300s → √(30) ≈ 5.5
-    // This scales a 0.02% tick σ to ~0.11% cycle σ — within the threshold range.
-    const historyDurationSec = prices.length * 0.1; // ~10s for 100 ticks at 100ms
-    const cycleDurationSec = 300; // 5-min decision cycle
-    const scaleFactor = Math.sqrt(Math.max(1, cycleDurationSec / Math.max(1, historyDurationSec)));
-    return tickSigma * scaleFactor;
+
+    // v2.0.820: Correct diffusion scaling uses tickInterval, NOT historyDuration.
+    // sigma_cycle = sigma_tick * sqrt(cycleDuration / tickInterval)
+    // where tickInterval = historyDuration / (n-1) is the avg seconds between
+    // consecutive ticks. Using historyDuration directly understates by sqrt(n-1)
+    // (~10x for a 100-tick window) which would push every market below the
+    // vol-gate threshold. The original v2.0.764 bug had the same shape.
+    const cycleDurationSec = 300;
+    let tickIntervalSec: number;
+    if (ts && ts.length === prices.length && ts.length >= 2) {
+      const spanMs = (ts[ts.length - 1] ?? 0) - (ts[0] ?? 0);
+      const spanSec = Math.max(1, spanMs / 1000);
+      tickIntervalSec = spanSec / Math.max(1, prices.length - 1);
+    } else {
+      // Fallback: old 0.1s/tick assumption (preserves behaviour for unmigrated
+      // callers that pass prices without timestamps).
+      tickIntervalSec = 0.1;
+    }
+    // v2.0.820: Defensive floor — real exchange WS ticks are >=50ms apart.
+    // Sub-50ms intervals are almost certainly burst/dedup artifacts (e.g. 100
+    // same-ms ticks deduped to +1ms each → 0.001s interval → 547x scaleFactor
+    // → false high_volatility). Floor at 0.05s bounds the inflation while
+    // preserving accuracy for the fastest real feeds (HL markPrice ~50-200ms).
+    tickIntervalSec = Math.max(0.05, tickIntervalSec);
+    const scaleFactor = Math.sqrt(cycleDurationSec / tickIntervalSec);
+    const cycleSigma = tickSigma * scaleFactor;
+    // Sanity: cap at 100% (a 5-min σ > 100% is a data error, not a market).
+    return Math.min(cycleSigma, 1.0);
   }
 
   private calcTrend(ticker: Ticker | undefined, volatility: number): Trend {

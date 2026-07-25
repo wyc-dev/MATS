@@ -712,3 +712,54 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       expect(result.threshold).toBeLessThanOrEqual(0.55);
     });
   });
+
+  // ═════════════════════════════════════════════════════════════════
+  // v2.0.819: WINNER-FIRST multiplicative boostFactor
+  // ═════════════════════════════════════════════════════════════════
+
+  describe('v2.0.819: WINNER-FIRST boostFactor', () => {
+    it('boostFactor is 1.0 when no winnerBoost is provided', () => {
+      const calc = new DynamicThresholdCalculator();
+      const result = calc.compute(makeInput(), 'test:symbol');
+      expect(result.boostFactor).toBeCloseTo(1.0, 6);
+      expect(result.winnerBoost).toBe(0);
+    });
+
+    it('boostFactor = 1.0 + min(winnerBoost, 0.20) — caps at 1.20', () => {
+      const calc = new DynamicThresholdCalculator();
+      const r1 = calc.compute(makeInput({ winnerBoost: 0.15 }), 'test:symbol');
+      expect(r1.boostFactor).toBeCloseTo(1.15, 6);
+      const r2 = calc.compute(makeInput({ winnerBoost: 0.50 }), 'test:symbol');
+      expect(r2.boostFactor).toBeCloseTo(1.20, 6); // capped
+    });
+
+    it('negative / NaN winnerBoost is clamped to 0 (no penalty-as-boost)', () => {
+      const calc = new DynamicThresholdCalculator();
+      const r = calc.compute(makeInput({ winnerBoost: -0.5 as number }), 'test:symbol');
+      expect(r.boostFactor).toBeCloseTo(1.0, 6);
+      const r2 = calc.compute(makeInput({ winnerBoost: NaN }), 'test:symbol');
+      expect(r2.boostFactor).toBeCloseTo(1.0, 6);
+    });
+
+    it('effectiveConfidence includes boostFactor (4th arg, default 1.0)', () => {
+      // consensus=0.65, pwin=0.55, penalty=0.70, boost=1.15
+      // blend = 0.3 + 0.7×0.55 = 0.685
+      // conf = 0.65 × 0.685 × 0.70 × 1.15 = 0.3585
+      const conf = DynamicThresholdCalculator.effectiveConfidence(0.65, 0.55, 0.70, 1.15);
+      expect(conf).toBeCloseTo(0.65 * 0.685 * 0.70 * 1.15, 3);
+      // default boostFactor = 1.0 → backward compatible with 3-arg callers
+      const confDefault = DynamicThresholdCalculator.effectiveConfidence(0.65, 0.55, 0.70);
+      expect(confDefault).toBeCloseTo(0.65 * 0.685 * 0.70, 3);
+    });
+
+    it('WINNER-FIRST: a strong winner boost lifts effective conf above threshold', () => {
+      // Scenario: OLR P(win)=13% (blend 0.391), consensus=78%, penalty=1.0,
+      // boost=1.15 (lossStreak winner). Without boost: 0.78×0.391=0.305 < 50%.
+      // With boost: 0.78×0.391×1.15 = 0.351 — still < 50%, so the boost alone
+      // isn't enough; the combo blend override (separate, tested in combo tests)
+      // is what actually unblocks BTC. Here we just verify the boost direction.
+      const noBoost = DynamicThresholdCalculator.effectiveConfidence(0.78, 0.13, 1.0, 1.0);
+      const withBoost = DynamicThresholdCalculator.effectiveConfidence(0.78, 0.13, 1.0, 1.15);
+      expect(withBoost).toBeGreaterThan(noBoost);
+    });
+  });

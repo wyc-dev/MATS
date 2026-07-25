@@ -289,3 +289,56 @@ describe('Fix 2: AntiPattern structural lesson auto-generation', () => {
     expect(lesson).not.toContain('undefined');
   });
 });
+
+// ─── v2.0.819: WINNER-FIRST combo blend factor (Fix #1) ───────────────
+//
+// getComboBlendFactor() lets a statistically confident combo WR override the
+// OLR P(win) multiplicative veto in the Plan G conviction gate. Stricter gates
+// than the penalty path: n ≥ 20 AND Wilson 95% LB ≥ 0.55.
+
+describe('ComboWinRateTracker — v2.0.819 WINNER-FIRST blend factor', () => {
+  it('returns null on cold-start (0 trades)', () => {
+    const t = new ComboWinRateTracker('/tmp/mats-test-b1');
+    expect(t.getComboBlendFactor('btc', 'buy', 'low_volatility')).toBeNull();
+  });
+
+  it('returns null below BOOST_MIN_SAMPLES (19 trades, even at 100% WR)', () => {
+    const t = new ComboWinRateTracker('/tmp/mats-test-b2');
+    for (let i = 0; i < 19; i++) t.trackTrade('btc', 'buy', 'low_volatility', 'WIN', 0.5, 0.01, i);
+    // 19/19 WR but only 19 samples — must NOT override OLR (small-sample guard)
+    expect(t.getComboBlendFactor('btc', 'buy', 'low_volatility')).toBeNull();
+  });
+
+  it('returns null when Wilson LB < 0.55 (enough samples but not confident)', () => {
+    const t = new ComboWinRateTracker('/tmp/mats-test-b3');
+    // 11W / 9L over 20 trades = 55% raw WR, but Wilson LB ~0.32 — not a confident winner
+    for (let i = 0; i < 11; i++) t.trackTrade('btc', 'buy', 'low_volatility', 'WIN', 0.5, 0.01, i);
+    for (let i = 0; i < 9; i++) t.trackTrade('btc', 'buy', 'low_volatility', 'LOSS', -0.5, -0.01, i + 100);
+    const r = t.getComboBlendFactor('btc', 'buy', 'low_volatility');
+    expect(r).toBeNull();
+  });
+
+  it('BTC buy/low_vol 77% WR (556W/164L) returns a blend factor that overrides a low OLR blend', () => {
+    const t = new ComboWinRateTracker('/tmp/mats-test-b4');
+    for (let i = 0; i < 556; i++) t.trackTrade('btc', 'buy', 'low_volatility', 'WIN', 0.7, 0.005, i);
+    for (let i = 0; i < 164; i++) t.trackTrade('btc', 'buy', 'low_volatility', 'LOSS', -0.4, -0.003, i + 1000);
+    const r = t.getComboBlendFactor('btc', 'buy', 'low_volatility');
+    expect(r).not.toBeNull();
+    // Wilson LB for 556/720 ≈ 0.74 → blendFactor = 0.3 + 0.7×0.74 ≈ 0.818
+    expect(r!.blendFactor).toBeGreaterThan(0.7);
+    expect(r!.blendFactor).toBeLessThanOrEqual(1.0);
+    expect(r!.count).toBe(720);
+    // This blend factor must beat the OLR P(win)=6.6% blend (0.3+0.7×0.066=0.346)
+    // so BTC can finally trade — the whole point of WINNER-FIRST.
+    const olrBlend = 0.3 + 0.7 * 0.066;
+    expect(r!.blendFactor).toBeGreaterThan(olrBlend);
+    expect(r!.reason).toContain('WINNER-FIRST');
+  });
+
+  it('does NOT boost a losing combo (4W/16L) even with enough samples', () => {
+    const t = new ComboWinRateTracker('/tmp/mats-test-b5');
+    for (let i = 0; i < 4; i++) t.trackTrade('btc', 'sell', 'low_volatility', 'WIN', 0.3, 0.01, i);
+    for (let i = 0; i < 16; i++) t.trackTrade('btc', 'sell', 'low_volatility', 'LOSS', -0.3, -0.01, i + 100);
+    expect(t.getComboBlendFactor('btc', 'sell', 'low_volatility')).toBeNull();
+  });
+});
