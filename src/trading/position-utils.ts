@@ -64,20 +64,7 @@ export function trackMAEMFE(pos: Position): void {
  * Compute the margin (capital at risk) for a position.
  * margin = notional / leverage = (entryPrice × quantity) / leverage
  */
-export function computeMargin(pos: Position): number {
-  return (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
-}
-
 /**
  * Scale down a new position's quantity to fit within the remaining margin budget.
  * Returns the scaled quantity, or 0 if no budget remains.
  */
-export function scaleQuantityToMargin(
-  existingMargin: number,
-  maxMargin: number,
-  leverage: number,
-  price: number,
-): number {
-  const allowedNewMargin = Math.max(0, maxMargin - existingMargin);
-  return (allowedNewMargin * leverage) / price;
-}

@@ -138,27 +138,6 @@ export interface WinLossStats {
   avgPnl: number;
 }
 
-export function computeWinLossStats(
-  records: Array<{ pnl?: number }>,
-  isWinFn: (r: { pnl?: number }) => boolean = (r) => (r.pnl ?? 0) >= 0,
-): WinLossStats {
-  const total = records.length;
-  if (total === 0) {
-    return { total: 0, wins: 0, losses: 0, winRate: 0, wilsonWinRate: 0, avgPnl: 0 };
-  }
-  const wins = records.filter(isWinFn).length;
-  const losses = total - wins;
-  const pnlSum = records.reduce((s, r) => s + (r.pnl ?? 0), 0);
-  return {
-    total,
-    wins,
-    losses,
-    winRate: wins / total,
-    wilsonWinRate: wilsonScore(wins, total),
-    avgPnl: pnlSum / total,
-  };
-}
-
 // ─── Vector-Conditional Win Rate (v2.0.203) ───────────────────────────
 //
 // Computes win rate CONDITIONED on marketFeatures vector similarity,
