@@ -1094,6 +1094,81 @@ export interface TopVolumePair {
   exchange: ExchangeType;
 }
 
+/** A selectable market symbol with its category — NO volume/price data.
+ *  Used by the fast market-picker endpoint so the admin can select markets
+ *  instantly without waiting for the volume background scan. */
+export interface AllSymbolEntry {
+  symbol: string;          // Tradeable symbol (bare 'BTC' or prefixed 'xyz:SILVER')
+  name: string;            // Bare asset name without DEX prefix ('BTC', 'SILVER')
+  category: string;        // perpCategories category ('crypto','stocks','commodities','FX','indices','preipo','unknown')
+  dex: number;             // DEX index (0 = perps, 1-8 = DEX 1-8 synthetics)
+}
+
+// ─── v2.0.822: Analysis Matrix — per-asset recommendation grid ──────────
+// The backend computes a consensus decision per asset each cycle, then
+// expands it into a 3×3 recommendation matrix indexed by:
+//   • risk profile  — 'aggressive' | 'moderate' | 'conservative'
+//   • position state — 'long' | 'short' | 'flat' (the user's current exposure)
+// The app reads the matrix, picks the cell matching the user's risk profile +
+// current position, and shows the recommendation. The backend NEVER places
+// orders in analysis mode — it only writes the matrix to the database.
+
+export type RiskProfile = 'aggressive' | 'moderate' | 'conservative';
+export type PositionState = 'long' | 'short' | 'flat';
+
+/** A single recommendation cell in the analysis matrix. */
+export interface MatrixCell {
+  /** Recommended action for this (risk profile, position state) combination.
+   *  'buy'/'sell' = open a new position; 'close' = exit current; 'flip' =
+   *  close current + open opposite; 'hold' = do nothing. */
+  action: 'buy' | 'sell' | 'hold' | 'close' | 'flip';
+  /** Conviction 0.0–1.0 (maps to the consensus confidence, adjusted per profile). */
+  conviction: number;
+  /** Human-readable rationale (from the agent consensus thesis). */
+  rationale: string;
+  /** false until the profile's calibration rules are defined by the owner.
+   *  'moderate' is always calibrated (uses the live consensus mechanism);
+   *  'aggressive'/'conservative' are placeholders pending the owner's spec. */
+  calibrated: boolean;
+}
+
+/** A full 3×3 recommendation matrix for one asset. */
+export interface AnalysisMatrix {
+  aggressive: Record<PositionState, MatrixCell>;
+  moderate: Record<PositionState, MatrixCell>;
+  conservative: Record<PositionState, MatrixCell>;
+}
+
+/** Market snapshot embedded in each analysis row (the app renders this). */
+export interface AnalysisMarketData {
+  price: number;
+  volatility: number;
+  regime: string;
+  change24h: number;
+  volume24h: number;
+}
+
+/** Agent consensus snapshot embedded in each analysis row. */
+export interface AnalysisConsensus {
+  action: string;            // raw consensus action ('buy'|'sell'|'hold'|'close')
+  confidence: number;        // 0.0–1.0
+  thesis: string;            // entry thesis / rationale
+  pwin: number;              // OLR P(win) if available, else 0.5
+  agentsAligned: number;     // agents agreeing with the consensus
+  agentsTotal: number;
+}
+
+/** One analysis row per asset — the unit written to the `asset_analyses` table. */
+export interface AssetAnalysis {
+  symbol: string;
+  cycleId: number;
+  updatedAt: number;         // ms epoch
+  marketData: AnalysisMarketData;
+  consensus: AnalysisConsensus;
+  matrix: AnalysisMatrix;
+  metadata: Record<string, unknown>;
+}
+
 export interface ExchangeAccountInfo {
   free: number;
   locked: number;

@@ -190,6 +190,16 @@ export interface TopVolumePair {
   exchange: string;
 }
 
+/** v2.0.821: Fast symbol universe — name + category, NO volume data.
+ *  Used by the instant market picker so the admin can select without
+ *  waiting for the volume background scan. */
+export interface AllSymbolEntry {
+  symbol: string;
+  name: string;
+  category: string;
+  dex: number;
+}
+
 export interface APIData {
   status: SystemSnapshot;
   agentThoughts: AgentThought[];
