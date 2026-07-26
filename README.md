@@ -194,66 +194,28 @@ Each cycle (1-10 min, user-configurable): Terminal Agent checks rules → 5 sub-
 
 ### Cognitive Evolution Pipeline
 
-The system's learning stack evolved through 12 versions, each addressing a structural limitation of the previous:
+The system's learning stack evolved through 25+ versions (v2.0.203 → v2.0.820), each addressing a structural limitation of the previous. Key milestones:
 
-```
- v2.0.203  Raw WR → Vector-Conditional WR (min-max + cosine, cross-symbol, same side)
-     ↓     "SILVER BUY 0W/1L" doesn't mean BUY is wrong — different market conditions
- v2.0.204  Min-max → Numeric Autoencoder (learned non-linear 11→16→8 embedding)
-     ↓     Linear min-max can't capture volatility × regime × funding interactions
- v2.0.205  Uniform sampling → Time-weighted (30-day half-life) + Skeptics conditional block
-     ↓     Old samples pollute model; Skeptics couldn't see conditional WR
- v2.0.206  Single similarity → Unified NA cosine across classifier + EM + agent weights
-     ↓     Multiple similarity metrics disagreed; agent weights used raw WR
- v2.0.207  6 upgrades fixing 11-trade losing streak:
-           #B dark-psych MANDATORY on |momentum|>2% + #C momentum-adaptive SL
-           + #D momentum features + #E lesson persistence + #F anti-pattern clustering
-           + #G conditional WR in thesis generation
-     ↓     Counter-momentum SELL, SL too narrow, lessons not persisted, no anti-pattern memory
- v2.0.208  Meta-Agent DEEP LEARNING CONTEXT (5 learned-context blocks as first-class signals)
-     ↓     LLM couldn't see learned signals; treated them as footnotes
- v2.0.209  Prompt-only → Code-level conditional WR soft gate (conviction penalty)
-     ↓     LLM ignored prompt-level learning blocks; code enforces what prompt suggests
- v2.0.210  3 audit fixes: olrPWinAtEntry cache + TP R:R≥1.6 + thesis-action consistency
-     ↓     Thesis contradicted action; TP too narrow; audit repeat-diagnosed fixed issues
- v2.0.211  AttnRes 7 transfers from Kimi K3 (cycle-history selective retrieval + block
-           AttnRes + RMSNorm keys + softmax mixture + zero-init cold-start + single-head)
-     ↓     Conditional WR used single current snapshot; entry-time regime lost
- v2.0.212  #7 Dual pseudo-query (wDecision broad + wExecution sharp, different reward)
-     ↓     Single query couldn't serve both decision (broad) and execution (sharp)
- v2.0.213  Execution lens as PRIMARY computeATRSLTP signal (stop-out-trained SL/TP)
-           Full circle: wExecution learns from stop-outs → directly controls SL/TP
- v2.0.218  NaN sanitization — safeNum() catches NaN/±Infinity (?? only catches
-           null/undefined). 102 real trades → 0 OLR samples for BTC (fixed)
-           + backfillFromExpRecords() replays 191 EXP records through all systems
- v2.0.219  7 advanced systems: replay buffer (PER) + Bayesian OLR (MC Dropout) +
-           temporal attention (cross-trade) + cross-symbol backbone (transfer) +
-           reward shaping (5-component) + active exploration (UCB) + world model
-           (latent rollout). Shadow trade engine fix (maxAgeCycles 50→12, stale
-           trades now fed to OLR). 397 tests total.
- v2.0.221  Combo WR Gate fixes: hourOfDay feature fix + AntiPattern feed fix +
-           Combo WR tracker (symbol×side×regime Wilson LB) + hardened penalties
- v2.0.222  NA replay buffer persistence — validation survives restart
- v2.0.223  NA training quality: 4 blind spots (diversity collapse symmetry trap +
-           zero-init bottleneck + diversityLossWeight 0.01→0.1 + validation thresholds)
- v2.0.224  OLR P(win) × consensus multiplicative discount (defense-in-depth:
-           additive threshold raise + multiplicative confidence discount)
- v2.0.225  Two-layer exit protection: trailing stop + MFE giveback + TP narrowing +
-           per-symbol consensus SL/TP all DISABLED. SL/TP set at entry, never modified.
-           LLM thesis invalidation (Skeptics Phase 0.5) force-close is the only
-           active exit path. Removes entire auto-close block (61 lines).
- v2.0.226  Close-context-aware learning: computeLearningWeight(closeReason,
-           slNarrowed, isWin) scales learning by close context [0.3, 1.0].
-           OLR feedTrade receives slNarrowed + weightMultiplier. Combo WR skips
-           execution-caused losses (weight < 0.5). 485 tests total.
- v2.0.227  Plan G: dynamic threshold [45-55%] + multiplicative penalty decay.
-           DynamicThresholdCalculator: 5-factor hysteresis scoring (Rolling WR,
-           Idle, Drawdown, Sharpe, Regime), each [-2,+2], capped [-10,+10].
-           Penalty decay over 30 idle cycles → system self-recovers. 6 fairness
-           guarantees: multi-factor balance, symmetric, sample-size req, hysteresis,
-           hard cap, fact-driven. Fixes death spiral (44.5% vs 80% = impossible).
-           521 tests total.
-```
+| Version | Milestone |
+|:--------|:----------|
+| v2.0.203 | Raw WR → Vector-Conditional WR (min-max + cosine, cross-symbol, same side) |
+| v2.0.204 | Numeric Autoencoder — learned non-linear 11→16→8 market-condition embedding |
+| v2.0.207 | 6 upgrades fixing 11-trade losing streak (dark-psych hard gate, momentum SL, anti-pattern clustering) |
+| v2.0.209 | Conditional WR soft gate — code-level conviction enforcement |
+| v2.0.211 | AttnRes 7 transfers from Kimi K3 (cycle-history selective retrieval, block AttnRes, RMSNorm keys) |
+| v2.0.212 | Dual pseudo-query specialization (wDecision broad + wExecution sharp) |
+| v2.0.213 | Execution-lens SL/TP — wExecution directly controls SL/TP placement |
+| v2.0.219 | 7 advanced systems: replay buffer, Bayesian OLR, temporal attention, cross-symbol backbone, reward shaping, active exploration, world model |
+| v2.0.221 | Combo WR gate (symbol×side×regime Wilson LB) |
+| v2.0.224 | OLR P(win) × consensus multiplicative discount |
+| v2.0.226 | Close-context-aware learning (closeReason + slNarrowed weighted gradient) |
+| v2.0.227 | Plan G dynamic threshold [45-55%] + multiplicative penalty decay |
+| v2.0.819 | WINNER-FIRST conviction gate (combo blend override + multiplicative boost) |
+| v2.0.820 | Data-feed/volatility pipeline fix (per-cycle marketState backfill + stale-feed watchdog) |
+
+→ **Full version history**: [CHANGELOG.md](CHANGELOG.md)
+→ **Numeric Autoencoder design**: [NA.md](NA.md) — learned market-condition embedding, 13 vulnerability hardenings, full evolution map (v2.0.203 → v2.0.212)
+→ **AttnRes transfer from Kimi K3**: [K.md](K.md) — 7 transfers from arXiv 2603.15031, dual pseudo-query specialization, execution-lens SL/TP, 179 tests
 
 **Key design principles:**
 - **Cold-start safe everywhere**: every learned path has a deterministic fallback (NA → min-max, AttnRes → current snapshot, anti-pattern → no block, wExecution → ATR). The system never degrades below baseline on first deploy.
@@ -262,8 +224,6 @@ The system's learning stack evolved through 12 versions, each addressing a struc
 - **Outcome-driven, not gradient-driven**: MATS has no backprop loop. All learning is from trade outcomes (win/loss + PnL + closeReason). The reward-weighted key direction update (Peters & Schaal 2008) is the correct rule for deterministic attention — REINFORCE is identically zero.
 - **Close-context-aware learning (v2.0.226)**: How a position is closed is an important factor in the loss. `computeLearningWeight(closeReason, slNarrowed, isWin)` scales learning by close context: wins = 1.0, real SL hit = 1.0, tight-SL loss (SL narrowed post-entry) = 0.3, thesis invalidation = 0.3, manual close = 0.5, consensus close = 0.5. OLR `feedTrade` receives `slNarrowed` + `weightMultiplier` to scale gradient updates. Combo WR skips execution-caused losses (weight < 0.5). This prevents tight-SL losses from contaminating the learning systems with "these market conditions → loss" when the entry was actually fine.
 - **Dynamic threshold with fairness (v2.0.227)**: The conviction gate threshold is dynamic [45-55%], driven by 5 objective performance factors (Rolling WR, Idle cycles, Drawdown, Rolling Sharpe, Regime) with hysteresis. Penalties are multiplicative (not additive to threshold) with idle-based decay over 30 cycles. 6 fairness guarantees ensure the calculation is公正: multi-factor balance (no single factor dominates), symmetric design (good = bad influence), sample-size requirement (≥10 trades), hysteresis (no boundary oscillation), hard cap (mathematical [45-55%] guarantee), fact-driven (all inputs are measured, settled outcomes — not predictions).
-
-→ Full evolution map in [NA.md](NA.md) · AttnRes design in [K.md](K.md)
 
 ### RIL — Reason Intelligence Layer
 
