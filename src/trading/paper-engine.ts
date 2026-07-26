@@ -201,6 +201,17 @@ export class PaperTradingEngine {
   async executeDecision(decision: TradingDecision, forceMirror = false, entryData?: EntryFeatures): Promise<ExecutionReport[]> {
     const reports: ExecutionReport[] = [];
 
+    // v2.0.823: Guard against NaN/Infinity in decision fields — these would
+    // propagate into position sizing and corrupt the portfolio. Reject early.
+    if (!Number.isFinite(decision.positionSizePct) || decision.positionSizePct < 0) {
+      log.error(`executeDecision: invalid positionSizePct=${decision.positionSizePct} for ${decision.symbol}`);
+      return [{ order: this.createRejectedOrder(decision, `Invalid positionSizePct: ${decision.positionSizePct}`), error: 'Invalid positionSizePct' }];
+    }
+    if (decision.entryPrice != null && (!Number.isFinite(decision.entryPrice) || decision.entryPrice <= 0)) {
+      log.error(`executeDecision: invalid entryPrice=${decision.entryPrice} for ${decision.symbol}`);
+      return [{ order: this.createRejectedOrder(decision, `Invalid entryPrice: ${decision.entryPrice}`), error: 'Invalid entryPrice' }];
+    }
+
     if (decision.action === 'hold') {
       log.info('HOLD — no action taken.', { rationale: (decision.rationale ?? '').slice(0, 100) });
       return reports;
@@ -394,23 +405,36 @@ export class PaperTradingEngine {
 
     // Open or close position — TradeRecord capture happens via the callback
     // registered in constructor (portfolio.setOnPositionClosed)
-    if (decision.action === 'buy') {
-      // Close any existing short position first
-      if (this.portfolio.hasPosition(safeSymbol)) {
-        const existing = this.portfolio.getPosition(safeSymbol)!;
-        if (existing.side === 'sell') {
+    //
+    // v2.0.823: Wrap each portfolio operation in try/catch to prevent a
+    // single bad position from crashing the entire cycle. If openPosition
+    // throws (e.g. NaN price, zero quantity, internal assertion), we log
+    // the error and return a rejected order instead of crashing.
+    try {
+      if (decision.action === 'buy') {
+        // Close any existing short position first
+        if (this.portfolio.hasPosition(safeSymbol)) {
+          const existing = this.portfolio.getPosition(safeSymbol)!;
+          if (existing.side === 'sell') {
+            this.portfolio.closePosition(safeSymbol, price);
+          }
+        }
+        this.portfolio.openPosition(order, price, decision.leverage ?? 1, decision.entryThesis, entryData);
+      } else if (decision.action === 'sell') {
+        // Close long position
+        if (this.portfolio.hasPosition(safeSymbol)) {
           this.portfolio.closePosition(safeSymbol, price);
+        } else {
+          // Open short position (paper)
+          this.portfolio.openPosition(order, price, decision.leverage ?? 1, decision.entryThesis, entryData);
         }
       }
-      this.portfolio.openPosition(order, price, decision.leverage ?? 1, decision.entryThesis, entryData);
-    } else if (decision.action === 'sell') {
-      // Close long position
-      if (this.portfolio.hasPosition(safeSymbol)) {
-        this.portfolio.closePosition(safeSymbol, price);
-      } else {
-        // Open short position (paper)
-        this.portfolio.openPosition(order, price, decision.leverage ?? 1, decision.entryThesis, entryData);
-      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error(`executeOrder: portfolio operation failed for ${safeSymbol}: ${msg}`);
+      order.status = 'rejected';
+      order.metadata = { rejectionReason: `Portfolio error: ${msg}` };
+      return { order, error: `Portfolio error: ${msg}` };
     }
 
     // Look up the last closed trade from this execution (the callback pushed it)

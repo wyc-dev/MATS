@@ -1156,6 +1156,12 @@ export interface AnalysisConsensus {
   pwin: number;              // OLR P(win) if available, else 0.5
   agentsAligned: number;     // agents agreeing with the consensus
   agentsTotal: number;
+  /** Stop-loss price for the consensus signal (0 = not set). */
+  stopLoss?: number;
+  /** Take-profit price for the consensus signal (0 = not set). */
+  takeProfit?: number;
+  /** Suggested leverage for this signal (1-10x). */
+  suggestedLeverage?: number;
 }
 
 /** One analysis row per asset — the unit written to the `asset_analyses` table. */

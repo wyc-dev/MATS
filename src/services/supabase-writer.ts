@@ -52,7 +52,11 @@ export class SupabaseAnalysisWriter {
 
   /** Clear the table + write a fresh batch of analysis rows. Idempotent per
    *  cycle (DELETE then INSERT). Never throws — a DB error is logged and the
-   *  cycle continues (the analyses are still computed locally). */
+   *  cycle continues (the analyses are still computed locally).
+   *
+   *  v2.0.823: Retry up to 3 times with exponential backoff (500ms, 1s, 2s)
+   *  before giving up. A transient network error or Supabase rate limit
+   *  should not cause the analysis to be lost for that cycle. */
   async writeCycle(analyses: AssetAnalysis[]): Promise<void> {
     if (!this.enabled || !this.client) {
       // Local-only mode: just log a summary so the operator sees the output.
@@ -65,35 +69,67 @@ export class SupabaseAnalysisWriter {
       log.info('No analyses to write this cycle — skipping');
       return;
     }
-    try {
-      // 1. Clear the previous cycle's rows (clean-snapshot semantics).
-      // Delete all rows (clean-snapshot semantics). PostgREST DELETE requires
-      // a filter; gte on cycle_id >= 0 matches every row. Cast to any because
-      // the `asset_analyses` table isn't in the generated Supabase types yet.
-      const { error: delErr } = await (this.client as any)
-        .from(TABLE)
-        .delete()
-        .gte('cycle_id', 0);
-      if (delErr) throw delErr;
 
-      // 2. Insert the fresh batch.
-      const rows = analyses.map(a => ({
-        symbol: a.symbol,
-        cycle_id: a.cycleId,
-        updated_at: new Date(a.updatedAt).toISOString(),
-        market_data: a.marketData,
-        consensus: a.consensus,
-        matrix: a.matrix,
-        metadata: a.metadata,
-      }));
-      const { error: insErr } = await (this.client as any).from(TABLE).insert(rows);
-      if (insErr) throw insErr;
+    // v2.0.823: Validate analyses before writing — reject NaN/Infinity in
+    // numeric fields that would corrupt the DB or crash the client.
+    const validAnalyses = analyses.filter(a => {
+      if (!a.symbol || typeof a.symbol !== 'string') return false;
+      if (!Number.isFinite(a.marketData.price) || a.marketData.price < 0) return false;
+      if (!Number.isFinite(a.consensus.confidence) || a.consensus.confidence < 0 || a.consensus.confidence > 1) return false;
+      if (a.consensus.stopLoss != null && !Number.isFinite(a.consensus.stopLoss)) return false;
+      if (a.consensus.takeProfit != null && !Number.isFinite(a.consensus.takeProfit)) return false;
+      return true;
+    });
+    if (validAnalyses.length < analyses.length) {
+      log.warn(`Filtered ${analyses.length - validAnalyses.length} invalid analyses (NaN/Infinity fields)`);
+    }
+    if (validAnalyses.length === 0) {
+      log.warn('All analyses invalid — skipping write');
+      return;
+    }
 
-      this.lastWriteAt = Date.now();
-      this.lastWriteCount = analyses.length;
-      log.info(`Wrote ${analyses.length} asset analyses to Supabase (cycle #${analyses[0]!.cycleId})`);
-    } catch (err) {
-      log.error(`Supabase write failed (non-fatal — cycle continues): ${err instanceof Error ? err.message : String(err)}`);
+    const MAX_RETRIES = 3;
+    const BACKOFF_MS = [500, 1000, 2000];
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        // 1. Clear the previous cycle's rows (clean-snapshot semantics).
+        const { error: delErr } = await (this.client as any)
+          .from(TABLE)
+          .delete()
+          .gte('cycle_id', 0);
+        if (delErr) throw delErr;
+
+        // 2. Insert the fresh batch.
+        const rows = validAnalyses.map(a => ({
+          symbol: a.symbol,
+          cycle_id: a.cycleId,
+          updated_at: new Date(a.updatedAt).toISOString(),
+          market_data: a.marketData,
+          consensus: a.consensus,
+          matrix: a.matrix,
+          metadata: a.metadata,
+        }));
+        const { error: insErr } = await (this.client as any).from(TABLE).insert(rows);
+        if (insErr) throw insErr;
+
+        this.lastWriteAt = Date.now();
+        this.lastWriteCount = validAnalyses.length;
+        if (attempt > 0) {
+          log.info(`Wrote ${validAnalyses.length} asset analyses to Supabase (cycle #${validAnalyses[0]!.cycleId}) — succeeded on retry ${attempt + 1}`);
+        } else {
+          log.info(`Wrote ${validAnalyses.length} asset analyses to Supabase (cycle #${validAnalyses[0]!.cycleId})`);
+        }
+        return; // Success — exit retry loop.
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (attempt < MAX_RETRIES - 1) {
+          log.warn(`Supabase write attempt ${attempt + 1}/${MAX_RETRIES} failed: ${msg} — retrying in ${BACKOFF_MS[attempt]}ms`);
+          await new Promise(resolve => setTimeout(resolve, BACKOFF_MS[attempt]!));
+        } else {
+          log.error(`Supabase write failed after ${MAX_RETRIES} attempts (non-fatal — cycle continues): ${msg}`);
+        }
+      }
     }
   }
 }
