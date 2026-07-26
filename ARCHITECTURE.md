@@ -3,6 +3,10 @@
 > **作者**: YC Wong · **版本**: 2.0.227
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **代碼量**: ~59,000 行 TypeScript（嚴格模式，零類型錯誤）+ React UI
+>
+> **Repo 關係**: 本 repo (`amacrf` / branch `MATS_Terminal`) 係 OG 單一終端版本（terminal-only）。
+> `MATS` repo (`mats_backend`) 係較新嘅後端終端版本，支援 `mats_app`（client-side UI/UX）。
+> 三者關係：`amacrf` = OG terminal → `mats_backend` = new backend → `mats_app` = client UI/UX。
 
 ---
 
