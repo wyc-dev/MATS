@@ -139,9 +139,18 @@ class MATSSystem {
   private apiServer!: APIServer;
   private marketAgent!: MarketAgent;
   private tradingManager!: TradingManager;
-  /** v2.0.822: Analysis mode — write per-asset matrices to Supabase instead of
-   *  placing orders. Set via ANALYSIS_MODE env (default true for mats_backend). */
-  private analysisMode = (process.env['ANALYSIS_MODE'] ?? 'true') !== 'false';
+  /** v2.0.822: Analysis mode — write per-asset matrices to Supabase.
+   *  v2.0.823: Dual mode — analysis + execution. When ANALYSIS_MODE='dual',
+   *  the backend writes the analysis matrix to Supabase AND executes trades
+   *  (paper or real) in the same cycle. This is the production default.
+   *
+   *  Modes:
+   *    'true'  (default) — analysis only, no orders (legacy mats_backend)
+   *    'false'           — execution only, no DB write (legacy amacrf)
+   *    'dual'            — BOTH: write analysis to DB + execute trades
+   */
+  private analysisMode = (process.env['ANALYSIS_MODE'] ?? 'dual') !== 'false';
+  private dualMode = (process.env['ANALYSIS_MODE'] ?? 'dual') === 'dual';
   private analysisWriter!: SupabaseAnalysisWriter;
   private sentimentEngine!: SentimentEngine;
   /** v2.0.105: Adaptive noise filter — sigmoid+EMA with per-cycle auto-tuning */
@@ -3746,7 +3755,11 @@ ${recentExamples}
     // been expanded into a per-asset matrix and written to Supabase; the user's
     // client reads the matrix and decides execution. Return success so the
     // cycle's downstream bookkeeping (portfolio sync, pushToAPI) stays consistent.
-    if (this.analysisMode) {
+    //
+    // v2.0.823: Dual mode — write analysis to DB AND execute trades. The
+    // backend acts as both the signal provider (DB write) and the executor
+    // (paper/real trade). This is the production default for mats_backend.
+    if (this.analysisMode && !this.dualMode) {
       log.info(`📊 [analysis-mode] ${decision.action.toUpperCase()} ${decision.symbol} — NOT executing (analysis written to DB). conviction=${(decision.positionSizePct * 100).toFixed(1)}%`);
       return { success: true };
     }

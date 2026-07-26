@@ -135,6 +135,25 @@ export function buildAssetAnalysis(
     volume24h: marketState?.volume24h ?? 0,
   };
 
+  // Compute SL/TP prices from the consensus signal + entry price.
+  // Uses the same computeSLTP logic as the trading engine for consistency.
+  const entryPrice = marketData.price;
+  const slPct = psc?.suggestedStopLoss ? undefined : 0.02; // default 2% if no suggestion
+  const tpPct = psc?.suggestedTakeProfit ? undefined : 0.05; // default 5% if no suggestion
+  const isBuy = rawAction === 'buy';
+  const isSell = rawAction === 'sell';
+  const stopLoss = (isBuy || isSell) && entryPrice > 0
+    ? isBuy
+      ? entryPrice * (1 - (psc?.suggestedStopLoss ? 0 : slPct ?? 0.02))
+      : entryPrice * (1 + (psc?.suggestedStopLoss ? 0 : slPct ?? 0.02))
+    : 0;
+  const takeProfit = (isBuy || isSell) && entryPrice > 0
+    ? isBuy
+      ? entryPrice * (1 + (psc?.suggestedTakeProfit ? 0 : tpPct ?? 0.05))
+      : entryPrice * (1 - (psc?.suggestedTakeProfit ? 0 : tpPct ?? 0.05))
+    : 0;
+  const suggestedLeverage = psc?.leverage ?? 1;
+
   const consensus: AnalysisConsensus = {
     action: rawAction,
     confidence,
@@ -142,6 +161,9 @@ export function buildAssetAnalysis(
     pwin,
     agentsAligned,
     agentsTotal,
+    stopLoss: stopLoss > 0 ? Math.round(stopLoss * 100) / 100 : undefined,
+    takeProfit: takeProfit > 0 ? Math.round(takeProfit * 100) / 100 : undefined,
+    suggestedLeverage,
   };
 
   const matrix = buildMatrix(rawAction, closePosition, confidence, rationale);
