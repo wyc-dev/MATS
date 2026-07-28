@@ -372,8 +372,24 @@ export class ThesisExperience {
           log.warn(`[EXP] skipping corrupt jsonl line during load`);
         }
       }
+      // v2.0.221 (Fix #6): Dedup by id — the digester callback at line ~579
+      // re-appends the same record (same id) with fine-grained exitType + lesson.
+      // Without dedup, both copies enter the in-memory set, inflating trade counts
+      // and distorting win/loss statistics. Keep the LAST occurrence per id (it has
+      // the digester's fine-grained exitType + lesson filled in).
+      const dedupMap = new Map<string, ThesisExperienceRecord>();
+      for (const rec of recs) {
+        if (rec.id) {
+          dedupMap.set(rec.id, rec); // last occurrence wins
+        }
+      }
+      const deduped = Array.from(dedupMap.values());
+      const dupesRemoved = recs.length - deduped.length;
+      if (dupesRemoved > 0) {
+        log.info(`[EXP] dedup: removed ${dupesRemoved} duplicate record(s) by id (${recs.length} → ${deduped.length} unique)`);
+      }
       // Rolling cap — keep most recent
-      this.records = recs.slice(-this.cfg.maxRecords);
+      this.records = deduped.slice(-this.cfg.maxRecords);
       this.loaded = true;
       log.info(`[EXP] loaded ${this.records.length} records from ${this.cfg.jsonlPath}`);
     } catch (err) {

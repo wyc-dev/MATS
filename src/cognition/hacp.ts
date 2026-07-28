@@ -8,7 +8,7 @@ import { config } from '../config/index.ts';
 import { parseA2ASignal, formatA2ASignal } from './a2a-utils.ts';
 import { normalizeDecision } from '../trading/decision-utils.ts';
 // v2.0.42: Import normalizeSymbol for consistent symbol casing in adjustPositions.
-import { normalizeSymbol } from '../trading/portfolio.ts';
+import { normalizeSymbol, isThesisPlaceholder } from '../trading/portfolio.ts';
 import type { TradeHistory } from '../evolution/trade-history.ts';
 import type { AgentEvolutionEngine } from '../evolution/agent-evolution.ts';
 import type {
@@ -251,6 +251,16 @@ export class HACPEngine {
    *  stop-out regime patterns. */
   private cycleHistoryRetriever: { retrieveBlend: (sym: string, mode: 'decision' | 'execution') => { hBlend: Record<string, number>; blended: boolean; explanation: string; entropy: number } } | null = null;
   setCycleHistoryRetriever(r: typeof this.cycleHistoryRetriever): void { this.cycleHistoryRetriever = r; }
+
+  /** v2.0.221 (Fix #5): Active Exploration context provider — injects the
+   *  UCB exploration assessment into the Meta-Agent/Skeptics context so they
+   *  know a symbol is being explored for information value. This is a SIGNAL,
+   *  not a thesis — the Meta-Agent must still articulate a specific, falsifiable
+   *  market-structure edge. The provider receives the candidate direction so it
+   *  can query the correct OLR side. Returns a formatted context block string
+   *  (or empty string when exploration is not active/disabled). */
+  private explorationContextProvider: ((side: 'buy' | 'sell') => string) | null = null;
+  setExplorationContextProvider(cb: ((side: 'buy' | 'sell') => string) | null): void { this.explorationContextProvider = cb; }
 
   /** v2.0.143: RIL SimilarTradeRetriever — finds top-N most similar historical
    *  trades to a candidate thesis. Injected by index.ts so HACP can produce
@@ -1232,8 +1242,8 @@ export class HACPEngine {
 
     const metaDecision = metaThought.metadata?.['decision'] as TradingDecision | undefined;
     const metaMultiDec = metaThought.metadata?.['multiSymbolDecision'] as MultiSymbolDecision | undefined;
-    const metaAction = metaDecision?.action ?? metaMultiDec?.marketTicker.action ?? 'hold';
-    const metaThesis = metaDecision?.entryThesis ?? metaMultiDec?.marketTicker.entryThesis;
+    let metaAction = metaDecision?.action ?? metaMultiDec?.marketTicker.action ?? 'hold';
+    let metaThesis = metaDecision?.entryThesis ?? metaMultiDec?.marketTicker.entryThesis;
     const metaSymbol = metaDecision?.symbol ?? metaMultiDec?.marketTicker.symbol ?? '';
 
     // v2.0.210 (Fix 3): Thesis-action consistency check. If the Meta-Agent
@@ -1277,6 +1287,24 @@ export class HACPEngine {
     //   REJECT → override to HOLD
     //   EXP_DISABLED / EXP_ERRORED → fall back to 1.8b (expThesisGated stays false)
     let expThesisGated = false;
+    // v2.0.221 (Fix #7): Code-level placeholder thesis gate — BEFORE EXP gate + Skeptics.
+    // The Meta-Agent prompt says placeholder theses ("[1h: thesis]", "[1h: market
+    // win]", etc.) are "FORBIDDEN — HARD BLOCK, NO EXCEPTIONS" but neither EXP nor
+    // the Skeptics LLM was catching them. EXP's checkThesisHistory does semantic
+    // similarity — a placeholder matches other placeholders and gets FAST_APPROVE.
+    // The Skeptics LLM says "APPROVAL IS THE DEFAULT" and a vague thesis isn't a
+    // "specific loss scenario". Result: 81% of records had vague theses. This
+    // code-level gate enforces what the prompt only claims: if the thesis is a
+    // placeholder, override to HOLD immediately — no EXP check, no LLM call.
+    if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition && isThesisPlaceholder(metaThesis)) {
+      log.warn(`🚫 [placeholder-thesis] ${metaAction.toUpperCase()} ${metaSymbol}: thesis is a placeholder ("${metaThesis.slice(0, 60)}...") — overriding to HOLD (code-level gate, no EXP/Skeptics call)`);
+      this.overrideMetaDecision(allThoughts, metaSymbol, metaMultiDec, {
+        action: 'hold', rationale: `Placeholder thesis rejected by code-level gate: "${metaThesis.slice(0, 60)}..."`,
+        confidence: 0.1, tag: 'PLACEHOLDER-REJECT',
+      });
+      metaAction = 'hold';
+      metaThesis = undefined;
+    }
     if (this.expMemory && this.expMemory.getCfg().enabled
         && (metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition) {
       try {
@@ -1477,7 +1505,22 @@ export class HACPEngine {
         }
       } catch { /* non-critical */ }
     }
-    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}${executionLensBlock}`;
+
+    // v2.0.221 (Fix #5): Active Exploration context — injects the UCB
+    // exploration assessment so Meta-Agent/Skeptics know this symbol is being
+    // explored for information value. This is a SIGNAL, not a thesis. The
+    // block explicitly tells the LLM not to copy it into entryThesis.
+    let explorationBlock = '';
+    if (this.explorationContextProvider && (metaAction === 'buy' || metaAction === 'sell') && !hasExistingPosition) {
+      try {
+        const expCtx = this.explorationContextProvider(metaAction);
+        if (expCtx && expCtx.length > 0) {
+          explorationBlock = `\n${expCtx}`;
+        }
+      } catch { /* non-critical */ }
+    }
+
+    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}${executionLensBlock}${explorationBlock}`;
 
     if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition && !expThesisGated) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);

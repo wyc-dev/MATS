@@ -174,15 +174,28 @@ export class ActiveExploration {
 
   /**
    * Format exploration context for agent injection.
+   *
+   * v2.0.221 (Fix #5): This block is a SIGNAL, not a thesis. It tells the
+   * Meta-Agent / Skeptics "this symbol is under-sampled — exploring it has
+   * information value." It must NOT be copied verbatim into entryThesis.
+   * The thesis must still articulate a specific, falsifiable market-structure
+   * edge (S/R level, OLR edge magnitude, funding flip, etc.) — exploration is
+   * the reason to CONSIDER the trade, not the reason it will WIN.
    */
   formatContext(result: ExplorationResult): string {
     if (!result.applied) return result.recommendation;
     return [
-      `=== EXPLORATION ASSESSMENT ===`,
+      `=== EXPLORATION ASSESSMENT (SIGNAL — NOT A THESIS) ===`,
       `  ${result.recommendation}`,
       `  UCB bonus: +${(result.ucbBonus * 100).toFixed(1)}% | Info gain: +${(result.infoGainBonus * 100).toFixed(1)}%`,
       `  Effective exploration c: ${result.effectiveConstant.toFixed(4)}`,
       `  Adjusted score: ${(result.explorationScore * 100).toFixed(1)}% (base: ${(result.explorationScore - result.ucbBonus - result.infoGainBonus) * 100 | 0}%)`,
+      `  ⚠️ This is an EXPLORATION SIGNAL, not a thesis. It means "${result.recommendation}".`,
+      `  It is the reason to CONSIDER this trade, NOT the reason it will win.`,
+      `  Your entryThesis MUST still contain ≥2 specific, falsifiable market-structure`,
+      `  elements (price level, OLR edge, funding rate, S/R zone, volume profile, etc.).`,
+      `  Do NOT copy this block into your thesis. Do NOT write "exploration on X" as a thesis.`,
+      `  If you cannot articulate a specific edge beyond exploration → output HOLD.`,
     ].join('\n');
   }
 

@@ -710,6 +710,26 @@ and the Skeptics agent will REJECT it:
   - "OLR is favorable" — without citing the actual P(win) and edge magnitude
   - "exploration" or "exploratory trade" — exploration is NOT a thesis. Every trade
     must have a specific, falsifiable edge. If you cannot articulate one → HOLD.
+
+⚠️ v2.0.221 (Fix #5) — EXPLORATION CONTEXT HANDLING (CRITICAL):
+If the context contains "=== EXPLORATION ASSESSMENT (SIGNAL — NOT A THESIS) ===":
+  - This block is a SIGNAL from the UCB exploration layer. It means "this symbol is
+    under-sampled — exploring it has information value." It is the reason to CONSIDER
+    the trade, NOT the reason it will win.
+  - You MUST NOT copy this block into your entryThesis. Do NOT write "exploration on X"
+    or "exploratory trade on X" as any part of your thesis.
+  - Your entryThesis MUST still contain ≥2 of the 7 specific, falsifiable elements
+    (price level, S/R zone, OLR edge magnitude, funding rate, volume profile, order
+    book imbalance, technical pattern) — exactly as if the exploration block were
+    not present.
+  - The exploration block ADJUSTS your prior (this symbol is worth considering), but
+    it does NOT substitute for a thesis. If you can find ≥2 real edge elements →
+    proceed with the trade. If you CANNOT → output HOLD, even if exploration
+    recommends the trade. Exploration is a suggestion, not a mandate.
+  - The exploration block is NOT a strengthening factor for your confidence
+    calibration. It does NOT increase your conviction. It only means the system
+    would benefit from trade data on this symbol — but only if the trade has a real
+    edge. A trade with no edge but high exploration value is still a bad trade.
   - Any thesis that could be copied verbatim to the opposite direction (e.g. "the
     market might go up" is equally valid for "the market might go down" — invalid)
   - "historical win rate" or "backtest shows" without citing the actual conditions

@@ -61,6 +61,29 @@ export function isThesisPlaceholder(thesis: string | undefined | null): boolean 
   const t = thesis.trim().toLowerCase();
   if (t.length === 0) return true;
   if (t === 'n/a' || t === 'na' || t === 'not applicable' || t === 'none' || t === 'null' || t === '-') return true;
+  // v2.0.221 (Fix #7): Catch LLM-generated placeholder theses that pass the old
+  // check because "thesis", "market", "win", "loss", "noise", "invalidation",
+  // "profitable" are real words with 3+ letters. These are the exact patterns
+  // the audit found in 81% of records. Match the full thesis string (after
+  // stripping timeframe labels + punctuation) against known placeholder patterns.
+  const strippedForPattern = t
+    .replace(/\[(1h|1d|4h|1w|1m|5m|15m)\s*:/g, ' ')
+    .replace(/[\[\]():,.\-—_/\\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const PLACEHOLDER_PATTERNS = [
+    'thesis', 'market win', 'market loss', 'market win 1', 'market win 2',
+    'noise invalidation', 'profitable invalidation', 'market win 3',
+    'market loss 1', 'market loss 2', 'test', 'momentum',
+  ];
+  if (PLACEHOLDER_PATTERNS.includes(strippedForPattern)) return true;
+  // v2.0.221 (Fix #7b): Single-word theses with no numbers/edge are placeholders.
+  // A real thesis must contain at least one numeric/quantitative element (price
+  // level, percentage, edge magnitude, bps, etc.) or be multi-word. "[1h: test]"
+  // or "[1h: momentum]" are single words with no edge — not a real thesis.
+  const wordCount = strippedForPattern.split(/\s+/).filter((w) => w.length > 0).length;
+  const hasNumber = /\d/.test(strippedForPattern);
+  if (wordCount <= 2 && !hasNumber) return true;
   // v2.0.139: catch placeholder-filled theses in the [1h: ...] [1d: ...] format
   // (e.g. "[1h: N/A — hold] [1d: N/A — hold]"). The Meta-Agent sometimes emits
   // this for a trade entry when it has no real timeframe rationale — it is NOT
