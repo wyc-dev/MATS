@@ -59,6 +59,7 @@ const extractHandler = (msgs: ExpLLMMessage[]): string => {
 };
 
 function makeEXP(embed: MockEmbedProvider) {
+  const p = paths();
   return new ThesisExperience({
     embed,
     llm: { async chat(m: ExpLLMMessage[]) { return extractHandler(m); } },
@@ -68,6 +69,7 @@ function makeEXP(embed: MockEmbedProvider) {
       winProbThreshold: 0.6, lossProbThreshold: 0.4, deltaThreshold: 0.55,
       minDeltaSamples: 2, deltaWinRateThreshold: 0.6, deltaLossRateThreshold: 0.4,
       allowReverse: true, breakevenIs: 'win', similarityMode: 'asymmetric',
+      jsonlPath: p.jsonlPath, expMdPath: p.expMdPath, incidentsPath: p.incidentsPath,
       repair: { enabled: false, maxRetries: 1, backoffMs: 1 },
       assetCategoryMap: { BTC: 'crypto' },
     },
