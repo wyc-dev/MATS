@@ -117,25 +117,25 @@ describe('conditional WR exclusion — thesis_invalidation removed from market-c
     // market SL/TP outcomes — both must be excluded from conditional WR.
     await exp.recordClose({ symbol: 'BTC', side: 'buy', source: 'paper', decisionOrigin: 'meta-agent',
       pnl: 0.004, pnlPct: 0.00004, entry: 100, exit: 100.0004, leverage: 1, holdMin: 8,
-      regime: 'low_volatility', entryThesis: '[1h: noise invalidation]',
+      regime: 'low_volatility', entryThesis: '[1h: OLR P(win)=72% (edge +18pp) + S/R bounce at $64K support]',
       exitType: 'thesis_invalidation', marketFeatures: FEATS });
     await exp.recordClose({ symbol: 'BTC', side: 'buy', source: 'paper', decisionOrigin: 'meta-agent',
       pnl: 1.9547, pnlPct: 0.0204, entry: 100, exit: 102.04, leverage: 1, holdMin: 59,
-      regime: 'low_volatility', entryThesis: '[1h: profitable invalidation]',
+      regime: 'low_volatility', entryThesis: '[1h: Funding rate -0.005% (shorts paying) + order book 3x bid depth at $64K support]',
       exitType: 'thesis_invalidation', marketFeatures: FEATS });
 
     // 1 genuine market SL loss + 2 genuine market TP wins (clean market outcomes).
     await exp.recordClose({ symbol: 'BTC', side: 'buy', source: 'paper', decisionOrigin: 'meta-agent',
       pnl: -1.2, pnlPct: -0.012, entry: 100, exit: 98.8, leverage: 1, holdMin: 12,
-      regime: 'low_volatility', entryThesis: '[1h: market loss]',
+      regime: 'low_volatility', entryThesis: '[1h: OLR P(win)=45% (edge -5pp) + S/R rejection at $102K resistance]',
       exitType: 'correct_sl', marketFeatures: FEATS });
     await exp.recordClose({ symbol: 'BTC', side: 'buy', source: 'paper', decisionOrigin: 'meta-agent',
       pnl: 0.8, pnlPct: 0.008, entry: 100, exit: 100.8, leverage: 1, holdMin: 40,
-      regime: 'low_volatility', entryThesis: '[1h: market win 1]',
+      regime: 'low_volatility', entryThesis: '[1h: Bull flag on 1h after 5% impulse + volume declining → continuation BUY from $100.5K]',
       exitType: 'correct_tp', marketFeatures: FEATS });
     await exp.recordClose({ symbol: 'BTC', side: 'buy', source: 'paper', decisionOrigin: 'meta-agent',
       pnl: 0.6, pnlPct: 0.006, entry: 100, exit: 100.6, leverage: 1, holdMin: 35,
-      regime: 'low_volatility', entryThesis: '[1h: market win 2]',
+      regime: 'low_volatility', entryThesis: '[1h: Liquidation cluster at $101K (longs) + OI spike 15% in 1h → price targeting liquidity]',
       exitType: 'correct_tp', marketFeatures: FEATS });
 
     const records = exp.getRecords();
@@ -163,15 +163,15 @@ describe('conditional WR exclusion — thesis_invalidation removed from market-c
     const exp = makeEXP(embed);
     await exp.recordClose({ symbol: 'BTC', side: 'buy', source: 'paper', decisionOrigin: 'meta-agent',
       pnl: 1.95, pnlPct: 0.0195, entry: 100, exit: 101.95, leverage: 1, holdMin: 59,
-      regime: 'low_volatility', entryThesis: '[1h: profitable invalidation]',
+      regime: 'low_volatility', entryThesis: '[1h: Funding rate -0.005% (shorts paying) + order book 3x bid depth at $64K support]',
       exitType: 'thesis_invalidation', marketFeatures: FEATS });
     await exp.recordClose({ symbol: 'BTC', side: 'buy', source: 'paper', decisionOrigin: 'meta-agent',
       pnl: -1.0, pnlPct: -0.01, entry: 100, exit: 99, leverage: 1, holdMin: 12,
-      regime: 'low_volatility', entryThesis: '[1h: market loss]',
+      regime: 'low_volatility', entryThesis: '[1h: OLR P(win)=45% (edge -5pp) + S/R rejection at $102K resistance]',
       exitType: 'correct_sl', marketFeatures: FEATS });
     await exp.recordClose({ symbol: 'BTC', side: 'buy', source: 'paper', decisionOrigin: 'meta-agent',
       pnl: 0.5, pnlPct: 0.005, entry: 100, exit: 100.5, leverage: 1, holdMin: 40,
-      regime: 'low_volatility', entryThesis: '[1h: market win]',
+      regime: 'low_volatility', entryThesis: '[1h: Bull flag on 1h after 5% impulse + volume declining → continuation BUY from $100.5K]',
       exitType: 'correct_tp', marketFeatures: FEATS });
 
     const records = exp.getRecords();
@@ -189,7 +189,7 @@ describe('outcome field — economic reality preserved (no relabel)', () => {
     const exp = makeEXP(embed);
     await exp.recordClose({ symbol: 'BTC', side: 'buy', source: 'real', decisionOrigin: 'meta-agent',
       pnl: 1.95, pnlPct: 0.0195, entry: 100, exit: 101.95, leverage: 1, holdMin: 59,
-      regime: 'low_volatility', entryThesis: '[1h: thesis]',
+      regime: 'low_volatility', entryThesis: '[1h: OLR P(win)=72% (edge +18pp) + S/R bounce at $64K support]',
       exitType: 'thesis_invalidation' });
     expect(exp._records()[0]!.outcome).toBe('WIN'); // real profit stays WIN
   });
@@ -199,7 +199,7 @@ describe('outcome field — economic reality preserved (no relabel)', () => {
     const exp = makeEXP(embed);
     await exp.recordClose({ symbol: 'BTC', side: 'buy', source: 'real', decisionOrigin: 'meta-agent',
       pnl: 0.004, pnlPct: 0.00004, entry: 100, exit: 100.0004, leverage: 1, holdMin: 8,
-      regime: 'low_volatility', entryThesis: '[1h: thesis]',
+      regime: 'low_volatility', entryThesis: '[1h: OLR P(win)=72% (edge +18pp) + S/R bounce at $64K support]',
       exitType: 'thesis_invalidation' });
     expect(exp._records()[0]!.outcome).toBe('WIN'); // pnl>0 → WIN, factually correct
   });
@@ -209,7 +209,7 @@ describe('outcome field — economic reality preserved (no relabel)', () => {
     const exp = makeEXP(embed);
     await exp.recordClose({ symbol: 'BTC', side: 'buy', source: 'real', decisionOrigin: 'meta-agent',
       pnl: -2, pnlPct: -0.02, entry: 100, exit: 98, leverage: 1, holdMin: 10,
-      regime: 'unknown', entryThesis: '[1h: thesis]',
+      regime: 'unknown', entryThesis: '[1h: OLR P(win)=45% (edge -5pp) + S/R rejection at $102K resistance]',
       exitType: 'thesis_invalidation' });
     expect(exp._records()[0]!.outcome).toBe('LOSS');
   });
@@ -219,7 +219,7 @@ describe('outcome field — economic reality preserved (no relabel)', () => {
     const exp = makeEXP(embed);
     await exp.recordClose({ symbol: 'BTC', side: 'buy', source: 'real', decisionOrigin: 'meta-agent',
       pnl: 0.004, pnlPct: 0.00004, entry: 100, exit: 100.0004, leverage: 1, holdMin: 10,
-      regime: 'trending_bull', entryThesis: '[1h: thesis]',
+      regime: 'trending_bull', entryThesis: '[1h: Bull flag on 1h after 5% impulse + volume declining → continuation BUY from $100.5K]',
       exitType: 'correct_tp' });
     expect(exp._records()[0]!.outcome).toBe('WIN');
   });
@@ -229,7 +229,7 @@ describe('outcome field — economic reality preserved (no relabel)', () => {
     const exp = makeEXP(embed);
     await exp.recordClose({ symbol: 'BTC', side: 'buy', source: 'real', decisionOrigin: 'meta-agent',
       pnl: 0, pnlPct: 0, entry: 100, exit: 100, leverage: 1, holdMin: 10,
-      regime: 'unknown', entryThesis: '[1h: thesis]',
+      regime: 'unknown', entryThesis: '[1h: Bull flag on 1h after 5% impulse + volume declining → continuation BUY from $100.5K]',
       exitType: 'consensus' });
     expect(exp._records()[0]!.outcome).toBe('WIN');
   });

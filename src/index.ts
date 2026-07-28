@@ -2241,6 +2241,35 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         this.hacpEngine.setAntiPatternTracker(this.antiPatternTracker);
         // v2.0.212 (#7): Wire cycle-history retriever for execution-lens context.
         this.hacpEngine.setCycleHistoryRetriever(this.cycleHistory);
+        // v2.0.221 (Fix #5): Wire exploration context provider so HACP can inject
+        // the UCB exploration assessment into Meta-Agent/Skeptics context. This is
+        // a SIGNAL — the Meta-Agent must still build a real thesis with ≥2 specific
+        // edge elements. The provider calls activeExploration.formatContext() with
+        // the current cycle's exploration result.
+        this.hacpEngine.setExplorationContextProvider((side: 'buy' | 'sell') => {
+          if (!this.activeExploration) return '';
+          try {
+            const expConfig = this.activeExploration.getConfig();
+            if (!expConfig.enabled) return '';
+            const sym = normalizeSymbol(this.marketAgent.getConfig().selectedSymbol ?? '');
+            const feats = this.lastCycleShadowContexts.get(sym)?.features ?? {};
+            const olrPWin = safeNum(this.olrEngine.query(sym, feats, side, this.totalCycles).pWin, 0.5);
+            const bayesianUncertainty = this.bayesianOLR ? safeNum(this.bayesianOLR.query(sym, feats, side, this.totalCycles).uncertainty, 0) : 0;
+            const result = this.activeExploration.compute({
+              pWin: olrPWin,
+              symbol: sym,
+              side,
+              uncertainty: bayesianUncertainty,
+              totalTrades: this.totalCycles,
+              symbolTrades: this.evolution.tradeHistory.getRecent(100).filter(t => normalizeSymbol(t.symbol) === sym).length,
+            });
+            if (!result.applied) return ''; // cold-start or disabled — don't inject
+            return this.activeExploration.formatContext(result);
+          } catch (err) {
+            log.warn(`[exploration-ctx] Failed to build exploration context: ${err instanceof Error ? err.message : String(err)}`);
+            return '';
+          }
+        });
         this.hacpEngine.setNaCandidateFeaturesProvider(() => {
           // v2.0.211 (K.md #1): Use AttnRes h_blend (softmax blend over cycle
           // history + entry-time state) as the candidate features instead of
@@ -6906,6 +6935,7 @@ ${recentExamples}
             // OLR + shadow context (if available)
             let expOlr = 'N/A';
             let expShadow = 'N/A';
+            let expOlrPWin = 0; // v2.0.221 Fix #5: store OLR pWin for edge detection
             try {
               const olrCtx2 = {
                 volatility: combinedState.volatility ?? 0,
@@ -6920,6 +6950,7 @@ ${recentExamples}
                 hourOfDay: currentHourOfDay(), // v2.0.221 Fix 1
               };
               const olrQ = this.olrEngine.query(activeSymbol, olrCtx2, direction as 'buy' | 'sell', this.totalCycles);
+              expOlrPWin = safeNum(olrQ.pWin, 0);
               expOlr = `${(olrQ.pWin * 100).toFixed(0)}% (${olrQ.nSamples} samples)`;
               const shadowSym = normalizeSymbol(activeSymbol);
               const shadowStat = this.shadowEngine.getStats().find(s => s.symbol === shadowSym);
@@ -6930,10 +6961,88 @@ ${recentExamples}
               }
             } catch { /* non-critical — thesis still has market data */ }
 
-            const entryThesis = [
-              `[1h: ${direction} exploration on ${activeSymbolUpper} @ ${expPrice} — regime=${expRegime}, vol=${expVol}, OB=${expOB}, funding=${expFunding}, 24h=${expChange24h}%, S/R: support=${expSrDist}bps/resistance=${expSrResist}bps, sentiment=${expSentiment}, volRatio=${expVolumeRatio}, OLR_pWin=${expOlr}, shadowWR=${expShadow}]`,
-              `[1d: exploration trade (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) — system needs trade data for evolution; ${direction} selected by multi-signal priority chain]`,
-            ].join(' ');
+            // v2.0.221 (Fix #5): Build a REAL thesis with specific, falsifiable
+            // edge elements — NOT a template that dumps all market data. The
+            // old template ("buy exploration on xyz:SILVER @ ...") was identical
+            // for all exploration trades, making EXP embeddings useless AND
+            // violating the Meta-Agent's own thesis quality gate (≥2 specific
+            // elements required). Exploration is the reason to CONSIDER the
+            // trade, not the thesis itself. If we can't find ≥2 real edge
+            // elements, we HOLD — no exploration trade without a real thesis.
+            const expFundingNum = safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0);
+            const expOlrNum = expOlrPWin;
+            const expOBNum = safeNum(combinedState.orderBookImbalance, 0);
+            const expSrSupport = this.lastSRContext?.nearestSupport ?? null;
+            const expSrResistance = this.lastSRContext?.nearestResistance ?? null;
+            const expSrDistNum = safeNum(this.lastSRContext?.distanceToSupportBps, 0);
+            const expSrResistNum = safeNum(this.lastSRContext?.distanceToResistanceBps, 0);
+            const expFpLong = safeNum(this.lastFirstPassage?.longPWin, 0);
+            const expFpShort = safeNum(this.lastFirstPassage?.shortPWin, 0);
+            const expFpBeLong = safeNum(this.lastFirstPassage?.breakevenPLong, 0.5);
+            const expFpBeShort = safeNum(this.lastFirstPassage?.breakevenPShort, 0.5);
+            const expVolNum = safeNum(combinedState.volatility, 0);
+
+            // Collect edge elements (must find ≥2 for a valid thesis)
+            const edgeElements: string[] = [];
+
+            // Edge 1: OLR P(win) with edge magnitude
+            if (expOlrNum > 0 && expOlrNum > 0.55) {
+              const olrEdge = expOlrNum - 0.5;
+              edgeElements.push(`OLR P(win)=${(expOlrNum * 100).toFixed(0)}% (edge +${(olrEdge * 100).toFixed(0)}pp over 50%)`);
+            }
+
+            // Edge 2: First-passage path edge
+            const fpScore = direction === 'buy' ? expFpLong : expFpShort;
+            const fpBe = direction === 'buy' ? expFpBeLong : expFpBeShort;
+            const fpEdge = fpScore - fpBe;
+            if (fpScore > 0 && fpEdge > 0.05) {
+              edgeElements.push(`First-passage P(TP)=${(fpScore * 100).toFixed(0)}% vs breakeven ${(fpBe * 100).toFixed(0)}% (+${(fpEdge * 100).toFixed(0)}pp path edge)`);
+            }
+
+            // Edge 3: S/R proximity (near support for BUY, near resistance for SELL)
+            if (expSrSupport !== null && direction === 'buy' && expSrDistNum > 0 && expSrDistNum < 50) {
+              edgeElements.push(`S/R bounce at $${expSrSupport.toFixed(2)} support (${expSrDistNum.toFixed(0)}bps away)`);
+            }
+            if (expSrResistance !== null && direction === 'sell' && expSrResistNum > 0 && expSrResistNum < 50) {
+              edgeElements.push(`S/R rejection at $${expSrResistance.toFixed(2)} resistance (${expSrResistNum.toFixed(0)}bps away)`);
+            }
+
+            // Edge 4: Funding rate edge
+            if (Math.abs(expFundingNum) > 0.0002) {
+              if (direction === 'buy' && expFundingNum < 0) {
+                edgeElements.push(`Funding rate ${(expFundingNum * 10000).toFixed(2)}bps (shorts paying longs → squeeze potential)`);
+              } else if (direction === 'sell' && expFundingNum > 0) {
+                edgeElements.push(`Funding rate ${(expFundingNum * 10000).toFixed(2)}bps (longs paying shorts → squeeze potential)`);
+              }
+            }
+
+            // Edge 5: Order book imbalance
+            if (Math.abs(expOBNum) > 0.15) {
+              const obDir = expOBNum > 0 ? 'bid' : 'ask';
+              edgeElements.push(`Order book ${obDir} pressure (${(expOBNum * 100).toFixed(0)}% imbalance)`);
+            }
+
+            // Edge 6: Volatility regime edge (ATR compression → expansion)
+            if (expVolNum > 0 && expVolNum < 0.01) {
+              edgeElements.push(`ATR compression to ${(expVolNum * 100).toFixed(2)}% (low vol → expansion expected)`);
+            }
+
+            // v2.0.221 (Fix #5): If we can't find ≥2 real edge elements, HOLD.
+            // An exploration trade without a real thesis is worse than no
+            // trade — it pollutes the EXP learning system with meaningless
+            // clusters and produces template-generated theses that the audit
+            // flags as "thesis-quality-issue".
+            if (edgeElements.length < 2) {
+              log.info(`🧪 Exploration skipped — insufficient edge elements (${edgeElements.length}/2 found: ${edgeElements.join('; ') || 'none'}) for ${direction.toUpperCase()} ${activeSymbolUpper}`);
+              direction = null;
+              finalDecision = result.consensus.decision; // keep HOLD
+            } else {
+              // Build thesis from the top 2-3 edge elements (not all — keep it focused)
+              const topEdges = edgeElements.slice(0, 3);
+              const entryThesis = [
+                `[1h: ${direction} ${activeSymbolUpper} @ ${expPrice} — ${topEdges.join(', ')}]`,
+                `[1d: exploration trade (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) — ${direction} selected by multi-signal priority chain; OLR=${expOlr}, shadow=${expShadow}]`,
+              ].join(' ');
 
             // v2.0.748: Volatility-scaled SL/TP for exploration trades.
             // Previously hardcoded 0.02/0.05 — too tight when volatility is low
@@ -6959,8 +7068,9 @@ ${recentExamples}
               // v2.0.722: Rich thesis with actual market data for EXP learning
               entryThesis,
             };
-            log.info(`🧪 Exploration trade triggered: ${direction.toUpperCase()} ${(exploreSize * 100).toFixed(1)}% ${activeSymbolUpper} @ ${exploreLev}x (cycle #${this.totalCycles}) — regime=${expRegime}, OLR=${expOlr}, shadow=${expShadow}`);
-          }
+            log.info(`🧪 Exploration trade triggered: ${direction.toUpperCase()} ${(exploreSize * 100).toFixed(1)}% ${activeSymbolUpper} @ ${exploreLev}x (cycle #${this.totalCycles}) — regime=${expRegime}, OLR=${expOlr}, shadow=${expShadow}, edges=${edgeElements.length}`);
+            } // end: edgeElements >= 2 — real thesis built
+          } // end: direction !== null — exploration trade executed
         }
       }
 
