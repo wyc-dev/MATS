@@ -505,10 +505,38 @@ export class DynamicThresholdCalculator {
    * only called when OLR has sufficient data.
    */
   static pwinBlendFactor(pwin: number): number {
-    // v2.0.831: Non-linear sigmoid blend — strong signals get minimal discount.
-    const sigmoid = 1 / (1 + Math.exp(-PWIN_SIGMOID_STEEPNESS * (pwin - 0.5)));
-    const blend = 0.5 + 0.5 * sigmoid;
-    // Clamp to [PWIN_FLOOR, 1.0] for safety (PWIN_FLOOR=0.3 is the absolute floor)
+    // v2.0.831: Non-linear blend — strong signals get minimal discount.
+    // v2.0.831-fix: Power-based concave blend (replaces sigmoid).
+    //
+    // Formula: blend = PWIN_FLOOR + (1 - PWIN_FLOOR) × P(win)^0.5
+    //
+    // The square root is a concave function — it curves UPWARD, meaning:
+    //   - Low P(win) (negative edge): heavily discounted (sqrt(0.2)=0.447)
+    //   - Mid P(win) (neutral): moderately discounted (sqrt(0.5)=0.707)
+    //   - High P(win) (strong edge): barely discounted (sqrt(0.8)=0.894)
+    //   - P(win)=1.0: no discount (sqrt(1)=1.0)
+    //   - P(win)=0: maximum discount (sqrt(0)=0 → floor)
+    //
+    // This is simpler and more numerically stable than a sigmoid:
+    //   - No exp() overflow/underflow risk
+    //   - Exact endpoints: P(win)=0 → floor, P(win)=1 → 1.0
+    //   - Monotonically increasing (no non-monotonic regions)
+    //   - NaN guard: non-finite → floor (most conservative)
+
+    // ── NaN / non-finite guard (CRITICAL) ──────────────────────────────
+    // If pwin is NaN (from a corrupted OLR model or division error), the
+    // blend would produce NaN, and NaN < threshold = false → the gate
+    // would PASS any trade. Return the floor for any non-finite input.
+    if (!Number.isFinite(pwin)) return PWIN_FLOOR;
+
+    // Clamp pwin to [0, 1] — OLR should never produce values outside this
+    // range, but a corrupted model or floating-point error could.
+    const pwinClamped = Math.max(0, Math.min(1, pwin));
+
+    // Concave power blend: sqrt(pwin) gives the institutional shape —
+    // strong edges are barely discounted, weak edges are heavily discounted.
+    const blend = PWIN_FLOOR + (1 - PWIN_FLOOR) * Math.sqrt(pwinClamped);
+    // Final clamp for floating-point safety
     return Math.max(PWIN_FLOOR, Math.min(1.0, blend));
   }
 
