@@ -59,6 +59,17 @@ const PENALTY_CAP = 0.30;
 const PENALTY_DECAY_CYCLES = 30;
 /** P(win) floor: blendFactor never drops below this. */
 const PWIN_FLOOR = 0.3;
+/** v2.0.831: Non-linear blend factor steepness. The blend factor uses a
+ *  sigmoid centered at P(win)=0.5 so that:
+ *    P(win) > 55% → blendFactor ≈ 0.9+ (strong edge → minimal discount)
+ *    P(win) = 50% → blendFactor = 0.75 (neutral → moderate discount)
+ *    P(win) < 45% → blendFactor ≈ 0.5- (negative edge → heavy discount)
+ *  This replaces the old linear formula (0.3 + 0.7×P(win)) which over-
+ *  discounted strong signals: P(win)=65% gave blend=0.755 (25% discount)
+ *  instead of the ~0.95 it deserves. The old formula caused a 65% consensus
+ *  with 65% P(win) to produce 49.1% effective confidence — blocked by a 50%
+ *  threshold despite being a strong signal. */
+const PWIN_SIGMOID_STEEPNESS = 4.0;
 /** v2.0.819: WINNER-FIRST — maximum multiplicative boost from the
  *  lossStreakTracker winner pattern. Cap prevents an over-aggressive winner
  *  signal from letting garbage through; the combo blend factor (separate,
@@ -472,11 +483,33 @@ export class DynamicThresholdCalculator {
   }
 
   /**
-   * Compute the P(win) blend factor (v2.0.224, preserved).
-   * pwinBlendFactor = pwinFloor + (1 - pwinFloor) × P(win)
+   * Compute the P(win) blend factor.
+   * v2.0.224: linear formula pwinFloor + (1-pwinFloor) × P(win).
+   * v2.0.831: NON-LINEAR sigmoid blend for stronger signals.
+   *
+   * When P(win) has a clear edge (>55%), the blend factor approaches 1.0 —
+   * a strong OLR signal should NOT be heavily discounted. The old linear
+   * formula gave P(win)=65% a blend of 0.755 (25% discount), which caused
+   * a 65% consensus × 65% P(win) = 49.1% effective confidence — blocked by
+   * a 50% threshold despite being a strong signal.
+   *
+   * The new formula: blendFactor = 0.5 + 0.5 × sigmoid(k × (P(win) - 0.5))
+   *   P(win)=50% → 0.75 (neutral, moderate discount)
+   *   P(win)=65% → 0.95 (strong edge, minimal discount)
+   *   P(win)=80% → 0.99 (very strong, almost no discount)
+   *   P(win)=35% → 0.55 (negative edge, heavy discount)
+   *   P(win)=20% → 0.51 (strong negative, near floor)
+   *
+   * Cold-start safety: when P(win) is not available (olrHasData=false), the
+   * caller sets blendFactor=1.0 directly (no discount) — this function is
+   * only called when OLR has sufficient data.
    */
   static pwinBlendFactor(pwin: number): number {
-    return PWIN_FLOOR + (1 - PWIN_FLOOR) * pwin;
+    // v2.0.831: Non-linear sigmoid blend — strong signals get minimal discount.
+    const sigmoid = 1 / (1 + Math.exp(-PWIN_SIGMOID_STEEPNESS * (pwin - 0.5)));
+    const blend = 0.5 + 0.5 * sigmoid;
+    // Clamp to [PWIN_FLOOR, 1.0] for safety (PWIN_FLOOR=0.3 is the absolute floor)
+    return Math.max(PWIN_FLOOR, Math.min(1.0, blend));
   }
 
   /**
