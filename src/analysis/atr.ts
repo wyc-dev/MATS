@@ -369,6 +369,8 @@ export function computeATRSLTP(
   // medium (5%/8%); baseline gets tightest (3%/5%).
   // v2.0.231: high-confidence trades (OLR > 0.8) get wider caps (8%/12%)
   // to match the wider SL multiplier.
+  // v2.0.832: baseline TP cap raised from 5% → 10% to accommodate R:R ≥ 1.6
+  // when SL is wide (e.g. SL=4% → TP needs 6.4%, old cap=5% blocked this).
   const isHighConfidence = olrConfidence !== undefined && olrConfidence > 0.8;
   const finalMaxSlDist = useExecLens
     ? entryPrice * 0.06
@@ -382,8 +384,8 @@ export function computeATRSLTP(
     : isHighConfidence
       ? entryPrice * 0.12
       : (adverseMomentum && adverseMomentum > 0)
-        ? entryPrice * 0.08
-        : entryPrice * 0.05;
+        ? entryPrice * 0.10
+        : entryPrice * 0.10; // v2.0.832: raised from 0.05 → 0.10 for R:R ≥ 1.6
 
   const cappedSlDist = Math.min(slDist, finalMaxSlDist);
   const cappedTpDist = Math.min(tpDist, finalMaxTpDist);
