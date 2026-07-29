@@ -7487,11 +7487,29 @@ ${recentExamples}
             // 0 < vol < threshold → soft: proportional confidence penalty so a
             // strong WINNER-FIRST winner can still pass. Previously this
             // hard-skipped every calm symbol (SILVER/BTC) permanently.
-            const pscVolRaw = this.marketState.getState(psc.symbol)?.volatility ?? 0;
+            //
+            // v2.0.831: ATR FALLBACK for vol=0 (same fix as active path).
+            // Non-active symbols often have vol=0 because calcVolatility needs
+            // ≥2 price history points, not because the feed is broken.
+            // Fall back to ATR% before hard-blocking.
+            let pscVolRaw = this.marketState.getState(psc.symbol)?.volatility ?? 0;
+            // v2.0.831: ATR fallback when marketState volatility is 0
+            if (pscVolRaw === 0) {
+              try {
+                const pscAtrFallback = await withTimeout(getATR(normalizeSymbol(psc.symbol)), 5_000, `vol-gate-atr-ms ${psc.symbol}`);
+                if (pscAtrFallback !== null && pscAtrFallback > 0) {
+                  const pscEntryPx = this.marketState?.getState(psc.symbol)?.price ?? 0;
+                  if (pscEntryPx > 0) {
+                    pscVolRaw = pscAtrFallback / pscEntryPx;
+                    log.info(`📊 [vol-gate] Multi-symbol ${psc.symbol}: marketState vol=0, using ATR fallback: vol=${(pscVolRaw * 100).toFixed(3)}%`);
+                  }
+                }
+              } catch { /* non-critical — fall through to hard block */ }
+            }
             const pscVol = pscVolRaw > 0 ? pscVolRaw : (combinedState.volatility > 0 ? combinedState.volatility : 0);
             if (pscVol === 0) {
-              log.warn(`🛑 [vol-gate] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol}: volatility 0 — feed broken/stale, skipping`);
-              auditGates.push({ gate: 'vol-gate', passed: false, reason: `vol=0 (feed broken)` });
+              log.warn(`🛑 [vol-gate] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol}: volatility 0 (marketState=0, ATR=0) — feed truly broken, skipping`);
+              auditGates.push({ gate: 'vol-gate', passed: false, reason: `vol=0 (marketState+ATR both 0)` });
               this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
               continue;
             }
@@ -8064,16 +8082,47 @@ ${recentExamples}
       //     signal) but let a strong WINNER-FIRST combo override pass. The
       //     penalty is added to _lossStreakPenalty so the Plan G conviction
       //     gate's penaltyFactor absorbs it.
+      //
+      // v2.0.831: ATR FALLBACK for vol=0. The old logic assumed vol=0 means
+      // "feed broken" — but for non-active symbols (CL, SKHX, GOLD), vol=0
+      // often means "not enough price history to compute σ" (calcVolatility
+      // needs ≥2 price points; a freshly added trading market may have only 1).
+      // This is NOT a broken feed — the price is real (fetched from HL), we
+      // just can't compute volatility from it yet.
+      //
+      // Fix: when marketState vol=0, fall back to ATR% (fetched from HL 1h
+      // candles). ATR is a direct measure of the asset's actual price range
+      // and doesn't need accumulated price history. If ATR > 0, use it as the
+      // volatility estimate and proceed (soft gate, not hard block). Only
+      // hard-block if BOTH marketState vol=0 AND ATR=0 (truly no data).
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
         const activeSymForVol = normalizeSymbol(finalDecision.symbol || activeSymbol);
-        const perSymVol = this.marketState.getState(activeSymForVol)?.volatility ?? 0;
+        let perSymVol = this.marketState.getState(activeSymForVol)?.volatility ?? 0;
+        // v2.0.831: ATR fallback when marketState volatility is 0.
+        // This fixes the "vol=0 → hard block" that prevented CL/SKHX/GOLD
+        // from ever trading. ATR is fetched from HL 1h candles (real data),
+        // so it's a valid volatility estimate even when price history is
+        // too short for calcVolatility.
+        if (perSymVol === 0) {
+          try {
+            const atrFallback = await withTimeout(getATR(activeSymForVol), 5_000, `vol-gate-atr ${activeSymForVol}`);
+            if (atrFallback !== null && atrFallback > 0) {
+              const entryPx = finalDecision.entryPrice ?? this.marketState?.getState(activeSymForVol)?.price ?? 0;
+              if (entryPx > 0) {
+                perSymVol = atrFallback / entryPx; // ATR as fraction of price = volatility estimate
+                log.info(`📊 [vol-gate] ${activeSymForVol}: marketState vol=0, using ATR fallback: ATR=$${atrFallback.toFixed(2)} / price=$${entryPx.toFixed(2)} = vol=${(perSymVol * 100).toFixed(3)}%`);
+              }
+            }
+          } catch { /* non-critical — fall through to hard block if ATR also fails */ }
+        }
         const currentVol = perSymVol > 0
           ? perSymVol
           : (combinedState.volatility > 0 ? combinedState.volatility : 0);
         if (currentVol === 0) {
-          // Hard block: no data at all — feed broken. Never trade on phantom prices.
-          log.warn(`🛑 [vol-gate] ${finalDecision.action.toUpperCase()} ${finalDecision.symbol || activeSymbol}: volatility 0 — data feed broken/stale, HARD HOLD`);
-          activeAuditGates.push({ gate: 'vol-gate', passed: false, reason: `vol=0 (feed broken — hard block)` });
+          // Hard block: no data at all — both marketState AND ATR returned 0.
+          // This is a genuinely broken feed, not just insufficient history.
+          log.warn(`🛑 [vol-gate] ${finalDecision.action.toUpperCase()} ${finalDecision.symbol || activeSymbol}: volatility 0 (marketState=0, ATR=0) — data feed truly broken, HARD HOLD`);
+          activeAuditGates.push({ gate: 'vol-gate', passed: false, reason: `vol=0 (marketState+ATR both 0 — feed broken)` });
           finalDecision = {
             ...finalDecision,
             action: 'hold',

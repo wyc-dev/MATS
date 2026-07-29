@@ -2448,12 +2448,37 @@ export class HACPEngine {
       const avgSl = data.sls.filter(s => s > 0).reduce((s, v) => s + v, 0) / Math.max(1, data.sls.filter(s => s > 0).length);
       const avgTp = data.tps.filter(s => s > 0).reduce((s, v) => s + v, 0) / Math.max(1, data.tps.filter(s => s > 0).length);
 
+      // v2.0.831: Meta-Agent CLOSE override for positions with thesis.
+      // Meta-Agent is the arbitrator — if it decides CLOSE for a position
+      // (closePosition=true), that should override the sub-agent majority.
+      // Previously, CLOSE required >50% of ALL agents to set closePosition=true,
+      // but sub-agents rarely set closePosition (they output action='hold' for
+      // positions they're uncertain about). This meant Meta-Agent's CLOSE
+      // decision was drowned out by sub-agent HOLDs, and positions with broken
+      // theses were never closed via the consensus path.
+      //
+      // Fix: if Meta-Agent explicitly set closePosition=true for this symbol,
+      // override closeMajority to true. This mirrors the trading-market
+      // override (line 2410+) where Meta-Agent's BUY/SELL overrides sub-agent
+      // majority. CLOSE is equally authoritative — Meta-Agent is the decision
+      // maker, sub-agents are data-gatherers.
+      let finalClosePosition = closeMajority;
+      if (metaPerSymbol.has(sym)) {
+        const metaDec = metaPerSymbol.get(sym)!;
+        if (metaDec.closePosition === true) {
+          finalClosePosition = true;
+          if (!closeMajority) {
+            log.info(`📊 [v2.0.831] Position ${sym}: Meta-Agent CLOSE override (sub-agents: ${closeCount}C/${buyCount}B/${sellCount}S/${holdCount}H — no majority, but Meta-Agent is authoritative)`);
+          }
+        }
+      }
+
       perSymbolConsensus.push({
         symbol: sym,
         action: finalAction,
         confidence: finalConfidence,
         hasPosition: false, // ⚠️ UNRELIABLE — consumers MUST check portfolio directly (see index.ts per-symbol consensus loop)
-        closePosition: closeMajority,
+        closePosition: finalClosePosition,
         suggestedStopLoss: avgSl > 0 ? avgSl : undefined,
         suggestedTakeProfit: avgTp > 0 ? avgTp : undefined,
         positionSizePct: finalSize,
