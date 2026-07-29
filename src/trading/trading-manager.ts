@@ -520,8 +520,12 @@ export class TradingManager {
         // the asset's actual volatility, not a fixed percentage. A stop that
         // is inside the normal trading range of the asset is not a stop —
         // it's a guaranteed loss.
-        const atrPct = atr > 0 && actualEntryPrice > 0 ? atr / actualEntryPrice : 0;
-        const volatilityAdaptiveSlFloor = Math.max(0.005, atrPct * 1.5);
+        // v2.0.831: NaN guard — if ATR returns NaN (fetch error), atrPct = NaN,
+        // and Math.max(0.005, NaN) = NaN → SL price = NaN → crash. Fall back to 0.5%.
+        const atrPct = (Number.isFinite(atr) && atr > 0 && actualEntryPrice > 0)
+          ? atr / actualEntryPrice
+          : 0;
+        const volatilityAdaptiveSlFloor = Math.max(0.005, Number.isFinite(atrPct) ? atrPct * 1.5 : 0.005);
         const slDistPct = Math.abs(slPrice - actualEntryPrice) / actualEntryPrice;
         const tpDistPct = Math.abs(tpPrice - actualEntryPrice) / actualEntryPrice;
         if (slDistPct < volatilityAdaptiveSlFloor) {
