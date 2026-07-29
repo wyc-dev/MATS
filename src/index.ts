@@ -221,7 +221,7 @@ class MATSSystem {
    *  mode so the UI Portfolio positions module shows the actual Hyperliquid
    *  positions, not just the local mirror. */
   private cachedExchangePositions: Array<{ symbol: string; side: 'buy' | 'sell'; quantity: number; averageEntryPrice: number; currentPrice: number; unrealizedPnl: number; leverage: number; openedAt: number }> | null = null;
-  private lastSRContext: { formatted: string; regime: string; zoneCount: number; strongZones: number; nearestSupport: number | null; nearestResistance: number | null; distanceToSupportBps: number; distanceToResistanceBps: number; degradedReason: string | null } | null = null;
+  private lastSRContext: { formatted: string; regime: string; zoneCount: number; strongZones: number; nearestSupport: number | null; nearestResistance: number | null; distanceToSupportBps: number; distanceToResistanceBps: number; degradedReason: string | null; nearestSupportStrength: 'strong' | 'moderate' | 'weak' | null; nearestSupportSource: 'pivot' | 'round_num' | 'orderbook' | null } | null = null;
   /** v2.0.79: Cached news headlines per symbol for UI display in News Reporter card. */
   private cachedNewsHeadlines: Array<{ symbol: string; headlines: Array<{ title: string; publisher: string; url?: string; pubDate: number | null }> }> = [];
   /** v2.0.143: Cached news context from the last successful fetch — reused
@@ -5902,6 +5902,14 @@ ${recentExamples}
 
       // Store latest S/R context for API push
       if (srContext) {
+        // v2.0.830: Find the nearest support zone's strength + source for
+        // PROFIT GUARD v3 break-quality assessment. A break of a 'strong'
+        // pivot support is a real structural event; a break of a 'weak'
+        // round_num support (e.g. $64K integer) is just noise.
+        const nearestSupportPrice = srContext.currentPosition.nearestSupport;
+        const nearestSupportZone = nearestSupportPrice !== null
+          ? srContext.zones.find(z => z.type === 'support' && Math.abs(z.price - nearestSupportPrice) / nearestSupportPrice * 10_000 < 1)
+          : null;
         this.lastSRContext = {
           formatted: srContext.formatted,
           regime: srContext.regime,
@@ -5912,6 +5920,8 @@ ${recentExamples}
           distanceToSupportBps: srContext.currentPosition.distanceToNearestSupport,
           distanceToResistanceBps: srContext.currentPosition.distanceToNearestResistance,
           degradedReason: srContext.degradedReason,
+          nearestSupportStrength: nearestSupportZone?.strength ?? null,
+          nearestSupportSource: nearestSupportZone?.source ?? null,
         };
       }
 
@@ -6619,13 +6629,47 @@ ${recentExamples}
 
           // S/R break confirmation (only for active symbol — S/R is only
           // computed for the active symbol; non-active symbols rely on SL)
+          //
+          // v2.0.830: BREAK QUALITY ASSESSMENT — not all breaks are equal.
+          // A break of a STRONG PIVOT support (multiple touches, real price
+          // action) is a genuine structural event. A break of a WEAK ROUND_NUM
+          // support (e.g. $64K integer level, 1 touch) is just noise — price
+          // often wicks below round numbers and bounces back.
+          //
+          // The break must be DECISIVE: price must be beyond the S/R level by
+          // a minimum percentage that scales with the zone's weakness:
+          //   strong pivot    → 0.3% beyond = confirmed (real levels break clean)
+          //   moderate        → 0.5% beyond
+          //   weak round_num  → 1.0% beyond (need more proof for weak levels)
+          //   unknown/null    → 0.5% beyond (default)
+          //
+          // This prevents "wick below $64K for 1 second → force close" while
+          // still catching genuine structural breaks.
           if (!structureConfirmed && normalizeSymbol(sym) === normalizeSymbol(this.marketAgent.getSelectedSymbol())) {
-            if (pos.side === 'buy' && srSupport !== null && currentPrice < srSupport) {
-              structureConfirmed = true;
-              confirmReason = `price $${currentPrice.toFixed(2)} < support $${srSupport.toFixed(2)}`;
-            } else if (pos.side === 'sell' && srResistance !== null && currentPrice > srResistance) {
-              structureConfirmed = true;
-              confirmReason = `price $${currentPrice.toFixed(2)} > resistance $${srResistance.toFixed(2)}`;
+            const srStrength = this.lastSRContext?.nearestSupportStrength ?? null;
+            const srSource = this.lastSRContext?.nearestSupportSource ?? null;
+            // Minimum break depth (fraction beyond the level) based on zone quality
+            const breakDepthRequired = srStrength === 'strong' ? 0.003
+              : srStrength === 'weak' ? 0.010
+              : 0.005; // moderate or unknown
+
+            if (pos.side === 'buy' && srSupport !== null && srSupport > 0) {
+              const breakDepth = (srSupport - currentPrice) / srSupport;
+              if (currentPrice < srSupport && breakDepth >= breakDepthRequired) {
+                structureConfirmed = true;
+                confirmReason = `price $${currentPrice.toFixed(2)} < support $${srSupport.toFixed(2)} by ${(breakDepth * 100).toFixed(2)}% (≥ ${(breakDepthRequired * 100).toFixed(1)}% required, strength=${srStrength ?? 'unknown'}, source=${srSource ?? 'unknown'})`;
+              } else if (currentPrice < srSupport) {
+                // Price is below support but NOT decisively — just a wick
+                confirmReason = `price $${currentPrice.toFixed(2)} below support $${srSupport.toFixed(2)} by only ${(breakDepth * 100).toFixed(2)}% (< ${(breakDepthRequired * 100).toFixed(1)}% required for ${srStrength ?? 'unknown'} ${srSource ?? 'unknown'} support) — NOT confirmed (likely wick)`;
+              }
+            } else if (pos.side === 'sell' && srResistance !== null && srResistance > 0) {
+              const breakDepth = (currentPrice - srResistance) / srResistance;
+              if (currentPrice > srResistance && breakDepth >= breakDepthRequired) {
+                structureConfirmed = true;
+                confirmReason = `price $${currentPrice.toFixed(2)} > resistance $${srResistance.toFixed(2)} by ${(breakDepth * 100).toFixed(2)}% (≥ ${(breakDepthRequired * 100).toFixed(1)}% required, strength=${srStrength ?? 'unknown'}, source=${srSource ?? 'unknown'})`;
+              } else if (currentPrice > srResistance) {
+                confirmReason = `price $${currentPrice.toFixed(2)} above resistance $${srResistance.toFixed(2)} by only ${(breakDepth * 100).toFixed(2)}% (< ${(breakDepthRequired * 100).toFixed(1)}% required for ${srStrength ?? 'unknown'} ${srSource ?? 'unknown'} resistance) — NOT confirmed (likely wick)`;
+              }
             }
           }
 
@@ -7608,12 +7652,21 @@ ${recentExamples}
                 if (posSide === 'buy' && flipPrice <= flipSL) flipStructureConfirmed = true;
                 if (posSide === 'sell' && flipPrice >= flipSL) flipStructureConfirmed = true;
               }
-              // S/R confirmation (active symbol only)
+              // S/R confirmation (active symbol only) — v2.0.830: break quality
               if (!flipStructureConfirmed && normalizeSymbol(psc.symbol) === normalizeSymbol(this.marketAgent.getSelectedSymbol())) {
                 const flipSupport = this.lastSRContext?.nearestSupport ?? null;
                 const flipResistance = this.lastSRContext?.nearestResistance ?? null;
-                if (posSide === 'buy' && flipSupport !== null && flipPrice < flipSupport) flipStructureConfirmed = true;
-                if (posSide === 'sell' && flipResistance !== null && flipPrice > flipResistance) flipStructureConfirmed = true;
+                const flipSrStrength = this.lastSRContext?.nearestSupportStrength ?? null;
+                const flipBreakDepthRequired = flipSrStrength === 'strong' ? 0.003
+                  : flipSrStrength === 'weak' ? 0.010
+                  : 0.005;
+                if (posSide === 'buy' && flipSupport !== null && flipSupport > 0) {
+                  const flipBreakDepth = (flipSupport - flipPrice) / flipSupport;
+                  if (flipPrice < flipSupport && flipBreakDepth >= flipBreakDepthRequired) flipStructureConfirmed = true;
+                } else if (posSide === 'sell' && flipResistance !== null && flipResistance > 0) {
+                  const flipBreakDepth = (flipPrice - flipResistance) / flipResistance;
+                  if (flipPrice > flipResistance && flipBreakDepth >= flipBreakDepthRequired) flipStructureConfirmed = true;
+                }
               }
 
               if (!flipStructureConfirmed) {
