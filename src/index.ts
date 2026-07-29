@@ -6713,7 +6713,11 @@ ${recentExamples}
 
             if (pos.side === 'buy' && srSupport !== null && srSupport > 0) {
               const breakDepth = (srSupport - currentPrice) / srSupport;
-              if (currentPrice < srSupport && breakDepth >= breakDepthRequired) {
+              // v2.0.831: NaN guard — if currentPrice is NaN, breakDepth = NaN.
+              // NaN >= breakDepthRequired = false → structureConfirmed stays false.
+              // This is safe (won't crash, won't false-positive), but we guard
+              // explicitly to avoid NaN propagating to the log message.
+              if (Number.isFinite(breakDepth) && currentPrice < srSupport && breakDepth >= breakDepthRequired) {
                 structureConfirmed = true;
                 confirmReason = `price $${currentPrice.toFixed(2)} < support $${srSupport.toFixed(2)} by ${(breakDepth * 100).toFixed(2)}% (≥ ${(breakDepthRequired * 100).toFixed(1)}% required, strength=${srStrength ?? 'unknown'}, source=${srSource ?? 'unknown'})`;
               } else if (currentPrice < srSupport) {
@@ -6722,7 +6726,8 @@ ${recentExamples}
               }
             } else if (pos.side === 'sell' && srResistance !== null && srResistance > 0) {
               const breakDepth = (currentPrice - srResistance) / srResistance;
-              if (currentPrice > srResistance && breakDepth >= breakDepthRequired) {
+              // v2.0.831: NaN guard — same as buy path
+              if (Number.isFinite(breakDepth) && currentPrice > srResistance && breakDepth >= breakDepthRequired) {
                 structureConfirmed = true;
                 confirmReason = `price $${currentPrice.toFixed(2)} > resistance $${srResistance.toFixed(2)} by ${(breakDepth * 100).toFixed(2)}% (≥ ${(breakDepthRequired * 100).toFixed(1)}% required, strength=${srStrength ?? 'unknown'}, source=${srSource ?? 'unknown'})`;
               } else if (currentPrice > srResistance) {
@@ -7557,7 +7562,12 @@ ${recentExamples}
             const pscRiskMultiplier = pscRiskProfile === 'aggressive' ? 0.85
               : pscRiskProfile === 'conservative' ? 1.15
               : 1.0;
-            const pscAdjustedThreshold = Math.max(0.30, Math.min(0.70, pscFilter.getConvictionThreshold() * pscRiskMultiplier));
+            // v2.0.831: NaN guard — same as active path. If pscFilter threshold is NaN,
+// fall back to 0.50 (baseline). Math.max(0.30, Math.min(0.70, NaN)) = NaN.
+const pscThresholdRaw = pscFilter.getConvictionThreshold();
+const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
+  ? Math.max(0.30, Math.min(0.70, pscThresholdRaw * pscRiskMultiplier))
+  : 0.50; // safe fallback
             if (psc.confidence < pscAdjustedThreshold) {
               log.warn(`🛑 [adaptive-filter] Multi-symbol conviction gate [${psc.symbol}]: ${(psc.confidence * 100).toFixed(0)}% < ${(pscAdjustedThreshold * 100).toFixed(0)}% (risk=${pscRiskProfile}) — skipping entry (noise-dominated)`);
               auditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(psc.confidence * 100).toFixed(0)}% < ${(pscAdjustedThreshold * 100).toFixed(0)}% [risk=${pscRiskProfile}]` });
@@ -8278,7 +8288,13 @@ ${recentExamples}
         const riskThresholdMultiplier = riskProfile === 'aggressive' ? 0.85
           : riskProfile === 'conservative' ? 1.15
           : 1.0;
-        const adjustedThreshold = Math.max(0.30, Math.min(0.70, effectiveThreshold * riskThresholdMultiplier));
+        // v2.0.831: NaN guard — if effectiveThreshold is NaN (DTC computation error),
+// fall back to 0.50 (baseline threshold). Math.max(0.30, Math.min(0.70, NaN))
+// = NaN, and NaN < threshold = false → gate would PASS any trade. This is
+// a critical safety bug that could allow trades on corrupted state.
+const adjustedThreshold = Number.isFinite(effectiveThreshold)
+  ? Math.max(0.30, Math.min(0.70, effectiveThreshold * riskThresholdMultiplier))
+  : 0.50; // safe fallback — baseline threshold
         if (riskProfile !== 'moderate') {
           log.info(`🎯 [risk-profile] ${riskProfile}: threshold ${(effectiveThreshold * 100).toFixed(1)}% → ${(adjustedThreshold * 100).toFixed(1)}% (×${riskThresholdMultiplier})`);
         }
