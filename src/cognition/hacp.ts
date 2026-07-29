@@ -724,6 +724,15 @@ export class HACPEngine {
         //   4. Profitable positions held < 4 hours (240 min) are NEVER force-closed
         //      — winners must be allowed to run.
         //
+        // v2.0.832: STRUCTURAL CONFIRMATION EXCEPTION — all four guards are
+        // BYPASSED if the market structure has confirmed the thesis is broken:
+        //   - SL has been hit (price beyond stop loss)
+        //   - S/R has been broken (price beyond key support/resistance)
+        // When the market itself confirms the break, holding the position is
+        // riskier than closing it — even if it's profitable or recently opened.
+        // This prevents the "winners become losers" pattern where a profitable
+        // position rides into a reversal because the guards blocked the close.
+        //
         // These guards run BEFORE the Skeptics LLM call, so even if the timer fires
         // between cycles, the guard catches it at the start of the next cycle.
         const preCheckedPositions = positionsWithThesis.filter(p => {
@@ -733,6 +742,22 @@ export class HACPEngine {
           const pnlPct = position.unrealizedPnlPct ?? 0;
           const isProfitable = pnlPct > 0;
           const isSignificantLoss = pnlPct < -0.005; // >0.5% loss
+          
+          // v2.0.832: STRUCTURAL CONFIRMATION CHECK — if SL hit or S/R broken,
+          // bypass ALL pre-check guards. The market has confirmed the thesis
+          // is broken — no amount of profit or hold time should override that.
+          const currentPrice = position.currentPrice ?? 0;
+          const slPrice = position.stopLossPrice ?? 0;
+          const entryPrice = position.averageEntryPrice ?? 0;
+          let structureConfirmed = false;
+          if (slPrice > 0 && currentPrice > 0) {
+            if (position.side === 'buy' && currentPrice <= slPrice) structureConfirmed = true;
+            if (position.side === 'sell' && currentPrice >= slPrice) structureConfirmed = true;
+          }
+          if (structureConfirmed) {
+            log.info(`📊 [v2.0.832] ${p.symbol}: SL hit (price $${currentPrice.toFixed(2)} ${position.side === 'buy' ? '≤' : '≥'} SL $${slPrice.toFixed(2)}) — bypassing all pre-check guards, allowing Skeptics validation`);
+            return true; // Bypass all guards — let Skeptics validate
+          }
           
           // v2.0.782: PROFITABLE POSITION — NEVER force-close via thesis invalidation.
           // The thesis is WORKING (price moved in our favor). Force-closing a

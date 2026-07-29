@@ -7786,8 +7786,23 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
           // This must happen before closePosition()/closeExchangePosition()
           // because those methods delete the position from the map.
           const closeRationale = psc.rationale || 'No rationale provided.';
-          if (pos.entryThesis) {
+
+          // v2.0.832: STRUCTURAL CONFIRMATION CHECK for Skeptics close validation.
+          // If SL has been hit, the market itself has confirmed the thesis is
+          // broken — Skeptics should NOT block this close, even if the position
+          // is profitable. The old logic let Skeptics block closes on profitable
+          // positions, causing winners to ride into reversal and become losers.
+          const closeSLPrice = pos.stopLossPrice ?? 0;
+          const closeCurrentPrice = pos.currentPrice ?? 0;
+          let closeStructureConfirmed = false;
+          if (closeSLPrice > 0 && closeCurrentPrice > 0) {
+            if (pos.side === 'buy' && closeCurrentPrice <= closeSLPrice) closeStructureConfirmed = true;
+            if (pos.side === 'sell' && closeCurrentPrice >= closeSLPrice) closeStructureConfirmed = true;
+          }
+
+          if (pos.entryThesis && !closeStructureConfirmed) {
             // v2.0.90: Validate close decision with Skeptics for thesis-backed positions
+            // v2.0.832: Skip Skeptics validation if SL hit (market confirmed the break)
             const closeValidation = await this.hacpEngine.getSkeptics().validateCloseDecision(
               psc.symbol,
               pos.side as 'buy' | 'sell',
@@ -7803,6 +7818,9 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               continue;
             }
             log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale} [Skeptics: ✅ ${closeValidation.rationale}]`);
+          } else if (pos.entryThesis && closeStructureConfirmed) {
+            // v2.0.832: SL hit — market confirmed the break, skip Skeptics validation
+            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — SL hit ($${closeSLPrice.toFixed(2)}), market confirmed break, skipping Skeptics [${psc.rationale}]`);
           } else {
             // v2.0.91: Legacy position without entryThesis — close directly
             log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (legacy, no thesis) (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
