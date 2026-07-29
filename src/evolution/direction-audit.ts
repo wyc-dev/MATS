@@ -13,6 +13,7 @@ import { getAgentModel } from '../agents/agent-models.ts';
 import type { ThesisExperienceRecord } from '../types/index.ts';
 import { computeVectorConditionalWinRate, entryDecisionCondWROptions, formatVectorConditional } from './evolution-utils.ts';
 import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
+import { isThesisPlaceholder } from '../trading/portfolio.ts';
 
 const log = createLogger({ phase: 'trade-audit' });
 
@@ -101,13 +102,28 @@ export async function auditTradeRecordsLLM(records: ThesisExperienceRecord[], em
   // entry-time data pipeline fix — they have NO_OLR/NO_SHADOW/NO_MARKET_DATA
   // by design (the data was never captured at entry). Auditing them produces
   // false positives that trigger unnecessary System Engineer fixes.
-  // Only audit trades that have the post-fix data pipeline fields populated.
-  const postFixRecords = records.filter(r =>
-    r.marketFeatures !== undefined && Object.keys(r.marketFeatures ?? {}).length > 0
-  );
+  //
+  // v2.0.831-fix: The initial filter only checked marketFeatures, but 982/1584
+  // trades have marketFeatures while still missing olrPWinAtEntry (the OLR data
+  // pipeline was fixed later than the marketFeatures pipeline). This caused
+  // trades with marketFeatures but NO_OLR to pass the filter and still produce
+  // false-positive NO_OLR incidents. Now requires ALL three fields populated:
+  //   1. marketFeatures (non-empty object)
+  //   2. olrPWinAtEntry (non-null number)
+  //   3. entryThesis (non-placeholder — must pass isThesisPlaceholder check)
+  // This ensures only fully-instrumented trades are audited.
+  const postFixRecords = records.filter(r => {
+    // Must have market features
+    if (!r.marketFeatures || Object.keys(r.marketFeatures).length === 0) return false;
+    // Must have OLR P(win) at entry
+    if (r.olrPWinAtEntry === undefined || r.olrPWinAtEntry === null || !Number.isFinite(r.olrPWinAtEntry)) return false;
+    // Must have a non-placeholder thesis
+    if (isThesisPlaceholder(r.entryThesis)) return false;
+    return true;
+  });
   const recent = postFixRecords.slice(-20);
   if (recent.length === 0) {
-    return { incidents: [], summary: 'No post-fix records to audit (all trades are pre-v2.0.819 legacy)', llmAnalysis: '', timestamp };
+    return { incidents: [], summary: 'No fully-instrumented records to audit (all trades are pre-v2.0.819 legacy or missing OLR/thesis data)', llmAnalysis: '', timestamp };
   }
 
   // Build a compact data summary for the LLM
