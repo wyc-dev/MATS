@@ -8464,7 +8464,11 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         const effectiveConfidence = safeNum(consensusConfidence, 0) * pwinBlendFactor * penaltyFactor * boostFactor;
 
         // ── Gate decision ─────────────────────────────────────────────────
-        if (effectiveConfidence < adjustedThreshold) {
+        // v2.0.832: Use <= instead of < to avoid floating-point boundary issues.
+        // When effective confidence is exactly at the threshold (e.g. 0.49 == 0.49),
+        // floating-point arithmetic may produce 0.48999... < 0.49 → HOLD by 0.001%.
+        // At exactly the threshold, the signal is strong enough to trade.
+        if (effectiveConfidence <= adjustedThreshold - 0.001) {
           const blendStr = comboBlendUsed
             ? ` blend=${pwinBlendFactor.toFixed(3)} (combo override: ${comboBlendUsed.reason.slice(0, 80)})`
             : ` blend=${pwinBlendFactor.toFixed(3)}`;
