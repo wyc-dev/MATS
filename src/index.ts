@@ -3677,7 +3677,12 @@ ${recentExamples}
             if (trueRanges.length > 0) {
               const atr = trueRanges.reduce((a, b) => a + b, 0) / trueRanges.length;
               if (Number.isFinite(atr) && atr > 0) {
-                this.atrCacheThisCycle.set(normalizeSymbol(sym), atr);
+                // v2.0.831: Use full lowercase key for case-insensitive cache lookup.
+                // normalizeSymbol only lowercases the prefix (xyz:), preserving
+                // the asset name case (CL vs cl). If the LLM outputs 'xyz:cl' but
+                // the cache was set with 'xyz:CL', the lookup would miss.
+                // Full lowercase eliminates this ambiguity.
+                this.atrCacheThisCycle.set(sym.toLowerCase(), atr);
               }
             }
           }
@@ -3895,9 +3900,8 @@ ${recentExamples}
       try {
         const sym = normalizeSymbol(decision.symbol);
         // v2.0.831: Read ATR from pre-fetched cache (populated at cycle start).
-        // This replaces the synchronous withTimeout(getATR, 5s) call that timed
-        // out under HL rate-limiter pressure, causing vol-gate to hard-block.
-        const atrVal = this.atrCacheThisCycle.get(sym) ?? null;
+        // Key is full lowercase for case-insensitive matching.
+        const atrVal = this.atrCacheThisCycle.get(sym.toLowerCase()) ?? null;
         const entryPrice = decision.entryPrice ?? this.marketState?.getState(sym)?.price ?? 0;
         if (atrVal !== null && atrVal > 0 && entryPrice > 0) {
           const atrPct = atrVal / entryPrice;
@@ -7579,7 +7583,8 @@ ${recentExamples}
             if (pscVolRaw === 0) {
               try {
                 // v2.0.831: Read ATR from pre-fetched cache (no synchronous fetch)
-                const pscAtrFallback = this.atrCacheThisCycle.get(normalizeSymbol(psc.symbol)) ?? null;
+                // Key is full lowercase for case-insensitive matching.
+                const pscAtrFallback = this.atrCacheThisCycle.get(normalizeSymbol(psc.symbol).toLowerCase()) ?? null;
                 if (pscAtrFallback !== null && pscAtrFallback > 0) {
                   const pscEntryPx = this.marketState?.getState(psc.symbol)?.price ?? 0;
                   if (pscEntryPx > 0) {
@@ -8194,7 +8199,8 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
         if (perSymVol === 0) {
           try {
             // v2.0.831: Read ATR from pre-fetched cache (no synchronous fetch)
-            const atrFallback = this.atrCacheThisCycle.get(activeSymForVol) ?? null;
+            // Key is full lowercase for case-insensitive matching.
+            const atrFallback = this.atrCacheThisCycle.get(activeSymForVol.toLowerCase()) ?? null;
             if (atrFallback !== null && atrFallback > 0) {
               const entryPx = finalDecision.entryPrice ?? this.marketState?.getState(activeSymForVol)?.price ?? 0;
               if (entryPx > 0) {
