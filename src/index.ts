@@ -49,7 +49,7 @@ import { ExecutionTracker } from './trading/execution-tracker.ts';
 import { CorrelationBudget } from './risk/correlation-budget.ts';
 import { calculateTakerFee, calculateFundingCost, getFeeSummary } from './trading/cost-model.ts';
 import { getSRZones } from './analysis/support-resistance.ts';
-import { setExecutionLensProvider, prepareExecutionLens, clearExecutionLens, type ExecutionLensData } from './analysis/atr.ts';
+import { setExecutionLensProvider, prepareExecutionLens, clearExecutionLens, type ExecutionLensData, getATR } from './analysis/atr.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
@@ -3799,6 +3799,64 @@ ${recentExamples}
     if (this.analysisMode && !this.dualMode) {
       log.info(`📊 [analysis-mode] ${decision.action.toUpperCase()} ${decision.symbol} — NOT executing (analysis written to DB). conviction=${(decision.positionSizePct * 100).toFixed(1)}%`);
       return { success: true };
+    }
+
+    // v2.0.831: ENTRY QUALITY GATE — Volatility-adaptive SL sanity check.
+    // Prevents entries where the SL is inside the asset's normal candle noise.
+    // A SL that can be triggered by a single normal candle is not a stop —
+    // it's a guaranteed loss. This is the institutional standard: never enter
+    // a position where the stop distance is less than 1.2× the ATR.
+    //
+    // Root cause: SILVER trade lost -$1.54 because SL was 0.5% from entry
+    // while the average 1h candle range was 0.654%. The SL was inside the
+    // normal trading range — a single normal candle triggered it. MFE = $0
+    // (never profitable) because the entry was immediately stopped out by
+    // noise, not by a genuine thesis failure.
+    //
+    // This gate checks: is the SL distance ≥ 1.2× ATR? If not, the entry
+    // is blocked — the stop is too tight for this asset's volatility.
+    // The trading-manager's SL floor (1.5× ATR) will widen the SL, but if
+    // even the widened SL exceeds the 5% cap, the trade is unviable.
+    if (decision.action === 'buy' || decision.action === 'sell') {
+      try {
+        const sym = normalizeSymbol(decision.symbol);
+        const atrVal = await withTimeout(getATR(sym), 5_000, `entry-gate-atr ${sym}`);
+        const entryPrice = decision.entryPrice ?? this.marketState?.getState(sym)?.price ?? 0;
+        if (atrVal !== null && atrVal > 0 && entryPrice > 0) {
+          const atrPct = atrVal / entryPrice;
+          const slPct = decision.stopLossPct ?? config.risk.stopLossPct;
+          // SL must be at least 1.2× ATR — otherwise it's inside candle noise
+          const minSlPct = atrPct * 1.2;
+          if (slPct < minSlPct) {
+            // SL is too tight for this asset's volatility
+            const widenedSl = Math.min(0.05, atrPct * 1.5); // widen to 1.5× ATR, cap at 5%
+            if (widenedSl <= 0.05) {
+              // Can widen within cap — adjust the decision
+              log.warn(`🛡️ [entry-gate] ${decision.symbol}: SL ${(slPct * 100).toFixed(2)}% < 1.2×ATR ${(minSlPct * 100).toFixed(2)}% — widening SL to ${(widenedSl * 100).toFixed(2)}% (1.5×ATR) to prevent noise stop-out`);
+              decision = { ...decision, stopLossPct: widenedSl };
+              // Also widen TP to maintain R:R ≥ 1.6
+              const currentTp = decision.takeProfitPct ?? config.risk.takeProfitPct;
+              const minTp = widenedSl * 1.6;
+              if (currentTp < minTp) {
+                const widenedTp = Math.min(0.10, minTp);
+                log.info(`📐 [entry-gate] ${decision.symbol}: TP widened from ${(currentTp * 100).toFixed(2)}% to ${(widenedTp * 100).toFixed(2)}% to maintain R:R ≥ 1.6`);
+                decision = { ...decision, takeProfitPct: widenedTp };
+              }
+            } else {
+              // Even 1.5× ATR exceeds 5% cap — asset is too volatile for a
+              // viable trade with current risk constraints. Block entry.
+              log.warn(`🛡️ [entry-gate] ${decision.symbol}: BLOCKING entry — SL would need ${(widenedSl * 100).toFixed(2)}% (1.5×ATR) but cap is 5%. Asset too volatile for viable stop. ATR=${(atrPct * 100).toFixed(2)}%`);
+              auditGates.push({ gate: 'sl-volatility-gate', passed: false, reason: `SL ${(slPct * 100).toFixed(2)}% < 1.2×ATR ${(minSlPct * 100).toFixed(2)}%, widened SL would exceed 5% cap` });
+              return { success: false, error: `SL too tight for volatility (ATR=${(atrPct * 100).toFixed(2)}%, need ≥${(minSlPct * 100).toFixed(2)}% SL)` };
+            }
+          }
+          auditGates.push({ gate: 'sl-volatility-gate', passed: true, reason: `SL ${(slPct * 100).toFixed(2)}% ≥ 1.2×ATR ${(minSlPct * 100).toFixed(2)}%` });
+        }
+      } catch (err) {
+        // ATR fetch failed — non-critical, proceed with original SL
+        // (the trading-manager's SL floor will still apply)
+        log.warn(`[entry-gate] ATR fetch failed for ${decision.symbol}: ${err instanceof Error ? err.message : String(err)} — skipping volatility check`);
+      }
     }
     
     // v2.0.790: Pre-compute entry-time features BEFORE executeTrade() if not provided.

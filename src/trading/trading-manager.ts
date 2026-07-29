@@ -443,8 +443,10 @@ export class TradingManager {
         // v2.0.73 S2.3: Try ATR-based SL/TP first (volatility-adaptive).
         // SL = 1.5×ATR, TP = 3×ATR (R:R 2:1). Falls back to S/R or % if ATR unavailable.
         let atrSLTP: { sl: number; tp: number } | null = null;
+        // v2.0.831: ATR value extracted to outer scope for volatility-adaptive SL floor.
+        let atr = 0;
         try {
-          const atr = await getATR(decision.symbol);
+          atr = await getATR(decision.symbol);
           if (atr > 0) {
             // v2.0.207 (#C): Momentum-adaptive SL — widen SL against adverse
             // short-term momentum so a continued push doesn't stop the position
@@ -502,16 +504,32 @@ export class TradingManager {
           }
         }
 
-        // v2.0.33: Hard constraints — SL 0.5-5% from entry, TP 0.5-5% from entry
-        // SL too tight = noise stop-out, SL too wide = excessive risk
-        // TP too tight = not enough profit, TP too wide = unreachable
+        // v2.0.33: Hard constraints — SL/TP distance from entry.
+        // v2.0.831: VOLATILITY-ADAPTIVE SL FLOOR — replaces hardcoded 0.5%.
+        // The old 0.5% minimum was a global constant that didn't account for
+        // per-asset volatility. For SILVER (avg 1h candle range = 0.65%), a
+        // 0.5% SL is INSIDE the normal candle noise — a single normal candle
+        // can trigger the stop. For BTC (avg range = 2%), 0.5% is even worse.
+        //
+        // The new floor is: max(1.5 × ATR%, 0.5%) — SL must be at least 1.5×
+        // the ATR distance (enough room for normal candle noise) but never
+        // less than 0.5% (absolute floor for extreme low-vol assets).
+        // The ceiling remains 5% (excessive risk above that).
+        //
+        // This is the institutional standard: SL distance is proportional to
+        // the asset's actual volatility, not a fixed percentage. A stop that
+        // is inside the normal trading range of the asset is not a stop —
+        // it's a guaranteed loss.
+        const atrPct = atr > 0 && actualEntryPrice > 0 ? atr / actualEntryPrice : 0;
+        const volatilityAdaptiveSlFloor = Math.max(0.005, atrPct * 1.5);
         const slDistPct = Math.abs(slPrice - actualEntryPrice) / actualEntryPrice;
         const tpDistPct = Math.abs(tpPrice - actualEntryPrice) / actualEntryPrice;
-        if (slDistPct < 0.005) {
-          // SL too tight — widen to 0.5%
+        if (slDistPct < volatilityAdaptiveSlFloor) {
+          // SL too tight — widen to volatility-adaptive floor
           slPrice = decision.action === 'buy'
-            ? actualEntryPrice * 0.995
-            : actualEntryPrice * 1.005;
+            ? actualEntryPrice * (1 - volatilityAdaptiveSlFloor)
+            : actualEntryPrice * (1 + volatilityAdaptiveSlFloor);
+          log.info(`📐 [SL-floor] ${decision.symbol}: SL widened from ${(slDistPct * 100).toFixed(2)}% to ${(volatilityAdaptiveSlFloor * 100).toFixed(2)}% (ATR=${(atrPct * 100).toFixed(3)}%, floor=1.5×ATR) — prevents noise stop-out`);
         }
         if (slDistPct > 0.05) {
           // SL too wide — narrow to 5%
