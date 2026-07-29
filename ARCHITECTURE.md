@@ -661,7 +661,22 @@ riskPct = maxPositionSizePct × volatilityFactor × confidenceFactor
 quantity = (equity × riskPct) / (entryPrice × priceRisk)
 ```
 
-**TP/SL 設定於入場時，入場後永不修改（v2.0.225）**：ATR（1.5×）或 S/R 計算，入場後不再收窄。Trailing stop、MFE giveback、TP narrowing、per-symbol consensus SL/TP 全部停用——入場後收窄導致提前止蝕 + UI/交易所 SL desync。兩層退出保護：(1) 初始 SL/TP 交易所層面觸發，(2) LLM thesis invalidation（Skeptics Phase 0.5 強制平倉）。Portfolio 安全層：no-widen + not-too-tight（SL ≥ 1%, TP ≥ 1.5%）+ min-gap 2%。
+**TP/SL 設定於入場時，入場後永不修改（v2.0.225）**：入場後不再收窄。Trailing stop、MFE giveback、TP narrowing、per-symbol consensus SL/TP 全部停用——入場後收窄導致提前止蝕 + UI/交易所 SL desync。兩層退出保護：(1) 初始 SL/TP 交易所層面觸發，(2) LLM thesis invalidation（Skeptics Phase 0.5 強制平倉）。Portfolio 安全層：no-widen + not-too-tight（SL ≥ 1%, TP ≥ 1.5%）+ min-gap 2%。
+
+**Smart SL/TP（v2.0.832）**：機構級 SL/TP 計算——優先級：S/R zones → 50-candle 頂底 → ATR floor。`computeSmartSLTP()`（`src/analysis/smart-sltp.ts`）取代舊嘅 ATR-first 邏輯。
+
+```
+SL 優先級：                          TP 優先級：
+1. S/R support zone（最精準）         1. S/R resistance zone（最精準）
+2. 50-candle ATL（次精準）            2. 50-candle ATH（次精準）
+3. 1.5×ATR（fallback）               3. config default（fallback）
+4. config default（最後）             4. config default（最後）
+
+ATR 只用嚟防止 SL 太窄（SL ≥ 1.5×ATR），唔用嚟推 TP。
+唔強制 R:R——如果 TP 近過 SL，照設。賺少都係賺。
+S/R buffer 按強度加權：strong 0.2%, moderate 0.3%, weak 0.5%。
+SL cap 5%, TP cap 10%, TP min 0.3%。
+```
 
 **累計 Margin 上限 20%**：所有持倉 margin 總和 ≤ 20% balance（基於 margin 而非 notional）。
 
