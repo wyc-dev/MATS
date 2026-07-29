@@ -10,6 +10,7 @@ import { PaperTradingEngine } from './paper-engine.ts';
 import { HyperliquidEngine } from './hyperliquid-engine.ts';
 import { computeSLTP } from './position-utils.ts';
 import { getATR, computeATRSLTP, getMomentum } from '../analysis/atr.ts';
+import { computeSmartSLTP, fetchCandleHighLow } from '../analysis/smart-sltp.ts';
 import type {
   TradeMode,
   ExchangeType,
@@ -428,141 +429,54 @@ export class TradingManager {
         }
 
         // Step 2: Calculate SL/TP from the ACTUAL fill price
-        // v2.0.33: Use S/R levels when available — SL just beyond nearest
-        // support (for long) or resistance (for short), TP at the next S/R level.
-        // Fall back to percentage-based if S/R not available.
-        // v2.0.73 S2.3: ATR is now the PRIMARY method (volatility-adaptive).
-        // Priority: ATR → S/R → fixed %.
+        // v2.0.832: SMART SL/TP — priority: S/R zones → 50-candle 頂底 → ATR floor → config.
+        // SL = below nearest support (or candle low), TP = at nearest resistance (or candle high).
+        // ATR only ensures SL ≥ 1.5×ATR (prevents noise stop-out). TP is NOT widened for R:R.
+        // 賺少都係賺 — if market structure says TP is close, we take it.
         const srSupport = (decision as any).srSupport as number | null | undefined;
         const srResistance = (decision as any).srResistance as number | null | undefined;
+        const srSupportStrength = (decision as any).srSupportStrength as 'strong' | 'moderate' | 'weak' | null | undefined;
+        const srResistanceStrength = (decision as any).srResistanceStrength as 'strong' | 'moderate' | 'weak' | null | undefined;
         const slPctDefault = 0.015; // 1.5% default
         const tpPctDefault = 0.03;  // 3% default
 
-        let slPrice: number, tpPrice: number;
-
-        // v2.0.73 S2.3: Try ATR-based SL/TP first (volatility-adaptive).
-        // SL = 1.5×ATR, TP = 3×ATR (R:R 2:1). Falls back to S/R or % if ATR unavailable.
-        let atrSLTP: { sl: number; tp: number } | null = null;
-        // v2.0.831: ATR value extracted to outer scope for volatility-adaptive SL floor.
-        let atr = 0;
+        // v2.0.832: Fetch 50-candle high/low for SL/TP (non-blocking, fail-open)
+        let candleHigh: number | null = null;
+        let candleLow: number | null = null;
         try {
-          atr = await getATR(decision.symbol);
-          if (atr > 0) {
-            // v2.0.207 (#C): Momentum-adaptive SL — widen SL against adverse
-            // short-term momentum so a continued push doesn't stop the position
-            // out before the thesis plays out. adverseMomentum > 0 = price is
-            // moving AGAINST this position.
-            let adverseMomentum: number | undefined;
-            try {
-              const mom = await getMomentum(decision.symbol, 5);
-              if (mom !== 0) {
-                adverseMomentum = decision.action === 'sell' ? Math.max(0, mom) : Math.max(0, -mom);
-              }
-            } catch { /* non-critical — ATR-only SL */ }
-            atrSLTP = computeATRSLTP(actualEntryPrice, atr, decision.action as 'buy' | 'sell', 1.5, 2.0, adverseMomentum);
-            if (atrSLTP) {
-              const momTag = adverseMomentum && adverseMomentum > 0 ? ` adverseMomentum=${(adverseMomentum * 100).toFixed(1)}%` : '';
-              log.info(`📐 ATR SL/TP: ${decision.symbol} entry=$${actualEntryPrice.toFixed(2)} ATR=$${atr.toFixed(2)} SL=$${atrSLTP.sl.toFixed(2)} TP=$${atrSLTP.tp.toFixed(2)}${momTag}`);
-            }
-          }
-        } catch { /* fall back below */ }
+          const hl = await fetchCandleHighLow(decision.symbol, 50);
+          candleHigh = hl.high;
+          candleLow = hl.low;
+        } catch { /* non-critical — fall back to S/R or ATR */ }
 
-        if (atrSLTP) {
-          slPrice = atrSLTP.sl;
-          tpPrice = atrSLTP.tp;
-        } else if (decision.action === 'buy') {
-          // Long: SL below entry (below nearest support), TP above entry (at resistance)
-          if (srSupport && srSupport > 0 && srSupport < actualEntryPrice) {
-            // SL just below support (0.3% beyond support to avoid wick stop-outs)
-            slPrice = srSupport * 0.997;
-            // Ensure SL is at least 0.5% from entry (avoid noise stop-out)
-            const minSL = actualEntryPrice * (1 - 0.005);
-            slPrice = Math.min(slPrice, minSL);
-          } else {
-            slPrice = actualEntryPrice * (1 - (decision.stopLossPct ?? slPctDefault));
-          }
-          if (srResistance && srResistance > 0 && srResistance > actualEntryPrice) {
-            tpPrice = srResistance;
-          } else {
-            tpPrice = actualEntryPrice * (1 + (decision.takeProfitPct ?? tpPctDefault));
-          }
-        } else {
-          // Short: SL above entry (above nearest resistance), TP below entry (at support)
-          if (srResistance && srResistance > 0 && srResistance > actualEntryPrice) {
-            // SL just above resistance (0.3% beyond resistance to avoid wick stop-outs)
-            slPrice = srResistance * 1.003;
-            // Ensure SL is at least 0.5% from entry (avoid noise stop-out)
-            const minSL = actualEntryPrice * (1 + 0.005);
-            slPrice = Math.max(slPrice, minSL);
-          } else {
-            slPrice = actualEntryPrice * (1 + (decision.stopLossPct ?? slPctDefault));
-          }
-          if (srSupport && srSupport > 0 && srSupport < actualEntryPrice) {
-            tpPrice = srSupport;
-          } else {
-            tpPrice = actualEntryPrice * (1 - (decision.takeProfitPct ?? tpPctDefault));
-          }
-        }
+        // v2.0.832: Fetch ATR for SL floor (non-blocking, fail-open)
+        let atrForSmartSLTP = 0;
+        try {
+          atrForSmartSLTP = await getATR(decision.symbol);
+        } catch { /* non-critical — SL floor falls back to 0.5% */ }
 
-        // v2.0.33: Hard constraints — SL/TP distance from entry.
-        // v2.0.831: VOLATILITY-ADAPTIVE SL FLOOR — replaces hardcoded 0.5%.
-        // The old 0.5% minimum was a global constant that didn't account for
-        // per-asset volatility. For SILVER (avg 1h candle range = 0.65%), a
-        // 0.5% SL is INSIDE the normal candle noise — a single normal candle
-        // can trigger the stop. For BTC (avg range = 2%), 0.5% is even worse.
-        //
-        // The new floor is: max(1.5 × ATR%, 0.5%) — SL must be at least 1.5×
-        // the ATR distance (enough room for normal candle noise) but never
-        // less than 0.5% (absolute floor for extreme low-vol assets).
-        // The ceiling remains 5% (excessive risk above that).
-        //
-        // This is the institutional standard: SL distance is proportional to
-        // the asset's actual volatility, not a fixed percentage. A stop that
-        // is inside the normal trading range of the asset is not a stop —
-        // it's a guaranteed loss.
-        // v2.0.831: NaN guard — if ATR returns NaN (fetch error), atrPct = NaN,
-        // and Math.max(0.005, NaN) = NaN → SL price = NaN → crash. Fall back to 0.5%.
-        const atrPct = (Number.isFinite(atr) && atr > 0 && actualEntryPrice > 0)
-          ? atr / actualEntryPrice
-          : 0;
-        const volatilityAdaptiveSlFloor = Math.max(0.005, Number.isFinite(atrPct) ? atrPct * 1.5 : 0.005);
-        const slDistPct = Math.abs(slPrice - actualEntryPrice) / actualEntryPrice;
-        const tpDistPct = Math.abs(tpPrice - actualEntryPrice) / actualEntryPrice;
-        if (slDistPct < volatilityAdaptiveSlFloor) {
-          // SL too tight — widen to volatility-adaptive floor
-          slPrice = decision.action === 'buy'
-            ? actualEntryPrice * (1 - volatilityAdaptiveSlFloor)
-            : actualEntryPrice * (1 + volatilityAdaptiveSlFloor);
-          log.info(`📐 [SL-floor] ${decision.symbol}: SL widened from ${(slDistPct * 100).toFixed(2)}% to ${(volatilityAdaptiveSlFloor * 100).toFixed(2)}% (ATR=${(atrPct * 100).toFixed(3)}%, floor=1.5×ATR) — prevents noise stop-out`);
-        }
-        if (slDistPct > 0.05) {
-          // SL too wide — narrow to 5%
-          slPrice = decision.action === 'buy'
-            ? actualEntryPrice * 0.95
-            : actualEntryPrice * 1.05;
-        }
-        if (tpDistPct < 0.005) {
-          // TP too tight — widen to 0.5%
-          tpPrice = decision.action === 'buy'
-            ? actualEntryPrice * 1.005
-            : actualEntryPrice * 0.995;
-        }
-        if (tpDistPct > 0.05) {
-          // TP too wide — narrow to 5%
-          tpPrice = decision.action === 'buy'
-            ? actualEntryPrice * 1.05
-            : actualEntryPrice * 0.95;
-        }
+        // v2.0.832: Compute smart SL/TP
+        const smartSLTP = computeSmartSLTP({
+          entryPrice: actualEntryPrice,
+          side: decision.action as 'buy' | 'sell',
+          srSupport: srSupport ?? null,
+          srResistance: srResistance ?? null,
+          srSupportStrength: srSupportStrength ?? null,
+          srResistanceStrength: srResistanceStrength ?? null,
+          candleHigh,
+          candleLow,
+          atr: atrForSmartSLTP,
+          stopLossPct: decision.stopLossPct ?? slPctDefault,
+          takeProfitPct: decision.takeProfitPct ?? tpPctDefault,
+        });
 
-        // Risk:Reward — TP must be >= SL distance (never risk more than reward)
-        const finalSlDist = Math.abs(slPrice - actualEntryPrice);
-        const finalTpDist = Math.abs(tpPrice - actualEntryPrice);
-        if (finalTpDist < finalSlDist) {
-          // TP closer than SL — widen TP to match SL distance
-          tpPrice = decision.action === 'buy'
-            ? actualEntryPrice + finalSlDist
-            : actualEntryPrice - finalSlDist;
-        }
+        let slPrice = smartSLTP.sl;
+        let tpPrice = smartSLTP.tp;
+
+        // v2.0.832: Old ATR-based + S/R fallback + R:R fix logic REMOVED.
+        // computeSmartSLTP handles everything: S/R zones → 50-candle 頂底 → ATR floor.
+        // No R:R hard guarantee — TP is set at market structure levels, not forced.
+        // 賺少都係賺.
 
         const slPctActual = Math.abs(slPrice - actualEntryPrice) / actualEntryPrice;
         const tpPctActual = Math.abs(tpPrice - actualEntryPrice) / actualEntryPrice;
