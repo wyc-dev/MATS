@@ -524,20 +524,56 @@ export async function fetchNewsSentiment(
 
   // Three sources in parallel — any one that resolves is enough.
   // Promise.allSettled so a single source failure doesn't reject the batch.
-  const [gRes, gdeltRes, bingRes] = await Promise.allSettled([
-    fetchGoogleNewsRSS(query),
-    fetchGDELT(query),
-    fetchBingNewsRSS(query),
-  ]);
+  // v2.0.831: Circuit breaker — skip sources in cooldown (3 consecutive failures).
+  // This prevents 10 symbols × 3 sources = 30 requests when a source is down.
+  const sourcesToFetch: Array<{ name: string; fn: () => Promise<NewsHeadline[]> }> = [];
+  if (!isSourceInCooldown('google-news-rss')) {
+    sourcesToFetch.push({ name: 'google-news-rss', fn: () => fetchGoogleNewsRSS(query) });
+  }
+  if (!isSourceInCooldown('gdelt')) {
+    sourcesToFetch.push({ name: 'gdelt', fn: () => fetchGDELT(query) });
+  }
+  if (!isSourceInCooldown('bing-news-rss')) {
+    sourcesToFetch.push({ name: 'bing-news-rss', fn: () => fetchBingNewsRSS(query) });
+  }
+
+  // If all sources are in cooldown, return neutral (no news this cycle)
+  if (sourcesToFetch.length === 0) {
+    log.warn(`📰 [news] ${cacheKey}: all sources in cooldown — returning neutral (no fetch)`);
+    const neutralResult: NewsSentimentResult = {
+      symbol: cacheKey,
+      category,
+      query,
+      headlineCount: 0,
+      headlines: [],
+      lexiconHint: 'NEUTRAL',
+      lexiconScore: 0.5,
+      fetchedAt: Date.now(),
+      source: 'all-cooldown',
+      windowHours: 24,
+    };
+    cache.set(cacheKey, { result: neutralResult, ts: Date.now() });
+    return neutralResult;
+  }
+
+  const sourceResults = await Promise.allSettled(sourcesToFetch.map(s => s.fn()));
 
   // Merge ALL source results into one pool (dedup happens later).
-  // Track which tier served so we can report it, but always merge for max coverage.
+  // v2.0.831: Record success/failure for circuit breaker.
   const mergedPool: NewsHeadline[] = [];
   let source = 'none';
-  if (gRes.status === 'fulfilled') { mergedPool.push(...gRes.value); if (gRes.value.length > 0) source = 'google-news-rss'; }
-  if (gdeltRes.status === 'fulfilled') { mergedPool.push(...gdeltRes.value); if (source === 'none' && gdeltRes.value.length > 0) source = 'gdelt'; }
-  if (bingRes.status === 'fulfilled') { mergedPool.push(...bingRes.value); if (source === 'none' && bingRes.value.length > 0) source = 'bing-news-rss'; }
-  if (mergedPool.length > 1 && (gRes.status === 'fulfilled' || gdeltRes.status === 'fulfilled' || bingRes.status === 'fulfilled')) source = 'merged';
+  for (let i = 0; i < sourceResults.length; i++) {
+    const res = sourceResults[i]!;
+    const srcName = sourcesToFetch[i]!.name;
+    if (res.status === 'fulfilled') {
+      recordSourceSuccess(srcName);
+      mergedPool.push(...res.value);
+      if (res.value.length > 0 && source === 'none') source = srcName;
+    } else {
+      recordSourceFailure(srcName);
+    }
+  }
+  if (mergedPool.length > 1 && source !== 'none') source = 'merged';
 
   // Adaptive window cascade: crypto is news-heavy (24h is plenty), but
   // low-coverage stocks (e.g. Korean SK Hynix) may have no English headlines
@@ -584,8 +620,55 @@ export async function fetchNewsSentiment(
 //
 // Cap + parallel allSettled: avoid hammering Google News/GDELT/Bing when many
 // positions are open. Fail-open — any error returns null for that symbol.
+//
+// v2.0.831: Cap raised from 5 → 10 to support 10 trading markets.
+// Added source-level circuit breaker: if a source fails 3 times in a row,
+// it's skipped for 60s (cooldown) to avoid wasting requests on a down source.
+// This prevents 10 symbols × 3 sources = 30 requests when one source is down
+// (circuit breaker cuts it to 10 × 2 = 20, then 10 × 1 = 10 if two are down).
 
-const MULTI_SYMBOL_CAP = 5;  // max symbols to fetch per cycle (active + 4 others)
+const MULTI_SYMBOL_CAP = 10;  // v2.0.831: raised from 5 → 10 for 10 trading markets
+
+// v2.0.831: Source-level circuit breaker — tracks consecutive failures per source.
+// After 3 consecutive failures, the source is skipped for COOLDOWN_MS.
+// This prevents hammering a down/rate-limited source with 10+ requests per cycle.
+interface SourceHealth {
+  consecutiveFailures: number;
+  cooldownUntil: number;
+}
+const sourceHealth = new Map<string, SourceHealth>();
+const SOURCE_FAILURE_THRESHOLD = 3;
+const SOURCE_COOLDOWN_MS = 60_000; // 1 min cooldown after 3 consecutive failures
+
+/** v2.0.831: Check if a source is in cooldown (circuit breaker open). */
+function isSourceInCooldown(sourceName: string): boolean {
+  const health = sourceHealth.get(sourceName);
+  if (!health) return false;
+  if (health.consecutiveFailures < SOURCE_FAILURE_THRESHOLD) return false;
+  return Date.now() < health.cooldownUntil;
+}
+
+/** v2.0.831: Record a source success (reset failure counter). */
+function recordSourceSuccess(sourceName: string): void {
+  const health = sourceHealth.get(sourceName);
+  if (health && health.consecutiveFailures > 0) {
+    health.consecutiveFailures = 0;
+  }
+}
+
+/** v2.0.831: Record a source failure (increment counter, maybe enter cooldown). */
+function recordSourceFailure(sourceName: string): void {
+  let health = sourceHealth.get(sourceName);
+  if (!health) {
+    health = { consecutiveFailures: 0, cooldownUntil: 0 };
+    sourceHealth.set(sourceName, health);
+  }
+  health.consecutiveFailures++;
+  if (health.consecutiveFailures >= SOURCE_FAILURE_THRESHOLD) {
+    health.cooldownUntil = Date.now() + SOURCE_COOLDOWN_MS;
+    log.warn(`📰 [news] Source "${sourceName}" entered cooldown (${health.consecutiveFailures} consecutive failures) — skipping for ${SOURCE_COOLDOWN_MS / 1000}s`);
+  }
+}
 
 export async function fetchNewsForSymbols(
   symbols: string[],
@@ -604,6 +687,7 @@ export async function fetchNewsForSymbols(
   }
   // Parallel fetch — allSettled so one failure doesn't reject the batch.
   // The 5-min per-symbol cache means symbols already fetched this cycle are free.
+  // v2.0.831: Circuit breaker inside fetchNewsSentiment skips cooldown sources.
   const results = await Promise.all(unique.map((s) =>
     fetchNewsSentiment(s, _marketContext).catch(() => null),
   ));
