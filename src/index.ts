@@ -5190,18 +5190,29 @@ ${recentExamples}
         // This is the root cause of CL/SKHX/GOLD "vol=0 → hard block" — the
         // WebSocket was disconnected, so marketState never received price
         // updates, so calcVolatility returned 0, so vol-gate hard-blocked.
-        this.marketState.update({
-          symbol: activeSymbol,
-          price: priceData.price,
-          volume: priceData.volume24h ?? 0,
-          quoteVolume: 0,
-          priceChange: 0,
-          priceChangePercent: priceData.change24h ?? 0,
-          high24h: 0,
-          low24h: 0,
-          timestamp: Date.now(),
-        });
-        log.info(`📊 [active-rest-fallback] ${activeSymbol}: WS disconnected, REST price $${priceData.price.toFixed(2)} fed to marketState (enables vol/regime calculation)`);
+        // v2.0.831-fix: Guard against empty symbol + wrap in try/catch so a
+        // marketState.update() error doesn't crash the entire decision cycle.
+        if (activeSymbol && activeSymbol.length > 0) {
+          try {
+            this.marketState.update({
+              symbol: activeSymbol,
+              price: priceData.price,
+              volume: priceData.volume24h ?? 0,
+              quoteVolume: 0,
+              priceChange: 0,
+              priceChangePercent: priceData.change24h ?? 0,
+              high24h: 0,
+              low24h: 0,
+              timestamp: Date.now(),
+            });
+            log.info(`📊 [active-rest-fallback] ${activeSymbol}: WS disconnected, REST price $${priceData.price.toFixed(2)} fed to marketState (enables vol/regime calculation)`);
+          } catch (msErr) {
+            // v2.0.831-fix: marketState.update() crash must NOT propagate —
+            // the cycle can proceed with the local marketPrice variable even
+            // if marketState wasn't updated (vol-gate ATR cache compensates).
+            log.warn(`📊 [active-rest-fallback] ${activeSymbol}: marketState.update failed (${msErr instanceof Error ? msErr.message : String(msErr)}) — proceeding with local marketPrice only`);
+          }
+        }
       }
       marketChange24h = marketChange24h || priceData.change24h;
     } else {
