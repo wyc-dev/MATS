@@ -5179,6 +5179,29 @@ ${recentExamples}
       }
       if (marketPrice <= 0 && priceData.price > 0) {
         marketPrice = priceData.price; // REST price as fallback if WS price not available
+        // v2.0.831: CRITICAL FIX — when WebSocket is disconnected, the active
+        // symbol's marketState.price stays 0 because marketState.update() is
+        // only called by multiWs.onPrice (WS callback). fetchPriceForSymbol
+        // fallback only set the local marketPrice variable, NOT marketState.
+        // This caused vol-gate to see vol=0 (calcVolatility needs price history
+        // from marketState.update) even though the REST price was valid.
+        // Fix: when REST fallback provides the active symbol's price, also
+        // call marketState.update() so vol/regime/priceHistory are populated.
+        // This is the root cause of CL/SKHX/GOLD "vol=0 → hard block" — the
+        // WebSocket was disconnected, so marketState never received price
+        // updates, so calcVolatility returned 0, so vol-gate hard-blocked.
+        this.marketState.update({
+          symbol: activeSymbol,
+          price: priceData.price,
+          volume: priceData.volume24h ?? 0,
+          quoteVolume: 0,
+          priceChange: 0,
+          priceChangePercent: priceData.change24h ?? 0,
+          high24h: 0,
+          low24h: 0,
+          timestamp: Date.now(),
+        });
+        log.info(`📊 [active-rest-fallback] ${activeSymbol}: WS disconnected, REST price $${priceData.price.toFixed(2)} fed to marketState (enables vol/regime calculation)`);
       }
       marketChange24h = marketChange24h || priceData.change24h;
     } else {
