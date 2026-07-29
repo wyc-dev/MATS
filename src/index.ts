@@ -3630,13 +3630,57 @@ ${recentExamples}
     // ATR fetch was wrapped in a 5s withTimeout that expired when the HL rate
     // limiter queue was full. Pre-fetching here (with a generous 10s budget
     // per symbol) eliminates the timeout issue.
+    //
+    // v2.0.831-fix: getATR uses hlFetchFn which goes through the HL rate limiter.
+    // When the rate limiter queue is full (backfill + S/R + other calls), getATR
+    // blocks waiting for tokens and may exceed even 10s. Instead of relying on
+    // getATR, we fetch candle data directly via MarketAgent.hlFetch (which also
+    // rate-limits but is the same queue used by backfill — so it's already
+    // warmed up) and compute ATR inline. This eliminates the dependency on
+    // hlFetchFn being set + avoids double rate-limiting.
     this.atrCacheThisCycle.clear();
     const allSymbolsForATR = [...new Set([activeSymbol, ...markets.map(m => normalizeSymbol(m))])];
     for (const sym of allSymbolsForATR) {
       try {
-        const atrVal = await withTimeout(getATR(sym), 10_000, `atr-cache ${sym}`);
-        if (atrVal !== null && atrVal > 0 && Number.isFinite(atrVal)) {
-          this.atrCacheThisCycle.set(normalizeSymbol(sym), atrVal);
+        // v2.0.831-fix: Direct HL candle fetch + inline ATR calculation.
+        // This bypasses getATR's hlFetchFn dependency (which may not be set
+        // or may be rate-limited) and uses MarketAgent.hlFetch directly.
+        const coin = sym.includes(':') ? sym : sym.toUpperCase();
+        const endTime = Date.now();
+        const startTime = endTime - 30 * 3_600_000; // 30h of 1h candles
+        const candleData = await MarketAgent.hlFetch({
+          type: 'candleSnapshot',
+          req: { coin, interval: '1h', startTime, endTime },
+        }) as Array<{ t?: string; o?: string; h?: string; l?: string; c?: string; v?: string }>;
+        if (Array.isArray(candleData) && candleData.length >= 2) {
+          // Compute ATR (14-period, simple average of True Range)
+          const candles = candleData
+            .map(c => ({
+              high: parseFloat(c['h'] ?? '0'),
+              low: parseFloat(c['l'] ?? '0'),
+              close: parseFloat(c['c'] ?? '0'),
+            }))
+            .filter(c => c.high > 0 && c.low > 0)
+            .sort((a, b) => 0); // preserve order
+          if (candles.length >= 2) {
+            const trueRanges: number[] = [];
+            for (let i = 1; i < candles.length; i++) {
+              const prev = candles[i - 1]!;
+              const curr = candles[i]!;
+              const tr = Math.max(
+                curr.high - curr.low,
+                Math.abs(curr.high - prev.close),
+                Math.abs(curr.low - prev.close),
+              );
+              if (Number.isFinite(tr) && tr >= 0) trueRanges.push(tr);
+            }
+            if (trueRanges.length > 0) {
+              const atr = trueRanges.reduce((a, b) => a + b, 0) / trueRanges.length;
+              if (Number.isFinite(atr) && atr > 0) {
+                this.atrCacheThisCycle.set(normalizeSymbol(sym), atr);
+              }
+            }
+          }
         }
       } catch {
         // Non-critical — vol-gate will fall back to marketState volatility
@@ -3644,6 +3688,8 @@ ${recentExamples}
     }
     if (this.atrCacheThisCycle.size > 0) {
       log.info(`📊 [atr-cache] Pre-fetched ATR for ${this.atrCacheThisCycle.size}/${allSymbolsForATR.length} symbols: ${[...this.atrCacheThisCycle.entries()].map(([s, a]) => `${s}=$${a.toFixed(2)}`).join(', ')}`);
+    } else {
+      log.warn(`📊 [atr-cache] FAILED to pre-fetch ATR for any of ${allSymbolsForATR.length} symbols — vol-gate may hard-block`);
     }
   }
 
