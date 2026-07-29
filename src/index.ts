@@ -330,6 +330,10 @@ class MATSSystem {
   private terminalSideGuide = '';
   /** Per-symbol previous cycle context for shadow trade opening — Map<symbol, context> */
   private lastCycleShadowContexts = new Map<string, { symbol: string; price: number; features: Record<string, number> }>();
+  /** v2.0.831: Per-cycle ATR cache — pre-fetched at cycle start so vol-gate
+   *  and entry-gate don't need to make synchronous HL API calls (which timeout
+   *  under rate-limiter pressure). Key = normalized symbol, value = ATR (absolute). */
+  private atrCacheThisCycle = new Map<string, number>();
   /** v2.0.122: Pending entry theses from Meta-Agent that didn't execute.
    *  When Meta-Agent outputs BUY/SELL with an entryThesis but the trade is
    *  blocked (conviction gate, liquidity, direction restriction, etc.), the
@@ -3617,6 +3621,30 @@ ${recentExamples}
         // Non-critical: the stale-feed watchdog tracks persistent failures.
       }
     }
+
+    // v2.0.831: Pre-fetch ATR for ALL trading markets (including active symbol)
+    // and cache for this cycle. The vol-gate ATR fallback + entry quality gate
+    // read from this cache instead of making synchronous HL API calls during
+    // the decision phase (which timeout under rate-limiter pressure).
+    // This is the root cause fix for "vol=0 (marketState+ATR both 0)" — the
+    // ATR fetch was wrapped in a 5s withTimeout that expired when the HL rate
+    // limiter queue was full. Pre-fetching here (with a generous 10s budget
+    // per symbol) eliminates the timeout issue.
+    this.atrCacheThisCycle.clear();
+    const allSymbolsForATR = [...new Set([activeSymbol, ...markets.map(m => normalizeSymbol(m))])];
+    for (const sym of allSymbolsForATR) {
+      try {
+        const atrVal = await withTimeout(getATR(sym), 10_000, `atr-cache ${sym}`);
+        if (atrVal !== null && atrVal > 0 && Number.isFinite(atrVal)) {
+          this.atrCacheThisCycle.set(normalizeSymbol(sym), atrVal);
+        }
+      } catch {
+        // Non-critical — vol-gate will fall back to marketState volatility
+      }
+    }
+    if (this.atrCacheThisCycle.size > 0) {
+      log.info(`📊 [atr-cache] Pre-fetched ATR for ${this.atrCacheThisCycle.size}/${allSymbolsForATR.length} symbols: ${[...this.atrCacheThisCycle.entries()].map(([s, a]) => `${s}=$${a.toFixed(2)}`).join(', ')}`);
+    }
   }
 
   /** v2.0.790: Pre-compute entry-time features for a given symbol+side and
@@ -3820,7 +3848,10 @@ ${recentExamples}
     if (decision.action === 'buy' || decision.action === 'sell') {
       try {
         const sym = normalizeSymbol(decision.symbol);
-        const atrVal = await withTimeout(getATR(sym), 5_000, `entry-gate-atr ${sym}`);
+        // v2.0.831: Read ATR from pre-fetched cache (populated at cycle start).
+        // This replaces the synchronous withTimeout(getATR, 5s) call that timed
+        // out under HL rate-limiter pressure, causing vol-gate to hard-block.
+        const atrVal = this.atrCacheThisCycle.get(sym) ?? null;
         const entryPrice = decision.entryPrice ?? this.marketState?.getState(sym)?.price ?? 0;
         if (atrVal !== null && atrVal > 0 && entryPrice > 0) {
           const atrPct = atrVal / entryPrice;
@@ -7501,7 +7532,8 @@ ${recentExamples}
             // v2.0.831: ATR fallback when marketState volatility is 0
             if (pscVolRaw === 0) {
               try {
-                const pscAtrFallback = await withTimeout(getATR(normalizeSymbol(psc.symbol)), 5_000, `vol-gate-atr-ms ${psc.symbol}`);
+                // v2.0.831: Read ATR from pre-fetched cache (no synchronous fetch)
+                const pscAtrFallback = this.atrCacheThisCycle.get(normalizeSymbol(psc.symbol)) ?? null;
                 if (pscAtrFallback !== null && pscAtrFallback > 0) {
                   const pscEntryPx = this.marketState?.getState(psc.symbol)?.price ?? 0;
                   if (pscEntryPx > 0) {
@@ -8115,7 +8147,8 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
         // too short for calcVolatility.
         if (perSymVol === 0) {
           try {
-            const atrFallback = await withTimeout(getATR(activeSymForVol), 5_000, `vol-gate-atr ${activeSymForVol}`);
+            // v2.0.831: Read ATR from pre-fetched cache (no synchronous fetch)
+            const atrFallback = this.atrCacheThisCycle.get(activeSymForVol) ?? null;
             if (atrFallback !== null && atrFallback > 0) {
               const entryPx = finalDecision.entryPrice ?? this.marketState?.getState(activeSymForVol)?.price ?? 0;
               if (entryPx > 0) {
