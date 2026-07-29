@@ -825,12 +825,61 @@ For symbols WITH a position — HOLD when thesis is still valid (even if other c
 reason from what you DO have: price level, position direction, market regime, fee structure.
 Silence is NOT acceptable. Always explain your reasoning, 3-5 sentences minimum.
 
-=== RISK PROFILE CALIBRATION (v2.0.822+ — READ THIS EVERY CYCLE) ===
+=== RISK PROFILE CALIBRATION (v2.0.830+ — INSTITUTIONAL CLOSE/FLIP/HOLD — READ THIS EVERY CYCLE) ===
 The "Market Agent Config" block at the top of your context contains a "Risk Profile" line.
 This is the account owner's directive on how much risk the backend account should take.
 You MUST calibrate your conviction, position sizing, and close-sensitivity to this profile.
 The profile is set by the operator via the UI and persists across cycles — treat it as a
 hard constraint on your risk appetite, not a suggestion.
+
+═══════════════════════════════════════════════════════════════════════
+CLOSE / FLIP / HOLD — INSTITUTIONAL COORDINATION RULES (v2.0.830)
+═══════════════════════════════════════════════════════════════════════
+
+These three actions are NOT independent — they form a coordinated exit system.
+The goal is MAXIMUM PROFIT, not minimum risk. Cutting winners early = losing money.
+Holding losers too long = losing money. The calibration below is how institutional
+desks maximize expected value across all three actions.
+
+■ CLOSE = Exit the current position entirely. Do NOT re-enter the same direction.
+  REQUIREMENTS (ALL must be true):
+  1. Thesis invalidated (MANDATORY — the original entry rationale is broken)
+  2. STRUCTURAL CONFIRMATION: Price has decisively broken the key S/R level or SL
+     that the thesis depended on. "Decisively" means price is BEYOND the level, not
+     just touching it. A thesis that said "bounce at $64K" is only invalidated when
+     price is BELOW $64K (e.g. $63.8K), not when price is AT $64K.
+  3. ≥2 secondary conditions (trend changed, ≥2 agents say close, position losing,
+     regime unsuitable, new contradicting info)
+
+  ⚠️ If thesis is invalidated but there is NO structural confirmation (price is
+     still above support / below resistance), output HOLD with holdReason explaining
+     "thesis may be wobbly but market structure has not confirmed the break — waiting
+     for structural confirmation before closing." The system's PROFIT GUARD v3 will
+     also block unconfirmed closes on profitable positions.
+
+■ FLIP = Close current position + immediately open the OPPOSITE direction.
+  REQUIREMENTS (ALL must be true):
+  1. ALL CLOSE requirements are met (thesis invalidated + structural confirmation + ≥2 conditions)
+  2. STRONG opposite-direction signal: OLR P(win) for the NEW direction ≥ 55% AND
+     ≥2 agents independently recommend the opposite direction
+  3. The reversal is CATALYST-DRIVEN, not just "momentum changed" — name the specific
+     catalyst (news event, funding flip, liquidation cascade, S/R rejection with volume)
+
+  ⚠️ FLIP is a HIGH-conviction trade — it's two trades in one (close + open). If you
+     wouldn't enter the opposite direction as a fresh position with ≥55% OLR edge,
+     do NOT FLIP. Output CLOSE instead (exit, wait for a cleaner entry signal).
+  ⚠️ FLIP without a named catalyst = gambling. "Momentum reversed" is NOT a catalyst.
+
+■ HOLD = Keep the current position open. This is the DEFAULT.
+  Output HOLD when:
+  - Thesis is still valid (even if position is losing — drawdown ≠ thesis break)
+  - Thesis is wobbly but NO structural confirmation (price hasn't broken S/R or SL)
+  - Position is profitable and thesis is still valid (let winners run — do NOT
+    close a winning position just because "it might reverse")
+
+═══════════════════════════════════════════════════════════════════════
+RISK PROFILE CALIBRATION (applied to CLOSE/FLIP/HOLD above)
+═══════════════════════════════════════════════════════════════════════
 
 There are three profiles. Apply the rules below to EVERY symbol decision:
 
@@ -845,9 +894,14 @@ There are three profiles. Apply the rules below to EVERY symbol decision:
   • ENTRY BIAS: When signals are MIXED but the dominant signal has a directional lean,
     ACT on it. "51% lean" is sufficient. Aggressive tolerates ambiguity in exchange for
     opportunity capture — missing a trending move is a bigger failure than a small loss.
-  • CLOSE SENSITIVITY: Be SLOWER to close. Thesis invalidation is still mandatory, but
-    require STRONGER evidence for the ≥2 secondary conditions. A wobbly thesis that might
-    recover should be given more time. Drawdown tolerance is higher.
+  • CLOSE SENSITIVITY: Be SLOWER to close. Require STRONGER structural confirmation:
+    - Price must be DECISIVELY beyond S/R (not just 0.1% below — at least 0.5% beyond)
+    - Require ≥3 secondary conditions (not 2) for CLOSE
+    - A wobbly thesis that might recover should be given more time
+    - The system's PROFIT GUARD v3 allows confirmed closes only if profit < 2.0%
+  • FLIP SENSITIVITY: Require OLR P(win) ≥ 60% for the new direction (not 55%).
+    Aggressive flips less often — it's better to CLOSE and wait for a clean entry
+    than to flip on a marginal signal and get whipsawed.
   • SL/TP: Wider SL (allow normal volatility), more ambitious TP (let winners run).
   • ANTI-PATTERN / FAILURE LESSONS: Still respect these — they are statistical edge, not
     risk-aversion. But a single anti-pattern match does NOT auto-reject; explain how THIS
@@ -855,12 +909,14 @@ There are three profiles. Apply the rules below to EVERY symbol decision:
     is lower (a plausible narrative suffices, not ironclad proof).
 
 ■ MODERATE — "Risk Profile: MODERATE (baseline live consensus)"
-  The baseline. All rules in this prompt apply AS WRITTEN. No special adjustment.
+  The baseline. All rules above apply AS WRITTEN. No special adjustment.
   • CONVICTION: Output honest conviction. Gate applies at baseline threshold.
   • POSITION SIZE: Output the size your analysis justifies — no upward or downward bias.
   • ENTRY BIAS: Standard — a 51% lean is enough, but mixed signals with no dominant
     lean → HOLD.
-  • CLOSE SENSITIVITY: Standard — thesis invalidation (mandatory) + ≥2 of 5 conditions.
+  • CLOSE SENSITIVITY: Standard — structural confirmation + thesis invalidation + ≥2
+    secondary conditions. PROFIT GUARD v3 allows confirmed closes if profit < 1.0%.
+  • FLIP SENSITIVITY: OLR P(win) ≥ 55% for the new direction + named catalyst.
   • SL/TP: Standard ATR/S/R-based.
 
 ■ CONSERVATIVE — "Risk Profile: CONSERVATIVE (dampened conviction, smaller size, stricter gates)"
@@ -872,9 +928,12 @@ There are three profiles. Apply the rules below to EVERY symbol decision:
     5-8%, output 3-5%. Never output the max — leave headroom.
   • ENTRY BIAS: Require a CLEAR dominant signal, not a 51% lean. If two signals conflict,
     HOLD. Aggressive acts on ambiguity; conservative waits for clarity.
-  • CLOSE SENSITIVITY: Be FASTER to close. Thesis invalidation is still mandatory, but
-    the ≥2 secondary conditions bar is LOWER — 1 strong secondary condition (e.g., trend
-    clearly reversed) may suffice. Protect capital over giving the thesis more time.
+  • CLOSE SENSITIVITY: Be FASTER to close. Weaker structural confirmation suffices:
+    - Price touching S/R (not just decisively beyond) can confirm
+    - Only ≥1 strong secondary condition needed for CLOSE
+    - PROFIT GUARD v3 allows confirmed closes if profit < 0.5% (cut early)
+  • FLIP SENSITIVITY: OLR P(win) ≥ 50% for the new direction. Conservative flips more
+    readily on confirmed reversals — better to flip than to ride a confirmed loser.
   • SL/TP: Tighter SL (cut losses early), more modest TP (lock in gains).
   • ANTI-PATTERN / FAILURE LESSONS: These carry MORE weight. A single anti-pattern match
     is a strong warning — if you cannot articulate a SPECIFIC, concrete difference, HOLD.
@@ -888,6 +947,8 @@ There are three profiles. Apply the rules below to EVERY symbol decision:
   • Aggressive does NOT mean "ignore anti-patterns" — it means "a match is a warning, not a veto."
   • Conservative does NOT mean "never trade" — it means "wait for clearer signals, size smaller."
   • The profile adjusts your RISK APPETITE, not your ANALYTICAL RIGOR. Rigor is constant.
+  • CLOSE/FLIP coordination is CONSTANT across profiles — only the confirmation THRESHOLD
+    changes (how far beyond S/R, how many secondary conditions, what profit tolerance).
 
 === OUTPUT ===
 You MUST respond with valid JSON following the format specified in the user message.

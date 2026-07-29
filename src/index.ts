@@ -6556,42 +6556,136 @@ ${recentExamples}
       // portfolio (which is updated by the WS price feed every tick) BEFORE
       // calling closeTrade(). If the position is profitable, we skip the close
       // entirely and log the guard activation.
+      //
+      // v2.0.830: PROFIT GUARD v3 — Institutional CLOSE/FLIP confirmation.
+      // The old v2 guard BLINDLY blocked ALL profitable force-closes, even when
+      // the thesis was confirmed broken (price below support, trend reversed).
+      // This caused positions to ride winning into a reversal and give back all
+      // gains — the "let winners ride into losers" problem.
+      //
+      // v3 introduces STRUCTURAL BREAK CONFIRMATION + risk-profile calibration:
+      //   • A close is CONFIRMED if price has broken the key S/R level that the
+      //     thesis depended on (not just touched — broken decisively).
+      //   • If the close is confirmed, the profit guard allows it EVEN if the
+      //     position is slightly profitable — because holding a broken thesis
+      //     into a reversal is riskier than locking in a small gain.
+      //   • The profit tolerance is calibrated by risk profile:
+      //       aggressive   → only allow confirmed close if profit < 2.0%
+      //                       (tolerate larger drawdowns, give thesis more room)
+      //       moderate     → allow confirmed close if profit < 1.0%
+      //       conservative → allow confirmed close if profit < 0.5%
+      //                       (cut early, protect capital)
+      //   • If the close is NOT confirmed (thesis invalidated but no structural
+      //     break), the old v2 behavior applies: block if profitable.
+      //   • SL hit is ALWAYS a confirmed close (the market itself confirmed).
       if (result.thesisInvalidatedSymbols && result.thesisInvalidatedSymbols.length > 0) {
+        const riskProfile = this.marketAgent.getRiskProfile();
+        // v2.0.830: Profit tolerance for confirmed-structure-break closes.
+        // Above this profit %, even a confirmed break is blocked (the position
+        // is winning enough to justify giving the thesis one more cycle).
+        const confirmedCloseProfitTolerance = riskProfile === 'aggressive' ? 0.020
+          : riskProfile === 'conservative' ? 0.005
+          : 0.010; // moderate
+
         for (const sym of result.thesisInvalidatedSymbols) {
           const pos = this.portfolio.getPosition(sym);
           if (!pos) continue;
-          
-          // v2.0.814: CRITICAL FIX — Check unrealized PnL from the portfolio
-          // (updated by WS price feed every tick) BEFORE calling closeTrade().
-          // The portfolio's unrealizedPnl is the most up-to-date PnL because
-          // the WS price feed updates it in real-time between cycles.
-          // If the position is profitable, skip the close entirely.
-          if (pos.unrealizedPnl > 0) {
-            log.warn(`🛡️ [PROFIT GUARD v2] ${sym}: position is profitable (unrealized PnL=${pos.unrealizedPnl.toFixed(2)}) — BLOCKING force-close. Thesis was invalidated but position is winning. Keeping position open.`);
-            this.thesisInvalidatedCloseSymbols.delete(sym);
-            continue;
+
+          // ── v2.0.830: Structural break confirmation ────────────────────
+          // Check if price has decisively broken the key S/R level or SL.
+          // A "confirmed break" means price is BEYOND the SL price (for the
+          // position's direction) OR beyond the nearest S/R level that the
+          // thesis depended on. This is the institutional standard: a thesis
+          // is only "confirmed broken" when the market structure agrees, not
+          // just when the LLM says so.
+          const currentPrice = this.marketState?.getState(sym)?.price ?? pos.currentPrice ?? 0;
+          const slPrice = pos.stopLossPrice ?? 0;
+          const srSupport = this.lastSRContext?.nearestSupport ?? null;
+          const srResistance = this.lastSRContext?.nearestResistance ?? null;
+
+          let structureConfirmed = false;
+          let confirmReason = '';
+
+          // SL hit = always confirmed (market itself confirmed the break)
+          if (slPrice > 0) {
+            if (pos.side === 'buy' && currentPrice <= slPrice) {
+              structureConfirmed = true;
+              confirmReason = `price $${currentPrice.toFixed(2)} ≤ SL $${slPrice.toFixed(2)}`;
+            } else if (pos.side === 'sell' && currentPrice >= slPrice) {
+              structureConfirmed = true;
+              confirmReason = `price $${currentPrice.toFixed(2)} ≥ SL $${slPrice.toFixed(2)}`;
+            }
           }
-          
-          // v2.0.814: SECONDARY GUARD — Re-fetch current price from market state
-          // as a fallback. The portfolio's unrealizedPnl may be stale if the WS
-          // price feed hasn't updated recently. This catches positions that became
-          // profitable BETWEEN the invalidation check and this close call.
-          const guardPrice = this.marketState?.getState(sym)?.price ?? pos.currentPrice ?? 0;
-          if (guardPrice > 0) {
-            const guardPnl = pos.side === 'buy'
-              ? (guardPrice - pos.averageEntryPrice) / pos.averageEntryPrice
-              : (pos.averageEntryPrice - guardPrice) / pos.averageEntryPrice;
-            if (guardPnl > 0) {
-              log.warn(`🛡️ [PROFIT GUARD v2] ${sym}: position is profitable (PnL=${(guardPnl * 100).toFixed(1)}%) at close time — BLOCKING force-close. Thesis was invalidated but position is winning. Keeping position open.`);
+
+          // S/R break confirmation (only for active symbol — S/R is only
+          // computed for the active symbol; non-active symbols rely on SL)
+          if (!structureConfirmed && normalizeSymbol(sym) === normalizeSymbol(this.marketAgent.getSelectedSymbol())) {
+            if (pos.side === 'buy' && srSupport !== null && currentPrice < srSupport) {
+              structureConfirmed = true;
+              confirmReason = `price $${currentPrice.toFixed(2)} < support $${srSupport.toFixed(2)}`;
+            } else if (pos.side === 'sell' && srResistance !== null && currentPrice > srResistance) {
+              structureConfirmed = true;
+              confirmReason = `price $${currentPrice.toFixed(2)} > resistance $${srResistance.toFixed(2)}`;
+            }
+          }
+
+          // ── Compute current PnL % ──────────────────────────────────────
+          const guardPrice = currentPrice > 0 ? currentPrice : (pos.currentPrice ?? 0);
+          // v2.0.830: If we have NO valid price at all, we cannot determine
+          // profitability or structural break. Fall through to v2 behavior:
+          // use the portfolio's unrealizedPnl as fallback. If that's also
+          // positive, block (don't close a position we can't price).
+          if (guardPrice <= 0) {
+            if (pos.unrealizedPnl > 0) {
+              log.warn(`🛡️ [PROFIT GUARD v3] ${sym}: no valid price data (marketState=0, currentPrice=0) but portfolio shows profit — BLOCKING force-close (cannot confirm structure without price).`);
               this.thesisInvalidatedCloseSymbols.delete(sym);
               continue;
             }
+            // No price + not profitable → allow close (thesis invalidated + losing)
+            log.warn(`🚫 Thesis INVALIDATED for ${sym} — force-closing (no price data, position not profitable per portfolio)`);
+            this.thesisInvalidatedCloseSymbols.add(sym);
+            const exitThesis = `Thesis invalidated: ${pos.entryThesis ?? 'original entry thesis no longer valid'} [no price data]`;
+            const success = await this.closeTrade(sym, exitThesis);
+            if (success) {
+              log.info(`  → Force-closed ${sym} (thesis invalidated, no price data)`);
+            } else {
+              log.error(`  → Failed to force-close ${sym} — position remains open`);
+              this.thesisInvalidatedCloseSymbols.delete(sym);
+            }
+            continue;
           }
-          
-          log.warn(`🚫 Thesis INVALIDATED for ${sym} — force-closing position (entry thesis no longer valid)`);
+          const guardPnlPct = pos.side === 'buy'
+            ? (guardPrice - pos.averageEntryPrice) / pos.averageEntryPrice
+            : (pos.averageEntryPrice - guardPrice) / pos.averageEntryPrice;
+          const isProfitable = guardPnlPct > 0;
+
+          // ── v2.0.830: Profit Guard v3 decision logic ───────────────────
+          // Matrix:
+          //   structureConfirmed + losing    → CLOSE (always — thesis broken + losing)
+          //   structureConfirmed + profitable < tolerance → CLOSE (confirmed break, small gain)
+          //   structureConfirmed + profitable ≥ tolerance → BLOCK (winning enough to wait)
+          //   !structureConfirmed + profitable → BLOCK (v2 behavior — no structural proof)
+          //   !structureConfirmed + losing    → CLOSE (v2 behavior — thesis broken + losing)
+          if (isProfitable && structureConfirmed && guardPnlPct < confirmedCloseProfitTolerance) {
+            // Confirmed structural break + small profit → allow close
+            log.info(`🛡️ [PROFIT GUARD v3] ${sym}: confirmed break (${confirmReason}) + small profit (${(guardPnlPct * 100).toFixed(2)}% < ${(confirmedCloseProfitTolerance * 100).toFixed(1)}% tolerance, risk=${riskProfile}) — ALLOWING force-close. Thesis confirmed broken by market structure.`);
+          } else if (isProfitable && structureConfirmed && guardPnlPct >= confirmedCloseProfitTolerance) {
+            // Confirmed break but profit is large enough to justify waiting
+            log.warn(`🛡️ [PROFIT GUARD v3] ${sym}: confirmed break (${confirmReason}) but profit ${(guardPnlPct * 100).toFixed(2)}% ≥ ${(confirmedCloseProfitTolerance * 100).toFixed(1)}% tolerance (risk=${riskProfile}) — BLOCKING force-close. Position is winning enough to give thesis one more cycle.`);
+            this.thesisInvalidatedCloseSymbols.delete(sym);
+            continue;
+          } else if (isProfitable && !structureConfirmed) {
+            // No structural confirmation + profitable → block (v2 behavior)
+            log.warn(`🛡️ [PROFIT GUARD v3] ${sym}: position is profitable (${(guardPnlPct * 100).toFixed(2)}%) but NO structural break confirmed — BLOCKING force-close. Thesis invalidated by LLM but market structure has not confirmed. Keeping position open.`);
+            this.thesisInvalidatedCloseSymbols.delete(sym);
+            continue;
+          }
+          // If losing (regardless of structureConfirmed) → fall through to close
+
+          log.warn(`🚫 Thesis INVALIDATED for ${sym} — force-closing position${structureConfirmed ? ` (confirmed: ${confirmReason})` : ' (no structural confirmation, but position is losing)'} (risk=${riskProfile})`);
           this.thesisInvalidatedCloseSymbols.add(sym);
           // v2.0.143: Route through closeTrade() with thesis-invalidation exitThesis.
-          const exitThesis = `Thesis invalidated: ${pos.entryThesis ?? 'original entry thesis no longer valid'}`;
+          const exitThesis = `Thesis invalidated: ${pos.entryThesis ?? 'original entry thesis no longer valid'}${structureConfirmed ? ` [confirmed: ${confirmReason}]` : ''}`;
           const success = await this.closeTrade(sym, exitThesis);
           if (success) {
             if (pos.agentId === 'hyperliquid-real') {
@@ -7489,10 +7583,62 @@ ${recentExamples}
         // CRITICAL: This must run BEFORE SL/TP adjustment — otherwise we waste
         // an HL API call adjusting SL/TP on a position we're about to close,
         // and may leave stale trigger orders on a closed position.
+        // v2.0.830: FLIP profit guard — if the position is profitable, require
+        // structural confirmation (SL hit or S/R break) before allowing the flip
+        // close. Same logic as PROFIT GUARD v3 for thesis-invalidation closes.
+        // A flip on a profitable position without structural confirmation = 
+        // cutting a winner early on a hunch. Let the SL/TP do their job.
         if ((psc.action === 'buy' || psc.action === 'sell') && !psc.closePosition) {
           const posSide = pos.side;
           const wantsSameDirection = (psc.action === 'buy' && posSide === 'buy') || (psc.action === 'sell' && posSide === 'sell');
           if (!wantsSameDirection) {
+            // v2.0.830: FLIP profit guard — check if position is profitable
+            const flipPrice = this.marketState?.getState(psc.symbol)?.price ?? pos.currentPrice ?? 0;
+            const flipPnlPct = flipPrice > 0
+              ? (posSide === 'buy'
+                ? (flipPrice - pos.averageEntryPrice) / pos.averageEntryPrice
+                : (pos.averageEntryPrice - flipPrice) / pos.averageEntryPrice)
+              : 0;
+
+            if (flipPnlPct > 0) {
+              // Position is profitable — check structural confirmation
+              const flipSL = pos.stopLossPrice ?? 0;
+              let flipStructureConfirmed = false;
+              if (flipSL > 0) {
+                if (posSide === 'buy' && flipPrice <= flipSL) flipStructureConfirmed = true;
+                if (posSide === 'sell' && flipPrice >= flipSL) flipStructureConfirmed = true;
+              }
+              // S/R confirmation (active symbol only)
+              if (!flipStructureConfirmed && normalizeSymbol(psc.symbol) === normalizeSymbol(this.marketAgent.getSelectedSymbol())) {
+                const flipSupport = this.lastSRContext?.nearestSupport ?? null;
+                const flipResistance = this.lastSRContext?.nearestResistance ?? null;
+                if (posSide === 'buy' && flipSupport !== null && flipPrice < flipSupport) flipStructureConfirmed = true;
+                if (posSide === 'sell' && flipResistance !== null && flipPrice > flipResistance) flipStructureConfirmed = true;
+              }
+
+              if (!flipStructureConfirmed) {
+                // Profitable + no structural confirmation → block flip, keep position
+                const flipRiskProfile = this.marketAgent.getRiskProfile();
+                const flipTolerance = flipRiskProfile === 'aggressive' ? 0.020
+                  : flipRiskProfile === 'conservative' ? 0.005
+                  : 0.010;
+                if (flipPnlPct >= flipTolerance) {
+                  log.warn(`🛡️ [FLIP GUARD v3] ${psc.symbol}: flip suggested (${posSide.toUpperCase()}→${psc.action.toUpperCase()}) but position is profitable (${(flipPnlPct * 100).toFixed(2)}% ≥ ${(flipTolerance * 100).toFixed(1)}% tolerance, risk=${flipRiskProfile}) with NO structural confirmation — BLOCKING flip. Let SL/TP work.`);
+                  this.recordDecisionAudit(
+                    psc.symbol,
+                    psc.action as 'buy' | 'sell',
+                    psc.confidence,
+                    psc.entryThesis ?? psc.rationale ?? '',
+                    [{ gate: 'flip-profit-guard', passed: false, reason: `profitable ${(flipPnlPct * 100).toFixed(2)}% ≥ ${(flipTolerance * 100).toFixed(1)}% tolerance, no structural confirmation` }],
+                    false,
+                  );
+                  continue;
+                }
+                // Profit < tolerance → allow flip (small gain, confirmed by agent consensus)
+                log.info(`🛡️ [FLIP GUARD v3] ${psc.symbol}: flip suggested, position profitable (${(flipPnlPct * 100).toFixed(2)}% < ${(flipTolerance * 100).toFixed(1)}% tolerance) — allowing flip despite no structural confirmation.`);
+              }
+            }
+
             // Direction flip: close existing position first
             log.warn(`🔄 Per-symbol flip: ${psc.symbol} ${posSide.toUpperCase()} → ${psc.action.toUpperCase()}. Closing existing position first.`);
             const flipCloseSuccess = await this.closeTrade(psc.symbol, `Position flip: closing ${posSide.toUpperCase()} to open ${psc.action.toUpperCase()}`);
