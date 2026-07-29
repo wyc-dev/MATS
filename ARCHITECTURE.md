@@ -1,14 +1,19 @@
-# {MATS} — Multi Agent Trading System
+# {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.227
+> **作者**: YC Wong · **版本**: 2.0.822+
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **代碼量**: ~59,000 行 TypeScript（嚴格模式，零類型錯誤）+ React UI
+> **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 3×3 風險矩陣 → 寫入 Supabase；客戶端按用戶選擇嘅風險等級讀取對應矩陣格並決定執行
+> **代碼量**: ~59,000 行 TypeScript（嚴格模式，零類型錯誤）
 
 ---
 
 ## 概述
 
-**MATS**（Multi Agent Trading System）是一個具備自我演化能力的多智能體量化交易系統。核心決策引擎為 **HACP（Hyper-Accelerated Cognition Protocol）**——結構化多 LLM 辯論協議。在 **Hyperliquid（9 perpetual DEXs, 416 assets）** 市場上進行機構級 Paper Trading 模擬及 Real Trading。
+**MATS**（Multi Agent Trading System）係一個具備自我演化能力嘅多智能體量化訊號系統。核心決策引擎為 **HACP（Hyper-Accelerated Cognition Protocol）**——結構化多 LLM 辯論協議。在 **Hyperliquid（9 perpetual DEXs, 416 assets）** 市場上計算機構級交易訊號。
+
+**架構定位（v2.0.822+）**：`mats_backend` 不再係獨立交易系統，而係 **`mats_app` 嘅訊號運算後端**。每個 cycle 後端計算 HACP 共識 → 擴展成 **3×3 Analysis Matrix**（風險等級 × 持倉狀態）→ 寫入 Supabase `asset_analyses` 表。客戶端（`mats_app`）讀取矩陣，按用戶喺客戶端選擇嘅風險等級（`high`/`mid`/`low` → `aggressive`/`moderate`/`conservative`）+ 當前持倉狀態（`long`/`short`/`flat`）揀選對應矩陣格，再由客戶端決定執行（paper/real）。
+
+**風險等級由客戶端選擇**：後端運算所有三個風險等級嘅訊號，客戶端 UI（`mats_app` SettingsSheet）讓用戶選 `high`/`mid`/`low`。後端矩陣係 **universal**（per-asset，非 per-user）——所有同風險等級嘅用戶讀同一格。
 
 ### 核心設計原則
 
@@ -21,54 +26,67 @@
 | **自我演化** | 23 層認知演化管線 — OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + 7 advanced systems v2.0.219 + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227，從每筆交易學習 |
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
+| **風險等級客戶端選擇** | 後端運算 3 個風險等級（aggressive/moderate/conservative）嘅訊號矩陣；客戶端按用戶選擇讀取對應格（v2.0.822）|
+| **訊號與執行分離** | 後端計算訊號 + 寫入 Supabase；客戶端讀取 + 決定執行（paper/real）。`ANALYSIS_MODE` 控制後端是否同時執行 |
 | **生產級標準** | 完整型別（Zod 驗證）、結構化日誌（Winston）、優雅關閉、指數退避重連 |
 
 ---
 
-## 三層架構
+## 系統架構（訊號運算後端 + 客戶端執行）
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│   Layer 1: 戰略層 (PI Agent + Terminal Agent)                  │
+│   mats_app（Expo React Native 客戶端）— 執行 + 風險選擇         │
+│   • 用戶喺 SettingsSheet 選擇風險等級（high/mid/low）           │
+│   • useAssetAnalyses hook 讀取 Supabase asset_analyses 表       │
+│   • useAutoTrade hook 按風險等級 + 持倉狀態揀矩陣格 → 執行      │
+│   • Paper mode：寫入 Supabase positions 表（模擬）              │
+│   • Real mode：Pro + PK stored → 簽名 + 提交 Hyperliquid        │
+│   • 自託管：PK 存喺設備 SecureStorage，後端永不持有             │
+│   • trade-bridge：HL WS 市場數據 + on-chain reconciliation      │
+└──────────────────────────────────────────────────────────────┘
+                            ↑ 讀取
+                            │
+┌──────────────────────────────────────────────────────────────┐
+│   Supabase（asset_analyses 表 — universal per-asset 矩陣）      │
+│   • 每個 cycle 後端 DELETE + INSERT 乾淨快照                    │
+│   • 一行一 asset，含 3×3 matrix + consensus + marketData        │
+│   • RLS：anon/authenticated 可讀；service_role 寫入             │
+└──────────────────────────────────────────────────────────────┘
+                            ↑ 寫入（service_role）
+                            │
+┌──────────────────────────────────────────────────────────────┐
+│   mats_backend（本系統 — 訊號運算引擎）                         │
+│                                                                │
+│   Layer 1: 戰略層 (Terminal Agent)                              │
 │   • Terminal Agent：用戶自然語言偏好 → Root Command Prompt      │
-│   • 啟動/停止系統 · 績效審查 & 參數調整 · 人工干預入口         │
+│   • Cycle 前置規則檢查 + 後置決策核實                           │
 ├──────────────────────────────────────────────────────────────┤
-│   Layer 2: 認知層 (TypeScript + Ollama)                       │
+│   Layer 2: 認知層 (TypeScript + Ollama)                        │
 │   • HACP 多模型平行推理（僅關鍵決策點觸發 LLM）                 │
-│   • Terminal Agent Cycle 前置規則檢查 + 後置決策核實             │
 │   • 6 智能體 + Meta-Agent 仲裁 + Skeptics 邏輯審查             │
 │   • Entry Thesis System + 暗黑心理學 + 結構化辯論 + 加權投票    │
-│   • Self-Evolution（OLR + Shadow + First-Passage + EM + GA）   │
-│   • RIL Reason Intelligence Layer（pattern clustering + close   │
-│   │  reason stats + similar trade retrieval + subtle diff LLM） │
-│   • Numeric Autoencoder（learned market-condition embedding）   │
-│   • AttnRes Cycle-History Retrieval（K3 transfer, dual pseudo-  │
-│   │  query: wDecision + wExecution, v2.0.211-v2.0.212）          │
-│   • Anti-Pattern Tracker（failure lesson clustering）           │
-│   • Conditional WR Soft Gate（code-level conviction penalty）    │
-│   • Combo WR Gate（symbol×side×regime WR, Wilson LB, v2.0.221） │
-│   • OLR P(win)×Consensus Discount（multiplicative, v2.0.224）   │
-│   • Replay Buffer（PER, mini-batch retrain, v2.0.219）         │
-│   • Bayesian OLR（MC Dropout uncertainty, v2.0.219）          │
-│   • Temporal Attention（cross-trade regime learning, v2.0.219）│
-│   • Cross-Symbol Backbone（shared+residual transfer, v2.0.219）│
-│   • Reward Shaping（5-component risk-adjusted reward, v2.0.219）│
-│   • Active Exploration（UCB + info gain + annealing, v2.0.219） │
-│   • World Model（latent dynamics + rollout planning, v2.0.219）│
-│   • Close-Context Learning（closeReason+slNarrowed 加權, v2.0.226）│
-│   • Plan G Dynamic Threshold（5-factor hysteresis [45-55%] + │
-│     multiplicative penalty decay, v2.0.227）                    │
-│   • Trade Incident Panel（MAE/MFE + exitThesis + post-review）  │
+│   • 23 層自我演化管線（OLR + Shadow + NA + AttnRes + ...）     │
+│   • Plan G Dynamic Threshold [45-55%] + 乘法 Penalty 衰減       │
 │   • SystemGuard（5 層系統級保護）                               │
 ├──────────────────────────────────────────────────────────────┤
-│   Layer 3: 執行層 (TypeScript Runtime)                         │
+│   Layer 3: 訊號輸出層 (Analysis Matrix Builder + Supabase)     │
+│   • buildAssetAnalysis()：共識 → 3×3 矩陣（v2.0.822）           │
+│   • SupabaseAnalysisWriter：每 cycle 寫入 asset_analyses 表     │
+│   • ANALYSIS_MODE：true=僅訊號 / dual=訊號+執行 / false=僅執行  │
+├──────────────────────────────────────────────────────────────┤
+│   Layer 4: 執行層（dual mode 時啟用，TypeScript Runtime）       │
 │   • Hyperliquid WebSocket（l2Book + trades + userFills）+ REST  │
 │   • 風險引擎（毫秒級，無需 LLM）· Paper/Real Trading Manager    │
-│   • 倉位追蹤 & SL/TP（每個 price update 自動檢查）              │
-│   • Position Reconciliation（偵測 exchange 已平倉 → 同步）      │
+│   • 倉位追蹤 & SL/TP · Position Reconciliation                 │
 │   • 數據管道 & 持久化 & 可觀測性                                │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+**`ANALYSIS_MODE` 環境變數**（`src/index.ts` line ~152）：
+- `'true'` — 僅計算訊號 + 寫入 Supabase，唔下單（純訊號後端模式）
+- `'dual'` — 同時計算訊號 + 寫入 Supabase + 執行交易（paper/real）
+- `'false'` — 僅執行交易，唔寫入 Supabase（legacy 獨立交易模式）
 
 ---
 
@@ -76,7 +94,7 @@
 
 ```
 src/
-├── agents/                  # 8 agents + Meta-Agent
+├── agents/                  # 8 agents + Meta-Agent（訊號運算用）
 │   ├── base-agent.ts        # LLM call + retry + confidence
 │   ├── meta-agent.ts        # 仲裁 + entryThesis 生成
 │   ├── skeptics.ts          # 邏輯審查 + thesis 驗證（Phase 0.5/1.5/1.8）
@@ -115,12 +133,162 @@ src/
 ├── analysis/                # sentiment · S/R · ATR（momentum-adaptive SL v2.0.207 #C）· planck-chaos · options · news
 ├── market-agent/            # 自動 pair 選擇（9 DEX, 416 assets, 類別過濾）
 ├── data/                    # Hyperliquid + Binance WebSocket
-├── api-server.ts            # REST + SSE (:3456) + static UI
-└── index.ts                 # 系統 orchestrator（決策循環）
-ui/                          # React + Vite dashboard (:5173)
+├── services/                # v2.0.822: Analysis Matrix + Supabase writer
+│   ├── analysis-matrix.ts   # buildAssetAnalysis()：共識 → 3×3 風險矩陣（v2.0.822）
+│   └── supabase-writer.ts   # SupabaseAnalysisWriter：每 cycle 寫入 asset_analyses 表（v2.0.822+823）
+├── api-server.ts            # REST + SSE (:3456) + static UI（legacy）
+└── index.ts                 # 系統 orchestrator（決策循環 + 矩陣寫入 ~line 6478）
+ui/                          # Legacy React + Vite dashboard（已由 mats_app 取代）
 data/evolution/              # olr-state · shadow-state · patterns · GA state · em-state · na-model · cycle-history · anti-patterns
-tests/                       # vitest（179 tests，9 test files）
+tests/                       # vitest（28 test files，含 analysis-matrix.test.ts）
+supabase/migrations/         # 00000000000018_asset_analyses_matrix.sql（v2.0.822）
 ```
+
+## Analysis Matrix + 風險設定架構（v2.0.822）
+
+**核心設計**：後端每個 cycle 為每個 asset 計算一個 HACP 共識，然後擴展成 **3×3 推薦矩陣**，寫入 Supabase `asset_analyses` 表。客戶端讀取矩陣，按用戶選擇嘅風險等級 + 當前持倉狀態揀選對應格。
+
+### 3×3 矩陣結構
+
+```
+              │  long（已持多）  │  short（已持空）  │  flat（無倉位）
+─────────────┼────────────────┼─────────────────┼────────────────
+aggressive   │  ×1.3 conviction │  ×1.3 conviction  │  ×1.3 conviction
+moderate     │  baseline（已校準）│  baseline         │  baseline
+conservative │  ×0.7 conviction │  ×0.7 conviction  │  ×0.7 conviction
+```
+
+**風險等級對應**（客戶端 `mats_app` `useAutoTrade.ts` `mapRiskProfile()`）：
+| 客戶端 UI（SettingsSheet）| 後端矩陣 key | conviction 縮放 | 校準狀態 |
+|:-------------------------|:------------|:----------------|:--------|
+| `high` | `aggressive` | ×1.3（capped 1.0）| `calibrated: false`（待 owner 定義規則）|
+| `mid` | `moderate` | ×1.0（baseline）| `calibrated: true`（live consensus）|
+| `low` | `conservative` | ×0.7 | `calibrated: false`（待 owner 定義規則）|
+
+**矩陣格 action**（`mapAction()` 按 rawAction + closePosition + posState 推導）：
+| 持倉狀態 │ buy 共識 → │ sell 共識 → │ hold/close → │
+|:--------|:-----------|:------------|:-------------|
+| `flat` | `buy` | `sell` | `hold` |
+| `long` | `hold` | `flip` | `hold`（或 `close` 若 closePosition）|
+| `short` | `flip` | `hold` | `hold`（或 `close` 若 closePosition）|
+
+**`moderate` = 已校準 baseline**：使用 live consensus 機制（conviction gate、OLR blend、combo WR override）。`aggressive` / `conservative` 係 placeholder——same action as moderate，conviction 縮放 ×1.3 / ×0.7，`calibrated: false` 直到 owner 定義精確規則。結構設計令規則可以直接 drop into `buildProfileCell()` 唔影響 consensus-mapping 邏輯。
+
+### 寫入路徑（`src/index.ts` ~line 6478）
+
+```
+HACP consensus result
+  ↓
+for each symbol in (activeSymbol ∪ tradingMarkets ∪ pscList):
+  ↓
+  buildAssetAnalysis(symbol, psc, marketState, cycleId, pwin, agentsAligned, agentsTotal)
+    ↓
+    mapAction() → per (profile, posState) cell
+    buildProfileCell() → conviction 縮放 + calibrated flag
+    buildMatrix() → 3×3 AnalysisMatrix
+    ↓
+    AssetAnalysis { symbol, cycleId, marketData, consensus, matrix, metadata }
+  ↓
+analysisWriter.writeCycle(analyses[])
+  ↓
+SupabaseAnalysisWriter：DELETE all rows → INSERT fresh batch（clean-snapshot）
+  ↓
+asset_analyses 表（RLS：anon 可讀，service_role 寫入）
+```
+
+### 客戶端讀取路徑（`mats_app`）
+
+```
+useAssetAnalyses(cycleMinutes) → fetchAssetAnalyses() → Supabase asset_analyses
+  ↓
+useAutoTrade(analyses, settings, user, positions)
+  ↓
+  mapRiskProfile(settings.riskProfile)  // high→aggressive, mid→moderate, low→conservative
+  inferPositionState(symbol, positions) // long/short/flat
+  getRecommendedAction(analysis, riskProfile, posState) → matrix[profile][state]
+  ↓
+  action: buy/sell/hold/close/flip + conviction + rationale
+  ↓
+  Paper mode → 寫入 Supabase positions 表
+  Real mode（Pro + PK）→ 簽名 + 提交 Hyperliquid
+```
+
+### Supabase 表結構（`supabase/migrations/00000000000018_asset_analyses_matrix.sql`）
+
+```sql
+create table public.asset_analyses (
+  symbol      text primary key,           -- 一行一 asset
+  cycle_id    bigint not null,
+  updated_at  timestamptz not null default now(),
+  market_data jsonb not null,  -- { price, volatility, regime, change24h, volume24h }
+  consensus   jsonb not null,  -- { action, confidence, thesis, pwin, agentsAligned, agentsTotal, stopLoss, takeProfit, suggestedLeverage }
+  matrix      jsonb not null,  -- 3×3: { aggressive|moderate|conservative: { long|short|flat: { action, conviction, rationale, calibrated } } }
+  metadata    jsonb not null
+);
+-- RLS：anon/authenticated 可讀（universal market intelligence）；service_role 寫入
+```
+
+---
+
+## 後端帳戶風險設定（v2.0.822+ — Backend Account Risk Profile）
+
+**與客戶端風險等級嘅分別**：呢個係兩個獨立概念。
+- **客戶端風險等級**（`mats_app` `TradingSettings.riskProfile`）：控制客戶端讀取矩陣嘅邊一格 + 客戶端執行策略。
+- **後端帳戶風險設定**（`MarketAgentConfig.riskProfile`）：控制後端自己交易帳戶嘅 conviction 校準 + Plan G threshold 調整 + Meta-Agent prompt 行為。後端計算所有三個等級嘅矩陣，但佢自己執行交易時用呢個設定。
+
+### 三段式風險等級
+
+| 等級 | UI 顯示 | Threshold 倍率 | Conviction 校準 | 倉位大小傾向 | 平倉敏感度 |
+|:-----|:--------|:--------------:|:----------------|:------------|:-----------|
+| `aggressive` | Aggr | × 0.85（放鬆） | 不膨脹——gate 自動放鬆 | 偏大（上限） | 較慢（容忍 drawdown） |
+| `moderate` | Mode | × 1.00（baseline） | 誠實輸出 | 分析支持嘅大小 | 標準（thesis 失效 + ≥2 條件） |
+| `conservative` | Cons | × 1.15（收緊） | 不壓低——gate 自動收緊 | 偏小（留 headroom） | 較快（保護資本優先） |
+
+### 三層執行機制
+
+```
+Layer 1: Prompt 層（Meta-Agent system prompt）
+  ─ getMarketDescription() 注入 "Risk Profile: AGGRESSIVE/MODERATE/CONSERVATIVE" 行
+  ─ 所有 7 個 agent 見到（5 sub-agents + Skeptics + Meta-Agent）
+  ─ Meta-Agent system prompt 有完整 RISK PROFILE CALIBRATION 段落：
+    • conviction 校準規則（不膨脹/不壓低——gate 調整）
+    • position size 傾向（偏大/偏小）
+    • entry bias（51% lean 足夠 / 要求清晰主導信號）
+    • close sensitivity（較慢/較快）
+    • SL/TP（更闊/更緊）
+    • anti-pattern 權重（警告/強警告）
+  ─ 核心原則：風險等級調整 RISK APPETITE，唔調整 ANALYTICAL RIGOR
+
+Layer 2: Code 層（Plan G conviction gate，src/index.ts ~line 7960）
+  ─ adjustedThreshold = clamp(effectiveThreshold × multiplier, 0.30, 0.70)
+  ─ aggressive: × 0.85（放鬆——更多交易通過）
+  ─ moderate:   × 1.00（baseline）
+  ─ conservative: × 1.15（收緊——更少交易通過）
+  ─ clamp [0.30, 0.70]：aggressive 唔可以低過 30%（唔會魯莽），conservative 唔可以高過 70%（唔會永久癱瘓）
+  ─ 乘法唔加法：與 Plan G 嘅乘法模型一致，唔會重現加法死循環
+
+Layer 3: Multi-symbol 路徑（src/index.ts ~line 7340）
+  ─ 同樣嘅 multiplier 應用於 adaptive filter threshold
+  ─ pscAdjustedThreshold = clamp(pscFilter.getConvictionThreshold() × multiplier, 0.30, 0.70)
+  ─ 確保多符號入場都尊重風險等級
+```
+
+### API + 持久化
+
+| 層 | 檔案/位置 | 說明 |
+|:---|:---------|:-----|
+| Type | `src/types/index.ts` `MarketAgentConfig.riskProfile` | `RiskProfile` type（`aggressive`/`moderate`/`conservative`）|
+| Config | `src/market-agent/index.ts` | `setRiskProfile()` / `getRiskProfile()`，預設 `moderate` |
+| Persistence | `src/evolution/persistence.ts` | `MarketAgentConfigSnapshot.riskProfile` + save + load（驗證 3 個值）|
+| API | `POST /api/market-agent/risk-profile` | `{ profile: 'aggressive'|'moderate'|'conservative' }` |
+| Callback | `src/index.ts` `setMarketAgentSetRiskProfileHandler` | `marketAgent.setRiskProfile()` + `pushToAPI()` |
+| UI | `ui/src/App.tsx` ~line 1397 | 3-segment slider（Aggr/Mode/Cons）+ `ui/src/types.ts` |
+| Agent context | `src/market-agent/index.ts` `getMarketDescription()` | 注入 `Risk Profile:` 行到所有 agent |
+| Meta-Agent prompt | `src/agents/meta-agent.ts` `getSystemPrompt()` | `RISK PROFILE CALIBRATION` 段落 |
+
+### 向後兼容
+
+舊 `market-agent-config.json` 冇 `riskProfile` → load 時驗證失敗 → 唔載入 → `getRiskProfile()` 返回 `'moderate'`（安全預設）。唔會 crash，唔會丟失其他設定。
 
 ### System Engineer Agent（v2.0.201）
 
@@ -230,7 +398,7 @@ tests/                       # vitest（179 tests，9 test files）
 
 | # | Agent | 溫度 | 權重 | 角色描述 |
 |:-:|:------|:----:|:----:|:---------|
-| 0 | **Terminal Agent** | 0.30 | — | 用戶自然語言偏好入口。接受交易偏好指令 → LLM 整合 → Root Command Prompt。Cycle 開始前檢查規則（時間/條件/資產），不符合即 abort cycle。Meta-Agent 決策後核實是否符合 Root Command Prompt。預設 DeepSeek V4 Flash。 |
+| 0 | **Terminal Agent** | 0.30 | — | 用戶自然語言偏好入口。接受交易偏好指令 → LLM 整合 → Root Command Prompt。Cycle 開始前檢查規則（時間/條件/資產），不符合即 abort cycle。Meta-Agent 決策後核實是否符合 Root Command Prompt。預設 DeepSeek V4 Flash。**註**：v2.0.822+ 風險等級（high/mid/low）改由客戶端 `mats_app` SettingsSheet 選擇，後端運算所有三個等級嘅矩陣。 |
 | 1 | **Trading Setup** | — | — | 交易配置管理（非 LLM agent）。Trade Mode、Cycle Period（1-10m）、Position Size、Max Portion、Leverage、Asset Type、Available Pairs、Selected Market Pairs。UI 控件直接連接後端。 |
 | 2 | **Fractal Momentum Sentinel** | 0.85 | 0.10 | 多時間框架碎形自相似模式檢測。趨勢加速早期信號。極端逆向，中間趨勢追隨。預設 Kimi K2.6。 |
 | 3 | **On-Chain Whisperer** | 0.50 | 0.10 | 類別感知鏈上分析。Crypto: mempool/flows/supply。TradFi: DXY/COT/商品/COT 持倉。5 分鐘緩存。預設 Kimi K2.6。 |
@@ -629,7 +797,9 @@ Plan G（6 小時 idle 後）：
 
 ---
 
-## Paper Trading 模擬層
+## Paper Trading 模擬層（dual/execution mode）
+
+**註**：v2.0.822+ 訊號運算模式（`ANALYSIS_MODE=true`）下，後端唔執行交易——執行由客戶端 `mats_app` `useAutoTrade` hook 處理。以下僅適用於 `dual` 或 `false` 模式。
 
 - 槓桿感知 P&L：notional-based 雙邊手續費扣除
 - 每個 price update 自動檢查 SL/TP + 追蹤 MAE/MFE（部位價值 = margin + unrealized PnL）
@@ -638,6 +808,12 @@ Plan G（6 小時 idle 後）：
 - **v2.0.143 統一交易路由**：`executeTrade()` 按 tradeMode 路由 — paper 直接走 paperEngine，real 走 realTradingManager。`closeTrade()` 按 agentId 路由 — paper 走 portfolio.closePosition()，real 走 realTradingManager.closePosition()。不再所有交易都經過 RealTradingManager。
 - **v2.0.143 entryThesis 修復**：執行成功後才調用 `setEntryThesis()`，確保 thesis 在 position 存在時才寫入。syncExchangePositions 的 close+reimport 路徑保留 entryThesis + MAE/MFE。
 - placeOrder 價格源：LIVE `l2Book`（best bid/ask）做 aggressive price 主源，`allMids` REST 做 fallback
+
+**客戶端執行路徑**（`mats_app` `useAutoTrade.ts`，訊號模式）：
+- Paper mode：寫入 Supabase `positions` 表（模擬倉位）
+- Real mode：Pro tier + PK stored → `HlRestClient` 簽名 + 提交 Hyperliquid
+- SL/TP 從用戶 settings 應用；Max position % 強制；manual mode 永不執行
+- One trade per symbol per cycle（dedup by cycleId）
 
 ---
 
@@ -695,9 +871,25 @@ Hyperliquid WebSocket（l2Book + trades + activeAssetCtx + clearinghouseState + 
 ```bash
 # Ollama
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud
+OLLAMA_MODEL_DEFAULT=kimi-k2.6:cloud
 
-# Hyperliquid (optional, real trading)
+# ═════════════════════════════════════════════════════════════
+# ANALYSIS MODE — 訊號運算模式（v2.0.822+，核心架構開關）
+# ═════════════════════════════════════════════════════════════
+# 'true'  — 僅計算訊號 + 寫入 Supabase，唔下單（純訊號後端）
+# 'dual'  — 訊號 + 執行（寫 Supabase + paper/real 交易）← 生產預設
+# 'false' — 僅執行，唔寫 Supabase（legacy 獨立交易模式）
+ANALYSIS_MODE=true
+
+# ═════════════════════════════════════════════════════════════
+# SUPABASE — 訊號輸出目標（v2.0.822+）
+# ═════════════════════════════════════════════════════════════
+# 後端用 service_role 寫入 asset_analyses 表；客戶端用 anon key 讀取
+# 缺少時 → analysis writer disabled（local-only mode，僅 log 輸出）
+SUPABASE_URL=https://<your-project>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=          # ⚠️ service_role — 永不 ship 到客戶端
+
+# Hyperliquid (optional, real trading — dual/execution mode)
 HYPERLIQUID_WALLET_ADDRESS=
 HYPERLIQUID_PRIVATE_KEY=             # ⚠️ RADIOACTIVE — 永不 commit
 
@@ -736,6 +928,13 @@ RIL_SUBTLE_DIFF_ENABLED=true
 
 所有環境變數啟動時經 **Zod schema** 驗證。失敗 → 立即退出 + 詳細錯誤訊息。
 
+**`ANALYSIS_MODE` 行為矩陣**：
+| 設定 | 訊號計算 | 寫入 Supabase | 執行交易 | 適用場景 |
+|:-----|:--------:|:------------:|:--------:|:--------|
+| `true` | ✓ | ✓ | ✗ | 純訊號後端（mats_app 客戶端執行）|
+| `dual` | ✓ | ✓ | ✓ | 訊號 + 後端執行（生產預設）|
+| `false` | ✓ | ✗ | ✓ | Legacy 獨立交易模式 |
+
 ---
 
 ## 技術棧
@@ -746,10 +945,14 @@ RIL_SUBTLE_DIFF_ENABLED=true
 | Runtime | Node.js 22+ |
 | LLM | Ollama（local + Pro cloud）/ OpenAI-compatible |
 | Market Data | Hyperliquid WebSocket + REST（9 perpetual DEXs） |
-| Frontend | React 18 + Vite + TradingView Chart |
+| 訊號輸出 | Supabase `asset_analyses` 表（service_role 寫入，anon 讀取）|
+| 客戶端 | **`mats_app`**（Expo React Native + Reanimated + Three.js）— 風險選擇 + 執行 |
+| 客戶端錢包 | `mats_app` `src/wallet/`（自託管，SecureStorage，`@noble/curves` 簽名）|
+| 客戶端數據 | `mats_app/trade-bridge`（HL WS 市場數據 + on-chain reconciliation，永不簽名）|
+| Legacy UI | `ui/`（React 18 + Vite — 已由 mats_app 取代，保留作 local dashboard）|
 | Config | Zod schema validation |
 | Logging | Winston（structured + file rotation） |
-| Testing | vitest（179 tests，9 test files） |
+| Testing | vitest（28 test files，含 analysis-matrix + dynamic-threshold-attack）|
 | Crypto | `@noble/curves`（HL phantom agent signing） |
 | Vector Embedding | Transformers.js MiniLM L6 v2（384-dim, in-process, CPU） |
 | Pattern Clustering | Greedy cosine clustering（RIL Reason Intelligence Layer） |
@@ -759,23 +962,33 @@ RIL_SUBTLE_DIFF_ENABLED=true
 ## 啟動
 
 ```bash
-npm run engineer    # 自主進化模式：交易 + System Engineer 自主修復 + 修復後自動重啟
+npm run engineer    # 自主進化模式：訊號運算 + System Engineer 自主修復 + 修復後自動重啟
+npm run dev         # 開發模式：API :3456 + legacy UI :5173（concurrently）
 ```
-Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/api/status**
+API: **http://localhost:3456/api/status** · Legacy Dashboard: **http://localhost:5173/**
 
-`npm run engineer` 是唯一支援的生產啟動模式。流程：
+**訊號運算模式**（`ANALYSIS_MODE=true`，配合 `mats_app`）：
+1. 後端每個 cycle 計算 HACP 共識 → 擴展成 3×3 矩陣 → 寫入 Supabase `asset_analyses`
+2. 客戶端 `mats_app` 用戶選擇風險等級（high/mid/low）→ 讀取對應矩陣格 → 決定執行
+3. 後端唔下單——純訊號輸出。執行由客戶端 `useAutoTrade` hook 處理
+
+**Dual 模式**（`ANALYSIS_MODE=dual`，生產預設）：
+1. 後端同時計算訊號 + 寫入 Supabase + 執行交易（paper/real）
+2. 客戶端同時可讀取矩陣做手動/自動執行
+
+**`npm run engineer` 自主進化模式**：
 1. `engineer-loop.sh` 啟動 `tsx src/index.ts`（`SYSTEM_ENGINEER_ENABLED=true`）
-2. 交易系統正常運行，每 2 個 cycle（cycle period ≥ 5 min 時）觸發 System Engineer
+2. 訊號系統正常運行，每 2 個 cycle（cycle period ≥ 5 min 時）觸發 System Engineer
 3. System Engineer 審查交易記錄 + 源代碼 → 生成修復 → `tsc --noEmit` + `npm test` 驗證
 4. 全部通過 → git commit → `process.exit(42)` → `engineer-loop.sh` 偵測 exit code 42 → 重啟進程
 5. 任何失敗 → 自動 rollback（恢復原始文件）→ 繼續運行
-6. 重啟後加載新代碼 → 繼續交易 → 2 個 cycle 後再檢查 → 循環
+6. 重啟後加載新代碼 → 繼續運算 → 2 個 cycle 後再檢查 → 循環
 
 **安全設計**：
 - System Engineer 只可修改 `src/evolution/` + `src/cognition/` + `src/analysis/` + `src/agents/` + `tests/`
 - 禁止觸碰 `src/trading/`（下單/SL/TP/簽名）+ `src/config/`（風險設置）+ `src/index.ts` + `.env`
 - tsc + test 安全網：任何失敗 → 自動 rollback，不會應用未驗證的代碼
-- 重啟期間持倉由 HL 交易所的 SL/TP trigger orders 保護，不依賴本地進程
+- Dual/execution 模式時，重啟期間持倉由 HL 交易所的 SL/TP trigger orders 保護，不依賴本地進程
 
 ---
 

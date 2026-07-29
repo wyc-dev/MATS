@@ -1081,6 +1081,13 @@ export interface MarketAgentConfig {
   tradingMarkets?: string[];
   /** Cycle period in minutes (1-10). Controls the decision cycle interval. */
   cyclePeriodMinutes?: number;
+  /** v2.0.822+: Risk profile for the backend's own trading account.
+   *  Controls how the Meta-Agent calibrates conviction + position sizing.
+   *  'aggressive' = higher conviction threshold tolerance, larger size;
+   *  'moderate'   = baseline (live consensus mechanism);
+   *  'conservative' = dampened conviction, smaller size, stricter gates.
+   *  Default 'moderate'. Persisted so it survives restarts. */
+  riskProfile?: RiskProfile;
   /** Timestamp of last config change */
   updatedAt: number;
 }

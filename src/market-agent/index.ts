@@ -17,6 +17,7 @@ import type {
   TradeMode,
   ExchangeType,
   HyperliquidAssetType,
+  RiskProfile,
 } from '../types/index.ts';
 
 const log = createLogger({ phase: 'market-agent' });
@@ -32,6 +33,7 @@ const DEFAULT_CONFIG: MarketAgentConfig = {
   maxPortionPct: 0.20,
   leverage: 10,
   cyclePeriodMinutes: 5,
+  riskProfile: 'moderate',
   updatedAt: Date.now(),
 };
 
@@ -358,6 +360,22 @@ export class MarketAgent {
     this.config.updatedAt = Date.now();
     this.persistConfig();
     log.info(`Cycle period changed: ${clamped}m`);
+  }
+
+  /** v2.0.822+: Set the backend account's risk profile.
+   *  Controls Meta-Agent conviction calibration + position sizing guidance.
+   *  Valid values: 'aggressive' | 'moderate' | 'conservative'. */
+  setRiskProfile(profile: RiskProfile): void {
+    if (this.config.riskProfile === profile) return;
+    this.config.riskProfile = profile;
+    this.config.updatedAt = Date.now();
+    this.persistConfig();
+    log.info(`Risk profile changed: ${profile}`);
+  }
+
+  /** v2.0.822+: Get the current risk profile (default 'moderate'). */
+  getRiskProfile(): RiskProfile {
+    return this.config.riskProfile ?? 'moderate';
   }
 
   // ── v2.0.122: Per-Symbol Direction Restrictions ──
@@ -1346,6 +1364,14 @@ export class MarketAgent {
     if (this.config.exchange === 'hyperliquid') {
       lines.push(`Asset Filter: ${this.config.hyperliquidAssetType ?? 'crypto_perps'}`);
     }
+
+    // v2.0.822+: Inject risk profile so all agents see the account's risk setting.
+    // Meta-Agent uses this to calibrate conviction + position sizing.
+    const rp = this.config.riskProfile ?? 'moderate';
+    const rpLabel = rp === 'aggressive' ? 'AGGRESSIVE (higher conviction tolerance, larger size)'
+      : rp === 'conservative' ? 'CONSERVATIVE (dampened conviction, smaller size, stricter gates)'
+      : 'MODERATE (baseline live consensus)';
+    lines.push(`Risk Profile: ${rpLabel}`);
 
     if (pair) {
       lines.push(

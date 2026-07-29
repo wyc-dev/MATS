@@ -8,7 +8,7 @@ import { createLogger } from './observability/logger.ts';
 // v2.0.42: Import normalizeSymbol for manual close symbol normalization.
 import { normalizeSymbol } from './trading/portfolio.ts';
 import { getAllAgentModels, getAvailableModels, getDynamicAvailableModels, setAgentModel, resetAgentModel, type AgentModelConfig, type ModelDefinition } from './agents/agent-models.ts';
-import type { AgentThought, ConsensusResult, DebateRound, Portfolio, MarketState, AgentStatus, CycleProgress, MarketAgentConfig, TopVolumePair, AllSymbolEntry, TradeMode, ExchangeType, HyperliquidAssetType } from './types/index.ts';
+import type { AgentThought, ConsensusResult, DebateRound, Portfolio, MarketState, AgentStatus, CycleProgress, MarketAgentConfig, TopVolumePair, AllSymbolEntry, TradeMode, ExchangeType, HyperliquidAssetType, RiskProfile } from './types/index.ts';
 import type { BacktestResult, BacktestProgress } from './backtest/index.ts';
 
 const log = createLogger({ phase: 'api' });
@@ -267,6 +267,8 @@ export class APIServer {
   private onMarketAgentSetMaxPortion: ((pct: number) => void) | null = null;
   private onMarketAgentSetLeverage: ((lev: number) => void) | null = null;
   private onSetCyclePeriod: ((minutes: number) => void) | null = null;
+  /** v2.0.822+: Set the backend account's risk profile. */
+  private onMarketAgentSetRiskProfile: ((profile: RiskProfile) => void) | null = null;
   /** v2.0.44: Manual symbol selection from Top Volume Pairs list. */
   private onMarketAgentSelectSymbol: ((symbol: string) => void) | null = null;
   /** v2.0.79: Set trading markets list from UI pills. */
@@ -386,6 +388,11 @@ export class APIServer {
   /** Register callback for cycle period changes (1-10 minutes) */
   setCyclePeriodHandler(cb: (minutes: number) => void): void {
     this.onSetCyclePeriod = cb;
+  }
+
+  /** v2.0.822+: Register callback for risk profile changes. */
+  setMarketAgentSetRiskProfileHandler(cb: (profile: RiskProfile) => void): void {
+    this.onMarketAgentSetRiskProfile = cb;
   }
 
   /** v2.0.44: Register a callback for manual symbol selection from Top Volume Pairs */
@@ -1065,6 +1072,29 @@ export class APIServer {
             if (this.onSetCyclePeriod) this.onSetCyclePeriod(clamped);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: true, message: `Cycle period set to ${clamped}m` }));
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+
+      // POST: set risk profile (aggressive | moderate | conservative)
+      if (pathname === '/api/market-agent/risk-profile' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          try {
+            const { profile } = JSON.parse(body) as { profile: string };
+            if (profile === 'aggressive' || profile === 'moderate' || profile === 'conservative') {
+              if (this.onMarketAgentSetRiskProfile) this.onMarketAgentSetRiskProfile(profile);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: true, message: `Risk profile set to ${profile}` }));
+            } else {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, message: 'Invalid risk profile. Use "aggressive", "moderate", or "conservative".' }));
+            }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));

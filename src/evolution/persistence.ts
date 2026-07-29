@@ -652,6 +652,8 @@ interface MarketAgentConfigSnapshot {
   /** v2.0.730: Cycle when direction restrictions were set (for auto-expiry). */
   directionRestrictionsSetCycle?: number;
   tradingMarkets?: string[];
+  /** v2.0.822+: Risk profile (aggressive|moderate|conservative). */
+  riskProfile?: string;
   updatedAt: number;
 }
 
@@ -667,6 +669,7 @@ const MARKET_AGENT_CONFIG_FIELDS: Record<string, SchemaField> = {
   cyclePeriodMinutes: { type: 'number', required: false },
   directionRestrictions: { type: 'object', required: false },
   tradingMarkets: { type: 'array', required: false },
+  riskProfile: { type: 'string', required: false },
   updatedAt: { type: 'number', required: true },
 };
 
@@ -688,6 +691,7 @@ export function saveMarketAgentConfig(cfg: MarketAgentConfig): boolean {
       ...(cfg.directionRestrictions ? { directionRestrictions: cfg.directionRestrictions } : {}),
       ...(cfg.directionRestrictionsSetCycle !== undefined ? { directionRestrictionsSetCycle: cfg.directionRestrictionsSetCycle } : {}),
       ...(cfg.tradingMarkets && cfg.tradingMarkets.length > 0 ? { tradingMarkets: cfg.tradingMarkets } : {}),
+      ...(cfg.riskProfile ? { riskProfile: cfg.riskProfile } : {}),
       updatedAt: cfg.updatedAt,
     };
     // v2.0.78: Use direct atomicWriteSync (not lockedWrite) because this is
@@ -747,6 +751,10 @@ export function loadMarketAgentConfig(): Partial<MarketAgentConfig> | null {
       // If missing (old config), set to -999 so it expires immediately on first cycle.
       ...(directionRestrictions ? { directionRestrictionsSetCycle: snapshot.directionRestrictionsSetCycle ?? -999 } : {}),
       ...(tradingMarkets && tradingMarkets.length > 0 ? { tradingMarkets } : {}),
+      // v2.0.822+: Restore riskProfile, validating to the 3 allowed values.
+      ...(snapshot.riskProfile === 'aggressive' || snapshot.riskProfile === 'moderate' || snapshot.riskProfile === 'conservative'
+        ? { riskProfile: snapshot.riskProfile }
+        : {}),
       updatedAt: snapshot.updatedAt,
     };
   } catch (err) {

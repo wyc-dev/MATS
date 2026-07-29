@@ -997,6 +997,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [positionSizePct, setPositionSizePct] = useState(config?.positionSizePct ?? 0.10)
   const [maxPortionPct, setMaxPortionPct] = useState(config?.maxPortionPct ?? 0.20)
   const [leverage, setLeverage] = useState(config?.leverage ?? 10)
+  const [riskProfile, setRiskProfile] = useState<'aggressive' | 'moderate' | 'conservative'>(config?.riskProfile ?? 'moderate')
   const [assetSearch, setAssetSearch] = useState('')
   const [cyclePeriod, setCyclePeriod] = useState(config?.cyclePeriodMinutes ?? 5)
   const [closeConfirmSym, setCloseConfirmSym] = useState<string | null>(null)
@@ -1118,8 +1119,10 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       setMaxPortionPct(prev => Math.abs(prev - (config.maxPortionPct ?? 0.20)) > 0.001 ? (config.maxPortionPct ?? 0.20) : prev)
       setLeverage(prev => prev !== config.leverage ? config.leverage : prev)
       if (config.cyclePeriodMinutes) setCyclePeriod(prev => prev !== config.cyclePeriodMinutes ? config.cyclePeriodMinutes! : prev)
+      // v2.0.822+: Sync risk profile from backend config
+      if (config.riskProfile) setRiskProfile(prev => prev !== config.riskProfile ? config.riskProfile! : prev)
     }
-  }, [config?.tradeMode, config?.hyperliquidAssetType, config?.positionSizePct, config?.maxPortionPct, config?.leverage, config?.cyclePeriodMinutes])
+  }, [config?.tradeMode, config?.hyperliquidAssetType, config?.positionSizePct, config?.maxPortionPct, config?.leverage, config?.cyclePeriodMinutes, config?.riskProfile])
 
   const showStatus = (msg: string) => {
     setStatusMsg(msg)
@@ -1391,6 +1394,39 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               style={{ flex: 1, height: 4, accentColor: 'var(--accent)' }}
             />
             <span className="slider-value">{leverage}x</span>
+          </div>
+        </div>
+        {/* v2.0.822+: Risk Profile 3-segment slider — controls backend account risk */}
+        <div className="market-control-col">
+          <div className="market-control-label">
+            Risk Profile: <strong>{riskProfile === 'aggressive' ? 'Aggressive' : riskProfile === 'conservative' ? 'Conservative' : 'Moderate'}</strong>
+          </div>
+          <div className="risk-profile-segments" role="radiogroup" aria-label="Risk Profile">
+            {(['aggressive', 'moderate', 'conservative'] as const).map((rp) => (
+              <button
+                key={rp}
+                role="radio"
+                aria-checked={riskProfile === rp}
+                aria-label={`Risk profile: ${rp}`}
+                className={`risk-segment ${riskProfile === rp ? 'risk-segment-active' : ''} risk-segment-${rp}`}
+                onClick={async () => {
+                  setRiskProfile(rp)
+                  try {
+                    const res = await fetch(`${API_BASE}/market-agent/risk-profile`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ profile: rp }),
+                    })
+                    if ((await res.json()).success) showStatus(`Risk: ${rp}`)
+                  } catch { showStatus('Failed') }
+                }}
+                title={rp === 'aggressive' ? 'Higher conviction tolerance, larger size, slower to close'
+                  : rp === 'conservative' ? 'Dampened conviction, smaller size, faster to close, stricter gates'
+                  : 'Baseline live consensus mechanism'}
+              >
+                {rp === 'aggressive' ? 'Aggr' : rp === 'conservative' ? 'Cons' : 'Mode'}
+              </button>
+            ))}
           </div>
         </div>
       </div>

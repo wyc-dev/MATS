@@ -1436,6 +1436,14 @@ Respond ONLY with JSON:
         this.pushToAPI();
       });
 
+      // v2.0.822+: Risk profile handler — sets the backend account's risk profile.
+      // This controls Meta-Agent conviction calibration + position sizing guidance.
+      this.apiServer.setMarketAgentSetRiskProfileHandler((profile) => {
+        log.info(`Market Agent: risk profile → ${profile}`);
+        this.marketAgent.setRiskProfile(profile);
+        this.pushToAPI();
+      });
+
       // Terminal Agent — user input → LLM integration → Root Command Prompt
       this.apiServer.setTerminalAgentInputHandler(async (input: string, currentPrompt: string) => {
         try {
@@ -7327,13 +7335,22 @@ ${recentExamples}
 
             // v2.0.106: Check per-asset filter gate
             const pscFilter = this.assetFilterRegistry.getFilter(psc.symbol);
-            if (psc.confidence < pscFilter.getConvictionThreshold()) {
-              log.warn(`🛑 [adaptive-filter] Multi-symbol conviction gate [${psc.symbol}]: ${(psc.confidence * 100).toFixed(0)}% < ${(pscFilter.getConvictionThreshold() * 100).toFixed(0)}% — skipping entry (noise-dominated)`);
-              auditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(psc.confidence * 100).toFixed(0)}% < ${(pscFilter.getConvictionThreshold() * 100).toFixed(0)}%` });
+            // v2.0.822+: Apply risk profile adjustment to the adaptive filter
+            // threshold (same multiplicative model as Plan G). Aggressive relaxes
+            // the noise-gate, conservative tightens it. This ensures multi-symbol
+            // entries respect the account's risk profile, not just the active symbol.
+            const pscRiskProfile = this.marketAgent.getRiskProfile();
+            const pscRiskMultiplier = pscRiskProfile === 'aggressive' ? 0.85
+              : pscRiskProfile === 'conservative' ? 1.15
+              : 1.0;
+            const pscAdjustedThreshold = Math.max(0.30, Math.min(0.70, pscFilter.getConvictionThreshold() * pscRiskMultiplier));
+            if (psc.confidence < pscAdjustedThreshold) {
+              log.warn(`🛑 [adaptive-filter] Multi-symbol conviction gate [${psc.symbol}]: ${(psc.confidence * 100).toFixed(0)}% < ${(pscAdjustedThreshold * 100).toFixed(0)}% (risk=${pscRiskProfile}) — skipping entry (noise-dominated)`);
+              auditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(psc.confidence * 100).toFixed(0)}% < ${(pscAdjustedThreshold * 100).toFixed(0)}% [risk=${pscRiskProfile}]` });
               this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
               continue;
             }
-            auditGates.push({ gate: 'conviction-gate', passed: true, reason: `${(psc.confidence * 100).toFixed(0)}% ≥ ${(pscFilter.getConvictionThreshold() * 100).toFixed(0)}%` });
+            auditGates.push({ gate: 'conviction-gate', passed: true, reason: `${(psc.confidence * 100).toFixed(0)}% ≥ ${(pscAdjustedThreshold * 100).toFixed(0)}% [risk=${pscRiskProfile}]` });
 
             if (pscFilter.isTradeFrequencyLimited()) {
               log.warn(`🛑 [adaptive-filter] Multi-symbol frequency throttle [${psc.symbol}]: limit reached — skipping entry`);
@@ -7939,6 +7956,27 @@ ${recentExamples}
         const penaltyFactor = dtcResult.penaltyFactor;
         const boostFactor = dtcResult.boostFactor;
 
+        // ── v2.0.822+: Risk profile threshold adjustment ──────────────────
+        // The operator sets the backend account's risk profile via the UI.
+        // This adjusts the dynamic threshold AFTER Plan G computes it, so the
+        // [45%, 55%] cap is preserved but shifted by the profile bias.
+        //   aggressive   → threshold × 0.85 (relaxed — more trades pass)
+        //   moderate     → threshold × 1.00 (baseline, no shift)
+        //   conservative → threshold × 1.15 (tightened — fewer trades pass)
+        // The shift is multiplicative on the threshold (not additive) so it
+        // composes cleanly with Plan G's multiplicative model and cannot
+        // resurrect the additive death-spiral. Clamped to [0.30, 0.70] so
+        // even aggressive cannot drop below 30% (no reckless entries) and
+        // conservative cannot exceed 70% (no permanent paralysis).
+        const riskProfile = this.marketAgent.getRiskProfile();
+        const riskThresholdMultiplier = riskProfile === 'aggressive' ? 0.85
+          : riskProfile === 'conservative' ? 1.15
+          : 1.0;
+        const adjustedThreshold = Math.max(0.30, Math.min(0.70, effectiveThreshold * riskThresholdMultiplier));
+        if (riskProfile !== 'moderate') {
+          log.info(`🎯 [risk-profile] ${riskProfile}: threshold ${(effectiveThreshold * 100).toFixed(1)}% → ${(adjustedThreshold * 100).toFixed(1)}% (×${riskThresholdMultiplier})`);
+        }
+
         // ── OLR P(win) multiplicative discount (v2.0.224, preserved) ──────
         const pwinSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
         const pwinCtx = this.lastCycleShadowContexts.get(pwinSym);
@@ -7985,7 +8023,7 @@ ${recentExamples}
         const effectiveConfidence = safeNum(consensusConfidence, 0) * pwinBlendFactor * penaltyFactor * boostFactor;
 
         // ── Gate decision ─────────────────────────────────────────────────
-        if (effectiveConfidence < effectiveThreshold) {
+        if (effectiveConfidence < adjustedThreshold) {
           const blendStr = comboBlendUsed
             ? ` blend=${pwinBlendFactor.toFixed(3)} (combo override: ${comboBlendUsed.reason.slice(0, 80)})`
             : ` blend=${pwinBlendFactor.toFixed(3)}`;
@@ -7993,13 +8031,13 @@ ${recentExamples}
             ? ` (P(win)=${(olrPWin * 100).toFixed(0)}%${blendStr} × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%)`
             : ` (consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%, OLR cold-start)`;
           const factorStr = dtcResult.factors.map(f => `${f.factor}=${f.score > 0 ? '+' : ''}${f.score}`).join(' ');
-          log.warn(`🛑 [Plan-G] Conviction gate [${finalDecision.symbol || activeSymbol}]: effective ${(effectiveConfidence * 100).toFixed(0)}% < threshold ${(effectiveThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, penalty=${penaltyFactor.toFixed(2)}, boost=${boostFactor.toFixed(2)})${pwinStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD`);
-          activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(effectiveConfidence * 100).toFixed(0)}% < ${(effectiveThreshold * 100).toFixed(1)}%${pwinStr} [${factorStr}]` });
+          log.warn(`🛑 [Plan-G] Conviction gate [${finalDecision.symbol || activeSymbol}]: effective ${(effectiveConfidence * 100).toFixed(0)}% < threshold ${(adjustedThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, penalty=${penaltyFactor.toFixed(2)}, boost=${boostFactor.toFixed(2)}, risk=${riskProfile})${pwinStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD`);
+          activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(effectiveConfidence * 100).toFixed(0)}% < ${(adjustedThreshold * 100).toFixed(1)}%${pwinStr} [${factorStr}] [risk=${riskProfile}]` });
           finalDecision = {
             ...finalDecision,
             action: 'hold',
             positionSizePct: 0,
-            rationale: `[Plan-G ${finalDecision.symbol || activeSymbol}] Effective confidence ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × blend=${pwinBlendFactor.toFixed(3)} × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)}) below dynamic threshold ${(effectiveThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}). HOLD. Original: ${finalDecision.rationale}`,
+            rationale: `[Plan-G ${finalDecision.symbol || activeSymbol}] Effective confidence ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × blend=${pwinBlendFactor.toFixed(3)} × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)}) below dynamic threshold ${(adjustedThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, risk=${riskProfile}). HOLD. Original: ${finalDecision.rationale}`,
           };
         } else if (symFilter.isTradeFrequencyLimited()) {
           log.warn(`🛑 [adaptive-filter] Trade frequency throttle [${finalDecision.symbol || activeSymbol}]: limit reached — overriding ${finalDecision.action.toUpperCase()} → HOLD (over-trading prevention)`);
@@ -8013,8 +8051,8 @@ ${recentExamples}
         } else {
           const factorStr = dtcResult.factors.map(f => `${f.factor}=${f.score > 0 ? '+' : ''}${f.score}`).join(' ');
           activeAuditGates.push({ gate: 'conviction-gate', passed: true, reason: olrHasData
-            ? `effective ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × blend=${pwinBlendFactor.toFixed(3)}${comboBlendUsed ? ' [combo override]' : ''} × ${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)}) ≥ ${(effectiveThreshold * 100).toFixed(1)}% [${factorStr}]`
-            : `${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} = ${(effectiveConfidence * 100).toFixed(0)}% ≥ ${(effectiveThreshold * 100).toFixed(1)}% (OLR cold-start) [${factorStr}]` });
+            ? `effective ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × blend=${pwinBlendFactor.toFixed(3)}${comboBlendUsed ? ' [combo override]' : ''} × ${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)}) ≥ ${(adjustedThreshold * 100).toFixed(1)}% [${factorStr}] [risk=${riskProfile}]`
+            : `${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} = ${(effectiveConfidence * 100).toFixed(0)}% ≥ ${(adjustedThreshold * 100).toFixed(1)}% (OLR cold-start) [${factorStr}] [risk=${riskProfile}]` });
           activeAuditGates.push({ gate: 'frequency-throttle', passed: true, reason: 'OK' });
         }
       }
