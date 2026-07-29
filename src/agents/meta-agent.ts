@@ -844,18 +844,23 @@ desks maximize expected value across all three actions.
 ■ CLOSE = Exit the current position entirely. Do NOT re-enter the same direction.
   REQUIREMENTS (ALL must be true):
   1. Thesis invalidated (MANDATORY — the original entry rationale is broken)
-  2. STRUCTURAL CONFIRMATION: Price has decisively broken the key S/R level or SL
-     that the thesis depended on. "Decisively" means price is BEYOND the level, not
-     just touching it. A thesis that said "bounce at $64K" is only invalidated when
-     price is BELOW $64K (e.g. $63.8K), not when price is AT $64K.
+  2. STRUCTURAL CONFIRMATION: Price has DECISIVELY broken the key S/R level or SL
+     that the thesis depended on. "Decisively" means price is BEYOND the level by
+     a meaningful margin, not just touching or wicking through:
+     - Strong pivot S/R (multiple touches): 0.3% beyond = confirmed
+     - Moderate S/R: 0.5% beyond = confirmed
+     - Weak / round-number S/R (e.g. $64K integer): 1.0% beyond = confirmed
+     A wick that briefly pierces a level and bounces back is NOT a confirmed break.
+     SL hit = always confirmed (the market's own stop was triggered).
   3. ≥2 secondary conditions (trend changed, ≥2 agents say close, position losing,
      regime unsuitable, new contradicting info)
 
   ⚠️ If thesis is invalidated but there is NO structural confirmation (price is
-     still above support / below resistance), output HOLD with holdReason explaining
-     "thesis may be wobbly but market structure has not confirmed the break — waiting
-     for structural confirmation before closing." The system's PROFIT GUARD v3 will
-     also block unconfirmed closes on profitable positions.
+     still above support / below resistance, or only wicked through briefly), output
+     HOLD with holdReason explaining "thesis may be wobbly but market structure has
+     not confirmed the break — waiting for a decisive close beyond the S/R level
+     before closing." The system's PROFIT GUARD v3 will also block unconfirmed
+     closes on profitable positions.
 
 ■ FLIP = Close current position + immediately open the OPPOSITE direction.
   REQUIREMENTS (ALL must be true):
@@ -895,7 +900,8 @@ There are three profiles. Apply the rules below to EVERY symbol decision:
     ACT on it. "51% lean" is sufficient. Aggressive tolerates ambiguity in exchange for
     opportunity capture — missing a trending move is a bigger failure than a small loss.
   • CLOSE SENSITIVITY: Be SLOWER to close. Require STRONGER structural confirmation:
-    - Price must be DECISIVELY beyond S/R (not just 0.1% below — at least 0.5% beyond)
+    - Price must be DECISIVELY beyond S/R: strong pivot ≥0.5%, moderate ≥0.8%,
+      weak/round-num ≥1.5% (deeper than moderate — aggressive tolerates more noise)
     - Require ≥3 secondary conditions (not 2) for CLOSE
     - A wobbly thesis that might recover should be given more time
     - The system's PROFIT GUARD v3 allows confirmed closes only if profit < 2.0%
@@ -929,7 +935,9 @@ There are three profiles. Apply the rules below to EVERY symbol decision:
   • ENTRY BIAS: Require a CLEAR dominant signal, not a 51% lean. If two signals conflict,
     HOLD. Aggressive acts on ambiguity; conservative waits for clarity.
   • CLOSE SENSITIVITY: Be FASTER to close. Weaker structural confirmation suffices:
-    - Price touching S/R (not just decisively beyond) can confirm
+    - Price touching S/R (even a brief wick through) can confirm
+    - Break depth: strong pivot ≥0.2%, moderate ≥0.3%, weak ≥0.5%
+      (shallower than moderate — conservative cuts earlier on less proof)
     - Only ≥1 strong secondary condition needed for CLOSE
     - PROFIT GUARD v3 allows confirmed closes if profit < 0.5% (cut early)
   • FLIP SENSITIVITY: OLR P(win) ≥ 50% for the new direction. Conservative flips more
