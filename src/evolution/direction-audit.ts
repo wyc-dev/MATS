@@ -95,8 +95,20 @@ export async function auditTradeRecordsLLM(records: ThesisExperienceRecord[], em
     return { incidents: [], summary: 'No records to audit', llmAnalysis: '', timestamp };
   }
 
-  // Take last 20 records (most recent + most relevant)
-  const recent = records.slice(-20);
+  // Take last 20 records (most recent + most relevant).
+  // v2.0.831: Filter out pre-v2.0.819 trades that have NO entryMarketFeatures /
+  // entryOlrPWin / entryShadowWinRate. These are legacy trades from before the
+  // entry-time data pipeline fix — they have NO_OLR/NO_SHADOW/NO_MARKET_DATA
+  // by design (the data was never captured at entry). Auditing them produces
+  // false positives that trigger unnecessary System Engineer fixes.
+  // Only audit trades that have the post-fix data pipeline fields populated.
+  const postFixRecords = records.filter(r =>
+    r.marketFeatures !== undefined && Object.keys(r.marketFeatures ?? {}).length > 0
+  );
+  const recent = postFixRecords.slice(-20);
+  if (recent.length === 0) {
+    return { incidents: [], summary: 'No post-fix records to audit (all trades are pre-v2.0.819 legacy)', llmAnalysis: '', timestamp };
+  }
 
   // Build a compact data summary for the LLM
   const dataLines = recent.map((r, i) => {
