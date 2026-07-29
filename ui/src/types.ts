@@ -178,6 +178,8 @@ export interface MarketAgentConfig {
   maxPortionPct: number;
   leverage: number;
   cyclePeriodMinutes?: number;
+  /** v2.0.822+: Backend account risk profile. Controls Meta-Agent conviction calibration. */
+  riskProfile?: 'aggressive' | 'moderate' | 'conservative';
   updatedAt: number;
 }
 

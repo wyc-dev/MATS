@@ -4251,6 +4251,58 @@ body {
   text-align: right;
 }
 
+/* ── v2.0.822+: Risk Profile 3-segment selector ── */
+.risk-profile-segments {
+  display: flex;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-sm, 6px);
+  padding: 3px;
+  height: 28px;
+}
+
+.risk-segment {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary, #888);
+  font-size: var(--fs-xs, 11px);
+  font-weight: var(--fw-semibold, 600);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+  padding: 0;
+  letter-spacing: 0.3px;
+}
+
+.risk-segment:hover {
+  color: var(--text-secondary, #ccc);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.risk-segment:active {
+  transform: scale(0.96);
+}
+
+.risk-segment-active.risk-segment-aggressive {
+  background: rgba(255, 80, 80, 0.25);
+  color: #ff6b6b;
+  box-shadow: inset 0 0 0 1px rgba(255, 80, 80, 0.4);
+}
+
+.risk-segment-active.risk-segment-moderate {
+  background: rgba(80, 180, 255, 0.22);
+  color: #5ab4ff;
+  box-shadow: inset 0 0 0 1px rgba(80, 180, 255, 0.4);
+}
+
+.risk-segment-active.risk-segment-conservative {
+  background: rgba(80, 220, 120, 0.22);
+  color: #50dc78;
+  box-shadow: inset 0 0 0 1px rgba(80, 220, 120, 0.4);
+}
+
 .market-price-top {
   margin-top: var(--space-5);
 }
