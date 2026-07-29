@@ -439,15 +439,17 @@ export class MarketAgent {
 
   // ── v2.0.124: Trading Markets Persistence ──
 
-  /** Get persisted trading markets list (from config). Max 3 symbols. */
+  /** Get persisted trading markets list (from config). Max 10 symbols. */
   getTradingMarkets(): string[] {
     return [...(this.config.tradingMarkets ?? [])];
   }
 
   /** Set trading markets list. Persists to disk so the system resumes with
-   *  the correct markets on restart instead of falling back to auto-select. */
+   *  the correct markets on restart instead of falling back to auto-select.
+   *  v2.0.822+: Max 10 symbols (was 3 — caused silent loss of markets 4-10
+   *  on save + restart; UI and API already allowed 10). */
   setTradingMarkets(markets: string[]): void {
-    const valid = markets.filter(s => typeof s === 'string' && s.length > 0 && s.length <= 50).slice(0, 3);
+    const valid = markets.filter(s => typeof s === 'string' && s.length > 0 && s.length <= 50).slice(0, 10);
     this.config.tradingMarkets = valid.length > 0 ? valid : undefined;
     this.config.updatedAt = Date.now();
     this.persistConfig();
