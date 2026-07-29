@@ -307,21 +307,25 @@ describe('DynamicThresholdCalculator — Plan G', () => {
   describe('Effective confidence formula', () => {
     it('effectiveConfidence = consensus × blend × penalty', () => {
       const conf = DynamicThresholdCalculator.effectiveConfidence(0.65, 0.55, 0.70);
-      // blend = 0.3 + 0.7 × 0.55 = 0.685
-      // conf = 0.65 × 0.685 × 0.70 = 0.3117
-      expect(conf).toBeCloseTo(0.3117, 3);
+      // v2.0.831: non-linear sigmoid blend: blend = 0.5 + 0.5×sigmoid(4×(0.55-0.5)) = 0.7749
+      // conf = 0.65 × 0.7749 × 0.70 = 0.3526
+      expect(conf).toBeCloseTo(0.3526, 3);
     });
 
-    it('pwinBlendFactor: P(win)=0 → 0.3 (floor)', () => {
-      expect(DynamicThresholdCalculator.pwinBlendFactor(0)).toBeCloseTo(0.3, 4);
+    it('pwinBlendFactor: P(win)=0 → floor (sigmoid saturates low)', () => {
+      // v2.0.831: sigmoid(4×(0-0.5)) = sigmoid(-2) ≈ 0.119 → blend = 0.5+0.5×0.119 = 0.5596
+      // (above PWIN_FLOOR=0.3, so floor doesn't bind)
+      expect(DynamicThresholdCalculator.pwinBlendFactor(0)).toBeCloseTo(0.5596, 4);
     });
 
-    it('pwinBlendFactor: P(win)=1 → 1.0 (max)', () => {
-      expect(DynamicThresholdCalculator.pwinBlendFactor(1)).toBeCloseTo(1.0, 4);
+    it('pwinBlendFactor: P(win)=1 → near-max (sigmoid saturates high)', () => {
+      // v2.0.831: sigmoid(4×(1-0.5)) = sigmoid(2) ≈ 0.881 → blend = 0.5+0.5×0.881 = 0.9404
+      expect(DynamicThresholdCalculator.pwinBlendFactor(1)).toBeCloseTo(0.9404, 4);
     });
 
-    it('pwinBlendFactor: P(win)=0.5 → 0.65', () => {
-      expect(DynamicThresholdCalculator.pwinBlendFactor(0.5)).toBeCloseTo(0.65, 4);
+    it('pwinBlendFactor: P(win)=0.5 → 0.75 (neutral)', () => {
+      // v2.0.831: sigmoid(0) = 0.5 → blend = 0.5+0.5×0.5 = 0.75
+      expect(DynamicThresholdCalculator.pwinBlendFactor(0.5)).toBeCloseTo(0.75, 4);
     });
   });
 
@@ -372,7 +376,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       const penaltyFactor = result.penaltyFactor; // ~1.0
       // P(win)=79%, consensus=65%, penalty=1.0
       const conf = DynamicThresholdCalculator.effectiveConfidence(0.65, 0.79, penaltyFactor);
-      // blend = 0.3 + 0.7 × 0.79 = 0.853, conf = 0.65 × 0.853 × 1.0 = 0.554
+      // v2.0.831: blend(0.79) = 0.8807, conf = 0.65 × 0.8807 × 1.0 = 0.5724
       expect(conf).toBeGreaterThan(threshold);
     });
 
@@ -394,7 +398,7 @@ describe('DynamicThresholdCalculator — Plan G', () => {
       const penaltyFactor = result.penaltyFactor;
       // P(win)=55%, consensus=65%, penalty=1.0
       const conf = DynamicThresholdCalculator.effectiveConfidence(0.65, 0.55, penaltyFactor);
-      // blend = 0.685, conf = 0.65 × 0.685 × 1.0 = 0.445
+      // v2.0.831: blend(0.55) = 0.7749, conf = 0.65 × 0.7749 × 1.0 = 0.5037
       expect(conf).toBeLessThan(threshold);
     });
 
@@ -742,20 +746,21 @@ describe('DynamicThresholdCalculator — Plan G', () => {
     });
 
     it('effectiveConfidence includes boostFactor (4th arg, default 1.0)', () => {
+      // v2.0.831: non-linear blend: blend(0.55) = 0.7749
       // consensus=0.65, pwin=0.55, penalty=0.70, boost=1.15
-      // blend = 0.3 + 0.7×0.55 = 0.685
-      // conf = 0.65 × 0.685 × 0.70 × 1.15 = 0.3585
+      // conf = 0.65 × 0.7749 × 0.70 × 1.15 = 0.4055
+      const blend55 = DynamicThresholdCalculator.pwinBlendFactor(0.55);
       const conf = DynamicThresholdCalculator.effectiveConfidence(0.65, 0.55, 0.70, 1.15);
-      expect(conf).toBeCloseTo(0.65 * 0.685 * 0.70 * 1.15, 3);
+      expect(conf).toBeCloseTo(0.65 * blend55 * 0.70 * 1.15, 3);
       // default boostFactor = 1.0 → backward compatible with 3-arg callers
       const confDefault = DynamicThresholdCalculator.effectiveConfidence(0.65, 0.55, 0.70);
-      expect(confDefault).toBeCloseTo(0.65 * 0.685 * 0.70, 3);
+      expect(confDefault).toBeCloseTo(0.65 * blend55 * 0.70, 3);
     });
 
     it('WINNER-FIRST: a strong winner boost lifts effective conf above threshold', () => {
-      // Scenario: OLR P(win)=13% (blend 0.391), consensus=78%, penalty=1.0,
-      // boost=1.15 (lossStreak winner). Without boost: 0.78×0.391=0.305 < 50%.
-      // With boost: 0.78×0.391×1.15 = 0.351 — still < 50%, so the boost alone
+      // Scenario: OLR P(win)=13% (blend 0.593), consensus=78%, penalty=1.0,
+      // boost=1.15 (lossStreak winner). Without boost: 0.78×0.593=0.462 < 50%.
+      // With boost: 0.78×0.593×1.15 = 0.532 — passes 50% with boost!
       // isn't enough; the combo blend override (separate, tested in combo tests)
       // is what actually unblocks BTC. Here we just verify the boost direction.
       const noBoost = DynamicThresholdCalculator.effectiveConfidence(0.78, 0.13, 1.0, 1.0);
