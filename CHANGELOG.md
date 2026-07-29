@@ -4,6 +4,57 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.822-832: Signal-computation backend + risk profile + smart SL/TP + vol-gate fix + news optimization. 20+ commits covering the transformation from standalone trading system to `mats_app` signal backend, with institutional-grade SL/TP, risk-profile calibration, and root-cause fixes for trading execution failures.
+
+### v2.0.832: Smart SL/TP — S/R zones → 50-candle 頂底 → ATR floor
+
+**New file: `src/analysis/smart-sltp.ts`** — `computeSmartSLTP()` with institutional priority chain:
+1. S/R zones (if available) → most precise SL/TP (buffer scales with strength: strong 0.2%, moderate 0.3%, weak 0.5%)
+2. 50-candle 頂底 (if no S/R) → next best (0.3% buffer beyond ATH/ATL)
+3. ATR (if neither) → last fallback (1.5×ATR for SL, config default for TP)
+4. ATR only ensures SL ≥ 1.5×ATR (prevents noise stop-out), does NOT push TP
+
+**Key design principle: NO R:R hard guarantee.** TP is set at market structure levels. If TP is closer than SL, we take it. 賺少都係賺. The old R:R ≥ 1.6 forced TP to unreachable levels, causing positions to hold until SL hit — turning wins into losses.
+
+**`src/trading/trading-manager.ts`** — replaced old ATR-first + S/R fallback + R:R ≥ 1.6 logic with `computeSmartSLTP`. Old logic had ATR as PRIMARY (but ATR only reflects volatility, not market structure); new logic has S/R as PRIMARY.
+
+**`src/analysis/atr.ts`** — `computeATRSLTP` baseline TP cap raised 5% → 10%.
+
+Attack: 28/28 edge case tests pass (NaN, Infinity, negative prices, S/R at entry, TP inversion, SL==TP, extreme ATR, empty candle data).
+
+### v2.0.831: Risk profile + vol-gate fix + pwinBlendFactor + news optimization + trade-audit filter
+
+**Risk profile (v2.0.822+)**: 3-segment slider (Aggr/Mode/Cons) in UI. `MarketAgentConfig.riskProfile` persisted. Meta-Agent prompt has `RISK PROFILE CALIBRATION` section. Plan G conviction gate applies `adjustedThreshold = clamp(effectiveThreshold × multiplier, 0.30, 0.70)` — aggressive ×0.85, conservative ×1.15.
+
+**PROFIT GUARD v3 (v2.0.830)**: Replaces v2 blind block of all profitable force-closes. Structural break confirmation (SL hit = always confirmed; S/R break = depth-weighted by zone strength). Risk-profile-calibrated profit tolerance (aggressive 2%, moderate 1%, conservative 0.5%). FLIP GUARD v3: FLIP on profitable positions also requires structural confirmation.
+
+**Volatility-adaptive SL floor (v2.0.831)**: Replaces hardcoded 0.5% minimum with `max(0.5%, 1.5×ATR%)`. Entry quality gate checks SL ≥ 1.2×ATR before placing orders.
+
+**pwinBlendFactor (v2.0.831)**: Replaced linear formula with power-based concave blend: `blend = 0.3 + 0.7 × √P(win)`. Strong signals (P(win)=65%) get blend=0.864 (was 0.755 — 25% over-discount). NaN guard returns floor. Exact endpoints: P(win)=0 → 0.3, P(win)=1 → 1.0.
+
+**Vol-gate ATR fallback + root cause fix (v2.0.831)**: Three layers of fixes for "vol=0 → hard block":
+1. ATR fallback when marketState vol=0 (ATR from HL 1h candles)
+2. ATR pre-fetch cache at cycle start (avoids rate-limiter timeout)
+3. **Root cause**: active symbol `marketState.update()` on REST fallback when WebSocket disconnected — `fetchPriceForSymbol` only set local `marketPrice` variable, NOT `marketState`, so `calcVolatility` returned 0
+
+**Meta-Agent CLOSE override (v2.0.831)**: If Meta-Agent sets `closePosition=true`, overrides sub-agent majority. Previously CLOSE required >50% of ALL agents, but sub-agents rarely set closePosition — Meta-Agent's CLOSE was drowned out by HOLDs.
+
+**News fetch optimization (v2.0.831)**: `MULTI_SYMBOL_CAP` raised 5 → 10 for 10 trading markets. Source-level circuit breaker: 3 consecutive failures → 60s cooldown. Prevents 30 requests/cycle when a source is down.
+
+**Trade-audit filter (v2.0.831)**: Filters out pre-v2.0.819 legacy trades. Requires ALL three: marketFeatures + olrPWinAtEntry + non-placeholder thesis. 1584 → 164 fully-instrumented trades (1420 legacy filtered).
+
+**NaN propagation guards (v2.0.831)**: `adjustedThreshold`, `volatilityAdaptiveSlFloor`, `breakDepth` all guarded with `Number.isFinite()` + safe fallbacks.
+
+**ATR cache key case-insensitive (v2.0.831)**: Cache uses `sym.toLowerCase()` as key (was `normalizeSymbol` which only lowercases prefix, preserving asset name case — caused miss when LLM outputs different case).
+
+**tradingMarkets truncation fix (v2.0.831)**: `slice(0, 3)` → `slice(0, 10)` in `setTradingMarkets()` + persistence load path. UI + API already allowed 10; backend silently truncated to 3.
+
+**ANALYSIS_MODE dual (v2.0.831)**: `.env` changed from `true` (signal-only) to `dual` (signal + execution). Backend was never placing orders — all BUY/SELL decisions computed but not executed.
+
+Build: `tsc --noEmit` zero errors, 609/609 tests pass (28 files).
+
+---
+
 ## v2.0.221: Three production bugs found by trade-audit LLM (Fix #5, #6, #7). The audit LLM flagged exploration trades with template-generated theses ("buy exploration on xyz:SILVER @ ..."), duplicate trade records inflating all learning signals, and 81% of records having vague placeholder theses ("[1h: thesis]", "[1h: market win]") that polluted the EXP learning pool.
 
 **Fix #5 — Exploration thesis quality (active-exploration.ts + index.ts + hacp.ts + meta-agent.ts).** The exploration trade path in `index.ts` built its thesis from a hardcoded string template that dumped all market data — identical for every exploration trade, making EXP embeddings useless. The `ActiveExploration.formatContext()` block was never injected into HACP/Meta-Agent context. Four changes: (1) `formatContext()` now labels the block as `EXPLORATION ASSESSMENT (SIGNAL — NOT A THESIS)` with explicit instructions not to copy it into entryThesis; (2) `index.ts` exploration thesis builder replaced with 6 edge-element detectors (OLR P(win) edge, first-passage path edge, S/R proximity, funding rate, OB imbalance, ATR compression) — hard gate: <2 real edge elements → HOLD, no exploration trade without a real thesis; (3) HACP gains `setExplorationContextProvider()` setter, injects the UCB exploration assessment into `rilEnhancedMarketDesc` after the execution lens block; (4) Meta-Agent prompt adds `EXPLORATION CONTEXT HANDLING (CRITICAL)` section with 6 rules. Self-attack fixes: provider accepts `side` parameter (was hardcoded `'buy'` for OLR query), gates on `expConfig.enabled` + `result.applied` (cold-start/disabled → no injection), `expOlrPWin` stored in outer variable (was `try`-scoped).
