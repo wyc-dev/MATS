@@ -732,10 +732,12 @@ export function loadMarketAgentConfig(): Partial<MarketAgentConfig> | null {
             .map(([k, v]) => [k, v as 'buy' | 'sell']),
         )
       : undefined;
-    // v2.0.124: Restore tradingMarkets (array of strings, max 3)
+    // v2.0.124: Restore tradingMarkets (array of strings, max 10)
+    // v2.0.822+: Was max 3 — caused silent loss of markets 4-10 on restart.
+    // UI (uniqueCount > 10) and API (.slice(0, 10)) already allowed 10.
     const rawTradingMarkets = snapshot.tradingMarkets;
     const tradingMarkets: string[] | undefined = Array.isArray(rawTradingMarkets)
-      ? rawTradingMarkets.filter(s => typeof s === 'string' && s.length > 0 && s.length <= 50).slice(0, 3)
+      ? rawTradingMarkets.filter(s => typeof s === 'string' && s.length > 0 && s.length <= 50).slice(0, 10)
       : undefined;
     return {
       tradeMode: snapshot.tradeMode as MarketAgentConfig['tradeMode'],
