@@ -23,6 +23,7 @@ import type {
   MatrixCell,
   PositionState,
   RiskProfile,
+  EdgeReport,
 } from '../types/index.ts';
 import type { PerSymbolConsensus } from '../types/index.ts';
 import type { AggregatedMarketState } from '../data/binance-websocket.ts';
@@ -57,16 +58,18 @@ function mapAction(
 
 /** Build a single matrix cell for a (profile, positionState) combination.
  *  `baseAction`/`baseConviction` come from the moderate consensus mapping;
- *  the profile scales conviction and flags calibration. */
+ *  the profile scales conviction and flags calibration. The optional `edge`
+ *  carries the risk-profile-conditional edge report for this cell. */
 function buildProfileCell(
   profile: RiskProfile,
   baseAction: MatrixCell['action'],
   baseConviction: number,
   rationale: string,
+  edge?: EdgeReport,
 ): MatrixCell {
   switch (profile) {
     case 'moderate':
-      return { action: baseAction, conviction: baseConviction, rationale, calibrated: true };
+      return { action: baseAction, conviction: baseConviction, rationale, calibrated: true, edge };
     case 'aggressive':
       // Placeholder: amplify conviction, more likely to act. Owner refines.
       return {
@@ -74,6 +77,7 @@ function buildProfileCell(
         conviction: Math.min(1.0, baseConviction * 1.3),
         rationale,
         calibrated: false,
+        edge,
       };
     case 'conservative':
       // Placeholder: dampen conviction, more cautious. Owner refines.
@@ -82,32 +86,51 @@ function buildProfileCell(
         conviction: Math.max(0, baseConviction * 0.7),
         rationale,
         calibrated: false,
+        edge,
       };
   }
 }
 
-/** Build the full 3×3 matrix for one asset from its per-symbol consensus. */
+/** Build the full 3×3 matrix for one asset from its per-symbol consensus.
+ *  `profileEdges` (optional) carries per-profile conditional edge reports —
+ *  one EdgeReport per risk profile, applied uniformly to all three position
+ *  states of that profile (edge is a property of the signal, not the
+ *  existing position). If a profile's edge recommendation is 'skip', the
+ *  cell action is forced to 'hold' so the client never acts on a no-edge
+ *  signal. */
 function buildMatrix(
   rawAction: string,
   closePosition: boolean,
   confidence: number,
   rationale: string,
+  profileEdges?: Partial<Record<RiskProfile, EdgeReport>>,
 ): AnalysisMatrix {
   const profiles: RiskProfile[] = ['aggressive', 'moderate', 'conservative'];
   const states: PositionState[] = ['long', 'short', 'flat'];
   const matrix = {} as AnalysisMatrix;
   for (const profile of profiles) {
+    const edge = profileEdges?.[profile];
     matrix[profile] = {} as Record<PositionState, MatrixCell>;
     for (const state of states) {
-      const action = mapAction(rawAction, closePosition, state);
-      matrix[profile][state] = buildProfileCell(profile, action, confidence, rationale);
+      let action = mapAction(rawAction, closePosition, state);
+      // v2.0.833: a 'skip' recommendation forces the cell to 'hold' — the
+      // backend has no edge for this (profile, symbol, regime) and the
+      // client must not act on it. This is the ONLY place edge can mute a
+      // signal; it never fabricates a new action.
+      if (edge?.recommendation === 'skip') action = 'hold';
+      matrix[profile][state] = buildProfileCell(profile, action, confidence, rationale, edge);
     }
   }
   return matrix;
 }
 
 /** Build a complete AssetAnalysis row from the consensus + market state.
- *  Returns null if the symbol has no usable data (skip writing). */
+ *  Returns null if the symbol has no usable data (skip writing).
+ *
+ *  v2.0.833: `edgeReport` (risk-neutral) + `profileEdges` (per-profile
+ *  conditional) are optional — the orchestrator computes them via the Edge
+ *  Validation layer and passes them in. When absent, the matrix is built
+ *  exactly as before (backward compatible). */
 export function buildAssetAnalysis(
   symbol: string,
   psc: PerSymbolConsensus | undefined,
@@ -116,6 +139,8 @@ export function buildAssetAnalysis(
   pwin: number,
   agentsAligned: number,
   agentsTotal: number,
+  edgeReport?: EdgeReport,
+  profileEdges?: Partial<Record<RiskProfile, EdgeReport>>,
 ): AssetAnalysis | null {
   // No consensus for this symbol → emit a neutral matrix (all 'hold').
   const rawAction = psc?.action ?? 'hold';
@@ -166,7 +191,7 @@ export function buildAssetAnalysis(
     suggestedLeverage,
   };
 
-  const matrix = buildMatrix(rawAction, closePosition, confidence, rationale);
+  const matrix = buildMatrix(rawAction, closePosition, confidence, rationale, profileEdges);
 
   return {
     symbol,
@@ -176,5 +201,6 @@ export function buildAssetAnalysis(
     consensus,
     matrix,
     metadata: {},
+    edgeReport,
   };
 }

@@ -18,6 +18,7 @@
 import { createLogger } from '../observability/logger.ts';
 import { OLREngine, FEATURE_NAMES, regimeToOrdinal } from './olr-engine.ts';
 import { safeNum, sanitizeFeatures } from './evolution-utils.ts';
+import { edgeConfig } from '../edge/edge-config.ts';
 
 const log = createLogger({ phase: 'replay-buffer' });
 
@@ -77,7 +78,7 @@ export class ReplayBuffer {
   constructor(olrEngine: OLREngine, config?: Partial<ReplayBufferConfig>) {
     this.olrEngine = olrEngine;
     this.config = {
-      maxCapacity: 5000,
+      maxCapacity: edgeConfig.replayBufferCap, // v2.0.833: 5000 → 10000
       batchSize: 32,
       epochsPerReplay: 1,
       perAlpha: 0.6,

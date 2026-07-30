@@ -23,7 +23,7 @@
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 23 層認知演化管線 — OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + 7 advanced systems v2.0.219 + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227，從每筆交易學習 |
+| **自我演化** | 認知演化管線（v2.0.833: 23→15 active + 1 Edge Validation layer）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration |
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
 | **風險等級客戶端選擇** | 後端運算 3 個風險等級（aggressive/moderate/conservative）嘅訊號矩陣；客戶端按用戶選擇讀取對應格（v2.0.822）|
@@ -66,7 +66,7 @@
 │   • HACP 多模型平行推理（僅關鍵決策點觸發 LLM）                 │
 │   • 6 智能體 + Meta-Agent 仲裁 + Skeptics 邏輯審查             │
 │   • Entry Thesis System + 暗黑心理學 + 結構化辯論 + 加權投票    │
-│   • 23 層自我演化管線（OLR + Shadow + NA + AttnRes + ...）     │
+│   • 認知演化管線（v2.0.833: 15 active + Edge Validation；4 組件已移除）     │
 │   • Plan G Dynamic Threshold [45-55%] + 乘法 Penalty 衰減       │
 │   • SystemGuard（5 層系統級保護）                               │
 ├──────────────────────────────────────────────────────────────┤
@@ -109,7 +109,7 @@ src/
 │   │   v2.0.143: executeTrade() / closeTrade() 統一路由
 ├── risk/                    # 風險引擎 + correlation-budget
 ├── system-guard/            # 5 層保護閘門
-├── evolution/               # 自我演化（23 層認知演化管線：OLR + Shadow + First-Passage + EM + GA + RIL + EXP + NA + AttnRes + Anti-Pattern + Combo WR + P(win) Discount + 7 advanced systems v2.0.219 + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227）
+├── evolution/               # 自我演化（認知演化管線：OLR + Shadow + First-Passage + EM + GA + RIL + EXP + NA + AttnRes + Anti-Pattern + Combo WR + P(win) Discount + Close-Context Learning v2.0.226 + Plan G v2.0.227。v2.0.833 移除 temporal-attention/cross-symbol/reward-shaping/world-model；暫停 active-exploration）
 │   ├── embeddings.ts        # Transformers.js MiniLM 384-d 向量（in-process, singleton v2.0.216）
 │   ├── thesis-experience.ts # EXP 理據組合歷史勝率（方向過濾 + lesson persistence v2.0.207 #E）
 │   ├── experience-digester.ts # A2A 經驗消化（per-direction winRate + LessonStatement v2.0.207）
@@ -120,22 +120,26 @@ src/
 │   ├── attnres-trade-embedder.ts # AttnRes trade embedder（anti-collapse v2.0.217）
 │   ├── anti-pattern-tracker.ts # Anti-Pattern clustering（failure lessons, v2.0.207 #F）
 │   ├── replay-buffer.ts     # Experience Replay Buffer（PER, mini-batch retrain, v2.0.219）
-│   ├── bayesian-olr.ts     # Bayesian OLR wrapper（MC Dropout uncertainty, v2.0.219）
-│   ├── temporal-attention.ts # Temporal Attention（cross-trade regime learning, v2.0.219）
-│   ├── cross-symbol-backbone.ts # Cross-Symbol shared+residual（transfer learning, v2.0.219）
-│   ├── reward-shaping.ts   # Reward Shaping（5-component risk-adjusted, v2.0.219）
-│   ├── active-exploration.ts # Active Exploration（UCB + info gain, v2.0.219）
-│   ├── world-model.ts     # World Model（latent dynamics + rollout, v2.0.219）
+│   ├── bayesian-olr.ts     # Bayesian OLR wrapper（MC Dropout uncertainty, v2.0.219；paused w/ exploration v2.0.833）
+│   ├── active-exploration.ts # Active Exploration（UCB + info gain, v2.0.219；PAUSED v2.0.833: ACTIVE_EXPLORATION_ENABLED=false）
 │   ├── reason-analytics.ts  # RIL（per-direction win rates + direction-filtered similar trades v2.0.176）
 │   ├── evolution-utils.ts   # 共享 utils（safeNum v2.0.218, wilsonScore, computeVectorConditionalWinRate + rmsNormKeys + softmaxWeightedWR v2.0.211）
+│   │   # v2.0.833 REMOVED (0 inference call sites): temporal-attention.ts, cross-symbol-backbone.ts, reward-shaping.ts, world-model.ts
 │   ├── direction-audit.ts   # LLM 交易記錄審計（v2.0.180）
 │   └── system-engineer.ts   # 自主代碼工程師 Agent（v2.0.182）
 ├── analysis/                # sentiment · S/R · ATR（momentum-adaptive SL v2.0.207 #C）· planck-chaos · options · news
 ├── market-agent/            # 自動 pair 選擇（9 DEX, 416 assets, 類別過濾）
 ├── data/                    # Hyperliquid + Binance WebSocket
 ├── services/                # v2.0.822: Analysis Matrix + Supabase writer
-│   ├── analysis-matrix.ts   # buildAssetAnalysis()：共識 → 3×3 風險矩陣（v2.0.822）
+│   ├── analysis-matrix.ts   # buildAssetAnalysis()：共識 → 3×3 風險矩陣（v2.0.822）+ edgeReport 注入（v2.0.833）
 │   └── supabase-writer.ts   # SupabaseAnalysisWriter：每 cycle 寫入 asset_analyses 表（v2.0.822+823）
+├── edge/                    # v2.0.833: Edge Validation Layer（alpha 測謊機）
+│   ├── edge-config.ts       # Zod env var：threshold + weight + sample cap 10000
+│   ├── edge-calculator.ts   # Task 1A：5-component regime-weighted edgeScore
+│   ├── execution-tracker.ts # Task 1B：slippage + funding → 可實現 PnL 校準
+│   ├── stability-monitor.ts  # Task 1C：perturbation + cross-time 穩定性
+│   ├── risk-profile-edge-store.ts # MiniLM 向量 DB：per-profile conditional edge
+│   └── backtest-validation.ts # Sharpe/Sortino/Calmar/PF/bootstrap/DSR/walk-forward
 ├── api-server.ts            # REST + SSE (:3456) + static UI（legacy）
 └── index.ts                 # 系統 orchestrator（決策循環 + 矩陣寫入 ~line 6478）
 ui/                          # Legacy React + Vite dashboard（已由 mats_app 取代）
@@ -544,7 +548,7 @@ FINAL CONFIDENCE:
 
 ## 自我演化系統
 
-MATS 嘅核心競爭力係 **23 層認知演化管線**——每筆交易結果都會餵回 23 個獨立學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。以下逐層詳述：
+MATS 嘅核心競爭力係**認知演化管線**（v2.0.833: 23→15 active + 1 Edge Validation layer）——每筆交易結果都會餵回學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。v2.0.833 移除咗 4 個 0-inference 組件（temporal-attention / cross-symbol / reward-shaping / world-model）同暫停 active-exploration。以下逐層詳述：
 
 ### OLR — Online Logistic Regression（`olr-engine.ts`）
 
@@ -715,7 +719,7 @@ SL cap 5%, TP cap 10%, TP min 0.3%。
 
 **Combo WR 跳過執行 loss**：`comboTracker.trackTrade()` 只喺 `isWin || learningWeight ≥ 0.5` 時調用。Tight-SL loss + thesis invalidation loss（weight=0.3）被排除，唔拖低 (symbol×side×regime) 嘅 combo WR。
 
-**Advanced learning PnL 縮放**：`feedAdvancedLearning` 嘅 `pnl` + `pnlPct` 乘以 `learningWeight`。AttnRes reward-weighted regression、temporal attention、cross-symbol backbone、world model 都按權重學習。
+**Advanced learning PnL 縮放**：`feedAdvancedLearning` 嘅 `pnl` + `pnlPct` 乘以 `learningWeight`。AttnRes reward-weighted regression 按 weight 學習。（v2.0.833: temporal attention / cross-symbol / world model 已移除，`feedAdvancedLearning` 而家只 feed replay buffer。）
 
 ---
 
@@ -853,6 +857,42 @@ Plan G（6 小時 idle 後）：
 **Post-Review LLM**：每筆交易關閉後，fire-and-forget 調用 DeepSeek V4 Flash 生成 2-4 句賽後檢討，分析 MAE/MFE + entry/exit thesis + close reason，提出如何改善。
 
 **持久化**：所有新欄位（entryThesis, exitThesis, postReview, minValueReached, maxValueReached, originalStopLossPrice, originalTakeProfitPrice）持久化到 `portfolio-state.json`，重啟不丟失。
+
+---
+
+## Edge Validation Layer（v2.0.833 — alpha 測謊機）
+
+**核心定位**：Edge 系統唔係 alpha 嘅來源，係 alpha 嘅測謊機。佢唔會製造盈利，佢會令系統知道「有冇 edge、邊度有 edge」。盈利 = alpha × 執行 × 穩定性；Edge 層只量化 alpha + 強制穩定性。
+
+**6 個組件**（`src/edge/`）：
+
+| 組件 | 檔案 | 作用 |
+|:-----|:-----|:-----|
+| Edge Config | `edge-config.ts` | 所有 threshold + weight 經 Zod env var。Regime-aware 5-component 加權。Sample cap 10000。與 `src/config/` 分離（edge 控制訊號質量量度，risk 控制後端帳戶） |
+| Edge Calculator (1A) | `edge-calculator.ts` | 5-component regime-weighted edgeScore：directionalEdge（shadow WR）+ learnedEdge（OLR 校準）+ comboEdge（Wilson LB）+ pathEdge（First-Passage）+ realizedEdge（WR×Sharpe）。Confidence label 按最少 sample。低 confidence 永遠唔可以 `trade`（最多 `caution`）。`Object.hasOwn` 防原型污染。`skipEdgeReport` 返回 `caution`（唔係 `skip`）—冷啟動唔可以 block |
+| Execution Tracker (1B) | `execution-tracker.ts` | 記錄真實 slippage + funding per (symbol, side)。`calibratePnlLabel()` 將理論 PnL → 可實現 PnL。Cold-start passthrough（\u003c20 sample 唔校準）。Ring buffer bounded。Side-aware slippage（buy: fill\u003esignal=bad；sell: fill\u003csignal=bad） |
+| Stability Monitor (1C) | `stability-monitor.ts` | ±5% perturbation test + cross-time consistency。Stability factor [0.5, 1.0] 乘 conviction。純數學，毫秒級 |
+| Risk-Profile Edge Store | `risk-profile-edge-store.ts` | MiniLM 384-d 向量 DB。Ring buffer 10k。Brute-force cosine over (market + profile) embeddings。Per-profile conditional edge → 3 個 edgeScore per asset。Wilson LB + 30 日 time-decay。Cold-start neutral 0.5 |
+| Backtest Validation | `backtest-validation.ts` | 計量金融標準：Sharpe / Sortino / Calmar / Profit Factor / Expectancy / Max Drawdown / Information Ratio vs buy-and-hold。統計顯著性：stationary bootstrap p-value（Politis & Romano 1994）+ Deflated Sharpe Ratio（Bailey & López de Prado 2014，修正 multiple testing）+ walk-forward 70/30 IS/OOS split |
+
+**整合**：`buildAssetAnalysis()` 接受 `edgeReport`（風險中性）+ `profileEdges`（per-profile 條件化）。`MatrixCell.edge?` + `AssetAnalysis.edgeReport?` 加入 types。`skip` recommendation 強制 cell action = `hold`（client 唔執行無 edge 訊號）。`caution` 唔強制 hold（系統可以 bootstrap）。
+
+**冷啟動安全**：零 sample → `edgeScore=0.5`（中性）+ `recommendation=caution`（唔係 skip）。全新系統可以交易去累積 sample。無知 ≠ 無 edge 嘅證據。
+
+**安全修復（94 attack tests）**：原型污染（`Object.hasOwn`）、冷啟動死鎖（`skipEdgeReport=caution`）、confidence bypass（低 confidence 永遠唔 trade）、ExecutionTracker DoS（bounded `recent.length`）、store 原型污染（load 驗證）。
+
+**v2.0.833 移除嘅組件**（training wired 但 0 inference call site，grep 證實）：
+
+| 組件 | 移除原因 |
+|:-----|:---------|
+| `world-model.ts` | `addSample` 用 close-time features 同時做 current + next → identity transition model → 0 預測能力。`predict`/`rollout` 0 call |
+| `reward-shaping.ts` | `shape()` 0 call。`learningWeight`（v2.0.226）已覆蓋關鍵 case（執行損失降權） |
+| `cross-symbol-backbone.ts` | `query()` 0 call。OLR backfill 已解決 cold-start |
+| `temporal-attention.ts` | `retrieve()` 0 call。同 AttnRes cycle-history 重疊，保留更成熟嘅 AttnRes |
+
+**v2.0.833 暫停**：`active-exploration`（`ACTIVE_EXPLORATION_ENABLED=false`）。盲目 UCB 探索喺冇 edge 驗證下危險。等 Edge Report 證明 baseline 有 edge 先重啟。
+
+**Sample cap 提升至 10000**：`trade-history` 5000→10000、`replay-buffer` 5000→10000、`pattern-tag` 500→5000、`shadow-recent` 50→200、`olr-recent` 20→100、`audit-recent` 20→100、`em-insight` 500→5000、`EXP_MAX_RECORDS` 1000→10000。全部經 `edgeConfig` env var。
 
 ---
 
