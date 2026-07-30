@@ -4,6 +4,60 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.833: Edge Validation Layer — alpha "lie detector" + dead-component pruning + sample-cap lift + 94 attack tests. First time the system can quantitatively answer "do we have edge?". Adds 6 new `src/edge/` modules (~1,400 lines), removes 4 inference-disconnected components, lifts all sample-size caps to 10,000, and fixes 5 security vulnerabilities found by adversarial attack testing.
+
+### New: `src/edge/` module (6 files, ~1,400 lines)
+
+**`src/edge/edge-config.ts`** — All edge thresholds + weights via Zod-validated env vars. Regime-aware 5-component weights (trending/mean_reverting/chaotic/unknown). Sample-size caps, stability thresholds, backtest validation params. Separated from `src/config/` (edge config controls signal quality measurement feeding the matrix; risk config controls the backend's own account).
+
+**`src/edge/execution-tracker.ts` (Task 1B)** — Records realised slippage + funding per (symbol, side). `calibratePnlLabel()` converts theoretical PnL → realisable PnL (theoretical − slippage − funding). Cold-start safe (<20 samples = passthrough, no harm). Dedup by ts (double-close paths safe). `computeSlippageBps()` side-aware (buy: fill>signal=bad; sell: fill<signal=bad). Ring buffer bounded by `execLookback` (200). `getStats().samples` returns `recent.length` (bounded, not unbounded counter — fixes DoS vector).
+
+**`src/edge/stability-monitor.ts` (Task 1C)** — ±5% perturbation test (nudge features, recompute action, count flips) + cross-time consistency (direction flips over last N cycles). Stability factor [0.5, 1.0] multiplies conviction. Pure math, no LLM/network. `perturbFeatures()` multiplicative for |v|>1e-6, additive for near-zero (avoids sign flip past zero = different regime, not noise).
+
+**`src/edge/edge-calculator.ts` (Task 1A)** — 5-component regime-weighted edgeScore: directionalEdge (shadow WR) + learnedEdge (OLR calibrated) + comboEdge (Wilson LB) + pathEdge (First-Passage) + realizedEdge (WR × Sharpe). Weights per-regime, sum to 1.0. Confidence label from min sample across components. `applyConfidence('low')` pulls toward 0.5 half-distance; `recommendFromScore` with low confidence NEVER returns 'trade' (max 'caution') — fixes false-confidence on zero-sample systems. `Object.hasOwn` defends against prototype-pollution crash (`regime='__proto__'` would return Object.prototype, bypass `??` fallback, destructuring non-tuple → TypeError). `skipEdgeReport` returns CAUTION not skip (cold-start must not block — ignorance ≠ evidence of no-edge). `realizedStats()` helper for rolling WR + Sharpe.
+
+**`src/edge/risk-profile-edge-store.ts`** — MiniLM 384-d vector DB for risk-profile-conditional edge. Ring buffer 10k. Brute-force cosine over (market + profile) embeddings. `buildEdgeText()` structured text input (MiniLM is sentence-trained, raw numeric vectors underperform). `recordTrade` idempotent by ts+symbol+side. `query` returns neutral 0.5 on cold-start. Wilson LB + 30-day time-decay weighted WR blend. `load` filters non-finite embeddings + validates riskProfile enum.
+
+**`src/edge/backtest-validation.ts`** — Industry-standard quantitative-finance metrics: Sharpe, Sortino, Calmar, Profit Factor, Expectancy, Max Drawdown, Information Ratio vs buy-and-hold. Statistical significance: stationary bootstrap p-value (Politis & Romano 1994, block size √n). Deflated Sharpe Ratio (Bailey & López de Prado 2014, corrects multiple-testing). Walk-forward 70/30 IS/OOS split + overfit ratio. `buildValidationReport` groups by (symbol, regime), marks 'edge' (p<0.05 AND DSR>0.5 AND Sharpe>0.5 AND PF>1.5 AND IR>0) / 'no-edge' / 'insufficient' (<30 trades). `normalCDF` Abramowitz & Stegun approximation.
+
+### Removed: 4 dead components (Task 2 Phase 1)
+
+Removed from `index.ts` (imports, fields, constructors, loads, feeds, saves, stats): `world-model.ts`, `reward-shaping.ts`, `cross-symbol-backbone.ts`, `temporal-attention.ts`. All 4 had training wired (`feedAdvancedLearning` continuously fed them) but ZERO inference call sites in the decision pipeline (grep-verified: `shape()` / `query()` / `retrieve()` / `predict`/`rollout()` = 0 calls). The system was burning CPU + disk training models whose output was never read.
+
+**Why not "complete the wiring" instead of removing**: each had a design defect beyond just missing wiring — world-model used close-time features as both current + next state (identity transition = zero predictive power); reward-shaping's 5 components were hand-tuned heuristics (not learned, and `learningWeight` v2.0.226 already covers the key case); cross-symbol overlapped with per-symbol OLR which already has cold-start backfill; temporal-attention overlapped with AttnRes cycle-history (both learn history→current attention, keep the more-tested one). Files remain on disk (not deleted) for git-history preservation + Task 4 cherry-pick.
+
+### Paused: active-exploration (Task 2 Phase 2)
+
+`active-exploration` default `enabled` → `false` via `ACTIVE_EXPLORATION_ENABLED=true` env override. Blind UCB exploration without a validated edge is dangerous — the Edge Report (Task 1) must first prove baseline edge before purposeful exploration is re-enabled. `bayesian-olr` kept (has other call sites).
+
+### Lifted: sample-size caps to 10,000
+
+- `trade-history.ts` `maxEntries` 5000 → `edgeConfig.tradeHistoryMax` (10000)
+- `replay-buffer.ts` `maxCapacity` 5000 → `edgeConfig.replayBufferCap` (10000)
+- `pattern-tag-tracker.ts` 500 → `edgeConfig.patternTagMax` (5000)
+- `shadow-trade-engine.ts` recentResults 50 → `edgeConfig.shadowRecent` (200)
+- `olr-engine.ts` recentTrades display 20 → `edgeConfig.olrRecentDisplay` (100)
+- `direction-audit.ts` 20 → `edgeConfig.auditRecent` (100)
+- `cycle-summary.ts` insightVectors 500 → `edgeConfig.emInsightVectors` (5000)
+- `EXP_MAX_RECORDS` env default 1000 → 10000 (.env change)
+- `agent-outcomes.ts` already 10000 ✅
+
+### Wired: edge reports into analysis matrix
+
+`buildAssetAnalysis()` accepts `edgeReport` (risk-neutral) + `profileEdges` (per-profile conditional). `MatrixCell.edge?` + `AssetAnalysis.edgeReport?` added to types. `skip` recommendation forces cell action to `hold` (client never acts on no-edge signal). `caution` does NOT force hold (system can bootstrap). Backward compatible (optional params, no edge → no field).
+
+### Fixed: 5 security vulnerabilities (adversarial attack testing, 94 tests)
+
+1. **Prototype pollution crash** — `regime='__proto__'` → `weights['__proto__']` returned Object.prototype (truthy) → `??` fallback skipped → destructuring non-5-tuple → TypeError crash. Fix: `Object.hasOwn(edgeConfig.weights, key)`.
+2. **Cold-start deadlock** — `skipEdgeReport` returned `recommendation:'skip'` + `edgeScore:0` → matrix forced `hold` → brand-new system never trades → never accumulates samples → permanent skip. Fix: returns `caution` + `0.5` (neutral). Ignorance ≠ evidence of no-edge.
+3. **Confidence bypass** — `applyConfidence('low')` pulled 1.0→0.75 (half-distance), but 0.75 ≥ 0.55 trade threshold → zero-sample system could `trade`. Fix: `recommendFromScore` with `confidence==='low'` never returns `trade` (max `caution`).
+4. **ExecutionTracker DoS** — `getStats().samples` returned unbounded counter (100k records showed 100000) → upstream could over-trust. Fix: returns `recent.length` (bounded by ring buffer).
+5. **RiskProfileEdgeStore prototype pollution** — `load([{symbol:'__proto__',...}])` could pollute Object.prototype. Fix: type validation + `Array.isArray` + finite-embedding filter on load.
+
+Build: `tsc --noEmit` zero errors, 94/94 edge attack tests pass (single-threaded, no RAM blowup), 609/609 full suite pass (28 files), `cd ui && npx vite build` passes.
+
+---
+
 ## v2.0.822-832: Signal-computation backend + risk profile + smart SL/TP + vol-gate fix + news optimization. 20+ commits covering the transformation from standalone trading system to `mats_app` signal backend, with institutional-grade SL/TP, risk-profile calibration, and root-cause fixes for trading execution failures.
 
 ### v2.0.832: Smart SL/TP — S/R zones → 50-candle 頂底 → ATR floor

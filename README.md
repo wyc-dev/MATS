@@ -2,7 +2,7 @@
 
 **9 AI agents debate every trade. A Skeptics agent vetoes bad ones. A System Engineer agent autonomously fixes its own bugs. The system learns from every trade outcome — not just whether it won or lost, but WHY it won or lost, under WHAT market conditions, and feeds that back into the next decision.**
 
-A dedicated Skeptics agent stress-tests every position against historical experience data. The system self-evolves via a **23-layer cognitive evolution pipeline**: online logistic regression (OLR) → shadow trading → first-passage path-risk → EM cycle chains → genetic algorithms → RIL pattern clustering → **Numeric Autoencoder** (learned non-linear market embedding) → **AttnRes cycle-history retrieval** (Kimi K3 attention residual transfer) → **dual pseudo-query specialization** (decision vs execution) → **anti-pattern memory** (failure lesson clustering) → **conditional WR soft gate** (code-level enforcement) → **combo WR gate** (symbol×side×regime Wilson LB) → **OLR P(win) × consensus discount** (multiplicative confidence scaling) → **execution-lens SL/TP** (stop-out-trained direct SL/TP control) → **experience replay buffer** (prioritized mini-batch retrain) → **Bayesian OLR** (MC Dropout uncertainty quantification) → **temporal attention** (cross-trade regime learning) → **cross-symbol shared backbone** (transfer learning) → **reward shaping** (5-component risk-adjusted reward) → **active exploration** (UCB + information gain) → **world model** (latent dynamics + rollout planning) → **close-context-aware learning** (closeReason + slNarrowed weighted learning) → **Plan G dynamic threshold** (5-factor hysteresis [45-55%] + multiplicative penalty decay).
+A dedicated Skeptics agent stress-tests every position against historical experience data. The system self-evolves via a **cognitive evolution pipeline** (v2.0.833: 15 active layers + 1 Edge Validation layer — 4 dead components pruned). The pipeline learns: online logistic regression (OLR) → shadow trading → first-passage path-risk → EM cycle chains → genetic algorithms → RIL pattern clustering → **Numeric Autoencoder** (learned non-linear market embedding) → **AttnRes cycle-history retrieval** (Kimi K3 attention residual transfer) → **dual pseudo-query specialization** (decision vs execution) → **anti-pattern memory** (failure lesson clustering) → **conditional WR soft gate** (code-level enforcement) → **combo WR gate** (symbol×side×regime Wilson LB) → **OLR P(win) × consensus discount** (multiplicative confidence scaling) → **execution-lens SL/TP** (stop-out-trained direct SL/TP control) → **experience replay buffer** (prioritized mini-batch retrain) → **close-context-aware learning** (closeReason + slNarrowed weighted learning) → **Plan G dynamic threshold** (5-factor hysteresis [45-55%] + multiplicative penalty decay) → **⭐ Edge Validation layer** (v2.0.833: alpha "lie detector" — quantifies whether each signal has genuine statistical edge via Sharpe/Sortino/bootstrap/DSR/walk-forward).
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -70,7 +70,7 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 - **🤖 Terminal Agent + Root Command Prompt** — users type natural language trading preferences (e.g., "only trade on Monday GMT"). LLM integrates them into a Root Command Prompt. Before each cycle, rules are checked — if a rule fails, the entire cycle is aborted (no token cost). After the Meta-Agent decides, the Terminal Agent verifies that the decision matches user preferences.
 - **🧠 Entry Thesis System** — every trade needs a validated `[1h: ...] [1d: ...]` rationale. Meta-Agent generates it; Skeptics stress-test it.  No thesis → no trade.
 - **🛡️ Skeptics veto** — an AI stress-tests every position's logic, data consistency, and dark-psychology (whale manipulation?) before execution. Approve-first: rejects only on concrete money-losing flaws. Dark-psychology check escalates from LIGHTWEIGHT to **MANDATORY** when |momentum| > 2% — must articulate a specific reversal catalyst or reject.
-- **🧬 23-Layer Cognitive Evolution** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, **which historical cycles** are most relevant right now, and **what the next market state will look like** — through a stack of learned representations (see below).
+- **🧬 Cognitive Evolution Pipeline** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, **which historical cycles** are most relevant right now — through a stack of learned representations (15 active layers + 1 Edge Validation layer, v2.0.833).
 - **🔬 Numeric Autoencoder** — a pure-TypeScript MLP (11→16→8 encoder + contrastive loss) learns a non-linear embedding of market conditions. "Similar market conditions" is no longer handcrafted min-max cosine — it's a learned representation where "similar" means "historically led to similar outcomes." Cold-start safe: min-max fallback until 200+ samples + validation pass.
 - **🌀 AttnRes Cycle-History Retrieval** — transferred from Kimi K3's Attention Residuals (arXiv 2603.15031). The conditional win-rate candidate is no longer a single current snapshot — it's a **softmax-weighted blend over 80 cycles of history + entry-time state**, with a learned pseudo-query deciding which historical periods matter most right now. Entry-time regime retains persistent weight (K3 embedding persistence). Block AttnRes compresses 80 cycles → 8 blocks for O(Nd) memory.
 - **⚔️ Dual Pseudo-Query Specialization** — two learned queries per symbol, inspired by K3's pre-attention vs pre-MLP layer specialization: **wDecision** (broad receptive field, trained on trade PnL) for conditional win-rate + thesis context; **wExecution** (sharp/recent-biased, trained on SL/TP stop-out outcomes) for SL/TP survival context.
@@ -80,6 +80,7 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 - **🎯 Combo WR Gate** (v2.0.221) — tracks (symbol × side × regime) win rate with Wilson score lower bound. Injects PRE-thesis warning into Meta-Agent. WR<25% → +50% conviction penalty. Stacks with conditional WR + loss-streak gates.
 - **🔢 OLR P(win) × Consensus Discount** (v2.0.224) — multiplicative confidence discount: `effectiveConfidence = consensus × (0.3 + 0.7 × P(win))`. P(win)=29% × 90% consensus = 45% → HOLD. Fixes the gap where overconfident agents bypassed the additive threshold raise. Cold-start safe (no OLR data → no discount).
 - **🎯 Plan G Dynamic Threshold** (v2.0.227) — the conviction gate's threshold dynamically adjusts [45-55%] based on 5 objective performance factors (rolling WR, idle cycles, drawdown, rolling Sharpe, regime) with hysteresis. Penalties are **multiplicative** (not additive to threshold) with automatic idle-based decay over 30 cycles. Fixes the death spiral where additive penalties (+30%) stacked with P(win) discount to make trading mathematically impossible (44.5% vs 80%). 6 fairness guarantees: multi-factor balance, symmetric design, sample-size requirement, hysteresis, hard cap, fact-driven.
+- **⭐ Edge Validation Layer** (v2.0.833) — the system's first **alpha "lie detector"**. For the first time, MATS can quantitatively answer "do we have edge?". A 5-component regime-weighted edgeScore (directionalEdge from shadow WR + learnedEdge from OLR + comboEdge from Wilson LB + pathEdge from First-Passage + realizedEdge from rolling WR×Sharpe) per (symbol × regime), with perturbation + cross-time stability gating. Risk-profile-conditional edge via MiniLM vector DB. Industry-standard backtest validation: Sharpe, Sortino, Calmar, Profit Factor, bootstrap p-value (Politis & Romano 1994), Deflated Sharpe Ratio (Bailey & López de Prado 2014), walk-forward IS/OOS split, Information Ratio vs buy-and-hold. Cold-start safe: zero trades → `caution` (never `skip` — the system must be able to trade to accumulate samples).
 - **🧠 Direction-aware learning** — all learning systems filter by direction: SELL candidates only match SELL history, BUY only matches BUY. Per-direction win rates tracked everywhere. Counter-momentum trades require a specific named catalyst — "could reverse" is not enough.
 - **⚡ HACP protocol** — Terminal Agent checks rules → 5 sub-agents think in parallel (staggered, 60s deadline race), Skeptics audits, Meta-Agent arbitrates, weighted voting consensus, Terminal Agent verifies. 120s hard timeout → HOLD.
 - **💰 Capital preservation first** — every error path defaults to HOLD. SystemGuard (5 layers). Notional-based fees. SL/TP hard safety layers. Configurable max portion + drawdown + daily-loss limits.
@@ -99,7 +100,8 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 │   • HACP protocol (parallel multi-model inference)           │
 │   • 6-agent system + Meta-Agent arbitration + Skeptics gate  │
 │   • Entry Thesis System + dark psychology + weighted voting  │
-│   • Self-evolution (23-layer cognitive evolution pipeline)   │
+│   • Self-evolution (cognitive evolution pipeline:            │
+│     15 active layers + 1 Edge Validation, v2.0.833)          │
 │   • Numeric Autoencoder (learned market-condition embedding) │
 │   • AttnRes cycle-history retrieval (K3 dual pseudo-query)   │
 │   • Anti-pattern memory (failure lesson clustering)          │
@@ -108,18 +110,18 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 │   • OLR P(win)×consensus discount (multiplicative, v2.0.224) │
 │   • Execution-lens SL/TP (stop-out-trained direct control)   │
 │   • Replay buffer (PER mini-batch retrain, v2.0.219)         │
-│   • Bayesian OLR (MC Dropout uncertainty, v2.0.219)          │
-│   • Temporal attention (cross-trade regime, v2.0.219)        │
-│   • Cross-symbol backbone (shared+residual, v2.0.219)        │
-│   • Reward shaping (5-component risk-adjusted, v2.0.219)     │
-│   • Active exploration (UCB + info gain, v2.0.219)           │
-│   • World model (latent dynamics + rollout, v2.0.219)        │
 │   • Close-Context Learning (closeReason+slNarrowed, v2.0.226)│
-│   • Plan G dynamic threshold (5-factor [45-55%] + penalty   │
-│     decay, v2.0.227)                                        │
+│   • Plan G dynamic threshold (5-factor [45-55%] + penalty    │
+│     decay, v2.0.227)                                         │
+│   • ⭐ Edge Validation (v2.0.833): edge-calculator +         │
+│     execution-tracker + stability-monitor + risk-profile     │
+│     edge-store + backtest-validation (Sharpe/DSR/walk-fwd)   │
 │   • RIL Reason Intelligence (pattern clustering + similar    │
 │     trade retrieval + subtle diff LLM analysis)              │
 │   • Trade Incident Panel (MAE/MFE + exitThesis + post-review)│
+│   ⛔ v2.0.833 REMOVED (0 inference call sites): temporal-    │
+│      attention, cross-symbol-backbone, reward-shaping,       │
+│      world-model. ⚠️ PAUSED: active-exploration, bayesian-olr│
 ├──────────────────────────────────────────────────────────────┤
 │   Layer 3: Execution (TypeScript Runtime)                    │
 │   • Hyperliquid WebSocket + REST (9 perpetual DEXs)          │
@@ -178,78 +180,21 @@ Each cycle (1-10 min, user-configurable): Terminal Agent checks rules → 5 sub-
 | **Experience Digester** | `experience-digester.ts` | LLM digests each trade into a LessonStatement (rootCause + lesson + categories). Lesson persists to ThesisExperienceRecord. `classifyCandidate` uses per-direction winRate. |
 | **Trade Audit** | `direction-audit.ts` | LLM-powered trade record audit. Every 2 cycles. Uses vector-conditional win rate (not raw per-symbol WR). Known-fixed issues list prevents repeat diagnosis. |
 | **System Engineer** | `system-engineer.ts` | Autonomous LLM code engineer. Every 2 cycles: reads SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md + trade records + source code, generates fix, applies it, runs tsc+test, auto-rollbacks on failure, auto-commits on success. |
-| **Replay Buffer** | `replay-buffer.ts` | v2.0.219: Prioritized Experience Replay (Schaul et al. 2015). Ring buffer (capacity 5000) stores all trade records. `replayEpoch()` samples mini-batch via PER (`p_i = priority_i^α / Σ`) and re-feeds OLR with IS weights correcting bias. Breaks temporal correlation between sequential trades — improves sample efficiency 3-5×. Cold-start guard (< 10 samples → no-op). |
-| **Bayesian OLR** | `bayesian-olr.ts` | v2.0.219: MC Dropout uncertainty estimation (Gal & Ghahramani 2016). N=30 forward passes with feature dropout → mean, std, 90% CI. Epistemic uncertainty [0,1] distinguishes "50% because genuinely uncertain" vs "50% because well-calibrated." Cold-start safe (< minSamples → point estimate). Seeded RNG for reproducibility. |
-| **Temporal Attention** | `temporal-attention.ts` | v2.0.219: Learns regime transitions by attending ACROSS trades (unlike AttnRes which attends within a single trade's rationales). Pseudo-query w (zero-init) attends over 50-trade sequence. Anti-collapse: adaptive temperature + label smoothing (mirrors v2.0.217). Reward-weighted regression. Learns "after 3 losses in low-vol, next trade likely fails." |
-| **Cross-Symbol Backbone** | `cross-symbol-backbone.ts` | v2.0.219: Multi-task learning — `w_symbol = w_shared + δ_symbol`. Shared backbone learns general patterns from ALL symbols; per-symbol residuals learn symbol-specific deviations. Cold-start symbols (e.g. SKHX with 5 samples) use shared backbone only (transfer learning from well-sampled symbols like CL with 138). Falls back to OLR when shared untrained. |
-| **Reward Shaping** | `reward-shaping.ts` | v2.0.219: 5-component shaped reward replaces binary sign(pnl): PnL magnitude (40%) + drawdown penalty (20%) + Sharpe component (15%) + hold-time penalty (10%) + recovery bonus (15%). Bounded [-1,1]. Rolling Sharpe from PnL history. Feeds AttnRes/CHR/temporal-attention with risk-adjusted reward instead of raw win/loss. |
-| **Active Exploration** | `active-exploration.ts` | v2.0.219: UCB exploration — `score = pWin + c·sqrt(ln(N_total)/N_symbol)`. Information-gain bonus when Bayesian uncertainty high. Annealing: exploration decays as system matures. Soft gating (never hard-blocks — preserves user operation space). Under-sampled symbols get exploration boost. |
-| **World Model** | `world-model.ts` | v2.0.219: Lightweight Dreamer-style latent dynamics. 14→8-d encoder (tanh bounded) + transition model (predict next latent from current + action) + reward predictor (predict pWin). Rollout N steps forward for "latent imagination" planning — simulate entry decisions without actually trading. Cold-start safe (< 50 samples → 0.5 defaults). |
+| **Replay Buffer** | `replay-buffer.ts` | v2.0.219: Prioritized Experience Replay (Schaul et al. 2015). Ring buffer (capacity 10000 as of v2.0.833) stores all trade records. `replayEpoch()` samples mini-batch via PER (`p_i = priority_i^α / Σ`) and re-feeds OLR with IS weights correcting bias. Breaks temporal correlation between sequential trades — improves sample efficiency 3-5×. Cold-start guard (< 10 samples → no-op). |
 | **Close-Context Learning** | `index.ts` computeLearningWeight + `portfolio.ts` | v2.0.226: How a position is closed is an important factor in the loss. `computeLearningWeight(closeReason, slNarrowed, isWin)` scales learning by close context: wins=1.0, real SL hit=1.0, tight-SL loss (SL narrowed post-entry)=0.3, thesis invalidation=0.3, manual=0.5, consensus=0.5. OLR `feedTrade` receives `slNarrowed`+`weightMultiplier` to scale gradient. Combo WR skips execution-caused losses (weight<0.5). TradeRecord captures `originalStopLossPrice`/`finalStopLossPrice`/`slNarrowed`. Prevents tight-SL losses from contaminating learning with "these market conditions→loss" when the entry was fine. |
 | **Plan G Dynamic Threshold** | `analysis/dynamic-threshold.ts` | v2.0.227: `DynamicThresholdCalculator` replaces the additive penalty-on-threshold model with a unified multiplicative system. `effectiveConfidence = consensus × pwinBlendFactor × penaltyFactor`, `dynamicThreshold = 50% + (totalScore × 0.5%)` → [45%, 55%]. 5-factor hysteresis scoring (Rolling WR, Idle cycles, Drawdown, Rolling Sharpe, Regime), each [-2,+2], capped at [-10,+10]. Penalty decay: `penaltyFactor = 1.0 - min(decayedPenalty, 0.30)`, linear decay over 30 idle cycles → system self-recovers. 6 fairness guarantees: multi-factor balance, symmetric design, sample-size requirement (≥10), hysteresis, hard cap [45-55%], fact-driven. Fixes death spiral (44.5% vs 80% = 35.5pp gap → impossible). 36 attack tests. |
+| **⭐ Edge Calculator** | `edge/edge-calculator.ts` | v2.0.833: 5-component regime-weighted edgeScore per (symbol × regime): directionalEdge (shadow WR) + learnedEdge (OLR calibrated) + comboEdge (Wilson LB) + pathEdge (First-Passage) + realizedEdge (WR × Sharpe). Recommendation: trade/caution/skip. `skip` → matrix cell forced to `hold`. Cold-start → `caution` (never `skip` — system must bootstrap). `Object.hasOwn` defends against prototype-pollution crash. Low confidence never returns `trade`. |
+| **⭐ Execution Tracker** | `edge/execution-tracker.ts` | v2.0.833: Records realised slippage + funding per (symbol, side). `calibratePnlLabel()` converts theoretical PnL → realisable PnL (theoretical − slippage − funding). Cold-start passthrough (<20 samples). Side-aware slippage. Ring buffer bounded (200). |
+| **⭐ Stability Monitor** | `edge/stability-monitor.ts` | v2.0.833: ±5% perturbation test (nudge features, recompute action, count flips) + cross-time consistency (direction flips over last N cycles). Stability factor [0.5, 1.0] multiplies conviction. Pure math, milliseconds. |
+| **⭐ Risk-Profile Edge Store** | `edge/risk-profile-edge-store.ts` | v2.0.833: MiniLM 384-d vector DB for risk-profile-conditional edge. Ring buffer 10k. Brute-force cosine over (market + profile) embeddings. Per-profile conditional edge → 3 edgeScores per asset. Wilson LB + 30-day time-decay. Cold-start neutral 0.5. |
+| **⭐ Backtest Validation** | `edge/backtest-validation.ts` | v2.0.833: Industry-standard quantitative-finance metrics: Sharpe, Sortino, Calmar, Profit Factor, Expectancy, Max Drawdown, Information Ratio vs buy-and-hold. Statistical significance: stationary bootstrap p-value (Politis & Romano 1994) + Deflated Sharpe Ratio (Bailey & López de Prado 2014) + walk-forward 70/30 IS/OOS split. Verdict: edge / no-edge / insufficient. |
+| **⛔ Temporal Attention** | ~~`temporal-attention.ts`~~ | ⛔ REMOVED v2.0.833 (0 `retrieve()` call sites, overlapped AttnRes). File on disk, unwired. |
+| **⛔ Cross-Symbol Backbone** | ~~`cross-symbol-backbone.ts`~~ | ⛔ REMOVED v2.0.833 (0 `query()` call sites, OLR backfill covers cold-start). File on disk, unwired. |
+| **⛔ Reward Shaping** | ~~`reward-shaping.ts`~~ | ⛔ REMOVED v2.0.833 (0 `shape()` call sites, `learningWeight` v2.0.226 covers key case). File on disk, unwired. |
+| **⛔ World Model** | ~~`world-model.ts`~~ | ⛔ REMOVED v2.0.833 (identity transition model, 0 `predict`/`rollout` call sites). File on disk, unwired. |
+| **⚠️ Active Exploration** | `active-exploration.ts` | v2.0.219: UCB exploration. ⚠️ PAUSED v2.0.833 (`ACTIVE_EXPLORATION_ENABLED=false`) — blind UCB without validated edge is dangerous. Re-enable after Edge Report proves baseline edge. |
+| **⚠️ Bayesian OLR** | `bayesian-olr.ts` | v2.0.219: MC Dropout uncertainty. ⚠️ PAUSED v2.0.833 with active-exploration (its only call site). |
 
-### Cognitive Evolution Pipeline
-
-The system's learning stack evolved through 12 versions, each addressing a structural limitation of the previous:
-
-```
- v2.0.203  Raw WR → Vector-Conditional WR (min-max + cosine, cross-symbol, same side)
-     ↓     "SILVER BUY 0W/1L" doesn't mean BUY is wrong — different market conditions
- v2.0.204  Min-max → Numeric Autoencoder (learned non-linear 11→16→8 embedding)
-     ↓     Linear min-max can't capture volatility × regime × funding interactions
- v2.0.205  Uniform sampling → Time-weighted (30-day half-life) + Skeptics conditional block
-     ↓     Old samples pollute model; Skeptics couldn't see conditional WR
- v2.0.206  Single similarity → Unified NA cosine across classifier + EM + agent weights
-     ↓     Multiple similarity metrics disagreed; agent weights used raw WR
- v2.0.207  6 upgrades fixing 11-trade losing streak:
-           #B dark-psych MANDATORY on |momentum|>2% + #C momentum-adaptive SL
-           + #D momentum features + #E lesson persistence + #F anti-pattern clustering
-           + #G conditional WR in thesis generation
-     ↓     Counter-momentum SELL, SL too narrow, lessons not persisted, no anti-pattern memory
- v2.0.208  Meta-Agent DEEP LEARNING CONTEXT (5 learned-context blocks as first-class signals)
-     ↓     LLM couldn't see learned signals; treated them as footnotes
- v2.0.209  Prompt-only → Code-level conditional WR soft gate (conviction penalty)
-     ↓     LLM ignored prompt-level learning blocks; code enforces what prompt suggests
- v2.0.210  3 audit fixes: olrPWinAtEntry cache + TP R:R≥1.6 + thesis-action consistency
-     ↓     Thesis contradicted action; TP too narrow; audit repeat-diagnosed fixed issues
- v2.0.211  AttnRes 7 transfers from Kimi K3 (cycle-history selective retrieval + block
-           AttnRes + RMSNorm keys + softmax mixture + zero-init cold-start + single-head)
-     ↓     Conditional WR used single current snapshot; entry-time regime lost
- v2.0.212  #7 Dual pseudo-query (wDecision broad + wExecution sharp, different reward)
-     ↓     Single query couldn't serve both decision (broad) and execution (sharp)
- v2.0.213  Execution lens as PRIMARY computeATRSLTP signal (stop-out-trained SL/TP)
-           Full circle: wExecution learns from stop-outs → directly controls SL/TP
- v2.0.218  NaN sanitization — safeNum() catches NaN/±Infinity (?? only catches
-           null/undefined). 102 real trades → 0 OLR samples for BTC (fixed)
-           + backfillFromExpRecords() replays 191 EXP records through all systems
- v2.0.219  7 advanced systems: replay buffer (PER) + Bayesian OLR (MC Dropout) +
-           temporal attention (cross-trade) + cross-symbol backbone (transfer) +
-           reward shaping (5-component) + active exploration (UCB) + world model
-           (latent rollout). Shadow trade engine fix (maxAgeCycles 50→12, stale
-           trades now fed to OLR). 397 tests total.
- v2.0.221  Combo WR Gate fixes: hourOfDay feature fix + AntiPattern feed fix +
-           Combo WR tracker (symbol×side×regime Wilson LB) + hardened penalties
- v2.0.222  NA replay buffer persistence — validation survives restart
- v2.0.223  NA training quality: 4 blind spots (diversity collapse symmetry trap +
-           zero-init bottleneck + diversityLossWeight 0.01→0.1 + validation thresholds)
- v2.0.224  OLR P(win) × consensus multiplicative discount (defense-in-depth:
-           additive threshold raise + multiplicative confidence discount)
- v2.0.225  Two-layer exit protection: trailing stop + MFE giveback + TP narrowing +
-           per-symbol consensus SL/TP all DISABLED. SL/TP set at entry, never modified.
-           LLM thesis invalidation (Skeptics Phase 0.5) force-close is the only
-           active exit path. Removes entire auto-close block (61 lines).
- v2.0.226  Close-context-aware learning: computeLearningWeight(closeReason,
-           slNarrowed, isWin) scales learning by close context [0.3, 1.0].
-           OLR feedTrade receives slNarrowed + weightMultiplier. Combo WR skips
-           execution-caused losses (weight < 0.5). 485 tests total.
- v2.0.227  Plan G: dynamic threshold [45-55%] + multiplicative penalty decay.
-           DynamicThresholdCalculator: 5-factor hysteresis scoring (Rolling WR,
-           Idle, Drawdown, Sharpe, Regime), each [-2,+2], capped [-10,+10].
-           Penalty decay over 30 idle cycles → system self-recovers. 6 fairness
-           guarantees: multi-factor balance, symmetric, sample-size req, hysteresis,
-           hard cap, fact-driven. Fixes death spiral (44.5% vs 80% = impossible).
-           521 tests total.
-```
 
 **Key design principles:**
 - **Cold-start safe everywhere**: every learned path has a deterministic fallback (NA → min-max, AttnRes → current snapshot, anti-pattern → no block, wExecution → ATR). The system never degrades below baseline on first deploy.
@@ -258,8 +203,9 @@ The system's learning stack evolved through 12 versions, each addressing a struc
 - **Outcome-driven, not gradient-driven**: MATS has no backprop loop. All learning is from trade outcomes (win/loss + PnL + closeReason). The reward-weighted key direction update (Peters & Schaal 2008) is the correct rule for deterministic attention — REINFORCE is identically zero.
 - **Close-context-aware learning (v2.0.226)**: How a position is closed is an important factor in the loss. `computeLearningWeight(closeReason, slNarrowed, isWin)` scales learning by close context: wins = 1.0, real SL hit = 1.0, tight-SL loss (SL narrowed post-entry) = 0.3, thesis invalidation = 0.3, manual close = 0.5, consensus close = 0.5. OLR `feedTrade` receives `slNarrowed` + `weightMultiplier` to scale gradient updates. Combo WR skips execution-caused losses (weight < 0.5). This prevents tight-SL losses from contaminating the learning systems with "these market conditions → loss" when the entry was actually fine.
 - **Dynamic threshold with fairness (v2.0.227)**: The conviction gate threshold is dynamic [45-55%], driven by 5 objective performance factors (Rolling WR, Idle cycles, Drawdown, Rolling Sharpe, Regime) with hysteresis. Penalties are multiplicative (not additive to threshold) with idle-based decay over 30 cycles. 6 fairness guarantees ensure the calculation is公正: multi-factor balance (no single factor dominates), symmetric design (good = bad influence), sample-size requirement (≥10 trades), hysteresis (no boundary oscillation), hard cap (mathematical [45-55%] guarantee), fact-driven (all inputs are measured, settled outcomes — not predictions).
+- **Edge validation as lie detector (v2.0.833)**: The Edge Validation layer is the system's first quantitative answer to "do we have edge?". It measures 5 independent evidence streams (shadow WR, OLR P(win), combo WR, first-passage, realized WR×Sharpe), blends them per-regime, and produces a recommendation (trade/caution/skip). `skip` forces the matrix cell to `hold` — the client never acts on a no-edge signal. Cold-start returns `caution` (never `skip`) so a brand-new system can bootstrap. Backtest validation uses industry-standard metrics (Sharpe, Sortino, Calmar, Profit Factor, bootstrap p-value, Deflated Sharpe Ratio, walk-forward, Information Ratio vs buy-and-hold). This is NOT an alpha generator — it is an alpha *measurer* that stops the system from trading where no edge exists.
 
-→ Full evolution map in [NA.md](NA.md) · AttnRes design in [K.md](K.md)
+→ Full evolution map in [NA.md](NA.md) · AttnRes design in [K.md](K.md) · Pipeline in [CHANGELOG.md](CHANGELOG.md)
 
 ### RIL — Reason Intelligence Layer
 
@@ -339,7 +285,7 @@ Restrict a symbol to BUY-only or SELL-only via API or `data/evolution/market-age
 | **Frontend** | React 18 + Vite + TradingView Chart |
 | **Config** | Zod schema validation |
 | **Logging** | Winston (structured + file rotation) |
-| **Testing** | vitest (521 tests, 23 test files) |
+| **Testing** | vitest (703 tests: 609 core + 94 edge attack, 29 test files) |
 | **Crypto** | `@noble/curves` (HL phantom agent signing) |
 | **Vector Embedding** | Transformers.js MiniLM L6 v2 (384-dim, in-process, CPU) |
 

@@ -1123,6 +1123,75 @@ export interface AllSymbolEntry {
 export type RiskProfile = 'aggressive' | 'moderate' | 'conservative';
 export type PositionState = 'long' | 'short' | 'flat';
 
+/** v2.0.833: Edge validation report — quantifies whether a (symbol × regime)
+ *  combination has a genuine, non-luck, non-beta statistical edge.
+ *
+ *  Edge is conditional: the same signal has different realised edge for
+ *  different risk profiles (hold-time, SL tolerance, funding cost all
+ *  interact with profile). This report is computed once per cycle per asset
+ *  (risk-neutral) and re-weighted per profile inside MatrixCell.edge.
+ *
+ *  Design principle: this is a "lie detector", not an alpha generator. It
+ *  stops the system from trading where no edge exists and surfaces where
+ *  edge is strongest. Profit still comes from alpha × execution × stability;
+ *  this layer only measures alpha and enforces stability. */
+export interface EdgeReport {
+  /** Aggregated edge score [0, 1]. ≥0.55 = trade, 0.45–0.55 = caution,
+   *  <0.45 = skip. Blends five components below. */
+  edgeScore: number;
+  /** Per-component breakdown for transparency + debugging. */
+  components: {
+    /** Pure directional edge from shadow-trade WR (no LLM bias, no
+     *  execution friction). Low shadow WR ⇒ OLR learned labels carry no
+     *  alpha regardless of how confident the model is. */
+    directionalEdge: number;
+    /** Calibrated OLR P(win) after subtracting realised slippage + funding
+     *  (Execution Tracker). Measures learned feature→outcome mapping
+     *  against realisable PnL, not theoretical PnL. */
+    learnedEdge: number;
+    /** (symbol × side × regime) Wilson-95% lower-bound win rate. The
+     *  strongest conditional signal; high combo WR with n≥20 can override
+     *  a low OLR P(win) (WINNER-FIRST, v2.0.819). */
+    comboEdge: number;
+    /** First-Passage P(TP before SL) from σ + drift + SL/TP distances.
+     *  A structural edge from volatility geometry, independent of history. */
+    pathEdge: number;
+    /** Rolling realised WR × Sharpe over the last N closed trades. The
+     *  ground-truth evidence that the other four components are not lying. */
+    realizedEdge: number;
+  };
+  /** Sample-size-aware confidence label. 'high' needs ≥30 samples in every
+   *  component; 'low' downgrades edgeScore toward 0.5 (neutral). */
+  confidence: 'high' | 'medium' | 'low';
+  /** 'trade' = strong enough to enter the matrix as-is; 'caution' = enter but
+   *  conviction is downweighted by the stability factor; 'skip' = force the
+   *  matrix cell to 'hold' (no client should act on this signal). */
+  recommendation: 'trade' | 'caution' | 'skip';
+  /** Stability metrics that gate the recommendation. */
+  stability: {
+    /** 1 = decisions are invariant to ±5% feature perturbation; <0.5 =
+     *  decisions flip frequently under noise ⇒ signal is fragile. */
+    perturbation: number;
+    /** 1 = consistent direction across recent cycles; <0.5 = direction
+     *  flips frequently (e.g. buy→SL→buy→SL loop, v2.0.229 SKHX pattern). */
+    crossTime: number;
+    /** Multiplier applied to conviction: 1.0 = stable, 0.85 = caution,
+     *  lower = downgrade recommendation. */
+    factor: number;
+  };
+  /** Realised execution friction (slippage + funding) for this symbol/side.
+   *  Used to calibrate OLR PnL labels from theoretical to realisable. */
+  executionGap: {
+    avgSlippageBps: number;
+    avgFundingPctPerHour: number;
+    samples: number;
+  };
+  /** Market regime at decision time — edge is conditional on regime. */
+  regime: string;
+  /** ms epoch. */
+  computedAt: number;
+}
+
 /** A single recommendation cell in the analysis matrix. */
 export interface MatrixCell {
   /** Recommended action for this (risk profile, position state) combination.
@@ -1137,6 +1206,11 @@ export interface MatrixCell {
    *  'moderate' is always calibrated (uses the live consensus mechanism);
    *  'aggressive'/'conservative' are placeholders pending the owner's spec. */
   calibrated: boolean;
+  /** v2.0.833: Risk-profile-conditional edge report for this cell.
+   *  Quantifies how much statistical edge this (profile, symbol, regime)
+   *  combination has, so the client can show a confidence badge and the
+   *  backend can downgrade / skip low-edge signals. Undefined on cold-start. */
+  edge?: EdgeReport;
 }
 
 /** A full 3×3 recommendation matrix for one asset. */
@@ -1180,6 +1254,9 @@ export interface AssetAnalysis {
   consensus: AnalysisConsensus;
   matrix: AnalysisMatrix;
   metadata: Record<string, unknown>;
+  /** v2.0.833: Risk-neutral edge report (computed once per cycle, applies to
+   *  all profiles). Per-profile conditional edge lives in each MatrixCell.edge. */
+  edgeReport?: EdgeReport;
 }
 
 export interface ExchangeAccountInfo {

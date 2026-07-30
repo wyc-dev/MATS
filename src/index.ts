@@ -61,11 +61,7 @@ import { CycleHistoryRetriever } from './evolution/cycle-history-retrieval.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { ReplayBuffer } from './evolution/replay-buffer.ts';
 import { BayesianOLR } from './evolution/bayesian-olr.ts';
-import { TemporalAttention } from './evolution/temporal-attention.ts';
-import { CrossSymbolBackbone } from './evolution/cross-symbol-backbone.ts';
-import { RewardShaper } from './evolution/reward-shaping.ts';
 import { ActiveExploration } from './evolution/active-exploration.ts';
-import { WorldModel } from './evolution/world-model.ts';
 import { calculateFirstPassage, estimateDrift, estimateVolatility, computeMomentum, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
 import { wilsonScore } from './evolution/evolution-utils.ts';
@@ -271,11 +267,7 @@ class MATSSystem {
   /** v2.0.219: Advanced learning systems */
   private replayBuffer!: ReplayBuffer;
   private bayesianOLR!: BayesianOLR;
-  private temporalAttention!: TemporalAttention;
-  private crossSymbolBackbone!: CrossSymbolBackbone;
-  private rewardShaper!: RewardShaper;
   private activeExploration!: ActiveExploration;
-  private worldModel!: WorldModel;
   /** v2.0.221 (Fix 3+4): Combo Win Rate Tracker — (symbol × side × regime) WR tracking + soft gate. */
   private comboTracker!: ComboWinRateTracker;
 
@@ -844,11 +836,13 @@ class MATSSystem {
       // v2.0.219: Initialize advanced learning systems
       this.replayBuffer = new ReplayBuffer(this.olrEngine);
       this.bayesianOLR = new BayesianOLR(this.olrEngine);
-      this.temporalAttention = new TemporalAttention();
-      this.crossSymbolBackbone = new CrossSymbolBackbone(this.olrEngine);
-      this.rewardShaper = new RewardShaper();
-      this.activeExploration = new ActiveExploration();
-      this.worldModel = new WorldModel([...FEATURE_NAMES]);
+      // v2.0.833 (Task 2 Phase 2): active-exploration paused by default —
+      // blind UCB exploration without a validated edge is dangerous. The
+      // Edge Report (Task 1) must first prove baseline edge before purposeful
+      // exploration is re-enabled. Override via env ACTIVE_EXPLORATION_ENABLED=true.
+      const explorationEnabled = process.env['ACTIVE_EXPLORATION_ENABLED'] === 'true';
+      this.activeExploration = new ActiveExploration({ enabled: explorationEnabled });
+      log.info(`✓ ActiveExploration ${explorationEnabled ? 'enabled' : 'paused (set ACTIVE_EXPLORATION_ENABLED=true to re-enable)'}`);
       // v2.0.221 (Fix 3+4): Combo Win Rate Tracker — (symbol × side × regime) WR
       this.comboTracker = new ComboWinRateTracker(path.join(process.cwd(), 'data'));
       try {
@@ -880,12 +874,8 @@ class MATSSystem {
           }
         };
         loadAdv('replay-buffer.json', (j) => this.replayBuffer.load(j));
-        loadAdv('temporal-attention.json', (j) => this.temporalAttention.load(j));
-        loadAdv('cross-symbol.json', (j) => this.crossSymbolBackbone.load(j));
-        loadAdv('reward-shaper.json', (j) => this.rewardShaper.load(j));
         loadAdv('exploration.json', (j) => this.activeExploration.load(j));
-        loadAdv('world-model.json', (j) => this.worldModel.load(j));
-        log.info('✓ Advanced learning systems initialized (replay buffer, Bayesian OLR, temporal attention, cross-symbol, reward shaping, exploration, world model)');
+        log.info('✓ Advanced learning systems initialized (replay buffer, Bayesian OLR, exploration)');
       } catch { /* start fresh */ }
       log.info('✓ OLR + Shadow Trade Engine ready');
 
@@ -2834,7 +2824,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           log.warn(`[close-learning] NA addSample failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        // v2.0.219: Feed advanced learning systems (replay, temporal, cross-symbol, world model)
+        // v2.0.219: Feed advanced learning systems (replay)
+        // v2.0.833: temporal/cross-symbol/world-model removed (no inference wiring)
         try {
           this.feedAdvancedLearning({
             symbol,
@@ -4647,16 +4638,16 @@ ${recentExamples}
   private expBackfillDone = false;
 
   // ── v2.0.219: Unified advanced learning feeder ──
-  // Feeds the 4 "dead-initialized" systems that were created in v2.0.219 but
-  // never connected to a data pipeline:
-  //   1. Replay Buffer     — PER sample for experience replay
-  //   2. Temporal Attention — cross-trade sequence for attention learning
-  //   3. Cross-Symbol      — shared + per-symbol residual backbone
-  //   4. World Model       — latent dynamics + reward predictor
+  // Feeds the advanced learning systems that are actually wired into the
+  // decision pipeline. v2.0.833: removed world-model, reward-shaping,
+  // cross-symbol-backbone, and temporal-attention — all four had training
+  // wired but ZERO inference call sites (see plan.md §2.3). Their state
+  // files remain on disk for archival but are no longer loaded.
   //
-  // All feeds are individually try-catch'd — one system failure never blocks
-  // the others. Cold-start safe: each system internally guards against
-  // insufficient samples.
+  //   1. Replay Buffer     — PER sample for experience replay (replayEpoch
+  //                          is called periodically, line ~9385)
+  //
+  // All feeds are individually try-catch'd. Cold-start safe.
   private feedAdvancedLearning(params: {
     symbol: string;
     side: 'buy' | 'sell';
@@ -4669,7 +4660,7 @@ ${recentExamples}
     regime?: string;
     /** v2.0.226: Learning weight from close context. Scales the PnL reward
      *  so execution-caused losses (tight SL, thesis invalidation) contribute
-     *  less to AttnRes reward-weighted regression + temporal attention. */
+     *  less to AttnRes reward-weighted regression. */
     learningWeight?: number;
   }): void {
     const sym = params.symbol.toLowerCase();
@@ -4689,44 +4680,6 @@ ${recentExamples}
       });
     } catch (err) {
       log.warn(`[advanced-learning] ReplayBuffer.add failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    // 2. Temporal Attention — cross-trade attention learning
-    try {
-      this.temporalAttention?.addTrade({
-        symbol: sym,
-        side: params.side,
-        features: params.features,
-        outcome: params.outcome,
-        pnl: params.pnl,
-        pnlPct: params.pnlPct,
-        ts,
-        regime: params.regime ?? 'unknown',
-      });
-      // Update pseudo-query from outcome (reward-weighted regression)
-      this.temporalAttention?.updateOnOutcome(params.pnl);
-    } catch (err) {
-      log.warn(`[advanced-learning] TemporalAttention failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    // 3. Cross-Symbol Backbone — shared + per-symbol residual
-    try {
-      this.crossSymbolBackbone?.feedTrade(sym, params.features, params.outcome, params.side);
-    } catch (err) {
-      log.warn(`[advanced-learning] CrossSymbolBackbone.feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    // 4. World Model — latent dynamics + reward predictor
-    //    Uses close-time features as both current and next state. The transition
-    //    model learns a degenerate (identity-ish) mapping, but the encoder +
-    //    reward head still learn a useful latent representation of market
-    //    conditions → outcome. This is a pragmatic cold-start choice; a full
-    //    implementation would store entry-time features separately.
-    try {
-      const action = params.side === 'buy' ? 1 : 0;
-      this.worldModel?.addSample(params.features, action, params.features, params.outcome);
-    } catch (err) {
-      log.warn(`[advanced-learning] WorldModel.addSample failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -4861,7 +4814,7 @@ ${recentExamples}
           comboFed++;
         } catch { /* non-critical */ }
 
-        // 6. v2.0.219: Advanced learning systems (replay, temporal, cross-symbol, world model)
+        // 6. v2.0.219: Advanced learning systems (replay only; v2.0.833 pruned dead systems)
         //    Uses the same features object built for OLR above.
         if (mf && typeof mf === 'object' && Object.keys(mf).length > 0) {
           try {
@@ -5466,7 +5419,7 @@ ${recentExamples}
             });
           }
           if (shadowResults.length > 0) {
-            log.info(`🧬 [shadow] Fed ${shadowResults.length} shadow resolutions to advanced learning (replay/temporal/cross-symbol/world-model)`);
+            log.info(`🧬 [shadow] Fed ${shadowResults.length} shadow resolutions to advanced learning (replay)`);
           }
         } catch (err) {
           log.warn(`[shadow] Advanced learning feed failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
@@ -10083,11 +10036,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         fs.renameSync(t, p);
       };
       saveAdv('replay-buffer.json', this.replayBuffer.save());
-      saveAdv('temporal-attention.json', this.temporalAttention.save());
-      saveAdv('cross-symbol.json', this.crossSymbolBackbone.save());
-      saveAdv('reward-shaper.json', this.rewardShaper.save());
       saveAdv('exploration.json', this.activeExploration.save());
-      saveAdv('world-model.json', this.worldModel.save());
       // v2.0.221 (Fix 3): Save combo win rate tracker state
       if (this.comboTracker.isDirty()) {
         saveAdv('combo-win-rates.json', this.comboTracker.save());
@@ -10665,16 +10614,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               };
             } catch { return undefined; }
           })(),
-          // Temporal Attention
-          temporal: this.temporalAttention ? this.temporalAttention.getState() : undefined,
-          // Cross-Symbol Backbone
-          crossSymbol: this.crossSymbolBackbone ? this.crossSymbolBackbone.getStats() : undefined,
-          // Reward Shaper
-          rewardShaper: this.rewardShaper ? { config: this.rewardShaper.getConfig() } : undefined,
           // Active Exploration
           exploration: this.activeExploration ? this.activeExploration.getConfig() : undefined,
-          // World Model
-          worldModel: this.worldModel ? this.worldModel.getState() : undefined,
         },
         backtest: this.lastBacktestResult,
         backtestProgress: this.backtestProgress,

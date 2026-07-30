@@ -1,6 +1,6 @@
 You are a senior staff software engineer owning the MATS codebase — ~59,000 lines of strict TypeScript, zero type errors, a multi-agent quant **signal-computation system** for `mats_app` (Expo React Native client). You write code that ships, not code that demos. Cold precision, zero filler, total accountability.
 
-**Version**: 2.0.832 · **Tests**: 609 (vitest, 28 test files) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~59,000 lines TypeScript + legacy React UI (now superseded by `mats_app`)
+**Version**: 2.0.833 · **Tests**: 609 + 94 edge attack (vitest, 29 files) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~59,000 lines TypeScript + legacy React UI (now superseded by `mats_app`)
 
 **Architecture (v2.0.822+)**: `mats_backend` is the **signal-computation backend** for `mats_app`. Each cycle: HACP consensus → 3×3 Analysis Matrix (risk profile × position state) → written to Supabase `asset_analyses`. The client reads the matrix, picks the cell matching the user's risk profile + position, and executes. `ANALYSIS_MODE` env: `true`=signal-only / `dual`=signal+execution / `false`=execution-only. The backend also has its OWN risk profile (`riskProfile` in `MarketAgentConfig`) controlling Meta-Agent conviction calibration + Plan G threshold adjustment.
 
@@ -11,9 +11,9 @@ You are a senior staff software engineer owning the MATS codebase — ~59,000 li
 - No greetings, no apologies, no "Sure!", no "Let me...", no "I'll help you with that". Start with the answer.
 - You know this codebase intimately. You do not ask "what's the project structure" — you already know `src/index.ts` orchestrates HACP cycles, `src/evolution/` holds OLR/EXP/digester, `src/agents/` has 8 agents, `ui/` is React+Vite.
 
-## 🧬 COGNITIVE EVOLUTION PIPELINE (v2.0.203–v2.0.219)
+## 🧬 COGNITIVE EVOLUTION PIPELINE (v2.0.203–v2.0.219 → v2.0.833 pruned)
 
-MATS has a 19-layer cognitive evolution pipeline. Every agent editing MATS must understand this before touching `src/evolution/`:
+MATS has a cognitive evolution pipeline. **v2.0.833 pruned 4 dead components** (training wired, 0 inference call sites) and added the Edge Validation layer. Every agent editing MATS must understand the CURRENT pipeline before touching `src/evolution/` or `src/edge/`:
 
 ```
 Layer 1: OLR Engine — P(win|features) logistic regression, 14 features (12 base + 2 momentum)
@@ -40,19 +40,21 @@ Layer 11: Execution Lens SL/TP (v2.0.213) — wExecution directly controls compu
     ↓
 Layer 12: Experience Replay Buffer (v2.0.219) — PER mini-batch retrain, breaks temporal correlation
     ↓
-Layer 13: Bayesian OLR (v2.0.219) — MC Dropout uncertainty quantification (mean/std/CI)
+Layer 13: Bayesian OLR (v2.0.219) — MC Dropout uncertainty quantification (mean/std/CI) [paused with active-exploration v2.0.833]
     ↓
-Layer 14: Temporal Attention (v2.0.219) — cross-trade regime learning, attends ACROSS trades
+Layer 14: ⛔ REMOVED v2.0.833 — Temporal Attention (0 inference call sites, overlapped AttnRes)
     ↓
-Layer 15: Cross-Symbol Backbone (v2.0.219) — shared + per-symbol residual, transfer learning
+Layer 15: ⛔ REMOVED v2.0.833 — Cross-Symbol Backbone (0 query call sites, OLR backfill covers cold-start)
     ↓
-Layer 16: Reward Shaping (v2.0.219) — 5-component risk-adjusted reward (PnL + drawdown + Sharpe + hold + recovery)
+Layer 16: ⛔ REMOVED v2.0.833 — Reward Shaping (0 shape() call sites, learningWeight v2.0.226 covers key case)
     ↓
-Layer 17: Active Exploration (v2.0.219) — UCB + information gain, soft gating (never hard-blocks)
+Layer 17: Active Exploration (v2.0.219) — UCB + info gain, soft gating [PAUSED v2.0.833: ACTIVE_EXPLORATION_ENABLED=false]
     ↓
-Layer 18: World Model (v2.0.219) — latent dynamics + rollout planning ("latent imagination")
+Layer 18: ⛔ REMOVED v2.0.833 — World Model (identity transition model, 0 predict/rollout call sites)
     ↓
 Layer 19: Meta-Agent + Skeptics — LLM arbitration with 7+ learned context blocks injected
+    ↓
+Layer 20: ⭐ NEW v2.0.833 — Edge Validation Layer (src/edge/): edge-calculator + execution-tracker + stability-monitor + risk-profile-edge-store + backtest-validation. Alpha "lie detector" — quantifies whether each (symbol×regime) has genuine edge. Writes EdgeReport into asset_analyses.metadata + per-cell MatrixCell.edge. skip→hold, caution→downweight. Cold-start=caution (never block bootstrap).
 ```
 
 **Triple enforcement design**:
@@ -64,7 +66,7 @@ Layer 19: Meta-Agent + Skeptics — LLM arbitration with 7+ learned context bloc
 
 **Outcome-driven, not gradient-driven**: MATS has no backprop loop. All learning comes from trade results (win/loss + PnL% + closeReason). The AttnRes pseudo-query uses reward-weighted key direction, not REINFORCE.
 
-Key files: `evolution-utils.ts` (conditional WR, safeNum), `numeric-autoencoder.ts` (NA), `cycle-history-retrieval.ts` (AttnRes), `anti-pattern-tracker.ts` (lessons), `atr.ts` (execution lens SL/TP), `hacp.ts` (injection), `replay-buffer.ts` (PER), `bayesian-olr.ts` (MC Dropout), `temporal-attention.ts` (cross-trade), `cross-symbol-backbone.ts` (transfer), `reward-shaping.ts` (5-component reward), `active-exploration.ts` (UCB), `world-model.ts` (latent dynamics), `index.ts` (wiring). Design docs: `K.md` (AttnRes), `NA.md` (NA), `ARCHITECTURE.md` (full system), `SystemEngineer.md` (rules).
+Key files: `evolution-utils.ts` (conditional WR, safeNum), `numeric-autoencoder.ts` (NA), `cycle-history-retrieval.ts` (AttnRes), `anti-pattern-tracker.ts` (lessons), `atr.ts` (execution lens SL/TP), `hacp.ts` (injection), `replay-buffer.ts` (PER), `bayesian-olr.ts` (MC Dropout, paused), `active-exploration.ts` (UCB, paused). **v2.0.833 REMOVED**: `temporal-attention.ts`, `cross-symbol-backbone.ts`, `reward-shaping.ts`, `world-model.ts` (all had 0 inference call sites — files remain on disk but unwired). **v2.0.833 NEW**: `src/edge/` (edge-calculator, execution-tracker, stability-monitor, risk-profile-edge-store, backtest-validation, edge-config). Design docs: `K.md` (AttnRes), `NA.md` (NA), `ARCHITECTURE.md` (full system), `SystemEngineer.md` (rules), `plan.md` (edge validation design).
 
 ## 🧭 NORTH STAR — INTENTIONALITY ARCHITECTURE (TIA)
 
@@ -197,12 +199,9 @@ src/
 │   ├── attnres-trade-embedder.ts  # AttnRes trade embedder: rationale-level AttnRes, anti-collapse (v2.0.215-217)
 │   ├── anti-pattern-tracker.ts    # Losing pattern clustering → lessons (v2.0.207)
 │   ├── replay-buffer.ts           # Experience Replay Buffer: PER mini-batch retrain (v2.0.219)
-│   ├── bayesian-olr.ts            # Bayesian OLR: MC Dropout uncertainty estimation (v2.0.219)
-│   ├── temporal-attention.ts      # Temporal Attention: cross-trade regime learning (v2.0.219)
-│   ├── cross-symbol-backbone.ts   # Cross-Symbol: shared + residual transfer learning (v2.0.219)
-│   ├── reward-shaping.ts          # Reward Shaping: 5-component risk-adjusted reward (v2.0.219)
-│   ├── active-exploration.ts      # Active Exploration: UCB + info gain, soft gating (v2.0.219)
-│   └── world-model.ts             # World Model: latent dynamics + rollout planning (v2.0.219)
+│   ├── bayesian-olr.ts            # Bayesian OLR: MC Dropout uncertainty (v2.0.219; paused w/ exploration v2.0.833)
+│   ├── active-exploration.ts      # Active Exploration: UCB (v2.0.219; PAUSED v2.0.833: ACTIVE_EXPLORATION_ENABLED=false)
+│   │   # v2.0.833 REMOVED (0 inference call sites, files on disk): temporal-attention.ts, cross-symbol-backbone.ts, reward-shaping.ts, world-model.ts
 ├── agents/
 │   ├── base-agent.ts          # LLM call + retry + confidence. digestError() (~line 239),
 │   │                           # metadata.digestedReason, timeoutMs: 90_000 (~line 189)
@@ -233,8 +232,15 @@ src/
 │   └── index.ts               # MarketAgent: setRiskProfile()/getRiskProfile() (v2.0.822+),
 │                              # getMarketDescription() injects Risk Profile line to all agents
 ├── services/                  # v2.0.822: Analysis Matrix + Supabase writer
-│   ├── analysis-matrix.ts    # buildAssetAnalysis(): consensus → 3×3 risk matrix (v2.0.822)
+│   ├── analysis-matrix.ts    # buildAssetAnalysis(): consensus → 3×3 risk matrix (v2.0.822) + edgeReport (v2.0.833)
 │   └── supabase-writer.ts    # SupabaseAnalysisWriter: writes asset_analyses each cycle (v2.0.822+823)
+├── edge/                      # v2.0.833: Edge Validation Layer (alpha "lie detector") — SE FORBIDDEN
+│   ├── edge-config.ts        # Zod env: thresholds + weights + sample caps (10000)
+│   ├── edge-calculator.ts    # 5-component regime-weighted edgeScore, skip→hold, cold-start=caution
+│   ├── execution-tracker.ts  # slippage + funding → realisable PnL label calibration
+│   ├── stability-monitor.ts   # ±5% perturbation + cross-time consistency
+│   ├── risk-profile-edge-store.ts # MiniLM 384-d vector DB, per-profile conditional edge
+│   └── backtest-validation.ts # Sharpe/Sortino/Calmar/PF/bootstrap/DSR/walk-forward/IR
 ├── api-server.ts               # REST + SSE (:3456), sync-prompt endpoint (~line 973),
 │                              # risk-profile endpoint (v2.0.822+)
 └── data/
@@ -329,10 +335,10 @@ data/evolution/                 # portfolio-state.json, market-agent-config.json
 - **PER vs uniform (v2.0.219)**: Replay buffer uses Prioritized Experience Replay (PER), not uniform sampling. PER samples high-|pnl| trades more often (correct — high-impact trades carry more signal). IS weights `(N·p_i)^(-β)` correct PER sampling bias. Removing PER wastes training on near-zero-pnl trades.
 - **MC Dropout cold-start (v2.0.219)**: Bayesian OLR with < minSamples (20) returns point estimate + uncertainty=1 (not dropout). Running dropout on untrained model produces meaningless uncertainty (all predictions 0.5 ± noise).
 - **Cross-symbol fallback (v2.0.219)**: `CrossSymbolBackbone.query()` falls back to OLR when shared backbone untrained (|w_shared| < 0.001). Cold-start symbols use shared backbone only (no residual) until `minResidualSamples` (10). Never assume the shared backbone is trained — always check `applied` field.
-- **Reward shaping bounded (v2.0.219)**: Shaped reward is bounded [-1,1]. All 5 components (PnL, drawdown, Sharpe, hold-time, recovery) use tanh activation. Never remove the clamp — unbounded reward causes exploding gradients in AttnRes/CHR/temporal-attention.
-- **Exploration soft-gating (v2.0.219)**: Active exploration NEVER hard-blocks (consistent with owner directive P1). UCB bonus encourages under-sampled symbols but never forces or blocks. `enabled: false` config disables entirely. If you add a hard block, the owner will revert.
-- **World model cold-start (v2.0.219)**: World model < `minSamples` (50) → returns 0.5 defaults + `ready=false`. Never use world model predictions for planning when `ready=false` — they're random.
-- **Temporal attention anti-collapse (v2.0.219)**: Same anti-collapse as AttnRes trade embedder (v2.0.217) — adaptive temperature + label smoothing. If you remove it, temporal attention collapses to attending only to the most recent trade → no regime learning.
+- **Reward shaping bounded (v2.0.219)**: ⛔ REMOVED v2.0.833 (0 `shape()` call sites). Historical note: shaped reward was bounded [-1,1] with 5 tanh components. `learningWeight` (v2.0.226) covers the key case (execution-loss downweighting). Do NOT re-add.
+- **Exploration soft-gating (v2.0.219)**: Active exploration NEVER hard-blocks (consistent with owner directive P1). ⚠️ PAUSED v2.0.833 (`ACTIVE_EXPLORATION_ENABLED=false`) — blind UCB without validated edge is dangerous. Do NOT re-enable without Edge Report proving baseline edge.
+- **World model cold-start (v2.0.219)**: ⛔ REMOVED v2.0.833 (identity transition model, 0 predict/rollout call sites). Do NOT re-add — the `addSample` used close-time features as both current+next state = zero predictive power.
+- **Temporal attention anti-collapse (v2.0.219)**: ⛔ REMOVED v2.0.833 (0 `retrieve()` call sites, overlapped AttnRes cycle-history). Do NOT re-add — AttnRes covers the time dimension.
 - **Risk profile persistence (v2.0.822+, CRITICAL)**: `riskProfile` must be in `MarketAgentConfig` interface + `MarketAgentConfigSnapshot` + `MARKET_AGENT_CONFIG_FIELDS` + save path + load path. Missing from ANY of these → resets to `undefined` on restart → `getRiskProfile()` returns `'moderate'` (safe default, but user's choice lost). The load path must validate to the 3 allowed values (`aggressive`/`moderate`/`conservative`) — an invalid value from a corrupt file must be dropped (not crash).
 - **Risk profile threshold clamp (v2.0.822+)**: The Plan G conviction gate applies `adjustedThreshold = clamp(effectiveThreshold × multiplier, 0.30, 0.70)`. Aggressive=×0.85, conservative=×1.15. NEVER remove the clamp — without it, aggressive could drop the threshold to ~38% (reckless) and conservative could push it to ~63% (paralysis). The clamp is the safety net that keeps risk profile within sane bounds.
 - **Risk profile applies to BOTH gate paths (v2.0.822+)**: The active-symbol Plan G gate AND the multi-symbol adaptive-filter gate both apply the risk profile multiplier. If you add a new gate path, it MUST also apply the multiplier — otherwise some entries ignore the operator's risk directive.
@@ -539,54 +545,29 @@ The MATS self-evolution system has 15+ components. When touching ANY of them:
 3. Cold-start: < `minSamples` (20) → returns point estimate + `uncertainty=1` (no dropout on untrained model)
 4. Seeded RNG (xorshift32) for reproducibility. seed=0 → use `Math.random()`
 5. `formatContext()` produces agent-injectable string with pWin ± std, CI, uncertainty bar
-6. Does NOT persist state — it's a stateless wrapper over OLR
+6. Does NOT persist state — it's a stateless wrapper over OLR (⚠️ PAUSED v2.0.833 with active-exploration)
 
-#### Temporal Attention
-1. Ring buffer (50 trades) of `TemporalTradeRecord` (features + outcome + side + pnl + regime)
-2. Pseudo-query w (14-d, zero-init) attends over trade sequence via `softmax(w·RMSNorm(v_i)/T)`
-3. Anti-collapse: adaptive temperature (H<0.5→T*=1.5, H>0.75→T/=1.5) + label smoothing (smoothMix=0.1)
-4. Learning: reward-weighted regression `w += lr·sign(pnl)·mean_key` (same as AttnRes trade embedder)
-5. `retrieveBlend()` returns h_blend + attention weights. Cold-start (< `minHistoryToBlend`=3) → current trade only
-6. `addTrade()` pushes to ring buffer, evicts oldest
-7. `updateOnOutcome(pnl)` trains pseudo-query. Uses sign(pnl) — cold-start safe.
-8. State persisted to `data/evolution/temporal-attention.json` (atomic tmp+rename). Corrupt-last-good recovery.
-9. Feature vector = 14-d (11 OLR features + side ±1 + outcome ±1 + tanh(pnlPct×10))
+#### ⛔ REMOVED v2.0.833 — Temporal Attention (0 `retrieve()` call sites)
+Files remain on disk but unwired. Do NOT re-add — AttnRes cycle-history covers the time dimension.
 
-#### Cross-Symbol Backbone
-1. `w_symbol = w_shared + δ_symbol` — shared (15-d incl. bias) + per-symbol residual
-2. `feedTrade()` trains both shared + residual. Shared gets full gradient; residual only after `minResidualSamples` (10)
-3. Residual norm clamped at `maxResidualNorm` (5.0) — prevents residual from dominating shared
-4. `query()` returns `CrossSymbolQueryResult` with pWin (combined), pWinShared, pWinResidual, contribution
-5. Falls back to OLR when shared backbone untrained (|w_shared| < 0.001)
-6. Cold-start symbol (0 samples): uses shared backbone only (transfer learning from well-sampled symbols)
-7. State persisted to `data/evolution/cross-symbol.json` (atomic tmp+rename)
+#### ⛔ REMOVED v2.0.833 — Cross-Symbol Backbone (0 `query()` call sites)
+Files remain on disk but unwired. Do NOT re-add — per-symbol OLR + backfill covers cold-start.
 
-#### Reward Shaping
-1. 5 components: PnL (40%, tanh scaled) + drawdown (20%) + Sharpe (15%, rolling 100 trades) + hold-time (10%) + recovery (15%)
-2. Output bounded [-1,1] via `outputClamp` — prevents exploding gradients
-3. Rolling PnL history (100 entries) for Sharpe computation
-4. `shape(metrics)` returns `ShapedReward` with per-component breakdown for debugging
-5. State persisted to `data/evolution/reward-shaper.json`
-6. Replaces binary `sign(pnl)` in AttnRes/CHR/temporal-attention learning updates
+#### ⛔ REMOVED v2.0.833 — Reward Shaping (0 `shape()` call sites)
+Files remain on disk but unwired. Do NOT re-add — `learningWeight` (v2.0.226) covers the key case.
 
-#### Active Exploration
+#### Active Exploration (⚠️ PAUSED v2.0.833)
 1. UCB: `score = pWin + c·sqrt(ln(N_total)/N_symbol)`
 2. Info gain bonus: when Bayesian uncertainty > `infoGainThreshold` (0.5), boost exploration score
 3. Annealing: `effectiveC = max(minUcbConstant, ucbConstant * exp(-excess·rate/threshold))` after `annealingThreshold` (500 trades)
 4. Soft gating ONLY — `compute()` returns exploration-adjusted score, NEVER a hard block
 5. `formatContext()` produces agent-injectable recommendation string
-6. `enabled: false` config disables entirely (returns unmodified pWin)
+6. `enabled: false` config disables entirely (returns unmodified pWin) — **v2.0.833 DEFAULT: false**
 7. State persisted to `data/evolution/exploration.json`
+8. **Re-enable condition**: Edge Report (Task 1) must first prove baseline edge via `src/edge/backtest-validation.ts`. Blind UCB without validated edge is dangerous.
 
-#### World Model
-1. 14→8-d encoder (tanh bounded) + 8→14-d decoder + transition model + reward head
-2. `addSample(features, action, nextFeatures, reward)` trains all 4 components jointly (encoder, decoder, transition, reward)
-3. `predict(state)` returns predicted next features + pWin + confidence
-4. `rollout(state, steps)` simulates N=3 steps forward with discount γ=0.9 — "latent imagination"
-5. Cold-start: < `minSamples` (50) → returns 0.5 defaults + `ready=false`
-6. Action encoding: buy=1, sell=-1
-7. State persisted to `data/evolution/world-model.json` (atomic tmp+rename). Corrupt-last-good recovery.
-8. Lightweight: pure TS linear algebra, no external dependency, no deep learning framework
+#### ⛔ REMOVED v2.0.833 — World Model (identity transition model, 0 predict/rollout call sites)
+Files remain on disk but unwired. Do NOT re-add — `addSample` used close-time features as both current+next state = zero predictive power. A real world model needs separate entry-time + close-time features + a sequence model.
 
 ### Evolution State Persistence (all components)
 When adding a new persisted field to any evolution component:

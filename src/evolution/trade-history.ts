@@ -6,6 +6,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../observability/logger.ts';
 import type { TradingDecision, MarketRegime } from '../types/index.ts';
+import { edgeConfig } from '../edge/edge-config.ts';
 
 const log = createLogger({ phase: 'trade-history' });
 
@@ -45,7 +46,9 @@ export interface TradeHistoryEntry {
  */
 export class TradeHistory {
   private entries: TradeHistoryEntry[] = [];
-  private readonly maxEntries = 5000;
+  // v2.0.833: lifted from 5000 → 10000 via edge config (plan.md §1.9).
+  // More history = better rolling WR/Sharpe estimates for the Edge Report.
+  private readonly maxEntries = edgeConfig.tradeHistoryMax;
 
   /** Load entries from saved state (restore after restart) */
   load(entries: TradeHistoryEntry[]): void {
