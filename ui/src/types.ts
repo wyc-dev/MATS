@@ -215,7 +215,7 @@ export interface APIData {
   agentModels?: { available: ModelDefinition[]; assignments: AgentModelConfig[] };
   cycleProgress?: CycleProgress | null;
   hacpThreshold?: number;
-  /** v2.0.219: Advanced learning systems state */
+  /** v2.0.219: Advanced learning systems state (v2.0.833: 4 dead components removed) */
   advancedLearning?: {
     na?: { ready: boolean; sampleCount: number; inputDim: number };
     attnres?: { updateCount: number; wNorm: number; temperature: number };
@@ -227,11 +227,15 @@ export interface APIData {
       buy: { pWin: number; std: number; low: number; high: number; uncertainty: number; applied: boolean };
       sell: { pWin: number; std: number; low: number; high: number; uncertainty: number; applied: boolean };
     };
-    temporal?: { historyLen: number; updateCount: number; temperature: number; wNorm: number };
-    crossSymbol?: Array<{ symbol: string; samples: number; residualNorm: number; sharedNorm: number }>;
-    rewardShaper?: { config: Record<string, number> };
+    // v2.0.833 REMOVED (0 inference call sites): temporal, crossSymbol, rewardShaper, worldModel
     exploration?: { ucbConstant: number; enabled: boolean; infoGainThreshold: number };
-    worldModel?: { sampleCount: number; ready: boolean; latentDim: number };
+    /** v2.0.833: Edge Validation layer state */
+    edgeValidation?: {
+      edgeReportCount: number;
+      execTrackerEntries: number;
+      rpStoreSize: number;
+      avgEdgeScore: number;
+    };
   };
   evolution?: EvolutionData;
   /** v2.0.140: EM Cycle Digestion — MiniLM insight retrieval + self-adjustment */

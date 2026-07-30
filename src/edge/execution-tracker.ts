@@ -220,6 +220,11 @@ export class ExecutionTracker {
     log.info(`[exec-tracker] loaded ${this.stats.size} (symbol,side) entries`);
   }
 
+  /** Number of (symbol, side) entries tracked. */
+  entryCount(): number {
+    return this.stats.size;
+  }
+
   /** Reset — used by tests. */
   reset(): void {
     this.stats.clear();

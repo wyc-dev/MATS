@@ -2462,12 +2462,14 @@ function EvolutionHeader({ generation, symbolCount, systemsReady, systemsTotal }
 }
 
 // ─── System Status Grid ─────────────────────────────────────────────
-// Compact grid showing all 19 learning systems with ready/training/cold states.
+// Compact grid showing all active learning systems with ready/training/cold states.
+// v2.0.833: 4 dead components removed (temporal/crossSymbol/rewardShaper/worldModel).
+//          Exploration + Bayesian marked as PAUSED. Edge Validation layer added.
 
 function SystemStatusGrid({ al, olrState, emState, rilState }: {
   al?: APIData['advancedLearning']; olrState?: any; emState?: any; rilState?: any
 }) {
-  type SysState = 'ready' | 'training' | 'cold' | 'disabled'
+  type SysState = 'ready' | 'training' | 'cold' | 'disabled' | 'paused'
   interface SysEntry { name: string; state: SysState; detail: string }
 
   const systems: SysEntry[] = []
@@ -2505,27 +2507,14 @@ function SystemStatusGrid({ al, olrState, emState, rilState }: {
   const rbTotal = al?.replay?.totalSamples ?? 0
   systems.push({ name: 'Replay', state: rbTotal >= 10 ? 'ready' : rbTotal > 0 ? 'training' : 'cold', detail: `${rbTotal} samples, ${al?.replay?.totalReplays ?? 0} replays` })
 
-  // Bayesian OLR
-  const bayesApplied = al?.bayesian?.buy?.applied ?? false
-  systems.push({ name: 'Bayesian', state: bayesApplied ? 'ready' : 'cold', detail: bayesApplied ? `σ=${(al!.bayesian!.buy.std * 100).toFixed(1)}%` : 'cold-start' })
+  // Bayesian OLR — ⚠️ PAUSED v2.0.833 (with active-exploration)
+  systems.push({ name: 'Bayesian', state: 'paused', detail: 'paused v2.0.833' })
 
-  // Temporal Attention
-  const taUpdates = al?.temporal?.updateCount ?? 0
-  systems.push({ name: 'Temporal', state: taUpdates > 0 ? 'ready' : 'cold', detail: `${al?.temporal?.historyLen ?? 0} trades, ${taUpdates} updates` })
+  // v2.0.833 REMOVED: Temporal Attention, Cross-Symbol, Reward Shaper, World Model
+  // (all had 0 inference call sites — training wired but output never read)
 
-  // Cross-Symbol
-  const csSyms = al?.crossSymbol ?? []
-  systems.push({ name: 'Cross-Symbol', state: csSyms.length > 0 ? 'ready' : 'cold', detail: `${csSyms.length} symbols` })
-
-  // Reward Shaper
-  systems.push({ name: 'Reward', state: 'ready', detail: '5-component' })
-
-  // Active Exploration
-  systems.push({ name: 'Exploration', state: (al?.exploration?.enabled ?? false) ? 'ready' : 'disabled', detail: `UCB c=${al?.exploration?.ucbConstant ?? 0}` })
-
-  // World Model
-  const wmReady = al?.worldModel?.ready ?? false
-  systems.push({ name: 'World Model', state: wmReady ? 'ready' : (al?.worldModel?.sampleCount ?? 0) > 0 ? 'training' : 'cold', detail: `${al?.worldModel?.sampleCount ?? 0} samples` })
+  // Active Exploration — ⚠️ PAUSED v2.0.833
+  systems.push({ name: 'Exploration', state: 'paused', detail: 'paused v2.0.833' })
 
   // EM Cycle Chain
   systems.push({ name: 'EM Chain', state: (emState?.summaryCount ?? 0) > 0 ? 'ready' : 'cold', detail: `${emState?.summaryCount ?? 0} summaries` })
@@ -2539,8 +2528,18 @@ function SystemStatusGrid({ al, olrState, emState, rilState }: {
   // Execution Lens
   systems.push({ name: 'Exec Lens', state: attnUpdates > 0 ? 'ready' : 'cold', detail: attnUpdates > 0 ? 'wExecution active' : 'cold-start' })
 
-  const stateColor = (s: SysState) => s === 'ready' ? 'var(--green)' : s === 'training' ? 'var(--gold)' : s === 'disabled' ? 'var(--text-muted)' : 'var(--red)'
-  const stateLabel = (s: SysState) => s === 'ready' ? '●' : s === 'training' ? '◐' : s === 'disabled' ? '○' : '○'
+  // ⭐ v2.0.833: Edge Validation Layer
+  const evReports = al?.edgeValidation?.edgeReportCount ?? 0
+  const evExec = al?.edgeValidation?.execTrackerEntries ?? 0
+  const evRpSize = al?.edgeValidation?.rpStoreSize ?? 0
+  const evAvg = al?.edgeValidation?.avgEdgeScore ?? 0
+  systems.push({ name: 'Edge Calc', state: evReports > 0 ? 'ready' : 'cold', detail: `${evReports} reports` })
+  systems.push({ name: 'Exec Tracker', state: evExec > 0 ? 'ready' : 'cold', detail: `${evExec} entries` })
+  systems.push({ name: 'Stability', state: 'ready', detail: 'perturbation + cross-time' })
+  systems.push({ name: 'RP Edge Store', state: evRpSize > 0 ? 'ready' : 'cold', detail: `${evRpSize} vectors, avg=${evAvg.toFixed(2)}` })
+
+  const stateColor = (s: SysState) => s === 'ready' ? 'var(--green)' : s === 'training' ? 'var(--gold)' : s === 'paused' ? 'var(--text-muted)' : s === 'disabled' ? 'var(--text-muted)' : 'var(--red)'
+  const stateLabel = (s: SysState) => s === 'ready' ? '●' : s === 'training' ? '◐' : s === 'paused' ? '⏸' : s === 'disabled' ? '○' : '○'
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '6px', padding: '8px 12px' }}>
@@ -2913,7 +2912,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
   const al = data?.advancedLearning
   const symbolCount = olrState?.symbols?.length ?? 0
 
-  // Count ready systems
+  // Count ready systems (v2.0.833: 4 dead components removed, 4 edge components added)
   const systemsReady = (() => {
     let count = 0
     if ((olrState?.symbols?.length ?? 0) > 0) count++
@@ -2923,19 +2922,20 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
     if (al?.chr && Object.keys(al.chr.symbols).length > 0) count++
     if ((al?.antiPattern?.clusterCount ?? 0) > 0) count++
     if ((al?.replay?.totalSamples ?? 0) >= 10) count++
-    if (al?.bayesian?.buy?.applied) count++
-    if ((al?.temporal?.updateCount ?? 0) > 0) count++
-    if ((al?.crossSymbol?.length ?? 0) > 0) count++
-    if (al?.rewardShaper) count++
-    if (al?.exploration?.enabled) count++
-    if (al?.worldModel?.ready) count++
+    // v2.0.833: Bayesian + Exploration PAUSED (not counted as ready)
+    // v2.0.833: temporal/crossSymbol/rewardShaper/worldModel REMOVED
     if ((data?.emState?.summaryCount ?? 0) > 0) count++
     if (data?.rilState?.isBuilt) count++
     count++ // Cond WR Gate (always ready)
     if ((al?.attnres?.updateCount ?? 0) > 0) count++ // Exec Lens
+    // ⭐ v2.0.833: Edge Validation components
+    if ((al?.edgeValidation?.edgeReportCount ?? 0) > 0) count++
+    if ((al?.edgeValidation?.execTrackerEntries ?? 0) > 0) count++
+    count++ // Stability Monitor (always ready — pure math)
+    if ((al?.edgeValidation?.rpStoreSize ?? 0) > 0) count++
     return count
   })()
-  const systemsTotal = 19
+  const systemsTotal = 15 // v2.0.833: 19→15 (4 removed + exploration/bayesian paused)
 
   // Build set of open position symbols
   const openPositionSymbols = new Set<string>()

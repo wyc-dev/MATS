@@ -237,12 +237,12 @@ sequenceDiagram
     participant Edge as EdgeCalculator
     participant Matrix as buildAssetAnalysis
     participant DB as Supabase
-    HACP->>Edge: consensus + marketState + shadow stats
-    Edge->>Edge: compute EdgeReport (A + B + C)
+    HACP->>Edge: consensus + marketState + shadow
+    Edge->>Edge: compute EdgeReport A+B+C
     Edge->>Matrix: edgeReport
-    Matrix->>Matrix: 若 recommendation=skip → action=hold + 標記 reason
-    Matrix->>Matrix: 若 caution → conviction × stabilityFactor
-    Matrix->>DB: asset_analyses.metadata.edgeReport = {...}
+    Matrix->>Matrix: skip → action=hold
+    Matrix->>Matrix: caution → conviction × factor
+    Matrix->>DB: metadata.edgeReport
 ```
 
 **改動範圍**（尊重 non-negotiables）：
@@ -383,15 +383,15 @@ Query vector = [
 
 ```mermaid
 graph TD
-  A[Trade closes] --> B[recordEntry vector = MiniLM embed of: marketFeatures + riskProfile + holdTimePref + slTolerance + side + symbol category]
-  B --> C[Vector DB append to ring buffer 10000]
-  C --> D[Outcome: realizedPnl + closeReason]
-  D --> E[Stored alongside vector]
-  F[Cycle decision time] --> G[Query vector = embed of: current marketFeatures + target riskProfile + profile-specific params]
-  G --> H[Vector DB top-K nearest = cosine similarity ≥ threshold]
-  H --> I[Compute risk-profile-conditional WR: Wilson LB over K matches]
-  I --> J[edgeScore(profile) = blend(conditional WR, other components)]
-  J --> K[Write 3 edgeScores to matrix: aggressive / moderate / conservative]
+  A["Trade closes"] --> B["MiniLM embed<br/>market + profile +<br/>holdPref + SL + side"]
+  B --> C["Vector DB<br/>ring buffer 10k"]
+  C --> D["Store outcome<br/>realizedPnl + closeReason"]
+  D --> E["Stored alongside vector"]
+  F["Cycle decision"] --> G["Query embed<br/>current market +<br/>target profile"]
+  G --> H["Top-K nearest<br/>cosine ≥ 0.65"]
+  H --> I["Conditional WR<br/>Wilson LB"]
+  I --> J["edgeScore per profile<br/>blend(WR, components)"]
+  J --> K["Matrix: 3 edgeScores<br/>aggr / mode / cons"]
 ```
 
 ### 1.10.4 向量構造
