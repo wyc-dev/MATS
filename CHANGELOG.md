@@ -22,6 +22,12 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 Attack: 28/28 edge case tests pass (NaN, Infinity, negative prices, S/R at entry, TP inversion, SL==TP, extreme ATR, empty candle data).
 
+**SL hit bypasses all close blocks (v2.0.832)**: v2.0.782 PRE-CHECK (4 guards: profitable, <30min, <0.5% loss, <240min profitable) + Skeptics close validation now bypass when SL is hit. Market confirmation overrides thesis protection — winners don't ride into losers. Root cause: GOLD (+$0.56 MFE → -$0.42) and BTC (+$2.41 MFE → -$0.90) rode into reversal because guards blocked close on profitable positions even when SL was hit. Fix: structural confirmation check before all guards — if SL hit, bypass all guards + skip Skeptics validation. Attack: 13/13 pass.
+
+**Conviction gate floating-point boundary (v2.0.832)**: SKHX SELL blocked by 0.001% — `0.7 × 0.7 = 0.48999...` < `0.49` threshold. Fix: `<` changed to `<= threshold - 0.001` (0.1% tolerance).
+
+**Trade-audit reads CHANGELOG (v2.0.832)**: `readChangelogFixes()` reads last 5 CHANGELOG version sections and injects into audit LLM prompt. LLM now checks if issue is already fixed before reporting — prevents re-reporting fixed issues (e.g. "SL too tight" was fixed in v2.0.832 but LLM kept reporting it).
+
 ### v2.0.831: Risk profile + vol-gate fix + pwinBlendFactor + news optimization + trade-audit filter
 
 **Risk profile (v2.0.822+)**: 3-segment slider (Aggr/Mode/Cons) in UI. `MarketAgentConfig.riskProfile` persisted. Meta-Agent prompt has `RISK PROFILE CALIBRATION` section. Plan G conviction gate applies `adjustedThreshold = clamp(effectiveThreshold × multiplier, 0.30, 0.70)` — aggressive ×0.85, conservative ×1.15.
