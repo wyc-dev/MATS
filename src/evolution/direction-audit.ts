@@ -14,8 +14,37 @@ import type { ThesisExperienceRecord } from '../types/index.ts';
 import { computeVectorConditionalWinRate, entryDecisionCondWROptions, formatVectorConditional } from './evolution-utils.ts';
 import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
 import { isThesisPlaceholder } from '../trading/portfolio.ts';
+import { readFileSync, existsSync } from 'node:fs';
 
 const log = createLogger({ phase: 'trade-audit' });
+
+/**
+ * v2.0.832: Read recent CHANGELOG.md fixes so the trade-audit LLM knows which
+ * issues have already been fixed. This prevents the LLM from re-reporting
+ * already-fixed issues (e.g. "SL too tight" was fixed in v2.0.832 smart SL/TP,
+ * but the LLM keeps reporting it because it doesn't know about the fix).
+ *
+ * Returns a compact summary of the last 5 changelog version sections.
+ */
+function readChangelogFixes(): string {
+  try {
+    if (!existsSync('CHANGELOG.md')) return '(CHANGELOG.md not found)';
+    const raw = readFileSync('CHANGELOG.md', 'utf-8');
+    // Extract version sections (## v2.0.XXX: ...)
+    const sections = raw.split(/^## /m).filter(s => s.startsWith('v2.0.'));
+    // Take last 5 sections, first 200 chars each (compact for LLM context)
+    const recent = sections.slice(0, 5).map(s => {
+      const lines = s.split('\n');
+      const title = lines[0] ?? '';
+      // Extract key fix keywords from first few lines
+      const summary = lines.slice(0, 5).join(' ').slice(0, 200);
+      return `- ${title}: ${summary}`;
+    });
+    return recent.join('\n') || '(no recent fixes found)';
+  } catch {
+    return '(failed to read CHANGELOG.md)';
+  }
+}
 
 // v2.0.211: System-decision close exitTypes — their PnL is partial/noisy (a
 // system force-close was not taken to SL/TP by the market), so the audit
@@ -152,6 +181,13 @@ Also, VECTOR-CONDITIONAL win rate per recent trade (win rate of historically sim
 ${buildVectorConditionalSummary(records, embeddingProvider)}
 
 IMPORTANT: Do NOT accuse the system of "ignoring learning data" based on raw per-symbol win rates alone. A symbol with 0% raw WR may have only 1 trade under totally different market conditions. The VECTOR-CONDITIONAL win rate above is the correct signal — if conditional WR is high but the trade lost, the issue is exit timing / luck, not direction. If conditional WR is low and the system still entered, THAT is a real learning failure.
+
+Examine these trade records for ANY suspicious patterns. Detect issues that hardcoded rules would miss.
+
+IMPORTANT: Before reporting an issue, check if it has ALREADY BEEN FIXED in the changelog below. If the fix is already in the changelog, do NOT report it as a new issue — the fix exists but these trades were opened BEFORE the fix was deployed. Only report NEW issues that are NOT addressed in the changelog.
+
+### CHANGELOG (recent fixes — do NOT re-report these as issues):
+${readChangelogFixes()}
 
 Examine these trade records for ANY suspicious patterns. Detect issues that hardcoded rules would miss.`;
 
