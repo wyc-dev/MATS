@@ -272,6 +272,21 @@ export class HACPEngine {
   /** v2.0.837: Set Meta-Cognitive Calibration block for agent context injection. */
   setMetaCalibrationBlock(block: string): void { this.metaCalibrationBlock = block; }
 
+  /** v2.0.838: Self-Improvement block — auto-tuning */
+  private selfImprovementBlock = '';
+  /** v2.0.838: Set Self-Improvement block for agent context injection. */
+  setSelfImprovementBlock(block: string): void { this.selfImprovementBlock = block; }
+
+  /** v2.0.839: Causal Reasoning block — causation vs correlation */
+  private causalBlock = '';
+  /** v2.0.839: Set Causal Reasoning block for agent context injection. */
+  setCausalBlock(block: string): void { this.causalBlock = block; }
+
+  /** v2.0.840: Meta-Learning block — learning to learn */
+  private metaLearningBlock = '';
+  /** v2.0.840: Set Meta-Learning block for agent context injection. */
+  setMetaLearningBlock(block: string): void { this.metaLearningBlock = block; }
+
   /** v2.0.143: RIL SimilarTradeRetriever — finds top-N most similar historical
    *  trades to a candidate thesis. Injected by index.ts so HACP can produce
    *  a "SIMILAR TRADES" context block for the Meta-Agent. */
@@ -1555,7 +1570,7 @@ export class HACPEngine {
       } catch { /* non-critical */ }
     }
 
-    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}${executionLensBlock}${explorationBlock}${this.qrlDiscoveryBlock ? `\n=== 🧬 Q-RL ALPHA DISCOVERY ===\n${this.qrlDiscoveryBlock}\n---` : ''}${this.metaCalibrationBlock ? `\n${this.metaCalibrationBlock}` : ''}`;
+    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}${executionLensBlock}${explorationBlock}${this.qrlDiscoveryBlock ? `\n=== 🧬 Q-RL ALPHA DISCOVERY ===\n${this.qrlDiscoveryBlock}\n---` : ''}${this.metaCalibrationBlock ? `\n${this.metaCalibrationBlock}` : ''}${this.selfImprovementBlock ? `\n${this.selfImprovementBlock}` : ''}${this.causalBlock ? `\n${this.causalBlock}` : ''}${this.metaLearningBlock ? `\n${this.metaLearningBlock}` : ''}`;
 
     if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition && !expThesisGated) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);

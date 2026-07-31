@@ -16,6 +16,9 @@ import {
 } from './edge/index.ts';
 import { QRLTable, type AlphaDiscovery } from './evolution/q-rl-table.ts';
 import { MetaCalibrator } from './evolution/meta-calibrator.ts';
+import { SelfImprover } from './evolution/self-improver.ts';
+import { CausalReasoner } from './evolution/causal-reasoner.ts';
+import { MetaLearner } from './evolution/meta-learner.ts';
 import { computeDCS } from './edge/dcs-calculator.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
 import { getActiveProvider } from './llm/index.ts';
@@ -166,6 +169,12 @@ class MATSSystem {
   private qrlDiscoveryBlock = ''; // injected into LLM agent context
   // v2.0.837: Meta-Cognitive Calibrator — system self-awareness
   private metaCalibrator!: MetaCalibrator;
+  // v2.0.838: Self-Improver — auto-tuning hyperparameters
+  private selfImprover!: SelfImprover;
+  // v2.0.839: Causal Reasoner — causation vs correlation
+  private causalReasoner!: CausalReasoner;
+  // v2.0.840: Meta-Learner — learning to learn
+  private metaLearner!: MetaLearner;
   private sentimentEngine!: SentimentEngine;
   /** v2.0.105: Adaptive noise filter — sigmoid+EMA with per-cycle auto-tuning */
   private adaptiveFilter!: AdaptiveNoiseFilter;
@@ -1111,6 +1120,45 @@ class MATSSystem {
         log.warn(`[meta-cal-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
       }
       log.info('✓ Meta-Cognitive Calibrator initialized');
+
+      // v2.0.838: Self-Improver init
+      this.selfImprover = new SelfImprover();
+      try {
+        const siPath = path.join(process.cwd(), 'data/evolution/self-improver.json');
+        if (fs.existsSync(siPath)) {
+          this.selfImprover.load(JSON.parse(fs.readFileSync(siPath, 'utf-8')));
+          log.info(`✓ Self-Improver loaded (${this.selfImprover.getPerformanceCount()} perf windows)`);
+        }
+      } catch (e) {
+        log.warn(`[self-improve-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+      }
+      log.info('✓ Self-Improver initialized');
+
+      // v2.0.839: Causal Reasoner init
+      this.causalReasoner = new CausalReasoner();
+      try {
+        const crPath = path.join(process.cwd(), 'data/evolution/causal-reasoner.json');
+        if (fs.existsSync(crPath)) {
+          this.causalReasoner.load(JSON.parse(fs.readFileSync(crPath, 'utf-8')));
+          log.info(`✓ Causal Reasoner loaded (${this.causalReasoner.getPairedCount()} paired shadows)`);
+        }
+      } catch (e) {
+        log.warn(`[causal-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+      }
+      log.info('✓ Causal Reasoner initialized');
+
+      // v2.0.840: Meta-Learner init
+      this.metaLearner = new MetaLearner();
+      try {
+        const mlPath = path.join(process.cwd(), 'data/evolution/meta-learner.json');
+        if (fs.existsSync(mlPath)) {
+          this.metaLearner.load(JSON.parse(fs.readFileSync(mlPath, 'utf-8')));
+          log.info(`✓ Meta-Learner loaded (${this.metaLearner.getCellCount()} cells, ${this.metaLearner.getFeatureCount()} features)`);
+        }
+      } catch (e) {
+        log.warn(`[meta-learn-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+      }
+      log.info('✓ Meta-Learner initialized');
 
       // 6. Start API Server
       log.info('Step 6/7: Starting API server...');
@@ -3067,6 +3115,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       } catch (err) {
         log.warn(`[meta-cal] recordTrade failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
       }
+
+      // v2.0.840: Meta-Learner — feature outcomes now recorded from shadow resolution
+      // (hybrid data source: shadow is 10-50× faster than real trade close)
+      // Real-trade feature outcomes kept for gradient validation but not primary source.
 
       // 5. Trigger Evolution — adapt strategy to the loss
       try {
@@ -5568,11 +5620,63 @@ ${recentExamples}
               const slippageCost = execStats.samples >= 20 ? (execStats.avgSlippageBps / 10000) : 0.0005;
               const fundingCost = execStats.samples >= 20 ? execStats.avgFundingPctPerHour * (sr.holdCycles * 5 / 60) : 0;
               const reward = sr.pnlPct - slippageCost - fundingCost;
+
+              // v2.0.840: Meta-Learner — record cell update for adaptive alpha
+              const oldQ = this.qrlTable.getRewardHistory({ regime: srFeatures['regimeOrdinal']?.toString() ?? 'unknown', volBin: 'normal', momBin: 'flat', fundingBin: 'neutral', action: sr.side }).length > 0
+                ? 0 : 0; // oldQ not easily available here; meta-learner tracks internally
+
               this.qrlTable.update(srFeatures, sr.side, reward);
+
+              // v2.0.840: Meta-Learner — record feature outcomes from shadow resolution
+              // (hybrid data source: shadow is 10-50× faster than real trade close)
+              try {
+                for (const [fname, fval] of Object.entries(srFeatures)) {
+                  this.metaLearner?.recordFeatureOutcome(fname, fval, sr.pnlPct);
+                }
+              } catch { /* non-critical */ }
+
+              // v2.0.839: Causal Reasoner — record paired shadow (traded vs hold benchmark)
+              // Hold benchmark = 0 (no position = no PnL from trading, but we
+              // could track market return as benchmark. For now, holdPnl = 0.)
+              try {
+                this.causalReasoner?.recordPairedShadow(
+                  sr.symbol,
+                  sr.side,
+                  sr.cycle,
+                  0,         // entryPrice not available in drainRecentResults; use 0
+                  sr.pnlPct, // traded PnL
+                  0,         // hold benchmark = 0% (no position)
+                );
+              } catch { /* non-critical */ }
             }
           }
           if (shadowResults.length > 0) {
             log.info(`🧬 [shadow] Fed ${shadowResults.length} shadow resolutions to advanced learning (replay)`);
+
+            // v2.0.838: Self-Improver — record performance from shadow resolutions
+            // (hybrid data source: shadow is 10-50× faster than real trade close)
+            // Every 20 shadow resolutions = one performance window
+            try {
+              const alignedResults = shadowResults.filter(r => r.shadowType === 'aligned');
+              if (alignedResults.length > 0) {
+                const wins = alignedResults.filter(r => r.outcome === 'win').length;
+                const winRate = wins / alignedResults.length;
+                const avgPnl = alignedResults.reduce((s, r) => s + safeNum(r.pnlPct, 0), 0) / alignedResults.length;
+                this.selfImprover?.recordPerformance({
+                  cycle: this.totalCycles,
+                  pnlPct: avgPnl,
+                  winRate,
+                  brier: this.metaCalibrator?.getOverallBrier() ?? 0.25,
+                  ece: this.metaCalibrator?.getECE() ?? 0,
+                  configSnapshot: {
+                    explorationStrategy: 'epsilon-greedy', // TODO: read from qrlTable config
+                  },
+                });
+                this.selfImprover?.runTuningCycle();
+              }
+            } catch (err) {
+              log.warn(`[self-improve] shadow perf record failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+            }
           }
 
           // v2.0.835: Q-RL discovery scan — every 5 cycles
@@ -5595,6 +5699,43 @@ ${recentExamples}
               this.hacpEngine.setMetaCalibrationBlock(calBlock);
             }
           } catch { /* non-critical — calibration is supplementary */ }
+
+          // v2.0.838: Inject Self-Improvement block into HACP
+          try {
+            const siBlock = this.selfImprover?.getImprovementBlock();
+            if (siBlock) {
+              this.hacpEngine.setSelfImprovementBlock(siBlock);
+            }
+          } catch { /* non-critical */ }
+
+          // v2.0.839: Inject Causal Reasoning block into HACP
+          try {
+            const causalBlock = this.causalReasoner?.getCausalBlock();
+            if (causalBlock) {
+              this.hacpEngine.setCausalBlock(causalBlock);
+            }
+          } catch { /* non-critical */ }
+
+          // v2.0.840: Inject Meta-Learning block into HACP
+          try {
+            const mlBlock = this.metaLearner?.getMetaLearningBlock();
+            if (mlBlock) {
+              this.hacpEngine.setMetaLearningBlock(mlBlock);
+            }
+          } catch { /* non-critical */ }
+
+          // v2.0.838: Self-Improver performance recording now uses shadow resolution data
+          // (moved to shadow resolution loop above — hybrid data source architecture)
+          // Real-trade param tuning gradient is still recorded at trade close below.
+
+          // v2.0.840: Meta-Learner — update regime speeds every 50 cycles
+          try {
+            if (this.totalCycles > 0 && this.totalCycles % 50 === 0) {
+              this.metaLearner?.updateRegimeSpeeds(this.totalCycles);
+            }
+          } catch (err) {
+            log.warn(`[meta-learn] regime update failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+          }
         } catch (err) {
           log.warn(`[shadow] Advanced learning feed failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -10495,6 +10636,24 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         saveAdv('meta-calibration.json', JSON.stringify(this.metaCalibrator?.save() ?? {}));
       } catch (err) {
         log.warn(`[meta-cal-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // v2.0.838: Save Self-Improver state
+      try {
+        saveAdv('self-improver.json', JSON.stringify(this.selfImprover?.save() ?? {}));
+      } catch (err) {
+        log.warn(`[self-improve-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // v2.0.839: Save Causal Reasoner state
+      try {
+        saveAdv('causal-reasoner.json', JSON.stringify(this.causalReasoner?.save() ?? {}));
+      } catch (err) {
+        log.warn(`[causal-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // v2.0.840: Save Meta-Learner state
+      try {
+        saveAdv('meta-learner.json', JSON.stringify(this.metaLearner?.save() ?? {}));
+      } catch (err) {
+        log.warn(`[meta-learn-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
       }
       // v2.0.221 (Fix 3): Save combo win rate tracker state
       if (this.comboTracker.isDirty()) {
