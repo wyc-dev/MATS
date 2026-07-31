@@ -95,7 +95,7 @@ export interface OLRModel {
   newestSampleTs: number;
   /** Recent resolved trades (last N, for agent context recency display) */
   recentTrades: Array<{
-    source: 'shadow' | 'paper' | 'real' | 'backfill';
+    source: 'shadow' | 'shadow_blind' | 'paper' | 'real' | 'backfill';
     side: 'buy' | 'sell';
     outcome: 'win' | 'loss';
     timestamp: number;
@@ -184,10 +184,10 @@ export interface OLRQueryResult {
   /** Human-readable explanation */
   explanation: string;
   /** Per-source-type sample breakdown (for agent context — no weighting) */
-  sourceBreakdown: { shadow: number; paper: number; real: number; backfill: number };
+  sourceBreakdown: { shadow: number; shadow_blind: number; paper: number; real: number; backfill: number };
   /** Recent resolved trades for this side (for recency judgment) */
   recentTrades: Array<{
-    source: 'shadow' | 'paper' | 'real' | 'backfill';
+    source: 'shadow' | 'shadow_blind' | 'paper' | 'real' | 'backfill';
     outcome: 'win' | 'loss';
     cyclesAgo: number;
     slNarrowed?: boolean;
@@ -252,7 +252,12 @@ const OLR_CONFIG = {
   // which is 30% of 1393 real samples. At 0.1, the same 1387 backfill = 139
   // effective, only 10% of real — backfill can cold-start the prior without
   // drowning out the live signal.
-  sourceWeight: { shadow: 1, paper: 2, real: 4, backfill: 0.1 } as Record<'shadow' | 'paper' | 'real' | 'backfill', number>,
+  // v2.0.834: Added 'shadow_blind' (weight 0.1) for blind shadow trades (both
+  // directions, no LLM direction). Aligned shadows (follow LLM consensus) keep
+  // weight 1.0. This ensures OLR learns the correct conditional distribution
+  // (LLM-chosen conditions) at full weight, while blind shadows serve only as
+  // cold-start priors at 10% weight — preventing distribution-shift pollution.
+  sourceWeight: { shadow: 1, shadow_blind: 0.1, paper: 2, real: 4, backfill: 0.1 } as Record<'shadow' | 'shadow_blind' | 'paper' | 'real' | 'backfill', number>,
   minSamplesForQuery: 10,
   highConfidenceSamples: 50,
   mediumConfidenceSamples: 20,
@@ -603,7 +608,7 @@ export class OLREngine {
     features: Record<string, number>,
     outcome: 1 | 0,
     side: 'buy' | 'sell',
-    source: 'shadow' | 'paper' | 'real' | 'backfill' = 'shadow',
+    source: 'shadow' | 'shadow_blind' | 'paper' | 'real' | 'backfill' = 'shadow',
     cycle: number = 0,
     slNarrowed: boolean = false,
     welfordMask?: Set<number>,
@@ -920,7 +925,7 @@ export class OLREngine {
       confidence: 'low',
       featureContributions: [],
       explanation: reason,
-      sourceBreakdown: { shadow: 0, paper: 0, real: 0, backfill: 0 },
+      sourceBreakdown: { shadow: 0, shadow_blind: 0, paper: 0, real: 0, backfill: 0 },
       recentTrades: [],
     });
 
@@ -1001,6 +1006,7 @@ export class OLREngine {
 
     const sourceBreakdown = {
       shadow: model.shadowSamples,
+      shadow_blind: 0, // v2.0.834: blind shadow count tracked separately
       paper: model.paperSamples,
       real: model.realSamples,
       backfill: model.backfillSamples,

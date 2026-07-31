@@ -4743,7 +4743,7 @@ ${recentExamples}
     outcome: 0 | 1;
     pnl: number;
     pnlPct: number;
-    source: 'shadow' | 'paper' | 'real' | 'backfill';
+    source: 'shadow' | 'shadow_blind' | 'paper' | 'real' | 'backfill';
     cycle: number;
     regime?: string;
     /** v2.0.226: Learning weight from close context. Scales the PnL reward
@@ -5501,7 +5501,12 @@ ${recentExamples}
               outcome: sr.outcome === 'win' ? 1 : 0,
               pnl: sr.pnlPct,
               pnlPct: sr.pnlPct,
-              source: 'shadow',
+              // v2.0.834 Fix B: Route by shadowType — aligned shadows are
+              // full-weight 'shadow' source; blind shadows are 0.1× 'shadow_blind'.
+              // This ensures the replay buffer + OLR receive the correct source
+              // label, so blind samples don't dilute aligned samples in PER
+              // sampling + IS-weight correction.
+              source: sr.shadowType === 'aligned' ? 'shadow' : 'shadow_blind',
               cycle: sr.cycle,
               regime: srSymState?.regime ?? 'unknown',
             });
@@ -5554,6 +5559,17 @@ ${recentExamples}
             ? (this.lastSRContext?.nearestSupport ?? null) : null;
           const srResistance = normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol)
             ? (this.lastSRContext?.nearestResistance ?? null) : null;
+
+          // v2.0.834 Fix A: Skip blind shadow if an aligned shadow already
+          // exists for this symbol+cycle. Aligned shadows follow the LLM
+          // consensus direction at full OLR weight (1.0); blind shadows are
+          // cold-start priors at 0.1× weight. Opening both wastes resources
+          // and the blind (wrong-distribution) sample dilutes the aligned
+          // (correct-distribution) sample in OLR's SGD update.
+          if (this.shadowEngine.hasAlignedShadow(mktSym, this.totalCycles)) {
+            log.debug(`[shadow] Skipping blind shadow for ${mktSym} — aligned shadow already open this cycle`);
+            continue;
+          }
 
           this.shadowEngine.openShadowTrades(
             mktSym,
@@ -6744,6 +6760,102 @@ ${recentExamples}
         } catch (err) {
           log.warn(`[analysis-write] failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
         }
+      }
+
+      // v2.0.834: Factor-Tagged Aligned Shadow Trading
+      // After HACP consensus + conviction gate, open aligned shadow trades
+      // for conditions where the LLM leaned toward a direction but the trade
+      // didn't execute (conviction gate blocked, or consensus was HOLD but
+      // sub-agent weighted direction had a lean). This teaches OLR + RP Edge
+      // Store the correct conditional distribution: "what happens when the
+      // LLM says go this way under these conditions."
+      //
+      // v2.0.834 Fix C: Iterate ALL perSymbolConsensus entries (not just active
+      // symbol) so every trading market gets aligned shadows. Each psc has its
+      // own direction + confidence — we open an aligned shadow for each symbol
+      // where the LLM leaned toward a direction but the trade didn't execute.
+      try {
+        const votes = result.consensus.votes ?? [];
+        const consensusConf = result.consensus.confidence;
+
+        // Compute sub-agent weighted direction from the global vote set
+        let buyWeight = 0, sellWeight = 0;
+        for (const v of votes) {
+          const action = (v.decision?.action as string) ?? 'hold';
+          if (action === 'buy') buyWeight += safeNum(v.weight, 0);
+          else if (action === 'sell') sellWeight += safeNum(v.weight, 0);
+        }
+        const hasWeightedLean = Math.abs(buyWeight - sellWeight) > 0.01;
+        if (!hasWeightedLean) {
+          // All agents HOLD — no directional lean → no aligned shadow (situation C)
+        } else {
+          // Determine the lean direction + primary driver
+          const leanSide: 'buy' | 'sell' = buyWeight > sellWeight ? 'buy' : 'sell';
+          const leanScore = buyWeight - sellWeight;
+
+          // Find primary driver: highest-weight agent matching the lean direction
+          let primaryDriver: { agent: string; weight: number; action: string } = { agent: 'none', weight: 0, action: 'hold' };
+          for (const v of votes) {
+            const action = (v.decision?.action as string) ?? 'hold';
+            if (action === leanSide && safeNum(v.weight, 0) > primaryDriver.weight) {
+              primaryDriver = { agent: v.agentRole, weight: v.weight, action };
+            }
+          }
+
+          // Build agent votes summary for factor tagging
+          const agentVotes = votes.map(v => ({
+            agent: v.agentRole,
+            weight: v.weight,
+            action: (v.decision?.action as string) ?? 'hold',
+          }));
+
+          // Iterate ALL symbols in the consensus (active + all trading markets)
+          const pscList = result.consensus.perSymbolConsensus ?? [];
+          const allSyms = new Set<string>([normalizeSymbol(activeSymbol)]);
+          for (const m of (this.tradingMarkets ?? [])) allSyms.add(normalizeSymbol(m));
+          for (const psc of pscList) allSyms.add(normalizeSymbol(psc.symbol));
+
+          for (const sym of allSyms) {
+            const psc = pscList.find(p => normalizeSymbol(p.symbol) === sym);
+            // Use per-symbol consensus action if available, else global lean
+            const pscAction = psc?.action ?? result.consensus.decision.action;
+            const didTradeExecute = pscAction === 'buy' || pscAction === 'sell';
+
+            // Skip if a real trade executed for this symbol (would overlap)
+            if (didTradeExecute) continue;
+
+            // Skip if an aligned shadow was already opened for this symbol+cycle
+            // (e.g. by a previous iteration or the blind-skip check)
+            if (this.shadowEngine.hasAlignedShadow(sym, this.totalCycles)) continue;
+
+            const ms = this.marketState.getState(sym);
+            const entryPrice = ms?.price ?? 0;
+            if (!Number.isFinite(entryPrice) || entryPrice <= 0) continue;
+
+            const ctx = this.lastCycleShadowContexts.get(sym);
+            const features = ctx?.features ?? {};
+
+            // Compute Smart SL/TP using config defaults + S/R if available
+            const slPct = config.risk.stopLossPct;
+            const tpPct = config.risk.takeProfitPct;
+            const slPrice = leanSide === 'buy'
+              ? entryPrice * (1 - slPct)
+              : entryPrice * (1 + slPct);
+            const tpPrice = leanSide === 'buy'
+              ? entryPrice * (1 + tpPct)
+              : entryPrice * (1 - tpPct);
+
+            this.shadowEngine.openAlignedShadow(
+              sym, entryPrice, leanSide, slPrice, tpPrice,
+              this.totalCycles, features,
+              pscAction, consensusConf,
+              leanSide, leanScore,
+              primaryDriver, agentVotes,
+            );
+          }
+        }
+      } catch (err) {
+        log.warn(`[aligned-shadow] failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
 
       // v2.0.60: Options Playbook deterministic veto.
