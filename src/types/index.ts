@@ -18,6 +18,8 @@ export interface EntryFeatures {
   shadowWinRate?: number;
   /** Market regime at entry (low_volatility / mean_reverting / trending_bull / …). */
   regime?: string;
+  /** v2.0.837: HACP consensus confidence at entry time (for Meta-Calibrator). */
+  consensusConfidence?: number;
 }
 
 // ─── Market Data ───
@@ -311,6 +313,8 @@ export interface Position {
   entryShadowWinRate?: number;
   /** Entry-time market regime. */
   regime?: string;
+  /** v2.0.837: Entry-time HACP consensus confidence (for Meta-Calibrator). */
+  entryConsensusConfidence?: number;
 }
 
 // ─── Multi-Symbol Decision (v1.9.2 — each agent evaluates ALL pairs) ───
@@ -560,6 +564,8 @@ export interface TradeRecord {
   entryShadowWinRate?: number;
   /** Entry-time market regime (copied from pos at close). */
   regime?: string;
+  /** v2.0.837: Entry-time HACP consensus confidence (for Meta-Calibrator). */
+  entryConsensusConfidence?: number;
 }
 
 // ─── EXP: Thesis Experience Vector Memory (v2.0.138) ───
