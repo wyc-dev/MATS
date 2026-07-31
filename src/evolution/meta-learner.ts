@@ -290,6 +290,44 @@ export class MetaLearner {
     return this.featureStates.size;
   }
 
+  /**
+   * v2.0.842: Record an audit-detected feature weight adjustment.
+   * When the LLM audit finds "thesis-contradicts-action", the thesis feature
+   * has low predictive power and should be downweighted. This directly adjusts
+   * the feature's predictive power EMA, causing the adaptive weight to drop.
+   *
+   * @param featureName  Feature to adjust (e.g. "thesisSignal")
+   * @param predictivePowerDelta  Change in predictive power (negative = downweight)
+   */
+  recordAuditFeatureAdjustment(featureName: string, predictivePowerDelta: number): void {
+    if (typeof featureName !== 'string' || featureName.length === 0) return;
+    if (!Number.isFinite(predictivePowerDelta)) return;
+
+    let state = this.featureStates.get(featureName);
+    if (!state) {
+      state = {
+        feature: featureName,
+        predictivePower: 0,
+        weight: 1.0,
+        history: [],
+      };
+      this.featureStates.set(featureName, state);
+    }
+
+    // Apply delta to predictive power EMA (clamped [-1, 1])
+    state.predictivePower = Math.max(-1, Math.min(1, state.predictivePower + predictivePowerDelta));
+
+    // Recompute weight from new predictive power
+    const targetWeight = 0.3 + 2.7 * Math.abs(state.predictivePower);
+    state.weight = Math.max(0.1, Math.min(3.0, targetWeight));
+
+    log.info(
+      `[meta-learn] audit feature adjustment: ${featureName} ` +
+      `delta=${predictivePowerDelta.toFixed(3)} → predictivePower=${state.predictivePower.toFixed(3)}, ` +
+      `weight=${state.weight.toFixed(2)}`
+    );
+  }
+
   private pearsonCorrelation(x: number[], y: number[]): number {
     const n = x.length;
     if (n < 5) return 0;

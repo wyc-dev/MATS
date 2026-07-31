@@ -77,7 +77,7 @@ import { calculateFirstPassage, estimateDrift, estimateVolatility, computeMoment
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
 import { wilsonScore } from './evolution/evolution-utils.ts';
 import { ComboWinRateTracker, type ComboGateResult } from './evolution/combo-win-rate-tracker.ts';
-import { auditTradeRecordsLLM, type AuditResult } from './evolution/direction-audit.ts';
+import { auditTradeRecordsLLM, type AuditResult, type AuditIncident } from './evolution/direction-audit.ts';
 import { runSystemEngineer } from './evolution/system-engineer.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
 import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent, computePriceNewsTiming, normalizeBaseAsset, type TimingCandle } from './analysis/news-sentiment.ts';
@@ -2778,6 +2778,79 @@ ${currentPrompt || '(empty — this is the first input)'}`;
     } catch (err) {
       log.warn(`[system-engineer] failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /** v2.0.842: Feed trade-audit incidents into evolution components.
+   *  Routes audit categories to the appropriate component:
+   *  - direction-repetition-loss → Self-Improver (negative reward)
+   *  - low-conditional-win-rate-ignored → CausalReasoner (confounder)
+   *  - thesis-contradicts-action → MetaLearner (feature downweight)
+   *  - premature-exit-mfe-mismatch → Self-Improver (SL cap push)
+   *  - overtrading → Self-Improver (conviction gate push)
+   *  - data-quality-issue → CausalReasoner (confounder)
+   *  Non-blocking, idempotent (called once per audit result). */
+  private feedAuditToEvolution(incidents: AuditIncident[]): void {
+    for (const inc of incidents) {
+      const weight = inc.severity === 'critical' ? 1.0
+        : inc.severity === 'warning' ? 0.5
+        : 0.25;
+
+      switch (inc.category) {
+        case 'direction-repetition-loss':
+        case 'low-conditional-win-rate-ignored':
+          // Self-Improver: strong negative performance signal
+          try {
+            this.selfImprover?.recordAuditIncident(inc.category, inc.severity, 0.01 * weight);
+          } catch { /* non-critical */ }
+          break;
+
+        case 'premature-exit-mfe-mismatch':
+        case 'sl-too-tight-for-volatility':
+          // Self-Improver: SL too narrow → negative reward pushes SL cap up
+          try {
+            this.selfImprover?.recordAuditIncident(inc.category, inc.severity, 0.005 * weight);
+          } catch { /* non-critical */ }
+          break;
+
+        case 'thesis-contradicts-action':
+        case 'thesis-quality-issue':
+          // Meta-Learner: thesis feature predictive power → downweight
+          try {
+            this.metaLearner?.recordAuditFeatureAdjustment('thesisSignal', -0.1 * weight);
+          } catch { /* non-critical */ }
+          break;
+
+        case 'market-condition-pattern':
+          // Meta-Learner: regime learning speed → downweight
+          // (extract regime from detail if possible)
+          try {
+            this.metaLearner?.recordAuditFeatureAdjustment('marketRegime', -0.05 * weight);
+          } catch { /* non-critical */ }
+          break;
+
+        case 'overtrading':
+          // Self-Improver: conviction gate too low → push up
+          try {
+            this.selfImprover?.recordAuditIncident(inc.category, inc.severity, 0.003 * weight);
+          } catch { /* non-critical */ }
+          break;
+
+        case 'data-quality-issue':
+          // Causal Reasoner: mark as confounder
+          try {
+            this.causalReasoner?.recordAuditConfounder('dataQuality', inc.detail);
+          } catch { /* non-critical */ }
+          break;
+
+        default:
+          // Unknown category → feed to Self-Improver as weak signal
+          try {
+            this.selfImprover?.recordAuditIncident(inc.category, inc.severity, 0.002 * weight);
+          } catch { /* non-critical */ }
+          break;
+      }
+    }
+    log.info(`[audit] Fed ${incidents.length} incidents to evolution components`);
   }
 
   /** v2.0.726: No-trade investigation — SE investigates why the system hasn't
@@ -5973,6 +6046,8 @@ ${recentExamples}
               log.info(`[audit] Cached ${result.incidents.length} incidents (${result.incidents.filter(i => i.severity === 'critical').length} critical) — will gate next decisions`);
               // v2.0.736: Trigger SE when audit has incidents — SE follows audit, not a fixed schedule
               this.auditTriggeredSE = true;
+              // v2.0.842: Feed audit incidents into evolution components
+              this.feedAuditToEvolution(result.incidents);
             } else {
               log.info(`[audit] No incidents — SE will not run this cycle`);
             }
