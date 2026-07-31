@@ -69,6 +69,24 @@ export interface ShadowPosition {
    *  Used to detect "SL was nearly avoided" — if MAE was 1.9% but SL was at
    *  2%, the trade nearly survived the dip and could have reached TP. */
   maePct: number;
+  /** v2.0.834: Shadow type — 'blind' (old behavior, both directions) or
+   *  'aligned' (follows LLM consensus direction with factor tagging).
+   *  Aligned shadows learn "what happens when the LLM says go this way but
+   *  conviction gate blocked the trade" — the distribution the system
+   *  actually needs for decision calibration. Blind shadows are cold-start
+   *  priors only (weight=0.1 in OLR). */
+  shadowType: 'blind' | 'aligned';
+  /** v2.0.834: Factor tagging for aligned shadows. The consensus direction
+   *  the LLM chose, plus which agent + signal drove that direction.
+   *  Undefined for blind shadows. */
+  factorTag?: {
+    consensusAction: string;
+    consensusConfidence: number;
+    weightedDirection: 'buy' | 'sell';
+    weightedScore: number;
+    primaryDriver: { agent: string; weight: number; action: string };
+    agentVotes: Array<{ agent: string; weight: number; action: string }>;
+  };
 }
 
 export interface ShadowTradeStats {
@@ -151,7 +169,7 @@ export class ShadowTradeEngine {
   /** Recently resolved trades (for agent context + stats).
    *  v2.0.178: Added mfePct/maePct to recentResults so getStats() can compute
    *  MAE/MFE averages from historical results, not just current positions. */
-  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number }> = [];
+  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' }> = [];
 
   constructor(olrEngine: OLREngine) {
     this.olrEngine = olrEngine;
@@ -191,7 +209,8 @@ export class ShadowTradeEngine {
     thesisDirection: 'buy' | 'sell' | null = null,
     srProvider?: { getZones: (symbol: string, price: number) => { support: number; resistance: number } | null },
   ): void {
-    if (entryPrice <= 0) return;
+    // v2.0.834: Guard against NaN/Infinity — same fix as openAlignedShadow.
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
 
     // Check limits
     const sym = symbol.toLowerCase();
@@ -254,8 +273,9 @@ export class ShadowTradeEngine {
       lowSinceOpen: entryPrice,
       mfePct: 0,
       maePct: 0,
+      shadowType: 'blind',
     });
-    log.debug(`[shadow] Opened LONG ${sym} at ${entryPrice.toFixed(2)} (SL=${longSL.toFixed(2)}, TP=${longTP.toFixed(2)})`);
+    log.debug(`[shadow] Opened BLIND LONG ${sym} at ${entryPrice.toFixed(2)} (SL=${longSL.toFixed(2)}, TP=${longTP.toFixed(2)})`);
 
     // Open shadow SHORT
     const shortId = `shadow_${++this.idCounter}`;
@@ -277,8 +297,9 @@ export class ShadowTradeEngine {
       lowSinceOpen: entryPrice,
       mfePct: 0,
       maePct: 0,
+      shadowType: 'blind',
     });
-    log.debug(`[shadow] Opened SHORT ${sym} at ${entryPrice.toFixed(2)} (SL=${shortSL.toFixed(2)}, TP=${shortTP.toFixed(2)})`);
+    log.debug(`[shadow] Opened BLIND SHORT ${sym} at ${entryPrice.toFixed(2)} (SL=${shortSL.toFixed(2)}, TP=${shortTP.toFixed(2)})`);
 
     // Prune old resolved positions (keep all open + last 100 resolved).
     // O(n) single-pass (L3 fix) — the previous indexOf-based filter was O(n²).
@@ -287,6 +308,117 @@ export class ShadowTradeEngine {
       const resolved = this.positions.filter(p => p.status !== 'open');
       this.positions = [...open, ...resolved.slice(-100)];
     }
+  }
+
+  /**
+   * v2.0.834: Open a Factor-Tagged Aligned Shadow position.
+   *
+   * Unlike `openShadowTrades` (blind — opens both directions regardless of
+   * LLM), this method opens a shadow trade in the direction the LLM consensus
+   * leaned toward, but ONLY when the conviction gate blocked the trade (or
+   * when consensus was HOLD but sub-agent weighted direction had a lean).
+   *
+   * This solves the fundamental distribution-shift problem: blind shadows
+   * learn "what happens if you blindly bet in any condition", but the system
+   * needs "what happens when the LLM says go this way under these conditions".
+   * Aligned shadows learn the correct conditional distribution.
+   *
+   * Factor tagging records which agent + signal drove the shadow direction.
+   * This metadata is NOT added to OLR features (avoiding dimension explosion
+   * + overfitting on a linear model). Instead, it's passed to the RP Edge
+   * Store's MiniLM embedding, enabling non-linear "similar market condition +
+   * similar agent signal combination → historical outcome" queries.
+   *
+   * @param symbol           Symbol name
+   * @param entryPrice       Current price
+   * @param side             Direction to shadow (the weighted lean direction)
+   * @param slPrice          Stop-loss price (from computeSmartSLTP)
+   * @param tpPrice          Take-profit price (from computeSmartSLTP)
+   * @param cycle            Current cycle number
+   * @param features         Feature snapshot at entry time
+   * @param consensusAction  The raw HACP consensus action ('buy'/'sell'/'hold')
+   * @param consensusConfidence  The HACP consensus confidence (0-1)
+   * @param weightedDirection The sub-agent weighted lean direction
+   * @param weightedScore    Net weighted score (buyWeight - sellWeight)
+   * @param primaryDriver    The agent with highest weight × matching direction
+   * @param agentVotes       All sub-agent votes for factor analysis
+   */
+  openAlignedShadow(
+    symbol: string,
+    entryPrice: number,
+    side: 'buy' | 'sell',
+    slPrice: number,
+    tpPrice: number,
+    cycle: number,
+    features: Record<string, number>,
+    consensusAction: string,
+    consensusConfidence: number,
+    weightedDirection: 'buy' | 'sell',
+    weightedScore: number,
+    primaryDriver: { agent: string; weight: number; action: string },
+    agentVotes: Array<{ agent: string; weight: number; action: string }>,
+  ): void {
+    // v2.0.834: Guard against NaN/Infinity entry price — `<= 0` does NOT
+    // catch NaN (NaN <= 0 === false) or Infinity (Infinity <= 0 === false).
+    // These would propagate into SL/TP calculations and corrupt OLR training.
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
+    const sym = symbol.toLowerCase();
+
+    // Don't open if we already have an aligned shadow for this symbol+side+cycle
+    const existing = this.positions.find(
+      p => p.symbol === sym && p.status === 'open' && p.side === side && p.shadowType === 'aligned' && p.openCycle === cycle,
+    );
+    if (existing) return;
+
+    // Check limits (aligned shadows count toward the same pool)
+    const symOpen = this.positions.filter(p => p.symbol === sym && p.status === 'open').length;
+    if (symOpen >= SHADOW_CONFIG.maxOpenPerSymbol) return;
+
+    const ts = Date.now();
+    const id = `aligned_${++this.idCounter}`;
+
+    // Calculate SL/TP — use provided Smart SL/TP, fall back to defaults
+    const sl = slPrice > 0 ? slPrice : entryPrice * (1 - SHADOW_CONFIG.defaultSLDistance);
+    const tp = tpPrice > 0 ? tpPrice : entryPrice * (1 + SHADOW_CONFIG.defaultTPDistance);
+    // For SELL, SL is above and TP is below
+    const finalSL = side === 'sell' && slPrice > 0 ? slPrice : (side === 'sell' ? entryPrice * (1 + SHADOW_CONFIG.defaultSLDistance) : sl);
+    const finalTP = side === 'sell' && tpPrice > 0 ? tpPrice : (side === 'sell' ? entryPrice * (1 - SHADOW_CONFIG.defaultTPDistance) : tp);
+
+    this.positions.push({
+      id,
+      symbol: sym,
+      side,
+      entryPrice,
+      stopLossPrice: finalSL,
+      takeProfitPrice: finalTP,
+      openCycle: cycle,
+      openTimestamp: ts,
+      features: { ...features },
+      status: 'open',
+      slNarrowed: false,
+      originalSL: finalSL,
+      originalTP: finalTP,
+      highSinceOpen: entryPrice,
+      lowSinceOpen: entryPrice,
+      mfePct: 0,
+      maePct: 0,
+      shadowType: 'aligned',
+      factorTag: {
+        consensusAction,
+        consensusConfidence,
+        weightedDirection,
+        weightedScore,
+        primaryDriver,
+        agentVotes,
+      },
+    });
+
+    log.info(
+      `[shadow] Opened ALIGNED ${side.toUpperCase()} ${sym} at ${entryPrice.toFixed(2)} ` +
+      `(SL=${finalSL.toFixed(2)}, TP=${finalTP.toFixed(2)}) — consensus=${consensusAction} ` +
+      `conf=${(consensusConfidence * 100).toFixed(0)}% driver=${primaryDriver.agent}(${primaryDriver.action}) ` +
+      `netWeight=${weightedScore.toFixed(2)}`,
+    );
   }
 
   /**
@@ -414,16 +546,18 @@ export class ShadowTradeEngine {
           : 0;
 
         try {
+          // v2.0.834: Aligned shadows use 'shadow' source; blind use 'shadow_blind'.
+          const staleSource = pos.shadowType === 'aligned' ? 'shadow' : 'shadow_blind';
           this.olrEngine.feedTrade(
-            sym, trainingFeaturesStale, outcomeNum, pos.side, 'shadow', cycle,
+            sym, trainingFeaturesStale, outcomeNum, pos.side, staleSource, cycle,
             false, undefined, SHADOW_CONFIG.staleLearningWeight,
           );
-          log.info(`[shadow] Force-resolved ${pos.id} (${pos.side} ${sym}) after ${holdCycles} cycles — pnl=${(pnl * 100).toFixed(2)}% → OLR fed with stale weight=${SHADOW_CONFIG.staleLearningWeight}`);
+          log.info(`[shadow] Force-resolved ${pos.id} (${pos.side} ${sym}, type=${pos.shadowType}) after ${holdCycles} cycles — pnl=${(pnl * 100).toFixed(2)}% → OLR fed (source=${staleSource}, stale weight=${SHADOW_CONFIG.staleLearningWeight})`);
         } catch (err) {
           log.warn(`[shadow] OLR feedTrade (stale) failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct });
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType });
         if (this.recentResults.length > 50) this.recentResults.shift();
         resolved++;
         continue;
@@ -480,13 +614,16 @@ export class ShadowTradeEngine {
         }
 
         try {
-          this.olrEngine.feedTrade(sym, trainingFeatures, outcomeNum, pos.side, 'shadow', cycle);
-          log.info(`[shadow] ${outcome.toUpperCase()} ${pos.side.toUpperCase()} ${sym} held ${holdCycles} cycles (entry=${pos.entryPrice.toFixed(2)} exit=${exitPrice.toFixed(2)}, slNarrowed=${pos.slNarrowed}) → OLR fed with weighted features (entry=${entryWeight}, resolution=${resolutionWeight})`);
+          // v2.0.834: Aligned shadows feed OLR at full weight (source='shadow');
+          // blind shadows feed at reduced weight (source='shadow_blind', 0.1×).
+          const source = pos.shadowType === 'aligned' ? 'shadow' : 'shadow_blind';
+          this.olrEngine.feedTrade(sym, trainingFeatures, outcomeNum, pos.side, source, cycle);
+          log.info(`[shadow] ${outcome.toUpperCase()} ${pos.side.toUpperCase()} ${sym} held ${holdCycles} cycles (entry=${pos.entryPrice.toFixed(2)} exit=${exitPrice.toFixed(2)}, slNarrowed=${pos.slNarrowed}, type=${pos.shadowType}) → OLR fed (source=${source})`);
         } catch (err) {
           log.warn(`[shadow] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct });
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType });
         if (this.recentResults.length > 50) this.recentResults.shift();
 
         resolved++;
@@ -626,6 +763,7 @@ export class ShadowTradeEngine {
     id: string; symbol: string; side: 'buy' | 'sell';
     outcome: 'win' | 'loss'; holdCycles: number; cycle: number;
     mfePct: number; maePct: number; pnlPct: number;
+    shadowType: 'blind' | 'aligned';
   }> {
     if (this.recentResults.length === 0) return [];
     const drained = this.recentResults.map(r => ({
@@ -640,9 +778,22 @@ export class ShadowTradeEngine {
       // Approximate pnlPct from outcome + MFE/MAE (exact entry/exit not stored
       // in recentResults, but outcome direction is the key signal)
       pnlPct: r.outcome === 'win' ? Math.max(r.mfePct ?? 0, 0.001) : -Math.max(r.maePct ?? 0, 0.001),
+      shadowType: r.shadowType ?? 'blind',
     }));
     this.recentResults = [];
     return drained;
+  }
+
+  /**
+   * v2.0.834: Check if an aligned shadow was already opened for this symbol
+   * in the given cycle. Used to skip redundant blind shadows when an aligned
+   * shadow already covers the LLM-chosen direction.
+   */
+  hasAlignedShadow(symbol: string, cycle: number): boolean {
+    const sym = symbol.toLowerCase();
+    return this.positions.some(
+      p => p.symbol === sym && p.status === 'open' && p.shadowType === 'aligned' && p.openCycle === cycle,
+    );
   }
 
   /**

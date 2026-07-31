@@ -88,6 +88,9 @@ export class RiskProfileEdgeStore {
     holdMinutes: number;
     slTolerancePct: number;
     ts?: number;
+    /** v2.0.834: Factor tagging — agent vote summary for embedding */
+    agentVotes?: Array<{ agent: string; weight: number; action: string }>;
+    primaryDriver?: { agent: string; action: string };
   }): Promise<void> {
     const ts = input.ts ?? Date.now();
     // de-dup by ts + symbol + side
@@ -119,13 +122,18 @@ export class RiskProfileEdgeStore {
   }
 
   /** Query the store for the conditional edge of a (market, profile) combo.
-   *  Returns neutral 0.5 on cold-start / no matches — never hard-blocks. */
+   *  Returns neutral 0.5 on cold-start / no matches — never hard-blocks.
+   *  v2.0.834: Optional agentVotes + primaryDriver enable factor-tagged
+   *  queries — "similar market condition + similar agent signal combination
+   *  → historical outcome." */
   async query(input: {
     marketFeatures: Record<string, number>;
     symbol: string;
     side: 'buy' | 'sell';
     riskProfile: RiskProfile;
     regime: string;
+    agentVotes?: Array<{ agent: string; weight: number; action: string }>;
+    primaryDriver?: { agent: string; action: string };
   }): Promise<RiskProfileEdgeResult> {
     if (!this.embedProvider || this.buffer.length === 0) {
       return { edgeScore: 0.5, confidence: 'low', samples: 0 };
@@ -241,6 +249,12 @@ export function buildEdgeText(input: {
   regime: string;
   holdMinutes?: number;
   slTolerancePct?: number;
+  /** v2.0.834: Factor tagging — agent vote summary for MiniLM embedding.
+   *  When provided, the embedding captures the JOINT semantics of market
+   *  condition + agent signal combination, enabling "similar market +
+   *  similar agent combination → historical outcome" queries. */
+  agentVotes?: Array<{ agent: string; weight: number; action: string }>;
+  primaryDriver?: { agent: string; action: string };
 }): string {
   const f = input.marketFeatures;
   const vol = safeNum(f['volatility'], 0).toFixed(4);
@@ -251,11 +265,17 @@ export function buildEdgeText(input: {
   const momLong = safeNum(f['momentumLong'], 0).toFixed(2);
   const hold = input.holdMinutes !== undefined ? `, hold ${input.holdMinutes}min` : '';
   const sl = input.slTolerancePct !== undefined ? `, SL ${input.slTolerancePct.toFixed(1)}%` : '';
+  // v2.0.834: Factor tagging — include agent vote summary in the embedding text
+  // so MiniLM captures the agent signal combination semantics.
+  const driver = input.primaryDriver ? `, driver ${input.primaryDriver.agent}(${input.primaryDriver.action})` : '';
+  const votes = input.agentVotes && input.agentVotes.length > 0
+    ? ', agents ' + input.agentVotes.map(v => `${v.agent}:${v.action}`).join('/')
+    : '';
   return [
     `Symbol ${input.symbol}, side ${input.side}.`,
     `Regime ${input.regime}, vol ${vol}, S/R ${sr}bps, funding ${funding}, OB ${ob},`,
     `momentum short ${momShort} long ${momLong}.`,
-    `Risk profile ${input.riskProfile}${hold}${sl}.`,
+    `Risk profile ${input.riskProfile}${hold}${sl}${driver}${votes}.`,
   ].join(' ');
 }
 

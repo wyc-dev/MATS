@@ -30,7 +30,7 @@ export interface ReplaySample {
   features: Record<string, number>;
   outcome: 1 | 0;
   side: 'buy' | 'sell';
-  source: 'shadow' | 'paper' | 'real' | 'backfill';
+  source: 'shadow' | 'shadow_blind' | 'paper' | 'real' | 'backfill';
   cycle: number;
   ts: number;
   pnl: number;
