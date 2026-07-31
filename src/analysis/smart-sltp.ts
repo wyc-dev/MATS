@@ -36,6 +36,10 @@ export interface SmartSLTPInput {
   /** Config fallback percentages */
   stopLossPct: number;
   takeProfitPct: number;
+  /** v2.0.836: Risk profile for DCS-aware SL/TP scaling (optional, backward compatible) */
+  riskProfile?: 'aggressive' | 'moderate' | 'conservative';
+  /** v2.0.836: DCS v2 Discovery Confidence Score [0, 1] (optional, backward compatible) */
+  dcs?: number;
 }
 
 export interface SmartSLTPResult {
@@ -245,30 +249,65 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // CAPS — SL max 5%, TP max 10%
+  // v2.0.836: PROFILE + DCS SL/TP SCALING
+  // DCS-aware continuous scaling of SL/TP based on risk profile + DCS score.
+  // Aggressive: SL wider (×1.0–1.3), TP wider (×1.0–1.5)
+  // Moderate:   SL ×1.0, TP ×1.0 (standard, never changes)
+  // Conservative: SL tighter (×0.7–1.0), TP tighter (×0.8–1.0)
+  // ═══════════════════════════════════════════════════════════════
+
+  const safeDcs = Number.isFinite(input.dcs ?? 0) && (input.dcs ?? 0) >= 0 ? (input.dcs ?? 0) : 0;
+  const profile = input.riskProfile ?? 'moderate';
+
+  // SL/TP multipliers from DCS (continuous, not tiered)
+  const slMultiplier = profile === 'aggressive' ? 1.0 + 0.3 * safeDcs   // [1.0, 1.3]
+    : profile === 'conservative' ? 0.7 + 0.3 * safeDcs                  // [0.7, 1.0]
+    : 1.0;                                                              // moderate
+  const tpMultiplier = profile === 'aggressive' ? 1.0 + 0.5 * safeDcs  // [1.0, 1.5]
+    : profile === 'conservative' ? 0.8 + 0.2 * safeDcs                 // [0.8, 1.0]
+    : 1.0;                                                              // moderate
+
+  // Apply SL/TP scaling (only if prices are finite and > 0)
+  if (Number.isFinite(slPrice) && slPrice > 0 && Number.isFinite(entryPrice) && entryPrice > 0) {
+    const slPctBeforeScale = Math.abs(slPrice - entryPrice) / entryPrice;
+    const scaledSlPct = slPctBeforeScale * slMultiplier;
+    slPrice = isBuy ? entryPrice * (1 - scaledSlPct) : entryPrice * (1 + scaledSlPct);
+    if (slMultiplier !== 1.0) {
+      logParts.push(`[DCS-SL] ×${slMultiplier.toFixed(3)} (${profile}, DCS=${safeDcs.toFixed(2)})`);
+    }
+  }
+  if (Number.isFinite(tpPrice) && tpPrice > 0 && Number.isFinite(entryPrice) && entryPrice > 0) {
+    const tpPctBeforeScale = Math.abs(tpPrice - entryPrice) / entryPrice;
+    const scaledTpPct = tpPctBeforeScale * tpMultiplier;
+    tpPrice = isBuy ? entryPrice * (1 + scaledTpPct) : entryPrice * (1 - scaledTpPct);
+    if (tpMultiplier !== 1.0) {
+      logParts.push(`[DCS-TP] ×${tpMultiplier.toFixed(3)} (${profile}, DCS=${safeDcs.toFixed(2)})`);
+    }
+  }
+
+  // Profile-specific caps
+  const slCap = profile === 'aggressive' ? 0.07 : profile === 'conservative' ? 0.03 : 0.05;
+  const tpCap = profile === 'aggressive' ? 0.15 : profile === 'conservative' ? 0.06 : 0.10;
+  const tpMin = profile === 'aggressive' ? 0.005 : profile === 'conservative' ? 0.002 : 0.003;
+
+  // ═══════════════════════════════════════════════════════════════
+  // CAPS — SL max (profile-specific), TP max (profile-specific)
   // ═══════════════════════════════════════════════════════════════
 
   const finalSlPct = Math.abs(slPrice - entryPrice) / entryPrice;
   const finalTpPct = Math.abs(tpPrice - entryPrice) / entryPrice;
 
-  // v2.0.835 security: use >= with epsilon for floating-point safe comparisons
-  if (finalSlPct > 0.05 + 1e-9) {
-    slPrice = isBuy ? entryPrice * 0.95 : entryPrice * 1.05;
-    logParts.push(`[SL-cap] narrowed from ${(finalSlPct * 100).toFixed(2)}% to 5%`);
+  if (finalSlPct > slCap + 1e-9) {
+    slPrice = isBuy ? entryPrice * (1 - slCap) : entryPrice * (1 + slCap);
+    logParts.push(`[SL-cap] narrowed from ${(finalSlPct * 100).toFixed(2)}% to ${(slCap * 100).toFixed(1)}%`);
   }
-  if (finalTpPct > 0.10 + 1e-9) {
-    tpPrice = isBuy ? entryPrice * 1.10 : entryPrice * 0.90;
-    logParts.push(`[TP-cap] narrowed from ${(finalTpPct * 100).toFixed(2)}% to 10%`);
+  if (finalTpPct > tpCap + 1e-9) {
+    tpPrice = isBuy ? entryPrice * (1 + tpCap) : entryPrice * (1 - tpCap);
+    logParts.push(`[TP-cap] narrowed from ${(finalTpPct * 100).toFixed(2)}% to ${(tpCap * 100).toFixed(1)}%`);
   }
-  // v2.0.832: TP minimum viability check — TP must be on the correct side
-  // of entry AND at least 0.3% away (not worth the fees below).
-  // This also catches the edge case where S/R resistance is so close to entry
-  // that TP = resistance × (1 - buffer) ends up BELOW entry for a BUY
-  // (or ABOVE entry for a SELL) — which would be an inverted TP.
-  if (finalTpPct < 0.003 - 1e-9) {
-    // TP too tight (less than 0.3%) — not worth the fees
-    tpPrice = isBuy ? entryPrice * 1.003 : entryPrice * 0.997;
-    logParts.push(`[TP-min] widened from ${(finalTpPct * 100).toFixed(2)}% to 0.3% (min viable)`);
+  if (finalTpPct < tpMin - 1e-9) {
+    tpPrice = isBuy ? entryPrice * (1 + tpMin) : entryPrice * (1 - tpMin);
+    logParts.push(`[TP-min] widened from ${(finalTpPct * 100).toFixed(2)}% to ${(tpMin * 100).toFixed(1)}% (min viable)`);
   }
 
   // ═══════════════════════════════════════════════════════════════

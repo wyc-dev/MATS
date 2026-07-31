@@ -42,6 +42,8 @@ export interface AlphaDiscovery {
   pValue: number;
   level: 'candidate' | 'probable' | 'confirmed';
   description: string;
+  /** v2.0.836: cycle number when this discovery was created (for DCS time decay) */
+  discoveredAt: number;
 }
 
 export interface QRLConfig {
@@ -235,6 +237,7 @@ export class QRLTable {
         pValue,
         level,
         description: this.formatDescription(key, qValue, visits, wilsonLB, level),
+        discoveredAt: cycle, // v2.0.836: record creation cycle for DCS time decay
       });
     }
 
@@ -281,6 +284,14 @@ export class QRLTable {
 
     // Fallback: best confirmed regardless of state match
     return discoveries.find(d => d.level === 'confirmed') ?? discoveries[0] ?? null;
+  }
+
+  /** v2.0.836: Get the reward history for a Q-table key (for DCS calculator).
+   *  Returns a copy of the internal reward history array. */
+  getRewardHistory(key: QTableKey): number[] {
+    const keyStr = `${key.regime}|${key.volBin}|${key.momBin}|${key.fundingBin}|${key.action.toLowerCase() as 'buy' | 'sell'}`;
+    const raw = this.rewardHistory[keyStr];
+    return Array.isArray(raw) ? [...raw] : [];
   }
 
   // ─── Persistence ───

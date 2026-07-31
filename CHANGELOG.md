@@ -4,6 +4,39 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.836: DCS v2 Risk Profile Differentiation + Task 3 build. First time three risk profiles (Aggressive/Moderate/Conservative) make truly different decisions — not just conviction scaling, but different entry acceptance, SL/TP width, and position size. DCS v2 (Discovery Confidence Score) replaces discrete Q-RL tiers with a continuous [0, 1] score incorporating 5 evidence dimensions + time decay + Edge cross-validation + recent performance + negative Q gate. 333 adversarial attack tests across 5 test suites find and fix 7 vulnerabilities.
+
+### New: `src/edge/dcs-calculator.ts` (~200 lines)
+
+**DCS v2 — Discovery Confidence Score** — continuous [0, 1] score replacing discrete Q-RL tiers. Five evidence dimensions (Q-value, Wilson LB, visits, p-value, downside consistency) + time decay (200-cycle half-life) + Edge cross-validation + recent performance + negative Q gate. Profile behavior: Aggressive gets continuous boost (×1.0+0.15×DCS²), Conservative gets continuous tightening (DCS ≥ 0.55 honest, < 0.3 HOLD), Moderate never changes.
+
+### Modified: `src/services/analysis-matrix.ts` — DCS-aware buildProfileCell
+
+`buildProfileCell()` upgraded from placeholder ×1.3/×0.7 to DCS-driven continuous logic. Moderate always standard, Aggressive quadratic boost, Conservative DCS ≥ 0.55 honest / < 0.3 HOLD. DCS clamped to [0, 1].
+
+### Modified: `src/analysis/smart-sltp.ts` — DCS-aware SL/TP scaling
+
+`computeSmartSLTP()` gains optional `riskProfile` + `dcs` parameters. Continuous SL/TP scaling + profile-specific caps (Aggressive 7%/15%, Moderate 5%/10%, Conservative 3%/6%).
+
+### Modified: `src/evolution/q-rl-table.ts` — AlphaDiscovery.discoveredAt + getRewardHistory
+
+- `AlphaDiscovery` interface gains `discoveredAt: number` (for DCS time decay)
+- New `getRewardHistory(key)` public method for DCS downside consistency + recent performance
+
+### Modified: `src/types/index.ts`, `src/index.ts`, `src/trading/trading-manager.ts`
+
+- `MatrixCell.dcs?` + `AssetAnalysis.dcs?` optional fields
+- `computeEdgeForSymbol()` computes DCS via `computeDCS()`
+- `trading-manager.ts` passes `riskProfile` + `dcs` to `computeSmartSLTP()`
+
+### 7 vulnerabilities fixed (333 attack tests, 5 suites)
+
+DCS = -1 → Aggressive boost (fixed: clamp [0,1]), DCS = 2 → out-of-range multipliers (fixed: clamp), DCS = NaN → NaN conviction in matrix (fixed: clamp in buildProfileCell), computeDCS getter bomb (fixed: try-catch), computeDCS Proxy throw (fixed: try-catch), buildProfileCell no DCS clamp (fixed: clamp).
+
+Build: `tsc --noEmit` zero errors, 333/333 attack tests pass.
+
+---
+
 ## v2.0.835: Q-RL Alpha Discovery + Factor-Tagged Aligned Shadow + Edge Validation hardening. First component that can DISCOVER new alpha via ε-greedy exploration. 270-cell Q-table (5 regime × 3 vol × 3 momentum × 3 funding × 2 action), EWMA Q-value update, Wilson score LB, stationary bootstrap p-value, Benjamini-Hochberg FDR correction. Aligned Shadow follows LLM consensus direction with agent vote metadata (Factor-Tagged). 242 adversarial attack tests across 4 test suites find and fix 16 vulnerabilities including getter bombs, prototype pollution, reference leaks, bootstrap centering bugs, and NaN propagation.
 
 ### New: `src/evolution/q-rl-table.ts` (~450 lines)
