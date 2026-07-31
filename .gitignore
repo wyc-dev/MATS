@@ -85,3 +85,4 @@ investMATS.md
 investor/
 *.investor.md
 pitch-deck-private/
+tests/
