@@ -279,6 +279,33 @@ export class SelfImprover {
   }
 
   /**
+   * v2.0.842: Record an audit incident as a performance signal.
+   * Critical incidents = strong negative reward (pnlPct = -0.01 × weight).
+   * Warning incidents = moderate negative reward (-0.005 × weight).
+   * Info incidents = weak negative reward (-0.003 × weight).
+   *
+   * This feeds the LLM audit's findings directly into the self-improvement
+   * loop, so the bandit + gradient tuning can react to qualitative patterns
+   * that quantitative metrics alone might miss.
+   */
+  recordAuditIncident(category: string, severity: string, pnlImpact: number): void {
+    if (!Number.isFinite(pnlImpact)) return;
+    const weight = severity === 'critical' ? 1.0
+      : severity === 'warning' ? 0.5
+      : 0.25;
+    const effectivePnl = -Math.abs(pnlImpact) * weight;
+    this.recordPerformance({
+      cycle: 0, // audit cycle, not decision cycle
+      pnlPct: effectivePnl,
+      winRate: effectivePnl >= 0 ? 1 : 0,
+      brier: 0.25,
+      ece: 0,
+      configSnapshot: { auditCategory: category },
+    });
+    log.info(`[self-improve] audit incident: ${category} (${severity}) → pnlPct=${effectivePnl.toFixed(4)}`);
+  }
+
+  /**
    * Get a snapshot of all current tuned values (for applying to live config).
    */
   getTunedValues(): Record<string, number> {

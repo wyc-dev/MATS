@@ -249,6 +249,34 @@ export class CausalReasoner {
   }
 
   /**
+   * v2.0.842: Record an audit-detected confounder.
+   * When the LLM audit finds "low-conditional-win-rate-ignored", it means
+   * a feature (e.g. conviction gate) has high correlation with trade entry
+   * but low causal importance — the system trades despite low WR = confounder.
+   * This injects a synthetic feature importance entry marking the feature
+   * as a confounder so the causal block warns the Meta-Agent.
+   */
+  recordAuditConfounder(featureName: string, detail: string): void {
+    if (typeof featureName !== 'string' || featureName.length === 0) return;
+    // Add as a confounder entry in feature importance
+    const existing = this.featureImportance.find(fi => fi.feature === featureName);
+    if (existing) {
+      existing.isConfounder = true;
+      existing.causalImportance = Math.min(existing.causalImportance, 0.01);
+    } else {
+      this.featureImportance.push({
+        feature: featureName,
+        causalImportance: 0.01,  // near-zero causal importance
+        correlation: 0.5,       // moderate correlation (it correlates with entry)
+        isConfounder: true,
+      });
+      // Keep sorted
+      this.featureImportance.sort((a, b) => b.causalImportance - a.causalImportance);
+    }
+    log.info(`[causal] audit confounder: ${featureName} — ${detail.slice(0, 80)}`);
+  }
+
+  /**
    * Pearson correlation coefficient.
    */
   private pearsonCorrelation(x: number[], y: number[]): number {
