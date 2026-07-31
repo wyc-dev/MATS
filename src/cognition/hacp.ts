@@ -267,6 +267,11 @@ export class HACPEngine {
   /** v2.0.835: Set Q-RL Alpha Discovery block for injection into agent context. */
   setQRLDiscoveryBlock(block: string): void { this.qrlDiscoveryBlock = block; }
 
+  /** v2.0.837: Meta-Cognitive Calibration block — system self-awareness */
+  private metaCalibrationBlock = '';
+  /** v2.0.837: Set Meta-Cognitive Calibration block for agent context injection. */
+  setMetaCalibrationBlock(block: string): void { this.metaCalibrationBlock = block; }
+
   /** v2.0.143: RIL SimilarTradeRetriever — finds top-N most similar historical
    *  trades to a candidate thesis. Injected by index.ts so HACP can produce
    *  a "SIMILAR TRADES" context block for the Meta-Agent. */
@@ -1550,7 +1555,7 @@ export class HACPEngine {
       } catch { /* non-critical */ }
     }
 
-    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}${executionLensBlock}${explorationBlock}${this.qrlDiscoveryBlock ? `\n=== 🧬 Q-RL ALPHA DISCOVERY ===\n${this.qrlDiscoveryBlock}\n---` : ''}`;
+    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}${executionLensBlock}${explorationBlock}${this.qrlDiscoveryBlock ? `\n=== 🧬 Q-RL ALPHA DISCOVERY ===\n${this.qrlDiscoveryBlock}\n---` : ''}${this.metaCalibrationBlock ? `\n${this.metaCalibrationBlock}` : ''}`;
 
     if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition && !expThesisGated) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);
