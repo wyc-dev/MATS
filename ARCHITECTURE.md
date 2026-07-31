@@ -3,7 +3,7 @@
 > **作者**: YC Wong · **版本**: 2.0.822+
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 3×3 風險矩陣 → 寫入 Supabase；客戶端按用戶選擇嘅風險等級讀取對應矩陣格並決定執行
-> **代碼量**: ~59,000 行 TypeScript（嚴格模式，零類型錯誤）
+> **代碼量**: ~60,000 行 TypeScript（嚴格模式，零類型錯誤）
 
 ---
 
@@ -23,7 +23,7 @@
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 認知演化管線（v2.0.833: 23→15 active + 1 Edge Validation layer）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration |
+| **自我演化** | 認知演化管線（v2.0.835: 23→15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL Alpha Discovery + Factor-Tagged Aligned Shadow |
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
 | **風險等級客戶端選擇** | 後端運算 3 個風險等級（aggressive/moderate/conservative）嘅訊號矩陣；客戶端按用戶選擇讀取對應格（v2.0.822）|
@@ -66,7 +66,7 @@
 │   • HACP 多模型平行推理（僅關鍵決策點觸發 LLM）                 │
 │   • 6 智能體 + Meta-Agent 仲裁 + Skeptics 邏輯審查             │
 │   • Entry Thesis System + 暗黑心理學 + 結構化辯論 + 加權投票    │
-│   • 認知演化管線（v2.0.833: 15 active + Edge Validation；4 組件已移除）     │
+│   • 認知演化管線（v2.0.835: 15 active + Edge Validation + Q-RL Alpha Discovery；4 組件已移除）     │
 │   • Plan G Dynamic Threshold [45-55%] + 乘法 Penalty 衰減       │
 │   • SystemGuard（5 層系統級保護）                               │
 ├──────────────────────────────────────────────────────────────┤
@@ -109,7 +109,7 @@ src/
 │   │   v2.0.143: executeTrade() / closeTrade() 統一路由
 ├── risk/                    # 風險引擎 + correlation-budget
 ├── system-guard/            # 5 層保護閘門
-├── evolution/               # 自我演化（認知演化管線：OLR + Shadow + First-Passage + EM + GA + RIL + EXP + NA + AttnRes + Anti-Pattern + Combo WR + P(win) Discount + Close-Context Learning v2.0.226 + Plan G v2.0.227。v2.0.833 移除 temporal-attention/cross-symbol/reward-shaping/world-model；暫停 active-exploration）
+├── evolution/               # 自我演化（認知演化管線：OLR + Shadow + First-Passage + EM + GA + RIL + EXP + NA + AttnRes + Anti-Pattern + Combo WR + P(win) Discount + Close-Context Learning v2.0.226 + Plan G v2.0.227 + Q-RL Alpha Discovery v2.0.835。v2.0.833 移除 temporal-attention/cross-symbol/reward-shaping/world-model；暫停 active-exploration）
 │   ├── embeddings.ts        # Transformers.js MiniLM 384-d 向量（in-process, singleton v2.0.216）
 │   ├── thesis-experience.ts # EXP 理據組合歷史勝率（方向過濾 + lesson persistence v2.0.207 #E）
 │   ├── experience-digester.ts # A2A 經驗消化（per-direction winRate + LessonStatement v2.0.207）
@@ -124,6 +124,7 @@ src/
 │   ├── active-exploration.ts # Active Exploration（UCB + info gain, v2.0.219；PAUSED v2.0.833: ACTIVE_EXPLORATION_ENABLED=false）
 │   ├── reason-analytics.ts  # RIL（per-direction win rates + direction-filtered similar trades v2.0.176）
 │   ├── evolution-utils.ts   # 共享 utils（safeNum v2.0.218, wilsonScore, computeVectorConditionalWinRate + rmsNormKeys + softmaxWeightedWR v2.0.211）
+│   ├── q-rl-table.ts       # Q-RL Alpha Discovery（270-cell Q-table, ε-greedy, BH-FDR, v2.0.835）
 │   │   # v2.0.833 REMOVED (0 inference call sites): temporal-attention.ts, cross-symbol-backbone.ts, reward-shaping.ts, world-model.ts
 │   ├── direction-audit.ts   # LLM 交易記錄審計（v2.0.180）
 │   └── system-engineer.ts   # 自主代碼工程師 Agent（v2.0.182）
@@ -144,7 +145,7 @@ src/
 └── index.ts                 # 系統 orchestrator（決策循環 + 矩陣寫入 ~line 6478）
 ui/                          # Legacy React + Vite dashboard（已由 mats_app 取代）
 data/evolution/              # olr-state · shadow-state · patterns · GA state · em-state · na-model · cycle-history · anti-patterns
-tests/                       # vitest（28 test files，含 analysis-matrix.test.ts）
+tests/                       # vitest（609 core + 424 attack tests，gitignored）
 supabase/migrations/         # 00000000000018_asset_analyses_matrix.sql（v2.0.822）
 ```
 
@@ -548,7 +549,7 @@ FINAL CONFIDENCE:
 
 ## 自我演化系統
 
-MATS 嘅核心競爭力係**認知演化管線**（v2.0.833: 23→15 active + 1 Edge Validation layer）——每筆交易結果都會餵回學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。v2.0.833 移除咗 4 個 0-inference 組件（temporal-attention / cross-symbol / reward-shaping / world-model）同暫停 active-exploration。以下逐層詳述：
+MATS 嘅核心競爭力係**認知演化管線**（v2.0.835: 23→15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery）——每筆交易結果都會餵回學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。v2.0.833 移除咗 4 個 0-inference 組件（temporal-attention / cross-symbol / reward-shaping / world-model）同暫停 active-exploration。v2.0.835 新增 Q-RL Alpha Discovery（首個可以發現新 alpha 嘅組件）+ Factor-Tagged Aligned Shadow。以下逐層詳述：
 
 ### OLR — Online Logistic Regression（`olr-engine.ts`）
 
@@ -896,6 +897,62 @@ Plan G（6 小時 idle 後）：
 
 ---
 
+## Q-RL Alpha Discovery（v2.0.835 — 首個可以發現新 alpha 嘅組件）
+
+**核心定位**：Edge Validation Layer 係 alpha 嘅「測謊機」——量化現有 edge。Q-RL Alpha Discovery 係首個可以**發現新 alpha**嘅組件——透過 ε-greedy 探索，嘗試 LLM 唔會選擇嘅 action，從 Aligned Shadow 嘅 reward 學習。
+
+### Q-RL Q-Table（`src/evolution/q-rl-table.ts`）
+
+**270 cells** = 5 regime × 3 vol × 3 momentum × 3 funding × 2 action。每個 cell 儲存 Q-value（預期 PnL%）、visit count、reward history。
+
+| 元件 | 說明 |
+|:-----|:-----|
+| ε-greedy 探索 | ε 由 1.0（100% 探索）線性衰減到 0.05，over 500 cycles。Cold-start（Q=0）→ follow LLM（同現有行為一致） |
+| EWMA Q-value 更新 | `α = 1/(1+visits)` diminishing learning rate。`newQ = (1-α)×oldQ + α×reward` |
+| Discovery 掃描 | 每 5 cycles 掃描 Q-table。Candidate: Q \u003e 0.2% + n ≥ 10。Probable: Q \u003e 0.3% + Wilson LB \u003e 50% + n ≥ 20。Confirmed: Q \u003e 0.5% + Wilson LB \u003e 55% + BH-FDR pass + n ≥ 30 |
+| Stationary bootstrap p-value | Politis & Romano 1994，block size √n，H0-centered（v2.0.835 fix: center data under H0，否則全部相同 reward → p-value=1.0） |
+| Benjamini-Hochberg FDR | 多重檢定修正。失敗嘅 confirmed → downgraded to probable |
+| HACP 注入 | `qrlDiscoveryBlock` 注入 Meta-Agent prompt。Confirmed → conviction +5%，Probable → +2%，Candidate → note only |
+| 持久化 | `q-rl-table.json`（atomic save/load），save 返回 deep copy（防 mutation） |
+
+**Cold-start 安全**：所有 Q=0 → follow LLM（同現有行為完全一致）。冇 GPU，冇 backprop，冇神經網絡——純 TypeScript EWMA + Wilson score。
+
+### Factor-Tagged Aligned Shadow（`src/evolution/shadow-trade-engine.ts`）
+
+**問題**：Blind shadow 喺所有市場條件下開模擬倉，但真實交易只喺 LLM 選擇嘅條件下執行 → distribution shift → OLR 學習錯誤分佈。
+
+**解決方案**：Aligned Shadow 跟隨 LLM 共識方向，帶 agent vote metadata（factor tagging）。
+
+| 元件 | 說明 |
+|:-----|:-----|
+| `shadowType: 'blind' \| 'aligned'` | ShadowPosition 新增欄位 |
+| `openAlignedShadow()` | 跟隨 LLM 共識方向，接受外部 SL/TP 參數 + agentVotes + primaryDriver |
+| `hasAlignedShadow()` | Blind skip check（避免重複 shadow） |
+| OLR source routing | `checkPositions` 按 `shadowType` 路由：aligned → 'shadow'（weight 1），blind → 'shadow_blind'（weight 0.1） |
+| `buildEdgeText` factor tagging | agentVotes + primaryDriver 注入 MiniLM embedding text → factor-tagged queries |
+
+**OLR source weights**：`shadow=1, shadow_blind=0.1, paper=2, real=4, backfill=0.1`。Blind shadow downweighted 10×（distribution shift）。
+
+### 安全修復（v2.0.835: 20 vulnerabilities, 242 attack tests）
+
+5 輪對抗測試發現並修復 20 個漏洞：
+
+| 輪次 | 目標 | 測試數 | 漏洞 |
+|:---|:---|:---:|:---:|
+| Round 1 | Q-RL 基礎 | 52 | 2（null features crash, action case sensitivity） |
+| Round 2 | Q-RL 深度 | +48 → 100 | 3（save reference leak, load config restore, bootstrap centering） |
+| Round 3 | CHANGELOG 10 功能 | 142 | 8（NaN entryPrice, serialize leak, getter bomb, bootstrap centering, 等） |
+| Round 4 | 創意/意想不到 | 113 | 3（MAX_VALUE overflow, serialize recent leak, Object.entries getter bomb） |
+| Round 5 | Q-RL 創意 | 69 | 4（makeKey getter bomb, Proxy throw, getBestDiscovery getter） |
+| **總計** | | **242** | **20** |
+
+最嚴重嘅漏洞：
+1. **Q-RL bootstrapPValue centering**（R2-3）——全部相同 reward → p-value=1.0 → confirmed discovery 永遠唔會發生 → Alpha Discovery 系統名存實亡
+2. **smart-sltp.ts NaN entryPrice**（V1）——SL/TP 全部 NaN → 交易引擎收到 NaN 止損 = 無止損開倉
+3. **Q-RL getter bomb**（Q1-Q4）——`makeKey` 嘅 `features['regimeOrdinal']` 觸發 getter → crash 整個 decision cycle
+
+---
+
 ## 其他子系統
 
 ### S/R Zone Detection（`support-resistance.ts`）
@@ -1007,7 +1064,7 @@ RIL_SUBTLE_DIFF_ENABLED=true
 | Legacy UI | `ui/`（React 18 + Vite — 已由 mats_app 取代，保留作 local dashboard）|
 | Config | Zod schema validation |
 | Logging | Winston（structured + file rotation） |
-| Testing | vitest（28 test files，含 analysis-matrix + dynamic-threshold-attack）|
+| Testing | vitest（609 core + 424 attack tests，gitignored；4 attack suites: q-rl-attack, changelog-features-attack, creative-attacks, q-rl-creative-attacks）|
 | Crypto | `@noble/curves`（HL phantom agent signing） |
 | Vector Embedding | Transformers.js MiniLM L6 v2（384-dim, in-process, CPU） |
 | Pattern Clustering | Greedy cosine clustering（RIL Reason Intelligence Layer） |

@@ -192,7 +192,8 @@ export class ExecutionTracker {
         avgFundingPctPerHour: s.avgFundingPctPerHour,
         sumSlippageBps: s.sumSlippageBps,
         sumFundingPctPerHour: s.sumFundingPctPerHour,
-        recent: s.recent,
+        // v2.0.835 security: deep copy recent array to prevent mutation of internal state
+        recent: s.recent.map(r => ({ ...r })),
       };
     }
     return out;

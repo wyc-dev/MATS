@@ -168,11 +168,16 @@ export function bootstrapPValue(
 ): number {
   if (returns.length < 5) return 1.0; // cannot reject H0 with <5 samples
   const observed = meanOf(returns);
+  // v2.0.835 fix: center data under H0 (mean = 0) so that bootstrap samples
+  // reflect the null distribution. Without centering, identical positive
+  // returns yield p-value=1.0 (all bootstrap means = observed) instead of
+  // ~0.0 (highly significant). Same bug as Q-RL bootstrapPValue.
+  const centered = returns.map(r => r - observed);
   // expected block size: ~√n (Politis rule of thumb)
   const blockSize = Math.max(1, Math.floor(Math.sqrt(returns.length)));
   let count = 0;
   for (let i = 0; i < iterations; i++) {
-    const sample = blockBootstrapSample(returns, blockSize);
+    const sample = blockBootstrapSample(centered, blockSize);
     if (meanOf(sample) >= observed) count++;
   }
   return count / iterations;
@@ -188,6 +193,8 @@ export function deflatedSharpeRatio(
   sampleCount: number,
 ): number {
   if (sampleCount < 2 || numTrials < 1) return 0;
+  // v2.0.835 security: guard against NaN/Infinity observedSharpe
+  if (!Number.isFinite(observedSharpe)) return 0;
   // expected max Sharpe under H0 over M independent trials:
   const expectedMaxSharpe = Math.sqrt(2 * Math.log(Math.max(1, numTrials)));
   // standard error of the Sharpe estimate (Lo 2002):

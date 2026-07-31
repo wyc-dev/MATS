@@ -196,7 +196,11 @@ export class RiskProfileEdgeStore {
   /** Serialise for persistence. Embeddings are large (384-d × N); we keep
    *  them because re-embedding 10k records on restart is expensive. */
   serialize(): RiskProfileEdgeRecord[] {
-    return this.buffer.slice(-edgeConfig.rpStoreCap);
+    // v2.0.835 security: deep copy to prevent external mutation of internal state
+    return this.buffer.slice(-edgeConfig.rpStoreCap).map(r => ({
+      ...r,
+      embedding: Array.isArray(r.embedding) ? [...r.embedding] : [],
+    }));
   }
 
   /** Restore from persisted state. Tolerates missing/partial embeddings. */
@@ -256,7 +260,10 @@ export function buildEdgeText(input: {
   agentVotes?: Array<{ agent: string; weight: number; action: string }>;
   primaryDriver?: { agent: string; action: string };
 }): string {
-  const f = input.marketFeatures;
+  // v2.0.835 security: guard against null/undefined marketFeatures
+  const f = (input.marketFeatures && typeof input.marketFeatures === 'object')
+    ? input.marketFeatures
+    : {};
   const vol = safeNum(f['volatility'], 0).toFixed(4);
   const sr = safeNum(f['srDistanceBps'], 0).toFixed(0);
   const funding = safeNum(f['fundingRate'], 0).toFixed(5);

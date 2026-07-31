@@ -137,9 +137,26 @@ export function perturbFeatures(
   features: Record<string, number>,
   magnitude: number,
 ): Record<string, number> {
+  // v2.0.835 security: guard against null/undefined features
+  if (!features || typeof features !== 'object') return {};
   const out: Record<string, number> = {};
-  for (const [k, v] of Object.entries(features)) {
-    const safe = safeNum(v, 0);
+  // v2.0.835 security: Object.entries can trigger getters that throw.
+  // Wrap in try-catch so a malicious feature object can't crash the cycle.
+  let entries: [string, unknown][];
+  try {
+    entries = Object.entries(features);
+  } catch {
+    return {};
+  }
+  for (const [k, v] of entries) {
+    // v2.0.835 security: getter could throw on property access — guard each access
+    let val: number;
+    try {
+      val = typeof v === 'number' ? v : Number(v);
+    } catch {
+      val = 0;
+    }
+    const safe = Number.isFinite(val) ? val : 0;
     // symmetric ±nudge around the current value. Avoid sign flip when the
     // feature is near zero (a tiny feature nudged past zero is a different
     // regime, not noise) by using multiplicative perturbation for |v|>1e-6.
