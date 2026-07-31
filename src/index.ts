@@ -15,6 +15,7 @@ import {
   RiskProfileEdgeStore, type EdgeCalcInput,
 } from './edge/index.ts';
 import { QRLTable, type AlphaDiscovery } from './evolution/q-rl-table.ts';
+import { MetaCalibrator } from './evolution/meta-calibrator.ts';
 import { computeDCS } from './edge/dcs-calculator.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
 import { getActiveProvider } from './llm/index.ts';
@@ -163,6 +164,8 @@ class MATSSystem {
   // v2.0.835: Q-RL Alpha Discovery
   private qrlTable!: QRLTable;
   private qrlDiscoveryBlock = ''; // injected into LLM agent context
+  // v2.0.837: Meta-Cognitive Calibrator — system self-awareness
+  private metaCalibrator!: MetaCalibrator;
   private sentimentEngine!: SentimentEngine;
   /** v2.0.105: Adaptive noise filter — sigmoid+EMA with per-cycle auto-tuning */
   private adaptiveFilter!: AdaptiveNoiseFilter;
@@ -1095,6 +1098,19 @@ class MATSSystem {
         log.warn(`[q-rl-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
       }
       log.info('✓ Q-RL Alpha Discovery initialized');
+
+      // v2.0.837: Meta-Cognitive Calibrator init
+      this.metaCalibrator = new MetaCalibrator();
+      try {
+        const calPath = path.join(process.cwd(), 'data/evolution/meta-calibration.json');
+        if (fs.existsSync(calPath)) {
+          this.metaCalibrator.load(JSON.parse(fs.readFileSync(calPath, 'utf-8')));
+          log.info(`✓ Meta-Calibrator loaded (${this.metaCalibrator.getSampleCount()} samples, Brier=${this.metaCalibrator.getOverallBrier().toFixed(4)}, ECE=${this.metaCalibrator.getECE().toFixed(4)})`);
+        }
+      } catch (e) {
+        log.warn(`[meta-cal-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+      }
+      log.info('✓ Meta-Cognitive Calibrator initialized');
 
       // 6. Start API Server
       log.info('Step 6/7: Starting API server...');
@@ -3040,6 +3056,16 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         }
       } catch (err) {
         log.warn(`[edge-close] tracking failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // v2.0.837: Meta-Cognitive Calibrator — record prediction accuracy
+      try {
+        const predictedPWin = safeNum(trade.entryOlrPWin, 0.5);
+        const conviction = safeNum(this.lastHACPResult?.consensus?.confidence, 0.5);
+        const entryRegime = trade.regime ?? regime ?? 'unknown';
+        this.metaCalibrator?.recordTrade(predictedPWin, conviction, entryRegime, outcome);
+      } catch (err) {
+        log.warn(`[meta-cal] recordTrade failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
       }
 
       // 5. Trigger Evolution — adapt strategy to the loss
@@ -5560,6 +5586,14 @@ ${recentExamples}
               this.qrlDiscoveryBlock = best.description;
             }
           }
+
+          // v2.0.837: Inject Meta-Cognitive Calibration block into HACP
+          try {
+            const calBlock = this.metaCalibrator?.getCalibrationBlock();
+            if (calBlock) {
+              this.hacpEngine.setMetaCalibrationBlock(calBlock);
+            }
+          } catch { /* non-critical — calibration is supplementary */ }
         } catch (err) {
           log.warn(`[shadow] Advanced learning feed failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -10454,6 +10488,12 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         saveAdv('q-rl-table.json', JSON.stringify(this.qrlTable?.save() ?? {}));
       } catch (err) {
         log.warn(`[q-rl-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // v2.0.837: Save Meta-Cognitive Calibrator state
+      try {
+        saveAdv('meta-calibration.json', JSON.stringify(this.metaCalibrator?.save() ?? {}));
+      } catch (err) {
+        log.warn(`[meta-cal-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
       }
       // v2.0.221 (Fix 3): Save combo win rate tracker state
       if (this.comboTracker.isDirty()) {

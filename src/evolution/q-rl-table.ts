@@ -75,12 +75,21 @@ export interface QRLConfig {
   maxRewardHistory: number;
   /** How often to scan for discoveries (in cycles) */
   discoveryScanInterval: number;
+  /** v2.0.837: Exploration strategy — 'epsilon-greedy' (legacy), 'ucb1', or 'thompson' */
+  explorationStrategy: 'epsilon-greedy' | 'ucb1' | 'thompson';
+  /** v2.0.837: UCB1 exploration constant c. sqrt(2) ≈ 1.41 */
+  ucbExplorationConstant: number;
+  /** v2.0.837: Minimum total visits before UCB/Thompson kicks in (cold-start safety) */
+  ucbMinTotalVisits: number;
 }
 
 const DEFAULT_CONFIG: QRLConfig = {
   epsilonStart: 1.0,
   epsilonMin: 0.05,
   epsilonDecayCycles: 500,
+  explorationStrategy: 'epsilon-greedy', // v2.0.837: default = backward compatible
+  ucbExplorationConstant: 1.41, // sqrt(2)
+  ucbMinTotalVisits: 10,
   minVisitsCandidate: 10,
   minVisitsProbable: 20,
   minVisitsConfirmed: 30,
@@ -110,17 +119,24 @@ export class QRLTable {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  // ─── ε-greedy action selection ───
+  // ─── Action selection (v2.0.837: ε-greedy / UCB1 / Thompson Sampling) ───
 
-  /** Select an action using ε-greedy: explore with Q-table, exploit with LLM.
-   *  Cold-start (both Q=0) → follow LLM (identical to current behavior).
-   *  v2.0.835 security: null/undefined features → safe fallback (follows LLM). */
+  /**
+   * Select an action. Strategy determined by config.explorationStrategy.
+   *
+   * - 'epsilon-greedy': random explore with probability ε (legacy behavior)
+   * - 'ucb1':           pick action with highest Q(a) + c√(ln N / n_a)
+   * - 'thompson':       sample from Beta(wins+1, losses+1) per action, pick highest
+   *
+   * All strategies are cold-start safe: if both actions have 0 visits,
+   * follow LLM (identical to current behavior).
+   * v2.0.835 security: null/undefined features → safe fallback (follows LLM).
+   */
   selectAction(
     llmAction: 'buy' | 'sell',
     features: Record<string, number>,
   ): 'buy' | 'sell' {
     this.totalCycles++;
-    const epsilon = this.currentEpsilon();
 
     // Guard against null/undefined features
     if (!features || typeof features !== 'object') return llmAction;
@@ -129,19 +145,156 @@ export class QRLTable {
     const sellKey = this.makeKey(features, 'sell');
     const qBuy = this.values[buyKey] ?? 0;
     const qSell = this.values[sellKey] ?? 0;
+    const visitsBuy = this.visits[buyKey] ?? 0;
+    const visitsSell = this.visits[sellKey] ?? 0;
 
-    // Cold-start: both Q=0 → follow LLM
-    if (qBuy === 0 && qSell === 0) return llmAction;
+    // Cold-start: both visits=0 → follow LLM
+    if (visitsBuy === 0 && visitsSell === 0) return llmAction;
 
-    // Exploration: ε% chance to follow Q-table instead of LLM
+    const strategy = this.config.explorationStrategy;
+
+    if (strategy === 'ucb1') {
+      return this.selectUCB1(llmAction, qBuy, qSell, visitsBuy, visitsSell);
+    }
+    if (strategy === 'thompson') {
+      return this.selectThompson(llmAction, buyKey, sellKey);
+    }
+
+    // Default: epsilon-greedy (legacy behavior)
+    const epsilon = this.currentEpsilon();
     if (Math.random() < epsilon) {
       const rlAction = qBuy > qSell ? 'buy' : 'sell';
       log.debug(`[q-rl] EXPLORE (ε=${epsilon.toFixed(3)}): LLM=${llmAction}, RL=${rlAction} (Q_buy=${qBuy.toFixed(4)}, Q_sell=${qSell.toFixed(4)})`);
       return rlAction;
     }
-
-    // Exploitation: follow LLM
     return llmAction;
+  }
+
+  /**
+   * UCB1 action selection.
+   * UCB1(a) = Q(a) + c × √(ln(N) / n_a)
+   * If n_a = 0, the exploration term is Infinity → always pick unvisited first.
+   */
+  private selectUCB1(
+    llmAction: 'buy' | 'sell',
+    qBuy: number,
+    qSell: number,
+    visitsBuy: number,
+    visitsSell: number,
+  ): 'buy' | 'sell' {
+    const N = visitsBuy + visitsSell;
+    if (N < this.config.ucbMinTotalVisits) {
+      // Not enough total visits → follow LLM (cold-start safety)
+      return llmAction;
+    }
+
+    const c = this.config.ucbExplorationConstant;
+    const lnN = Math.log(N + 1);
+
+    const ucbBuy = visitsBuy === 0
+      ? Infinity  // unvisited → always explore first
+      : qBuy + c * Math.sqrt(lnN / visitsBuy);
+
+    const ucbSell = visitsSell === 0
+      ? Infinity
+      : qSell + c * Math.sqrt(lnN / visitsSell);
+
+    const selected = ucbBuy >= ucbSell ? 'buy' : 'sell';
+
+    log.debug(
+      `[q-rl] UCB1: Q_buy=${qBuy.toFixed(4)} (n=${visitsBuy}, ` +
+      `UCB=${ucbBuy === Infinity ? '∞' : ucbBuy.toFixed(4)}), ` +
+      `Q_sell=${qSell.toFixed(4)} (n=${visitsSell}, ` +
+      `UCB=${ucbSell === Infinity ? '∞' : ucbSell.toFixed(4)}) → ${selected}`
+    );
+
+    return selected;
+  }
+
+  /**
+   * Thompson Sampling action selection.
+   * For each action, maintain Beta(wins+1, losses+1) posterior.
+   * Sample from each posterior, pick the higher sample.
+   *
+   * Beta(α, β) where α = wins + 1, β = losses + 1 (prior = Beta(1,1) = uniform).
+   * Cold-start (0 wins 0 losses) → Beta(1,1) = uniform [0,1] → 50/50.
+   */
+  private selectThompson(
+    llmAction: 'buy' | 'sell',
+    buyKey: string,
+    sellKey: string,
+  ): 'buy' | 'sell' {
+    const buyRewards = this.rewardHistory[buyKey] ?? [];
+    const sellRewards = this.rewardHistory[sellKey] ?? [];
+
+    const buyWins = buyRewards.filter(r => r > 0).length;
+    const buyLosses = buyRewards.length - buyWins;
+    const sellWins = sellRewards.filter(r => r > 0).length;
+    const sellLosses = sellRewards.length - sellWins;
+
+    const sampleBuy = this.sampleBeta(buyWins + 1, buyLosses + 1);
+    const sampleSell = this.sampleBeta(sellWins + 1, sellLosses + 1);
+
+    const selected = sampleBuy >= sampleSell ? 'buy' : 'sell';
+
+    log.debug(
+      `[q-rl] Thompson: buy=Beta(${buyWins + 1},${buyLosses + 1})→${sampleBuy.toFixed(4)}, ` +
+      `sell=Beta(${sellWins + 1},${sellLosses + 1})→${sampleSell.toFixed(4)} → ${selected}`
+    );
+
+    return selected;
+  }
+
+  /**
+   * Sample from Beta(α, β) distribution via gamma ratio.
+   * Beta(α, β) = Gamma(α) / (Gamma(α) + Gamma(β))
+   */
+  private sampleBeta(alpha: number, beta: number): number {
+    if (alpha <= 0 || beta <= 0) return 0.5; // safety
+    const x = this.sampleGamma(alpha);
+    const y = this.sampleGamma(beta);
+    const sum = x + y;
+    if (sum === 0 || !Number.isFinite(sum)) return 0.5;
+    return Math.max(0, Math.min(1, x / sum));
+  }
+
+  /**
+   * Marsaglia-Tsang gamma sampling for shape parameter α ≥ 1.
+   * For α < 1, uses the boost trick: Gamma(α) = Gamma(α+1) × U^(1/α).
+   * Returns a finite, positive number. Never throws.
+   */
+  private sampleGamma(shape: number): number {
+    if (!Number.isFinite(shape) || shape <= 0) return 1; // safety
+    if (shape < 1) {
+      // Boost: Gamma(α) = Gamma(α+1) × U^(1/α)
+      const u = Math.random();
+      if (u === 0) return 0;
+      return this.sampleGamma(shape + 1) * Math.pow(u, 1 / shape);
+    }
+
+    const d = shape - 1 / 3;
+    const c = 1 / Math.sqrt(9 * d);
+    for (let i = 0; i < 100; i++) {
+      let x: number;
+      let v: number;
+      do {
+        x = this.standardNormal();
+        v = 1 + c * x;
+      } while (v <= 0);
+      v = v * v * v;
+      const u = Math.random();
+      if (u < 1 - 0.0331 * x * x * x * x) return d * v;
+      if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
+    }
+    return d; // fallback (should rarely reach here)
+  }
+
+  /** Box-Muller standard normal sample. */
+  private standardNormal(): number {
+    const u1 = Math.random();
+    const u2 = Math.random();
+    if (u1 === 0) return 0;
+    return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
   }
 
   /** Current ε value: linear decay from epsilonStart to epsilonMin.
