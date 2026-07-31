@@ -954,6 +954,109 @@ Plan G（6 小時 idle 後）：
 
 ---
 
+## Self-Aware Evolution（v2.0.842 — Meta-Cognition + Self-Improving + Causal Reasoning + Meta-Learning）
+
+v2.0.842 新增三大進化組件 + 混合數據源架構。系統唔再只係從交易結果學習，而係知道自己幾準（元認知）、自動調整自己嘅 hyperparameters（自我改善）、區分因果同相關（因果推理）、學點樣學得更快（元學習）。
+
+### Meta-Cognitive Calibrator（`src/evolution/meta-calibrator.ts`，v2.0.837）
+
+系統知道自己嘅 P(win) 預測整體準唔準。每筆 trade close 時記錄 `(predictedPWin, conviction, regime, outcome)`，計算：
+
+| 指標 | 公式 | 意義 |
+|:---|:---|:---|
+| **Brier score** | $\frac{1}{N}\sum(f_i - o_i)^2$ | 0 = 完美，0.25 = 隨機，1 = 全錯 |
+| **ECE** | $\sum \frac{n_b}{N}\|acc(b) - conf(b)\|$ | 0 = 完美校準，>0.15 = 唔可信 |
+
+**Per-regime Brier**：每個 regime 獨立追蹤。如果 `trending_bear` 嘅 Brier = 0.30（差過隨機），Meta-Agent 見到 `❌ trending_bear: 0.30` 後自動降低 conviction。
+
+**整合**：`getCalibrationBlock()` → HACP `setMetaCalibrationBlock()` → 注入 `rilEnhancedMarketDesc`。
+
+### Self-Improver（`src/evolution/self-improver.ts`，v2.0.838）
+
+系統自動調整自己嘅 hyperparameters。
+
+| 機制 | 參數 | 範圍 | 數據源 |
+|:---|:---|:---|:---|
+| **Config bandit** | `explorationStrategy` | ε-greedy / UCB1 / Thompson | Shadow ✅ |
+| **Continuous param** | `convictionGateThreshold` | [0.40, 0.60] | Real ❌ |
+| **Continuous param** | `aggressiveSlCap` | [0.05, 0.09] | Real ❌ |
+| **Continuous param** | `conservativeSlCap` | [0.02, 0.04] | Real ❌ |
+| **Continuous param** | `dcsTimeDecayHalfLife` | [100, 400] | Real ❌ |
+
+**Hard bounds**：所有參數有安全限制。系統永遠唔會將 SL cap 調到 50%，唔會將 conviction gate 調到 0.1。
+
+**`runTuningCycle()`**：apply all recommendations with audit logging（old value → new value + gradient）。
+
+### Causal Reasoner（`src/evolution/causal-reasoner.ts`，v2.0.839）
+
+區分因果同相關。
+
+**Paired shadow uplift**：每開一筆 aligned shadow，同時記錄「如果冇交易」嘅 counterfactual。
+
+$$\text{Uplift} = \text{tradedPnl} - \text{holdPnl}$$
+
+- Uplift > 0 = 交易有因果效果（有 alpha）
+- Uplift ≈ 0 = 交易冇因果效果（只係跟市場）
+- Uplift < 0 = 交易有負面因果效果（SL hit 但市場冇郁）
+
+**Permutation causal feature importance**：打亂每個 feature 嘅值，睇 PnL 預測跌幾多。跌好多 = causal。唔跌 = spurious correlation。
+
+**`recordAuditConfounder()`**：trade-audit 發現嘅 confounder 標記到 feature importance。
+
+### Meta-Learner（`src/evolution/meta-learner.ts`，v2.0.840）
+
+系統學點樣學得更快。
+
+| 機制 | 作用 | 範圍 | 數據源 |
+|:---|:---|:---|:---|
+| **Adaptive α** | 高 reward variance → 低 learning rate | [0.1, 2.0] × | Q-RL ✅ |
+| **Feature weight** | 高 predictive power → 高 weight | [0.1, 3.0] | Shadow ✅ |
+| **Curriculum** | Fast-learning regime → 優先探索 | [0, 1] priority | Q-RL ✅ |
+
+**`recordAuditFeatureAdjustment()`**：trade-audit 發現 thesis 矛盾 → 降 thesis feature 嘅 predictive power → weight 自動降。
+
+### 混合數據源架構（Hybrid Data Source）
+
+| 組件 | 數據源 | 原因 | 速度 |
+|:---|:---|:---|:---|
+| Self-Improving (config bandit) | Shadow ✅ | explorationStrategy 直接影響 shadow | 10-50× |
+| Self-Improving (param tuning) | Real ❌ | convictionGate / SL caps 影響真金白銀 | 必須 real |
+| Causal Reasoning (uplift) | Shadow ✅ | counterfactual 只可能用 paired shadow | 天然 |
+| Meta-Learning (adaptive α) | Q-RL ✅ | 已經係 Q-value change rate | 已最快 |
+| Meta-Learning (feature weight) | Shadow ✅ | Shadow resolution 快 10-50× | 10-50× |
+| Meta-Learning (curriculum) | Q-RL ✅ | regime learning speed = Q-value 變化 | 已最快 |
+
+### Trade-Audit → Evolution 路由（`feedAuditToEvolution()`）
+
+Trade-audit LLM 每 2 個 cycle 發現 incidents，而家會路由到進化組件：
+
+| Audit category | 灌入 | 效果 |
+|:---|:---|:---|
+| `direction-repetition-loss` | SelfImprover | 負 reward → bandit 降 config alpha |
+| `low-conditional-win-rate-ignored` | SelfImprover | 負 reward → conviction gate push |
+| `premature-exit-mfe-mismatch` | SelfImprover | SL cap push |
+| `sl-too-tight-for-volatility` | SelfImprover | SL cap push |
+| `overtrading` | SelfImprover | conviction gate push（降頻率） |
+| `thesis-contradicts-action` | MetaLearner | thesis feature 降 predictive power |
+| `thesis-quality-issue` | MetaLearner | thesis feature 降權 |
+| `market-condition-pattern` | MetaLearner | regime feature 降權 |
+| `data-quality-issue` | CausalReasoner | 標記為 confounder |
+| `default` | SelfImprover | 弱負信號 |
+
+**Severity weighting**：critical ×1.0，warning ×0.5，info ×0.25。
+
+### Backfill 機制
+
+`backfillFromExpRecords()` 喺系統重啟時讀取 1640 條 EXP 記錄（1038 條有 marketFeatures），灌入三個新組件：
+
+| 組件 | Backfill 量 | 效果 |
+|:---|:---|:---|
+| MetaLearner | ~10K feature observations | adaptive feature weights 即時生效 |
+| CausalReasoner | ~1038 paired shadows | uplift + feature importance 即時計算 |
+| SelfImprover | ~50 performance windows | config bandit + param tuning 即時啟動 |
+
+---
+
 ## 其他子系統
 
 ### S/R Zone Detection（`support-resistance.ts`）
