@@ -595,6 +595,7 @@ export class PortfolioTracker {
       entryOlrPWin: entryData?.olrPWin,
       entryShadowWinRate: entryData?.shadowWinRate,
       regime: entryData?.regime,
+      entryConsensusConfidence: entryData?.consensusConfidence,
     };
 
     // Set stop-loss and take-profit
@@ -631,6 +632,7 @@ export class PortfolioTracker {
       entryOlrPWin: entryData?.olrPWin,
       entryShadowWinRate: entryData?.shadowWinRate,
       regime: entryData?.regime,
+      entryConsensusConfidence: entryData?.consensusConfidence,
     };
 
     log.info(`Position opened: ${order.side.toUpperCase()} ${quantity.toFixed(6)} ${symbol} @ ${entryPrice}`, {
@@ -886,6 +888,7 @@ export class PortfolioTracker {
       entryOlrPWin: entryData?.olrPWin,
       entryShadowWinRate: entryData?.shadowWinRate,
       regime: entryData?.regime,
+      entryConsensusConfidence: entryData?.consensusConfidence,
     };
 
     // v2.0.72: Store in realPositions (separate from paper positions).
@@ -1395,6 +1398,7 @@ export class PortfolioTracker {
       entryOlrPWin: pos.entryOlrPWin,
       entryShadowWinRate: pos.entryShadowWinRate,
       regime: pos.regime,
+      entryConsensusConfidence: pos.entryConsensusConfidence,
     };
 
     // Update portfolio stats
@@ -1564,6 +1568,7 @@ export class PortfolioTracker {
       entryOlrPWin: pos.entryOlrPWin,
       entryShadowWinRate: pos.entryShadowWinRate,
       regime: pos.regime,
+      entryConsensusConfidence: pos.entryConsensusConfidence,
     };
 
     // v2.0.32: Do NOT update paper portfolio stats (totalPnl, winCount,

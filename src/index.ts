@@ -3061,7 +3061,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // v2.0.837: Meta-Cognitive Calibrator — record prediction accuracy
       try {
         const predictedPWin = safeNum(trade.entryOlrPWin, 0.5);
-        const conviction = safeNum(this.lastHACPResult?.consensus?.confidence, 0.5);
+        const conviction = safeNum(trade.entryConsensusConfidence, 0.5);
         const entryRegime = trade.regime ?? regime ?? 'unknown';
         this.metaCalibrator?.recordTrade(predictedPWin, conviction, entryRegime, outcome);
       } catch (err) {
@@ -4105,6 +4105,7 @@ ${recentExamples}
           olrPWin: pre.olrPWin,
           shadowWinRate: pre.shadowWinRate,
           regime: this.marketState?.getState(sym)?.regime ?? this.marketState?.getState(this.marketAgent?.getSelectedSymbol() ?? '')?.regime,
+          consensusConfidence: this.lastHACPResult?.consensus?.confidence,
         };
       }
     }
