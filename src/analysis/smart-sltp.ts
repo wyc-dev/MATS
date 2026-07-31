@@ -75,7 +75,6 @@ export interface SmartSLTPResult {
  */
 export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   const {
-    entryPrice,
     side,
     srSupport,
     srResistance,
@@ -87,6 +86,20 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
     stopLossPct,
     takeProfitPct,
   } = input;
+
+  // v2.0.835 security: guard against NaN/Infinity/0/negative entryPrice — without this,
+  // all downstream calculations produce NaN, which propagates to the trading
+  // engine as a NaN SL or TP (market order with no stop = catastrophic risk).
+  // Also guard against extremely large entryPrice (Number.MAX_VALUE) which causes
+  // floating-point overflow in all downstream × operations → Infinity SL/TP.
+  // No real asset price exceeds 1e15 (1 quadrillion); clamp to that.
+  const entryPrice = Number.isFinite(input.entryPrice) && input.entryPrice > 0 && input.entryPrice < 1e15
+    ? input.entryPrice
+    : 1; // fallback to 1 (all % math still works, SL/TP become tiny but finite)
+
+  // v2.0.835 security: guard against NaN/Infinity stopLossPct/takeProfitPct
+  const safeStopLossPct = Number.isFinite(stopLossPct) && stopLossPct >= 0 ? stopLossPct : 0.02;
+  const safeTakeProfitPct = Number.isFinite(takeProfitPct) && takeProfitPct >= 0 ? takeProfitPct : 0.03;
 
   const isBuy = side === 'buy';
   let slPrice = 0;
@@ -129,9 +142,9 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
     }
     // Priority 4: config default
     else {
-      slPrice = entryPrice * (1 - stopLossPct);
+      slPrice = entryPrice * (1 - safeStopLossPct);
       slSource = 'config-default';
-      logParts.push(`SL=config default ${(stopLossPct * 100).toFixed(1)}%`);
+      logParts.push(`SL=config default ${(safeStopLossPct * 100).toFixed(1)}%`);
     }
   } else {
     // SELL: SL above entry
@@ -156,9 +169,9 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
     }
     // Priority 4: config default
     else {
-      slPrice = entryPrice * (1 + stopLossPct);
+      slPrice = entryPrice * (1 + safeStopLossPct);
       slSource = 'config-default';
-      logParts.push(`SL=config default ${(stopLossPct * 100).toFixed(1)}%`);
+      logParts.push(`SL=config default ${(safeStopLossPct * 100).toFixed(1)}%`);
     }
   }
 
@@ -185,9 +198,9 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
     }
     // Priority 3: config default
     else {
-      tpPrice = entryPrice * (1 + takeProfitPct);
+      tpPrice = entryPrice * (1 + safeTakeProfitPct);
       tpSource = 'config-default';
-      logParts.push(`TP=config default ${(takeProfitPct * 100).toFixed(1)}%`);
+      logParts.push(`TP=config default ${(safeTakeProfitPct * 100).toFixed(1)}%`);
     }
   } else {
     // SELL: TP below entry
@@ -206,9 +219,9 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
     }
     // Priority 3: config default
     else {
-      tpPrice = entryPrice * (1 - takeProfitPct);
+      tpPrice = entryPrice * (1 - safeTakeProfitPct);
       tpSource = 'config-default';
-      logParts.push(`TP=config default ${(takeProfitPct * 100).toFixed(1)}%`);
+      logParts.push(`TP=config default ${(safeTakeProfitPct * 100).toFixed(1)}%`);
     }
   }
 
@@ -238,11 +251,12 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   const finalSlPct = Math.abs(slPrice - entryPrice) / entryPrice;
   const finalTpPct = Math.abs(tpPrice - entryPrice) / entryPrice;
 
-  if (finalSlPct > 0.05) {
+  // v2.0.835 security: use >= with epsilon for floating-point safe comparisons
+  if (finalSlPct > 0.05 + 1e-9) {
     slPrice = isBuy ? entryPrice * 0.95 : entryPrice * 1.05;
     logParts.push(`[SL-cap] narrowed from ${(finalSlPct * 100).toFixed(2)}% to 5%`);
   }
-  if (finalTpPct > 0.10) {
+  if (finalTpPct > 0.10 + 1e-9) {
     tpPrice = isBuy ? entryPrice * 1.10 : entryPrice * 0.90;
     logParts.push(`[TP-cap] narrowed from ${(finalTpPct * 100).toFixed(2)}% to 10%`);
   }
@@ -251,7 +265,7 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   // This also catches the edge case where S/R resistance is so close to entry
   // that TP = resistance × (1 - buffer) ends up BELOW entry for a BUY
   // (or ABOVE entry for a SELL) — which would be an inverted TP.
-  if (finalTpPct < 0.003) {
+  if (finalTpPct < 0.003 - 1e-9) {
     // TP too tight (less than 0.3%) — not worth the fees
     tpPrice = isBuy ? entryPrice * 1.003 : entryPrice * 0.997;
     logParts.push(`[TP-min] widened from ${(finalTpPct * 100).toFixed(2)}% to 0.3% (min viable)`);
@@ -265,18 +279,29 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   const tpPctFinal = Math.abs(tpPrice - entryPrice) / entryPrice;
   const rr = slPctFinal > 0 ? tpPctFinal / slPctFinal : 0;
 
-  const logStr = `${isBuy ? 'BUY' : 'SELL'} entry=$${entryPrice.toFixed(2)} SL=$${slPrice.toFixed(2)} (${(slPctFinal * 100).toFixed(2)}%, ${slSource}) TP=$${tpPrice.toFixed(2)} (${(tpPctFinal * 100).toFixed(2)}%, ${tpSource}) R:R=${rr.toFixed(2)} | ${logParts.join(', ')}`;
+  // v2.0.835 security: final finite guard — floating-point overflow can produce
+  // Infinity when entryPrice is very large (Number.MAX_VALUE × 0.95 = Infinity).
+  // Without this, NaN/Infinity SL or TP propagates to the trading engine.
+  const finiteFallback = (pct: number) =>
+    Number.isFinite(entryPrice * (1 - pct)) ? entryPrice * (1 - pct) : entryPrice / (1 + pct);
+  const safeSl = Number.isFinite(slPrice) ? slPrice : (isBuy ? finiteFallback(0.05) : finiteFallback(-0.05));
+  const safeTp = Number.isFinite(tpPrice) ? tpPrice : (isBuy ? finiteFallback(-0.03) : finiteFallback(0.03));
+  const safeSlPct = Number.isFinite(slPctFinal) ? slPctFinal : 0.02;
+  const safeTpPct = Number.isFinite(tpPctFinal) ? tpPctFinal : 0.03;
+  const safeRr = Number.isFinite(rr) ? rr : 0;
+
+  const logStr = `${isBuy ? 'BUY' : 'SELL'} entry=$${entryPrice.toFixed(2)} SL=$${safeSl.toFixed(2)} (${(safeSlPct * 100).toFixed(2)}%, ${slSource}) TP=$${safeTp.toFixed(2)} (${(safeTpPct * 100).toFixed(2)}%, ${tpSource}) R:R=${safeRr.toFixed(2)} | ${logParts.join(', ')}`;
 
   log.info(`📐 [smart-sltp] ${logStr}`);
 
   return {
-    sl: slPrice,
-    tp: tpPrice,
+    sl: safeSl,
+    tp: safeTp,
     slSource,
     tpSource,
-    slPct: slPctFinal,
-    tpPct: tpPctFinal,
-    rr,
+    slPct: safeSlPct,
+    tpPct: safeTpPct,
+    rr: safeRr,
     log: logStr,
   };
 }

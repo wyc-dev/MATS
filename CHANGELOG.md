@@ -4,6 +4,104 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.835: Q-RL Alpha Discovery + Factor-Tagged Aligned Shadow + Edge Validation hardening. First component that can DISCOVER new alpha via ε-greedy exploration. 270-cell Q-table (5 regime × 3 vol × 3 momentum × 3 funding × 2 action), EWMA Q-value update, Wilson score LB, stationary bootstrap p-value, Benjamini-Hochberg FDR correction. Aligned Shadow follows LLM consensus direction with agent vote metadata (Factor-Tagged). 242 adversarial attack tests across 4 test suites find and fix 16 vulnerabilities including getter bombs, prototype pollution, reference leaks, bootstrap centering bugs, and NaN propagation.
+
+### New: `src/evolution/q-rl-table.ts` (~450 lines)
+
+**Q-RL Alpha Discovery** — the first component in MATS that can DISCOVER new alpha, not just measure existing edge. Uses a discrete Q-table with ε-greedy exploration to try actions the LLM wouldn't, learning from Aligned Shadow rewards.
+
+- **270 cells** = 5 regime × 3 vol × 3 momentum × 3 funding × 2 action
+- **ε-greedy**: starts at 1.0 (100% explore), linear decay to 0.05 over 500 cycles
+- **EWMA Q-value update**: diminishing learning rate α = 1/(1+visits)
+- **Discovery scanning**: every 5 cycles, scan Q-table for alpha patterns
+  - Candidate: Q > 0.2% + n ≥ 10
+  - Probable: Q > 0.3% + Wilson LB > 50% + n ≥ 20
+  - Confirmed: Q > 0.5% + Wilson LB > 55% + BH-FDR pass + n ≥ 30
+- **Stationary bootstrap p-value** (Politis & Romano 1994, block size √n, H0-centered)
+- **Benjamini-Hochberg FDR correction** across all discoveries
+- **HACP injection**: `qrlDiscoveryBlock` injected into Meta-Agent prompt + FMS strategy recognition
+- **Conviction rules**: Confirmed → +5%, Probable → +2%, Candidate → note only
+- **Cold-start safe**: all Q=0 → follow LLM (identical to current behavior)
+- **Persistence**: `q-rl-table.json` (atomic save/load)
+
+### Modified: `src/evolution/shadow-trade-engine.ts` — Factor-Tagged Aligned Shadow
+
+**Aligned Shadow** follows LLM consensus direction (not blind) with agent vote metadata for factor-tagged embedding queries. Solves the OLR distribution-shift problem: blind shadow learns on ALL market conditions, but real trades only execute on LLM-selected conditions.
+
+- `shadowType: 'blind' | 'aligned'` field on ShadowPosition
+- `openAlignedShadow()` — follows LLM consensus direction with factor tagging
+- `hasAlignedShadow()` — blind skip check (avoid duplicate shadows)
+- `drainRecentResults()` returns `shadowType` field
+- `checkPositions` routes OLR source by `shadowType` (aligned → 'shadow', blind → 'shadow_blind')
+- `Number.isFinite(entryPrice)` guard on both open paths
+
+### Modified: `src/evolution/olr-engine.ts` — shadow_blind source
+
+- Added `'shadow_blind'` to all source type unions (3 locations + sourceBreakdown)
+- `sourceWeight: { shadow: 1, shadow_blind: 0.1, paper: 2, real: 4, backfill: 0.1 }` — blind shadow downweighted 10× (distribution shift)
+
+### Modified: `src/evolution/replay-buffer.ts` — shadow_blind source
+
+- `ReplaySample.source` type includes `'shadow_blind'`
+
+### Modified: `src/index.ts` — Q-RL wiring
+
+- Q-RL table instantiated with save/load (`q-rl-table.json`)
+- Decision cycle: ε-greedy `qrlTable.selectAction()` overrides LLM lean → `openAlignedShadow` with RL action
+- Close learning: `qrlTable.update()` with reward (PnL% - slippage - funding)
+- Shadow drain: routes source by `shadowType`, feeds Q-RL with reward
+- Discovery scan: every 5 cycles → `qrlDiscoveryBlock` → HACP injection
+- Per-cycle: `hacpEngine.setQRLDiscoveryBlock()` before `executeDecisionCycle`
+- Persistence: atomic save
+- API status: `qrlDiscovery` field in `advancedLearning`
+
+### Modified: `src/cognition/hacp.ts` — Q-RL injection
+
+- Added `qrlDiscoveryBlock` field + `setQRLDiscoveryBlock()` setter
+- Appended Q-RL block to `rilEnhancedMarketDesc`
+
+### Modified: `src/agents/meta-agent.ts` — Q-RL prompt
+
+- Added 6th DEEP LEARNING CONTEXT block for Q-RL Alpha Discovery
+- Rules: Confirmed → conviction +5%, Probable → +2%, Candidate → note only
+- Contradiction handling: weigh statistical evidence vs thesis quality
+
+### Edge Validation hardening (v2.0.835 round 3-5)
+
+20 vulnerabilities found and fixed across 5 rounds of adversarial attack testing (242 total tests):
+
+**Q-RL (5 vulnerabilities)**:
+1. Null features crash in `selectAction` — guard `if (!features || typeof features !== 'object')`
+2. Action case sensitivity in `makeKey` — `action.toLowerCase()`
+3. `save()` returns direct reference (mutation of internal state) — deep copy via `Object.create(null)`
+4. `load()` doesn't restore config — `this.config = { ...DEFAULT_CONFIG, ...savedConfig }`
+5. `bootstrapPValue` doesn't center under H0 — all identical rewards → p-value=1.0 (should be ~0)
+
+**Q-RL creative (4 vulnerabilities)**:
+6. `makeKey` getter bomb — `features['regimeOrdinal']` triggers getter → crash — `safeFeature()` try-catch helper
+7. `update` getter bomb — same vector via `makeKey`
+8. Proxy features throw — `new Proxy({}, { get() { throw } })` passes `typeof === 'object'`
+9. `getBestDiscovery` getter bomb — same vector
+
+**Edge modules (8 vulnerabilities)**:
+10. `smart-sltp.ts` NaN/Infinity/0 entryPrice → SL/TP NaN — `entryPrice < 1e15` clamp + final finite guard
+11. `smart-sltp.ts` NaN stopLossPct → SL NaN — `safeStopLossPct` guard
+12. `edge-calculator.ts` NaN perturbation → stability=NaN → trade PASSES — `Number.isFinite` guard
+13. `stability-monitor.ts` `perturbFeatures(null)` → TypeError — null guard + Object.entries try-catch
+14. `risk-profile-edge-store.ts` `serialize()` shallow copy — deep copy with `.map(r => ({...r, embedding: [...r.embedding]}))`
+15. `risk-profile-edge-store.ts` `buildEdgeText(null)` → TypeError — null guard
+16. `backtest-validation.ts` `bootstrapPValue` centering bug (same as Q-RL) — H0-centered resampling
+17. `backtest-validation.ts` `deflatedSharpeRatio(NaN)` → NaN — `Number.isFinite` guard
+
+**Creative (3 vulnerabilities)**:
+18. `smart-sltp.ts` `Number.MAX_VALUE` entryPrice → SL/TP Infinity (float overflow) — `< 1e15` clamp
+19. `execution-tracker.ts` `serialize()` recent array shallow copy — `.map(r => ({...r}))`
+20. `stability-monitor.ts` getter bomb via `Object.entries` — try-catch around entries + value access
+
+Build: `tsc --noEmit` zero errors, 242/242 attack tests pass (4 suites, single-threaded).
+
+---
+
 ## v2.0.833: Edge Validation Layer — alpha "lie detector" + dead-component pruning + sample-cap lift + 94 attack tests. First time the system can quantitatively answer "do we have edge?". Adds 6 new `src/edge/` modules (~1,400 lines), removes 4 inference-disconnected components, lifts all sample-size caps to 10,000, and fixes 5 security vulnerabilities found by adversarial attack testing.
 
 ### New: `src/edge/` module (6 files, ~1,400 lines)

@@ -260,7 +260,12 @@ export class HACPEngine {
    *  can query the correct OLR side. Returns a formatted context block string
    *  (or empty string when exploration is not active/disabled). */
   private explorationContextProvider: ((side: 'buy' | 'sell') => string) | null = null;
+  /** v2.0.835: Q-RL Alpha Discovery block — injected into agent context */
+  private qrlDiscoveryBlock = '';
   setExplorationContextProvider(cb: ((side: 'buy' | 'sell') => string) | null): void { this.explorationContextProvider = cb; }
+
+  /** v2.0.835: Set Q-RL Alpha Discovery block for injection into agent context. */
+  setQRLDiscoveryBlock(block: string): void { this.qrlDiscoveryBlock = block; }
 
   /** v2.0.143: RIL SimilarTradeRetriever — finds top-N most similar historical
    *  trades to a candidate thesis. Injected by index.ts so HACP can produce
@@ -1545,7 +1550,7 @@ export class HACPEngine {
       } catch { /* non-critical */ }
     }
 
-    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}${executionLensBlock}${explorationBlock}`;
+    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}${executionLensBlock}${explorationBlock}${this.qrlDiscoveryBlock ? `\n=== 🧬 Q-RL ALPHA DISCOVERY ===\n${this.qrlDiscoveryBlock}\n---` : ''}`;
 
     if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition && !expThesisGated) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);

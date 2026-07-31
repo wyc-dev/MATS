@@ -14,6 +14,7 @@ import {
   ExecutionTracker as EdgeExecutionTracker, StabilityMonitor,
   RiskProfileEdgeStore, type EdgeCalcInput,
 } from './edge/index.ts';
+import { QRLTable, type AlphaDiscovery } from './evolution/q-rl-table.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
 import { getActiveProvider } from './llm/index.ts';
 import { getAgentModel } from './agents/agent-models.ts';
@@ -158,6 +159,9 @@ class MATSSystem {
   private edgeStabilityMonitor!: StabilityMonitor;
   private edgeRpStore!: RiskProfileEdgeStore;
   private edgeReportCount = 0;
+  // v2.0.835: Q-RL Alpha Discovery
+  private qrlTable!: QRLTable;
+  private qrlDiscoveryBlock = ''; // injected into LLM agent context
   private sentimentEngine!: SentimentEngine;
   /** v2.0.105: Adaptive noise filter — sigmoid+EMA with per-cycle auto-tuning */
   private adaptiveFilter!: AdaptiveNoiseFilter;
@@ -1077,6 +1081,19 @@ class MATSSystem {
         }).catch((err: unknown) => log.warn(`[edge-init] embed warmup failed: ${err instanceof Error ? err.message : String(err)}`));
       } catch { /* cold-start safe — store works without provider, just no embeddings */ }
       log.info('✓ Edge Validation layer initialized (exec-tracker + stability-monitor + rp-store)');
+
+      // v2.0.835: Q-RL Alpha Discovery init
+      this.qrlTable = new QRLTable();
+      try {
+        const qrlPath = path.join(process.cwd(), 'data/evolution/q-rl-table.json');
+        if (fs.existsSync(qrlPath)) {
+          this.qrlTable.load(JSON.parse(fs.readFileSync(qrlPath, 'utf-8')));
+          log.info(`✓ Q-RL Table loaded (${this.qrlTable.getStats().activeCells} active cells, ε=${this.qrlTable.getStats().epsilon.toFixed(3)})`);
+        }
+      } catch (e) {
+        log.warn(`[q-rl-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+      }
+      log.info('✓ Q-RL Alpha Discovery initialized');
 
       // 6. Start API Server
       log.info('Step 6/7: Starting API server...');
@@ -2306,6 +2323,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         this.hacpEngine.setAntiPatternTracker(this.antiPatternTracker);
         // v2.0.212 (#7): Wire cycle-history retriever for execution-lens context.
         this.hacpEngine.setCycleHistoryRetriever(this.cycleHistory);
+        // v2.0.835: Q-RL discovery block is set per-cycle before executeDecisionCycle
         // v2.0.221 (Fix #5): Wire exploration context provider so HACP can inject
         // the UCB exploration assessment into Meta-Agent/Skeptics context. This is
         // a SIGNAL — the Meta-Agent must still build a real thesis with ≥2 specific
@@ -5510,9 +5528,36 @@ ${recentExamples}
               cycle: sr.cycle,
               regime: srSymState?.regime ?? 'unknown',
             });
+
+            // v2.0.835: Q-RL table update — only for aligned shadows (blind
+            // shadows don't follow LLM direction, so their reward doesn't
+            // represent the Q-value of a specific state-action pair).
+            if (sr.shadowType === 'aligned') {
+              // Compute reward = realized PnL% (approximated from outcome + MFE/MAE)
+              // For a true SL/TP hit: reward = pnlPct (actual PnL%)
+              // For stale force-resolve: reward = pnlPct (current PnL direction)
+              const execStats = this.edgeExecTracker.getStats(sr.symbol, sr.side);
+              const slippageCost = execStats.samples >= 20 ? (execStats.avgSlippageBps / 10000) : 0.0005;
+              const fundingCost = execStats.samples >= 20 ? execStats.avgFundingPctPerHour * (sr.holdCycles * 5 / 60) : 0;
+              const reward = sr.pnlPct - slippageCost - fundingCost;
+              this.qrlTable.update(srFeatures, sr.side, reward);
+            }
           }
           if (shadowResults.length > 0) {
             log.info(`🧬 [shadow] Fed ${shadowResults.length} shadow resolutions to advanced learning (replay)`);
+          }
+
+          // v2.0.835: Q-RL discovery scan — every 5 cycles
+          const discoveries = this.qrlTable.discoverPatterns(this.totalCycles);
+          if (discoveries.length > 0) {
+            // Use active symbol's features for state-matching
+            const activeSym = normalizeSymbol(activeSymbol);
+            const activeCtx = this.lastCycleShadowContexts.get(activeSym);
+            const activeFeatures = activeCtx?.features ?? {};
+            const best = this.qrlTable.getBestDiscovery(activeFeatures);
+            if (best) {
+              this.qrlDiscoveryBlock = best.description;
+            }
           }
         } catch (err) {
           log.warn(`[shadow] Advanced learning feed failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
@@ -6694,6 +6739,9 @@ ${recentExamples}
         log.warn(`[OLR-RT] real-time exit-trigger block failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
       }
 
+      // v2.0.835: Inject Q-RL discovery block into HACP before running decision cycle
+      this.hacpEngine.setQRLDiscoveryBlock(this.qrlDiscoveryBlock);
+
       const result = await this.hacpEngine.executeDecisionCycle(
         `${marketDesc}${olrRealtimeBlock}\n\n${adjustedEvolutionContext}${backtestContext}`,
         portfolioDesc,
@@ -6836,20 +6884,24 @@ ${recentExamples}
             const features = ctx?.features ?? {};
 
             // Compute Smart SL/TP using config defaults + S/R if available
+            // v2.0.835: Q-RL ε-greedy action selection — may override LLM lean
+            // to explore actions the LLM wouldn't choose. Cold-start (Q=0) → follow LLM.
+            const rlAction = this.qrlTable.selectAction(leanSide, features);
+
             const slPct = config.risk.stopLossPct;
             const tpPct = config.risk.takeProfitPct;
-            const slPrice = leanSide === 'buy'
+            const slPrice = rlAction === 'buy'
               ? entryPrice * (1 - slPct)
               : entryPrice * (1 + slPct);
-            const tpPrice = leanSide === 'buy'
+            const tpPrice = rlAction === 'buy'
               ? entryPrice * (1 + tpPct)
               : entryPrice * (1 - tpPct);
 
             this.shadowEngine.openAlignedShadow(
-              sym, entryPrice, leanSide, slPrice, tpPrice,
+              sym, entryPrice, rlAction, slPrice, tpPrice,
               this.totalCycles, features,
               pscAction, consensusConf,
-              leanSide, leanScore,
+              rlAction, leanScore,
               primaryDriver, agentVotes,
             );
           }
@@ -10386,6 +10438,12 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       } catch (err) {
         log.warn(`[edge-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
       }
+      // v2.0.835: Save Q-RL table state
+      try {
+        saveAdv('q-rl-table.json', JSON.stringify(this.qrlTable?.save() ?? {}));
+      } catch (err) {
+        log.warn(`[q-rl-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
       // v2.0.221 (Fix 3): Save combo win rate tracker state
       if (this.comboTracker.isDirty()) {
         saveAdv('combo-win-rates.json', this.comboTracker.save());
@@ -10972,6 +11030,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             rpStoreSize: this.edgeRpStore?.size() ?? 0,
             avgEdgeScore: 0.5, // updated by edge compute cycle
           },
+          // v2.0.835: Q-RL Alpha Discovery state
+          qrlDiscovery: this.qrlTable ? this.qrlTable.getStats() : undefined,
         },
         backtest: this.lastBacktestResult,
         backtestProgress: this.backtestProgress,

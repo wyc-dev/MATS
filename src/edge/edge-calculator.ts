@@ -187,9 +187,14 @@ function recommendFromScore(
 /** Stability → conviction multiplier. Stable = 1.0; mid = 0.85; below mid
  *  scales linearly down to 0.5 (never zero — we don't hard-block here). */
 function computeStabilityFactor(perturbation: number, crossTime: number): number {
+  // v2.0.835 security: guard against NaN/Infinity — without this, NaN
+  // propagates through Math.min/max → worst=NaN → factor=NaN → edgeScore=NaN
+  // → recommendation comparison with NaN always false → trade PASSES.
+  const safePert = Number.isFinite(perturbation) ? perturbation : 1;
+  const safeCross = Number.isFinite(crossTime) ? crossTime : 1;
   const worst = Math.min(
-    Math.max(0, Math.min(1, perturbation)),
-    Math.max(0, Math.min(1, crossTime)),
+    Math.max(0, Math.min(1, safePert)),
+    Math.max(0, Math.min(1, safeCross)),
   );
   if (worst >= edgeConfig.stabilityStable) return 1.0;
   if (worst >= edgeConfig.stabilityMid) return edgeConfig.stabilityFactorMid;

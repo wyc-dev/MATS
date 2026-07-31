@@ -147,6 +147,26 @@ DECISION INTEGRATION RULE:
   • For OPEN positions: real-time OLR edge collapse (P(win) < 35%) is a CLOSE trigger on
     par with thesis invalidation. If P(win) collapsed AND thesis is wobbly → CLOSE.
 
+6. Q-RL ALPHA DISCOVERY (v2.0.835 — REINFORCEMENT LEARNING DISCOVERED EDGE):
+   "=== 🧬 Q-RL ALPHA DISCOVERY ==="
+   This block appears when the Q-RL table has discovered a statistically significant
+   alpha pattern through ε-greedy exploration on Aligned Shadow trades. The discovery
+   shows: regime + volatility + momentum + funding conditions → BUY/SELL, with expected
+   PnL (Q-value), sample count, Wilson lower bound, and discovery level.
+   - CONFIRMED (Q > 0.5% + Wilson LB > 55% + BH-FDR pass + n ≥ 30): Strong discovered
+     edge. INCREASE conviction by 5% for the discovered action if current market
+     conditions match. This is NOT a hard override — it is a statistical prior from
+     exploration that the LLM may not have considered.
+   - PROBABLE (Q > 0.3% + Wilson LB > 50% + n ≥ 20): Moderate discovered edge.
+     INCREASE conviction by 2% for the discovered action.
+   - CANDIDATE (Q > 0.2% + n ≥ 10): Early signal. Note but do NOT adjust conviction.
+   - If the Q-RL discovery CONTRADICTS your thesis (e.g., discovery says BUY but you
+     want SELL), weigh the discovery's statistical evidence (n samples + Wilson LB +
+     Q-value) against your thesis quality. A CONFIRMED discovery with n=30 + Wilson
+     LB=58% + Q=+0.8% is a strong statistical signal — do NOT dismiss it lightly.
+   - Cold-start: if no Q-RL block appears, the table has no discoveries yet —
+     behave exactly as before (no Q-RL influence).
+
 === PATTERN DATA ===
 If the context contains "=== TRADE PATTERN INSIGHTS ===" or "=== POSITION PATTERN INSIGHTS ===":
   - This is the MOST IMPORTANT signal — historical win rate from real trades
