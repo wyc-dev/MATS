@@ -4,6 +4,142 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.842: Trade-Audit → Evolution Component Integration
+
+### New: `feedAuditToEvolution()` routing method (`src/index.ts`)
+
+Trade-audit LLM finds patterns (direction-repetition-loss, thesis-contradicts-action, etc.) every 2 cycles but they never reached the evolution components. Now audit incidents are routed to the appropriate component:
+
+| Audit category | Routed to | Effect |
+|:---|:---|:---|
+| `direction-repetition-loss` | **SelfImprover** | Negative reward → bandit + gradient react |
+| `low-conditional-win-rate-ignored` | **SelfImprover** | Negative reward → conviction gate push |
+| `premature-exit-mfe-mismatch` | **SelfImprover** | SL cap push via negative PnL |
+| `sl-too-tight-for-volatility` | **SelfImprover** | SL cap push |
+| `overtrading` | **SelfImprover** | Conviction gate push (reduce frequency) |
+| `thesis-contradicts-action` | **MetaLearner** | Thesis feature predictive power downweighted |
+| `thesis-quality-issue` | **MetaLearner** | Thesis feature downweighted |
+| `market-condition-pattern` | **MetaLearner** | Regime feature downweighted |
+| `data-quality-issue` | **CausalReasoner** | Marked as confounder |
+| `default` | **SelfImprover** | Weak negative signal |
+
+### New methods (3 files)
+
+- `SelfImprover.recordAuditIncident(category, severity, pnlImpact)` — audit incident → negative performance signal
+- `CausalReasoner.recordAuditConfounder(featureName, detail)` — marks feature as confounder in feature importance
+- `MetaLearner.recordAuditFeatureAdjustment(featureName, predictivePowerDelta)` — adjusts feature predictive power EMA → weight auto-adjusts
+
+### Severity weighting
+
+- `critical` = full weight (1.0×)
+- `warning` = half weight (0.5×)
+- `info` = quarter weight (0.25×)
+
+### Integration
+
+`feedAuditToEvolution()` called in `auditTradeRecordsLLM().then()` callback (non-blocking). Same audit result not re-fed (idempotent by design — audit runs every 2 cycles, each result processed once).
+
+Build: `tsc --noEmit` zero errors, 89/89 attack tests pass.
+
+---
+
+## v2.0.841: Backfill evolution components from existing EXP trade history
+
+The system already has 1640 EXP records (1038 with marketFeatures) + 5537 tradeHistory records. Instead of waiting days for shadow resolutions to populate Self-Improver, CausalReasoner, and MetaLearner, we backfill them from existing historical data inside `backfillFromExpRecords()`.
+
+### Backfill per EXP record (when `marketFeatures` available)
+
+- **MetaLearner.recordFeatureOutcome**: feed `(feature, value, pnlPct)` for each market feature → ~10K feature observations
+- **CausalReasoner.recordPairedShadow**: feed `(tradedPnl, holdPnl=0)` → 1038 paired shadow records → immediate uplift computation
+- **SelfImprover.recordPerformance**: batch every 20 EXP records into one performance window → ~50 performance windows from history
+
+### Expected effect after restart
+
+- MetaLearner: ~10K feature observations → adaptive feature weights active immediately
+- CausalReasoner: ~1038 paired shadows → uplift + feature importance immediately
+- SelfImprover: ~50 performance windows → config bandit + param tuning immediately
+- Meta-Calibrator: remains 0 (needs real trade close with `entryOlrPWin`)
+
+Build: `tsc --noEmit` zero errors, 89/89 attack tests pass.
+
+---
+
+## v2.0.838-840: Self-Improving + Causal Reasoning + Meta-Learning Infrastructure
+
+Three evolution infrastructure components with hybrid data source architecture.
+
+### New: `src/evolution/self-improver.ts` (~280 lines, v2.0.838)
+
+**Self-Improver** — system automatically tunes its own hyperparameters based on observed performance. Uses Thompson Sampling bandit for discrete config selection + OLS gradient for continuous parameter tuning.
+
+- **Config bandit**: Thompson Sampling auto-selects best `explorationStrategy` (`epsilon-greedy` / `ucb1` / `thompson`)
+- **Continuous param tuning**: OLS gradient + EMA for `convictionGateThreshold` [0.40, 0.60], `aggressiveSlCap` [0.05, 0.09], `conservativeSlCap` [0.02, 0.04], `dcsTimeDecayHalfLife` [100, 400]
+- **Hard bounds**: all params bounded — system never sets SL cap to 50% or conviction gate to 0.1
+- **`runTuningCycle()`**: applies all recommendations with audit logging (old value → new value + gradient)
+- **Performance source**: shadow resolution (hybrid: 10-50× faster than real trade close)
+- **`recordAuditIncident()`**: feeds trade-audit incidents as negative performance signals
+
+### New: `src/evolution/causal-reasoner.ts` (~250 lines, v2.0.839)
+
+**Causal Reasoner** — distinguishes causation from correlation in trade outcomes. Uses paired shadow trades to estimate counterfactual PnL (uplift) + permutation-based causal feature importance.
+
+- **Paired shadow uplift**: `tradedPnl - holdPnl = causal effect of trading` — uplift > 0 = trading has causal alpha; ≈ 0 = just following market; < 0 = negative causal effect
+- **Per-symbol uplift breakdown**: per-symbol causal uplift (BTC positive vs ETH negative)
+- **Permutation causal feature importance**: permute each feature's values, measure PnL prediction drop — features whose permutation doesn't reduce prediction = confounders
+- **`recordAuditConfounder()`**: marks audit-detected confounders in feature importance
+- **HACP block**: uplift warning (≈0 = no alpha) + feature importance + confounder detection
+- **Performance source**: shadow (natural — can't trade and not-trade simultaneously)
+
+### New: `src/evolution/meta-learner.ts` (~260 lines, v2.0.840)
+
+**Meta-Learner** — system learns HOW to learn. Adjusts learning rates, feature weights, and exploration priorities based on observed learning efficiency.
+
+- **Per-cell adaptive learning rate**: high reward variance → low α (don't over-react to noise); low variance → high α (stable signal, learn faster). Multiplier [0.1, 2.0]
+- **Feature weight meta-learning**: rolling predictive power → adaptive weight [0.1, 3.0]. High predictive power → weight high; zero → weight low
+- **Regime learning speed tracking**: Q-value change rate per regime → curriculum priority
+- **Curriculum**: suggest which regime to explore next (fastest-learning regime → prioritize)
+- **`recordAuditFeatureAdjustment()`**: audit-detected feature weight adjustment (thesis contradiction → downweight thesis feature)
+- **HACP block**: adaptive feature weights + curriculum suggestions
+- **Performance source**: Q-RL (adaptive α, already fastest) + shadow (feature weight, 10-50× faster)
+
+### HACP integration (`src/cognition/hacp.ts`)
+
+- `setSelfImprovementBlock(block)` — appended to `rilEnhancedMarketDesc`
+- `setCausalBlock(block)` — appended to `rilEnhancedMarketDesc`
+- `setMetaLearningBlock(block)` — appended to `rilEnhancedMarketDesc`
+- All 3 blocks injected pre-cycle (after Q-RL discovery block)
+
+### `index.ts` integration
+
+- **Init**: all 3 loaded from `data/evolution/*.json`
+- **Shadow resolution loop**: `recordPerformance` + `recordFeatureOutcome` + `recordPairedShadow` (hybrid data source: shadow is 10-50× faster than real trade close)
+- **Pre-cycle**: 3 blocks injected into HACP
+- **Shutdown**: atomic save to `self-improver.json`, `causal-reasoner.json`, `meta-learner.json`
+
+### Hybrid data source architecture (`evo.md` §14)
+
+| Component | Data source | Why | Speed |
+|:---|:---|:---|:---|
+| Self-Improving (config bandit) | Shadow ✅ | `explorationStrategy` directly affects shadow trade, not real trade. Shadow can tune in hours. | 10-50× |
+| Self-Improving (param tuning) | Real ❌ | `convictionGate` / SL caps affect real money, shadow has no slippage → doesn't reflect real cost. | Must be real |
+| Causal Reasoning (uplift) | Shadow ✅ | Counterfactual only possible with paired shadow — can't trade and not-trade simultaneously. | Natural |
+| Causal Reasoning (feature importance) | Hybrid | Shadow quickly discovers which feature has predictive power → Real validates. | Shadow first |
+| Meta-Learning (adaptive α) | Q-RL ✅ | Already Q-value change rate, pure Q-RL data. | Already fastest |
+| Meta-Learning (feature weight) | Shadow ✅ | Shadow resolution is 10-50× faster. | 10-50× |
+| Meta-Learning (curriculum) | Q-RL ✅ | Regime learning speed = Q-value change rate, pure Q-RL. | Already fastest |
+
+### Attack tests: 50/50 pass
+
+- SelfImprover: 12 tests (cold-start, NaN guards, config bandit, uplift computation, persistence)
+- CausalReasoner: 13 tests (cold-start, NaN guards, uplift computation, per-symbol, feature importance, persistence)
+- MetaLearner: 25 tests (cold-start, NaN guards, adaptive α bounds, feature weight bounds, curriculum priority, persistence)
+
+Build: `tsc --noEmit` zero errors, 50/50 attack tests pass.
+
+---
+
+## v2.0.837: Meta-Cognitive Calibrator + Thompson Sampling Active Exploration
+
 ## v2.0.836: DCS v2 Risk Profile Differentiation + Task 3 build. First time three risk profiles (Aggressive/Moderate/Conservative) make truly different decisions — not just conviction scaling, but different entry acceptance, SL/TP width, and position size. DCS v2 (Discovery Confidence Score) replaces discrete Q-RL tiers with a continuous [0, 1] score incorporating 5 evidence dimensions + time decay + Edge cross-validation + recent performance + negative Q gate. 333 adversarial attack tests across 5 test suites find and fix 7 vulnerabilities.
 
 ### New: `src/edge/dcs-calculator.ts` (~200 lines)
