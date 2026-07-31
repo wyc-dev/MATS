@@ -3,7 +3,7 @@
 > **作者**: YC Wong · **版本**: 2.0.842+
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 3×3 風險矩陣 → 寫入 Supabase；客戶端按用戶選擇嘅風險等級讀取對應矩陣格並決定執行
-> **代碼量**: ~61,000 行 TypeScript（嚴格模式，零類型錯誤）
+> **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
 
 ---
 
@@ -1107,26 +1107,7 @@ API: **http://localhost:3456/api/status** · Legacy Dashboard: **http://localhos
 
 > 完整版本歷史請見 [CHANGELOG.md](CHANGELOG.md)。
 
-
-## System Engineer Update
-Added `applyLossStreakGateToDecision()` method to MATSSystem class that calls the existing `checkLossStreakGate()` method in the decision cycle. This is the missing injection point — the guard existed but was never invoked. The new method is called for the active symbol's final decision and for each per-symbol consensus entry decision, blocking BUY/SELL when the loss streak or systematic loser threshold is exceeded.
-
-
-## System Engineer Update
-LossStreakTracker now has three layers: (1) SOFT gate at 3 consecutive losses in same regime → +50% conviction penalty. (2) HARD gate at 5 consecutive losses in any regime → block for 12 cycles. (3) SYSTEMATIC LOSER gate at >= 10 trades with WR < 35% → block until WR recovers above 40%. The HARD and SYSTEMATIC LOSER gates are checked BEFORE the SOFT gate returns, so they take priority. The SOFT gate no longer returns early, allowing the HARD gate to be reached.
-
-
-## System Engineer Update
-The OLR query() method now applies applyConfidencePenalty() to the calibrated pWin before returning it to agents. The effective sample size (excluding backfill) is used for the penalty calculation, preventing backfill samples from inflating the sample count and bypassing the penalty. This ensures agents see calibrated probabilities that reflect true model uncertainty, preventing extreme P(win) values (0% or 100%) from overriding safety gates.
-
-
-## System Engineer Update
-The OLR engine's query() method now applies a three-layer safety net: (1) existing Bayesian confidence penalty for low-sample models, (2) NEW inverse-sample-count confidence penalty applied to ALL queries regardless of sample count, which scales the pull toward 0.5 with the inverse of effective sample size, and (3) NEW hard clamp that prevents sigmoid saturation to exactly 0% or 100%. The clamp ranges are [0.05, 0.95] for models with <50 samples and [0.01, 0.99] for models with >=50 samples. This ensures that even well-trained models with 100+ samples cannot output extreme values that override safety gates, while preserving the model's signal when it has strong evidence.
-
-
-## System Engineer Update
-The query() method now accepts an optional 5th parameter `currentFeatures: Record<string, number> | undefined`. When provided, these fresh market features are used for the sigmoid computation (logit → pWin) instead of the features passed to query(). The currentFeatures are NOT fed into Welford normalization or SGD training — those still use the original features from feedTrade(). This ensures the model trains on the features that were actually present at trade entry, but predicts using the features that reflect current market conditions. The shadow trade engine's getStats() method should pass current cycle features when computing P(win) for the active symbol.
-
+---
 
 ## v2.0.227: Plan G — Dynamic Threshold [45-55%] + Multiplicative Penalty with Decay
 
@@ -1177,23 +1158,3 @@ if effectiveConfidence < dynamicThreshold → HOLD
 - `src/index.ts` — Conviction gate replaced: additive → multiplicative + dynamic threshold
 - `src/cognition/hacp.ts` — Added `getCyclesWithoutTrade()` getter
 - `tests/dynamic-threshold-attack.test.ts` — 36 attack tests
-
-
-## System Engineer Update
-Added entryMarketFeatures collection in the main decision cycle (before executeTrade) for ALL trade entries, not just exploration. The features are attached to the decision as a runtime property and read by executeTrade() to store on the trade record. OLR P(win) is now queried at entry time for every trade and cached in entryOlrPWinCache. This ensures the learning pipeline (OLR, EXP, NA, AttnRes) always has real market data to train on.
-
-
-## System Engineer Update
-The fix requires a corresponding change in src/index.ts: before calling executeTrade(), collect market features (volatility, srDistanceBps, obImbalance, sentiment, signalAgreement, fundingRate, volumeRatio, sentimentConviction, mfePct, maePct, mfeToPnlRatio, regimeOrdinal, momentumShort, momentumLong, hourOfDay) into a Record<string, number> and pass this snapshot as the 5th argument to OLR.query(). The same snapshot must be stored in the trade record so that when the trade resolves, feedTrade() receives the same features. This ensures the P(win) prediction uses the SAME features that will be recorded at entry time, eliminating the distribution shift.
-
-
-## System Engineer Update
-The MarketContext interface now requires `recentTradeCount` to be populated with the per-symbol-direction trade count. The caller (index.ts) must inject this data when calling `adapt()`. The adaptive filter's conviction gate now follows the WINNER-FIRST PRINCIPLE: proven winners get boosted (lower threshold), proven losers get soft penalty (higher threshold), and insufficient data (<3 samples) results in no change (PASS_OPEN_DIRECTLY).
-
-
-## System Engineer Update
-The entry-time data pipeline now has two independent injection paths: (1) precomputed features map (populated before executeTrade), and (2) direct state-based injection (built at injection time). Path 2 is the fallback that ensures 100% coverage even when path 1 fails. The injectEntryFeaturesIntoNewPositions() method is now self-sufficient and does not depend on any pre-execution state.
-
-
-## System Engineer Update
-Added v2.0.799 FINAL PROFITABILITY GUARD at the end of Phase 0.5 in executeDecisionCycle(). The guard runs AFTER all thesis validation logic (pre-check, post-check, Skeptics LLM, final profit guard) and re-fetches the CURRENT price for EVERY symbol in thesisInvalidatedSymbols. Any position that is now profitable is removed from the invalidation set. This is the LAST line of defense — it catches the 59-minute timer pattern where the timer in index.ts (unmodifiable) fires BETWEEN HACP cycles and force-closes positions that became profitable during the hold. The guard is placed at the point where thesisInvalidatedSymbols is finalized and about to be returned to index.ts, ensuring NO code path can force-close a winning position.
