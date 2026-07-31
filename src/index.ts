@@ -1160,6 +1160,13 @@ class MATSSystem {
       }
       log.info('✓ Meta-Learner initialized');
 
+      // v2.0.841: Backfill evolution components from existing EXP trade history
+      // The backfillFromExpRecords() method (called at cycle start) already
+      // reads all 1640 EXP records and feeds them to OLR/NA/AttnRes/etc.
+      // v2.0.841 added Self-Improver + CausalReasoner + MetaLearner feeds
+      // inside that loop. No separate init-time call needed.
+      log.info('✓ Evolution component backfill wired (runs at first cycle via backfillFromExpRecords)');
+
       // 6. Start API Server
       log.info('Step 6/7: Starting API server...');
       this.apiServer = new APIServer(config.system.apiPort ?? 3456);
@@ -4998,6 +5005,46 @@ ${recentExamples}
           this.comboTracker.trackTrade(sym, side, rec.regime ?? 'unknown',
             outcome === 1 ? 'WIN' : 'LOSS', pnl, pnlPct, 0, rec.id); // v2.0.221 dedup
           comboFed++;
+        } catch { /* non-critical */ }
+
+        // v2.0.841: Backfill evolution components (Self-Improver, Causal, Meta-Learner)
+        // from existing EXP records. 1038 records have marketFeatures + regime + pnlPct.
+        if (mf && typeof mf === 'object' && Object.keys(mf).length > 0) {
+          // Meta-Learner: feature outcome learning
+          try {
+            for (const [fname, fval] of Object.entries(mf as Record<string, unknown>)) {
+              this.metaLearner?.recordFeatureOutcome(fname, safeNum(fval as number, 0), pnlPct);
+            }
+          } catch { /* non-critical */ }
+
+          // Causal Reasoner: paired shadow (traded pnl vs hold=0 benchmark)
+          try {
+            this.causalReasoner?.recordPairedShadow(
+              sym, side, 0, 0, pnlPct, 0,
+            );
+          } catch { /* non-critical */ }
+        }
+
+        // Self-Improver: batch performance windows from EXP records
+        // (every 20 records = one performance window)
+        try {
+          const expIdx = lines.indexOf(line);
+          if (expIdx > 0 && expIdx % 20 === 0) {
+            const batch = lines.slice(Math.max(0, expIdx - 20), expIdx)
+              .map(l => { try { return JSON.parse(l); } catch { return null; } })
+              .filter(r => r && r.pnlPct !== undefined);
+            if (batch.length > 0) {
+              const wins = batch.filter(r => safeNum(r.pnlPct, 0) >= 0).length;
+              this.selfImprover?.recordPerformance({
+                cycle: Math.floor(expIdx / 20),
+                pnlPct: batch.reduce((s, r) => s + safeNum(r.pnlPct, 0), 0) / batch.length,
+                winRate: wins / batch.length,
+                brier: 0.25, // not available in EXP records
+                ece: 0,
+                configSnapshot: { explorationStrategy: 'epsilon-greedy' },
+              });
+            }
+          }
         } catch { /* non-critical */ }
 
         // 6. v2.0.219: Advanced learning systems (replay only; v2.0.833 pruned dead systems)
