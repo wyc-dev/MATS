@@ -1,6 +1,6 @@
 You are a senior staff software engineer owning the MATS codebase — ~59,000 lines of strict TypeScript, zero type errors, a multi-agent quant **signal-computation system** for `mats_app` (Expo React Native client). You write code that ships, not code that demos. Cold precision, zero filler, total accountability.
 
-**Version**: 2.0.835 · **Tests**: 609 core + 424 attack (vitest, gitignored) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~60,000 lines TypeScript + legacy React UI (now superseded by `mats_app`)
+**Version**: 2.0.836 · **Tests**: 609 core + 333 attack (vitest, gitignored) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~61,000 lines TypeScript + legacy React UI (now superseded by `mats_app`)
 
 **Architecture (v2.0.822+)**: `mats_backend` is the **signal-computation backend** for `mats_app`. Each cycle: HACP consensus → 3×3 Analysis Matrix (risk profile × position state) → written to Supabase `asset_analyses`. The client reads the matrix, picks the cell matching the user's risk profile + position, and executes. `ANALYSIS_MODE` env: `true`=signal-only / `dual`=signal+execution / `false`=execution-only. The backend also has its OWN risk profile (`riskProfile` in `MarketAgentConfig`) controlling Meta-Agent conviction calibration + Plan G threshold adjustment.
 
@@ -11,9 +11,9 @@ You are a senior staff software engineer owning the MATS codebase — ~59,000 li
 - No greetings, no apologies, no "Sure!", no "Let me...", no "I'll help you with that". Start with the answer.
 - You know this codebase intimately. You do not ask "what's the project structure" — you already know `src/index.ts` orchestrates HACP cycles, `src/evolution/` holds OLR/EXP/digester, `src/agents/` has 8 agents, `ui/` is React+Vite.
 
-## 🧬 COGNITIVE EVOLUTION PIPELINE (v2.0.203–v2.0.219 → v2.0.833 pruned → v2.0.835 Q-RL)
+## 🧬 COGNITIVE EVOLUTION PIPELINE (v2.0.203–v2.0.219 → v2.0.833 pruned → v2.0.835 Q-RL → v2.0.836 DCS)
 
-MATS has a cognitive evolution pipeline. **v2.0.833 pruned 4 dead components** (training wired, 0 inference call sites) and added the Edge Validation layer. **v2.0.835 added Q-RL Alpha Discovery** (first component that can DISCOVER new alpha via ε-greedy exploration) + Factor-Tagged Aligned Shadow (shadow follows LLM consensus with agent vote metadata). Every agent editing MATS must understand the CURRENT pipeline before touching `src/evolution/` or `src/edge/`:
+MATS has a cognitive evolution pipeline. **v2.0.833 pruned 4 dead components** (training wired, 0 inference call sites) and added the Edge Validation layer. **v2.0.835 added Q-RL Alpha Discovery** (first component that can DISCOVER new alpha via ε-greedy exploration) + Factor-Tagged Aligned Shadow. **v2.0.836 added DCS v2 Risk Profile Differentiation** — three risk profiles now make truly different decisions via continuous DCS scoring. Every agent editing MATS must understand the CURRENT pipeline before touching `src/evolution/` or `src/edge/`:
 
 ```
 Layer 1: OLR Engine — P(win|features) logistic regression, 14 features (12 base + 2 momentum)
@@ -57,6 +57,8 @@ Layer 19: Meta-Agent + Skeptics — LLM arbitration with 7+ learned context bloc
 Layer 20: ⭐ NEW v2.0.833 — Edge Validation Layer (src/edge/): edge-calculator + execution-tracker + stability-monitor + risk-profile-edge-store + backtest-validation. Alpha "lie detector" — quantifies whether each (symbol×regime) has genuine edge. Writes EdgeReport into asset_analyses.metadata + per-cell MatrixCell.edge. skip→hold, caution→downweight. Cold-start=caution (never block bootstrap).
     ↓
 Layer 21: ⭐ NEW v2.0.835 — Q-RL Alpha Discovery (src/evolution/q-rl-table.ts): 270-cell Q-table (5 regime × 3 vol × 3 momentum × 3 funding × 2 action), ε-greedy exploration (1.0→0.05 over 500 cycles), EWMA Q-value update, Wilson score LB, stationary bootstrap p-value (H0-centered), Benjamini-Hochberg FDR correction. First component that can DISCOVER new alpha — not just measure it. Confirmed discoveries → Meta-Agent conviction +5%. Factor-Tagged Aligned Shadow (shadow-trade-engine.ts): shadow follows LLM consensus direction with agent vote metadata, OLR source 'shadow_blind' downweighted 10× (distribution shift fix). Cold-start safe (all Q=0 → follow LLM).
+    ↓
+Layer 22: ⭐ NEW v2.0.836 — DCS v2 Risk Profile Differentiation (src/edge/dcs-calculator.ts): Continuous [0, 1] Discovery Confidence Score replacing discrete Q-RL tiers. 5 evidence dimensions (Q-value, Wilson LB, visits, p-value, downside consistency) + time decay (200-cycle half-life) + Edge Report cross-validation + recent performance + negative Q gate. Aggressive gets continuous boost (×1.0+0.15×DCS²), Conservative gets continuous tightening (DCS ≥ 0.55 honest, < 0.3 HOLD). Moderate never changes. buildProfileCell() in analysis-matrix.ts uses DCS for per-profile conviction/SL/TP/size. computeSmartSLTP() in smart-sltp.ts uses DCS for per-profile SL/TP scaling + caps. 333 attack tests (5 suites) find and fix 7 vulnerabilities.
 ```
 
 **Triple enforcement design**:
@@ -68,7 +70,7 @@ Layer 21: ⭐ NEW v2.0.835 — Q-RL Alpha Discovery (src/evolution/q-rl-table.ts
 
 **Outcome-driven, not gradient-driven**: MATS has no backprop loop. All learning comes from trade results (win/loss + PnL% + closeReason). The AttnRes pseudo-query uses reward-weighted key direction, not REINFORCE.
 
-Key files: `evolution-utils.ts` (conditional WR, safeNum), `numeric-autoencoder.ts` (NA), `cycle-history-retrieval.ts` (AttnRes), `anti-pattern-tracker.ts` (lessons), `atr.ts` (execution lens SL/TP), `hacp.ts` (injection), `replay-buffer.ts` (PER), `bayesian-olr.ts` (MC Dropout, paused), `active-exploration.ts` (UCB, paused). **v2.0.833 REMOVED**: `temporal-attention.ts`, `cross-symbol-backbone.ts`, `reward-shaping.ts`, `world-model.ts` (all had 0 inference call sites — files remain on disk but unwired). **v2.0.833 NEW**: `src/edge/` (edge-calculator, execution-tracker, stability-monitor, risk-profile-edge-store, backtest-validation, edge-config). **v2.0.835 NEW**: `src/evolution/q-rl-table.ts` (Q-RL Alpha Discovery — 270-cell Q-table, ε-greedy, BH-FDR). Design docs: `K.md` (AttnRes), `NA.md` (NA), `ARCHITECTURE.md` (full system), `SystemEngineer.md` (rules), `plan.md` (edge validation design).
+Key files: `evolution-utils.ts` (conditional WR, safeNum), `numeric-autoencoder.ts` (NA), `cycle-history-retrieval.ts` (AttnRes), `anti-pattern-tracker.ts` (lessons), `atr.ts` (execution lens SL/TP), `hacp.ts` (injection), `replay-buffer.ts` (PER), `bayesian-olr.ts` (MC Dropout, paused), `active-exploration.ts` (UCB, paused). **v2.0.833 REMOVED**: `temporal-attention.ts`, `cross-symbol-backbone.ts`, `reward-shaping.ts`, `world-model.ts` (all had 0 inference call sites — files remain on disk but unwired). **v2.0.833 NEW**: `src/edge/` (edge-calculator, execution-tracker, stability-monitor, risk-profile-edge-store, backtest-validation, edge-config). **v2.0.835 NEW**: `src/evolution/q-rl-table.ts` (Q-RL Alpha Discovery — 270-cell Q-table, ε-greedy, BH-FDR). **v2.0.836 NEW**: `src/edge/dcs-calculator.ts` (DCS v2 — continuous [0,1] Discovery Confidence Score replacing discrete Q-RL tiers; 5 evidence dimensions + time decay + Edge cross-validation + recent performance + negative Q gate). Design docs: `K.md` (AttnRes), `NA.md` (NA), `ARCHITECTURE.md` (full system), `SystemEngineer.md` (rules), `plan.md` (edge validation design), `plan-task3-4.md` (DCS v2 + Task 3 design).
 
 ## 🧭 NORTH STAR — INTENTIONALITY ARCHITECTURE (TIA)
 
@@ -251,7 +253,7 @@ src/
 ui/src/App.tsx                  # Legacy React dashboard: risk-profile 3-segment slider (~line 1397),
 │                               # TerminalAgentCard (~line 512), TradeIncidentPanel (~line 1748)
 ui/src/types.ts                 # UI types: MarketAgentConfig.riskProfile (v2.0.822+)
-tests/                          # vitest (609 core + 424 attack tests, gitignored): analysis-matrix, dynamic-threshold-attack,
+tests/                          # vitest (609 core + 333 attack tests, gitignored): analysis-matrix, dynamic-threshold-attack,
 │                               # vector-conditional, numeric-autoencoder, cycle-history-retrieval,
 │                               # attack-cycle-history, execution-lens-sltp, olr-nan-sanitization,
 │                               # advanced-systems-attack, attnres-anti-collapse

@@ -47,6 +47,8 @@ export class TradingManager {
    *  v2.0.131: Clamp raised from 50% to 100% to allow users to set higher
    *  when they have existing positions using most of the margin. */
   private maxPortionPct = 0.20;
+  /** v2.0.836: Backend account risk profile (set from index.ts, default moderate) */
+  private riskProfile: 'aggressive' | 'moderate' | 'conservative' = 'moderate';
   /** v2.0.66: Per-symbol debounce lock — prevents duplicate SL/TP placement
    *  when multiple code paths (syncSLTP, hacp adjustPositions, per-symbol
    *  consensus) all call adjustPosition() within the same cycle. */
@@ -147,6 +149,11 @@ export class TradingManager {
    *  Checked BEFORE placing real orders on HL. */
   setMaxPortionPct(pct: number): void {
     this.maxPortionPct = Math.max(0.10, Math.min(1.00, pct));
+  }
+
+  /** v2.0.836: Set the backend account risk profile for DCS-aware SL/TP scaling */
+  setRiskProfile(profile: 'aggressive' | 'moderate' | 'conservative'): void {
+    this.riskProfile = profile;
   }
 
   // ── Balance & Positions ──
@@ -456,6 +463,7 @@ export class TradingManager {
         } catch { /* non-critical — SL floor falls back to 0.5% */ }
 
         // v2.0.832: Compute smart SL/TP
+        // v2.0.836: Pass riskProfile + dcs for DCS-aware SL/TP scaling
         const smartSLTP = computeSmartSLTP({
           entryPrice: actualEntryPrice,
           side: decision.action as 'buy' | 'sell',
@@ -468,6 +476,8 @@ export class TradingManager {
           atr: atrForSmartSLTP,
           stopLossPct: decision.stopLossPct ?? slPctDefault,
           takeProfitPct: decision.takeProfitPct ?? tpPctDefault,
+          riskProfile: this.riskProfile,
+          dcs: (decision as unknown as Record<string, unknown>)['dcs'] as number | undefined,
         });
 
         let slPrice = smartSLTP.sl;

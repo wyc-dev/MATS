@@ -11,9 +11,10 @@
 //   • conservative = placeholder — same action as moderate, conviction scaled
 //                   ×0.7, `calibrated: false` until the owner defines the rules.
 //
-// The owner will supply the aggressive/conservative calibration separately;
-// this module is structured so those rules drop into `buildProfileCell()`
-// without touching the consensus-mapping logic.
+// v2.0.836: aggressive/conservative now use DCS v2 continuous scoring from
+// Q-RL Alpha Discovery to differentiate conviction, SL/TP, and position size.
+// moderate remains the calibrated baseline (DCS never affects it).
+// See plan-task3-4.md for the full design.
 
 import type {
   AssetAnalysis,
@@ -27,6 +28,7 @@ import type {
 } from '../types/index.ts';
 import type { PerSymbolConsensus } from '../types/index.ts';
 import type { AggregatedMarketState } from '../data/binance-websocket.ts';
+import { dcsConvictionFactor } from '../edge/dcs-calculator.ts';
 
 /** Map a raw consensus action (+ closePosition flag) to a MatrixCell action,
  *  depending on the user's current position state. */
@@ -57,38 +59,91 @@ function mapAction(
 }
 
 /** Build a single matrix cell for a (profile, positionState) combination.
- *  `baseAction`/`baseConviction` come from the moderate consensus mapping;
- *  the profile scales conviction and flags calibration. The optional `edge`
- *  carries the risk-profile-conditional edge report for this cell. */
+ *  v2.0.836: Uses DCS v2 continuous scoring for aggressive/conservative.
+ *  Moderate is the standard baseline — DCS never affects it.
+ *
+ *  DCS × Profile decision matrix:
+ *  - Moderate: action + conviction unchanged (standard)
+ *  - Aggressive: conviction × (1.0 + 0.15 × DCS²) [1.0, 1.15] — quadratic boost
+ *  - Conservative: DCS ≥ 0.55 → honest conviction ×1.0; DCS 0.3–0.55 → extremely
+ *    low conviction (threshold ×1.15 blocks most, but not a hard HOLD);
+ *    DCS < 0.3 → hard HOLD; Edge Report skip → hard HOLD for all profiles */
 function buildProfileCell(
   profile: RiskProfile,
   baseAction: MatrixCell['action'],
   baseConviction: number,
   rationale: string,
   edge?: EdgeReport,
+  dcs: number = 0,
 ): MatrixCell {
-  switch (profile) {
-    case 'moderate':
-      return { action: baseAction, conviction: baseConviction, rationale, calibrated: true, edge };
-    case 'aggressive':
-      // Placeholder: amplify conviction, more likely to act. Owner refines.
-      return {
-        action: baseAction,
-        conviction: Math.min(1.0, baseConviction * 1.3),
-        rationale,
-        calibrated: false,
-        edge,
-      };
-    case 'conservative':
-      // Placeholder: dampen conviction, more cautious. Owner refines.
-      return {
-        action: baseAction,
-        conviction: Math.max(0, baseConviction * 0.7),
-        rationale,
-        calibrated: false,
-        edge,
-      };
+  // v2.0.836 security: clamp DCS to [0, 1] — same fix as dcs-calculator.ts.
+  // Without this, negative DCS boosts Aggressive (D1 bug) and DCS > 1
+  // produces out-of-range multipliers (D2 bug).
+  const safeDcs = Number.isFinite(dcs) ? Math.max(0, Math.min(1, dcs)) : 0;
+
+  // Edge Report skip → hard hold for ALL profiles
+  if (edge?.recommendation === 'skip') {
+    return { action: 'hold', conviction: 0, rationale: 'Edge Report: skip', calibrated: false, edge, dcs: safeDcs };
   }
+
+  // Moderate = standard, never affected by DCS
+  if (profile === 'moderate') {
+    return { action: baseAction, conviction: baseConviction, rationale, calibrated: true, edge, dcs: 0 };
+  }
+
+  // Aggressive: DCS > 0 → accept, conviction continuous boost (quadratic)
+  if (profile === 'aggressive') {
+    const factor = 1.0 + 0.15 * safeDcs * safeDcs; // [1.0, 1.15], quadratic
+    return {
+      action: baseAction,
+      conviction: Math.min(1.0, baseConviction * factor),
+      rationale: safeDcs > 0.01
+        ? `${rationale} [Aggr DCS=${safeDcs.toFixed(2)} ×${factor.toFixed(3)}]`
+        : rationale,
+      calibrated: safeDcs >= 0.55,
+      edge,
+      dcs: safeDcs,
+    };
+  }
+
+  // Conservative: DCS ≥ 0.55 → honest; DCS 0.3–0.55 → extremely low; DCS < 0.3 → HOLD
+  if (profile === 'conservative') {
+    if (safeDcs < 0.3) {
+      // Hard HOLD — DCS too low
+      return {
+        action: 'hold',
+        conviction: 0,
+        rationale: `Conservative: DCS=${safeDcs.toFixed(2)} < 0.3`,
+        calibrated: false,
+        edge,
+        dcs: safeDcs,
+      };
+    }
+    if (safeDcs >= 0.55) {
+      // Honest conviction — DCS is high enough, triple protection is sufficient
+      return {
+        action: baseAction,
+        conviction: baseConviction, // ×1.0 honest
+        rationale: `${rationale} [Cons DCS=${safeDcs.toFixed(2)} honest]`,
+        calibrated: true,
+        edge,
+        dcs: safeDcs,
+      };
+    }
+    // DCS 0.3–0.55: extremely low conviction (threshold ×1.15 will block most)
+    const factor = 0.3 * (safeDcs - 0.3) / 0.25; // [0, 0.3]
+    return {
+      action: baseAction,
+      conviction: baseConviction * factor,
+      rationale: `${rationale} [Cons DCS=${safeDcs.toFixed(2)} ×${factor.toFixed(3)} gate]`,
+      calibrated: false,
+      edge,
+      dcs: safeDcs,
+    };
+  }
+
+  // Fallback (should not reach — RiskProfile has only 3 values)
+  return { action: baseAction, conviction: baseConviction, rationale, calibrated: false, edge, dcs: safeDcs };
 }
 
 /** Build the full 3×3 matrix for one asset from its per-symbol consensus.
@@ -104,6 +159,7 @@ function buildMatrix(
   confidence: number,
   rationale: string,
   profileEdges?: Partial<Record<RiskProfile, EdgeReport>>,
+  dcs: number = 0,
 ): AnalysisMatrix {
   const profiles: RiskProfile[] = ['aggressive', 'moderate', 'conservative'];
   const states: PositionState[] = ['long', 'short', 'flat'];
@@ -118,7 +174,7 @@ function buildMatrix(
       // client must not act on it. This is the ONLY place edge can mute a
       // signal; it never fabricates a new action.
       if (edge?.recommendation === 'skip') action = 'hold';
-      matrix[profile][state] = buildProfileCell(profile, action, confidence, rationale, edge);
+      matrix[profile][state] = buildProfileCell(profile, action, confidence, rationale, edge, dcs);
     }
   }
   return matrix;
@@ -141,6 +197,7 @@ export function buildAssetAnalysis(
   agentsTotal: number,
   edgeReport?: EdgeReport,
   profileEdges?: Partial<Record<RiskProfile, EdgeReport>>,
+  dcs: number = 0,
 ): AssetAnalysis | null {
   // No consensus for this symbol → emit a neutral matrix (all 'hold').
   const rawAction = psc?.action ?? 'hold';
@@ -191,7 +248,7 @@ export function buildAssetAnalysis(
     suggestedLeverage,
   };
 
-  const matrix = buildMatrix(rawAction, closePosition, confidence, rationale, profileEdges);
+  const matrix = buildMatrix(rawAction, closePosition, confidence, rationale, profileEdges, dcs);
 
   return {
     symbol,
@@ -202,5 +259,6 @@ export function buildAssetAnalysis(
     matrix,
     metadata: {},
     edgeReport,
+    dcs,
   };
 }

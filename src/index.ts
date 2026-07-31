@@ -15,6 +15,7 @@ import {
   RiskProfileEdgeStore, type EdgeCalcInput,
 } from './edge/index.ts';
 import { QRLTable, type AlphaDiscovery } from './evolution/q-rl-table.ts';
+import { computeDCS } from './edge/dcs-calculator.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
 import { getActiveProvider } from './llm/index.ts';
 import { getAgentModel } from './agents/agent-models.ts';
@@ -6800,7 +6801,7 @@ ${recentExamples}
             const edgeResult = await this.computeEdgeForSymbol(sym, edgeSide, regime);
             const analysis = buildAssetAnalysis(
               sym, psc, ms, this.totalCycles, pwin, aligned, votes.length,
-              edgeResult?.edgeReport, edgeResult?.profileEdges,
+              edgeResult?.edgeReport, edgeResult?.profileEdges, edgeResult?.dcs ?? 0,
             );
             if (analysis) analyses.push(analysis);
           }
@@ -9909,7 +9910,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     sym: string,
     side: 'buy' | 'sell',
     regime: string,
-  ): Promise<{ edgeReport: EdgeReport; profileEdges: Partial<Record<RiskProfile, EdgeReport>> } | null> {
+  ): Promise<{ edgeReport: EdgeReport; profileEdges: Partial<Record<RiskProfile, EdgeReport>>; dcs: number } | null> {
     try {
       // 1. Shadow WR (pure directional edge proxy)
       const shadowStats = this.shadowEngine.getStats().find(
@@ -10002,9 +10003,19 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         ts: Date.now(),
       });
 
+      // v2.0.836: Compute DCS v2 — Discovery Confidence Score from Q-RL
+      const marketFeatures = this.lastCycleShadowContexts.get(normalizeSymbol(sym))?.features ?? {};
+      const qrlDiscovery = this.qrlTable.getBestDiscovery(marketFeatures);
+      const rewardHistory = qrlDiscovery
+        ? this.qrlTable.getRewardHistory(qrlDiscovery.key)
+        : [];
+      const ageCycles = qrlDiscovery?.discoveredAt
+        ? Math.max(0, this.totalCycles - qrlDiscovery.discoveredAt)
+        : 0;
+      const dcs = computeDCS(qrlDiscovery, edgeReport.edgeScore, rewardHistory, ageCycles);
+
       // Per-profile conditional edge from the MiniLM vector store
       const profileEdges: Partial<Record<RiskProfile, EdgeReport>> = {};
-      const marketFeatures = this.lastCycleShadowContexts.get(normalizeSymbol(sym))?.features ?? {};
       for (const profile of ['aggressive', 'moderate', 'conservative'] as RiskProfile[]) {
         try {
           const rpResult = await this.edgeRpStore.query({
@@ -10026,7 +10037,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         }
       }
 
-      return { edgeReport, profileEdges };
+      return { edgeReport, profileEdges, dcs };
     } catch (err) {
       log.warn(`[edge-compute] ${sym} ${side} failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       return null;

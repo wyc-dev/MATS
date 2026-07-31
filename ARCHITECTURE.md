@@ -3,7 +3,7 @@
 > **作者**: YC Wong · **版本**: 2.0.822+
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 3×3 風險矩陣 → 寫入 Supabase；客戶端按用戶選擇嘅風險等級讀取對應矩陣格並決定執行
-> **代碼量**: ~60,000 行 TypeScript（嚴格模式，零類型錯誤）
+> **代碼量**: ~61,000 行 TypeScript（嚴格模式，零類型錯誤）
 
 ---
 
@@ -23,7 +23,7 @@
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 認知演化管線（v2.0.835: 23→15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL Alpha Discovery + Factor-Tagged Aligned Shadow |
+| **自我演化** | 認知演化管線（v2.0.836: 23→15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Risk Profile Differentiation）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + DCS v2 v2.0.836，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 風險等級區別化（三個 profile 真正唔同決策） |
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
 | **風險等級客戶端選擇** | 後端運算 3 個風險等級（aggressive/moderate/conservative）嘅訊號矩陣；客戶端按用戶選擇讀取對應格（v2.0.822）|
@@ -66,7 +66,7 @@
 │   • HACP 多模型平行推理（僅關鍵決策點觸發 LLM）                 │
 │   • 6 智能體 + Meta-Agent 仲裁 + Skeptics 邏輯審查             │
 │   • Entry Thesis System + 暗黑心理學 + 結構化辯論 + 加權投票    │
-│   • 認知演化管線（v2.0.835: 15 active + Edge Validation + Q-RL Alpha Discovery；4 組件已移除）     │
+│   • 認知演化管線（v2.0.836: 15 active + Edge Validation + Q-RL Alpha Discovery + DCS v2；4 組件已移除）     │
 │   • Plan G Dynamic Threshold [45-55%] + 乘法 Penalty 衰減       │
 │   • SystemGuard（5 層系統級保護）                               │
 ├──────────────────────────────────────────────────────────────┤
@@ -134,13 +134,14 @@ src/
 ├── services/                # v2.0.822: Analysis Matrix + Supabase writer
 │   ├── analysis-matrix.ts   # buildAssetAnalysis()：共識 → 3×3 風險矩陣（v2.0.822）+ edgeReport 注入（v2.0.833）
 │   └── supabase-writer.ts   # SupabaseAnalysisWriter：每 cycle 寫入 asset_analyses 表（v2.0.822+823）
-├── edge/                    # v2.0.833: Edge Validation Layer（alpha 測謊機）
+├── edge/                    # v2.0.833: Edge Validation Layer（alpha 測謊機）+ v2.0.836 DCS v2
 │   ├── edge-config.ts       # Zod env var：threshold + weight + sample cap 10000
 │   ├── edge-calculator.ts   # Task 1A：5-component regime-weighted edgeScore
 │   ├── execution-tracker.ts # Task 1B：slippage + funding → 可實現 PnL 校準
 │   ├── stability-monitor.ts  # Task 1C：perturbation + cross-time 穩定性
 │   ├── risk-profile-edge-store.ts # MiniLM 向量 DB：per-profile conditional edge
-│   └── backtest-validation.ts # Sharpe/Sortino/Calmar/PF/bootstrap/DSR/walk-forward
+│   ├── backtest-validation.ts # Sharpe/Sortino/Calmar/PF/bootstrap/DSR/walk-forward
+│   └── dcs-calculator.ts    # v2.0.836: DCS v2 連續 [0,1] Discovery Confidence Score
 ├── api-server.ts            # REST + SSE (:3456) + static UI（legacy）
 └── index.ts                 # 系統 orchestrator（決策循環 + 矩陣寫入 ~line 6478）
 ui/                          # Legacy React + Vite dashboard（已由 mats_app 取代）
@@ -549,7 +550,7 @@ FINAL CONFIDENCE:
 
 ## 自我演化系統
 
-MATS 嘅核心競爭力係**認知演化管線**（v2.0.835: 23→15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery）——每筆交易結果都會餵回學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。v2.0.833 移除咗 4 個 0-inference 組件（temporal-attention / cross-symbol / reward-shaping / world-model）同暫停 active-exploration。v2.0.835 新增 Q-RL Alpha Discovery（首個可以發現新 alpha 嘅組件）+ Factor-Tagged Aligned Shadow。以下逐層詳述：
+MATS 嘅核心競爭力係**認知演化管線**（v2.0.836: 23→15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Risk Profile Differentiation）——每筆交易結果都會餵回學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。v2.0.833 移除咗 4 個 0-inference 組件（temporal-attention / cross-symbol / reward-shaping / world-model）同暫停 active-exploration。v2.0.835 新增 Q-RL Alpha Discovery（首個可以發現新 alpha 嘅組件）+ Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 風險等級區別化（三個 profile 真正唔同決策——唔止 conviction 數字唔同，而係 entry acceptance、SL/TP 闊度、position size 都唔同）。以下逐層詳述：
 
 ### OLR — Online Logistic Regression（`olr-engine.ts`）
 
