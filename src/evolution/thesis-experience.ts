@@ -43,6 +43,7 @@ import {
   combinationSimilarity,
   cosine,
 } from './embeddings.ts';
+import { ANNIndex, type ANNQueryResult } from './ann-index.ts';
 import { ExperienceDigester } from './experience-digester.ts';
 import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
 import { extractJSON, categoriseRationale, normaliseCategory, wilsonScore } from './evolution-utils.ts';
@@ -249,6 +250,15 @@ export class ThesisExperience {
   private readonly digester: ExperienceDigester;
   /** v2.0.140: Last semantic verdict from the classification path (for fusion). */
   private lastSemanticVerdict: ExpCheckResult | null = null;
+  /** v2.0.843: ANN index for fast similarity search over rationale vectors.
+   *  Stores (recordIdx → vector) mapping. When the IVF is trained, queries
+   *  scan only Nprobe buckets. Otherwise (cold-start < 500 records), falls
+   *  back to brute-force. */
+  private ann: ANNIndex;
+  /** v2.0.843: Map ANN internal ID → record index in this.records.
+   *  Needed because the ANN stores its own integer IDs, and we need to
+   *  map back to ThesisExperienceRecord for outcome/category lookup. */
+  private annIdToRecordIdx: Map<number, number> = new Map();
 
   constructor(opts: {
     embed: EmbedProvider;
@@ -275,6 +285,10 @@ export class ThesisExperience {
         maxDigestCache: config.exp.digest.maxDigestCache,
       },
     });
+    // v2.0.843: ANN index for fast similarity search. Uses the same embed
+    // dimension as the MiniLM provider. K=64 centroids, Nprobe=8 buckets,
+    // trains automatically when ≥500 records are loaded.
+    this.ann = new ANNIndex({ dim: this.cfg.embedDim, k: 64, nprobe: 8 });
   }
 
   /** Access the A2A Experience Digester (for startup rebuild + UI). */
@@ -392,6 +406,11 @@ export class ThesisExperience {
       this.records = deduped.slice(-this.cfg.maxRecords);
       this.loaded = true;
       log.info(`[EXP] loaded ${this.records.length} records from ${this.cfg.jsonlPath}`);
+      // v2.0.843: Build ANN index from loaded records. Each record's
+      // rationaleVectors are added individually (the ANN stores flat
+      // vectors, not per-record vector lists). The annIdToRecordIdx map
+      // links each ANN ID back to the record index for outcome lookup.
+      this.buildANNFromRecords();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn(`[EXP] load failed: ${msg}`);
@@ -399,6 +418,105 @@ export class ThesisExperience {
       this.loaded = false;
       throw err;
     }
+  }
+
+  // ── v2.0.843: ANN index management ──────────────────────────
+
+  /**
+   * Rebuild the ANN index from scratch using all current records.
+   * Called on load and when the rolling cap trims old records.
+   * O(N·K·D) but amortised — happens at most once per maxRecords trades.
+   */
+  private buildANNFromRecords(): void {
+    // Reset the ANN + ID map.
+    this.ann = new ANNIndex({ dim: this.cfg.embedDim, k: 64, nprobe: 8 });
+    this.annIdToRecordIdx = new Map();
+    for (let i = 0; i < this.records.length; i++) {
+      this.addRecordToANN(this.records[i]!, i);
+    }
+    // Train the IVF if enough records.
+    this.ann.train();
+    const stats = this.ann.getStats();
+    log.info(
+      `[EXP] ANN index built: ${stats.size} vectors, ` +
+      `trained=${stats.trained} (K=${stats.k}, Nprobe=${stats.nprobe})`
+    );
+  }
+
+  /**
+   * Add a single record's rationale vectors to the ANN index.
+   * Each rationale vector gets its own ANN ID, all mapping back to the
+   * same record index (a record has 2-5 rationale vectors).
+   */
+  private addRecordToANN(record: ThesisExperienceRecord, recordIdx: number): void {
+    if (!record.rationaleVectors || record.rationaleVectors.length === 0) return;
+    for (const vec of record.rationaleVectors) {
+      if (!Array.isArray(vec) || vec.length !== this.cfg.embedDim) continue;
+      if (!vec.every(v => Number.isFinite(v))) continue;
+      const annId = this.ann.add(vec);
+      if (annId >= 0) {
+        this.annIdToRecordIdx.set(annId, recordIdx);
+      }
+    }
+  }
+
+  /**
+   * v2.0.843: Query the ANN for the top-K records whose rationale vectors
+   * are most similar to the candidate vectors. Uses combinationSimilarity
+   * (asymmetric or symmetric per config) to compare candidate vector lists
+   * against historical record vector lists, but uses the ANN to pre-filter
+   * which records to compare (reducing O(N) → O(Nprobe × bucketSize)).
+   *
+   * @param candVectors  Candidate rationale vectors (2-5 vectors × 384 dims)
+   * @param topK         Max records to return
+   * @param minSim       Minimum similarity threshold (from cfg.matchThreshold)
+   * @returns Array of { recordIdx, sim } sorted by descending similarity.
+   *          Returns ALL records if ANN is cold-start (not trained) — caller
+   *          then does the full brute-force loop (same as pre-v2.0.843 behavior).
+   */
+  private queryANNForRecords(
+    candVectors: number[][],
+    topK: number,
+    minSim: number,
+  ): Array<{ recordIdx: number; sim: number }> {
+    // Cold-start: ANN not trained → return all records (full scan).
+    // The caller will do the brute-force combinationSimilarity loop.
+    if (!this.ann.isTrained() || this.ann.size() === 0) {
+      return this.records.map((_, idx) => ({ recordIdx: idx, sim: 0 }));
+    }
+
+    // For each candidate vector, find top-K nearest ANN vectors.
+    // A record with multiple rationale vectors may appear multiple times
+    // — we keep the highest similarity per record.
+    const perRecordBest = new Map<number, number>();
+    const candidatesPerVec = Math.max(topK * 3, 20);  // over-fetch to dedup
+
+    for (const cv of candVectors) {
+      const results: ANNQueryResult[] = this.ann.query(cv, candidatesPerVec);
+      for (const r of results) {
+        if (r.similarity < minSim) continue;
+        const recordIdx = this.annIdToRecordIdx.get(r.id);
+        if (recordIdx === undefined) continue;
+        const existing = perRecordBest.get(recordIdx);
+        if (existing === undefined || r.similarity > existing) {
+          perRecordBest.set(recordIdx, r.similarity);
+        }
+      }
+    }
+
+    // Convert to array, compute full combinationSimilarity for the
+    // top candidates (ANN gives a per-vector estimate; combinationSimilarity
+    // gives the true multi-vector similarity).
+    const candidates: Array<{ recordIdx: number; sim: number }> = [];
+    for (const [recordIdx, annSim] of perRecordBest) {
+      const rec = this.records[recordIdx];
+      if (!rec || rec.rationaleVectors.length === 0) continue;
+      const fullSim = combinationSimilarity(candVectors, rec.rationaleVectors, this.cfg.similarityMode);
+      candidates.push({ recordIdx, sim: fullSim });
+    }
+
+    candidates.sort((a, b) => b.sim - a.sim);
+    return candidates.slice(0, topK * 2);  // over-fetch for direction filtering
   }
 
   private ensureDir(path: string): void {
@@ -564,6 +682,14 @@ export class ThesisExperience {
       // Rolling cap in memory
       if (this.records.length > this.cfg.maxRecords) {
         this.records = this.records.slice(-this.cfg.maxRecords);
+        // v2.0.843: When records are trimmed, the ANN index is stale (IDs no
+        // longer map to valid record indices). Rebuild from the trimmed set.
+        // This is O(N·K·D) but happens at most once per maxRecords trades.
+        this.buildANNFromRecords();
+      } else {
+        // v2.0.843: Incrementally add the new record's vectors to the ANN.
+        // Only add vectors that are valid (non-empty, finite).
+        this.addRecordToANN(record, this.records.length - 1);
       }
       this.renderEXPmd();
       // v2.0.140: incremental class update (non-blocking) — digest + embed the
@@ -751,12 +877,12 @@ export class ThesisExperience {
     // them via getLastCandidateVectors() after checkThesisHistory returns).
     this.lastCandidateVectors = candVectors;
 
-    // Combination similarity vs every historical record
-    // v2.0.175: Split matches by direction — a SELL candidate should be
-    // compared against historical SELL records, not BUY records. Previously
-    // all matches were pooled together, so a SELL "distribution-hype" thesis
-    // could match a BUY "accumulation" thesis (both mention ETF, price, SKHX)
-    // and the BUY wins would inflate pWin, masking the SELL losses.
+    // v2.0.843: Use ANN index to pre-filter candidate records before computing
+    // full combinationSimilarity. When the ANN is trained (≥500 records), this
+    // reduces the O(N) brute-force loop to O(Nprobe × bucketSize) — ~12% of
+    // records are scanned for 10k records with K=64, Nprobe=8.
+    // Cold-start (ANN not trained): queryANNForRecords returns ALL records,
+    // preserving the pre-v2.0.843 full-scan behavior.
     const sameDirMatches: Array<{ rec: ThesisExperienceRecord; sim: number }> = [];
     const allMatches: Array<{ rec: ThesisExperienceRecord; sim: number }> = [];
     // v2.0.721: Condition-based filtering — if candidate provides regime and/or
@@ -765,8 +891,19 @@ export class ThesisExperience {
     const candRegime = input.regime;
     const candVol = input.volatility;
     const conditionMatched: Array<{ rec: ThesisExperienceRecord; sim: number }> = [];
-    for (const h of this.records) {
-      if (h.rationaleVectors.length === 0) continue;
+
+    // v2.0.843: Get ANN candidates (pre-filtered when trained, all when cold-start).
+    // Request 5× the matchThreshold area to over-fetch for direction + condition
+    // filtering (which removes ~50-70% of candidates).
+    const annCandidates = this.queryANNForRecords(
+      candVectors,
+      Math.max(this.records.length, 200),  // cold-start: all; trained: capped
+      0,  // get all above 0 sim, then filter by matchThreshold below
+    );
+
+    for (const { recordIdx, sim: _annSim } of annCandidates) {
+      const h = this.records[recordIdx];
+      if (!h || h.rationaleVectors.length === 0) continue;
       const sim = combinationSimilarity(candVectors, h.rationaleVectors, this.cfg.similarityMode);
       if (sim >= this.cfg.matchThreshold) {
         allMatches.push({ rec: h, sim });

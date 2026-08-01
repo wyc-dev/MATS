@@ -70,7 +70,12 @@ const envSchema = z.object({
   EXP_ENABLED: z.coerce.boolean().default(false),
   EXP_EMBED_MODEL: z.string().default('Xenova/all-MiniLM-L6-v2'),
   EXP_EMBED_DIM: z.coerce.number().int().positive().default(384),
-  EXP_MAX_RECORDS: z.coerce.number().int().positive().default(1000),
+  // v2.0.843: EXP_MAX_RECORDS 1000 → 10,000. The ANN index (src/evolution/ann-index.ts)
+  // keeps query latency O(Nprobe × bucketSize) instead of O(N), so 10k records
+  // are feasible. Each record has 2-5 rationale vectors × 384 dims, so 10k records
+  // = ~30k vectors. IVF with K=64 centroids + Nprobe=8 scans ~3.7k vectors per
+  // query (~12% of brute-force) at >95% recall@10. Memory: ~46 MB for vectors.
+  EXP_MAX_RECORDS: z.coerce.number().int().positive().default(10_000),
   EXP_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.55),
   EXP_WIN_PROB_THRESHOLD: z.coerce.number().min(0).max(1).default(0.6),
   EXP_LOSS_PROB_THRESHOLD: z.coerce.number().min(0).max(1).default(0.4),

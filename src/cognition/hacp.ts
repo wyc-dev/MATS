@@ -287,6 +287,44 @@ export class HACPEngine {
   /** v2.0.840: Set Meta-Learning block for agent context injection. */
   setMetaLearningBlock(block: string): void { this.metaLearningBlock = block; }
 
+  /**
+   * v2.0.843: Build the system-level evolution context blocks suffix.
+   *
+   * These blocks represent system-wide self-awareness state (calibration,
+   * self-improvement, causal reasoning, meta-learning, Q-RL alpha discovery).
+   * They are NOT candidate-specific (unlike RIL similar-trades / subtle-diff
+   * blocks, which depend on the trade thesis being evaluated). They apply
+   * equally to entry validation, open-position re-validation, and the
+   * consensus thesis gate.
+   *
+   * Every Skeptics validation path (Phase 0.5 close decision, Phase 1.8 entry
+   * thesis, Phase 4.8 fallback thesis gate) must receive these blocks so
+   * Skeptics can reason about system confidence calibration and causal
+   * evidence when deciding whether to approve / invalidate a thesis.
+   *
+   * Returns an empty string when no evolution blocks are set (cold-start
+   * safe — downstream concatenation is a no-op).
+   */
+  private buildSystemEvolutionBlocks(): string {
+    const parts: string[] = [];
+    if (this.qrlDiscoveryBlock) {
+      parts.push(`=== 🧬 Q-RL ALPHA DISCOVERY ===\n${this.qrlDiscoveryBlock}\n---`);
+    }
+    if (this.metaCalibrationBlock) {
+      parts.push(this.metaCalibrationBlock);
+    }
+    if (this.selfImprovementBlock) {
+      parts.push(this.selfImprovementBlock);
+    }
+    if (this.causalBlock) {
+      parts.push(this.causalBlock);
+    }
+    if (this.metaLearningBlock) {
+      parts.push(this.metaLearningBlock);
+    }
+    return parts.length > 0 ? `\n${parts.join('\n')}` : '';
+  }
+
   /** v2.0.143: RIL SimilarTradeRetriever — finds top-N most similar historical
    *  trades to a candidate thesis. Injected by index.ts so HACP can produce
    *  a "SIMILAR TRADES" context block for the Meta-Agent. */
@@ -845,9 +883,16 @@ export class HACPEngine {
         } else {
           log.info(`Phase 0.5: ${preCheckedPositions.length}/${positionsWithThesis.length} position(s) passed pre-check — running Skeptics validation...`);
           try {
+            // v2.0.843: Inject system-level evolution blocks (calibration,
+            // self-improvement, causal, meta-learning, Q-RL) so Skeptics can
+            // reason about system confidence calibration and causal evidence
+            // when deciding whether to invalidate an open position's thesis.
+            // Without this, the close-decision path was blind to the system's
+            // measured prediction accuracy (Brier/ECE) and causal uplift.
+            const evolutionEnhancedMarketDesc = `${marketStateDesc}${this.buildSystemEvolutionBlocks()}`;
             const thesisResults = await this.skeptics.validateOpenPositionTheses(
               preCheckedPositions,
-              marketStateDesc,
+              evolutionEnhancedMarketDesc,
               fetchPriceForSymbol,
             );
             for (const [symbol, result] of thesisResults) {
@@ -1570,7 +1615,7 @@ export class HACPEngine {
       } catch { /* non-critical */ }
     }
 
-    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}${executionLensBlock}${explorationBlock}${this.qrlDiscoveryBlock ? `\n=== 🧬 Q-RL ALPHA DISCOVERY ===\n${this.qrlDiscoveryBlock}\n---` : ''}${this.metaCalibrationBlock ? `\n${this.metaCalibrationBlock}` : ''}${this.selfImprovementBlock ? `\n${this.selfImprovementBlock}` : ''}${this.causalBlock ? `\n${this.causalBlock}` : ''}${this.metaLearningBlock ? `\n${this.metaLearningBlock}` : ''}`;
+    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}${executionLensBlock}${explorationBlock}${this.buildSystemEvolutionBlocks()}`;
 
     if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition && !expThesisGated) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);
@@ -2103,12 +2148,18 @@ export class HACPEngine {
         if (!wasValidated) {
           // Thesis exists but wasn't validated by Phase 1.8 (e.g. came from
           // metaAgentArbitration or buildConsensus). Validate now.
+          // v2.0.843: Inject system-level evolution blocks (same as Phase 1.8)
+          // so Skeptics sees calibration / causal / self-improvement context.
+          // Previously this fallback path passed raw marketStateDesc, leaving
+          // Skeptics blind to the system's measured prediction accuracy when
+          // validating consensus-resurrected trades.
           log.info(`Phase 4.8: Validating unvalidated thesis for ${finalConsensus.decision.action.toUpperCase()} ${activeSym}...`);
+          const evolutionEnhancedMarketDesc = `${marketStateDesc}${this.buildSystemEvolutionBlocks()}`;
           const thesisResult = await this.skeptics.validateEntryThesis(
             effectiveThesis,
             finalConsensus.decision.action,
             activeSym,
-            marketStateDesc,
+            evolutionEnhancedMarketDesc,
             allThoughts,
           );
           if (!thesisResult.approved) {
