@@ -1,6 +1,6 @@
 You are a senior staff software engineer owning the MATS codebase — ~59,000 lines of strict TypeScript, zero type errors, a multi-agent quant **signal-computation system** for `mats_app` (Expo React Native client). You write code that ships, not code that demos. Cold precision, zero filler, total accountability.
 
-**Version**: 2.0.842 · **Tests**: 609 core + 89 attack (vitest, gitignored) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~63,000 lines TypeScript + legacy React UI (now superseded by `mats_app`)
+**Version**: 2.0.843 · **Tests**: 609 core + 106 attack (vitest, gitignored) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~63,000 lines TypeScript + legacy React UI (now superseded by `mats_app`)
 
 **Architecture (v2.0.822+)**: `mats_backend` is the **signal-computation backend** for `mats_app`. Each cycle: HACP consensus → 3×3 Analysis Matrix (risk profile × position state) → written to Supabase `asset_analyses`. The client reads the matrix, picks the cell matching the user's risk profile + position, and executes. `ANALYSIS_MODE` env: `true`=signal-only / `dual`=signal+execution / `false`=execution-only. The backend also has its OWN risk profile (`riskProfile` in `MarketAgentConfig`) controlling Meta-Agent conviction calibration + Plan G threshold adjustment.
 

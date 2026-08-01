@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.842+
+> **作者**: YC Wong · **版本**: 2.0.843+
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 3×3 風險矩陣 → 寫入 Supabase；客戶端按用戶選擇嘅風險等級讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -125,6 +125,11 @@ src/
 │   ├── reason-analytics.ts  # RIL（per-direction win rates + direction-filtered similar trades v2.0.176）
 │   ├── evolution-utils.ts   # 共享 utils（safeNum v2.0.218, wilsonScore, computeVectorConditionalWinRate + rmsNormKeys + softmaxWeightedWR v2.0.211）
 │   ├── q-rl-table.ts       # Q-RL Alpha Discovery（270-cell Q-table, ε-greedy, BH-FDR, v2.0.835）
+│   ├── ann-index.ts        # ANN Index for EXP（IVF + spherical k-means, 10k records, v2.0.843）
+│   ├── meta-learner.ts     # Meta-Learner（adaptive α + asset-aware feature weights, v2.0.840+843）
+│   ├── self-improver.ts    # Self-Improver（Thompson Sampling bandit + OLS gradient, v2.0.838）
+│   ├── causal-reasoner.ts  # Causal Reasoner（paired shadow uplift + permutation importance, v2.0.839）
+│   ├── meta-calibrator.ts  # Meta-Cognitive Calibrator（Brier score + ECE, per-regime, v2.0.837）
 │   │   # v2.0.833 REMOVED (0 inference call sites): temporal-attention.ts, cross-symbol-backbone.ts, reward-shaping.ts, world-model.ts
 │   ├── direction-audit.ts   # LLM 交易記錄審計（v2.0.180）
 │   └── system-engineer.ts   # 自主代碼工程師 Agent（v2.0.182）
@@ -954,38 +959,17 @@ Plan G（6 小時 idle 後）：
 
 ---
 
-## Self-Aware Evolution（v2.0.842 — Meta-Cognition + Self-Improving + Causal Reasoning + Meta-Learning）
+## Self-Aware Evolution（v2.0.843 — Meta-Cognition + Self-Improving + Causal Reasoning + Meta-Learning）
 
-v2.0.842 新增三大進化組件 + 混合數據源架構。系統唔再只係從交易結果學習，而係知道自己幾準（元認知）、自動調整自己嘅 hyperparameters（自我改善）、區分因果同相關（因果推理）、學點樣學得更快（元學習）。
+v2.0.842 新增三大進化組件 + 混合數據源架構。v2.0.843 新增 ANN index + asset-aware Meta-Learner + Skeptics evolution block fix。系統唔再只係從交易結果學習，而係知道自己幾準（元認知）、自動調整自己嘅 hyperparameters（自我改善）、區分因果同相關（因果推理）、學點樣學得更快（元學習）。
 
 ### Meta-Cognitive Calibrator（`src/evolution/meta-calibrator.ts`，v2.0.837）
 
-系統知道自己嘅 P(win) 預測整體準唔準。每筆 trade close 時記錄 `(predictedPWin, conviction, regime, outcome)`，計算：
-
-| 指標 | 公式 | 意義 |
-|:---|:---|:---|
-| **Brier score** | $\frac{1}{N}\sum(f_i - o_i)^2$ | 0 = 完美，0.25 = 隨機，1 = 全錯 |
-| **ECE** | $\sum \frac{n_b}{N}\|acc(b) - conf(b)\|$ | 0 = 完美校準，>0.15 = 唔可信 |
-
-**Per-regime Brier**：每個 regime 獨立追蹤。如果 `trending_bear` 嘅 Brier = 0.30（差過隨機），Meta-Agent 見到 `❌ trending_bear: 0.30` 後自動降低 conviction。
-
-**整合**：`getCalibrationBlock()` → HACP `setMetaCalibrationBlock()` → 注入 `rilEnhancedMarketDesc`。
+系統知道自己嘅 P(win) 預測整體準唔準。每筆 trade close 時記錄 `(predictedPWin, conviction, regime, outcome)`，計算 Brier score + ECE。Per-regime Brier 追蹤。`getCalibrationBlock()` → HACP `setMetaCalibrationBlock()` → 注入 `rilEnhancedMarketDesc`。
 
 ### Self-Improver（`src/evolution/self-improver.ts`，v2.0.838）
 
-系統自動調整自己嘅 hyperparameters。
-
-| 機制 | 參數 | 範圍 | 數據源 |
-|:---|:---|:---|:---|
-| **Config bandit** | `explorationStrategy` | ε-greedy / UCB1 / Thompson | Shadow ✅ |
-| **Continuous param** | `convictionGateThreshold` | [0.40, 0.60] | Real ❌ |
-| **Continuous param** | `aggressiveSlCap` | [0.05, 0.09] | Real ❌ |
-| **Continuous param** | `conservativeSlCap` | [0.02, 0.04] | Real ❌ |
-| **Continuous param** | `dcsTimeDecayHalfLife` | [100, 400] | Real ❌ |
-
-**Hard bounds**：所有參數有安全限制。系統永遠唔會將 SL cap 調到 50%，唔會將 conviction gate 調到 0.1。
-
-**`runTuningCycle()`**：apply all recommendations with audit logging（old value → new value + gradient）。
+系統自動調整自己嘅 hyperparameters：Thompson Sampling bandit（`explorationStrategy`）+ OLS gradient（`convictionGateThreshold` [0.40, 0.60]、`aggressiveSlCap` [0.05, 0.09]、`conservativeSlCap` [0.02, 0.04]、`dcsTimeDecayHalfLife` [100, 400]）。Hard bounds 限制。`runTuningCycle()` apply all recommendations with audit logging。
 
 ### Causal Reasoner（`src/evolution/causal-reasoner.ts`，v2.0.839）
 
@@ -1003,7 +987,9 @@ $$\text{Uplift} = \text{tradedPnl} - \text{holdPnl}$$
 
 **`recordAuditConfounder()`**：trade-audit 發現嘅 confounder 標記到 feature importance。
 
-### Meta-Learner（`src/evolution/meta-learner.ts`，v2.0.840）
+**HACP block**：uplift warning（≈0 = no alpha）+ feature importance + confounder detection。
+
+### Meta-Learner（`src/evolution/meta-learner.ts`，v2.0.840+843）
 
 系統學點樣學得更快。
 
@@ -1014,6 +1000,8 @@ $$\text{Uplift} = \text{tradedPnl} - \text{holdPnl}$$
 | **Curriculum** | Fast-learning regime → 優先探索 | [0, 1] priority | Q-RL ✅ |
 
 **`recordAuditFeatureAdjustment()`**：trade-audit 發現 thesis 矛盾 → 降 thesis feature 嘅 predictive power → weight 自動降。
+
+**v2.0.843 Asset-aware feature weighting**：3-level hierarchy（symbol → category → global）。每個 asset 學自己嘅 pattern（SILVER 可以學到「OB imbalance works for me」而唔俾 BTC 拖低）。`deriveAssetMetadata()` 分類：crypto（唔按 vol 拆分）、commodity、forex、equity、other。低 volume ≠ 唔可靠——每個 asset 有自己嘅 pattern，weight 來自數據唔來自 volume 假設。`getAssetAwareFeatureWeights()` 做 3-level blend，warmup at 30 samples。
 
 ### 混合數據源架構（Hybrid Data Source）
 
