@@ -2791,7 +2791,13 @@ ${currentPrompt || '(empty — this is the first input)'}`;
    *  Non-blocking, idempotent (called once per audit result). */
   private feedAuditToEvolution(incidents: AuditIncident[]): void {
     for (const inc of incidents) {
-      const weight = inc.severity === 'critical' ? 1.0
+      // v2.0.843c: Guard against null/undefined/malformed incidents from LLM.
+      if (!inc || typeof inc !== 'object') continue;
+      if (typeof inc.category !== 'string' || inc.category.length === 0) continue;
+      // v2.0.843c: Don't double-apply severity weight. recordAuditIncident
+      // already applies severity weighting internally. Pass the raw impact
+      // magnitude and let the method handle severity.
+      const baseImpact = inc.severity === 'critical' ? 1.0
         : inc.severity === 'warning' ? 0.5
         : 0.25;
 
@@ -2800,7 +2806,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         case 'low-conditional-win-rate-ignored':
           // Self-Improver: strong negative performance signal
           try {
-            this.selfImprover?.recordAuditIncident(inc.category, inc.severity, 0.01 * weight);
+            this.selfImprover?.recordAuditIncident(inc.category, inc.severity, 0.01);
           } catch { /* non-critical */ }
           break;
 
@@ -2808,7 +2814,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         case 'sl-too-tight-for-volatility':
           // Self-Improver: SL too narrow → negative reward pushes SL cap up
           try {
-            this.selfImprover?.recordAuditIncident(inc.category, inc.severity, 0.005 * weight);
+            this.selfImprover?.recordAuditIncident(inc.category, inc.severity, 0.005);
           } catch { /* non-critical */ }
           break;
 
@@ -2816,36 +2822,36 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         case 'thesis-quality-issue':
           // Meta-Learner: thesis feature predictive power → downweight
           try {
-            this.metaLearner?.recordAuditFeatureAdjustment('thesisSignal', -0.1 * weight);
+            this.metaLearner?.recordAuditFeatureAdjustment('thesisSignal', -0.1 * baseImpact);
           } catch { /* non-critical */ }
           break;
 
         case 'market-condition-pattern':
           // Meta-Learner: regime learning speed → downweight
-          // (extract regime from detail if possible)
           try {
-            this.metaLearner?.recordAuditFeatureAdjustment('marketRegime', -0.05 * weight);
+            this.metaLearner?.recordAuditFeatureAdjustment('marketRegime', -0.05 * baseImpact);
           } catch { /* non-critical */ }
           break;
 
         case 'overtrading':
           // Self-Improver: conviction gate too low → push up
           try {
-            this.selfImprover?.recordAuditIncident(inc.category, inc.severity, 0.003 * weight);
+            this.selfImprover?.recordAuditIncident(inc.category, inc.severity, 0.003);
           } catch { /* non-critical */ }
           break;
 
         case 'data-quality-issue':
           // Causal Reasoner: mark as confounder
           try {
-            this.causalReasoner?.recordAuditConfounder('dataQuality', inc.detail);
+            // v2.0.843c: Safe detail (recordAuditConfounder now guards against undefined)
+            this.causalReasoner?.recordAuditConfounder('dataQuality', inc.detail ?? 'no detail');
           } catch { /* non-critical */ }
           break;
 
         default:
           // Unknown category → feed to Self-Improver as weak signal
           try {
-            this.selfImprover?.recordAuditIncident(inc.category, inc.severity, 0.002 * weight);
+            this.selfImprover?.recordAuditIncident(inc.category, inc.severity, 0.002);
           } catch { /* non-critical */ }
           break;
       }
