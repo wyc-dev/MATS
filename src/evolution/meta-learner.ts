@@ -46,6 +46,112 @@ interface RegimeLearningSpeed {
   curriculumPriority: number;  // [0, 1]
 }
 
+// ─── v2.0.843: Asset-aware feature weighting ─────────────────────
+//
+// Different assets have fundamentally different microstructure:
+//   - BTC/ETH (high-volume crypto): funding rate is a strong signal
+//   - SILVER/GOLD (commodity): S/R levels dominate, funding irrelevant
+//   - Low-volume alts: OB imbalance unreliable (thin book), volatility noisy
+//
+// The Meta-Learner now tracks per-feature predictive power SEPARATELY
+// for each asset tier. When computing feature weights for OLR queries,
+// it blends the asset-specific weight with the global weight:
+//   effectiveWeight = α × assetSpecificWeight + (1-α) × globalWeight
+// where α = min(1, assetSamples / 30) — cold-start leans on global,
+// warm leans on asset-specific. This is "transfer learning" within
+// the trading domain: a feature's value in one asset class informs
+// its starting weight in a new asset class, then adapts.
+
+export type AssetTier = 'crypto' | 'commodity' | 'forex' | 'equity' | 'other';
+
+export interface AssetMetadata {
+  /** Asset class — groups assets that share structural characteristics.
+   *  NOTE: This does NOT imply "better" or "worse" — each tier has its own
+   *  patterns. A low-volume alt (SILVER) has its own microstructure edge
+   *  that BTC doesn't. The tier just controls HOW knowledge transfers. */
+  category: AssetTier;
+  /** Volume tier: 'high' (top-10), 'medium' (top-50), 'low' (rest).
+   *  Used to tag observations for diagnostics + volume-tier-aware transfer.
+   *  Low volume ≠ unreliable — it means the market microstructure is
+   *  different (thin order books, fewer market makers, larger spreads). */
+  volumeTier: 'high' | 'medium' | 'low';
+  /** Volatility tier from market state: 'high' (>3%), 'medium' (1-3%), 'low' (<1%).
+   *  Used for diagnostics + volatility-tier-aware transfer. Low vol assets
+   *  have different pattern characteristics (mean-reversion vs trending). */
+  volatilityTier: 'high' | 'medium' | 'low';
+  /** Normalized symbol for per-symbol tracking. Each asset gets its own
+   *  feature weight track, so SILVER can learn "OB imbalance works for me"
+   *  independently of BTC's "funding rate works for me". The category
+   *  controls cross-asset transfer; the symbol controls fine-grained
+   *  adaptation. */
+  symbol: string;
+}
+
+interface AssetTierFeatureState {
+  /** Per-asset-tier predictive power tracking. */
+  predictivePower: number;  // [-1, 1]
+  weight: number;           // [0.1, 3.0]
+  sampleCount: number;
+}
+
+/**
+ * v2.0.843: Derive asset tier from symbol + market state.
+ * Used by the shadow learning loop to pass asset metadata to the Meta-Learner
+ * for per-asset-tier feature weight tracking.
+ *
+ * Asset tier classification:
+ *   - crypto: All perpetual crypto (BTC, ETH, alts, stables). NOT split by
+ *     volatility — a low-volume alt has its own patterns, not a "worse
+ *     version of BTC". The tier controls transfer, not quality.
+ *   - commodity: XAU, XAG, SILVER, GOLD, OIL
+ *   - forex: EURUSD, USDJPY, etc.
+ *   - equity: SPX, NDX, individual stocks
+ *   - other: Everything else
+ *
+ * Volume tier from 24h volume:
+ *   - high: >$100M (BTC, ETH)
+ *   - medium: $1M-$100M (most alts)
+ *   - low: <$1M (thin books)
+ *
+ * Volatility tier from market state vol:
+ *   - high: >3%
+ *   - medium: 1-3%
+ *   - low: <1%
+ */
+export function deriveAssetMetadata(
+  symbol: string,
+  marketState?: { volume24h?: number; volatility?: number },
+): AssetMetadata {
+  const s = symbol.toUpperCase().replace(/^(XYZ:|HL:)/, '');
+
+  let category: AssetTier;
+  if (s === 'BTC' || s === 'ETH' || s.includes('USDT') || s.includes('USDC') || s.startsWith('XYZ:')) {
+    category = 'crypto';
+  } else if (s.includes('SILVER') || s.includes('GOLD') || s === 'XAU' || s === 'XAG' || s.includes('OIL')) {
+    category = 'commodity';
+  } else if (s.includes('EUR') || s.includes('JPY') || s.includes('GBP') || (s.includes('USD') && s.length === 6)) {
+    category = 'forex';
+  } else if (s.includes('SPX') || s.includes('NDX') || s.includes('SP500')) {
+    category = 'equity';
+  } else {
+    category = 'crypto';  // default for unknown perpetual DEX assets
+  }
+
+  const vol24h = marketState?.volume24h ?? 0;
+  let volumeTier: 'high' | 'medium' | 'low';
+  if (vol24h > 100_000_000) volumeTier = 'high';
+  else if (vol24h > 1_000_000) volumeTier = 'medium';
+  else volumeTier = 'low';
+
+  const volatility = marketState?.volatility ?? 0;
+  let volatilityTier: 'high' | 'medium' | 'low';
+  if (volatility > 0.03) volatilityTier = 'high';
+  else if (volatility > 0.01) volatilityTier = 'medium';
+  else volatilityTier = 'low';
+
+  return { category, volumeTier, volatilityTier, symbol: s };
+}
+
 // ─── Constants ───
 
 const FEATURE_HISTORY_MAX = 100;
@@ -58,6 +164,8 @@ const ALPHA_MULT_MIN = 0.1;
 const ALPHA_MULT_MAX = 2.0;
 const PREDICTIVE_POWER_EMA_DECAY = 0.8;
 const FEATURE_WEIGHT_EMA_DECAY = 0.9;
+// v2.0.843: Asset-specific weight takes over after 30 samples.
+const ASSET_WARMUP_SAMPLES = 30;
 
 // ─── Meta-Learner ───
 
@@ -66,6 +174,9 @@ export class MetaLearner {
   private featureStates: Map<string, FeatureMetaState> = new Map();
   private regimeSpeeds: Map<string, RegimeLearningSpeed> = new Map();
   private totalCycles = 0;
+  // v2.0.843: Per-asset-tier feature tracking.
+  // Key = `${feature}|${assetTier}` → AssetTierFeatureState
+  private assetTierStates: Map<string, AssetTierFeatureState> = new Map();
 
   /**
    * Record a Q-value update and compute adaptive learning rate.
@@ -121,15 +232,33 @@ export class MetaLearner {
   /**
    * Record a feature-PnL observation and update adaptive feature weight.
    * Called from the learning pipeline when a trade closes.
+   *
+   * v2.0.843: Accepts optional `assetMeta` for per-asset-tier tracking.
+   * When provided, the feature's predictive power is tracked SEPARATELY
+   * for the asset tier + symbol, enabling cross-asset transfer learning:
+   *   - Per-category (e.g. 'crypto'): broad transfer priors — BTC fundingRate
+   *     pattern can transfer to ETH, but NOT override SILVER's own pattern.
+   *   - Per-symbol (e.g. 'SILVER'): fine-grained adaptation — SILVER can
+   *     learn "OB imbalance works for me even though it doesn't for BTC"
+   *     without being dragged down by BTC's different microstructure.
+   *   - Each asset has its own pattern. Low volume ≠ unreliable — it means
+   *     different microstructure (thin books, wider spreads, fewer MMs).
+   *     The system learns these per-symbol patterns from the data, not from
+   *     a volume-based assumption.
+   *   - Hierarchy: symbol (fine) → category (transfer) → global (fallback).
+   *     When symbol has < 5 samples, falls back to category weight; when
+   *     category has < 5 samples, falls back to global weight.
    */
   recordFeatureOutcome(
     feature: string,
     featureValue: number,
     pnlPct: number,
+    assetMeta?: AssetMetadata,
   ): void {
     if (!Number.isFinite(featureValue) || !Number.isFinite(pnlPct)) return;
     if (typeof feature !== 'string' || feature.length === 0) return;
 
+    // ── Global feature tracking (unchanged from v2.0.840) ──
     let state = this.featureStates.get(feature);
     if (!state) {
       state = {
@@ -158,6 +287,55 @@ export class MetaLearner {
         (1 - FEATURE_WEIGHT_EMA_DECAY) * targetWeight;
       state.weight = Math.max(FEATURE_WEIGHT_MIN, Math.min(FEATURE_WEIGHT_MAX, state.weight));
     }
+
+    // ── v2.0.843: Per-symbol + per-category tracking (3-level hierarchy) ──
+    // Hierarchy: symbol (finest) → category (transfer) → global (fallback).
+    // Each level tracks feature predictive power independently. A low-volume
+    // alt like SILVER can learn "OB imbalance is predictive FOR ME" even if
+    // BTC's data shows OB imbalance is noise — because they're tracked
+    // separately. The category level enables transfer: a new crypto asset
+    // starts with the crypto-category prior, then adapts to its own pattern.
+    if (assetMeta) {
+      // Sign-agreement heuristic: does the feature direction match PnL direction?
+      // O(1) memory, converges faster than Pearson for small N.
+      const featureSign = Math.sign(featureValue);
+      const pnlSign = Math.sign(pnlPct);
+      const agreement = featureSign === pnlSign ? 1 : -1;
+
+      // Level 1: Per-symbol tracking (finest granularity).
+      // Key = `feature|sym:SYMBOL` — each asset gets its own weight track.
+      // This lets SILVER learn its own pattern independently of BTC.
+      const symKey = `${feature}|sym:${assetMeta.symbol}`;
+      this.updateTierState(symKey, agreement);
+
+      // Level 2: Per-category tracking (cross-asset transfer).
+      // Key = `feature|cat:CATEGORY` — assets in the same class share a prior.
+      // BTC + ETH + alts share 'crypto' prior; SILVER + GOLD share 'commodity'.
+      const catKey = `${feature}|cat:${assetMeta.category}`;
+      this.updateTierState(catKey, agreement);
+    }
+  }
+
+  /**
+   * v2.0.843: Update a single tier state with sign-agreement EMA.
+   * Used for both per-symbol and per-category tracking.
+   */
+  private updateTierState(key: string, agreement: number): void {
+    let tierState = this.assetTierStates.get(key);
+    if (!tierState) {
+      tierState = { predictivePower: 0, weight: 1.0, sampleCount: 0 };
+      this.assetTierStates.set(key, tierState);
+    }
+    tierState.sampleCount++;
+    // EMA update of predictive power
+    tierState.predictivePower = PREDICTIVE_POWER_EMA_DECAY * tierState.predictivePower +
+      (1 - PREDICTIVE_POWER_EMA_DECAY) * agreement;
+    tierState.predictivePower = Math.max(-1, Math.min(1, tierState.predictivePower));
+    // Weight from predictive power: |pp| high → weight high
+    const targetWeight = 0.3 + 2.7 * Math.abs(tierState.predictivePower);
+    tierState.weight = FEATURE_WEIGHT_EMA_DECAY * tierState.weight +
+      (1 - FEATURE_WEIGHT_EMA_DECAY) * targetWeight;
+    tierState.weight = Math.max(FEATURE_WEIGHT_MIN, Math.min(FEATURE_WEIGHT_MAX, tierState.weight));
   }
 
   /**
@@ -167,6 +345,53 @@ export class MetaLearner {
     const out: Record<string, number> = {};
     for (const [feature, state] of this.featureStates) {
       out[feature] = state.weight;
+    }
+    return out;
+  }
+
+  /**
+   * v2.0.843: Get asset-aware feature weights — 3-level hierarchy:
+   *   symbol (finest) → category (transfer) → global (fallback).
+   *
+   * - If symbol has enough samples (≥5): blend symbol weight with category
+   *   weight. The symbol weight captures the asset's own pattern (e.g.
+   *   SILVER's OB imbalance edge); the category weight provides transfer
+   *   from structurally similar assets.
+   * - If symbol is cold-start (<5 samples) but category has samples: use
+   *   category weight (cross-asset transfer from the same asset class).
+   * - If both are cold-start: use global weight (broad prior from all assets).
+   *
+   * Each asset has its own pattern. Low volume ≠ unreliable — it means
+   * different microstructure. The weight comes from the data, not from a
+   * volume-based assumption. SILVER can have weight=2.5 on OB imbalance
+   * if the data shows it's predictive for SILVER, regardless of BTC's
+   * weight=0.5 on the same feature.
+   */
+  getAssetAwareFeatureWeights(assetMeta?: AssetMetadata): Record<string, number> {
+    if (!assetMeta) return this.getFeatureWeights();
+
+    const out: Record<string, number> = {};
+    for (const [feature, globalState] of this.featureStates) {
+      const symKey = `${feature}|sym:${assetMeta.symbol}`;
+      const catKey = `${feature}|cat:${assetMeta.category}`;
+      const symState = this.assetTierStates.get(symKey);
+      const catState = this.assetTierStates.get(catKey);
+
+      if (symState && symState.sampleCount >= 5) {
+        // Symbol has enough data — blend symbol + category.
+        // α = min(1, symSamples / ASSET_WARMUP_SAMPLES) — symbol weight
+        // dominates as its own data accumulates, category provides stability.
+        const alpha = Math.min(1, symState.sampleCount / ASSET_WARMUP_SAMPLES);
+        const catWeight = catState && catState.sampleCount >= 5 ? catState.weight : globalState.weight;
+        out[feature] = alpha * symState.weight + (1 - alpha) * catWeight;
+      } else if (catState && catState.sampleCount >= 5) {
+        // Symbol cold-start, category warm — transfer from same asset class.
+        const alpha = Math.min(1, catState.sampleCount / ASSET_WARMUP_SAMPLES);
+        out[feature] = alpha * catState.weight + (1 - alpha) * globalState.weight;
+      } else {
+        // Both cold-start — use global weight (broad prior).
+        out[feature] = globalState.weight;
+      }
     }
     return out;
   }
@@ -253,6 +478,44 @@ export class MetaLearner {
           `  ${tag} ${name}: weight=${state.weight.toFixed(2)}, ` +
           `predictivePower=${state.predictivePower.toFixed(3)}`
         );
+      }
+    }
+
+    // v2.0.843: Per-symbol + per-category feature weights (3-level hierarchy)
+    if (this.assetTierStates.size > 0) {
+      // Group by tier (symbol-level and category-level)
+      const tierMap = new Map<string, Array<{ feature: string; weight: number; pp: number; n: number }>>();
+      for (const [key, ts] of this.assetTierStates) {
+        if (ts.sampleCount < 3) continue;
+        // Keys are `feature|sym:SYMBOL` or `feature|cat:CATEGORY`
+        const pipeIdx = key.indexOf('|');
+        if (pipeIdx < 0) continue;
+        const feature = key.substring(0, pipeIdx);
+        const tier = key.substring(pipeIdx + 1);  // "sym:BTC" or "cat:crypto"
+        if (!feature || !tier) continue;
+        const arr = tierMap.get(tier) ?? [];
+        arr.push({ feature, weight: ts.weight, pp: ts.predictivePower, n: ts.sampleCount });
+        tierMap.set(tier, arr);
+      }
+      if (tierMap.size > 0) {
+        lines.push('');
+        lines.push('Per-asset feature weights (symbol + category hierarchy):');
+        // Show category-level first (broader), then per-symbol (finest)
+        const sortedTiers = [...tierMap.entries()].sort((a, b) => {
+          const aIsCat = a[0].startsWith('cat:');
+          const bIsCat = b[0].startsWith('cat:');
+          if (aIsCat && !bIsCat) return -1;
+          if (!aIsCat && bIsCat) return 1;
+          return b[1].length - a[1].length;
+        });
+        for (const [tier, feats] of sortedTiers) {
+          const top = feats.sort((a, b) => b.weight - a.weight).slice(0, 3);
+          lines.push(`  [${tier}] (${feats.length} features, ${feats.reduce((s, f) => s + f.n, 0)} samples):`);
+          for (const f of top) {
+            const tag = f.pp > 0.1 ? '✅' : f.pp < -0.1 ? '❌' : '⚪';
+            lines.push(`    ${tag} ${f.feature}: ${f.weight.toFixed(2)} (pp=${f.pp.toFixed(2)}, n=${f.n})`);
+          }
+        }
       }
     }
 
@@ -352,6 +615,8 @@ export class MetaLearner {
         [...this.featureStates.entries()].map(([k, v]) => [k, { ...v, history: v.history.slice(-20) }])
       ),
       regimeSpeeds: Object.fromEntries(this.regimeSpeeds),
+      // v2.0.843: Persist asset tier states for cross-asset transfer learning
+      assetTierStates: Object.fromEntries(this.assetTierStates),
       totalCycles: this.totalCycles,
     };
   }
@@ -378,14 +643,29 @@ export class MetaLearner {
     if (regimes && typeof regimes === 'object' && !Array.isArray(regimes)) {
       this.regimeSpeeds = new Map(Object.entries(regimes as Record<string, RegimeLearningSpeed>));
     }
+    // v2.0.843: Load asset tier states
+    const tiers = s['assetTierStates'];
+    if (tiers && typeof tiers === 'object' && !Array.isArray(tiers)) {
+      for (const [key, ts] of Object.entries(tiers as Record<string, unknown>)) {
+        if (ts && typeof ts === 'object') {
+          const tsObj = ts as Record<string, unknown>;
+          this.assetTierStates.set(key, {
+            predictivePower: safeNum(tsObj['predictivePower'] as number, 0),
+            weight: safeNum(tsObj['weight'] as number, 1.0),
+            sampleCount: typeof tsObj['sampleCount'] === 'number' ? tsObj['sampleCount'] : 0,
+          });
+        }
+      }
+    }
     this.totalCycles = safeNum(s['totalCycles'] as number, 0);
-    log.info(`[meta-learn] loaded: ${this.cellStates.size} cells, ${this.featureStates.size} features, ${this.regimeSpeeds.size} regimes`);
+    log.info(`[meta-learn] loaded: ${this.cellStates.size} cells, ${this.featureStates.size} features, ${this.regimeSpeeds.size} regimes, ${this.assetTierStates.size} asset tiers`);
   }
 
   reset(): void {
     this.cellStates.clear();
     this.featureStates.clear();
     this.regimeSpeeds.clear();
+    this.assetTierStates.clear();
     this.totalCycles = 0;
   }
 }

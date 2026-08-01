@@ -18,7 +18,7 @@ import { QRLTable, type AlphaDiscovery } from './evolution/q-rl-table.ts';
 import { MetaCalibrator } from './evolution/meta-calibrator.ts';
 import { SelfImprover } from './evolution/self-improver.ts';
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
-import { MetaLearner } from './evolution/meta-learner.ts';
+import { MetaLearner, deriveAssetMetadata } from './evolution/meta-learner.ts';
 import { computeDCS } from './edge/dcs-calculator.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
 import { getActiveProvider } from './llm/index.ts';
@@ -5083,10 +5083,11 @@ ${recentExamples}
         // v2.0.841: Backfill evolution components (Self-Improver, Causal, Meta-Learner)
         // from existing EXP records. 1038 records have marketFeatures + regime + pnlPct.
         if (mf && typeof mf === 'object' && Object.keys(mf).length > 0) {
-          // Meta-Learner: feature outcome learning
+          // Meta-Learner: feature outcome learning (v2.0.843: with asset metadata)
           try {
+            const backfillMeta = deriveAssetMetadata(sym);
             for (const [fname, fval] of Object.entries(mf as Record<string, unknown>)) {
-              this.metaLearner?.recordFeatureOutcome(fname, safeNum(fval as number, 0), pnlPct);
+              this.metaLearner?.recordFeatureOutcome(fname, safeNum(fval as number, 0), pnlPct, backfillMeta);
             }
           } catch { /* non-critical */ }
 
@@ -5747,11 +5748,17 @@ ${recentExamples}
 
               this.qrlTable.update(srFeatures, sr.side, reward);
 
-              // v2.0.840: Meta-Learner — record feature outcomes from shadow resolution
+              // v2.0.843: Meta-Learner — record feature outcomes from shadow resolution
+              // with asset metadata for per-asset-tier feature weight tracking.
               // (hybrid data source: shadow is 10-50× faster than real trade close)
               try {
+                const srSymState = this.marketState.getState(sr.symbol);
+                const assetMeta = deriveAssetMetadata(sr.symbol, {
+                  volume24h: srSymState?.volume24h ?? 0,
+                  volatility: srSymState?.volatility ?? 0,
+                });
                 for (const [fname, fval] of Object.entries(srFeatures)) {
-                  this.metaLearner?.recordFeatureOutcome(fname, fval, sr.pnlPct);
+                  this.metaLearner?.recordFeatureOutcome(fname, fval, sr.pnlPct, assetMeta);
                 }
               } catch { /* non-critical */ }
 
