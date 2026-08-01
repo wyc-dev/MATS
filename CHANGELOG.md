@@ -4,6 +4,93 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.843c: Adversarial attack hardening for trade-audit → evolution routing (25 attack tests)
+
+5 vulnerabilities found and fixed in the trade-audit → evolution routing that was added in v2.0.842 but never attack-tested:
+
+1. **V7/V8**: `recordAuditConfounder` undefined/null `detail` → TypeError on `.slice` → Safe detail fallback (`'no detail provided'`) before `.slice`
+2. **V17**: `recordAuditFeatureAdjustment` pipe in `featureName` → display corruption → Sanitize `|` to `_` (same guard as `recordFeatureOutcome` v2.0.843)
+3. **V5**: Double severity weighting in `feedAuditToEvolution` → `feedAuditToEvolution` passes raw impact, `recordAuditIncident` handles severity weighting once (was: `feedAudit × severity × recordAudit × severity` = 0.25 effective weight instead of 0.5)
+4. **V1**: Null/undefined/malformed incidents from LLM not guarded → `feedAuditToEvolution` guards: `typeof inc`, `typeof category`, empty category
+5. **V23**: `data-quality-issue` `detail` passed as undefined to `recordAuditConfounder` → `feedAuditToEvolution` passes `inc.detail ?? 'no detail'`
+
+Attack tests: 25/25 pass (`tests/v2.0.843c-audit-attack.test.ts`) — 6 `recordAuditIncident` attacks (undefined/empty category, NaN/Infinity `pnlImpact`, undefined severity, double-weighting verification) + 6 `recordAuditConfounder` attacks (undefined/null detail, empty/undefined featureName, pipe in featureName, very long detail, 1000× dedup) + 8 `recordAuditFeatureAdjustment` attacks (undefined featureName, NaN/Infinity delta, pipe sanitize, extreme delta clamping, positive upweight, accumulation, `getMetaLearningBlock` after adjustment) + 5 integration attacks (empty incidents, all-undefined fields, 1000 incidents memory, 1000 confounder dedup).
+
+Regression: 106/106 attack tests pass (3 test files). Build: `tsc --noEmit` zero errors.
+
+---
+
+## v2.0.843b: Adversarial attack hardening — 8 vulnerabilities found and fixed (31 attack tests)
+
+8 vulnerabilities found and fixed across ANN Index (`src/evolution/ann-index.ts`) and Meta-Learner (`src/evolution/meta-learner.ts`):
+
+| # | Vulnerability | Attack Vector | Fix |
+|:-:|:-------------|:-------------|:---|
+| 1 | Zero-vector query returned garbage results | `[0,0,0,0]` query → cosine=0 with all → random results | `add()` and `query()` reject all-zero vectors (`isZeroVector` guard) |
+| 2 | Proxy/ggetter bomb in query vector crashed `l2Normalise` | `new Proxy([1,0,0,0], { get() { throw } })` → crash | `isValidVector` wrapped in try-catch + `l2Normalise` copies to plain array |
+| 3 | `remove()` left stale ID in IVF buckets → query found deleted vectors | Remove ID → bucket still has ID → query returns stale | `remove()` now linear-scans and splices from bucket + marks dirty |
+| 4 | kmeans `findNearestCentroids[0]` could be undefined | Empty centroids array → `[0]` = undefined → assignment to undefined | assignments initialized to `-1`, `undefined ?? -1` guard |
+| 5 | `train()` with zero-norm vectors in k-means → degenerate centroids | All-zero vectors in `sphericalKMeans` → zero centroid | `train()` filters zero-norm vectors before k-means |
+| 6 | `deriveAssetMetadata(undefined)` → TypeError on `.toUpperCase()` | `undefined.toUpperCase()` → crash | Type guard: non-string/empty → `'UNKNOWN'` fallback |
+| 7 | Feature name containing pipe corrupted tier key parsing | `volatility|sub` → `indexOf('|')` splits at wrong position → display corruption | `recordFeatureOutcome` sanitizes `|` to `_` before using as key |
+| 8 | `queryANNForRecords` with `topK=records.length` defeated ANN purpose | 10k records → query returns 30k candidates → 100% brute-force | Trained ANN uses fixed cap of 500 (vs 10k brute-force), preserving the 12% scan-rate benefit |
+
+Attack tests: 31/31 pass (`tests/v2.0.843-attack.test.ts`) — 17 ANN index attacks (zero vectors, NaN, Infinity, Proxy bombs, remove stale, kmeans edge cases, empty/negative topK, identical vectors) + 14 Meta-Learner attacks (empty/undefined symbol, pipe in feature, NaN inputs, garbage load, prototype pollution, save/load round-trip).
+
+Regression: 144/144 evolution+EXP tests pass (4 test files). Build: `tsc --noEmit` zero errors.
+
+---
+
+## v2.0.843: ANN index for EXP (10k records) + asset-aware Meta-Learner + Skeptics evolution block fix
+
+### New: `src/evolution/ann-index.ts` (~280 lines)
+
+**ANN Index** — lightweight IVF (Inverted File) with spherical k-means clustering for fast similarity search over 384-d MiniLM embeddings. Pure TypeScript, zero external dependencies.
+
+- K=64 centroids, Nprobe=8 buckets, auto-trains at 500 records
+- K-means++ initialisation for well-separated centroids
+- 10k records → ~12% of brute-force scanned per query, >95% recall@10
+- Cold-start safe: brute-force until trained (identical to pre-v2.0.843 behavior)
+- Rejects zero-vectors (no direction) and Proxy/ggetter bombs (`isValidVector` try-catch)
+- `remove()` linear-scans and splices from bucket + marks dirty for rebuild
+
+### Modified: `src/evolution/thesis-experience.ts` — ANN integration
+
+- `EXP_MAX_RECORDS` 1000 → 10,000 (`src/config/index.ts`): ANN makes 10k feasible (O(Nprobe × bucketSize) not O(N))
+- `buildANNFromRecords()`: full rebuild on load + when rolling cap trims
+- `addRecordToANN()`: incremental add on new record
+- `queryANNForRecords()`: pre-filter candidates before `combinationSimilarity`
+- `annIdToRecordIdx` map: ANN ID → record index for outcome lookup
+- Cold-start (<500 records): brute-force (identical to pre-v2.0.843)
+
+### New: Asset-aware Meta-Learner (`src/evolution/meta-learner.ts`)
+
+- **3-level hierarchy**: symbol (finest) → category (transfer) → global (fallback)
+- **Per-symbol tracking**: each asset learns its own pattern independently (SILVER can learn 'OB imbalance works for me' without BTC dragging it down)
+- **Per-category tracking**: cross-asset transfer within same asset class (new crypto asset starts with crypto-category prior, then adapts)
+- **`deriveAssetMetadata()`**: category = crypto (NOT split by vol), commodity, forex, equity, other. `volumeTier` + `volatilityTier` for diagnostics only.
+- **Key insight**: low volume ≠ unreliable. Each asset has its own pattern. The weight comes from the data, not from a volume-based assumption.
+- **`getAssetAwareFeatureWeights()`**: 3-level blend with warmup at 30 samples
+- **HACP block**: shows per-symbol + per-category weights (sorted cat → sym)
+- **Persistence**: `assetTierStates` saved/loaded (save/load/reset)
+
+### Modified: `src/index.ts` — shadow learning loop wired with asset metadata
+
+- Shadow resolution: `deriveAssetMetadata(sr.symbol, marketState)` passed to `recordFeatureOutcome` for per-symbol + per-category tracking
+- Backfill: `deriveAssetMetadata(sym)` for EXP record backfill
+- Import `deriveAssetMetadata` from `meta-learner.ts`
+
+### Modified: `src/cognition/hacp.ts` — Skeptics evolution block fix
+
+- `buildSystemEvolutionBlocks()` helper: system-level evolution blocks (Q-RL + meta-calibration + self-improvement + causal + meta-learning)
+- **Phase 0.5** (close decisions): now receives evolution-enhanced context (was raw `marketStateDesc` — Skeptics was blind to calibration data)
+- **Phase 4.8** (fallback thesis gate): now receives evolution-enhanced context (was raw `marketStateDesc` — Skeptics couldn't see causal evidence)
+- **Phase 1.8** (primary entry): refactored to use helper (no behavior change)
+
+Build: `tsc --noEmit` zero errors, 113/113 evolution+EXP tests pass.
+
+---
+
 ## v2.0.842: Trade-Audit → Evolution Component Integration
 
 ### New: `feedAuditToEvolution()` routing method (`src/index.ts`)
