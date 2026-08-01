@@ -573,16 +573,19 @@ export class MetaLearner {
   recordAuditFeatureAdjustment(featureName: string, predictivePowerDelta: number): void {
     if (typeof featureName !== 'string' || featureName.length === 0) return;
     if (!Number.isFinite(predictivePowerDelta)) return;
+    // v2.0.843c: Sanitize feature name — reject or escape pipe characters
+    // (same guard as recordFeatureOutcome, prevents tier key parsing corruption).
+    const safeFeature = featureName.includes('|') ? featureName.replace(/\|/g, '_') : featureName;
 
-    let state = this.featureStates.get(featureName);
+    let state = this.featureStates.get(safeFeature);
     if (!state) {
       state = {
-        feature: featureName,
+        feature: safeFeature,
         predictivePower: 0,
         weight: 1.0,
         history: [],
       };
-      this.featureStates.set(featureName, state);
+      this.featureStates.set(safeFeature, state);
     }
 
     // Apply delta to predictive power EMA (clamped [-1, 1])
@@ -593,7 +596,7 @@ export class MetaLearner {
     state.weight = Math.max(0.1, Math.min(3.0, targetWeight));
 
     log.info(
-      `[meta-learn] audit feature adjustment: ${featureName} ` +
+      `[meta-learn] audit feature adjustment: ${safeFeature} ` +
       `delta=${predictivePowerDelta.toFixed(3)} → predictivePower=${state.predictivePower.toFixed(3)}, ` +
       `weight=${state.weight.toFixed(2)}`
     );

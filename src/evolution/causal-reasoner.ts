@@ -258,6 +258,10 @@ export class CausalReasoner {
    */
   recordAuditConfounder(featureName: string, detail: string): void {
     if (typeof featureName !== 'string' || featureName.length === 0) return;
+    // v2.0.843c: Guard against undefined/null/NaN detail — .slice would throw
+    const safeDetail = typeof detail === 'string' && detail.length > 0
+      ? detail
+      : 'no detail provided';
     // Add as a confounder entry in feature importance
     const existing = this.featureImportance.find(fi => fi.feature === featureName);
     if (existing) {
@@ -273,7 +277,7 @@ export class CausalReasoner {
       // Keep sorted
       this.featureImportance.sort((a, b) => b.causalImportance - a.causalImportance);
     }
-    log.info(`[causal] audit confounder: ${featureName} — ${detail.slice(0, 80)}`);
+    log.info(`[causal] audit confounder: ${featureName} — ${safeDetail.slice(0, 80)}`);
   }
 
   /**
