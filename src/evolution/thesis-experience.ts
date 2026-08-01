@@ -893,11 +893,17 @@ export class ThesisExperience {
     const conditionMatched: Array<{ rec: ThesisExperienceRecord; sim: number }> = [];
 
     // v2.0.843: Get ANN candidates (pre-filtered when trained, all when cold-start).
-    // Request 5× the matchThreshold area to over-fetch for direction + condition
-    // filtering (which removes ~50-70% of candidates).
+    // When the ANN is trained, we request a FIXED cap of 500 candidates per vector
+    // (not records.length — that would defeat the ANN's purpose by scanning all).
+    // 500 candidates × 3-5 vectors = ~1500-2500 combinationSimilarity calls,
+    // vs 10,000 for brute-force. With direction + condition filtering removing
+    // ~50-70%, the effective set is ~500-1000 records — enough for confident
+    // verdicts (Wilson LB at n=500 has tight bounds).
+    // Cold-start (ANN not trained): queryANNForRecords returns ALL records.
+    const ANN_TOP_K = this.ann.isTrained() ? 500 : Math.max(this.records.length, 200);
     const annCandidates = this.queryANNForRecords(
       candVectors,
-      Math.max(this.records.length, 200),  // cold-start: all; trained: capped
+      ANN_TOP_K,
       0,  // get all above 0 sim, then filter by matchThreshold below
     );
 
