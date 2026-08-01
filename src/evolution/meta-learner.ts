@@ -122,7 +122,11 @@ export function deriveAssetMetadata(
   symbol: string,
   marketState?: { volume24h?: number; volatility?: number },
 ): AssetMetadata {
-  const s = symbol.toUpperCase().replace(/^(XYZ:|HL:)/, '');
+  // v2.0.843: Guard against undefined/null/empty symbol — .toUpperCase()
+  // would throw TypeError on undefined. Fall back to 'UNKNOWN'.
+  const s = (typeof symbol === 'string' && symbol.length > 0
+    ? symbol.toUpperCase().replace(/^(XYZ:|HL:)/, '')
+    : 'UNKNOWN');
 
   let category: AssetTier;
   if (s === 'BTC' || s === 'ETH' || s.includes('USDT') || s.includes('USDC') || s.startsWith('XYZ:')) {
@@ -257,17 +261,21 @@ export class MetaLearner {
   ): void {
     if (!Number.isFinite(featureValue) || !Number.isFinite(pnlPct)) return;
     if (typeof feature !== 'string' || feature.length === 0) return;
+    // v2.0.843: Sanitize feature name — reject or escape pipe characters
+    // to prevent tier key parsing corruption (feature|sym:SYMBOL →
+    // indexOf('|') splits at wrong position if feature contains '|').
+    const safeFeature = feature.includes('|') ? feature.replace(/\|/g, '_') : feature;
 
     // ── Global feature tracking (unchanged from v2.0.840) ──
-    let state = this.featureStates.get(feature);
+    let state = this.featureStates.get(safeFeature);
     if (!state) {
       state = {
-        feature,
+        feature: safeFeature,
         predictivePower: 0,
         weight: 1.0,
         history: [],
       };
-      this.featureStates.set(feature, state);
+      this.featureStates.set(safeFeature, state);
     }
 
     state.history.push({ value: featureValue, pnlPct });
@@ -303,15 +311,15 @@ export class MetaLearner {
       const agreement = featureSign === pnlSign ? 1 : -1;
 
       // Level 1: Per-symbol tracking (finest granularity).
-      // Key = `feature|sym:SYMBOL` — each asset gets its own weight track.
+      // Key = `safeFeature|sym:SYMBOL` — each asset gets its own weight track.
       // This lets SILVER learn its own pattern independently of BTC.
-      const symKey = `${feature}|sym:${assetMeta.symbol}`;
+      const symKey = `${safeFeature}|sym:${assetMeta.symbol}`;
       this.updateTierState(symKey, agreement);
 
       // Level 2: Per-category tracking (cross-asset transfer).
-      // Key = `feature|cat:CATEGORY` — assets in the same class share a prior.
+      // Key = `safeFeature|cat:CATEGORY` — assets in the same class share a prior.
       // BTC + ETH + alts share 'crypto' prior; SILVER + GOLD share 'commodity'.
-      const catKey = `${feature}|cat:${assetMeta.category}`;
+      const catKey = `${safeFeature}|cat:${assetMeta.category}`;
       this.updateTierState(catKey, agreement);
     }
   }

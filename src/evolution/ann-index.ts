@@ -101,6 +101,9 @@ export class ANNIndex {
    */
   add(vector: number[]): number {
     if (!this.isValidVector(vector)) return -1;
+    // v2.0.843: Reject all-zero vectors — they have no direction and
+    // produce cosine=0 with everything (random results).
+    if (this.isZeroVector(vector)) return -1;
 
     const id = this.nextId++;
     const normalised = this.l2Normalise(vector);
@@ -150,9 +153,11 @@ export class ANNIndex {
    * @returns array of { id, similarity } sorted by descending similarity.
    */
   query(queryVector: number[], topK: number): ANNQueryResult[] {
-    if (this.vectors.size === 0) return [];
+    if (this.vectors.size === 0 || topK <= 0) return [];
     const q = this.l2Normalise(queryVector);
-    if (!this.isValidVector(q)) return [];
+    // v2.0.843: Reject all-zero or invalid query vectors — they produce
+    // cosine=0 with everything (random/garbage results).
+    if (!this.isValidVector(q) || this.isZeroVector(q)) return [];
 
     if (!this.ivf) {
       // Cold-start: brute force over all vectors.
@@ -181,14 +186,22 @@ export class ANNIndex {
   }
 
   /**
-   * Remove a vector by ID. Marks the index dirty so a rebuild can
-   * re-balance buckets on the next addBatch/query cycle.
+   * v2.0.843: Remove a vector by ID. Also removes it from the IVF bucket
+   * to prevent stale references from accumulating.
    */
   remove(id: number): boolean {
     if (!this.vectors.has(id)) return false;
     this.vectors.delete(id);
     if (this.ivf) {
-      // Lazy: mark dirty, rebuild on next addBatch.
+      // Remove from whatever bucket it's in. Linear scan is O(K×bucketSize)
+      // but remove is rare (only on rolling cap trim + explicit delete).
+      for (const [, bucket] of this.ivf.buckets) {
+        const idx = bucket.indexOf(id);
+        if (idx >= 0) {
+          bucket.splice(idx, 1);
+          break;
+        }
+      }
       this.dirty = true;
     }
     return true;
@@ -204,7 +217,12 @@ export class ANNIndex {
     if (this.vectors.size < this.k) return;  // need at least K vectors
 
     const allVectors = [...this.vectors.values()];
-    const centroids = this.sphericalKMeans(allVectors, this.k);
+    // v2.0.843: Filter out zero-norm vectors (all-zeros after normalise)
+    // before k-means — they can cause degenerate centroids.
+    const validVectors = allVectors.filter(v => !this.isZeroVector(v));
+    if (validVectors.length < this.k) return;
+
+    const centroids = this.sphericalKMeans(validVectors, this.k);
 
     // Assign all vectors to nearest centroid
     const buckets = new Map<number, number[]>();
@@ -239,16 +257,41 @@ export class ANNIndex {
   // ── Internal helpers ──
 
   private isValidVector(v: number[]): boolean {
-    return Array.isArray(v) && v.length === this.dim &&
-      v.every(x => Number.isFinite(x));
+    // v2.0.843: Guard against Proxy/ggetter bombs — Array.isArray passes
+    // for Proxy-wrapped arrays, but .every can trigger a getter that throws.
+    if (!Array.isArray(v) || v.length !== this.dim) return false;
+    try {
+      return v.every(x => Number.isFinite(x));
+    } catch {
+      return false;  // Getter bomb — reject safely
+    }
+  }
+
+  /**
+   * v2.0.843: Check if a vector is all-zeros (no direction).
+   * Used to reject meaningless zero-vectors in add and query.
+   */
+  private isZeroVector(v: number[]): boolean {
+    for (let i = 0; i < v.length; i++) {
+      if (v[i] !== 0) return false;
+    }
+    return true;
   }
 
   private l2Normalise(v: number[]): number[] {
+    // v2.0.843: Guard against Proxy/ggetter bombs — v.map and for...of
+    // can trigger getters that throw. Copy to a plain array first.
+    const arr = new Array<number>(this.dim);
+    try {
+      for (let i = 0; i < this.dim; i++) arr[i] = v[i] ?? 0;
+    } catch {
+      return new Array(this.dim).fill(0);  // Getter bomb → zero vector
+    }
     let norm = 0;
-    for (const x of v) norm += x * x;
+    for (let i = 0; i < this.dim; i++) norm += arr[i]! * arr[i]!;
     norm = Math.sqrt(norm);
     if (norm < 1e-10) return new Array(this.dim).fill(0);
-    return v.map(x => x / norm);
+    return arr.map(x => x / norm);
   }
 
   /**
@@ -262,9 +305,11 @@ export class ANNIndex {
 
     for (let iter = 0; iter < KMEANS_MAX_ITERS; iter++) {
       // Assignment step: assign each vector to nearest centroid (max cosine).
-      const assignments = new Array(data.length).fill(0);
+      // v2.0.843: Guard against undefined from findNearestCentroids[0].
+      const assignments = new Array(data.length).fill(-1);
       for (let i = 0; i < data.length; i++) {
-        assignments[i] = this.findNearestCentroids(data[i]!, 1)[0];
+        const nearest = this.findNearestCentroids(data[i]!, 1)[0];
+        assignments[i] = nearest ?? -1;
       }
 
       // Update step: compute mean of each cluster, renormalise.
