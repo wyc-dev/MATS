@@ -104,6 +104,50 @@ export function isThesisPlaceholder(thesis: string | undefined | null): boolean 
 /** Callback fired when a position is closed (SL/TP, reconciliation, or explicit close) */
 export type OnPositionClosed = (trade: TradeRecord) => void;
 
+/**
+ * v2.0.851: Infer the CLOSE REASON for a position being closed, based on where
+ * the exit price landed relative to the stop-loss / take-profit levels.
+ *
+ * This is the foundation for close-context-aware learning (v2.0.226) and the
+ * RIL CloseReasonAggregator — without it, every TradeRecord has an undefined
+ * `closeReason`, so:
+ *   - `computeLearningWeight` falls back to 'sl_tp' for EVERY close (tight-SL
+ *     losses are treated as full-weight real market losses, contaminating OLR)
+ *   - the RIL "premature SL" warning never fires
+ *   - the trade-audit cannot distinguish "SL too tight" from "thesis wrong"
+ *
+ * The inference is a best-effort DEFAULT only. Agent-driven closes (consensus,
+ * manual, thesis-invalidation, reconciliation) pass an explicit closeReason
+ * from the caller which OVERRIDES this inference (see closePosition /
+ * closeExchangePosition). The SL/TP detection is deterministic:
+ *   - exit at/beyond the SL level   → 'sl_tp' (stop-loss hit)
+ *   - exit at/beyond the TP level   → 'sl_tp' (take-profit hit)
+ *   - exit between SL and TP        → 'reconciliation' (position disappeared
+ *     without a trigger order firing — e.g. manual UI close or exchange-side
+ *     liquidation handled outside the SL/TP loop)
+ *   - no SL/TP levels set           → 'reconciliation' (unprotected close)
+ *
+ * @param side       Position direction ('buy' or 'sell').
+ * @param exitPrice  The fill price the position was closed at.
+ * @param stopLoss   Final stop-loss price (undefined if none set).
+ * @param takeProfit Final take-profit price (undefined if none set).
+ * @returns The inferred close-reason string ('sl_tp' | 'reconciliation').
+ */
+export function inferCloseReason(
+  side: 'buy' | 'sell',
+  exitPrice: number,
+  stopLoss?: number | null,
+  takeProfit?: number | null,
+): 'sl_tp' | 'reconciliation' {
+  const validSL = typeof stopLoss === 'number' && Number.isFinite(stopLoss) && stopLoss > 0;
+  const validTP = typeof takeProfit === 'number' && Number.isFinite(takeProfit) && takeProfit > 0;
+  if (validSL && side === 'buy' && exitPrice <= stopLoss!) return 'sl_tp';
+  if (validSL && side === 'sell' && exitPrice >= stopLoss!) return 'sl_tp';
+  if (validTP && side === 'buy' && exitPrice >= takeProfit!) return 'sl_tp';
+  if (validTP && side === 'sell' && exitPrice <= takeProfit!) return 'sl_tp';
+  return 'reconciliation';
+}
+
 export class PortfolioTracker {
   private portfolio: Portfolio;
   /** Callback so PaperTradingEngine can capture trades from SL/TP closes */
@@ -233,6 +277,9 @@ export class PortfolioTracker {
         postReview: (t as any).postReview,
         minValueReached: (t as any).minValueReached,
         maxValueReached: (t as any).maxValueReached,
+        // v2.0.851: Restore close reason so it survives restart.
+        closeReason: (t as any).closeReason,
+        exitType: (t as any).exitType,
       }));
 
       // v2.0.38: Restore real (exchange) trades — these are HL SL/TP-triggered
@@ -259,6 +306,9 @@ export class PortfolioTracker {
         postReview: (t as any).postReview,
         minValueReached: (t as any).minValueReached,
         maxValueReached: (t as any).maxValueReached,
+        // v2.0.851: Restore close reason so it survives restart.
+        closeReason: (t as any).closeReason,
+        exitType: (t as any).exitType,
       }));
       this.closedRealTrades.push(...restoredRealTrades);
       if (restoredRealTrades.length > 0) {
@@ -1258,8 +1308,8 @@ export class PortfolioTracker {
         // (doesn't add margin back to balance — importExchangePosition didn't deduct it).
         // Use closePosition() for paper positions (margin was deducted at open).
         const trade = pos.agentId === 'hyperliquid-real'
-          ? this.closeExchangePosition(localSymbol, pos.currentPrice)
-          : this.closePosition(localSymbol, pos.currentPrice);
+          ? this.closeExchangePosition(localSymbol, pos.currentPrice, undefined, 'reconciliation')
+          : this.closePosition(localSymbol, pos.currentPrice, 'reconciliation');
         if (trade) {
           reconciled.push(localSymbol);
           log.info(`  → Reconciled ${localSymbol}: PnL $${trade.pnl.toFixed(2)}`);
@@ -1269,7 +1319,16 @@ export class PortfolioTracker {
     return reconciled;
   }
 
-  closePosition(symbol: string, exitPrice: number): TradeRecord | null {
+  /**
+   * v2.0.30: Close a PAPER position and produce a trade record.
+   * Deducted margin is returned to balance; entry/exit fees are netted.
+   *
+   * @param closeReason v2.0.851: Optional explicit close reason passed by the
+   *  caller (consensus / manual / reconciliation / thesis_invalidation). When
+   *  omitted, it is inferred from the exit price vs SL/TP levels. Stored on the
+   *  TradeRecord so learning + RIL + trade-audit see HOW the position closed.
+   */
+  closePosition(symbol: string, exitPrice: number, closeReason?: TradeRecord['closeReason']): TradeRecord | null {
     const pos = this.portfolio.positions.get(symbol);
     if (!pos) return null;
 
@@ -1281,7 +1340,7 @@ export class PortfolioTracker {
     // without touching paper balance/stats.
     if (pos.agentId === 'hyperliquid-real') {
       log.warn(`⚠️ closePosition() called on real position ${symbol} — redirecting to closeExchangePosition() to prevent balance inflation`);
-      return this.closeExchangePosition(symbol, exitPrice);
+      return this.closeExchangePosition(symbol, exitPrice, undefined, closeReason);
     }
 
     const lev = pos.leverage ?? 1;
@@ -1399,6 +1458,14 @@ export class PortfolioTracker {
       entryShadowWinRate: pos.entryShadowWinRate,
       regime: pos.regime,
       entryConsensusConfidence: pos.entryConsensusConfidence,
+      // v2.0.851: Capture HOW the position closed. Prefer the caller-provided
+      // reason; fall back to deterministic inference from exitPrice vs SL/TP.
+      closeReason: closeReason ?? inferCloseReason(
+        pos.side,
+        exitPrice,
+        pos.stopLossPrice,
+        pos.takeProfitPrice,
+      ),
     };
 
     // Update portfolio stats
@@ -1433,8 +1500,14 @@ export class PortfolioTracker {
    * didn't deduct margin). Only adds realized PnL to balance + produces
    * trade record + triggers learning mechanisms.
    * Used by syncExchangePositions() when HL SL/TP trigger closes a position.
+   *
+   * @param closeReason v2.0.851: Optional explicit close reason (consensus,
+   *  manual, reconciliation, thesis_invalidation) passed by the caller. When
+   *  omitted, it is inferred deterministically from the exit price vs the
+   *  SL/TP levels via inferCloseReason(). Stored on the TradeRecord so the
+   *  learning pipeline + RIL + trade-audit can see HOW the position closed.
    */
-  closeExchangePosition(symbol: string, exitPrice: number, hlRealizedPnl?: number): TradeRecord | null {
+  closeExchangePosition(symbol: string, exitPrice: number, hlRealizedPnl?: number, closeReason?: TradeRecord['closeReason']): TradeRecord | null {
     // v2.0.72: real positions live in realPositions
     const sym = normalizeSymbol(symbol);
     const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(symbol);
@@ -1569,6 +1642,17 @@ export class PortfolioTracker {
       entryShadowWinRate: pos.entryShadowWinRate,
       regime: pos.regime,
       entryConsensusConfidence: pos.entryConsensusConfidence,
+      // v2.0.851: Capture HOW the position closed. Prefer the caller-provided
+      // reason (consensus/manual/reconciliation/thesis_invalidation); fall back
+      // to deterministic inference from exitPrice vs SL/TP levels. Without this,
+      // every real trade had an undefined closeReason → learning + RIL + audit
+      // all treated every close as 'sl_tp'.
+      closeReason: closeReason ?? inferCloseReason(
+        pos.side,
+        exitPrice,
+        pos.stopLossPrice,
+        pos.takeProfitPrice,
+      ),
     };
 
     // v2.0.32: Do NOT update paper portfolio stats (totalPnl, winCount,

@@ -1915,7 +1915,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           // separation + sets exitThesis before closing. For real positions,
           // closeTrade() → tradingManager.closePosition() closes on HL
           // first, then locally. No need to close on HL separately here.
-          const closeSuccess = await this.closeTrade(sym, 'Manual close by user');
+          // v2.0.851: Pass closeReason='manual' so the TradeRecord records it
+          // (previously only paper trades were tagged after the fact; real
+          // trades + reloaded trades lost the manual flag).
+          const closeSuccess = await this.closeTrade(sym, 'Manual close by user', 'manual');
           if (closeSuccess) {
             // Tag the trade record with manual close reason
             const recentPaper = this.paperEngine.getTrades().slice(-1)[0];
@@ -3075,6 +3078,15 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // market-risk losses (SL hit), not thesis-system force-closes.
       const isThesisInvalidation = this.thesisInvalidatedCloseSymbols.delete(symbol);
       const closeReason = isThesisInvalidation ? 'thesis_invalidation' : (trade.closeReason ?? 'sl_tp');
+
+      // v2.0.851: Write the resolved closeReason BACK onto the TradeRecord so
+      // the persisted record (via savePortfolio) and the RIL CloseReasonAggregator
+      // see HOW the position closed. Without this, trade.closeReason stayed
+      // undefined for every close and RIL/trade-audit could not distinguish
+      // SL-too-tight from thesis-wrong. thesis_invalidation overrides the
+      // portfolio-inferred reason because it is detected here (the force-close
+      // set is the authoritative source for that path).
+      trade.closeReason = closeReason;
 
       // v2.0.226: Close-context-aware learning weight.
       // The close mechanism is an important factor in the loss:
@@ -4804,8 +4816,13 @@ ${recentExamples}
    *   → onPositionClosedLearning).
    *
    * exitThesis is set BEFORE closing so the TradeRecord captures it.
+   *
+   * @param closeReason v2.0.851: How the position was closed (consensus /
+   *  manual / reconciliation / thesis_invalidation). Forwarded to the
+   *  portfolio close method so the TradeRecord records it. When omitted, the
+   *  portfolio infers it from the exit price vs SL/TP levels.
    */
-  private async closeTrade(symbol: string, exitThesis: string): Promise<boolean> {
+  private async closeTrade(symbol: string, exitThesis: string, closeReason?: TradeRecord['closeReason']): Promise<boolean> {
     const sym = symbol.includes(':') ? symbol : symbol.toLowerCase();
     const pos = this.portfolio.getPosition(sym);
     if (!pos) return false;
@@ -4822,7 +4839,7 @@ ${recentExamples}
 
     if (pos.agentId === 'hyperliquid-real') {
       // Real position: close on HL first, then locally
-      return await this.tradingManager.closePosition(sym);
+      return await this.tradingManager.closePosition(sym, closeReason);
     } else {
       // Paper position: close locally
       const state = this.marketState?.getState(sym);
@@ -4831,7 +4848,7 @@ ${recentExamples}
         log.error(`closeTrade: no price available for ${sym}`);
         return false;
       }
-      const trade = this.portfolio.closePosition(sym, closePrice);
+      const trade = this.portfolio.closePosition(sym, closePrice, closeReason);
       return !!trade;
     }
   }

@@ -4,6 +4,29 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.851: Populate TradeRecord.closeReason end-to-end (real data bug)
+
+**Bug (trade-audit / RIL)**: Every closed trade persisted with an undefined `closeReason`. Three linked defects dropped it:
+1. `closePosition` / `closeExchangePosition` built the TradeRecord WITHOUT setting `closeReason`.
+2. `onPositionClosedLearning` computed a local `closeReason` but never wrote it back to the trade.
+3. `savePortfolio` + the portfolio restore path serialized trades without `closeReason`/`exitType`.
+
+Result: RIL CloseReasonAggregator, trade-audit, and `computeLearningWeight` all saw `closeReason=undefined` → every close fell back to `'sl_tp'`. Tight-SL losses were treated as full-weight real market losses (should be 0.3×), and the "premature SL" warning never fired. Could not distinguish "SL too tight" from "thesis wrong".
+
+### Fix
+
+**`src/trading/portfolio.ts`** — added `inferCloseReason()` (deterministic: exit at/beyond SL or TP → `'sl_tp'`, else `'reconciliation'`; null/NaN/0 levels treated as unset). `closePosition` + `closeExchangePosition` now accept an optional explicit `closeReason` and set it on the TradeRecord (explicit overrides inference). `checkPositionExits` (SL/TP auto-close) passes `'sl_tp'`; reconciliation passes `'reconciliation'`. Restore path reloads `closeReason` + `exitType`.
+
+**`src/index.ts`** — `closeTrade()` now accepts a `closeReason` param forwarded to the portfolio/trading-manager close. `onPositionClosedLearning` writes the resolved reason (including thesis-invalidation override) back onto the trade. Manual-close handler passes `'manual'` (was tagging only paper trades after the fact).
+
+**`src/trading/trading-manager.ts`** — `closePosition()` forwards `closeReason` to `closeExchangePosition`/`closePosition`.
+
+**`src/evolution/persistence.ts`** — `savePortfolio()` serializes `closeReason` + `exitType` for paper and real trades.
+
+**Tests**: `tests/v2.0.851-close-reason-attack.test.ts` (17 tests) — inferCloseReason boundaries (SL/TP hit, between, null/NaN, exact-level), closePosition inference + explicit override, persistence round-trip. 53/53 close-related tests pass. Build: `tsc --noEmit` zero errors.
+
+---
+
 ## v2.0.850: Unified all agent default models to `deepseek-v4-flash:0731-cloud`
 
 All agents now default to `deepseek-v4-flash:0731-cloud` (was mixed `deepseek-v4-flash:cloud` / `kimi-k2.6:cloud`).

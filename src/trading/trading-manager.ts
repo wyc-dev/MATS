@@ -21,6 +21,7 @@ import type {
   ExchangeAccountInfo,
   RealTradingEngine,
   EntryFeatures,
+  TradeRecord,
 } from '../types/index.ts';
 
 const log = createLogger({ phase: 'real-trading' });
@@ -911,7 +912,7 @@ export class TradingManager {
   /**
    * Close a position on the active exchange or paper.
    */
-  async closePosition(symbol: string): Promise<boolean> {
+  async closePosition(symbol: string, closeReason?: TradeRecord['closeReason']): Promise<boolean> {
     const engine = this.getActiveEngine();
     if (engine) {
       const success = await engine.closePosition(symbol);
@@ -923,12 +924,12 @@ export class TradingManager {
         const pos = this.portfolio.getPosition(symbol);
         if (pos) {
           if (pos.agentId === 'hyperliquid-real') {
-            this.portfolio.closeExchangePosition(symbol, pos.currentPrice);
+            this.portfolio.closeExchangePosition(symbol, pos.currentPrice, undefined, closeReason);
           } else {
             // v2.0.143: This should not happen in real mode — paper positions
             // are closed via closeTrade() → portfolio.closePosition() directly.
             // But if a paper mirror exists in real mode, close it properly.
-            this.portfolio.closePosition(symbol, pos.currentPrice);
+            this.portfolio.closePosition(symbol, pos.currentPrice, closeReason);
           }
         }
       }
