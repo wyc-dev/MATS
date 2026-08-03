@@ -23,7 +23,7 @@
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 認知演化管線（v2.0.836: 23→15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Risk Profile Differentiation）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + DCS v2 v2.0.836，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 風險等級區別化（三個 profile 真正唔同決策） |
+| **自我演化** | 認知演化管線（v2.0.848: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Risk Profile Differentiation + 1 Component Attribution）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + DCS v2 v2.0.836 + Component Attribution v2.0.844，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 風險等級區別化（三個 profile 真正唔同決策）。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge） |
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
 | **風險等級客戶端選擇** | 後端運算 3 個風險等級（aggressive/moderate/conservative）嘅訊號矩陣；客戶端按用戶選擇讀取對應格（v2.0.822）|
@@ -959,9 +959,9 @@ Plan G（6 小時 idle 後）：
 
 ---
 
-## Self-Aware Evolution（v2.0.843 — Meta-Cognition + Self-Improving + Causal Reasoning + Meta-Learning）
+## Self-Aware Evolution（v2.0.843-848 — Meta-Cognition + Self-Improving + Causal Reasoning + Meta-Learning + Component Attribution）
 
-v2.0.842 新增三大進化組件 + 混合數據源架構。v2.0.843 新增 ANN index + asset-aware Meta-Learner + Skeptics evolution block fix。系統唔再只係從交易結果學習，而係知道自己幾準（元認知）、自動調整自己嘅 hyperparameters（自我改善）、區分因果同相關（因果推理）、學點樣學得更快（元學習）。
+v2.0.842 新增三大進化組件 + 混合數據源架構。v2.0.843 新增 ANN index + asset-aware Meta-Learner + Skeptics evolution block fix。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（見下方專節）。系統唔再只係從交易結果學習，而係知道自己幾準（元認知）、自動調整自己嘅 hyperparameters（自我改善）、區分因果同相關（因果推理）、學點樣學得更快（元學習）、量度邊個組件真正加 edge（歸因）。
 
 ### Meta-Cognitive Calibrator（`src/evolution/meta-calibrator.ts`，v2.0.837）
 
@@ -1042,6 +1042,65 @@ Trade-audit LLM 每 2 個 cycle 發現 incidents，而家會路由到進化組�
 | MetaLearner | ~10K feature observations | adaptive feature weights 即時生效 |
 | CausalReasoner | ~1038 paired shadows | uplift + feature importance 即時計算 |
 | SelfImprover | ~50 performance windows | config bandit + param tuning 即時啟動 |
+| ComponentAttribution (v2.0.848) | 全部 EXP records | 歸因 dashboard cold-start 唔空（Causal 除外——EXP 冇 per-symbol data） |
+
+---
+
+## Component Attribution + LLM-vs-Stats A/B（v2.0.844-848 — 邊個組件真正加 edge？）
+
+Verification-first 基礎設施：系統唔再假設每個進化組件都有價值，而係量度每筆 trade 每個組件嘅實際 contribution。Attribution 係 cost-benefit 分析，唔係 prediction——佢答「邊個組件加 edge」，唔答「市場會唔會升」。
+
+### Component Attribution Store（`src/evolution/component-attribution.ts`，v2.0.844）
+
+| 元件 | 說明 |
+|:-----|:-----|
+| **Proxy credit assignment** | `contribution = (agreement − 0.5) × 2 × sign(pnlPct)`。組件同意咗贏錢嗰邊 → 正 credit |
+| **Cold-start safe** | `< MIN_SAMPLES (10)` → neutral stats，永遠唔會過早 prune |
+| **Idempotent** | per `(tradeId, componentId)`——backfill + live 唔會 double-count |
+| **Bounded** | ring buffer MAX_RECORDS = 10k，rolling eviction |
+| **Hardened (v2.0.845)** | sanitize undefined/null symbol + empty regime；load purge evicted seenKeys（無 stale-token leak） |
+| **`getCleanlinessOverview(lookbackMs)`** | label-quality summary：per-regime clean/polluted rate，由 `computeLearningWeight` 推導（v2.0.846 Phase 1b） |
+| **`getComponentStats()`/`getAllStats()`** | per-component expectancy、contribution、samples、confidence |
+| **Persistence** | `component-attribution.json`（atomic save/load） |
+
+### Phase 1a：LLM vs 純統計 A/B Shadow（`shadow-trade-engine.ts`，v2.0.846）
+
+新 `shadowType: 'statistical'`——方向**淨**由統計組件（OLR P(win) + Combo WR + Causal uplift）計算嘅 shadow，`openStatisticalShadow()` + `hasStatisticalShadow()`（per symbol+side+cycle dedup）。
+
+**點解**：Aligned shadow 跟 LLM 共識，blind shadow 跟 noise——但都冇對照組去隔離「LLM 共識本身」有冇加 edge。Statistical shadow 係同一個市場條件下嘅受控 A/B：LLM 驅動嘅 aligned shadow vs 純統計 shadow 對賭，隔離 LLM 嘅邊際價值。
+
+**OLR source routing**：`statistical` → `'shadow'`（full weight，真實統計信號），`blind` → `'shadow_blind'`（0.1×）。
+
+### Phase 2a：Causal-Grounded Entry Gate（`index.ts`，v2.0.844）
+
+`computeCausalConvictionMultiplier()`——negative causal uplift → 乘法 conviction 折讓 `[0.5, 1.0]`。Soft gate，永遠唔 hard-block（owner P1）。只有 aligned shadow 顯示 positive causal alpha 先俾 full size。Cold-start safe（insufficient samples → 1.0）。
+
+### Phase 2b：Meta-Calibrator → Dynamic Trust（`index.ts`，v2.0.844）
+
+`computeCalibrationTrustMultiplier(regime)`——per-regime Brier：差過 random（Brier > 0.25）→ ×<1.0，良好校准（Brier < 0.20）→ ×>1.0。委託現有 `getConfidenceAdjustment()`。Clamped `[0.5, 1.5]`。insufficient data → 1.0。
+
+### Attribution 錄製（`onPositionClosedLearning`）
+
+- OLR signal（`entryOlrPWin`）+ Causal uplift signal → `componentAttribution.recordAttribution`
+- Cleanliness 由 `computeLearningWeight`（close-context-aware）推導
+- `normalizeSymbol` 對 undefined symbol 加 guard（legacy/corrupt trade records——之前係 crash vector）
+
+### v2.0.847：Fix `computeStatisticalLean` cross-symbol contamination
+
+**BUG**：`computeStatisticalLean` 無條件用 `this.lastFirstPassage`，但 first-passage 淨係為 active symbol 計算。Aligned-shadow A/B loop 為**所有** trading symbols 開 statistical shadow——所以非 active symbols 被餵咗 active symbol 嘅 path-risk 數據，污染咗 LLM-vs-stats 比較。
+
+**FIX**：加 `isActive` guard——first-passage 淨係喺 symbol 係 active symbol 時先 contribution。非 active symbols 只用 OLR + Combo WR + Causal uplift。另外 guard undefined/empty symbol + non-object features。
+
+### v2.0.848：Backfill Component Attribution
+
+`backfillFromExpRecords()` 為每條 EXP record 餵 `componentAttribution.recordAttribution`——`attrFed` counter、OLR signal 由 `rec.olrPWinAtEntry`、cleanliness 由 `computeLearningWeight`、regime 由 `rec.regime`。每次 cold-start 執行，令 dashboard 唔空。Causal uplift 跳過（EXP 冇 per-symbol historical data——by design 冷啟動）。
+
+### API 暴露（`advancedLearning`）+ UI
+
+- API：`componentAttribution`（size / components / per-component stats）+ `labelCleanliness`（records / avgCleanliness / cleanRate / pollutedRate / byRegime）
+- UI：`ComponentAttributionSection`，格式與 OLR/Experience/EM/RIL 對齊（`evo-section-header`/`evo-section-accent`/`evo-section-toggle`），systemsTotal 15 → 18
+
+**驗證**：41/41 attack tests（`v2.0.844-attribution-attack.test.ts` + `v2.0.846-stat-shadow-attack.test.ts`），91/91 stat-shadow + attribution + evolution，`tsc --noEmit` zero errors。
 
 ---
 
