@@ -374,6 +374,9 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       postReview: (t as any).postReview,
       minValueReached: (t as any).minValueReached,
       maxValueReached: (t as any).maxValueReached,
+      // v2.0.851: Persist HOW the position closed so it survives restart.
+      closeReason: (t as any).closeReason,
+      exitType: (t as any).exitType,
     })) : undefined;
 
     // v2.0.38: Serialize real (exchange) trades separately so they survive
@@ -399,6 +402,9 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       postReview: (t as any).postReview,
       minValueReached: (t as any).minValueReached,
       maxValueReached: (t as any).maxValueReached,
+      // v2.0.851: Persist HOW the position closed so it survives restart.
+      closeReason: (t as any).closeReason,
+      exitType: (t as any).exitType,
     })) : undefined;
 
     // v2.0.160: Serialize real positions so they survive restart with thesis + MAE/MFE
