@@ -204,6 +204,52 @@ export class ComponentAttributionStore {
     return this.records.length;
   }
 
+  /**
+   * v2.0.846 Phase 1b: Learning-label cleanliness overview.
+   *
+   * Aggregates the per-record labelCleanliness into an overall "how polluted
+   * is our learning signal" view. A label is polluted when the trade was
+   * closed by an execution-caused reason (tight SL / thesis invalidation /
+   * premature close) rather than a clean market trigger — those PnL labels
+   * do not reflect "these conditions → win/loss" and should be discounted.
+   *
+   * @param lookback  Only consider records with timestamp >= (now - lookback ms).
+   *                  Default 30 days. Pass 0 for all-time.
+   */
+  getCleanlinessOverview(lookbackMs: number = 30 * 24 * 3600 * 1000): {
+    records: number;
+    avgCleanliness: number;
+    cleanRate: number;     // fraction with cleanliness >= 0.8
+    pollutedRate: number;  // fraction with cleanliness < 0.6
+    byRegime: Array<{ regime: string; avgCleanliness: number; records: number }>;
+  } {
+    const cutoff = lookbackMs > 0 ? Date.now() - lookbackMs : 0;
+    const window = this.records.filter(r => r.timestamp >= cutoff);
+    if (window.length === 0) {
+      return { records: 0, avgCleanliness: 1.0, cleanRate: 0, pollutedRate: 0, byRegime: [] };
+    }
+    const avg = window.reduce((s, r) => s + r.labelCleanliness, 0) / window.length;
+    const cleanRate = window.filter(r => r.labelCleanliness >= 0.8).length / window.length;
+    const pollutedRate = window.filter(r => r.labelCleanliness < 0.6).length / window.length;
+
+    const byRegimeMap = new Map<string, { sum: number; n: number }>();
+    for (const r of window) {
+      const e = byRegimeMap.get(r.regime) ?? { sum: 0, n: 0 };
+      e.sum += r.labelCleanliness;
+      e.n++;
+      byRegimeMap.set(r.regime, e);
+    }
+    const byRegime = Array.from(byRegimeMap.entries())
+      .map(([regime, e]) => ({
+        regime,
+        avgCleanliness: e.sum / e.n,
+        records: e.n,
+      }))
+      .sort((a, b) => a.avgCleanliness - b.avgCleanliness); // worst-first
+
+    return { records: window.length, avgCleanliness: avg, cleanRate, pollutedRate, byRegime };
+  }
+
   /** Distinct components tracked. */
   componentCount(): number {
     return new Set(this.records.map(r => r.componentId)).size;

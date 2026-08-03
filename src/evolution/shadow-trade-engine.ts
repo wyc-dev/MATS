@@ -74,8 +74,12 @@ export interface ShadowPosition {
    *  Aligned shadows learn "what happens when the LLM says go this way but
    *  conviction gate blocked the trade" — the distribution the system
    *  actually needs for decision calibration. Blind shadows are cold-start
-   *  priors only (weight=0.1 in OLR). */
-  shadowType: 'blind' | 'aligned';
+   *  priors only (weight=0.1 in OLR).
+   *  v2.0.846 Phase 1a: 'statistical' = pure-statistics A/B shadow. Follows a
+   *  direction computed ONLY from statistical components (OLR P(win) +
+   *  First-Passage + Combo WR + Causal uplift), with NO LLM. Used to compare
+   *  whether the LLM debate actually adds edge vs pure statistics. */
+  shadowType: 'blind' | 'aligned' | 'statistical';
   /** v2.0.834: Factor tagging for aligned shadows. The consensus direction
    *  the LLM chose, plus which agent + signal drove that direction.
    *  Undefined for blind shadows. */
@@ -169,7 +173,7 @@ export class ShadowTradeEngine {
   /** Recently resolved trades (for agent context + stats).
    *  v2.0.178: Added mfePct/maePct to recentResults so getStats() can compute
    *  MAE/MFE averages from historical results, not just current positions. */
-  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' }> = [];
+  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' }> = [];
 
   constructor(olrEngine: OLREngine) {
     this.olrEngine = olrEngine;
@@ -308,6 +312,91 @@ export class ShadowTradeEngine {
       const resolved = this.positions.filter(p => p.status !== 'open');
       this.positions = [...open, ...resolved.slice(-100)];
     }
+  }
+
+  /**
+   * v2.0.846 Phase 1a: Open a PURE-STATISTICS A/B shadow.
+   *
+   * Unlike `openAlignedShadow` (follows the LLM consensus direction), this opens
+   * a shadow in a direction computed ONLY from statistical components — the same
+   * ones the system uses but WITHOUT any LLM reasoning. By running both paths on
+   * the same symbol/cycle with the same SL/TP, we can compare whether the LLM
+   * debate actually adds edge over pure statistics (Phase 1a A/B test).
+   *
+   * The direction is passed in from the caller (which computes it from OLR P(win)
+   * + First-Passage + Combo WR + Causal uplift). This method only persists the
+   * shadow tagged `shadowType: 'statistical'` so the resolution loop can route it
+   * to OLR at full weight and the attribution store can credit it separately.
+   *
+   * @param symbol      Symbol
+   * @param entryPrice  Current price
+   * @param side        Statistical direction ('buy' | 'sell')
+   * @param slPrice     Stop-loss price (above for sell, below for buy)
+   * @param tpPrice     Take-profit price (below for sell, above for buy)
+   * @param cycle       Current cycle number
+   * @param features    Feature snapshot at entry
+   * @param statScore   Aggregate statistical conviction (for diagnostics)
+   */
+  openStatisticalShadow(
+    symbol: string,
+    entryPrice: number,
+    side: 'buy' | 'sell',
+    slPrice: number,
+    tpPrice: number,
+    cycle: number,
+    features: Record<string, number>,
+    statScore: number,
+  ): void {
+    // Guard against NaN/Infinity — same as openAlignedShadow.
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
+    if (!Number.isFinite(statScore)) statScore = 0;
+    const sym = symbol.toLowerCase();
+
+    // Don't open if we already have a statistical shadow for this symbol+side+cycle.
+    const existing = this.positions.find(
+      p => p.symbol === sym && p.status === 'open' && p.side === side && p.shadowType === 'statistical' && p.openCycle === cycle,
+    );
+    if (existing) return;
+
+    // Check limits (statistical shadows share the same pool).
+    const symOpen = this.positions.filter(p => p.symbol === sym && p.status === 'open').length;
+    if (symOpen >= SHADOW_CONFIG.maxOpenPerSymbol) return;
+    const totalOpen = this.positions.filter(p => p.status === 'open').length;
+    if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) return;
+
+    const ts = Date.now();
+    const id = `stat_${++this.idCounter}`;
+
+    const sl = slPrice > 0 ? slPrice : entryPrice * (1 - SHADOW_CONFIG.defaultSLDistance);
+    const tp = tpPrice > 0 ? tpPrice : entryPrice * (1 + SHADOW_CONFIG.defaultTPDistance);
+    const finalSL = side === 'sell' && slPrice > 0 ? slPrice : (side === 'sell' ? entryPrice * (1 + SHADOW_CONFIG.defaultSLDistance) : sl);
+    const finalTP = side === 'sell' && tpPrice > 0 ? tpPrice : (side === 'sell' ? entryPrice * (1 - SHADOW_CONFIG.defaultTPDistance) : tp);
+
+    this.positions.push({
+      id,
+      symbol: sym,
+      side,
+      entryPrice,
+      stopLossPrice: finalSL,
+      takeProfitPrice: finalTP,
+      openCycle: cycle,
+      openTimestamp: ts,
+      features: { ...features },
+      status: 'open',
+      slNarrowed: false,
+      originalSL: finalSL,
+      originalTP: finalTP,
+      highSinceOpen: entryPrice,
+      lowSinceOpen: entryPrice,
+      mfePct: 0,
+      maePct: 0,
+      shadowType: 'statistical',
+    });
+
+    log.debug(
+      `[shadow] Opened STATISTICAL ${side.toUpperCase()} ${sym} at ${entryPrice.toFixed(2)} ` +
+      `(SL=${finalSL.toFixed(2)}, TP=${finalTP.toFixed(2)}) — statScore=${statScore.toFixed(3)}`,
+    );
   }
 
   /**
@@ -547,7 +636,9 @@ export class ShadowTradeEngine {
 
         try {
           // v2.0.834: Aligned shadows use 'shadow' source; blind use 'shadow_blind'.
-          const staleSource = pos.shadowType === 'aligned' ? 'shadow' : 'shadow_blind';
+          // v2.0.846: Statistical shadows (pure-statistics A/B) also use full-weight
+          // 'shadow' — they follow a real statistical signal, not blind noise.
+          const staleSource = pos.shadowType === 'blind' ? 'shadow_blind' : 'shadow';
           this.olrEngine.feedTrade(
             sym, trainingFeaturesStale, outcomeNum, pos.side, staleSource, cycle,
             false, undefined, SHADOW_CONFIG.staleLearningWeight,
@@ -616,7 +707,8 @@ export class ShadowTradeEngine {
         try {
           // v2.0.834: Aligned shadows feed OLR at full weight (source='shadow');
           // blind shadows feed at reduced weight (source='shadow_blind', 0.1×).
-          const source = pos.shadowType === 'aligned' ? 'shadow' : 'shadow_blind';
+          // v2.0.846: Statistical shadows (pure-statistics A/B) also full-weight.
+          const source = pos.shadowType === 'blind' ? 'shadow_blind' : 'shadow';
           this.olrEngine.feedTrade(sym, trainingFeatures, outcomeNum, pos.side, source, cycle);
           log.info(`[shadow] ${outcome.toUpperCase()} ${pos.side.toUpperCase()} ${sym} held ${holdCycles} cycles (entry=${pos.entryPrice.toFixed(2)} exit=${exitPrice.toFixed(2)}, slNarrowed=${pos.slNarrowed}, type=${pos.shadowType}) → OLR fed (source=${source})`);
         } catch (err) {
@@ -763,7 +855,7 @@ export class ShadowTradeEngine {
     id: string; symbol: string; side: 'buy' | 'sell';
     outcome: 'win' | 'loss'; holdCycles: number; cycle: number;
     mfePct: number; maePct: number; pnlPct: number;
-    shadowType: 'blind' | 'aligned';
+    shadowType: 'blind' | 'aligned' | 'statistical';
   }> {
     if (this.recentResults.length === 0) return [];
     const drained = this.recentResults.map(r => ({
@@ -793,6 +885,17 @@ export class ShadowTradeEngine {
     const sym = symbol.toLowerCase();
     return this.positions.some(
       p => p.symbol === sym && p.status === 'open' && p.shadowType === 'aligned' && p.openCycle === cycle,
+    );
+  }
+
+  /**
+   * v2.0.846 Phase 1a: Check if a statistical A/B shadow is already open for
+   * this symbol+side+cycle. Prevents duplicate statistical shadows per cycle.
+   */
+  hasStatisticalShadow(symbol: string, side: 'buy' | 'sell', cycle: number): boolean {
+    const sym = symbol.toLowerCase();
+    return this.positions.some(
+      p => p.symbol === sym && p.status === 'open' && p.side === side && p.shadowType === 'statistical' && p.openCycle === cycle,
     );
   }
 

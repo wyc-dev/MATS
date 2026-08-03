@@ -2933,9 +2933,13 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
     if ((al?.edgeValidation?.execTrackerEntries ?? 0) > 0) count++
     count++ // Stability Monitor (always ready — pure math)
     if ((al?.edgeValidation?.rpStoreSize ?? 0) > 0) count++
+    // v2.0.844: Component Attribution + Self-Aware Evolution
+    if ((al?.componentAttribution?.size ?? 0) > 0) count++
+    count++ // Causal-Grounded Entry Gate (always ready)
+    count++ // Meta-Calibrator Dynamic Trust (always ready)
     return count
   })()
-  const systemsTotal = 15 // v2.0.833: 19→15 (4 removed + exploration/bayesian paused)
+  const systemsTotal = 18 // v2.0.844: 15 + componentAttribution + causal-gate + cal-trust
 
   // Build set of open position symbols
   const openPositionSymbols = new Set<string>()
@@ -2999,6 +3003,14 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
         isExpanded={expandedSection === 'ril'}
         onToggleExpand={() => toggleSection('ril')}
       />
+
+      {/* v2.0.844: Component Attribution — which components actually add edge */}
+      <ComponentAttributionSection
+        attribution={al?.componentAttribution}
+        cleanliness={al?.labelCleanliness}
+        isExpanded={expandedSection === 'attribution'}
+        onToggleExpand={() => toggleSection('attribution')}
+      />
     </div>
   )
 }
@@ -3007,6 +3019,102 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
 interface ParsedClass {
   count: number; winRate: number; avgHoldMin: number; directionBias: string;
   exitNote: string; lesson: string; symbols: string; netPnl: number;
+}
+
+// ─── v2.0.844: Component Attribution Section ─────────────────────────
+// Answers "which learning component actually adds edge?" — the core blind
+// spot of a 15+ component stack. Ranks components by contribution so dead
+// weight sinks to the bottom. Cold-start (few samples) shows a note.
+function ComponentAttributionSection({
+  attribution,
+  cleanliness,
+  isExpanded,
+  onToggleExpand,
+}: {
+  attribution?: NonNullable<APIData['advancedLearning']>['componentAttribution'];
+  cleanliness?: NonNullable<APIData['advancedLearning']>['labelCleanliness'];
+  isExpanded: boolean;
+  onToggleExpand: () => void;
+}) {
+  const stats = attribution?.stats ?? []
+  const hasData = (attribution?.size ?? 0) > 0
+  // Sort by contribution desc (highest edge first, dead weight last)
+  const sorted = [...stats].sort((a, b) => b.contribution - a.contribution)
+
+  return (
+    <div className="evo-section" style={{ borderBottom: '1px solid var(--border)', padding: '10px 12px' }}>
+      <div className="evo-row evo-row-clickable" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
+        <span className="evo-title" style={{ fontSize: '0.9rem' }}>Component Attribution &amp; Label Quality</span>
+        <span className="evo-badge" style={{ marginLeft: '8px' }}>{attribution?.size ?? 0} recs</span>
+        <span className="evo-chevron">{isExpanded ? '▾' : '▸'}</span>
+      </div>
+      {isExpanded && (
+        <div style={{ marginTop: '8px' }}>
+          {/* v2.0.846 Phase 1b: Label cleanliness summary */}
+          {cleanliness && cleanliness.records > 0 && (
+            <div style={{ marginBottom: '10px', padding: '8px 10px', background: 'rgba(0,0,0,0.15)', borderRadius: '6px', fontSize: '0.78rem' }}>
+              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                <span>Avg cleanliness: <b style={{ color: cleanliness.avgCleanliness >= 0.8 ? 'var(--green)' : cleanliness.avgCleanliness >= 0.6 ? 'var(--gold)' : 'var(--red)' }}>
+                  {(cleanliness.avgCleanliness * 100).toFixed(0)}%
+                </b></span>
+                <span>Clean: <b style={{ color: 'var(--green)' }}>{(cleanliness.cleanRate * 100).toFixed(0)}%</b></span>
+                <span>Polluted: <b style={{ color: 'var(--red)' }}>{(cleanliness.pollutedRate * 100).toFixed(0)}%</b></span>
+                <span>{cleanliness.records} recs / 30d</span>
+              </div>
+              {cleanliness.byRegime.length > 0 && (
+                <div style={{ marginTop: '6px', color: 'var(--text-muted)' }}>
+                  Worst regimes: {cleanliness.byRegime.slice(0, 3).map(r =>
+                    `${r.regime} ${(r.avgCleanliness * 100).toFixed(0)}% (${r.records})`).join(' · ')}
+                </div>
+              )}
+            </div>
+          )}
+          {!hasData && !cleanliness?.records ? (
+            <div className="evo-empty-text" style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+              No attribution data yet — records accumulate as trades close.
+            </div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+              <thead>
+                <tr style={{ color: 'var(--text-muted)' }}>
+                  <th style={{ textAlign: 'left', padding: '4px 6px' }}>Component</th>
+                  <th style={{ textAlign: 'right', padding: '4px 6px' }}>Samples</th>
+                  <th style={{ textAlign: 'right', padding: '4px 6px' }}>Expectancy</th>
+                  <th style={{ textAlign: 'right', padding: '4px 6px' }}>Contrib</th>
+                  <th style={{ textAlign: 'right', padding: '4px 6px' }}>Clean</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((s) => {
+                  const contribColor = s.contribution > 0.05 ? 'var(--green)'
+                    : s.contribution < -0.05 ? 'var(--red)'
+                    : 'var(--text-muted)'
+                  const expColor = s.expectancy > 0.001 ? 'var(--green)'
+                    : s.expectancy < -0.001 ? 'var(--red)'
+                    : 'var(--text-muted)'
+                  return (
+                    <tr key={s.componentId} style={{ borderTop: '1px solid var(--border)' }}>
+                      <td style={{ padding: '4px 6px', fontWeight: 500 }}>{s.componentId}</td>
+                      <td style={{ padding: '4px 6px', textAlign: 'right' }}>{s.samples}</td>
+                      <td style={{ padding: '4px 6px', textAlign: 'right', color: expColor }}>
+                        {(s.expectancy * 100).toFixed(3)}%
+                      </td>
+                      <td style={{ padding: '4px 6px', textAlign: 'right', color: contribColor }}>
+                        {s.contribution.toFixed(3)}
+                      </td>
+                      <td style={{ padding: '4px 6px', textAlign: 'right' }}>
+                        {(s.cleanliness * 100).toFixed(0)}%
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 interface ParsedSymbol {
   symbol: string; side: string; wins: number; losses: number; netPnl: number; avgHold: number; isPremature: boolean;
