@@ -2507,14 +2507,38 @@ function SystemStatusGrid({ al, olrState, emState, rilState }: {
   const rbTotal = al?.replay?.totalSamples ?? 0
   systems.push({ name: 'Replay', state: rbTotal >= 10 ? 'ready' : rbTotal > 0 ? 'training' : 'cold', detail: `${rbTotal} samples, ${al?.replay?.totalReplays ?? 0} replays` })
 
-  // Bayesian OLR — ⚠️ PAUSED v2.0.833 (with active-exploration)
-  systems.push({ name: 'Bayesian', state: 'paused', detail: 'paused v2.0.833' })
+  // Bayesian OLR — v2.0.850: reflect REAL backend state (was hardcoded paused v2.0.833).
+  // Bayesian applies when the active symbol's OLR model has ≥ minSamples (20) and
+  // MC dropout produced a non-trivial uncertainty band (std > 0). It mirrors OLR
+  // training, so it's 'ready' when OLR is trained on the active symbol.
+  const bayesBuy = al?.bayesian?.buy
+  const bayesSell = al?.bayesian?.sell
+  const bayesApplied = !!((bayesBuy?.applied && bayesBuy.std > 0) || (bayesSell?.applied && bayesSell.std > 0))
+  const bayesSamples = (bayesBuy?.std ?? 0) > 0 || (bayesSell?.std ?? 0) > 0
+  systems.push({
+    name: 'Bayesian',
+    state: bayesApplied ? 'ready' : bayesSamples ? 'training' : 'cold',
+    detail: bayesApplied
+      ? `buy σ=${(bayesBuy?.std ?? 0).toFixed(3)} sell σ=${(bayesSell?.std ?? 0).toFixed(3)}`
+      : bayesSamples
+        ? 'accumulating OLR samples (≥20)'
+        : 'cold — needs OLR samples',
+  })
 
   // v2.0.833 REMOVED: Temporal Attention, Cross-Symbol, Reward Shaper, World Model
   // (all had 0 inference call sites — training wired but output never read)
 
-  // Active Exploration — ⚠️ PAUSED v2.0.833
-  systems.push({ name: 'Exploration', state: 'paused', detail: 'paused v2.0.833' })
+  // Active Exploration — v2.0.850: reflect REAL backend enabled state (was hardcoded
+  // paused v2.0.833). Backend gates on ACTIVE_EXPLORATION_ENABLED=true. Show paused
+  // only when explicitly disabled; cold when enabled but < 5 trades; ready otherwise.
+  const explEnabled = al?.exploration?.enabled === true
+  systems.push({
+    name: 'Exploration',
+    state: explEnabled ? 'cold' : 'paused',
+    detail: explEnabled
+      ? `enabled, ucb=${al?.exploration?.ucbConstant?.toFixed(2) ?? '0.15'}`
+      : 'paused (ACTIVE_EXPLORATION_ENABLED=true to re-enable)',
+  })
 
   // EM Cycle Chain
   systems.push({ name: 'EM Chain', state: (emState?.summaryCount ?? 0) > 0 ? 'ready' : 'cold', detail: `${emState?.summaryCount ?? 0} summaries` })
@@ -2922,7 +2946,13 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
     if (al?.chr && Object.keys(al.chr.symbols).length > 0) count++
     if ((al?.antiPattern?.clusterCount ?? 0) > 0) count++
     if ((al?.replay?.totalSamples ?? 0) >= 10) count++
-    // v2.0.833: Bayesian + Exploration PAUSED (not counted as ready)
+    // v2.0.850: Bayesian counts ready when active symbol OLR model is trained
+    // (MC-dropout applied → non-trivial std). Exploration counts ready only when
+    // explicitly enabled on the backend (ACTIVE_EXPLORATION_ENABLED=true).
+    const bayesB = al?.bayesian?.buy
+    const bayesS = al?.bayesian?.sell
+    if ((bayesB?.applied && (bayesB.std ?? 0) > 0) || (bayesS?.applied && (bayesS.std ?? 0) > 0)) count++
+    if (al?.exploration?.enabled === true) count++
     // v2.0.833: temporal/crossSymbol/rewardShaper/worldModel REMOVED
     if ((data?.emState?.summaryCount ?? 0) > 0) count++
     if (data?.rilState?.isBuilt) count++
