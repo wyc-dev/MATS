@@ -4,6 +4,22 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.851-fix: Tag agent-driven closes with explicit closeReason
+
+Adversarial attack on v2.0.851 closeReason found agent-driven closes were NOT tagged with an explicit reason — so `inferCloseReason` classified them by exit price vs SL/TP, losing the agent-decision signal. Now pass `'consensus'` for:
+- consensus close (`index.ts` per-symbol consensus path)
+- per-symbol flip close
+- active-symbol flip close
+- legacy agent-vote close
+
+Manual close already passed `'manual'`; reconciliation passes `'reconciliation'`; SL/TP auto-close passes `'sl_tp'`; thesis-invalidation overrides via `thesisInvalidatedCloseSymbols`.
+
+Also fixed stale test expectation: non-finite exitPrice (Infinity/−Infinity) is a DATA ERROR and must return `'reconciliation'` (never misclassify as `'sl_tp'`). The `inferCloseReason` defensive guard (`!Number.isFinite || ≤0`) was already correct; the test expected the naive comparison result.
+
+64 close-related tests pass. `tsc --noEmit` zero errors.
+
+---
+
 ## v2.0.851: Populate TradeRecord.closeReason end-to-end (real data bug)
 
 **Bug (trade-audit / RIL)**: Every closed trade persisted with an undefined `closeReason`. Three linked defects dropped it:
