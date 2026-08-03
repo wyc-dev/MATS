@@ -11,6 +11,7 @@ import { HyperliquidEngine } from './hyperliquid-engine.ts';
 import { computeSLTP } from './position-utils.ts';
 import { getATR, computeATRSLTP, getMomentum } from '../analysis/atr.ts';
 import { computeSmartSLTP, fetchCandleHighLow } from '../analysis/smart-sltp.ts';
+import { getMfeCalibration } from '../analysis/mfe-calibrator.ts';
 import type {
   TradeMode,
   ExchangeType,
@@ -55,6 +56,10 @@ export class TradingManager {
    *  consensus) all call adjustPosition() within the same cycle. */
   private lastSLTPPlacement: Map<string, { sl?: number; tp?: number; ts: number }> = new Map();
   private readonly SLTP_DEBOUNCE_MS = 10_000;
+  /** v2.0.852 (fix #C): SL/TP values that failed to place on HL and were
+   *  rolled back from the local mirror. syncSLTP() retries them each cycle so
+   *  a transient HL failure does not permanently desync UI/cache vs exchange. */
+  private pendingSLTPRetry: Map<string, { sl?: number; tp?: number }> = new Map();
 
   constructor(
     config: TradingManagerConfig,
@@ -463,6 +468,14 @@ export class TradingManager {
           atrForSmartSLTP = await getATR(decision.symbol);
         } catch { /* non-critical — SL floor falls back to 0.5% */ }
 
+        // v2.0.852: Fetch MFE calibration (data-driven TP target/cap + SL
+        // floor) from candle-derived price-extension distributions. Cached
+        // 15 min per symbol; fail-open → null falls back to default SL/TP.
+        let mfeCal: import('../analysis/mfe-calibrator.ts').MfeCalibrationResult | null = null;
+        try {
+          mfeCal = await getMfeCalibration(decision.symbol);
+        } catch { /* non-critical — MFE calibration falls back to defaults */ }
+
         // v2.0.849: Fetch short-term momentum for momentum-adaptive SL
         // (v2.0.207 #C: SL ≥ 2.5×adverseMomentum). Non-blocking, fail-open.
         // getMomentum is the same 1h-candle data source as getATR so the
@@ -500,6 +513,7 @@ export class TradingManager {
         // v2.0.836: Pass riskProfile + dcs for DCS-aware SL/TP scaling
         // v2.0.849: Pass adverseMomentum + olrConfidence for momentum-adaptive
         //           + execution-lens + confidence SL widening
+        // v2.0.852: Pass MFE calibration (data-driven TP target/cap + SL floor).
         const smartSLTP = computeSmartSLTP({
           entryPrice: actualEntryPrice,
           side: decision.action as 'buy' | 'sell',
@@ -516,6 +530,14 @@ export class TradingManager {
           dcs: (decision as unknown as Record<string, unknown>)['dcs'] as number | undefined,
           adverseMomentum,
           olrConfidence: entryOlrConfidence,
+          // v2.0.852: Pass the ACTUAL fill leverage so computeSmartSLTP can
+          // widen the SL floor on high-leverage positions (prevents normal
+          // volatility from stopping out a 10x position at a 0.81% structural
+          // SL — the SILVER SELL defect).
+          leverage: actualLeverage,
+          // v2.0.852: MFE calibration (fail-open — null falls back to defaults).
+          // Cached 15 min per symbol so it does not re-fetch every trade.
+          mfeCalibration: mfeCal ?? undefined,
         });
 
         let slPrice = smartSLTP.sl;
@@ -982,49 +1004,89 @@ export class TradingManager {
    *      (cancel existing + place fresh SL + TP)
    */
   async adjustPosition(positionId: string, sl?: number, tp?: number): Promise<void> {
-    // Always update local mirror first — this validates SL/TP direction,
-    // no-widen, gap, and narrowing constraints. Returns false if rejected.
+    // ── v2.0.852 (fix #B + #C): HL-FIRST with rollback ────────────────
+    // OLD (buggy): local mirror updated FIRST, then best-effort sync to HL.
+    //   If HL placement failed or was debounced, the local mirror kept the
+    //   new SL/TP → UI showed a value HL never had (the SILVER SELL phantom
+    //   SL defect: UI showed SL $57.28 that HL never applied, and the position
+    //   was left with a stale/wrong HL order).
+    // NEW: compute the desired SL/TP, place on HL FIRST. Only if HL accepts
+    //   do we commit to the local mirror. On failure we ROLL BACK the local
+    //   mirror to its previous value so UI/cache always reflect reality, and
+    //   the change is queued for retry by the next syncSLTP() pass.
+    //
+    // We still run portfolio.adjustPosition() first to VALIDATE direction/no-
+    // widen/gap constraints (it returns the accepted values without committing
+    // them permanently — we snapshot prior values to enable rollback).
+
+    const pos = this.portfolio.getPosition(positionId);
+    const prevSL = pos?.stopLossPrice;
+    const prevTP = pos?.takeProfitPrice;
+
+    // Validate + compute the desired values via the local mirror (validates
+    // direction, no-widen, gap, narrowing). Returns false if the raw input was
+    // rejected → fall back to the position's existing validated values.
     const accepted = this.portfolio.adjustPosition(positionId, sl, tp);
+    const desiredSL = accepted ? sl : pos?.stopLossPrice;
+    const desiredTP = accepted ? tp : pos?.takeProfitPrice;
 
-    // In real mode, place native trigger orders on HL
+    // ── Debounce (unchanged) ──
+    if (pos) {
+      const sym = normalizeSymbol(pos.symbol);
+      const last = this.lastSLTPPlacement.get(sym);
+      if (last && (Date.now() - last.ts) < this.SLTP_DEBOUNCE_MS) {
+        const slMatch = desiredSL === undefined || (last.sl !== undefined && Math.abs(last.sl - desiredSL) < 1);
+        const tpMatch = desiredTP === undefined || (last.tp !== undefined && Math.abs(last.tp - desiredTP) < 1);
+        if (slMatch && tpMatch) {
+          log.info(`⏭️ SL/TP debounced for ${pos.symbol} — already placed ${Date.now() - last.ts}ms ago (SL=${desiredSL?.toFixed(2) ?? '-'} TP=${desiredTP?.toFixed(2) ?? '-'})`);
+          return;
+        }
+      }
+    }
+
+    // ── HL placement first ──
     const engine = this.getActiveEngine();
-    if (engine) {
+    let hlOk = false;
+    if (engine && pos) {
       try {
-        const pos = this.portfolio.getPosition(positionId);
-        if (pos) {
-          // v2.0.54: If portfolio.adjustPosition() rejected the values,
-          // use the position's EXISTING validated SL/TP (not the rejected ones).
-          // This ensures HL gets the correct, validated values — not raw
-          // unvalidated ones that the local mirror already rejected.
-          const hlSl = accepted ? sl : pos.stopLossPrice;
-          const hlTp = accepted ? tp : pos.takeProfitPrice;
-
-          // v2.0.66: DEBOUNCE — skip if we already placed the same SL/TP
-          // for this symbol within SLTP_DEBOUNCE_MS. Multiple code paths
-          // (syncSLTP, hacp adjustPositions, per-symbol consensus) all call
-          // this method in the same cycle. Without this lock, each path
-          // places duplicate orders because HL's async processing means
-          // getOpenOrders() returns stale data for all of them.
+        if (desiredSL !== undefined || desiredTP !== undefined) {
           const sym = normalizeSymbol(pos.symbol);
-          const last = this.lastSLTPPlacement.get(sym);
-          if (last && (Date.now() - last.ts) < this.SLTP_DEBOUNCE_MS) {
-            const slMatch = hlSl === undefined || (last.sl !== undefined && Math.abs(last.sl - hlSl) < 1);
-            const tpMatch = hlTp === undefined || (last.tp !== undefined && Math.abs(last.tp - hlTp) < 1);
-            if (slMatch && tpMatch) {
-              log.info(`⏭️ SL/TP debounced for ${pos.symbol} — already placed ${Date.now() - last.ts}ms ago (SL=${hlSl?.toFixed(2) ?? '-'} TP=${hlTp?.toFixed(2) ?? '-'})`);
-              return;
-            }
+          this.lastSLTPPlacement.set(sym, { sl: desiredSL, tp: desiredTP, ts: Date.now() });
+          hlOk = await engine.adjustPosition(pos.symbol, desiredSL, desiredTP);
+          if (hlOk) {
+            log.info(`🔧 Real SL/TP placed on HL: ${pos.symbol} SL=${desiredSL?.toFixed(2) ?? '-'} TP=${desiredTP?.toFixed(2) ?? '-'}${accepted ? '' : ' (used existing — input rejected)'}`);
           }
-
-          if (hlSl !== undefined || hlTp !== undefined) {
-            this.lastSLTPPlacement.set(sym, { sl: hlSl, tp: hlTp, ts: Date.now() });
-            await engine.adjustPosition(pos.symbol, hlSl, hlTp);
-            log.info(`🔧 Real SL/TP placed on HL: ${pos.symbol} SL=${hlSl?.toFixed(2) ?? '-'} TP=${hlTp?.toFixed(2) ?? '-'}${accepted ? '' : ' (used existing — input rejected)'}`);
-          }
+        } else {
+          hlOk = true; // nothing to place → nothing to fail
         }
       } catch (err) {
         log.error(`Failed to place SL/TP on HL: ${err instanceof Error ? err.message : String(err)}`);
+        hlOk = false;
       }
+    } else if (!engine) {
+      // Paper mode / no active engine → local mirror is authoritative.
+      hlOk = true;
+    }
+
+    // ── Commit or roll back the local mirror ──
+    if (!hlOk) {
+      // HL rejected/failed → ROLL BACK local mirror to the previous values so
+      // UI + cache never show an SL/TP that HL doesn't actually have. The
+      // desired values are queued for a retry by the next syncSLTP() pass.
+      if (pos) {
+        if (prevSL !== undefined) pos.stopLossPrice = prevSL;
+        else delete (pos as any).stopLossPrice;
+        if (prevTP !== undefined) pos.takeProfitPrice = prevTP;
+        else delete (pos as any).takeProfitPrice;
+        pos.updatedAt = Date.now();
+        // v2.0.852: Queue for retry — syncSLTP() reads this set next cycle.
+        this.pendingSLTPRetry.set(normalizeSymbol(pos.symbol), { sl: desiredSL, tp: desiredTP });
+        log.warn(`🔁 SL/TP NOT applied (HL failure) — rolled back local mirror for ${pos.symbol} (SL=${prevSL?.toFixed(2) ?? '-'} TP=${prevTP?.toFixed(2) ?? '-'}); queued for retry`);
+      }
+    } else {
+      // HL accepted (or local-only) → local mirror already has the desired
+      // values from portfolio.adjustPosition(); clear any pending retry.
+      if (pos) this.pendingSLTPRetry.delete(normalizeSymbol(pos.symbol));
     }
   }
 
@@ -1113,9 +1175,18 @@ export class TradingManager {
           continue;
         }
 
-        const sl = pos.stopLossPrice;
-        const tp = pos.takeProfitPrice;
+        // v2.0.852 (fix #C): Retry any SL/TP that previously failed to place
+        // on HL. The pending values were rolled back from the local mirror, so
+        // `pos.stopLossPrice/takeProfitPrice` still hold the LAST successfully
+        // placed values. Override with the pending desired values for this pass.
+        const pending = this.pendingSLTPRetry.get(sym);
+        const retrying = pending !== undefined;
+        let sl = retrying ? pending?.sl : pos.stopLossPrice;
+        let tp = retrying ? pending?.tp : pos.takeProfitPrice;
         if (!sl && !tp) continue;
+        if (retrying) {
+          log.info(`🔁 syncSLTP retrying pending SL/TP for ${pos.symbol}: SL=${sl?.toFixed(2) ?? '-'} TP=${tp?.toFixed(2) ?? '-'}`);
+        }
 
         // v2.0.48: Safety check — ensure SL/TP are on the correct side.
         // SL can be on EITHER side of entry (trailing stop / profit-side SL
@@ -1225,6 +1296,15 @@ export class TradingManager {
           log.info(`🔧 Placing SL/TP on HL for ${pos.symbol}: SL=${slToPlace?.toFixed(2) ?? '-'} TP=${tpToPlace?.toFixed(2) ?? '-'}`);
           await engine.adjustPosition(pos.symbol, slToPlace, tpToPlace);
           justPlaced = true;
+        }
+
+        // v2.0.852 (fix #C): A pending retry that actually placed on HL is now
+        // resolved — clear it so we don't re-place stale values next cycle.
+        // If placement just happened, the values are on HL and match the local
+        // mirror (rollback logic guarantees this), so the pending entry is stale.
+        if (retrying && justPlaced) {
+          this.pendingSLTPRetry.delete(sym);
+          log.info(`✅ Pending SL/TP retry resolved for ${pos.symbol}`);
         }
 
         // v2.0.66: If we just placed orders, SKIP the reverse-sync + push-corrected
