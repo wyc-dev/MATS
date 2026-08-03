@@ -54,6 +54,21 @@ export interface SmartSLTPInput {
   /** v2.0.849: OLR P(win) confidence (0-1). High confidence → wider SL to avoid
    *  premature stops; low confidence → tighter SL. Ported from v2.0.231. */
   olrConfidence?: number;
+  /** v2.0.852: Position leverage. Higher leverage amplifies the margin impact of
+   *  any price move, so the SL distance must be widened to avoid normal-volatility
+   *  stop-outs destroying the (smaller) margin. Only affects the SL floor; it
+   *  never narrows a structurally-placed SL. Default 1 (no scaling). */
+  leverage?: number;
+  /** v2.0.852: Data-driven MFE calibration (from mfe-calibrator.ts). When
+   *  present, overrides the TP target with the median favourable 1h extension
+   *  (aim to realise typical profit, not an unreachable 5×), caps TP at the
+   *  90th-percentile extension, and raises the SL floor to the 95th-percentile
+   *  adverse 5m excursion so high-leverage positions aren't noise-stopped. */
+  mfeCalibration?: {
+    tpTargetPct: number;
+    tpCapPct: number;
+    slFloorPct: number;
+  };
 }
 
 export interface SmartSLTPResult {
@@ -252,6 +267,35 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
     ? atr / entryPrice
     : 0;
   const slFloorPct = Math.max(0.005, Number.isFinite(atrPct) ? atrPct * 1.5 : 0.005);
+
+  // ═══════════════════════════════════════════════════════════════
+  // v2.0.852: LEVERAGE-AWARE SL FLOOR (fix #A)
+  // A structural S/R-based SL can sit very close to entry (e.g. 0.81%).
+  // On a 10x position that means a 0.81% adverse price move wipes out ~8%
+  // of margin — normal volatility can stop the position out long before
+  // the thesis plays out (this is exactly the SILVER SELL defect: entry
+  // $56.82, SL $57.28 = +0.81%, got stopped out by routine noise).
+  // Higher leverage amplifies margin impact, so we scale the MINIMUM SL
+  // distance with leverage. This is a FLOOR only — it never narrows a
+  // structurally-wide SL, and downstream momentum/exec-lens widenings still
+  // apply on top. Clamped so it cannot exceed the SL cap (5%) nor go below
+  // the 1.5×ATR floor.
+  //
+  // levFactor grows sub-linearly so 20x does not produce absurdly wide stops:
+  //   1x → 1.0, 5x → 1.6, 10x → 2.35, 20x → 3.85 (then clamped to 5%).
+  // ═══════════════════════════════════════════════════════════════
+  const rawLeverage = Number.isFinite(input.leverage ?? 1) ? (input.leverage ?? 1) : 1;
+  const leverage = Math.max(1, Math.min(50, rawLeverage)); // sane clamp [1, 50]
+  const levFactor = 1.0 + (leverage - 1) * 0.15;
+  const levFloorPct = Math.min(0.05, Math.max(slFloorPct, 0.01 * levFactor));
+  if (levFloorPct > slFloorPct && levFloorPct > Math.abs(slPrice - entryPrice) / entryPrice) {
+    const levCurrentSlPct = Math.abs(slPrice - entryPrice) / entryPrice;
+    slPrice = isBuy
+      ? entryPrice * (1 - levFloorPct)
+      : entryPrice * (1 + levFloorPct);
+    logParts.push(`[SL-leverage] widened from ${(levCurrentSlPct * 100).toFixed(2)}% to ${(levFloorPct * 100).toFixed(2)}% (${leverage}x, factor ${levFactor.toFixed(2)})`);
+  }
+
   const currentSlPct = Math.abs(slPrice - entryPrice) / entryPrice;
 
   if (currentSlPct < slFloorPct) {
@@ -419,6 +463,56 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   const slCap = profile === 'aggressive' ? 0.07 : profile === 'conservative' ? 0.03 : 0.05;
   const tpCap = profile === 'aggressive' ? 0.15 : profile === 'conservative' ? 0.06 : 0.10;
   const tpMin = profile === 'aggressive' ? 0.005 : profile === 'conservative' ? 0.002 : 0.003;
+
+  // ═══════════════════════════════════════════════════════════════
+  // v2.0.852 (fix #D): MFE-CALIBRATED TP TARGET + DATA-DRIVEN CAP + SL FLOOR
+  // Uses the real historical price-extension distribution (candle-derived,
+  // immune to the contaminated TradeRecord.MFE fields) to:
+  //   1. TP target ← median favourable 1h extension (realistic profit aim,
+  //      not an unreachable 5× MFE). Only tightens if the structural S/R TP
+  //      was aiming too far (the "TP set too far → giveback" failure).
+  //   2. TP cap   ← 90th-percentile extension (data-driven ceiling that
+  //      replaces the fixed 10% ceiling only when the data says price rarely
+  //      runs further; the fixed cap still applies as an absolute backstop).
+  //   3. SL floor ← 95th-percentile adverse 5m excursion (noise floor so a
+  //      high-leverage position isn't stopped out by routine noise).
+  // All are FLOORS/CEILINGS — they never remove the structural S/R placement,
+  // they only correct over-optimistic / over-tight values.
+  // ═══════════════════════════════════════════════════════════════
+  const cal = input.mfeCalibration;
+  if (cal) {
+    const calTpTarget = Number.isFinite(cal.tpTargetPct) ? cal.tpTargetPct : 0;
+    const calTpCap = Number.isFinite(cal.tpCapPct) ? cal.tpCapPct : 0;
+    const calSlFloor = Number.isFinite(cal.slFloorPct) ? cal.slFloorPct : 0;
+
+    // 1. TP target — if the structural TP is aiming FURTHER than the median
+    //    favourable extension × 1.25 (leave headroom), pull it in to a
+    //    realistic median target so profit is realised instead of given back.
+    const tpPctBeforeCal = Math.abs(tpPrice - entryPrice) / entryPrice;
+    if (calTpTarget > 0 && tpPctBeforeCal > calTpTarget * 1.25) {
+      tpPrice = isBuy ? entryPrice * (1 + calTpTarget) : entryPrice * (1 - calTpTarget);
+      logParts.push(`[MFE-TP] target ${(calTpTarget * 100).toFixed(2)}% (median 1h ext) — pulled in from ${(tpPctBeforeCal * 100).toFixed(2)}%`);
+    }
+
+    // 2. TP cap — data-driven ceiling, but never below the fixed absolute cap.
+    const effectiveTpCap = Math.min(tpCap, Math.max(calTpCap, tpMin * 1.5));
+    const tpPctAfterTarget = Math.abs(tpPrice - entryPrice) / entryPrice;
+    if (effectiveTpCap > 0 && tpPctAfterTarget > effectiveTpCap) {
+      tpPrice = isBuy ? entryPrice * (1 + effectiveTpCap) : entryPrice * (1 - effectiveTpCap);
+      logParts.push(`[MFE-TP-cap] ${(effectiveTpCap * 100).toFixed(2)}% (90th pct 1h ext, fixed cap ${(tpCap * 100).toFixed(1)}%)`);
+    }
+
+    // 3. SL floor — noise floor from adverse 5m excursion. Only widens SL if
+    //    the current SL is tighter than this floor (and still below SL cap).
+    if (calSlFloor > 0) {
+      const slPctNow = Math.abs(slPrice - entryPrice) / entryPrice;
+      const slFloorApplied = Math.min(slCap, Math.max(calSlFloor, slPctNow));
+      if (slFloorApplied > slPctNow) {
+        slPrice = isBuy ? entryPrice * (1 - slFloorApplied) : entryPrice * (1 + slFloorApplied);
+        logParts.push(`[MFE-SL-floor] ${(slFloorApplied * 100).toFixed(2)}% (95th pct 5m adverse)`);
+      }
+    }
+  }
 
   // ═══════════════════════════════════════════════════════════════
   // CAPS — SL max (profile-specific), TP max (profile-specific)
