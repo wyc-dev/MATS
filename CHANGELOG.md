@@ -4,6 +4,64 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.846-848: Component Attribution + LLM-vs-Stats A/B + Label Cleanliness + Backfill (41 attack tests)
+
+Attribution-first verification infrastructure — the system can now answer **"which component actually adds edge?"**. Built with adversarial attack-testing on every layer (41 tests across `tests/v2.0.844-attribution-attack.test.ts` + `tests/v2.0.846-stat-shadow-attack.test.ts`).
+
+### New: `src/evolution/component-attribution.ts` (~320 lines, v2.0.844)
+
+**Component Attribution Store** — per-component edge attribution. Each learning component's decision signal is recorded against the trade outcome so we can measure contribution, not assume it.
+
+- **Proxy credit assignment**: `contribution = (agreement - 0.5) × 2 × sign(pnlPct)` — component gets credit when it agreed with the winning side
+- **Cold-start safe**: components with `< MIN_SAMPLES (10)` return neutral stats — never prematurely pruned
+- **Idempotent** per `(tradeId, componentId)` — backfill + live never double-count
+- **Bounded** ring buffer (MAX_RECORDS = 10k, rolling eviction)
+- **Hardened** (v2.0.845): `recordAttribution` sanitizes undefined/null symbol + empty regime; load purges evicted seenKeys (no stale-token leak)
+- **`getCleanlinessOverview(lookbackMs)`** (v2.0.846 Phase 1b): label-quality summary — per-regime clean/polluted rate from learning weight
+- **`getComponentStats()` / `getAllStats()`**: per-component expectancy, contribution, samples, confidence
+- **Persistence**: `component-attribution.json` (atomic save/load)
+
+### Phase 1a: LLM vs Pure-Statistics A/B Shadow (`shadow-trade-engine.ts`, v2.0.846)
+
+New `shadowType: 'statistical'` — a shadow opened in a direction computed **ONLY** from statistical components (OLR P(win) + Combo WR + Causal uplift), with `openStatisticalShadow()` + `hasStatisticalShadow()` (dedup per symbol+side+cycle). This is a controlled A/B: the LLM-driven aligned shadow trades against a pure-statistics shadow in the same conditions, so we can isolate whether the LLM consensus actually adds edge over raw statistics. OLR source routing: `statistical` → `'shadow'` (full weight, real statistical signal), `blind` → `'shadow_blind'` (0.1×).
+
+### Phase 2a: Causal-Grounded Entry Gate (`index.ts`, v2.0.844)
+
+`computeCausalConvictionMultiplier()` — negative causal uplift → multiplicative conviction discount `[0.5, 1.0]`. Soft gate, never hard-blocks (owner P1). Only trades where aligned shadow shows positive causal alpha get full size. Cold-start safe (insufficient samples → 1.0).
+
+### Phase 2b: Meta-Calibrator → Dynamic Trust (`index.ts`, v2.0.844)
+
+`computeCalibrationTrustMultiplier(regime)` — per-regime Brier dampens conviction when worse than random (Brier > 0.25 → ×<1.0), boosts when well-calibrated (Brier < 0.20 → ×>1.0). Delegates to existing `getConfidenceAdjustment()`. Clamped `[0.5, 1.5]`. Insufficient data → 1.0.
+
+### Attribution recording (`onPositionClosedLearning`)
+
+- OLR signal from `entryOlrPWin` + Causal uplift signal → `componentAttribution.recordAttribution`
+- Cleanliness derived from `computeLearningWeight` (close-context-aware)
+- `normalizeSymbol` guarded against undefined symbol (legacy/corrupt trade records — was a crash vector)
+
+### v2.0.847: Fix `computeStatisticalLean` cross-symbol contamination
+
+**BUG**: `computeStatisticalLean` used `this.lastFirstPassage` unconditionally, but first-passage is computed **ONLY** for the active symbol. The aligned-shadow A/B loop opens statistical shadows for ALL trading symbols — so non-active symbols were fed the ACTIVE symbol's path-risk data, corrupting the LLM-vs-stats comparison.
+
+**FIX**: Added `isActive` guard — first-passage only contributes when the symbol IS the active symbol. Non-active symbols use OLR + Combo WR + Causal uplift only. Also guards undefined/empty symbol + non-object features.
+
+### v2.0.848: Backfill Component Attribution from EXP history
+
+`backfillFromExpRecords()` now feeds `componentAttribution.recordAttribution` for each EXP record — `attrFed` counter, OLR signal from `rec.olrPWinAtEntry`, cleanliness from `computeLearningWeight`, regime from `rec.regime`. Runs every cold-start so the dashboard isn't empty. Causal uplift skipped (no per-symbol historical data in EXP — cold-start by design).
+
+### API exposure (`advancedLearning`)
+
+- `componentAttribution`: size / components / per-component stats
+- `labelCleanliness`: records / avgCleanliness / cleanRate / pollutedRate / byRegime
+
+### UI (`ui/src/App.tsx`)
+
+New `ComponentAttributionSection` — format aligned with OLR/Experience/EM/RIL sections (`evo-section-header`/`evo-section-accent`/`evo-section-toggle`). systemsTotal 15 → 18. Label cleanliness summary added.
+
+Regression: 41/41 attack tests pass (attribution + stat-shadow), 91/91 stat-shadow + attribution + evolution. Build: `tsc --noEmit` zero errors.
+
+---
+
 ## v2.0.843c: Adversarial attack hardening for trade-audit → evolution routing (25 attack tests)
 
 5 vulnerabilities found and fixed in the trade-audit → evolution routing that was added in v2.0.842 but never attack-tested:
