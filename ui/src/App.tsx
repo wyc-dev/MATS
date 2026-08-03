@@ -2529,12 +2529,12 @@ function SystemStatusGrid({ al, olrState, emState, rilState }: {
   // (all had 0 inference call sites — training wired but output never read)
 
   // Active Exploration — v2.0.850: reflect REAL backend enabled state (was hardcoded
-  // paused v2.0.833). Backend gates on ACTIVE_EXPLORATION_ENABLED=true. Show paused
-  // only when explicitly disabled; cold when enabled but < 5 trades; ready otherwise.
+  // paused v2.0.833). Backend gates on ACTIVE_EXPLORATION_ENABLED=true. Show ready
+  // (green) when enabled; paused only when explicitly disabled.
   const explEnabled = al?.exploration?.enabled === true
   systems.push({
     name: 'Exploration',
-    state: explEnabled ? 'cold' : 'paused',
+    state: explEnabled ? 'ready' : 'paused',
     detail: explEnabled
       ? `enabled, ucb=${al?.exploration?.ucbConstant?.toFixed(2) ?? '0.15'}`
       : 'paused (ACTIVE_EXPLORATION_ENABLED=true to re-enable)',
