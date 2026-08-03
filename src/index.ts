@@ -5212,6 +5212,7 @@ ${recentExamples}
       const raw = fs.readFileSync(expPath, 'utf-8');
       const lines = raw.trim().split('\n').filter(l => l.trim());
       let olrFed = 0, naFed = 0, attnresFed = 0, clusterFed = 0, chrFed = 0, advancedFed = 0, comboFed = 0;
+      let attrFed = 0; // v2.0.848: Component Attribution backfill count
       let skipped = 0;
 
       for (const line of lines) {
@@ -5346,6 +5347,35 @@ ${recentExamples}
               sym, side, 0, 0, pnlPct, 0,
             );
           } catch { /* non-critical */ }
+
+          // v2.0.848: Component Attribution backfill — feed historical trades so
+          // the attribution dashboard isn't empty at startup. OLR signal is the
+          // only one EXP records carry (entryOlrPWin). Causal uplift has no
+          // per-symbol historical data in EXP, so it's skipped (cold-start).
+          try {
+            if (this.componentAttribution) {
+              const tradeId = rec.id ?? `${sym}|${side}|${rec.ts ?? 0}`;
+              const isWinBackfill = outcome === 1;
+              const closeWeight = computeLearningWeight(closeReason, false, isWinBackfill);
+              const cleanliness = Math.max(0, Math.min(1, (closeWeight - 0.3) / 0.7));
+              // OLR signal: entryOlrPWin direction-agnostic → directional signal.
+              const olrPWin = safeNum(rec.olrPWinAtEntry, 0.5);
+              this.componentAttribution.recordAttribution({
+                componentId: 'olr',
+                tradeId,
+                symbol: rec.symbol,
+                side,
+                cycleId: 0, // historical — no real cycle number
+                signal: side === 'buy' ? olrPWin : 1 - olrPWin,
+                pnlPct,
+                labelCleanliness: cleanliness,
+                regime: rec.regime ?? 'unknown',
+                riskProfile: 'moderate', // historical default
+                timestamp: safeNum(rec.ts, 0) || Date.now(),
+              });
+              attrFed++;
+            }
+          } catch { /* non-critical */ }
         }
 
         // Self-Improver: batch performance windows from EXP records
@@ -5406,7 +5436,7 @@ ${recentExamples}
         }
       }
 
-      log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, Combo=${comboFed}, skipped=${skipped}`);
+      log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, Combo=${comboFed}, Attr=${attrFed}, skipped=${skipped}`);
 
       // v2.0.223: Train + validate NA immediately after backfill. Previously only
       // validated, which meant the model had 228 samples but only 230 training
