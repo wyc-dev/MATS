@@ -462,8 +462,26 @@ export class TradingManager {
           atrForSmartSLTP = await getATR(decision.symbol);
         } catch { /* non-critical — SL floor falls back to 0.5% */ }
 
+        // v2.0.849: Fetch short-term momentum for momentum-adaptive SL
+        // (v2.0.207 #C: SL ≥ 2.5×adverseMomentum). Non-blocking, fail-open.
+        // getMomentum is the same 1h-candle data source as getATR so the
+        // momentum is consistent with the ATR floor. Previously this widening
+        // only lived in the DEAD computeATRSLTP — now wired into the live path.
+        let adverseMomentum = 0;
+        try {
+          adverseMomentum = await getMomentum(decision.symbol, 5);
+        } catch { /* non-critical — no momentum floor */ }
+
+        // v2.0.849: OLR P(win) confidence for confidence-scaled SL (v2.0.231).
+        // High confidence (>0.8) → wider SL to avoid premature stops; low (<0.5)
+        // → tighter SL. Comes from the decision's cached entry-time OLR P(win).
+        const entryOlrConfidence = (decision as unknown as Record<string, unknown>)['olrPWin'] as number | undefined
+          ?? (decision as unknown as Record<string, unknown>)['entryOlrPWin'] as number | undefined;
+
         // v2.0.832: Compute smart SL/TP
         // v2.0.836: Pass riskProfile + dcs for DCS-aware SL/TP scaling
+        // v2.0.849: Pass adverseMomentum + olrConfidence for momentum-adaptive
+        //           + execution-lens + confidence SL widening
         const smartSLTP = computeSmartSLTP({
           entryPrice: actualEntryPrice,
           side: decision.action as 'buy' | 'sell',
@@ -478,6 +496,8 @@ export class TradingManager {
           takeProfitPct: decision.takeProfitPct ?? tpPctDefault,
           riskProfile: this.riskProfile,
           dcs: (decision as unknown as Record<string, unknown>)['dcs'] as number | undefined,
+          adverseMomentum,
+          olrConfidence: entryOlrConfidence,
         });
 
         let slPrice = smartSLTP.sl;
