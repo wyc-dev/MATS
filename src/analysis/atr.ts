@@ -73,6 +73,19 @@ export function clearExecutionLens(): void {
   pendingExecutionLens = null;
 }
 
+/** Read the current pending execution lens (null if not prepared).
+ *
+ *  v2.0.849: Exposed so `computeSmartSLTP` — the LIVE SL/TP path used by
+ *  `trading-manager` — can consume the same stop-out-trained execution lens
+ *  that `computeATRSLTP` uses. Previously the lens was prepared in index.ts
+ *  but only ever read by the DEAD `computeATRSLTP`, so the momentum-adaptive +
+ *  execution-lens + confidence SL widening never reached real trades (the
+ *  audit's "premature SL hit in 3-22 min on high-confidence trades" root cause).
+ */
+export function getPendingExecutionLens(): ExecutionLensData | null {
+  return pendingExecutionLens;
+}
+
 export interface Candle {
   timestamp: number;
   open: number;

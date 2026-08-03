@@ -16,6 +16,10 @@
 //   4. ATR 只用嚟 ensure SL ≥ 1.5×ATR（防止噪音止損）
 
 import { createLogger } from '../observability/logger.ts';
+// v2.0.849: Consume the stop-out-trained execution lens that index.ts prepares
+// before each trade. Previously only the DEAD computeATRSLTP read this lens, so
+// the momentum-adaptive + execution-lens SL widening never reached real trades.
+import { getPendingExecutionLens } from './atr.ts';
 
 const log = createLogger({ phase: 'smart-sltp' });
 
@@ -40,6 +44,16 @@ export interface SmartSLTPInput {
   riskProfile?: 'aggressive' | 'moderate' | 'conservative';
   /** v2.0.836: DCS v2 Discovery Confidence Score [0, 1] (optional, backward compatible) */
   dcs?: number;
+  /** v2.0.849: Adverse short-term momentum (fraction, e.g. 0.03 = +3% AGAINST
+   *  this position). When > 0, the SL distance is widened to cover 2.5× the
+   *  adverse momentum range so a continuation of the push doesn't stop the
+   *  position out before the thesis plays out. This is the v2.0.207 (#C) fix
+   *  ported onto the LIVE `computeSmartSLTP` path (was only in dead
+   *  `computeATRSLTP`). */
+  adverseMomentum?: number;
+  /** v2.0.849: OLR P(win) confidence (0-1). High confidence → wider SL to avoid
+   *  premature stops; low confidence → tighter SL. Ported from v2.0.231. */
+  olrConfidence?: number;
 }
 
 export interface SmartSLTPResult {
@@ -246,6 +260,113 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
       ? entryPrice * (1 - slFloorPct)
       : entryPrice * (1 + slFloorPct);
     logParts.push(`[SL-floor] widened from ${(currentSlPct * 100).toFixed(2)}% to ${(slFloorPct * 100).toFixed(2)}% (1.5×ATR)`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // v2.0.849: MOMENTUM-ADAPTIVE + EXECUTION-LENS + CONFIDENCE SL WIDENING
+  // Ported onto the LIVE `computeSmartSLTP` path. These protections existed
+  // only in `computeATRSLTP` — which is DEAD CODE (never called by
+  // trading-manager) — so high-confidence trades kept getting stopped out in
+  // 3-22 min by continued adverse push. Now the live SL adapts to:
+  //   1. Raw adverse momentum (v2.0.207 #C): SL ≥ 2.5×adverseMomentum range
+  //   2. Execution-lens momentum (v2.0.213 #7): stop-out-trained adverse move
+  //   3. Execution-lens volatility scaling (v2.0.213): vol > 1.5× implied → up to +40%
+  //   4. Entropy dampening (v2.0.213): uncertain lens → dampen widening 50%
+  //   5. Confidence scaling (v2.0.231): P(win) > 0.8 → 2.5×ATR; < 0.5 → 1.2×ATR
+  //
+  // All widenings are FLOORS on the SL distance (never narrow below what the
+  // adverse momentum/lens suggests), then capped by the profile caps below.
+  // ═══════════════════════════════════════════════════════════════
+
+  // Helper: set the SL distance from entry as a fraction.
+  const setSlPct = (pct: number): void => {
+    slPrice = isBuy ? entryPrice * (1 - pct) : entryPrice * (1 + pct);
+  };
+  const getSlPct = (): number => Math.abs(slPrice - entryPrice) / entryPrice;
+
+  // 1. Raw adverse momentum floor (v2.0.207 #C).
+  const advMom = Number.isFinite(input.adverseMomentum ?? 0)
+    ? Math.max(0, input.adverseMomentum ?? 0)
+    : 0;
+  if (advMom > 0) {
+    const momFloorPct = Math.min(advMom * 2.5, 0.05); // 2.5× range, capped 5%
+    if (momFloorPct > getSlPct()) {
+      setSlPct(momFloorPct);
+      logParts.push(`[SL-momentum] widened to ${(momFloorPct * 100).toFixed(2)}% (2.5× adverseMomentum ${(advMom * 100).toFixed(2)}%)`);
+    }
+  }
+
+  // 2-4. Execution lens (v2.0.213 #7). Cold-start safe: no lens / not blended /
+  //      wExecution untrained → skip (identical to pre-v2.0.849 behavior).
+  const execLens = getPendingExecutionLens();
+  const useExecLens = execLens && execLens.blended && execLens.updateCount > 0;
+  if (useExecLens) {
+    // Base SL distance (ATR floor + raw momentum) BEFORE the execution lens.
+    // execWidening tracks the TOTAL exec-lens contribution OVER this base —
+    // so high-entropy dampening (base + widening×0.5) mirrors computeATRSLTP
+    // exactly. Increment-based tracking under-counted and the dampened SL
+    // stayed at the cap (attack-test failure).
+    const execBasePct = getSlPct();
+    let execWidening = 0;
+
+    // 2a. Execution adverse momentum — filtered through wExecution's stop-out
+    //     learning. Replaces raw momentum as primary when the lens is trained.
+    const execMom = execLens!.momentumShort;
+    const execAdverse = isBuy ? Math.max(0, -execMom) : Math.max(0, execMom);
+    if (execAdverse > 0) {
+      const execMomFloorPct = Math.min(execAdverse * 2.5, 0.05);
+      if (execMomFloorPct > getSlPct()) {
+        execWidening = Math.max(execWidening, execMomFloorPct - execBasePct);
+        setSlPct(execMomFloorPct);
+      }
+    }
+
+    // 2b. Execution volatility scaling — if the lens sees elevated volatility
+    //     through the stop-out filter, widen SL by up to 40%.
+    const currentImpliedVol = atrPct; // ATR/entryPrice (0 if no ATR)
+    if (execLens!.volatility > currentImpliedVol * 1.5 && currentImpliedVol > 0) {
+      const volRatio = Math.min(execLens!.volatility / currentImpliedVol, 3.0);
+      const volWidenFactor = 1.0 + Math.min((volRatio - 1.0) * 0.2, 0.4); // up to +40%
+      const volSlPct = getSlPct() * volWidenFactor;
+      if (volSlPct > getSlPct()) {
+        execWidening = Math.max(execWidening, volSlPct - execBasePct);
+        setSlPct(volSlPct);
+      }
+    }
+
+    // 2c. Entropy confidence — low entropy = confident pattern → trust widening;
+    //     high entropy (> 2.0 for 9 sources, log2(9) ≈ 3.17) → dampen 50%.
+    if (execLens!.entropy > 2.0) {
+      const dampedPct = execBasePct + execWidening * 0.5;
+      const finalPct = Math.max(atrPct > 0 ? atrPct * 1.5 : 0.005, dampedPct);
+      if (finalPct < getSlPct()) {
+        setSlPct(finalPct);
+        logParts.push(`[SL-entropy] dampened (entropy ${execLens!.entropy.toFixed(2)} > 2.0)`);
+      }
+    } else if (execWidening > 0) {
+      logParts.push(`[SL-exec-lens] widened ${(execWidening * 100).toFixed(2)}% (stop-out-trained)`);
+    }
+  }
+
+  // 5. Confidence scaling (v2.0.231). Applied AFTER ATR floor + momentum so a
+  //    high-confidence trade gets even more room. Conservative: never narrow a
+  //    widened SL below the ATR floor / momentum floor (we only widen).
+  const conf = Number.isFinite(input.olrConfidence ?? 0)
+    ? Math.max(0, Math.min(1, input.olrConfidence ?? 0))
+    : 0;
+  if (conf > 0.8) {
+    const hcFloorPct = Math.max(atrPct > 0 ? atrPct * 2.5 : 0.008, getSlPct());
+    if (hcFloorPct > getSlPct()) {
+      setSlPct(hcFloorPct);
+      logParts.push(`[SL-conf] widened to ${(hcFloorPct * 100).toFixed(2)}% (P(win)=${(conf * 100).toFixed(0)}%)`);
+    }
+  } else if (conf < 0.5 && conf > 0) {
+    // Low confidence → tighten to 1.2×ATR, but never below the ATR floor.
+    const lcPct = Math.max(atrPct > 0 ? atrPct * 1.2 : 0.005, slFloorPct);
+    if (lcPct < getSlPct()) {
+      setSlPct(lcPct);
+      logParts.push(`[SL-conf] tightened to ${(lcPct * 100).toFixed(2)}% (P(win)=${(conf * 100).toFixed(0)}%)`);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════
