@@ -8375,7 +8375,9 @@ ${recentExamples}
           : `${closeVotes} agents + Meta-Agent recommend closing`;
         log.warn(`⚠️ ${closeReason} legacy position ${posSymbol} @ $${pos.currentPrice.toFixed(2)} (PnL: ${((pos.unrealizedPnlPct ?? 0)*100).toFixed(2)}%)...`);
         // v2.0.143: Route through closeTrade() — handles paper vs real + exitThesis.
-        const legacyCloseSuccess = await this.closeTrade(posSymbol, closeReason);
+        // v2.0.851: Legacy agent-vote close → tag 'consensus' so the TradeRecord
+        // records it as an agent decision (not SL/TP inference).
+        const legacyCloseSuccess = await this.closeTrade(posSymbol, closeReason, 'consensus');
         if (legacyCloseSuccess) {
           log.info(`  → Closed ${posSymbol} (${pos.agentId === 'hyperliquid-real' ? 'real' : 'paper'}, legacy)`);
         } else {
@@ -8680,7 +8682,11 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
           }
           // v2.0.143: Route through closeTrade() — handles paper vs real
           // separation + sets exitThesis before closing.
-          const closeSuccess = await this.closeTrade(psc.symbol, closeRationale);
+          // v2.0.851: This is a CONSENSUS close (agents voted CLOSE). Tag it
+          // explicitly so the TradeRecord.closeReason records 'consensus' —
+          // otherwise inferCloseReason would classify it by exit price vs
+          // SL/TP, losing the agent-decision signal.
+          const closeSuccess = await this.closeTrade(psc.symbol, closeRationale, 'consensus');
           if (closeSuccess) {
             if (pos.agentId === 'hyperliquid-real') {
               log.info(`  → Closed ${psc.symbol} (real, closed on HL)`);
@@ -8768,7 +8774,9 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
 
             // Direction flip: close existing position first
             log.warn(`🔄 Per-symbol flip: ${psc.symbol} ${posSide.toUpperCase()} → ${psc.action.toUpperCase()}. Closing existing position first.`);
-            const flipCloseSuccess = await this.closeTrade(psc.symbol, `Position flip: closing ${posSide.toUpperCase()} to open ${psc.action.toUpperCase()}`);
+            // v2.0.851: Flip is an agent-consensus close → tag 'consensus' so the
+            // TradeRecord records the agent-driven exit (not SL/TP inference).
+            const flipCloseSuccess = await this.closeTrade(psc.symbol, `Position flip: closing ${posSide.toUpperCase()} to open ${psc.action.toUpperCase()}`, 'consensus');
             if (flipCloseSuccess) {
               log.info(`  → Flipped ${psc.symbol}. Position will be re-evaluated next cycle for ${psc.action.toUpperCase()} entry.`);
             } else {
@@ -8980,7 +8988,8 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
             // v2.0.143: Route through closeTrade() — handles paper vs real + exitThesis.
             // which closes on HL first. portfolio.closePosition() only closes locally.
             // v2.0.143: Route through closeTrade() — handles paper vs real + exitThesis.
-            const flipCloseSuccess = await this.closeTrade(activeSym, `Position flip: closing ${existingPos.side.toUpperCase()} to open ${finalDecision.action.toUpperCase()}`);
+            // v2.0.851: Flip is an agent-consensus close → tag 'consensus'.
+            const flipCloseSuccess = await this.closeTrade(activeSym, `Position flip: closing ${existingPos.side.toUpperCase()} to open ${finalDecision.action.toUpperCase()}`, 'consensus');
             if (flipCloseSuccess) {
               log.info(`  → Flipped ${activeSym}. Proceeding with ${finalDecision.action.toUpperCase()} order.`);
             } else {
