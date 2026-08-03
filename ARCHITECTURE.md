@@ -23,7 +23,7 @@
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 認知演化管線（v2.0.848: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Risk Profile Differentiation + 1 Component Attribution）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + DCS v2 v2.0.836 + Component Attribution v2.0.844，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 風險等級區別化（三個 profile 真正唔同決策）。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge） |
+| **自我演化** | 認知演化管線（v2.0.851: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Risk Profile Differentiation + 1 Component Attribution）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + DCS v2 v2.0.836 + Component Attribution v2.0.844，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 風險等級區別化（三個 profile 真正唔同決策）。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge）。v2.0.849-851 將 momentum/exec-lens/confidence SL widening 移植到 live computeSmartSLTP + 修復 TradeRecord.closeReason 資料缺失（RIL + trade-audit 可以分到「SL 太緊」定「thesis 錯」） |
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
 | **風險等級客戶端選擇** | 後端運算 3 個風險等級（aggressive/moderate/conservative）嘅訊號矩陣；客戶端按用戶選擇讀取對應格（v2.0.822）|
@@ -689,6 +689,23 @@ S/R buffer 按強度加權：strong 0.2%, moderate 0.3%, weak 0.5%。
 SL cap 5%, TP cap 10%, TP min 0.3%。
 ```
 
+**Momentum + Execution-Lens + Confidence SL Widening（v2.0.849）**：呢啲保護原本只喺 dead code `computeATRSLTP`（trading-manager 從未 call），而家移植到 live `computeSmartSLTP`：
+
+```
+兩階段 pipeline（v2.0.849-fix）：
+1. Confidence 設定 BASE ATR floor 乘數：
+   P(win) > 0.8 → 2.5×ATR；< 0.5 → 1.2×ATR；否則 1.5×ATR
+2. Momentum + Execution-Lens 之後作為無條件 hard floor（Math.max）：
+   - Raw adverse momentum floor（v2.0.207 #C）：SL ≥ 2.5×adverseMomentum
+   - Execution-lens adverse momentum（v2.0.213 #7）：stop-out-trained
+   - Execution-lens vol scaling：vol > 1.5× implied → 加寬最多 +40%
+   - High-entropy dampening：唔確定 lens → 收窄 50%
+   所有 widening 都係 FLOOR（唔會窄過 ATR floor），再由 per-profile caps 封頂
+   （aggressive 7% / moderate 5% / conservative 3%）
+```
+
+**語義不變式**（v2.0.849-fix）：低信心（P<0.5）淨係收窄 BASE ATR 乘數，**唔會剝奪** momentum/exec-lens 保護。BUY side momentum 方向已修正（`BUY adverse = max(0, -momentum)`，`SELL adverse = max(0, +momentum)`），OLR P(win) confidence 由 entryData payload 讀取（唔係 decision object）。
+
 **累計 Margin 上限 20%**：所有持倉 margin 總和 ≤ 20% balance（基於 margin 而非 notional）。
 
 ---
@@ -727,6 +744,33 @@ SL cap 5%, TP cap 10%, TP min 0.3%。
 **Combo WR 跳過執行 loss**：`comboTracker.trackTrade()` 只喺 `isWin || learningWeight ≥ 0.5` 時調用。Tight-SL loss + thesis invalidation loss（weight=0.3）被排除，唔拖低 (symbol×side×regime) 嘅 combo WR。
 
 **Advanced learning PnL 縮放**：`feedAdvancedLearning` 嘅 `pnl` + `pnlPct` 乘以 `learningWeight`。AttnRes reward-weighted regression 按 weight 學習。（v2.0.833: temporal attention / cross-symbol / world model 已移除，`feedAdvancedLearning` 而家只 feed replay buffer。）
+
+## TradeRecord.closeReason 資料完整性（v2.0.851）
+
+**背景**：v2.0.226 嘅 `computeLearningWeight(closeReason, ...)` 一直依賴 `trade.closeReason`，但 v2.0.851 之前每個 closed trade 持久化後 `closeReason` 都係 `undefined` — 三個環節斷裂：
+1. `closePosition` / `closeExchangePosition` 建立 TradeRecord 時冇設 `closeReason`。
+2. `onPositionClosedLearning` 計算咗本地 `closeReason` 但冇寫返 trade。
+3. `savePortfolio` + restore path 序列化時冇存 `closeReason`/`exitType`。
+
+**結果**：RIL CloseReasonAggregator、trade-audit、`computeLearningWeight` 全部睇到 `closeReason=undefined` → 每個平倉都 fallback 做 `'sl_tp'`。Tight-SL loss 被當 full-weight（應 0.3×），「premature SL」warning 永遠唔觸發，分唔到「SL 太緊」定「thesis 錯」。
+
+**`inferCloseReason(side, exitPrice, stopLoss, takeProfit)`**（`portfolio.ts`）— 確定性推斷：
+- exit 觸及/越過 SL 或 TP → `'sl_tp'`
+- exit 喺 SL/TP 之間 或 冇設 SL/TP → `'reconciliation'`
+- 非 finite exitPrice（NaN/Infinity/≤0）→ `'reconciliation'`（數據錯誤，唔應分類為 sl_tp）
+- null/NaN/0 嘅 SL/TP 當無設
+
+**完整數據流**：
+```
+closePosition / closeExchangePosition
+  → inferCloseReason() 推斷 或 caller 顯式傳入（consensus/manual/reconciliation/thesis_invalidation）
+  → trade.closeReason 設好
+  → onPositionClosedLearning 寫回（thesis_invalidation override）
+  → savePortfolio 持久化 closeReason + exitType
+  → 重啟後 restore 還原
+```
+
+**Agent-driven close 顯式標記**（`index.ts`）：consensus close / per-symbol flip / active-symbol flip / legacy agent-vote 全部傳 `'consensus'`；manual close 傳 `'manual'`；reconciliation 傳 `'reconciliation'`。SL/TP 自動平倉傳 `'sl_tp'`。Thesis-invalidation 由 `thesisInvalidatedCloseSymbols` set 喺 `onPositionClosedLearning` override。
 
 ---
 
