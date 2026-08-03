@@ -236,6 +236,27 @@ export interface APIData {
       rpStoreSize: number;
       avgEdgeScore: number;
     };
+    /** v2.0.844: Component Attribution — which components actually add edge */
+    componentAttribution?: {
+      size: number;
+      components: number;
+      stats: Array<{
+        componentId: string;
+        samples: number;
+        expectancy: number;
+        contribution: number;
+        positiveRate: number;
+        cleanliness: number;
+      }>;
+    };
+    /** v2.0.846 Phase 1b: Learning-label cleanliness overview */
+    labelCleanliness?: {
+      records: number;
+      avgCleanliness: number;
+      cleanRate: number;
+      pollutedRate: number;
+      byRegime: Array<{ regime: string; avgCleanliness: number; records: number }>;
+    };
   };
   evolution?: EvolutionData;
   /** v2.0.140: EM Cycle Digestion — MiniLM insight retrieval + self-adjustment */

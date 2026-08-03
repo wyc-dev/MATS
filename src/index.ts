@@ -2852,6 +2852,111 @@ ${currentPrompt || '(empty — this is the first input)'}`;
     }
   }
 
+  /**
+   * v2.0.846 Phase 1a: Compute a PURE-STATISTICS directional lean for a symbol.
+   *
+   * Uses ONLY statistical components — NO LLM reasoning — to decide whether
+   * the market should be traded long or short. This feeds the A/B statistical
+   * shadow so we can measure whether the LLM debate actually adds edge over
+   * pure statistics.
+   *
+   * Components (each contributes a signed score in [-1, 1]):
+   *   1. OLR P(win)   — per-side probability the trade hits TP before SL
+   *   2. First-Passage — P(TP before SL) from GBM path-risk (regime-aware)
+   *   3. Combo WR     — historical (symbol × side × regime) win rate
+   *   4. Causal uplift — aligned-shadow counterfactual (alpha vs market)
+   *
+   * Returns { side, score } where score > 0 favors long, < 0 favors short.
+   * Cold-start safe: components with insufficient data contribute 0 (neutral).
+   */
+  private computeStatisticalLean(
+    symbol: string,
+    features: Record<string, number>,
+    regime: string,
+  ): { side: 'buy' | 'sell'; score: number } {
+    let longScore = 0;
+    let shortScore = 0;
+    let weightSum = 0;
+    // v2.0.847: Guard against undefined/empty symbol — normalizeSymbol would
+    // crash on undefined. Empty symbol → no statistical shadow (neutral).
+    if (typeof symbol !== 'string' || symbol.length === 0) {
+      return { side: 'buy', score: 0 };
+    }
+    const sym = normalizeSymbol(symbol);
+    // v2.0.847: `lastFirstPassage` is computed ONLY for the active symbol
+    // (in the per-cycle first-passage calc). Using it for non-active symbols
+    // would feed the WRONG symbol's path-risk into the A/B statistical shadow,
+    // corrupting the LLM-vs-stats comparison. Restrict it to the active symbol.
+    const isActive = sym === normalizeSymbol(this.marketAgent?.getSelectedSymbol()?.toLowerCase() ?? '');
+
+    try {
+      // 1. OLR P(win) — directional evidence from logistic regression.
+      if (this.olrEngine && features && typeof features === 'object' && Object.keys(features).length > 0) {
+        const long = this.olrEngine.query(sym, features, 'buy', this.totalCycles);
+        const short = this.olrEngine.query(sym, features, 'sell', this.totalCycles);
+        if (Number.isFinite(long.pWin) && Number.isFinite(short.pWin)) {
+          const w = 1.0;
+          longScore += (long.pWin - 0.5) * 2 * w;      // [-1, 1]
+          shortScore += (short.pWin - 0.5) * 2 * w;
+          weightSum += w;
+        }
+      }
+
+      // 2. First-Passage — regime-aware path-risk P(TP before SL).
+      //    Only valid for the ACTIVE symbol (see isActive guard above).
+      if (isActive && this.lastFirstPassage) {
+        const fp = this.lastFirstPassage;
+        const longP = Number.isFinite(fp.longPWin) ? fp.longPWin : 0.5;
+        const shortP = Number.isFinite(fp.shortPWin) ? fp.shortPWin : 0.5;
+        const w = 1.0;
+        longScore += (longP - 0.5) * 2 * w;
+        shortScore += (shortP - 0.5) * 2 * w;
+        weightSum += w;
+      }
+
+      // 3. Combo WR — historical (symbol × side × regime) win rate.
+      try {
+        const buyCombo = this.comboTracker.getComboBlendFactor(sym, 'buy', regime);
+        const sellCombo = this.comboTracker.getComboBlendFactor(sym, 'sell', regime);
+        // getComboBlendFactor returns a blend factor in [0.3, 1.0]; map to [-1, 1].
+        if (buyCombo && Number.isFinite(buyCombo.blendFactor)) {
+          const w = 0.7;
+          longScore += (buyCombo.blendFactor - 0.5) * 2 * w;
+          weightSum += w;
+        }
+        if (sellCombo && Number.isFinite(sellCombo.blendFactor)) {
+          const w = 0.7;
+          shortScore += (sellCombo.blendFactor - 0.5) * 2 * w;
+          weightSum += w;
+        }
+      } catch { /* cold-start safe */ }
+
+      // 4. Causal uplift — aligned-shadow counterfactual (alpha vs market).
+      try {
+        const uplift = this.causalReasoner?.getPerSymbolUplift().find(
+          p => normalizeSymbol(p.symbol) === sym,
+        );
+        if (uplift && uplift.samples >= 5) {
+          // Positive uplift means trading adds alpha; use as a directional prior.
+          const w = 0.5;
+          longScore += uplift.uplift * w;   // uplift>0 → lean long
+          shortScore += -uplift.uplift * w; // uplift<0 → lean short
+          weightSum += w;
+        }
+      } catch { /* cold-start safe */ }
+    } catch (err) {
+      log.warn(`[stat-lean] compute failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // No confident evidence → no statistical shadow (neutral).
+    if (weightSum <= 0) return { side: 'buy', score: 0 };
+
+    const longWeighted = longScore / weightSum;
+    const shortWeighted = shortScore / weightSum;
+    const diff = longWeighted - shortWeighted;
+    return { side: diff >= 0 ? 'buy' : 'sell', score: diff };
+  }
+
   /** v2.0.842: Feed trade-audit incidents into evolution components.
    *  Routes audit categories to the appropriate component:
    *  - direction-repetition-loss → Self-Improver (negative reward)
@@ -7354,6 +7459,26 @@ ${recentExamples}
               rlAction, leanScore,
               primaryDriver, agentVotes,
             );
+
+            // ── v2.0.846 Phase 1a: A/B pure-statistics shadow ──────────────
+            // Open a SECOND shadow in the direction pure statistics would pick
+            // (no LLM). Both paths share the same SL/TP, so comparing their
+            // eventual PnL reveals whether the LLM debate adds edge over stats.
+            const statRegime = ms?.regime ?? 'unknown';
+            const statLean = this.computeStatisticalLean(sym, features, statRegime);
+            if (!this.shadowEngine.hasStatisticalShadow(sym, statLean.side, this.totalCycles) && Math.abs(statLean.score) > 0.1) {
+              const statSlPrice = statLean.side === 'buy'
+                ? entryPrice * (1 - slPct)
+                : entryPrice * (1 + slPct);
+              const statTpPrice = statLean.side === 'buy'
+                ? entryPrice * (1 + tpPct)
+                : entryPrice * (1 - tpPct);
+              this.shadowEngine.openStatisticalShadow(
+                sym, entryPrice, statLean.side, statSlPrice, statTpPrice,
+                this.totalCycles, features, statLean.score,
+              );
+              log.info(`[shadow] A/B: statistical lean ${statLean.side.toUpperCase()} ${sym} (score=${statLean.score.toFixed(3)}) vs LLM ${rlAction.toUpperCase()} — both tracked for edge attribution`);
+            }
           }
         }
       } catch (err) {
@@ -11560,6 +11685,23 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               cleanliness: Number(s.cleanliness.toFixed(3)),
             })),
           } : undefined,
+          // v2.0.846 Phase 1b: Learning-label cleanliness overview — how polluted
+          // is our learning signal by execution-caused closes (tight SL / thesis
+          // invalidation / premature close)?
+          labelCleanliness: this.componentAttribution ? (() => {
+            const o = this.componentAttribution.getCleanlinessOverview(30 * 24 * 3600 * 1000);
+            return {
+              records: o.records,
+              avgCleanliness: Number(o.avgCleanliness.toFixed(3)),
+              cleanRate: Number(o.cleanRate.toFixed(3)),
+              pollutedRate: Number(o.pollutedRate.toFixed(3)),
+              byRegime: o.byRegime.map(r => ({
+                regime: r.regime,
+                avgCleanliness: Number(r.avgCleanliness.toFixed(3)),
+                records: r.records,
+              })),
+            };
+          })() : undefined,
         },
         backtest: this.lastBacktestResult,
         backtestProgress: this.backtestProgress,
