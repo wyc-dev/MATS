@@ -18,6 +18,7 @@ import { QRLTable, type AlphaDiscovery } from './evolution/q-rl-table.ts';
 import { MetaCalibrator } from './evolution/meta-calibrator.ts';
 import { SelfImprover } from './evolution/self-improver.ts';
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
+import { ComponentAttributionStore } from './evolution/component-attribution.ts';
 import { MetaLearner, deriveAssetMetadata } from './evolution/meta-learner.ts';
 import { computeDCS } from './edge/dcs-calculator.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
@@ -175,6 +176,8 @@ class MATSSystem {
   private causalReasoner!: CausalReasoner;
   // v2.0.840: Meta-Learner — learning to learn
   private metaLearner!: MetaLearner;
+  // v2.0.844: Component Attribution Store — per-component edge attribution
+  private componentAttribution!: ComponentAttributionStore;
   private sentimentEngine!: SentimentEngine;
   /** v2.0.105: Adaptive noise filter — sigmoid+EMA with per-cycle auto-tuning */
   private adaptiveFilter!: AdaptiveNoiseFilter;
@@ -1159,6 +1162,19 @@ class MATSSystem {
         log.warn(`[meta-learn-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
       }
       log.info('✓ Meta-Learner initialized');
+
+      // v2.0.844: Component Attribution Store init
+      this.componentAttribution = new ComponentAttributionStore();
+      try {
+        const caPath = path.join(process.cwd(), 'data/evolution/component-attribution.json');
+        if (fs.existsSync(caPath)) {
+          this.componentAttribution.load(JSON.parse(fs.readFileSync(caPath, 'utf-8')));
+          log.info(`✓ Component Attribution loaded (${this.componentAttribution.size()} records, ${this.componentAttribution.componentCount()} components)`);
+        }
+      } catch (e) {
+        log.warn(`[attribution-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+      }
+      log.info('✓ Component Attribution initialized');
 
       // v2.0.841: Backfill evolution components from existing EXP trade history
       // The backfillFromExpRecords() method (called at cycle start) already
@@ -2780,6 +2796,62 @@ ${currentPrompt || '(empty — this is the first input)'}`;
     }
   }
 
+  /**
+   * v2.0.844 Phase 2a: Causal-Grounded Entry Gate multiplier.
+   *
+   * When the Causal Reasoner reports a NEGATIVE causal uplift for a symbol
+   * (aligned shadow shows trading actively destroys value vs holding), dampen
+   * conviction. Soft gate — returns [0.5, 1.0], never blocks outright.
+   *
+   * Cold-start safe: insufficient per-symbol samples → 1.0 (no penalty).
+   * WINNER-FIRST: a strong combo winner can still trade through because the
+   * penalty is multiplicative on confidence, not a hard block.
+   */
+  private computeCausalConvictionMultiplier(
+    symbol: string,
+    _action: 'buy' | 'sell',
+    _regime: string,
+  ): number {
+    try {
+      if (!this.causalReasoner) return 1.0;
+      const perSymbol = this.causalReasoner.getPerSymbolUplift();
+      const match = perSymbol.find(
+        p => normalizeSymbol(p.symbol) === normalizeSymbol(symbol),
+      );
+      if (!match || match.samples < 5) return 1.0; // cold-start: no penalty
+      if (match.uplift >= 0) return 1.0;          // positive or neutral uplift: no penalty
+
+      // Negative uplift: proportional soft penalty, capped at 0.5 floor so
+      // a genuinely strong signal can still pass a loose threshold.
+      const penalty = Math.min(0.5, Math.abs(match.uplift) * 20);
+      return Math.max(0.5, 1.0 - penalty);
+    } catch (err) {
+      log.warn(`[causal-gate] compute failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      return 1.0;
+    }
+  }
+
+  /**
+   * v2.0.844 Phase 2b: Meta-Calibrator → Dynamic Trust multiplier.
+   *
+   * Uses the per-regime Brier score to dampen conviction when the system is
+   * poorly calibrated in the current regime (Brier > 0.25 = worse than random)
+   * and boost it when well-calibrated (Brier < 0.20). Insufficient data → 1.0.
+   *
+   * Delegates to the existing MetaCalibrator.getConfidenceAdjustment() which
+   * already implements the [0.5, 1.5] clamping and MIN_SAMPLES guard.
+   */
+  private computeCalibrationTrustMultiplier(regime: string): number {
+    try {
+      if (!this.metaCalibrator) return 1.0;
+      const trust = this.metaCalibrator.getConfidenceAdjustment(regime);
+      return Number.isFinite(trust) ? Math.max(0.5, Math.min(1.5, trust)) : 1.0;
+    } catch (err) {
+      log.warn(`[cal-trust] compute failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      return 1.0;
+    }
+  }
+
   /** v2.0.842: Feed trade-audit incidents into evolution components.
    *  Routes audit categories to the appropriate component:
    *  - direction-repetition-loss → Self-Improver (negative reward)
@@ -3200,6 +3272,66 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         this.metaCalibrator?.recordTrade(predictedPWin, conviction, entryRegime, outcome);
       } catch (err) {
         log.warn(`[meta-cal] recordTrade failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // v2.0.844: Component Attribution — record each component's contribution.
+      // Uses the trade outcome to credit components whose directional signals
+      // agreed with the resolved PnL. Cleanliness reflects close-context pollution.
+      try {
+        const tradeId = trade.id ?? `${trade.symbol}|${trade.side}|${trade.openedAt ?? Date.now()}`;
+        const tradeSide = trade.side === 'buy' ? 'buy' as const : 'sell' as const;
+        const pnlPct = safeNum(trade.pnlPct, 0);
+        const backendProfile = this.marketAgent.getRiskProfile();
+        // Label cleanliness: execution-caused losses (tight SL / thesis invalidation)
+        // are polluted learning signals — downweight their attribution weight.
+        const closeWeight = computeLearningWeight(
+          closeReason as string,
+          trade.slNarrowed ?? false,
+          isWin,
+        );
+        // Normalize: weight 1.0 → clean, 0.3 (execution loss) → heavily polluted.
+        const cleanliness = Math.max(0, Math.min(1, (closeWeight - 0.3) / 0.7));
+
+        // OLR signal: entryOlrPWin is the direction-agnostic P(win); map to a
+        // directional signal in [0,1] that agrees with the trade when high.
+        const olrPWin = safeNum(trade.entryOlrPWin, 0.5);
+        this.componentAttribution?.recordAttribution({
+          componentId: 'olr',
+          tradeId,
+          symbol: trade.symbol,
+          side: tradeSide,
+          cycleId: this.totalCycles,
+          signal: tradeSide === 'buy' ? olrPWin : 1 - olrPWin,
+          pnlPct,
+          labelCleanliness: cleanliness,
+          regime,
+          riskProfile: backendProfile,
+          timestamp: Date.now(),
+        });
+
+        // Causal uplift signal: per-symbol uplift > 0 → positive directional signal.
+        const causalUplift = this.causalReasoner?.getPerSymbolUplift().find(
+          p => normalizeSymbol(p.symbol) === normalizeSymbol(trade.symbol),
+        );
+        if (causalUplift) {
+          // Map uplift (-1..1) to a [0,1] signal; 0.5 = neutral (no alpha).
+          const sig = 0.5 + Math.max(-0.5, Math.min(0.5, causalUplift.uplift));
+          this.componentAttribution?.recordAttribution({
+            componentId: 'causal-uplift',
+            tradeId,
+            symbol: trade.symbol,
+            side: tradeSide,
+            cycleId: this.totalCycles,
+            signal: sig,
+            pnlPct,
+            labelCleanliness: cleanliness,
+            regime,
+            riskProfile: backendProfile,
+            timestamp: Date.now(),
+          });
+        }
+      } catch (err) {
+        log.warn(`[attribution] record failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
       }
 
       // v2.0.840: Meta-Learner — feature outcomes now recorded from shadow resolution
@@ -9003,7 +9135,32 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         }
 
         // ── Final effective confidence: consensus × P(win) × penalty × boost ──
-        const effectiveConfidence = safeNum(consensusConfidence, 0) * pwinBlendFactor * penaltyFactor * boostFactor;
+        let effectiveConfidence = safeNum(consensusConfidence, 0) * pwinBlendFactor * penaltyFactor * boostFactor;
+
+        // ── v2.0.844 Phase 2a: Causal-Grounded Entry Gate ────────────────
+        // Only allow high-conviction entries where the aligned shadow shows a
+        // POSITIVE causal uplift (trading adds alpha, not just follows the market).
+        // Soft gate: negative uplift → multiplicative conviction discount, never a
+        // hard block (preserves operation space — owner directive P1).
+        const causalMultiplier = this.computeCausalConvictionMultiplier(
+          pwinSym, gateAction, regime,
+        );
+        if (causalMultiplier < 1.0) {
+          effectiveConfidence *= causalMultiplier;
+          log.info(`🟠 [causal-gate] ${gateAction.toUpperCase()} ${pwinSym}: negative causal uplift → conviction ×${causalMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+          activeAuditGates.push({ gate: 'causal-gate', passed: true, reason: `negative uplift → ×${causalMultiplier.toFixed(3)} (soft)` });
+        }
+
+        // ── v2.0.844 Phase 2b: Meta-Calibrator → Dynamic Trust ───────────
+        // When the system is poorly calibrated in the current regime (Brier > 0.25),
+        // dampen conviction by the regime-trust factor. Already well-calibrated
+        // regimes (Brier < 0.25) get a slight boost. Insufficient data → no change.
+        const calibrationTrust = this.computeCalibrationTrustMultiplier(regime);
+        if (calibrationTrust !== 1.0) {
+          effectiveConfidence *= calibrationTrust;
+          log.info(`🔵 [cal-trust] ${gateAction.toUpperCase()} ${pwinSym} regime=${regime}: Brier-calibrated trust ×${calibrationTrust.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+          activeAuditGates.push({ gate: 'calibration-trust', passed: true, reason: `regime trust ×${calibrationTrust.toFixed(3)}` });
+        }
 
         // ── Gate decision ─────────────────────────────────────────────────
         // v2.0.832: Use <= instead of < to avoid floating-point boundary issues.
@@ -10790,6 +10947,12 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       } catch (err) {
         log.warn(`[meta-learn-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
       }
+      // v2.0.844: Save Component Attribution Store
+      try {
+        saveAdv('component-attribution.json', JSON.stringify(this.componentAttribution?.save() ?? {}));
+      } catch (err) {
+        log.warn(`[attribution-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
       // v2.0.221 (Fix 3): Save combo win rate tracker state
       if (this.comboTracker.isDirty()) {
         saveAdv('combo-win-rates.json', this.comboTracker.save());
@@ -11378,6 +11541,19 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           },
           // v2.0.835: Q-RL Alpha Discovery state
           qrlDiscovery: this.qrlTable ? this.qrlTable.getStats() : undefined,
+          // v2.0.844: Component Attribution — which components actually add edge
+          componentAttribution: this.componentAttribution ? {
+            size: this.componentAttribution.size(),
+            components: this.componentAttribution.componentCount(),
+            stats: this.componentAttribution.getAllStats().map(s => ({
+              componentId: s.componentId,
+              samples: s.samples,
+              expectancy: Number(s.expectancy.toFixed(5)),
+              contribution: Number(s.contribution.toFixed(4)),
+              positiveRate: Number(s.positiveRate.toFixed(3)),
+              cleanliness: Number(s.cleanliness.toFixed(3)),
+            })),
+          } : undefined,
         },
         backtest: this.lastBacktestResult,
         backtestProgress: this.backtestProgress,
