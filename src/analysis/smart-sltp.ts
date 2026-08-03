@@ -268,14 +268,18 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   // only in `computeATRSLTP` — which is DEAD CODE (never called by
   // trading-manager) — so high-confidence trades kept getting stopped out in
   // 3-22 min by continued adverse push. Now the live SL adapts to:
-  //   1. Raw adverse momentum (v2.0.207 #C): SL ≥ 2.5×adverseMomentum range
-  //   2. Execution-lens momentum (v2.0.213 #7): stop-out-trained adverse move
-  //   3. Execution-lens volatility scaling (v2.0.213): vol > 1.5× implied → up to +40%
-  //   4. Entropy dampening (v2.0.213): uncertain lens → dampen widening 50%
-  //   5. Confidence scaling (v2.0.231): P(win) > 0.8 → 2.5×ATR; < 0.5 → 1.2×ATR
+  //   1. Confidence (v2.0.231): P(win) > 0.8 → 2.5×ATR; < 0.5 → 1.2×ATR (base)
+  //   2. Raw adverse momentum (v2.0.207 #C): SL ≥ 2.5×adverseMomentum
+  //   3. Execution-lens momentum (v2.0.213 #7): stop-out-trained adverse move
+  //   4. Execution-lens volatility scaling (v2.0.213): vol > 1.5× implied → up to +40%
+  //   5. Entropy dampening (v2.0.213): uncertain lens → dampen widening 50%
   //
-  // All widenings are FLOORS on the SL distance (never narrow below what the
-  // adverse momentum/lens suggests), then capped by the profile caps below.
+  // SEMANTIC INVARIANT (v2.0.849-fix): confidence only sets the BASE ATR floor
+  // multiplier. Momentum + execution-lens widenings are applied AFTER as
+  // unconditional hard floors (Math.max) — so a low-confidence trade NEVER
+  // strips adverse-momentum / exec-lens protection, and a high-confidence trade
+  // is never narrowed. This exactly mirrors computeATRSLTP (which sets
+  // effectiveSlMult first, then Math.max's momentum/exec-lens on top).
   // ═══════════════════════════════════════════════════════════════
 
   // Helper: set the SL distance from entry as a fraction.
@@ -284,16 +288,41 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   };
   const getSlPct = (): number => Math.abs(slPrice - entryPrice) / entryPrice;
 
-  // 1. Raw adverse momentum floor (v2.0.207 #C).
+  // 0. Confidence scaling (v2.0.231) — sets the BASE ATR floor multiplier.
+  //    Applied here (base stage) so momentum/exec-lens below can only widen.
+  const conf = Number.isFinite(input.olrConfidence ?? 0)
+    ? Math.max(0, Math.min(1, input.olrConfidence ?? 0))
+    : 0;
+  let baseSlFloorPct = slFloorPct; // 1.5×ATR default
+  let confLabel = '';
+  if (conf > 0.8) {
+    baseSlFloorPct = Math.max(slFloorPct, atrPct > 0 ? atrPct * 2.5 : 0.008);
+    confLabel = `[SL-conf] base ${(baseSlFloorPct * 100).toFixed(2)}% (P(win)=${(conf * 100).toFixed(0)}%)`;
+  } else if (conf < 0.5 && conf > 0) {
+    baseSlFloorPct = atrPct > 0 ? Math.min(slFloorPct, Math.max(atrPct * 1.2, 0.005)) : slFloorPct;
+    confLabel = `[SL-conf] base ${(baseSlFloorPct * 100).toFixed(2)}% (P(win)=${(conf * 100).toFixed(0)}%)`;
+  }
+  if (confLabel && baseSlFloorPct > getSlPct()) {
+    setSlPct(baseSlFloorPct);
+    logParts.push(confLabel);
+  } else if (confLabel) {
+    logParts.push(confLabel);
+  }
+
+  // ── HARD FLOOR (v2.0.849 fix): the MINIMUM SL distance that no downstream
+  // dampening (high-entropy) may go below. Combines the (confidence-scaled) ATR
+  // floor with the raw adverse-momentum floor. Low-confidence is handled at the
+  // base stage above — it cannot undo momentum/exec-lens applied below.
   const advMom = Number.isFinite(input.adverseMomentum ?? 0)
     ? Math.max(0, input.adverseMomentum ?? 0)
     : 0;
-  if (advMom > 0) {
-    const momFloorPct = Math.min(advMom * 2.5, 0.05); // 2.5× range, capped 5%
-    if (momFloorPct > getSlPct()) {
-      setSlPct(momFloorPct);
-      logParts.push(`[SL-momentum] widened to ${(momFloorPct * 100).toFixed(2)}% (2.5× adverseMomentum ${(advMom * 100).toFixed(2)}%)`);
-    }
+  const momFloorPct = Math.min(advMom * 2.5, 0.05); // 2.5× range, capped 5%
+  const hardFloorPct = Math.max(baseSlFloorPct, momFloorPct);
+
+  // 1. Raw adverse momentum floor (v2.0.207 #C) — apply once.
+  if (momFloorPct > getSlPct()) {
+    setSlPct(momFloorPct);
+    logParts.push(`[SL-momentum] widened to ${(momFloorPct * 100).toFixed(2)}% (2.5× adverseMomentum ${(advMom * 100).toFixed(2)}%)`);
   }
 
   // 2-4. Execution lens (v2.0.213 #7). Cold-start safe: no lens / not blended /
@@ -336,36 +365,16 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
 
     // 2c. Entropy confidence — low entropy = confident pattern → trust widening;
     //     high entropy (> 2.0 for 9 sources, log2(9) ≈ 3.17) → dampen 50%.
+    //     The dampened SL may not fall below the HARD floor (ATR + raw momentum).
     if (execLens!.entropy > 2.0) {
       const dampedPct = execBasePct + execWidening * 0.5;
-      const finalPct = Math.max(atrPct > 0 ? atrPct * 1.5 : 0.005, dampedPct);
+      const finalPct = Math.max(hardFloorPct, dampedPct);
       if (finalPct < getSlPct()) {
         setSlPct(finalPct);
         logParts.push(`[SL-entropy] dampened (entropy ${execLens!.entropy.toFixed(2)} > 2.0)`);
       }
     } else if (execWidening > 0) {
       logParts.push(`[SL-exec-lens] widened ${(execWidening * 100).toFixed(2)}% (stop-out-trained)`);
-    }
-  }
-
-  // 5. Confidence scaling (v2.0.231). Applied AFTER ATR floor + momentum so a
-  //    high-confidence trade gets even more room. Conservative: never narrow a
-  //    widened SL below the ATR floor / momentum floor (we only widen).
-  const conf = Number.isFinite(input.olrConfidence ?? 0)
-    ? Math.max(0, Math.min(1, input.olrConfidence ?? 0))
-    : 0;
-  if (conf > 0.8) {
-    const hcFloorPct = Math.max(atrPct > 0 ? atrPct * 2.5 : 0.008, getSlPct());
-    if (hcFloorPct > getSlPct()) {
-      setSlPct(hcFloorPct);
-      logParts.push(`[SL-conf] widened to ${(hcFloorPct * 100).toFixed(2)}% (P(win)=${(conf * 100).toFixed(0)}%)`);
-    }
-  } else if (conf < 0.5 && conf > 0) {
-    // Low confidence → tighten to 1.2×ATR, but never below the ATR floor.
-    const lcPct = Math.max(atrPct > 0 ? atrPct * 1.2 : 0.005, slFloorPct);
-    if (lcPct < getSlPct()) {
-      setSlPct(lcPct);
-      logParts.push(`[SL-conf] tightened to ${(lcPct * 100).toFixed(2)}% (P(win)=${(conf * 100).toFixed(0)}%)`);
     }
   }
 

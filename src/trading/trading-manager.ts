@@ -467,15 +467,32 @@ export class TradingManager {
         // getMomentum is the same 1h-candle data source as getATR so the
         // momentum is consistent with the ATR floor. Previously this widening
         // only lived in the DEAD computeATRSLTP — now wired into the live path.
-        let adverseMomentum = 0;
+        //
+        // v2.0.849-fix: getMomentum returns SIGNED momentum (positive = rising,
+        // negative = falling). computeSmartSLTP expects adverseMomentum = a
+        // NON-NEGATIVE magnitude of the move AGAINST this position. We must
+        // convert per-side here, exactly like computeATRSLTP does internally:
+        //   BUY  adverse = max(0, -momentum)  (a rising market is FAVOURABLE)
+        //   SELL adverse = max(0, +momentum)  (a falling market is FAVOURABLE)
+        // Otherwise BUY trades lost their down-move protection entirely (the
+        // sign flip zeroed it) and got spurious widening on favourable up-moves.
+        let signedMomentum = 0;
         try {
-          adverseMomentum = await getMomentum(decision.symbol, 5);
+          signedMomentum = await getMomentum(decision.symbol, 5);
         } catch { /* non-critical — no momentum floor */ }
+        const adverseMomentum = (decision.action === 'buy')
+          ? Math.max(0, -signedMomentum)
+          : Math.max(0, signedMomentum);
 
         // v2.0.849: OLR P(win) confidence for confidence-scaled SL (v2.0.231).
         // High confidence (>0.8) → wider SL to avoid premature stops; low (<0.5)
-        // → tighter SL. Comes from the decision's cached entry-time OLR P(win).
-        const entryOlrConfidence = (decision as unknown as Record<string, unknown>)['olrPWin'] as number | undefined
+        // → tighter SL. The TRUE entry-time P(win) flows through `entryData`
+        // (EntryFeatures.olrPWin), NOT on the decision object — reading it from
+        // decision.olrPWin would always be undefined, silently disabling this
+        // protection. Fall back to decision.entryOlrPWin only if entryData is
+        // absent (older callers).
+        const entryOlrConfidence = entryData?.olrPWin
+          ?? (decision as unknown as Record<string, unknown>)['olrPWin'] as number | undefined
           ?? (decision as unknown as Record<string, unknown>)['entryOlrPWin'] as number | undefined;
 
         // v2.0.832: Compute smart SL/TP
