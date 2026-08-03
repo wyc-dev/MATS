@@ -4,6 +4,16 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.849-fix2: Cross-symbol contamination guard — Skeptics close validation (real bug)
+
+**Bug (trade-audit)**: Skeptics blocked a close for `xyz:SP500` but its rationale referenced SKHX position data ("entry thesis for SKHX is a SELL based on mean-reversion from $1100 supply... $1086.50") — while the close rationale was about SP500 ($7409/$7463/$7500). Root cause: the per-symbol consensus loop called `portfolio.getPosition(psc.symbol)` but never verified the returned position object's own `symbol` field matched `psc.symbol`. When the position-map key resolved to a position carrying a DIFFERENT symbol (corrupted/stale key, or cross-symbol import), close management passed one symbol's `entryPrice`/`entryThesis`/`side` to `validateCloseDecision` for ANOTHER symbol. Result: Skeptics could BLOCK a valid close (or approve a wrong one) based on mismatched thesis/price.
+
+**Fix (`src/index.ts`)**: Added a symbol-consistency guard at the top of the per-symbol consensus management loop — after `getPosition(psc.symbol)` returns, verify `normalizeSymbol(pos.symbol) === normalizeSymbol(psc.symbol)`. On mismatch, log + `continue` (skip close/flip/adjust management this cycle) — never act on mismatched data. The position re-syncs next cycle. Placed BEFORE the close/structural-confirmation/flip/SL-TP-adjust downstream blocks so ALL position management is protected.
+
+Regression: 332/332 relevant tests pass (6 suites). Build: `tsc --noEmit` zero errors.
+
+---
+
 ## v2.0.849-fix: Adversarial attack hardening of momentum/exec-lens/confidence SL widening (3 real vulnerabilities)
 
 Attack-testing the v2.0.849 SL-widening port found and fixed **3 real production bugs** — all of which would have defeated the very premature-stop protection being added:
