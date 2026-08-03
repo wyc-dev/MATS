@@ -1109,7 +1109,7 @@ E. NET INSTITUTIONAL-ADJUSTED SIGNAL — combine motive (C) + timing matrix (B) 
 
 // ─── Agent 6: Skeptics ───
 // Post-thinking reviewer. Challenges every sub-agent's reasoning and data usage.
-// Default model: deepseek-v4-flash:cloud (fast, for minimal latency overhead).
+// Default model: deepseek-v4-flash:0731-cloud (fast, for minimal latency overhead).
 // Meta-Agent and Market Agent are NOT reviewed.
 // If a decision is deemed flawed, Skeptics outputs a corrected version.
 

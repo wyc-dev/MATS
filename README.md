@@ -48,7 +48,7 @@ cd ui && npm install && cd ..
 cp .env.example .env
 # Edit .env — key vars:
 #   OLLAMA_BASE_URL=http://localhost:11434
-#   OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud
+#   OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:0731-cloud
 #   DECISION_INTERVAL_MS=300000   # 5-min cycles
 #   API_PORT=3456
 #   HYPERLIQUID_WALLET_ADDRESS=   # optional, for real trading
@@ -268,7 +268,7 @@ SL/TP set at entry via ATR (1.5×) / S/R levels, never modified post-entry (v2.0
 ```bash
 # .env essentials (validated by Zod schema on startup)
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud
+OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:0731-cloud
 DECISION_INTERVAL_MS=300000          # 5-min cycles
 API_PORT=3456
 PAPER_INITIAL_BALANCE=1000

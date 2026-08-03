@@ -4,6 +4,22 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.850: Unified all agent default models to `deepseek-v4-flash:0731-cloud`
+
+All agents now default to `deepseek-v4-flash:0731-cloud` (was mixed `deepseek-v4-flash:cloud` / `kimi-k2.6:cloud`).
+
+### Changes
+
+- `src/agents/agent-models.ts` — `AVAILABLE_MODELS` + `getDefaultModelMap()`: all roles (fractal_momentum_sentinel, onchain_whisperer, rbc_sentiment_analyst, independent_risk_auditor, meta_agent, news_reporter, skeptics, market_agent, terminal_agent, options_data_layer) → `deepseek-v4-flash:0731-cloud`
+- `src/config/index.ts` — `OLLAMA_MODEL_DEFAULT` default → `deepseek-v4-flash:0731-cloud`
+- `src/llm/ollama-provider.ts` — `TEMP_MODEL_MAP`, `MODEL_NUM_CTX` (131_072), `FALLBACK_MODELS` first entry → `deepseek-v4-flash:0731-cloud` (kept `deepseek-v4-flash:cloud` in NUM_CTX for backward compat)
+- `.env.example`, `README.md`, `ARCHITECTURE.md`, `TERMINAL_AGENT.md`, `ui/src/App.tsx` (default state + fallback) — doc/UI references updated
+- `src/agents/agents.ts` — comment updated
+
+Build: `tsc --noEmit` zero errors.
+
+---
+
 ## v2.0.849-fix2: Cross-symbol contamination guard — Skeptics close validation (real bug)
 
 **Bug (trade-audit)**: Skeptics blocked a close for `xyz:SP500` but its rationale referenced SKHX position data ("entry thesis for SKHX is a SELL based on mean-reversion from $1100 supply... $1086.50") — while the close rationale was about SP500 ($7409/$7463/$7500). Root cause: the per-symbol consensus loop called `portfolio.getPosition(psc.symbol)` but never verified the returned position object's own `symbol` field matched `psc.symbol`. When the position-map key resolved to a position carrying a DIFFERENT symbol (corrupted/stale key, or cross-symbol import), close management passed one symbol's `entryPrice`/`entryThesis`/`side` to `validateCloseDecision` for ANOTHER symbol. Result: Skeptics could BLOCK a valid close (or approve a wrong one) based on mismatched thesis/price.

@@ -28,7 +28,7 @@ export const AVAILABLE_MODELS: ModelDefinition[] = [
   { id: 'google/gemma-2-27b-it', label: 'Gemma 2 27B', provider: 'nim', category: 'default' },
   // Ollama models
   { id: 'kimi-k2.6:cloud', label: 'Kimi K2.6 (Cloud)', provider: 'ollama', category: 'default' },
-  { id: 'deepseek-v4-flash:cloud', label: 'DeepSeek V4 Flash', provider: 'ollama', category: 'fast' },
+  { id: 'deepseek-v4-flash:0731-cloud', label: 'DeepSeek V4 Flash', provider: 'ollama', category: 'fast' },
   { id: 'deepseek-v4-pro:cloud', label: 'DeepSeek V4 Pro', provider: 'ollama', category: 'strong' },
   { id: 'qwen3.5:397b-cloud', label: 'Qwen 3.5 397B Cloud', provider: 'ollama', category: 'strong' },
   { id: 'qwen3-coder:30b', label: 'Qwen 3 Coder 30B', provider: 'ollama', category: 'fast' },
@@ -45,25 +45,26 @@ function getDefaultModelMap(): Record<AgentRole, string> {
   if (defaultModelMap) return defaultModelMap;
 
   // Ollama is the only provider
+  // v2.0.850: All agents default to deepseek-v4-flash:0731-cloud (unified).
   defaultModelMap = {
-    // Sub-agents use kimi-k2.6:cloud — balanced speed/capability for parallel inference
-    // Meta-agent uses deepseek-v4-flash:cloud — faster for arbitration/synthesis
-    // Risk Auditor uses deepseek-v4-flash:cloud — fast + analytical for risk veto decisions
+    // Sub-agents use deepseek-v4-flash:0731-cloud — unified fast model
+    // Meta-agent uses deepseek-v4-flash:0731-cloud — faster for arbitration/synthesis
+    // Risk Auditor uses deepseek-v4-flash:0731-cloud — fast + analytical for risk veto decisions
     // Regime guardian uses 2048 maxTokens (set in agents.ts) for verbose JSON
-    fractal_momentum_sentinel: 'kimi-k2.6:cloud',
-    onchain_whisperer: 'kimi-k2.6:cloud',
-    rbc_sentiment_analyst: 'kimi-k2.6:cloud',
-    independent_risk_auditor: 'deepseek-v4-flash:cloud',
-    meta_agent: 'deepseek-v4-flash:cloud',
+    fractal_momentum_sentinel: 'deepseek-v4-flash:0731-cloud',
+    onchain_whisperer: 'deepseek-v4-flash:0731-cloud',
+    rbc_sentiment_analyst: 'deepseek-v4-flash:0731-cloud',
+    independent_risk_auditor: 'deepseek-v4-flash:0731-cloud',
+    meta_agent: 'deepseek-v4-flash:0731-cloud',
     // v2.0.76: News Reporter uses DeepSeek V4 Flash — cold, analytical, fast.
     // The Shadow Strategist mandate (source/motive/conspiracy analysis) demands
     // sharp reasoning without hype-chasing; Flash keeps the 8-agent parallel
     // Phase 1 within budget.
-    news_reporter: 'deepseek-v4-flash:cloud',
-    skeptics: 'deepseek-v4-flash:cloud',
-    market_agent: 'kimi-k2.6:cloud',
-    terminal_agent: 'deepseek-v4-flash:cloud',
-    options_data_layer: 'deepseek-v4-flash:cloud',
+    news_reporter: 'deepseek-v4-flash:0731-cloud',
+    skeptics: 'deepseek-v4-flash:0731-cloud',
+    market_agent: 'deepseek-v4-flash:0731-cloud',
+    terminal_agent: 'deepseek-v4-flash:0731-cloud',
+    options_data_layer: 'deepseek-v4-flash:0731-cloud',
   };
   return defaultModelMap;
 }

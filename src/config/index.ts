@@ -16,7 +16,7 @@ const envSchema = z.object({
 
   // Ollama (Primary LLM provider)
   OLLAMA_BASE_URL: z.string().url().default('http://localhost:11434'),
-  OLLAMA_MODEL_DEFAULT: z.string().default('kimi-k2.6:cloud'),  // Sub-agents default; meta-agent uses deepseek-v4-flash:cloud
+  OLLAMA_MODEL_DEFAULT: z.string().default('deepseek-v4-flash:0731-cloud'),  // v2.0.850: All agents default to deepseek-v4-flash:0731-cloud
 
   // Paper Trading
   PAPER_INITIAL_BALANCE: z.coerce.number().positive().default(1000),

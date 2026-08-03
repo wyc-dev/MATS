@@ -1119,7 +1119,7 @@ SNR-based 支撐阻力區間。輸出 nearestSupport/Resistance + distanceBps。
 | E — Liquidity | 流動性不足 → veto |
 
 ### LLM 抽象層（`llm/`）
-Provider interface + Ollama provider（circuit breaker + concurrency 4 + 指數退避）。支援 local + Pro cloud models。`OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:cloud`。
+Provider interface + Ollama provider（circuit breaker + concurrency 4 + 指數退避）。支援 local + Pro cloud models。`OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:0731-cloud`。
 
 ### 數據管道（`data/`）
 Hyperliquid WebSocket（l2Book + trades + activeAssetCtx + clearinghouseState + userFills）+ REST fallback。Binance WebSocket（輔助）。Global HL rate limiter（single queue, 429 retry）。WS infinite reconnect + REST polling backoff。
@@ -1134,7 +1134,7 @@ Hyperliquid WebSocket（l2Book + trades + activeAssetCtx + clearinghouseState + 
 ```bash
 # Ollama
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL_DEFAULT=kimi-k2.6:cloud
+OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:0731-cloud
 
 # ═════════════════════════════════════════════════════════════
 # ANALYSIS MODE — 訊號運算模式（v2.0.822+，核心架構開關）
