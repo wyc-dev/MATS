@@ -4,6 +4,47 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.849-fix: Adversarial attack hardening of momentum/exec-lens/confidence SL widening (3 real vulnerabilities)
+
+Attack-testing the v2.0.849 SL-widening port found and fixed **3 real production bugs** — all of which would have defeated the very premature-stop protection being added:
+
+**V1 — Low-confidence tightening stripped the momentum floor (`smart-sltp.ts`).**
+The low-confidence branch (`P(win) < 0.5 → tighten to 1.2×ATR`) ran AFTER the adverse-momentum floor and could undo it. A low-confidence SELL with strong adverse momentum got its SL clamped back to 1.2×ATR — re-creating the exact 3-22 min premature stop the fix targets. **Fix**: refactored to a two-stage pipeline — confidence now only sets the BASE ATR floor multiplier (high → 2.5×ATR, low → 1.2×ATR), then momentum + execution-lens apply AFTER as unconditional hard `Math.max` floors. Low-confidence can never strip momentum/exec-lens protection. This exactly mirrors `computeATRSLTP` semantics (confidence first, momentum/exec-lens floors on top).
+
+**V2 — BUY-side momentum direction was inverted (`trading-manager.ts`).**
+`getMomentum` returns SIGNED momentum (positive = rising). It was passed to `computeSmartSLTP` which does `Math.max(0, ...)` — treating rising as adverse. Consequences: (a) BUY trades lost their down-move protection entirely (sign-flip zeroed it), and (b) BUY trades got spurious widening on favourable up-moves. **Fix**: per-side conversion before passing — `BUY adverse = max(0, -momentum)`, `SELL adverse = max(0, +momentum)` (identical to `computeATRSLTP`'s internal `isBuy ? max(0,-mom) : max(0,mom)`).
+
+**V3 — OLR P(win) confidence was always `undefined` (`trading-manager.ts`).**
+The confidence-scaled SL branch read `decision.olrPWin` / `decision.entryOlrPWin` — but the true entry-time P(win) flows through the `entryData` payload (`EntryFeatures.olrPWin`), NOT on the decision object. So the high/low-confidence SL scaling was silently disabled. **Fix**: read `entryData?.olrPWin` first, fall back to decision fields for older callers.
+
+**Attack tests** (+3 in `tests/v2.0.849-smart-sltp-attack.test.ts`, 21 total):
+- low confidence does NOT strip raw momentum floor (SELL, adverse 4% → stays 5%)
+- low confidence does NOT strip exec-lens adverse momentum
+- high-entropy dampening respects the raw momentum hard floor
+
+Regression: 388/388 relevant tests pass (8 suites). Build: `tsc --noEmit` zero errors.
+
+---
+
+## v2.0.849: Port momentum/exec-lens/confidence SL widening to live computeSmartSLTP
+
+ROOT CAUSE (trade-audit `premature-exit-mfe-mismatch`): the momentum-adaptive (2.5× adverseMomentum v2.0.207 #C), execution-lens (stop-out-trained v2.0.213 #7) and confidence (P(win) v2.0.231) SL-widening protections lived ONLY in `computeATRSLTP` — **DEAD CODE** never called by `trading-manager`. The live path used `computeSmartSLTP` which had NONE of these, so high-confidence trades kept getting stopped out in 3-22 min by adverse push (SELL xyz:SKHX audit finding).
+
+### Fix (`src/analysis/smart-sltp.ts`)
+
+- Add `adverseMomentum` + `olrConfidence` to `SmartSLTPInput`
+- Add `getPendingExecutionLens()` accessor in `atr.ts` (was only read by the dead fn)
+- `computeSmartSLTP` now applies: (1) confidence base scaling, (2) raw adverse momentum floor 2.5×, (3) exec-lens adverse momentum, (4) exec-lens vol scaling up to +40%, (5) high-entropy dampening 50% (total widening over base). All widenings are FLOORS, then capped by existing per-profile caps (aggressive 7% / moderate 5% / conservative 3%).
+
+### Wiring (`src/trading/trading-manager.ts`)
+
+- Fetch `getMomentum(symbol, 5)` + pass `adverseMomentum` to `computeSmartSLTP`
+- Pass `olrConfidence` from the entry-time OLR P(win) payload
+
+Tests: 18 new attack tests (`tests/v2.0.849-smart-sltp-attack.test.ts`) covering momentum floor, exec-lens, vol scaling, entropy dampening, confidence scaling, caps, NaN/Infinity guards, SELL mirror, stack+cap interaction. 385/385 relevant tests pass. `tsc --noEmit` zero errors.
+
+---
+
 ## v2.0.846-848: Component Attribution + LLM-vs-Stats A/B + Label Cleanliness + Backfill (41 attack tests)
 
 Attribution-first verification infrastructure — the system can now answer **"which component actually adds edge?"**. Built with adversarial attack-testing on every layer (41 tests across `tests/v2.0.844-attribution-attack.test.ts` + `tests/v2.0.846-stat-shadow-attack.test.ts`).
