@@ -8592,6 +8592,25 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
         // !pos && hasExchangePos and !pos && !hasExchangePos paths continue above).
         // But TypeScript can't narrow through continue, so we assert here.
         if (!pos) continue;
+
+        // ── v2.0.849-fix2: SYMBOL-CONSISTENCY GUARD ──
+        // Defends against cross-symbol contamination: getPosition() is keyed by
+        // normalizeSymbol(psc.symbol), but a corrupted/stale position object may
+        // carry a DIFFERENT symbol field (trade-audit observed Skeptics being fed
+        // SKHX position data while validating an SP500 close: entry=$1086.50 +
+        // "SELL mean-reversion from $1100 supply" for a close rationale that
+        // referenced SP500 @ $7409/$7463/$7500). Without this check, close
+        // management would pass one symbol's position to validateCloseDecision for
+        // ANOTHER symbol, so Skeptics could BLOCK a valid close (or approve a
+        // wrong one) based on mismatched entry price / thesis. When the position
+        // object's own symbol disagrees with the consensus symbol, skip management
+        // this cycle (it will re-sync next cycle) — never act on mismatched data.
+        const posSymbolNorm = pos.symbol ? normalizeSymbol(pos.symbol) : '';
+        const pscSymbolNorm = pscNorm;
+        if (posSymbolNorm && posSymbolNorm !== pscSymbolNorm) {
+          log.warn(`🚫 [symbol-mismatch] Consensus symbol ${psc.symbol} resolved to position symbol ${pos.symbol} (entry=$${(pos.averageEntryPrice ?? 0).toFixed(2)}) — SKIPPING close/adjust management this cycle to prevent cross-symbol contamination (Skeptics would validate against the wrong position's thesis/price).`);
+          continue;
+        }
         const posDef = pos;
         // v2.0.91: Close validation depends on whether the position has an entryThesis.
         // - WITH entryThesis: Meta-Agent → Skeptics validateCloseDecision → execute
