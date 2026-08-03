@@ -261,21 +261,23 @@ export class MetaLearner {
   ): void {
     if (!Number.isFinite(featureValue) || !Number.isFinite(pnlPct)) return;
     if (typeof feature !== 'string' || feature.length === 0) return;
-    // v2.0.843: Sanitize feature name — reject or escape pipe characters
-    // to prevent tier key parsing corruption (feature|sym:SYMBOL →
-    // indexOf('|') splits at wrong position if feature contains '|').
-    const safeFeature = feature.includes('|') ? feature.replace(/\|/g, '_') : feature;
 
     // ── Global feature tracking (unchanged from v2.0.840) ──
-    let state = this.featureStates.get(safeFeature);
+    // v2.0.845: Keep the feature name AS-IS (do NOT sanitize pipes). A feature
+    // named `feature|with|pipes` is legal — the pipe is a valid identifier char.
+    // Tier keys use the \x1f (Unit Separator) control char as their delimiter,
+    // which can never collide with a feature/symbol/category name. Sanitizing the
+    // name itself would silently rename features and break callers that expect
+    // the original name (e.g. hacker-attack test asserts `feature|with|pipes`).
+    let state = this.featureStates.get(feature);
     if (!state) {
       state = {
-        feature: safeFeature,
+        feature,
         predictivePower: 0,
         weight: 1.0,
         history: [],
       };
-      this.featureStates.set(safeFeature, state);
+      this.featureStates.set(feature, state);
     }
 
     state.history.push({ value: featureValue, pnlPct });
@@ -311,15 +313,15 @@ export class MetaLearner {
       const agreement = featureSign === pnlSign ? 1 : -1;
 
       // Level 1: Per-symbol tracking (finest granularity).
-      // Key = `safeFeature|sym:SYMBOL` — each asset gets its own weight track.
-      // This lets SILVER learn its own pattern independently of BTC.
-      const symKey = `${safeFeature}|sym:${assetMeta.symbol}`;
+      // Key = `feature\x1fsym:SYMBOL` — \x1f (Unit Separator) can never appear
+      // in a feature/symbol/category name, so keys parse unambiguously even
+      // when the feature name itself contains pipes.
+      const symKey = `${feature}\x1fsym:${assetMeta.symbol}`;
       this.updateTierState(symKey, agreement);
 
       // Level 2: Per-category tracking (cross-asset transfer).
-      // Key = `safeFeature|cat:CATEGORY` — assets in the same class share a prior.
-      // BTC + ETH + alts share 'crypto' prior; SILVER + GOLD share 'commodity'.
-      const catKey = `${safeFeature}|cat:${assetMeta.category}`;
+      // Key = `feature\x1fcat:CATEGORY` — assets in the same class share a prior.
+      const catKey = `${feature}\x1fcat:${assetMeta.category}`;
       this.updateTierState(catKey, agreement);
     }
   }
@@ -380,8 +382,10 @@ export class MetaLearner {
 
     const out: Record<string, number> = {};
     for (const [feature, globalState] of this.featureStates) {
-      const symKey = `${feature}|sym:${assetMeta.symbol}`;
-      const catKey = `${feature}|cat:${assetMeta.category}`;
+      // v2.0.845: Use \x1f (Unit Separator) to match the tier keys written by
+      // recordFeatureOutcome. Never collide with pipe characters in feature names.
+      const symKey = `${feature}\x1fsym:${assetMeta.symbol}`;
+      const catKey = `${feature}\x1fcat:${assetMeta.category}`;
       const symState = this.assetTierStates.get(symKey);
       const catState = this.assetTierStates.get(catKey);
 
@@ -495,11 +499,12 @@ export class MetaLearner {
       const tierMap = new Map<string, Array<{ feature: string; weight: number; pp: number; n: number }>>();
       for (const [key, ts] of this.assetTierStates) {
         if (ts.sampleCount < 3) continue;
-        // Keys are `feature|sym:SYMBOL` or `feature|cat:CATEGORY`
-        const pipeIdx = key.indexOf('|');
-        if (pipeIdx < 0) continue;
-        const feature = key.substring(0, pipeIdx);
-        const tier = key.substring(pipeIdx + 1);  // "sym:BTC" or "cat:crypto"
+        // Keys are `feature\x1fsym:SYMBOL` or `feature\x1fcat:CATEGORY`
+        // (\x1f = Unit Separator — can never appear in a feature name).
+        const sepIdx = key.indexOf('\x1f');
+        if (sepIdx < 0) continue;
+        const feature = key.substring(0, sepIdx);
+        const tier = key.substring(sepIdx + 1);  // "sym:BTC" or "cat:crypto"
         if (!feature || !tier) continue;
         const arr = tierMap.get(tier) ?? [];
         arr.push({ feature, weight: ts.weight, pp: ts.predictivePower, n: ts.sampleCount });
@@ -573,9 +578,11 @@ export class MetaLearner {
   recordAuditFeatureAdjustment(featureName: string, predictivePowerDelta: number): void {
     if (typeof featureName !== 'string' || featureName.length === 0) return;
     if (!Number.isFinite(predictivePowerDelta)) return;
-    // v2.0.843c: Sanitize feature name — reject or escape pipe characters
-    // (same guard as recordFeatureOutcome, prevents tier key parsing corruption).
-    const safeFeature = featureName.includes('|') ? featureName.replace(/\|/g, '_') : featureName;
+    // v2.0.845: Keep the feature name AS-IS. recordFeatureOutcome stores under the
+    // original name (pipes legal); tier keys use \x1f so they never collide with
+    // a pipe in the feature name. Renaming here would split featureStates into
+    // two keys for the same logical feature.
+    const safeFeature = featureName;
 
     let state = this.featureStates.get(safeFeature);
     if (!state) {
