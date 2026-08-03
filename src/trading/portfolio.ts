@@ -139,6 +139,12 @@ export function inferCloseReason(
   stopLoss?: number | null,
   takeProfit?: number | null,
 ): 'sl_tp' | 'reconciliation' {
+  // Defensive guard (v2.0.851-fix): an invalid exitPrice (NaN, Infinity,
+  // zero, negative) means we CANNOT determine whether SL/TP was hit. Never
+  // classify such a close as 'sl_tp' — return 'reconciliation' (unknown exit).
+  // Without this, exitPrice=0 (corrupt data) or exitPrice=NaN would compare
+  // against SL/TP and misclassify the close reason.
+  if (!Number.isFinite(exitPrice) || exitPrice <= 0) return 'reconciliation';
   const validSL = typeof stopLoss === 'number' && Number.isFinite(stopLoss) && stopLoss > 0;
   const validTP = typeof takeProfit === 'number' && Number.isFinite(takeProfit) && takeProfit > 0;
   if (validSL && side === 'buy' && exitPrice <= stopLoss!) return 'sl_tp';
@@ -1329,7 +1335,13 @@ export class PortfolioTracker {
    *  TradeRecord so learning + RIL + trade-audit see HOW the position closed.
    */
   closePosition(symbol: string, exitPrice: number, closeReason?: TradeRecord['closeReason']): TradeRecord | null {
-    const pos = this.portfolio.positions.get(symbol);
+    // v2.0.851-fix: Look up BOTH stores (paper + real). The previous code only
+    // checked `portfolio.positions`, so a real position (which lives in
+    // `realPositions`) returned undefined → the real-position redirect guard
+    // below was DEAD CODE and the position was silently never closed. Using
+    // getPosition() (which checks both maps) makes the redirect guard actually
+    // effective: a real position passed to closePosition is safely redirected.
+    const pos = this.getPosition(symbol);
     if (!pos) return null;
 
     // v2.0.33: Defensive guard — real positions (agentId='hyperliquid-real')
