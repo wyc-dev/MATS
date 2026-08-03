@@ -122,6 +122,11 @@ export class ComponentAttributionStore {
     if (!Number.isFinite(input.labelCleanliness)) input.labelCleanliness = 1.0;
     if (typeof input.tradeId !== 'string' || input.tradeId.length === 0) return;
     if (typeof input.componentId !== 'string' || input.componentId.length === 0) return;
+    // v2.0.845: Guard against undefined/null symbol from legacy/corrupt records.
+    // normalizeSymbol() would crash on undefined; here we sanitize to '' so
+    // per-symbol lookups are safe ('' never matches a real symbol).
+    if (typeof input.symbol !== 'string') input.symbol = '';
+    if (typeof input.regime !== 'string' || input.regime.length === 0) input.regime = 'unknown';
 
     // Clamp signal to [0,1] — a malformed 2.5 would otherwise skew stats.
     const signal = Math.max(0, Math.min(1, input.signal));
@@ -246,7 +251,14 @@ export class ComponentAttributionStore {
       }
       // Bounded after load too.
       if (this.records.length > MAX_RECORDS) {
+        // v2.0.845: Trim and purge evicted seenKeys so a re-trade of an
+        // evicted id can be recorded again (matches recordAttribution).
+        const evictedCount = this.records.length - MAX_RECORDS;
+        const evicted = this.records.slice(0, evictedCount);
         this.records = this.records.slice(-MAX_RECORDS);
+        for (const e of evicted) {
+          this.seenKeys.delete(`${e.tradeId}|${e.componentId}`);
+        }
       }
       log.info(`[attribution] loaded ${this.records.length} attribution records`);
     }

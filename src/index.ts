@@ -3282,6 +3282,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const tradeSide = trade.side === 'buy' ? 'buy' as const : 'sell' as const;
         const pnlPct = safeNum(trade.pnlPct, 0);
         const backendProfile = this.marketAgent.getRiskProfile();
+        // v2.0.845: Sanitize symbol — legacy/corrupt trade records may have
+        // undefined symbol, which would crash normalizeSymbol() below.
+        const attrSymbol = typeof trade.symbol === 'string' ? trade.symbol : '';
         // Label cleanliness: execution-caused losses (tight SL / thesis invalidation)
         // are polluted learning signals — downweight their attribution weight.
         const closeWeight = computeLearningWeight(
@@ -3298,7 +3301,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         this.componentAttribution?.recordAttribution({
           componentId: 'olr',
           tradeId,
-          symbol: trade.symbol,
+          symbol: attrSymbol,
           side: tradeSide,
           cycleId: this.totalCycles,
           signal: tradeSide === 'buy' ? olrPWin : 1 - olrPWin,
@@ -3310,16 +3313,19 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         });
 
         // Causal uplift signal: per-symbol uplift > 0 → positive directional signal.
-        const causalUplift = this.causalReasoner?.getPerSymbolUplift().find(
-          p => normalizeSymbol(p.symbol) === normalizeSymbol(trade.symbol),
-        );
+        // v2.0.845: Guard normalizeSymbol against empty symbol (never matches).
+        const causalUplift = attrSymbol.length > 0
+          ? this.causalReasoner?.getPerSymbolUplift().find(
+              p => normalizeSymbol(p.symbol) === normalizeSymbol(attrSymbol),
+            )
+          : undefined;
         if (causalUplift) {
           // Map uplift (-1..1) to a [0,1] signal; 0.5 = neutral (no alpha).
           const sig = 0.5 + Math.max(-0.5, Math.min(0.5, causalUplift.uplift));
           this.componentAttribution?.recordAttribution({
             componentId: 'causal-uplift',
             tradeId,
-            symbol: trade.symbol,
+            symbol: attrSymbol,
             side: tradeSide,
             cycleId: this.totalCycles,
             signal: sig,
