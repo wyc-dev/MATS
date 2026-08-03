@@ -9,8 +9,8 @@ const log = rootLogger;
 
 // Default model mapping by temperature
 const TEMP_MODEL_MAP: Array<[number, string]> = [
-  [0.0, 'deepseek-v4-flash:cloud'],
-  [1.0, 'deepseek-v4-flash:cloud'],
+  [0.0, 'deepseek-v4-flash:0731-cloud'],
+  [1.0, 'deepseek-v4-flash:0731-cloud'],
 ];
 
 function suggestModel(temperature: number): string {
@@ -39,6 +39,7 @@ const MODEL_NUM_CTX: Record<string, number> = {
   'kimi-k2.5:cloud': 262_144,
   'qwen3.5:397b-cloud': 262_144,
   'qwen3-coder:30b': 262_144,
+  'deepseek-v4-flash:0731-cloud': 131_072,
   'deepseek-v4-flash:cloud': 131_072,
   'deepseek-v4-pro:cloud': 131_072,
   'gemma4:31b-cloud': 131_072,
@@ -58,7 +59,7 @@ function getNumCtxForModel(model: string): number {
 interface OllamaMessage {
   role: string;
   content: string;
-  /** Cloud models (deepseek-v4-flash:cloud, kimi-k2.6:cloud) put reasoning here */
+  /** Cloud models (deepseek-v4-flash:0731-cloud, kimi-k2.6:cloud) put reasoning here */
   thinking?: string;
   /** Some cloud variants use response instead of content */
   response?: string;
@@ -224,7 +225,7 @@ export class OllamaProvider implements LLMProvider {
     const originalModel = model;
     const maxRetries = 2;
     // v2.0.79: Fallback models for 503 (model overloaded)
-    const FALLBACK_MODELS = ['kimi-k2.6:cloud', 'glm-5:cloud', 'kimi-k2.5:cloud'];
+    const FALLBACK_MODELS = ['deepseek-v4-flash:0731-cloud', 'kimi-k2.6:cloud', 'glm-5:cloud'];
 
     // Acquire concurrency slot to avoid ephemeral port exhaustion.
     // acquireSlot() now fails fast after SLOT_ACQUIRE_TIMEOUT_MS instead of
@@ -239,7 +240,7 @@ export class OllamaProvider implements LLMProvider {
             role: m.role,
             content: m.content,
           })),
-          // Disable thinking for cloud models (deepseek-v4-flash:cloud, kimi-k2.6:cloud)
+          // Disable thinking for cloud models (deepseek-v4-flash:0731-cloud, kimi-k2.6:cloud)
           // so they output JSON directly without chain-of-thought reasoning.
           think: false,
           options: {

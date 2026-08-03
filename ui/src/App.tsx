@@ -492,7 +492,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
   // v2.0.143: Always show the assigned model name — fall back to assignments
   // if the thought hasn't been injected yet (e.g. no Root Command Prompt set).
   const taAssignedModel = assignments.find((a: AgentModelConfig) => a.role === 'terminal_agent')?.model
-  const taModelShort = (taModel ?? taAssignedModel ?? 'deepseek-v4-flash:cloud').split('/').pop()?.slice(0, 16)
+  const taModelShort = (taModel ?? taAssignedModel ?? 'deepseek-v4-flash:0731-cloud').split('/').pop()?.slice(0, 16)
   // v2.0.143: Read Root Command Prompt from API data (stored on backend)
   const apiRootPrompt = (data as any)?.rootCommandPrompt as string | undefined
   const apiSideGuide = (data as any)?.terminalSideGuide as string | undefined
@@ -3399,7 +3399,7 @@ function BacktestPanel({ data, onRun }: { data: APIData | null; onRun: (years: n
   const isPaused = bp?.phase === 'paused'
   const [selectedYears, setSelectedYears] = useState(3)
   const [selectedInterval, setSelectedInterval] = useState('1h')
-  const [selectedModel, setSelectedModel] = useState('kimi-k2.6:cloud')
+  const [selectedModel, setSelectedModel] = useState('deepseek-v4-flash:0731-cloud')
   const [reverseMode, setReverseMode] = useState(false)
 
   const availableModels = data?.agentModels?.available ?? []
@@ -4066,7 +4066,7 @@ export default function App() {
                   <p className="settings-hint">
                     Ollama API key for cloud model access. Without this, the system uses local models only (slower, limited concurrency for personal devices).
                     <br /><MapPin size={12} color="var(--text-tertiary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Get it from <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="settings-link">ollama.com</a> → Settings → API Keys.
-                    <br /><Lightbulb size={12} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} /><strong>Recommended:</strong> Upgrade to <a href="https://ollama.com/pricing" target="_blank" rel="noopener noreferrer" className="settings-link">Ollama Pro</a> ($20/mo) for cloud models like <code>deepseek-v4-flash:cloud</code>, <code>kimi-k2.6:cloud</code>, <code>glm-5.2:cloud</code>. Pro gives faster inference, 8-agent concurrent requests, and no local GPU required — making trading decisions more reliable and timely, directly improving profitability.
+                    <br /><Lightbulb size={12} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} /><strong>Recommended:</strong> Upgrade to <a href="https://ollama.com/pricing" target="_blank" rel="noopener noreferrer" className="settings-link">Ollama Pro</a> ($20/mo) for cloud models like <code>deepseek-v4-flash:0731-cloud</code>, <code>kimi-k2.6:cloud</code>, <code>glm-5.2:cloud</code>. Pro gives faster inference, 8-agent concurrent requests, and no local GPU required — making trading decisions more reliable and timely, directly improving profitability.
                   </p>
                 </div>
                 {/* MASSIVE_API_KEY */}

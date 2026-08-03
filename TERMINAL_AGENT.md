@@ -291,7 +291,7 @@ src/index.ts
   └── loadRootCommandPrompt / persistRootCommandPrompt — disk persistence
 
 src/agents/agent-models.ts
-  └── terminal_agent: 'deepseek-v4-flash:cloud' (default model)
+  └── terminal_agent: 'deepseek-v4-flash:0731-cloud' (default model)
 
 ui/src/types.ts
   └── AGENT_META['terminal_agent'] — name, color, description
