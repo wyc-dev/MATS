@@ -107,61 +107,76 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 
 ### How the System Fits Together
 
-```
-┌─────────────────────────┐
-│  LAYER 1 · STRATEGIC    │
-│  Terminal Agent         │
-│  user prefs → rules     │
-└───────────┬─────────────┘
-            │
-┌───────────▼──────────────────────────────────────────────────────────┐
-│  LAYER 2 · COGNITIVE (HACP + Evolution)                              │
-│                                                                      │
-│  ┌─ HACP ─────────────────────────────────────────────────────┐      │
-│  │  5 Sub-Agents ──▶ Skeptics ──▶ Meta-Agent                  │      │
-│  │  (Fractal·OnChain·OLR·News·Risk)   (audit+veto) (arbitrate)│      │
-│  └──────────────┬─────────────────────────────────────────────┘      │
-│                 │  conviction + thesis                               │
-│  ┌──────────────▼─────────────────────────────────────────────────┐  │
-│  │  EVOLUTION PIPELINE                                           │  │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌────────────────────────┐ │  │
-│  │  │ Statistical │  │   Learned   │  │        Memory          │ │  │
-│  │  │ OLR · Shadow│  │ Autoencoder │  │ EXP·RIL·AntiPattern·EM │ │  │
-│  │  │ FirstPassage│  │ · AttnRes   │  │ ·ReplayBuffer          │ │  │
-│  │  │ Combo WR    │  │             │  │                        │ │  │
-│  │  └──────┬──────┘  └──────┬──────┘  └──────────┬─────────────┘ │  │
-│  │         │                │                    │               │  │
-│  │  ┌──────▼────────────────▼────────────────────▼─────────────┐ │  │
-│  │  │  GATES: Conditional WR · Combo WR · P(win)×Consensus     │ │  │
-│  │  │        · Plan G Dynamic Threshold                        │ │  │
-│  │  └────────────────────────┬─────────────────────────────────┘ │  │
-│  │                           │  edge-scored conviction          │  │
-│  │  ┌────────────────────────▼─────────────────────────────────┐ │  │
-│  │  │  EDGE VALIDATION (alpha lie detector)                   │ │  │
-│  │  │  edge-calculator · execution-tracker · stability-monitor │ │  │
-│  │  │  risk-profile-edge-store · backtest-validation          │ │  │
-│  │  └────────────────────────┬─────────────────────────────────┘ │  │
-│  │                           │                                   │  │
-│  │  Q-RL Discovery ─────────▶│  Self-Aware Evolution ───────────▶│  │
-│  │  (alpha discovery)        │  Calibrator·Improver·Causal       │  │
-│  │                           ▼                                   │  │
-│  │              Smart SL/TP + MFE Calibration                    │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-└───────────┬──────────────────────────────────────────────────────────┘
-            │  3×3 matrix + execute
-┌───────────▼──────────────────────────────────────────────────────────┐
-│  LAYER 3 · EXECUTION                                                 │
-│  Trading Manager ──▶ Hyperliquid Exchange (9 DEXs)                   │
-│  Risk Engine · Position Tracking · SL/TP · Reconciliation            │
-└───────────┬──────────────────────────────────────────────────────────┘
-            │  fills + PnL
-            ▼
-    ┌────────────────┐
-    │  mats_app Client│  ←── 3×3 matrix via Supabase
-    └────────────────┘
+```mermaid
+flowchart TB
+    %% ── Layer 1 · Strategic ──────────────────────────────────────────
+    subgraph L1["LAYER 1 · STRATEGIC"]
+        TA["Terminal Agent<br/><small>user prefs → rules</small>"]
+    end
+
+    %% ── Layer 2 · Cognitive ──────────────────────────────────────────
+    subgraph L2["LAYER 2 · COGNITIVE (HACP + Evolution)"]
+        direction TB
+        subgraph HACP["HACP Protocol"]
+            A1["5 Sub-Agents"] --> A2["Skeptics"] --> A3["Meta-Agent"]
+        end
+
+        subgraph EVO["Evolution Pipeline"]
+            direction LR
+            subgraph SRC["Signal Sources"]
+                ST["Statistical<br/>OLR · Shadow · First-Passage"]
+                LRN["Learned<br/>Autoencoder · AttnRes"]
+                MEM["Memory<br/>EXP · RIL · Anti-Pattern"]
+            end
+            subgraph GATE["Conviction Gates"]
+                G1["Conditional WR"]
+                G2["Combo WR"]
+                G3["P(win)×Consensus"]
+                G4["Plan G Threshold"]
+            end
+            subgraph EDGE["Edge Validation"]
+                E1["edge-calculator"]
+                E2["execution-tracker"]
+                E3["stability-monitor"]
+                E4["risk-profile-store"]
+                E5["backtest"]
+            end
+            subgraph EXTRA["Discovery + Meta"]
+                Q["Q-RL Discovery"]
+                S["Self-Aware<br/>Calibrator·Improver·Causal"]
+                T["Smart SL/TP<br/>+ MFE Calibration"]
+            end
+            %% signal sources converge into gates
+            ST --> G1 & G2
+            LRN --> G1 & G2
+            MEM --> G3 & G4
+            G1 & G2 & G3 & G4 --> A3
+            E1 & E2 & E3 & E4 & E5 --> A3
+            Q --> A3
+            S --> A3
+            A3 --> T
+        end
+    end
+
+    %% ── Layer 3 · Execution ──────────────────────────────────────────
+    subgraph L3["LAYER 3 · EXECUTION"]
+        TM["Trading Manager"] --> HLX["Hyperliquid Exchange"]
+        RS["Risk Engine"]
+        PS["Position Tracking · SL/TP"]
+    end
+
+    %% ── Output ───────────────────────────────────────────────────────
+    MAT["3×3 Analysis Matrix"] --> DB[("Supabase")] --> CLI["mats_app Client"]
+
+    %% ── Flow ─────────────────────────────────────────────────────────
+    TA --> HACP
+    HACP -->|conviction + thesis| MAT
+    HACP -->|execute| TM
+    HLX -->|fills + PnL| MEM
+    MEM -->|learn| EVO
 ```
 
-**Data flow:** user prefs → Terminal Agent → HACP agents → evolution gates (weighted by statistical/learned/memory/edge/Q-RL) → Meta-Agent scores edge + sets SL/TP → 3×3 matrix written to Supabase → client (or backend in dual mode) executes → fills/PnL feed back into memory → learning improves the next decision.
+**Data flow:** user prefs → Terminal Agent → HACP agents → evolution gates (weighted by statistical/learned/memory + edge validation + Q-RL + self-aware) → Meta-Agent scores edge + sets SL/TP → 3×3 matrix written to Supabase → client (or backend in dual mode) executes → fills/PnL feed back into memory → learning improves the next decision.
 
 ### Layered View
 
