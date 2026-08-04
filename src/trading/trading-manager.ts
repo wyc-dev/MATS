@@ -8,7 +8,7 @@ import { PortfolioTracker, normalizeSymbol } from './portfolio.ts';
 import { RiskEngine } from '../risk/engine.ts';
 import { PaperTradingEngine } from './paper-engine.ts';
 import { HyperliquidEngine } from './hyperliquid-engine.ts';
-import { computeSLTP } from './position-utils.ts';
+import { computeSLTP, safeLeverage } from './position-utils.ts';
 import { getATR, computeATRSLTP, getMomentum } from '../analysis/atr.ts';
 import { computeSmartSLTP, fetchCandleHighLow } from '../analysis/smart-sltp.ts';
 import { getMfeCalibration } from '../analysis/mfe-calibrator.ts';
@@ -292,8 +292,13 @@ export class TradingManager {
       }
 
       const price = decision.entryPrice ?? 0;
-      if (price <= 0) {
-        return { success: false, error: 'No price available for real trade' };
+      // v2.0.854: Guard against NaN/Infinity — the old `price <= 0` check is
+      // insufficient because `NaN <= 0` is `false`, so a NaN entryPrice (from
+      // corrupt market data) slipped through, produced quantity = positionSize/NaN
+      // = NaN, and reached the exchange as a garbage order. Number.isFinite is
+      // the correct guard (rejects NaN, ±Infinity, and 0/negative together).
+      if (!Number.isFinite(price) || price <= 0) {
+        return { success: false, error: 'No valid price available for real trade' };
       }
 
       const equity = this.portfolio.getEquity();
@@ -332,9 +337,11 @@ export class TradingManager {
       const realPositions = this.portfolio.getRealPositions();
       let totalMarginExposure = 0;
       for (const pos of realPositions) {
-        totalMarginExposure += (pos.quantity * pos.averageEntryPrice) / (pos.leverage ?? 1);
+        // v2.0.854-ATTACK: safeLeverage guards leverage=0/NaN/negative/>50
+        // which would make margin Infinity/NaN and bypass the cap check.
+        totalMarginExposure += (pos.quantity * pos.averageEntryPrice) / safeLeverage(pos.leverage);
       }
-      const newMargin = (quantity * price) / (decision.leverage ?? 10);
+      const newMargin = (quantity * price) / safeLeverage(decision.leverage ?? 10);
       const totalMarginAfter = totalMarginExposure + newMargin;
       // Use exchange TOTAL equity if available, otherwise paper equity as proxy
       const exBal = await this.getBalance();
@@ -439,6 +446,22 @@ export class TradingManager {
           }
         } catch (syncErr) {
           log.warn(`Post-trade exchange sync failed: ${syncErr instanceof Error ? syncErr.message : String(syncErr)} — SL/TP will use decision price`);
+        }
+
+        // v2.0.854: Final sanity guard on the fill price used for SL/TP.
+        // exPos.averageEntryPrice could be NaN/0/negative from a corrupt
+        // exchange response. If so, fall back to the already-validated
+        // decision `price` (which passed the Number.isFinite guard above).
+        // Never let a garbage fill price produce a NaN/0 SL/TP that the
+        // engine then places on HL — an unprotected/garbage stop is worse
+        // than using the decision price.
+        if (!Number.isFinite(actualEntryPrice) || actualEntryPrice <= 0) {
+          log.warn(`⚠️ Invalid fill entry price ${actualEntryPrice} for ${decision.symbol} — falling back to decision price ${price}`);
+          actualEntryPrice = price;
+        }
+        if (!Number.isFinite(actualLeverage) || actualLeverage <= 0 || actualLeverage > 50) {
+          log.warn(`⚠️ Invalid leverage ${actualLeverage} for ${decision.symbol} — falling back to ${decision.leverage ?? 10}`);
+          actualLeverage = decision.leverage ?? 10;
         }
 
         // Step 2: Calculate SL/TP from the ACTUAL fill price

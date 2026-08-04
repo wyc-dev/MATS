@@ -7,6 +7,21 @@ import type { Position } from '../types/index.ts';
 import { config } from '../config/index.ts';
 
 /**
+ * v2.0.854-ATTACK: Sanitize a leverage value before using it as a divisor.
+ * `leverage = 0` or `NaN` would turn `notional / leverage` into `Infinity` /
+ * `NaN`, corrupting balance, margin, and pnlPct. Hyperliquid supports 1–50x.
+ * The safe floor is 1 (no leverage) — never 0 (an invalid order that must not
+ * be silently accepted as "free money").
+ */
+export function safeLeverage(leverage: number | undefined | null): number {
+  if (typeof leverage !== 'number' || !Number.isFinite(leverage)) return 1;
+  // Clamp to Hyperliquid's supported [1, 50] range. Reject <= 0 (invalid order)
+  // and > 50 (unrealistic / unsupported) → fall back to 1 (conservative).
+  if (leverage < 1 || leverage > 50) return 1;
+  return leverage;
+}
+
+/**
  * Compute SL/TP from entry price + side + percentages.
  * LONG: SL = entry × (1 - slPct), TP = entry × (1 + tpPct)
  * SHORT: SL = entry × (1 + slPct), TP = entry × (1 - tpPct)
@@ -34,7 +49,8 @@ export function computeSLTP(
  */
 export function recomputePnL(pos: Position, currentPrice: number): void {
   const entryFee = pos.entryFee ?? 0;
-  const margin = (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
+  // v2.0.854-ATTACK: safeLeverage guards leverage=0/NaN (Infinity margin).
+  const margin = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
   if (pos.side === 'buy') {
     pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee;
     pos.unrealizedPnlPct = margin > 0 ? pos.unrealizedPnl / margin : 0;
@@ -50,7 +66,8 @@ export function recomputePnL(pos: Position, currentPrice: number): void {
  * Updates pos.minValueReached + pos.maxValueReached in-place.
  */
 export function trackMAEMFE(pos: Position): void {
-  const margin = (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
+  // v2.0.854-ATTACK: safeLeverage guards leverage=0/NaN (Infinity margin).
+  const margin = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
   const posValue = margin + pos.unrealizedPnl;
   if (pos.minValueReached === undefined || posValue < pos.minValueReached) {
     pos.minValueReached = posValue;

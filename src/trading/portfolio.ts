@@ -6,7 +6,7 @@ import { createLogger } from '../observability/logger.ts';
 import { config } from '../config/index.ts';
 import { loadPortfolio, type PortfolioSnapshot } from '../evolution/persistence.ts';
 import { calculateTakerFee } from './cost-model.ts';
-import { computeSLTP, recomputePnL, trackMAEMFE } from './position-utils.ts';
+import { computeSLTP, recomputePnL, trackMAEMFE, safeLeverage } from './position-utils.ts';
 import type {
   Portfolio,
   Position,
@@ -585,13 +585,20 @@ export class PortfolioTracker {
 
   openPosition(order: Order, entryPrice: number, leverage = 1, entryThesis?: string, entryData?: EntryFeatures): Position {
     const symbol = normalizeSymbol(order.symbol);
+    // v2.0.854-ATTACK: Sanitize leverage AT STORAGE so every downstream consumer
+    // (position-utils recomputePnL/trackMAEMFE, index.ts margin calcs, UI) is
+    // safe from division-by-zero. A stored leverage of 0/NaN/negative/>50 is an
+    // invalid order that must degrade to 1 (no leverage), never Infinity/NaN.
+    const safeLev = safeLeverage(leverage);
     const quantity = order.filledQuantity > 0 ? order.filledQuantity : order.quantity;
     const notional = quantity * entryPrice;
     // v2.0.63: Deduct MARGIN (notional / leverage), not full notional.
     // On Hyperliquid, a 10x leveraged position only requires 10% margin.
     // The old code deducted full notional, causing balance to drop 10x
     // faster than reality. closePosition() now returns margin (not notional).
-    const margin = notional / leverage;
+    // v2.0.854-ATTACK: safeLeverage guards leverage=0/NaN which would make
+    // margin Infinity/NaN and corrupt the paper balance.
+    const margin = notional / safeLev;
 
     // Deduct margin from balance.
     this.portfolio.balance -= margin;
@@ -631,7 +638,7 @@ export class PortfolioTracker {
       unrealizedPnl: -entryFee,
       unrealizedPnlPct: margin > 0 ? -entryFee / margin : 0,
       realizedPnl: 0,
-      leverage,
+      leverage: safeLev,
       openedAt: Date.now(),
       updatedAt: Date.now(),
       agentId: order.agentId,
@@ -870,6 +877,9 @@ export class PortfolioTracker {
   ): void {
     // v2.0.31: Use normalizeSymbol for case-sensitive colon symbol support
     const sym = normalizeSymbol(symbol);
+    // v2.0.854-ATTACK: Sanitize leverage AT STORAGE so every downstream consumer
+    // is safe from division-by-zero. leverage=0/NaN/negative/>50 → 1 (safe).
+    const safeLev = safeLeverage(leverage);
 
     // Don't import if already exists in either map
     if (this.portfolio.positions.has(sym) || this.realPositions.has(sym)) return;
@@ -922,7 +932,7 @@ export class PortfolioTracker {
       unrealizedPnl: 0,
       unrealizedPnlPct: 0,
       realizedPnl: 0,
-      leverage,
+      leverage: safeLev,
       openedAt,
       updatedAt: Date.now(),
       agentId: 'hyperliquid-real',
@@ -931,8 +941,9 @@ export class PortfolioTracker {
       takeProfitPrice,
       // v2.0.143: Initialize MAE/MFE tracking at import.
       // Position value = margin (notional / leverage) + unrealized PnL (0 at import).
-      minValueReached: (entryPrice * quantity) / leverage,
-      maxValueReached: (entryPrice * quantity) / leverage,
+      // v2.0.854-ATTACK: safeLeverage guards leverage=0/NaN (Infinity margin).
+      minValueReached: (entryPrice * quantity) / safeLev,
+      maxValueReached: (entryPrice * quantity) / safeLev,
       // v2.0.143: Record original SL/TP at import.
       originalStopLossPrice: stopLossPrice,
       originalTakeProfitPrice: takeProfitPrice,
@@ -1355,7 +1366,7 @@ export class PortfolioTracker {
       return this.closeExchangePosition(symbol, exitPrice, undefined, closeReason);
     }
 
-    const lev = pos.leverage ?? 1;
+    const lev = safeLeverage(pos.leverage);
     let realizedPnl: number;
     let cashReturned: number;
     // v2.0.63: Return MARGIN (notional / leverage), not full notional.
@@ -1481,7 +1492,14 @@ export class PortfolioTracker {
     };
 
     // Update portfolio stats
-    this.portfolio.positions.delete(symbol);
+    // v2.0.854: Use the normalized symbol for the delete. openPosition() stores
+    // under normalizeSymbol(order.symbol), but closePosition() received the raw
+    // `symbol` param — if any caller passed an un-normalized symbol (e.g. 'BTC'
+    // vs stored 'btc'), this delete silently missed the position → ghost
+    // position stayed open while balance/PnL were already credited → double
+    // PnL on a later reconcile. getPosition() normalizes, so the lookup found
+    // the position but the delete didn't. Now normalize here to match.
+    this.portfolio.positions.delete(normalizeSymbol(symbol));
     this.portfolio.totalPnl += realizedPnl;
     this.portfolio.totalPnlPct = this.portfolio.totalPnl / this.portfolio.initialBalance;
 
@@ -1537,13 +1555,43 @@ export class PortfolioTracker {
       log.info(`⏭️ closeExchangePosition dedup: ${symbol} @ $${pos.averageEntryPrice.toFixed(2)} already closed ${Date.now() - lastClose}ms ago — skipping duplicate`);
       // Still delete the position from the map (it's gone from HL)
       this.realPositions.delete(sym);
-      this.portfolio.positions.delete(symbol);
+      this.portfolio.positions.delete(sym);
       return null;
     }
     this.recentlyClosedSyms.set(dedupKey, Date.now());
+    // v2.0.854: Bound the dedup map so it can't grow unboundedly.
+    // Previously entries were only ever removed by importExchangePosition
+    // (on a dedup-bypass), so over months of trading one key per
+    // (symbol:entryPrice) accumulated forever — a silent memory leak.
+    // (a) Purge expired keys, and (b) hard-cap total size by evicting the
+    // oldest entries regardless of TTL. (b) matters because in a burst of
+    // closes (many symbols at once) the keys are all "fresh", so an
+    // expiry-only purge would never trigger — the map would keep growing
+    // up to the burst size. The FIFO eviction guarantees a hard bound.
+    const CLOSE_DEDUP_MAX = 512;
+    if (this.recentlyClosedSyms.size > CLOSE_DEDUP_MAX) {
+      const now = Date.now();
+      // (a) remove expired
+      for (const [k, ts] of this.recentlyClosedSyms) {
+        if (now - ts > this.CLOSE_DEDUP_TTL_MS) this.recentlyClosedSyms.delete(k);
+      }
+      // (b) FIFO-evict oldest until back under cap (Map preserves insertion order)
+      for (const k of this.recentlyClosedSyms.keys()) {
+        if (this.recentlyClosedSyms.size <= CLOSE_DEDUP_MAX) break;
+        this.recentlyClosedSyms.delete(k);
+      }
+    }
 
-    const lev = pos.leverage ?? 1;
-    const margin = pos.averageEntryPrice * pos.quantity;
+    const lev = safeLeverage(pos.leverage);
+    // v2.0.854: Use NOTIONAL / LEVERAGE for margin, matching closePosition()
+    // (paper) and recalculateEquity(). The previous code used full notional
+    // (no / lev), so real positions reported `investment` and `pnlPct` as if
+    // they were UN-leveraged — a 10x position showed 1/10th of its true
+    // return-on-margin. This distorted every learning system (OLR/EXP/RIL)
+    // that consumes pnlPct, biasing them to underestimate real-trade edge.
+    // v2.0.854-ATTACK: safeLeverage guards leverage=0/NaN (division-by-zero →
+    // Infinity margin).
+    const margin = (pos.averageEntryPrice * pos.quantity) / lev;
     let realizedPnl: number;
 
     if (hlRealizedPnl !== undefined) {
@@ -1672,8 +1720,12 @@ export class PortfolioTracker {
     // should not affect paper portfolio statistics. Only delete the
     // position + produce trade record + trigger learning.
     // v2.0.72: delete from realPositions (separate store)
+    // v2.0.854: delete with the normalized symbol from BOTH maps. `sym` is
+    // already normalized at the top of this method; `symbol` is the raw
+    // caller param. Using raw `symbol` could miss a position stored under a
+    // different casing (e.g. 'BTC' vs 'btc'), leaving a ghost position.
     this.realPositions.delete(sym);
-    this.portfolio.positions.delete(symbol);
+    this.portfolio.positions.delete(sym);
     // No recalculateEquity — real positions don't affect paper equity.
     // v2.0.35: Store the closed real trade so the UI Trade Records panel
     // can display it with accurate exit price + PnL. Previously this trade
@@ -1824,8 +1876,9 @@ export class PortfolioTracker {
     // v2.0.63: lockedMargin = margin (notional / leverage), not full notional.
     // openPosition() deducts margin from balance, so equity adds it back.
     // Using full notional here would inflate equity by (notional - margin).
+    // v2.0.854-ATTACK: safeLeverage guards leverage=0/NaN (Infinity margin).
     unrealizedSum += pos.unrealizedPnl;
-    lockedMargin += (pos.averageEntryPrice * pos.quantity) / (pos.leverage ?? 1);
+    lockedMargin += (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
     }
 
     // totalEquity = available balance + unrealized PnL + locked margin on open positions

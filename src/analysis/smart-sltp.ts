@@ -439,7 +439,14 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   // Conservative: SL tighter (×0.7–1.0), TP tighter (×0.8–1.0)
   // ═══════════════════════════════════════════════════════════════
 
-  const safeDcs = Number.isFinite(input.dcs ?? 0) && (input.dcs ?? 0) >= 0 ? (input.dcs ?? 0) : 0;
+  // v2.0.836: Clamp DCS to [0, 1] — same fix as dcs-calculator.ts and
+  // analysis-matrix.ts. The previous code only checked `>= 0`, so an untrusted
+  // DCS > 1 (e.g. 5) silently inflated the SL multiplier (×2.5) and TP
+  // multiplier (×3.5), widening SL/TP far beyond the designed [1.0, 1.3] /
+  // [1.0, 1.5] range before the caps clamped them. Negative DCS is invalid.
+  const safeDcs = Number.isFinite(input.dcs ?? 0)
+    ? Math.max(0, Math.min(1, input.dcs ?? 0))
+    : 0;
   const profile = input.riskProfile ?? 'moderate';
 
   // SL/TP multipliers from DCS (continuous, not tiered)
