@@ -575,7 +575,9 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   const gapPct = Math.abs(slAfter - tpAfter);
   if (slAfter > 0 && gapPct < tpMin - 1e-9) {
     // Too close / crossed → push TP out so gap >= tpMin on the profit side.
-    const tpFromSL = Math.max(tpAfter, slAfter + tpMin);
+    // Clamp to tpCap so the widened TP never exceeds the profile ceiling
+    // (the CAPS block already ran, so we must re-apply the cap here).
+    const tpFromSL = Math.min(tpCap, Math.max(tpAfter, slAfter + tpMin));
     tpPrice = isBuy ? entryPrice * (1 + tpFromSL) : entryPrice * (1 - tpFromSL);
     logParts.push(`[SL/TP-gap] widened TP from ${(tpAfter * 100).toFixed(2)}% to ${(tpFromSL * 100).toFixed(2)}% to keep ≥${(tpMin * 100).toFixed(2)}% gap from SL (${(slAfter * 100).toFixed(2)}%)`);
   }
