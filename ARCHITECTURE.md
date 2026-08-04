@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.853+
+> **作者**: YC Wong · **版本**: 2.0.855+
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 3×3 風險矩陣 → 寫入 Supabase；客戶端按用戶選擇嘅風險等級讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -23,7 +23,7 @@
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 認知演化管線（v2.0.853: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Risk Profile Differentiation + 1 Component Attribution）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + DCS v2 v2.0.836 + Component Attribution v2.0.844，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 風險等級區別化（三個 profile 真正唔同決策）。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge）。v2.0.849-851 將 momentum/exec-lens/confidence SL widening 移植到 live computeSmartSLTP + 修復 TradeRecord.closeReason 資料缺失（RIL + trade-audit 可以分到「SL 太緊」定「thesis 錯」）。v2.0.853 修復 closeTrade dual-mode guard（dual 模式下所有平倉被靜默跳過）+ 3 個缺失 closeReason 標記 + tradingManager.closePosition 用滯後 WS 價格代替實際 HL fill + UI SSE 退避 |
+| **自我演化** | 認知演化管線（v2.0.855: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Risk Profile Differentiation + 1 Component Attribution）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + DCS v2 v2.0.836 + Component Attribution v2.0.844，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 風險等級區別化（三個 profile 真正唔同決策）。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge）。v2.0.849-851 將 momentum/exec-lens/confidence SL widening 移植到 live computeSmartSLTP + 修復 TradeRecord.closeReason 資料缺失（RIL + trade-audit 可以分到「SL 太緊」定「thesis 錯」）。v2.0.853 修復 closeTrade dual-mode guard（dual 模式下所有平倉被靜默跳過）+ 3 個缺失 closeReason 標記 + tradingManager.closePosition 用滯後 WS 價格代替實際 HL fill + UI SSE 退避。**v2.0.855 學習管道修復**：aligned shadow 恆開（real-trade cycles 都開，Q-RL 不再餓死）+ shadow_blind OLR 計數器（v2.0.834 承諾但從未 implement）+ thesis-invalidation closeReason 全覆蓋。**v2.0.855-fix**：Q-RL EXP backfill（1072 筆歷史交易 populate Q-table，令 discoverPatterns 即刻有嘢掃）。**v2.0.855-attack**：7 個修復引入嘅漏洞全部修補（OLR counter 字符串/負數消毒、closeReason 白名單、aligned-shadow weightedDirection 用真 LLM lean）。**v2.0.855-attack2**：Q-RL binRegime 邊界同 regimeToOrdinal 完全錯位（6/7 regime 入錯桶，bull/bear 對調）已對齊 |
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
 | **風險等級客戶端選擇** | 後端運算 3 個風險等級（aggressive/moderate/conservative）嘅訊號矩陣；客戶端按用戶選擇讀取對應格（v2.0.822）|
@@ -1095,6 +1095,21 @@ Plan G（6 小時 idle 後）：
 1. **Q-RL bootstrapPValue centering**（R2-3）——全部相同 reward → p-value=1.0 → confirmed discovery 永遠唔會發生 → Alpha Discovery 系統名存實亡
 2. **smart-sltp.ts NaN entryPrice**（V1）——SL/TP 全部 NaN → 交易引擎收到 NaN 止損 = 無止損開倉
 3. **Q-RL getter bomb**（Q1-Q4）——`makeKey` 嘅 `features['regimeOrdinal']` 觸發 getter → crash 整個 decision cycle
+
+### 學習管道修復（v2.0.855 — 三條斷裂嘅血管重新接駁）
+
+Adversarial audit（v2.0.855 系列）對照真實持久化狀態（`shadow-state.json`、`q-rl-table.json`、`olr-state.json`）發現三個疊加斷點令 Q-RL 由開局至今**永遠冇數據**（`values: {}` after 79 cycles）——而唔係「冷啟動安全」：
+
+| 版本 | 修復 | 斷點 |
+|:-----|:-----|:-----|
+| v2.0.855 | Aligned shadow 恆開 | `if (didTradeExecute) continue;` 令 real-trade cycles（最多決策信號嘅 cycles）跳過 aligned shadow → Q-RL 唯一 live feed 餓死 |
+| v2.0.855 | shadow_blind OLR 計數器 | v2.0.834 承諾「tracked separately」但 feedTrade 從未 increment → BTC long `shadowSamples=0` 而 54k paper samples 淹沒模型 |
+| v2.0.855 | thesis-invalidation closeReason 全覆蓋 | 2 個 force-close call site 缺顯式 reason → 72/167 筆 real close 被誤標為 'sl_tp' |
+| v2.0.855-fix | **Q-RL EXP backfill** | `backfillFromExpRecords()` 餵咗 OLR/NA/AttnRes/Cluster/CHR/Combo/MetaLearner/Causal/Attribution 但**從未餵 Q-RL** → 加 `qrlTable.update(features, side, pnlPct)`（1072/1674 筆有 marketFeatures） |
+| v2.0.855-attack | 7 個修復引入嘅漏洞 | OLR counter `?? 0` 擋唔住字符串/負數；closeReason 空字符串/typo 穿透（`'' ?? x === ''`）令學習權重爆 3.3×；aligned-shadow weightedDirection 用咗 Q-RL 探索 action |
+| v2.0.855-attack2 | **binRegime 對齊** | `binRegime()` 邊界同 `regimeToOrdinal()` **完全錯位**（6/7 regime 入錯桶，bull/bear 對調）→ 每個 Q-RL cell 標籤錯誤 |
+
+**Q-RL 而家三通道完整**：live aligned shadow（修好）+ EXP backfill（新加）+ 正確 regime 分桶（修好）——`discoverPatterns()` 即刻有嘢掃，DCS 即刻有 discovery evidence。
 
 ---
 

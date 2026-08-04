@@ -5284,6 +5284,7 @@ ${recentExamples}
       const lines = raw.trim().split('\n').filter(l => l.trim());
       let olrFed = 0, naFed = 0, attnresFed = 0, clusterFed = 0, chrFed = 0, advancedFed = 0, comboFed = 0;
       let attrFed = 0; // v2.0.848: Component Attribution backfill count
+      let qrlFed = 0; // v2.0.855-fix: Q-RL Alpha Discovery backfill count
       let skipped = 0;
 
       for (const line of lines) {
@@ -5323,6 +5324,21 @@ ${recentExamples}
           try {
             this.olrEngine.feedTrade(sym, features, outcome, side, source, 0);
             olrFed++;
+          } catch { /* non-critical */ }
+
+          // v2.0.855-fix: Q-RL Alpha Discovery backfill — the Q-RL table was
+          // PERMANENTLY EMPTY (values={} after 79 cycles) because its ONLY
+          // live feed is aligned-shadow resolution, and aligned shadows were
+          // skipped on real-trade cycles (pre-v2.0.855). Backfill historical
+          // EXP outcomes so the table has a cold-start prior and DCS has
+          // discovery evidence. Uses the SAME feature snapshot as OLR —
+          // makeKey() reads regimeOrdinal/volatility/momentumShort/fundingRate,
+          // all present in `features` above (momentumShort=0 neutral for EXP).
+          // Reward = pnlPct (margin-relative return), matching the live
+          // aligned-shadow reward definition (sr.pnlPct).
+          try {
+            this.qrlTable?.update(features, side, pnlPct);
+            qrlFed++;
           } catch { /* non-critical */ }
         }
 
@@ -5507,7 +5523,7 @@ ${recentExamples}
         }
       }
 
-      log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, Combo=${comboFed}, Attr=${attrFed}, skipped=${skipped}`);
+      log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, Combo=${comboFed}, Attr=${attrFed}, QRL=${qrlFed}, skipped=${skipped}`);
 
       // v2.0.223: Train + validate NA immediately after backfill. Previously only
       // validated, which meant the model had 228 samples but only 230 training
@@ -7530,10 +7546,15 @@ ${recentExamples}
             const psc = pscList.find(p => normalizeSymbol(p.symbol) === sym);
             // Use per-symbol consensus action if available, else global lean
             const pscAction = psc?.action ?? result.consensus.decision.action;
-            const didTradeExecute = pscAction === 'buy' || pscAction === 'sell';
 
-            // Skip if a real trade executed for this symbol (would overlap)
-            if (didTradeExecute) continue;
+            // v2.0.855: Aligned shadow ALWAYS opens — including when a real
+            // trade executed for this symbol. The shadow provides the
+            // counterfactual: "what would standard SL/TP config have done vs
+            // the real trade's actual SL/TP". Q-RL ONLY updates from aligned
+            // shadows (index.ts shadow-resolution loop), so skipping them on
+            // real-trade cycles left q-rl-table.json permanently empty
+            // (values={} after 79 cycles) → DCS had zero discovery evidence →
+            // the three risk profiles made identical decisions.
 
             // Skip if an aligned shadow was already opened for this symbol+cycle
             // (e.g. by a previous iteration or the blind-skip check)
@@ -7564,7 +7585,14 @@ ${recentExamples}
               sym, entryPrice, rlAction, slPrice, tpPrice,
               this.totalCycles, features,
               pscAction, consensusConf,
-              rlAction, leanScore,
+              // v2.0.855-attack: weightedDirection must be the TRUE LLM
+              // weighted lean (leanSide), NOT rlAction — rlAction may be a
+              // Q-RL ε-greedy exploration action opposite to the LLM lean.
+              // Passing rlAction here corrupted the factorTag semantics
+              // ("which agent signal drove this shadow") when exploration
+              // diverged from consensus, poisoning RP Edge Store queries.
+              // The actual shadow side is still rlAction (first arg).
+              leanSide, leanScore,
               primaryDriver, agentVotes,
             );
 
@@ -7762,7 +7790,10 @@ ${recentExamples}
             log.warn(`🚫 Thesis INVALIDATED for ${sym} — force-closing (no price data, position not profitable per portfolio)`);
             this.thesisInvalidatedCloseSymbols.add(sym);
             const exitThesis = `Thesis invalidated: ${pos.entryThesis ?? 'original entry thesis no longer valid'} [no price data]`;
-            const success = await this.closeTrade(sym, exitThesis);
+            // v2.0.855: Explicit closeReason — without it, inferCloseReason
+            // classifies by exit price vs SL/TP, mislabeling this agent-driven
+            // close as 'sl_tp' → OLR/EXP/RIL learn from wrong close context.
+            const success = await this.closeTrade(sym, exitThesis, 'thesis_invalidation');
             if (success) {
               log.info(`  → Force-closed ${sym} (thesis invalidated, no price data)`);
             } else {
@@ -7802,8 +7833,11 @@ ${recentExamples}
           log.warn(`🚫 Thesis INVALIDATED for ${sym} — force-closing position${structureConfirmed ? ` (confirmed: ${confirmReason})` : ' (no structural confirmation, but position is losing)'} (risk=${riskProfile})`);
           this.thesisInvalidatedCloseSymbols.add(sym);
           // v2.0.143: Route through closeTrade() with thesis-invalidation exitThesis.
+          // v2.0.855: Explicit closeReason 'thesis_invalidation' — the old call
+          // omitted it, so inferCloseReason fell back to exit-price vs SL/TP
+          // classification and mislabeled 72/167 real closes as SL/TP.
           const exitThesis = `Thesis invalidated: ${pos.entryThesis ?? 'original entry thesis no longer valid'}${structureConfirmed ? ` [confirmed: ${confirmReason}]` : ''}`;
-          const success = await this.closeTrade(sym, exitThesis);
+          const success = await this.closeTrade(sym, exitThesis, 'thesis_invalidation');
           if (success) {
             if (pos.agentId === 'hyperliquid-real') {
               log.info(`  → Force-closed ${sym} (real, thesis invalidated)`);

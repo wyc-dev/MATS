@@ -105,6 +105,39 @@ export function isThesisPlaceholder(thesis: string | undefined | null): boolean 
 export type OnPositionClosed = (trade: TradeRecord) => void;
 
 /**
+ * v2.0.855-attack: Whitelist for closeReason values. A caller-supplied reason
+ * that is NOT in this set (typo 'thesis_invalid', empty string '', garbage,
+ * NaN) MUST be rejected — otherwise `closeReason ?? inferCloseReason()` lets
+ * '' through ('' ?? x === '') and computeLearningWeight falls through to
+ * default 1.0, silently inflating a 0.3× thesis_invalidation close to full
+ * weight (3.3× error). Returns undefined for invalid input so the caller
+ * falls back to deterministic inference.
+ */
+export const VALID_CLOSE_REASONS = new Set([
+  'sl_tp',
+  'consensus',
+  'manual',
+  'reconciliation',
+  'exchange_closed',
+  'thesis_invalidation',
+] as const);
+
+/**
+ * v2.0.855-attack: Sanitize a caller-supplied closeReason against the
+ * whitelist. Non-string, empty, unknown, or non-finite values → undefined
+ * (fall back to inference). This closes the '' / typo / garbage injection.
+ */
+export function sanitizeCloseReason(reason: unknown): TradeRecord['closeReason'] | undefined {
+  if (typeof reason !== 'string' || reason.length === 0) return undefined;
+  // Cast through the non-optional union — VALID_CLOSE_REASONS is the
+  // canonical set, and TradeRecord['closeReason'] includes `undefined`
+  // (optional field) which Set.has() rejects at the type level.
+  const r = reason as Exclude<TradeRecord['closeReason'], undefined>;
+  if (!VALID_CLOSE_REASONS.has(r)) return undefined;
+  return r;
+}
+
+/**
  * v2.0.851: Infer the CLOSE REASON for a position being closed, based on where
  * the exit price landed relative to the stop-loss / take-profit levels.
  *
@@ -1498,7 +1531,10 @@ export class PortfolioTracker {
       entryConsensusConfidence: pos.entryConsensusConfidence,
       // v2.0.851: Capture HOW the position closed. Prefer the caller-provided
       // reason; fall back to deterministic inference from exitPrice vs SL/TP.
-      closeReason: closeReason ?? inferCloseReason(
+      // v2.0.855-attack: Sanitize the caller reason against the whitelist —
+      // '' / typo / garbage would otherwise store an invalid reason and
+      // silently inflate computeLearningWeight to 1.0.
+      closeReason: sanitizeCloseReason(closeReason) ?? inferCloseReason(
         pos.side,
         exitPrice,
         pos.stopLossPrice,
@@ -1725,7 +1761,8 @@ export class PortfolioTracker {
       // to deterministic inference from exitPrice vs SL/TP levels. Without this,
       // every real trade had an undefined closeReason → learning + RIL + audit
       // all treated every close as 'sl_tp'.
-      closeReason: closeReason ?? inferCloseReason(
+      // v2.0.855-attack: Sanitize the caller reason against the whitelist.
+      closeReason: sanitizeCloseReason(closeReason) ?? inferCloseReason(
         pos.side,
         exitPrice,
         pos.stopLossPrice,

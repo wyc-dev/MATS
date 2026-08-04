@@ -559,11 +559,21 @@ export class QRLTable {
 
   private binRegime(regimeOrdinal: number): string {
     if (!Number.isFinite(regimeOrdinal)) return 'low_vol';
+    // v2.0.855-attack-fix: boundaries ALIGNED with regimeToOrdinal() (olr-engine.ts).
+    // OLD boundaries (<=0.35 mean_reverting, <=0.55 low_vol, <=0.8 trending_bull,
+    // else trending_bear) were INVERTED vs the ordinal encoding:
+    //   regimeToOrdinal: chaotic=0.1, low_vol=0.2, volatile=0.3, mean_reverting=0.5,
+    //                    breakout=0.6, trending_bear=0.8, trending_bull=1.0
+    // So low_volatility(0.2) landed in mean_reverting, mean_reverting(0.5) in low_vol,
+    // trending_bull(1.0) in trending_bear, trending_bear(0.8) in trending_bull — 6 of 7
+    // regimes mis-binned, corrupting every Q-RL cell label + discovery pattern.
+    // Aligned boundaries: chaotic[0,0.15] low_vol(0.15,0.35] mean_reverting(0.35,0.65]
+    //                     trending_bear(0.65,0.85] trending_bull(0.85,1.0]
     if (regimeOrdinal <= 0.15) return 'chaotic';
-    if (regimeOrdinal <= 0.35) return 'mean_reverting';
-    if (regimeOrdinal <= 0.55) return 'low_vol';
-    if (regimeOrdinal <= 0.8) return 'trending_bull';
-    return 'trending_bear';
+    if (regimeOrdinal <= 0.35) return 'low_vol';
+    if (regimeOrdinal <= 0.65) return 'mean_reverting';
+    if (regimeOrdinal <= 0.85) return 'trending_bear';
+    return 'trending_bull';
   }
 
   private binVol(vol: number): string {
