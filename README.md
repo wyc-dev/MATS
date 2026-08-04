@@ -108,40 +108,42 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 ### How the System Fits Together
 
 ```mermaid
-flowchart TB
-    subgraph INPUTS["📡 Data Sources"]
-        HL["Hyperliquid WS + REST<br/>(l2Book, trades, clearinghouseState, userFills)"]
-        NEWS["News Feeds<br/>(Google News, GDELT, Bing)"]
-        USER["User Preferences<br/>(Terminal Agent → Root Command Prompt)"]
+flowchart LR
+    subgraph INPUTS["📡 1 · Data Sources"]
+        HL["Hyperliquid<br/>WS + REST"]
+        NEWS["News Feeds"]
+        USER["User Preferences"]
     end
 
-    subgraph COGNITION["🧠 Cognitive Layer (HACP)"]
-        TA["Terminal Agent<br/>(rule check)"]
-        AGENTS["5 Sub-Agents<br/>Fractal · On-Chain · OLR · News · Risk"]
-        SKEPTICS["Skeptics<br/>(logic audit + thesis veto)"]
-        META["Meta-Agent<br/>(arbitration + entryThesis)"]
-        TA --> AGENTS --> SKEPTICS --> META
+    subgraph COGNITION["🧠 2 · Cognitive Layer — HACP"]
+        direction TB
+        TA["Terminal Agent<br/>rule check"]
+        AG["5 Sub-Agents<br/>Fractal · On-Chain · OLR · News · Risk"]
+        SK["Skeptics<br/>audit + veto"]
+        ME["Meta-Agent<br/>arbitration + thesis"]
+        TA --> AG --> SK --> ME
     end
 
-    subgraph EVOLUTION["🧬 Cognitive Evolution Pipeline (20+ layers)"]
-        STAT["Statistical<br/>OLR · Shadow · First-Passage · Combo WR"]
-        LEARNED["Learned Embeddings<br/>Numeric Autoencoder · AttnRes Cycle-History"]
-        MEM["Memory<br/>EXP · RIL · Anti-Pattern · EM Cycle · Replay Buffer"]
-        EDGE["Edge Validation<br/>(alpha lie detector)"]
-        ALPHA["Q-RL Alpha Discovery"]
-        SLTP["Smart SL/TP + MFE Calibration"]
-        CLOSE["Close-Context Learning"]
+    subgraph EVOLUTION["🧬 3 · Evolution Pipeline"]
+        direction TB
+        STAT["Statistical<br/>OLR · Shadow · Combo WR"]
+        LRN["Learned<br/>Autoencoder · AttnRes"]
+        MEM["Memory<br/>EXP · RIL · Anti-Pattern"]
+        EDGE["Edge Validation<br/>alpha lie detector"]
+        ALPHA["Q-RL Discovery"]
+        SLTP["Smart SL/TP<br/>+ MFE Calibration"]
+        CLOSE["Close-Context<br/>Learning"]
     end
 
-    subgraph OUTPUT["📤 Signal Output"]
-        MATRIX["3×3 Analysis Matrix<br/>(risk profile × position state)"]
+    subgraph OUTPUT["📤 4 · Signal Output"]
+        MATRIX["3×3 Analysis Matrix"]
         SUPABASE[("Supabase<br/>asset_analyses")]
-        CLIENT["mats_app Client<br/>(risk selection + execution)"]
+        CLIENT["mats_app Client"]
     end
 
-    subgraph EXECUTION["⚙️ Execution Layer (dual mode)"]
-        TM["Trading Manager<br/>(paper / real)"]
-        HL_EX["Hyperliquid Exchange"]
+    subgraph EXECUTION["⚙️ 5 · Execution"]
+        TM["Trading Manager<br/>paper / real"]
+        HL_EX["Hyperliquid<br/>Exchange"]
     end
 
     INPUTS --> COGNITION
