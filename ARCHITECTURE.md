@@ -853,6 +853,22 @@ never:   margin = notional / (leverage ?? 1)  // ?? 只 catch undefined/null，�
 
 ---
 
+## recomputePnL / trackMAEMFE / computeSLTP / recalculateEquity NaN 防禦（v2.0.854-attack3）
+
+對 v2.0.854-attack2 嘅對抗攻擊搵到共享 helper 冇 defense-in-depth——`updatePosition`/`softUpdatePosition` 有 guard，但 helper 本身接受 NaN/Infinity/0/negative。
+
+**ATTACK3-fix1：`recomputePnL` NaN currentPrice → NaN equity（CRITICAL）**。`recomputePnL(pos, NaN)` → `unrealizedPnl = NaN` → `recalculateEquity` 加 NaN → `totalEquity = NaN` → 整個 portfolio 崩潰。修復：`recomputePnL` 用 `safePrice(currentPrice)` sanitize。
+
+**ATTACK3-fix2：`trackMAEMFE` NaN unrealizedPnl → NaN MAE/MFE**。腐敗 restore 載入 NaN `unrealizedPnl` → `posValue = NaN` → `minValueReached = NaN` → 學習系統食 NaN。修復：guard `Number.isFinite(unrealizedPnl)` + skip non-finite `posValue`。
+
+**ATTACK3-fix3：`computeSLTP` NaN entry → NaN SL/TP → 無止損開倉**。`computeSLTP(NaN, 'buy')` → `sl = NaN` → 交易引擎收到 NaN 止損 = 無止損。修復：`computeSLTP` 用 `safePrice(entry)` sanitize。
+
+**ATTACK3-fix4：`recalculateEquity` NaN unrealizedPnl → NaN totalEquity**。單一 NaN position 令 `totalEquity = NaN` → 所有下游 risk check（max drawdown、daily loss、position sizing）崩潰。修復：guard 每個 `unrealizedPnl` 用 `Number.isFinite`（→ 0 fallback）。
+
+**Tests**：`tests/v2.0.854-attack3-recompute-equity.test.ts`（12 tests）。Regression：162 相關測試通過。`tsc --noEmit` 零錯誤。
+
+---
+
 ## Plan G — 動態 Threshold [45-55%] + 乘法 Penalty 衰減（v2.0.227）
 
 ### 問題：Penalty 死循環

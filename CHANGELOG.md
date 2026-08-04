@@ -4,6 +4,38 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.854-attack3: recomputePnL / trackMAEMFE / computeSLTP / recalculateEquity NaN defense (5 vulnerabilities)
+
+Adversarial attack on the v2.0.854-attack2 safePrice/safeQuantity fix found that `recomputePnL`, `trackMAEMFE`, `computeSLTP`, and `recalculateEquity` had NO defense-in-depth — while `updatePosition`/`softUpdatePosition` guard their inputs, the shared helpers themselves accepted NaN/Infinity/0/negative `currentPrice` and `unrealizedPnl` without sanitization:
+
+### ATTACK3-fix1: `recomputePnL` NaN currentPrice → NaN unrealizedPnl → NaN equity (CRITICAL)
+
+**Bug**: `recomputePnL(pos, NaN)` → `unrealizedPnl = (NaN - entry) * qty = NaN` → `recalculateEquity` sums NaN → `totalEquity = NaN` → entire portfolio poisoned. While `updatePosition`/`softUpdatePosition` have `Number.isFinite` guards, `recomputePnL` itself had no defense-in-depth (a future caller bypassing the guard would corrupt the portfolio).
+
+**Fix**: `recomputePnL` now sanitizes `currentPrice` via `safePrice()` before any arithmetic.
+
+### ATTACK3-fix2: `trackMAEMFE` NaN/Infinity unrealizedPnl → NaN MAE/MFE
+
+**Bug**: A corrupted persistence restore could load a position with `unrealizedPnl = NaN/Infinity`. `trackMAEMFE` computed `posValue = margin + NaN = NaN` → `minValueReached = NaN` → TradeRecord.MAE/MFE = NaN → learning systems (OLR/EXP/RIL) fed NaN.
+
+**Fix**: `trackMAEMFE` now guards `unrealizedPnl` with `Number.isFinite` (→ 0 fallback) and skips the update entirely if `posValue` is non-finite.
+
+### ATTACK3-fix3: `computeSLTP` NaN/Infinity/0 entry → NaN SL/TP → no-stop order
+
+**Bug**: `computeSLTP(NaN, 'buy')` → `sl = NaN * (1-0.02) = NaN` → trading engine receives NaN stop-loss = position opened with NO stop (catastrophic risk). Same for `Infinity` and `0`.
+
+**Fix**: `computeSLTP` now sanitizes `entry` via `safePrice()` before computing SL/TP.
+
+### ATTACK3-fix4: `recalculateEquity` NaN unrealizedPnl → NaN totalEquity
+
+**Bug**: `recalculateEquity` directly summed `pos.unrealizedPnl` — a single position with NaN `unrealizedPnl` (from a corrupted restore) made `totalEquity = NaN`, poisoning the entire portfolio + all downstream risk checks (max drawdown, daily loss, position sizing).
+
+**Fix**: `recalculateEquity` now guards each `unrealizedPnl` with `Number.isFinite` (→ 0 fallback) before summing.
+
+**Tests**: `tests/v2.0.854-attack3-recompute-equity.test.ts` (12 tests). Regression: 162 relevant tests pass. `tsc --noEmit` zero errors.
+
+---
+
 ## v2.0.854-tests: Sync stale matrix tests to v2.0.836 DCS behaviour (4 tests → full suite green)
 
 The full test suite had 4 pre-existing failures from the v2.0.836 DCS-v2 migration: `analysis-matrix.test.ts` and `edge-attack.test.ts` still asserted the **v2.0.822** conviction scaling (aggressive ×1.3, conservative ×0.7), but `src/services/analysis-matrix.ts` now uses DCS-driven scaling:

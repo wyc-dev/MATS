@@ -1895,7 +1895,10 @@ export class PortfolioTracker {
     // openPosition() deducts margin from balance, so equity adds it back.
     // Using full notional here would inflate equity by (notional - margin).
     // v2.0.854-ATTACK: safeLeverage guards leverage=0/NaN (Infinity margin).
-    unrealizedSum += pos.unrealizedPnl;
+    // v2.0.854-ATTACK3: Guard NaN unrealizedPnl (corrupted restore) — a single
+    // NaN position would make totalEquity NaN, poisoning the entire portfolio.
+    const uPnl = Number.isFinite(pos.unrealizedPnl) ? pos.unrealizedPnl : 0;
+    unrealizedSum += uPnl;
     lockedMargin += (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
     }
 
