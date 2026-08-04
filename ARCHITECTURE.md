@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.852+
+> **作者**: YC Wong · **版本**: 2.0.853+
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 3×3 風險矩陣 → 寫入 Supabase；客戶端按用戶選擇嘅風險等級讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -23,7 +23,7 @@
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 認知演化管線（v2.0.851: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Risk Profile Differentiation + 1 Component Attribution）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + DCS v2 v2.0.836 + Component Attribution v2.0.844，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 風險等級區別化（三個 profile 真正唔同決策）。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge）。v2.0.849-851 將 momentum/exec-lens/confidence SL widening 移植到 live computeSmartSLTP + 修復 TradeRecord.closeReason 資料缺失（RIL + trade-audit 可以分到「SL 太緊」定「thesis 錯」） |
+| **自我演化** | 認知演化管線（v2.0.853: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Risk Profile Differentiation + 1 Component Attribution）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + DCS v2 v2.0.836 + Component Attribution v2.0.844，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 風險等級區別化（三個 profile 真正唔同決策）。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge）。v2.0.849-851 將 momentum/exec-lens/confidence SL widening 移植到 live computeSmartSLTP + 修復 TradeRecord.closeReason 資料缺失（RIL + trade-audit 可以分到「SL 太緊」定「thesis 錯」）。v2.0.853 修復 closeTrade dual-mode guard（dual 模式下所有平倉被靜默跳過）+ 3 個缺失 closeReason 標記 + tradingManager.closePosition 用滯後 WS 價格代替實際 HL fill + UI SSE 退避 |
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
 | **風險等級客戶端選擇** | 後端運算 3 個風險等級（aggressive/moderate/conservative）嘅訊號矩陣；客戶端按用戶選擇讀取對應格（v2.0.822）|
@@ -779,7 +779,19 @@ closePosition / closeExchangePosition
   → 重啟後 restore 還原
 ```
 
-**Agent-driven close 顯式標記**（`index.ts`）：consensus close / per-symbol flip / active-symbol flip / legacy agent-vote 全部傳 `'consensus'`；manual close 傳 `'manual'`；reconciliation 傳 `'reconciliation'`。SL/TP 自動平倉傳 `'sl_tp'`。Thesis-invalidation 由 `thesisInvalidatedCloseSymbols` set 喺 `onPositionClosedLearning` override。
+**Agent-driven close 顯式標記**（`index.ts`）：consensus close / per-symbol flip / active-symbol flip / legacy agent-vote 全部傳 `'consensus'`；manual close / close-all / manual flip 傳 `'manual'`；reconciliation close 傳 `'reconciliation'`。SL/TP 自動平倉傳 `'sl_tp'`。Thesis-invalidation 由 `thesisInvalidatedCloseSymbols` set 喺 `onPositionClosedLearning` override。
+
+## closeTrade dual-mode guard + fill-price accuracy（v2.0.853）
+
+**v2.0.853-fix1**：`closeTrade()` 嘅 analysis-mode guard 缺少 `!this.dualMode` 檢查。`ANALYSIS_MODE='dual'`（生產預設）時 `analysisMode=true` → `closeTrade()` 靜默返回 `true` 而唔平倉。所有平倉路徑（SL/TP、consensus、thesis-invalidation、manual、flip）全部斷裂。修復：加 `&& !this.dualMode`，與 `executeTrade()` 嘅 guard 一致。
+
+**v2.0.853-fix2**：3 個 `closeTrade()` call site 缺少顯式 `closeReason`：close-all（Trade Mode 切換前）→ `'manual'`；manual flip（UI）→ `'manual'`；reconciliation close → `'reconciliation'`。同 v2.0.851-fix 同類 bug。
+
+**v2.0.853-fix3+fix4**：`tradingManager.closePosition()` 用 `pos.currentPrice`（滯後 WS 價格）作為 `exitPrice`，傳 `undefined` 作為 `hlRealizedPnl`。修復：平倉後從 `getRecentFills()` 揾到實際成交 fill，用 `fill.price` + `fill.closedPnl`。Retry 2 次 × 500ms + `clearCaches()` bust fills cache。Fill fetch 失敗時 fallback 到 `pos.currentPrice`（同 pre-fix 行為一致）。
+
+**v2.0.853-fix5**：UI SSE 重連加指數退避（2s → 4s → 8s → 15s capped），`ollama-plan` fetch 加 `res.ok` guard，`all-symbols` useEffect 加 `data` gate + dedup ref。防止後端 down 時 ECONNRESET/ECONNREFUSED spam。
+
+**v2.0.853-fix6**：Fill-fetch retry 從 3×1s=3s 減到 2×500ms=1s，避免阻塞 decision cycle（阻塞期間其他倉位嘅 SL/TP 唔被監控）。
 
 ---
 
@@ -884,7 +896,7 @@ Plan G（6 小時 idle 後）：
 - 每個 price update 自動檢查 SL/TP + 追蹤 MAE/MFE（部位價值 = margin + unrealized PnL）
 - Position Reconciliation：偵測 exchange 已平倉 → 同步 local mirror
 - Real Trading Manager：HL exchange 下單 + 本地 mirror（phantom agent signing via `@noble/curves`）
-- **v2.0.143 統一交易路由**：`executeTrade()` 按 tradeMode 路由 — paper 直接走 paperEngine，real 走 realTradingManager。`closeTrade()` 按 agentId 路由 — paper 走 portfolio.closePosition()，real 走 realTradingManager.closePosition()。不再所有交易都經過 RealTradingManager。
+- **v2.0.143 統一交易路由**：`executeTrade()` 按 tradeMode 路由 — paper 直接走 paperEngine，real 走 realTradingManager。`closeTrade()` 按 agentId 路由 — paper 走 portfolio.closePosition()，real 走 tradingManager.closePosition()。不再所有交易都經過 RealTradingManager。v2.0.853: `closeTrade()` 嘅 analysis-mode guard 必須檢查 `!this.dualMode`（同 `executeTrade()` 一致），否則 dual 模式下所有平倉被靜默跳過。`tradingManager.closePosition()` 必須從 `getRecentFills()` 揾到實際 HL fill price + PnL，唔好用滯後 `pos.currentPrice`。
 - **v2.0.143 entryThesis 修復**：執行成功後才調用 `setEntryThesis()`，確保 thesis 在 position 存在時才寫入。syncExchangePositions 的 close+reimport 路徑保留 entryThesis + MAE/MFE。
 - placeOrder 價格源：LIVE `l2Book`（best bid/ask）做 aggressive price 主源，`allMids` REST 做 fallback
 

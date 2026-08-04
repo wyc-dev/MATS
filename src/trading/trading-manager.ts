@@ -946,7 +946,81 @@ export class TradingManager {
         const pos = this.portfolio.getPosition(symbol);
         if (pos) {
           if (pos.agentId === 'hyperliquid-real') {
-            this.portfolio.closeExchangePosition(symbol, pos.currentPrice, undefined, closeReason);
+            // v2.0.853-fix3: Fetch the ACTUAL fill price + realized PnL from HL
+            // after the market close order fills. Previously this passed
+            // `pos.currentPrice` (the last WS tick price — potentially stale
+            // by seconds or minutes) and `undefined` for hlRealizedPnl, causing
+            // closeExchangePosition to self-calculate PnL from the stale price.
+            //
+            // Impact: TradeRecord.exitPrice + pnl were wrong → inferCloseReason
+            // compared stale price vs SL/TP → could misclassify close reason →
+            // computeLearningWeight applied wrong weight → OLR/EXP/RIL/AttnRes
+            // all learned from incorrect outcome + incorrect close context.
+            //
+            // syncExchangePositions already does this correctly (finds the
+            // closing fill from getRecentFills and uses fill.price + fill.closedPnl).
+            // This fix brings closePosition() to the same standard.
+            //
+            // v2.0.853-fix4: Race condition + cache defense. The fill may not
+            // appear in getRecentFills immediately after closePosition returns
+            // (HL REST lag 2-5s, same as CHANGELOG v2.0.160). Additionally,
+            // getRecentFills has a 10s cache (FILLS_CACHE_TTL_MS) that could
+            // return stale fills without the just-placed close. Fix:
+            //   1. Bust the fills cache via clearCaches() before fetching
+            //   2. Retry up to 2 times with 500ms delay (max 1s block —
+            //      v2.0.853-fix6: reduced from 3×1s=3s to 2×500ms=1s to avoid
+            //      blocking the decision cycle. 3s of blocking delayed price
+            //      updates + SL/TP monitoring for ALL other positions. 1s is
+            //      enough for HL REST to propagate in most cases; if not, the
+            //      fallback to pos.currentPrice is still better than blocking)
+            //   3. Only accept a fill with timestamp >= the close order time
+            //      (not just pos.openedAt) to avoid matching a stale fill from
+            //      a previous close on the same symbol
+            //
+            // Cold-start safe: if all retries fail, fall back to pos.currentPrice
+            // (same as pre-fix behavior — no regression, just no improvement).
+            const closeOrderTime = Date.now();
+            let fillPrice = pos.currentPrice;
+            let fillPnl: number | undefined;
+            try {
+              if (engine instanceof HyperliquidEngine) {
+                const expectedCloseSide = pos.side === 'buy' ? 'sell' : 'buy';
+                // Bust the fills cache so we get fresh data from HL REST
+                engine.clearCaches();
+
+                // Retry loop: HL REST may lag before the fill appears.
+                // v2.0.853-fix6: 2 attempts × 500ms = max 1s block (was 3×1s=3s).
+                for (let attempt = 1; attempt <= 2; attempt++) {
+                  const fills = await engine.getRecentFills(20);
+                  // Find the closing fill: same symbol, closing side, "close" dir,
+                  // timestamp after position opened AND after the close order was
+                  // placed (fix4: prevents matching a stale fill from a previous
+                  // close on the same symbol that happened after openedAt but
+                  // before this close order).
+                  const closingFill = fills.find(f =>
+                    f.symbol.toLowerCase() === symbol.toLowerCase() &&
+                    !f.dir.toLowerCase().startsWith('open') &&
+                    f.side === expectedCloseSide &&
+                    f.timestamp >= (pos.openedAt ?? 0) &&
+                    f.timestamp >= closeOrderTime - 10_000 // allow 10s clock skew
+                  );
+                  if (closingFill && closingFill.price > 0) {
+                    fillPrice = closingFill.price;
+                    fillPnl = closingFill.closedPnl;
+                    log.info(`📉 closePosition: using HL fill price $${fillPrice.toFixed(2)} (PnL: $${fillPnl.toFixed(2)}) for ${symbol} — was $${pos.currentPrice.toFixed(2)} (stale WS) [attempt ${attempt}]`);
+                    break;
+                  }
+                  // Fill not found yet — wait 500ms and retry (HL REST propagation)
+                  if (attempt < 2) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    engine.clearCaches(); // bust cache again before retry
+                  }
+                }
+              }
+            } catch {
+              // Non-critical — fall back to pos.currentPrice (same as pre-fix behavior)
+            }
+            this.portfolio.closeExchangePosition(symbol, fillPrice, fillPnl, closeReason);
           } else {
             // v2.0.143: This should not happen in real mode — paper positions
             // are closed via closeTrade() → portfolio.closePosition() directly.
