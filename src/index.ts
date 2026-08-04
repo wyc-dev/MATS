@@ -1951,7 +1951,11 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         log.info(`📕 Close-all requested: ${allSymbols.length} open positions`);
         for (const sym of allSymbols) {
           try {
-            const closeSuccess = await this.closeTrade(sym, 'Close-all before Trade Mode switch');
+            // v2.0.853-fix2: Tag 'manual' so the TradeRecord records the user-driven
+            //   exit. Without this, inferCloseReason classifies by exit price vs SL/TP,
+            //   mislabeling a user-initiated close-all as 'sl_tp' → learning systems
+            //   treat a user decision as a full-weight market signal (should be 0.5×).
+            const closeSuccess = await this.closeTrade(sym, 'Close-all before Trade Mode switch', 'manual');
             if (closeSuccess) {
               closed++;
               this.legacyPositionModes.delete(sym);
@@ -1989,7 +1993,11 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             }
             // Flip: close existing first
             log.warn(`🔄 Manual flip: closing existing ${existing!.side.toUpperCase()} ${sym} first`);
-            await this.closeTrade(sym, `Manual flip: closing ${existing!.side.toUpperCase()} to open ${action.toUpperCase()}`);
+            // v2.0.853-fix2: Tag 'manual' — this is a user-initiated flip, not a
+            //   system consensus close. Without this, inferCloseReason may classify
+            //   it as 'sl_tp' if the exit price happens to be near SL/TP, polluting
+            //   the learning weight (should be 0.5× for manual, not 1.0× for sl_tp).
+            await this.closeTrade(sym, `Manual flip: closing ${existing!.side.toUpperCase()} to open ${action.toUpperCase()}`, 'manual');
           }
 
           // Fetch current price
@@ -4829,7 +4837,17 @@ ${recentExamples}
 
     // v2.0.822: Analysis mode — do NOT close positions. The matrix already
     // encodes the close/flip recommendation for the user's client to act on.
-    if (this.analysisMode) {
+    // v2.0.823: Dual mode — analysis + execution. The backend writes the
+    // matrix to Supabase AND executes closes (paper/real) in the same cycle.
+    // v2.0.853-fix: The guard must check `!this.dualMode` — same as
+    // executeTrade(). Without this, ANALYSIS_MODE='dual' (production default)
+    // sets analysisMode=true, and closeTrade() silently returns without
+    // closing ANY position. SL/TP triggers, consensus closes, thesis-
+    // invalidation force-closes, manual closes, direction flips — ALL skipped.
+    // Positions cannot exit → winners give back gains → losers run unchecked.
+    // This is the exact same class of bug as executeTrade's guard (which
+    // correctly checks `this.analysisMode && !this.dualMode`).
+    if (this.analysisMode && !this.dualMode) {
       log.info(`📊 [analysis-mode] CLOSE ${sym} skipped — recommendation written to DB. thesis: ${exitThesis.slice(0, 60)}`);
       return true;
     }
@@ -7158,7 +7176,14 @@ ${recentExamples}
             if (reconciled.includes(sym)) {
               log.info(`🔒 Closing ${sym} on HL (reconciled locally but still open on exchange)`);
               try {
-                await this.closeTrade(sym, 'Reconciliation close: position reconciled locally but still open on HL');
+                // v2.0.853-fix2: Tag 'reconciliation' — this is a reconciliation-driven
+                //   close (position disappeared locally but may still be on HL), not an
+                //   SL/TP trigger. Without this, inferCloseReason may classify it as
+                //   'sl_tp' if the exit price is near SL/TP, giving it full learning
+                //   weight (should be 1.0× for reconciliation, but the closeReason must
+                //   be correct for RIL CloseReasonAggregator + trade-audit to distinguish
+                //   "exchange reconciliation" from "SL too tight").
+                await this.closeTrade(sym, 'Reconciliation close: position reconciled locally but still open on HL', 'reconciliation');
               } catch (err) {
                 log.error(`Failed to close ${sym} on HL: ${err instanceof Error ? err.message : String(err)}`);
               }
