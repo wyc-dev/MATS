@@ -4,7 +4,135 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
-## v2.0.854-attack3: recomputePnL / trackMAEMFE / computeSLTP / recalculateEquity NaN defense (5 vulnerabilities)
+## v2.0.855-fix: Q-RL Alpha Discovery backfill integration — the table was NEVER populated (9 tests)
+
+**Bug (root-cause confirmation)**: `q-rl-table.json` was permanently empty (`values: {}`, `visits: {}` after 79 cycles) for TWO stacked reasons — (1) the v2.0.855 fix made aligned shadows open on real-trade cycles, but (2) `backfillFromExpRecords()` fed OLR/NA/AttnRes/PatternCluster/CHR/ComboTracker/MetaLearner/CausalReasoner/ComponentAttribution and **NEVER Q-RL**. The Q-RL table had NO cold-start prior at all: its only data source was live aligned-shadow resolution, so before the first aligned shadow resolved (which itself was blocked by the pre-v2.0.855 `didTradeExecute` skip), the table stayed empty forever → `discoverPatterns()` found nothing → DCS had zero discovery evidence.
+
+**Fix (`src/index.ts` `backfillFromExpRecords`)**: Every EXP record with `marketFeatures` (1072 of 1674 historical trades) now feeds `qrlTable.update(features, side, pnlPct)` using the SAME feature snapshot built for OLR — `makeKey()` reads regimeOrdinal/volatility/momentumShort/fundingRate, all present (momentumShort=0 neutral for EXP records which don't store momentum). Reward = `pnlPct` (margin-relative return), matching the live aligned-shadow reward definition. Added `qrlFed` counter to the backfill summary log.
+
+### Tests
+
+`tests/v2.0.855-qrl-backfill.test.ts` (9 tests):
+- **Table population**: empty table has 0 active cells (reproduces bug); feeding EXP-shaped records creates active cells; discovery scan finds candidate patterns after backfill (min-visits respected)
+- **Persistence**: backfilled cells survive save → load → query; empty/null/undefined load doesn't crash
+- **Input hardening**: NaN/Infinity reward → sanitized to 0 (no corruption); missing features → neutral bins; negative pnlPct creates negative Q (correct learning)
+
+**Result**: Full suite 1896 tests → 1884 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated, confirmed failing before all v2.0.855 commits). `tsc --noEmit` zero errors.
+
+
+---
+
+## v2.0.855-attack2: Q-RL regime binning INVERTED — 6 of 7 regimes mis-binned (12 tests)
+
+Adversarial attack on the v2.0.855-fix Q-RL backfill found the DEEPER corruption it was about to load: `binRegime()` boundaries in `q-rl-table.ts` were **inverted vs `regimeToOrdinal()`** (olr-engine.ts):
+
+### V8 (CRITICAL): regime mapping completely misaligned — every Q-RL cell label corrupt
+
+**Bug**: `regimeToOrdinal()` encodes regimes as chaotic=0.1, low_vol=0.2, volatile=0.3, mean_reverting=0.5, breakout=0.6, trending_bear=0.8, trending_bull=1.0. But `binRegime()` bucketed: <=0.35→mean_reverting, <=0.55→low_vol, <=0.8→trending_bull, else→trending_bear.
+
+| regimeToOrdinal | OLD binRegime bin | CORRECT bin |
+|:----------------|:------------------|:------------|
+| low_volatility (0.2) | **mean_reverting** ❌ | low_vol |
+| mean_reverting (0.5) | **low_vol** ❌ | mean_reverting |
+| trending_bull (1.0) | **trending_bear** ❌ | trending_bull |
+| trending_bear (0.8) | **trending_bull** ❌ | trending_bear |
+| volatile (0.3) | mean_reverting ❌ | low_vol |
+| breakout (0.6) | low_vol ❌ | mean_reverting |
+| chaotic (0.1) | chaotic ✓ | chaotic |
+
+6 of 7 regimes landed in the WRONG bucket — bull and bear were **swapped**. Every Q-RL cell (270-cell table) carried a wrong regime label; every discovery pattern attributed edge to the wrong market regime. The v2.0.855-fix backfill was about to load 1072 EXP trades into these corrupted cells, permanently teaching Q-RL that "mean_reverting is where low_volatility wins" (and vice versa).
+
+**Fix (`src/evolution/q-rl-table.ts` `binRegime`)**: Aligned boundaries with the ordinal encoding — chaotic[0,0.15], low_vol(0.15,0.35], mean_reverting(0.35,0.65], trending_bear(0.65,0.85], trending_bull(0.85,1.0]. All 7 regimes now land in semantically correct buckets.
+
+### Tests
+
+- `tests/v2.0.855-attack.test.ts` +10 (V8 suite): all 7 regimes map to correct bins; volatile→low_vol; breakout→mean_reverting; unknown→neutral mean_reverting; 0.85→bear / 0.86→bull boundary; EXP round-trip produces 5 DISTINCT bins (no bull/bear conflation)
+- `tests/q-rl-attack.test.ts` updated: boundary test names + 270-cell regime set fixed (old set collided 0.45/0.65 in mean_reverting → 216 cells)
+- `tests/q-rl-creative-attacks.test.ts` updated: `makeFeatures` regimeOrdinal 0.8→1.0 (0.8 is now trending_bear, hardcoded keys reference trending_bull)
+
+**Result**: Full suite 1908 tests → 1896 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` zero errors.
+---
+
+## v2.0.855-attack: Adversarial attack on the v2.0.855 learning-pipeline repair — 7 real vulnerabilities found & fixed (23 attack tests)
+
+Adversarial attack on the v2.0.855 fix itself (aligned-shadow-always-open, shadow_blind counter, thesis-invalidation closeReason) found **7 real vulnerabilities** — all in the NEW code's defense boundaries:
+
+### V1 (CRITICAL): String `'5'` passes `?? 0` in OLR load → string-typed counter
+
+**Bug**: `migrateModel()` used `m.shadowBlindSamples ?? 0` — `??` only catches null/undefined, NOT strings. A state file with `shadowBlindSamples: "5"` loaded as `typeof string`, poisoning `getAllModelStats()`, save/load round-trips, and agent context (string vs number display corruption). Same bug class as the v2.0.218 NaN rejection pitfall.
+
+**Fix**: All counters (`nSamples`, `shadowSamples`, `shadowBlindSamples`, `paperSamples`, `realSamples`, `backfillSamples`, `newestSampleTs`) now sanitized via `typeof === 'number' && Number.isFinite && >= 0` — rejects strings, negatives, NaN, ±Infinity.
+
+### V2 (HIGH): Negative sample counts pass `?? 0`
+
+**Bug**: `shadowBlindSamples: -5` loaded as -5 → negative sample counts in agent context (impossible state, misleads confidence calibration).
+
+**Fix**: Same sanitizer as V1 (rejects `>= 0` violation).
+
+### V3 (HIGH): `nSamples` accepts strings/NaN → query gate bypass
+
+**Bug**: `nSamples: 'NaN'` loaded as string → `model.nSamples < minSamplesForQuery` comparison coerced, corrupting the cold-start query gate.
+
+**Fix**: Sanitized with the same guard.
+
+### V4 (CRITICAL): Empty string `''` passes `closeReason ?? inferCloseReason()`
+
+**Bug**: `closeReason ?? inferCloseReason(...)` — `'' ?? x === ''` (empty string is NOT null/undefined), so `''` was stored as the TradeRecord closeReason → `computeLearningWeight('')` fell through to default 1.0, silently inflating a 0.3× thesis_invalidation close to full weight.
+
+**Fix**: New `sanitizeCloseReason()` whitelist (VALID_CLOSE_REASONS: sl_tp / consensus / manual / reconciliation / exchange_closed / thesis_invalidation) applied at BOTH storage points (`closePosition` + `closeExchangePosition`). Invalid → undefined → deterministic inference.
+
+### V5 (CRITICAL): Typo `thesis_invalid` vs `thesis_invalidation` → 3.3× learning-weight explosion
+
+**Bug**: Any future call site typos the reason (e.g. `'thesis_invalid'`) → computeLearningWeight falls through to 1.0 instead of 0.3. A silent typo on any new close path would have tripled learning weight with zero error.
+
+**Fix**: Whitelist rejects unknown reasons at the storage boundary — a typo can never reach computeLearningWeight.
+
+### V6 (HIGH): Garbage closeReason stored on TradeRecord with no validation
+
+**Bug**: `closePosition(sym, price, 'mispelled')` stored the garbage string → RIL CloseReasonAggregator created fake close-reason groups → polluted close-reason stats fed to Meta-Agent.
+
+**Fix**: Same whitelist — only the 6 canonical reasons can be stored.
+
+### V7 (HIGH): Aligned-shadow `weightedDirection` passed Q-RL exploration action instead of true LLM lean
+
+**Bug**: `openAlignedShadow(..., rlAction, leanScore, ...)` passed `rlAction` (a Q-RL ε-greedy exploration action, possibly OPPOSITE to the LLM consensus) as the factorTag's `weightedDirection`. When exploration diverged from consensus, the factor tag recorded "agent signal X drove this shadow" with a direction no agent voted for → RP Edge Store factor-tagged queries learned corrupted semantics.
+
+**Fix**: `weightedDirection` now receives `leanSide` (the TRUE sub-agent weighted lean). The actual shadow side remains `rlAction` (exploration may still diverge, as designed) — only the metadata now records which agent signal actually drove the consensus lean.
+
+### Attack tests
+
+`tests/v2.0.855-attack.test.ts` (23 tests, 3 suites): V1-V3 counter sanitization (string/negative/NaN/Infinity rejection + valid survival), V4-V6 closeReason whitelist (empty/typo/garbage/casing/whitespace rejection + all-valid pass-through + learning-weight chain intact), V7 regression guard (aligned/blind counters, persistence round-trip, getAllModelStats exposure, NaN-feature sanitization).
+
+---
+
+## v2.0.855: Learning pipeline repair — aligned shadow on real-trade cycles + shadow_blind OLR counter + thesis-invalidation closeReason (3 severed pipes, 18 attack tests)
+
+### fix1: Aligned shadow NEVER opened on real-trade cycles — Q-RL table permanently empty (CRITICAL)
+
+**Bug**: `src/index.ts` aligned-shadow loop had `if (didTradeExecute) continue;` — any cycle where the consensus produced buy/sell (the most decision-rich cycles!) skipped the aligned shadow. Q-RL ONLY updates from aligned shadows (`index.ts` shadow-resolution loop gates on `sr.shadowType === 'aligned'`), so the combination left `q-rl-table.json` permanently empty (`values: {}`, `visits: {}` after 79 cycles). DCS (Discovery Confidence Score) therefore had zero discovery evidence → the three risk profiles made identical decisions despite the v2.0.836 claim of differentiation.
+
+**Fix**: Removed the `didTradeExecute` skip. Aligned shadow now ALWAYS opens — including on real-trade cycles — providing the counterfactual "what would standard SL/TP config have done vs the real trade's actual SL/TP". Q-RL ε-greedy `selectAction` (cold-start → follow LLM) still applies. Dedup (`hasAlignedShadow` per symbol+cycle) preserved. `didTradeExecute` variable deleted (was only used for the skip).
+
+### fix2: OLR `shadow_blind` samples hit NO counter — shadow learning invisible (CRITICAL)
+
+**Bug**: `feedTrade()` accepted `source='shadow_blind'` and fed it to SGD at 0.1× weight, but the counter block only handled `'shadow'`/`'paper'`/`'real'`/`'backfill'` — `shadow_blind` hit NO counter. The v2.0.834 comment promised "blind shadow count tracked separately" but never implemented it. Result: BTC long OLR model showed `shadowSamples=0` while 54,270 paper samples dominated — blind shadow learning was invisible and indistinguishable from "no shadow signal at all".
+
+**Fix**: Added `shadowBlindSamples` counter to `OLRModel` + `makeEmptyModel()` + `load()` (backward-compat `?? 0`) + `feedTrade()` short/long branches + `sourceBreakdown.shadow_blind` (was hardcoded 0) + `OLRSymbolStats.longSource/shortSource`. Aligned `'shadow'` → `shadowSamples`; blind `'shadow_blind'` → `shadowBlindSamples`. Gradient weight unchanged (0.1×) — the counter is observability-only, restoring per-source visibility.
+
+### fix3: Thesis-invalidation force-closes passed NO closeReason — mislabeled as SL/TP (CRITICAL)
+
+**Bug**: Two `closeTrade()` call sites in the thesis-invalidation force-close paths (no-price-data + structure-confirmed) omitted the explicit closeReason. `inferCloseReason` then classified the exit by price vs SL/TP → 72/167 real closes mislabeled as `'sl_tp'` → `computeLearningWeight` applied wrong weights → OLR/EXP/RIL learned from wrong close context ("SL too tight" vs "thesis wrong" indistinguishable).
+
+**Fix**: Both call sites now pass `'thesis_invalidation'` explicitly, matching the v2.0.851/853 convention.
+
+### Attack tests
+
+`tests/v2.0.855-learning-pipeline-attack.test.ts` (18 tests, 3 suites):
+- **Fix B suite (8 tests)**: aligned feed → shadowSamples only; blind feed → shadowBlindSamples only; mixed feeds independent; persistence round-trip; legacy-state backward compat (no shadowBlindSamples → 0); `getAllModelStats` longSource/shortSource exposure; NaN feature sanitization still increments counter
+- **Fix A suite (5 tests)**: consensusAction=buy/sell (real-trade cycles) → aligned shadow opens; hold → unchanged; de-dup preserved; resolved aligned shadow (consensusAction=buy) feeds OLR with full-weight `'shadow'` source
+- **Fix D suite (6 tests)**: explicit `thesis_invalidation` overrides inference at SL level + on winning exit; persists through `closeExchangePosition` trade records; inference guards NOT broken (no-reason still infers sl_tp / reconciliation)
+
+**Result**: Full suite 1864 tests → 1852 pass, 12 pre-existing failures in `v2.0.854-attack2-nan-price.test.ts` (gitignored; references non-existent `getBalance()` — unrelated, confirmed failing before this change). `tsc --noEmit` zero errors.
 
 Adversarial attack on the v2.0.854-attack2 safePrice/safeQuantity fix found that `recomputePnL`, `trackMAEMFE`, `computeSLTP`, and `recalculateEquity` had NO defense-in-depth — while `updatePosition`/`softUpdatePosition` guard their inputs, the shared helpers themselves accepted NaN/Infinity/0/negative `currentPrice` and `unrealizedPnl` without sanitization:
 

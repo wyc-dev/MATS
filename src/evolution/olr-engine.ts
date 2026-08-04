@@ -82,6 +82,11 @@ export interface OLRModel {
   welfordCount: number[];
   /** Per-source-type sample counts (for agent context — no weighting, just info) */
   shadowSamples: number;
+  /** v2.0.855: Blind shadow samples (0.1× weight) tracked separately from
+   *  aligned shadow samples — v2.0.834 declared "tracked separately" but
+   *  feedTrade never incremented a counter, so blind samples were invisible
+   *  while aligned samples were conflated. This counter restores the split. */
+  shadowBlindSamples: number;
   paperSamples: number;
   realSamples: number;
   /** Cold-start backfill samples (historical candle simulation). Tracked
@@ -202,9 +207,9 @@ export interface OLRSymbolStats {
   shortPWin: number;
   /** Timestamp of the newest sample across either side (0 if no samples). */
   newestSampleTs: number;
-  /** Per-side source breakdown (shadow / paper / real / backfill sample counts). */
-  longSource: { shadow: number; paper: number; real: number; backfill: number };
-  shortSource: { shadow: number; paper: number; real: number; backfill: number };
+  /** Per-side source breakdown (shadow / shadow_blind / paper / real / backfill sample counts). */
+  longSource: { shadow: number; shadow_blind: number; paper: number; real: number; backfill: number };
+  shortSource: { shadow: number; shadow_blind: number; paper: number; real: number; backfill: number };
 }
 
 // ─── Config ───
@@ -302,6 +307,7 @@ function makeEmptyModel(): OLRModel {
     m2: new Array(D).fill(0),
     welfordCount: new Array(D).fill(0),
     shadowSamples: 0,
+    shadowBlindSamples: 0,
     paperSamples: 0,
     realSamples: 0,
     backfillSamples: 0,
@@ -356,16 +362,22 @@ export class OLREngine {
     };
     return {
       weights,
-      nSamples: m.nSamples ?? 0,
+      // v2.0.855-attack: Sanitize ALL counters on load — `?? 0` only catches
+      // null/undefined, NOT strings ('5'), negatives (-5), NaN, or Infinity.
+      // A poisoned counter (string/negative) corrupts getAllModelStats +
+      // save/load round-trips + agent context. Number.isFinite + >= 0 rejects
+      // every invalid form; nSamples additionally can't exceed a sane cap.
+      nSamples: (typeof m.nSamples === 'number' && Number.isFinite(m.nSamples) && m.nSamples >= 0) ? m.nSamples : 0,
       mean: padArray(m.mean, 0),
       m2: padArray(m.m2, 0),
       // Backward compat: old state stored a single number; broadcast to all features.
       welfordCount: padArray(m.welfordCount, typeof m.welfordCount === 'number' ? m.welfordCount : 0),
-      shadowSamples: m.shadowSamples ?? 0,
-      paperSamples: m.paperSamples ?? 0,
-      realSamples: m.realSamples ?? 0,
-      backfillSamples: m.backfillSamples ?? 0,
-      newestSampleTs: m.newestSampleTs ?? 0,
+      shadowSamples: (typeof m.shadowSamples === 'number' && Number.isFinite(m.shadowSamples) && m.shadowSamples >= 0) ? m.shadowSamples : 0,
+      shadowBlindSamples: (typeof m.shadowBlindSamples === 'number' && Number.isFinite(m.shadowBlindSamples) && m.shadowBlindSamples >= 0) ? m.shadowBlindSamples : 0,
+      paperSamples: (typeof m.paperSamples === 'number' && Number.isFinite(m.paperSamples) && m.paperSamples >= 0) ? m.paperSamples : 0,
+      realSamples: (typeof m.realSamples === 'number' && Number.isFinite(m.realSamples) && m.realSamples >= 0) ? m.realSamples : 0,
+      backfillSamples: (typeof m.backfillSamples === 'number' && Number.isFinite(m.backfillSamples) && m.backfillSamples >= 0) ? m.backfillSamples : 0,
+      newestSampleTs: (typeof m.newestSampleTs === 'number' && Number.isFinite(m.newestSampleTs) && m.newestSampleTs >= 0) ? m.newestSampleTs : 0,
       recentTrades: Array.isArray(m.recentTrades) ? m.recentTrades.slice(-20) : [],
       // v2.0.229 Fix A: Purge backfill-poisoned calibration bins.
       // v2.0.228 stopped NEW backfill from entering bins, but OLD backfill data
@@ -677,7 +689,12 @@ export class OLREngine {
       this.sgdUpdate(models.short, xNorm, outcome, srcWeight, liveSamples);
       models.short.nSamples++;
       models.short.newestSampleTs = ts;
+      // v2.0.855: Restore the shadow/shadow_blind split the v2.0.834 comment
+      // promised. aligned 'shadow' → shadowSamples; blind 'shadow_blind' →
+      // shadowBlindSamples (0.1× gradient weight unchanged — counter is
+      // observability-only, preserving per-source visibility for agent context).
       if (source === 'shadow') models.short.shadowSamples++;
+      else if (source === 'shadow_blind') models.short.shadowBlindSamples++;
       else if (source === 'paper') models.short.paperSamples++;
       else if (source === 'real') models.short.realSamples++;
       else if (source === 'backfill') models.short.backfillSamples++;
@@ -698,7 +715,9 @@ export class OLREngine {
       this.sgdUpdate(models.long, xNorm, outcome, srcWeight, liveSamples);
       models.long.nSamples++;
       models.long.newestSampleTs = ts;
+      // v2.0.855: Same split for long side (see short side above).
       if (source === 'shadow') models.long.shadowSamples++;
+      else if (source === 'shadow_blind') models.long.shadowBlindSamples++;
       else if (source === 'paper') models.long.paperSamples++;
       else if (source === 'real') models.long.realSamples++;
       else if (source === 'backfill') models.long.backfillSamples++;
@@ -1006,7 +1025,7 @@ export class OLREngine {
 
     const sourceBreakdown = {
       shadow: model.shadowSamples,
-      shadow_blind: 0, // v2.0.834: blind shadow count tracked separately
+      shadow_blind: model.shadowBlindSamples ?? 0,
       paper: model.paperSamples,
       real: model.realSamples,
       backfill: model.backfillSamples,
@@ -1041,8 +1060,8 @@ export class OLREngine {
         longPWin,
         shortPWin,
         newestSampleTs: Math.max(models.long.newestSampleTs, models.short.newestSampleTs),
-        longSource: { shadow: models.long.shadowSamples, paper: models.long.paperSamples, real: models.long.realSamples, backfill: models.long.backfillSamples },
-        shortSource: { shadow: models.short.shadowSamples, paper: models.short.paperSamples, real: models.short.realSamples, backfill: models.short.backfillSamples },
+        longSource: { shadow: models.long.shadowSamples, shadow_blind: models.long.shadowBlindSamples ?? 0, paper: models.long.paperSamples, real: models.long.realSamples, backfill: models.long.backfillSamples },
+        shortSource: { shadow: models.short.shadowSamples, shadow_blind: models.short.shadowBlindSamples ?? 0, paper: models.short.paperSamples, real: models.short.realSamples, backfill: models.short.backfillSamples },
       });
     }
     return result;
