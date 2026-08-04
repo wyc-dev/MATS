@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.843+
+> **作者**: YC Wong · **版本**: 2.0.852+
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 3×3 風險矩陣 → 寫入 Supabase；客戶端按用戶選擇嘅風險等級讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -686,8 +686,17 @@ SL 優先級：                          TP 優先級：
 ATR 只用嚟防止 SL 太窄（SL ≥ 1.5×ATR），唔用嚟推 TP。
 唔強制 R:R——如果 TP 近過 SL，照設。賺少都係賺。
 S/R buffer 按強度加權：strong 0.2%, moderate 0.3%, weak 0.5%。
-SL cap 5%, TP cap 10%, TP min 0.3%。
+Per-profile caps（v2.0.836）：aggressive SL 7% / TP 15% / TP min 0.5%；
+moderate SL 5% / TP 10% / TP min 0.3%；conservative SL 3% / TP 6% / TP min 0.2%。
 ```
+
+**Leverage-Aware SL Floor（v2.0.852 fix #A）**：結構性 S/R SL 可以好貼 entry（例如 0.81%）。喺 10x 倉位，0.81% 逆向價格移動會抹走 ~8% margin——正常噪音就可以喺 thesis 兌現前止蝕（SILVER SELL 缺陷：entry $56.82, SL $57.28 = +0.81%，被例行噪音止蝕）。`computeSmartSLTP` 依家接受 `leverage` 參數，將 MINIMUM SL 距離按槓桿放大：`levFactor = 1.0 + (leverage - 1) × 0.15`（1x→1.0, 5x→1.6, 10x→2.35, 20x→3.85），`levFloorPct = min(0.05, max(slFloorPct, 0.01 × levFactor))`。只係 FLOOR——永遠唔會收窄結構性 SL，下游 momentum/exec-lens widening 仍然疊加。槓桿 clamp [1, 50]。
+
+**MFE-Calibrated TP/SL（v2.0.852 fix #D）**：`computeSmartSLTP` 接受 `mfeCalibration`（由 `src/analysis/mfe-calibrator.ts` 從真實 1h/5m 蠟燭分佈計算，免疫被污染嘅 TradeRecord.MFE 欄位）：
+1. TP target ← 中位數有利 1h extension ×0.8（現實盈利目標，唔係觸及唔到嘅 5× MFE）。只喺結構性 S/R TP 瞄得太遠時收窄（「TP 設太遠 → giveback」失敗）。
+2. TP cap ← 90th-percentile extension（數據驅動上限，取代固定 10% 上限——只喺數據話價格好少行得更遠時生效；固定 cap 仍然係絕對 backstop）。
+3. SL floor ← 95th-percentile adverse 5m excursion（噪音 floor，高槓桿倉位唔會被例行噪音止蝕）。
+方向感知：BUY 用 `tpTargetLongPct`/`tpCapLongPct`/`slFloorLongPct`；SELL 用 `*ShortPct`。全部係 FLOOR/CEILING——唔會移除結構性 S/R 放置，只修正過度樂觀/過度緊嘅值。Caller 提供嘅值 clamp 到 sane bounds（tpTarget ∈ [0.003, 0.20], tpCap ∈ [0.005, 0.30], slFloor ∈ [0.005, 0.15]）。TP 永遠唔可以 cross SL（R:R ≥ 0，v2.0.852 attack fix #4）。
 
 **Momentum + Execution-Lens + Confidence SL Widening（v2.0.849）**：呢啲保護原本只喺 dead code `computeATRSLTP`（trading-manager 從未 call），而家移植到 live `computeSmartSLTP`：
 
@@ -1186,7 +1195,7 @@ OLLAMA_MODEL_DEFAULT=deepseek-v4-flash:0731-cloud
 # 'true'  — 僅計算訊號 + 寫入 Supabase，唔下單（純訊號後端）
 # 'dual'  — 訊號 + 執行（寫 Supabase + paper/real 交易）← 生產預設
 # 'false' — 僅執行，唔寫 Supabase（legacy 獨立交易模式）
-ANALYSIS_MODE=true
+ANALYSIS_MODE=dual
 
 # ═════════════════════════════════════════════════════════════
 # SUPABASE — 訊號輸出目標（v2.0.822+）

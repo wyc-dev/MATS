@@ -164,6 +164,29 @@ const cache = new Map<string, { result: MfeCalibrationResult | null; ts: number 
 const CACHE_TTL_MS = 15 * 60_000;
 /** In-flight promise dedup: prevents duplicate concurrent fetches for the same symbol. */
 const inflight = new Map<string, Promise<MfeCalibrationResult | null>>();
+/**
+ * Timeout for the whole calibration fetch (both frames). The calibrator runs
+ * inside the trade-open path (executeTrade → computeSmartSLTP). If HL candles
+ * are slow, we must FAIL OPEN (return null → default SL/TP) rather than block
+ * the order. `hlRateLimitedFetch` has a 15s per-attempt timeout; this bounds
+ * the combined 1h+5m fetch so a stuck symbol cannot stall a live trade.
+ */
+const FETCH_TIMEOUT_MS = 8_000;
+
+/** Race a promise against a timeout. Resolves undefined on timeout. */
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /** Fetch a single candle range via MarketAgent.hlFetch. */
 async function fetchCandles(symbol: string, interval: string, count: number): Promise<Candle[]> {
@@ -190,7 +213,8 @@ async function fetchCandles(symbol: string, interval: string, count: number): Pr
 
 /**
  * Get the MFE calibration for a symbol, cached 15 min.
- * Thread-safe (in-flight dedup). Returns null on cold-start / fetch failure.
+ * Thread-safe (in-flight dedup). Returns null on cold-start / fetch failure /
+ * timeout (always fail-open — never blocks the trade-open path).
  */
 export async function getMfeCalibration(symbol: string): Promise<MfeCalibrationResult | null> {
   const norm = symbol.includes(':') ? symbol : symbol.toLowerCase();
@@ -203,10 +227,17 @@ export async function getMfeCalibration(symbol: string): Promise<MfeCalibrationR
 
   const promise = (async () => {
     try {
-      const [candles1h, candles5m] = await Promise.all([
+      const fetched = await withTimeout(Promise.all([
         fetchCandles(symbol, '1h', 100),
         fetchCandles(symbol, '5m', 100),
-      ]);
+      ]), FETCH_TIMEOUT_MS);
+      if (!fetched) {
+        log.warn(`[mfe-calibrator] ${symbol}: fetch timed out after ${FETCH_TIMEOUT_MS}ms — fallback to default SL/TP`);
+        cache.set(norm, { result: null, ts: Date.now() });
+        return null;
+      }
+      const candles1h = fetched[0];
+      const candles5m = fetched[1];
       // 1h forward window ≈ 12 candles (12h swing); 5m forward window ≈ 100
       // candles (≈ 8.3h). Each frame yields both UP and DOWN extensions so
       // BUY and SELL can be calibrated against the correct direction.
