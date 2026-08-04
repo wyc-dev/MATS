@@ -105,6 +105,60 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 
 ## Architecture Overview
 
+### How the System Fits Together
+
+```mermaid
+flowchart TB
+    subgraph INPUTS["📡 Data Sources"]
+        HL["Hyperliquid WS + REST<br/>(l2Book, trades, clearinghouseState, userFills)"]
+        NEWS["News Feeds<br/>(Google News, GDELT, Bing)"]
+        USER["User Preferences<br/>(Terminal Agent → Root Command Prompt)"]
+    end
+
+    subgraph COGNITION["🧠 Cognitive Layer (HACP)"]
+        TA["Terminal Agent<br/>(rule check)"]
+        AGENTS["5 Sub-Agents<br/>Fractal · On-Chain · OLR · News · Risk"]
+        SKEPTICS["Skeptics<br/>(logic audit + thesis veto)"]
+        META["Meta-Agent<br/>(arbitration + entryThesis)"]
+        TA --> AGENTS --> SKEPTICS --> META
+    end
+
+    subgraph EVOLUTION["🧬 Cognitive Evolution Pipeline (20+ layers)"]
+        STAT["Statistical<br/>OLR · Shadow · First-Passage · Combo WR"]
+        LEARNED["Learned Embeddings<br/>Numeric Autoencoder · AttnRes Cycle-History"]
+        MEM["Memory<br/>EXP · RIL · Anti-Pattern · EM Cycle · Replay Buffer"]
+        EDGE["Edge Validation<br/>(alpha lie detector)"]
+        ALPHA["Q-RL Alpha Discovery"]
+        SLTP["Smart SL/TP + MFE Calibration"]
+        CLOSE["Close-Context Learning"]
+    end
+
+    subgraph OUTPUT["📤 Signal Output"]
+        MATRIX["3×3 Analysis Matrix<br/>(risk profile × position state)"]
+        SUPABASE[("Supabase<br/>asset_analyses")]
+        CLIENT["mats_app Client<br/>(risk selection + execution)"]
+    end
+
+    subgraph EXECUTION["⚙️ Execution Layer (dual mode)"]
+        TM["Trading Manager<br/>(paper / real)"]
+        HL_EX["Hyperliquid Exchange"]
+    end
+
+    INPUTS --> COGNITION
+    COGNITION --> EVOLUTION
+    EVOLUTION --> SLTP
+    EVOLUTION --> CLOSE
+    COGNITION --> MATRIX
+    MATRIX --> SUPABASE --> CLIENT
+    COGNITION -->|execute| TM --> HL_EX
+    HL_EX -->|fills + PnL| CLOSE
+    CLOSE -->|learning weight| EVOLUTION
+```
+
+**Data flow at a glance:** market data + news + user prefs → HACP agents debate → evolution pipeline scores the edge → 3×3 matrix written to Supabase → the client (or the backend in dual mode) executes → trade results feed back through close-context learning to improve the next decision.
+
+### Layered View
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │   Layer 1: Strategic (Terminal Agent)                        │
