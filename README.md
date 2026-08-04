@@ -80,26 +80,26 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 
 ## Why MATS is Different
 
-- **🤖 Terminal Agent + Root Command Prompt** — users type natural language trading preferences (e.g., "only trade on Monday GMT"). LLM integrates them into a Root Command Prompt. Before each cycle, rules are checked — if a rule fails, the entire cycle is aborted (no token cost). After the Meta-Agent decides, the Terminal Agent verifies that the decision matches user preferences.
-- **🧠 Entry Thesis System** — every trade needs a validated `[1h: ...] [1d: ...]` rationale. Meta-Agent generates it; Skeptics stress-test it.  No thesis → no trade.
-- **🛡️ Skeptics veto** — an AI stress-tests every position's logic, data consistency, and dark-psychology (whale manipulation?) before execution. Approve-first: rejects only on concrete money-losing flaws. Dark-psychology check escalates from LIGHTWEIGHT to **MANDATORY** when |momentum| > 2% — must articulate a specific reversal catalyst or reject.
-- **🧬 Cognitive Evolution Pipeline** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, **which historical cycles** are most relevant right now — through a stack of learned representations (15 active layers + 1 Edge Validation + 1 Q-RL Alpha Discovery, v2.0.835).
-- **🔬 Numeric Autoencoder** — a pure-TypeScript MLP (11→16→8 encoder + contrastive loss) learns a non-linear embedding of market conditions. "Similar market conditions" is no longer handcrafted min-max cosine — it's a learned representation where "similar" means "historically led to similar outcomes." Cold-start safe: min-max fallback until 200+ samples + validation pass.
-- **🌀 AttnRes Cycle-History Retrieval** — transferred from Kimi K3's Attention Residuals (arXiv 2603.15031). The conditional win-rate candidate is no longer a single current snapshot — it's a **softmax-weighted blend over 80 cycles of history + entry-time state**, with a learned pseudo-query deciding which historical periods matter most right now. Entry-time regime retains persistent weight (K3 embedding persistence). Block AttnRes compresses 80 cycles → 8 blocks for O(Nd) memory.
-- **⚔️ Dual Pseudo-Query Specialization** — two learned queries per symbol, inspired by K3's pre-attention vs pre-MLP layer specialization: **wDecision** (broad receptive field, trained on trade PnL) for conditional win-rate + thesis context; **wExecution** (sharp/recent-biased, trained on SL/TP stop-out outcomes) for SL/TP survival context.
-- **🎯 Execution-Lens SL/TP** — `computeATRSLTP` uses the execution-mode AttnRes blend as the **PRIMARY** SL/TP signal. wExecution has learned which regime patterns precede stop-outs — when the current regime matches, SL widens automatically (up to 6%), with volatility scaling + entropy confidence damping. Falls back to ATR + raw momentum when wExecution is untrained (cold-start).
-- **🚨 Anti-Pattern Memory** — failed trade lessons are clustered (cosine 0.78) into anti-pattern classes. When a new candidate matches a known failure cluster, Skeptics sees: "Anti-pattern #3 [78% match]: counter-momentum SELL stop-out — 6 losses, avg -7.2%." Repeating a known failure pattern is worse than a novel loss.
-- **🔒 Conditional WR Soft Gate** — code-level conviction penalty: if the conditional win-rate (learned embedding + AttnRes blend) is < 20%, conviction is penalized +35%. This runs even if the LLM ignores the prompt — **the code enforces what the prompt suggests**.
-- **🎯 Combo WR Gate** (v2.0.221) — tracks (symbol × side × regime) win rate with Wilson score lower bound. Injects PRE-thesis warning into Meta-Agent. WR<25% → +50% conviction penalty. Stacks with conditional WR + loss-streak gates.
-- **🔢 OLR P(win) × Consensus Discount** (v2.0.224) — multiplicative confidence discount: `effectiveConfidence = consensus × (0.3 + 0.7 × P(win))`. P(win)=29% × 90% consensus = 45% → HOLD. Fixes the gap where overconfident agents bypassed the additive threshold raise. Cold-start safe (no OLR data → no discount).
-- **🎯 Plan G Dynamic Threshold** (v2.0.227) — the conviction gate's threshold dynamically adjusts [45-55%] based on 5 objective performance factors (rolling WR, idle cycles, drawdown, rolling Sharpe, regime) with hysteresis. Penalties are **multiplicative** (not additive to threshold) with automatic idle-based decay over 30 cycles. Fixes the death spiral where additive penalties (+30%) stacked with P(win) discount to make trading mathematically impossible (44.5% vs 80%). 6 fairness guarantees: multi-factor balance, symmetric design, sample-size requirement, hysteresis, hard cap, fact-driven.
-- **⭐ Edge Validation Layer** (v2.0.833) — the system's first **alpha "lie detector"**. For the first time, MATS can quantitatively answer "do we have edge?". A 5-component regime-weighted edgeScore (directionalEdge from shadow WR + learnedEdge from OLR + comboEdge from Wilson LB + pathEdge from First-Passage + realizedEdge from rolling WR×Sharpe) per (symbol × regime), with perturbation + cross-time stability gating. Risk-profile-conditional edge via MiniLM vector DB. Industry-standard backtest validation: Sharpe, Sortino, Calmar, Profit Factor, bootstrap p-value (Politis & Romano 1994), Deflated Sharpe Ratio (Bailey & López de Prado 2014), walk-forward IS/OOS split, Information Ratio vs buy-and-hold. Cold-start safe: zero trades → `caution` (never `skip` — the system must be able to trade to accumulate samples).
-- **🧠 Direction-aware learning** — all learning systems filter by direction: SELL candidates only match SELL history, BUY only matches BUY. Per-direction win rates tracked everywhere. Counter-momentum trades require a specific named catalyst — "could reverse" is not enough.
-- **🎯 Smart SL/TP + MFE calibration** (v2.0.852) — institutional SL/TP placement (S/R zones → 50-candle 頂底 → ATR floor) with a **leverage-aware SL floor** (a 10x position gets a wider minimum SL so normal volatility doesn't stop it out) and a **MFE calibrator** that derives the TP target/cap + SL floor from real 1h/5m candle price-extension distributions. Direction-aware for BUY vs SELL. This directly targets the "profit given back" failure — positions reaching +5% MFE then reversing to SL because TP was set too far.
-- **🔒 closeReason integrity + close exit correctness** (v2.0.851-853) — TradeRecord.closeReason is populated end-to-end so close-context learning weights are accurate (a tight-SL loss is weighted 0.3×, not treated as a full market loss). The `closeTrade` dual-mode guard was fixed so position exits are never silently skipped in production (`ANALYSIS_MODE=dual`), and `closePosition` now uses the actual HL fill price rather than a stale WS tick so exit PnL + learning labels are correct.
-- **⚡ HACP protocol** — Terminal Agent checks rules → 5 sub-agents think in parallel (staggered, 60s deadline race), Skeptics audits, Meta-Agent arbitrates, weighted voting consensus, Terminal Agent verifies. 120s hard timeout → HOLD.
-- **💰 Capital preservation first** — every error path defaults to HOLD. SystemGuard (5 layers). Notional-based fees. SL/TP hard safety layers. Configurable max portion + drawdown + daily-loss limits.
-- **⚙️ Trading Setup** — UI config panel for trade mode, cycle period (1-10m), position size, max portion, leverage, asset type, and market selection. Separate from Root Command Prompt (behavioral rules only).
+- **Terminal Agent + Root Command Prompt** — users type natural language trading preferences (e.g., "only trade on Monday GMT"). LLM integrates them into a Root Command Prompt. Before each cycle, rules are checked — if a rule fails, the entire cycle is aborted (no token cost). After the Meta-Agent decides, the Terminal Agent verifies that the decision matches user preferences.
+- **Entry Thesis System** — every trade needs a validated `[1h: ...] [1d: ...]` rationale. Meta-Agent generates it; Skeptics stress-test it.  No thesis → no trade.
+- **Skeptics veto** — an AI stress-tests every position's logic, data consistency, and dark-psychology (whale manipulation?) before execution. Approve-first: rejects only on concrete money-losing flaws. Dark-psychology check escalates from LIGHTWEIGHT to **MANDATORY** when |momentum| > 2% — must articulate a specific reversal catalyst or reject.
+- **Cognitive Evolution Pipeline** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, **which historical cycles** are most relevant right now — through a stack of learned representations (15 active layers + 1 Edge Validation + 1 Q-RL Alpha Discovery, v2.0.835).
+- **Numeric Autoencoder** — a pure-TypeScript MLP (11→16→8 encoder + contrastive loss) learns a non-linear embedding of market conditions. "Similar market conditions" is no longer handcrafted min-max cosine — it's a learned representation where "similar" means "historically led to similar outcomes." Cold-start safe: min-max fallback until 200+ samples + validation pass.
+- **AttnRes Cycle-History Retrieval** — transferred from Kimi K3's Attention Residuals (arXiv 2603.15031). The conditional win-rate candidate is no longer a single current snapshot — it's a **softmax-weighted blend over 80 cycles of history + entry-time state**, with a learned pseudo-query deciding which historical periods matter most right now. Entry-time regime retains persistent weight (K3 embedding persistence). Block AttnRes compresses 80 cycles → 8 blocks for O(Nd) memory.
+- **Dual Pseudo-Query Specialization** — two learned queries per symbol, inspired by K3's pre-attention vs pre-MLP layer specialization: **wDecision** (broad receptive field, trained on trade PnL) for conditional win-rate + thesis context; **wExecution** (sharp/recent-biased, trained on SL/TP stop-out outcomes) for SL/TP survival context.
+- **Execution-Lens SL/TP** — `computeATRSLTP` uses the execution-mode AttnRes blend as the **PRIMARY** SL/TP signal. wExecution has learned which regime patterns precede stop-outs — when the current regime matches, SL widens automatically (up to 6%), with volatility scaling + entropy confidence damping. Falls back to ATR + raw momentum when wExecution is untrained (cold-start).
+- **Anti-Pattern Memory** — failed trade lessons are clustered (cosine 0.78) into anti-pattern classes. When a new candidate matches a known failure cluster, Skeptics sees: "Anti-pattern #3 [78% match]: counter-momentum SELL stop-out — 6 losses, avg -7.2%." Repeating a known failure pattern is worse than a novel loss.
+- **Conditional WR Soft Gate** — code-level conviction penalty: if the conditional win-rate (learned embedding + AttnRes blend) is < 20%, conviction is penalized +35%. This runs even if the LLM ignores the prompt — **the code enforces what the prompt suggests**.
+- **Combo WR Gate** (v2.0.221) — tracks (symbol × side × regime) win rate with Wilson score lower bound. Injects PRE-thesis warning into Meta-Agent. WR<25% → +50% conviction penalty. Stacks with conditional WR + loss-streak gates.
+- **OLR P(win) × Consensus Discount** (v2.0.224) — multiplicative confidence discount: `effectiveConfidence = consensus × (0.3 + 0.7 × P(win))`. P(win)=29% × 90% consensus = 45% → HOLD. Fixes the gap where overconfident agents bypassed the additive threshold raise. Cold-start safe (no OLR data → no discount).
+- **Plan G Dynamic Threshold** (v2.0.227) — the conviction gate's threshold dynamically adjusts [45-55%] based on 5 objective performance factors (rolling WR, idle cycles, drawdown, rolling Sharpe, regime) with hysteresis. Penalties are **multiplicative** (not additive to threshold) with automatic idle-based decay over 30 cycles. Fixes the death spiral where additive penalties (+30%) stacked with P(win) discount to make trading mathematically impossible (44.5% vs 80%). 6 fairness guarantees: multi-factor balance, symmetric design, sample-size requirement, hysteresis, hard cap, fact-driven.
+- **Edge Validation Layer** (v2.0.833) — the system's first **alpha "lie detector"**. For the first time, MATS can quantitatively answer "do we have edge?". A 5-component regime-weighted edgeScore (directionalEdge from shadow WR + learnedEdge from OLR + comboEdge from Wilson LB + pathEdge from First-Passage + realizedEdge from rolling WR×Sharpe) per (symbol × regime), with perturbation + cross-time stability gating. Risk-profile-conditional edge via MiniLM vector DB. Industry-standard backtest validation: Sharpe, Sortino, Calmar, Profit Factor, bootstrap p-value (Politis & Romano 1994), Deflated Sharpe Ratio (Bailey & López de Prado 2014), walk-forward IS/OOS split, Information Ratio vs buy-and-hold. Cold-start safe: zero trades → `caution` (never `skip` — the system must be able to trade to accumulate samples).
+- **Direction-aware learning** — all learning systems filter by direction: SELL candidates only match SELL history, BUY only matches BUY. Per-direction win rates tracked everywhere. Counter-momentum trades require a specific named catalyst — "could reverse" is not enough.
+- **Smart SL/TP + MFE calibration** (v2.0.852) — institutional SL/TP placement (S/R zones → 50-candle 頂底 → ATR floor) with a **leverage-aware SL floor** (a 10x position gets a wider minimum SL so normal volatility doesn't stop it out) and a **MFE calibrator** that derives the TP target/cap + SL floor from real 1h/5m candle price-extension distributions. Direction-aware for BUY vs SELL. This directly targets the "profit given back" failure — positions reaching +5% MFE then reversing to SL because TP was set too far.
+- **closeReason integrity + close exit correctness** (v2.0.851-853) — TradeRecord.closeReason is populated end-to-end so close-context learning weights are accurate (a tight-SL loss is weighted 0.3×, not treated as a full market loss). The `closeTrade` dual-mode guard was fixed so position exits are never silently skipped in production (`ANALYSIS_MODE=dual`), and `closePosition` now uses the actual HL fill price rather than a stale WS tick so exit PnL + learning labels are correct.
+- **HACP protocol** — Terminal Agent checks rules → 5 sub-agents think in parallel (staggered, 60s deadline race), Skeptics audits, Meta-Agent arbitrates, weighted voting consensus, Terminal Agent verifies. 120s hard timeout → HOLD.
+- **Capital preservation first** — every error path defaults to HOLD. SystemGuard (5 layers). Notional-based fees. SL/TP hard safety layers. Configurable max portion + drawdown + daily-loss limits.
+- **Trading Setup** — UI config panel for trade mode, cycle period (1-10m), position size, max portion, leverage, asset type, and market selection. Separate from Root Command Prompt (behavioral rules only).
 
 ---
 
@@ -128,22 +128,22 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 │   • Close-Context Learning (closeReason+slNarrowed, v2.0.226)│
 │   • Plan G dynamic threshold (5-factor [45-55%] + penalty    │
 │     decay, v2.0.227)                                         │
-│   • ⭐ Edge Validation (v2.0.833): edge-calculator +         │
+│   • Edge Validation (v2.0.833): edge-calculator +           │
 │     execution-tracker + stability-monitor + risk-profile     │
 │     edge-store + backtest-validation (Sharpe/DSR/walk-fwd)   │
-│   • ⭐ Q-RL Alpha Discovery (v2.0.835): 270-cell Q-table +   │
+│   • Q-RL Alpha Discovery (v2.0.835): 270-cell Q-table +      │
 │     ε-greedy + Wilson LB + BH-FDR + Factor-Tagged Aligned    │
 │     Shadow (first component that can DISCOVER new alpha)     │
-│   • ⭐ ANN Index (v2.0.843): IVF + spherical k-means — EXP   │
+│   • ANN Index (v2.0.843): IVF + spherical k-means — EXP      │
 │     vector memory scales to 10k records at ~12% scan rate    │
-│   • ⭐ Asset-Aware Meta-Learner (v2.0.843): symbol → category│
+│   • Asset-Aware Meta-Learner (v2.0.843): symbol → category   │
 │     → global hierarchy — each asset learns its own pattern   │
-│   • ⭐ Component Attribution (v2.0.844-848): proxy credit    │
+│   • Component Attribution (v2.0.844-848): proxy credit       │
 │     assignment — measures which component actually adds edge │
-│   • 🎯 Smart SL/TP (v2.0.852): S/R → 50-candle → ATR floor,  │
+│   • Smart SL/TP (v2.0.852): S/R → 50-candle → ATR floor,     │
 │     leverage-aware SL floor, MFE-calibrated TP target/cap +  │
 │     SL floor (direction-aware for BUY vs SELL)               │
-│   • 🔒 closeReason integrity + closeTrade dual-mode guard    │
+│   • closeReason integrity + closeTrade dual-mode guard       │
 │     (v2.0.851-853): exit closes never silently skipped;      │
 │     closePosition uses actual HL fill price                  │
 │   • Self-Aware Evolution (v2.0.843): Meta-Cognitive          │
@@ -153,9 +153,6 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 │   • RIL Reason Intelligence (pattern clustering + similar    │
 │     trade retrieval + subtle diff LLM analysis)              │
 │   • Trade Incident Panel (MAE/MFE + exitThesis + post-review)│
-│   ⛔ v2.0.833 REMOVED (0 inference call sites): temporal-    │
-│      attention, cross-symbol-backbone, reward-shaping,       │
-│      world-model. ⚠️ PAUSED: active-exploration, bayesian-olr│
 ├──────────────────────────────────────────────────────────────┤
 │   Layer 3: Execution (TypeScript Runtime)                    │
 │   • Hyperliquid WebSocket + REST (9 perpetual DEXs)          │
@@ -216,13 +213,13 @@ Each cycle (1-10 min, user-configurable): Terminal Agent checks rules → 5 sub-
 | **Replay Buffer** | `replay-buffer.ts` | Prioritized Experience Replay — mini-batch retrain to break temporal correlation. |
 | **Close-Context Learning** | `index.ts` + `portfolio.ts` | `computeLearningWeight(closeReason, slNarrowed, isWin)` scales learning by how the trade closed (tight-SL ≠ bad entry). |
 | **Plan G Dynamic Threshold** | `analysis/dynamic-threshold.ts` | Dynamic conviction threshold [45-55%] driven by 5 performance factors with multiplicative penalty decay — self-recovers, never deadlocks. |
-| **⭐ Edge Validation** | `edge/*.ts` | Alpha "lie detector": 5-component regime-weighted edgeScore + stability + backtest validation (Sharpe/DSR/walk-forward). Cold-start `caution`, never `skip`. |
-| **⭐ Q-RL Alpha Discovery** | `evolution/q-rl-table.ts` | First component that can *discover* new alpha — 270-cell Q-table with ε-greedy exploration, Wilson LB, bootstrap p-value, BH-FDR. Factor-Tagged Aligned Shadow. |
-| **⭐ ANN Index** | `evolution/ann-index.ts` | IVF + spherical k-means over 384-d embeddings — EXP memory scales to 10k records at ~12% scan rate. |
-| **⭐ Asset-Aware Meta-Learner** | `evolution/meta-learner.ts` | 3-level feature-weight hierarchy (symbol → category → global) — each asset learns its own pattern; low volume ≠ unreliable. |
-| **⭐ Component Attribution** | `evolution/component-attribution.ts` | Measures which component actually adds edge via proxy credit assignment + label cleanliness. |
-| **⭐ Smart SL/TP + MFE** | `analysis/smart-sltp.ts` + `analysis/mfe-calibrator.ts` | Institutional SL/TP (S/R → 50-candle → ATR) with leverage-aware floor + MFE-derived TP targets, direction-aware. |
-| **⭐ Self-Aware Evolution** | `evolution/meta-calibrator.ts` + `self-improver.ts` + `causal-reasoner.ts` + `meta-learner.ts` | Knows its own accuracy (Brier/ECE), auto-tunes hyperparameters (Thompson bandit), distinguishes causation from correlation (paired-shadow uplift). |
+| **Edge Validation** | `edge/*.ts` | Alpha "lie detector": 5-component regime-weighted edgeScore + stability + backtest validation (Sharpe/DSR/walk-forward). Cold-start `caution`, never `skip`. |
+| **Q-RL Alpha Discovery** | `evolution/q-rl-table.ts` | First component that can *discover* new alpha — 270-cell Q-table with ε-greedy exploration, Wilson LB, bootstrap p-value, BH-FDR. Factor-Tagged Aligned Shadow. |
+| **ANN Index** | `evolution/ann-index.ts` | IVF + spherical k-means over 384-d embeddings — EXP memory scales to 10k records at ~12% scan rate. |
+| **Asset-Aware Meta-Learner** | `evolution/meta-learner.ts` | 3-level feature-weight hierarchy (symbol → category → global) — each asset learns its own pattern; low volume ≠ unreliable. |
+| **Component Attribution** | `evolution/component-attribution.ts` | Measures which component actually adds edge via proxy credit assignment + label cleanliness. |
+| **Smart SL/TP + MFE** | `analysis/smart-sltp.ts` + `analysis/mfe-calibrator.ts` | Institutional SL/TP (S/R → 50-candle → ATR) with leverage-aware floor + MFE-derived TP targets, direction-aware. |
+| **Self-Aware Evolution** | `evolution/meta-calibrator.ts` + `self-improver.ts` + `causal-reasoner.ts` + `meta-learner.ts` | Knows its own accuracy (Brier/ECE), auto-tunes hyperparameters (Thompson bandit), distinguishes causation from correlation (paired-shadow uplift). |
 
 
 **Key design principles:**
