@@ -125,7 +125,7 @@ Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 │     edge-store + backtest-validation (Sharpe/DSR/walk-fwd)   │
 │   • ⭐ Q-RL Alpha Discovery (v2.0.835): 270-cell Q-table +   │
 │     ε-greedy + Wilson LB + BH-FDR + Factor-Tagged Aligned    │
-│     Shadow (first component that can DISCOVER new alpha)    │
+│     Shadow (first component that can DISCOVER new alpha)     │
 │   • ⭐ ANN Index (v2.0.843): IVF + spherical k-means — EXP   │
 │     vector memory scales to 10k records at ~12% scan rate    │
 │   • ⭐ Asset-Aware Meta-Learner (v2.0.843): symbol → category│
