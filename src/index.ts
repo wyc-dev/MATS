@@ -11190,8 +11190,19 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     //   trade count stay local (they mix paper + real history).
     // - If HL balance not yet fetched → null → UI shows '--'.
     const exBal = isRealMode ? this.cachedExchangeBalance : null;
-    const displayBalance = isRealMode ? (exBal ? exBal.free : null) : p.balance;
-    const displayEquity = isRealMode ? (exBal ? exBal.total : null) : p.totalEquity;
+    // v2.0.856-attack4 (H1/H2): guard non-finite HL values — parseFloat of a
+    // malformed HL response ("abc") yields NaN; a NaN balance/equity flows to
+    // the UI and renders "$NaN". Coerce non-finite → null (UI shows '--').
+    // v2.0.856-attack5 (I3): same guard for PAPER branch — a corrupted paper
+    // portfolio (NaN balance from a bad restore) must not flow to the UI.
+    const safeFree = exBal && Number.isFinite(exBal.free) ? exBal.free : null;
+    const safeTotal = exBal && Number.isFinite(exBal.total) ? exBal.total : null;
+    const displayBalance = isRealMode
+      ? safeFree
+      : (Number.isFinite(p.balance) ? p.balance : null);
+    const displayEquity = isRealMode
+      ? safeTotal
+      : (Number.isFinite(p.totalEquity) ? p.totalEquity : null);
     return {
       balance: displayBalance as number,
       initialBalance: p.initialBalance,

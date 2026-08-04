@@ -59,7 +59,18 @@ function main(): void {
   const args = process.argv.slice(2);
   const liveOnly = args.includes('--live-only');
   const minSamplesIdx = args.indexOf('--min-samples');
-  const minSamples = minSamplesIdx >= 0 ? parseInt(args[minSamplesIdx + 1] ?? '10', 10) : 10;
+  // v2.0.856-attack5 (I1): malformed --min-samples value ("abc") → parseInt
+  // NaN → `n < NaN` is false → the sample floor silently DISABLED → every
+  // component judged "enough samples" → misleading verdicts. Validate + warn.
+  let minSamples = 10;
+  if (minSamplesIdx >= 0) {
+    const parsed = Number.parseInt(args[minSamplesIdx + 1] ?? '10', 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      minSamples = parsed;
+    } else {
+      console.warn(`⚠️ 忽略無效 --min-samples 值 "${args[minSamplesIdx + 1] ?? '(missing)'}" — 使用預設 10`);
+    }
+  }
 
   const dataPath = path.join(process.cwd(), 'data/evolution/component-attribution.json');
   if (!fs.existsSync(dataPath)) {
@@ -67,7 +78,17 @@ function main(): void {
     process.exit(1);
   }
 
-  const raw = JSON.parse(fs.readFileSync(dataPath, 'utf-8')) as { records?: AttributionRecord[] };
+  // v2.0.856-attack4 (F1): JSON.parse 冇 try/catch → truncated/corrupt file
+  // (partial write, interrupted persist) throws SyntaxError → tool crashes
+  // with an unhelpful stack trace. Wrap + report the specific file error.
+  let raw: { records?: AttributionRecord[] };
+  try {
+    raw = JSON.parse(fs.readFileSync(dataPath, 'utf-8')) as { records?: AttributionRecord[] };
+  } catch (err) {
+    console.error(`✖ ${dataPath} 無法解析（可能係 interrupted write 導致 partial JSON）: ${err instanceof Error ? err.message : String(err)}`);
+    console.error('  請檢查檔案完整性，或等系統下次 atomic save 覆寫。');
+    process.exit(1);
+  }
   // v2.0.856-attack: defensive — malformed/corrupt file must not crash the
   // tool. records may be missing, non-array, or contain non-object entries.
   const rawRecords = raw.records;
@@ -84,9 +105,16 @@ function main(): void {
   console.log('');
 
   // ── Aggregation ──
+  // v2.0.856-attack5 (I6): `contribSum += c` overflows to Infinity for
+  // extreme contributions (1e308 + 1e308 = Infinity) → mean Infinity → bad
+  // verdict. Use Welford-style online mean (sum/n via running mean) to stay
+  // finite for any bounded input, and clamp per-record contribution (it is
+  // [-1,1] by design — clamp defensively so corrupted data can't inflate).
+  const clampContrib = (c: number): number => Math.max(-1, Math.min(1, c));
   const comps = new Map<string, CompAgg>();
   for (const r of records) {
     if (typeof r.contribution !== 'number' || !Number.isFinite(r.contribution)) continue;
+    const c = clampContrib(r.contribution);
     let agg = comps.get(r.componentId);
     if (!agg) {
       agg = {
@@ -96,19 +124,21 @@ function main(): void {
       comps.set(r.componentId, agg);
     }
     agg.n++;
-    agg.contribSum += r.contribution;
-    agg.contribSumSq += r.contribution * r.contribution;
-    if (r.contribution > 0) agg.positive++;
+    agg.contribSum += c;
+    agg.contribSumSq += c * c;
+    if (c > 0) agg.positive++;
 
     const regime = r.regime || 'unknown';
     let rg = agg.byRegime.get(regime);
     if (!rg) { rg = { n: 0, contribSum: 0, positive: 0 }; agg.byRegime.set(regime, rg); }
-    rg.n++; rg.contribSum += r.contribution; if (r.contribution > 0) rg.positive++;
+    rg.n++; rg.contribSum += c; if (c > 0) rg.positive++;
 
-    const side = r.side || '?';
+    const side = typeof r.side === 'string' && (r.side === 'buy' || r.side === 'sell')
+      ? r.side
+      : (r.side || '?');
     let sd = agg.bySide.get(side);
     if (!sd) { sd = { n: 0, contribSum: 0 }; agg.bySide.set(side, sd); }
-    sd.n++; sd.contribSum += r.contribution;
+    sd.n++; sd.contribSum += c;
   }
 
   // ── Per-component report ──

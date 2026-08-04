@@ -4,6 +4,70 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.856-attack5: CLI min-samples validation + paper NaN guard + UI type guard + overflow clamp (4 fixes, 10 tests)
+
+Round-5 attack on the v2.0.856 suite found 4 more issues:
+
+### I1 (MEDIUM): edge-audit `--min-samples abc` → NaN → sample floor silently disabled
+
+**Bug**: `parseInt('abc')` = NaN → `records.length < NaN` is ALWAYS false → the sample floor is silently bypassed → every component judged "enough samples" → misleading verdicts.
+
+**Fix**: Validate `Number.isFinite(parsed) && parsed > 0` — malformed → warn + default 10. Verified: `--min-samples abc` → "⚠️ 忽略無效 --min-samples 值 "abc" — 使用預設 10".
+
+### I3 (LOW): serializePortfolio paper-mode NaN balance → UI $NaN
+
+**Bug**: The v2.0.856-attack4 H1/H2 guard only covered the REAL branch (`safeFree`/`safeTotal`). Paper mode passed `p.balance`/`p.totalEquity` unguarded — a NaN paper balance (corrupt restore) flows to UI as $NaN.
+
+**Fix**: Apply `Number.isFinite` guard to the paper branch too → null → UI '--'.
+
+### I4 (LOW): UI paper fallback string balance → TypeError
+
+**Bug**: `(p?.balance ?? s?.balance)` — if `s.balance` is a string (malformed SSE), `bal.toFixed(2)` throws TypeError → UI crashes.
+
+**Fix**: `(typeof rawBal === 'number' && Number.isFinite(rawBal)) ? rawBal : null` — type + finite guard on both cells.
+
+### I6 (LOW): edge-audit contribSum overflow → Infinity mean
+
+**Bug**: `contribSum += c` — two 1e308 contributions sum to Infinity → mean Infinity → bad verdict. Per-record contribution is [-1,1] by design, but corrupted data could carry huge values.
+
+**Fix**: Clamp per-record contribution to [-1,1] before accumulating; also tighten bySide bucket to canonical buy/sell/'?'.
+
+### Tests
+
+`tests/v2.0.856-attack5.test.ts` (10 tests): min-samples validation (abc/25/-5); paper NaN balance/equity → null; UI string/NaN → '--' no TypeError; contribution overflow clamp finite.
+
+**Result**: Full suite 1957 tests → 1945 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` zero errors.
+---
+
+## v2.0.856-attack4: Edge-audit JSON crash + HL NaN balance + UI paper fallback (3 fixes, 8 tests)
+
+Round-4 attack on the v2.0.856 suite's surroundings found 3 more issues:
+
+### F1 (MEDIUM): edge-audit.ts JSON.parse crash on corrupt file
+
+**Bug**: `JSON.parse(fs.readFileSync(...))` with NO try/catch. A truncated/corrupt `component-attribution.json` (interrupted atomic write, partial JSON) throws SyntaxError → the audit tool crashes with an unhelpful stack trace.
+
+**Fix**: Wrap JSON.parse in try/catch — clear error message + `process.exit(1)`. Verified live: corrupt file → "✖ ... 無法解析（可能係 interrupted write 導致 partial JSON）: Expected ':' after property name..." instead of crash.
+
+### H1/H2 (LOW): HL NaN balance flows to UI as "$NaN"
+
+**Bug**: `serializePortfolio()` passes `exBal.free`/`exBal.total` straight through. If HL returns a malformed numeric string, `parseFloat` → NaN → UI renders "$NaN".
+
+**Fix**: Coerce non-finite → null (`Number.isFinite` guard) → UI shows '--'.
+
+### G4 (LOW): UI paper-mode fallback showed "$0.00" for null balance
+
+**Bug**: `(p?.balance ?? s?.balance ?? 0)` — null balance fell through to `0` → rendered "$0.00" instead of "--" (e.g. API not yet loaded).
+
+**Fix**: Explicit null/undefined check → `null` → UI shows '--'.
+
+### Tests
+
+`tests/v2.0.856-attack4.test.ts` (8 tests): truncated-JSON SyntaxError (the bug) now caught; valid JSON parses; NaN/Infinity/malformed HL values → null; finite values pass; paper-mode null balance → '--' not $0.00.
+
+**Result**: Full suite 1947 tests → 1935 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` zero errors.
+---
+
 ## v2.0.856-attack3: Symbol guard — undefined symbol crashes learning pipeline (E2/E3, 4 tests)
 
 Round-4 adversarial attack found the symbol dimension of the same corrupt-record problem:

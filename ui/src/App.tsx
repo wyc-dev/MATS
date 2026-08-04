@@ -1287,9 +1287,12 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           <span className="stat-label">{isRealMode ? 'Genuine Balance' : 'Simulated Balance'}</span>
           <span className="stat-number neutral">{(() => {
             // REAL: Genuine Balance = accountValue (total incl. unrealized PnL)
-            const bal = isRealMode
-              ? (p?.totalEquity !== null && p?.totalEquity !== undefined ? p.totalEquity : null)
-              : (p?.balance ?? s?.balance ?? 0)
+            // PAPER: simulated balance — null/non-number → '--' (was ?? 0 → $0.00;
+            // v2.0.856-attack5 I4: string s.balance crashed bal.toFixed → guard type)
+            const rawBal = isRealMode
+              ? p?.totalEquity
+              : (p?.balance ?? s?.balance)
+            const bal = (typeof rawBal === 'number' && Number.isFinite(rawBal)) ? rawBal : null
             return bal === null ? '--' : `$${bal.toFixed(2)}`
           })()}</span>
         </div>
@@ -1297,9 +1300,11 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           <span className="stat-label">{isRealMode ? 'Genuine Equity' : 'Simulated Equity'}</span>
           <span className="stat-number neutral">{(() => {
             // REAL: Genuine Equity = free (withdrawable, EXCLUDES margin)
-            const eq = isRealMode
-              ? (p?.balance !== null && p?.balance !== undefined ? p.balance : null)
-              : (p?.totalEquity ?? s?.equity ?? 0)
+            // v2.0.856-attack5 I4: type+finite guard (string/NaN → '--')
+            const rawEq = isRealMode
+              ? p?.balance
+              : (p?.totalEquity ?? s?.equity)
+            const eq = (typeof rawEq === 'number' && Number.isFinite(rawEq)) ? rawEq : null
             return eq === null ? '--' : `$${eq.toFixed(2)}`
           })()}</span>
         </div>
