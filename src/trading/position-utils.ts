@@ -57,11 +57,14 @@ export function computeSLTP(
   slPct?: number,
   tpPct?: number,
 ): { sl: number; tp: number } {
+  // v2.0.854-ATTACK3: Guard against NaN/Infinity/0/negative entry — without
+  // this, SL/TP become NaN → trading engine receives NaN stop = no stop.
+  const safeEntry = safePrice(entry);
   const sl = slPct ?? config.risk.stopLossPct;
   const tp = tpPct ?? config.risk.takeProfitPct;
   return side === 'buy'
-    ? { sl: entry * (1 - sl), tp: entry * (1 + tp) }
-    : { sl: entry * (1 + sl), tp: entry * (1 - tp) };
+    ? { sl: safeEntry * (1 - sl), tp: safeEntry * (1 + tp) }
+    : { sl: safeEntry * (1 + sl), tp: safeEntry * (1 - tp) };
 }
 
 /**
@@ -73,11 +76,15 @@ export function recomputePnL(pos: Position, currentPrice: number): void {
   const entryFee = pos.entryFee ?? 0;
   // v2.0.854-ATTACK: safeLeverage guards leverage=0/NaN (Infinity margin).
   const margin = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
+  // v2.0.854-ATTACK3: Sanitize currentPrice — NaN/Infinity/0/negative corrupts
+  // unrealizedPnl → recalculateEquity sums NaN → totalEquity = NaN → entire
+  // portfolio poisoned. Degrade to 0 (no price change = zero unrealized PnL).
+  const safeCurrent = safePrice(currentPrice);
   if (pos.side === 'buy') {
-    pos.unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.quantity - entryFee;
+    pos.unrealizedPnl = (safeCurrent - pos.averageEntryPrice) * pos.quantity - entryFee;
     pos.unrealizedPnlPct = margin > 0 ? pos.unrealizedPnl / margin : 0;
   } else {
-    pos.unrealizedPnl = (pos.averageEntryPrice - currentPrice) * pos.quantity - entryFee;
+    pos.unrealizedPnl = (pos.averageEntryPrice - safeCurrent) * pos.quantity - entryFee;
     pos.unrealizedPnlPct = margin > 0 ? pos.unrealizedPnl / margin : 0;
   }
 }
@@ -90,7 +97,12 @@ export function recomputePnL(pos: Position, currentPrice: number): void {
 export function trackMAEMFE(pos: Position): void {
   // v2.0.854-ATTACK: safeLeverage guards leverage=0/NaN (Infinity margin).
   const margin = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
-  const posValue = margin + pos.unrealizedPnl;
+  // v2.0.854-ATTACK3: Guard against NaN/Infinity unrealizedPnl (e.g. from a
+  // corrupted persistence restore). A NaN posValue would permanently poison
+  // minValueReached/maxValueReached → TradeRecord.MAE/MFE → learning systems.
+  const pnl = Number.isFinite(pos.unrealizedPnl) ? pos.unrealizedPnl : 0;
+  const posValue = margin + pnl;
+  if (!Number.isFinite(posValue)) return; // skip update if posValue is NaN/Infinity
   if (pos.minValueReached === undefined || posValue < pos.minValueReached) {
     pos.minValueReached = posValue;
   }
