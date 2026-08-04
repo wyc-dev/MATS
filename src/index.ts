@@ -157,8 +157,35 @@ class MATSSystem {
    *    'false'           — execution only, no DB write (legacy amacrf)
    *    'dual'            — BOTH: write analysis to DB + execute trades
    */
-  private analysisMode = (process.env['ANALYSIS_MODE'] ?? 'dual') !== 'false';
-  private dualMode = (process.env['ANALYSIS_MODE'] ?? 'dual') === 'dual';
+  private analysisMode = ((): boolean => {
+    const v = (process.env['ANALYSIS_MODE'] ?? 'dual').trim().toLowerCase();
+    // v2.0.853-fix: Strict-parse ANALYSIS_MODE. The old code did
+    //   analysisMode = (env ?? 'dual') !== 'false'
+    //   dualMode      = (env ?? 'dual') === 'dual'
+    // which silently mis-parses any non-canonical value. E.g. ANALYSIS_MODE=
+    // 'TRUE'/'Dual'/'1' (user typo) yields analysisMode=true + dualMode=false,
+    // which makes closeTrade()'s `analysisMode && !dualMode` guard skip EVERY
+    // position close — the exact fatal bug this was meant to fix. Fall back to
+    // the safe production default 'dual' on any unrecognised value so the
+    // backend never silently stops closing positions.
+    if (v === 'false') return false;
+    // 'true' and 'dual' both enable analysis (DB write). 'dual' additionally
+    // enables execution. Unrecognised → treat as 'dual' (safe: executes + writes).
+    return true;
+  })();
+  private dualMode = ((): boolean => {
+    const v = (process.env['ANALYSIS_MODE'] ?? 'dual').trim().toLowerCase();
+    // Three canonical modes (trim + case-insensitive):
+    //   'false'  → no DB write, no orders (legacy execution-only)
+    //   'true'   → signal-only, no orders
+    //   'dual'   → write analysis AND execute  (SAFE DEFAULT)
+    // Any unrecognised value (garbage, '1', empty, etc.) FALLS BACK to 'dual'
+    // so closeTrade/openTrade are never silently disabled by a typo. This is
+    // the fix for the fatal bug where a non-canonical env value made
+    // dualMode=false and skipped every position close.
+    if (v === 'false' || v === 'true') return false;
+    return true; // 'dual' or any unrecognised value → execute (safe default)
+  })();
   private analysisWriter!: SupabaseAnalysisWriter;
   // v2.0.833: Edge Validation layer — alpha "lie detector"
   private edgeExecTracker!: EdgeExecutionTracker;
