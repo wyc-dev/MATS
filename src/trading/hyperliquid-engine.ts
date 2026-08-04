@@ -20,6 +20,7 @@ import type {
 } from '../types/index.ts';
 // v2.0.42: Import normalizeSymbol for consistent symbol casing.
 import { normalizeSymbol } from './portfolio.ts';
+import { safeLeverage } from './position-utils.ts';
 
 const log = createLogger({ phase: 'hyperliquid-real' });
 
@@ -519,7 +520,7 @@ export class HyperliquidEngine implements RealTradingEngine {
             const size = parseFloat(p.szi);
             const entryPx = parseFloat(p.entryPx);
             const unrealizedPnl = parseFloat(p.unrealizedPnl ?? '0');
-            const leverage = p.leverage?.value ?? 1;
+            const leverage = safeLeverage(p.leverage?.value ?? 1);
 
             // v2.0.33: Match open fill by coin + side + approximate entry price.
             // The fill price might not exactly match the position entry price

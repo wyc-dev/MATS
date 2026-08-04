@@ -4,6 +4,80 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.854-attack: Leverage division-by-zero + safeLeverage hardening (1 critical bug + 10 guard tests)
+
+Adversarial attack on the v2.0.854 fixes found a **critical money-corruption bug** in the very code just changed, plus a systemic division-by-zero hazard:
+
+### ATTACK-fix1: `leverage=0` / NaN → Infinity balance corruption (CRITICAL)
+
+**Bug**: `openPosition` did `margin = notional / leverage` with NO guard. A caller passing `leverage=0` produced `margin = notional/0 = Infinity`, and `balance -= Infinity = -Infinity`. The paper balance was permanently corrupted. Same class of bug existed in `closeExchangePosition` (my v2.0.854-fix4), `recomputePnL`, `trackMAEMFE`, `recalculateEquity`, `trading-manager` margin check, and `hyperliquid-engine` — all did `/ (leverage ?? 1)`, and `0 ?? 1 === 0` (so the `?? 1` fallback NEVER caught `0`).
+
+**Fix**: Added `safeLeverage()` (in `position-utils.ts`), which rejects `0`, `NaN`, `Infinity`, negative, `>50`, non-number types → falls back to `1` (no leverage). Applied at STORAGE (openPosition + importExchangePosition) so every downstream consumer is automatically safe, plus directly at the remaining call sites: `closePosition`, `closeExchangePosition`, `recomputePnL`, `trackMAEMFE`, `recalculateEquity`, `trading-manager` margin cap check, `hyperliquid-engine`, and 4 `index.ts` margin calcs.
+
+**Key insight**: `(x ?? 1)` is NOT a NaN/zero guard. It only catches `undefined`/`null`. `0 ?? 1 = 0` and `NaN ?? 1 = NaN` — the exact values that break division.
+
+### Attack vectors validated (26 tests)
+
+| Vector | Result |
+|:-------|:-------|
+| `leverage=0` openPosition | ✅ balance stays finite (was `-Infinity`) |
+| `leverage=0` closeExchangePosition | ✅ pnlPct finite (was Infinity) |
+| `leverage=NaN/Infinity/negative/>50` | ✅ → 1 |
+| `leverage` Proxy getter-bomb | ✅ → 1, no throw |
+| `leverage` string type | ✅ rejected → 1 |
+| DCS Proxy getter-bomb | ✅ no crash |
+| DCS `-0` / `"5"` / boundary 0,1 | ✅ clamped correctly |
+| 1000 distinct symbol closes | ✅ dedup map ≤512 |
+| per-symbol idle eviction (1000 symbols) | ✅ evicted |
+| raw-casing closePosition delete | ✅ no ghost position |
+| NaN entryPrice in dedup key | ✅ no crash |
+| negative exitPrice close | ✅ finite PnL |
+
+**Tests**: `tests/v2.0.854-architecture-fix-attack.test.ts` (26 tests) + `tests/v2.0.854-architecture-audit-fix.test.ts` (13 tests). Regression: 169 relevant tests pass. `tsc --noEmit` zero errors. (The 20 pre-existing failures in unrelated suites are unchanged — confirmed present before these changes.)
+
+---
+
+## v2.0.854: Architecture blueprint audit — 5 loss/crash vectors fixed (13 attack tests)
+
+Adversarial audit of ARCHITECTURE.md against the actual code found and fixed **5 real production bugs** (2 memory leaks, 2 financial-metric distortions, 1 garbage-order vector):
+
+### fix1: `computeSmartSLTP` DCS not clamped to [0,1] (`src/analysis/smart-sltp.ts`)
+
+
+**Bug**: `safeDcs` only checked `>= 0`, never `<= 1`. An untrusted/LLM-supplied DCS of 5 produced `slMultiplier = 1.0 + 0.3×5 = 2.5` and `tpMultiplier = 1.0 + 0.5×5 = 3.5`, silently inflating SL/TP well beyond the designed ranges before the caps clamped them. `dcs-calculator.ts` and `analysis-matrix.ts` both clamp to [0,1] — `computeSmartSLTP` was the inconsistent one.
+
+**Fix**: Clamp `safeDcs = Math.min(1, Math.max(0, safeDcs))` — matches the other two DCS consumers.
+
+### fix2: `recentlyClosedSyms` dedup map unbounded memory leak (`src/trading/portfolio.ts`)
+
+**Bug**: Entries were only ever removed by `importExchangePosition` (on a dedup-bypass). Over months, one key per `(symbol:entryPrice)` accumulated forever. Worse, in a burst of closes all keys are "fresh", so an expiry-only purge never triggers.
+
+**Fix**: On each insert when size > 512, (a) purge expired keys AND (b) FIFO-evict oldest regardless of TTL → hard bounded map.
+
+### fix3: `perSymbolIdleCycles` map unbounded growth (`src/analysis/dynamic-threshold.ts`)
+
+**Bug**: Symbols were added via `incrementIdleCycles(allKnownSymbols)` but never evicted. Long-running systems or transient symbols grew the map without bound.
+
+**Fix**: Evict a symbol when its idle count exceeds `2 × PENALTY_DECAY_CYCLES` (60). At that point its penalty is fully decayed; a returning symbol re-registers at the global-idle fallback.
+
+### fix4: real-position `pnlPct` computed on full notional, not margin (`src/trading/portfolio.ts`)
+
+**Bug**: `closeExchangePosition` used `margin = entryPrice × quantity` (no `/leverage`), while `closePosition` (paper) and `recalculateEquity` use `notional / lev`. A 10x real position showed 1/10th its true return-on-margin — biasing OLR/EXP/RIL that consume `pnlPct` to underestimate real-trade edge.
+
+**Fix**: `margin = (entryPrice × quantity) / leverage`, consistent with paper positions.
+
+### fix5: real-trade entry-price guard let NaN/Infinity through + position delete by raw symbol (`src/trading/trading-manager.ts` + `src/trading/portfolio.ts`)
+
+**Bug A**: `executeTrade`'s guard `price <= 0` fails for `NaN` (`NaN <= 0` is `false`) — a corrupt entry price produced `quantity = NaN` and reached the exchange as a garbage order. **Bug B**: `closePosition`/`closeExchangePosition` deleted positions by raw `symbol`, while they're stored under `normalizeSymbol` — a casing-mismatched caller left a ghost position while balance/PnL were already credited (double PnL on a later reconcile). **Bug C**: `actualEntryPrice` from a corrupt exchange response could be NaN/0, feeding a garbage SL/TP to HL.
+
+**Fix**: (A) guard `!Number.isFinite(price) || price <= 0`; (B) delete with the normalized symbol in all three close paths; (C) after the exchange sync, fall back to the validated decision price when the fill price is non-finite/≤0, and clamp leverage to [1, 50].
+
+**Attack tests**: `tests/v2.0.854-architecture-audit-fix.test.ts` (13 tests) — DCS clamp (dcs=5 ≡ dcs=1, negative→0, NaN→0), per-symbol eviction + no-evict-when-recent, NaN/Infinity entry rejection, normalized close with raw-casing caller, leveraged pnlPct on margin, dedup map bounded ≤512.
+
+Regression: `dynamic-threshold` + `portfolio-accounting` + `smart-sltp` + `sltp-desync-mfe` + `execution-lens-sltp` = 111/111 pass. `tsc --noEmit` zero errors. (20 pre-existing failures in unrelated suites confirmed present before this change.)
+
+---
+
 ## v2.0.853: closeTrade dual-mode guard + fill-price accuracy + UI backoff (6 fixes, 45 attack tests)
 
 Adversarial attack on the closeTrade → tradingManager.closePosition → closeExchangePosition chain found and fixed **6 real production bugs** across 5 rounds of attack-testing:
@@ -47,6 +121,12 @@ Adversarial attack on the closeTrade → tradingManager.closePosition → closeE
 **Bug**: fix3/fix4 retry loop (3×1s=3s) blocked the decision cycle. During the block, `paperEngine.updatePrice()` + `checkPositionExits()` don't run → other positions' SL/TP not monitored → MAE/MFE tracking gaps.
 
 **Fix (`src/trading/trading-manager.ts`)**: Reduced to 2×500ms=1s. 1s is enough for HL REST to propagate in most cases; if not, fallback to `pos.currentPrice` is still better than blocking.
+
+### fix7: closeTrade symbol normalization inconsistency
+
+**Bug**: `closeTrade()` used `symbol.includes(':') ? symbol : symbol.toLowerCase()` instead of `normalizeSymbol()`. For colon symbols with uppercase prefixes (e.g. `XYZ:SKHX`), this returned the raw symbol (`XYZ:SKHX`) instead of the normalized form (`xyz:SKHX`). While all downstream methods (`getPosition`, `setExitThesis`, `closePosition`, `closeExchangePosition`) call `normalizeSymbol` internally so this didn't cause a runtime error, it caused log messages to show inconsistent symbol casing and could mask a future bug if a downstream method ever stopped calling `normalizeSymbol`.
+
+**Fix (`src/index.ts`)**: Replaced with `normalizeSymbol(symbol)` for consistency with all downstream methods.
 
 **Attack tests**: `tests/v2.0.853-closetrade-dual-mode-attack.test.ts` (45 tests) — dual-mode guard logic (all ANALYSIS_MODE values), return value semantics, closeReason misclassification scenarios, stale-price PnL difference, race condition + cache defense, fill timestamp/side/dir filters, retry timing, consistency with syncExchangePositions.
 

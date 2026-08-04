@@ -793,6 +793,64 @@ closePosition / closeExchangePosition
 
 **v2.0.853-fix6**：Fill-fetch retry 從 3×1s=3s 減到 2×500ms=1s，避免阻塞 decision cycle（阻塞期間其他倉位嘅 SL/TP 唔被監控）。
 
+**v2.0.853-fix7**：`closeTrade()` 用 `symbol.includes(':') ? symbol : symbol.toLowerCase()` 而唔係 `normalizeSymbol()`。對於大寫前綴嘅 colon symbol（例如 `XYZ:SKHX`），返回原始 symbol 而唔係 normalized form（`xyz:SKHX`）。雖然所有下游方法都 call `normalizeSymbol` 所以唔會 crash，但 log 顯示唔一致嘅 symbol casing，且如果下游方法將來唔再 call `normalizeSymbol` 就會出 bug。修復：改用 `normalizeSymbol(symbol)`。
+
+---
+
+## Architecture 藍圖審計 — 5 個 loss/crash 向量修復（v2.0.854）
+
+對照 ARCHITECTURE.md 藍圖與實際代碼嘅對抗審計，搵到並修復 **5 個真實生產 bug**（2 個 memory leak、2 個金融指標扭曲、1 個 garbage-order 向量）：
+
+**v2.0.854-fix1：`computeSmartSLTP` 嘅 `safeDcs` 冇 clamp 到 [0,1]**（`smart-sltp.ts`）。舊代碼只 check `>= 0`，未 check `<= 1`。Untrusted DCS=5 → `slMultiplier=2.5`、`tpMultiplier=3.5`，喺 cap-clamping 前已經扭曲 SL/TP。`dcs-calculator.ts` 同 `analysis-matrix.ts` 都 clamp，呢個係不一致嗰個。修復：`safeDcs = Math.min(1, Math.max(0, safeDcs))`。
+
+**v2.0.854-fix2：`recentlyClosedSyms` dedup map 無界 memory leak**（`portfolio.ts`）。Entry 只喺 `importExchangePosition`（dedup-bypass）時移除。長期運行每 `(symbol:entryPrice)` 累積一條。更嚴重：close 爆發時全部 key 都「fresh」，淨靠 expiry purge 永遠唔觸發。修復：size > 512 時 (a) purge 過期 key + (b) FIFO 逐出最舊——硬 bound。
+
+**v2.0.854-fix3：`perSymbolIdleCycles` map 無界增長**（`dynamic-threshold.ts`）。Symbol 透過 `incrementIdleCycles(allKnownSymbols)` 加入但永不逐出。修復：idle 超過 `2 × PENALTY_DECAY_CYCLES`（60）就逐出——此時 penalty 已完全衰減，返回時喺 global-idle fallback 重新註冊。
+
+**v2.0.854-fix4：real 倉位 `pnlPct` 用 full notional 而唔係 margin**（`portfolio.ts`）。`closeExchangePosition` 用 `margin = entryPrice × quantity`（冇 `/leverage`），而 `closePosition`（paper）同 `recalculateEquity` 用 `notional / lev`。10x real 倉位顯示 1/10 真實 margin return——令 consume `pnlPct` 嘅 OLR/EXP/RIL 低估 real-trade edge。修復：`margin = (entryPrice × quantity) / leverage`。
+
+**v2.0.854-fix5：real-trade entry-price guard 漏咗 NaN/Infinity + position delete 用 raw symbol**（`trading-manager.ts` + `portfolio.ts`）。(A) `executeTrade` 嘅 `price <= 0` guard 對 NaN 失效（`NaN <= 0` = false）→ 腐敗 entry price 產生 `quantity=NaN` 到達交易所。修復：`!Number.isFinite(price) || price <= 0`。(B) `closePosition`/`closeExchangePosition` 用 raw `symbol` delete，而 position 存喺 `normalizeSymbol` 下——casing mismatch 留 ghost position + 重複 PnL。修復：三個 close path 都用 normalized symbol delete。(C) exchange fill price 可 NaN/0 → garbage SL/TP。修復：非 finite/≤0 時 fallback 已驗證 decision price，leverage clamp [1,50]。
+
+**Attack tests**：`tests/v2.0.854-architecture-audit-fix.test.ts`（13 tests）——DCS clamp（dcs=5 ≡ dcs=1、負→0、NaN→0）、per-symbol eviction + 近期交易唔逐出、NaN/Infinity entry 拒絕、raw-casing caller 都正常 close、margin 上嘅 leveraged pnlPct、dedup map bounded ≤512。Regression：相關套件 111/111 通過，`tsc --noEmit` 零錯誤。
+
+---
+
+## Leverage division-by-zero + safeLeverage hardening（v2.0.854-attack — CRITICAL）
+
+對 v2.0.854 修復嘅對抗攻擊搵到一個 **critical 資金污染 bug**——正正喺啱啱改嘅 code 度，加上成個系統性 division-by-zero 隱患。
+
+### ATTACK-fix1：`leverage=0` / NaN → Infinity balance 永久污染（CRITICAL）
+
+**漏洞**：`openPosition` 做 `margin = notional / leverage` 完全冇 guard。Caller 傳 `leverage=0` → `margin = notional/0 = Infinity` → `balance -= Infinity = -Infinity`，paper balance 永久損毀。同一類 bug 散佈喺 `closeExchangePosition`（v2.0.854-fix4）、`recomputePnL`、`trackMAEMFE`、`recalculateEquity`、`trading-manager` margin check、`hyperliquid-engine`——全部都做 `/ (leverage ?? 1)`，而 `0 ?? 1 === 0`（所以 `?? 1` fallback **永遠唔會 catch `0`**）。
+
+**關鍵洞察**：`(x ?? 1)` 唔係 NaN/zero guard！佢只 catch `undefined`/`null`。`0 ?? 1 = 0`、`NaN ?? 1 = NaN`——啱啱係會搞壞 division 嘅值。
+
+**修復**：新增 `safeLeverage()`（`position-utils.ts`），reject `0`、`NaN`、`Infinity`、負數、`>50`、非 number → fallback `1`。喺**存儲點**（`openPosition` + `importExchangePosition`）應用令所有下游自動安全，再加埋直接 call site：`closePosition`、`closeExchangePosition`、`recomputePnL`、`trackMAEMFE`、`recalculateEquity`、`trading-manager` margin cap check、`hyperliquid-engine`、4 個 `index.ts` margin calc。
+
+### 防禦原則
+
+```
+margin = notional / safeLeverage(leverage)   // 永遠
+never:   margin = notional / leverage         // 可 Infinity/NaN
+never:   margin = notional / (leverage ?? 1)  // ?? 只 catch undefined/null，唔 catch 0/NaN
+```
+
+### 驗證（26 tests）
+
+| 向量 | 結果 |
+|:------|:------|
+| `leverage=0` openPosition | ✅ balance 保持 finite（原本 `-Infinity`） |
+| `leverage=0` closeExchangePosition | ✅ pnlPct finite（原本 Infinity） |
+| `leverage=NaN/Infinity/負/>50` | ✅ → 1 |
+| `leverage` Proxy getter-bomb | ✅ → 1，冇 throw |
+| `leverage` string type | ✅ reject → 1 |
+| DCS Proxy getter-bomb / `-0` / `"5"` | ✅ 正確 clamp |
+| 1000 distinct symbol close | ✅ dedup map ≤512 |
+| per-symbol idle eviction（1000 symbols）| ✅ 正確逐出 |
+| raw-casing closePosition delete | ✅ 冇 ghost position |
+
+**Tests**：`tests/v2.0.854-architecture-fix-attack.test.ts`（26 tests）+ `tests/v2.0.854-architecture-audit-fix.test.ts`（13 tests）。Regression：169 相關測試通過。`tsc --noEmit` 零錯誤。
+
 ---
 
 ## Plan G — 動態 Threshold [45-55%] + 乘法 Penalty 衰減（v2.0.227）

@@ -30,6 +30,7 @@ import { MultiExchangeWebSocketManager, detectExchange, type UnifiedPrice, type 
 import { HACPEngine } from './cognition/hacp.ts';
 import { RiskEngine } from './risk/engine.ts';
 import { PortfolioTracker, normalizeSymbol, isThesisPlaceholder } from './trading/portfolio.ts';
+import { safeLeverage } from './trading/position-utils.ts';
 import { PaperTradingEngine, type ExecutionReport } from './trading/paper-engine.ts';
 import { EvolutionOrchestrator } from './evolution/index.ts';
 import { savePortfolio, saveDebateHistory, loadDebateHistory, saveEMState, loadEMState } from './evolution/persistence.ts';
@@ -1369,7 +1370,7 @@ class MATSSystem {
           }
 
           // Build context for the LLM
-          const margin = (trade.entryPrice * trade.quantity) / (trade.leverage ?? 1);
+          const margin = (trade.entryPrice * trade.quantity) / safeLeverage(trade.leverage);
           const maePnl = (trade.minValueReached ?? 0) - margin;
           const mfePnl = (trade.maxValueReached ?? 0) - margin;
           const tradeContext = `Trade: ${trade.side.toUpperCase()} ${trade.symbol}
@@ -3208,7 +3209,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // v2.0.218: Use safeNum for MAE/MFE/margin — trade fields may be NaN.
         const mae = safeNum(trade.minValueReached, 0);
         const mfe = safeNum(trade.maxValueReached, 0);
-        const margin = trade.investment > 0 ? trade.investment / (trade.leverage ?? 1) : 0;
+        const margin = trade.investment > 0 ? trade.investment / safeLeverage(trade.leverage) : 0;
         const safeMargin = safeNum(margin, 0);
         const maePct = safeMargin > 0 ? (safeMargin - mae) / safeMargin : 0;
         const mfePct = safeMargin > 0 ? (mfe - safeMargin) / safeMargin : 0;
@@ -3733,7 +3734,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // NOT as raw PnL. Convert to actual PnL for the LLM so it doesn't confuse
       // $11.72 position value with $11.72 profit. The margin (capital required
       // to open the position) = entryPrice × quantity / leverage.
-      const margin = (trade.entryPrice * trade.quantity) / (trade.leverage ?? 1);
+      const margin = (trade.entryPrice * trade.quantity) / safeLeverage(trade.leverage);
       const maeValue = trade.minValueReached ?? 0;
       const mfeValue = trade.maxValueReached ?? 0;
       const maePnl = maeValue - margin; // actual worst PnL dip
@@ -3831,7 +3832,7 @@ Provide your post-trade review:`;
         if (t.status !== 'closed') continue;
         totalTrades++;
         const mfe = t.maxValueReached ?? 0;
-        const margin = (t.quantity ?? 0) * (t.entryPrice ?? 0) / (t.leverage ?? 1);
+        const margin = (t.quantity ?? 0) * (t.entryPrice ?? 0) / safeLeverage(t.leverage);
         if (margin <= 0 || mfe <= 0) continue;
         const mfePnl = mfe - margin;
         if (mfePnl <= 0) continue;
@@ -4858,7 +4859,15 @@ ${recentExamples}
    *  portfolio infers it from the exit price vs SL/TP levels.
    */
   private async closeTrade(symbol: string, exitThesis: string, closeReason?: TradeRecord['closeReason']): Promise<boolean> {
-    const sym = symbol.includes(':') ? symbol : symbol.toLowerCase();
+    // v2.0.853-fix7: Use normalizeSymbol() for consistency with all downstream
+    // methods (getPosition, setExitThesis, closePosition, closeExchangePosition).
+    // The old `symbol.includes(':') ? symbol : symbol.toLowerCase()` did NOT
+    // lowercase the prefix for colon symbols (XYZ:SKHX → XYZ:SKHX, not xyz:SKHX).
+    // While all downstream methods call normalizeSymbol internally so this
+    // didn't cause a runtime error, it caused log messages to show
+    // inconsistent symbol casing and could mask a future bug if a downstream
+    // method ever stopped calling normalizeSymbol.
+    const sym = normalizeSymbol(symbol);
     const pos = this.portfolio.getPosition(sym);
     if (!pos) return false;
 
@@ -10918,7 +10927,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // v2.0.43: Recompute unrealizedPnlPct from the HL API PnL and the live
         // mark price so it's consistent with both. Margin = qty * entry / lev.
         const margin = exPos.averageEntryPrice > 0
-          ? exPos.quantity * exPos.averageEntryPrice / (exPos.leverage ?? 1)
+          ? exPos.quantity * exPos.averageEntryPrice / safeLeverage(exPos.leverage)
           : 0;
         positions[key] = {
           id: pos.id,
@@ -11021,7 +11030,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           const cachedLive = this.cachedPriceMap.get(exPos.symbol.toLowerCase()) ?? this.cachedPriceMap.get(baseSym.toLowerCase()) ?? 0;
           const livePrice = localPos?.currentPrice || cachedLive || exPos.currentPrice;
           const margin = exPos.averageEntryPrice > 0
-            ? exPos.quantity * exPos.averageEntryPrice / (exPos.leverage ?? 1)
+            ? exPos.quantity * exPos.averageEntryPrice / safeLeverage(exPos.leverage)
             : 0;
           // v2.0.50: If exPos.openedAt is 0 (fill not found), use local mirror's
           // openedAt or Date.now() — never show Jan 1 1970 in the UI.

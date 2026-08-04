@@ -463,9 +463,21 @@ export class DynamicThresholdCalculator {
       }
     }
     // Increment all tracked symbols except the ones that traded
-    for (const [sym] of this.perSymbolIdleCycles) {
+    for (const [sym, idle] of this.perSymbolIdleCycles) {
       if (!tradedSymbols.has(sym)) {
-        this.perSymbolIdleCycles.set(sym, (this.perSymbolIdleCycles.get(sym) ?? 0) + 1);
+        const nextIdle = idle + 1;
+        this.perSymbolIdleCycles.set(sym, nextIdle);
+        // v2.0.854: Evict symbols idle well beyond the penalty decay horizon.
+        // Once a symbol exceeds PENALTY_DECAY_CYCLES (30), its penalty is fully
+        // decayed (decayMultiplier=0) — keeping the entry forever is a silent
+        // memory leak (the map grew without bound over long-running systems or
+        // when allKnownSymbols includes transient symbols). A symbol that
+        // returns later re-registers at the global-idle fallback in compute().
+        // Use a generous 2× decay horizon so an occasionally-traded symbol
+        // never loses its near-decayed state prematurely.
+        if (nextIdle > PENALTY_DECAY_CYCLES * 2) {
+          this.perSymbolIdleCycles.delete(sym);
+        }
       }
     }
   }
