@@ -6,7 +6,7 @@ import { createLogger } from '../observability/logger.ts';
 import { config } from '../config/index.ts';
 import { loadPortfolio, type PortfolioSnapshot } from '../evolution/persistence.ts';
 import { calculateTakerFee } from './cost-model.ts';
-import { computeSLTP, recomputePnL, trackMAEMFE, safeLeverage } from './position-utils.ts';
+import { computeSLTP, recomputePnL, trackMAEMFE, safeLeverage, safePrice, safeQuantity } from './position-utils.ts';
 import type {
   Portfolio,
   Position,
@@ -590,8 +590,13 @@ export class PortfolioTracker {
     // safe from division-by-zero. A stored leverage of 0/NaN/negative/>50 is an
     // invalid order that must degrade to 1 (no leverage), never Infinity/NaN.
     const safeLev = safeLeverage(leverage);
-    const quantity = order.filledQuantity > 0 ? order.filledQuantity : order.quantity;
-    const notional = quantity * entryPrice;
+    // v2.0.854-ATTACK2: Sanitize price + quantity AT STORAGE. NaN/Infinity/0/
+    // negative entryPrice or quantity corrupts notional → margin → balance →
+    // every learning system. Degrade to 0 (zero-value position) so the
+    // portfolio stays finite.
+    const safeEntryPrice = safePrice(entryPrice);
+    const quantity = safeQuantity(order.filledQuantity > 0 ? order.filledQuantity : order.quantity);
+    const notional = quantity * safeEntryPrice;
     // v2.0.63: Deduct MARGIN (notional / leverage), not full notional.
     // On Hyperliquid, a 10x leveraged position only requires 10% margin.
     // The old code deducted full notional, causing balance to drop 10x
@@ -633,8 +638,8 @@ export class PortfolioTracker {
       symbol,
       side: order.side,
       quantity,
-      averageEntryPrice: entryPrice,
-      currentPrice: entryPrice,
+      averageEntryPrice: safeEntryPrice,
+      currentPrice: safeEntryPrice,
       unrealizedPnl: -entryFee,
       unrealizedPnlPct: margin > 0 ? -entryFee / margin : 0,
       realizedPnl: 0,
@@ -880,6 +885,11 @@ export class PortfolioTracker {
     // v2.0.854-ATTACK: Sanitize leverage AT STORAGE so every downstream consumer
     // is safe from division-by-zero. leverage=0/NaN/negative/>50 → 1 (safe).
     const safeLev = safeLeverage(leverage);
+    // v2.0.854-ATTACK2: Sanitize price + quantity AT STORAGE. NaN/Infinity/0/
+    // negative entryPrice or quantity corrupts notional → margin → MAE/MFE →
+    // every learning system. Degrade to 0 (zero-value position).
+    const safeEntryPrice = safePrice(entryPrice);
+    const safeQty = safeQuantity(quantity);
 
     // Don't import if already exists in either map
     if (this.portfolio.positions.has(sym) || this.realPositions.has(sym)) return;
@@ -895,14 +905,14 @@ export class PortfolioTracker {
     // block re-import if the position was ACTUALLY closed on the exchange.
     // Since importExchangePosition is only called when syncExchangePositions
     // confirms the position exists on HL, we can safely bypass the dedup here.
-    const dedupKey = `${sym}:${entryPrice.toFixed(2)}`;
+    const dedupKey = `${sym}:${safeEntryPrice.toFixed(2)}`;
     const lastClose = this.recentlyClosedSyms.get(dedupKey);
     if (lastClose && (Date.now() - lastClose) < this.CLOSE_DEDUP_TTL_MS) {
       // v2.0.97: Position exists on HL (caller confirmed via getPositions()),
       // so the local close was either a paper-only close or the HL close failed.
       // Either way, the position is still open on HL and must be re-imported
       // so agents can manage it. Clear the dedup entry and proceed.
-      log.info(`⏭️ importExchangePosition dedup bypassed: ${sym} @ $${entryPrice.toFixed(2)} was closed locally ${Date.now() - lastClose}ms ago but still exists on HL — re-importing`);
+      log.info(`⏭️ importExchangePosition dedup bypassed: ${sym} @ $${safeEntryPrice.toFixed(2)} was closed locally ${Date.now() - lastClose}ms ago but still exists on HL — re-importing`);
       this.recentlyClosedSyms.delete(dedupKey);
     }
 
@@ -920,15 +930,15 @@ export class PortfolioTracker {
     //   - Per-position close voting (agents see SL/TP in context)
     //   - Portfolio exit monitoring (checkPositionExits)
     // Uses config.risk defaults via computeSLTP (no more hardcoded 0.02/0.05)
-    const { sl: stopLossPrice, tp: takeProfitPrice } = computeSLTP(entryPrice, side);
+    const { sl: stopLossPrice, tp: takeProfitPrice } = computeSLTP(safeEntryPrice, side);
 
     const position: Position = {
       id: `hl-${sym}-${Date.now()}`,
       symbol: sym,
       side,
-      quantity,
-      averageEntryPrice: entryPrice,
-      currentPrice: entryPrice,
+      quantity: safeQty,
+      averageEntryPrice: safeEntryPrice,
+      currentPrice: safeEntryPrice,
       unrealizedPnl: 0,
       unrealizedPnlPct: 0,
       realizedPnl: 0,
@@ -942,8 +952,8 @@ export class PortfolioTracker {
       // v2.0.143: Initialize MAE/MFE tracking at import.
       // Position value = margin (notional / leverage) + unrealized PnL (0 at import).
       // v2.0.854-ATTACK: safeLeverage guards leverage=0/NaN (Infinity margin).
-      minValueReached: (entryPrice * quantity) / safeLev,
-      maxValueReached: (entryPrice * quantity) / safeLev,
+      minValueReached: (safeEntryPrice * safeQty) / safeLev,
+      maxValueReached: (safeEntryPrice * safeQty) / safeLev,
       // v2.0.143: Record original SL/TP at import.
       originalStopLossPrice: stopLossPrice,
       originalTakeProfitPrice: takeProfitPrice,
@@ -1346,6 +1356,9 @@ export class PortfolioTracker {
    *  TradeRecord so learning + RIL + trade-audit see HOW the position closed.
    */
   closePosition(symbol: string, exitPrice: number, closeReason?: TradeRecord['closeReason']): TradeRecord | null {
+    // v2.0.854-ATTACK2: Sanitize exitPrice — NaN/Infinity/0/negative corrupts
+    // PnL, balance, and every learning system. Degrade to 0 (zero PnL close).
+    const safeExitPrice = safePrice(exitPrice);
     // v2.0.851-fix: Look up BOTH stores (paper + real). The previous code only
     // checked `portfolio.positions`, so a real position (which lives in
     // `realPositions`) returned undefined → the real-position redirect guard
@@ -1363,7 +1376,7 @@ export class PortfolioTracker {
     // without touching paper balance/stats.
     if (pos.agentId === 'hyperliquid-real') {
       log.warn(`⚠️ closePosition() called on real position ${symbol} — redirecting to closeExchangePosition() to prevent balance inflation`);
-      return this.closeExchangePosition(symbol, exitPrice, undefined, closeReason);
+      return this.closeExchangePosition(symbol, safeExitPrice, undefined, closeReason);
     }
 
     const lev = safeLeverage(pos.leverage);
@@ -1378,12 +1391,12 @@ export class PortfolioTracker {
     const margin = notional / lev;
     // v2.0.48: PnL = priceDelta * quantity (NOT * leverage).
     if (pos.side === 'buy') {
-      realizedPnl = (exitPrice - pos.averageEntryPrice) * pos.quantity;
+      realizedPnl = (safeExitPrice - pos.averageEntryPrice) * pos.quantity;
       cashReturned = margin + realizedPnl;
       this.portfolio.balance += cashReturned;
     } else {
       // Short: profit when exit < entry
-      realizedPnl = (pos.averageEntryPrice - exitPrice) * pos.quantity;
+      realizedPnl = (pos.averageEntryPrice - safeExitPrice) * pos.quantity;
       cashReturned = margin + realizedPnl;
       this.portfolio.balance += cashReturned;
     }
@@ -1391,7 +1404,9 @@ export class PortfolioTracker {
     // ── v2.0.18: Deduct exit taker fee (notional-based) ──
     // HL taker fee = 0.04% of NOTIONAL at exit. notional = exitPrice × quantity.
     // v2.0.48: Notional is NOT leveraged — fee is on raw position value.
-    const exitNotional = exitPrice * pos.quantity;
+    // v2.0.854-ATTACK2: Use safeExitPrice so NaN/Infinity exitPrice doesn't
+    // produce a NaN exitFee that corrupts balance + realizedPnl.
+    const exitNotional = safeExitPrice * pos.quantity;
     const exitFee = calculateTakerFee(exitNotional);
     this.portfolio.balance -= exitFee;
     // v2.0.78: realizedPnl must reflect TRUE net PnL (priceDelta − entryFee − exitFee).
@@ -1448,7 +1463,7 @@ export class PortfolioTracker {
       symbol: pos.symbol,
       side: pos.side,
       entryPrice: pos.averageEntryPrice,
-      exitPrice,
+      exitPrice: safeExitPrice,
       quantity: pos.quantity,
       leverage: lev,
       investment: margin,
@@ -1538,6 +1553,9 @@ export class PortfolioTracker {
    *  learning pipeline + RIL + trade-audit can see HOW the position closed.
    */
   closeExchangePosition(symbol: string, exitPrice: number, hlRealizedPnl?: number, closeReason?: TradeRecord['closeReason']): TradeRecord | null {
+    // v2.0.854-ATTACK2: Sanitize exitPrice — NaN/Infinity/0/negative corrupts
+    // PnL, pnlPct, inferCloseReason, and every learning system.
+    const safeExitPrice = safePrice(exitPrice);
     // v2.0.72: real positions live in realPositions
     const sym = normalizeSymbol(symbol);
     const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(symbol);
@@ -1604,12 +1622,12 @@ export class PortfolioTracker {
       // Fallback: calculate ourselves (without leverage multiplier — HL PnL
       // is not leveraged, it's the raw price difference × quantity)
       if (pos.side === 'buy') {
-        realizedPnl = (exitPrice - pos.averageEntryPrice) * pos.quantity;
+        realizedPnl = (safeExitPrice - pos.averageEntryPrice) * pos.quantity;
       } else {
-        realizedPnl = (pos.averageEntryPrice - exitPrice) * pos.quantity;
+        realizedPnl = (pos.averageEntryPrice - safeExitPrice) * pos.quantity;
       }
       // Deduct exit taker fee (notional-based, NOT leveraged)
-      const exitNotional = exitPrice * pos.quantity;
+      const exitNotional = safeExitPrice * pos.quantity;
       const exitFee = calculateTakerFee(exitNotional);
       realizedPnl -= exitFee;
     }
@@ -1669,7 +1687,7 @@ export class PortfolioTracker {
       symbol: pos.symbol,
       side: pos.side,
       entryPrice: pos.averageEntryPrice,
-      exitPrice,
+      exitPrice: safeExitPrice,
       quantity: pos.quantity,
       leverage: lev,
       investment: margin,

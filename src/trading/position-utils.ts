@@ -22,6 +22,28 @@ export function safeLeverage(leverage: number | undefined | null): number {
 }
 
 /**
+ * v2.0.854-ATTACK2: Sanitize a price before using it in any arithmetic.
+ * NaN/Infinity/0/negative prices corrupt balance, PnL, MAE/MFE, and every
+ * learning system. A corrupt price must degrade to 0 (no position value) so
+ * the portfolio stays finite — never NaN/Infinity which permanently poisons
+ * every downstream calculation.
+ */
+export function safePrice(price: number | undefined | null): number {
+  if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) return 0;
+  return price;
+}
+
+/**
+ * v2.0.854-ATTACK2: Sanitize a quantity before using it in any arithmetic.
+ * NaN/Infinity/0/negative quantities corrupt notional, margin, PnL. A corrupt
+ * quantity must degrade to 0 so the position has zero value — never NaN.
+ */
+export function safeQuantity(qty: number | undefined | null): number {
+  if (typeof qty !== 'number' || !Number.isFinite(qty) || qty <= 0) return 0;
+  return qty;
+}
+
+/**
  * Compute SL/TP from entry price + side + percentages.
  * LONG: SL = entry × (1 - slPct), TP = entry × (1 + tpPct)
  * SHORT: SL = entry × (1 + slPct), TP = entry × (1 - tpPct)
