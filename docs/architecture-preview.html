@@ -17,17 +17,17 @@
 <div class="container"><div id="diagram" class="mermaid">
 flowchart TB
     subgraph L1["LAYER 1 · STRATEGIC"]
-        TA["Terminal Agent<br/><small>user prefs → rules</small>"]
+        TA["Terminal Agent<br/>user prefs → rules"]
     end
 
-    subgraph L2["LAYER 2 · COGNITIVE (HACP + Evolution)"]
+    subgraph L2["LAYER 2 · COGNITIVE"]
         direction TB
         subgraph HACP["HACP Protocol"]
             A1["5 Sub-Agents"] --> A2["Skeptics"] --> A3["Meta-Agent"]
         end
 
         subgraph EVO["Evolution Pipeline"]
-            direction LR
+            direction TB
             subgraph SRC["Signal Sources"]
                 ST["Statistical<br/>OLR · Shadow · First-Passage"]
                 LRN["Learned<br/>Autoencoder · AttnRes"]

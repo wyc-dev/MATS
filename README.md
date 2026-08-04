@@ -111,18 +111,18 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 flowchart TB
     %% ── Layer 1 · Strategic ──────────────────────────────────────────
     subgraph L1["LAYER 1 · STRATEGIC"]
-        TA["Terminal Agent<br/><small>user prefs → rules</small>"]
+        TA["Terminal Agent<br/>user prefs → rules"]
     end
 
     %% ── Layer 2 · Cognitive ──────────────────────────────────────────
-    subgraph L2["LAYER 2 · COGNITIVE (HACP + Evolution)"]
+    subgraph L2["LAYER 2 · COGNITIVE"]
         direction TB
         subgraph HACP["HACP Protocol"]
             A1["5 Sub-Agents"] --> A2["Skeptics"] --> A3["Meta-Agent"]
         end
 
         subgraph EVO["Evolution Pipeline"]
-            direction LR
+            direction TB
             subgraph SRC["Signal Sources"]
                 ST["Statistical<br/>OLR · Shadow · First-Passage"]
                 LRN["Learned<br/>Autoencoder · AttnRes"]
@@ -146,7 +146,6 @@ flowchart TB
                 S["Self-Aware<br/>Calibrator·Improver·Causal"]
                 T["Smart SL/TP<br/>+ MFE Calibration"]
             end
-            %% signal sources converge into gates
             ST --> G1 & G2
             LRN --> G1 & G2
             MEM --> G3 & G4
