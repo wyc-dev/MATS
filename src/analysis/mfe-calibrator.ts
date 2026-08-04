@@ -153,7 +153,15 @@ async function fetchCandles(symbol: string, interval: string, count: number): Pr
   }) as Candle[] | null;
   if (!Array.isArray(data)) return [];
   // Sort chronologically (oldest first) for forward-window measurement.
-  return [...data].sort((a, b) => (a.t ?? 0) - (b.t ?? 0));
+  // HL returns `t` as a number (epoch ms); guard against string / NaN so the
+  // sort is stable regardless of payload shape (attack fix #3).
+  return [...data].sort((a, b) => {
+    const ta = typeof a.t === 'number' ? a.t : (typeof a.t === 'string' ? parseInt(a.t, 10) : 0);
+    const tb = typeof b.t === 'number' ? b.t : (typeof b.t === 'string' ? parseInt(b.t, 10) : 0);
+    const va = Number.isFinite(ta) ? ta : 0;
+    const vb = Number.isFinite(tb) ? tb : 0;
+    return va - vb;
+  });
 }
 
 /**
