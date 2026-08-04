@@ -108,56 +108,91 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 ### How the System Fits Together
 
 ```mermaid
-flowchart LR
-    subgraph INPUTS["📡 1 · Data Sources"]
-        HL["Hyperliquid<br/>WS + REST"]
-        NEWS["News Feeds"]
-        USER["User Preferences"]
+flowchart TB
+    subgraph L1["Layer 1 · Strategic"]
+        TA["Terminal Agent<br/>user prefs → Root Command Prompt<br/>pre-cycle rule check + post-cycle verification"]
     end
 
-    subgraph COGNITION["🧠 2 · Cognitive Layer — HACP"]
+    subgraph L2["Layer 2 · Cognitive (HACP + Evolution)"]
         direction TB
-        TA["Terminal Agent<br/>rule check"]
-        AG["5 Sub-Agents<br/>Fractal · On-Chain · OLR · News · Risk"]
-        SK["Skeptics<br/>audit + veto"]
-        ME["Meta-Agent<br/>arbitration + thesis"]
-        TA --> AG --> SK --> ME
+        subgraph HACP["HACP Protocol"]
+            AG["5 Sub-Agents<br/>Fractal · On-Chain · OLR · News · Risk"]
+            SK["Skeptics<br/>logic audit + thesis veto"]
+            ME["Meta-Agent<br/>arbitration + entryThesis"]
+            AG --> SK --> ME
+        end
+
+        subgraph EVO["Cognitive Evolution Pipeline"]
+            direction TB
+            subgraph STAT["Statistical"]
+                OLR["OLR P(win)"]
+                SHADOW["Shadow Trading"]
+                FP["First-Passage"]
+                COMBO["Combo WR Gate"]
+            end
+            subgraph LEARNED["Learned"]
+                NA["Numeric Autoencoder"]
+                ATTN["AttnRes Cycle-History<br/>+ Dual Pseudo-Query"]
+            end
+            subgraph MEM["Memory"]
+                EXP["EXP Vector Memory"]
+                RIL["RIL Reason Intelligence"]
+                ANTI["Anti-Pattern Memory"]
+                EM["EM Cycle Chain"]
+                REPLAY["Replay Buffer"]
+            end
+            subgraph GATES["Gates"]
+                COND["Conditional WR Gate"]
+                DISCOUNT["P(win)×Consensus Discount"]
+                PLAN["Plan G Dynamic Threshold"]
+            end
+            subgraph EDGE["Edge Validation"]
+                EDGE_C["edge-calculator"]
+                EXEC_T["execution-tracker"]
+                STAB["stability-monitor"]
+                RPE["risk-profile-edge-store"]
+                BT["backtest-validation"]
+            end
+            subgraph ALPHA["Alpha Discovery"]
+                QRL["Q-RL 270-cell Q-table"]
+            end
+            subgraph SLTP["SL/TP"]
+                SMART["Smart SL/TP<br/>(S/R → 50-candle → ATR)"]
+                MFE["MFE Calibration"]
+                LEV["Leverage-aware floor"]
+            end
+            subgraph SELF["Self-Aware"]
+                META_C["Meta-Cognitive Calibrator"]
+                SI["Self-Improver"]
+                CAUSAL["Causal Reasoner"]
+                ML["Meta-Learner"]
+                ATTR["Component Attribution"]
+            end
+        end
     end
 
-    subgraph EVOLUTION["🧬 3 · Evolution Pipeline"]
-        direction TB
-        STAT["Statistical<br/>OLR · Shadow · Combo WR"]
-        LRN["Learned<br/>Autoencoder · AttnRes"]
-        MEM["Memory<br/>EXP · RIL · Anti-Pattern"]
-        EDGE["Edge Validation<br/>alpha lie detector"]
-        ALPHA["Q-RL Discovery"]
-        SLTP["Smart SL/TP<br/>+ MFE Calibration"]
-        CLOSE["Close-Context<br/>Learning"]
-    end
-
-    subgraph OUTPUT["📤 4 · Signal Output"]
-        MATRIX["3×3 Analysis Matrix"]
-        SUPABASE[("Supabase<br/>asset_analyses")]
-        CLIENT["mats_app Client"]
-    end
-
-    subgraph EXECUTION["⚙️ 5 · Execution"]
+    subgraph L3["Layer 3 · Execution"]
         TM["Trading Manager<br/>paper / real"]
-        HL_EX["Hyperliquid<br/>Exchange"]
+        HL_EX["Hyperliquid Exchange<br/>(9 perpetual DEXs)"]
+        RISK["Risk Engine"]
+        POS["Position Tracking<br/>+ SL/TP + Reconciliation"]
     end
 
-    INPUTS --> COGNITION
-    COGNITION --> EVOLUTION
-    EVOLUTION --> SLTP
-    EVOLUTION --> CLOSE
-    COGNITION --> MATRIX
-    MATRIX --> SUPABASE --> CLIENT
-    COGNITION -->|execute| TM --> HL_EX
-    HL_EX -->|fills + PnL| CLOSE
-    CLOSE -->|learning weight| EVOLUTION
+    INPUT["📡 Data<br/>HL WS · News · User"] --> TA
+    TA --> HACP
+    HACP --> EVO
+    EVO --> SMART
+    SMART --> MFE
+    MFE --> LEV
+    EVO --> MATRIX["3×3 Analysis Matrix"]
+    MATRIX --> SUPABASE[("Supabase<br/>asset_analyses")]
+    SUPABASE --> CLIENT["mats_app Client"]
+    HACP -->|execute| TM --> HL_EX
+    HL_EX -->|fills + PnL| EXP
+    EXP -->|learning| EVO
 ```
 
-**Data flow at a glance:** market data + news + user prefs → HACP agents debate → evolution pipeline scores the edge → 3×3 matrix written to Supabase → the client (or the backend in dual mode) executes → trade results feed back through close-context learning to improve the next decision.
+**Data flow at a glance:** market data + news + user prefs → Terminal Agent → HACP agents debate → evolution pipeline (statistical + learned + memory + gates + edge validation + Q-RL + SL/TP + self-aware) scores the edge → 3×3 matrix written to Supabase → the client (or backend in dual mode) executes → trade results feed back through close-context learning to improve the next decision.
 
 ### Layered View
 

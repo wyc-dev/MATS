@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MATS System Architecture Preview</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  body { background:#1e1e2e; color:#cdd6f4; font-family: -apple-system, "Segoe UI", sans-serif; display:flex; flex-direction:column; align-items:center; padding:24px; }
+  h1 { color:#89b4fa; }
+  .container { background:#181825; border-radius:16px; padding:24px; box-shadow:0 8px 32px rgba(0,0,0,.4); max-width:100%; }
+  #diagram svg { background:transparent; }
+</style>
+</head>
+<body>
+<h1>🧠 MATS — System Architecture</h1>
+<div class="container"><div id="diagram" class="mermaid">
+flowchart TB
+    subgraph L1["Layer 1 · Strategic"]
+        TA["Terminal Agent<br/>user prefs → Root Command Prompt<br/>pre-cycle rule check + post-cycle verification"]
+    end
+
+    subgraph L2["Layer 2 · Cognitive (HACP + Evolution)"]
+        direction TB
+        subgraph HACP["HACP Protocol"]
+            AG["5 Sub-Agents<br/>Fractal · On-Chain · OLR · News · Risk"]
+            SK["Skeptics<br/>logic audit + thesis veto"]
+            ME["Meta-Agent<br/>arbitration + entryThesis"]
+            AG --> SK --> ME
+        end
+
+        subgraph EVO["Cognitive Evolution Pipeline"]
+            direction TB
+            subgraph STAT["Statistical"]
+                OLR["OLR P(win)"]
+                SHADOW["Shadow Trading"]
+                FP["First-Passage"]
+                COMBO["Combo WR Gate"]
+            end
+            subgraph LEARNED["Learned"]
+                NA["Numeric Autoencoder"]
+                ATTN["AttnRes Cycle-History<br/>+ Dual Pseudo-Query"]
+            end
+            subgraph MEM["Memory"]
+                EXP["EXP Vector Memory"]
+                RIL["RIL Reason Intelligence"]
+                ANTI["Anti-Pattern Memory"]
+                EM["EM Cycle Chain"]
+                REPLAY["Replay Buffer"]
+            end
+            subgraph GATES["Gates"]
+                COND["Conditional WR Gate"]
+                DISCOUNT["P(win)×Consensus Discount"]
+                PLAN["Plan G Dynamic Threshold"]
+            end
+            subgraph EDGE["Edge Validation"]
+                EDGE_C["edge-calculator"]
+                EXEC_T["execution-tracker"]
+                STAB["stability-monitor"]
+                RPE["risk-profile-edge-store"]
+                BT["backtest-validation"]
+            end
+            subgraph ALPHA["Alpha Discovery"]
+                QRL["Q-RL 270-cell Q-table"]
+            end
+            subgraph SLTP["SL/TP"]
+                SMART["Smart SL/TP<br/>(S/R → 50-candle → ATR)"]
+                MFE["MFE Calibration"]
+                LEV["Leverage-aware floor"]
+            end
+            subgraph SELF["Self-Aware"]
+                META_C["Meta-Cognitive Calibrator"]
+                SI["Self-Improver"]
+                CAUSAL["Causal Reasoner"]
+                ML["Meta-Learner"]
+                ATTR["Component Attribution"]
+            end
+        end
+    end
+
+    subgraph L3["Layer 3 · Execution"]
+        TM["Trading Manager<br/>paper / real"]
+        HL_EX["Hyperliquid Exchange<br/>(9 perpetual DEXs)"]
+        RISK["Risk Engine"]
+        POS["Position Tracking<br/>+ SL/TP + Reconciliation"]
+    end
+
+    INPUT["📡 Data<br/>HL WS · News · User"] --> TA
+    TA --> HACP
+    HACP --> EVO
+    EVO --> SMART
+    SMART --> MFE
+    MFE --> LEV
+    EVO --> MATRIX["3×3 Analysis Matrix"]
+    MATRIX --> SUPABASE[("Supabase<br/>asset_analyses")]
+    SUPABASE --> CLIENT["mats_app Client"]
+    HACP -->|execute| TM --> HL_EX
+    HL_EX -->|fills + PnL| EXP
+    EXP -->|learning| EVO
+</div></div>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'dark', flowchart: { curve: 'basis', nodeSpacing: 40, rankSpacing: 60 } });
+</script>
+</body>
+</html>
