@@ -1070,23 +1070,73 @@ export class TradingManager {
 
     // ── Commit or roll back the local mirror ──
     if (!hlOk) {
-      // HL rejected/failed → ROLL BACK local mirror to the previous values so
-      // UI + cache never show an SL/TP that HL doesn't actually have. The
-      // desired values are queued for a retry by the next syncSLTP() pass.
+      // HL rejected/failed. The OLD rollback used `prevSL/prevTP` — but that
+      // is WRONG on partial success (engine.adjustPosition places SL and TP
+      // independently; one can succeed while the other fails, returning false).
+      // Rolling back BOTH to prev would then create a REVERSE desync: HL has
+      // the new SL, local shows the old SL. Instead, read the ACTUAL trigger
+      // orders from HL and sync the local mirror to ground truth. Whatever HL
+      // really holds becomes the local value; the failed side stays pending.
       if (pos) {
-        if (prevSL !== undefined) pos.stopLossPrice = prevSL;
-        else delete (pos as any).stopLossPrice;
-        if (prevTP !== undefined) pos.takeProfitPrice = prevTP;
-        else delete (pos as any).takeProfitPrice;
-        pos.updatedAt = Date.now();
-        // v2.0.852: Queue for retry — syncSLTP() reads this set next cycle.
+        try {
+          const actual = await this.readHLTriggerPrices(pos.symbol);
+          if (actual.sl !== undefined) pos.stopLossPrice = actual.sl;
+          else if (prevSL !== undefined) pos.stopLossPrice = prevSL;
+          if (actual.tp !== undefined) pos.takeProfitPrice = actual.tp;
+          else if (prevTP !== undefined) pos.takeProfitPrice = prevTP;
+          pos.updatedAt = Date.now();
+          log.warn(`🔁 SL/TP HL placement failed — synced local mirror to HL truth (SL=${pos.stopLossPrice?.toFixed(2) ?? '-'} TP=${pos.takeProfitPrice?.toFixed(2) ?? '-'}); queued desired for retry`);
+        } catch (readErr) {
+          // Best-effort fallback: if we cannot read HL, keep prev values
+          // (never commit the desired — it may not be on HL).
+          if (prevSL !== undefined) pos.stopLossPrice = prevSL;
+          else delete (pos as any).stopLossPrice;
+          if (prevTP !== undefined) pos.takeProfitPrice = prevTP;
+          else delete (pos as any).takeProfitPrice;
+          log.warn(`🔁 SL/TP HL failure + readback failed (${readErr instanceof Error ? readErr.message : String(readErr)}) — kept prev local values`);
+        }
+        // Queue desired for retry by the next syncSLTP() pass.
         this.pendingSLTPRetry.set(normalizeSymbol(pos.symbol), { sl: desiredSL, tp: desiredTP });
-        log.warn(`🔁 SL/TP NOT applied (HL failure) — rolled back local mirror for ${pos.symbol} (SL=${prevSL?.toFixed(2) ?? '-'} TP=${prevTP?.toFixed(2) ?? '-'}); queued for retry`);
       }
     } else {
       // HL accepted (or local-only) → local mirror already has the desired
       // values from portfolio.adjustPosition(); clear any pending retry.
       if (pos) this.pendingSLTPRetry.delete(normalizeSymbol(pos.symbol));
+    }
+  }
+
+  /**
+   * v2.0.852 (attack fix #1): Read the ACTUAL SL/TP trigger prices currently
+   * placed on HL for a position, and return them. Used to reconcile the local
+   * mirror to exchange ground truth after a partial HL placement failure.
+   * Returns undefined for any side not currently on HL.
+   */
+  private async readHLTriggerPrices(symbol: string): Promise<{ sl?: number; tp?: number }> {
+    const engine = this.getActiveEngine();
+    if (!engine || !(engine instanceof HyperliquidEngine)) return {};
+    const pos = this.portfolio.getPosition(symbol);
+    if (!pos) return {};
+    try {
+      const orders = await engine.getOpenOrders();
+      const closeSide = pos.side === 'buy' ? 'A' : 'B';
+      const myOrders = orders.filter(o =>
+        o.coin.toLowerCase() === pos.symbol.toLowerCase() &&
+        o.side === closeSide
+      );
+      const hlSL = myOrders.find(o => o.triggerPx && o.tpsl === 'sl');
+      const hlTP = myOrders.find(o => o.triggerPx && o.tpsl === 'tp');
+      const result: { sl?: number; tp?: number } = {};
+      if (hlSL?.triggerPx) {
+        const v = parseFloat(hlSL.triggerPx);
+        if (Number.isFinite(v) && v > 0) result.sl = v;
+      }
+      if (hlTP?.triggerPx) {
+        const v = parseFloat(hlTP.triggerPx);
+        if (Number.isFinite(v) && v > 0) result.tp = v;
+      }
+      return result;
+    } catch {
+      return {};
     }
   }
 
@@ -1298,13 +1348,34 @@ export class TradingManager {
           justPlaced = true;
         }
 
-        // v2.0.852 (fix #C): A pending retry that actually placed on HL is now
-        // resolved — clear it so we don't re-place stale values next cycle.
-        // If placement just happened, the values are on HL and match the local
-        // mirror (rollback logic guarantees this), so the pending entry is stale.
+        // v2.0.852 (fix #C + attack fix #5): Resolve a pending retry, but do it
+        // PER-SIDE. `justPlaced` being true means at least one side placed on
+        // HL — but the OTHER side may have failed validation (slValid/tpValid
+        // false) or placement. Clearing the WHOLE pending entry would then
+        // permanently lose the failed side. Instead:
+        //   - clear the pending SL only if this pass actually placed a valid SL
+        //   - clear the pending TP only if this pass actually placed a valid TP
+        //   - sync the local mirror to the values actually placed on HL
         if (retrying && justPlaced) {
-          this.pendingSLTPRetry.delete(sym);
-          log.info(`✅ Pending SL/TP retry resolved for ${pos.symbol}`);
+          const remaining: { sl?: number; tp?: number } = {};
+          if (placeSL) {
+            pos.stopLossPrice = sl;
+          } else if (pending?.sl !== undefined) {
+            remaining.sl = pending.sl; // SL not placed this pass → keep pending
+          }
+          if (placeTP) {
+            pos.takeProfitPrice = tp;
+          } else if (pending?.tp !== undefined) {
+            remaining.tp = pending.tp; // TP not placed this pass → keep pending
+          }
+          pos.updatedAt = Date.now();
+          if (remaining.sl !== undefined || remaining.tp !== undefined) {
+            this.pendingSLTPRetry.set(sym, remaining);
+            log.info(`🔁 Pending SL/TP retry partially resolved for ${pos.symbol} — local synced (SL=${pos.stopLossPrice?.toFixed(2) ?? '-'} TP=${pos.takeProfitPrice?.toFixed(2) ?? '-'}); remaining pending (SL=${remaining.sl?.toFixed(2) ?? '-'} TP=${remaining.tp?.toFixed(2) ?? '-'})`);
+          } else {
+            this.pendingSLTPRetry.delete(sym);
+            log.info(`✅ Pending SL/TP retry fully resolved for ${pos.symbol} — local synced to HL (SL=${pos.stopLossPrice?.toFixed(2) ?? '-'} TP=${pos.takeProfitPrice?.toFixed(2) ?? '-'})`);
+          }
         }
 
         // v2.0.66: If we just placed orders, SKIP the reverse-sync + push-corrected

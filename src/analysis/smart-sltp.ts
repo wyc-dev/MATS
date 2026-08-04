@@ -481,9 +481,20 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   // ═══════════════════════════════════════════════════════════════
   const cal = input.mfeCalibration;
   if (cal) {
-    const calTpTarget = Number.isFinite(cal.tpTargetPct) ? cal.tpTargetPct : 0;
-    const calTpCap = Number.isFinite(cal.tpCapPct) ? cal.tpCapPct : 0;
-    const calSlFloor = Number.isFinite(cal.slFloorPct) ? cal.slFloorPct : 0;
+    // Defense-in-depth (attack fix #9): clamp caller-supplied calibration values
+    // to sane bounds BEFORE use. Callers may be untrusted (constructed at runtime
+    // from arbitrary sources); an unbounded tpTargetPct could push TP to an
+    // absurd level before the cap logic runs. Hard clamps mirror buildCalibration:
+    //   tpTarget ∈ [0.003, 0.20], tpCap ∈ [0.005, 0.30], slFloor ∈ [0.005, 0.15].
+    const calTpTarget = Number.isFinite(cal.tpTargetPct)
+      ? Math.max(0.003, Math.min(0.20, cal.tpTargetPct))
+      : 0;
+    const calTpCap = Number.isFinite(cal.tpCapPct)
+      ? Math.max(0.005, Math.min(0.30, cal.tpCapPct))
+      : 0;
+    const calSlFloor = Number.isFinite(cal.slFloorPct)
+      ? Math.max(0.005, Math.min(0.15, cal.slFloorPct))
+      : 0;
 
     // 1. TP target — if the structural TP is aiming FURTHER than the median
     //    favourable extension × 1.25 (leave headroom), pull it in to a
@@ -532,6 +543,26 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   if (finalTpPct < tpMin - 1e-9) {
     tpPrice = isBuy ? entryPrice * (1 + tpMin) : entryPrice * (1 - tpMin);
     logParts.push(`[TP-min] widened from ${(finalTpPct * 100).toFixed(2)}% to ${(tpMin * 100).toFixed(1)}% (min viable)`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // v2.0.852 (attack fix #4): TP must NEVER cross SL (R:R >= 0).
+  // The MFE TP target pulls TP in toward entry — if SL was widened (leverage /
+  // momentum / MFE SL floor) and TP pulled in too far, TP can end up on the
+  // WRONG side of SL (BUY: TP below SL, or SELL: TP above SL). A crossed
+  // SL/TP pair is degenerate: one always triggers immediately or they cancel
+  // out on HL. Enforce a minimum gap of `tpMin` between SL and TP, widening
+  // TP away from SL as needed. This only fires on degenerate cases; it never
+  // narrows a sane TP.
+  // ═══════════════════════════════════════════════════════════════
+  const slAfter = Math.abs(slPrice - entryPrice) / entryPrice;
+  const tpAfter = Math.abs(tpPrice - entryPrice) / entryPrice;
+  const gapPct = Math.abs(slAfter - tpAfter);
+  if (slAfter > 0 && gapPct < tpMin - 1e-9) {
+    // Too close / crossed → push TP out so gap >= tpMin on the profit side.
+    const tpFromSL = Math.max(tpAfter, slAfter + tpMin);
+    tpPrice = isBuy ? entryPrice * (1 + tpFromSL) : entryPrice * (1 - tpFromSL);
+    logParts.push(`[SL/TP-gap] widened TP from ${(tpAfter * 100).toFixed(2)}% to ${(tpFromSL * 100).toFixed(2)}% to keep ≥${(tpMin * 100).toFixed(2)}% gap from SL (${(slAfter * 100).toFixed(2)}%)`);
   }
 
   // ═══════════════════════════════════════════════════════════════
