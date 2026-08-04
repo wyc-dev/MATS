@@ -886,7 +886,23 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   // v2.0.821: Fast symbol universe (instant, no volume scan) for the market picker.
   const [allSymbols, setAllSymbols] = useState<AllSymbolEntry[]>([])
   const [symbolsLoading, setSymbolsLoading] = useState(false)
+  // v2.0.853-fix5: Prevent fetch spam when backend is down. The old effect
+  // fired whenever config?.hyperliquidAssetType changed — but when the SSE
+  // reconnects after a disconnect, data goes from null → object, causing
+  // config to change from undefined → value, re-triggering the effect.
+  // With a flapping backend, this created a flood of /api/market-agent/
+  // all-symbols requests (ECONNREFUSED spam in vite proxy log).
+  // Fix: gate on `data` being present (implies backend is up) + dedup ref
+  // to avoid refetching the same asset type.
+  const lastAssetTypeFetchedRef = useRef<string | undefined>(undefined)
   useEffect(() => {
+    // Don't fetch if backend is disconnected (data is null)
+    if (!data) return
+    const assetType = config?.hyperliquidAssetType
+    // Don't refetch if we already fetched this asset type
+    if (lastAssetTypeFetchedRef.current === assetType && allSymbols.length > 0) return
+    lastAssetTypeFetchedRef.current = assetType
+
     let cancelled = false
     const fetchSymbols = async () => {
       setSymbolsLoading(true)
@@ -904,7 +920,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
     void fetchSymbols()
     // Refetch when asset type changes (different universe per type).
     return () => { cancelled = true }
-  }, [config?.hyperliquidAssetType])
+  }, [config?.hyperliquidAssetType, data])
 
   // v2.0.822: Read per-asset analyses from Supabase (the backend writes the
   // 3×3 recommendation matrix each cycle). This is the AUTHORITATIVE data
@@ -3749,6 +3765,14 @@ export default function App() {
   // auto-pausing, so a single transient 500/timeout from Ollama (common when
   // 8 agents are hitting it concurrently) doesn't pause the system.
   const nonePlanCountRef = useRef<number>(0)
+  // v2.0.853-fix5: Exponential backoff for SSE reconnection. When the backend
+  // is down or flapping, the old 2s fixed reconnect caused rapid-fire
+  // /api/settings/ollama-plan requests (ECONNRESET → ECONNREFUSED spam in
+  // the vite proxy log). Each SSE onopen immediately fetches ollama-plan,
+  // so a fast reconnect loop = request flood. Backoff: 2s → 4s → 8s → 15s
+  // (capped), reset to 2s on successful data receipt.
+  const reconnectDelayRef = useRef<number>(2000)
+  const MAX_RECONNECT_DELAY = 15_000
 
   // v2.0.119: DESKTOP_PANELS defined inside App() so it can access ollamaPlan
   const DESKTOP_PANELS: Array<(data: APIData | null) => React.ReactNode> = [
@@ -3767,9 +3791,16 @@ export default function App() {
     esRef.current = es
     es.onopen = async () => {
       setConnected(true)
+      // v2.0.853-fix5: Reset backoff on successful connection
+      reconnectDelayRef.current = 2000
       // v2.0.117: Fetch Ollama plan info on connect
+      // v2.0.853-fix5: Guard with try/catch + don't retry here — the 30s
+      // poll interval will pick it up. The onopen fetch is a one-shot
+      // best-effort; if it fails (backend flapping), we don't want to
+      // contribute to the request flood.
       try {
         const res = await fetch(`${API_BASE}/settings/ollama-plan`)
+        if (!res.ok) return // backend responded but with error — don't parse
         const json = await res.json()
         if (json.success) {
           setOllamaPlan(json.plan)
@@ -3784,7 +3815,7 @@ export default function App() {
             nonePlanCountRef.current = 0
           }
         }
-      } catch { /* ignore */ }
+      } catch { /* ignore — backend may be flapping, don't retry here */ }
     }
 
     // v2.0.120: Poll Ollama plan every 30s to detect disconnection
@@ -3825,10 +3856,16 @@ export default function App() {
         clearInterval(planPollRef.current)
         planPollRef.current = null
       }
-      // Auto-reconnect after 2s
       es.close()
       esRef.current = null
-      setTimeout(() => connectSSE(), 2000)
+      // v2.0.853-fix5: Exponential backoff instead of fixed 2s. When the
+      // backend is down or flapping, a fixed 2s reconnect causes rapid-fire
+      // SSE open → ollama-plan fetch → connection drop → reconnect loops.
+      // This floods the vite proxy with ECONNRESET/ECONNREFUSED errors.
+      // Backoff: 2s → 4s → 8s → 15s (capped), reset on successful onopen.
+      const delay = reconnectDelayRef.current
+      reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, MAX_RECONNECT_DELAY)
+      setTimeout(() => connectSSE(), delay)
     }
   }, [])
 
