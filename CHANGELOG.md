@@ -4,6 +4,20 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.854-tests: Sync stale matrix tests to v2.0.836 DCS behaviour (4 tests → full suite green)
+
+The full test suite had 4 pre-existing failures from the v2.0.836 DCS-v2 migration: `analysis-matrix.test.ts` and `edge-attack.test.ts` still asserted the **v2.0.822** conviction scaling (aggressive ×1.3, conservative ×0.7), but `src/services/analysis-matrix.ts` now uses DCS-driven scaling:
+- aggressive: `conviction × (1.0 + 0.15 × DCS²)` — quadratic, `[1.0, 1.15]`
+- conservative: `DCS < 0.3 → hard HOLD`; `DCS ≥ 0.55 → honest ×1.0`
+
+Tests called `buildAssetAnalysis` without a DCS argument (defaults 0), so aggressive got no boost (was expecting ×1.3) and conservative went to HOLD (was expecting sell/buy).
+
+**Fix (`tests/analysis-matrix.test.ts` + `tests/edge-attack.test.ts`)**: Rewrote the 3 stale aggressive/conservative assertions + 1 edge-isolation assertion to lock in the v2.0.836 DCS behaviour, including explicit DCS-parameter cases (DCS=1.0 → ×1.15 aggressive; DCS=0.6 → honest conservative; DCS=0.1 → hard HOLD).
+
+**Result**: Full suite **1789 tests pass, 0 failures** (was 20 pre-existing failures across analysis-matrix / edge-attack / na-replay-persistence / attnres-trade-embedder / cycle-history-retrieval — the na-replay/attnres/cycle-history set resolved on clean runs; the 4 persistent ones were the stale matrix tests above). `tsc --noEmit` zero errors.
+
+---
+
 ## v2.0.854-attack: Leverage division-by-zero + safeLeverage hardening (1 critical bug + 10 guard tests)
 
 Adversarial attack on the v2.0.854 fixes found a **critical money-corruption bug** in the very code just changed, plus a systemic division-by-zero hazard:
