@@ -128,7 +128,7 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 │   • Close-Context Learning (closeReason+slNarrowed, v2.0.226)│
 │   • Plan G dynamic threshold (5-factor [45-55%] + penalty    │
 │     decay, v2.0.227)                                         │
-│   • Edge Validation (v2.0.833): edge-calculator +           │
+│   • Edge Validation (v2.0.833): edge-calculator +            │
 │     execution-tracker + stability-monitor + risk-profile     │
 │     edge-store + backtest-validation (Sharpe/DSR/walk-fwd)   │
 │   • Q-RL Alpha Discovery (v2.0.835): 270-cell Q-table +      │
