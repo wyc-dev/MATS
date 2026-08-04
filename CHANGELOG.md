@@ -4,6 +4,56 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.853: closeTrade dual-mode guard + fill-price accuracy + UI backoff (6 fixes, 45 attack tests)
+
+Adversarial attack on the closeTrade → tradingManager.closePosition → closeExchangePosition chain found and fixed **6 real production bugs** across 5 rounds of attack-testing:
+
+### fix1: closeTrade() dual-mode guard missing `!dualMode` (CRITICAL)
+
+**Bug**: `closeTrade()` guarded with `if (this.analysisMode)` but NOT `&& !this.dualMode`. In `ANALYSIS_MODE='dual'` (production default), `analysisMode=true` → `closeTrade()` silently returned `true` without closing ANY position. SL/TP triggers, consensus closes, thesis-invalidation force-closes, manual closes, direction flips — ALL skipped. Positions could not exit → winners gave back gains → losers ran unchecked.
+
+`executeTrade()` had the correct guard (`this.analysisMode && !this.dualMode`) — `closeTrade()` was a copy-paste omission from v2.0.823 when dual mode was introduced.
+
+**Fix (`src/index.ts`)**: Added `&& !this.dualMode` to the guard, matching `executeTrade()`.
+
+### fix2: 3 closeTrade() call sites missing explicit closeReason
+
+**Bug**: Same bug class as v2.0.851-fix. Three `closeTrade()` call sites were not passing an explicit `closeReason`, so `inferCloseReason` classified them by exit price vs SL/TP — losing the decision signal and polluting learning weights:
+- close-all (Trade Mode switch) → should be `'manual'`, was inferred
+- manual flip (UI) → should be `'manual'`, was inferred
+- reconciliation close → should be `'reconciliation'`, was inferred
+
+**Fix (`src/index.ts`)**: Added explicit `closeReason` to all 3 call sites.
+
+### fix3+fix4: tradingManager.closePosition() used stale WS price instead of actual HL fill
+
+**Bug**: `tradingManager.closePosition()` passed `pos.currentPrice` (last WS tick, potentially stale by seconds/minutes) as `exitPrice` and `undefined` for `hlRealizedPnl` to `closeExchangePosition`. This caused:
+1. Wrong exitPrice in TradeRecord → wrong PnL → wrong learning signal
+2. `inferCloseReason` comparing stale price vs SL/TP → misclassified close reason
+3. `computeLearningWeight` applied wrong weight → OLR/EXP/RIL learned from incorrect outcome
+
+`syncExchangePositions` already did this correctly (fetches closing fill from `getRecentFills`, uses `fill.price` + `fill.closedPnl`). `closePosition()` was missing the same logic.
+
+**Fix (`src/trading/trading-manager.ts`)**: After `engine.closePosition()` succeeds, fetch `getRecentFills(20)`, find the closing fill (same symbol + close side + dir not 'open' + timestamp ≥ openedAt + timestamp ≥ closeOrderTime - 10s), use `fill.price` + `fill.closedPnl`. Retry 2× with 500ms delay + `clearCaches()` before each fetch (busts 10s fills cache). Falls back to `pos.currentPrice` if all retries fail (no regression).
+
+### fix5: UI SSE exponential backoff + fetch gating
+
+**Bug**: When backend is down, UI SSE reconnect loop (fixed 2s) + `onopen` ollama-plan fetch + `all-symbols` useEffect re-firing on SSE reconnect → rapid-fire ECONNRESET/ECONNREFUSED spam in vite proxy log.
+
+**Fix (`ui/src/App.tsx`)**: (1) Exponential backoff on SSE reconnect: 2s → 4s → 8s → 15s (capped), reset on successful `onopen`. (2) `onopen` ollama-plan fetch: check `res.ok` before parsing, no retry. (3) `all-symbols` useEffect: gate on `data` being present (implies backend up) + dedup ref to avoid refetching same asset type.
+
+### fix6: Fill-fetch retry reduced to avoid blocking decision cycle
+
+**Bug**: fix3/fix4 retry loop (3×1s=3s) blocked the decision cycle. During the block, `paperEngine.updatePrice()` + `checkPositionExits()` don't run → other positions' SL/TP not monitored → MAE/MFE tracking gaps.
+
+**Fix (`src/trading/trading-manager.ts`)**: Reduced to 2×500ms=1s. 1s is enough for HL REST to propagate in most cases; if not, fallback to `pos.currentPrice` is still better than blocking.
+
+**Attack tests**: `tests/v2.0.853-closetrade-dual-mode-attack.test.ts` (45 tests) — dual-mode guard logic (all ANALYSIS_MODE values), return value semantics, closeReason misclassification scenarios, stale-price PnL difference, race condition + cache defense, fill timestamp/side/dir filters, retry timing, consistency with syncExchangePositions.
+
+Build: `tsc --noEmit` zero errors, `cd ui && npx vite build` zero errors.
+
+---
+
 ## v2.0.851-fix: Tag agent-driven closes with explicit closeReason
 
 Adversarial attack on v2.0.851 closeReason found agent-driven closes were NOT tagged with an explicit reason — so `inferCloseReason` classified them by exit price vs SL/TP, losing the agent-decision signal. Now pass `'consensus'` for:
