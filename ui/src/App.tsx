@@ -44,8 +44,15 @@ function SystemStatusPanel({ data }: { data: APIData | null }) {
   // (before first exchange balance fetch) — UI shows '--'.
   const totalPnl: number | null = s.totalPnl ?? null
   const drawdownPct: number | null = s.drawdownPct ?? null
-  const balance: number | null = s.balance ?? null
-  const equity: number | null = s.equity ?? null
+  // v2.0.855-fix: REAL-mode semantics — SSE maps balance→free (withdrawable),
+  // equity→accountValue (incl. unrealized PnL). Per owner spec:
+  //   Genuine Balance = accountValue (57.25) = s.equity
+  //   Genuine Equity  = free (31.09)       = s.balance
+  // So in real mode the two labels read the OPPOSITE fields of the paper-mode
+  // convention. Paper mode keeps balance→balance, equity→equity.
+  const isRealMode = data?.marketAgent?.config?.tradeMode === 'real'
+  const balance: number | null = isRealMode ? (s.equity ?? null) : (s.balance ?? null)
+  const equity: number | null = isRealMode ? (s.balance ?? null) : (s.equity ?? null)
   const progress = data?.cycleProgress
   const phaseLabel = progress?.phase === 'thinking' ? 'Agents Thinking'
     : progress?.phase === 'debating' ? `Debate Round ${progress.round}/${progress.totalRounds}`
@@ -1268,10 +1275,18 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       </div>
 
       {/* v2.0.151: Balance/Equity moved from Hippocampus to top of Trading Terminal */}
+      {/* v2.0.855-fix: REAL-mode field split — Genuine Balance = HL accountValue
+          (free + marginUsed, INCLUDES unrealized PnL on open positions) — the
+          TOTAL account value. Genuine Equity = HL `free` (withdrawable cash
+          EXCLUDING margin locked in open positions) — the spendable equity.
+          serializePortfolio maps: balance→exBal.free, totalEquity→exBal.total.
+          ⚠️ Field names are counter-intuitive: p.totalEquity carries accountValue
+          (larger, incl. unrealized PnL), p.balance carries free (smaller). */}
       <div className="portfolio-grid">
         <div className={`portfolio-cell ${isRealMode ? 'balance-real' : 'balance-paper'}`}>
           <span className="stat-label">{isRealMode ? 'Genuine Balance' : 'Simulated Balance'}</span>
           <span className="stat-number neutral">{(() => {
+            // REAL: Genuine Balance = accountValue (total incl. unrealized PnL)
             const bal = isRealMode
               ? (p?.totalEquity !== null && p?.totalEquity !== undefined ? p.totalEquity : null)
               : (p?.balance ?? s?.balance ?? 0)
@@ -1281,8 +1296,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         <div className={`portfolio-cell ${isRealMode ? 'balance-real' : 'balance-paper'}`}>
           <span className="stat-label">{isRealMode ? 'Genuine Equity' : 'Simulated Equity'}</span>
           <span className="stat-number neutral">{(() => {
+            // REAL: Genuine Equity = free (withdrawable, EXCLUDES margin)
             const eq = isRealMode
-              ? (p?.totalEquity !== null && p?.totalEquity !== undefined ? p.totalEquity : null)
+              ? (p?.balance !== null && p?.balance !== undefined ? p.balance : null)
               : (p?.totalEquity ?? s?.equity ?? 0)
             return eq === null ? '--' : `$${eq.toFixed(2)}`
           })()}</span>

@@ -471,10 +471,42 @@ export interface RealTradingEngine {
 }
 
 export interface Portfolio {
+  /**
+   * PAPER (simulated) account balance — NOT real money.
+   *
+   * ⚠️ 前文後理 (data provenance):
+   * - This is the PAPER trading engine's virtual balance, seeded from
+   *   `PAPER_INITIAL_BALANCE` (default 1000) and mutated ONLY by paper
+   *   openPosition()/closePosition() margin + fee arithmetic.
+   * - In REAL mode this value is IRRELEVANT to the actual Hyperliquid
+   *   account. The REAL balance comes from `hyperliquid-engine.ts`
+   *   `getBalance()` → HL `clearinghouseState` → `cachedExchangeBalance`
+   *   in index.ts. The UI's "Genuine Balance" reads that, NOT this.
+   * - `portfolio-state.json` persists THIS paper balance. Do NOT use it
+   *   to diagnose real-account profitability.
+   */
   balance: number;
+  /**
+   * PAPER account starting balance (config.paper.initialBalance, default 1000).
+   * Only meaningful for paper-mode PnL%. Real-mode initial deposit is not
+   * tracked here — the real account's starting value is whatever the wallet
+   * held before trading began (see HL accountValue).
+   */
   initialBalance: number;
-  totalEquity: number; // balance + unrealized pnl
+  /**
+   * PAPER total equity = paper balance + unrealized PnL + locked margin on
+   * OPEN PAPER positions only. v2.0.72: real positions live in `realPositions`
+   * and NEVER affect this number. In real mode, the UI shows HL accountValue
+   * (real equity) instead — see serializePortfolio() in index.ts.
+   */
+  totalEquity: number; // paper: balance + unrealized pnl (paper positions only)
   positions: Map<string, Position>;
+  /**
+   * PAPER total realized PnL (paper trades only). In real mode this is
+   * nulled out in the API response — real PnL is realized HL PnL, which is
+   * NOT tracked in a single number here; it lives in HL's own account
+   * accounting (funding, fees, realized + unrealized).
+   */
   totalPnl: number;
   totalPnlPct: number;
   maxDrawdown: number;

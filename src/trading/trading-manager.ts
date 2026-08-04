@@ -165,8 +165,18 @@ export class TradingManager {
   // ── Balance & Positions ──
 
   /**
-   * Get account balance from the active exchange.
-   * Falls back to paper portfolio if in paper mode.
+   * Get account balance from the active exchange (REAL HL account).
+   * Falls back to paper portfolio ONLY if in paper mode or the exchange
+   * engine is unavailable.
+   *
+   * ═══ 前文後理 (data provenance) ═══
+   * - Real mode: returns the REAL Hyperliquid account (total = accountValue
+   *   incl. unrealized PnL, free = withdrawable). This is the "Genuine
+   *   Balance".
+   * - Paper mode: returns the PAPER (simulated) portfolio numbers. These are
+   *   NOT real money.
+   * - The two are completely independent: real positions never touch paper
+   *   balance/equity; paper trades never touch the HL account.
    */
   async getBalance(): Promise<ExchangeAccountInfo> {
     const engine = this.getActiveEngine();

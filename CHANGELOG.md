@@ -4,6 +4,108 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.856-attack3: Symbol guard — undefined symbol crashes learning pipeline (E2/E3, 4 tests)
+
+Round-4 adversarial attack found the symbol dimension of the same corrupt-record problem:
+
+### E2/E3 (CRITICAL): valid side + undefined symbol → TypeError crash at feedTrade
+
+**Bug**: The v2.0.856-attack2 guard checked side only. But the restore path in `portfolio.ts` (`symbol: t.symbol` on restored trades) has NO runtime guard — a corrupt state file with `symbol: undefined` + VALID side passes the side guard, then:
+- `this.thesisInvalidatedCloseSymbols.delete(undefined)` — Set.delete(undefined) is safe (no crash)
+- `olrEngine.feedTrade(undefined, ...)` → `getOrCreate(undefined)` → `undefined.toLowerCase()` → **TypeError crash** killing the whole learning pipeline
+
+**Fix**: Extended the `onPositionClosedLearning` guard to also validate symbol — `safeSymbol = typeof trade.symbol === 'string' && trade.symbol.length > 0 ? trade.symbol : ''` — unknown side OR empty/undefined symbol → skip ALL learning with a clear log line. Defense-in-depth: a corrupt record is now fully quarantined, never reaching `feedTrade`/`normalizeSymbol`.
+
+### Tests
+
+`tests/v2.0.856-attack.test.ts` +4: side-valid-but-symbol-undefined caught by combined guard; empty-string symbol rejected; valid pair passes; crash-prevention demonstrated.
+
+**Result**: Full suite 1939 tests → 1927 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` zero errors.
+---
+
+## v2.0.856-attack2: Caller-side side-coercion + learning-pipeline guard + uplift sanitize (4 fixes, 5 new tests)
+
+Round-3 adversarial attack on the v2.0.856-attack fix's SURROUNDINGS found the side-coercion bug one level UPSTREAM, plus 3 more:
+
+### V11 (CRITICAL): `trade.side === 'buy' ? 'buy' : 'sell'` silently fabricates SELL for garbage sides
+
+**Bug**: 8 call sites in `onPositionClosedLearning()` (index.ts) used `trade.side === 'buy' ? 'buy' : 'sell'` — undefined/null/'BUY'/'long' ALL coerced to SELL. A corrupt trade record (e.g. hand-edited portfolio-state.json, restored via `as 'buy'|'sell'` cast which is NOT a runtime guard) fabricated a SELL direction that:
+- poisoned bySide attribution stats (a BUY trade recorded under SELL)
+- fed wrong direction labels into OLR/EXP/RIL/agentOutcomes/edgeExecTracker
+
+**Fix**: 
+- `normalizeTradeSide()` first — unknown → SKIP the entire learning block (index.ts `onPositionClosedLearning` guard: invalid side → log + return, protecting all 8 downstream consumers at once)
+- Attribution block now skips unknown-side records entirely (never attribute without a verifiable direction)
+- `ComponentAttribution.side` type widened to `'buy' | 'sell' | 'unknown'`
+
+### V12 (MEDIUM): `causalUplift.uplift` unsanitized — NaN/string silently skip or JS-coerce
+
+**Bug**: `Math.min(0.5, undefined)` = NaN → sig NaN → directionalSig NaN → store silently skips a positive-alpha record (data loss). `Math.min(0.5, '0.3')` JS-coerces to 0.3 (garbage-in).
+
+**Fix**: `safeNum(causalUplift.uplift, 0)` before the sig math.
+
+### V13 (LOW): `normalizeTradeSide` rejects boxed String / proxy — verified safe (no coercion, === compare)
+
+**Test**: boxed `new String('buy')` → 'unknown' (correct — never coerces); toString-bomb object → no throw (=== never invokes toString).
+
+### Tests
+
+`tests/v2.0.856-attack.test.ts` +4 (V11): uppercase/legacy rejection; store records unknown side as unknown (no fabrication); canonical regression. Round-6 probes verified: undefined uplift → NaN (store guard skips), null → 0.5 neutral, string coerced (now safeNum'd), proxy symbol guarded by caller try/catch.
+
+**Result**: Full suite 1935 tests → 1923 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` zero errors.
+---
+
+## v2.0.856-attack: Adversarial attack on the attribution signal-contract fix — 3 real vulnerabilities (12 tests)
+
+Adversarial attack on the v2.0.856 fix (causal-uplift SELL signal conversion) found **3 real vulnerabilities** — the signal-inversion fix was applied at the caller but the side-comparison logic remained asymmetric:
+
+### V8 (CRITICAL): side-value asymmetry — garbage side inverts contribution
+
+**Bug**: The v2.0.856 caller inverted for non-'buy' (`tradeSide === 'buy' ? sig : 1-sig`) while the store inverts for 'sell' (`input.side === 'sell' ? 1-signal : signal`). These two checks are **not symmetric** for garbage side values:
+- `'SELL'` (uppercase): caller sees non-'buy' → inverts; store sees non-'sell' → does NOT invert → agreement inverted → **positive alpha recorded as negative contribution** (the exact v2.0.856 bug re-entered via case)
+- `undefined` / `null` / `'long'` / `'short'` (legacy): same asymmetry → inverted agreement
+- Only canonical lowercase `'buy'`/`'sell'` behaved correctly
+
+**Fix**: Added `normalizeTradeSide()` (component-attribution.ts) returning canonical `'buy' | 'sell' | 'unknown'`. Callers (index.ts: OLR live + causal live + OLR backfill) AND the store all use it — a garbage/unknown side triggers NO inversion on either side (neutral, never fabricates a direction). Store also stores the normalized side in records (no pollution of bySide stats).
+
+### V9 (HIGH): edge-audit.ts crashes on malformed records
+
+**Bug**: `raw.records ?? []` — if records is a non-array (string, null), `.filter()` crashes the audit tool.
+
+**Fix**: `Array.isArray(rawRecords) ? rawRecords.filter(r => !!r && typeof r === 'object') : []` — non-array → empty, null entries filtered.
+
+### V10 (MEDIUM): store stored raw garbage side in records
+
+**Bug**: `side: input.side` stored the raw value ('SELL', undefined) → bySide aggregation polluted with garbage keys.
+
+**Fix**: Store normalized side (`side: normalizeTradeSide(input.side)`).
+
+### Tests
+
+`tests/v2.0.856-attack.test.ts` (12 tests): normalizeTradeSide canonical/uppercase/legacy/null rejection; store-level garbage-side no-inversion; canonical SELL inversion regression; edge-audit non-array/null/null-entry robustness; v2.0.856 original fixes regression (SELL+positive-uplift positive, NaN signal skipped).
+
+**Result**: Full suite 1931 tests → 1919 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` zero errors.
+---
+
+## v2.0.856: Attribution signal-contract fix + Component Edge Audit (2 real bugs, 11 tests)
+
+### fix1 (CRITICAL): Causal-uplift SELL signal inverted — positive alpha recorded as negative contribution
+
+**Bug**: `component-attribution.ts`'s signal contract: "signal > 0.5 = bullish; store inverts for SELL (agreement = 1 - signal)". The causal-uplift caller passed a **direction-agnostic** score (`0.5 + uplift`, where uplift > 0 = "this trade direction had positive alpha"), NOT a bullish signal. For SELL trades, the store inverted it → positive-uplift (good) trades recorded agreement < 0.5 → **negative contribution**. Live causal-uplift contribution was -0.031 largely from this inversion (14/16 live records were SELL).
+
+The OLR caller was accidentally correct: it inverts for SELL (`1 - P(win|sell)`), and the store re-inverts → agreement = P(win|side). Double-inversion luck, not design.
+
+**Fix (`src/index.ts` + `src/evolution/component-attribution.ts`)**: Unified the signal contract — callers pass raw bullish degree (>0.5 = market up); direction-agnostic metrics MUST be converted by the caller (`buy → sig, sell → 1 - sig`). Updated the store's `signal` JSDoc to state the contract explicitly. Added `tests/v2.0.856-attribution-signal.test.ts` (11 tests) locking both store-level and caller-level semantics: SELL+positive-uplift on win → positive contribution (was -0.8, now +0.8); SELL+negative-uplift → negative; neutral → zero; OLR double-inversion verified.
+
+### fix2 (Investigation): OLR extreme-signal pollution + `scripts/edge-audit.ts` tool
+
+**Findings**: OLR live attribution shows 9/20 records with extreme agreement (>0.9 or <0.1, i.e. P(win) 99%+), of which 5/9 are wrong (overconfident). Calibration bins reveal the root: BTC long's 65814 samples concentrate in the [0.6-0.8) bin (594W/208L, actual WR 74%) — OLR habitually emits high P(win), and those high-confidence predictions are wrong half the time in real trading (selection bias: system trades when OLR says high WR, but high confidence ≠ high accuracy).
+
+**New tool**: `scripts/edge-audit.ts` — read-only component edge audit. Reads `component-attribution.json`, separates backfill (cycleId=0) vs live, computes per-component / per-regime contribution with Wilson 95% CI, flags insufficient samples, and checks the signal contract for regression.
+
+**Result**: Full suite 1919 tests → 1907 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` zero errors.
+---
+
 ## v2.0.855-fix: Q-RL Alpha Discovery backfill integration — the table was NEVER populated (9 tests)
 
 **Bug (root-cause confirmation)**: `q-rl-table.json` was permanently empty (`values: {}`, `visits: {}` after 79 cycles) for TWO stacked reasons — (1) the v2.0.855 fix made aligned shadows open on real-trade cycles, but (2) `backfillFromExpRecords()` fed OLR/NA/AttnRes/PatternCluster/CHR/ComboTracker/MetaLearner/CausalReasoner/ComponentAttribution and **NEVER Q-RL**. The Q-RL table had NO cold-start prior at all: its only data source was live aligned-shadow resolution, so before the first aligned shadow resolved (which itself was blocked by the pre-v2.0.855 `didTradeExecute` skip), the table stayed empty forever → `discoverPatterns()` found nothing → DCS had zero discovery evidence.

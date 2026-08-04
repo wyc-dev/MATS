@@ -32,6 +32,31 @@
 
 ---
 
+## 帳戶模型：Paper（模擬）vs Real（Hyperliquid 真實）⚠️ 前文後理
+
+> **重要**：MATS 有兩套完全獨立嘅帳戶，數據來源唔同，**唔可以混淆**。診斷真實盈虧一定要用 Real 帳戶數據。
+
+| 維度 | Paper 帳戶（模擬） | Real 帳戶（Hyperliquid 真實） |
+|:-----|:------------------|:------------------------------|
+| **金錢性質** | 虛擬餘額，唔係真錢 | 真實 USDC，HL 鏈上 |
+| **初始值** | `config.paper.initialBalance`（`PAPER_INITIAL_BALANCE`, 預設 1000） | HL 錢包持有量（系統無記錄初始值，用 accountValue 睇現值） |
+| **數據來源** | `PortfolioTracker`（portfolio.ts）本機計算 | HL API `clearinghouseState`（hyperliquid-engine.ts `getBalance()`） |
+| **儲存位置** | `portfolio-state.json` 嘅 `balance` / `totalEquity` / `totalPnl` 欄位 | **唔儲存**——每次啟動重新 fetch（`cachedExchangeBalance`） |
+| **變動機制** | Paper 開倉/平倉嘅 margin + fee 加減 | HL 真實撮合、funding、手續費 |
+| **未實現 PnL** | 計入 paper `totalEquity`（僅 paper 倉位） | 已包含喺 HL `accountValue`（= free + marginUsed） |
+| **已實現 PnL** | paper `totalPnl` | **冇單一數字**——要睇 HL 帳戶自己嘅 accounting |
+| **UI 顯示** | Paper mode 先顯示 | Real mode：Genuine Balance / Equity 直接用 HL 值（`serializePortfolio` displayBalance/displayEquity） |
+
+### 關鍵規則
+
+1. **`portfolio-state.json` 嘅 balance 係 paper 值**——診斷真實盈虧用佢係錯嘅。真實盈虧睇 HL `accountValue`（UI「Genuine Balance」）。
+2. **Real 倉位從不影響 paper balance/equity**——`recalculateEquity()` 只 loop `portfolio.positions`（paper），`realPositions` 完全唔計。呢個係設計（v2.0.72），唔係 bug。
+3. **`realTrades`（closedRealTrades）只含已平倉交易**——未平倉嘅 4 倉位嘅盈利存喺 `realPositions.unrealizedPnl`，未入歷史記錄。
+4. **HL `accountValue` 包含未實現 PnL**——`total = free + marginUsed`，所以佢反映「而家」嘅真實權益，包括開倉中嘅浮盈。
+5. **Real 帳戶嘅初始值唔追蹤**——系統無記錄 HL 入金量；判斷盈虧要用 accountValue 同主神自己記得嘅入金量對比。
+
+---
+
 ## 系統架構（訊號運算後端 + 客戶端執行）
 
 ```
@@ -567,11 +592,28 @@ Per-symbol, per-side online logistic regression 從 shadow + paper + real + back
 
 每個 cycle 為每個 trading market 開模擬 LONG + SHORT，S/R-aligned SL/TP。Intra-cycle high/low 追蹤（正確判定 TP-before-SL）。學 TP-before-SL（真實可盈利性），唔係 5 分鐘價格方向。
 
+**完整結構（v2.0.855-audit）**：
+
+| 元件 | 位置 | 作用 |
+|:-----|:-----|:-----|
+| `ShadowPosition` | interface | `side` / `entryPrice` / `stopLossPrice` / `takeProfitPrice` / `highSinceOpen` / `lowSinceOpen` / `mfePct` / `maePct` / `shadowType` / `factorTag` |
+| `SHADOW_CONFIG` | constant | `maxOpenPerSymbol=10` / `maxTotalOpen=60` / `maxAgeCycles=12`(60min force-resolve) / `staleLearningWeight=0.3` |
+| `openShadowTrades()` | blind | 每 cycle 為每個 trading market 開 LONG+SHORT 兩邊（cold-start prior，OLR weight 0.1×） |
+| `openAlignedShadow()` | aligned | 跟 LLM 共識方向 + factor tag（v2.0.834）。v2.0.855：real-trade cycles 都開（counterfactual） |
+| `openStatisticalShadow()` | statistical | 純統計方向（OLR+Combo WR+Causal），同 LLM 對照（v2.0.846 A/B） |
+| `checkPositions()` | resolution | 用 `highSinceOpen`/`lowSinceOpen` 判定 SL/TP 命中（path-based，唔係 close price）→ feed OLR |
+| `drainRecentResults()` | 學習出口 | index.ts 每次 cycle drain，feed OLR + Q-RL + MetaLearner + CausalReasoner |
+| `pruneStaleSymbols()` | 維護 | 清理已移除 symbol 嘅 stale positions |
+
+**index.ts 整合點（v2.0.855-audit）**：`checkPositions` 喺 active symbol + 每個 trading market 都跑（line ~6029/6049）；`drainRecentResults` 每 cycle feed 去 OLR/Q-RL（line ~6071）；shadow 開倉喺 multi-symbol loop（line ~6289）。**Shadow → OLR → Q-RL 係完整學習管道**。
+
 **v2.0.143 改進**：
 - **MAE/MFE path-risk 追蹤**：每筆 shadow trade 記錄 Maximum Adverse/Favorable Excursion。Agent context 顯示 `avg MFE=3.2% avg MAE=1.8%`，讓 agent 看到「trades 平均先賺 3% 再虧到 SL」= 方向對但 exit timing 有問題。
 - **Per-symbol funding rate**：非 active symbol 不再用 active symbol 的 funding rate，改用 per-symbol HL WS mark price cache。
 - **Shadow soft gate**：當 shadow samples ≥ 10 且 win rate < 25%，override 為 HOLD（方向根本性錯誤）。
 - **OLR 來源標記**：shadow outcomes 餵入 OLR 時標記 `source='shadow'`，不再與 paper/real 混在一起無法區分。
+
+**現有 A/B 基礎（可擴展做退出策略驗證）**：`shadowType: 'blind' | 'aligned' | 'statistical'` 已經係天然嘅 A/B 分組機制——同一市況開唔同策略嘅 shadow，比較 outcome。**退出策略 A/B（standard vs trailing）可以完全複用呢個機制**：喺 `ShadowPosition` 加 `exitStrategy` 字段，`checkPositions()` 按策略分支。
 
 ### First-Passage Path Risk（`first-passage.ts`）
 
@@ -1216,6 +1258,41 @@ Verification-first 基礎設施：系統唔再假設每個進化組件都有價�
 | **`getCleanlinessOverview(lookbackMs)`** | label-quality summary：per-regime clean/polluted rate，由 `computeLearningWeight` 推導（v2.0.846 Phase 1b） |
 | **`getComponentStats()`/`getAllStats()`** | per-component expectancy、contribution、samples、confidence |
 | **Persistence** | `component-attribution.json`（atomic save/load） |
+
+**⚠️ 真實數據審計（v2.0.855-audit，`component-attribution.json`）**：
+
+| 發現 | 數據 | 含義 |
+|:-----|:-----|:-----|
+| **97% 係 backfill** | 1026 records 中 992 係 cycleId=0（歷史 EXP backfill），得 34 筆 live | Attribution 統計主要反映歷史，唔係現時系統行為 |
+| **Live OLR contribution 係負數** | 34 筆 live：`olr` contribution = **-4.586**（19 筆）；`causal-uplift` = -0.031（15 筆） | **OLR 信號喺真實交易上實際係「減低 edge」**，同文檔宣稱嘅「PRIMARY factor」相反——需要調查點解 |
+| **Regime 極度集中** | low_volatility 891/1026 (87%)；mean_reverting 127；trending_bull 8 | 絕大多數學習發生喺單一 regime，其他 regime 樣本極少 |
+| **OLR agreement 差異微弱** | 贏時 avg agreement 0.505 vs 蝕時 0.494（差 0.011） | OLR signal 嘅預測力好弱，接近 random |
+
+**結論**：Component Attribution 框架存在，但**數據主體係 backfill（97%），live 樣本太少（34）且顯示 OLR 係負貢獻**。喺累積足夠 live 樣本之前，唔可以根據 attribution 數據做組件增刪決定——但佢指出一個需要調查嘅方向：**OLR 信號可能唔係淨加 edge**。
+
+### ⚠️ 更深層發現（v2.0.856 audit）：兩個疊加嘅測量謬誤
+
+**謬誤 1：signal contract bug——causal-uplift 對 SELL 信號被錯誤反轉（已修 v2.0.856）**
+
+`recordAttribution()` 嘅契約係「signal > 0.5 = bullish, store 對 SELL 反轉」。但 causal-uplift caller 傳嘅係 direction-agnostic 嘅 `0.5+uplift`（uplift>0 = 呢筆 trade 有正 alpha，唔係市場向上）——對 SELL 交易被 store 反轉 → 正 alpha 記錄成負 contribution。**OLR caller 僥倖正確**（caller 反轉 `1-P(win|sell)` + store 再反轉 = 雙重反轉 cancel），但 causal 冇 caller 反轉 → 單次反轉錯。Live causal-uplift contribution = -0.031 主要就係來自呢個反轉（16 筆中 14 筆 SELL）。
+
+**修復（v2.0.856）**：統一 signal 契約——caller 全部傳 raw bullish degree（>0.5 = 睇升），direction-agnostic 指標（causal uplift）必須由 caller 轉換：`buy → sig, sell → 1-sig`。更新 store 註解講清楚契約。11 個測試鎖定。
+
+**謬誤 2：OLR 極端信號污染統計（未修，需進一步調查）**
+
+OLR live attribution 記錄中 9/20 係極端 agreement（>0.9 或 <0.1，即 P(win) 99%+），而其中 5/9 係錯（overconfident）。Calibration bins 揭示根源：BTC long 65814 樣本中絕大多數集中喺 [0.6-0.8) bin（594W/208L，實際 WR 74%）——**OLR 成日輸出高 P(win)，而呢啲「高信心」預測喺真實交易時一半錯**。呢個係 selection bias：系統傾向喺 OLR 話高勝率時先開倉，但「高信心」唔保證「高準確」。
+
+**對 Edge 審計嘅影響**：v2.0.856 前嘅 attribution 數據（尤其 causal SELL + OLR 極端信號）不可信。判讀組件 edge 應以 v2.0.856 後新累積嘅 live 記錄為準。可用 `npx tsx scripts/edge-audit.ts` 做唯讀審計。
+
+### ⚠️ Attack 系列（v2.0.856-attack/attack2/attack3）：side/symbol 維度嘅 guard 補完
+
+| 版本 | 漏洞 | 修復 |
+|:-----|:-----|:-----|
+| v2.0.856-attack | **V8 side 不對稱**：caller `=== 'buy'` vs store `=== 'sell'`——garbage side（'SELL' 大寫/undefined/'long'）令 caller 反轉而 store 唔反轉 → contribution 反轉。**V9** edge-audit 對 malformed records crash。**V10** store 存 raw garbage side | 加 `normalizeTradeSide()` helper（component-attribution.ts）——caller 同 store 共用，garbage → 'unknown' → 兩邊都唔反轉（中性，永不捏造方向）。12 測試 |
+| v2.0.856-attack2 | **V11 side fabricate**：`trade.side === 'buy' ? 'buy' : 'sell'` 喺 8 個 call site 將 undefined/'BUY'/'long' 靜默當 sell → 污染 bySide 統計 + 方向標籤。**V12** uplift 未 sanitize（NaN/string）。**V13** boxed String 驗證安全 | `onPositionClosedLearning` 開頭統一 guard：side 唔 canonical → skip 成個 learning block（保護 8 個下游 consumer）。Attribution block skip unknown side。`ComponentAttribution.side` type 拓寬至 `'buy'\|'sell'\|'unknown'`。`safeNum(uplift)`。4 測試 |
+| v2.0.856-attack3 | **E2/E3 symbol crash**：restore 路徑 `symbol: t.symbol` 無 runtime guard——undefined symbol + valid side 通過 side guard → `olrEngine.feedTrade(undefined)` → `undefined.toLowerCase()` TypeError crash | Guard 同時驗證 symbol：`safeSymbol = typeof trade.symbol === 'string' && trade.symbol.length > 0`。side 或 symbol 任何一個唔 valid → 完全隔離 corrupt record。4 測試 |
+
+**核心防禦原則（v2.0.856-attack 系列）**：一個 corrupt trade record 而家係「完全隔離」——無論 side/symbol/uplift 邊個字段壞，統一 guard 都會 skip 成個 learning 記錄，唔會用錯誤方向/錯誤 symbol 污染任何 learning 系統，亦唔會 crash 到 `feedTrade`/`normalizeSymbol`。
 
 ### Phase 1a：LLM vs 純統計 A/B Shadow（`shadow-trade-engine.ts`，v2.0.846）
 

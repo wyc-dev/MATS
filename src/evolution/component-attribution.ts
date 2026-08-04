@@ -57,11 +57,22 @@ export interface ComponentAttribution {
   componentId: ComponentId;
   tradeId: string;
   symbol: string;
-  side: 'buy' | 'sell';
+  side: 'buy' | 'sell' | 'unknown';
   cycleId: number;
   /** Directional signal the component emitted at decision time in [0,1].
    *  0.5 = neutral, > 0.5 = bullish, < 0.5 = bearish (for a 'buy' decision).
-   *  For 'sell', the signal is inverted so 1.0 always means "agrees with trade". */
+   *  For 'sell', the signal is inverted so 1.0 always means "agrees with trade".
+   *
+   *  ⚠️ v2.0.856 SIGNAL CONTRACT (all callers MUST follow):
+   *  signal is the RAW BULLISH degree, independent of trade side.
+   *    - > 0.5 = component thinks the market goes UP
+   *    - < 0.5 = component thinks the market goes DOWN
+   *  The store inverts for SELL trades (agreement = 1 - signal).
+   *  A direction-agnostic metric (e.g. causal uplift: "this trade had alpha")
+   *  MUST be converted by the CALLER: buy → keep, sell → 1 - value. Do NOT
+   *  pass a direction-agnostic score raw — it will invert for SELL and
+   *  positive alpha will record as negative contribution (v2.0.855-audit bug).
+   */
   signal: number;
   /** Normalised agreement of signal with the actual trade direction in [0,1]. */
   agreement: number;
@@ -99,6 +110,24 @@ const MAX_RECORDS = 10_000;         // matches sample-cap lift (edgeConfig)
 const MIN_SAMPLES = 10;             // below this → neutral stats (cold-start safe)
 const CONFIDENT_SIGNAL = 0.6;       // |agreement| threshold for "confident signal"
 
+/**
+ * v2.0.856-attack: Normalize a trade-side value to the canonical 'buy' | 'sell'
+ * | 'unknown'. Legacy/corrupt values ('BUY', 'SELL', 'long', 'short', undefined,
+ * null, 'L') must NOT silently map to either direction — an unknown side breaks
+ * the signal-inversion symmetry between caller and store:
+ *   caller inverts for non-'buy' (causal: `tradeSide === 'buy' ? sig : 1-sig`)
+ *   store inverts for 'sell' (`input.side === 'sell' ? 1-signal : signal`)
+ * A garbage side (e.g. 'SELL' uppercase) makes the caller invert while the store
+ * does NOT → agreement inverted → positive alpha records as negative
+ * contribution (the exact v2.0.856 bug, re-entered via case/legacy values).
+ * Returning 'unknown' lets both sides treat it as neutral (no inversion).
+ */
+export function normalizeTradeSide(side: unknown): 'buy' | 'sell' | 'unknown' {
+  if (side === 'buy') return 'buy';
+  if (side === 'sell') return 'sell';
+  return 'unknown';
+}
+
 // ─── Component Attribution Store ───
 
 export class ComponentAttributionStore {
@@ -131,9 +160,15 @@ export class ComponentAttributionStore {
     // Clamp signal to [0,1] — a malformed 2.5 would otherwise skew stats.
     const signal = Math.max(0, Math.min(1, input.signal));
 
+    // v2.0.856-attack: Normalize side BEFORE the inversion decision. A garbage
+    // side ('SELL', undefined, 'long') must not invert — unknown → no inversion
+    // (treated as neutral). This keeps caller/store inversion symmetric.
+    const side = normalizeTradeSide(input.side);
+
     // Invert for 'sell' so agreement ∈ [0,1] always means "agrees with trade".
     // buy:  signal 1.0 = max agree with buy.  sell: signal 0.0 = max agree with sell.
-    const agreement = input.side === 'sell' ? 1 - signal : signal;
+    // unknown: no inversion (neutral) — never fabricate a direction.
+    const agreement = side === 'sell' ? 1 - signal : signal;
 
     // Proxy contribution: positive when the component's direction agreed with
     // the outcome's sign (i.e. the component was "right").

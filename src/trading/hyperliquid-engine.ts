@@ -328,6 +328,25 @@ export class HyperliquidEngine implements RealTradingEngine {
     this.fillsCache = null;
   }
 
+  /**
+   * Fetch REAL Hyperliquid account balance from the exchange API.
+   *
+   * ═══ 前文後理 (data provenance) ═══
+   * This is the REAL account — the ONLY trustworthy source for real-account
+   * profitability. Returned fields:
+   * - `total` (accountValue): TOTAL account equity = free + marginUsed,
+   *   and INCLUDES unrealized PnL on open positions. This is the "Genuine
+   *   Balance" the UI displays (serializePortfolio displayEquity).
+   * - `free` (withdrawable): available cash after margin — UI shows this as
+   *   "Balance" in real mode.
+   * - `marginUsed` (totalMarginUsed): collateral locked in open positions.
+   * - `unrealizedPnl`: sum of unrealized PnL across open positions.
+   *
+   * Relationship to paper portfolio: `portfolio.balance`/`totalEquity`/
+   * `totalPnl` in portfolio.ts are the PAPER (simulated) numbers — paper
+   * trades only. Real positions NEVER touch paper balance/equity. Diagnosing
+   * real-account PnL from portfolio-state.json is WRONG; use this.
+   */
   async getBalance(): Promise<ExchangeAccountInfo> {
     // v2.0.79: Return cached balance if fresh (< 10s old)
     if (this.balanceCache && (Date.now() - this.balanceCache.ts) < HyperliquidEngine.BALANCE_CACHE_TTL_MS) {

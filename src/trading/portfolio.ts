@@ -205,6 +205,18 @@ export class PortfolioTracker {
    *  closes (SL/TP triggered on exchange) with accurate exit price + PnL.
    *  Previously closeExchangePosition() created a TradeRecord but it was only
    *  used for learning — never stored, so the UI never showed the close. */
+  /**
+   * Closed REAL (Hyperliquid) trade records — CLOSED trades only.
+   *
+   * ═══ 前文後理 (data provenance) ═══
+   * - A trade enters this list ONLY when a real position is CLOSED
+   *   (closeExchangePosition → closeTrade path). OPEN real positions live in
+   *   `realPositions` and are NOT here.
+   * - Their unrealized PnL is therefore NOT included in any sum of this
+   *   list. To see current real-account profitability incl. open positions,
+   *   use Hyperliquid accountValue (getBalance().total) — not this list.
+   * - PnL here is REAL (actual HL fills), but the list is historical only.
+   */
   private closedRealTrades: TradeRecord[] = [];
   /** v2.0.66: Dedup set — symbols that were recently closed via closeExchangePosition().
    *  Prevents duplicate trade records when reconciliation fires multiple times
@@ -472,6 +484,12 @@ export class PortfolioTracker {
 
   /** Get portfolio data for persistence (serializable format) */
   getPortfolioSnapshot(): import('../evolution/persistence.ts').PortfolioSnapshot {
+    // ⚠️ 前文後理 (data provenance): the `balance` / `initialBalance` /
+    // `totalEquity` / `totalPnl` fields in the returned snapshot are the
+    // PAPER (simulated) account numbers — NOT the real HL account. Real
+    // positions are included below (so they survive restart) but the real
+    // account BALANCE is fetched fresh from HL API on each startup, never
+    // restored from this snapshot.
     // v2.0.72: persist both paper + real positions
     const positions = [
       ...Array.from(this.portfolio.positions.values()),
@@ -1922,6 +1940,24 @@ export class PortfolioTracker {
     }
   }
 
+  /**
+   * Recompute PAPER totalEquity = paper balance + unrealized PnL + locked
+   * margin on OPEN PAPER positions.
+   *
+   * ⚠️ 前文後理 (data provenance):
+   * - v2.0.72: portfolio.positions contains ONLY paper positions. Real
+   *   positions live in `realPositions` (imported from HL via
+   *   importExchangePosition / syncExchangePositions).
+   * - This function therefore EXCLUDES real positions entirely — real
+   *   unrealized PnL and real locked margin are NOT added here.
+   * - The REAL account value comes from Hyperliquid's own API
+   *   (`clearinghouseState.marginSummary.accountValue`), fetched by
+   *   `hyperliquid-engine.ts getBalance()` → `cachedExchangeBalance` in
+   *   index.ts. UI "Genuine Balance" reads that; it is NOT this value.
+   * - Consequence: paper totalEquity ≠ real HL equity. Diagnosing
+   *   real-account profitability from `portfolio-state.json` (which
+   *   persists this paper value) is WRONG. Use HL accountValue.
+   */
   private recalculateEquity(): void {
     let unrealizedSum = 0;
     let lockedMargin = 0;

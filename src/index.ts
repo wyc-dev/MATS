@@ -18,7 +18,7 @@ import { QRLTable, type AlphaDiscovery } from './evolution/q-rl-table.ts';
 import { MetaCalibrator } from './evolution/meta-calibrator.ts';
 import { SelfImprover } from './evolution/self-improver.ts';
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
-import { ComponentAttributionStore } from './evolution/component-attribution.ts';
+import { ComponentAttributionStore, normalizeTradeSide } from './evolution/component-attribution.ts';
 import { MetaLearner, deriveAssetMetadata } from './evolution/meta-learner.ts';
 import { computeDCS } from './edge/dcs-calculator.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
@@ -3103,6 +3103,24 @@ ${currentPrompt || '(empty — this is the first input)'}`;
   private onPositionClosedLearning(trade: TradeRecord): void {
     try {
       const symbol = trade.symbol;
+      // v2.0.856-attack (V11): if the trade's side is not canonical, the entire
+      // learning pipeline (OLR/EXP/RIL/agentOutcomes/attribution) would feed a
+      // fabricated direction (the old `trade.side === 'buy' ? 'buy' : 'sell'`
+      // silently coerced undefined/'BUY'/'long' to SELL). A corrupt side means
+      // the whole trade record is suspect — skip ALL learning for it rather
+      // than poison 8 downstream consumers with a wrong direction label.
+      // v2.0.856-attack2 (E2/E3): also guard symbol — restore path
+      // (`symbol: t.symbol` in portfolio.ts) has NO runtime guard; a corrupt
+      // state file with undefined symbol + valid side passes the side guard
+      // and then crashes at olrEngine.feedTrade(undefined) → undefined.toLowerCase().
+      const tradeSide = normalizeTradeSide(trade.side);
+      const safeSymbol = typeof trade.symbol === 'string' && trade.symbol.length > 0
+        ? trade.symbol
+        : '';
+      if (tradeSide === 'unknown' || safeSymbol.length === 0) {
+        log.warn(`[close-learning] SKIP learning for trade ${trade.id ?? (safeSymbol || '<no-id>')} — invalid side ${JSON.stringify(trade.side)} / symbol ${JSON.stringify(trade.symbol)} (would fabricate direction or crash normalizeSymbol)`);
+        return;
+      }
       const isWin = trade.pnl >= 0;
       const pnlPct = trade.pnlPct;
       const outcome: 1 | 0 = isWin ? 1 : 0;
@@ -3432,7 +3450,16 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // agreed with the resolved PnL. Cleanliness reflects close-context pollution.
       try {
         const tradeId = trade.id ?? `${trade.symbol}|${trade.side}|${trade.openedAt ?? Date.now()}`;
-        const tradeSide = trade.side === 'buy' ? 'buy' as const : 'sell' as const;
+        // v2.0.856-attack (V11): the OLD `trade.side === 'buy' ? 'buy' : 'sell'`
+        // silently coerced undefined/null/'BUY'/'long' to SELL — fabricating a
+        // direction that poisons bySide attribution stats AND can invert the
+        // signal-contract (caller thinks sell, store thinks unknown). If the
+        // side is not canonical, SKIP the whole attribution record — never
+        // record a direction we cannot verify.
+        const tradeSide = normalizeTradeSide(trade.side);
+        if (tradeSide === 'unknown') {
+          log.warn(`[attribution] skip — invalid trade side ${JSON.stringify(trade.side)} for trade ${tradeId} (cannot attribute without direction)`);
+        } else {
         const pnlPct = safeNum(trade.pnlPct, 0);
         const backendProfile = this.marketAgent.getRiskProfile();
         // v2.0.845: Sanitize symbol — legacy/corrupt trade records may have
@@ -3448,16 +3475,25 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // Normalize: weight 1.0 → clean, 0.3 (execution loss) → heavily polluted.
         const cleanliness = Math.max(0, Math.min(1, (closeWeight - 0.3) / 0.7));
 
-        // OLR signal: entryOlrPWin is the direction-agnostic P(win); map to a
-        // directional signal in [0,1] that agrees with the trade when high.
+        // OLR signal — ⚠️ v2.0.856 signal-contract clarification:
+        // entryOlrPWin = olrEngine.query(sym, feats, SIDE).pWin = P(win | THIS
+        // trade direction) — direction-specific, NOT bullish. The store's
+        // contract is: signal > 0.5 = bullish, < 0.5 = bearish (store inverts
+        // for SELL). So we map to a bullish signal: BUY keeps P(win|buy),
+        // SELL inverts 1-P(win|sell) (high P(win|sell) → bearish → low).
+        // The store then inverts again for SELL → agreement = P(win|side).
+        // v2.0.856-attack: normalize side via normalizeTradeSide() — a garbage
+        // side (uppercase/legacy/undefined) must NOT trigger an inversion here
+        // while the store skips it (asymmetry → inverted contribution).
         const olrPWin = safeNum(trade.entryOlrPWin, 0.5);
+        const attrSide = tradeSide; // already normalized; unknown handled above
         this.componentAttribution?.recordAttribution({
           componentId: 'olr',
           tradeId,
           symbol: attrSymbol,
-          side: tradeSide,
+          side: attrSide,
           cycleId: this.totalCycles,
-          signal: tradeSide === 'buy' ? olrPWin : 1 - olrPWin,
+          signal: attrSide === 'sell' ? 1 - olrPWin : olrPWin,
           pnlPct,
           labelCleanliness: cleanliness,
           regime,
@@ -3474,20 +3510,38 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           : undefined;
         if (causalUplift) {
           // Map uplift (-1..1) to a [0,1] signal; 0.5 = neutral (no alpha).
-          const sig = 0.5 + Math.max(-0.5, Math.min(0.5, causalUplift.uplift));
+          // ⚠️ v2.0.856: Uplift is DIRECTION-AGNOSTIC — uplift > 0 means "this
+          // trade direction had positive causal alpha" (tradedPnl - holdPnl).
+          // It is NOT a bullish signal. The store's contract is: signal > 0.5 =
+          // bullish, < 0.5 = bearish (store inverts for SELL). So we must map:
+          //   BUY  trade: positive uplift → bullish (signal > 0.5)
+          //   SELL trade: positive uplift → bearish (signal < 0.5)
+          // OLD BUG: `signal: sig` passed uplift directly — for SELL trades a
+          // positive-uplift (good) trade became agreement<0.5 → NEGATIVE
+          // contribution (inverted). Live causal-uplift contribution was -0.031
+          // largely from this inversion (14/16 live records were SELL).
+          // v2.0.856-attack: normalize side — unknown side → no inversion
+          // (keeps caller/store symmetric; garbage side must not invert).
+          // v2.0.856-attack: sanitize uplift — undefined/NaN/string would
+          // produce NaN signal (silently skipped by store) or JS-coerced
+          // garbage. safeNum(uplift, 0) → finite number, 0 = neutral.
+          const upliftVal = safeNum(causalUplift.uplift, 0);
+          const sig = 0.5 + Math.max(-0.5, Math.min(0.5, upliftVal));
+          const directionalSig = attrSide === 'sell' ? 1 - sig : sig;
           this.componentAttribution?.recordAttribution({
             componentId: 'causal-uplift',
             tradeId,
             symbol: attrSymbol,
-            side: tradeSide,
+            side: attrSide,
             cycleId: this.totalCycles,
-            signal: sig,
+            signal: directionalSig,
             pnlPct,
             labelCleanliness: cleanliness,
             regime,
             riskProfile: backendProfile,
             timestamp: Date.now(),
           });
+        }
         }
       } catch (err) {
         log.warn(`[attribution] record failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
@@ -5445,15 +5499,19 @@ ${recentExamples}
               const isWinBackfill = outcome === 1;
               const closeWeight = computeLearningWeight(closeReason, false, isWinBackfill);
               const cleanliness = Math.max(0, Math.min(1, (closeWeight - 0.3) / 0.7));
-              // OLR signal: entryOlrPWin direction-agnostic → directional signal.
+              // OLR signal — v2.0.856: same bullish-signal contract as live
+              // path (entryOlrPWin = P(win|side); BUY keeps, SELL inverts;
+              // store re-inverts for SELL → agreement = P(win|side)).
+              // v2.0.856-attack: normalize side — garbage side → no inversion.
               const olrPWin = safeNum(rec.olrPWinAtEntry, 0.5);
+              const bfSide = normalizeTradeSide(side);
               this.componentAttribution.recordAttribution({
                 componentId: 'olr',
                 tradeId,
                 symbol: rec.symbol,
                 side,
                 cycleId: 0, // historical — no real cycle number
-                signal: side === 'buy' ? olrPWin : 1 - olrPWin,
+                signal: bfSide === 'sell' ? 1 - olrPWin : olrPWin,
                 pnlPct,
                 labelCleanliness: cleanliness,
                 regime: rec.regime ?? 'unknown',
@@ -11116,11 +11174,21 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     // v2.0.42: Recent 20 trades win rate — reflects current performance.
     const recent20 = this.paperEngine.getRecentWinLoss(20);
 
-    // v2.0.17: in real mode, show the actual Hyperliquid account value +
-    // null out totalPnl/drawdown (paper-trade concepts). Win rate / trade
-    // count stay local (paper + real mixed).
-    // If real mode but exchange balance not yet fetched → null (UI shows '--')
-    // v2.0.31: Balance = free (available to trade), Equity = total (account value)
+    // ═══ REAL vs PAPER account display switch ═══
+    // 前文後理 (data provenance):
+    // - `p.balance` / `p.totalEquity` / `p.totalPnl` are PAPER (simulated)
+    //   account numbers — the virtual balance mutated by paper trades only.
+    // - In REAL mode these paper numbers are MEANINGLESS for the real
+    //   account. The REAL values come from Hyperliquid's own API:
+    //   `cachedExchangeBalance` (fetched via tradingManager.getBalance() →
+    //   hyperliquid-engine _fetchBalance() → HL clearinghouseState).
+    // - HL accountValue (total) = free (withdrawable) + marginUsed, and
+    //   INCLUDES unrealized PnL on open positions. This is the "Genuine
+    //   Balance" the UI should display.
+    // - Therefore: in real mode we swap in HL values for balance/equity and
+    //   null out paper-only concepts (totalPnl, maxDrawdown). Win rate +
+    //   trade count stay local (they mix paper + real history).
+    // - If HL balance not yet fetched → null → UI shows '--'.
     const exBal = isRealMode ? this.cachedExchangeBalance : null;
     const displayBalance = isRealMode ? (exBal ? exBal.free : null) : p.balance;
     const displayEquity = isRealMode ? (exBal ? exBal.total : null) : p.totalEquity;
@@ -11152,7 +11220,15 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
 
   private persistPortfolio(): void {
     try {
-      // v2.0.160: Pass realPositions so they survive restart with thesis + MAE/MFE
+      // ⚠️ 前文後理 (data provenance):
+      // This persists the PAPER portfolio (balance/totalEquity/totalPnl are
+      // paper numbers). It ALSO persists realPositions + closedRealTrades so
+      // real positions/theses survive restart — but the ACCOUNT BALANCE
+      // fields in portfolio-state.json are the PAPER account, NOT the real
+      // HL account. On restart, the real HL balance is re-fetched from
+      // Hyperliquid API (tradingManager.getBalance()).
+      // Do NOT read portfolio-state.json balance to diagnose real-account
+      // profitability — read HL accountValue (Genuine Balance in UI).
       savePortfolio(this.portfolio.getPortfolio(), this.paperEngine.getTrades(), this.portfolio.getClosedRealTrades(), this.portfolio.getRealPositions());
     } catch (err) {
       // Best-effort
