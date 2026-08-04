@@ -38,12 +38,19 @@ import { createLogger } from '../observability/logger.ts';
 const log = createLogger({ phase: 'mfe-calibrator' });
 
 export interface MfeCalibrationResult {
-  /** Median favourable 1h extension (fraction, e.g. 0.023 = 2.3%). */
-  tpTargetPct: number;
-  /** 90th-percentile favourable 1h extension — data-driven TP cap. */
-  tpCapPct: number;
-  /** 95th-percentile adverse 5m extension — SL noise floor. */
-  slFloorPct: number;
+  /** LONG TP target (fraction) = 50th-pct UPWARD 1h extension × 0.8.
+   *  Aiming at 80% of the typical upswing leaves headroom to realise profit. */
+  tpTargetLongPct: number;
+  /** LONG TP cap (fraction) = 90th-pct UPWARD 1h extension. */
+  tpCapLongPct: number;
+  /** SHORT TP target (fraction) = 50th-pct DOWNWARD 1h extension × 0.8. */
+  tpTargetShortPct: number;
+  /** SHORT TP cap (fraction) = 90th-pct DOWNWARD 1h extension. */
+  tpCapShortPct: number;
+  /** LONG SL floor (fraction) = 95th-pct DOWNWARD 5m excursion (adverse to a long). */
+  slFloorLongPct: number;
+  /** SHORT SL floor (fraction) = 95th-pct UPWARD 5m excursion (adverse to a short). */
+  slFloorShortPct: number;
   /** Number of candle samples the calibration is based on. */
   samples1h: number;
   samples5m: number;
@@ -105,28 +112,45 @@ export function measureExtensions(
 /**
  * Build a CalibrationResult from measured extensions.
  * Cold-start safe: needs >= MIN_SAMPLES of each extension type.
+ *
+ * DIRECTION-AWARE (fix: BUY ≠ SELL):
+ *   mfe1h carries UPWARD extensions, mae1h DOWNWARD. A LONG's TP rides up
+ *   (use upward), a SHORT's TP rides down (use downward). Conversely a LONG's
+ *   SL is pierced by a down-move (use downward), a SHORT's SL by an up-move.
  */
 export function buildCalibration(
   symbol: string,
-  mfe1h: number[],
-  mae5m: number[],
+  up1h: number[],
+  down1h: number[],
+  up5m: number[],
+  down5m: number[],
 ): MfeCalibrationResult | null {
   const MIN_SAMPLES = 20;
-  const fav1h = mfe1h.filter(v => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
-  const adv5m = mae5m.filter(v => Number.isFinite(v) && v >= 0).sort((a, b) => a - b);
-  if (fav1h.length < MIN_SAMPLES || adv5m.length < MIN_SAMPLES) return null;
+  const up1hSorted = up1h.filter(v => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+  const down1hSorted = down1h.filter(v => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+  const up5mSorted = up5m.filter(v => Number.isFinite(v) && v >= 0).sort((a, b) => a - b);
+  const down5mSorted = down5m.filter(v => Number.isFinite(v) && v >= 0).sort((a, b) => a - b);
+  if (up1hSorted.length < MIN_SAMPLES || down1hSorted.length < MIN_SAMPLES ||
+      up5mSorted.length < MIN_SAMPLES || down5mSorted.length < MIN_SAMPLES) return null;
 
-  const tpTargetPct = percentile(fav1h, 50);
-  const tpCapPct = percentile(fav1h, 90);
-  const slFloorPct = percentile(adv5m, 95);
+  // LONG TP rides the upswing (×0.8 target); SHORT TP rides the downswing.
+  const tpTargetLongPct = percentile(up1hSorted, 50) * 0.8;
+  const tpCapLongPct = percentile(up1hSorted, 90);
+  const tpTargetShortPct = percentile(down1hSorted, 50) * 0.8;
+  const tpCapShortPct = percentile(down1hSorted, 90);
+  // LONG SL pierced by down-move; SHORT SL pierced by up-move.
+  const slFloorLongPct = percentile(down5mSorted, 95);
+  const slFloorShortPct = percentile(up5mSorted, 95);
 
-  // Sane guards: never produce a negative / degenerate cap.
   const result: MfeCalibrationResult = {
-    tpTargetPct: Math.max(0.003, Math.min(0.20, tpTargetPct)),
-    tpCapPct: Math.max(0.005, Math.min(0.30, tpCapPct)),
-    slFloorPct: Math.max(0.005, Math.min(0.15, slFloorPct)),
-    samples1h: fav1h.length,
-    samples5m: adv5m.length,
+    tpTargetLongPct: Math.max(0.003, Math.min(0.20, tpTargetLongPct)),
+    tpCapLongPct: Math.max(0.005, Math.min(0.30, tpCapLongPct)),
+    tpTargetShortPct: Math.max(0.003, Math.min(0.20, tpTargetShortPct)),
+    tpCapShortPct: Math.max(0.005, Math.min(0.30, tpCapShortPct)),
+    slFloorLongPct: Math.max(0.005, Math.min(0.15, slFloorLongPct)),
+    slFloorShortPct: Math.max(0.005, Math.min(0.15, slFloorShortPct)),
+    samples1h: up1hSorted.length,
+    samples5m: up5mSorted.length,
     symbol,
     generatedAt: Date.now(),
   };
@@ -184,13 +208,20 @@ export async function getMfeCalibration(symbol: string): Promise<MfeCalibrationR
         fetchCandles(symbol, '5m', 100),
       ]);
       // 1h forward window ≈ 12 candles (12h swing); 5m forward window ≈ 100
-      // candles (≈ 8.3h) for the adverse excursion — matches the design doc.
-      const mfe1h = measureExtensions(candles1h, 12).mfePct;
-      const mae5m = measureExtensions(candles5m, 100).maePct;
-      const result = buildCalibration(symbol, mfe1h, mae5m);
+      // candles (≈ 8.3h). Each frame yields both UP and DOWN extensions so
+      // BUY and SELL can be calibrated against the correct direction.
+      const ext1h = measureExtensions(candles1h, 12);
+      const ext5m = measureExtensions(candles5m, 100);
+      const result = buildCalibration(
+        symbol,
+        ext1h.mfePct,   // upward 1h
+        ext1h.maePct,   // downward 1h
+        ext5m.mfePct,   // upward 5m
+        ext5m.maePct,   // downward 5m
+      );
       cache.set(norm, { result, ts: Date.now() });
       if (result) {
-        log.info(`[mfe-calibrator] ${symbol}: TP_target=${(result.tpTargetPct * 100).toFixed(2)}% TP_cap=${(result.tpCapPct * 100).toFixed(2)}% SL_floor=${(result.slFloorPct * 100).toFixed(2)}% (${result.samples1h}×1h + ${result.samples5m}×5m)`);
+        log.info(`[mfe-calibrator] ${symbol}: LONG TP=${(result.tpTargetLongPct * 100).toFixed(2)}%/<${(result.tpCapLongPct * 100).toFixed(2)}% SL>${(result.slFloorLongPct * 100).toFixed(2)}% | SHORT TP=${(result.tpTargetShortPct * 100).toFixed(2)}%/<${(result.tpCapShortPct * 100).toFixed(2)}% SL>${(result.slFloorShortPct * 100).toFixed(2)}% (${result.samples1h}×1h + ${result.samples5m}×5m)`);
       } else {
         log.info(`[mfe-calibrator] ${symbol}: insufficient samples — fallback to default SL/TP`);
       }
