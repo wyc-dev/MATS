@@ -114,10 +114,26 @@ export interface DebateStatement {
 }
 
 export interface Portfolio {
-  /** Null in real-trade mode before first exchange balance fetch — UI shows '--'. */
+  /**
+   * REAL mode: HL `withdrawable` (free cash EXCLUDING margin locked in open
+   * positions) — this is what "Genuine Equity" shows (spendable equity).
+   * PAPER mode: simulated account balance.
+   * Null in real mode before first exchange balance fetch — UI shows '--'.
+   * ⚠️ Counter-intuitive: in REAL mode this is the SMALLER number (free),
+   * while `totalEquity` is the LARGER (accountValue incl. unrealized PnL).
+   */
   balance: number | null;
   initialBalance: number;
-  /** Null in real-trade mode before first exchange balance fetch — UI shows '--'. */
+  /**
+   * REAL mode: HL `accountValue` (free + marginUsed, INCLUDES unrealized PnL
+   * on open positions) — this is what "Genuine Balance" shows (total account
+   * value).
+   * PAPER mode: simulated equity (balance + unrealized + locked margin on
+   * paper positions only).
+   * Null in real mode before first exchange balance fetch — UI shows '--'.
+   * ⚠️ Counter-intuitive: in REAL mode this is the LARGER number (accountValue),
+   * while `balance` is the SMALLER (free cash).
+   */
   totalEquity: number | null;
   /** Null in real-trade mode (v2.0.17) — UI shows '--'. */
   totalPnl: number | null;
