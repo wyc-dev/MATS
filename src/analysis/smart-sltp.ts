@@ -60,14 +60,23 @@ export interface SmartSLTPInput {
    *  never narrows a structurally-placed SL. Default 1 (no scaling). */
   leverage?: number;
   /** v2.0.852: Data-driven MFE calibration (from mfe-calibrator.ts). When
-   *  present, overrides the TP target with the median favourable 1h extension
-   *  (aim to realise typical profit, not an unreachable 5×), caps TP at the
-   *  90th-percentile extension, and raises the SL floor to the 95th-percentile
-   *  adverse 5m excursion so high-leverage positions aren't noise-stopped. */
+   *  present, overrides the TP target with the median favourable extension in
+   *  the position's direction (×0.8), caps TP at the 90th-percentile extension,
+   *  and raises the SL floor to the 95th-percentile adverse excursion so
+   *  high-leverage positions aren't noise-stopped. Direction-aware: BUY uses
+   *  tpTargetLongPct/tpCapLongPct/slFloorLongPct; SELL uses the *ShortPct fields.
+   *  Legacy flat fields (tpTargetPct/tpCapPct/slFloorPct) are accepted and used
+   *  for BOTH directions (backward-compatible for tests). */
   mfeCalibration?: {
-    tpTargetPct: number;
-    tpCapPct: number;
-    slFloorPct: number;
+    tpTargetPct?: number;
+    tpCapPct?: number;
+    slFloorPct?: number;
+    tpTargetLongPct?: number;
+    tpCapLongPct?: number;
+    slFloorLongPct?: number;
+    tpTargetShortPct?: number;
+    tpCapShortPct?: number;
+    slFloorShortPct?: number;
   };
 }
 
@@ -486,23 +495,29 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
     // from arbitrary sources); an unbounded tpTargetPct could push TP to an
     // absurd level before the cap logic runs. Hard clamps mirror buildCalibration:
     //   tpTarget ∈ [0.003, 0.20], tpCap ∈ [0.005, 0.30], slFloor ∈ [0.005, 0.15].
-    const calTpTarget = Number.isFinite(cal.tpTargetPct)
-      ? Math.max(0.003, Math.min(0.20, cal.tpTargetPct))
+    //
+    // DIRECTION-AWARE (fix: BUY ≠ SELL): select the calibration values for the
+    // position's direction. A LONG's TP rides the upswing and its SL is pierced
+    // by a down-move; a SHORT's TP rides the downswing and its SL by an up-move.
+    const calTpTarget = Number.isFinite(cal.tpTargetPct ?? cal[isBuy ? 'tpTargetLongPct' : 'tpTargetShortPct'])
+      ? Math.max(0.003, Math.min(0.20, (cal.tpTargetPct ?? cal[isBuy ? 'tpTargetLongPct' : 'tpTargetShortPct'])!))
       : 0;
-    const calTpCap = Number.isFinite(cal.tpCapPct)
-      ? Math.max(0.005, Math.min(0.30, cal.tpCapPct))
+    const calTpCap = Number.isFinite(cal.tpCapPct ?? cal[isBuy ? 'tpCapLongPct' : 'tpCapShortPct'])
+      ? Math.max(0.005, Math.min(0.30, (cal.tpCapPct ?? cal[isBuy ? 'tpCapLongPct' : 'tpCapShortPct'])!))
       : 0;
-    const calSlFloor = Number.isFinite(cal.slFloorPct)
-      ? Math.max(0.005, Math.min(0.15, cal.slFloorPct))
+    const calSlFloor = Number.isFinite(cal.slFloorPct ?? cal[isBuy ? 'slFloorLongPct' : 'slFloorShortPct'])
+      ? Math.max(0.005, Math.min(0.15, (cal.slFloorPct ?? cal[isBuy ? 'slFloorLongPct' : 'slFloorShortPct'])!))
       : 0;
 
-    // 1. TP target — if the structural TP is aiming FURTHER than the median
-    //    favourable extension × 1.25 (leave headroom), pull it in to a
-    //    realistic median target so profit is realised instead of given back.
+    // 1. TP target — `calTpTarget` is ALREADY median×0.8 (the calibrated aim).
+    //    If the structural S/R TP is aiming FURTHER than this realistic target
+    //    (beyond ~1.1× to tolerate level noise), pull TP in to the calibrated
+    //    target so profit is realised instead of given back. A 10% tolerance
+    //    prevents churn when the structural TP is only marginally further.
     const tpPctBeforeCal = Math.abs(tpPrice - entryPrice) / entryPrice;
-    if (calTpTarget > 0 && tpPctBeforeCal > calTpTarget * 1.25) {
+    if (calTpTarget > 0 && tpPctBeforeCal > calTpTarget * 1.1) {
       tpPrice = isBuy ? entryPrice * (1 + calTpTarget) : entryPrice * (1 - calTpTarget);
-      logParts.push(`[MFE-TP] target ${(calTpTarget * 100).toFixed(2)}% (median 1h ext) — pulled in from ${(tpPctBeforeCal * 100).toFixed(2)}%`);
+      logParts.push(`[MFE-TP] target ${(calTpTarget * 100).toFixed(2)}% (median 1h ext ×0.8) — pulled in from ${(tpPctBeforeCal * 100).toFixed(2)}%`);
     }
 
     // 2. TP cap — data-driven ceiling, but never below the fixed absolute cap.
