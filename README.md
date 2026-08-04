@@ -34,11 +34,14 @@ A dedicated Skeptics agent stress-tests every position against historical experi
 - Node.js 22+, npm
 - [Ollama](https://ollama.com) running locally (or Pro plan for cloud models)
 
-### 1. Install Ollama & Pull a Model
+### 1. Install Ollama
 ```bash
 # macOS: brew install ollama  |  Linux: curl -fsSL https://ollama.com/install.sh | sh
 ollama serve
-ollama pull deepseek-v4-flash   # primary model used by sub-agents
+```
+Most deployments use **cloud models** (via Ollama Pro) — no local model download needed. If you run fully local, pull a model:
+```bash
+ollama pull deepseek-v4-flash
 ```
 
 ### 2. Clone & Install
@@ -61,12 +64,17 @@ cp .env.example .env
 ```
 
 ### 4. Launch
-```bash
-npm run engineer    # Autonomous mode: trading + System Engineer self-repair + auto-restart on code fix
-```
-Open **http://localhost:5173/** for the dashboard. The API server runs on :3456.
 
-`npm run engineer` runs MATS with the System Engineer agent enabled. Every 2 cycles (when cycle period ≥ 5 min), the System Engineer examines trade records + source code, detects learning system bugs, and autonomously fixes them. The fix is validated via `tsc --noEmit` + `npm test` — if either fails, the change is automatically rolled back. If both pass, the fix is committed and the process restarts to load the new code. This is the only supported production launch mode.
+Pick the mode that fits your use case:
+
+```bash
+npm run engineer   # PRODUCTION — autonomous: System Engineer self-repair + auto-restart on code fix
+npm run dev        # DEVELOPMENT — API :3456 + legacy UI :5173 (concurrently)
+npm start          # SIMPLE — just the backend, no System Engineer
+```
+Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
+
+`npm run engineer` is the recommended production mode — every 2 cycles the System Engineer examines trade records + source code, detects learning-system bugs, and autonomously fixes them. Each fix is validated via `tsc --noEmit` + `npm test`; on failure it is auto-rolled-back, on success it is committed and the process restarts to load the new code.
 
 ---
 
@@ -188,42 +196,33 @@ Each cycle (1-10 min, user-configurable): Terminal Agent checks rules → 5 sub-
 
 | Component | File | What it does |
 |:----------|:-----|:-------------|
-| **OLR** | `olr-engine.ts` | Per-symbol, per-side online logistic regression. 15 features (12 base + 2 momentum + 1 hourOfDay). Learns P(win) from shadow + paper + real trade outcomes (TP-before-SL). Source-weighted SGD (real=4, paper=2, shadow=1). Confidence penalty for low-sample models. |
-| **Shadow Trading** | `shadow-trade-engine.ts` | Opens simulated LONG + SHORT every cycle with fixed S/R SL/TP. Tracks intra-cycle high/low for correct TP-before-SL resolution. Records MAE/MFE path-risk per trade. Feeds outcomes to OLR with source='shadow'. |
-| **First-Passage** | `first-passage.ts` | Instant P(TP before SL) from volatility (σ) + log-drift (ν) + SL/TP distances. Cox & Miller GBM formula. RR-aware: compares to breakeven P, not 50%. Also provides `computeMomentum()` for 5-cycle short-term momentum. |
-| **Numeric Autoencoder** | `numeric-autoencoder.ts` | Pure-TypeScript MLP (11→16→8 encoder + 8→16→11 decoder). Learns non-linear market-condition embedding via reconstruction loss + contrastive loss + diversity penalty (pairwise repulsion anti-collapse, v2.0.223). Adam optimizer (self-implemented), gradient clip, weight clip, LR decay, seeded RNG, replay buffer (persisted v2.0.222), time-weighted sampling (30-day half-life). Cold-start safe: min-max cosine fallback until 200+ samples + validation pass (MSE<1.5, acc>55%, diversity>0.01). trainEpochs(50) with early stop after backfill (v2.0.223). |
-| **AttnRes Cycle-History** | `cycle-history-retrieval.ts` | Kimi K3 Attention Residuals transfer (arXiv 2603.15031). K3 layer-depth ≡ MATS cycle-history depth. Conditional WR candidate = softmax-weighted blend over 80-cycle history + entry-time state (persistent). Block AttnRes: 8 blocks of 10 cycles, intra-block mean, inter-block softmax attention. Per-feature Welford z-score + RMSNorm keys. Online learning via reward-weighted key direction (Peters & Schaal 2008) — NOT REINFORCE (identically zero for deterministic softmax). Fixed recency prior breaks uniform-policy deadlock. |
-| **Dual Pseudo-Query** | `cycle-history-retrieval.ts` | Two learned queries per symbol (K3 pre-attention vs pre-MLP): **wDecision** (broad, base recency 0.5, PnL reward) for conditional WR + thesis; **wExecution** (sharp, recency × 2.0, SL/TP stop-out reward) for SL/TP survival. wExecution only updates on closeReason='sl_tp' (SL hit → negative, TP hit → positive). Separate temperature + update counter per mode. Backward compat: old single-w state migrates on load. |
-| **Execution-Lens SL/TP** | `analysis/atr.ts` | `computeATRSLTP` uses wExecution blend as **PRIMARY** SL/TP signal: (1) execAdverseMomentum from hBlend.momentumShort, (2) volatility scaling when exec vol > 1.5× ATR-implied, (3) entropy confidence damping. Falls back to ATR + raw momentum when wExecution untrained. SL cap 6% / TP cap 10% for exec lens (vs 5%/8% raw). Module-level provider — no trading-manager changes. |
-| **Anti-Pattern Tracker** | `anti-pattern-tracker.ts` | Clusters failed trade LessonStatements (cosine 0.78, min 2 members). `matchCandidate(thesis)` returns matching classes + count + avgPnl. Skeptics sees: "you've lost this way N times before." Persisted to `anti-patterns.json`. |
-| **Conditional WR Gate** | `index.ts` | Code-level conviction penalty: condWR < 20% → +35%, < 30% → +25%, < 40% → +15%. Uses AttnRes h_blend + NA embedding + RMSNorm keys + softmax mixture. Soft gate (penalty, never hard block). minSamples=5 guard. |
-| **Combo WR Gate** | `combo-win-rate-tracker.ts` | Tracks (symbol × side × regime) win rate with Wilson score lower bound. Injects PRE-thesis block into Meta-Agent: "🔴 BUY mean_reverting W5 L7 (42% WR, Wilson 19%) — AVOID". Soft gate: WR<25% & n≥5 → +50% penalty; <35% → +30%; <45% → +15%. Stacks with loss-streak + conditional WR gates. Auto-generates structural lessons for losses without LLM text (v2.0.221). |
-| **OLR P(win) × Consensus Discount** | `index.ts` | Multiplicative confidence discount: `effectiveConfidence = consensus × blendFactor`, `blendFactor = 0.3 + 0.7 × P(win)` when OLR has data, `1.0` cold-start. P(win)=29% × 90% consensus = 45% → HOLD. Fixes the detection/implementation gap where overconfident agents bypassed the additive threshold raise (v2.0.224). |
-| **EM Cycle Chain** | `cycle-summary.ts` | Meta-Agent distills each cycle into a key insight. Previous insights injected into next cycle's context. Dual-channel retrieval (text cosine 50% + NA market-condition cosine 50%). Tiered memory: hot(12) + warm(288) + cold(48 epochs). |
-| **Cold-Start Backfill** | `olr-backfill.ts` | First cycle per market replays 186 historical HL M5 candles into OLR. Non-blocking, idempotent. |
-| **GA + Pattern DB** | `sigmoid-ga.ts` + `trade-pattern-classifier.ts` | GA evolves sigmoid sentiment function by weakest fitness dimension. KNN pattern DB with Wilson-score confidence + time-weighted win/loss. Uses NA learned cosine when ready (falls back to handcrafted weighted-diff). |
-| **EXP** | `thesis-experience.ts` | Vector thesis memory. Direction-filtered (SELL only matches SELL). `recordClose` stores market conditions + OLR/shadow predictions + LLM-distilled LessonStatement (rootCause + lesson + categories). `retrieveSimilarFailureLessons()` — dual-channel (text + NA market-condition) retrieval of most similar LOSSES, injected into Skeptics. |
-| **Experience Digester** | `experience-digester.ts` | LLM digests each trade into a LessonStatement (rootCause + lesson + categories). Lesson persists to ThesisExperienceRecord. `classifyCandidate` uses per-direction winRate. |
-| **Trade Audit** | `direction-audit.ts` | LLM-powered trade record audit. Every 2 cycles. Uses vector-conditional win rate (not raw per-symbol WR). Known-fixed issues list prevents repeat diagnosis. |
-| **System Engineer** | `system-engineer.ts` | Autonomous LLM code engineer. Every 2 cycles: reads SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md + trade records + source code, generates fix, applies it, runs tsc+test, auto-rollbacks on failure, auto-commits on success. |
-| **Replay Buffer** | `replay-buffer.ts` | v2.0.219: Prioritized Experience Replay (Schaul et al. 2015). Ring buffer (capacity 10000 as of v2.0.833) stores all trade records. `replayEpoch()` samples mini-batch via PER (`p_i = priority_i^α / Σ`) and re-feeds OLR with IS weights correcting bias. Breaks temporal correlation between sequential trades — improves sample efficiency 3-5×. Cold-start guard (< 10 samples → no-op). |
-| **Close-Context Learning** | `index.ts` computeLearningWeight + `portfolio.ts` | v2.0.226: How a position is closed is an important factor in the loss. `computeLearningWeight(closeReason, slNarrowed, isWin)` scales learning by close context: wins=1.0, real SL hit=1.0, tight-SL loss (SL narrowed post-entry)=0.3, thesis invalidation=0.3, manual=0.5, consensus=0.5. OLR `feedTrade` receives `slNarrowed`+`weightMultiplier` to scale gradient. Combo WR skips execution-caused losses (weight<0.5). TradeRecord captures `originalStopLossPrice`/`finalStopLossPrice`/`slNarrowed`. Prevents tight-SL losses from contaminating learning with "these market conditions→loss" when the entry was fine. |
-| **Plan G Dynamic Threshold** | `analysis/dynamic-threshold.ts` | v2.0.227: `DynamicThresholdCalculator` replaces the additive penalty-on-threshold model with a unified multiplicative system. `effectiveConfidence = consensus × pwinBlendFactor × penaltyFactor`, `dynamicThreshold = 50% + (totalScore × 0.5%)` → [45%, 55%]. 5-factor hysteresis scoring (Rolling WR, Idle cycles, Drawdown, Rolling Sharpe, Regime), each [-2,+2], capped at [-10,+10]. Penalty decay: `penaltyFactor = 1.0 - min(decayedPenalty, 0.30)`, linear decay over 30 idle cycles → system self-recovers. 6 fairness guarantees: multi-factor balance, symmetric design, sample-size requirement (≥10), hysteresis, hard cap [45-55%], fact-driven. Fixes death spiral (44.5% vs 80% = 35.5pp gap → impossible). 36 attack tests. |
-| **⭐ Edge Calculator** | `edge/edge-calculator.ts` | v2.0.833: 5-component regime-weighted edgeScore per (symbol × regime): directionalEdge (shadow WR) + learnedEdge (OLR calibrated) + comboEdge (Wilson LB) + pathEdge (First-Passage) + realizedEdge (WR × Sharpe). Recommendation: trade/caution/skip. `skip` → matrix cell forced to `hold`. Cold-start → `caution` (never `skip` — system must bootstrap). `Object.hasOwn` defends against prototype-pollution crash. Low confidence never returns `trade`. |
-| **⭐ Execution Tracker** | `edge/execution-tracker.ts` | v2.0.833: Records realised slippage + funding per (symbol, side). `calibratePnlLabel()` converts theoretical PnL → realisable PnL (theoretical − slippage − funding). Cold-start passthrough (<20 samples). Side-aware slippage. Ring buffer bounded (200). |
-| **⭐ Stability Monitor** | `edge/stability-monitor.ts` | v2.0.833: ±5% perturbation test (nudge features, recompute action, count flips) + cross-time consistency (direction flips over last N cycles). Stability factor [0.5, 1.0] multiplies conviction. Pure math, milliseconds. |
-| **⭐ Risk-Profile Edge Store** | `edge/risk-profile-edge-store.ts` | v2.0.833: MiniLM 384-d vector DB for risk-profile-conditional edge. Ring buffer 10k. Brute-force cosine over (market + profile) embeddings. Per-profile conditional edge → 3 edgeScores per asset. Wilson LB + 30-day time-decay. Cold-start neutral 0.5. |
-| **⭐ Backtest Validation** | `edge/backtest-validation.ts` | v2.0.833: Industry-standard quantitative-finance metrics: Sharpe, Sortino, Calmar, Profit Factor, Expectancy, Max Drawdown, Information Ratio vs buy-and-hold. Statistical significance: stationary bootstrap p-value (Politis & Romano 1994) + Deflated Sharpe Ratio (Bailey & López de Prado 2014) + walk-forward 70/30 IS/OOS split. Verdict: edge / no-edge / insufficient. |
-| **⛔ Temporal Attention** | ~~`temporal-attention.ts`~~ | ⛔ REMOVED v2.0.833 (0 `retrieve()` call sites, overlapped AttnRes). File on disk, unwired. |
-| **⛔ Cross-Symbol Backbone** | ~~`cross-symbol-backbone.ts`~~ | ⛔ REMOVED v2.0.833 (0 `query()` call sites, OLR backfill covers cold-start). File on disk, unwired. |
-| **⛔ Reward Shaping** | ~~`reward-shaping.ts`~~ | ⛔ REMOVED v2.0.833 (0 `shape()` call sites, `learningWeight` v2.0.226 covers key case). File on disk, unwired. |
-| **⛔ World Model** | ~~`world-model.ts`~~ | ⛔ REMOVED v2.0.833 (identity transition model, 0 `predict`/`rollout` call sites). File on disk, unwired. |
-| **⚠️ Active Exploration** | `active-exploration.ts` | v2.0.219: UCB exploration. ⚠️ PAUSED v2.0.833 (`ACTIVE_EXPLORATION_ENABLED=false`) — blind UCB without validated edge is dangerous. Re-enable after Edge Report proves baseline edge. |
-| **⚠️ Bayesian OLR** | `bayesian-olr.ts` | v2.0.219: MC Dropout uncertainty. ⚠️ PAUSED v2.0.833 with active-exploration (its only call site). |
-| **⭐ Q-RL Alpha Discovery** | `evolution/q-rl-table.ts` | v2.0.835: **First component that can DISCOVER new alpha** — not just measure it. 270-cell Q-table (5 regime × 3 vol × 3 momentum × 3 funding × 2 action), ε-greedy exploration (1.0→0.05 over 500 cycles), EWMA Q-value update, Wilson score LB, stationary bootstrap p-value (H0-centered), Benjamini-Hochberg FDR correction. Confirmed discoveries → Meta-Agent conviction +5%. Factor-Tagged Aligned Shadow follows LLM consensus with agent vote metadata. OLR source 'shadow_blind' downweighted 10× (distribution shift fix). Cold-start safe (all Q=0 → follow LLM). |
-| **⭐ ANN Index** | `evolution/ann-index.ts` | v2.0.843: Lightweight IVF (Inverted File) with spherical k-means clustering for fast approximate nearest-neighbour search over 384-d MiniLM embeddings. K=64 centroids, Nprobe=8 buckets, auto-trains at 500 records. **10k records → ~12% of brute-force scanned per query, >95% recall@10.** Cold-start safe (brute-force until trained, identical to pre-v2.0.843). Powers EXP vector memory (`thesis-experience.ts`) — pre-filters candidates before `combinationSimilarity`. Rejects zero-vectors (no direction) + Proxy/getter bombs. `EXP_MAX_RECORDS` 1000 → 10,000. |
-| **⭐ Asset-Aware Meta-Learner** | `evolution/meta-learner.ts` | v2.0.843: 3-level feature-weight hierarchy **symbol → category → global**. Each asset learns its own pattern independently — SILVER can learn "OB imbalance works for me" without BTC dragging it down. Cross-asset transfer within same class (new crypto asset starts with crypto-category prior, then adapts). `deriveAssetMetadata()` classifies crypto (NOT split by vol), commodity, forex, equity, other. **Key insight: low volume ≠ unreliable — each asset has its own pattern; weight comes from the data, not a volume-based assumption.** `getAssetAwareFeatureWeights()` blends with 30-sample warmup. |
-| **Self-Aware Evolution** | `evolution/meta-calibrator.ts` + `self-improver.ts` + `causal-reasoner.ts` + `meta-learner.ts` | v2.0.842-843: System knows how accurate its P(win) predictions are (Meta-Cognitive Calibrator — Brier score + ECE per regime), auto-tunes hyperparameters (Self-Improver — Thompson Sampling bandit + OLS gradient, hard-bounded), distinguishes causation from correlation (Causal Reasoner — paired-shadow uplift + permutation importance), and learns how to learn (Meta-Learner — adaptive α + feature weight + curriculum). Skeptics now receives evolution-enhanced context for ALL validation paths (Phase 0.5 close, Phase 1.8 entry, Phase 4.8 fallback). Trade-audit incidents route into evolution components. |
+| **OLR** | `olr-engine.ts` | Per-symbol, per-side online logistic regression. Learns P(win) from shadow + paper + real outcomes. Source-weighted SGD, confidence penalty for low-sample models. |
+| **Shadow Trading** | `shadow-trade-engine.ts` | Simulated LONG + SHORT every cycle with S/R-aligned SL/TP. Tracks TP-before-SL + MAE/MFE path-risk; feeds OLR. |
+| **First-Passage** | `first-passage.ts` | Instant P(TP before SL) from volatility + drift + SL/TP distances (GBM). RR-aware vs breakeven. |
+| **Numeric Autoencoder** | `numeric-autoencoder.ts` | Pure-TypeScript MLP learning a non-linear market-condition embedding. Contrastive + reconstruction loss with anti-collapse. Cold-start falls back to min-max cosine. |
+| **AttnRes Cycle-History** | `cycle-history-retrieval.ts` | Kimi K3 attention-residual transfer: conditional WR = softmax blend over cycle history + entry state. Per-feature z-score + RMSNorm keys. |
+| **Dual Pseudo-Query** | `cycle-history-retrieval.ts` | **wDecision** (PnL-trained, conditional WR) + **wExecution** (stop-out-trained, SL/TP survival). |
+| **Execution-Lens SL/TP** | `analysis/atr.ts` | `computeATRSLTP` uses the wExecution blend as primary SL/TP signal, with volatility scaling + entropy damping. Falls back to ATR when untrained. |
+| **Anti-Pattern Tracker** | `anti-pattern-tracker.ts` | Clusters failed-trade lessons (cosine 0.78). Skeptics sees "you've lost this way N times before." |
+| **Conditional WR Gate** | `index.ts` | Code-level conviction penalty when learned conditional win-rate is low — enforces what the prompt suggests. |
+| **Combo WR Gate** | `combo-win-rate-tracker.ts` | (symbol × side × regime) win rate with Wilson LB. Injects PRE-thesis warnings; soft-gate penalty. |
+| **OLR P(win) × Consensus Discount** | `index.ts` | Multiplicative confidence discount: `consensus × (0.3 + 0.7 × P(win))`. Blocks overconfident agents. |
+| **EM Cycle Chain** | `cycle-summary.ts` | Distills each cycle into an insight; previous insights feed next cycle. Dual-channel retrieval + tiered memory. |
+| **GA + Pattern DB** | `sigmoid-ga.ts` + `trade-pattern-classifier.ts` | GA-evolved sentiment sigmoid + KNN pattern DB with Wilson-score confidence. |
+| **EXP** | `thesis-experience.ts` | Vector thesis memory, direction-filtered. Stores market conditions + predictions + distilled lessons. |
+| **Experience Digester** | `experience-digester.ts` | LLM distills each trade into a lesson (root cause + lesson + categories). |
+| **Trade Audit** | `direction-audit.ts` | LLM audit of trade records every 2 cycles; known-fixed list prevents repeat diagnosis. |
+| **System Engineer** | `system-engineer.ts` | Autonomous code engineer. Every 2 cycles: diagnoses + fixes learning bugs, validated by tsc+test, auto-rollback/commit. |
+| **Replay Buffer** | `replay-buffer.ts` | Prioritized Experience Replay — mini-batch retrain to break temporal correlation. |
+| **Close-Context Learning** | `index.ts` + `portfolio.ts` | `computeLearningWeight(closeReason, slNarrowed, isWin)` scales learning by how the trade closed (tight-SL ≠ bad entry). |
+| **Plan G Dynamic Threshold** | `analysis/dynamic-threshold.ts` | Dynamic conviction threshold [45-55%] driven by 5 performance factors with multiplicative penalty decay — self-recovers, never deadlocks. |
+| **⭐ Edge Validation** | `edge/*.ts` | Alpha "lie detector": 5-component regime-weighted edgeScore + stability + backtest validation (Sharpe/DSR/walk-forward). Cold-start `caution`, never `skip`. |
+| **⭐ Q-RL Alpha Discovery** | `evolution/q-rl-table.ts` | First component that can *discover* new alpha — 270-cell Q-table with ε-greedy exploration, Wilson LB, bootstrap p-value, BH-FDR. Factor-Tagged Aligned Shadow. |
+| **⭐ ANN Index** | `evolution/ann-index.ts` | IVF + spherical k-means over 384-d embeddings — EXP memory scales to 10k records at ~12% scan rate. |
+| **⭐ Asset-Aware Meta-Learner** | `evolution/meta-learner.ts` | 3-level feature-weight hierarchy (symbol → category → global) — each asset learns its own pattern; low volume ≠ unreliable. |
+| **⭐ Component Attribution** | `evolution/component-attribution.ts` | Measures which component actually adds edge via proxy credit assignment + label cleanliness. |
+| **⭐ Smart SL/TP + MFE** | `analysis/smart-sltp.ts` + `analysis/mfe-calibrator.ts` | Institutional SL/TP (S/R → 50-candle → ATR) with leverage-aware floor + MFE-derived TP targets, direction-aware. |
+| **⭐ Self-Aware Evolution** | `evolution/meta-calibrator.ts` + `self-improver.ts` + `causal-reasoner.ts` + `meta-learner.ts` | Knows its own accuracy (Brier/ECE), auto-tunes hyperparameters (Thompson bandit), distinguishes causation from correlation (paired-shadow uplift). |
 
 
 **Key design principles:**
