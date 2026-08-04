@@ -108,76 +108,76 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 ### How the System Fits Together
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                                  │
-│                                MATS — MULTI-AGENT TRADING SYSTEM                                 │
-│                         Strategic → Cognitive → Execution (closed loop)                          │
-│                                                                                                  │
-├──────────────────────────────────────────────────────────────────────────────────────────────────┤
-│LAYER 1 · STRATEGIC                                                                               │
-│  ┌──────────────────────────────────────────────────────────────────────────────────────────────┐│
-│  │Terminal Agent  ·  user prefs → rules                                                         ││
-│  │pre-cycle rule check + post-cycle decision verification                                       ││
-│  └──────────────────────────────────────────────────────────────────────────────────────────────┘│
-│      │                                                                                           │
-│      ▼  preferences / rules                                                                      │
-├──────────────────────────────────────────────────────────────────────────────────────────────────┤
-│LAYER 2 · COGNITIVE  (TypeScript + LLM)                                                           │
-│  ┌──────────────────────────────────────────────────────────────────────────────────────────────┐│
-│  │HACP Protocol                                                                                 ││
-│  │· parallel multi-model inference                                                              ││
-│  │· 5 Sub-Agents → Skeptics → Meta-Agent                                                        ││
-│  │· entry thesis + dark psychology + weighted voting                                            ││
-│  │· Self-evolution (15 layers + Edge Validation + Q-RL, v2.0.835)                               ││
-│  │· Numeric Autoencoder (learned market-condition embedding)                                    ││
-│  │· AttnRes cycle-history retrieval (K3 dual pseudo-query)                                      ││
-│  │· Anti-pattern memory (failure lesson clustering)                                             ││
-│  │· Conditional WR soft gate (code-level enforcement)                                           ││
-│  │· Combo WR gate (symbol×side×regime Wilson LB, v2.0.221)                                      ││
-│  │· OLR P(win)×consensus discount (multiplicative, v2.0.224)                                    ││
-│  │· Execution-lens SL/TP (stop-out-trained direct control)                                      ││
-│  │· Replay buffer (PER mini-batch retrain, v2.0.219)                                            ││
-│  │· Close-Context Learning (closeReason+slNarrowed, v2.0.226)                                   ││
-│  │· Plan G dynamic threshold (5-factor [45-55%] + penalty decay)                                ││
-│  │· Edge Validation (v2.0.833): edge-calculator + execution-tracker                             ││
-│  │  + stability-monitor + risk-profile edge-store + backtest                                    ││
-│  │  validation (Sharpe / DSR / walk-forward)                                                    ││
-│  │· Q-RL Alpha Discovery (v2.0.835): 270-cell Q-table + ε-greedy +                              ││
-│  │  Wilson LB + BH-FDR + Factor-Tagged Aligned Shadow                                           ││
-│  │· ANN Index (v2.0.843): IVF + spherical k-means — EXP vector                                  ││
-│  │  memory scales to 10k records at ~12% scan rate                                              ││
-│  │· Asset-Aware Meta-Learner (v2.0.843): symbol → category → global                             ││
-│  │  hierarchy — each asset learns its own pattern                                               ││
-│  │· Component Attribution (v2.0.844-848): proxy credit assignment                               ││
-│  │· Smart SL/TP (v2.0.852): S/R → 50-candle → ATR floor, leverage-                              ││
-│  │  aware SL floor, MFE-calibrated TP target/cap + SL floor                                     ││
-│  │· closeReason integrity + closeTrade dual-mode guard                                          ││
-│  │  (v2.0.851-853): exit closes never silently skipped                                          ││
-│  │· Self-Aware Evolution (v2.0.843): Meta-Cognitive Calibrator +                                ││
-│  │  Self-Improver + Causal Reasoner + Meta-Learner                                              ││
-│  │· RIL Reason Intelligence (pattern clustering + similar trade                                 ││
-│  │  retrieval + subtle diff LLM analysis)                                                       ││
-│  │· Trade Incident Panel (MAE/MFE + exitThesis + post-review)                                   ││
-│  ├──────────────────────────────────────────────────────────────────────────────────────────────┤│
-│  │▼  conviction + thesis  ·  Meta-Agent scores edge + sets SL/TP                                ││
-│  └──────────────────────────────────────────────────────────────────────────────────────────────┘│
-│      │  execute                                                                                  │
-│      ▼                                                                                           │
-├──────────────────────────────────────────────────────────────────────────────────────────────────┤
-│LAYER 3 · EXECUTION  (TypeScript Runtime)                                                         │
-│  ┌──────────────────────────────────────────────────────────────────────────────────────────────┐│
-│  │Trading Manager → Risk Engine → Position Tracking · SL/TP                                     ││
-│  │· Hyperliquid WebSocket + REST (9 perpetual DEXs)                                             ││
-│  │· Risk engine (millisecond, no LLM)                                                           ││
-│  │· Paper/Real trading with unified execute/close routing                                       ││
-│  │· Position tracking & SL/TP · persistence · observability                                     ││
-│  └──────────────────────────────────────────────────────────────────────────────────────────────┘│
-│      │  fills + PnL (learn)                                                                      │
-│      ▼                                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────────────────────────────────┐│
-│  │Supabase → mats_app Client (theses persisted)                                                 ││
-│  └──────────────────────────────────────────────────────────────────────────────────────────────┘│
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│                      MATS — MULTI-AGENT TRADING SYSTEM                       │
+│               Strategic → Cognitive → Execution (closed loop)                │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│LAYER 1 · STRATEGIC                                                           │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ Terminal Agent  ·  user prefs → rules                                  │  │
+│  │ pre-cycle rule check + post-cycle decision verification                │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│      │                                                                       │
+│      ▼  preferences / rules                                                  │
+├──────────────────────────────────────────────────────────────────────────────┤
+│LAYER 2 · COGNITIVE  (TypeScript + LLM)                                       │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ HACP Protocol + Evolution Pipeline (self-evolving)                     │  │
+│  │ • parallel multi-model inference                                       │  │
+│  │ • 5 Sub-Agents → Skeptics → Meta-Agent                                 │  │
+│  │ • entry thesis + dark psychology + weighted voting                     │  │
+│  │ • Self-evolution (15 layers + Edge Validation + Q-RL, v2.0.835)        │  │
+│  │ • Numeric Autoencoder (learned market-condition embedding)             │  │
+│  │ • AttnRes cycle-history retrieval (K3 dual pseudo-query)               │  │
+│  │ • Anti-pattern memory (failure lesson clustering)                      │  │
+│  │ • Conditional WR soft gate (code-level enforcement)                    │  │
+│  │ • Combo WR gate (symbol×side×regime Wilson LB, v2.0.221)               │  │
+│  │ • OLR P(win)×consensus discount (multiplicative, v2.0.224)             │  │
+│  │ • Execution-lens SL/TP (stop-out-trained direct control)               │  │
+│  │ • Replay buffer (PER mini-batch retrain, v2.0.219)                     │  │
+│  │ • Close-Context Learning (closeReason+slNarrowed, v2.0.226)            │  │
+│  │ • Plan G dynamic threshold (5-factor [45-55%] + penalty decay)         │  │
+│  │ • Edge Validation (v2.0.833): edge-calculator + execution-tracker +    │  │
+│  │ stability-monitor + risk-profile edge-store + backtest validation      │  │
+│  │ (Sharpe / DSR / walk-forward)                                          │  │
+│  │ • Q-RL Alpha Discovery (v2.0.835): 270-cell Q-table + ε-greedy +       │  │
+│  │ Wilson LB + BH-FDR + Factor-Tagged Aligned Shadow                      │  │
+│  │ • ANN Index (v2.0.843): IVF + spherical k-means — EXP vector memory    │  │
+│  │ scales to 10k records at ~12% scan rate                                │  │
+│  │ • Asset-Aware Meta-Learner (v2.0.843): symbol → category → global      │  │
+│  │ hierarchy — each asset learns its own pattern                          │  │
+│  │ • Component Attribution (v2.0.844-848): proxy credit assignment        │  │
+│  │ • Smart SL/TP (v2.0.852): S/R → 50-candle → ATR floor, leverage-aware  │  │
+│  │ SL floor, MFE-calibrated TP target/cap + SL floor                      │  │
+│  │ • closeReason integrity + closeTrade dual-mode guard                   │  │
+│  │ (v2.0.851-853): exit closes never silently skipped                     │  │
+│  │ • Self-Aware Evolution (v2.0.843): Meta-Cognitive Calibrator +         │  │
+│  │ Self-Improver + Causal Reasoner + Meta-Learner                         │  │
+│  │ • RIL Reason Intelligence (pattern clustering + similar trade          │  │
+│  │ retrieval + subtle diff LLM analysis)                                  │  │
+│  │ • Trade Incident Panel (MAE/MFE + exitThesis + post-review)            │  │
+│  ├────────────────────────────────────────────────────────────────────────┤  │
+│  │ ▼  conviction + thesis  ·  Meta-Agent scores edge + sets SL/TP         │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│      │  execute                                                              │
+│      ▼                                                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│LAYER 3 · EXECUTION  (TypeScript Runtime)                                     │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ Trading Manager → Risk Engine → Position Tracking · SL/TP              │  │
+│  │ • Hyperliquid WebSocket + REST (9 perpetual DEXs)                      │  │
+│  │ • Risk engine (millisecond, no LLM)                                    │  │
+│  │ • Paper/Real trading with unified execute/close routing                │  │
+│  │ • Position tracking & SL/TP · persistence · observability              │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│      │  fills + PnL (learn)                                                  │
+│      ▼                                                                       │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ Supabase → mats_app Client (theses persisted)                          │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Data flow:** user prefs → Terminal Agent → HACP agents → evolution gates (weighted by statistical/learned/memory + edge validation + Q-RL + self-aware) → Meta-Agent scores edge + sets SL/TP → 3×3 matrix written to Supabase → client (or backend in dual mode) executes → fills/PnL feed back into memory → learning improves the next decision.
