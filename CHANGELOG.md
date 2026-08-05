@@ -4,6 +4,77 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.860: Three-factor Q-RL exploration + adaptive reward normalization + operator-conditioned SE context (Frontis-MA1 / OpenMLE-Evo insights)
+
+**Inspiration**: [arXiv 2607.28568](https://arxiv.org/pdf/2607.28568) (Frontis-MA1 / OpenMLE) — parent-selection utility `λs·score + λΔ·progress + λn·novelty` (proven 1.0/0.6/0.3), adaptive reward bounds, and bounded operator-conditioned memory. Applied to MATS at production grade.
+
+### Q-RL three-factor exploration (`src/evolution/q-rl-table.ts`)
+
+ε-greedy EXPLORE upgraded from "always take the higher-Q action" to a **softmax over three-factor utility**:
+
+```
+U = 1.0×score + 0.6×progress + 0.3×novelty   (config-tunable, paper weights)
+  score    — Q min-max normalized against the cell's OWN reward history
+             (adaptive reward normalization: BTC 1% ≈ SILVER 1% at selection)
+  progress — recent ≤3 reward mean vs cell history (min-max normalized)
+  novelty  — 1/(1+selectionCount): freshly explored sides down-weighted,
+             exploration can't loop on one action
+```
+
+- `selectionCount` NOT persisted (short-horizon behaviour; restart resets novelty pressure).
+- Corrupt Q (Infinity/NaN) neutralized to 0.5 — corrupt state can no longer dominate exploration.
+- `ucb1`/`thompson` strategies untouched (three-factor only applies to ε-greedy explore).
+
+### System Engineer operator-conditioned context (`src/evolution/system-engineer.ts`)
+
+`readFileSummaries()` is now **priority-conditioned**: files with high operator relevance (failed within 1h + touched by last 3 CHANGELOG versions) get full 50-line previews; everything else is compressed to a one-line metadata stub (name + line count + first line). Paper: bounded conditioned context IMPROVES decision quality (new-best rate +84% at −41% tokens) — eager full previews on unrelated files are noise. Phase 1 prompt documents the scheme so SE can still name stubbed files (Phase 2 reads the FULL file before any fix).
+
+### Attack round (v2.0.860-attack): softmax NaN pinning — CRITICAL
+
+**Vuln**: raw `exp(u/τ)` overflows to Infinity under extreme weights × small τ → `probBuy = Infinity/(Infinity+Infinity) = NaN` → `Math.random() < NaN` is ALWAYS false → **exploration silently pinned to one side forever** (200 consecutive selects, 0 opposite-side). A future weight tuning or corrupt config would freeze exploration.
+
+**Fixes (4 layers)**: (1) log-sum-exp stabilization (`exp((u−max)/τ)` — prob always finite); (2) τ guard — `Math.max(0.01, NaN)` = NaN doesn't sanitize → explicit `Number.isFinite && > 0`, fallback 0.01; (3) weight guards in `explorationUtility` (NaN/Infinity/negative → defaults); (4) NaN prob safety net → fair coin flip, never a pinned side.
+
+**Tests** (gitignored): +26 (`v2.0.860-three-factor-upgrade` + `v2.0.860-attack-three-factor`). Updated 2 q-rl-creative tests to three-factor semantics (corrupt Infinity Q now neutral, not dominant). Full suite: **1860 pass**, 12 pre-existing gitignored failures (v2.0.854-attack2, unrelated). `tsc --noEmit` zero errors.
+
+---
+
+## v2.0.859: Dead-component removal (DCS + MiniLM edge-store) + learning-pipeline hardening
+
+**Owner decision (P1/P2/P5/P7/P8)**: complete removal of the edge-discovery layer components that had zero decision consumers since v2.0.857, plus repair of the learning pipeline's two severed data paths.
+
+### REMOVED (zero decision consumers, pure waste)
+
+| Component | Why removed | Saved |
+|:---|:---|:---|
+| `src/edge/dcs-calculator.ts` (DCS v2) | conviction/SL/TP/size outputs cut since v2.0.857; compute was pure waste; `self-improver` tuned dead `dcsTimeDecayHalfLife` | ~230 lines + dead bandit tuning |
+| `src/edge/risk-profile-edge-store.ts` (MiniLM vector DB) | 59 live records, selection-biased (only records trades the system WAS willing to take), output never reached a decision; its per-cycle query burned **200ms–1s of MiniLM embed inference on the main decision path** | 200ms–1s/cycle + 488KB orphan data |
+| Q-RL discovery prompt injection (hacp `qrlDiscoveryBlock` + index.ts scan) | prompt-only guidance with no code-level consumer (±5% effect, unverifiable) | context tokens |
+| `dcs`/`profileEdges` params + fields + `rp*` config fields | same dead data path | — |
+
+**KEPT**: `edgeReport` (edge-calculator 5-component, `skip→hold` in buildProfileCell) — the single live edge signal, independent of both removed components. `QRLTable` itself retained (ε-greedy shadow exploration), minus discovery feed.
+
+### Q-RL backfill idempotency — CRITICAL fix
+
+The EXP backfill was gated only by a per-process instance flag (`expBackfillDone`) that reset on every restart → the same 1072 EXP records re-fed **~18×**, inflating total visits to **19520** and crushing live aligned-shadow learning via EWMA α=1/(1+visits)≈0.00005 — Q-RL was effectively frozen on historical data, live signal invisible.
+
+**Fix**: persisted `backfillDone` flag on `QRLTable` (save/load symmetric, STRICT boolean check on load — string/number/null → false, so corrupt state never silently skips backfill forever; reset clears). index.ts gates Q-RL feed on `isBackfillDone()` + atomically persists after marking. One-time cleanup: polluted table reset (config retained), backup at `q-rl-table.json.v2.0.859-polluted-backup`.
+
+### OLR backfill idempotency + calibration shrinkage — CRITICAL fixes
+
+Same bug class: OLR re-fed the EXP backfill ~3.5× (btc long `backfillSamples=3752 ≈ 1072×3.5`). Fix: persisted `backfillDone` flag on `OLREngine` (same contract), one-time migration marked done (backup saved).
+
+**Calibration shrinkage (overconfidence kill)**: `applyCalibration` previously fell back to the RAW pWin when a bin had < 5 samples — raw overconfidence (P(win) 90%+) passed straight into the conviction gate. Audit showed 9/20 live attribution records with agreement >0.9 of which 5/9 were wrong. Fix: empirical WR shrunk toward neutral prior 0.5 by `count/(count+K)` — empty bin → 0.5 (never raw), 5 samples → halfway, 100+ → ~empirical. Plus finite guard on bin wins/losses (corrupt bin → 0.5, never NaN). `applyCalibration` exported for unit testing.
+
+### Attack round (v2.0.859-attack): 2 real vulns in repaired code
+
+1. **CRITICAL**: `applyCalibration(NaN)` → `bins[NaN]` → raw NaN → conviction gate passes ALL trades (`NaN < threshold = false`). Fixed: non-finite raw → 0.5.
+2. **CRITICAL**: Proxy bin with throwing getters → crash on property access. Fixed: try/catch containment + `Object.hasOwn` guard + finite clamp on wins/losses (string/corrupt → 0).
+
+**Tests**: +20 (`v2.0.859-attack-post-removal`), +16 (`v2.0.859-olr-calibration`), +15 (`v2.0.859-qrl-backfill-idempotent`). Deleted 3 DCS-only suites (dcs-attacks/creative/surrounding, 169 tests). Full suite: **1834 pass**, 12 pre-existing gitignored failures (unrelated). `tsc --noEmit` zero errors.
+
+---
+
 ## v2.0.858: Unlock market selection during cycles + full attack round (5 issues, 16 tests)
 
 **Feature**: Removed the UX blocker that forced users to wait for a running cycle before adding markets. Users can now select assets freely mid-cycle; the backend naturally defers new markets to the next cycle (snapshot-based `allSymbols`/`_additionalMarkets`), with the post-cycle drift check triggering an immediate follow-up cycle.
