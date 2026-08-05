@@ -4,6 +4,35 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.857-fix3-attack: env POST handler injection hardening (3 security bugs, 7 tests)
+
+Round-1 attack on the v2.0.857-fix3 Supabase settings found 3 security vulnerabilities in the env-write path (`POST /api/settings/env`):
+
+### B1 (HIGH): regex injection — key with metachars matched the WRONG .env line
+
+**Bug**: `new RegExp(`^${key}=.*$`, 'm')` — an attacker-controlled key with regex metachars (e.g. `OLLAMA_API_KEY|^HYPERLIQUID`) matched a different line → attacker could overwrite any env var.
+
+**Fix**: keys validated `/^[A-Z0-9_]+$/` before use → regex-safe.
+
+### B2 (HIGH): no allowlist — POST accepted arbitrary keys
+
+**Bug**: POST body could set ANY env var (PATH, LD_PRELOAD, HYPERLIQUID_PRIVATE_KEY) → attacker could overwrite critical secrets.
+
+**Fix**: ALLOWED_ENV_KEYS allowlist (9 known keys) — unknown keys logged + skipped.
+
+### B4 (MEDIUM): newline injection — value with \n appended arbitrary env lines
+
+**Bug**: `${key}=${value}` with a value containing `\n` appended arbitrary env vars to .env.
+
+**Fix**: values with `\r`/`\n` rejected (injection attempt).
+
+### Tests
+
+`tests/v2.0.857-fix3-attack.test.ts` (7 tests): legit keys allowed; arbitrary keys rejected; regex-metachar keys rejected (pipe/^/$/()/.); lowercase rejected; newline/CRLF values rejected; normal values pass.
+
+**Result**: Full suite ~1988 tests → ~1975 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` zero errors, `vite build` passes.
+---
+
 ## v2.0.857-fix3: Supabase settings section in Settings modal + live reconfigure
 
 **Owner request**: Add SUPABASE_URL & SUPABASE_SERVICE_ROLE_KEY to the Settings modal in a new section, with instructions on where to obtain them.

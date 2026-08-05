@@ -1892,12 +1892,36 @@ ${currentPrompt || '(empty — this is the first input)'}`;
 
       this.apiServer.setUpdateEnvSettingsHandler(async (settings: Record<string, string>) => {
         try {
+          // v2.0.857-fix3-attack (B1/B2/B4): harden the env-write path.
+          //  - ALLOWLIST: only known keys may be written — an attacker posting
+          //    arbitrary keys could overwrite HYPERLIQUID_PRIVATE_KEY etc.
+          //  - KEY SAFE: keys must be alphanumeric+underscore (no regex
+          //    metachars — B1 regex injection could match the wrong line).
+          //  - VALUE SAFE: values must not contain \n/\r (B4 multi-line .env
+          //    injection could append arbitrary env vars).
+          const ALLOWED_ENV_KEYS = new Set([
+            'HYPERLIQUID_WALLET_ADDRESS', 'HYPERLIQUID_PRIVATE_KEY',
+            'OLLAMA_API_KEY', 'MASSIVE_API_KEY', 'OLLAMA_PLAN',
+            'TELEGRAM_BOT_API', 'TELEGRAM_CHAT_ID',
+            'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY',
+          ]);
           const envPath = path.join(process.cwd(), '.env');
           let envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
-          for (const [key, value] of Object.entries(settings)) {
+          for (const [rawKey, value] of Object.entries(settings)) {
             // Skip if value is masked (contains ••••) — means user didn't change it
             if (value.includes('••••')) continue;
-            // Update or add the env var
+            // ALLOWLIST + KEY SAFE: reject unknown keys or regex-metachar keys
+            if (!ALLOWED_ENV_KEYS.has(rawKey) || !/^[A-Z0-9_]+$/.test(rawKey)) {
+              log.warn(`[settings] rejected env key ${JSON.stringify(rawKey)} (not in allowlist / invalid)`);
+              continue;
+            }
+            // VALUE SAFE: reject newlines (multi-line .env injection)
+            if (/[\r\n]/.test(value)) {
+              log.warn(`[settings] rejected ${rawKey} value containing newline (injection attempt)`);
+              continue;
+            }
+            const key = rawKey;
+            // Update or add the env var (key is validated [A-Z0-9_] → regex-safe)
             const regex = new RegExp(`^${key}=.*$`, 'm');
             if (regex.test(envContent)) {
               envContent = envContent.replace(regex, `${key}=${value}`);
