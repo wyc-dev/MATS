@@ -114,6 +114,13 @@ export class QRLTable {
   private totalCycles = 0;
   private lastDiscoveryCycle = 0;
   private cachedDiscoveries: AlphaDiscovery[] = [];
+  /** v2.0.859: Persisted EXP-backfill completion flag. The pre-fix guard was a
+   *  per-process instance flag (`expBackfillDone` in index.ts) that reset on
+   *  every restart — so the 1072-record EXP backfill re-ran ~12×, inflating
+   *  visits (12851 ≈ 1072×12) and crushing live aligned-shadow learning via
+   *  EWMA α = 1/(1+visits) ≈ 0.00008. Persisted via save()/load() so the
+   *  backfill runs exactly once over the table's lifetime. */
+  private backfillDone = false;
 
   constructor(config?: Partial<QRLConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -449,6 +456,19 @@ export class QRLTable {
 
   // ─── Persistence ───
 
+  /** v2.0.859: Has the EXP backfill already been applied to this table?
+   *  Callers MUST check this before feeding historical records — without it,
+   *  restarts re-feed the same history and visits inflate unboundedly. */
+  isBackfillDone(): boolean {
+    return this.backfillDone;
+  }
+
+  /** v2.0.859: Mark the EXP backfill as applied. Persisted by save() — call
+   *  save() promptly after marking so the flag survives a crash/restart. */
+  markBackfillDone(): void {
+    this.backfillDone = true;
+  }
+
   save(): Record<string, unknown> {
     // v2.0.835 security: deep copy to prevent external mutation of internal state
     const cloneRecord = (r: Record<string, number>): Record<string, number> =>
@@ -465,6 +485,7 @@ export class QRLTable {
       rewardHistory: cloneArrRecord(this.rewardHistory),
       totalCycles: this.totalCycles,
       config: this.config,
+      backfillDone: this.backfillDone, // v2.0.859
     };
   }
 
@@ -491,6 +512,11 @@ export class QRLTable {
     this.cachedDiscoveries = [];
     this.lastDiscoveryCycle = 0;
     this.totalCycles = safeNum(s['totalCycles'] as number, 0);
+    // v2.0.859: restore persisted backfill flag — STRICT boolean check.
+    // A corrupt string ('true') / number (1) / null must NOT be treated as
+    // done, otherwise the backfill is silently skipped forever. Missing key
+    // (pre-v2.0.859 state) → false → backfill runs once on next start.
+    this.backfillDone = typeof s['backfillDone'] === 'boolean' ? (s['backfillDone'] as boolean) : false;
     // v2.0.835 fix: restore config from saved state (save/load symmetry)
     const savedConfig = s['config'] as Partial<QRLConfig> | undefined;
     if (savedConfig && typeof savedConfig === 'object') {
@@ -508,6 +534,7 @@ export class QRLTable {
     this.totalCycles = 0;
     this.lastDiscoveryCycle = 0;
     this.cachedDiscoveries = [];
+    this.backfillDone = false; // v2.0.859
   }
 
   /** Get stats for UI / API. */

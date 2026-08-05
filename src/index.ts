@@ -5489,10 +5489,17 @@ ${recentExamples}
           // all present in `features` above (momentumShort=0 neutral for EXP).
           // Reward = pnlPct (margin-relative return), matching the live
           // aligned-shadow reward definition (sr.pnlPct).
-          try {
-            this.qrlTable?.update(features, side, pnlPct);
-            qrlFed++;
-          } catch { /* non-critical */ }
+          // v2.0.859: IDEMPOTENT — gate on the PERSISTED backfillDone flag.
+          // Pre-fix, the per-process `expBackfillDone` instance flag reset on
+          // every restart, so the same 1072 records re-fed ~12× (visits
+          // 12851 ≈ 1072×12) and crushed live learning via EWMA α=1/(1+visits)
+          // ≈ 0.00008. The flag now survives restarts via q-rl-table.json.
+          if (!this.qrlTable?.isBackfillDone()) {
+            try {
+              this.qrlTable?.update(features, side, pnlPct);
+              qrlFed++;
+            } catch { /* non-critical */ }
+          }
         }
 
         // 2. NA — feed market-condition embedding sample
@@ -5681,6 +5688,26 @@ ${recentExamples}
       }
 
       log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, Combo=${comboFed}, Attr=${attrFed}, QRL=${qrlFed}, skipped=${skipped}`);
+
+      // v2.0.859: Persist Q-RL backfill completion. Mark ONLY when records
+      // were actually fed (qrlFed > 0) — if the corpus had no usable
+      // features, leave the flag unset so a future richer corpus can still
+      // be backfilled. Persist immediately (atomic tmp+rename, same pattern
+      // as saveEvolutionState) so the flag survives a crash before the next
+      // periodic save cycle.
+      if (this.qrlTable && qrlFed > 0 && !this.qrlTable.isBackfillDone()) {
+        this.qrlTable.markBackfillDone();
+        try {
+          const qrlDir = path.join(process.cwd(), 'data/evolution');
+          const qrlTmp = path.join(qrlDir, 'q-rl-table.json.tmp');
+          const qrlFinal = path.join(qrlDir, 'q-rl-table.json');
+          fs.writeFileSync(qrlTmp, JSON.stringify(this.qrlTable?.save() ?? {}), 'utf-8');
+          fs.renameSync(qrlTmp, qrlFinal);
+          log.info(`[exp-backfill] Q-RL backfill marked done (${qrlFed} records) — persisted`);
+        } catch (err) {
+          log.warn(`[exp-backfill] Q-RL backfillDone persist failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
 
       // v2.0.223: Train + validate NA immediately after backfill. Previously only
       // validated, which meant the model had 228 samples but only 230 training
