@@ -42,8 +42,6 @@ export interface SmartSLTPInput {
   takeProfitPct: number;
   /** v2.0.836: Risk profile for DCS-aware SL/TP scaling (optional, backward compatible) */
   riskProfile?: 'aggressive' | 'moderate' | 'conservative';
-  /** v2.0.836: DCS v2 Discovery Confidence Score [0, 1] (optional, backward compatible) */
-  dcs?: number;
   /** v2.0.849: Adverse short-term momentum (fraction, e.g. 0.03 = +3% AGAINST
    *  this position). When > 0, the SL distance is widened to cover 2.5× the
    *  adverse momentum range so a continuation of the push doesn't stop the
@@ -438,15 +436,9 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   // Moderate:   SL ×1.0, TP ×1.0 (standard, never changes)
   // Conservative: SL tighter (×0.7–1.0), TP tighter (×0.8–1.0)
   // ═══════════════════════════════════════════════════════════════
-
-  // v2.0.836: Clamp DCS to [0, 1] — same fix as dcs-calculator.ts and
-  // analysis-matrix.ts. The previous code only checked `>= 0`, so an untrusted
-  // DCS > 1 (e.g. 5) silently inflated the SL multiplier (×2.5) and TP
-  // multiplier (×3.5), widening SL/TP far beyond the designed [1.0, 1.3] /
-  // [1.0, 1.5] range before the caps clamped them. Negative DCS is invalid.
-  const safeDcs = Number.isFinite(input.dcs ?? 0)
-    ? Math.max(0, Math.min(1, input.dcs ?? 0))
-    : 0;
+  // v2.0.859: DCS clamp block REMOVED — dcs-calculator deleted (zero decision
+  // consumers since v2.0.857). SL/TP multipliers are the moderate baseline
+  // (1.0 / 5% / 10%); no external DCS input exists anymore.
   const profile = input.riskProfile ?? 'moderate';
 
   // v2.0.857: risk profiles removed — SL/TP multipliers always 1.0 (moderate

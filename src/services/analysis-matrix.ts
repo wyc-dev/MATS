@@ -22,7 +22,6 @@ import type {
 } from '../types/index.ts';
 import type { PerSymbolConsensus } from '../types/index.ts';
 import type { AggregatedMarketState } from '../data/binance-websocket.ts';
-import { dcsConvictionFactor } from '../edge/dcs-calculator.ts';
 
 /** Map a raw consensus action (+ closePosition flag) to a MatrixCell action,
  *  depending on the user's current position state. */
@@ -113,8 +112,6 @@ export function buildAssetAnalysis(
   agentsAligned: number,
   agentsTotal: number,
   edgeReport?: EdgeReport,
-  profileEdges?: Partial<Record<RiskProfile, EdgeReport>>,
-  dcs: number = 0,
 ): AssetAnalysis | null {
   // No consensus for this symbol → emit a neutral matrix (all 'hold').
   const rawAction = psc?.action ?? 'hold';
@@ -165,8 +162,9 @@ export function buildAssetAnalysis(
     suggestedLeverage,
   };
 
-  // v2.0.857: moderate-only matrix — pass the risk-neutral edge report;
-  // profileEdges/dcs are deprecated (aggressive/conservative removed).
+  // v2.0.857: moderate-only matrix — pass the risk-neutral edge report.
+  // v2.0.859: profileEdges/dcs parameters REMOVED (MiniLM edge-store + DCS
+  // deleted — zero decision consumers since v2.0.857).
   const matrix = buildMatrix(rawAction, closePosition, confidence, rationale, edgeReport);
 
   return {
@@ -178,6 +176,5 @@ export function buildAssetAnalysis(
     matrix,
     metadata: {},
     edgeReport,
-    dcs,
   };
 }

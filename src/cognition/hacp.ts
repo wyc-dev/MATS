@@ -260,12 +260,7 @@ export class HACPEngine {
    *  can query the correct OLR side. Returns a formatted context block string
    *  (or empty string when exploration is not active/disabled). */
   private explorationContextProvider: ((side: 'buy' | 'sell') => string) | null = null;
-  /** v2.0.835: Q-RL Alpha Discovery block — injected into agent context */
-  private qrlDiscoveryBlock = '';
   setExplorationContextProvider(cb: ((side: 'buy' | 'sell') => string) | null): void { this.explorationContextProvider = cb; }
-
-  /** v2.0.835: Set Q-RL Alpha Discovery block for injection into agent context. */
-  setQRLDiscoveryBlock(block: string): void { this.qrlDiscoveryBlock = block; }
 
   /** v2.0.837: Meta-Cognitive Calibration block — system self-awareness */
   private metaCalibrationBlock = '';
@@ -291,7 +286,7 @@ export class HACPEngine {
    * v2.0.843: Build the system-level evolution context blocks suffix.
    *
    * These blocks represent system-wide self-awareness state (calibration,
-   * self-improvement, causal reasoning, meta-learning, Q-RL alpha discovery).
+   * self-improvement, causal reasoning, meta-learning).
    * They are NOT candidate-specific (unlike RIL similar-trades / subtle-diff
    * blocks, which depend on the trade thesis being evaluated). They apply
    * equally to entry validation, open-position re-validation, and the
@@ -302,14 +297,15 @@ export class HACPEngine {
    * Skeptics can reason about system confidence calibration and causal
    * evidence when deciding whether to approve / invalidate a thesis.
    *
+   * v2.0.859: Q-RL ALPHA DISCOVERY block REMOVED — the discovery signal had
+   * no code-level consumer (prompt-only guidance with ±5% effect); owner
+   * decided to remove it together with DCS/MiniLM edge-store.
+   *
    * Returns an empty string when no evolution blocks are set (cold-start
    * safe — downstream concatenation is a no-op).
    */
   private buildSystemEvolutionBlocks(): string {
     const parts: string[] = [];
-    if (this.qrlDiscoveryBlock) {
-      parts.push(`=== 🧬 Q-RL ALPHA DISCOVERY ===\n${this.qrlDiscoveryBlock}\n---`);
-    }
     if (this.metaCalibrationBlock) {
       parts.push(this.metaCalibrationBlock);
     }
