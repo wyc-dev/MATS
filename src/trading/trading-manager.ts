@@ -548,7 +548,6 @@ export class TradingManager {
           ?? (decision as unknown as Record<string, unknown>)['entryOlrPWin'] as number | undefined;
 
         // v2.0.832: Compute smart SL/TP
-        // v2.0.836: Pass riskProfile + dcs for DCS-aware SL/TP scaling
         // v2.0.849: Pass adverseMomentum + olrConfidence for momentum-adaptive
         //           + execution-lens + confidence SL widening
         // v2.0.852: Pass MFE calibration (data-driven TP target/cap + SL floor).
@@ -565,7 +564,6 @@ export class TradingManager {
           stopLossPct: decision.stopLossPct ?? slPctDefault,
           takeProfitPct: decision.takeProfitPct ?? tpPctDefault,
           riskProfile: this.riskProfile,
-          dcs: (decision as unknown as Record<string, unknown>)['dcs'] as number | undefined,
           adverseMomentum,
           olrConfidence: entryOlrConfidence,
           // v2.0.852: Pass the ACTUAL fill leverage so computeSmartSLTP can

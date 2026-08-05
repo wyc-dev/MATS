@@ -12,7 +12,7 @@ import type { AssetAnalysis, EdgeReport, RiskProfile } from './types/index.ts';
 import {
   computeEdgeReport, skipEdgeReport, realizedStats,
   ExecutionTracker as EdgeExecutionTracker, StabilityMonitor,
-  RiskProfileEdgeStore, type EdgeCalcInput,
+  type EdgeCalcInput,
 } from './edge/index.ts';
 import { QRLTable, type AlphaDiscovery } from './evolution/q-rl-table.ts';
 import { MetaCalibrator } from './evolution/meta-calibrator.ts';
@@ -20,7 +20,6 @@ import { SelfImprover } from './evolution/self-improver.ts';
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
 import { ComponentAttributionStore, normalizeTradeSide } from './evolution/component-attribution.ts';
 import { MetaLearner, deriveAssetMetadata } from './evolution/meta-learner.ts';
-import { computeDCS } from './edge/dcs-calculator.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
 import { getActiveProvider } from './llm/index.ts';
 import { getAgentModel } from './agents/agent-models.ts';
@@ -191,11 +190,9 @@ class MATSSystem {
   // v2.0.833: Edge Validation layer — alpha "lie detector"
   private edgeExecTracker!: EdgeExecutionTracker;
   private edgeStabilityMonitor!: StabilityMonitor;
-  private edgeRpStore!: RiskProfileEdgeStore;
   private edgeReportCount = 0;
   // v2.0.835: Q-RL Alpha Discovery
   private qrlTable!: QRLTable;
-  private qrlDiscoveryBlock = ''; // injected into LLM agent context
   // v2.0.837: Meta-Cognitive Calibrator — system self-awareness
   private metaCalibrator!: MetaCalibrator;
   // v2.0.838: Self-Improver — auto-tuning hyperparameters
@@ -1101,13 +1098,7 @@ class MATSSystem {
       // v2.0.833: Edge Validation layer init
       this.edgeExecTracker = new EdgeExecutionTracker();
       this.edgeStabilityMonitor = new StabilityMonitor();
-      this.edgeRpStore = new RiskProfileEdgeStore();
       try {
-        const rpPath = path.join(process.cwd(), 'data/evolution/rp-edge-store.json');
-        if (fs.existsSync(rpPath)) {
-          this.edgeRpStore.load(JSON.parse(fs.readFileSync(rpPath, 'utf-8')));
-          log.info(`✓ RiskProfileEdgeStore loaded (${this.edgeRpStore.size()} records)`);
-        }
         const execPath = path.join(process.cwd(), 'data/evolution/execution-tracker.json');
         if (fs.existsSync(execPath)) {
           this.edgeExecTracker.load(JSON.parse(fs.readFileSync(execPath, 'utf-8')));
@@ -1116,14 +1107,6 @@ class MATSSystem {
       } catch (e) {
         log.warn(`[edge-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
       }
-      // Set the shared MiniLM provider for the risk-profile edge store
-      try {
-        const provider = getSharedEmbedProvider();
-        void provider.warmup().then(() => {
-          this.edgeRpStore.setEmbedProvider(provider);
-          log.info('✓ Edge RP store embed provider ready');
-        }).catch((err: unknown) => log.warn(`[edge-init] embed warmup failed: ${err instanceof Error ? err.message : String(err)}`));
-      } catch { /* cold-start safe — store works without provider, just no embeddings */ }
       log.info('✓ Edge Validation layer initialized (exec-tracker + stability-monitor + rp-store)');
 
       // v2.0.835: Q-RL Alpha Discovery init
@@ -3500,36 +3483,6 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           theoreticalPnlPct: safeNum(trade.pnlPct, 0),
           ts: trade.closedAt ?? Date.now(),
         });
-        // Risk-Profile Edge Store: record the outcome for vector-based conditional edge
-        const edgeMarketFeatures: Record<string, number> = {};
-        if (Number.isFinite(volatility)) edgeMarketFeatures['volatility'] = volatility;
-        if (Number.isFinite(srDistanceBps)) edgeMarketFeatures['srDistanceBps'] = srDistanceBps;
-        if (Number.isFinite(obImbalance)) edgeMarketFeatures['obImbalance'] = obImbalance;
-        if (Number.isFinite(fundingRate)) edgeMarketFeatures['fundingRate'] = fundingRate;
-        if (Number.isFinite(volumeRatio)) edgeMarketFeatures['volumeRatio'] = volumeRatio;
-        if (Number.isFinite(signalAgreement)) edgeMarketFeatures['signalAgreement'] = signalAgreement;
-        if (Number.isFinite(sentiment)) edgeMarketFeatures['sentiment'] = sentiment;
-        if (Object.keys(edgeMarketFeatures).length > 0) {
-          // Record for the backend's own risk profile + neutral moderate
-          const backendProfile = this.marketAgent.getRiskProfile();
-          void this.edgeRpStore.recordTrade({
-            marketFeatures: edgeMarketFeatures,
-            symbol: trade.symbol,
-            side: trade.side === 'buy' ? 'buy' : 'sell',
-            riskProfile: backendProfile,
-            regime: regime ?? 'unknown',
-            realizedPnlPct: safeNum(trade.pnlPct, 0),
-            outcome: isWin ? 1 : 0,
-            closeReason: closeReason,
-            holdMinutes,
-            slTolerancePct: trade.originalStopLossPrice
-              ? Math.abs((trade.originalStopLossPrice - trade.entryPrice) / trade.entryPrice) * 100
-              : 2.0,
-            ts: trade.closedAt ?? Date.now(),
-          }).catch((err: unknown) =>
-            log.warn(`[edge-close] rp store record failed: ${err instanceof Error ? err.message : String(err)}`)
-          );
-        }
       } catch (err) {
         log.warn(`[edge-close] tracking failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -6390,19 +6343,6 @@ ${recentExamples}
             }
           }
 
-          // v2.0.835: Q-RL discovery scan — every 5 cycles
-          const discoveries = this.qrlTable.discoverPatterns(this.totalCycles);
-          if (discoveries.length > 0) {
-            // Use active symbol's features for state-matching
-            const activeSym = normalizeSymbol(activeSymbol);
-            const activeCtx = this.lastCycleShadowContexts.get(activeSym);
-            const activeFeatures = activeCtx?.features ?? {};
-            const best = this.qrlTable.getBestDiscovery(activeFeatures);
-            if (best) {
-              this.qrlDiscoveryBlock = best.description;
-            }
-          }
-
           // v2.0.837: Inject Meta-Cognitive Calibration block into HACP
           try {
             const calBlock = this.metaCalibrator?.getCalibrationBlock();
@@ -7636,9 +7576,6 @@ ${recentExamples}
         log.warn(`[OLR-RT] real-time exit-trigger block failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      // v2.0.835: Inject Q-RL discovery block into HACP before running decision cycle
-      this.hacpEngine.setQRLDiscoveryBlock(this.qrlDiscoveryBlock);
-
       const result = await this.hacpEngine.executeDecisionCycle(
         `${marketDesc}${olrRealtimeBlock}\n\n${adjustedEvolutionContext}${backtestContext}`,
         portfolioDesc,
@@ -7697,7 +7634,7 @@ ${recentExamples}
             const edgeResult = await this.computeEdgeForSymbol(sym, edgeSide, regime);
             const analysis = buildAssetAnalysis(
               sym, psc, ms, this.totalCycles, pwin, aligned, votes.length,
-              edgeResult?.edgeReport, edgeResult?.profileEdges, edgeResult?.dcs ?? 0,
+              edgeResult?.edgeReport,
             );
             if (analysis) analyses.push(analysis);
           }
@@ -10902,7 +10839,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     sym: string,
     side: 'buy' | 'sell',
     regime: string,
-  ): Promise<{ edgeReport: EdgeReport; profileEdges: Partial<Record<RiskProfile, EdgeReport>>; dcs: number } | null> {
+  ): Promise<{ edgeReport: EdgeReport } | null> {
     try {
       // 1. Shadow WR (pure directional edge proxy)
       const shadowStats = this.shadowEngine.getStats().find(
@@ -10995,48 +10932,12 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         ts: Date.now(),
       });
 
-      // v2.0.836: Compute DCS v2 — Discovery Confidence Score from Q-RL
-      const marketFeatures = this.lastCycleShadowContexts.get(normalizeSymbol(sym))?.features ?? {};
-      const qrlDiscovery = this.qrlTable.getBestDiscovery(marketFeatures);
-      const rewardHistory = qrlDiscovery
-        ? this.qrlTable.getRewardHistory(qrlDiscovery.key)
-        : [];
-      const ageCycles = qrlDiscovery?.discoveredAt
-        ? Math.max(0, this.totalCycles - qrlDiscovery.discoveredAt)
-        : 0;
-      const dcs = computeDCS(qrlDiscovery, edgeReport.edgeScore, rewardHistory, ageCycles);
-
-      // v2.0.857: Per-profile conditional edge — risk profiles removed, so
-      // only the moderate query is needed. (Old code looped 3 profiles →
-      // 3 MiniLM vector queries per symbol per cycle, all dead since
-      // buildAssetAnalysis ignores profileEdges in the moderate-only matrix.)
-      const profileEdges: Partial<Record<RiskProfile, EdgeReport>> = {};
-      try {
-        const rpResult = await this.edgeRpStore.query({
-          marketFeatures, symbol: sym, side, riskProfile: 'moderate', regime,
-        });
-        // v2.0.857-fix-attack2 (F2): sanitize rpResult fields — a NaN
-        // edgeScore/samples from a corrupt store entry would make blendedScore
-        // NaN → recommendation 'skip' (NaN >= x is false), silently killing a
-        // strong edge signal. safeNum → finite fallback; samples 0 → cold-start.
-        const rpEdgeScore = safeNum(rpResult?.edgeScore, 0);
-        const rpSamples = safeNum(rpResult?.samples, 0);
-        const rpConfidence = rpResult?.confidence ?? edgeReport.confidence;
-        // Blend: cold-start weights neutral; warm shifts to profile-specific
-        const neutralWeight = rpSamples >= 30 ? 0.4 : 0.8;
-        const profileWeight = 1.0 - neutralWeight;
-        const blendedScore = neutralWeight * safeNum(edgeReport.edgeScore, 0) + profileWeight * rpEdgeScore;
-        profileEdges['moderate'] = {
-          ...edgeReport,
-          edgeScore: blendedScore,
-          confidence: rpSamples >= 30 ? rpConfidence : edgeReport.confidence,
-          recommendation: blendedScore >= 0.55 ? 'trade' : blendedScore >= 0.45 ? 'caution' : 'skip',
-        };
-      } catch {
-        profileEdges['moderate'] = edgeReport; // fallback to neutral
-      }
-
-      return { edgeReport, profileEdges, dcs };
+      // v2.0.833: Edge Report computed above (risk-neutral, single signal).
+      // v2.0.859: DCS v2 + per-profile MiniLM edge queries REMOVED — both had
+      // zero decision consumers since v2.0.857 and burned compute on the main
+      // path (MiniLM embed inference ~200ms-1s/cycle). edgeReport remains the
+      // only edge signal (skip → hold in buildProfileCell).
+      return { edgeReport };
     } catch (err) {
       log.warn(`[edge-compute] ${sym} ${side} failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       return null;
@@ -11473,7 +11374,6 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       // v2.0.833: Save Edge Validation layer state
       try {
         saveAdv('execution-tracker.json', JSON.stringify(this.edgeExecTracker?.serialize() ?? {}));
-        saveAdv('rp-edge-store.json', JSON.stringify(this.edgeRpStore?.serialize() ?? []));
       } catch (err) {
         log.warn(`[edge-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -12096,7 +11996,6 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           edgeValidation: {
             edgeReportCount: this.edgeReportCount,
             execTrackerEntries: this.edgeExecTracker?.entryCount() ?? 0,
-            rpStoreSize: this.edgeRpStore?.size() ?? 0,
             avgEdgeScore: 0.5, // updated by edge compute cycle
           },
           // v2.0.835: Q-RL Alpha Discovery state

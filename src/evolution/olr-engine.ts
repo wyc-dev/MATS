@@ -180,15 +180,31 @@ export function applyCalibration(
   bins: Array<{ lo: number; hi: number; wins: number; losses: number }> | undefined,
   rawPWin: number,
 ): number {
+  // v2.0.859-attack: non-finite rawPWin must never propagate. NaN would
+  // flow through binIdx → bins[NaN] → undefined → raw NaN returned, poisoning
+  // the conviction gate (NaN < threshold = false → pass all trades).
+  if (!Number.isFinite(rawPWin)) return 0.5;
   if (!bins || bins.length === 0) return rawPWin;
   const clamped = Math.max(0, Math.min(0.9999, rawPWin));
   const binIdx = Math.floor(clamped * CALIBRATION_NUM_BINS);
-  const bin = bins[binIdx];
-  if (!bin) return rawPWin;
-  // v2.0.859: finite guard — a corrupt bin missing wins/losses keys would
-  // produce count=NaN → 0×NaN = NaN calibrated, poisoning the decision chain.
-  const wins = Number.isFinite(bin.wins) ? bin.wins : 0;
-  const losses = Number.isFinite(bin.losses) ? bin.losses : 0;
+  // v2.0.859-attack: a Proxy bin whose getters THROW (or a corrupt entry)
+  // must not crash the query path — fall back to the neutral prior. The bin
+  // lookup and field reads are wrapped so ANY throwing access is contained.
+  let wins = 0;
+  let losses = 0;
+  try {
+    const bin = bins[binIdx];
+    if (!bin || typeof bin !== 'object') return 0.5;
+    // Object.hasOwn guard — a __proto__-polluted bins array must not read
+    // inherited attacker-controlled values.
+    const rawWins = Object.hasOwn(bin, 'wins') ? (bin as { wins: unknown }).wins : 0;
+    const rawLosses = Object.hasOwn(bin, 'losses') ? (bin as { losses: unknown }).losses : 0;
+    wins = Number.isFinite(rawWins as number) ? (rawWins as number) : 0;
+    losses = Number.isFinite(rawLosses as number) ? (rawLosses as number) : 0;
+  } catch {
+    // getter bomb / Proxy throw → honest neutral
+    return 0.5;
+  }
   const count = wins + losses;
   const empiricalWR = count > 0 ? wins / count : 0.5;
   if (!Number.isFinite(empiricalWR)) return rawPWin;

@@ -74,7 +74,9 @@ const CONTINUOUS_BOUNDS: Array<{
   // v2.0.857: aggressiveSlCap / conservativeSlCap REMOVED — risk profiles are
   // gone (moderate-only); dcsSlCap() always returns 5%. Tuning dead params was
   // wasted computation + misleading logs.
-  { name: 'dcsTimeDecayHalfLife', min: 100, max: 400, step: 25, initial: 200 },
+  // v2.0.859: dcsTimeDecayHalfLife REMOVED — dcs-calculator deleted (zero
+  // decision consumers since v2.0.857). The bandit was tuning a param whose
+  // only consumer was a dead computation — pure waste.
 ];
 
 // ─── Self-Improver ───

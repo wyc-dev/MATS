@@ -142,15 +142,10 @@ export const edgeConfig = {
   execMinSamples: raw.EDGE_EXEC_MIN_SAMPLES,
   execLookback: raw.EDGE_EXEC_LOOKBACK,
 
-  // Risk-Profile Edge Store
-  rpStoreCap: raw.EDGE_RP_STORE_CAP,
-  rpTopK: raw.EDGE_RP_TOP_K,
-  rpMinSimilarity: raw.EDGE_RP_MIN_SIMILARITY,
-  rpMinMatches: raw.EDGE_RP_MIN_MATCHES,
-  rpHalfLifeDays: raw.EDGE_RP_HALF_LIFE_DAYS,
-  rpNeutralWeight: raw.EDGE_RP_NEUTRAL_WEIGHT,
-  rpProfileWeight: raw.EDGE_RP_PROFILE_WEIGHT,
-  rpWarmSamples: raw.EDGE_RP_WARM_SAMPLES,
+  // v2.0.859: Risk-Profile Edge Store config REMOVED (rpStoreCap/rpTopK/
+  // rpMinSimilarity/rpMinMatches/rpHalfLifeDays/rpNeutralWeight/
+  // rpProfileWeight/rpWarmSamples) — the MiniLM store was deleted (zero
+  // decision consumers since v2.0.857).
 
   // Backtest Validation
   btestSplit: raw.EDGE_BTEST_SPLIT,

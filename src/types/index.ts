@@ -1256,11 +1256,6 @@ export interface MatrixCell {
    *  combination has, so the client can show a confidence badge and the
    *  backend can downgrade / skip low-edge signals. Undefined on cold-start. */
   edge?: EdgeReport;
-  /** v2.0.836: DCS v2 Discovery Confidence Score [0, 1] — continuous score
-   *  from Q-RL Alpha Discovery that drove this cell's conviction/SL/TP/size
-   *  calibration. 0 = no/weak discovery, 1 = strong fresh confirmed.
-   *  Moderate cells always have dcs=0 (DCS doesn't affect Moderate). */
-  dcs?: number;
 }
 
 /**
@@ -1312,9 +1307,6 @@ export interface AssetAnalysis {
   /** v2.0.833: Risk-neutral edge report (computed once per cycle, applies to
    *  all profiles). Per-profile conditional edge lives in each MatrixCell.edge. */
   edgeReport?: EdgeReport;
-  /** v2.0.836: DCS v2 Discovery Confidence Score [0, 1] — continuous score
-   *  from Q-RL Alpha Discovery used for risk-profile differentiation. */
-  dcs?: number;
 }
 
 export interface ExchangeAccountInfo {
