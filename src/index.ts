@@ -5475,8 +5475,16 @@ ${recentExamples}
             hourOfDay: hourOfDayFromTs(rec.ts), // v2.0.221 Fix 1
           };
           try {
-            this.olrEngine.feedTrade(sym, features, outcome, side, source, 0);
-            olrFed++;
+            // v2.0.859: IDEMPOTENT — gate on the PERSISTED backfillDone flag.
+            // Same bug class as Q-RL: the per-process `expBackfillDone` flag
+            // reset on every restart, re-feeding the same EXP records ~3.5×
+            // (btc long backfillSamples=3752 ≈ 1072×3.5), inflating backfill
+            // counters and re-weighting the cold-start prior on identical
+            // data. The flag now survives restarts via olr-state.json.
+            if (!this.olrEngine.isBackfillDone()) {
+              this.olrEngine.feedTrade(sym, features, outcome, side, source, 0);
+              olrFed++;
+            }
           } catch { /* non-critical */ }
 
           // v2.0.855-fix: Q-RL Alpha Discovery backfill — the Q-RL table was
@@ -5688,6 +5696,26 @@ ${recentExamples}
       }
 
       log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, Combo=${comboFed}, Attr=${attrFed}, QRL=${qrlFed}, skipped=${skipped}`);
+
+      // v2.0.859: Persist OLR backfill completion (same idempotency contract
+      // as Q-RL). Mark only when records were actually fed (olrFed > 0) — if
+      // the corpus had no usable features, leave the flag unset so a future
+      // richer corpus can still be backfilled. Persist immediately (atomic
+      // tmp+rename, same pattern as saveEvolutionState) so the flag survives
+      // a crash before the next periodic save cycle.
+      if (olrFed > 0 && !this.olrEngine.isBackfillDone()) {
+        this.olrEngine.markBackfillDone();
+        try {
+          const olrDir = path.join(process.cwd(), 'data/evolution');
+          const olrTmp = path.join(olrDir, 'olr-state.json.tmp');
+          const olrFinal = path.join(olrDir, 'olr-state.json');
+          fs.writeFileSync(olrTmp, this.olrEngine.save(), 'utf-8');
+          fs.renameSync(olrTmp, olrFinal);
+          log.info(`[exp-backfill] OLR backfill marked done (${olrFed} records) — persisted`);
+        } catch (err) {
+          log.warn(`[exp-backfill] OLR backfillDone persist failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
 
       // v2.0.859: Persist Q-RL backfill completion. Mark ONLY when records
       // were actually fed (qrlFed > 0) — if the corpus had no usable
