@@ -4,6 +4,17 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.857-fix3-ui: Skeptic audit chip grid in HACP Consciousness
+
+**Owner request**: Skeptic per-symbol audit (`btc 5 OK / xyz:GOLD 5 OK / ...`) rendered one vertical group per symbol — short statuses wasted a row each. Make the layout prettier.
+
+**Changes (2 files)**:
+- `ui/src/App.tsx`: Skeptic audit now renders as a **compact horizontal wrap chip grid** — each symbol is one pill (`SYMBOL + N OK / N MOD`), auto-wrapping by available width. Thesis rejection rationale moved from inline block to a **dropdown** under the chip (▲/▼ toggle), keeping the grid unbroken. Standalone rejections (no matching perSymbolAudit) stay as always-open REJ chips.
+- `ui/src/index.css`: New `.agent-skeptic-grid` / `.agent-skeptic-chip` / `.agent-skeptic-rej-btn` / `.agent-skeptic-rej-detail` styles (glass border, pill radius, red-tinted border for rejected chips, dropdown z-index + shadow).
+
+**Result**: `vite build` passes (0 errors).
+---
+
 ## v2.0.857-fix3-attack: env POST handler injection hardening (3 security bugs, 7 tests)
 
 Round-1 attack on the v2.0.857-fix3 Supabase settings found 3 security vulnerabilities in the env-write path (`POST /api/settings/env`):
