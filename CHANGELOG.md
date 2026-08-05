@@ -4,6 +4,41 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.857-fix3-ui-attack: Skeptic chip grid defensive hardening (4 issues, 7 tests)
+
+Round-2 attack on the v2.0.857-fix3-ui Skeptic chip grid found 4 issues:
+
+### A5 (MEDIUM): absolute dropdown overflowed the card edge
+
+**Bug**: rejection detail used `position: absolute; left: 0` — when the chip sat on the right side of the grid, the 340px dropdown overflowed the card boundary and covered other UI.
+
+**Fix**: dropdown now **flows in-grid under its chip** — item wrapper (`agent-skeptic-item`) goes `flex-basis: 100%` when open, so the detail renders BELOW the chip in normal grid flow. Nothing overlaps, nothing escapes the card.
+
+### A7 (MEDIUM): standalone REJ chips hard-coded always-open
+
+**Bug**: standalone thesis rejections were hard-coded `agent-skeptic-chip-open` — the detail always rendered, permanently overlapping the next card.
+
+**Fix**: same toggle UX as audit chips (▲/▼ button), collapsed by default.
+
+### A3 (LOW): non-numeric counts rendered "undefined OK"
+
+**Bug**: `a.modified > 0` with a malformed payload rendered `undefined OK` / `NaN MOD`.
+
+**Fix**: `Number()` + `Number.isFinite` sanitize → fallback 0.
+
+### A10 (LOW): expandedRejections Set never pruned (memory growth)
+
+**Bug**: rejection-expansion keys accumulated forever across cycles.
+
+**Fix**: `useEffect` prunes keys not present in the current `perSymbolAudit` / `thesisRejections` (reference-stable bail-out — no re-render churn). Moved above the `if (!meta) return null` guard for rules-of-hooks compliance.
+
+### Tests
+
+`tests/v2.0.857-fix3-ui-attack.test.ts` (7): count sanitizer (normal/undefined/null/NaN/negative/numeric-string), key pruning (keep alive / drop stale / standalone prefix / empty no-churn).
+
+**Result**: Full suite ~1995 tests → ~1983 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `vite build` passes, old `agent-skeptic-chip-open` class fully removed.
+---
+
 ## v2.0.857-fix3-ui: Skeptic audit chip grid in HACP Consciousness
 
 **Owner request**: Skeptic per-symbol audit (`btc 5 OK / xyz:GOLD 5 OK / ...`) rendered one vertical group per symbol — short statuses wasted a row each. Make the layout prettier.
