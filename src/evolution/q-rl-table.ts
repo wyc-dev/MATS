@@ -208,11 +208,24 @@ export class QRLTable {
       //               action. The paper's proven weights are 1.0/0.6/0.3.
       const uBuy = this.explorationUtility(buyKey, qBuy);
       const uSell = this.explorationUtility(sellKey, qSell);
-      const tau = Math.max(0.01, this.config.explorationTemperature);
-      const eBuy = Math.exp(uBuy / tau);
-      const eSell = Math.exp(uSell / tau);
+      // v2.0.860-attack: τ guard — Math.max(0.01, NaN) = NaN, so NaN config
+      // would propagate into exp(u/NaN)=NaN. Explicit finite+positive check.
+      let tau = this.config.explorationTemperature;
+      if (!Number.isFinite(tau) || tau <= 0) tau = 0.01;
+      // v2.0.860-attack: LOG-SUM-EXP stabilization. Raw exp(u/τ) overflows to
+      // Infinity for large utilities (extreme weights × small τ), producing
+      // probBuy = Infinity/(Infinity+Infinity) = NaN → Math.random()<NaN is
+      // ALWAYS false → the action silently pins to one side forever,
+      // corrupting exploration. Subtract the max before exponentiating:
+      //   (u−max) ≤ 0 → exp ≤ 1 → prob ∈ (0,1] always finite.
+      const maxU = Math.max(uBuy, uSell);
+      const eBuy = Math.exp((uBuy - maxU) / tau);
+      const eSell = Math.exp((uSell - maxU) / tau);
       const probBuy = eBuy / (eBuy + eSell);
-      const rlAction = Math.random() < probBuy ? 'buy' : 'sell';
+      // Safety net: a NaN prob (should be impossible post-fix) must not bias
+      // exploration — fall back to a fair coin flip rather than a pinned side.
+      const finalProb = Number.isFinite(probBuy) ? probBuy : 0.5;
+      const rlAction = Math.random() < finalProb ? 'buy' : 'sell';
       // v2.0.860: record selection for novelty decay
       this.selectionCount[rlAction === 'buy' ? buyKey : sellKey] =
         (this.selectionCount[rlAction === 'buy' ? buyKey : sellKey] ?? 0) + 1;
@@ -242,7 +255,14 @@ export class QRLTable {
     if (hi - lo < 1e-9) { hi = lo + 1; } // degenerate history → avoid div-by-zero
     const norm = (v: number): number => Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
 
-    // 1. Quality — normalized Q (cross-cell fair)
+    // 1. Quality — normalized Q (cross-cell fair). v2.0.860-attack: guard
+    //    against NaN/negative config weights (corrupt loaded config).
+    const wScore = Number.isFinite(this.config.explorationScoreWeight)
+      ? Math.max(0, this.config.explorationScoreWeight) : 1.0;
+    const wProgress = Number.isFinite(this.config.explorationProgressWeight)
+      ? Math.max(0, this.config.explorationProgressWeight) : 0.6;
+    const wNovelty = Number.isFinite(this.config.explorationNoveltyWeight)
+      ? Math.max(0, this.config.explorationNoveltyWeight) : 0.3;
     const score = Number.isFinite(q) ? norm(q) : 0.5;
 
     // 2. Progress — recent (≤3) reward mean vs cell history, normalized.
@@ -252,17 +272,17 @@ export class QRLTable {
     if (history.length >= 3) {
       const recent = history.slice(-3);
       const recentMean = recent.reduce((a, b) => a + b, 0) / recent.length;
-      progress = norm(recentMean);
+      progress = Number.isFinite(recentMean) ? norm(recentMean) : 0.5;
     }
 
     // 3. Novelty — freshly explored actions are down-weighted
     const visits = this.selectionCount[key] ?? 0;
-    const novelty = 1 / (1 + visits);
+    const novelty = 1 / (1 + Math.max(0, visits));
 
     return (
-      this.config.explorationScoreWeight * score
-      + this.config.explorationProgressWeight * progress
-      + this.config.explorationNoveltyWeight * novelty
+      wScore * score
+      + wProgress * progress
+      + wNovelty * novelty
     );
   }
 
