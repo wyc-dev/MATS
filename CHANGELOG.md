@@ -4,6 +4,55 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.858: Unlock market selection during cycles + full attack round (5 issues, 16 tests)
+
+**Feature**: Removed the UX blocker that forced users to wait for a running cycle before adding markets. Users can now select assets freely mid-cycle; the backend naturally defers new markets to the next cycle (snapshot-based `allSymbols`/`_additionalMarkets`), with the post-cycle drift check triggering an immediate follow-up cycle.
+
+### F1: UI no longer blocks market picker during `cycleInProgress`
+
+**Before**: label said "Select asset after this cycle of calculations is completed", the list was `pointerEvents: none` + `opacity: 0.4` + red wash.
+
+**After**: label is now an informative gold hint ("Agent is calculating — new assets will be analyzed in the next cycle (you can still select now)"), list fully interactive. Newly added markets without analysis show a **⏳ next cycle** / **⏳ awaiting analysis** gold badge.
+
+### Attack round (A1-A5)
+
+### A1 (HIGH): select-symbol POST mid-cycle corrupted the running cycle
+
+**Bug**: UI `addTradingMarket` always POSTs `/market-agent/select-symbol` (1500ms debounce). During a running cycle this live-switched `selectedSymbol`, corrupting mid-cycle reads — REST polling active-symbol fetches, trade feature builders (`fallbackPatchMissingTradeFeatures`/`closeTrade`) all read `getSelectedSymbol()` LIVE.
+
+**Fix**: select-symbol handler now defers while `cycleInProgress` — a 500ms retry interval applies the switch the moment the cycle completes. An edge-case guard skips the switch if the symbol was removed from tradingMarkets while waiting (keeps the WS feed honest).
+
+### A2 (HIGH): 3s throttle silently DROPPED rapid market adds
+
+**Bug**: `TRADING_MARKETS_THROTTLE_MS` returned early inside its window — but the UI debounce is only 500ms, so 2-3 quick adds were silently lost forever (UI `lastPostedMarkets` had already advanced past them and never re-POSTs).
+
+**Fix**: throttle now **coalesces** — the latest pending value is remembered and applied when the window expires (only final state matters; matches UI debounce semantics). No update is ever dropped.
+
+### A3 (MEDIUM): post-cycle drift check compared count, not symbol set
+
+**Bug**: `_cycleMarketCount` count-only diff — a user adding one market and removing another mid-cycle (same count) never triggered the immediate follow-up cycle; the new market waited 300s.
+
+**Fix**: cycle start now snapshots the full normalized symbol list (`_cycleMarketsSnapshot`); the drift check diffs symbol sets (case + DEX-prefix insensitive), triggering the immediate cycle on any added market.
+
+### A4 (LOW): `removeTradingMarket` had no normalization
+
+**Bug**: exact-match removal — `'BTC'` vs stored `'btc'` or DEX-prefixed variants silently failed to remove, leaving a ghost market the backend kept analyzing.
+
+**Fix**: removal now normalizes both sides (`xyz:` prefix preserved, base lowercased).
+
+### A5 (LOW): pending badge depended on `cycleInProgress`
+
+**Bug**: badge vanished when the cycle ended even though the asset had no analysis yet — user assumed it was analyzed when it wasn't.
+
+**Fix**: badge now renders whenever the asset has no analysis (`!ana`), with context-aware label ("⏳ next cycle" during a cycle, "⏳ awaiting analysis" otherwise).
+
+### Tests
+
+`tests/v2.0.858-attack.test.ts` (16): select-symbol deferral (defers / applies on complete / skips removed symbol / immediate when idle), throttle coalescing (first accepted / latest-pending preserved / no-op guard / normal after window), symbol-set drift (add+remove same count / simple add / normalized / no change), removal normalization (exact / case / DEX prefix).
+
+**Result**: Full suite ~2011 tests → 1999 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` clean, `vite build` passes.
+---
+
 ## v2.0.857-fix3-ui-attack: Skeptic chip grid defensive hardening (4 issues, 7 tests)
 
 Round-2 attack on the v2.0.857-fix3-ui Skeptic chip grid found 4 issues:

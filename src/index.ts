@@ -1780,16 +1780,50 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // already debounces a single cycle trigger. This was causing duplicate
       // cycle triggers when addTradingMarket sends both select-symbol AND
       // trading-markets POSTs.
+      // v2.0.858-attack: A cycle is snapshot-based — allSymbols/_additionalMarkets
+      // are frozen at cycle start. Switching selectedSymbol mid-cycle would
+      // CORRUPT the running cycle: REST polling (activeSymbol reads), trade
+      // feature builders (fallbackPatchMissingTradeFeatures/closeTrade) all
+      // read getSelectedSymbol() LIVE. Defer the switch until the cycle
+      // completes so the current cycle keeps its snapshot integrity.
       let selectSymbolTimer: ReturnType<typeof setTimeout> | null = null;
+      let selectSymbolRetryTimer: ReturnType<typeof setInterval> | null = null;
+      const applySelectSymbol = (symbol: string): void => {
+        // v2.0.858-attack: edge case — the user may have removed this symbol
+        // from tradingMarkets while the switch was deferred. Don't force an
+        // active symbol that is no longer selected (keeps WS feed honest).
+        const stillSelected = this.tradingMarkets.some((m) => {
+          const n = m.includes(':') ? m.split(':')[0]!.toLowerCase() + m.slice(m.indexOf(':')) : m.toLowerCase();
+          const s = symbol.includes(':') ? symbol.split(':')[0]!.toLowerCase() + symbol.slice(symbol.indexOf(':')) : symbol.toLowerCase();
+          return n === s;
+        });
+        if (!stillSelected) {
+          log.info(`Market Agent: select-symbol skipped — ${symbol} no longer in trading markets`);
+          return;
+        }
+        log.info(`Market Agent: manual symbol selection → ${symbol}`);
+        this.marketAgent.setSelectedSymbolManual(symbol);
+        this.pushToAPI();
+      };
       this.apiServer.setMarketAgentSelectSymbolHandler((symbol) => {
         if (selectSymbolTimer) clearTimeout(selectSymbolTimer);
         selectSymbolTimer = setTimeout(() => {
-          log.info(`Market Agent: manual symbol selection → ${symbol}`);
-          this.marketAgent.setSelectedSymbolManual(symbol);
-          this.pushToAPI();
-          // v2.0.110: No cycle trigger here — trading-markets handler handles it.
-          // If this was a pure symbol switch (not a trading market add),
-          // the next scheduled cycle (300s) will pick it up.
+          if (this.cycleInProgress) {
+            // v2.0.858-attack: defer until the cycle completes. Retry every
+            // 500ms — this is strictly better than a one-shot setTimeout that
+            // could fire after a much longer cycle or a cycle that restarts
+            // immediately (drift-triggered).
+            log.info(`⏳ select-symbol deferred until cycle completes: ${symbol}`);
+            if (selectSymbolRetryTimer) clearInterval(selectSymbolRetryTimer);
+            selectSymbolRetryTimer = setInterval(() => {
+              if (!this.cycleInProgress) {
+                if (selectSymbolRetryTimer) { clearInterval(selectSymbolRetryTimer); selectSymbolRetryTimer = null; }
+                applySelectSymbol(symbol);
+              }
+            }, 500);
+            return;
+          }
+          applySelectSymbol(symbol);
         }, 1500);
       });
 
@@ -1805,20 +1839,21 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // and each POSTs its own tradingMarkets. Without throttling, two tabs
       // with different markets alternate POSTs → backend flips back and forth
       // → infinite loop. The throttle ensures only one update per 3s window.
+      //
+      // v2.0.858-attack: Throttling must NOT DROP updates. The UI is now
+      // usable during a running cycle (user can add markets freely), so rapid
+      // adds in quick succession (UI debounce is 500ms, throttle is 3000ms)
+      // would otherwise be silently lost: UI's lastPostedMarkets has already
+      // advanced past them and will never re-POST → permanent divergence.
+      // Fix: when throttled, remember the LATEST pending value and apply it
+      // once the window expires. Only the final state matters — intermediate
+      // states can be coalesced (same as the UI debounce does).
       let lastTradingMarketsAccept = 0;
       const TRADING_MARKETS_THROTTLE_MS = 3000;
-      this.apiServer.setTradingMarketsHandler((markets) => {
-        // Skip if markets haven't changed
-        const prevJson = JSON.stringify(this.tradingMarkets);
-        const newJson = JSON.stringify(markets);
-        if (prevJson === newJson) return;
-        // v2.0.114: Throttle — skip if within throttle window
-        const now = Date.now();
-        if (now - lastTradingMarketsAccept < TRADING_MARKETS_THROTTLE_MS) {
-          log.debug(`Trading markets POST throttled (within ${TRADING_MARKETS_THROTTLE_MS}ms window): ${markets.join(', ')}`);
-          return;
-        }
-        lastTradingMarketsAccept = now;
+      let pendingThrottledMarkets: string[] | null = null;
+      let pendingThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+      const applyTradingMarkets = (markets: string[]): void => {
+        lastTradingMarketsAccept = Date.now();
         const prevCount = this.tradingMarkets.length;
         this.tradingMarkets = markets;
         // v2.0.124: Persist trading markets so the system resumes with the
@@ -1843,6 +1878,38 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             log.info(`📊 Trading markets updated during cycle — will be picked up by next cycle (tradingMarkets=${this.tradingMarkets.length})`);
           }
         }, 2000);
+      };
+      this.apiServer.setTradingMarketsHandler((markets) => {
+        // Skip if markets haven't changed
+        const prevJson = JSON.stringify(this.tradingMarkets);
+        const newJson = JSON.stringify(markets);
+        if (prevJson === newJson) return;
+        // v2.0.114: Throttle — skip if within throttle window
+        const now = Date.now();
+        if (now - lastTradingMarketsAccept < TRADING_MARKETS_THROTTLE_MS) {
+          // v2.0.858-attack: DO NOT DROP. Coalesce: remember the latest value
+          // and apply it once the window expires. If a timer is already
+          // scheduled, just overwrite the pending value — only the final
+          // state matters.
+          pendingThrottledMarkets = markets;
+          if (!pendingThrottleTimer) {
+            pendingThrottleTimer = setTimeout(() => {
+              pendingThrottleTimer = null;
+              const pending = pendingThrottledMarkets;
+              pendingThrottledMarkets = null;
+              if (pending) {
+                const prevJsonNow = JSON.stringify(this.tradingMarkets);
+                const pendingJson = JSON.stringify(pending);
+                if (prevJsonNow !== pendingJson) {
+                  log.info(`Trading markets throttle-window expired — applying pending: ${pending.join(', ')}`);
+                  applyTradingMarkets(pending);
+                }
+              }
+            }, TRADING_MARKETS_THROTTLE_MS);
+          }
+          return;
+        }
+        applyTradingMarkets(markets);
       });
 
       // v2.0.122: Per-symbol direction restrictions from UI.
@@ -5828,7 +5895,10 @@ ${recentExamples}
       (this as any)._additionalMarkets = nonPositionMarkets.filter(s => s !== activeSymbol);
       log.info(`📊 _additionalMarkets: [${((this as any)._additionalMarkets as string[]).join(', ')}] (tradingMarkets=${this.tradingMarkets.length}, nonPosition=${nonPositionMarkets.length})`);
       // v2.0.108: Record market count at cycle start for post-cycle drift detection
+      // v2.0.858-attack: snapshot the FULL symbol list — drift detection now
+      // diffs symbol sets (add+remove same count must still trigger).
       (this as any)._cycleMarketCount = this.tradingMarkets.length;
+      (this as any)._cycleMarketsSnapshot = [...this.tradingMarkets];
     } else {
       // No trading markets and no open positions — fall back to auto-select
       const selectedSymbol = await this.marketAgent.autoSelectTopPair();
@@ -5850,7 +5920,10 @@ ${recentExamples}
       }
       (this as any)._additionalMarkets = [];
       // v2.0.108: Record market count at cycle start for post-cycle drift detection
+      // v2.0.858-attack: snapshot the FULL symbol list — drift detection now
+      // diffs symbol sets (add+remove same count must still trigger).
       (this as any)._cycleMarketCount = this.tradingMarkets.length;
+      (this as any)._cycleMarketsSnapshot = [...this.tradingMarkets];
       log.info(`No trading markets or positions — auto-selected ${activeSymbol} and appended to trading markets (now ${this.tradingMarkets.length})`);
     }
     // v2.0.79: Use normalizeSymbol instead of toUpperCase — DEX prefixes (xyz:)
@@ -10641,10 +10714,21 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       // during the cycle (e.g. UI re-POSTed 3 markets while cycle only had 1),
       // trigger an immediate cycle to analyze the full set. Without this,
       // the system waits 300s for the next scheduled cycle.
-      const cycleMarketCount = (this as any)._cycleMarketCount ?? 0;
-      const currentMarketCount = this.tradingMarkets.length;
-      if (currentMarketCount > cycleMarketCount && !isShuttingDown()) {
-        log.info(`📊 Post-cycle drift: markets ${cycleMarketCount} → ${currentMarketCount} — triggering immediate cycle`);
+      // v2.0.858-attack: COMPARE SYMBOL SETS, not just count. A user who adds
+      // one market and removes another mid-cycle has the same count but a
+      // different symbol set — count-only check missed it and the new market
+      // waited 300s. Snapshot the full symbol list at cycle start and diff.
+      const cycleMarketsSnapshot = (this as any)._cycleMarketsSnapshot as string[] | undefined;
+      const currentMarkets = this.tradingMarkets ?? [];
+      const normSnap = new Set<string>((cycleMarketsSnapshot ?? []).map((s: string) =>
+        s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()));
+      const driftedMarkets = currentMarkets.filter((s) => {
+        const n = s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase();
+        return !normSnap.has(n);
+      });
+      const cycleMarketCount = (cycleMarketsSnapshot ?? []).length;
+      if (driftedMarkets.length > 0 && !isShuttingDown()) {
+        log.info(`📊 Post-cycle drift: markets ${cycleMarketCount} → ${currentMarkets.length} (new: ${driftedMarkets.join(', ')}) — triggering immediate cycle`);
         setTimeout(() => {
           if (!this.cycleInProgress && !isShuttingDown()) {
             void this.runDecisionCycle();

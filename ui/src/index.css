@@ -1795,6 +1795,18 @@ body {
   color: var(--red);
 }
 
+.smp-pending-badge {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--gold);
+  background: rgba(255, 215, 0, 0.12);
+  border: 1px solid rgba(255, 215, 0, 0.35);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .smp-consensus-body {
   padding: var(--space-3) var(--space-5);
   border-top: 1px solid var(--glass-border);

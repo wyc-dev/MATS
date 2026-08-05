@@ -1187,7 +1187,13 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   }
 
   const removeTradingMarket = (symbol: string) => {
-    setTradingMarkets(prev => prev.filter(s => s !== symbol))
+    // v2.0.858-attack: Normalize before removing — the list stores normalized
+    // symbols (lowercased, xyz: prefix preserved). An un-normalized removal
+    // (e.g. 'BTC' vs stored 'btc', or a DEX-prefixed variant) silently failed
+    // to remove, leaving a ghost market that the backend kept analyzing.
+    const norm = (s: string) => s.includes(':') ? s.split(':')[0]!.toLowerCase() + s.slice(s.indexOf(':')) : s.toLowerCase()
+    const n = norm(symbol)
+    setTradingMarkets(prev => prev.filter(s => norm(s) !== n))
   }
 
   useEffect(() => {
@@ -1558,14 +1564,14 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           immediately. Volume/change data from topPairs enriches the display in
           the background but selection is never gated on it. */}
       <div className="market-pairs-header">
-        <div className="market-pairs-header-label" style={symbolsLoading ? { color: 'var(--gold)' } : s?.cycleInProgress ? { color: 'var(--red)' } : undefined}>
+        <div className="market-pairs-header-label" style={symbolsLoading ? { color: 'var(--gold)' } : s?.cycleInProgress ? { color: 'var(--gold)' } : undefined}>
           {symbolsLoading
             ? `Loading ${selectedAssetType.replace(/_/g, ' ')} markets ...`
             : s?.cycleInProgress
-            ? 'Select asset after this cycle of calculations is completed:'
+            ? 'Agent is calculating — new assets will be analyzed in the next cycle (you can still select now):'
             : `Available Markets — click to add (up to 10):`}
         </div>
-        <div className="top-pairs-list" style={{ position: 'relative', overflow: symbolsLoading ? 'hidden' : 'auto', ...(s?.cycleInProgress ? { pointerEvents: 'none', opacity: 0.4, background: 'rgba(248, 113, 113, 0.25)' } : {}) }}>
+        <div className="top-pairs-list" style={{ position: 'relative', overflow: symbolsLoading ? 'hidden' : 'auto' }}>
           {symbolsLoading && (
             <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0, 0, 0, 0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', borderRadius: 'var(--radius-md)', zIndex: 10 }}>
               <span className="spinner" style={{ width: '24px', height: '24px', borderWidth: '3px' }} />
@@ -1754,6 +1760,14 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                     <span className="smp-data">{ana ? `$${(ana.market_data?.price ?? 0).toFixed(2)}` : '—'}</span>
                     <span className="smp-data">{ana ? `${(ana.market_data?.change24h ?? 0) >= 0 ? '+' : ''}${(ana.market_data?.change24h ?? 0).toFixed(2)}%` : '—'}</span>
                     <span className="smp-spacer" />
+                    {!ana && (
+                      <span
+                        className="smp-pending-badge"
+                        title={s?.cycleInProgress
+                          ? 'Added during an active cycle — will be analyzed in the next cycle'
+                          : 'No analysis yet — awaiting next calculation cycle'}
+                      >{s?.cycleInProgress ? '⏳ next cycle' : '⏳ awaiting analysis'}</span>
+                    )}
                     <span
                       className="smp-close-btn"
                       onClick={(e) => { e.stopPropagation(); removeTradingMarket(sym) }}
