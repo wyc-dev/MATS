@@ -1087,13 +1087,16 @@ export class APIServer {
         req.on('end', () => {
           try {
             const { profile } = JSON.parse(body) as { profile: string };
-            if (profile === 'aggressive' || profile === 'moderate' || profile === 'conservative') {
-              if (this.onMarketAgentSetRiskProfile) this.onMarketAgentSetRiskProfile(profile);
+            // v2.0.857: aggressive/conservative removed — only 'moderate' is
+            // valid. Any other value → 400 with a clear message. The endpoint
+            // is kept for client compat but always coerces to moderate.
+            if (profile === 'moderate') {
+              if (this.onMarketAgentSetRiskProfile) this.onMarketAgentSetRiskProfile('moderate');
               res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ success: true, message: `Risk profile set to ${profile}` }));
+              res.end(JSON.stringify({ success: true, message: 'Risk profile set to moderate' }));
             } else {
               res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ success: false, message: 'Invalid risk profile. Use "aggressive", "moderate", or "conservative".' }));
+              res.end(JSON.stringify({ success: false, message: 'v2.0.857: risk profiles removed. Only "moderate" is supported.' }));
             }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });

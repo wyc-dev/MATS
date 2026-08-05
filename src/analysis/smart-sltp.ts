@@ -449,36 +449,21 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
     : 0;
   const profile = input.riskProfile ?? 'moderate';
 
-  // SL/TP multipliers from DCS (continuous, not tiered)
-  const slMultiplier = profile === 'aggressive' ? 1.0 + 0.3 * safeDcs   // [1.0, 1.3]
-    : profile === 'conservative' ? 0.7 + 0.3 * safeDcs                  // [0.7, 1.0]
-    : 1.0;                                                              // moderate
-  const tpMultiplier = profile === 'aggressive' ? 1.0 + 0.5 * safeDcs  // [1.0, 1.5]
-    : profile === 'conservative' ? 0.8 + 0.2 * safeDcs                 // [0.8, 1.0]
-    : 1.0;                                                              // moderate
+  // v2.0.857: risk profiles removed — SL/TP multipliers always 1.0 (moderate
+  // baseline). aggressive/conservative tolerated for backward compat but
+  // behave identically. DCS no longer scales SL/TP (moderate never used it).
+  const slMultiplier = 1.0;
+  const tpMultiplier = 1.0;
 
-  // Apply SL/TP scaling (only if prices are finite and > 0)
-  if (Number.isFinite(slPrice) && slPrice > 0 && Number.isFinite(entryPrice) && entryPrice > 0) {
-    const slPctBeforeScale = Math.abs(slPrice - entryPrice) / entryPrice;
-    const scaledSlPct = slPctBeforeScale * slMultiplier;
-    slPrice = isBuy ? entryPrice * (1 - scaledSlPct) : entryPrice * (1 + scaledSlPct);
-    if (slMultiplier !== 1.0) {
-      logParts.push(`[DCS-SL] ×${slMultiplier.toFixed(3)} (${profile}, DCS=${safeDcs.toFixed(2)})`);
-    }
-  }
-  if (Number.isFinite(tpPrice) && tpPrice > 0 && Number.isFinite(entryPrice) && entryPrice > 0) {
-    const tpPctBeforeScale = Math.abs(tpPrice - entryPrice) / entryPrice;
-    const scaledTpPct = tpPctBeforeScale * tpMultiplier;
-    tpPrice = isBuy ? entryPrice * (1 + scaledTpPct) : entryPrice * (1 - scaledTpPct);
-    if (tpMultiplier !== 1.0) {
-      logParts.push(`[DCS-TP] ×${tpMultiplier.toFixed(3)} (${profile}, DCS=${safeDcs.toFixed(2)})`);
-    }
-  }
+  // v2.0.857: risk profiles removed — multipliers are always 1.0, so the
+  // DCS SL/TP scaling block is dead code (scaled == unscaled). Removed.
+  // (safeDcs/profile retained above for backward-compat of the signature.)
 
-  // Profile-specific caps
-  const slCap = profile === 'aggressive' ? 0.07 : profile === 'conservative' ? 0.03 : 0.05;
-  const tpCap = profile === 'aggressive' ? 0.15 : profile === 'conservative' ? 0.06 : 0.10;
-  const tpMin = profile === 'aggressive' ? 0.005 : profile === 'conservative' ? 0.002 : 0.003;
+  // v2.0.857: risk profiles removed — caps are the moderate baseline
+  // (SL 5%, TP 10%, TP min 0.3%).
+  const slCap = 0.05;
+  const tpCap = 0.10;
+  const tpMin = 0.003;
 
   // ═══════════════════════════════════════════════════════════════
   // v2.0.852 (fix #D): MFE-CALIBRATED TP TARGET + DATA-DRIVEN CAP + SL FLOOR

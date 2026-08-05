@@ -192,7 +192,10 @@ export class ComponentAttributionStore {
       contribution,
       labelCleanliness: Math.max(0, Math.min(1, input.labelCleanliness)),
       regime: input.regime,
-      riskProfile: input.riskProfile,
+      // v2.0.857: risk profiles removed — always store as 'moderate'.
+      // Historical aggressive/conservative records load() untouched
+      // (line 328 tolerates any string) but NEW records are moderate-only.
+      riskProfile: 'moderate',
       timestamp: input.timestamp,
     });
 

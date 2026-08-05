@@ -362,20 +362,24 @@ export class MarketAgent {
     log.info(`Cycle period changed: ${clamped}m`);
   }
 
-  /** v2.0.822+: Set the backend account's risk profile.
-   *  Controls Meta-Agent conviction calibration + position sizing guidance.
-   *  Valid values: 'aggressive' | 'moderate' | 'conservative'. */
+  /** v2.0.857: Set the backend account's risk profile — DEPRECATED.
+   *  aggressive/conservative removed; accepted for backward compat but
+   *  coerced to 'moderate' (live consensus baseline). Position sizing is
+   *  controlled by Position Size / Max Portion / Leverage, not profile. */
   setRiskProfile(profile: RiskProfile): void {
-    if (this.config.riskProfile === profile) return;
-    this.config.riskProfile = profile;
+    if (profile !== 'moderate') {
+      log.warn(`[market-agent] riskProfile=${profile} deprecated (v2.0.857) — coercing to moderate`);
+    }
+    if (this.config.riskProfile === 'moderate') return;
+    this.config.riskProfile = 'moderate';
     this.config.updatedAt = Date.now();
     this.persistConfig();
-    log.info(`Risk profile changed: ${profile}`);
+    log.info('Risk profile set to moderate (v2.0.857: profiles removed)');
   }
 
-  /** v2.0.822+: Get the current risk profile (default 'moderate'). */
+  /** v2.0.857: Get the current risk profile — always 'moderate'. */
   getRiskProfile(): RiskProfile {
-    return this.config.riskProfile ?? 'moderate';
+    return 'moderate';
   }
 
   // ── v2.0.122: Per-Symbol Direction Restrictions ──

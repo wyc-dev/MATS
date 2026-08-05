@@ -49,7 +49,8 @@ export class TradingManager {
    *  v2.0.131: Clamp raised from 50% to 100% to allow users to set higher
    *  when they have existing positions using most of the margin. */
   private maxPortionPct = 0.20;
-  /** v2.0.836: Backend account risk profile (set from index.ts, default moderate) */
+  /** v2.0.857: Backend account risk profile — only 'moderate' used (aggressive/
+   *  conservative removed). Field kept for backward compat; always moderate. */
   private riskProfile: 'aggressive' | 'moderate' | 'conservative' = 'moderate';
   /** v2.0.66: Per-symbol debounce lock — prevents duplicate SL/TP placement
    *  when multiple code paths (syncSLTP, hacp adjustPositions, per-symbol
@@ -157,9 +158,13 @@ export class TradingManager {
     this.maxPortionPct = Math.max(0.10, Math.min(1.00, pct));
   }
 
-  /** v2.0.836: Set the backend account risk profile for DCS-aware SL/TP scaling */
+  /** v2.0.857: Set backend risk profile — DEPRECATED. aggressive/conservative
+   *  removed; accepted for backward compat but coerced to moderate (no-op). */
   setRiskProfile(profile: 'aggressive' | 'moderate' | 'conservative'): void {
-    this.riskProfile = profile;
+    if (profile !== 'moderate') {
+      log.warn(`[trading-manager] riskProfile=${profile} deprecated (v2.0.857) — coerced to moderate`);
+    }
+    this.riskProfile = 'moderate';
   }
 
   // ── Balance & Positions ──

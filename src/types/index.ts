@@ -1120,11 +1120,11 @@ export interface MarketAgentConfig {
   /** Cycle period in minutes (1-10). Controls the decision cycle interval. */
   cyclePeriodMinutes?: number;
   /** v2.0.822+: Risk profile for the backend's own trading account.
-   *  Controls how the Meta-Agent calibrates conviction + position sizing.
-   *  'aggressive' = higher conviction threshold tolerance, larger size;
-   *  'moderate'   = baseline (live consensus mechanism);
-   *  'conservative' = dampened conviction, smaller size, stricter gates.
-   *  Default 'moderate'. Persisted so it survives restarts. */
+   *  ⚠️ v2.0.857: DEPRECATED — aggressive/conservative removed. Only
+   *  'moderate' (live consensus baseline) is used. The type keeps the 3-value
+   *  union ONLY for backward compat with historical persisted state
+   *  (component-attribution.json / rp-edge-store.json); runtime always
+   *  coerces to 'moderate'. Default 'moderate'. */
   riskProfile?: RiskProfile;
   /** Timestamp of last config change */
   updatedAt: number;
@@ -1158,6 +1158,13 @@ export interface AllSymbolEntry {
 // current position, and shows the recommendation. The backend NEVER places
 // orders in analysis mode — it only writes the matrix to the database.
 
+/**
+ * v2.0.822+: Risk profile. ⚠️ v2.0.857: DEPRECATED — only 'moderate' is used.
+ * The 3-value union is retained ONLY for backward compat when READING
+ * historical persisted state (component-attribution.json, rp-edge-store.json
+ * may carry 'aggressive'/'conservative' records). All runtime code coerces
+ * to 'moderate'. Do NOT add new aggressive/conservative branches.
+ */
 export type RiskProfile = 'aggressive' | 'moderate' | 'conservative';
 export type PositionState = 'long' | 'short' | 'flat';
 
@@ -1256,11 +1263,16 @@ export interface MatrixCell {
   dcs?: number;
 }
 
-/** A full 3×3 recommendation matrix for one asset. */
+/**
+ * A recommendation matrix for one asset. v2.0.857: REDUCED from 3×3 to
+ * moderate-only — aggressive/conservative risk profiles removed (they were
+ * uncalibrated placeholders). The client reads `matrix.moderate` by
+ * position state; position sizing is controlled by Position Size /
+ * Max Portion / Leverage sliders in the Trading Terminal, not by risk
+ * profile. `mats_app` must read the `moderate` key only.
+ */
 export interface AnalysisMatrix {
-  aggressive: Record<PositionState, MatrixCell>;
   moderate: Record<PositionState, MatrixCell>;
-  conservative: Record<PositionState, MatrixCell>;
 }
 
 /** Market snapshot embedded in each analysis row (the app renders this). */

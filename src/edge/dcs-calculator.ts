@@ -152,22 +152,10 @@ export function dcsConvictionFactor(
   dcs: number,
   profile: 'aggressive' | 'moderate' | 'conservative',
 ): number {
-  // v2.0.836 security: clamp DCS to [0, 1] — negative DCS must NOT boost,
-  // DCS > 1 must NOT exceed the designed range.
-  const safeDcs = Number.isFinite(dcs) ? Math.max(0, Math.min(1, dcs)) : 0;
-
-  if (profile === 'moderate') return 1.0; // never changes
-
-  if (profile === 'aggressive') {
-    // Quadratic boost: weak DCS barely affects, strong DCS full boost
-    return 1.0 + 0.15 * safeDcs * safeDcs; // [1.0, 1.15]
-  }
-
-  // Conservative
-  if (safeDcs >= 0.55) return 1.0; // honest conviction — triple protection sufficient
-  if (safeDcs < 0.3) return -1; // hard HOLD signal
-  // DCS 0.3–0.55: linear ramp from 0 to 0.3
-  return 0.3 * (safeDcs - 0.3) / 0.25; // [0, 0.3]
+  // v2.0.857: risk profiles removed — ONLY moderate (live consensus baseline)
+  // is used. DCS never affects moderate conviction. aggressive/conservative
+  // arguments are tolerated (backward compat) but all behave as moderate.
+  return 1.0;
 }
 
 /**
@@ -181,11 +169,8 @@ export function dcsSlMultiplier(
   dcs: number,
   profile: 'aggressive' | 'moderate' | 'conservative',
 ): number {
-  // v2.0.836 security: clamp DCS to [0, 1]
-  const safeDcs = Number.isFinite(dcs) ? Math.max(0, Math.min(1, dcs)) : 0;
-  if (profile === 'moderate') return 1.0;
-  if (profile === 'aggressive') return 1.0 + 0.3 * safeDcs; // [1.0, 1.3]
-  return 0.7 + 0.3 * safeDcs; // conservative [0.7, 1.0]
+  // v2.0.857: risk profiles removed — always 1.0 (moderate baseline).
+  return 1.0;
 }
 
 /**
@@ -199,11 +184,8 @@ export function dcsTpMultiplier(
   dcs: number,
   profile: 'aggressive' | 'moderate' | 'conservative',
 ): number {
-  // v2.0.836 security: clamp DCS to [0, 1]
-  const safeDcs = Number.isFinite(dcs) ? Math.max(0, Math.min(1, dcs)) : 0;
-  if (profile === 'moderate') return 1.0;
-  if (profile === 'aggressive') return 1.0 + 0.5 * safeDcs; // [1.0, 1.5]
-  return 0.8 + 0.2 * safeDcs; // conservative [0.8, 1.0]
+  // v2.0.857: risk profiles removed — always 1.0 (moderate baseline).
+  return 1.0;
 }
 
 /**
@@ -217,11 +199,8 @@ export function dcsSizeFactor(
   dcs: number,
   profile: 'aggressive' | 'moderate' | 'conservative',
 ): number {
-  // v2.0.836 security: clamp DCS to [0, 1]
-  const safeDcs = Number.isFinite(dcs) ? Math.max(0, Math.min(1, dcs)) : 0;
-  if (profile === 'moderate') return 1.0;
-  if (profile === 'aggressive') return 1.0 + 0.3 * safeDcs; // [1.0, 1.3]
-  return 0.3 + 0.2 * safeDcs; // conservative [0.3, 0.5]
+  // v2.0.857: risk profiles removed — always 1.0 (moderate baseline).
+  return 1.0;
 }
 
 /**
@@ -229,8 +208,7 @@ export function dcsSizeFactor(
  * Aggressive: 7%, Moderate: 5%, Conservative: 3%
  */
 export function dcsSlCap(profile: 'aggressive' | 'moderate' | 'conservative'): number {
-  if (profile === 'aggressive') return 0.07;
-  if (profile === 'conservative') return 0.03;
+  // v2.0.857: risk profiles removed — always moderate cap (5%).
   return 0.05;
 }
 
@@ -239,8 +217,7 @@ export function dcsSlCap(profile: 'aggressive' | 'moderate' | 'conservative'): n
  * Aggressive: 15%, Moderate: 10%, Conservative: 6%
  */
 export function dcsTpCap(profile: 'aggressive' | 'moderate' | 'conservative'): number {
-  if (profile === 'aggressive') return 0.15;
-  if (profile === 'conservative') return 0.06;
+  // v2.0.857: risk profiles removed — always moderate cap (10%).
   return 0.10;
 }
 

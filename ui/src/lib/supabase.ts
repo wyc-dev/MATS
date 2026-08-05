@@ -37,10 +37,14 @@ export interface AssetAnalysisRow {
     agentsAligned: number;
     agentsTotal: number;
   };
+  // v2.0.857: aggressive/conservative risk profiles REMOVED — only moderate
+  // exists. Field kept optional for backward-compat with pre-v2.0.857 rows
+  // that may still carry aggressive/conservative keys; new rows have only
+  // moderate. The UI reads matrix.moderate[state].
   matrix: {
-    aggressive: Record<'long' | 'short' | 'flat', MatrixCellRow>;
     moderate: Record<'long' | 'short' | 'flat', MatrixCellRow>;
-    conservative: Record<'long' | 'short' | 'flat', MatrixCellRow>;
+    aggressive?: Record<'long' | 'short' | 'flat', MatrixCellRow>;
+    conservative?: Record<'long' | 'short' | 'flat', MatrixCellRow>;
   };
   metadata: Record<string, unknown>;
 }

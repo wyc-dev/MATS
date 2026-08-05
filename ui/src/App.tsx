@@ -950,16 +950,22 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
     return () => { cancelled = true; clearInterval(id) }
   }, [])
   // Helper: get the Supabase analysis row for a symbol (normalized match).
-  const normSymForAna = (sym: string) => sym.replace(/^xyz:/i, '').toLowerCase()
+  // v2.0.857-fix-attack: guard non-string symbol — a malformed Supabase row
+  // with symbol:null/undefined would crash normSymForAna (null.replace).
+  const normSymForAna = (sym: unknown): string =>
+    typeof sym === 'string' && sym.length > 0 ? sym.replace(/^xyz:/i, '').toLowerCase() : ''
   const getAnalysisForSym = (sym: string): AssetAnalysisRow | undefined => {
     const n = normSymForAna(sym)
+    if (!n) return undefined
     return assetAnalyses.find(a => normSymForAna(a.symbol) === n)
   }
 
-  // v2.0.822: Render the 3×3 analysis matrix (risk profile × position state).
-  // Shows the recommendation grid from Supabase so the user can verify the
-  // backend's analysis directly against the database.
-  const PROFILES = ['aggressive', 'moderate', 'conservative'] as const
+  // v2.0.857: Render the 1×3 analysis matrix (moderate profile × position state).
+  // aggressive/conservative risk profiles were REMOVED — the matrix now has a
+  // single row (moderate = live consensus baseline) × 3 position states.
+  // Position sizing is controlled by Position Size / Max Portion / Leverage
+  // sliders, not by risk profile rows.
+  const PROFILES = ['moderate'] as const
   const STATES = ['long', 'short', 'flat'] as const
   const renderAnalysisMatrix = (ana: AssetAnalysisRow) => (
     <div className="smp-matrix">
@@ -969,13 +975,15 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         <span style={{ opacity: 0.6 }}>pwin {((ana.consensus?.pwin ?? 0) * 100).toFixed(0)}% · {ana.consensus?.agentsAligned ?? 0}/{ana.consensus?.agentsTotal ?? 0} agents</span>
       </div>
       <div className="smp-matrix-grid">
-        <div className="smp-matrix-hdr" />
         {STATES.map(st => <div key={st} className="smp-matrix-hdr">{st}</div>)}
         {PROFILES.map(prof => (
           <React.Fragment key={prof}>
-            <div className="smp-matrix-row-label">{prof.slice(0, 4)}</div>
             {STATES.map(st => {
-              const cell = ana.matrix[prof]?.[st]
+              // v2.0.857-fix-attack: guard ana.matrix itself — a malformed/
+              // corrupt Supabase row with matrix:undefined would crash at
+              // ana.matrix[prof] (?. only protects the profile index, not the
+              // matrix object). Optional chain BOTH levels → undefined cell.
+              const cell = ana.matrix?.[prof]?.[st]
               if (!cell) return <div key={`${prof}-${st}`} className="smp-matrix-cell hold" />
               return (
                 <div key={`${prof}-${st}`} className={`smp-matrix-cell ${cell.action} ${!cell.calibrated ? 'uncalibrated' : ''}`} title={cell.rationale}>
@@ -1020,7 +1028,6 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [positionSizePct, setPositionSizePct] = useState(config?.positionSizePct ?? 0.10)
   const [maxPortionPct, setMaxPortionPct] = useState(config?.maxPortionPct ?? 0.20)
   const [leverage, setLeverage] = useState(config?.leverage ?? 10)
-  const [riskProfile, setRiskProfile] = useState<'aggressive' | 'moderate' | 'conservative'>(config?.riskProfile ?? 'moderate')
   const [assetSearch, setAssetSearch] = useState('')
   const [cyclePeriod, setCyclePeriod] = useState(config?.cyclePeriodMinutes ?? 5)
   const [closeConfirmSym, setCloseConfirmSym] = useState<string | null>(null)
@@ -1142,10 +1149,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       setMaxPortionPct(prev => Math.abs(prev - (config.maxPortionPct ?? 0.20)) > 0.001 ? (config.maxPortionPct ?? 0.20) : prev)
       setLeverage(prev => prev !== config.leverage ? config.leverage : prev)
       if (config.cyclePeriodMinutes) setCyclePeriod(prev => prev !== config.cyclePeriodMinutes ? config.cyclePeriodMinutes! : prev)
-      // v2.0.822+: Sync risk profile from backend config
-      if (config.riskProfile) setRiskProfile(prev => prev !== config.riskProfile ? config.riskProfile! : prev)
+      // v2.0.857: riskProfile removed — no longer synced (backend always moderate)
     }
-  }, [config?.tradeMode, config?.hyperliquidAssetType, config?.positionSizePct, config?.maxPortionPct, config?.leverage, config?.cyclePeriodMinutes, config?.riskProfile])
+  }, [config?.tradeMode, config?.hyperliquidAssetType, config?.positionSizePct, config?.maxPortionPct, config?.leverage, config?.cyclePeriodMinutes])
 
   const showStatus = (msg: string) => {
     setStatusMsg(msg)
@@ -1434,38 +1440,10 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           </div>
         </div>
         {/* v2.0.822+: Risk Profile 3-segment slider — controls backend account risk */}
-        <div className="market-control-col">
-          <div className="market-control-label">
-            Risk Profile: <strong>{riskProfile === 'aggressive' ? 'Aggressive' : riskProfile === 'conservative' ? 'Conservative' : 'Moderate'}</strong>
-          </div>
-          <div className="risk-profile-segments" role="radiogroup" aria-label="Risk Profile">
-            {(['aggressive', 'moderate', 'conservative'] as const).map((rp) => (
-              <button
-                key={rp}
-                role="radio"
-                aria-checked={riskProfile === rp}
-                aria-label={`Risk profile: ${rp}`}
-                className={`risk-segment ${riskProfile === rp ? 'risk-segment-active' : ''} risk-segment-${rp}`}
-                onClick={async () => {
-                  setRiskProfile(rp)
-                  try {
-                    const res = await fetch(`${API_BASE}/market-agent/risk-profile`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ profile: rp }),
-                    })
-                    if ((await res.json()).success) showStatus(`Risk: ${rp}`)
-                  } catch { showStatus('Failed') }
-                }}
-                title={rp === 'aggressive' ? 'Higher conviction tolerance, larger size, slower to close'
-                  : rp === 'conservative' ? 'Dampened conviction, smaller size, faster to close, stricter gates'
-                  : 'Baseline live consensus mechanism'}
-              >
-                {rp === 'aggressive' ? 'Aggr' : rp === 'conservative' ? 'Cons' : 'Mode'}
-              </button>
-            ))}
-          </div>
-        </div>
+        {/* v2.0.857: Risk Profile removed — aggressive/conservative were
+            uncalibrated placeholders. Risk is controlled by Position Size /
+            Max Portion / Leverage sliders above (single, real controls).
+            Backend always runs moderate (live consensus baseline). */}
       </div>
 
       {/* Status msg */}
@@ -4138,7 +4116,47 @@ export default function App() {
                 </div>
               </div>
 
-              {/* ── Section 2: AI Provider ── */}
+              {/* ── Section 2: Supabase ── */}
+              <div className="settings-section">
+                <div className="settings-section-title">Supabase</div>
+                {/* SUPABASE_URL */}
+                <div className="settings-field">
+                  <label className="settings-label">SUPABASE_URL</label>
+                  <input
+                    type="text"
+                    className="settings-input"
+                    value={envSettings['SUPABASE_URL'] ?? ''}
+                    onChange={e => setEnvSettings(prev => ({ ...prev, SUPABASE_URL: e.target.value }))}
+                    placeholder="https://xxxx.supabase.co"
+                  />
+                  <p className="settings-hint">
+                    Your Supabase project URL — the backend writes the per-asset analysis matrix (asset_analyses table) here each cycle so the mobile app can read recommendations.
+                    <br /><MapPin size={12} color="var(--text-tertiary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Get it from <a href="https://supabase.com/dashboard" target="_blank" rel="noopener noreferrer" className="settings-link">Supabase Dashboard</a> → select your project → <strong>Project Settings → API</strong> → copy the <strong>Project URL</strong>.
+                  </p>
+                </div>
+                {/* SUPABASE_SERVICE_ROLE_KEY */}
+                <div className="settings-field">
+                  <label className="settings-label">SUPABASE_SERVICE_ROLE_KEY</label>
+                  <input
+                    type="password"
+                    className="settings-input"
+                    value={envSettings['SUPABASE_SERVICE_ROLE_KEY'] ?? ''}
+                    onChange={e => setEnvSettings(prev => ({ ...prev, SUPABASE_SERVICE_ROLE_KEY: e.target.value }))}
+                    placeholder="eyJhbGciOiJIUzI1NiIs..."
+                  />
+                  <p className="settings-hint">
+                    The service_role secret key — bypasses RLS so the backend can write the analysis matrix (DELETE + INSERT clean snapshot each cycle). Read-only for you; never exposed to the mobile app.
+                    <br /><MapPin size={12} color="var(--text-tertiary)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Get it from <a href="https://supabase.com/dashboard" target="_blank" rel="noopener noreferrer" className="settings-link">Supabase Dashboard</a> → select your project → <strong>Project Settings → API</strong> → scroll to <strong>service_role</strong> → click <strong>Reveal</strong> → copy.
+                    <br /><AlertTriangle size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />Never share or expose this key publicly — it bypasses all row-level security. Keep it in your backend .env only.
+                  </p>
+                </div>
+                <p className="settings-hint" style={{ marginTop: 'var(--space-2)', opacity: 0.7 }}>
+                  <Lightbulb size={12} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />
+                  To enable the Analysis Matrix dashboard + mobile app sync: (1) create a free project at <a href="https://supabase.com" target="_blank" rel="noopener noreferrer" className="settings-link">supabase.com</a>, (2) run the migration <code>supabase/migrations/00000000000018_asset_analyses_matrix.sql</code> in the SQL editor, (3) paste the URL + service_role key here, (4) restart the backend.
+                </p>
+              </div>
+
+              {/* ── Section 3: AI Provider ── */}
               <div className="settings-section">
                 <div className="settings-section-title">AI Provider</div>
                 {/* OLLAMA_API_KEY */}
