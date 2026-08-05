@@ -96,6 +96,26 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
   const [thoughtExpanded, setThoughtExpanded] = useState(false)
   const [expandedRationales, setExpandedRationales] = useState<Set<string>>(new Set())
   const [expandedRejections, setExpandedRejections] = useState<Set<string>>(new Set())
+
+  // v2.0.857-fix3-ui-attack: prune stale rejection-expansion keys when the
+  // audit set changes (new cycle / different symbols) — prevents unbounded
+  // Set growth in long-running sessions (memory leak). Must precede the
+  // `if (!meta) return null` guard (rules of hooks).
+  useEffect(() => {
+    const audits = (thought?.metadata?.perSymbolAudit ?? []) as { symbol: string }[]
+    const rejections = (thought?.metadata?.thesisRejections ?? []) as { symbol: string }[]
+    const liveSymbols = new Set([...audits.map(a => a.symbol), ...rejections.map(r => r.symbol)])
+    setExpandedRejections(prev => {
+      if (prev.size === 0) return prev
+      const next = new Set<string>()
+      for (const k of prev) {
+        const sym = k.startsWith('skeptics-rej-') ? k.slice('skeptics-rej-'.length) : k.slice('skeptics-'.length)
+        if (liveSymbols.has(sym)) next.add(k)
+      }
+      return next.size === prev.size ? prev : next
+    })
+  }, [thought?.metadata?.perSymbolAudit, thought?.metadata?.thesisRejections])
+
   if (!meta) return null
 
   const toggleRationale = (symbol: string) => {
@@ -287,16 +307,58 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
             const rejection = thesisRejections.find(r => r.symbol === a.symbol)
             const rejKey = `skeptics-${a.symbol}`
             const rejExpanded = expandedRejections.has(rejKey)
-            const hasMod = a.modified > 0
+            // v2.0.857-fix3-ui-attack: sanitize counts — backend always sends
+            // numbers, but a malformed payload must not render "undefined OK".
+            const approvedN = Number(a.approved)
+            const modifiedN = Number(a.modified)
+            const approvedSafe = Number.isFinite(approvedN) && approvedN > 0 ? approvedN : 0
+            const modifiedSafe = Number.isFinite(modifiedN) && modifiedN > 0 ? modifiedN : 0
+            const hasMod = modifiedSafe > 0
             return (
-              <div key={i} className={`agent-skeptic-chip ${rejection ? 'agent-skeptic-chip-rej' : ''} ${rejExpanded ? 'agent-skeptic-chip-open' : ''}`}>
-                <span className="agent-decision-symbol">{a.symbol}</span>
-                <span className={`decision-tag ${hasMod ? 'sell' : 'hold'} decision-tag-inner`}>
-                  {hasMod
-                    ? <><AlertTriangle size={10} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} />{a.modified} MOD</>
-                    : <><Check size={10} color="var(--green)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} />{a.approved} OK</>}
-                </span>
-                {rejection && (
+              <div key={i} className={`agent-skeptic-item ${rejExpanded ? 'agent-skeptic-item-open' : ''}`}>
+                <div className={`agent-skeptic-chip ${rejection ? 'agent-skeptic-chip-rej' : ''}`}>
+                  <span className="agent-decision-symbol">{a.symbol}</span>
+                  <span className={`decision-tag ${hasMod ? 'sell' : 'hold'} decision-tag-inner`}>
+                    {hasMod
+                      ? <><AlertTriangle size={10} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} />{modifiedSafe} MOD</>
+                      : <><Check size={10} color="var(--green)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} />{approvedSafe} OK</>}
+                  </span>
+                  {rejection && (
+                    <button
+                      className="agent-skeptic-rej-btn"
+                      onClick={() => {
+                        setExpandedRejections(prev => {
+                          const next = new Set(prev)
+                          if (next.has(rejKey)) next.delete(rejKey)
+                          else next.add(rejKey)
+                          return next
+                        })
+                      }}
+                      title={rejExpanded ? 'Collapse rejection' : 'Expand rejection'}
+                      aria-expanded={rejExpanded}
+                    >
+                      {rejExpanded ? '▲' : '▼'}
+                    </button>
+                  )}
+                </div>
+                {rejExpanded && rejection && (
+                  <div className="agent-skeptic-rej-detail">
+                    <span className="agent-skeptic-rej-action"><Ban size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />REJECTED {rejection.action.toUpperCase()}</span>
+                    {rejection.rationale}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          {/* Show thesis rejections that don't have a matching perSymbolAudit entry */}
+          {thesisRejections.filter(r => !skepticsAudit.some(a => a.symbol === r.symbol)).map((r, i) => {
+            const rejKey = `skeptics-rej-${r.symbol}`
+            const rejExpanded = expandedRejections.has(rejKey)
+            return (
+              <div key={`rej-${i}`} className={`agent-skeptic-item ${rejExpanded ? 'agent-skeptic-item-open' : ''}`}>
+                <div className="agent-skeptic-chip agent-skeptic-chip-rej">
+                  <span className="agent-decision-symbol">{r.symbol}</span>
+                  <span className="decision-tag sell decision-tag-inner"><Ban size={10} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} />REJ</span>
                   <button
                     className="agent-skeptic-rej-btn"
                     onClick={() => {
@@ -312,27 +374,16 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                   >
                     {rejExpanded ? '▲' : '▼'}
                   </button>
-                )}
-                {rejExpanded && rejection && (
+                </div>
+                {rejExpanded && (
                   <div className="agent-skeptic-rej-detail">
-                    <span className="agent-skeptic-rej-action"><Ban size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />REJECTED {rejection.action.toUpperCase()}</span>
-                    {rejection.rationale}
+                    <span className="agent-skeptic-rej-action"><Ban size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />REJECTED {r.action.toUpperCase()}</span>
+                    {r.rationale}
                   </div>
                 )}
               </div>
             )
           })}
-          {/* Show thesis rejections that don't have a matching perSymbolAudit entry */}
-          {thesisRejections.filter(r => !skepticsAudit.some(a => a.symbol === r.symbol)).map((r, i) => (
-            <div key={`rej-${i}`} className="agent-skeptic-chip agent-skeptic-chip-rej agent-skeptic-chip-open">
-              <span className="agent-decision-symbol">{r.symbol}</span>
-              <span className="decision-tag sell decision-tag-inner"><Ban size={10} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} />REJ</span>
-              <div className="agent-skeptic-rej-detail">
-                <span className="agent-skeptic-rej-action"><Ban size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />REJECTED {r.action.toUpperCase()}</span>
-                {r.rationale}
-              </div>
-            </div>
-          ))}
         </div>
       ) : allDecisions.length > 0 ? (
         <div className="agent-per-symbol-section">

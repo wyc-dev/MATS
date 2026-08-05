@@ -4033,6 +4033,19 @@ body {
   align-items: center;
 }
 
+/* v2.0.857-fix3-ui-attack: item wrapper — when expanded, the chip takes a
+   full row so the rejection detail flows BELOW it (no absolute positioning,
+   nothing overlaps the next card). */
+.agent-skeptic-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.agent-skeptic-item-open {
+  flex-basis: 100%;
+}
+
 .agent-skeptic-chip {
   position: relative;
   display: inline-flex;
@@ -4077,28 +4090,18 @@ body {
   background: var(--red-bg);
 }
 
-/* Dropdown rejection rationale — floats under the chip, doesn't break the grid */
+/* Rejection rationale — flows under its chip (in-grid, never overlaps). */
 .agent-skeptic-rej-detail {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 30;
-  display: none;
-  width: max-content;
-  max-width: 340px;
+  max-width: 100%;
   padding: var(--space-2) var(--space-3);
   background: var(--surface-primary);
   border: 1px solid var(--red);
   border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
   font-size: var(--fs-sm);
   line-height: 1.5;
   color: var(--red);
   white-space: normal;
-}
-
-.agent-skeptic-chip-open .agent-skeptic-rej-detail {
-  display: block;
+  overflow-wrap: anywhere;
 }
 
 .agent-skeptic-rej-action {
