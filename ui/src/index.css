@@ -4023,6 +4023,90 @@ body {
   gap: var(--space-4);
 }
 
+/* v2.0.857-fix3-ui: Skeptic audit — compact horizontal chip grid
+   (was one vertical group per symbol; short "5 OK" states wasted a row each). */
+.agent-skeptic-grid {
+  margin-top: var(--space-4);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.agent-skeptic-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 6px 2px 2px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  background: var(--glass-bg-active);
+}
+
+.agent-skeptic-chip .agent-decision-symbol {
+  padding: 2px 10px;
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  border: none;
+  max-width: none;
+}
+
+.agent-skeptic-chip-rej {
+  border-color: color-mix(in srgb, var(--red) 45%, var(--glass-border));
+}
+
+.agent-skeptic-rej-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 9px;
+  line-height: 1;
+  border-radius: 4px;
+  padding: 0;
+}
+
+.agent-skeptic-rej-btn:hover {
+  color: var(--red);
+  background: var(--red-bg);
+}
+
+/* Dropdown rejection rationale — floats under the chip, doesn't break the grid */
+.agent-skeptic-rej-detail {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  display: none;
+  width: max-content;
+  max-width: 340px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-primary);
+  border: 1px solid var(--red);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--red);
+  white-space: normal;
+}
+
+.agent-skeptic-chip-open .agent-skeptic-rej-detail {
+  display: block;
+}
+
+.agent-skeptic-rej-action {
+  display: block;
+  margin-bottom: 2px;
+  font-weight: 600;
+}
+
 .agent-per-symbol-group {
   display: flex;
   flex-direction: column;
