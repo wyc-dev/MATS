@@ -114,8 +114,16 @@ export interface OLRModel {
 }
 
 /** v2.0.721: Minimum samples per bin before calibration kicks in. Below this,
- *  the bin returns identity (raw pWin) to avoid overfitting on tiny samples. */
+ *  the bin returns identity (raw pWin) to avoid overfitting on tiny samples.
+ *  ⚠️ v2.0.859: SUPERSEDED by shrinkage calibration — identity fallback let raw
+ *  overconfidence pass through on sparse bins. Kept for backward-compat. */
 const CALIBRATION_MIN_SAMPLES_PER_BIN = 5;
+/** v2.0.859: Shrinkage strength — empirical WR is pulled toward the neutral
+ *  prior 0.5 by weight count/(count+K). K=5: 5 samples → halfway, 20 → 80%
+ *  empirical, 100+ → ~95% empirical. Replaces the hard identity fallback
+ *  (raw pWin on sparse bins) that caused OLR extreme-signal pollution
+ *  (9/20 live attribution records with agreement >0.9, 5/9 wrong). */
+const CALIBRATION_SHRINK_K = 5;
 const CALIBRATION_NUM_BINS = 5;
 
 /** v2.0.721: Create empty calibration bins. */
@@ -154,9 +162,21 @@ function recordCalibrationSample(
   else bin.losses++;
 }
 
-/** v2.0.721: Apply calibration to a raw pWin. Returns calibrated pWin if the
- *  corresponding bin has enough samples, otherwise returns the raw pWin (identity). */
-function applyCalibration(
+/** v2.0.721 + v2.0.859: Apply calibration to a raw pWin.
+ *
+ *  v2.0.859: SHRINKAGE calibration replaces the hard identity fallback
+ *  (count < MIN_SAMPLES → raw pWin). The old behavior let raw overconfidence
+ *  (P(win) 90%+) pass straight into the decision chain on sparse bins — the
+ *  audit showed 9/20 live attribution records with agreement >0.9 of which
+ *  5/9 were wrong. Now the empirical WR is shrunk toward the neutral prior
+ *  0.5 by a strength that scales with sample count:
+ *    count=0   → 0.5 (honest — never raw, never overconfident)
+ *    count=5   → halfway between 0.5 and empirical
+ *    count=20  → 80% empirical
+ *    count=100+ → ~95% empirical
+ *  This is standard Bayesian shrinkage (Beta(1+K/2,1+K/2) prior). A sparse
+ *  bin can never emit an extreme calibrated P(win) again. */
+export function applyCalibration(
   bins: Array<{ lo: number; hi: number; wins: number; losses: number }> | undefined,
   rawPWin: number,
 ): number {
@@ -165,12 +185,17 @@ function applyCalibration(
   const binIdx = Math.floor(clamped * CALIBRATION_NUM_BINS);
   const bin = bins[binIdx];
   if (!bin) return rawPWin;
-  const count = bin.wins + bin.losses;
-  if (count < CALIBRATION_MIN_SAMPLES_PER_BIN) return rawPWin;
-  const empiricalWR = bin.wins / count;
+  // v2.0.859: finite guard — a corrupt bin missing wins/losses keys would
+  // produce count=NaN → 0×NaN = NaN calibrated, poisoning the decision chain.
+  const wins = Number.isFinite(bin.wins) ? bin.wins : 0;
+  const losses = Number.isFinite(bin.losses) ? bin.losses : 0;
+  const count = wins + losses;
+  const empiricalWR = count > 0 ? wins / count : 0.5;
   if (!Number.isFinite(empiricalWR)) return rawPWin;
-  log.debug(`[OLR calibration] raw=${(rawPWin * 100).toFixed(0)}% → calibrated=${(empiricalWR * 100).toFixed(0)}% (bin ${binIdx}, ${count} samples)`);
-  return empiricalWR;
+  const shrink = count / (count + CALIBRATION_SHRINK_K);
+  const calibrated = 0.5 + (empiricalWR - 0.5) * shrink;
+  log.debug(`[OLR calibration] raw=${(rawPWin * 100).toFixed(0)}% → calibrated=${(calibrated * 100).toFixed(0)}% (bin ${binIdx}, ${count} samples, shrink=${shrink.toFixed(2)})`);
+  return calibrated;
 }
 
 export interface OLRQueryResult {
@@ -322,6 +347,26 @@ function makeEmptyModel(): OLRModel {
 
 export class OLREngine {
   private symbols = new Map<string, { long: OLRModel; short: OLRModel }>();
+  /** v2.0.859: Persisted EXP-backfill completion flag. Same bug class as Q-RL:
+   *  the per-process `expBackfillDone` instance flag in index.ts reset on every
+   *  restart, so the EXP backfill re-ran ~3.5× (btc long backfillSamples=3752 ≈
+   *  1072×3.5), inflating backfill counters and re-weighting the cold-start
+   *  prior on identical data. Persisted via save()/load() (strict boolean) so
+   *  the backfill runs exactly once over the engine's lifetime. */
+  private backfillDone = false;
+
+  /** v2.0.859: Has the EXP backfill already been applied? Callers MUST gate
+   *  historical-record feeds on this — without it, restarts re-feed the same
+   *  records and backfillSamples inflate unboundedly. */
+  isBackfillDone(): boolean {
+    return this.backfillDone;
+  }
+
+  /** v2.0.859: Mark the EXP backfill as applied. Persisted by save() — call
+   *  save() promptly after marking so the flag survives a crash/restart. */
+  markBackfillDone(): void {
+    this.backfillDone = true;
+  }
 
   load(json: string): void {
     try {
@@ -340,6 +385,12 @@ export class OLREngine {
           log.info(`  ${sym}: long=${models.long.nSamples} short=${models.short.nSamples}`);
         }
       }
+      // v2.0.859: restore persisted backfill flag — STRICT boolean check.
+      // A corrupt string ('true') / number (1) / null must NOT be treated as
+      // done, otherwise the backfill is silently skipped forever. Missing key
+      // (pre-v2.0.859 state) → false → backfill runs once on next start.
+      this.backfillDone = typeof data?.backfillDone === 'boolean' ? (data.backfillDone as boolean) : false;
+      log.info(`OLR backfill ${this.backfillDone ? 'already done (skip on next start)' : 'pending (runs once on next start)'}`);
     } catch {
       log.warn('[OLR load] Failed to parse data, starting fresh');
     }
@@ -408,7 +459,7 @@ export class OLREngine {
     for (const [sym, models] of this.symbols) {
       obj[sym] = { long: models.long, short: models.short };
     }
-    return JSON.stringify({ olrSymbols: obj });
+    return JSON.stringify({ olrSymbols: obj, backfillDone: this.backfillDone }); // v2.0.859
   }
 
   private getOrCreate(symbol: string): { long: OLRModel; short: OLRModel } {
