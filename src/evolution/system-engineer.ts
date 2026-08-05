@@ -337,8 +337,30 @@ export async function runSystemEngineer(
     .map(l => l.slice(4))
     .slice(0, 10); // last 10 changelog entries
 
+  // v2.0.860 (Frontis-MA1 / OpenMLE-Evo): OPERATOR-CONDITIONED diagnosis.
+  // Build the set of high-relevance files: (1) files that failed within the
+  // last hour (the SE should see their FULL context to attempt a different
+  // fix, not a 50-line stub it already failed against), and (2) files touched
+  // by the most recent CHANGELOG entries (recently-modified code is where
+  // regressions live). Everything else gets a one-line metadata stub — the
+  // paper showed eager full context on unrelated files is noise that hurts
+  // decision quality (-41% tokens at +84% new-best-rate).
+  const priorityFiles = new Set<string>();
+  for (const [file, attempts] of failedAttempts) {
+    const recent = attempts.filter(a => (timestamp - a.timestamp) < 3600_000);
+    if (recent.length > 0 && (file.startsWith('src/') || file.startsWith('tests/'))) {
+      priorityFiles.add(file);
+    }
+  }
+  // Files referenced in the last 3 CHANGELOG versions (recently modified)
+  const changelogFileRefs = changelogTail.match(/`(?:src|tests)\/[^`]+\.ts`/g) ?? [];
+  for (const ref of changelogFileRefs) {
+    const file = ref.replace(/`/g, '');
+    if (file.startsWith('src/') || file.startsWith('tests/')) priorityFiles.add(file);
+  }
+
   // ─── Phase 1: Diagnosis ───
-  const fileSummaries = readFileSummaries();
+  const fileSummaries = readFileSummaries(priorityFiles);
 
   const phase1Prompt = `## System Context
 
@@ -430,6 +452,7 @@ ${dirSummary}
 ${patternAnalysis}
 
 ## File Summaries (you can modify files under src/evolution/, src/cognition/, src/analysis/, src/agents/, src/index.ts, tests/)
+⭐ PRIORITY files below have full 50-line previews (recently failed or recently modified — where regressions live). Other files are listed as one-line stubs (name + size + first line) to keep your context bounded. If you suspect a stubbed file is involved, name it in your diagnosis — Phase 2 reads the FULL file before you propose a fix.
 ${fileSummaries}
 
 ## Known Good Code (DO NOT attempt to "fix" these — they are already correct)
@@ -1281,9 +1304,15 @@ function buildTradePatternAnalysis(records: ThesisExperienceRecord[]): string {
   return lines.join('\n');
 }
 
-function readFileSummaries(): string {
+export function readFileSummaries(priorityFiles: Set<string> = new Set()): string {
   // v2.0.201: Show file name + line count + first 50 lines as a summary.
   // The full file is read in Phase 2 after the LLM identifies which file to fix.
+  // v2.0.860 (Frontis-MA1 / OpenMLE-Evo insight): OPERATOR-CONDITIONED context.
+  // Files with high operator relevance (recently failed / recently modified)
+  // get the full 50-line preview; everything else is compressed to a one-line
+  // metadata stub (name + line count + first meaningful line). The paper showed
+  // bounded, conditioned context IMPROVES decision quality (new-best rate
+  // +84% at -41% tokens) — eager full previews on unrelated files are noise.
   const keyFiles = [
     'src/evolution/thesis-experience.ts',
     'src/evolution/experience-digester.ts',
@@ -1311,9 +1340,17 @@ function readFileSummaries(): string {
     try {
       const content = readFileSync(join(PROJECT_ROOT, file), 'utf-8');
       const lines = content.split('\n');
-      const previewLines = 50;
-      const preview = lines.slice(0, previewLines).join('\n');
-      parts.push(`### ${file} (${lines.length} lines total, showing first ${previewLines})\n\`\`\`typescript\n${preview}\n\`\`\``);
+      const isPriority = priorityFiles.has(file);
+      if (isPriority) {
+        // High operator relevance → full preview (kept for diagnosis quality)
+        const previewLines = 50;
+        const preview = lines.slice(0, previewLines).join('\n');
+        parts.push(`### ${file} (${lines.length} lines total — ⭐ PRIORITY, showing first ${previewLines})\n\`\`\`typescript\n${preview}\n\`\`\``);
+      } else {
+        // Low relevance → one-line metadata stub (name + size + first line)
+        const firstMeaningful = lines.find(l => l.trim() && !l.trim().startsWith('//') && !l.trim().startsWith('/*') && !l.trim().startsWith('*'))?.trim().slice(0, 80) ?? '';
+        parts.push(`- ${file} (${lines.length} lines)${firstMeaningful ? ` — ${firstMeaningful}` : ''}`);
+      }
     } catch { /* skip */ }
   }
 

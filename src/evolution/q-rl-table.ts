@@ -81,6 +81,20 @@ export interface QRLConfig {
   ucbExplorationConstant: number;
   /** v2.0.837: Minimum total visits before UCB/Thompson kicks in (cold-start safety) */
   ucbMinTotalVisits: number;
+  /** v2.0.860: Three-factor exploration weights (Frontis-MA1 / OpenMLE-Evo
+   *  parent-selection insight). During ε-greedy EXPLORE, the action is sampled
+   *  from a softmax over utility = λs·score + λΔ·progress + λn·novelty instead
+   *  of always taking the higher-Q action — this keeps high-gain, structurally
+   *  novel directions actionable long enough to be selected and refined.
+   *  Defaults follow the paper's proven 1.0 / 0.6 / 0.3. */
+  explorationScoreWeight: number;
+  /** λΔ — progress (recent reward trend vs cell history, min-max normalized) */
+  explorationProgressWeight: number;
+  /** λn — novelty (1/(1+recent selection count); freshly-explored actions are
+   *  down-weighted so exploration does not loop on one side) */
+  explorationNoveltyWeight: number;
+  /** Softmax temperature τ for exploration sampling (lower = more greedy). */
+  explorationTemperature: number;
 }
 
 const DEFAULT_CONFIG: QRLConfig = {
@@ -90,6 +104,11 @@ const DEFAULT_CONFIG: QRLConfig = {
   explorationStrategy: 'epsilon-greedy', // v2.0.837: default = backward compatible
   ucbExplorationConstant: 1.41, // sqrt(2)
   ucbMinTotalVisits: 10,
+  // v2.0.860: three-factor exploration (Frontis-MA1 paper 1.0/0.6/0.3)
+  explorationScoreWeight: 1.0,
+  explorationProgressWeight: 0.6,
+  explorationNoveltyWeight: 0.3,
+  explorationTemperature: 0.5,
   minVisitsCandidate: 10,
   minVisitsProbable: 20,
   minVisitsConfirmed: 30,
@@ -111,6 +130,11 @@ export class QRLTable {
   private visits: Record<string, number> = {};
   private lastUpdate: Record<string, number> = {};
   private rewardHistory: Record<string, number[]> = {};
+  /** v2.0.860: Per-key selection counter (NOT persisted — exploration is a
+   *  short-horizon behaviour; a restart naturally resets novelty pressure,
+   *  which is fine since ε re-decays from its loaded level). Incremented on
+   *  every selectAction outcome; novelty = 1/(1+count). */
+  private selectionCount: Record<string, number> = {};
   private totalCycles = 0;
   private lastDiscoveryCycle = 0;
   private cachedDiscoveries: AlphaDiscovery[] = [];
@@ -170,11 +194,76 @@ export class QRLTable {
     // Default: epsilon-greedy (legacy behavior)
     const epsilon = this.currentEpsilon();
     if (Math.random() < epsilon) {
-      const rlAction = qBuy > qSell ? 'buy' : 'sell';
-      log.debug(`[q-rl] EXPLORE (ε=${epsilon.toFixed(3)}): LLM=${llmAction}, RL=${rlAction} (Q_buy=${qBuy.toFixed(4)}, Q_sell=${qSell.toFixed(4)})`);
+      // v2.0.860: Three-factor exploration (Frontis-MA1 / OpenMLE-Evo).
+      // Instead of always taking the higher-Q action (which concentrates
+      // exploration on already-strong cells and starves novel directions),
+      // sample from a softmax over utility =
+      //   λs·normalizedScore + λΔ·progress + λn·novelty
+      //   - score:    Q-value min-max normalized against the cell's own
+      //               reward history (cross-symbol/regime fair — BTC's 1%
+      //               and SILVER's 1% are NOT the same raw pnlPct)
+      //   - progress: recent (≤3) reward trend vs cell history
+      //   - novelty:  1/(1+recent selection count) — freshly explored sides
+      //               are down-weighted so exploration doesn't loop on one
+      //               action. The paper's proven weights are 1.0/0.6/0.3.
+      const uBuy = this.explorationUtility(buyKey, qBuy);
+      const uSell = this.explorationUtility(sellKey, qSell);
+      const tau = Math.max(0.01, this.config.explorationTemperature);
+      const eBuy = Math.exp(uBuy / tau);
+      const eSell = Math.exp(uSell / tau);
+      const probBuy = eBuy / (eBuy + eSell);
+      const rlAction = Math.random() < probBuy ? 'buy' : 'sell';
+      // v2.0.860: record selection for novelty decay
+      this.selectionCount[rlAction === 'buy' ? buyKey : sellKey] =
+        (this.selectionCount[rlAction === 'buy' ? buyKey : sellKey] ?? 0) + 1;
+      log.debug(`[q-rl] EXPLORE (ε=${epsilon.toFixed(3)}): LLM=${llmAction}, RL=${rlAction} (U_buy=${uBuy.toFixed(3)}, U_sell=${uSell.toFixed(3)}, P_buy=${probBuy.toFixed(3)})`);
       return rlAction;
     }
     return llmAction;
+  }
+
+  /** v2.0.860: Three-factor exploration utility for one (key, Q) pair.
+   *  Returns a value in [0, 1] combining quality, progress and novelty.
+   *  All three factors are min-max normalized against the cell's own reward
+   *  history so a high-volatility symbol's Q=0.01 is comparable to a
+   *  low-volatility symbol's Q=0.01 (adaptive reward normalization — the
+   *  OpenMLE adaptive-bounds insight applied at action-selection time). */
+  private explorationUtility(key: string, q: number): number {
+    const raw = this.rewardHistory[key];
+    const history = Array.isArray(raw) ? raw.filter(r => Number.isFinite(r)) : [];
+
+    // ── min-max bounds from the cell's own history (adaptive bounds) ──
+    let lo = 0;
+    let hi = 1;
+    if (history.length >= 3) {
+      lo = Math.min(...history);
+      hi = Math.max(...history);
+    }
+    if (hi - lo < 1e-9) { hi = lo + 1; } // degenerate history → avoid div-by-zero
+    const norm = (v: number): number => Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
+
+    // 1. Quality — normalized Q (cross-cell fair)
+    const score = Number.isFinite(q) ? norm(q) : 0.5;
+
+    // 2. Progress — recent (≤3) reward mean vs cell history, normalized.
+    //    A cell whose recent rewards are above its own historical range is
+    //    improving — exploration should keep it actionable.
+    let progress = 0.5;
+    if (history.length >= 3) {
+      const recent = history.slice(-3);
+      const recentMean = recent.reduce((a, b) => a + b, 0) / recent.length;
+      progress = norm(recentMean);
+    }
+
+    // 3. Novelty — freshly explored actions are down-weighted
+    const visits = this.selectionCount[key] ?? 0;
+    const novelty = 1 / (1 + visits);
+
+    return (
+      this.config.explorationScoreWeight * score
+      + this.config.explorationProgressWeight * progress
+      + this.config.explorationNoveltyWeight * novelty
+    );
   }
 
   /**
