@@ -460,6 +460,10 @@ PHASE -1  Terminal Agent 規則檢查（Cycle 開始前）
           • 全部通過 → 注入 Root Command Prompt directive 到所有 agent context
 PHASE 0   Trading Setup 市場選擇 + Position Reconciliation
           • 選取最高 volume pair · real mode 同步 exchange 倉位
+          • v2.0.858: 市場選擇喺 cycle 期間完全開放（唔再 block）——
+            snapshot 於 cycle 開始時凍結 allSymbols/_additionalMarkets，
+            中途新增資產自動由 post-cycle symbol-set drift check 觸發
+            immediate follow-up cycle，唔使等 300s
 PHASE 0.5 Skeptics 入場理據重新驗證（每個持倉）
           • thesis 失效 → 強制平倉
 PHASE 1   平行思考（5 sub-agents, 60s deadline race, staggered 6s）
