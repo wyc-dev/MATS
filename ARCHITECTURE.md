@@ -1,8 +1,8 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.855+
+> **作者**: YC Wong · **版本**: 2.0.858
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 3×3 風險矩陣 → 寫入 Supabase；客戶端按用戶選擇嘅風險等級讀取對應矩陣格並決定執行
+> **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
 
 ---
@@ -11,9 +11,9 @@
 
 **MATS**（Multi Agent Trading System）係一個具備自我演化能力嘅多智能體量化訊號系統。核心決策引擎為 **HACP（Hyper-Accelerated Cognition Protocol）**——結構化多 LLM 辯論協議。在 **Hyperliquid（9 perpetual DEXs, 416 assets）** 市場上計算機構級交易訊號。
 
-**架構定位（v2.0.822+）**：`mats_backend` 不再係獨立交易系統，而係 **`mats_app` 嘅訊號運算後端**。每個 cycle 後端計算 HACP 共識 → 擴展成 **3×3 Analysis Matrix**（風險等級 × 持倉狀態）→ 寫入 Supabase `asset_analyses` 表。客戶端（`mats_app`）讀取矩陣，按用戶喺客戶端選擇嘅風險等級（`high`/`mid`/`low` → `aggressive`/`moderate`/`conservative`）+ 當前持倉狀態（`long`/`short`/`flat`）揀選對應矩陣格，再由客戶端決定執行（paper/real）。
+**架構定位（v2.0.822+ → v2.0.857 moderate-only）**：`mats_backend` 不再係獨立交易系統，而係 **`mats_app` 嘅訊號運算後端**。每個 cycle 後端計算 HACP 共識 → 擴展成 **1×3 Analysis Matrix**（持倉狀態 × 單一 moderate 等級；v2.0.857 由 3×3 縮減）→ 寫入 Supabase `asset_analyses` 表。客戶端（`mats_app`）讀取矩陣，按用戶喺客戶端選擇嘅持倉狀態（`long`/`short`/`flat`）揀選對應矩陣格，再由客戶端決定執行（paper/real）。
 
-**風險等級由客戶端選擇**：後端運算所有三個風險等級嘅訊號，客戶端 UI（`mats_app` SettingsSheet）讓用戶選 `high`/`mid`/`low`。後端矩陣係 **universal**（per-asset，非 per-user）——所有同風險等級嘅用戶讀同一格。
+**風險等級由客戶端選擇（v2.0.857 更新）**：後端運算單一 moderate 等級嘅訊號（v2.0.857 移除 aggressive/conservative），客戶端 UI（`mats_app` SettingsSheet）讓用戶選 `high`/`mid`/`low`——全部映射到同一 moderate 矩陣格。後端矩陣係 **universal**（per-asset，非 per-user）——所有用戶讀同一格。
 
 ### 核心設計原則
 
@@ -23,10 +23,10 @@
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 認知演化管線（v2.0.855: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Risk Profile Differentiation + 1 Component Attribution）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + DCS v2 v2.0.836 + Component Attribution v2.0.844，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 風險等級區別化（三個 profile 真正唔同決策）。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge）。v2.0.849-851 將 momentum/exec-lens/confidence SL widening 移植到 live computeSmartSLTP + 修復 TradeRecord.closeReason 資料缺失（RIL + trade-audit 可以分到「SL 太緊」定「thesis 錯」）。v2.0.853 修復 closeTrade dual-mode guard（dual 模式下所有平倉被靜默跳過）+ 3 個缺失 closeReason 標記 + tradingManager.closePosition 用滯後 WS 價格代替實際 HL fill + UI SSE 退避。**v2.0.855 學習管道修復**：aligned shadow 恆開（real-trade cycles 都開，Q-RL 不再餓死）+ shadow_blind OLR 計數器（v2.0.834 承諾但從未 implement）+ thesis-invalidation closeReason 全覆蓋。**v2.0.855-fix**：Q-RL EXP backfill（1072 筆歷史交易 populate Q-table，令 discoverPatterns 即刻有嘢掃）。**v2.0.855-attack**：7 個修復引入嘅漏洞全部修補（OLR counter 字符串/負數消毒、closeReason 白名單、aligned-shadow weightedDirection 用真 LLM lean）。**v2.0.855-attack2**：Q-RL binRegime 邊界同 regimeToOrdinal 完全錯位（6/7 regime 入錯桶，bull/bear 對調）已對齊 |
+| **自我演化** | 認知演化管線（v2.0.858: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Discovery Confidence + 1 Component Attribution）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + DCS v2 v2.0.836 + Component Attribution v2.0.844，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 Discovery Confidence Score。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge）。v2.0.849-851 將 momentum/exec-lens/confidence SL widening 移植到 live computeSmartSLTP + 修復 TradeRecord.closeReason 資料缺失（RIL + trade-audit 可以分到「SL 太緊」定「thesis 錯」）。v2.0.853 修復 closeTrade dual-mode guard（dual 模式下所有平倉被靜默跳過）+ 3 個缺失 closeReason 標記 + tradingManager.closePosition 用滯後 WS 價格代替實際 HL fill + UI SSE 退避。**v2.0.855 學習管道修復**：aligned shadow 恆開（real-trade cycles 都開，Q-RL 不再餓死）+ shadow_blind OLR 計數器（v2.0.834 承諾但從未 implement）+ thesis-invalidation closeReason 全覆蓋。**v2.0.855-fix**：Q-RL EXP backfill（1072 筆歷史交易 populate Q-table，令 discoverPatterns 即刻有嘢掃）。**v2.0.855-attack**：7 個修復引入嘅漏洞全部修補（OLR counter 字符串/負數消毒、closeReason 白名單、aligned-shadow weightedDirection 用真 LLM lean）。**v2.0.855-attack2**：Q-RL binRegime 邊界同 regimeToOrdinal 完全錯位（6/7 regime 入錯桶，bull/bear 對調）已對齊。**v2.0.856**：Attribution signal 契約修正（SELL 反轉 bug）+ side/symbol guard 補完（normalizeTradeSide，8 call site 強制 coerce 成 SELL 嘅 bug）+ edge-audit 工具。**v2.0.857 移除 aggressive/conservative 風險等級（moderate-only）**：12 個檔案——3×3 矩陣縮減為 1×3、DCS 6 函數全部 moderate、後端 riskProfile 恆為 moderate、Meta-Agent prompt 改 moderate-only（慳 ~4.7KB context/cycle）。**v2.0.858 解鎖 cycle 期間市場選擇**：select-symbol 延遲應用 + throttle coalescing（唔再掉更新）+ symbol-set drift check（唔再淨比 count）|
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
-| **風險等級客戶端選擇** | 後端運算 3 個風險等級（aggressive/moderate/conservative）嘅訊號矩陣；客戶端按用戶選擇讀取對應格（v2.0.822）|
+| **風險等級客戶端選擇** | 後端運算單一 moderate 等級嘅訊號矩陣（v2.0.857 移除 aggressive/conservative）；客戶端按用戶選擇讀取對應格（v2.0.822→857）|
 | **訊號與執行分離** | 後端計算訊號 + 寫入 Supabase；客戶端讀取 + 決定執行（paper/real）。`ANALYSIS_MODE` 控制後端是否同時執行 |
 | **生產級標準** | 完整型別（Zod 驗證）、結構化日誌（Winston）、優雅關閉、指數退避重連 |
 
@@ -62,7 +62,7 @@
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │   mats_app（Expo React Native 客戶端）— 執行 + 風險選擇         │
-│   • 用戶喺 SettingsSheet 選擇風險等級（high/mid/low）           │
+│   • 用戶喺 SettingsSheet 選擇風險等級（high/mid/low → 同一 moderate 格，v2.0.857）│
 │   • useAssetAnalyses hook 讀取 Supabase asset_analyses 表       │
 │   • useAutoTrade hook 按風險等級 + 持倉狀態揀矩陣格 → 執行      │
 │   • Paper mode：寫入 Supabase positions 表（模擬）              │
@@ -75,7 +75,7 @@
 ┌──────────────────────────────────────────────────────────────┐
 │   Supabase（asset_analyses 表 — universal per-asset 矩陣）      │
 │   • 每個 cycle 後端 DELETE + INSERT 乾淨快照                    │
-│   • 一行一 asset，含 3×3 matrix + consensus + marketData        │
+│   • 一行一 asset，含 1×3 matrix + consensus + marketData        │
 │   • RLS：anon/authenticated 可讀；service_role 寫入             │
 └──────────────────────────────────────────────────────────────┘
                             ↑ 寫入（service_role）
@@ -91,12 +91,12 @@
 │   • HACP 多模型平行推理（僅關鍵決策點觸發 LLM）                 │
 │   • 6 智能體 + Meta-Agent 仲裁 + Skeptics 邏輯審查             │
 │   • Entry Thesis System + 暗黑心理學 + 結構化辯論 + 加權投票    │
-│   • 認知演化管線（v2.0.836: 15 active + Edge Validation + Q-RL Alpha Discovery + DCS v2；4 組件已移除）     │
+│   • 認知演化管線（v2.0.858: 15 active + Edge Validation + Q-RL Alpha Discovery + DCS v2 + Component Attribution；4 組件已移除；v2.0.857 風險等級 moderate-only）│
 │   • Plan G Dynamic Threshold [45-55%] + 乘法 Penalty 衰減       │
 │   • SystemGuard（5 層系統級保護）                               │
 ├──────────────────────────────────────────────────────────────┤
 │   Layer 3: 訊號輸出層 (Analysis Matrix Builder + Supabase)     │
-│   • buildAssetAnalysis()：共識 → 3×3 矩陣（v2.0.822）           │
+│   • buildAssetAnalysis()：共識 → 1×3 矩陣（v2.0.857）           │
 │   • SupabaseAnalysisWriter：每 cycle 寫入 asset_analyses 表     │
 │   • ANALYSIS_MODE：true=僅訊號 / dual=訊號+執行 / false=僅執行  │
 ├──────────────────────────────────────────────────────────────┤
@@ -162,7 +162,7 @@ src/
 ├── market-agent/            # 自動 pair 選擇（9 DEX, 416 assets, 類別過濾）
 ├── data/                    # Hyperliquid + Binance WebSocket
 ├── services/                # v2.0.822: Analysis Matrix + Supabase writer
-│   ├── analysis-matrix.ts   # buildAssetAnalysis()：共識 → 3×3 風險矩陣（v2.0.822）+ edgeReport 注入（v2.0.833）
+│   ├── analysis-matrix.ts   # buildAssetAnalysis()：共識 → 1×3 風險矩陣（v2.0.857）+ edgeReport 注入（v2.0.833）
 │   └── supabase-writer.ts   # SupabaseAnalysisWriter：每 cycle 寫入 asset_analyses 表（v2.0.822+823）
 ├── edge/                    # v2.0.833: Edge Validation Layer（alpha 測謊機）+ v2.0.836 DCS v2
 │   ├── edge-config.ts       # Zod env var：threshold + weight + sample cap 10000
@@ -176,30 +176,30 @@ src/
 └── index.ts                 # 系統 orchestrator（決策循環 + 矩陣寫入 ~line 6478）
 ui/                          # Legacy React + Vite dashboard（已由 mats_app 取代）
 data/evolution/              # olr-state · shadow-state · patterns · GA state · em-state · na-model · cycle-history · anti-patterns
-tests/                       # vitest（609 core + 424 attack tests，gitignored）
+tests/                       # vitest（~2,000 tests / 70 suites，gitignored）
 supabase/migrations/         # 00000000000018_asset_analyses_matrix.sql（v2.0.822）
 ```
 
 ## Analysis Matrix + 風險設定架構（v2.0.822）
 
-**核心設計**：後端每個 cycle 為每個 asset 計算一個 HACP 共識，然後擴展成 **3×3 推薦矩陣**，寫入 Supabase `asset_analyses` 表。客戶端讀取矩陣，按用戶選擇嘅風險等級 + 當前持倉狀態揀選對應格。
+**核心設計**：後端每個 cycle 為每個 asset 計算一個 HACP 共識，然後擴展成 **1×3 推薦矩陣**（v2.0.857 由 3×3 縮減——moderate-only），寫入 Supabase `asset_analyses` 表。客戶端讀取矩陣，按用戶當前持倉狀態揀選對應格。
 
-### 3×3 矩陣結構
+### 1×3 矩陣結構（v2.0.857 moderate-only）
 
 ```
               │  long（已持多）  │  short（已持空）  │  flat（無倉位）
 ─────────────┼────────────────┼─────────────────┼────────────────
-aggressive   │  ×1.3 conviction │  ×1.3 conviction  │  ×1.3 conviction
 moderate     │  baseline（已校準）│  baseline         │  baseline
-conservative │  ×0.7 conviction │  ×0.7 conviction  │  ×0.7 conviction
 ```
 
 **風險等級對應**（客戶端 `mats_app` `useAutoTrade.ts` `mapRiskProfile()`）：
 | 客戶端 UI（SettingsSheet）| 後端矩陣 key | conviction 縮放 | 校準狀態 |
 |:-------------------------|:------------|:----------------|:--------|
-| `high` | `aggressive` | ×1.3（capped 1.0）| `calibrated: false`（待 owner 定義規則）|
+| `high` | `moderate`（v2.0.857 單一）| ×1.0（baseline）| `calibrated: true`（live consensus）|
 | `mid` | `moderate` | ×1.0（baseline）| `calibrated: true`（live consensus）|
-| `low` | `conservative` | ×0.7 | `calibrated: false`（待 owner 定義規則）|
+| `low` | `moderate` | ×1.0（baseline）| `calibrated: true`（live consensus）|
+
+> ⚠️ v2.0.857：後端只運算 moderate 一行。客戶端 high/mid/low 全部映射到同一 moderate 格——真正嘅風險控制係客戶端自己嘅 Position Size / Max Portion / Leverage sliders，唔係矩陣。
 
 **矩陣格 action**（`mapAction()` 按 rawAction + closePosition + posState 推導）：
 | 持倉狀態 │ buy 共識 → │ sell 共識 → │ hold/close → │
@@ -208,7 +208,7 @@ conservative │  ×0.7 conviction │  ×0.7 conviction  │  ×0.7 conviction
 | `long` | `hold` | `flip` | `hold`（或 `close` 若 closePosition）|
 | `short` | `flip` | `hold` | `hold`（或 `close` 若 closePosition）|
 
-**`moderate` = 已校準 baseline**：使用 live consensus 機制（conviction gate、OLR blend、combo WR override）。`aggressive` / `conservative` 係 placeholder——same action as moderate，conviction 縮放 ×1.3 / ×0.7，`calibrated: false` 直到 owner 定義精確規則。結構設計令規則可以直接 drop into `buildProfileCell()` 唔影響 consensus-mapping 邏輯。
+**`moderate` = 已校準 baseline**：使用 live consensus 機制（conviction gate、OLR blend、combo WR override）。v2.0.857 後 aggressive/conservative placeholder 已移除——`buildProfileCell()` 只輸出 moderate 格，conviction 係 live consensus 原值（DCS 唔再縮放）。
 
 ### 寫入路徑（`src/index.ts` ~line 6478）
 
@@ -219,9 +219,9 @@ for each symbol in (activeSymbol ∪ tradingMarkets ∪ pscList):
   ↓
   buildAssetAnalysis(symbol, psc, marketState, cycleId, pwin, agentsAligned, agentsTotal)
     ↓
-    mapAction() → per (profile, posState) cell
-    buildProfileCell() → conviction 縮放 + calibrated flag
-    buildMatrix() → 3×3 AnalysisMatrix
+    mapAction() → per (posState) cell
+    buildProfileCell() → moderate conviction（live consensus，無縮放）
+    buildMatrix() → 1×3 AnalysisMatrix（v2.0.857）
     ↓
     AssetAnalysis { symbol, cycleId, marketData, consensus, matrix, metadata }
   ↓
@@ -239,9 +239,9 @@ useAssetAnalyses(cycleMinutes) → fetchAssetAnalyses() → Supabase asset_analy
   ↓
 useAutoTrade(analyses, settings, user, positions)
   ↓
-  mapRiskProfile(settings.riskProfile)  // high→aggressive, mid→moderate, low→conservative
+  mapRiskProfile(settings.riskProfile)  // high/mid/low → 全部 moderate（v2.0.857 單一 row）
   inferPositionState(symbol, positions) // long/short/flat
-  getRecommendedAction(analysis, riskProfile, posState) → matrix[profile][state]
+  getRecommendedAction(analysis, posState) → matrix.moderate[state]
   ↓
   action: buy/sell/hold/close/flip + conviction + rationale
   ↓
@@ -258,7 +258,7 @@ create table public.asset_analyses (
   updated_at  timestamptz not null default now(),
   market_data jsonb not null,  -- { price, volatility, regime, change24h, volume24h }
   consensus   jsonb not null,  -- { action, confidence, thesis, pwin, agentsAligned, agentsTotal, stopLoss, takeProfit, suggestedLeverage }
-  matrix      jsonb not null,  -- 3×3: { aggressive|moderate|conservative: { long|short|flat: { action, conviction, rationale, calibrated } } }
+  matrix      jsonb not null,  -- 1×3: { moderate: { long|short|flat: { action, conviction, rationale, calibrated } } }（v2.0.857）
   metadata    jsonb not null
 );
 -- RLS：anon/authenticated 可讀（universal market intelligence）；service_role 寫入
@@ -266,65 +266,53 @@ create table public.asset_analyses (
 
 ---
 
-## 後端帳戶風險設定（v2.0.822+ — Backend Account Risk Profile）
+## 後端帳戶風險設定（v2.0.822+ → ⚠️ v2.0.857 moderate-only — Backend Account Risk Profile）
 
 **與客戶端風險等級嘅分別**：呢個係兩個獨立概念。
-- **客戶端風險等級**（`mats_app` `TradingSettings.riskProfile`）：控制客戶端讀取矩陣嘅邊一格 + 客戶端執行策略。
-- **後端帳戶風險設定**（`MarketAgentConfig.riskProfile`）：控制後端自己交易帳戶嘅 conviction 校準 + Plan G threshold 調整 + Meta-Agent prompt 行為。後端計算所有三個等級嘅矩陣，但佢自己執行交易時用呢個設定。
+- **客戶端風險等級**（`mats_app` `TradingSettings.riskProfile`）：仍然存在（high/mid/low），但 v2.0.857 後全部映射到同一 moderate 矩陣格——真正嘅風險控制係客戶端自己嘅 Position Size / Max Portion / Leverage sliders。
+- **後端帳戶風險設定**（`MarketAgentConfig.riskProfile`）：**v2.0.857 移除 aggressive/conservative——恆為 `moderate`**。`setRiskProfile()` 將任何非 moderate 值 coerce 成 moderate（warn）；`getRiskProfile()` 永遠返回 `'moderate'`。後端以 moderate 校準執行交易，唔再做 per-profile 區別。
 
-### 三段式風險等級
+### 單一風險等級（v2.0.857）
 
 | 等級 | UI 顯示 | Threshold 倍率 | Conviction 校準 | 倉位大小傾向 | 平倉敏感度 |
 |:-----|:--------|:--------------:|:----------------|:------------|:-----------|
-| `aggressive` | Aggr | × 0.85（放鬆） | 不膨脹——gate 自動放鬆 | 偏大（上限） | 較慢（容忍 drawdown） |
-| `moderate` | Mode | × 1.00（baseline） | 誠實輸出 | 分析支持嘅大小 | 標準（thesis 失效 + ≥2 條件） |
-| `conservative` | Cons | × 1.15（收緊） | 不壓低——gate 自動收緊 | 偏小（留 headroom） | 較快（保護資本優先） |
+| `moderate` | Mode | × 1.00（baseline，無 profile multiplier） | 誠實輸出 | 分析支持嘅大小 | 標準（thesis 失效 + ≥2 條件） |
 
-### 三層執行機制
+### 三層執行機制（v2.0.857 更新）
 
 ```
 Layer 1: Prompt 層（Meta-Agent system prompt）
-  ─ getMarketDescription() 注入 "Risk Profile: AGGRESSIVE/MODERATE/CONSERVATIVE" 行
+  ─ getMarketDescription() 注入 "Risk Profile: MODERATE" 行
   ─ 所有 7 個 agent 見到（5 sub-agents + Skeptics + Meta-Agent）
-  ─ Meta-Agent system prompt 有完整 RISK PROFILE CALIBRATION 段落：
-    • conviction 校準規則（不膨脹/不壓低——gate 調整）
-    • position size 傾向（偏大/偏小）
-    • entry bias（51% lean 足夠 / 要求清晰主導信號）
-    • close sensitivity（較慢/較快）
-    • SL/TP（更闊/更緊）
-    • anti-pattern 權重（警告/強警告）
+  ─ Meta-Agent system prompt 有 moderate-only RISK PROFILE CALIBRATION 段落（v2.0.857：
+    3-profile 段落移除，慳 ~4.7KB context/cycle）
   ─ 核心原則：風險等級調整 RISK APPETITE，唔調整 ANALYTICAL RIGOR
 
-Layer 2: Code 層（Plan G conviction gate，src/index.ts ~line 7960）
-  ─ adjustedThreshold = clamp(effectiveThreshold × multiplier, 0.30, 0.70)
-  ─ aggressive: × 0.85（放鬆——更多交易通過）
-  ─ moderate:   × 1.00（baseline）
-  ─ conservative: × 1.15（收緊——更少交易通過）
-  ─ clamp [0.30, 0.70]：aggressive 唔可以低過 30%（唔會魯莽），conservative 唔可以高過 70%（唔會永久癱瘓）
-  ─ 乘法唔加法：與 Plan G 嘅乘法模型一致，唔會重現加法死循環
+Layer 2: Code 層（Plan G conviction gate，src/index.ts）
+  ─ adjustedThreshold = clamp(effectiveThreshold, 0.30, 0.70)
+  ─ v2.0.857：NO profile multiplier（aggressive ×0.85 / conservative ×1.15 已移除）
+  ─ clamp [0.30, 0.70] 保留作為 safety net——唔會魯莽，唔會癱瘓
 
-Layer 3: Multi-symbol 路徑（src/index.ts ~line 7340）
-  ─ 同樣嘅 multiplier 應用於 adaptive filter threshold
-  ─ pscAdjustedThreshold = clamp(pscFilter.getConvictionThreshold() × multiplier, 0.30, 0.70)
-  ─ 確保多符號入場都尊重風險等級
+Layer 3: Multi-symbol 路徑（src/index.ts）
+  ─ 同樣無 multiplier——pscAdjustedThreshold = clamp(pscFilter.getConvictionThreshold(), 0.30, 0.70)
 ```
 
-### API + 持久化
+### API + 持久化（v2.0.857 更新）
 
 | 層 | 檔案/位置 | 說明 |
 |:---|:---------|:-----|
-| Type | `src/types/index.ts` `MarketAgentConfig.riskProfile` | `RiskProfile` type（`aggressive`/`moderate`/`conservative`）|
-| Config | `src/market-agent/index.ts` | `setRiskProfile()` / `getRiskProfile()`，預設 `moderate` |
-| Persistence | `src/evolution/persistence.ts` | `MarketAgentConfigSnapshot.riskProfile` + save + load（驗證 3 個值）|
-| API | `POST /api/market-agent/risk-profile` | `{ profile: 'aggressive'|'moderate'|'conservative' }` |
+| Type | `src/types/index.ts` `MarketAgentConfig.riskProfile` | `RiskProfile` type（v2.0.857 deprecated——只係爲 backward-compat READING 保留）|
+| Config | `src/market-agent/index.ts` | `setRiskProfile()` coerce 到 moderate + warn；`getRiskProfile()` 永遠返回 `'moderate'` |
+| Persistence | `src/evolution/persistence.ts` | load 時 coerce 歷史 aggressive/conservative → moderate |
+| API | `POST /api/market-agent/risk-profile` | 只接受 `'moderate'`（其他值 400 + clear message）|
 | Callback | `src/index.ts` `setMarketAgentSetRiskProfileHandler` | `marketAgent.setRiskProfile()` + `pushToAPI()` |
-| UI | `ui/src/App.tsx` ~line 1397 | 3-segment slider（Aggr/Mode/Cons）+ `ui/src/types.ts` |
+| UI | `ui/src/App.tsx` | v2.0.857 移除 3-segment slider（Position Size / Max Portion / Leverage 保留）|
 | Agent context | `src/market-agent/index.ts` `getMarketDescription()` | 注入 `Risk Profile:` 行到所有 agent |
-| Meta-Agent prompt | `src/agents/meta-agent.ts` `getSystemPrompt()` | `RISK PROFILE CALIBRATION` 段落 |
+| Meta-Agent prompt | `src/agents/meta-agent.ts` `getSystemPrompt()` | moderate-only `RISK PROFILE CALIBRATION` 段落 |
 
 ### 向後兼容
 
-舊 `market-agent-config.json` 冇 `riskProfile` → load 時驗證失敗 → 唔載入 → `getRiskProfile()` 返回 `'moderate'`（安全預設）。唔會 crash，唔會丟失其他設定。
+舊 `market-agent-config.json` 冇 `riskProfile` → 預設 `'moderate'`。歷史持久化狀態（component-attribution.json / rp-edge-store.json）可能帶 aggressive/conservative 值——read-tolerant（load 唔 crash），永不重新寫入。
 
 ### System Engineer Agent（v2.0.201）
 
@@ -434,7 +422,7 @@ Layer 3: Multi-symbol 路徑（src/index.ts ~line 7340）
 
 | # | Agent | 溫度 | 權重 | 角色描述 |
 |:-:|:------|:----:|:----:|:---------|
-| 0 | **Terminal Agent** | 0.30 | — | 用戶自然語言偏好入口。接受交易偏好指令 → LLM 整合 → Root Command Prompt。Cycle 開始前檢查規則（時間/條件/資產），不符合即 abort cycle。Meta-Agent 決策後核實是否符合 Root Command Prompt。預設 DeepSeek V4 Flash。**註**：v2.0.822+ 風險等級（high/mid/low）改由客戶端 `mats_app` SettingsSheet 選擇，後端運算所有三個等級嘅矩陣。 |
+| 0 | **Terminal Agent** | 0.30 | — | 用戶自然語言偏好入口。接受交易偏好指令 → LLM 整合 → Root Command Prompt。Cycle 開始前檢查規則（時間/條件/資產），不符合即 abort cycle。Meta-Agent 決策後核實是否符合 Root Command Prompt。預設 DeepSeek V4 Flash。**註**：v2.0.822+ 風險等級（high/mid/low）由客戶端 `mats_app` SettingsSheet 選擇；v2.0.857 後端只運算 moderate 矩陣。 |
 | 1 | **Trading Setup** | — | — | 交易配置管理（非 LLM agent）。Trade Mode、Cycle Period（1-10m）、Position Size、Max Portion、Leverage、Asset Type、Available Pairs、Selected Market Pairs。UI 控件直接連接後端。 |
 | 2 | **Fractal Momentum Sentinel** | 0.85 | 0.10 | 多時間框架碎形自相似模式檢測。趨勢加速早期信號。極端逆向，中間趨勢追隨。預設 Kimi K2.6。 |
 | 3 | **On-Chain Whisperer** | 0.50 | 0.10 | 類別感知鏈上分析。Crypto: mempool/flows/supply。TradFi: DXY/COT/商品/COT 持倉。5 分鐘緩存。預設 Kimi K2.6。 |
@@ -584,7 +572,7 @@ FINAL CONFIDENCE:
 
 ## 自我演化系統
 
-MATS 嘅核心競爭力係**認知演化管線**（v2.0.836: 23→15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Risk Profile Differentiation）——每筆交易結果都會餵回學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。v2.0.833 移除咗 4 個 0-inference 組件（temporal-attention / cross-symbol / reward-shaping / world-model）同暫停 active-exploration。v2.0.835 新增 Q-RL Alpha Discovery（首個可以發現新 alpha 嘅組件）+ Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 風險等級區別化（三個 profile 真正唔同決策——唔止 conviction 數字唔同，而係 entry acceptance、SL/TP 闊度、position size 都唔同）。以下逐層詳述：
+MATS 嘅核心競爭力係**認知演化管線**（v2.0.858: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Discovery Confidence + 1 Component Attribution）——每筆交易結果都會餵回學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。v2.0.833 移除咗 4 個 0-inference 組件（temporal-attention / cross-symbol / reward-shaping / world-model）同暫停 active-exploration。v2.0.835 新增 Q-RL Alpha Discovery（首個可以發現新 alpha 嘅組件）+ Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 Discovery Confidence Score（連續 [0,1] 量化 Q-RL 證據）。**v2.0.857 移除風險等級區別化（moderate-only）**——DCS 6 函數全部 moderate，矩陣 3×3 → 1×3。**v2.0.858 解鎖 cycle 期間市場選擇**。以下逐層詳述：
 
 ### OLR — Online Logistic Regression（`olr-engine.ts`）
 
@@ -732,8 +720,7 @@ SL 優先級：                          TP 優先級：
 ATR 只用嚟防止 SL 太窄（SL ≥ 1.5×ATR），唔用嚟推 TP。
 唔強制 R:R——如果 TP 近過 SL，照設。賺少都係賺。
 S/R buffer 按強度加權：strong 0.2%, moderate 0.3%, weak 0.5%。
-Per-profile caps（v2.0.836）：aggressive SL 7% / TP 15% / TP min 0.5%；
-moderate SL 5% / TP 10% / TP min 0.3%；conservative SL 3% / TP 6% / TP min 0.2%。
+Per-profile caps（v2.0.836 → ⚠️ v2.0.857 moderate-only）：moderate SL 5% / TP 10% / TP min 0.3%（aggressive/conservative caps 已移除）。
 ```
 
 **Leverage-Aware SL Floor（v2.0.852 fix #A）**：結構性 S/R SL 可以好貼 entry（例如 0.81%）。喺 10x 倉位，0.81% 逆向價格移動會抹走 ~8% margin——正常噪音就可以喺 thesis 兌現前止蝕（SILVER SELL 缺陷：entry $56.82, SL $57.28 = +0.81%，被例行噪音止蝕）。`computeSmartSLTP` 依家接受 `leverage` 參數，將 MINIMUM SL 距離按槓桿放大：`levFactor = 1.0 + (leverage - 1) × 0.15`（1x→1.0, 5x→1.6, 10x→2.35, 20x→3.85），`levFloorPct = min(0.05, max(slFloorPct, 0.01 × levFactor))`。只係 FLOOR——永遠唔會收窄結構性 SL，下游 momentum/exec-lens widening 仍然疊加。槓桿 clamp [1, 50]。
@@ -756,7 +743,7 @@ moderate SL 5% / TP 10% / TP min 0.3%；conservative SL 3% / TP 6% / TP min 0.2%
    - Execution-lens vol scaling：vol > 1.5× implied → 加寬最多 +40%
    - High-entropy dampening：唔確定 lens → 收窄 50%
    所有 widening 都係 FLOOR（唔會窄過 ATR floor），再由 per-profile caps 封頂
-   （aggressive 7% / moderate 5% / conservative 3%）
+   （v2.0.857 moderate-only：SL cap 5% / TP cap 10%）
 ```
 
 **語義不變式**（v2.0.849-fix）：低信心（P<0.5）淨係收窄 BASE ATR 乘數，**唔會剝奪** momentum/exec-lens 保護。BUY side momentum 方向已修正（`BUY adverse = max(0, -momentum)`，`SELL adverse = max(0, +momentum)`），OLR P(win) confidence 由 entryData payload 讀取（唔係 decision object）。
@@ -1169,7 +1156,7 @@ v2.0.842 新增三大進化組件 + 混合數據源架構。v2.0.843 新增 ANN 
 
 ### Self-Improver（`src/evolution/self-improver.ts`，v2.0.838）
 
-系統自動調整自己嘅 hyperparameters：Thompson Sampling bandit（`explorationStrategy`）+ OLS gradient（`convictionGateThreshold` [0.40, 0.60]、`aggressiveSlCap` [0.05, 0.09]、`conservativeSlCap` [0.02, 0.04]、`dcsTimeDecayHalfLife` [100, 400]）。Hard bounds 限制。`runTuningCycle()` apply all recommendations with audit logging。
+系統自動調整自己嘅 hyperparameters：Thompson Sampling bandit（`explorationStrategy`）+ OLS gradient（`convictionGateThreshold` [0.40, 0.60]、`dcsTimeDecayHalfLife` [100, 400]）。v2.0.857 移除 dead `aggressiveSlCap` [0.05, 0.09] + `conservativeSlCap` [0.02, 0.04]（風險等級已移除，`dcsSlCap()` 永遠返回 5%）——bandit 唔再浪費運算 tune 冇 consumer 嘅參數。Hard bounds 限制。`runTuningCycle()` apply all recommendations with audit logging。
 
 ### Causal Reasoner（`src/evolution/causal-reasoner.ts`，v2.0.839）
 
@@ -1450,7 +1437,7 @@ RIL_SUBTLE_DIFF_ENABLED=true
 | Legacy UI | `ui/`（React 18 + Vite — 已由 mats_app 取代，保留作 local dashboard）|
 | Config | Zod schema validation |
 | Logging | Winston（structured + file rotation） |
-| Testing | vitest（609 core + 424 attack tests，gitignored；4 attack suites: q-rl-attack, changelog-features-attack, creative-attacks, q-rl-creative-attacks）|
+| Testing | vitest（~2,000 tests / 70 suites，gitignored；4 attack suites: q-rl-attack, changelog-features-attack, creative-attacks, q-rl-creative-attacks）|
 | Crypto | `@noble/curves`（HL phantom agent signing） |
 | Vector Embedding | Transformers.js MiniLM L6 v2（384-dim, in-process, CPU） |
 | Pattern Clustering | Greedy cosine clustering（RIL Reason Intelligence Layer） |
@@ -1466,7 +1453,7 @@ npm run dev         # 開發模式：API :3456 + legacy UI :5173（concurrently�
 API: **http://localhost:3456/api/status** · Legacy Dashboard: **http://localhost:5173/**
 
 **訊號運算模式**（`ANALYSIS_MODE=true`，配合 `mats_app`）：
-1. 後端每個 cycle 計算 HACP 共識 → 擴展成 3×3 矩陣 → 寫入 Supabase `asset_analyses`
+1. 後端每個 cycle 計算 HACP 共識 → 擴展成 1×3 矩陣（v2.0.857 moderate-only）→ 寫入 Supabase `asset_analyses`
 2. 客戶端 `mats_app` 用戶選擇風險等級（high/mid/low）→ 讀取對應矩陣格 → 決定執行
 3. 後端唔下單——純訊號輸出。執行由客戶端 `useAutoTrade` hook 處理
 
