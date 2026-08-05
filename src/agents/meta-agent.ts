@@ -903,80 +903,29 @@ desks maximize expected value across all three actions.
     close a winning position just because "it might reverse")
 
 ═══════════════════════════════════════════════════════════════════════
-RISK PROFILE CALIBRATION (applied to CLOSE/FLIP/HOLD above)
+RISK PROFILE CALIBRATION (v2.0.857 — MODERATE ONLY)
 ═══════════════════════════════════════════════════════════════════════
 
-There are three profiles. Apply the rules below to EVERY symbol decision:
-
-■ AGGRESSIVE — "Risk Profile: AGGRESSIVE (higher conviction tolerance, larger size)"
-  The operator wants to maximize profit and accepts larger drawdowns to get it.
-  • CONVICTION: Output your HONEST conviction as normal — do NOT inflate it. The system's
-    conviction gate is RELAXED for aggressive (effective threshold lowered). Your job is
-    accuracy; the gate adjusts. A 0.55 conviction that would be blocked under moderate
-    may pass under aggressive — so do NOT self-censor down to HOLD.
-  • POSITION SIZE: Lean toward the UPPER end of the justified range. If your analysis
-    supports 5-8% size, output 8%. If the consensus suggests 3%, output 5-6%.
-  • ENTRY BIAS: When signals are MIXED but the dominant signal has a directional lean,
-    ACT on it. "51% lean" is sufficient. Aggressive tolerates ambiguity in exchange for
-    opportunity capture — missing a trending move is a bigger failure than a small loss.
-  • CLOSE SENSITIVITY: Be SLOWER to close. Require STRONGER structural confirmation:
-    - Price must be DECISIVELY beyond S/R: strong pivot ≥0.5%, moderate ≥0.8%,
-      weak/round-num ≥1.5% (deeper than moderate — aggressive tolerates more noise)
-    - Require ≥3 secondary conditions (not 2) for CLOSE
-    - A wobbly thesis that might recover should be given more time
-    - The system's PROFIT GUARD v3 allows confirmed closes only if profit < 2.0%
-  • FLIP SENSITIVITY: Require OLR P(win) ≥ 60% for the new direction (not 55%).
-    Aggressive flips less often — it's better to CLOSE and wait for a clean entry
-    than to flip on a marginal signal and get whipsawed.
-  • SL/TP: Wider SL (allow normal volatility), more ambitious TP (let winners run).
-  • ANTI-PATTERN / FAILURE LESSONS: Still respect these — they are statistical edge, not
-    risk-aversion. But a single anti-pattern match does NOT auto-reject; explain how THIS
-    trade differs. Conditional WR < 40% requires a named catalyst, but the catalyst bar
-    is lower (a plausible narrative suffices, not ironclad proof).
+The backend ALWAYS runs the MODERATE profile (live consensus baseline) — the
+aggressive/conservative risk profiles were REMOVED (v2.0.857). Risk appetite is
+controlled by Position Size / Max Portion / Leverage (operator UI sliders), NOT
+by a risk profile. Apply the rules below as written:
 
 ■ MODERATE — "Risk Profile: MODERATE (baseline live consensus)"
-  The baseline. All rules above apply AS WRITTEN. No special adjustment.
   • CONVICTION: Output honest conviction. Gate applies at baseline threshold.
-  • POSITION SIZE: Output the size your analysis justifies — no upward or downward bias.
-  • ENTRY BIAS: Standard — a 51% lean is enough, but mixed signals with no dominant
-    lean → HOLD.
-  • CLOSE SENSITIVITY: Standard — structural confirmation + thesis invalidation + ≥2
-    secondary conditions. PROFIT GUARD v3 allows confirmed closes if profit < 1.0%.
+  • POSITION SIZE: Output the size your analysis justifies — no upward/downward bias.
+  • ENTRY BIAS: A 51% lean is enough, but mixed signals with no dominant lean → HOLD.
+  • CLOSE SENSITIVITY: Structural confirmation + thesis invalidation + ≥2 secondary
+    conditions. PROFIT GUARD v3 allows confirmed closes if profit < 1.0%.
   • FLIP SENSITIVITY: OLR P(win) ≥ 55% for the new direction + named catalyst.
   • SL/TP: Standard ATR/S/R-based.
-
-■ CONSERVATIVE — "Risk Profile: CONSERVATIVE (dampened conviction, smaller size, stricter gates)"
-  The operator wants capital preservation above all. Profit is secondary.
-  • CONVICTION: Output your HONEST conviction — do NOT artificially deflate it (the gate
-    tightens for conservative, so let the gate do the filtering). BUT when signals are
-    mixed, your DEFAULT should be HOLD, not "act on the weakest lean."
-  • POSITION SIZE: Lean toward the LOWER end of the justified range. If analysis supports
-    5-8%, output 3-5%. Never output the max — leave headroom.
-  • ENTRY BIAS: Require a CLEAR dominant signal, not a 51% lean. If two signals conflict,
-    HOLD. Aggressive acts on ambiguity; conservative waits for clarity.
-  • CLOSE SENSITIVITY: Be FASTER to close. Weaker structural confirmation suffices:
-    - Price touching S/R (even a brief wick through) can confirm
-    - Break depth: strong pivot ≥0.2%, moderate ≥0.3%, weak ≥0.5%
-      (shallower than moderate — conservative cuts earlier on less proof)
-    - Only ≥1 strong secondary condition needed for CLOSE
-    - PROFIT GUARD v3 allows confirmed closes if profit < 0.5% (cut early)
-  • FLIP SENSITIVITY: OLR P(win) ≥ 50% for the new direction. Conservative flips more
-    readily on confirmed reversals — better to flip than to ride a confirmed loser.
-  • SL/TP: Tighter SL (cut losses early), more modest TP (lock in gains).
-  • ANTI-PATTERN / FAILURE LESSONS: These carry MORE weight. A single anti-pattern match
-    is a strong warning — if you cannot articulate a SPECIFIC, concrete difference, HOLD.
-    Conditional WR < 50% (not 40%) requires a named catalyst.
-  • DRAWDOWN: If the account is in a drawdown (check portfolio snapshot), be even more
-    conservative — reduce size further, require stronger signals.
 
 ⚠️ RISK PROFILE IS NOT A LICENSE TO HALLUCINATE:
   • Regardless of profile, you MUST still provide an entryThesis with ≥2 falsifiable elements.
   • Regardless of profile, you MUST still respect the GROUND TRUTH RULE (check real data first).
-  • Aggressive does NOT mean "ignore anti-patterns" — it means "a match is a warning, not a veto."
-  • Conservative does NOT mean "never trade" — it means "wait for clearer signals, size smaller."
-  • The profile adjusts your RISK APPETITE, not your ANALYTICAL RIGOR. Rigor is constant.
-  • CLOSE/FLIP coordination is CONSTANT across profiles — only the confirmation THRESHOLD
-    changes (how far beyond S/R, how many secondary conditions, what profit tolerance).
+  • Moderate does NOT mean "ignore anti-patterns" — a match is a warning, not a veto.
+  • Moderate does NOT mean "never trade" — it means "wait for clearer signals."
+  • The risk profile adjusts RISK APPETITE, not ANALYTICAL RIGOR. Rigor is constant.
 
 === OUTPUT ===
 You MUST respond with valid JSON following the format specified in the user message.

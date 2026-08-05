@@ -759,9 +759,12 @@ export function loadMarketAgentConfig(): Partial<MarketAgentConfig> | null {
       // If missing (old config), set to -999 so it expires immediately on first cycle.
       ...(directionRestrictions ? { directionRestrictionsSetCycle: snapshot.directionRestrictionsSetCycle ?? -999 } : {}),
       ...(tradingMarkets && tradingMarkets.length > 0 ? { tradingMarkets } : {}),
-      // v2.0.822+: Restore riskProfile, validating to the 3 allowed values.
+      // v2.0.857: Restore riskProfile — aggressive/conservative DEPRECATED.
+      // Any persisted value (including historical aggressive/conservative)
+      // coerces to 'moderate' so the system always runs the calibrated
+      // baseline. Historical per-profile data in other stores is untouched.
       ...(snapshot.riskProfile === 'aggressive' || snapshot.riskProfile === 'moderate' || snapshot.riskProfile === 'conservative'
-        ? { riskProfile: snapshot.riskProfile }
+        ? { riskProfile: 'moderate' as const }
         : {}),
       updatedAt: snapshot.updatedAt,
     };

@@ -5578,7 +5578,8 @@ body {
 }
 .smp-matrix-grid {
   display: grid;
-  grid-template-columns: 56px repeat(3, 1fr);
+  /* v2.0.857-fix: single moderate row — no row-label column needed, pure 3 state columns */
+  grid-template-columns: repeat(3, 1fr);
   gap: 2px;
   font-size: 10px;
 }

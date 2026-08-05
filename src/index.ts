@@ -1872,7 +1872,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // v2.0.116: Settings modal — get/update env vars
       this.apiServer.setGetEnvSettingsHandler(() => {
         const settings: Record<string, string> = {};
-        const keys = ['HYPERLIQUID_WALLET_ADDRESS', 'HYPERLIQUID_PRIVATE_KEY', 'OLLAMA_API_KEY', 'MASSIVE_API_KEY', 'OLLAMA_PLAN', 'TELEGRAM_BOT_API', 'TELEGRAM_CHAT_ID'];
+        // v2.0.857-fix2: + SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY — the
+        // Settings modal Supabase section needs them populated on open (GET),
+        // not just writable (POST). Masked like the other secrets.
+        const keys = ['HYPERLIQUID_WALLET_ADDRESS', 'HYPERLIQUID_PRIVATE_KEY', 'OLLAMA_API_KEY', 'MASSIVE_API_KEY', 'OLLAMA_PLAN', 'TELEGRAM_BOT_API', 'TELEGRAM_CHAT_ID', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];
         for (const key of keys) {
           const val = process.env[key] ?? '';
           // Mask: show first 6 + last 6 chars if value is long enough
@@ -1905,6 +1908,11 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             process.env[key] = value;
           }
           fs.writeFileSync(envPath, envContent, 'utf-8');
+          // v2.0.857-fix2: if SUPABASE_URL / SERVICE_ROLE_KEY were updated,
+          // re-init the analysis writer immediately (no restart needed).
+          if ('SUPABASE_URL' in settings || 'SUPABASE_SERVICE_ROLE_KEY' in settings) {
+            try { this.analysisWriter.reconfigure(); } catch { /* non-critical */ }
+          }
           log.info('⚙️ Env settings updated from UI Settings modal');
           return { success: true };
         } catch (err) {
@@ -7745,11 +7753,8 @@ ${recentExamples}
       if (result.thesisInvalidatedSymbols && result.thesisInvalidatedSymbols.length > 0) {
         const riskProfile = this.marketAgent.getRiskProfile();
         // v2.0.830: Profit tolerance for confirmed-structure-break closes.
-        // Above this profit %, even a confirmed break is blocked (the position
-        // is winning enough to justify giving the thesis one more cycle).
-        const confirmedCloseProfitTolerance = riskProfile === 'aggressive' ? 0.020
-          : riskProfile === 'conservative' ? 0.005
-          : 0.010; // moderate
+        // v2.0.857: risk profiles removed — always moderate tolerance (1.0%).
+        const confirmedCloseProfitTolerance = 0.010; // moderate
 
         for (const sym of result.thesisInvalidatedSymbols) {
           const pos = this.portfolio.getPosition(sym);
@@ -8665,9 +8670,8 @@ ${recentExamples}
             // the noise-gate, conservative tightens it. This ensures multi-symbol
             // entries respect the account's risk profile, not just the active symbol.
             const pscRiskProfile = this.marketAgent.getRiskProfile();
-            const pscRiskMultiplier = pscRiskProfile === 'aggressive' ? 0.85
-              : pscRiskProfile === 'conservative' ? 1.15
-              : 1.0;
+            // v2.0.857: risk profiles removed — always moderate multiplier (1.0).
+            const pscRiskMultiplier = 1.0;
             // v2.0.831: NaN guard — same as active path. If pscFilter threshold is NaN,
 // fall back to 0.50 (baseline). Math.max(0.30, Math.min(0.70, NaN)) = NaN.
 const pscThresholdRaw = pscFilter.getConvictionThreshold();
@@ -8905,9 +8909,8 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               if (!flipStructureConfirmed) {
                 // Profitable + no structural confirmation → block flip, keep position
                 const flipRiskProfile = this.marketAgent.getRiskProfile();
-                const flipTolerance = flipRiskProfile === 'aggressive' ? 0.020
-                  : flipRiskProfile === 'conservative' ? 0.005
-                  : 0.010;
+                // v2.0.857: risk profiles removed — always moderate tolerance (1.0%).
+                const flipTolerance = 0.010;
                 if (flipPnlPct >= flipTolerance) {
                   log.warn(`🛡️ [FLIP GUARD v3] ${psc.symbol}: flip suggested (${posSide.toUpperCase()}→${psc.action.toUpperCase()}) but position is profitable (${(flipPnlPct * 100).toFixed(2)}% ≥ ${(flipTolerance * 100).toFixed(1)}% tolerance, risk=${flipRiskProfile}) with NO structural confirmation — BLOCKING flip. Let SL/TP work.`);
                   this.recordDecisionAudit(
@@ -9437,9 +9440,8 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
         // even aggressive cannot drop below 30% (no reckless entries) and
         // conservative cannot exceed 70% (no permanent paralysis).
         const riskProfile = this.marketAgent.getRiskProfile();
-        const riskThresholdMultiplier = riskProfile === 'aggressive' ? 0.85
-          : riskProfile === 'conservative' ? 1.15
-          : 1.0;
+        // v2.0.857: risk profiles removed — always moderate multiplier (1.0).
+        const riskThresholdMultiplier = 1.0;
         // v2.0.831: NaN guard — if effectiveThreshold is NaN (DTC computation error),
 // fall back to 0.50 (baseline threshold). Math.max(0.30, Math.min(0.70, NaN))
 // = NaN, and NaN < threshold = false → gate would PASS any trade. This is
@@ -10841,27 +10843,34 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         : 0;
       const dcs = computeDCS(qrlDiscovery, edgeReport.edgeScore, rewardHistory, ageCycles);
 
-      // Per-profile conditional edge from the MiniLM vector store
+      // v2.0.857: Per-profile conditional edge — risk profiles removed, so
+      // only the moderate query is needed. (Old code looped 3 profiles →
+      // 3 MiniLM vector queries per symbol per cycle, all dead since
+      // buildAssetAnalysis ignores profileEdges in the moderate-only matrix.)
       const profileEdges: Partial<Record<RiskProfile, EdgeReport>> = {};
-      for (const profile of ['aggressive', 'moderate', 'conservative'] as RiskProfile[]) {
-        try {
-          const rpResult = await this.edgeRpStore.query({
-            marketFeatures, symbol: sym, side, riskProfile: profile, regime,
-          });
-          // Blend: cold-start weights neutral; warm shifts to profile-specific
-          const neutralWeight = rpResult.samples >= 30 ? 0.4 : 0.8;
-          const profileWeight = 1.0 - neutralWeight;
-          const blendedScore = neutralWeight * edgeReport.edgeScore + profileWeight * rpResult.edgeScore;
-          // Clone the edgeReport but override edgeScore + confidence
-          profileEdges[profile] = {
-            ...edgeReport,
-            edgeScore: blendedScore,
-            confidence: rpResult.samples >= 30 ? rpResult.confidence : edgeReport.confidence,
-            recommendation: blendedScore >= 0.55 ? 'trade' : blendedScore >= 0.45 ? 'caution' : 'skip',
-          };
-        } catch {
-          profileEdges[profile] = edgeReport; // fallback to neutral
-        }
+      try {
+        const rpResult = await this.edgeRpStore.query({
+          marketFeatures, symbol: sym, side, riskProfile: 'moderate', regime,
+        });
+        // v2.0.857-fix-attack2 (F2): sanitize rpResult fields — a NaN
+        // edgeScore/samples from a corrupt store entry would make blendedScore
+        // NaN → recommendation 'skip' (NaN >= x is false), silently killing a
+        // strong edge signal. safeNum → finite fallback; samples 0 → cold-start.
+        const rpEdgeScore = safeNum(rpResult?.edgeScore, 0);
+        const rpSamples = safeNum(rpResult?.samples, 0);
+        const rpConfidence = rpResult?.confidence ?? edgeReport.confidence;
+        // Blend: cold-start weights neutral; warm shifts to profile-specific
+        const neutralWeight = rpSamples >= 30 ? 0.4 : 0.8;
+        const profileWeight = 1.0 - neutralWeight;
+        const blendedScore = neutralWeight * safeNum(edgeReport.edgeScore, 0) + profileWeight * rpEdgeScore;
+        profileEdges['moderate'] = {
+          ...edgeReport,
+          edgeScore: blendedScore,
+          confidence: rpSamples >= 30 ? rpConfidence : edgeReport.confidence,
+          recommendation: blendedScore >= 0.55 ? 'trade' : blendedScore >= 0.45 ? 'caution' : 'skip',
+        };
+      } catch {
+        profileEdges['moderate'] = edgeReport; // fallback to neutral
       }
 
       return { edgeReport, profileEdges, dcs };

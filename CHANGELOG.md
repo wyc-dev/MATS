@@ -4,6 +4,155 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.857-fix3: Supabase settings section in Settings modal + live reconfigure
+
+**Owner request**: Add SUPABASE_URL & SUPABASE_SERVICE_ROLE_KEY to the Settings modal in a new section, with instructions on where to obtain them.
+
+**Changes (3 files)**:
+- `ui/src/App.tsx`: New "Supabase" settings section (between Real Trade and AI Provider) with SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY fields + step-by-step hints (Supabase Dashboard → Project Settings → API → Project URL / service_role → Reveal) + security warning (service_role bypasses RLS, never expose) + setup steps (create project, run migration `00000000000018_asset_analyses_matrix.sql`, paste keys, restart).
+- `src/index.ts`: `setGetEnvSettingsHandler` keys list + SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (so existing values are shown masked on modal open). `setUpdateEnvSettingsHandler` calls `analysisWriter.reconfigure()` when either Supabase key was updated.
+- `src/services/supabase-writer.ts`: New `reconfigure()` method — re-inits client from current process.env (no backend restart needed after Settings save). No-op guard via `lastUrl`. Disables cleanly if keys removed.
+
+**Result**: Full suite 1981 tests → 1968 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` zero errors, `vite build` passes.
+---
+
+## v2.0.857-fix2: Remove redundant "Mod" row label from single-row matrix
+
+**Owner report**: After 3×3 → 1×3, the single remaining row still had a "Mod" label — redundant since there's only one row.
+
+**Fix (2 files)**:
+- `ui/src/App.tsx`: removed the empty corner header cell + `<div className="smp-matrix-row-label">Mod</div>` — the grid now renders just the 3 state columns (long/short/flat) with their cells.
+- `ui/src/index.css`: `.smp-matrix-grid` grid-template-columns `56px repeat(3, 1fr)` → `repeat(3, 1fr)` (no label column needed).
+
+Verified: `tsc --noEmit` zero errors, `vite build` passes, full suite 1981 → 1969 pass (12 pre-existing gitignored failures unrelated).
+---
+
+## v2.0.857-fix-attack3: writeCycle filter object-guard + edge-blend NaN sanitize (2 fixes, 8 new tests)
+
+Round-4 attack on the v2.0.857 suite's surroundings found 2 more issues:
+
+### E1-E3 (CRITICAL): writeCycle filter crashes on malformed entries
+
+**Bug**: The v2.0.823 NaN filter did `a.marketData.price` / `a.consensus.confidence` directly — a malformed entry with `marketData: undefined` or `consensus: null` threw TypeError **inside the filter itself**, killing the entire writeCycle (filter is supposed to REJECT bad entries, not crash on them). E.g. one corrupt analysis → no analyses written that cycle.
+
+**Fix**: Object-shape guards FIRST (`!a || typeof a !== 'object'` / `!a.marketData || typeof a.marketData !== 'object'` / `!a.consensus ...`) before touching fields. Malformed entries now cleanly rejected.
+
+### F2 (MEDIUM): edge-blend NaN → strong edge silently became 'skip'
+
+**Bug**: `computeEdgeForSymbol` blend: `neutralWeight * edgeReport.edgeScore + profileWeight * rpResult.edgeScore` — a NaN `rpResult.edgeScore` (corrupt store entry) made `blendedScore` NaN → `NaN >= 0.55` false → recommendation 'skip' → a strong 0.7 edge silently killed. NaN pollutes downstream (profileEdges.moderate.edgeScore = NaN).
+
+**Fix**: `safeNum(rpResult?.edgeScore, 0)` / `safeNum(rpResult?.samples, 0)` / `safeNum(edgeReport.edgeScore, 0)` before blend — NaN → finite fallback, no pollution.
+
+### Tests
+
+`tests/v2.0.857-fix-attack.test.ts` +8: marketData undefined/null/consensus undefined/entry primitive → rejected (no TypeError); valid passes; NaN rpEdgeScore → finite blendedScore (0.28, no NaN); NaN edgeScore/undefined fields → finite.
+
+**Result**: Full suite 1981 tests → 1969 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` zero errors, `vite build` passes.
+---
+
+## v2.0.857-fix-attack2: supabase-writer updatedAt RangeError + dead per-profile edge computation (2 fixes, 3 new tests)
+
+Round-3 attack on the v2.0.857 suite's surroundings found 2 more issues:
+
+### D1 (CRITICAL): supabase-writer `new Date(a.updatedAt).toISOString()` RangeError
+
+**Bug**: `writeCycle()` maps rows with `updated_at: new Date(a.updatedAt).toISOString()` — the v2.0.823 NaN filter validated price/confidence/SL/TP but NOT updatedAt. An undefined/NaN/negative updatedAt throws RangeError (`Invalid Date.toISOString()`), crashing the entire writeCycle (no analyses written that cycle).
+
+**Fix**: Added `!Number.isFinite(a.updatedAt) || a.updatedAt <= 0 → reject` to the filter — consistent with the other NaN guards. Verified: undefined/NaN/0/negative rejected, valid timestamp passes.
+
+### D2 (MEDIUM): computeEdgeForSymbol looped 3 risk profiles for dead per-profile edges
+
+**Bug**: `computeEdgeForSymbol()` looped `['aggressive','moderate','conservative']` doing 3× MiniLM vector queries per symbol per cycle — but buildAssetAnalysis (moderate-only matrix) ignores profileEdges for aggressive/conservative. 3× wasted queries.
+
+**Fix**: Single moderate query only.
+
+### Tests
+
+`tests/v2.0.857-fix-attack.test.ts` +3: undefined/NaN updatedAt throws RangeError (bug reproduced); fixed filter rejects non-finite/<=0, accepts valid.
+
+**Result**: Full suite 1973 tests → 1961 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` zero errors, `vite build` passes.
+---
+
+## v2.0.857-fix-attack: UI matrix re-layout crash vectors from malformed rows (2 real bugs, 8 tests)
+
+Round-2 attack on the v2.0.857-fix (UI matrix 3×3 → 1×3) found 2 crash vectors from malformed Supabase rows:
+
+### A1 (CRITICAL): renderAnalysisMatrix crashes on matrix:undefined
+
+**Bug**: `const cell = ana.matrix[prof]?.[st]` — the `?.` only protected the profile index, NOT the matrix object itself. A corrupt Supabase row `{matrix: undefined}` → `undefined[prof]` TypeError → UI crash on every pair-card render.
+
+**Fix**: `ana.matrix?.[prof]?.[st]` — optional chain BOTH levels → undefined cell (renders empty hold).
+
+### B1/B3 (HIGH): normSymForAna crashes on null/undefined symbol
+
+**Bug**: `normSymForAna = (sym) => sym.replace(...)` — a malformed Supabase row `{symbol: null}` broke `getAnalysisForSym` → TypeError on every pair-card render.
+
+**Fix**: `typeof sym === 'string' && sym.length > 0 ? ... : ''` — non-string → empty (no match, no crash).
+
+### Tests
+
+`tests/v2.0.857-fix-attack.test.ts` (8 tests): matrix undefined/null/string → undefined cell; valid cell returns; legacy aggressive-only row + moderate PROFILES → empty cell; normSymForAna undefined/null → ''; valid symbol normalizes.
+
+**Result**: Full suite 1970 tests → 1958 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` zero errors, `vite build` passes.
+---
+
+## v2.0.857-fix: UI analysis matrix re-layout — 3×3 → 1×3 (moderate-only)
+
+**Owner report**: Trading Terminal's analysis matrix grid still rendered 3 rows (Aggr/Mod/Cons) after the v2.0.857 profile removal — data was gone but the format wasn't re-laid out, showing two empty rows.
+
+**Fix (2 files)**:
+- `ui/src/App.tsx`: `PROFILES` narrowed `['aggressive','moderate','conservative']` → `['moderate']`. Row label "Mod" (title: moderate baseline). Grid now renders 1 row (moderate) × 3 position states (long/short/flat) — CSS grid unchanged (56px label + 3 state cols).
+- `ui/src/lib/supabase.ts`: `AssetAnalysisRow.matrix` — moderate required, aggressive/conservative optional (backward-compat with pre-v2.0.857 rows still carrying them). New rows have only moderate.
+
+Verified: backend `supabase-writer.ts` writes `a.matrix` directly (already moderate-only). `tsc --noEmit` zero errors, `vite build` passes, full suite 1962 → 1950 pass (12 pre-existing gitignored failures unrelated).
+---
+
+## v2.0.857-attack: Residual aggressive/conservative leaks after profile removal (2 real bugs, 7 tests)
+
+Adversarial attack on the v2.0.857 profile removal found 2 leaks where aggressive/conservative survived:
+
+### V14 (HIGH): Meta-Agent prompt still had full 3-profile CALIBRATION section
+
+**Bug**: `src/agents/meta-agent.ts` system prompt still contained the complete RISK PROFILE CALIBRATION section (~150 lines) with AGGRESSIVE and CONSERVATIVE blocks (close/flip sensitivity, size bias, entry bias, SL/TP guidance). Runtime only runs moderate — so the LLM was instructed with dead rules every cycle:
+- risk of mis-calibration (e.g. "conservative cuts earlier" advice bleeding into behavior despite moderate)
+- ~4.7KB of context tokens wasted per cycle
+
+**Fix**: Replaced the 3-profile section with a moderate-only section (explicitly notes v2.0.857 removal); cleaned the ⚠️ section's aggressive/conservative license references.
+
+### V15 (MEDIUM): self-improver tuned dead SL caps
+
+**Bug**: `CONTINUOUS_BOUNDS` still included `aggressiveSlCap [0.05, 0.09]` and `conservativeSlCap [0.02, 0.04]` — but `dcsSlCap()` now ALWAYS returns 5% (moderate-only). The bandit wasted computation tuning two params with zero consumers + logged misleading values.
+
+**Fix**: Removed both from CONTINUOUS_BOUNDS; convictionGateThreshold + dcsTimeDecayHalfLife retained.
+
+### Tests
+
+`tests/v2.0.857-attack.test.ts` (7 tests): 3-profile blocks absent from prompt; moderate section present; ⚠️ section cleaned; dead SL caps absent from self-improver; live params retained; DCS all-profiles=moderate regression; caps 5%/10% regression. Also updated `tests/evolution-infra-attack.test.ts` (2 assertions: aggressiveSlCap now undefined).
+
+**Result**: Full suite 1962 tests → 1950 pass, 12 pre-existing failures in gitignored `v2.0.854-attack2-nan-price.test.ts` (unrelated). `tsc --noEmit` zero errors.
+---
+
+## v2.0.857: Remove aggressive/conservative risk profiles — moderate-only (12 files)
+
+**Decision (owner)**: The 3-way risk profile selector (Aggr/Moderate/Cons) was redundant — Trading Terminal already has Position Size / Max Portion / Leverage sliders (the REAL risk controls). aggressive/conservative were uncalibrated placeholders (v2.0.822) with conviction ×0.7/×1.3 linear scaling — a "fake sense of control". Removed.
+
+**Changes (12 files)**:
+- `src/types/index.ts`: RiskProfile union kept (3 values) for backward-compat READING of historical persisted state (component-attribution.json / rp-edge-store.json may carry aggressive/conservative); deprecated JSDoc. `AnalysisMatrix` reduced to `{ moderate: Record<PositionState, MatrixCell> }`.
+- `src/edge/dcs-calculator.ts`: all 6 functions (convictionFactor/SlMultiplier/TpMultiplier/SizeFactor/SlCap/TpCap) — aggressive/conservative branches removed, always moderate (1.0 / 5% / 10%). Signature kept for compat.
+- `src/services/analysis-matrix.ts`: buildProfileCell moderate-only (DCS never affects conviction); buildMatrix outputs only `moderate` key (client reads `matrix.moderate[state]`).
+- `src/analysis/smart-sltp.ts`: SL/TP multipliers always 1.0 (DCS scaling block removed); caps = moderate (5%/10%/0.3%).
+- `src/trading/trading-manager.ts`: setRiskProfile coerces non-moderate → moderate (warn).
+- `src/market-agent/index.ts`: setRiskProfile coerces to moderate; getRiskProfile always 'moderate'.
+- `src/evolution/persistence.ts`: load coerces persisted aggressive/conservative → moderate.
+- `src/api-server.ts`: /risk-profile endpoint only accepts 'moderate' (else 400 with clear message).
+- `src/edge/risk-profile-edge-store.ts`: new records stored as moderate; historical aggressive/conservative untouched (load() tolerant).
+- `src/evolution/component-attribution.ts`: new records riskProfile='moderate'; historical untouched.
+- `src/index.ts`: profit-guard tolerance / multi-symbol multiplier / flip tolerance / risk threshold multiplier — all fixed moderate values (aggressive/conservative branches removed).
+- `ui/src/App.tsx`: Risk Profile 3-segment slider removed (Position Size/Max Portion/Leverage remain). `ui/src/types.ts` riskProfile type narrowed.
+
+**Tests**: Updated analysis-matrix (12), dcs-attacks (70), dcs-creative (69), dcs-surrounding (25), edge-attack (94), v2.0.849-smart-sltp-attack (21) — aggressive/conservative expectations → moderate. Full suite 1955 tests → 1943 pass, 12 pre-existing gitignored failures (unrelated). `tsc --noEmit` zero errors, `vite build` passes.
+---
+
 ## v2.0.856-attack5: CLI min-samples validation + paper NaN guard + UI type guard + overflow clamp (4 fixes, 10 tests)
 
 Round-5 attack on the v2.0.856 suite found 4 more issues:

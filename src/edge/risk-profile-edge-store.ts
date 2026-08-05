@@ -109,7 +109,11 @@ export class RiskProfileEdgeStore {
       embedding,
       symbol: input.symbol,
       side: input.side,
-      riskProfile: input.riskProfile,
+      // v2.0.857: risk profiles removed — always store as moderate. Historical
+      // aggressive/conservative records in persisted state remain untouched
+      // (load() tolerates them for backward compat), but NEW records are
+      // moderate-only so per-profile queries stay consistent.
+      riskProfile: 'moderate' as RiskProfile,
       regime: input.regime,
       realizedPnlPct: safeNum(input.realizedPnlPct, 0),
       outcome: input.outcome,

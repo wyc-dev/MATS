@@ -27,6 +27,8 @@ export class SupabaseAnalysisWriter {
   private enabled = false;
   private lastWriteAt = 0;
   private lastWriteCount = 0;
+  /** v2.0.857-fix2: last SUPABASE_URL we configured with (reconfigure no-op guard). */
+  private lastUrl = '';
 
   /** Initialise from env. No-op (disabled) if the keys are absent — the
    *  system runs in local-only mode and just logs the analyses. */
@@ -45,6 +47,37 @@ export class SupabaseAnalysisWriter {
       log.info('Supabase analysis writer enabled');
     } catch (err) {
       log.error(`Failed to init Supabase client: ${err instanceof Error ? err.message : String(err)} — writer disabled`);
+    }
+  }
+
+  /** v2.0.857-fix2: Re-initialise from the CURRENT env (process.env), so the
+   *  Settings modal can enable Supabase WITHOUT a backend restart. No-op if
+   *  the env is unchanged or keys are still absent. Call after an env update
+   *  that touched SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY. */
+  reconfigure(): void {
+    const url = process.env['SUPABASE_URL'] ?? '';
+    const key = process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? '';
+    // If already enabled with these exact values → no-op (avoid churn).
+    if (this.enabled && this.lastUrl === url) return;
+    if (!url || !key) {
+      this.client = null;
+      this.enabled = false;
+      this.lastUrl = url;
+      log.warn('[supabase-writer] reconfigure: keys absent — writer disabled (local-only)');
+      return;
+    }
+    try {
+      this.client = createClient(url, key, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      this.enabled = true;
+      this.lastUrl = url;
+      log.info('[supabase-writer] reconfigured from env — writer enabled');
+    } catch (err) {
+      this.client = null;
+      this.enabled = false;
+      this.lastUrl = url;
+      log.error(`[supabase-writer] reconfigure failed: ${err instanceof Error ? err.message : String(err)} — writer disabled`);
     }
   }
 
@@ -72,12 +105,24 @@ export class SupabaseAnalysisWriter {
 
     // v2.0.823: Validate analyses before writing — reject NaN/Infinity in
     // numeric fields that would corrupt the DB or crash the client.
+    // v2.0.857-fix-attack (D1): also reject non-finite updatedAt —
+    // `new Date(a.updatedAt).toISOString()` throws RangeError on
+    // undefined/NaN/negative, crashing the entire writeCycle.
     const validAnalyses = analyses.filter(a => {
+      // v2.0.857-fix-attack2 (E1-E3): guard the OBJECTS before touching fields —
+      // a malformed entry with marketData:undefined would crash at
+      // a.marketData.price (TypeError), killing the whole filter (and thus
+      // writeCycle). The filter is supposed to REJECT bad entries, not crash on
+      // them. Check object shape first, then numeric fields.
+      if (!a || typeof a !== 'object') return false;
       if (!a.symbol || typeof a.symbol !== 'string') return false;
+      if (!a.marketData || typeof a.marketData !== 'object') return false;
+      if (!a.consensus || typeof a.consensus !== 'object') return false;
       if (!Number.isFinite(a.marketData.price) || a.marketData.price < 0) return false;
       if (!Number.isFinite(a.consensus.confidence) || a.consensus.confidence < 0 || a.consensus.confidence > 1) return false;
       if (a.consensus.stopLoss != null && !Number.isFinite(a.consensus.stopLoss)) return false;
       if (a.consensus.takeProfit != null && !Number.isFinite(a.consensus.takeProfit)) return false;
+      if (!Number.isFinite(a.updatedAt) || a.updatedAt <= 0) return false;
       return true;
     });
     if (validAnalyses.length < analyses.length) {

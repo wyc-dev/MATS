@@ -71,8 +71,9 @@ const CONTINUOUS_BOUNDS: Array<{
   initial: number;
 }> = [
   { name: 'convictionGateThreshold', min: 0.40, max: 0.60, step: 0.01, initial: 0.50 },
-  { name: 'aggressiveSlCap', min: 0.05, max: 0.09, step: 0.005, initial: 0.07 },
-  { name: 'conservativeSlCap', min: 0.02, max: 0.04, step: 0.005, initial: 0.03 },
+  // v2.0.857: aggressiveSlCap / conservativeSlCap REMOVED — risk profiles are
+  // gone (moderate-only); dcsSlCap() always returns 5%. Tuning dead params was
+  // wasted computation + misleading logs.
   { name: 'dcsTimeDecayHalfLife', min: 100, max: 400, step: 25, initial: 200 },
 ];
 
