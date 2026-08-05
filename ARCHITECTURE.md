@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.858
+> **作者**: YC Wong · **版本**: 2.0.860
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -23,7 +23,7 @@
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 認知演化管線（v2.0.858: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Discovery Confidence + 1 Component Attribution）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + DCS v2 v2.0.836 + Component Attribution v2.0.844，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 Discovery Confidence Score。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge）。v2.0.849-851 將 momentum/exec-lens/confidence SL widening 移植到 live computeSmartSLTP + 修復 TradeRecord.closeReason 資料缺失（RIL + trade-audit 可以分到「SL 太緊」定「thesis 錯」）。v2.0.853 修復 closeTrade dual-mode guard（dual 模式下所有平倉被靜默跳過）+ 3 個缺失 closeReason 標記 + tradingManager.closePosition 用滯後 WS 價格代替實際 HL fill + UI SSE 退避。**v2.0.855 學習管道修復**：aligned shadow 恆開（real-trade cycles 都開，Q-RL 不再餓死）+ shadow_blind OLR 計數器（v2.0.834 承諾但從未 implement）+ thesis-invalidation closeReason 全覆蓋。**v2.0.855-fix**：Q-RL EXP backfill（1072 筆歷史交易 populate Q-table，令 discoverPatterns 即刻有嘢掃）。**v2.0.855-attack**：7 個修復引入嘅漏洞全部修補（OLR counter 字符串/負數消毒、closeReason 白名單、aligned-shadow weightedDirection 用真 LLM lean）。**v2.0.855-attack2**：Q-RL binRegime 邊界同 regimeToOrdinal 完全錯位（6/7 regime 入錯桶，bull/bear 對調）已對齊。**v2.0.856**：Attribution signal 契約修正（SELL 反轉 bug）+ side/symbol guard 補完（normalizeTradeSide，8 call site 強制 coerce 成 SELL 嘅 bug）+ edge-audit 工具。**v2.0.857 移除 aggressive/conservative 風險等級（moderate-only）**：12 個檔案——3×3 矩陣縮減為 1×3、DCS 6 函數全部 moderate、後端 riskProfile 恆為 moderate、Meta-Agent prompt 改 moderate-only（慳 ~4.7KB context/cycle）。**v2.0.858 解鎖 cycle 期間市場選擇**：select-symbol 延遲應用 + throttle coalescing（唔再掉更新）+ symbol-set drift check（唔再淨比 count）|
+| **自我演化** | 認知演化管線（v2.0.860: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 Component Attribution）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + Component Attribution v2.0.844，從每筆交易學習。v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge）。v2.0.849-851 將 momentum/exec-lens/confidence SL widening 移植到 live computeSmartSLTP + 修復 TradeRecord.closeReason 資料缺失（RIL + trade-audit 可以分到「SL 太緊」定「thesis 錯」）。v2.0.853 修復 closeTrade dual-mode guard（dual 模式下所有平倉被靜默跳過）+ 3 個缺失 closeReason 標記 + tradingManager.closePosition 用滯後 WS 價格代替實際 HL fill + UI SSE 退避。**v2.0.855 學習管道修復**：aligned shadow 恆開（real-trade cycles 都開，Q-RL 不再餓死）+ shadow_blind OLR 計數器（v2.0.834 承諾但從未 implement）+ thesis-invalidation closeReason 全覆蓋。**v2.0.855-fix**：Q-RL EXP backfill（1072 筆歷史交易 populate Q-table，令 discoverPatterns 即刻有嘢掃）。**v2.0.855-attack**：7 個修復引入嘅漏洞全部修補（OLR counter 字符串/負數消毒、closeReason 白名單、aligned-shadow weightedDirection 用真 LLM lean）。**v2.0.855-attack2**：Q-RL binRegime 邊界同 regimeToOrdinal 完全錯位（6/7 regime 入錯桶，bull/bear 對調）已對齊。**v2.0.856**：Attribution signal 契約修正（SELL 反轉 bug）+ side/symbol guard 補完（normalizeTradeSide，8 call site 強制 coerce 成 SELL 嘅 bug）+ edge-audit 工具。**v2.0.857 移除 aggressive/conservative 風險等級（moderate-only）**：12 個檔案——3×3 矩陣縮減為 1×3、後端 riskProfile 恆為 moderate、Meta-Agent prompt 改 moderate-only（慳 ~4.7KB context/cycle）。**v2.0.858 解鎖 cycle 期間市場選擇**：select-symbol 延遲應用 + throttle coalescing（唔再掉更新）+ symbol-set drift check（唔再淨比 count）。**v2.0.859 移除零消費者組件 + 修復學習管道**：backfill 重複喂飼（Q-RL/OLR persisted flag）+ OLR calibration shrinkage（斬 overconfidence）。**v2.0.860 三因子探索 + adaptive 歸一 + SE operator-conditioned context**（Frontis-MA1/OpenMLE-Evo：`U = 1.0×score + 0.6×progress + 0.3×novelty`，score 對 cell 自己 reward 歷史 min-max 歸一；SE 診斷只對 priority 文件畀全文、其餘 stub）|
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
 | **風險等級客戶端選擇** | 後端運算單一 moderate 等級嘅訊號矩陣（v2.0.857 移除 aggressive/conservative）；客戶端按用戶選擇讀取對應格（v2.0.822→857）|
@@ -91,7 +91,7 @@
 │   • HACP 多模型平行推理（僅關鍵決策點觸發 LLM）                 │
 │   • 6 智能體 + Meta-Agent 仲裁 + Skeptics 邏輯審查             │
 │   • Entry Thesis System + 暗黑心理學 + 結構化辯論 + 加權投票    │
-│   • 認知演化管線（v2.0.858: 15 active + Edge Validation + Q-RL Alpha Discovery + DCS v2 + Component Attribution；4 組件已移除；v2.0.857 風險等級 moderate-only）│
+│   • 認知演化管線（v2.0.860: 15 active + Edge Validation + Q-RL Alpha Discovery + Component Attribution；4 組件已移除；v2.0.857 風險等級 moderate-only）│
 │   • Plan G Dynamic Threshold [45-55%] + 乘法 Penalty 衰減       │
 │   • SystemGuard（5 層系統級保護）                               │
 ├──────────────────────────────────────────────────────────────┤
@@ -164,14 +164,12 @@ src/
 ├── services/                # v2.0.822: Analysis Matrix + Supabase writer
 │   ├── analysis-matrix.ts   # buildAssetAnalysis()：共識 → 1×3 風險矩陣（v2.0.857）+ edgeReport 注入（v2.0.833）
 │   └── supabase-writer.ts   # SupabaseAnalysisWriter：每 cycle 寫入 asset_analyses 表（v2.0.822+823）
-├── edge/                    # v2.0.833: Edge Validation Layer（alpha 測謊機）+ v2.0.836 DCS v2
+├── edge/                    # v2.0.833: Edge Validation Layer（alpha 測謊機）
 │   ├── edge-config.ts       # Zod env var：threshold + weight + sample cap 10000
 │   ├── edge-calculator.ts   # Task 1A：5-component regime-weighted edgeScore
 │   ├── execution-tracker.ts # Task 1B：slippage + funding → 可實現 PnL 校準
 │   ├── stability-monitor.ts  # Task 1C：perturbation + cross-time 穩定性
-│   ├── risk-profile-edge-store.ts # MiniLM 向量 DB：per-profile conditional edge
 │   ├── backtest-validation.ts # Sharpe/Sortino/Calmar/PF/bootstrap/DSR/walk-forward
-│   └── dcs-calculator.ts    # v2.0.836: DCS v2 連續 [0,1] Discovery Confidence Score
 ├── api-server.ts            # REST + SSE (:3456) + static UI（legacy）
 └── index.ts                 # 系統 orchestrator（決策循環 + 矩陣寫入 ~line 6478）
 ui/                          # Legacy React + Vite dashboard（已由 mats_app 取代）
@@ -208,7 +206,7 @@ moderate     │  baseline（已校準）│  baseline         │  baseline
 | `long` | `hold` | `flip` | `hold`（或 `close` 若 closePosition）|
 | `short` | `flip` | `hold` | `hold`（或 `close` 若 closePosition）|
 
-**`moderate` = 已校準 baseline**：使用 live consensus 機制（conviction gate、OLR blend、combo WR override）。v2.0.857 後 aggressive/conservative placeholder 已移除——`buildProfileCell()` 只輸出 moderate 格，conviction 係 live consensus 原值（DCS 唔再縮放）。
+**`moderate` = 已校準 baseline**：使用 live consensus 機制（conviction gate、OLR blend、combo WR override）。v2.0.857 後 aggressive/conservative placeholder 已移除——`buildProfileCell()` 只輸出 moderate 格，conviction 係 live consensus 原值。
 
 ### 寫入路徑（`src/index.ts` ~line 6478）
 
@@ -572,7 +570,7 @@ FINAL CONFIDENCE:
 
 ## 自我演化系統
 
-MATS 嘅核心競爭力係**認知演化管線**（v2.0.858: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 DCS v2 Discovery Confidence + 1 Component Attribution）——每筆交易結果都會餵回學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。v2.0.833 移除咗 4 個 0-inference 組件（temporal-attention / cross-symbol / reward-shaping / world-model）同暫停 active-exploration。v2.0.835 新增 Q-RL Alpha Discovery（首個可以發現新 alpha 嘅組件）+ Factor-Tagged Aligned Shadow。v2.0.836 新增 DCS v2 Discovery Confidence Score（連續 [0,1] 量化 Q-RL 證據）。**v2.0.857 移除風險等級區別化（moderate-only）**——DCS 6 函數全部 moderate，矩陣 3×3 → 1×3。**v2.0.858 解鎖 cycle 期間市場選擇**。以下逐層詳述：
+MATS 嘅核心競爭力係**認知演化管線**（v2.0.860: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 Component Attribution）——每筆交易結果都會餵回學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。v2.0.833 移除咗 4 個 0-inference 組件（temporal-attention / cross-symbol / reward-shaping / world-model）同暫停 active-exploration。v2.0.835 新增 Q-RL Alpha Discovery（首個可以發現新 alpha 嘅組件）+ Factor-Tagged Aligned Shadow。**v2.0.857 移除風險等級區別化（moderate-only）**——矩陣 3×3 → 1×3。**v2.0.858 解鎖 cycle 期間市場選擇**。**v2.0.859 移除零消費者組件 + 修復 Q-RL/OLR backfill 重複喂飼 + OLR calibration shrinkage**。**v2.0.860 三因子探索 + adaptive 歸一 + SE operator-conditioned context**（Frontis-MA1/OpenMLE-Evo）。以下逐層詳述：
 
 ### OLR — Online Logistic Regression（`olr-engine.ts`）
 
@@ -1043,18 +1041,17 @@ Plan G（6 小時 idle 後）：
 
 **核心定位**：Edge 系統唔係 alpha 嘅來源，係 alpha 嘅測謊機。佢唔會製造盈利，佢會令系統知道「有冇 edge、邊度有 edge」。盈利 = alpha × 執行 × 穩定性；Edge 層只量化 alpha + 強制穩定性。
 
-**6 個組件**（`src/edge/`）：
+**5 個組件**（`src/edge/`）：
 
 | 組件 | 檔案 | 作用 |
 |:-----|:-----|:-----|
 | Edge Config | `edge-config.ts` | 所有 threshold + weight 經 Zod env var。Regime-aware 5-component 加權。Sample cap 10000。與 `src/config/` 分離（edge 控制訊號質量量度，risk 控制後端帳戶） |
 | Edge Calculator (1A) | `edge-calculator.ts` | 5-component regime-weighted edgeScore：directionalEdge（shadow WR）+ learnedEdge（OLR 校準）+ comboEdge（Wilson LB）+ pathEdge（First-Passage）+ realizedEdge（WR×Sharpe）。Confidence label 按最少 sample。低 confidence 永遠唔可以 `trade`（最多 `caution`）。`Object.hasOwn` 防原型污染。`skipEdgeReport` 返回 `caution`（唔係 `skip`）—冷啟動唔可以 block |
-| Execution Tracker (1B) | `execution-tracker.ts` | 記錄真實 slippage + funding per (symbol, side)。`calibratePnlLabel()` 將理論 PnL → 可實現 PnL。Cold-start passthrough（\u003c20 sample 唔校準）。Ring buffer bounded。Side-aware slippage（buy: fill\u003esignal=bad；sell: fill\u003csignal=bad） |
+| Execution Tracker (1B) | `execution-tracker.ts` | 記錄真實 slippage + funding per (symbol, side)。`calibratePnlLabel()` 將理論 PnL → 可實現 PnL。Cold-start passthrough（<20 sample 唔校準）。Ring buffer bounded。Side-aware slippage（buy: fill>signal=bad；sell: fill<signal=bad） |
 | Stability Monitor (1C) | `stability-monitor.ts` | ±5% perturbation test + cross-time consistency。Stability factor [0.5, 1.0] 乘 conviction。純數學，毫秒級 |
-| Risk-Profile Edge Store | `risk-profile-edge-store.ts` | MiniLM 384-d 向量 DB。Ring buffer 10k。Brute-force cosine over (market + profile) embeddings。Per-profile conditional edge → 3 個 edgeScore per asset。Wilson LB + 30 日 time-decay。Cold-start neutral 0.5 |
 | Backtest Validation | `backtest-validation.ts` | 計量金融標準：Sharpe / Sortino / Calmar / Profit Factor / Expectancy / Max Drawdown / Information Ratio vs buy-and-hold。統計顯著性：stationary bootstrap p-value（Politis & Romano 1994）+ Deflated Sharpe Ratio（Bailey & López de Prado 2014，修正 multiple testing）+ walk-forward 70/30 IS/OOS split |
 
-**整合**：`buildAssetAnalysis()` 接受 `edgeReport`（風險中性）+ `profileEdges`（per-profile 條件化）。`MatrixCell.edge?` + `AssetAnalysis.edgeReport?` 加入 types。`skip` recommendation 強制 cell action = `hold`（client 唔執行無 edge 訊號）。`caution` 唔強制 hold（系統可以 bootstrap）。
+**整合**：`buildAssetAnalysis()` 接受 `edgeReport`（風險中性）。`MatrixCell.edge?` + `AssetAnalysis.edgeReport?` 加入 types。`skip` recommendation 強制 cell action = `hold`（client 唔執行無 edge 訊號）。`caution` 唔強制 hold（系統可以 bootstrap）。
 
 **冷啟動安全**：零 sample → `edgeScore=0.5`（中性）+ `recommendation=caution`（唔係 skip）。全新系統可以交易去累積 sample。無知 ≠ 無 edge 嘅證據。
 
@@ -1107,7 +1104,6 @@ Plan G（6 小時 idle 後）：
 | `openAlignedShadow()` | 跟隨 LLM 共識方向，接受外部 SL/TP 參數 + agentVotes + primaryDriver |
 | `hasAlignedShadow()` | Blind skip check（避免重複 shadow） |
 | OLR source routing | `checkPositions` 按 `shadowType` 路由：aligned → 'shadow'（weight 1），blind → 'shadow_blind'（weight 0.1） |
-| `buildEdgeText` factor tagging | agentVotes + primaryDriver 注入 MiniLM embedding text → factor-tagged queries |
 
 **OLR source weights**：`shadow=1, shadow_blind=0.1, paper=2, real=4, backfill=0.1`。Blind shadow downweighted 10×（distribution shift）。
 
@@ -1142,7 +1138,7 @@ Adversarial audit（v2.0.855 系列）對照真實持久化狀態（`shadow-stat
 | v2.0.855-attack | 7 個修復引入嘅漏洞 | OLR counter `?? 0` 擋唔住字符串/負數；closeReason 空字符串/typo 穿透（`'' ?? x === ''`）令學習權重爆 3.3×；aligned-shadow weightedDirection 用咗 Q-RL 探索 action |
 | v2.0.855-attack2 | **binRegime 對齊** | `binRegime()` 邊界同 `regimeToOrdinal()` **完全錯位**（6/7 regime 入錯桶，bull/bear 對調）→ 每個 Q-RL cell 標籤錯誤 |
 
-**Q-RL 而家三通道完整**：live aligned shadow（修好）+ EXP backfill（新加）+ 正確 regime 分桶（修好）——`discoverPatterns()` 即刻有嘢掃，DCS 即刻有 discovery evidence。
+**Q-RL 而家三通道完整**：live aligned shadow（修好）+ EXP backfill（新加）+ 正確 regime 分桶（修好）——`discoverPatterns()` 即刻有嘢掃。
 
 ---
 
