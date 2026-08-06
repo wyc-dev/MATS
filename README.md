@@ -1,14 +1,17 @@
 # MATS — The First Self-Evolving AI Trading Brain
 
-**9 AI agents debate every trade. A Skeptics agent vetoes bad ones. A System Engineer agent autonomously fixes its own bugs. The system learns from every trade outcome — not just whether it won or lost, but WHY it won or lost, under WHAT market conditions, and feeds that back into the next decision.**
+**9 AI agents debate every trade. Skeptics stress-tests every thesis. System Engineer fixes its own bugs. A 33-layer cognitive brain learns from every outcome — why it won, why it lost, and how to win next time.**
 
-A dedicated Skeptics agent stress-tests every position against historical experience data. The system self-evolves via a **33-layer cognitive evolution pipeline** — stacking statistical models, learned embeddings, attention mechanisms, reinforcement learning, and an LLM world model to answer *which market conditions* precede wins, *why* trades lose, and *how* to place better exits. Highlights:
-- **LLM World-Model Layer** (v2.0.863) — the LLM is the *direction source*: it reads K-LINE charts (1h×30 trend + 5m×60 timing, dual timeframe) and reasons from world events; statistics calibrate its claims. Chart-aware conviction (K-LINE opposite ×0.75, data-unreliable ×0.85) + **LLM Conviction Calibrator** (self-reported 0.85 but historical bin 40% → 40%) make LLM output a *quantifiable, calibrated* signal.
-- **Q-RL Alpha Discovery + Direction Signal** (v2.0.835/861) — the first component that can *discover* new alpha via ε-greedy exploration; a regime-conditioned expectancy oracle (median, skew-robust) wired into the conviction gate.
-- **Edge Validation** — an alpha "lie detector" that quantifies whether each signal has genuine statistical edge, stopping trades where no edge exists.
-- **PAEL Exit-Price Learner** (v2.0.862) — per-asset MFE/MAE percentile profiles (60-day window) → one-vote lock-profit gate; SL is never touched.
-- **Smart SL/TP + MFE calibration** — institutional SL/TP placement with a leverage-aware floor (so 10x positions aren't noise-stopped) and TP targets derived from real market price-extension data, directly reducing "profit given back."
-- **Close-Context Learning** — learns not just win/loss, but *how* each trade closed (tight-SL loss ≠ bad entry), so learning weights are accurate.
+The **industry-first self-evolving trading brain** — where an LLM **reads the charts** and statistics keep it honest. Highlights:
+
+- 🧠 **LLM World-Model Layer** — the LLM is the *direction source*: reads K-LINE charts (1h×30 + 5m×60, dual-timeframe) + reasons from world events; a **Conviction Calibrator** turns self-reported confidence into a *quantifiable* signal — claim 0.85, get 0.85, only if history backs it.
+- ⚡ **Q-RL Alpha Discovery** — *discovers* new alpha (not just measures it) via ε-greedy exploration + a skew-robust expectancy oracle wired straight into the gate.
+- 🛡️ **Edge Validation** — an alpha lie detector that refuses to trade where no edge exists.
+- 💰 **PAEL Exit-Price Learner** — learns each asset's real MFE/MAE profile (60-day window) → locks profit at the perfect moment. Your stop-loss is never touched.
+- 🎯 **Smart SL/TP + MFE calibration** — leverage-aware floors so 10x positions don't get noise-stopped; TP from real price-extension data — stop giving profit back.
+- 🔄 **Close-Context Learning** — learns *how* trades close (tight-SL loss ≠ bad entry), so every lesson is accurate.
+
+**33 layers of cognition. Zero manual tuning. It evolves its own strategy — relentlessly.**
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -129,8 +132,8 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 │  │ • parallel multi-model inference                                       │  │
 │  │ • 5 Sub-Agents → Skeptics → Meta-Agent                                 │  │
 │  │ • entry thesis + dark psychology + weighted voting                     │  │
-│  │ • Self-evolution (33 layers: OLR → NA → AttnRes → Q-RL → Attribution →│  │
-    │  │  LLM World-Model, v2.0.863)                                           │  │
+│  │ • Self-evolution (33 layers: OLR → NA → AttnRes → Q-RL → Attribution → │  │
+│  │  LLM World-Model, v2.0.863)                                            │  │
 │  │ • Numeric Autoencoder (learned market-condition embedding)             │  │
 │  │ • AttnRes cycle-history retrieval (K3 dual pseudo-query)               │  │
 │  │ • Anti-pattern memory (failure lesson clustering)                      │  │
@@ -142,7 +145,7 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 │  │ • Close-Context Learning (closeReason+slNarrowed, v2.0.226)            │  │
 │  │ • Plan G dynamic threshold (5-factor [45-55%] + penalty decay)         │  │
 │  │ • Edge Validation (v2.0.833): edge-calculator + execution-tracker +    │  │
-│  │ stability-monitor + backtest validation (Sharpe / DSR / walk-forward) │  │
+│  │ stability-monitor + backtest validation (Sharpe / DSR / walk-forward)  │  │
 │  │ • Q-RL Alpha Discovery (v2.0.835): 270-cell Q-table + ε-greedy +       │  │
 │  │ Wilson LB + BH-FDR + Factor-Tagged Aligned Shadow                      │  │
 │  │ • Q-RL Direction Signal (v2.0.861): expectancy oracle + shadow A/B arm │  │
