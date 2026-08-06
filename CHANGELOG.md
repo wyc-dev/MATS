@@ -3338,3 +3338,24 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **設計原則**:主神嘅「TP 一票通過、SL 保留空間」——鎖利係「賺夠就走」(離場),唔係「收窄 SL」(俾噪音掃走)。trending regime 用 p90 保守閾值防截短趨勢 profit。模擬已證實(Phase B):鎖利路徑 expectancy +42%,大贏家保留 100%,轉換 26 筆 A蝕→B賺。
 
 **驗證**:`tests/exit-price-lock.test.ts`(5 tests——白名單 + sanitize + learning weight 0.5 對比 full-weight sl_tp)。`tsc --noEmit` 零錯誤。全 regression 1970/1982(12 pre-existing `getBalance` API 腐敗)。
+
+---
+
+## v2.0.862-fund: PAEL — RECENT-trades guarantee + size-agnostic slippage guard
+
+**主神要求**:① 確保用「最近交易嘅 Max Value Reached 百分比」判定典型區;② 大資金即將放入,必須大小資金兼顧。
+
+**修正 1 — RECENT 保證**(`exit-price-learner.ts`):
+- **時間窗 `maxAgeDays: 60`**:`getExitProfile()` 只用 60 日內 records——MFE/MAE 分佈隨 regime drift,6 個月前嘅 trade 對今日延伸冇參考價值(同 rolling cap 100 筆雙層 bound)
+- **backfill 顯式時間排序**:唔再依賴 portfolio 順序(之前係脆)——按 closedAt 排序後先餵 rolling cap,確保保留嘅係最新
+- **確認**:MFE% = (maxValueReached − margin)/margin/leverage——**純百分比,scale-invariant**
+
+**修正 2 — 大小資金兼顧**(`index.ts` gate + MFE CHECK block):
+- **滑點調整閾值**:`threshold = (p75×0.8 或 trending p90) + avgSlippageBps/10000`
+  - MFE% 係百分比(同資金無關),但**執行價唔係**——大資金喺薄 book(xyz: 系列)fill 差
+  - 大資金(高滑點)→ 鎖利閾值自動提高(確保扣滑點後仍然 profit > 0)
+  - 細資金(低滑點)→ 標準閾值
+  - 滑點來源:`execution-tracker.getStats(sym, side).avgSlippageBps`(per-symbol per-side 實測)
+- **驗證**:MFE% median inv<20 (0.32%) vs inv>=50 (0.41%)——細資金範圍內大致一致,百分比 scale-invariant 有初步數據支持;大資金由滑點 guard 補償執行差
+
+**測試**:`tests/exit-price-learner.test.ts` 加 2 個時間窗測試(26/26)。`tsc --noEmit` 零錯誤。
