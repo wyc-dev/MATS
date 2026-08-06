@@ -7,6 +7,23 @@
 
 ---
 
+## 客戶端生態：mats_app & mats_frontend（v2.0.862）
+
+MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊號運算大腦（HACP 共識 → 1×3 矩陣 → Supabase）。
+
+| 客戶端 | 定位 | 執行 | 讀取 |
+|:-------|:-----|:-----|:-----|
+| **mats_app** | Expo React Native 手機 app（官方客戶端） | 用戶喺 app 揀風險等級 + 持倉狀態 → 對應矩陣格 → paper/real 執行 | Supabase `asset_analyses`（1×3 矩陣） |
+| **mats_frontend** | Web 純客戶端（零 AI 運算，獨立 folder `/Users/y.c./Downloads/MATS_Frontend`） | paper = 前端 PaperEngine 計算寫 Supabase；real = 用戶 wallet 自託管簽名（HL API） | Supabase `asset_analyses` + `ui_snapshots`（後端每 cycle clean-snapshot feed，含完整 agent_thoughts）+ 用戶 section（RLS） |
+
+**核心原則**：
+- 後端每 cycle：HACP 共識 → `asset_analyses`（矩陣）+ `ui_snapshots`（完整 UI 快照，R6 完整 agent_thoughts）→ Supabase
+- 兩個客戶端都唔做任何 LLM/agent 推理——純讀取 + 執行
+- `ui_snapshots`（migration 19）：按 section 拆行（status/portfolio/market_state/consensus/agent_thoughts/evolution/misc），後端 `writeUiSnapshot()` 每 cycle INSERT 先行 + DELETE 舊 cycle
+- 用戶 section（`portfolios`/`positions`/`trades`/`orders`/`user_risk_prefs`）：RLS select-own，寫入經 security-definer RPC
+
+**詳細建構方案見 `frontend.md`（gitignore 排除——設計草稿，唔入版本庫）。**
+
 ## 概述
 
 **MATS**（Multi Agent Trading System）係一個具備自我演化能力嘅多智能體量化訊號系統。核心決策引擎為 **HACP（Hyper-Accelerated Cognition Protocol）**——結構化多 LLM 辯論協議。在 **Hyperliquid（9 perpetual DEXs, 416 assets）** 市場上計算機構級交易訊號。
