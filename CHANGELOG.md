@@ -3438,3 +3438,20 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
   - `orders`(paper + real 統一,參考 mats_app format:signal_cycle/signal_confidence/trade_mode/fill/exit/pnl + RLS select-own,寫入經 RPC)
 
 **待做**(R2/R5/R7 裁決後):Settings modal、Pause/Shutdown 功能、權限分級;MATS_Frontend 前端開發(§九 階段 2-6)。
+
+---
+
+## v2.0.862-judge: Direction Health Block — per-symbol 壓倒性負面數據注入(提高判斷力,唔 hard block)
+
+**主神指令**:「我唔希望 hard block,我係想提高判斷力」——回應 trade-audit 發現(BUY MU/SKHX 10 連蝕,cond WR 10-15% 但照開,LLM theses 引用 P=100% overconfident)。
+
+**根因**:combo WR block 只注入 **activeSymbol**——MU/SKHX 非 active 時,佢哋嘅決策 context 冇「66 筆 23% WR,淨 -10 USD」呢個數據 → LLM 只見到 OLR 高 P(win) → 開咗。
+
+**修復**(`src/index.ts`):`buildDirectionHealthBlock()` 對 **每個 trading symbol** 注入:
+- 🔴 **壓倒性負面警告**(combo WR <25% + Wilson <15% + n≥10 + netPnl<0):「歷史 N 筆只有 X% 勝率,淨蝕 $Y——除非有 NEW catalyst 明確改變呢個歷史統計,否則唔應該開。若 OLR 顯示高 P(win),可能 overfit——以 per-symbol 歷史 combo 為準」
+- ⚠️ **最近 7 日 real 表現**(n≥3 且 WR<30%):「近期實際表現差,需要額外證據先好開」
+- **純資訊注入,無 hard gate**——LLM 見到數據自行判斷(主神要求)
+
+**效果**:SKHX BUY low_vol(23%, n=66, -10.03 USD)而家會喺 Meta-Agent 開倉決策前出現 🔴 警告——LLM 必須有 NEW catalyst 先可以正當化開倉;同時提示 OLR overfit 可能,防止 P=100% 自欺。
+
+**驗證**:`tsc --noEmit` 零錯誤。全 regression 1988/2000(12 pre-existing)。
