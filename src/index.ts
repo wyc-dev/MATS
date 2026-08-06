@@ -64,6 +64,7 @@ import { calculateTakerFee, calculateFundingCost, getFeeSummary } from './tradin
 import { getSRZones } from './analysis/support-resistance.ts';
 import { setExecutionLensProvider, prepareExecutionLens, clearExecutionLens, type ExecutionLensData, getATR } from './analysis/atr.ts';
 import { summarizeKlines } from './analysis/kline-structure.ts';
+import { candleCache } from './data/candle-cache.ts';
 import { evaluateDataQuality } from './analysis/data-quality.ts';
 import { computeChartConvictionMultiplier } from './analysis/chart-conviction.ts';
 import { classifyThesisCatalyst } from './analysis/thesis-catalyst.ts';
@@ -113,27 +114,6 @@ const chartConvictionConfig = { enabled: parseBlockBool(process.env['CHART_AWARE
  *  candleSnapshot 頻繁 fetch。5 分鐘 cycle 每 cycle 一次;cycle < TTL 時用 cache。 */
 const KLINE_CACHE_TTL_MS = 120_000; // 2 分鐘
 
-/** v2.0.863: Fetch 1h candles (o/h/l/c/v) for K-LINE structure — HL candleSnapshot,
- *  rate-limited via MarketAgent.hlFetch(same queue as getATR/fetchCandleHighLow). */
-async function fetchCandleSnapshot(symbol: string, count: number): Promise<Array<{ o: number; h: number; l: number; c: number; v: number }> | null> {
-  try {
-    const { MarketAgent } = await import('./market-agent/index.ts');
-    const coin = symbol.includes(':') ? symbol : symbol.toUpperCase();
-    const endTime = Date.now();
-    const startTime = endTime - count * 3_600_000;
-    const data = await MarketAgent.hlFetch({
-      type: 'candleSnapshot',
-      req: { coin, interval: '1h', startTime, endTime },
-    }) as Array<{ o?: string; h?: string; l?: string; c?: string; v?: string }>;
-    if (!Array.isArray(data) || data.length === 0) return null;
-    return data.map(c => ({
-      o: Number(c.o ?? 0), h: Number(c.h ?? 0), l: Number(c.l ?? 0),
-      c: Number(c.c ?? 0), v: Number(c.v ?? 0),
-    }));
-  } catch {
-    return null;
-  }
-}
 
 /** v2.0.720: Check if an audit category string mentions a specific direction.
  *  Used by the audit gate to match critical incidents to candidate decisions. */
@@ -267,7 +247,7 @@ class MATSSystem {
   private lastUiSnapshotCycle = -1;
   /** v2.0.863: cached K-line summary + data-quality score for the conviction gate
    *  (computed once per cycle in buildKlineBlock/buildDataQualityBlock — no refetch). */
-  private lastKlineSummary: { trend: 'up' | 'down' | 'sideways' } | null = null;
+  private lastKlineSummary: { trend1h: 'up' | 'down' | 'sideways'; trend5m: 'up' | 'down' | 'sideways' } | null = null;
   private lastQualityScore = 1;
   private lastKlineFetchTs = 0;
   private lastKlineBlockText = '';
@@ -3101,9 +3081,11 @@ ${currentPrompt || '(empty — this is the first input)'}`;
     if (!chartConvictionConfig.enabled) return 1.0;
     try {
       const catalyst = classifyThesisCatalyst(rationale);
+      const k = this.lastKlineSummary;
       return computeChartConvictionMultiplier({
         action,
-        klineTrend: this.lastKlineSummary?.trend ?? null,
+        klineTrend: k?.trend1h ?? null,
+        klineTrend5m: k?.trend5m ?? null,
         catalystLevel: catalyst.level,
         qualityScore: this.lastQualityScore,
       });
@@ -4332,22 +4314,35 @@ ${recentExamples}
       if (now - this.lastKlineFetchTs < KLINE_CACHE_TTL_MS && this.lastKlineBlockText) {
         return this.lastKlineBlockText;
       }
-      const candles = await fetchCandleSnapshot(sym, 30);
-      // v2.0.863-attack (V1): fetch 失敗/null → RESET cached K-line to null —
-      // 舊 K 線唔可以用喺今次決策校準(市場可能已變)。
-      if (!candles || candles.length === 0) {
+      // v2.0.863 (dual-frame): 1h(大方向)+ 5m(入場時機)——雙重分析。
+      // 兩者都經 candle cache(5m 同 mfe-calibrator 共享)——每 cycle 只
+      // fetch 各一次(active symbol:1h + 5m = 2 個 fetch,安全)。
+      const [candles1h, candles5m] = await Promise.all([
+        candleCache.getCandles(sym, '1h', 30),
+        candleCache.getCandles(sym, '5m', 60),
+      ]);
+      if ((!candles1h || candles1h.length === 0) && (!candles5m || candles5m.length === 0)) {
         this.lastKlineSummary = null;
         return '';
       }
-      const summary = summarizeKlines(candles);
-      this.lastKlineSummary = { trend: summary.trend };
+      const summary1h = summarizeKlines(candles1h);
+      const summary5m = summarizeKlines(candles5m);
+      this.lastKlineSummary = {
+        trend1h: summary1h.trend,
+        trend5m: summary5m.trend,
+      };
       this.lastKlineFetchTs = now;
-      if (!summary.description) {
-        this.lastKlineBlockText = '';
-        return '';
+      const lines: string[] = ['=== K-LINE STRUCTURE for ' + sym + ' ==='];
+      if (summary1h.description) lines.push('[1h] ' + summary1h.description.replace(/\n/g, ' | '));
+      if (summary5m.description) lines.push('[5m] ' + summary5m.description.replace(/\n/g, ' | '));
+      // 一致性標記(1h 大方向 vs 5m 時機)
+      if (summary1h.trend !== 'sideways' && summary5m.trend !== 'sideways') {
+        if (summary1h.trend === summary5m.trend) lines.push(`雙重確認: 1h ${summary1h.trend.toUpperCase()} + 5m ${summary5m.trend.toUpperCase()} 同向 — 強`);
+        else lines.push(`⚠️ 多空分歧: 1h ${summary1h.trend.toUpperCase()} 但 5m ${summary5m.trend.toUpperCase()} — 大方向同短線相反,時機未到,唔好即刻入`);
       }
-      this.lastKlineBlockText = `=== K-LINE STRUCTURE for ${sym} ===\n${summary.description}\n(蠟燭形態——統計睇唔到,你用世界模型判斷趨勢/形態/突破真偽)`;
-      log.debug(`[kline] ${sym}: fetched ${candles.length} candles (TTL cache active, next fetch in ${KLINE_CACHE_TTL_MS / 1000}s)`);
+      lines.push('(蠟燭形態——統計睇唔到,你用世界模型判斷趨勢/形態/突破真偽)');
+      this.lastKlineBlockText = lines.join('\n');
+      log.debug(`[kline] ${sym}: fetched 1h(${(candles1h ?? []).length}) + 5m(${(candles5m ?? []).length}) candles (TTL cache)`);
       return this.lastKlineBlockText;
     } catch { return ''; }
   }
