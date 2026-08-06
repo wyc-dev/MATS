@@ -3897,3 +3897,22 @@ Conviction Calibrator 管「信心報數準唔準」,Direction Verifier 管「�
 **修復**:verify 用 strict price——只有 `markPriceMap` 真係有該 symbol(且 symbol 名 match)先俾價,否則 null → 留低(下次再試)或 stale 棄置——唔再 fallback 到 latest。
 
 **驗證**:相關 31/31。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.864-neutral: 冷啟動中性錨點修復(accuracy 0.5 = ×1.0 唔壓抑)
+
+**主神問題**:「新 symbol 而家都照開到單㗎嘛?」——實證驗證 reveal 一個真問題:
+
+**真 bug**:`accuracyToMultiplier(0.5, 1)` = 0.9833(唔係 1.0)——0.5-0.55 映射到 ×0.85——**0.5 係「隨機/冇預測力」= 中性,唔應該壓抑**——冷啟動(全新 symbol + 全新 trend-type)本應 ×1.0 完全中性,實際 ×0.9833 輕微壓抑。
+
+**修復**:accuracy 0.5 → **×1.0 中性錨點**(0.50-0.55 = 1.0,0.55-0.60 = 0.95,<0.50 = 0.85 真反指先壓)——冷啟動乾淨 1.0。
+
+**實證確認(修正後)**:
+```
+全新 symbol + 全新 trend-type → multiplier = 1.0(完全照開單)
+新 symbol + BTC 歷史 trend-type → fallback 到 trend 全局(微調,唔 block)
+新 symbol 判斷 → 每 cycle 自動累積樣本(唔使任何預配置)
+```
+
+**驗證**:22/22(verifier + attack)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
