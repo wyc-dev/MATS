@@ -4168,6 +4168,74 @@ ${recentExamples}
   }
 
   /**
+   * v2.0.862: DIRECTION HEALTH BLOCK — per-symbol 壓倒性負面數據注入.
+   *
+   * Owner directive: "唔好 hard block,提高判斷力" — injects, for EVERY trading
+   * symbol, the per-symbol (side × regime) historical win rate + expectancy +
+   * recent real outcomes with STRONG warning language when the stats are
+   * overwhelmingly negative. The LLM sees the data BEFORE generating a thesis
+   * and must weigh it — no hard gate, pure judgment aid.
+   *
+   * Why this fixes the trade-audit finding (10 consecutive BUY MU/SKHX losses):
+   * the combo block was injected ONLY for the ACTIVE symbol; MU/SKHX BUY
+   * (23% WR, n=66, -10 USD) had NO warning in their decision context, so the
+   * LLM opened on OLR's overconfident P=100% output.
+   */
+  private buildDirectionHealthBlock(): string {
+    try {
+      const syms = new Set<string>([normalizeSymbol(this.marketAgent.getSelectedSymbol() ?? '')]);
+      for (const m of (this.tradingMarkets ?? [])) syms.add(normalizeSymbol(m));
+      const blocks: string[] = [];
+      for (const sym of syms) {
+        const b = this.buildDirectionHealthForSymbol(sym);
+        if (b) blocks.push(b);
+      }
+      if (blocks.length === 0) return '';
+      return '\n' + blocks.join('\n\n');
+    } catch { return ''; }
+  }
+
+  private buildDirectionHealthForSymbol(sym: string): string {
+    try {
+      // 1. Per-symbol combo history (side × regime)
+      const combos = this.comboTracker.getCombosForSymbol(sym);
+      // 2. Recent 7d real outcomes per side
+      const now = Date.now();
+      const cutoff = now - 7 * 86_400_000;
+      const recent = this.portfolio.getClosedRealTrades().filter(t =>
+        normalizeSymbol(t.symbol) === sym && (t.closedAt ?? 0) > cutoff);
+      const perSide: Record<string, { n: number; wins: number; pnl: number }> = {};
+      for (const t of recent) {
+        const side = t.side === 'sell' ? 'sell' : 'buy';
+        perSide[side] = perSide[side] ?? { n: 0, wins: 0, pnl: 0 };
+        perSide[side].n++;
+        if ((t.pnl ?? 0) > 0) perSide[side].wins++;
+        perSide[side].pnl += (t.pnl ?? 0);
+      }
+
+      // 3. Strong warnings for overwhelmingly-negative sides (no hard block —
+      //    pure judgment aid for the LLM).
+      const warnings: string[] = [];
+      for (const side of ['buy', 'sell'] as const) {
+        const sideCombos = combos.filter(c => c.side === side);
+        for (const c of sideCombos) {
+          const r = c.result;
+          if (r.count >= 10 && r.wr < 0.25 && r.wilsonLB < 0.15 && r.netPnl < 0) {
+            warnings.push(`🔴 ${side.toUpperCase()} ${sym} (${c.regime}): 歷史 ${r.count} 筆只有 ${(r.wr * 100).toFixed(0)}% 勝率 (Wilson ${(r.wilsonLB * 100).toFixed(0)}%), 淨蝕 $${Math.abs(r.netPnl).toFixed(2)} — 壓倒性負面。除非有 NEW catalyst 明確改變呢個歷史統計,否則唔應該開 ${side.toUpperCase()}。若 OLR 顯示高 P(win),可能 overfit——以 per-symbol 歷史 combo 為準。`);
+          }
+        }
+        const rs = perSide[side];
+        if (rs && rs.n >= 3 && rs.wins / rs.n < 0.3) {
+          warnings.push(`⚠️ ${side.toUpperCase()} ${sym}: 最近 7 日 ${rs.n} 筆 real 只有 ${(rs.wins / rs.n * 100).toFixed(0)}% 勝率, 平均 ${(rs.pnl / rs.n).toFixed(3)} USD — 近期實際表現差, 需要額外證據先好開。`);
+        }
+      }
+      if (warnings.length === 0) return '';
+      return `=== DIRECTION HEALTH for ${sym} ===\n${warnings.join('\n')}`;
+    } catch { return ''; }
+  }
+
+
+  /**
    * v2.0.143: Unified trade execution router.
    *
    * Paper mode → paperEngine.executeDecision() directly.
@@ -7127,6 +7195,13 @@ ${recentExamples}
       const mfePerformanceBlock = this.buildMfePerformanceBlock();
       if (mfePerformanceBlock) {
         marketDesc += `\n\n${mfePerformanceBlock}`;
+      }
+
+      // v2.0.862: Direction Health Block — per-symbol overwhelming-negative
+      // stats injected for EVERY trading symbol (owner: 提高判斷力, 唔 hard block).
+      const directionHealthBlock = this.buildDirectionHealthBlock();
+      if (directionHealthBlock) {
+        marketDesc += `\n${directionHealthBlock}`;
       }
 
       // v2.0.143: Inject Root Command Prompt into marketDesc so ALL 7 agents
