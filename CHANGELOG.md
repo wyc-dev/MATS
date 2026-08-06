@@ -3772,3 +3772,18 @@ dataQuality:       0(系統從未做過——全新領域)
 **效果**:LLM 唔可以再「自報高 conviction」呃過 threshold——佢嘅 conviction 受歷史校準——「LLM 回應可量化」嘅必要條件。
 
 **驗證**:`tests/llm-conviction-calibrator.test.ts`(13 tests——bin 校準/冷啟動/side 分離/讀圖質素/persistence/corrupt/毒 state/malformed)。全量 2037/2049(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.863-calib-attack: LLM Calibrator 對抗硬化(NaN 傳播 + 毒校準)
+
+**主神指令**:不擇手段攻擊規限①。
+
+| # | 漏洞 | 嚴重性 | 修復 |
+|---|---|---|---|
+| V1 | **`getCalibratedConviction` 對 NaN/Infinity/undefined conviction 傳播**——NaN → 返回 NaN(bin lookup 失敗返原值);Infinity → 被當 0.99+ 校準;undefined → 傳返 undefined——污染 effectiveConfidence | 🔴 High | 非 finite conviction → **0.5 中性**(唔傳播) |
+| V2 | **`calibrateBin` 對毒 wins/losses(負數)→ empirical 負 → 校準負數**(-0.25) | 🟠 Medium | clamp 負數 wins/losses ≥ 0;非 finite raw → 0.5 |
+
+**已確認安全**:outcome garbage → 當 loss、conviction 1e308 clamp、side 大寫唔記錄、`__proto__` bins key 唔污染、recent array cap 20、1000 次重複 record 唔 crash、毒 state load + block 唔 crash。
+
+**驗證**:`tests/llm-conviction-attack.test.ts`(14 tests——NaN/Infinity/undefined、越界、毒 state、重複、proto)。相關 27/27。全量 2050/2062(12 pre-existing)。`tsc --noEmit` 零錯誤。
