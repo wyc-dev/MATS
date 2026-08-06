@@ -275,6 +275,37 @@ export interface APIData {
       pollutedRate: number;
       byRegime: Array<{ regime: string; avgCleanliness: number; records: number }>;
     };
+    /** v2.0.861: Q-RL Direction Signal — per-symbol expectancy lean */
+    qrlDirection?: {
+      minSamples: number;
+      symbols: Array<{
+        symbol: string;
+        bucket: string;
+        buyQ: number;
+        sellQ: number;
+        buyMedian: number | null;
+        sellMedian: number | null;
+        buyN: number;
+        sellN: number;
+        spread: number;
+        lean: 'buy' | 'sell' | 'neutral';
+        robust: boolean;
+      }>;
+    };
+    /** v2.0.862: PAEL — per-asset exit-price profiles + lock gate */
+    pael?: {
+      minSamples: number;
+      lockCount: number;
+      profiles: Array<{
+        symbol: string;
+        side: 'buy' | 'sell';
+        samples: number;
+        mfeP50: number;
+        mfeP75: number;
+        mfeP90: number;
+        maeP95: number;
+      }>;
+    };
   };
   evolution?: EvolutionData;
   /** v2.0.140: EM Cycle Digestion — MiniLM insight retrieval + self-adjustment */

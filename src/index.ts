@@ -12381,6 +12381,67 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               })),
             };
           })() : undefined,
+          // v2.0.861: Q-RL Direction Signal — per-trading-symbol expectancy lean.
+          qrlDirection: (() => {
+            if (!this.qrlTable || !qrlDirectionConfig.leanEnabled) return undefined;
+            try {
+              const out: Array<Record<string, unknown>> = [];
+              const syms = new Set<string>([
+                normalizeSymbol(activeSymbol),
+                ...(this.tradingMarkets ?? []).map((m: string) => normalizeSymbol(m)),
+              ]);
+              for (const sym of syms) {
+                const features = this.lastCycleShadowContexts.get(sym)?.features;
+                if (!features || Object.keys(features).length === 0) continue;
+                const lean = this.qrlTable.getDirectionLean(features, qrlDirectionConfig.minSamples);
+                out.push({
+                  symbol: sym,
+                  bucket: lean.buy.bucket,
+                  buyQ: Number(lean.buy.q.toFixed(5)),
+                  sellQ: Number(lean.sell.q.toFixed(5)),
+                  buyMedian: lean.buy.medianReward !== null ? Number(lean.buy.medianReward.toFixed(5)) : null,
+                  sellMedian: lean.sell.medianReward !== null ? Number(lean.sell.medianReward.toFixed(5)) : null,
+                  buyN: lean.buy.visits,
+                  sellN: lean.sell.visits,
+                  spread: Number(lean.spread.toFixed(5)),
+                  lean: lean.lean,
+                  robust: lean.robust,
+                });
+              }
+              return { symbols: out, minSamples: qrlDirectionConfig.minSamples };
+            } catch { return undefined; }
+          })(),
+          // v2.0.862: PAEL — per-asset exit-price profiles + lock gate status.
+          pael: (() => {
+            if (!this.exitPriceLearner) return undefined;
+            try {
+              const syms = new Set<string>([
+                normalizeSymbol(activeSymbol),
+                ...(this.tradingMarkets ?? []).map((m: string) => normalizeSymbol(m)),
+              ]);
+              const profiles: Array<Record<string, unknown>> = [];
+              for (const sym of syms) {
+                for (const side of ['buy', 'sell'] as const) {
+                  const p = this.exitPriceLearner.getExitProfile(sym, side);
+                  if (!p) continue;
+                  profiles.push({
+                    symbol: sym,
+                    side,
+                    samples: p.samples,
+                    mfeP50: Number(p.mfeP50.toFixed(5)),
+                    mfeP75: Number(p.mfeP75.toFixed(5)),
+                    mfeP90: Number(p.mfeP90.toFixed(5)),
+                    maeP95: Number(p.maeP95.toFixed(5)),
+                  });
+                }
+              }
+              return {
+                profiles,
+                lockCount: this.exitPriceLockCount,
+                minSamples: 10,
+              };
+            } catch { return undefined; }
+          })(),
         },
         backtest: this.lastBacktestResult,
         backtestProgress: this.backtestProgress,
