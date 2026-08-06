@@ -67,6 +67,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { evaluateDataQuality } from './analysis/data-quality.ts';
 import { computeChartConvictionMultiplier } from './analysis/chart-conviction.ts';
+import { LLMConvictionCalibrator } from './analysis/llm-conviction-calibrator.ts';
 import { classifyThesisCatalyst } from './analysis/thesis-catalyst.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
@@ -110,6 +111,7 @@ function parseBlockBool(v: string | undefined, def: boolean): boolean {
 const klineBlockConfig = { enabled: parseBlockBool(process.env['KLINE_BLOCK_ENABLED'], true) } as const;
 const dataQualityConfig = { enabled: parseBlockBool(process.env['DATA_QUALITY_BLOCK_ENABLED'], true) } as const;
 const chartConvictionConfig = { enabled: parseBlockBool(process.env['CHART_AWARE_CONVICTION'], true) } as const;
+const llmCalibrationConfig = { enabled: parseBlockBool(process.env['LLM_CONVICTION_CALIBRATION'], true) } as const;
 /** v2.0.863-attack: K-LINE fetch TTL cache — 防 cycle period 縮短/多 call 令
  *  candleSnapshot 頻繁 fetch。5 分鐘 cycle 每 cycle 一次;cycle < TTL 時用 cache。 */
 const KLINE_CACHE_TTL_MS = 120_000; // 2 分鐘
@@ -251,6 +253,8 @@ class MATSSystem {
   private lastQualityScore = 1;
   private lastKlineFetchTs = 0;
   private lastKlineBlockText = '';
+  /** v2.0.863 規限①:LLM conviction calibrator + 讀圖質素 */
+  private llmCalibrator!: LLMConvictionCalibrator;
   // v2.0.837: Meta-Cognitive Calibrator — system self-awareness
   private metaCalibrator!: MetaCalibrator;
   // v2.0.838: Self-Improver — auto-tuning hyperparameters
@@ -1183,6 +1187,16 @@ class MATSSystem {
       // v2.0.862: PAEL — Exit-Price Learner init (learning layer only).
       // Loads per-asset MFE/MAE profiles, then backfills from the persisted
       // real-trade history so cold-start profiles are immediately available.
+      // v2.0.863 規限①: LLM conviction calibrator(校準 LLM 自報 conviction)
+      this.llmCalibrator = new LLMConvictionCalibrator();
+      try {
+        this.llmCalibrator.load();
+        const lc = this.llmCalibrator.getStats();
+        log.info(`✓ LLM Conviction Calibrator loaded (${lc.bins} bins, ${lc.klineReads} kline reads)`);
+      } catch (e) {
+        log.warn(`[llm-calib-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+
       this.exitPriceLearner = new ExitPriceLearner();
       try {
         this.exitPriceLearner.load();
@@ -3587,6 +3601,16 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // drive the exit-price lock gate + close-decision context).
         if (tradeSource === 'real') {
           this.recordRealExitToPAEL(trade as never);
+        }
+        // v2.0.863 規限①: LLM conviction calibrator — 記錄 (LLM conviction, outcome)
+        // 用開倉時嘅 consensus confidence(entryConsensusConfidence——v2.0.837 已存)
+        const entryConf = (trade as { entryConsensusConfidence?: number }).entryConsensusConfidence;
+        if (Number.isFinite(entryConf) && this.llmCalibrator) {
+          this.llmCalibrator.recordDecision(
+            trade.side === 'sell' ? 'sell' : 'buy',
+            entryConf ?? 0.5,
+            isWin ? 'win' : 'loss',
+          );
         }
         // v2.0.226: Pass slNarrowed + learningWeight so OLR downweights tight-SL
         // losses (execution problem) vs real market losses (entry problem).
@@ -7343,6 +7367,12 @@ ${recentExamples}
         marketDesc += `\n${directionHealthBlock}`;
       }
 
+      // v2.0.863 規限①: LLM CONVICTION CALIBRATION block(校準 LLM 自報 conviction)
+      try {
+        const calBlock = this.llmCalibrator?.getCalibrationBlock();
+        if (calBlock) marketDesc += `\n${calBlock}`;
+      } catch { /* non-fatal */ }
+
       // v2.0.863: K-LINE STRUCTURE + DATA QUALITY blocks(LLM 世界模型讀圖)
       // — active symbol 完整,trading markets 簡短。純 context,flag-gated。
       try {
@@ -10125,6 +10155,23 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         const gateAction = (finalDecision.action === 'buy' || finalDecision.action === 'sell')
           ? (finalDecision.action as 'buy' | 'sell')
           : 'buy';
+
+        // ── v2.0.863 規限①: LLM conviction 校準——LLM 自報 conviction 受歷史 bin 校準
+        // (LLM 話 0.85 但 bin 實際 40% → 用 40%)。冷啟動(樣本<20)→ 中性。
+        const calibratedConsensus = this.llmCalibrator && llmCalibrationConfig.enabled
+          ? this.llmCalibrator.getCalibratedConviction(gateAction, consensusConfidence)
+          : consensusConfidence;
+        // v2.0.863 規限②: LLM 讀圖質素——thesis 引用 K 線方向 vs 統計實際趨勢
+        try {
+          if (this.llmCalibrator && this.lastKlineSummary && typeof finalDecision.rationale === 'string') {
+            const r = finalDecision.rationale.toLowerCase();
+            const upRef = /(上升趨勢|uptrend|趨勢向上|bullish)/.test(r);
+            const downRef = /(下降趨勢|downtrend|趨勢向下|bearish)/.test(r);
+            if (upRef || downRef) {
+              this.llmCalibrator.recordKlineRead(upRef ? 'up' : 'down', this.lastKlineSummary.trend1h);
+            }
+          }
+        } catch { /* non-fatal */ }
         const comboBlend = this.comboTracker.getComboBlendFactor(pwinSym, gateAction, regime);
         let pwinBlendFactor = olrBlendFactor;
         let comboBlendUsed: { blendFactor: number; reason: string } | null = null;
@@ -10135,7 +10182,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         }
 
         // ── Final effective confidence: consensus × P(win) × penalty × boost ──
-        let effectiveConfidence = safeNum(consensusConfidence, 0) * pwinBlendFactor * penaltyFactor * boostFactor;
+        let effectiveConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor;
 
         // ── v2.0.844 Phase 2a: Causal-Grounded Entry Gate ────────────────
         // Only allow high-conviction entries where the aligned shadow shows a
@@ -11908,6 +11955,13 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     } catch { /* best-effort */ }
   }
 
+  /** v2.0.863 規限①: Persist LLM conviction calibrator state. */
+  private persistLLMCalibrator(): void {
+    try {
+      this.llmCalibrator?.save();
+    } catch { /* best-effort */ }
+  }
+
   /** v2.0.143: Persist Root Command Prompt to disk so it survives backend restarts. */
   private persistRootCommandPrompt(): void {
     try {
@@ -12833,6 +12887,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     this.persistPortfolio();
     this.persistOLR();
     this.persistExitPriceLearner();
+    this.persistLLMCalibrator();
     this.persistRootCommandPrompt();
     if (this.emManager) saveEMState(this.emManager.getState());
     this.stopTimers();

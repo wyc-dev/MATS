@@ -3751,3 +3751,24 @@ dataQuality:       0(系統從未做過——全新領域)
 **已確認安全**:並行 fetch 保護(inflight dedup——同一 key 並發 1 次 fetch)、malformed symbol → null、LRU bounded(evict 最舊)。
 
 **驗證**:`tests/v2.0.863-cache-attack.test.ts`(6 tests——count 餓死/fail cooldown/inflight dedup/malformed/LRU)。`tsc --noEmit` 零錯誤。全量 2031/2043(12 pre-existing)。
+
+---
+
+## v2.0.863-calib: 規限① LLM Conviction Calibrator + 規限② 讀圖質素
+
+**主神要求**:「確認 LLM 回應可量化?需要明確謹慎嘅規限」——核心問題:LLM 自報 conviction 未校準(可以話 0.95 但實際 40%)。
+
+**規限①(Conviction Calibrator)**(`src/analysis/llm-conviction-calibrator.ts`):
+- 記錄每筆 LLM 決策 (entryConsensusConfidence, outcome)——開倉 confidence 已有(v2.0.837)
+- 5-bin 映射:LLM 話 0.8-1.0 → bin 實際 WR(empirical + shrink,冷啟動 <20 樣本 → 中性)
+- **conviction gate:effectiveConfidence 用校準後嘅 consensus**——LLM 話 0.85 但 bin 實際 40% → 用 40% → 過唔到 threshold → 少 overconfident 交易
+- 注入 Meta-Agent:「LLM CONVICTION CALIBRATION」block(每 bin 實際 WR)
+- flag: `LLM_CONVICTION_CALIBRATION`
+
+**規限②(讀圖質素)**:
+- thesis 引用 K 線方向 vs 統計 K-LINE 實際趨勢 → 讀圖一致率(最近 20 次)
+- 注入 Meta-Agent:「你嘅 K-LINE 讀圖歷史 X% 一致」——一致率高先信自己讀圖
+
+**效果**:LLM 唔可以再「自報高 conviction」呃過 threshold——佢嘅 conviction 受歷史校準——「LLM 回應可量化」嘅必要條件。
+
+**驗證**:`tests/llm-conviction-calibrator.test.ts`(13 tests——bin 校準/冷啟動/side 分離/讀圖質素/persistence/corrupt/毒 state/malformed)。全量 2037/2049(12 pre-existing)。`tsc --noEmit` 零錯誤。
