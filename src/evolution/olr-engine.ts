@@ -446,27 +446,28 @@ export class OLREngine {
       backfillSamples: (typeof m.backfillSamples === 'number' && Number.isFinite(m.backfillSamples) && m.backfillSamples >= 0) ? m.backfillSamples : 0,
       newestSampleTs: (typeof m.newestSampleTs === 'number' && Number.isFinite(m.newestSampleTs) && m.newestSampleTs >= 0) ? m.newestSampleTs : 0,
       recentTrades: Array.isArray(m.recentTrades) ? m.recentTrades.slice(-20) : [],
-      // v2.0.229 Fix A: Purge backfill-poisoned calibration bins.
-      // v2.0.228 stopped NEW backfill from entering bins, but OLD backfill data
-      // remains in persisted bins. Clear them entirely — they'll rebuild from
-      // real+shadow+paper going forward. The identity fallback (raw pWin) is
-      // safer than poisoned bins that map raw P(win) → false empirical WR.
-      // One-time migration: after this, bins only accumulate non-backfill samples.
+      // v2.0.862: CALIBRATION BINS PURGE BUG FIX (was v2.0.229 Fix A).
       //
-      // Why not partially discount? Bins store aggregate wins/losses without
-      // per-source tagging, so we cannot separate backfill from real. A full
-      // purge is the only honest option — the cost (temporary identity fallback)
-      // is far less than the cost (false 86% P(win) from poisoned bins).
-      calibrationBins: (m.backfillSamples ?? 0) > 0
-        ? makeEmptyCalibrationBins()  // purge — backfill poisoned the bins
-        : (Array.isArray(m.calibrationBins) && m.calibrationBins.length === CALIBRATION_NUM_BINS
-          ? m.calibrationBins.map((b: any) => ({
-              lo: Number(b.lo) ?? 0,
-              hi: Number(b.hi) ?? 0,
-              wins: Number(b.wins) ?? 0,
-              losses: Number(b.losses) ?? 0,
-            }))
-          : makeEmptyCalibrationBins()),
+      // The old logic purged bins whenever backfillSamples > 0 — a PERMANENT
+      // condition (every model has backfill), so bins were wiped on EVERY
+      // restart and OLR calibration was permanently dead system-wide: raw
+      // P(win) (e.g. 70% on SKHX BUY) was never mapped to the empirical bin
+      // WR (9%), so the LLM kept opening overwhelmingly-negative directions.
+      //
+      // v2.0.228 already stopped NEW backfill from entering bins — persisted
+      // bins only accumulate real+shadow+paper samples. So a non-empty
+      // persisted bin set is CLEAN and must be KEPT. Purge is only needed for
+      // the one-time migration of PRE-v2.0.228 poisoned state — and that
+      // purge already happened in the past (bins since then are clean).
+      // Empty bins → empty (identity fallback) — same as before.
+      calibrationBins: (Array.isArray(m.calibrationBins) && m.calibrationBins.length === CALIBRATION_NUM_BINS
+        ? m.calibrationBins.map((b: any) => ({
+            lo: Number(b.lo) ?? 0,
+            hi: Number(b.hi) ?? 0,
+            wins: Number(b.wins) ?? 0,
+            losses: Number(b.losses) ?? 0,
+          }))
+        : makeEmptyCalibrationBins()),
     };
   }
 

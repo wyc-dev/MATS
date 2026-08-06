@@ -3488,3 +3488,23 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 - `assetType=stocks` for GOLD/SILVER:**唔係錯標**——log 顯示嘅係**全局 `hyperliquidAssetType` 設定**(stocks,因為 SKHX 係股票),唔係 per-symbol category;GOLD/SILVER 嘅 options data 仍按自己 symbol 攞
 - `Rate limited ... 3-poll cooldown`:**正常防禦**——options 供應商 rate limit 後 cooldown,唔 crash
 - `gdelt entered cooldown`:**正常**——新聞源連續失敗 60s cooldown,其他源繼續
+
+---
+
+## v2.0.862-calib: 🔴 OLR calibration bins permanent-purge bug — 瘋狂蝕錢根因修復
+
+**主神報告**:mats_backend 仍然瘋狂蝕錢(最近 12 筆 10 蝕,全部 BUY MU/SKHX/btc/SP500——逆勢)。
+
+**根因(v2.0.229「backfill purge」永久 bug)**:
+- load 時 `calibrationBins: backfillSamples > 0 ? makeEmptyCalibrationBins() : ...`——**backfill>0 係永久條件(16/16 models 都中)** → **每次 restart 清空 calibration bins → OLR calibration 全系統永久失效**
+- 結果:OLR 輸出 raw P(win)(SKHX BUY 70-75%)從未映射到 empirical bin WR(0.6-0.8 bin 實際 9.1%,3W/30L)→ **LLM 信 OLR 高 P(win) → 開逆勢 BUY → 連蝕**
+- LLM thesis 證實:「OLR BUY P(win)=70% (+41pp edge) + First-Passage LONG 99%」vs combo 歷史 23% WR——OLR overconfidence 完全冇被校正
+
+**修復**(`src/evolution/olr-engine.ts`):
+- 移除「backfill>0 → purge」條件——**保留 persisted bins**(v2.0.228 後 bins 只累積 real/shadow/paper 樣本,全部乾淨)
+- 空 bins → 空(identity fallback,同前)
+- 驗證:load 後 SKHX bins 保留(111 samples)→ raw 70% → **calibrated 14.1%**(之前 70%)
+
+**效果**:OLR 對 SKHX BUY 輸出由 70% → 14%——LLM 見到真實 P(win) 就唔會再開逆勢倉。calibration 功能正式復活(全系統)。
+
+**驗證**:OLR 相關 34/34 測試通過,`tsc --noEmit` 零錯誤。tsx watch 自動 reload → 即刻生效。
