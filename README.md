@@ -2,10 +2,11 @@
 
 **9 AI agents debate every trade. A Skeptics agent vetoes bad ones. A System Engineer agent autonomously fixes its own bugs. The system learns from every trade outcome — not just whether it won or lost, but WHY it won or lost, under WHAT market conditions, and feeds that back into the next decision.**
 
-A dedicated Skeptics agent stress-tests every position against historical experience data. The system self-evolves via a **cognitive evolution pipeline** — 20+ learning layers that stack statistical models, learned embeddings, and attention mechanisms to answer *which market conditions* precede wins, *why* trades lose, and *how* to place better exits. Highlights:
+A dedicated Skeptics agent stress-tests every position against historical experience data. The system self-evolves via a **33-layer cognitive evolution pipeline** — stacking statistical models, learned embeddings, attention mechanisms, reinforcement learning, and an LLM world model to answer *which market conditions* precede wins, *why* trades lose, and *how* to place better exits. Highlights:
+- **LLM World-Model Layer** (v2.0.863) — the LLM is the *direction source*: it reads K-LINE charts (1h×30 trend + 5m×60 timing, dual timeframe) and reasons from world events; statistics calibrate its claims. Chart-aware conviction (K-LINE opposite ×0.75, data-unreliable ×0.85) + **LLM Conviction Calibrator** (self-reported 0.85 but historical bin 40% → 40%) make LLM output a *quantifiable, calibrated* signal.
+- **Q-RL Alpha Discovery + Direction Signal** (v2.0.835/861) — the first component that can *discover* new alpha via ε-greedy exploration; a regime-conditioned expectancy oracle (median, skew-robust) wired into the conviction gate.
 - **Edge Validation** — an alpha "lie detector" that quantifies whether each signal has genuine statistical edge, stopping trades where no edge exists.
-- **Q-RL Alpha Discovery** — the first component that can *discover* new alpha, not just measure it, via ε-greedy exploration.
-- **DCS v2 Risk Profiles** — three risk profiles that make truly different decisions, so conservative and aggressive users get appropriate signals.
+- **PAEL Exit-Price Learner** (v2.0.862) — per-asset MFE/MAE percentile profiles (60-day window) → one-vote lock-profit gate; SL is never touched.
 - **Smart SL/TP + MFE calibration** — institutional SL/TP placement with a leverage-aware floor (so 10x positions aren't noise-stopped) and TP targets derived from real market price-extension data, directly reducing "profit given back."
 - **Close-Context Learning** — learns not just win/loss, but *how* each trade closed (tight-SL loss ≠ bad entry), so learning weights are accurate.
 
@@ -83,7 +84,7 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 - **🤖 Terminal Agent + Root Command Prompt** — users type natural language trading preferences (e.g., "only trade on Monday GMT"). LLM integrates them into a Root Command Prompt. Before each cycle, rules are checked — if a rule fails, the entire cycle is aborted (no token cost). After the Meta-Agent decides, the Terminal Agent verifies that the decision matches user preferences.
 - **🧠 Entry Thesis System** — every trade needs a validated `[1h: ...] [1d: ...]` rationale. Meta-Agent generates it; Skeptics stress-test it.  No thesis → no trade.
 - **🛡️ Skeptics veto** — an AI stress-tests every position's logic, data consistency, and dark-psychology (whale manipulation?) before execution. Approve-first: rejects only on concrete money-losing flaws. Dark-psychology check escalates from LIGHTWEIGHT to **MANDATORY** when |momentum| > 2% — must articulate a specific reversal catalyst or reject.
-- **🧬 Cognitive Evolution Pipeline** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, **which historical cycles** are most relevant right now — through a stack of learned representations (15 active layers + 1 Edge Validation + 1 Q-RL Alpha Discovery, v2.0.835).
+- **🧬 Cognitive Evolution Pipeline** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, **which historical cycles** are most relevant right now — through a **33-layer pipeline** (v2.0.863): OLR → shadow trading → NA → AttnRes → anti-pattern → combo WR → Q-RL Alpha Discovery → Component Attribution → PAEL → LLM World-Model. Dead components are actively pruned (v2.0.833/859 removed 6 zero-call-site modules).
 - **🔬 Numeric Autoencoder** — a pure-TypeScript MLP (11→16→8 encoder + contrastive loss) learns a non-linear embedding of market conditions. "Similar market conditions" is no longer handcrafted min-max cosine — it's a learned representation where "similar" means "historically led to similar outcomes." Cold-start safe: min-max fallback until 200+ samples + validation pass.
 - **🌀 AttnRes Cycle-History Retrieval** — transferred from Kimi K3's Attention Residuals (arXiv 2603.15031). The conditional win-rate candidate is no longer a single current snapshot — it's a **softmax-weighted blend over 80 cycles of history + entry-time state**, with a learned pseudo-query deciding which historical periods matter most right now. Entry-time regime retains persistent weight (K3 embedding persistence). Block AttnRes compresses 80 cycles → 8 blocks for O(Nd) memory.
 - **⚔️ Dual Pseudo-Query Specialization** — two learned queries per symbol, inspired by K3's pre-attention vs pre-MLP layer specialization: **wDecision** (broad receptive field, trained on trade PnL) for conditional win-rate + thesis context; **wExecution** (sharp/recent-biased, trained on SL/TP stop-out outcomes) for SL/TP survival context.
@@ -128,7 +129,8 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 │  │ • parallel multi-model inference                                       │  │
 │  │ • 5 Sub-Agents → Skeptics → Meta-Agent                                 │  │
 │  │ • entry thesis + dark psychology + weighted voting                     │  │
-│  │ • Self-evolution (15 layers + Edge Validation + Q-RL, v2.0.835)        │  │
+│  │ • Self-evolution (33 layers: OLR → NA → AttnRes → Q-RL → Attribution →│  │
+    │  │  LLM World-Model, v2.0.863)                                           │  │
 │  │ • Numeric Autoencoder (learned market-condition embedding)             │  │
 │  │ • AttnRes cycle-history retrieval (K3 dual pseudo-query)               │  │
 │  │ • Anti-pattern memory (failure lesson clustering)                      │  │
@@ -140,10 +142,15 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 │  │ • Close-Context Learning (closeReason+slNarrowed, v2.0.226)            │  │
 │  │ • Plan G dynamic threshold (5-factor [45-55%] + penalty decay)         │  │
 │  │ • Edge Validation (v2.0.833): edge-calculator + execution-tracker +    │  │
-│  │ stability-monitor + risk-profile edge-store + backtest validation      │  │
-│  │ (Sharpe / DSR / walk-forward)                                          │  │
+│  │ stability-monitor + backtest validation (Sharpe / DSR / walk-forward) │  │
 │  │ • Q-RL Alpha Discovery (v2.0.835): 270-cell Q-table + ε-greedy +       │  │
 │  │ Wilson LB + BH-FDR + Factor-Tagged Aligned Shadow                      │  │
+│  │ • Q-RL Direction Signal (v2.0.861): expectancy oracle + shadow A/B arm │  │
+│  │ + shadow-pool priority eviction                                        │  │
+│  │ • PAEL Exit-Price Learner (v2.0.862): MFE/MAE percentile → lock-profit │  │
+│  │ • LLM World-Model Layer (v2.0.863): K-LINE 1h×30+5m×60 chart reading + │  │
+│  │ data-reliability + chart-aware conviction + Candle Cache + LLM         │  │
+│  │ Conviction Calibrator (self-reported confidence 5-bin calibrated)      │  │
 │  │ • ANN Index (v2.0.843): IVF + spherical k-means — EXP vector memory    │  │
 │  │ scales to 10k records at ~12% scan rate                                │  │
 │  │ • Asset-Aware Meta-Learner (v2.0.843): symbol → category → global      │  │
@@ -180,7 +187,7 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Data flow:** user prefs → Terminal Agent → HACP agents → evolution gates (weighted by statistical/learned/memory + edge validation + Q-RL + self-aware) → Meta-Agent scores edge + sets SL/TP → 3×3 matrix written to Supabase → client (or backend in dual mode) executes → fills/PnL feed back into memory → learning improves the next decision.
+**Data flow:** user prefs → Terminal Agent → HACP agents → evolution gates (weighted by statistical/learned/memory + edge validation + Q-RL expectancy + chart-aware conviction + LLM calibration) → Meta-Agent scores edge + sets SL/TP → 1×3 matrix (moderate profile, v2.0.857) written to Supabase → client (mats_app / mats_frontend) or backend in dual mode executes → fills/PnL feed back into memory → learning improves the next decision.
 
 → Full architecture in [ARCHITECTURE.md](ARCHITECTURE.md)
 
@@ -231,10 +238,14 @@ Each cycle (1-10 min, user-configurable): Terminal Agent checks rules → 5 sub-
 | **Trade Audit** | `direction-audit.ts` | LLM audit of trade records every 2 cycles; known-fixed list prevents repeat diagnosis. |
 | **System Engineer** | `system-engineer.ts` | Autonomous code engineer. Every 2 cycles: diagnoses + fixes learning bugs, validated by tsc+test, auto-rollback/commit. |
 | **Replay Buffer** | `replay-buffer.ts` | Prioritized Experience Replay — mini-batch retrain to break temporal correlation. |
-| **Close-Context Learning** | `index.ts` + `portfolio.ts` | `computeLearningWeight(closeReason, slNarrowed, isWin)` scales learning by how the trade closed (tight-SL ≠ bad entry). |
+| **Close-Context Learning** | `index.ts` + `portfolio.ts` | `computeLearningWeight(closeReason, slNarrowed, isWin)` scales learning by how the trade closed (tight-SL ≠ bad entry). `exit_price_lock` (PAEL) closeReason weight 0.5. |
 | **Plan G Dynamic Threshold** | `analysis/dynamic-threshold.ts` | Dynamic conviction threshold [45-55%] driven by 5 performance factors with multiplicative penalty decay — self-recovers, never deadlocks. |
 | **Edge Validation** | `edge/*.ts` | Alpha "lie detector": 5-component regime-weighted edgeScore + stability + backtest validation (Sharpe/DSR/walk-forward). Cold-start `caution`, never `skip`. |
 | **Q-RL Alpha Discovery** | `evolution/q-rl-table.ts` | First component that can *discover* new alpha — 270-cell Q-table with ε-greedy exploration, Wilson LB, bootstrap p-value, BH-FDR. Factor-Tagged Aligned Shadow. |
+| **Q-RL Direction Signal** | `evolution/q-rl-table.ts` | Regime-conditioned expectancy oracle (median / 10% trimmed-mean / t-stat / Wilson, skew-robust) wired into the conviction gate; independent `qrl` shadow A/B arm; shadow-pool priority eviction (blind cold-start priors evicted for aligned/statistical/qrl arms). |
+| **PAEL Exit-Price Learner** | `analysis/exit-price-learner.ts` | Per-asset × per-direction MFE/MAE percentile profiles (p50/p75/p90, 60-day window) from real-trade position-value extremes → deterministic TP-side ONE-VOTE lock-profit gate (MFE ≥ p75×0.8, trending → p90). **SL never touched** (owner directive). Size-agnostic: threshold + measured slippage bps. |
+| **LLM World-Model Layer** | `analysis/kline-structure.ts` + `data-quality.ts` + `chart-conviction.ts` + `thesis-catalyst.ts` + `data/candle-cache.ts` | K-LINE structure reading (1h×30 + 5m×60, dual timeframe): EMA+consistency trend, HH/LL structure, 3-candle breakout, volume anomaly; data-reliability σ scoring (funding/volume/spread/staleness). CHART-AWARE conviction gate: opposite K-LINE ×0.75, 1h/5m divergence ×0.85, unreliable data ×0.85, catalyst can override ×1.0. Candle Cache shared pool (4-5 duplicate fetches → 1, rate-limit safe). |
+| **LLM Conviction Calibrator** | `analysis/llm-conviction-calibrator.ts` | 規限①:5-bin historical calibration of LLM self-reported confidence — "LLM 0.85 but bin actual 40% → 40%" — kills overconfident entries; cold-start (<20 samples) neutral. 規限②:K-LINE read-quality tracking (thesis claim vs statistical trend consistency) injected into Meta-Agent. |
 | **ANN Index** | `evolution/ann-index.ts` | IVF + spherical k-means over 384-d embeddings — EXP memory scales to 10k records at ~12% scan rate. |
 | **Asset-Aware Meta-Learner** | `evolution/meta-learner.ts` | 3-level feature-weight hierarchy (symbol → category → global) — each asset learns its own pattern; low volume ≠ unreliable. |
 | **Component Attribution** | `evolution/component-attribution.ts` | Measures which component actually adds edge via proxy credit assignment + label cleanliness. |
@@ -290,7 +301,9 @@ Replaces the old Positions table + Trade Records with a unified card-based view.
 | Take profit | 5% | Per trade (un-leveraged) |
 | Cumulative margin | 20% | All positions' margin ≤ 20% balance |
 
-SL/TP set at entry via **Smart SL/TP** (`computeSmartSLTP`, v2.0.832): institutional priority chain — S/R zones → 50-candle 頂底 → ATR floor → config default. **Never modified post-entry** (v2.0.225: trailing stop + MFE giveback + TP narrowing + per-symbol consensus SL/TP all DISABLED — post-entry narrowing caused premature stop-outs + UI/exchange SL desync). **Leverage-aware SL floor** (v2.0.852): high-leverage positions get a wider minimum SL so normal volatility doesn't stop them out. **MFE calibration** (v2.0.852): TP target/cap + SL floor derived from real 1h/5m candle price-extension distributions, direction-aware for BUY vs SELL, reducing "profit given back" (positions reaching +5% MFE then reversing to SL). Two-layer exit protection: (1) initial SL/TP at exchange level, (2) LLM thesis invalidation (Skeptics Phase 0.5 force-close). Portfolio safety layer: no-widen + not-too-tight (SL ≥ 1%, TP ≥ 1.5%) + min-gap 2%. Original SL/TP recorded at open for exit-thesis analysis. `closePosition` uses the actual HL fill price (v2.0.853), not a stale WS tick, so exit PnL + learning labels are accurate.
+SL/TP set at entry via **Smart SL/TP** (`computeSmartSLTP`, v2.0.832): institutional priority chain — S/R zones → 50-candle 頂底 → ATR floor → config default. **Never modified post-entry** (v2.0.225: trailing stop + MFE giveback + TP narrowing + per-symbol consensus SL/TP all DISABLED — post-entry narrowing caused premature stop-outs + UI/exchange SL desync). **Leverage-aware SL floor** (v2.0.852): high-leverage positions get a wider minimum SL so normal volatility doesn't stop them out. **MFE calibration** (v2.0.852): TP target/cap + SL floor derived from real 1h/5m candle price-extension distributions, direction-aware for BUY vs SELL. **PAEL lock-profit** (v2.0.862): deterministic TP-side ONE-VOTE close at MFE ≥ p75×0.8 — **SL is never touched** (owner directive; the stop keeps its noise room). Three-layer exit protection: (1) initial SL/TP at exchange level, (2) LLM thesis invalidation (Skeptics Phase 0.5 force-close), (3) PAEL lock-profit close. Portfolio safety layer: no-widen + not-too-tight (SL ≥ 1%, TP ≥ 1.5%) + min-gap 2%. Original SL/TP recorded at open for exit-thesis analysis. `closePosition` uses the actual HL fill price (v2.0.853), not a stale WS tick, so exit PnL + learning labels are accurate.
+
+**Multi-signal conviction gate** (v2.0.224-863): entry is gated by a multiplicative chain — `effectiveConfidence = calibratedConsensus × OLR P(win) blend × causal uplift × Q-RL expectancy × chart-aware multiplier × calibration trust`. LLM self-reported conviction is first calibrated by historical bin (規限①); chart-aware multiplier penalizes K-LINE-opposite / data-unreliable entries; catalysts can override statistical dampening (LLM world-model is the direction source, stats calibrate).
 
 ---
 
@@ -323,12 +336,33 @@ HYPERLIQUID_PRIVATE_KEY=             # RADIOACTIVE — never commit
 RIL_ENABLED=true
 RIL_SIMILAR_TRADE_COUNT=5
 RIL_SUBTLE_DIFF_ENABLED=true
+# LLM World-Model Layer (v2.0.863):
+KLINE_BLOCK_ENABLED=true        # K-LINE 結構 block(LLM 讀圖)
+DATA_QUALITY_BLOCK_ENABLED=true # 數據可靠性 block(σ 異常偵測)
+CHART_AWARE_CONVICTION=true     # 圖表意識 conviction(反向/分歧/不可靠 ×0.75-0.85)
+LLM_CONVICTION_CALIBRATION=true # 規限①:LLM 自報 conviction 5-bin 歷史校準
+# PAEL (v2.0.862):
+EXIT_PRICE_CLOSE_ENABLED=true   # MFE ≥ p75×0.8 鎖利平倉(TP-side one-vote,SL 唔掂)
+EXIT_PRICE_LOCK_MIN_HOLD_MIN=15
 ```
 
 ### Per-Symbol Direction Restrictions
 Restrict a symbol to BUY-only or SELL-only via API or `data/evolution/market-agent-config.json`.
 
 ---
+
+## Client Ecosystem (v2.0.822+)
+
+MATS 係 **訊號運算後端 + 多客戶端執行** 架構:
+
+| 客戶端 | 技術 | 角色 |
+|:-------|:-----|:-----|
+| **mats_app** | Expo React Native (iOS/Android) | 主要移動端——AuthGate passkey、SignalMatrix、PositionsPanel、AgentMonitor、paper-engine |
+| **mats_frontend** | React + Vite | Web dashboard(原 MATS_Frontend)——自托營 wallet、paper 持久化、TradingView 整合 |
+
+- **Analysis Matrix**:每個 cycle,後端將 HACP consensus 展開為 **1×3 matrix**(`{ moderate: Record<PositionState, MatrixCell> }`——v2.0.857 moderate-only;aggressive/conservative 已移除,未校準嘅 placeholder 係假安全感)寫入 Supabase `asset_analyses`。
+- 矩陣係 **per-asset + universal**(唔係 per-user)——所有用戶讀同一 moderate row;實際倉位 sizing 由客戶端自己嘅 sliders 控制(唔係矩陣)。
+- **ANALYSIS_MODE**:`true`=signal-only(寫 DB,唔落單)/ `dual`=signal+execution(production default)/ `false`=execution-only legacy。
 
 ## Tech Stack
 
@@ -338,10 +372,10 @@ Restrict a symbol to BUY-only or SELL-only via API or `data/evolution/market-age
 | **Runtime** | Node.js 22+ |
 | **LLM** | Ollama (local + Pro cloud) / OpenAI-compatible |
 | **Market Data** | Hyperliquid WebSocket (l2Book + trades + userFills) + REST fallback |
-| **Frontend** | React 18 + Vite + TradingView Chart |
+| **Frontend** | mats_app (Expo React Native) + mats_frontend (React 18 + Vite + TradingView Chart) |
 | **Config** | Zod schema validation |
 | **Logging** | Winston (structured + file rotation) |
-| **Testing** | vitest (609 core + 424 attack tests, gitignored; attack suites cover DCS, Q-RL, edge modules, creative vectors, ANN index, asset-aware Meta-Learner, audit→evolution routing, SL/TP desync + leverage + MFE calibration, closeTrade dual-mode guard) |
+| **Testing** | vitest — **2,050+ tests / 86 suites** (gitignored; every version attack-hardened: NaN propagation, Chinese regex boundary, cache starvation, poisoned state, side guards, dual-mode, calibration shrinkage...) |
 | **Crypto** | `@noble/curves` (HL phantom agent signing) |
 | **Vector Embedding** | Transformers.js MiniLM L6 v2 (384-dim, in-process, CPU) |
 
