@@ -4215,13 +4215,26 @@ ${recentExamples}
 
       // 3. Strong warnings for overwhelmingly-negative sides (no hard block —
       //    pure judgment aid for the LLM).
+      // v2.0.862 (方案 A): 🔴 fires on MEDIAN per-trade pnlPct < -0.15% (n≥10) —
+      //    the robust EV centre. avg is skewed by outliers (a few big TP wins
+      //    can hide a losing median — the SKEW trap). WR<25%+netPnl<0 is kept
+      //    as a secondary signal. EWMA (方案 D) is shown so the LLM sees the
+      //    RECENT (time-decayed) expectancy, not the lifetime average.
       const warnings: string[] = [];
       for (const side of ['buy', 'sell'] as const) {
         const sideCombos = combos.filter(c => c.side === side);
         for (const c of sideCombos) {
           const r = c.result;
-          if (r.count >= 10 && r.wr < 0.25 && r.wilsonLB < 0.15 && r.netPnl < 0) {
-            warnings.push(`🔴 ${side.toUpperCase()} ${sym} (${c.regime}): 歷史 ${r.count} 筆只有 ${(r.wr * 100).toFixed(0)}% 勝率 (Wilson ${(r.wilsonLB * 100).toFixed(0)}%), 淨蝕 $${Math.abs(r.netPnl).toFixed(2)} — 壓倒性負面。除非有 NEW catalyst 明確改變呢個歷史統計,否則唔應該開 ${side.toUpperCase()}。若 OLR 顯示高 P(win),可能 overfit——以 per-symbol 歷史 combo 為準。`);
+          const medianNeg = r.count >= 10 && (r.medianPnlPct ?? 0) < -0.0015;
+          const wrNeg = r.count >= 10 && r.wr < 0.25 && r.wilsonLB < 0.15 && r.netPnl < 0;
+          if (medianNeg || wrNeg) {
+            const medStr = (r.medianPnlPct * 100).toFixed(2);
+            const ewmaStr = (r.ewmaPnlPct * 100).toFixed(2);
+            const avgStr = (r.avgPnlPct * 100).toFixed(2);
+            const skewTag = r.medianPnlPct < 0 && r.avgPnlPct > 0 ? ' ⚠️ SKEW(avg正但median負——靠少數大贏,脆弱)' : '';
+            warnings.push(`🔴 ${side.toUpperCase()} ${sym} (${c.regime}): 歷史 ${r.count} 筆 median 每筆 ${medStr}%(ewma ${ewmaStr}%, avg ${avgStr}%)${skewTag} — 壓倒性負期望值。除非有 NEW catalyst 明確改變呢個歷史統計,否則唔應該開 ${side.toUpperCase()}。若 OLR 顯示高 P(win),可能 overfit——以 per-symbol 歷史 combo(median)為準。`);
+          } else if (r.count >= 10 && (r.ewmaPnlPct ?? 0) < -0.0015) {
+            warnings.push(`🟠 ${side.toUpperCase()} ${sym} (${c.regime}): 時序衰減期望值(ewma)每筆 ${(r.ewmaPnlPct * 100).toFixed(2)}% — 近期表現差,需要額外證據先好開。`);
           }
         }
         const rs = perSide[side];

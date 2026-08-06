@@ -3533,3 +3533,25 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **保留**:V2/V1/V3(calibrationBins per-bin sanitize——getter-throw/NaN/負值/非 object 元素隔離,防成個 OLR load 崩潰)。
 
 **驗證**:OLR 相關 67/67(v2.0.859 attack + calibration + backfill-purge + 新 calibration-attack)。全量 1999/2011(12 pre-existing `getBalance`)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.862-ev: 方案 A(median 負 EV 抑制)+ D(時序衰減)——量化審計修正
+
+**主神批准**:方案 A(median 負 EV 抑制)+ D(時序衰減)。
+
+**背景(謹慎驗證)**:上個方案嘅「hidden edge boost」係統計假象——用 median 驗證後,btc buy/mean_rev「+0.95%」係 median -0.04% + top5 撐起 97% + 3 期唔穩(假 edge)。**真實狀況:0 個穩健正 EV,9 個穩健負 EV**——問題係「喺負 EV 地方照交易」,唔係「漏咗 edge」。
+
+**方案 A(median 負 EV 抑制)**(`combo-win-rate-tracker.ts` + `index.ts`):
+- ComboStats 加 `pnlPcts` ring buffer(cap 50)→ `medianPnlPct`(robust EV centre)
+- Direction Health 🔴 條件由「WR<25%」改為「**median < -0.15% AND n≥10**」——直接捉 MU buy(-4.06%)、SKHX buy(-0.75%)、SILVER sell(-0.64%)等穩健負 EV
+- 保留 WR<25% 作為 secondary;加 SKEW 標記(median<0 avg>0 →「靠少數大贏,脆弱」)
+- 🟠 新:ewma < -0.15% →「近期表現差」警告
+
+**方案 D(時序衰減)**(`combo-win-rate-tracker.ts`):
+- `ewmaPnlPct` + `ewmaLastCycle`——time-decayed EWMA(半衰期 500 cycles ≈ 2 日)——舊 trade 衰減,最近 trade 權重高
+- Direction Health 顯示 ewma——LLM 見到「近期期望值」而唔係 lifetime average
+
+**量化核心**:avg 會被 outlier 騙(SKEW trap),median 先係分佈中心;edge 隨 regime 旋轉,舊數據要衰減——呢兩個修正直接令系統「喺負 EV 方向唔開倉」+「近期 edge 主導」。
+
+**驗證**:`tests/combo-expectancy.test.ts`(7 tests——median vs avg SKEW、EWMA 時序衰減、半衰期、ring cap、persistence、corrupt input)。相關 46/46。全量 2005/2018(12 pre-existing)。`tsc --noEmit` 零錯誤。

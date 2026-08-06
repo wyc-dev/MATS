@@ -53,6 +53,16 @@ export interface ComboStats {
   pnlPctSum: number;
   // Last-updated cycle (for staleness detection)
   lastCycle: number;
+  // v2.0.862 (方案 A): per-trade pnlPct ring buffer (cap 50) — computes the
+  // MEDIAN (distribution centre). avg is skewed by outliers; median is the
+  // robust centre. A combo with median<0 but avg>0 is a SKEW trap (top-N
+  // winners carrying the EV) — fragile, must not be treated as a real edge.
+  pnlPcts?: number[];
+  // v2.0.862 (方案 D): time-decayed EWMA of pnlPct (half-life 500 cycles ≈
+  // 2 days at 5min/cycle). Edge rotates with regime; old trades must fade
+  // instead of weighting equally forever. ewmaLastCycle = last update cycle.
+  ewmaPnlPct?: number;
+  ewmaLastCycle?: number;
 }
 
 export interface ComboWRResult {
@@ -62,6 +72,10 @@ export interface ComboWRResult {
   netPnl: number;
   avgPnlPct: number;
   confidence: 'none' | 'low' | 'medium' | 'high';
+  /** v2.0.862 (方案 A): median per-trade pnlPct — robust EV centre. */
+  medianPnlPct: number;
+  /** v2.0.862 (方案 D): time-decayed EWMA pnlPct — recent trades weighted more. */
+  ewmaPnlPct: number;
 }
 
 export interface ComboGateResult {
@@ -90,6 +104,10 @@ const SEVERE_WR = 0.25;       // WR below this with enough samples → 0.50 pena
 const MODERATE_WR = 0.35;    // WR below this with enough samples → 0.30 penalty
 const MILD_WR = 0.45;        // WR below this with enough samples → 0.15 penalty
 
+// v2.0.862 (方案 A+D): median ring cap + EWMA half-life
+const MEDIAN_RING_CAP = 50;        // per-combo pnlPct buffer (median sample size)
+const EWMA_HALF_LIFE_CYCLES = 500; // ≈ 2 days at 5min/cycle (edge rotation)
+
 // ── v2.0.819: WINNER-FIRST combo blend factor ───────────────────────────
 // Stricter than the penalty tiers: a combo may only OVERRIDE the OLR P(win)
 // multiplicative discount when the evidence is overwhelming. This implements
@@ -112,6 +130,18 @@ export interface ComboBlendResult {
   count: number;
   netPnl: number;
   reason: string;
+}
+
+/** v2.0.862 (方案 A): median of an array — robust distribution centre.
+ *  Empty → 0; single → that value. Pure, testable. */
+function medianOf(values: number[]): number {
+  const clean = values.filter(v => Number.isFinite(v));
+  if (clean.length === 0) return 0;
+  const sorted = [...clean].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[mid]!
+    : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
 function comboKeyToString(symbol: string, side: string, regime: string): string {
@@ -165,6 +195,22 @@ export class ComboWinRateTracker {
     stats.netPnl += safePnl;
     stats.pnlPctSum += safePnlPct;
     stats.lastCycle = cycle;
+
+    // v2.0.862 (方案 A): pnlPct ring buffer → median (robust EV centre).
+    stats.pnlPcts = stats.pnlPcts ?? [];
+    stats.pnlPcts.push(safePnlPct);
+    if (stats.pnlPcts.length > MEDIAN_RING_CAP) stats.pnlPcts.shift();
+
+    // v2.0.862 (方案 D): time-decayed EWMA — old trades fade (half-life 500
+    // cycles ≈ 2 days at 5min/cycle). First sample seeds the EWMA directly.
+    if (stats.ewmaLastCycle === undefined) {
+      stats.ewmaPnlPct = safePnlPct;
+    } else {
+      const delta = Math.max(0, cycle - stats.ewmaLastCycle);
+      const decay = Math.exp(-delta / EWMA_HALF_LIFE_CYCLES);
+      stats.ewmaPnlPct = (stats.ewmaPnlPct ?? 0) * decay + safePnlPct * (1 - decay);
+    }
+    stats.ewmaLastCycle = cycle;
     this.dirty = true;
   }
 
@@ -177,7 +223,7 @@ export class ComboWinRateTracker {
     const key = comboKeyToString(sym, side, regime || 'unknown');
     const stats = this.combos.get(key);
     if (!stats || stats.wins + stats.losses === 0) {
-      return { wr: 0.5, count: 0, wilsonLB: 0.5, netPnl: 0, avgPnlPct: 0, confidence: 'none' };
+      return { wr: 0.5, count: 0, wilsonLB: 0.5, netPnl: 0, avgPnlPct: 0, confidence: 'none', medianPnlPct: 0, ewmaPnlPct: 0 };
     }
     const total = stats.wins + stats.losses;
     const wr = stats.wins / total;
@@ -192,6 +238,9 @@ export class ComboWinRateTracker {
       netPnl: stats.netPnl,
       avgPnlPct: total > 0 ? stats.pnlPctSum / total : 0,
       confidence,
+      // v2.0.862 (方案 A+D): median (robust centre) + time-decayed EWMA
+      medianPnlPct: medianOf(stats.pnlPcts ?? []),
+      ewmaPnlPct: Number.isFinite(stats.ewmaPnlPct) ? (stats.ewmaPnlPct ?? 0) : 0,
     };
   }
 
