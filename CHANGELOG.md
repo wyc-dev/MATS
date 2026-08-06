@@ -3627,3 +3627,17 @@ dataQuality:       0(系統從未做過——全新領域)
 **謹慎決定(Google Tech Lead)**:Phase 4(conviction 融合)唔落住——數據話 chart 只係打和(median -0.04%),唔係正 EV——直接改 conviction 風險高——等 Phase 5 shadow A/B 證明「圖表 catalyst 加值」先落。
 
 **驗證**:`tests/kline-data-quality.test.ts`(13 tests——趨勢/形態/突破/volume/異常偵測/邊界/attack)。`tsc --noEmit` 零錯誤。全量 2015/2027(12 pre-existing)。
+
+---
+
+## v2.0.863-attack: thesis-catalyst 中文 pattern 失效修復(嚴重 bug)
+
+**主神指令**:不擇手段攻擊 v2.0.863。
+
+| # | 漏洞 | 嚴重性 | 修復 |
+|---|---|---|---|
+| V1 | **中文 catalyst pattern 用 `\b` word boundary——CJK 之間冇 boundary →「央行」「通脹」「趨勢」「突破」等中文 pattern 全部 match 唔到**——系統係繁中 prompt,中文新聞/圖表 catalyst 偵測完全失靈 | 🔴 High | 改用 ASCII word-boundary lookaround(`(?<![A-Za-z0-9_])pattern(?![A-Za-z0-9_])`)——英文受 word boundary 限制(「trend」唔 match 喺「downtrend」中間),中文自由 |
+
+**已確認安全(V2-V4)**:summarizeKlines 極端輸入(1e300 price/constant candles/單根/全 0 vol)、evaluateDataQuality 極端(funding 1e308/volume 0/spread 負)、thesis-catalyst 超長(100k chars)/特殊字符——全部安全。
+
+**驗證**:`tests/v2.0.863-attack.test.ts`(11 tests——中文 match、極端輸入、超長 thesis)。修復後:「央行減息」→ strong、「突破 $64K」→ weak、「OLR」→ none(正確)。審計結果不變(news -0.54%、非新聞 -0.04%——中文補捉後結論一致)。`tsc --noEmit` 零錯誤。
