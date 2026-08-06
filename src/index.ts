@@ -12347,8 +12347,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               const sellResult = this.bayesianOLR.query(sym, ctx.features, 'sell', this.totalCycles);
               return {
                 symbol: normalizeSymbol(sym),
-                buy: { pWin: buyResult.pWin_mean, std: buyResult.pWin_std, low: buyResult.pWin_low, high: buyResult.pWin_high, uncertainty: buyResult.uncertainty, applied: buyResult.applied },
-                sell: { pWin: sellResult.pWin_mean, std: sellResult.pWin_std, low: sellResult.pWin_low, high: sellResult.pWin_high, uncertainty: sellResult.uncertainty, applied: sellResult.applied },
+                buy: { pWin: buyResult.pWin_mean, std: buyResult.pWin_std, low: buyResult.pWin_low, high: buyResult.pWin_high, uncertainty: buyResult.uncertainty, applied: buyResult.applied, passes: buyResult.passes },
+                sell: { pWin: sellResult.pWin_mean, std: sellResult.pWin_std, low: sellResult.pWin_low, high: sellResult.pWin_high, uncertainty: sellResult.uncertainty, applied: sellResult.applied, passes: sellResult.passes },
               };
             } catch { return undefined; }
           })(),

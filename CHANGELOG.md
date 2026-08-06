@@ -3400,3 +3400,25 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 - backend API `advancedLearning.na` 加 `validation`(passed/mse/contrastiveAcc/diversity/reason)
 - UI:NA 顯示「275266 samples, val ✗ (reason)」+ disabled 狀態(唔再「/200」誤導);Exploration enabled 確認係 `.env ACTIVE_EXPLORATION_ENABLED=true`(真實狀態,非 bug)
 - frontend.md:§二 inventory 加 v2.0.861-862 數據行 + §十.5 變更記錄(對 MATS_Frontend 構建有參考:顯示 vs 移除準則)
+
+---
+
+## v2.0.862-ui-fix4: Bayesian σ=0 ≠ cold — neutral-logit models misdisplayed
+
+**主神報告**:XYZ:GOLD 持續顯示「○ no OLR samples yet — active symbol rotated」,即使過咗 n cycles。
+
+**完整根因鏈**(逐層驗證):
+1. GOLD OLR model 有 1380 samples(olr-state load 正常)
+2. OLR query 對 GOLD 返回 **pWin=0.5(logit≈0)——中性預測**,唔係「冇數據」(explanation 顯示 features 有值、weights 有值、1380 samples)
+3. MC dropout 所有 pass 都係 0.5 → **std=0, applied=true**(MC dropout 正常執行)
+4. UI 用 `std > 0` 判斷「有 uncertainty」→ std=0 → 誤判「no OLR samples」→ 永久 cold
+
+**修復**(UI 三態判斷):
+- `applied && σ>0` → **ready**(真實 epistemic uncertainty)
+- `applied && σ=0` → **training**(「neutral logit — applied but σ=0」——MC dropout 執行咗但預測中性,唔係 cold)
+- `!applied` → **cold**(「no OLR samples (<20)」——真冷啟動)
+- backend bayesian 加 `passes`(MC dropout 有效 pass 數,audit)
+
+**教訓**:std=0 有兩種完全唔同語義——「模型確定」(logit 遠離 0,所有 dropout pass 相同)→ ready;「模型中性」(logit≈0,所有 pass = 0.5)→ training/中性。用 `std > 0` 判斷數據存在係錯誤——應該用 `applied` 判斷 MC dropout 有冇執行。
+
+**驗證**:live SSE probe 確認 bayesian applied=true(MC dropout 有跑);`tsc --noEmit` 零錯誤 + `vite build` 成功。
