@@ -109,6 +109,9 @@ function parseBlockBool(v: string | undefined, def: boolean): boolean {
 const klineBlockConfig = { enabled: parseBlockBool(process.env['KLINE_BLOCK_ENABLED'], true) } as const;
 const dataQualityConfig = { enabled: parseBlockBool(process.env['DATA_QUALITY_BLOCK_ENABLED'], true) } as const;
 const chartConvictionConfig = { enabled: parseBlockBool(process.env['CHART_AWARE_CONVICTION'], true) } as const;
+/** v2.0.863-attack: K-LINE fetch TTL cache — 防 cycle period 縮短/多 call 令
+ *  candleSnapshot 頻繁 fetch。5 分鐘 cycle 每 cycle 一次;cycle < TTL 時用 cache。 */
+const KLINE_CACHE_TTL_MS = 120_000; // 2 分鐘
 
 /** v2.0.863: Fetch 1h candles (o/h/l/c/v) for K-LINE structure — HL candleSnapshot,
  *  rate-limited via MarketAgent.hlFetch(same queue as getATR/fetchCandleHighLow). */
@@ -266,6 +269,8 @@ class MATSSystem {
    *  (computed once per cycle in buildKlineBlock/buildDataQualityBlock — no refetch). */
   private lastKlineSummary: { trend: 'up' | 'down' | 'sideways' } | null = null;
   private lastQualityScore = 1;
+  private lastKlineFetchTs = 0;
+  private lastKlineBlockText = '';
   // v2.0.837: Meta-Cognitive Calibrator — system self-awareness
   private metaCalibrator!: MetaCalibrator;
   // v2.0.838: Self-Improver — auto-tuning hyperparameters
@@ -4321,6 +4326,12 @@ ${recentExamples}
   private async buildKlineBlock(sym: string): Promise<string> {
     if (!klineBlockConfig.enabled) return '';
     try {
+      // v2.0.863-attack: TTL cache — 唔會超過每 KLINE_CACHE_TTL_MS 一次
+      // candleSnapshot fetch(防 cycle period 縮短 / 多 call 撞 rate limit)。
+      const now = Date.now();
+      if (now - this.lastKlineFetchTs < KLINE_CACHE_TTL_MS && this.lastKlineBlockText) {
+        return this.lastKlineBlockText;
+      }
       const candles = await fetchCandleSnapshot(sym, 30);
       // v2.0.863-attack (V1): fetch 失敗/null → RESET cached K-line to null —
       // 舊 K 線唔可以用喺今次決策校準(市場可能已變)。
@@ -4330,8 +4341,14 @@ ${recentExamples}
       }
       const summary = summarizeKlines(candles);
       this.lastKlineSummary = { trend: summary.trend };
-      if (!summary.description) return '';
-      return `=== K-LINE STRUCTURE for ${sym} ===\n${summary.description}\n(蠟燭形態——統計睇唔到,你用世界模型判斷趨勢/形態/突破真偽)`;
+      this.lastKlineFetchTs = now;
+      if (!summary.description) {
+        this.lastKlineBlockText = '';
+        return '';
+      }
+      this.lastKlineBlockText = `=== K-LINE STRUCTURE for ${sym} ===\n${summary.description}\n(蠟燭形態——統計睇唔到,你用世界模型判斷趨勢/形態/突破真偽)`;
+      log.debug(`[kline] ${sym}: fetched ${candles.length} candles (TTL cache active, next fetch in ${KLINE_CACHE_TTL_MS / 1000}s)`);
+      return this.lastKlineBlockText;
     } catch { return ''; }
   }
 

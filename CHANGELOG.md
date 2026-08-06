@@ -3674,3 +3674,20 @@ dataQuality:       0(系統從未做過——全新領域)
 **已確認安全**:computeChartConvictionMultiplier 大寫 trend/UP、garbage catalyst(唔誤罰)、負數/超大 qualityScore、組合矩陣、rationale 各形態(undefined/空/新聞 strong)。
 
 **驗證**:`tests/v2.0.863-chart-attack.test.ts`(10 tests)。相關 43/43。`tsc --noEmit` 零錯誤。全量 2012/2024(12 pre-existing)。
+
+---
+
+## v2.0.863-attack3: K-LINE fetch rate-limit 防護(TTL cache)
+
+**主神擔憂**:攞 chart(candleSnapshot)會撞 HL rate limit。
+
+**審計**:HL 允許 ~20 req/s;`hlRateLimitedFetch` global limiter(2.5 req/s + 429 cooldown + 5 retries)保護**所有** HL call;buildKlineBlock 每 5 分鐘只 1 次(active symbol);logs 無 429 記錄。
+
+**加固**(雙保險):
+- **TTL cache(120s)**:`lastKlineFetchTs` + `lastKlineBlockText`——唔會超過每 2 分鐘 1 次 candleSnapshot——即使 cycle period 縮短(<2 分鐘)或者未來多 symbol 都安全
+- **fallback 已確保**:fetch 失敗 → `lastKlineSummary=null`(唔校準 ×1.0,V1 修復)
+- **監察**:debug log(`[kline] <sym>: fetched N candles, next fetch in 120s`)
+
+**效果**:candleSnapshot 總 call 頻率 = max(每 2 分鐘 1 次 K-LINE + 開倉時 ATR/momentum/S-R)——全部經 global queue,唔可能 429。
+
+**驗證**:相關 32/32。`tsc --noEmit` 零錯誤。全量 2022/2034(12 pre-existing)。
