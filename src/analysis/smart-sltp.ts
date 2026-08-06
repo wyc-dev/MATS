@@ -16,6 +16,7 @@
 //   4. ATR 只用嚟 ensure SL ≥ 1.5×ATR（防止噪音止損）
 
 import { createLogger } from '../observability/logger.ts';
+import { candleCache } from '../data/candle-cache.ts';
 // v2.0.849: Consume the stop-out-trained execution lens that index.ts prepares
 // before each trade. Previously only the DEAD computeATRSLTP read this lens, so
 // the momentum-adaptive + execution-lens SL widening never reached real trades.
@@ -611,16 +612,8 @@ export async function fetchCandleHighLow(
   candleCount: number = 50,
 ): Promise<{ high: number | null; low: number | null }> {
   try {
-    // v2.0.832: Use dynamic import to avoid circular dependency with MarketAgent
-    const { MarketAgent } = await import('../market-agent/index.ts');
-    const coin = symbol.includes(':') ? symbol : symbol.toUpperCase();
-    const endTime = Date.now();
-    const startTime = endTime - candleCount * 3_600_000; // 1h candles
-
-    const data = await MarketAgent.hlFetch({
-      type: 'candleSnapshot',
-      req: { coin, interval: '1h', startTime, endTime },
-    }) as Array<{ h?: string; l?: string }>;
+    // v2.0.863: 共用 candle cache(1h——同 getATR/momentum/kline 共享)
+    const data = await candleCache.getCandles(symbol, '1h', candleCount);
 
     if (!Array.isArray(data) || data.length === 0) {
       return { high: null, low: null };
@@ -629,8 +622,8 @@ export async function fetchCandleHighLow(
     let high = 0;
     let low = Infinity;
     for (const c of data) {
-      const h = parseFloat(c['h'] ?? '0');
-      const l = parseFloat(c['l'] ?? '0');
+      const h = Number(c.h);
+      const l = Number(c.l);
       if (Number.isFinite(h) && h > high) high = h;
       if (Number.isFinite(l) && l > 0 && l < low) low = l;
     }

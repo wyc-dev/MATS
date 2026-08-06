@@ -207,19 +207,12 @@ export async function getATR(symbol: string, period = 14): Promise<number> {
  * against adverse momentum and by Skeptics to flag "price is being pushed".
  */
 export async function getMomentum(symbol: string, n = 5): Promise<number> {
-  if (!hlFetchFn) return 0;
   try {
-    const coin = symbol.includes(':') ? symbol : symbol.toUpperCase();
-    const endTime = Date.now();
-    const intervalMs = 3_600_000;
-    const startTime = endTime - (n + 2) * intervalMs;
-    const data = await hlFetchFn({
-      type: 'candleSnapshot',
-      req: { coin, interval: '1h', startTime, endTime },
-    }) as Array<{ t?: string; c?: string }>;
-    if (!Array.isArray(data) || data.length < 2) return 0;
-    const closes = data
-      .map(c => parseFloat(c['c'] ?? '0'))
+    // v2.0.863: 共用 candle cache(1h——同 getATR/kline 共享,每 cycle 一次 fetch)
+    const raw = await candleCache.getCandles(symbol, '1h', n + 2);
+    if (!raw || raw.length < 2) return 0;
+    const closes = raw
+      .map(c => c.c)
       .filter(c => c > 0)
       .sort((a, b) => a - b);
     if (closes.length < 2) return 0;
