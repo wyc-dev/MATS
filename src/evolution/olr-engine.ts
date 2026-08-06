@@ -206,7 +206,12 @@ export function applyCalibration(
     return 0.5;
   }
   const count = wins + losses;
-  const empiricalWR = count > 0 ? wins / count : 0.5;
+  // v2.0.862-calib-attack (V5): EMPTY bin MUST be identity (return raw) — the
+  // old code returned 0.5 (empiricalWR=0.5, shrink=0 → 0.5), silently killing
+  // the raw prediction for every cold-start symbol / fresh bin. v2.0.859's
+  // "identity fallback is safer" intent was never implemented for count=0.
+  if (count <= 0) return rawPWin;
+  const empiricalWR = wins / count;
   if (!Number.isFinite(empiricalWR)) return rawPWin;
   const shrink = count / (count + CALIBRATION_SHRINK_K);
   const calibrated = 0.5 + (empiricalWR - 0.5) * shrink;
@@ -461,12 +466,27 @@ export class OLREngine {
       // purge already happened in the past (bins since then are clean).
       // Empty bins → empty (identity fallback) — same as before.
       calibrationBins: (Array.isArray(m.calibrationBins) && m.calibrationBins.length === CALIBRATION_NUM_BINS
-        ? m.calibrationBins.map((b: any) => ({
-            lo: Number(b.lo) ?? 0,
-            hi: Number(b.hi) ?? 0,
-            wins: Number(b.wins) ?? 0,
-            losses: Number(b.losses) ?? 0,
-          }))
+        ? m.calibrationBins.map((b: unknown) => {
+            // v2.0.862-calib-attack (V2/V1/V3): sanitize EACH bin defensively —
+            // a getter-throw Proxy / NaN / negative / string value must be
+            // isolated (→ 0) and must NEVER crash migrateModel (which would
+            // lose the ENTIRE OLR state → cold-start DoS).
+            try {
+              const bin = b as { lo?: unknown; hi?: unknown; wins?: unknown; losses?: unknown };
+              const num = (v: unknown, def: number): number => {
+                const n = typeof v === 'number' ? v : Number(v);
+                return Number.isFinite(n) ? Math.max(0, n) : def;
+              };
+              return {
+                lo: num(bin.lo, 0),
+                hi: num(bin.hi, 0),
+                wins: num(bin.wins, 0),
+                losses: num(bin.losses, 0),
+              };
+            } catch {
+              return { lo: 0, hi: 0, wins: 0, losses: 0 };
+            }
+          })
         : makeEmptyCalibrationBins()),
     };
   }

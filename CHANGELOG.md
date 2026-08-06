@@ -3508,3 +3508,18 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **效果**:OLR 對 SKHX BUY 輸出由 70% → 14%——LLM 見到真實 P(win) 就唔會再開逆勢倉。calibration 功能正式復活(全系統)。
 
 **驗證**:OLR 相關 34/34 測試通過,`tsc --noEmit` 零錯誤。tsx watch 自動 reload → 即刻生效。
+
+---
+
+## v2.0.862-calib-attack: OLR calibration hardening(2 個真 bug 修復)
+
+**主神指令**:不擇手段攻擊 calibration 修復。
+
+| # | 漏洞 | 嚴重性 | 修復 |
+|---|---|---|---|
+| V5 | **空 calibration bin(count=0)返回 0.5 而唔係 raw**——`empiricalWR=0.5, shrink=0 → 0.5`。**冷啟動/新 symbol 嘅 OLR 全部輸出 0.5(中性),真實預測被毀**——v2.0.859「identity fallback」原意從未實現(count=0 冇 guard) | 🔴 High | `count <= 0 → return rawPWin`(identity) |
+| V2/V1/V3 | **migrateModel calibrationBins 無防禦**——`Number(x)??0` 唔 catch NaN(→NaN 入 bins);負 wins 扭曲 empirical WR;corrupt bin 元素可令 load 全丟(冷啟動 DoS) | 🟠 Medium | 每 bin sanitize:try/catch 隔離 + `Number.isFinite` + `Math.max(0, n)` clamp |
+
+**已確認安全**:applyCalibration 已有 Object.hasOwn + try/catch;recordCalibrationSample 對 NaN binIdx 安全(undefined → return)。
+
+**驗證**:`tests/olr-calibration-attack.test.ts`(11 tests——NaN/string/Infinity bins、corrupt 元素、負 wins、長度錯、null 元素、乾淨 bins 保留、空 bins identity)。OLR 相關 50/50。`tsc --noEmit` 零錯誤。
