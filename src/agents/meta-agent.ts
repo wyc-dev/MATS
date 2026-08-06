@@ -658,6 +658,21 @@ pile up. Before deciding CLOSE, you MUST verify ALL of the following:
      direction still correct? If the trend/momentum/OLR edge still favors the position's
      side, the thesis is NOT invalidated — the position just needs more time. DO NOT CLOSE.
 
+  6. **EXIT-PRICE MFE CHECK (v2.0.862)**: If the context contains
+     "=== EXIT-PRICE MFE CHECK for <sym> ===", the system's PAEL learner has measured
+     how far THIS asset typically extends in the position's favour (MFE distribution,
+     per-asset × per-direction).
+       - If the block says "🔒 LOCK-PROFIT ZONE REACHED": price has reached the asset's
+         typical favourable-extension zone (p75×0.8; 75% of historical trades reversed
+         before this level). The system WILL lock profit deterministically — do NOT
+         argue against it unless the thesis has NEW, STRONG upside evidence (a fresh
+         catalyst) that overrides the statistical zone.
+       - If the block says "not yet in lock zone": the position has NOT reached the
+         typical profit zone — this is NOT a reason to close; it means the thesis
+         still has room to play out. HOLD unless another check fails.
+       - This signal NEVER touches the SL. It only supports TP-side exits.
+       - Cold-start (no profile / no block): ignore, behave as before.
+
 These 5 checks are MANDATORY before any CLOSE decision. If ANY check fails → HOLD.
 
 === ENTRY THESIS (v2.0.776 — QUALITY GATE — SPECIFIC, FALSIFIABLE REASONING REQUIRED) ===

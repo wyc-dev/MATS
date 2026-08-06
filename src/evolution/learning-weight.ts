@@ -43,6 +43,14 @@ export function computeLearningWeight(
     case 'consensus':
       // Agent consensus close — system vote, not a clean market trigger.
       return 0.5;
+    case 'exit_price_lock':
+      // v2.0.862: data-driven lock-profit close — the PAEL MFE extension check
+      // fired (price reached the asset's typical favourable zone). The market
+      // DID confirm the direction (profit existed), but the exit was a system
+      // decision at p75×0.8, not a natural TP trigger — treat as a system
+      // decision (0.5), never full weight. Also never a loss (the gate only
+      // fires when profit > 0), so this branch is defensive.
+      return 0.5;
   }
   // Wins from clean market closes (sl_tp / reconciliation / exchange_closed)
   // always get full weight — the market confirmed the entry thesis, and that

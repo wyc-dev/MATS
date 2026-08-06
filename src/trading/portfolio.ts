@@ -120,6 +120,9 @@ export const VALID_CLOSE_REASONS = new Set([
   'reconciliation',
   'exchange_closed',
   'thesis_invalidation',
+  // v2.0.862: data-driven lock-profit close — PAEL MFE extension check reached
+  // the asset's typical favourable-extension zone (TP side one-vote exit).
+  'exit_price_lock',
 ] as const);
 
 /**
