@@ -3555,3 +3555,19 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **量化核心**:avg 會被 outlier 騙(SKEW trap),median 先係分佈中心;edge 隨 regime 旋轉,舊數據要衰減——呢兩個修正直接令系統「喺負 EV 方向唔開倉」+「近期 edge 主導」。
 
 **驗證**:`tests/combo-expectancy.test.ts`(7 tests——median vs avg SKEW、EWMA 時序衰減、半衰期、ring cap、persistence、corrupt input)。相關 46/46。全量 2005/2018(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.862-ev-attack: median/EWMA adversarial hardening(1 crash + 2 污染修復)
+
+**主神指令**:不擇手段攻擊方案 A+D。
+
+| # | 漏洞 | 嚴重性 | 修復 |
+|---|---|---|---|
+| V1 | **毒 state `pnlPcts: "garbage"` → `medianOf().filter` crash → getComboWR 崩潰** | 🔴 High | medianOf 加 Array.isArray guard(non-array → 0) |
+| V2/V3 | **load() 冇 sanitize pnlPcts 元素(NaN/string/Infinity)+ ewma 字段(string/NaN)→ median/EWMA 污染** | 🟠 Medium | load 時 sanitize:pnlPcts filter finite + cap 50;ewma 非 finite → 清空(下次 trade seed) |
+| V4 | **trackTrade cycle=NaN → delta NaN → decay NaN → EWMA NaN** | 🟠 Medium | safeCycle guard + firstOrPoisoned → seed fresh |
+
+**已確認安全**:ring cap 50 bounded、極端值(1e308)finite、NaN 元素 filtered。
+
+**驗證**:`tests/combo-expectancy-attack.test.ts`(9 tests——毒 load 各形態、NaN cycle、極端值)。相關 40/40。`tsc --noEmit` 零錯誤。全量 2005/2018(12 pre-existing)。
