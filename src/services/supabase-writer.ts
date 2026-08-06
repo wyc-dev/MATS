@@ -229,7 +229,11 @@ export class SupabaseAnalysisWriter {
       this.lastWriteAt = Date.now();
       log.info(`[ui-snapshot] wrote ${rows.length} sections (cycle ${cycleId})`);
     } catch (err) {
-      log.warn(`[ui-snapshot] write failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+      // v2.0.862-attack: supabase-js errors are plain objects — String(err) is
+      // '[object Object]' (useless). Extract message/code/hint for diagnosis.
+      const sbErr = err as { message?: string; code?: string; hint?: string; details?: string };
+      const detail = sbErr?.message ?? (err instanceof Error ? err.message : JSON.stringify(err));
+      log.warn(`[ui-snapshot] write failed (non-blocking): ${detail}${sbErr?.code ? ` (${sbErr.code})` : ''}`);
     }
   }
 }
