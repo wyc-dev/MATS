@@ -3801,3 +3801,31 @@ dataQuality:       0(系統從未做過——全新領域)
 **效果**:LLM 知自己睇「30 支 1h + 60 支 5m」——趨勢/時機語義明確,唔會俾 100 支嘅長週期稀釋。
 
 **驗證**:相關 44/44。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.864: LLM Direction Verifier — 方向預測 + 平倉結果雙層校準
+
+**主神問題**:「有沒有記錄每次執行的時候 LLM 所給予的判斷和建議,來給予日後的 LLM 判斷之前對於相關資產和相關走勢的判斷是否正確?」
+
+**新增**(`src/analysis/llm-direction-verifier.ts`):
+- **每 cycle 記錄**:Meta-Agent 方向判斷 (symbol, direction, trend-type, 判斷時 price)——包括 HOLD/冇落單——樣本 = cycles(上萬級)
+- **每 cycle 驗證 B(方向預測)**:下個 cycle 用現價 vs 判斷時價 → 判斷正確/錯誤——純價格比較,避開 SL/TP 干擾(修 Conviction Calibrator 用 trade outcome 嘅 gap)
+- **平倉時記錄 C(終極結果)**:該筆判斷嘅 trade 最終賺/蝕——by tradeId idempotent(平倉事件重複觸發只記一次)
+- **準確率 blend**:acc = 0.7×B + 0.3×C(C 有樣本時)——B 樣本多、C 係終極
+- **三層 fallback**(主神要求):symbol×trend-type(≥10)→ 該 trend-type 全局跨 symbol(≥20)→ 中性——新市場參考其他走勢
+- **gate 乘數**:accuracy → ×[0.80, 1.05] + shrink(樣本少 → 趨近 1.0)——**永遠唔 hard block**
+- **注入 Meta-Agent**:「LLM DIRECTION TRUST」block(B 方向預測 + C 平倉結果準確率 + ×乘數)
+- 48h 未驗證 pending 自動棄置(價格比較無意義);pending cap 5000
+- flag: `LLM_DIRECTION_VERIFIER_ENABLED`
+
+**與 Conviction Calibrator 分工(並排 = 同層級 gate 乘數,直接左右決策,唔同權重)**:
+```
+effectiveConfidence = calibratedConsensus(改 consensus 本身,大範圍)
+                   × OLR × causal × qrlExpectancy × chartMultiplier
+                   × llmDirectionTrust(×0.80-1.05,方向層微調)
+                   × calibrationTrust
+```
+Conviction Calibrator 管「信心報數準唔準」,Direction Verifier 管「方向預測啱唔啱」——互補唔重疊,避免 double-count 懲罰。
+
+**驗證**:`tests/llm-direction-verifier.test.ts`(9 tests——正確性/三層 fallback/平倉 idempotent/乘數 shrink/持久化/毒 state/malformed/stale 棄置/deterministic)。相關 58/58。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

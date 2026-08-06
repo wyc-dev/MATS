@@ -68,6 +68,7 @@ import { candleCache } from './data/candle-cache.ts';
 import { evaluateDataQuality } from './analysis/data-quality.ts';
 import { computeChartConvictionMultiplier } from './analysis/chart-conviction.ts';
 import { LLMConvictionCalibrator } from './analysis/llm-conviction-calibrator.ts';
+import { LLMDirectionVerifier } from './analysis/llm-direction-verifier.ts';
 import { classifyThesisCatalyst } from './analysis/thesis-catalyst.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
@@ -112,6 +113,7 @@ const klineBlockConfig = { enabled: parseBlockBool(process.env['KLINE_BLOCK_ENAB
 const dataQualityConfig = { enabled: parseBlockBool(process.env['DATA_QUALITY_BLOCK_ENABLED'], true) } as const;
 const chartConvictionConfig = { enabled: parseBlockBool(process.env['CHART_AWARE_CONVICTION'], true) } as const;
 const llmCalibrationConfig = { enabled: parseBlockBool(process.env['LLM_CONVICTION_CALIBRATION'], true) } as const;
+const llmDirectionConfig = { enabled: parseBlockBool(process.env['LLM_DIRECTION_VERIFIER'], true) } as const;
 /** v2.0.863-attack: K-LINE fetch TTL cache — 防 cycle period 縮短/多 call 令
  *  candleSnapshot 頻繁 fetch。5 分鐘 cycle 每 cycle 一次;cycle < TTL 時用 cache。 */
 const KLINE_CACHE_TTL_MS = 120_000; // 2 分鐘
@@ -255,6 +257,10 @@ class MATSSystem {
   private lastKlineBlockText = '';
   /** v2.0.863 規限①:LLM conviction calibrator + 讀圖質素 */
   private llmCalibrator!: LLMConvictionCalibrator;
+  /** v2.0.864:LLM Direction Verifier(方向預測 + 平倉結果雙層校準) */
+  private llmDirectionVerifier!: LLMDirectionVerifier;
+  /** v2.0.864: 上次記錄判斷時嘅 rationale(block 注入用) */
+  private lastJudgeRationale = '';
   // v2.0.837: Meta-Cognitive Calibrator — system self-awareness
   private metaCalibrator!: MetaCalibrator;
   // v2.0.838: Self-Improver — auto-tuning hyperparameters
@@ -1195,6 +1201,15 @@ class MATSSystem {
         log.info(`✓ LLM Conviction Calibrator loaded (${lc.bins} bins, ${lc.klineReads} kline reads)`);
       } catch (e) {
         log.warn(`[llm-calib-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      // v2.0.864: LLM Direction Verifier(方向預測 + 平倉結果)
+      this.llmDirectionVerifier = new LLMDirectionVerifier();
+      try {
+        this.llmDirectionVerifier.load();
+        const dv = this.llmDirectionVerifier.getStats();
+        log.info(`✓ LLM Direction Verifier loaded (${dv.pending} pending, ${dv.directionKeys} dir keys, ${dv.outcomeKeys} outcome keys)`);
+      } catch (e) {
+        log.warn(`[dir-verifier-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
       }
 
       this.exitPriceLearner = new ExitPriceLearner();
@@ -3611,6 +3626,18 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             entryConf ?? 0.5,
             isWin ? 'win' : 'loss',
           );
+        }
+        // v2.0.864: LLM Direction Verifier — 平倉時記錄 C 終極結果(賺/蝕)
+        // trendType 由開倉 thesis 提取(同判斷時一致)——by tradeId idempotent
+        if (this.llmDirectionVerifier && llmDirectionConfig.enabled) {
+          try {
+            this.llmDirectionVerifier.recordOutcome(
+              normalizeSymbol(trade.symbol || ''),
+              this.extractTrendType((trade as { entryThesis?: string }).entryThesis),
+              String((trade as { id?: string | number }).id ?? `t${Date.now()}-${Math.random()}`),
+              isWin,
+            );
+          } catch { /* non-fatal */ }
         }
         // v2.0.226: Pass slNarrowed + learningWeight so OLR downweights tight-SL
         // losses (execution problem) vs real market losses (entry problem).
@@ -7377,6 +7404,16 @@ ${recentExamples}
         const calBlock = this.llmCalibrator?.getCalibrationBlock();
         if (calBlock) marketDesc += `\n${calBlock}`;
       } catch { /* non-fatal */ }
+      // v2.0.864: LLM DIRECTION TRUST block(方向預測 + 平倉結果準確率)
+      try {
+        if (this.llmDirectionVerifier && llmDirectionConfig.enabled && activeSymbol) {
+          const dirBlock = this.llmDirectionVerifier.getDirectionTrustBlock(
+            normalizeSymbol(activeSymbol),
+            this.extractTrendType(this.lastJudgeRationale),
+          );
+          if (dirBlock) marketDesc += `\n${dirBlock}`;
+        }
+      } catch { /* non-fatal */ }
 
       // v2.0.863: K-LINE STRUCTURE + DATA QUALITY blocks(LLM 世界模型讀圖)
       // — active symbol 完整,trading markets 簡短。純 context,flag-gated。
@@ -10166,6 +10203,28 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         const calibratedConsensus = this.llmCalibrator && llmCalibrationConfig.enabled
           ? this.llmCalibrator.getCalibratedConviction(gateAction, consensusConfidence)
           : consensusConfidence;
+        // ── v2.0.864: LLM Direction Verifier——每 cycle 記錄 LLM 方向判斷(包括 HOLD/冇落單)
+        // 判斷時 price 凍結——下個 cycle 用現價驗證 B 方向預測;平倉時記錄 C 終極結果
+        if (this.llmDirectionVerifier && llmDirectionConfig.enabled) {
+          try {
+            const judgeSymbol = normalizeSymbol(finalDecision.symbol || activeSymbol);
+            const judgePrice = this.hyperliquidWs?.getMarkPriceForSymbol(judgeSymbol)?.markPrice ?? null;
+            this.llmDirectionVerifier.recordJudgment(
+              judgeSymbol,
+              gateAction,
+              this.extractTrendType(finalDecision.rationale),
+              this.totalCycles,
+              judgePrice ?? undefined,
+            );
+            this.lastJudgeRationale = typeof finalDecision.rationale === 'string' ? finalDecision.rationale : '';
+          } catch { /* non-fatal */ }
+        }
+        const llmDirectionTrust = this.llmDirectionVerifier && llmDirectionConfig.enabled
+          ? this.llmDirectionVerifier.getTrustMultiplier(
+              normalizeSymbol(finalDecision.symbol || activeSymbol),
+              this.extractTrendType(finalDecision.rationale),
+            )
+          : 1.0;
         // v2.0.863 規限②: LLM 讀圖質素——thesis 引用 K 線方向 vs 統計實際趨勢
         try {
           if (this.llmCalibrator && this.lastKlineSummary && typeof finalDecision.rationale === 'string') {
@@ -10187,7 +10246,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         }
 
         // ── Final effective confidence: consensus × P(win) × penalty × boost ──
-        let effectiveConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor;
+        let effectiveConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor * llmDirectionTrust;
 
         // ── v2.0.844 Phase 2a: Causal-Grounded Entry Gate ────────────────
         // Only allow high-conviction entries where the aligned shadow shows a
@@ -10253,8 +10312,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             ? ` blend=${pwinBlendFactor.toFixed(3)} (combo override: ${comboBlendUsed.reason.slice(0, 80)})`
             : ` blend=${pwinBlendFactor.toFixed(3)}`;
           const pwinStr = olrHasData
-            ? ` (P(win)=${(olrPWin * 100).toFixed(0)}%${blendStr} × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%)`
-            : ` (consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%, OLR cold-start)`;
+            ? ` (P(win)=${(olrPWin * 100).toFixed(0)}%${blendStr} × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} × dirTrust=${llmDirectionTrust.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%)`
+            : ` (consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} × dirTrust=${llmDirectionTrust.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%, OLR cold-start)`;
           const factorStr = dtcResult.factors.map(f => `${f.factor}=${f.score > 0 ? '+' : ''}${f.score}`).join(' ');
           log.warn(`🛑 [Plan-G] Conviction gate [${finalDecision.symbol || activeSymbol}]: effective ${(effectiveConfidence * 100).toFixed(0)}% < threshold ${(adjustedThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, penalty=${penaltyFactor.toFixed(2)}, boost=${boostFactor.toFixed(2)}, risk=${riskProfile})${pwinStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD`);
           activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(effectiveConfidence * 100).toFixed(0)}% < ${(adjustedThreshold * 100).toFixed(1)}%${pwinStr} [${factorStr}] [risk=${riskProfile}]` });
@@ -11960,10 +12019,38 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     } catch { /* best-effort */ }
   }
 
+  /** v2.0.864: 由 rationale/thesis 提取 LLM 聲稱嘅走勢類型(1h-up/1h-down/mixed) */
+  private extractTrendType(text: string | undefined): string {
+    if (!text || typeof text !== 'string') return 'unknown';
+    const r = text.toLowerCase();
+    const up = /(上升|uptrend|趨勢向上|bullish|向上|higher high)/.test(r);
+    const down = /(下降|downtrend|趨勢向下|bearish|向下|lower low)/.test(r);
+    if (up && !down) return '1h-up';
+    if (down && !up) return '1h-down';
+    return 'mixed-neutral';
+  }
+
+  /** v2.0.864: 每 cycle 驗證 pending LLM 判斷(B 方向預測——判斷時 price vs 而家 price) */
+  private verifyPendingLLMJudgments(): void {
+    try {
+      if (!this.llmDirectionVerifier || !llmDirectionConfig.enabled) return;
+      this.llmDirectionVerifier.verifyAllPending(
+        (sym) => this.hyperliquidWs?.getMarkPriceForSymbol(sym)?.markPrice ?? null,
+      );
+    } catch { /* non-fatal */ }
+  }
+
   /** v2.0.863 規限①: Persist LLM conviction calibrator state. */
   private persistLLMCalibrator(): void {
     try {
       this.llmCalibrator?.save();
+    } catch { /* best-effort */ }
+  }
+
+  /** v2.0.864: Persist LLM Direction Verifier state. */
+  private persistLLMDirectionVerifier(): void {
+    try {
+      this.llmDirectionVerifier?.save();
     } catch { /* best-effort */ }
   }
 
@@ -12893,6 +12980,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     this.persistOLR();
     this.persistExitPriceLearner();
     this.persistLLMCalibrator();
+    this.persistLLMDirectionVerifier();
     this.persistRootCommandPrompt();
     if (this.emManager) saveEMState(this.emManager.getState());
     this.stopTimers();
