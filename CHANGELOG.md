@@ -3228,3 +3228,21 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **已確認安全(攻擊測試證明,無需修改)**:V4(parseNumEnv 已有 isFinite check)、V6(tStat 已有 std>1e-12 guard,constant rewards → t=0)、V8(大寫 action makeKey 已 lowercase、n=1 median/trim fallback、全 0 rewards、1e200 混合、Proxy getter-bomb、`__proto__` pollution 全部 safe)、V9(openQRLShadow NaN entry guard + qrlSignal 局部 sanitise)。
 
 **攻擊測試**:`tests/qrl-direction-attack.test.ts`(32 tests)——V1-V10 全向量。連同 signal tests 61/61。Q-RL 相關 suites 171/171(q-rl-attack + q-rl-creative)。`tsc --noEmit` 零錯誤。全 regression 1925/1937(12 個 fail 係 pre-existing `v2.0.854-attack2-nan-price.test.ts` `getBalance is not a function` API 腐敗,git stash 驗證非本版造成)。
+
+---
+
+## v2.0.861-shadow: Shadow pool priority eviction — blind cold-start priors make room for real A/B arms
+
+**問題**:blind shadows(0.1× cold-start prior,兩邊開,2%/5% SL/TP 喺低波動市況好少 resolve)壟斷 60-slot pool(59/60 實測),令 v2.0.846 statistical + v2.0.861 qrl A/B 臂同 v2.0.855 aligned arm(Q-RL 唯一 live feed)冇位開——真正嘅 edge 實驗全部餓死。
+
+**修復**(`src/evolution/shadow-trade-engine.ts`):
+- `evictOldestBlindForRoom()`:pool 滿時,evict **最舊**、**未觸發 SL/TP barrier** 嘅 open blind(最接近 force-resolve、價值最低;已觸發 barrier 嘅保留等 checkPositions 自然 resolve + feed OLR)
+- 接入 3 個真統計 open 方法:aligned / statistical / qrl——pool 滿 → evict → 開
+- **blind 唔會為自己讓位**(維持最低優先級)
+- **aligned 補上 global total cap**(之前只有 per-symbol cap——latent unbounded-growth vector)
+- evict = **discard**(splice 出 array → checkPositions 永不會 double-process;唔入 recentResults、唔 feed OLR——少樣本,永不污染)
+- Per-instance evict counter + audit log(可觀測性)
+
+**Env flags**:`SHADOW_EVICT_BLIND`(default true,false = 完全 v2.0.860 行為)+ `SHADOW_EVICT_MAX_PER_CALL`(default 1,clamp [1,5])。
+
+**驗證**:`tests/shadow-evict-attack.test.ts`(11 tests)——最舊 victim 揀選、barrier-hit 保留、無 blind skip、無 double-resolve、唔 feed OLR、blind 唔 self-evict、aligned 新 cap、statistical/qrl evict、pool 未滿正常開、`SHADOW_EVICT_BLIND=false` rollback 路徑。`tsc --noEmit` 零錯誤。全 regression 1936/1948(12 pre-existing `getBalance` API 腐敗)。

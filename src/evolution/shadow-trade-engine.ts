@@ -167,6 +167,37 @@ const SHADOW_CONFIG = {
   staleLearningWeight: 0.3,
 } as const;
 
+// ─── v2.0.861: Shadow pool priority eviction config ─────────────────────
+// True-statistical shadows (aligned / statistical / qrl) are worth MORE than
+// blind cold-start priors (0.1× weight). Blind shadows open BOTH sides every
+// cycle with 2%/5% SL/TP that rarely hit in low-vol regimes — they monopolise
+// the 60-slot pool for 12 cycles (maxAgeCycles) and starve the A/B arms. When
+// a higher-value shadow needs room, evict the OLDEST unevicted blind.
+// Env-tunable, independently disableable (SHADOW_EVICT_BLIND=false → v2.0.860
+// behaviour, zero behavioural change).
+function parseEvictBoolEnv(v: string | undefined, def: boolean): boolean {
+  if (v === undefined || v.trim() === '') return def;
+  const s = v.trim().toLowerCase();
+  if (s === 'true' || s === '1' || s === 'yes') return true;
+  if (s === 'false' || s === '0' || s === 'no') return false;
+  return def;
+}
+function parseEvictNumEnv(v: string | undefined, def: number): number {
+  if (v === undefined || v.trim() === '') return def;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+}
+const shadowEvictConfig = {
+  enabled: parseEvictBoolEnv(process.env['SHADOW_EVICT_BLIND'], true),
+  // Per-call cap — evict at most this many blinds per open attempt (conservative:
+  // one frees one slot; the rest retry next cycle). Clamped [1, 5].
+  maxPerCall: Math.max(1, Math.min(5, Math.floor(parseEvictNumEnv(process.env['SHADOW_EVICT_MAX_PER_CALL'], 1)))),
+} as const;
+
+/** v2.0.861: Total blind evictions (observability + tests). Per-instance so
+ *  each engine's count is independently testable (module-level would leak
+ *  across tests / engine instances). */
+
 // ─── Shadow Trade Engine ───
 
 export class ShadowTradeEngine {
@@ -176,6 +207,73 @@ export class ShadowTradeEngine {
   private idCounter = 0;
   /** Reference to OLR engine for feeding outcomes */
   private olrEngine: OLREngine;
+  /** v2.0.861: blind evictions performed by THIS instance (observability). */
+  private shadowEvictCount = 0;
+
+  /** v2.0.861: Priority eviction — when the shadow pool is FULL, make room for
+   *  a higher-value true-statistical shadow (aligned/statistical/qrl) by
+   *  evicting the OLDEST open blind position that has NOT yet touched its
+   *  SL/TP barrier.
+   *
+   *  Why blind: blind shadows are 0.1× cold-start priors (lowest learning
+   *  value). They open BOTH sides every cycle with default 2%/5% SL/TP that
+   *  rarely resolve in low-vol regimes — a full 60-slot pool of unevicted
+   *  blinds starves the statistical A/B arms (v2.0.846 statistical, v2.0.861
+   *  qrl) AND the aligned arm (Q-RL's only live feed, v2.0.855), crippling
+   *  the very experiments that measure real edge.
+   *
+   *  Why OLDEST: closest to maxAgeCycles force-resolve → least remaining
+   *  learning value.
+   *
+   *  Why only non-barrier-hit blinds: a blind whose SL/TP was touched is
+   *  about to resolve naturally → checkPositions will feed OLR with a real
+   *  outcome — do NOT discard a resolvable sample.
+   *
+   *  Eviction = DISCARD: the victim is spliced out of the array (checkPositions
+   *  can never double-process it), NOT recorded in recentResults, NOT fed to
+   *  OLR. Fewer samples, never polluted samples — the safe direction.
+   *
+   *  @returns true if at least one blind was evicted (caller may open).
+   */
+  private evictOldestBlindForRoom(): boolean {
+    if (!shadowEvictConfig.enabled) return false;
+    const openCount = this.positions.filter(p => p.status === 'open').length;
+    if (openCount < SHADOW_CONFIG.maxTotalOpen) return false;
+
+    // Candidates: open blinds that have NOT touched SL or TP yet.
+    const candidates = this.positions.filter(p => {
+      if (p.status !== 'open' || p.shadowType !== 'blind') return false;
+      if (p.side === 'buy') {
+        if (p.lowSinceOpen <= p.stopLossPrice) return false;
+        if (p.highSinceOpen >= p.takeProfitPrice) return false;
+      } else {
+        if (p.highSinceOpen >= p.stopLossPrice) return false;
+        if (p.lowSinceOpen <= p.takeProfitPrice) return false;
+      }
+      return true;
+    });
+    if (candidates.length === 0) return false;
+
+    // Oldest first — closest to force-resolve, lowest remaining value.
+    candidates.sort((a, b) => a.openTimestamp - b.openTimestamp);
+    const maxEvict = Math.max(1, shadowEvictConfig.maxPerCall);
+    let evicted = 0;
+    for (const victim of candidates) {
+      if (evicted >= maxEvict) break;
+      const idx = this.positions.indexOf(victim);
+      if (idx < 0) continue;
+      this.positions.splice(idx, 1);
+      this.shadowEvictCount++;
+      evicted++;
+      log.info(`[shadow] EVICT blind ${victim.side.toUpperCase()} ${victim.symbol} (age=${Math.round((Date.now() - victim.openTimestamp) / 60000)}min, opened cycle ${victim.openCycle}) — made room for higher-value shadow (total evicts=${this.shadowEvictCount})`);
+    }
+    return evicted > 0;
+  }
+
+  /** v2.0.861: Total blind evictions (observability + tests). */
+  getShadowEvictCount(): number {
+    return this.shadowEvictCount;
+  }
   /** Recently resolved trades (for agent context + stats).
    *  v2.0.178: Added mfePct/maePct to recentResults so getStats() can compute
    *  MAE/MFE averages from historical results, not just current positions. */
@@ -368,7 +466,11 @@ export class ShadowTradeEngine {
     const symOpen = this.positions.filter(p => p.symbol === sym && p.status === 'open').length;
     if (symOpen >= SHADOW_CONFIG.maxOpenPerSymbol) return;
     const totalOpen = this.positions.filter(p => p.status === 'open').length;
-    if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) return;
+    if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) {
+      // v2.0.861: priority eviction — a true-statistical shadow outranks the
+      // oldest unevicted blind cold-start prior (0.1×). Evict → open.
+      if (!this.evictOldestBlindForRoom()) return;
+    }
 
     const ts = Date.now();
     const id = `stat_${++this.idCounter}`;
@@ -441,7 +543,11 @@ export class ShadowTradeEngine {
     const symOpen = this.positions.filter(p => p.symbol === sym && p.status === 'open').length;
     if (symOpen >= SHADOW_CONFIG.maxOpenPerSymbol) return;
     const totalOpen = this.positions.filter(p => p.status === 'open').length;
-    if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) return;
+    if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) {
+      // v2.0.861: priority eviction — the Q-RL expectancy A/B arm outranks the
+      // oldest unevicted blind cold-start prior. Evict → open.
+      if (!this.evictOldestBlindForRoom()) return;
+    }
 
     const ts = Date.now();
     const id = `qrl_${++this.idCounter}`;
@@ -551,10 +657,19 @@ export class ShadowTradeEngine {
     );
     if (existing) return;
 
-    // Check limits (aligned shadows count toward the same pool)
+    // Check limits (aligned shadows count toward the same pool).
     const symOpen = this.positions.filter(p => p.symbol === sym && p.status === 'open').length;
     if (symOpen >= SHADOW_CONFIG.maxOpenPerSymbol) return;
-
+    // v2.0.861: aligned shadows previously had NO global total cap — only
+    // per-symbol. With LLM leans this rarely matters, but it is a latent
+    // unbounded-growth vector (a burst of lean cycles could exceed the pool
+    // forever since aligned shadows never self-evict). Enforce the shared cap
+    // with priority eviction: aligned (Q-RL's only live feed, v2.0.855)
+    // outranks the oldest unevicted blind cold-start prior.
+    const totalOpen = this.positions.filter(p => p.status === 'open').length;
+    if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) {
+      if (!this.evictOldestBlindForRoom()) return;
+    }
     const ts = Date.now();
     const id = `aligned_${++this.idCounter}`;
 
