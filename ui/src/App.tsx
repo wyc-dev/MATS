@@ -2566,10 +2566,19 @@ function SystemStatusGrid({ al, olrState, emState, rilState }: {
   const shadowResolved = olrState?.shadowStats?.reduce((a: number, s: any) => a + s.longWins + s.longLosses + s.shortWins + s.shortLosses, 0) ?? 0
   systems.push({ name: 'Shadow', state: shadowOpen > 0 || shadowResolved > 0 ? 'ready' : 'cold', detail: `${shadowOpen} open, ${shadowResolved} resolved` })
 
-  // NA
+  // NA — v2.0.862-ui-fix: distinguish "accumulating" from "validation FAILED".
+  // 275k samples with failed validation is NOT "almost ready" — it is stuck.
   const naReady = al?.na?.ready ?? false
   const naSamples = al?.na?.sampleCount ?? 0
-  systems.push({ name: 'NA', state: naReady ? 'ready' : naSamples > 0 ? 'training' : 'cold', detail: `${naSamples} samples${naReady ? ' ✓' : `/${200}`}` })
+  const naVal = al?.na?.validation
+  let naDetail = `${naSamples} samples`
+  let naState: SysState = 'cold'
+  if (naReady) { naState = 'ready'; naDetail += ' ✓' }
+  else if (naSamples > 0) {
+    if (naVal && !naVal.passed) { naState = 'disabled'; naDetail += `, val ✗ ${naVal.reason?.slice(0, 40) ?? ''}` }
+    else { naState = 'training'; naDetail += ` (${naSamples}/${al?.na?.inputDim ?? 200})` }
+  }
+  systems.push({ name: 'NA', state: naState, detail: naDetail })
 
   // AttnRes Trade Embedder
   const attnUpdates = al?.attnres?.updateCount ?? 0

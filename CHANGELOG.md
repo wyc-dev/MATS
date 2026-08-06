@@ -3391,3 +3391,12 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **週邊掃描(確認無其他死引用)**:DCS(v2.0.859 移除)零殘留;temporal/crossSymbol/rewardShaper/worldModel(v2.0.833 移除)只係註釋;UI 使用嘅 advancedLearning 字段全部對應 live API(含新加 qrlDirection/pael)。
 
 **驗證**:`tsc --noEmit` 零錯誤 + `vite build` 成功。
+
+---
+
+## v2.0.862-ui-fix2: NA validation display + frontend.md sync
+
+**主神質疑**:SystemStatusGrid 逐個驗證——NA「275266 samples/200」顯示誤導(暗示差 200),實際係 275266 samples 但 **validation FAILED**(MSE/acc 未達標)→ isReady()=false → 卡住。修復:
+- backend API `advancedLearning.na` 加 `validation`(passed/mse/contrastiveAcc/diversity/reason)
+- UI:NA 顯示「275266 samples, val ✗ (reason)」+ disabled 狀態(唔再「/200」誤導);Exploration enabled 確認係 `.env ACTIVE_EXPLORATION_ENABLED=true`(真實狀態,非 bug)
+- frontend.md:§二 inventory 加 v2.0.861-862 數據行 + §十.5 變更記錄(對 MATS_Frontend 構建有參考:顯示 vs 移除準則)
