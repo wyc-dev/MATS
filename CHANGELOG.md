@@ -3787,3 +3787,17 @@ dataQuality:       0(系統從未做過——全新領域)
 **已確認安全**:outcome garbage → 當 loss、conviction 1e308 clamp、side 大寫唔記錄、`__proto__` bins key 唔污染、recent array cap 20、1000 次重複 record 唔 crash、毒 state load + block 唔 crash。
 
 **驗證**:`tests/llm-conviction-attack.test.ts`(14 tests——NaN/Infinity/undefined、越界、毒 state、重複、proto)。相關 27/27。全量 2050/2062(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.863-kline-count: LLM 讀圖支數明確化(30×1h + 60×5m)
+
+**主神問題**:LLM 分別攞幾多支 5m & 1h?
+
+**發現**:buildKlineBlock 請求 1h 30 / 5m 60,但 candleCache 強制 fetch ≥100(防 count 餓死,同 ATR/momentum 共享)——summarizeKlines 用晒 100 支(1h=4.2 日、5m=8.3 小時)——LLM 實際讀嘅支數唔係設計值。
+
+**修正**:buildKlineBlock 明確 slice——**1h 最近 30 支(30 小時趨勢)+ 5m 最近 60 支(5 小時時機)**——cache 照 fetch 100(共享唔影響),但 LLM 讀圖用明確支數。
+
+**效果**:LLM 知自己睇「30 支 1h + 60 支 5m」——趨勢/時機語義明確,唔會俾 100 支嘅長週期稀釋。
+
+**驗證**:相關 44/44。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

@@ -4341,10 +4341,15 @@ ${recentExamples}
       // v2.0.863 (dual-frame): 1h(大方向)+ 5m(入場時機)——雙重分析。
       // 兩者都經 candle cache(5m 同 mfe-calibrator 共享)——每 cycle 只
       // fetch 各一次(active symbol:1h + 5m = 2 個 fetch,安全)。
-      const [candles1h, candles5m] = await Promise.all([
+      const [raw1h, raw5m] = await Promise.all([
         candleCache.getCandles(sym, '1h', 30),
         candleCache.getCandles(sym, '5m', 60),
       ]);
+      // v2.0.863-attack: cache 強制 fetch ≥100 支(防 count 餓死——同 ATR/momentum
+      // 共享),但 LLM 讀圖要「明確支數」——slice 到自己需要嘅:
+      //   1h 最近 30 支(30 小時趨勢)+ 5m 最近 60 支(5 小時時機)
+      const candles1h = raw1h?.slice(-30) ?? null;
+      const candles5m = raw5m?.slice(-60) ?? null;
       if ((!candles1h || candles1h.length === 0) && (!candles5m || candles5m.length === 0)) {
         this.lastKlineSummary = null;
         return '';
