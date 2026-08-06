@@ -9,6 +9,7 @@
 // ATR is computed over 14 periods (Wilder's original).
 
 import { createLogger } from '../observability/logger.ts';
+import { candleCache } from '../data/candle-cache.ts';
 
 const log = createLogger({ phase: 'atr' });
 
@@ -171,37 +172,22 @@ export function computeATR(candles: Candle[], period = 14): number {
  * @returns ATR in price units, or 0 if unavailable.
  */
 export async function getATR(symbol: string, period = 14): Promise<number> {
-  if (!hlFetchFn) {
-    log.debug(`[getATR] HL fetch fn not set — skipping ${symbol}`);
-    return 0;
-  }
   try {
-    // v2.0.XX: DEX 1-8 symbols (xyz:SKHX) require the FULL coin name.
-    // Stripping the prefix caused HL to return empty data for all DEX 1-8 assets.
-    // v2.0.98: HL candleSnapshot API is CASE-SENSITIVE. DEX 0 symbols (BTC, ETH)
-    // must be UPPERCASE. normalizeSymbol lowercases non-colon symbols → fix here.
-    const coin = symbol.includes(':') ? symbol : symbol.toUpperCase();
-    const endTime = Date.now();
-    // 1h candles, fetch 30 → enough for 14-period ATR + smoothing
-    const intervalMs = 3_600_000;
-    const startTime = endTime - 30 * intervalMs;
-    const data = await hlFetchFn({
-      type: 'candleSnapshot',
-      req: { coin, interval: '1h', startTime, endTime },
-    }) as Array<{ t?: string; o?: string; h?: string; l?: string; c?: string; v?: string }>;
-
-    if (!Array.isArray(data) || data.length < 2) {
+    // v2.0.863: 共用 candle cache——同 momentum/SLTP/kline 共用 1h data,
+    // 每 cycle 只 fetch 一次(cache TTL 內 hit)。計算邏輯保留。
+    const raw = await candleCache.getCandles(symbol, '1h', 30);
+    if (!raw || raw.length < 2) {
       log.debug(`[getATR] No 1h data for ${symbol}`);
       return 0;
     }
-    const candles: Candle[] = data
+    const candles: Candle[] = raw
       .map(c => ({
-        timestamp: parseInt(c['t'] ?? '0', 10),
-        open: parseFloat(c['o'] ?? '0'),
-        high: parseFloat(c['h'] ?? '0'),
-        low: parseFloat(c['l'] ?? '0'),
-        close: parseFloat(c['c'] ?? '0'),
-        volume: parseFloat(c['v'] ?? '0'),
+        timestamp: c.t,
+        open: c.o,
+        high: c.h,
+        low: c.l,
+        close: c.c,
+        volume: c.v,
       }))
       .filter(c => c.timestamp > 0 && c.high > 0)
       .sort((a, b) => a.timestamp - b.timestamp);

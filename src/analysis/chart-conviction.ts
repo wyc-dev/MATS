@@ -15,8 +15,10 @@ export type ChartTrend = 'up' | 'down' | 'sideways' | null;
 export interface ChartConvictionInput {
   /** LLM 決策方向 */
   action: 'buy' | 'sell';
-  /** K 線趨勢(null = 冷啟動/無數據) */
+  /** 1h K 線趨勢(大方向)——null = 冷啟動/無數據 */
   klineTrend: ChartTrend;
+  /** 5m K 線趨勢(入場時機)——雙時間框架(主神要求 1h+5m 雙重分析) */
+  klineTrend5m?: ChartTrend;
   /** thesis catalyst 分類(新聞/事件有理由 override) */
   catalystLevel: 'strong' | 'weak' | 'none';
   /** 數據可靠性 0-1(1 = 可靠) */
@@ -26,6 +28,8 @@ export interface ChartConvictionInput {
 export const CHART_CONVICTION_CONFIG = {
   /** 反向 + 無 catalyst → 校準乘數 */
   reverseNoCatalyst: 0.75,
+  /** 雙時間框架分歧(1h vs 5m 反向)→ 校準(時機未到) */
+  divergencePenalty: 0.85,
   /** 數據不可靠 threshold(< 0.7 → 降權) */
   qualityThreshold: 0.7,
   /** 數據不可靠乘數 */
@@ -39,19 +43,28 @@ export function computeChartConvictionMultiplier(input: ChartConvictionInput | u
 
   let m = 1.0;
 
-  // 1. K-LINE 一致性校準(只有明確 up/down 先校準;Range/冷啟動唔罰)
+  // 1. K-LINE 一致性校準(1h 大方向 vs LLM 方向;Range/冷啟動唔罰)
   const trend = input.klineTrend;
   if (trend === 'up' || trend === 'down') {
     const consistent = (input.action === 'buy' && trend === 'up')
       || (input.action === 'sell' && trend === 'down');
     if (!consistent) {
-      // 反向:K 線話 up 但 LLM 出 sell(或相反)
+      // 反向:1h K 線話 up 但 LLM 出 sell(或相反)
       //   有 catalyst → LLM 有世界模型理由,唔罰
-      //   冇 catalyst → 逆圖表但冇理由 → 校準
+      //   冇 catalyst → 逆大方向但冇理由 → 校準
       if (input.catalystLevel === 'none' || input.catalystLevel === 'weak') {
         m *= CHART_CONVICTION_CONFIG.reverseNoCatalyst;
       }
     }
+  }
+
+  // 1b. 雙時間框架分歧校準(主神要求 1h+5m 雙重分析):
+  //     1h 大方向 UP 但 5m 短線 DOWN = 多空分歧——時機未到——唔好即刻入
+  //     (即使 LLM 想跟 1h 大方向,5m 逆轉中 → 等 5m 轉向)
+  const trend5m = input.klineTrend5m;
+  if ((trend === 'up' || trend === 'down') && (trend5m === 'up' || trend5m === 'down')
+      && trend !== trend5m) {
+    m *= CHART_CONVICTION_CONFIG.divergencePenalty;
   }
 
   // 2. DATA QUALITY 校準(數據不可靠一律降)

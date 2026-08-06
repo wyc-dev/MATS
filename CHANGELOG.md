@@ -3691,3 +3691,25 @@ dataQuality:       0(系統從未做過——全新領域)
 **效果**:candleSnapshot 總 call 頻率 = max(每 2 分鐘 1 次 K-LINE + 開倉時 ATR/momentum/S-R)——全部經 global queue,唔可能 429。
 
 **驗證**:相關 32/32。`tsc --noEmit` 零錯誤。全量 2022/2034(12 pre-existing)。
+
+---
+
+## v2.0.863-cache: Candle Cache Pool + 雙時間框架(1h+5m)分析
+
+**主神洞察**:① 同一 symbol 嘅 chart data 被多個消費者重複 fetch(getATR/momentum/SLTP/kline 各自 fetch 1h = 4-5 次);② 1h & 5m 都應該用嚟做雙重分析。
+
+**修復**:
+- **`src/data/candle-cache.ts`**(Lazy Cache Pool):第一次 call fetch + 存,TTL 90s 內全部消費者 hit——同一 cycle 1h data 只 fetch 一次供 getATR/momentum/kline/SLTP;5m 同 mfe-calibrator 共享。並行 fetch 保護、fail cooldown、LRU bounded(60 entries)、malformed → null
+- **消費者改共用 cache**:`buildKlineBlock`(index.ts)+ `getATR`(atr.ts)已改;移除 dead `fetchCandleSnapshot`
+- **雙時間框架 K-LINE**(主神要求):buildKlineBlock 同時 fetch 1h(30 支)+ 5m(60 支)→ 雙層 block:
+  ```
+  [1h] Trend: UP | Structure: higher-high | ...
+  [5m] Trend: UP | Structure: higher-high | ...
+  雙重確認: 1h UP + 5m UP 同向 — 強
+  ⚠️ 多空分歧: 1h UP 但 5m DOWN — 時機未到,唔好即刻入
+  ```
+- **雙時間框架分歧校準**(`chart-conviction.ts`):1h 同 5m 方向相反 → ×0.85(大方向 up 但短線回調 = 時機未到)——即使 LLM 想跟 1h 大方向,5m 逆轉中都校準
+
+**效果**:① rate limit 大幅降低(4-5 次重複 fetch → 1 次)② LLM 睇到 1h 大方向 + 5m 時機,雙重分析判斷更準 ③ 分歧時唔會即刻入場。
+
+**驗證**:`tests/kline-data-quality.test.ts` 加 6 個雙時間框架 tests(28/28)。`tsc --noEmit` 零錯誤。全量 2022/2034(12 pre-existing)。
