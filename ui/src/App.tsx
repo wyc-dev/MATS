@@ -2637,12 +2637,9 @@ function SystemStatusGrid({ al, olrState, emState, rilState }: {
   // ⭐ v2.0.833: Edge Validation Layer
   const evReports = al?.edgeValidation?.edgeReportCount ?? 0
   const evExec = al?.edgeValidation?.execTrackerEntries ?? 0
-  const evRpSize = al?.edgeValidation?.rpStoreSize ?? 0
-  const evAvg = al?.edgeValidation?.avgEdgeScore ?? 0
   systems.push({ name: 'Edge Calc', state: evReports > 0 ? 'ready' : 'cold', detail: `${evReports} reports` })
   systems.push({ name: 'Exec Tracker', state: evExec > 0 ? 'ready' : 'cold', detail: `${evExec} entries` })
   systems.push({ name: 'Stability', state: 'ready', detail: 'perturbation + cross-time' })
-  systems.push({ name: 'RP Edge Store', state: evRpSize > 0 ? 'ready' : 'cold', detail: `${evRpSize} vectors, avg=${evAvg.toFixed(2)}` })
 
   // ⭐ v2.0.861: Q-RL Direction Signal — regime-conditioned expectancy oracle
   const qrlSyms = al?.qrlDirection?.symbols?.length ?? 0
@@ -3080,7 +3077,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
     if ((al?.edgeValidation?.edgeReportCount ?? 0) > 0) count++
     if ((al?.edgeValidation?.execTrackerEntries ?? 0) > 0) count++
     count++ // Stability Monitor (always ready — pure math)
-    if ((al?.edgeValidation?.rpStoreSize ?? 0) > 0) count++
+
     // v2.0.844: Component Attribution + Self-Aware Evolution
     if ((al?.componentAttribution?.size ?? 0) > 0) count++
     count++ // Causal-Grounded Entry Gate (always ready)

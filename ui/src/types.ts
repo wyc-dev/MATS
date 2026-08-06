@@ -251,7 +251,6 @@ export interface APIData {
     edgeValidation?: {
       edgeReportCount: number;
       execTrackerEntries: number;
-      rpStoreSize: number;
       avgEdgeScore: number;
     };
     /** v2.0.844: Component Attribution — which components actually add edge */
