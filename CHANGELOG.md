@@ -3846,3 +3846,23 @@ Conviction Calibrator 管「信心報數準唔準」,Direction Verifier 管「�
 - 48h + 2×maxWindow 超時棄置;判斷時無價 → 棄置
 
 **驗證**:`tests/llm-direction-verifier.test.ts`(13 tests——+C9 窗口校準揀最佳/C10 雙層驗證/C11 錯判教訓/C12 窗口映射)。相關 27/27。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.864-attack: LLM Direction Verifier 對抗硬化(prototype pollution 修復)
+
+**主神指令**:不擇手段攻擊 v2.0.864-accurate。
+
+| # | 漏洞 | 嚴重性 | 結果 |
+|---|---|---|---|
+| **V5** | **`__proto__`/`constructor`/`prototype` keys 污染 dict prototype**——load sanitize 時 `clean.direction['__proto__'] = {correct:99,total:100}` → direction 嘅 [[Prototype]] 被 set → 唔存在 key 嘅 lookup 行 prototype 鏈讀到毒數據(99/100)——fallbackCounter/準確率查詢被污染 | 🔴 High | **修復**:load 時 UNSAFE_KEYS(`__proto__`/`constructor`/`prototype`)skip——direction/outcome/windowStats 全部 |
+| V4 | symbol/trendType 含 `\|` → key 碰撞 | 🟠 Med | 確認安全:實際 symbol 經 normalizeSymbol 無 `\|`;fallback 計數不受污染 |
+| V6 | priceFor 一直 null → pending 堆積 | 🟡 Low | 確認安全:56h stale 棄置 + cap 5000 |
+| V7 | 窗口時間負/NaN/巨大 | 🟡 Low | 確認安全:windowIndexFor clamp |
+| V8 | 同 cycle 重複 verifyAllPending → double-count | 🟡 Low | 確認安全:quickVerified guard + delete |
+| V9 | 毒 windowStats(NaN/負/1e308) | 🟡 Low | 確認安全:sanitize |
+| V10 | 空/垃圾輸入 getTrustMultiplier | 🟡 Low | 確認安全 |
+| V11 | 6000 recordJudgment 4.7s(capPending sort) | ⚪ Perf | 可接受(cap 5000 只超限先 sort) |
+| V12 | fallback tradeId 重複 close | 🟡 Low | 確認安全:idempotent |
+
+**驗證**:`tests/llm-direction-attack.test.ts`(9 tests)+ verifier 13 = 22/22。相關 27/27。`tsc --noEmit` 零錯誤。

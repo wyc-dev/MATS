@@ -57,6 +57,9 @@ function windowKey(trendType: string, windowIdx: number): string {
   return `${trendType}|w${windowIdx}`;
 }
 
+/** v2.0.864-attack (V5): 毒 key 會 pollution prototype——跳過 */
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 function key(symbol: string, trendType: string): string {
   return `${symbol}|${trendType}`;
 }
@@ -393,6 +396,7 @@ export class LLMDirectionVerifier {
         };
         if (raw.pending && typeof raw.pending === 'object') {
           for (const [id, j] of Object.entries(raw.pending)) {
+            if (UNSAFE_KEYS.has(id)) continue;
             if (j && typeof j === 'object') {
               const p = j as Record<string, unknown>;
               if (typeof p['symbol'] === 'string' && typeof p['trendType'] === 'string') {
@@ -412,10 +416,16 @@ export class LLMDirectionVerifier {
           }
         }
         if (raw.direction && typeof raw.direction === 'object') {
-          for (const [k, v] of Object.entries(raw.direction)) clean.direction[k] = sanitizeCounter(v);
+          for (const [k, v] of Object.entries(raw.direction)) {
+            if (UNSAFE_KEYS.has(k)) continue;
+            clean.direction[k] = sanitizeCounter(v);
+          }
         }
         if (raw.outcome && typeof raw.outcome === 'object') {
-          for (const [k, v] of Object.entries(raw.outcome)) clean.outcome[k] = sanitizeCounter(v);
+          for (const [k, v] of Object.entries(raw.outcome)) {
+            if (UNSAFE_KEYS.has(k)) continue;
+            clean.outcome[k] = sanitizeCounter(v);
+          }
         }
         if (Array.isArray(raw.outcomeTradeIds)) {
           clean.outcomeTradeIds = raw.outcomeTradeIds
@@ -423,7 +433,10 @@ export class LLMDirectionVerifier {
             .slice(-15000);
         }
         if (raw.windowStats && typeof raw.windowStats === 'object') {
-          for (const [k, v] of Object.entries(raw.windowStats)) clean.windowStats[k] = sanitizeCounter(v);
+          for (const [k, v] of Object.entries(raw.windowStats)) {
+            if (UNSAFE_KEYS.has(k)) continue;
+            clean.windowStats[k] = sanitizeCounter(v);
+          }
         }
       }
       this.state = clean;
