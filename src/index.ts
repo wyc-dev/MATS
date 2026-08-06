@@ -4322,7 +4322,12 @@ ${recentExamples}
     if (!klineBlockConfig.enabled) return '';
     try {
       const candles = await fetchCandleSnapshot(sym, 30);
-      if (!candles || candles.length === 0) return '';
+      // v2.0.863-attack (V1): fetch 失敗/null → RESET cached K-line to null —
+      // 舊 K 線唔可以用喺今次決策校準(市場可能已變)。
+      if (!candles || candles.length === 0) {
+        this.lastKlineSummary = null;
+        return '';
+      }
       const summary = summarizeKlines(candles);
       this.lastKlineSummary = { trend: summary.trend };
       if (!summary.description) return '';

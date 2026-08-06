@@ -21,7 +21,10 @@
 //   中文自由(CJK 唔係 ASCII word char,lookaround 唔阻)。
 
 function wb(pattern: string): RegExp {
-  return new RegExp(`(?<![A-Za-z0-9_])${pattern}(?![A-Za-z0-9_])`, 'i');
+  // v2.0.863-attack (V2): `(?:${pattern})` GROUP 包住全部 alternatives——
+  // 否則 lookaround 只包住第一個同最後一個 alternative,中間嘅冇 boundary
+  // (「downtrend」入面嘅「trend」會被獨立 match)。
+  return new RegExp(`(?<![A-Za-z0-9_])(?:${pattern})(?![A-Za-z0-9_])`, 'i');
 }
 
 const NEWS_MACRO_PATTERNS: Array<{ name: string; re: RegExp }> = [
