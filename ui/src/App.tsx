@@ -2644,6 +2644,16 @@ function SystemStatusGrid({ al, olrState, emState, rilState }: {
   systems.push({ name: 'Stability', state: 'ready', detail: 'perturbation + cross-time' })
   systems.push({ name: 'RP Edge Store', state: evRpSize > 0 ? 'ready' : 'cold', detail: `${evRpSize} vectors, avg=${evAvg.toFixed(2)}` })
 
+  // ⭐ v2.0.861: Q-RL Direction Signal — regime-conditioned expectancy oracle
+  const qrlSyms = al?.qrlDirection?.symbols?.length ?? 0
+  const qrlRobust = (al?.qrlDirection?.symbols ?? []).filter((x: any) => x.robust).length
+  systems.push({ name: 'Q-RL Dir', state: qrlSyms > 0 ? 'ready' : 'cold', detail: `${qrlSyms} syms, ${qrlRobust} robust lean` })
+
+  // ⭐ v2.0.862: PAEL — per-asset exit-price learner + lock gate
+  const paelProfiles = al?.pael?.profiles?.length ?? 0
+  const paelLocks = al?.pael?.lockCount ?? 0
+  systems.push({ name: 'PAEL', state: paelProfiles > 0 ? 'ready' : 'cold', detail: `${paelProfiles} profiles${paelLocks > 0 ? `, ${paelLocks} locks 🔒` : ''}` })
+
   const stateColor = (s: SysState) => s === 'ready' ? 'var(--green)' : s === 'training' ? 'var(--gold)' : s === 'paused' ? 'var(--text-muted)' : s === 'disabled' ? 'var(--text-muted)' : 'var(--red)'
   const stateLabel = (s: SysState) => s === 'ready' ? '●' : s === 'training' ? '◐' : s === 'paused' ? '⏸' : s === 'disabled' ? '○' : '○'
 
@@ -2682,12 +2692,38 @@ function OLRBayesianSection({ olrState, al, openPositionSymbols, isExpanded, onT
     <div className="evo-section">
       <div className="evo-section-header" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
         <div className="evo-section-accent" />
-        <span className="evo-section-title">OLR + Bayesian Uncertainty</span>
+        <span className="evo-section-title">OLR + Bayesian + Q-RL Direction</span>
         {hasSymbols && <span className="evo-badge evo-badge-right">{olrState.symbols.length} symbols</span>}
         <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
       </div>
       {expanded && (
         <div className="slide-expand-content">
+          {/* v2.0.861: Q-RL Direction Signal — regime-conditioned expectancy per symbol */}
+          {(al?.qrlDirection?.symbols?.length ?? 0) > 0 && (
+            <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Q-RL Expectancy (state bucket → buy/sell Q, median, n)
+              </div>
+              {al!.qrlDirection!.symbols!.map((q: any) => {
+                const buyColor = (q.buyMedian ?? q.buyQ) > 0 ? 'var(--green)' : (q.buyMedian ?? q.buyQ) < 0 ? 'var(--red)' : 'var(--gold)'
+                const sellColor = (q.sellMedian ?? q.sellQ) > 0 ? 'var(--green)' : (q.sellMedian ?? q.sellQ) < 0 ? 'var(--red)' : 'var(--gold)'
+                const leanLabel = !q.robust ? '⚠️ starved' : q.lean === 'buy' ? '→ BUY' : q.lean === 'sell' ? '→ SELL' : 'neutral'
+                return (
+                  <div key={q.symbol} style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '3px', fontSize: '0.7rem', flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 600 }}>{q.symbol.toUpperCase()}</span>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.6rem' }}>{q.bucket}</span>
+                    <span style={{ color: buyColor }}>B Q={(q.buyQ * 100).toFixed(2)}% med={q.buyMedian !== null ? (q.buyMedian * 100).toFixed(2) + '%' : '—'} n={q.buyN}</span>
+                    <span style={{ color: sellColor }}>S Q={(q.sellQ * 100).toFixed(2)}% med={q.sellMedian !== null ? (q.sellMedian * 100).toFixed(2) + '%' : '—'} n={q.sellN}</span>
+                    <span style={{ color: 'var(--accent, #a78bfa)', fontWeight: 600 }}>{leanLabel}</span>
+                  </div>
+                )
+              })}
+              <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                median 係 skew-robust(負 = 該方向喺當前狀態負期望);樣本飢餓 bucket 唔作方向 claim
+              </div>
+            </div>
+          )}
+
           {!hasSymbols ? (
             <div className="evo-empty">
               <div className="evo-empty-text">Waiting for OLR data...</div>
@@ -3051,7 +3087,7 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
     count++ // Meta-Calibrator Dynamic Trust (always ready)
     return count
   })()
-  const systemsTotal = 18 // v2.0.844: 15 + componentAttribution + causal-gate + cal-trust
+  const systemsTotal = 20 // v2.0.862: 18 + Q-RL Direction + PAEL
 
   // Build set of open position symbols
   const openPositionSymbols = new Set<string>()
@@ -3123,6 +3159,13 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
         isExpanded={expandedSection === 'attribution'}
         onToggleExpand={() => toggleSection('attribution')}
       />
+
+      {/* v2.0.862: PAEL — per-asset exit-price profiles + lock gate */}
+      <PAELSection
+        pael={al?.pael}
+        isExpanded={expandedSection === 'pael'}
+        onToggleExpand={() => toggleSection('pael')}
+      />
     </div>
   )
 }
@@ -3131,6 +3174,61 @@ function EvolutionPanel({ data }: { data: APIData | null }) {
 interface ParsedClass {
   count: number; winRate: number; avgHoldMin: number; directionBias: string;
   exitNote: string; lesson: string; symbols: string; netPnl: number;
+}
+
+// ─── v2.0.862: PAEL — Exit-Price Learner Section ─────────────────────
+// Per-asset × direction MFE/MAE profiles from real-trade position-value
+// extremes. Shows where the exit-price lock gate will fire (MFE ≥ p75×0.8;
+// trending → p90). TP-side one-vote exit; SL is NEVER touched.
+function PAELSection({ pael, isExpanded, onToggleExpand }: {
+  pael?: NonNullable<APIData['advancedLearning']>['pael'];
+  isExpanded: boolean; onToggleExpand: () => void;
+}) {
+  const profiles = pael?.profiles ?? []
+  const lockCount = pael?.lockCount ?? 0
+  const expanded = isExpanded
+  if (profiles.length === 0 && lockCount === 0) return null
+
+  return (
+    <div className="evo-section">
+      <div className="evo-section-header" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
+        <div className="evo-section-accent" />
+        <span className="evo-section-title">PAEL Exit-Price</span>
+        {lockCount > 0 && <span className="evo-badge evo-badge-right">🔒 {lockCount} locks</span>}
+        <span className="evo-badge evo-badge-right">{profiles.length} profiles</span>
+        <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
+      </div>
+      {expanded && (
+        <div className="slide-expand-content">
+          <div style={{ padding: '8px 12px' }}>
+            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Per-asset MFE/MAE profiles (60-day window) — lock gate: MFE ≥ p75×0.8 (trending → p90)
+            </div>
+            {profiles.map((p: any) => {
+              const lockAt = p.mfeP75 * 0.8
+              return (
+                <div key={`${p.symbol}|${p.side}`} style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '3px', fontSize: '0.7rem', flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 600 }}>{p.symbol.toUpperCase()}</span>
+                  <span className="evo-badge">{p.side === 'buy' ? 'LONG' : 'SHORT'}</span>
+                  <span style={{ color: 'var(--text-muted)' }}>n={p.samples}</span>
+                  <span style={{ color: 'var(--green)' }}>MFE p50 {(p.mfeP50 * 100).toFixed(2)}%</span>
+                  <span style={{ color: 'var(--gold)' }}>p75 {(p.mfeP75 * 100).toFixed(2)}%</span>
+                  <span style={{ color: 'var(--red)' }}>p90 {(p.mfeP90 * 100).toFixed(2)}%</span>
+                  <span style={{ color: 'var(--text-muted)' }}>MAE p95 {(p.maeP95 * 100).toFixed(2)}%</span>
+                  <span style={{ color: 'var(--accent, #a78bfa)', fontSize: '0.6rem' }}>🔒 lock @ {(lockAt * 100).toFixed(2)}%</span>
+                </div>
+              )
+            })}
+            {lockCount > 0 && (
+              <div style={{ fontSize: '0.65rem', color: 'var(--green)', marginTop: '4px' }}>
+                🔒 Exit-Price Lock Gate 已觸發 {lockCount} 次 — MFE 到達典型盈利區即鎖利離場,SL 永不觸碰
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ─── v2.0.844: Component Attribution Section ─────────────────────────
