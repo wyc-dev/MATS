@@ -3829,3 +3829,20 @@ effectiveConfidence = calibratedConsensus(改 consensus 本身,大範圍)
 Conviction Calibrator 管「信心報數準唔準」,Direction Verifier 管「方向預測啱唔啱」——互補唔重疊,避免 double-count 懲罰。
 
 **驗證**:`tests/llm-direction-verifier.test.ts`(9 tests——正確性/三層 fallback/平倉 idempotent/乘數 shrink/持久化/毒 state/malformed/stale 棄置/deterministic)。相關 58/58。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.864-accurate: Direction Verifier 較準功能 — 時間窗口自動校準 + 錯判教訓
+
+**主神要求**:「新增一個較準嘅功能,可以不斷調校提高準確度到極致」。
+
+**核心洞察**:層面 B 原本用「下 cycle(5 分鐘)」即時驗證——但 LLM 判斷係針對「1h 趨勢」——5 分鐘後回調,判斷其實啱但即時驗證話錯——**驗證窗口唔公平 → 準確度數字被污染**。
+
+**較準功能**:
+- **時間窗口自動校準**:per trend-type,5 個候選窗口(15m/30m/1h/2h/4h)各自累計準確率 → 自動揀「準確率最高 + 樣本夠」嗰個做該 trend-type 嘅最佳驗證窗口(樣本懲罰 shrink)——窗口隨歷史表現不斷漂移
+- **雙層驗證**:quick(未驗證過 → 下 cycle 即時回饋,計入 direction bins)+ accurate(到 scheduledVerifyAt → 較準驗證,計入 windowStats)——乘數用較準嗰個
+- **gate 乘數改用較準準確率**:`getBlendedAccuracy = (1-β)×accurate(B) + β×C`——真實預測能力,唔係 5 分鐘噪聲
+- **錯判教訓**:錯判次數注入 Meta-Agent block——「你對呢類判斷錯咗 N 次——方向與價格走勢一致先好堅持」——LLM 自我改善
+- 48h + 2×maxWindow 超時棄置;判斷時無價 → 棄置
+
+**驗證**:`tests/llm-direction-verifier.test.ts`(13 tests——+C9 窗口校準揀最佳/C10 雙層驗證/C11 錯判教訓/C12 窗口映射)。相關 27/27。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

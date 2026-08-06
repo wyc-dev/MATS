@@ -25,6 +25,10 @@ const PRIMARY_MIN_SAMPLES = 10;   // (symbol × trend-type) 最少樣本
 const FALLBACK_MIN_SAMPLES = 20;  // trend-type 全局最少樣本
 const SHRINK_K = 8;               // 樣本加權 shrink——少樣本唔過度校準
 const OUTCOME_BLEND = 0.30;       // C(平倉結果)喺準確率嘅權重(終極但稀疏)
+const WINDOW_MIN_SAMPLES = 10;    // 窗口校準最少樣本(先信該窗口)
+// 較準:驗證窗口候選(秒)——自動揀「準確率最高」嗰個
+const VERIFY_WINDOWS = [15 * 60, 30 * 60, 60 * 60, 120 * 60, 240 * 60];
+const DEFAULT_VERIFY_WINDOW = 60 * 60; // 無樣本時 default 1h
 const DEFAULT_PATH = 'data/evolution/llm-direction-verifier.json';
 
 interface Counter {
@@ -33,18 +37,24 @@ interface Counter {
 }
 
 export interface DirectionVerifierState {
-  /** 未驗證判斷:judgmentId → { symbol, direction, trendType, cycle, ts, price } */
-  pending: Record<string, { symbol: string; direction: 'buy' | 'sell'; trendType: string; cycle: number; ts: number; price?: number }>;
+  /** 未驗證判斷:judgmentId → { symbol, direction, trendType, cycle, ts, price, quickVerified, scheduledVerifyAt } */
+  pending: Record<string, { symbol: string; direction: 'buy' | 'sell'; trendType: string; cycle: number; ts: number; price?: number; quickVerified?: boolean; scheduledVerifyAt: number }>;
   /** B:方向預測結果 per (symbol|trendType) */
   direction: Record<string, Counter>;
   /** C:平倉結果 per (symbol|trendType) */
   outcome: Record<string, Counter>;
   /** 已記錄平倉嘅 tradeIds(防重複) */
   outcomeTradeIds: string[];
+  /** 較準:per trend-type × window 嘅準確驗證結果(揀最佳窗口用) */
+  windowStats: Record<string, Counter>;
 }
 
 function emptyState(): DirectionVerifierState {
-  return { pending: {}, direction: {}, outcome: {}, outcomeTradeIds: [] };
+  return { pending: {}, direction: {}, outcome: {}, outcomeTradeIds: [], windowStats: {} };
+}
+
+function windowKey(trendType: string, windowIdx: number): string {
+  return `${trendType}|w${windowIdx}`;
 }
 
 function key(symbol: string, trendType: string): string {
@@ -80,13 +90,17 @@ export class LLMDirectionVerifier {
     if (direction !== 'buy' && direction !== 'sell') return null;
     const tt = typeof trendType === 'string' && trendType.length > 0 ? trendType : 'unknown';
     const id = `j${this.nextId++}`;
+    const now = Date.now();
+    const bestWindow = this.getBestVerifyWindow(tt); // 較準:該 trend-type 最佳驗證窗口
     this.state.pending[id] = {
       symbol: symbol.slice(0, 24),
       direction,
       trendType: tt.slice(0, 32),
       cycle: Number.isFinite(cycle) ? Math.floor(cycle) : 0,
-      ts: Date.now(),
+      ts: now,
       price: Number.isFinite(price) && (price as number) > 0 ? price : undefined,
+      quickVerified: false,
+      scheduledVerifyAt: now + bestWindow,
     };
     this.capPending();
     return id;
@@ -153,21 +167,109 @@ export class LLMDirectionVerifier {
     }
   }
 
-  /** 每 cycle:驗證所有 pending 判斷(用 priceFor callback 攞各 symbol 現價) */
+  // ── 較準:時間窗口自動校準 ────────────────────────────────────────
+
+  /**
+   * 較準:揀「該 trend-type 準確率最高 + 樣本夠」嘅驗證窗口(EWMA shrink)。
+   * 無樣本 → default 1h。窗口隨歷史表現漂移——「不斷調校提高準確度」。
+   */
+  getBestVerifyWindow(trendType: string): number {
+    const tt = typeof trendType === 'string' && trendType.length > 0 ? trendType : 'unknown';
+    let best = DEFAULT_VERIFY_WINDOW;
+    let bestScore = -1;
+    for (let wi = 0; wi < VERIFY_WINDOWS.length; wi++) {
+      const c = this.state.windowStats[windowKey(tt, wi)];
+      if (!c || c['total'] < WINDOW_MIN_SAMPLES) continue;
+      const acc = c['correct'] / c['total'];
+      const score = acc - (WINDOW_MIN_SAMPLES / (WINDOW_MIN_SAMPLES + c['total'])) * 0.5; // 樣本懲罰
+      if (score > bestScore) {
+        bestScore = score;
+        best = VERIFY_WINDOWS[wi] ?? DEFAULT_VERIFY_WINDOW;
+      }
+    }
+    return best;
+  }
+
+  /** 該 trend-type 喺「最佳窗口」下嘅準確率(較準——反映真實預測能力) */
+  getAccurateAccuracy(trendType: string): { accuracy: number; total: number; windowSec: number } {
+    const tt = typeof trendType === 'string' && trendType.length > 0 ? trendType : 'unknown';
+    let bestAcc = 0.5, bestTotal = 0, bestWindow = DEFAULT_VERIFY_WINDOW, bestScore = -1;
+    for (let wi = 0; wi < VERIFY_WINDOWS.length; wi++) {
+      const c = this.state.windowStats[windowKey(tt, wi)];
+      if (!c || c['total'] < WINDOW_MIN_SAMPLES) continue;
+      const acc = c['correct'] / c['total'];
+      const score = acc - (WINDOW_MIN_SAMPLES / (WINDOW_MIN_SAMPLES + c['total'])) * 0.5;
+      if (score > bestScore) {
+        bestScore = score;
+        bestAcc = acc;
+        bestTotal = c['total'];
+        bestWindow = VERIFY_WINDOWS[wi] ?? DEFAULT_VERIFY_WINDOW;
+      }
+    }
+    return { accuracy: bestTotal > 0 ? bestAcc : 0.5, total: bestTotal, windowSec: bestWindow };
+  }
+
+  /** 每 cycle:驗證所有 pending 判斷。
+   *  雙層驗證:
+   *    quick(即時)——未驗證過 → 用現價驗證 → 計入 direction bins(快速回饋)
+   *    accurate(較準)——到 scheduledVerifyAt → 用現價驗證 → 計入 windowStats
+   *      (該 trend-type × 該窗口)——乘數用呢個,反映真實預測能力 */
   verifyAllPending(priceFor: (symbol: string) => number | null): void {
+    const now = Date.now();
     const ids = Object.keys(this.state.pending);
     for (const id of ids) {
       const j = this.state.pending[id];
       if (!j) continue;
-      // 判斷過太耐(> 48h 未驗證)→ 棄置(價格比較已無意義)
-      if (Date.now() - (j.ts ?? Date.now()) > 48 * 3600 * 1000) {
+      const ageMs = now - (j.ts ?? now);
+      // 超時棄置:48h + 兩倍最大窗口後仍未到期(判斷已過時)
+      const maxWindow = VERIFY_WINDOWS[VERIFY_WINDOWS.length - 1] ?? DEFAULT_VERIFY_WINDOW;
+      if (ageMs > 48 * 3600 * 1000 + 2 * maxWindow * 1000) {
         delete this.state.pending[id];
         continue;
       }
       let price: number | null = null;
       try { price = priceFor(j.symbol); } catch { /* non-fatal */ }
-      this.verifyDirection(id, price);
+      if (price === null || !Number.isFinite(price) || (price as number) <= 0) continue; // 無價 → 留低下次
+      const cp = price as number;
+      const jp = j.price;
+      if (jp === undefined || !Number.isFinite(jp) || jp <= 0) {
+        delete this.state.pending[id]; // 判斷時無價 → 唔可驗證 → 棄置
+        continue;
+      }
+      // quick:未驗證過 → 即時驗證(計入 direction bins——每 cycle 回饋)
+      if (!j.quickVerified) {
+        j.quickVerified = true;
+        const upQ = cp > jp;
+        const kQ = key(j.symbol, j.trendType);
+        const cQ = this.state.direction[kQ] ?? { correct: 0, total: 0 };
+        cQ['total']++;
+        if ((j.direction === 'buy') === upQ) cQ['correct']++;
+        this.state.direction[kQ] = cQ;
+      }
+      // accurate:到期 → 較準驗證(計入 windowStats——揀最佳窗口)
+      if (now >= j.scheduledVerifyAt) {
+        const upA = cp > jp;
+        const wi = this.windowIndexFor(j.scheduledVerifyAt - j.ts);
+        const wKey = windowKey(j.trendType, wi);
+        const cA = this.state.windowStats[wKey] ?? { correct: 0, total: 0 };
+        cA['total']++;
+        if ((j.direction === 'buy') === upA) cA['correct']++;
+        this.state.windowStats[wKey] = cA;
+        delete this.state.pending[id];
+      }
     }
+  }
+
+  /** 判斷嘅實際窗口 → 最近嘅 VERIFY_WINDOWS index */
+  private windowIndexFor(durationMs: number): number {
+    const sec = Math.max(1, Math.floor(durationMs / 1000));
+    let best = 0;
+    for (let wi = 0; wi < VERIFY_WINDOWS.length; wi++) {
+      if (Math.abs(sec - (VERIFY_WINDOWS[wi] ?? DEFAULT_VERIFY_WINDOW)) < Math.abs(sec - (VERIFY_WINDOWS[best] ?? DEFAULT_VERIFY_WINDOW))) {
+        best = wi;
+      }
+    }
+    return best;
   }
 
   // ── 查詢(三層 fallback + blend)────────────────────────────────────
@@ -203,15 +305,16 @@ export class LLMDirectionVerifier {
     return { accuracy: 0.5, total: 0, source: 'neutral' };
   }
 
-  /** 合併 B+C 嘅最終準確率:acc = (1-β)×B + β×C(C 有樣本時) */
+  /** 合併「較準 B + C」嘅最終準確率:acc = (1-β)×B_acc + β×C(C 有樣本時)。
+   *  較準 = 用「該 trend-type 最佳窗口」下嘅準確率(真實預測能力,唔係 5 分鐘噪聲)。 */
   getBlendedAccuracy(symbol: string, trendType: string): { accuracy: number; total: number } {
-    const b = this.getDirectionAccuracy(symbol, trendType);
+    const acc = this.getAccurateAccuracy(trendType); // 較準——trend-type 最佳窗口
     const c = this.getOutcomeAccuracy(symbol, trendType);
     const hasC = c.total >= PRIMARY_MIN_SAMPLES || c.source === 'fallback';
     const blend = hasC ? OUTCOME_BLEND : 0;
-    const acc = (1 - blend) * b.accuracy + (blend) * c.accuracy;
-    const total = b.total + c.total;
-    return { accuracy: acc, total: Math.max(b.total, 1) };
+    const finalAcc = (1 - blend) * (acc.total > 0 ? acc.accuracy : this.getDirectionAccuracy(symbol, trendType).accuracy) + (blend) * c.accuracy;
+    const total = acc.total + c.total;
+    return { accuracy: finalAcc, total: Math.max(total, 1) };
   }
 
   /** gate 乘數 ×[0.80, 1.05]——直接乘落 effectiveConfidence */
@@ -220,17 +323,26 @@ export class LLMDirectionVerifier {
     return accuracyToMultiplier(accuracy, total);
   }
 
-  /** 注入 Meta-Agent 嘅 block */
+  /** 注入 Meta-Agent 嘅 block(較準 + 即時 + 平倉 + 錯判教訓) */
   getDirectionTrustBlock(symbol: string, trendType: string): string {
+    const acc = this.getAccurateAccuracy(trendType);
     const b = this.getDirectionAccuracy(symbol, trendType);
     const c = this.getOutcomeAccuracy(symbol, trendType);
     const mult = this.getTrustMultiplier(symbol, trendType);
     const lines: string[] = [];
+    if (acc.total > 0) {
+      lines.push(`  較準預測(${Math.round(acc.windowSec / 60)}m 窗口): ${(acc.accuracy * 100).toFixed(0)}% 正確(${acc.total} 次)`);
+    }
     if (b.total > 0) {
-      lines.push(`  方向預測(${b.source}): ${(b.accuracy * 100).toFixed(0)}% 正確(${b.total} 次)`);
+      lines.push(`  即時回饋: ${(b.accuracy * 100).toFixed(0)}% 正確(${b.total} 次)`);
     }
     if (c.total > 0) {
-      lines.push(`  平倉結果(${c.source}): ${(c.accuracy * 100).toFixed(0)}% 賺(${c.total} 筆)`);
+      lines.push(`  平倉結果: ${(c.accuracy * 100).toFixed(0)}% 賺(${c.total} 筆)`);
+    }
+    // 錯判教訓:錯咗幾多次——提醒 LLM 唔好重複
+    if (acc.total > 0) {
+      const wrong = acc.total - Math.round(acc.accuracy * acc.total);
+      if (wrong > 0) lines.push(`  錯判教訓:你對呢類判斷錯咗 ${wrong} 次——方向與價格走勢一致先好堅持`);
     }
     if (lines.length === 0) return '';
     return `=== LLM DIRECTION TRUST (${symbol} × ${trendType}) ===\n${lines.join('\n')}\n(準確率高 → 信心 ×${mult.toFixed(2)}——你對呢類判斷嘅歷史表現)`;
@@ -284,13 +396,16 @@ export class LLMDirectionVerifier {
             if (j && typeof j === 'object') {
               const p = j as Record<string, unknown>;
               if (typeof p['symbol'] === 'string' && typeof p['trendType'] === 'string') {
+                const pTs = Number.isFinite(p['ts']) ? (p['ts'] as number) : Date.now();
                 clean.pending[id] = {
                   symbol: (p['symbol'] as string).slice(0, 24),
                   direction: p['direction'] === 'sell' ? 'sell' : 'buy',
                   trendType: (p['trendType'] as string).slice(0, 32),
                   cycle: Number.isFinite(p['cycle']) ? Math.max(0, p['cycle'] as number) : 0,
-                  ts: Number.isFinite(p['ts']) ? (p['ts'] as number) : Date.now(),
+                  ts: pTs,
                   price: Number.isFinite(p['price']) && (p['price'] as number) > 0 ? (p['price'] as number) : undefined,
+                  quickVerified: p['quickVerified'] === true,
+                  scheduledVerifyAt: Number.isFinite(p['scheduledVerifyAt']) ? (p['scheduledVerifyAt'] as number) : pTs + DEFAULT_VERIFY_WINDOW,
                 };
               }
             }
@@ -306,6 +421,9 @@ export class LLMDirectionVerifier {
           clean.outcomeTradeIds = raw.outcomeTradeIds
             .filter((x): x is string => typeof x === 'string')
             .slice(-15000);
+        }
+        if (raw.windowStats && typeof raw.windowStats === 'object') {
+          for (const [k, v] of Object.entries(raw.windowStats)) clean.windowStats[k] = sanitizeCounter(v);
         }
       }
       this.state = clean;
