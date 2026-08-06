@@ -6516,45 +6516,21 @@ ${recentExamples}
           const srResistance = normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol)
             ? (this.lastSRContext?.nearestResistance ?? null) : null;
 
-          // v2.0.834 Fix A: Skip blind shadow if an aligned shadow already
-          // exists for this symbol+cycle. Aligned shadows follow the LLM
-          // consensus direction at full OLR weight (1.0); blind shadows are
-          // cold-start priors at 0.1× weight. Opening both wastes resources
-          // and the blind (wrong-distribution) sample dilutes the aligned
-          // (correct-distribution) sample in OLR's SGD update.
-          if (this.shadowEngine.hasAlignedShadow(mktSym, this.totalCycles)) {
-            log.debug(`[shadow] Skipping blind shadow for ${mktSym} — aligned shadow already open this cycle`);
-            continue;
-          }
-
-          this.shadowEngine.openShadowTrades(
-            mktSym,
-            mktPrice,
-            srSupport,
-            srResistance,
-            srResistance,
-            srSupport,
-            this.totalCycles,
-            mktFeatures,
-          );
-
           // ── v2.0.861 Phase 1.5: Q-RL EXPECTANCY shadow — INDEPENDENT arm ──
           // The Q-RL expectancy oracle is a PURE-STATISTICS signal source. It
           // must be able to open its A/B shadow EVERY cycle for EVERY trading
-          // market, INDEPENDENT of LLM votes (pre-fix: this block was nested
-          // inside the aligned-shadow block behind hasWeightedLean — with
-          // mostly-HOLD votes the arm NEVER opened, starving the uplift
-          // experiment even though the oracle had robust leans).
+          // market, INDEPENDENT of LLM votes. v2.0.861-qrlarm-attack: this
+          // block MUST sit BEFORE the hasAlignedShadow skip below — the skip
+          // is for BLIND shadows (wrong-distribution dilution), and an aligned
+          // shadow already open is EXACTLY the A/B counterpart the Q-RL arm
+          // needs. Nesting the Q-RL arm after the skip meant aligned-open
+          // cycles silently starved the arm again.
           //
           // Conditions (all must hold):
           //   1. QRL_DIRECTION_LEAN_ENABLED (shared with 1.1 prompt injection)
           //   2. robust lean — BOTH sides ≥ minSamples AND |spread| ≥ minSpread
           //      (regime-starved buckets make NO directional claim)
           //   3. no qrl shadow already open for this symbol+side+cycle
-          //
-          // Uses the SAME config.risk SL/TP as aligned shadows, and the SAME
-          // feature source (lastCycleShadowContexts — includes regimeOrdinal /
-          // momentumShort) so the Q-RL bucket key matches the live market state.
           try {
             if (qrlDirectionConfig.leanEnabled && this.qrlTable) {
               const qrlCtx = this.lastCycleShadowContexts.get(mktNorm);
@@ -6578,6 +6554,28 @@ ${recentExamples}
               }
             }
           } catch { /* non-fatal — Q-RL arm is best-effort */ }
+
+          // v2.0.834 Fix A: Skip blind shadow if an aligned shadow already
+          // exists for this symbol+cycle. Aligned shadows follow the LLM
+          // consensus direction at full OLR weight (1.0); blind shadows are
+          // cold-start priors at 0.1× weight. Opening both wastes resources
+          // and the blind (wrong-distribution) sample dilutes the aligned
+          // (correct-distribution) sample in OLR's SGD update.
+          if (this.shadowEngine.hasAlignedShadow(mktSym, this.totalCycles)) {
+            log.debug(`[shadow] Skipping blind shadow for ${mktSym} — aligned shadow already open this cycle`);
+            continue;
+          }
+
+          this.shadowEngine.openShadowTrades(
+            mktSym,
+            mktPrice,
+            srSupport,
+            srResistance,
+            srResistance,
+            srSupport,
+            this.totalCycles,
+            mktFeatures,
+          );
         }
       } catch (err) {
         log.warn(`[shadow-trade] Failed: ${err instanceof Error ? err.message : String(err)}`);
