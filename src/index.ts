@@ -12022,14 +12022,18 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     } catch { /* best-effort */ }
   }
 
-  /** v2.0.864: 由 rationale/thesis 提取 LLM 聲稱嘅走勢類型(1h-up/1h-down/mixed) */
+  /** v2.0.864-scalp: 由 rationale/thesis 提取 LLM 聲稱嘅走勢類型。
+   *  提取實際 timeframe(5m/15m/30m/1h/4h/1d)+ 方向——短炒導向。
+   *  例如:「5m-up」「15m-down」「1h-up」;冇 timeframe → mixed-neutral。 */
   private extractTrendType(text: string | undefined): string {
     if (!text || typeof text !== 'string') return 'unknown';
     const r = text.toLowerCase();
-    const up = /(上升|uptrend|趨勢向上|bullish|向上|higher high)/.test(r);
-    const down = /(下降|downtrend|趨勢向下|bearish|向下|lower low)/.test(r);
-    if (up && !down) return '1h-up';
-    if (down && !up) return '1h-down';
+    const tfMatch = r.match(/(?:^|[^a-z0-9])(5m|15m|30m|1h|4h|1d)(?=$|[^a-z0-9])/);
+    const tf = tfMatch ? tfMatch[1] : '1h'; // 冇 explicit timeframe → 當 1h(舊行為)
+    const up = /(上升|uptrend|趨勢向上|bullish|向上|higher high|breakout|突破)/.test(r);
+    const down = /(下降|downtrend|趨勢向下|bearish|向下|lower low|breakdown|跌破)/.test(r);
+    if (up && !down) return `${tf}-up`;
+    if (down && !up) return `${tf}-down`;
     return 'mixed-neutral';
   }
 

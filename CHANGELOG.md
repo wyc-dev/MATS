@@ -3866,3 +3866,19 @@ Conviction Calibrator 管「信心報數準唔準」,Direction Verifier 管「�
 | V12 | fallback tradeId 重複 close | 🟡 Low | 確認安全:idempotent |
 
 **驗證**:`tests/llm-direction-attack.test.ts`(9 tests)+ verifier 13 = 22/22。相關 27/27。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.864-scalp: Direction Verifier 短炒導向(timeframe 提取 + 5m/15m 窗口)
+
+**主神質疑**(短炒玩家):「1-10 分鐘一個 cycle,1h candle 記錄係咪冇乜作用?」——質疑成立,兩個真問題修正:
+
+**問題①(誤導)**:`extractTrendType` 硬編碼返回「1h-up/1h-down」——即使 LLM 判斷係 5m 走勢都叫「1h-up」——trend-type 分類冇分 timeframe。
+**修正**:提取實際 timeframe(5m/15m/30m/1h/4h/1d)+ 方向 → 「5m-up」「15m-down」;冇 explicit timeframe → 當 1h(舊行為)。
+
+**問題②(短炒唔啱)**:`DEFAULT_VERIFY_WINDOW = 1h`、`VERIFY_WINDOWS = [15m, 30m, 1h, 2h, 4h]`——判斷後 1 小時先較準驗證,短炒已完場。
+**修正**:`VERIFY_WINDOWS = [5m, 15m, 30m, 1h, 2h]`、`DEFAULT = 15m`——短炒節奏;窗口校準仍會自動揀「準確率最高」嗰個。
+
+**澄清**:記錄嘅唔係 1h candle——係「LLM 判斷 + 判斷時價格」——驗證用價格比較(quick = 下 cycle 即時,1-10 分鐘後;accurate = 最佳窗口)——短炒完全適用。
+
+**驗證**:22/22(verifier + attack)+ 相關 44/44。`tsc --noEmit` 零錯誤。

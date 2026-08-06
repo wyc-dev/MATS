@@ -27,8 +27,9 @@ const SHRINK_K = 8;               // 樣本加權 shrink——少樣本唔過度
 const OUTCOME_BLEND = 0.30;       // C(平倉結果)喺準確率嘅權重(終極但稀疏)
 const WINDOW_MIN_SAMPLES = 10;    // 窗口校準最少樣本(先信該窗口)
 // 較準:驗證窗口候選(秒)——自動揀「準確率最高」嗰個
-const VERIFY_WINDOWS = [15 * 60, 30 * 60, 60 * 60, 120 * 60, 240 * 60];
-const DEFAULT_VERIFY_WINDOW = 60 * 60; // 無樣本時 default 1h
+// v2.0.864-scalp:短炒導向——5m/15m 優先,default 15m(1-10 分鐘 cycle 玩家)
+const VERIFY_WINDOWS = [5 * 60, 15 * 60, 30 * 60, 60 * 60, 120 * 60];
+const DEFAULT_VERIFY_WINDOW = 15 * 60; // 短炒 default 15m(窗口校準會自動調)
 const DEFAULT_PATH = 'data/evolution/llm-direction-verifier.json';
 
 interface Counter {
