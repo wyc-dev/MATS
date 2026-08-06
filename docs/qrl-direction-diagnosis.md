@@ -1,7 +1,8 @@
 # Q-RL Direction Signal — Diagnosis & Decision Memory (v2.0.861)
 
 > 建立:2026-08-06 · 來源:Phase 0 診斷(唯讀)+ SILVER 解剖
-> 狀態:**1.5 shadow A/B 待主神批准執行**;1.1/1.2 設計定稿但 **default OFF**
+> 狀態:**1.1/1.2/1.5 已實作並 commit(v2.0.861, cd58054)**——待主神重啟系統生效
+> 驗證:tsc 零錯誤、qrl-direction-signal.test.ts 33/33、相關 regression 330/330
 
 ---
 
@@ -60,3 +61,6 @@
 - **trending_bull 得 6 筆、trending_bear 2 筆、high_vol 15 筆**——99.7% 學習喺 low_vol/mean_reverting
 - **tools**:`scripts/qrl-audit.ts`(新)+ `scripts/edge-audit.ts`(擴展 per-regime×side)——唯讀,tsc 零錯誤
 - **曾犯錯誤**:`now - h.timestamp < cutoff8`(duration vs absolute)——已修正為 `h.timestamp > now - 8*86400000`;教訓:窗口過濾要用 absolute comparison
+- **pre-existing 測試腐敗(v2.0.854-attack2-nan-price.test.ts 12 fail)**:`tracker.getBalance is not a function`——PortfolioTracker API 改名後測試未同步,gittest 確認非 v2.0.861 造成,待修
+- **運行注意**:main process `tsx src/index.ts`(PID 18635,非 watch)行緊舊 code;另有 `tsx watch src/index.ts`(PID 42572)——疑似兩個 instance,待查
+- **生效**:重啟後 1.1/1.2 接入(default true,flag 可關),1.5 shadow A/B 開始累積 uplift 數據(2-4 週後 `causal-reasoner` 睇 qrl uplift)
