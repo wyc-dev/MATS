@@ -2602,18 +2602,25 @@ function SystemStatusGrid({ al, olrState, emState, rilState }: {
   // Bayesian applies when the active symbol's OLR model has ≥ minSamples (20) and
   // MC dropout produced a non-trivial uncertainty band (std > 0). It mirrors OLR
   // training, so it's 'ready' when OLR is trained on the active symbol.
+  // v2.0.862-ui-fix3: Bayesian tracks the ACTIVE symbol only (backend queries
+  // getSelectedSymbol()). When the market selection rotates to a symbol with
+  // no OLR samples yet, std=0/applied=false → the UI showed "cold — needs OLR
+  // samples" with NO symbol context — the state jumps looked like a system
+  // failure. Now the active symbol is always shown so rotation is obvious.
   const bayesBuy = al?.bayesian?.buy
   const bayesSell = al?.bayesian?.sell
+  const bayesSym = al?.bayesian?.symbol ?? ''
   const bayesApplied = !!((bayesBuy?.applied && bayesBuy.std > 0) || (bayesSell?.applied && bayesSell.std > 0))
   const bayesSamples = (bayesBuy?.std ?? 0) > 0 || (bayesSell?.std ?? 0) > 0
+  const bayesSymTag = bayesSym ? `${bayesSym.toUpperCase()}: ` : ''
   systems.push({
     name: 'Bayesian',
     state: bayesApplied ? 'ready' : bayesSamples ? 'training' : 'cold',
     detail: bayesApplied
-      ? `buy σ=${(bayesBuy?.std ?? 0).toFixed(3)} sell σ=${(bayesSell?.std ?? 0).toFixed(3)}`
+      ? `${bayesSymTag}buy σ=${(bayesBuy?.std ?? 0).toFixed(3)} sell σ=${(bayesSell?.std ?? 0).toFixed(3)}`
       : bayesSamples
-        ? 'accumulating OLR samples (≥20)'
-        : 'cold — needs OLR samples',
+        ? `${bayesSymTag}accumulating OLR samples (≥20)`
+        : `${bayesSymTag}no OLR samples yet — active symbol rotated`,
   })
 
   // v2.0.833 REMOVED: Temporal Attention, Cross-Symbol, Reward Shaper, World Model
