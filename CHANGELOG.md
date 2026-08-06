@@ -3571,3 +3571,20 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **已確認安全**:ring cap 50 bounded、極端值(1e308)finite、NaN 元素 filtered。
 
 **驗證**:`tests/combo-expectancy-attack.test.ts`(9 tests——毒 load 各形態、NaN cycle、極端值)。相關 40/40。`tsc --noEmit` 零錯誤。全量 2005/2018(12 pre-existing)。
+
+---
+
+## v2.0.862-cleanup: 刪除 4 個死組件檔案(v2.0.833 移除但留 disk)+ 同步
+
+**主神發現**:MiniLM 唔係空轉(EXP/RIL/Anti-Pattern 真用);真正嘅 disk 空轉係 v2.0.833 移除但留低嘅 4 個死檔案。
+
+**刪除**(`git rm`):
+- `src/evolution/temporal-attention.ts` / `cross-symbol-backbone.ts` / `reward-shaping.ts` / `world-model.ts`(0 import,純 clutter)
+
+**同步**(Google Tech Lead):
+- **tests/**:`advanced-learning-pipeline.test.ts`(213→120 行)+ `advanced-systems-attack.test.ts`(移除 4 個死組件 describe + imports,保留 ReplayBuffer/BayesianOLR/ActiveExploration/ShadowTrade)——刪 src 唔會令測試 import fail
+- **index.ts**:3 處 comment 更新(「files on disk」→「v2.0.862 DELETED」)
+- **AGENT_PROMPT.md / ARCHITECTURE.md**:同步「REMOVED + DELETED」
+- **System Engineer ALLOWED_PREFIXES**:directory 級(`src/evolution/`)——**唔使改**(刪檔案唔影響權限)
+
+**驗證**:tsc 零錯誤;保留測試 33/33;全量 1979/1991(12 pre-existing;test 數少 36 個 = 刪除嘅死組件測試,預期)。
