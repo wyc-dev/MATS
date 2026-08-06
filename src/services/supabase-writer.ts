@@ -216,12 +216,16 @@ export class SupabaseAnalysisWriter {
       }));
       if (rows.length === 0) return;
 
-      // Clean-snapshot: remove the previous cycle's rows, then insert.
-      // `neq('id', -1)` is a no-op-safe DELETE-ALL (id is identity >= 1).
-      const { error: delErr } = await this.client.from('ui_snapshots').delete().neq('id', -1);
-      if (delErr) throw delErr;
+      // v2.0.862-attack: INSERT FIRST, then DELETE the previous cycle — a
+      // failed insert must NOT blank the snapshot (the client would read an
+      // empty table = "no latest cycle"). With insert-then-delete, an insert
+      // failure leaves the previous cycle intact (readable, stale-but-present),
+      // and the delete only removes rows from OLDER cycles.
       const { error: insErr } = await this.client.from('ui_snapshots').insert(rows);
       if (insErr) throw insErr;
+      // Delete only rows from older cycles (keep the fresh ones just written).
+      const { error: delErr } = await this.client.from('ui_snapshots').delete().neq('cycle_id', cycleId);
+      if (delErr) throw delErr;
       this.lastWriteAt = Date.now();
       log.info(`[ui-snapshot] wrote ${rows.length} sections (cycle ${cycleId})`);
     } catch (err) {
