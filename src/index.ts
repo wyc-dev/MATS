@@ -6338,7 +6338,14 @@ ${recentExamples}
               // This ensures the replay buffer + OLR receive the correct source
               // label, so blind samples don't dilute aligned samples in PER
               // sampling + IS-weight correction.
-              source: sr.shadowType === 'aligned' ? 'shadow' : 'shadow_blind',
+              // v2.0.861-attack (V7): statistical (v2.0.846) + qrl (v2.0.861)
+              // shadows follow REAL statistical signals — they must route to
+              // full-weight 'shadow' like aligned, NOT 'shadow_blind' (0.1×).
+              // The old `=== 'aligned' ? 'shadow' : 'shadow_blind'` silently
+              // downweighted statistical/qrl in the replay buffer while the
+              // shadow engine fed them at full weight into OLR — inconsistent
+              // labels across learning systems.
+              source: sr.shadowType === 'blind' ? 'shadow_blind' : 'shadow',
               cycle: sr.cycle,
               regime: srSymState?.regime ?? 'unknown',
             });

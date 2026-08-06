@@ -441,7 +441,15 @@ export class QRLTable {
     const visits = this.visits[key] ?? 0;
     const alpha = 1 / (1 + visits); // diminishing learning rate
     const oldQ = this.values[key] ?? 0;
-    const safeReward = Number.isFinite(reward) ? reward : 0;
+    // v2.0.861-attack (V1): clamp the reward to sane bounds BEFORE the EWMA
+    // so a corrupt extreme reward (1e308 from a poisoned aligned-shadow feed)
+    // cannot drive Q to a pinning magnitude (3e306) that locks the direction
+    // lean to one side forever. Rewards are pnlPct — |pnl| > 100% is corrupt
+    // by construction (leverage is capped at 50×). NaN/Infinity → 0 (neutral).
+    const clampedReward = Number.isFinite(reward)
+      ? Math.max(-1, Math.min(1, reward))
+      : 0;
+    const safeReward = clampedReward;
     const newQ = (1 - alpha) * oldQ + alpha * safeReward;
 
     this.values[key] = newQ;
@@ -601,7 +609,22 @@ export class QRLTable {
   load(state: unknown): void {
     if (!state || typeof state !== 'object') return;
     const s = state as Record<string, unknown>;
-    this.values = (s['values'] as Record<string, number>) ?? {};
+    // v2.0.861-attack (V1-hardening): clamp persisted Q-values to sane pnl
+    // bounds (±100%). A poisoned state file with values like 1e308 would
+    // otherwise pin selectAction (ucb1/thompson) and getDirectionLean to one
+    // side forever — Q is E[pnlPct], |pnl| > 100% is corrupt by construction.
+    const rawValues = s['values'] as Record<string, unknown>;
+    if (rawValues && typeof rawValues === 'object') {
+      const clean: Record<string, number> = {};
+      for (const [k, v] of Object.entries(rawValues)) {
+        clean[k] = (typeof v === 'number' && Number.isFinite(v))
+          ? Math.max(-1, Math.min(1, v))
+          : 0;
+      }
+      this.values = clean;
+    } else {
+      this.values = {};
+    }
     this.visits = (s['visits'] as Record<string, number>) ?? {};
     this.lastUpdate = (s['lastUpdate'] as Record<string, number>) ?? {};
     // v2.0.835 security: sanitize rewardHistory — each entry must be array of finite numbers
@@ -609,8 +632,13 @@ export class QRLTable {
     if (rawRH && typeof rawRH === 'object') {
       const clean: Record<string, number[]> = {};
       for (const [k, v] of Object.entries(rawRH)) {
+        // v2.0.861-attack (V2): cap each cell's reward history to
+        // maxRewardHistory on LOAD (update() already caps on write). A
+        // poisoned/truncated state file with 1e6 rewards would otherwise make
+        // every getCellExpectancy() sort O(1e6 log 1e6) every cycle → CPU DoS.
+        // Keep the NEWEST rewards (recency bias — oldest are stale).
         clean[k] = Array.isArray(v)
-          ? v.filter((x) => typeof x === 'number' && Number.isFinite(x)) as number[]
+          ? v.filter((x) => typeof x === 'number' && Number.isFinite(x)).slice(-this.config.maxRewardHistory)
           : [];
       }
       this.rewardHistory = clean;
@@ -864,7 +892,11 @@ export class QRLTable {
     const buy = this.getCellExpectancy(features, 'buy');
     const sell = this.getCellExpectancy(features, 'sell');
     const spread = buy.q - sell.q;
-    const robust = buy.visits >= minSamples && sell.visits >= minSamples;
+    // v2.0.861-attack: minSamples guard — negative/NaN/0 minSamples would make
+    // the sample guard vacuous (visits >= 0 always true) → stale cells could
+    // fire. A caller must pass a positive integer floor.
+    const floor = (Number.isFinite(minSamples) && minSamples > 0) ? Math.floor(minSamples) : 20;
+    const robust = buy.visits >= floor && sell.visits >= floor;
     let lean: 'buy' | 'sell' | 'neutral' = 'neutral';
     if (robust) {
       if (spread >= qrlDirectionConfig.minSpread) lean = 'buy';
@@ -886,8 +918,11 @@ function parseBoolEnv(v: string | undefined, def: boolean): boolean {
   if (s === 'false' || s === '0' || s === 'no') return false;
   return def;
 }
-function parseNumEnv(v: string | undefined, def: number): number {
-  if (v === undefined || v === '') return def;
+/** v2.0.861-attack: trim + finite guard. Old version returned 0 for whitespace
+ *  (' ' → Number(' ')=0) and NaN-defeated inputs. Now whitespace → default and
+ *  non-finite (Infinity/'1e309') → default. Exported for adversarial tests. */
+export function parseNumEnv(v: string | undefined, def: number): number {
+  if (v === undefined || v.trim() === '') return def;
   const n = Number(v);
   return Number.isFinite(n) ? n : def;
 }
@@ -946,6 +981,15 @@ export function qrlExpectancyMultiplier(
   // Defensive: garbage input must never distort the gate.
   if (!cell || typeof cell !== 'object') return 1.0;
   if (typeof cell.visits !== 'number' || !Number.isFinite(cell.visits)) return 1.0;
+  // v2.0.861-attack (V5): corrupt cfg (NaN/Infinity factors from a poisoned
+  // caller) must never produce a NaN multiplier — NaN in the conviction gate
+  // makes `effectiveConfidence <= threshold` ALWAYS false → ALL trades pass
+  // (garbage in → full-through). Any non-finite / out-of-range cfg value
+  // silently neutralizes the whole gate to 1.0 (no dampen, no boost).
+  if (!Number.isFinite(cfg.minSamples) || cfg.minSamples < 0) return 1.0;
+  if (!Number.isFinite(cfg.negThreshold)) return 1.0;
+  if (!Number.isFinite(cfg.dampenFactor) || cfg.dampenFactor < 0.3 || cfg.dampenFactor > 0.9) return 1.0;
+  if (!Number.isFinite(cfg.boostFactor) || cfg.boostFactor < 1.0 || cfg.boostFactor > 1.3) return 1.0;
   // Dampening — all four conditions must hold.
   if (
     cell.visits >= cfg.minSamples

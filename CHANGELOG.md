@@ -3209,3 +3209,22 @@ Math audit (13 numerical fixes), LLM resilience (circuit breaker + deadline race
 ## v2.0.0–v2.0.9 — Foundation + RBC + Pattern Classifier + SystemGuard
 
 Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, paper trading, dual memory, survival fitness, evolutionary pressure, Sigmoid·GA sentiment engine, S/R zone detection, RBC engine (layered decay + time-weighted centroid), trade pattern classifier (Wilson score), EM cycle chain, backtest engine, loop engineering, real trading interface, TradingView chart, agent model selector, live progress, Fear & Greed index, leverage 2-10x, cumulative position cap, atomic write, schema validation.
+---
+
+## v2.0.861-attack: Q-RL Direction Signal — adversarial hardening(10 個攻擊向量全修)
+
+對 v2.0.861 新代碼 + 週邊 modules 進行不擇手段對抗攻擊,搵到並修復 7 個真實漏洞(1 critical):
+
+| # | 漏洞 | 嚴重性 | 修復 |
+|---|---|---|:---:|---|
+| V1 | `update()` 冇 clamp reward → corrupt reward(1e308)令 Q=3e306 pin 住 direction lean 一側 / boost 假觸發 | 🔴 High | reward clamp 到 ±1(pnlPct 語義上限,槓桿 cap 50× 下 |pnl|>100% 必 corrupt) |
+| V1b | `load()` 冇 clamp values → 毒 state file(1e308)pin 住 selectAction(ucb1/thompson)+ lean | 🔴 High | load 時 values clamp ±1 + non-finite → 0 |
+| V2 | `load()` 冇 cap rewardHistory 長度 → 1e6 元素 → 每次 cycle 每 symbol sort O(n log n) CPU DoS | 🟠 Medium | load 時 `slice(-maxRewardHistory)`(保留最新,recency bias) |
+| V3 | `parseNumEnv` 冇 trim → `QRL_NEG_THRESHOLD=' '` → 0(threshold 失效,行為偏差) | 🟠 Medium | whitespace → default;export 做攻擊測試 |
+| V5 | `qrlExpectancyMultiplier` 對 corrupt cfg(dampenFactor=NaN/Infinity)返回 NaN → `effectiveConfidence *= NaN` → gate 比較永遠 false → **所有 trade PASSES** | 🔴 **CRITICAL** | cfg 全 field finite + range guard,任何 corrupt → 1.0(neutral) |
+| V7 | `drainRecentResults` consumer `=== 'aligned' ? 'shadow' : 'shadow_blind'` → statistical(v2.0.846)+ qrl(v2.0.861)被降做 0.1×,同 shadow engine 內部 'shadow'(1×)不一致 | 🟠 Medium | 改為 `=== 'blind' ? 'shadow_blind' : 'shadow'`(同 checkPositions 一致) |
+| V10 | `getDirectionLean(minSamples=0/NaN/負數)` → sample guard vacuous(visits≥0 永遠 true)→ stale cell 可 fire | 🟡 Low | floor guard:`Math.floor` + `>0` 否則 default 20 |
+
+**已確認安全(攻擊測試證明,無需修改)**:V4(parseNumEnv 已有 isFinite check)、V6(tStat 已有 std>1e-12 guard,constant rewards → t=0)、V8(大寫 action makeKey 已 lowercase、n=1 median/trim fallback、全 0 rewards、1e200 混合、Proxy getter-bomb、`__proto__` pollution 全部 safe)、V9(openQRLShadow NaN entry guard + qrlSignal 局部 sanitise)。
+
+**攻擊測試**:`tests/qrl-direction-attack.test.ts`(32 tests)——V1-V10 全向量。連同 signal tests 61/61。Q-RL 相關 suites 171/171(q-rl-attack + q-rl-creative)。`tsc --noEmit` 零錯誤。全 regression 1925/1937(12 個 fail 係 pre-existing `v2.0.854-attack2-nan-price.test.ts` `getBalance is not a function` API 腐敗,git stash 驗證非本版造成)。
