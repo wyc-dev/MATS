@@ -41,6 +41,11 @@ export const exitPriceLearnerConfig = {
   minSamples: 10,
   /** Rolling-window cap per (symbol|side) — oldest records evicted. */
   maxRecordsPerCell: 100,
+  /** v2.0.862-fund: TIME WINDOW — only records younger than this (days) are
+   *  used to build a profile. MFE/MAE distributions drift with regime; a
+   *  trade from 6 months ago says nothing about today's extension. Combined
+   *  with the count cap this guarantees profiles reflect RECENT trades. */
+  maxAgeDays: 60,
   /** Learning weights by source. Shadow MFE is truncated by fixed SL/TP
    *  (upper bound = TP distance) — it is a LOWER-BOUND estimate, hence 0.5. */
   sourceWeights: { real: 1.0, shadow: 0.5, paper: 0.3 } as const,
@@ -178,11 +183,16 @@ export class ExitPriceLearner {
     this.records[key] = arr;
   }
 
-  /** Robust stats for one (symbol, side). Null when sample-starved. */
+  /** Robust stats for one (symbol, side). Null when sample-starved.
+   *  v2.0.862-fund: only records within maxAgeDays are used — the profile is
+   *  RECENT-trades-based (regime drift), not lifetime-based. */
   getExitProfile(symbol: string, side: 'buy' | 'sell'): ExitProfile | null {
     const key = cellKey(symbol, side);
-    const arr = this.records[key];
-    if (!arr || arr.length < exitPriceLearnerConfig.minSamples) return null;
+    const raw = this.records[key];
+    if (!raw || raw.length === 0) return null;
+    const cutoff = Date.now() - exitPriceLearnerConfig.maxAgeDays * 86_400_000;
+    const arr = raw.filter(r => r.timestamp >= cutoff);
+    if (arr.length < exitPriceLearnerConfig.minSamples) return null;
     const mfe = arr.map(r => r.mfePricePct);
     const mae = arr.map(r => r.maePricePct);
     const w = arr.map(r => r.weight);
@@ -198,12 +208,15 @@ export class ExitPriceLearner {
     };
   }
 
-  /** Backfill from closed real trades (portfolio-state shape). */
+  /** Backfill from closed real trades (portfolio-state shape).
+   *  v2.0.862-fund: explicitly time-sorts so the rolling cap + time window
+   *  always keep the NEWEST trades (previously relied on portfolio order). */
   backfillFromRealTrades(trades: Array<RawPositionExtremes & {
     symbol: string; side: string; closedAt?: number; openTimestamp?: number;
   }>): number {
+    const sorted = [...trades].sort((a, b) => (a.closedAt ?? a.openTimestamp ?? 0) - (b.closedAt ?? b.openTimestamp ?? 0));
     let fed = 0;
-    for (const t of trades) {
+    for (const t of sorted) {
       const side = t.side === 'sell' ? 'sell' : 'buy';
       const converted = convertToPriceExtremes(t);
       if (!converted) continue;

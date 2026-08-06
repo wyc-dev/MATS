@@ -3104,7 +3104,17 @@ ${currentPrompt || '(empty — this is the first input)'}`;
 
         const regime = this.marketState.getState(normalizeSymbol(sym))?.regime ?? 'unknown';
         const isTrending = regime.includes('trending');
-        const threshold = isTrending ? profile.mfeP90 : profile.mfeP75 * 0.8;
+        // v2.0.862-fund: SIZE-AGNOSTIC guard — the lock threshold is raised by
+        // this symbol×side's measured slippage (bps → fraction). MFE% is
+        // scale-invariant (percentage), but the EXECUTED price isn't: a large
+        // fund fills worse on thin books, so the lock must fire only when MFE
+        // clears the zone PLUS the friction it will pay to exit. Small sizes
+        // (low slippage) keep the standard threshold.
+        const execStats = this.edgeExecTracker?.getStats(normalizeSymbol(sym), side);
+        const slippagePct = Number.isFinite(execStats?.avgSlippageBps)
+          ? (execStats!.avgSlippageBps) / 10_000
+          : 0;
+        const threshold = (isTrending ? profile.mfeP90 : profile.mfeP75 * 0.8) + slippagePct;
         if (converted.mfePricePct < threshold) continue;
 
         const pnlNow = pos.unrealizedPnl ?? 0;
@@ -7221,7 +7231,12 @@ ${recentExamples}
               });
               const posRegime = this.marketState.getState(normalizeSymbol(posSym))?.regime ?? 'unknown';
               const trending = posRegime.includes('trending');
-              const threshold = trending ? profile.mfeP90 : profile.mfeP75 * 0.8;
+              // v2.0.862-fund: mirror the gate — slippage-adjusted threshold.
+              const execStats = this.edgeExecTracker?.getStats(normalizeSymbol(posSym), posSide);
+              const slippagePct = Number.isFinite(execStats?.avgSlippageBps)
+                ? (execStats!.avgSlippageBps) / 10_000
+                : 0;
+              const threshold = (trending ? profile.mfeP90 : profile.mfeP75 * 0.8) + slippagePct;
               const mfePct = conv?.mfePricePct ?? 0;
               const status = mfePct >= threshold
                 ? `🔒 LOCK-PROFIT ZONE REACHED (MFE ${(mfePct * 100).toFixed(2)}% ≥ ${(threshold * 100).toFixed(2)}%) — profit will be locked`
