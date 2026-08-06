@@ -47,11 +47,16 @@ function binOf(conviction: number): number {
   return Math.floor(c * NUM_BINS);
 }
 
-/** empirical WR + shrink(同 OLR applyCalibration 一致) */
+/** empirical WR + shrink(同 OLR applyCalibration 一致)。
+ *  v2.0.863-calib-attack (V2): clamp 負數 wins/losses(毒 state 會令
+ *  empirical 負 → 校準負數);非 finite raw → 0.5 中性。 */
 export function calibrateBin(wins: number, losses: number, raw: number): number {
-  const count = wins + losses;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return 0.5;
+  const w = Math.max(0, wins);
+  const l = Math.max(0, losses);
+  const count = w + l;
   if (count <= 0) return raw; // 空 bin → identity(唔校準)
-  const empirical = wins / count;
+  const empirical = w / count;
   const shrink = count / (count + BIN_SHRINK_K);
   return 0.5 + (empirical - 0.5) * shrink;
 }
@@ -78,8 +83,11 @@ export class LLMConvictionCalibrator {
     this.state.bins[key] = bin;
   }
 
-  /** 校準一筆 conviction——LLM 話 0.85 → bin 實際 WR */
+  /** 校準一筆 conviction——LLM 話 0.85 → bin 實際 WR。
+   *  v2.0.863-calib-attack (V1): 非 finite conviction → 0.5 中性——
+   *  NaN/Infinity/undefined 唔可以傳播返 gate(會污染 effectiveConfidence)。 */
   getCalibratedConviction(side: 'buy' | 'sell', conviction: number): number {
+    if (typeof conviction !== 'number' || !Number.isFinite(conviction)) return 0.5;
     const key = binKey(side, binOf(conviction));
     const bin = this.state.bins[key];
     if (!bin || bin.wins + bin.losses < MIN_SAMPLES) return conviction; // 冷啟動中性
