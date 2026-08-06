@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.862
+> **作者**: YC Wong · **版本**: 2.0.863
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -40,7 +40,7 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 認知演化管線（v2.0.862: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 Component Attribution + 1 PAEL Exit-Price Learner）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + Component Attribution v2.0.844 + **Q-RL Direction Signal v2.0.861**（regime-conditioned expectancy oracle：1.1 prompt 注入 + 1.2 conviction multiplier + 1.5 shadow A/B）+ **Shadow Pool Priority Eviction v2.0.861**（blind cold-start priors 讓位俾真統計 A/B 臂）+ **PAEL v2.0.862**（per-asset MFE/MAE exit-price learner → TP-side one-vote lock-profit gate）|
+| **自我演化** | 認知演化管線（v2.0.863: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 Component Attribution + 1 PAEL Exit-Price Learner + **1 LLM World-Model Layer**）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + Component Attribution v2.0.844 + **Q-RL Direction Signal v2.0.861** + **Shadow Pool Priority Eviction v2.0.861** + **PAEL v2.0.862** + **LLM World-Model v2.0.863**（K-LINE 結構讀圖 + 數據可靠性 + CHART-AWARE conviction 真駁通 + Candle Cache 雙時間框架）|
   歷史：v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge）。v2.0.849-851 將 momentum/exec-lens/confidence SL widening 移植到 live computeSmartSLTP + 修復 TradeRecord.closeReason 資料缺失（RIL + trade-audit 可以分到「SL 太緊」定「thesis 錯」）。v2.0.853 修復 closeTrade dual-mode guard（dual 模式下所有平倉被靜默跳過）+ 3 個缺失 closeReason 標記 + tradingManager.closePosition 用滯後 WS 價格代替實際 HL fill + UI SSE 退避。**v2.0.855 學習管道修復**：aligned shadow 恆開（real-trade cycles 都開，Q-RL 不再餓死）+ shadow_blind OLR 計數器（v2.0.834 承諾但從未 implement）+ thesis-invalidation closeReason 全覆蓋。**v2.0.855-fix**：Q-RL EXP backfill（1072 筆歷史交易 populate Q-table，令 discoverPatterns 即刻有嘢掃）。**v2.0.855-attack**：7 個修復引入嘅漏洞全部修補（OLR counter 字符串/負數消毒、closeReason 白名單、aligned-shadow weightedDirection 用真 LLM lean）。**v2.0.855-attack2**：Q-RL binRegime 邊界同 regimeToOrdinal 完全錯位（6/7 regime 入錯桶，bull/bear 對調）已對齊。**v2.0.856**：Attribution signal 契約修正（SELL 反轉 bug）+ side/symbol guard 補完（normalizeTradeSide，8 call site 強制 coerce 成 SELL 嘅 bug）+ edge-audit 工具。**v2.0.857 移除 aggressive/conservative 風險等級（moderate-only）**：12 個檔案——3×3 矩陣縮減為 1×3、後端 riskProfile 恆為 moderate、Meta-Agent prompt 改 moderate-only（慳 ~4.7KB context/cycle）。**v2.0.858 解鎖 cycle 期間市場選擇**：select-symbol 延遲應用 + throttle coalescing（唔再掉更新）+ symbol-set drift check（唔再淨比 count）。**v2.0.859 移除零消費者組件 + 修復學習管道**：backfill 重複喂飼（Q-RL/OLR persisted flag）+ OLR calibration shrinkage（斬 overconfidence）。**v2.0.860 三因子探索 + adaptive 歸一 + SE operator-conditioned context**（Frontis-MA1/OpenMLE-Evo：`U = 1.0×score + 0.6×progress + 0.3×novelty`，score 對 cell 自己 reward 歷史 min-max 歸一；SE 診斷只對 priority 文件畀全文、其餘 stub）|
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
@@ -1209,6 +1209,41 @@ Adversarial audit（v2.0.855 系列）對照真實持久化狀態（`shadow-stat
 - Env：`EXIT_PRICE_CLOSE_ENABLED` / `EXIT_PRICE_LOCK_MIN_HOLD_MIN`
 
 **工具**：`scripts/exit-price-audit.ts`（per-asset 分佈 + giveback 指標）· `scripts/exit-price-backtest.ts`（三場景模擬）· `scripts/qrl-audit.ts`（Q-RL oracle 審計）。
+
+## LLM World-Model Layer（v2.0.863 — 讀圖 + 數據可靠性 + 真駁通）
+
+**主神哲學**:「如果淨係統計判定 EV,使乜 LLM?——要用 LLM 本身嘅世界模型成為系統優勢」。LLM 唔係被統計 gate——佢係方向來源 + 世界事件來源;統計做歷史校準。
+
+**Phase 0 驗證(謹慎)**:
+```
+news(新聞/宏觀):  median -0.52%(負 alpha——新聞已 price in)
+chart(圖表/趨勢):  median -0.04%(打和——遠好過新聞 0.48pp)
+dataQuality:       0(系統從未做過——全新領域)
+```
+
+**組件**(`src/analysis/` + `src/data/`):
+| 組件 | 作用 |
+|---|---|
+| `kline-structure.ts` | 純函數:蠟燭 → 趨勢/形態/突破/成交量摘要(EMA+一致性、HH/LL、3 支破 20 支、baseline σ volume) |
+| `data-quality.ts` | 純函數:funding/volume/spread/staleness σ 異常偵測 → qualityScore 0-1 |
+| `chart-conviction.ts` | 純函數:conviction 校準——K-LINE 趨勢 vs LLM 方向(反向+無 catalyst ×0.75)、1h/5m 分歧(×0.85)、數據不可靠(×0.85)、catalyst 可 override(×1.0) |
+| `thesis-catalyst.ts` | 純函數:thesis → catalyst 分類(strong/weak/none)——新聞/宏觀/數據事件/K 線結構(ASCII word-boundary lookaround——CJK 兼容) |
+| `candle-cache.ts` | **Lazy Cache Pool**——1h+5m 蠟燭共享(fetch ≥100 支防 count 餓死、inflight dedup、fail cooldown、LRU bounded、依賴注入可測試) |
+
+**真駁通**(conviction gate 內硬性乘法):
+```
+1h+5m 蠟燭 → cache → K-LINE 結構(雙時間框架)→ LLM 讀圖(thesis)
+  → K-LINE 反向 + 無 catalyst → ×0.75
+  → 1h/5m 分歧(大方向對但時機未到)→ ×0.85
+  → 數據不可靠 → ×0.85
+  → Q-RL 期望值 × causal × calibration → effectiveConfidence → trade/HOLD
+```
+
+**雙時間框架**(主神要求):1h 大方向 + 5m 入場時機——雙重分析——同向 = 雙重確認,分歧 = 校準。
+
+**Env flags**:`KLINE_BLOCK_ENABLED` / `DATA_QUALITY_BLOCK_ENABLED` / `CHART_AWARE_CONVICTION`。
+
+**Rate limit 防護**:所有 candle 經 `candleCache`(global limiter 2.5 req/s + TTL 120s + 每 cycle 1h+5m 各 1 次/active symbol)——4-5 次重複 fetch → 1 次。
 
 ## Self-Aware Evolution（v2.0.843-848 — Meta-Cognition + Self-Improving + Causal Reasoning + Meta-Learning + Component Attribution）
 
