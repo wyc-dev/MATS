@@ -65,6 +65,8 @@ import { getSRZones } from './analysis/support-resistance.ts';
 import { setExecutionLensProvider, prepareExecutionLens, clearExecutionLens, type ExecutionLensData, getATR } from './analysis/atr.ts';
 import { summarizeKlines } from './analysis/kline-structure.ts';
 import { evaluateDataQuality } from './analysis/data-quality.ts';
+import { computeChartConvictionMultiplier } from './analysis/chart-conviction.ts';
+import { classifyThesisCatalyst } from './analysis/thesis-catalyst.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
@@ -106,6 +108,7 @@ function parseBlockBool(v: string | undefined, def: boolean): boolean {
 }
 const klineBlockConfig = { enabled: parseBlockBool(process.env['KLINE_BLOCK_ENABLED'], true) } as const;
 const dataQualityConfig = { enabled: parseBlockBool(process.env['DATA_QUALITY_BLOCK_ENABLED'], true) } as const;
+const chartConvictionConfig = { enabled: parseBlockBool(process.env['CHART_AWARE_CONVICTION'], true) } as const;
 
 /** v2.0.863: Fetch 1h candles (o/h/l/c/v) for K-LINE structure — HL candleSnapshot,
  *  rate-limited via MarketAgent.hlFetch(same queue as getATR/fetchCandleHighLow). */
@@ -259,6 +262,10 @@ class MATSSystem {
   private exitPriceLockCount = 0;
   /** v2.0.862: last cycle we fed ui_snapshots (throttle — once per cycle). */
   private lastUiSnapshotCycle = -1;
+  /** v2.0.863: cached K-line summary + data-quality score for the conviction gate
+   *  (computed once per cycle in buildKlineBlock/buildDataQualityBlock — no refetch). */
+  private lastKlineSummary: { trend: 'up' | 'down' | 'sideways' } | null = null;
+  private lastQualityScore = 1;
   // v2.0.837: Meta-Cognitive Calibrator — system self-awareness
   private metaCalibrator!: MetaCalibrator;
   // v2.0.838: Self-Improver — auto-tuning hyperparameters
@@ -3078,6 +3085,28 @@ ${currentPrompt || '(empty — this is the first input)'}`;
    * Pure logic lives in qrlExpectancyMultiplier() (q-rl-table.ts) so it is
    * unit-testable; this method only gathers the cell + logs the outcome.
    */
+  /**
+   * v2.0.863: CHART-AWARE conviction — 真駁通 LLM 世界模型(讀圖)到 gate。
+   * K-LINE 趨勢 vs LLM 方向一致性 + DATA QUALITY 校準(硬性乘法,soft 可回滾)。
+   */
+  private computeChartConviction(
+    action: 'buy' | 'sell',
+    rationale: string | undefined,
+  ): number {
+    if (!chartConvictionConfig.enabled) return 1.0;
+    try {
+      const catalyst = classifyThesisCatalyst(rationale);
+      return computeChartConvictionMultiplier({
+        action,
+        klineTrend: this.lastKlineSummary?.trend ?? null,
+        catalystLevel: catalyst.level,
+        qualityScore: this.lastQualityScore,
+      });
+    } catch {
+      return 1.0;
+    }
+  }
+
   private computeQRLExpectancyMultiplier(
     symbol: string,
     action: 'buy' | 'sell',
@@ -4295,6 +4324,7 @@ ${recentExamples}
       const candles = await fetchCandleSnapshot(sym, 30);
       if (!candles || candles.length === 0) return '';
       const summary = summarizeKlines(candles);
+      this.lastKlineSummary = { trend: summary.trend };
       if (!summary.description) return '';
       return `=== K-LINE STRUCTURE for ${sym} ===\n${summary.description}\n(蠟燭形態——統計睇唔到,你用世界模型判斷趨勢/形態/突破真偽)`;
     } catch { return ''; }
@@ -4318,6 +4348,7 @@ ${recentExamples}
         spreadPct: state.orderBookImbalance !== undefined && state.price > 0 ? Math.abs(state.orderBookImbalance) * 0.01 : 0,
         lastUpdateMs: Math.max(0, Date.now() - (state.updatedAt ?? Date.now())),
       });
+      this.lastQualityScore = flags.qualityScore;
       if (flags.qualityScore === 1) return '';
       return `=== DATA QUALITY for ${sym} ===\n${flags.warnings.join('\n')}\n(數據異常——訊號可能失真,判斷點用)`;
     } catch { return ''; }
@@ -10119,6 +10150,17 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           effectiveConfidence *= qrlMultiplier;
           log.info(`🟣 [qrl-expectancy] ${gateAction.toUpperCase()} ${pwinSym}: positive expectancy (t≥2) → conviction ×${qrlMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
           activeAuditGates.push({ gate: 'qrl-expectancy', passed: true, reason: `positive Q-RL expectancy → ×${qrlMultiplier.toFixed(3)} (soft)` });
+        }
+
+        // ── v2.0.863: CHART-AWARE conviction — 真駁通 LLM 世界模型(讀圖)──
+        // K-LINE 趨勢 vs LLM 方向一致性 + DATA QUALITY 校準。
+        // LLM 有 catalyst 可以逆圖表(×1.0);無理由逆圖表 → ×0.75;
+        // 數據不可靠 → ×0.85。唔再係淨注入——code 層面硬性校準。
+        const chartMultiplier = this.computeChartConviction(gateAction, finalDecision.rationale);
+        if (chartMultiplier < 1.0) {
+          effectiveConfidence *= chartMultiplier;
+          log.info(`📊 [chart-aware] ${gateAction.toUpperCase()} ${pwinSym}: K-LINE 反向/數據異常 → conviction ×${chartMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+          activeAuditGates.push({ gate: 'chart-aware', passed: true, reason: `K-LINE/DATA-QUALITY 校準 → ×${chartMultiplier.toFixed(3)} (soft)` });
         }
 
         // ── v2.0.844 Phase 2b: Meta-Calibrator → Dynamic Trust ───────────

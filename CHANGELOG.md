@@ -3641,3 +3641,21 @@ dataQuality:       0(系統從未做過——全新領域)
 **已確認安全(V2-V4)**:summarizeKlines 極端輸入(1e300 price/constant candles/單根/全 0 vol)、evaluateDataQuality 極端(funding 1e308/volume 0/spread 負)、thesis-catalyst 超長(100k chars)/特殊字符——全部安全。
 
 **驗證**:`tests/v2.0.863-attack.test.ts`(11 tests——中文 match、極端輸入、超長 thesis)。修復後:「央行減息」→ strong、「突破 $64K」→ weak、「OLR」→ none(正確)。審計結果不變(news -0.54%、非新聞 -0.04%——中文補捉後結論一致)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.863-chart: CHART-AWARE CONVICTION — 真駁通 LLM 世界模型到 gate
+
+**主神質疑**:「K-LINE/DATA QUALITY 係咪真係有駁通落去做決策?」——誠實審計:核心統計 gate(Q-RL/causal/calibration)駁通咗,但 K-LINE/DATA QUALITY 只係 context 注入(LLM 可以忽略)。
+
+**修復**(`src/analysis/chart-conviction.ts` + `index.ts`):
+- `computeChartConvictionMultiplier()`(純函數)——conviction gate 內硬性乘法:
+  - K-LINE 趨勢 vs LLM 方向:**一致 → ×1.0;反向 + 無 catalyst → ×0.75;反向 + catalyst(新聞/事件)→ ×1.0(LLM 有世界模型理由)**
+  - Range / 冷啟動 → ×1.0(唔罰)
+  - DATA QUALITY:qualityScore < 0.7 → ×0.85(數據不可靠一律降)
+- index.ts:cycle 預計算 K-LINE summary + quality score(cache,唔重複 fetch)→ conviction gate call(`[chart-aware]` audit log)
+- flag: `CHART_AWARE_CONVICTION`
+
+**效果**:LLM 世界模型(讀圖)唔再係「建議」——「無理由逆圖表」會被 code 校準(×0.75),數據不可靠一律降(×0.85)——但 LLM 有 catalyst 仍然可以逆圖表(×1.0)——**LLM 主導,code 校準,兩者融合**。
+
+**驗證**:`computeChartConvictionMultiplier` 9 tests(全條件矩陣 + malformed input)。kline-data-quality 22/22。`tsc --noEmit` 零錯誤。
