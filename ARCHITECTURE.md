@@ -1245,6 +1245,44 @@ dataQuality:       0(系統從未做過——全新領域)
 
 **Rate limit 防護**:所有 candle 經 `candleCache`(global limiter 2.5 req/s + TTL 120s + 每 cycle 1h+5m 各 1 次/active symbol)——4-5 次重複 fetch → 1 次。
 
+## LLM Direction Verifier（v2.0.864 — 每 cycle 判斷記錄 + 雙層驗證 + 平倉結果 + 窗口校準）
+
+**主神問題**:「有沒有記錄每次執行的時候 LLM 所給予的判斷和建議,來給予日後的 LLM 判斷之前對於相關資產和相關走勢的判斷是否正確?」
+
+**核心**(`src/analysis/llm-direction-verifier.ts`):LLM 判斷品質嘅「預測層」校準——同 Conviction Calibrator(信心層)並排,都係 gate 乘數,直接左右決策但唔同權重(避免 double-count)。
+
+```
+每 cycle 記錄:recordJudgment(symbol, direction, trend-type, 判斷時 price)
+  ——conviction gate 內執行,包括 HOLD/冇落單——樣本 = cycles(上萬級)
+每 cycle 驗證:quick(下 cycle 現價 vs 判斷時價——即時回饋)
+  + accurate(到 scheduledVerifyAt——較準窗口)——乘數用 accurate
+平倉時:recordOutcome(trade 最終賺/蝕)——by tradeId idempotent
+準確率:blend = (1-β)×accurate + β×平倉結果(β=0.3 當 C 有樣本)
+三層 fallback:symbol×trend-type(≥10)→ trend-type 全局(≥20)→ 中性
+  ——主神要求:新市場參考其他走勢
+gate 乘數:accuracy → ×[0.80, 1.05] + shrink——永遠唔 hard block
+```
+
+**窗口自動校準(v2.0.864-accurate)**——「較準」功能:
+```
+per trend-type × 5 候選窗口(15m/30m/1h/2h/4h)
+  → 每窗口累計準確率 → 自動揀「準確率最高 + 樣本夠」嗰個
+  → 窗口隨歷史漂移(EWMA + 樣本懲罰)——唔好嘅窗口自然淘汰
+→ 解決「5 分鐘即時驗證對 1h 趨勢判斷唔公平」——判斷後回調但判斷其實啱
+```
+
+**錯判教訓**:錯判次數注入 Meta-Agent block(「你對呢類判斷錯咗 N 次——方向與價格走勢一致先好堅持」)——LLM 自我改善。
+
+**gate 鏈(v2.0.864 完整)**:
+```
+effectiveConfidence = calibratedConsensus(Conviction 校準,大範圍)
+                   × OLR P(win) × causal × qrlExpectancy × chartMultiplier
+                   × llmDirectionTrust(×0.80-1.05,方向層微調)
+                   × calibrationTrust
+```
+
+**Env**:`LLM_DIRECTION_VERIFIER`。**攻擊硬化(v2.0.864-attack)**:`__proto__`/`constructor`/`prototype` keys prototype pollution 修復(UNSAFE_KEYS skip);`|` key 碰撞、null-price pending(56h stale)、窗口時間極端、double-call guard、毒 state——全部驗證安全。
+
 ## Self-Aware Evolution（v2.0.843-848 — Meta-Cognition + Self-Improving + Causal Reasoning + Meta-Learning + Component Attribution）
 
 v2.0.842 新增三大進化組件 + 混合數據源架構。v2.0.843 新增 ANN index + asset-aware Meta-Learner + Skeptics evolution block fix。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（見下方專節）。系統唔再只係從交易結果學習，而係知道自己幾準（元認知）、自動調整自己嘅 hyperparameters（自我改善）、區分因果同相關（因果推理）、學點樣學得更快（元學習）、量度邊個組件真正加 edge（歸因）。
