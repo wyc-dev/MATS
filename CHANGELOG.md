@@ -3471,3 +3471,20 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **已確認安全**:combos NaN 比較(false 唔觸發)、normalizeSymbol('')guard、supabase-js NaN→null、大 payload server 413 → catch(唔 crash,log warning)。
 
 **驗證**:`tsc --noEmit` 零錯誤;全 regression 1988/2000(12 pre-existing)。
+
+---
+
+## v2.0.862-ops: ui_snapshots 表 apply + error log 改善
+
+**主神 log 報告**:`[ui-snapshot] write failed (non-blocking): [object Object]`。
+
+**根因**:migration 19(ui_snapshots/user_risk_prefs/orders)寫咗但**從未 apply 到 Supabase project**(PGRST205: table not found)。已用 `supabase db query --linked` apply 三張表(驗證存在)。
+
+**修復**:
+- **error log 改善**:`[object Object]`(supabase-js error 係 plain object,`String(err)` 冇用)→ 提取 `message/code/hint` 顯示
+- 表已建:ui_snapshots / user_risk_prefs / orders ✅
+
+**主神 log 其他項目解釋**:
+- `assetType=stocks` for GOLD/SILVER:**唔係錯標**——log 顯示嘅係**全局 `hyperliquidAssetType` 設定**(stocks,因為 SKHX 係股票),唔係 per-symbol category;GOLD/SILVER 嘅 options data 仍按自己 symbol 攞
+- `Rate limited ... 3-poll cooldown`:**正常防禦**——options 供應商 rate limit 後 cooldown,唔 crash
+- `gdelt entered cooldown`:**正常**——新聞源連續失敗 60s cooldown,其他源繼續
