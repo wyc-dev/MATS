@@ -3317,3 +3317,24 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **工具**:`scripts/exit-price-audit.ts`(per-asset 分佈報告 + giveback 指標——實測 35 筆 giveback = 18%)· `scripts/exit-price-backtest.ts`(三場景模擬)。
 
 **驗證**:`tests/exit-price-learner.test.ts`(19 tests——conversion/percentile/sample floor/rolling cap/persistence/corrupt-input)。`tsc --noEmit` 零錯誤。全 regression 1965/1977(12 pre-existing `getBalance` API 腐敗)。
+
+---
+
+## v2.0.862-lock: PAEL Exit-Price Lock Gate — TP-side one-vote exit(Phase C)
+
+**主神指令**:TP 側一票通過離場(鎖利),SL 保留噪音震動空間。
+
+**接入**(`src/index.ts` + `portfolio.ts` + `learning-weight.ts` + `meta-agent.ts`):
+- **`runExitPriceLockGate()`**(deterministic,每 cycle 喺 thesis-invalidation 前執行):
+  - 條件(全必須):PAEL profile 存在(≥10 samples)· MFE price% ≥ 閾值(非 trending:p75×0.8;trending:p90 保守——趨勢市唔截短)· 當前 profit > 0 · 持倉 ≥ 15min(5 分鐘 MFE spike = noise)
+  - 觸發 → `closeTrade(sym, thesis, 'exit_price_lock')`
+  - **SL 永不被觸碰**——gate 只 close(鎖利),唔會收緊止損
+- **closeReason `exit_price_lock`**:加入白名單(portfolio.ts)+ TradeRecord/trade-history type + `computeLearningWeight` = 0.5(系統決策,唔係自然市場觸發)
+- **實時學習**:real trades 平倉時(onPositionClosedLearning)→ PAEL weight 1.0;shadow resolutions → weight 0.5;init 時 backfill portfolio 歷史
+- **MFE CHECK soft block**(per-position context):LLM 見到「🔒 LOCK-PROFIT ZONE REACHED」/「not yet in lock zone」+ PAEL 分佈——Meta-Agent prompt 加第 6 重 EXIT-PRICE MFE CHECK 檢查
+- **持久化**:exit-price-state.json(cycle 結尾 + shutdown)
+- **Env flags**:`EXIT_PRICE_CLOSE_ENABLED`(default true,false = 完全 pre-PAEL 行為)+ `EXIT_PRICE_LOCK_MIN_HOLD_MIN`(default 15)
+
+**設計原則**:主神嘅「TP 一票通過、SL 保留空間」——鎖利係「賺夠就走」(離場),唔係「收窄 SL」(俾噪音掃走)。trending regime 用 p90 保守閾值防截短趨勢 profit。模擬已證實(Phase B):鎖利路徑 expectancy +42%,大贏家保留 100%,轉換 26 筆 A蝕→B賺。
+
+**驗證**:`tests/exit-price-lock.test.ts`(5 tests——白名單 + sanitize + learning weight 0.5 對比 full-weight sl_tp)。`tsc --noEmit` 零錯誤。全 regression 1970/1982(12 pre-existing `getBalance` API 腐敗)。

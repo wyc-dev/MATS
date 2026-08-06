@@ -17,6 +17,7 @@ import {
 import { QRLTable, qrlDirectionConfig, qrlExpectancyMultiplier, type AlphaDiscovery, type QRLExpectancy } from './evolution/q-rl-table.ts';
 import { MetaCalibrator } from './evolution/meta-calibrator.ts';
 import { SelfImprover } from './evolution/self-improver.ts';
+import { ExitPriceLearner, convertToPriceExtremes } from './analysis/exit-price-learner.ts';
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
 import { ComponentAttributionStore, normalizeTradeSide } from './evolution/component-attribution.ts';
 import { MetaLearner, deriveAssetMetadata } from './evolution/meta-learner.ts';
@@ -116,6 +117,30 @@ function currentHourOfDay(): number {
   return new Date().getHours() / 23;
 }
 
+// ─── v2.0.862: PAEL Exit-Price Lock config (TP-side one-vote exit) ──────
+// Owner directive: TP side gets a one-vote exit when MFE reaches the asset's
+// typical favourable zone; SL is NEVER touched (keeps noise room). Env-tunable,
+// independently disableable (false → exact pre-PAEL close behaviour).
+function parseLockBoolEnv(v: string | undefined, def: boolean): boolean {
+  if (v === undefined || v.trim() === '') return def;
+  const s = v.trim().toLowerCase();
+  if (s === 'true' || s === '1' || s === 'yes') return true;
+  if (s === 'false' || s === '0' || s === 'no') return false;
+  return def;
+}
+function parseLockNumEnv(v: string | undefined, def: number): number {
+  if (v === undefined || v.trim() === '') return def;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+}
+const exitPriceLockConfig = {
+  /** Master switch — false restores exact pre-PAEL close behaviour. */
+  enabled: parseLockBoolEnv(process.env['EXIT_PRICE_CLOSE_ENABLED'], true),
+  /** Minimum hold (minutes) before the lock gate may fire — a 5-min MFE
+   *  spike is noise, not a zone (matches meta-agent TIME CHECK spirit). */
+  minHoldMinutes: Math.max(1, Math.floor(parseLockNumEnv(process.env['EXIT_PRICE_LOCK_MIN_HOLD_MIN'], 15))),
+} as const;
+
 /** v2.0.226 / v2.0.211: Compute learning weight based on close context.
  *  Extracted to src/evolution/learning-weight.ts for unit testability.
  *  See learning-weight.ts for the full decision table + v2.0.211 fix notes
@@ -193,6 +218,10 @@ class MATSSystem {
   private edgeReportCount = 0;
   // v2.0.835: Q-RL Alpha Discovery
   private qrlTable!: QRLTable;
+  /** v2.0.862: PAEL — per-asset exit-price learner (MFE/MAE profiles). */
+  private exitPriceLearner!: ExitPriceLearner;
+  /** v2.0.862: total lock-profit closes fired by the exit-price gate. */
+  private exitPriceLockCount = 0;
   // v2.0.837: Meta-Cognitive Calibrator — system self-awareness
   private metaCalibrator!: MetaCalibrator;
   // v2.0.838: Self-Improver — auto-tuning hyperparameters
@@ -1121,6 +1150,25 @@ class MATSSystem {
         log.warn(`[q-rl-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
       }
       log.info('✓ Q-RL Alpha Discovery initialized');
+
+      // v2.0.862: PAEL — Exit-Price Learner init (learning layer only).
+      // Loads per-asset MFE/MAE profiles, then backfills from the persisted
+      // real-trade history so cold-start profiles are immediately available.
+      this.exitPriceLearner = new ExitPriceLearner();
+      try {
+        this.exitPriceLearner.load();
+        const pfRaw = fs.existsSync(path.join(process.cwd(), 'data/evolution/portfolio-state.json'))
+          ? JSON.parse(fs.readFileSync(path.join(process.cwd(), 'data/evolution/portfolio-state.json'), 'utf-8'))
+          : null;
+        const realTrades = pfRaw?.realTrades ?? [];
+        if (Array.isArray(realTrades) && realTrades.length > 0) {
+          this.exitPriceLearner.backfillFromRealTrades(realTrades as never);
+        }
+        const stats = this.exitPriceLearner.getStats();
+        log.info(`✓ PAEL loaded (${stats.cells} cells, ${stats.totalRecords} records)`);
+      } catch (e) {
+        log.warn(`[exit-price-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+      }
 
       // v2.0.837: Meta-Cognitive Calibrator init
       this.metaCalibrator = new MetaCalibrator();
@@ -3020,6 +3068,89 @@ ${currentPrompt || '(empty — this is the first input)'}`;
     }
   }
 
+  // ─── v2.0.862: PAEL — Exit-Price Lock Gate (TP-side one-vote exit) ───
+  // Owner directive: when the position's MFE has reached the asset's typical
+  // favourable-extension zone, the TP side gets a ONE-VOTE exit — lock the
+  // profit deterministically, no LLM needed. The SL is NEVER touched: the stop
+  // keeps its noise room; this gate only CLOSES (locks profit), it never
+  // tightens a stop.
+  //
+  // Conditions (ALL must hold):
+  //   1. PAEL profile exists (≥ minSamples per asset×direction)
+  //   2. MFE price% ≥ threshold (p75×0.8; trending regime → p90 conservative
+  //      — trends run far, locking at p75 would truncate them)
+  //   3. CURRENT profit > 0 (lock realisable profit, not a vanished peak)
+  //   4. hold ≥ minHoldMinutes (a 5-min MFE spike is noise, not a zone)
+  //
+  // closeReason 'exit_price_lock' (whitelisted) → learning weight 0.5.
+  private async runExitPriceLockGate(): Promise<void> {
+    if (!exitPriceLockConfig.enabled || !this.exitPriceLearner) return;
+    try {
+      for (const sym of this.portfolio.getOpenSymbols()) {
+        const pos = this.portfolio.getPosition(sym);
+        if (!pos) continue; // getOpenSymbols() only returns open positions
+        const side = pos.side === 'sell' ? 'sell' : 'buy';
+        const profile = this.exitPriceLearner.getExitProfile(normalizeSymbol(sym), side);
+        if (!profile) continue; // cold-start: no profile → existing behaviour
+
+        const converted = convertToPriceExtremes({
+          entryPrice: pos.averageEntryPrice,
+          quantity: pos.quantity,
+          leverage: pos.leverage,
+          minValueReached: pos.minValueReached ?? 0,
+          maxValueReached: pos.maxValueReached ?? 0,
+        });
+        if (!converted || converted.mfePricePct <= 0) continue;
+
+        const regime = this.marketState.getState(normalizeSymbol(sym))?.regime ?? 'unknown';
+        const isTrending = regime.includes('trending');
+        const threshold = isTrending ? profile.mfeP90 : profile.mfeP75 * 0.8;
+        if (converted.mfePricePct < threshold) continue;
+
+        const pnlNow = pos.unrealizedPnl ?? 0;
+        if (!Number.isFinite(pnlNow) || pnlNow <= 0) continue;
+
+        const holdMin = (Date.now() - (pos.openedAt ?? 0)) / 60000;
+        if (holdMin < exitPriceLockConfig.minHoldMinutes) continue;
+
+        const exitThesis = `[EXIT-PRICE LOCK] ${sym} ${pos.side.toUpperCase()}: MFE ${(converted.mfePricePct * 100).toFixed(2)}% ≥ ${isTrending ? 'p90' : 'p75×0.8'} (${(threshold * 100).toFixed(2)}%) in ${regime} (${profile.samples} samples). Locking profit — SL untouched.`;
+        const ok = await this.closeTrade(sym, exitThesis, 'exit_price_lock');
+        if (ok) {
+          this.exitPriceLockCount++;
+          log.info(`🔒 [exit-price-lock] CLOSED ${sym} ${pos.side.toUpperCase()} @ MFE ${(converted.mfePricePct * 100).toFixed(2)}% (threshold ${(threshold * 100).toFixed(2)}%, samples=${profile.samples}) — profit locked (total=${this.exitPriceLockCount})`);
+        } else {
+          log.warn(`🔒 [exit-price-lock] close attempt failed for ${sym} (non-fatal)`);
+        }
+      }
+    } catch (err) {
+      log.warn(`[exit-price-lock] gate failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** v2.0.862: Record a closed real trade into the PAEL learner. */
+  private recordRealExitToPAEL(trade: {
+    symbol: string; side: string; entryPrice: number; quantity: number;
+    leverage: number; minValueReached?: number; maxValueReached?: number;
+    closedAt?: number; openedAt?: number;
+  }): void {
+    if (!this.exitPriceLearner) return;
+    try {
+      const converted = convertToPriceExtremes({
+        entryPrice: trade.entryPrice, quantity: trade.quantity, leverage: trade.leverage,
+        minValueReached: trade.minValueReached ?? 0, maxValueReached: trade.maxValueReached ?? 0,
+      });
+      if (!converted) return;
+      this.exitPriceLearner.recordExit({
+        symbol: trade.symbol.toLowerCase(),
+        side: trade.side === 'sell' ? 'sell' : 'buy',
+        ...converted,
+        source: 'real',
+        timestamp: trade.closedAt ?? trade.openedAt ?? Date.now(),
+        weight: 1.0,
+      });
+    } catch { /* non-fatal */ }
+  }
+
   /**
    * v2.0.846 Phase 1a: Compute a PURE-STATISTICS directional lean for a symbol.
    *
@@ -3388,6 +3519,12 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           hourOfDay: hourOfDayFromTs((trade as any)?.openedAt) ?? currentHourOfDay(),
         };
         const tradeSource: 'paper' | 'real' = trade.agentId === 'hyperliquid-real' ? 'real' : 'paper';
+        // v2.0.862: Record this closed trade into the PAEL exit-price learner
+        // (real trades = full weight; feeds the per-asset MFE/MAE profiles that
+        // drive the exit-price lock gate + close-decision context).
+        if (tradeSource === 'real') {
+          this.recordRealExitToPAEL(trade as never);
+        }
         // v2.0.226: Pass slNarrowed + learningWeight so OLR downweights tight-SL
         // losses (execution problem) vs real market losses (entry problem).
         this.olrEngine.feedTrade(symbol, features, outcome, trade.side === 'buy' ? 'buy' : 'sell', tradeSource, this.totalCycles, slNarrowed, undefined, learningWeight);
@@ -6317,6 +6454,21 @@ ${recentExamples}
         try {
           const shadowResults = this.shadowEngine.drainRecentResults();
           for (const sr of shadowResults) {
+            // v2.0.862: Record resolved shadows into PAEL (0.5 weight — shadow
+            // MFE is truncated by fixed SL/TP, lower-bound estimate).
+            try {
+              if (this.exitPriceLearner && Number.isFinite(sr.mfePct) && Number.isFinite(sr.maePct)) {
+                this.exitPriceLearner.recordExit({
+                  symbol: sr.symbol.toLowerCase(),
+                  side: sr.side === 'sell' ? 'sell' : 'buy',
+                  mfePricePct: Math.max(0, Math.min(0.5, sr.mfePct ?? 0)),
+                  maePricePct: Math.max(0, Math.min(0.5, sr.maePct ?? 0)),
+                  source: 'shadow',
+                  timestamp: Date.now(),
+                  weight: 0.5,
+                });
+              }
+            } catch { /* non-fatal */ }
             const srFeatures = buildCurrentFeaturesForSymbol(sr.symbol, combinedState);
             // Add MFE/MAE from the shadow result itself
             srFeatures['mfePct'] = sr.mfePct;
@@ -7052,6 +7204,32 @@ ${recentExamples}
           const posBlock = this.buildOLRBlock(posSym, features, `OLR ASSESSMENT for ${posSym}`, posInfo);
           if (posBlock) marketDesc += `\n\n` + posBlock;
         } catch { /* non-critical */ }
+
+        // v2.0.862: PAEL Exit-Price MFE CHECK — soft data block for the LLM's
+        // HOLD-vs-CLOSE reasoning. The HARD gate is runExitPriceLockGate() (TP-
+        // side one-vote exit); this block merely tells the LLM where the
+        // position stands relative to the asset's typical favourable zone so
+        // its own close reasoning can agree or override with a strong thesis.
+        try {
+          if (exitPriceLockConfig.enabled && this.exitPriceLearner) {
+            const posSide = pos.side === 'sell' ? 'sell' : 'buy';
+            const profile = this.exitPriceLearner.getExitProfile(normalizeSymbol(posSym), posSide);
+            if (profile) {
+              const conv = convertToPriceExtremes({
+                entryPrice: pos.averageEntryPrice, quantity: pos.quantity, leverage: pos.leverage,
+                minValueReached: pos.minValueReached ?? 0, maxValueReached: pos.maxValueReached ?? 0,
+              });
+              const posRegime = this.marketState.getState(normalizeSymbol(posSym))?.regime ?? 'unknown';
+              const trending = posRegime.includes('trending');
+              const threshold = trending ? profile.mfeP90 : profile.mfeP75 * 0.8;
+              const mfePct = conv?.mfePricePct ?? 0;
+              const status = mfePct >= threshold
+                ? `🔒 LOCK-PROFIT ZONE REACHED (MFE ${(mfePct * 100).toFixed(2)}% ≥ ${(threshold * 100).toFixed(2)}%) — profit will be locked`
+                : `not yet in lock zone (MFE ${(mfePct * 100).toFixed(2)}% vs ${(threshold * 100).toFixed(2)}% in ${trending ? 'trending→p90' : 'normal→p75×0.8'})`;
+              marketDesc += `\n=== EXIT-PRICE MFE CHECK for ${posSym} ===\n  ${status}. PAEL profile: MFE p50=${(profile.mfeP50 * 100).toFixed(2)}% p75=${(profile.mfeP75 * 100).toFixed(2)}% p90=${(profile.mfeP90 * 100).toFixed(2)}% (${profile.samples} ${posSide} samples).\n  (data-driven: ${Math.round(profile.mfeP75 * 100)}% of historical ${posSym} ${posSide} trades reversed before p75×0.8 — a reach here is strong lock-profit evidence; SL is NEVER touched by this signal.)`;
+            }
+          }
+        } catch { /* non-fatal */ }
 
         // S/R zones for this position's symbol
         try {
@@ -7914,6 +8092,15 @@ ${recentExamples}
           };
         }
       }
+
+      // v2.0.862: PAEL Exit-Price Lock Gate — TP-side one-vote exit.
+      // Runs BEFORE thesis-invalidation closes: a position whose MFE reached
+      // the asset's typical favourable zone and is still profitable gets its
+      // profit LOCKED deterministically (no LLM vote needed). SL is never
+      // touched — the stop keeps its noise room; this gate only closes.
+      // Only when the gate is disabled does execution fall entirely to the
+      // pre-PAEL paths below.
+      await this.runExitPriceLockGate();
 
       // v2.0.80: Force-close positions whose entry thesis was invalidated by Skeptics
       // v2.0.139: Mark these as thesis_invalidation closes so the conviction-gate
@@ -10646,6 +10833,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       this.patternClassifier?.persist();
       this.patternTagTracker?.persist();
       this.persistOLR();
+      // v2.0.862: PAEL exit-price learner persists alongside the rest.
+      this.persistExitPriceLearner();
 
       // v2.0.219: Replay buffer epoch — re-feed high-priority trades to OLR
       // to break temporal correlations. Runs every 5 cycles (enough buffer
@@ -11457,6 +11646,13 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     } catch (err) {
       // Best-effort
     }
+  }
+
+  /** v2.0.862: Persist the PAEL exit-price learner state (best-effort). */
+  private persistExitPriceLearner(): void {
+    try {
+      this.exitPriceLearner?.save();
+    } catch { /* best-effort */ }
   }
 
   /** v2.0.143: Persist Root Command Prompt to disk so it survives backend restarts. */
@@ -12303,6 +12499,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     this.evolution.persistState();
     this.persistPortfolio();
     this.persistOLR();
+    this.persistExitPriceLearner();
     this.persistRootCommandPrompt();
     if (this.emManager) saveEMState(this.emManager.getState());
     this.stopTimers();
