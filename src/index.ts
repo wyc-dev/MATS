@@ -6537,6 +6537,47 @@ ${recentExamples}
             this.totalCycles,
             mktFeatures,
           );
+
+          // ── v2.0.861 Phase 1.5: Q-RL EXPECTANCY shadow — INDEPENDENT arm ──
+          // The Q-RL expectancy oracle is a PURE-STATISTICS signal source. It
+          // must be able to open its A/B shadow EVERY cycle for EVERY trading
+          // market, INDEPENDENT of LLM votes (pre-fix: this block was nested
+          // inside the aligned-shadow block behind hasWeightedLean — with
+          // mostly-HOLD votes the arm NEVER opened, starving the uplift
+          // experiment even though the oracle had robust leans).
+          //
+          // Conditions (all must hold):
+          //   1. QRL_DIRECTION_LEAN_ENABLED (shared with 1.1 prompt injection)
+          //   2. robust lean — BOTH sides ≥ minSamples AND |spread| ≥ minSpread
+          //      (regime-starved buckets make NO directional claim)
+          //   3. no qrl shadow already open for this symbol+side+cycle
+          //
+          // Uses the SAME config.risk SL/TP as aligned shadows, and the SAME
+          // feature source (lastCycleShadowContexts — includes regimeOrdinal /
+          // momentumShort) so the Q-RL bucket key matches the live market state.
+          try {
+            if (qrlDirectionConfig.leanEnabled && this.qrlTable) {
+              const qrlCtx = this.lastCycleShadowContexts.get(mktNorm);
+              const qrlFeatures = qrlCtx?.features && Object.keys(qrlCtx.features).length > 0
+                ? qrlCtx.features
+                : { ...mktFeatures, regimeOrdinal: regimeToOrdinal(mktState?.regime ?? 'unknown'), momentumShort: 0, momentumLong: 0 };
+              const qrlLean = this.qrlTable.getDirectionLean(qrlFeatures, qrlDirectionConfig.minSamples);
+              if (qrlLean.robust && qrlLean.lean !== 'neutral' && !this.shadowEngine.hasQRLShadow(mktSym, qrlLean.lean, this.totalCycles)) {
+                const qrlSlPrice = qrlLean.lean === 'buy'
+                  ? mktPrice * (1 - config.risk.stopLossPct)
+                  : mktPrice * (1 + config.risk.stopLossPct);
+                const qrlTpPrice = qrlLean.lean === 'buy'
+                  ? mktPrice * (1 + config.risk.takeProfitPct)
+                  : mktPrice * (1 - config.risk.takeProfitPct);
+                this.shadowEngine.openQRLShadow(
+                  mktSym, mktPrice, qrlLean.lean, qrlSlPrice, qrlTpPrice,
+                  this.totalCycles, qrlFeatures,
+                  { spread: qrlLean.spread, buyQ: qrlLean.buy.q, sellQ: qrlLean.sell.q },
+                );
+                log.info(`[shadow] QRL arm ${qrlLean.lean.toUpperCase()} ${mktSym} (spread=${(qrlLean.spread * 100).toFixed(2)}pp, buy n=${qrlLean.buy.visits}, sell n=${qrlLean.sell.visits}) — independent of LLM votes (Phase 1.5)`);
+              }
+            }
+          } catch { /* non-fatal — Q-RL arm is best-effort */ }
         }
       } catch (err) {
         log.warn(`[shadow-trade] Failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -7853,32 +7894,6 @@ ${recentExamples}
               );
               log.info(`[shadow] A/B: statistical lean ${statLean.side.toUpperCase()} ${sym} (score=${statLean.score.toFixed(3)}) vs LLM ${rlAction.toUpperCase()} — both tracked for edge attribution`);
             }
-
-            // ── v2.0.861 Phase 1.5: Q-RL expectancy shadow A/B ──────────────
-            // Open a THIRD shadow in the direction the Q-RL EXPECTANCY oracle
-            // picks (regime-conditioned, sample-guarded, no LLM). Same SL/TP
-            // structure, same cycle. Its eventual PnL vs the LLM-aligned shadow
-            // (paired uplift) tells us whether the Q-RL direction signal ADDS
-            // edge over the LLM debate — zero live risk. Only opens when the
-            // lean is robust (both sides ≥ minSamples) and clearly directional
-            // (|spread| ≥ minSpread), so regime-starved states never fire.
-            try {
-              const qrlLean = this.qrlTable.getDirectionLean(features, qrlDirectionConfig.minSamples);
-              if (qrlLean.robust && qrlLean.lean !== 'neutral' && !this.shadowEngine.hasQRLShadow(sym, qrlLean.lean, this.totalCycles)) {
-                const qrlSlPrice = qrlLean.lean === 'buy'
-                  ? entryPrice * (1 - slPct)
-                  : entryPrice * (1 + slPct);
-                const qrlTpPrice = qrlLean.lean === 'buy'
-                  ? entryPrice * (1 + tpPct)
-                  : entryPrice * (1 - tpPct);
-                this.shadowEngine.openQRLShadow(
-                  sym, entryPrice, qrlLean.lean, qrlSlPrice, qrlTpPrice,
-                  this.totalCycles, features,
-                  { spread: qrlLean.spread, buyQ: qrlLean.buy.q, sellQ: qrlLean.sell.q },
-                );
-                log.info(`[shadow] A/B: Q-RL lean ${qrlLean.lean.toUpperCase()} ${sym} (spread=${(qrlLean.spread * 100).toFixed(2)}pp, Q buy=${(qrlLean.buy.q * 100).toFixed(2)}% sell=${(qrlLean.sell.q * 100).toFixed(2)}%) vs LLM ${rlAction.toUpperCase()} — Phase 1.5 uplift tracking`);
-              }
-            } catch { /* non-fatal — Q-RL lean is best-effort */ }
           }
         }
       } catch (err) {
