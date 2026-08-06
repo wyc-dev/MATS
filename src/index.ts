@@ -6309,6 +6309,9 @@ ${recentExamples}
     // ALL passed the guard because none had reached the `= true` line yet.
     // This caused multiple HACP cycles to run simultaneously.
     this.cycleInProgress = true;
+    // v2.0.864-fix: 每 cycle 驗證上 cycle 嘅 LLM 判斷(B 方向預測——
+    // 判斷時 price vs 而家 price)——recordJudgment 喺 gate 度,呢度先驗證舊 pending
+    this.verifyPendingLLMJudgments();
 
     // ── Cold-start OLR backfill (once per process) ──
     // On the first cycle with non-empty trading markets, backfill the OLR
