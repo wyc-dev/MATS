@@ -3588,3 +3588,18 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 - **System Engineer ALLOWED_PREFIXES**:directory 級(`src/evolution/`)——**唔使改**(刪檔案唔影響權限)
 
 **驗證**:tsc 零錯誤;保留測試 33/33;全量 1979/1991(12 pre-existing;test 數少 36 個 = 刪除嘅死組件測試,預期)。
+
+---
+
+## v2.0.862-cleanup-attack: 死組件清理對抗攻擊(2 個殘留修復)
+
+**主神指令**:不擇手段攻擊死組件清理。
+
+| # | 殘留 | 修復 |
+|---|---|---|
+| V1 | `combo-win-rate-attack.test.ts` test 名叫「TemporalAttention featureDim」(已刪組件)——實際只測 OLR FEATURE_NAMES——**誤導後人** | 改名「OLR FEATURE_NAMES is dynamic (renamed from TemporalAttention test, deleted v2.0.862)」 |
+| V2 | `advanced-learning-pipeline.test.ts` 殘留 unused `fs`/`path` imports(段落剪走後冇人用) | 移除 |
+
+**已確認安全**:其他測試 0 import 死組件;`src/evolution/index.ts` 0 export 死組件;`loop-engineering-memory.md` 0 提及;`plan.md` 提及係歷史設計文檔(保留,有 v2.0.833 決策記錄價值);tsx watch reload 後系統 startup 正常。
+
+**驗證**:相關 tests 57/57;全量 1979/1991(12 pre-existing);`tsc --noEmit` 零錯誤;system alive(cycles 10746)。
