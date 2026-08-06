@@ -3261,3 +3261,22 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 - aligned block 內嘅舊 qrl block 已移除(避免雙重開倉)
 
 **驗證**:tsc 零錯誤;qrl-direction-signal(33)+ qrl-direction-attack(32)+ shadow-evict(11)= 76/76;全 regression 1936/1948(12 pre-existing)。tsx watch 自動 reload——下一 cycle qrl arm 開始開倉。
+
+---
+
+## v2.0.861-attack2: Q-RL independent arm + eviction round-2 hardening(1 個 integration bug 修復)
+
+對 v2.0.861-qrlarm(獨立 qrl 開倉 arm)+ shadow eviction 進行第二輪對抗攻擊:
+
+**修復**:`src/index.ts` — **qrl arm block 移前到 `hasAlignedShadow continue` 之前**。原 block 喺盲 shadow 開倉之後,而 `hasAlignedShadow` skip 喺之前——aligned shadow 已開嘅 cycle 成個 loop `continue` → qrl arm 被跳過,再次餓死 A/B 實驗(違背「獨立於 LLM 投票」設計;aligned 已開正正係 qrl arm 需要嘅對照)。
+
+**攻擊測試確認安全**(`tests/shadow-evict-attack2.test.ts`,10 tests):
+- SELL-side barrier-hit 檢查(round-1 只測 BUY)——SL/TP 已觸發嘅 sell blind 唔會被 evict
+- NaN/0 SL/TP 腐敗 position → 成為 evict 候選(腐敗被清走,唔 crash)
+- maxPerCall 界限 + garbage env 值 clamp('abc'/' ' /'1e309'/Infinity/-5/100 全部安全)
+- equal/NaN openTimestamp → sort 穩定、唔 crash
+- **evict+open 原子性**——每次 evict 必配一次成功 open,pool 唔會無端縮細
+- duplicate object reference(corrupt state)→ indexOf 攞第一個,splice 單次,唔 crash
+- external mutation(getOpenPositions reference 改 barrier)→ eviction 仍揀真最舊
+
+**驗證**:tsc 零錯誤;相關 suites 86/86(signal 33 + attack 32 + evict 11 + evict2 10);全 regression 1946/1958(12 pre-existing `getBalance` API 腐敗)。
