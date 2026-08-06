@@ -1136,7 +1136,7 @@ class MATSSystem {
       } catch (e) {
         log.warn(`[edge-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
       }
-      log.info('✓ Edge Validation layer initialized (exec-tracker + stability-monitor + rp-store)');
+      log.info('✓ Edge Validation layer initialized (exec-tracker + stability-monitor)');
 
       // v2.0.835: Q-RL Alpha Discovery init
       this.qrlTable = new QRLTable();
@@ -11177,7 +11177,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
   // Gathers the 5 evidence streams (shadow WR, OLR P(win), combo WR,
   // first-passage, realized WR×Sharpe) + stability + execution friction,
   // then calls computeEdgeReport() to produce the risk-neutral EdgeReport.
-  // Per-profile conditional edge comes from the RiskProfileEdgeStore.
+  // v2.0.859: RiskProfileEdgeStore removed (zero decision consumers) —
+  // the risk-neutral edgeReport remains the only edge signal.
   // All inputs are best-effort — cold-start returns a neutral `caution`.
   private async computeEdgeForSymbol(
     sym: string,

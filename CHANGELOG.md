@@ -3376,3 +3376,18 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 另外修:MFE CHECK block 文字 bug(p75 顯示成「1% of historical」→ 改為「75th percentile」)。
 
 **攻擊測試**:`tests/exit-price-attack.test.ts`(16 tests)——V1-V7 全向量。PAEL 相關 42/42。`tsc --noEmit` 零錯誤。全 regression 1988/2000(12 pre-existing `getBalance` API 腐敗)。
+
+---
+
+## v2.0.862-ui-fix: RP Edge Store dead-UI cleanup(v2.0.859 移除遺留)
+
+**主神發現**:RP Edge Store 長期紅燈——v2.0.859 已移除 MiniLM edge-store(zero decision consumers),但 UI 未清理,永遠顯示 0 vectors = 永久 cold。
+
+**清理**(4 處死引用):
+- `ui/src/App.tsx`:移除 `evRpSize`/`evAvg` 變數 + 「RP Edge Store」system push + systemsReady 計數
+- `ui/src/types.ts`:移除 `rpStoreSize` 字段
+- `src/index.ts`:清理「rp-store」log 文字 + RiskProfileEdgeStore comment(v2.0.859 標註)
+
+**週邊掃描(確認無其他死引用)**:DCS(v2.0.859 移除)零殘留;temporal/crossSymbol/rewardShaper/worldModel(v2.0.833 移除)只係註釋;UI 使用嘅 advancedLearning 字段全部對應 live API(含新加 qrlDirection/pael)。
+
+**驗證**:`tsc --noEmit` 零錯誤 + `vite build` 成功。
