@@ -187,6 +187,96 @@ function main(): void {
     console.log(`  ${regime.padEnd(20)} n=${String(r.n).padStart(4)} avg=${avg.toFixed(4)} ${verdict}`);
   }
 
+  // ── Per-regime × side direction expectancy (tradeHistory ground truth) ──
+  // Phase 0.2 (v2.0.861): 從 evolution-state.json 嘅 tradeHistory 讀取每筆
+  // real/simulated 交易嘅 (regime, side, pnl),聚合 per-regime direction
+  // expectancy — 呢個係系統應該適應嘅「地面真相」。若某 (regime, side)
+  // 實際期望值係負而系統仍交易 → 確認 regime-adaptation gap。
+  console.log('');
+  console.log('─'.repeat(60));
+  console.log('  Per-regime × side direction expectancy(tradeHistory ground truth)');
+  console.log('─'.repeat(60));
+  const evoPath = path.join(process.cwd(), 'data/evolution/evolution-state.json');
+  if (fs.existsSync(evoPath)) {
+    let evo: { tradeHistory?: Array<Record<string, unknown>> } = {};
+    try {
+      evo = JSON.parse(fs.readFileSync(evoPath, 'utf-8')) as { tradeHistory?: Array<Record<string, unknown>> };
+    } catch (err) {
+      console.log(`  ⚠️ evolution-state.json 無法解析: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const history = Array.isArray(evo.tradeHistory) ? evo.tradeHistory : [];
+    const cellKey = (regime: string, side: string): string => `${regime}|${side}`;
+    const cells = new Map<string, { n: number; wins: number; pnl: number; pnlSumSq: number }>();
+    for (const h of history) {
+      const dec = (h['decision'] as { action?: string } | undefined);
+      const action = (dec?.action ?? '').toLowerCase();
+      if (action !== 'buy' && action !== 'sell') continue;
+      const regime = typeof h['regime'] === 'string' && h['regime'].length > 0 ? h['regime'] : 'unknown';
+      const pnlRaw = h['realisedPnl'] ?? h['simulatedPnl'];
+      const pnl = typeof pnlRaw === 'number' && Number.isFinite(pnlRaw) ? pnlRaw : NaN;
+      if (!Number.isFinite(pnl)) continue;
+      const key = cellKey(regime, action);
+      let c = cells.get(key);
+      if (!c) { c = { n: 0, wins: 0, pnl: 0, pnlSumSq: 0 }; cells.set(key, c); }
+      c.n++; if (pnl > 0) c.wins++; c.pnl += pnl; c.pnlSumSq += pnl * pnl;
+    }
+    if (cells.size === 0) {
+      console.log('  (tradeHistory 無 buy/sell 交易記錄)');
+    } else {
+      const sorted = [...cells.entries()].sort((a, b) => b[1].n - a[1].n);
+      console.log(`  regime`.padEnd(18) + `side`.padEnd(6) + `n`.padStart(5) + `winRate`.padStart(8) + `avgPnl`.padStart(9) + `totalPnl`.padStart(9) + ` 判定`);
+      for (const [key, c] of sorted) {
+        const [regime, side] = key.split('|');
+        const winRate = c.wins / c.n;
+        const avg = c.pnl / c.n;
+        const variance = Math.max(0, c.pnlSumSq / c.n - avg * avg);
+        const std = Math.sqrt(variance);
+        const tStat = std > 1e-12 ? avg / (std / Math.sqrt(c.n)) : 0;
+        const verdict = c.n < 10
+          ? '⚠️ 樣本不足'
+          : Math.abs(tStat) >= 2
+            ? (avg > 0 ? '✅ 正期望' : '❌ 負期望')
+            : (avg > 0 ? '➖ 正(未顯著)' : '➖ 負(未顯著)');
+        console.log(`  ${(regime || '?').padEnd(18)} ${side.padEnd(6)} ${String(c.n).padStart(5)} ${(winRate * 100).toFixed(0).padStart(6)}% ${avg.toFixed(4).padStart(9)} ${c.pnl.toFixed(3).padStart(9)} ${verdict}`);
+      }
+    }
+  } else {
+    console.log('  (evolution-state.json 不存在 — 跳過 tradeHistory expectancy)');
+  }
+
+  // ── Per-regime × side signal contribution (attribution) ────────────────
+  // 每個 (regime, side) 嘅組件訊號平均 contribution:邊個 regime 邊個方向
+  // 嘅統計訊號(OLR/causal 等)真正加 edge。
+  console.log('');
+  console.log('─'.repeat(60));
+  console.log('  Per-regime × side signal contribution(attribution records)');
+  console.log('─'.repeat(60));
+  const rsCells = new Map<string, { n: number; contribSum: number; positive: number }>();
+  for (const r of records) {
+    if (typeof r.contribution !== 'number' || !Number.isFinite(r.contribution)) continue;
+    const side = typeof r.side === 'string' && (r.side === 'buy' || r.side === 'sell') ? r.side : '?';
+    const regime = r.regime || 'unknown';
+    const key = `${regime}|${side}`;
+    let c = rsCells.get(key);
+    if (!c) { c = { n: 0, contribSum: 0, positive: 0 }; rsCells.set(key, c); }
+    c.n++; c.contribSum += clampContrib(r.contribution); if (clampContrib(r.contribution) > 0) c.positive++;
+  }
+  if (rsCells.size === 0) {
+    console.log('  (無 attribution 記錄)');
+  } else {
+    const sorted = [...rsCells.entries()].sort((a, b) => b[1].n - a[1].n);
+    console.log(`  regime`.padEnd(18) + `side`.padEnd(6) + `n`.padStart(5) + `avgContrib`.padStart(11) + `posRate`.padStart(8) + ` 判定`);
+    for (const [key, c] of sorted) {
+      const [regime, side] = key.split('|');
+      const avg = c.contribSum / c.n;
+      const posRate = c.positive / c.n;
+      const verdict = c.n < minSamples
+        ? '⚠️ 樣本不足'
+        : avg > 0.05 ? '✅ 加 edge' : avg < -0.05 ? '❌ 減 edge' : '➖ 中性';
+      console.log(`  ${(regime || '?').padEnd(18)} ${side.padEnd(6)} ${String(c.n).padStart(5)} ${avg.toFixed(4).padStart(11)} ${(posRate * 100).toFixed(0).padStart(6)}% ${verdict}`);
+    }
+  }
+
   // ── Signal contract check (v2.0.855-audit regression) ──
   console.log('');
   console.log('─'.repeat(60));
