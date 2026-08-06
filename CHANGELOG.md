@@ -3713,3 +3713,24 @@ dataQuality:       0(系統從未做過——全新領域)
 **效果**:① rate limit 大幅降低(4-5 次重複 fetch → 1 次)② LLM 睇到 1h 大方向 + 5m 時機,雙重分析判斷更準 ③ 分歧時唔會即刻入場。
 
 **驗證**:`tests/kline-data-quality.test.ts` 加 6 個雙時間框架 tests(28/28)。`tsc --noEmit` 零錯誤。全量 2022/2034(12 pre-existing)。
+
+---
+
+## v2.0.863-cache2: cache 接駁補完 + 端到端鏈路驗證
+
+**主神確認要求**:① 雙 timeframe 緩存搞掂晒?② LLM 認知可以直接影響決策?
+
+**cache 接駁狀態(誠實)**:
+- ✅ 已接:getATR / getMomentum / buildKlineBlock / fetchCandleHighLow(SL/TP)——即「每 cycle 決策 + 每 trade SL/TP」嘅 1h data 全部共享 cache(4-5 次重複 fetch → 1 次)
+- ⏳ 未接:support-resistance / mfe-calibrator——佢哋有自己嘅 rate limit 策略(probe-mfe-rate-limit),後續可統一
+
+**LLM 認知 → 決策鏈路(端到端測試證明)**:
+```
+蠟燭(下降)→ summarizeKlines → trend='down'
+→ LLM 出 buy + 無 catalyst → computeChartConvictionMultiplier = ×0.75
+→ conviction gate:effectiveConfidence *= 0.75(10178 行,硬性)
+→ 70% × 0.75 = 52.5% < threshold 55% → HOLD
+```
+證明:LLM 讀圖(認知)→ 硬性影響決策(唔係淨注入)。
+
+**驗證**:`tests/kline-data-quality.test.ts` 加 3 個端到端鏈路 tests(31/31)。全量 2031/2043(12 pre-existing)。`tsc --noEmit` 零錯誤。
