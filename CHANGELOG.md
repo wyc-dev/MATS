@@ -4,7 +4,62 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
-## v2.0.860: Three-factor Q-RL exploration + adaptive reward normalization + operator-conditioned SE context (Frontis-MA1 / OpenMLE-Evo insights)
+## v2.0.861: Q-RL Direction Signal — Phase 1.1/1.2/1.5 (regime-conditioned expectancy oracle wiring)
+
+**背景(Phase 0 診斷,唯讀)**:四條獨立數據流證實「sell 喺現有 dominant regimes 係負期望」——
+
+| 訊號源 | SELL | BUY |
+|---|---|---|
+| Q-RL oracle(visit-weighted) | **-0.086%/trade**(pooled -0.82%, t=-4.6) | +0.425%/trade |
+| tradeHistory ground truth(30d) | mean_rev -0.19%、low_vol -0.04% | mean_rev **+0.72%**、low_vol +0.22% |
+| Attribution live(OLR/causal) | mean_rev -0.20 ❌ 減 edge | +0.03 中性 |
+
+30d→14d→8d 單調惡化(buy +0.29%→+1.51%,sell -0.08%→-0.92%)——真實 regime 旋轉,非 noise。SILVER 解剖:升市入面一路做空(OLR SHORT calibration bins 全喺 [0.8,1.0] 但實際 47.6% WR)+ 高位追買,買賣都「遲到」。
+
+### Phase 1.1 — Q-RL Expectancy Block 注入 Meta-Agent(`src/index.ts` buildOLRBlock)
+
+每個 symbol 嘅 OLR block 尾部新增 `=== Q-RL EXPECTANCY (state bucket: <regime|vol|mom|funding>) ===`,顯示當前 bucket 嘅 BUY/SELL Q-value + 樣本數 + median(skew-robust)。**樣本飢餓 bucket → 明確「NO directional claim」**,唔會跨 regime extrapolate stale 數據。`QRL_DIRECTION_LEAN_ENABLED`(default true)。
+
+### Phase 1.2 — Q-RL Expectancy Conviction Multiplier(`src/index.ts` gate + `q-rl-table.ts`)
+
+`computeQRLExpectancyMultiplier()` 喺 conviction gate 內(causal-gate 後、calibration-trust 前)應用:
+
+```
+多條件折讓(全部必須):
+  visits ≥ QRL_MIN_SAMPLES(20)
+  AND medianReward < 0 AND trimmedMean < 0   // skew-robust,唔係 raw mean
+  AND Q < QRL_NEG_THRESHOLD(-0.2%)
+→ conviction × QRL_DAMPEN_FACTOR(0.5)
+
+非對稱:positive boost 只喺 median > 0 AND t ≥ 2(統計顯著),且
+  QRL_BOOST_FACTOR 預設 1.0 = OFF(buy t=+1.0 未顯著,boost = overconfidence)
+
+⚠️ 唔 hard-block(floor 0.3)——保留跌市 sell edge(全期 sell +7.74)
+⚠️ per-bucket——只喺 robust 負期望 bucket 折讓,樣本飢餓 → 唔郁
+⚠️ 每個 dampening/boost log 到 audit trail(`[qrl-expectancy]` + activeAuditGates)
+```
+
+純邏輯喺 `qrlExpectancyMultiplier()`(pure function,q-rl-table.ts)——單元可測。`QRL_EXPECTANCY_GATE`(default true)。
+
+### Phase 1.5 — Q-RL Shadow A/B(`shadow-trade-engine.ts` + `index.ts`)
+
+新增 `shadowType: 'qrl'` + `openQRLShadow()` + `hasQRLShadow()`。每 cycle 喺 aligned + statistical shadow 旁開第三條 A/B 臂:方向由 Q-RL expectancy oracle 決定(`getDirectionLean()`,樣本守衛 + min-spread 0.1%)。同 LLM aligned shadow 共享同一 SL/TP 結構,最終 PnL 經 causal paired-uplift 對比——**零 live 風險驗證 Q-RL 方向訊號係咪真係加 edge**。OLR routing:`'shadow'`(full weight,同 statistical——真統計訊號,唔係 blind noise)。
+
+### QRLTable Expectancy API(`src/evolution/q-rl-table.ts`)
+
+`getCellExpectancy(features, action)` — median/10% trimmed-mean/t-stat/Wilson(全部 skew-robust,outlier 唔能冒充訊號);`getDirectionLean(features, minSamples)` — sample-guarded 方向 lean。所有 reward 統計由 ring buffer(max 30)實時計算,唔靠 EWMA Q 單一數字。
+
+### Phase 0 診斷工具
+
+`scripts/qrl-audit.ts`(新)—— Q-RL expectancy oracle 審計(全 bucket 地圖、visit-weighted 聚合、主導 bucket 聚光燈、oracle-vs-現實一致性、`--json` 機器輸出)。`scripts/edge-audit.ts`(+90 行)—— per-regime × side direction expectancy(tradeHistory ground truth)+ per-regime × side signal contribution(attribution)。全部唯讀。
+
+### Env flags(全部獨立,可即時 disable)
+
+`QRL_DIRECTION_LEAN_ENABLED` · `QRL_EXPECTANCY_GATE` · `QRL_MIN_SAMPLES` · `QRL_NEG_THRESHOLD` · `QRL_DAMPEN_FACTOR` · `QRL_BOOST_FACTOR` · `QRL_DIRECTION_MIN_SPREAD`(見 .env.example)
+
+### 驗證
+
+新測試 `tests/qrl-direction-signal.test.ts`(33 tests)—— multiplier 條件矩陣 + garbage-in-safe-out、getCellExpectancy skew robustness、getDirectionLean sample guard、openQRLShadow dedup/NaN/limits/OLR source routing。相關 regression:330/330(q-rl-attack + q-rl-creative + factor-tagged-shadow + stat-shadow + edge-attack + qrl-direction-signal)。`tsc --noEmit` 零錯誤。
 
 **Inspiration**: [arXiv 2607.28568](https://arxiv.org/pdf/2607.28568) (Frontis-MA1 / OpenMLE) — parent-selection utility `λs·score + λΔ·progress + λn·novelty` (proven 1.0/0.6/0.3), adaptive reward bounds, and bounded operator-conditioned memory. Applied to MATS at production grade.
 
