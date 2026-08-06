@@ -3603,3 +3603,27 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **已確認安全**:其他測試 0 import 死組件;`src/evolution/index.ts` 0 export 死組件;`loop-engineering-memory.md` 0 提及;`plan.md` 提及係歷史設計文檔(保留,有 v2.0.833 決策記錄價值);tsx watch reload 後系統 startup 正常。
 
 **驗證**:相關 tests 57/57;全量 1979/1991(12 pre-existing);`tsc --noEmit` 零錯誤;system alive(cycles 10746)。
+
+---
+
+## v2.0.863: LLM 世界模型(讀圖 + 數據可靠性)Phase 1-3
+
+**主神洞察**:LLM 除咗新聞,仲可以判斷「數據可靠性」+「蠟燭圖表趨勢」——統計 feature 睇唔到蠟燭形態,LLM 讀圖係世界模型優勢。
+
+**Phase 0 細分驗證**:
+```
+news(新聞/宏觀):  median -0.52%(負 alpha——新聞已 price in)
+chart(圖表/趨勢):  median -0.04%(打和——遠好過新聞 0.48pp)
+dataQuality:       0(系統從未做過——全新領域)
+```
+
+**落地(Phase 1-3,production-grade)**:
+- `src/analysis/kline-structure.ts`(純函數):蠟燭 → 趨勢/形態/突破/成交量異常摘要——trend(EMA+close 一致性)、structure(higher-high/lower-low)、breakout(近 3 根破前 20 根)、volume anomaly(前 N 根 baseline + 3σ + constant-fallback)
+- `src/analysis/data-quality.ts`(純函數):funding/volume/spread/staleness 異常偵測(σ-based)→ qualityScore 0-1
+- `src/index.ts`:buildKlineBlock + buildDataQualityBlock 注入 marketDesc(flag-gated:`KLINE_BLOCK_ENABLED`/`DATA_QUALITY_BLOCK_ENABLED`)
+- `src/agents/meta-agent.ts`:第 8 重「K-LINE STRUCTURE + DATA QUALITY CHECK」——Trend UP+HH+突破 → 強證據;Range → 唔好過度自信;Volume ⚠️ → 突破可能假;Data ⚠️ → 訊號失真降權;Thesis 必須引用具體結構
+- `src/analysis/thesis-catalyst.ts`:加 CHART_PATTERNS(趨勢/形態/突破/蠟燭/量價)——Phase 5 shadow 標記用
+
+**謹慎決定(Google Tech Lead)**:Phase 4(conviction 融合)唔落住——數據話 chart 只係打和(median -0.04%),唔係正 EV——直接改 conviction 風險高——等 Phase 5 shadow A/B 證明「圖表 catalyst 加值」先落。
+
+**驗證**:`tests/kline-data-quality.test.ts`(13 tests——趨勢/形態/突破/volume/異常偵測/邊界/attack)。`tsc --noEmit` 零錯誤。全量 2015/2027(12 pre-existing)。
