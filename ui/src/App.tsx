@@ -2607,21 +2607,24 @@ function SystemStatusGrid({ al, olrState, emState, rilState }: {
   // no OLR samples yet, std=0/applied=false → the UI showed "cold — needs OLR
   // samples" with NO symbol context — the state jumps looked like a system
   // failure. Now the active symbol is always shown so rotation is obvious.
+  // v2.0.862-ui-fix4: std=0 does NOT mean "no OLR samples". MC dropout with a
+  // neutral logit (pWin≈0.5) yields std=0 while applied=true — that is a
+  // CONFIDENT-NEUTRAL model, not a cold one. Three states now:
+  //   applied && σ>0  → ready (real epistemic uncertainty)
+  //   applied && σ=0  → neutral (MC dropout ran, prediction is 0.5/confident)
+  //   !applied        → cold (truly no OLR samples < 20)
   const bayesBuy = al?.bayesian?.buy
   const bayesSell = al?.bayesian?.sell
   const bayesSym = al?.bayesian?.symbol ?? ''
-  const bayesApplied = !!((bayesBuy?.applied && bayesBuy.std > 0) || (bayesSell?.applied && bayesSell.std > 0))
-  const bayesSamples = (bayesBuy?.std ?? 0) > 0 || (bayesSell?.std ?? 0) > 0
+  const bayesAnyApplied = !!(bayesBuy?.applied || bayesSell?.applied)
+  const bayesUncertainty = Math.max(bayesBuy?.std ?? 0, bayesSell?.std ?? 0)
   const bayesSymTag = bayesSym ? `${bayesSym.toUpperCase()}: ` : ''
-  systems.push({
-    name: 'Bayesian',
-    state: bayesApplied ? 'ready' : bayesSamples ? 'training' : 'cold',
-    detail: bayesApplied
-      ? `${bayesSymTag}buy σ=${(bayesBuy?.std ?? 0).toFixed(3)} sell σ=${(bayesSell?.std ?? 0).toFixed(3)}`
-      : bayesSamples
-        ? `${bayesSymTag}accumulating OLR samples (≥20)`
-        : `${bayesSymTag}no OLR samples yet — active symbol rotated`,
-  })
+  const bayesDetail = `buy σ=${(bayesBuy?.std ?? 0).toFixed(3)} sell σ=${(bayesSell?.std ?? 0).toFixed(3)}`
+  let bayesState: SysState = 'cold'
+  let bayesDetailText = `${bayesSymTag}no OLR samples yet (<20)`
+  if (bayesAnyApplied && bayesUncertainty > 0) { bayesState = 'ready'; bayesDetailText = `${bayesSymTag}${bayesDetail}` }
+  else if (bayesAnyApplied) { bayesState = 'training'; bayesDetailText = `${bayesSymTag}${bayesDetail} (neutral logit — applied but σ=0)` }
+  systems.push({ name: 'Bayesian', state: bayesState, detail: bayesDetailText })
 
   // v2.0.833 REMOVED: Temporal Attention, Cross-Symbol, Reward Shaper, World Model
   // (all had 0 inference call sites — training wired but output never read)
