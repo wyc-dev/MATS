@@ -3246,3 +3246,18 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **Env flags**:`SHADOW_EVICT_BLIND`(default true,false = 完全 v2.0.860 行為)+ `SHADOW_EVICT_MAX_PER_CALL`(default 1,clamp [1,5])。
 
 **驗證**:`tests/shadow-evict-attack.test.ts`(11 tests)——最舊 victim 揀選、barrier-hit 保留、無 blind skip、無 double-resolve、唔 feed OLR、blind 唔 self-evict、aligned 新 cap、statistical/qrl evict、pool 未滿正常開、`SHADOW_EVICT_BLIND=false` rollback 路徑。`tsc --noEmit` 零錯誤。全 regression 1936/1948(12 pre-existing `getBalance` API 腐敗)。
+
+---
+
+## v2.0.861-qrlarm: Q-RL shadow independent open arm — unblocked from LLM votes
+
+**問題**:qrl shadow 開倉 block 之前嵌套喺 aligned-shadow block 內(需 `hasWeightedLean`——LLM 投票有方向 lean 先跑)。實測 LLM 大部分時間全 HOLD → 即使 Q-RL oracle 有 5 個 robust bucket(兩邊 ≥20 samples + |spread| ≥ minSpread),qrl A/B 臂都永遠開唔到 → 1.5 uplift 實驗餓死。
+
+**修復**(`src/index.ts`):
+- qrl shadow 開倉移出 aligned block,**獨立接入盲 shadow multi-symbol loop**——每 cycle × 每個 trading market,完全唔理 LLM 投票
+- 條件:`QRL_DIRECTION_LEAN_ENABLED` AND robust lean(buy+sell ≥ minSamples AND |spread| ≥ minSpread)AND 無重複(symbol+side+cycle dedup)
+- 用 `lastCycleShadowContexts` 完整 features(含 regimeOrdinal/momentumShort——Q-RL bucket key 對應 live 市場狀態);fallback 手動構建 mktFeatures + regimeOrdinal
+- 用 config.risk SL/TP(同 aligned 一致);eviction(盲 shadow 讓位)照常運作
+- aligned block 內嘅舊 qrl block 已移除(避免雙重開倉)
+
+**驗證**:tsc 零錯誤;qrl-direction-signal(33)+ qrl-direction-attack(32)+ shadow-evict(11)= 76/76;全 regression 1936/1948(12 pre-existing)。tsx watch 自動 reload——下一 cycle qrl arm 開始開倉。
