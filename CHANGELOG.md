@@ -3280,3 +3280,40 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 - external mutation(getOpenPositions reference 改 barrier)→ eviction 仍揀真最舊
 
 **驗證**:tsc 零錯誤;相關 suites 86/86(signal 33 + attack 32 + evict 11 + evict2 10);全 regression 1946/1958(12 pre-existing `getBalance` API 腐敗)。
+
+---
+
+## v2.0.862: PAEL — Per-Asset Exit-Price Learner(Phase A)+ Historical Simulation(Phase B)
+
+**背景(主神洞察)**:好多交易觸碰唔到 TP → 賺唔到最盡 → giveback 反蝕。TradeRecord.Max/Min Value Reached(MFE/MAE)100% 記錄,但從未逆向用嚟定離場位。PAEL 用真實交易 MFE/MAE 分佈學習「呢種資產每次落單應該幾多價位離場」。
+
+### Phase A — `src/analysis/exit-price-learner.ts`(學習層,零執行影響)
+
+- **Per-asset × per-direction MFE/MAE 分佈**:MFE p50/p75/p90 + MAE p95
+- **Percentile-based(robust,outlier 免疫)**——唔係 sigmoid / mean(單筆極端 trade 唔會拉走分佈)
+- **轉換公式**(`convertToPriceExtremes`):position-value → price excursion = margin% / safeLeverage;clamp [0, 0.5];NaN/Inf → null 拒絕
+- **加權 percentile**(`weightedPercentile`):線性插值,零權重 fallback
+- **學習權重**:real=1.0 · shadow=0.5(固定 SL/TP 截斷 = lower-bound)· paper=0.3
+- **Rolling window**(per cell 100 筆)+ **樣本門檻 ≥10**(冷啟動 → null → 現有模式)
+- **持久化**:exit-price-state.json(atomic,corrupt-tolerant load)
+- **A-1 驗證門**:position-value → price 轉換 96.1% 對照通過(188/195;7 筆偏差係 fill/funding/部分平倉,不影響 MFE/MAE)
+
+### Phase B — `scripts/exit-price-backtest.ts`(唯讀模擬,防 look-ahead)
+
+- **Expanding window**(pseudo out-of-sample):每筆 trade 嘅 percentile 只用之前嘅 trades——無 look-ahead bias
+- **三場景**:A 實際 / B ⑥ 鎖利(MFE ≥ p75×0.8 且非 TP 觸發 → 鎖利離場)/ C ① TP 定位(p50×0.8)
+- **大贏家保護**:已 TP 觸發嘅 trade 永不干預(保留率 100%)
+- **模擬結果**:
+  | 場景 | blended expectancy | 判定 |
+  |---|---|---|
+  | A(實際) | 0.0200 | 基準 |
+  | **B(⑥ 鎖利)** | **0.0284(+42%)**,PF 1.11,轉換 26 筆 | ✅ **通過**(sign test 弱 19v17) |
+  | C(① TP 定位) | 0.0007(更差) | ❌ 未過 |
+
+**結論**:主神嘅方向正確——**⑥ MFE CHECK 鎖利(接入 close 決策)有效,改 TP 距離冇用**。B 路徑四項 gate 全過(expectancy↑、大贏家保留 100%、轉換 13.3%、4 cells 有分佈),但 sign test 弱(19v17)——建議 Phase C 用 **soft 接入(注入 LLM close 決策 context)** 而非 hard gate,繼續累積數據。C 路徑(TP 定位)唔支持——維持現有 S/R 結構性 TP。
+
+**Phase A + B 全部唯讀/學習層,未接任何執行邏輯**——Phase C(接入)待模擬通過 + 主神批准。
+
+**工具**:`scripts/exit-price-audit.ts`(per-asset 分佈報告 + giveback 指標——實測 35 筆 giveback = 18%)· `scripts/exit-price-backtest.ts`(三場景模擬)。
+
+**驗證**:`tests/exit-price-learner.test.ts`(19 tests——conversion/percentile/sample floor/rolling cap/persistence/corrupt-input)。`tsc --noEmit` 零錯誤。全 regression 1965/1977(12 pre-existing `getBalance` API 腐敗)。
