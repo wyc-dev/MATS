@@ -13,43 +13,53 @@
 // 純函數、無依賴、可單元測試。
 
 // ─── 特徵 pattern(可驗證世界事件)─────────────────────────────────────
+// v2.0.863-attack (V1): `\b` word boundary 對 CJK 失效(中文之間冇 boundary)
+// ——「央行」「趨勢」等中文 pattern 全部 match 唔到(系統係繁中 prompt,
+// 呢個係嚴重 bug)。改用 ASCII word-boundary lookaround:
+//   (?<![A-Za-z0-9_])pattern(?![A-Za-z0-9_])
+// ——英文受 word boundary 限制(「trend」唔會 match 喺「downtrend」中間),
+//   中文自由(CJK 唔係 ASCII word char,lookaround 唔阻)。
+
+function wb(pattern: string): RegExp {
+  return new RegExp(`(?<![A-Za-z0-9_])${pattern}(?![A-Za-z0-9_])`, 'i');
+}
 
 const NEWS_MACRO_PATTERNS: Array<{ name: string; re: RegExp }> = [
   // 央行/貨幣政策
-  { name: 'central_bank', re: /\b(fed|美聯儲|聯儲局|央行|central\s*bank|ecb|boj|pboc|人行)\b/i },
+  { name: 'central_bank', re: wb('fed|美聯儲|聯儲局|央行|central\\s*bank|ecb|boj|pboc|人行') },
   // 宏觀經濟數據
-  { name: 'macro_data', re: /\b(cpi|ppi|非農|nfp|interest\s*rate|利率|通脹|inflation|gdp|pmi|失業率|unemployment)\b/i },
+  { name: 'macro_data', re: wb('cpi|ppi|非農|nfp|interest\\s*rate|利率|通脹|inflation|gdp|pmi|失業率|unemployment') },
   // 地緣政治
-  { name: 'geopolitics', re: /\b(地緣|geopolit|戰爭|war|制裁|sanction|衝突|conflict|入侵|invasion|選舉|election)\b/i },
+  { name: 'geopolitics', re: wb('地緣|geopolit|戰爭|war|制裁|sanction|衝突|conflict|入侵|invasion|選舉|election') },
   // 新聞/公告/事件
-  { name: 'news_event', re: /\b(新聞|news|報道|report(?!s\b)|announcement|宣布|宣佈|catalyst|catalyst|突破性|surge|plunge)\b/i },
+  { name: 'news_event', re: wb('新聞|news|報道|report(?!s\\b)|announcement|宣布|宣佈|突破性|surge|plunge') },
   // 供應鏈/商品
-  { name: 'supply_demand', re: /\b(opec|增產|減產|supply|demand|庫存|inventory|產量|output|供應|需求)\b/i },
+  { name: 'supply_demand', re: wb('opec|增產|減產|supply|demand|庫存|inventory|產量|output|供應|需求') },
 ];
 
 const DATA_EVENT_PATTERNS: Array<{ name: string; re: RegExp }> = [
   // 技術突破/結構
-  { name: 'breakout', re: /\b(突破|跌破|升破|breakout|break\s*below|break\s*above|reclaim|失守)\b/i },
+  { name: 'breakout', re: wb('突破|跌破|升破|breakout|break\\s*below|break\\s*above|reclaim|失守') },
   // 成交量/流動性
-  { name: 'volume_liquidity', re: /\b(成交量|volume|流動性|liquidity|ob\s*imbalance|訂單簿|order\s*book|清算|liquidation)\b/i },
+  { name: 'volume_liquidity', re: wb('成交量|volume|流動性|liquidity|ob\\s*imbalance|訂單簿|order\\s*book|清算|liquidation') },
   // funding/持倉
-  { name: 'funding_positioning', re: /\b(funding\s*rate|資金費率|open\s*interest|持倉|positioning|擠倉|squeeze)\b/i },
-  // 具體數字/價位/日期
-  { name: 'concrete_level', re: /\$\s?\d[\d,.]*|\b\d+\.\d+\s*%|\bQ[1-4]\b|\b20\d{2}\b|\b\d+\s*月\b/ },
+  { name: 'funding_positioning', re: wb('funding\\s*rate|資金費率|open\\s*interest|持倉|positioning|擠倉|squeeze') },
+  // 具體數字/價位/日期(數字 pattern 唔使 word boundary)
+  { name: 'concrete_level', re: /\$\s?\d[\d,.]*|\d+\.\d+\s*%|\bQ[1-4]\b|\b20\d{2}\b|\d+\s*月/ },
 ];
 
 /** 統計引用——唔算 catalyst(後視鏡,唔係世界模型前瞻) */
 const STAT_PATTERNS: RegExp[] = [
-  /\b(olr|p\s*\(win\)|first[- ]passage|q-rl|combo|wilson|cond\s*wr|shadow|edge\s*\+|-?\d+\s*pp)\b/i,
+  wb('olr|p\\s*\\(win\\)|first[- ]passage|q-rl|combo|wilson|cond\\s*wr|shadow|edge\\s*\\+|-?\\d+\\s*pp'),
 ];
 
 /** v2.0.863: K 線/圖表結構引用——LLM 讀圖嘅世界模型證據(唔係新聞) */
 const CHART_PATTERNS: Array<{ name: string; re: RegExp }> = [
-  { name: 'trend', re: /\b(上升趨勢|下降趨勢|uptrend|downtrend|trend|趨勢|bullish|bearish|強勢|弱勢)\b/i },
-  { name: 'structure', re: /\b(higher[- ]high|lower[- ]low|雙頂|雙底|頭肩|head[- ]and[- ]shoulders|形態|pattern|盤整|range|通道|channel)\b/i },
-  { name: 'breakout', re: /\b(突破|跌破|升破|breakout|break\s*above|break\s*below|reclaim|失守|守住|hold)\b/i },
-  { name: 'candle', re: /\b(蠟燭|candle|k線|k-line|長上影|長下影|吞沒|engulf|錘頭|hammer)\b/i },
-  { name: 'volume_price', re: /\b(價量|volume.*(confirm|配合|背離|divergence)|量價)\b/i },
+  { name: 'trend', re: wb('上升趨勢|下降趨勢|uptrend|downtrend|trend|趨勢|bullish|bearish|強勢|弱勢') },
+  { name: 'structure', re: wb('higher[- ]high|lower[- ]low|雙頂|雙底|頭肩|head[- ]and[- ]shoulders|形態|pattern|盤整|range|通道|channel') },
+  { name: 'breakout', re: wb('突破|跌破|升破|breakout|break\\s*above|break\\s*below|reclaim|失守|守住|hold') },
+  { name: 'candle', re: wb('蠟燭|candle|k線|k-line|長上影|長下影|吞沒|engulf|錘頭|hammer') },
+  { name: 'volume_price', re: wb('價量|volume.*(confirm|配合|背離|divergence)|量價') },
 ];
 
 export type CatalystLevel = 'strong' | 'weak' | 'none';
