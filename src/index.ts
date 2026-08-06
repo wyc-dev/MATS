@@ -12302,6 +12302,16 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             ready: this.naEngine.isReady(),
             sampleCount: this.naEngine.sampleCount(),
             inputDim: this.naEngine.inputDim,
+            // v2.0.862-ui-fix: expose validation so the UI can distinguish
+            // "accumulating samples" from "validation FAILED" (275k samples
+            // with failed validation is NOT "almost ready" — it is stuck).
+            validation: this.naEngine.lastValidation() ? {
+              passed: this.naEngine.lastValidation()!.passed,
+              mse: Number(this.naEngine.lastValidation()!.mse.toFixed(4)),
+              contrastiveAcc: Number(this.naEngine.lastValidation()!.contrastiveAcc.toFixed(4)),
+              diversity: Number(this.naEngine.lastValidation()!.diversity.toFixed(4)),
+              reason: this.naEngine.lastValidation()!.reason,
+            } : null,
           } : undefined,
           // AttnRes Trade Embedder
           attnres: this.attnResTradeEmbedder ? {

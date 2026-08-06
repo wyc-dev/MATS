@@ -247,6 +247,19 @@ export interface APIData {
     };
     // v2.0.833 REMOVED (0 inference call sites): temporal, crossSymbol, rewardShaper, worldModel
     exploration?: { ucbConstant: number; enabled: boolean; infoGainThreshold: number };
+    /** v2.0.862-ui-fix: NA validation detail */
+    na?: {
+      ready: boolean;
+      sampleCount: number;
+      inputDim: number;
+      validation: {
+        passed: boolean;
+        mse: number;
+        contrastiveAcc: number;
+        diversity: number;
+        reason: string;
+      } | null;
+    };
     /** v2.0.833: Edge Validation layer state */
     edgeValidation?: {
       edgeReportCount: number;
