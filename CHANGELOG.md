@@ -3916,3 +3916,29 @@ Conviction Calibrator 管「信心報數準唔準」,Direction Verifier 管「�
 ```
 
 **驗證**:22/22(verifier + attack)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.865: EV Filter — 期望值過濾器(量化核心:負 EV 軟性降權)
+
+**主神數據**:30 日 757 fills net -$10,手續費 $9.75 為主——「手續費絞肉機」。
+**Quant 分析師思路**:win rate 高唔等於賺錢——55% win rate 但 avgWin 0.3% vs avgLoss 0.5%(+ 手續費)→ **負 EV**——系統開太多「期望值 ≈ 手續費」嘅低質素單。
+
+**新增**(`src/analysis/ev-filter.ts`):
+- **每筆 trade close 記錄實際 pnlPct**(已含手續費)→ per (symbol × side) 分布(cap 300)
+- **期望值計算**:EV = pWin×avgWin − (1−pWin)×avgLoss——用實際 PnL 分布(自動包含手續費)
+- **gate 乘數**:EV ≥ 0 → ×1.0(正 EV 唔郁);EV < 0 → ×[0.75, 0.98] 線性壓抑(EV=-0.5% → ×0.875)——**永遠唔 hard block**
+- **注入 Meta-Agent**:「EV FILTER」block——顯示 EV/pWin/avgWin/avgLoss/n——「EV < 0 = 手續費都搵唔返——呢個方向唔值得開」
+- 冷啟動(<20 樣本)→ 中性 ×1.0(唔 block 新市場)
+- flag: `EV_FILTER`
+
+**攻擊硬化**:`__proto__`/`constructor`/`prototype` 毒 key skip、NaN/Infinity/garbage sanitize、cap 300、毒 state load 安全。
+
+**驗證**:`tests/ev-filter.test.ts`(7 tests——computeEV/乘數映射/手續費陷阱場景/分離/持久化/毒 state/malformed)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.864-fix2: markPriceMap key 大小寫統一(strict-price 驗證死亡修復)
+
+**攻擊發現**:`markPriceMap.set(markPrice.symbol)` 用 WS 原格式(大寫 'BTC'),但 `getMarkPriceForSymbol` 用 lowercase 查 → **key miss → latest fallback → strict-price 後全部 null → B 方向驗證死亡**。
+**修復**:set 時 key 統一同 get 一致(lowercase bare / 帶 ':' 原樣)——case miss 消除。

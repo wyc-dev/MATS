@@ -69,6 +69,7 @@ import { evaluateDataQuality } from './analysis/data-quality.ts';
 import { computeChartConvictionMultiplier } from './analysis/chart-conviction.ts';
 import { LLMConvictionCalibrator } from './analysis/llm-conviction-calibrator.ts';
 import { LLMDirectionVerifier } from './analysis/llm-direction-verifier.ts';
+import { EVFilter } from './analysis/ev-filter.ts';
 import { classifyThesisCatalyst } from './analysis/thesis-catalyst.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
@@ -114,6 +115,7 @@ const dataQualityConfig = { enabled: parseBlockBool(process.env['DATA_QUALITY_BL
 const chartConvictionConfig = { enabled: parseBlockBool(process.env['CHART_AWARE_CONVICTION'], true) } as const;
 const llmCalibrationConfig = { enabled: parseBlockBool(process.env['LLM_CONVICTION_CALIBRATION'], true) } as const;
 const llmDirectionConfig = { enabled: parseBlockBool(process.env['LLM_DIRECTION_VERIFIER'], true) } as const;
+const evFilterConfig = { enabled: parseBlockBool(process.env['EV_FILTER'], true) } as const;
 /** v2.0.863-attack: K-LINE fetch TTL cache — 防 cycle period 縮短/多 call 令
  *  candleSnapshot 頻繁 fetch。5 分鐘 cycle 每 cycle 一次;cycle < TTL 時用 cache。 */
 const KLINE_CACHE_TTL_MS = 120_000; // 2 分鐘
@@ -259,8 +261,12 @@ class MATSSystem {
   private llmCalibrator!: LLMConvictionCalibrator;
   /** v2.0.864:LLM Direction Verifier(方向預測 + 平倉結果雙層校準) */
   private llmDirectionVerifier!: LLMDirectionVerifier;
+  /** v2.0.865:EV Filter(期望值過濾器——量化核心:負 EV 軟性降權) */
+  private evFilter!: EVFilter;
   /** v2.0.864: 上次記錄判斷時嘅 rationale(block 注入用) */
   private lastJudgeRationale = '';
+  /** v2.0.865: 上次判斷嘅 gateAction(block 注入用) */
+  private lastJudgeGateAction: 'buy' | 'sell' = 'buy';
   // v2.0.837: Meta-Cognitive Calibrator — system self-awareness
   private metaCalibrator!: MetaCalibrator;
   // v2.0.838: Self-Improver — auto-tuning hyperparameters
@@ -1210,6 +1216,15 @@ class MATSSystem {
         log.info(`✓ LLM Direction Verifier loaded (${dv.pending} pending, ${dv.directionKeys} dir keys, ${dv.outcomeKeys} outcome keys)`);
       } catch (e) {
         log.warn(`[dir-verifier-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      // v2.0.865: EV Filter(期望值過濾器)
+      this.evFilter = new EVFilter();
+      try {
+        this.evFilter.load();
+        const ef = this.evFilter.getStats();
+        log.info(`✓ EV Filter loaded (${ef.keys} keys, ${ef.totalSamples} samples)`);
+      } catch (e) {
+        log.warn(`[ev-filter-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
       }
 
       this.exitPriceLearner = new ExitPriceLearner();
@@ -3636,6 +3651,16 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               this.extractTrendType((trade as { entryThesis?: string }).entryThesis),
               String((trade as { id?: string | number }).id ?? `t${Date.now()}-${Math.random()}`),
               isWin,
+            );
+          } catch { /* non-fatal */ }
+        }
+        // v2.0.865: EV Filter — 記錄實際 pnlPct(已含手續費)per (symbol × side)
+        if (this.evFilter && evFilterConfig.enabled) {
+          try {
+            this.evFilter.recordTrade(
+              normalizeSymbol(trade.symbol || ''),
+              trade.side === 'sell' ? 'sell' : 'buy',
+              safeNum((trade as { pnlPct?: number }).pnlPct, 0),
             );
           } catch { /* non-fatal */ }
         }
@@ -7417,6 +7442,13 @@ ${recentExamples}
           if (dirBlock) marketDesc += `\n${dirBlock}`;
         }
       } catch { /* non-fatal */ }
+      // v2.0.865: EV FILTER block(期望值——正 EV 先值得開)
+      try {
+        if (this.evFilter && evFilterConfig.enabled && activeSymbol) {
+          const evBlock = this.evFilter.getEVBlock(normalizeSymbol(activeSymbol), this.lastJudgeGateAction);
+          if (evBlock) marketDesc += `\n${evBlock}`;
+        }
+      } catch { /* non-fatal */ }
 
       // v2.0.863: K-LINE STRUCTURE + DATA QUALITY blocks(LLM 世界模型讀圖)
       // — active symbol 完整,trading markets 簡短。純 context,flag-gated。
@@ -10220,12 +10252,20 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               judgePrice ?? undefined,
             );
             this.lastJudgeRationale = typeof finalDecision.rationale === 'string' ? finalDecision.rationale : '';
+            this.lastJudgeGateAction = gateAction;
           } catch { /* non-fatal */ }
         }
         const llmDirectionTrust = this.llmDirectionVerifier && llmDirectionConfig.enabled
           ? this.llmDirectionVerifier.getTrustMultiplier(
               normalizeSymbol(finalDecision.symbol || activeSymbol),
               this.extractTrendType(finalDecision.rationale),
+            )
+          : 1.0;
+        // v2.0.865: EV Filter 乘數——負 EV(手續費都搵唔返)軟性降
+        const evMultiplier = this.evFilter && evFilterConfig.enabled
+          ? this.evFilter.getEVMultiplier(
+              normalizeSymbol(finalDecision.symbol || activeSymbol),
+              gateAction,
             )
           : 1.0;
         // v2.0.863 規限②: LLM 讀圖質素——thesis 引用 K 線方向 vs 統計實際趨勢
@@ -10249,7 +10289,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         }
 
         // ── Final effective confidence: consensus × P(win) × penalty × boost ──
-        let effectiveConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor * llmDirectionTrust;
+        let effectiveConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor * llmDirectionTrust * evMultiplier;
 
         // ── v2.0.844 Phase 2a: Causal-Grounded Entry Gate ────────────────
         // Only allow high-conviction entries where the aligned shadow shows a
@@ -10315,8 +10355,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             ? ` blend=${pwinBlendFactor.toFixed(3)} (combo override: ${comboBlendUsed.reason.slice(0, 80)})`
             : ` blend=${pwinBlendFactor.toFixed(3)}`;
           const pwinStr = olrHasData
-            ? ` (P(win)=${(olrPWin * 100).toFixed(0)}%${blendStr} × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} × dirTrust=${llmDirectionTrust.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%)`
-            : ` (consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} × dirTrust=${llmDirectionTrust.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%, OLR cold-start)`;
+            ? ` (P(win)=${(olrPWin * 100).toFixed(0)}%${blendStr} × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} × dirTrust=${llmDirectionTrust.toFixed(2)} × ev=${evMultiplier.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%)`
+            : ` (consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} × dirTrust=${llmDirectionTrust.toFixed(2)} × ev=${evMultiplier.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%, OLR cold-start)`;
           const factorStr = dtcResult.factors.map(f => `${f.factor}=${f.score > 0 ? '+' : ''}${f.score}`).join(' ');
           log.warn(`🛑 [Plan-G] Conviction gate [${finalDecision.symbol || activeSymbol}]: effective ${(effectiveConfidence * 100).toFixed(0)}% < threshold ${(adjustedThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, penalty=${penaltyFactor.toFixed(2)}, boost=${boostFactor.toFixed(2)}, risk=${riskProfile})${pwinStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD`);
           activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(effectiveConfidence * 100).toFixed(0)}% < ${(adjustedThreshold * 100).toFixed(1)}%${pwinStr} [${factorStr}] [risk=${riskProfile}]` });
@@ -12068,6 +12108,13 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     } catch { /* best-effort */ }
   }
 
+  /** v2.0.865: Persist EV Filter state. */
+  private persistEVFilter(): void {
+    try {
+      this.evFilter?.save();
+    } catch { /* best-effort */ }
+  }
+
   /** v2.0.143: Persist Root Command Prompt to disk so it survives backend restarts. */
   private persistRootCommandPrompt(): void {
     try {
@@ -12995,6 +13042,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     this.persistExitPriceLearner();
     this.persistLLMCalibrator();
     this.persistLLMDirectionVerifier();
+    this.persistEVFilter();
     this.persistRootCommandPrompt();
     if (this.emManager) saveEMState(this.emManager.getState());
     this.stopTimers();

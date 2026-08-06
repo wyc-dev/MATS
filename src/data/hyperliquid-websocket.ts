@@ -816,7 +816,11 @@ export class HyperliquidWebSocketManager {
 
     this.latestMarkPrice = markPrice;
     // v2.0.143: Update per-symbol cache for shadow trade funding rate lookup.
-    this.markPriceMap.set(markPrice.symbol, markPrice);
+    // v2.0.864-fix2: key 格式同 getMarkPriceForSymbol 一致(lowercase bare /
+    // 帶 ':' 原樣)——否則 WS 返大寫 'BTC' 而查詢用 'btc' → miss → latest
+    // fallback → strict-price 驗證全部 null(B 方向驗證死亡)。
+    const mk = markPrice.symbol.includes(':') ? markPrice.symbol : markPrice.symbol.toLowerCase();
+    this.markPriceMap.set(mk, markPrice);
 
     // Notify callbacks
     for (const cb of this.priceCallbacks) {
