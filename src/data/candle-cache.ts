@@ -55,7 +55,12 @@ async function fetchCandles(symbol: string, interval: '1h' | '5m', count: number
     const coin = symbol.includes(':') ? symbol : symbol.toUpperCase();
     const endTime = Date.now();
     const intervalMs = interval === '1h' ? 3_600_000 : 300_000;
-    const startTime = endTime - count * intervalMs;
+    // v2.0.863-cache-attack (V1): fetch 至少 100 支——cache 冇 count 維度,
+    // 細 count 請求(getMomentum 7支)先 fill 會令大 count 消費者(getATR 30支)
+    // 攞唔夠支 → computeATR 唔夠 period+1 → ATR=0 → SL 冇 ATR 保護。
+    // 統一 fetch 100+ 支,消費者自行 slice 所需——cache 永遠夠用。
+    const fetchCount = Math.max(100, count);
+    const startTime = endTime - fetchCount * intervalMs;
     const data = await MarketAgent.hlFetch({
       type: 'candleSnapshot',
       req: { coin, interval, startTime, endTime },
@@ -77,9 +82,12 @@ export class CandleCache {
   /** 並行 fetch 保護:同一 key 同時 call → 共用一個 pending promise */
   private inflight = new Map<string, Promise<Candle[] | null>>();
   private config: CandleCacheConfig;
+  /** v2.0.863-cache-attack: 依賴注入——測試可傳 mock fetchFn(默認真實 HL) */
+  private fetchFn: (symbol: string, interval: '1h' | '5m', count: number) => Promise<Candle[] | null>;
 
-  constructor(config?: Partial<CandleCacheConfig>) {
+  constructor(config?: Partial<CandleCacheConfig>, fetchFn?: (symbol: string, interval: '1h' | '5m', count: number) => Promise<Candle[] | null>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.fetchFn = fetchFn ?? fetchCandles;
   }
 
   /**
@@ -92,18 +100,23 @@ export class CandleCache {
     const key = `${symbol.toLowerCase()}|${interval}`;
     const now = Date.now();
 
-    // 1. cache hit(未過期)
+    // 1. fail cooldown 優先——fetch 失敗後短時間唔 retry(亦唔當成功返 []),
+    //    v2.0.863-cache-attack: fail 檢查必須喺 ttl 檢查之前,否則 fail entry
+    //    喺 TTL 內被當成功返回空 []——failCooldown 永遠到唔到。
     const hit = this.cache.get(key);
-    if (hit && now - hit.ts < this.config.ttlMs) return hit.candles;
+    if (hit && hit.failTs > 0) {
+      if (now - hit.failTs < this.config.failCooldownMs) return null;
+      // cooldown 過咗 → 可以 retry(當 miss 處理)
+    }
 
-    // 2. fail cooldown——fetch 失敗後短時間唔 retry
-    if (hit && hit.failTs > 0 && now - hit.failTs < this.config.failCooldownMs) return null;
+    // 2. cache hit(未過期,且唔係 fail entry)
+    if (hit && now - hit.ts < this.config.ttlMs && hit.failTs === 0) return hit.candles;
 
     // 3. 並行 fetch 保護——同一 key 同時 call 共用一個 promise
     const pending = this.inflight.get(key);
     if (pending) return pending;
 
-    const promise = fetchCandles(symbol, interval, count).then(candles => {
+    const promise = this.fetchFn(symbol, interval, count).then(candles => {
       if (candles && candles.length > 0) {
         this.cache.set(key, { candles, ts: now, failTs: 0 });
         this.evictIfNeeded();

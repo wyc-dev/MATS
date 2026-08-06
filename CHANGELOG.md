@@ -3734,3 +3734,20 @@ dataQuality:       0(系統從未做過——全新領域)
 證明:LLM 讀圖(認知)→ 硬性影響決策(唔係淨注入)。
 
 **驗證**:`tests/kline-data-quality.test.ts` 加 3 個端到端鏈路 tests(31/31)。全量 2031/2043(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.863-cache-attack: CandleCache 對抗硬化(2 個真 bug)
+
+**主神指令**:不擇手段攻擊 candle cache。
+
+| # | 漏洞 | 嚴重性 | 修復 |
+|---|---|---|---|
+| V1 | **cache 冇 count 維度——細 count 請求(getMomentum 7支)先 fill → 大 count 消費者(getATR 30支)hit 7 支 → computeATR 唔夠 period+1 → ATR=0 → SL 冇 ATR 保護** | 🔴 High | fetch 至少 `Math.max(100, count)` 支——cache 永遠夠用,消費者自行 slice |
+| V4 | **fail entry 喺 TTL 內被當成功返回 `[]`**——failCooldown 檢查喺 ttl 檢查之後,永遠到唔到——fetch 失敗後 TTL 內每 call 都返回空 [] 而唔係 null | 🟠 Medium | **fail 檢查優先**——fail entry 喺 cooldown 內 → null;cooldown 過咗 → 當 miss retry |
+
+**另加(production-grade)**:`CandleCache` 依賴注入(`fetchFn` 參數,默認真實 HL)——可單元測試(唔使 mock module/dynamic import)。
+
+**已確認安全**:並行 fetch 保護(inflight dedup——同一 key 並發 1 次 fetch)、malformed symbol → null、LRU bounded(evict 最舊)。
+
+**驗證**:`tests/v2.0.863-cache-attack.test.ts`(6 tests——count 餓死/fail cooldown/inflight dedup/malformed/LRU)。`tsc --noEmit` 零錯誤。全量 2031/2043(12 pre-existing)。
