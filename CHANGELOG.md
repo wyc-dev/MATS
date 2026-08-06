@@ -3659,3 +3659,18 @@ dataQuality:       0(系統從未做過——全新領域)
 **效果**:LLM 世界模型(讀圖)唔再係「建議」——「無理由逆圖表」會被 code 校準(×0.75),數據不可靠一律降(×0.85)——但 LLM 有 catalyst 仍然可以逆圖表(×1.0)——**LLM 主導,code 校準,兩者融合**。
 
 **驗證**:`computeChartConvictionMultiplier` 9 tests(全條件矩陣 + malformed input)。kline-data-quality 22/22。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.863-chart-attack: CHART-AWARE 對抗硬化(2 個真 bug)
+
+**主神指令**:不擇手段攻擊 CHART-AWARE 真駁通。
+
+| # | 漏洞 | 嚴重性 | 修復 |
+|---|---|---|---|
+| V1 | **buildKlineBlock fetch 失敗留 STALE `lastKlineSummary`**——舊 K 線用喺今次決策校準(市場可能已變)→ 校準用咗過期圖表 | 🟠 Medium | fetch 失敗/null → **reset `lastKlineSummary = null`**(冷啟動唔罰) |
+| V2 | **wb() alternation boundary 失效**——lookaround 只包住第一個/最後一個 alternative:「trending」入面嘅「trend」被獨立 match(應唔 match——後面跟 ing) | 🟡 Low | `(?:${pattern})` **group 包住全部 alternatives**——boundary 對全部生效 |
+
+**已確認安全**:computeChartConvictionMultiplier 大寫 trend/UP、garbage catalyst(唔誤罰)、負數/超大 qualityScore、組合矩陣、rationale 各形態(undefined/空/新聞 strong)。
+
+**驗證**:`tests/v2.0.863-chart-attack.test.ts`(10 tests)。相關 43/43。`tsc --noEmit` 零錯誤。全量 2012/2024(12 pre-existing)。
