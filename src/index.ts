@@ -12042,8 +12042,15 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     try {
       if (!this.llmDirectionVerifier || !llmDirectionConfig.enabled) return;
       this.llmDirectionVerifier.verifyAllPending(
-        (sym) => this.hyperliquidWs?.getMarkPriceForSymbol(sym)?.markPrice ?? null,
-      );
+      (sym) => {
+        // v2.0.864-fix:getMarkPriceForSymbol 有 latestMarkPrice fallback——
+        // 非 active symbol 會用「另一個 symbol 嘅價」驗證(方向全錯,污染準確率)。
+        // strict:只有 markPriceMap 真係有該 symbol 先俾價,否則 null(留低/棄置)。
+        const mp = this.hyperliquidWs?.getMarkPriceForSymbol(sym);
+        if (!mp) return null;
+        return normalizeSymbol(mp.symbol) === normalizeSymbol(sym) ? mp.markPrice : null;
+      },
+    );
     } catch { /* non-fatal */ }
   }
 
