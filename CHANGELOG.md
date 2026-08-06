@@ -3882,3 +3882,18 @@ Conviction Calibrator 管「信心報數準唔準」,Direction Verifier 管「�
 **澄清**:記錄嘅唔係 1h candle——係「LLM 判斷 + 判斷時價格」——驗證用價格比較(quick = 下 cycle 即時,1-10 分鐘後;accurate = 最佳窗口)——短炒完全適用。
 
 **驗證**:22/22(verifier + attack)+ 相關 44/44。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.864-fix: Direction Verifier strict-price 驗證(防跨 symbol 污染)
+
+**主神質疑**:「15min candle 好似冇緩存?有信心整個流程 work?不會有 rate limit?」
+
+**核查結果**:
+1. ✅ **Direction Verifier 全程用 WebSocket markPrice(記憶體)——零 candle fetch——零 rate limit**——記錄/驗證/平倉結果三個環節都唔觸及 API
+2. 🔴 **真 bug**:`getMarkPriceForSymbol()` 有 `?? this.latestMarkPrice` fallback——pending 判斷嘅 symbol 若唔喺 markPriceMap(已非 active market / WS 未訂閱)→ 用「**另一個 symbol 嘅最新價**」驗證 → 方向完全錯 → 污染準確率
+3. ✅ candle-cache 冇 15m——但 verifier 用 markPrice 唔用 candle,無影響
+
+**修復**:verify 用 strict price——只有 `markPriceMap` 真係有該 symbol(且 symbol 名 match)先俾價,否則 null → 留低(下次再試)或 stale 棄置——唔再 fallback 到 latest。
+
+**驗證**:相關 31/31。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
