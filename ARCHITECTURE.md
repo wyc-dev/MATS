@@ -173,7 +173,7 @@ src/
 │   ├── self-improver.ts    # Self-Improver（Thompson Sampling bandit + OLS gradient, v2.0.838）
 │   ├── causal-reasoner.ts  # Causal Reasoner（paired shadow uplift + permutation importance, v2.0.839）
 │   ├── meta-calibrator.ts  # Meta-Cognitive Calibrator（Brier score + ECE, per-regime, v2.0.837）
-│   │   # v2.0.833 REMOVED (0 inference call sites): temporal-attention.ts, cross-symbol-backbone.ts, reward-shaping.ts, world-model.ts
+│   │   # v2.0.833 REMOVED + v2.0.862 DELETED: temporal-attention.ts, cross-symbol-backbone.ts, reward-shaping.ts, world-model.ts
 │   ├── direction-audit.ts   # LLM 交易記錄審計（v2.0.180）
 │   └── system-engineer.ts   # 自主代碼工程師 Agent（v2.0.182）
 ├── analysis/                # sentiment · S/R · ATR（momentum-adaptive SL v2.0.207 #C）· planck-chaos · options · news

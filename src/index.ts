@@ -3553,7 +3553,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         }
 
         // v2.0.219: Feed advanced learning systems (replay)
-        // v2.0.833: temporal/cross-symbol/world-model removed (no inference wiring)
+        // v2.0.833 removed temporal/cross-symbol/reward-shaping/world-model; v2.0.862 deleted the files
         try {
           this.feedAdvancedLearning({
             symbol,
@@ -5610,8 +5610,9 @@ ${recentExamples}
 
   // ── v2.0.219: Unified advanced learning feeder ──
   // Feeds the advanced learning systems that are actually wired into the
-  // decision pipeline. v2.0.833: removed world-model, reward-shaping,
-  // cross-symbol-backbone, and temporal-attention — all four had training
+  // decision pipeline. v2.0.833 removed world-model, reward-shaping,
+  // cross-symbol-backbone, and temporal-attention (0 inference call sites);
+  // v2.0.862 DELETED the files from disk.
   // wired but ZERO inference call sites (see plan.md §2.3). Their state
   // files remain on disk for archival but are no longer loaded.
   //
