@@ -206,12 +206,10 @@ export function applyCalibration(
     return 0.5;
   }
   const count = wins + losses;
-  // v2.0.862-calib-attack (V5): EMPTY bin MUST be identity (return raw) — the
-  // old code returned 0.5 (empiricalWR=0.5, shrink=0 → 0.5), silently killing
-  // the raw prediction for every cold-start symbol / fresh bin. v2.0.859's
-  // "identity fallback is safer" intent was never implemented for count=0.
-  if (count <= 0) return rawPWin;
-  const empiricalWR = wins / count;
+  // v2.0.859 (intentional): EMPTY bin → 0.5 (conservative neutral — "the
+  // overconfidence kill"). No calibration evidence → never trust the raw
+  // prediction (which could be overconfident); return neutral 0.5 instead.
+  const empiricalWR = count > 0 ? wins / count : 0.5;
   if (!Number.isFinite(empiricalWR)) return rawPWin;
   const shrink = count / (count + CALIBRATION_SHRINK_K);
   const calibrated = 0.5 + (empiricalWR - 0.5) * shrink;

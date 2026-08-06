@@ -3523,3 +3523,13 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **已確認安全**:applyCalibration 已有 Object.hasOwn + try/catch;recordCalibrationSample 對 NaN binIdx 安全(undefined → return)。
 
 **驗證**:`tests/olr-calibration-attack.test.ts`(11 tests——NaN/string/Infinity bins、corrupt 元素、負 wins、長度錯、null 元素、乾淨 bins 保留、空 bins identity)。OLR 相關 50/50。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.862-calib-attack2: calibration hardening final(撤銷錯誤 V5 + 保留 sanitize)
+
+**對抗攻擊修正**:V5(empty bin → raw)係本座誤判——v2.0.859 測試鎖定「empty bin → 0.5(保守防 overconfidence)」係**有意設計**(冇 calibration 證據 → 唔信 raw → 中性)。已撤銷,恢復 v2.0.859 行為。
+
+**保留**:V2/V1/V3(calibrationBins per-bin sanitize——getter-throw/NaN/負值/非 object 元素隔離,防成個 OLR load 崩潰)。
+
+**驗證**:OLR 相關 67/67(v2.0.859 attack + calibration + backfill-purge + 新 calibration-attack)。全量 1999/2011(12 pre-existing `getBalance`)。`tsc --noEmit` 零錯誤。
