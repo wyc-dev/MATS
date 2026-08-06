@@ -3422,3 +3422,19 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **教訓**:std=0 有兩種完全唔同語義——「模型確定」(logit 遠離 0,所有 dropout pass 相同)→ ready;「模型中性」(logit≈0,所有 pass = 0.5)→ training/中性。用 `std > 0` 判斷數據存在係錯誤——應該用 `applied` 判斷 MC dropout 有冇執行。
 
 **驗證**:live SSE probe 確認 bayesian applied=true(MC dropout 有跑);`tsc --noEmit` 零錯誤 + `vite build` 成功。
+
+---
+
+## v2.0.862-front: MATS_Frontend 執行啟動——主神 7 項裁決 + 後端 feed 機制
+
+**主神裁決(2026-08-06)**:R1 Real = 每個用戶自己 wallet(自託管簽名,方案 A)· R2 Settings modal = 後補 · R3 歷史格式 = mats_app · R4 Auth = passkey(WebAuthn)· R5 Pause/Shutdown = 後補 · R6 Agent 面板 = 完整數據 · R7 權限 = 後分。已寫入 frontend.md「主神裁定記錄 2」+ §六.2 更新(薄代理 → 用戶自託管)。
+
+**後端 feed 機制**(MATS_Frontend 零 AI 讀取基礎):
+- `supabase-writer.ts` 新增 `writeUiSnapshot(payload, cycleId)`——clean-snapshot(DELETE + INSERT)寫 `ui_snapshots`,按 section 拆行(status/portfolio/market_state/consensus/agent_thoughts/evolution/misc);同 writeCycle 一樣 resilience(service_role、失敗只 log 唔 block)
+- `index.ts` pushToAPI 結尾接入——每 cycle throttle 一次(`lastUiSnapshotCycle`);agent_thoughts 帶完整 8-agent × 每資產理據(R6)
+- **migration `00000000000019_mats_frontend.sql`**:3 張新表
+  - `ui_snapshots`(公開可讀,clean-snapshot)
+  - `user_risk_prefs`(per-user,風險風格 + `upsert_user_risk_prefs` RPC)
+  - `orders`(paper + real 統一,參考 mats_app format:signal_cycle/signal_confidence/trade_mode/fill/exit/pnl + RLS select-own,寫入經 RPC)
+
+**待做**(R2/R5/R7 裁決後):Settings modal、Pause/Shutdown 功能、權限分級;MATS_Frontend 前端開發(§九 階段 2-6)。

@@ -177,4 +177,55 @@ export class SupabaseAnalysisWriter {
       }
     }
   }
+
+  /**
+   * v2.0.862: MATS_Frontend feed — write the full UI snapshot (clean-snapshot).
+   *
+   * Stores the latest cycle's UI payload in `ui_snapshots` (one row per
+   * section, keyed by section name + cycle_id) so the MATS_Frontend client
+   * reads the latest completed cycle without SSE. Same resilience contract as
+   * writeCycle: service_role, never throws (a DB error is logged and the
+   * trading cycle continues).
+   *
+   * Section split: 'status' / 'portfolio' / 'market_state' / 'consensus' /
+   * 'agent_thoughts' / 'evolution' / 'misc'. agent_thoughts carries the FULL
+   * 8-agent × per-asset reasoning (owner ruling R6).
+   */
+  async writeUiSnapshot(payload: Record<string, unknown>, cycleId: number): Promise<void> {
+    if (!this.enabled || !this.client) return;
+    if (!payload || typeof payload !== 'object') return;
+    try {
+      // Split into sections; anything not explicitly sectioned goes to 'misc'.
+      const sectioned: Record<string, unknown> = {
+        status: payload['status'] ?? payload,
+      };
+      for (const key of ['portfolio', 'market_state', 'consensus', 'agent_thoughts', 'evolution']) {
+        if (payload[key] !== undefined) sectioned[key] = payload[key];
+      }
+      const miscKeys = Object.keys(payload).filter(k => !sectioned[k] && k !== 'status');
+      if (miscKeys.length > 0) {
+        const misc: Record<string, unknown> = {};
+        for (const k of miscKeys) misc[k] = payload[k];
+        sectioned['misc'] = misc;
+      }
+
+      const rows = Object.entries(sectioned).map(([section, data]) => ({
+        cycle_id: cycleId,
+        section,
+        payload: data as object,
+      }));
+      if (rows.length === 0) return;
+
+      // Clean-snapshot: remove the previous cycle's rows, then insert.
+      // `neq('id', -1)` is a no-op-safe DELETE-ALL (id is identity >= 1).
+      const { error: delErr } = await this.client.from('ui_snapshots').delete().neq('id', -1);
+      if (delErr) throw delErr;
+      const { error: insErr } = await this.client.from('ui_snapshots').insert(rows);
+      if (insErr) throw insErr;
+      this.lastWriteAt = Date.now();
+      log.info(`[ui-snapshot] wrote ${rows.length} sections (cycle ${cycleId})`);
+    } catch (err) {
+      log.warn(`[ui-snapshot] write failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }

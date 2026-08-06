@@ -222,6 +222,8 @@ class MATSSystem {
   private exitPriceLearner!: ExitPriceLearner;
   /** v2.0.862: total lock-profit closes fired by the exit-price gate. */
   private exitPriceLockCount = 0;
+  /** v2.0.862: last cycle we fed ui_snapshots (throttle — once per cycle). */
+  private lastUiSnapshotCycle = -1;
   // v2.0.837: Meta-Cognitive Calibrator — system self-awareness
   private metaCalibrator!: MetaCalibrator;
   // v2.0.838: Self-Improver — auto-tuning hyperparameters
@@ -12576,6 +12578,15 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         });
       }
       this.apiServer.update(apiData);
+      // v2.0.862: MATS_Frontend feed — write ui_snapshots ONCE per cycle
+      // (clean-snapshot, service_role). Throttled by cycle counter so SSE
+      // re-pushes within a cycle don't rewrite the DB. Best-effort — never
+      // blocks the cycle. agent_thoughts section carries the FULL 8-agent ×
+      // per-asset reasoning (owner ruling R6).
+      if (this.totalCycles !== this.lastUiSnapshotCycle) {
+        this.lastUiSnapshotCycle = this.totalCycles;
+        void this.analysisWriter.writeUiSnapshot(apiData as unknown as Record<string, unknown>, this.totalCycles);
+      }
     } catch (err) {
       // API push is best-effort
     }
