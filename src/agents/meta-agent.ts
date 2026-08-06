@@ -673,6 +673,27 @@ pile up. Before deciding CLOSE, you MUST verify ALL of the following:
        - This signal NEVER touches the SL. It only supports TP-side exits.
        - Cold-start (no profile / no block): ignore, behave as before.
 
+  7. **DIRECTION HEALTH CHECK (v2.0.862)**: If the context contains
+     "=== DIRECTION HEALTH for <sym> ===", the system's per-symbol history
+     (combo WR + recent real outcomes) has flagged a direction as
+     overwhelmingly negative:
+       - A "🔴 <SIDE> <sym>: 歷史 N 筆只有 X% 勝率 (Wilson Y%), 淨蝕 $Z — 壓倒性負面"
+         line means this exact side on this exact symbol has a statistically
+         crushing losing record (n≥10, WR<25%, Wilson<15%, net PnL negative).
+         You MUST NOT open that side unless you have a CONCRETE NEW catalyst
+         (a fresh event, not the same reasoning that already lost N times)
+         that explicitly changes the historical regime. "Strong conviction",
+         "thesis is good", or an OLR/LLM high P(win) are NOT enough — OLR can
+         overfit; the per-symbol combo history is the ground truth. If no NEW
+         catalyst exists, the correct action is HOLD (or the opposite side if
+         IT is healthy).
+       - A "⚠️ <SIDE>: 最近 7 日 N 筆 real 只有 X% 勝率, 平均 $Y" line means
+         recent live performance is poor — require extra evidence before
+         opening, and prefer to wait for the historical edge to re-assert.
+       - This is a JUDGMENT AID, not a prohibition: a genuinely new catalyst
+         that changes the structure may override it — but you must name it
+         explicitly in your rationale.
+
 These 5 checks are MANDATORY before any CLOSE decision. If ANY check fails → HOLD.
 
 === ENTRY THESIS (v2.0.776 — QUALITY GATE — SPECIFIC, FALSIFIABLE REASONING REQUIRED) ===

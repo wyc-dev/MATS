@@ -4226,7 +4226,9 @@ ${recentExamples}
         }
         const rs = perSide[side];
         if (rs && rs.n >= 3 && rs.wins / rs.n < 0.3) {
-          warnings.push(`⚠️ ${side.toUpperCase()} ${sym}: 最近 7 日 ${rs.n} 筆 real 只有 ${(rs.wins / rs.n * 100).toFixed(0)}% 勝率, 平均 ${(rs.pnl / rs.n).toFixed(3)} USD — 近期實際表現差, 需要額外證據先好開。`);
+          // v2.0.862-attack: NaN-safe — a corrupt pnl would render 'NaN USD'.
+          const avgPnl = Number.isFinite(rs.pnl) ? (rs.pnl / rs.n).toFixed(3) : 'n/a';
+          warnings.push(`⚠️ ${side.toUpperCase()} ${sym}: 最近 7 日 ${rs.n} 筆 real 只有 ${(rs.wins / rs.n * 100).toFixed(0)}% 勝率, 平均 ${avgPnl} USD — 近期實際表現差, 需要額外證據先好開。`);
         }
       }
       if (warnings.length === 0) return '';

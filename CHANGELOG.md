@@ -3455,3 +3455,19 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 **效果**:SKHX BUY low_vol(23%, n=66, -10.03 USD)而家會喺 Meta-Agent 開倉決策前出現 🔴 警告——LLM 必須有 NEW catalyst 先可以正當化開倉;同時提示 OLR overfit 可能,防止 P=100% 自欺。
 
 **驗證**:`tsc --noEmit` 零錯誤。全 regression 1988/2000(12 pre-existing)。
+
+---
+
+## v2.0.862-attack2: Direction Health + ui_snapshot adversarial hardening(3 漏洞)
+
+**主神指令**:不擇手段攻擊 v2.0.862 最新代碼。
+
+| # | 漏洞 | 嚴重性 | 修復 |
+|---|---|---|---|
+| V1 | **Direction Health Block 注入咗 🔴 警告,但 meta-agent prompt 冇解讀指引**——LLM 當普通 context 睇過,唔知「🔴 = 除非 NEW catalyst 否則唔好開」→ 判斷力提升落空 | 🔴 High | meta-agent 加第 7 重 **DIRECTION HEALTH CHECK**:「🔴 壓倒性負面(WR<25%/Wilson<15%/n≥10/netPnl<0)→ 必須有 CONCRETE NEW catalyst 先可以開;『strong conviction』/『thesis is good』/OLR 高 P 都唔夠——OLR 可 overfit,per-symbol combo 先係 ground truth;⚠️ 最近 7 日差 → 要額外證據」 |
+| V2 | `writeUiSnapshot` DELETE 先行——INSERT 失敗 → 舊 snapshot 已刪 → client 讀空表 | 🟠 Medium | **INSERT 先行,再 DELETE `cycle_id != 新`**——INSERT 失敗保留上一 cycle(stale-but-present) |
+| V3 | `buildDirectionHealthForSymbol` 對 corrupt pnl → 顯示「NaN USD」 | 🟡 Low | NaN-safe:`Number.isFinite ? toFixed : 'n/a'` |
+
+**已確認安全**:combos NaN 比較(false 唔觸發)、normalizeSymbol('')guard、supabase-js NaN→null、大 payload server 413 → catch(唔 crash,log warning)。
+
+**驗證**:`tsc --noEmit` 零錯誤;全 regression 1988/2000(12 pre-existing)。
