@@ -1283,6 +1283,33 @@ effectiveConfidence = calibratedConsensus(Conviction 校準,大範圍)
 
 **Env**:`LLM_DIRECTION_VERIFIER`。**攻擊硬化(v2.0.864-attack)**:`__proto__`/`constructor`/`prototype` keys prototype pollution 修復(UNSAFE_KEYS skip);`|` key 碰撞、null-price pending(56h stale)、窗口時間極端、double-call guard、毒 state——全部驗證安全。
 
+## EV Filter（v2.0.865 — 期望值過濾器,量化金融分析師核心）
+
+**主神數據**:30 日 757 fills net -$10,手續費 $9.75 為主——「手續費絞肉機」。
+**Quant 思維**:win rate 高唔等於賺錢——55% win rate 但 avgWin 0.3% vs avgLoss 0.5%(+ 手續費)→ 負 EV——系統開太多「期望值 ≈ 手續費」嘅低質素單。
+
+**組件**(`src/analysis/ev-filter.ts`):
+```
+每筆 trade close → recordTrade(symbol, side, pnlPct)——實際 PnL(已含費)
+per (symbol × side) 分布(cap 300)
+EV = pWin×avgWin − (1−pWin)×avgLoss
+gate 乘數:EV ≥ 0 → ×1.0;EV < 0 → ×[0.75, 0.98] 線性壓抑
+  例:EV=-0.5% → ×0.875——永遠唔 hard block
+冷啟動(<20 樣本)→ ×1.0(唔 block 新市場)
+注入 Meta-Agent:「EV FILTER」block——EV/pWin/avgWin/avgLoss/n
+```
+
+**gate 鏈(v2.0.865 完整)**:
+```
+effectiveConfidence = calibratedConsensus × OLR P(win) × causal × qrlExpectancy
+                   × chartMultiplier × llmDirectionTrust × evMultiplier
+                   × calibrationTrust
+```
+
+**Env**:`EV_FILTER`。**攻擊硬化**:`__proto__`/`constructor`/`prototype` 毒 key skip、NaN/Infinity/garbage sanitize、cap 300。
+
+**修復 v2.0.864-fix2**:markPriceMap key 大小寫統一——WS set 大寫 'BTC' vs 查詢 lowercase → key miss → latest fallback → strict-price 全 null → B 驗證死亡——set 時 key 同 get 一致(lowercase bare / ':' 原樣)。
+
 ## Self-Aware Evolution（v2.0.843-848 — Meta-Cognition + Self-Improving + Causal Reasoning + Meta-Learning + Component Attribution）
 
 v2.0.842 新增三大進化組件 + 混合數據源架構。v2.0.843 新增 ANN index + asset-aware Meta-Learner + Skeptics evolution block fix。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（見下方專節）。系統唔再只係從交易結果學習，而係知道自己幾準（元認知）、自動調整自己嘅 hyperparameters（自我改善）、區分因果同相關（因果推理）、學點樣學得更快（元學習）、量度邊個組件真正加 edge（歸因）。
