@@ -1239,7 +1239,7 @@ dataQuality:       0(系統從未做過——全新領域)
   → Q-RL 期望值 × causal × calibration → effectiveConfidence → trade/HOLD
 ```
 
-**雙時間框架**(主神要求):1h 大方向 + 5m 入場時機——雙重分析——同向 = 雙重確認,分歧 = 校準。
+**雙時間框架**(主神要求):1h 大方向 + 5m 入場時機——雙重分析——同向 = 雙重確認,分歧 = 校準。**LLM 讀圖支數(明確)**:1h 最近 **30 支**(30 小時趨勢)+ 5m 最近 **60 支**(5 小時時機)——cache 照 fetch ≥100(同 ATR/momentum 共享,防 count 餓死),但 buildKlineBlock 明確 slice 到設計支數,LLM 知自己睇幾多。
 
 **Env flags**:`KLINE_BLOCK_ENABLED` / `DATA_QUALITY_BLOCK_ENABLED` / `CHART_AWARE_CONVICTION`。
 
