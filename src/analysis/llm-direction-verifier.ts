@@ -65,12 +65,14 @@ function key(symbol: string, trendType: string): string {
   return `${symbol}|${trendType}`;
 }
 
-/** 平滑準確率 → gate 乘數(×[0.80, 1.05],shrink 向中性) */
+/** 平滑準確率 → gate 乘數(×[0.80, 1.05],shrink 向中性)。
+ *  v2.0.864-fix:0.5(隨機/冇預測力)= 中性錨點 → ×1.0——
+ *  唔可以壓抑(0.5 唔係反指,係「無資訊」);只有 <0.5(真反指)先壓。 */
 export function accuracyToMultiplier(accuracy: number, total: number): number {
   if (!Number.isFinite(accuracy) || total <= 0) return 1.0;
   const acc = Math.max(0, Math.min(1, accuracy));
   const shrink = total / (total + SHRINK_K);
-  const raw = acc >= 0.65 ? 1.05 : acc >= 0.60 ? 1.0 : acc >= 0.55 ? 0.92 : acc >= 0.50 ? 0.85 : 0.80;
+  const raw = acc >= 0.65 ? 1.05 : acc >= 0.60 ? 1.0 : acc >= 0.55 ? 0.95 : acc >= 0.50 ? 1.0 : 0.85;
   return 1.0 + (raw - 1.0) * shrink; // 少樣本 → 乘數趨近 1.0
 }
 
