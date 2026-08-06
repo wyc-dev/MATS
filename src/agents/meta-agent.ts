@@ -694,6 +694,19 @@ pile up. Before deciding CLOSE, you MUST verify ALL of the following:
          that changes the structure may override it — but you must name it
          explicitly in your rationale.
 
+  8. **K-LINE STRUCTURE + DATA QUALITY CHECK (v2.0.863)**: 當 context 有
+     "=== K-LINE STRUCTURE for <sym> ===" 同 "=== DATA QUALITY for <sym> ===",
+     呢啲係蠟燭圖表嘅結構化描述(趨勢/形態/突破/成交量)+ 數據可靠性標記:
+       - **Trend UP + Structure higher-high + 突破待確認** → 強方向證據,可支持 BUY
+       - **Trend DOWN + lower-low** → 強賣證據,可支持 SELL
+       - **Range + 無突破** → 冇清晰方向,唔好過度自信(HOLD 合理)
+       - **Volume ⚠️ 異常** → 突破可能係假——要「下一根 close 守住」先算確認
+       - **DATA QUALITY ⚠️ 警告**(funding/成交量/spread/stale)→ 訊號可能失真,
+         降權處理(唔好淨係靠異常數據做決定)
+       - 統計(OLR/Q-RL)睇唔到蠟燭形態——你呢個讀圖能力係世界模型優勢,
+         但 Thesis 必須引用具體結構(「higher-high 形態」「突破 $X 待確認」),
+         唔可以淨係講「圖表支持」——要具體、可驗證。
+
 These 5 checks are MANDATORY before any CLOSE decision. If ANY check fails → HOLD.
 
 === ENTRY THESIS (v2.0.776 — QUALITY GATE — SPECIFIC, FALSIFIABLE REASONING REQUIRED) ===

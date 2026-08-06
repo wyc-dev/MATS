@@ -63,6 +63,8 @@ import { CorrelationBudget } from './risk/correlation-budget.ts';
 import { calculateTakerFee, calculateFundingCost, getFeeSummary } from './trading/cost-model.ts';
 import { getSRZones } from './analysis/support-resistance.ts';
 import { setExecutionLensProvider, prepareExecutionLens, clearExecutionLens, type ExecutionLensData, getATR } from './analysis/atr.ts';
+import { summarizeKlines } from './analysis/kline-structure.ts';
+import { evaluateDataQuality } from './analysis/data-quality.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
@@ -93,6 +95,39 @@ import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, C
 // silently drops these fields (root cause of 100% NO_OLR / NO_SHADOW).
 
 const log = createLogger({ phase: 'system' });
+
+// ─── v2.0.863: K-Line + Data Quality block flags(可獨立關閉)──────────
+function parseBlockBool(v: string | undefined, def: boolean): boolean {
+  if (v === undefined || v.trim() === '') return def;
+  const s = v.trim().toLowerCase();
+  if (s === 'true' || s === '1' || s === 'yes') return true;
+  if (s === 'false' || s === '0' || s === 'no') return false;
+  return def;
+}
+const klineBlockConfig = { enabled: parseBlockBool(process.env['KLINE_BLOCK_ENABLED'], true) } as const;
+const dataQualityConfig = { enabled: parseBlockBool(process.env['DATA_QUALITY_BLOCK_ENABLED'], true) } as const;
+
+/** v2.0.863: Fetch 1h candles (o/h/l/c/v) for K-LINE structure — HL candleSnapshot,
+ *  rate-limited via MarketAgent.hlFetch(same queue as getATR/fetchCandleHighLow). */
+async function fetchCandleSnapshot(symbol: string, count: number): Promise<Array<{ o: number; h: number; l: number; c: number; v: number }> | null> {
+  try {
+    const { MarketAgent } = await import('./market-agent/index.ts');
+    const coin = symbol.includes(':') ? symbol : symbol.toUpperCase();
+    const endTime = Date.now();
+    const startTime = endTime - count * 3_600_000;
+    const data = await MarketAgent.hlFetch({
+      type: 'candleSnapshot',
+      req: { coin, interval: '1h', startTime, endTime },
+    }) as Array<{ o?: string; h?: string; l?: string; c?: string; v?: string }>;
+    if (!Array.isArray(data) || data.length === 0) return null;
+    return data.map(c => ({
+      o: Number(c.o ?? 0), h: Number(c.h ?? 0), l: Number(c.l ?? 0),
+      c: Number(c.c ?? 0), v: Number(c.v ?? 0),
+    }));
+  } catch {
+    return null;
+  }
+}
 
 /** v2.0.720: Check if an audit category string mentions a specific direction.
  *  Used by the audit gate to match critical incidents to candidate decisions. */
@@ -4249,6 +4284,46 @@ ${recentExamples}
     } catch { return ''; }
   }
 
+  /**
+   * v2.0.863 (Phase 1): K-LINE STRUCTURE block — 蠟燭圖表結構化摘要。
+   * 統計 feature 睇唔到蠟燭形態,LLM 世界模型讀圖係優勢。
+   * 純 context 注入(flag-gated),唔改任何執行邏輯。
+   */
+  private async buildKlineBlock(sym: string): Promise<string> {
+    if (!klineBlockConfig.enabled) return '';
+    try {
+      const candles = await fetchCandleSnapshot(sym, 30);
+      if (!candles || candles.length === 0) return '';
+      const summary = summarizeKlines(candles);
+      if (!summary.description) return '';
+      return `=== K-LINE STRUCTURE for ${sym} ===\n${summary.description}\n(蠟燭形態——統計睇唔到,你用世界模型判斷趨勢/形態/突破真偽)`;
+    } catch { return ''; }
+  }
+
+  /**
+   * v2.0.863 (Phase 2): DATA QUALITY block — 數據可靠性標記。
+   * 異常偵測係統計計算(σ),LLM 判斷「點用」。
+   * 正常 → 一行 ✅;異常 → 警告(注入用)。
+   */
+  private buildDataQualityBlock(sym: string): string {
+    if (!dataQualityConfig.enabled) return '';
+    try {
+      const state = this.marketState.getState(sym);
+      if (!state) return '';
+      const flags = evaluateDataQuality({
+        fundingRate: this.hyperliquidWs?.getMarkPriceForSymbol(sym)?.fundingRate ?? 0,
+        fundingMean: 0.0001, fundingStd: 0.0005, // rolling stats 由 caller 提供(簡化:中性)
+        volume: state.volume24h ?? 0,
+        volumeMean: 0, volumeStd: 0,
+        spreadPct: state.orderBookImbalance !== undefined && state.price > 0 ? Math.abs(state.orderBookImbalance) * 0.01 : 0,
+        lastUpdateMs: Math.max(0, Date.now() - (state.updatedAt ?? Date.now())),
+      });
+      if (flags.qualityScore === 1) return '';
+      return `=== DATA QUALITY for ${sym} ===\n${flags.warnings.join('\n')}\n(數據異常——訊號可能失真,判斷點用)`;
+    } catch { return ''; }
+  }
+
+
 
   /**
    * v2.0.143: Unified trade execution router.
@@ -7219,6 +7294,16 @@ ${recentExamples}
       if (directionHealthBlock) {
         marketDesc += `\n${directionHealthBlock}`;
       }
+
+      // v2.0.863: K-LINE STRUCTURE + DATA QUALITY blocks(LLM 世界模型讀圖)
+      // — active symbol 完整,trading markets 簡短。純 context,flag-gated。
+      try {
+        const klineSym = normalizeSymbol(this.marketAgent.getSelectedSymbol() ?? '');
+        const klineBlock = await this.buildKlineBlock(klineSym);
+        if (klineBlock) marketDesc += `\n${klineBlock}`;
+        const dqBlock = this.buildDataQualityBlock(klineSym);
+        if (dqBlock) marketDesc += `\n${dqBlock}`;
+      } catch { /* non-fatal */ }
 
       // v2.0.143: Inject Root Command Prompt into marketDesc so ALL 7 agents
       // (5 sub-agents + Skeptics + Meta-Agent) see the user's behavioral rules
