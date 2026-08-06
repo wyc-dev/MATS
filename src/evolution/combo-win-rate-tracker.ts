@@ -133,9 +133,11 @@ export interface ComboBlendResult {
 }
 
 /** v2.0.862 (方案 A): median of an array — robust distribution centre.
- *  Empty → 0; single → that value. Pure, testable. */
-function medianOf(values: number[]): number {
-  const clean = values.filter(v => Number.isFinite(v));
+ *  Empty → 0; single → that value. Pure, testable.
+ *  v2.0.862-ev-attack (V1): non-array (poisoned load) → 0, never crash. */
+function medianOf(values: number[] | unknown): number {
+  if (!Array.isArray(values)) return 0;
+  const clean = (values as number[]).filter(v => Number.isFinite(v));
   if (clean.length === 0) return 0;
   const sorted = [...clean].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
@@ -203,14 +205,18 @@ export class ComboWinRateTracker {
 
     // v2.0.862 (方案 D): time-decayed EWMA — old trades fade (half-life 500
     // cycles ≈ 2 days at 5min/cycle). First sample seeds the EWMA directly.
-    if (stats.ewmaLastCycle === undefined) {
+    // v2.0.862-ev-attack (V3/V4): guard every input — NaN cycle / poisoned
+    // ewma fields would produce NaN EWMA. Non-finite → treat as first sample.
+    const safeCycle = Number.isFinite(cycle) ? cycle : (stats.ewmaLastCycle ?? 0);
+    const firstOrPoisoned = !Number.isFinite(stats.ewmaPnlPct) || !Number.isFinite(stats.ewmaLastCycle);
+    if (firstOrPoisoned) {
       stats.ewmaPnlPct = safePnlPct;
     } else {
-      const delta = Math.max(0, cycle - stats.ewmaLastCycle);
+      const delta = Math.max(0, safeCycle - (stats.ewmaLastCycle ?? safeCycle));
       const decay = Math.exp(-delta / EWMA_HALF_LIFE_CYCLES);
       stats.ewmaPnlPct = (stats.ewmaPnlPct ?? 0) * decay + safePnlPct * (1 - decay);
     }
-    stats.ewmaLastCycle = cycle;
+    stats.ewmaLastCycle = safeCycle;
     this.dirty = true;
   }
 
@@ -478,7 +484,24 @@ export class ComboWinRateTracker {
     try {
       const obj = JSON.parse(json) as PersistShape;
       if (obj && obj.combos) {
-        this.combos = new Map(Object.entries(obj.combos));
+        const cleaned = new Map<string, ComboStats>();
+        for (const [key, raw] of Object.entries(obj.combos)) {
+          const st = raw as ComboStats;
+          // v2.0.862-ev-attack (V1/V2/V3): sanitize new fields on load —
+          // pnlPcts must be a bounded array of finite numbers; ewma fields
+          // must be finite (or cleared so the next trade seeds fresh).
+          if (Array.isArray(st.pnlPcts)) {
+            st.pnlPcts = st.pnlPcts
+              .filter(v => typeof v === 'number' && Number.isFinite(v))
+              .slice(-MEDIAN_RING_CAP);
+          } else {
+            st.pnlPcts = undefined;
+          }
+          if (!Number.isFinite(st.ewmaPnlPct)) st.ewmaPnlPct = undefined;
+          if (!Number.isFinite(st.ewmaLastCycle)) st.ewmaLastCycle = undefined;
+          cleaned.set(key, st);
+        }
+        this.combos = cleaned;
       }
       if (obj && obj.ingestedIds) {
         this.ingestedIds = new Set(obj.ingestedIds);
