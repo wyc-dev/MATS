@@ -692,7 +692,6 @@ export class QRLTable {
     const action = (parts[4] ?? 'buy') as 'buy' | 'sell';
     return { regime, volBin, momBin, fundingBin, action };
   }
-
   private binRegime(regimeOrdinal: number): string {
     if (!Number.isFinite(regimeOrdinal)) return 'low_vol';
     // v2.0.855-attack-fix: boundaries ALIGNED with regimeToOrdinal() (olr-engine.ts).
@@ -790,4 +789,179 @@ export class QRLTable {
     }
     return sorted;
   }
+
+  // ─── v2.0.861: Expectancy API (Phase 1.1 / 1.2 / 1.5) ───────────────────
+  // The Q-RL table is a REGIME-CONDITIONED EXPECTANCY ORACLE: each cell's
+  // Q-value is E[pnlPct | regime × vol × momentum × funding × action] learned
+  // from aligned-shadow + backfill rewards. Phase 1.1 injects it into the
+  // Meta-Agent context, Phase 1.2 uses it as a conviction multiplier, and
+  // Phase 1.5 opens A/B shadows in its direction. This API exposes the data
+  // with skew-robust statistics (median + trimmed mean) so a few outlier
+  // rewards cannot masquerade as a real expectancy signal.
+
+  /** Robust expectancy stats for one (bucket, action) cell. All reward-based
+   *  fields are null when the cell has no reward history (EWMA Q only). */
+  getCellExpectancy(
+    features: Record<string, number>,
+    action: 'buy' | 'sell',
+  ): QRLExpectancy {
+    const key = this.makeKey(features, action);
+    const q = this.values[key] ?? 0;
+    const visits = this.visits[key] ?? 0;
+    const raw = this.rewardHistory[key];
+    const rewards = Array.isArray(raw) ? raw.filter((r) => typeof r === 'number' && Number.isFinite(r)) : [];
+    let meanReward: number | null = null;
+    let medianReward: number | null = null;
+    let trimmedMean: number | null = null;
+    let positiveRate: number | null = null;
+    let wilsonLB: number | null = null;
+    let tStat: number | null = null;
+    if (rewards.length > 0) {
+      const n = rewards.length;
+      const sorted = [...rewards].sort((a, b) => a - b);
+      meanReward = rewards.reduce((a, b) => a + b, 0) / n;
+      medianReward = n % 2 === 1
+        ? sorted[(n - 1) / 2]!
+        : (sorted[n / 2 - 1]! + sorted[n / 2]!) / 2;
+      // 10% trimmed mean (both tails) — robust to outliers. Guard: when the
+      // trimmed slice is empty (tiny n), fall back to the median.
+      const trim = Math.max(1, Math.floor(n * 0.1));
+      const trimmed = sorted.slice(trim, n - trim);
+      trimmedMean = trimmed.length > 0
+        ? trimmed.reduce((a, b) => a + b, 0) / trimmed.length
+        : medianReward;
+      const positive = rewards.filter((r) => r > 0).length;
+      positiveRate = positive / n;
+      wilsonLB = wilsonScore(positive, n);
+      const variance = rewards.reduce((s, r) => s + (r - meanReward!) ** 2, 0) / n;
+      const std = Math.sqrt(Math.max(0, variance));
+      tStat = std > 1e-12 ? meanReward! / (std / Math.sqrt(n)) : 0;
+    }
+    return {
+      bucket: key.slice(0, key.lastIndexOf('|')),
+      key,
+      action,
+      q,
+      visits,
+      rewardCount: rewards.length,
+      meanReward,
+      medianReward,
+      trimmedMean,
+      positiveRate,
+      wilsonLB,
+      tStat,
+    };
+  }
+
+  /** Direction lean from the expectancy oracle. Sample-guarded: if either
+   *  side has fewer than minSamples visits the lean is 'neutral' — a
+   *  regime-starved bucket makes NO directional claim (identical to
+   *  no-signal, prevents stale-data extrapolation across regimes). */
+  getDirectionLean(
+    features: Record<string, number>,
+    minSamples: number = 20,
+  ): { buy: QRLExpectancy; sell: QRLExpectancy; spread: number; lean: 'buy' | 'sell' | 'neutral'; robust: boolean } {
+    const buy = this.getCellExpectancy(features, 'buy');
+    const sell = this.getCellExpectancy(features, 'sell');
+    const spread = buy.q - sell.q;
+    const robust = buy.visits >= minSamples && sell.visits >= minSamples;
+    let lean: 'buy' | 'sell' | 'neutral' = 'neutral';
+    if (robust) {
+      if (spread >= qrlDirectionConfig.minSpread) lean = 'buy';
+      else if (spread <= -qrlDirectionConfig.minSpread) lean = 'sell';
+    }
+    return { buy, sell, spread, lean, robust };
+  }
+}
+
+// ─── v2.0.861: Q-RL Direction Signal config (Phase 1.1/1.2/1.5) ───────
+// Env-tunable with sane defaults, parsed defensively (garbage → default).
+// Flags are INDEPENDENT so each phase can be disabled without touching the
+// others; everything defaults to safe conservative behaviour.
+
+function parseBoolEnv(v: string | undefined, def: boolean): boolean {
+  if (v === undefined || v === '') return def;
+  const s = v.trim().toLowerCase();
+  if (s === 'true' || s === '1' || s === 'yes') return true;
+  if (s === 'false' || s === '0' || s === 'no') return false;
+  return def;
+}
+function parseNumEnv(v: string | undefined, def: number): number {
+  if (v === undefined || v === '') return def;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+}
+
+export const qrlDirectionConfig = {
+  /** 1.1: inject Q-RL expectancy block into Meta-Agent context */
+  leanEnabled: parseBoolEnv(process.env['QRL_DIRECTION_LEAN_ENABLED'], true),
+  /** 1.2: apply Q-RL expectancy conviction multiplier in the gate */
+  gateEnabled: parseBoolEnv(process.env['QRL_EXPECTANCY_GATE'], true),
+  /** 1.2: minimum visits on the action's cell before dampening may fire */
+  minSamples: Math.max(5, Math.floor(parseNumEnv(process.env['QRL_MIN_SAMPLES'], 20))),
+  /** 1.2: Q below this (fraction) counts as negative expectancy */
+  negThreshold: parseNumEnv(process.env['QRL_NEG_THRESHOLD'], -0.002),
+  /** 1.2: dampen multiplier for robust negative expectancy (floor 0.3 —
+   *  never hard-block: preserves the genuine bear-market sell edge) */
+  dampenFactor: Math.max(0.3, Math.min(0.9, parseNumEnv(process.env['QRL_DAMPEN_FACTOR'], 0.5))),
+  /** 1.2: asymmetric positive boost — OFF by default (buy t=+1.0 not yet
+   *  significant; boosting an unproven edge is overconfidence) */
+  boostFactor: Math.max(1.0, Math.min(1.3, parseNumEnv(process.env['QRL_BOOST_FACTOR'], 1.0))),
+  /** 1.5 + getDirectionLean: minimum |buyQ − sellQ| spread for a directional
+   *  lean (0.1% — below round-trip friction, the spread is noise) */
+  minSpread: parseNumEnv(process.env['QRL_DIRECTION_MIN_SPREAD'], 0.001),
+} as const;
+
+/** v2.0.861: Robust per-cell expectancy stats. */
+export interface QRLExpectancy {
+  bucket: string;
+  key: string;
+  action: 'buy' | 'sell';
+  /** EWMA Q-value = E[pnlPct | bucket] (persisted, time-decaying) */
+  q: number;
+  /** Total visits (persisted counter, includes backfill) */
+  visits: number;
+  /** Finite rewards actually available in the ring buffer (≤ 30) */
+  rewardCount: number;
+  meanReward: number | null;
+  /** Skew-robust central tendency — the primary dampening gate input */
+  medianReward: number | null;
+  /** 10% trimmed mean (both tails) — secondary robust check */
+  trimmedMean: number | null;
+  positiveRate: number | null;
+  wilsonLB: number | null;
+  /** t-statistic of mean vs 0 (|t| ≥ 2 ≈ 95% for n ≥ 30) */
+  tStat: number | null;
+}
+
+/** v2.0.861: PURE multiplier function — testable without the Q-RL instance.
+ *  Multi-condition dampening (ALL must hold):
+ *    visits ≥ minSamples AND median < 0 AND trimmedMean < 0 AND Q < negThreshold
+ *  → dampenFactor (e.g. ×0.5). Asymmetric boost: only when median > 0 AND
+ *  t ≥ 2 (statistically strong positive) → boostFactor. Otherwise 1.0. */
+export function qrlExpectancyMultiplier(
+  cell: QRLExpectancy,
+  cfg: { minSamples: number; negThreshold: number; dampenFactor: number; boostFactor: number },
+): number {
+  // Defensive: garbage input must never distort the gate.
+  if (!cell || typeof cell !== 'object') return 1.0;
+  if (typeof cell.visits !== 'number' || !Number.isFinite(cell.visits)) return 1.0;
+  // Dampening — all four conditions must hold.
+  if (
+    cell.visits >= cfg.minSamples
+    && cell.medianReward !== null && cell.medianReward < 0
+    && cell.trimmedMean !== null && cell.trimmedMean < 0
+    && Number.isFinite(cell.q) && cell.q < cfg.negThreshold
+  ) {
+    return cfg.dampenFactor;
+  }
+  // Asymmetric boost — requires statistically strong positive expectancy.
+  if (
+    cell.visits >= cfg.minSamples
+    && cell.medianReward !== null && cell.medianReward > 0
+    && cell.tStat !== null && cell.tStat >= 2
+  ) {
+    return cfg.boostFactor;
+  }
+  return 1.0;
 }

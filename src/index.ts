@@ -14,7 +14,7 @@ import {
   ExecutionTracker as EdgeExecutionTracker, StabilityMonitor,
   type EdgeCalcInput,
 } from './edge/index.ts';
-import { QRLTable, type AlphaDiscovery } from './evolution/q-rl-table.ts';
+import { QRLTable, qrlDirectionConfig, qrlExpectancyMultiplier, type AlphaDiscovery, type QRLExpectancy } from './evolution/q-rl-table.ts';
 import { MetaCalibrator } from './evolution/meta-calibrator.ts';
 import { SelfImprover } from './evolution/self-improver.ts';
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
@@ -2974,6 +2974,53 @@ ${currentPrompt || '(empty — this is the first input)'}`;
   }
 
   /**
+   * v2.0.861 Phase 1.2: Q-RL EXPECTANCY conviction multiplier.
+   *
+   * Multi-condition dampening (ALL must hold): the action's cell in the
+   * CURRENT state bucket has
+   *   visits ≥ QRL_MIN_SAMPLES AND medianReward < 0 AND trimmedMean < 0
+   *   AND Q < QRL_NEG_THRESHOLD
+   * → conviction × QRL_DAMPEN_FACTOR (default 0.5). This is the regime-
+   * conditioned counterweight to stale OLR edges: when the Q-RL table has
+   * LEARNED that this side loses money in the current state, the gate
+   * damps it — without hard-blocking (floor 0.3, preserving the genuine
+   * bear-market sell edge).
+   *
+   * Asymmetric: positive boost requires a statistically STRONG positive
+   * (median > 0 AND t ≥ 2) and is OFF by default (boostFactor = 1.0) —
+   * buy's t=+1.0 is not yet significant, so boosting would be overconfidence.
+   *
+   * Pure logic lives in qrlExpectancyMultiplier() (q-rl-table.ts) so it is
+   * unit-testable; this method only gathers the cell + logs the outcome.
+   */
+  private computeQRLExpectancyMultiplier(
+    symbol: string,
+    action: 'buy' | 'sell',
+  ): number {
+    try {
+      if (!qrlDirectionConfig.gateEnabled || !this.qrlTable) return 1.0;
+      const features = this.lastCycleShadowContexts.get(normalizeSymbol(symbol))?.features;
+      if (!features || Object.keys(features).length === 0) return 1.0;
+      const cell = this.qrlTable.getCellExpectancy(features, action);
+      const multiplier = qrlExpectancyMultiplier(cell, {
+        minSamples: qrlDirectionConfig.minSamples,
+        negThreshold: qrlDirectionConfig.negThreshold,
+        dampenFactor: qrlDirectionConfig.dampenFactor,
+        boostFactor: qrlDirectionConfig.boostFactor,
+      });
+      if (multiplier < 1.0) {
+        log.info(`🟣 [qrl-expectancy] ${action.toUpperCase()} ${normalizeSymbol(symbol)}: cell ${cell.bucket} Q=${(cell.q * 100).toFixed(2)}% median=${cell.medianReward !== null ? (cell.medianReward * 100).toFixed(2) + '%' : 'n/a'} trim=${cell.trimmedMean !== null ? (cell.trimmedMean * 100).toFixed(2) + '%' : 'n/a'} n=${cell.visits} — NEGATIVE expectancy → conviction ×${multiplier.toFixed(2)}`);
+      } else if (multiplier > 1.0) {
+        log.info(`🟣 [qrl-expectancy] ${action.toUpperCase()} ${normalizeSymbol(symbol)}: cell ${cell.bucket} Q=${(cell.q * 100).toFixed(2)}% median=${cell.medianReward !== null ? (cell.medianReward * 100).toFixed(2) + '%' : 'n/a'} t=${cell.tStat !== null ? cell.tStat.toFixed(1) : 'n/a'} n=${cell.visits} — POSITIVE expectancy (t≥2) → conviction ×${multiplier.toFixed(2)}`);
+      }
+      return multiplier;
+    } catch (err) {
+      log.warn(`[qrl-expectancy] compute failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      return 1.0;
+    }
+  }
+
+  /**
    * v2.0.846 Phase 1a: Compute a PURE-STATISTICS directional lean for a symbol.
    *
    * Uses ONLY statistical components — NO LLM reasoning — to decide whether
@@ -5801,6 +5848,35 @@ ${recentExamples}
 
       lines.push(`DATA SOURCES: shadow=fixed S/R SL/TP sim, paper=dynamic SL/TP, real=HL exchange (truest), backfill=cold-start prior (weight least). Weight by recency + source reliability.`);
       lines.push(`SL/TP NARROWING: [SL narrowed] tag = SL was tightened — if narrowed trades mostly lost, consider widening SL; if they won, narrowing is working.`);
+
+      // v2.0.861 Phase 1.1: Q-RL EXPECTANCY block — the regime-conditioned
+      // expectancy oracle. Each Q-cell is E[pnlPct | state bucket × action]
+      // learned from aligned-shadow + backfill rewards in THAT EXACT state.
+      // This is the quantitative counterweight to stale OLR edges: when the
+      // market rotates, the current bucket's Q(buy)/Q(sell) re-anchors the
+      // Meta-Agent on what actually happened in the CURRENT state, not the
+      // all-time average. Sample-guarded: a regime-starved bucket shows
+      // 'NO directional claim' instead of extrapolating stale data.
+      // Median is skew-robust (outlier rewards cannot masquerade as signal).
+      try {
+        if (qrlDirectionConfig.leanEnabled && this.qrlTable) {
+          const qrlLean = this.qrlTable.getDirectionLean(features, qrlDirectionConfig.minSamples);
+          const fmtCell = (c: QRLExpectancy): string =>
+            `Q=${(c.q * 100).toFixed(2)}% n=${c.visits}`
+            + (c.medianReward !== null ? ` median=${(c.medianReward * 100).toFixed(2)}%` : '');
+          lines.push('');
+          lines.push(`=== Q-RL EXPECTANCY (state bucket: ${qrlLean.buy.bucket}) ===`);
+          lines.push(`  BUY  ${fmtCell(qrlLean.buy)}`);
+          lines.push(`  SELL ${fmtCell(qrlLean.sell)}`);
+          if (qrlLean.robust) {
+            const dirDesc = qrlLean.lean === 'buy' ? 'favors BUY' : qrlLean.lean === 'sell' ? 'favors SELL' : 'no clear directional edge (spread within friction) — weight OTHER signals';
+            lines.push(`  spread = ${(qrlLean.spread * 100).toFixed(2)}pp → ${dirDesc} (${qrlLean.buy.bucket}, both sides ≥ ${qrlDirectionConfig.minSamples} samples)`);
+          } else {
+            lines.push(`  ⚠️ sample-starved on one/both sides (buy n=${qrlLean.buy.visits}, sell n=${qrlLean.sell.visits}) → NO directional claim — do not extrapolate across regimes`);
+          }
+          lines.push(`  (learned from aligned-shadow + backfill rewards in this exact state bucket; negative median = losing side in current conditions)`);
+        }
+      } catch { /* non-fatal — Q-RL block is best-effort */ }
       // v2.0.140: inject EXP digest (only for active symbol — avoids per-symbol duplication)
       if (digest) lines.push(`\n${digest}`);
       return '\n' + lines.join('\n');
@@ -7770,6 +7846,32 @@ ${recentExamples}
               );
               log.info(`[shadow] A/B: statistical lean ${statLean.side.toUpperCase()} ${sym} (score=${statLean.score.toFixed(3)}) vs LLM ${rlAction.toUpperCase()} — both tracked for edge attribution`);
             }
+
+            // ── v2.0.861 Phase 1.5: Q-RL expectancy shadow A/B ──────────────
+            // Open a THIRD shadow in the direction the Q-RL EXPECTANCY oracle
+            // picks (regime-conditioned, sample-guarded, no LLM). Same SL/TP
+            // structure, same cycle. Its eventual PnL vs the LLM-aligned shadow
+            // (paired uplift) tells us whether the Q-RL direction signal ADDS
+            // edge over the LLM debate — zero live risk. Only opens when the
+            // lean is robust (both sides ≥ minSamples) and clearly directional
+            // (|spread| ≥ minSpread), so regime-starved states never fire.
+            try {
+              const qrlLean = this.qrlTable.getDirectionLean(features, qrlDirectionConfig.minSamples);
+              if (qrlLean.robust && qrlLean.lean !== 'neutral' && !this.shadowEngine.hasQRLShadow(sym, qrlLean.lean, this.totalCycles)) {
+                const qrlSlPrice = qrlLean.lean === 'buy'
+                  ? entryPrice * (1 - slPct)
+                  : entryPrice * (1 + slPct);
+                const qrlTpPrice = qrlLean.lean === 'buy'
+                  ? entryPrice * (1 + tpPct)
+                  : entryPrice * (1 - tpPct);
+                this.shadowEngine.openQRLShadow(
+                  sym, entryPrice, qrlLean.lean, qrlSlPrice, qrlTpPrice,
+                  this.totalCycles, features,
+                  { spread: qrlLean.spread, buyQ: qrlLean.buy.q, sellQ: qrlLean.sell.q },
+                );
+                log.info(`[shadow] A/B: Q-RL lean ${qrlLean.lean.toUpperCase()} ${sym} (spread=${(qrlLean.spread * 100).toFixed(2)}pp, Q buy=${(qrlLean.buy.q * 100).toFixed(2)}% sell=${(qrlLean.sell.q * 100).toFixed(2)}%) vs LLM ${rlAction.toUpperCase()} — Phase 1.5 uplift tracking`);
+              }
+            } catch { /* non-fatal — Q-RL lean is best-effort */ }
           }
         }
       } catch (err) {
@@ -9599,6 +9701,24 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           effectiveConfidence *= causalMultiplier;
           log.info(`🟠 [causal-gate] ${gateAction.toUpperCase()} ${pwinSym}: negative causal uplift → conviction ×${causalMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
           activeAuditGates.push({ gate: 'causal-gate', passed: true, reason: `negative uplift → ×${causalMultiplier.toFixed(3)} (soft)` });
+        }
+
+        // ── v2.0.861 Phase 1.2: Q-RL Expectancy multiplier ────────────────
+        // Regime-conditioned expectancy oracle: when the Q-RL table has
+        // LEARNED that this action loses money in the CURRENT state bucket
+        // (robust negative median + trimmed mean + Q below threshold), damp
+        // conviction multiplicatively. Sample-guarded (regime-starved buckets
+        // never fire) and non-symmetric (positive boost off by default).
+        // This is the quantitative counterweight to stale OLR sell edges.
+        const qrlMultiplier = this.computeQRLExpectancyMultiplier(pwinSym, gateAction);
+        if (qrlMultiplier < 1.0) {
+          effectiveConfidence *= qrlMultiplier;
+          log.info(`🟣 [qrl-expectancy] ${gateAction.toUpperCase()} ${pwinSym}: negative expectancy → conviction ×${qrlMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+          activeAuditGates.push({ gate: 'qrl-expectancy', passed: true, reason: `negative Q-RL expectancy → ×${qrlMultiplier.toFixed(3)} (soft)` });
+        } else if (qrlMultiplier > 1.0) {
+          effectiveConfidence *= qrlMultiplier;
+          log.info(`🟣 [qrl-expectancy] ${gateAction.toUpperCase()} ${pwinSym}: positive expectancy (t≥2) → conviction ×${qrlMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+          activeAuditGates.push({ gate: 'qrl-expectancy', passed: true, reason: `positive Q-RL expectancy → ×${qrlMultiplier.toFixed(3)} (soft)` });
         }
 
         // ── v2.0.844 Phase 2b: Meta-Calibrator → Dynamic Trust ───────────

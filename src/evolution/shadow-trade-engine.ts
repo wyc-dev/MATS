@@ -79,7 +79,13 @@ export interface ShadowPosition {
    *  direction computed ONLY from statistical components (OLR P(win) +
    *  First-Passage + Combo WR + Causal uplift), with NO LLM. Used to compare
    *  whether the LLM debate actually adds edge vs pure statistics. */
-  shadowType: 'blind' | 'aligned' | 'statistical';
+  shadowType: 'blind' | 'aligned' | 'statistical' | 'qrl';
+  /** v2.0.861: Q-RL signal snapshot for 'qrl' shadows (audit + uplift analysis). */
+  qrlSignal?: {
+    spread: number;
+    buyQ: number;
+    sellQ: number;
+  };
   /** v2.0.834: Factor tagging for aligned shadows. The consensus direction
    *  the LLM chose, plus which agent + signal drove that direction.
    *  Undefined for blind shadows. */
@@ -173,7 +179,7 @@ export class ShadowTradeEngine {
   /** Recently resolved trades (for agent context + stats).
    *  v2.0.178: Added mfePct/maePct to recentResults so getStats() can compute
    *  MAE/MFE averages from historical results, not just current positions. */
-  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' }> = [];
+  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl' }> = [];
 
   constructor(olrEngine: OLREngine) {
     this.olrEngine = olrEngine;
@@ -396,6 +402,92 @@ export class ShadowTradeEngine {
     log.debug(
       `[shadow] Opened STATISTICAL ${side.toUpperCase()} ${sym} at ${entryPrice.toFixed(2)} ` +
       `(SL=${finalSL.toFixed(2)}, TP=${finalTP.toFixed(2)}) — statScore=${statScore.toFixed(3)}`,
+    );
+  }
+
+  /**
+   * v2.0.861 Phase 1.5: Open a shadow in the direction the Q-RL EXPECTANCY
+   * oracle picks (regime-conditioned, sample-guarded). This is the A/B
+   * control arm against the LLM-aligned shadow: same SL/TP structure, same
+   * cycle, different direction source. Its eventual PnL (via causal-reasoner
+   * paired uplift) tells us whether the Q-RL direction signal ADDS edge over
+   * the LLM debate — WITHOUT any live risk. OLR routing: 'shadow' (full
+   * weight, same as statistical — it follows a real statistical signal, not
+   * blind noise).
+   *
+   * @param qrlSignal  Spread + per-side Q snapshot for audit/uplift analysis.
+   */
+  openQRLShadow(
+    symbol: string,
+    entryPrice: number,
+    side: 'buy' | 'sell',
+    slPrice: number,
+    tpPrice: number,
+    cycle: number,
+    features: Record<string, number>,
+    qrlSignal?: { spread: number; buyQ: number; sellQ: number },
+  ): void {
+    // Guard against NaN/Infinity — same as openAlignedShadow.
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
+    const sym = symbol.toLowerCase();
+
+    // Don't open if we already have a Q-RL shadow for this symbol+side+cycle.
+    const existing = this.positions.find(
+      p => p.symbol === sym && p.status === 'open' && p.side === side && p.shadowType === 'qrl' && p.openCycle === cycle,
+    );
+    if (existing) return;
+
+    // Check limits (Q-RL shadows share the same pool).
+    const symOpen = this.positions.filter(p => p.symbol === sym && p.status === 'open').length;
+    if (symOpen >= SHADOW_CONFIG.maxOpenPerSymbol) return;
+    const totalOpen = this.positions.filter(p => p.status === 'open').length;
+    if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) return;
+
+    const ts = Date.now();
+    const id = `qrl_${++this.idCounter}`;
+
+    const sl = slPrice > 0 ? slPrice : entryPrice * (1 - SHADOW_CONFIG.defaultSLDistance);
+    const tp = tpPrice > 0 ? tpPrice : entryPrice * (1 + SHADOW_CONFIG.defaultTPDistance);
+    const finalSL = side === 'sell' && slPrice > 0 ? slPrice : (side === 'sell' ? entryPrice * (1 + SHADOW_CONFIG.defaultSLDistance) : sl);
+    const finalTP = side === 'sell' && tpPrice > 0 ? tpPrice : (side === 'sell' ? entryPrice * (1 - SHADOW_CONFIG.defaultTPDistance) : tp);
+
+    this.positions.push({
+      id,
+      symbol: sym,
+      side,
+      entryPrice,
+      stopLossPrice: finalSL,
+      takeProfitPrice: finalTP,
+      openCycle: cycle,
+      openTimestamp: ts,
+      features: { ...features },
+      status: 'open',
+      slNarrowed: false,
+      originalSL: finalSL,
+      originalTP: finalTP,
+      highSinceOpen: entryPrice,
+      lowSinceOpen: entryPrice,
+      mfePct: 0,
+      maePct: 0,
+      shadowType: 'qrl',
+      qrlSignal: qrlSignal && Number.isFinite(qrlSignal.spread) ? {
+        spread: qrlSignal.spread,
+        buyQ: Number.isFinite(qrlSignal.buyQ) ? qrlSignal.buyQ : 0,
+        sellQ: Number.isFinite(qrlSignal.sellQ) ? qrlSignal.sellQ : 0,
+      } : undefined,
+    });
+
+    log.info(
+      `[shadow] Opened QRL ${side.toUpperCase()} ${sym} at ${entryPrice.toFixed(2)} ` +
+      `(SL=${finalSL.toFixed(2)}, TP=${finalTP.toFixed(2)}) — spread=${qrlSignal ? (qrlSignal.spread * 100).toFixed(2) + 'pp' : 'n/a'} (Phase 1.5 A/B)`,      
+    );
+  }
+
+  /** Dedup check for Q-RL shadows (Phase 1.5). */
+  hasQRLShadow(symbol: string, side: 'buy' | 'sell', cycle: number): boolean {
+    const sym = symbol.toLowerCase();
+    return this.positions.some(
+      p => p.symbol === sym && p.status === 'open' && p.side === side && p.shadowType === 'qrl' && p.openCycle === cycle,
     );
   }
 
@@ -855,7 +947,7 @@ export class ShadowTradeEngine {
     id: string; symbol: string; side: 'buy' | 'sell';
     outcome: 'win' | 'loss'; holdCycles: number; cycle: number;
     mfePct: number; maePct: number; pnlPct: number;
-    shadowType: 'blind' | 'aligned' | 'statistical';
+    shadowType: 'blind' | 'aligned' | 'statistical' | 'qrl';
   }> {
     if (this.recentResults.length === 0) return [];
     const drained = this.recentResults.map(r => ({
