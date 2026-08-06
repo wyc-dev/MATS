@@ -7241,7 +7241,7 @@ ${recentExamples}
               const status = mfePct >= threshold
                 ? `🔒 LOCK-PROFIT ZONE REACHED (MFE ${(mfePct * 100).toFixed(2)}% ≥ ${(threshold * 100).toFixed(2)}%) — profit will be locked`
                 : `not yet in lock zone (MFE ${(mfePct * 100).toFixed(2)}% vs ${(threshold * 100).toFixed(2)}% in ${trending ? 'trending→p90' : 'normal→p75×0.8'})`;
-              marketDesc += `\n=== EXIT-PRICE MFE CHECK for ${posSym} ===\n  ${status}. PAEL profile: MFE p50=${(profile.mfeP50 * 100).toFixed(2)}% p75=${(profile.mfeP75 * 100).toFixed(2)}% p90=${(profile.mfeP90 * 100).toFixed(2)}% (${profile.samples} ${posSide} samples).\n  (data-driven: ${Math.round(profile.mfeP75 * 100)}% of historical ${posSym} ${posSide} trades reversed before p75×0.8 — a reach here is strong lock-profit evidence; SL is NEVER touched by this signal.)`;
+              marketDesc += `\n=== EXIT-PRICE MFE CHECK for ${posSym} ===\n  ${status}. PAEL profile: MFE p50=${(profile.mfeP50 * 100).toFixed(2)}% p75=${(profile.mfeP75 * 100).toFixed(2)}% p90=${(profile.mfeP90 * 100).toFixed(2)}% (${profile.samples} ${posSide} samples).\n  (data-driven: this is the 75th percentile — the majority of historical ${posSym} ${posSide} trades reversed before this zone; a reach here is strong lock-profit evidence; SL is NEVER touched by this signal.)`;
             }
           }
         } catch { /* non-fatal */ }

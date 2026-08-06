@@ -3359,3 +3359,20 @@ Multi-agent system, HACP protocol, Ollama integration, Binance WS, risk engine, 
 - **驗證**:MFE% median inv<20 (0.32%) vs inv>=50 (0.41%)——細資金範圍內大致一致,百分比 scale-invariant 有初步數據支持;大資金由滑點 guard 補償執行差
 
 **測試**:`tests/exit-price-learner.test.ts` 加 2 個時間窗測試(26/26)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.862-attack: PAEL adversarial hardening(3 個真實漏洞修復)
+
+對 v2.0.862 PAEL 全鏈(exit-price-learner / lock gate / 週邊)對抗攻擊:
+
+| # | 漏洞 | 嚴重性 | 修復 |
+|---|---|---|---|
+| V1 | `weightedPercentile` NaN weight → cum+=NaN 毒化循環 → **靜默返回最後元素**(當成 median) | 🟠 Medium | weights sanitize(NaN/Infinity/負 → 0) |
+| V2 | `weightedPercentile` p<0 → `sorted[-1]` undefined → **返回 0**;p>1 → 靜默最大 | 🟡 Low | p clamp [0,1];NaN → 0.5 |
+| V3 | `load()` 對 `__proto__`/`constructor` key → `clean[k]=...` 觸發 setter **污染 records prototype** | 🟠 Medium | skip danger keys |
+| V4-V7 | convertToPriceExtremes 極端輸入(溢出/負 qty/1e-300)、recordExit garbage(source/weight/symbol)、時間窗邊界(inclusive)、closeReason 整合 | ✅ 已安全(測試證明) |
+
+另外修:MFE CHECK block 文字 bug(p75 顯示成「1% of historical」→ 改為「75th percentile」)。
+
+**攻擊測試**:`tests/exit-price-attack.test.ts`(16 tests)——V1-V7 全向量。PAEL 相關 42/42。`tsc --noEmit` 零錯誤。全 regression 1988/2000(12 pre-existing `getBalance` API 腐敗)。

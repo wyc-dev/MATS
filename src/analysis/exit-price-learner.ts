@@ -121,7 +121,11 @@ export function convertToPriceExtremes(
 }
 
 /** Weighted percentile — linear interpolation over cumulative weight.
- *  Zero/negative weights fall back to unweighted. Pure, testable. */
+ *  Zero/negative weights fall back to unweighted. Pure, testable.
+ *  v2.0.862-attack (V1/V2): sanitize weights (NaN/Infinity → 0) and clamp
+ *  p to [0,1] — a NaN weight previously poisoned the cumulative sum and
+ *  silently returned the LAST element; a negative p produced sorted[-1]
+ *  → undefined → 0. Both are now neutralized. */
 export function weightedPercentile(
   values: number[],
   weights: number[],
@@ -130,17 +134,23 @@ export function weightedPercentile(
   const n = values.length;
   if (n === 0) return 0;
   if (n === 1) return Math.max(0, values[0] ?? 0);
+  // Sanitize p — clamp to [0,1]; NaN → 0.5 (median).
+  const pp = Number.isFinite(p) ? Math.max(0, Math.min(1, p)) : 0.5;
   const pairs = values
-    .map((v, i) => ({ v: Math.max(0, v), w: Math.max(0, weights[i] ?? 0) }))
+    .map((v, i) => ({
+      v: Math.max(0, Number.isFinite(v) ? v : 0),
+      w: Math.max(0, Number.isFinite(weights[i] as number) ? (weights[i] as number) : 0),
+    }))
     .filter(x => Number.isFinite(x.v))
     .sort((a, b) => a.v - b.v);
   if (pairs.length === 0) return 0;
   if (pairs.length === 1) return pairs[0]!.v;
   const totalW = pairs.reduce((s, x) => s + x.w, 0);
-  const target = p * totalW;
+  const target = pp * totalW;
   if (totalW <= 0 || target <= 0) {
     const sorted = pairs.map(x => x.v);
-    return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] ?? 0;
+    const idx = Math.max(0, Math.min(sorted.length - 1, Math.floor(pp * sorted.length)));
+    return sorted[idx] ?? 0;
   }
   let cum = 0;
   for (let i = 0; i < pairs.length; i++) {
@@ -260,6 +270,12 @@ export class ExitPriceLearner {
       if (!raw.records || typeof raw.records !== 'object') return;
       const clean: Record<string, ExitRecord[]> = {};
       for (const [k, arr] of Object.entries(raw.records)) {
+        // v2.0.862-attack (V3): prototype-pollution keys must NEVER become
+        // record keys. JSON.parse creates an OWN '__proto__' property (no
+        // setter), so `clean[k] = ...` WOULD hit the setter on clean and
+        // silently reparent its prototype — corrupting every subsequent
+        // `this.records[key]` lookup semantics. Skip the danger set.
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
         if (!Array.isArray(arr)) continue;
         const filtered = arr
           .map(r => this.sanitizeRecord(r))
