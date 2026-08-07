@@ -48,10 +48,12 @@ export interface DirectionVerifierState {
   outcomeTradeIds: string[];
   /** 較準:per trend-type × window 嘅準確驗證結果(揀最佳窗口用) */
   windowStats: Record<string, Counter>;
+  /** v2.0.865-fix:backfill 完成標記(persisted)——防止 restart 重複 backfill */
+  backfillDone: boolean;
 }
 
 function emptyState(): DirectionVerifierState {
-  return { pending: {}, direction: {}, outcome: {}, outcomeTradeIds: [], windowStats: {} };
+  return { pending: {}, direction: {}, outcome: {}, outcomeTradeIds: [], windowStats: {}, backfillDone: false };
 }
 
 function windowKey(trendType: string, windowIdx: number): string {
@@ -366,6 +368,14 @@ export class LLMDirectionVerifier {
     return { correct, total };
   }
 
+  isBackfillDone(): boolean {
+    return this.state.backfillDone === true;
+  }
+
+  markBackfillDone(): void {
+    this.state.backfillDone = true;
+  }
+
   getStats(): { pending: number; directionKeys: number; outcomeKeys: number; outcomeTrades: number } {
     return {
       pending: Object.keys(this.state.pending).length,
@@ -391,6 +401,7 @@ export class LLMDirectionVerifier {
       const raw = JSON.parse(fs.readFileSync(this.path, 'utf-8')) as DirectionVerifierState;
       const clean = emptyState();
       if (raw && typeof raw === 'object') {
+        clean.backfillDone = (raw as { backfillDone?: unknown }).backfillDone === true;
         const sanitizeCounter = (v: unknown): Counter => {
           const o = (v ?? {}) as Record<string, unknown>;
           const correct = Number.isFinite(o['correct']) ? Math.max(0, o['correct'] as number) : 0;
