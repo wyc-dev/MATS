@@ -27,6 +27,8 @@ const DEFAULT_PATH = 'data/evolution/ev-filter.json';
 export interface EVFilterState {
   /** per (symbol|side) → 最近 pnlPct 樣本 */
   samples: Record<string, number[]>;
+  /** v2.0.865-fix:backfill 完成標記(persisted)——防止 restart 重複 backfill 加入 */
+  backfillDone: boolean;
 }
 
 const MAX_SAMPLES_PER_KEY = 300;
@@ -36,7 +38,7 @@ function key(symbol: string, side: 'buy' | 'sell'): string {
 }
 
 function emptyState(): EVFilterState {
-  return { samples: {} };
+  return { samples: {}, backfillDone: false };
 }
 
 /** 從樣本計算 EV(分佈思維:median 優先抗 skew) */
@@ -109,6 +111,14 @@ export class EVFilter {
     return { keys: Object.keys(this.state.samples).length, totalSamples: total };
   }
 
+  isBackfillDone(): boolean {
+    return this.state.backfillDone === true;
+  }
+
+  markBackfillDone(): void {
+    this.state.backfillDone = true;
+  }
+
   save(): void {
     try {
       fs.writeFileSync(this.path, JSON.stringify({ version: 1, savedAt: Date.now(), ...this.state }), 'utf-8');
@@ -122,6 +132,9 @@ export class EVFilter {
       if (!fs.existsSync(this.path)) return;
       const raw = JSON.parse(fs.readFileSync(this.path, 'utf-8')) as EVFilterState;
       const clean = emptyState();
+      if (raw && typeof raw === 'object') {
+        clean.backfillDone = (raw as { backfillDone?: unknown }).backfillDone === true;
+      }
       if (raw && typeof raw === 'object' && raw.samples && typeof raw.samples === 'object') {
         for (const [k, arr] of Object.entries(raw.samples)) {
           // v2.0.865-attack: __proto__/constructor/prototype 毒 key 跳過

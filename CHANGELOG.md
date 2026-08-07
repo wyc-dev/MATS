@@ -3971,3 +3971,17 @@ regime:mean_reverting -0.133%、unknown -0.995% 蝕;low_vol +0.365% 正
 應對(已落):EV Filter 自動學「MU|buy 負 EV」→ 降權;Direction Verifier 校準
 LLM 喺 SILVER/GOLD 判斷準確度;Q-RL `calm|sell` 負 EV 已知——校準系統會逐步壓制負 EV 方向。
 ```
+
+---
+
+## v2.0.865-fix2: EV Filter + Direction Verifier EXP backfill(idempotent)
+
+**主神質疑**:「累積足半日數據都唔夠?」——答案:唔係數據唔夠——係校準系統(EV Filter/Direction Verifier)啱啱先落,由零開始,冇食返歷史數據——EXP 已有 940 real + 826 paper 現成。
+
+**修復**:
+- **EV Filter backfill**:啟動時從 EXP trades.jsonl 回填 per (symbol × side) pnlPct(已含費)——即刻有樣本,唔使等新 trade
+- **Direction Verifier C backfill**:entryThesis 提取 trend-type → recordOutcome(平倉結果)——回填歷史
+- **Idempotent(主神要求)**:persisted `backfillDone` flag(同 v2.0.859 Q-RL 修復同款)——restart 唔重複加入——fallback id 用 rec.ts+symbol 穩定
+- guard:`!isBackfillDone()` + 完成後 mark + save
+
+**驗證**:E8/C13(flag 持久化)+ 22/22。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

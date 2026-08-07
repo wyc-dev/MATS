@@ -5877,6 +5877,8 @@ ${recentExamples}
       let olrFed = 0, naFed = 0, attnresFed = 0, clusterFed = 0, chrFed = 0, advancedFed = 0, comboFed = 0;
       let attrFed = 0; // v2.0.848: Component Attribution backfill count
       let qrlFed = 0; // v2.0.855-fix: Q-RL Alpha Discovery backfill count
+      let evFed = 0; // v2.0.865-fix: EV Filter backfill
+      let dirFed = 0; // v2.0.865-fix: Direction Verifier outcome backfill
       let skipped = 0;
 
       for (const line of lines) {
@@ -5945,6 +5947,29 @@ ${recentExamples}
             try {
               this.qrlTable?.update(features, side, pnlPct);
               qrlFed++;
+            } catch { /* non-critical */ }
+          }
+          // v2.0.865-fix: EV Filter backfill——用歷史 pnlPct(已含費)即刻有樣本
+          // (唔使等新 trade——EXP 940 real + 826 paper 現成)
+          // persisted backfillDone guard——restart 唔重複加入
+          if (this.evFilter && evFilterConfig.enabled && !this.evFilter.isBackfillDone()) {
+            try {
+              this.evFilter.recordTrade(normalizeSymbol(String(rec.symbol ?? '')), side, Number.isFinite(pnlPct) ? pnlPct : 0);
+              evFed++;
+            } catch { /* non-critical */ }
+          }
+          // v2.0.865-fix: Direction Verifier C(平倉結果)backfill——entryThesis 提取 trend-type
+          // persisted backfillDone guard + fallback id 穩定(rec.ts+symbol)
+          if (this.llmDirectionVerifier && llmDirectionConfig.enabled && rec && !this.llmDirectionVerifier.isBackfillDone()) {
+            try {
+              const tt = this.extractTrendType(typeof rec.entryThesis === 'string' ? rec.entryThesis : undefined);
+              this.llmDirectionVerifier.recordOutcome(
+                normalizeSymbol(String(rec.symbol ?? '')),
+                tt,
+                `exp-backfill-${String(rec.id ?? `${rec.ts ?? 0}-${String(rec.symbol ?? '')}`)}`,
+                Number.isFinite(pnlPct) ? pnlPct > 0 : false,
+              );
+              dirFed++;
             } catch { /* non-critical */ }
           }
         }
@@ -6134,7 +6159,14 @@ ${recentExamples}
         }
       }
 
-      log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, Combo=${comboFed}, Attr=${attrFed}, QRL=${qrlFed}, skipped=${skipped}`);
+      // v2.0.865-fix2: mark backfill done + persist——restart 唔重複加入
+      if (this.evFilter && evFilterConfig.enabled) {
+        try { this.evFilter.markBackfillDone(); this.evFilter.save(); } catch { /* best-effort */ }
+      }
+      if (this.llmDirectionVerifier && llmDirectionConfig.enabled) {
+        try { this.llmDirectionVerifier.markBackfillDone(); this.llmDirectionVerifier.save(); } catch { /* best-effort */ }
+      }
+      log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, Combo=${comboFed}, Attr=${attrFed}, QRL=${qrlFed}, EV=${evFed}, DIR=${dirFed}, skipped=${skipped}`);
 
       // v2.0.859: Persist OLR backfill completion (same idempotency contract
       // as Q-RL). Mark only when records were actually fed (olrFed > 0) — if
