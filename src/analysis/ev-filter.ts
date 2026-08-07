@@ -53,10 +53,17 @@ export function computeEV(samples: number[]): { ev: number; pWin: number; avgWin
   return { ev: pWin * avgWin - (1 - pWin) * avgLoss, pWin, avgWin, avgLoss, n };
 }
 
-/** EV → gate 乘數(負 EV 軟性降,愈負降愈多——永遠唔 hard block) */
+/** EV → gate 乘數(Kelly 比例思維——倉位 ∝ EV):
+ *  正 EV → 輕 boost(×[1.0, 1.25]——EV=0.3% → ×1.08;EV≥1% → ×1.25)
+ *  負 EV → 軟性降(×[0.75, 1.0]——EV=-0.5% → ×0.90;EV≤-1% → ×0.75 floor)
+ *  永遠唔 hard block。 */
 export function evToMultiplier(ev: number, n: number): number {
   if (!Number.isFinite(ev) || n < MIN_SAMPLES) return 1.0;
-  if (ev >= 0) return 1.0;
+  if (ev >= 0) {
+    // Kelly 式正 EV boost——EV 高加大倉位(soft cap 1.25)
+    const boost = Math.min(0.25, ev * 0.25); // 1% EV → +0.25
+    return 1.0 + boost;
+  }
   // EV < 0:線性壓抑——EV=-0.1% → ×0.98;EV=-0.5% → ×0.90;EV=-1% → ×0.75(floor)
   const clamp = Math.max(-1.0, Math.min(0, ev)); // ev 範圍 [-1%, 0]
   const mult = 1.0 + clamp * 0.25; // -1% → 0.75
@@ -91,7 +98,7 @@ export class EVFilter {
     return computeEV(arr);
   }
 
-  /** gate 乘數 ×[0.75, 1.0]——正 EV 唔郁,負 EV 軟性降 */
+  /** gate 乘數 ×[0.75, 1.25]——Kelly 思維:正 EV boost,負 EV 軟性降 */
   getEVMultiplier(symbol: string, side: 'buy' | 'sell'): number {
     const { ev, n } = this.getEVStats(symbol, side);
     return evToMultiplier(ev, n);

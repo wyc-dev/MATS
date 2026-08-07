@@ -320,8 +320,10 @@ export class CausalReasoner {
         if (!raw || typeof raw !== 'object') continue;
         const r = raw as Record<string, unknown>;
         if (typeof r['tradeId'] !== 'string' && typeof r['symbol'] !== 'string') continue;
-        const traded = safeNum(r['tradedPnl'] as number, 0);
-        const hold = safeNum(r['holdPnl'] as number, 0);
+        // v2.0.865-fix3-attack (V1): 字段名 match——recordPairedShadow 用 tradedPnlPct/holdPnlPct
+        // (舊 load 用 tradedPnl → 全部 0 → uplift 計算錯)
+        const traded = safeNum(r['tradedPnlPct'] as number, safeNum(r['tradedPnl'] as number, 0));
+        const hold = safeNum(r['holdPnlPct'] as number, safeNum(r['holdPnl'] as number, 0));
         this.pairedShadows.push({
           symbol: typeof r['symbol'] === 'string' ? r['symbol'] : '',
           side: r['side'] === 'sell' ? 'sell' : 'buy',
