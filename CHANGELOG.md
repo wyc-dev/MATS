@@ -4060,3 +4060,18 @@ Kelly 式:倉位 ∝ EV(edge/odds)——正 EV 加大倉位,負 EV 縮
 **盈利改善**:re-feed 修復 = conditional WR gate 恢復(NA 模型由乾淨樣本重訓 + AttnRes 唔再被重複樣本污染)→ conviction 校準更準 → 決策質素提升。
 
 **驗證**:相關 79/79。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.865-fix5: NA validation mse gate 移除(design-vs-code 矛盾修復)
+
+**主神問題**:「NA 1168 samples, val ✗ mse=2.2766 (max 1.5), acc=55% (min 55%)——點解仲係 empty?」
+
+**診斷**:
+1. ✅ reset 生效(316k → 1,168 samples)
+2. **EXP trades.jsonl 冇存 marketFeatures(0/20)**——NA backfill 餵唔到(EXP 歷史唔存 features)——1,168 samples 全係真實新 trade——呢個 OK(新 trade 真實累積)
+3. 🔴 **design-vs-code 矛盾**:註釋明寫「accepting models that learned useful contrastive representations (acc≥55%) **even when reconstruction is imperfect**」——但 code 嘅 passed = AND 全部(含 mse<1.5)——**acc 已達 55%(embedding 分到 win/loss)+ diversity OK 嘅模型被 mse(重建誤差)gate 死**——mse 2.28 只係「重建差過 mean」,但 conditional WR 用 cosine(方向)——mse 唔係能力指標
+
+**修復**:passed = contrastiveAcc ≥ 0.55 **+** diversity > 0.01(mse 降為 log-only sanity——符合設計意圖)。acc 55% ≥ 0.55 → **validation 會 PASS** → NA isReady → conditional WR gate 用 learned embedding。
+
+**驗證**:39/39(NA 相關 3 suites)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
