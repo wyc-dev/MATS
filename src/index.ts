@@ -5996,8 +5996,10 @@ ${recentExamples}
         }
 
         // 3. AttnRes — feed rationale blend learning
+        // v2.0.865-fix4:persisted backfillDone guard——restart 唔重複 feed
+        // (同 NA bug:updateCount 累積 + weights 被重複樣本主導)
         const rv = rec.rationaleVectors;
-        if (this.attnResTradeEmbedder && Array.isArray(rv) && rv.length >= 2) {
+        if (this.attnResTradeEmbedder && Array.isArray(rv) && rv.length >= 2 && !this.attnResTradeEmbedder.isBackfillDone()) {
           try {
             this.attnResTradeEmbedder.updateOnOutcome(rv, pnl);
             attnresFed++;
@@ -6174,6 +6176,13 @@ ${recentExamples}
         try {
           this.naEngine.markBackfillDone();
           this.naEngine.persist();
+        } catch { /* best-effort */ }
+      }
+      // v2.0.865-fix4: AttnRes embedder backfill 完成標記(persisted)
+      if (this.attnResTradeEmbedder && !this.attnResTradeEmbedder.isBackfillDone()) {
+        try {
+          this.attnResTradeEmbedder.markBackfillDone();
+          void this.attnResTradeEmbedder.save('data/evolution/attnres-embed-state.json');
         } catch { /* best-effort */ }
       }
       if (this.llmDirectionVerifier && llmDirectionConfig.enabled) {

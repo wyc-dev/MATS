@@ -4040,3 +4040,23 @@ Kelly 式:倉位 ∝ EV(edge/odds)——正 EV 加大倉位,負 EV 縮
 **效果**:下次啟動 → v1 污染 model 自動 reset → 一次 clean backfill(1766 真實樣本)→ backfillDone=true → 之後只靠新 trade 真實累積——模型重新由乾淨樣本訓練 → validation 有望 pass(conditional WR gate 用返 learned embedding)。
 
 **驗證**:`tests/na-backfill-idempotency.test.ts`(3 tests——污染 migrate reset/flag 持久化/正常 v1 保留)。NA 相關 3 suites pass。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.865-fix4-attack: AttnRes embedder re-feed 修復(同 NA bug 同款)
+
+**主神指令**:不擇手段攻擊 + 每組件 check basic mechanism。
+
+**攻擊發現**:backfillFromExpRecords 度 **AttnRes trade embedder(updateOnOutcome)冇 idempotency guard**——同 NA 完全同款 re-feed bug:每次 restart 重複 feed 相同 rationale vectors → updateCount 累積 + weights 被重複樣本主導 → AttnRes 學習退化。
+
+**修復**:
+- `attnres-trade-embedder.ts`:AttnResEmbedState 加 `backfillDone`(getState/save/loadState 全通)+ isBackfillDone/markBackfillDone
+- `index.ts`:backfill guard `!isBackfillDone()` + 完成後 mark + save(persisted)
+
+**審計結論**:
+- ✅ 已 guard:OLR/Q-RL/EV Filter/Direction Verifier/NA/AttnRes(全部 persisted backfillDone)
+- PatternCluster(addTrade):純 memory 無 persist 累積 → restart 後清零 → 每次 restart 一次性 backfill(唔累積污染)→ 影響細,唔急
+
+**盈利改善**:re-feed 修復 = conditional WR gate 恢復(NA 模型由乾淨樣本重訓 + AttnRes 唔再被重複樣本污染)→ conviction 校準更準 → 決策質素提升。
+
+**驗證**:相關 79/79。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

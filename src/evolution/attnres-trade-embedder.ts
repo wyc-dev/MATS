@@ -80,6 +80,8 @@ export interface AttnResEmbedState {
   maxTemperature?: number;
   minTemperature?: number;
   smoothMix?: number;
+  /** v2.0.865-fix4:backfill 完成標記(persisted)——restart 唔重複 feed EXP(同 NA bug) */
+  backfillDone?: boolean;
 }
 
 /**
@@ -111,6 +113,7 @@ export class AttnResTradeEmbedder {
   private emaW: number[];
   /** Number of outcome-driven updates applied. */
   private updateCount = 0;
+  private backfillDone = false;
   /** Embedding dimension (384 for MiniLM). */
   readonly embedDim: number;
   /** Softmax temperature (lower = sharper, higher = softer). Adaptive. */
@@ -310,6 +313,7 @@ export class AttnResTradeEmbedder {
       maxTemperature: this.maxTemperature,
       minTemperature: this.minTemperature,
       smoothMix: this.smoothMix,
+      backfillDone: this.backfillDone,
     };
   }
 
@@ -325,6 +329,7 @@ export class AttnResTradeEmbedder {
     this.lr = state.lr ?? this.lr;
     this.lrDecay = state.lrDecay ?? this.lrDecay;
     this.emaAlpha = state.emaAlpha ?? this.emaAlpha;
+    this.backfillDone = (state as { backfillDone?: unknown }).backfillDone === true;
     // v2.0.217: load new fields with fallback to current config
     this.entropyFloor = state.entropyFloor ?? this.entropyFloor;
     this.warmupFactor = state.warmupFactor ?? this.warmupFactor;
@@ -333,6 +338,14 @@ export class AttnResTradeEmbedder {
     this.smoothMix = state.smoothMix ?? this.smoothMix;
     // Ensure loaded temperature is within bounds
     this.temperature = clamp(this.temperature, this.minTemperature, this.maxTemperature);
+  }
+
+  isBackfillDone(): boolean {
+    return this.backfillDone;
+  }
+
+  markBackfillDone(): void {
+    this.backfillDone = true;
   }
 
   async save(filePath: string): Promise<void> {
