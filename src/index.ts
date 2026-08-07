@@ -5978,7 +5978,9 @@ ${recentExamples}
         }
 
         // 2. NA — feed market-condition embedding sample
-        if (mf && typeof mf === 'object' && Object.keys(mf).length > 0) {
+        // v2.0.865-fix4:persisted backfillDone guard——restart 唔重複 feed
+        // (v1 bug:1766 EXP × ~180 restarts = 316,985 samples → validation fail)
+        if (mf && typeof mf === 'object' && Object.keys(mf).length > 0 && !this.naEngine.isBackfillDone()) {
           try {
             const presentFeatures = Object.keys(mf).filter(k =>
               mf[k] !== null && mf[k] !== undefined && Number.isFinite(mf[k]),
@@ -6165,6 +6167,14 @@ ${recentExamples}
       // v2.0.865-fix2: mark backfill done + persist——restart 唔重複加入
       if (this.evFilter && evFilterConfig.enabled) {
         try { this.evFilter.markBackfillDone(); this.evFilter.save(); } catch { /* best-effort */ }
+      }
+      // v2.0.865-fix4: NA backfill 完成標記——v1 污染 model 會喺 migrate 已 reset,
+      // 呢度一次 clean backfill 後 mark,之後 restart 唔再 feed
+      if (!this.naEngine.isBackfillDone()) {
+        try {
+          this.naEngine.markBackfillDone();
+          this.naEngine.persist();
+        } catch { /* best-effort */ }
       }
       if (this.llmDirectionVerifier && llmDirectionConfig.enabled) {
         try { this.llmDirectionVerifier.markBackfillDone(); this.llmDirectionVerifier.save(); } catch { /* best-effort */ }

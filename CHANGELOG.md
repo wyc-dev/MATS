@@ -4024,3 +4024,19 @@ Kelly 式:倉位 ∝ EV(edge/odds)——正 EV 加大倉位,負 EV 縮
 → 高 EV 方向(GOLD|buy/MU|sell/SP500|buy)自動加大倉位,負 EV 方向(SILVER|sell/MU|buy)縮——超額盈利由「邊度賺多啲」+「邊度唔好蝕」雙向推進。
 
 **驗證**:31/31(node:test)+ 27/27(vitest)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.865-fix4: NA backfill idempotency 修復(316,985 samples 污染根因)
+
+**主神發現**(UI):「NA 316985 samples, val ✗ mse=2.3928 (max 1.5), acc=52% (min 55%)」——**咁多樣本但 validation 唔 pass**。
+
+**根因**:NA backfill 冇 idempotency guard(不像 Q-RL/EV Filter/Direction Verifier 有 persisted backfillDone)——**每次 restart 重複 feed 相同 EXP records**——1766 records × ~180 restarts = 316,985 samples——模型被重複樣本訓練壞(mse 2.39/acc 52% = 學唔到結構,embedding 分唔到 win/loss)——**同 v2.0.859 Q-RL backfill re-feed bug(1072×18)完全同款,NA 漏咗**。
+
+**修復**:
+- `numeric-autoencoder.ts`:NAModelState 加 `backfillDone`(v2 migration)——v1 污染 state(sampleCount > 20000)→ **全 reset**(weights/replay/sampleCount/validation)+ backfillDone=false(留一次 clean backfill 1766 樣本);正常 v1 → 只加 flag
+- `index.ts`:NA backfill 加 `!isBackfillDone()` guard + 完成後 mark + persist
+
+**效果**:下次啟動 → v1 污染 model 自動 reset → 一次 clean backfill(1766 真實樣本)→ backfillDone=true → 之後只靠新 trade 真實累積——模型重新由乾淨樣本訓練 → validation 有望 pass(conditional WR gate 用返 learned embedding)。
+
+**驗證**:`tests/na-backfill-idempotency.test.ts`(3 tests——污染 migrate reset/flag 持久化/正常 v1 保留)。NA 相關 3 suites pass。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
