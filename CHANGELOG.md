@@ -4005,3 +4005,22 @@ LLM 喺 SILVER/GOLD 判斷準確度;Q-RL `calm|sell` 負 EV 已知——校準�
 - EV Filter / Direction Verifier / Q-RL / OLR / combo-win-rate / exit-price-learner:全機制齊 ✓
 
 **驗證**:node:test 各組件全 pass + 全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.865-fix3-attack: CausalReasoner 字段名修復 + EV Filter Kelly 思維 boost
+
+**主神指令**:不擇手段攻擊 + 量化分析師思維提升盈利。
+
+**攻擊發現(V1)**:CausalReasoner sanitize load 用 `r['tradedPnl']` 但 recordPairedShadow 用 `tradedPnlPct`——**字段名 mismatch → load 後全部 0 → uplift 計算錯**——修:tradedPnlPct/holdPnlPct(舊字段名 fallback)。
+
+**盈利改善(Kelly 比例思維)**:EV Filter 由「正 EV 唔郁」→「正 EV boost」:
+```
+Kelly 式:倉位 ∝ EV(edge/odds)——正 EV 加大倉位,負 EV 縮
+  正 EV:×[1.0, 1.25](EV=0.3% → ×1.08;EV≥1% → ×1.25 cap)
+  負 EV:×[0.75, 1.0](EV=-0.5% → ×0.90;EV≤-1% → ×0.75 floor)
+  冷啟動 → ×1.0
+```
+→ 高 EV 方向(GOLD|buy/MU|sell/SP500|buy)自動加大倉位,負 EV 方向(SILVER|sell/MU|buy)縮——超額盈利由「邊度賺多啲」+「邊度唔好蝕」雙向推進。
+
+**驗證**:31/31(node:test)+ 27/27(vitest)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
