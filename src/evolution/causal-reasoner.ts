@@ -312,9 +312,43 @@ export class CausalReasoner {
     if (!state || typeof state !== 'object') return;
     const s = state as Record<string, unknown>;
     const savedShadows = s['pairedShadows'];
-    if (Array.isArray(savedShadows)) this.pairedShadows = savedShadows as PairedShadow[];
+    if (Array.isArray(savedShadows)) {
+      // 基本機制審計(v2.0.865-fix3):毒元素(非 finite pnl / 垃圾 shape)會污染
+      // uplift 計算——drop 唔 sanitize
+      this.pairedShadows = [];
+      for (const raw of savedShadows) {
+        if (!raw || typeof raw !== 'object') continue;
+        const r = raw as Record<string, unknown>;
+        if (typeof r['tradeId'] !== 'string' && typeof r['symbol'] !== 'string') continue;
+        const traded = safeNum(r['tradedPnl'] as number, 0);
+        const hold = safeNum(r['holdPnl'] as number, 0);
+        this.pairedShadows.push({
+          symbol: typeof r['symbol'] === 'string' ? r['symbol'] : '',
+          side: r['side'] === 'sell' ? 'sell' : 'buy',
+          entryCycle: Number.isFinite(r['entryCycle'] as number) ? (r['entryCycle'] as number) : 0,
+          entryPrice: safeNum(r['entryPrice'] as number, 0),
+          tradedPnlPct: traded,
+          holdPnlPct: hold,
+          uplift: safeNum(r['uplift'] as number, traded - hold),
+          resolved: r['resolved'] === true,
+        } as PairedShadow);
+      }
+    }
     const savedFI = s['featureImportance'];
-    if (Array.isArray(savedFI)) this.featureImportance = savedFI as FeatureImportanceResult[];
+    if (Array.isArray(savedFI)) {
+      this.featureImportance = [];
+      for (const raw of savedFI) {
+        if (!raw || typeof raw !== 'object') continue;
+        const r = raw as Record<string, unknown>;
+        if (typeof r['feature'] !== 'string') continue;
+        this.featureImportance.push({
+          feature: r['feature'] as string,
+          causalImportance: Math.max(0, Math.min(1, safeNum(r['causalImportance'] as number, 0))),
+          correlation: Math.max(-1, Math.min(1, safeNum(r['correlation'] as number, 0))),
+          isConfounder: r['isConfounder'] === true,
+        } as FeatureImportanceResult);
+      }
+    }
     this.lastImportanceCycle = safeNum(s['lastImportanceCycle'] as number, 0);
     log.info(`[causal] loaded: ${this.pairedShadows.length} paired shadows, ${this.featureImportance.length} feature importance`);
   }

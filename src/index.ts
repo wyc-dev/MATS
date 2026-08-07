@@ -267,6 +267,9 @@ class MATSSystem {
   private lastJudgeRationale = '';
   /** v2.0.865: 上次判斷嘅 gateAction(block 注入用) */
   private lastJudgeGateAction: 'buy' | 'sell' = 'buy';
+  /** v2.0.865-fix3: 今次決策嘅 consensus confidence(開倉傳遞用——
+   *  舊用 lastHACPResult = 上 cycle,錯配——Conviction Calibrator/Meta-Calibrator 全錯) */
+  private lastCycleConsensusConfidence = 0.5;
   // v2.0.837: Meta-Cognitive Calibrator — system self-awareness
   private metaCalibrator!: MetaCalibrator;
   // v2.0.838: Self-Improver — auto-tuning hyperparameters
@@ -5125,7 +5128,7 @@ ${recentExamples}
           olrPWin: pre.olrPWin,
           shadowWinRate: pre.shadowWinRate,
           regime: this.marketState?.getState(sym)?.regime ?? this.marketState?.getState(this.marketAgent?.getSelectedSymbol() ?? '')?.regime,
-          consensusConfidence: this.lastHACPResult?.consensus?.confidence,
+          consensusConfidence: this.lastCycleConsensusConfidence ?? this.lastHACPResult?.consensus?.confidence,
         };
       }
     }
@@ -10122,6 +10125,8 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
           psc => normalizeSymbol(psc.symbol) === normalizeSymbol(finalDecision.symbol || activeSymbol),
         );
         const consensusConfidence = activePscForGate?.confidence ?? result.consensus.confidence;
+        // v2.0.865-fix3: 記錄「今次決策」嘅 confidence——開倉傳遞用(唔好上 cycle 值)
+        this.lastCycleConsensusConfidence = Number.isFinite(consensusConfidence) ? consensusConfidence : 0.5;
 
         // ── v2.0.227: Plan G — Unified Multiplicative Conviction Gate ──────
         // Replaces the old additive penalty-on-threshold model that caused the

@@ -3985,3 +3985,23 @@ LLM 喺 SILVER/GOLD 判斷準確度;Q-RL `calm|sell` 負 EV 已知——校準�
 - guard:`!isBackfillDone()` + 完成後 mark + save
 
 **驗證**:E8/C13(flag 持久化)+ 22/22。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.865-fix3: 基本機制審計修補(主神教訓——唔可以等主神提)
+
+**主神質疑**:「點解咁基本嘅嘢都可以遺留?你仲需唔需要 check 吓其他好基本嘅機制?」——全組件基本機制矩陣審計(18 組件 × 6 機制:backfill/save-load/finite/proto/cold-start/idempotent):
+
+**P0 修復(最關鍵——數據源錯配)**:
+- 🔴 `entryDataPayload.consensusConfidence` 用 `lastHACPResult`(上個 cycle)——**錯配**——開倉記錄嘅 confidence 係上 cycle 值——**Conviction Calibrator + Meta-Calibrator 兩個組件嘅數據全錯**
+- ✅ gate 度記錄「今次決策」`lastCycleConsensusConfidence` → 開倉傳遞——confidence 端到端正確
+
+**P1 修復**:
+- CausalReasoner load 毒數據 sanitize(pairedShadows/featureImportance——非 finite pnl 污染 uplift 計算)
+
+**審計結論(已安全)**:
+- ComponentAttribution:records array + safeNum + seenKeys dedup ✓
+- MFECalibrator:stateless 純計算(冇 state 要 persist)✓
+- EV Filter / Direction Verifier / Q-RL / OLR / combo-win-rate / exit-price-learner:全機制齊 ✓
+
+**驗證**:node:test 各組件全 pass + 全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
