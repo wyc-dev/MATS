@@ -3942,3 +3942,32 @@ Conviction Calibrator 管「信心報數準唔準」,Direction Verifier 管「�
 
 **攻擊發現**:`markPriceMap.set(markPrice.symbol)` 用 WS 原格式(大寫 'BTC'),但 `getMarkPriceForSymbol` 用 lowercase 查 → **key miss → latest fallback → strict-price 後全部 null → B 方向驗證死亡**。
 **修復**:set 時 key 統一同 get 一致(lowercase bare / 帶 ':' 原樣)——case miss 消除。
+
+---
+
+## v2.0.865-fix: EXP symbol 大小寫分裂修復(BTC 1319 vs btc 79)
+
+**主神指令**:「依然係好有系統,咁蝕緊錢,你可以睇吓紀錄」——EXP trades.jsonl(1766 條)診斷:
+
+**真 bug**:EXP 記錄 symbol 冇 normalize——'BTC'(1319 條)vs 'btc'(79 條)分裂——OLR/EXP/Q-RL/EV Filter 樣本分散 + 互相污染——正 EV 嘅 btc 數據被隔離,微負 EV 嘅 BTC 大樣本主導(手續費絞肉機典型)。
+
+**修復**:`recordClose` symbol → `normalizeSymbol(symbol)`。
+
+**真實蝕錢診斷(EXP 940 real trades)**:
+```
+REAL: 940 trades, win 47%, avg -0.110%, total -102.95%(leverage 10x 計)
+PAPER: 826 trades, win 75%, avg +0.465%(real vs paper 差距巨大——執行/滑點/費)
+
+蝕錢方向 bias(做錯邊):
+  MU|buy -51.7%(應該做空——MU|sell +31% 正 EV)
+  SILVER|sell -49.2%(應該做多)
+  SKHX|buy -48.1%
+  GOLD|sell -32.6%(應該做多——GOLD|buy +36%)
+  正 EV:GOLD|buy +36% / SP500|buy +43% / MU|sell +31% / btc|buy +8.7%
+
+短 hold 陷阱:<15m hold 473 筆 avg -0.545%(負 EV);15m-1h +0.505%、≥1h +0.239%
+regime:mean_reverting -0.133%、unknown -0.995% 蝕;low_vol +0.365% 正
+
+應對(已落):EV Filter 自動學「MU|buy 負 EV」→ 降權;Direction Verifier 校準
+LLM 喺 SILVER/GOLD 判斷準確度;Q-RL `calm|sell` 負 EV 已知——校準系統會逐步壓制負 EV 方向。
+```

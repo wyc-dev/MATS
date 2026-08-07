@@ -3988,7 +3988,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const holdMin = Math.max(0, Math.round((trade.closedAt - trade.openedAt) / 60_000));
         const expSource: 'paper' | 'real' = trade.agentId === 'hyperliquid-real' ? 'real' : 'paper';
         void this.expMemory?.recordClose({
-          symbol,
+          // v2.0.865-fix:normalize symbol——EXP 記錄曾分裂 'BTC'(1319)vs 'btc'(79)
+          // → OLR/EXP/Q-RL/EV Filter 樣本分散 + 互相污染(正 EV 數據被隔離)
+          symbol: normalizeSymbol(symbol),
           side: trade.side === 'buy' ? 'buy' : 'sell',
           source: expSource,
           decisionOrigin: 'meta-agent',
