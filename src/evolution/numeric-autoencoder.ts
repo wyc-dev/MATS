@@ -298,9 +298,12 @@ interface NAModelState {
   // Previously replay was in-memory only → wiped on restart → validate()
   // always failed ("insufficient samples") until 200+ new trades accumulated.
   replay?: NATrainingSample[];
+  /** v2.0.865-fix4: backfill 完成標記(persisted)——防止 restart 重複 feed EXP
+   *  (v1 bug:1766 records × ~180 restarts = 316,985 samples → validation fail) */
+  backfillDone?: boolean;
 }
 
-const NA_MODEL_VERSION = 1;
+const NA_MODEL_VERSION = 2;
 
 // ─── NumericAutoencoder ───
 
@@ -326,6 +329,7 @@ export class NumericAutoencoder implements NumericEmbedProvider {
   private replay: NATrainingSample[] = [];
   private lastGoodWeights: NAModelState | null = null;
   private dirty = false;
+  private backfillDone = false;
 
   constructor(cfg: Partial<NAConfig> = {}, featureNames: readonly string[] = []) {
     this.cfg = { ...DEFAULT_NA_CONFIG, ...cfg };
@@ -394,6 +398,31 @@ export class NumericAutoencoder implements NumericEmbedProvider {
       log.warn(`[NA] inputDim mismatch (persisted=${parsed.inputDim}, current=${this.inputDim}) — resetting to fresh (feature set changed)`);
       throw new Error(`inputDim mismatch ${parsed.inputDim}→${this.inputDim}`);
     }
+    // v2.0.865-fix4: v1 state backfill 污染檢測——EXP 1766 records × restart 次
+    // re-feed(無 idempotency guard)→ sampleCount 異常大 → 模型被重複樣本訓練壞
+    // (mse=2.39/acc=52% validation fail 嘅根因)→ 全 reset 等一次 clean backfill
+    const isV1 = !('backfillDone' in parsed);
+    if (isV1 && (parsed.sampleCount ?? 0) > 20000) {
+      log.warn(`[NA] v1 state polluted by backfill re-feed (sampleCount=${parsed.sampleCount} ≈ EXP×restart 次) — resetting model for clean restart`);
+      this.encoderL1 = makeLayer(this.cfg.inputDim, this.cfg.hiddenDim, 'leakyRelu', this.rng);
+      this.encoderL2 = makeLayer(this.cfg.hiddenDim, this.cfg.embedDim, 'linear', this.rng);
+      this.decoderL1 = makeLayer(this.cfg.embedDim, this.cfg.hiddenDim, 'leakyRelu', this.rng);
+      this.decoderL2 = makeLayer(this.cfg.hiddenDim, this.cfg.inputDim, 'linear', this.rng);
+      this.inputMean = zeros1d(this.inputDim);
+      this.inputM2 = zeros1d(this.inputDim);
+      this.inputCount = zeros1d(this.inputDim);
+      this._sampleCount = 0;
+      this.trainStep = 0;
+      this.seed = 0x5eed1234;
+      this.validation = null;
+      this.featureNames = parsed.featureNames ?? [];
+      this.replay = [];
+      this.backfillDone = false; // 留返一次 clean backfill(1766 樣本一次性)
+      this.dirty = true; // persist clean state
+      log.info(`[NA] Model reset — waiting for clean backfill (${parsed.featureNames?.length ?? 0} features)`);
+      return;
+    }
+    this.backfillDone = parsed.backfillDone === true;
     this.encoderL1 = parsed.encoderL1;
     this.encoderL2 = parsed.encoderL2;
     this.decoderL1 = parsed.decoderL1;
@@ -479,7 +508,18 @@ export class NumericAutoencoder implements NumericEmbedProvider {
       featureNames: this.featureNames,
       // v2.0.222: Persist replay buffer so validation survives restart.
       replay: this.replay.slice(-this.cfg.replayBufferSize),
+      backfillDone: this.backfillDone,
     };
+  }
+
+  // v2.0.865-fix4: backfill idempotency API(同 Q-RL/EV Filter 一致)
+  isBackfillDone(): boolean {
+    return this.backfillDone;
+  }
+
+  markBackfillDone(): void {
+    this.backfillDone = true;
+    this.dirty = true;
   }
 
   /** V1: reset any non-finite weight/bias to 0. Called after load + after every
