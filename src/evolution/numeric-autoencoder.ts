@@ -1117,8 +1117,12 @@ export class NumericAutoencoder implements NumericEmbedProvider {
     let diversity = 0;
     for (const e of embeddings) for (let k = 0; k < this.embedDim; k++) { const d = e.z[k]! - mean[k]!; diversity += d * d; }
     diversity /= embeddings.length;
+    // v2.0.865-fix5: mse 由 gate 降為「log-only sanity」——設計註釋明寫
+    // 「accepting models that learned useful contrastive representations
+    // (acc≥55%) even when reconstruction is imperfect」——但 code 之前 AND
+    // mse<1.5 令 code 同設計矛盾(mse 2.28 + acc 55% 有用模型被 gate 死)。
+    // conditional WR 用 cosine(方向)——acc + diversity 先係能力指標。
     const passed = Number.isFinite(mse)
-      && mse < this.cfg.validationMseMax
       && contrastiveAcc >= this.cfg.validationContrastiveAccMin
       && diversity > 0.01; // V13: non-degenerate
     const reason = passed
