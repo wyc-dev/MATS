@@ -324,6 +324,11 @@ export class CloseDecisionCalibrator {
     return Object.hasOwn(this.state.pendingCloses, symbol.slice(0, 24));
   }
 
+  /** 確認執行後清理 pending(防殘留——v2.0.866-phase-b-attack V8) */
+  removePendingClose(symbol: string): void {
+    delete this.state.pendingCloses[symbol.slice(0, 24)];
+  }
+
   getStats(): { pending: number; contexts: number; pendingCloses: number } {
     return {
       pending: Object.keys(this.state.pending).length,

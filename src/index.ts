@@ -9727,10 +9727,11 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
           // otherwise inferCloseReason would classify it by exit price vs
           // SL/TP, losing the agent-decision signal.
           // v2.0.866 Phase B:二次確認 hold gate(consensus close——過早率高 + 盈利)
-          // SL hit 分支(pos.entryThesis && closeStructureConfirmed)→ 都係 consensus close——
-          // 但係 SL hit 應該立即執行——用 closeRationale 判斷:SL 分支有特別 rationale
-          const isSLHitClose = closeRationale.includes('SL hit') || closeRationale.includes('market confirmed break');
-          if (!isSLHitClose && this.holdCloseIfCalibrated(psc.symbol, (pos.unrealizedPnlPct ?? 0) > 0, 'consensus')) {
+          // v2.0.866-phase-b-attack (V14):SL hit 必須永遠立即執行——
+          // 用「結構判斷」closeStructureConfirmed(價格到 SL 價位)而唔係 rationale 文字
+          // (agents 嘅 rationale 可能冇「SL hit」字眼 → 舊 check 會誤 hold SL close = 蝕死!)
+          // closeStructureConfirmed:buy 且 price ≤ SL、sell 且 price ≥ SL——由市場確認
+          if (!closeStructureConfirmed && this.holdCloseIfCalibrated(psc.symbol, (pos.unrealizedPnlPct ?? 0) > 0, 'consensus')) {
             continue; // close 被 hold——唔執行(下 cycle 再確認)
           }
           const closeSuccess = await this.closeTrade(psc.symbol, closeRationale, 'consensus');
@@ -12237,6 +12238,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       // pending-close 確認:上 cycle hold 咗 + 今 cycle 又 close 決定 → 執行(唔再 hold)
       if (this.closeCalibrator.isPendingClose(symNorm)) {
         log.info(`🔓 [close-calib] ${symNorm} pending-close 確認(再次 close 決定)→ 執行`);
+        this.closeCalibrator.removePendingClose(symNorm); // 防殘留
         return false;
       }
       const trend = this.lastKlineSummary?.trend1h ?? 'unknown';

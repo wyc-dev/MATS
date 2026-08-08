@@ -4322,3 +4322,17 @@ Prompt 注入:CLOSE-DECISION CALIBRATION block(有 active position 時——
 - 見好即收 → 取消揸住(P3)
 
 **驗證**:P1-P4(shouldHoldClose 條件/SL 唔掂/見好即收擋/再次確認/超時/block 警告)+ 17/17。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.866-phase-b-attack: SL hit 誤 hold 修復(V14 HIGH)+ pending 殘留(V8)
+
+**主神指令**:不擇手段攻擊 Phase B Hold Gate。
+
+| # | 漏洞 | 嚴重性 | 結果 |
+|---|---|---|---|
+| **V14** | **SL hit 分支可能被 hold**——用 `closeRationale.includes('SL hit')` 判斷——但 agents 嘅 rationale 唔一定含「SL hit」字眼 → **SL close 被二次確認 hold = 蝕死風險**(主神裁決 SL 永遠唔可以 hold) | 🔴 **High** | **修復**:改用**結構判斷** `closeStructureConfirmed`(buy 且 price ≤ SL / sell 且 price ≥ SL——由市場確認)——SL hit 永遠立即執行 |
+| V8 | pending-close「確認執行」後殘留(1 cycle) | 🟡 Low | 修復:isPendingClose 確認時 `removePendingClose` |
+| V21-23 | SL/thesis/虧損唔 hold、remove 清理、毒 pendingCloses | 🟡 | ✅ 驗證安全 |
+
+**驗證**:V21-23 + 36/36(path-attack + calibrator + attack)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
