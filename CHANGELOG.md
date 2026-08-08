@@ -4119,3 +4119,19 @@ D2 逆序測試:有 lesson 行在前、無 lesson 行在後 → 仍保留有 les
 - 冷啟動(無 C 樣本)→ ×1.0
 
 **驗證**:C14(準確率 100% 但賠率差 → 仍壓)+ 30/30。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.865-fix7: Kelly sizing 降為參考數據(主神裁決——size 用戶決定)
+
+**主神裁決**:「Size 交咗俾用戶去決定——Trading Terminal 'Position Size:' 調教——目的係用戶/管理員自己決定風險——Kelly sizing 淨係負責提供參考數據就可以。」
+
+**問題**:EV Filter 正 EV boost(×[1.0, 1.25])乘入 effectiveConfidence → 過 threshold 更易 + 間接推高 conviction → size 分級——**系統代用戶加大倉位——越權**(用戶 Position Size slider 先係 size 控制)。
+
+**修正**:
+- `evToMultiplier`:**正 EV → ×1.0(唔 boost)**——負 EV 保持軟性降(×[0.75, 1.0]——呢個係「判斷力」:系統唔慫恿開負 EV 單,用戶仍可開,soft 唔 block)
+- `getEVBlock`:加 **Kelly 參考數據**——顯示 Kelly fraction 建議倉位百分比——但註明「**最終 size 由用戶喺 Position Size 決定**」
+
+**原則**:負 EV 降權 = 判斷力(系統唔主動推蝕錢單);正 EV 唔 boost = 尊重用戶風險決定權(Kelly 只做參考,唔代用戶落注)。
+
+**驗證**:E2/E3/E7 更新(正 EV → 1.0 + Kelly 參考 block)。23/23(node:test)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
