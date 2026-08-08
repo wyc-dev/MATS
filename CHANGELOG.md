@@ -4232,3 +4232,23 @@ close 後價格反轉          = 啱 close(避開回吐)
 **Phase A(今次)**:只記錄 + 延遲驗證 + per-context 統計——**唔 apply gate multiplier**(getCloseMultiplier 已建但唔接入——確保「先觀察,唔影響操作」)。Phase B 先注入 Meta-Agent block + close gate。
 
 **驗證**:`tests/close-decision-calibrator.test.ts`(10 tests——記錄過濾/side-aware/分級/情境分層/冷啟動/門檻/窗口/持久化/毒 state/malformed/SL 永遠唔掂/idempotent)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.866-attack: Close-Decision Calibrator 對抗硬化(V3 division-by-zero)
+
+**主神指令**:不擇手段攻擊 v2.0.866。
+
+| # | 漏洞 | 嚴重性 | 結果 |
+|---|---|---|---|
+| **V3** | **closePrice=0 毒 state → verify division by zero → Infinity → premature_high 污染統計**——load sanitize 將無效 closePrice 設 0 而唔係 skip——verify 度 (price-0)/0 = Infinity | 🔴 High | **修復**:load 時 closePrice 無效 → skip 唔入 pending + verify double-guard(closePrice ≤ 0 → delete 唔計) |
+| V4 | closePrice NaN/負 load | 🟡 Low | ✅ 安全(skip) |
+| V5 | verifyWindowSec 負/NaN | 🟡 Low | ✅ 安全(立即到期/fallback DEFAULT) |
+| V6 | side 毒值 | 🟡 Low | ✅ 安全(buy fallback) |
+| V7 | closeId 碰撞 | 🟡 Low | ✅ 唔 crash |
+| V8 | 6000 pending cap + stale | ⚪ Perf | ✅ cap 5000 + 50h stale 棄置 |
+| V9 | `__proto__`/prototype context key | 🟡 Low | ✅ load sanitize 跳過 |
+| V10 | 空/垃圾輸入 | 🟡 Low | ✅ 安全 |
+| V11 | NaN price / 反覆 verify | 🟡 Low | ✅ 安全 |
+
+**驗證**:`tests/close-decision-attack.test.ts`(9 tests)+ calibrator 10 = 19/19。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
