@@ -70,6 +70,7 @@ import { computeChartConvictionMultiplier } from './analysis/chart-conviction.ts
 import { LLMConvictionCalibrator } from './analysis/llm-conviction-calibrator.ts';
 import { LLMDirectionVerifier } from './analysis/llm-direction-verifier.ts';
 import { EVFilter } from './analysis/ev-filter.ts';
+import { CloseDecisionCalibrator } from './analysis/close-decision-calibrator.ts';
 import { classifyThesisCatalyst } from './analysis/thesis-catalyst.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
@@ -116,6 +117,7 @@ const chartConvictionConfig = { enabled: parseBlockBool(process.env['CHART_AWARE
 const llmCalibrationConfig = { enabled: parseBlockBool(process.env['LLM_CONVICTION_CALIBRATION'], true) } as const;
 const llmDirectionConfig = { enabled: parseBlockBool(process.env['LLM_DIRECTION_VERIFIER'], true) } as const;
 const evFilterConfig = { enabled: parseBlockBool(process.env['EV_FILTER'], true) } as const;
+const closeCalibConfig = { enabled: parseBlockBool(process.env['CLOSE_DECISION_CALIBRATION'], true) } as const;
 /** v2.0.863-attack: K-LINE fetch TTL cache — 防 cycle period 縮短/多 call 令
  *  candleSnapshot 頻繁 fetch。5 分鐘 cycle 每 cycle 一次;cycle < TTL 時用 cache。 */
 const KLINE_CACHE_TTL_MS = 120_000; // 2 分鐘
@@ -263,6 +265,8 @@ class MATSSystem {
   private llmDirectionVerifier!: LLMDirectionVerifier;
   /** v2.0.865:EV Filter(期望值過濾器——量化核心:負 EV 軟性降權) */
   private evFilter!: EVFilter;
+  /** v2.0.866:Close-Decision Calibrator(平倉判斷校準——Phase A:記錄+驗證+統計) */
+  private closeCalibrator!: CloseDecisionCalibrator;
   /** v2.0.864: 上次記錄判斷時嘅 rationale(block 注入用) */
   private lastJudgeRationale = '';
   /** v2.0.865: 上次判斷嘅 gateAction(block 注入用) */
@@ -1228,6 +1232,15 @@ class MATSSystem {
         log.info(`✓ EV Filter loaded (${ef.keys} keys, ${ef.totalSamples} samples)`);
       } catch (e) {
         log.warn(`[ev-filter-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      // v2.0.866: Close-Decision Calibrator(Phase A——記錄+驗證+統計)
+      this.closeCalibrator = new CloseDecisionCalibrator();
+      try {
+        this.closeCalibrator.load();
+        const cc = this.closeCalibrator.getStats();
+        log.info(`✓ Close-Decision Calibrator loaded (${cc.pending} pending, ${cc.contexts} contexts)`);
+      } catch (e) {
+        log.warn(`[close-calib-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
       }
 
       this.exitPriceLearner = new ExitPriceLearner();
@@ -3665,6 +3678,21 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               trade.side === 'sell' ? 'sell' : 'buy',
               safeNum((trade as { pnlPct?: number }).pnlPct, 0),
             );
+          } catch { /* non-fatal */ }
+        }
+        // v2.0.866: Close-Decision Calibrator — 只記錄「自主 close」
+        // (consensus/thesis_invalidation——SL/PAEL/manual 由 recordClose 內部過濾)
+        // Phase A:只記錄 + 延遲驗證,唔影響操作——「唔會製造死揸」
+        if (this.closeCalibrator && closeCalibConfig.enabled) {
+          try {
+            this.closeCalibrator.recordClose({
+              symbol: normalizeSymbol(trade.symbol || ''),
+              side: trade.side === 'sell' ? 'sell' : 'buy',
+              closePrice: safeNum((trade as { exitPrice?: number }).exitPrice, 0),
+              pnlPct: safeNum((trade as { pnlPct?: number }).pnlPct, 0),
+              closeReason: closeReason ?? '',
+              trendAtClose: this.lastKlineSummary?.trend1h ?? 'unknown',
+            });
           } catch { /* non-fatal */ }
         }
         // v2.0.226: Pass slNarrowed + learningWeight so OLR downweights tight-SL
@@ -6422,6 +6450,9 @@ ${recentExamples}
     // v2.0.864-fix: 每 cycle 驗證上 cycle 嘅 LLM 判斷(B 方向預測——
     // 判斷時 price vs 而家 price)——recordJudgment 喺 gate 度,呢度先驗證舊 pending
     this.verifyPendingLLMJudgments();
+    // v2.0.866: Close-Decision Calibrator 延遲驗證巡邏——
+    // 驗證到期嘅 close 決定(close 後價格方向 vs close 方向——反事實代理)
+    this.verifyPendingCloseDecisions();
 
     // ── Cold-start OLR backfill (once per process) ──
     // On the first cycle with non-empty trading markets, backfill the OLR
@@ -12164,6 +12195,20 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     return 'mixed-neutral';
   }
 
+  /** v2.0.866: 每 cycle 驗證 pending close 決定(延遲驗證——close 後價格方向) */
+  private verifyPendingCloseDecisions(): void {
+    try {
+      if (!this.closeCalibrator || !closeCalibConfig.enabled) return;
+      this.closeCalibrator.verifyPending(
+        (sym) => {
+          const mp = this.hyperliquidWs?.getMarkPriceForSymbol(sym);
+          if (!mp) return null;
+          return normalizeSymbol(mp.symbol) === normalizeSymbol(sym) ? mp.markPrice : null;
+        },
+      );
+    } catch { /* non-fatal */ }
+  }
+
   /** v2.0.864: 每 cycle 驗證 pending LLM 判斷(B 方向預測——判斷時 price vs 而家 price) */
   private verifyPendingLLMJudgments(): void {
     try {
@@ -12199,6 +12244,13 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
   private persistEVFilter(): void {
     try {
       this.evFilter?.save();
+    } catch { /* best-effort */ }
+  }
+
+  /** v2.0.866: Persist Close-Decision Calibrator state. */
+  private persistCloseCalibrator(): void {
+    try {
+      this.closeCalibrator?.save();
     } catch { /* best-effort */ }
   }
 
@@ -13130,6 +13182,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     this.persistLLMCalibrator();
     this.persistLLMDirectionVerifier();
     this.persistEVFilter();
+    this.persistCloseCalibrator();
     this.persistRootCommandPrompt();
     if (this.emManager) saveEMState(this.emManager.getState());
     this.stopTimers();
