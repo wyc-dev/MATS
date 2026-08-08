@@ -4075,3 +4075,31 @@ Kelly 式:倉位 ∝ EV(edge/odds)——正 EV 加大倉位,負 EV 縮
 **修復**:passed = contrastiveAcc ≥ 0.55 **+** diversity > 0.01(mse 降為 log-only sanity——符合設計意圖)。acc 55% ≥ 0.55 → **validation 會 PASS** → NA isReady → conditional WR gate 用 learned embedding。
 
 **驗證**:39/39(NA 相關 3 suites)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.865-fix6: EXP backfill dedup by id(lesson 優先——主神要求資料完整性)
+
+**主神要求**:「backfill 加 dedup by id 必須確切保留有 lesson 嘅紀錄,你可以確保嗎?」
+
+**完整調查結論**:
+- recordClose 寫兩次 = **設計**(v2.0.207 #E:第一次無 lesson + digester 後第二次有 lesson)——註釋明寫「load-dedup keeps the latest by id」
+- EXP load() 有 dedup(v2.0.221)——EXP memory 正確
+- 🔴 **backfillFromExpRecords 讀 raw jsonl 冇 dedup**——8.6% 重複樣本餵俾 OLR/NA/Q-RL/EV Filter/Direction Verifier/AttnRes
+- 驗證:143 個重複 id 全部係「無 lesson 前 + 有 lesson 後」
+
+**修復(lesson 優先——唔單靠順序)**:
+- `thesis-experience.ts`:新增 `hasLessonData()` helper + load() dedup 升級——**有 lesson 版本必定保留**(即使逆序/寫入順序變化)
+- `index.ts` backfill:先 parse 全部 → lesson 優先 dedup Map → 再 feed 學習組件——重複樣本唔入 OLR/NA/Q-RL/EV/DIR/AttnRes
+
+**確保機制(主神要求)**:
+```
+dedup 決策:
+  existing 無 lesson + 新有 lesson → 取代(保留 lesson)
+  existing 有 lesson + 新無 lesson → 保留 existing(lesson 唔俾覆蓋)
+  平手 → keep last(最新)
+  冇 id → 唯一 key 保留(唔誤刪)
+```
+D2 逆序測試:有 lesson 行在前、無 lesson 行在後 → 仍保留有 lesson ✅
+
+**驗證**:`tests/exp-dedup-lesson.test.ts`(7 tests——順序/逆序/平手/冇id/helper/真實 jsonl)。相關 24/24。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

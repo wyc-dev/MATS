@@ -21,6 +21,11 @@
 // All failures fall back safely (EXP_ERRORED → 1.8b; valid no-history → 直出).
 
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
+
+/** v2.0.865-fix6:判斷記錄有冇 lesson 數據(資料完整性 dedup 用) */
+export function hasLessonData(rec: { lesson?: string; rootCause?: string; lessonCategories?: string[] }): boolean {
+  return Boolean(rec.lesson) || Boolean(rec.rootCause) || (Array.isArray(rec.lessonCategories) && rec.lessonCategories.length > 0);
+}
 import { dirname } from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config/index.ts';
@@ -394,7 +399,20 @@ export class ThesisExperience {
       const dedupMap = new Map<string, ThesisExperienceRecord>();
       for (const rec of recs) {
         if (rec.id) {
-          dedupMap.set(rec.id, rec); // last occurrence wins
+          // v2.0.865-fix6(主神要求——資料完整性):
+          // dedup 用「lesson 優先」而非盲目 keep-last——
+          // 確保「有 lesson」嘅版本必定保留,即使寫入順序變化
+          // (digester 版有 lesson/rootCause/lessonCategories——第二行)
+          const existing = dedupMap.get(rec.id);
+          if (!existing) {
+            dedupMap.set(rec.id, rec);
+          } else {
+            const exHas = hasLessonData(existing);
+            const recHas = hasLessonData(rec);
+            if (recHas && !exHas) dedupMap.set(rec.id, rec);      // 新有 lesson → 取代
+            else if (!recHas && exHas) { /* 保留 existing(有 lesson) */ }
+            else dedupMap.set(rec.id, rec);                        // 平手 → keep last
+          }
         }
       }
       const deduped = Array.from(dedupMap.values());
