@@ -1350,7 +1350,7 @@ effectiveConfidence = calibratedConsensus × OLR P(win) × causal × qrlExpectan
 
 **注入**:CLOSE-DECISION CALIBRATION prompt block(active position 時)+ legacy/per-symbol consensus close 兩處 gate + cycle 尾超時處理。
 
-**攻擊硬化**:closePrice=0 division-by-zero(load skip + verify guard)、verifyWindowSec 秒/毫秒單位(V13)、毒 min/max、超大窗口 stale 兜底、`__proto__` sanitize、idempotent(by closeId)。
+**攻擊硬化**:closePrice=0 division-by-zero(load skip + verify guard)、verifyWindowSec 秒/毫秒單位(V13)、毒 min/max、超大窗口 stale 兜底、`__proto__` sanitize、idempotent(by closeId)、**SL hit 用結構判斷 exempt(V14——唔用 rationale 文字——agents 措辭唔影響止蝕)、thesis_invalidation 永遠唔 hold(V26——判斷失效=趨勢反轉證據——只 hold 純 consensus)**。
 
 **Env**:`CLOSE_DECISION_CALIBRATION`。
 
