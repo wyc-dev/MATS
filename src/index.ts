@@ -3682,6 +3682,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           } catch { /* non-fatal */ }
         }
         // v2.0.867:TG close 訊號(事後記錄——解釋性;非阻塞)
+        // v2.0.867-attack (V11):tradeId dedup——同一 trade 兩次 close 事件只發一次
         void tgSignalPusher.pushSignal('close', tgSignalPusher.formatCloseSignal({
           symbol: normalizeSymbol(trade.symbol || ''),
           side: trade.side === 'buy' ? 'buy' : 'sell',
@@ -3692,7 +3693,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           reason: closeReason ?? 'system',
           source: tradeSource,
           exitThesis: (trade as { exitThesis?: string }).exitThesis,
-        })).catch(() => {});
+        }), String((trade as { id?: string | number }).id ?? `close-${(trade as { closedAt?: number }).closedAt ?? Date.now()}-${normalizeSymbol(trade.symbol ?? '')}`)).catch(() => {});
 
         // v2.0.866: Close-Decision Calibrator — 只記錄「自主 close」
         // (consensus/thesis_invalidation——SL/PAEL/manual 由 recordClose 內部過濾)

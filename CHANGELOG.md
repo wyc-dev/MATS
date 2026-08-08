@@ -4375,3 +4375,18 @@ Prompt 注入:CLOSE-DECISION CALIBRATION block(有 active position 時——
 **攞 @mats_trading chat id**:POST `/api/tg-signal/discover`(bot 加入 group 後收過訊息)→ 自動攞;或者用 @userinfobot
 
 **驗證**:`tests/tg-signal.test.ts`(6 tests——格式/設定 persist/冇 token skip/malformed/sanitize)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.867-attack: TG Signal Push 對抗硬化(V11 spam + V3 timeout + V9 undefined)
+
+**主神指令**:不擇手段攻擊 v2.0.867。
+
+| # | 漏洞 | 嚴重性 | 修復 |
+|---|---|---|---|
+| **V11** | **close 訊號無 dedup——同一 trade 兩次 close 事件(onPositionClosedLearning 可被 call 兩次——EXP 重複 bug 已證)→ 兩條訊號 spam group** | 🟠 Medium | `pushSignal(kind, text, tradeId?)`——sentTradeIds Set(cap 200)——index.ts 傳 tradeId |
+| V3 | fetch 冇 timeout——Telegram 唔通時 hang | 🟡 Low | AbortController 10s(sendMessage + getUpdates) |
+| V9 | entryPrice undefined → 顯示 '@undefined' | 🟡 Low | Number.isFinite check |
+| T3/T10 | 測試共享默認 path 污染 + 無意義測試 | 🟡 | TGSignalPusher 加 path 參數(可測試)+ 修測試 |
+
+**驗證**:T7(dedup/cap 200)+ T8(冇 tradeId 唔 dedup)+ T9 + 9/9。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

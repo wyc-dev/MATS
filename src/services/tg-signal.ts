@@ -34,9 +34,15 @@ function defaultSettings(): TGSignalSettings {
 
 export class TGSignalPusher {
   private settings: TGSignalSettings;
+  private path: string;
+  /** v2.0.867-attack (V11):已發送訊號嘅 tradeId dedup——
+   *  onPositionClosedLearning 對同一 trade 可被 call 兩次(EXP 重複 bug 已證)
+   *  → 冇 dedup 會發兩條訊號 spam group——Set cap 200 */
+  private sentTradeIds: Set<string> = new Set();
 
-  constructor() {
+  constructor(path = SETTINGS_PATH) {
     this.settings = defaultSettings();
+    this.path = path;
     this.load();
   }
 
@@ -59,7 +65,14 @@ export class TGSignalPusher {
     try {
       const token = process.env['TELEGRAM_BOT_API'];
       if (!token) return null;
-      const res = await fetch(`https://api.telegram.org/bot${token}/getUpdates`, { method: 'GET' });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      let res: Response;
+      try {
+        res = await fetch(`https://api.telegram.org/bot${token}/getUpdates`, { method: 'GET', signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
       const data = await res.json() as { ok?: boolean; result?: Array<{ message?: { chat?: { id: number; type?: string; title?: string } } }> };
       if (data.ok && Array.isArray(data.result)) {
         // 揀 group/supergroup(排除個人 chat)
@@ -82,8 +95,17 @@ export class TGSignalPusher {
    * 推送訊號(非阻塞——send 失敗唔影響交易)。
    * enabled 開關 + chatId 有效先發。
    */
-  async pushSignal(kind: 'open' | 'close', text: string): Promise<boolean> {
+  async pushSignal(kind: 'open' | 'close', text: string, tradeId?: string): Promise<boolean> {
     try {
+      // v2.0.867-attack (V11):tradeId dedup——同一 trade 兩次事件 → 只發一次
+      if (tradeId) {
+        if (this.sentTradeIds.has(tradeId)) return false;
+        this.sentTradeIds.add(tradeId);
+        if (this.sentTradeIds.size > 200) {
+          const first = this.sentTradeIds.values().next().value as string | undefined;
+          if (first) this.sentTradeIds.delete(first); // cap 200
+        }
+      }
       const enabled = kind === 'open' ? this.settings.openEnabled : this.settings.closeEnabled;
       if (!enabled) return false;
       const chatId = this.settings.chatId.trim();
@@ -92,16 +114,25 @@ export class TGSignalPusher {
 
       // 主神用緊嘅 bridge 發現:Telegram parse_mode 對未配對特殊字符敏感——
       // 用純文字(唔用 Markdown/HTML)——安全第一
+      // v2.0.867-attack (V3):fetch 加 timeout(10s)——Telegram 唔通時唔好 hang
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
       const body = new URLSearchParams({
         chat_id: chatId,
         text: text.slice(0, 4000),
         disable_web_page_preview: 'true',
       });
-      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString(),
-      });
+      let res: Response;
+      try {
+        res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString(),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
       const data = await res.json() as { ok?: boolean };
       if (!data.ok) {
         log.warn(`[tg-signal] sendMessage failed (${kind}): ${JSON.stringify(data).slice(0, 200)}`);
@@ -123,7 +154,7 @@ export class TGSignalPusher {
     thesis?: string; confidence?: number; regime?: string;
   }): string {
     const side = trade.side === 'sell' ? 'SHORT' : 'LONG';
-    const entry = trade.entryPrice ? ` @${trade.entryPrice}` : '';
+    const entry = Number.isFinite(trade.entryPrice) && (trade.entryPrice as number) > 0 ? ` @${trade.entryPrice}` : '';
     const lev = trade.leverage ? ` | ${trade.leverage}x` : '';
     const conf = trade.confidence ? ` | conf ${(trade.confidence * 100).toFixed(0)}%` : '';
     const thesis = trade.thesis ? `\n  開倉理由:${this.truncate(trade.thesis, 300)}` : '';
@@ -157,7 +188,7 @@ ${reason}${thesis}`;
 
   private save(): void {
     try {
-      fs.writeFileSync(SETTINGS_PATH, JSON.stringify({ version: 1, savedAt: Date.now(), ...this.settings }, null, 2), 'utf-8');
+      fs.writeFileSync(this.path, JSON.stringify({ version: 1, savedAt: Date.now(), ...this.settings }, null, 2), 'utf-8');
     } catch (err) {
       log.warn(`[tg-signal] save failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -165,8 +196,8 @@ ${reason}${thesis}`;
 
   private load(): void {
     try {
-      if (!fs.existsSync(SETTINGS_PATH)) return;
-      const raw = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8')) as Partial<TGSignalSettings>;
+      if (!fs.existsSync(this.path)) return;
+      const raw = JSON.parse(fs.readFileSync(this.path, 'utf-8')) as Partial<TGSignalSettings>;
       if (raw && typeof raw === 'object') {
         if (typeof raw.chatId === 'string') this.settings.chatId = raw.chatId.trim().slice(0, 64);
         if (typeof raw.openEnabled === 'boolean') this.settings.openEnabled = raw.openEnabled;
