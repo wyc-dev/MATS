@@ -4157,3 +4157,21 @@ Kelly 倉位建議 = 只做參考數據(block 顯示——size 用戶 Position S
 ```
 
 **驗證**:E2/E3 還原(正 EV boost 預期)。8/8。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.865-fix7c: 移除 Direction Verifier 賠率感知(多餘——EV Filter 已有真 EV)
+
+**主神三點回應**:
+① Kelly cap 50% vs 20%:唔係大問題(贏多贏少唔影響方向)——順手對齊系統上限 20%
+② 賠率感知:「多餘——贏錢就足夠,風險用戶自己衡量」+ 質疑「真 EV 咪一早由 real/paper 歷史取得?」
+③ EXP pnlPct 含費:唔需要(百分比算少)
+
+**主神質疑②確認——EV Filter 一早有真 EV**:
+```
+recordTrade(symbol, side, pnlPct)  ← 所有 real/paper close 記錄(含 EXP backfill)
+computeEV = pWin×avgWin − (1−pWin)×avgLoss  ← 真 pnlPct 計真 avgWin/avgLoss
+```
+**Direction Verifier 嘅 EVFactor 係多餘重複 + 用 accuracy proxy(假設 avgWin=avgLoss)= 假貨**——移除——getTrustMultiplier 還原純 accuracy 乘數——block 移除賠率警告。
+
+**驗證**:C14 移除 + 31/31(node:test)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

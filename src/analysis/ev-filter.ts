@@ -116,7 +116,7 @@ export class EVFilter {
     // Kelly 參考(唔控制):f* = (p×b − q)/b——b = avgWin/avgLoss
     const b = avgLoss > 0 ? avgWin / avgLoss : 0;
     const kellyFrac = b > 0 ? (pWin * b - (1 - pWin)) / b : 0;
-    const kellyPct = Math.max(0, Math.min(50, kellyFrac * 50)); // cap 50% 參考
+    const kellyPct = Math.max(0, Math.min(20, kellyFrac * 50)); // cap 對齊系統上限 20%(maxPositionSizePct)
     const kellyNote = ev >= 0
       ? `(Kelly 參考:此方向歷史賠率支持最高約 ${kellyPct.toFixed(0)}% 倉位——最終 size 由用戶喺 Position Size 決定)`
       : `(EV < 0 = 手續費都搵唔返——建議唔開呢個方向;乘數 ×${mult.toFixed(2)})`;
