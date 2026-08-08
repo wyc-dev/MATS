@@ -43,7 +43,7 @@ import { getAllAgentModels, getAvailableModels } from './agents/agent-models.ts'
 import { BacktestEngine, type BacktestProgress } from './backtest/index.ts';
 import { MarketAgent } from './market-agent/index.ts';
 import { TradingManager } from './trading/trading-manager.ts';
-import { ThesisExperience, ActiveProviderLLMCaller } from './evolution/thesis-experience.ts';
+import { ThesisExperience, ActiveProviderLLMCaller, hasLessonData } from './evolution/thesis-experience.ts';
 import {
   PatternClusterManager,
   CloseReasonAggregator,
@@ -5884,10 +5884,39 @@ ${recentExamples}
       let dirFed = 0; // v2.0.865-fix: Direction Verifier outcome backfill
       let skipped = 0;
 
-      for (const line of lines) {
-        let rec: any;
-        try { rec = JSON.parse(line); } catch { skipped++; continue; }
-        if (!rec.outcome || !rec.symbol) { skipped++; continue; }
+      // v2.0.865-fix6(主神要求——資料完整性):
+      // backfill 讀 raw jsonl 曾無 dedup——recordClose 會寫兩次(第一次無 lesson、
+      // digester 後第二次有 lesson——v2.0.207 #E 設計)——load() 有 dedup(v2.0.221)
+      // 但 backfill 冇 → 8.6% 重複樣本餵俾 OLR/NA/Q-RL/EV/DIR/AttnRes。
+      // 修復:先 parse 全部 → 「lesson 優先」dedup(有 lesson 版本必定保留,
+      // 唔單靠順序——確保資料完整性,即使寫入順序變化)。
+      const dedupedRecs: any[] = [];
+      {
+        const dedupMap = new Map<string, any>();
+        for (const line of lines) {
+          let rec: any;
+          try { rec = JSON.parse(line); } catch { skipped++; continue; }
+          if (!rec || typeof rec !== 'object') { skipped++; continue; }
+          if (rec.id) {
+            const existing = dedupMap.get(rec.id);
+            const exHas = existing ? hasLessonData(existing) : false;
+            const recHas = hasLessonData(rec);
+            if (!existing || (recHas && !exHas)) dedupMap.set(rec.id, rec);
+            // recHas && exHas → keep last(平手);!recHas && exHas → 保留 existing
+          } else {
+            dedupMap.set(`noid-${dedupMap.size}-${Math.random()}`, rec); // 冇 id → 唯一 key 保留
+          }
+        }
+        for (const rec of dedupMap.values()) {
+          if (!rec.outcome || !rec.symbol) { skipped++; continue; }
+          dedupedRecs.push(rec);
+        }
+        if (lines.length - dedupedRecs.length > 0) {
+          log.info(`[exp-backfill] Deduped ${lines.length - dedupedRecs.length} duplicate records by id (lesson-priority kept)`);
+        }
+      }
+
+      for (const rec of dedupedRecs) {
 
         const sym = normalizeSymbol(rec.symbol);
         const side = rec.side === 'buy' ? 'buy' : 'sell' as 'buy' | 'sell';
@@ -6011,7 +6040,7 @@ ${recentExamples}
           try {
             // Construct a minimal ThesisExperienceRecord for addTrade
             const fakeRecord = {
-              id: rec.id ?? `exp-${lines.indexOf(line)}`,
+              id: rec.id ?? `exp-backfill-${String(rec.ts ?? 0)}-${String(rec.symbol ?? '')}`,
               symbol: rec.symbol,
               side: rec.side,
               source: rec.source === 'real' ? 'real' : 'paper',
@@ -6111,7 +6140,7 @@ ${recentExamples}
         // Self-Improver: batch performance windows from EXP records
         // (every 20 records = one performance window)
         try {
-          const expIdx = lines.indexOf(line);
+          const expIdx = 0; // v2.0.865-fix6: dedup 後無 line index——用 0(僅用於 fallback)
           if (expIdx > 0 && expIdx % 20 === 0) {
             const batch = lines.slice(Math.max(0, expIdx - 20), expIdx)
               .map(l => { try { return JSON.parse(l); } catch { return null; } })
