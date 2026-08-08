@@ -282,7 +282,11 @@ export class CloseDecisionCalibrator {
    *  -> 「有腦咁 hold」:只擋「數據證明過早率高嘅見好即收」——唔會死揸
    */
   shouldHoldClose(symbol: string, wasProfitable: boolean, trend: string, closeReason: string): boolean {
-    if (closeReason !== 'consensus' && closeReason !== 'thesis_invalidation') return false; // SL/PAEL/manual 永遠唔 hold
+    // v2.0.866-phase-b-attack2 (V26):只 hold 純 consensus——
+    // thesis_invalidation = Skeptics 判斷「thesis 失效」(趨勢反轉/結構破壞證據)
+    // → 同 SL 一樣係「市場/判斷確認嘅退出」——hold 佢 = 死揸!
+    // SL/thesis/PAEL/manual 永遠唔 hold
+    if (closeReason !== 'consensus') return false;
     if (!wasProfitable) return false; // 虧損 close 唔 hold——止血優先
     const { rate, total } = this.getPrematureRate(symbol, wasProfitable, trend);
     if (total < MIN_SAMPLES) return false; // 冷啟動唔 hold

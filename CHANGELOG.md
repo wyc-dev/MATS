@@ -4336,3 +4336,19 @@ Prompt 注入:CLOSE-DECISION CALIBRATION block(有 active position 時——
 | V21-23 | SL/thesis/虧損唔 hold、remove 清理、毒 pendingCloses | 🟡 | ✅ 驗證安全 |
 
 **驗證**:V21-23 + 36/36(path-attack + calibrator + attack)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.866-phase-b-attack2: thesis_invalidation 誤 hold 修復(V26 HIGH)
+
+**主神指令**:不擇手段攻擊(第二輪)。
+
+| # | 漏洞 | 嚴重性 | 結果 |
+|---|---|---|---|
+| **V26** | **thesis_invalidation close 可能被 hold**——`shouldHoldClose` allow thesis_invalidation——但 thesis invalidation = Skeptics 判斷「thesis 失效」(趨勢反轉/結構破壞證據)——**同 SL 一樣係「判斷確認嘅退出」——hold 佢 = 趨勢反轉都唔走 = 死揸!**(20 樣本過早率高時確認 hold=true) | 🔴 **High** | **修復**:`shouldHoldClose` 只 hold 純 `consensus`——thesis_invalidation/SL/PAEL/manual 永遠唔 hold |
+| V15 | 趨勢參數變化 | 🟡 | ✅ 低風險(情境分層用 close 決定時趨勢) |
+| V21 | flip close 交互 | 🟡 | ✅ flip 經 9797 直接 close(唔經 gate) |
+
+**「唔會死揸」最終保證**:SL + thesis_invalidation + PAEL + manual 全部永遠唔 hold——只有「純 consensus close」先可能 hold(而且只係二次確認 1 cycle + 虧損唔 hold + 冷啟動唔 hold + 超時兜底)。
+
+**驗證**:V21 更新(thesis 永遠唔 hold)+ 36/36。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
