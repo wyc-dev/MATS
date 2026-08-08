@@ -4175,3 +4175,17 @@ computeEV = pWin×avgWin − (1−pWin)×avgLoss  ← 真 pnlPct 計真 avgWin/a
 **Direction Verifier 嘅 EVFactor 係多餘重複 + 用 accuracy proxy(假設 avgWin=avgLoss)= 假貨**——移除——getTrustMultiplier 還原純 accuracy 乘數——block 移除賠率警告。
 
 **驗證**:C14 移除 + 31/31(node:test)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.865-fix7c-attack: Kelly 全贏邏輯 bug 修復(V4)
+
+**主神指令**:不擇手段攻擊 fix7c。
+
+**漏洞(V4)**:Kelly 參考計算——`b = avgLoss > 0 ? avgWin/avgLoss : 0`——**全贏方向(avgLoss=0)→ b=0 → kellyFrac=0 → Kelly 建議 0%**——完全錯(全贏應該建議大倉位)——LLM 見到「全贏但建議 0%」誤導。
+
+**修復**:avgLoss=0 且 avgWin>0 → kellyFrac = pWin(高)——全贏方向建議合理倉位(仍 cap 20% 對齊系統上限)。
+
+**已確認安全**:移除 EVFactor 後 Direction Verifier 純 accuracy(無殘留引用)、Kelly 負值/超大/全輸方向 clamp 正確、exp-dedup 之前已硬化。
+
+**驗證**:`tests/ev-filter-attack2.test.ts`(2 tests——全贏 Kelly > 0% + cap 20%)+ 24/24。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

@@ -114,8 +114,15 @@ export class EVFilter {
     if (n < MIN_SAMPLES) return '';
     const mult = this.getEVMultiplier(symbol, side);
     // Kelly 參考(唔控制):f* = (p×b − q)/b——b = avgWin/avgLoss
-    const b = avgLoss > 0 ? avgWin / avgLoss : 0;
-    const kellyFrac = b > 0 ? (pWin * b - (1 - pWin)) / b : 0;
+    // v2.0.865-fix7c-attack (V4): 全贏方向(avgLoss=0)→ b=0 → kellyFrac=0 → 建議 0%
+    // ——完全錯(全贏應建議大倉位)。修:avgLoss=0 且 avgWin>0 → kellyFrac = pWin。
+    let kellyFrac = 0;
+    if (avgLoss > 0) {
+      const b = avgWin / avgLoss;
+      kellyFrac = b > 0 ? (pWin * b - (1 - pWin)) / b : 0;
+    } else if (avgWin > 0) {
+      kellyFrac = pWin; // 全贏(無 loss)→ Kelly = pWin(高)
+    }
     const kellyPct = Math.max(0, Math.min(20, kellyFrac * 50)); // cap 對齊系統上限 20%(maxPositionSizePct)
     const kellyNote = ev >= 0
       ? `(Kelly 參考:此方向歷史賠率支持最高約 ${kellyPct.toFixed(0)}% 倉位——最終 size 由用戶喺 Position Size 決定)`
