@@ -53,17 +53,15 @@ export function computeEV(samples: number[]): { ev: number; pWin: number; avgWin
   return { ev: pWin * avgWin - (1 - pWin) * avgLoss, pWin, avgWin, avgLoss, n };
 }
 
-/** EV → gate 乘數(Kelly 比例思維——倉位 ∝ EV):
- *  正 EV → 輕 boost(×[1.0, 1.25]——EV=0.3% → ×1.08;EV≥1% → ×1.25)
+/** EV → gate 乘數(主神裁決:size 決定權喺用戶/管理員——Position Size slider——
+ *  系統唔可以代用戶加大倉位):
+ *  正 EV → ×1.0(唔 boost——Kelly 只做參考數據,唔控制 size)
  *  負 EV → 軟性降(×[0.75, 1.0]——EV=-0.5% → ×0.90;EV≤-1% → ×0.75 floor)
+ *  負 EV 降權係「判斷力」(系統唔慫恿開負 EV 單——用戶仍可開,soft)
  *  永遠唔 hard block。 */
 export function evToMultiplier(ev: number, n: number): number {
   if (!Number.isFinite(ev) || n < MIN_SAMPLES) return 1.0;
-  if (ev >= 0) {
-    // Kelly 式正 EV boost——EV 高加大倉位(soft cap 1.25)
-    const boost = Math.min(0.25, ev * 0.25); // 1% EV → +0.25
-    return 1.0 + boost;
-  }
+  if (ev >= 0) return 1.0; // 正 EV 唔 boost——唔代用戶加大倉位
   // EV < 0:線性壓抑——EV=-0.1% → ×0.98;EV=-0.5% → ×0.90;EV=-1% → ×0.75(floor)
   const clamp = Math.max(-1.0, Math.min(0, ev)); // ev 範圍 [-1%, 0]
   const mult = 1.0 + clamp * 0.25; // -1% → 0.75
@@ -98,18 +96,25 @@ export class EVFilter {
     return computeEV(arr);
   }
 
-  /** gate 乘數 ×[0.75, 1.25]——Kelly 思維:正 EV boost,負 EV 軟性降 */
+  /** gate 乘數 ×[0.75, 1.0]——主神裁決:size 用戶決定——正 EV 唔 boost,負 EV 軟性降 */
   getEVMultiplier(symbol: string, side: 'buy' | 'sell'): number {
     const { ev, n } = this.getEVStats(symbol, side);
     return evToMultiplier(ev, n);
   }
 
-  /** 注入 Meta-Agent 嘅 block */
+  /** 注入 Meta-Agent 嘅 block(主神裁決:Kelly 只提供參考數據——size 用戶決定) */
   getEVBlock(symbol: string, side: 'buy' | 'sell'): string {
     const { ev, pWin, avgWin, avgLoss, n } = this.getEVStats(symbol, side);
     if (n < MIN_SAMPLES) return '';
     const mult = this.getEVMultiplier(symbol, side);
-    return `=== EV FILTER (${symbol} × ${side}) ===\n  期望值 EV: ${(ev * 100).toFixed(2)}%(pWin ${(pWin * 100).toFixed(0)}%, avgWin ${(avgWin * 100).toFixed(2)}%, avgLoss ${(avgLoss * 100).toFixed(2)}%, n=${n})\n  (EV < 0 = 手續費都搵唔返——呢個方向唔值得開;乘數 ×${mult.toFixed(2)})`;
+    // Kelly 參考(唔控制):f* = (p×b − q)/b——b = avgWin/avgLoss
+    const b = avgLoss > 0 ? avgWin / avgLoss : 0;
+    const kellyFrac = b > 0 ? (pWin * b - (1 - pWin)) / b : 0;
+    const kellyPct = Math.max(0, Math.min(50, kellyFrac * 50)); // cap 50% 參考
+    const kellyNote = ev >= 0
+      ? `(Kelly 參考:此方向歷史賠率支持最高約 ${kellyPct.toFixed(0)}% 倉位——最終 size 由用戶喺 Position Size 決定)`
+      : `(EV < 0 = 手續費都搵唔返——建議唔開呢個方向;乘數 ×${mult.toFixed(2)})`;
+    return `=== EV FILTER (${symbol} × ${side}) ===\n  期望值 EV: ${(ev * 100).toFixed(2)}%(pWin ${(pWin * 100).toFixed(0)}%, avgWin ${(avgWin * 100).toFixed(2)}%, avgLoss ${(avgLoss * 100).toFixed(2)}%, n=${n})\n  ${kellyNote}`;
   }
 
   getStats(): { keys: number; totalSamples: number } {
