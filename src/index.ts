@@ -6453,6 +6453,8 @@ ${recentExamples}
     // v2.0.866: Close-Decision Calibrator 延遲驗證巡邏——
     // 驗證到期嘅 close 決定(close 後價格方向 vs close 方向——反事實代理)
     this.verifyPendingCloseDecisions();
+    // v2.0.866 Phase B:處理 pending-close(超時兜底執行——唔會永遠 hold)
+    this.processPendingCloseDecisions();
 
     // ── Cold-start OLR backfill (once per process) ──
     // On the first cycle with non-empty trading markets, backfill the OLR
@@ -7563,6 +7565,21 @@ ${recentExamples}
         if (this.evFilter && evFilterConfig.enabled && activeSymbol) {
           const evBlock = this.evFilter.getEVBlock(normalizeSymbol(activeSymbol), this.lastJudgeGateAction);
           if (evBlock) marketDesc += `\n${evBlock}`;
+        }
+      } catch { /* non-fatal */ }
+      // v2.0.866 Phase B: CLOSE-DECISION CALIBRATION block(平倉判斷校準——
+      // 有 active position 時注入——agents 決定 close 前見到過早率)
+      try {
+        if (this.closeCalibrator && closeCalibConfig.enabled && activeSymbol) {
+          const pos = this.portfolio.getPosition(normalizeSymbol(activeSymbol));
+          if (pos) {
+            const ccBlock = this.closeCalibrator.getCalibrationBlock(
+              normalizeSymbol(activeSymbol),
+              (pos.unrealizedPnlPct ?? 0) > 0,
+              this.lastKlineSummary?.trend1h ?? 'unknown',
+            );
+            if (ccBlock) marketDesc += `\n${ccBlock}`;
+          }
         }
       } catch { /* non-fatal */ }
 
@@ -9397,6 +9414,10 @@ ${recentExamples}
         // v2.0.143: Route through closeTrade() — handles paper vs real + exitThesis.
         // v2.0.851: Legacy agent-vote close → tag 'consensus' so the TradeRecord
         // records it as an agent decision (not SL/TP inference).
+        // v2.0.866 Phase B:二次確認 hold gate(過早率高 + 盈利 → 下 cycle 再確認)
+        if (this.holdCloseIfCalibrated(posSymbol, (pos.unrealizedPnlPct ?? 0) > 0, 'consensus')) {
+          continue; // close 被 hold——唔執行(下 cycle 再確認)
+        }
         const legacyCloseSuccess = await this.closeTrade(posSymbol, closeReason, 'consensus');
         if (legacyCloseSuccess) {
           log.info(`  → Closed ${posSymbol} (${pos.agentId === 'hyperliquid-real' ? 'real' : 'paper'}, legacy)`);
@@ -9705,6 +9726,13 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
           // explicitly so the TradeRecord.closeReason records 'consensus' —
           // otherwise inferCloseReason would classify it by exit price vs
           // SL/TP, losing the agent-decision signal.
+          // v2.0.866 Phase B:二次確認 hold gate(consensus close——過早率高 + 盈利)
+          // SL hit 分支(pos.entryThesis && closeStructureConfirmed)→ 都係 consensus close——
+          // 但係 SL hit 應該立即執行——用 closeRationale 判斷:SL 分支有特別 rationale
+          const isSLHitClose = closeRationale.includes('SL hit') || closeRationale.includes('market confirmed break');
+          if (!isSLHitClose && this.holdCloseIfCalibrated(psc.symbol, (pos.unrealizedPnlPct ?? 0) > 0, 'consensus')) {
+            continue; // close 被 hold——唔執行(下 cycle 再確認)
+          }
           const closeSuccess = await this.closeTrade(psc.symbol, closeRationale, 'consensus');
           if (closeSuccess) {
             if (pos.agentId === 'hyperliquid-real') {
@@ -12193,6 +12221,49 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     if (up && !down) return `${tf}-up`;
     if (down && !up) return `${tf}-down`;
     return 'mixed-neutral';
+  }
+
+  /**
+   * v2.0.866 Phase B:consensus close 二次確認 hold gate。
+   * 過早率高(≥60%)+ 盈利 + consensus close → 標記 pending-close(唔立即執行),
+   * 下 cycle 再確認(agents 再 close = 確認執行;冇再 close = 取消揸住;3 cycle 超時 = 兜底執行)。
+   * SL/thesis/PAEL 永遠唔受影響(closeReason 唔係 consensus → 唔 hold)。
+   * @returns true = close 被 hold(唔應該執行);false = 照常執行
+   */
+  private holdCloseIfCalibrated(symbol: string, wasProfitable: boolean, closeReason: string): boolean {
+    try {
+      if (!this.closeCalibrator || !closeCalibConfig.enabled) return false;
+      const symNorm = normalizeSymbol(symbol);
+      // pending-close 確認:上 cycle hold 咗 + 今 cycle 又 close 決定 → 執行(唔再 hold)
+      if (this.closeCalibrator.isPendingClose(symNorm)) {
+        log.info(`🔓 [close-calib] ${symNorm} pending-close 確認(再次 close 決定)→ 執行`);
+        return false;
+      }
+      const trend = this.lastKlineSummary?.trend1h ?? 'unknown';
+      if (!this.closeCalibrator.shouldHoldClose(symNorm, wasProfitable, trend, closeReason)) return false;
+      const rate = this.closeCalibrator.getPrematureRate(symNorm, wasProfitable, trend).rate;
+      this.closeCalibrator.registerPendingClose(symNorm, this.totalCycles, rate);
+      log.warn(`🛑 [close-calib] ${symNorm} close 決定被 hold(過早率 ${(rate * 100).toFixed(0)}%)——下 cycle 再確認;SL/thesis/PAEL 仍然立即執行`);
+      return true;
+    } catch { return false; } // 校準器錯誤 → 唔 hold(照常 close——安全 fallback)
+  }
+
+  /** v2.0.866 Phase B:每 cycle 處理 pending-close(超時兜底執行) */
+  private processPendingCloseDecisions(): void {
+    try {
+      if (!this.closeCalibrator || !closeCalibConfig.enabled) return;
+      const toExecute = this.closeCalibrator.processPendingCloses(this.totalCycles, new Set());
+      for (const sym of toExecute) {
+        log.warn(`⏱️ [close-calib] ${sym} pending-close 超時(3 cycle 冇再確認)→ 兜底執行`);
+        // 超時兜底:執行 close(用 consensus reason——如果 position 仲存在)
+        const pos = this.portfolio.getPosition(sym);
+        if (pos) {
+          void this.closeTrade(sym, 'Close-decision timeout (pending-close 3 cycles)', 'consensus').catch((e) =>
+            log.warn(`[close-calib] timeout close failed: ${e instanceof Error ? e.message : String(e)}`),
+          );
+        }
+      }
+    } catch { /* non-fatal */ }
   }
 
   /** v2.0.866: 每 cycle 驗證 pending close 決定(延遲驗證——close 後價格方向) */
