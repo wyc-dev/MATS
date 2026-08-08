@@ -4272,3 +4272,21 @@ close 後價格反轉          = 啱 close(避開回吐)
 - Close-Decision 係「**close 之後**」極端(錯失/避開)——概念唔同——冇重複——方法論一致互補
 
 **驗證**:C13-15(路徑感知——主神 SELL case/一路跌/避開回吐)+ 22/22。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.866-fix-attack: Close-Decision 路徑感知對抗硬化(7 項確認安全)
+
+**主神指令**:不擇手段攻擊路徑感知驗證。
+
+| # | 攻擊 | 結果 |
+|---|---|---|
+| V14 | 毒 min/max(1e-9/1e308)→ MFE/MAE 無限大污染 | ✅ 唔 crash、premature finite(數值大但唔爆) |
+| V15 | verifyWindowSec 超大(1e15)→ pending 永遠唔到期 | ✅ stale(50h)兜底——唔會永遠堆積 |
+| V16 | 極端更新同到期同步(最後 call price 係極端) | ✅ 正確計(3% MFE → premature_high) |
+| V17 | V13 修正後延遲驗證(10min 留低/31min 到期) | ✅ 正常運作 |
+| V18 | price 1e308 溢出 | ✅ 唔 crash |
+| V19 | 毒 closePrice + 毒極端一齊 | ✅ load sanitize + verify guard |
+| V20 | multi-cycle 極端累積(SELL:跌→更低→到期) | ✅ 累極端 97 → 3% MFE 正確 |
+
+**驗證**:`tests/close-decision-path-attack.test.ts`(7 tests)+ calibrator 13 + attack 9 = 29/29。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
