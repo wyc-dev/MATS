@@ -1293,20 +1293,21 @@ effectiveConfidence = calibratedConsensus(Conviction 校準,大範圍)
 每筆 trade close → recordTrade(symbol, side, pnlPct)——實際 PnL(已含費)
 per (symbol × side) 分布(cap 300)
 EV = pWin×avgWin − (1−pWin)×avgLoss
-gate 乘數:EV ≥ 0 → ×1.0(**v2.0.865-fix7 主神裁決:正 EV 唔 boost——
-  size 決定權喺用戶 Position Size slider——Kelly 唔代用戶加大倉位**);
+gate 乘數:EV ≥ 0 → 輕 boost(×[1.0, 1.25]——判斷層,fix7b 還原——
+  effectiveConfidence 唔直接寫入 positionSizePct,size 用戶 slider + Meta-Agent 決定);
   EV < 0 → ×[0.75, 0.98] 線性壓抑(例:EV=-0.5% → ×0.875——判斷力,soft)
 冷啟動(<20 樣本)→ ×1.0(唔 block 新市場)
-注入 Meta-Agent:「EV FILTER」block——EV/pWin/avgWin/avgLoss/n +
-  **Kelly 參考數據**(建議倉位百分比——「最終 size 由用戶喺 Position Size 決定」)
+注入 Meta-Agent:「EV FILTER」block——EV/pWin/avgWin/avgLoss/n
+  (fix7d:Kelly 建議完全移除——size 用戶決定,建議無用)
 EXP backfill(idempotent persisted backfillDone)
 ```
 
-**Kelly sizing 分工(主神裁決 v2.0.865-fix7)**:
+**size 決定權分工(主神裁決 v2.0.865-fix7b/d)**:
 ```
 負 EV 降權 = 判斷力(系統唔慫恿開蝕錢單——用戶仍可開,soft)
-正 EV 唔 boost = 尊重用戶風險決定權(唔代用戶落注)
-Kelly fraction 只做參考數據注入(LLM 見到建議倉位,但 size 用戶話事)
+正 EV boost = 判斷層(更有信心開正 EV 單——effectiveConfidence 唔寫入
+  positionSizePct——size 永遠由用戶 Position Size slider + Meta-Agent 決定)
+Kelly 建議 = 已完全移除(冇用,塞 LLM 浪費 context)
 ```
 
 **gate 鏈(v2.0.865 完整)**:
