@@ -4103,3 +4103,19 @@ dedup 決策:
 D2 逆序測試:有 lesson 行在前、無 lesson 行在後 → 仍保留有 lesson ✅
 
 **驗證**:`tests/exp-dedup-lesson.test.ts`(7 tests——順序/逆序/平手/冇id/helper/真實 jsonl)。相關 24/24。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.865-fix6-attack: Direction Verifier 賠率感知 EV 校準(quant 正統)
+
+**主神指令**:不擇手段攻擊 + 量化分析師思維提升盈利。
+
+**攻擊結論**:v2.0.865-fix6(dedup)冇真 bug——load dedup→cap 順序正確、backfill 無 line 殘留、runtime 唔雙 push、noid key 唯一、digester callback 唔 push——確認安全。
+
+**盈利改善(quant)**:Direction Verifier 之前只校準「準確率」——**漏咗賠率**——診斷證明:real win 47% 但賠率 1.5:1 先係盈利來源——準確率 60% 但 avgWin 0.2% vs avgLoss 0.8% = 負 EV 唔應該 boost!
+- `getEVFactor`:用 C 平倉結果計方向 EV——EV ≥ 0.2% → ×1.0;0~0.2% → ×0.95;<0 → ×0.85
+- `getTrustMultiplier = 準確率乘數 × EVFactor`——賠率感知
+- block 加「賠率警告」:準確率高但贏幅細 → 信心 ×0.85
+- 冷啟動(無 C 樣本)→ ×1.0
+
+**驗證**:C14(準確率 100% 但賠率差 → 仍壓)+ 30/30。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
