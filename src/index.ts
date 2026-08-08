@@ -3681,19 +3681,31 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             );
           } catch { /* non-fatal */ }
         }
-        // v2.0.867:TG close 訊號(事後記錄——解釋性;非阻塞)
+        // v2.0.867:TG close 訊號(事後記錄——完整字段商業財務英語點列;非阻塞)
         // v2.0.867-attack (V11):tradeId dedup——同一 trade 兩次 close 事件只發一次
-        void tgSignalPusher.pushSignal('close', tgSignalPusher.formatCloseSignal({
-          symbol: normalizeSymbol(trade.symbol || ''),
-          side: trade.side === 'buy' ? 'buy' : 'sell',
-          exitPrice: (trade as { exitPrice?: number }).exitPrice,
-          entryPrice: (trade as { entryPrice?: number }).entryPrice,
-          pnlPct: safeNum((trade as { pnlPct?: number }).pnlPct, 0),
-          holdMin: trade.openedAt > 0 && trade.closedAt > 0 ? Math.max(0, Math.round((trade.closedAt - trade.openedAt) / 60000)) : undefined,
-          reason: closeReason ?? 'system',
-          source: tradeSource,
-          exitThesis: (trade as { exitThesis?: string }).exitThesis,
-        }), String((trade as { id?: string | number }).id ?? `close-${(trade as { closedAt?: number }).closedAt ?? Date.now()}-${normalizeSymbol(trade.symbol ?? '')}`)).catch(() => {});
+        // 主神:輸錢平倉暫時唔推(profitOnlyClose——pnlPct 傳俾 pushSignal 判斷)
+        {
+          const tgPnl = safeNum((trade as { pnlPct?: number }).pnlPct, 0);
+          void tgSignalPusher.pushSignal('close', tgSignalPusher.formatCloseSignal({
+            symbol: normalizeSymbol(trade.symbol || ''),
+            side: trade.side === 'buy' ? 'buy' : 'sell',
+            entryPrice: (trade as { entryPrice?: number }).entryPrice,
+            exitPrice: (trade as { exitPrice?: number }).exitPrice,
+            pnlPct: tgPnl,
+            holdMin: trade.openedAt > 0 && trade.closedAt > 0 ? Math.max(0, Math.round((trade.closedAt - trade.openedAt) / 60000)) : undefined,
+            leverage: (trade as { leverage?: number }).leverage,
+            investment: (trade as { investment?: number }).investment,
+            minValue: (trade as { minValueReached?: number }).minValueReached,
+            maxValue: (trade as { maxValueReached?: number }).maxValueReached,
+            openedAt: (trade as { openedAt?: number }).openedAt,
+            closedAt: (trade as { closedAt?: number }).closedAt,
+            reason: closeReason ?? 'system',
+            source: tradeSource,
+            entryThesis: (trade as { entryThesis?: string }).entryThesis,
+            exitThesis: (trade as { exitThesis?: string }).exitThesis,
+            postReview: (trade as { postReview?: string }).postReview,
+          }), String((trade as { id?: string | number }).id ?? `close-${(trade as { closedAt?: number }).closedAt ?? Date.now()}-${normalizeSymbol(trade.symbol ?? '')}`), tgPnl).catch(() => {});
+        }
 
         // v2.0.866: Close-Decision Calibrator — 只記錄「自主 close」
         // (consensus/thesis_invalidation——SL/PAEL/manual 由 recordClose 內部過濾)

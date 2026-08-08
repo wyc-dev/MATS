@@ -575,6 +575,7 @@ export class APIServer {
               chatId: typeof patch['chatId'] === 'string' ? patch['chatId'] : undefined,
               openEnabled: typeof patch['openEnabled'] === 'boolean' ? patch['openEnabled'] : undefined,
               closeEnabled: typeof patch['closeEnabled'] === 'boolean' ? patch['closeEnabled'] : undefined,
+              profitOnlyClose: typeof patch['profitOnlyClose'] === 'boolean' ? patch['profitOnlyClose'] : undefined,
             });
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(updated));

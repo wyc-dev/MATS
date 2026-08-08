@@ -22,6 +22,8 @@ export interface TGSignalSettings {
   openEnabled: boolean;
   /** close position 訊號推送開關 */
   closeEnabled: boolean;
+  /** 主神:輸錢平倉暫時唔推——只推盈利 close */
+  profitOnlyClose: boolean;
 }
 
 function defaultSettings(): TGSignalSettings {
@@ -29,6 +31,7 @@ function defaultSettings(): TGSignalSettings {
     chatId: process.env['TELEGRAM_CHAT_ID'] ?? '',
     openEnabled: false,
     closeEnabled: true, // close 訊號預設開(事後記錄——安全)
+    profitOnlyClose: true, // 主神:暫時只推盈利 close(輸錢唔 expose)
   };
 }
 
@@ -56,6 +59,7 @@ export class TGSignalPusher {
     }
     if (typeof patch.openEnabled === 'boolean') this.settings.openEnabled = patch.openEnabled;
     if (typeof patch.closeEnabled === 'boolean') this.settings.closeEnabled = patch.closeEnabled;
+    if (typeof patch.profitOnlyClose === 'boolean') this.settings.profitOnlyClose = patch.profitOnlyClose;
     this.save();
     return this.getSettings();
   }
@@ -95,8 +99,14 @@ export class TGSignalPusher {
    * 推送訊號(非阻塞——send 失敗唔影響交易)。
    * enabled 開關 + chatId 有效先發。
    */
-  async pushSignal(kind: 'open' | 'close', text: string, tradeId?: string): Promise<boolean> {
+  async pushSignal(kind: 'open' | 'close', text: string, tradeId?: string, pnlPct?: number): Promise<boolean> {
     try {
+      // 主神:輸錢平倉暫時唔推(profitOnlyClose)——pnlPct < 0 → skip
+      // (check 喺 dedup 之前——輸錢唔應該入 dedup——唔係「已推」)
+      if (kind === 'close' && this.settings.profitOnlyClose && pnlPct !== undefined && Number.isFinite(pnlPct) && pnlPct < 0) {
+        log.info(`[tg-signal] close signal skipped (loss ${(pnlPct * 100).toFixed(2)}% — profitOnlyClose)`);
+        return false;
+      }
       // v2.0.867-attack (V11):tradeId dedup——同一 trade 兩次事件 → 只發一次
       if (tradeId) {
         if (this.sentTradeIds.has(tradeId)) return false;
@@ -162,21 +172,39 @@ export class TGSignalPusher {
 ${thesis}${trade.regime ? `\n  Regime: ${trade.regime}` : ''}`;
   }
 
-  /** Close position 訊號(事後——記錄 + 解釋) */
+  /** Close position 訊號(事後——完整字段,商業財務英語點列,主神要求) */
   formatCloseSignal(trade: {
     symbol: string; side: string; exitPrice?: number; entryPrice?: number;
     pnlPct?: number; holdMin?: number; reason?: string; source?: string;
-    exitThesis?: string;
+    entryThesis?: string; exitThesis?: string; postReview?: string;
+    leverage?: number; investment?: number; minValue?: number; maxValue?: number;
+    openedAt?: number; closedAt?: number;
   }): string {
+    const lines: string[] = [];
     const side = trade.side === 'sell' ? 'SHORT' : 'LONG';
-    const exit = trade.exitPrice ? ` @${trade.exitPrice}` : '';
-    const pnl = trade.pnlPct !== undefined ? ` | ${(trade.pnlPct * 100).toFixed(2)}%` : '';
-    const hold = trade.holdMin !== undefined ? ` | hold ${trade.holdMin}m` : '';
-    const src = trade.source ? ` | [${trade.source.toUpperCase()}]` : '';
-    const reason = trade.reason ? `\n  平倉理由:${this.truncate(trade.reason, 200)}` : '';
-    const thesis = trade.exitThesis ? `\n  ${this.truncate(trade.exitThesis, 200)}` : '';
-    return `📊 MATS Signal — CLOSE ${side} ${trade.symbol}${exit}${pnl}${hold}${src}
-${reason}${thesis}`;
+    lines.push(`📊 MATS Trade Signal — ${trade.symbol.toUpperCase()}`);
+    lines.push('');
+    lines.push(`Direction: ${side}`);
+    if (Number.isFinite(trade.entryPrice) && (trade.entryPrice as number) > 0) lines.push(`Entry Price: $${Number(trade.entryPrice).toFixed(2)}`);
+    if (Number.isFinite(trade.exitPrice) && (trade.exitPrice as number) > 0) lines.push(`Exit Price: $${Number(trade.exitPrice).toFixed(2)}`);
+    const pnl = Number.isFinite(trade.pnlPct) ? (trade.pnlPct as number) * 100 : NaN;
+    if (Number.isFinite(pnl)) {
+      const sign = pnl >= 0 ? '+' : '';
+      lines.push(`P&L: ${sign}${pnl.toFixed(2)}%`);
+    }
+    if (Number.isFinite(trade.holdMin)) lines.push(`Hold: ${Math.round(trade.holdMin as number)} min`);
+    if (Number.isFinite(trade.leverage)) lines.push(`Leverage: ${trade.leverage}x`);
+    if (Number.isFinite(trade.investment) && (trade.investment as number) > 0) lines.push(`Investment: $${Number(trade.investment).toFixed(2)}`);
+    if (Number.isFinite(trade.minValue) && (trade.minValue as number) > 0) lines.push(`MAE (Min Value Reached): $${Number(trade.minValue).toFixed(2)}`);
+    if (Number.isFinite(trade.maxValue) && (trade.maxValue as number) > 0) lines.push(`MFE (Max Value Reached): $${Number(trade.maxValue).toFixed(2)}`);
+    if (Number.isFinite(trade.openedAt) && (trade.openedAt as number) > 0) lines.push(`Opened: ${new Date(trade.openedAt as number).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}`);
+    if (Number.isFinite(trade.closedAt) && (trade.closedAt as number) > 0) lines.push(`Closed: ${new Date(trade.closedAt as number).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}`);
+    if (trade.source) lines.push(`Source: ${trade.source.toUpperCase()}`);
+    if (trade.reason) lines.push(`Close Reason: ${this.truncate(trade.reason, 200)}`);
+    if (trade.entryThesis) lines.push(`Entry Thesis: ${this.truncate(trade.entryThesis, 400)}`);
+    if (trade.exitThesis) lines.push(`Exit Thesis: ${this.truncate(trade.exitThesis, 300)}`);
+    if (trade.postReview) lines.push(`Post-Review: ${this.truncate(trade.postReview, 300)}`);
+    return lines.join('\n');
   }
 
   private truncate(s: string, max: number): string {
@@ -202,6 +230,7 @@ ${reason}${thesis}`;
         if (typeof raw.chatId === 'string') this.settings.chatId = raw.chatId.trim().slice(0, 64);
         if (typeof raw.openEnabled === 'boolean') this.settings.openEnabled = raw.openEnabled;
         if (typeof raw.closeEnabled === 'boolean') this.settings.closeEnabled = raw.closeEnabled;
+        if (typeof raw.profitOnlyClose === 'boolean') this.settings.profitOnlyClose = raw.profitOnlyClose;
       }
     } catch (err) {
       log.warn(`[tg-signal] load failed (defaults): ${err instanceof Error ? err.message : String(err)}`);

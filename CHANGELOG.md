@@ -4390,3 +4390,27 @@ Prompt 注入:CLOSE-DECISION CALIBRATION block(有 active position 時——
 | T3/T10 | 測試共享默認 path 污染 + 無意義測試 | 🟡 | TGSignalPusher 加 path 參數(可測試)+ 修測試 |
 
 **驗證**:T7(dedup/cap 200)+ T8(冇 tradeId 唔 dedup)+ T9 + 9/9。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.867-format: TG 訊號完整格式(商業財務英語點列)+ Profit-Only 控制
+
+**主神要求**:① 訊號內容商業財務英語 + 點列法 + 濃縮重點數據——完整字段整齊顯示;② 設定加 profit/loss 操控——暫時只推盈利 close。
+
+**格式**(formatCloseSignal 完整點列):
+```
+📊 MATS Trade Signal — BNB
+Direction: LONG / Entry Price / Exit Price / P&L / Hold / Leverage /
+Investment / MAE (Min Value) / MFE (Max Value) / Opened / Closed / Source /
+Close Reason / Entry Thesis / Exit Thesis / Post-Review
+```
+
+**Profit-Only(主神)**:
+- `TGSignalSettings.profitOnlyClose`(default true)——pnlPct < 0 → 唔推(輸錢唔 expose)
+- check 喺 dedup **之前**(輸錢唔入 dedup——唔係「已推」)
+- mats_app SettingsSheet 加「Profit Only (只推盈利平倉)」開關
+- API 接受 profitOnlyClose
+
+**實測**:完整格式訊號成功發去 MATS Builder group(-1004392024628)——去 group 睇到「Direction/Entry/Exit/P&L/MAE/MFE/Opened/Closed/Entry Thesis/Exit Thesis/Post-Review」全部齊。
+
+**驗證**:T2 更新(完整字段)+ T11(profitOnly)+ 10/10。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
