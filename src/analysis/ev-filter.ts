@@ -113,21 +113,12 @@ export class EVFilter {
     const { ev, pWin, avgWin, avgLoss, n } = this.getEVStats(symbol, side);
     if (n < MIN_SAMPLES) return '';
     const mult = this.getEVMultiplier(symbol, side);
-    // Kelly 參考(唔控制):f* = (p×b − q)/b——b = avgWin/avgLoss
-    // v2.0.865-fix7c-attack (V4): 全贏方向(avgLoss=0)→ b=0 → kellyFrac=0 → 建議 0%
-    // ——完全錯(全贏應建議大倉位)。修:avgLoss=0 且 avgWin>0 → kellyFrac = pWin。
-    let kellyFrac = 0;
-    if (avgLoss > 0) {
-      const b = avgWin / avgLoss;
-      kellyFrac = b > 0 ? (pWin * b - (1 - pWin)) / b : 0;
-    } else if (avgWin > 0) {
-      kellyFrac = pWin; // 全贏(無 loss)→ Kelly = pWin(高)
-    }
-    const kellyPct = Math.max(0, Math.min(20, kellyFrac * 50)); // cap 對齊系統上限 20%(maxPositionSizePct)
-    const kellyNote = ev >= 0
-      ? `(Kelly 參考:此方向歷史賠率支持最高約 ${kellyPct.toFixed(0)}% 倉位——最終 size 由用戶喺 Position Size 決定)`
+    // v2.0.865-fix7d(主神裁決):Kelly 建議「冇乜用」——移除(size 用戶決定,
+    // 建議唔影響決策,塞 LLM 浪費 context)——只留真實 EV 數據
+    const note = ev >= 0
+      ? `(正 EV——此方向有歷史數據支持)`
       : `(EV < 0 = 手續費都搵唔返——建議唔開呢個方向;乘數 ×${mult.toFixed(2)})`;
-    return `=== EV FILTER (${symbol} × ${side}) ===\n  期望值 EV: ${(ev * 100).toFixed(2)}%(pWin ${(pWin * 100).toFixed(0)}%, avgWin ${(avgWin * 100).toFixed(2)}%, avgLoss ${(avgLoss * 100).toFixed(2)}%, n=${n})\n  ${kellyNote}`;
+    return `=== EV FILTER (${symbol} × ${side}) ===\n  期望值 EV: ${(ev * 100).toFixed(2)}%(pWin ${(pWin * 100).toFixed(0)}%, avgWin ${(avgWin * 100).toFixed(2)}%, avgLoss ${(avgLoss * 100).toFixed(2)}%, n=${n})\n  ${note}`;
   }
 
   getStats(): { keys: number; totalSamples: number } {
