@@ -4203,3 +4203,32 @@ computeEV = pWin×avgWin − (1−pWin)×avgLoss  ← 真 pnlPct 計真 avgWin/a
 **系統更簡潔**:EV Filter block 而家只顯示「呢個方向期望值係幾多」——唔再建議倉位(size 用戶話事)——LLM context 更乾淨。
 
 **驗證**:22/22。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.866: Close-Decision Calibrator(Phase A——平倉判斷校準)
+
+**主神問題**:連續 4 次 BUY BNB over-trade 蝕手續費——根因:consensus close 太快(1.5 分鐘 close 方向正確嘅倉——「見好即收」心理)+ 每筆利潤細 vs 手續費(費侵蝕 30-90%)。
+
+**主神指引**:「優化平倉判斷,而唔係設定規矩限制操作」——15 分鐘 close 規矩被否決(蝕錢時會害死、賺到返落嚟會白坐)。
+
+**核心邏輯**(反事實代理):close 唔影響市場——「close 後價格走勢」=「如果冇 close 繼續持有嘅結果」:
+```
+close 後價格繼續原方向 > 0.5% = 過早 close(錯失利潤)
+close 後價格反轉          = 啱 close(避開回吐)
+分級:>1% 明顯過早(weight 1.0)、>0.5% 輕微(weight 0.5)、0~0.5% neutral 唔計(噪音防護)
+```
+
+**校準範圍(污染防護 + 唔會製造死揸)**:
+```
+✅ consensus / thesis_invalidation(自主判斷——校準對象)
+❌ SL hit(風險底——永遠唔可以教「唔好止蝕」——主神裁決 SL 正確)
+❌ PAEL exit_price_lock(已有 backtest +42% 驗證)
+❌ manual / reconciliation(非自主判斷)
+情境分層(symbol|盈利|趨勢):「虧損 + 趨勢已破」close 過早率低 → 唔會抑制
+  → 趨勢反轉照 close——SL + Skeptics + agents 三重自動平倉永不 block
+```
+
+**Phase A(今次)**:只記錄 + 延遲驗證 + per-context 統計——**唔 apply gate multiplier**(getCloseMultiplier 已建但唔接入——確保「先觀察,唔影響操作」)。Phase B 先注入 Meta-Agent block + close gate。
+
+**驗證**:`tests/close-decision-calibrator.test.ts`(10 tests——記錄過濾/side-aware/分級/情境分層/冷啟動/門檻/窗口/持久化/毒 state/malformed/SL 永遠唔掂/idempotent)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
