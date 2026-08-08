@@ -4290,3 +4290,35 @@ close 後價格反轉          = 啱 close(避開回吐)
 | V20 | multi-cycle 極端累積(SELL:跌→更低→到期) | ✅ 累極端 97 → 3% MFE 正確 |
 
 **驗證**:`tests/close-decision-path-attack.test.ts`(7 tests)+ calibrator 13 + attack 9 = 29/29。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.866-phase-b: 二次確認 Hold Gate(真係可以 hold 到平倉決定)
+
+**主神要求**:「Phase B & C 建議力度唔夠——希望佢真係可以 hold 到平倉嘅決定」——唔單止 prompt 建議,要系統層面有能力擋。
+
+**Phase B 實施**(Close-Decision Calibrator + index.ts):
+```
+二次確認 hold gate:
+  過早率高(≥60%)+ 盈利 + consensus close 決定
+    → 標記 pending-close(唔立即執行)
+    → 下 cycle:
+         agents 再次 close(有反轉證據)→ 確認執行(冇損失)
+         agents 冇再 close = HOLD → 取消(揸住——見好即收被擋)
+         3 cycle 超時 → 兜底執行(唔會永遠 hold)
+    → SL/thesis/PAEL 永遠唔受影響(closeReason 唔係 consensus → 唔 hold)
+    → 虧損 close 唔 hold(止血優先)、冷啟動唔 hold
+
+Prompt 注入:CLOSE-DECISION CALIBRATION block(有 active position 時——
+  agents 決定 close 前見到過早率——「過早率高應揸住;close 需要明確理由」)
+```
+
+**唔會死揸保證**(測試驗證):
+- SL/PAEL/thesis → 永遠唔 hold(P2)
+- 虧損 close → 唔 hold(止血)(P2)
+- 冷啟動 → 唔 hold(P2)
+- 再次 close 決定 → 確認執行(P3)
+- 3 cycle 超時 → 兜底執行(P3)
+- 見好即收 → 取消揸住(P3)
+
+**驗證**:P1-P4(shouldHoldClose 條件/SL 唔掂/見好即收擋/再次確認/超時/block 警告)+ 17/17。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

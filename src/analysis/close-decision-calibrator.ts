@@ -65,15 +65,23 @@ export interface CloseRecord {
   maxPriceSinceClose: number;
 }
 
+export interface PendingCloseDecision {
+  symbol: string;
+  triggeredAtCycle: number;
+  prematureRate: number;
+}
+
 export interface CloseCalibrationState {
   pending: Record<string, CloseRecord>;
   stats: Record<string, Counter>;
   windowStats: Record<string, Counter>;
   backfillDone: boolean;
+  /** v2.0.866 Phase B:二次確認 hold gate——過早率高情境嘅 close 決定 hold 一個 cycle */
+  pendingCloses: Record<string, PendingCloseDecision>;
 }
 
 function emptyState(): CloseCalibrationState {
-  return { pending: {}, stats: {}, windowStats: {}, backfillDone: false };
+  return { pending: {}, stats: {}, windowStats: {}, backfillDone: false, pendingCloses: {} };
 }
 
 function contextKey(symbol: string, wasProfitable: boolean, trend: string): string {
@@ -265,8 +273,63 @@ export class CloseDecisionCalibrator {
     return best;
   }
 
-  getStats(): { pending: number; contexts: number } {
-    return { pending: Object.keys(this.state.pending).length, contexts: Object.keys(this.state.stats).length };
+  // ── Phase B:二次確認 hold gate(真係可以 hold 到平倉決定)───────────
+
+  /**
+   * 應唔應該 hold 呢次 consensus close?
+   *   ✅ hold:過早率高(≥60%)+ 盈利 + 自主 consensus close
+   *   ❌ 唔 hold:SL/thesis/PAEL(永遠立即)、虧損 close(止血)、冷啟動
+   *  -> 「有腦咁 hold」:只擋「數據證明過早率高嘅見好即收」——唔會死揸
+   */
+  shouldHoldClose(symbol: string, wasProfitable: boolean, trend: string, closeReason: string): boolean {
+    if (closeReason !== 'consensus' && closeReason !== 'thesis_invalidation') return false; // SL/PAEL/manual 永遠唔 hold
+    if (!wasProfitable) return false; // 虧損 close 唔 hold——止血優先
+    const { rate, total } = this.getPrematureRate(symbol, wasProfitable, trend);
+    if (total < MIN_SAMPLES) return false; // 冷啟動唔 hold
+    return rate >= 0.60;
+  }
+
+  /** 標記 pending-close(唔立即執行——下 cycle 再確認) */
+  registerPendingClose(symbol: string, cycle: number, prematureRate: number): void {
+    if (!symbol) return;
+    this.state.pendingCloses[symbol.slice(0, 24)] = {
+      symbol: symbol.slice(0, 24),
+      triggeredAtCycle: Number.isFinite(cycle) ? Math.floor(cycle) : 0,
+      prematureRate: Number.isFinite(prematureRate) ? prematureRate : 0.6,
+    };
+  }
+
+  /** 每 cycle 處理 pending-close:
+   *   - confirmedSymbols(本 cycle 再次 close 決定)→ 確認執行(唔再 hold)
+   *   - 超時(3 cycle 冇再 close 決定)→ 超時執行(兜底——唔會永遠 hold)
+   *   - 其餘(本 cycle 冇再 close = HOLD)→ 取消(揸住——見好即收被擋)
+   *   返回:應該執行 close 嘅 symbol list */
+  processPendingCloses(cycle: number, confirmedSymbols: Set<string>): string[] {
+    const toExecute: string[] = [];
+    for (const [sym, pc] of Object.entries(this.state.pendingCloses)) {
+      if (confirmedSymbols.has(sym)) {
+        toExecute.push(sym); // 再次 close 決定 = 確認 → 執行
+        delete this.state.pendingCloses[sym];
+      } else if (cycle - pc.triggeredAtCycle >= 3) {
+        toExecute.push(sym); // 3 cycle 冇再 close(技術異常)→ 超時兜底執行
+        delete this.state.pendingCloses[sym];
+      } else {
+        delete this.state.pendingCloses[sym]; // 本 cycle 冇再 close = HOLD → 取消(揸住)
+      }
+    }
+    return toExecute;
+  }
+
+  isPendingClose(symbol: string): boolean {
+    return Object.hasOwn(this.state.pendingCloses, symbol.slice(0, 24));
+  }
+
+  getStats(): { pending: number; contexts: number; pendingCloses: number } {
+    return {
+      pending: Object.keys(this.state.pending).length,
+      contexts: Object.keys(this.state.stats).length,
+      pendingCloses: Object.keys(this.state.pendingCloses).length,
+    };
   }
 
   // ── Persistence ──────────────────────────────────────────────────────
@@ -327,6 +390,18 @@ export class CloseDecisionCalibrator {
           for (const [k, v] of Object.entries(raw.windowStats)) {
             if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
             clean.windowStats[k] = sanitizeCounter(v);
+          }
+        }
+        if (raw.pendingCloses && typeof raw.pendingCloses === 'object') {
+          for (const [sym, pc] of Object.entries(raw.pendingCloses)) {
+            if (sym === '__proto__' || sym === 'constructor' || sym === 'prototype') continue;
+            const p = (pc ?? {}) as unknown as Record<string, unknown>;
+            if (typeof p['symbol'] !== 'string') continue;
+            clean.pendingCloses[sym.slice(0, 24)] = {
+              symbol: (p['symbol'] as string).slice(0, 24),
+              triggeredAtCycle: Number.isFinite(p['triggeredAtCycle']) ? Math.max(0, p['triggeredAtCycle'] as number) : 0,
+              prematureRate: Number.isFinite(p['prematureRate']) ? Math.max(0, Math.min(1, p['prematureRate'] as number)) : 0.6,
+            };
           }
         }
       }
