@@ -4252,3 +4252,23 @@ close 後價格反轉          = 啱 close(避開回吐)
 | V11 | NaN price / 反覆 verify | 🟡 Low | ✅ 安全 |
 
 **驗證**:`tests/close-decision-attack.test.ts`(9 tests)+ calibrator 10 = 19/19。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.866-fix: Close-Decision Calibrator 路徑感知驗證(MFE/MAE 淨值)+ V13 秒/毫秒 bug
+
+**主神 edge case**:SELL 倉 close 後跌 15min 繼續賺、之後升返賺少好多——單點驗證(最終價)miss「中間錯失」——誤判「啱 close」。
+
+**修正(路徑感知)**:
+- pending 追蹤 close 後極端價(minPriceSinceClose/maxPriceSinceClose——每 cycle 更新)
+- 到期判斷用 **MFE/MAE 淨值**:net = MFE − MAE(錯失 vs 避開)
+  - SELL:MFE=(close−min)/close;MAE=(max−close)/close
+  - net ≥ 1% → premature_high、≥0.5% → premature_low、≤−0.5% → correct、之間 neutral
+- 邊界用 >=/<= (1% 整數算明顯過早)
+- **V13(攻擊發現):verifyWindowSec 秒/毫秒單位錯**——`rec.ts + 1800(秒)` vs ts(毫秒)——**所有 pending 1.8 秒後即到期——根本冇延遲驗證**——修 `×1000`
+
+**MFE/MAE 用家調查(主神問題)**:
+- 現有全部係「倉位內」(PAEL 鎖利門/smart-sltp TP+SL floor/shadow 追蹤/TradeRecord minValue/maxValue)
+- Close-Decision 係「**close 之後**」極端(錯失/避開)——概念唔同——冇重複——方法論一致互補
+
+**驗證**:C13-15(路徑感知——主神 SELL case/一路跌/避開回吐)+ 22/22。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
