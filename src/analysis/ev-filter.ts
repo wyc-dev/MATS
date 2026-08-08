@@ -53,15 +53,20 @@ export function computeEV(samples: number[]): { ev: number; pWin: number; avgWin
   return { ev: pWin * avgWin - (1 - pWin) * avgLoss, pWin, avgWin, avgLoss, n };
 }
 
-/** EV → gate 乘數(主神裁決:size 決定權喺用戶/管理員——Position Size slider——
- *  系統唔可以代用戶加大倉位):
- *  正 EV → ×1.0(唔 boost——Kelly 只做參考數據,唔控制 size)
+/** EV → gate 乘數(判斷層——主神澄清:Kelly「倉位建議」只做參考,
+ *  但「正 EV 判斷信心 boost」係判斷力——effectiveConfidence 唔直接寫入
+ *  positionSizePct,size 由用戶 Position Size slider + Meta-Agent 自己決定):
+ *  正 EV → 輕 boost(×[1.0, 1.25]——EV=0.3% → ×1.08;EV≥1% → ×1.25 cap)——判斷層
  *  負 EV → 軟性降(×[0.75, 1.0]——EV=-0.5% → ×0.90;EV≤-1% → ×0.75 floor)
- *  負 EV 降權係「判斷力」(系統唔慫恿開負 EV 單——用戶仍可開,soft)
+ *  兩者對稱:正 EV 更有信心開單、負 EV 唔慫恿開單——判斷力,唔係 size 控制
  *  永遠唔 hard block。 */
 export function evToMultiplier(ev: number, n: number): number {
   if (!Number.isFinite(ev) || n < MIN_SAMPLES) return 1.0;
-  if (ev >= 0) return 1.0; // 正 EV 唔 boost——唔代用戶加大倉位
+  if (ev >= 0) {
+    // Kelly 式正 EV boost——判斷層(開單信心),唔影響 size(用戶決定)
+    const boost = Math.min(0.25, ev * 0.25); // 1% EV → +0.25
+    return 1.0 + boost;
+  }
   // EV < 0:線性壓抑——EV=-0.1% → ×0.98;EV=-0.5% → ×0.90;EV=-1% → ×0.75(floor)
   const clamp = Math.max(-1.0, Math.min(0, ev)); // ev 範圍 [-1%, 0]
   const mult = 1.0 + clamp * 0.25; // -1% → 0.75
@@ -96,7 +101,8 @@ export class EVFilter {
     return computeEV(arr);
   }
 
-  /** gate 乘數 ×[0.75, 1.0]——主神裁決:size 用戶決定——正 EV 唔 boost,負 EV 軟性降 */
+  /** gate 乘數 ×[0.75, 1.25]——判斷層:正 EV boost(開單信心),負 EV 軟性降——
+   *  effectiveConfidence 唔直接寫入 positionSizePct——size 用戶 Position Size 話事 */
   getEVMultiplier(symbol: string, side: 'buy' | 'sell'): number {
     const { ev, n } = this.getEVStats(symbol, side);
     return evToMultiplier(ev, n);

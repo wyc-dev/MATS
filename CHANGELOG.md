@@ -4135,3 +4135,25 @@ D2 逆序測試:有 lesson 行在前、無 lesson 行在後 → 仍保留有 les
 **原則**:負 EV 降權 = 判斷力(系統唔主動推蝕錢單);正 EV 唔 boost = 尊重用戶風險決定權(Kelly 只做參考,唔代用戶落注)。
 
 **驗證**:E2/E3/E7 更新(正 EV → 1.0 + Kelly 參考 block)。23/23(node:test)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.865-fix7b: 正 EV boost 還原(主神澄清——Kelly「倉位建議」參考,「判斷信心 boost」保留)
+
+**主神質疑**:「之前『正 EV 會 boost』,點解而家『正 EV 唔 boost』?」——本座誠實檢討:過度解讀。
+
+**澄清**(check 實際鏈路):
+- `effectiveConfidence`(含 EV boost)**冇直接寫入 `positionSizePct`**——size 由用戶 Position Size slider(marketAgent config)+ Meta-Agent 自己決定(conviction 分級)+ winner-boost
+- 即係:「正 EV boost」影響嘅係「**判斷層**」(開單信心——過 threshold),唔係「size 控制」
+- 主神「Kelly sizing 只提供參考」=「**倉位大小建議**」參考(block 顯示)——唔係「正 EV 判斷信心都要冇」
+
+**還原**:`evToMultiplier` 正 EV → 輕 boost(×[1.0, 1.25]——判斷層,同負 EV 降權對稱);Kelly 倉位建議保持參考(getEVBlock 註明「最終 size 用戶決定」)。
+
+**分工最終版**:
+```
+正 EV boost = 判斷力(更有信心開正 EV 單——唔影響 size)
+負 EV 降權 = 判斷力(唔慫恿開負 EV 單——soft)
+Kelly 倉位建議 = 只做參考數據(block 顯示——size 用戶 Position Size 話事)
+```
+
+**驗證**:E2/E3 還原(正 EV boost 預期)。8/8。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
