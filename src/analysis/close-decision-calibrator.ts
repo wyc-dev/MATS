@@ -58,6 +58,11 @@ export interface CloseRecord {
   trendAtClose: string;
   verifyWindowSec: number;
   ts: number;
+  /** v2.0.866-fix(主神 edge case——路徑感知):
+   *  close 後極端價追蹤(初始 = closePrice)——MFE/MAE 淨值用
+   *  close 後跌 15min 再升返——單點驗證 miss「中間錯失」——極端捕捉 */
+  minPriceSinceClose: number;
+  maxPriceSinceClose: number;
 }
 
 export interface CloseCalibrationState {
@@ -118,6 +123,8 @@ export class CloseDecisionCalibrator {
       trendAtClose: trend.slice(0, 16),
       verifyWindowSec: this.getBestVerifyWindow(trend),
       ts: Date.now(),
+      minPriceSinceClose: input.closePrice, // 極端初始 = closePrice
+      maxPriceSinceClose: input.closePrice,
     };
     this.capPending();
     return closeId;
@@ -152,23 +159,41 @@ export class CloseDecisionCalibrator {
         delete this.state.pending[id]; // 超時棄置
         continue;
       }
-      if (now < rec.ts + rec.verifyWindowSec) continue; // 未到期——留低
+      // v2.0.866-fix:路徑感知——每 cycle 更新 close 後極端(未到期都更新)
       let price: number | null = null;
       try { price = priceFor(rec.symbol); } catch { /* non-fatal */ }
-      if (price === null || !Number.isFinite(price) || price <= 0) continue; // 無價→留低下次
+      if (price !== null && Number.isFinite(price) && price > 0) {
+        rec.minPriceSinceClose = Math.min(rec.minPriceSinceClose, price);
+        rec.maxPriceSinceClose = Math.max(rec.maxPriceSinceClose, price);
+      }
+      // v2.0.866-attack (V13):verifyWindowSec 係「秒」——要 ×1000 先係毫秒
+      // (舊:rec.ts + 1800(秒) → 1.8 秒後即到期——根本冇延遲驗證——pending 全部即時 delete)
+      if (now < rec.ts + rec.verifyWindowSec * 1000) continue; // 未到期——留低(極端已更新)
       // v2.0.866-attack (V3):closePrice<=0(毒 state)→ division by zero → Infinity
       // → premature_high 污染統計——delete 唔計(唔好污染)
       if (!Number.isFinite(rec.closePrice) || rec.closePrice <= 0) {
         delete this.state.pending[id];
         continue;
       }
-      const pct = (price - rec.closePrice) / rec.closePrice;
-      let verdict: 'premature_high' | 'premature_low' | 'correct' | 'neutral';
+      // v2.0.866-fix(主神 edge case):MFE/MAE 淨值判據(路徑感知——單點驗證 miss
+      // 「close 後跌 15min 再升返」——極端捕捉「錯失 vs 避開」淨效果):
+      //   SELL:MFE(錯失利潤)= (close−min)/close;MAE(避開虧損)= (max−close)/close
+      //   BUY: MFE = (max−close)/close;MAE = (close−min)/close
+      //   net = MFE − MAE
+      //   net > 1% → premature_high;>0.5% → premature_low;<-0.5% → correct;之間 neutral
+      const cp = rec.closePrice;
+      let mfe: number, mae: number;
       if (rec.side === 'buy') {
-        verdict = pct > PREMATURE_HIGH_PCT ? 'premature_high' : pct > PREMATURE_LIGHT_PCT ? 'premature_low' : pct < 0 ? 'correct' : 'neutral';
+        mfe = (rec.maxPriceSinceClose - cp) / cp;
+        mae = (cp - rec.minPriceSinceClose) / cp;
       } else {
-        verdict = pct < -PREMATURE_HIGH_PCT ? 'premature_high' : pct < -PREMATURE_LIGHT_PCT ? 'premature_low' : pct > 0 ? 'correct' : 'neutral';
+        mfe = (cp - rec.minPriceSinceClose) / cp;
+        mae = (rec.maxPriceSinceClose - cp) / cp;
       }
+      const net = mfe - mae;
+      let verdict: 'premature_high' | 'premature_low' | 'correct' | 'neutral';
+      // v2.0.866-attack:邊界用 >=/<=——1% 整數應該算「明顯過早」(同 getCloseMultiplier 一致)
+      verdict = net >= PREMATURE_HIGH_PCT ? 'premature_high' : net >= PREMATURE_LIGHT_PCT ? 'premature_low' : net <= -PREMATURE_LIGHT_PCT ? 'correct' : 'neutral';
       const ctx = contextKey(rec.symbol, rec.wasProfitable, rec.trendAtClose);
       const c = this.state.stats[ctx] ?? { premature: 0, correct: 0 };
       if (verdict === 'premature_high') c.premature += PREMATURE_HIGH_WEIGHT;
@@ -287,6 +312,8 @@ export class CloseDecisionCalibrator {
               trendAtClose: typeof p['trendAtClose'] === 'string' ? p['trendAtClose'] : 'unknown',
               verifyWindowSec: Number.isFinite(p['verifyWindowSec']) ? (p['verifyWindowSec'] as number) : DEFAULT_VERIFY_WINDOW,
               ts,
+              minPriceSinceClose: Number.isFinite(p['minPriceSinceClose']) && (p['minPriceSinceClose'] as number) > 0 ? (p['minPriceSinceClose'] as number) : closePrice,
+              maxPriceSinceClose: Number.isFinite(p['maxPriceSinceClose']) && (p['maxPriceSinceClose'] as number) > 0 ? (p['maxPriceSinceClose'] as number) : closePrice,
             };
           }
         }
