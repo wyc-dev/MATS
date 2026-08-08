@@ -1321,6 +1321,39 @@ effectiveConfidence = calibratedConsensus × OLR P(win) × causal × qrlExpectan
 
 **修復 v2.0.864-fix2**:markPriceMap key 大小寫統一——WS set 大寫 'BTC' vs 查詢 lowercase → key miss → latest fallback → strict-price 全 null → B 驗證死亡——set 時 key 同 get 一致(lowercase bare / ':' 原樣)。
 
+## Close-Decision Calibrator（v2.0.866 — 平倉判斷校準 + 二次確認 Hold Gate）
+
+**主神問題**:連續 4 次 BUY BNB over-trade 蝕手續費——根因:consensus close 太快(1.5 分鐘 close 方向正確嘅倉——「見好即收」)。主神指引:「優化平倉判斷,而唔係設定規矩限制操作」。
+
+**核心邏輯**(反事實代理):close 唔影響市場——「close 後價格走勢」=「如果冇 close 繼續持有嘅結果」——close 後繼續原方向 = 過早(錯失利潤)、反轉 = 啱(避開回吐)。
+
+**Phase A(記錄 + 路徑感知驗證)**(`src/analysis/close-decision-calibrator.ts`):
+```
+記錄:只 consensus/thesis_invalidation(SL/PAEL/manual/reconciliation 排除——污染防護)
+路徑感知:pending 追蹤 close 後極端價(min/max since close)
+判斷:net = MFE − MAE(錯失 vs 避開)
+  SELL:MFE=(close−min)/close;MAE=(max−close)/close
+  net ≥1% premature_high、≥0.5% premature_low、≤−0.5% correct、之間 neutral
+  (主神 edge case:SELL 跌 15min 再升返——單點驗證 miss——極端捕捉)
+```
+
+**Phase B(二次確認 Hold Gate)**——主神:「真係可以 hold 到平倉決定」:
+```
+過早率高(≥60%)+ 盈利 + consensus close:
+  → pending-close(唔立即執行)
+  → 下 cycle:再次 close = 確認執行;冇再 close = HOLD 取消(揸住);
+     3 cycle 超時 = 兜底執行
+  → SL/thesis/PAEL 永遠唔 hold(非 consensus reason)
+  → 虧損 close 唔 hold(止血)、冷啟動唔 hold
+  → 「有腦咁 hold」:只擋見好即收,唔會死揸(三重自動平倉永不 block)
+```
+
+**注入**:CLOSE-DECISION CALIBRATION prompt block(active position 時)+ legacy/per-symbol consensus close 兩處 gate + cycle 尾超時處理。
+
+**攻擊硬化**:closePrice=0 division-by-zero(load skip + verify guard)、verifyWindowSec 秒/毫秒單位(V13)、毒 min/max、超大窗口 stale 兜底、`__proto__` sanitize、idempotent(by closeId)。
+
+**Env**:`CLOSE_DECISION_CALIBRATION`。
+
 ## Self-Aware Evolution（v2.0.843-848 — Meta-Cognition + Self-Improving + Causal Reasoning + Meta-Learning + Component Attribution）
 
 v2.0.842 新增三大進化組件 + 混合數據源架構。v2.0.843 新增 ANN index + asset-aware Meta-Learner + Skeptics evolution block fix。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（見下方專節）。系統唔再只係從交易結果學習，而係知道自己幾準（元認知）、自動調整自己嘅 hyperparameters（自我改善）、區分因果同相關（因果推理）、學點樣學得更快（元學習）、量度邊個組件真正加 edge（歸因）。
