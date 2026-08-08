@@ -70,6 +70,7 @@ import { computeChartConvictionMultiplier } from './analysis/chart-conviction.ts
 import { LLMConvictionCalibrator } from './analysis/llm-conviction-calibrator.ts';
 import { LLMDirectionVerifier } from './analysis/llm-direction-verifier.ts';
 import { EVFilter } from './analysis/ev-filter.ts';
+import { tgSignalPusher } from './services/tg-signal.ts';
 import { CloseDecisionCalibrator } from './analysis/close-decision-calibrator.ts';
 import { classifyThesisCatalyst } from './analysis/thesis-catalyst.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
@@ -3680,6 +3681,19 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             );
           } catch { /* non-fatal */ }
         }
+        // v2.0.867:TG close 訊號(事後記錄——解釋性;非阻塞)
+        void tgSignalPusher.pushSignal('close', tgSignalPusher.formatCloseSignal({
+          symbol: normalizeSymbol(trade.symbol || ''),
+          side: trade.side === 'buy' ? 'buy' : 'sell',
+          exitPrice: (trade as { exitPrice?: number }).exitPrice,
+          entryPrice: (trade as { entryPrice?: number }).entryPrice,
+          pnlPct: safeNum((trade as { pnlPct?: number }).pnlPct, 0),
+          holdMin: trade.openedAt > 0 && trade.closedAt > 0 ? Math.max(0, Math.round((trade.closedAt - trade.openedAt) / 60000)) : undefined,
+          reason: closeReason ?? 'system',
+          source: tradeSource,
+          exitThesis: (trade as { exitThesis?: string }).exitThesis,
+        })).catch(() => {});
+
         // v2.0.866: Close-Decision Calibrator — 只記錄「自主 close」
         // (consensus/thesis_invalidation——SL/PAEL/manual 由 recordClose 內部過濾)
         // Phase A:只記錄 + 延遲驗證,唔影響操作——「唔會製造死揸」
@@ -5176,6 +5190,16 @@ ${recentExamples}
       // importExchangePosition. entryThesis is set after execution succeeds.
       const execResult = await this.tradingManager.executeDecision(decision, entryDataPayload);
       if (execResult.success && (decision.action === 'buy' || decision.action === 'sell')) {
+        // v2.0.867:TG open 訊號(事前——設定開啟先發;非阻塞)
+        void tgSignalPusher.pushSignal('open', tgSignalPusher.formatOpenSignal({
+          symbol: normalizeSymbol(decision.symbol ?? ''),
+          side: decision.action,
+          entryPrice: decision.entryPrice,
+          leverage: decision.leverage,
+          thesis: typeof decision.entryThesis === 'string' ? decision.entryThesis : undefined,
+          confidence: (decision as { confidence?: number }).confidence,
+          regime: this.marketState?.getState(normalizeSymbol(decision.symbol ?? ''))?.regime,
+        })).catch(() => {});
         if (decision.entryThesis) {
           this.portfolio.setEntryThesis(decision.symbol, decision.entryThesis);
         }

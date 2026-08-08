@@ -4352,3 +4352,26 @@ Prompt 注入:CLOSE-DECISION CALIBRATION block(有 active position 時——
 **「唔會死揸」最終保證**:SL + thesis_invalidation + PAEL + manual 全部永遠唔 hold——只有「純 consensus close」先可能 hold(而且只係二次確認 1 cycle + 虧損唔 hold + 冷啟動唔 hold + 超時兜底)。
 
 **驗證**:V21 更新(thesis 永遠唔 hold)+ 36/36。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.867: TG Signal Push — MATS 訊號推送去 Telegram(商品化分發)
+
+**主神商品化**:@mats_trading TG group——每次 open/close 訊號公開推送——「先社群後產品」分發引擎。
+
+**後端**(`src/services/tg-signal.ts` + API + 事件觸發):
+- **設定**:chatId(settings 優先 → env TELEGRAM_CHAT_ID)+ openEnabled/closeEnabled 開關——persist `tg-signal-settings.json`
+- **格式化(解釋性——MATS 殺手功能)**:
+  - Open:「📊 MATS Signal — OPEN LONG BNB @602 | 10x | conf 72% + 開倉理由(thesis)+ regime」
+  - Close:「📊 MATS Signal — CLOSE SHORT BNB @98 | 2.00% | hold 88m | [REAL] + 平倉理由」
+- **事件觸發**:open position(executeDecision 成功)+ close position(onPositionClosedLearning)——非阻塞(send 失敗唔影響交易)
+- **API**:GET/POST `/api/tg-signal`(設定)+ POST `/api/tg-signal/discover`(getUpdates 自動攞 group chat id)
+- **安全**:純文字 sendMessage(唔用 parse_mode——Telegram 特殊字符敏感)、冇 chatId/token 靜默 skip
+
+**前端(mats_app SettingsSheet)**:
+- TG Signal Push section:Group Chat ID 輸入 + Open/Close 訊號開關(ToggleRow)
+- onChange 同步後端(POST /api/tg-signal——EXPO_PUBLIC_MATS_API 設咗先 sync)
+
+**攞 @mats_trading chat id**:POST `/api/tg-signal/discover`(bot 加入 group 後收過訊息)→ 自動攞;或者用 @userinfobot
+
+**驗證**:`tests/tg-signal.test.ts`(6 tests——格式/設定 persist/冇 token skip/malformed/sanitize)。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

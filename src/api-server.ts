@@ -5,6 +5,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from './observability/logger.ts';
+import { tgSignalPusher } from './services/tg-signal.ts';
 // v2.0.42: Import normalizeSymbol for manual close symbol normalization.
 import { normalizeSymbol } from './trading/portfolio.ts';
 import { getAllAgentModels, getAvailableModels, getDynamicAvailableModels, setAgentModel, resetAgentModel, type AgentModelConfig, type ModelDefinition } from './agents/agent-models.ts';
@@ -555,6 +556,49 @@ export class APIServer {
           thoughts: this.data?.agentThoughts ?? [],
           statuses: this.data?.agentStatuses ?? [],
         }));
+        return;
+      }
+
+      // v2.0.867: TG Signal settings(GET 攞設定 / POST 存設定 / discover 攞 group chat id)
+      if (pathname === '/api/tg-signal' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(tgSignalPusher.getSettings()));
+        return;
+      }
+      if (pathname === '/api/tg-signal' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        req.on('end', () => {
+          try {
+            const patch = JSON.parse(body || '{}') as Record<string, unknown>;
+            const updated = tgSignalPusher.updateSettings({
+              chatId: typeof patch['chatId'] === 'string' ? patch['chatId'] : undefined,
+              openEnabled: typeof patch['openEnabled'] === 'boolean' ? patch['openEnabled'] : undefined,
+              closeEnabled: typeof patch['closeEnabled'] === 'boolean' ? patch['closeEnabled'] : undefined,
+            });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(updated));
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid body' }));
+          }
+        });
+        return;
+      }
+      if (pathname === '/api/tg-signal/discover' && req.method === 'POST') {
+        void tgSignalPusher.discoverChatId().then((chatId) => {
+          if (chatId) {
+            const updated = tgSignalPusher.updateSettings({ chatId });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(updated));
+          } else {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'no group found — 確保 bot 已加入 group 並收到訊息' }));
+          }
+        }).catch(() => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'discover failed' }));
+        });
         return;
       }
 
