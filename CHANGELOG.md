@@ -4189,3 +4189,17 @@ computeEV = pWin×avgWin − (1−pWin)×avgLoss  ← 真 pnlPct 計真 avgWin/a
 **已確認安全**:移除 EVFactor 後 Direction Verifier 純 accuracy(無殘留引用)、Kelly 負值/超大/全輸方向 clamp 正確、exp-dedup 之前已硬化。
 
 **驗證**:`tests/ev-filter-attack2.test.ts`(2 tests——全贏 Kelly > 0% + cap 20%)+ 24/24。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.865-fix7d: Kelly 建議完全移除(主神裁決——冇用,size 用戶決定)
+
+**主神裁決**:「Kelly 建議反正都冇乜用,係咪可以移除?」——可以——size 由用戶 Position Size 決定,Kelly 建議唔影響決策,塞 LLM 浪費 context。
+
+**移除**:
+- `getEVBlock`:Kelly fraction 計算 + 「Kelly 參考」文字全部移除——只留真實 EV 數據(EV/pWin/avgWin/avgLoss/n)+ 簡潔註解(正 EV「此方向有歷史數據支持」/ 負 EV「手續費都搵唔返——建議唔開」)
+- `tests/ev-filter-attack2.test.ts`(Kelly 測試)刪除;E7 更新
+
+**系統更簡潔**:EV Filter block 而家只顯示「呢個方向期望值係幾多」——唔再建議倉位(size 用戶話事)——LLM context 更乾淨。
+
+**驗證**:22/22。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
