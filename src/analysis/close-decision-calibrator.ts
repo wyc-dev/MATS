@@ -156,6 +156,12 @@ export class CloseDecisionCalibrator {
       let price: number | null = null;
       try { price = priceFor(rec.symbol); } catch { /* non-fatal */ }
       if (price === null || !Number.isFinite(price) || price <= 0) continue; // 無價→留低下次
+      // v2.0.866-attack (V3):closePrice<=0(毒 state)→ division by zero → Infinity
+      // → premature_high 污染統計——delete 唔計(唔好污染)
+      if (!Number.isFinite(rec.closePrice) || rec.closePrice <= 0) {
+        delete this.state.pending[id];
+        continue;
+      }
       const pct = (price - rec.closePrice) / rec.closePrice;
       let verdict: 'premature_high' | 'premature_low' | 'correct' | 'neutral';
       if (rec.side === 'buy') {
@@ -267,12 +273,14 @@ export class CloseDecisionCalibrator {
             if (id === '__proto__' || id === 'constructor' || id === 'prototype') continue;
             const p = (r ?? {}) as unknown as Record<string, unknown>;
             if (typeof p['symbol'] !== 'string' || typeof p['closeId'] !== 'string') continue;
+            const closePrice = Number.isFinite(p['closePrice']) && (p['closePrice'] as number) > 0 ? (p['closePrice'] as number) : 0;
+            if (closePrice <= 0) continue; // v2.0.866-attack (V3):毒 closePrice → skip 唔入 pending
             const ts = Number.isFinite(p['ts']) ? (p['ts'] as number) : Date.now();
             clean.pending[id] = {
               closeId: p['closeId'] as string,
               symbol: (p['symbol'] as string).slice(0, 24),
               side: p['side'] === 'sell' ? 'sell' : 'buy',
-              closePrice: Number.isFinite(p['closePrice']) && (p['closePrice'] as number) > 0 ? (p['closePrice'] as number) : 0,
+              closePrice,
               pnlPct: Number.isFinite(p['pnlPct']) ? (p['pnlPct'] as number) : 0,
               wasProfitable: p['wasProfitable'] === true,
               closeReason: typeof p['closeReason'] === 'string' ? p['closeReason'] : 'consensus',
