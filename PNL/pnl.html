@@ -101,14 +101,14 @@
 
   /* ── Trade Summary + Records ── */
   .summary {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
-    padding: 16px 20px; width: 100%; max-width: 860px; margin-top: 16px;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 12px;
   }
-  .summary h2 { font-size: 0.95rem; font-weight: 800; margin-bottom: 12px; color: var(--text); }
-  .summary .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
-  .summary .cell { background: var(--surface2); border-radius: 8px; padding: 8px 12px; }
-  .summary .cell .k { font-size: 0.62rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
-  .summary .cell .v { font-family: var(--mono); font-size: 1rem; font-weight: 700; margin-top: 2px; }
+  .summary h2 { font-size: 0.8rem; font-weight: 800; margin-bottom: 10px; color: var(--text); }
+  .summary .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+  .summary .cell { background: var(--surface); border-radius: 8px; padding: 6px 10px; }
+  .summary .cell .k { font-size: 0.58rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+  .summary .cell .v { font-family: var(--mono); font-size: 0.9rem; font-weight: 700; margin-top: 2px; }
 
   .records { width: 100%; max-width: 860px; margin-top: 14px; }
   .records h2 { font-size: 0.95rem; font-weight: 800; margin-bottom: 10px; color: var(--text); }
@@ -159,12 +159,11 @@
 </div>
 
 <div class="chart-wrap" id="chart-card">
+  <div class="summary" id="summary-section">
+    <h2 class="section-title"><i data-lucide="clipboard-list"></i> Trade Summary</h2>
+    <div class="grid" id="summary-grid"></div>
+  </div>
   <canvas id="chart"></canvas>
-</div>
-
-<div class="summary" id="summary-section">
-  <h2 class="section-title"><i data-lucide="clipboard-list"></i> Today's Trade Summary</h2>
-  <div class="grid" id="summary-grid"></div>
 </div>
 
 <div class="records">
@@ -356,7 +355,7 @@ function renderChart(d) {
   ctx.fillStyle = '#e4e4e7';
   ctx.font = 'bold 12px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText(`${data.date} (GMT+8)`, W / 2, 12);
+  ctx.fillText(`${periodDate || ''} (GMT+8)`, W / 2, 12);
 
   // peak / trough 標注(最高/最低累計點)
   const peak = pts.reduce((a, b) => (b.cum > a.cum ? b : a));
