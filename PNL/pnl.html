@@ -244,12 +244,9 @@ function renderSummary(d) {
     ? `${pct >= 0 ? '+' : ''}${Math.abs(pct).toFixed(2)}%`
     : `${usd >= 0 ? '+' : '-'}$${Math.abs(usd).toFixed(2)}`;
   const cells = [
-    ['Mode', modeLabel, ''],
     ['Cumulative PnL', fmtPnl(d.total ?? 0), (d.total ?? 0) >= 0 ? 'var(--green)' : 'var(--red)'],
     ['Trades', String(d.trades ?? 0), ''],
     ['Win Rate', d.trades > 0 ? `${((d.wins ?? 0) / d.trades * 100).toFixed(1)}%` : '—', ''],
-    ['Avg Win', wins.length ? fmtAvg(avgWin, avgWinPct) : '—', 'var(--green)'],
-    ['Avg Loss', losses.length ? fmtAvg(avgLoss, avgLossPct) : '—', 'var(--red)'],
     ['Best Trade', maxWin > 0 ? fmtAvg(maxWin, maxWinPct) : '—', 'var(--green)'],
     ['Worst Trade', maxLoss < 0 ? fmtAvg(maxLoss, maxLossPct) : '—', 'var(--red)'],
   ];
