@@ -242,7 +242,7 @@ function renderSummary(d) {
   const maxWinPct = winPcts.length ? Math.max(...winPcts) : 0;
   const maxLossPct = lossPcts.length ? Math.min(...lossPcts) : 0;
   const fmtAvg = (usd, pct) => unit === 'pct'
-    ? `${pct >= 0 ? '+' : ''}${Math.abs(pct).toFixed(2)}%`
+    ? `${pct >= 0 ? '+' : '-'}${Math.abs(pct).toFixed(2)}%`
     : `${usd >= 0 ? '+' : '-'}$${Math.abs(usd).toFixed(2)}`;
   const cells = [
     ['Cumulative PnL', fmtPnl(d.total ?? 0), (d.total ?? 0) >= 0 ? 'var(--green)' : 'var(--red)'],
@@ -618,7 +618,7 @@ function renderRecords(d) {
     const pnlPct = Number(t.pnlPct ?? 0) * 100;
     const pnlCls = pnl >= 0 ? 'var(--green)' : 'var(--red)';
     const pnlTxt = unit === 'pct'
-      ? `${pnlPct >= 0 ? '+' : ''}${Math.abs(pnlPct).toFixed(2)}%`
+      ? `${pnlPct >= 0 ? '+' : '-'}${Math.abs(pnlPct).toFixed(2)}%`
       : `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`;
     const holdMin = t.openedAt && t.closedAt ? Math.max(0, Math.round((Number(t.closedAt) - Number(t.openedAt)) / 60000)) : null;
     return `<div class="trade-card">
