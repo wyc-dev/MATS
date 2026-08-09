@@ -4496,3 +4496,20 @@ Aug 8, 20:53 → Aug 8, 21:49
 **實測**:簡潔格式成功發去 MATS Builder group——主神去 group 睇效果。
 
 **驗證**:T2 更新(冇表格框/合併行/emoji)+ 12/12。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.867-format4: MAE/MFE 用 -x% & +x% 表示
+
+**主神要求**:「MAE $5.88 · MFE $6.03」→ 應該用 -x% & +x%。
+
+**實現**:MAE/MFE 用 position value 極端 vs 開倉值(investment/margin)計算百分比:
+```
+MAE% = (minValue − initial) / initial → 負(最多蝕幾多%)
+MFE% = (maxValue − initial) / initial → 正(最多賺幾多%)
+顯示:MAE -0.34% · MFE +2.20%
+```
+- 冇 investment(數據缺失)→ fallback 顯示價值($)
+- 實測:成功發去 MATS Builder group
+
+**驗證**:T2(MAE -0.34% / MFE +2.20% assert)+ 12/12。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
