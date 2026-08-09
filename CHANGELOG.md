@@ -4433,3 +4433,20 @@ Close Reason / Entry Thesis / Exit Thesis / Post-Review
 - **C** 後端 `/api/trades`(realTrades 200 筆 persist)+ pushToAPI 傳 realTrades + mats_frontend fetchMyTrades **後端優先** fallback Supabase
 
 **驗證**:T12(P&L 分解)+ T13(idempotent)+ 12/12。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.867-format2: TG 訊號表格格式(Monospace box-drawing)+ 移除 Source/Investment
+
+**主神要求**:① 唔需要顯示 Source 同 Investment;② 用表格框住份資料(TG 有格式支援)。
+
+**實現**:
+- **Monospace code block + box-drawing 字符**(┌─┐│└─┘)——Telegram 無原生表格,但 code block 等寬字體 + box-drawing 做視覺表格(全 ASCII/CJK-free——mobile 對齊 OK)
+- 表格框住核心數據:Direction/Entry/Exit/P&L(槓桿 + 價格)/Hold/Leverage/MAE/MFE/Opened/Closed
+- **移除 Source/Investment**
+- 長文本(Close Reason/Entry Thesis/Exit Thesis/Post-Review)放表格下面(唔適合框)
+- P&L 清楚:「+2.15% (10x) | price +0.21%」——槓桿 + 未槓桿唔再混淆
+
+**實測**:表格格式成功發去 MATS Builder group——主神去 group 睇效果。
+
+**驗證**:T2 更新(表格 + Source/Investment 移除)+ T12(P&L 分解)+ 12/12。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

@@ -172,7 +172,9 @@ export class TGSignalPusher {
 ${thesis}${trade.regime ? `\n  Regime: ${trade.regime}` : ''}`;
   }
 
-  /** Close position 訊號(事後——完整字段,商業財務英語點列,主神要求) */
+  /** Close position 訊號(事後——表格框住核心數據 + 詳細文字,主神要求:
+   *  移除 Source/Investment + Monospace code block 表格(Telegram 無原生表格——
+   *  box-drawing 字符 + code block 等寬字體做視覺表格)) */
   formatCloseSignal(trade: {
     symbol: string; side: string; exitPrice?: number; entryPrice?: number;
     pnlPct?: number; holdMin?: number; reason?: string; source?: string;
@@ -184,30 +186,48 @@ ${thesis}${trade.regime ? `\n  Regime: ${trade.regime}` : ''}`;
     const side = trade.side === 'sell' ? 'SHORT' : 'LONG';
     lines.push(`📊 MATS Trade Signal — ${trade.symbol.toUpperCase()}`);
     lines.push('');
-    lines.push(`Direction: ${side}`);
-    if (Number.isFinite(trade.entryPrice) && (trade.entryPrice as number) > 0) lines.push(`Entry Price: $${Number(trade.entryPrice).toFixed(2)}`);
-    if (Number.isFinite(trade.exitPrice) && (trade.exitPrice as number) > 0) lines.push(`Exit Price: $${Number(trade.exitPrice).toFixed(2)}`);
+
+    // ── 核心數據表格(Monospace code block + box-drawing)──
+    const fmtDate = (ts: number) => new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+    const rows: Array<[string, string]> = [];
+    rows.push(['Direction', side]);
+    if (Number.isFinite(trade.entryPrice) && (trade.entryPrice as number) > 0) rows.push(['Entry', `$${Number(trade.entryPrice).toFixed(2)}`]);
+    if (Number.isFinite(trade.exitPrice) && (trade.exitPrice as number) > 0) rows.push(['Exit', `$${Number(trade.exitPrice).toFixed(2)}`]);
     const pnl = Number.isFinite(trade.pnlPct) ? (trade.pnlPct as number) * 100 : NaN;
     if (Number.isFinite(pnl)) {
       const sign = pnl >= 0 ? '+' : '';
-      // v2.0.867-fix(A):清楚顯示「槓桿後 P&L + 未槓桿價格變化」——
-      // 避免「0.56% vs 5.73%」混淆(未槓桿 vs 槓桿——之前訊號誤導)
+      // v2.0.867-fix(A):槓桿後 P&L + 價格變化(未槓桿)——唔再混淆
       if (Number.isFinite(trade.entryPrice) && Number.isFinite(trade.exitPrice) && (trade.entryPrice as number) > 0) {
         const pricePct = (((trade.exitPrice as number) - (trade.entryPrice as number)) / (trade.entryPrice as number)) * 100;
         const lev = Number.isFinite(trade.leverage) && (trade.leverage as number) > 0 ? ` (${trade.leverage}x)` : '';
-        lines.push(`P&L: ${sign}${pnl.toFixed(2)}% (leveraged${lev}) | price ${pricePct >= 0 ? '+' : ''}${pricePct.toFixed(2)}%`);
+        rows.push(['P&L', `${sign}${pnl.toFixed(2)}%${lev} | price ${pricePct >= 0 ? '+' : ''}${pricePct.toFixed(2)}%`]);
       } else {
-        lines.push(`P&L: ${sign}${pnl.toFixed(2)}%`);
+        rows.push(['P&L', `${sign}${pnl.toFixed(2)}%`]);
       }
     }
-    if (Number.isFinite(trade.holdMin)) lines.push(`Hold: ${Math.round(trade.holdMin as number)} min`);
-    if (Number.isFinite(trade.leverage)) lines.push(`Leverage: ${trade.leverage}x`);
-    if (Number.isFinite(trade.investment) && (trade.investment as number) > 0) lines.push(`Investment: $${Number(trade.investment).toFixed(2)}`);
-    if (Number.isFinite(trade.minValue) && (trade.minValue as number) > 0) lines.push(`MAE (Min Value Reached): $${Number(trade.minValue).toFixed(2)}`);
-    if (Number.isFinite(trade.maxValue) && (trade.maxValue as number) > 0) lines.push(`MFE (Max Value Reached): $${Number(trade.maxValue).toFixed(2)}`);
-    if (Number.isFinite(trade.openedAt) && (trade.openedAt as number) > 0) lines.push(`Opened: ${new Date(trade.openedAt as number).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}`);
-    if (Number.isFinite(trade.closedAt) && (trade.closedAt as number) > 0) lines.push(`Closed: ${new Date(trade.closedAt as number).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}`);
-    if (trade.source) lines.push(`Source: ${trade.source.toUpperCase()}`);
+    if (Number.isFinite(trade.holdMin)) rows.push(['Hold', `${Math.round(trade.holdMin as number)} min`]);
+    if (Number.isFinite(trade.leverage)) rows.push(['Leverage', `${trade.leverage}x`]);
+    if (Number.isFinite(trade.minValue) && (trade.minValue as number) > 0) rows.push(['MAE', `$${Number(trade.minValue).toFixed(2)}`]);
+    if (Number.isFinite(trade.maxValue) && (trade.maxValue as number) > 0) rows.push(['MFE', `$${Number(trade.maxValue).toFixed(2)}`]);
+    if (Number.isFinite(trade.openedAt) && (trade.openedAt as number) > 0) rows.push(['Opened', fmtDate(trade.openedAt as number)]);
+    if (Number.isFinite(trade.closedAt) && (trade.closedAt as number) > 0) rows.push(['Closed', fmtDate(trade.closedAt as number)]);
+
+    if (rows.length > 0) {
+      const labelW = Math.max(...rows.map((r) => r[0].length));
+      const valueMax = Math.min(34, Math.max(...rows.map((r) => r[1].length)));
+      const border = '─'.repeat(labelW + valueMax + 3);
+      lines.push('```');
+      lines.push(`┌${border}┐`);
+      for (const [label, value] of rows) {
+        const val = value.length > valueMax ? value.slice(0, valueMax - 1) + '…' : value;
+        lines.push(`│${label.padEnd(labelW)}│ ${val.padEnd(valueMax)}│`);
+      }
+      lines.push(`└${border}┘`);
+      lines.push('```');
+      lines.push('');
+    }
+
+    // ── 詳細文字(長文本唔適合框——放表格下面)──
     if (trade.reason) lines.push(`Close Reason: ${this.truncate(trade.reason, 200)}`);
     if (trade.entryThesis) lines.push(`Entry Thesis: ${this.truncate(trade.entryThesis, 400)}`);
     if (trade.exitThesis) lines.push(`Exit Thesis: ${this.truncate(trade.exitThesis, 300)}`);
