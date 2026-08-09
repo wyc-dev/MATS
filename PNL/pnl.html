@@ -127,9 +127,10 @@
   /* ── Trade Summary + Records ── */
   .summary { padding: 0; }
   .summary .grid, .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
-  .grid .cell { background: var(--surface2); border-radius: 8px; padding: 4px 8px; }
-  .grid .cell .k { font-size: 0.52rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
-  .grid .cell .v { font-family: var(--mono); font-size: 0.78rem; font-weight: 700; margin-top: 2px; }
+  /* v2.0.868-fix:summary 置中 + 數據大一個 size */
+  .grid .cell { background: var(--surface2); border-radius: 8px; padding: 6px 8px; text-align: center; }
+  .grid .cell .k { font-size: 0.52rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; text-align: center; }
+  .grid .cell .v { font-family: var(--mono); font-size: 0.95rem; font-weight: 700; margin-top: 2px; text-align: center; }
 
 
   /* ── Footer ── */
