@@ -149,6 +149,7 @@
     <button class="switch-btn" data-mode="real" id="btn-real">REAL</button>
   </div>
   <div class="switch-group" id="period-switch">
+    <button class="switch-btn" id="btn-weekly">WEEKLY</button>
     <button class="switch-btn" id="btn-yesterday">YESTERDAY</button>
     <button class="switch-btn active-period2" id="btn-today">TODAY</button>
   </div>
@@ -227,7 +228,7 @@ async function load() {
 function render() {
   if (!data) return;
   const p = data[period] || { date: '', paper: {}, real: {} };
-  document.getElementById('date-label').textContent = `${p.date} (GMT+8)`;
+  document.getElementById('date-label').textContent = period === 'weekly' ? `LAST 7 DAYS (GMT+8)` : `${p.date} (GMT+8)`;
   const d = p[mode] || { points: [], total: 0, trades: 0, wins: 0 };
   renderStats(d);
   renderChart(d);
@@ -245,7 +246,8 @@ function renderSummary(d) {
   const avgLoss = losses.length ? losses.reduce((a, b) => a + b, 0) / losses.length : 0;
   const maxWin = wins.length ? Math.max(...wins) : 0;
   const maxLoss = losses.length ? Math.min(...losses) : 0;
-  const modeLabel = `${mode === 'paper' ? 'PAPER' : 'REAL'} · ${period === 'today' ? 'TODAY' : 'YESTERDAY'}`;
+  const periodLabel = period === 'weekly' ? 'WEEKLY' : period === 'today' ? 'TODAY' : 'YESTERDAY';
+  const modeLabel = `${mode === 'paper' ? 'PAPER' : 'REAL'} · ${periodLabel}`;
   // % 模式:Avg/Best/Worst 用 pnlPct(每筆改變幾多%)
   const pcts = (d.list || []).map(t => Number(t.pnlPct ?? 0) * 100);
   const winPcts = pcts.filter(p => p > 0);
@@ -393,7 +395,7 @@ function renderChart(d) {
   ctx.fillStyle = '#e4e4e7';
   ctx.font = 'bold 12px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText(`${periodDate || ''} (GMT+8)`, W / 2, 12);
+  ctx.fillText(period === 'weekly' ? 'LAST 7 DAYS (GMT+8)' : `${periodDate || ''} (GMT+8)`, W / 2, 12);
 
   // peak / trough 標注(最高/最低累計點)
   const peak = pts.reduce((a, b) => (b.cum > a.cum ? b : a));
@@ -476,6 +478,7 @@ function renderChart(d) {
 // ═══ Mode switch ═══
 document.getElementById('btn-paper').addEventListener('click', () => setMode('paper'));
 document.getElementById('btn-real').addEventListener('click', () => setMode('real'));
+document.getElementById('btn-weekly').addEventListener('click', () => setPeriod('weekly'));
 document.getElementById('btn-yesterday').addEventListener('click', () => setPeriod('yesterday'));
 document.getElementById('btn-today').addEventListener('click', () => setPeriod('today'));
 
@@ -491,6 +494,7 @@ function setUnit(u) {
 
 function setPeriod(p) {
   period = p;
+  document.getElementById('btn-weekly').className = `switch-btn${p === 'weekly' ? ' active-period' : ''}`;
   document.getElementById('btn-yesterday').className = `switch-btn${p === 'yesterday' ? ' active-period' : ''}`;
   document.getElementById('btn-today').className = `switch-btn${p === 'today' ? ' active-period2' : ''}`;
   render();
