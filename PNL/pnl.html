@@ -20,7 +20,8 @@
     --red: #f87171;
     --mono: 'SF Mono', 'Fira Code', monospace;
     --sans: -apple-system, 'Helvetica Neue', sans-serif;
-    --fs-lg: 1.05rem;   /* 核心數值 */
+    --fs-xl: 1.3rem;    /* 頁面/區塊標題(最大) */
+    --fs-lg: 1.05rem;   /* 交易頭行(BNB+PnL) */
     --fs-md: 0.82rem;   /* 正文/標題 */
     --fs-sm: 0.68rem;   /* 標籤/細節 */
     --space: 8px;
@@ -38,10 +39,10 @@
 
   /* ── Header:quiet, small, centered ── */
   .header { text-align: center; margin-bottom: 28px; }
-  .header h1 { font-size: var(--fs-md); font-weight: 500; letter-spacing: -0.01em; }
+  .header h1 { font-size: var(--fs-xl); font-weight: 600; letter-spacing: -0.01em; }
   .header h1 .mono { font-family: var(--mono); font-weight: 600; }
-  .header .date { font-size: var(--fs-sm); color: var(--muted); margin-top: 4px; font-family: var(--mono); }
-  .header .sub { font-size: var(--fs-sm); color: var(--muted); margin-top: 2px; }
+  .header .date { font-size: var(--fs-md); color: var(--muted); margin-top: 4px; font-family: var(--mono); }
+  .header .sub { font-size: var(--fs-md); color: var(--muted); margin-top: 2px; }
 
   /* ── Controls:minimal segmented control ── */
   .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 32px; flex-wrap: wrap; justify-content: center; }
@@ -88,11 +89,7 @@
 
   /* ── Daily Trade Summary:vertical stacked cells, centered, no wasted side space ── */
   .summary { display: flex; flex-direction: column; align-items: center; padding: 0 4px 20px; }
-  .section-title {
-    display: flex; align-items: center; gap: 7px;
-    font-size: var(--fs-sm); font-weight: 500; color: var(--muted);
-    text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 14px;
-  }
+  .section-title { display: flex; align-items: center; gap: 7px; font-size: var(--fs-xl); font-weight: 600; color: var(--text); margin-bottom: 14px; }
   .section-title svg, .records-header svg { width: 14px; height: 14px; color: var(--muted); }
   .summary .grid { display: flex; flex-direction: column; gap: 4px; width: 100%; max-width: 380px; }
   .grid .cell { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 0; }
@@ -102,23 +99,18 @@
   /* ── Trade Records:hairline separators, no card frames ── */
   .records { width: 100%; max-width: 860px; margin-top: 40px; }
   /* 同 Daily Trade Summary 完全一致:header 純 text label(冇容器/冇 border) */
-  .records .records-header {
-    display: flex; align-items: center; gap: 7px;
-    font-size: var(--fs-sm); font-weight: 500; color: var(--muted);
-    text-transform: uppercase; letter-spacing: 0.1em;
-    margin-bottom: 14px;
-  }
+  .records .records-header { display: flex; align-items: center; gap: 7px; font-size: var(--fs-xl); font-weight: 600; color: var(--text); margin-bottom: 14px; }
   .trade-card { padding: 16px 4px; border-bottom: 1px solid var(--border); }
   .trade-card:last-child { border-bottom: none; }
   .trade-card .tc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
-  .trade-card .tc-sym { display: flex; align-items: center; gap: 10px; font-size: var(--fs-md); }
+  .trade-card .tc-sym { display: flex; align-items: center; gap: 10px; font-size: var(--fs-lg); }
   .trade-card .sym { font-family: var(--mono); font-weight: 600; }
   .trade-card .side { font-family: var(--mono); font-size: var(--fs-sm); font-weight: 600; padding: 2px 8px; border-radius: 4px; }
   .trade-card .side-buy { color: var(--green); background: rgba(52,211,153,0.08); }
   .trade-card .side-sell { color: var(--red); background: rgba(248,113,113,0.08); }
-  .trade-card .pnl { font-family: var(--mono); font-size: var(--fs-md); font-weight: 600; font-variant-numeric: tabular-nums; }
-  .trade-card .tc-meta { color: var(--muted); font-family: var(--mono); font-size: var(--fs-sm); margin-top: 6px; line-height: 1.6; }
-  .trade-card .tc-thesis { color: var(--muted); font-size: var(--fs-sm); margin-top: 6px; line-height: 1.6; }
+  .trade-card .pnl { font-family: var(--mono); font-size: var(--fs-lg); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .trade-card .tc-meta { color: var(--muted); font-family: var(--mono); font-size: var(--fs-md); margin-top: 6px; line-height: 1.6; }
+  .trade-card .tc-thesis { color: var(--muted); font-size: var(--fs-md); margin-top: 6px; line-height: 1.6; }
   .trade-card .tc-thesis b { color: var(--muted); font-weight: 600; }
 
   .footer { margin-top: 32px; color: var(--muted); font-size: var(--fs-sm); font-family: var(--mono); }
