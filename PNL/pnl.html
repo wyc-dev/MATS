@@ -130,7 +130,8 @@
   .foot-qrs { display: flex; gap: 14px; align-items: center; }
   .qr-item { display: flex; flex-direction: column; align-items: center; gap: 4px; }
   .qr-item canvas, .qr-item img { border-radius: 6px; border: 1px solid var(--border); }
-  .qr-item span { font-size: var(--fs-sm); color: var(--muted); font-family: var(--mono); }
+  .qr-item .qr-ico { display: flex; align-items: center; justify-content: center; color: var(--muted); line-height: 1; }
+  .qr-item .qr-ico:hover { color: var(--text); }
 </style>
 </head>
 <body>
@@ -189,9 +190,9 @@
 <div class="footer">
   <div class="foot-left">MATS PNL Dashboard · data via /api/pnl · private</div>
   <div class="foot-qrs">
-    <div class="qr-item" title="https://t.me/mats_trading"><div id="qr-tg"></div><span>TG</span></div>
-    <div class="qr-item" title="https://x.com/yc_msg"><div id="qr-x"></div><span>X</span></div>
-    <div class="qr-item" title="https://mats.trading/"><div id="qr-web"></div><span>WEB</span></div>
+    <div class="qr-item" title="https://t.me/mats_trading"><div id="qr-tg"></div><span class="qr-ico" aria-label="Telegram"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></span></div>
+    <div class="qr-item" title="https://x.com/yc_msg"><div id="qr-x"></div><span class="qr-ico" aria-label="X"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></span></div>
+    <div class="qr-item" title="https://mats.trading/"><div id="qr-web"></div><span class="qr-ico" aria-label="Website"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg></span></div>
   </div>
 </div>
 </div>
