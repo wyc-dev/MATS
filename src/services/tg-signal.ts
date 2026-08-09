@@ -172,9 +172,8 @@ export class TGSignalPusher {
 ${thesis}${trade.regime ? `\n  Regime: ${trade.regime}` : ''}`;
   }
 
-  /** Close position 訊號(事後——表格框住核心數據 + 詳細文字,主神要求:
-   *  移除 Source/Investment + Monospace code block 表格(Telegram 無原生表格——
-   *  box-drawing 字符 + code block 等寬字體做視覺表格)) */
+  /** Close position 訊號(事後——簡潔點列,主神要求:唔用表格框(TG box-drawing
+   *  效果差)——合併相關數據、每行一個資訊單元、易讀) */
   formatCloseSignal(trade: {
     symbol: string; side: string; exitPrice?: number; entryPrice?: number;
     pnlPct?: number; holdMin?: number; reason?: string; source?: string;
@@ -184,54 +183,53 @@ ${thesis}${trade.regime ? `\n  Regime: ${trade.regime}` : ''}`;
   }): string {
     const lines: string[] = [];
     const side = trade.side === 'sell' ? 'SHORT' : 'LONG';
-    lines.push(`📊 MATS Trade Signal — ${trade.symbol.toUpperCase()}`);
+    const fmtDate = (ts: number) => new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+
+    // ── 標題一行 ──
+    lines.push(`📊 MATS TRADE — ${trade.symbol.toUpperCase()} ${side}`);
     lines.push('');
 
-    // ── 核心數據表格(Monospace code block + box-drawing)──
-    const fmtDate = (ts: number) => new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
-    const rows: Array<[string, string]> = [];
-    rows.push(['Direction', side]);
-    if (Number.isFinite(trade.entryPrice) && (trade.entryPrice as number) > 0) rows.push(['Entry', `$${Number(trade.entryPrice).toFixed(2)}`]);
-    if (Number.isFinite(trade.exitPrice) && (trade.exitPrice as number) > 0) rows.push(['Exit', `$${Number(trade.exitPrice).toFixed(2)}`]);
+    // ── 核心數據(合併相關——每行一個資訊單元)──
+    const entry = Number.isFinite(trade.entryPrice) && (trade.entryPrice as number) > 0 ? `$${Number(trade.entryPrice).toFixed(2)}` : null;
+    const exit = Number.isFinite(trade.exitPrice) && (trade.exitPrice as number) > 0 ? `$${Number(trade.exitPrice).toFixed(2)}` : null;
+    if (entry && exit) lines.push(`Entry ${entry} → Exit ${exit}`);
+    else if (entry) lines.push(`Entry ${entry}`);
+    else if (exit) lines.push(`Exit ${exit}`);
+
     const pnl = Number.isFinite(trade.pnlPct) ? (trade.pnlPct as number) * 100 : NaN;
     if (Number.isFinite(pnl)) {
       const sign = pnl >= 0 ? '+' : '';
-      // v2.0.867-fix(A):槓桿後 P&L + 價格變化(未槓桿)——唔再混淆
-      if (Number.isFinite(trade.entryPrice) && Number.isFinite(trade.exitPrice) && (trade.entryPrice as number) > 0) {
+      // v2.0.867-fix(A):槓桿後 P&L + 未槓桿價格變化——清楚
+      if (entry && exit && Number.isFinite(trade.entryPrice) && Number.isFinite(trade.exitPrice)) {
         const pricePct = (((trade.exitPrice as number) - (trade.entryPrice as number)) / (trade.entryPrice as number)) * 100;
         const lev = Number.isFinite(trade.leverage) && (trade.leverage as number) > 0 ? ` (${trade.leverage}x)` : '';
-        rows.push(['P&L', `${sign}${pnl.toFixed(2)}%${lev} | price ${pricePct >= 0 ? '+' : ''}${pricePct.toFixed(2)}%`]);
+        lines.push(`P&L ${sign}${pnl.toFixed(2)}%${lev} | price ${pricePct >= 0 ? '+' : ''}${pricePct.toFixed(2)}%`);
       } else {
-        rows.push(['P&L', `${sign}${pnl.toFixed(2)}%`]);
+        lines.push(`P&L ${sign}${pnl.toFixed(2)}%`);
       }
     }
-    if (Number.isFinite(trade.holdMin)) rows.push(['Hold', `${Math.round(trade.holdMin as number)} min`]);
-    if (Number.isFinite(trade.leverage)) rows.push(['Leverage', `${trade.leverage}x`]);
-    if (Number.isFinite(trade.minValue) && (trade.minValue as number) > 0) rows.push(['MAE', `$${Number(trade.minValue).toFixed(2)}`]);
-    if (Number.isFinite(trade.maxValue) && (trade.maxValue as number) > 0) rows.push(['MFE', `$${Number(trade.maxValue).toFixed(2)}`]);
-    if (Number.isFinite(trade.openedAt) && (trade.openedAt as number) > 0) rows.push(['Opened', fmtDate(trade.openedAt as number)]);
-    if (Number.isFinite(trade.closedAt) && (trade.closedAt as number) > 0) rows.push(['Closed', fmtDate(trade.closedAt as number)]);
 
-    if (rows.length > 0) {
-      const labelW = Math.max(...rows.map((r) => r[0].length));
-      const valueMax = Math.min(34, Math.max(...rows.map((r) => r[1].length)));
-      const border = '─'.repeat(labelW + valueMax + 3);
-      lines.push('```');
-      lines.push(`┌${border}┐`);
-      for (const [label, value] of rows) {
-        const val = value.length > valueMax ? value.slice(0, valueMax - 1) + '…' : value;
-        lines.push(`│${label.padEnd(labelW)}│ ${val.padEnd(valueMax)}│`);
-      }
-      lines.push(`└${border}┘`);
-      lines.push('```');
-      lines.push('');
+    // 合併:Hold + Leverage / MAE + MFE / Opened→Closed
+    const stats: string[] = [];
+    if (Number.isFinite(trade.holdMin)) stats.push(`${Math.round(trade.holdMin as number)}m`);
+    if (Number.isFinite(trade.leverage)) stats.push(`${trade.leverage}x`);
+    if (stats.length > 0) lines.push(`Hold ${stats.join(' · ')}`);
+    const excursions: string[] = [];
+    if (Number.isFinite(trade.minValue) && (trade.minValue as number) > 0) excursions.push(`MAE $${Number(trade.minValue).toFixed(2)}`);
+    if (Number.isFinite(trade.maxValue) && (trade.maxValue as number) > 0) excursions.push(`MFE $${Number(trade.maxValue).toFixed(2)}`);
+    if (excursions.length > 0) lines.push(excursions.join(' · '));
+    if (Number.isFinite(trade.openedAt) && (trade.openedAt as number) > 0 && Number.isFinite(trade.closedAt) && (trade.closedAt as number) > 0) {
+      lines.push(`${fmtDate(trade.openedAt as number)} → ${fmtDate(trade.closedAt as number)}`);
+    } else if (Number.isFinite(trade.closedAt) && (trade.closedAt as number) > 0) {
+      lines.push(`Closed ${fmtDate(trade.closedAt as number)}`);
     }
+    lines.push('');
 
-    // ── 詳細文字(長文本唔適合框——放表格下面)──
-    if (trade.reason) lines.push(`Close Reason: ${this.truncate(trade.reason, 200)}`);
-    if (trade.entryThesis) lines.push(`Entry Thesis: ${this.truncate(trade.entryThesis, 400)}`);
-    if (trade.exitThesis) lines.push(`Exit Thesis: ${this.truncate(trade.exitThesis, 300)}`);
-    if (trade.postReview) lines.push(`Post-Review: ${this.truncate(trade.postReview, 300)}`);
+    // ── 詳細文字(簡潔——label 用縮寫)──
+    if (trade.reason) lines.push(`📝 ${this.truncate(trade.reason, 220)}`);
+    if (trade.entryThesis) lines.push(`📄 Entry: ${this.truncate(trade.entryThesis, 350)}`);
+    if (trade.exitThesis) lines.push(`📄 Exit: ${this.truncate(trade.exitThesis, 250)}`);
+    if (trade.postReview) lines.push(`✅ Review: ${this.truncate(trade.postReview, 280)}`);
     return lines.join('\n');
   }
 
