@@ -279,16 +279,17 @@ function renderStats(d) {
   const lossPcts = pcts.filter(p => p < 0);
   const avgWinP = winPcts.length ? winPcts.reduce((a, b) => a + b, 0) / winPcts.length : 0;
   const avgLossP = lossPcts.length ? lossPcts.reduce((a, b) => a + b, 0) / lossPcts.length : 0;
+  // v2.0.868-fix:Avg Win/Loss 分開顏色(win 綠、loss 紅、/ 灰)——唔係一個顏色
+  const avgEl = document.getElementById('stat-avg');
   if (trades > 0 && (winVals.length > 0 || lossVals.length > 0)) {
     if (unit === 'pct') {
-      const avgColor = avgWinP + avgLossP >= 0 ? 'var(--green)' : 'var(--red)';
-      el('stat-avg', `+${avgWinP.toFixed(2)}% / ${avgLossP.toFixed(2)}%`, avgColor);
+      avgEl.innerHTML = `<span style="color:var(--green)">+${avgWinP.toFixed(2)}%</span> <span style="color:var(--muted)">/</span> <span style="color:var(--red)">${avgLossP.toFixed(2)}%</span>`;
     } else {
-      const avgColor = avgWinU + avgLossU >= 0 ? 'var(--green)' : 'var(--red)';
-      el('stat-avg', `+$${avgWinU.toFixed(2)} / -$${Math.abs(avgLossU).toFixed(2)}`, avgColor);
+      avgEl.innerHTML = `<span style="color:var(--green)">+$${avgWinU.toFixed(2)}</span> <span style="color:var(--muted)">/</span> <span style="color:var(--red)">-$${Math.abs(avgLossU).toFixed(2)}</span>`;
     }
   } else {
-    el('stat-avg', '—');
+    avgEl.textContent = '—';
+    avgEl.style.color = 'var(--text)';
   }
 }
 
