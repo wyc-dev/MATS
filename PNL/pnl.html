@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MATS — Daily PnL (Private)</title>
 <script src="https://unpkg.com/lucide@latest"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   /* ═══ World-class minimal design system ═══
      Principles: generous whitespace · no decorative boxes ·
@@ -70,6 +71,19 @@
     display: inline-flex; align-items: center; gap: 6px;
   }
   .btn:hover { color: var(--text); border-color: rgba(255,255,255,0.2); }
+  .capture-drop { position: relative; }
+  .capture-menu {
+    position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 4px; min-width: 140px; display: none;
+  }
+  .capture-menu.open { display: block; }
+  .capture-item {
+    display: block; width: 100%; text-align: left; padding: 8px 12px;
+    background: transparent; border: none; color: var(--text); font-family: var(--mono);
+    font-size: var(--fs-sm); border-radius: 6px; cursor: pointer;
+  }
+  .capture-item:hover { background: var(--surface2); }
   .btn svg, .btn i { width: 13px; height: 13px; color: var(--muted); }
 
   /* ── Stats:pure numbers, no boxes ── */
@@ -137,7 +151,13 @@
     <button class="switch-btn" id="btn-pct">%</button>
   </div>
   <button class="btn" id="btn-refresh"><i data-lucide="refresh-cw"></i> Refresh</button>
-  <button class="btn" id="btn-capture"><i data-lucide="camera"></i> Capture</button>
+  <div class="capture-drop">
+    <button class="btn" id="btn-capture"><i data-lucide="camera"></i> Capture <span class="caret">▾</span></button>
+    <div class="capture-menu" id="capture-menu">
+      <button class="capture-item" data-format="png">Save as PNG</button>
+      <button class="capture-item" data-format="pdf">Save as PDF</button>
+    </div>
+  </div>
 </div>
 
 <div class="stats">
@@ -474,18 +494,55 @@ function setMode(m) {
 document.getElementById('btn-refresh').addEventListener('click', load);
 
 // ═══ Capture (html2canvas CDN + canvas fallback) ═══
-document.getElementById('btn-capture').addEventListener('click', async () => {
+// Capture dropdown
+document.getElementById('btn-capture').addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('capture-menu').classList.toggle('open');
+});
+document.addEventListener('click', () => document.getElementById('capture-menu').classList.remove('open'));
+document.querySelectorAll('.capture-item').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const fmt = btn.dataset.format;
+    document.getElementById('capture-menu').classList.remove('open');
+    capture(fmt);
+  });
+});
+
+// 生成 PNG 或 PDF(html2canvas → jsPDF)
+async function capture(fmt) {
   const root = document.getElementById('capture-root');
   const title = document.getElementById('title-text');
   try {
     if (window.html2canvas) {
-      // v2.0.868-fix:capture 前停用 rainbow 動畫(標題變白字)——截完恢復
       if (title) title.classList.add('no-anim');
-      // 等一幀渲染(css 切換生效)
       await new Promise(r => setTimeout(r, 50));
       const canvas = await html2canvas(root, { backgroundColor: '#0a0a0f', scale: 2, logging: false });
       if (title) title.classList.remove('no-anim');
-      download(canvas.toDataURL('image/png'));
+      if (fmt === 'pdf' && window.jspdf) {
+        // html2canvas canvas → jsPDF A4
+        const imgData = canvas.toDataURL('image/jpeg', 0.95);
+        const pdf = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+        const pw = pdf.internal.pageSize.getWidth();
+        const ph = pdf.internal.pageSize.getHeight();
+        const ratio = canvas.height / canvas.width;
+        const imgH = pw * ratio;
+        if (imgH <= ph) {
+          pdf.addImage(imgData, 'JPEG', 0, 0, pw, imgH);
+        } else {
+          // 多頁(長頁面切分)
+          let pos = 0;
+          const pageH = ph;
+          pdf.addImage(imgData, 'JPEG', 0, pos, pw, imgH);
+          while (pos + pageH < imgH) {
+            pos -= pageH;
+            pdf.addPage();
+            pdf.addImage(imgData, 'JPEG', 0, pos, pw, imgH);
+          }
+        }
+        pdf.save(`MATS-PnL-${mode}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.pdf`);
+      } else {
+        download(canvas.toDataURL('image/png'));
+      }
       return;
     }
     const c = document.getElementById('chart');
@@ -495,7 +552,7 @@ document.getElementById('btn-capture').addEventListener('click', async () => {
     const c = document.getElementById('chart');
     download(c.toDataURL('image/png'));
   }
-});
+}
 
 function download(dataUrl) {
   const a = document.createElement('a');
