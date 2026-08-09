@@ -39,7 +39,8 @@
 
   /* ── Header:quiet, small, centered ── */
   .header { text-align: center; margin-bottom: 28px; }
-  .header h1 { font-size: var(--fs-xl); font-weight: 600; letter-spacing: -0.01em; }
+  .header h1 { display: flex; align-items: center; justify-content: center; gap: 10px; font-size: var(--fs-xl); font-weight: 600; letter-spacing: -0.01em; }
+  .header h1 svg { width: 1.3rem; height: 1.3rem; color: var(--text); }
   .header h1 .mono { font-family: var(--mono); font-weight: 600; }
   .header .date { font-size: var(--fs-sm); color: var(--muted); margin-top: 4px; font-family: var(--mono); }
   .header .sub { font-size: var(--fs-sm); color: var(--muted); margin-top: 2px; }
@@ -87,7 +88,7 @@
   /* ── Daily Trade Summary:vertical stacked cells, centered, no wasted side space ── */
   .summary { display: flex; flex-direction: column; width: 100%; max-width: 860px; margin-bottom: 32px; }
   .section-title { display: flex; align-items: center; gap: 7px; font-size: var(--fs-xl); font-weight: 600; color: var(--text); margin-bottom: 20px; }
-  .section-title svg, .records-header svg { width: 14px; height: 14px; color: var(--muted); }
+  .section-title svg, .records-header svg { width: 1.3rem; height: 1.3rem; color: var(--text); }
   .summary .grid { display: flex; justify-content: space-between; gap: 16px; width: 100%; margin-top: 8px; }
   .grid .cell { text-align: center; flex: 1; padding: 4px 0; }
   .grid .cell .k { font-size: var(--fs-sm); color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
@@ -117,7 +118,7 @@
 
 <div id="capture-root">
 <div class="header">
-  <h1><span class="rainbow-text" id="title-text">MATS</span> — Daily Cumulative PnL</h1>
+  <h1><i data-lucide="bot"></i> <span class="rainbow-text" id="title-text">MATS</span> — Daily Cumulative PnL</h1>
   <div class="date" id="date-label">—</div>
   <div class="sub">AI-native multi-agent trading system · live cumulative PnL (local time GMT+8)</div>
 </div>
