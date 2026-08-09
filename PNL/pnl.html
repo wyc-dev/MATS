@@ -601,7 +601,12 @@ document.head.appendChild(script);
 // ═══ Trade Records(每筆交易——unit-aware)═══
 function renderRecords(d) {
   const list = document.getElementById('records-list');
-  const records = d.list || [];
+  // v2.0.868-fix:最新 close 排最頂(降序——fallback openedAt)
+  const records = [...(d.list || [])].sort((a, b) => {
+    const ta = Number(a.closedAt ?? a.openedAt ?? 0);
+    const tb = Number(b.closedAt ?? b.openedAt ?? 0);
+    return tb - ta;
+  });
   if (records.length === 0) {
     list.innerHTML = '<div class="trade-card"><div class="meta">No trades closed this period</div></div>';
     return;
