@@ -12326,6 +12326,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
   private computeDailyPnl(): {
     today: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
     yesterday: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
+    weekly: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
   } {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -12386,6 +12387,13 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         principal: { paper: paperPrincipal, real: realPrincipal },
         paper: toSeries(paperAll, yesterdayStart, todayStart),
         real: toSeries(realAll, yesterdayStart, todayStart),
+      },
+      // v2.0.868:最近 7 日(含今日——今日未完都計)
+      weekly: {
+        date: fmt(todayStart - 6 * DAY),
+        principal: { paper: paperPrincipal, real: realPrincipal },
+        paper: toSeries(paperAll, todayStart - 6 * DAY, todayStart + DAY),
+        real: toSeries(realAll, todayStart - 6 * DAY, todayStart + DAY),
       },
     };
   }
