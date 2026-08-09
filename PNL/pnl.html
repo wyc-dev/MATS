@@ -96,9 +96,15 @@
   .btn svg, .btn i { width: 14px; height: 14px; color: #fff; }
   .section-title { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); }
   .section-title svg { width: 13px; height: 13px; color: #fff; }
-  .records { width: 100%; max-width: 860px; margin-top: 14px; }
+  /* v2.0.868-fix:Trade Records 成個 section 包喺卡片 div(標題+icon+紀錄喺容器內) */
+  .records {
+    width: 100%; max-width: 860px; margin-top: 14px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 14px;
+  }
   .records .records-header {
     display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: var(--fs-sm); font-weight: 800;
+    padding-bottom: 10px; border-bottom: 1px solid var(--border);
   }
   .records .records-header svg { width: 13px; height: 13px; color: #fff; }
   .trade-card {
