@@ -158,18 +158,24 @@ export class TGSignalPusher {
 
   // ── 格式化 ───────────────────────────────────────────────────────────
 
-  /** Open position 訊號(事前——解釋性) */
+  /** Open position 訊號(事前——簡潔點列,同 close 一致風格;主神準備用) */
   formatOpenSignal(trade: {
     symbol: string; side: string; entryPrice?: number; leverage?: number;
     thesis?: string; confidence?: number; regime?: string;
   }): string {
+    const lines: string[] = [];
     const side = trade.side === 'sell' ? 'SHORT' : 'LONG';
-    const entry = Number.isFinite(trade.entryPrice) && (trade.entryPrice as number) > 0 ? ` @${trade.entryPrice}` : '';
-    const lev = trade.leverage ? ` | ${trade.leverage}x` : '';
-    const conf = trade.confidence ? ` | conf ${(trade.confidence * 100).toFixed(0)}%` : '';
-    const thesis = trade.thesis ? `\n  開倉理由:${this.truncate(trade.thesis, 300)}` : '';
-    return `📊 MATS Signal — OPEN ${side} ${trade.symbol}${entry}${lev}${conf}
-${thesis}${trade.regime ? `\n  Regime: ${trade.regime}` : ''}`;
+    lines.push(`📊 MATS TRADE — ${trade.symbol.toUpperCase()} ${side} (OPEN)`);
+    lines.push('');
+    if (Number.isFinite(trade.entryPrice) && (trade.entryPrice as number) > 0) lines.push(`Entry $${Number(trade.entryPrice).toFixed(2)}`);
+    const stats: string[] = [];
+    if (Number.isFinite(trade.leverage) && (trade.leverage as number) > 0) stats.push(`${trade.leverage}x`);
+    if (Number.isFinite(trade.confidence) && (trade.confidence as number) > 0) stats.push(`Conf ${((trade.confidence as number) * 100).toFixed(0)}%`);
+    if (trade.regime) stats.push(trade.regime);
+    if (stats.length > 0) lines.push(stats.join(' · '));
+    lines.push('');
+    if (trade.thesis) lines.push(`📝 ${this.truncate(trade.thesis, 350)}`);
+    return lines.join('\n');
   }
 
   /** Close position 訊號(事後——簡潔點列,主神要求:唔用表格框(TG box-drawing
@@ -186,7 +192,7 @@ ${thesis}${trade.regime ? `\n  Regime: ${trade.regime}` : ''}`;
     const fmtDate = (ts: number) => new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
 
     // ── 標題一行 ──
-    lines.push(`📊 MATS TRADE — ${trade.symbol.toUpperCase()} ${side}`);
+    lines.push(`📊 MATS TRADE — ${trade.symbol.toUpperCase()} ${side} (CLOSE)`);
     lines.push('');
 
     // ── 核心數據(合併相關——每行一個資訊單元)──

@@ -4513,3 +4513,31 @@ MFE% = (maxValue − initial) / initial → 正(最多賺幾多%)
 - 實測:成功發去 MATS Builder group
 
 **驗證**:T2(MAE -0.34% / MFE +2.20% assert)+ 12/12。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.867-format5: Open 訊號 + Loss close 訊號格式準備(主神:may use later)
+
+**主神**:Profit close TG msg 做得好——準備埋 Open + Loss close 格式(遲啲用)。
+
+**Open 訊號**(簡潔點列——同 close 一致風格):
+```
+📊 MATS TRADE — BNB LONG (OPEN)
+Entry $602.00
+10x · Conf 72% · low_volatility
+📝 [1h: bnb retesting broken resistance $600...]
+```
+
+**Loss close 訊號**(同一 formatCloseSignal——pnl 負數自動 -):
+```
+📊 MATS TRADE — BNB LONG (CLOSE)
+Entry $602.00 → Exit $595.00
+P&L -8.90% (10x) | price -1.16%
+Hold 27m · 10x
+MAE -8.47% · MFE +2.20%
+📝 SL hit — ...
+```
+
+**控制**:profitOnlyClose 保持(true——輸錢暫時唔推)——但格式 ready,遲啲開 profitOnlyClose=false 就會推 Loss 訊號。Open 訊號由 openEnabled 控制(預設 false)。
+
+**驗證**:T1(Open 點列)+ T2(CLOSE 標籤)+ T9 + 12/12。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
