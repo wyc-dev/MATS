@@ -101,11 +101,12 @@
 
   /* ── Trade Records:hairline separators, no card frames ── */
   .records { width: 100%; max-width: 860px; margin-top: 40px; }
+  /* 同 Daily Trade Summary 完全一致:header 純 text label(冇容器/冇 border) */
   .records .records-header {
     display: flex; align-items: center; gap: 7px;
     font-size: var(--fs-sm); font-weight: 500; color: var(--muted);
     text-transform: uppercase; letter-spacing: 0.1em;
-    padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 4px;
+    margin-bottom: 14px;
   }
   .trade-card { padding: 16px 4px; border-bottom: 1px solid var(--border); }
   .trade-card:last-child { border-bottom: none; }
