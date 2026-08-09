@@ -80,7 +80,7 @@
   .btn:hover { border-color: var(--purple); color: var(--purple); }
   .btn svg, .btn i { width: 14px; height: 14px; }
   .section-title { display: flex; align-items: center; gap: 8px; }
-  .section-title svg { width: 16px; height: 16px; color: var(--purple); }
+  .section-title svg { width: 13px; height: 13px; color: var(--purple); }
 
   /* ── Stats cards ── */
   .stats { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; justify-content: center; }
@@ -102,9 +102,9 @@
   /* ── Trade Summary + Records ── */
   .summary { padding: 0; }
   .summary .grid, .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
-  .grid .cell { background: var(--surface2); border-radius: 8px; padding: 6px 10px; }
-  .grid .cell .k { font-size: 0.58rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
-  .grid .cell .v { font-family: var(--mono); font-size: 0.9rem; font-weight: 700; margin-top: 2px; }
+  .grid .cell { background: var(--surface2); border-radius: 8px; padding: 4px 8px; }
+  .grid .cell .k { font-size: 0.52rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+  .grid .cell .v { font-family: var(--mono); font-size: 0.78rem; font-weight: 700; margin-top: 2px; }
 
 
   /* ── Footer ── */
@@ -141,7 +141,7 @@
 </div>
 
 <div class="chart-wrap" id="chart-card">
-  <h2 class="section-title" style="margin-bottom:10px"><i data-lucide="clipboard-list"></i> Trade Summary</h2>
+  <h2 class="section-title" style="margin-bottom:8px;font-size:0.7rem"><i data-lucide="clipboard-list"></i> Daily Trade Summary</h2>
   <div class="grid" id="summary-grid" style="margin-bottom:12px"></div>
   <canvas id="chart"></canvas>
 </div>
