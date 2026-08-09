@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MATS — Daily PnL (Private)</title>
+<script src="https://unpkg.com/lucide@latest"></script>
 <style>
   :root {
     --bg: #0a0a0f;
@@ -74,8 +75,12 @@
     padding: 8px 18px; border: 1px solid var(--border); background: var(--surface);
     color: var(--text); font-family: var(--mono); font-size: 0.78rem; font-weight: 700;
     border-radius: 10px; cursor: pointer; transition: all 0.2s;
+    display: inline-flex; align-items: center; gap: 6px;
   }
   .btn:hover { border-color: var(--purple); color: var(--purple); }
+  .btn svg, .btn i { width: 14px; height: 14px; }
+  .section-title { display: flex; align-items: center; gap: 8px; }
+  .section-title svg { width: 16px; height: 16px; color: var(--purple); }
 
   /* ── Stats cards ── */
   .stats { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; justify-content: center; }
@@ -142,8 +147,8 @@
     <button class="switch-btn active-period" id="btn-yesterday">YESTERDAY</button>
     <button class="switch-btn active-period2" id="btn-today">TODAY</button>
   </div>
-  <button class="btn" id="btn-refresh">⟳ Refresh</button>
-  <button class="btn" id="btn-capture">📸 Capture</button>
+  <button class="btn" id="btn-refresh"><i data-lucide="refresh-cw"></i> Refresh</button>
+  <button class="btn" id="btn-capture"><i data-lucide="camera"></i> Capture</button>
 </div>
 
 <div class="stats">
@@ -158,12 +163,12 @@
 </div>
 
 <div class="summary" id="summary-section">
-  <h2>📋 Today's Trade Summary</h2>
+  <h2 class="section-title"><i data-lucide="clipboard-list"></i> Today's Trade Summary</h2>
   <div class="grid" id="summary-grid"></div>
 </div>
 
 <div class="records">
-  <h2>📜 Today's Trade Records</h2>
+  <h2 class="section-title"><i data-lucide="scroll-text"></i> Today's Trade Records</h2>
   <div id="records-list"></div>
 </div>
 
@@ -351,7 +356,7 @@ function renderChart(d) {
   ctx.fillStyle = '#e4e4e7';
   ctx.font = 'bold 12px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText(`📅 ${data.date} (GMT+8)`, W / 2, 12);
+  ctx.fillText(`${data.date} (GMT+8)`, W / 2, 12);
 
   // peak / trough 標注(最高/最低累計點)
   const peak = pts.reduce((a, b) => (b.cum > a.cum ? b : a));
@@ -360,12 +365,12 @@ function renderChart(d) {
   if (peak.cum > 0) {
     ctx.fillStyle = '#34d399';
     ctx.textAlign = 'left';
-    ctx.fillText(`▲ peak +$${peak.cum.toFixed(2)}`, X(peak.t) + 6, Y(peak.cum) - 6);
+    ctx.fillText(`PEAK +$${peak.cum.toFixed(2)}`, X(peak.t) + 6, Y(peak.cum) - 6);
   }
   if (trough.cum < 0) {
     ctx.fillStyle = '#f87171';
     ctx.textAlign = 'left';
-    ctx.fillText(`▼ trough $${trough.cum.toFixed(2)}`, X(trough.t) + 6, Y(trough.cum) + 12);
+    ctx.fillText(`TROUGH $${trough.cum.toFixed(2)}`, X(trough.t) + 6, Y(trough.cum) + 12);
   }
 
   // x time labels (first / mid / last)
@@ -492,6 +497,19 @@ script.onerror = () => { /* offline — fallback to canvas capture */ };
 document.head.appendChild(script);
 
 // ═══ Init ═══
+function initIcons() {
+  if (window.lucide) {
+    try { lucide.createIcons(); } catch { /* non-fatal */ }
+  }
+}
+// render 後(動態 icon——summary/records 內)都要 init
+const origRender = render;
+render = function() {
+  origRender();
+  initIcons();
+};
+document.addEventListener('DOMContentLoaded', initIcons);
+
 load();
 setInterval(load, 60_000); // auto refresh every minute
 </script>
