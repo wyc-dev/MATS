@@ -106,20 +106,6 @@
   .grid .cell .k { font-size: 0.58rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
   .grid .cell .v { font-family: var(--mono); font-size: 0.9rem; font-weight: 700; margin-top: 2px; }
 
-  .records { width: 100%; max-width: 860px; margin-top: 14px; }
-  .records h2 { font-size: 0.95rem; font-weight: 800; margin-bottom: 10px; color: var(--text); }
-  .trade-card {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-    padding: 14px 16px; margin-bottom: 10px;
-  }
-  .trade-card .row1 { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; }
-  .trade-card .sym { font-family: var(--mono); font-weight: 800; font-size: 0.95rem; }
-  .trade-card .side-buy { color: var(--green); }
-  .trade-card .side-sell { color: var(--red); }
-  .trade-card .pnl { font-family: var(--mono); font-weight: 800; font-size: 0.95rem; }
-  .trade-card .meta { color: var(--text-muted); font-family: var(--mono); font-size: 0.72rem; margin-top: 4px; }
-  .trade-card .thesis { color: var(--text-muted); font-size: 0.75rem; margin-top: 6px; line-height: 1.5; }
-  .trade-card .thesis b { color: var(--text); font-weight: 600; }
 
   /* ── Footer ── */
   .footer { margin-top: 14px; color: var(--text-muted); font-size: 0.68rem; font-family: var(--mono); }
@@ -160,11 +146,6 @@
   <canvas id="chart"></canvas>
 </div>
 
-<div class="records">
-  <h2 class="section-title"><i data-lucide="scroll-text"></i> Today's Trade Records</h2>
-  <div id="records-list"></div>
-</div>
-
 <div class="footer">MATS PNL Dashboard · data via /api/pnl · private</div>
 </div>
 
@@ -202,7 +183,6 @@ function render() {
   renderStats(d);
   renderChart(d);
   renderSummary(d);
-  renderRecords(d);
 }
 
 // ═══ Today's Trade Summary(交易紀錄頂部總結)═══
@@ -231,43 +211,7 @@ function renderSummary(d) {
   ).join('');
 }
 
-// ═══ Today's Trade Records(完整交易紀錄)═══
-function renderRecords(d) {
-  const list = document.getElementById('records-list');
-  const records = d.list || [];
-  if (records.length === 0) {
-    list.innerHTML = '<div class="trade-card"><div class="meta">No trades closed today yet</div></div>';
-    return;
-  }
-  const fmtT = (ts) => {
-    if (!ts) return '—';
-    const dt = new Date(ts);
-    return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
-  };
-  const fmtFull = (ts) => {
-    if (!ts) return '—';
-    return new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
-  };
-  const esc = (v) => String(v ?? '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const cards = records.map((t, i) => {
-    const side = t.side === 'sell' ? 'SHORT' : 'LONG';
-    const sideCls = t.side === 'sell' ? 'side-sell' : 'side-buy';
-    const pnl = Number(t.pnl ?? 0);
-    const pnlCls = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-    const holdMin = t.openedAt && t.closedAt ? Math.max(0, Math.round((Number(t.closedAt) - Number(t.openedAt)) / 60000)) : null;
-    return `<div class="trade-card">
-      <div class="row1">
-        <div><span class="sym">${esc(t.symbol)}</span> <span class="${sideCls}" style="font-family:var(--mono);font-weight:700">${side}</span></div>
-        <div class="pnl" style="color:${pnlCls}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${(Number(t.pnlPct ?? 0) * 100).toFixed(2)}%)</div>
-      </div>
-      <div class="meta">Entry $${Number(t.entryPrice ?? 0).toFixed(2)} → Exit $${Number(t.exitPrice ?? 0).toFixed(2)}${t.leverage ? ' · ' + t.leverage + 'x' : ''}${holdMin !== null ? ' · hold ' + holdMin + 'm' : ''} · ${fmtFull(t.openedAt)} → ${fmtFull(t.closedAt)}</div>
-      ${t.entryThesis ? `<div class="thesis"><b>Entry Thesis:</b> ${esc(t.entryThesis)}</div>` : ''}
-      ${t.exitThesis ? `<div class="thesis"><b>Exit Thesis:</b> ${esc(t.exitThesis)}</div>` : ''}
-      ${t.closeReason ? `<div class="thesis"><b>Close:</b> ${esc(t.closeReason)}</div>` : ''}
-    </div>`;
-  }).join('');
-  list.innerHTML = cards;
-}
+
 
 function renderStats(d) {
   const total = d.total ?? 0;
