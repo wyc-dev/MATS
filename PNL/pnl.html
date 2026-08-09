@@ -147,8 +147,8 @@
     <button class="switch-btn active-period2" id="btn-today">TODAY</button>
   </div>
   <div class="switch-group" id="unit-switch">
-    <button class="switch-btn active-unit" id="btn-usd">$</button>
-    <button class="switch-btn" id="btn-pct">%</button>
+    <button class="switch-btn" id="btn-usd">$</button>
+    <button class="switch-btn active-unit2" id="btn-pct">%</button>
   </div>
   <button class="btn" id="btn-refresh"><i data-lucide="refresh-cw"></i> Refresh</button>
   <div class="capture-drop">
@@ -191,7 +191,7 @@
 let data = null;
 let mode = 'paper';      // paper | real
 let period = 'today';    // today | yesterday(昨日數據一定完整——今日可能未完)
-let unit = 'usd';         // usd | pct(% 模式:累計對比本金增長)
+let unit = 'pct';         // usd | pct(% 模式:累計對比本金增長)——預設 %
 
 const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
   ? '' : '';
