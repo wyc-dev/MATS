@@ -61,18 +61,27 @@
 
   /* ── Controls ── */
   .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; justify-content: center; }
-  .switch-group { display: flex; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 3px; }
-  .switch-btn {
-    padding: 8px 20px; border: none; background: transparent; color: var(--text-muted);
-    font-family: var(--mono); font-size: 0.8rem; font-weight: 700; border-radius: 8px; cursor: pointer;
-    transition: all 0.2s;
+  /* v2.0.868-fix(production):switch 黑白對比明確——
+     active = 純白底黑字(inactive = 透明深底灰字)——無論 select 與否一眼分明 */
+  .switch-group {
+    display: flex; background: #0d0d13; border: 1px solid var(--border);
+    border-radius: 10px; padding: 3px; gap: 2px;
   }
-  /* v2.0.868-fix:3 個 switch 全部黑白(active = 白底黑字) */
+  .switch-btn {
+    padding: 8px 18px; border: none; border-radius: 8px; cursor: pointer;
+    font-family: var(--mono); font-size: 0.78rem; font-weight: 700;
+    background: transparent; color: #6b6b76; transition: all 0.15s;
+    min-width: 84px; text-align: center;
+  }
+  /* active = 純白底黑字(強對比——!important 防任何覆蓋) */
   .switch-btn.active-paper, .switch-btn.active-real,
   .switch-btn.active-period, .switch-btn.active-period2,
   .switch-btn.active-unit, .switch-btn.active-unit2 {
-    background: var(--text); color: #000;
+    background: #ffffff !important;
+    color: #000000 !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.5);
   }
+  .switch-btn:hover:not([class*='active']) { color: #ffffff; }
   .btn {
     padding: 8px 18px; border: 1px solid var(--border); background: var(--surface);
     color: var(--text); font-family: var(--mono); font-size: 0.78rem; font-weight: 700;
@@ -143,11 +152,11 @@
   </div>
   <div class="switch-group" id="period-switch">
     <button class="switch-btn active-period" id="btn-yesterday">YESTERDAY</button>
-    <button class="switch-btn active-period2" id="btn-today">TODAY</button>
+    <button class="switch-btn" id="btn-today">TODAY</button>
   </div>
   <div class="switch-group" id="unit-switch">
     <button class="switch-btn active-unit" id="btn-usd">$</button>
-    <button class="switch-btn active-unit2" id="btn-pct">%</button>
+    <button class="switch-btn" id="btn-pct">%</button>
   </div>
   <button class="btn" id="btn-refresh"><i data-lucide="refresh-cw"></i> Refresh</button>
   <button class="btn" id="btn-capture"><i data-lucide="camera"></i> Capture</button>
