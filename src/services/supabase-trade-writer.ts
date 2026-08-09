@@ -93,10 +93,18 @@ export class SupabaseTradeWriter {
       closed_at: closedAt,
     };
 
-    const p = this.client.from('trades').upsert(row, { onConflict: 'trade_id' });
-    void Promise.resolve(p).then(({ error }) => {
+    // v2.0.867-fix-attack (V12):onConflict 'trade_id' 需要 unique constraint——
+    // trades 表(migration 未定義)可能冇——upsert 會報錯 → 每次 insert 重複 row!
+    // 改用「select → update/insert」(唔靠 constraint——idempotent by trade_id)
+    const c = this.client;
+    void Promise.resolve(c.from('trades').select('trade_id').eq('trade_id', tradeId).maybeSingle()).then(({ data }) => {
+      if (data) {
+        return Promise.resolve(c.from('trades').update(row).eq('trade_id', tradeId));
+      }
+      return Promise.resolve(c.from('trades').insert(row));
+    }).then(({ error }: { error: { message: string } | null }) => {
       if (error) {
-        log.warn(`[supabase-trades] upsert failed for ${tradeId}: ${error.message}`);
+        log.warn(`[supabase-trades] write failed for ${tradeId}: ${error.message}`);
       }
     }).catch((err: unknown) => {
       log.warn(`[supabase-trades] write failed (${tradeId}): ${err instanceof Error ? err.message : String(err)}`);

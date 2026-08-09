@@ -4450,3 +4450,17 @@ Close Reason / Entry Thesis / Exit Thesis / Post-Review
 **實測**:表格格式成功發去 MATS Builder group——主神去 group 睇效果。
 
 **驗證**:T2 更新(表格 + Source/Investment 移除)+ T12(P&L 分解)+ 12/12。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.867-fix-attack: Supabase trade writer onConflict constraint bug (V12)
+
+**主神指令**:不擇手段攻擊表格格式 + Supabase trade writer。
+
+| # | 漏洞 | 嚴重性 | 修復 |
+|---|---|---|---|
+| **V12** | **`upsert(row, { onConflict: 'trade_id' })` 需要 unique constraint——但 trades 表(migration 未定義)可能冇——Postgres 報錯 → 每次 insert 重複 row(UI 重複顯示!)** | 🟠 Medium | 改用「select → update/insert」(唔靠 constraint——idempotent by trade_id) |
+| V6 | pnlPct undefined → profitOnly 唔 filter | 🟡 | ✅ 低風險(實際 close 有 pnlPct) |
+| V16/V19 | 表格 value 超長/文字超 4000 | 🟡 | ✅ guard 已有 |
+
+**驗證**:tsc 零錯誤。全量 2064/2076(12 pre-existing)。
