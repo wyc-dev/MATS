@@ -41,8 +41,8 @@
   .header { text-align: center; margin-bottom: 28px; }
   .header h1 { font-size: var(--fs-xl); font-weight: 600; letter-spacing: -0.01em; }
   .header h1 .mono { font-family: var(--mono); font-weight: 600; }
-  .header .date { font-size: var(--fs-md); color: var(--muted); margin-top: 4px; font-family: var(--mono); }
-  .header .sub { font-size: var(--fs-md); color: var(--muted); margin-top: 2px; }
+  .header .date { font-size: var(--fs-sm); color: var(--muted); margin-top: 4px; font-family: var(--mono); }
+  .header .sub { font-size: var(--fs-sm); color: var(--muted); margin-top: 2px; }
 
   /* ── Controls:minimal segmented control ── */
   .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 32px; flex-wrap: wrap; justify-content: center; }
@@ -81,10 +81,7 @@
   }
 
   /* ── Chart card:single quiet surface ── */
-  .chart-wrap {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-    padding: 20px; width: 100%; max-width: 860px;
-  }
+  .chart-wrap { width: 100%; max-width: 860px; background: none; border: none; padding: 0; }
   canvas { width: 100%; height: 340px; display: block; border-radius: 6px; }
 
   /* ── Daily Trade Summary:vertical stacked cells, centered, no wasted side space ── */
@@ -102,15 +99,15 @@
   .records .records-header { display: flex; align-items: center; gap: 7px; font-size: var(--fs-xl); font-weight: 600; color: var(--text); margin-bottom: 14px; }
   .trade-card { padding: 16px 4px; border-bottom: 1px solid var(--border); }
   .trade-card:last-child { border-bottom: none; }
-  .trade-card .tc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .trade-card .tc-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: nowrap; }
   .trade-card .tc-sym { display: flex; align-items: center; gap: 10px; font-size: var(--fs-lg); }
   .trade-card .sym { font-family: var(--mono); font-weight: 600; }
   .trade-card .side { font-family: var(--mono); font-size: var(--fs-sm); font-weight: 600; padding: 2px 8px; border-radius: 4px; }
   .trade-card .side-buy { color: var(--green); background: rgba(52,211,153,0.08); }
   .trade-card .side-sell { color: var(--red); background: rgba(248,113,113,0.08); }
   .trade-card .pnl { font-family: var(--mono); font-size: var(--fs-lg); font-weight: 600; font-variant-numeric: tabular-nums; }
-  .trade-card .tc-meta { color: var(--muted); font-family: var(--mono); font-size: var(--fs-md); margin-top: 6px; line-height: 1.6; }
-  .trade-card .tc-thesis { color: var(--muted); font-size: var(--fs-md); margin-top: 6px; line-height: 1.6; }
+  .trade-card .tc-meta { color: var(--muted); font-family: var(--mono); font-size: var(--fs-sm); margin-top: 6px; line-height: 1.6; }
+  .trade-card .tc-thesis { color: var(--muted); font-size: var(--fs-sm); margin-top: 6px; line-height: 1.6; }
   .trade-card .tc-thesis b { color: var(--muted); font-weight: 600; }
 
   .footer { margin-top: 32px; color: var(--muted); font-size: var(--fs-sm); font-family: var(--mono); }
@@ -536,14 +533,14 @@ function renderRecords(d) {
       : `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`;
     const holdMin = t.openedAt && t.closedAt ? Math.max(0, Math.round((Number(t.closedAt) - Number(t.openedAt)) / 60000)) : null;
     return `<div class="trade-card">
-      <div class="row1">
-        <div><span class="sym">${esc(String(t.symbol || '').replace(/^xyz:/i, '').toUpperCase())}</span> <span class="${sideCls}" style="font-family:var(--mono);font-weight:700">${side}</span></div>
+      <div class="tc-head">
+        <div class="tc-sym"><span class="sym">${esc(String(t.symbol || '').replace(/^xyz:/i, '').toUpperCase())}</span> <span class="side ${sideCls}">${side}</span></div>
         <div class="pnl" style="color:${pnlCls}">${pnlTxt}</div>
       </div>
-      <div class="meta">Entry $${Number(t.entryPrice ?? 0).toFixed(2)} → Exit $${Number(t.exitPrice ?? 0).toFixed(2)}${t.leverage ? ' · ' + t.leverage + 'x' : ''}${holdMin !== null ? ' · hold ' + holdMin + 'm' : ''} · ${fmtFull(t.openedAt)} → ${fmtFull(t.closedAt)}</div>
-      ${t.entryThesis ? `<div class="thesis"><b>Entry Thesis:</b> ${esc(t.entryThesis)}</div>` : ''}
-      ${t.exitThesis ? `<div class="thesis"><b>Exit Thesis:</b> ${esc(t.exitThesis)}</div>` : ''}
-      ${t.closeReason ? `<div class="thesis"><b>Close:</b> ${esc(t.closeReason)}</div>` : ''}
+      <div class="tc-meta">Entry $${Number(t.entryPrice ?? 0).toFixed(2)} → Exit $${Number(t.exitPrice ?? 0).toFixed(2)}${t.leverage ? ' · ' + t.leverage + 'x' : ''}${holdMin !== null ? ' · hold ' + holdMin + 'm' : ''} · ${fmtFull(t.openedAt)} → ${fmtFull(t.closedAt)}</div>
+      ${t.entryThesis ? `<div class="tc-thesis"><b>Entry Thesis:</b> ${esc(t.entryThesis)}</div>` : ''}
+      ${t.exitThesis ? `<div class="tc-thesis"><b>Exit Thesis:</b> ${esc(t.exitThesis)}</div>` : ''}
+      ${t.closeReason ? `<div class="tc-thesis"><b>Close:</b> ${esc(t.closeReason)}</div>` : ''}
     </div>`;
   }).join('');
   list.innerHTML = cards;
