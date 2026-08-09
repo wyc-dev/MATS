@@ -522,9 +522,9 @@ async function capture(fmt) {
     if (window.html2canvas) {
       if (title) title.classList.add('no-anim');
       await new Promise(r => setTimeout(r, 50));
-      // 動態 scale:長頁面(大量 records)→ scale 1 防記憶體爆;短頁面 scale 2 高清
+      // 動態 scale:長頁面 scale 1 防記憶體爆;PDF 強制 scale 1(唔使高清 + 防 hang)
       const rootH = root.offsetHeight || 0;
-      const scale = rootH > 2500 ? 1 : 2;
+      const scale = (fmt === 'pdf' || rootH > 2500) ? 1 : 2;
       const canvas = await html2canvas(root, {
         backgroundColor: '#0a0a0f',
         scale,
@@ -538,25 +538,27 @@ async function capture(fmt) {
       });
       if (title) title.classList.remove('no-anim');
       if (fmt === 'pdf' && window.jspdf) {
-        // html2canvas canvas → jsPDF A4
-        const imgData = canvas.toDataURL('image/jpeg', 0.95);
+        // v2.0.868-fix:PDF 深色頁背景 + margin 10mm + 頁數上限防 hang
+        const imgData = canvas.toDataURL('image/jpeg', 0.9);
         const pdf = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
         const pw = pdf.internal.pageSize.getWidth();
         const ph = pdf.internal.pageSize.getHeight();
+        const M = 10; // margin mm(上下左右)
+        const availW = pw - 2 * M;
         const ratio = canvas.height / canvas.width;
-        const imgH = pw * ratio;
-        if (imgH <= ph) {
-          pdf.addImage(imgData, 'JPEG', 0, 0, pw, imgH);
-        } else {
-          // 多頁(長頁面切分)
-          let pos = 0;
-          const pageH = ph;
-          pdf.addImage(imgData, 'JPEG', 0, pos, pw, imgH);
-          while (pos + pageH < imgH) {
-            pos -= pageH;
-            pdf.addPage();
-            pdf.addImage(imgData, 'JPEG', 0, pos, pw, imgH);
-          }
+        const imgH = availW * ratio;
+        const MAX_PAGES = 30; // 防 hang(超過截斷)
+        let y = M;
+        let page = 1;
+        while (true) {
+          // 深色頁背景(防白底)
+          pdf.setFillColor(10, 10, 15);
+          pdf.rect(0, 0, pw, ph, 'F');
+          pdf.addImage(imgData, 'JPEG', M, y, availW, imgH, undefined, 'FAST');
+          if (y + imgH <= ph - M || page >= MAX_PAGES) break;
+          pdf.addPage();
+          y = y - (ph - 2 * M); // 每頁向上偏移(內容連續)
+          page++;
         }
         pdf.save(`MATS-PnL-${mode}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.pdf`);
       } else {
