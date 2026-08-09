@@ -100,15 +100,11 @@
   canvas { width: 100%; height: 380px; display: block; border-radius: 8px; }
 
   /* ── Trade Summary + Records ── */
-  .summary {
-    background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
-    padding: 12px 14px; margin-bottom: 12px;
-  }
-  .summary h2 { font-size: 0.8rem; font-weight: 800; margin-bottom: 10px; color: var(--text); }
-  .summary .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
-  .summary .cell { background: var(--surface); border-radius: 8px; padding: 6px 10px; }
-  .summary .cell .k { font-size: 0.58rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
-  .summary .cell .v { font-family: var(--mono); font-size: 0.9rem; font-weight: 700; margin-top: 2px; }
+  .summary { padding: 0; }
+  .summary .grid, .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+  .grid .cell { background: var(--surface2); border-radius: 8px; padding: 6px 10px; }
+  .grid .cell .k { font-size: 0.58rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+  .grid .cell .v { font-family: var(--mono); font-size: 0.9rem; font-weight: 700; margin-top: 2px; }
 
   .records { width: 100%; max-width: 860px; margin-top: 14px; }
   .records h2 { font-size: 0.95rem; font-weight: 800; margin-bottom: 10px; color: var(--text); }
@@ -159,10 +155,8 @@
 </div>
 
 <div class="chart-wrap" id="chart-card">
-  <div class="summary" id="summary-section">
-    <h2 class="section-title"><i data-lucide="clipboard-list"></i> Trade Summary</h2>
-    <div class="grid" id="summary-grid"></div>
-  </div>
+  <h2 class="section-title" style="margin-bottom:10px"><i data-lucide="clipboard-list"></i> Trade Summary</h2>
+  <div class="grid" id="summary-grid" style="margin-bottom:12px"></div>
   <canvas id="chart"></canvas>
 </div>
 
