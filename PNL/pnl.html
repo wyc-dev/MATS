@@ -6,114 +6,117 @@
 <title>MATS — Daily PnL (Private)</title>
 <script src="https://unpkg.com/lucide@latest"></script>
 <style>
-  /* ═══ MATS PNL — structured minimal dashboard ═══
-     World-class = clear information architecture (grouped containers)
-     + unified type system (3 sizes) + restrained color + consistent spacing.
-     Containers give scannability; nothing decorative. */
+  /* ═══ World-class minimal design system ═══
+     Principles: generous whitespace · no decorative boxes ·
+     tabular numerals · restrained accent (green/red for PnL only) ·
+     3 font sizes · hairline separators instead of card frames */
   :root {
     --bg: #0a0a0f;
-    --surface: #12121a;
-    --surface2: #1a1a24;
-    --border: rgba(255,255,255,0.08);
+    --surface: #111118;
+    --border: rgba(255,255,255,0.07);
     --text: #f4f4f5;
     --muted: #8b8b96;
     --green: #34d399;
     --red: #f87171;
     --mono: 'SF Mono', 'Fira Code', monospace;
     --sans: -apple-system, 'Helvetica Neue', sans-serif;
-    --fs-xl: 1.5rem;   /* page title */
-    --fs-lg: 1.1rem;   /* primary numbers */
-    --fs-md: 0.82rem;  /* body/titles */
-    --fs-sm: 0.68rem;  /* labels/details */
-    --radius: 12px;
+    --fs-lg: 1.05rem;   /* 核心數值 */
+    --fs-md: 0.82rem;   /* 正文/標題 */
+    --fs-sm: 0.68rem;   /* 標籤/細節 */
+    --space: 8px;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    background: var(--bg); color: var(--text);
-    font-family: var(--sans); -webkit-font-smoothing: antialiased;
-    min-height: 100vh; display: flex; flex-direction: column; align-items: center;
-    padding: 40px 20px 56px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 40px 20px 48px;
   }
 
-  /* ── Header ── */
+  /* ── Header:quiet, small, centered ── */
   .header { text-align: center; margin-bottom: 28px; }
-  .header h1 { font-size: var(--fs-xl); font-weight: 700; letter-spacing: -0.02em; }
-  .header h1 .mono { font-family: var(--mono); }
-  .header .date { font-size: var(--fs-md); color: var(--muted); margin-top: 6px; font-family: var(--mono); }
+  .header h1 { font-size: var(--fs-md); font-weight: 500; letter-spacing: -0.01em; }
+  .header h1 .mono { font-family: var(--mono); font-weight: 600; }
+  .header .date { font-size: var(--fs-sm); color: var(--muted); margin-top: 4px; font-family: var(--mono); }
   .header .sub { font-size: var(--fs-sm); color: var(--muted); margin-top: 2px; }
 
-  /* ── Controls ── */
-  .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 32px; flex-wrap: wrap; justify-content: center; }
-  .switch-group { display: flex; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 3px; }
-  .switch-btn {
-    padding: 7px 16px; border: none; border-radius: 6px; background: transparent; color: var(--muted);
-    font-family: var(--mono); font-size: var(--fs-sm); font-weight: 600; cursor: pointer; transition: all 0.15s;
-    min-width: 76px; text-align: center;
+  /* ── Controls:minimal segmented control ── */
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 32px; flex-wrap: wrap; justify-content: center; }
+  .switch-group {
+    display: flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden;
   }
+  .switch-btn {
+    padding: 7px 16px; border: none; background: transparent; color: var(--muted);
+    font-family: var(--mono); font-size: var(--fs-sm); font-weight: 500;
+    cursor: pointer; transition: all 0.15s;
+    min-width: 78px; text-align: center;
+  }
+  .switch-btn + .switch-btn { border-left: 1px solid var(--border); }
   .switch-btn.active-paper, .switch-btn.active-real,
   .switch-btn.active-period, .switch-btn.active-period2,
   .switch-btn.active-unit, .switch-btn.active-unit2 {
-    background: var(--text); color: #000;
+    background: var(--text); color: #000; font-weight: 600;
   }
   .switch-btn:not([class*='active']):hover { color: var(--text); }
   .btn {
-    padding: 7px 16px; border: 1px solid var(--border); background: var(--surface);
-    color: var(--muted); font-family: var(--mono); font-size: var(--fs-sm); font-weight: 600;
-    border-radius: 8px; cursor: pointer; transition: all 0.15s;
+    padding: 7px 16px; border: 1px solid var(--border); background: transparent;
+    color: var(--muted); font-family: var(--mono); font-size: var(--fs-sm); font-weight: 500;
+    border-radius: 7px; cursor: pointer; transition: all 0.15s;
     display: inline-flex; align-items: center; gap: 6px;
   }
   .btn:hover { color: var(--text); border-color: rgba(255,255,255,0.2); }
   .btn svg, .btn i { width: 13px; height: 13px; color: var(--muted); }
 
-  /* ── Stats:grouped cards ── */
-  .stats { display: flex; gap: 12px; margin-bottom: 28px; flex-wrap: wrap; justify-content: center; }
-  .stat {
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 16px 28px; text-align: center; min-width: 140px;
+  /* ── Stats:pure numbers, no boxes ── */
+  .stats { display: flex; justify-content: center; gap: 48px; margin-bottom: 32px; flex-wrap: wrap; }
+  .stat { text-align: center; }
+  .stat .label { font-size: var(--fs-sm); color: var(--muted); text-transform: uppercase; letter-spacing: 0.12em; }
+  .stat .value {
+    font-family: var(--mono); font-size: var(--fs-lg); font-weight: 500;
+    margin-top: 6px; font-variant-numeric: tabular-nums;
   }
-  .stat .label { font-size: var(--fs-sm); color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
-  .stat .value { font-family: var(--mono); font-size: var(--fs-lg); font-weight: 600; margin-top: 6px; font-variant-numeric: tabular-nums; }
 
-  /* ── Chart card ── */
+  /* ── Chart card:single quiet surface ── */
   .chart-wrap {
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
     padding: 20px; width: 100%; max-width: 860px;
   }
   canvas { width: 100%; height: 340px; display: block; border-radius: 6px; }
 
-  /* ── Daily Trade Summary:section title + grouped cells ── */
-  .summary { padding: 0 4px 24px; }
-  .section-title, .records-header {
+  /* ── Daily Trade Summary:vertical stacked cells, centered, no wasted side space ── */
+  .summary { display: flex; flex-direction: column; align-items: center; padding: 0 4px 20px; }
+  .section-title {
     display: flex; align-items: center; gap: 7px;
-    font-size: var(--fs-sm); font-weight: 600; color: var(--muted);
+    font-size: var(--fs-sm); font-weight: 500; color: var(--muted);
     text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 14px;
   }
   .section-title svg, .records-header svg { width: 14px; height: 14px; color: var(--muted); }
-  .summary .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
-  .grid .cell {
-    background: var(--surface2); border-radius: 8px; padding: 10px 12px; text-align: center;
-  }
+  .summary .grid { display: flex; flex-direction: column; gap: 4px; width: 100%; max-width: 380px; }
+  .grid .cell { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 0; }
   .grid .cell .k { font-size: var(--fs-sm); color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
-  .grid .cell .v { font-family: var(--mono); font-size: var(--fs-lg); font-weight: 600; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .grid .cell .v { font-family: var(--mono); font-size: var(--fs-md); font-weight: 500; font-variant-numeric: tabular-nums; }
 
-  /* ── Trade Records:container + per-trade cards ── */
-  .records {
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 20px; width: 100%; max-width: 860px; margin-top: 24px;
+  /* ── Trade Records:hairline separators, no card frames ── */
+  .records { width: 100%; max-width: 860px; margin-top: 40px; }
+  .records .records-header {
+    display: flex; align-items: center; gap: 7px;
+    font-size: var(--fs-sm); font-weight: 500; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.1em;
+    padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 4px;
   }
-  .records .records-header { padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
-  .trade-card {
-    background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
-    padding: 14px 16px; margin-top: 10px;
-  }
-  .trade-card .tc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-  .trade-card .tc-sym { display: flex; align-items: center; gap: 10px; font-size: var(--fs-lg); }
-  .trade-card .sym { font-family: var(--mono); font-weight: 700; }
-  .trade-card .side { font-family: var(--mono); font-size: var(--fs-sm); font-weight: 700; padding: 2px 8px; border-radius: 4px; }
-  .trade-card .side-buy { color: var(--green); background: rgba(52,211,153,0.1); }
-  .trade-card .side-sell { color: var(--red); background: rgba(248,113,113,0.1); }
-  .trade-card .pnl { font-family: var(--mono); font-size: var(--fs-md); font-weight: 700; font-variant-numeric: tabular-nums; }
-  .trade-card .tc-meta { color: var(--muted); font-family: var(--mono); font-size: var(--fs-sm); margin-top: 8px; line-height: 1.6; }
+  .trade-card { padding: 16px 4px; border-bottom: 1px solid var(--border); }
+  .trade-card:last-child { border-bottom: none; }
+  .trade-card .tc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .trade-card .tc-sym { display: flex; align-items: center; gap: 10px; font-size: var(--fs-md); }
+  .trade-card .sym { font-family: var(--mono); font-weight: 600; }
+  .trade-card .side { font-family: var(--mono); font-size: var(--fs-sm); font-weight: 600; padding: 2px 8px; border-radius: 4px; }
+  .trade-card .side-buy { color: var(--green); background: rgba(52,211,153,0.08); }
+  .trade-card .side-sell { color: var(--red); background: rgba(248,113,113,0.08); }
+  .trade-card .pnl { font-family: var(--mono); font-size: var(--fs-md); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .trade-card .tc-meta { color: var(--muted); font-family: var(--mono); font-size: var(--fs-sm); margin-top: 6px; line-height: 1.6; }
   .trade-card .tc-thesis { color: var(--muted); font-size: var(--fs-sm); margin-top: 6px; line-height: 1.6; }
   .trade-card .tc-thesis b { color: var(--muted); font-weight: 600; }
 
