@@ -1344,6 +1344,7 @@ class MATSSystem {
         log.info('Shutdown handler called from API');
         void this.stop();
       });
+      this.apiServer.setDailyPnlProvider(() => this.computeDailyPnl());
       this.apiServer.setTriggerCycleHandler(() => {
         log.info('Manual cycle trigger from API');
         if (!this.cycleInProgress && !isShuttingDown() && !this.paused) {
@@ -12310,6 +12311,33 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         }
       }
     } catch { /* non-fatal */ }
+  }
+
+  /** v2.0.868:當日累計 PnL(paper + real——今日 closedAt 排序累計) */
+  private computeDailyPnl(): { date: string; paper: { points: Array<{ t: number; cum: number }>; total: number; trades: number; wins: number }; real: { points: Array<{ t: number; cum: number }>; total: number; trades: number; wins: number } } {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const todayEnd = todayStart + 24 * 3600 * 1000;
+    const toSeries = (trades: Array<{ closedAt?: number; pnl?: number }>) => {
+      const filtered = trades
+        .filter((t) => Number.isFinite(t.closedAt) && (t.closedAt ?? 0) >= todayStart && (t.closedAt ?? 0) < todayEnd)
+        .sort((a, b) => (a.closedAt ?? 0) - (b.closedAt ?? 0));
+      let cum = 0;
+      const points = filtered.map((t) => { cum += safeNum(t.pnl, 0); return { t: t.closedAt ?? 0, cum }; });
+      return {
+        points,
+        total: cum,
+        trades: filtered.length,
+        wins: filtered.filter((t) => safeNum(t.pnl, 0) > 0).length,
+      };
+    };
+    const paper = toSeries(Array.from((this.paperEngine?.getTrades?.() ?? []) as never as Array<{ closedAt?: number; pnl?: number }>));
+    const real = toSeries(Array.from(this.portfolio?.getClosedRealTrades?.() ?? []) as never as Array<{ closedAt?: number; pnl?: number }>);
+    return {
+      date: now.toLocaleDateString('en-CA'),
+      paper,
+      real,
+    };
   }
 
   /** v2.0.866: 每 cycle 驗證 pending close 決定(延遲驗證——close 後價格方向) */

@@ -253,6 +253,7 @@ export class APIServer {
   private uiDir: string;
   private onShutdown: (() => void) | null = null;
   private onTriggerCycle: (() => void) | null = null;
+  private dailyPnlProvider: (() => { date: string; paper: unknown; real: unknown }) | null = null;
   private onBacktest: ((params: { years: number; symbol: string; interval: string; maxCandles: number; model?: string; reverse?: boolean }) => void) | null = null;
   private onBacktestPause: (() => void) | null = null;
   private onBacktestResume: (() => void) | null = null;
@@ -315,6 +316,11 @@ export class APIServer {
   /** Register a callback for triggering an immediate cycle */
   setTriggerCycleHandler(cb: () => void): void {
     this.onTriggerCycle = cb;
+  }
+
+  /** v2.0.868:當日累計 PnL 數據 provider(index.ts 注入) */
+  setDailyPnlProvider(fn: () => { date: string; paper: unknown; real: unknown }): void {
+    this.dailyPnlProvider = fn;
   }
 
   /** Register a callback for running a backtest */
@@ -604,6 +610,16 @@ export class APIServer {
       }
 
       // REST: portfolio
+      // v2.0.868:當日累計 PnL(paper/real——PNL dashboard 頁)
+      if (pathname === '/api/pnl' && req.method === 'GET') {
+        const data = this.dailyPnlProvider
+          ? this.dailyPnlProvider()
+          : { date: '', paper: { points: [], total: 0, trades: 0 }, real: { points: [], total: 0, trades: 0 } };
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(data));
+        return;
+      }
+
       // v2.0.867-fix(C):後端 realTrades(UI Trade Incident 讀源——唔靠 Supabase)
       if (pathname === '/api/trades' && req.method === 'GET') {
         const rt = (this.data as { realTrades?: unknown[] } | undefined)?.realTrades ?? [];
@@ -1539,6 +1555,22 @@ export class APIServer {
           if (this.onShutdown) this.onShutdown();
           process.exit(0);
         }, 100);
+        return;
+      }
+
+      // v2.0.868:PNL dashboard 目錄(獨立頁——當日累計 PnL)
+      if (pathname.startsWith('/PNL/')) {
+        const pnlDir = path.join(process.cwd(), 'PNL');
+        let fp = path.join(pnlDir, pathname.replace('/PNL/', ''));
+        if (!fp.endsWith('.html')) fp = path.join(pnlDir, 'pnl.html');
+        if (fs.existsSync(fp)) {
+          const ext = path.extname(fp);
+          const mime: Record<string, string> = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css' };
+          res.writeHead(200, { 'Content-Type': mime[ext] ?? 'application/octet-stream' });
+          res.end(fs.readFileSync(fp));
+          return;
+        }
+        res.writeHead(404); res.end('PNL not found');
         return;
       }
 
