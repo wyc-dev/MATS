@@ -4541,3 +4541,15 @@ MAE -8.47% · MFE +2.20%
 **控制**:profitOnlyClose 保持(true——輸錢暫時唔推)——但格式 ready,遲啲開 profitOnlyClose=false 就會推 Loss 訊號。Open 訊號由 openEnabled 控制(預設 false)。
 
 **驗證**:T1(Open 點列)+ T2(CLOSE 標籤)+ T9 + 12/12。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.867-format6: 時間左邊註明時區(GMT+8)
+
+**主神**:時間需要喺左邊註明時區避免混淆。
+
+**實現**:`timezoneLabel()` 動態計本地 offset——「(GMT+8) Aug 9, 07:49 → Aug 9, 08:26」——左邊註明——跨時區讀者唔會混淆。
+
+**實測**:成功發去 MATS Builder group(時區測試訊號)。
+
+**驗證**:12/12。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

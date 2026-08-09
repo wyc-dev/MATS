@@ -240,9 +240,10 @@ export class TGSignalPusher {
     }
     if (excursions.length > 0) lines.push(excursions.join(' · '));
     if (Number.isFinite(trade.openedAt) && (trade.openedAt as number) > 0 && Number.isFinite(trade.closedAt) && (trade.closedAt as number) > 0) {
-      lines.push(`${fmtDate(trade.openedAt as number)} → ${fmtDate(trade.closedAt as number)}`);
+      // v2.0.867-format6(主神):時間左邊註明時區——避免混淆(本地時區 GMT+8)
+      lines.push(`${this.timezoneLabel()} ${fmtDate(trade.openedAt as number)} → ${fmtDate(trade.closedAt as number)}`);
     } else if (Number.isFinite(trade.closedAt) && (trade.closedAt as number) > 0) {
-      lines.push(`Closed ${fmtDate(trade.closedAt as number)}`);
+      lines.push(`${this.timezoneLabel()} Closed ${fmtDate(trade.closedAt as number)}`);
     }
     lines.push('');
 
@@ -252,6 +253,15 @@ export class TGSignalPusher {
     if (trade.exitThesis) lines.push(`📄 Exit: ${this.truncate(trade.exitThesis, 250)}`);
     if (trade.postReview) lines.push(`✅ Review: ${this.truncate(trade.postReview, 280)}`);
     return lines.join('\n');
+  }
+
+  /** 時區 label——動態計本地 offset(例:(GMT+8))——主神要求時間左邊註明 */
+  private timezoneLabel(): string {
+    const offsetMin = -new Date().getTimezoneOffset();
+    const sign = offsetMin >= 0 ? '+' : '';
+    const h = Math.floor(Math.abs(offsetMin) / 60);
+    const m = Math.abs(offsetMin) % 60;
+    return `(GMT${sign}${h}${m > 0 ? ':' + String(m).padStart(2, '0') : ''})`;
   }
 
   private truncate(s: string, max: number): string {
