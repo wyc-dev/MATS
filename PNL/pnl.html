@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MATS — Daily PnL (Private)</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface2: #1a1a24;
+    --border: rgba(255,255,255,0.08);
+    --text: #e4e4e7;
+    --text-muted: #8b8b96;
+    --green: #34d399;
+    --red: #f87171;
+    --purple: #a78bfa;
+    --cyan: #22d3ee;
+    --mono: 'SF Mono', 'Fira Code', monospace;
+    --sans: -apple-system, 'Helvetica Neue', sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px;
+  }
+
+  /* ── Rainbow ── */
+  @keyframes rgb-shimmer {
+    0% { background-position: 0% 0; }
+    100% { background-position: 200% 0; }
+  }
+  .rainbow-text {
+    background: linear-gradient(90deg, #ffb3cf, #ffd9b3, #fff0b3, #b3ffcc, #b3e0ff, #d4b3ff, #ffb3cf);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: rgb-shimmer 4s linear infinite;
+  }
+
+  /* ── Header ── */
+  .header { text-align: center; margin-bottom: 20px; }
+  .header h1 { font-size: 1.6rem; font-weight: 800; letter-spacing: -0.02em; }
+  .header .date { color: var(--text-muted); font-family: var(--mono); font-size: 0.8rem; margin-top: 4px; }
+  .header .sub { color: var(--text-muted); font-size: 0.75rem; margin-top: 2px; }
+
+  /* ── Controls ── */
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; justify-content: center; }
+  .switch-group { display: flex; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 3px; }
+  .switch-btn {
+    padding: 8px 20px; border: none; background: transparent; color: var(--text-muted);
+    font-family: var(--mono); font-size: 0.8rem; font-weight: 700; border-radius: 8px; cursor: pointer;
+    transition: all 0.2s;
+  }
+  .switch-btn.active-paper { background: var(--purple); color: #fff; }
+  .switch-btn.active-real { background: var(--cyan); color: #000; }
+  .btn {
+    padding: 8px 18px; border: 1px solid var(--border); background: var(--surface);
+    color: var(--text); font-family: var(--mono); font-size: 0.78rem; font-weight: 700;
+    border-radius: 10px; cursor: pointer; transition: all 0.2s;
+  }
+  .btn:hover { border-color: var(--purple); color: var(--purple); }
+
+  /* ── Stats cards ── */
+  .stats { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; justify-content: center; }
+  .stat {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px 22px; text-align: center; min-width: 130px;
+  }
+  .stat .label { font-size: 0.68rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+  .stat .value { font-family: var(--mono); font-size: 1.4rem; font-weight: 800; margin-top: 4px; }
+  .stat .sub { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; }
+
+  /* ── Chart ── */
+  .chart-wrap {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 14px; width: 100%; max-width: 860px; position: relative;
+  }
+  canvas { width: 100%; height: 380px; display: block; border-radius: 8px; }
+
+  /* ── Footer ── */
+  .footer { margin-top: 14px; color: var(--text-muted); font-size: 0.68rem; font-family: var(--mono); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span class="rainbow-text">MATS</span> — Daily Cumulative PnL</h1>
+  <div class="date" id="date-label">—</div>
+  <div class="sub">AI-native multi-agent trading system · live cumulative PnL (local time GMT+8)</div>
+</div>
+
+<div class="controls">
+  <div class="switch-group" id="mode-switch">
+    <button class="switch-btn active-paper" data-mode="paper" id="btn-paper">PAPER</button>
+    <button class="switch-btn" data-mode="real" id="btn-real">REAL</button>
+  </div>
+  <button class="btn" id="btn-refresh">⟳ Refresh</button>
+  <button class="btn" id="btn-capture">📸 Capture</button>
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="label">Cumulative PnL</div><div class="value" id="stat-pnl">—</div></div>
+  <div class="stat"><div class="label">Trades</div><div class="value" id="stat-trades">—</div></div>
+  <div class="stat"><div class="label">Win Rate</div><div class="value" id="stat-winrate">—</div></div>
+  <div class="stat"><div class="label">Avg Win / Loss</div><div class="value" id="stat-avg" style="font-size:0.9rem">—</div></div>
+</div>
+
+<div class="chart-wrap" id="chart-card">
+  <canvas id="chart"></canvas>
+</div>
+
+<div class="footer">MATS PNL Dashboard · data via /api/pnl · private</div>
+
+<script>
+'use strict';
+
+// ═══ State ═══
+let data = null;
+let mode = 'paper'; // paper | real
+
+const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+  ? '' : '';
+
+// ═══ Fetch ═══
+async function load() {
+  try {
+    const res = await fetch(`${API_BASE}/api/pnl`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+    document.getElementById('date-label').textContent = data.date || '—';
+    render();
+  } catch (e) {
+    document.getElementById('stat-pnl').textContent = '⚠ offline';
+    document.getElementById('date-label').textContent = 'cannot reach backend /api/pnl';
+  }
+}
+
+// ═══ Render ═══
+function render() {
+  if (!data) return;
+  const d = data[mode] || { points: [], total: 0, trades: 0, wins: 0 };
+  renderStats(d);
+  renderChart(d);
+}
+
+function renderStats(d) {
+  const total = d.total ?? 0;
+  const trades = d.trades ?? 0;
+  const wins = d.wins ?? 0;
+  const el = (id, txt, cls) => {
+    const e = document.getElementById(id);
+    e.textContent = txt;
+    e.style.color = cls;
+  };
+  el('stat-pnl', `${total >= 0 ? '+' : ''}$${total.toFixed(2)}`, total >= 0 ? 'var(--green)' : 'var(--red)');
+  el('stat-trades', String(trades));
+  const wr = trades > 0 ? (wins / trades) * 100 : 0;
+  el('stat-winrate', trades > 0 ? `${wr.toFixed(1)}%` : '—');
+  el('stat-avg', '—');
+}
+
+function renderChart(d) {
+  const canvas = document.getElementById('chart');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth;
+  const H = canvas.clientHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  ctx.fillStyle = '#12121a';
+  ctx.fillRect(0, 0, W, H);
+
+  const pts = d.points || [];
+  if (pts.length === 0) {
+    ctx.fillStyle = '#8b8b96';
+    ctx.font = '14px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('No trades closed today yet', W / 2, H / 2);
+    return;
+  }
+
+  // range
+  const tMin = pts[0].t, tMax = pts[pts.length - 1].t;
+  let vMin = Math.min(...pts.map(p => p.cum), 0);
+  let vMax = Math.max(...pts.map(p => p.cum), 0);
+  const pad = (vMax - vMin) * 0.15 || 1;
+  vMin -= pad; vMax += pad;
+
+  const padL = 10, padR = 10, padT = 16, padB = 24;
+  const X = (t) => padL + ((t - tMin) / Math.max(1, tMax - tMin)) * (W - padL - padR);
+  const Y = (v) => padT + (1 - (v - vMin) / (vMax - vMin)) * (H - padT - padB);
+
+  // zero line
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(padL, Y(0)); ctx.lineTo(W - padR, Y(0));
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // grid + y labels
+  ctx.fillStyle = '#8b8b96';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {
+    const v = vMin + ((vMax - vMin) * i) / 4;
+    const y = Y(v);
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.fillText(`${v >= 0 ? '+' : ''}${v.toFixed(2)}`, W - padR - 4, y - 3);
+  }
+
+  // x time labels (first / mid / last)
+  ctx.textAlign = 'center';
+  const fmt = (t) => {
+    const dt = new Date(t);
+    return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+  };
+  ctx.fillText(fmt(tMin), padL, H - 6);
+  ctx.fillText(fmt(pts[Math.floor(pts.length / 2)].t), W / 2, H - 6);
+  ctx.fillText(fmt(tMax), W - padR, H - 6);
+
+  // cumulative line (green if final >= 0, red if < 0)
+  const color = (d.total ?? 0) >= 0 ? '#34d399' : '#f87171';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  pts.forEach((p, i) => {
+    const x = X(p.t), y = Y(p.cum);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // glow
+  ctx.strokeStyle = color + '44';
+  ctx.lineWidth = 8;
+  ctx.stroke();
+
+  // area fill
+  const grad = ctx.createLinearGradient(0, padT, 0, H - padB);
+  grad.addColorStop(0, color + '33');
+  grad.addColorStop(1, color + '00');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.moveTo(X(tMin), Y(vMin));
+  pts.forEach(p => ctx.lineTo(X(p.t), Y(p.cum)));
+  ctx.lineTo(X(tMax), Y(vMin));
+  ctx.closePath();
+  ctx.fill();
+
+  // last point marker
+  const last = pts[pts.length - 1];
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(X(last.t), Y(last.cum), 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#0a0a0f';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+// ═══ Mode switch ═══
+document.getElementById('btn-paper').addEventListener('click', () => setMode('paper'));
+document.getElementById('btn-real').addEventListener('click', () => setMode('real'));
+
+function setMode(m) {
+  mode = m;
+  document.getElementById('btn-paper').className = `switch-btn${m === 'paper' ? ' active-paper' : ''}`;
+  document.getElementById('btn-real').className = `switch-btn${m === 'real' ? ' active-real' : ''}`;
+  render();
+}
+
+// ═══ Refresh ═══
+document.getElementById('btn-refresh').addEventListener('click', load);
+
+// ═══ Capture (html2canvas CDN + canvas fallback) ═══
+document.getElementById('btn-capture').addEventListener('click', async () => {
+  const card = document.getElementById('chart-card');
+  try {
+    // 優先:html2canvas(截成張頁面)——CDN
+    if (window.html2canvas) {
+      const canvas = await html2canvas(card, { backgroundColor: '#0a0a0f', scale: 2 });
+      download(canvas.toDataURL('image/png'));
+      return;
+    }
+    // fallback:截 canvas 折線圖
+    const c = document.getElementById('chart');
+    download(c.toDataURL('image/png'));
+  } catch {
+    const c = document.getElementById('chart');
+    download(c.toDataURL('image/png'));
+  }
+});
+
+function download(dataUrl) {
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = `MATS-PnL-${mode}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.png`;
+  a.click();
+}
+
+// load html2canvas lazily on capture (offline fallback = canvas only)
+const script = document.createElement('script');
+script.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+script.onerror = () => { /* offline — fallback to canvas capture */ };
+document.head.appendChild(script);
+
+// ═══ Init ═══
+load();
+setInterval(load, 60_000); // auto refresh every minute
+</script>
+</body>
+</html>
