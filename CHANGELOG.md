@@ -4464,3 +4464,35 @@ Close Reason / Entry Thesis / Exit Thesis / Post-Review
 | V16/V19 | 表格 value 超長/文字超 4000 | 🟡 | ✅ guard 已有 |
 
 **驗證**:tsc 零錯誤。全量 2064/2076(12 pre-existing)。
+
+---
+
+## v2.0.867-format3: TG 訊號簡潔點列(移除表格框——box-drawing 喺 TG 效果差)
+
+**主神要求**:表格框喺 TG 展現效果差(「$595.93      tg」——box-drawing 對齊問題)——換第二種方法——唔一定要表格——簡潔易明。
+
+**新格式(簡潔點列——合併相關數據)**:
+```
+📊 MATS TRADE — BNB LONG
+
+Entry $595.93 → Exit $597.21
+P&L +2.15% (10x) | price +0.21%
+Hold 56m · 10x
+MAE $5.88 · MFE $6.03
+Aug 8, 20:53 → Aug 8, 21:49
+
+📝 EXIT-PRICE LOCK — ... (reason)
+📄 Entry: ... (thesis)
+📄 Exit: ...
+✅ Review: ...
+```
+
+**設計原則**:
+- 標題一行(資產 + 方向)
+- 核心數據每行一個資訊單元——相關合併(Entry→Exit 價格移動、Hold·Leverage、MAE·MFE、時間範圍)
+- emoji 分隔詳細文字(📝 reason / 📄 thesis / ✅ review)——易掃讀
+- 唔用 box-drawing/表格框(跨平台對齊問題)
+
+**實測**:簡潔格式成功發去 MATS Builder group——主神去 group 睇效果。
+
+**驗證**:T2 更新(冇表格框/合併行/emoji)+ 12/12。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
