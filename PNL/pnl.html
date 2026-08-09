@@ -88,7 +88,7 @@
   canvas { width: 100%; height: 340px; display: block; border-radius: 6px; }
 
   /* ── Daily Trade Summary:vertical stacked cells, centered, no wasted side space ── */
-  .summary { display: flex; flex-direction: column; align-items: center; padding: 0 4px 20px; }
+  .summary { display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 860px; margin-top: 40px; }
   .section-title { display: flex; align-items: center; gap: 7px; font-size: var(--fs-xl); font-weight: 600; color: var(--text); margin-bottom: 14px; }
   .section-title svg, .records-header svg { width: 14px; height: 14px; color: var(--muted); }
   .summary .grid { display: flex; flex-direction: column; gap: 4px; width: 100%; max-width: 380px; }
@@ -150,9 +150,12 @@
 </div>
 
 <div class="chart-wrap" id="chart-card">
-  <h2 class="section-title" style="margin-bottom:8px"><i data-lucide="clipboard-list"></i> Daily Trade Summary</h2>
-  <div class="grid" id="summary-grid" style="margin-bottom:12px"></div>
   <canvas id="chart"></canvas>
+</div>
+
+<div class="summary">
+  <h2 class="section-title" style="margin-bottom:8px"><i data-lucide="clipboard-list"></i> Daily Trade Summary</h2>
+  <div class="grid" id="summary-grid"></div>
 </div>
 
 <div class="records">
