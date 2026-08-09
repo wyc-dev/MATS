@@ -44,6 +44,13 @@
     -webkit-text-fill-color: transparent;
     animation: rgb-shimmer 4s linear infinite;
   }
+  /* v2.0.868-fix:capture 時禁用 rainbow 動畫——html2canvas 唔支援
+     background-clip:text(截 PNG 只見到漸變冇文字)——標題變普通白色 */
+  .no-anim {
+    background: none !important;
+    -webkit-text-fill-color: var(--text) !important;
+    animation: none !important;
+  }
 
   /* ── Header ── */
   .header { text-align: center; margin-bottom: 20px; }
@@ -121,7 +128,7 @@
 
 <div id="capture-root">
 <div class="header">
-  <h1><span class="rainbow-text">MATS</span> — Daily Cumulative PnL</h1>
+  <h1><span class="rainbow-text" id="title-text">MATS</span> — Daily Cumulative PnL</h1>
   <div class="date" id="date-label">—</div>
   <div class="sub">AI-native multi-agent trading system · live cumulative PnL (local time GMT+8)</div>
 </div>
@@ -450,18 +457,22 @@ document.getElementById('btn-refresh').addEventListener('click', load);
 // ═══ Capture (html2canvas CDN + canvas fallback) ═══
 document.getElementById('btn-capture').addEventListener('click', async () => {
   const root = document.getElementById('capture-root');
+  const title = document.getElementById('title-text');
   try {
     if (window.html2canvas) {
-      // 截成張 dashboard(header + stats + chart)——scale 2 高清
+      // v2.0.868-fix:capture 前停用 rainbow 動畫(標題變白字)——截完恢復
+      if (title) title.classList.add('no-anim');
+      // 等一幀渲染(css 切換生效)
+      await new Promise(r => setTimeout(r, 50));
       const canvas = await html2canvas(root, { backgroundColor: '#0a0a0f', scale: 2, logging: false });
+      if (title) title.classList.remove('no-anim');
       download(canvas.toDataURL('image/png'));
       return;
     }
-    // fallback:截 chart card(含 stats 上方區域)
-    const card = document.getElementById('chart-card');
     const c = document.getElementById('chart');
     download(c.toDataURL('image/png'));
   } catch {
+    if (title) title.classList.remove('no-anim');
     const c = document.getElementById('chart');
     download(c.toDataURL('image/png'));
   }
