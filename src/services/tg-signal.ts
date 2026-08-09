@@ -209,14 +209,29 @@ ${thesis}${trade.regime ? `\n  Regime: ${trade.regime}` : ''}`;
       }
     }
 
-    // 合併:Hold + Leverage / MAE + MFE / Opened→Closed
+    // 合併:Hold + Leverage / MAE% + MFE%(主神:用 -x% & +x%——position value 極端 vs 開倉值)
     const stats: string[] = [];
     if (Number.isFinite(trade.holdMin)) stats.push(`${Math.round(trade.holdMin as number)}m`);
     if (Number.isFinite(trade.leverage)) stats.push(`${trade.leverage}x`);
     if (stats.length > 0) lines.push(`Hold ${stats.join(' · ')}`);
     const excursions: string[] = [];
-    if (Number.isFinite(trade.minValue) && (trade.minValue as number) > 0) excursions.push(`MAE $${Number(trade.minValue).toFixed(2)}`);
-    if (Number.isFinite(trade.maxValue) && (trade.maxValue as number) > 0) excursions.push(`MFE $${Number(trade.maxValue).toFixed(2)}`);
+    // initial = 開倉時 position value(investment/margin)——計算極端%需要
+    const initial = Number.isFinite(trade.investment) && (trade.investment as number) > 0 ? (trade.investment as number) : null;
+    if (initial && Number.isFinite(trade.minValue) && (trade.minValue as number) > 0) {
+      const maePct = ((trade.minValue as number) - initial) / initial * 100;
+      excursions.push(`MAE ${maePct <= 0 ? '' : '+'}${maePct.toFixed(2)}%`);
+    }
+    if (initial && Number.isFinite(trade.maxValue) && (trade.maxValue as number) > 0) {
+      const mfePct = ((trade.maxValue as number) - initial) / initial * 100;
+      excursions.push(`MFE ${mfePct >= 0 ? '+' : ''}${mfePct.toFixed(2)}%`);
+    }
+    // 冇 initial(數據缺失)→ fallback 顯示價值
+    if (excursions.length === 0) {
+      const v: string[] = [];
+      if (Number.isFinite(trade.minValue) && (trade.minValue as number) > 0) v.push(`MAE $${Number(trade.minValue).toFixed(2)}`);
+      if (Number.isFinite(trade.maxValue) && (trade.maxValue as number) > 0) v.push(`MFE $${Number(trade.maxValue).toFixed(2)}`);
+      if (v.length > 0) excursions.push(v.join(' · '));
+    }
     if (excursions.length > 0) lines.push(excursions.join(' · '));
     if (Number.isFinite(trade.openedAt) && (trade.openedAt as number) > 0 && Number.isFinite(trade.closedAt) && (trade.closedAt as number) > 0) {
       lines.push(`${fmtDate(trade.openedAt as number)} → ${fmtDate(trade.closedAt as number)}`);
