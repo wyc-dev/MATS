@@ -71,6 +71,7 @@ import { LLMConvictionCalibrator } from './analysis/llm-conviction-calibrator.ts
 import { LLMDirectionVerifier } from './analysis/llm-direction-verifier.ts';
 import { EVFilter } from './analysis/ev-filter.ts';
 import { tgSignalPusher } from './services/tg-signal.ts';
+import { supabaseTradeWriter } from './services/supabase-trade-writer.ts';
 import { CloseDecisionCalibrator } from './analysis/close-decision-calibrator.ts';
 import { classifyThesisCatalyst } from './analysis/thesis-catalyst.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
@@ -3681,6 +3682,12 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             );
           } catch { /* non-fatal */ }
         }
+        // v2.0.867-fix(B):close 事件 → Supabase trades(UI Trade Incident 數據源——
+        // 之前「冇人自動寫」→ UI 唔顯示 = 「消失」——by tradeId idempotent + 非阻塞)
+        if (supabaseTradeWriter.isEnabled()) {
+          supabaseTradeWriter.recordTrade(trade as never, tradeSource === 'real' ? 'real' : 'paper');
+        }
+
         // v2.0.867:TG close 訊號(事後記錄——完整字段商業財務英語點列;非阻塞)
         // v2.0.867-attack (V11):tradeId dedup——同一 trade 兩次 close 事件只發一次
         // 主神:輸錢平倉暫時唔推(profitOnlyClose——pnlPct 傳俾 pushSignal 判斷)
@@ -12793,6 +12800,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         newsHeadlines: this.cachedNewsHeadlines,
         tradingMarkets: this.tradingMarkets,
         portfolio: this.serializePortfolio(p) as any,
+        // v2.0.867-fix(C):realTrades(UI Trade Incident 後端數據源——200 筆 persist)
+        realTrades: this.portfolio.getClosedRealTrades() as never,
         marketState: {
           ...state,
           calibrationSummary: this.marketState.calibrator.getCalibrationSummary(),

@@ -190,7 +190,15 @@ ${thesis}${trade.regime ? `\n  Regime: ${trade.regime}` : ''}`;
     const pnl = Number.isFinite(trade.pnlPct) ? (trade.pnlPct as number) * 100 : NaN;
     if (Number.isFinite(pnl)) {
       const sign = pnl >= 0 ? '+' : '';
-      lines.push(`P&L: ${sign}${pnl.toFixed(2)}%`);
+      // v2.0.867-fix(A):清楚顯示「槓桿後 P&L + 未槓桿價格變化」——
+      // 避免「0.56% vs 5.73%」混淆(未槓桿 vs 槓桿——之前訊號誤導)
+      if (Number.isFinite(trade.entryPrice) && Number.isFinite(trade.exitPrice) && (trade.entryPrice as number) > 0) {
+        const pricePct = (((trade.exitPrice as number) - (trade.entryPrice as number)) / (trade.entryPrice as number)) * 100;
+        const lev = Number.isFinite(trade.leverage) && (trade.leverage as number) > 0 ? ` (${trade.leverage}x)` : '';
+        lines.push(`P&L: ${sign}${pnl.toFixed(2)}% (leveraged${lev}) | price ${pricePct >= 0 ? '+' : ''}${pricePct.toFixed(2)}%`);
+      } else {
+        lines.push(`P&L: ${sign}${pnl.toFixed(2)}%`);
+      }
     }
     if (Number.isFinite(trade.holdMin)) lines.push(`Hold: ${Math.round(trade.holdMin as number)} min`);
     if (Number.isFinite(trade.leverage)) lines.push(`Leverage: ${trade.leverage}x`);

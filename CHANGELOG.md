@@ -4414,3 +4414,22 @@ Close Reason / Entry Thesis / Exit Thesis / Post-Review
 **實測**:完整格式訊號成功發去 MATS Builder group(-1004392024628)——去 group 睇到「Direction/Entry/Exit/P&L/MAE/MFE/Opened/Closed/Entry Thesis/Exit Thesis/Post-Review」全部齊。
 
 **驗證**:T2 更新(完整字段)+ T11(profitOnly)+ 10/10。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+---
+
+## v2.0.867-fix: Trade Incident 消失徹查 + 三修復(A 訊號數據 + B Supabase 寫入 + C 後端讀源)
+
+**主神問題**:TG 訊號顯示「CLOSE LONG BNB @605.38 | 0.56% | hold 88m」但 UI Trade Incident 資料消失——係咪「發 tg 就 skip」定「dedup 剷咗」?
+
+**徹查結論**(四個發現):
+1. 「發 tg 就 skip」——❌ 唔成立(fire-and-forget + catch + 位置喺記錄之後)
+2. 「dedup 剷紀錄」——❌ 唔成立(sentTradeIds 只係 TG 內部 Set)
+3. 🔴 **TG 訊號錯數據**:0.56%(未槓桿)vs realTrades 5.73%(槓桿)——同一 exit 605.38——「0.56% 88m」係幻影
+4. 🔴 **Trade Incident 消失根源**:UI 讀 Supabase `trades` 表——但「冇人自動寫」(後端只寫 asset_analyses、app 只讀)
+
+**三修復**:
+- **A** `formatCloseSignal`:P&L 清楚顯示「+5.73% (leveraged (10x)) | price +0.56%」——未槓桿/槓桿唔再混淆
+- **B** `src/services/supabase-trade-writer.ts`(新):close 事件 → Supabase trades(by tradeId idempotent + 非阻塞 + upsert onConflict)——UI Trade Incident 有數據
+- **C** 後端 `/api/trades`(realTrades 200 筆 persist)+ pushToAPI 傳 realTrades + mats_frontend fetchMyTrades **後端優先** fallback Supabase
+
+**驗證**:T12(P&L 分解)+ T13(idempotent)+ 12/12。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。

@@ -604,6 +604,14 @@ export class APIServer {
       }
 
       // REST: portfolio
+      // v2.0.867-fix(C):後端 realTrades(UI Trade Incident 讀源——唔靠 Supabase)
+      if (pathname === '/api/trades' && req.method === 'GET') {
+        const rt = (this.data as { realTrades?: unknown[] } | undefined)?.realTrades ?? [];
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(rt));
+        return;
+      }
+
       if (pathname === '/api/portfolio') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(this.data?.portfolio ?? {}));
