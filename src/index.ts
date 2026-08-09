@@ -6583,8 +6583,16 @@ ${recentExamples}
         ? nonPositionMarkets[0]!
         : (this.tradingMarkets[0] ?? openPositionSymbols[0]!);
       // Ensure Market Agent has this symbol selected (for WS + price feed)
-      if (this.marketAgent.getSelectedSymbol() !== activeSymbol) {
-        this.marketAgent.setSelectedSymbolManual(activeSymbol);
+      // v2.0.868-fix:用戶手動鎖定嘅 symbol 優先——cycle 唔覆蓋。
+      // Root cause:「Trading Terminal select 其他 symbol 後 chart 仍顯示 BTC」
+      // ——每個 cycle 開始都無條件 setSelectedSymbolManual(第一個 market)——
+      // 連 manualSymbolLock 都一齊覆蓋(因為 setSelectedSymbolManual 會設 lock)。
+      // 修復:用戶已鎖定 → 保持用戶選擇(cycle 照常分析 allSymbols——唔影響);
+      //       冇鎖定 → 原有行為(用第一個 market,同時設 lock)。
+      if (!this.marketAgent.isManualSymbolLocked()) {
+        if (this.marketAgent.getSelectedSymbol() !== activeSymbol) {
+          this.marketAgent.setSelectedSymbolManual(activeSymbol);
+        }
       }
       log.info(`Cycle symbols: ${allSymbols.join(', ')} (active: ${activeSymbol})`);
       // v2.0.104: Store additional non-position trading markets to inject into currentPositions
