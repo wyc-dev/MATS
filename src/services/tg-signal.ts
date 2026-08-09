@@ -192,7 +192,12 @@ export class TGSignalPusher {
     const fmtDate = (ts: number) => new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
 
     // ── 標題一行 ──
-    lines.push(`📊 MATS TRADE — ${trade.symbol.toUpperCase()} ${side} (CLOSE)`);
+    // v2.0.868:reconciliation 平倉加 ⚠️(可能係幻影——HL 實際可能仍持有)
+    const isReconciliation = trade.reason === 'reconciliation';
+    lines.push(`📊 MATS TRADE — ${trade.symbol.toUpperCase()} ${side} (CLOSE${isReconciliation ? ' ⚠️' : ''})`);
+    if (isReconciliation) {
+      lines.push('⚠️ 對賬平倉——HL 可能仍持有倉位,請核實');
+    }
     lines.push('');
 
     // ── 核心數據(合併相關——每行一個資訊單元)──

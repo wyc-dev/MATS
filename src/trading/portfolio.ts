@@ -228,6 +228,18 @@ export class PortfolioTracker {
   /** v2.0.71: Extended to 5min — syncExchangePositions re-imports positions
    *  within the same cycle after closeExchangePosition deletes them. */
   private readonly CLOSE_DEDUP_TTL_MS = 300_000;
+  /**
+   * v2.0.868: Reconciliation confirmation counter — 防幻影 close。
+   * Root cause:「TG 顯示 GOLD 賺、UI 顯示蝕」——reconcilePositions 用單次
+   * externalOpenSymbols 快照判斷「消失」——若該快照唔完整(HL API partial/
+   * 延遲/DEX 查法錯)→ position 被誤判消失 → 幻影 close → 觸發 TG 訊號(假平倉)
+   * → 之後 sync 又 re-import → 循環。HL position 實際一直 open。
+   * 修復:position 要「連續 RECONCILIATION_CONFIRM_COUNT 次」都唔喺 external
+   * 先真正 close——單次查錯唔再造成幻影。喺 external → reset 計數。
+   */
+  private readonly reconciliationMissingCounts: Map<string, number> = new Map();
+  private static readonly RECONCILIATION_CONFIRM_COUNT = 2;
+
   /** v2.0.72: COMPLETELY SEPARATE store for real (exchange) positions.
    *  Paper and real positions no longer share the same Map. This eliminates:
    *    - recalculateEquity needing to skip real positions (fragile)
@@ -1381,10 +1393,18 @@ export class PortfolioTracker {
     ]));
     for (const localSymbol of allSymbols) {
       if (!externalSet.has(localSymbol)) {
-        // This position exists locally but NOT externally → manually closed
+        // This position exists locally but NOT externally → possibly manually closed
         const pos = this.realPositions.get(localSymbol) ?? this.portfolio.positions.get(localSymbol);
         if (!pos) continue;
-        log.warn(`🔍 Reconciliation: ${localSymbol} not found externally. Closing local mirror @ $${pos.currentPrice.toFixed(2)}`);
+        // v2.0.868: 連續 N 次確認(防幻影——單次 external 快照唔完整會誤判消失)
+        const prevMissing = this.reconciliationMissingCounts.get(localSymbol) ?? 0;
+        const missingCount = prevMissing + 1;
+        this.reconciliationMissingCounts.set(localSymbol, missingCount);
+        if (missingCount < PortfolioTracker.RECONCILIATION_CONFIRM_COUNT) {
+          log.warn(`🔍 Reconciliation: ${localSymbol} not found externally (attempt ${missingCount}/${PortfolioTracker.RECONCILIATION_CONFIRM_COUNT}) — NOT closing yet (single snapshot may be incomplete; position may still be open on HL)`);
+          continue;
+        }
+        log.warn(`🔍 Reconciliation: ${localSymbol} missing ${missingCount} consecutive syncs — closing local mirror @ $${pos.currentPrice.toFixed(2)}`);
         // v2.0.32: Use closeExchangePosition() for exchange-imported positions
         // (doesn't add margin back to balance — importExchangePosition didn't deduct it).
         // Use closePosition() for paper positions (margin was deducted at open).
@@ -1393,8 +1413,12 @@ export class PortfolioTracker {
           : this.closePosition(localSymbol, pos.currentPrice, 'reconciliation');
         if (trade) {
           reconciled.push(localSymbol);
+          this.reconciliationMissingCounts.delete(localSymbol);
           log.info(`  → Reconciled ${localSymbol}: PnL $${trade.pnl.toFixed(2)}`);
         }
+      } else {
+        // v2.0.868: position confirmed on external exchange → reset counter
+        this.reconciliationMissingCounts.delete(localSymbol);
       }
     }
     return reconciled;
