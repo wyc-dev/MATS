@@ -88,7 +88,7 @@
   .summary { display: flex; flex-direction: column; width: 100%; max-width: 860px; margin-bottom: 32px; }
   .section-title { display: flex; align-items: center; gap: 7px; font-size: var(--fs-xl); font-weight: 600; color: var(--text); margin-bottom: 20px; }
   .section-title svg, .records-header svg { width: 14px; height: 14px; color: var(--muted); }
-  .summary .grid { display: flex; justify-content: space-between; gap: 16px; width: 100%; }
+  .summary .grid { display: flex; justify-content: space-between; gap: 16px; width: 100%; margin-top: 8px; }
   .grid .cell { text-align: center; flex: 1; padding: 4px 0; }
   .grid .cell .k { font-size: var(--fs-sm); color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
   .grid .cell .v { font-family: var(--mono); font-size: var(--fs-md); font-weight: 500; font-variant-numeric: tabular-nums; }
@@ -147,7 +147,7 @@
 </div>
 
 <div class="summary">
-  <h2 class="section-title" style="margin-bottom:8px"><i data-lucide="clipboard-list"></i> Daily Trade Summary</h2>
+  <h2 class="section-title"><i data-lucide="clipboard-list"></i> Daily Trade Summary</h2>
   <div class="grid" id="summary-grid"></div>
 </div>
 
