@@ -20,6 +20,47 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 const log = createLogger({ phase: 'supabase-trades' });
 
+/**
+ * v2.0.868-attack:抽離 row 構建——純函數可測試(真 client 路徑唔使 mock)。
+ * 所有字段安全:NaN/undefined/Infinity → null;巨型 string → slice;
+ * symbol 强制 string(CJK/emoji/special 都安全)。
+ */
+export function buildTradeRow(
+  trade: Record<string, unknown> | null | undefined,
+  source: 'paper' | 'real',
+  tradeId: string,
+): Record<string, unknown> {
+  const t: Record<string, unknown> = trade ?? {};
+  const num = (v: unknown): number | null => typeof v === 'number' && Number.isFinite(v) ? v : null;
+  const str = (v: unknown, max = 2000): string | null =>
+    typeof v === 'string' && v.length > 0 ? v.slice(0, max) : null;
+  const closedAtMs = num(t['closedAt']) !== null && (t['closedAt'] as number) > 0
+    ? Math.round(t['closedAt'] as number) : null;
+  const openedAtMs = num(t['openedAt']) !== null && (t['openedAt'] as number) > 0
+    ? Math.round(t['openedAt'] as number) : null;
+  return {
+    trade_id: tradeId,
+    symbol: String(t['symbol'] ?? '').slice(0, 24),
+    side: t['side'] === 'sell' ? 'sell' : 'buy',
+    mode: source,
+    entry_price: num(t['entryPrice']),
+    exit_price: num(t['exitPrice']),
+    quantity: num(t['quantity']),
+    leverage: num(t['leverage']),
+    investment: num(t['investment']),
+    pnl: num(t['pnl']),
+    pnl_pct: num(t['pnlPct']),
+    opened_at: openedAtMs,
+    closed_at: closedAtMs,
+    close_reason: str(t['closeReason'], 64),
+    entry_thesis: str(t['entryThesis']),
+    exit_thesis: str(t['exitThesis']),
+    min_value_reached: num(t['minValueReached']),
+    max_value_reached: num(t['maxValueReached']),
+    agent_id: str(t['agentId'], 64),
+  };
+}
+
 export class SupabaseTradeWriter {
   private client: SupabaseClient | null = null;
   private userId: string;
@@ -60,7 +101,9 @@ export class SupabaseTradeWriter {
     maxValueReached?: number; agentId?: string;
   }, source: 'paper' | 'real'): void {
     if (!this.client) return;
-    const tradeId = String(trade.id ?? '');
+    // v2.0.868-attack:無 id trade → skip(防 'undefined' 共用 key——所有無 id
+    // trade 會撞同一個 key——第一個寫入後其餘全部被 block)
+    const tradeId = String(trade.id ?? '').trim();
     if (!tradeId || !trade.symbol) return;
     if (this.writtenIds.has(tradeId)) return; // 同一 trade 兩次 close → 只寫一次
     this.writtenIds.add(tradeId);
@@ -69,38 +112,8 @@ export class SupabaseTradeWriter {
       if (first) this.writtenIds.delete(first);
     }
 
-    // v2.0.868:trade_records 表 opened_at/closed_at 係 bigint(epoch ms)——直接存
-    const closedAtMs = Number.isFinite(trade.closedAt) && (trade.closedAt as number) > 0
-      ? Math.round(trade.closedAt as number)
-      : null;
-    const openedAtMs = Number.isFinite(trade.openedAt) && (trade.openedAt as number) > 0
-      ? Math.round(trade.openedAt as number)
-      : null;
-    const num = (v: unknown): number | null => Number.isFinite(v) ? v as number : null;
-    const str = (v: unknown, max = 2000): string | null =>
-      typeof v === 'string' && v.length > 0 ? v.slice(0, max) : null;
-
-    const row = {
-      trade_id: tradeId,
-      symbol: String(trade.symbol ?? '').slice(0, 24),
-      side: trade.side === 'sell' ? 'sell' : 'buy',
-      mode: source,
-      entry_price: num(trade.entryPrice),
-      exit_price: num(trade.exitPrice),
-      quantity: num(trade.quantity),
-      leverage: num(trade.leverage),
-      investment: num(trade.investment),
-      pnl: num(trade.pnl),
-      pnl_pct: num(trade.pnlPct),
-      opened_at: openedAtMs,
-      closed_at: closedAtMs,
-      close_reason: str(trade.closeReason, 64),
-      entry_thesis: str(trade.entryThesis),
-      exit_thesis: str(trade.exitThesis),
-      min_value_reached: num(trade.minValueReached),
-      max_value_reached: num(trade.maxValueReached),
-      agent_id: str(trade.agentId, 64),
-    };
+    // v2.0.868-attack:row 構建抽離(buildTradeRow——純函數可測)
+    const row = buildTradeRow(trade as unknown as Record<string, unknown>, source, tradeId);
 
     // v2.0.868:trade_records 表有 trade_id unique constraint → 直接 upsert
     // (原子 + idempotent——唔再需要 select→update/insert 兩步)

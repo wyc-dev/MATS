@@ -165,6 +165,7 @@ export class TGSignalPusher {
   }): string {
     const lines: string[] = [];
     const side = trade.side === 'sell' ? 'SHORT' : 'LONG';
+    const symbol = String(trade.symbol ?? '');
     lines.push(`📊 MATS TRADE — ${trade.symbol.toUpperCase()} ${side} (OPEN)`);
     lines.push('');
     if (Number.isFinite(trade.entryPrice) && (trade.entryPrice as number) > 0) lines.push(`Entry $${Number(trade.entryPrice).toFixed(2)}`);
@@ -189,12 +190,13 @@ export class TGSignalPusher {
   }): string {
     const lines: string[] = [];
     const side = trade.side === 'sell' ? 'SHORT' : 'LONG';
+    const symbol = String(trade.symbol ?? '');
     const fmtDate = (ts: number) => new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
 
     // ── 標題一行 ──
     // v2.0.868:reconciliation 平倉加 ⚠️(可能係幻影——HL 實際可能仍持有)
-    const isReconciliation = trade.reason === 'reconciliation';
-    lines.push(`📊 MATS TRADE — ${trade.symbol.toUpperCase()} ${side} (CLOSE${isReconciliation ? ' ⚠️' : ''})`);
+    const isReconciliation = (trade.reason ?? '').trim().toLowerCase() === 'reconciliation';
+    lines.push(`📊 MATS TRADE — ${symbol.toUpperCase()} ${side} (CLOSE${isReconciliation ? ' ⚠️' : ''})`);
     if (isReconciliation) {
       lines.push('⚠️ 對賬平倉——HL 可能仍持有倉位,請核實');
     }
