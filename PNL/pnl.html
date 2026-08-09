@@ -538,26 +538,33 @@ async function capture(fmt) {
       });
       if (title) title.classList.remove('no-anim');
       if (fmt === 'pdf' && window.jspdf) {
-        // v2.0.868-fix:PDF 深色頁背景 + margin 10mm + 頁數上限防 hang
-        const imgData = canvas.toDataURL('image/jpeg', 0.9);
+        // v2.0.868-fix:每頁獨立截取 canvas 子區域——每頁都有 top+bottom margin、
+        // 無縫接合(冇頁尾/頁頭重複)、深色背景、頁數上限防 hang
         const pdf = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
         const pw = pdf.internal.pageSize.getWidth();
         const ph = pdf.internal.pageSize.getHeight();
-        const M = 10; // margin mm(上下左右)
+        const M = 10; // margin mm(上下左右每頁一致)
         const availW = pw - 2 * M;
-        const ratio = canvas.height / canvas.width;
-        const imgH = availW * ratio;
-        const MAX_PAGES = 30; // 防 hang(超過截斷)
-        let y = M;
-        let page = 1;
-        while (true) {
+        const availH = ph - 2 * M;
+        // 每頁顯示嘅 canvas 高度(像素)——保持比例
+        const pageCanvasH = Math.floor(availH * canvas.width / availW);
+        const MAX_PAGES = 30;
+        let srcY = 0, page = 0;
+        while (srcY < canvas.height && page < MAX_PAGES) {
+          const h = Math.min(pageCanvasH, canvas.height - srcY);
+          // 截取 canvas 子區域(獨立一頁——唔係「圖向上移」)
+          const tmp = document.createElement('canvas');
+          tmp.width = canvas.width; tmp.height = h;
+          const tctx = tmp.getContext('2d');
+          tctx.drawImage(canvas, 0, srcY, canvas.width, h, 0, 0, canvas.width, h);
+          const pageImg = tmp.toDataURL('image/jpeg', 0.9);
+          if (page > 0) pdf.addPage();
           // 深色頁背景(防白底)
           pdf.setFillColor(10, 10, 15);
           pdf.rect(0, 0, pw, ph, 'F');
-          pdf.addImage(imgData, 'JPEG', M, y, availW, imgH, undefined, 'FAST');
-          if (y + imgH <= ph - M || page >= MAX_PAGES) break;
-          pdf.addPage();
-          y = y - (ph - 2 * M); // 每頁向上偏移(內容連續)
+          // 每頁都放喺 (M, M)——top+bottom margin 一致
+          pdf.addImage(pageImg, 'JPEG', M, M, availW, availH * (h / pageCanvasH), undefined, 'FAST');
+          srcY += h;
           page++;
         }
         pdf.save(`MATS-PnL-${mode}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.pdf`);
