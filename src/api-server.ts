@@ -253,7 +253,7 @@ export class APIServer {
   private uiDir: string;
   private onShutdown: (() => void) | null = null;
   private onTriggerCycle: (() => void) | null = null;
-  private dailyPnlProvider: (() => { date: string; paper: unknown; real: unknown }) | null = null;
+  private dailyPnlProvider: (() => { today: { date: string; paper: unknown; real: unknown }; yesterday: { date: string; paper: unknown; real: unknown } }) | null = null;
   private onBacktest: ((params: { years: number; symbol: string; interval: string; maxCandles: number; model?: string; reverse?: boolean }) => void) | null = null;
   private onBacktestPause: (() => void) | null = null;
   private onBacktestResume: (() => void) | null = null;
@@ -319,7 +319,7 @@ export class APIServer {
   }
 
   /** v2.0.868:當日累計 PnL 數據 provider(index.ts 注入) */
-  setDailyPnlProvider(fn: () => { date: string; paper: unknown; real: unknown }): void {
+  setDailyPnlProvider(fn: () => { today: { date: string; paper: unknown; real: unknown }; yesterday: { date: string; paper: unknown; real: unknown } }): void {
     this.dailyPnlProvider = fn;
   }
 
@@ -614,7 +614,7 @@ export class APIServer {
       if (pathname === '/api/pnl' && req.method === 'GET') {
         const data = this.dailyPnlProvider
           ? this.dailyPnlProvider()
-          : { date: '', paper: { points: [], total: 0, trades: 0 }, real: { points: [], total: 0, trades: 0 } };
+          : { today: { date: '', paper: { points: [], total: 0, trades: 0, wins: 0, list: [] }, real: { points: [], total: 0, trades: 0, wins: 0, list: [] } }, yesterday: { date: '', paper: { points: [], total: 0, trades: 0, wins: 0, list: [] }, real: { points: [], total: 0, trades: 0, wins: 0, list: [] } } };
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify(data));
         return;
