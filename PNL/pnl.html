@@ -509,14 +509,33 @@ document.querySelectorAll('.capture-item').forEach((btn) => {
 });
 
 // 生成 PNG 或 PDF(html2canvas → jsPDF)
+let capturing = false;
 async function capture(fmt) {
+  if (capturing) return; // 防重複 click(lag 源頭之一)
+  capturing = true;
+  const btn = document.getElementById('btn-capture');
+  const orig = btn.innerHTML;
+  btn.innerHTML = 'Capturing…';
   const root = document.getElementById('capture-root');
   const title = document.getElementById('title-text');
   try {
     if (window.html2canvas) {
       if (title) title.classList.add('no-anim');
       await new Promise(r => setTimeout(r, 50));
-      const canvas = await html2canvas(root, { backgroundColor: '#0a0a0f', scale: 2, logging: false });
+      // 動態 scale:長頁面(大量 records)→ scale 1 防記憶體爆;短頁面 scale 2 高清
+      const rootH = root.offsetHeight || 0;
+      const scale = rootH > 2500 ? 1 : 2;
+      const canvas = await html2canvas(root, {
+        backgroundColor: '#0a0a0f',
+        scale,
+        logging: false,
+        windowWidth: document.documentElement.scrollWidth,
+        windowHeight: document.documentElement.scrollHeight,
+        onclone: (doc) => {
+          // 移除 unload violation 來源(html2canvas 內部 window unload handler)
+          try { doc.defaultView.onbeforeunload = null; } catch { /* non-fatal */ }
+        },
+      });
       if (title) title.classList.remove('no-anim');
       if (fmt === 'pdf' && window.jspdf) {
         // html2canvas canvas → jsPDF A4
@@ -551,6 +570,9 @@ async function capture(fmt) {
     if (title) title.classList.remove('no-anim');
     const c = document.getElementById('chart');
     download(c.toDataURL('image/png'));
+  } finally {
+    capturing = false;
+    btn.innerHTML = orig;
   }
 }
 
