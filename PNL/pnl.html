@@ -6,150 +6,121 @@
 <title>MATS — Daily PnL (Private)</title>
 <script src="https://unpkg.com/lucide@latest"></script>
 <style>
+  /* ═══ World-class minimal design system ═══
+     Principles: generous whitespace · no decorative boxes ·
+     tabular numerals · restrained accent (green/red for PnL only) ·
+     3 font sizes · hairline separators instead of card frames */
   :root {
     --bg: #0a0a0f;
-    --surface: #12121a;
-    --surface2: #1a1a24;
-    --border: rgba(255,255,255,0.08);
-    --text: #e4e4e7;
-    --text-muted: #8b8b96;
+    --surface: #111118;
+    --border: rgba(255,255,255,0.07);
+    --text: #f4f4f5;
+    --muted: #8b8b96;
     --green: #34d399;
     --red: #f87171;
-    --purple: #a78bfa;
-    --cyan: #22d3ee;
     --mono: 'SF Mono', 'Fira Code', monospace;
     --sans: -apple-system, 'Helvetica Neue', sans-serif;
-    /* v2.0.868-fix:全頁只有三種 font size */
-    --fs-lg: 1.1rem;
-    --fs-md: 0.85rem;
-    --fs-sm: 0.7rem;
+    --fs-lg: 1.05rem;   /* 核心數值 */
+    --fs-md: 0.82rem;   /* 正文/標題 */
+    --fs-sm: 0.68rem;   /* 標籤/細節 */
+    --space: 8px;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     background: var(--bg);
     color: var(--text);
     font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
     min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 24px 16px;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 40px 20px 48px;
   }
 
-  /* ── Rainbow ── */
-  @keyframes rgb-shimmer {
-    0% { background-position: 0% 0; }
-    100% { background-position: 200% 0; }
-  }
-  .rainbow-text {
-    background: linear-gradient(90deg, #ffb3cf, #ffd9b3, #fff0b3, #b3ffcc, #b3e0ff, #d4b3ff, #ffb3cf);
-    background-size: 200% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    animation: rgb-shimmer 4s linear infinite;
-  }
-  /* v2.0.868-fix:capture 時禁用 rainbow 動畫——html2canvas 唔支援
-     background-clip:text(截 PNG 只見到漸變冇文字)——標題變普通白色 */
-  .no-anim {
-    background: none !important;
-    -webkit-text-fill-color: var(--text) !important;
-    animation: none !important;
-  }
+  /* ── Header:quiet, small, centered ── */
+  .header { text-align: center; margin-bottom: 28px; }
+  .header h1 { font-size: var(--fs-md); font-weight: 500; letter-spacing: -0.01em; }
+  .header h1 .mono { font-family: var(--mono); font-weight: 600; }
+  .header .date { font-size: var(--fs-sm); color: var(--muted); margin-top: 4px; font-family: var(--mono); }
+  .header .sub { font-size: var(--fs-sm); color: var(--muted); margin-top: 2px; }
 
-  /* ── Header ── */
-  .header { text-align: center; margin-bottom: 20px; }
-  .header h1 { font-size: var(--fs-lg); font-weight: 800; letter-spacing: -0.02em; }
-  .header .date { color: var(--text-muted); font-family: var(--mono); font-size: var(--fs-md); margin-top: 4px; }
-  .header .sub { color: var(--text-muted); font-size: var(--fs-sm); margin-top: 2px; }
-
-  /* ── Controls ── */
-  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; justify-content: center; }
-  /* v2.0.868-fix(production):switch 黑白對比明確——
-     active = 純白底黑字(inactive = 透明深底灰字)——無論 select 與否一眼分明 */
+  /* ── Controls:minimal segmented control ── */
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 32px; flex-wrap: wrap; justify-content: center; }
   .switch-group {
-    display: flex; background: #0d0d13; border: 1px solid var(--border);
-    border-radius: 10px; padding: 3px; gap: 2px;
+    display: flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden;
   }
   .switch-btn {
-    padding: 8px 18px; border: none; border-radius: 8px; cursor: pointer;
-    font-family: var(--mono); font-size: var(--fs-md); font-weight: 700;
-    background: transparent; color: #6b6b76; transition: all 0.15s;
-    min-width: 84px; text-align: center;
+    padding: 7px 16px; border: none; background: transparent; color: var(--muted);
+    font-family: var(--mono); font-size: var(--fs-sm); font-weight: 500;
+    cursor: pointer; transition: all 0.15s;
+    min-width: 78px; text-align: center;
   }
-  /* active = 純白底黑字(強對比——!important 防任何覆蓋) */
+  .switch-btn + .switch-btn { border-left: 1px solid var(--border); }
   .switch-btn.active-paper, .switch-btn.active-real,
   .switch-btn.active-period, .switch-btn.active-period2,
   .switch-btn.active-unit, .switch-btn.active-unit2 {
-    background: #ffffff !important;
-    color: #000000 !important;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+    background: var(--text); color: #000; font-weight: 600;
   }
-  .switch-btn:hover:not([class*='active']) { color: #ffffff; }
+  .switch-btn:not([class*='active']):hover { color: var(--text); }
   .btn {
-    padding: 8px 18px; border: 1px solid var(--border); background: var(--surface);
-    color: var(--text); font-family: var(--mono); font-size: var(--fs-md); font-weight: 700;
-    border-radius: 10px; cursor: pointer; transition: all 0.2s;
+    padding: 7px 16px; border: 1px solid var(--border); background: transparent;
+    color: var(--muted); font-family: var(--mono); font-size: var(--fs-sm); font-weight: 500;
+    border-radius: 7px; cursor: pointer; transition: all 0.15s;
     display: inline-flex; align-items: center; gap: 6px;
   }
-  .btn:hover { border-color: var(--purple); color: var(--purple); }
-  .btn svg, .btn i { width: 14px; height: 14px; color: #fff; }
-  .section-title { display: flex; align-items: center; gap: 8px; font-size: var(--fs-md); font-weight: 800; }
-  .section-title svg { width: 16px; height: 16px; color: #fff; }
-  /* v2.0.868-fix:Trade Records 成個 section 包喺卡片 div(標題+icon+紀錄喺容器內) */
-  .records {
-    width: 100%; max-width: 860px; margin-top: 14px;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 14px; padding: 14px;
-  }
-  .records .records-header {
-    display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: var(--fs-md); font-weight: 800;
-    padding-bottom: 10px; border-bottom: 1px solid var(--border);
-  }
-  .records .records-header svg { width: 16px; height: 16px; color: #fff; }
-  .trade-card {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-    padding: 12px 14px; margin-bottom: 8px;
-  }
-  .trade-card .tc-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
-  .trade-card .tc-sym { display: flex; align-items: center; gap: 8px; font-size: var(--fs-lg); }
-  .trade-card .sym { font-family: var(--mono); font-weight: 800; }
-  .trade-card .side { font-family: var(--mono); font-weight: 700; font-size: var(--fs-sm); padding: 2px 8px; border-radius: 5px; }
-  .trade-card .side-buy { color: var(--green); background: rgba(52,211,153,0.12); }
-  .trade-card .side-sell { color: var(--red); background: rgba(248,113,113,0.12); }
-  .trade-card .pnl { font-family: var(--mono); font-weight: 800; font-size: var(--fs-lg); }
-  .trade-card .tc-meta { color: var(--text-muted); font-family: var(--mono); font-size: var(--fs-md); margin-top: 6px; line-height: 1.5; }
-  .trade-card .tc-thesis { color: var(--text-muted); font-size: var(--fs-sm); margin-top: 6px; line-height: 1.5; }
-  .trade-card .tc-thesis b { color: var(--text); font-weight: 600; }
+  .btn:hover { color: var(--text); border-color: rgba(255,255,255,0.2); }
+  .btn svg, .btn i { width: 13px; height: 13px; color: var(--muted); }
 
-  /* ── Stats cards ── */
-  .stats { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; justify-content: center; }
-  .stat {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-    padding: 12px 22px; text-align: center; min-width: 130px;
+  /* ── Stats:pure numbers, no boxes ── */
+  .stats { display: flex; justify-content: center; gap: 48px; margin-bottom: 32px; flex-wrap: wrap; }
+  .stat { text-align: center; }
+  .stat .label { font-size: var(--fs-sm); color: var(--muted); text-transform: uppercase; letter-spacing: 0.12em; }
+  .stat .value {
+    font-family: var(--mono); font-size: var(--fs-lg); font-weight: 500;
+    margin-top: 6px; font-variant-numeric: tabular-nums;
   }
-  .stat .label { font-size: var(--fs-sm); color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
-  .stat .value { font-family: var(--mono); font-size: var(--fs-lg); font-weight: 800; margin-top: 4px; }
-  .stat .sub { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 2px; }
 
-  /* ── Chart ── */
+  /* ── Chart card:single quiet surface ── */
   .chart-wrap {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
-    padding: 14px; width: 100%; max-width: 860px; position: relative;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px; width: 100%; max-width: 860px;
   }
-  canvas { width: 100%; height: 380px; display: block; border-radius: 8px; }
+  canvas { width: 100%; height: 340px; display: block; border-radius: 6px; }
 
-  /* ── Trade Summary + Records ── */
-  .summary { padding: 0; }
-  .summary .grid, .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
-  /* v2.0.868-fix:summary 置中 + 數據大一個 size */
-  .grid .cell { background: var(--surface2); border-radius: 8px; padding: 6px 8px; text-align: center; }
-  .grid .cell .k { font-size: var(--fs-sm); color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; text-align: center; }
-  .grid .cell .v { font-family: var(--mono); font-size: var(--fs-lg); font-weight: 700; margin-top: 2px; text-align: center; }
+  /* ── Daily Trade Summary:one quiet row, no frames ── */
+  .summary { display: flex; justify-content: space-between; gap: 16px; padding: 0 4px 20px; flex-wrap: wrap; }
+  .summary .section-title, .section-title {
+    display: flex; align-items: center; gap: 7px; width: 100%;
+    font-size: var(--fs-sm); font-weight: 500; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 16px;
+  }
+  .section-title svg, .records-header svg { width: 14px; height: 14px; color: var(--muted); }
+  .summary .grid { display: flex; width: 100%; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .grid .cell { text-align: center; flex: 1; min-width: 90px; }
+  .grid .cell .k { font-size: var(--fs-sm); color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+  .grid .cell .v { font-family: var(--mono); font-size: var(--fs-lg); font-weight: 500; margin-top: 6px; font-variant-numeric: tabular-nums; }
 
+  /* ── Trade Records:hairline separators, no card frames ── */
+  .records { width: 100%; max-width: 860px; margin-top: 40px; }
+  .records .records-header {
+    display: flex; align-items: center; gap: 7px;
+    font-size: var(--fs-sm); font-weight: 500; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.1em;
+    padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 4px;
+  }
+  .trade-card { padding: 16px 4px; border-bottom: 1px solid var(--border); }
+  .trade-card:last-child { border-bottom: none; }
+  .trade-card .tc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .trade-card .tc-sym { display: flex; align-items: center; gap: 10px; font-size: var(--fs-md); }
+  .trade-card .sym { font-family: var(--mono); font-weight: 600; }
+  .trade-card .side { font-family: var(--mono); font-size: var(--fs-sm); font-weight: 600; padding: 2px 8px; border-radius: 4px; }
+  .trade-card .side-buy { color: var(--green); background: rgba(52,211,153,0.08); }
+  .trade-card .side-sell { color: var(--red); background: rgba(248,113,113,0.08); }
+  .trade-card .pnl { font-family: var(--mono); font-size: var(--fs-md); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .trade-card .tc-meta { color: var(--muted); font-family: var(--mono); font-size: var(--fs-sm); margin-top: 6px; line-height: 1.6; }
+  .trade-card .tc-thesis { color: var(--muted); font-size: var(--fs-sm); margin-top: 6px; line-height: 1.6; }
+  .trade-card .tc-thesis b { color: var(--muted); font-weight: 600; }
 
-  /* ── Footer ── */
-  .footer { margin-top: 14px; color: var(--text-muted); font-size: var(--fs-sm); font-family: var(--mono); }
+  .footer { margin-top: 32px; color: var(--muted); font-size: var(--fs-sm); font-family: var(--mono); }
 </style>
 </head>
 <body>
