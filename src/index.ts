@@ -71,6 +71,15 @@ import { LLMConvictionCalibrator } from './analysis/llm-conviction-calibrator.ts
 import { LLMDirectionVerifier } from './analysis/llm-direction-verifier.ts';
 import { EVFilter } from './analysis/ev-filter.ts';
 import { tgSignalPusher } from './services/tg-signal.ts';
+
+/** v2.0.868:單日 PnL 序列結構(PNL dashboard 用) */
+export interface PnlSeries {
+  points: Array<{ t: number; cum: number }>;
+  total: number;
+  trades: number;
+  wins: number;
+  list: Array<Record<string, unknown>>;
+}
 import { supabaseTradeWriter } from './services/supabase-trade-writer.ts';
 import { CloseDecisionCalibrator } from './analysis/close-decision-calibrator.ts';
 import { classifyThesisCatalyst } from './analysis/thesis-catalyst.ts';
@@ -12313,18 +12322,22 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     } catch { /* non-fatal */ }
   }
 
-  /** v2.0.868:當日累計 PnL(paper + real——今日 closedAt 排序累計 + 完整 trade 詳情) */
-  private computeDailyPnl(): { date: string; paper: { points: Array<{ t: number; cum: number }>; total: number; trades: number; wins: number; list: Array<Record<string, unknown>> }; real: { points: Array<{ t: number; cum: number }>; total: number; trades: number; wins: number; list: Array<Record<string, unknown>> } } {
+  /** v2.0.868:當日累計 PnL(paper + real——今日/昨日 closedAt 排序累計 + 完整 trade 詳情) */
+  private computeDailyPnl(): {
+    today: { date: string; paper: PnlSeries; real: PnlSeries };
+    yesterday: { date: string; paper: PnlSeries; real: PnlSeries };
+  } {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    const todayEnd = todayStart + 24 * 3600 * 1000;
-    const toSeries = (trades: Array<Record<string, unknown>>) => {
+    const DAY = 24 * 3600 * 1000;
+    const yesterdayStart = todayStart - DAY;
+    const toSeries = (trades: Array<Record<string, unknown>>, start: number, end: number): PnlSeries => {
       const filtered = trades
-        .filter((t) => Number.isFinite(t['closedAt'] as number) && (t['closedAt'] as number) >= todayStart && (t['closedAt'] as number) < todayEnd)
+        .filter((t) => Number.isFinite(t['closedAt'] as number) && (t['closedAt'] as number) >= start && (t['closedAt'] as number) < end)
         .sort((a, b) => (a['closedAt'] as number) - (b['closedAt'] as number));
       let cum = 0;
       const points = filtered.map((t) => { cum += safeNum(t['pnl'] as number, 0); return { t: t['closedAt'] as number, cum }; });
-      // v2.0.868-fix:完整 trade 詳情(PNL 頁交易紀錄用)
+      // 完整 trade 詳情(PNL 頁交易紀錄用)
       const list = filtered.map((t) => ({
         symbol: t['symbol'] ?? '',
         side: t['side'] ?? '',
@@ -12350,12 +12363,20 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         list,
       };
     };
-    const paper = toSeries(Array.from((this.paperEngine?.getTrades?.() ?? []) as never as Array<Record<string, unknown>>));
-    const real = toSeries(Array.from(this.portfolio?.getClosedRealTrades?.() ?? []) as never as Array<Record<string, unknown>>);
+    const paperAll = Array.from((this.paperEngine?.getTrades?.() ?? []) as never as Array<Record<string, unknown>>);
+    const realAll = Array.from(this.portfolio?.getClosedRealTrades?.() ?? []) as never as Array<Record<string, unknown>>;
+    const fmt = (ts: number) => new Date(ts).toLocaleDateString('en-CA');
     return {
-      date: now.toLocaleDateString('en-CA'),
-      paper,
-      real,
+      today: {
+        date: fmt(todayStart),
+        paper: toSeries(paperAll, todayStart, todayStart + DAY),
+        real: toSeries(realAll, todayStart, todayStart + DAY),
+      },
+      yesterday: {
+        date: fmt(yesterdayStart),
+        paper: toSeries(paperAll, yesterdayStart, todayStart),
+        real: toSeries(realAll, yesterdayStart, todayStart),
+      },
     };
   }
 
