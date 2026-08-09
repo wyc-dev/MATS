@@ -12324,8 +12324,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
 
   /** v2.0.868:當日累計 PnL(paper + real——今日/昨日 closedAt 排序累計 + 完整 trade 詳情) */
   private computeDailyPnl(): {
-    today: { date: string; paper: PnlSeries; real: PnlSeries };
-    yesterday: { date: string; paper: PnlSeries; real: PnlSeries };
+    today: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
+    yesterday: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
   } {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -12366,14 +12366,24 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     const paperAll = Array.from((this.paperEngine?.getTrades?.() ?? []) as never as Array<Record<string, unknown>>);
     const realAll = Array.from(this.portfolio?.getClosedRealTrades?.() ?? []) as never as Array<Record<string, unknown>>;
     const fmt = (ts: number) => new Date(ts).toLocaleDateString('en-CA');
+    // v2.0.868-fix:本金(principal——% 模式「對比本金增長」用)
+    // paper:初始餘額;real:HL 帳戶餘額(cachedExchangeBalance)
+    const paperPrincipal = Number.isFinite(this.portfolio?.getPortfolio?.()?.initialBalance as number) && (this.portfolio?.getPortfolio?.()?.initialBalance as number) > 0
+      ? (this.portfolio?.getPortfolio?.()?.initialBalance as number)
+      : 1000;
+    const realPrincipal = Number.isFinite(this.cachedExchangeBalance?.total as number) && (this.cachedExchangeBalance?.total as number) > 0
+      ? (this.cachedExchangeBalance?.total as number)
+      : 0;
     return {
       today: {
         date: fmt(todayStart),
+        principal: { paper: paperPrincipal, real: realPrincipal },
         paper: toSeries(paperAll, todayStart, todayStart + DAY),
         real: toSeries(realAll, todayStart, todayStart + DAY),
       },
       yesterday: {
         date: fmt(yesterdayStart),
+        principal: { paper: paperPrincipal, real: realPrincipal },
         paper: toSeries(paperAll, yesterdayStart, todayStart),
         real: toSeries(realAll, yesterdayStart, todayStart),
       },
