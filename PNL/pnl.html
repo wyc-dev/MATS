@@ -91,6 +91,7 @@
 </head>
 <body>
 
+<div id="capture-root">
 <div class="header">
   <h1><span class="rainbow-text">MATS</span> — Daily Cumulative PnL</h1>
   <div class="date" id="date-label">—</div>
@@ -118,6 +119,7 @@
 </div>
 
 <div class="footer">MATS PNL Dashboard · data via /api/pnl · private</div>
+</div>
 
 <script>
 'use strict';
@@ -180,7 +182,7 @@ function renderChart(d) {
   ctx.fillStyle = '#12121a';
   ctx.fillRect(0, 0, W, H);
 
-  const pts = d.points || [];
+  const pts = (d.points || []).slice();
   if (pts.length === 0) {
     ctx.fillStyle = '#8b8b96';
     ctx.font = '14px monospace';
@@ -189,7 +191,13 @@ function renderChart(d) {
     return;
   }
 
-  // range
+  // v2.0.868-fix:起點由零開始(開市累計 = 0)——line 由 0 起
+  // 用今日開始時間做起點(todayStart)——data 有 date,用 pts[0].t 之前 0 點
+  const dayStart = new Date(data.date + 'T00:00:00').getTime();
+  const anchor = Number.isFinite(dayStart) ? dayStart : (pts[0].t - 24 * 3600 * 1000);
+  pts.unshift({ t: anchor, cum: 0 });
+
+  // range(包含 0——起點)
   const tMin = pts[0].t, tMax = pts[pts.length - 1].t;
   let vMin = Math.min(...pts.map(p => p.cum), 0);
   let vMax = Math.max(...pts.map(p => p.cum), 0);
@@ -218,6 +226,27 @@ function renderChart(d) {
     ctx.strokeStyle = 'rgba(255,255,255,0.04)';
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
     ctx.fillText(`${v >= 0 ? '+' : ''}${v.toFixed(2)}`, W - padR - 4, y - 3);
+  }
+
+  // 日期標注(圖表頂部中央——主神要求)
+  ctx.fillStyle = '#e4e4e7';
+  ctx.font = 'bold 12px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(`📅 ${data.date} (GMT+8)`, W / 2, 12);
+
+  // peak / trough 標注(最高/最低累計點)
+  const peak = pts.reduce((a, b) => (b.cum > a.cum ? b : a));
+  const trough = pts.reduce((a, b) => (b.cum < a.cum ? b : a));
+  ctx.font = '10px monospace';
+  if (peak.cum > 0) {
+    ctx.fillStyle = '#34d399';
+    ctx.textAlign = 'left';
+    ctx.fillText(`▲ peak +$${peak.cum.toFixed(2)}`, X(peak.t) + 6, Y(peak.cum) - 6);
+  }
+  if (trough.cum < 0) {
+    ctx.fillStyle = '#f87171';
+    ctx.textAlign = 'left';
+    ctx.fillText(`▼ trough $${trough.cum.toFixed(2)}`, X(trough.t) + 6, Y(trough.cum) + 12);
   }
 
   // x time labels (first / mid / last)
@@ -259,15 +288,28 @@ function renderChart(d) {
   ctx.closePath();
   ctx.fill();
 
-  // last point marker
+  // 每 trade 點 marker(細點——每個 close 位置)
+  ctx.fillStyle = color;
+  for (let i = 1; i < pts.length; i++) {
+    ctx.beginPath();
+    ctx.arc(X(pts[i].t), Y(pts[i].cum), 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // last point marker(大——目前值)
   const last = pts[pts.length - 1];
   ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.arc(X(last.t), Y(last.cum), 5, 0, Math.PI * 2);
+  ctx.arc(X(last.t), Y(last.cum), 6, 0, Math.PI * 2);
   ctx.fill();
   ctx.strokeStyle = '#0a0a0f';
   ctx.lineWidth = 2;
   ctx.stroke();
+  // 目前值標注
+  ctx.fillStyle = '#e4e4e7';
+  ctx.font = 'bold 11px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(`now ${last.cum >= 0 ? '+' : ''}$${last.cum.toFixed(2)}`, X(last.t) + 10, Y(last.cum) - 8);
 }
 
 // ═══ Mode switch ═══
@@ -286,15 +328,16 @@ document.getElementById('btn-refresh').addEventListener('click', load);
 
 // ═══ Capture (html2canvas CDN + canvas fallback) ═══
 document.getElementById('btn-capture').addEventListener('click', async () => {
-  const card = document.getElementById('chart-card');
+  const root = document.getElementById('capture-root');
   try {
-    // 優先:html2canvas(截成張頁面)——CDN
     if (window.html2canvas) {
-      const canvas = await html2canvas(card, { backgroundColor: '#0a0a0f', scale: 2 });
+      // 截成張 dashboard(header + stats + chart)——scale 2 高清
+      const canvas = await html2canvas(root, { backgroundColor: '#0a0a0f', scale: 2, logging: false });
       download(canvas.toDataURL('image/png'));
       return;
     }
-    // fallback:截 canvas 折線圖
+    // fallback:截 chart card(含 stats 上方區域)
+    const card = document.getElementById('chart-card');
     const c = document.getElementById('chart');
     download(c.toDataURL('image/png'));
   } catch {
