@@ -12313,26 +12313,45 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     } catch { /* non-fatal */ }
   }
 
-  /** v2.0.868:當日累計 PnL(paper + real——今日 closedAt 排序累計) */
-  private computeDailyPnl(): { date: string; paper: { points: Array<{ t: number; cum: number }>; total: number; trades: number; wins: number }; real: { points: Array<{ t: number; cum: number }>; total: number; trades: number; wins: number } } {
+  /** v2.0.868:當日累計 PnL(paper + real——今日 closedAt 排序累計 + 完整 trade 詳情) */
+  private computeDailyPnl(): { date: string; paper: { points: Array<{ t: number; cum: number }>; total: number; trades: number; wins: number; list: Array<Record<string, unknown>> }; real: { points: Array<{ t: number; cum: number }>; total: number; trades: number; wins: number; list: Array<Record<string, unknown>> } } {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const todayEnd = todayStart + 24 * 3600 * 1000;
-    const toSeries = (trades: Array<{ closedAt?: number; pnl?: number }>) => {
+    const toSeries = (trades: Array<Record<string, unknown>>) => {
       const filtered = trades
-        .filter((t) => Number.isFinite(t.closedAt) && (t.closedAt ?? 0) >= todayStart && (t.closedAt ?? 0) < todayEnd)
-        .sort((a, b) => (a.closedAt ?? 0) - (b.closedAt ?? 0));
+        .filter((t) => Number.isFinite(t['closedAt'] as number) && (t['closedAt'] as number) >= todayStart && (t['closedAt'] as number) < todayEnd)
+        .sort((a, b) => (a['closedAt'] as number) - (b['closedAt'] as number));
       let cum = 0;
-      const points = filtered.map((t) => { cum += safeNum(t.pnl, 0); return { t: t.closedAt ?? 0, cum }; });
+      const points = filtered.map((t) => { cum += safeNum(t['pnl'] as number, 0); return { t: t['closedAt'] as number, cum }; });
+      // v2.0.868-fix:完整 trade 詳情(PNL 頁交易紀錄用)
+      const list = filtered.map((t) => ({
+        symbol: t['symbol'] ?? '',
+        side: t['side'] ?? '',
+        entryPrice: t['entryPrice'] ?? null,
+        exitPrice: t['exitPrice'] ?? null,
+        pnl: safeNum(t['pnl'] as number, 0),
+        pnlPct: safeNum(t['pnlPct'] as number, 0),
+        leverage: t['leverage'] ?? null,
+        openedAt: t['openedAt'] ?? null,
+        closedAt: t['closedAt'] ?? null,
+        closeReason: t['closeReason'] ?? '',
+        entryThesis: t['entryThesis'] ?? '',
+        exitThesis: t['exitThesis'] ?? '',
+        postReview: t['postReview'] ?? '',
+        minValue: t['minValueReached'] ?? null,
+        maxValue: t['maxValueReached'] ?? null,
+      }));
       return {
         points,
         total: cum,
         trades: filtered.length,
-        wins: filtered.filter((t) => safeNum(t.pnl, 0) > 0).length,
+        wins: filtered.filter((t) => safeNum(t['pnl'] as number, 0) > 0).length,
+        list,
       };
     };
-    const paper = toSeries(Array.from((this.paperEngine?.getTrades?.() ?? []) as never as Array<{ closedAt?: number; pnl?: number }>));
-    const real = toSeries(Array.from(this.portfolio?.getClosedRealTrades?.() ?? []) as never as Array<{ closedAt?: number; pnl?: number }>);
+    const paper = toSeries(Array.from((this.paperEngine?.getTrades?.() ?? []) as never as Array<Record<string, unknown>>));
+    const real = toSeries(Array.from(this.portfolio?.getClosedRealTrades?.() ?? []) as never as Array<Record<string, unknown>>);
     return {
       date: now.toLocaleDateString('en-CA'),
       paper,
