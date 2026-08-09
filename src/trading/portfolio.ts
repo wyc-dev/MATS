@@ -190,6 +190,11 @@ export function inferCloseReason(
   return 'reconciliation';
 }
 
+/** v2.0.868-attack:local safeNum——NaN/undefined/Infinity → fallback(log 行 toFixed 硬化) */
+function safeNum(v: unknown, fallback = 0): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+}
+
 export class PortfolioTracker {
   private portfolio: Portfolio;
   /** Callback so PaperTradingEngine can capture trades from SL/TP closes */
@@ -786,7 +791,7 @@ export class PortfolioTracker {
     if (pos.currentPrice > 0) {
       const deviation = Math.abs(currentPrice - pos.currentPrice) / pos.currentPrice;
       if (deviation > 0.25) {
-        log.warn(`[updatePosition] Rejected corrupt price ${currentPrice.toFixed(2)} for ${symbol} (deviation ${(deviation * 100).toFixed(1)}% from last ${pos.currentPrice.toFixed(2)})`);
+        log.warn(`[updatePosition] Rejected corrupt price ${currentPrice.toFixed(2)} for ${symbol} (deviation ${(deviation * 100).toFixed(1)}% from last ${safeNum(pos.currentPrice, 0).toFixed(2)})`);
         return;
       }
     }
@@ -913,7 +918,7 @@ export class PortfolioTracker {
     if (pos.currentPrice > 0) {
       const deviation = Math.abs(currentPrice - pos.currentPrice) / pos.currentPrice;
       if (deviation > 0.25) {
-        log.warn(`[softUpdatePosition] Rejected corrupt price ${currentPrice.toFixed(2)} for ${sym} (deviation ${(deviation * 100).toFixed(1)}% from last ${pos.currentPrice.toFixed(2)}) — keeping MAE/MFE clean`);
+        log.warn(`[softUpdatePosition] Rejected corrupt price ${currentPrice.toFixed(2)} for ${sym} (deviation ${(deviation * 100).toFixed(1)}% from last ${safeNum(pos.currentPrice, 0).toFixed(2)}) — keeping MAE/MFE clean`);
         return;
       }
     }
@@ -1195,14 +1200,14 @@ export class PortfolioTracker {
         if (finalSL !== undefined && pos.currentPrice > 0) {
           const slDistPct = Math.abs(pos.currentPrice - finalSL) / pos.currentPrice;
           if (slDistPct < MIN_SL_DIST_PCT) {
-            log.warn(`🚫 adjustPosition SL too-tight: ${pos.symbol} SL $${finalSL.toFixed(2)} is ${(slDistPct * 100).toFixed(2)}% from current price $${pos.currentPrice.toFixed(2)} — minimum ${(MIN_SL_DIST_PCT * 100)}% required to avoid noise stop-out`);
+            log.warn(`🚫 adjustPosition SL too-tight: ${pos.symbol} SL $${finalSL.toFixed(2)} is ${(slDistPct * 100).toFixed(2)}% from current price $${safeNum(pos.currentPrice, 0).toFixed(2)} — minimum ${(MIN_SL_DIST_PCT * 100)}% required to avoid noise stop-out`);
             finalSL = undefined;
           }
         }
         if (finalTP !== undefined && pos.currentPrice > 0) {
           const tpDistPct = Math.abs(pos.currentPrice - finalTP) / pos.currentPrice;
           if (tpDistPct < MIN_TP_DIST_PCT) {
-            log.warn(`🚫 adjustPosition TP too-tight: ${pos.symbol} TP $${finalTP.toFixed(2)} is ${(tpDistPct * 100).toFixed(2)}% from current price $${pos.currentPrice.toFixed(2)} — minimum ${(MIN_TP_DIST_PCT * 100)}% required to avoid noise take-profit`);
+            log.warn(`🚫 adjustPosition TP too-tight: ${pos.symbol} TP $${finalTP.toFixed(2)} is ${(tpDistPct * 100).toFixed(2)}% from current price $${safeNum(pos.currentPrice, 0).toFixed(2)} — minimum ${(MIN_TP_DIST_PCT * 100)}% required to avoid noise take-profit`);
             finalTP = undefined;
           }
         }
@@ -1256,7 +1261,7 @@ export class PortfolioTracker {
     if (validSL !== undefined) {
       const slSafe = isLong ? validSL < pos.currentPrice : validSL > pos.currentPrice;
       if (!slSafe) {
-        log.warn(`🚫 syncSLTPFromExchange: ${isLong ? 'LONG' : 'SHORT'} SL $${validSL.toFixed(2)} on wrong side of current price $${pos.currentPrice.toFixed(2)} for ${sym} — rejecting HL value, keeping local SL=$${pos.stopLossPrice?.toFixed(2) ?? 'none'}`);
+        log.warn(`🚫 syncSLTPFromExchange: ${isLong ? 'LONG' : 'SHORT'} SL $${validSL.toFixed(2)} on wrong side of current price $${safeNum(pos.currentPrice, 0).toFixed(2)} for ${sym} — rejecting HL value, keeping local SL=$${pos.stopLossPrice?.toFixed(2) ?? 'none'}`);
         validSL = undefined;
       }
     }
@@ -1266,7 +1271,7 @@ export class PortfolioTracker {
     if (validTP !== undefined) {
       const tpValid = isLong ? validTP > pos.averageEntryPrice : validTP < pos.averageEntryPrice;
       if (!tpValid) {
-        log.warn(`🚫 syncSLTPFromExchange: ${isLong ? 'LONG' : 'SHORT'} TP $${validTP.toFixed(2)} on wrong side of entry $${pos.averageEntryPrice.toFixed(2)} for ${sym} — rejecting HL value, keeping local TP=$${pos.takeProfitPrice?.toFixed(2) ?? 'none'}`);
+        log.warn(`🚫 syncSLTPFromExchange: ${isLong ? 'LONG' : 'SHORT'} TP $${validTP.toFixed(2)} on wrong side of entry $${safeNum(pos.averageEntryPrice, 0).toFixed(2)} for ${sym} — rejecting HL value, keeping local TP=$${pos.takeProfitPrice?.toFixed(2) ?? 'none'}`);
         validTP = undefined;
       }
     }
@@ -1328,7 +1333,7 @@ export class PortfolioTracker {
       // Check if SL is on the wrong side of current price (would trigger immediately)
       const slSafe = isLong ? pos.stopLossPrice < pos.currentPrice : pos.stopLossPrice > pos.currentPrice;
       if (!slSafe) {
-        log.warn(`🔧 correctInvertedSLTP: ${isLong ? 'LONG' : 'SHORT'} ${sym} SL $${pos.stopLossPrice.toFixed(2)} on wrong side of current price $${pos.currentPrice.toFixed(2)} — recalculating`);
+        log.warn(`🔧 correctInvertedSLTP: ${isLong ? 'LONG' : 'SHORT'} ${sym} SL $${safeNum(pos.stopLossPrice, 0).toFixed(2)} on wrong side of current price $${safeNum(pos.currentPrice, 0).toFixed(2)} — recalculating`);
         needsCorrection = true;
       }
     }
@@ -1341,7 +1346,7 @@ export class PortfolioTracker {
       // Check if TP is on the wrong side of entry (wrong profit direction)
       const tpValid = isLong ? pos.takeProfitPrice > pos.averageEntryPrice : pos.takeProfitPrice < pos.averageEntryPrice;
       if (!tpValid) {
-        log.warn(`🔧 correctInvertedSLTP: ${isLong ? 'LONG' : 'SHORT'} ${sym} TP $${pos.takeProfitPrice.toFixed(2)} on wrong side of entry $${pos.averageEntryPrice.toFixed(2)} — recalculating`);
+        log.warn(`🔧 correctInvertedSLTP: ${isLong ? 'LONG' : 'SHORT'} ${sym} TP $${safeNum(pos.takeProfitPrice, 0).toFixed(2)} on wrong side of entry $${safeNum(pos.averageEntryPrice, 0).toFixed(2)} — recalculating`);
         needsCorrection = true;
       }
     }
@@ -1372,7 +1377,11 @@ export class PortfolioTracker {
    */
   reconcilePositions(externalOpenSymbols: string[]): string[] {
     const reconciled: string[] = [];
-    const externalSet = new Set(externalOpenSymbols.map(s => normalizeSymbol(s)));
+    // v2.0.868-attack:比較用「全小寫」——normalizeSymbol 只 lower prefix
+    // (asset name 保留原樣)——HL 用 'xyz:GOLD'(大寫 asset)vs local
+    // 'xyz:gold'(小寫)→ 永遠唔 match → 幻影 close(每次 reconciliation
+    // 誤判消失 → 假平倉訊號 → re-import 循環)——GOLD 幻影真正 root cause
+    const externalSet = new Set(externalOpenSymbols.map(s => normalizeSymbol(String(s ?? '')).toLowerCase()));
 
     // v2.0.33: API-failure guard — if externalOpenSymbols is empty but we have
     // real (exchange-imported) positions locally, do NOT reconcile. An empty
@@ -1392,7 +1401,8 @@ export class PortfolioTracker {
       ...this.portfolio.positions.keys(),
     ]));
     for (const localSymbol of allSymbols) {
-      if (!externalSet.has(localSymbol)) {
+      if (!localSymbol) continue;
+      if (!externalSet.has(normalizeSymbol(localSymbol).toLowerCase())) {
         // This position exists locally but NOT externally → possibly manually closed
         const pos = this.realPositions.get(localSymbol) ?? this.portfolio.positions.get(localSymbol);
         if (!pos) continue;
@@ -1404,7 +1414,7 @@ export class PortfolioTracker {
           log.warn(`🔍 Reconciliation: ${localSymbol} not found externally (attempt ${missingCount}/${PortfolioTracker.RECONCILIATION_CONFIRM_COUNT}) — NOT closing yet (single snapshot may be incomplete; position may still be open on HL)`);
           continue;
         }
-        log.warn(`🔍 Reconciliation: ${localSymbol} missing ${missingCount} consecutive syncs — closing local mirror @ $${pos.currentPrice.toFixed(2)}`);
+        log.warn(`🔍 Reconciliation: ${localSymbol} missing ${missingCount} consecutive syncs — closing local mirror @ $${safeNum(pos.currentPrice, 0).toFixed(2)}`);
         // v2.0.32: Use closeExchangePosition() for exchange-imported positions
         // (doesn't add margin back to balance — importExchangePosition didn't deduct it).
         // Use closePosition() for paper positions (margin was deducted at open).
@@ -1521,16 +1531,16 @@ export class PortfolioTracker {
       // SL/TP change detection
       let slChange = '';
       if (pos.originalStopLossPrice !== undefined && pos.stopLossPrice !== undefined && pos.originalStopLossPrice !== pos.stopLossPrice) {
-        slChange = ` SL: $${pos.originalStopLossPrice.toFixed(2)}→$${pos.stopLossPrice.toFixed(2)}.`;
+        slChange = ` SL: $${pos.originalStopLossPrice.toFixed(2)}→$${safeNum(pos.stopLossPrice, 0).toFixed(2)}.`;
       }
       let tpChange = '';
       if (pos.originalTakeProfitPrice !== undefined && pos.takeProfitPrice !== undefined && pos.originalTakeProfitPrice !== pos.takeProfitPrice) {
-        tpChange = ` TP: $${pos.originalTakeProfitPrice.toFixed(2)}→$${pos.takeProfitPrice.toFixed(2)}.`;
+        tpChange = ` TP: $${pos.originalTakeProfitPrice.toFixed(2)}→$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}.`;
       }
       if (pos.stopLossPrice && ((pos.side === 'buy' && exitPrice <= pos.stopLossPrice) || (pos.side === 'sell' && exitPrice >= pos.stopLossPrice))) {
-        pos.exitThesis = `Stop-loss triggered @ $${exitPrice.toFixed(2)} (SL=$${pos.stopLossPrice.toFixed(2)}).${slChange}${gapNote}`;
+        pos.exitThesis = `Stop-loss triggered @ $${exitPrice.toFixed(2)} (SL=$${safeNum(pos.stopLossPrice, 0).toFixed(2)}).${slChange}${gapNote}`;
       } else if (pos.takeProfitPrice && ((pos.side === 'buy' && exitPrice >= pos.takeProfitPrice) || (pos.side === 'sell' && exitPrice <= pos.takeProfitPrice))) {
-        pos.exitThesis = `Take-profit triggered @ $${exitPrice.toFixed(2)} (TP=$${pos.takeProfitPrice.toFixed(2)}).${tpChange}${gapNote}`;
+        pos.exitThesis = `Take-profit triggered @ $${exitPrice.toFixed(2)} (TP=$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}).${tpChange}${gapNote}`;
       } else {
         pos.exitThesis = `Position closed @ $${exitPrice.toFixed(2)} (${isWin ? 'profit' : 'loss'} $${realizedPnl.toFixed(2)}).${slChange}${tpChange}${gapNote}`;
       }
@@ -1648,10 +1658,10 @@ export class PortfolioTracker {
     // and each path may detect the same position as "closed on HL".
     // Use (normalizedSymbol, entryPrice) as key — same symbol can have multiple
     // positions with different entry prices, and we only want to dedup the SAME one.
-    const dedupKey = `${normalizeSymbol(symbol)}:${pos.averageEntryPrice.toFixed(2)}`;
+    const dedupKey = `${normalizeSymbol(symbol)}:${safeNum(pos.averageEntryPrice, 0).toFixed(2)}`;
     const lastClose = this.recentlyClosedSyms.get(dedupKey);
     if (lastClose && (Date.now() - lastClose) < this.CLOSE_DEDUP_TTL_MS) {
-      log.info(`⏭️ closeExchangePosition dedup: ${symbol} @ $${pos.averageEntryPrice.toFixed(2)} already closed ${Date.now() - lastClose}ms ago — skipping duplicate`);
+      log.info(`⏭️ closeExchangePosition dedup: ${symbol} @ $${safeNum(pos.averageEntryPrice, 0).toFixed(2)} already closed ${Date.now() - lastClose}ms ago — skipping duplicate`);
       // Still delete the position from the map (it's gone from HL)
       this.realPositions.delete(sym);
       this.portfolio.positions.delete(sym);
@@ -1746,18 +1756,18 @@ export class PortfolioTracker {
       }
       let slChange = '';
       if (pos.originalStopLossPrice !== undefined && pos.stopLossPrice !== undefined && pos.originalStopLossPrice !== pos.stopLossPrice) {
-        slChange = ` SL: $${pos.originalStopLossPrice.toFixed(2)}→$${pos.stopLossPrice.toFixed(2)}.`;
+        slChange = ` SL: $${pos.originalStopLossPrice.toFixed(2)}→$${safeNum(pos.stopLossPrice, 0).toFixed(2)}.`;
       }
       let tpChange = '';
       if (pos.originalTakeProfitPrice !== undefined && pos.takeProfitPrice !== undefined && pos.originalTakeProfitPrice !== pos.takeProfitPrice) {
-        tpChange = ` TP: $${pos.originalTakeProfitPrice.toFixed(2)}→$${pos.takeProfitPrice.toFixed(2)}.`;
+        tpChange = ` TP: $${pos.originalTakeProfitPrice.toFixed(2)}→$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}.`;
       }
       if (hlRealizedPnl !== undefined) {
         pos.exitThesis = `Exchange close @ $${exitPrice.toFixed(2)} (${isWin ? 'profit' : 'loss'} $${realizedPnl.toFixed(2)}).${slChange}${tpChange}${gapNote}`;
       } else if (pos.stopLossPrice && ((pos.side === 'buy' && exitPrice <= pos.stopLossPrice) || (pos.side === 'sell' && exitPrice >= pos.stopLossPrice))) {
-        pos.exitThesis = `Stop-loss triggered @ $${exitPrice.toFixed(2)} (SL=$${pos.stopLossPrice.toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChange}${gapNote}`;
+        pos.exitThesis = `Stop-loss triggered @ $${exitPrice.toFixed(2)} (SL=$${safeNum(pos.stopLossPrice, 0).toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChange}${gapNote}`;
       } else if (pos.takeProfitPrice && ((pos.side === 'buy' && exitPrice >= pos.takeProfitPrice) || (pos.side === 'sell' && exitPrice <= pos.takeProfitPrice))) {
-        pos.exitThesis = `Take-profit triggered @ $${exitPrice.toFixed(2)} (TP=$${pos.takeProfitPrice.toFixed(2)}, ${(tpDistPct * 100).toFixed(1)}% from entry).${tpChange}${gapNote}`;
+        pos.exitThesis = `Take-profit triggered @ $${exitPrice.toFixed(2)} (TP=$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}, ${(tpDistPct * 100).toFixed(1)}% from entry).${tpChange}${gapNote}`;
       } else {
         pos.exitThesis = `Exchange position closed @ $${exitPrice.toFixed(2)} (${isWin ? 'profit' : 'loss'} $${realizedPnl.toFixed(2)}).${slChange}${tpChange}${gapNote}`;
       }
@@ -1941,26 +1951,26 @@ export class PortfolioTracker {
     if (pos.side === 'buy') {
       if (pos.stopLossPrice && pos.currentPrice <= pos.stopLossPrice) {
         log.warn(`Stop-loss triggered for ${pos.symbol} @ ${pos.currentPrice}`);
-        pos.exitThesis = `Stop-loss triggered @ $${pos.currentPrice.toFixed(2)} (SL=$${pos.stopLossPrice.toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChangeNote}${gapNote}`;
+        pos.exitThesis = `Stop-loss triggered @ $${safeNum(pos.currentPrice, 0).toFixed(2)} (SL=$${safeNum(pos.stopLossPrice, 0).toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChangeNote}${gapNote}`;
         this.closePosition(pos.symbol, pos.currentPrice);
         return;
       }
       if (pos.takeProfitPrice && pos.currentPrice >= pos.takeProfitPrice) {
         log.info(`Take-profit triggered for ${pos.symbol} @ ${pos.currentPrice}`);
-        pos.exitThesis = `Take-profit triggered @ $${pos.currentPrice.toFixed(2)} (TP=$${pos.takeProfitPrice.toFixed(2)}, ${(tpDistPct * 100).toFixed(1)}% from entry).${tpChangeNote}${gapNote}`;
+        pos.exitThesis = `Take-profit triggered @ $${safeNum(pos.currentPrice, 0).toFixed(2)} (TP=$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}, ${(tpDistPct * 100).toFixed(1)}% from entry).${tpChangeNote}${gapNote}`;
         this.closePosition(pos.symbol, pos.currentPrice);
         return;
       }
     } else {
       if (pos.stopLossPrice && pos.currentPrice >= pos.stopLossPrice) {
         log.warn(`Stop-loss triggered for ${pos.symbol} @ ${pos.currentPrice}`);
-        pos.exitThesis = `Stop-loss triggered @ $${pos.currentPrice.toFixed(2)} (SL=$${pos.stopLossPrice.toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChangeNote}${gapNote}`;
+        pos.exitThesis = `Stop-loss triggered @ $${safeNum(pos.currentPrice, 0).toFixed(2)} (SL=$${safeNum(pos.stopLossPrice, 0).toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChangeNote}${gapNote}`;
         this.closePosition(pos.symbol, pos.currentPrice);
         return;
       }
       if (pos.takeProfitPrice && pos.currentPrice <= pos.takeProfitPrice) {
         log.info(`Take-profit triggered for ${pos.symbol} @ ${pos.currentPrice}`);
-        pos.exitThesis = `Take-profit triggered @ $${pos.currentPrice.toFixed(2)} (TP=$${pos.takeProfitPrice.toFixed(2)}, ${(tpDistPct * 100).toFixed(1)}% from entry).${tpChangeNote}${gapNote}`;
+        pos.exitThesis = `Take-profit triggered @ $${safeNum(pos.currentPrice, 0).toFixed(2)} (TP=$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}, ${(tpDistPct * 100).toFixed(1)}% from entry).${tpChangeNote}${gapNote}`;
         this.closePosition(pos.symbol, pos.currentPrice);
         return;
       }
