@@ -4,6 +4,49 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.868-P1P2: Entry Quality System + Skew Analyzer + 方向審計(超額盈利組件)
+
+**背景(主神深入調查)**:今日 NET -1.36——sl_tp 100% 全蝕(-5.09)——**負偏度確認**:
+- 蝕錢 trade 入場後「立即」逆向(MAE -5~-7.7% margin,MFE 0.1~2.1%)
+- 賺錢 trade 入場後「立即」順行(MAE -0.4~-2.4%,MFE 4~6.8%)
+- avgLoss/avgWin = 1.9x——win rate 62% 但蝕嘅大過贏——「輸贏喺入場嗰 5 分鐘決定」
+
+### P1 Entry Confirmation Gate(入場確認——負偏度解藥)
+- 3 訊號:① Price 位置(已離開 demand/supply zone——相對計算防 overflow)② Momentum(1h 趨勢同向——sideways 明確未確認)③ Noise(SL ≥0.8% 合理/冇 SL 未確認)
+- multiplier:≥2 確認 → 1.0;1 → ×0.85;0 → ×0.7(判斷層——唔 hard block——LLM 可 override)
+- **D4 修復**:Meta-Agent 冇填 srSupport/srResistance——Price 確認形同虛設 → SL 距離 ≥0.3% fallback(entry 離開 support)
+- 應用:effectiveConfidence(entry-gate audit)
+
+### P2 Entry MAE Profile(rolling window——主神「相同資產最近數據」)
+- 全部 close 類型(sl_tp/consensus/reconciliation/PAEL——主神糾正唔排除——避免樣本偏差)
+- 過濾污染樣本(正 MAE skip/明顯污染 skip/±300% clamp)
+- 最近 30 日 window + cap 100/context;冷啟動 <20 → 中性
+- 保守 EV:Wilson LB win rate + median MAE/MFE——soft multiplier(≥0 → 1.0;-0.5 → ×0.92;-1 → ×0.85;else ×0.75)
+- 應用:effectiveConfidence(entry-ev audit)+ marketDesc advice 注入
+
+### Skew Analyzer(贏細輸大偵測)
+- per symbol×side:avgLoss/avgWin ratio > 1.49 = 負偏度 trap
+- 「[SKEW] win rate 62% 但 avgLoss/avgWin = 1.9x——贏細輸大——即使 win rate 高期望值可能負」
+- buy/sell 獨立顯示(唔用 || 隱藏);ratio Infinity guard
+
+### 方向審計(主神全面審計——「需要方向但冇分辨」)
+- **close-decision-calibrator 全面加 side**(9 函數):contextKey/windowKey 之前冇 side——BUY/SELL 過早率混埋——PAEL threshold 校準用污染數據 → 全部按方向分辨
+- **thesis-catalyst 加 sentiment**(bullish/bearish/neutral——中英兼容)——chart-conviction 矛盾偵測:BUY + bearish / SELL + bullish → ×0.85(之前有 level 冇方向——矛盾冇被偵測)
+- **side 大小寫全鏈硬化**:isBuySide(buy/long)/isSellSide(sell/short)helper——16 處 `pos.side ===` 比較統一(HL 'BUY'/'SELL' 大寫/語義變體——方向零顛倒)
+
+### 攻擊硬化(Attack9-13——30+ 測試場景)
+- Entry Gate 數學邊界(overflow/正 MAE/污染/浮點)/sideways/冇 SL
+- Skew 浮點邊界(1.4999999 < 1.5 漏警告 → 1.49 threshold)
+- sentiment 邊界(bull=bear→neutral/majority/特殊字符/統計 only)
+- side 大小寫 16 處 + short/long 語義
+
+### 其他 v2.0.868 修復(同輪)
+- MAE -50% 污染 root cause:price deviation 25%→10% + trackMAEMFE sanity range + close-time sanitizeMinMax(三層防禦)
+- 幻影 reconciliation fill 驗證(系統自己檢查——唔叫用戶核實)
+- reason 競態(PAEL thesis pending → closeReason=exit_price_lock)
+- PNL:每筆 % 改為 pnl/principal、PEAK/TROUGH % 模式、WEEKLY 七日日期標記
+- **雙進程發現**:40794(舊 code)+32659(watch)——同時交易同一 HL 帳戶——重啟單進程解決
+
 ## v2.0.868: 量化閉環 + PNL Dashboard + 幻影修復 + Profitability Analyzer
 
 **背景**:HL 帳戶 30 日 757 fills net -$10(手續費 $9.75 為主);小額 trade(76/200,投資 <$12)平均 pnl -$0.0008(fee 侵蝕);re-open 循環 141/200 trade(close 後 3 小時內再開);短 hold <15m 負 EV(-0.545%)vs 15m-1h +0.505%。
