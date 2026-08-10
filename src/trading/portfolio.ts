@@ -1383,7 +1383,15 @@ export class PortfolioTracker {
    * @param getExternalOpenSymbols A callback that returns symbols open on-exchange
    * @returns Array of symbols that were reconciled (closed locally)
    */
-  reconcilePositions(externalOpenSymbols: string[]): string[] {
+  /**
+   * v2.0.868-fix:reconcilePositions 加 confirmClosed callback——系統自己驗證。
+   * 主神指正:「系統應該完成檢查,唔係叫用戶核實」——之前 reconciliation close
+   * 冇 fill 驗證——幻影 close 後發 TG 警告「可能仍持有,請核實」——荒謬。
+   * 而家:close 前 caller(index.ts)提供 fill 驗證 callback——
+   *   有 closing fill(HL 實際成交)→ confirmClosed=true → 真 close
+   *   冇 closing fill(唔確定)→ skip(系統自己 hold——唔製造幻影 trade)
+   */
+  reconcilePositions(externalOpenSymbols: string[], confirmClosed?: (symbol: string) => boolean): string[] {
     const reconciled: string[] = [];
     // v2.0.868-attack:比較用「全小寫」——normalizeSymbol 只 lower prefix
     // (asset name 保留原樣)——HL 用 'xyz:GOLD'(大寫 asset)vs local
@@ -1420,6 +1428,13 @@ export class PortfolioTracker {
         this.reconciliationMissingCounts.set(localSymbol, missingCount);
         if (missingCount < PortfolioTracker.RECONCILIATION_CONFIRM_COUNT) {
           log.warn(`🔍 Reconciliation: ${localSymbol} not found externally (attempt ${missingCount}/${PortfolioTracker.RECONCILIATION_CONFIRM_COUNT}) — NOT closing yet (single snapshot may be incomplete; position may still be open on HL)`);
+          continue;
+        }
+        // v2.0.868-fix:系統自己驗證——confirmClosed callback(fill 驗證)。
+        // 冇 closing fill(唔確定 HL 真係 close 咗)→ 唔 close——系統 hold——
+        // 唔製造幻影 trade、唔叫用戶核實。
+        if (confirmClosed && !confirmClosed(localSymbol)) {
+          log.warn(`🔍 Reconciliation: ${localSymbol} missing ${missingCount} syncs but NO closing fill found on HL — NOT closing (system holds — verify failure means position likely still open)`);
           continue;
         }
         log.warn(`🔍 Reconciliation: ${localSymbol} missing ${missingCount} consecutive syncs — closing local mirror @ $${safeNum(pos.currentPrice, 0).toFixed(2)}`);

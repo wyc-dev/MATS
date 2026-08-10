@@ -8296,7 +8296,28 @@ ${recentExamples}
           }
         }
 
-        const reconciled = this.portfolio.reconcilePositions(externalSymbols);
+        // v2.0.868-fix:系統自己驗證 reconciliation close——HL fills 確認有 closing fill
+        // 先 close;冇 closing fill(唔確定)→ 系統 hold——唔製造幻影 trade
+        let closingFillsForReconcile: Array<{ symbol: string; side: string; timestamp: number }> = [];
+        try {
+          if (this.tradingManager.getTradeMode() === 'real' && this.hyperliquidWs) {
+            const engine = (this.tradingManager as unknown as { getActiveEngine(): { getRecentFills(n: number): Promise<Array<{ symbol: string; side: string; timestamp: number }>> } | null }).getActiveEngine?.();
+            if (engine) {
+              const fills = await engine.getRecentFills(50);
+              closingFillsForReconcile = fills.filter(f => !String(f.side).toLowerCase().startsWith('open'));
+            }
+          }
+        } catch { /* 非致命——冇 fills 就全部唔確定 → 唔 close(保守) */ }
+        const reconciled = this.portfolio.reconcilePositions(externalSymbols, (localSym) => {
+          const pos = this.portfolio.getPosition(localSym);
+          if (!pos) return true;
+          const expectedCloseSide = pos.side === 'buy' ? 'sell' : 'buy';
+          return closingFillsForReconcile.some(f =>
+            f.symbol.toLowerCase() === localSym.toLowerCase() &&
+            f.side.toLowerCase() === expectedCloseSide.toLowerCase() &&
+            f.timestamp >= (pos.openedAt ?? 0),
+          );
+        });
         if (reconciled.length > 0) {
           // v2.0.32: Close reconciled exchange positions on HL.
           // The local mirror was closed by reconcilePositions(), but the
