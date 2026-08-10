@@ -195,10 +195,15 @@ export class TGSignalPusher {
 
     // ── 標題一行 ──
     // v2.0.868:reconciliation 平倉加 ⚠️(可能係幻影——HL 實際可能仍持有)
-    const isReconciliation = (trade.reason ?? '').trim().toLowerCase() === 'reconciliation';
+    // v2.0.868-fix:⚠️ 標記必須英文(主神格式要求:商業財務英語——公眾訊號)
+    // v2.0.868-attack6:unicode whitespace bypass—— (NBSP)/ /  唔被
+    // trim() 處理(trim 只處理 ASCII)——'\u00A0reconciliation' 會 miss ⚠️ 標記
+    const isReconciliation = String(trade.reason ?? '')
+      .replace(/[\s\u00A0\u2007\u202F]+/g, '')
+      .toLowerCase() === 'reconciliation';
     lines.push(`📊 MATS TRADE — ${symbol.toUpperCase()} ${side} (CLOSE${isReconciliation ? ' ⚠️' : ''})`);
     if (isReconciliation) {
-      lines.push('⚠️ 對賬平倉——HL 可能仍持有倉位,請核實');
+      lines.push('⚠️ Reconciliation close — position may still be open on HL. Verify before acting.');
     }
     lines.push('');
 
