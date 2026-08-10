@@ -3279,7 +3279,11 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         let threshold = (isTrending ? profile.mfeP90 : profile.mfeP75 * 0.8) + slippagePct;
         if (this.closeCalibrator && closeCalibConfig.enabled) {
           try {
-            const lockMult = this.closeCalibrator.getLockThresholdMultiplier(normalizeSymbol(sym), regime);
+            // v2.0.868-attack4:trend 來源必須同 recordClose 一致(trend1h——
+            // 'up'/'down'/'sideways')——之前用 regime('mean_reverting')——
+            // contextKey 永遠唔 match——閉環 multiplier 永遠 1.0(FIX2 白做)!
+            const trendKey = this.lastKlineSummary?.trend1h ?? 'unknown';
+            const lockMult = this.closeCalibrator.getLockThresholdMultiplier(normalizeSymbol(sym), trendKey);
             if (lockMult > 1.0) {
               threshold *= lockMult;
               log.info(`🔒 [exit-price-lock] ${sym} threshold ×${lockMult.toFixed(2)} (過早率校準)—— MFE ${(converted.mfePricePct * 100).toFixed(2)}% vs ${(threshold * 100).toFixed(2)}%`);
@@ -3777,7 +3781,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           try {
             this.closeCalibrator.recordClose({
               symbol: normalizeSymbol(trade.symbol || ''),
-              side: trade.side === 'sell' ? 'sell' : 'buy',
+              side: String(trade.side ?? '').toLowerCase() === 'sell' ? 'sell' : 'buy',
               closePrice: safeNum((trade as { exitPrice?: number }).exitPrice, 0),
               pnlPct: safeNum((trade as { pnlPct?: number }).pnlPct, 0),
               closeReason: closeReason ?? '',
@@ -3797,7 +3801,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             const feeUsd = margin > 0 && lev > 0 ? margin * lev * 0.0008 : 0;
             this.profitabilityAnalyzer.recordTrade(
               normalizeSymbol(trade.symbol || ''),
-              trade.side === 'sell' ? 'sell' : 'buy',
+              String(trade.side ?? '').toLowerCase() === 'sell' ? 'sell' : 'buy',
               holdMin,
               safeNum((trade as { pnlPct?: number }).pnlPct, 0),
               feeUsd,
@@ -7688,9 +7692,10 @@ ${recentExamples}
         }
       } catch { /* non-fatal */ }
       // v2.0.868: PROFITABILITY ADVICE block(hold-time EV + direction bias——量化校準)
+      // v2.0.868-attack4:雙 side advice——唔用 global gate action(per-symbol 錯 side 斷層)
       try {
         if (this.profitabilityAnalyzer && activeSymbol) {
-          const paBlock = this.profitabilityAnalyzer.getContextAdvice(normalizeSymbol(activeSymbol), this.lastJudgeGateAction ?? 'buy');
+          const paBlock = this.profitabilityAnalyzer.getDualSideAdvice(normalizeSymbol(activeSymbol));
           if (paBlock) marketDesc += `\n${paBlock}`;
         }
       } catch { /* non-fatal */ }

@@ -193,6 +193,24 @@ export class ProfitabilityAnalyzer {
     return parts.join('\n');
   }
 
+  /**
+   * v2.0.868-attack4:雙 side advice——一次過輸出 buy + sell 兩邊數據(LLM 對比)。
+   * 之前 marketDesc 注入用 global gate action 嘅 side 查 per-symbol advice——
+   * global=BUY 但 GOLD 想 SELL → 顯示錯 side 嘅 bias——斷層。
+   * 而家兩邊都俾——LLM 世界模型自己判斷(統計只做校準)。
+   */
+  getDualSideAdvice(symbol: string): string {
+    const sym = String(symbol ?? '').slice(0, 24);
+    if (!sym) return '';
+    const buy = this.getContextAdvice(sym, 'buy');
+    const sell = this.getContextAdvice(sym, 'sell');
+    if (!buy && !sell) return '';
+    const parts: string[] = [];
+    if (buy) parts.push(`[PROFITABILITY ${sym.toUpperCase()} BUY]\n${buy}`);
+    if (sell) parts.push(`[PROFITABILITY ${sym.toUpperCase()} SELL]\n${sell}`);
+    return parts.join('\n');
+  }
+
   /** Fee 影響報告(透明度) */
   getFeeImpact(): { totalFees: number; trades: number; avgFeePerTrade: number } {
     const { totalFees, trades } = this.state.fees;
