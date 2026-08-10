@@ -195,6 +195,31 @@ export class ProfitabilityAnalyzer {
   }
 
   /**
+   * v2.0.868-q:Skew(偏度)advice——識別「贏細輸大」負偏度 trap。
+   * 主神觀察:「win rate 高但蝕得多拉勻都係蝕」——avgLoss/avgWin ratio > 1.5 = 負偏度
+   * → EV 話「負期望」——skew 話「點解負」(贏 62% 但輸嘅大 1.9 倍)
+   * → LLM 世界模型理解「就算 win rate 高都要嚴格確認」——同 Entry Quality 互補
+   */
+  getSkewAdvice(symbol: string, side: 'buy' | 'sell'): string {
+    const key = `${String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24)}|${side}`;
+    const arr = this.state.bias[key];
+    if (!arr || arr.length < MIN_SAMPLES) return '';
+    const wins = arr.filter(p => p > 0);
+    const losses = arr.filter(p => p <= 0);
+    if (wins.length === 0 || losses.length === 0) return '';
+    const avgWin = wins.reduce((a, c) => a + c, 0) / wins.length;
+    const avgLoss = Math.abs(losses.reduce((a, c) => a + c, 0) / losses.length);
+    if (avgWin <= 0 || avgLoss <= 0) return '';
+    // v2.0.868-attack9:ratio 可能 Infinity(極端 loss)——唔輸出 garbage
+    const ratioRaw = avgLoss / avgWin;
+    if (!Number.isFinite(ratioRaw)) return '';
+    const ratio = ratioRaw;
+    if (ratio < 1.5) return ''; // 正常盈虧比——唔出
+    const wr = wins.length / arr.length;
+    return `[SKEW ${String(symbol).toUpperCase()} ${side.toUpperCase()}] win rate ${(wr * 100).toFixed(0)}% 但 avgLoss/avgWin = ${ratio.toFixed(1)}x(贏${(avgWin * 100).toFixed(1)}%/輸${(avgLoss * 100).toFixed(1)}%)——負偏度:贏細輸大——即使 win rate 高期望值都可能負——需要嚴格確認訊號/細 size(世界模型可 override)`;
+  }
+
+  /**
    * v2.0.868-attack4:雙 side advice——一次過輸出 buy + sell 兩邊數據(LLM 對比)。
    * 之前 marketDesc 注入用 global gate action 嘅 side 查 per-symbol advice——
    * global=BUY 但 GOLD 想 SELL → 顯示錯 side 嘅 bias——斷層。
@@ -209,6 +234,9 @@ export class ProfitabilityAnalyzer {
     const parts: string[] = [];
     if (buy) parts.push(`[PROFITABILITY ${sym.toUpperCase()} BUY]\n${buy}`);
     if (sell) parts.push(`[PROFITABILITY ${sym.toUpperCase()} SELL]\n${sell}`);
+    // v2.0.868-q:skew(贏細輸大)提示
+    const sk = this.getSkewAdvice(sym, 'buy') || this.getSkewAdvice(sym, 'sell');
+    if (sk) parts.push(sk);
     return parts.join('\n');
   }
 

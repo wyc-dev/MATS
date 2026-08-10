@@ -73,17 +73,20 @@ export function checkConfirmation(params: {
   const dir = params.lastCandleDir;
   if (dir === 'up') momentum = side === 'buy';
   else if (dir === 'down') momentum = side === 'sell';
-  // sideways → 未確認(反彈未開始)——唔當中性
+  else if (dir === 'sideways') momentum = false; // v2.0.868-attack:sideways = 反彈未開始——明確未確認
 
   // ③ Noise 確認(ATR < SL——noise 唔會直接 stop-out)
   let noise = true; // 缺數據中性
   const atr = Number.isFinite(params.atrPct) ? (params.atrPct as number) : 0;
   const slDist = Number.isFinite(params.slDistancePct) && params.slDistancePct > 0 ? params.slDistancePct : 0;
-  if (slDist > 0 && slDist < 0.8) {
+  if (slDist <= 0) {
+    // v2.0.868-attack:冇 SL = 冇保護——noise 唔確認(唔應該入無保護倉位)
+    noise = false;
+  } else if (slDist < 0.8) {
     // SL 太貼(<0.8% price = 8% margin at 10x)——noise(0.5%+)就 stop-out——
     // 數據顯示蝕錢 trade 全部 SL 太貼——未確認(唔改 SL——Gate 判斷層唔入)
     noise = false;
-  } else if (atr > 0 && slDist > 0) {
+  } else if (atr > 0) {
     noise = atr < slDist;
   }
 
