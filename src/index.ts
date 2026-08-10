@@ -83,6 +83,7 @@ export interface PnlSeries {
 import { supabaseTradeWriter } from './services/supabase-trade-writer.ts';
 import { CloseDecisionCalibrator } from './analysis/close-decision-calibrator.ts';
 import { ProfitabilityAnalyzer } from './analysis/profitability-analyzer.ts';
+import { EntryQuality, checkConfirmation } from './analysis/entry-quality.ts';
 import { classifyThesisCatalyst } from './analysis/thesis-catalyst.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
@@ -281,6 +282,8 @@ class MATSSystem {
   private closeCalibrator!: CloseDecisionCalibrator;
   /** v2.0.868:Profitability Analyzer——量化分析器(hold-time EV / direction bias / fee impact) */
   private profitabilityAnalyzer!: ProfitabilityAnalyzer;
+  /** v2.0.868-P1P2:Entry Quality System——入場確認 Gate + MAE Profile */
+  private entryQuality!: EntryQuality;
   /** v2.0.864: 上次記錄判斷時嘅 rationale(block 注入用) */
   private lastJudgeRationale = '';
   /** v2.0.865: 上次判斷嘅 gateAction(block 注入用) */
@@ -1246,6 +1249,15 @@ class MATSSystem {
         log.info(`✓ EV Filter loaded (${ef.keys} keys, ${ef.totalSamples} samples)`);
       } catch (e) {
         log.warn(`[ev-filter-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      // v2.0.868-P1P2: Entry Quality System(入場確認 Gate + MAE Profile)
+      this.entryQuality = new EntryQuality();
+      try {
+        this.entryQuality.load();
+        const eq = this.entryQuality.getStats();
+        log.info(`✓ Entry Quality loaded (${eq.contexts} contexts, ${eq.samples} samples)`);
+      } catch (e) {
+        log.warn(`[entry-quality-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
       }
       // v2.0.868: Profitability Analyzer(量化分析器——hold-time EV/direction bias/fee)
       this.profitabilityAnalyzer = new ProfitabilityAnalyzer();
@@ -3789,6 +3801,24 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             });
           } catch { /* non-fatal */ }
         }
+        // v2.0.868-P1P2: Entry Quality——MAE/MFE profile(全部 close 類型——rolling window)
+        try {
+          if (this.entryQuality && trade.openedAt > 0) {
+            const eqMargin = safeNum((trade as { investment?: number }).investment, 0);
+            const eqMin = safeNum((trade as { minValueReached?: number }).minValueReached, eqMargin);
+            const eqMax = safeNum((trade as { maxValueReached?: number }).maxValueReached, eqMargin);
+            const eqMae = eqMargin > 0 ? (eqMin - eqMargin) / eqMargin * 100 : 0;
+            const eqMfe = eqMargin > 0 ? (eqMax - eqMargin) / eqMargin * 100 : 0;
+            this.entryQuality.record(
+              normalizeSymbol(trade.symbol || ''),
+              String(trade.side ?? '').toLowerCase() === 'sell' ? 'sell' : 'buy',
+              eqMae, eqMfe,
+              safeNum((trade as { pnlPct?: number }).pnlPct, 0) * 100,
+              safeNum((trade as { closedAt?: number }).closedAt, Date.now()),
+              safeNum((trade as { leverage?: number }).leverage, 1),
+            );
+          }
+        } catch { /* non-fatal */ }
         // v2.0.868: Profitability Analyzer——hold-time EV / direction bias / fee(判斷層)
         try {
           if (this.profitabilityAnalyzer) {
@@ -7699,6 +7729,13 @@ ${recentExamples}
           if (paBlock) marketDesc += `\n${paBlock}`;
         }
       } catch { /* non-fatal */ }
+      // v2.0.868-P1P2: ENTRY QUALITY block(入場確認統計——負偏度解藥)
+      try {
+        if (this.entryQuality && activeSymbol) {
+          const entryAdv = this.entryQuality.getAdvice(normalizeSymbol(activeSymbol), this.lastJudgeGateAction ?? 'buy');
+          if (entryAdv) marketDesc += `\n${entryAdv}`;
+        }
+      } catch { /* non-fatal */ }
       // v2.0.865: EV FILTER block(期望值——正 EV 先值得開)
       try {
         if (this.evFilter && evFilterConfig.enabled && activeSymbol) {
@@ -10604,6 +10641,50 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
 
         // ── Final effective confidence: consensus × P(win) × penalty × boost ──
         let effectiveConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor * llmDirectionTrust * evMultiplier;
+
+        // ── v2.0.868-P1: Entry Confirmation Gate(入場確認——負偏度解藥)──
+        // 數據:蝕錢 trade 入場後「立即」逆向(MAE -5~-7.7%)——輸贏喺入場嗰刻決定
+        // Gate:「反彈已開始先入,唔係預期會反彈就入」——3 訊號:
+        //   ① Price 位置:已離開 demand/supply zone(唔喺邊緣徘徊)
+        //   ② Momentum:最近 1h 趨勢方向同目標一致(反彈已有動能)
+        //   ③ Noise:SL 距離合理(≥0.8%——noise 唔會立即 stop-out——太貼唔入)
+        // 判斷層——唔 hard block(LLM 世界模型可 override 強 thesis)
+        try {
+          if (finalDecision && (gateAction === 'buy' || gateAction === 'sell') && this.entryQuality) {
+            const eqEntry = safeNum(finalDecision.entryPrice, 0) || safeNum((finalDecision as { entryPrice?: number }).entryPrice, 0);
+            const slPct = safeNum(finalDecision.stopLossPct, 0) * 100; // decision stopLossPct 係小數
+            if (eqEntry > 0 && slPct > 0) {
+              const eqResult = checkConfirmation({
+                side: gateAction,
+                currentPrice: eqEntry,
+                slDistancePct: slPct,
+                support: finalDecision.srSupport,
+                resistance: finalDecision.srResistance,
+                atrPct: undefined, // 同步計算——用 SL 距離合理性代替(簡化:slPct>=0.8 先算 noise 合理)
+                lastCandleDir: this.lastKlineSummary?.trend1h,
+              });
+              if (eqResult.multiplier < 1.0) {
+                effectiveConfidence *= eqResult.multiplier;
+                log.info(`🟡 [entry-gate] ${gateAction.toUpperCase()} ${pwinSym}: 確認 ${eqResult.confirmedCount}/3 (price=${eqResult.signals.pricePosition ? '✓' : '✗'} mom=${eqResult.signals.momentum ? '✓' : '✗'} noise=${eqResult.signals.noise ? '✓' : '✗'}) → conviction ×${eqResult.multiplier} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+                activeAuditGates.push({ gate: 'entry-gate', passed: true, reason: `confirmation ${eqResult.confirmedCount}/3 → ×${eqResult.multiplier} (soft)` });
+              }
+            }
+          }
+        } catch { /* 非致命——Gate 失敗唔 block */ }
+
+        // ── v2.0.868-P2: Entry EV 校準(MAE profile——保守 EV 乘數)──
+        // Profile:該 symbol×side 最近 30 日「入場後點走」(rolling window)
+        // EV = wilsonLB×mfeMedian − (1−wilsonLB)×|maeMedian|——保守估計
+        try {
+          if ((gateAction === 'buy' || gateAction === 'sell') && this.entryQuality) {
+            const eqProf = this.entryQuality.getProfile(pwinSym, gateAction);
+            if (eqProf && eqProf.evMultiplier < 1.0) {
+              effectiveConfidence *= eqProf.evMultiplier;
+              log.info(`🟠 [entry-ev] ${gateAction.toUpperCase()} ${pwinSym}: 保守 EV ${eqProf.ev.toFixed(2)}% margin (n=${eqProf.n}, winLB ${(eqProf.wilsonLB * 100).toFixed(0)}%) → conviction ×${eqProf.evMultiplier}`);
+              activeAuditGates.push({ gate: 'entry-ev', passed: true, reason: `conservative EV ${eqProf.ev.toFixed(2)}% → ×${eqProf.evMultiplier} (soft)` });
+            }
+          }
+        } catch { /* 非致命 */ }
 
         // ── v2.0.844 Phase 2a: Causal-Grounded Entry Gate ────────────────
         // Only allow high-conviction entries where the aligned shadow shows a
