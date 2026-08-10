@@ -1470,9 +1470,15 @@ export class PortfolioTracker {
         // v2.0.32: Use closeExchangePosition() for exchange-imported positions
         // (doesn't add margin back to balance — importExchangePosition didn't deduct it).
         // Use closePosition() for paper positions (margin was deducted at open).
+        // v2.0.868-fix(主神 SP500 調查):reason 競態——PAEL(exit-price-lock)已經寫咗
+        // EXIT-PRICE LOCK thesis(準備鎖利)——reconciliation 搶先 close——
+        // reason 應該反映「系統意圖」(PAEL 決定先)→ 用 exit_price_lock——
+        // 唔好顯示「reconciliation」(誤導主神以為係幻影/操作 close)
+        const paelPending = typeof pos.exitThesis === 'string' && pos.exitThesis.includes('EXIT-PRICE LOCK');
+        const closeReason = paelPending ? 'exit_price_lock' : 'reconciliation';
         const trade = pos.agentId === 'hyperliquid-real'
-          ? this.closeExchangePosition(localSymbol, pos.currentPrice, undefined, 'reconciliation')
-          : this.closePosition(localSymbol, pos.currentPrice, 'reconciliation');
+          ? this.closeExchangePosition(localSymbol, pos.currentPrice, undefined, closeReason)
+          : this.closePosition(localSymbol, pos.currentPrice, closeReason);
         if (trade) {
           reconciled.push(localSymbol);
           this.reconciliationMissingCounts.delete(localSymbol);
