@@ -253,6 +253,7 @@ export class APIServer {
   private uiDir: string;
   private onShutdown: (() => void) | null = null;
   private onTriggerCycle: (() => void) | null = null;
+  private profitabilityProvider: (() => { holdTime: Record<string, unknown>; bias: Record<string, unknown>; fee: { totalFees: number; trades: number; avgFeePerTrade: number } }) | null = null;
   private dailyPnlProvider: (() => { today: { date: string; paper: unknown; real: unknown }; yesterday: { date: string; paper: unknown; real: unknown }; weekly: { date: string; paper: unknown; real: unknown } }) | null = null;
   private onBacktest: ((params: { years: number; symbol: string; interval: string; maxCandles: number; model?: string; reverse?: boolean }) => void) | null = null;
   private onBacktestPause: (() => void) | null = null;
@@ -316,6 +317,11 @@ export class APIServer {
   /** Register a callback for triggering an immediate cycle */
   setTriggerCycleHandler(cb: () => void): void {
     this.onTriggerCycle = cb;
+  }
+
+  /** v2.0.868:Profitability Analyzer 數據 provider(index.ts 注入) */
+  setProfitabilityProvider(fn: () => { holdTime: Record<string, unknown>; bias: Record<string, unknown>; fee: { totalFees: number; trades: number; avgFeePerTrade: number } }): void {
+    this.profitabilityProvider = fn;
   }
 
   /** v2.0.868:當日累計 PnL 數據 provider(index.ts 注入) */
@@ -606,6 +612,17 @@ export class APIServer {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'discover failed' }));
         });
+        return;
+      }
+
+      // REST: portfolio
+      // v2.0.868:Profitability Analyzer(hold-time EV / direction bias / fee)
+      if (pathname === '/api/profitability' && req.method === 'GET') {
+        const data = this.profitabilityProvider
+          ? this.profitabilityProvider()
+          : { holdTime: {}, bias: {}, fee: { totalFees: 0, trades: 0, avgFeePerTrade: 0 } };
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(data));
         return;
       }
 

@@ -37,7 +37,7 @@ const PREMATURE_HIGH_WEIGHT = 1.0;   // 明顯過早權重
 const VERIFY_WINDOWS = [5 * 60, 15 * 60, 30 * 60, 60 * 60];  // 窗口候選
 const DEFAULT_VERIFY_WINDOW = 30 * 60;  // 短炒 default 30m
 const STALE_MS = 48 * 3600 * 1000;    // pending 超時棄置
-const MAX_PENDING = 5000;
+const MAX_PENDING = 200;
 const DEFAULT_PATH = 'data/evolution/close-decision-calibration.json';
 
 const CLOSE_REASONS_TO_CALIBRATE = new Set(['consensus', 'thesis_invalidation', 'exit_price_lock']);
@@ -97,6 +97,10 @@ function windowKey(trend: string, windowIdx: number): string {
 export class CloseDecisionCalibrator {
   private state: CloseCalibrationState;
   private path: string;
+  /** v2.0.868-attack3 (K6):dirty-flag + debounce——recordClose/verifyPending
+   *  唔同步 writeFileSync(10k close = 27s 阻塞交易流程!)——
+   *  2s window 內多次改動只寫一次——高頻 close 唔再拖慢 */
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(path = DEFAULT_PATH) {
     this.state = emptyState();
@@ -135,18 +139,20 @@ export class CloseDecisionCalibrator {
       maxPriceSinceClose: input.closePrice,
     };
     this.capPending();
-    this.save(); // v2.0.868-fix1:persist——之前 save 從未被 call——restart 後過早率數據清空
+    this.markDirty(); // v2.0.868-fix1:persist + attack3:debounce(唔同步寫)
     return closeId;
   }
 
   private capPending(): void {
+    // v2.0.868-attack3 (K6):樽頸係「每次超 MAX 就 sort 一次 5000+ 元素」——
+    // 10k recordClose = 4.2s(阻塞交易流程!)。而家:超 MAX 時一次過清 100 個
+    // 最舊(sort 次數由 ~5000 次降到 ~50 次——快 100 倍)
     const keys = Object.keys(this.state.pending);
-    if (keys.length > MAX_PENDING) {
-      // 刪最舊
-      const sorted = keys.sort((a, b) => this.state.pending[a]!.ts - this.state.pending[b]!.ts);
-      for (let i = 0; i < sorted.length - MAX_PENDING; i++) {
-        delete this.state.pending[sorted[i]!];
-      }
+    if (keys.length <= MAX_PENDING) return;
+    const sorted = keys.sort((a, b) => (this.state.pending[a]?.ts ?? 0) - (this.state.pending[b]?.ts ?? 0));
+    const excess = Math.min(50, sorted.length - MAX_PENDING + 50);
+    for (let i = 0; i < excess; i++) {
+      delete this.state.pending[sorted[i]!];
     }
   }
 
@@ -219,7 +225,7 @@ export class CloseDecisionCalibrator {
       this.state.windowStats[wKey] = wc;
       delete this.state.pending[id]; // idempotent——驗證一次
     }
-    this.save(); // v2.0.868-fix1:驗證結果持久化(閉環數據累積)
+    this.markDirty(); // v2.0.868-fix1:驗證結果持久化 + attack3:debounce
   }
 
   /** 某 context 嘅過早率(weighted) */
@@ -361,6 +367,26 @@ export class CloseDecisionCalibrator {
   }
 
   // ── Persistence ──────────────────────────────────────────────────────
+
+  /** v2.0.868-attack3:dirty-flag——2s debounce 批量寫入(唔阻塞交易流程) */
+  private markDirty(): void {
+    if (this.saveTimer) return; // 已有 pending save
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      this.save();
+    }, 2000);
+    // v2.0.868-attack3:unref——timer 唔阻止進程/測試退出(debounce 係優化唔係閘門)
+    this.saveTimer.unref?.();
+  }
+
+  /** v2.0.868-attack3:強制立即 save(shutdown/測試用——清 pending debounce) */
+  flushSave(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.save();
+  }
 
   save(): void {
     try {
