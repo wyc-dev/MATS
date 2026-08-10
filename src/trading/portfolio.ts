@@ -195,6 +195,20 @@ function safeNum(v: unknown, fallback = 0): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
+/** v2.0.868-attack8:close 時 min/max sanity——restore 舊污染(錯價寫入)兜底。
+ *   min 唔應該 < 0(清算線下)或者 > 3×margin;max 唔應該 < margin。
+ *   超範圍 → 重置為 margin(唔帶污染入 trade record)。 */
+function sanitizeMinMax(pos: { minValueReached?: number; maxValueReached?: number }, margin: number): { min: number; max: number } {
+  const safeMargin = Number.isFinite(margin) && margin > 0 ? margin : 0;
+  const min = Number.isFinite(pos.minValueReached) && (pos.minValueReached as number) >= 0
+    ? Math.min(pos.minValueReached as number, safeMargin > 0 ? safeMargin * 3 : Infinity)
+    : safeMargin;
+  const max = Number.isFinite(pos.maxValueReached) && (pos.maxValueReached as number) >= 0
+    ? Math.max(pos.maxValueReached as number, safeMargin)
+    : safeMargin;
+  return { min, max };
+}
+
 /** v2.0.868-attack2:side 大小寫硬化——'BUY'/'buy'/'Long'/'long' 都係多頭。
  *  之前 `pos.side === 'buy'` 對 'BUY'(大寫)/'Long' 唔 match →
  *  方向計算反轉——買升變蝕、賣跌變賺——「TG 顯示賺/UI 顯示蝕」另一源頭。 */
@@ -1584,6 +1598,16 @@ export class PortfolioTracker {
       }
     }
 
+    // v2.0.868-attack8:close 時 min/max sanity——restore 舊污染(錯價寫入嘅
+    // minValueReached/maxValueReached)兜底重置為 margin(唔帶污染入 trade record)
+    const saneMargin = marginUsed > 0 ? marginUsed : 0;
+    const safeMin = Number.isFinite(pos.minValueReached) && (pos.minValueReached as number) >= 0
+      ? Math.min(pos.minValueReached as number, saneMargin > 0 ? saneMargin * 3 : Infinity)
+      : saneMargin;
+    const safeMax = Number.isFinite(pos.maxValueReached) && (pos.maxValueReached as number) >= 0
+      ? Math.max(pos.maxValueReached as number, saneMargin)
+      : saneMargin;
+
     const trade: TradeRecord = {
       id: uuidv4(),
       symbol: pos.symbol,
@@ -1604,8 +1628,9 @@ export class PortfolioTracker {
       // v2.0.143: capture exit thesis (set by setExitThesis before close)
       exitThesis: pos.exitThesis,
       // v2.0.143: capture MAE/MFE from position lifetime tracking
-      minValueReached: pos.minValueReached,
-      maxValueReached: pos.maxValueReached,
+      // v2.0.868-attack8:sanitize——restore 舊污染兜底重置(唔帶污染入 trade record)
+      minValueReached: sanitizeMinMax(pos, margin).min,
+      maxValueReached: sanitizeMinMax(pos, margin).max,
       // v2.0.226: Capture original + final SL/TP for close-context learning.
       originalStopLossPrice: pos.originalStopLossPrice,
       finalStopLossPrice: pos.stopLossPrice,
@@ -1831,8 +1856,9 @@ export class PortfolioTracker {
       // v2.0.143: capture exit thesis (set by setExitThesis before close)
       exitThesis: pos.exitThesis,
       // v2.0.143: capture MAE/MFE from position lifetime tracking
-      minValueReached: pos.minValueReached,
-      maxValueReached: pos.maxValueReached,
+      // v2.0.868-attack8:sanitize——restore 舊污染兜底重置(唔帶污染入 trade record)
+      minValueReached: sanitizeMinMax(pos, margin).min,
+      maxValueReached: sanitizeMinMax(pos, margin).max,
       // v2.0.226: Capture original + final SL/TP for close-context learning.
       originalStopLossPrice: pos.originalStopLossPrice,
       finalStopLossPrice: pos.stopLossPrice,

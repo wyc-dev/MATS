@@ -76,6 +76,9 @@ export function recomputePnL(pos: Position, currentPrice: number): void {
   const entryFee = pos.entryFee ?? 0;
   // v2.0.854-ATTACK: safeLeverage guards leverage=0/NaN (Infinity margin).
   const margin = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
+  // v2.0.868-attack8:margin<=0(qty=0/entry=0 異常 position)→ 唔更新——
+  // 否則 posValue=0 記錄 minValueReached=0 → close 時 MAE% = (0-margin)/margin = -100% 污染
+  if (!Number.isFinite(margin) || margin <= 0) return;
   // v2.0.854-ATTACK3: Sanitize currentPrice — NaN/Infinity/0/negative corrupts
   // unrealizedPnl → recalculateEquity sums NaN → totalEquity = NaN → entire
   // portfolio poisoned. Degrade to 0 (no price change = zero unrealized PnL).
@@ -97,6 +100,9 @@ export function recomputePnL(pos: Position, currentPrice: number): void {
 export function trackMAEMFE(pos: Position): void {
   // v2.0.854-ATTACK: safeLeverage guards leverage=0/NaN (Infinity margin).
   const margin = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
+  // v2.0.868-attack8:margin<=0(qty=0/entry=0 異常 position)→ 唔更新——
+  // 否則 posValue=0 記錄 minValueReached=0 → close 時 MAE% = (0-margin)/margin = -100% 污染
+  if (!Number.isFinite(margin) || margin <= 0) return;
   // v2.0.854-ATTACK3: Guard against NaN/Infinity unrealizedPnl (e.g. from a
   // corrupted persistence restore). A NaN posValue would permanently poison
   // minValueReached/maxValueReached → TradeRecord.MAE/MFE → learning systems.
