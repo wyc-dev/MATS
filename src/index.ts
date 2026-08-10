@@ -30,6 +30,15 @@ import { MultiExchangeWebSocketManager, detectExchange, type UnifiedPrice, type 
 import { HACPEngine } from './cognition/hacp.ts';
 import { RiskEngine } from './risk/engine.ts';
 import { PortfolioTracker, normalizeSymbol, isThesisPlaceholder } from './trading/portfolio.ts';
+
+/** v2.0.868-attack13:side normalize helper——'sell'/'short' → sell、'buy'/'long' → buy。
+ *  HL/import 可能傳 'SELL'/'SHORT'——大小寫 + 語義都統一(唔會方向顛倒) */
+function isSellSide(side: unknown): boolean {
+  return ['sell', 'short'].includes(String(side ?? '').toLowerCase());
+}
+function isBuySide(side: unknown): boolean {
+  return ['buy', 'long'].includes(String(side ?? '').toLowerCase());
+}
 import { safeLeverage } from './trading/position-utils.ts';
 import { PaperTradingEngine, type ExecutionReport } from './trading/paper-engine.ts';
 import { EvolutionOrchestrator } from './evolution/index.ts';
@@ -2526,7 +2535,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               // side=buy) could match a NEW SELL SKHX position and create a
               // phantom close record.
               // HL WS fills use 'B' (buy) / 'A' (ask=sell) for side.
-              const expectedCloseSideRaw = pos.side === 'buy' ? 'A' : 'B';
+              const expectedCloseSideRaw = isBuySide(pos.side) ? 'A' : 'B';
               if (fill.side !== expectedCloseSideRaw) {
                 log.info(`📡 HL WS closing fill ${fill.symbol} side=${fill.side} doesn't match closing side ${expectedCloseSideRaw} for ${pos.side} position — skipping (may be from a previous position)`);
               } else {
@@ -3261,7 +3270,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       for (const sym of this.portfolio.getOpenSymbols()) {
         const pos = this.portfolio.getPosition(sym);
         if (!pos) continue; // getOpenSymbols() only returns open positions
-        const side = pos.side === 'sell' ? 'sell' : 'buy';
+        const side = isSellSide(pos.side) ? 'sell' : 'buy';
         const profile = this.exitPriceLearner.getExitProfile(normalizeSymbol(sym), side);
         if (!profile) continue; // cold-start: no profile → existing behaviour
 
@@ -3794,7 +3803,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           try {
             this.closeCalibrator.recordClose({
               symbol: normalizeSymbol(trade.symbol || ''),
-              side: String(trade.side ?? '').toLowerCase() === 'sell' ? 'sell' : 'buy',
+              side: isSellSide(trade.side) ? 'sell' : 'buy',
               closePrice: safeNum((trade as { exitPrice?: number }).exitPrice, 0),
               pnlPct: safeNum((trade as { pnlPct?: number }).pnlPct, 0),
               closeReason: closeReason ?? '',
@@ -3832,7 +3841,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             const feeUsd = margin > 0 && lev > 0 ? margin * lev * 0.0008 : 0;
             this.profitabilityAnalyzer.recordTrade(
               normalizeSymbol(trade.symbol || ''),
-              String(trade.side ?? '').toLowerCase() === 'sell' ? 'sell' : 'buy',
+              isSellSide(trade.side) ? 'sell' : 'buy',
               holdMin,
               safeNum((trade as { pnlPct?: number }).pnlPct, 0),
               feeUsd,
@@ -7752,7 +7761,7 @@ ${recentExamples}
           if (pos) {
             const ccBlock = this.closeCalibrator.getCalibrationBlock(
               normalizeSymbol(activeSymbol),
-              String(pos.side ?? '').toLowerCase() === 'sell' ? 'sell' : 'buy',
+              isSellSide(pos.side) ? 'sell' : 'buy',
               (pos.unrealizedPnlPct ?? 0) > 0,
               this.lastKlineSummary?.trend1h ?? 'unknown',
             );
@@ -7866,7 +7875,7 @@ ${recentExamples}
         // its own close reasoning can agree or override with a strong thesis.
         try {
           if (exitPriceLockConfig.enabled && this.exitPriceLearner) {
-            const posSide = pos.side === 'sell' ? 'sell' : 'buy';
+            const posSide = isSellSide(pos.side) ? 'sell' : 'buy';
             const profile = this.exitPriceLearner.getExitProfile(normalizeSymbol(posSym), posSide);
             if (profile) {
               const conv = convertToPriceExtremes({
@@ -8136,7 +8145,7 @@ ${recentExamples}
                   // as syncExchangePositions. A SELL position is closed by a BUY
                   // fill (side='buy'), and vice versa.
                   // v2.0.868-attack7:side 大小寫——HL position side 可能 'BUY'/'SELL'
-            const expectedCloseSide = String(pos.side ?? '').toLowerCase() === 'buy' ? 'sell' : 'buy';
+            const expectedCloseSide = isBuySide(pos.side) ? 'sell' : 'buy';
                   const closingFill = recentFills.find(f =>
                     f.symbol.toLowerCase() === sym.toLowerCase() &&
                     !f.dir.toLowerCase().startsWith('open') &&
@@ -8207,7 +8216,7 @@ ${recentExamples}
                       try { paperModeRecentFills = await (engine as any).getRecentFills(50); } catch { /* non-critical */ }
                     }
                     // v2.0.868-attack7:side 大小寫——HL position side 可能 'BUY'/'SELL'
-            const expectedCloseSide = String(pos.side ?? '').toLowerCase() === 'buy' ? 'sell' : 'buy';
+            const expectedCloseSide = isBuySide(pos.side) ? 'sell' : 'buy';
                     const closingFill = paperModeRecentFills.find(f =>
                       f.symbol.toLowerCase() === sym.toLowerCase() &&
                       !f.dir.toLowerCase().startsWith('open') &&
@@ -8356,7 +8365,7 @@ ${recentExamples}
             const pos = this.portfolio.getPosition(localSym);
             if (!pos) return true;
             // v2.0.868-attack7:side 大小寫——HL position side 可能 'BUY'/'SELL'
-            const expectedCloseSide = String(pos.side ?? '').toLowerCase() === 'buy' ? 'sell' : 'buy';
+            const expectedCloseSide = isBuySide(pos.side) ? 'sell' : 'buy';
             return closingFillsForReconcile.some(f =>
               String(f?.symbol ?? '').toLowerCase() === String(localSym).toLowerCase() &&
               String(f?.side ?? '').toLowerCase() === String(expectedCloseSide).toLowerCase() &&
@@ -8544,7 +8553,7 @@ ${recentExamples}
           const lines: string[] = [];
           for (const pos of realPositions) {
             const sym = normalizeSymbol(pos.symbol);
-            const side = pos.side === 'buy' ? 'buy' : 'sell';
+            const side = isBuySide(pos.side) ? 'buy' : 'sell';
             const ctx = this.lastCycleShadowContexts.get(sym);
             if (ctx && ctx.features && Object.keys(ctx.features).length > 0) {
               const olr = this.olrEngine.query(sym, ctx.features, side, this.totalCycles);
@@ -8862,10 +8871,10 @@ ${recentExamples}
 
           // SL hit = always confirmed (market itself confirmed the break)
           if (slPrice > 0) {
-            if (pos.side === 'buy' && currentPrice <= slPrice) {
+            if (isBuySide(pos.side) && currentPrice <= slPrice) {
               structureConfirmed = true;
               confirmReason = `price $${currentPrice.toFixed(2)} ≤ SL $${slPrice.toFixed(2)}`;
-            } else if (pos.side === 'sell' && currentPrice >= slPrice) {
+            } else if (isSellSide(pos.side) && currentPrice >= slPrice) {
               structureConfirmed = true;
               confirmReason = `price $${currentPrice.toFixed(2)} ≥ SL $${slPrice.toFixed(2)}`;
             }
@@ -8897,7 +8906,7 @@ ${recentExamples}
               : srStrength === 'weak' ? 0.010
               : 0.005; // moderate or unknown
 
-            if (pos.side === 'buy' && srSupport !== null && srSupport > 0) {
+            if (isBuySide(pos.side) && srSupport !== null && srSupport > 0) {
               const breakDepth = (srSupport - currentPrice) / srSupport;
               // v2.0.831: NaN guard — if currentPrice is NaN, breakDepth = NaN.
               // NaN >= breakDepthRequired = false → structureConfirmed stays false.
@@ -8910,7 +8919,7 @@ ${recentExamples}
                 // Price is below support but NOT decisively — just a wick
                 confirmReason = `price $${currentPrice.toFixed(2)} below support $${srSupport.toFixed(2)} by only ${(breakDepth * 100).toFixed(2)}% (< ${(breakDepthRequired * 100).toFixed(1)}% required for ${srStrength ?? 'unknown'} ${srSource ?? 'unknown'} support) — NOT confirmed (likely wick)`;
               }
-            } else if (pos.side === 'sell' && srResistance !== null && srResistance > 0) {
+            } else if (isSellSide(pos.side) && srResistance !== null && srResistance > 0) {
               const breakDepth = (currentPrice - srResistance) / srResistance;
               // v2.0.831: NaN guard — same as buy path
               if (Number.isFinite(breakDepth) && currentPrice > srResistance && breakDepth >= breakDepthRequired) {
@@ -8950,7 +8959,7 @@ ${recentExamples}
             }
             continue;
           }
-          const guardPnlPct = pos.side === 'buy'
+          const guardPnlPct = isBuySide(pos.side)
             ? (guardPrice - pos.averageEntryPrice) / pos.averageEntryPrice
             : (pos.averageEntryPrice - guardPrice) / pos.averageEntryPrice;
           const isProfitable = guardPnlPct > 0;
@@ -9897,8 +9906,8 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
           const closeCurrentPrice = pos.currentPrice ?? 0;
           let closeStructureConfirmed = false;
           if (closeSLPrice > 0 && closeCurrentPrice > 0) {
-            if (pos.side === 'buy' && closeCurrentPrice <= closeSLPrice) closeStructureConfirmed = true;
-            if (pos.side === 'sell' && closeCurrentPrice >= closeSLPrice) closeStructureConfirmed = true;
+            if (isBuySide(pos.side) && closeCurrentPrice <= closeSLPrice) closeStructureConfirmed = true;
+            if (isSellSide(pos.side) && closeCurrentPrice >= closeSLPrice) closeStructureConfirmed = true;
           }
 
           if (pos.entryThesis && !closeStructureConfirmed) {
@@ -10065,7 +10074,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
         } else if (psc.suggestedStopLoss !== undefined || psc.suggestedTakeProfit !== undefined) {
           let validSL = psc.suggestedStopLoss;
           let validTP = psc.suggestedTakeProfit;
-          const isLong = pos.side === 'buy';
+          const isLong = isBuySide(pos.side);
           const currentPrice = pos.currentPrice;
           const entryPrice = pos.averageEntryPrice;
 
@@ -10174,7 +10183,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
                 combinedState.price,
               );
               const pnlPct = pos.currentPrice && pos.averageEntryPrice
-                ? (pos.currentPrice - pos.averageEntryPrice) / pos.averageEntryPrice * (pos.side === 'buy' ? 1 : -1)
+                ? (pos.currentPrice - pos.averageEntryPrice) / pos.averageEntryPrice * (isBuySide(pos.side) ? 1 : -1)
                 : 0;
               const holdDuration = pos.openedAt ? Math.max(1, Math.round((Date.now() - pos.openedAt) / 300_000)) : 1;
               this.lastPatternContext = this.patternClassifier.formatPositionContext(
@@ -12495,7 +12504,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       const trend = this.lastKlineSummary?.trend1h ?? 'unknown';
       // v2.0.868-attack12:加 side——buy/sell 過早率分開(主神審計)
       const posSide = this.portfolio.getPosition(symNorm)?.side;
-      const holdSide: 'buy' | 'sell' = String(posSide ?? '').toLowerCase() === 'sell' ? 'sell' : 'buy';
+      const holdSide: 'buy' | 'sell' = isSellSide(posSide) ? 'sell' : 'buy';
       if (!this.closeCalibrator.shouldHoldClose(symNorm, holdSide, wasProfitable, trend, closeReason)) return false;
       const rate = this.closeCalibrator.getPrematureRate(symNorm, holdSide, wasProfitable, trend).rate;
       this.closeCalibrator.registerPendingClose(symNorm, this.totalCycles, rate);
