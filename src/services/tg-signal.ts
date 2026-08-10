@@ -194,17 +194,10 @@ export class TGSignalPusher {
     const fmtDate = (ts: number) => new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
 
     // ── 標題一行 ──
-    // v2.0.868:reconciliation 平倉加 ⚠️(可能係幻影——HL 實際可能仍持有)
-    // v2.0.868-fix:⚠️ 標記必須英文(主神格式要求:商業財務英語——公眾訊號)
-    // v2.0.868-attack6:unicode whitespace bypass—— (NBSP)/ /  唔被
-    // trim() 處理(trim 只處理 ASCII)——'\u00A0reconciliation' 會 miss ⚠️ 標記
-    const isReconciliation = String(trade.reason ?? '')
-      .replace(/[\s\u00A0\u2007\u202F]+/g, '')
-      .toLowerCase() === 'reconciliation';
-    lines.push(`📊 MATS TRADE — ${symbol.toUpperCase()} ${side} (CLOSE${isReconciliation ? ' ⚠️' : ''})`);
-    if (isReconciliation) {
-      lines.push('⚠️ Reconciliation close — position may still be open on HL. Verify before acting.');
-    }
+    // v2.0.868-fix(主神指正):reconciliation close 前系統已經用 HL fills 驗證
+    // (冇 closing fill → 系統 hold——唔 close)——reconciliation 係「已驗證」嘅
+    // 正常 close——唔需要 ⚠️ 警告、唔需要叫用戶核實——同其他 close 一樣格式。
+    lines.push(`📊 MATS TRADE — ${symbol.toUpperCase()} ${side} (CLOSE)`);
     lines.push('');
 
     // ── 核心數據(合併相關——每行一個資訊單元)──
