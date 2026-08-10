@@ -57,14 +57,16 @@ export function checkConfirmation(params: {
   const side = params.side === 'sell' ? 'sell' : 'buy';
   const cur = Number.isFinite(params.currentPrice) && params.currentPrice > 0 ? params.currentPrice : 0;
 
-  // ① Price 位置確認(離開 zone)
+  // ① Price 位置確認(離開 zone)——相對計算(防 support*1.0015 overflow——1e308 → Infinity)
   let pricePosition = true; // 缺數據中性
   if (cur > 0) {
-    if (side === 'buy' && Number.isFinite(params.support) && (params.support ?? 0) > 0) {
-      // BUY:price 應該高過 support 0.15%——「已離開 demand」(唔係喺 zone 邊緣)
-      pricePosition = cur >= (params.support as number) * 1.0015;
-    } else if (side === 'sell' && Number.isFinite(params.resistance) && (params.resistance ?? 0) > 0) {
-      pricePosition = cur <= (params.resistance as number) * 0.9985;
+    if (side === 'buy' && Number.isFinite(params.support) && (params.support as number) > 0) {
+      const sup = params.support as number;
+      // 相對距離:(cur − support)/support > 0.15%——避免乘法 overflow(極大值)
+      pricePosition = cur > sup && (cur - sup) / sup > 0.0015;
+    } else if (side === 'sell' && Number.isFinite(params.resistance) && (params.resistance as number) > 0) {
+      const res = params.resistance as number;
+      pricePosition = cur < res && (res - cur) / res > 0.0015;
     }
   }
 
@@ -163,7 +165,9 @@ export class EntryQuality {
       // 污染過濾:MAE/MFE 唔應該超出合理範圍(±3×margin——sanity)
       // 10x 槓杆 → 價格 ±30% 已經極端——margin ±300% 唔可能(錯價)
       const maxSanity = 300; // margin %
-      const mae = Number.isFinite(maePct) ? Math.max(-maxSanity, Math.min(0, maePct)) : 0;
+      // v2.0.868-attack10:正 MAE = 數據錯(MAE 定義係逆向——≤0)——skip 唔 clamp 隱藏
+      if (Number.isFinite(maePct) && maePct > 0) return;
+      const mae = Number.isFinite(maePct) ? Math.max(-maxSanity, maePct) : 0;
       const mfe = Number.isFinite(mfePct) ? Math.max(0, Math.min(maxSanity, mfePct)) : 0;
       // 污染樣本(MAE -50% 嗢啲)唔應該用——直接 skip(唔記錄)
       if (mae < -maxSanity * 0.5 && mfe < 10) return; // 明顯污染(逆向超 150% margin 且冇順向)
