@@ -1433,7 +1433,18 @@ export class PortfolioTracker {
         // v2.0.868-fix:系統自己驗證——confirmClosed callback(fill 驗證)。
         // 冇 closing fill(唔確定 HL 真係 close 咗)→ 唔 close——系統 hold——
         // 唔製造幻影 trade、唔叫用戶核實。
-        if (confirmClosed && !confirmClosed(localSymbol)) {
+        // v2.0.868-attack7 (O2):callback 可能 throw(caller bug/垃圾 fills)→
+        // 包 try/catch——throw = 唔確定 → 唔 close(保守——唔崩潰拖垮 reconciliation)
+        let confirmed = true;
+        if (confirmClosed) {
+          try {
+            confirmed = confirmClosed(localSymbol);
+          } catch {
+            log.warn(`🔍 Reconciliation: ${localSymbol} confirmClosed callback threw — treating as NOT confirmed (system holds)`);
+            confirmed = false;
+          }
+        }
+        if (!confirmed) {
           log.warn(`🔍 Reconciliation: ${localSymbol} missing ${missingCount} syncs but NO closing fill found on HL — NOT closing (system holds — verify failure means position likely still open)`);
           continue;
         }
