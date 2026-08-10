@@ -90,7 +90,8 @@ export class ProfitabilityAnalyzer {
   /** recordTrade:close 事件累積——holdMin + pnlPct(已含費) */
   recordTrade(symbol: string, side: 'buy' | 'sell', holdMin: number, pnlPct: number, feeUsd?: number): void {
     try {
-      const sym = String(symbol ?? '').slice(0, 24);
+      // v2.0.868-attack6:symbol 控制字符 sanitize(換行/CR——防 prompt 注入 advice)
+      const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
       if (!sym || (side !== 'buy' && side !== 'sell')) return;
       const hold = Number.isFinite(holdMin) ? Math.max(0, holdMin) : 0;
       const pnl = Number.isFinite(pnlPct) ? pnlPct : 0;
@@ -200,7 +201,7 @@ export class ProfitabilityAnalyzer {
    * 而家兩邊都俾——LLM 世界模型自己判斷(統計只做校準)。
    */
   getDualSideAdvice(symbol: string): string {
-    const sym = String(symbol ?? '').slice(0, 24);
+    const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
     if (!sym) return '';
     const buy = this.getContextAdvice(sym, 'buy');
     const sell = this.getContextAdvice(sym, 'sell');
