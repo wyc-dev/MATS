@@ -103,6 +103,11 @@ export function trackMAEMFE(pos: Position): void {
   const pnl = Number.isFinite(pos.unrealizedPnl) ? pos.unrealizedPnl : 0;
   const posValue = margin + pnl;
   if (!Number.isFinite(posValue)) return; // skip update if posValue is NaN/Infinity
+  // v2.0.868-fix(主神 MAE -50% 調查):position value sanity range——
+  // unrealizedPnl 唔應該 < -margin(清算線)或者 > 3×margin(價格 3 倍——正常唔可能)。
+  // 一時錯價(WS spike/API 錯)會令 posValue 跳出合理範圍——唔更新 min/max——
+  // 防「永久污染」trade record 嘅 MAE/MFE(之前 SKHX -50% MAE 就係咁嚟)。
+  if (posValue < 0 || posValue > margin * 3) return;
   if (pos.minValueReached === undefined || posValue < pos.minValueReached) {
     pos.minValueReached = posValue;
   }
