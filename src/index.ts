@@ -3205,6 +3205,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         klineTrend: k?.trend1h ?? null,
         klineTrend5m: k?.trend5m ?? null,
         catalystLevel: catalyst.level,
+        catalystSentiment: catalyst.sentiment,
         qualityScore: this.lastQualityScore,
       });
     } catch {
@@ -3295,7 +3296,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             // 'up'/'down'/'sideways')——之前用 regime('mean_reverting')——
             // contextKey 永遠唔 match——閉環 multiplier 永遠 1.0(FIX2 白做)!
             const trendKey = this.lastKlineSummary?.trend1h ?? 'unknown';
-            const lockMult = this.closeCalibrator.getLockThresholdMultiplier(normalizeSymbol(sym), trendKey);
+            const lockMult = this.closeCalibrator.getLockThresholdMultiplier(normalizeSymbol(sym), side, trendKey);
             if (lockMult > 1.0) {
               threshold *= lockMult;
               log.info(`🔒 [exit-price-lock] ${sym} threshold ×${lockMult.toFixed(2)} (過早率校準)—— MFE ${(converted.mfePricePct * 100).toFixed(2)}% vs ${(threshold * 100).toFixed(2)}%`);
@@ -7751,6 +7752,7 @@ ${recentExamples}
           if (pos) {
             const ccBlock = this.closeCalibrator.getCalibrationBlock(
               normalizeSymbol(activeSymbol),
+              String(pos.side ?? '').toLowerCase() === 'sell' ? 'sell' : 'buy',
               (pos.unrealizedPnlPct ?? 0) > 0,
               this.lastKlineSummary?.trend1h ?? 'unknown',
             );
@@ -12491,8 +12493,11 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         return false;
       }
       const trend = this.lastKlineSummary?.trend1h ?? 'unknown';
-      if (!this.closeCalibrator.shouldHoldClose(symNorm, wasProfitable, trend, closeReason)) return false;
-      const rate = this.closeCalibrator.getPrematureRate(symNorm, wasProfitable, trend).rate;
+      // v2.0.868-attack12:加 side——buy/sell 過早率分開(主神審計)
+      const posSide = this.portfolio.getPosition(symNorm)?.side;
+      const holdSide: 'buy' | 'sell' = String(posSide ?? '').toLowerCase() === 'sell' ? 'sell' : 'buy';
+      if (!this.closeCalibrator.shouldHoldClose(symNorm, holdSide, wasProfitable, trend, closeReason)) return false;
+      const rate = this.closeCalibrator.getPrematureRate(symNorm, holdSide, wasProfitable, trend).rate;
       this.closeCalibrator.registerPendingClose(symNorm, this.totalCycles, rate);
       log.warn(`🛑 [close-calib] ${symNorm} close 決定被 hold(過早率 ${(rate * 100).toFixed(0)}%)——下 cycle 再確認;SL/thesis/PAEL 仍然立即執行`);
       return true;

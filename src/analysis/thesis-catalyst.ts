@@ -75,6 +75,10 @@ export interface CatalystResult {
   evidence: string[];
   /** 有冇引用統計(OLR 等)——輔助資訊 */
   hasStatReference: boolean;
+  /** v2.0.868-attack12(主神審計):catalyst 方向——利好/利淡/中性。
+   *  之前只有 level(strong/weak/none)——BUY thesis + bearish catalyst
+   *  矛盾冇被偵測(方向資料缺失) */
+  sentiment: 'bullish' | 'bearish' | 'neutral';
 }
 
 /**
@@ -83,7 +87,7 @@ export interface CatalystResult {
  */
 export function classifyThesisCatalyst(thesis: string | undefined | null): CatalystResult {
   if (typeof thesis !== 'string' || thesis.length === 0) {
-    return { level: 'none', categories: [], evidence: [], hasStatReference: false };
+    return { level: 'none', categories: [], evidence: [], hasStatReference: false, sentiment: 'neutral' };
   }
   const categories: string[] = [];
   const evidence: string[] = [];
@@ -132,5 +136,11 @@ export function classifyThesisCatalyst(thesis: string | undefined | null): Catal
   if (hasNews) level = 'strong';
   else if (hasData) level = 'weak';
 
-  return { level, categories, evidence: evidence.slice(0, 6), hasStatReference };
+  // v2.0.868-attack12:catalyst 方向偵測——bullish/bearish 字(中英兼容)
+  let sentiment: 'bullish' | 'bearish' | 'neutral' = 'neutral';
+  const bullScore = (thesis.match(/(利好|看漲|上升趨勢|突破|強勢|bullish|uptrend|breakout|surge|rally|soar|overtake|accumulation|inflow|expansion)/gi) ?? []).length;
+  const bearScore = (thesis.match(/(利淡|看跌|下降趨勢|跌破|弱勢|bearish|downtrend|breakdown|plunge|crash|distribution|outflow|recession|fear)/gi) ?? []).length;
+  if (bullScore > bearScore) sentiment = 'bullish';
+  else if (bearScore > bullScore) sentiment = 'bearish';
+  return { level, categories, evidence: evidence.slice(0, 6), hasStatReference, sentiment };
 }
