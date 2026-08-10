@@ -214,7 +214,8 @@ export class TGSignalPusher {
       const sign = pnl >= 0 ? '+' : '';
       // v2.0.867-fix(A):槓桿後 P&L + 未槓桿價格變化——清楚
       if (entry && exit && Number.isFinite(trade.entryPrice) && Number.isFinite(trade.exitPrice)) {
-        const pricePct = (((trade.exitPrice as number) - (trade.entryPrice as number)) / (trade.entryPrice as number)) * 100;
+        const pricePctRaw = (((trade.exitPrice as number) - (trade.entryPrice as number)) / (trade.entryPrice as number)) * 100;
+        const pricePct = Number.isFinite(pricePctRaw) ? pricePctRaw : 0;
         const lev = Number.isFinite(trade.leverage) && (trade.leverage as number) > 0 ? ` (${trade.leverage}x)` : '';
         lines.push(`P&L ${sign}${pnl.toFixed(2)}%${lev} | price ${pricePct >= 0 ? '+' : ''}${pricePct.toFixed(2)}%`);
       } else {
@@ -231,12 +232,16 @@ export class TGSignalPusher {
     // initial = 開倉時 position value(investment/margin)——計算極端%需要
     const initial = Number.isFinite(trade.investment) && (trade.investment as number) > 0 ? (trade.investment as number) : null;
     if (initial && Number.isFinite(trade.minValue) && (trade.minValue as number) > 0) {
-      const maePct = ((trade.minValue as number) - initial) / initial * 100;
-      excursions.push(`MAE ${maePct <= 0 ? '' : '+'}${maePct.toFixed(2)}%`);
+      const maeRaw = ((trade.minValue as number) - initial) / initial * 100;
+      if (Number.isFinite(maeRaw)) {
+        excursions.push(`MAE ${maeRaw <= 0 ? '' : '+'}${maeRaw.toFixed(2)}%`);
+      }
     }
     if (initial && Number.isFinite(trade.maxValue) && (trade.maxValue as number) > 0) {
-      const mfePct = ((trade.maxValue as number) - initial) / initial * 100;
-      excursions.push(`MFE ${mfePct >= 0 ? '+' : ''}${mfePct.toFixed(2)}%`);
+      const mfeRaw = ((trade.maxValue as number) - initial) / initial * 100;
+      if (Number.isFinite(mfeRaw)) {
+        excursions.push(`MFE ${mfeRaw >= 0 ? '+' : ''}${mfeRaw.toFixed(2)}%`);
+      }
     }
     // 冇 initial(數據缺失)→ fallback 顯示價值
     if (excursions.length === 0) {

@@ -195,6 +195,14 @@ function safeNum(v: unknown, fallback = 0): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
+/** v2.0.868-attack2:side 大小寫硬化——'BUY'/'buy'/'Long'/'long' 都係多頭。
+ *  之前 `pos.side === 'buy'` 對 'BUY'(大寫)/'Long' 唔 match →
+ *  方向計算反轉——買升變蝕、賣跌變賺——「TG 顯示賺/UI 顯示蝕」另一源頭。 */
+function isBuySide(side: unknown): boolean {
+  const s = String(side ?? '').toLowerCase();
+  return s === 'buy' || s === 'long';
+}
+
 export class PortfolioTracker {
   private portfolio: Portfolio;
   /** Callback so PaperTradingEngine can capture trades from SL/TP closes */
@@ -1068,7 +1076,7 @@ export class PortfolioTracker {
     const allPositions = [...this.realPositions.values(), ...this.portfolio.positions.values()];
     for (const pos of allPositions) {
       if (pos.id === positionId) {
-        const isLong = pos.side === 'buy';
+        const isLong = isBuySide(pos.side);
 
         // ── Hard safety: validate TP direction ──
         // TP for LONG must be ABOVE entry (profit side)
@@ -1251,7 +1259,7 @@ export class PortfolioTracker {
     const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(sym);
     if (!pos) return;
 
-    const isLong = pos.side === 'buy';
+    const isLong = isBuySide(pos.side);
     let validSL = slPrice;
     let validTP = tpPrice;
 
@@ -1320,7 +1328,7 @@ export class PortfolioTracker {
     const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(sym);
     if (!pos) return;
 
-    const isLong = pos.side === 'buy';
+    const isLong = isBuySide(pos.side);
     let needsCorrection = false;
 
     // v2.0.58: Check if SL is MISSING — real positions must always have SL/TP.
@@ -1478,7 +1486,7 @@ export class PortfolioTracker {
     const notional = pos.averageEntryPrice * pos.quantity;
     const margin = notional / lev;
     // v2.0.48: PnL = priceDelta * quantity (NOT * leverage).
-    if (pos.side === 'buy') {
+    if (isBuySide(pos.side)) {
       realizedPnl = (safeExitPrice - pos.averageEntryPrice) * pos.quantity;
       cashReturned = margin + realizedPnl;
       this.portfolio.balance += cashReturned;
@@ -1537,9 +1545,9 @@ export class PortfolioTracker {
       if (pos.originalTakeProfitPrice !== undefined && pos.takeProfitPrice !== undefined && pos.originalTakeProfitPrice !== pos.takeProfitPrice) {
         tpChange = ` TP: $${pos.originalTakeProfitPrice.toFixed(2)}→$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}.`;
       }
-      if (pos.stopLossPrice && ((pos.side === 'buy' && exitPrice <= pos.stopLossPrice) || (pos.side === 'sell' && exitPrice >= pos.stopLossPrice))) {
+      if (pos.stopLossPrice && ((isBuySide(pos.side) && exitPrice <= pos.stopLossPrice) || (!isBuySide(pos.side) && exitPrice >= pos.stopLossPrice))) {
         pos.exitThesis = `Stop-loss triggered @ $${exitPrice.toFixed(2)} (SL=$${safeNum(pos.stopLossPrice, 0).toFixed(2)}).${slChange}${gapNote}`;
-      } else if (pos.takeProfitPrice && ((pos.side === 'buy' && exitPrice >= pos.takeProfitPrice) || (pos.side === 'sell' && exitPrice <= pos.takeProfitPrice))) {
+      } else if (pos.takeProfitPrice && ((isBuySide(pos.side) && exitPrice >= pos.takeProfitPrice) || (!isBuySide(pos.side) && exitPrice <= pos.takeProfitPrice))) {
         pos.exitThesis = `Take-profit triggered @ $${exitPrice.toFixed(2)} (TP=$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}).${tpChange}${gapNote}`;
       } else {
         pos.exitThesis = `Position closed @ $${exitPrice.toFixed(2)} (${isWin ? 'profit' : 'loss'} $${realizedPnl.toFixed(2)}).${slChange}${tpChange}${gapNote}`;
@@ -1712,7 +1720,7 @@ export class PortfolioTracker {
     } else {
       // Fallback: calculate ourselves (without leverage multiplier — HL PnL
       // is not leveraged, it's the raw price difference × quantity)
-      if (pos.side === 'buy') {
+      if (isBuySide(pos.side)) {
         realizedPnl = (safeExitPrice - pos.averageEntryPrice) * pos.quantity;
       } else {
         realizedPnl = (pos.averageEntryPrice - safeExitPrice) * pos.quantity;
@@ -1764,9 +1772,9 @@ export class PortfolioTracker {
       }
       if (hlRealizedPnl !== undefined) {
         pos.exitThesis = `Exchange close @ $${exitPrice.toFixed(2)} (${isWin ? 'profit' : 'loss'} $${realizedPnl.toFixed(2)}).${slChange}${tpChange}${gapNote}`;
-      } else if (pos.stopLossPrice && ((pos.side === 'buy' && exitPrice <= pos.stopLossPrice) || (pos.side === 'sell' && exitPrice >= pos.stopLossPrice))) {
+      } else if (pos.stopLossPrice && ((isBuySide(pos.side) && exitPrice <= pos.stopLossPrice) || (!isBuySide(pos.side) && exitPrice >= pos.stopLossPrice))) {
         pos.exitThesis = `Stop-loss triggered @ $${exitPrice.toFixed(2)} (SL=$${safeNum(pos.stopLossPrice, 0).toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChange}${gapNote}`;
-      } else if (pos.takeProfitPrice && ((pos.side === 'buy' && exitPrice >= pos.takeProfitPrice) || (pos.side === 'sell' && exitPrice <= pos.takeProfitPrice))) {
+      } else if (pos.takeProfitPrice && ((isBuySide(pos.side) && exitPrice >= pos.takeProfitPrice) || (!isBuySide(pos.side) && exitPrice <= pos.takeProfitPrice))) {
         pos.exitThesis = `Take-profit triggered @ $${exitPrice.toFixed(2)} (TP=$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}, ${(tpDistPct * 100).toFixed(1)}% from entry).${tpChange}${gapNote}`;
       } else {
         pos.exitThesis = `Exchange position closed @ $${exitPrice.toFixed(2)} (${isWin ? 'profit' : 'loss'} $${realizedPnl.toFixed(2)}).${slChange}${tpChange}${gapNote}`;
@@ -1905,7 +1913,7 @@ export class PortfolioTracker {
     const origTP = pos.originalTakeProfitPrice;
     const currSL = pos.stopLossPrice;
     const currTP = pos.takeProfitPrice;
-    const isLong = pos.side === 'buy';
+    const isLong = isBuySide(pos.side);
 
     // SL narrowing: SL moved closer to entry (tighter stop = more risk of noise stop-out)
     // SL widening: SL moved further from entry (wider stop = more risk) — blocked by no-widen, but check anyway
@@ -1948,7 +1956,7 @@ export class PortfolioTracker {
       }
     }
 
-    if (pos.side === 'buy') {
+    if (isBuySide(pos.side)) {
       if (pos.stopLossPrice && pos.currentPrice <= pos.stopLossPrice) {
         log.warn(`Stop-loss triggered for ${pos.symbol} @ ${pos.currentPrice}`);
         pos.exitThesis = `Stop-loss triggered @ $${safeNum(pos.currentPrice, 0).toFixed(2)} (SL=$${safeNum(pos.stopLossPrice, 0).toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChangeNote}${gapNote}`;
