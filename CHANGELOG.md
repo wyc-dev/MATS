@@ -4,6 +4,85 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.868: 量化閉環 + PNL Dashboard + 幻影修復 + Profitability Analyzer
+
+**背景**:HL 帳戶 30 日 757 fills net -$10(手續費 $9.75 為主);小額 trade(76/200,投資 <$12)平均 pnl -$0.0008(fee 侵蝕);re-open 循環 141/200 trade(close 後 3 小時內再開);短 hold <15m 負 EV(-0.545%)vs 15m-1h +0.505%。
+
+### 量化閉環(缺陷 1-2-3 修正)
+- **FIX1 Close-Calibrator persist**:recordClose/verifyPending 自動 save(debounce 2s + unref + flushSave)——之前 save 從未被 call——restart 後過早率數據清空
+- **FIX2 PAEL 閉環**:CLOSE_REASONS_TO_CALIBRATE + `exit_price_lock`(PAEL 過早率開始記錄);`getLockThresholdMultiplier()`——過早率 >0.4 → 鎖利 threshold ×(1+(rate-0.4)),cap ×1.5——index.ts PAEL threshold 應用
+- **FIX3 Hold Gate 擴展**:shouldHoldClose PAEL 過早率 ≥0.7 → hold 一 cycle(防「鎖完立即重開」);SL/thesis/manual 永不 hold(死揸防禦)
+- **Attack4 閉環斷層**:PAEL multiplier 用 regime vs recordClose 用 trend1h → contextKey 永遠唔 match → 統一 trend1h;marketDesc 注入改雙 side advice(getDualSideAdvice——唔用 global gate action)
+- **Attack5 trend 變化閉環失效**:過早率記錄喺「close 時 trend」但 PAEL 查詢用「而家 trend」→ `getAggregatePrematureRate()` fallback(指定 trend 無數據 → 合併所有 trend——趨勢免疫)
+
+### Profitability Analyzer(新組件——量化分析器)
+- `src/analysis/profitability-analyzer.ts`:Hold-Time EV(per symbol×side,EV by hold bucket <15m/15m-1h/1-4h/>4h)+ Direction Bias(WR/EV/median,極端偏差 ⚠️)+ Fee Impact(透明度)
+- 判斷層:advice 注入 Meta-Agent marketDesc(LLM 世界模型主導——統計校準);`/api/profitability` endpoint
+- 冷啟動中性(<20 samples 唔出 advice);persist debounce + atomic write;memory cap 500/cell
+
+### 幻影 Reconciliation Close 修復(「TG 賺 / UI 蝕」root cause)
+- **N 次確認**:reconcilePositions 要連續 2 次 sync 都「唔喺 external」先 close(防單次 snapshot 唔完整)
+- **大小寫比較**:normalizeSymbol 只 lower prefix——'XYZ:GOLD' vs 'xyz:gold' 永遠唔 match → 幻影 close → external 比較改全小寫
+- **fill 驗證(系統自己檢查——主神指正「唔好叫用戶核實」)**:close 前 confirmClosed callback——HL recent fills 有 closing fill 先 close——冇 → 系統 hold——零幻影 trade
+- TG 訊號移除 ⚠️ 警告——reconciliation 係系統驗證後嘅正常 close
+
+### Supabase trade_records(寫入修復)
+- 舊 `trades` 表(mats_app 早期,migration 未定義)冇 trade_id column → 42703 → 每次寫入失敗
+- migration `00000000000020_trade_records.sql`:完整結構表 + trade_id unique + RLS read policy
+- `supabase-trade-writer`:trades → trade_records + 直接 upsert onConflict trade_id(原子 idempotent)+ 完整字段(mode/close_reason/exit_thesis/agent_id/epoch ms)
+
+### PNL Dashboard(`PNL/pnl.html`)
+- 三 switch(PAPER/REAL + WEEKLY/YESTERDAY/TODAY + $/%)黑白 monochrome;統計卡;折線圖(零起點/PEAK/TROUGH);Daily Trade Summary(打橫排五透明 cell);Trade Records(最新 close 最頂、BNB LONG + PnL 同一行)
+- 負號修復(Worst Trade 顯示 -8.44% 而唔係 8.44%——Math.abs + 手動符號負數分支漏 '-')
+- Capture dropdown(PNG/PDF——jsPDF A4 多頁、深色頁背景、margin 10mm、per-page canvas slice 無重疊)
+- Footer 3 QR codes(TG/X/WEB——dark theme)
+- WEEKLY 後端:`computeDailyPnl()` + weekly(最近 7 日含今日)
+
+### Trading Terminal select-symbol 修復
+- cycle 開始無條件 `setSelectedSymbolManual(第一個 market)` 覆蓋用戶選擇 → 有 manual lock 唔覆蓋(`isManualSymbolLocked()`)
+
+### 攻擊硬化(7 輪——37+ 測試場景)
+- side 大小寫(closeExchangePosition/closePosition/SL-TP 判斷 `pos.side === 'buy'` → isBuySide helper——'BUY'/'Long' 方向反轉修復)
+- toFixed undefined crash(27 log 行 safeNum);formatCloseSignal symbol undefined;buildTradeRow(null);external symbols undefined;無 id trade 共用 'undefined' key;reconciliationMissingCounts O(n²)(MAX_PENDING 5000→200 + bulk-clear——10k 259ms)
+- TG 訊號英文化(中文 ⚠️ 移除);unicode whitespace bypass(NBSP);控制字符 prompt 注入 sanitize
+- confirmClosed callback throw 硬化(雙層 try/catch)
+
+---
+
+## v2.0.867: TG 訊號推送 + Supabase Trade Writer + Trade Incident 修復
+
+### TG 訊號(`src/services/tg-signal.ts`)
+- open/close 訊號推送去 TG group(chatId settings→env、open/close/profitOnly toggles、tradeId dedup、fetch timeout、V9 undefined price)
+- 格式:簡潔點列(商業財務英語、P&L 槓杆+價格分解、MAE/MFE %、(GMT+8) 時區、Profit/Open/Loss 三式 ready)
+
+### Trade Incident「消失」徹查
+- root cause ①:TG 訊號錯數據(0.56% 未槓杆 vs realTrades 5.73% 槓杆=幻影)②:UI 讀 Supabase trades 但無人自動寫
+- 修復 A(P&L 顯示槓杆+價格)、B(`supabase-trade-writer.ts` close 事件寫 Supabase,select→update/insert 防 V12 constraint bug)、C(/api/trades 返回 realTrades + mats_frontend fetchMyTrades 後端優先)
+
+---
+
+## v2.0.866: Close-Decision Calibrator(平倉判斷校準)
+
+- **Phase A 路徑感知 MFE/MAE 淨值驗證**:close 後極值追蹤——net = MFE − MAE:≥1% premature_high、≥0.5% premature_low、≤−0.5% correct——捕捉「中間錯失 + 最終避開」
+- **Phase B 二次確認 Hold Gate**:pending-close 1 cycle 再確認,3 cycle 超時兜底——SL/thesis/PAEL/manual 永遠不 hold(V26)
+- V13 秒/毫秒 bug、V3 毒 state closePrice<=0、verifyWindow 正確 ×1000
+
+---
+
+## v2.0.865: EV Filter(期望值濾波)
+
+- per (symbol×side) 真實 pnlPct(已含費)分布 → EV = pWin×avgWin − (1−pWin)×avgLoss
+- gate ×[0.75, 1.25](正 EV boost 判斷層、負 EV 軟性降);EXP backfill(idempotent)
+- Kelly 建議完全移除(主神:size 用戶決定——Kelly 只做參考已死)
+
+---
+
+## v2.0.864: LLM Direction Verifier(方向預測驗證)
+
+- 每 cycle 記錄判斷(含 HOLD)+ 雙層驗證(quick/accurate 窗口校準)+ 平倉結果 C(by tradeId idempotent)
+- 三層 fallback(symbol×trend-type → trend-type 全局 → neutral);錯判教訓注入
+- V13 秒/毫秒、V26 thesis_invalidation 不 hold、strict-price 防跨 symbol 污染、冷啟動 neutral anchor 0.5→×1.0
+
 ## v2.0.861: Q-RL Direction Signal — Phase 1.1/1.2/1.5 (regime-conditioned expectancy oracle wiring)
 
 **背景(Phase 0 診斷,唯讀)**:四條獨立數據流證實「sell 喺現有 dominant regimes 係負期望」——
