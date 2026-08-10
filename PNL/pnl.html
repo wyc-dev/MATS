@@ -400,30 +400,48 @@ function renderChart(d) {
   ctx.textAlign = 'center';
   ctx.fillText(period === 'weekly' ? 'LAST 7 DAYS (GMT+8)' : `${periodDate || ''} (GMT+8)`, W / 2, 12);
 
-  // peak / trough 標注(最高/最低累計點)
-  const peak = pts.reduce((a, b) => (b.cum > a.cum ? b : a));
-  const trough = pts.reduce((a, b) => (b.cum < a.cum ? b : a));
+  // peak / trough 標注(最高/最低累計點)——v2.0.868-fix:用 toVal 後值(% 模式顯示百分比)
+  const peak = valPts.reduce((a, b) => (b.cum > a.cum ? b : a));
+  const trough = valPts.reduce((a, b) => (b.cum < a.cum ? b : a));
   ctx.font = '10px monospace';
+  const fmtVal = (v) => unit === 'pct' ? `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` : `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(2)}`;
   if (peak.cum > 0) {
     ctx.fillStyle = '#34d399';
     ctx.textAlign = 'left';
-    ctx.fillText(`PEAK +$${peak.cum.toFixed(2)}`, X(peak.t) + 6, Y(peak.cum) - 6);
+    ctx.fillText(`PEAK ${fmtVal(peak.cum)}`, X(peak.t) + 6, Y(peak.cum) - 6);
   }
   if (trough.cum < 0) {
     ctx.fillStyle = '#f87171';
     ctx.textAlign = 'left';
-    ctx.fillText(`TROUGH $${trough.cum.toFixed(2)}`, X(trough.t) + 6, Y(trough.cum) + 12);
+    ctx.fillText(`TROUGH ${fmtVal(trough.cum)}`, X(trough.t) + 6, Y(trough.cum) + 12);
   }
 
-  // x time labels (first / mid / last)
+  // x axis labels
   ctx.textAlign = 'center';
   const fmt = (t) => {
     const dt = new Date(t);
     return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
   };
-  ctx.fillText(fmt(tMin), padL, H - 6);
-  ctx.fillText(fmt(pts[Math.floor(pts.length / 2)].t), W / 2, H - 6);
-  ctx.fillText(fmt(tMax), W - padR, H - 6);
+  const fmtDay = (t) => {
+    const dt = new Date(t);
+    return `${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+  };
+  if (period === 'weekly') {
+    // v2.0.868-fix:WEEKLY 顯示七日標記(每日一個日期——唔係淨係 HH:MM)
+    const DAY = 24 * 3600 * 1000;
+    for (let i = 0; i < 7; i++) {
+      const t = tMin + i * DAY;
+      if (t > tMax) break;
+      const x = X(t);
+      ctx.fillStyle = '#6b7488';
+      ctx.fillText(fmtDay(t), x, H - 6);
+    }
+  } else {
+    ctx.fillStyle = '#6b7488';
+    ctx.fillText(fmt(tMin), padL, H - 6);
+    ctx.fillText(fmt(pts[Math.floor(pts.length / 2)].t), W / 2, H - 6);
+    ctx.fillText(fmt(tMax), W - padR, H - 6);
+  }
 
   // cumulative line (green if final >= 0, red if < 0)
   const color = (d.total ?? 0) >= 0 ? '#34d399' : '#f87171';
