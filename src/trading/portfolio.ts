@@ -798,8 +798,11 @@ export class PortfolioTracker {
     if (!Number.isFinite(currentPrice) || currentPrice <= 0) return;
     if (pos.currentPrice > 0) {
       const deviation = Math.abs(currentPrice - pos.currentPrice) / pos.currentPrice;
-      if (deviation > 0.25) {
-        log.warn(`[updatePosition] Rejected corrupt price ${currentPrice.toFixed(2)} for ${symbol} (deviation ${(deviation * 100).toFixed(1)}% from last ${safeNum(pos.currentPrice, 0).toFixed(2)})`);
+      // v2.0.868-fix(主神 MAE -50% 調查):單 tick 跳動 >10% 極可能係錯價
+      // (HL WS spike/API 錯)——之前 25% 太寛鬆——SKHX 一時讀到 11.7% 錯價
+      // → unrealizedPnl 計到 -58% margin → trackMAEMFE 永久污染 minValueReached
+      if (deviation > 0.10) {
+        log.warn(`[updatePosition] Rejected corrupt price ${currentPrice.toFixed(2)} for ${symbol} (deviation ${(deviation * 100).toFixed(1)}% from last ${safeNum(pos.currentPrice, 0).toFixed(2)}) — single-tick >10% jump`);
         return;
       }
     }
@@ -925,7 +928,8 @@ export class PortfolioTracker {
     if (!Number.isFinite(currentPrice) || currentPrice <= 0) return;
     if (pos.currentPrice > 0) {
       const deviation = Math.abs(currentPrice - pos.currentPrice) / pos.currentPrice;
-      if (deviation > 0.25) {
+      // v2.0.868-fix:單 tick >10% 拒絕(防錯價污染 min/max——MAE -50% 調查)
+      if (deviation > 0.10) {
         log.warn(`[softUpdatePosition] Rejected corrupt price ${currentPrice.toFixed(2)} for ${sym} (deviation ${(deviation * 100).toFixed(1)}% from last ${safeNum(pos.currentPrice, 0).toFixed(2)}) — keeping MAE/MFE clean`);
         return;
       }
