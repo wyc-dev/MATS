@@ -21,6 +21,8 @@ export interface ChartConvictionInput {
   klineTrend5m?: ChartTrend;
   /** thesis catalyst 分類(新聞/事件有理由 override) */
   catalystLevel: 'strong' | 'weak' | 'none';
+  /** v2.0.868-attack12:catalyst 方向(bullish/bearish/neutral)——矛盾偵測 */
+  catalystSentiment?: 'bullish' | 'bearish' | 'neutral';
   /** 數據可靠性 0-1(1 = 可靠) */
   qualityScore: number;
 }
@@ -57,6 +59,13 @@ export function computeChartConvictionMultiplier(input: ChartConvictionInput | u
       }
     }
   }
+
+  // 1a2. v2.0.868-attack12:catalyst 方向矛盾偵測——
+  //     BUY + bearish catalyst(利淡新聞)或 SELL + bullish catalyst(利好新聞)
+  //     = 世界模型方向同事件方向矛盾——×0.85(判斷層——強 thesis 可 override)
+  const catSent = input.catalystSentiment;
+  if (catSent === 'bullish' && input.action === 'sell') m *= 0.85;
+  else if (catSent === 'bearish' && input.action === 'buy') m *= 0.85;
 
   // 1b. 雙時間框架分歧校準(主神要求 1h+5m 雙重分析):
   //     1h 大方向 UP 但 5m 短線 DOWN = 多空分歧——時機未到——唔好即刻入

@@ -84,12 +84,14 @@ function emptyState(): CloseCalibrationState {
   return { pending: {}, stats: {}, windowStats: {}, backfillDone: false, pendingCloses: {} };
 }
 
-function contextKey(symbol: string, wasProfitable: boolean, trend: string): string {
-  return `${symbol}|${wasProfitable ? 'win' : 'loss'}|${trend}`;
+function contextKey(symbol: string, side: 'buy' | 'sell', wasProfitable: boolean, trend: string): string {
+  // v2.0.868-attack12(主神審計):加 side——之前 buy/sell 過早率混埋——
+  // buy 過早率高但 sell 正常 → 混埋令兩邊都受污染
+  return `${symbol}|${side}|${wasProfitable ? 'win' : 'loss'}|${trend}`;
 }
 
-function windowKey(trend: string, windowIdx: number): string {
-  return `${trend}|w${windowIdx}`;
+function windowKey(side: 'buy' | 'sell', trend: string, windowIdx: number): string {
+  return `${side}|${trend}|w${windowIdx}`;
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────
@@ -133,7 +135,7 @@ export class CloseDecisionCalibrator {
       wasProfitable: pnlPct > 0,
       closeReason: input.closeReason,
       trendAtClose: trend.slice(0, 16),
-      verifyWindowSec: this.getBestVerifyWindow(trend),
+      verifyWindowSec: this.getBestVerifyWindow(input.side, trend),
       ts: Date.now(),
       minPriceSinceClose: input.closePrice, // 極端初始 = closePrice
       maxPriceSinceClose: input.closePrice,
@@ -209,7 +211,7 @@ export class CloseDecisionCalibrator {
       let verdict: 'premature_high' | 'premature_low' | 'correct' | 'neutral';
       // v2.0.866-attack:邊界用 >=/<=——1% 整數應該算「明顯過早」(同 getCloseMultiplier 一致)
       verdict = net >= PREMATURE_HIGH_PCT ? 'premature_high' : net >= PREMATURE_LIGHT_PCT ? 'premature_low' : net <= -PREMATURE_LIGHT_PCT ? 'correct' : 'neutral';
-      const ctx = contextKey(rec.symbol, rec.wasProfitable, rec.trendAtClose);
+      const ctx = contextKey(rec.symbol, rec.side === 'sell' ? 'sell' : 'buy', rec.wasProfitable, rec.trendAtClose);
       const c = this.state.stats[ctx] ?? { premature: 0, correct: 0 };
       if (verdict === 'premature_high') c.premature += PREMATURE_HIGH_WEIGHT;
       else if (verdict === 'premature_low') c.premature += PREMATURE_LIGHT_WEIGHT;
@@ -218,7 +220,7 @@ export class CloseDecisionCalibrator {
       this.state.stats[ctx] = c;
       // 窗口統計(校準用)
       const wi = this.windowIndexFor(rec.verifyWindowSec);
-      const wKey = windowKey(rec.trendAtClose, wi);
+      const wKey = windowKey(rec.side === 'sell' ? 'sell' : 'buy', rec.trendAtClose, wi);
       const wc = this.state.windowStats[wKey] ?? { premature: 0, correct: 0 };
       if (verdict === 'premature_high' || verdict === 'premature_low') wc.premature += verdict === 'premature_high' ? 1 : 0.5;
       else if (verdict === 'correct') wc.correct += 1;
@@ -228,9 +230,9 @@ export class CloseDecisionCalibrator {
     this.markDirty(); // v2.0.868-fix1:驗證結果持久化 + attack3:debounce
   }
 
-  /** 某 context 嘅過早率(weighted) */
-  getPrematureRate(symbol: string, wasProfitable: boolean, trend: string): { rate: number; total: number } {
-    const c = this.state.stats[contextKey(symbol, wasProfitable, trend)];
+  /** 某 context 嘅過早率(weighted)——v2.0.868-attack12:加 side(方向分辨) */
+  getPrematureRate(symbol: string, side: 'buy' | 'sell', wasProfitable: boolean, trend: string): { rate: number; total: number } {
+    const c = this.state.stats[contextKey(symbol, side, wasProfitable, trend)];
     if (!c || c.premature + c.correct < MIN_SAMPLES) return { rate: 0.5, total: 0 }; // 冷啟動中性
     return { rate: c.premature / (c.premature + c.correct), total: c.premature + c.correct };
   }
@@ -241,15 +243,16 @@ export class CloseDecisionCalibrator {
    *   rate 0.5 → ×1.10;0.6 → ×1.20;0.8 → ×1.40;cap ×1.5
    *   冷啟動(樣本 < MIN_SAMPLES)→ ×1.0(唔影響現有行為)
    */
-  getLockThresholdMultiplier(symbol: string, trend: string): number {
+  getLockThresholdMultiplier(symbol: string, side: 'buy' | 'sell', trend: string): number {
     // v2.0.868-attack5:先查指定 trend——無數據 fallback aggregate(趨勢變化唔令閉環失效)
-    const { rate, total } = this.getPrematureRate(symbol, true, trend);
+    // v2.0.868-attack12:加 side——PAEL 鎖利 threshold 按方向校準(buy/sell 過早率分開)
+    const { rate, total } = this.getPrematureRate(symbol, side, true, trend);
     if (total >= MIN_SAMPLES) {
       if (rate <= 0.4) return 1.0;
       return Math.min(1.5, 1 + (rate - 0.4) * 1.0);
     }
     // aggregate fallback——但係 cold start(總樣本 < MIN_SAMPLES)→ 1.0(唔影響)
-    const agg = this.getAggregatePrematureRate(symbol, true);
+    const agg = this.getAggregatePrematureRate(symbol, side, true);
     if (agg.total < MIN_SAMPLES) return 1.0;
     if (agg.rate <= 0.4) return 1.0;
     return Math.min(1.5, 1 + (agg.rate - 0.4) * 1.0);
@@ -261,8 +264,8 @@ export class CloseDecisionCalibrator {
    * 「而家 trend」——趨勢變化後指定 trend 查唔到 → 閉環失效(multiplier 1.0)。
    * 修復:指定 trend 無數據 → fallback aggregate(所有 trend 合併)——閉環保證有數據。
    */
-  getAggregatePrematureRate(symbol: string, wasProfitable: boolean): { rate: number; total: number } {
-    const prefix = `${symbol.slice(0, 24)}|${wasProfitable ? 'win' : 'loss'}|`;
+  getAggregatePrematureRate(symbol: string, side: 'buy' | 'sell', wasProfitable: boolean): { rate: number; total: number } {
+    const prefix = `${symbol.slice(0, 24)}|${side}|${wasProfitable ? 'win' : 'loss'}|`;
     let premature = 0;
     let correct = 0;
     for (const [key, c] of Object.entries(this.state.stats)) {
@@ -275,8 +278,8 @@ export class CloseDecisionCalibrator {
   }
 
   /** Phase B 用:close 傾向乘數(>75% 過早 → ×0.85;>60% → ×0.9;否則 1.0) */
-  getCloseMultiplier(symbol: string, wasProfitable: boolean, trend: string): number {
-    const { rate, total } = this.getPrematureRate(symbol, wasProfitable, trend);
+  getCloseMultiplier(symbol: string, side: 'buy' | 'sell', wasProfitable: boolean, trend: string): number {
+    const { rate, total } = this.getPrematureRate(symbol, side, wasProfitable, trend);
     if (total < MIN_SAMPLES) return 1.0; // 冷啟動——唔影響
     if (rate >= 0.75) return 0.85;
     if (rate >= 0.60) return 0.92;
@@ -284,10 +287,10 @@ export class CloseDecisionCalibrator {
   }
 
   /** 注入 Meta-Agent 嘅 block(Phase B 用) */
-  getCalibrationBlock(symbol: string, wasProfitable: boolean, trend: string): string {
-    const { rate, total } = this.getPrematureRate(symbol, wasProfitable, trend);
+  getCalibrationBlock(symbol: string, side: 'buy' | 'sell', wasProfitable: boolean, trend: string): string {
+    const { rate, total } = this.getPrematureRate(symbol, side, wasProfitable, trend);
     if (total < MIN_SAMPLES) return '';
-    const mult = this.getCloseMultiplier(symbol, wasProfitable, trend);
+    const mult = this.getCloseMultiplier(symbol, side, wasProfitable, trend);
     const dir = symbol + (wasProfitable ? ' × 盈利' : ' × 虧損') + ' × ' + trend;
     const advice = rate > 0.6
       ? `——呢類情況趨勢未完應揸住(close 需要明確理由:趨勢反轉/catalyst 完成/風險;『見好即收』唔係理由)`
@@ -297,12 +300,12 @@ export class CloseDecisionCalibrator {
 
   // ── 窗口校準 ─────────────────────────────────────────────────────────
 
-  getBestVerifyWindow(trend: string): number {
+  getBestVerifyWindow(side: 'buy' | 'sell', trend: string): number {
     const tt = typeof trend === 'string' && trend ? trend : 'unknown';
     let best = DEFAULT_VERIFY_WINDOW;
     let bestScore = -1;
     for (let wi = 0; wi < VERIFY_WINDOWS.length; wi++) {
-      const c = this.state.windowStats[windowKey(tt, wi)];
+      const c = this.state.windowStats[windowKey(side, tt, wi)];
       if (!c || c.premature + c.correct < 10) continue;
       // 揀「過早率最高」嘅窗口——最敏感捕捉過早 close
       const rate = c.premature / (c.premature + c.correct);
@@ -328,7 +331,7 @@ export class CloseDecisionCalibrator {
    *   ❌ 唔 hold:SL/thesis/PAEL(永遠立即)、虧損 close(止血)、冷啟動
    *  -> 「有腦咁 hold」:只擋「數據證明過早率高嘅見好即收」——唔會死揸
    */
-  shouldHoldClose(symbol: string, wasProfitable: boolean, trend: string, closeReason: string): boolean {
+  shouldHoldClose(symbol: string, side: 'buy' | 'sell', wasProfitable: boolean, trend: string, closeReason: string): boolean {
     // v2.0.866-phase-b-attack2 (V26):thesis_invalidation = Skeptics 判斷
     // 「thesis 失效」(趨勢反轉/結構破壞證據)→ 同 SL 一樣係「市場/判斷確認嘅退出」
     // → hold 佢 = 死揸!SL/thesis/manual 永遠唔 hold。
@@ -337,7 +340,7 @@ export class CloseDecisionCalibrator {
     //   過早率 ≥70% = 強證據「鎖完 price 繼續行」→ hold 一 cycle 再確認
     //   (3 cycle 超時兜底執行——唔會變成死揸;pending-close 再確認機制照常)
     if (!wasProfitable) return false; // 虧損 close 唔 hold——止血優先
-    const { rate, total } = this.getPrematureRate(symbol, wasProfitable, trend);
+    const { rate, total } = this.getPrematureRate(symbol, side, wasProfitable, trend);
     if (total < MIN_SAMPLES) return false; // 冷啟動唔 hold
     if (closeReason === 'consensus') return rate >= 0.60;
     if (closeReason === 'exit_price_lock') return rate >= 0.70;
