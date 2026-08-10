@@ -3811,7 +3811,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             const eqMfe = eqMargin > 0 ? (eqMax - eqMargin) / eqMargin * 100 : 0;
             this.entryQuality.record(
               normalizeSymbol(trade.symbol || ''),
-              String(trade.side ?? '').toLowerCase() === 'sell' ? 'sell' : 'buy',
+              ['sell', 'short'].includes(String(trade.side ?? '').toLowerCase()) ? 'sell' : 'buy',
               eqMae, eqMfe,
               safeNum((trade as { pnlPct?: number }).pnlPct, 0) * 100,
               safeNum((trade as { closedAt?: number }).closedAt, Date.now()),
