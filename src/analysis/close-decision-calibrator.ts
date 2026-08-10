@@ -242,10 +242,36 @@ export class CloseDecisionCalibrator {
    *   冷啟動(樣本 < MIN_SAMPLES)→ ×1.0(唔影響現有行為)
    */
   getLockThresholdMultiplier(symbol: string, trend: string): number {
+    // v2.0.868-attack5:先查指定 trend——無數據 fallback aggregate(趨勢變化唔令閉環失效)
     const { rate, total } = this.getPrematureRate(symbol, true, trend);
-    if (total < MIN_SAMPLES) return 1.0;
-    if (rate <= 0.4) return 1.0;
-    return Math.min(1.5, 1 + (rate - 0.4) * 1.0);
+    if (total >= MIN_SAMPLES) {
+      if (rate <= 0.4) return 1.0;
+      return Math.min(1.5, 1 + (rate - 0.4) * 1.0);
+    }
+    // aggregate fallback——但係 cold start(總樣本 < MIN_SAMPLES)→ 1.0(唔影響)
+    const agg = this.getAggregatePrematureRate(symbol, true);
+    if (agg.total < MIN_SAMPLES) return 1.0;
+    if (agg.rate <= 0.4) return 1.0;
+    return Math.min(1.5, 1 + (agg.rate - 0.4) * 1.0);
+  }
+
+  /**
+   * v2.0.868-attack5:aggregate 過早率——合併該 symbol×side 所有 trend。
+   * 背景:過早率按「close 時 trend」記錄('btc|win|up')——但 PAEL 查詢用
+   * 「而家 trend」——趨勢變化後指定 trend 查唔到 → 閉環失效(multiplier 1.0)。
+   * 修復:指定 trend 無數據 → fallback aggregate(所有 trend 合併)——閉環保證有數據。
+   */
+  getAggregatePrematureRate(symbol: string, wasProfitable: boolean): { rate: number; total: number } {
+    const prefix = `${symbol.slice(0, 24)}|${wasProfitable ? 'win' : 'loss'}|`;
+    let premature = 0;
+    let correct = 0;
+    for (const [key, c] of Object.entries(this.state.stats)) {
+      if (!key.startsWith(prefix)) continue;
+      premature += c.premature;
+      correct += c.correct;
+    }
+    if (premature + correct < MIN_SAMPLES) return { rate: 0.5, total: 0 };
+    return { rate: premature / (premature + correct), total: premature + correct };
   }
 
   /** Phase B 用:close 傾向乘數(>75% 過早 → ×0.85;>60% → ×0.9;否則 1.0) */
