@@ -248,8 +248,9 @@ function renderSummary(d) {
   const maxLoss = losses.length ? Math.min(...losses) : 0;
   const periodLabel = period === 'weekly' ? 'WEEKLY' : period === 'today' ? 'TODAY' : 'YESTERDAY';
   const modeLabel = `${mode === 'paper' ? 'PAPER' : 'REAL'} · ${periodLabel}`;
-  // % 模式:Avg/Best/Worst 用 pnlPct(每筆改變幾多%)
-  const pcts = (d.list || []).map(t => Number(t.pnlPct ?? 0) * 100);
+  // % 模式:Avg/Best/Worst 用 pnl/principal(對比本金——主神 v2.0.868 指正)
+  const sumPrincipal = getPrincipal();
+  const pcts = (d.list || []).map(t => sumPrincipal > 0 ? (Number(t.pnl ?? 0) / sumPrincipal) * 100 : 0);
   const winPcts = pcts.filter(p => p > 0);
   const lossPcts = pcts.filter(p => p < 0);
   const avgWinPct = winPcts.length ? winPcts.reduce((a, b) => a + b, 0) / winPcts.length : 0;
@@ -307,7 +308,9 @@ function renderStats(d) {
   const lossVals = pnls.filter(p => p < 0);
   const avgWinU = winVals.length ? winVals.reduce((a, b) => a + b, 0) / winVals.length : 0;
   const avgLossU = lossVals.length ? lossVals.reduce((a, b) => a + b, 0) / lossVals.length : 0;
-  const pcts = (d.list || []).map(t => Number(t.pnlPct ?? 0) * 100);
+  // v2.0.868-fix(主神):% 對比本金(pnl/principal)——同 Trade Records 一致
+  const statsPrincipal = getPrincipal();
+  const pcts = (d.list || []).map(t => statsPrincipal > 0 ? (Number(t.pnl ?? 0) / statsPrincipal) * 100 : 0);
   const winPcts = pcts.filter(p => p > 0);
   const lossPcts = pcts.filter(p => p < 0);
   const avgWinP = winPcts.length ? winPcts.reduce((a, b) => a + b, 0) / winPcts.length : 0;
@@ -652,7 +655,10 @@ function renderRecords(d) {
     const side = t.side === 'sell' ? 'SHORT' : 'LONG';
     const sideCls = t.side === 'sell' ? 'side-sell' : 'side-buy';
     const pnl = Number(t.pnl ?? 0);
-    const pnlPct = Number(t.pnlPct ?? 0) * 100;
+    // v2.0.868-fix(主神):每筆 trade 嘅 % = pnl / principal(對比總餘額)——
+    // 之前用 pnlPct(pnl/margin 槓杆後回報)——SILVER -$0.45 顯示 -9.43% 誤導
+    const tradePrincipal = getPrincipal();
+    const pnlPct = tradePrincipal > 0 ? (pnl / tradePrincipal) * 100 : 0;
     const pnlCls = pnl >= 0 ? 'var(--green)' : 'var(--red)';
     const pnlTxt = unit === 'pct'
       ? `${pnlPct >= 0 ? '+' : '-'}${Math.abs(pnlPct).toFixed(2)}%`
