@@ -8096,7 +8096,8 @@ ${recentExamples}
                   // v2.0.166: Check fill direction matches closing side — same fix
                   // as syncExchangePositions. A SELL position is closed by a BUY
                   // fill (side='buy'), and vice versa.
-                  const expectedCloseSide = pos.side === 'buy' ? 'sell' : 'buy';
+                  // v2.0.868-attack7:side 大小寫——HL position side 可能 'BUY'/'SELL'
+            const expectedCloseSide = String(pos.side ?? '').toLowerCase() === 'buy' ? 'sell' : 'buy';
                   const closingFill = recentFills.find(f =>
                     f.symbol.toLowerCase() === sym.toLowerCase() &&
                     !f.dir.toLowerCase().startsWith('open') &&
@@ -8166,7 +8167,8 @@ ${recentExamples}
                     if (paperModeRecentFills.length === 0 && typeof (engine as any).getRecentFills === 'function') {
                       try { paperModeRecentFills = await (engine as any).getRecentFills(50); } catch { /* non-critical */ }
                     }
-                    const expectedCloseSide = pos.side === 'buy' ? 'sell' : 'buy';
+                    // v2.0.868-attack7:side 大小寫——HL position side 可能 'BUY'/'SELL'
+            const expectedCloseSide = String(pos.side ?? '').toLowerCase() === 'buy' ? 'sell' : 'buy';
                     const closingFill = paperModeRecentFills.find(f =>
                       f.symbol.toLowerCase() === sym.toLowerCase() &&
                       !f.dir.toLowerCase().startsWith('open') &&
@@ -8309,14 +8311,19 @@ ${recentExamples}
           }
         } catch { /* 非致命——冇 fills 就全部唔確定 → 唔 close(保守) */ }
         const reconciled = this.portfolio.reconcilePositions(externalSymbols, (localSym) => {
-          const pos = this.portfolio.getPosition(localSym);
-          if (!pos) return true;
-          const expectedCloseSide = pos.side === 'buy' ? 'sell' : 'buy';
-          return closingFillsForReconcile.some(f =>
-            f.symbol.toLowerCase() === localSym.toLowerCase() &&
-            f.side.toLowerCase() === expectedCloseSide.toLowerCase() &&
-            f.timestamp >= (pos.openedAt ?? 0),
-          );
+          // v2.0.868-attack7:callback 內部防禦——垃圾 fills(undefined/非 string)
+          // 唔 crash(String()/Number() 防護)——throw → false(唔確定 → 系統 hold)
+          try {
+            const pos = this.portfolio.getPosition(localSym);
+            if (!pos) return true;
+            // v2.0.868-attack7:side 大小寫——HL position side 可能 'BUY'/'SELL'
+            const expectedCloseSide = String(pos.side ?? '').toLowerCase() === 'buy' ? 'sell' : 'buy';
+            return closingFillsForReconcile.some(f =>
+              String(f?.symbol ?? '').toLowerCase() === String(localSym).toLowerCase() &&
+              String(f?.side ?? '').toLowerCase() === String(expectedCloseSide).toLowerCase() &&
+              Number(f?.timestamp ?? 0) >= (pos.openedAt ?? 0),
+            );
+          } catch { return false; }
         });
         if (reconciled.length > 0) {
           // v2.0.32: Close reconciled exchange positions on HL.
