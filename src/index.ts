@@ -82,6 +82,7 @@ export interface PnlSeries {
 }
 import { supabaseTradeWriter } from './services/supabase-trade-writer.ts';
 import { CloseDecisionCalibrator } from './analysis/close-decision-calibrator.ts';
+import { ProfitabilityAnalyzer } from './analysis/profitability-analyzer.ts';
 import { classifyThesisCatalyst } from './analysis/thesis-catalyst.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
@@ -278,6 +279,8 @@ class MATSSystem {
   private evFilter!: EVFilter;
   /** v2.0.866:Close-Decision Calibrator(平倉判斷校準——Phase A:記錄+驗證+統計) */
   private closeCalibrator!: CloseDecisionCalibrator;
+  /** v2.0.868:Profitability Analyzer——量化分析器(hold-time EV / direction bias / fee impact) */
+  private profitabilityAnalyzer!: ProfitabilityAnalyzer;
   /** v2.0.864: 上次記錄判斷時嘅 rationale(block 注入用) */
   private lastJudgeRationale = '';
   /** v2.0.865: 上次判斷嘅 gateAction(block 注入用) */
@@ -1244,6 +1247,15 @@ class MATSSystem {
       } catch (e) {
         log.warn(`[ev-filter-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
       }
+      // v2.0.868: Profitability Analyzer(量化分析器——hold-time EV/direction bias/fee)
+      this.profitabilityAnalyzer = new ProfitabilityAnalyzer();
+      try {
+        this.profitabilityAnalyzer.load();
+        const pa = this.profitabilityAnalyzer.getStats();
+        log.info(`✓ Profitability Analyzer loaded (${pa.holdCells} hold cells, ${pa.biasCells} bias cells, ${pa.feeTrades} fee trades)`);
+      } catch (e) {
+        log.warn(`[profitability-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
       // v2.0.866: Close-Decision Calibrator(Phase A——記錄+驗證+統計)
       this.closeCalibrator = new CloseDecisionCalibrator();
       try {
@@ -1354,6 +1366,28 @@ class MATSSystem {
         void this.stop();
       });
       this.apiServer.setDailyPnlProvider(() => this.computeDailyPnl());
+      this.apiServer.setProfitabilityProvider(() => {
+        const holdTime: Record<string, unknown> = {};
+        const bias: Record<string, unknown> = {};
+        try {
+          // 全部 symbol×side 嘅 hold-time EV + direction bias(API 輸出)
+          const allKeys = new Set([
+            ...Object.keys((this.profitabilityAnalyzer as unknown as { state: { holdTime: Record<string, unknown> } }).state.holdTime),
+            ...Object.keys((this.profitabilityAnalyzer as unknown as { state: { bias: Record<string, unknown> } }).state.bias),
+          ]);
+          for (const key of allKeys) {
+            const [sym, side] = key.split('|');
+            if (!sym || (side !== 'buy' && side !== 'sell')) continue;
+            holdTime[key] = this.profitabilityAnalyzer.getHoldTimeEV(sym, side as 'buy' | 'sell');
+            bias[key] = this.profitabilityAnalyzer.getDirectionBias(sym, side as 'buy' | 'sell');
+          }
+        } catch { /* non-fatal */ }
+        return {
+          holdTime,
+          bias,
+          fee: this.profitabilityAnalyzer.getFeeImpact(),
+        };
+      });
       this.apiServer.setTriggerCycleHandler(() => {
         log.info('Manual cycle trigger from API');
         if (!this.cycleInProgress && !isShuttingDown() && !this.paused) {
@@ -3751,6 +3785,25 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             });
           } catch { /* non-fatal */ }
         }
+        // v2.0.868: Profitability Analyzer——hold-time EV / direction bias / fee(判斷層)
+        try {
+          if (this.profitabilityAnalyzer) {
+            const holdMin = trade.openedAt > 0 && trade.closedAt > 0
+              ? Math.max(0, (trade.closedAt - trade.openedAt) / 60000)
+              : 0;
+            // fee 估算:round-trip = notional × 0.0008(margin × lev × taker 0.04% × 2)
+            const margin = safeNum((trade as { investment?: number }).investment, 0);
+            const lev = safeNum((trade as { leverage?: number }).leverage, 1);
+            const feeUsd = margin > 0 && lev > 0 ? margin * lev * 0.0008 : 0;
+            this.profitabilityAnalyzer.recordTrade(
+              normalizeSymbol(trade.symbol || ''),
+              trade.side === 'sell' ? 'sell' : 'buy',
+              holdMin,
+              safeNum((trade as { pnlPct?: number }).pnlPct, 0),
+              feeUsd,
+            );
+          }
+        } catch { /* non-fatal */ }
         // v2.0.226: Pass slNarrowed + learningWeight so OLR downweights tight-SL
         // losses (execution problem) vs real market losses (entry problem).
         this.olrEngine.feedTrade(symbol, features, outcome, trade.side === 'buy' ? 'buy' : 'sell', tradeSource, this.totalCycles, slNarrowed, undefined, learningWeight);
@@ -7632,6 +7685,13 @@ ${recentExamples}
             this.extractTrendType(this.lastJudgeRationale),
           );
           if (dirBlock) marketDesc += `\n${dirBlock}`;
+        }
+      } catch { /* non-fatal */ }
+      // v2.0.868: PROFITABILITY ADVICE block(hold-time EV + direction bias——量化校準)
+      try {
+        if (this.profitabilityAnalyzer && activeSymbol) {
+          const paBlock = this.profitabilityAnalyzer.getContextAdvice(normalizeSymbol(activeSymbol), this.lastJudgeGateAction ?? 'buy');
+          if (paBlock) marketDesc += `\n${paBlock}`;
         }
       } catch { /* non-fatal */ }
       // v2.0.865: EV FILTER block(期望值——正 EV 先值得開)
