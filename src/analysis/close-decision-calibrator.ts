@@ -40,7 +40,7 @@ const STALE_MS = 48 * 3600 * 1000;    // pending 超時棄置
 const MAX_PENDING = 5000;
 const DEFAULT_PATH = 'data/evolution/close-decision-calibration.json';
 
-const CLOSE_REASONS_TO_CALIBRATE = new Set(['consensus', 'thesis_invalidation']);
+const CLOSE_REASONS_TO_CALIBRATE = new Set(['consensus', 'thesis_invalidation', 'exit_price_lock']);
 
 interface Counter {
   premature: number;  // weighted
@@ -135,6 +135,7 @@ export class CloseDecisionCalibrator {
       maxPriceSinceClose: input.closePrice,
     };
     this.capPending();
+    this.save(); // v2.0.868-fix1:persist——之前 save 從未被 call——restart 後過早率數據清空
     return closeId;
   }
 
@@ -218,6 +219,7 @@ export class CloseDecisionCalibrator {
       this.state.windowStats[wKey] = wc;
       delete this.state.pending[id]; // idempotent——驗證一次
     }
+    this.save(); // v2.0.868-fix1:驗證結果持久化(閉環數據累積)
   }
 
   /** 某 context 嘅過早率(weighted) */
@@ -225,6 +227,19 @@ export class CloseDecisionCalibrator {
     const c = this.state.stats[contextKey(symbol, wasProfitable, trend)];
     if (!c || c.premature + c.correct < MIN_SAMPLES) return { rate: 0.5, total: 0 }; // 冷啟動中性
     return { rate: c.premature / (c.premature + c.correct), total: c.premature + c.correct };
+  }
+
+  /**
+   * v2.0.868-fix2:PAEL 鎖利 threshold 加成——過早率閉環去 exit-price-lock。
+   *   premature rate > 0.4 → multiplier > 1(鎖利門檻提高——等 price 行得更遠先鎖)
+   *   rate 0.5 → ×1.10;0.6 → ×1.20;0.8 → ×1.40;cap ×1.5
+   *   冷啟動(樣本 < MIN_SAMPLES)→ ×1.0(唔影響現有行為)
+   */
+  getLockThresholdMultiplier(symbol: string, trend: string): number {
+    const { rate, total } = this.getPrematureRate(symbol, true, trend);
+    if (total < MIN_SAMPLES) return 1.0;
+    if (rate <= 0.4) return 1.0;
+    return Math.min(1.5, 1 + (rate - 0.4) * 1.0);
   }
 
   /** Phase B 用:close 傾向乘數(>75% 過早 → ×0.85;>60% → ×0.9;否則 1.0) */
@@ -282,15 +297,19 @@ export class CloseDecisionCalibrator {
    *  -> 「有腦咁 hold」:只擋「數據證明過早率高嘅見好即收」——唔會死揸
    */
   shouldHoldClose(symbol: string, wasProfitable: boolean, trend: string, closeReason: string): boolean {
-    // v2.0.866-phase-b-attack2 (V26):只 hold 純 consensus——
-    // thesis_invalidation = Skeptics 判斷「thesis 失效」(趨勢反轉/結構破壞證據)
-    // → 同 SL 一樣係「市場/判斷確認嘅退出」——hold 佢 = 死揸!
-    // SL/thesis/PAEL/manual 永遠唔 hold
-    if (closeReason !== 'consensus') return false;
+    // v2.0.866-phase-b-attack2 (V26):thesis_invalidation = Skeptics 判斷
+    // 「thesis 失效」(趨勢反轉/結構破壞證據)→ 同 SL 一樣係「市場/判斷確認嘅退出」
+    // → hold 佢 = 死揸!SL/thesis/manual 永遠唔 hold。
+    // v2.0.868-fix3:PAEL(exit_price_lock)喺過早率 ≥70% 都 hold——鎖利門檻高。
+    //   背景:PAEL 鎖完 thesis 未失效 → 下 cycle 又開 → re-open 循環 → fee 侵蝕。
+    //   過早率 ≥70% = 強證據「鎖完 price 繼續行」→ hold 一 cycle 再確認
+    //   (3 cycle 超時兜底執行——唔會變成死揸;pending-close 再確認機制照常)
     if (!wasProfitable) return false; // 虧損 close 唔 hold——止血優先
     const { rate, total } = this.getPrematureRate(symbol, wasProfitable, trend);
     if (total < MIN_SAMPLES) return false; // 冷啟動唔 hold
-    return rate >= 0.60;
+    if (closeReason === 'consensus') return rate >= 0.60;
+    if (closeReason === 'exit_price_lock') return rate >= 0.70;
+    return false;
   }
 
   /** 標記 pending-close(唔立即執行——下 cycle 再確認) */

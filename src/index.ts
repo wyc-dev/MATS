@@ -3239,7 +3239,19 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const slippagePct = Number.isFinite(execStats?.avgSlippageBps)
           ? (execStats!.avgSlippageBps) / 10_000
           : 0;
-        const threshold = (isTrending ? profile.mfeP90 : profile.mfeP75 * 0.8) + slippagePct;
+        // v2.0.868-fix2:過早率閉環——鎖利 threshold × calibrator multiplier。
+        // close-decision-calibrator 記錄 PAEL 過早率(鎖完 price 繼續行 >0.5%)——
+        // 過早率高 → 鎖利門檻提高(等 price 行得更遠)——數據驅動提升平倉質素
+        let threshold = (isTrending ? profile.mfeP90 : profile.mfeP75 * 0.8) + slippagePct;
+        if (this.closeCalibrator && closeCalibConfig.enabled) {
+          try {
+            const lockMult = this.closeCalibrator.getLockThresholdMultiplier(normalizeSymbol(sym), regime);
+            if (lockMult > 1.0) {
+              threshold *= lockMult;
+              log.info(`🔒 [exit-price-lock] ${sym} threshold ×${lockMult.toFixed(2)} (過早率校準)—— MFE ${(converted.mfePricePct * 100).toFixed(2)}% vs ${(threshold * 100).toFixed(2)}%`);
+            }
+          } catch { /* non-fatal */ }
+        }
         if (converted.mfePricePct < threshold) continue;
 
         const pnlNow = pos.unrealizedPnl ?? 0;
@@ -12290,7 +12302,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
    * v2.0.866 Phase B:consensus close 二次確認 hold gate。
    * 過早率高(≥60%)+ 盈利 + consensus close → 標記 pending-close(唔立即執行),
    * 下 cycle 再確認(agents 再 close = 確認執行;冇再 close = 取消揸住;3 cycle 超時 = 兜底執行)。
-   * SL/thesis/PAEL 永遠唔受影響(closeReason 唔係 consensus → 唔 hold)。
+   * v2.0.868-fix3:PAEL(exit_price_lock)過早率 ≥70% 都 hold(強證據防「鎖完立即重開」)。
+   * SL/thesis/manual 永遠唔受影響(死揸防禦)。
    * @returns true = close 被 hold(唔應該執行);false = 照常執行
    */
   private holdCloseIfCalibrated(symbol: string, wasProfitable: boolean, closeReason: string): boolean {
