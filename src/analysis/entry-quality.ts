@@ -57,16 +57,21 @@ export function checkConfirmation(params: {
   const side = params.side === 'sell' ? 'sell' : 'buy';
   const cur = Number.isFinite(params.currentPrice) && params.currentPrice > 0 ? params.currentPrice : 0;
 
-  // ① Price 位置確認(離開 zone)——相對計算(防 support*1.0015 overflow——1e308 → Infinity)
+  // ① Price 位置確認(離開 zone)——相對計算(防 overflow)
   let pricePosition = true; // 缺數據中性
   if (cur > 0) {
     if (side === 'buy' && Number.isFinite(params.support) && (params.support as number) > 0) {
       const sup = params.support as number;
-      // 相對距離:(cur − support)/support > 0.15%——避免乘法 overflow(極大值)
       pricePosition = cur > sup && (cur - sup) / sup > 0.0015;
     } else if (side === 'sell' && Number.isFinite(params.resistance) && (params.resistance as number) > 0) {
       const res = params.resistance as number;
       pricePosition = cur < res && (res - cur) / res > 0.0015;
+    } else {
+      // v2.0.868-attack11:Meta-Agent decision 冇填 S/R(srSupport/srResistance 永遠 undefined)
+      // → Price 位置確認形同虛設(永遠中性)。替代:SL 距離 ≥0.3%(entry 離開 SL/support
+      // 0.3%+ = 「反彈已開始」)——用 decision.stopLossPct(已有數據——同步)
+      const slDist = Number.isFinite(params.slDistancePct) ? params.slDistancePct : 0;
+      pricePosition = slDist >= 0.3;
     }
   }
 
@@ -161,7 +166,11 @@ export class EntryQuality {
   record(symbol: string, side: 'buy' | 'sell', maePct: number, mfePct: number, pnlPct: number, closedAt: number, leverage = 1): void {
     try {
       const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
-      if (!sym || (side !== 'buy' && side !== 'sell')) return;
+      // v2.0.868-attack11:side 防禦 normalize——'short'→'sell'、'long'→'buy'(runtime 可能非規範值)
+      const rawSide = String(side ?? '').toLowerCase();
+      if (rawSide !== 'buy' && rawSide !== 'long' && rawSide !== 'sell' && rawSide !== 'short') return;
+      const normSide: 'buy' | 'sell' = (rawSide === 'sell' || rawSide === 'short') ? 'sell' : 'buy';
+      if (!sym) return;
       // 污染過濾:MAE/MFE 唔應該超出合理範圍(±3×margin——sanity)
       // 10x 槓杆 → 價格 ±30% 已經極端——margin ±300% 唔可能(錯價)
       const maxSanity = 300; // margin %
@@ -171,7 +180,7 @@ export class EntryQuality {
       const mfe = Number.isFinite(mfePct) ? Math.max(0, Math.min(maxSanity, mfePct)) : 0;
       // 污染樣本(MAE -50% 嗢啲)唔應該用——直接 skip(唔記錄)
       if (mae < -maxSanity * 0.5 && mfe < 10) return; // 明顯污染(逆向超 150% margin 且冇順向)
-      const key = `${sym}|${side}`;
+      const key = `${sym}|${normSide}`;
       this.state.profile[key] ??= [];
       this.state.profile[key]!.push({
         maePct: mae, mfePct: mfe,

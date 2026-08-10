@@ -214,7 +214,9 @@ export class ProfitabilityAnalyzer {
     const ratioRaw = avgLoss / avgWin;
     if (!Number.isFinite(ratioRaw)) return '';
     const ratio = ratioRaw;
-    if (ratio < 1.5) return ''; // 正常盈虧比——唔出
+    // v2.0.868-attack11:浮點邊界——ratio 啱好 1.5 但 0.0015/0.001 = 1.4999999 < 1.5 → 唔出
+    // threshold 用 1.49(1.5 附近都出——唔好因為浮點誤差漏警告)
+    if (ratio < 1.49) return ''; // 正常盈虧比——唔出
     const wr = wins.length / arr.length;
     return `[SKEW ${String(symbol).toUpperCase()} ${side.toUpperCase()}] win rate ${(wr * 100).toFixed(0)}% 但 avgLoss/avgWin = ${ratio.toFixed(1)}x(贏${(avgWin * 100).toFixed(1)}%/輸${(avgLoss * 100).toFixed(1)}%)——負偏度:贏細輸大——即使 win rate 高期望值都可能負——需要嚴格確認訊號/細 size(世界模型可 override)`;
   }
@@ -234,9 +236,11 @@ export class ProfitabilityAnalyzer {
     const parts: string[] = [];
     if (buy) parts.push(`[PROFITABILITY ${sym.toUpperCase()} BUY]\n${buy}`);
     if (sell) parts.push(`[PROFITABILITY ${sym.toUpperCase()} SELL]\n${sell}`);
-    // v2.0.868-q:skew(贏細輸大)提示
-    const sk = this.getSkewAdvice(sym, 'buy') || this.getSkewAdvice(sym, 'sell');
-    if (sk) parts.push(sk);
+    // v2.0.868-attack11:skew 分開顯示 buy/sell(唔用 ||——buy 有 skew 就隱藏 sell)
+    const skBuy = this.getSkewAdvice(sym, 'buy');
+    const skSell = this.getSkewAdvice(sym, 'sell');
+    if (skBuy) parts.push(skBuy);
+    if (skSell) parts.push(skSell);
     return parts.join('\n');
   }
 
