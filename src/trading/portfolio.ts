@@ -1713,6 +1713,14 @@ export class PortfolioTracker {
    *  learning pipeline + RIL + trade-audit can see HOW the position closed.
    */
   closeExchangePosition(symbol: string, exitPrice: number, hlRealizedPnl?: number, closeReason?: TradeRecord['closeReason']): TradeRecord | null {
+    // v2.0.868-fix(主神 GOLD 調查):PAEL 寫咗 EXIT-PRICE LOCK thesis(準備鎖利)
+    // → 任何路徑 close(reconcile/sync/HL fill)reason 都應該係 exit_price_lock——
+    // 唔好顯示 reconciliation(誤導——主神見到「EXIT-PRICE LOCK + reconciliation」矛盾)
+    const pos0 = this.getPosition(symbol);
+    if (pos0 && typeof pos0.exitThesis === 'string' && pos0.exitThesis.includes('EXIT-PRICE LOCK')
+        && (!closeReason || closeReason === 'reconciliation')) {
+      closeReason = 'exit_price_lock';
+    }
     // v2.0.854-ATTACK2: Sanitize exitPrice — NaN/Infinity/0/negative corrupts
     // PnL, pnlPct, inferCloseReason, and every learning system.
     const safeExitPrice = safePrice(exitPrice);
