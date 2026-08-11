@@ -3298,7 +3298,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // v2.0.868-fix2:過早率閉環——鎖利 threshold × calibrator multiplier。
         // close-decision-calibrator 記錄 PAEL 過早率(鎖完 price 繼續行 >0.5%)——
         // 過早率高 → 鎖利門檻提高(等 price 行得更遠)——數據驅動提升平倉質素
-        let threshold = (isTrending ? profile.mfeP90 : profile.mfeP75 * 0.8) + slippagePct;
+        // v2.0.868-fix(主神 GOLD 調查):threshold floor 0.3%——低波動 symbol
+        // (GOLD p75×0.8 = 0.24%)一有少少順向就鎖——thesis 目標($4430 +0.5%)
+        // 一半都未到——鎖完 thesis 未失效 → re-open 循環(fee 浪費)
+        let threshold = Math.max(0.3, (isTrending ? profile.mfeP90 : profile.mfeP75 * 0.8)) + slippagePct;
         if (this.closeCalibrator && closeCalibConfig.enabled) {
           try {
             // v2.0.868-attack4:trend 來源必須同 recordClose 一致(trend1h——
@@ -3811,6 +3814,13 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             });
           } catch { /* non-fatal */ }
         }
+        // v2.0.868-fix(主神 GOLD 調查):PAEL 鎖利 close → 記錄 close 價——
+        // re-open 價格條件抑制(price 未行遠唔重開——fee 浪費)
+        try {
+          if (this.entryQuality && closeReason === 'exit_price_lock' && Number.isFinite((trade as { exitPrice?: number }).exitPrice)) {
+            this.entryQuality.recordClosePrice(normalizeSymbol(trade.symbol || ''), (trade as { exitPrice?: number }).exitPrice as number);
+          }
+        } catch { /* non-fatal */ }
         // v2.0.868-P1P2: Entry Quality——MAE/MFE profile(全部 close 類型——rolling window)
         try {
           if (this.entryQuality && trade.openedAt > 0) {
@@ -10678,6 +10688,14 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
                 effectiveConfidence *= eqResult.multiplier;
                 log.info(`🟡 [entry-gate] ${gateAction.toUpperCase()} ${pwinSym}: 確認 ${eqResult.confirmedCount}/3 (price=${eqResult.signals.pricePosition ? '✓' : '✗'} mom=${eqResult.signals.momentum ? '✓' : '✗'} noise=${eqResult.signals.noise ? '✓' : '✗'}) → conviction ×${eqResult.multiplier} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
                 activeAuditGates.push({ gate: 'entry-gate', passed: true, reason: `confirmation ${eqResult.confirmedCount}/3 → ×${eqResult.multiplier} (soft)` });
+              }
+              // v2.0.868-fix(主神 GOLD 調查):re-open 價格條件——PAEL 啱啱鎖利
+              // close(price 未行遠 ±0.3%)→ 重開 = 同位置再入(fee 浪費)→ ×0.7
+              const reopenMult = this.entryQuality.getReopenMultiplier(pwinSym, eqEntry);
+              if (reopenMult < 1.0) {
+                effectiveConfidence *= reopenMult;
+                log.info(`🟠 [reopen-guard] ${gateAction.toUpperCase()} ${pwinSym}: price 未離開最近 close 價 ±0.3%——重開 = 同位置再入 → conviction ×${reopenMult}`);
+                activeAuditGates.push({ gate: 'reopen-guard', passed: true, reason: `price within ±0.3% of recent close → ×${reopenMult} (soft)` });
               }
             }
           }

@@ -132,11 +132,15 @@ interface EntryQualityState {
   version: number;
   savedAt: number;
   profile: Record<string, EntrySample[]>; // `${sym}|${side}` → samples(全部 close 類型)
+  /** v2.0.868-fix(主神 GOLD 調查):最近 close 價——re-open 價格條件抑制
+   *  PAEL 鎖利 close 後——price 未離開 closePrice ±0.3% = 無新資訊——
+   *  重開 = 同位置再入(fee 浪費)——conviction 降(判斷層——唔 hard block) */
+  recentCloses: Record<string, { price: number; ts: number }>;
   backfillDone: boolean;
 }
 
 function emptyState(): EntryQualityState {
-  return { version: 1, savedAt: 0, profile: {}, backfillDone: false };
+  return { version: 1, savedAt: 0, profile: {}, recentCloses: {}, backfillDone: false };
 }
 
 /** 保守 EV:Wilson LB win rate(90%)+ median MAE/MFE——全程保守(主神:設計謹慎) */
@@ -235,6 +239,31 @@ export class EntryQuality {
   保守條件 EV ${pct(prof.ev)} margin — ${prof.ev >= 0 ? '正期望(可入場)' : '負期望(等確認/細 size——統計校準,世界模型可 override)'}`;
   }
 
+  /** v2.0.868-fix:記錄 close 價(PAEL 鎖利 close 時)——re-open 抑制用 */
+  recordClosePrice(symbol: string, price: number): void {
+    try {
+      const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
+      if (!sym || !Number.isFinite(price) || price <= 0) return;
+      this.state.recentCloses[sym] = { price, ts: Date.now() };
+      this.markDirty();
+    } catch { /* 非致命 */ }
+  }
+
+  /**
+   * v2.0.868-fix:re-open 價格條件——最近 close 價 ±0.3% 內 = 無新資訊——
+   * 重開 = 同位置再入(fee 浪費)——conviction ×0.7(判斷層——唔 hard block)
+   * 超過 0.3% 或冇記錄 → 1.0(唔影響)
+   */
+  getReopenMultiplier(symbol: string, currentPrice: number): number {
+    try {
+      const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
+      const rec = this.state.recentCloses[sym];
+      if (!rec || !Number.isFinite(currentPrice) || currentPrice <= 0) return 1.0;
+      const dist = Math.abs(currentPrice - rec.price) / rec.price;
+      return dist < 0.003 ? 0.7 : 1.0; // ±0.3% 內 → 降信心
+    } catch { return 1.0; }
+  }
+
   getStats(): { contexts: number; samples: number } {
     let samples = 0;
     for (const k of Object.keys(this.state.profile)) samples += (this.state.profile[k] ?? []).length;
@@ -277,6 +306,15 @@ export class EntryQuality {
       const clean = emptyState();
       if (raw && typeof raw === 'object') {
         clean.backfillDone = raw['backfillDone'] === true;
+        if (raw['recentCloses'] && typeof raw['recentCloses'] === 'object') {
+          for (const [k, v] of Object.entries(raw['recentCloses'] as Record<string, unknown>)) {
+            if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+            const o = v as { price?: unknown; ts?: unknown };
+            if (o && Number.isFinite(o['price']) && (o['price'] as number) > 0) {
+              clean.recentCloses[k] = { price: o['price'] as number, ts: Number.isFinite(o['ts']) ? o['ts'] as number : Date.now() };
+            }
+          }
+        }
         if (raw['profile'] && typeof raw['profile'] === 'object') {
           for (const [k, samples] of Object.entries(raw['profile'] as Record<string, unknown>)) {
             if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
