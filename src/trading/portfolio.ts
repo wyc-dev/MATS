@@ -115,6 +115,7 @@ export type OnPositionClosed = (trade: TradeRecord) => void;
  */
 export const VALID_CLOSE_REASONS = new Set([
   'sl_tp',
+  'tp_hit', // v2.0.868-fix(主神 SKHX 調查):TP 觸發分開——之前同 SL 共用 'sl_tp' 誤導
   'consensus',
   'manual',
   'reconciliation',
@@ -174,7 +175,7 @@ export function inferCloseReason(
   exitPrice: number,
   stopLoss?: number | null,
   takeProfit?: number | null,
-): 'sl_tp' | 'reconciliation' {
+): 'sl_tp' | 'tp_hit' | 'reconciliation' {
   // Defensive guard (v2.0.851-fix): an invalid exitPrice (NaN, Infinity,
   // zero, negative) means we CANNOT determine whether SL/TP was hit. Never
   // classify such a close as 'sl_tp' — return 'reconciliation' (unknown exit).
@@ -185,8 +186,10 @@ export function inferCloseReason(
   const validTP = typeof takeProfit === 'number' && Number.isFinite(takeProfit) && takeProfit > 0;
   if (validSL && side === 'buy' && exitPrice <= stopLoss!) return 'sl_tp';
   if (validSL && side === 'sell' && exitPrice >= stopLoss!) return 'sl_tp';
-  if (validTP && side === 'buy' && exitPrice >= takeProfit!) return 'sl_tp';
-  if (validTP && side === 'sell' && exitPrice <= takeProfit!) return 'sl_tp';
+  // v2.0.868-fix(主神 SKHX 調查):TP 觸發唔應該標記 'sl_tp'(誤導——主神見到
+  // sl_tp 以為止蝕——但實際係 TP 取利)。分開 'tp_hit'——UI/TG 顯示 Take-profit
+  if (validTP && side === 'buy' && exitPrice >= takeProfit!) return 'tp_hit';
+  if (validTP && side === 'sell' && exitPrice <= takeProfit!) return 'tp_hit';
   return 'reconciliation';
 }
 
