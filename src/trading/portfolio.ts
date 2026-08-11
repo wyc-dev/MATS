@@ -198,12 +198,16 @@ function safeNum(v: unknown, fallback = 0): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
-/** v2.0.868-attack8:close 時 min/max sanity——restore 舊污染(錯價寫入)兜底。
- *   min 唔應該 < 0(清算線下)或者 > 3×margin;max 唔應該 < margin。
- *   超範圍 → 重置為 margin(唔帶污染入 trade record)。 */
+/** v2.0.868-attack8+fix(主神 MAE 調查):close 時 min/max sanity。
+ *   主神發現:state file 有大量污染 minValueReached(-0.55 負值、-48% 等)——
+ *   restore/import 路徑冇 sanitize——污染值帶入新 trade(「MAE -49.9%」假象——
+ *   price 根本冇跌到嗰個位——candle 驗證最低 973.7——要 895 先 -49.9%)。
+ *   收緊:min 唔可以 < margin×0.6(跌 40% margin = price -8% at 5x——閃崩級——
+ *   正常 MAE -5~-30%——低過 = 錯價污染)→ 重置為 margin。
+ *   min > 3×margin(max 唔合理)→ 重置。 */
 function sanitizeMinMax(pos: { minValueReached?: number; maxValueReached?: number }, margin: number): { min: number; max: number } {
   const safeMargin = Number.isFinite(margin) && margin > 0 ? margin : 0;
-  const min = Number.isFinite(pos.minValueReached) && (pos.minValueReached as number) >= 0
+  const min = Number.isFinite(pos.minValueReached) && (pos.minValueReached as number) >= safeMargin * 0.6
     ? Math.min(pos.minValueReached as number, safeMargin > 0 ? safeMargin * 3 : Infinity)
     : safeMargin;
   const max = Number.isFinite(pos.maxValueReached) && (pos.maxValueReached as number) >= 0
@@ -339,6 +343,12 @@ export class PortfolioTracker {
           // v2.0.143: Restore MAE/MFE tracking from saved state
           minValueReached: (p as any).minValueReached,
           maxValueReached: (p as any).maxValueReached,
+          // v2.0.868-fix(主神 MAE 調查):restore 污染值(負值/-48%)帶入——
+          // 用 margin 計算後 sanitize——重置污染 min/max
+          ...(() => {
+            const m = (safeNum((p as any).averageEntryPrice, 0) * safeNum((p as any).quantity, 0)) / safeLeverage((p as any).leverage ?? 1);
+            return sanitizeMinMax(p as { minValueReached?: number; maxValueReached?: number }, m);
+          })(),
           // v2.0.143: Restore original SL/TP for exitThesis narrowing analysis
           originalStopLossPrice: (p as any).originalStopLossPrice,
           originalTakeProfitPrice: (p as any).originalTakeProfitPrice,
@@ -438,6 +448,11 @@ export class PortfolioTracker {
             holdReason: rp.holdReason,
             minValueReached: rp.minValueReached,
             maxValueReached: rp.maxValueReached,
+            // v2.0.868-fix(主神 MAE 調查):restore 污染值 sanitize(同 positions 一致)
+            ...(() => {
+              const m = (safeNum(rp.averageEntryPrice, 0) * safeNum(rp.quantity, 0)) / safeLeverage(rp.leverage ?? 1);
+              return sanitizeMinMax(rp as { minValueReached?: number; maxValueReached?: number }, m);
+            })(),
             originalStopLossPrice: rp.originalStopLossPrice,
             originalTakeProfitPrice: rp.originalTakeProfitPrice,
           } as any);
