@@ -265,10 +265,11 @@
     gap: 0.35rem;
     margin-top: 1rem;
     max-width: 1000px;
-    /* v2.0.868-fix(主神):容器全透明 */
+    /* v2.0.868-fix(主神):大外框裝住 33 層(整齊)——item 保持透明 */
     background: transparent;
-    border: none;
-    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.8rem;
   }
   .layer-item {
     /* v2.0.868-fix(主神):外框+背景全透明 + 字體再縮細 */
