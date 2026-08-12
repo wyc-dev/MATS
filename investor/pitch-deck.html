@@ -265,16 +265,15 @@
     gap: 0.35rem;
     margin-top: 1rem;
     max-width: 1000px;
-    /* v2.0.868-fix(主神):完整 div 容器 */
-    background: rgba(255,255,255,0.02);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 0.8rem;
+    /* v2.0.868-fix(主神):容器全透明 */
+    background: transparent;
+    border: none;
+    padding: 0;
   }
   .layer-item {
-    background: var(--surface);
-    padding: 0.3rem 0.5rem; /* v2.0.868-fix:33 層緊湊 */
-    font-size: 0.65rem;
+    background: transparent; /* v2.0.868-fix(主神):外框全透明 */
+    padding: 0.2rem 0.3rem;
+    font-size: 0.55rem;
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.6rem 0.8rem;
