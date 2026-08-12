@@ -271,17 +271,15 @@
     padding: 0;
   }
   .layer-item {
-    background: transparent; /* v2.0.868-fix(主神):外框全透明 */
-    padding: 0.2rem 0.3rem;
-    font-size: 0.55rem;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 0.6rem 0.8rem;
-    font-size: 0.78rem;
+    /* v2.0.868-fix(主神):外框+背景全透明 + 字體再縮細 */
+    background: transparent;
+    border: none;
+    padding: 0.15rem 0.2rem;
+    font-size: 0.5rem;
     font-family: var(--mono);
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.3rem;
   }
   .layer-num {
     background: var(--rainbow);
