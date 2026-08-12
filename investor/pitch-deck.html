@@ -1070,7 +1070,7 @@
 <!-- SLIDE 11: Contact (merged Team + Let's Talk) -->
 
 
-<div class="slide" id="s12">
+<div class="slide" id="s10">
   <span class="slide-tag">Performance</span>
   <h2 data-en="Simulated track record — <span class='accent'>~280% APY</span>"><span class="h2-icon"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 14 4-4 4 3 5-6"/></svg></span>模擬實績 — <span class="accent">年化 ~280% APY</span></h2>
   <div class="slide-content">
@@ -1152,7 +1152,7 @@
     const el = document.getElementById('s' + n);
     if (el) el.classList.add('active');
     // v2.0.868-fix:slide 顯示時重畫折線圖(隱藏 slide 嘅 canvas clientWidth=0——畫唔到)
-    if (n === 12 && window.__drawPerfChart) {
+    if (n === 10 && window.__drawPerfChart) {
       setTimeout(() => window.__drawPerfChart(), 30);
     }
     current = n;
