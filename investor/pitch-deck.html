@@ -261,13 +261,15 @@
 
   .layer-list {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 0.5rem;
-    margin-top: 1.5rem;
-    max-width: 900px;
+    grid-template-columns: repeat(4, 1fr); /* v2.0.868-fix:33 層——4 列緊湊(一頁睇晒) */
+    gap: 0.4rem;
+    margin-top: 1rem;
+    max-width: 1000px;
   }
   .layer-item {
     background: var(--surface);
+    padding: 0.4rem 0.6rem; /* v2.0.868-fix:33 層緊湊 */
+    font-size: 0.75rem;
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.6rem 0.8rem;
@@ -796,31 +798,43 @@
 <!-- SLIDE 3: Solution -->
 <div class="slide" id="s3">
   <span class="slide-tag">The Solution</span>
-  <h2 data-en="MATS: <span class='accent'>21-Layer</span> Cognitive Evolution Pipeline"><span class="h2-icon"><svg viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>MATS：<span class="accent">21 層</span>認知演化管線</h2>
+  <h2 data-en="MATS: <span class='accent'>33-Layer</span> Cognitive Evolution Pipeline"><span class="h2-icon"><svg viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>MATS：<span class="accent">33 層</span>認知演化管線</h2>
   <div class="slide-content">
   <p data-en="Every trade outcome feeds back into 21 independent learning systems. The system isn't fixed rules — it's an evolving cognitive engine.">每一筆交易結果，都會餵回 21 個獨立學習系統。系統不是固定規則 — 是一個會進化的認知引擎。</p>
   <div class="layer-list">
     <div class="layer-item"><span class="layer-num">01</span> OLR 預測</div>
-    <div class="layer-item"><span class="layer-num">02</span> Bayesian CI</div>
-    <div class="layer-item"><span class="layer-num">03</span> Shadow Trade</div>
-    <div class="layer-item"><span class="layer-num">04</span> First-Passage</div>
-    <div class="layer-item"><span class="layer-num">05</span> Numeric Autoencoder</div>
-    <div class="layer-item"><span class="layer-num">06</span> AttnRes Embed</div>
-    <div class="layer-item"><span class="layer-num">07</span> Cycle History</div>
-    <div class="layer-item"><span class="layer-num">08</span> Temporal Attention</div>
-    <div class="layer-item"><span class="layer-num">09</span> Cross-Symbol</div>
-    <div class="layer-item"><span class="layer-num">10</span> Replay Buffer</div>
-    <div class="layer-item"><span class="layer-num">11</span> World Model</div>
-    <div class="layer-item"><span class="layer-num">12</span> Reward Shaping</div>
-    <div class="layer-item"><span class="layer-num">13</span> Active Exploration</div>
-    <div class="layer-item"><span class="layer-num">14</span> Anti-Pattern</div>
-    <div class="layer-item"><span class="layer-num">15</span> Cond WR Gate</div>
-    <div class="layer-item"><span class="layer-num">16</span> Combo WR Gate</div>
-    <div class="layer-item"><span class="layer-num">17</span> P(win) Discount</div>
-    <div class="layer-item"><span class="layer-num">18</span> 5-Agent Debate</div>
-    <div class="layer-item"><span class="layer-num">19</span> Q-RL Alpha Discovery</div>
-    <div class="layer-item"><span class="layer-num">20</span> PAEL Exit-Price Lock</div>
-    <div class="layer-item"><span class="layer-num">21</span> HACP Gate</div>
+    <div class="layer-item"><span class="layer-num">02</span> Shadow Trade</div>
+    <div class="layer-item"><span class="layer-num">03</span> First-Passage</div>
+    <div class="layer-item"><span class="layer-num">04</span> EM Cycle Chain</div>
+    <div class="layer-item"><span class="layer-num">05</span> GA 遺傳演算法</div>
+    <div class="layer-item"><span class="layer-num">06</span> RIL 強化學習</div>
+    <div class="layer-item"><span class="layer-num">07</span> NA 數值自編碼</div>
+    <div class="layer-item"><span class="layer-num">08</span> AttnRes Embed</div>
+    <div class="layer-item"><span class="layer-num">09</span> Combo WR Gate</div>
+    <div class="layer-item"><span class="layer-num">10</span> P(win) Discount</div>
+    <div class="layer-item"><span class="layer-num">11</span> Close-Context Learning</div>
+    <div class="layer-item"><span class="layer-num">12</span> Plan G Dynamic Threshold</div>
+    <div class="layer-item"><span class="layer-num">13</span> Edge Validation</div>
+    <div class="layer-item"><span class="layer-num">14</span> Q-RL Alpha Discovery</div>
+    <div class="layer-item"><span class="layer-num">15</span> Component Attribution</div>
+    <div class="layer-item"><span class="layer-num">16</span> Q-RL Direction Signal</div>
+    <div class="layer-item"><span class="layer-num">17</span> Shadow Pool Eviction</div>
+    <div class="layer-item"><span class="layer-num">18</span> PAEL Exit-Price Lock</div>
+    <div class="layer-item"><span class="layer-num">19</span> LLM World-Model</div>
+    <div class="layer-item"><span class="layer-num">20</span> LLM Direction Verifier</div>
+    <div class="layer-item"><span class="layer-num">21</span> EV Filter</div>
+    <div class="layer-item"><span class="layer-num">22</span> Close-Decision Calibrator</div>
+    <div class="layer-item"><span class="layer-num">23</span> TG Signal Push</div>
+    <div class="layer-item"><span class="layer-num">24</span> Profitability Analyzer</div>
+    <div class="layer-item"><span class="layer-num">25</span> Entry Quality System</div>
+    <div class="layer-item"><span class="layer-num">26</span> EXP Thesis Experience</div>
+    <div class="layer-item"><span class="layer-num">27</span> Replay Buffer</div>
+    <div class="layer-item"><span class="layer-num">28</span> Anti-Pattern</div>
+    <div class="layer-item"><span class="layer-num">29</span> Cond WR Gate</div>
+    <div class="layer-item"><span class="layer-num">30</span> Bayesian CI</div>
+    <div class="layer-item"><span class="layer-num">31</span> Temporal Attention</div>
+    <div class="layer-item"><span class="layer-num">32</span> Cross-Symbol</div>
+    <div class="layer-item"><span class="layer-num">33</span> HACP Gate</div>
   </div>
   </div></div>
 
