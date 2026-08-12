@@ -1015,10 +1015,6 @@
   <p style="margin-top:1.5rem; font-size:0.92rem; line-height:1.7;" data-en="<span class='rainbow-text'>▸</span> Solo risk is real — but 220+ iterations prove execution. The core goal: commercialize MATS — mobile app → data flywheel → recurring revenue. Next: 30-min Demo Call → Data Room → SAFE Signing."><span class="rainbow-text">▸</span> 單人風險是真實的 — 但 220+ 次迭代證明了執行力。核心目標：將 MATS 商品化 — 手機 App → 數據飛輪 → 持續收入。下一步：30 分鐘 Demo Call → Data Room → SAFE 簽署。</p>
   </div></div>
 
-<div class="nav">
-  <div class="lang-btn" onclick="toggleLang()" id="langBtn">EN</div>
-  <div class="nav-btn" onclick="prev()" data-en="← Prev">← Prev</div>
-  <div class="nav-btn" onclick="next()" data-en="Next →">Next →</div>
   <div class="slide" id="s12">
   <span class="slide-tag">Performance</span>
   <h2 data-en="Simulated track record — <span class='accent'>~280% APY</span>"><span class="h2-icon"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 14 4-4 4 3 5-6"/></svg></span>模擬實績 — <span class="accent">年化 ~280% APY</span></h2>
@@ -1067,6 +1063,10 @@
   </div>
   <p style="margin-top:1.2rem; font-size:0.9rem;" data-en="One cognitive engine — three distribution channels. Retail builds the data flywheel; institutions scale the reach; private quant unlocks the deepest value.">同一認知引擎 — 三條分發渠道。散戶建立數據飛輪；機構放大覆蓋；私人量化解鎖最深價值。</p>
   </div></div>
+<div class="nav">
+  <div class="lang-btn" onclick="toggleLang()" id="langBtn">EN</div>
+  <div class="nav-btn" onclick="prev()" data-en="← Prev">← Prev</div>
+  <div class="nav-btn" onclick="next()" data-en="Next →">Next →</div>
 </div>
 
 <script>
@@ -1087,77 +1087,121 @@
     if (e.key === 'ArrowLeft') prev();
   });
 
-  // ── Performance chart (simulated ~280% APY equity curve) ──
+  // ── Performance chart (institutional-grade — responsive + smooth curve) ──
   (function drawPerfChart() {
     const cv = document.getElementById('perfChart');
     if (!cv) return;
-    const ctx = cv.getContext('2d');
-    const W = cv.width, H = cv.height;
-    const padL = 46, padR = 16, padT = 18, padB = 28;
-    // 模擬 12 個月權益曲線:$100k → $380k(280% APY)——帶波動(更真實)
-    const months = 12;
-    const start = 100000, end = 380000;
-    const pts = [];
-    let v = start;
-    for (let i = 0; i <= months; i++) {
-      if (i > 0) {
-        // 月回報 ~11.8% 平均 + 波動(±8%)——平滑到終點
-        const target = start * Math.pow(end / start, i / months);
-        const noise = (Math.random() - 0.5) * 0.16 * v;
-        v = Math.max(start * 0.9, target * 0.97 + noise * 0.3 + v * 0.7);
+    const draw = () => {
+      const dpr = window.devicePixelRatio || 1;
+      const cw = cv.clientWidth || 560;
+      const ch = Math.max(280, Math.round(cw * 0.55));
+      cv.width = cw * dpr;
+      cv.height = ch * dpr;
+      const ctx = cv.getContext('2d');
+      ctx.scale(dpr, dpr);
+      const W = cw, H = ch;
+      const padL = 52, padR = 20, padT = 26, padB = 30;
+      // 模擬 12 個月權益曲線:$100k → $380k(280% APY)——帶波動
+      const months = 12, start = 100000, end = 380000;
+      const pts = [];
+      let v = start;
+      for (let i = 0; i <= months; i++) {
+        if (i > 0) {
+          const target = start * Math.pow(end / start, i / months);
+          const noise = (Math.random() - 0.5) * 0.14 * v;
+          v = Math.max(start * 0.92, target * 0.97 + noise * 0.3 + v * 0.7);
+        }
+        pts.push({ m: i, v });
       }
-      pts.push({ m: i, v });
-    }
-    // 確保終點 = end
-    pts[months] = { m: months, v: end };
-    const vMin = 0, vMax = 420000;
-    const X = (m) => padL + (m / months) * (W - padL - padR);
-    const Y = (val) => padT + (1 - (val - vMin) / (vMax - vMin)) * (H - padT - padB);
-    // grid
-    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-    ctx.fillStyle = '#6b7488';
-    ctx.font = '10px monospace';
-    for (let i = 0; i <= 4; i++) {
-      const val = vMin + (vMax - vMin) * i / 4;
-      const y = Y(val);
-      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
-      ctx.fillText('$' + (val / 1000).toFixed(0) + 'k', 4, y + 3);
-    }
-    // x labels(月份)
-    ctx.textAlign = 'center';
-    for (let m = 0; m <= months; m += 2) {
-      ctx.fillText('M' + m, X(m), H - 8);
-    }
-    // 曲線
-    ctx.strokeStyle = '#34d399';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    pts.forEach((p, i) => {
-      if (i === 0) ctx.moveTo(X(p.m), Y(p.v));
-      else ctx.lineTo(X(p.m), Y(p.v));
-    });
-    ctx.stroke();
-    // 填充漸變
-    const grad = ctx.createLinearGradient(0, padT, 0, H - padB);
-    grad.addColorStop(0, 'rgba(52,211,153,0.18)');
-    grad.addColorStop(1, 'rgba(52,211,153,0)');
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.moveTo(X(0), Y(pts[0].v));
-    pts.forEach(p => ctx.lineTo(X(p.m), Y(p.v)));
-    ctx.lineTo(X(months), Y(vMin));
-    ctx.lineTo(X(0), Y(vMin));
-    ctx.closePath();
-    ctx.fill();
-    // 起點/終點標注
-    ctx.fillStyle = '#34d399';
-    ctx.textAlign = 'left';
-    ctx.fillText('$100k', X(0) + 4, Y(pts[0].v) - 6);
-    ctx.fillText('$380k (+280%)', X(months) - 90, Y(pts[months].v) - 6);
-    // APY 標注
-    ctx.fillStyle = '#e4e4e7';
-    ctx.font = 'bold 11px monospace';
-    ctx.fillText('~280% APY', W / 2 - 30, padT + 4);
+      pts[months] = { m: months, v: end };
+      const vMin = 0, vMax = 440000;
+      const X = (m) => padL + (m / months) * (W - padL - padR);
+      const Y = (val) => padT + (1 - (val - vMin) / (vMax - vMin)) * (H - padT - padB);
+      // 背景網格(水平 + 垂直)
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#6b7488';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'right';
+      for (let i = 0; i <= 4; i++) {
+        const val = vMin + (vMax - vMin) * i / 4;
+        const y = Y(val);
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+        ctx.fillText('$' + (val / 1000).toFixed(0) + 'k', padL - 6, y + 3);
+      }
+      ctx.textAlign = 'center';
+      for (let m = 0; m <= months; m += 2) {
+        const x = X(m);
+        ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, H - padB); ctx.stroke();
+        ctx.fillText('M' + m, x, H - 10);
+      }
+      // 平滑曲線(bezier 插值)
+      const smooth = (arr) => {
+        const out = [];
+        for (let i = 0; i < arr.length - 1; i++) {
+          const p0 = arr[Math.max(0, i - 1)], p1 = arr[i], p2 = arr[i + 1], p3 = arr[Math.min(arr.length - 1, i + 2)];
+          const c1x = p1.m + (p2.m - p0.m) / 6, c1y = p1.v + (p2.v - p0.v) / 6;
+          const c2x = p2.m - (p3.m - p1.m) / 6, c2y = p2.v - (p3.v - p1.v) / 6;
+          out.push({ p1, c1: { m: c1x, v: c1y }, c2: { m: c2x, v: c2y }, p2 });
+        }
+        return out;
+      };
+      const segs = smooth(pts);
+      // 陰影填充
+      const grad = ctx.createLinearGradient(0, padT, 0, H - padB);
+      grad.addColorStop(0, 'rgba(52,211,153,0.20)');
+      grad.addColorStop(1, 'rgba(52,211,153,0.02)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(X(0), Y(pts[0].v));
+      segs.forEach(sg => {
+        ctx.bezierCurveTo(X(sg.c1.m), Y(sg.c1.v), X(sg.c2.m), Y(sg.c2.v), X(sg.p2.m), Y(sg.p2.v));
+      });
+      ctx.lineTo(X(months), Y(vMin));
+      ctx.lineTo(X(0), Y(vMin));
+      ctx.closePath();
+      ctx.fill();
+      // 主曲線
+      ctx.strokeStyle = '#34d399';
+      ctx.lineWidth = 2.2;
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(X(0), Y(pts[0].v));
+      segs.forEach(sg => {
+        ctx.bezierCurveTo(X(sg.c1.m), Y(sg.c1.v), X(sg.c2.m), Y(sg.c2.v), X(sg.p2.m), Y(sg.p2.v));
+      });
+      ctx.stroke();
+      // 數據點(每月)
+      pts.forEach((p, i) => {
+        if (i % 2 === 0 || i === months) {
+          ctx.beginPath();
+          ctx.arc(X(p.m), Y(p.v), 3, 0, Math.PI * 2);
+          ctx.fillStyle = '#34d399';
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(10,12,18,0.8)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+      });
+      // 標注:起點/終點/APY
+      ctx.font = 'bold 11px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#6b7488';
+      ctx.fillText('$100k', X(0) + 6, Y(pts[0].v) - 8);
+      ctx.fillStyle = '#34d399';
+      ctx.fillText('$380k', X(months) - 46, Y(pts[months].v) - 8);
+      ctx.fillStyle = '#e4e4e7';
+      ctx.font = 'bold 12px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('~280% APY', W / 2, padT - 6);
+      // 圖例
+      ctx.font = '10px monospace';
+      ctx.fillStyle = '#6b7488';
+      ctx.textAlign = 'right';
+      ctx.fillText('Simulated equity · $100k → $380k · 12m', W - padR, H - 10);
+    };
+    draw();
+    window.addEventListener('resize', () => draw());
   })();
 
   // ── Language toggle (CN ↔ EN) ──
