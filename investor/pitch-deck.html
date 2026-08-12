@@ -75,6 +75,8 @@
     overflow-y: auto;
   }
   .slide.active { display: flex; }
+  /* v2.0.868-fix:#s1 cover 頁——h1 唔 absolute(保持置中 cover 設計) */
+  #s1 h1 { position: static; margin: 0; }
   /* v2: All slides except first — center content block on screen (slight downward offset) */
   .slide:not(#s1) {
     justify-content: center;
@@ -97,6 +99,8 @@
     flex-direction: column;
     justify-content: center;
     padding-bottom: 6vh;
+    /* v2.0.868-fix(主神):內容由固定標題下開始(避開 absolute 標題) */
+    margin-top: 15vh;
   }
   .slide-bottom-block {
     margin-top: auto;
@@ -111,8 +115,13 @@
     font-size: 0.75rem;
   }
   .slide-tag {
+    /* v2.0.868-fix(主神):TOPIC 固定左上角——唔受內容影響 */
+    position: absolute;
+    top: 4.5vh;
+    left: 8vw;
+    z-index: 3;
     display: block;
-    margin-bottom: 2.5vh;
+    margin: 0;
     background: var(--rainbow);
     background-size: 200% 100%;
     -webkit-background-clip: text;
@@ -123,6 +132,15 @@
     font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.15em;
+  }
+  .slide h2 {
+    /* v2.0.868-fix(主神):說明標題固定左上角(tag 下面) */
+    position: absolute;
+    top: 7vh;
+    left: 8vw;
+    z-index: 3;
+    max-width: 82vw;
+    margin: 0;
   }
   h1 {
     font-size: 3.2rem;
@@ -870,15 +888,17 @@
   <h3 style="margin-top:2rem;" data-en="Why Now">為什麼是現在</h3>
   <p data-en="• Hyperliquid rising → decentralized perps, full API, low fees<br>• LLM cost crash → 5-agent debate from $0.50/cycle to $0.05<br>• AI Agent sector raised $15B+ in 2025 → but very few trading agents in production">• Hyperliquid 崛起 → 去中心化永續合約，API 完整，手續費低<br>• LLM 成本暴跌 → 5 代理辯論從 $0.50/cycle 降至 $0.05<br>• AI Agent 賽道 2025 年融資 $15B+ → 但真正在生產運行的交易 Agent 極少</p>
   <div style="margin-top:2rem; border-top:1px solid var(--border); padding-top:1.2rem;">
-    <div class="ask-box">
-      <div class="ask-amount">$250K-$500K</div>
-      <p style="margin-top:0.8rem; font-size:1rem; color:var(--text);" data-en="Pre-Seed · SAFE · 20% discount · $3.5M cap · 12-month runway">Pre-Seed · SAFE · 20% discount · $3.5M cap · 12 個月跑道</p>
-    </div>
-    <div class="grid-4" style="margin-top:1.2rem; max-width:900px;">
-      <div class="card"><div class="card-title" data-en="Survival">生存</div><div class="card-value" style="font-size:1.4rem;">$84K</div><div class="card-desc" data-en="Founder 12mo">創辦人 12 月</div></div>
-      <div class="card"><div class="card-title" data-en="Mobile App">手機 App</div><div class="card-value" style="font-size:1.4rem;">$50K</div><div class="card-desc" data-en="Dev + infrastructure">開發 + 基礎設施</div></div>
-      <div class="card"><div class="card-title" data-en="Engineer">工程師</div><div class="card-value" style="font-size:1.4rem;">$72K</div><div class="card-desc" data-en="RN engineer 12mo">RN 工程師 12 月</div></div>
-      <div class="card"><div class="card-title" data-en="Other">其他</div><div class="card-value" style="font-size:1.4rem;">$144K</div><div class="card-desc" data-en="Cloud + LLM + legal + marketing">雲端 + LLM + 法律 + 行銷</div></div>
+    <div style="display:flex; gap:2rem; align-items:center; flex-wrap:wrap;">
+      <div class="ask-box" style="flex:1; min-width:280px;">
+        <div class="ask-amount">$250K-$500K</div>
+        <p style="margin-top:0.8rem; font-size:0.95rem; color:var(--text);" data-en="Pre-Seed · SAFE · 20% discount · $3.5M cap · 12-month runway">Pre-Seed · SAFE · 20% discount · $3.5M cap · 12 個月跑道</p>
+      </div>
+      <div class="grid-4" style="flex:2; min-width:420px; margin-top:0;">
+        <div class="card"><div class="card-title" data-en="Survival">生存</div><div class="card-value" style="font-size:1.3rem;">$84K</div><div class="card-desc" data-en="Founder 12mo">創辦人 12 月</div></div>
+        <div class="card"><div class="card-title" data-en="Mobile App">手機 App</div><div class="card-value" style="font-size:1.3rem;">$50K</div><div class="card-desc" data-en="Dev + infrastructure">開發 + 基礎設施</div></div>
+        <div class="card"><div class="card-title" data-en="Engineer">工程師</div><div class="card-value" style="font-size:1.3rem;">$72K</div><div class="card-desc" data-en="RN engineer 12mo">RN 工程師 12 月</div></div>
+        <div class="card"><div class="card-title" data-en="Other">其他</div><div class="card-value" style="font-size:1.3rem;">$144K</div><div class="card-desc" data-en="Cloud + LLM + legal + marketing">雲端 + LLM + 法律 + 行銷</div></div>
+      </div>
     </div>
   </div>
   </div></div>
