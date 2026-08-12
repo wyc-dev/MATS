@@ -75,10 +75,18 @@
     overflow-y: auto;
   }
   .slide.active { display: flex; }
-  /* v2.0.868-fix:#s1 cover 頁——h1 唔 absolute(保持置中 cover 設計) */
-  #s1 h1 { position: static; margin: 0; }
-  /* v2.0.868-fix(主神):s1 標題字體/Icon 大小跟返其他頁面(h2 2.4rem + h2-icon 2rem) */
-  #s1 h1 { font-size: 2.4rem; line-height: 1.2; }
+  /* v2.0.868-fix(主神):s1 標題同其他頁 h2 Pixel Perfect 對齊——
+   *  absolute 左上角(top 7vh, left 8vw——同 .slide h2 完全一致) */
+  #s1 h1 {
+    position: absolute;
+    top: 7vh;
+    left: 8vw;
+    z-index: 3;
+    max-width: 82vw;
+    margin: 0;
+    font-size: 2.4rem;
+    line-height: 1.2;
+  }
   #s1 h1 .h2-icon { width: 2rem; height: 2rem; }
   /* v2: All slides except first — center content block on screen (slight downward offset) */
   .slide:not(#s1) {
