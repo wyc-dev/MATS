@@ -1076,6 +1076,10 @@
     document.querySelectorAll('.slide').forEach(s => s.classList.remove('active'));
     const el = document.getElementById('s' + n);
     if (el) el.classList.add('active');
+    // v2.0.868-fix:slide 顯示時重畫折線圖(隱藏 slide 嘅 canvas clientWidth=0——畫唔到)
+    if (n === 12 && window.__drawPerfChart) {
+      setTimeout(() => window.__drawPerfChart(), 30);
+    }
     current = n;
     const sn = document.getElementById('slideNum');
     if (sn) sn.textContent = String(n).padStart(2, '0') + ' / ' + total;
@@ -1094,24 +1098,26 @@
     const draw = () => {
       const dpr = window.devicePixelRatio || 1;
       const cw = cv.clientWidth || 560;
-      const ch = Math.max(280, Math.round(cw * 0.55));
+      const ch = Math.max(300, Math.round(cw * 0.55));
       cv.width = cw * dpr;
       cv.height = ch * dpr;
       const ctx = cv.getContext('2d');
       ctx.scale(dpr, dpr);
       const W = cw, H = ch;
       const padL = 52, padR = 20, padT = 26, padB = 30;
-      // 模擬 12 個月權益曲線:$100k → $380k(280% APY)——帶波動
+      // 模擬 12 個月權益曲線:$100k → $380k(280% APY)
+      // 「震動住上升」:上升趨勢 + 週期性 sin 波(平滑震動——唔係鋸齒)
       const months = 12, start = 100000, end = 380000;
       const pts = [];
-      let v = start;
       for (let i = 0; i <= months; i++) {
-        if (i > 0) {
-          const target = start * Math.pow(end / start, i / months);
-          const noise = (Math.random() - 0.5) * 0.14 * v;
-          v = Math.max(start * 0.92, target * 0.97 + noise * 0.3 + v * 0.7);
-        }
-        pts.push({ m: i, v });
+        const t = i / months;
+        // 平滑上升趨勢(複合增長)
+        const trend = start * Math.pow(end / start, t);
+        // 週期性震動(sin 波——2.5 個週期——平滑)——幅度隨時間增大(真實感)
+        const wave = Math.sin(t * Math.PI * 5) * 0.05 * trend * (0.5 + t);
+        // 微 noise(平滑——唔鋸齒)
+        const noise = (Math.random() - 0.5) * 0.02 * trend;
+        pts.push({ m: i, v: Math.max(start * 0.95, trend + wave + noise) });
       }
       pts[months] = { m: months, v: end };
       const vMin = 0, vMax = 440000;
@@ -1202,6 +1208,7 @@
     };
     draw();
     window.addEventListener('resize', () => draw());
+    window.__drawPerfChart = draw; // slide 顯示時重畫(隱藏 slide clientWidth=0)
   })();
 
   // ── Language toggle (CN ↔ EN) ──
