@@ -262,14 +262,19 @@
   .layer-list {
     display: grid;
     grid-template-columns: repeat(4, 1fr); /* v2.0.868-fix:33 層——4 列緊湊(一頁睇晒) */
-    gap: 0.4rem;
+    gap: 0.35rem;
     margin-top: 1rem;
     max-width: 1000px;
+    /* v2.0.868-fix(主神):完整 div 容器 */
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.8rem;
   }
   .layer-item {
     background: var(--surface);
-    padding: 0.4rem 0.6rem; /* v2.0.868-fix:33 層緊湊 */
-    font-size: 0.75rem;
+    padding: 0.3rem 0.5rem; /* v2.0.868-fix:33 層緊湊 */
+    font-size: 0.65rem;
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.6rem 0.8rem;
@@ -802,18 +807,18 @@
   <div class="slide-content">
   <p data-en="Every trade outcome feeds back into 21 independent learning systems. The system isn't fixed rules — it's an evolving cognitive engine.">每一筆交易結果，都會餵回 21 個獨立學習系統。系統不是固定規則 — 是一個會進化的認知引擎。</p>
   <div class="layer-list">
-    <div class="layer-item"><span class="layer-num">01</span> OLR 預測</div>
+    <div class="layer-item"><span class="layer-num">01</span> OLR Prediction</div>
     <div class="layer-item"><span class="layer-num">02</span> Shadow Trade</div>
     <div class="layer-item"><span class="layer-num">03</span> First-Passage</div>
     <div class="layer-item"><span class="layer-num">04</span> EM Cycle Chain</div>
-    <div class="layer-item"><span class="layer-num">05</span> GA 遺傳演算法</div>
-    <div class="layer-item"><span class="layer-num">06</span> RIL 強化學習</div>
-    <div class="layer-item"><span class="layer-num">07</span> NA 數值自編碼</div>
+    <div class="layer-item"><span class="layer-num">05</span> GA Genetic Algorithm</div>
+    <div class="layer-item"><span class="layer-num">06</span> RIL Reinforcement</div>
+    <div class="layer-item"><span class="layer-num">07</span> NA Autoencoder</div>
     <div class="layer-item"><span class="layer-num">08</span> AttnRes Embed</div>
     <div class="layer-item"><span class="layer-num">09</span> Combo WR Gate</div>
     <div class="layer-item"><span class="layer-num">10</span> P(win) Discount</div>
     <div class="layer-item"><span class="layer-num">11</span> Close-Context Learning</div>
-    <div class="layer-item"><span class="layer-num">12</span> Plan G Dynamic Threshold</div>
+    <div class="layer-item"><span class="layer-num">12</span> Plan G Dynamic</div>
     <div class="layer-item"><span class="layer-num">13</span> Edge Validation</div>
     <div class="layer-item"><span class="layer-num">14</span> Q-RL Alpha Discovery</div>
     <div class="layer-item"><span class="layer-num">15</span> Component Attribution</div>
