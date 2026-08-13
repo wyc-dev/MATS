@@ -35,6 +35,16 @@
     100% { background-position: 200% 0; }
   }
 
+  /* v2.0.868-fix(主神):Export PDF 時強制 rainbow-text 變實色——
+   * html2canvas 對 background-clip:text 支援差——漸變文字會變色塊 */
+  .pdf-fix {
+    -webkit-background-clip: initial !important;
+    background-clip: initial !important;
+    -webkit-text-fill-color: #ffffff !important;
+    background: none !important;
+    animation: none !important;
+    color: #ffffff !important;
+  }
   .rainbow-text {
     background: var(--rainbow);
     background-size: 200% 100%;
@@ -1270,17 +1280,9 @@
         // 「背景漸變色 + 白色/灰色文字」——截圖前暫時改實色(白色文字)——
         // 截完恢復(html2canvas 對 background-clip:text 支援差)
         const rainbowEls = document.querySelectorAll('.rainbow-text');
-        rainbowEls.forEach(r => {
-          r.style.webkitTextFillColor = '#ffffff';
-          r.style.background = 'none';
-          r.style.animation = 'none';
-        });
+        rainbowEls.forEach(r => r.classList.add('pdf-fix'));
         const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#0a0a0f', logging: false });
-        rainbowEls.forEach(r => {
-          r.style.webkitTextFillColor = '';
-          r.style.background = '';
-          r.style.animation = '';
-        });
+        rainbowEls.forEach(r => r.classList.remove('pdf-fix'));
         const imgData = canvas.toDataURL('image/jpeg', 0.92);
         if (i > 0) pdf.addPage();
         // v2.0.868-fix(主神):每頁先填黑背景(防左右白邊)
