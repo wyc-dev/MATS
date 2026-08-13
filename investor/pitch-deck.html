@@ -263,7 +263,7 @@
     display: grid;
     grid-template-columns: repeat(4, 1fr); /* v2.0.868-fix:33 層——4 列緊湊(一頁睇晒) */
     gap: 0.35rem;
-    margin-top: 1rem;
+    margin: 0; /* v2.0.868-fix(主神):四 div margin 一致——grid gap 處理間距 */
     max-width: 1000px;
     /* v2.0.868-fix(主神):大外框裝住 33 層(整齊)——item 保持透明 */
     background: transparent;
@@ -456,6 +456,7 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 10px;
+    margin: 0; /* v2.0.868-fix(主神):四 div margin 一致 */
     padding: 0.3rem 0.5rem; /* v2.0.868-fix(主神):上下空白取消 */
     font-family: var(--mono);
     font-size: 0.55rem; /* v2.0.868-fix(主神):字體縮細 */
@@ -865,7 +866,7 @@
     <p class="mono" style="font-size:0.65rem; color:var(--text-muted); margin-top:0.4rem; word-break:break-all;" data-en="https://www.linkedin.com/company/mats-trading/">https://www.linkedin.com/company/mats-trading/</p>
     <p style="font-size:0.65rem; color:var(--text-muted); margin-top:0.6rem;" data-en="Daily reports: live P&L, trade-by-trade breakdown, system evolution log.">每日報表：實盤盈虧、逐筆交易拆解、系統演化日誌。</p>
   </div>
-  <div>
+  <div style="margin:0;">
     <canvas id="perfChart" width="560" height="300" style="width:100%; height:auto; background:rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:10px;"></canvas>
   </div>
   <div class="arch-box">
