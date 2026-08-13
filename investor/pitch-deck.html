@@ -268,8 +268,8 @@
     /* v2.0.868-fix(主神):大外框裝住 33 層(整齊)——item 保持透明 */
     background: transparent;
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 0.8rem;
+    border-radius: 12px;
+    padding: 1.5rem; /* v2.0.868-fix(主神):同 card padding 統一 */
   }
   .layer-item {
     /* v2.0.868-fix(主神):外框+背景全透明 + 字體再縮細 */
@@ -1260,10 +1260,7 @@
       ctx.font = 'bold 12px monospace';
       ctx.textAlign = 'center';
       ctx.fillText('~280% APY', W / 2, padT - 6);
-      ctx.font = '10px monospace';
-      ctx.fillStyle = '#6b7488';
-      ctx.textAlign = 'right';
-      ctx.fillText('Simulated equity · $100k → $380k · 12m', W - padR, H - 10);
+      // v2.0.868-fix(主神):圖例移除——同 X 軸座標標示重疊
     };
     draw();
     window.addEventListener('resize', () => draw());
