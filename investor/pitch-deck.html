@@ -267,8 +267,8 @@
     max-width: 1000px;
     /* v2.0.868-fix(主神):大外框裝住 33 層(整齊)——item 保持透明 */
     background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    border: none; /* v2.0.868-fix(主神):border 去除 */
+    border-radius: 0;
     padding: 1.5rem; /* v2.0.868-fix(主神):同 card padding 統一 */
   }
   .layer-item {
@@ -805,6 +805,53 @@
   <h2 data-en="MATS: <span class='accent'>33-Layer</span> Cognitive Evolution Pipeline<br>Every 1 minute a full cognitive exploration cycle"><span class="h2-icon"><svg viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>MATS：<span class="accent">33 層</span>認知演化管線<br>每 1 分鐘 <span class="rainbow-text">一個完整認知探索週期</span></h2>
   <div class="slide-content">
   <div style="display:grid; grid-template-columns:1fr 1fr; grid-auto-rows:1fr; gap:1rem; align-items:stretch;">
+  <div class="arch-box" style="min-height:324px; display:flex; align-items:center; justify-content:center; text-align:center;">
+┌────────────────┐    ┌──────────────┐    ┌───────────────┐
+│  Market Data   │───▶│  14-dim      │───▶│  5 AI Agents  │
+│  (Hyperliquid) │    │  Features    │    │  Debate       │
+└────────────────┘    └──────────────┘    └───────┬───────┘
+                                                  │
+┌───────────────┐    ┌───────────────┐    ┌───────▼───────┐
+│  Execute      │◀───│  33-Layer     │◀───│  HACP         │
+│  BUY/SELL     │    │  Filter       │    │  Consensus    │
+└───────┬───────┘    └───────────────┘    └───────────────┘
+        │
+        ▼
+┌───────────────┐    ┌───────────────┐    ┌───────────────┐
+│  Outcome      │───▶│  Feed 33      │───▶│  Improved     │
+│  (Win/Loss)   │    │  Systems      │    │  Predictions  │
+└───────────────┘    └───────────────┘    └───────────────┘
+  </div>
+  </div>
+  <div class="card">
+    <div class="card-title" style="font-size:0.7rem;" data-en="Daily Live P&L Reports">每日實盤交易報表</div>
+    <p style="font-size:0.7rem; line-height:1.5; margin-top:0.5rem;" data-en="Every closed trade is published — wins AND losses. Full transparency: entry/exit, P&L, MAE/MFE, thesis. Follow our journey on LinkedIn.">每一筆平倉交易都公開 — 賺蝕都透明：入場/離場、盈虧、MAE/MFE、交易邏輯。喺 LinkedIn 追蹤我哋嘅旅程。</p>
+    <p style="margin-top:0.8rem;">
+      <a href="https://www.linkedin.com/company/mats-trading/" target="_blank" rel="noopener" style="display:inline-flex; align-items:center; gap:0.5rem; padding:0.4rem 0.9rem; border:1px solid rgba(255,255,255,0.15); border-radius:8px; text-decoration:none; font-size:0.75rem;">
+        <svg viewBox="0 0 24 24" width="16" height="16">
+          <defs>
+            <linearGradient id="liGrad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="24" y2="0">
+              <stop offset="0%" stop-color="#ffb3cf"/>
+              <stop offset="16%" stop-color="#ffd9b3"/>
+              <stop offset="33%" stop-color="#fff0b3"/>
+              <stop offset="50%" stop-color="#b3ffcc"/>
+              <stop offset="66%" stop-color="#b3e0ff"/>
+              <stop offset="83%" stop-color="#d4b3ff"/>
+              <stop offset="100%" stop-color="#ffb3cf"/>
+              <animate attributeName="x1" values="0;24;0" dur="4s" repeatCount="indefinite"/>
+              <animate attributeName="x2" values="24;48;24" dur="4s" repeatCount="indefinite"/>
+            </linearGradient>
+          </defs>
+          <path fill="url(#liGrad)" d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+        <span class="rainbow-text" data-en="MATS Trading on LinkedIn">MATS Trading on LinkedIn</span>
+      </a>
+    </p>
+    <p class="mono" style="font-size:0.65rem; color:var(--text-muted); margin-top:0.4rem; word-break:break-all;" data-en="https://www.linkedin.com/company/mats-trading/">https://www.linkedin.com/company/mats-trading/</p>
+    <p style="font-size:0.65rem; color:var(--text-muted); margin-top:0.6rem;" data-en="Daily reports: live P&L, trade-by-trade breakdown, system evolution log.">每日報表：實盤盈虧、逐筆交易拆解、系統演化日誌。</p>
+  </div>
+  <div style="margin:0; padding:1.5rem; border:1px solid var(--border); border-radius:12px; background:var(--surface); min-height:324px; display:flex; align-items:center;">
+    <canvas id="perfChart" width="560" height="300" style="width:100%; height:auto; background:rgba(255,255,255,0.02); border-radius:10px;"></canvas>
+  </div>
   <div class="layer-list">
     <div class="layer-item"><span class="layer-num">01</span> OLR Prediction</div>
     <div class="layer-item"><span class="layer-num">02</span> Shadow Trade</div>
@@ -839,53 +886,6 @@
     <div class="layer-item"><span class="layer-num">31</span> HACP Gate</div>
     <div class="layer-item"><span class="layer-num">32</span> Decision Audit</div>
     <div class="layer-item"><span class="layer-num">33</span> Exec Lens</div>
-  </div>
-  <div class="card">
-    <div class="card-title" style="font-size:0.7rem;" data-en="Daily Live P&L Reports">每日實盤交易報表</div>
-    <p style="font-size:0.7rem; line-height:1.5; margin-top:0.5rem;" data-en="Every closed trade is published — wins AND losses. Full transparency: entry/exit, P&L, MAE/MFE, thesis. Follow our journey on LinkedIn.">每一筆平倉交易都公開 — 賺蝕都透明：入場/離場、盈虧、MAE/MFE、交易邏輯。喺 LinkedIn 追蹤我哋嘅旅程。</p>
-    <p style="margin-top:0.8rem;">
-      <a href="https://www.linkedin.com/company/mats-trading/" target="_blank" rel="noopener" style="display:inline-flex; align-items:center; gap:0.5rem; padding:0.4rem 0.9rem; border:1px solid rgba(255,255,255,0.15); border-radius:8px; text-decoration:none; font-size:0.75rem;">
-        <svg viewBox="0 0 24 24" width="16" height="16">
-          <defs>
-            <linearGradient id="liGrad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="24" y2="0">
-              <stop offset="0%" stop-color="#ffb3cf"/>
-              <stop offset="16%" stop-color="#ffd9b3"/>
-              <stop offset="33%" stop-color="#fff0b3"/>
-              <stop offset="50%" stop-color="#b3ffcc"/>
-              <stop offset="66%" stop-color="#b3e0ff"/>
-              <stop offset="83%" stop-color="#d4b3ff"/>
-              <stop offset="100%" stop-color="#ffb3cf"/>
-              <animate attributeName="x1" values="0;24;0" dur="4s" repeatCount="indefinite"/>
-              <animate attributeName="x2" values="24;48;24" dur="4s" repeatCount="indefinite"/>
-            </linearGradient>
-          </defs>
-          <path fill="url(#liGrad)" d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
-        <span class="rainbow-text" data-en="MATS Trading on LinkedIn">MATS Trading on LinkedIn</span>
-      </a>
-    </p>
-    <p class="mono" style="font-size:0.65rem; color:var(--text-muted); margin-top:0.4rem; word-break:break-all;" data-en="https://www.linkedin.com/company/mats-trading/">https://www.linkedin.com/company/mats-trading/</p>
-    <p style="font-size:0.65rem; color:var(--text-muted); margin-top:0.6rem;" data-en="Daily reports: live P&L, trade-by-trade breakdown, system evolution log.">每日報表：實盤盈虧、逐筆交易拆解、系統演化日誌。</p>
-  </div>
-  <div style="margin:0; padding:1.5rem; border:1px solid var(--border); border-radius:12px; background:var(--surface); min-height:324px; display:flex; align-items:center;">
-    <canvas id="perfChart" width="560" height="300" style="width:100%; height:auto; background:rgba(255,255,255,0.02); border-radius:10px;"></canvas>
-  </div>
-  <div class="arch-box" style="min-height:324px; display:flex; align-items:center; justify-content:center; text-align:center;">
-┌────────────────┐    ┌──────────────┐    ┌───────────────┐
-│  Market Data   │───▶│  14-dim      │───▶│  5 AI Agents  │
-│  (Hyperliquid) │    │  Features    │    │  Debate       │
-└────────────────┘    └──────────────┘    └───────┬───────┘
-                                                  │
-┌───────────────┐    ┌───────────────┐    ┌───────▼───────┐
-│  Execute      │◀───│  33-Layer     │◀───│  HACP         │
-│  BUY/SELL     │    │  Filter       │    │  Consensus    │
-└───────┬───────┘    └───────────────┘    └───────────────┘
-        │
-        ▼
-┌───────────────┐    ┌───────────────┐    ┌───────────────┐
-│  Outcome      │───▶│  Feed 33      │───▶│  Improved     │
-│  (Win/Loss)   │    │  Systems      │    │  Predictions  │
-└───────────────┘    └───────────────┘    └───────────────┘
-  </div>
   </div>
   <p style="margin-top:1.2rem; font-size:0.9rem; text-align:center;" data-en="→ Every trade outcome feeds all 33 learning systems → next cycle's predictions are sharper.">→ 每筆交易的結果都反哺所有 33 個學習系統 → 下一個週期的預測更準。</p>
   <p style="font-size:0.9rem; color:var(--text-muted); text-align:center;" data-en="Simulated equity curve — $100k → $380k over 12 months (~280% APY). Not investment advice. Live P&L reports published daily.">模擬權益曲線 — 12 個月 $100k → $380k（年化 ~280%）。非投資建議。每日更新實盤交易報表。</p>
