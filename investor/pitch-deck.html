@@ -1386,7 +1386,8 @@
         if (logo) el.appendChild(logo);
         // v2.0.868-fix(主神):背景層用外部檔案——Export PDF 時運行時 fetch → data URI
         // (同源 http://localhost:8000——唔 tainted——背景保留喺 PDF)
-        // fetch 失敗(file:// 開)——保留原背景(唔隱藏——背景照常顯示)
+        // fetch 失敗(file:// 開)——隱藏背景層(避免 Tainted canvas——PDF 冇背景但唔 error)
+        // 用 http://localhost:8000 開——fetch 同源——背景保留喺 PDF
         const bgLayers = document.querySelectorAll('.slide-bg-layer');
         const bgStates = [];
         for (const b of bgLayers) {
@@ -1400,8 +1401,8 @@
                 const reader = new FileReader();
                 const dataUri = await new Promise((res, rej) => { reader.onload = () => res(reader.result); reader.onerror = rej; reader.readAsDataURL(blob); });
                 b.style.backgroundImage = `url('${dataUri}')`;
-              }
-            } catch { /* file:// 協議 fetch 失敗——保留原背景 */ }
+              } else { b.style.display = 'none'; }
+            } catch { b.style.display = 'none'; }
           }
         }
         // v2.0.868-fix(主神):QR code 只喺 Export PDF 時顯示——截圖前顯示——截完隱藏
