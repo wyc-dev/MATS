@@ -1338,12 +1338,31 @@
         const logo = document.querySelector('.brand-logo-wrap');
         const logoParent = logo ? logo.parentNode : null;
         if (logo) el.appendChild(logo);
-        // v2.0.868-fix(主神):背景層用外部檔案(file:// 協議污染 canvas——tainted)
-        // 截圖前隱藏所有背景層(display:none)——截完恢復
+        // v2.0.868-fix(主神):背景層用外部檔案——Export PDF 時運行時 fetch → data URI
+        // (同源 http://localhost:3456——唔 tainted——背景保留喺 PDF)
+        // fetch 失敗(file:// 開)——隱藏背景層(PDF 冇背景——頁面正常)
         const bgLayers = document.querySelectorAll('.slide-bg-layer');
-        bgLayers.forEach(b => b.style.display = 'none');
+        const bgStates = [];
+        for (const b of bgLayers) {
+          const url = b.style.backgroundImage.match(/url\(['"]?([^'")]+)['"]?\)/);
+          bgStates.push({ el: b, url: url ? url[1] : null });
+          if (url) {
+            try {
+              const resp = await fetch(url[1]);
+              if (resp.ok) {
+                const blob = await resp.blob();
+                const reader = new FileReader();
+                const dataUri = await new Promise((res, rej) => { reader.onload = () => res(reader.result); reader.onerror = rej; reader.readAsDataURL(blob); });
+                b.style.backgroundImage = `url('${dataUri}')`;
+              } else { b.style.display = 'none'; }
+            } catch { b.style.display = 'none'; }
+          }
+        }
         const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#0a0a0f', logging: false });
-        bgLayers.forEach(b => b.style.display = '');
+        for (const st of bgStates) {
+          st.el.style.display = '';
+          if (st.url) st.el.style.backgroundImage = `url('${st.url}')`;
+        }
         if (logo && logoParent) logoParent.appendChild(logo);
         savedGrad.forEach(sg => {
           sg.elm.style.removeProperty('background-image');
