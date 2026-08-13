@@ -1266,9 +1266,26 @@
         document.querySelectorAll('.slide').forEach(s => s.classList.remove('active'));
         el.classList.add('active');
         await new Promise(r => setTimeout(r, 60)); // 等渲染
+        // v2.0.868-fix(主神):rainbow-text 漸變文字喺 html2canvas 度會變
+        // 「背景漸變色 + 白色/灰色文字」——截圖前暫時改實色(白色文字)——
+        // 截完恢復(html2canvas 對 background-clip:text 支援差)
+        const rainbowEls = document.querySelectorAll('.rainbow-text');
+        rainbowEls.forEach(r => {
+          r.style.webkitTextFillColor = '#ffffff';
+          r.style.background = 'none';
+          r.style.animation = 'none';
+        });
         const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#0a0a0f', logging: false });
+        rainbowEls.forEach(r => {
+          r.style.webkitTextFillColor = '';
+          r.style.background = '';
+          r.style.animation = '';
+        });
         const imgData = canvas.toDataURL('image/jpeg', 0.92);
         if (i > 0) pdf.addPage();
+        // v2.0.868-fix(主神):每頁先填黑背景(防左右白邊)
+        pdf.setFillColor(10, 10, 15);
+        pdf.rect(0, 0, pw, ph, 'F');
         // 保持比例——填滿 A4 landscape
         const ratio = canvas.height / canvas.width;
         const imgH = pw * ratio;
