@@ -1279,10 +1279,26 @@
         // v2.0.868-fix(主神):rainbow-text 漸變文字喺 html2canvas 度會變
         // 「背景漸變色 + 白色/灰色文字」——截圖前暫時改實色(白色文字)——
         // 截完恢復(html2canvas 對 background-clip:text 支援差)
+        // v2.0.868-fix(主神):setProperty + important——inline 強制覆蓋
+        // (html2canvas clone 文檔時讀 inline style——最可靠——class 可能唔夠)
         const rainbowEls = document.querySelectorAll('.rainbow-text');
-        rainbowEls.forEach(r => r.classList.add('pdf-fix'));
+        rainbowEls.forEach(r => {
+          r.style.setProperty('-webkit-background-clip', 'initial', 'important');
+          r.style.setProperty('background-clip', 'initial', 'important');
+          r.style.setProperty('-webkit-text-fill-color', '#ffffff', 'important');
+          r.style.setProperty('background', 'none', 'important');
+          r.style.setProperty('animation', 'none', 'important');
+          r.style.setProperty('color', '#ffffff', 'important');
+        });
         const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#0a0a0f', logging: false });
-        rainbowEls.forEach(r => r.classList.remove('pdf-fix'));
+        rainbowEls.forEach(r => {
+          r.style.removeProperty('-webkit-background-clip');
+          r.style.removeProperty('background-clip');
+          r.style.removeProperty('-webkit-text-fill-color');
+          r.style.removeProperty('background');
+          r.style.removeProperty('animation');
+          r.style.removeProperty('color');
+        });
         const imgData = canvas.toDataURL('image/jpeg', 0.92);
         if (i > 0) pdf.addPage();
         // v2.0.868-fix(主神):每頁先填黑背景(防左右白邊)
