@@ -110,6 +110,8 @@
   .slide:not(#s1) .slide-content {
     flex: 0 1 auto;     /* shrink to content size so parent centering takes effect */
   }
+  .qr-item { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .qr-item canvas, .qr-item img { border-radius: 6px; border: 1px solid rgba(255,255,255,0.15); }
   .nav-slide-num {
     color: var(--text-muted);
     font-family: var(--mono);
@@ -778,7 +780,7 @@
     <div class="qr-item" title="https://mats.trading/"><div class="qr-web"></div><span style="display:flex; align-items:center; justify-content:center; color:#6b7280; line-height:1;"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg></span></div>
   </div>
   <!-- v2.0.868-fix(主神):靜態截圖背景(唔用 iframe——避免 hang)——opacity 0.3 + 滾動下方避開 header -->
-    <div class="slide-bg-layer" style="position:absolute; top:0; left:0; width:100%; height:100%; background-image:url('ui-bg-crop.png'); background-size:cover; background-position:center; opacity:0.33; z-index:0; pointer-events:none;
+    <div class="slide-bg-layer" style="position:absolute; top:0; left:0; width:100%; height:100%; background-image:url('ui-bg-crop.png'); background-size:cover; background-position:center; opacity:0.5; z-index:0; pointer-events:none;
     -webkit-mask-image:linear-gradient(to right, transparent 0%, black 100%);
     mask-image:linear-gradient(to right, transparent 0%, black 100%);"></div>
   <span class="slide-tag">MATS · Multi-Agent Trading System</span>
@@ -882,7 +884,7 @@
 
 <div class="slide" id="s3">
   <span class="slide-tag">Solution & Performance</span>
-  <div class="slide-bg-layer" style="position:absolute; top:0; left:0; width:100%; height:100%; background-image:url('solution-bg.jpg'); background-size:cover; background-position:center; opacity:0.2; z-index:0; pointer-events:none;"></div>
+  <div class="slide-bg-layer" style="position:absolute; top:0; left:0; width:100%; height:100%; background-image:url('solution-bg.jpg'); background-size:cover; background-position:center; opacity:0.35; z-index:0; pointer-events:none;"></div>
   <h2 data-en="MATS: <span class='accent'>33-Layer</span> Cognitive Evolution Pipeline<br>Every 1 minute a full cognitive exploration cycle"><span class="h2-icon"><svg viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>MATS：<span class="accent">33 層</span>認知演化管線<br>每 1 分鐘 <span class="rainbow-text">一個完整認知探索週期</span></h2>
   <div class="slide-content">
   <div style="display:grid; grid-template-columns:1fr 1fr; grid-auto-rows:1fr; gap:1rem; align-items:stretch;">
@@ -1384,7 +1386,7 @@
         if (logo) el.appendChild(logo);
         // v2.0.868-fix(主神):背景層用外部檔案——Export PDF 時運行時 fetch → data URI
         // (同源 http://localhost:8000——唔 tainted——背景保留喺 PDF)
-        // fetch 失敗(file:// 開)——隱藏背景層(PDF 冇背景——頁面正常)
+        // fetch 失敗(file:// 開)——保留原背景(唔隱藏——背景照常顯示)
         const bgLayers = document.querySelectorAll('.slide-bg-layer');
         const bgStates = [];
         for (const b of bgLayers) {
@@ -1398,8 +1400,8 @@
                 const reader = new FileReader();
                 const dataUri = await new Promise((res, rej) => { reader.onload = () => res(reader.result); reader.onerror = rej; reader.readAsDataURL(blob); });
                 b.style.backgroundImage = `url('${dataUri}')`;
-              } else { b.style.display = 'none'; }
-            } catch { b.style.display = 'none'; }
+              }
+            } catch { /* file:// 協議 fetch 失敗——保留原背景 */ }
           }
         }
         // v2.0.868-fix(主神):QR code 只喺 Export PDF 時顯示——截圖前顯示——截完隱藏
