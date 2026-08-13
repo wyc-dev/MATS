@@ -276,7 +276,12 @@ function renderSummary(d) {
 
 function getPrincipal() {
   const p = data[period] || {};
-  return p.principal ? (mode === 'paper' ? p.principal.paper : p.principal.real) : 0;
+  const balance = p.principal ? (mode === 'paper' ? p.principal.paper : p.principal.real) : 0;
+  // v2.0.868-fix(主神):% 應該係 Profit/(Balance−Profit)= 利潤/初始本金——
+  // 之前用 Profit/Balance(principal 係當前餘額——包含利潤——回報被低估)
+  const total = p[mode]?.total ?? 0;
+  const initial = balance - total; // 初始本金 = Balance − Profit
+  return initial > 0 ? initial : 0;
 }
 
 function fmtPnl(v) {
