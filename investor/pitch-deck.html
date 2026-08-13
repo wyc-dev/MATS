@@ -770,7 +770,7 @@
 
 <div class="slide active" id="s1">
   <!-- v2.0.868-fix(主神):靜態截圖背景(唔用 iframe——避免 hang)——opacity 0.3 + 滾動下方避開 header -->
-  <div style="position:absolute; top:0; left:0; width:100%; height:100%; background-image:url('ui-bg-crop.png'); background-size:cover; background-position:center; opacity:0.33; z-index:0; pointer-events:none;
+  <div class="slide-bg-layer" style="position:absolute; top:0; left:0; width:100%; height:100%; background-image:url('ui-bg-crop.png'); background-size:cover; background-position:center; opacity:0.33; z-index:0; pointer-events:none;
     -webkit-mask-image:linear-gradient(to right, transparent 0%, black 100%);
     mask-image:linear-gradient(to right, transparent 0%, black 100%);"></div>
   <span class="slide-tag">MATS · Multi-Agent Trading System</span>
@@ -1330,7 +1330,13 @@
         const logo = document.querySelector('.brand-logo-wrap');
         const logoParent = logo ? logo.parentNode : null;
         if (logo) el.appendChild(logo);
+        // v2.0.868-fix(主神):Tainted canvas——s1 背景圖片(file:// 協議)污染 canvas——
+        // toDataURL 失敗。截圖前暫時隱藏背景層(display:none)——截完恢復。
+        // (背景圖片唔影響 PDF 內容——cover 用純黑背景)
+        const bgLayer = el.querySelector('.slide-bg-layer');
+        if (bgLayer) bgLayer.style.display = 'none';
         const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#0a0a0f', logging: false });
+        if (bgLayer) bgLayer.style.display = '';
         if (logo && logoParent) logoParent.appendChild(logo);
         savedGrad.forEach(sg => {
           sg.elm.style.removeProperty('background-image');
