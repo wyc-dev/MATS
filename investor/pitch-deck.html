@@ -1279,25 +1279,31 @@
         // v2.0.868-fix(主神):rainbow-text 漸變文字喺 html2canvas 度會變
         // 「背景漸變色 + 白色/灰色文字」——截圖前暫時改實色(白色文字)——
         // 截完恢復(html2canvas 對 background-clip:text 支援差)
-        // v2.0.868-fix(主神):setProperty + important——inline 強制覆蓋
-        // (html2canvas clone 文檔時讀 inline style——最可靠——class 可能唔夠)
-        const rainbowEls = document.querySelectorAll('.rainbow-text');
-        rainbowEls.forEach(r => {
-          r.style.setProperty('-webkit-background-clip', 'initial', 'important');
-          r.style.setProperty('background-clip', 'initial', 'important');
-          r.style.setProperty('-webkit-text-fill-color', '#ffffff', 'important');
-          r.style.setProperty('background', 'none', 'important');
-          r.style.setProperty('animation', 'none', 'important');
-          r.style.setProperty('color', '#ffffff', 'important');
+        // v2.0.868-fix(主神):全元素掃描——移除所有漸變背景元素
+        // (rainbow-text/h2-icon/飛輪邊框等——html2canvas 對 background-clip:text
+        // 同 linear-gradient 背景支援差——會 render 成彩色 high-light)
+        const allEls = document.querySelectorAll('*');
+        const savedGrad = [];
+        allEls.forEach(elm => {
+          const cs = getComputedStyle(elm);
+          const bgImg = cs.backgroundImage;
+          const clip = cs.webkitBackgroundClip || cs.backgroundClip;
+          if ((bgImg && bgImg.includes('linear-gradient')) || clip === 'text') {
+            savedGrad.push({ elm, bgImg, clip });
+            elm.style.setProperty('background-image', 'none', 'important');
+            elm.style.setProperty('-webkit-background-clip', 'initial', 'important');
+            elm.style.setProperty('background-clip', 'initial', 'important');
+            elm.style.setProperty('-webkit-text-fill-color', '#ffffff', 'important');
+            elm.style.setProperty('animation', 'none', 'important');
+          }
         });
         const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#0a0a0f', logging: false });
-        rainbowEls.forEach(r => {
-          r.style.removeProperty('-webkit-background-clip');
-          r.style.removeProperty('background-clip');
-          r.style.removeProperty('-webkit-text-fill-color');
-          r.style.removeProperty('background');
-          r.style.removeProperty('animation');
-          r.style.removeProperty('color');
+        savedGrad.forEach(sg => {
+          sg.elm.style.removeProperty('background-image');
+          sg.elm.style.removeProperty('-webkit-background-clip');
+          sg.elm.style.removeProperty('background-clip');
+          sg.elm.style.removeProperty('-webkit-text-fill-color');
+          sg.elm.style.removeProperty('animation');
         });
         const imgData = canvas.toDataURL('image/jpeg', 0.92);
         if (i > 0) pdf.addPage();
