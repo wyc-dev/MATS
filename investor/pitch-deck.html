@@ -1297,7 +1297,13 @@
             elm.style.setProperty('animation', 'none', 'important');
           }
         });
+        // v2.0.868-fix(主神):Logo 喺 slide 外(固定 overlay)——html2canvas 只截 slide——
+        // 截圖前暫時移入 slide(截完移返 body)
+        const logo = document.querySelector('.brand-logo-wrap');
+        const logoParent = logo ? logo.parentNode : null;
+        if (logo) el.appendChild(logo);
         const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#0a0a0f', logging: false });
+        if (logo && logoParent) logoParent.appendChild(logo);
         savedGrad.forEach(sg => {
           sg.elm.style.removeProperty('background-image');
           sg.elm.style.removeProperty('-webkit-background-clip');
