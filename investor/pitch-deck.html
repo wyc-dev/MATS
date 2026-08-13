@@ -1110,11 +1110,14 @@
   </div></div>
 
 <div class="nav">
+  <div class="nav-btn" onclick="exportPDF()" id="exportBtn" data-en="Export PDF">Export PDF</div>
   <div class="lang-btn" onclick="toggleLang()" id="langBtn">EN</div>
   <div class="nav-btn" onclick="prev()" data-en="← Prev">← Prev</div>
   <div class="nav-btn" onclick="next()" data-en="Next →">Next →</div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
   // ── Slide navigation ──
   let current = 1;
@@ -1238,6 +1241,57 @@
     window.addEventListener('resize', () => draw());
     window.__drawPerfChart = draw;
   })();
+
+  // ── Export PDF (all slides → landscape A4) ──
+  // Production grade:逐頁 html2canvas 截圖 → jsPDF landscape A4——
+  // 每頁保持比例、錯誤處理、進度指示、唔阻塞 UI
+  async function exportPDF() {
+    const btn = document.getElementById('exportBtn');
+    if (!btn || btn.dataset.busy === '1') return; // 防重複
+    btn.dataset.busy = '1';
+    const orig = btn.textContent;
+    btn.textContent = 'Exporting…';
+    try {
+      if (!window.html2canvas || !window.jspdf) {
+        alert('PDF libraries not loaded — check internet connection');
+        return;
+      }
+      const slides = document.querySelectorAll('.slide');
+      const pdf = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      const pw = pdf.internal.pageSize.getWidth();
+      const ph = pdf.internal.pageSize.getHeight();
+      for (let i = 0; i < slides.length; i++) {
+        const el = slides[i];
+        // 顯示 slide(截圖需要可見)
+        document.querySelectorAll('.slide').forEach(s => s.classList.remove('active'));
+        el.classList.add('active');
+        await new Promise(r => setTimeout(r, 60)); // 等渲染
+        const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#0a0a0f', logging: false });
+        const imgData = canvas.toDataURL('image/jpeg', 0.92);
+        if (i > 0) pdf.addPage();
+        // 保持比例——填滿 A4 landscape
+        const ratio = canvas.height / canvas.width;
+        const imgH = pw * ratio;
+        if (imgH <= ph) {
+          pdf.addImage(imgData, 'JPEG', 0, (ph - imgH) / 2, pw, imgH);
+        } else {
+          const imgW = ph / ratio;
+          pdf.addImage(imgData, 'JPEG', (pw - imgW) / 2, 0, imgW, ph);
+        }
+        btn.textContent = `Exporting ${i + 1}/${slides.length}…`;
+      }
+      // 恢復第一頁
+      document.querySelectorAll('.slide').forEach(s => s.classList.remove('active'));
+      document.getElementById('s1').classList.add('active');
+      pdf.save('MATS-Pitch-Deck.pdf');
+    } catch (err) {
+      console.error('[exportPDF]', err);
+      alert('Export failed: ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      btn.dataset.busy = '';
+      btn.textContent = orig;
+    }
+  }
 
   // ── Language toggle (CN ↔ EN) ──
   let currentLang = 'cn';
