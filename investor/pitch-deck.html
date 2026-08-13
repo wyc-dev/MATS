@@ -1300,7 +1300,24 @@
       // 恢復第一頁
       document.querySelectorAll('.slide').forEach(s => s.classList.remove('active'));
       document.getElementById('s1').classList.add('active');
-      pdf.save('MATS-Pitch-Deck.pdf');
+      // v2.0.868-fix(主神):File System Access API——可以覆蓋舊文件(唔加 (1))
+      // fallback:pdf.save(瀏覽器決定——可能另存)
+      if (window.showSaveFilePicker) {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: 'MATS-Pitch-Deck.pdf',
+            types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }],
+          });
+          const writable = await handle.createWritable();
+          await writable.write(pdf.output('blob'));
+          await writable.close();
+        } catch (err) {
+          if (err && err.name === 'AbortError') return; // 用戶取消
+          pdf.save('MATS-Pitch-Deck.pdf'); // fallback
+        }
+      } else {
+        pdf.save('MATS-Pitch-Deck.pdf');
+      }
     } catch (err) {
       console.error('[exportPDF]', err);
       alert('Export failed: ' + (err instanceof Error ? err.message : String(err)));
