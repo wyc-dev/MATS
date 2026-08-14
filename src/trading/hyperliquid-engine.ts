@@ -607,6 +607,27 @@ export class HyperliquidEngine implements RealTradingEngine {
         }
       }
 
+      // v2.0.869-P2(主神 TG entry=cur 調查):用 allMids 批量更新 currentPrice——
+      // 舊邏輯 currentPrice = entryPx(冇更新)——TG 顯示 entry=cur 但 PnL≠0(矛盾)
+      // 更深層:SL/TP check 用 entryPx——SL/TP 永遠唔觸發——蝕死!
+      // allMids 一次過攞所有 symbol 嘅 mid price——批量(慳 API call)
+      try {
+        const midsRes = await hlRateLimitedFetch(HL_INFO_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'allMids' }),
+        });
+        if (midsRes.ok) {
+          const mids = await midsRes.json() as Record<string, string>;
+          for (const pos of allPositions) {
+            const mid = parseFloat(mids[pos.symbol] ?? '');
+            if (Number.isFinite(mid) && mid > 0) {
+              pos.currentPrice = mid;
+            }
+          }
+        }
+      } catch { /* 非致命——用 entryPx fallback */ }
+
       // v2.0.79: Only cache if ALL DEXes succeeded — a partial result (missing
       // xyz DEX) would be cached and prevent the next caller from getting full data.
       if (dexFetchFailures === 0) {
