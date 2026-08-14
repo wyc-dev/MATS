@@ -50,12 +50,15 @@ interface ProfitabilityState {
   savedAt: number;
   holdTime: Record<string, Record<string, number[]>>;  // `${sym}|${side}` → bucket → pnlPcts
   bias: Record<string, number[]>;                      // `${sym}|${side}` → 全部 pnlPcts
+  /** v2.0.869(主神 SKHX MAE=0 調查):時間加權蝕錢率——(pnl, ts) 配對——
+   *  短炒窗口 τ=6h——最近蝕錢權重高——舊蝕錢衰減(唔誤傷「市場已變」) */
+  recentPnl: Record<string, Array<{ pnl: number; ts: number }>>;
   fees: { totalFees: number; trades: number };
   backfillDone: boolean;
 }
 
 function emptyState(): ProfitabilityState {
-  return { version: 1, savedAt: 0, holdTime: {}, bias: {}, fees: { totalFees: 0, trades: 0 }, backfillDone: false };
+  return { version: 1, savedAt: 0, holdTime: {}, bias: {}, recentPnl: {}, fees: { totalFees: 0, trades: 0 }, backfillDone: false };
 }
 
 function bucketFor(holdMin: number): Bucket {
@@ -88,7 +91,7 @@ export class ProfitabilityAnalyzer {
   // ── 記錄(close 事件)────────────────────────────────────────────────
 
   /** recordTrade:close 事件累積——holdMin + pnlPct(已含費) */
-  recordTrade(symbol: string, side: 'buy' | 'sell', holdMin: number, pnlPct: number, feeUsd?: number): void {
+  recordTrade(symbol: string, side: 'buy' | 'sell', holdMin: number, pnlPct: number, feeUsd?: number, closedAt?: number): void {
     try {
       // v2.0.868-attack6:symbol 控制字符 sanitize(換行/CR——防 prompt 注入 advice)
       const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
@@ -104,6 +107,12 @@ export class ProfitabilityAnalyzer {
       // direction bias(全部)
       this.state.bias[key] ??= [];
       this.state.bias[key]!.push(pnl);
+      // v2.0.869(主神 SKHX MAE=0 調查):時間加權蝕錢率——記錄 (pnl, ts) 配對
+      this.state.recentPnl[key] ??= [];
+      this.state.recentPnl[key]!.push({ pnl, ts: Number.isFinite(closedAt) ? (closedAt as number) : Date.now() });
+      if (this.state.recentPnl[key]!.length > 20) {
+        this.state.recentPnl[key] = this.state.recentPnl[key]!.slice(-20);
+      }
       // fee
       const fee = Number.isFinite(feeUsd) ? (feeUsd as number) : 0;
       if (fee > 0) {
@@ -113,6 +122,39 @@ export class ProfitabilityAnalyzer {
       this.capMemory();
       this.markDirty();
     } catch { /* 非致命——分析器唔影響交易 */ }
+  }
+
+  /**
+   * v2.0.869(主神 SKHX MAE=0 調查):時間加權蝕錢率乘數(per symbol×side——τ=6h)
+   *  weight = exp(-Δt/6h)——最近蝕錢權重高——舊蝕錢衰減
+   *  加權蝕錢率 > 0.9 → ×0.45 / > 0.8 → ×0.65 / > 0.6 → ×0.85
+   *  樣本太少(<3)/冇數據 → 1.0(唔干擾)
+   */
+  getLosingMultiplier(symbol: string, side: 'buy' | 'sell'): number {
+    try {
+      const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
+      const rawSide = String(side ?? '').toLowerCase();
+      const normSide: 'buy' | 'sell' = (rawSide === 'sell' || rawSide === 'short') ? 'sell' : 'buy';
+      const key = `${sym}|${normSide}`;
+      const arr = this.state.recentPnl[key];
+      if (!arr || arr.length < 3) return 1.0;
+      const now = Date.now();
+      const TAU_MS = 6 * 3600 * 1000; // τ=6h(短炒窗口)
+      let lossWeight = 0;
+      let totalWeight = 0;
+      for (const r of arr) {
+        const dt = Math.max(0, now - (Number.isFinite(r.ts) ? r.ts : now));
+        const w = Math.exp(-dt / TAU_MS);
+        totalWeight += w;
+        if (r.pnl < 0) lossWeight += w;
+      }
+      if (totalWeight <= 0) return 1.0;
+      const lossRate = lossWeight / totalWeight;
+      if (lossRate > 0.9) return 0.45;
+      if (lossRate > 0.8) return 0.65;
+      if (lossRate > 0.6) return 0.85;
+      return 1.0;
+    } catch { return 1.0; }
   }
 
   /** v2.0.868-attack:memory cap——防無限增長(rolling window 500 per cell) */

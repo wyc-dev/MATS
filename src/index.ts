@@ -3858,6 +3858,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               holdMin,
               safeNum((trade as { pnlPct?: number }).pnlPct, 0),
               feeUsd,
+              safeNum((trade as { closedAt?: number }).closedAt, Date.now()),
             );
           }
         } catch { /* non-fatal */ }
@@ -10737,6 +10738,19 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
                   const pat = this.entryQuality.getMaePattern(pwinSym, gateAction as 'buy' | 'sell');
                   log.info(`🔴 [mae-pattern] ${gateAction.toUpperCase()} ${pwinSym}: MAE 模式=${pat?.pattern ?? '?'} (ratio=${pat?.ratio?.toFixed(2) ?? '?'}, n=${pat?.n ?? 0})——入場後逆向多過順向 → conviction ×${maeMult} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
                   activeAuditGates.push({ gate: 'mae-pattern', passed: true, reason: `MAE pattern ${pat?.pattern ?? '?'} (ratio ${pat?.ratio?.toFixed(2) ?? '?'}, n=${pat?.n ?? 0}) → ×${maeMult} (soft)` });
+                }
+              }
+              // v2.0.869(主神 SKHX MAE=0 調查):宏觀 gate——時間加權蝕錢率(τ=6h)
+              // per symbol×side——最近蝕錢權重高——舊蝕錢衰減
+              // 加權蝕錢率 > 0.9 → ×0.45 / > 0.8 → ×0.65 / > 0.6 → ×0.85
+              // 樣本太少(<3)→ 1.0(唔干擾)
+              // 獨立 flag:MACRO_LOSING_GATE=false → 現有行為(可回滾)
+              if (process.env['MACRO_LOSING_GATE'] !== 'false' && this.profitabilityAnalyzer) {
+                const macroMult = this.profitabilityAnalyzer.getLosingMultiplier(pwinSym, gateAction as 'buy' | 'sell');
+                if (macroMult < 1.0) {
+                  effectiveConfidence *= macroMult;
+                  log.info(`🟣 [macro-losing] ${gateAction.toUpperCase()} ${pwinSym}: 時間加權蝕錢率高(τ=6h)——最近蝕錢主導 → conviction ×${macroMult} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+                  activeAuditGates.push({ gate: 'macro-losing', passed: true, reason: `time-weighted loss rate high (τ=6h) → ×${macroMult} (soft)` });
                 }
               }
             }
