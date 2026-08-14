@@ -194,10 +194,22 @@ async function fetchCandles(symbol: string, interval: string, count: number): Pr
   const coin = symbol.includes(':') ? symbol : symbol.toUpperCase();
   const endTime = Date.now();
   const startTime = endTime - count * (interval === '1h' ? 3_600_000 : 300_000);
-  const data = await MarketAgent.hlFetch({
-    type: 'candleSnapshot',
-    req: { coin, interval, startTime, endTime },
-  }) as Candle[] | null;
+  // v2.0.869(主神 並行 candle 調查):HL DEX 資產(貴金屬/指數——SILVER/GOLD/SP500)
+  // 需要 xyz: 前綴——冇前綴 HL API 500(throw)。catch 後再試 xyz: 前綴。
+  let data: Candle[] | null = null;
+  try {
+    data = await MarketAgent.hlFetch({
+      type: 'candleSnapshot',
+      req: { coin, interval, startTime, endTime },
+    }) as Candle[] | null;
+  } catch {
+    if (!symbol.includes(':')) {
+      data = await MarketAgent.hlFetch({
+        type: 'candleSnapshot',
+        req: { coin: `xyz:${coin}`, interval, startTime, endTime },
+      }) as Candle[] | null;
+    }
+  }
   if (!Array.isArray(data)) return [];
   // Sort chronologically (oldest first) for forward-window measurement.
   // HL returns `t` as a number (epoch ms); guard against string / NaN so the
