@@ -152,3 +152,83 @@ describe('P2: Entry MAE Profile', () => {
 });
 
 
+
+describe('v2.0.869 MAE 模式(主神 SKHX MAE=0 調查)', () => {
+  let eq: EntryQuality;
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eq-mae-'));
+    eq = new EntryQuality(path.join(tmpDir, 'eq.json'));
+  });
+
+  it('M1: 數據缺失標記——MAE=0 且 MFE=0 → dataMissing', () => {
+    eq.record('skhx', 'sell', 0, 0, -0.2, Date.now());
+    const pat = eq.getMaePattern('skhx', 'sell');
+    // 數據缺失樣本唔參與分類——樣本太少 → null(中性)
+    expect(pat).toBeNull();
+  });
+
+  it('M2: 好入場(MAE 細 + MFE 大)→ pattern good', () => {
+    eq.record('skhx', 'sell', 0, 0.18, -0.12, Date.now());
+    eq.record('skhx', 'sell', 0, 0.07, -0.2, Date.now());
+    eq.record('skhx', 'sell', 0, 0.3, 0.5, Date.now());
+    const pat = eq.getMaePattern('skhx', 'sell');
+    expect(pat).not.toBeNull();
+    expect(pat!.pattern).toBe('good');
+    expect(eq.getMaePatternMultiplier('skhx', 'sell')).toBe(1.0);
+  });
+
+  it('M3: 差入場(MAE 大 + MFE 細)→ pattern bad → ×0.5', () => {
+    eq.record('silver', 'buy', -0.43, 0.21, -0.34, Date.now());
+    eq.record('silver', 'buy', -0.44, 0.29, -0.5, Date.now());
+    eq.record('silver', 'buy', -0.5, 0.1, -0.6, Date.now());
+    const pat = eq.getMaePattern('silver', 'buy');
+    expect(pat).not.toBeNull();
+    expect(pat!.pattern).toBe('bad');
+    expect(eq.getMaePatternMultiplier('silver', 'buy')).toBe(0.5);
+  });
+
+  it('M4: 中性(ratio 0.5-1.5)→ ×0.85', () => {
+    eq.record('btc', 'buy', -0.5, 0.5, -0.1, Date.now());
+    eq.record('btc', 'buy', -0.6, 0.6, 0.2, Date.now());
+    eq.record('btc', 'buy', -0.7, 0.7, -0.3, Date.now());
+    const pat = eq.getMaePattern('btc', 'buy');
+    expect(pat).not.toBeNull();
+    expect(pat!.pattern).toBe('neutral');
+    expect(eq.getMaePatternMultiplier('btc', 'buy')).toBe(0.85);
+  });
+
+  it('M5: 樣本太少(<3)→ null(中性——唔干擾)', () => {
+    eq.record('btc', 'buy', -0.5, 0.1, -0.1, Date.now());
+    eq.record('btc', 'buy', -0.6, 0.1, -0.2, Date.now());
+    expect(eq.getMaePattern('btc', 'buy')).toBeNull();
+    expect(eq.getMaePatternMultiplier('btc', 'buy')).toBe(1.0);
+  });
+
+  it('M6: side 分開——sell 差入場唔影響 buy', () => {
+    eq.record('silver', 'sell', -0.5, 0.1, -0.3, Date.now());
+    eq.record('silver', 'sell', -0.6, 0.1, -0.4, Date.now());
+    eq.record('silver', 'sell', -0.7, 0.1, -0.5, Date.now());
+    expect(eq.getMaePatternMultiplier('silver', 'buy')).toBe(1.0);
+    expect(eq.getMaePatternMultiplier('silver', 'sell')).toBe(0.5);
+  });
+
+  it('M7: 數據缺失樣本唔參與——有真實樣本時正常分類', () => {
+    eq.record('skhx', 'sell', 0, 0, -0.2, Date.now()); // 數據缺失
+    eq.record('skhx', 'sell', 0, 0.18, -0.12, Date.now());
+    eq.record('skhx', 'sell', 0, 0.07, -0.2, Date.now());
+    eq.record('skhx', 'sell', 0, 0.3, 0.5, Date.now());
+    const pat = eq.getMaePattern('skhx', 'sell');
+    expect(pat).not.toBeNull();
+    expect(pat!.pattern).toBe('good'); // 數據缺失唔影響
+  });
+
+  it('M8: 攻擊——side 非規範值/NaN——唔 crash', () => {
+    eq.record('btc', 'short', -0.5, 0.1, -0.1, Date.now());
+    eq.record('btc', 'short', -0.6, 0.1, -0.2, Date.now());
+    eq.record('btc', 'short', -0.7, 0.1, -0.3, Date.now());
+    expect(eq.getMaePatternMultiplier('btc', 'sell')).toBe(0.5);
+    expect(() => eq.getMaePattern('btc', 'x' as 'buy')).not.toThrow();
+    expect(() => eq.getMaePatternMultiplier('', 'buy')).not.toThrow();
+  });
+});
