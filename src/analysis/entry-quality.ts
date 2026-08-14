@@ -115,6 +115,9 @@ export interface EntrySample {
   mfePct: number;   // 入場後最大順向(margin %)
   pnlPct: number;   // 最終 pnl(margin %)
   closedAt: number; // epoch ms——rolling window 過濾
+  /** v2.0.869(主神 SKHX MAE=0 調查):數據缺失標記——MAE=0 且 MFE=0(HL pnl 修復前
+   *  嘅舊樣本——trackMAEMFE 冇追蹤——唔係「真係好入場」)——唔參與 MAE 模式分類 */
+  dataMissing?: boolean;
 }
 
 export interface EntryProfileResult {
@@ -186,10 +189,14 @@ export class EntryQuality {
       if (mae < -maxSanity * 0.5 && mfe < 10) return; // 明顯污染(逆向超 150% margin 且冇順向)
       const key = `${sym}|${normSide}`;
       this.state.profile[key] ??= [];
+      // v2.0.869(主神 SKHX MAE=0 調查):數據缺失標記——MAE=0 且 MFE=0(HL pnl 修復前
+      // 嘅舊樣本——trackMAEMFE 冇追蹤)——唔當「好入場」(誤判)——標記 dataMissing
+      const dataMissing = mae === 0 && mfe === 0;
       this.state.profile[key]!.push({
         maePct: mae, mfePct: mfe,
         pnlPct: Number.isFinite(pnlPct) ? pnlPct : 0,
         closedAt: Number.isFinite(closedAt) ? closedAt : Date.now(),
+        dataMissing,
       });
       if (this.state.profile[key]!.length > MAX_SAMPLES) {
         this.state.profile[key] = this.state.profile[key]!.slice(-MAX_SAMPLES);
@@ -240,6 +247,51 @@ export class EntryQuality {
   }
 
   /** v2.0.868-fix:記錄 close 價(PAEL 鎖利 close 時)——re-open 抑制用 */
+  /**
+   * v2.0.869(主神 SKHX MAE=0 調查):MAE 模式分類——入場後「逆向多定順向多」
+   *  ratio = |MAE| / max(MFE, 0.01)(防除零)
+   *  ratio > 1.5  → 差入場(thesis 錯——入場後立即逆向)
+   *  ratio 0.5-1.5 → 中性(逆向同順向相若)
+   *  ratio ≤ 0.5  → 好入場(順向多過逆向——管理問題)
+   *  數據缺失(MAE=0 且 MFE=0)→ 中性(唔當好入場——唔誤判)
+   *  返回:MAE 模式分數(0-1——越高越應該抑制重開)
+   */
+  getMaePattern(symbol: string, side: 'buy' | 'sell', windowDays = ROLLING_DAYS): { pattern: 'good' | 'neutral' | 'bad'; ratio: number; n: number } | null {
+    try {
+      const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
+      const rawSide = String(side ?? '').toLowerCase();
+      const normSide: 'buy' | 'sell' = (rawSide === 'sell' || rawSide === 'short') ? 'sell' : 'buy';
+      const key = `${sym}|${normSide}`;
+      const arr = this.state.profile[key];
+      if (!arr || arr.length === 0) return null;
+      const cutoff = Date.now() - windowDays * 24 * 3600 * 1000;
+      const recent = arr.filter(s => s.closedAt >= cutoff && !s.dataMissing);
+      if (recent.length < 3) return null; // 樣本太少——中性(唔干擾)
+      // 用最近樣本嘅 MAE/MFE 中位數計算 ratio(穩健——唔受單一 outlier 影響)
+      const maes = recent.map(s => Math.abs(s.maePct)).sort((a, b) => a - b);
+      const mfes = recent.map(s => s.mfePct).sort((a, b) => a - b);
+      const maeMed = maes[Math.floor(maes.length / 2)] ?? 0;
+      const mfeMed = mfes[Math.floor(mfes.length / 2)] ?? 0;
+      const ratio = maeMed / Math.max(mfeMed, 0.01);
+      let pattern: 'good' | 'neutral' | 'bad' = 'neutral';
+      if (ratio > 1.5) pattern = 'bad';
+      else if (ratio <= 0.5) pattern = 'good';
+      return { pattern, ratio, n: recent.length };
+    } catch { return null; }
+  }
+
+  /** v2.0.869(主神 SKHX MAE=0 調查):重開抑制乘數——MAE 模式
+   *  差入場(thesis 錯)→ ×0.5 / 中性 → ×0.85 / 好入場(管理問題)→ ×1.0
+   *  樣本太少/數據缺失 → 1.0(唔干擾)
+   */
+  getMaePatternMultiplier(symbol: string, side: 'buy' | 'sell'): number {
+    const pat = this.getMaePattern(symbol, side);
+    if (!pat) return 1.0;
+    if (pat.pattern === 'bad') return 0.5;
+    if (pat.pattern === 'neutral') return 0.85;
+    return 1.0;
+  }
+
   recordClosePrice(symbol: string, price: number): void {
     try {
       const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
