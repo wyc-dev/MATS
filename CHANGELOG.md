@@ -4,6 +4,54 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.869-P2: LLM 波動率 Threshold 判定器 + Binance 剷除(市況判斷修復)
+
+**背景(主神深入調查)**:200 個 trade 全部 low_volatility(regimeOrdinal 0.2)——市況判斷有問題:
+- 88.5% trade 記錄時 volatility = 0(冷啟動——price history 唔夠)——誤判 low_volatility
+- 貴金屬/指數正常波動 0.03-0.3%——global threshold 0.3% 誤判低波動
+- 診斷 script 證明 MarketStateAggregator 判斷正常(唔同 volatility → 唔同 regime)——問題係「輸入」
+
+### LLM 波動率 Threshold 判定器(per symbol——世界知識 + 統計校準)
+- `volatility-threshold-judge.ts`(新組件):
+  - LLM system prompt(世界知識——唔同資產類型唔同正常波動——加密/貴金屬/指數/股票)
+  - LLM 判斷 per symbol threshold(volLow/volHigh/trendThreshold/confidence)
+  - 統計校準(volLow < p25——唔誤判正常波動;volHigh > p75——唔誤判正常波動)
+  - 即時數據規則(LLM 必須用輸入提供嘅即時 market data——唔可以用訓練數據)
+  - 5min candle 分析(最近 24 支精確 OHLCV + 摘要——新聞可能 delay——candle 先係最即時)
+  - judgeBatch(多個 asset 一次過問——慳 token——system prompt 唔重複)
+  - 持久化(JSON——debounce)
+- `index.ts` 整合:
+  - 每 cycle——對已選定 asset——threshold 過期(>1h)先重新判斷(fire-and-forget)
+  - Promise.all 並行攞 5m candle(50 支)
+  - getAssetType(per symbol——貴金屬/指數/加密)
+  - getVolatilityStats(price history 計算 σ 分布)
+- `MarketStateAggregator` 整合:
+  - setSymbolThreshold(per symbol threshold)
+  - calcRegimeForSymbol(用 per symbol threshold——fallback 默認)
+  - getState 用 per symbol regime
+
+### Binance WebSocket 剷除(HL-only mode)
+- `binance-websocket.ts` 剷除(704 行——BinanceWebSocketManager 從未連接——HL-only)
+- `market-state.ts`(新檔案)——搬 MarketStateAggregator + RegimeCalibrator + AggregatedMarketState
+- `multi-exchange-ws.ts`——移除 binance 參數 + 邏輯(detectExchange 全部 hyperliquid)
+- Binance REST API(klines)——保留(有用——攞 candle 數據)
+
+### Candle xyz: 前綴修復(並行攞 candle 測試)
+- HL DEX 資產(貴金屬/指數)需要 xyz: 前綴——冇前綴 HL API 500(throw)
+- `candle-cache.ts` + `support-resistance.ts` + `mfe-calibrator.ts`——try/catch fallback(500 throw 時再試 xyz: 前綴)
+- 並行 6 個 asset 測試:6/6 成功(3.8 秒——全部 101 支)
+
+### 刁鑽攻擊硬化(併發/狀態注入/持久化污染——31 個新測試)
+- `vol-judge-attack.test.ts` +10(LLM 輸出解析/併發/持久化污染)
+- `market-state-attack.test.ts` +13(MarketStateAggregator 極端值/併發)
+- `vol-threshold-judge.test.ts` +11(校準/candle/資產類型)
+- 修復:judgeBatch thresholds null crash + trendThreshold 異常 fallback + update ticker.symbol 防禦
+
+### 測試
+- 全量:2280 pass + 13 pre-existing(冇新失敗)
+
+---
+
 ## v2.0.869: MAE 模式升級方案(重開抑制 + MFE 鎖利 + 宏觀 gate)——超額盈利組件
 
 **背景(主神深入調查)**:4 個 trade 重複輸(SILVER BUY ×2 + SKHX SELL ×2——全部 reconciliation close 後重開)——「重開單又重複輸」:
