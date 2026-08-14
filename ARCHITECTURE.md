@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.869
+> **作者**: YC Wong · **版本**: 2.0.869-P3
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -85,6 +85,22 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - Binance REST API(klines)——保留(有用)
 
 **Candle xyz: 前綴修復**:HL DEX 資產需要 xyz: 前綴——`candle-cache.ts` + `support-resistance.ts` + `mfe-calibrator.ts`——try/catch fallback——並行 6 個 asset 測試 6/6 成功。
+
+### v2.0.869-P3: Shadow Trade 升級 + Meta-Agent 暗黑心理學(一擊即中提升)
+
+**背景**:今日交易表現差——主要係「新架構之前」開嘅 trade(S/R bounce 失敗——低波動市場)——Shadow trade 需要升級(追蹤/統計——提升一擊即中)。
+
+**Shadow Trade 升級**(`shadow-trade-engine.ts`):
+- recentResults 加 exitReason(sl_tp/force_resolve/evicted)+ pnlPct(盈虧 %)
+- cap 50 → 100——getRecentPerformance(100):{ n, winRate, totalPnlPct, avgPnlPct, bySide, byExitReason }
+- getSideStats():buy/sell 分別統計——getContext() 加統計(注入 Meta-Agent)
+- Shadow 保持「每個 Cycle 都 BUY SELL 開倉」(探索——學「唔同情況下 buy/sell 分別」)
+
+**Meta-Agent System Prompt(暗黑心理學)**:
+- SHADOW TRADE STATS 分析(bySide 方向仲裁/byExitReason 陷阱偵測/avgPnl 負偏度/totalPnl regime)
+- 暗黑心理學層(質疑 shadow 統計係咪大戶操縱——distribution trap/front-run/force_resolve 陷阱/avgPnl 不對稱/totalPnl regime 真相)
+
+**刁鑽攻擊硬化**(12 個新測試):prototype 污染/null 樣本/prompt 注入/side 異常/併發——修復(null skip + __proto__ 防污染 + symbol sanitize)。
 
 ## 帳戶模型：Paper（模擬）vs Real（Hyperliquid 真實）⚠️ 前文後理
 
