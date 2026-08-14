@@ -8978,6 +8978,28 @@ ${recentExamples}
             : (pos.averageEntryPrice - guardPrice) / pos.averageEntryPrice;
           const isProfitable = guardPnlPct > 0;
 
+          // ── v2.0.869(主神 SKHX 09:18 調查):MFE 鎖利 override ────────────
+          // 第 5 個 trade(SKHX 09:18):MFE 1.29% 觸發 lock-profit zone——但係冇 close——
+          // price 反轉——蝕 -0.13。Post-Review:「should have taken the $0.77 MFE
+          // when the lock-profit threshold was hit」——MFE 鎖利應該 override PROFIT GUARD
+          // (鎖住 gain——唔係 cutting a winner early——係「鎖住已到嘅 gain」)
+          let mfeLockOverride = false;
+          try {
+            if (this.closeCalibrator && pos) {
+              const posMargin = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
+              const posMfe = posMargin > 0 && Number.isFinite(pos.maxValueReached) ? ((pos.maxValueReached as number) - posMargin) / posMargin : 0;
+              const curFav = posMargin > 0 && Number.isFinite(pos.unrealizedPnl) ? pos.unrealizedPnl / posMargin : 0;
+              const retraced = posMfe > 0 ? Math.max(0, Math.min(1, (posMfe - curFav) / posMfe)) : 0;
+              const atrVal = this.atrCacheThisCycle.get(String(sym).toLowerCase()) ?? 0;
+              const atrPct = atrVal > 0 && pos.averageEntryPrice > 0 ? atrVal / pos.averageEntryPrice : 0;
+              const lockAdvice = this.closeCalibrator.getMfeLockAdvice(sym, isSellSide(pos.side) ? 'sell' : 'buy', posMfe, atrPct, retraced);
+              if (lockAdvice.shouldLock) {
+                mfeLockOverride = true;
+                log.info(`🔒 [mfe-lock-override] ${sym}: ${lockAdvice.reason}——override PROFIT GUARD——直接 close(鎖利)`);
+              }
+            }
+          } catch { /* 非致命——MFE 鎖利失敗唔 block */ }
+
           // ── v2.0.830: Profit Guard v3 decision logic ───────────────────
           // Matrix:
           //   structureConfirmed + losing    → CLOSE (always — thesis broken + losing)
@@ -8985,7 +9007,10 @@ ${recentExamples}
           //   structureConfirmed + profitable ≥ tolerance → BLOCK (winning enough to wait)
           //   !structureConfirmed + profitable → BLOCK (v2 behavior — no structural proof)
           //   !structureConfirmed + losing    → CLOSE (v2 behavior — thesis broken + losing)
-          if (isProfitable && structureConfirmed && guardPnlPct < confirmedCloseProfitTolerance) {
+          // v2.0.869:MFE 鎖利 override——MFE 已達且回吐——直接 close(鎖利)
+          if (mfeLockOverride) {
+            // MFE 鎖利——直接 close(唔 block)
+          } else if (isProfitable && structureConfirmed && guardPnlPct < confirmedCloseProfitTolerance) {
             // Confirmed structural break + small profit → allow close
             log.info(`🛡️ [PROFIT GUARD v3] ${sym}: confirmed break (${confirmReason}) + small profit (${(guardPnlPct * 100).toFixed(2)}% < ${(confirmedCloseProfitTolerance * 100).toFixed(1)}% tolerance, risk=${riskProfile}) — ALLOWING force-close. Thesis confirmed broken by market structure.`);
           } else if (isProfitable && structureConfirmed && guardPnlPct >= confirmedCloseProfitTolerance) {
