@@ -114,6 +114,8 @@ export class MarketStateAggregator {
   }
 
   update(ticker: Ticker): void {
+    // v2.0.869(主神 刁鑽攻擊):ticker 防禦——symbol 缺失/非 string——唔 crash
+    if (!ticker || typeof ticker.symbol !== 'string' || ticker.symbol.length === 0) return;
     // Normalize symbol to lowercase for case-insensitive matching.
     // HL WebSocket sends "BTC", Market Agent may use "btc" — both must land in the same bucket.
     const sym = ticker.symbol.toLowerCase();
