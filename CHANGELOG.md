@@ -4,6 +4,47 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.869-P3: Shadow Trade 升級 + Meta-Agent 暗黑心理學(一擊即中提升)
+
+**背景(主神深入調查)**:今日交易表現差(-$2.99——8 蝕 1 賺)——主要係「新架構之前」開嘅 trade(S/R bounce 失敗——低波動市場)——Shadow trade 需要升級(追蹤/統計——提升一擊即中)。
+
+### Shadow Trade 升級(追蹤 + 統計——保持探索)
+- `shadow-trade-engine.ts`:
+  - recentResults 加 exitReason(sl_tp/force_resolve/evicted)+ pnlPct(盈虧 %)
+  - cap 50 → 100(主神要求「最近 100 個」)
+  - getRecentPerformance(100):{ n, winRate, totalPnlPct, avgPnlPct, bySide, byExitReason }
+    → 學「邊個 side 有 edge」+「邊個離場原因有 edge」
+  - getSideStats():buy/sell 分別統計
+  - getContext() 加統計(bySide/byExitReason/avgPnl/totalPnl)——注入 Meta-Agent
+- Shadow 保持「每個 Cycle 都 BUY SELL 開倉」(探索——學「唔同情況下 buy/sell 分別」)
+
+### Meta-Agent System Prompt(暗黑心理學)
+- SHADOW TRADE STATS 分析:
+  - bySide——shadow BUY/SELL win rate——方向仲裁(學「邊個 side 有 edge」)
+  - byExitReason——force_resolve 陷阱偵測(學「邊個離場原因有 edge」)
+  - avgPnl——負偏度偵測(60% WR + avgPnl -0.5% = 陷阱)
+  - totalPnl——regime 真相(最近 100 個負——探索 regime 蝕——降低 conviction)
+- 暗黑心理學層(質疑 shadow 統計係咪大戶操縱):
+  - Shadow BUY 主導可能係 distribution trap(價格喺 resistance——機構派發)
+  - Shadow SELL 主導可能係 front-run(泵前——機構預先做空——真 edge)
+  - force_resolve 蝕 = 市場嘅謊言(noise 陷阱——唔好 trade)
+  - avgPnl 不對稱 = 真訊號(但係 round-number resistance 可能係 bait)
+  - Total PnL 趨勢 = regime 真相(負——唔好強迫 trade)
+
+### 刁鑽攻擊硬化(併發/狀態注入/持久化污染——12 個新測試)
+- `shadow-attack.test.ts` +12:
+  - prototype 污染(__proto__ key——byExitReason)
+  - null 樣本(5 個位置 crash——getRecentPerformance/getContext/getStats)
+  - prompt 注入(symbol 控制字符——contextString 含注入)
+  - side/outcome 異常(undefined/null/大寫)
+  - 併發 1000 call
+- 修復:null skip + __proto__ 防污染 + symbol sanitize + side/outcome 防禦
+
+### 測試
+- 全量:2280 pass + 13 pre-existing(冇新失敗)
+
+---
+
 ## v2.0.869-P2: LLM 波動率 Threshold 判定器 + Binance 剷除(市況判斷修復)
 
 **背景(主神深入調查)**:200 個 trade 全部 low_volatility(regimeOrdinal 0.2)——市況判斷有問題:
