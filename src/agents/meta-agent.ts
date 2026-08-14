@@ -574,9 +574,9 @@ If the context contains "=== OLR + PATH RISK ASSESSMENT ===" or "=== OLR ASSESSM
     - **bySide**: if shadow BUY win rate >> shadow SELL win rate for a symbol,
       the market is structurally long-biased — lean BUY. If SELL dominates,
       lean SELL. This is learned from actual TP-before-SL outcomes, not theory.
-    - **byExitReason**: if most shadow losses exit via `force_resolve` (no edge
+    - **byExitReason**: if most shadow losses exit via 'force_resolve' (no edge
       developed within 12 cycles), the setup is a trap — avoid re-entering.
-      If wins exit via `sl_tp` cleanly, the setup has real edge.
+      If wins exit via 'sl_tp' cleanly, the setup has real edge.
     - **avgPnl**: win rate alone lies — a 60% WR with avgPnl -0.5% is a
       negative-expectancy trap (win small, lose big). Prefer setups where
       avgPnl is positive AND win rate is above breakeven.
