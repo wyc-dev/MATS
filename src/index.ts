@@ -24,7 +24,9 @@ import { MetaLearner, deriveAssetMetadata } from './evolution/meta-learner.ts';
 import { initializeLLM, getActiveProviderType } from './llm/index.ts';
 import { getActiveProvider } from './llm/index.ts';
 import { getAgentModel } from './agents/agent-models.ts';
-import { BinanceWebSocketManager, MarketStateAggregator, type AggregatedMarketState } from './data/binance-websocket.ts';
+// v2.0.869(主神 binance-websocket 剷除):MarketStateAggregator 搬去 market-state.ts——
+// BinanceWebSocketManager 冇用(HL-only mode)
+import { MarketStateAggregator, type AggregatedMarketState } from './data/market-state.ts';
 import { HyperliquidWebSocketManager } from './data/hyperliquid-websocket.ts';
 import { MultiExchangeWebSocketManager, detectExchange, type UnifiedPrice, type UnifiedOrderBook } from './data/multi-exchange-ws.ts';
 import { HACPEngine } from './cognition/hacp.ts';
@@ -2570,7 +2572,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       log.info('✓ Hyperliquid WebSocket ready');
 
       // Multi-Exchange WS — binance left null intentionally (HL-only mode)
-      this.multiWs = new MultiExchangeWebSocketManager(null as any, this.hyperliquidWs);
+      // v2.0.869(主神 binance-websocket 剷除):HL-only——移除 binance 參數
+      this.multiWs = new MultiExchangeWebSocketManager(this.hyperliquidWs);
       // Wire unified WS data into sentiment engine + paper engine + marketState
       this.multiWs.onPrice((data: UnifiedPrice) => {
         // v2.0.24: track trade count before updatePrice so we can detect

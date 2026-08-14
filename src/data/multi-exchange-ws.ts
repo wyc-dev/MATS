@@ -10,7 +10,6 @@
 
 import { createLogger } from '../observability/logger.ts';
 import { hlRateLimitedFetch } from '../utils/hl-global-limiter.ts';
-import { BinanceWebSocketManager } from './binance-websocket.ts';
 import { HyperliquidWebSocketManager, type HLMarkPrice, type HLOrderBook, type HLTrade } from './hyperliquid-websocket.ts';
 import type { Ticker } from '../types/index.ts';
 
@@ -53,18 +52,14 @@ export type UnifiedConnectionCallback = (exchange: 'binance' | 'hyperliquid', co
 
 // ─── Symbol Detection ───
 
-export function detectExchange(symbol: string): 'binance' | 'hyperliquid' {
-  const upper = symbol.toUpperCase();
-  if (symbol.includes(':')) return 'hyperliquid';
-  if (upper.endsWith('USDT') || upper.endsWith('USD')) return 'binance';
-  // Bare symbols (BTC, ETH, SOL) → Hyperliquid by default
+export function detectExchange(symbol: string): 'hyperliquid' {
+  // v2.0.869(主神 binance-websocket 剷除):HL-only mode——全部 hyperliquid
   return 'hyperliquid';
 }
 
 // ─── Manager ───
 
 export class MultiExchangeWebSocketManager {
-  readonly binance: BinanceWebSocketManager | null;
   readonly hyperliquid: HyperliquidWebSocketManager;
 
   private activeSymbol: string | null = null;
@@ -82,56 +77,8 @@ export class MultiExchangeWebSocketManager {
   private readonly tradeCallbacks: Set<UnifiedTradeCallback> = new Set();
   private readonly connectionCallbacks: Set<UnifiedConnectionCallback> = new Set();
 
-  constructor(binanceWs: BinanceWebSocketManager | null, hyperliquidWs: HyperliquidWebSocketManager) {
-    this.binance = binanceWs;
+  constructor(hyperliquidWs: HyperliquidWebSocketManager) {
     this.hyperliquid = hyperliquidWs;
-
-    // Wire internal callbacks to unified interface — Binance is optional (null in HL-only mode)
-    if (this.binance) {
-      this.binance.onPrice((ticker: Ticker) => {
-        this.emitUnifiedPrice({
-          symbol: ticker.symbol,
-          price: ticker.price,
-          exchange: 'binance',
-        });
-      });
-
-      this.binance.onDepth((bids, asks) => {
-        const bidTotal = bids.reduce((s, b) => s + b.qty, 0);
-        const askTotal = asks.reduce((s, a) => s + a.qty, 0);
-        const total = bidTotal + askTotal;
-        const imbalance = total > 0 ? (bidTotal - askTotal) / total : 0;
-        const bestBid = bids[0]?.price ?? 0;
-        const bestAsk = asks[0]?.price ?? 0;
-        const spread = bestAsk > 0 && bestBid > 0 ? bestAsk - bestBid : 0;
-
-        this.emitUnifiedOrderBook({
-          symbol: this.activeSymbol ?? 'btcusdt',
-          bids: bids.map(b => ({ price: b.price, size: b.qty })),
-          asks: asks.map(a => ({ price: a.price, size: a.qty })),
-          imbalance,
-          spread,
-          exchange: 'binance',
-        });
-
-        const recentLarge = this.binance!.getRecentLargeTrades(5);
-        for (const t of recentLarge) {
-          this.emitUnifiedTrade({
-            symbol: this.activeSymbol ?? 'btcusdt',
-            side: t.side,
-            price: t.price,
-            size: t.size,
-            notional: t.notional,
-            timestamp: t.timestamp,
-            exchange: 'binance',
-          });
-        }
-      });
-
-      this.binance.onConnectionChange((connected: boolean) => {
-        this.emitConnectionChange('binance', connected);
-      });
-    }
 
     this.hyperliquid.onPrice((data: HLMarkPrice) => {
       this.emitUnifiedPrice({
@@ -191,7 +138,7 @@ export class MultiExchangeWebSocketManager {
   }
 
   isConnected(): boolean {
-    if (this.activeExchange === 'binance') return this.binance?.isConnected() ?? false;
+    // v2.0.869(主神 binance-websocket 剷除):HL-only——全部 hyperliquid
     if (this.activeExchange === 'hyperliquid') {
       // REST polling mode for DEX 1-8 symbols counts as "connected"
       if (this.restPollSymbol) return true;
@@ -215,8 +162,7 @@ export class MultiExchangeWebSocketManager {
     // For DEX 1-8 we must use REST polling via l2Book endpoint.
     if (symbol.includes(':') && exchange === 'hyperliquid') {
       // Disconnect any previous WS connection
-      if (this.activeExchange === 'binance') await this.binance?.disconnect();
-      else await this.hyperliquid.disconnect();
+      await this.hyperliquid.disconnect();
 
       this.activeSymbol = symbol;
       this.activeExchange = 'hyperliquid';
@@ -231,25 +177,19 @@ export class MultiExchangeWebSocketManager {
 
     // Disconnect previous if switching exchanges
     if (this.activeExchange && this.activeExchange !== exchange) {
-      if (this.activeExchange === 'binance') await this.binance?.disconnect();
-      else await this.hyperliquid.disconnect();
+      await this.hyperliquid.disconnect();
     }
 
     this.activeSymbol = symbol;
     this.activeExchange = exchange;
 
-    if (exchange === 'binance') {
-      await this.binance?.switchSymbol(symbol);
-    } else {
-      await this.hyperliquid.connect(symbol);
-    }
+    await this.hyperliquid.connect(symbol);
 
     log.info(`Multi-WS connected: ${symbol} on ${exchange}`);
   }
 
   async disconnect(): Promise<void> {
     this.stopRestPolling();
-    if (this.binance) await this.binance.disconnect();
     await this.hyperliquid.disconnect();
     this.activeSymbol = null;
     this.activeExchange = null;
