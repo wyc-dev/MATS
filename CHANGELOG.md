@@ -4,6 +4,55 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.869: MAE 模式升級方案(重開抑制 + MFE 鎖利 + 宏觀 gate)——超額盈利組件
+
+**背景(主神深入調查)**:4 個 trade 重複輸(SILVER BUY ×2 + SKHX SELL ×2——全部 reconciliation close 後重開)——「重開單又重複輸」:
+- SKHX 兩個 trade 顯示 Min Value = Investment——MAE = 0——數據矛盾
+- 根本原因:HL WS position push 用 `p.entryPx` 做 softUpdatePosition——pnl = 0——trackMAEMFE 冇追蹤
+- 第 5 個 trade(SKHX 09:18):MFE 1.29% 觸發 lock-profit zone——但係冇 close——price 反轉——蝕 -0.13
+
+### HL unrealizedPnl 追蹤修復(數據基礎)
+- `portfolio.ts` softUpdatePosition 加 `hlUnrealizedPnl` 參數——HL 回傳真實 pnl——trackMAEMFE 追蹤真實 min/max
+- 短持倉 trade(冇經過 cycle updatePosition)MAE/MFE 有真實值——唔再係 0
+- 刁鑽攻擊硬化(併發/狀態注入/持久化污染——8 攻擊測試):HL pnl sanity range 驗證 + min/max sanitize
+
+### MAE 模式(Phase 2——回測驗證後實施)
+- `entry-quality.ts` 加 `getMaePattern()`——MAE/MFE ratio 分類(防除零):
+  - ratio > 1.5 → 差入場(thesis 錯——入場後立即逆向)→ 重開 ×0.5
+  - ratio 0.5-1.5 → 中性 → ×0.85
+  - ratio ≤ 0.5 → 好入場(管理問題)→ ×1.0(唔抑制)
+- 數據缺失標記(dataMissing——MAE=0 且 MFE=0——HL pnl 修復前舊樣本——唔當好入場)
+- `index.ts` 開倉前應用(entry-gate 之後)——獨立 flag:MAE_PATTERN_GATE=false → 回滾
+- **回測驗證(200 Supabase trade)**:差入場 27% vs 好入場 82%——55pp 差異——n=131——統計顯著
+- 每 symbol×side 明細:SKHX SELL 89% 差入場(解釋重複輸)
+
+### MFE 鎖利(Phase 3——鎖住俾返晒嘅 gain)
+- `close-decision-calibrator.ts` 加 `getMfeLockAdvice()`(純計算):
+  - MFE ≥ 2×ATR 且已回吐 ≥ 30% → 鎖利
+  - MFE ≥ 1.5×ATR 且已回吐 ≥ 50% → 鎖利
+- `index.ts` consensus close 決策(hold gate 之前)——鎖利建議 → 唔 hold 直接 close
+- **MFE 鎖利 override**(第 5 個 trade 調查):thesis invalidation close 都應用——override PROFIT GUARD——鎖住已到嘅 gain——唔等 price 反轉
+
+### 宏觀 gate(Phase 4——時間加權蝕錢率)
+- `profitability-analyzer.ts` 加 `getLosingMultiplier()`——per symbol×side——τ=6h:
+  - weight = exp(-Δt/6h)——最近蝕錢權重高——舊蝕錢衰減(唔誤傷「市場已變」)
+  - 加權蝕錢率 > 0.9 → ×0.45 / > 0.8 → ×0.65 / > 0.6 → ×0.85
+- `index.ts` 開倉前應用(MAE 模式 gate 之後)——獨立 flag:MACRO_LOSING_GATE=false → 回滾
+
+### 回測 script
+- `scripts/mae-pattern-backtest.ts`——讀 Supabase API(200 trade)+ entry-quality profile——分組統計(win rate/EV/偏度/Wilson LB)——驗證結論
+
+### 測試
+- `tests/portfolio-accounting.test.ts` +5(HL pnl 追蹤)
+- `tests/hl-pnl-attack.test.ts` +8(刁鑽攻擊)
+- `tests/entry-quality.test.ts` +8(MAE 模式)
+- `tests/close-decision-calibrator.test.ts` +7(MFE 鎖利——node --test)
+- `tests/profitability-analyzer.test.ts` +7(宏觀 gate)
+- `tests/mae-macro-attack.test.ts` +15(Part 3/4/5/6 刁鑽攻擊)
+- 全量:2280 pass + 12 pre-existing(冇新失敗)
+
+---
+
 ## v2.0.869: HL unrealizedPnl 追蹤修復 + 刁鑽攻擊硬化(主神 SKHX MAE=0 調查)
 
 **背景(主神深入調查)**:SKHX 兩個 trade 顯示 Min Value = Investment——MAE = 0——數據矛盾:
