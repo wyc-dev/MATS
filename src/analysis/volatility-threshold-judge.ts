@@ -129,8 +129,8 @@ export class VolatilityThresholdJudge {
       const avgRange = ranges.reduce((a, b) => a + b, 0) / n;
       const maxRange = Math.max(...ranges);
       const minRange = Math.min(...ranges);
-      // 最近 5 支精確
-      const recent = candles.slice(-5).map(c => {
+      // 最近 24 支精確(主神:5 支太少——最少 24 支睇即時價格行為)
+      const recent = candles.slice(-24).map(c => {
         const d = new Date(c.t);
         const hh = String(d.getHours()).padStart(2, '0');
         const mm = String(d.getMinutes()).padStart(2, '0');
@@ -139,7 +139,7 @@ export class VolatilityThresholdJudge {
       return `5min candle 摘要(最近 ${n} 支):\n`
         + `  趨勢:${trendPct >= 0.1 ? '上升' : trendPct <= -0.1 ? '下降' : '橫行'}(${trendPct >= 0 ? '+' : ''}${trendPct.toFixed(2)}%——${n} 支內)\n`
         + `  波動:平均 ${(avgRange * 100).toFixed(3)}% / 高 ${(maxRange * 100).toFixed(3)}% / 低 ${(minRange * 100).toFixed(3)}%\n`
-        + `  最近 5 支:\n${recent}`;
+        + `  最近 24 支:\n${recent}`;
     } catch { return ''; }
   }
 
