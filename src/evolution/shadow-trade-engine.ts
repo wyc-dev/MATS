@@ -947,12 +947,14 @@ export class ShadowTradeEngine {
     byExitReason: Record<string, { n: number; winRate: number; avgPnlPct: number }>;
   } {
     const recent = this.recentResults.slice(-Math.max(1, Math.min(200, n)));
-    const wins = recent.filter(r => r.outcome === 'win').length;
-    const totalPnl = recent.reduce((a, r) => a + (Number.isFinite(r.pnlPct) ? (r.pnlPct as number) : 0), 0);
+    // v2.0.869-P2(主神 刁鑽攻擊):防禦——null/非物件樣本 skip + __proto__ key 防污染
+    const valid = recent.filter((r): r is NonNullable<typeof r> => !!r && typeof r === 'object');
+    const wins = valid.filter(r => r.outcome === 'win').length;
+    const totalPnl = valid.reduce((a, r) => a + (Number.isFinite(r.pnlPct) ? (r.pnlPct as number) : 0), 0);
     const bySide: Record<string, { n: number; winRate: number; avgPnlPct: number }> = {};
     const byExitReason: Record<string, { n: number; winRate: number; avgPnlPct: number }> = {};
     for (const side of ['buy', 'sell'] as const) {
-      const arr = recent.filter(r => r.side === side);
+      const arr = valid.filter(r => r.side === side);
       if (arr.length > 0) {
         const sideWins = arr.filter(r => r.outcome === 'win').length;
         bySide[side] = {
@@ -962,21 +964,23 @@ export class ShadowTradeEngine {
         };
       }
     }
-    for (const r of recent) {
+    for (const r of valid) {
       const reason = r.exitReason ?? 'unknown';
+      // v2.0.869-P2(主神 刁鑽攻擊):__proto__/constructor/prototype key 防污染
+      if (reason === '__proto__' || reason === 'constructor' || reason === 'prototype') continue;
       byExitReason[reason] ??= { n: 0, winRate: 0, avgPnlPct: 0 };
       byExitReason[reason]!.n++;
       byExitReason[reason]!.avgPnlPct += Number.isFinite(r.pnlPct) ? (r.pnlPct as number) : 0;
     }
     for (const k of Object.keys(byExitReason)) {
       byExitReason[k]!.avgPnlPct /= Math.max(1, byExitReason[k]!.n);
-      byExitReason[k]!.winRate = recent.filter(r => (r.exitReason ?? 'unknown') === k && r.outcome === 'win').length / Math.max(1, byExitReason[k]!.n);
+      byExitReason[k]!.winRate = valid.filter(r => (r.exitReason ?? 'unknown') === k && r.outcome === 'win').length / Math.max(1, byExitReason[k]!.n);
     }
     return {
-      n: recent.length,
-      winRate: recent.length > 0 ? wins / recent.length : 0,
+      n: valid.length,
+      winRate: valid.length > 0 ? wins / valid.length : 0,
       totalPnlPct: totalPnl,
-      avgPnlPct: recent.length > 0 ? totalPnl / recent.length : 0,
+      avgPnlPct: valid.length > 0 ? totalPnl / valid.length : 0,
       bySide,
       byExitReason,
     };
@@ -1007,13 +1011,15 @@ export class ShadowTradeEngine {
     if (recent.length > 0) {
       parts.push('Recent outcomes:');
       for (const r of recent) {
+        // v2.0.869-P2(主神 刁鑽攻擊):null/非物件樣本 skip——唔 crash
+        if (!r || typeof r !== 'object') continue;
         const icon = r.outcome === 'win' ? '✅' : '❌';
         parts.push(`  ${icon} ${r.side.toUpperCase()} ${r.symbol} — ${r.outcome.toUpperCase()} (${r.holdCycles} cycles)`);
       }
 
       // Aggregate win rates
-      const longResults = this.recentResults.filter(r => r.side === 'buy');
-      const shortResults = this.recentResults.filter(r => r.side === 'sell');
+      const longResults = this.recentResults.filter(r => !!r && typeof r === 'object' && r.side === 'buy');
+      const shortResults = this.recentResults.filter(r => !!r && typeof r === 'object' && r.side === 'sell');
       const longWins = longResults.filter(r => r.outcome === 'win').length;
       const shortWins = shortResults.filter(r => r.outcome === 'win').length;
       if (longResults.length > 0) {
@@ -1058,7 +1064,8 @@ export class ShadowTradeEngine {
     return {
       contextString: parts.join('\n'),
       openCount,
-      recentResults: recent.map(r => ({ symbol: r.symbol, side: r.side, outcome: r.outcome, holdCycles: r.holdCycles })),
+      // v2.0.869-P2(主神 刁鑽攻擊):null/非物件樣本 skip——唔 crash
+      recentResults: recent.filter((r): r is NonNullable<typeof r> => !!r && typeof r === 'object').map(r => ({ symbol: r.symbol, side: r.side, outcome: r.outcome, holdCycles: r.holdCycles })),
     };
   }
 
@@ -1104,6 +1111,8 @@ export class ShadowTradeEngine {
 
     // 3. Recent results (survives restart) — skip if already counted in positions
     for (const r of this.recentResults) {
+      // v2.0.869-P2(主神 刁鑽攻擊):null/非物件樣本 skip——唔 crash
+      if (!r || typeof r !== 'object') continue;
       if (this.positions.some(p => p.id === r.id && p.status !== 'open')) continue;
       const s = getOrCreate(r.symbol);
       applyResolved(s, r.side, r.outcome, r.holdCycles, r.mfePct, r.maePct);
