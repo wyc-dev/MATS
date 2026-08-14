@@ -109,3 +109,52 @@ describe('v2.0.869 Volatility Threshold Judge(LLM 波動率 threshold 判定)', 
     }
   });
 });
+
+describe('v2.0.869 formatCandles(5min candle 摘要——慳 token)', () => {
+  let tmpDir: string;
+  beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vtj-candle-')); });
+
+  it('C1: 50 支 candle——摘要格式正確(趨勢/波動/最近 5 支)', () => {
+    const judge = new VolatilityThresholdJudge(path.join(tmpDir, 'vtj.json'));
+    const now = Date.now();
+    const candles = [];
+    for (let i = 0; i < 50; i++) {
+      candles.push({ t: now - (50 - i) * 300000, o: 100 + i * 0.1, h: 100 + i * 0.1 + 0.2, l: 100 + i * 0.1 - 0.1, c: 100 + i * 0.1 + 0.1, v: 1000 });
+    }
+    const summary = judge.formatCandles(candles);
+    expect(summary).toContain('5min candle 摘要');
+    expect(summary).toContain('趨勢');
+    expect(summary).toContain('波動');
+    expect(summary).toContain('最近 5 支');
+    // 最近 5 支精確 OHLCV(時間格式 [HH:MM])
+    expect(summary).toContain('[');
+  });
+
+  it('C2: 空 candle——返回空字串(唔 crash)', () => {
+    const judge = new VolatilityThresholdJudge(path.join(tmpDir, 'vtj2.json'));
+    expect(judge.formatCandles([])).toBe('');
+    expect(judge.formatCandles(null as unknown as Array<{ t: number; o: number; h: number; l: number; c: number; v: number }>)).toBe('');
+  });
+
+  it('C3: 攻擊——candle 極端值(NaN/Infinity/負值)——唔 crash', () => {
+    const judge = new VolatilityThresholdJudge(path.join(tmpDir, 'vtj3.json'));
+    const candles = [
+      { t: Date.now(), o: NaN, h: Infinity, l: -1, c: 100, v: 1000 },
+      { t: Date.now(), o: 100, h: 100, l: 100, c: 100, v: 1000 },
+    ];
+    expect(() => judge.formatCandles(candles)).not.toThrow();
+  });
+
+  it('C4: 趨勢判斷——上升/下降/橫行', () => {
+    const judge = new VolatilityThresholdJudge(path.join(tmpDir, 'vtj4.json'));
+    const now = Date.now();
+    // 上升
+    const up = [];
+    for (let i = 0; i < 10; i++) up.push({ t: now - (10 - i) * 300000, o: 100 + i, h: 100 + i + 1, l: 100 + i - 0.5, c: 100 + i + 0.5, v: 1000 });
+    expect(judge.formatCandles(up)).toContain('上升');
+    // 下降
+    const down = [];
+    for (let i = 0; i < 10; i++) down.push({ t: now - (10 - i) * 300000, o: 100 - i, h: 100 - i + 0.5, l: 100 - i - 1, c: 100 - i - 0.5, v: 1000 });
+    expect(judge.formatCandles(down)).toContain('下降');
+  });
+});

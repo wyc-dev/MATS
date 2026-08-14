@@ -6680,25 +6680,58 @@ ${recentExamples}
     // fire-and-forget(非阻塞——唔影響 cycle 流程)
     try {
       if (this.volThresholdJudge && process.env['VOL_THRESHOLD_JUDGE'] !== 'false') {
-        const judgeSym = this.marketAgent?.getConfig()?.selectedSymbol;
-        if (judgeSym) {
-          const existing = this.volThresholdJudge.getThreshold(judgeSym);
+        // 收集所有已選定 asset——threshold 過期(>1h)先重新判斷
+        const judgeSyms = new Set<string>();
+        const primary = this.marketAgent?.getConfig()?.selectedSymbol;
+        if (primary) judgeSyms.add(primary);
+        // 加埋有 open position 嘅 symbol
+        for (const sym of this.portfolio?.getOpenSymbols?.() ?? []) judgeSyms.add(sym);
+
+        const staleAssets: Array<{
+          symbol: string;
+          assetType: string;
+          histVol: { p25: number; median: number; p75: number; max: number };
+          currentState: { regime: string; trend: string; volatility: number };
+          candles?: Array<{ t: number; o: number; h: number; l: number; c: number; v: number }>;
+        }> = [];
+        const staleSyms: string[] = [];
+        for (const sym of judgeSyms) {
+          const existing = this.volThresholdJudge.getThreshold(sym);
           const stale = !existing || (Date.now() - existing.judgedAt) > 3600 * 1000;
-          if (stale) {
-            const state = this.marketState?.getState(judgeSym);
-            const hist = this.getVolatilityStats(judgeSym);
-            void this.volThresholdJudge.judge(
-              judgeSym,
-              this.getAssetType(judgeSym),
-              hist ?? { p25: 0, median: 0, p75: 0, max: 0 },
-              { regime: state?.regime ?? 'unknown', trend: state?.trend ?? 'sideways', volatility: state?.volatility ?? 0 },
-            ).then((t) => {
-              // LLM 判斷成功——setSymbolThreshold(per symbol regime 用)
-              if (t && this.marketState) {
-                this.marketState.setSymbolThreshold(judgeSym, t.volLow, t.volHigh, t.trendThreshold);
+          if (stale) staleSyms.push(sym);
+        }
+        // 並行攞 candle(唔逐個 await——慳時間)
+        const candleResults = await Promise.all(staleSyms.map(async (sym) => {
+          try {
+            const cc = await candleCache.getCandles(sym, '5m', 50);
+            return { sym, candles: cc && cc.length > 0 ? cc : undefined };
+          } catch { return { sym, candles: undefined }; }
+        }));
+        const candleMap = new Map(candleResults.map(r => [r.sym, r.candles]));
+        for (const sym of staleSyms) {
+          const state = this.marketState?.getState(sym);
+          const hist = this.getVolatilityStats(sym);
+          staleAssets.push({
+            symbol: sym,
+            assetType: this.getAssetType(sym),
+            histVol: hist ?? { p25: 0, median: 0, p75: 0, max: 0 },
+            currentState: { regime: state?.regime ?? 'unknown', trend: state?.trend ?? 'sideways', volatility: state?.volatility ?? 0 },
+            candles: candleMap.get(sym),
+          });
+        }
+        // 一次過批量判斷(慳 token——system prompt 唔重複)
+        if (staleAssets.length > 0) {
+          void this.volThresholdJudge.judgeBatch(staleAssets).then((results) => {
+            // 每個 asset setSymbolThreshold(per symbol regime 用)
+            if (this.marketState) {
+              for (let i = 0; i < staleAssets.length; i++) {
+                const t = results[i];
+                if (t) {
+                  this.marketState.setSymbolThreshold(staleAssets[i]!.symbol, t.volLow, t.volHigh, t.trendThreshold);
+                }
               }
-            }).catch(() => {});
-          }
+            }
+          }).catch(() => {});
         }
       }
     } catch { /* 非致命——threshold 判斷失敗唔影響 cycle */ }
