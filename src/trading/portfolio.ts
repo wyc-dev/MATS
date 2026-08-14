@@ -957,6 +957,18 @@ export class PortfolioTracker {
     const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(symbol);
     if (!pos) return;
 
+    // v2.0.869-attack(主神 刁鑽攻擊):持久化污染防禦——load 時 minValueReached 可能
+    // 係負值/NaN(舊版污染 state file)——softUpdate 前 sanitize:
+    // 負值/NaN → 重置為開倉值(margin - entryFee)——唔 crash + 唔污染追蹤
+    const safeMargin0 = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
+    const openValue = Number.isFinite(safeMargin0) && safeMargin0 > 0 ? safeMargin0 - (Number.isFinite(pos.entryFee) ? (pos.entryFee as number) : 0) : 0;
+    if (!Number.isFinite(pos.minValueReached) || (pos.minValueReached as number) < 0) {
+      pos.minValueReached = openValue;
+    }
+    if (!Number.isFinite(pos.maxValueReached) || (pos.maxValueReached as number) < 0) {
+      pos.maxValueReached = openValue;
+    }
+
     // v2.0.219: Price sanity check — reject corrupt/stale prices that deviate
     // too far from the last known price. A 10%+ move in a single update is
     // almost certainly a data glitch (wrong symbol, stale REST response, WS
@@ -981,9 +993,22 @@ export class PortfolioTracker {
     // (HL 計算嘅真實未實現盈虧——sanitize NaN/Infinity——唔覆蓋本地計算)
     // 有 HL pnl → 用 HL 值追蹤 min/max(短持倉 trade 唔再 MAE=0)
     // 冇 HL pnl → 現有 recomputePnL(本地計算——含 entryFee)
+    //
+    // v2.0.869-attack(主神 刁鑽攻擊):HL pnl 必須先驗證「posValue 喺 sanity range」——
+    // 否則超大/超細/負值 pnl 污染 pos.unrealizedPnl(即使 trackMAEMFE 拒絕——
+    // pos.unrealizedPnl 已經被設定——recalculateEquity 用錯值)。
+    // 驗證:0 ≤ margin + hlPnl ≤ 3×margin(同 trackMAEMFE 一致)——跳出 → 唔用 HL 值
     if (Number.isFinite(hlUnrealizedPnl)) {
-      pos.unrealizedPnl = hlUnrealizedPnl as number;
-      trackMAEMFE(pos);
+      const margin = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
+      const hlPosValue = margin + (hlUnrealizedPnl as number);
+      if (Number.isFinite(margin) && margin > 0 && hlPosValue >= 0 && hlPosValue <= margin * 3) {
+        pos.unrealizedPnl = hlUnrealizedPnl as number;
+        trackMAEMFE(pos);
+      } else {
+        // HL pnl 跳出 sanity range(錯值/污染)——fallback 本地 recomputePnL
+        recomputePnL(pos, currentPrice);
+        trackMAEMFE(pos);
+      }
     } else {
       // v2.0.173: Extracted to shared helpers (same as updatePosition, minus SL/TP check)
       recomputePnL(pos, currentPrice);
