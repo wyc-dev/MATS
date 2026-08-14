@@ -276,8 +276,10 @@ export class ShadowTradeEngine {
   }
   /** Recently resolved trades (for agent context + stats).
    *  v2.0.178: Added mfePct/maePct to recentResults so getStats() can compute
-   *  MAE/MFE averages from historical results, not just current positions. */
-  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl' }> = [];
+   *  MAE/MFE averages from historical results, not just current positions.
+   *  v2.0.869-P2(主神 Shadow 升級):加 exitReason + pnlPct——學「邊個離場原因有 edge」
+   *  +「贏幾多/蝕幾多」——cap 50 → 100(主神要求「最近 100 個」) */
+  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl'; exitReason?: 'sl_tp' | 'force_resolve' | 'evicted'; pnlPct?: number }> = [];
 
   constructor(olrEngine: OLREngine) {
     this.olrEngine = olrEngine;
@@ -855,8 +857,8 @@ export class ShadowTradeEngine {
           log.warn(`[shadow] OLR feedTrade (stale) failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType });
-        if (this.recentResults.length > 50) this.recentResults.shift();
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0 });
+        if (this.recentResults.length > 100) this.recentResults.shift();
         resolved++;
         continue;
       }
@@ -922,14 +924,71 @@ export class ShadowTradeEngine {
           log.warn(`[shadow] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType });
-        if (this.recentResults.length > 50) this.recentResults.shift();
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0 });
+        if (this.recentResults.length > 100) this.recentResults.shift();
 
         resolved++;
       }
     }
 
     return resolved;
+  }
+
+  /**
+   * v2.0.869-P2(主神 Shadow 升級):最近 N 個 shadow trade 盈虧統計
+   *  bySide(學「邊個 side 有 edge」)+ byExitReason(學「邊個離場原因有 edge」)
+   */
+  getRecentPerformance(n = 100): {
+    n: number;
+    winRate: number;
+    totalPnlPct: number;
+    avgPnlPct: number;
+    bySide: Record<string, { n: number; winRate: number; avgPnlPct: number }>;
+    byExitReason: Record<string, { n: number; winRate: number; avgPnlPct: number }>;
+  } {
+    const recent = this.recentResults.slice(-Math.max(1, Math.min(200, n)));
+    const wins = recent.filter(r => r.outcome === 'win').length;
+    const totalPnl = recent.reduce((a, r) => a + (Number.isFinite(r.pnlPct) ? (r.pnlPct as number) : 0), 0);
+    const bySide: Record<string, { n: number; winRate: number; avgPnlPct: number }> = {};
+    const byExitReason: Record<string, { n: number; winRate: number; avgPnlPct: number }> = {};
+    for (const side of ['buy', 'sell'] as const) {
+      const arr = recent.filter(r => r.side === side);
+      if (arr.length > 0) {
+        const sideWins = arr.filter(r => r.outcome === 'win').length;
+        bySide[side] = {
+          n: arr.length,
+          winRate: sideWins / arr.length,
+          avgPnlPct: arr.reduce((a, r) => a + (Number.isFinite(r.pnlPct) ? (r.pnlPct as number) : 0), 0) / arr.length,
+        };
+      }
+    }
+    for (const r of recent) {
+      const reason = r.exitReason ?? 'unknown';
+      byExitReason[reason] ??= { n: 0, winRate: 0, avgPnlPct: 0 };
+      byExitReason[reason]!.n++;
+      byExitReason[reason]!.avgPnlPct += Number.isFinite(r.pnlPct) ? (r.pnlPct as number) : 0;
+    }
+    for (const k of Object.keys(byExitReason)) {
+      byExitReason[k]!.avgPnlPct /= Math.max(1, byExitReason[k]!.n);
+      byExitReason[k]!.winRate = recent.filter(r => (r.exitReason ?? 'unknown') === k && r.outcome === 'win').length / Math.max(1, byExitReason[k]!.n);
+    }
+    return {
+      n: recent.length,
+      winRate: recent.length > 0 ? wins / recent.length : 0,
+      totalPnlPct: totalPnl,
+      avgPnlPct: recent.length > 0 ? totalPnl / recent.length : 0,
+      bySide,
+      byExitReason,
+    };
+  }
+
+  /** v2.0.869-P2(主神 Shadow 升級):buy/sell 分別統計——學「邊個 side 有 edge」 */
+  getSideStats(): { buy: { n: number; winRate: number; avgPnlPct: number }; sell: { n: number; winRate: number; avgPnlPct: number } } {
+    const perf = this.getRecentPerformance(100);
+    return {
+      buy: perf.bySide['buy'] ?? { n: 0, winRate: 0, avgPnlPct: 0 },
+      sell: perf.bySide['sell'] ?? { n: 0, winRate: 0, avgPnlPct: 0 },
+    };
   }
 
   /**
@@ -972,6 +1031,24 @@ export class ShadowTradeEngine {
         const totalResolved = s.longWins + s.longLosses + s.shortWins + s.shortLosses;
         if (totalResolved >= 5) {
           parts.push(`${s.symbol}: avg MFE=${(s.avgMfePct * 100).toFixed(1)}% avg MAE=${(s.avgMaePct * 100).toFixed(1)}%`);
+        }
+      }
+
+      // v2.0.869-P2(主神 Shadow 升級):最近 100 個盈虧統計——bySide + byExitReason
+      // 學「邊個 side 有 edge」+「邊個離場原因有 edge」——注入 Meta-Agent
+      const perf = this.getRecentPerformance(100);
+      if (perf.n >= 5) {
+        parts.push(`Recent ${perf.n} shadow trades: WR=${(perf.winRate * 100).toFixed(0)}% avgPnl=${perf.avgPnlPct >= 0 ? '+' : ''}${perf.avgPnlPct.toFixed(2)}% total=${perf.totalPnlPct >= 0 ? '+' : ''}${perf.totalPnlPct.toFixed(2)}%`);
+        for (const side of ['buy', 'sell'] as const) {
+          const s = perf.bySide[side];
+          if (s && s.n >= 3) {
+            parts.push(`  ${side.toUpperCase()}: n=${s.n} WR=${(s.winRate * 100).toFixed(0)}% avgPnl=${s.avgPnlPct >= 0 ? '+' : ''}${s.avgPnlPct.toFixed(2)}%`);
+          }
+        }
+        for (const [reason, s] of Object.entries(perf.byExitReason)) {
+          if (s.n >= 3) {
+            parts.push(`  exit=${reason}: n=${s.n} WR=${(s.winRate * 100).toFixed(0)}% avgPnl=${s.avgPnlPct >= 0 ? '+' : ''}${s.avgPnlPct.toFixed(2)}%`);
+          }
         }
       }
     } else {
