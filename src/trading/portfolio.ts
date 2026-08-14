@@ -944,7 +944,14 @@ export class PortfolioTracker {
     }
   }
 
-  softUpdatePosition(symbol: string, currentPrice: number): void {
+  /**
+   * v2.0.869-fix(主神 SKHX MAE=0 調查):soft update——可選傳入 HL 回傳嘅 unrealizedPnl。
+   *  HL WS position push 有真實 unrealizedPnl(HL 計算)——但係之前用 entryPx 做
+   *  currentPrice——pnl = 0——trackMAEMFE 冇追蹤——短持倉 trade MAE/MFE = 0(數據錯)。
+   *  有 HL pnl → 直接使用(HL 真實值——sanitize)——trackMAEMFE 追蹤真實 min/max。
+   *  冇 HL pnl(本地 call)→ 現有邏輯(recomputePnL + trackMAEMFE)。
+   */
+  softUpdatePosition(symbol: string, currentPrice: number, hlUnrealizedPnl?: number): void {
     // v2.0.72: check real positions first, then paper
     const sym = normalizeSymbol(symbol);
     const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(symbol);
@@ -970,9 +977,18 @@ export class PortfolioTracker {
     pos.currentPrice = currentPrice;
     pos.updatedAt = Date.now();
 
-    // v2.0.173: Extracted to shared helpers (same as updatePosition, minus SL/TP check)
-    recomputePnL(pos, currentPrice);
-    trackMAEMFE(pos);
+    // v2.0.869-fix(主神 SKHX MAE=0 調查):HL 回傳 unrealizedPnl——直接使用
+    // (HL 計算嘅真實未實現盈虧——sanitize NaN/Infinity——唔覆蓋本地計算)
+    // 有 HL pnl → 用 HL 值追蹤 min/max(短持倉 trade 唔再 MAE=0)
+    // 冇 HL pnl → 現有 recomputePnL(本地計算——含 entryFee)
+    if (Number.isFinite(hlUnrealizedPnl)) {
+      pos.unrealizedPnl = hlUnrealizedPnl as number;
+      trackMAEMFE(pos);
+    } else {
+      // v2.0.173: Extracted to shared helpers (same as updatePosition, minus SL/TP check)
+      recomputePnL(pos, currentPrice);
+      trackMAEMFE(pos);
+    }
 
     this.recalculateEquity();
   }

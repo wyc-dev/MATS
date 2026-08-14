@@ -2465,7 +2465,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           for (const p of positions) {
             const sym = normalizeSymbol(p.symbol);
             if (this.portfolio.hasPosition(sym)) {
-              this.portfolio.softUpdatePosition(sym, p.entryPx);
+              // v2.0.869-fix(主神 SKHX MAE=0 調查):傳 HL 回傳嘅 unrealizedPnl——
+              // 之前用 entryPx 做 currentPrice——pnl = 0——trackMAEMFE 冇追蹤——
+              // 短持倉 trade MAE/MFE = 0(數據錯)。HL pnl 係真實——直接使用。
+              this.portfolio.softUpdatePosition(sym, p.entryPx, p.unrealizedPnl);
             }
           }
           // v2.0.35: Check for real positions that disappeared from HL
