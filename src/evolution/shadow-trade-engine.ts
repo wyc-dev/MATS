@@ -967,7 +967,8 @@ export class ShadowTradeEngine {
     for (const r of valid) {
       const reason = r.exitReason ?? 'unknown';
       // v2.0.869-P2(主神 刁鑽攻擊):__proto__/constructor/prototype key 防污染
-      if (reason === '__proto__' || reason === 'constructor' || reason === 'prototype') continue;
+      const reasonStr = String(reason);
+      if (reasonStr === '__proto__' || reasonStr === 'constructor' || reasonStr === 'prototype') continue;
       byExitReason[reason] ??= { n: 0, winRate: 0, avgPnlPct: 0 };
       byExitReason[reason]!.n++;
       byExitReason[reason]!.avgPnlPct += Number.isFinite(r.pnlPct) ? (r.pnlPct as number) : 0;
