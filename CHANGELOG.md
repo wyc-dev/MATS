@@ -4,6 +4,38 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.869: HL unrealizedPnl 追蹤修復 + 刁鑽攻擊硬化(主神 SKHX MAE=0 調查)
+
+**背景(主神深入調查)**:SKHX 兩個 trade 顯示 Min Value = Investment——MAE = 0——數據矛盾:
+- SELL 蝕錢——margin 應該跌——但係 Min Value = Investment——MAE = 0
+- 根本原因:HL WS position push 用 `p.entryPx` 做 softUpdatePosition——pnl = 0——trackMAEMFE 冇追蹤
+- HL position 有 `unrealizedPnl` 字段(HL 計算真實值)——但係冇用
+
+### HL unrealizedPnl 追蹤修復
+- `portfolio.ts` softUpdatePosition 加 `hlUnrealizedPnl` 參數:
+  - 有 HL pnl → 直接使用(sanitize NaN/Infinity)——trackMAEMFE 追蹤真實 min/max
+  - 冇 HL pnl(本地 call)→ 現有 recomputePnL(含 entryFee)
+- `index.ts` HL position push 傳 `p.unrealizedPnl`
+- 效果:短持倉 trade(冇經過 cycle updatePosition)MAE/MFE 有真實值——唔再係 0
+
+### 刁鑽攻擊硬化(併發/狀態注入/持久化污染——8 攻擊測試)
+- **A1/A2**:HL pnl 超大(1e308)/超細(-1e308)——pos.unrealizedPnl 被污染
+  → 修復:HL pnl 先驗證「posValue = margin + hlPnl」喺 sanity range(0 ≤ v ≤ 3×margin)
+  → 跳出 → fallback 本地 recomputePnL(唔用 HL 值——唔污染)
+- **A3**:HL pnl 令 posValue 負(清算線以下)——同上修復
+- **A4**:HL pnl string/object/null——sanitize fallback 本地
+- **A5**:併發交錯(HL pnl + 本地)——min/max 唔倒退
+- **A6**:HL pnl 令 posValue 剛好喺 range 邊緣(3×margin)——邊界
+- **A7**:持久化污染——minValueReached 負值/NaN——softUpdate 前 sanitize(重置為開倉值)
+- **A8**:HL pnl 0——posValue = margin——min/max 正常
+
+### 測試
+- `tests/portfolio-accounting.test.ts` +5(H1-H5——HL pnl 追蹤)
+- `tests/hl-pnl-attack.test.ts` +8(A1-A8——刁鑽攻擊)
+- 全量:2272 pass + 12 pre-existing(冇新失敗)
+
+---
+
 ## v2.0.868-P1P2: Entry Quality System + Skew Analyzer + 方向審計(超額盈利組件)
 
 **背景(主神深入調查)**:今日 NET -1.36——sl_tp 100% 全蝕(-5.09)——**負偏度確認**:
