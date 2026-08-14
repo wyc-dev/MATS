@@ -61,10 +61,24 @@ async function fetchCandles(symbol: string, interval: '1h' | '5m', count: number
     // 統一 fetch 100+ 支,消費者自行 slice 所需——cache 永遠夠用。
     const fetchCount = Math.max(100, count);
     const startTime = endTime - fetchCount * intervalMs;
-    const data = await MarketAgent.hlFetch({
-      type: 'candleSnapshot',
-      req: { coin, interval, startTime, endTime },
-    }) as Array<{ t?: string; o?: string; h?: string; l?: string; c?: string; v?: string }>;
+    // v2.0.869(主神 並行 candle 測試):HL DEX 資產(貴金屬/指數——SILVER/GOLD/SP500)
+    // 需要 xyz: 前綴——冇前綴 HL API 500(throw)。嘗試冇前綴——catch 後再試 xyz: 前綴。
+    let data: Array<{ t?: string; o?: string; h?: string; l?: string; c?: string; v?: string }> | null = null;
+    try {
+      data = await MarketAgent.hlFetch({
+        type: 'candleSnapshot',
+        req: { coin, interval, startTime, endTime },
+      }) as Array<{ t?: string; o?: string; h?: string; l?: string; c?: string; v?: string }>;
+    } catch {
+      // 500(throw)——fallback:試 xyz: 前綴(DEX 資產)
+      if (!symbol.includes(':')) {
+        const dexCoin = `xyz:${coin}`;
+        data = await MarketAgent.hlFetch({
+          type: 'candleSnapshot',
+          req: { coin: dexCoin, interval, startTime, endTime },
+        }) as Array<{ t?: string; o?: string; h?: string; l?: string; c?: string; v?: string }>;
+      }
+    }
     if (!Array.isArray(data) || data.length === 0) return null;
     return data.map(cd => ({
       t: Number(cd.t ?? 0),
