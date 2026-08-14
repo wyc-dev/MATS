@@ -12,6 +12,7 @@
  * 用法: npx tsx scripts/mae-pattern-backtest.ts
  */
 import { readFileSync, existsSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
 interface EntrySample {
@@ -47,25 +48,64 @@ function classify(maePct: number, mfePct: number): 'good' | 'neutral' | 'bad' | 
   return 'neutral';
 }
 
-function main(): void {
-  const path = resolve('data/evolution/entry-quality.json');
-  if (!existsSync(path)) {
-    console.log('❌ 冇 entry-quality 數據——先跑系統收集樣本');
-    return;
+interface ApiTrade {
+  symbol: string;
+  side: string;
+  investment: number;
+  minValueReached?: number;
+  maxValueReached?: number;
+  pnlPct?: number;
+  closedAt?: number;
+}
+
+/** 從 Supabase API 攞 trade 數據(200 個——有 min/max/pnl——計算 MAE/MFE) */
+function loadApiTrades(): Array<{ key: string; sample: EntrySample; pattern: string }> {
+  try {
+    const res = fetch('http://localhost:3456/api/trades');
+    // 同步 fetch 唔得——用 execSync curl
+    const raw = execSync('curl -s http://localhost:3456/api/trades', { timeout: 10000 }).toString();
+    const trades = JSON.parse(raw) as ApiTrade[];
+    const out: Array<{ key: string; sample: EntrySample; pattern: string }> = [];
+    for (const t of trades) {
+      const inv = Number(t.investment);
+      const min = Number(t.minValueReached);
+      const max = Number(t.maxValueReached);
+      if (!Number.isFinite(inv) || inv <= 0) continue;
+      if (!Number.isFinite(min) || !Number.isFinite(max)) continue;
+      const maePct = (min - inv) / inv * 100;
+      const mfePct = (max - inv) / inv * 100;
+      const pnlPct = Number.isFinite(Number(t.pnlPct)) ? Number(t.pnlPct) * 100 : 0;
+      const key = `${String(t.symbol ?? '').toLowerCase()}|${String(t.side ?? '').toLowerCase()}`;
+      out.push({ key, sample: { maePct, mfePct, pnlPct, closedAt: Number(t.closedAt) || Date.now() }, pattern: classify(maePct, mfePct) });
+    }
+    console.log(`📡 API 數據源: ${out.length} 個 trade(有 min/max/pnl)`);
+    return out;
+  } catch (e) {
+    console.log(`⚠️ API 讀取失敗: ${e instanceof Error ? e.message : String(e)}`);
+    return [];
   }
-  const state = JSON.parse(readFileSync(path, 'utf-8')) as ProfileState;
-  const profile = state.profile ?? {};
-  const allSamples: Array<{ key: string; sample: EntrySample; pattern: string }> = [];
-  for (const [key, samples] of Object.entries(profile)) {
-    for (const s of samples) {
-      allSamples.push({ key, sample: s, pattern: classify(s.maePct, s.mfePct) });
+}
+
+function main(): void {
+  // 優先用 API 數據源(200 個 trade——有 min/max/pnl)
+  const apiSamples = loadApiTrades();
+  const path = resolve('data/evolution/entry-quality.json');
+  const allSamples: Array<{ key: string; sample: EntrySample; pattern: string }> = [...apiSamples];
+  if (existsSync(path)) {
+    const state = JSON.parse(readFileSync(path, 'utf-8')) as ProfileState;
+    const profile = state.profile ?? {};
+    for (const [key, samples] of Object.entries(profile)) {
+      for (const s of samples) {
+        allSamples.push({ key, sample: s, pattern: classify(s.maePct, s.mfePct) });
+      }
     }
   }
 
   console.log('══════════════════════════════════════════════════════');
   console.log('MAE 模式回測報告(v2.0.869)');
   console.log('══════════════════════════════════════════════════════');
-  console.log(`總樣本: ${allSamples.length}(profile keys: ${Object.keys(profile).length})`);
+  const profileKeys = new Set(allSamples.map(x => x.key));
+  console.log(`總樣本: ${allSamples.length}(profile keys: ${profileKeys.size})`);
   console.log('');
 
   // 分組統計
@@ -131,7 +171,12 @@ function main(): void {
 
   // 每 symbol×side 明細
   console.log('每 symbol×side 明細(per symbol×side——空間隔離):');
-  for (const [key, samples] of Object.entries(profile)) {
+  const byKey = new Map<string, EntrySample[]>();
+  for (const { key, sample } of allSamples) {
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key)!.push(sample);
+  }
+  for (const [key, samples] of byKey) {
     const valid = samples.filter(s => !s.dataMissing);
     if (valid.length === 0) continue;
     const wins = valid.filter(s => s.pnlPct > 0).length;
