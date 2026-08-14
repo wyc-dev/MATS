@@ -21,7 +21,7 @@ import type {
   EdgeReport,
 } from '../types/index.ts';
 import type { PerSymbolConsensus } from '../types/index.ts';
-import type { AggregatedMarketState } from '../data/binance-websocket.ts';
+import type { AggregatedMarketState } from '../data/market-state.ts';
 
 /** Map a raw consensus action (+ closePosition flag) to a MatrixCell action,
  *  depending on the user's current position state. */
