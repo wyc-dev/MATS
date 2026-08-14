@@ -285,11 +285,14 @@ export class MarketStateAggregator {
 
   private calcRegime(trend: Trend, volatility: number): MarketRegime {
     const t = this.calibrator.getThresholds();
-    if (volatility > t.volHigh) return 'high_volatility';
-    if (volatility < t.volLow) return 'low_volatility';
+    // v2.0.869-P2(主神 低波動 trending 洞察):trend 優先——
+    // 低波動市場都有低波動嘅 trending(GOLD 緩慢上升 = trending_bull)
+    // 舊邏輯:volatility < volLow 攔截 trend——低波動永遠 low_volatility——冇 trending 樣本
     if (trend === 'bullish') return 'trending_bull';
     if (trend === 'bearish') return 'trending_bear';
     if (trend === 'volatile') return 'chaotic';
+    if (volatility > t.volHigh) return 'high_volatility';
+    if (volatility < t.volLow) return 'low_volatility';
     return 'mean_reverting';
   }
 
@@ -300,11 +303,12 @@ export class MarketStateAggregator {
     const sym = String(symbol ?? '').toLowerCase();
     const st = this.symbolThresholds.get(sym);
     if (!st) return this.calcRegime(trend, volatility);
-    if (volatility > st.volHigh) return 'high_volatility';
-    if (volatility < st.volLow) return 'low_volatility';
+    // v2.0.869-P2(主神 低波動 trending 洞察):trend 優先——低波動市場都有 trending
     if (trend === 'bullish') return 'trending_bull';
     if (trend === 'bearish') return 'trending_bear';
     if (trend === 'volatile') return 'chaotic';
+    if (volatility > st.volHigh) return 'high_volatility';
+    if (volatility < st.volLow) return 'low_volatility';
     return 'mean_reverting';
   }
 

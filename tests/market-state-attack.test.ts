@@ -146,3 +146,44 @@ describe('v2.0.869 multi-exchange-ws(剷除 binance 後)+ getVolatilityStats 攻
     }
   });
 });
+
+describe('v2.0.869-P2 trend 優先(主神 低波動 trending 洞察)', () => {
+  let agg: MarketStateAggregator;
+  beforeEach(() => { agg = new MarketStateAggregator(); });
+
+  it('T1: 低波動 + bullish → trending_bull(唔再被攔截)', () => {
+    agg.setSymbolThreshold('GOLD', 0.0002, 0.002, 0.5);
+    const regime = agg.calcRegimeForSymbol('GOLD', 'bullish', 0.00034);
+    expect(regime).toBe('trending_bull');
+  });
+
+  it('T2: 低波動 + bearish → trending_bear', () => {
+    agg.setSymbolThreshold('SILVER', 0.0002, 0.002, 0.5);
+    const regime = agg.calcRegimeForSymbol('SILVER', 'bearish', 0.00034);
+    expect(regime).toBe('trending_bear');
+  });
+
+  it('T3: 真低波動(< volLow)+ sideways → low_volatility(volatility check)', () => {
+    agg.setSymbolThreshold('GOLD', 0.0002, 0.002, 0.5);
+    const regime = agg.calcRegimeForSymbol('GOLD', 'sideways', 0.0001);  // < volLow 0.0002
+    expect(regime).toBe('low_volatility');
+  });
+
+  it('T4: 高波動 + bullish → trending_bull(trend 優先——唔係 high_volatility)', () => {
+    agg.setSymbolThreshold('BTC', 0.003, 0.03, 0.5);
+    const regime = agg.calcRegimeForSymbol('BTC', 'bullish', 0.05);
+    expect(regime).toBe('trending_bull');
+  });
+
+  it('T5: 冇 per symbol threshold——fallback 默認 calcRegime(trend 優先)', () => {
+    const regime = agg.calcRegimeForSymbol('NONEXISTENT', 'bullish', 0.0001);
+    expect(regime).toBe('trending_bull');
+  });
+
+  it('T6: 攻擊——trend 異常(undefined/空)——唔 crash', () => {
+    agg.setSymbolThreshold('GOLD', 0.0002, 0.002, 0.5);
+    expect(() => agg.calcRegimeForSymbol('GOLD', undefined as any, 0.00034)).not.toThrow();
+    expect(() => agg.calcRegimeForSymbol('GOLD', '' as any, 0.00034)).not.toThrow();
+    expect(() => agg.calcRegimeForSymbol('GOLD', 'EVIL' as any, 0.00034)).not.toThrow();
+  });
+});
