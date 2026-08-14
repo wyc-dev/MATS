@@ -481,6 +481,16 @@ export class MarketStateAggregator {
   private tickers: Map<string, Ticker> = new Map();
   private orderBookImbalance = 0;
   readonly calibrator = new RegimeCalibrator();
+  /** v2.0.869(主神 市況判斷調查):per symbol threshold(LLM 判斷 + 校準)
+   *  貴金屬/指數正常波動 0.03-0.3%——global threshold 0.3% 誤判低波動 */
+  private symbolThresholds: Map<string, { volLow: number; volHigh: number; trend: number }> = new Map();
+
+  /** v2.0.869:設定 per symbol threshold(LLM 判斷 + 校準後)——calcRegime 用 */
+  setSymbolThreshold(symbol: string, volLow: number, volHigh: number, trend: number): void {
+    const sym = String(symbol ?? '').toLowerCase();
+    if (!sym || !Number.isFinite(volLow) || !Number.isFinite(volHigh) || volLow <= 0 || volLow >= volHigh) return;
+    this.symbolThresholds.set(sym, { volLow, volHigh, trend: Number.isFinite(trend) ? Math.max(0.1, Math.min(2.0, trend)) : 0.5 });
+  }
 
   update(ticker: Ticker): void {
     // Normalize symbol to lowercase for case-insensitive matching.
@@ -555,7 +565,9 @@ export class MarketStateAggregator {
 
     const volatility = this.calcVolatility(history, tsHistory);
     const trend = this.calcTrend(ticker, volatility);
-    const regime = this.calcRegime(trend, volatility);
+    // v2.0.869(主神 市況判斷調查):per symbol regime——用 LLM 判斷嘅 threshold
+    // (貴金屬/指數正常波動 0.03-0.3%——global threshold 0.3% 誤判低波動)
+    const regime = this.calcRegimeForSymbol(sym, trend, volatility);
 
     // Feed the observation to the calibrator (auto-adjusts thresholds if >80% dominant)
     this.calibrator.observe(regime);
@@ -652,6 +664,21 @@ export class MarketStateAggregator {
     const t = this.calibrator.getThresholds();
     if (volatility > t.volHigh) return 'high_volatility';
     if (volatility < t.volLow) return 'low_volatility';
+    if (trend === 'bullish') return 'trending_bull';
+    if (trend === 'bearish') return 'trending_bear';
+    if (trend === 'volatile') return 'chaotic';
+    return 'mean_reverting';
+  }
+
+  /** v2.0.869(主神 市況判斷調查):per symbol regime 判斷——用 LLM 判斷嘅 threshold
+   *  (貴金屬/指數正常波動 0.03-0.3%——global threshold 0.3% 誤判低波動)
+   *  冇 per symbol threshold → fallback 默認 calcRegime */
+  calcRegimeForSymbol(symbol: string, trend: Trend, volatility: number): MarketRegime {
+    const sym = String(symbol ?? '').toLowerCase();
+    const st = this.symbolThresholds.get(sym);
+    if (!st) return this.calcRegime(trend, volatility);
+    if (volatility > st.volHigh) return 'high_volatility';
+    if (volatility < st.volLow) return 'low_volatility';
     if (trend === 'bullish') return 'trending_bull';
     if (trend === 'bearish') return 'trending_bear';
     if (trend === 'volatile') return 'chaotic';
