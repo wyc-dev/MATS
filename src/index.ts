@@ -10731,7 +10731,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               // 中性 → ×0.85 / 好入場(管理問題)→ ×1.0(唔抑制)
               // 樣本太少/數據缺失 → 1.0(唔干擾)
               // 獨立 flag:MAE_PATTERN_GATE=false → 現有行為(可回滾)
-              if (process.env['MAE_PATTERN_GATE'] !== 'false') {
+              if (process.env['MAE_PATTERN_GATE'] !== 'false' && this.entryQuality) {
                 const maeMult = this.entryQuality.getMaePatternMultiplier(pwinSym, gateAction as 'buy' | 'sell');
                 if (maeMult < 1.0) {
                   effectiveConfidence *= maeMult;
