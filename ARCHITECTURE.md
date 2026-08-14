@@ -65,6 +65,27 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 
 **回測 script**:`scripts/mae-pattern-backtest.ts`——讀 Supabase API(200 trade)+ entry-quality profile——分組統計(win rate/EV/偏度/Wilson LB)——驗證結論。
 
+### v2.0.869-P2: LLM 波動率 Threshold 判定器 + Binance 剷除(市況判斷修復)
+
+**背景**:200 個 trade 全部 low_volatility(regimeOrdinal 0.2)——市況判斷有問題——88.5% trade 記錄時 volatility = 0(冷啟動)——貴金屬/指數正常波動 0.03-0.3%——global threshold 0.3% 誤判低波動。
+
+**LLM 波動率 Threshold 判定器**(`volatility-threshold-judge.ts`):
+- LLM system prompt(世界知識——唔同資產類型唔同正常波動——加密/貴金屬/指數/股票)
+- LLM 判斷 per symbol threshold(volLow/volHigh/trendThreshold/confidence)
+- 統計校準(volLow < p25——唔誤判正常波動;volHigh > p75——唔誤判正常波動)
+- 即時數據規則(LLM 必須用輸入提供嘅即時 market data——唔可以用訓練數據)
+- 5min candle 分析(最近 24 支精確 OHLCV + 摘要——新聞可能 delay——candle 先係最即時)
+- judgeBatch(多個 asset 一次過問——慳 token——system prompt 唔重複)
+- `MarketStateAggregator` 整合:setSymbolThreshold + calcRegimeForSymbol(per symbol regime)
+
+**Binance WebSocket 剷除**(HL-only mode):
+- `binance-websocket.ts` 剷除(704 行——BinanceWebSocketManager 從未連接)
+- `market-state.ts`(新檔案)——搬 MarketStateAggregator + RegimeCalibrator
+- `multi-exchange-ws.ts`——移除 binance 參數 + 邏輯(detectExchange 全部 hyperliquid)
+- Binance REST API(klines)——保留(有用)
+
+**Candle xyz: 前綴修復**:HL DEX 資產需要 xyz: 前綴——`candle-cache.ts` + `support-resistance.ts` + `mfe-calibrator.ts`——try/catch fallback——並行 6 個 asset 測試 6/6 成功。
+
 ## 帳戶模型：Paper（模擬）vs Real（Hyperliquid 真實）⚠️ 前文後理
 
 > **重要**：MATS 有兩套完全獨立嘅帳戶，數據來源唔同，**唔可以混淆**。診斷真實盈虧一定要用 Real 帳戶數據。
