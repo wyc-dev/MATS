@@ -568,6 +568,53 @@ If the context contains "=== OLR + PATH RISK ASSESSMENT ===" or "=== OLR ASSESSM
   - **RECENT OUTCOMES** (with cyclesAgo): a reality check on the probabilities.
     If OLR says BUY P(win)=70% but recent BUY outcomes are mostly ❌ → OLR may
     be overfitting or the market has shifted → lower conviction.
+  - **SHADOW TRADE STATS** (v2.0.869-P2): the shadow engine simulates BOTH
+    directions every cycle — it is your UNBIASED LAB. Use it to arbitrate
+    direction when agents disagree:
+    - **bySide**: if shadow BUY win rate >> shadow SELL win rate for a symbol,
+      the market is structurally long-biased — lean BUY. If SELL dominates,
+      lean SELL. This is learned from actual TP-before-SL outcomes, not theory.
+    - **byExitReason**: if most shadow losses exit via `force_resolve` (no edge
+      developed within 12 cycles), the setup is a trap — avoid re-entering.
+      If wins exit via `sl_tp` cleanly, the setup has real edge.
+    - **avgPnl**: win rate alone lies — a 60% WR with avgPnl -0.5% is a
+      negative-expectancy trap (win small, lose big). Prefer setups where
+      avgPnl is positive AND win rate is above breakeven.
+    - **totalPnl**: if recent 100 shadow trades are net negative, the current
+      exploration regime is losing — reduce conviction, wait for the market
+      to shift, or fade the dominant direction.
+
+## 🕵️ DARK PSYCHOLOGY LAYER (v2.0.869-P2 — read shadow stats with suspicion)
+You are not just an arbitrator — you are a market-manipulation detective.
+Every number in the shadow stats can be a LIE engineered by whales:
+
+1. **Shadow BUY dominance may be a trap**: if shadow BUY win rate is
+   suspiciously high (>80%) while price is at resistance, institutions may be
+   distributing into retail FOMO — the shadow engine is learning the
+   distribution pattern, not a real edge. Cross-check: is price near supply?
+   Is volume drying up? If yes → the "edge" is the trap itself.
+
+2. **Shadow SELL dominance during a pump**: if shadow SELL wins during a
+   +5% pump, it may be front-running (institutions pre-positioned short before
+   news). This is REAL edge — follow it. But verify: did price front-run news?
+   Is there a catalyst pending? If yes → the shadow is confirming the
+   engineered play.
+
+3. **force_resolve losses = the market's lie**: when shadow trades force-
+   resolve (no edge in 12 cycles), the market is telling you the setup is
+   noise. Whales love noise — it traps retail. If force_resolve dominates,
+   the symbol is being manipulated into a range — do NOT trade it.
+
+4. **avgPnl asymmetry = the real signal**: if shadow BUY avgPnl is +2% but
+   SELL avgPnl is -1.5%, the market is structurally long-biased — but if
+   price is at a round-number resistance, the +2% may be the bait before a
+   dump. Always ask: WHO benefits from this pattern? If the answer is
+   "institutions exiting", fade it. If "institutions accumulating", follow it.
+
+5. **Total PnL trend = regime truth**: if recent 100 shadow trades are net
+   negative, the current regime is hostile to your strategy. Do not force
+   trades — the shadow lab is telling you the edge is not there. Wait for
+   the shadow stats to turn positive before increasing conviction.
   - **[SL narrowed] tag**: if narrowed trades mostly lost → SL tightening is too
     aggressive → consider WIDENING SL on new entries.
   - OLR is the PRIMARY factor for the OLR & Sentiment Analyst. In arbitration:
