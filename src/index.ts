@@ -9959,7 +9959,31 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
           // 用「結構判斷」closeStructureConfirmed(價格到 SL 價位)而唔係 rationale 文字
           // (agents 嘅 rationale 可能冇「SL hit」字眼 → 舊 check 會誤 hold SL close = 蝕死!)
           // closeStructureConfirmed:buy 且 price ≤ SL、sell 且 price ≥ SL——由市場確認
-          if (!closeStructureConfirmed && this.holdCloseIfCalibrated(psc.symbol, (pos.unrealizedPnlPct ?? 0) > 0, 'consensus')) {
+          //
+          // v2.0.869(主神 SKHX MAE=0 調查):MFE 鎖利——鎖住「俾返晒」嘅 gain
+          // (SKHX 前兩個 trade:MFE 0.18/0.07——但係蝕——成個 gain 俾返晒)
+          // MFE ≥ 2×ATR 且已回吐 ≥ 30% → 鎖利(唔 hold——直接 close)
+          // MFE ≥ 1.5×ATR 且已回吐 ≥ 50% → 鎖利(唔 hold——直接 close)
+          // soft——判斷層——唔 hard block
+          let mfeLock = false;
+          try {
+            if (this.closeCalibrator && pos) {
+              const posMargin = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
+              const posMfe = posMargin > 0 && Number.isFinite(pos.maxValueReached) ? ((pos.maxValueReached as number) - posMargin) / posMargin : 0;
+              const posMae = posMargin > 0 && Number.isFinite(pos.minValueReached) ? (posMargin - (pos.minValueReached as number)) / posMargin : 0;
+              const curFav = posMargin > 0 && Number.isFinite(pos.unrealizedPnl) ? pos.unrealizedPnl / posMargin : 0;
+              const retraced = posMfe > 0 ? Math.max(0, Math.min(1, (posMfe - curFav) / posMfe)) : 0;
+              // ATR 來源:atrCacheThisCycle(美元)→ 除以 entryPrice 轉 pct
+              const atrVal = this.atrCacheThisCycle.get(String(psc.symbol).toLowerCase()) ?? 0;
+              const atrPct = atrVal > 0 && pos.averageEntryPrice > 0 ? atrVal / pos.averageEntryPrice : 0;
+              const lockAdvice = this.closeCalibrator.getMfeLockAdvice(psc.symbol, isSellSide(pos.side) ? 'sell' : 'buy', posMfe, atrPct, retraced);
+              if (lockAdvice.shouldLock) {
+                mfeLock = true;
+                log.info(`🔒 [mfe-lock] ${psc.symbol}: ${lockAdvice.reason}——唔 hold——直接 close(鎖利)`);
+              }
+            }
+          } catch { /* 非致命——MFE 鎖利失敗唔 block */ }
+          if (!closeStructureConfirmed && !mfeLock && this.holdCloseIfCalibrated(psc.symbol, (pos.unrealizedPnlPct ?? 0) > 0, 'consensus')) {
             continue; // close 被 hold——唔執行(下 cycle 再確認)
           }
           const closeSuccess = await this.closeTrade(psc.symbol, closeRationale, 'consensus');

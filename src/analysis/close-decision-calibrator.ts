@@ -243,6 +243,37 @@ export class CloseDecisionCalibrator {
    *   rate 0.5 → ×1.10;0.6 → ×1.20;0.8 → ×1.40;cap ×1.5
    *   冷啟動(樣本 < MIN_SAMPLES)→ ×1.0(唔影響現有行為)
    */
+  /**
+   * v2.0.869(主神 SKHX MAE=0 調查):MFE 鎖利建議——鎖住「俾返晒」嘅 gain
+   *  (SKHX 前兩個 trade:MFE 0.18/0.07——但係蝕——成個 gain 俾返晒)
+   *  純計算(唔依賴 state)——用 position 追蹤嘅 MFE + 當前價
+   *
+   *  @param mfePct 持倉中最大順向(margin %——正數)
+   *  @param atrPct 當前 ATR(margin %——用嚟判斷 MFE 相對規模)
+   *  @param retracedPct 已回吐比例(0-1——1 = 完全回吐)
+   *
+   *  鎖利條件(soft——判斷層——唔 hard block):
+   *    MFE ≥ 2×ATR 且已回吐 ≥ 30% → 建議 close(鎖利)
+   *    MFE ≥ 1.5×ATR 且已回吐 ≥ 50% → 建議 close(鎖利)
+   */
+  getMfeLockAdvice(symbol: string, side: 'buy' | 'sell', mfePct: number, atrPct: number, retracedPct: number): { shouldLock: boolean; reason: string } {
+    try {
+      const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
+      const rawSide = String(side ?? '').toLowerCase();
+      const normSide: 'buy' | 'sell' = (rawSide === 'sell' || rawSide === 'short') ? 'sell' : 'buy';
+      if (!sym || !Number.isFinite(mfePct) || mfePct <= 0) return { shouldLock: false, reason: 'no MFE' };
+      if (!Number.isFinite(atrPct) || atrPct <= 0) return { shouldLock: false, reason: 'no ATR' };
+      const retraced = Number.isFinite(retracedPct) ? Math.max(0, Math.min(1, retracedPct)) : 0;
+      if (mfePct >= 2 * atrPct && retraced >= 0.3) {
+        return { shouldLock: true, reason: `${sym} ${normSide.toUpperCase()} MFE ${(mfePct * 100).toFixed(1)}% ≥ 2×ATR(${(atrPct * 100).toFixed(1)}%) 且已回吐 ${(retraced * 100).toFixed(0)}% → 鎖利` };
+      }
+      if (mfePct >= 1.5 * atrPct && retraced >= 0.5) {
+        return { shouldLock: true, reason: `${sym} ${normSide.toUpperCase()} MFE ${(mfePct * 100).toFixed(1)}% ≥ 1.5×ATR(${(atrPct * 100).toFixed(1)}%) 且已回吐 ${(retraced * 100).toFixed(0)}% → 鎖利` };
+      }
+      return { shouldLock: false, reason: 'not triggered' };
+    } catch { return { shouldLock: false, reason: 'error' }; }
+  }
+
   getLockThresholdMultiplier(symbol: string, side: 'buy' | 'sell', trend: string): number {
     // v2.0.868-attack5:先查指定 trend——無數據 fallback aggregate(趨勢變化唔令閉環失效)
     // v2.0.868-attack12:加 side——PAEL 鎖利 threshold 按方向校準(buy/sell 過早率分開)
