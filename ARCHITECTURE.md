@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.868-P1P2
+> **作者**: YC Wong · **版本**: 2.0.869
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -49,6 +49,21 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 | **生產級標準** | 完整型別（Zod 驗證）、結構化日誌（Winston）、優雅關閉、指數退避重連 |
 
 ---
+
+
+### v2.0.869: MAE 模式升級方案(重開抑制 + MFE 鎖利 + 宏觀 gate)
+
+**背景**:4 個 trade 重複輸(SILVER BUY ×2 + SKHX SELL ×2——reconciliation close 後重開)——「重開單又重複輸」——SKHX MAE = 0 數據矛盾(HL softUpdate 用 entryPx——pnl = 0——trackMAEMFE 冇追蹤)。
+
+**HL unrealizedPnl 追蹤修復**:`portfolio.ts` softUpdatePosition 加 `hlUnrealizedPnl` 參數——HL 回傳真實 pnl——短持倉 trade MAE/MFE 有真實值——刁鑽攻擊硬化(併發/狀態注入/持久化污染——sanity range 驗證 + min/max sanitize)。
+
+**MAE 模式(Phase 2)**:`entry-quality.ts` getMaePattern()——MAE/MFE ratio 分類(防除零)——差入場(>1.5)→ 重開 ×0.5 / 中性 → ×0.85 / 好入場(≤0.5)→ ×1.0——數據缺失標記(dataMissing——HL pnl 修復前舊樣本)——回測驗證(200 trade——差入場 27% vs 好入場 82%——55pp——n=131——統計顯著)——index.ts 開倉前應用(flag:MAE_PATTERN_GATE)。
+
+**MFE 鎖利(Phase 3)**:`close-decision-calibrator.ts` getMfeLockAdvice()——MFE ≥ 2×ATR 且已回吐 ≥ 30% / MFE ≥ 1.5×ATR 且已回吐 ≥ 50% → 鎖利——consensus close 唔 hold——thesis invalidation close override PROFIT GUARD(第 5 個 trade:MFE 1.29% 觸發——直接 close——唔等 price 反轉)。
+
+**宏觀 gate(Phase 4)**:`profitability-analyzer.ts` getLosingMultiplier()——時間加權蝕錢率(τ=6h——per symbol×side)——weight = exp(-Δt/6h)——加權蝕錢率 > 0.9 → ×0.45 / > 0.8 → ×0.65 / > 0.6 → ×0.85——index.ts 開倉前應用(flag:MACRO_LOSING_GATE)。
+
+**回測 script**:`scripts/mae-pattern-backtest.ts`——讀 Supabase API(200 trade)+ entry-quality profile——分組統計(win rate/EV/偏度/Wilson LB)——驗證結論。
 
 ## 帳戶模型：Paper（模擬）vs Real（Hyperliquid 真實）⚠️ 前文後理
 
