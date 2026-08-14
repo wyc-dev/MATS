@@ -10700,6 +10700,21 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
                 log.info(`🟠 [reopen-guard] ${gateAction.toUpperCase()} ${pwinSym}: price 未離開最近 close 價 ±0.3%——重開 = 同位置再入 → conviction ×${reopenMult}`);
                 activeAuditGates.push({ gate: 'reopen-guard', passed: true, reason: `price within ±0.3% of recent close → ×${reopenMult} (soft)` });
               }
+              // v2.0.869(主神 SKHX MAE=0 調查):MAE 模式 gate——回測確認有預測力
+              // (差入場 27% vs 好入場 82%——n=131——55pp 差異——統計顯著)
+              // 差入場(MAE/MFE ratio > 1.5——入場後立即逆向)→ ×0.5
+              // 中性 → ×0.85 / 好入場(管理問題)→ ×1.0(唔抑制)
+              // 樣本太少/數據缺失 → 1.0(唔干擾)
+              // 獨立 flag:MAE_PATTERN_GATE=false → 現有行為(可回滾)
+              if (process.env['MAE_PATTERN_GATE'] !== 'false') {
+                const maeMult = this.entryQuality.getMaePatternMultiplier(pwinSym, gateAction as 'buy' | 'sell');
+                if (maeMult < 1.0) {
+                  effectiveConfidence *= maeMult;
+                  const pat = this.entryQuality.getMaePattern(pwinSym, gateAction as 'buy' | 'sell');
+                  log.info(`🔴 [mae-pattern] ${gateAction.toUpperCase()} ${pwinSym}: MAE 模式=${pat?.pattern ?? '?'} (ratio=${pat?.ratio?.toFixed(2) ?? '?'}, n=${pat?.n ?? 0})——入場後逆向多過順向 → conviction ×${maeMult} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+                  activeAuditGates.push({ gate: 'mae-pattern', passed: true, reason: `MAE pattern ${pat?.pattern ?? '?'} (ratio ${pat?.ratio?.toFixed(2) ?? '?'}, n=${pat?.n ?? 0}) → ×${maeMult} (soft)` });
+                }
+              }
             }
           }
         } catch { /* 非致命——Gate 失敗唔 block */ }
