@@ -265,11 +265,19 @@ export class EntryQuality {
       const arr = this.state.profile[key];
       if (!arr || arr.length === 0) return null;
       const cutoff = Date.now() - windowDays * 24 * 3600 * 1000;
-      const recent = arr.filter(s => s.closedAt >= cutoff && !s.dataMissing);
+      // v2.0.869(主神 超刁鑽攻擊):數據完整性防禦——
+      // 1. maePct 正數 = 數據錯(MAE 定義係逆向——≤0)——skip(唔參與分類)
+      // 2. mfePct 負數 = 數據錯(MFE 定義係順向——≥0)——當 0(唔影響 ratio)
+      // 3. closedAt 非有限值——skip(rolling window 唔可靠)
+      const recent = arr.filter(s =>
+        s.closedAt >= cutoff && !s.dataMissing
+        && Number.isFinite(s.maePct) && s.maePct <= 0
+        && Number.isFinite(s.closedAt),
+      );
       if (recent.length < 3) return null; // 樣本太少——中性(唔干擾)
       // 用最近樣本嘅 MAE/MFE 中位數計算 ratio(穩健——唔受單一 outlier 影響)
       const maes = recent.map(s => Math.abs(s.maePct)).sort((a, b) => a - b);
-      const mfes = recent.map(s => s.mfePct).sort((a, b) => a - b);
+      const mfes = recent.map(s => Math.max(s.mfePct, 0)).sort((a, b) => a - b);
       const maeMed = maes[Math.floor(maes.length / 2)] ?? 0;
       const mfeMed = mfes[Math.floor(mfes.length / 2)] ?? 0;
       const ratio = maeMed / Math.max(mfeMed, 0.01);

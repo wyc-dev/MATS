@@ -143,10 +143,14 @@ export class ProfitabilityAnalyzer {
       let lossWeight = 0;
       let totalWeight = 0;
       for (const r of arr) {
-        const dt = Math.max(0, now - (Number.isFinite(r.ts) ? r.ts : now));
+        // v2.0.869(主神 超刁鑽攻擊):數據完整性防禦——
+        // pnl NaN/Infinity → 當 0(中性——唔計蝕亦唔計賺——唔誤判)
+        const pnl = Number.isFinite(r?.pnl) ? (r.pnl as number) : 0;
+        const ts = Number.isFinite(r?.ts) ? (r.ts as number) : now;
+        const dt = Math.max(0, now - ts);
         const w = Math.exp(-dt / TAU_MS);
         totalWeight += w;
-        if (r.pnl < 0) lossWeight += w;
+        if (pnl < 0) lossWeight += w;
       }
       if (totalWeight <= 0) return 1.0;
       const lossRate = lossWeight / totalWeight;
