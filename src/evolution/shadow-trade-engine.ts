@@ -1014,8 +1014,13 @@ export class ShadowTradeEngine {
       for (const r of recent) {
         // v2.0.869-P2(主神 刁鑽攻擊):null/非物件樣本 skip——唔 crash
         if (!r || typeof r !== 'object') continue;
+        // v2.0.869-P2(主神 刁鑽攻擊):side/outcome 異常防禦(undefined/null/大寫)
+        // + symbol 控制字符 sanitize(防 prompt 注入)
+        const sideStr = typeof r.side === 'string' ? r.side.toUpperCase() : '?';
+        const outcomeStr = typeof r.outcome === 'string' ? r.outcome.toUpperCase() : '?';
+        const symStr = String(r.symbol ?? '?').replace(/[\x00-\x1F]/g, '').slice(0, 24);
         const icon = r.outcome === 'win' ? '✅' : '❌';
-        parts.push(`  ${icon} ${r.side.toUpperCase()} ${r.symbol} — ${r.outcome.toUpperCase()} (${r.holdCycles} cycles)`);
+        parts.push(`  ${icon} ${sideStr} ${symStr} — ${outcomeStr} (${r.holdCycles} cycles)`);
       }
 
       // Aggregate win rates
@@ -1037,7 +1042,7 @@ export class ShadowTradeEngine {
       for (const s of allStats) {
         const totalResolved = s.longWins + s.longLosses + s.shortWins + s.shortLosses;
         if (totalResolved >= 5) {
-          parts.push(`${s.symbol}: avg MFE=${(s.avgMfePct * 100).toFixed(1)}% avg MAE=${(s.avgMaePct * 100).toFixed(1)}%`);
+          parts.push(`${String(s.symbol ?? '?').replace(/[\x00-\x1F]/g, '').slice(0, 24)}: avg MFE=${(s.avgMfePct * 100).toFixed(1)}% avg MAE=${(s.avgMaePct * 100).toFixed(1)}%`);
         }
       }
 
