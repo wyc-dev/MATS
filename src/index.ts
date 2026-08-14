@@ -93,6 +93,8 @@ import { supabaseTradeWriter } from './services/supabase-trade-writer.ts';
 import { CloseDecisionCalibrator } from './analysis/close-decision-calibrator.ts';
 import { ProfitabilityAnalyzer } from './analysis/profitability-analyzer.ts';
 import { EntryQuality, checkConfirmation } from './analysis/entry-quality.ts';
+// v2.0.869(主神 市況判斷調查):LLM 波動率 threshold 判定——per symbol threshold
+import { VolatilityThresholdJudge } from './analysis/volatility-threshold-judge.ts';
 import { classifyThesisCatalyst } from './analysis/thesis-catalyst.ts';
 import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
@@ -200,6 +202,8 @@ import { computeLearningWeight } from './evolution/learning-weight.ts';
 
 class MATSSystem {
   private marketState!: MarketStateAggregator;
+  // v2.0.869(主神 市況判斷調查):LLM 波動率 threshold 判定器——per symbol threshold
+  private volThresholdJudge!: VolatilityThresholdJudge;
   private fractalAgent!: FractalMomentumSentinel;
   private onchainAgent!: OnChainWhisperer;
   private regimeAgent!: OLRSentimentAnalyst;
@@ -956,6 +960,12 @@ class MATSSystem {
       log.info('Step 3.6/8: Initializing Market State Aggregator...');
       this.marketState = new MarketStateAggregator();
       log.info('✓ Market State Aggregator ready');
+
+      // v2.0.869(主神 市況判斷調查):LLM 波動率 threshold 判定器——per symbol threshold
+      // (貴金屬/指數正常波動 0.03-0.3%——global threshold 0.3% 誤判低波動)
+      this.volThresholdJudge = new VolatilityThresholdJudge();
+      this.volThresholdJudge.load();
+      log.info('✓ Volatility Threshold Judge ready');
 
       // 3.7 Initialize SystemGuard (5-layer protection gate)
       log.info('Step 3.7/8: Initializing SystemGuard...');
@@ -6611,6 +6621,47 @@ ${recentExamples}
     return '';
   }
 
+  /** v2.0.869(主神 市況判斷調查):判斷資產類型(per symbol——用 symbol 名)
+   *  貴金屬/指數/加密貨幣——唔同正常波動水平 */
+  private getAssetType(symbol: string): string {
+    const s = String(symbol ?? '').toUpperCase();
+    if (s.includes('GOLD') || s.includes('SILVER') || s.includes('PLATINUM') || s.includes('PALLADIUM')) return 'precious_metal';
+    if (s.includes('SP500') || s.includes('NAS') || s.includes('DOW') || s.includes('NDX') || s.includes('SPX')) return 'index';
+    if (s.includes('BTC') || s.includes('ETH') || s.includes('SOL') || s.includes('BNB') || s.includes('XRP') || s.includes('DOGE')) return 'crypto';
+    return 'crypto'; // HL 主要係 crypto perps
+  }
+
+  /** v2.0.869(主神 市況判斷調查):攞歷史波動率分布(p25/median/p75/max——5 分鐘 σ)
+   *  用 price history 計算 log-return σ——分佈統計 */
+  private getVolatilityStats(symbol: string): { p25: number; median: number; p75: number; max: number } | null {
+    try {
+      const ph = this.marketState?.getPriceHistory(symbol);
+      if (!ph || ph.length < 10) return null;
+      // 計算 log-return σ(用最近 100 個 tick)
+      const prices = ph.slice(-100);
+      const logReturns: number[] = [];
+      for (let i = 1; i < prices.length; i++) {
+        const prev = prices[i - 1]!;
+        const curr = prices[i]!;
+        if (prev > 0 && curr > 0 && Number.isFinite(prev) && Number.isFinite(curr)) {
+          logReturns.push(Math.log(curr / prev));
+        }
+      }
+      if (logReturns.length < 5) return null;
+      const mean = logReturns.reduce((a, b) => a + b, 0) / logReturns.length;
+      const variance = logReturns.reduce((a, b) => a + (b - mean) ** 2, 0) / (logReturns.length - 1);
+      const sigma = Math.sqrt(Math.max(variance, 0));
+      if (!Number.isFinite(sigma) || sigma <= 0) return null;
+      // 用 sigma 做基準——p25/p75 用 sigma 嘅比例(保守估計)
+      return {
+        p25: sigma * 0.5,
+        median: sigma,
+        p75: sigma * 1.5,
+        max: sigma * 3,
+      };
+    } catch { return null; }
+  }
+
   private async runDecisionCycle(): Promise<void> {
     if (isShuttingDown()) return;
     if (this.cycleInProgress) {
@@ -6624,6 +6675,33 @@ ${recentExamples}
     // ALL passed the guard because none had reached the `= true` line yet.
     // This caused multiple HACP cycles to run simultaneously.
     this.cycleInProgress = true;
+    // v2.0.869(主神 市況判斷調查):LLM 波動率 threshold 定期判斷——
+    // 對已選定 asset——threshold 過期(>1 小時)先重新判斷(唔每 cycle call——慳成本)
+    // fire-and-forget(非阻塞——唔影響 cycle 流程)
+    try {
+      if (this.volThresholdJudge && process.env['VOL_THRESHOLD_JUDGE'] !== 'false') {
+        const judgeSym = this.marketAgent?.getConfig()?.selectedSymbol;
+        if (judgeSym) {
+          const existing = this.volThresholdJudge.getThreshold(judgeSym);
+          const stale = !existing || (Date.now() - existing.judgedAt) > 3600 * 1000;
+          if (stale) {
+            const state = this.marketState?.getState(judgeSym);
+            const hist = this.getVolatilityStats(judgeSym);
+            void this.volThresholdJudge.judge(
+              judgeSym,
+              this.getAssetType(judgeSym),
+              hist ?? { p25: 0, median: 0, p75: 0, max: 0 },
+              { regime: state?.regime ?? 'unknown', trend: state?.trend ?? 'sideways', volatility: state?.volatility ?? 0 },
+            ).then((t) => {
+              // LLM 判斷成功——setSymbolThreshold(per symbol regime 用)
+              if (t && this.marketState) {
+                this.marketState.setSymbolThreshold(judgeSym, t.volLow, t.volHigh, t.trendThreshold);
+              }
+            }).catch(() => {});
+          }
+        }
+      }
+    } catch { /* 非致命——threshold 判斷失敗唔影響 cycle */ }
     // v2.0.864-fix: 每 cycle 驗證上 cycle 嘅 LLM 判斷(B 方向預測——
     // 判斷時 price vs 而家 price)——recordJudgment 喺 gate 度,呢度先驗證舊 pending
     this.verifyPendingLLMJudgments();
