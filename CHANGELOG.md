@@ -41,6 +41,19 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ### 回測 script
 - `scripts/mae-pattern-backtest.ts`——讀 Supabase API(200 trade)+ entry-quality profile——分組統計(win rate/EV/偏度/Wilson LB)——驗證結論
+- `scripts/mae-profit-backtest.ts`——Phase A 回測驗證(MFE 鎖利 + 重開抑制實際提升盈利)
+
+### Phase A 回測驗證(200 Supabase trade——實際提升盈利證明)
+- **方案 1:MFE 鎖利回測**:
+  - 64 個「MFE 有但蝕」(俾返晒)——總蝕 $27.40
+  - 模擬鎖利(保守——MFE 70% 位置 close)——64/64 可改善——慳 419.52% margin
+  - → MFE 鎖利有巨大改善空間(鎖住俾返晒嘅 gain)
+- **方案 2:重開抑制回測**:
+  - 好入場 n=52 win 87% 總pnl +$19.94 / 中性 n=26 win 69% 總pnl +$0.05 / 差入場 n=122 win 27% 總pnl -$12.67
+  - 模擬抑制(差入場 50% 唔開)——慳 $22.48——錯過 $4.84(保守 30%)——淨改善 $17.64
+  - → 重開抑制有效(60pp 差異——差入場 27% vs 好入場 87%)
+- **每 symbol×side 明細**:SKHX sell 差入場 33/37(89%)/SILVER sell 14/18/SILVER buy 15/27——鎖利候選 6-9 個
+- **極端攻擊測試(10 個——10/10 通過)**:ratio overflow/未來時間/周邊污染/side 非規範/極端組合/併發全交錯
 
 ### 測試
 - `tests/portfolio-accounting.test.ts` +5(HL pnl 追蹤)
