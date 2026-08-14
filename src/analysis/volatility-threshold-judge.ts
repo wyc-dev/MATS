@@ -201,7 +201,7 @@ export class VolatilityThresholdJudge {
         const a = assets[i]!;
         const sym = String(a.symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
         const llmOut = thresholds.find((t: Record<string, unknown>) =>
-          String(t['symbol'] ?? '').toLowerCase() === sym.toLowerCase(),
+          t && typeof t === 'object' && String(t['symbol'] ?? '').toLowerCase() === sym.toLowerCase(),
         );
         if (!llmOut) {
           results.push(null);
@@ -301,9 +301,12 @@ export class VolatilityThresholdJudge {
       const assetType = String(parsed['assetType'] ?? 'unknown');
 
       // 基本驗證
-      if (!Number.isFinite(volLow) || !Number.isFinite(volHigh) || !Number.isFinite(trendThreshold)) return null;
+      if (!Number.isFinite(volLow) || !Number.isFinite(volHigh)) return null;
       if (volLow <= 0 || volHigh <= 0 || volLow >= volHigh) return null;
       if (volLow < 0.0001 || volHigh > 0.1) return null;  // 合理範圍
+      // v2.0.869(主神 刁鑽攻擊):trendThreshold 異常(NaN/string)——fallback 0.5
+      // (唔應該令成個 threshold 無效——trendThreshold 只係輔助)
+      const safeTrend = Number.isFinite(trendThreshold) ? trendThreshold : 0.5;
 
       // 統計校準(量化金融分析師——數據驅動):
       // 1. volLow 唔應該高過歷史 p25(否則正常波動誤判低波動)
@@ -326,7 +329,7 @@ export class VolatilityThresholdJudge {
         assetType,
         volLow: finalVolLow,
         volHigh: finalVolHigh,
-        trendThreshold: Number.isFinite(trendThreshold) ? Math.max(0.1, Math.min(2.0, trendThreshold)) : 0.5,
+        trendThreshold: Number.isFinite(safeTrend) ? Math.max(0.1, Math.min(2.0, safeTrend)) : 0.5,
         confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.5,
         rationale: String(parsed['rationale'] ?? '').slice(0, 200),
         judgedAt: Date.now(),
