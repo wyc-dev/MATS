@@ -1072,7 +1072,8 @@ export class MarketAgent {
           const entry = cached.data.find(e => e.name === symbol.toUpperCase());
           if (entry) {
             log.debug(`[price-cache] HIT for ${symbol} (${(Date.now() - cached.timestamp) / 1000}s old)`);
-            return { price: entry.price, volume24h: entry.volume24h, change24h: entry.change24h };
+            // v2.0.869-P4(主神 forget change24h):唔用 change24h——返回 0
+            return { price: entry.price, volume24h: entry.volume24h, change24h: 0 };
           }
         }
       }
@@ -1087,7 +1088,7 @@ export class MarketAgent {
           return {
             price: parseFloat(data['lastPrice'] ?? '0'),
             volume24h: parseFloat(data['quoteVolume'] ?? '0'),
-            change24h: parseFloat(data['priceChangePercent'] ?? '0'),
+            change24h: 0, // v2.0.869-P4(主神 forget change24h):唔用——返回 0
           };
         }
       } else {
@@ -1219,7 +1220,6 @@ export class MarketAgent {
     }
 
     log.info(`Market Agent filter judgment: ${symbol} → ${profileType}`, {
-      change24h: `${(change24h * 100).toFixed(2)}%`,
       volume24h: `$${(volume24h / 1_000_000).toFixed(2)}M`,
     });
 
