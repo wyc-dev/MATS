@@ -6718,7 +6718,9 @@ ${recentExamples}
         const staleSyms: string[] = [];
         for (const sym of judgeSyms) {
           const existing = this.volThresholdJudge.getThreshold(sym);
-          const stale = !existing || (Date.now() - existing.judgedAt) > 3600 * 1000;
+          // v2.0.869-P4(主神 每個 Cycle fetch):唔等 1 小時過期——每個 Cycle 都判斷
+          // 市場百變——threshold 應該每 cycle 更新——唔係 1 小時先更新
+          const stale = true;
           if (stale) staleSyms.push(sym);
         }
         // 並行攞 candle(唔逐個 await——慳時間)
