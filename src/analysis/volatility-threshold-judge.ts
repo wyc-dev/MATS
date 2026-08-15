@@ -239,7 +239,7 @@ export class VolatilityThresholdJudge {
               parsed = d as { thresholds?: Array<Record<string, unknown>> };
             } else if (d['thresholds'] && typeof d['thresholds'] === 'object') {
               // thresholds 係 object——轉 array
-              parsed = { thresholds: Object.values(d['thresholds'] as Record<string, unknown>) };
+              parsed = { thresholds: Object.values(d['thresholds'] as Record<string, unknown>) as unknown as Array<Record<string, unknown>> };
             }
           }
         } catch { /* 繼續 */ }
