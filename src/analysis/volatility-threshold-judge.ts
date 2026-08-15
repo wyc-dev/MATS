@@ -18,6 +18,8 @@
  *  - 保守(唔誤判正常波動)
  */
 import { createLogger } from '../observability/logger.ts';
+// v2.0.869-P4(主神 save failed):ESM 環境——require 唔 defined——用 import fs
+import fs from 'node:fs';
 
 const log = createLogger({ phase: 'vol-threshold' });
 
@@ -412,7 +414,6 @@ export class VolatilityThresholdJudge {
 
   save(): void {
     try {
-      const fs = require('node:fs');
       fs.writeFileSync(this.path, JSON.stringify({ version: 1, savedAt: Date.now(), thresholds: this.state.thresholds }), 'utf-8');
     } catch (err) {
       log.warn(`[vol-judge] save failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -421,7 +422,6 @@ export class VolatilityThresholdJudge {
 
   load(): void {
     try {
-      const fs = require('node:fs');
       if (!fs.existsSync(this.path)) return;
       const raw = JSON.parse(fs.readFileSync(this.path, 'utf-8')) as Record<string, unknown>;
       const clean: Record<string, VolThreshold> = {};
