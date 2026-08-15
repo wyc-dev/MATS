@@ -255,11 +255,28 @@ export class VolatilityThresholdJudge {
       for (let i = 0; i < assets.length; i++) {
         const a = assets[i]!;
         const sym = String(a.symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
+        // v2.0.869-P4(主神 全面攞晒驗證):symbol match 前綴唔敏感——
+        // 系統請求 xyz:GOLD——LLM 輸出 GOLD(冇前綴)——舊邏輯唔 match
+        const normSym = (s: string): string => String(s ?? '').split(':').pop()?.toLowerCase() ?? '';
         const llmOut = thresholds.find((t: Record<string, unknown>) =>
-          t && typeof t === 'object' && String(t['symbol'] ?? '').toLowerCase() === sym.toLowerCase(),
+          t && typeof t === 'object' && normSym(String(t['symbol'] ?? '')) === normSym(sym),
         );
         if (!llmOut) {
-          results.push(null);
+          // v2.0.869-P4(主神 全面攞晒驗證):LLM 漏咗 asset——用默認 threshold(保守)
+          // 唔係 null——確保每個 asset 都有 threshold(唔會「冇 threshold」)
+          const fallback: VolThreshold = {
+            symbol: sym,
+            assetType: a.assetType,
+            volLow: 0.0005,
+            volHigh: 0.01,
+            trendThreshold: 0.5,
+            confidence: 0.3,
+            rationale: 'LLM 漏咗——用默認保守 threshold',
+            judgedAt: Date.now(),
+          };
+          this.state.thresholds[sym] = fallback;
+          log.warn(`[vol-judge] ${sym} LLM 漏咗——用默認保守 threshold`);
+          results.push(fallback);
           continue;
         }
         const threshold = this.calibrate(sym, llmOut, a.histVol);
