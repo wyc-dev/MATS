@@ -6699,6 +6699,14 @@ ${recentExamples}
         if (primary) judgeSyms.add(primary);
         // 加埋有 open position 嘅 symbol
         for (const sym of this.portfolio?.getOpenSymbols?.() ?? []) judgeSyms.add(sym);
+        // v2.0.869-P4(主神 batch 開始 1 個 asset):加埋 Market Agent 篩選嘅 symbols
+        // (topPairs——全部已選定 symbol——唔係淨係 primary + open)
+        // 其他 symbol 都可能要 threshold(如果之後開倉——用默認 threshold 唔準)
+        try {
+          for (const p of this.marketAgent?.getTopPairs?.() ?? []) {
+            if (p && p.symbol) judgeSyms.add(p.symbol);
+          }
+        } catch { /* 非致命 */ }
 
         const staleAssets: Array<{
           symbol: string;
