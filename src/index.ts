@@ -6753,42 +6753,45 @@ ${recentExamples}
           void (async () => {
             try {
               const results = await this.volThresholdJudge.judgeBatch(staleAssets);
-              // 每個 asset setSymbolThreshold(per symbol regime 用)
+              // v2.0.869-P5(主神 錯位 bug):LLM 輸出順序唔同——唔可以按位置對應!
+              // 按 symbol 匹配(唔按位置)——每個 result 搵 staleAssets 中對應嘅 symbol
+              const normSym = (s: string): string => String(s ?? '').split(':').pop()?.toLowerCase() ?? '';
+              const matched = new Set<number>();
               if (this.marketState) {
-                for (let i = 0; i < staleAssets.length; i++) {
+                for (let i = 0; i < results.length; i++) {
                   const t = results[i];
-                  if (t) {
-                    this.marketState.setSymbolThreshold(staleAssets[i]!.symbol, t.volLow, t.volHigh, t.trendThreshold);
+                  if (!t) continue;
+                  // 搵 staleAssets 中 symbol 匹配嘅位置
+                  const idx = staleAssets.findIndex((a, j) => !matched.has(j) && normSym(a.symbol) === normSym(t.symbol));
+                  if (idx >= 0) {
+                    matched.add(idx);
+                    this.marketState.setSymbolThreshold(staleAssets[idx]!.symbol, t.volLow, t.volHigh, t.trendThreshold);
                   }
                 }
               }
-              // v2.0.869-P4(主神 遞歸 retry):漏咗嘅 asset(conf ≤ 0.3 或者 null)——
-              // 整批補問(唔係單獨)——再漏就再整批問——直至攞晒
-              // 或者冇再漏(或者 max 3 輪——防無限)
-              let pending = staleAssets.filter((_, i) => {
-                const t = results[i];
-                return !t || t.confidence <= 0.3;
-              });
+              // 漏咗嘅 asset(冇 match 到)——整批補問(遞歸 retry)
+              let pending = staleAssets.filter((_, i) => !matched.has(i));
               let round = 0;
               while (pending.length > 0 && round < 3) {
                 round++;
                 log.info(`[vol-judge] 第 ${round} 輪補問: ${pending.length} 個 asset 漏咗——整批再問`);
                 const retryResults = await this.volThresholdJudge.judgeBatch(pending);
                 const stillMissing: Array<typeof staleAssets[number]> = [];
+                const retryMatched = new Set<number>();
                 if (this.marketState) {
-                  for (let i = 0; i < pending.length; i++) {
+                  for (let i = 0; i < retryResults.length; i++) {
                     const t = retryResults[i];
-                    if (t && t.confidence > 0.3) {
-                      this.marketState.setSymbolThreshold(pending[i]!.symbol, t.volLow, t.volHigh, t.trendThreshold);
-                      log.info(`✅ [vol-judge] ${pending[i]!.symbol} 補問成功: volLow=${(t.volLow * 100).toFixed(3)}% volHigh=${(t.volHigh * 100).toFixed(2)}% conf=${t.confidence}`);
-                    } else {
-                      stillMissing.push(pending[i]!);
+                    if (!t || t.confidence <= 0.3) continue;
+                    // 按 symbol 匹配(唔按位置)
+                    const idx = pending.findIndex((a, j) => !retryMatched.has(j) && normSym(a.symbol) === normSym(t.symbol));
+                    if (idx >= 0) {
+                      retryMatched.add(idx);
+                      this.marketState.setSymbolThreshold(pending[idx]!.symbol, t.volLow, t.volHigh, t.trendThreshold);
+                      log.info(`✅ [vol-judge] ${pending[idx]!.symbol} 補問成功: volLow=${(t.volLow * 100).toFixed(3)}% volHigh=${(t.volHigh * 100).toFixed(2)}% conf=${t.confidence}`);
                     }
                   }
-                } else {
-                  stillMissing.push(...pending);
                 }
-                pending = stillMissing;
+                pending = pending.filter((_, i) => !retryMatched.has(i));
               }
               if (pending.length > 0) {
                 log.warn(`[vol-judge] ${pending.length} 個 asset 補問 ${round} 輪後仍漏——用默認 threshold`);
