@@ -121,6 +121,42 @@ describe('v2.0.869-P4 LLM 輸出直接 array(主神 batch JSON 解析失敗)', (
       { symbol: 'BTC', assetType: 'crypto', histVol: { p25: 0.003, median: 0.006, p75: 0.012, max: 0.05 }, currentState: { regime: 'x', trend: 'y', volatility: 0.003 } },
     ]);
     expect(Array.isArray(results)).toBe(true);
-    expect(results[0]).toBeNull();  // ETH 唔 match BTC——null
+    // v2.0.869-P4:漏 asset 用默認 threshold(唔係 null)——保守 fallback
+    expect(results[0]).not.toBeNull();
+    expect(results[0]!.confidence).toBe(0.3);  // 默認 confidence
+  });
+});
+
+describe('v2.0.869-P4 全面攞晒驗證(前綴/漏 asset)', () => {
+  let tmpDir: string;
+  beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vtj-full-')); });
+
+  it('F1: 系統請求 xyz:GOLD——LLM 輸出 GOLD(冇前綴)——match?', async () => {
+    const judge = new VolatilityThresholdJudge(path.join(tmpDir, 'vtj.json'));
+    const content = '[{"symbol": "GOLD", "assetType": "precious_metal", "volLow": 0.0002, "volHigh": 0.002, "trendThreshold": 0.5, "confidence": 0.8}]';
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ message: { content } }) });
+    (globalThis as any).fetch = mockFetch;
+    const results = await judge.judgeBatch([
+      { symbol: 'xyz:GOLD', assetType: 'precious_metal', histVol: { p25: 0.0003, median: 0.0006, p75: 0.0012, max: 0.005 }, currentState: { regime: 'x', trend: 'y', volatility: 0.00034 } },
+    ]);
+    console.log('F1 RESULTS:', JSON.stringify(results));
+    expect(results[0]).not.toBeNull();  // 應該 match(前綴唔敏感)
+  });
+
+  it('F2: 系統請求 3 個——LLM 輸出 2 個(漏 1 個)——漏嗰個點處理?', async () => {
+    const judge = new VolatilityThresholdJudge(path.join(tmpDir, 'vtj2.json'));
+    const content = '[{"symbol": "BTC", "assetType": "crypto", "volLow": 0.0001, "volHigh": 0.0015, "trendThreshold": 0.5, "confidence": 0.7}, {"symbol": "GOLD", "assetType": "precious_metal", "volLow": 0.0002, "volHigh": 0.002, "trendThreshold": 0.5, "confidence": 0.8}]';
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ message: { content } }) });
+    (globalThis as any).fetch = mockFetch;
+    const results = await judge.judgeBatch([
+      { symbol: 'BTC', assetType: 'crypto', histVol: { p25: 0.003, median: 0.006, p75: 0.012, max: 0.05 }, currentState: { regime: 'x', trend: 'y', volatility: 0.003 } },
+      { symbol: 'GOLD', assetType: 'precious_metal', histVol: { p25: 0.0003, median: 0.0006, p75: 0.0012, max: 0.005 }, currentState: { regime: 'x', trend: 'y', volatility: 0.00034 } },
+      { symbol: 'SKHX', assetType: 'crypto', histVol: { p25: 0.0002, median: 0.0004, p75: 0.0008, max: 0.003 }, currentState: { regime: 'x', trend: 'y', volatility: 0.00017 } },
+    ]);
+    console.log('F2 RESULTS:', JSON.stringify(results));
+    // BTC/GOLD 攞到——SKHX 漏咗(null)
+    expect(results[0]).not.toBeNull();
+    expect(results[1]).not.toBeNull();
+    console.log('F2 SKHX:', results[2]);  // 可能 null
   });
 });
