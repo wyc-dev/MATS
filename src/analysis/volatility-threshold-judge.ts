@@ -232,7 +232,7 @@ export class VolatilityThresholdJudge {
           if (Array.isArray(direct)) {
             // v2.0.869-P4(主神 batch JSON 解析失敗):LLM 輸出直接 array——
             // 唔係 {"thresholds": [...]}——用 array 做 thresholds
-            parsed = { thresholds: direct as Array<Record<string, unknown>> };
+            parsed = { thresholds: direct.filter((x): x is Record<string, unknown> => !!x && typeof x === 'object') };
           } else if (direct && typeof direct === 'object') {
             const d = direct as { thresholds?: unknown };
             if (Array.isArray(d['thresholds'])) {
