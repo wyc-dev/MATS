@@ -1,6 +1,6 @@
 # MATS — The First Self-Evolving AI Trading Brain
 
-**9 AI agents debate every trade. Skeptics stress-tests every thesis. System Engineer fixes its own bugs. A 33-layer cognitive brain learns from every outcome — why it won, why it lost, and how to win next time.**
+**9 AI agents debate every trade. Skeptics stress-tests every thesis. System Engineer fixes its own bugs. A 42-layer cognitive brain learns from every outcome — why it won, why it lost, and how to win next time.**
 
 The **industry-first self-evolving trading brain** — where an LLM **reads the charts** and statistics keep it honest. Highlights:
 
@@ -25,7 +25,7 @@ The **industry-first self-evolving trading brain** — where an LLM **reads the 
 ## 📸 See It In Action
 
 <a href="https://github.com/wyc-dev/MATS/blob/main/docs/dashboard.mp4" target="_blank" title="Click to play the full 16s demo">
-  <img src="docs/dashboard.gif" alt=" MATS Dashboard demo — 8 AI agents debate every trade in real time" width="100%">
+  <img src="docs/dashboard.gif" alt=" MATS Dashboard demo — 9 AI agents debate every trade in real time" width="100%">
 </a>
 
 *8-second loop. [Click for the full 16s demo video](https://github.com/wyc-dev/MATS/blob/main/docs/dashboard.mp4) — real-time HACP debate, Skeptics validation, weighted consensus, live TP/SL on TradingView, self-evolution metrics.*
@@ -87,7 +87,7 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 - **🤖 Terminal Agent + Root Command Prompt** — users type natural language trading preferences (e.g., "only trade on Monday GMT"). LLM integrates them into a Root Command Prompt. Before each cycle, rules are checked — if a rule fails, the entire cycle is aborted (no token cost). After the Meta-Agent decides, the Terminal Agent verifies that the decision matches user preferences.
 - **🧠 Entry Thesis System** — every trade needs a validated `[1h: ...] [1d: ...]` rationale. Meta-Agent generates it; Skeptics stress-test it.  No thesis → no trade.
 - **🛡️ Skeptics veto** — an AI stress-tests every position's logic, data consistency, and dark-psychology (whale manipulation?) before execution. Approve-first: rejects only on concrete money-losing flaws. Dark-psychology check escalates from LIGHTWEIGHT to **MANDATORY** when |momentum| > 2% — must articulate a specific reversal catalyst or reject.
-- **🧬 Cognitive Evolution Pipeline** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, **which historical cycles** are most relevant right now — through a **33-layer pipeline** (v2.0.863): OLR → shadow trading → NA → AttnRes → anti-pattern → combo WR → Q-RL Alpha Discovery → Component Attribution → PAEL → LLM World-Model. Dead components are actively pruned (v2.0.833/859 removed 6 zero-call-site modules).
+- **🧬 Cognitive Evolution Pipeline** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, **which historical cycles** are most relevant right now — through a **42-layer pipeline** (v2.0.869-P3): OLR → shadow trading → NA → AttnRes → anti-pattern → combo WR → Q-RL Alpha Discovery → Component Attribution → PAEL → LLM World-Model → LLM Direction Verifier → EV Filter → Close-Decision Calibrator → Profitability Analyzer → Entry Quality → MAE Pattern → MFE Lock → LLM Volatility Threshold Judge → Shadow Trade Upgrade. Dead components are actively pruned (v2.0.833/859 removed 6 zero-call-site modules).
 - **🔬 Numeric Autoencoder** — a pure-TypeScript MLP (11→16→8 encoder + contrastive loss) learns a non-linear embedding of market conditions. "Similar market conditions" is no longer handcrafted min-max cosine — it's a learned representation where "similar" means "historically led to similar outcomes." Cold-start safe: min-max fallback until 200+ samples + validation pass.
 - **🌀 AttnRes Cycle-History Retrieval** — transferred from Kimi K3's Attention Residuals (arXiv 2603.15031). The conditional win-rate candidate is no longer a single current snapshot — it's a **softmax-weighted blend over 80 cycles of history + entry-time state**, with a learned pseudo-query deciding which historical periods matter most right now. Entry-time regime retains persistent weight (K3 embedding persistence). Block AttnRes compresses 80 cycles → 8 blocks for O(Nd) memory.
 - **⚔️ Dual Pseudo-Query Specialization** — two learned queries per symbol, inspired by K3's pre-attention vs pre-MLP layer specialization: **wDecision** (broad receptive field, trained on trade PnL) for conditional win-rate + thesis context; **wExecution** (sharp/recent-biased, trained on SL/TP stop-out outcomes) for SL/TP survival context.
