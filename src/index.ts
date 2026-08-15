@@ -6695,18 +6695,21 @@ ${recentExamples}
       if (this.volThresholdJudge && process.env['VOL_THRESHOLD_JUDGE'] !== 'false') {
         // 收集所有已選定 asset——threshold 過期(>1h)先重新判斷
         const judgeSyms = new Set<string>();
+        // v2.0.869-P4(主神 BTC vs btc 污染):全部用 normalizeSymbol 統一大小寫——
+        // 非冒號 symbol → 小寫(btc)——冒號 symbol → 前綴小寫 + 資產名保留(xyz:GOLD)
+        // 否則 BTC + btc 兩個 key——vol-judge 判斷兩次——存兩個 threshold——污染
+        const addSym = (sym: string): void => {
+          if (sym && String(sym).trim()) judgeSyms.add(normalizeSymbol(String(sym).trim()));
+        };
         const primary = this.marketAgent?.getConfig()?.selectedSymbol;
-        if (primary) judgeSyms.add(primary);
+        if (primary) addSym(primary);
         // 加埋有 open position 嘅 symbol
-        for (const sym of this.portfolio?.getOpenSymbols?.() ?? []) judgeSyms.add(sym);
+        for (const sym of this.portfolio?.getOpenSymbols?.() ?? []) addSym(sym);
         // v2.0.869-P4(主神 fetch topPairs 質疑):加埋「用戶所選擇嘅市場」
         // (tradingMarkets——Selected Markets——max 10)——唔係 topPairs(全部 HL symbols)
         // 用戶所選擇嘅市場先係要 trade 嘅——topPairs 包含一堆未用嘅 symbol
         try {
-          for (const sym of this.marketAgent?.getTradingMarkets?.() ?? []) {
-            // v2.0.869-P4(主神 刁鑽攻擊):trim 後空 skip(空格 symbol 無效)
-            if (sym && String(sym).trim()) judgeSyms.add(String(sym).trim());
-          }
+          for (const sym of this.marketAgent?.getTradingMarkets?.() ?? []) addSym(sym);
         } catch { /* 非致命 */ }
 
         const staleAssets: Array<{
