@@ -2556,7 +2556,17 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               } else {
                 log.info(`📡 HL WS closing fill: ${fill.symbol} ${fill.side} ${fill.size} @ ${fill.price} dir=${fill.dir} closedPnl=${fill.closedPnl} — closing local mirror immediately`);
                 // Close the local mirror with the actual HL fill price + realized PnL
-                this.portfolio.closeExchangePosition(sym, fill.price, fill.closedPnl);
+                const closedTrade = this.portfolio.closeExchangePosition(sym, fill.price, fill.closedPnl);
+                // v2.0.869-P3(主神 trade 缺失調查):onFills close 路徑——
+                // 之前冇 call recordTrade——trade 唔會寫入 Supabase——UI 冇顯示!
+                // 而家:close 後——call recordTrade(用 close 嘅 trade 資料)
+                if (closedTrade && this.supabaseTradeWriter) {
+                  try {
+                    this.supabaseTradeWriter.recordTrade(closedTrade as never, 'real');
+                  } catch (err) {
+                    log.warn(`[supabase-trades] onFills recordTrade failed: ${err instanceof Error ? err.message : String(err)}`);
+                  }
+                }
                 return;
               }
             }

@@ -117,16 +117,33 @@ export class SupabaseTradeWriter {
 
     // v2.0.868:trade_records 表有 trade_id unique constraint → 直接 upsert
     // (原子 + idempotent——唔再需要 select→update/insert 兩步)
+    // v2.0.869-P3(主神 trade 缺失調查):寫入失敗 → retry 3 次(指數退避 1s/2s/4s)
+    // 間歇性錯誤(rate limit/連線抖動)唔會永久缺失 trade
     const c = this.client;
-    void Promise.resolve(c.from('trade_records').upsert(row, { onConflict: 'trade_id' }))
-      .then(({ error }) => {
-        if (error) {
-          log.warn(`[supabase-trades] write failed for ${tradeId}: ${error.message}`);
-        }
-      })
-      .catch((err: unknown) => {
-        log.warn(`[supabase-trades] write failed (${tradeId}): ${err instanceof Error ? err.message : String(err)}`);
-      });
+    const attemptUpsert = (attempt: number): void => {
+      void Promise.resolve(c.from('trade_records').upsert(row, { onConflict: 'trade_id' }))
+        .then(({ error }) => {
+          if (error) {
+            if (attempt < 3) {
+              const delay = 1000 * Math.pow(2, attempt);
+              log.warn(`[supabase-trades] write failed for ${tradeId} (attempt ${attempt + 1}/3): ${error.message} — retry in ${delay}ms`);
+              setTimeout(() => attemptUpsert(attempt + 1), delay);
+            } else {
+              log.error(`[supabase-trades] write FAILED for ${tradeId} after 3 attempts: ${error.message} — trade missing from Supabase`);
+            }
+          }
+        })
+        .catch((err: unknown) => {
+          if (attempt < 3) {
+            const delay = 1000 * Math.pow(2, attempt);
+            log.warn(`[supabase-trades] write failed (${tradeId}) attempt ${attempt + 1}/3: ${err instanceof Error ? err.message : String(err)} — retry in ${delay}ms`);
+            setTimeout(() => attemptUpsert(attempt + 1), delay);
+          } else {
+            log.error(`[supabase-trades] write FAILED for ${tradeId} after 3 attempts: ${err instanceof Error ? err.message : String(err)} — trade missing from Supabase`);
+          }
+        });
+    };
+    attemptUpsert(0);
   }
 }
 
