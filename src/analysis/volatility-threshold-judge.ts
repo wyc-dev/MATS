@@ -234,12 +234,16 @@ export class VolatilityThresholdJudge {
             // 唔係 {"thresholds": [...]}——用 array 做 thresholds
             parsed = { thresholds: direct as unknown as Array<Record<string, unknown>> };
           } else if (direct && typeof direct === 'object') {
-            const d = direct as { thresholds?: unknown };
+            const d = direct as { thresholds?: unknown; assets?: unknown };
             if (Array.isArray(d['thresholds'])) {
               parsed = d as { thresholds?: Array<Record<string, unknown>> };
             } else if (d['thresholds'] && typeof d['thresholds'] === 'object') {
               // thresholds 係 object——轉 array
               parsed = { thresholds: Object.values(d['thresholds'] as Record<string, unknown>) as unknown as Array<Record<string, unknown>> };
+            } else if (Array.isArray(d['assets'])) {
+              // v2.0.869-P4(主神 batch JSON 解析失敗):LLM 輸出 {"assets": [...]}——
+              // 唔係 {"thresholds": [...]}——用 assets 做 thresholds
+              parsed = { thresholds: d['assets'] as unknown as Array<Record<string, unknown>> };
             }
           }
         } catch { /* 繼續 */ }
