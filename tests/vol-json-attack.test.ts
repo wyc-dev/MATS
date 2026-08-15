@@ -92,3 +92,35 @@ describe('v2.0.869-P4 vol-judge JSON 提取刁鑽攻擊(併發/狀態注入/持�
     expect(judge.getThreshold('SILVER')).not.toBeNull();
   });
 });
+
+describe('v2.0.869-P4 LLM 輸出直接 array(主神 batch JSON 解析失敗)', () => {
+  let tmpDir: string;
+  beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vtj-arr-')); });
+
+  it('K1: LLM 輸出直接 array(唔係 {"thresholds": [...]})——解析成功', async () => {
+    const judge = new VolatilityThresholdJudge(path.join(tmpDir, 'vtj.json'));
+    const content = '[\n  {"symbol": "BTC", "assetType": "crypto", "volLow": 0.0001, "volHigh": 0.0015, "trendThreshold": 0.5, "confidence": 0.7, "rationale": "test"},\n  {"symbol": "GOLD", "assetType": "precious_metal", "volLow": 0.0002, "volHigh": 0.002, "trendThreshold": 0.5, "confidence": 0.8, "rationale": "test"}\n]';
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ message: { content } }) });
+    (globalThis as any).fetch = mockFetch;
+    const results = await judge.judgeBatch([
+      { symbol: 'BTC', assetType: 'crypto', histVol: { p25: 0.003, median: 0.006, p75: 0.012, max: 0.05 }, currentState: { regime: 'x', trend: 'y', volatility: 0.003 } },
+      { symbol: 'GOLD', assetType: 'precious_metal', histVol: { p25: 0.0003, median: 0.0006, p75: 0.0012, max: 0.005 }, currentState: { regime: 'x', trend: 'y', volatility: 0.00034 } },
+    ]);
+    expect(results[0]).not.toBeNull();
+    expect(results[0]!.volLow).toBe(0.0001);
+    expect(results[1]).not.toBeNull();
+    expect(results[1]!.volLow).toBe(0.0002);
+  });
+
+  it('K2: LLM 輸出 array 但 symbol 唔 match——唔 crash', async () => {
+    const judge = new VolatilityThresholdJudge(path.join(tmpDir, 'vtj2.json'));
+    const content = '[{"symbol": "ETH", "assetType": "crypto", "volLow": 0.0001, "volHigh": 0.0015, "trendThreshold": 0.5, "confidence": 0.7}]';
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ message: { content } }) });
+    (globalThis as any).fetch = mockFetch;
+    const results = await judge.judgeBatch([
+      { symbol: 'BTC', assetType: 'crypto', histVol: { p25: 0.003, median: 0.006, p75: 0.012, max: 0.05 }, currentState: { regime: 'x', trend: 'y', volatility: 0.003 } },
+    ]);
+    expect(Array.isArray(results)).toBe(true);
+    expect(results[0]).toBeNull();  // ETH 唔 match BTC——null
+  });
+});
