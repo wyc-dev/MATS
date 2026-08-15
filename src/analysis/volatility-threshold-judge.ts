@@ -200,16 +200,24 @@ export class VolatilityThresholdJudge {
         try { parsed = JSON.parse(codeMatch[1]); } catch { /* 繼續 */ }
       }
       if (!parsed) {
-        const start = content.indexOf('{');
-        if (start >= 0) {
+        // v2.0.869-P4(主神 刁鑽攻擊):搵每個 { 位置——逐個 } 試 parse——
+        // 舊邏輯由第一個 { 開始——第二個 JSON 連埋第一個——parse 失敗
+        let searchFrom = 0;
+        while (!parsed) {
+          const start = content.indexOf('{', searchFrom);
+          if (start < 0) break;
           for (let i = start; i < content.length; i++) {
             if (content[i] === '}') {
               try {
-                parsed = JSON.parse(content.slice(start, i + 1));
-                break;
+                const candidate = JSON.parse(content.slice(start, i + 1)) as { thresholds?: Array<Record<string, unknown>> };
+                if (candidate && Array.isArray(candidate['thresholds'])) {
+                  parsed = candidate;
+                  break;
+                }
               } catch { /* 繼續試下一個 } */ }
             }
           }
+          searchFrom = start + 1;
         }
       }
       if (!parsed) {
