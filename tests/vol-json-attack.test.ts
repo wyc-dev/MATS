@@ -160,3 +160,35 @@ describe('v2.0.869-P4 全面攞晒驗證(前綴/漏 asset)', () => {
     console.log('F2 SKHX:', results[2]);  // 可能 null
   });
 });
+
+describe('v2.0.869-P4 LLM 輸出 {"assets": [...]}(主神 batch JSON 解析失敗)', () => {
+  let tmpDir: string;
+  beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vtj-assets-')); });
+
+  it('A1: LLM 輸出 {"assets": [...]}——解析成功', async () => {
+    const judge = new VolatilityThresholdJudge(path.join(tmpDir, 'vtj.json'));
+    const content = '{"assets": [{"symbol": "xyz:GOLD", "assetType": "precious_metal", "volLow": 0.0001, "volHigh": 0.0005, "trendThreshold": 0.001, "confidence": 0.6, "rationale": "test"}]}';
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ message: { content } }) });
+    (globalThis as any).fetch = mockFetch;
+    const results = await judge.judgeBatch([
+      { symbol: 'xyz:GOLD', assetType: 'precious_metal', histVol: { p25: 0.0003, median: 0.0006, p75: 0.0012, max: 0.005 }, currentState: { regime: 'x', trend: 'y', volatility: 0.00034 } },
+    ]);
+    expect(results[0]).not.toBeNull();
+    expect(results[0]!.volLow).toBe(0.0001);
+  });
+
+  it('A2: LLM 輸出 {"assets": [...]} 多個 asset——全部攞到', async () => {
+    const judge = new VolatilityThresholdJudge(path.join(tmpDir, 'vtj2.json'));
+    const content = '{"assets": [{"symbol": "BTC", "assetType": "crypto", "volLow": 0.0001, "volHigh": 0.0015, "trendThreshold": 0.5, "confidence": 0.7}, {"symbol": "xyz:GOLD", "assetType": "precious_metal", "volLow": 0.0002, "volHigh": 0.002, "trendThreshold": 0.5, "confidence": 0.8}]}';
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ message: { content } }) });
+    (globalThis as any).fetch = mockFetch;
+    const results = await judge.judgeBatch([
+      { symbol: 'BTC', assetType: 'crypto', histVol: { p25: 0.003, median: 0.006, p75: 0.012, max: 0.05 }, currentState: { regime: 'x', trend: 'y', volatility: 0.003 } },
+      { symbol: 'xyz:GOLD', assetType: 'precious_metal', histVol: { p25: 0.0003, median: 0.0006, p75: 0.0012, max: 0.005 }, currentState: { regime: 'x', trend: 'y', volatility: 0.00034 } },
+    ]);
+    expect(results[0]).not.toBeNull();
+    expect(results[0]!.volLow).toBe(0.0001);
+    expect(results[1]).not.toBeNull();
+    expect(results[1]!.volLow).toBe(0.0002);
+  });
+});
