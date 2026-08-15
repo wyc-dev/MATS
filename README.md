@@ -215,6 +215,39 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 
 > All agents have user-selectable model dropdowns in the UI.
 
+### MATS 多智能體系統組成(全面升級——v2.0.869-P3)
+
+MATS 多智能體系統組成如下：
+
+**Terminal Agent**：負責將用戶自然語言偏好轉化為 Root Command Prompt，並於每個 Cycle 前執行規則檢查（規則失敗即中止以節省 token），Cycle 後則進行決策驗證，確保符合用戶偏好。
+
+**Fractal Momentum Sentinel**：專注多時間框架碎形突破偵測，捕捉早期趨勢加速訊號，為系統中第一個發現趨勢的智能體。
+
+**On-Chain Whisperer**：進行分類感知的鏈上分析，涵蓋加密市場（mempool、資金流、供應數據）以及傳統金融市場（DXY、COT、商品相關指標）。
+
+**OLR & Sentiment Analyst**：計算各方向的 OLR 勝率 P(win)、First-Passage 路徑風險，並結合 Fear & Greed 情緒指標，評估相對於盈虧平衡點的風險報酬邊緣。
+
+**News Reporter**：作為機構敘事解碼器，採用五部分框架進行分析，包括資訊不對稱、價格與新聞時序關係、動機分類、權力地圖，以及淨機構訊號。
+
+**Independent Risk Auditor**：擔任顧問角色（無否決權），提供止盈／止損與倉位大小建議，並執行硬編碼的連續虧損與震盪市場限制。
+
+**Skeptics**：負責邏輯審計與 thesis 壓力測試，採「Approve-first」原則（僅拒絕存在具體虧損缺陷的決策），驗證 entryThesis，並於每個 Cycle 重新驗證持倉狀態。
+
+**Meta-Agent**：作為仲裁主席，進入偵探模式生成 entryThesis，採用 Confidence Calibration Framework；其權重為 0.00，因 thesis 系統由整體控制，而非透過投票決定。v2.0.869-P3 加入 **SHADOW TRADE STATS 分析**（bySide 方向仲裁／byExitReason 陷阱偵測／avgPnl 負偏度偵測／totalPnl regime 真相）與**暗黑心理學層**（質疑 shadow 統計是否大戶操縱——distribution trap／front-run／force_resolve 噪音陷阱／avgPnl 不對稱／totalPnl regime 真相）。
+
+**System Engineer**：自主代碼工程師，每兩個 Cycle 審計交易記錄與源碼，偵測學習系統中的 bug 並自動修復（經 tsc 與測試安全網驗證）；可修改 src/evolution/、src/cognition/、src/analysis/、src/agents/ 及 tests/ 目錄，但禁止觸及 src/trading/ 與 src/config/，預設使用 GLM-5.2 模型。
+
+#### 決策層升級(v2.0.868-P1P2 → v2.0.869-P3)
+
+除 8 個 agent 辯論外，MATS 加入多層決策校準（全部 soft——conviction 乘數——唔 hard block）：
+
+- **Entry Quality System**(v2.0.868-P1P2)：P1 Confirmation Gate（3 訊號：Price 位置／Momentum／Noise——「反彈已開始先入」）+ P2 Entry MAE Profile（rolling 30 日——保守 EV Wilson LB）+ Skew Analyzer（負偏度陷阱偵測 avgLoss/avgWin > 1.49）。
+- **MAE 模式**(v2.0.869)：MAE/MFE ratio 分類（好／中性／差入場）——重開抑制 ×0.5/0.85/1.0——回測驗證 55pp 差異（差入場 27% vs 好入場 82%——n=131）。
+- **MFE 鎖利**(v2.0.869)：MFE ≥ 1.5-2×ATR 且回吐 30-50% → 鎖利——override Profit Guard（thesis invalidation close 都應用）。
+- **宏觀 gate**(v2.0.869)：時間加權蝕錢率（τ=6h——per symbol×side）——×0.45-0.85。
+- **LLM 波動率 Threshold 判定器**(v2.0.869-P2)：LLM 世界模型判斷 per symbol volLow/volHigh——貴金屬/指數唔再誤判低波動——統計校準（volLow < p25）——5min candle 分析（最近 24 支）——judgeBatch（多 asset 一次過——慳 token）。
+- **Shadow Trade 升級**(v2.0.869-P3)：recentResults 加 exitReason + pnlPct + cap 100——getRecentPerformance(100) bySide/byExitReason——學「邊個 side／離場原因有 edge」——Shadow 保持每個 Cycle 都 BUY SELL 開倉（探索——學「唔同情況下 buy/sell 分別」）。
+
 ### HACP Protocol
 
 Each cycle (1-10 min, user-configurable): Terminal Agent checks rules → 5 sub-agents think in parallel (60s deadline) → Skeptics audits → Meta-Agent arbitrates with RIL reference data → Skeptics validates entryThesis → structured debate → weighted voting consensus → Terminal Agent verifies. 120s hard timeout → HOLD.
