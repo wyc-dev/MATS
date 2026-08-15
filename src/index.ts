@@ -6746,64 +6746,55 @@ ${recentExamples}
             candles: candleMap.get(sym),
           });
         }
-        // v2.0.869-P5(主神 每批 3 個):分批判斷——唔好一次過問 6 個
-        // 一次過問 6 個——輸入太長(candleSummary 50 支 + 24 支 OHLCV)——
-        // LLM 慢(timeout 180s)+ 輸出截斷(漏 asset)——需要分批
-        // 每批 3 個——輸入短——LLM 快——輸出完整——唔漏
-        // 10 個交易資產 → 4 批(3+3+3+1)
+        // v2.0.869-P5(主神 prompt 規範後——唔使分批):一次過問全部——
+        // prompt 已明確「必須輸出全部 asset」——唔會漏——唔使分批
+        // 漏咗嘅——遞歸 retry(整批補問——直至攞晒)
         if (staleAssets.length > 0) {
-          const BATCH_SIZE = 3;
-          const batches: Array<typeof staleAssets> = [];
-          for (let i = 0; i < staleAssets.length; i += BATCH_SIZE) {
-            batches.push(staleAssets.slice(i, i + BATCH_SIZE));
-          }
           void (async () => {
-            for (const batch of batches) {
-              try {
-                const results = await this.volThresholdJudge.judgeBatch(batch);
-                // 每個 asset setSymbolThreshold(per symbol regime 用)
-                if (this.marketState) {
-                  for (let i = 0; i < batch.length; i++) {
-                    const t = results[i];
-                    if (t) {
-                      this.marketState.setSymbolThreshold(batch[i]!.symbol, t.volLow, t.volHigh, t.trendThreshold);
-                    }
-                  }
-                }
-                // v2.0.869-P4(主神 遞歸 retry):漏咗嘅 asset(conf ≤ 0.3 或者 null)——
-                // 整批補問(唔係單獨)——再漏就再整批問——直至攞晒
-                // 或者冇再漏(或者 max 3 輪——防無限)
-                let pending = batch.filter((_, i) => {
+            try {
+              const results = await this.volThresholdJudge.judgeBatch(staleAssets);
+              // 每個 asset setSymbolThreshold(per symbol regime 用)
+              if (this.marketState) {
+                for (let i = 0; i < staleAssets.length; i++) {
                   const t = results[i];
-                  return !t || t.confidence <= 0.3;
-                });
-                let round = 0;
-                while (pending.length > 0 && round < 3) {
-                  round++;
-                  log.info(`[vol-judge] 第 ${round} 輪補問: ${pending.length} 個 asset 漏咗——整批再問`);
-                  const retryResults = await this.volThresholdJudge.judgeBatch(pending);
-                  const stillMissing: Array<typeof staleAssets[number]> = [];
-                  if (this.marketState) {
-                    for (let i = 0; i < pending.length; i++) {
-                      const t = retryResults[i];
-                      if (t && t.confidence > 0.3) {
-                        this.marketState.setSymbolThreshold(pending[i]!.symbol, t.volLow, t.volHigh, t.trendThreshold);
-                        log.info(`✅ [vol-judge] ${pending[i]!.symbol} 補問成功: volLow=${(t.volLow * 100).toFixed(3)}% volHigh=${(t.volHigh * 100).toFixed(2)}% conf=${t.confidence}`);
-                      } else {
-                        stillMissing.push(pending[i]!);
-                      }
-                    }
-                  } else {
-                    stillMissing.push(...pending);
+                  if (t) {
+                    this.marketState.setSymbolThreshold(staleAssets[i]!.symbol, t.volLow, t.volHigh, t.trendThreshold);
                   }
-                  pending = stillMissing;
                 }
-                if (pending.length > 0) {
-                  log.warn(`[vol-judge] ${pending.length} 個 asset 補問 ${round} 輪後仍漏——用默認 threshold`);
-                }
-              } catch (e) {
-                log.warn(`[vol-judge] batch 判斷失敗: ${(e as Error)?.message ?? e}——fallback 默認`);
               }
+              // v2.0.869-P4(主神 遞歸 retry):漏咗嘅 asset(conf ≤ 0.3 或者 null)——
+              // 整批補問(唔係單獨)——再漏就再整批問——直至攞晒
+              // 或者冇再漏(或者 max 3 輪——防無限)
+              let pending = staleAssets.filter((_, i) => {
+                const t = results[i];
+                return !t || t.confidence <= 0.3;
+              });
+              let round = 0;
+              while (pending.length > 0 && round < 3) {
+                round++;
+                log.info(`[vol-judge] 第 ${round} 輪補問: ${pending.length} 個 asset 漏咗——整批再問`);
+                const retryResults = await this.volThresholdJudge.judgeBatch(pending);
+                const stillMissing: Array<typeof staleAssets[number]> = [];
+                if (this.marketState) {
+                  for (let i = 0; i < pending.length; i++) {
+                    const t = retryResults[i];
+                    if (t && t.confidence > 0.3) {
+                      this.marketState.setSymbolThreshold(pending[i]!.symbol, t.volLow, t.volHigh, t.trendThreshold);
+                      log.info(`✅ [vol-judge] ${pending[i]!.symbol} 補問成功: volLow=${(t.volLow * 100).toFixed(3)}% volHigh=${(t.volHigh * 100).toFixed(2)}% conf=${t.confidence}`);
+                    } else {
+                      stillMissing.push(pending[i]!);
+                    }
+                  }
+                } else {
+                  stillMissing.push(...pending);
+                }
+                pending = stillMissing;
+              }
+              if (pending.length > 0) {
+                log.warn(`[vol-judge] ${pending.length} 個 asset 補問 ${round} 輪後仍漏——用默認 threshold`);
+              }
+            } catch (e) {
+              log.warn(`[vol-judge] batch 判斷失敗: ${(e as Error)?.message ?? e}——fallback 默認`);
             }
           })();
         }
