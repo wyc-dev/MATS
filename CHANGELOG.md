@@ -4,6 +4,32 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.869-P4: Trade 記錄缺失修復 + 對帳機制(主神 HL trade 缺失調查)
+
+**背景(主神深入調查)**:HL 真實 trade(63,055 Close Short)唔見咗——open position 唔見 + close 冇記錄——UI Trade Incident 冇顯示。
+
+### Root Cause(調查確認)
+- onFills closeExchangePosition——close 本地 mirror——但係冇 call recordTrade——trade 唔會寫入 Supabase——UI 冇顯示(主因!)
+- recordTrade 寫入失敗——唔 retry——間歇性錯誤永久缺失
+- 冇監察——系統冇 check「HL 有 trade 但 Supabase 冇」
+
+### 修復(Google Tech Lead + 量化金融)
+- `index.ts` onFills closeExchangePosition 後——call recordTrade(所有 close 路徑都寫入 Supabase)
+- `supabase-trade-writer.ts` recordTrade 加 retry(3 次——指數退避 1s/2s/4s)——間歇性錯誤唔會永久缺失
+- `scripts/reconcile-trades.ts`(對帳機制)——realTrades(本地)vs Supabase trade_records——缺失 → 補寫(用 realTrades 完整資料——包括 entryThesis/exitThesis——主神要求)
+- buildTradeRow side 大小寫不敏感('SELL'/'Short' → sell——舊邏輯大寫誤判 buy——方向顛倒)
+
+### 刁鑽攻擊硬化(併發/狀態注入/持久化污染——13 個新測試)
+- `trade-writer-attack.test.ts` +6(buildTradeRow 極端值/side 異常)
+- `reconcile-attack.test.ts` +7(對帳機制 null/NaN id/超長/併發)
+- 修復:buildTradeRow side 大小寫 + reconcile NaN id skip
+- 順帶修正:market-state-volatility.test.ts + analysis-matrix.test.ts(剷除 binance-websocket 時漏咗 import 更新)
+
+### 測試
+- 全量:2280 pass + 14 pre-existing(冇新失敗)
+
+---
+
 ## v2.0.869-P3: Shadow Trade 升級 + Meta-Agent 暗黑心理學(一擊即中提升)
 
 **背景(主神深入調查)**:今日交易表現差(-$2.99——8 蝕 1 賺)——主要係「新架構之前」開嘅 trade(S/R bounce 失敗——低波動市場)——Shadow trade 需要升級(追蹤/統計——提升一擊即中)。

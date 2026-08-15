@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.869-P3
+> **作者**: YC Wong · **版本**: 2.0.869-P4
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -101,6 +101,20 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 暗黑心理學層(質疑 shadow 統計係咪大戶操縱——distribution trap/front-run/force_resolve 陷阱/avgPnl 不對稱/totalPnl regime 真相)
 
 **刁鑽攻擊硬化**(12 個新測試):prototype 污染/null 樣本/prompt 注入/side 異常/併發——修復(null skip + __proto__ 防污染 + symbol sanitize)。
+
+### v2.0.869-P4: Trade 記錄缺失修復 + 對帳機制
+
+**背景**:HL 真實 trade(63,055 Close Short)唔見咗——open position 唔見 + close 冇記錄——UI Trade Incident 冇顯示。
+
+**Root Cause**:onFills closeExchangePosition——close 本地 mirror——但係冇 call recordTrade——trade 唔會寫入 Supabase——UI 冇顯示(主因!)+ recordTrade 寫入失敗唔 retry + 冇監察。
+
+**修復**:
+- `index.ts` onFills close 後 call recordTrade(所有 close 路徑都寫入)
+- `supabase-trade-writer.ts` recordTrade retry 3 次(指數退避)
+- `scripts/reconcile-trades.ts` 對帳機制(realTrades vs Supabase——缺失補寫——包括 entryThesis/exitThesis)
+- buildTradeRow side 大小寫不敏感(方向顛倒漏洞修復)
+
+**刁鑽攻擊硬化**(13 個新測試):buildTradeRow 極端值/side 異常/對帳 null/NaN id/超長/併發。
 
 ## 帳戶模型：Paper（模擬）vs Real（Hyperliquid 真實）⚠️ 前文後理
 
