@@ -6704,7 +6704,8 @@ ${recentExamples}
         // 用戶所選擇嘅市場先係要 trade 嘅——topPairs 包含一堆未用嘅 symbol
         try {
           for (const sym of this.marketAgent?.getTradingMarkets?.() ?? []) {
-            if (sym) judgeSyms.add(sym);
+            // v2.0.869-P4(主神 刁鑽攻擊):trim 後空 skip(空格 symbol 無效)
+            if (sym && String(sym).trim()) judgeSyms.add(String(sym).trim());
           }
         } catch { /* 非致命 */ }
 
