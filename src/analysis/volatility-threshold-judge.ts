@@ -157,6 +157,7 @@ export class VolatilityThresholdJudge {
   }>): Promise<Array<VolThreshold | null>> {
     if (!assets || assets.length === 0) return [];
     try {
+      log.info(`[vol-judge] batch 開始: ${assets.length} 個 asset——${new Date().toISOString()}`);
       const userMsg = `請判斷以下 ${assets.length} 個資產嘅波動率 threshold(一次過輸出所有):\n${JSON.stringify({
         assets: assets.map(a => ({
           symbol: String(a.symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24),
@@ -179,7 +180,7 @@ export class VolatilityThresholdJudge {
             { role: 'user', content: userMsg },
           ],
         }),
-        signal: AbortSignal.timeout(120000),
+        signal: AbortSignal.timeout(180000),
       });
 
       if (!response.ok) {
@@ -223,7 +224,7 @@ export class VolatilityThresholdJudge {
         }
       }
       if (!parsed) {
-        log.warn(`[vol-judge] batch JSON 解析失敗——fallback 默認`);
+        log.warn(`[vol-judge] batch JSON 解析失敗——fallback 默認——LLM 輸出前 200 字: ${content.slice(0, 200)}`);
         return assets.map(() => null);
       }
       const thresholds = parsed['thresholds'] ?? [];
