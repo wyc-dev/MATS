@@ -1207,26 +1207,14 @@ export class MarketAgent {
     }
 
     // ── Step 2: Refine based on real market data ──
-    // High 24h change (>5%) → upgrade to higher-vol profile (more smoothing)
-    // Low volume (<$1M) → upgrade to stricter profile (less liquidity = more noise)
-    if (change24h > 0.08) {
-      // Extreme volatility — use high_vol_alt profile regardless of asset type
-      profileType = 'high_vol_alt';
-    } else if (change24h > 0.05 && profileType === 'high_vol_crypto') {
-      // High vol for a major crypto — keep high_vol_crypto but it will adapt
-      profileType = 'high_vol_crypto';
-    } else if (change24h < 0.01 && volume24h > 100_000_000) {
-      // Very stable + high volume → low_vol_crypto (relax entry)
-      if (profileType === 'high_vol_crypto') {
-        profileType = 'low_vol_crypto';
-      }
-    }
-
-    // Low volume assets get stricter filtering (more noise from thin books)
+    // v2.0.869-P4(主神 forget change24h):change24h 數據唔可靠(btc 0%——
+    // 但係 HL API 有值——系統攞唔到)——移除 change24h 影響——
+    // 淨係用 volume(有數據支持——低 volume = 更嚴格)
+    // 低 volume 資產——更嚴格過濾(薄訂單簿——更多噪音)
     if (volume24h > 0 && volume24h < 1_000_000 && profileType !== 'high_vol_alt') {
       profileType = 'high_vol_alt';
     } else if (volume24h > 0 && volume24h < 10_000_000 && profileType === 'low_vol_crypto') {
-      // Not enough volume for relaxed entry
+      // 唔夠 volume——唔放寬入場
       profileType = 'high_vol_crypto';
     }
 
