@@ -224,6 +224,27 @@ export class VolatilityThresholdJudge {
         }
       }
       if (!parsed) {
+        // v2.0.869-P4(主神 batch JSON 解析失敗):最後 fallback——
+        // 1. thresholds 可能係 object(唔係 array)——轉 array
+        // 2. content 可能係純 JSON——直接 parse
+        try {
+          const direct = JSON.parse(content) as { thresholds?: unknown } | unknown[];
+          if (Array.isArray(direct)) {
+            // v2.0.869-P4(主神 batch JSON 解析失敗):LLM 輸出直接 array——
+            // 唔係 {"thresholds": [...]}——用 array 做 thresholds
+            parsed = { thresholds: direct as Array<Record<string, unknown>> };
+          } else if (direct && typeof direct === 'object') {
+            const d = direct as { thresholds?: unknown };
+            if (Array.isArray(d['thresholds'])) {
+              parsed = d as { thresholds?: Array<Record<string, unknown>> };
+            } else if (d['thresholds'] && typeof d['thresholds'] === 'object') {
+              // thresholds 係 object——轉 array
+              parsed = { thresholds: Object.values(d['thresholds'] as Record<string, unknown>) };
+            }
+          }
+        } catch { /* 繼續 */ }
+      }
+      if (!parsed) {
         log.warn(`[vol-judge] batch JSON 解析失敗——fallback 默認——LLM 輸出前 200 字: ${content.slice(0, 200)}`);
         return assets.map(() => null);
       }
