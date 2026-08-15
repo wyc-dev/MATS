@@ -6758,27 +6758,36 @@ ${recentExamples}
                 }
               }
             }
-            // v2.0.869-P4(主神 唔穩定——有時 5 個有時 4 個):兩層 retry——
-            // judgeBatch 漏咗嘅 asset(用默認 threshold conf 0.3)——單獨 call 補問
-            // 確保每個 asset 都有真實 threshold(唔用默認)
-            const missing: Array<typeof staleAssets[number]> = [];
-            for (let i = 0; i < staleAssets.length; i++) {
+            // v2.0.869-P4(主神 遞歸 retry):漏咗嘅 asset(conf ≤ 0.3 或者 null)——
+            // 整批補問(唔係單獨)——再漏就再整批問——直至攞晒 6 個
+            // 或者冇再漏(或者 max 3 輪——防無限)
+            let pending = staleAssets.filter((_, i) => {
               const t = results[i];
-              // 默認 threshold(conf 0.3——fallback)或者 null——需要補問
-              if (!t || t.confidence <= 0.3) missing.push(staleAssets[i]!);
-            }
-            if (missing.length > 0) {
-              log.info(`[vol-judge] ${missing.length} 個 asset 漏咗——單獨補問`);
-              const retryResults = await this.volThresholdJudge.judgeBatch(missing);
+              return !t || t.confidence <= 0.3;
+            });
+            let round = 0;
+            while (pending.length > 0 && round < 3) {
+              round++;
+              log.info(`[vol-judge] 第 ${round} 輪補問: ${pending.length} 個 asset 漏咗——整批再問`);
+              const retryResults = await this.volThresholdJudge.judgeBatch(pending);
+              const stillMissing: Array<typeof staleAssets[number]> = [];
               if (this.marketState) {
-                for (let i = 0; i < missing.length; i++) {
+                for (let i = 0; i < pending.length; i++) {
                   const t = retryResults[i];
                   if (t && t.confidence > 0.3) {
-                    this.marketState.setSymbolThreshold(missing[i]!.symbol, t.volLow, t.volHigh, t.trendThreshold);
-                    log.info(`✅ [vol-judge] ${missing[i]!.symbol} 補問成功: volLow=${(t.volLow * 100).toFixed(3)}% volHigh=${(t.volHigh * 100).toFixed(2)}% conf=${t.confidence}`);
+                    this.marketState.setSymbolThreshold(pending[i]!.symbol, t.volLow, t.volHigh, t.trendThreshold);
+                    log.info(`✅ [vol-judge] ${pending[i]!.symbol} 補問成功: volLow=${(t.volLow * 100).toFixed(3)}% volHigh=${(t.volHigh * 100).toFixed(2)}% conf=${t.confidence}`);
+                  } else {
+                    stillMissing.push(pending[i]!);
                   }
                 }
+              } else {
+                stillMissing.push(...pending);
               }
+              pending = stillMissing;
+            }
+            if (pending.length > 0) {
+              log.warn(`[vol-judge] ${pending.length} 個 asset 補問 ${round} 輪後仍漏——用默認 threshold`);
             }
           }).catch(() => {});
         }
