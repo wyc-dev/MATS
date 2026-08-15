@@ -6748,13 +6748,35 @@ ${recentExamples}
         }
         // 一次過批量判斷(慳 token——system prompt 唔重複)
         if (staleAssets.length > 0) {
-          void this.volThresholdJudge.judgeBatch(staleAssets).then((results) => {
+          void this.volThresholdJudge.judgeBatch(staleAssets).then(async (results) => {
             // 每個 asset setSymbolThreshold(per symbol regime 用)
             if (this.marketState) {
               for (let i = 0; i < staleAssets.length; i++) {
                 const t = results[i];
                 if (t) {
                   this.marketState.setSymbolThreshold(staleAssets[i]!.symbol, t.volLow, t.volHigh, t.trendThreshold);
+                }
+              }
+            }
+            // v2.0.869-P4(主神 唔穩定——有時 5 個有時 4 個):兩層 retry——
+            // judgeBatch 漏咗嘅 asset(用默認 threshold conf 0.3)——單獨 call 補問
+            // 確保每個 asset 都有真實 threshold(唔用默認)
+            const missing: Array<typeof staleAssets[number]> = [];
+            for (let i = 0; i < staleAssets.length; i++) {
+              const t = results[i];
+              // 默認 threshold(conf 0.3——fallback)或者 null——需要補問
+              if (!t || t.confidence <= 0.3) missing.push(staleAssets[i]!);
+            }
+            if (missing.length > 0) {
+              log.info(`[vol-judge] ${missing.length} 個 asset 漏咗——單獨補問`);
+              const retryResults = await this.volThresholdJudge.judgeBatch(missing);
+              if (this.marketState) {
+                for (let i = 0; i < missing.length; i++) {
+                  const t = retryResults[i];
+                  if (t && t.confidence > 0.3) {
+                    this.marketState.setSymbolThreshold(missing[i]!.symbol, t.volLow, t.volHigh, t.trendThreshold);
+                    log.info(`✅ [vol-judge] ${missing[i]!.symbol} 補問成功: volLow=${(t.volLow * 100).toFixed(3)}% volHigh=${(t.volHigh * 100).toFixed(2)}% conf=${t.confidence}`);
+                  }
                 }
               }
             }
