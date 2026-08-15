@@ -211,7 +211,7 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 | 5 | **Independent Risk Auditor** | Advisory-only (no veto). TP/SL/size suggestions + hard-coded loss-streak/choppy-market limits. |
 | 6 | **Skeptics** | Logic auditor + thesis stress-tester. Approve-first; rejects only on concrete flaws. Validates entryThesis + re-validates held positions each cycle. |
 | 7 | **Meta-Agent** | Arbitration chairman. Detective mode. Generates entryThesis. Uses Confidence Calibration Framework. Weight 0.00 (thesis system controls, not voting). |
-| 8 | **System Engineer** | Autonomous code engineer. Every 2 cycles: audits trade records + source code, detects learning system bugs, auto-fixes with tsc+test safety net. Reads SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md. Can modify src/evolution/ + src/cognition/ + src/analysis/ + src/agents/ + tests/. Forbidden: src/trading/ + src/config/. Default GLM-5.2. |
+| 8 | **System Engineer** | Autonomous code engineer. Every 2 cycles: audits trade records + source code, detects learning system bugs, auto-fixes with tsc+test safety net. Reads SystemEngineer.md + ARCHITECTURE.md + CHANGELOG.md. Can modify src/evolution/ + src/cognition/ + src/analysis/ + src/agents/ + tests/. Forbidden: src/trading/ + src/config/. Default DeepSeek V4 Flash 0731 (all agents unified since v2.0.850). |
 
 > All agents have user-selectable model dropdowns in the UI.
 
@@ -235,7 +235,7 @@ MATS 多智能體系統組成如下：
 
 **Meta-Agent**：作為仲裁主席，進入偵探模式生成 entryThesis，採用 Confidence Calibration Framework；其權重為 0.00，因 thesis 系統由整體控制，而非透過投票決定。v2.0.869-P3 加入 **SHADOW TRADE STATS 分析**（bySide 方向仲裁／byExitReason 陷阱偵測／avgPnl 負偏度偵測／totalPnl regime 真相）與**暗黑心理學層**（質疑 shadow 統計是否大戶操縱——distribution trap／front-run／force_resolve 噪音陷阱／avgPnl 不對稱／totalPnl regime 真相）。
 
-**System Engineer**：自主代碼工程師，每兩個 Cycle 審計交易記錄與源碼，偵測學習系統中的 bug 並自動修復（經 tsc 與測試安全網驗證）；可修改 src/evolution/、src/cognition/、src/analysis/、src/agents/ 及 tests/ 目錄，但禁止觸及 src/trading/ 與 src/config/，預設使用 GLM-5.2 模型。
+**System Engineer**：自主代碼工程師，每兩個 Cycle 審計交易記錄與源碼，偵測學習系統中的 bug 並自動修復（經 tsc 與測試安全網驗證）；可修改 src/evolution/、src/cognition/、src/analysis/、src/agents/ 及 tests/ 目錄，但禁止觸及 src/trading/ 與 src/config/，預設使用 DeepSeek V4 Flash 0731（v2.0.850 起所有 agent 統一預設 deepseek-v4-flash:0731-cloud）。
 
 #### 決策層升級(v2.0.868-P1P2 → v2.0.869-P3)
 
