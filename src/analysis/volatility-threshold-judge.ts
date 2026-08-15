@@ -177,7 +177,7 @@ export class VolatilityThresholdJudge {
             { role: 'user', content: userMsg },
           ],
         }),
-        signal: AbortSignal.timeout(60000),
+        signal: AbortSignal.timeout(120000),
       });
 
       if (!response.ok) {
@@ -190,9 +190,32 @@ export class VolatilityThresholdJudge {
       if (!content) return assets.map(() => null);
 
       // 解析 JSON(可能包喺 ```json ... ``` 內)
-      const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) ?? content.match(/\{[\s\S]*\}/);
-      const jsonStr = jsonMatch ? jsonMatch[1] ?? jsonMatch[0] : content;
-      const parsed = JSON.parse(jsonStr) as { thresholds?: Array<Record<string, unknown>> };
+      // v2.0.869-P4(主神 batch 判斷失敗):穩健 JSON 提取——
+      // 舊邏輯 content.match(/\{[\s\S]*\}/) 貪婪——match 到「最後一個 }」——
+      // 如果 LLM 輸出「{...} 額外文字 }」——JSON.parse 失敗。
+      // 新邏輯:搵第一個 {——逐個 } 試 parse——成功即用。
+      let parsed: { thresholds?: Array<Record<string, unknown>> } | null = null;
+      const codeMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (codeMatch && codeMatch[1]) {
+        try { parsed = JSON.parse(codeMatch[1]); } catch { /* 繼續 */ }
+      }
+      if (!parsed) {
+        const start = content.indexOf('{');
+        if (start >= 0) {
+          for (let i = start; i < content.length; i++) {
+            if (content[i] === '}') {
+              try {
+                parsed = JSON.parse(content.slice(start, i + 1));
+                break;
+              } catch { /* 繼續試下一個 } */ }
+            }
+          }
+        }
+      }
+      if (!parsed) {
+        log.warn(`[vol-judge] batch JSON 解析失敗——fallback 默認`);
+        return assets.map(() => null);
+      }
       const thresholds = parsed['thresholds'] ?? [];
 
       // 分返開——每個 asset 校準 + 記錄
@@ -269,9 +292,29 @@ export class VolatilityThresholdJudge {
       }
 
       // 解析 JSON(可能包喺 ```json ... ``` 內)
-      const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) ?? content.match(/\{[\s\S]*\}/);
-      const jsonStr = jsonMatch ? jsonMatch[1] ?? jsonMatch[0] : content;
-      const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+      // v2.0.869-P4(主神 batch 判斷失敗):穩健 JSON 提取——逐個 } 試 parse
+      let parsed: Record<string, unknown> | null = null;
+      const codeMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (codeMatch && codeMatch[1]) {
+        try { parsed = JSON.parse(codeMatch[1]); } catch { /* 繼續 */ }
+      }
+      if (!parsed) {
+        const start = content.indexOf('{');
+        if (start >= 0) {
+          for (let i = start; i < content.length; i++) {
+            if (content[i] === '}') {
+              try {
+                parsed = JSON.parse(content.slice(start, i + 1));
+                break;
+              } catch { /* 繼續試下一個 } */ }
+            }
+          }
+        }
+      }
+      if (!parsed) {
+        log.warn(`[vol-judge] JSON 解析失敗 for ${sym}——fallback 默認`);
+        return null;
+      }
 
       // 校準 + 驗證
       const threshold = this.calibrate(sym, parsed, histVol);
