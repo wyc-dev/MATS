@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.869-P4
+> **作者**: YC Wong · **版本**: 2.0.869-P5
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -115,6 +115,21 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - buildTradeRow side 大小寫不敏感(方向顛倒漏洞修復)
 
 **刁鑽攻擊硬化**(13 個新測試):buildTradeRow 極端值/side 異常/對帳 null/NaN id/超長/併發。
+
+### v2.0.869-P5: vol-judge 修復系列(JSON 解析/遞歸 retry/大小寫/每個 Cycle fetch)
+
+**背景**:vol-judge 判斷 threshold——多個問題(batch JSON 解析失敗/有時 5 個有時 4 個/BTC vs btc 污染/每個 Cycle 先 fetch/change24h 數據唔可靠)。
+
+**修復**:
+- JSON 解析多格式(thresholds array/直接 array/assets 包裝/單個 asset object)
+- 遞歸 retry(漏咗嘅整批補問——直至攞晒 6 個——max 3 輪)
+- 大小寫統一(normalizeSymbol——清理污染 36 → 35)
+- 每個 Cycle fetch(移除 1h 過期)
+- judgeSyms 用 getTradingMarkets(用戶所選擇嘅市場——唔係 topPairs)
+- change24h 移除(filter judgment 唔用——數據唔可靠)
+- timeout 180s + save require→import fs
+
+**刁鑽攻擊硬化**(25 個新測試):多格式 JSON 解析/每個 Cycle fetch/judgeSyms 異常/單個 object 解析/遞歸 retry。
 
 ## 帳戶模型：Paper（模擬）vs Real（Hyperliquid 真實）⚠️ 前文後理
 
