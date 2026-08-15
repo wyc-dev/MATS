@@ -41,7 +41,9 @@ export function buildTradeRow(
   return {
     trade_id: tradeId,
     symbol: String(t['symbol'] ?? '').slice(0, 24),
-    side: t['side'] === 'sell' ? 'sell' : 'buy',
+    // v2.0.869-P3(主神 刁鑽攻擊):side 大小寫不敏感——'SELL'/'Short' → sell
+    // 舊邏輯 t['side'] === 'sell' 嚴格比較——大寫 'SELL' 誤判成 buy——方向顛倒!
+    side: String(t['side'] ?? '').toLowerCase() === 'sell' || String(t['side'] ?? '').toLowerCase() === 'short' ? 'sell' : 'buy',
     mode: source,
     entry_price: num(t['entryPrice']),
     exit_price: num(t['exitPrice']),
