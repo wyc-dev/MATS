@@ -4,6 +4,37 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.869-P5: vol-judge 修復系列(JSON 解析/遞歸 retry/大小寫/每個 Cycle fetch)
+
+**背景(主神深入調查)**:vol-judge 判斷 threshold——多個問題:
+- batch JSON 解析失敗(LLM 輸出多格式——直接 array/assets 包裝/單個 object)
+- 有時 5 個有時 4 個(LLM 輸出唔齊——漏 asset)
+- BTC vs btc 大小寫唔一致(污染)
+- 每個 Cycle 先 fetch(唔等 1 小時過期)
+- change24h 數據唔可靠(btc 0%——但係 HL API 有值)
+
+### 修復(Google Tech Lead + 量化金融)
+- **JSON 解析多格式**:穩健提取——搵每個 { 位置——逐個 } 試 parse——處理:
+  - {"thresholds": [...]} / 直接 array / {"assets": [...]} / 單個 asset object
+- **遞歸 retry**:漏咗嘅 asset(conf ≤ 0.3 或者 null)——整批補問——直至攞晒 6 個(或者 max 3 輪)
+- **大小寫統一**:judgeSyms 用 normalizeSymbol(非冒號 → 小寫——冒號 → 前綴小寫 + 資產名保留)——清理現有污染(36 → 35)
+- **每個 Cycle fetch**:移除過期檢查(>1h)——每個 Cycle 都判斷(市場百變)
+- **judgeSyms 範圍**:用 getTradingMarkets(用戶所選擇嘅市場——max 10)——唔係 topPairs(全部 HL symbols——未用嘅)
+- **change24h 移除**:filter judgment 移除 change24h 影響——唔 fetch + 唔顯示(數據唔可靠)
+- **timeout 180s**:多 asset 一次過問——LLM 慢——180 秒超時
+- **save 修復**:require → import fs(ESM 環境)
+
+### 刁鑽攻擊硬化(併發/狀態注入/持久化污染——25 個新測試)
+- `vol-json-attack.test.ts` +13(多格式 JSON 解析)
+- `vol-cycle-attack.test.ts` +6(每個 Cycle fetch/judgeSyms 異常)
+- `vol-single-attack.test.ts` +6(單個 object 解析/遞歸 retry)
+- 修復:judgeSyms trim + normalizeSymbol + 單個 object 解析
+
+### 測試
+- 全量:2280 pass + 13 pre-existing(冇新失敗)
+
+---
+
 ## v2.0.869-P4: Trade 記錄缺失修復 + 對帳機制(主神 HL trade 缺失調查)
 
 **背景(主神深入調查)**:HL 真實 trade(63,055 Close Short)唔見咗——open position 唔見 + close 冇記錄——UI Trade Incident 冇顯示。
