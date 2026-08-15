@@ -65,8 +65,11 @@ function main(): void {
 
     // 3. 搵缺失 trade
     const missing = localTrades.filter(t => {
+      // v2.0.869-P3(主神 刁鑽攻擊):null/非物件 skip + NaN id skip(String(NaN) = 'NaN')
+      if (!t || typeof t !== 'object') return false;
       const id = String(t.id ?? '').trim();
-      return id && !remoteIds.has(id);
+      if (!id || id === 'NaN') return false;
+      return !remoteIds.has(id);
     });
     console.log(`缺失 trade: ${missing.length} 個`);
 
