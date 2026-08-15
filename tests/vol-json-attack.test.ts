@@ -192,3 +192,20 @@ describe('v2.0.869-P4 LLM 輸出 {"assets": [...]}(主神 batch JSON 解析失�
     expect(results[1]!.volLow).toBe(0.0002);
   });
 });
+
+describe('v2.0.869-P4 LLM 輸出單個 asset object(主神 batch JSON 解析失敗)', () => {
+  let tmpDir: string;
+  beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vtj-single-')); });
+
+  it('S1: LLM 輸出單個 asset object——解析成功', async () => {
+    const judge = new VolatilityThresholdJudge(path.join(tmpDir, 'vtj.json'));
+    const content = '{"symbol": "xyz:GOLD", "assetType": "precious_metal", "volLow": 0.0001, "volHigh": 0.001, "trendThreshold": 0.001, "confidence": 0.6, "rationale": "test"}';
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ message: { content } }) });
+    (globalThis as any).fetch = mockFetch;
+    const results = await judge.judgeBatch([
+      { symbol: 'xyz:GOLD', assetType: 'precious_metal', histVol: { p25: 0.0003, median: 0.0006, p75: 0.0012, max: 0.005 }, currentState: { regime: 'x', trend: 'y', volatility: 0.00034 } },
+    ]);
+    expect(results[0]).not.toBeNull();
+    expect(results[0]!.volLow).toBe(0.0001);
+  });
+});
