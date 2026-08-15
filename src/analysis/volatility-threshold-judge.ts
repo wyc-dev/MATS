@@ -244,6 +244,10 @@ export class VolatilityThresholdJudge {
               // v2.0.869-P4(主神 batch JSON 解析失敗):LLM 輸出 {"assets": [...]}——
               // 唔係 {"thresholds": [...]}——用 assets 做 thresholds
               parsed = { thresholds: d['assets'] as unknown as Array<Record<string, unknown>> };
+            } else if (d['symbol'] && d['volLow'] !== undefined && d['volHigh'] !== undefined) {
+              // v2.0.869-P4(主神 batch JSON 解析失敗):LLM 輸出單個 asset object——
+              // 唔係 array/thresholds/assets——用單個 object 做 thresholds(單個 array)
+              parsed = { thresholds: [d as unknown as Record<string, unknown>] };
             }
           }
         } catch { /* 繼續 */ }
