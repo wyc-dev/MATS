@@ -849,7 +849,10 @@ export class HACPEngine {
           // Fallback: if we can't determine hold time, assume it's < 30 min and
           // block the invalidation (conservative — better to let a bad position
           // run a bit than to close a winning position early).
-          const entryTimestamp = (position as any).entryTimestamp;
+          const entryTimestamp = (position as any).entryTimestamp ?? (position as any).openedAt;
+          // v2.0.869-P5(主神 held only 0 min 調查):Position 結構用 openedAt——
+          // 唔係 entryTimestamp——之前 entryTimestamp = undefined——holdTimeMinutes = 0——
+          // BLOCK 所有 thesis invalidation——唔 close——倒蝕!
           const holdTimeMinutes = entryTimestamp 
             ? (Date.now() - entryTimestamp) / 60000 
             : 0; // Unknown hold time — assume < 30 min
