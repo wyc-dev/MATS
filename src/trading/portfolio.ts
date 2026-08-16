@@ -1003,6 +1003,11 @@ export class PortfolioTracker {
       const hlPosValue = margin + (hlUnrealizedPnl as number);
       if (Number.isFinite(margin) && margin > 0 && hlPosValue >= 0 && hlPosValue <= margin * 3) {
         pos.unrealizedPnl = hlUnrealizedPnl as number;
+        // v2.0.869-P5(主神 price moved 0.00% 調查):用 HL pnl 同步更新 unrealizedPnlPct——
+        // 之前淨係更新 unrealizedPnl——unrealizedPnlPct 仲係 recomputePnL(currentPrice=entryPx)——
+        // = 0——hacp.ts thesis invalidation 用 unrealizedPnlPct 判斷「price moved」——
+        // 全部 0.00%——BLOCK 所有 thesis invalidation——唔 close——倒蝕!
+        pos.unrealizedPnlPct = margin > 0 ? (hlUnrealizedPnl as number) / margin : 0;
         trackMAEMFE(pos);
       } else {
         // HL pnl 跳出 sanity range(錯值/污染)——fallback 本地 recomputePnL
