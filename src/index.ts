@@ -8642,6 +8642,11 @@ ${recentExamples}
         entryThesis: (p as any).entryThesis,
         // v2.0.104: Forward isTradingMarket flag (undefined for real positions)
         isTradingMarket: (p as any).isTradingMarket as boolean | undefined,
+        // v2.0.869-P5(主神 price moved 0.00% 調查):Forward unrealizedPnlPct——
+        // hacp.ts posCtx 用 p.currentPrice 重新計算 pnlPct——但係 currentPrice 可能 = entryPrice
+        // (HL WS 冇 currentPrice)——pnlPct = 0——thesis invalidation 全部 BLOCK——唔 close——倒蝕!
+        // 用 portfolio 嘅真實 unrealizedPnlPct(本座已修正——用 HL pnl 更新)
+        unrealizedPnlPct: (p as any).unrealizedPnlPct as number | undefined,
         // v2.0.152: Forward MAE/MFE so adjustPositions can use MFE-aware trailing SL
         minValueReached: (p as any).minValueReached as number | undefined,
         maxValueReached: (p as any).maxValueReached as number | undefined,
@@ -8693,6 +8698,8 @@ ${recentExamples}
             side: 'buy' as const, // placeholder — quantity=0 means no real position
             entryPrice: mktPrice,
             currentPrice: mktPrice,
+            // v2.0.869-P5:非持倉市場——pnl = 0(placeholder)
+            unrealizedPnlPct: 0,
             stopLoss: undefined,
             takeProfit: undefined,
             leverage: this.marketAgent.getConfig().leverage,

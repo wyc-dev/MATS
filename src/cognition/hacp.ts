@@ -673,7 +673,9 @@ export class HACPEngine {
         averageEntryPrice: p.entryPrice,
         currentPrice: p.currentPrice,
         unrealizedPnl: pnl,
-        unrealizedPnlPct: pnlPct,
+        // v2.0.869-P5(主神 price moved 0.00% 調查):用 currentPositions 傳入嘅真實
+        // unrealizedPnlPct(portfolio 用 HL pnl 更新)——唔用重新計算(p.currentPrice 可能 = entryPrice——0)
+        unrealizedPnlPct: (p as any).unrealizedPnlPct ?? pnlPct,
         stopLossPrice: p.stopLoss,
         takeProfitPrice: p.takeProfit,
         leverage: lev,
