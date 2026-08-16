@@ -8647,6 +8647,9 @@ ${recentExamples}
         // (HL WS 冇 currentPrice)——pnlPct = 0——thesis invalidation 全部 BLOCK——唔 close——倒蝕!
         // 用 portfolio 嘅真實 unrealizedPnlPct(本座已修正——用 HL pnl 更新)
         unrealizedPnlPct: (p as any).unrealizedPnlPct as number | undefined,
+        // v2.0.869-P5(主神 held 0 min 調查):Forward openedAt——hacp.ts holdTimeMinutes
+        // 用 openedAt(entryTimestamp 唔存在)——但係 currentPositions 冇 openedAt——holdTime = 0
+        openedAt: (p as any).openedAt as number | undefined,
         // v2.0.152: Forward MAE/MFE so adjustPositions can use MFE-aware trailing SL
         minValueReached: (p as any).minValueReached as number | undefined,
         maxValueReached: (p as any).maxValueReached as number | undefined,
@@ -8700,6 +8703,7 @@ ${recentExamples}
             currentPrice: mktPrice,
             // v2.0.869-P5:非持倉市場——pnl = 0(placeholder)
             unrealizedPnlPct: 0,
+            openedAt: 0,
             stopLoss: undefined,
             takeProfit: undefined,
             leverage: this.marketAgent.getConfig().leverage,
