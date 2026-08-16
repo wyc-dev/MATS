@@ -684,6 +684,9 @@ export class HACPEngine {
         entryThesis: p.entryThesis,
         // v2.0.104: Forward isTradingMarket flag for agent context
         isTradingMarket: p.isTradingMarket,
+        // v2.0.869-P5(主神 held 0 min 調查):Forward openedAt——holdTimeMinutes 用
+        // (entryTimestamp 唔存在——openedAt 先係真實開倉時間)
+        openedAt: (p as any).openedAt as number | undefined,
       };
     });
 
@@ -764,6 +767,8 @@ export class HACPEngine {
           takeProfit: p.takeProfitPrice,
           leverage: p.leverage,
           entryThesis: p.entryThesis,
+          // v2.0.869-P5(主神 held 0 min 調查):Forward openedAt——holdTimeMinutes 用
+          openedAt: (p as any).openedAt as number | undefined,
         }));
 
       if (positionsWithThesis.length > 0) {
