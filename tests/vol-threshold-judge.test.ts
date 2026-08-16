@@ -125,7 +125,7 @@ describe('v2.0.869 formatCandles(5min candle 摘要——慳 token)', () => {
     expect(summary).toContain('5min candle 摘要');
     expect(summary).toContain('趨勢');
     expect(summary).toContain('波動');
-    expect(summary).toContain('最近 24 支');
+    expect(summary).toContain('最近 12 支');  // v2.0.869-P5:24 支 → 12 支(1 小時視窗)
     // 最近 5 支精確 OHLCV(時間格式 [HH:MM])
     expect(summary).toContain('[');
   });

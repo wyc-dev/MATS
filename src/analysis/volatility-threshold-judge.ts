@@ -148,7 +148,8 @@ export class VolatilityThresholdJudge {
       // 6 個 asset × 24 支 = 144 行——輸入太長——LLM 慢——180s timeout——全部 fallback
       // 12 支 × 6 個 = 72 行——輸入短——LLM 快——唔 timeout
       // 12 支 = 60 分鐘 = 1 小時(主神:剛剛好夠一個鐘)
-      const recent = candles.slice(-12).map(c => {
+      const recentCandles = candles.slice(-12);
+      const recent = recentCandles.map(c => {
         const d = new Date(c.t);
         const hh = String(d.getHours()).padStart(2, '0');
         const mm = String(d.getMinutes()).padStart(2, '0');
@@ -157,7 +158,9 @@ export class VolatilityThresholdJudge {
       return `5min candle 摘要(最近 ${n} 支):\n`
         + `  趨勢:${trendPct >= 0.1 ? '上升' : trendPct <= -0.1 ? '下降' : '橫行'}(${trendPct >= 0 ? '+' : ''}${trendPct.toFixed(2)}%——${n} 支內)\n`
         + `  波動:平均 ${(avgRange * 100).toFixed(3)}% / 高 ${(maxRange * 100).toFixed(3)}% / 低 ${(minRange * 100).toFixed(3)}%\n`
-        + `  最近 12 支:\n${recent}`;
+        // v2.0.869-P5(主神 刁鑽攻擊):recent 係 join 後嘅 string——length 係字符數唔係支數!
+        // 用 recentCandles.length(實際支數)——唔係 recent.length(字符數)
+        + `  最近 ${recentCandles.length} 支:\n${recent}`;
     } catch { return ''; }
   }
 
