@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.869-P8
+> **作者**: YC Wong · **版本**: 2.0.869-P10
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -150,6 +150,25 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 ### v2.0.869-P7-attack: 刁鑽攻擊硬化
 
 **修復**:Infinity stopLossPrice/currentPrice 唔再 bypass structure_confirmed(sanitize 為 finite 正值);normalizeSymbol null/undefined/非 string → ''(唔 crash);fallback map leverage Infinity → 0。
+
+### v2.0.869-P9: Supabase 資料完整性修復 + 資料契約文檔
+
+**背景**:審計 backend 寫入 Supabase 嘅資訊係咪齊全,發現 4 個缺口。
+
+**修復**:
+- `writeUiSnapshot` camelCase→snake_case section 映射(agentThoughts/marketState → agent_thoughts/market_state)——之前跌入 misc,frontend AgentMonitor 永遠顯示「未收到 agent_thoughts」(主神 R6 數據丟失)
+- `edge_report` 列(migration 21)+ writeCycle 寫入
+- `SUPABASE_DATA_CONTRACT.md`(gitignored)——frontend/app agent 讀取 Supabase 嘅完整資料契約
+
+### v2.0.869-P10: MAE 模式持久化污染修復
+
+**背景**:刁鑽攻擊(併發/狀態注入/持久化污染)MAE 模式升級方案,發現 2 個漏洞。
+
+**修復**:
+- `load()` 保留 `dataMissing` flag——restart 後 HL pnl 修復前舊樣本(MAE=0/MFE=0)唔再被誤判 'good'
+- `load()` 過濾腐敗 mfePct(>MAX_SANITY=300)——1e308 唔再 → ratio=0 → 'good'
+- `getMaePattern` filter 加 `Number.isFinite(mfePct)`(防禦性)
+- `maxSanity` 提升為 module-level `MAX_SANITY`
 
 ### v2.0.869-P8: Distribution Shape Gate + Convexity/Asymmetry Detector
 

@@ -20,6 +20,7 @@ const DEFAULT_PATH = 'data/evolution/entry-quality.json';
 const MIN_SAMPLES = 20;              // Profile 冷啟動
 const ROLLING_DAYS = 30;             // 最近 30 日(主神:「相同資產最近數據」)
 const MAX_SAMPLES = 100;             // per context rolling cap
+const MAX_SANITY = 300;              // margin %——MAE/MFE sanity clamp(±3×margin)
 
 // ── P1:Confirmation Gate(純函數——可測)────────────────────────────
 
@@ -180,7 +181,7 @@ export class EntryQuality {
       if (!sym) return;
       // 污染過濾:MAE/MFE 唔應該超出合理範圍(±3×margin——sanity)
       // 10x 槓杆 → 價格 ±30% 已經極端——margin ±300% 唔可能(錯價)
-      const maxSanity = 300; // margin %
+      const maxSanity = MAX_SANITY; // margin %(module-level constant)
       // v2.0.868-attack10:正 MAE = 數據錯(MAE 定義係逆向——≤0)——skip 唔 clamp 隱藏
       if (Number.isFinite(maePct) && maePct > 0) return;
       const mae = Number.isFinite(maePct) ? Math.max(-maxSanity, maePct) : 0;
@@ -272,6 +273,7 @@ export class EntryQuality {
       const recent = arr.filter(s =>
         s.closedAt >= cutoff && !s.dataMissing
         && Number.isFinite(s.maePct) && s.maePct <= 0
+        && Number.isFinite(s.mfePct)
         && Number.isFinite(s.closedAt),
       );
       if (recent.length < 3) return null; // 樣本太少——中性(唔干擾)
@@ -382,11 +384,20 @@ export class EntryQuality {
               const cleanSamples = samples
                 .filter((s): s is EntrySample => !!s && typeof s === 'object'
                   && Number.isFinite((s as EntrySample).maePct)
-                  && Number.isFinite((s as EntrySample).closedAt))
+                  && Number.isFinite((s as EntrySample).closedAt)
+                  // v2.0.869-P10: 只 reject 有限但超 MAX_SANITY 嘅 mfePct(腐敗 1e308)——
+                  // NaN/Infinity 喺 map 當 0(同 record 一致——唔 skip)
+                  && !(Number.isFinite((s as EntrySample).mfePct) && (s as EntrySample).mfePct > MAX_SANITY))
                 .map(s => ({
-                  maePct: s.maePct, mfePct: Number.isFinite(s.mfePct) ? s.mfePct : 0,
+                  maePct: s.maePct,
+                  // v2.0.869-P10: clamp mfePct 到 [0, MAX_SANITY]——持久化污染(1e308)
+                  // 之前只 check finite——巨大 mfePct → ratio=0 → 誤判 'good'
+                  mfePct: Number.isFinite(s.mfePct) ? Math.max(0, Math.min(MAX_SANITY, s.mfePct)) : 0,
                   pnlPct: Number.isFinite(s.pnlPct) ? s.pnlPct : 0,
                   closedAt: s.closedAt,
+                  // v2.0.869-P10: 保留 dataMissing flag——之前 load 丟失——
+                  // restart 後 HL pnl 修復前舊樣本(MAE=0/MFE=0)被誤判 'good'
+                  dataMissing: s.dataMissing === true,
                 }))
                 .slice(-MAX_SAMPLES);
               if (cleanSamples.length > 0) clean.profile[k] = cleanSamples;
