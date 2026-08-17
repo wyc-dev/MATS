@@ -254,6 +254,24 @@ function buildExplanation(
  * @param n       Number of recent prices to use (default 20)
  * @returns Per-cycle σ (std of log returns). 0 if insufficient data.
  */
+/**
+ * v2.0.870-P21-A: mean_reverting regime → drift 強制歸零。
+ *
+ * 病理(8·18 SKHX 驗屍):GBM 以近期 drift ν 估 path probability,但 MR regime
+ * 按定義係均值回歸——順勢 drift 喺呢度係假設違反(model misspecification)。
+ * 實證:SKHX 升完一浸 → drift 極正 → P(TP)=100%、edge +71pp 「high confidence」
+ * BUY → 37 分鐘 −2.26%。
+ * 修正:MR regime 用 ν=0(GBM zero-drift 極限)——P = a/(a+b)(barrier ratio),
+ * 即 MR 下嘅誠實上限(SL 近 TP 遠 → 長倉 P≈35%,唔會再有 100% 蜃景)。
+ * 環境開關 FP_MR_ZERO_DRIFT=false 即刻還原。
+ */
+const FP_MR_ZERO_DRIFT = (process.env['FP_MR_ZERO_DRIFT'] ?? 'true') !== 'false';
+export function sanitizeDriftForRegime(drift: number, regime?: string): number {
+  if (!Number.isFinite(drift)) return 0;
+  if (FP_MR_ZERO_DRIFT && regime === 'mean_reverting') return 0;
+  return drift;
+}
+
 export function estimateVolatility(prices: number[], n: number = 20): number {
   const recent = prices.slice(-Math.min(n, prices.length));
   if (recent.length < 3) return 0;

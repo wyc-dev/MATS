@@ -43,6 +43,10 @@ export interface SmartSLTPInput {
   takeProfitPct: number;
   /** v2.0.836: Risk profile for DCS-aware SL/TP scaling (optional, backward compatible) */
   riskProfile?: 'aggressive' | 'moderate' | 'conservative';
+  /** v2.0.870-P21-B: 實測不利止蝕滑點(bps,symbol:side 級;P21-C 供應,
+   *  n≥3 先出現)。SL 距離地板 = 2× 滑點——止蝕預算要覆蓋「被止蝕嘅執行成本」,
+   *  否則 thin book(xyz: 實測 147bps 滑穿 80bps SL)令實蝕 = 計劃 ×2.3。 */
+  stopSlippageBps?: number;
   /** v2.0.849: Adverse short-term momentum (fraction, e.g. 0.03 = +3% AGAINST
    *  this position). When > 0, the SL distance is widened to cover 2.5× the
    *  adverse momentum range so a continuation of the push doesn't stop the
@@ -369,7 +373,20 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
     ? Math.max(0, input.adverseMomentum ?? 0)
     : 0;
   const momFloorPct = Math.min(advMom * 2.5, 0.05); // 2.5× range, capped 5%
-  const hardFloorPct = Math.max(baseSlFloorPct, momFloorPct);
+  // ── P21-B: stop-slippage floor——止蝕離場本身要錢:SL 近過 ~2× 實測滑點,
+  //    觸發嗰下嘅執行成本已蝕凸計劃。冷啟動(無估計)→ 0 → 完全冇影響。
+  //    只加闊、永不收窄(HARD FLOOR 語義不變,v2.0.849 invariant 保持)。
+  const STOP_SLIP_FLOOR_ENABLED = (process.env['STOP_SLIP_FLOOR_ENABLED'] ?? 'true') !== 'false';
+  const STOP_SLIP_FLOOR_MULT = Number(process.env['STOP_SLIP_FLOOR_MULT'] ?? '2.0');
+  const STOP_SLIP_FLOOR_CAP = Number(process.env['STOP_SLIP_FLOOR_CAP_PCT'] ?? '0.04');
+  const slipBps = Number.isFinite(input.stopSlippageBps) && (input.stopSlippageBps ?? 0) > 0 ? (input.stopSlippageBps as number) : 0;
+  const slipFloorPct = STOP_SLIP_FLOOR_ENABLED
+    ? Math.min((slipBps * STOP_SLIP_FLOOR_MULT) / 10_000, STOP_SLIP_FLOOR_CAP)
+    : 0;
+  const hardFloorPct = Math.max(baseSlFloorPct, momFloorPct, slipFloorPct);
+  if (slipFloorPct > 0) {
+    logParts.push(`[SL-slip] floor ${(slipFloorPct * 100).toFixed(2)}% (2× measured stop slip ${slipBps.toFixed(0)}bps)`);
+  }
 
   // 1. Raw adverse momentum floor (v2.0.207 #C) — apply once.
   if (momFloorPct > getSlPct()) {
@@ -528,6 +545,17 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   // ═══════════════════════════════════════════════════════════════
   // CAPS — SL max (profile-specific), TP max (profile-specific)
   // ═══════════════════════════════════════════════════════════════
+
+  // ── P21-B final enforcement:stop-slip 地板喺所有階段(槓桿加闊、MFE floor、
+  //    entropy dampen...)之後做 widen-only 最終夾實——之前只入 hardFloorPct 會被
+  //    leverage stage 直接覆寫(實證:log 有 floor 2.94% 但最終 SL 得 1.60%)。
+  if (slipFloorPct > 0) {
+    const nowPct = Math.abs(slPrice - entryPrice) / entryPrice;
+    if (slipFloorPct > nowPct + 1e-9) {
+      slPrice = isBuy ? entryPrice * (1 - slipFloorPct) : entryPrice * (1 + slipFloorPct);
+      logParts.push(`[SL-slip-final] widened to ${(slipFloorPct * 100).toFixed(2)}% (final enforcement)`);
+    }
+  }
 
   const finalSlPct = Math.abs(slPrice - entryPrice) / entryPrice;
   const finalTpPct = Math.abs(tpPrice - entryPrice) / entryPrice;

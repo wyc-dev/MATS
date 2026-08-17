@@ -21,7 +21,7 @@ const DATA_DIR = path.resolve(process.cwd(), 'data/evolution');
 // ─── Write Lock (prevents concurrent writes that corrupt JSON) ───
 const writeQueue: Promise<void>[] = [];
 
-function lockedWrite(filePath: string, data: string): void {
+export function lockedWrite(filePath: string, data: string): void {
   const prev = writeQueue.length > 0 ? writeQueue[writeQueue.length - 1]! : Promise.resolve();
   const next = prev.then(() => atomicWriteSync(filePath, data));
   writeQueue.push(next);

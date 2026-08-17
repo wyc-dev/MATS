@@ -4,6 +4,32 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P21: 8·18 SKHX 驗屍三連修(主神實單檢討:FP 蜃景 × 止蝕盲區 × 滑點地板)
+
+**導火線**(主神實單):BUY xyz:SKHX $1238.5,37 分鐘 −11.3%($−1.34)。Entry thesis 吹「First-Passage P(TP)=100%, edge +71pp, high confidence」;實際:exit $1210.5 滑穿收緊 SL($1228.59)多 **147bps**,實蝕 = 計劃風險 **×2.31**。
+
+### P21-C: stop-exit slippage 觀測(盲區實錘修復)
+- edgeExecTracker 淨記開倉 → `avgSlip=0bps` 假象;**stop-out 滑點從未量度** → SL 幾何決策全盲
+- `ExecutionTracker.recordStopExit()`:signed/adverse bps,per symbol:side(EWMA α0.3 + 平均 max,偏保守),persist `data/evolution/stop-slippage.json`(atomic write;lockedWrite 升 export)
+- 冷啟動 <3 樣本 → estimate null(P21-B 唔郁);觸發條件係**價格證據**(exit 穿越 final SL),唔依賴 closeReason 字串
+- 觀測發現(順手):`lockedWrite` 係 microtask queue,process-exit 有 flush 窗口風險(與 repo 其他持久化一致,記低)
+
+### P21-A: MR regime FP drift 歸零(模型錯用斬根)
+- 病理:GBM 用近期 drift ν 估 path probability,喺 mean_reverting regime 係**模型假設違反**——升完一浸 → drift 極正 → P(TP)=100% 蜃景
+- `sanitizeDriftForRegime()`:MR regime → ν=0(zero-drift 極限 P = a/(a+b),MR 誠實上限);兩個 call site 全接(index.ts x2)
+- 重播驗證(測試錨定原案):同一份幾何(SL −0.98%/TP +1.82%),蜃景 drift 下 P=0.82 → 歸零後 P=0.35(edge 0pp,+71pp 唔會再出現);env `FP_MR_ZERO_DRIFT=false` 還原
+
+### P21-B: SL 距離地板 = 2× 實測 stop-slip
+- live 路徑係 `computeSmartSLTP`(computeATRSLTP 係 dead code);slip floor 同 conf/momentum/exec-lens 地板並列,**只加闊唔收窄**(v2.0.849 hard-floor invariant 保持)
+- 實證修正:最初只入 `hardFloorPct`(entropy-dampen 邊界)會被 leverage stage 覆寫 → 加 [SL-slip-final] 最終 widen-only 夾實;cap 4% 防荒謬闊止蝕
+- 冷啟動零影響(無估計 → no-op);env: STOP_SLIP_FLOOR_ENABLED / MULT / CAP_PCT
+- **⚠️ 已知副作用**:SL 加闊但 TP 唔郁 → RR 跌(重播 1.25→0.68)。喺真 MR edge 下合理(減止蝕頻率+滑點佔比),但 TP 幾何(per-symbol payoff——GOLD payoff 0.24)係 P20-B 議題,主神批准先郁
+
+### 驗證
+tests/p21-trade-postmortem-fixes.test.ts **11 綠**(蜃景重現對照組 + 原案重播 + 滑點數學 + 持久化 round-trip + 毒輸入 + 地板 widen-only/cap);全量 2634 pass / 13 pre-existing;tsc clean;/api 層冇郁。
+
+---
+
 ## v2.0.870-P19': Calibration Pipeline 修線(主神實證發現:v2.0.863 校準器一直係死碼)
 
 **主神問「P19 係咪確認提升盈利」→ 本座答唔確認,順勢實證挖穿:**
