@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.869-P15
+> **作者**: YC Wong · **版本**: 2.0.869-P15-attack
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -168,6 +168,14 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 統一用 `candleSnapshot` close 價(同 scanDEX18AssetsInBackground 一致——即市 close ≈ mid)
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
+
+### v2.0.869-P15-attack: RegimeWinRateLearner 攻擊硬化
+
+**背景**:刁鑽攻擊(併發/狀態注入/持久化污染)P15 嘅 RegimeWinRateLearner,發現未來 closedAt 漏洞。
+
+**修復**:
+- `getWinRate` clamp dt 到非負——未來 closedAt 唔再令 weight > 1(單一 trade 主導 win rate)
+- `recordTrade` + `load` clamp closedAt 到 now——未來 closedAt 唔會入 state
 
 ### v2.0.869-P15: Regime-Reversal Profit Lock(組合信號鎖利)
 
