@@ -4,6 +4,20 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P18-attack2: P18 刁鑽攻擊修复(截斷挽救 × fallback 鏈 × Skeptics 畸形輸入)
+
+**主神第三輪攻擊指令**:併發/狀態注入/持久化污染 + 出其不意——本次最痛發現係 **P18 自己嘅 claim 有假**:「decision-first 順序救到截斷」實測唔成立——`parseMultiSymbolResponse → extractJSON` 嘅 backward-scan filter 只認 `"thought"`/`"decision"` key,decision-first 之後完整嘅 marketTicker/positions 物件冇呢啲 key → 截斷喺尾段時完整決策照樣全丟。主動更正並封鎖:
+
+- **V-B(HIGH)→ G1**:`repairTruncatedJSON` 通用截斷修復(single-pass stack 追蹤 + 安全切點快照 + closers 補全,bounded 300 attempts);backward-scan filter 擴充認全部 decision key(`marketTicker`/`positions`/`approved`/`valid`...)。截斷修復實測:tho… 中途截 → BUY 決策完整救返(尾段嘅 overallConfidence 真數據已失 → 安全 default 0.5,唔會再係 phantom 0.0 全 HOLD)
+- **V-A1(HIGH)→ G2**:`glm-5:cloud` **已於 2026-07-15 退役**(實彈 curl HTTP "retired")——503 fallback 鏈結尾必死。改 `glm-5.2:cloud`(實測 format:'json' 支援)+ 從 AVAILABLE_MODELS 移除退役選項 + guard test 釘死
+- **V-A2(HIGH)→ G3**:fallback request **漏 `num_predict`**(平台預設 128/2048 → 停運窗口批量截斷)+ 漏 `think: false`。抽 `buildChatRequestBody()` 單一構造器,主路徑同 fallback 共用——根治「兩份 body 各自腐爛」
+- **V-C(MEDIUM)→ G4**:Skeptics `modifiedPositions` 回 object(唔係 array)→ `.find` TypeError → 外層 catch → **REJECT 靜默升級做 auto-APPROVE**。依家 LLM 回覆全部型別 guard(approved 嚴格 boolean、modified* 型態檢查、modifiedConfidence finite)——畸形輸入當冇修改,verdict 原樣保留
+- **G5**:fallback 空 content(thinking 模型細預算實測問題)明確 warn + 繼續下一個
+
+**測試**:tests/p18-attack.test.ts 6 個(紅→綠;過程揪出 2 個本座自己嘅測試 bug:空 positions 陣列未觸發 .find 路徑、`indexOf` 搵唔存在欄位得 -1 令截斷失真)。全量 **2615 pass / 13 pre-existing**;tsc 零錯誤。攻擊中自我糾正:Skeptics hard-constraint 正則「單位不匹配」懷疑經查證後**撤回**(system-guard 產出用 decimal,比較同單位——誠實記錄)。
+
+---
+
 ## v2.0.870-P18: Agent System Prompt 全面重構(極致精準 × 極致慳 token × 截斷止血)
 
 **背景(主神指令)**:除咗 System Engineer,對其餘全部 agent 嘅 system prompt 作極致優化——更精準、更慳 token、最大化盈利潛力、完美限制輸出格式。覆核階段發現一個比起原計劃更重要嘅結構性漏洞,並納入 P0 優先修復。

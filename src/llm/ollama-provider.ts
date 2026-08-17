@@ -211,6 +211,36 @@ export class OllamaProvider implements LLMProvider {
     }
   }
 
+  /**
+   * v2.0.870-P18-attack2 (G3): 單一 request-body 構造器。
+   * 主路徑同 503 fallback 共用——根治病史:「兩份 body 各自腐爛」
+   * (fallback 曾漏 `num_predict` → 平台預設(128/2048)喺停運窗口批量截斷 JSON;
+   *  亦漏 `think: false` → thinking model 細 budget 回吐空 content)。
+   */
+  private buildChatRequestBody(request: LLMRequest, model: string) {
+    return {
+      model,
+      messages: request.messages.map((m) => ({ role: m.role, content: m.content })),
+      // Disable thinking for cloud models so they output JSON directly without
+      // chain-of-thought reasoning eating the output budget.
+      think: false,
+      options: {
+        temperature: request.temperature,
+        // v2.0.77: Model-aware context window (GLM-5.2 1M; other cloud 256k; local 8192)
+        num_ctx: getNumCtxForModel(model),
+        // v2.0.208: explicit num_predict — without this Ollama default (often 128/2048)
+        // truncates long multi-symbol JSON. Cloud API rejects -1; must be positive.
+        num_predict: Math.max(1, Math.floor(request.maxTokens ?? 8192)),
+      },
+      // v2.0.870-P18: provider-level JSON mode — Ollama /api/chat 原生支援
+      // format:'json',保證 content 係 valid JSON(實測 deepseek-v4-flash
+      // done_reason=stop + parse OK;thinking 放獨立 field 唔受影響)。
+      // 終止 markdown fence/前後散文導致嘅 parse fallback(→全 HOLD 失血)。
+      format: 'json',
+      stream: false,
+    };
+  }
+
   async chat(request: LLMRequest): Promise<LLMResponse> {
     // Circuit breaker: fail fast when Ollama is in a known-bad state.
     // This prevents every agent from waiting the full 120s timeout during
@@ -225,7 +255,9 @@ export class OllamaProvider implements LLMProvider {
     const originalModel = model;
     const maxRetries = 2;
     // v2.0.79: Fallback models for 503 (model overloaded)
-    const FALLBACK_MODELS = ['deepseek-v4-flash:0731-cloud', 'kimi-k2.6:cloud', 'glm-5:cloud'];
+  // v2.0.870-P18-attack2 (G2): glm-5:cloud 已於 2026-07-15 退役(實測 HTTP error
+  // "retired")——鏈尾必死。改用 glm-5.2:cloud(已實測支援 format:'json')。
+    const FALLBACK_MODELS = ['deepseek-v4-flash:0731-cloud', 'kimi-k2.6:cloud', 'glm-5.2:cloud'];
 
     // Acquire concurrency slot to avoid ephemeral port exhaustion.
     // acquireSlot() now fails fast after SLOT_ACQUIRE_TIMEOUT_MS instead of
@@ -234,38 +266,7 @@ export class OllamaProvider implements LLMProvider {
 
     try {
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        const body = {
-          model,
-          messages: request.messages.map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
-          // Disable thinking for cloud models (deepseek-v4-flash:0731-cloud, kimi-k2.6:cloud)
-          // so they output JSON directly without chain-of-thought reasoning.
-          think: false,
-          options: {
-            temperature: request.temperature,
-            // v2.0.77: Model-aware context window. Previously hardcoded to 8192
-            // which truncated rich HACP context (market state + news + positions
-            // + evolution context + RBC + pattern DB) well under capacity.
-            // GLM-5.2 supports 1M tokens — give it the full window. Other cloud
-            // models get 256k (their typical max). Local/small models keep 8192
-            // to avoid OOM on modest hardware.
-            num_ctx: getNumCtxForModel(model),
-            // v2.0.208: Pass maxTokens as num_predict (Ollama's output token limit).
-            // Without this, Ollama uses its default (often 128 or 2048) which
-            // truncates long JSON responses from System Engineer (oldCode/newCode
-            // can be 50+ lines each). Use a large default when not specified.
-            // Note: Ollama cloud API rejects -1 (unlimited) — must be positive.
-            num_predict: request.maxTokens ?? 8192,
-          },
-          // v2.0.870-P18: provider-level JSON mode — Ollama /api/chat 原生支援
-          // format:'json',保證 content 係 valid JSON(實測 deepseek-v4-flash
-          // done_reason=stop + parse OK;thinking 放獨立 field 唔受影響)。
-          // 終止 markdown fence/前後散文導致嘅 parse fallback(→全 HOLD 失血)。
-          format: 'json',
-          stream: false,
-        };
+        const body = this.buildChatRequestBody(request, model);
 
         log.debug(`Ollama chat: model=${model} think=false temp=${request.temperature}`);
 
@@ -388,16 +389,8 @@ export class OllamaProvider implements LLMProvider {
                 model = fallback;
                 // Retry with fallback model (single attempt, no more retries)
                 try {
-                  const fallbackBody = {
-                    model,
-                    messages: request.messages,
-                    options: {
-                      temperature: request.temperature,
-                      num_ctx: getNumCtxForModel(model),
-                    },
-                    format: 'json', // v2.0.870-P18: 同主路徑一致
-                    stream: false,
-                  };
+                  // G3: 與主路徑同一份 body 構造(num_predict/think/format 永不偏差)
+                const fallbackBody = this.buildChatRequestBody(request, model);
                   const fbController = new AbortController();
                   const fbTimeout = setTimeout(() => fbController.abort(), request.timeoutMs ?? 30_000);
                   const fbResponse = await fetch(`${this.baseUrl}/api/chat`, {
@@ -414,6 +407,11 @@ export class OllamaProvider implements LLMProvider {
                   }
                   const fbData = await fbResponse.json() as any;
                   const fbContent = typeof fbData.message?.content === 'string' ? fbData.message.content : '';
+                  // G5: thinking/小預算模型可回吐空 content——明確記錄,試下一個 fallback
+                  if (!fbContent) {
+                    log.warn(`Fallback model ${fallback} returned empty content (done_reason=${fbData.done_reason ?? '?'}) — trying next`);
+                    continue;
+                  }
                   if (fbContent) {
                     this.recordSuccess();
                     log.info(`✅ Fallback model ${fallback} succeeded after ${originalModel} was overloaded`);

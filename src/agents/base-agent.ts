@@ -47,6 +47,13 @@ function buildPositionsContext(positions: PositionContext[]): string {
   }).join('\n');
 }
 
+// v2.0.870-P18-attack2 (G1): decision 層級識別 key——backward-scan / 截斷修復
+// 只接受含決策語義嘅物件。P18 改用 decision-first schema 後,完整但被孤立嘅
+// marketTicker/positions 物件冇 'thought' key,舊 filter 會將佢 reject 晒——
+// 截斷喺尾段時完整決策全丟。依家 filter 認所有 decision 層面 key。
+const DECISION_KEYS = ['"marketTicker"', '"positions"', '"decision"', '"thought"', '"approved"', '"valid"'] as const;
+const hasDecisionSemantics = (s: string): boolean => DECISION_KEYS.some(k => s.includes(k));
+
 export abstract class BaseAgent {
   readonly identity: AgentIdentity;
   readonly personality: string;
@@ -386,7 +393,7 @@ RULES:
     return { decision: decisions[0]!, confidence: 0.3 };
   }
 
-  /** Extract JSON object from text that may contain reasoning before/after it */
+    /** Extract JSON object from text that may contain reasoning before/after it */
   protected extractJSON(text: string): string {
     // Try direct parse first
     const trimmed = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
@@ -420,12 +427,19 @@ RULES:
               const sub = candidate.slice(scanStart, scanEnd + 1);
               try {
                 JSON.parse(sub);
-                if (sub.includes('"thought"') || sub.includes('"decision"')) {
+                if (hasDecisionSemantics(sub)) {
                   this.logger.debug(`Found valid JSON by scanning backwards (${sub.length} chars)`);
                   return sub;
                 }
               } catch { /* not valid */ }
               scanEnd = candidate.lastIndexOf('}', scanEnd - 1);
+            }
+            // v2.0.870-P18-attack2 (G1): 通用截斷修復——nested braces 令上面全部
+            // 路徑失效時,由尾部向前搵最後完整值邊界,按未閉合 stack 補回 closers。
+            const repaired = this.repairTruncatedJSON(candidate);
+            if (repaired !== null && hasDecisionSemantics(repaired)) {
+              this.logger.info(`🔧 Recovered truncated JSON (${repaired.length} chars)`);
+              return repaired;
             }
             this.logger.warn('JSON extraction failed for: ' + candidate.slice(0, 200));
             return trimmed;
@@ -443,9 +457,84 @@ RULES:
             return closed;
           } catch { /* keep trying */ }
         }
+        // v2.0.870-P18-attack2 (G1): suffix 表走唔通 → 通用截斷修復
+        const repaired = this.repairTruncatedJSON(candidate);
+        if (repaired !== null && hasDecisionSemantics(repaired)) {
+          this.logger.info(`🔧 Recovered truncated JSON (${repaired.length} chars)`);
+          return repaired;
+        }
       }
       this.logger.warn('No JSON object found in response: ' + trimmed.slice(0, 200));
       return trimmed;
+    }
+  }
+
+  /**
+   * v2.0.870-P18-attack2 (G1): 通用截斷 JSON 修復。
+   *
+   * 演算法:single-pass 掃描,追蹤字串狀態 + 未閉合 `{`/`[` stack;
+   * 於每個「完整值邊界」(`,` 或 `}`/`]` 收合後)記錄安全切點連同當刻 stack 快照。
+   * 由最後切點向前逐個嘗試:prefix + stack closers → JSON.parse——第一個成功者勝。
+   * 截斷喺字串中途時,prefix 永遠落喺字串之外嘅切點,唔會產生 unbalanced quote。
+   *
+   * 成本:O(n × parse)worst case,bounded by MAX_ATTEMPTS=300 個切點;
+   * LLM JSON ≤ 幾十 KB,parse failure 路徑先有成本。
+   * 任何例外/超時 → null(調用方 fallback → parse fallback → 安全 HOLD)。
+   */
+  protected repairTruncatedJSON(raw: string): string | null {
+    try {
+      interface Cut { pos: number; stackSnapshot: string; inStack: boolean }
+      const cuts: Cut[] = [];
+      let stack: string[] = [];
+      let inString = false;
+      let escaped = false;
+      for (let i = 0; i < raw.length; i++) {
+        const ch = raw[i]!;
+        if (inString) {
+          if (escaped) { escaped = false; continue; }
+          if (ch === '\\') { escaped = true; continue; }
+          if (ch === '"') inString = false;
+          continue;
+        }
+        if (ch === '"') { inString = true; continue; }
+        if (ch === '{' || ch === '[') { stack.push(ch); continue; }
+        if (ch === '}' || ch === ']') {
+          stack.pop();
+          // 切點 = 該 closer 之後(stack 快照 = pop 後嘅 stack)
+          cuts.push({ pos: i + 1, stackSnapshot: stack.join(''), inStack: false });
+          continue;
+        }
+        if (ch === ',') {
+          // 切點 = comma 之前(exclusive)——prefix 自動甩掉 trailing comma
+          cuts.push({ pos: i, stackSnapshot: stack.join(''), inStack: false });
+        }
+      }
+      const closersOf = (snap: string): string =>
+        [...snap].reverse().map(o => (o === '{' ? '}' : ']')).join('');
+      const tryParse = (s: string): string | null => {
+        try { JSON.parse(s); return s; } catch { return null; }
+      };
+      // 候選 0:整段 + closers(處理尾段係完整值但欠 closers,或截斷喺字串尾)
+      const snap0 = stack.join('');
+      if (!inString) {
+        const c0 = tryParse(raw.replace(/,\s*$/, '') + closersOf(snap0));
+        if (c0) return c0;
+      } else {
+        // 字串中途截斷:補引號再補 closers(數值中途截斷已由候選 0 嘅 parse fail 排除)
+        const c0s = tryParse(raw + '"' + closersOf(snap0));
+        if (c0s) return c0s;
+      }
+      // 候選 1+:由最後切點向前
+      const MAX_ATTEMPTS = 300;
+      for (let k = cuts.length - 1, attempts = 0; k >= 0 && attempts < MAX_ATTEMPTS; k--, attempts++) {
+        const { pos, stackSnapshot } = cuts[k]!;
+        const repaired = raw.slice(0, pos).replace(/,\s*$/, '') + closersOf(stackSnapshot);
+        const ok = tryParse(repaired);
+        if (ok) return ok;
+      }
+      return null;
+    } catch {
+      return null;
     }
   }
 
