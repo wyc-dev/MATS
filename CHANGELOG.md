@@ -4,6 +4,32 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.869-P13: env 安全加固 + !command 解析硬化(主神 env 安全指令)
+
+**背景(主神指令)**:env 儲存緊 private key,令 env file 參數更安全。
+
+### 安全問題(確認)
+- `.env` 權限 644(world-readable)——任何用戶可讀 private key
+- private key 明文儲存(HYPERLIQUID_PRIVATE_KEY + SUPABASE_SERVICE_ROLE_KEY)
+- config 冇 !command 支援——冇得用 macOS Keychain
+
+### 修復(三層加固)
+1. **chmod 600 .env**——修 world-readable(只 owner 可讀)
+2. **config 加 !command 支援**——private key 可存 macOS Keychain,唔使明文:
+   `HYPERLIQUID_PRIVATE_KEY=!security find-generic-password -ws 'mats-hyperliquid-private-key'`
+3. **.env.example 文檔化** Keychain 用法
+
+### 攻擊硬化(主神 刁鑽攻擊指令)
+- `resolveCommandValues` 導出供測試 + sanitize 輸出(只攞第一行——去除內部換行/多行輸出)
+- 8 個攻擊測試(輸出換行/空輸出/命令失敗/非 ! 值/空 ! 值/尾部換行/多 key 混合/前後空白)
+
+### 測試
+- 新增 `tests/config-command-attack.test.ts` +8
+- 全量:2517 pass + 13 pre-existing(冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
 ## v2.0.869-P12: Macro Gate 持久化修復(主神 刁鑽攻擊指令)
 
 **背景(主神指令)**:不擇手段用最刁鑽嘅攻擊方案(併發/狀態注入/持久化污染)攻擊 MAE 模式升級方案代碼及週邊 modules,搵出漏洞並完美修復。
