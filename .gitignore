@@ -46,6 +46,7 @@ docs/loop-engineering-blueprint.md
 AGENT_PROMPT.md
 evo.md
 frontend.md
+SUPABASE_DATA_CONTRACT.md
 
 # ─── Logs ───
 logs/

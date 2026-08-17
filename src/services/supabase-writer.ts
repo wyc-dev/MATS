@@ -22,6 +22,37 @@ const log = createLogger({ phase: 'analysis-writer' });
 
 const TABLE = 'asset_analyses';
 
+/**
+ * v2.0.869-P9: Split the apiData payload into ui_snapshots sections.
+ * Pure function (testable) — maps camelCase keys (agentThoughts/marketState)
+ * to snake_case section names (agent_thoughts/market_state). Without this
+ * mapping, agentThoughts/marketState fell into 'misc' and the frontend's
+ * AgentMonitor showed "未收到 agent_thoughts" (owner ruling R6 data loss).
+ */
+export function splitUiSnapshotSections(payload: Record<string, unknown>): Record<string, unknown> {
+  const sectioned: Record<string, unknown> = {
+    status: payload['status'] ?? payload,
+  };
+  const sectionKeyMap: Record<string, string> = {
+    portfolio: 'portfolio',
+    marketState: 'market_state',
+    consensus: 'consensus',
+    agentThoughts: 'agent_thoughts',
+    evolution: 'evolution',
+  };
+  for (const [camelKey, snakeKey] of Object.entries(sectionKeyMap)) {
+    if (payload[camelKey] !== undefined) sectioned[snakeKey] = payload[camelKey];
+  }
+  const mappedKeys = new Set(Object.keys(sectionKeyMap));
+  const miscKeys = Object.keys(payload).filter(k => k !== 'status' && !mappedKeys.has(k));
+  if (miscKeys.length > 0) {
+    const misc: Record<string, unknown> = {};
+    for (const k of miscKeys) misc[k] = payload[k];
+    sectioned['misc'] = misc;
+  }
+  return sectioned;
+}
+
 export class SupabaseAnalysisWriter {
   private client: SupabaseClient | null = null;
   private enabled = false;
@@ -153,6 +184,10 @@ export class SupabaseAnalysisWriter {
           market_data: a.marketData,
           consensus: a.consensus,
           matrix: a.matrix,
+          // v2.0.869-P9: edgeReport 之前計咗但從未寫入 Supabase(頂層字段缺失)。
+          // 而家寫入 edge_report 列(migration 21)——frontend 可讀 edge_report
+          // (matrix cell 嘅 edge 亦喺 matrix.moderate[state].edge)。
+          edge_report: a.edgeReport ?? null,
           metadata: a.metadata,
         }));
         const { error: insErr } = await (this.client as any).from(TABLE).insert(rows);
@@ -196,18 +231,8 @@ export class SupabaseAnalysisWriter {
     if (!payload || typeof payload !== 'object') return;
     try {
       // Split into sections; anything not explicitly sectioned goes to 'misc'.
-      const sectioned: Record<string, unknown> = {
-        status: payload['status'] ?? payload,
-      };
-      for (const key of ['portfolio', 'market_state', 'consensus', 'agent_thoughts', 'evolution']) {
-        if (payload[key] !== undefined) sectioned[key] = payload[key];
-      }
-      const miscKeys = Object.keys(payload).filter(k => !sectioned[k] && k !== 'status');
-      if (miscKeys.length > 0) {
-        const misc: Record<string, unknown> = {};
-        for (const k of miscKeys) misc[k] = payload[k];
-        sectioned['misc'] = misc;
-      }
+      // v2.0.869-P9: extracted to pure function splitUiSnapshotSections (testable).
+      const sectioned = splitUiSnapshotSections(payload);
 
       const rows = Object.entries(sectioned).map(([section, data]) => ({
         cycle_id: cycleId,

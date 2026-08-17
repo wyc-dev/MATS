@@ -4,6 +4,58 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.869-P10: MAE 模式持久化污染修復(主神 刁鑽攻擊指令)
+
+**背景(主神指令)**:不擇手段用最刁鑽嘅攻擊方案(併發/狀態注入/持久化污染)攻擊 MAE 模式升級方案代碼及週邊 modules,搵出漏洞並完美修復。
+
+### 攻擊測試結果(2 個漏洞確認)
+- **A1(MEDIUM)**:dataMissing 樣本(MAE=0/MFE=0)save+load 後——`load()` 嘅 `.map()` 冇保留 `dataMissing` flag → restart 後 HL pnl 修復前舊樣本被誤判 'good'(違反「dataMissing 唔當好入場」設計)
+- **A2(MEDIUM)**:持久化污染 mfePct=1e308——`load()` 只 check finite 冇 clamp → ratio=0 → 誤判 'good'
+
+### 修復(Google Tech Lead + 量化金融)
+1. `load()` 嘅 `.map()` 保留 `dataMissing: s.dataMissing === true`
+2. `load()` 嘅 `.filter()` 過濾腐敗 mfePct(有限但超 MAX_SANITY=300)→ skip(唔當好入場);NaN/Infinity 喺 map 當 0(同 record 一致)
+3. `getMaePattern` filter 加 `Number.isFinite(s.mfePct)`(防禦性)
+4. `maxSanity` 提升為 module-level 常數 `MAX_SANITY`(record + load 共用)
+
+### 測試
+- 新增 `tests/entry-quality-attack.test.ts` +5(持久化污染 A1-A5)
+- 更新 `tests/mae-extreme-attack.test.ts` E2(腐敗 mfePct → null 唔 crash)
+- 全量:2505 pass + 13 pre-existing(冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
+## v2.0.869-P9: Supabase 資料完整性修復 + 資料契約文檔(主神 完整審計指令)
+
+**背景(主神指令)**:審計 backend 寫入 Supabase 嘅資訊係咪齊全,足以顯示整個 dashboard。審計發現 4 個缺口。
+
+### 缺口 1(CRITICAL):agent_thoughts + market_state section 寫錯(snake_case vs camelCase)
+- `writeUiSnapshot` 用 snake_case 搵 section(`agent_thoughts`/`market_state`),但 apiData 用 camelCase(`agentThoughts`/`marketState`)
+- → 呢兩個 section 跌入 `misc`——frontend AgentMonitor 永遠顯示「未收到 agent_thoughts」(主神 R6 完整 8-agent 理據數據丟失)
+- 修復:提取純函數 `splitUiSnapshotSections`(camelCase → snake_case 映射)+ 5 個測試
+
+### 缺口 2(MINOR):edgeReport 頂層冇寫入
+- `writeCycle` 之前只寫 symbol/cycle_id/updated_at/market_data/consensus/matrix/metadata——冇寫 edgeReport
+- 修復:加 `edge_report` 列(migration 21)+ writeCycle 寫入 `edge_report`
+
+### 缺口 3(DEPLOYMENT):用戶 section 表(portfolios/positions/trades)唔喺 mats_backend migrations
+- 呢 3 張表係「照 mats_app migration 01 結構」——依賴 mats_app 嘅 migration
+- 修復:文檔化(SUPABASE_DATA_CONTRACT.md)
+
+### 缺口 4(NOTE):metadata 空 {}
+- 浪費字段,唔係缺口
+
+### 新增文檔
+- `SUPABASE_DATA_CONTRACT.md`——frontend/app agent 讀取 Supabase 嘅完整資料契約(表結構/JSON 形狀/讀取模式/注意事項)
+
+### 測試
+- 新增 `tests/supabase-writer-sections.test.ts` +5(section 映射)
+- 全量:2500 pass + 13 pre-existing(冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
 ## v2.0.869-P8: Distribution Shape Gate + Convexity/Asymmetry Detector(主神 超額盈利指令)
 
 **背景(主神指令)**:以擅長概率及分布嘅量化金融分析師思路,修正或創建新組件,盡一切可能導致 MATS 系統超額盈利。Kelly Sizing 完全唔需要(主神裁決)。

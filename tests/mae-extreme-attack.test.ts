@@ -40,7 +40,7 @@ describe('v2.0.869 MAE 模式極端攻擊(數值極限/架構級/周邊 modules)
     expect(() => eq.getMaePatternMultiplier('skhx', 'sell')).not.toThrow();
   });
 
-  it('E2: mfePct 超大(1e308)——ratio 超細——pattern good——唔 crash', () => {
+  it('E2: mfePct 超大(1e308)——腐敗樣本 skip——唔 crash', () => {
     const p = path.join(tmpDir, 'eq2.json');
     fs.writeFileSync(p, JSON.stringify({
       version: 1, savedAt: 0, backfillDone: false,
@@ -55,8 +55,8 @@ describe('v2.0.869 MAE 模式極端攻擊(數值極限/架構級/周邊 modules)
     const eq = new EntryQuality(p);
     eq.load();
     const pat = eq.getMaePattern('skhx', 'sell');
-    expect(pat).not.toBeNull();
-    expect(Number.isFinite(pat!.ratio)).toBe(true);
+    // v2.0.869-P10: 腐敗 mfePct(1e308)被過濾 → null(唔當好入場——唔 crash)
+    expect(pat).toBeNull();
   });
 
   it('E3: closedAt 未來(1e308)——rolling window 唔 crash', () => {
