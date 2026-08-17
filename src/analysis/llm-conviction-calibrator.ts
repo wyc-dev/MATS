@@ -184,6 +184,46 @@ export class LLMConvictionCalibrator {
   getStats(): { bins: number; klineReads: number } {
     return { bins: Object.keys(this.state.bins).length, klineReads: this.state.klineReads.total };
   }
+
+  /**
+   * v2.0.870-P19': 校準觀測報告——ECE(Expected Calibration Error)+ per-bin 表。
+   * ECE = Σ_b (n_b/N)·|bin中點 conviction − 實績 WR|——低 ECE = LLM 老實;
+   * ECE 大 = conviction 數字有水份/有保留。
+   * 只計有樣本嘅 bin;冷啟動(零樣本)→ ece = null(唔好誤導)。
+   */
+  getCalibrationReport(): {
+    ece: number | null;
+    totalTrades: number;
+    bins: Array<{ key: string; binMid: number; wins: number; losses: number; empiricalWR: number; samples: number; calibrated: number; gap: number }>;
+    klineReads: { correct: number; total: number };
+  } {
+    const rows: Array<{ key: string; binMid: number; wins: number; losses: number; empiricalWR: number; samples: number; calibrated: number; gap: number }> = [];
+    let totalN = 0;
+    let eceSum = 0;
+    for (const [key, bin] of Object.entries(this.state.bins)) {
+      const w = Math.max(0, bin.wins ?? 0);
+      const l = Math.max(0, bin.losses ?? 0);
+      const n = w + l;
+      if (n <= 0) continue;
+      // key = "side|binIdx" → binIdx → 中點 conviction = (idx+0.5)/NUM_BINS
+      const idx = Number(key.split('|')[1] ?? 0);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= NUM_BINS) continue; // 毒 key 防護
+      const binMid = (idx + 0.5) / NUM_BINS;
+      const empiricalWR = w / n;
+      const calibrated = calibrateBin(w, l, binMid);
+      const gap = binMid - empiricalWR; // 正 = 過度自信;負 = 被低估
+      rows.push({ key, binMid: Math.round(binMid * 100) / 100, wins: w, losses: l, empiricalWR: Math.round(empiricalWR * 1000) / 1000, samples: n, calibrated: Math.round(calibrated * 1000) / 1000, gap: Math.round(gap * 1000) / 1000 });
+      totalN += n;
+      eceSum += n * Math.abs(gap);
+    }
+    rows.sort((a, b) => a.key.localeCompare(b.key));
+    return {
+      ece: totalN > 0 ? Math.round((eceSum / totalN) * 1000) / 1000 : null,
+      totalTrades: totalN,
+      bins: rows,
+      klineReads: { correct: this.state.klineReads.correct, total: this.state.klineReads.total },
+    };
+  }
 }
 
 /** 全系統共享單例 */

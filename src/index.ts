@@ -311,6 +311,8 @@ class MATSSystem {
   /** v2.0.865-fix3: 今次決策嘅 consensus confidence(開倉傳遞用——
    *  舊用 lastHACPResult = 上 cycle,錯配——Conviction Calibrator/Meta-Calibrator 全錯) */
   private lastCycleConsensusConfidence = 0.5;
+  /** v2.0.870-P19': entryConsensusConfidence 缺失計數(觀測 pipeline 健康) */
+  private entryConfMissingCount = 0;
   // v2.0.837: Meta-Cognitive Calibrator — system self-awareness
   private metaCalibrator!: MetaCalibrator;
   // v2.0.838: Self-Improver — auto-tuning hyperparameters
@@ -3874,6 +3876,13 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // v2.0.863 規限①: LLM conviction calibrator — 記錄 (LLM conviction, outcome)
         // 用開倉時嘅 consensus confidence(entryConsensusConfidence——v2.0.837 已存)
         const entryConf = (trade as { entryConsensusConfidence?: number }).entryConsensusConfidence;
+        // v2.0.870-P19': 觀測性——缺失時明確記錄(每 50 單最多 warn 一次,唔洗版)
+        if (!Number.isFinite(entryConf)) {
+          this.entryConfMissingCount = (this.entryConfMissingCount ?? 0) + 1;
+          if (this.entryConfMissingCount === 1 || this.entryConfMissingCount % 50 === 0) {
+            log.warn(`[llm-calib] closed trade missing entryConsensusConfidence (count=${this.entryConfMissingCount}) — calibrator starving`);
+          }
+        }
         if (Number.isFinite(entryConf) && this.llmCalibrator) {
           this.llmCalibrator.recordDecision(
             trade.side === 'sell' ? 'sell' : 'buy',
@@ -5450,15 +5459,20 @@ ${recentExamples}
       const sym = normalizeSymbol(decision.symbol);
       const side = decision.action as 'buy' | 'sell';
       const pre = this.precomputedEntryFeatures.get(`${sym}:${side}`);
-      if (pre) {
-        entryDataPayload = {
-          marketFeatures: pre.marketFeatures,
-          olrPWin: pre.olrPWin,
-          shadowWinRate: pre.shadowWinRate,
-          regime: this.marketState?.getState(sym)?.regime ?? this.marketState?.getState(this.marketAgent?.getSelectedSymbol() ?? '')?.regime,
-          consensusConfidence: this.lastCycleConsensusConfidence ?? this.lastHACPResult?.consensus?.confidence,
-        };
-      }
+      // v2.0.870-P19'(本座實證:200/200 實倉冇 entryConsensusConfidence):payload
+      // 永遠構建——consensusConfidence/regime 唔依賴 precompute。歷史 bug:
+      // real-mode precompute 常態 miss → `if (pre)` 永不成立 → payload undefined →
+      // entryConsensusConfidence 永不落盤 → LLMConvictionCalibrator 空腹死碼。
+      // pre 嘅 features 維持 optional(injectPrecomputedEntryFeatures 會後補)。
+      entryDataPayload = {
+        marketFeatures: pre?.marketFeatures,
+        olrPWin: pre?.olrPWin,
+        shadowWinRate: pre?.shadowWinRate,
+        regime: this.marketState?.getState(sym)?.regime ?? this.marketState?.getState(this.marketAgent?.getSelectedSymbol() ?? '')?.regime,
+        consensusConfidence: Number.isFinite(this.lastCycleConsensusConfidence)
+          ? this.lastCycleConsensusConfidence
+          : this.lastHACPResult?.consensus?.confidence,
+      };
     }
 
     // v2.0.213 (#7): Prepare execution lens for computeATRSLTP. This caches
@@ -13518,6 +13532,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       const apiData = {
         systemPaused: this.paused,
         decisionAudit: this.decisionAudit.slice(-20),
+        // v2.0.870-P19': conviction calibration 觀測(bins/ECE/讀圖一致率)
+        llmCalibration: this.llmCalibrator?.getCalibrationReport?.() ?? null,
         status: {
           cycles: this.totalCycles,
           balance: displayBalance,

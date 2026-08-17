@@ -645,6 +645,13 @@ export class APIServer {
         return;
       }
 
+      // v2.0.870-P19': LLM conviction calibration 觀測(ECE + per-bin 表)
+      if (pathname === '/api/calibration' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify((this.data as { llmCalibration?: unknown } | undefined)?.llmCalibration ?? null));
+        return;
+      }
+
       if (pathname === '/api/portfolio') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(this.data?.portfolio ?? {}));
