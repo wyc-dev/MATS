@@ -36,6 +36,12 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../observability/logger.ts';
+import {
+  computeHybridDecayScore,
+  type HybridDecayConfig,
+  type HybridDecayInput,
+  type HybridDecayBreakdown,
+} from './hybrid-penalty-decay.ts';
 
 const log = createLogger({ phase: 'dynamic-threshold' });
 
@@ -110,6 +116,8 @@ export interface DynamicThresholdResult {
   boostFactor: number;
   /** Raw winner boost input (clamped to ≥ 0). */
   winnerBoost: number;
+  /** v2.0.870-P16: hybrid decay breakdown (undefined when hybrid inactive). */
+  hybrid?: HybridDecayBreakdown & { bypassed: boolean };
 }
 
 export interface DynamicThresholdInput {
@@ -134,6 +142,12 @@ export interface DynamicThresholdInput {
    *  up to 0.15; a PnL-likely winner contributes up to 0.08. Capped at
    *  BOOST_CAP in the resulting boostFactor. */
   winnerBoost?: number;
+  /** v2.0.870-P16: Optional hybrid decay evidence (per-symbol). When present
+   *  AND the calculator has an enabled HybridDecayConfig, the penalty decay
+   *  switches from idle-only to the three-channel hybrid model (cycle+win 20%
+   *  / time 40% with floor / edge 40% with hard bypass). When absent, the
+   *  legacy idle-only path runs unchanged (zero-risk rollback). */
+  hybridDecay?: HybridDecayInput;
 }
 
 // ─── Hysteresis Scoring ────────────────────────────────────────────────────
@@ -338,7 +352,12 @@ function scoreRegime(
 export class DynamicThresholdCalculator {
   // Hysteresis state: each factor remembers its current score [-2, +2]
   private wrScore = 0;
-  private idleScore = 0;
+  // v2.0.870-P16-attack2 (F4): idle hysteresis 改 per-symbol——v2.0.228 將
+  // idleCycles INPUT 改做 per-symbol,但 hysteresis STATE 仲係全局單例
+  // → 熱 symbol(idle=0)同凍 symbol(idle=25)交替 evaluate 時狀態機乒乓,
+  // 其中一方永遠到唔到穩態 ±2(fairness guarantee #4 靜默失效)。
+  // WR/Sharpe/drawdown/regime 嘅輸入係全局指標 → 共享狀態正確,唔改。
+  private perSymbolIdleScores: Map<string, number> = new Map();
   private drawdownScore = 0;
   private sharpeScore = 0;
   private regimeScore = 0;
@@ -350,8 +369,19 @@ export class DynamicThresholdCalculator {
   // symbol's penalty decays independently.
   private perSymbolIdleCycles: Map<string, number> = new Map();
 
+  // v2.0.870-P16: Hybrid Penalty Decay config (null → legacy idle-only decay)
+  private hybridCfg: HybridDecayConfig | null = null;
+
   // Last computed result (for inspection / logging)
   private lastResult: DynamicThresholdResult | null = null;
+
+  /**
+   * v2.0.870-P16: Attach hybrid decay config. Pass null to revert to the
+   * legacy idle-only decay path (instant rollback).
+   */
+  setHybridDecayConfig(cfg: HybridDecayConfig | null): void {
+    this.hybridCfg = cfg;
+  }
 
   /**
    * Compute the dynamic threshold and penalty factor.
@@ -367,20 +397,20 @@ export class DynamicThresholdCalculator {
 
     // 1. Score each factor with hysteresis
     const wrRes = scoreRollingWR(input.rollingWR, input.wrSampleCount, this.wrScore);
-    const idleRes = scoreIdleCycles(input.idleCycles, this.idleScore);
+    const idleRes = scoreIdleCycles(input.idleCycles, this.perSymbolIdleScores.get(symKey) ?? 0);
     const ddRes = scoreDrawdown(input.drawdownPct, this.drawdownScore);
     const sharpeRes = scoreSharpe(input.rollingSharpe, input.sharpeSampleCount, this.sharpeScore);
     const regimeRes = scoreRegime(input.regime, this.regimeScore);
 
     // Update hysteresis state
     this.wrScore = wrRes.score;
-    this.idleScore = idleRes.score;
+    this.perSymbolIdleScores.set(symKey, idleRes.score); // F4: per-symbol
     this.drawdownScore = ddRes.score;
     this.sharpeScore = sharpeRes.score;
     this.regimeScore = regimeRes.score;
 
     // 2. Sum and cap
-    const rawScore = this.wrScore + this.idleScore + this.drawdownScore + this.sharpeScore + this.regimeScore;
+    const rawScore = this.wrScore + idleRes.score + this.drawdownScore + this.sharpeScore + this.regimeScore;
     const totalScore = Math.max(-MAX_SCORE, Math.min(MAX_SCORE, rawScore));
 
     // 3. Map to threshold
@@ -394,7 +424,31 @@ export class DynamicThresholdCalculator {
     //    Safe-num all inputs to prevent NaN propagation.
     const safeIdle = Number.isFinite(input.idleCycles) ? input.idleCycles : 0;
     const safePenalty = Number.isFinite(input.netPenalty) ? input.netPenalty : 0;
-    const decayMultiplier = Math.max(0, 1 - safeIdle / PENALTY_DECAY_CYCLES);
+    let decayMultiplier = Math.max(0, 1 - safeIdle / PENALTY_DECAY_CYCLES);
+
+    // v2.0.870-P16: Hybrid Penalty Decay — three-channel score (cycle+win 20%
+    // / time 40% with spiral-break floor / edge 40% with hard bypass).
+    // decayMultiplier semantics stay "remaining fraction" (1 = no decay), so
+    // downstream logging and the penaltyFactor formula are unchanged. The
+    // hybrid path can only make decay FASTER than the idle baseline except
+    // when data is missing (conservative); it never amplifies a penalty.
+    let hybrid: (HybridDecayBreakdown & { bypassed: boolean }) | undefined;
+    if (this.hybridCfg?.enabled && input.hybridDecay) {
+      try {
+        const hd = computeHybridDecayScore(
+          { ...input.hybridDecay, idleCycles: safeIdle },
+          this.hybridCfg,
+        );
+        // NaN shield: a polluted score must fall back to the legacy idle
+        // multiplier — never propagate NaN into the gate (v2.0.831 NaN lesson:
+        // NaN < threshold = false would PASS any trade).
+        if (Number.isFinite(hd.score)) {
+          decayMultiplier = Math.max(0, Math.min(1, 1 - hd.score));
+          hybrid = { ...hd.breakdown, bypassed: hd.bypassed };
+        }
+      } catch { /* fall back to legacy idle-only decay */ }
+    }
+
     const decayedPenalty = safePenalty * decayMultiplier;
     const penaltyFactor = 1.0 - Math.min(decayedPenalty, PENALTY_CAP);
 
@@ -421,9 +475,10 @@ export class DynamicThresholdCalculator {
       decayMultiplier,
       boostFactor,
       winnerBoost: rawBoost,
+      hybrid,
       factors: [
         { factor: 'rollingWR', score: this.wrScore, rawValue: input.rollingWR, reason: wrRes.reason },
-        { factor: 'idleCycles', score: this.idleScore, rawValue: input.idleCycles, reason: idleRes.reason },
+        { factor: 'idleCycles', score: idleRes.score, rawValue: input.idleCycles, reason: idleRes.reason },
         { factor: 'drawdown', score: this.drawdownScore, rawValue: input.drawdownPct, reason: ddRes.reason },
         { factor: 'sharpe', score: this.sharpeScore, rawValue: input.rollingSharpe, reason: sharpeRes.reason },
         { factor: 'regime', score: this.regimeScore, rawValue: input.regime, reason: regimeRes.reason },
@@ -432,7 +487,7 @@ export class DynamicThresholdCalculator {
 
     this.lastResult = result;
 
-    log.info(`[Plan-G] threshold=${(threshold * 100).toFixed(1)}% (score=${totalScore > 0 ? '+' : ''}${totalScore}, adj=${(adjustment * 100).toFixed(1)}%), penaltyFactor=${penaltyFactor.toFixed(3)} (net=${(input.netPenalty * 100).toFixed(0)}%, decay=${(decayMultiplier * 100).toFixed(0)}%), boostFactor=${boostFactor.toFixed(3)} (winnerBoost=${(rawBoost * 100).toFixed(0)}%)`);
+    log.info(`[Plan-G] threshold=${(threshold * 100).toFixed(1)}% (score=${totalScore > 0 ? '+' : ''}${totalScore}, adj=${(adjustment * 100).toFixed(1)}%), penaltyFactor=${penaltyFactor.toFixed(3)} (net=${(input.netPenalty * 100).toFixed(0)}%, decay=${(decayMultiplier * 100).toFixed(0)}%)${hybrid ? `, hybrid[bypass=${hybrid.bypassed} cw=${(hybrid.dCW * 100).toFixed(0)}% t=${(hybrid.dTime * 100).toFixed(0)}% e=${(hybrid.dEdge * 100).toFixed(0)}%]` : ''}, boostFactor=${boostFactor.toFixed(3)} (winnerBoost=${(rawBoost * 100).toFixed(0)}%)`);
 
     return result;
   }
@@ -477,6 +532,7 @@ export class DynamicThresholdCalculator {
         // never loses its near-decayed state prematurely.
         if (nextIdle > PENALTY_DECAY_CYCLES * 2) {
           this.perSymbolIdleCycles.delete(sym);
+          this.perSymbolIdleScores.delete(sym); // F4: 同步 evict hysteresis 狀態
         }
       }
     }
@@ -571,7 +627,7 @@ export class DynamicThresholdCalculator {
   /** Reset all hysteresis state (for testing). */
   reset(): void {
     this.wrScore = 0;
-    this.idleScore = 0;
+    this.perSymbolIdleScores = new Map();
     this.drawdownScore = 0;
     this.sharpeScore = 0;
     this.regimeScore = 0;

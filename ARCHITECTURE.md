@@ -1,9 +1,9 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.869-P15-attack
+> **作者**: YC Wong · **版本**: 2.0.870-P16-attack2+P17
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
-> **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
+> **代碼量**: ~72,000 行 TypeScript（嚴格模式，零類型錯誤）
 
 ---
 
@@ -40,7 +40,7 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 認知演化管線（v2.0.868-P1P2: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 Component Attribution + 1 PAEL Exit-Price Learner + **1 LLM World-Model Layer** + **1 LLM Direction Verifier** + **1 EV Filter** + **1 Close-Decision Calibrator** + **1 Profitability Analyzer** + **1 Entry Quality System**）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + Component Attribution v2.0.844 + **Q-RL Direction Signal v2.0.861** + **Shadow Pool Priority Eviction v2.0.861** + **PAEL v2.0.862** + **LLM World-Model v2.0.863** + **LLM Direction Verifier v2.0.864** + **EV Filter v2.0.865** + **Close-Decision Calibrator v2.0.866** + **TG Signal Push + Supabase Trade Writer v2.0.867** + **Profitability Analyzer + 閉環校準 v2.0.868**（Hold-Time EV + Direction Bias + Fee Impact + PAEL threshold 過早率閉環 + reconciliation fill 驗證）+ **Distribution Shape Gate + Convexity Detector v2.0.869-P8**（偏度/峰度門 + Wilson LB 保守 EV）|
+| **自我演化** | 認知演化管線（v2.0.868-P1P2: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 Component Attribution + 1 PAEL Exit-Price Learner + **1 LLM World-Model Layer** + **1 LLM Direction Verifier** + **1 EV Filter** + **1 Close-Decision Calibrator** + **1 Profitability Analyzer** + **1 Entry Quality System**）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + Component Attribution v2.0.844 + **Q-RL Direction Signal v2.0.861** + **Shadow Pool Priority Eviction v2.0.861** + **PAEL v2.0.862** + **LLM World-Model v2.0.863** + **LLM Direction Verifier v2.0.864** + **EV Filter v2.0.865** + **Close-Decision Calibrator v2.0.866** + **TG Signal Push + Supabase Trade Writer v2.0.867** + **Profitability Analyzer + 閉環校準 v2.0.868**（Hold-Time EV + Direction Bias + Fee Impact + PAEL threshold 過早率閉環 + reconciliation fill 驗證）+ **Distribution Shape Gate + Convexity Detector v2.0.869-P8**（偏度/峰度門 + Wilson LB 保守 EV）+ **Hybrid Penalty Decay + Runs Test τ 調製 v2.0.870-P16/P17**（三層 OR 混合衰減打斷 Plan G death spiral：score = max(idle floor, time floor, 0.2·dCW+0.4·dTime+0.4·dEdge)；Wald-Wolfowitz 游程檢定 τ 9–18h 自適應；attack2：bypass 升級鏈硬化——plausibility + 新鮮度窗口 + load sanitize）|
   歷史：v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge）。v2.0.849-851 將 momentum/exec-lens/confidence SL widening 移植到 live computeSmartSLTP + 修復 TradeRecord.closeReason 資料缺失（RIL + trade-audit 可以分到「SL 太緊」定「thesis 錯」）。v2.0.853 修復 closeTrade dual-mode guard（dual 模式下所有平倉被靜默跳過）+ 3 個缺失 closeReason 標記 + tradingManager.closePosition 用滯後 WS 價格代替實際 HL fill + UI SSE 退避。**v2.0.855 學習管道修復**：aligned shadow 恆開（real-trade cycles 都開，Q-RL 不再餓死）+ shadow_blind OLR 計數器（v2.0.834 承諾但從未 implement）+ thesis-invalidation closeReason 全覆蓋。**v2.0.855-fix**：Q-RL EXP backfill（1072 筆歷史交易 populate Q-table，令 discoverPatterns 即刻有嘢掃）。**v2.0.855-attack**：7 個修復引入嘅漏洞全部修補（OLR counter 字符串/負數消毒、closeReason 白名單、aligned-shadow weightedDirection 用真 LLM lean）。**v2.0.855-attack2**：Q-RL binRegime 邊界同 regimeToOrdinal 完全錯位（6/7 regime 入錯桶，bull/bear 對調）已對齊。**v2.0.856**：Attribution signal 契約修正（SELL 反轉 bug）+ side/symbol guard 補完（normalizeTradeSide，8 call site 強制 coerce 成 SELL 嘅 bug）+ edge-audit 工具。**v2.0.857 移除 aggressive/conservative 風險等級（moderate-only）**：12 個檔案——3×3 矩陣縮減為 1×3、後端 riskProfile 恆為 moderate、Meta-Agent prompt 改 moderate-only（慳 ~4.7KB context/cycle）。**v2.0.858 解鎖 cycle 期間市場選擇**：select-symbol 延遲應用 + throttle coalescing（唔再掉更新）+ symbol-set drift check（唔再淨比 count）。**v2.0.859 移除零消費者組件 + 修復學習管道**：backfill 重複喂飼（Q-RL/OLR persisted flag）+ OLR calibration shrinkage（斬 overconfidence）。**v2.0.860 三因子探索 + adaptive 歸一 + SE operator-conditioned context**（Frontis-MA1/OpenMLE-Evo：`U = 1.0×score + 0.6×progress + 0.3×novelty`，score 對 cell 自己 reward 歷史 min-max 歸一；SE 診斷只對 priority 文件畀全文、其餘 stub）|
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
@@ -168,6 +168,44 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 統一用 `candleSnapshot` close 價(同 scanDEX18AssetsInBackground 一致——即市 close ≈ mid)
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
+
+### v2.0.870-P16 + P16-attack2 + P17: Hybrid Penalty Decay(混合衰減)+ 攻擊硬化 + Runs Test τ 調製
+
+**背景**:Plan G(v2.0.227)penalty 只喺 idle(冇交易)時衰減(`decayMultiplier = max(0, 1 − idleCycles/30)`)——系統蝕緊錢時 → penalty 高 → 壓制 trade → 繼續蝕(但唔 idle)→ penalty 永遠唔衰減 → death spiral(penaltyFactor 永久卡 floor 0.70)。
+
+**P16 主神方案 20/40/40 權重**(cycle+win / time / edge),三個結構修正:
+1. **Time floor**:時間係保底唔係普通加權項(pure weighting 下 48h 只得 38%)
+2. **Edge hard-bypass**:極強 edge 完全豁免(唔係只豁免 40%)
+3. **Idle floor(回測驅動)**:純加權令 idle-complete 只剩 20% 貢獻(burden +442% 退化)
+
+最終結構 **三層 OR**:`score = max(idleFloor, timeFloor, 0.2·dCW + 0.4·dTime + 0.4·dEdge)`——兩個 floor 保任何單一充分證據完成釋放(嚴格支配舊規則:score ≥ dIdle = 舊 decay),加權項令 wins/edge 喺 floors 未起時率先加速(2 贏 + 中強 edge = 55%)。
+
+**Hard bypass**(極強 edge 唔壓制):wilsonLB ≥ 0.70 + n ∈ [25, 5000] + median > 0(skew trap 守衛)+ EWMA > 0(新鮮度)+ 新鮮窗口 ≤1000 cycles。Graduated edge:wilsonLB 0.55→0.70 線性 0→1,median 缺失/≤0 → ×0.5 保守。
+
+**P16-attack2(刁鑽攻擊第二輪,6 紅測試實證 5 漏洞全修復轉綠)**:
+- **V1 CRITICAL**:污染 `combo-win-rates.json`(wins 通脹 100,000/2)→ wilsonLB≈1 → bypass 完全豁免 penalty,spiral 防護永久解除。修:F1 load() sanitize(wins/losses 必須 finite 非負整數 cap 50,000)+ F2 hybrid plausibility(wilsonLB ≤ maxLB(n)=1/(1+z²/n)+0.01、n ≤ 5000 否則成個 edge 通道歸零、|median/ewma| ≤ 300%)
+- **V2 HIGH**:EWMA write-only decay → 休眠 combo 嘅陳舊強 edge 喺新 regime 繼續 bypass。修:F3 `ComboWRResult.lastCycle` 暴露,bypass 要求 `currentCycle − lastCycle ≤ 1000`(`PLAN_G_EDGE_STALE_CYCLES`,≈2× EWMA 半衰期);缺 cycle 資訊 → 唔 bypass(保守)
+- **V3 HIGH**:`1e999`/負數/小數/字串 wins/losses → wilsonLB=NaN。修:同 F1
+- **V4 MEDIUM**:DTC idle hysteresis 全局單例 vs per-symbol idleCycles 輸入(v2.0.228 未收尾)→ 熱/凍 symbol 交替時狀態乒乓,永不到穩態 ±2。修:F4 per-symbol `perSymbolIdleScores` Map(其他 4 factor 輸入係全局指標,共享正確)
+- **V5 MEDIUM**:edge lookup 用全局 `combinedState.regime` 查 gateSymbol cell。修:F5 per-symbol regime(`marketState.getState(gateSymbol)`)
+- **V6 LOW**:close 雙管道重放雙計。修:F6 `recordEvent(... , tradeId)` + LRU ring(cap 500)
+
+**P17: Runs Test τ 調製(Wald-Wolfowitz 游程檢定)**——時間衰減嘅職責係「證據過時」,過時速度取決於證據係 regime 持續定隨機噪聲:per-symbol outcome ring(cap 30,持久化)→ runs z-score;z ≤ −1.96(連蝕成串 = regime 未完)→ τ_eff = τ × 1.5;|z| < 1.96(運氣)→ τ;z ≥ +1.96(乒乓 = 噪聲)→ τ × 0.75;全蝕(方差零)→ ×1.5;全贏 → ×0.75;n < 15 → ×1.0 冷啟動中性。penalty 對 serial correlation 反應,唔係對運氣反應。
+
+**τ 預設 24h → 12h(主神裁決)**——runs test 調製後實效 9–18h 自適應。
+
+**回測驗證(200 真實 trades / 580h)**:burden −24.9% @τ=12h(180.3 → 135.5 burden-hours;離線 edge/runs=0 保守下界);恢復率不變;synthetic spiral 舊規則 decay 永遠 ≤23% vs hybrid 86%@24h / 95%@36h。
+
+**Env flags**:`PLAN_G_HYBRID_DECAY`(default true,可回滾舊 idle-only)· `PLAN_G_DECAY_TAU_HOURS=12` · `PLAN_G_EDGE_BYPASS_WILSON=0.70` · `PLAN_G_EDGE_BYPASS_SAMPLES=25` · `PLAN_G_EDGE_MIN_SAMPLES=15` · `PLAN_G_EDGE_STALE_CYCLES=1000`
+
+### Files
+- `src/analysis/hybrid-penalty-decay.ts` — computeHybridDecayScore 純函數 + computeRunsTestTauMultiplier(P17)+ HybridPenaltyDecayTracker 持久化(`data/evolution/plan-g-decay-state.json`,v2 含 outcome ring)
+- `src/analysis/dynamic-threshold.ts` — `setHybridDecayConfig` + `hybridDecay` 輸入(NaN shield legacy fallback)+ F4 per-symbol idle hysteresis
+- `src/evolution/combo-win-rate-tracker.ts` — F1 load() sanitize + `ComboWRResult.lastCycle`(F3)
+- `src/index.ts` — tracker init/load、`onPositionClosedLearning` recordEvent(trade.id,F6 dedup)、gate edge lookup per-symbol regime(F5)+ freshness cycles + tauMultiplier
+- `scripts/plan-g-decay-backtest.ts` — 真實數據回測 + 合成 death spiral 壓力測試(捉到純加權設計缺陷 → 三層 OR 修正)
+- `tests/hybrid-penalty-decay.test.ts`(44 測試)+ `tests/hybrid-penalty-decay-attack.test.ts`(12)+ `tests/hybrid-penalty-decay-attack2.test.ts`(6 紅轉綠)
+- 全量:2598 pass + 13 pre-existing(gitignored,無新失敗);`tsc --noEmit` 零錯誤
 
 ### v2.0.869-P15-attack: RegimeWinRateLearner 攻擊硬化
 

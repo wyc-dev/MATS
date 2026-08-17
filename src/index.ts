@@ -67,6 +67,7 @@ import { TransformersEmbedProvider, getSharedEmbedProvider } from './evolution/e
 import { SentimentEngine } from './analysis/sentiment-engine.ts';
 import { AdaptiveNoiseFilter, AssetFilterRegistry, type MarketContext as FilterMarketContext, type FilterProfileType } from './analysis/adaptive-filter.ts';
 import { DynamicThresholdCalculator, type DynamicThresholdInput, type DynamicThresholdResult } from './analysis/dynamic-threshold.ts';
+import { HybridPenaltyDecayTracker, hybridDecayConfigFromEnv } from './analysis/hybrid-penalty-decay.ts';
 import { PlanckChaosEngine } from './analysis/planck-chaos.ts';
 import { SystemGuard } from './system-guard/index.ts';
 import { ExecutionTracker } from './trading/execution-tracker.ts';
@@ -295,6 +296,8 @@ class MATSSystem {
   /** v2.0.865:EV Filter(期望值過濾器——量化核心:負 EV 軟性降權) */
   private evFilter!: EVFilter;
   private regimeWinRateLearner!: RegimeWinRateLearner;
+  /** v2.0.870-P16:Hybrid Penalty Decay——per-symbol penalty-event tracker(打破 death spiral) */
+  private hybridDecayTracker!: HybridPenaltyDecayTracker;
   /** v2.0.866:Close-Decision Calibrator(平倉判斷校準——Phase A:記錄+驗證+統計) */
   private closeCalibrator!: CloseDecisionCalibrator;
   /** v2.0.868:Profitability Analyzer——量化分析器(hold-time EV / direction bias / fee impact) */
@@ -938,6 +941,9 @@ class MATSSystem {
       this.assetFilterRegistry = new AssetFilterRegistry();
       // v2.0.227: Plan G dynamic threshold calculator
       this.dynamicThresholdCalc = new DynamicThresholdCalculator();
+      // v2.0.870-P16: Hybrid Penalty Decay——三通道混合衰減(cycle+win 20% /
+      // time 40% floor / edge 40% + hard bypass)。PLAN_G_HYBRID_DECAY=false 可即時回滾。
+      this.dynamicThresholdCalc.setHybridDecayConfig(hybridDecayConfigFromEnv());
       // v2.0.211: Set decision interval for time-based trade frequency pruning
       this.assetFilterRegistry.setDecisionInterval(this.cycleIntervalMs);
       this.adaptiveFilter.setDecisionInterval(this.cycleIntervalMs);
@@ -1325,6 +1331,17 @@ class MATSSystem {
         log.info(`✓ Regime Win-Rate Learner loaded (${rw.trades} trades)`);
       } catch (e) {
         log.warn(`[regime-win-rate-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+
+      // v2.0.870-P16: Hybrid Penalty Decay tracker(penalty-event 時鐘持久化——
+      // restart 唔會免費 reset decay clock)
+      this.hybridDecayTracker = new HybridPenaltyDecayTracker();
+      try {
+        this.hybridDecayTracker.load();
+        const hd = this.hybridDecayTracker.getStats();
+        log.info(`✓ Hybrid Penalty Decay tracker loaded (${hd.symbols} symbols)`);
+      } catch (e) {
+        log.warn(`[hybrid-decay-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
       }
 
       // v2.0.837: Meta-Cognitive Calibrator init
@@ -3721,6 +3738,15 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       } catch (err) {
         log.warn(`[regime-win-rate] recordTrade failed: ${err instanceof Error ? err.message : String(err)}`);
       }
+
+      // v2.0.870-P16: Hybrid Penalty Decay——close 事件喂 recovery 證據。
+      // 贏錢(pnl≥0)→ winsSincePenalty +1(win-decay 通道);蝕錢 → 重置
+      // penalty-event 時鐘(時間衰減起點)+ wins 歸零。同三個 penalty gate
+      // 用嘅係同一份 trade 結果——唔另開爐灶,唔會口徑分叉。
+      // P16-attack2 (F6):傳 trade.id 去重(雙管道重放唔雙計)
+      try {
+        this.hybridDecayTracker?.recordEvent(safeSymbol, isWin, trade.closedAt, trade.id);
+      } catch { /* non-fatal */ }
 
       // v2.0.226: Close-context-aware learning weight.
       // The close mechanism is an important factor in the loss:
@@ -10870,6 +10896,37 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
         // Regime from market state
         const regime = combinedState.regime || 'unknown';
 
+        // v2.0.870-P16: Hybrid Penalty Decay inputs——per-symbol recovery 證據
+        // (penalty-event 時鐘 + 贏錢次數)+ edge 強度(combo wilsonLB/median/EWMA)。
+        // 冷啟動:冇數據 → 通道貢獻 0(保守,保留保護);hold action → 冇方向,
+        // edge 通道唔查(無謂嘅 lookup + 語義上 hold 唔存在 edge 方向)。
+        const hdState = this.hybridDecayTracker?.getState(gateSymbol)
+          ?? { lastPenaltyEventAt: null, winsSincePenalty: 0 };
+        let hdEdgeWilson: number | null = null;
+        let hdEdgeSamples = 0;
+        let hdEdgeMedian: number | null = null;
+        let hdEdgeEwma: number | null = null;
+        let hdEdgeLastCycle: number | null = null;
+        try {
+          const hdAction = finalDecision.action === 'buy' || finalDecision.action === 'sell'
+            ? finalDecision.action
+            : null;
+          if (hdAction) {
+            // F5:per-symbol regime——之前用 combinedState.regime(全局 active
+            // symbol 嘅 regime)查 gateSymbol 嘅 combo cell,多 symbol 時錯位,
+            // 可能喺錯誤 regime 上觸發 bypass
+            const hdRegime = this.marketState?.getState(gateSymbol)?.regime ?? regime;
+            const hdCombo = this.comboTracker.getComboWR(gateSymbol, hdAction, hdRegime);
+            hdEdgeWilson = Number.isFinite(hdCombo.wilsonLB) ? hdCombo.wilsonLB : null;
+            hdEdgeSamples = Number.isFinite(hdCombo.count) ? hdCombo.count : 0;
+            hdEdgeMedian = Number.isFinite(hdCombo.medianPnlPct) ? hdCombo.medianPnlPct : null;
+            hdEdgeEwma = Number.isFinite(hdCombo.ewmaPnlPct) ? hdCombo.ewmaPnlPct : null;
+            hdEdgeLastCycle = Number.isFinite(hdCombo.lastCycle) ? hdCombo.lastCycle : null; // F3
+          }
+        } catch { /* cold-start safe: keep nulls */ }
+        // P17:runs test τ 調製——連蝕成串(regime 持續)→ 慢放;贏蝕交替(噪聲)→ 快放
+        const hdTauMult = this.hybridDecayTracker?.getTauMultiplier(gateSymbol) ?? 1.0;
+
         // ── Compute dynamic threshold + penalty factor ─────────────────────
         const dtcInput: DynamicThresholdInput = {
           rollingWR: safeNum(rollingWR, 0.5),
@@ -10880,6 +10937,19 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
           sharpeSampleCount,
           regime,
           netPenalty: Math.max(0, safeNum(netPenalty, 0)),
+          // v2.0.870-P16: Hybrid Penalty Decay evidence（詳見 hybrid-penalty-decay.ts）
+          hybridDecay: {
+            idleCycles: safeNum(idleCycles, 0),
+            lastPenaltyEventAt: hdState.lastPenaltyEventAt,
+            winsSincePenalty: hdState.winsSincePenalty,
+            edgeWilsonLB: hdEdgeWilson,
+            edgeSamples: hdEdgeSamples,
+            edgeMedianPnlPct: hdEdgeMedian,
+            edgeEwmaPnlPct: hdEdgeEwma,
+            edgeLastCycle: hdEdgeLastCycle,      // F3: bypass 新鮮度
+            currentCycle: this.totalCycles,      // F3
+            tauMultiplier: hdTauMult,            // P17: runs test τ 調製
+          },
           // v2.0.819: WINNER-FIRST — flow the lossStreakTracker winner boost
           // into the Plan G multiplicative boostFactor. Previously this value
           // was stored as a negative _lossStreakPenalty and clipped to 0 here.

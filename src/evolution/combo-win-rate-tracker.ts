@@ -76,6 +76,9 @@ export interface ComboWRResult {
   medianPnlPct: number;
   /** v2.0.862 (方案 D): time-decayed EWMA pnlPct — recent trades weighted more. */
   ewmaPnlPct: number;
+  /** v2.0.870-P16-attack2 (F3): 最後更新 cycle——bypass 新鮮度檢查用
+   *  (EWMA 只喺 write 時衰減,休眠 combo 嘅陳舊強 edge 唔應該喺新 regime 豁免)。 */
+  lastCycle: number;
 }
 
 export interface ComboGateResult {
@@ -99,6 +102,16 @@ function safeNum(val: number, fallback: number): number {
 }
 
 const MIN_SAMPLES = 3;       // Below this → confidence='none', no penalty
+/** v2.0.870-P16-attack2 (F1): load 嗰時 wins/losses 嘅整數上限——
+ *  真實 combo 歷史最多幾百至幾千 trades;超大值 = 通脹注入。 */
+const MAX_COMBO_SAMPLES = 50000;
+
+/** 將持久化嘅 wins/losses 矯正為 finite 非負整數(污染 → 0) */
+function sanitizeComboCount(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v)
+    ? Math.min(MAX_COMBO_SAMPLES, Math.max(0, Math.floor(v)))
+    : 0;
+}
 const HIGH_CONF_SAMPLES = 8; // Above this → confidence='high'
 const SEVERE_WR = 0.25;       // WR below this with enough samples → 0.50 penalty
 const MODERATE_WR = 0.35;    // WR below this with enough samples → 0.30 penalty
@@ -229,7 +242,7 @@ export class ComboWinRateTracker {
     const key = comboKeyToString(sym, side, regime || 'unknown');
     const stats = this.combos.get(key);
     if (!stats || stats.wins + stats.losses === 0) {
-      return { wr: 0.5, count: 0, wilsonLB: 0.5, netPnl: 0, avgPnlPct: 0, confidence: 'none', medianPnlPct: 0, ewmaPnlPct: 0 };
+      return { wr: 0.5, count: 0, wilsonLB: 0.5, netPnl: 0, avgPnlPct: 0, confidence: 'none', medianPnlPct: 0, ewmaPnlPct: 0, lastCycle: 0 };
     }
     const total = stats.wins + stats.losses;
     const wr = stats.wins / total;
@@ -247,6 +260,8 @@ export class ComboWinRateTracker {
       // v2.0.862 (方案 A+D): median (robust centre) + time-decayed EWMA
       medianPnlPct: medianOf(stats.pnlPcts ?? []),
       ewmaPnlPct: Number.isFinite(stats.ewmaPnlPct) ? (stats.ewmaPnlPct ?? 0) : 0,
+      // v2.0.870-P16-attack2 (F3): 暴露 lastCycle 畀 bypass 新鮮度檢查
+      lastCycle: Number.isFinite(stats.lastCycle) ? stats.lastCycle : 0,
     };
   }
 
@@ -499,6 +514,17 @@ export class ComboWinRateTracker {
           }
           if (!Number.isFinite(st.ewmaPnlPct)) st.ewmaPnlPct = undefined;
           if (!Number.isFinite(st.ewmaLastCycle)) st.ewmaLastCycle = undefined;
+          // v2.0.870-P16-attack2 (F1): wins/losses/netPnl/pnlPctSum/lastCycle
+          // sanitize——持久化污染(1e999→Infinity、負數、小數、字串)曾令
+          // wilsonLB=NaN / count=Infinity;更嚴重嘅係通脹 wins 直接買到 P16
+          // edge hard-bypass(完全豁免所有 penalty)。全部矯正為
+          // finite 非負整數,cap MAX_COMBO_SAMPLES;無效 entry → drop。
+          st.wins = sanitizeComboCount(st.wins);
+          st.losses = sanitizeComboCount(st.losses);
+          st.netPnl = Number.isFinite(st.netPnl) ? st.netPnl : 0;
+          st.pnlPctSum = Number.isFinite(st.pnlPctSum) ? st.pnlPctSum : 0;
+          st.lastCycle = Number.isFinite(st.lastCycle) ? Math.max(0, Math.floor(st.lastCycle)) : 0;
+          if (st.wins + st.losses === 0) continue;
           cleaned.set(key, st);
         }
         this.combos = cleaned;
