@@ -14,8 +14,11 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 - `closeTrade` + `onFills` 平倉路徑喺 close 前 call setCloseRegime(從 marketState 攞)
 - `closePosition`/`closeExchangePosition` 複製 `pos.closeRegime` 到 TradeRecord
 
-### 階段 2:7×7 win rate 矩陣純函數
-- `src/analysis/regime-persistence.ts` `computeRegimeWinRateMatrix(trades)`——完整 7×7 條件 win rate 矩陣 P(win | entryRegime × closeRegime) + 邊際 win rate + winRateSpread
+### 階段 2:兩個 7×7 矩陣純函數
+- `src/analysis/regime-persistence.ts` `computeRegimeWinRateMatrix(trades)`——兩個完整 7×7 矩陣:
+  1. **轉移矩陣** P(closeRegime | entryRegime)——「開倉 regime → 平倉 regime」嘅動態
+  2. **win rate 矩陣** P(win | entryRegime × closeRegime)——每個 (開倉,平倉) 組合嘅 win rate
+- 加上邊際 win rate + winRateSpread
 
 ### 階段 3:回測驗證
 - `scripts/regime-persistence-backtest.ts`——讀 realTrades,計算 7×7 矩陣,判斷 winRateSpread 係咪顯著(>20pp 且 n≥10)
