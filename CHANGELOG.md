@@ -4,6 +4,35 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.869-P14: Regime Win-Rate Matrix 階段 1-3(主神 開倉×平倉市況指令)
+
+**背景(主神洞察)**:隔 12-24 小時嘅 trade,開倉 regime 同平倉 regime 可以完全唔同。系統之前只捕獲開倉 regime,冇捕獲平倉 regime——學唔到「開倉 regime × 平倉 regime」嘅完整 win rate 矩陣。
+
+### 階段 1:捕獲平倉市況(closeRegime)
+- `Position` + `TradeRecord` 加 `closeRegime` 字段
+- `PortfolioTracker.setCloseRegime(symbol, regime)` 方法
+- `closeTrade` + `onFills` 平倉路徑喺 close 前 call setCloseRegime(從 marketState 攞)
+- `closePosition`/`closeExchangePosition` 複製 `pos.closeRegime` 到 TradeRecord
+
+### 階段 2:7×7 win rate 矩陣純函數
+- `src/analysis/regime-persistence.ts` `computeRegimeWinRateMatrix(trades)`——完整 7×7 條件 win rate 矩陣 P(win | entryRegime × closeRegime) + 邊際 win rate + winRateSpread
+
+### 階段 3:回測驗證
+- `scripts/regime-persistence-backtest.ts`——讀 realTrades,計算 7×7 矩陣,判斷 winRateSpread 係咪顯著(>20pp 且 n≥10)
+- 回測結論:有顯著 spread → 建議階段 4;冇 → 唔做(避免過度擬合)
+
+### 主神指正(本座重新理解)
+- 開倉時唔需要知道平倉市況——平倉 regime 係學習信號,唔係預測輸入
+- 7×7 矩陣唔會差過 7×2——而家表現相當唔錯,數據足夠支撐 7×7
+- 要 win rate 預測器,唔係風險信號——完整 7×7 條件矩陣捕捉「開倉 A → 平倉 B」嘅精細互動
+
+### 測試
+- 新增 `tests/regime-persistence.test.ts` +6
+- 全量:2522 pass + 13 pre-existing(冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
 ## v2.0.869-P13: env 安全加固 + !command 解析硬化(主神 env 安全指令)
 
 **背景(主神指令)**:env 儲存緊 private key,令 env file 參數更安全。

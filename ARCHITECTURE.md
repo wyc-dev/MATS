@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.869-P13
+> **作者**: YC Wong · **版本**: 2.0.869-P14
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -168,6 +168,22 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 統一用 `candleSnapshot` close 價(同 scanDEX18AssetsInBackground 一致——即市 close ≈ mid)
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
+
+### v2.0.869-P14: Regime Win-Rate Matrix(開倉×平倉市況)
+
+**背景**:隔 12-24 小時嘅 trade,開倉 regime 同平倉 regime 可以完全唔同。系統之前只捕獲開倉 regime,冇捕獲平倉 regime——學唔到「開倉 regime × 平倉 regime」嘅完整 win rate 矩陣。
+
+**階段 1(捕獲 closeRegime)**:
+- `Position` + `TradeRecord` 加 `closeRegime` 字段
+- `setCloseRegime()` 方法 + `closeTrade`/`onFills` 平倉路徑 call
+- 純加法,零改動,完美兼容現有 agent/落單系統
+
+**階段 2(7×7 win rate 矩陣)**:
+- `computeRegimeWinRateMatrix` 純函數——完整 7×7 條件 win rate 矩陣 P(win | entryRegime × closeRegime) + 邊際 win rate + winRateSpread
+
+**階段 3(回測驗證)**:
+- `scripts/regime-persistence-backtest.ts`——判斷 winRateSpread 係咪顯著(>20pp 且 n≥10)
+- 有顯著 spread → 實施階段 4;冇 → 唔做(避免過度擬合)
 
 ### v2.0.869-P13: env 安全加固
 

@@ -313,6 +313,8 @@ export interface Position {
   entryShadowWinRate?: number;
   /** Entry-time market regime. */
   regime?: string;
+  /** v2.0.869-P14: Market regime at close time (set by setCloseRegime before close). */
+  closeRegime?: string;
   /** v2.0.837: Entry-time HACP consensus confidence (for Meta-Calibrator). */
   entryConsensusConfidence?: number;
 }
@@ -600,6 +602,8 @@ export interface TradeRecord {
   entryShadowWinRate?: number;
   /** Entry-time market regime (copied from pos at close). */
   regime?: string;
+  /** v2.0.869-P14: Market regime at close time (copied from pos at close). */
+  closeRegime?: string;
   /** v2.0.837: Entry-time HACP consensus confidence (for Meta-Calibrator). */
   entryConsensusConfidence?: number;
 }

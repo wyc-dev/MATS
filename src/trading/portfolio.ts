@@ -948,6 +948,18 @@ export class PortfolioTracker {
     }
   }
 
+  /** v2.0.869-P14(主神 開倉×平倉市況):Set the market regime at close time
+   *  (called before closePosition/closeExchangePosition)。用於學「開倉 regime
+   *  → 平倉 regime」嘅 persistence rate(regime 持續/反轉)。 */
+  setCloseRegime(symbol: string, regime: string): void {
+    const sym = normalizeSymbol(symbol);
+    const pos = this.realPositions.get(sym) ?? this.portfolio.positions.get(sym);
+    if (!pos) return;
+    if (regime && regime.trim().length > 0) {
+      pos.closeRegime = regime.trim();
+    }
+  }
+
   /**
    * v2.0.869-fix(主神 SKHX MAE=0 調查):soft update——可選傳入 HL 回傳嘅 unrealizedPnl。
    *  HL WS position push 有真實 unrealizedPnl(HL 計算)——但係之前用 entryPx 做
@@ -1720,6 +1732,7 @@ export class PortfolioTracker {
       entryOlrPWin: pos.entryOlrPWin,
       entryShadowWinRate: pos.entryShadowWinRate,
       regime: pos.regime,
+      closeRegime: pos.closeRegime,
       entryConsensusConfidence: pos.entryConsensusConfidence,
       // v2.0.851: Capture HOW the position closed. Prefer the caller-provided
       // reason; fall back to deterministic inference from exitPrice vs SL/TP.
@@ -1956,6 +1969,7 @@ export class PortfolioTracker {
       entryOlrPWin: pos.entryOlrPWin,
       entryShadowWinRate: pos.entryShadowWinRate,
       regime: pos.regime,
+      closeRegime: pos.closeRegime,
       entryConsensusConfidence: pos.entryConsensusConfidence,
       // v2.0.851: Capture HOW the position closed. Prefer the caller-provided
       // reason (consensus/manual/reconciliation/thesis_invalidation); fall back
