@@ -4,6 +4,52 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.869-P12: Macro Gate 持久化修復(主神 刁鑽攻擊指令)
+
+**背景(主神指令)**:不擇手段用最刁鑽嘅攻擊方案(併發/狀態注入/持久化污染)攻擊 MAE 模式升級方案代碼及週邊 modules,搵出漏洞並完美修復。
+
+### 攻擊測試結果(1 個漏洞確認)
+- **A1(MEDIUM)**:`profitability-analyzer.ts` 嘅 `load()` 冇載入 `recentPnl`(時間加權蝕錢率)——`save()` 有 persist 但 `load()` 冇讀返 → restart 後 Macro Gate 數據清空 → `getLosingMultiplier` 永遠 1.0(唔降權)——「重開單又重複輸」防護失效
+
+### 修復(Google Tech Lead + 量化金融)
+- `load()` 加載 `recentPnl`(sanitize:__proto__ 防護 + Number.isFinite + cap 20——同 recordTrade 一致)
+
+### 盈利影響
+- Macro Gate(時間加權蝕錢率 τ=6h)係「重開抑制」一部分——偵測某 symbol×side 最近蝕錢率高 → 降權 ×0.45-0.85,防止「重開單又重複輸」
+- 修復後 restart 後 Macro Gate 恢復功能——蝕錢率高嘅 symbol×side 被降權,避免重複蝕錢
+
+### 測試
+- 新增 `tests/profitability-analyzer-attack.test.ts` +4(持久化污染 A1-A4)
+- 全量:2509 pass + 13 pre-existing(冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
+## v2.0.869-P11: DEX 資產價格來源統一(主神 攞錯 data 調查)
+
+**背景(主神指正)**:P7 嘅 SILVER 正負號反轉只係顯示層症狀,真正根因係「根本攞錯 data」——DEX 資產(xyz:SILVER/GOLD)嘅即市價格用咗 l2Book best bid(買方出價),而唔係 HL mark/mid 價。
+
+### Root Cause(確認)
+- `fetchPricesForSymbols`(cycle 內 cachedPriceMap)用 l2Book best bid → 攞錯價 → recomputePnL 計錯 PnL
+- `fetchPriceForSymbol`(單 symbol)用 l2Book best bid → 同樣錯
+- `pollHLRestPrice`(multi-exchange-ws REST polling)用 l2Book best bid → 同樣錯
+- 而 `scanDEX18AssetsInBackground`(市場選擇)一直用 candleSnapshot close 價(正確)——兩條路徑唔一致
+
+### 修復(Google Tech Lead + 量化金融)
+- 統一用 `candleSnapshot` close 價(同 scanDEX18AssetsInBackground 一致——即市 close ≈ mid)
+- 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
+- `fetchPriceForSymbol` 順帶簡化(移除 l2Book call——candleSnapshot 同時供 price + volume)
+
+### 保留 l2Book 嘅地方(非即市 data——正確)
+- `hyperliquid-websocket.ts` getBestBid/getBestAsk——order book 深度(SystemGuard 流動性檢查)
+- `hyperliquid-engine.ts` placeOrder——落單 aggressive 價(bid/ask 係正確)
+
+### 測試
+- 全量:2505 pass + 13 pre-existing(冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
 ## v2.0.869-P10: MAE 模式持久化污染修復(主神 刁鑽攻擊指令)
 
 **背景(主神指令)**:不擇手段用最刁鑽嘅攻擊方案(併發/狀態注入/持久化污染)攻擊 MAE 模式升級方案代碼及週邊 modules,搵出漏洞並完美修復。
