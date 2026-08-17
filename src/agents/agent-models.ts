@@ -34,7 +34,7 @@ export const AVAILABLE_MODELS: ModelDefinition[] = [
   { id: 'qwen3-coder:30b', label: 'Qwen 3 Coder 30B', provider: 'ollama', category: 'fast' },
   { id: 'kimi-k2.5:cloud', label: 'Kimi K2.5 (Cloud)', provider: 'ollama', category: 'default' },
   { id: 'gemma4:31b-cloud', label: 'Gemma 4 31B Cloud', provider: 'ollama', category: 'default' },
-  { id: 'glm-5:cloud', label: 'GLM-5 (Cloud)', provider: 'ollama', category: 'default' },
+  // v2.0.870-P18-attack2: glm-5:cloud 已於 2026-07-15 退役(實測 HTTP "retired"),移除免得 UI 推死模型
   { id: 'glm-5.2:cloud', label: 'GLM-5.2 (Cloud)', provider: 'ollama', category: 'default' },
 ];
 

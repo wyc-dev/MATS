@@ -1090,6 +1090,26 @@ OUTPUT — ONLY valid JSON (omit modified* fields when approving as-is):
           modifiedPositions?: Array<Partial<PerSymbolDecision>>;
           modifiedConfidence?: number;
         };
+        // v2.0.870-P18-attack2 (G4): LLM 回覆屬不受信輸入——型別全部守一守。
+        // 歷史漏洞:modifiedPositions 回 object(唔係 array)→ .find TypeError →
+        // 外層 catch → 全條 review auto-APPROVE,REJECT 靜默升級。依家:
+        //  - approved 非嚴格 boolean true → 視為 false(保守=維持修改流程)
+        //  - modified* 型態唔啱 → 當冇修改(verdict 原樣保留,唔再 crash)
+        parsed.approved = (parsed?.approved as unknown) === true;
+        if (typeof parsed.skepticismRationale !== 'string') parsed.skepticismRationale = '';
+        if (!parsed.modifiedMarketTicker || typeof parsed.modifiedMarketTicker !== 'object' || Array.isArray(parsed.modifiedMarketTicker)) {
+          parsed.modifiedMarketTicker = undefined;
+        }
+        if (!Array.isArray(parsed.modifiedPositions)) {
+          parsed.modifiedPositions = undefined;
+        } else {
+          parsed.modifiedPositions = parsed.modifiedPositions.filter(
+            p => p !== null && typeof p === 'object' && !Array.isArray(p),
+          );
+        }
+        if (typeof parsed.modifiedConfidence !== 'number' || !Number.isFinite(parsed.modifiedConfidence)) {
+          parsed.modifiedConfidence = undefined;
+        }
 
         let modifiedDecision: MultiSymbolDecision | undefined;
         let modifiedConfidence: number | undefined;
