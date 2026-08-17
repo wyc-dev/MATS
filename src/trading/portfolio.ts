@@ -231,6 +231,67 @@ function isBuySide(side: unknown): boolean {
   return s === 'buy' || s === 'long';
 }
 
+/**
+ * v2.0.870-P19': spread-first restore helpers(根治「allowlist 重建蒸發欄位」bug 類)。
+ *
+ * 歷史病:restore mapping 用 allowlist 逐一 rebuild——每次新加欄位
+ * (entryConsensusConfidence / regime / entryMarketFeatures / 將來任何嘢),
+ * 唔記得入 allowlist 就喺 restart 靜默蒸發。實證:200/200 實倉 trade 冇
+ * entryConsensusConfidence → LLMConvictionCalibrator 出世至今空腹死碼。
+ *
+ * 規則:原物件全部保留(spread first),必要 coercion 同 sanitizer override
+ * 喺 spread 之後(順序反轉 = 污染復活,留意)。
+ */
+export function restoreClosedRealTradeRecord(t: Record<string, unknown>): TradeRecord {
+  return {
+    ...(t as object),
+    id: t['id'],
+    symbol: t['symbol'],
+    side: t['side'],
+    entryPrice: t['entryPrice'],
+    exitPrice: t['exitPrice'],
+    quantity: t['quantity'],
+    leverage: t['leverage'],
+    investment: t['investment'],
+    pnl: t['pnl'],
+    pnlPct: t['pnlPct'],
+    openedAt: t['openedAt'],
+    closedAt: t['closedAt'],
+    agentId: (t['agentId'] as string | undefined) ?? '',
+    status: ((t['status'] as string | undefined) ?? 'closed'),
+  } as unknown as TradeRecord;
+}
+
+export function restoreRealPositionRecord(rp: Record<string, unknown>, normSym: string): Position {
+  const margin = (safeNum(rp['averageEntryPrice'], 0) * safeNum(rp['quantity'], 0)) / safeLeverage((rp['leverage'] as number | undefined) ?? 1);
+  return {
+    ...(rp as object),
+    id: rp['id'],
+    symbol: normSym,
+    side: rp['side'],
+    quantity: rp['quantity'],
+    averageEntryPrice: rp['averageEntryPrice'],
+    currentPrice: rp['currentPrice'],
+    unrealizedPnl: rp['unrealizedPnl'],
+    unrealizedPnlPct: rp['unrealizedPnlPct'],
+    realizedPnl: rp['realizedPnl'] ?? 0,
+    stopLossPrice: rp['stopLossPrice'],
+    takeProfitPrice: rp['takeProfitPrice'],
+    leverage: rp['leverage'],
+    openedAt: rp['openedAt'],
+    updatedAt: rp['updatedAt'] ?? Date.now(),
+    agentId: (rp['agentId'] as string | undefined) ?? 'hyperliquid-real',
+    exchange: rp['exchange'],
+    // sanitizer 必須排 spread 之後(P19-attack 原則)。
+    // v2.0.870-P19'-fix2:sanitizeMinMax 返回 {min,max},舊代码直接 spread →
+    // key 錯名,污染值照樣存活(v2.0.868「fix」自始失效)。依家正確映射。
+    ...(() => {
+      const mm = sanitizeMinMax(rp as { minValueReached?: number; maxValueReached?: number }, margin);
+      return { minValueReached: mm.min, maxValueReached: mm.max };
+    })(),
+  } as unknown as Position;
+}
+
 export class PortfolioTracker {
   private portfolio: Portfolio;
   /** Callback so PaperTradingEngine can capture trades from SL/TP closes */
@@ -347,14 +408,16 @@ export class PortfolioTracker {
           exchange: p.exchange,
           // v2.0.80: Restore entryThesis from saved state
           entryThesis: (p as any).entryThesis,
-          // v2.0.143: Restore MAE/MFE tracking from saved state
-          minValueReached: (p as any).minValueReached,
-          maxValueReached: (p as any).maxValueReached,
+          // v2.0.143/870: MAE/MFE 由下面 sanitizer override(含 restore 污染重置)
           // v2.0.868-fix(主神 MAE 調查):restore 污染值(負值/-48%)帶入——
           // 用 margin 計算後 sanitize——重置污染 min/max
+          // v2.0.870-P19'-fix2:sanitizeMinMax 返回 {min,max} 唔係
+          // {minValueReached,maxValueReached}——舊寫法 spread 錯 key 名,
+          // 污染值原樣存活。依家正確映射。
           ...(() => {
             const m = (safeNum((p as any).averageEntryPrice, 0) * safeNum((p as any).quantity, 0)) / safeLeverage((p as any).leverage ?? 1);
-            return sanitizeMinMax(p as { minValueReached?: number; maxValueReached?: number }, m);
+            const mm = sanitizeMinMax(p as { minValueReached?: number; maxValueReached?: number }, m);
+            return { minValueReached: mm.min, maxValueReached: mm.max };
           })(),
           // v2.0.143: Restore original SL/TP for exitThesis narrowing analysis
           originalStopLossPrice: (p as any).originalStopLossPrice,
@@ -369,60 +432,14 @@ export class PortfolioTracker {
       }
 
       // Restore trades
-      this.restoredTrades = (saved.trades ?? []).map(t => ({
-        id: t.id,
-        symbol: t.symbol,
-        side: t.side as 'buy' | 'sell',
-        entryPrice: t.entryPrice,
-        exitPrice: t.exitPrice,
-        quantity: t.quantity,
-        leverage: t.leverage,
-        investment: t.investment,
-        pnl: t.pnl,
-        pnlPct: t.pnlPct,
-        openedAt: t.openedAt,
-        closedAt: t.closedAt,
-        agentId: t.agentId ?? '',
-        status: (t as any).status ?? 'closed',
-        // v2.0.143: Restore new Trade Incident fields
-        entryThesis: (t as any).entryThesis,
-        exitThesis: (t as any).exitThesis,
-        postReview: (t as any).postReview,
-        minValueReached: (t as any).minValueReached,
-        maxValueReached: (t as any).maxValueReached,
-        // v2.0.851: Restore close reason so it survives restart.
-        closeReason: (t as any).closeReason,
-        exitType: (t as any).exitType,
-      }));
+      // v2.0.870-P19': spread-first(同上,根治欄位蒸發)
+      this.restoredTrades = (saved.trades ?? []).map(t => restoreClosedRealTradeRecord(t as unknown as Record<string, unknown>));
 
       // v2.0.38: Restore real (exchange) trades — these are HL SL/TP-triggered
       // closes + manual exchange closes. Stored separately from paper trades
       // so they survive restarts but don't pollute paper stats.
-      const restoredRealTrades = (saved.realTrades ?? []).map(t => ({
-        id: t.id,
-        symbol: t.symbol,
-        side: t.side as 'buy' | 'sell',
-        entryPrice: t.entryPrice,
-        exitPrice: t.exitPrice,
-        quantity: t.quantity,
-        leverage: t.leverage,
-        investment: t.investment,
-        pnl: t.pnl,
-        pnlPct: t.pnlPct,
-        openedAt: t.openedAt,
-        closedAt: t.closedAt,
-        agentId: t.agentId ?? '',
-        status: (t as any).status ?? 'closed',
-        // v2.0.143: Restore new Trade Incident fields
-        entryThesis: (t as any).entryThesis,
-        exitThesis: (t as any).exitThesis,
-        postReview: (t as any).postReview,
-        minValueReached: (t as any).minValueReached,
-        maxValueReached: (t as any).maxValueReached,
-        // v2.0.851: Restore close reason so it survives restart.
-        closeReason: (t as any).closeReason,
-        exitType: (t as any).exitType,
-      }));
+      // v2.0.870-P19': spread-first(規則化見 restoreClosedRealTradeRecord 註釋)
+      const restoredRealTrades = (saved.realTrades ?? []).map(t => restoreClosedRealTradeRecord(t as unknown as Record<string, unknown>));
       this.closedRealTrades.push(...restoredRealTrades);
       if (restoredRealTrades.length > 0) {
         log.info(`📋 Restored ${restoredRealTrades.length} real (exchange) trade records`);
@@ -430,39 +447,13 @@ export class PortfolioTracker {
 
       // v2.0.160: Restore real positions with thesis + MAE/MFE + SL/TP
       const restoredRealPositions = saved.realPositions ?? [];
-      for (const rp of restoredRealPositions) {
-        const sym = normalizeSymbol(rp.symbol);
-        // Only restore if not already in realPositions (syncExchangePositions may have imported it)
-        if (!this.realPositions.has(sym)) {
-          this.realPositions.set(sym, {
-            id: rp.id,
-            symbol: sym,
-            side: rp.side as 'buy' | 'sell',
-            quantity: rp.quantity,
-            averageEntryPrice: rp.averageEntryPrice,
-            currentPrice: rp.currentPrice,
-            unrealizedPnl: rp.unrealizedPnl,
-            unrealizedPnlPct: rp.unrealizedPnlPct,
-            realizedPnl: rp.realizedPnl ?? 0,
-            stopLossPrice: rp.stopLossPrice,
-            takeProfitPrice: rp.takeProfitPrice,
-            leverage: rp.leverage,
-            openedAt: rp.openedAt,
-            updatedAt: rp.updatedAt ?? Date.now(),
-            agentId: rp.agentId ?? 'hyperliquid-real',
-            exchange: rp.exchange,
-            entryThesis: rp.entryThesis,
-            holdReason: rp.holdReason,
-            minValueReached: rp.minValueReached,
-            maxValueReached: rp.maxValueReached,
-            // v2.0.868-fix(主神 MAE 調查):restore 污染值 sanitize(同 positions 一致)
-            ...(() => {
-              const m = (safeNum(rp.averageEntryPrice, 0) * safeNum(rp.quantity, 0)) / safeLeverage(rp.leverage ?? 1);
-              return sanitizeMinMax(rp as { minValueReached?: number; maxValueReached?: number }, m);
-            })(),
-            originalStopLossPrice: rp.originalStopLossPrice,
-            originalTakeProfitPrice: rp.originalTakeProfitPrice,
-          } as any);
+      for (const rpRaw of restoredRealPositions) {
+        const normSym = normalizeSymbol((rpRaw as { symbol: string }).symbol);
+        // v2.0.870-P19': spread-first——allowlist 曾蒸發 entryConsensusConfidence/
+        // regime/entryMarketFeatures;而家原欄位全保留,sanitize 喺 helper 內置後。
+        const rp = rpRaw as unknown as Record<string, unknown>;
+        if (!this.realPositions.has(normSym) && rp['symbol']) {
+          this.realPositions.set(normSym, restoreRealPositionRecord(rp, normSym));
         }
       }
       if (restoredRealPositions.length > 0) {

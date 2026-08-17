@@ -4,6 +4,31 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P19': Calibration Pipeline 修線(主神實證發現:v2.0.863 校準器一直係死碼)
+
+**主神問「P19 係咪確認提升盈利」→ 本座答唔確認,順勢實證挖穿:**
+
+1. **P19 冗餘定案**:v2.0.863 `LLMConvictionCalibrator` 已係 P19 核心(5-bin conviction→實績 WR 校準 + shrink + 冷啟動中性),仲接埋 gate(index.ts:11026,env `LLM_CONVICTION_CALIBRATION` 預設 true)
+2. **但佢空腹至死**:實測 200/200 實倉 closed trades **冇** `entryConsensusConfidence`(regime 同樣 0/200;entryOlrPWin/entryThesis 200/200 係 inject patch 後補先存活)。雙重根源:
+   - `entryDataPayload` 舊寫法 `if (pre)` 先構建——real-mode precompute 常態 miss → payload 永 undefined → consensusConfidence 從未出世
+   - position/closed-trade restore 係 **allowlist 重建**——restart 靜默蒸發 entry-context(tsx watch 日日 restart)
+3. **修復**:
+   - payload 永遠構建(consensusConfidence = lastCycle(0.5 floor,gate 實值) ?? lastHACPResult;pre features 維持 optional)
+   - restore 改 **spread-first**(`restoreClosedRealTradeRecord` / `restoreRealPositionRecord` 导出純函數)——根治「新欄位被 allowlist 殺死」成個 bug 類;sanitizer 排 spread 之後
+   - **新發現兼修復**:v2.0.868 嘅 sanitize「fix」自始失效——`sanitizeMinMax` 返回 `{min,max}` 但舊代码直接 spread,key 名錯配 → 污染 min/max 原樣存活。依家正確映射 `{minValueReached: mm.min, ...}`
+   - **觀測**:`/api/calibration`(ECE + per-bin gap 表 + kline 讀圖一致率)+ 閉倉缺 entryConsensusConfidence 時 throttle warn
+4. **⚠️ 行為變化通告(主神知悉)**:pipeline 修好後,每 bin 儲夠 20 單,calibrator 會開始將 LLM conviction 換成 shrink 後嘅 bin 實績(`0.5+(WR−0.5)×shrink`)——gate 輸入從此有 empirical anchor。env `LLM_CONVICTION_CALIBRATION=false` 一鍵還原
+
+**歷史數據分佈分析(200 閉倉)——P20 盈利傾斜提案起點:**
+- 總計 +$4.31 / EV +$0.022 / WR 48% / payoff 1.18;Jul +1.65 → Aug +2.66 ✓ 溫和盈利
+- **GOLD:buy WR 67% 但 EV −$0.136、payoff 0.24(avgWin $0.16 vs avgLoss −$0.66)**——純 WR-based trust(llmDirectionTrust)對呢類「贏小粒蝕大粒」永久失明
+- 假想實驗:剔走 6 個 EV<0 嘅 symbol:direction → PnL +$4.31 → +$16.81(≈3.9×)
+- llm-direction-verifier `direction` 表 0 keys → dirTrust 同樣飢餓(v2.0.864 半失效)
+
+**測試**:tests/p19-calibration-pipeline.test.ts 8 綠(restore 存活/未來欄位免疫/ECE 數學/分邊 bin/毒 state 防護);全量 2623 pass / 13 pre-existing;tsc clean;/api/calibration 活體驗證 ✓
+
+---
+
 ## v2.0.870-P18-attack2: P18 刁鑽攻擊修复(截斷挽救 × fallback 鏈 × Skeptics 畸形輸入)
 
 **主神第三輪攻擊指令**:併發/狀態注入/持久化污染 + 出其不意——本次最痛發現係 **P18 自己嘅 claim 有假**:「decision-first 順序救到截斷」實測唔成立——`parseMultiSymbolResponse → extractJSON` 嘅 backward-scan filter 只認 `"thought"`/`"decision"` key,decision-first 之後完整嘅 marketTicker/positions 物件冇呢啲 key → 截斷喺尾段時完整決策照樣全丟。主動更正並封鎖:
