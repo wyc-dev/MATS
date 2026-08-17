@@ -259,6 +259,11 @@ export class OllamaProvider implements LLMProvider {
             // Note: Ollama cloud API rejects -1 (unlimited) — must be positive.
             num_predict: request.maxTokens ?? 8192,
           },
+          // v2.0.870-P18: provider-level JSON mode — Ollama /api/chat 原生支援
+          // format:'json',保證 content 係 valid JSON(實測 deepseek-v4-flash
+          // done_reason=stop + parse OK;thinking 放獨立 field 唔受影響)。
+          // 終止 markdown fence/前後散文導致嘅 parse fallback(→全 HOLD 失血)。
+          format: 'json',
           stream: false,
         };
 
@@ -390,6 +395,7 @@ export class OllamaProvider implements LLMProvider {
                       temperature: request.temperature,
                       num_ctx: getNumCtxForModel(model),
                     },
+                    format: 'json', // v2.0.870-P18: 同主路徑一致
                     stream: false,
                   };
                   const fbController = new AbortController();

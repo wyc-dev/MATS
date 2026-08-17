@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-P16-attack2+P17
+> **作者**: YC Wong · **版本**: 2.0.870-P18
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~72,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -168,6 +168,18 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 統一用 `candleSnapshot` close 價(同 scanDEX18AssetsInBackground 一致——即市 close ≈ mid)
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
+
+### v2.0.870-P18: Agent System Prompt 全面重構(主神指令:更精準 × 更慳 token × 完美 output 格式)
+
+**覆核發現嘅重大結構漏洞(P0)**:base default maxTokens=1024 裝唔落 5-symbol 決策 JSON → 結構性截斷 → parse fallback → 全 HOLD 失血。修:base 3072 / Meta 6144 / OLR 3072 + decision-first schema(決策排前,thought 排尾——截斷只切分析)+ omit-null + rationale ≤2句。
+
+**Meta-Agent 67.3KB → 12.5KB(−81%)**:CLOSE 規則曾 4 處寬嚴不一(17 次「≥2」重述、margin 只出現 1 次)、「5 checks」實為 8、版本考古入 prompt、HARD GATE/暗黑心理學重複。重構為單一權威源——語義 parity(thesis gate / 8 checks / FLIP / cond-WR / momentum catalyst / Q-RL / noise-gate 誠實 / News passthrough 全保留),每條規則只定義一次。
+
+**Skeptics ×4:21.5KB → 7.8KB(−64%)**,S1 新增顯式 output schema keys。**Sub-agents:OLR −56% / News −41%(timing matrix 保留)/ RA −51% / Fractal −37% / OnChain −34%**。
+
+**P4 provider JSON mode**:ollama-provider 主路徑 + 503 fallback 加 `format:'json'`(實測 flash done_reason=stop)。**實彈 smoke**:新 Meta prompt 經真 LLM + 真 parser → zero-truncation、合規 action/thesis。
+
+**Guard tests**:`tests/prompt-rearchitecture.test.ts`(體積預算 + 行為錨點 + decision-first + budget 一致性)。每 cycle system prompt ~27k → ~9k tokens(−67%),≈慳 6.5M tokens/日。
 
 ### v2.0.870-P16 + P16-attack2 + P17: Hybrid Penalty Decay(混合衰減)+ 攻擊硬化 + Runs Test τ 調製
 
