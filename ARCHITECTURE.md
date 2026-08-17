@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.869-P14
+> **作者**: YC Wong · **版本**: 2.0.869-P15
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -168,6 +168,20 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 統一用 `candleSnapshot` close 價(同 scanDEX18AssetsInBackground 一致——即市 close ≈ mid)
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
+
+### v2.0.869-P15: Regime-Reversal Profit Lock(組合信號鎖利)
+
+**背景**:盈利倉喺 regime 反轉時鎖利,避免「贏變蝕」。回測驗證:MFE proxy 淨效果 +214%,組合信號(MFE AND regime 反轉)副作用接近 0 → 淨效果接近 +292.70%。
+
+**組件 1:RegimeWinRateLearner**:
+- 記錄 (entryRegime, closeRegime, side, symbol, pnl, closedAt) 喺平倉時
+- 時間加權混合 win rate:單 symbol 80% + 跨 symbol 20% + weight = exp(−Δt/24h)
+- 冷啟動:樣本 < 10 → null(唔鎖);單 symbol 冇數據 → 跨 symbol 兜底
+
+**組件 2:runRegimeReversalLockGate**:
+- 組合信號:MFE ≥ 1.5×ATR(峰值)AND P(win) < 0.5(regime 反轉)
+- 獨立 gate(唔改 thesis invalidation pre-check),同 PAEL/MFE Lock 並排
+- closeReason = 'regime_reversal_lock'(whitelisted + learning weight 0.5)
 
 ### v2.0.869-P14: Regime Win-Rate Matrix(開倉×平倉市況)
 
