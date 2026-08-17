@@ -4,6 +4,117 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.869-P8: Distribution Shape Gate + Convexity/Asymmetry Detector(主神 超額盈利指令)
+
+**背景(主神指令)**:以擅長概率及分布嘅量化金融分析師思路,修正或創建新組件,盡一切可能導致 MATS 系統超額盈利。Kelly Sizing 完全唔需要(主神裁決)。
+
+### 組件 1:Distribution Shape Gate(偏度/峰度門)
+- 升級 Skew Analyzer(之前只輸出字串 advice,冇乘數、冇分布形狀)
+- 純函數 `computeSkewness`(adjusted Fisher-Pearson)+ `computeExcessKurtosis`(超額峰度)
+- 偵測「肥尾蝕錢」(高 win rate 但偶發大蝕 = 撿鋼鏰陷阱):skew < -0.5 且 excess kurtosis > 1 → ×0.75
+- 負偏(skew < -0.5)→ ×0.85;正偏(skew > 0.5)→ ×1.05(贏大輸細輕 boost)
+- 冷啟動 n < 30 → ×1.0(小樣本偏度/峰度噪聲大)
+
+### 組件 2:Convexity/Asymmetry Detector(凸性偵測)
+- 升級 EV Filter(之前用點估計 EV,唔理統計顯著性)
+- 純函數 `computeWilsonLB`(win rate 95% CI 下界)+ `computeConservativeEV`(Wilson LB win rate 取代點估計)
+- 核心:點 EV 可能 >0,但 Wilson LB 顯示唔顯著 → conservativeEV < 0 → 降權
+- conservativeEV > 0 → boost ×[1.0, 1.15];conservativeEV < 0 → 降權 ×[0.8, 1.0]
+- 冷啟動 n < 20 → ×1.0
+
+### 整合
+- `effectiveConfidence = ... × evMultiplier × shapeMultiplier × convexityMultiplier`(conviction gate 內,同 EV Filter 並排)
+- `getDistributionBlock` 注入 Meta-Agent(偏度/峰度 + 保守 EV)
+
+### 攻擊硬化
+- std=0(全樣本相同)→ skew/kurt = 0(唔 crash);n<3/n<4 → 0;NaN/Infinity → 0
+- Wilson LB:pWin clamp [0,1];n<=0 → 0;NaN → 0
+
+### 測試
+- 新增 `tests/distribution-shape.test.ts` +30(偏度/峰度/Wilson LB/保守 EV/乘數/邊界)
+- 全量:2495 pass + 13 pre-existing(冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
+## v2.0.869-P7-attack: 刁鑽攻擊硬化(主神 併發/狀態注入/持久化污染 攻擊指令)
+
+**背景(主神指令)**:不擇手段用最刁鑽嘅攻擊方案(併發/狀態注入/持久化污染)攻擊 P6/P7 修葺嘅代碼及週邊 functions/modules,搵出漏洞並完美修復。
+
+### 攻擊測試結果(6 個漏洞確認)
+- **A1(CRITICAL)**:`stopLossPrice = Infinity` → `currentPrice <= Infinity` 恆真 → structure_confirmed → **bypass 全部 guard**(賺錢倉被 force-close)
+- **A2(CRITICAL)**:`currentPrice = Infinity`(SELL)→ `Infinity >= slPrice` 恆真 → structure_confirmed bypass
+- **N1-N4(HIGH)**:`normalizeSymbol(null/undefined/123/{})` → `symbol.includes` TypeError crash(影響 hlPnlMap 構建)
+- **代碼審查(MEDIUM)**:fallback map `leverage = Infinity` → `(entry*qty)/Infinity = 0` → 除零 → `unrealizedPnlPct = Infinity`
+
+### 修復(Google Tech Lead + 量化金融)
+1. `thesis-validation-guard.ts`:結構確認前 sanitize `currentPrice`/`stopLossPrice` 為 FINITE 正值(Infinity/NaN → 0)——污染值永遠唔能 trigger structure_confirmed
+2. `thesis-validation-guard.ts`:加 null/undefined position guard → 保守 hold_time block(防未來 caller 崩潰)
+3. `portfolio.ts` `normalizeSymbol`:加 `typeof !== 'string' || length === 0 → ''` 防禦(HL WS push/持久化污染注入非 string)
+4. `index.ts` fallback map:guard 加 `Number.isFinite(ep.leverage)`(防 Infinity 除零)
+
+### 測試
+- 新增 `tests/thesis-validation-guard-attack.test.ts` +16(狀態注入攻擊 A1-A10 + normalizeSymbol N1-N6)
+- 全量:2465 pass + 13 pre-existing(冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
+## v2.0.869-P7: SILVER 正負號反轉修復(主神 Trade Incident UI 對比調查)
+
+**背景(主神深入調查)**:HACP guard 話 SILVER +4.07% 賺錢,但 Trade Incident UI 顯示 -3.0% 蝕緊——正負號反轉。主神確認 Trade Incident UI 嘅正負數先係正確(99% 接近 HL 真實倉位價值變動)。
+
+### Root Cause(確認)
+- `refreshPositionMarkPrices`(mark price polling,每 cycle 跑)用 l2Book bid 價調 `softUpdatePosition(sym, livePrice)`——**冇傳 HL 真實 unrealizedPnl**
+- `softUpdatePosition` 冇 hlUnrealizedPnl → fallback `recomputePnL(livePrice)`——用 l2Book bid 價計 PnL
+- l2Book bid 價同 HL mark 價有偏差(尤其 DEX 資產 xyz:SILVER)——bid 價高過 entry 但 mark 價低過 entry
+- → `recomputePnL` 計到 +$0.29(賺),但 HL 真實 unrealizedPnl = -$0.18(蝕)——正負號反轉
+- → guard 誤判 SILVER 賺錢 → BLOCK thesis invalidation → 蝕錢倉唔 close → 倒蝕
+
+### 修復(Google Tech Lead + 量化金融)
+- `refreshPositionMarkPrices`:mark price polling 傳返 HL 真實 `unrealizedPnl`(從 `hyperliquidWs.getUserPositions()` 攞)——`softUpdatePosition(sym, livePrice, hlPnl)`
+- 效果:currentPrice 用 l2Book bid(顯示用)+ unrealizedPnl/unrealizedPnlPct 用 HL 真實值(決策用)——兩者分離
+- 冇 HL pnl(WS 未 push/重連)→ fallback recomputePnL(向後兼容)
+- 順帶修復 2 處 startup sync(`hlPositions`/`exchangePositions` loop)同樣覆蓋 HL unrealizedPnl 嘅問題
+
+### 測試
+- `tests/portfolio-accounting.test.ts` +H6(HL pnl 同步更新 unrealizedPnlPct——正負號正確)
+- 全量:2449 pass + 13 pre-existing(冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
+## v2.0.869-P6: thesis invalidation 數據鏈修復 + 生產級硬化(主神 price moved 0.00% / held 0 min 調查)
+
+**背景(主神深入調查)**:主神發現「點解全部都 price moved only 0.00%???」+「hold 咗 24 個鐘嘅 position 話我 held 0 min」——thesis invalidation 全部被擋——蝕錢倉唔 close——倒蝕!
+
+### Root Cause(確認)
+- HL WS positions 冇 currentPrice(只有 entryPx + unrealizedPnl)——`softUpdatePosition(sym, p.entryPx, p.unrealizedPnl)` 傳 entryPx 做 currentPrice
+- v2.0.869-fix 傳咗 HL unrealizedPnl——但淨係更新 unrealizedPnl——unrealizedPnlPct 仲係 recomputePnL(currentPrice=entryPx)= 0
+- hacp.ts thesis invalidation 用 unrealizedPnlPct 判斷「price moved」→ 全部 0.00% → BLOCK 所有 thesis invalidation
+- Position 結構用 openedAt——但 hacp 用 entryTimestamp → undefined → holdTimeMinutes = 0 → BLOCK
+
+### 修復(4 commits——數據鏈全鏈打通)
+1. `portfolio.ts` softUpdatePosition:unrealizedPnlPct 用 HL pnl 同步更新(pnl / margin)——同 unrealizedPnl 一致(HL 真實值)
+2. `hacp.ts`:entryTimestamp ?? openedAt fallback(Position 結構用 openedAt)
+3. `hacp.ts` + `index.ts`:posCtx 用 currentPositions 傳入嘅真實 unrealizedPnlPct(唔重新計算)+ currentPositions 補字段
+4. `hacp.ts` + `index.ts`:openedAt 全鏈 forward(currentPositions → posCtx → positionsWithThesis)
+
+### P6 生產級硬化(本座——Google Tech Lead + 量化金融)
+- **guard 提取為純函數** `src/cognition/thesis-validation-guard.ts`:`shouldAllowThesisValidation(position, now)`——無 I/O、無 logging、無 Date.now()(除非省略 now)——決定性、可單元測試
+- **15 個新測試** `tests/thesis-validation-guard.test.ts`:鎖定三態(賺錢擋 profitable / 蝕 <0.5% 擋 minor_loss / 持倉 <30min 擋 hold_time)+ 結構確認(SL hit bypass)+ 邊界(pnlPct = -0.005 / 持倉 = 30min / NaN / Infinity / openedAt=0)
+- **cachedExchangePositions fallback 路徑補字段**:index.ts 429 恢復路徑 forward unrealizedPnlPct + openedAt——消除「靜默擋 close」盲區(之前 undefined → holdTimeMinutes=0 + pnlPct=0 → thesis invalidation 永遠被擋)
+- **型別安全**:PositionContext 加 openedAt + executeDecisionCycle currentPositions 型別加 unrealizedPnlPct/openedAt——移除 4 個 (p as any) casts
+- **移除死代碼**:`holdTimeMinutes < 240 && isProfitable`(永遠 false——isProfitable 已喺前面 return)+ 未用嘅 entryPrice 變數
+- **NaN 防禦**:guard 對 NaN/Infinity unrealizedPnlPct → 當 0(flat)——污染值唔能 bypass guard(NaN < -0.005 = false 會誤判為 significant loss)
+
+### 測試
+- 新增 `tests/thesis-validation-guard.test.ts` +15(三態 + 結構確認 + 邊界)
+- 全量:2448 pass + 13 pre-existing(12 喺 gitignored v2.0.854-attack2-nan-price.test.ts + 1 喺 v2.0.868-attack.test.ts D4 side——全部 pre-existing,冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
 ## v2.0.869-P5: vol-judge 修復系列(JSON 解析/遞歸 retry/大小寫/每個 Cycle fetch)
 
 **背景(主神深入調查)**:vol-judge 判斷 threshold——多個問題:

@@ -39,6 +39,10 @@ const log = createLogger({ phase: 'portfolio' });
 // callers: decision-utils.ts normalizeDecision(), base-agent.ts parseResponse(),
 // index.ts overlap guard + onPositions + onFills handlers.
 export function normalizeSymbol(symbol: string): string {
+  // v2.0.869-P7: null/undefined/non-string → '' (never crash). HL WS push or
+  // corrupted persistence can inject a non-string symbol; symbol.includes would
+  // throw TypeError and kill the whole mark-price polling loop.
+  if (typeof symbol !== 'string' || symbol.length === 0) return '';
   if (symbol.includes(':')) {
     // Lowercase the prefix (before colon), preserve the asset name (after colon)
     const colonIdx = symbol.indexOf(':');

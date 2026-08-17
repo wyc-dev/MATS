@@ -2907,7 +2907,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             for (const exPos of hlPositions) {
               const sym = exPos.symbol.includes(':') ? exPos.symbol : exPos.symbol.toLowerCase();
               if (this.portfolio.hasPosition(sym)) {
-                this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
+                // v2.0.869-P6:傳 HL 真實 unrealizedPnl——唔用 recomputePnL(entryPx)=0
+                this.portfolio.softUpdatePosition(sym, exPos.currentPrice, exPos.unrealizedPnl);
               }
             }
             // v2.0.79: Sync exchange positions into local mirror at startup
@@ -8391,7 +8392,8 @@ ${recentExamples}
                 for (const exPos of exchangePositions) {
                   const sym = exPos.symbol.includes(':') ? exPos.symbol : exPos.symbol.toLowerCase();
                   if (this.portfolio.hasPosition(sym)) {
-                    this.portfolio.softUpdatePosition(sym, exPos.currentPrice);
+                    // v2.0.869-P6:傳 HL 真實 unrealizedPnl——唔用 recomputePnL(entryPx)=0
+                    this.portfolio.softUpdatePosition(sym, exPos.currentPrice, exPos.unrealizedPnl);
                   }
                 }
                 // Check if any real positions were closed on the exchange
@@ -8626,6 +8628,14 @@ ${recentExamples}
             leverage: ep.leverage,
             quantity: ep.quantity,
             exchange: 'hyperliquid',
+            // v2.0.869-P6: Forward unrealizedPnlPct + openedAt so the thesis-
+            // invalidation guard sees REAL data for these fallback positions
+            // (previously undefined → holdTimeMinutes=0 + pnlPct=0 → thesis
+            // invalidation silently blocked for 429-recovered positions).
+            unrealizedPnlPct: Number.isFinite(ep.unrealizedPnl) && Number.isFinite(ep.leverage) && ep.quantity > 0 && ep.averageEntryPrice > 0 && ep.leverage > 0
+              ? ep.unrealizedPnl / ((ep.averageEntryPrice * ep.quantity) / ep.leverage)
+              : 0,
+            openedAt: ep.openedAt,
           })),
       ].map(p => ({
         id: p.id,
@@ -10883,6 +10893,22 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               gateAction,
             )
           : 1.0;
+        // v2.0.869-P8: Distribution Shape Gate(偏度/峰度)+ Convexity Detector(Wilson LB)
+        const shapeMultiplier = this.evFilter && evFilterConfig.enabled
+          ? this.evFilter.getShapeMultiplier(
+              normalizeSymbol(finalDecision.symbol || activeSymbol),
+              gateAction,
+            )
+          : 1.0;
+        const convexityMultiplier = this.evFilter && evFilterConfig.enabled
+          ? this.evFilter.getConvexityMultiplier(
+              normalizeSymbol(finalDecision.symbol || activeSymbol),
+              gateAction,
+            )
+          : 1.0;
+        if (shapeMultiplier < 1.0 || convexityMultiplier < 1.0) {
+          log.info(`📊 [distribution-shape] ${gateAction.toUpperCase()} ${pwinSym}: shape ×${shapeMultiplier.toFixed(2)} convexity ×${convexityMultiplier.toFixed(2)}`);
+        }
         // v2.0.863 規限②: LLM 讀圖質素——thesis 引用 K 線方向 vs 統計實際趨勢
         try {
           if (this.llmCalibrator && this.lastKlineSummary && typeof finalDecision.rationale === 'string') {
@@ -10904,7 +10930,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         }
 
         // ── Final effective confidence: consensus × P(win) × penalty × boost ──
-        let effectiveConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor * llmDirectionTrust * evMultiplier;
+        let effectiveConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor * llmDirectionTrust * evMultiplier * shapeMultiplier * convexityMultiplier;
 
         // ── v2.0.868-P1: Entry Confirmation Gate(入場確認——負偏度解藥)──
         // 數據:蝕錢 trade 入場後「立即」逆向(MAE -5~-7.7%)——輸贏喺入場嗰刻決定
@@ -13241,12 +13267,19 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     }
 
     // Update each position's Mark from the cache.
+    // v2.0.869-P6(主神 SILVER 正負號反轉調查):用 HL 真實 unrealizedPnl(WS push)——
+    // 唔用 recomputePnL(l2Book bid 價)——l2Book bid 同 HL mark 價有偏差——
+    // 之前 mark price polling 冇傳 hlUnrealizedPnl → 覆蓋咗 WS push 嘅正確 HL 值——
+    // 令 SILVER 蝕緊 -3.0% 但 guard 話 +4.07% 賺錢(正負號反轉)。
+    const hlPositions = this.hyperliquidWs?.getUserPositions() ?? [];
+    const hlPnlMap = new Map(hlPositions.map(p => [normalizeSymbol(p.symbol), p.unrealizedPnl]));
     for (const pos of realPositions) {
       try {
         let livePrice = this.cachedPriceMap.get(pos.symbol.toLowerCase()) ?? 0;
         if (!livePrice) livePrice = this.cachedPriceMap.get(base(pos.symbol).toLowerCase()) ?? 0;
         if (livePrice > 0) {
-          this.portfolio.softUpdatePosition(pos.symbol, livePrice);
+          const hlPnl = hlPnlMap.get(normalizeSymbol(pos.symbol));
+          this.portfolio.softUpdatePosition(pos.symbol, livePrice, hlPnl);
         }
       } catch { /* skip */ }
     }

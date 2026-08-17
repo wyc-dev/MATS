@@ -351,4 +351,19 @@ describe('v2.0.869 HL unrealizedPnl 追蹤(主神 SKHX MAE=0 調查)', () => {
     // max 應該係賺嗰陣嘅值
     expect(pos2.maxValueReached).toBeGreaterThan(margin);
   });
+
+  it('H6: HL pnl 同步更新 unrealizedPnlPct(主神 SILVER 正負號反轉調查)', () => {
+    // SILVER 真實場景:BUY entry $64.888,HL 真實 unrealizedPnl = -0.18(蝕緊)
+    // 但 l2Book bid 價 = 65.209(高過 entry)——recomputePnL 會計到 +0.29(錯——正負號反轉)
+    tracker.openPosition(makeOrder('silver', 'buy', 0.91), 64.888, 10);
+    const pos = tracker.getPosition('silver');
+    const margin = (pos.averageEntryPrice * pos.quantity) / pos.leverage;
+    // 修復:傳 HL 真實 unrealizedPnl = -0.18——unrealizedPnlPct 用 HL 值(唔用 recomputePnL)
+    tracker.softUpdatePosition('silver', 65.209, -0.18);
+    const pos2 = tracker.getPosition('silver');
+    expect(pos2.unrealizedPnl).toBe(-0.18);
+    expect(pos2.unrealizedPnlPct).toBeCloseTo(-0.18 / margin, 5);
+    // 正負號正確:蝕緊——唔係賺
+    expect(pos2.unrealizedPnlPct).toBeLessThan(0);
+  });
 });

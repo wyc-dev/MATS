@@ -340,6 +340,10 @@ export interface PositionContext {
    *  (quantity = 0). Agents can output BUY/SELL to open a new position.
    *  false or undefined = real open position. */
   isTradingMarket?: boolean;
+  /** v2.0.869-P6: Real open time (ms epoch). Used by the thesis-invalidation
+   *  pre-check guard to enforce the 30-min minimum hold before a position may
+   *  be force-closed. Forwarded from portfolio Position.openedAt. */
+  openedAt?: number;
 }
 
 export interface PerSymbolDecision {
