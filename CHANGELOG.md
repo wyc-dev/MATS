@@ -4,6 +4,105 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P16-attack2 + P17: bypass 升級鏈封鎖 + Runs Test τ 調製(主神 刁鑽攻擊第二輪 + τ=12h 裁決 + 精準化指令)
+
+**背景(主神指令)**:不擇手段用最刁鑽嘅攻擊方案(併發/狀態注入/持久化污染)攻擊 P16 代碼及週邊 modules;主神同時裁決 τ 預設 24h 太長(12h 差唔多),但 Wald-Wolfowitz 游程檢定調製會更精準。
+
+### 攻擊測試結果(6 個紅測試實證 5 個漏洞,全部修復轉綠)
+- **V1(CRITICAL)——持久化污染買 bypass**:P16 嘅 edge hard-bypass 係全系統最強動作(完全豁免 penalty),但證據源 combo tracker state(`combo-win-rates.json`)嘅 `wins/losses` 從未被 sanitize——注入 `wins=100000/losses=2` + 正 ring + 正 EWMA → wilsonLB≈1 → bypass 四條件全滿 → **death spiral 防護永久解除**(P16 將呢個預先存在嘅 data trust 問題 escalate 成 gate 級漏洞)
+- **V2(HIGH)——stale EWMA bypass**:EWMA 只在 `trackTrade`(write)時衰減,`getComboWR` 讀取唔衰減——休眠 10k cycles 嘅陳舊強 edge 喺新 regime 繼續 bypass(新鮮度守衛失效)
+- **V3(HIGH)——wins/losses NaN/Infinity/負數/小數注入**:`1e999`(valid JSON → Infinity)→ wilsonScore clamp 鏈斷裂 → wilsonLB=NaN、count=Infinity 流向下游
+- **V4(MEDIUM)——DTC idle hysteresis 跨 symbol 污染**:v2.0.228 將 idleCycles INPUT 改 per-symbol 但 hysteresis STATE 仲係全局單例——熱/凍 symbol 交替時狀態機乒乓,其中一方永遠到唔到穩態 ±2(threshold ±1% 錯位,fairness guarantee #4 靜默失效)
+- **V5(MEDIUM)——edge lookup 錯 regime**:gate 用 `combinedState.regime`(全局 active symbol)查 gateSymbol 嘅 combo cell——多 symbol 時搵錯 regime 格
+- **V6(LOW)——close 雙管道重放雙計**:tracker 冇 tradeId dedup
+
+### 修復(F1–F6,Google Tech Lead + 量化金融)
+1. **F1(根因)——combo tracker load() sanitize**:wins/losses 必須 finite 非負整數 cap 50,000;netPnl/pnlPctSum finite;lastCycle 非負整數;無效 entry → drop(`sanitizeComboCount`)
+2. **F2(hybrid 層 plausibility)**:① wilsonLB ≤ maxLB(n)=1/(1+z²/n)+0.01(z=1.96 同 evolution-utils 一致——n=25 理論上限 0.867,報 0.99 = 不可能 = 污染)② n ≤ 5000(通脹注入 → 成個 edge 通道歸零,bypass + graduated 都唔俾)③ median/ewma |值| ≤ 300%(MAX_SANITY 慣例)
+3. **F3(bypass 新鮮度)**:`ComboWRResult` 加 `lastCycle`;bypass 要求 `currentCycle − edgeLastCycle ≤ PLAN_G_EDGE_STALE_CYCLES`(預設 1000 ≈ 2× EWMA 半衰期);缺 cycle 資訊 → 唔 bypass(保守——豁免係最強動作);graduated dE 唔受影響(歷史證據仍值部分 credit)
+4. **F4(hysteresis 收尾)**:`idleScore` 改 per-symbol Map(共用 idle eviction 同步清除);其餘四 factor 輸入係全局指標 → 共享狀態正確唔改
+5. **F5(錯 regime)**:gate edge lookup 用 `marketState.getState(gateSymbol)?.regime ?? fallback`
+6. **F6(dedup)**:`recordEvent(sym, win, at?, tradeId?)` + LRU ring(cap 500);index.ts 傳 `trade.id`
+
+**誠實聲明(殘餘風險)**:完全一致嘅偽造檔(plausible n + plausible LB + 新鮮 lastCycle + 正 ring/EWMA)仍可買到 bypass——同 repo 所有 learner state(OLR/EV/Q-RL)同一信任邊界;threat model 係 runtime 腐敗/NaN,唔係 adversarial disk write。
+
+### P17:Runs Test Loss-Clustering Detector(Wald-Wolfowitz 游程檢定)→ τ 調製
+**量化洞察**:時間衰減嘅職責係「證據過時」——**過時速度取決於證據係 regime 持續定隨機噪聲**。penalty 應該對 serial correlation 反應,唔係對運氣反應。
+- `computeRunsTestTauMultiplier(outcomes)` 純函數:per-symbol outcome ring(cap 30)→ runs z-score:
+  - z ≤ −1.96(連蝕成串 = regime 未完)→ **τ_eff = τ × 1.5**(慢放,保護延長)
+  - |z| < 1.96(隨機散落 = 運氣)→ τ 正常
+  - z ≥ +1.96(乒乓交替 = 高噪聲)→ **τ_eff = τ × 0.75**(快放)
+  - 全蝕(方差零)→ 極端成串 ×1.5;全贏 → 極端回復 ×0.75;n < 15 → ×1.0(冷啟動中性)
+- **τ 預設 24h → 12h(主神裁決)**——runs test 調製後實效 9–18h 自適應
+- tracker 持久化 outcome ring(`plan-g-decay-state.json` v2);`getTauMultiplier(symbol)` 供 gate 使用
+- tracker recordEvent 推 ring(F6 dedup 後先入——污染 ring 會令檢定失真)
+
+### 回測驗證(τ=12h,200 real trades / 580h)
+- **Penalty burden −24.9%**(180.3 → 135.5 burden-hours;τ=24h 時係 −16.2%——主神直覺正確,12h 更優;離線 edge/runs=0 保守下界)
+- 恢復率不變(98/103)——無退化;嚴格支配性不變式保持
+- 合成 spiral:反彈贏錢期舊規則 decay 永遠 ≤23% vs hybrid 24h 釋放 **86%**(τ=12h)/ 36h 95%
+
+### Env flags
+`PLAN_G_DECAY_TAU_HOURS=12`(主神裁決)· `PLAN_G_EDGE_STALE_CYCLES=1000`(新增)
+
+### 測試
+- 更新 `tests/hybrid-penalty-decay.test.ts` +14(F2 plausibility ×3 / F3 新鮮度 / P17 τ multiplier / runs test ×7 / outcome ring ×3)
+- 新增 `tests/hybrid-penalty-decay-attack2.test.ts` 6 個(V1–V6 漏洞實證——全部轉綠)
+- 全量:2598 pass + 13 pre-existing(冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
+## v2.0.870-P16: Hybrid Penalty Decay(混合衰減——主神方案 + 回測驅動三層 OR 修正)
+
+**背景(主神洞察)**:Plan G penalty 只喺 idle 時衰減(`max(0, 1 − idle/30)`)——系統蝕緊但仲交易 → penalty 永遠唔衰減 → death spiral(penaltyFactor 永久卡 floor 0.72 壓制反彈期)。主神方案:三通道混合衰減(20/40/40)。
+
+### 設計(主神權重 + 三個結構修正)
+- **通道 1:cycle+win(20%)**——`dCW = max(min(1, idle/30), 1 − 0.5^min(wins, 4))`(連續 vs 離散取強者,唔 double-count)
+- **通道 2:時間(40%)**——`dTime = 1 − exp(−Δt/τ)`,τ=24h,Δt 從最後蝕錢 close 起計(同 RegimeWinRateLearner 一致)
+- **通道 3:edge(40%)**——graduated `dE = (wilsonLB−0.55)/0.15`(n≥15;median≤0/缺失 → ×0.5 skew-trap 守衛)
+- **修正 1(time floor)**:純加權下繼續蝕+弱 edge 情境 score 上限只有 0.4,spiral 只減弱唔打破 → `score ≥ dTime` 保底(24h 釋放 63% / 72h 95%,唔理仲交唔交易)
+- **修正 2(edge hard-bypass)**:「強 edge 唔壓制」嘅原意喺 40% 權重下最多只豁免 40%,違反原意 → wilsonLB ≥ 0.70 AND n ≥ 25 AND median > 0 AND EWMA > 0(regime-flip 新鮮度守衛)→ score = 1.0 完全豁免
+- **修正 3(idle floor,回測捉到)**:純加權令 idle-complete(舊系統 2h 全釋放)只剩 ~23% 貢獻,回測 burden +442% 大幅退化 → `score ≥ dIdle` 完整保留舊行為(idle 全釋放零風險:冇交易 = penalty 無壓制對象)
+- **最終合成(三層 OR)**:`score = max(dIdle, dTime, 0.2·dCW + 0.4·dTime + 0.4·dE)`——數學保證 `score ≥ 舊規則 decay`(嚴格支配:新規則處處恢復得更快或一樣快);wins/edge 經加權項提供早期加速(floors 未起時率先釋放)
+
+### 組件 1:`src/analysis/hybrid-penalty-decay.ts`(新)
+- `computeHybridDecayScore(input, cfg)` 純函數——無 I/O、無 Date.now()(除非省略 now)
+- `HybridPenaltyDecayTracker`——per-symbol `lastPenaltyEventAt` + `winsSincePenalty`;蝕錢 close → reset 時鐘 + wins 歸零(新懲罰證據);贏錢 → wins+1(唔 reset 時鐘——時間衰減係「距上次蝕錢幾耐」,兩通道獨立)
+- 持久化 `data/evolution/plan-g-decay-state.json`(debounce + atomic write)——restart 唔會免費 reset decay clock(exploit 防禦)
+
+### 組件 2:DynamicThresholdCalculator 整合
+- `setHybridDecayConfig()` + `DynamicThresholdInput.hybridDecay`(optional)——flag off / input 缺失 → 舊 idle-only 路徑完全唔變(零風險回滾)
+- NaN shield:污染 score → fallback legacy multiplier(v2.0.831 NaN < threshold = false 放行教訓)
+- result 加 `hybrid` breakdown;log 行加 `hybrid[bypass cw t e]` 段
+
+### 組件 3:index.ts 接線
+- close 學習路徑(onPositionClosedLearning)喂 recovery 證據——同三個 penalty gate 同一份 trade 結果,口徑唔分叉
+- gate 處 combo tracker `getComboWR(gateSymbol, action, regime)` 提供 wilsonLB/n/median/EWMA;hold action 唔查 edge(無方向)
+
+### 攻擊硬化(12 攻擊測試)
+- 未來 lastPenaltyEventAt → `max(0, Δt)` clamp(P15-attack 教訓);recordEvent/load 雙層 clamp ≤ now
+- NaN/Infinity 全注入 → score finite 且保守(≈0);Infinity wilsonLB 唔 triggered bypass
+- 持久化污染:__proto__/constructor/prototype key 跳過、非 finite 丟棄、負 ts clamp 0
+- map cap 500:**spam(wins-only junk)唔能冲走真實 penalty clock**(null-penalty entry 優先被 evict);全 penalty 時 evict 最舊
+- wins storage cap 64(計算 min 到 4);env 污染(τ≤0/bypassWilson≤gradLow)→ 安全預設
+
+### 回測證據(`scripts/plan-g-decay-backtest.ts`——200 real trades / 580h / 7 symbols)
+- **Penalty burden −16.2%**(180.28 → 155.72 burden-hours;離線 edge=0 保守下界)
+- 恢復率相同(98/103)——無退化;嚴格支配性數學保證 + property test 鎖死
+- **合成死亡螺旋壓力測試**:Phase 1 連蝕 24h → 兩規則都保持保護(正確——流血中途唔放手);Phase 2 反彈期每 30min 贏錢 → **舊規則 decay 永遠 ≤23%(每次 trade reset idle=真 spiral)vs hybrid 24h 釋放 63% / 72h 釋放 95%**
+
+### Env flags(.env.example 文檔化)
+`PLAN_G_HYBRID_DECAY`(default true)· `PLAN_G_DECAY_TAU_HOURS=24` · `PLAN_G_EDGE_BYPASS_WILSON=0.70` · `PLAN_G_EDGE_BYPASS_SAMPLES=25` · `PLAN_G_EDGE_MIN_SAMPLES=15`
+
+### 測試
+- 新增 `tests/hybrid-penalty-decay.test.ts` +30(三通道/合成公式/死亡螺旋/idle floor/嚴格支配性/DTC 整合/tracker/env)
+- 新增 `tests/hybrid-penalty-decay-attack.test.ts` +12(A1-A12)
+- 全量:2577 pass + 13 pre-existing(冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
 ## v2.0.869-P15-attack: RegimeWinRateLearner 攻擊硬化(主神 刁鑽攻擊指令)
 
 **背景(主神指令)**:不擇手段用最刁鑽嘅攻擊方案(併發/狀態注入/持久化污染)攻擊 P15 嘅 RegimeWinRateLearner,搵出漏洞並完美修復。
