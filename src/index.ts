@@ -2555,6 +2555,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
                 log.info(`📡 HL WS closing fill ${fill.symbol} side=${fill.side} doesn't match closing side ${expectedCloseSideRaw} for ${pos.side} position — skipping (may be from a previous position)`);
               } else {
                 log.info(`📡 HL WS closing fill: ${fill.symbol} ${fill.side} ${fill.size} @ ${fill.price} dir=${fill.dir} closedPnl=${fill.closedPnl} — closing local mirror immediately`);
+                // v2.0.869-P14:Set close regime before closing (for regime persistence learning)
+                const closeRegime = this.marketState?.getState(sym)?.regime;
+                if (closeRegime) this.portfolio.setCloseRegime(sym, closeRegime);
                 // Close the local mirror with the actual HL fill price + realized PnL
                 const closedTrade = this.portfolio.closeExchangePosition(sym, fill.price, fill.closedPnl);
                 // v2.0.869-P3(主神 trade 缺失調查):onFills close 路徑——
@@ -5713,6 +5716,11 @@ ${recentExamples}
 
     // Set exit thesis before closing (captured in TradeRecord at close time)
     this.portfolio.setExitThesis(sym, exitThesis);
+
+    // v2.0.869-P14(主神 開倉×平倉市況):Set close regime before closing
+    // (captured in TradeRecord at close time — for regime persistence learning)
+    const closeRegime = this.marketState?.getState(sym)?.regime;
+    if (closeRegime) this.portfolio.setCloseRegime(sym, closeRegime);
 
     if (pos.agentId === 'hyperliquid-real') {
       // Real position: close on HL first, then locally
