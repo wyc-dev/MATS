@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.869-P12
+> **作者**: YC Wong · **版本**: 2.0.869-P13
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -168,6 +168,16 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 統一用 `candleSnapshot` close 價(同 scanDEX18AssetsInBackground 一致——即市 close ≈ mid)
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
+
+### v2.0.869-P13: env 安全加固
+
+**背景**:env 儲存緊 private key,令 env file 參數更安全。
+
+**修復**:
+- `chmod 600 .env`(修 world-readable 644)
+- config 加 `!command` 支援——private key 可存 OS 安全儲存(macOS Keychain / Windows Credential Manager / Linux Secret Service),唔使明文
+- `resolveCommandValues` sanitize 輸出(只攞第一行——去除內部換行)
+- `.env.example` 文檔化跨平台方案
 
 ### v2.0.869-P12: Macro Gate 持久化修復
 

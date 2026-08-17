@@ -3,8 +3,31 @@
 
 import { z } from 'zod';
 import { config as dotenvConfig } from 'dotenv';
+import { execSync } from 'node:child_process';
 
 dotenvConfig();
+
+// v2.0.869-P13(主神 env 安全):resolve !command 值——允許敏感 key(如 private key)
+// 存喺 macOS Keychain,而唔係明文 .env。用法:
+//   HYPERLIQUID_PRIVATE_KEY=!security find-generic-password -ws 'mats-hyperliquid-private-key'
+// 同 models.json 嘅 !command 語法一致。失敗 → 空 string(令 Zod default 生效)。
+// v2.0.869-P13-attack:導出供測試 + sanitize 輸出(只攞第一行——去除內部換行)。
+export function resolveCommandValues(env: Record<string, string | undefined> = process.env): void {
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === 'string' && value.startsWith('!') && value.length > 1) {
+      try {
+        const raw = execSync(value.slice(1), { encoding: 'utf-8', timeout: 5000 });
+        // sanitize:只攞第一行(去除內部換行/多行輸出——private key 應該單行)
+        const resolved = raw.split(/\r?\n/)[0]?.trim() ?? '';
+        env[key] = resolved;
+      } catch (err) {
+        console.warn(`[config] failed to resolve !command for ${key}: ${err instanceof Error ? err.message : String(err)}`);
+        env[key] = '';
+      }
+    }
+  }
+}
+resolveCommandValues();
 
 const envSchema = z.object({
   // Binance (optional — only used when exchange='binance')
