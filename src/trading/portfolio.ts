@@ -128,6 +128,9 @@ export const VALID_CLOSE_REASONS = new Set([
   // v2.0.862: data-driven lock-profit close — PAEL MFE extension check reached
   // the asset's typical favourable-extension zone (TP side one-vote exit).
   'exit_price_lock',
+  // v2.0.869-P15: regime-reversal lock-profit close — MFE ≥ 1.5×ATR AND
+  // regime reversed (P(win) < 0.5). System decision at the regime-flip sweet spot.
+  'regime_reversal_lock',
 ] as const);
 
 /**

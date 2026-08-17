@@ -51,6 +51,12 @@ export function computeLearningWeight(
       // decision (0.5), never full weight. Also never a loss (the gate only
       // fires when profit > 0), so this branch is defensive.
       return 0.5;
+    case 'regime_reversal_lock':
+      // v2.0.869-P15: regime-reversal lock-profit close — system decision at
+      // the regime-flip sweet spot (MFE ≥ 1.5×ATR AND P(win) < 0.5). The market
+      // DID confirm the direction (profit existed), but the exit was a system
+      // decision — treat as 0.5, never full weight.
+      return 0.5;
   }
   // Wins from clean market closes (sl_tp / reconciliation / exchange_closed)
   // always get full weight — the market confirmed the entry thesis, and that

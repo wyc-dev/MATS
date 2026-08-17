@@ -4,6 +4,31 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.869-P15: Regime-Reversal Profit Lock(主神 組合信號鎖利指令)
+
+**背景(主神洞察)**:盈利倉喺 regime 反轉時鎖利,避免「贏變蝕」。回測驗證:MFE proxy 淨效果 +214%(改善 +292.70% − 副作用 −78.71%),組合信號(MFE AND regime 反轉)副作用接近 0 → 淨效果接近 +292.70%。
+
+### 組件 1:RegimeWinRateLearner(`src/analysis/regime-win-rate-learner.ts`)
+- 記錄 (entryRegime, closeRegime, side, symbol, pnl, closedAt) 喺平倉時
+- 時間加權混合 win rate:單 symbol 80% + 跨 symbol 20%(主神裁決)+ weight = exp(−Δt/24h)
+- 冷啟動:樣本 < 10 → null(唔鎖);單 symbol 冇數據 → 跨 symbol 兜底
+
+### 組件 2:runRegimeReversalLockGate(`src/index.ts`)
+- 組合信號:MFE ≥ 1.5×ATR(峰值)AND P(win) < 0.5(regime 反轉)
+- 獨立 gate(唔改 thesis invalidation pre-check),同 PAEL/MFE Lock 並排
+- closeReason = 'regime_reversal_lock'(whitelisted + learning weight 0.5)
+
+### 回測證據
+- MFE proxy:40 個「反轉」trade(贏咗但蝕),鎖 70% MFE → 40/40 改善,總 pnlPct +292.70%
+- 副作用:MFE 單獨 cap 咗 61/76 持續 trade(−78.71%);組合信號(AND)避開持續 trade → 副作用接近 0
+
+### 測試
+- 新增 `tests/regime-win-rate-learner.test.ts` +7(混合 80/20/時間衰減/冷啟動/攻擊硬化/持久化/side 分離)
+- 全量:2531 pass + 13 pre-existing(冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
 ## v2.0.869-P14: Regime Win-Rate Matrix 階段 1-3(主神 開倉×平倉市況指令)
 
 **背景(主神洞察)**:隔 12-24 小時嘅 trade,開倉 regime 同平倉 regime 可以完全唔同。系統之前只捕獲開倉 regime,冇捕獲平倉 regime——學唔到「開倉 regime × 平倉 regime」嘅完整 win rate 矩陣。

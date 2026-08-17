@@ -81,6 +81,7 @@ import { computeChartConvictionMultiplier } from './analysis/chart-conviction.ts
 import { LLMConvictionCalibrator } from './analysis/llm-conviction-calibrator.ts';
 import { LLMDirectionVerifier } from './analysis/llm-direction-verifier.ts';
 import { EVFilter } from './analysis/ev-filter.ts';
+import { RegimeWinRateLearner } from './analysis/regime-win-rate-learner.ts';
 import { tgSignalPusher } from './services/tg-signal.ts';
 
 /** v2.0.868:單日 PnL 序列結構(PNL dashboard 用) */
@@ -293,6 +294,7 @@ class MATSSystem {
   private llmDirectionVerifier!: LLMDirectionVerifier;
   /** v2.0.865:EV Filter(期望值過濾器——量化核心:負 EV 軟性降權) */
   private evFilter!: EVFilter;
+  private regimeWinRateLearner!: RegimeWinRateLearner;
   /** v2.0.866:Close-Decision Calibrator(平倉判斷校準——Phase A:記錄+驗證+統計) */
   private closeCalibrator!: CloseDecisionCalibrator;
   /** v2.0.868:Profitability Analyzer——量化分析器(hold-time EV / direction bias / fee impact) */
@@ -1313,6 +1315,16 @@ class MATSSystem {
         log.info(`✓ PAEL loaded (${stats.cells} cells, ${stats.totalRecords} records)`);
       } catch (e) {
         log.warn(`[exit-price-init] load failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+      }
+
+      // v2.0.869-P15: Regime Win-Rate Learner(regime 反轉鎖利)
+      this.regimeWinRateLearner = new RegimeWinRateLearner();
+      try {
+        this.regimeWinRateLearner.load();
+        const rw = this.regimeWinRateLearner.getStats();
+        log.info(`✓ Regime Win-Rate Learner loaded (${rw.trades} trades)`);
+      } catch (e) {
+        log.warn(`[regime-win-rate-init] load failed: ${e instanceof Error ? e.message : String(e)}`);
       }
 
       // v2.0.837: Meta-Cognitive Calibrator init
@@ -3367,6 +3379,55 @@ ${currentPrompt || '(empty — this is the first input)'}`;
     }
   }
 
+  /** v2.0.869-P15: Regime-Reversal Profit Lock——組合信號(MFE ≥ 1.5×ATR AND
+   *  P(win) < 0.5)鎖利。獨立 gate,唔改 thesis invalidation pre-check。
+   *  回測驗證:MFE proxy 淨效果 +214%,組合信號副作用接近 0 → 淨效果接近 +292%。 */
+  private async runRegimeReversalLockGate(): Promise<void> {
+    if (!this.regimeWinRateLearner) return;
+    try {
+      for (const sym of this.portfolio.getOpenSymbols()) {
+        const pos = this.portfolio.getPosition(sym);
+        if (!pos) continue;
+        const side = isSellSide(pos.side) ? 'sell' : 'buy';
+        const entryRegime = pos.regime;
+        if (!entryRegime) continue; // 冇 entry regime → 唔鎖
+
+        // MFE ≥ 1.5×ATR(峰值,price %)
+        const converted = convertToPriceExtremes({
+          entryPrice: pos.averageEntryPrice,
+          quantity: pos.quantity,
+          leverage: pos.leverage,
+          minValueReached: pos.minValueReached ?? 0,
+          maxValueReached: pos.maxValueReached ?? 0,
+        });
+        if (!converted || converted.mfePricePct <= 0) continue;
+        const atrVal = this.atrCacheThisCycle.get(String(sym).toLowerCase()) ?? 0;
+        const atrPct = atrVal > 0 && pos.averageEntryPrice > 0 ? atrVal / pos.averageEntryPrice : 0;
+        if (atrPct <= 0 || converted.mfePricePct < 1.5 * atrPct) continue; // MFE 未到門檻
+
+        // regime 反轉(P(win) < 0.5)
+        const currentRegime = this.marketState?.getState(normalizeSymbol(sym))?.regime;
+        if (!currentRegime) continue;
+        const pWin = this.regimeWinRateLearner.getWinRate(entryRegime, currentRegime, side, normalizeSymbol(sym));
+        if (pWin === null || pWin >= 0.5) continue; // 樣本不足或 regime 未反轉
+
+        // 當前盈利 > 0(有盈利可鎖)
+        const pnlNow = pos.unrealizedPnl ?? 0;
+        if (!Number.isFinite(pnlNow) || pnlNow <= 0) continue;
+
+        const exitThesis = `[REGIME-REVERSAL LOCK] ${sym} ${pos.side.toUpperCase()}: MFE ${(converted.mfePricePct * 100).toFixed(2)}% ≥ 1.5×ATR(${(atrPct * 100).toFixed(2)}%) AND regime ${entryRegime}→${currentRegime} P(win)=${(pWin * 100).toFixed(0)}% < 50%. Locking profit — SL untouched.`;
+        const ok = await this.closeTrade(sym, exitThesis, 'regime_reversal_lock');
+        if (ok) {
+          log.info(`🔒 [regime-reversal-lock] CLOSED ${sym} ${pos.side.toUpperCase()} @ MFE ${(converted.mfePricePct * 100).toFixed(2)}% (regime ${entryRegime}→${currentRegime}, P(win)=${(pWin * 100).toFixed(0)}%) — profit locked`);
+        } else {
+          log.warn(`🔒 [regime-reversal-lock] close attempt failed for ${sym} (non-fatal)`);
+        }
+      }
+    } catch (err) {
+      log.warn(`[regime-reversal-lock] gate failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   /** v2.0.862: Record a closed real trade into the PAEL learner. */
   private recordRealExitToPAEL(trade: {
     symbol: string; side: string; entryPrice: number; quantity: number;
@@ -3641,6 +3702,25 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // portfolio-inferred reason because it is detected here (the force-close
       // set is the authoritative source for that path).
       trade.closeReason = closeReason;
+
+      // v2.0.869-P15: Regime Win-Rate Learner——記錄 (entryRegime, closeRegime, side, pnl)
+      // 用嚟學「開倉 regime → 平倉 regime」嘅 win rate(regime 反轉鎖利)
+      try {
+        const entryRegime = trade.regime;
+        const closeRegime = this.marketState?.getState(safeSymbol)?.regime;
+        if (entryRegime && closeRegime) {
+          this.regimeWinRateLearner.recordTrade(
+            entryRegime,
+            closeRegime,
+            tradeSide,
+            safeSymbol,
+            pnlPct,
+            trade.closedAt,
+          );
+        }
+      } catch (err) {
+        log.warn(`[regime-win-rate] recordTrade failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
 
       // v2.0.226: Close-context-aware learning weight.
       // The close mechanism is an important factor in the loss:
@@ -9019,6 +9099,10 @@ ${recentExamples}
       // Only when the gate is disabled does execution fall entirely to the
       // pre-PAEL paths below.
       await this.runExitPriceLockGate();
+
+      // v2.0.869-P15: Regime-Reversal Profit Lock——組合信號(MFE ≥ 1.5×ATR AND
+      // P(win) < 0.5)鎖利。獨立 gate,同 PAEL/MFE Lock 並排。
+      await this.runRegimeReversalLockGate();
 
       // v2.0.80: Force-close positions whose entry thesis was invalidated by Skeptics
       // v2.0.139: Mark these as thesis_invalidation closes so the conviction-gate

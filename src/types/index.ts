@@ -555,7 +555,7 @@ export interface TradeRecord {
   /** 'open' = position opened; 'closed' = position closed */
   status: 'open' | 'closed';
   /** v2.0.30: How the position was closed — lets agents know if it was system or manual */
-  closeReason?: 'sl_tp' | 'tp_hit' | 'consensus' | 'manual' | 'reconciliation' | 'exchange_closed' | 'thesis_invalidation' | 'exit_price_lock';
+  closeReason?: 'sl_tp' | 'tp_hit' | 'consensus' | 'manual' | 'reconciliation' | 'exchange_closed' | 'thesis_invalidation' | 'exit_price_lock' | 'regime_reversal_lock';
   /** v2.0.138: Frozen entryThesis captured from the position at close time,
    *  fed to the EXP thesis-experience memory so Skeptics can match rationale
    *  combinations against historical win/loss outcomes. Source: pos.entryThesis
