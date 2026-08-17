@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.869-P10
+> **作者**: YC Wong · **版本**: 2.0.869-P12
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -159,6 +159,23 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - `writeUiSnapshot` camelCase→snake_case section 映射(agentThoughts/marketState → agent_thoughts/market_state)——之前跌入 misc,frontend AgentMonitor 永遠顯示「未收到 agent_thoughts」(主神 R6 數據丟失)
 - `edge_report` 列(migration 21)+ writeCycle 寫入
 - `SUPABASE_DATA_CONTRACT.md`(gitignored)——frontend/app agent 讀取 Supabase 嘅完整資料契約
+
+### v2.0.869-P11: DEX 資產價格來源統一
+
+**背景**:主神指正 P7 嘅 SILVER 正負號反轉只係顯示層症狀,真正根因係「根本攞錯 data」——DEX 資產(xyz:SILVER/GOLD)嘅即市價格用咗 l2Book best bid(買方出價),而唔係 HL mark/mid 價。
+
+**修復**:
+- 統一用 `candleSnapshot` close 價(同 scanDEX18AssetsInBackground 一致——即市 close ≈ mid)
+- 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
+- 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
+
+### v2.0.869-P12: Macro Gate 持久化修復
+
+**背景**:刁鑽攻擊 MAE 模式升級方案,發現 `profitability-analyzer.ts` 嘅 `load()` 冇載入 `recentPnl`。
+
+**修復**:
+- `load()` 加載 `recentPnl`(時間加權蝕錢率 τ=6h)——restart 後 Macro Gate 唔再 reset
+- 降權效果透過「新 trade 到來」衰減(唔係純時間)——蝕錢率高持續降權,開始賺錢自動解除
 
 ### v2.0.869-P10: MAE 模式持久化污染修復
 

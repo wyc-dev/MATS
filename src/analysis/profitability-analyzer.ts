@@ -373,6 +373,24 @@ export class ProfitabilityAnalyzer {
           clean.fees.totalFees = Number.isFinite(f['totalFees']) && (f['totalFees'] as number) > 0 ? f['totalFees'] as number : 0;
           clean.fees.trades = Number.isFinite(f['trades']) && (f['trades'] as number) > 0 ? Math.floor(f['trades'] as number) : 0;
         }
+        // v2.0.869-P12(主神 刁鑽攻擊):載入 recentPnl(時間加權蝕錢率)——之前 load
+        // 冇載入 → restart 後 Macro Gate 數據清空 → getLosingMultiplier 永遠 1.0
+        // (唔降權)——「重開單又重複輸」防護失效。sanitize:__proto__ 防護 +
+        // Number.isFinite + cap 20(同 recordTrade 一致)。
+        if (raw['recentPnl'] && typeof raw['recentPnl'] === 'object') {
+          for (const [k, arr] of Object.entries(raw['recentPnl'] as Record<string, unknown>)) {
+            if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+            if (Array.isArray(arr)) {
+              const cleanArr = arr
+                .filter((x): x is { pnl: number; ts: number } => !!x && typeof x === 'object'
+                  && Number.isFinite((x as { pnl?: unknown }).pnl)
+                  && Number.isFinite((x as { ts?: unknown }).ts))
+                .map(x => ({ pnl: (x as { pnl: number }).pnl, ts: (x as { ts: number }).ts }))
+                .slice(-20);
+              if (cleanArr.length > 0) clean.recentPnl[k] = cleanArr;
+            }
+          }
+        }
       }
       this.state = clean;
     } catch (err) {

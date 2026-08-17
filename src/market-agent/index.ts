@@ -1112,32 +1112,29 @@ export class MarketAgent {
           }
         }
 
-        // Colon symbol or not found in DEX 0: l2Book for price + candleSnapshot for volume
+        // Colon symbol or not found in DEX 0: candleSnapshot for price + volume
+        // v2.0.869-P11(主神 攞錯 data 調查):統一用 candleSnapshot close 價——
+        // 同 scanDEX18AssetsInBackground 一致(即市 close ≈ mid)
         if (symbol.includes(':')) {
-          const [bookRes, snapRes] = await Promise.all([
-            hlFetch({ type: 'l2Book', coin: symbol }),
-            hlFetch({
-              type: 'candleSnapshot',
-              // candleSnapshot requires FULL coin name (e.g. "xyz:META" not "META")
-              req: { coin: symbol, interval: '1d', startTime: Date.now() - 172_800_000, endTime: Date.now() },
-            }),
-          ]);
+          const snapRes = await hlFetch({
+            type: 'candleSnapshot',
+            // candleSnapshot requires FULL coin name (e.g. "xyz:META" not "META")
+            req: { coin: symbol, interval: '1d', startTime: Date.now() - 172_800_000, endTime: Date.now() },
+          });
           let price = 0;
           let volume = 0;
-          if (bookRes.ok) {
-            const book = await bookRes.json() as { levels: Array<Array<{ px: string }>> };
-            price = parseFloat(book.levels?.[0]?.[0]?.px ?? '0');
-          }
           if (snapRes.ok) {
             const snapData = await snapRes.json() as Array<Record<string, string>>;
-            if (Array.isArray(snapData)) {
+            if (Array.isArray(snapData) && snapData.length > 0) {
+              const last = snapData[snapData.length - 1]!;
+              price = parseFloat(last['c'] ?? '0');
               for (const c of snapData) {
                 const v = parseFloat(c['v'] ?? '0');
                 if (!isNaN(v)) volume += v;
               }
+              // Convert raw contract volume → USD notional: v * price
+              if (volume > 0 && price > 0) volume = volume * price;
             }
-            // Convert raw contract volume → USD notional: v * price
-            if (volume > 0 && price > 0) volume = volume * price;
           }
           return { price, volume24h: volume, change24h: 0 };
         }
@@ -1312,7 +1309,10 @@ export class MarketAgent {
       }
     }
 
-    // ── Colon symbols: parallel l2Book fetch (1 call each, but parallel) ──
+    // ── Colon symbols: parallel candleSnapshot fetch (close price) ──
+    // v2.0.869-P11(主神 攞錯 data 調查):統一用 candleSnapshot close 價——
+    // 同 scanDEX18AssetsInBackground 一致(即市 close ≈ mid)。之前用 l2Book
+    // best bid(買方出價)≠ HL mark/mid 價——攞錯價 → PnL 計錯 → 正負號反轉。
     if (colonSymbols.length > 0) {
       const colonResults = await Promise.allSettled(
         colonSymbols.map(async (sym) => {
@@ -1320,11 +1320,15 @@ export class MarketAgent {
           const res = await hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'l2Book', coin: sym }),
+            body: JSON.stringify({
+              type: 'candleSnapshot',
+              req: { coin: sym, interval: '1d', startTime: Date.now() - 172_800_000, endTime: Date.now() },
+            }),
           });
           if (!res.ok) return { symbol: sym, price: 0, volume24h: 0, change24h: 0 };
-          const book = await res.json() as { levels: Array<Array<{ px: string }>> };
-          const price = parseFloat(book.levels?.[0]?.[0]?.px ?? '0');
+          const snapData = await res.json() as Array<Record<string, string>>;
+          const last = Array.isArray(snapData) && snapData.length > 0 ? snapData[snapData.length - 1]! : null;
+          const price = last ? parseFloat(last['c'] ?? '0') : 0;
           return { symbol: sym, price, volume24h: 0, change24h: 0 };
         })
       );

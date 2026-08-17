@@ -199,19 +199,23 @@ export class MultiExchangeWebSocketManager {
 
   private async pollHLRestPrice(symbol: string): Promise<void> {
     try {
-      // l2Book REST API uses the full prefixed coin name for DEX 1-8 assets
-      // (e.g. xyz:META), unlike candleSnapshot which uses bare name (META).
-      // This matches the convention used in MarketAgent.fetchPriceForSymbol.
+      // v2.0.869-P11(主神 攞錯 data 調查):統一用 candleSnapshot close 價——
+      // 同 scanDEX18AssetsInBackground 一致(即市 close ≈ mid)。之前用 l2Book
+      // best bid(買方出價)≠ HL mark/mid 價——攞錯價。
       // v2.0.XX: Use global rate limiter instead of raw fetch.
       const coin = symbol;
       const res = await hlRateLimitedFetch('https://api.hyperliquid.xyz/info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'l2Book', coin }),
+        body: JSON.stringify({
+          type: 'candleSnapshot',
+          req: { coin, interval: '1d', startTime: Date.now() - 172_800_000, endTime: Date.now() },
+        }),
       });
       if (res.ok) {
-        const book = await res.json() as { levels: Array<Array<{ px: string; sz: string; n: number }>> };
-        const px = book.levels?.[0]?.[0]?.px ? parseFloat(book.levels[0][0].px) : 0;
+        const snapData = await res.json() as Array<Record<string, string>>;
+        const last = Array.isArray(snapData) && snapData.length > 0 ? snapData[snapData.length - 1]! : null;
+        const px = last ? parseFloat(last['c'] ?? '0') : 0;
         if (px > 0) {
           this.emitUnifiedPrice({
             symbol,
