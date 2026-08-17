@@ -11,6 +11,7 @@ import { HyperliquidEngine } from './hyperliquid-engine.ts';
 import { computeSLTP, safeLeverage } from './position-utils.ts';
 import { getATR, computeATRSLTP, getMomentum } from '../analysis/atr.ts';
 import { computeSmartSLTP, fetchCandleHighLow } from '../analysis/smart-sltp.ts';
+import { estimateStopSlippageBps } from './execution-tracker.ts';
 import { getMfeCalibration } from '../analysis/mfe-calibrator.ts';
 import type {
   TradeMode,
@@ -564,6 +565,8 @@ export class TradingManager {
           stopLossPct: decision.stopLossPct ?? slPctDefault,
           takeProfitPct: decision.takeProfitPct ?? tpPctDefault,
           riskProfile: this.riskProfile,
+          // P21-B: P21-C 實測 stop-slip → SL 地板(冷啟動 null → undefined → no-op)
+          stopSlippageBps: estimateStopSlippageBps(decision.symbol, decision.action as 'buy' | 'sell') ?? undefined,
           adverseMomentum,
           olrConfidence: entryOlrConfidence,
           // v2.0.852: Pass the ACTUAL fill leverage so computeSmartSLTP can

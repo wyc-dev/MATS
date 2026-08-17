@@ -70,7 +70,7 @@ import { DynamicThresholdCalculator, type DynamicThresholdInput, type DynamicThr
 import { HybridPenaltyDecayTracker, hybridDecayConfigFromEnv } from './analysis/hybrid-penalty-decay.ts';
 import { PlanckChaosEngine } from './analysis/planck-chaos.ts';
 import { SystemGuard } from './system-guard/index.ts';
-import { ExecutionTracker } from './trading/execution-tracker.ts';
+import { ExecutionTracker, setStopSlipEstimator } from './trading/execution-tracker.ts';
 import { CorrelationBudget } from './risk/correlation-budget.ts';
 import { calculateTakerFee, calculateFundingCost, getFeeSummary } from './trading/cost-model.ts';
 import { getSRZones } from './analysis/support-resistance.ts';
@@ -112,7 +112,7 @@ import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { ReplayBuffer } from './evolution/replay-buffer.ts';
 import { BayesianOLR } from './evolution/bayesian-olr.ts';
 import { ActiveExploration } from './evolution/active-exploration.ts';
-import { calculateFirstPassage, estimateDrift, estimateVolatility, computeMomentum, type FirstPassageResult } from './evolution/first-passage.ts';
+import { calculateFirstPassage, estimateDrift, estimateVolatility, sanitizeDriftForRegime, computeMomentum, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
 import { wilsonScore } from './evolution/evolution-utils.ts';
 import { ComboWinRateTracker, type ComboGateResult } from './evolution/combo-win-rate-tracker.ts';
@@ -986,7 +986,9 @@ class MATSSystem {
 
       // 3.8 Initialize Execution Tracker + Correlation Budget
       log.info('Step 3.8/8: Initializing Execution Tracker & Correlation Budget...');
-      this.executionTracker = new ExecutionTracker();
+      this.executionTracker = new ExecutionTracker(path.join(process.cwd(), 'data/evolution/stop-slippage.json'));
+      // P21-B: smart-sltp 經 module accessor 讀 stop-slip 估計(凈化依賴)
+      setStopSlipEstimator((sym, side) => this.executionTracker?.getStopSlippageEstimate(sym, side) ?? null);
       this.correlationBudget = new CorrelationBudget();
       log.info('✓ Execution Tracker & Correlation Budget ready');
 
@@ -3875,6 +3877,23 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         }
         // v2.0.863 規限①: LLM conviction calibrator — 記錄 (LLM conviction, outcome)
         // 用開倉時嘅 consensus confidence(entryConsensusConfidence——v2.0.837 已存)
+        // v2.0.870-P21-C: stop-exit slippage 觀測——exit 穿越 final SL 就記
+        // (唔依賴 closeReason 字串;價格證據最誠實)。正 adverse = 滑穿蝕多咗。
+        try {
+          const fsl = (trade as { finalStopLossPrice?: number }).finalStopLossPrice;
+          const exitPx = trade.exitPrice;
+          if (Number.isFinite(fsl) && Number.isFinite(exitPx) && (fsl as number) > 0 && (exitPx as number) > 0) {
+            const crossed = trade.side === 'buy' ? (exitPx as number) < (fsl as number) : (exitPx as number) > (fsl as number);
+            if (crossed) {
+              this.executionTracker?.recordStopExit({
+                symbol: trade.symbol, side: trade.side,
+                plannedStopPrice: fsl as number, fillPrice: exitPx as number,
+                mode: tradeSource,
+              });
+            }
+          }
+        } catch { /* non-critical */ }
+
         const entryConf = (trade as { entryConsensusConfidence?: number }).entryConsensusConfidence;
         // v2.0.870-P19': 觀測性——缺失時明確記錄(每 50 單最多 warn 一次,唔洗版)
         if (!Number.isFinite(entryConf)) {
@@ -6710,7 +6729,9 @@ ${recentExamples}
       try {
         const priceHistory = this.marketState.getPriceHistory(sym);
         const vol = estimateVolatility(priceHistory, 20);
-        const drift = estimateDrift(priceHistory, 20);
+        // P21-A: MR regime → drift 歸零(GBM drift 對 MR 係模型錯用)
+        const symRegime = this.marketState.getState(sym)?.regime;
+        const drift = sanitizeDriftForRegime(estimateDrift(priceHistory, 20), symRegime);
         const fp = calculateFirstPassage(vol, drift, dist.slLong, dist.tpLong, dist.slShort, dist.tpShort);
         lines.push(`First-Passage P(TP before SL) — path-risk from vol + drift + S/R SL/TP:`);
         lines.push(`  LONG  P=${(fp.longPWin * 100).toFixed(0)}% (breakeven=${(fp.breakevenPLong * 100).toFixed(0)}% → edge ${((fp.longPWin - fp.breakevenPLong) * 100).toFixed(0)}pp) conf=${fp.confidence}`);
@@ -7659,7 +7680,8 @@ ${recentExamples}
     try {
       const priceHistory = this.marketState.getPriceHistory(activeSymbol);
       const vol = estimateVolatility(priceHistory, 20);
-      const drift = estimateDrift(priceHistory, 20);
+      // P21-A: MR regime → drift 歸零
+      const drift = sanitizeDriftForRegime(estimateDrift(priceHistory, 20), this.marketState.getState(activeSymbol)?.regime);
       // LONG: SL at support (below), TP at resistance (above)
       const slDistLong = this.lastSRContext?.distanceToSupportBps ? this.lastSRContext.distanceToSupportBps / 10000 : 0.02;
       const tpDistLong = this.lastSRContext?.distanceToResistanceBps ? this.lastSRContext.distanceToResistanceBps / 10000 : 0.05;
