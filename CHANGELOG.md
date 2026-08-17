@@ -4,6 +4,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.869-P15-attack: RegimeWinRateLearner 攻擊硬化(主神 刁鑽攻擊指令)
+
+**背景(主神指令)**:不擇手段用最刁鑽嘅攻擊方案(併發/狀態注入/持久化污染)攻擊 P15 嘅 RegimeWinRateLearner,搵出漏洞並完美修復。
+
+### 攻擊測試結果(1 個漏洞確認)
+- **A1/A3(MEDIUM)**:未來 closedAt(now + 100h)→ weight = exp(正數) > 1 → 單一 trade 巨大權重主導 win rate(10 win vs 1 loss → win rate 崩潰到 0.13,應該接近 1.0)
+
+### 修復(Google Tech Lead + 量化金融)
+1. `getWinRate` clamp dt 到非負(`Math.max(0, now - closedAt)`)——未來 closedAt → weight = 1(唔會 > 1)
+2. `recordTrade` + `load` clamp closedAt 到 now(`Math.min(closedAt, Date.now())`)——未來 closedAt 唔會入 state
+
+### 測試
+- 新增 `tests/regime-win-rate-learner-attack.test.ts` +4(未來 closedAt/巨大 closedAt/持久化污染/併發)
+- 全量:2535 pass + 13 pre-existing(冇新失敗)
+- `tsc --noEmit` 零錯誤
+
+---
+
 ## v2.0.869-P15: Regime-Reversal Profit Lock(主神 組合信號鎖利指令)
 
 **背景(主神洞察)**:盈利倉喺 regime 反轉時鎖利,避免「贏變蝕」。回測驗證:MFE proxy 淨效果 +214%(改善 +292.70% − 副作用 −78.71%),組合信號(MFE AND regime 反轉)副作用接近 0 → 淨效果接近 +292.70%。

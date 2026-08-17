@@ -64,7 +64,7 @@ export class RegimeWinRateLearner {
       const s: 'buy' | 'sell' = side === 'sell' ? 'sell' : 'buy';
       const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
       const p = Number.isFinite(pnl) ? (pnl as number) : 0;
-      const t = Number.isFinite(closedAt) ? (closedAt as number) : Date.now();
+      const t = Number.isFinite(closedAt) ? Math.min(closedAt as number, Date.now()) : Date.now();
       if (!e || !c || !sym) return;
       this.state.trades.push({ entryRegime: e, closeRegime: c, side: s, symbol: sym, pnl: p, closedAt: t });
       if (this.state.trades.length > MAX_TRADES) {
@@ -88,7 +88,10 @@ export class RegimeWinRateLearner {
 
       for (const t of this.state.trades) {
         if (t.entryRegime !== entryRegime || t.closeRegime !== closeRegime || t.side !== side) continue;
-        const weight = Math.exp(-(now - t.closedAt) / TAU_MS);
+        // v2.0.869-P15-attack: clamp dt 到非負——未來 closedAt(持久化污染)會令
+        // weight = exp(正數) > 1 → 單一 trade 巨大權重主導 win rate
+        const dt = Math.max(0, now - t.closedAt);
+        const weight = Math.exp(-dt / TAU_MS);
         const win = t.pnl > 0;
         crossTotal += weight;
         if (win) crossWins += weight;
@@ -147,7 +150,7 @@ export class RegimeWinRateLearner {
           const side: 'buy' | 'sell' = o['side'] === 'sell' ? 'sell' : 'buy';
           const symbol = String(o['symbol'] ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
           const pnl = Number.isFinite(o['pnl']) ? (o['pnl'] as number) : 0;
-          const closedAt = Number.isFinite(o['closedAt']) ? (o['closedAt'] as number) : Date.now();
+          const closedAt = Number.isFinite(o['closedAt']) ? Math.min(o['closedAt'] as number, Date.now()) : Date.now();
           if (!entryRegime || !closeRegime || !symbol) continue;
           clean.trades.push({ entryRegime, closeRegime, side, symbol, pnl, closedAt });
         }
