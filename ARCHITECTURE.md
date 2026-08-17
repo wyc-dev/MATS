@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.869-P5
+> **作者**: YC Wong · **版本**: 2.0.869-P8
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~63,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -40,7 +40,7 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 | **理據驅動** | Meta-Agent 必須提供 entryThesis（`[1h:..] [1d:..]`）才可開倉；Skeptics 絕對否決權 |
 | **暗黑心理學** | Meta-Agent 質疑數據是否大戶操縱；Skeptics 驗證 Meta-Agent 自身是否被偏誤 |
 | **極限推理** | 冇倉位必須 BUY/SELL（極度不確定先 HOLD）；有倉位 thesis 失效（強制）+ ≥2 其他條件先 CLOSE |
-| **自我演化** | 認知演化管線（v2.0.868-P1P2: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 Component Attribution + 1 PAEL Exit-Price Learner + **1 LLM World-Model Layer** + **1 LLM Direction Verifier** + **1 EV Filter** + **1 Close-Decision Calibrator** + **1 Profitability Analyzer** + **1 Entry Quality System**）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + Component Attribution v2.0.844 + **Q-RL Direction Signal v2.0.861** + **Shadow Pool Priority Eviction v2.0.861** + **PAEL v2.0.862** + **LLM World-Model v2.0.863** + **LLM Direction Verifier v2.0.864** + **EV Filter v2.0.865** + **Close-Decision Calibrator v2.0.866** + **TG Signal Push + Supabase Trade Writer v2.0.867** + **Profitability Analyzer + 閉環校準 v2.0.868**（Hold-Time EV + Direction Bias + Fee Impact + PAEL threshold 過早率閉環 + reconciliation fill 驗證）|
+| **自我演化** | 認知演化管線（v2.0.868-P1P2: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 Component Attribution + 1 PAEL Exit-Price Learner + **1 LLM World-Model Layer** + **1 LLM Direction Verifier** + **1 EV Filter** + **1 Close-Decision Calibrator** + **1 Profitability Analyzer** + **1 Entry Quality System**）— OLR + Shadow Trading + First-Passage + EM Cycle Chain + GA + RIL + NA + AttnRes + Combo WR Gate + P(win)×Consensus Discount + Close-Context Learning v2.0.226 + Plan G Dynamic Threshold v2.0.227 + Edge Validation v2.0.833 + Q-RL Alpha Discovery v2.0.835 + Component Attribution v2.0.844 + **Q-RL Direction Signal v2.0.861** + **Shadow Pool Priority Eviction v2.0.861** + **PAEL v2.0.862** + **LLM World-Model v2.0.863** + **LLM Direction Verifier v2.0.864** + **EV Filter v2.0.865** + **Close-Decision Calibrator v2.0.866** + **TG Signal Push + Supabase Trade Writer v2.0.867** + **Profitability Analyzer + 閉環校準 v2.0.868**（Hold-Time EV + Direction Bias + Fee Impact + PAEL threshold 過早率閉環 + reconciliation fill 驗證）+ **Distribution Shape Gate + Convexity Detector v2.0.869-P8**（偏度/峰度門 + Wilson LB 保守 EV）|
   歷史：v2.0.833 移除 4 個 0-inference 組件 + 暫停 active-exploration。v2.0.835 新增 Q-RL + Factor-Tagged Aligned Shadow。v2.0.844-848 新增 Component Attribution + LLM-vs-Stats A/B shadow + Label Cleanliness（量度邊個組件真正加 edge）。v2.0.849-851 將 momentum/exec-lens/confidence SL widening 移植到 live computeSmartSLTP + 修復 TradeRecord.closeReason 資料缺失（RIL + trade-audit 可以分到「SL 太緊」定「thesis 錯」）。v2.0.853 修復 closeTrade dual-mode guard（dual 模式下所有平倉被靜默跳過）+ 3 個缺失 closeReason 標記 + tradingManager.closePosition 用滯後 WS 價格代替實際 HL fill + UI SSE 退避。**v2.0.855 學習管道修復**：aligned shadow 恆開（real-trade cycles 都開，Q-RL 不再餓死）+ shadow_blind OLR 計數器（v2.0.834 承諾但從未 implement）+ thesis-invalidation closeReason 全覆蓋。**v2.0.855-fix**：Q-RL EXP backfill（1072 筆歷史交易 populate Q-table，令 discoverPatterns 即刻有嘢掃）。**v2.0.855-attack**：7 個修復引入嘅漏洞全部修補（OLR counter 字符串/負數消毒、closeReason 白名單、aligned-shadow weightedDirection 用真 LLM lean）。**v2.0.855-attack2**：Q-RL binRegime 邊界同 regimeToOrdinal 完全錯位（6/7 regime 入錯桶，bull/bear 對調）已對齊。**v2.0.856**：Attribution signal 契約修正（SELL 反轉 bug）+ side/symbol guard 補完（normalizeTradeSide，8 call site 強制 coerce 成 SELL 嘅 bug）+ edge-audit 工具。**v2.0.857 移除 aggressive/conservative 風險等級（moderate-only）**：12 個檔案——3×3 矩陣縮減為 1×3、後端 riskProfile 恆為 moderate、Meta-Agent prompt 改 moderate-only（慳 ~4.7KB context/cycle）。**v2.0.858 解鎖 cycle 期間市場選擇**：select-symbol 延遲應用 + throttle coalescing（唔再掉更新）+ symbol-set drift check（唔再淨比 count）。**v2.0.859 移除零消費者組件 + 修復學習管道**：backfill 重複喂飼（Q-RL/OLR persisted flag）+ OLR calibration shrinkage（斬 overconfidence）。**v2.0.860 三因子探索 + adaptive 歸一 + SE operator-conditioned context**（Frontis-MA1/OpenMLE-Evo：`U = 1.0×score + 0.6×progress + 0.3×novelty`，score 對 cell 自己 reward 歷史 min-max 歸一；SE 診斷只對 priority 文件畀全文、其餘 stub）|
 | **唔靠過去 P&L** | 過去 drawdown/losses 唔係拒絕交易嘅理由——OLR 持續學習，市況不斷變化 |
 | **多資產單循環** | 所有交易市場單一 HACP 循環分析；無持倉市場以 isTradingMarket=true 注入 |
@@ -130,6 +130,42 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - timeout 180s + save require→import fs
 
 **刁鑽攻擊硬化**(25 個新測試):多格式 JSON 解析/每個 Cycle fetch/judgeSyms 異常/單個 object 解析/遞歸 retry。
+
+### v2.0.869-P6: thesis invalidation 數據鏈修復 + guard 提取
+
+**背景**:主神發現「price moved only 0.00%」+「held 0 min」——thesis invalidation 全部被擋——蝕錢倉唔 close——倒蝕。
+
+**修復**:
+- `portfolio.ts` softUpdatePosition:unrealizedPnlPct 用 HL pnl 同步更新(pnl/margin)
+- `hacp.ts`:entryTimestamp ?? openedAt fallback + posCtx 用真實 unrealizedPnlPct + openedAt 全鏈 forward
+- guard 提取為純函數 `src/cognition/thesis-validation-guard.ts`(shouldAllowThesisValidation——3 條資本保存不變式:賺錢永不 close/蝕 <0.5% 永不 close/持倉 <30min 永不 close + v2.0.832 SL-hit 結構確認 bypass)
+- 型別安全:PositionContext 加 openedAt + 移除 (p as any) casts
+
+### v2.0.869-P7: SILVER 正負號反轉修復
+
+**背景**:HACP guard 話 SILVER +4.07% 賺錢,但 Trade Incident UI 顯示 -3.0% 蝕緊——正負號反轉。
+
+**修復**:mark price polling 傳返 HL 真實 unrealizedPnl(從 getUserPositions 攞)——currentPrice 用 l2Book bid(顯示)+ unrealizedPnl/unrealizedPnlPct 用 HL 真實值(決策)——兩者分離。
+
+### v2.0.869-P7-attack: 刁鑽攻擊硬化
+
+**修復**:Infinity stopLossPrice/currentPrice 唔再 bypass structure_confirmed(sanitize 為 finite 正值);normalizeSymbol null/undefined/非 string → ''(唔 crash);fallback map leverage Infinity → 0。
+
+### v2.0.869-P8: Distribution Shape Gate + Convexity/Asymmetry Detector
+
+**背景**:以量化金融分析師思路創建超額盈利組件(Kelly Sizing 完全唔需要——主神裁決)。
+
+**組件 1:Distribution Shape Gate(偏度/峰度門)**:
+- 樣本偏度(adjusted Fisher-Pearson)+ 超額峰度
+- 偵測「肥尾蝕錢」(skew<-0.5 且 kurt>1 = 撿鋼鏰陷阱)→ ×0.75;負偏 → ×0.85;正偏 → ×1.05
+- 冷啟動 n<30 → ×1.0
+
+**組件 2:Convexity/Asymmetry Detector(凸性偵測)**:
+- Wilson LB(win rate 95% CI 下界)+ 保守 EV(Wilson LB win rate 取代點估計)
+- 點 EV 可能 >0 但唔顯著 → 降權;conservativeEV>0 → boost ×[1.0,1.15];<0 → 降權 ×[0.8,1.0]
+- 冷啟動 n<20 → ×1.0
+
+**整合**:effectiveConfidence × shapeMultiplier × convexityMultiplier(conviction gate 內)。
 
 ## 帳戶模型：Paper（模擬）vs Real（Hyperliquid 真實）⚠️ 前文後理
 

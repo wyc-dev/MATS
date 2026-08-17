@@ -18,6 +18,13 @@
 
 import { createLogger } from '../observability/logger.ts';
 import * as fs from 'node:fs';
+import {
+  computeDistributionShape,
+  shapeToMultiplier,
+  computeConservativeEV,
+  convexityToMultiplier,
+  MIN_SHAPE_SAMPLES,
+} from './distribution-shape.ts';
 
 const log = createLogger({ phase: 'ev-filter' });
 
@@ -106,6 +113,43 @@ export class EVFilter {
   getEVMultiplier(symbol: string, side: 'buy' | 'sell'): number {
     const { ev, n } = this.getEVStats(symbol, side);
     return evToMultiplier(ev, n);
+  }
+
+  /** v2.0.869-P8:分布形狀 gate 乘數(偏度/峰度)——偵測肥尾蝕錢(偶發大蝕 trap) */
+  getShapeMultiplier(symbol: string, side: 'buy' | 'sell'): number {
+    const k = key(symbol, side);
+    const arr = this.state.samples[k];
+    if (!arr || arr.length === 0) return 1.0;
+    return shapeToMultiplier(computeDistributionShape(arr));
+  }
+
+  /** v2.0.869-P8:凸性偵測乘數(Wilson LB 保守 EV)——統計顯著性 */
+  getConvexityMultiplier(symbol: string, side: 'buy' | 'sell'): number {
+    const k = key(symbol, side);
+    const arr = this.state.samples[k];
+    if (!arr || arr.length === 0) return 1.0;
+    const { conservativeEV, n } = computeConservativeEV(arr);
+    return convexityToMultiplier(conservativeEV, n);
+  }
+
+  /** v2.0.869-P8:注入 Meta-Agent 嘅分布形狀 block(偏度/峰度 + 保守 EV) */
+  getDistributionBlock(symbol: string, side: 'buy' | 'sell'): string {
+    const k = key(symbol, side);
+    const arr = this.state.samples[k];
+    if (!arr || arr.length < MIN_SHAPE_SAMPLES) return '';
+    const shape = computeDistributionShape(arr);
+    const { conservativeEV, wilsonLB, pWin } = computeConservativeEV(arr);
+    const shapeMult = shapeToMultiplier(shape);
+    const convMult = convexityToMultiplier(conservativeEV, arr.length);
+    const shapeNote =
+      shape.skewness < -0.5 && shape.excessKurtosis > 1
+        ? '肥尾蝕錢(偶發大蝕 trap)'
+        : shape.skewness < -0.5
+          ? '負偏(左尾重)'
+          : shape.skewness > 0.5
+            ? '正偏(贏大輸細)'
+            : '近似對稱';
+    return `=== DISTRIBUTION SHAPE (${symbol} × ${side}) ===\n  偏度 skew=${shape.skewness.toFixed(2)} 峰度 kurt=${shape.excessKurtosis.toFixed(2)} (${shapeNote}) → ×${shapeMult.toFixed(2)}\n  保守 EV=${(conservativeEV * 100).toFixed(2)}%(Wilson LB win rate ${(wilsonLB * 100).toFixed(0)}% vs 點估計 ${(pWin * 100).toFixed(0)}%) → ×${convMult.toFixed(2)}`;
   }
 
   /** 注入 Meta-Agent 嘅 block(主神裁決:Kelly 只提供參考數據——size 用戶決定) */

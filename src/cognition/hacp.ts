@@ -7,6 +7,7 @@ import { getActiveProvider } from '../llm/index.ts';
 import { config } from '../config/index.ts';
 import { parseA2ASignal, formatA2ASignal } from './a2a-utils.ts';
 import { normalizeDecision } from '../trading/decision-utils.ts';
+import { shouldAllowThesisValidation } from './thesis-validation-guard.ts';
 // v2.0.42: Import normalizeSymbol for consistent symbol casing in adjustPositions.
 import { normalizeSymbol, isThesisPlaceholder } from '../trading/portfolio.ts';
 import type { TradeHistory } from '../evolution/trade-history.ts';
@@ -600,7 +601,7 @@ export class HACPEngine {
      *  v2.0.104: Includes both real open positions (quantity > 0) and
      *  trading markets without positions (quantity = 0, isTradingMarket = true).
      *  Agents output decisions for ALL entries in a single cycle. */
-    currentPositions?: Array<{ id: string; symbol: string; side: string; entryPrice: number; currentPrice: number; stopLoss?: number; takeProfit?: number; leverage?: number; quantity?: number; exchange?: string; entryThesis?: string; isTradingMarket?: boolean }>,
+    currentPositions?: Array<{ id: string; symbol: string; side: string; entryPrice: number; currentPrice: number; stopLoss?: number; takeProfit?: number; leverage?: number; quantity?: number; exchange?: string; entryThesis?: string; isTradingMarket?: boolean; unrealizedPnlPct?: number; openedAt?: number }>,
     /** Previous cycle summary chain — injected into Meta-Agent context for EM continuity */
     emContext?: string,
     /** Cycle summaries for Skeptics convergence audit */
@@ -675,7 +676,7 @@ export class HACPEngine {
         unrealizedPnl: pnl,
         // v2.0.869-P5(主神 price moved 0.00% 調查):用 currentPositions 傳入嘅真實
         // unrealizedPnlPct(portfolio 用 HL pnl 更新)——唔用重新計算(p.currentPrice 可能 = entryPrice——0)
-        unrealizedPnlPct: (p as any).unrealizedPnlPct ?? pnlPct,
+        unrealizedPnlPct: p.unrealizedPnlPct ?? pnlPct,
         stopLossPrice: p.stopLoss,
         takeProfitPrice: p.takeProfit,
         leverage: lev,
@@ -686,7 +687,7 @@ export class HACPEngine {
         isTradingMarket: p.isTradingMarket,
         // v2.0.869-P5(主神 held 0 min 調查):Forward openedAt——holdTimeMinutes 用
         // (entryTimestamp 唔存在——openedAt 先係真實開倉時間)
-        openedAt: (p as any).openedAt as number | undefined,
+        openedAt: p.openedAt,
       };
     });
 
@@ -768,7 +769,7 @@ export class HACPEngine {
           leverage: p.leverage,
           entryThesis: p.entryThesis,
           // v2.0.869-P5(主神 held 0 min 調查):Forward openedAt——holdTimeMinutes 用
-          openedAt: (p as any).openedAt as number | undefined,
+          openedAt: p.openedAt,
         }));
 
       if (positionsWithThesis.length > 0) {
@@ -804,84 +805,27 @@ export class HACPEngine {
         const preCheckedPositions = positionsWithThesis.filter(p => {
           const position = posCtx.find(ctx => ctx.symbol === p.symbol);
           if (!position) return true; // No position context — let Skeptics decide
-          
-          const pnlPct = position.unrealizedPnlPct ?? 0;
-          const isProfitable = pnlPct > 0;
-          const isSignificantLoss = pnlPct < -0.005; // >0.5% loss
-          
-          // v2.0.832: STRUCTURAL CONFIRMATION CHECK — if SL hit or S/R broken,
-          // bypass ALL pre-check guards. The market has confirmed the thesis
-          // is broken — no amount of profit or hold time should override that.
-          const currentPrice = position.currentPrice ?? 0;
-          const slPrice = position.stopLossPrice ?? 0;
-          const entryPrice = position.averageEntryPrice ?? 0;
-          let structureConfirmed = false;
-          if (slPrice > 0 && currentPrice > 0) {
-            if (position.side === 'buy' && currentPrice <= slPrice) structureConfirmed = true;
-            if (position.side === 'sell' && currentPrice >= slPrice) structureConfirmed = true;
-          }
-          if (structureConfirmed) {
-            log.info(`📊 [v2.0.832] ${p.symbol}: SL hit (price $${currentPrice.toFixed(2)} ${position.side === 'buy' ? '≤' : '≥'} SL $${slPrice.toFixed(2)}) — bypassing all pre-check guards, allowing Skeptics validation`);
+
+          // v2.0.869-P6: guard extracted to pure function (thesis-validation-guard.ts)
+          // for unit-testability. Logging stays here; the decision is deterministic.
+          const verdict = shouldAllowThesisValidation(position, Date.now());
+          if (verdict.allow) {
+            if (verdict.reason === 'structure_confirmed') {
+              log.info(`📊 [v2.0.832] ${p.symbol}: SL hit (price $${position.currentPrice.toFixed(2)} ${position.side === 'buy' ? '≤' : '≥'} SL $${(position.stopLossPrice ?? 0).toFixed(2)}) — bypassing all pre-check guards, allowing Skeptics validation`);
+            }
             return true; // Bypass all guards — let Skeptics validate
           }
-          
-          // v2.0.782: PROFITABLE POSITION — NEVER force-close via thesis invalidation.
-          // The thesis is WORKING (price moved in our favor). Force-closing a
-          // profitable position is destroying profit. This is the #1 issue from
-          // the 59-minute pattern: 4 trades at +1.9% were force-closed.
-          if (isProfitable) {
+
+          const pnlPct = position.unrealizedPnlPct ?? 0;
+          if (verdict.reason === 'profitable') {
             log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — position is PROFITABLE (+${(pnlPct * 100).toFixed(2)}%). Thesis is working, not invalid. Skipping Skeptics validation entirely.`);
-            return false; // Remove from validation list — do NOT call Skeptics
-          }
-          
-          // v2.0.782: MINOR LOSS / SIDEWAYS — price hasn't moved significantly
-          // against the position. The 59-minute pattern shows positions at +1.9%
-          // being closed — this guard catches that case. Only allow thesis
-          // invalidation when price has actually moved against the position by
-          // at least 0.5%.
-          if (!isSignificantLoss) {
+          } else if (verdict.reason === 'minor_loss') {
             log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — price moved only ${(pnlPct * 100).toFixed(2)}% (needs < -0.5% to invalidate). Skipping Skeptics validation.`);
-            return false; // Remove from validation list
-          }
-          
-          // v2.0.782: MINIMUM HOLD TIME — positions held < 30 minutes are NEVER
-          // force-closed. The 59-minute pattern proves the system was closing on
-          // a timer, not on genuine thesis invalidation. This guard prevents
-          // premature exits while preserving genuine thesis invalidation for
-          // positions held long enough to be meaningful.
-          // We estimate hold time from the cycle count (each cycle ≈ 1 minute).
-          // If the position was opened this cycle or last cycle, it's too young.
-          // We use the position's entry timestamp if available (via metadata),
-          // otherwise we estimate from the cycle number.
-          // Fallback: if we can't determine hold time, assume it's < 30 min and
-          // block the invalidation (conservative — better to let a bad position
-          // run a bit than to close a winning position early).
-          const entryTimestamp = (position as any).entryTimestamp ?? (position as any).openedAt;
-          // v2.0.869-P5(主神 held only 0 min 調查):Position 結構用 openedAt——
-          // 唔係 entryTimestamp——之前 entryTimestamp = undefined——holdTimeMinutes = 0——
-          // BLOCK 所有 thesis invalidation——唔 close——倒蝕!
-          const holdTimeMinutes = entryTimestamp 
-            ? (Date.now() - entryTimestamp) / 60000 
-            : 0; // Unknown hold time — assume < 30 min
-          
-          if (holdTimeMinutes < 30) {
+          } else {
+            const holdTimeMinutes = position.openedAt && position.openedAt > 0 ? (Date.now() - position.openedAt) / 60000 : 0;
             log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — position held only ${holdTimeMinutes.toFixed(0)} min (needs ≥ 30 min). The 59-minute pattern proves premature exits destroy profit. Skipping Skeptics validation.`);
-            return false; // Remove from validation list
           }
-          
-          // v2.0.782: MAXIMUM HOLD TIME for profitable positions — even if the
-          // position is now losing (PnL < 0%), if it was profitable within the
-          // last 4 hours, the thesis was valid and the current loss may be a
-          // temporary pullback. Only allow invalidation if the position has been
-          // losing for > 4 hours.
-          // This prevents the system from closing a position that was winning
-          // for 3 hours but just pulled back 0.6%.
-          if (holdTimeMinutes < 240 && isProfitable) {
-            log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — position is PROFITABLE and held only ${holdTimeMinutes.toFixed(0)} min (needs ≥ 240 min for profitable positions). Winners must be allowed to run. Skipping Skeptics validation.`);
-            return false; // Remove from validation list
-          }
-          
-          return true; // Passes all guards — let Skeptics validate
+          return false; // Remove from validation list — do NOT call Skeptics
         });
         
         if (preCheckedPositions.length === 0) {
