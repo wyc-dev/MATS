@@ -4,6 +4,57 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P18: Agent System Prompt 全面重構(極致精準 × 極致慳 token × 截斷止血)
+
+**背景(主神指令)**:除咗 System Engineer,對其餘全部 agent 嘅 system prompt 作極致優化——更精準、更慳 token、最大化盈利潛力、完美限制輸出格式。覆核階段發現一個比起原計劃更重要嘅結構性漏洞,並納入 P0 優先修復。
+
+### P0(最重要發現):maxTokens 同 output schema 數學上自相矛盾 → 結構性截斷 → 假 HOLD 失血
+- 4 個 sub-agent 用 base default **maxTokens=1024**(OLR 2048、Meta 3072),但 schema 要求 5 個 symbol 各自 rationale + holdReason + entryThesis——**budget 裝唔落要求**,截斷 → `extractJSON` 失敗 → parse fallback → 全 HOLD(confidence 0.0)→ 分析根本冇入到決策
+- 修:base default 1024→**3072**;OLR 2048→3072;Meta 3072→**6144**
+- **Decision-first schema**(`getOutputFormatInstruction` 重寫):`marketTicker`/`positions` 排最前,`thought` 排最尾——就算截斷,決策 JSON 仍然完整,只切尾段分析(唔影響交易)
+- **Omit-null 規則**(hold 只需 7 欄位 唔再 12)+ per-symbol rationale 硬上限(≤2 句)+ patternTag enum 由 30 個例子減至 3——output tokens 降 30-50%,截斷風險同步下降
+
+### P1: Meta-Agent 67.3KB → 12.5KB(−81%;≈16.8k → ≈3.1k tokens/call)
+**覆核實證嘅問題(全部修復)**:
+- CLOSE 規則喺 4 處重述且**寬嚴不一**:「≥2 of 5 conditions」句式出現 17 次;structural confirmation margin(0.3%/0.5%/1.0%)只喺其中一版出現——LLM 見到多版本同一規則,判決分布漂移
+- 編號 bug:「These **5** checks are MANDATORY」實列 **8** 點
+- 歷史考古殘留:v2.0.857「aggressive/conservative 已被移除」敘述對 LLM 零價值(純雜訊)
+- WINNER-FIRST 引文 ×2、entryThesis HARD GATE ×2(v2.0.776 同 v2.0.758 九成重疊)、Dark Psychology 兩層重疊
+- 「MUST/HARD/CRITICAL」連環嗌 → 警告脫敏
+- **重構方法:規則單一權威源化**(每條規則只定義一次,其他處引用)、語義 parity(所有行為規則保留:thesis ≥2/7 falsifiable gate、CLOSE 三元條件、8 checks、FLIP 條件、cond-WR 優先、momentum catalyst 強制、Q-RL 三級、noise filter gate 誠實、News engineered-play passthrough、PAEL/Direction-Health/K-line checks)
+- 注意 Meta prompt 每 cycle 可燒 2 次(`metaAgentArbitration` 喺 no-consensus 時觸發),壓縮效益雙倍計
+
+### P2: Skeptics ×4 段 21.5KB → 7.8KB(−64%)
+- S1 logic auditor 10.3KB→3.0KB:same-as-Meta 嘅 RIL 解說重複刪除,保留 hard-constraint 執行 + approve-first + winner-first + experience-block 審計;**新增顯式 output schema**(原本 prompt 冇明確寫 `skepticismRationale`/`modified*` keys——格式精確度提升)
+- S2 thesis validator 4.9KB→2.0KB;S3 thesis revalidation 3.0KB→1.4KB;S4 close validator 3.2KB→1.4KB
+- 每 cycle Skeptics 行 ~5+N 次(每 sub-agent + 每 position + 每 entry/close candidate)——token 放大器收窄
+
+### P3: Sub-agent 精煉
+| Agent | 之前 | 之後 | −Δ |
+|---|---|---|---|
+| OLR & Sentiment | 8,670 | 3,776 | −56%(data-source 散文→表化) |
+| News Reporter | 6,002 | 3,548 | −41%(timing matrix 完整保留) |
+| Risk Auditor | 5,616 | 2,756 | −51%(「past losses 唔 veto」4 次→1 次) |
+| Fractal Momentum | 2,700 | 1,692 | −37%(Planck 段減半) |
+| On-Chain Whisperer | 2,306 | 1,523 | −34%(signal list → 表格) |
+
+### P4: Provider 級 JSON enforcement
+- `ollama-provider.ts` 主路徑 + 503 fallback 均加 `format: 'json'`——Ollama 原生 JSON mode,content 結構保證 valid(實測 deepseek-v4-flash:`done_reason=stop` + parse OK,thinking field 唔受影響)
+- 終止 markdown fence / 前後散文 → extractJSON fallback → parse failure 嘅全鏈路
+
+### 實彈驗證(live LLM call)
+新 Meta prompt + JSON mode + 真 parser:`done_reason=stop`(零截斷)、action=buy、rationale 引用實數(+12pp / +2.1% / 4 cycles)、entryThesis 合規 `[1h:..][1d:..]`、holdReason 正確省略(omit-null 生效)。語義正確(trending_bull + OLR edge → 順勢 BUY)。
+
+### 每 cycle LLM 呼叫地圖(驗證用)
+5 sub-agent think + riskAuditorAudit + Skeptics.review ×5 + validateOpenPositionTheses ×N(positions)+ validateEntryThesis ×candidate + validateCloseDecision ×close + Meta think + Meta arbitration(no-consensus)→ 每 cycle system-prompt 開支由 ~27k tokens → **~9k tokens(−67%)**;以 4-min cycle 計 ~360 cycles/day,**慳 ~6.5M tokens/日**(估算級 ±30%)。
+
+### 測試
+- 新增 `tests/prompt-rearchitecture.test.ts`(11 個 guard:prompt 體積預算、行為錨點 parity、decision-first、maxTokens-schema 一致性、「5 checks」bug 唔准返嚟、版本考古唔准入 prompt)
+- 更新 `tests/v2.0.857-attack.test.ts` V14(舊版本字串錨點 → 新語義錨點)
+- 全量:2609 pass / 13 pre-existing 不變;`tsc --noEmit` 零錯誤
+
+---
+
 ## v2.0.870-P16-attack2 + P17: bypass 升級鏈封鎖 + Runs Test τ 調製(主神 刁鑽攻擊第二輪 + τ=12h 裁決 + 精準化指令)
 
 **背景(主神指令)**:不擇手段用最刁鑽嘅攻擊方案(併發/狀態注入/持久化污染)攻擊 P16 代碼及週邊 modules;主神同時裁決 τ 預設 24h 太長(12h 差唔多),但 Wald-Wolfowitz 游程檢定調製會更精準。

@@ -73,7 +73,7 @@ export abstract class BaseAgent {
       modelPreference: cfg.modelPreference,
     };
     this.personality = cfg.personality;
-    this.maxTokens = cfg.maxTokens ?? 1024;
+    this.maxTokens = cfg.maxTokens ?? 3072; // v2.0.870-P18: 1024→3072 — 舊預算裝唔落 5-symbol JSON + per-symbol rationale,結構性截斷 → parse fallback → 全 HOLD(機會失血)
     this.logger = createLogger({ agent: cfg.role, phase: 'thinking' });
   }
 
@@ -93,64 +93,55 @@ export abstract class BaseAgent {
 
   abstract getSystemPrompt(): string;
 
-  /** Build the per-agent JSON format instruction — agents override to customize */
+  /** Build the per-agent JSON format instruction — agents override to customize.
+   *  v2.0.870-P18: decision-first(決策排最前,thought 排最尾)——maxTokens 截斷時
+   *  決策 JSON 仍然完整,只有尾段分析被切;omit-null + rationale 上限令 output
+   *  token 降 30-50%,截斷風險同步下降。 */
   protected getOutputFormatInstruction(): string {
-    return `You MUST respond with ONLY valid JSON. Output a JSON object with:
+    return `You MUST respond with ONLY valid JSON (no markdown fences, no prose). DECISIONS FIRST — "thought" goes LAST.
 {
-  "thought": "...your analysis...",
-  "overallConfidence": 0.0-1.0,
   "marketTicker": {
     "symbol": "${this.marketSymbol}",
     "action": "buy|sell|hold",
     "confidence": 0.0-1.0,
-    "positionSizePct": 0.0-0.20,
-    "leverage": 1-10,
-    "closePosition": false,
-    "patternTag": "short snake_case label for the chart pattern you see (e.g. momentum_breakout, double_bottom_reversal, ascending_triangle, range_bound, trend_exhaustion, support_bounce, resistance_rejection, consolidation_squeeze, vwap_reclaim, lower_highs)",
-    "rationale": "...",
-    "entryThesis": "[1h: <why price reaches TP within 1 hour>] [1d: <why price reaches TP within 1 day>]",
-    "holdReason": "why uncertain — what data conflicts or what state is ambiguous (required when action=hold)"
+    "patternTag": "snake_case label ≤40 chars (e.g. momentum_breakout, range_bound, support_bounce)",
+    "rationale": "≤2 sentences, cite actual numbers",
+    "holdReason": "REQUIRED when action=hold — ≤2 sentences: what data conflicts / what is ambiguous. Empty holdReason = failure.",
+    "entryThesis": "REQUIRED when action=buy|sell — \"[1h: why TP within 1h] [1d: why TP within 1d]\" with actual numbers",
+    "positionSizePct": 0.0-0.20,  // buy/sell only
+    "leverage": 1-10,             // buy/sell only
+    "closePosition": false
   },
   "positions": [
     {
       "symbol": "POSITION_SYMBOL",
       "action": "buy|sell|hold|close",
       "confidence": 0.0-1.0,
-      "positionSizePct": 0.0-0.20,
-      "leverage": 1-10,
       "closePosition": true|false,
-      "closeUrgency": "immediate|soon|patient",
-      "suggestedStopLoss": PRICE_OR_NULL,
-      "suggestedTakeProfit": PRICE_OR_NULL,
-      "patternTag": "short snake_case label for the pattern relevant to this symbol",
-      "rationale": "...",
-      "entryThesis": "[1h: <why price reaches TP within 1 hour>] [1d: <why price reaches TP within 1 day>] (required for buy/sell on trading markets without position)",
-      "holdReason": "why uncertain — what data conflicts or what state is ambiguous (required when action=hold)"
+      "closeUrgency": "immediate|soon|patient",   // close only
+      "positionSizePct": 0.0-0.20,                // buy/sell (new entry on TRADING MARKET) only
+      "leverage": 1-10,                           // buy/sell only
+      "suggestedStopLoss": PRICE,                 // only when adjusting SL
+      "suggestedTakeProfit": PRICE,               // only when adjusting TP
+      "patternTag": "snake_case ≤40 chars",
+      "rationale": "≤2 sentences, cite actual numbers",
+      "entryThesis": "required for buy/sell on TRADING MARKET (no position)",
+      "holdReason": "REQUIRED when action=hold"
     }
-  ]
+  ],
+  "overallConfidence": 0.0-1.0,
+  "thought": "≤3 sentences, final synthesis — placed AFTER all decisions"
 }
 
 RULES:
-- "marketTicker" = your view on the currently selected (primary) trading pair
-- Each entry in "positions" = your view on one symbol. This includes BOTH:
-  • Open positions (Qty > 0): action "hold" = keep open, "close" = close immediately
-  • Trading markets without position (Qty = 0, marked "TRADING MARKET"): action "buy|sell" = open new position, "hold" = no action
-- For open positions: Set "closePosition": true + "closeUrgency" when you want to exit
-- For trading markets without position: Set "positionSizePct" and "entryThesis" when action is buy/sell
-- Set suggestedStopLoss/suggestedTakeProfit to adjust SL/TP levels (or omit/null to leave unchanged)
-- "rationale" = your reasoning for this symbol's decision. ALWAYS provide this for EVERY symbol.
-- "holdReason" = REQUIRED when action is "hold" for ANY symbol (marketTicker OR positions). Explain WHY you are uncertain — what data conflicts, what state is ambiguous, or what manipulation risk prevents entry. Be specific: "Fractal bullish but On-Chain shows outflows" not "uncertain". If you output HOLD but leave holdReason empty, the UI will show "No reason provided" — this is a failure.
-- "patternTag" = a SHORT snake_case label identifying the chart/momentum pattern you see right now. Be specific but concise (max 40 chars). Examples: momentum_breakout, double_bottom_reversal, ascending_triangle, range_bound, trend_exhaustion, support_bounce, resistance_rejection, consolidation_squeeze, vwap_reclaim, lower_highs, higher_lows, bearish_divergence, bullish_divergence, failed_breakout, breakout_retest, channel_breakdown, rsi_oversold, rsi_overbought, funding_flip, volume_climax, liquidation_cascade, mean_reversion, trend_continuation, planck_resonance_strong, chaotic_divergence, diffusion_accumulation, cycle_phase_bottom, cycle_phase_top, edge_of_chaos
-- "overallConfidence" = how confident you are in ALL your decisions combined
-- "confidence" (per symbol) = how confident you are in THIS specific symbol's decision. This may differ from overallConfidence — e.g. you may be 80% confident on BTC but only 40% on SP500.
-
-⚠️ v2.0.106 PER-ASSET NOISE FILTER:
-The context contains "=== PER-ASSET NOISE FILTER STATUS ===" showing each asset's SNR (signal-to-noise ratio),
-conviction gate, and trade frequency status. You MUST factor this into your confidence:
-- Low SNR (<30%) = your signal is mostly noise → lower your confidence → system will likely block entry
-- High SNR (>60%) = signal is clean → higher confidence is justified
-- If trade frequency is THROTTLED for an asset → output HOLD (system will block entry anyway)
-- Different assets have DIFFERENT noise levels — don't treat all symbols the same way`;
+- "marketTicker" = your view on the currently selected (primary) trading pair.
+- Each "positions" entry = one symbol, BOTH open positions (Qty>0: hold/close) AND trading markets without position (Qty=0, marked "TRADING MARKET": buy|sell = open, hold = no action).
+- OMIT inapplicable fields entirely (never write null for unused fields) — hold decisions need only: symbol, action, confidence, closePosition, patternTag, rationale, holdReason.
+- "closeUrgency" only with closePosition=true; "suggestedStopLoss/TakeProfit" only when you want SL/TP adjusted.
+- "rationale" is REQUIRED for EVERY symbol entry (1-2 short sentences, cite the data).
+- "holdReason" is REQUIRED whenever action is "hold" — specific conflict, not the word \"uncertain\".
+- "confidence" (per symbol) may differ from "overallConfidence" (all decisions combined).
+- PER-ASSET NOISE FILTER (context: \"=== PER-ASSET NOISE FILTER STATUS ===\"): SNR<30% → lower confidence; SNR>60% → clean signal; frequency THROTTLED → HOLD.`;
   }
 
   async think(
