@@ -4,6 +4,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P29-S1+S3: Shadow 量標籤(記錄唔閘)+ 量條件勝率觀測
+
+**主神問**:Shadow 加埋 vol 資料會唔會再準啲?**答**:會——但遵守 quant 鐵律:**shadow 係探索層,開倉絕不按量過濾**(過濾 = 分佈 bias,永遠學唔到縮量會點);量只入 **features(標籤)**,由 outcome 學出 volume-conditioned edge。
+
+- **S1** `candleMomentumFeatures()` 擴展返回量維度:`volumeRatio5m / vol4hRatio / volumeThin / volumeStrong`——一次修改經 features spread 自動流入全部三條開倉路徑(blind / aligned / statistical)+ 判決/回滾/Q-RL 站點。**中性預設 = 1.0(常態量)唔係 0**(0 會讀做「極縮量」假訊號);NaN ratio → 1;tick fallback 路徑自動加中性量維度。
+- **S3** engine `volumeTagsFromFeatures()` 判決時從 entry features 提取量標籤持久化到 recentResults;`getVolumeConditionedStats()` 分桶(thin/normal/strong/unknown){resolved,wins,winRate,avgPnlPct}。歷史冇量維度的 → 'unknown' 桶(**唔准假扮 normal 污染正常桶**)。SSE apiData+ui_snapshots 新增 `volumeConditioned` 欄位(live 驗證 ✓)。
+- **誠實備註**:blind shadow 開雙向 → 任何桶嘅 WR 結構性傾向 ~50%;**aligned/statistical 單邊 shadow 先係有效訊號來源**;aggregation 未按 shadowType 細分(v0);累積數據後可再切細。
+
++7 紅先測試;全量 2740 pass / 13 pre-existing;tsc clean;live SSE 驗證。
+
+---
+
 ## v2.0.870-P29-S2: Shadow 判決路徑真實度(「判贏判輸準咗先係一切」)
 
 **根因**:shadow TP/SL resolution 用 tick `getHighLow`(100 格上限)——非 active 市場 REST 每 cycle 先 1 tick,**cycle 內高低位全盲** → 「TP 冇中」可以係假(插穿咗又縮返)→ 學返嘅勝率失真 → 一切下游(OLR 權重、Q-RL reward、direction lean)建立喺假判決上。

@@ -169,6 +169,10 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
 
+### v2.0.870-P29-S1+S3: Shadow 量標籤 + 量條件勝率
+
+S1:量維度(volumeRatio5m/vol4hRatio/thin/strong flags,中性=1.0)經單一 helper 流入 blind/aligned/statistical 三條開倉路徑——記錄唔閘(探索不可被 bias)。S3:判決時量標籤持久化 + `getVolumeConditionedStats()` 四桶觀測,SSE/ui_snapshots 加 `volumeConditioned`。盲影雙向結構性 ~50% WR,aligned 單邊先係訊號。
+
 ### v2.0.870-P29-S2: Shadow 判決路徑真實度(tick 盲區修復)
 
 shadow TP/SL 判決由 tick high/low(100 格)升級做 **tick ∪ 5m 蠟燭路徑**(每倉位 `openTimestamp−300s` 窗選;壞支盾;未來時鐘污染拒收;同日穿雙邊維持 SL-first 保守)。非 active 市場(REST 1 tick/cycle)嘅 cycle 內插針由全盲變全覆蓋;單一緩存池零成本。**Label-shift**:shadow 勝率新舊唔直接可比(resolution 修正記賬)。+8 紅先測試。

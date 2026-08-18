@@ -5077,12 +5077,23 @@ ${recentExamples}
   /** P28-B: 學習層動量維度數據源——蠟燭動量(免副作用 getter)→ fraction。
    *  冇新鮮數據 → 全 0(舊行為,cold-start 安全;OLR 呢兩維歷來全 0,
    *  權重≈0,新數進場後 online learner 自然重學)。 */
-  private candleMomentumFeatures(sym: string): { momentumShort: number; momentumLong: number } {
+  /** P29-S1: 快照 → 學習特徵(動量 + 量)。量維度中性預設:
+   *  volumeRatio5m / vol4hRatio 唔存在 → 1.0(=常態量,唔係 0——0 會係
+   *  「極縮量」嘅假訊號);flags 唔存在 → 0(unknown 唔標記 thin/strong)。 */
+  private candleMomentumFeatures(sym: string): { momentumShort: number; momentumLong: number; volumeRatio5m: number; vol4hRatio: number; volumeThin: number; volumeStrong: number } {
+    const neutral = { volumeRatio5m: 1, vol4hRatio: 1, volumeThin: 0, volumeStrong: 0 };
     try {
       const snap = this.marketState?.getMomentumSnapshot(sym);
-      if (!snap) return { momentumShort: 0, momentumLong: 0 };
-      return momentumFeaturesFromSnapshot(snap); // 單一真相源(B1 getter 盾喺模組層)
-    } catch { return { momentumShort: 0, momentumLong: 0 }; }
+      if (!snap) return { momentumShort: 0, momentumLong: 0, ...neutral };
+      const vr = Number.isFinite(snap.volumeRatio as number) && snap.volumeRatio !== null ? snap.volumeRatio : 1;
+      const v4 = Number.isFinite(snap.vol4hRatio as number) && snap.vol4hRatio !== null ? snap.vol4hRatio : 1;
+      return {
+        ...momentumFeaturesFromSnapshot(snap), // 單一真相源(B1 getter 盾喺模組層)
+        volumeRatio5m: vr, vol4hRatio: v4,
+        volumeThin: snap.volumeState === 'thin' ? 1 : 0,
+        volumeStrong: snap.volumeState === 'strong' ? 1 : 0,
+      };
+    } catch { return { momentumShort: 0, momentumLong: 0, ...neutral }; }
   }
 
   /** P28-A: LLM context 動量/量值 block(帶來源聲明)——新鮮先注入。
@@ -7816,7 +7827,7 @@ ${recentExamples}
         if (mktMomentum.momentumShort === 0 && mktMomentum.momentumLong === 0) {
           try {
             const mktPh = this.marketState.getPriceHistory(mktSym);
-            if (mktPh && mktPh.length >= 2) mktMomentum = computeMomentum(mktPh);
+            if (mktPh && mktPh.length >= 2) mktMomentum = { ...computeMomentum(mktPh), volumeRatio5m: 1, vol4hRatio: 1, volumeThin: 0, volumeStrong: 0 }; // tick fallback 無量維度 → 中性
           } catch { /* non-critical */ }
         }
         const mktFeatures = {
@@ -13879,6 +13890,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               confidence: this.lastFirstPassage.confidence,
             } : undefined,
             shadowStats: this.shadowEngine.getStats().filter(ss => _tradingNorms.has(_panelNorm(ss.symbol)) || _posNorms.has(_panelNorm(ss.symbol))),
+            volumeConditioned: this.shadowEngine.getVolumeConditionedStats(), // P29-S3
 
             shadowOpen: this.shadowEngine.getOpenPositions().filter(p => _tradingNorms.has(_panelNorm(p.symbol)) || _posNorms.has(_panelNorm(p.symbol))).map(p => ({
               symbol: p.symbol,

@@ -279,7 +279,7 @@ export class ShadowTradeEngine {
    *  MAE/MFE averages from historical results, not just current positions.
    *  v2.0.869-P2(主神 Shadow 升級):加 exitReason + pnlPct——學「邊個離場原因有 edge」
    *  +「贏幾多/蝕幾多」——cap 50 → 100(主神要求「最近 100 個」) */
-  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl'; exitReason?: 'sl_tp' | 'force_resolve' | 'evicted'; pnlPct?: number }> = [];
+  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl'; exitReason?: 'sl_tp' | 'force_resolve' | 'evicted'; pnlPct?: number; volumeState?: 'thin' | 'normal' | 'strong' | 'unknown'; volumeRatio5m?: number }> = [];
 
   constructor(olrEngine: OLREngine) {
     this.olrEngine = olrEngine;
@@ -879,7 +879,7 @@ export class ShadowTradeEngine {
           log.warn(`[shadow] OLR feedTrade (stale) failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0 });
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, ...this.volumeTagsFromFeatures(pos.features) });
         if (this.recentResults.length > 100) this.recentResults.shift();
         resolved++;
         continue;
@@ -946,7 +946,7 @@ export class ShadowTradeEngine {
           log.warn(`[shadow] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0 });
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, ...this.volumeTagsFromFeatures(pos.features) });
         if (this.recentResults.length > 100) this.recentResults.shift();
 
         resolved++;
@@ -1095,6 +1095,39 @@ export class ShadowTradeEngine {
       // v2.0.869-P2(主神 刁鑽攻擊):null/非物件樣本 skip——唔 crash
       recentResults: recent.filter((r): r is NonNullable<typeof r> => !!r && typeof r === 'object').map(r => ({ symbol: r.symbol, side: r.side, outcome: r.outcome, holdCycles: r.holdCycles })),
     };
+  }
+
+  /** P29-S1: 由 entry features 提取入場時量標籤(持久化到 recentResults)。
+   *  冇量維度(歷史/舊版)→ 'unknown'(唔准假扮 normal,否則污染正常桶)。 */
+  private volumeTagsFromFeatures(f: Record<string, number> | undefined): { volumeState?: 'thin' | 'normal' | 'strong' | 'unknown'; volumeRatio5m?: number } {
+    if (!f) return { volumeState: 'unknown' };
+    const vr = Number.isFinite(f['volumeRatio5m']) ? f['volumeRatio5m'] : undefined;
+    const v4 = Number.isFinite(f['vol4hRatio']) ? f['vol4hRatio'] : undefined;
+    if (vr === undefined && v4 === undefined && f['volumeThin'] !== 1 && f['volumeStrong'] !== 1) return { volumeState: 'unknown' };
+    const state = f['volumeThin'] === 1 ? 'thin' : f['volumeStrong'] === 1 ? 'strong' : 'normal';
+    return { volumeState: state, volumeRatio5m: vr };
+  }
+
+  /** P29-S3: 量條件勝率——主神親眼睇「放量入場 vs 縮量入場」邊個有 edge。 */
+  getVolumeConditionedStats(): Record<'thin' | 'normal' | 'strong' | 'unknown', { resolved: number; wins: number; winRate: number; avgPnlPct: number }> {
+    const mk = () => ({ resolved: 0, wins: 0, winRate: 0, avgPnlPct: 0, _pnlSum: 0 });
+    const buckets = { thin: mk(), normal: mk(), strong: mk(), unknown: mk() };
+    for (const r of this.recentResults) {
+      if (!r || typeof r !== 'object') continue;
+      const b = buckets[r.volumeState ?? 'unknown'] ?? buckets.unknown;
+      b.resolved++;
+      if (r.outcome === 'win') b.wins++;
+      if (Number.isFinite(r.pnlPct)) b._pnlSum += r.pnlPct as number;
+    }
+    const out: Record<string, { resolved: number; wins: number; winRate: number; avgPnlPct: number }> = {};
+    for (const [k, b] of Object.entries(buckets)) {
+      out[k] = {
+        resolved: b.resolved, wins: b.wins,
+        winRate: b.resolved > 0 ? b.wins / b.resolved : 0,
+        avgPnlPct: b.resolved > 0 ? b._pnlSum / b.resolved : 0,
+      };
+    }
+    return out as any;
   }
 
   /**

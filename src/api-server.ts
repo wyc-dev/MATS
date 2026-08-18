@@ -182,6 +182,8 @@ export interface APIData {
       breakevenPShort: number;
       confidence: 'high' | 'low';
     };
+    /** P29-S3: 量條件勝率(放量 vs 縮量入場 edge 觀測) */
+    volumeConditioned?: Record<'thin' | 'normal' | 'strong' | 'unknown', { resolved: number; wins: number; winRate: number; avgPnlPct: number }>;
     shadowStats?: Array<{
       symbol: string;
       totalOpened: number;
