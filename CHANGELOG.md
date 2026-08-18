@@ -4,6 +4,15 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P33: xyz 資產 currentPrice 由 xyz dex allMids 更新(主神 TG entry=cur 再現)
+
+**主神實問**:TG 顯示 SILVER/SP500/SKHX `entry=cur` 但 PnL≠0(矛盾)——「之前應該整好過?」
+**根因**:v2.0.869-P2 嘅 allMids 修復只攞**主 dex** allMids(實證 948 symbol、零 xyz)——xyz 資產 currentPrice 永遠 = entryPx → TG entry=cur。P2 修咗主 dex(BTC 有真 cur),xyz 係漏網。
+**修法**:逐 dex 攞 allMids(主 dex 冇 dex 欄,xyz 傳 `dex='xyz'`)合併——實證 `{"type":"allMids","dex":"xyz"}` 回 xyz:SILVER=65.1855 / SP500=7710.85 / SKHX=1152.25。
++1 紅先測試(mock hlRateLimitedFetch 驗 xyz 倉 currentPrice 更新);tsc clean。
+
+---
+
 ## v2.0.870-P32: GDELT 預設停運(主神決定)
 
 **主神原話**:「反正我見好多次都攞唔到」——IP 級硬限(1 req/5s)+ 系統每 cycle 6 發令 gdelt 實際產出近零,純粹係 cooldown 警報噪音源。
