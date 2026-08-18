@@ -4,6 +4,21 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P26: Local Momentum Trend(趨勢盲修復——「趨勢咁明顯都開唔到單」)
+
+**根因(實證)**:WS tick handler 每 tick 覆蓋 ticker 並將 `priceChangePercent` 寫死 0(主神當年因 HL 24h 統計不可靠刻意 cancel volume,株連埋 trend)→ `calcTrend` 永遠 sideways → `calcRegime` 永遠 mean_reverting → trending_bull/bear 形同死代碼。副作用深遠:慢性 MR 標籤令人工智能傾向「升多咗反手沽」(審計入面 SILVER:sell 25% WR 失血桶嘅根源),而且所有 regime-keyed learners 歷史標籤被污染成 mean_reverting(寫讀同一錯標籤,內部自洽,唔需清洗,新數據自然分叉)。
+
+**解法(主神定調:棄用 24h,短炒要 5m/1h 尺度)**:
+- `src/analysis/momentum-trend.ts`(新,純函數):`computeMomentum(c5m, c1h)` 計 5m/15m/1h/4h 動量(原料 = candleCache,LLM chart layer 反正都 fetch,零新 API、微秒算力);`classifyMomentumTrend` —— **4h 主方向 + 1h 時機確認,兩窗同向先判 trending**(單窗極端八成假突破);閾值按窗口線性縮放(τ4h=τ24/6、τ1h=τ24/24,下限 0.05%/0.03% 抗雜訊);`volatility>0.02 → volatile` 沿用舊制
+- **5m volume 確認**:最新收市支量 ÷ 前 24 支中位數 → strong/normal/thin(soft context,永不 hard-block——主神教條)
+- `MarketStateAggregator`:新鮮動量(TTL 10min)驅動 trend/regime;過期/缺失自動降級 legacy 行為;`setMomentumTrend` 全欄位 NaN 盾牌 + 無效 trend 拒收;`getTrendTau(per-symbol 優先)`
+- index.ts `updateMomentumTrendsForTradingMarkets()`:每 cycle 全部 trading markets 計算(每 symbol 數次陣列算術);supabase analysis-matrix payload 加 `momentum4h/1h/15m/volumeRatio5m/volumeState`
+- UI:`24h +0.00%` 卡位改為 **4h 動量**(新欄位缺失時 fallback 舊值,向後相容)
+
+**實況驗證**:上線首 cycle SILVER `trend: bullish · regime: trending_bull · m4h +0.31% · vol 2.8× strong`——趨勢眼復明。全量 2685 pass / 13 pre-existing;tsc clean。
+
+---
+
 ## v2.0.870-P24: Deployment-Version Awareness(trade-audit 時序誤判根除)
 
 **問題**(主神 08-18 發現):trade-audit LLM 控告「Trade #17(SKHX −11.3%)係 P21 fix 之後嘅新發生」——實際上嗰單 close 時間早於 P21 部署 43 分鐘。**根因**:audit prompt 只有「fix 存在」(CHANGELOG)但冇「幾時落地」;dataLine 甚至冇 close 時間戳——LLM 只能估,估必錯。

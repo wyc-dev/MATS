@@ -1285,6 +1285,13 @@ export interface AnalysisMarketData {
   regime: string;
   change24h: number;
   volume24h: number;
+  /** v2.0.870-P26: 本機蠟燭動量(%)——趨勢盲修復後嘅真市況顯示。
+   *  舊卡(冇呢啲欄位)UI 自動 fallback 去 change24h。 */
+  momentum4h?: number;
+  momentum1h?: number;
+  momentum15m?: number;
+  volumeRatio5m?: number;
+  volumeState?: string;
 }
 
 /** Agent consensus snapshot embedded in each analysis row. */

@@ -123,12 +123,22 @@ export function buildAssetAnalysis(
   const confidence = Number.isFinite(rawConfidence) ? Math.max(0, Math.min(1, rawConfidence)) : 0;
   const rationale = psc?.rationale ?? psc?.entryThesis ?? 'No consensus reached this cycle.';
 
+  // v2.0.870-P26: 卡片「24h」位改由本機蠟燭動量驅動(WS 清零 24h% 嘅趨勢盲修復)。
+  // change24h/volume24h 保留(legacy 欄位);新欄位可選,舊卡/舊 UI 自動 fallback。
+  const mom = marketState?.momentum;
   const marketData: AnalysisMarketData = {
     price: marketState?.price ?? 0,
     volatility: marketState?.volatility ?? 0,
     regime: marketState?.regime ?? 'unknown',
     change24h: marketState?.change24h ?? 0,
     volume24h: marketState?.volume24h ?? 0,
+    ...(mom ? {
+      momentum4h: mom.m4h ?? 0,
+      momentum1h: mom.m1h ?? 0,
+      momentum15m: mom.m15m ?? 0,
+      volumeRatio5m: mom.volumeRatio ?? 0,
+      volumeState: mom.volumeState ?? 'unknown',
+    } : {}),
   };
 
   // Compute SL/TP prices from the consensus signal + entry price.
