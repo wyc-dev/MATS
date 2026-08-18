@@ -4,6 +4,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P26-attack: P26/P26.5 刁鑽攻擊輪(8 攻 6 中,全部修復)
+
+**攻擊結果**(A1-A9:A2/A9 本已安全 + 前提修正 1):
+
+| # | 攻擊 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| A1 | classifyMomentumTrend 收 Infinity/NaN 窗口 → ∞>τ 呃到 bullish | MED | 分類器重複防禦:非 finite 窗口歸 null(defense-in-depth,唔信上游) |
+| A3 | future timestamp → TTL 繞過「永遠新鮮」 | MED | ts > now+60s → clamp now |
+| A4 | 萬字垃圾 symbol 注入 map | LOW | sym.length>64 拒收 |
+| A5 | vol-judge caller 傳垃圾 computedVolume(string/injection)→ LLM 見垃圾 | MED | 形狀校驗(object 非 array)唔過 → 由蠟燭自計 |
+| A6 | candle fetch 掛死 → trend 層凍結(併發) | **HIGH** | per-symbol `withTimeout` 8s 預算,超時 = 該 symbol 該 cycle 唔注入 |
+| A7 | momentum wiring 用 getState() 攞 vol → 額外觸發 calibrator.observe → 觀測量 double count,校準分布被 wiring 悄悄位移 | MED | 新 `getVolatilityForTrend()` 免副作用 getter(spy 測試證 observe 零觸發) |
+| A8 | prior 4h 全零量 → ÷0 | — | 已盾(sumPrior>0),補測試釘死 |
+
++10 攻擊測試全綠;全量 2699 pass / 13-14 pre-existing基線;tsc clean。
+
+---
+
 ## v2.0.870-P26.5: vol-judge × 蠟燭量核對(P2/P5 棄用數據嘅救贖)
 
 **主神洞察**:P2/P5 嗰時因 24h/volume REST 數據不可靠,vol-judge 被迫棄用量數據;P26 起有咗 candle-based 定量量值,可以做返 vol-judge 嘅核對來源。

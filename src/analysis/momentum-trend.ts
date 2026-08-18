@@ -119,6 +119,11 @@ export function computeMomentum(c5m: CandleLike[] | null, c1h: CandleLike[] | nu
  * @param volatility per-cycle σ(fraction,如 0.0018)
  */
 export function classifyMomentumTrend(snap: MomentumSnapshot, tau24: number, volatility: number): MomentumTrend {
+  // attack-hardened(P26-attack A1):非 finite 窗口歸 null——callers 未必係
+  // computeMomentum(防禦深度;setMomentumTrend 都有盾,呢度係最後防線)
+  const fin = (x: number | null): number | null => (x !== null && Number.isFinite(x) ? x : null);
+  snap = { ...snap, m5m: fin(snap.m5m), m15m: fin(snap.m15m), m1h: fin(snap.m1h), m4h: fin(snap.m4h) };
+  if (!Number.isFinite(volatility)) volatility = 0;
   const tauAbs = Number.isFinite(tau24) && tau24 > 0 ? Math.abs(tau24) : 0.5;
   // 窗口線性縮放:純線性趨勢下 24h return ≈ 6×4h ≈ 24×1h
   const tau4h = Math.min(Math.max(tauAbs / 6, 0.05), tauAbs);
