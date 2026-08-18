@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n api,ui -c blue,green \"tsx watch src/index.ts\" \"cd ui && npm run dev\"",
+    "dev": "concurrently -n api,ui -c blue,green \"tsx watch --ignore \\\"data/**\\\" src/index.ts\" \"cd ui && npm run dev\"",
     "start": "cd ui && npm run build && cd .. && bash scripts/start-loop.sh",
     "engineer": "cd ui && npm run build && cd .. && bash scripts/engineer-loop.sh",
     "build": "tsc",
