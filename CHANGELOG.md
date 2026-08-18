@@ -4,6 +4,45 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P20-C: Direction Verifier 飢餓修復(覆蓋缺口 × 觀測計數 × 嚴格錨價)
+
+**實證飢餓**:`direction`/`pending`/`windowStats` 全 0,但 `outcome=18 keys / tradeIds=1037` —— C 層(平倉結果)行到,B 層(方向驗證)出世至今零樣本。
+
+**根源(兩層)**
+1. `recordJudgment` 只喺 **activeSymbol buy/sell gate 分支**——其餘 6 個 trading markets 嘅入場決策(即大部分交易,經 perSymbolConsensus 路徑)從未記錄、從未被 dirTrust 校準。
+2. 記錄錨價用 `getMarkPriceForSymbol` 嘅 **latestMarkPrice fallback**——非 active symbol 會攞到另一個 symbol 嘅價做錨點(v2.0.864-fix 已喺 verify 層發現呢個毒,record 層同款冇修)。
+
+**修復**
+- 全覆蓋:perSymbolConsensus 路徑每個 buy/sell 決策(positionSizePct>0)都記錄 judgment(symbol/方向/trendType(entryThesis)/strict 錨價)
+- `getMarkPriceStrict()`:normalizeSymbol 一致先畀價,唔啱 → null(判斷照記,verify 棄置並計數——飢餓有聲)
+- **dirTrust 乘入 per-symbol gate**(psc.confidence × trust,clamp [0.80,1.05],軟乘唔 hard block)——activeSymbol 獨享校準嘅時代終結
+- **pipeline 觀測計數**(P19' 教訓:starving 要有聲):recorded/noEntryPrice/quickVerified/windowVerified/outcomeRecorded/droppedNoPrice/droppedStale48h/keptNoCurrentPrice,persist 落 state + expose `/api/direction`
+
+**驗證(主神提示:用歷史實倉 replay,唔使呆等 live)**
+- offline replay:200 閉倉行 production 路徑(record → verify → recordOutcome)→ **recorded 200 / quickVerified 200 / direction 19 keys**;trust 落地值有意義:`SILVER|1h-down ×0.89`、`SILVER|mixed-neutral ×0.88`(24% WR 失血桶被軟懲)、`SKHX|1h-down` 0% 準確率曝光
+- live 驗證:`/api/direction` 上線;而家 6 市場全部 HOLD(置信 0.708)→ recorded=0 係**正確行為**(冇方向判斷就冇嘢可記);下個 buy/sell 決策落地即會見到計數跳動
+- 單元測試 +5(計數行為/棄置路徑/留低路徑/舊 state 遷移唔 crash);全量 2639 pass / 13 pre-existing;tsc clean
+
+**⚠️ 已知結構留意(主神知悉,本次唔郁)**:per-symbol gate 路徑同 activeSymbol 路徑嘅校準層唔齊(illustrated:conviction calibrator / OLR pwinBlend / boost 等只喺 activeSymbol 分支)——P20-C 接埋咗 dirTrust,其餘對齊係獨立議題。
+
+---
+
+## 📋 暫緩議程(主神指示:記低,有需要先郁)
+
+### P20-A — EV-Trust 軟乘數(暫緩)
+機制:per symbol:direction 實績 EV/trade(Wilson/shrink)→ soft multiplier ×0.80–1.15。
+理由:dirTrust 只睇 WR,睇唔到「GOLD:buy WR67% 但 payoff 0.24 → EV 負」呢類贏小粒蝕大粒。
+假想上限(perfect foresight):剔走 6 個 EV<0 桶 → 200 單 PnL $4.31 → $16.81。
+
+### P20-B — per-symbol TP 幾何(暫緩)
+GOLD payoff 0.24(avgWin $0.16 vs avgLoss $0.66)= TP 太緊/SL 太遠;P21-B SL-slip floor 加闊咗 SL 令 RR 跌(重播 1.25→0.68)。等 P21-C stop-slip 數據儲夠先校準。
+
+### P21-D — prod 唔應該行 tsx watch(暫緩,部署紀律)
+實證:本座 debug save 觸發 hot-restart,撞中正主神持倉管理窗口(8·18 06:45-07:01)。
+建議:prod 行 build artifact,dev instance 分身做實驗。
+
+---
+
 ## v2.0.870-P21: 8·18 SKHX 驗屍三連修(主神實單檢討:FP 蜃景 × 止蝕盲區 × 滑點地板)
 
 **導火線**(主神實單):BUY xyz:SKHX $1238.5,37 分鐘 −11.3%($−1.34)。Entry thesis 吹「First-Passage P(TP)=100%, edge +71pp, high confidence」;實際:exit $1210.5 滑穿收緊 SL($1228.59)多 **147bps**,實蝕 = 計劃風險 **×2.31**。
