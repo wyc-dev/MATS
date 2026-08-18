@@ -206,6 +206,7 @@ export class MarketStateAggregator {
     }
     const cleanSnap = { ...snap } as import('../analysis/momentum-trend.ts').MomentumSnapshot;
     if (cleanSnap.volumeRatio !== null && !Number.isFinite(cleanSnap.volumeRatio)) cleanSnap.volumeRatio = null;
+    if (cleanSnap.vol4hRatio !== null && !Number.isFinite(cleanSnap.vol4hRatio)) cleanSnap.vol4hRatio = null;
     if (!Number.isFinite(ts) || ts <= 0) ts = Date.now();
     this.momentumTrends.set(sym, { trend: trend as Trend, snap: cleanSnap, ts });
     if (this.momentumTrends.size > 40) {

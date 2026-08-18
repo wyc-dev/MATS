@@ -6904,6 +6904,8 @@ ${recentExamples}
           histVol: { p25: number; median: number; p75: number; max: number };
           currentState: { regime: string; trend: string; volatility: number };
           candles?: Array<{ t: number; o: number; h: number; l: number; c: number; v: number }>;
+          /** v2.0.870-P26.5: 定量量值核對(由同一 candles 計出) */
+          computedVolume?: { volumeRatio5m: number | null; volumeState: string; vol4hRatio: number | null };
         }> = [];
         const staleSyms: string[] = [];
         for (const sym of judgeSyms) {
@@ -6914,9 +6916,11 @@ ${recentExamples}
           if (stale) staleSyms.push(sym);
         }
         // 並行攞 candle(唔逐個 await——慳時間)
+        // v2.0.870-P26.5(主神:量做核對來源):fetch 100 支(vol4hRatio 需 ≥97);
+        // candleCache 反正強制 ≥100 支——TTL 內同 trend/momentum 層共享同一物件。
         const candleResults = await Promise.all(staleSyms.map(async (sym) => {
           try {
-            const cc = await candleCache.getCandles(sym, '5m', 50);
+            const cc = await candleCache.getCandles(sym, '5m', 100);
             return { sym, candles: cc && cc.length > 0 ? cc : undefined };
           } catch { return { sym, candles: undefined }; }
         }));
@@ -6924,12 +6928,23 @@ ${recentExamples}
         for (const sym of staleSyms) {
           const state = this.marketState?.getState(sym);
           const hist = this.getVolatilityStats(sym);
+          // v2.0.870-P26.5: 同一蠟燭計定量量值——LLM 定性 vs 計算核對
+          const candles = candleMap.get(sym);
+          let computedVolume: { volumeRatio5m: number | null; volumeState: string; vol4hRatio: number | null } | undefined;
+          if (candles && candles.length >= 6) {
+            try {
+              const { computeMomentum } = await import('./analysis/momentum-trend.ts');
+              const m = computeMomentum(candles, null);
+              computedVolume = { volumeRatio5m: m.volumeRatio, volumeState: m.volumeState, vol4hRatio: m.vol4hRatio };
+            } catch { computedVolume = undefined; }
+          }
           staleAssets.push({
             symbol: sym,
             assetType: this.getAssetType(sym),
             histVol: hist ?? { p25: 0, median: 0, p75: 0, max: 0 },
             currentState: { regime: state?.regime ?? 'unknown', trend: state?.trend ?? 'sideways', volatility: state?.volatility ?? 0 },
-            candles: candleMap.get(sym),
+            candles,
+            computedVolume,
           });
         }
         // v2.0.869-P5(主神 prompt 規範後——唔使分批):一次過問全部——
