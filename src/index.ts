@@ -10077,6 +10077,32 @@ ${recentExamples}
             const auditGates: Array<{ gate: string; passed: boolean; reason: string }> = [];
             let pscExecuted = false;
 
+            // ── v2.0.870-P20-C: 全覆蓋方向判斷記錄 + trust 校準 ──
+            // 歷史飢餓實證:direction/pending/windowStats 全 0,但 outcome 1037 單——
+            // 因為 recordJudgment 只喺 activeSymbol 分支,其餘市場(大部分交易)
+            // 從未被記錄亦從未被校準。依家:每個被決策嘅 symbol 都記錄,
+            // 且 dirTrust 乘入 psc.confidence(軟乘,內部 clamp [0.80,1.05])。
+            if (this.llmDirectionVerifier && llmDirectionConfig.enabled) {
+              try {
+                const pscSym = normalizeSymbol(psc.symbol);
+                this.llmDirectionVerifier.recordJudgment(
+                  pscSym,
+                  psc.action as 'buy' | 'sell',
+                  this.extractTrendType(psc.entryThesis),
+                  this.totalCycles,
+                  this.getMarkPriceStrict(pscSym) ?? undefined,
+                );
+                const pscTrust = this.llmDirectionVerifier.getTrustMultiplier(
+                  pscSym,
+                  this.extractTrendType(psc.entryThesis),
+                );
+                if (Number.isFinite(pscTrust) && pscTrust !== 1) {
+                  auditGates.push({ gate: 'dir-trust', passed: true, reason: `trust ×${pscTrust.toFixed(2)}` });
+                  psc.confidence = psc.confidence * pscTrust;
+                }
+              } catch { /* non-fatal */ }
+            }
+
             // v2.0.122: Check per-symbol direction restriction
             if (!this.marketAgent.isDirectionAllowed(psc.symbol, psc.action)) {
               const allowedDir = this.marketAgent.getDirectionRestrictions()[normalizeSymbol(psc.symbol)];
@@ -11066,7 +11092,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         if (this.llmDirectionVerifier && llmDirectionConfig.enabled) {
           try {
             const judgeSymbol = normalizeSymbol(finalDecision.symbol || activeSymbol);
-            const judgePrice = this.hyperliquidWs?.getMarkPriceForSymbol(judgeSymbol)?.markPrice ?? null;
+            // P20-C: strict price——fallback 返嚟嘅另一 symbol 價會毒化錨點
+            const judgePrice = this.getMarkPriceStrict(judgeSymbol);
             this.llmDirectionVerifier.recordJudgment(
               judgeSymbol,
               gateAction,
@@ -13135,6 +13162,17 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
   }
 
   /** v2.0.864: 每 cycle 驗證 pending LLM 判斷(B 方向預測——判斷時 price vs 而家 price) */
+  /** v2.0.870-P20-C: 嚴格 mark price——latestMarkPrice fallback 會將 A symbol 嘅價
+   *  畀 B symbol 做判斷錨點(v2.0.864-fix 已喺 verify 層發現同類毒),record 層同款。
+   *  normalizeSymbol 大細楷一致先畀;miss → null(判斷照記,verify 層棄置並計數)。 */
+  private getMarkPriceStrict(sym: string): number | null {
+    try {
+      const mp = this.hyperliquidWs?.getMarkPriceForSymbol(sym);
+      if (!mp) return null;
+      return normalizeSymbol(mp.symbol) === normalizeSymbol(sym) ? mp.markPrice : null;
+    } catch { return null; }
+  }
+
   private verifyPendingLLMJudgments(): void {
     try {
       if (!this.llmDirectionVerifier || !llmDirectionConfig.enabled) return;
@@ -13556,6 +13594,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         decisionAudit: this.decisionAudit.slice(-20),
         // v2.0.870-P19': conviction calibration 觀測(bins/ECE/讀圖一致率)
         llmCalibration: this.llmCalibrator?.getCalibrationReport?.() ?? null,
+        // v2.0.870-P20-C: direction verifier pipeline 觀測
+        llmDirection: this.llmDirectionVerifier?.getStats?.() ?? null,
         status: {
           cycles: this.totalCycles,
           balance: displayBalance,

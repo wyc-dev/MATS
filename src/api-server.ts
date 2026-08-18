@@ -652,6 +652,13 @@ export class APIServer {
         return;
       }
 
+      // v2.0.870-P20-C: direction verifier pipeline 觀測(recorded/verified/dropped 計數)
+      if (pathname === '/api/direction' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify((this.data as { llmDirection?: unknown } | undefined)?.llmDirection ?? null));
+        return;
+      }
+
       if (pathname === '/api/portfolio') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(this.data?.portfolio ?? {}));

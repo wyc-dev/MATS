@@ -50,10 +50,26 @@ export interface DirectionVerifierState {
   windowStats: Record<string, Counter>;
   /** v2.0.865-fix:backfill 完成標記(persisted)——防止 restart 重複 backfill */
   backfillDone: boolean;
+  /** P20-C: pipeline 觀測計數 */
+  stats?: VerifierPipelineStats;
+}
+
+/** v2.0.870-P20-C: pipeline 觀測計數——飢餓必須有聲(P19' 教訓)。
+ *  邊個階段失血,state 檔案一眼可見,唔使再靠估。 */
+export interface VerifierPipelineStats {
+  recorded: number;          // recordJudgment 被調用次數
+  noEntryPrice: number;      // 判斷時攞唔到價(jp undefined——之後必被棄置)
+  quickVerified: number;     // B 層:first-seen 驗證入賬
+  windowVerified: number;    // 較準窗口驗證入賬
+  outcomeRecorded: number;   // C 層:平倉結果入賬
+  droppedNoPrice: number;    // verifyAllPending 棄置:判斷時無價
+  droppedStale48h: number;   // verifyAllPending 棄置:48h 超時
+  keptNoCurrentPrice: number;// 想驗證但而家攞唔到價(留低)
 }
 
 function emptyState(): DirectionVerifierState {
-  return { pending: {}, direction: {}, outcome: {}, outcomeTradeIds: [], windowStats: {}, backfillDone: false };
+  return { pending: {}, direction: {}, outcome: {}, outcomeTradeIds: [], windowStats: {}, backfillDone: false,
+    stats: { recorded: 0, noEntryPrice: 0, quickVerified: 0, windowVerified: 0, outcomeRecorded: 0, droppedNoPrice: 0, droppedStale48h: 0, keptNoCurrentPrice: 0 } };
 }
 
 function windowKey(trendType: string, windowIdx: number): string {
@@ -80,6 +96,11 @@ export function accuracyToMultiplier(accuracy: number, total: number): number {
 
 // ─── Main ──────────────────────────────────────────────────────────────
 
+function bumpStats(st: DirectionVerifierState, k: keyof VerifierPipelineStats): void {
+  if (!st.stats) st.stats = { recorded: 0, noEntryPrice: 0, quickVerified: 0, windowVerified: 0, outcomeRecorded: 0, droppedNoPrice: 0, droppedStale48h: 0, keptNoCurrentPrice: 0 };
+  st.stats[k] = (st.stats[k] ?? 0) + 1;
+}
+
 export class LLMDirectionVerifier {
   private state: DirectionVerifierState;
   private path: string;
@@ -100,6 +121,8 @@ export class LLMDirectionVerifier {
     const id = `j${this.nextId++}`;
     const now = Date.now();
     const bestWindow = this.getBestVerifyWindow(tt); // 較準:該 trend-type 最佳驗證窗口
+    bumpStats(this.state, 'recorded');
+    if (!Number.isFinite(price) || (price as number) <= 0) bumpStats(this.state, 'noEntryPrice');
     this.state.pending[id] = {
       symbol: symbol.slice(0, 24),
       direction,
@@ -170,6 +193,7 @@ export class LLMDirectionVerifier {
     if (isWin) c.correct++;
     this.state.outcome[k] = c;
     this.state.outcomeTradeIds.push(tradeId);
+    bumpStats(this.state, 'outcomeRecorded');
     if (this.state.outcomeTradeIds.length > 20000) {
       this.state.outcomeTradeIds = this.state.outcomeTradeIds.slice(-15000);
     }
@@ -233,20 +257,23 @@ export class LLMDirectionVerifier {
       const maxWindow = VERIFY_WINDOWS[VERIFY_WINDOWS.length - 1] ?? DEFAULT_VERIFY_WINDOW;
       if (ageMs > 48 * 3600 * 1000 + 2 * maxWindow * 1000) {
         delete this.state.pending[id];
+        bumpStats(this.state, 'droppedStale48h');
         continue;
       }
       let price: number | null = null;
       try { price = priceFor(j.symbol); } catch { /* non-fatal */ }
-      if (price === null || !Number.isFinite(price) || (price as number) <= 0) continue; // 無價 → 留低下次
+      if (price === null || !Number.isFinite(price) || (price as number) <= 0) { bumpStats(this.state, 'keptNoCurrentPrice'); continue; } // 無價 → 留低下次
       const cp = price as number;
       const jp = j.price;
       if (jp === undefined || !Number.isFinite(jp) || jp <= 0) {
         delete this.state.pending[id]; // 判斷時無價 → 唔可驗證 → 棄置
+        bumpStats(this.state, 'droppedNoPrice');
         continue;
       }
       // quick:未驗證過 → 即時驗證(計入 direction bins——每 cycle 回饋)
       if (!j.quickVerified) {
         j.quickVerified = true;
+        bumpStats(this.state, 'quickVerified');
         const upQ = cp > jp;
         const kQ = key(j.symbol, j.trendType);
         const cQ = this.state.direction[kQ] ?? { correct: 0, total: 0 };
@@ -263,6 +290,7 @@ export class LLMDirectionVerifier {
         cA['total']++;
         if ((j.direction === 'buy') === upA) cA['correct']++;
         this.state.windowStats[wKey] = cA;
+        bumpStats(this.state, 'windowVerified');
         delete this.state.pending[id];
       }
     }
@@ -383,12 +411,15 @@ export class LLMDirectionVerifier {
     this.state.backfillDone = true;
   }
 
-  getStats(): { pending: number; directionKeys: number; outcomeKeys: number; outcomeTrades: number } {
+  getStats(): { pending: number; directionKeys: number; outcomeKeys: number; outcomeTrades: number; pipeline: VerifierPipelineStats; direction: Record<string, Counter> } {
     return {
       pending: Object.keys(this.state.pending).length,
       directionKeys: Object.keys(this.state.direction).length,
       outcomeKeys: Object.keys(this.state.outcome).length,
       outcomeTrades: this.state.outcomeTradeIds.length,
+      // P20-C: pipeline 觀測(飢餓有聲) + direction 表直出(API 可讀)
+      pipeline: { ...(this.state.stats ?? { recorded: 0, noEntryPrice: 0, quickVerified: 0, windowVerified: 0, outcomeRecorded: 0, droppedNoPrice: 0, droppedStale48h: 0, keptNoCurrentPrice: 0 }) },
+      direction: { ...this.state.direction },
     };
   }
 
