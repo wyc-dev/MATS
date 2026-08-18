@@ -211,6 +211,9 @@ export class MarketStateAggregator {
     if (cleanSnap.vol4hRatio !== null && !Number.isFinite(cleanSnap.vol4hRatio)) cleanSnap.vol4hRatio = null;
     if (cleanSnap.vol5mSigma !== null && (!Number.isFinite(cleanSnap.vol5mSigma) || cleanSnap.vol5mSigma < 0 || cleanSnap.vol5mSigma >= 1)) cleanSnap.vol5mSigma = null;
     if (cleanSnap.vol4hNotionalUsd !== null && (!Number.isFinite(cleanSnap.vol4hNotionalUsd) || cleanSnap.vol4hNotionalUsd <= 0)) cleanSnap.vol4hNotionalUsd = null;
+    // B2(storage 層):volumeState 白名單——注入字串唔准存落 store
+    const SAFE_VOL_STATES = new Set(['strong', 'normal', 'thin', 'unknown']);
+    if (!SAFE_VOL_STATES.has(cleanSnap.volumeState)) cleanSnap.volumeState = 'unknown';
     if (!Number.isFinite(ts) || ts <= 0) ts = Date.now();
     // A3: future timestamp 係 TTL 繞過攻擊(永遠新鮮)——clamp 到 now(60s 容差畀 clock skew)
     if (ts > Date.now() + 60_000) ts = Date.now();
@@ -233,7 +236,7 @@ export class MarketStateAggregator {
     const e = this.momentumTrends.get(sym);
     if (!e) return undefined;
     if (Date.now() - e.ts > MarketStateAggregator.MOMENTUM_TTL_MS) return undefined;
-    return e.snap;
+    return { ...e.snap }; // B5: copy-on-read——外部 mutate 唔准污染 store
   }
 
   /** P26-attack A7: 免觀測副作用嘅 volatility 讀取。

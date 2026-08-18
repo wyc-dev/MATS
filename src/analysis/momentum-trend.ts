@@ -207,21 +207,33 @@ export function describeMomentum(snap: MomentumSnapshot): string {
  * hasData=false → 空字串(唔注入);NaN 窗口 → 「—」,唔准流入 prompt。
  */
 export function formatMomentumPromptBlock(snap: MomentumSnapshot): string {
-  if (!snap || !snap.hasData) return '';
-  const f = (x: number | null) => (x !== null && Number.isFinite(x) ? `${x >= 0 ? '+' : ''}${x.toFixed(2)}%` : '—');
-  const lines: string[] = [];
-  lines.push(`Momentum (local 5m candles): 5m ${f(snap.m5m)} · 15m ${f(snap.m15m)} · 1h ${f(snap.m1h)} · 4h ${f(snap.m4h)}`);
-  const vParts: string[] = [];
-  if (snap.volumeRatio !== null && Number.isFinite(snap.volumeRatio)) vParts.push(`last 5m volume ${snap.volumeRatio.toFixed(1)}× vs median of prior 24 bars (${snap.volumeState})`);
-  if (snap.vol4hRatio !== null && Number.isFinite(snap.vol4hRatio)) vParts.push(`4h volume ${snap.vol4hRatio.toFixed(1)}× vs prior 4h`);
-  if (snap.vol4hNotionalUsd !== null && Number.isFinite(snap.vol4hNotionalUsd)) {
-    const u = snap.vol4hNotionalUsd;
-    vParts.push(`4h notional $${u >= 1_000_000 ? (u / 1_000_000).toFixed(1) + 'M' : (u / 1_000).toFixed(0) + 'k'}`);
+  try {
+    if (!snap || !snap.hasData) return '';
+    const f = (x: number | null) => (x !== null && Number.isFinite(x) ? `${x >= 0 ? '+' : ''}${x.toFixed(2)}%` : '—');
+    const lines: string[] = [];
+    lines.push(`Momentum (local 5m candles): 5m ${f(snap.m5m)} · 15m ${f(snap.m15m)} · 1h ${f(snap.m1h)} · 4h ${f(snap.m4h)}`);
+    const vParts: string[] = [];
+    // B2: volumeState 白名單——入 prompt 嘅字串只准係已知 enum(注入防線)
+    const SAFE_VOL_STATES = new Set(['strong', 'normal', 'thin', 'unknown']);
+    const vs = SAFE_VOL_STATES.has(snap.volumeState) ? snap.volumeState : 'unknown';
+    if (snap.volumeRatio !== null && Number.isFinite(snap.volumeRatio)) vParts.push(`last 5m volume ${snap.volumeRatio.toFixed(1)}× vs median of prior 24 bars (${vs})`);
+    if (snap.vol4hRatio !== null && Number.isFinite(snap.vol4hRatio)) vParts.push(`4h volume ${snap.vol4hRatio.toFixed(1)}× vs prior 4h`);
+    if (snap.vol4hNotionalUsd !== null && Number.isFinite(snap.vol4hNotionalUsd)) {
+      const u = snap.vol4hNotionalUsd;
+      // B4: 小額唔准四捨五入誇大($999 → '$999',唔係 '$1k')
+      const usd = u >= 1_000_000 ? `$${(u / 1_000_000).toFixed(1)}M`
+        : u >= 100_000 ? `$${(u / 1_000).toFixed(0)}k`
+        : u >= 1_000 ? `$${(u / 1_000).toFixed(1)}k`
+        : `$${Math.round(u)}`;
+      vParts.push(`4h notional ${usd}`);
+    }
+    if (vParts.length > 0) lines.push('Volume confirm (local candles): ' + vParts.join(' · '));
+    // 來源 + 適用邊界聲明(主神:volume 只可以獨立適配一個 symbol,唔准交叉)
+    lines.push('[Source: local HL candle computation, 5m/1h bars, per-symbol absolute measures — cross-symbol comparison of volume/momentum is INVALID. Freshness < 10 min.]');
+    return lines.join('\n');
+  } catch {
+    return ''; // B1: hostile getter / 任何讀取爆炸 → 唔注入,唔 crash
   }
-  if (vParts.length > 0) lines.push('Volume confirm (local candles): ' + vParts.join(' · '));
-  // 來源 + 適用邊界聲明(主神:volume 只可以獨立適配一個 symbol,唔准交叉)
-  lines.push('[Source: local HL candle computation, 5m/1h bars, per-symbol absolute measures — cross-symbol comparison of volume/momentum is INVALID. Freshness < 10 min.]');
-  return lines.join('\n');
 }
 
 /**
@@ -231,6 +243,7 @@ export function formatMomentumPromptBlock(snap: MomentumSnapshot): string {
  * 唔准壞數流入,亦唔准壞窗口嘅 fallback 扮好數。hasData=false → 全 0(舊行為)。
  */
 export function momentumFeaturesFromSnapshot(snap: MomentumSnapshot | null | undefined): { momentumShort: number; momentumLong: number } {
+  try {
   if (!snap || !snap.hasData) return { momentumShort: 0, momentumLong: 0 };
   const pick = (primary: number | null, fallback: number | null): number => {
     let v: number | null;
@@ -246,4 +259,5 @@ export function momentumFeaturesFromSnapshot(snap: MomentumSnapshot | null | und
     momentumShort: pick(snap.m15m, snap.m5m),
     momentumLong: pick(snap.m4h, snap.m1h),
   };
+  } catch { return { momentumShort: 0, momentumLong: 0 }; } // B1: hostile getter
 }
