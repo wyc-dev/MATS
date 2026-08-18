@@ -4,6 +4,14 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P32: GDELT 預設停運(主神決定)
+
+**主神原話**:「反正我見好多次都攞唔到」——IP 級硬限(1 req/5s)+ 系統每 cycle 6 發令 gdelt 實際產出近零,純粹係 cooldown 警報噪音源。
+**做法**:預設剔除出 sourcesToFetch;`NEWS_GDELT=1` 可翻身(保留 P31 pacer,翻身後都唔會炸 limit)。google/bing RSS 繼續扛 news pipeline;breaker backstop 不變。
+tsc clean;news 模組測試 2/2(pacer 保留測試,確保翻身路徑可控)。
+
+---
+
 ## v2.0.870-P31: GDELT 429 節奏器(主神報告 cooldown 循環)
 
 **實證根因**(live curl):GDELT doc API 明文硬限 1 req/5s(429 body 原文),MATS 每 cycle 對 6 symbol 近並發打 → 後 5 次必中 429 → breaker 3 連敗 → cooldown-60s 警報無限循環。
