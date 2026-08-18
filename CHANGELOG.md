@@ -4,6 +4,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P34: 公開層最小化 —— ui_snapshots 私有化 + signals_lite 視圖(主神 lite app 私隱洞察)
+
+**主神洞察**:lite app 係公開用戶端,用戶唔可以見到倉位/結餘。審計發現 `ui_snapshots` 帶 `"ui_snapshots public read"` policy(migration 19)——**任何 anon key 持有人已經可以讀晒 status=結餘 + portfolio=倉位明細**。門一直開住。
+**答主神「Terminal Dashboard 讀 Supabase?」**:係——legacy `ui/` 讀 `asset_analyses`(matrix 卡),`mats_app` 讀 `asset_analyses` + `positions`;兩個都冇讀 `ui_snapshots`(`ui_snapshots` 唯一消費者 = AgentMonitor,owner 內部)。
+**Migration 22 三件事**:
+1. `ui_snapshots` public read policy 撤除 → 只限 authenticated(AgentMonitor/內部登入;backend service_role 寫入不受影響)
+2. `edge_report` 列 IF NOT EXISTS(21 未行都唔阻——冚冚聲)
+3. **`signals_lite` 視圖**(security_invoker=true,繼承 asset_analyses 嘅 public RLS):lite app 唯一讀取面——剔除 thesis 慳流量,齊方向/信心/edge 三態/SL-TP/市場上下文
+**架構**:一張公開表(asset_analyses/signals_lite)+ 內部表(ui_snapshots 私有化),一套 code 兩用。backend 零改動(選項 b:照上載)。
+
+---
+
 ## v2.0.870-P33: xyz 資產 currentPrice 由 xyz dex allMids 更新(主神 TG entry=cur 再現)
 
 **主神實問**:TG 顯示 SILVER/SP500/SKHX `entry=cur` 但 PnL≠0(矛盾)——「之前應該整好過?」
