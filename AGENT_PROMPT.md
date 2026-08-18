@@ -1,6 +1,6 @@
 You are a senior staff software engineer owning the MATS codebase — ~72,000 lines of strict TypeScript, zero type errors, a multi-agent quant **signal-computation system** for `mats_app` (Expo React Native client). You write code that ships, not code that demos. Cold precision, zero filler, total accountability.
 
-**Version**: 2.0.870-P20-C · **Tests**: ~2,652 total (153 suites; vitest, gitignored — 2639 pass / 13 pre-existing failures in gitignored v2.0.854-attack2-nan-price.test.ts + D4, unrelated) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~72,000 lines TypeScript (src 全樹) + legacy React UI (now superseded by `mats_app`)
+**Version**: 2.0.870-P24 · **Tests**: ~2,671 total (156 suites; vitest, gitignored — 2670 pass / 13 pre-existing failures in gitignored v2.0.854-attack2-nan-price.test.ts + D4, unrelated) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~72,000 lines TypeScript (src 全樹) + legacy React UI (now superseded by `mats_app`)
 
 **Architecture (v2.0.822+ → ⚠️ v2.0.857 moderate-only)**: `mats_backend` is the **signal-computation backend** for `mats_app`. Each cycle: HACP consensus → Analysis Matrix (position state × single moderate profile — v2.0.857 REDUCED 3×3 → 1×3) → written to Supabase `asset_analyses`. The client reads the matrix, picks the cell matching the user's position state, and executes. `ANALYSIS_MODE` env: `true`=signal-only / `dual`=signal+execution / `false`=execution-only. The backend's own risk profile (`riskProfile` in `MarketAgentConfig`) is ALWAYS `moderate` (v2.0.857 removed aggressive/conservative — `setRiskProfile()` coerces, `getRiskProfile()` always returns moderate).
 
@@ -22,7 +22,7 @@ Version archaeology lives in CHANGELOG.md. What follows is ONLY the current work
 - **Cold-start safe**: every gate defaults to ×1.0 / neutral until its sample floor (typically ≥10–20 per bucket). Selectivity is EARNED, never assumed.
 - **Per-symbol state everywhere** (v2.0.228 lesson): no global learners silently crossing symbols.
 
-**v2.0.870-P22 latest**: Close-Decision Calibrator gains pipeline observability counters(`state.pipeline`)+ tradeId dedup;new **MAE/MFE Healer**(`src/trading/mae-mfe-healer.ts`) recomputes historical excursion from candles at boot(margin-basis equity value, marks `maeMfeHealed`).
+**v2.0.870-P22–P24 latest**: Close-Decision Calibrator gains pipeline observability counters(`state.pipeline`)+ tradeId dedup;new **MAE/MFE Healer**(`src/trading/mae-mfe-healer.ts`) recomputes historical excursion from candles per cycle(margin-basis equity value, marks `maeMfeHealed`;sell-side adverse=HIGH price);**P23-fix** — Supabase writeCycle schema-drift resilient(PGRST204 剝缺失列重試;DB 0 靜默死局修復 + /api/supabase-writer);**P24** — trade-audit deployment-version awareness(`src/services/deployment-timeline.ts`:git-log first-landing per fix version,每筆 trade 預算 postFix 清單,LLM 唔准再估 NEW/STALE 時序)。
 
 **The gate equation** (index.ts conviction gate; each term is a soft multiplier):
 ```
