@@ -4899,8 +4899,8 @@ ${recentExamples}
         signalAgreement: safeNum(this.lastHACPResult?.consensus?.confidence, 0.5),
         regimeOrdinal: regimeToOrdinal(state?.regime),
         hourOfDay: currentHourOfDay(),
-        momentumShort: 0,
-        momentumLong: 0,
+        // P28-B: 蠟燭動量取代寫死 0(學習死維度復活)
+        ...this.candleMomentumFeatures(activeSymbol),
       };
 
       // Helper: patch a single trade record if it's missing features
@@ -5073,6 +5073,47 @@ ${recentExamples}
    * 失敗語義: candle fetch 失敗 → 呢個 cycle 唔注入 → marketState 留舊動量
    * (10min TTL 內繼續有效),再都冇 → legacy trend。永不 throw。
    */
+  /** P28-B: 學習層動量維度數據源——蠟燭動量(免副作用 getter)→ fraction。
+   *  冇新鮮數據 → 全 0(舊行為,cold-start 安全;OLR 呢兩維歷來全 0,
+   *  權重≈0,新數進場後 online learner 自然重學)。 */
+  private candleMomentumFeatures(sym: string): { momentumShort: number; momentumLong: number } {
+    try {
+      const snap = this.marketState?.getMomentumSnapshot(sym);
+      // 同步 import 唔得(lazy cycle)——用靜態 import 頂部已有 momentum-trend 用法冇?
+      // 用 dynamic 太重;靜態 import 已喺 vol-judge 路徑存在——呢度直接用 marketState 快照+本地換算
+      if (!snap) return { momentumShort: 0, momentumLong: 0 };
+      const pick = (primary: number | null, fallback: number | null): number => {
+        let v: number | null;
+        if (primary === null) v = fallback;
+        else if (!Number.isFinite(primary)) return 0;
+        else v = primary;
+        if (v === null || !Number.isFinite(v)) return 0;
+        const frac = v / 100;
+        return Number.isFinite(frac) && Math.abs(frac) <= 1 ? frac : 0;
+      };
+      return { momentumShort: pick(snap.m15m, snap.m5m), momentumLong: pick(snap.m4h, snap.m1h) };
+    } catch { return { momentumShort: 0, momentumLong: 0 }; }
+  }
+
+  /** P28-A: LLM context 動量/量值 block(帶來源聲明)——新鮮先注入 */
+  private marketContextMomentumBlock(sym: string): string[] {
+    const snap = this.marketState?.getMomentumSnapshot(sym);
+    if (!snap || !snap.hasData) return [];
+    const f = (v: number | null) => (v !== null && Number.isFinite(v) ? `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` : '—');
+    const lines: string[] = [];
+    lines.push(`Momentum (local 5m candles): 5m ${f(snap.m5m)} · 15m ${f(snap.m15m)} · 1h ${f(snap.m1h)} · 4h ${f(snap.m4h)}`);
+    const vp: string[] = [];
+    if (snap.volumeRatio !== null && Number.isFinite(snap.volumeRatio)) vp.push(`last 5m volume ${snap.volumeRatio.toFixed(1)}x vs median of prior 24 bars (${snap.volumeState})`);
+    if (snap.vol4hRatio !== null && Number.isFinite(snap.vol4hRatio)) vp.push(`4h volume ${snap.vol4hRatio.toFixed(1)}x vs prior 4h`);
+    if (snap.vol4hNotionalUsd !== null && Number.isFinite(snap.vol4hNotionalUsd)) {
+      const u = snap.vol4hNotionalUsd;
+      vp.push(`4h notional $${u >= 1_000_000 ? (u / 1_000_000).toFixed(1) + 'M' : (u / 1_000).toFixed(0) + 'k'}`);
+    }
+    if (vp.length > 0) lines.push('Volume confirm (local candles): ' + vp.join(' · '));
+    lines.push('[Source: local HL candle computation (5m/1h bars), per-symbol absolute measures — cross-symbol comparison of volume/momentum is INVALID. Freshness < 10 min.]');
+    return lines;
+  }
+
   private async updateMomentumTrendsForTradingMarkets(_activeSymbol: string): Promise<void> {
     const markets = this.tradingMarkets ?? [];
     if (markets.length === 0) return;
@@ -5271,8 +5312,8 @@ ${recentExamples}
         signalAgreement: safeNum(this.lastHACPResult?.consensus?.confidence, 0.5),
         regimeOrdinal: regimeToOrdinal(state?.regime),
         hourOfDay: currentHourOfDay(),
-        momentumShort: 0,
-        momentumLong: 0,
+        // P28-B: 蠟燭動量(m15m/m4h→fraction)取代寫死 0
+        ...this.candleMomentumFeatures(sym),
       };
       
       // Query OLR P(win) at entry time
@@ -5712,8 +5753,8 @@ ${recentExamples}
             signalAgreement: safeNum(this.lastHACPResult?.consensus?.confidence, 0.5),
             regimeOrdinal: regimeToOrdinal(state?.regime),
             hourOfDay: currentHourOfDay(),
-            momentumShort: 0,
-            momentumLong: 0,
+            // P28-B: 蠟燭動量取代寫死 0(本 scope 用 symNorm)
+            ...this.candleMomentumFeatures(symNorm),
           };
 
       // Query OLR P(win) at injection time
@@ -7692,7 +7733,7 @@ ${recentExamples}
               const qrlCtx = this.lastCycleShadowContexts.get(mktNorm);
               const qrlFeatures = qrlCtx?.features && Object.keys(qrlCtx.features).length > 0
                 ? qrlCtx.features
-                : { ...mktFeatures, regimeOrdinal: regimeToOrdinal(mktState?.regime ?? 'unknown'), momentumShort: 0, momentumLong: 0 };
+                : { ...mktFeatures, regimeOrdinal: regimeToOrdinal(mktState?.regime ?? 'unknown'), ...this.candleMomentumFeatures(mktSym) }; // P28-B: 唔再寫死 0
               const qrlLean = this.qrlTable.getDirectionLean(qrlFeatures, qrlDirectionConfig.minSamples);
               if (qrlLean.robust && qrlLean.lean !== 'neutral' && !this.shadowEngine.hasQRLShadow(mktSym, qrlLean.lean, this.totalCycles)) {
                 const qrlSlPrice = qrlLean.lean === 'buy'
@@ -7765,12 +7806,15 @@ ${recentExamples}
       const allMarkets = [...new Set([activeSymbol, ...this.tradingMarkets.map(m => normalizeSymbol(m))])];
       for (const mktSym of allMarkets) {
         const mktState = this.marketState.getState(mktSym);
-        // v2.0.207 (#D): Momentum features — short (5-cycle) + long (288-cycle) % change.
-        let mktMomentum = { momentumShort: 0, momentumLong: 0 };
-        try {
-          const mktPh = this.marketState.getPriceHistory(mktSym);
-          if (mktPh && mktPh.length >= 2) mktMomentum = computeMomentum(mktPh);
-        } catch { /* non-critical */ }
+        // P28-B: 蠟燭動量優先(均勻窗口,唔受 tick 密度綁架);
+        // 蠟燭數據缺席先降級 tick 版(legacy v2.0.207 #D 行為)
+        let mktMomentum = this.candleMomentumFeatures(mktSym);
+        if (mktMomentum.momentumShort === 0 && mktMomentum.momentumLong === 0) {
+          try {
+            const mktPh = this.marketState.getPriceHistory(mktSym);
+            if (mktPh && mktPh.length >= 2) mktMomentum = computeMomentum(mktPh);
+          } catch { /* non-critical */ }
+        }
         const mktFeatures = {
           volatility: mktState?.volatility ?? (normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? (combinedState.volatility ?? 0) : 0),
           srDistanceBps: normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? safeNum(this.lastSRContext?.distanceToSupportBps, 0) : 0,
@@ -8356,6 +8400,8 @@ ${recentExamples}
         if (mktVolume24h > 0) marketDesc += `\n24h Volume: $${(mktVolume24h / 1_000_000).toFixed(2)}M`;
         marketDesc += `\nTrend: ${(mktState?.trend ?? 'sideways').toUpperCase()}`;
         marketDesc += `\nRegime: ${(mktState?.regime ?? 'unknown').toUpperCase()}`;
+        // P28-A: 動量/量值證據 block(帶來源聲明)
+        marketDesc += '\n' + this.marketContextMomentumBlock(mktSym).join('\n');
         if (mktState && mktState.volatility > 0) marketDesc += `\nVolatility: ${(mktState.volatility * 100).toFixed(3)}%`;
 
         // OLR context for this trading market
@@ -11561,8 +11607,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         signalAgreement: safeNum(result.consensus.confidence, 0.5),
         regimeOrdinal: regimeToOrdinal(combinedState.regime),
         hourOfDay: currentHourOfDay(),
-        momentumShort: 0,
-        momentumLong: 0,
+        // P28-B: 蠟燭動量取代寫死 0
+        ...this.candleMomentumFeatures(activeSymbol),
       };
 
       // v2.0.773: Query OLR P(win) at entry time for the active symbol
@@ -13425,6 +13471,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       `Trend: ${state.trend.toUpperCase()}`,
       `Regime: ${state.regime.toUpperCase()}`,
     );
+    // P28-A: 注入真動量/量值證據數字(帶來源聲明)——唔再得兩個結論字
+    lines.push(...this.marketContextMomentumBlock(state.primarySymbol));
 
     // v2.0.115: Inject short-term price trend so agents can see multi-cycle direction
     const priceTrend = this.marketState?.getRecentPriceTrend?.(state.primarySymbol, 20);

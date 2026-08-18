@@ -225,6 +225,17 @@ export class MarketStateAggregator {
     } catch { /* A2: hostile getter / 讀取爆炸 → 拒收,唔准 crash */ }
   }
 
+  /** P28: 免副作用嘅動量快照 getter(新鮮先回,過期 → undefined)。
+   *  學習 feature 建構同 prompt 注入用;唔觸發 calibrator.observe(A7 教訓)。 */
+  getMomentumSnapshot(symbol: string): import('../analysis/momentum-trend.ts').MomentumSnapshot | undefined {
+    const sym = String(symbol ?? '').toLowerCase();
+    if (!sym) return undefined;
+    const e = this.momentumTrends.get(sym);
+    if (!e) return undefined;
+    if (Date.now() - e.ts > MarketStateAggregator.MOMENTUM_TTL_MS) return undefined;
+    return e.snap;
+  }
+
   /** P26-attack A7: 免觀測副作用嘅 volatility 讀取。
    *  getState() 每次都會 calibrator.observe(regime)——momentum wiring 每 cycle
    *  逐 symbol 再 call 一次 = 觀測量 double count → 校準分布被 wiring 位移。

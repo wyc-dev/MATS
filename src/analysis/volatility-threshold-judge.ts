@@ -118,6 +118,8 @@ const SYSTEM_PROMPT = `你係「波動率 Threshold 判定器」——頂尖量�
    - 你嘅定性 volume 判讀必須同計算值一致——若你覺得「高 volume」但 computedVolume.volumeRatio5m < 0.7,以計算值為準修正判讀
    - vol4hRatio > 1.5 = 量能顯著擴張(趨勢可信);< 0.7 = 量能萎縮(假突破風險)
    - computedVolume 係「無」→ 用 candle 自行判讀(舊行為)
+   - **適用邊界(P28-C)**:volume/momentum 係 per-symbol 絕對量度——每個 asset 流動性尺度唔同,
+     跨 asset 比較無效(唔准話「GOLD 量低過 BTC 所以 GOLD 靜」);只用時間序列自身對比(量比 = 自己 vs 自己歷史)
 
 6. 輸出校準:
    - volLow < volHigh(必須)

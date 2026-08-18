@@ -169,6 +169,10 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
 
+### v2.0.870-P28: 真市況 → LLM + 學習層完美接入
+
+主神質詢落地:A=agents context 注入動量/量值 block,每行帶來源聲明(per-symbol 絕對量度,跨 symbol 比較 INVALID);B=`entryMarketFeatures.momentumShort/Long` 死維度(寫死 0)復活——數據源換做蠟燭動量(m15m/m4h→fraction),四條活路接入 + shadow 蠟燭優先/tick 降級;C=vol-judge prompt per-symbol guardrail。副作用紀律:全部行免觀測 `getMomentumSnapshot()`。
+
 ### v2.0.870-P26-attack: 動量層攻擊硬化(8 向量 6 命中全修)
 
 紅先攻擊輪覆蓋 P26/P26.5:A1 分類器重複防禦(非 finite 窗口歸 null) · A3 future-ts TTL 繞過 clamp · A4 符號長度閘(>64 拒) · A5 vol-judge caller 垃圾 computedVolume 形狀校驗+自計回退 · **A6(HIGH)candle fetch 掛死凍結 trend 層 → per-symbol `withTimeout` 8s** · **A7 觀測者效應:momentum wiring 經 getState() 逐 symbol 多觸發 `calibrator.observe` → 校準分布被測量行為位移 → 免副作用 `getVolatilityForTrend()`**(spy 測試釘死零觸發)· A8/A9 既有盾牌釘回歸。

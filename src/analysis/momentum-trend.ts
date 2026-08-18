@@ -198,3 +198,52 @@ export function describeMomentum(snap: MomentumSnapshot): string {
   const vol4 = snap.vol4hRatio === null ? '' : ` · 4h量 ${snap.vol4hRatio.toFixed(1)}×`;
   return `5m ${f(snap.m5m)} · 15m ${f(snap.m15m)} · 1h ${f(snap.m1h)} · 4h ${f(snap.m4h)} · ${vol}${vol4}`;
 }
+
+// ═══ v2.0.870-P28: 真市況 → LLM + 學習層接入 helpers ═══
+
+/**
+ * P28-A(主神指定):LLM 用嘅動量/量值 block——**每個數字都帶來源聲明**。
+ * 規則:volume/momentum 係 per-symbol 絕對量度,跨 symbol 比較無效。
+ * hasData=false → 空字串(唔注入);NaN 窗口 → 「—」,唔准流入 prompt。
+ */
+export function formatMomentumPromptBlock(snap: MomentumSnapshot): string {
+  if (!snap || !snap.hasData) return '';
+  const f = (x: number | null) => (x !== null && Number.isFinite(x) ? `${x >= 0 ? '+' : ''}${x.toFixed(2)}%` : '—');
+  const lines: string[] = [];
+  lines.push(`Momentum (local 5m candles): 5m ${f(snap.m5m)} · 15m ${f(snap.m15m)} · 1h ${f(snap.m1h)} · 4h ${f(snap.m4h)}`);
+  const vParts: string[] = [];
+  if (snap.volumeRatio !== null && Number.isFinite(snap.volumeRatio)) vParts.push(`last 5m volume ${snap.volumeRatio.toFixed(1)}× vs median of prior 24 bars (${snap.volumeState})`);
+  if (snap.vol4hRatio !== null && Number.isFinite(snap.vol4hRatio)) vParts.push(`4h volume ${snap.vol4hRatio.toFixed(1)}× vs prior 4h`);
+  if (snap.vol4hNotionalUsd !== null && Number.isFinite(snap.vol4hNotionalUsd)) {
+    const u = snap.vol4hNotionalUsd;
+    vParts.push(`4h notional $${u >= 1_000_000 ? (u / 1_000_000).toFixed(1) + 'M' : (u / 1_000).toFixed(0) + 'k'}`);
+  }
+  if (vParts.length > 0) lines.push('Volume confirm (local candles): ' + vParts.join(' · '));
+  // 來源 + 適用邊界聲明(主神:volume 只可以獨立適配一個 symbol,唔准交叉)
+  lines.push('[Source: local HL candle computation, 5m/1h bars, per-symbol absolute measures — cross-symbol comparison of volume/momentum is INVALID. Freshness < 10 min.]');
+  return lines.join('\n');
+}
+
+/**
+ * P28-B: 蠟燭動量 → 學習 feature vector(momentumShort/momentumLong)。
+ * 尺度沿用 legacy fraction 語義(0.02 = +2%)——% 除 100。
+ * 缺失策略:null(冇計算)→ 向更短窗口 fallback;NaN(計咗但污)→ 該維度歸 0,
+ * 唔准壞數流入,亦唔准壞窗口嘅 fallback 扮好數。hasData=false → 全 0(舊行為)。
+ */
+export function momentumFeaturesFromSnapshot(snap: MomentumSnapshot | null | undefined): { momentumShort: number; momentumLong: number } {
+  if (!snap || !snap.hasData) return { momentumShort: 0, momentumLong: 0 };
+  const pick = (primary: number | null, fallback: number | null): number => {
+    let v: number | null;
+    if (primary === null) v = fallback;                   // 未曾計算 → fallback
+    else if (!Number.isFinite(primary)) return 0;          // 計咗但污 → 歸 0
+    else v = primary;
+    if (v === null) return 0;
+    if (!Number.isFinite(v)) return 0;                     // fallback 都污
+    const frac = v / 100;
+    return Number.isFinite(frac) && Math.abs(frac) <= 1 ? frac : 0; // |動量|>100% 係壞數
+  };
+  return {
+    momentumShort: pick(snap.m15m, snap.m5m),
+    momentumLong: pick(snap.m4h, snap.m1h),
+  };
+}
