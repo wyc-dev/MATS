@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P28: 真市況 → LLM + 學習系統完美接入(主神質詢落地)
+
+**主神質詢**:「呢啲真實數據係咪完美接入學習系統同 LLM 分析?LLM 嘅 system prompt 有冇註明資料來源同細節?」審計答案:**未**——有兩個真空洞:
+1. consensus agents 只見 Trend/Regime 結論字,見唔到動量/量值證據數字,更冇來源聲明
+2. 學習層 `entryMarketFeatures.momentumShort/Long` **全部 hardcode 0**——OLR/Q-RL/EXP 嘅動量維度係死嘅
+
+**修復**:
+- **A(LLM 接入+來源聲明)**:兩個 market-context 注入點(active + per-symbol marketDesc)新增 `marketContextMomentumBlock()`——數字齊全(5m/15m/1h/4h + 量比 + 4h 名義量)+ **來源聲明**「local HL candle computation, 5m/1h bars, per-symbol absolute — cross-symbol comparison INVALID, freshness <10min」
+- **B(學習維度復活)**:`candleMomentumFeatures()` helper(蠟燭 m15m→short / m4h→long,%→fraction 沿用 legacy 尺度;null=未曾計算→窗口fallback;NaN=污數→歸0唔准流入)接入四條活路:precomputed per-symbol entry features、final decision features、activeSymbol entry features、Q-RL direction-lean fallback;shadow-context features 轉「蠟燭優先,tick 降級」。EXP 歷史 backfill 保持 0(歷史冇存,合法 neutral)。OLR 呢兩維歷來全 0 → 權重≈0 → 新數進場 online learner 自然重學,語義重定義記入此檔。
+- **C(vol-judge guardrail)**:SYSTEM_PROMPT 加「適用邊界」條款——量/動量係 per-symbol 絕對量度,跨 asset 比較**無效**,只許時間序列自比。
+
+**副作用設計紀律**:feature 讀取全部行 `getMomentumSnapshot()`(A7 觀測者效應教訓——唔觸發 calibrator.observe);prompt 注入新鮮度閘(>10min 唔注入)。
+
++10 紅先測試;全量 2718 pass / 13 pre-existing;tsc clean。
+
+---
+
 ## v2.0.870-P27: 蠟燭 σ + 4h 名義量 USD(「vol 0.00%」假零修復)
 
 **根因(主神實問)**:卡上「vol 0.00%」係 volatility σ,原料係 tick 歷史——非 active symbol REST 每 cycle 先 1 tick,tick 間 log-return≈0 → σ 假零(實證:SKHX「4h −0.65%」但「vol 0.00%」)。trend 眼（P26)修咗,vol 眼仲生緊同一個病。
