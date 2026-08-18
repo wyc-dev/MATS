@@ -77,6 +77,7 @@ import { getSRZones } from './analysis/support-resistance.ts';
 import { setExecutionLensProvider, prepareExecutionLens, clearExecutionLens, type ExecutionLensData, getATR } from './analysis/atr.ts';
 import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
+import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { evaluateDataQuality } from './analysis/data-quality.ts';
 import { computeChartConvictionMultiplier } from './analysis/chart-conviction.ts';
 import { LLMConvictionCalibrator } from './analysis/llm-conviction-calibrator.ts';
@@ -5079,39 +5080,21 @@ ${recentExamples}
   private candleMomentumFeatures(sym: string): { momentumShort: number; momentumLong: number } {
     try {
       const snap = this.marketState?.getMomentumSnapshot(sym);
-      // 同步 import 唔得(lazy cycle)——用靜態 import 頂部已有 momentum-trend 用法冇?
-      // 用 dynamic 太重;靜態 import 已喺 vol-judge 路徑存在——呢度直接用 marketState 快照+本地換算
       if (!snap) return { momentumShort: 0, momentumLong: 0 };
-      const pick = (primary: number | null, fallback: number | null): number => {
-        let v: number | null;
-        if (primary === null) v = fallback;
-        else if (!Number.isFinite(primary)) return 0;
-        else v = primary;
-        if (v === null || !Number.isFinite(v)) return 0;
-        const frac = v / 100;
-        return Number.isFinite(frac) && Math.abs(frac) <= 1 ? frac : 0;
-      };
-      return { momentumShort: pick(snap.m15m, snap.m5m), momentumLong: pick(snap.m4h, snap.m1h) };
+      return momentumFeaturesFromSnapshot(snap); // 單一真相源(B1 getter 盾喺模組層)
     } catch { return { momentumShort: 0, momentumLong: 0 }; }
   }
 
-  /** P28-A: LLM context 動量/量值 block(帶來源聲明)——新鮮先注入 */
+  /** P28-A: LLM context 動量/量值 block(帶來源聲明)——新鮮先注入。
+   *  P28-attack: 單一真相源——直接調用模組 formatter(B1/B2/B4 硬化喺嗰邊),
+   *  唔再喺度複製邏輯(兩份邏輯遲早 drift)。 */
   private marketContextMomentumBlock(sym: string): string[] {
-    const snap = this.marketState?.getMomentumSnapshot(sym);
-    if (!snap || !snap.hasData) return [];
-    const f = (v: number | null) => (v !== null && Number.isFinite(v) ? `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` : '—');
-    const lines: string[] = [];
-    lines.push(`Momentum (local 5m candles): 5m ${f(snap.m5m)} · 15m ${f(snap.m15m)} · 1h ${f(snap.m1h)} · 4h ${f(snap.m4h)}`);
-    const vp: string[] = [];
-    if (snap.volumeRatio !== null && Number.isFinite(snap.volumeRatio)) vp.push(`last 5m volume ${snap.volumeRatio.toFixed(1)}x vs median of prior 24 bars (${snap.volumeState})`);
-    if (snap.vol4hRatio !== null && Number.isFinite(snap.vol4hRatio)) vp.push(`4h volume ${snap.vol4hRatio.toFixed(1)}x vs prior 4h`);
-    if (snap.vol4hNotionalUsd !== null && Number.isFinite(snap.vol4hNotionalUsd)) {
-      const u = snap.vol4hNotionalUsd;
-      vp.push(`4h notional $${u >= 1_000_000 ? (u / 1_000_000).toFixed(1) + 'M' : (u / 1_000).toFixed(0) + 'k'}`);
-    }
-    if (vp.length > 0) lines.push('Volume confirm (local candles): ' + vp.join(' · '));
-    lines.push('[Source: local HL candle computation (5m/1h bars), per-symbol absolute measures — cross-symbol comparison of volume/momentum is INVALID. Freshness < 10 min.]');
-    return lines;
+    try {
+      const snap = this.marketState?.getMomentumSnapshot(sym);
+      if (!snap) return [];
+      const block = formatMomentumPromptBlock(snap);
+      return block ? block.split('\n') : [];
+    } catch { return []; }
   }
 
   private async updateMomentumTrendsForTradingMarkets(_activeSymbol: string): Promise<void> {

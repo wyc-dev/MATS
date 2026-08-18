@@ -4,6 +4,25 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P28-attack: P28/P27 刁鑽攻擊輪(6 攻 5 中,全部修復;P27 補刀)
+
+紅測試鐵證:惡意 `volumeState` 字串**直接流入 LLM prompt**(真 prompt injection 通道)。
+
+| # | 攻擊 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| B1 | hostile getter snap → helper / formatter throw | MED | 模組兩函數全屋 try/catch → 安全默認 |
+| B2 | **惡意 volumeState 入 LLM prompt(注入通道)** | **HIGH** | 白名單 {strong,normal,thin,unknown}——**formatter + 存儲層雙盾** |
+| B3 | 外部 mutate caller 嘅 snap 污染 store | — | 已安全(set 時 copy),釘回歸 |
+| B4 | $999 notional 顯示「$1k」四捨五入誇大 | LOW | 誠實格式化:<$1k 顯示原值,$1k-$100k 一位小數 |
+| B5 | getMomentumSnapshot 返回內部引用 → 外部 mutate 污染 store | MED | copy-on-read(`{...e.snap}`) |
+| B6 | hasData=true 全 NaN → 流出 NaN 或 crash | — | 已盾(pick/f),釘回歸 |
+
+**架構級修復**:index.ts 嘅 `marketContextMomentumBlock` / `candleMomentumFeatures` **去重**——直接調用模組 formatter/helper(單一真相源,攻擊硬化集中一處,唔再兩份邏輯 drift)。
+
++7 攻擊測試全綠;全量 2725 pass / 13 pre-existing;tsc clean。
+
+---
+
 ## v2.0.870-P28: 真市況 → LLM + 學習系統完美接入(主神質詢落地)
 
 **主神質詢**:「呢啲真實數據係咪完美接入學習系統同 LLM 分析?LLM 嘅 system prompt 有冇註明資料來源同細節?」審計答案:**未**——有兩個真空洞:
