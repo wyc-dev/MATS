@@ -78,6 +78,7 @@ import { setExecutionLensProvider, prepareExecutionLens, clearExecutionLens, typ
 import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
+import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { evaluateDataQuality } from './analysis/data-quality.ts';
 import { computeChartConvictionMultiplier } from './analysis/chart-conviction.ts';
 import { LLMConvictionCalibrator } from './analysis/llm-conviction-calibrator.ts';
@@ -11356,6 +11357,25 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             }
           }
         } catch { /* 非致命——Gate 失敗唔 block */ }
+
+        // ── v2.0.870-P35: 順逆勢 soft gate(趨勢對齊乘數)──
+        // 主神實證鏈:近 7 筆輸錢單開倉嗰刻 trend/regime 已經 bearish/trending_bear——
+        // 明知熊市照 buy(刀口接刀),每筆 -6~-10%。閘門全管信心,冇層管方向 vs 趨勢。
+        // 鏡像:trending_bear+sell ×1.2 / trending_bear+buy ×0.5;bull 反向鏡像。
+        // 雙重一致先乘;soft 唔閘;TREND_ALIGN_GATE=false 回滾;A7 免觀測讀取。
+        try {
+          if (process.env['TREND_ALIGN_GATE'] !== 'false' && (gateAction === 'buy' || gateAction === 'sell')) {
+            const trSnap = this.marketState?.getTrendRegimeSnapshot(pwinSym);
+            if (trSnap) {
+              const ta = trendAlignmentMultiplier(gateAction, trSnap.trend, trSnap.regime);
+              if (ta.multiplier !== 1.0) {
+                effectiveConfidence *= ta.multiplier;
+                log.info(`${ta.label === 'aligned' ? '🟢' : '🔺'} [trend-align] ${gateAction.toUpperCase()} ${pwinSym}: ${ta.explanation} → conviction ×${ta.multiplier} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+                activeAuditGates.push({ gate: 'trend-align', passed: true, reason: `${ta.explanation} → ×${ta.multiplier} (soft)` });
+              }
+            }
+          }
+        } catch { /* 非致命 */ }
 
         // ── v2.0.868-P2: Entry EV 校準(MAE profile——保守 EV 乘數)──
         // Profile:該 symbol×side 最近 30 日「入場後點走」(rolling window)

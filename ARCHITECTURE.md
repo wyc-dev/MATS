@@ -169,6 +169,10 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
 
+### v2.0.870-P35: 順逆勢 soft gate(trend-alignment-gate)
+
+「最近瘋狂蝕錢」根因:開倉嗰刻 trend/regime 已 bearish/trending_bear 但系統照 buy(逆勢信號冇 any 閘)。`trendAlignmentMultiplier()` 純函數:雙重一致先乘,鏡像方向(trending_bear+sell ×1.2 / buy ×0.5 等);soft,env 回滾;A7 免觀測 getter(`getTrendRegimeSnapshot`)。插入 soft-multiplier 堆疊(entry-gate/mae-pattern 同款)。
+
 ### v2.0.870-P34: 公開層最小化(lite app 私隱架構)
 
 主神洞察:公開 lite app 唔可以見到帳戶倉位/結餘;審計發現 ui_snapshots 帶 public-read policy(任何 anon 讀到 status/portfolio)。Migration 22:ui_snapshots → authenticated-only;`signals_lite` 視圖(security_invoker)係公開 app 唯一讀取面(thesis 剔除);edge_report 列冚冚聲。架構:一張公開表(asset_analyses/signals_lite)+ 內部表(ui_snapshots);backend 零改動(照上載)。

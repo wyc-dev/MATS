@@ -250,6 +250,22 @@ export class MarketStateAggregator {
     return this.calcVolatility(history, tsHistory);
   }
 
+  /** P35: side-effect-free trend+regime 快照(A7 紀律——唔准觸發 calibrator.observe)。
+   *  供順逆勢 gate 用;數值同 getState() 一致,但唔 write/唔觀測。 */
+  getTrendRegimeSnapshot(symbol: string): { trend: string; regime: string } | null {
+    try {
+      const sym = String(symbol ?? '').toLowerCase();
+      const ticker = this.tickers.get(sym);
+      const momEntry = this.momentumTrends.get(sym);
+      const momFresh = momEntry !== undefined && Date.now() - momEntry.ts <= MarketStateAggregator.MOMENTUM_TTL_MS;
+      if (!momFresh && !ticker) return null;
+      const volatility = this.getVolatilityForTrend(sym);
+      const trend = momFresh ? momEntry.trend : this.calcTrend(ticker, volatility);
+      const regime = this.calcRegimeForSymbol(sym, trend, volatility);
+      return { trend, regime };
+    } catch { return null; }
+  }
+
   /** P26: per-symbol 趨勢閾值(24h 口徑,%)——symbol override 優先,跟手 calibrator global */
   getTrendTau(symbol: string): number {
     const sym = String(symbol ?? '').toLowerCase();
