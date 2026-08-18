@@ -4,6 +4,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P35-attack: P35 刁鑽攻擊輪(7 攻 1 中,修復)
+
+| # | 攻擊 | 結果 | 修復 |
+|---|------|:--:|------|
+| **A1** | `getTrendRegimeSnapshot` 用 tick σ 而 `getState` 用蠟燭 σ——同一 symbol 同一刻 snapshot 話 `low_volatility`、getState 話 `high_volatility`(**gate 錯位決策風險**:snapshot 可能報 trending_bear 而系統睇 volatile → ×0.5 乘落錯誤 regime) | MED | snapshot σ 口徑與 getState 統一(新鮮動量先蠟燭 σ) |
+| A3 | uppercase action 'BUY' | 釘(中性) | 雙保險 |
+| A4 | 污 trend 字串入 store | 釘(setMomentumTrend 白名單) | — |
+| A5 | 惡意 symbol(__proto__/512字) | 釘(null) | — |
+| A6 | 過期 momentum/TTL 邊界 | 釘(null → gate 中性) | — |
+| A7 | regime/trend 不一致(單一信號) | 釘(中性) | — |
+| A2 | observe 污染 | 釘(side-effect-free) | — |
+
+**核心發現**:同一套數據,兩個讀法 regime 分歧——σ 口徑唔統一。修好後 gate 同系統任何層睇同一個 regime。
+
++7 攻擊測試全綠;market-state 消費者 41 tests 綠;tsc clean。
+
+---
+
 ## v2.0.870-P35: 順逆勢 soft gate(「點解最近瘋狂蝕錢」嘅答案落碼)
 
 **主神問:「點解最近呢幾個交易都瘋狂蝕錢?」**

@@ -169,6 +169,10 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
 
+### v2.0.870-P35-attack: 攻擊輪 7 攻 1 中
+
+A1 fixed:`getTrendRegimeSnapshot` σ 口徑統一(candle σ 優先,同 getState)——修 gate 錯位決策風險。其餘 pins:uppercase 中性/污 trend 白名單/惡意 symbol null/TTL 中性/單信號中性/observe-side-effect-free。
+
 ### v2.0.870-P35: 順逆勢 soft gate(trend-alignment-gate)
 
 「最近瘋狂蝕錢」根因:開倉嗰刻 trend/regime 已 bearish/trending_bear 但系統照 buy(逆勢信號冇 any 閘)。`trendAlignmentMultiplier()` 純函數:雙重一致先乘,鏡像方向(trending_bear+sell ×1.2 / buy ×0.5 等);soft,env 回滾;A7 免觀測 getter(`getTrendRegimeSnapshot`)。插入 soft-multiplier 堆疊(entry-gate/mae-pattern 同款)。
