@@ -4,6 +4,31 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P22: 盈利審計落地第一刀 —— A(Close-Calibrator 觀測)+ G(MAE/MFE 歷史清污)
+
+> 背景:`docs/PROFIT-AUDIT-2026-08-18.md`(主神裁決只執行 A & G,其餘暫緩)。
+
+### P22-A — Close-Decision Calibrator 「飢餓有聲」(重要更正 + 觀測)
+**更正審計 A4**:calibrator 並非壞咗——佢自 v2.0.866 出世起**根本冇收過合資格輸入**(200 單裡面 20 個可校準 close 全部發生喺 v2.0.866 部署之前;之後 agent 驅動 close 跌到零——behavioral,唔係 pipeline bug)。
+**實際修復**(觀測為主):
+- `state.pipeline` 計數:closesSeen / recorded / filteredReason / invalidInput / deduped / verified / droppedNoPrice(同 verifier 同款,唔郁 verdict stats schema)
+- `tradeId` dedup(雙路徑/重試唔雙計)
+- verify 到期無價 → `droppedNoPrice` 棄置(舊行為會當 neutral 驗證,verified 計數虛高)
+- `/api/close-calibration` 直出
+
+### P22-G — MAE/MFE Historical Healer(candle 權威重算)
+**定性更正**:A7 嘅 −900% 其實係 sanitize reset 後嘅 1−leverage artifact + 混合量度格式——本質係「真實 excursion 數據缺席」,唔係單純污染。
+- 新模組 `src/trading/mae-mfe-healer.ts`:`computeValueExtremes()` 純函數(candle high/low → margin-basis equity value,side-aware adverse/favorable 分離——sell 的最差價係高價);`maeMfeNeedsHeal()` 判定;`healMaeMfeBatch()` 批量(8/batch,per-cycle fire-and-forget)
+- 每筆標記 `maeMfeHealed` / failure 標示 `maeMfeHealError`(fail 一次唔再 retry——唔 spam HL API)
+- 窗口:`pickInterval`(5m/15m/1h);candle fetch 用 `MarketAgent.hlFetch candleSnapshot`(xyz: 前綴 fallback 同款)
+- env:`MAE_MFE_HEAL_ENABLED`(true)/`MAE_MFE_HEAL_BATCH`(8)
+- 自測已捉住並修復真 bug:sell-side adverse/favorable 方向相反(若上線會寫反 min/max!)
+
+**測試**:+13(healer 8 + calibrator 5);全量 **2652 pass / 13 pre-existing**;tsc clean。
+**已知不變**:heal 只郁 excursion value,closeReason/PAEL percentile/PnL 等一切唔郁。失敗筆唔影響 live,純資料層修補。
+
+---
+
 ## v2.0.870-P20-C: Direction Verifier 飢餓修復(覆蓋缺口 × 觀測計數 × 嚴格錨價)
 
 **實證飢餓**:`direction`/`pending`/`windowStats` 全 0,但 `outcome=18 keys / tradeIds=1037` —— C 層(平倉結果)行到,B 層(方向驗證)出世至今零樣本。

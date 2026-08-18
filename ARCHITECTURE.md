@@ -169,6 +169,12 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
 
+### v2.0.870-P22: Close-Calibrator 觀測 + MAE/MFE Healer(審計落地 A & G)
+
+**P22-A**:Close-Decision Calibrator 自 v2.0.866 出世零輸入(可校準 close 全部 pre-deploy)——非壞,係 behavioral。落地「飢餓有聲」觀測:`state.pipeline`(closesSeen/recorded/filteredReason/invalidInput/deduped/verified/droppedNoPrice)+ tradeId dedup + `/api/close-calibration`。`verifyPending` 到期無價 → 棄置而非 fake neutral。
+
+**P22-G**:歷史 realTrades min/maxValueReached 混合量度 + sanitize reset 全毀(`median MAE=−900%` artifact)。Healer 用 HL candleSnapshot 權威價格史按 [openedAt, closedAt] 窗口重算 margin-basis equity value(canonical:v2.0.143 init 語義),每筆標記 `maeMfeHealed`。Batch 8/次 per-cycle fire-and-forget,唔阻塞交易。**自測捉住 sell-side adverse/favorable 方向相反 bug**(sell 的最差價係高價,唔係低價——若上線會寫反 min/max)。
+
 ### v2.0.870-P20-C: Direction Verifier 飢餓修復(Layer 34 全覆蓋)
 
 **實證**:state `direction=0 / pending=0 / windowStats=0`,`outcome=18 keys / tradeIds=1037` —— C 層(平倉結果)正常,B 層(方向驗證)出世至今零樣本。

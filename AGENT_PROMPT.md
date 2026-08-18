@@ -22,6 +22,8 @@ Version archaeology lives in CHANGELOG.md. What follows is ONLY the current work
 - **Cold-start safe**: every gate defaults to ×1.0 / neutral until its sample floor (typically ≥10–20 per bucket). Selectivity is EARNED, never assumed.
 - **Per-symbol state everywhere** (v2.0.228 lesson): no global learners silently crossing symbols.
 
+**v2.0.870-P22 latest**: Close-Decision Calibrator gains pipeline observability counters(`state.pipeline`)+ tradeId dedup;new **MAE/MFE Healer**(`src/trading/mae-mfe-healer.ts`) recomputes historical excursion from candles at boot(margin-basis equity value, marks `maeMfeHealed`).
+
 **The gate equation** (index.ts conviction gate; each term is a soft multiplier):
 ```
 effectiveConfidence = calibratedConsensus(P19') × OLR-P(win) × causal × Q-RL-expectancy

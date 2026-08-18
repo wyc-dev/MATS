@@ -95,6 +95,8 @@ export interface PnlSeries {
 }
 import { supabaseTradeWriter } from './services/supabase-trade-writer.ts';
 import { CloseDecisionCalibrator } from './analysis/close-decision-calibrator.ts';
+import { getHealConfig, healMaeMfeBatch } from './trading/mae-mfe-healer.ts';
+import type { CandleLike } from './trading/mae-mfe-healer.ts';
 import { ProfitabilityAnalyzer } from './analysis/profitability-analyzer.ts';
 import { EntryQuality, checkConfirmation } from './analysis/entry-quality.ts';
 // v2.0.869(主神 市況判斷調查):LLM 波動率 threshold 判定——per symbol threshold
@@ -3975,6 +3977,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               pnlPct: safeNum((trade as { pnlPct?: number }).pnlPct, 0),
               closeReason: closeReason ?? '',
               trendAtClose: this.lastKlineSummary?.trend1h ?? 'unknown',
+              tradeId: typeof (trade as { id?: unknown }).id === 'string' || typeof (trade as { id?: unknown }).id === 'number'
+                ? String((trade as { id?: unknown }).id) : undefined, // P22-A: dedup
             });
           } catch { /* non-fatal */ }
         }
@@ -6956,6 +6960,9 @@ ${recentExamples}
     // v2.0.864-fix: 每 cycle 驗證上 cycle 嘅 LLM 判斷(B 方向預測——
     // 判斷時 price vs 而家 price)——recordJudgment 喺 gate 度,呢度先驗證舊 pending
     this.verifyPendingLLMJudgments();
+    // v2.0.870-P22-G: 每 cycle fire-and-forget 一批 MAE/MFE heal(8 筆/batch,candle 權威重算)
+    // 唔 await——async 喺 cycle 之後完成;processed>0 → persistPortfolio
+    void this.healMaeMfeOnce().catch(() => {});
     // v2.0.866: Close-Decision Calibrator 延遲驗證巡邏——
     // 驗證到期嘅 close 決定(close 後價格方向 vs close 方向——反事實代理)
     this.verifyPendingCloseDecisions();
@@ -13596,6 +13603,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         llmCalibration: this.llmCalibrator?.getCalibrationReport?.() ?? null,
         // v2.0.870-P20-C: direction verifier pipeline 觀測
         llmDirection: this.llmDirectionVerifier?.getStats?.() ?? null,
+        // v2.0.870-P22-A: close-decision calibrator pipeline 觀測
+        closeCalibration: this.closeCalibrator ? { stats: this.closeCalibrator.getPipelineStats(), verdicts: this.closeCalibrator.getStats() } : null,
         status: {
           cycles: this.totalCycles,
           balance: displayBalance,
@@ -14146,6 +14155,38 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       }
     } catch (err) {
       // API push is best-effort
+    }
+  }
+
+  /** v2.0.870-P22-G: MAE/MFE Historical Healer(非阻塞 fire-and-forget,candle 權威重算) */
+  private async healMaeMfeOnce(): Promise<void> {
+    if (!getHealConfig().enabled) return;
+    try {
+      const trades = (this.portfolio as { trades?: Array<Record<string, unknown>> }).trades ?? [];
+      const rt = (this.portfolio as { realTrades?: Array<Record<string, unknown>> }).realTrades ?? [];
+      const all = [...trades, ...rt] as unknown as import('./trading/mae-mfe-healer.ts').HealableTradeLike[];
+      const todo = all.filter((t) => t.maeMfeHealed !== true && t.status === 'closed').length;
+      if (todo === 0) return;
+      const { MarketAgent } = await import('./market-agent/index.ts');
+      const res = await healMaeMfeBatch(all, async (sym, interval, startMs, endMs) => {
+        const coin = sym.includes(':') ? sym : sym.toUpperCase();
+        try {
+          const d = await MarketAgent.hlFetch({ type: 'candleSnapshot', req: { coin, interval, startTime: startMs, endTime: endMs } }) as CandleLike[] | null;
+          return Array.isArray(d) ? d : [];
+        } catch { /* xyz fallback */ }
+        if (!sym.includes(':')) {
+          const d2 = await MarketAgent.hlFetch({ type: 'candleSnapshot', req: { coin: `xyz:${sym.toUpperCase()}`, interval, startTime: startMs, endTime: endMs } }) as CandleLike[] | null;
+          return Array.isArray(d2) ? d2 : [];
+        }
+        return [];
+      }, getHealConfig().batchSize);
+      if (res.processed > 0) {
+        this.persistPortfolio();
+        this.persistOLR();
+        log.info(`🔧 [P22-G heal] processed=${res.processed} healed=${res.healed} failed=${res.failed}(MAE/MFE candle 重算)`);
+      }
+    } catch (err) {
+      log.warn(`[P22-G heal] error(唔影響交易): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
