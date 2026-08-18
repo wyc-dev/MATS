@@ -14159,8 +14159,13 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
   }
 
   /** v2.0.870-P22-G: MAE/MFE Historical Healer(非阻塞 fire-and-forget,candle 權威重算) */
+  /** P22-attack fix: healer 重入守衛——HL API 慢時唔准第二個 healer 並發(2× API 轟炸 + double persist) */
+  private healInFlight = false;
+
   private async healMaeMfeOnce(): Promise<void> {
     if (!getHealConfig().enabled) return;
+    if (this.healInFlight) return;
+    this.healInFlight = true;
     try {
       const trades = (this.portfolio as { trades?: Array<Record<string, unknown>> }).trades ?? [];
       const rt = (this.portfolio as { realTrades?: Array<Record<string, unknown>> }).realTrades ?? [];
@@ -14187,6 +14192,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       }
     } catch (err) {
       log.warn(`[P22-G heal] error(唔影響交易): ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.healInFlight = false;
     }
   }
 

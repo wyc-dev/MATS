@@ -582,6 +582,17 @@ export class CloseDecisionCalibrator {
             };
           }
         }
+        // P22-attack fix: pipeline 觀測計數 restart 後保留(逐欄 sanitize——
+        // string/object/NaN/負數 → 棄,唔 bump 就唔會污染級聯落磁碟)
+        const rawPipeline = (raw as { pipeline?: unknown }).pipeline;
+        if (rawPipeline && typeof rawPipeline === 'object' && !Array.isArray(rawPipeline)) {
+          const pl: Record<string, number> = {};
+          for (const [k, v] of Object.entries(rawPipeline as Record<string, unknown>)) {
+            if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+            if (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1e12) pl[k] = v;
+          }
+          (clean as unknown as { pipeline?: Record<string, number> }).pipeline = pl;
+        }
       }
       this.state = clean;
     } catch (err) {
