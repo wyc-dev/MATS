@@ -236,6 +236,12 @@ interface GDELTArticle {
   language?: string;
 }
 
+/** v2.0.870-P32(主神決定):GDELT 預設停運——長期 429 率限(IP 級硬限
+ *  1 req/5s)令佢成為「見好多次都攞唔到」嘅零產出噪音源,佢嘅失敗仲會
+ *  觸發 breaker cooldown 警報洗版。google-news / bing RSS 繼續扛。
+ *  翻身開關:NEWS_GDELT=1(保留 pacer,真要用都唔會炸 rate limit)。 */
+const GDELT_ENABLED = process.env['NEWS_GDELT'] === '1';
+
 // ─── GDELT host pacer(v2.0.870-P31)──
 // 實證:GDELT doc API 硬限 1 req/5s(429 明文)。每 cycle 6 symbol 近並發
 // 打 → 後 5 次必中 429 → breaker 循環。修:全域 promise chain 序列化 +
@@ -566,7 +572,7 @@ export async function fetchNewsSentiment(
   if (!isSourceInCooldown('google-news-rss')) {
     sourcesToFetch.push({ name: 'google-news-rss', fn: () => fetchGoogleNewsRSS(query) });
   }
-  if (!isSourceInCooldown('gdelt')) {
+  if (GDELT_ENABLED && !isSourceInCooldown('gdelt')) {
     sourcesToFetch.push({ name: 'gdelt', fn: () => fetchGDELT(query) });
   }
   if (!isSourceInCooldown('bing-news-rss')) {
