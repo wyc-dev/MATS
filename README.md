@@ -1,6 +1,6 @@
 # MATS — The First Self-Evolving AI Trading Brain
 
-**9 AI agents debate every trade. Skeptics stress-tests every thesis. System Engineer fixes its own bugs. A 42-layer cognitive brain learns from every outcome — why it won, why it lost, and how to win next time.**
+**9 AI agents debate every trade. Skeptics stress-tests every thesis. System Engineer fixes its own bugs. A 60+-layer cognitive brain learns from every outcome — why it won, why it lost, and how to win next time.**
 
 The **industry-first self-evolving trading brain** — where an LLM **reads the charts** and statistics keep it honest. Highlights:
 
@@ -10,8 +10,10 @@ The **industry-first self-evolving trading brain** — where an LLM **reads the 
 - 💰 **PAEL Exit-Price Learner** — learns each asset's real MFE/MAE profile (60-day window) → locks profit at the perfect moment. Your stop-loss is never touched.
 - 🎯 **Smart SL/TP + MFE calibration** — leverage-aware floors so 10x positions don't get noise-stopped; TP from real price-extension data — stop giving profit back.
 - 🔄 **Close-Context Learning** — learns *how* trades close (tight-SL loss ≠ bad entry), so every lesson is accurate.
+- 🧯 **Plan G Hybrid Penalty Decay + Runs-Test τ** (v2.0.870-P16/P17) — fixes the "penalty death spiral": three-layer OR decay (idle floor / time floor / weighted edge) + Wald-Wolfowitz runs-test τ modulation (9-18h adaptive; loss streaks decay slower, ping-pong noise decays faster) — the system recovers from losing streaks by EVIDENCE, not by idle luck.
+- 🩹 **Self-Healing Data Reliability** (v2.0.870-P19'-P24) — every learner is instrumented with pipeline observability counters ("starvation must be loud"): conviction calibrator / direction verifier / close-decision calibrator; **MAE/MFE Historical Healer** recomputes past excursions from authoritative candles; Supabase writes are schema-drift resilient (a DB column lag can never silently zero the whole feed); and the trade-audit agent is **deployment-version aware** (knows when each fix went live, so it never accuses new code with pre-fix trades).
 
-**33 layers of cognition. Zero manual tuning. It evolves its own strategy — relentlessly.**
+**60+ layers of cognition. Zero manual tuning. It evolves its own strategy — relentlessly.**
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -87,7 +89,7 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 - **🤖 Terminal Agent + Root Command Prompt** — users type natural language trading preferences (e.g., "only trade on Monday GMT"). LLM integrates them into a Root Command Prompt. Before each cycle, rules are checked — if a rule fails, the entire cycle is aborted (no token cost). After the Meta-Agent decides, the Terminal Agent verifies that the decision matches user preferences.
 - **🧠 Entry Thesis System** — every trade needs a validated `[1h: ...] [1d: ...]` rationale. Meta-Agent generates it; Skeptics stress-test it.  No thesis → no trade.
 - **🛡️ Skeptics veto** — an AI stress-tests every position's logic, data consistency, and dark-psychology (whale manipulation?) before execution. Approve-first: rejects only on concrete money-losing flaws. Dark-psychology check escalates from LIGHTWEIGHT to **MANDATORY** when |momentum| > 2% — must articulate a specific reversal catalyst or reject.
-- **🧬 Cognitive Evolution Pipeline** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, **which historical cycles** are most relevant right now — through a **42-layer pipeline** (v2.0.869-P3): OLR → shadow trading → NA → AttnRes → anti-pattern → combo WR → Q-RL Alpha Discovery → Component Attribution → PAEL → LLM World-Model → LLM Direction Verifier → EV Filter → Close-Decision Calibrator → Profitability Analyzer → Entry Quality → MAE Pattern → MFE Lock → LLM Volatility Threshold Judge → Shadow Trade Upgrade. Dead components are actively pruned (v2.0.833/859 removed 6 zero-call-site modules).
+- **🧬 Cognitive Evolution Pipeline** — the system doesn't just learn win/loss counts. It learns **which market conditions** precede wins, **which regime patterns** precede stop-outs, **which historical cycles** are most relevant right now — through a **60+-layer pipeline** (v2.0.870-P22): OLR → shadow trading → NA → AttnRes → anti-pattern → combo WR → Q-RL Alpha Discovery → Component Attribution → PAEL → LLM World-Model → LLM Direction Verifier (full-coverage, P20-C) → EV Filter → Close-Decision Calibrator → Profitability Analyzer → Entry Quality → MAE Pattern → MFE Lock → Vol Judge → Shadow Upgrade → Hybrid Penalty Decay + Runs τ (P16/P17) → Conviction-Calibrator pipeline (P19') → MAE/MFE Healer (P22). Dead components are actively pruned (v2.0.833/859 removed 6 zero-call-site modules).
 - **🔬 Numeric Autoencoder** — a pure-TypeScript MLP (11→16→8 encoder + contrastive loss) learns a non-linear embedding of market conditions. "Similar market conditions" is no longer handcrafted min-max cosine — it's a learned representation where "similar" means "historically led to similar outcomes." Cold-start safe: min-max fallback until 200+ samples + validation pass.
 - **🌀 AttnRes Cycle-History Retrieval** — transferred from Kimi K3's Attention Residuals (arXiv 2603.15031). The conditional win-rate candidate is no longer a single current snapshot — it's a **softmax-weighted blend over 80 cycles of history + entry-time state**, with a learned pseudo-query deciding which historical periods matter most right now. Entry-time regime retains persistent weight (K3 embedding persistence). Block AttnRes compresses 80 cycles → 8 blocks for O(Nd) memory.
 - **⚔️ Dual Pseudo-Query Specialization** — two learned queries per symbol, inspired by K3's pre-attention vs pre-MLP layer specialization: **wDecision** (broad receptive field, trained on trade PnL) for conditional win-rate + thesis context; **wExecution** (sharp/recent-biased, trained on SL/TP stop-out outcomes) for SL/TP survival context.
@@ -132,7 +134,7 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 │  │ • parallel multi-model inference                                       │  │
 │  │ • 5 Sub-Agents → Skeptics → Meta-Agent                                 │  │
 │  │ • entry thesis + dark psychology + weighted voting                     │  │
-│  │ • Self-evolution (33 layers: OLR → NA → AttnRes → Q-RL → Attribution → │  │
+│  │ • Self-evolution (60+ layers: OLR → NA → AttnRes → Q-RL → Attribution →│  │
 │  │  LLM World-Model, v2.0.863)                                            │  │
 │  │ • Numeric Autoencoder (learned market-condition embedding)             │  │
 │  │ • AttnRes cycle-history retrieval (K3 dual pseudo-query)               │  │
@@ -163,6 +165,10 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 │  │ SL floor, MFE-calibrated TP target/cap + SL floor                      │  │
 │  │ • closeReason integrity + closeTrade dual-mode guard                   │  │
 │  │ (v2.0.851-853): exit closes never silently skipped                     │  │
+│  │ • Hybrid Penalty Decay + Runs τ (v2.0.870-P16/17): spiral-break +     │  │
+│  │   adaptive decay horizon; Stop-Slippage SL floor + FP regime sanitize │  │
+│  │   (P21); Direction Verifier full symbol coverage (P20-C); MAE/MFE     │  │
+│  │   Healer + learner observability (P22); deployment-aware audit (P24)  │  │
 │  │ • Self-Aware Evolution (v2.0.843): Meta-Cognitive Calibrator +         │  │
 │  │ Self-Improver + Causal Reasoner + Meta-Learner                         │  │
 │  │ • RIL Reason Intelligence (pattern clustering + similar trade          │  │
