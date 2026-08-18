@@ -169,6 +169,48 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
 
+### v2.0.870-P20-C: Direction Verifier 飢餓修復(Layer 34 全覆蓋)
+
+**實證**:state `direction=0 / pending=0 / windowStats=0`,`outcome=18 keys / tradeIds=1037` —— C 層(平倉結果)正常,B 層(方向驗證)出世至今零樣本。
+
+**根源兩層**
+1. `recordJudgment` 只喺 **activeSymbol buy/sell gate 分支**(index.ts)——其餘 6 個 trading markets 嘅入場決策(perSymbolConsensus 路徑 = 大部分交易量)從未記錄亦從未被 dirTrust 校準。
+2. 記錄錨價用 `getMarkPriceForSymbol` 嘅 **latestMarkPrice fallback** —— 非 active symbol 攞到另一 symbol 嘅價做錨點(同 v2.0.864-fix 喺 verify 層發現嘅毒同款,record 層冇修)。
+
+**修復**
+- 全覆蓋:perSymbolConsensus 每個 buy/sell 決策(positionSizePct>0)記錄 judgment + dirTrust 乘入 `psc.confidence`(軟乘,clamp [0.80,1.05])。
+- `getMarkPriceStrict()`:normalizeSymbol 一致先畀價,唔啱 → null(判斷照記,verify 棄置並計數)。
+- **Pipeline 觀測計數**(P19' 教訓:飢餓要有聲):recorded / noEntryPrice / quickVerified / windowVerified / outcomeRecorded / droppedNoPrice / droppedStale48h / keptNoCurrentPrice —— persist 落 state + `/api/direction` 直出。
+- Offline replay 驗證(200 實倉行 production 路徑):recorded 200 → quickVerified 200 → 19 direction keys;trust 落地值有意義(`SILVER|1h-down ×0.89`,正正係 24% WR 失血桶)。
+
+**已知結構留意(未郁)**:per-symbol gate 與 activeSymbol gate 校準層唔齊(conviction calibrator / OLR pwinBlend / boost 等仍只在 activeSymbol 分支)。
+
+### v2.0.870-P21: 8·18 SKHX 虧損驗屍三連修(-11.3% 事件)
+
+8·18 06:24 BUY xyz:SKHX $1238.5 → 37 分鐘 -11.3% 收場。驗屍拆解:計劃 SL -0.98% vs 實現 -1.34% = **2.31× 計劃風險**,三大出血點:trailing 收窄 -0.48 / **stop-market 滑價 -0.87**(最大出血點且當時全盲)/ 入口追價 +0.18%。
+
+**P21-A — First-Passage 模型錯配修復**:`sanitizeDriftForRegime()` —— mean_reverting regime 下 GBM drift 係 mirage(實例:SKHX sideways 下 FP 報 P(TP)=100%,實質 edge +71pp 幻覺)。改為 zero-drift limit P = a/(a+b)。重播證明:同交易幾何 drift +0.5% 時 P=0.82,zero 後 P=0.35。
+
+**P21-B — Stop-Slippage SL Floor**:`ExecutionTracker.recordStopExit()` 記錄實測滑價(signed/adverse bps,EWMA+cap20,persist `data/evolution/stop-slippage.json`)→ `SmartSLTP` 以 2× 實測滑價(cap 4%)加闊 SL floor(widen-only,hard-floor invariant 唔郁);final enforcement clamp 喺 leverage stage 之後(第一版被覆寫 → 修)。
+
+**P21-C** = 觀測層(見 P21-B recordStopExit)。**P21-D(prod 唔行 tsx watch)= 暫緩,見 CHANGELOG 暫緩議程。
+
+**副作用披露**:SL 加闊但 TP 冇郁 → RR 跌(重播 1.25→0.68);TP 幾何 = P20-B 議程。
+
+### v2.0.870-P19': Conviction Calibrator Pipeline 修復(Layer 33 閉環)
+
+實計發現 **P19 冗餘**——v2.0.863 `LLMConvictionCalibrator` 已實現 P19 核心機制(5 bin shrinkage,`0.5 + (empiricalWR-0.5)·shrink`)。真正問題 = **數據管線飢餓**:persisted bins 為空,0/200 closed trades 有 `entryConsensusConfidence`。
+
+**雙根源**:(1) entryDataPayload 只喺 `pre`(precomputed features)命中時 build → real-mode 系統性缺;(2) restore helpers 係 allowlist rebuild → 重啟每次剝走新欄位。
+
+**修復**:payload 恒 build(pre features optional)+ spread-first restore(`restoreClosedRealTradeRecord` / `restoreRealPositionRecord`,sanitizer 喺 spread 後行)+ `getCalibrationReport()`(ECE + per-bin gap)+ `/api/calibration` route。順手捉住自 v2.0.868 出世就壞嘅 sanitizeMinMax key-mapping bug({min,max} spread 到錯嘅欄位名)。
+
+**行為披露**:pipeline 修復會**激活** dormant gate 元件(bins ≥20 trades 後開始 remap)→ env `LLM_CONVICTION_CALIBRATION=false` 即時回退。
+
+### v2.0.870-P18-attack2: P18 刁鑽攻擊第三輪(Layer 33 → LLM 穩健性)
+
+5 紅測試實證 5 漏洞全修(glm-5 已退役 chain tail / 截斷尾 JSON 修復器 / fallback body 缺 num_predict+think / Skeptics LLM 回覆型別守衛 / empty content warn-next)。
+
 ### v2.0.870-P18: Agent System Prompt 全面重構(主神指令:更精準 × 更慳 token × 完美 output 格式)
 
 **覆核發現嘅重大結構漏洞(P0)**:base default maxTokens=1024 裝唔落 5-symbol 決策 JSON → 結構性截斷 → parse fallback → 全 HOLD 失血。修:base 3072 / Meta 6144 / OLR 3072 + decision-first schema(決策排前,thought 排尾——截斷只切分析)+ omit-null + rationale ≤2句。
