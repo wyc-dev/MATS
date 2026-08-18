@@ -28,6 +28,12 @@ export interface AssetAnalysisRow {
     regime: string;
     change24h: number;
     volume24h: number;
+    // v2.0.870-P26: 本機蠟燭動量(新行有;舊行冇 → UI fallback 去 change24h)
+    momentum4h?: number;
+    momentum1h?: number;
+    momentum15m?: number;
+    volumeRatio5m?: number;
+    volumeState?: string;
   };
   consensus: {
     action: string;

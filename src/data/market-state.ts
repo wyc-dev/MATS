@@ -17,6 +17,10 @@ export interface AggregatedMarketState {
   regime: MarketRegime;
   orderBookImbalance: number;
   updatedAt: number;
+  /** v2.0.870-P26: 本機蠟燭動量(5m/15m/1h/4h + 5m 量確認);
+   *  每 cycle 由 index.ts updateMomentumTrendsForTradingMarkets 注入。
+   *  缺數據/注入失敗 → undefined(getState 自動降級 legacy trend)。 */
+  momentum?: import('../analysis/momentum-trend.ts').MomentumSnapshot;
 }
 
 /**
@@ -101,6 +105,11 @@ export class MarketStateAggregator {
   private readonly historySize = 100;
   private tickers: Map<string, Ticker> = new Map();
   private orderBookImbalance = 0;
+  // ── v2.0.870-P26: 動量驅動 trend(修 WS 清零 24h% → 永世 sideways 嘅趨勢盲)──
+  // tick history 得 100 格,撐唔起 1h/4h 窗口 → 動量由蠟燭計(candleCache),
+  // 每 cycle 注入呢度;過期(>10min)自動降級 legacy,行為同舊版一致。
+  private momentumTrends: Map<string, { trend: Trend; snap: import('../analysis/momentum-trend.ts').MomentumSnapshot; ts: number }> = new Map();
+  private static readonly MOMENTUM_TTL_MS = 10 * 60_000;
   readonly calibrator = new RegimeCalibrator();
   /** v2.0.869(主神 市況判斷調查):per symbol threshold(LLM 判斷 + 校準)
    *  貴金屬/指數正常波動 0.03-0.3%——global threshold 0.3% 誤判低波動 */
@@ -179,6 +188,44 @@ export class MarketStateAggregator {
     this.orderBookImbalance = total > 0 ? (bidVol - askVol) / total : 0;
   }
 
+  /** P26: 注入動量驅動 trend(sanitized)。垃圾輸入靜默拒收。 */
+  setMomentumTrend(
+    symbol: string,
+    trend: string,
+    snap: import('../analysis/momentum-trend.ts').MomentumSnapshot,
+    ts = Date.now(),
+  ): void {
+    const sym = String(symbol ?? '').toLowerCase();
+    if (!sym || !snap || typeof snap !== 'object') return;
+    const validTrends = new Set(['bullish', 'bearish', 'sideways', 'volatile']);
+    if (!validTrends.has(trend)) return;
+    // NaN 盾牌:任何非 null 欄位必須 finite;volumeRatio 污了只 null 化唔拒收
+    for (const k of ['m5m', 'm15m', 'm1h', 'm4h'] as const) {
+      const v = snap[k];
+      if (v !== null && !Number.isFinite(v)) return; // 動量污 → 成個拒收
+    }
+    const cleanSnap = { ...snap } as import('../analysis/momentum-trend.ts').MomentumSnapshot;
+    if (cleanSnap.volumeRatio !== null && !Number.isFinite(cleanSnap.volumeRatio)) cleanSnap.volumeRatio = null;
+    if (!Number.isFinite(ts) || ts <= 0) ts = Date.now();
+    this.momentumTrends.set(sym, { trend: trend as Trend, snap: cleanSnap, ts });
+    if (this.momentumTrends.size > 40) {
+      // bounded:逐出最舊(防長跑 leak)
+      let oldest: string | null = null;
+      let oldestTs = Infinity;
+      for (const [k, v] of this.momentumTrends) if (v.ts < oldestTs) { oldestTs = v.ts; oldest = k; }
+      if (oldest) this.momentumTrends.delete(oldest);
+    }
+  }
+
+  /** P26: per-symbol 趨勢閾值(24h 口徑,%)——symbol override 優先,跟手 calibrator global */
+  getTrendTau(symbol: string): number {
+    const sym = String(symbol ?? '').toLowerCase();
+    const st = this.symbolThresholds.get(sym);
+    if (st && Number.isFinite(st.trend) && st.trend > 0) return st.trend;
+    const t = this.calibrator.getThresholds().trend;
+    return Number.isFinite(t) && t > 0 ? Math.max(0.1, Math.min(2.0, t)) : 0.5;
+  }
+
   getState(symbol: string): AggregatedMarketState {
     // Normalize to lowercase — matches update()'s normalisation
     const sym = symbol.toLowerCase();
@@ -187,7 +234,10 @@ export class MarketStateAggregator {
     const tsHistory = this.priceHistoryTs.get(sym) ?? [];
 
     const volatility = this.calcVolatility(history, tsHistory);
-    const trend = this.calcTrend(ticker, volatility);
+    // P26: 有新鮮動量注入 → trend 由本機蠟燭動量驅動;過期/冇 → legacy(24h%≈0 → sideways)
+    const momEntry = this.momentumTrends.get(sym);
+    const momFresh = momEntry !== undefined && Date.now() - momEntry.ts <= MarketStateAggregator.MOMENTUM_TTL_MS;
+    const trend = momFresh ? momEntry.trend : this.calcTrend(ticker, volatility);
     // v2.0.869(主神 市況判斷調查):per symbol regime——用 LLM 判斷嘅 threshold
     // (貴金屬/指數正常波動 0.03-0.3%——global threshold 0.3% 誤判低波動)
     const regime = this.calcRegimeForSymbol(sym, trend, volatility);
@@ -205,6 +255,7 @@ export class MarketStateAggregator {
       regime,
       orderBookImbalance: this.orderBookImbalance,
       updatedAt: ticker?.timestamp ?? Date.now(),
+      momentum: momFresh ? momEntry.snap : undefined,
     };
   }
 

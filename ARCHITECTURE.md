@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-P24
+> **作者**: YC Wong · **版本**: 2.0.870-P26
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~72,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -168,6 +168,12 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 統一用 `candleSnapshot` close 價(同 scanDEX18AssetsInBackground 一致——即市 close ≈ mid)
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
+
+### v2.0.870-P26: Local Momentum Trend(趨勢盲修復)
+
+**根因**:WS tick 每 tick 將 `priceChangePercent` 覆蓋做 0 → calcTrend 永遠 sideways → regime 永世 mean_reverting → 「趨勢明顯都開唔到單」+ 慢性 MR 標籤教出 SILVER:sell 逆勢失血桶。
+
+**解法**(`src/analysis/momentum-trend.ts` 純函數):棄用 24h REST 欄位(主神定調),trend 由本機 candleCache 蠟燭動量(5m/15m/1h/4h)+ 5m volume 確認驅動;**4h 主方向 × 1h 時機確認雙窗同向**先判 trending_bull/bear;窗口線性縮放閾值(τ4h=τ24/6 floor 0.05%、τ1h=τ24/24 floor 0.03%);`MarketStateAggregator` 10min TTL 新鮮動量優先、過期降級 legacy;analysis-matrix/UI 卡位由 24h% 改顯示 4h 動量(舊行 fallback)。Live 驗證:SILVER 首 cycle trending_bull。
 
 ### v2.0.870-P24: Deployment-Version Awareness(trade-audit 時序誤判根除)
 

@@ -1052,7 +1052,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         <span>price <strong>${(ana.market_data?.price ?? 0).toFixed(2)}</strong></span>
         <span>vol {((ana.market_data?.volatility ?? 0) * 100).toFixed(2)}%</span>
         <span>regime {ana.market_data?.regime ?? 'unknown'}</span>
-        <span>24h {(ana.market_data?.change24h ?? 0) >= 0 ? '+' : ''}{(ana.market_data?.change24h ?? 0).toFixed(2)}%</span>
+        <span>4h {(ana.market_data?.momentum4h ?? ana.market_data?.change24h ?? 0) >= 0 ? '+' : ''}{(ana.market_data?.momentum4h ?? ana.market_data?.change24h ?? 0).toFixed(2)}%</span>
       </div>
     </div>
   )

@@ -5063,6 +5063,38 @@ ${recentExamples}
     }
   }
 
+  /**
+   * v2.0.870-P26: Per-cycle local-momentum trend computation for ALL trading
+   * markets (包括 active——WS 只供價唔供 24h 統計)。
+   *
+   * 原料: candleCache 5m×100 + 1h×100(通常已被 vol-gate ATR prefetch /
+   * kline layer 溫熱,TTL 90s 內零新增 REST call)。
+   * 成本: 每 symbol 數次陣列算術,微秒級——主神要求「每 cycle 計,反正唔使算力」。
+   * 失敗語義: candle fetch 失敗 → 呢個 cycle 唔注入 → marketState 留舊動量
+   * (10min TTL 內繼續有效),再都冇 → legacy trend。永不 throw。
+   */
+  private async updateMomentumTrendsForTradingMarkets(_activeSymbol: string): Promise<void> {
+    const markets = this.tradingMarkets ?? [];
+    if (markets.length === 0) return;
+    const { computeMomentum, classifyMomentumTrend } = await import('./analysis/momentum-trend.ts');
+    for (const mkt of markets) {
+      try {
+        const [c1h, c5m] = await Promise.all([
+          candleCache.getCandles(mkt, '1h', 100),
+          candleCache.getCandles(mkt, '5m', 100),
+        ]);
+        const snap = computeMomentum(c5m, c1h);
+        if (!snap.hasData) continue;
+        const tau = this.marketState.getTrendTau(mkt);
+        const vol = this.marketState.getState(mkt)?.volatility ?? 0;
+        const trend = classifyMomentumTrend(snap, tau, vol);
+        this.marketState.setMomentumTrend(mkt, trend, snap);
+      } catch {
+        // per-symbol 隔離:一個 symbol 失敗唔影響其他
+      }
+    }
+  }
+
   /** v2.0.820: Per-cycle marketState backfill for every trading market that
    *  is NOT the currently-selected symbol.
    *
@@ -7180,6 +7212,12 @@ ${recentExamples}
     // This per-cycle REST backfill feeds every trading market's priceHistory so
     // vol/regime/price are live for all symbols the system actually trades.
     await this.backfillMarketStateForTradingMarkets(activeSymbol);
+    // v2.0.870-P26: Local Momentum Trend——每 cycle 為全部 trading markets
+    // 由 candleCache(LLM chart layer 反正都 fetch 嘅原料)計 5m/15m/1h/4h
+    // 動量 + 5m volume 確認,注入 marketState 驅動 trend/regime。
+    // 這修復咗 WS tick 永遠清零 priceChangePercent → 永世 sideways/mean_reverting
+    // 嘅趨勢盲(主神:「趨勢咁明顯都開唔到單」)。失敗 per-symbol 隔離,唔阻塞。
+    await this.updateMomentumTrendsForTradingMarkets(activeSymbol);
     // v2.0.820: Stale-feed watchdog — auto-reconnect the WS when the selected
     // symbol's feed goes silent (the 10:13 BTC $0.00 breakage would have
     // self-healed with this). Runs every cycle; throttled internally.
