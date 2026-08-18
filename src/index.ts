@@ -13605,6 +13605,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         llmDirection: this.llmDirectionVerifier?.getStats?.() ?? null,
         // v2.0.870-P22-A: close-decision calibrator pipeline 觀測
         closeCalibration: this.closeCalibrator ? { stats: this.closeCalibrator.getPipelineStats(), verdicts: this.closeCalibrator.getStats() } : null,
+        // v2.0.870-P23-fix: Supabase writer 健康(DB 0 沈默失敗有聲)
+        supabaseWriter: this.analysisWriter?.getWriteStatus?.() ?? null,
         status: {
           cycles: this.totalCycles,
           balance: displayBalance,

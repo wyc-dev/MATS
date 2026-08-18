@@ -4,6 +4,28 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P23-fix: Supabase 靜默死局修復 + trade-audit 時序誤判定性(主神追查「DB 0 / awaiting analysis」)
+
+**實證(root cause 係 schema drift,唔係「冇計算」)**
+- live 模擬寫入實測:`PGRST204 Could not find 'edge_report' column` —— v2.0.869-P9 加咗 `edge_report` 入 insert,但 **migration 21(`supabase/migrations/00000000000021_asset_analyses_edge_report.sql`)從未喺 live DB 執行** → 每個 cycle 嘅 insert 全失敗 → `asset_analyses` 0 rows → UI 收到空 feed → **每張卡跌返 placeholder(HOLD 58%、0B/0S/6H/0C)** → 「⏳ awaiting analysis / next cycle」徽章。後台其實一直正常分析(cycles 遞增、交易正常),係 **write 層靜默死咗**。
+- 徽章語義:`cycleInProgress` → 「next cycle」;非進行中但冇分析數據 → 「awaiting analysis」(同一 feed 空嘅兩種表達,唔係 bug)。
+
+**修復(兩層)**
+1. **Schema-drift 韌性**:`writeCycle` insert 撞 PGRST204 → 自動剝走缺失列(任何列)重試一次 → matrix feed 永唔會再因為 schema 滯後而歸零(代價:該列 data 暫缺,前端 graceful)。
+2. **觀測有聲**:`lastWriteError` + `getWriteStatus()` + `/api/supabase-writer` —— 寫入失敗唔再只有 console 無人見。
+3. 順手修:PostgrestError 係 plain object,`String(err)='[object Object]'` —— catch 抽 `.message`。
+
+**主神手動步驟(一次過)**:Supabase Dashboard → SQL Editor → 執行 `supabase/migrations/00000000000021_asset_analyses_edge_report.sql` → `edge_report` 真正落地。
+
+**trade-audit 定性(主神問真問題定誤判)**:
+- **時序誤判(明確)**:audit 指嘅「Trade #17 SKHX −11.3% post-fix 新發生」係**同一單 8·18 06:24 歷史單**(07:01 收場)——P21 代碼 07:44 先落 live;#18 SILVER −4.3%(07:33)同樣 pre-fix。window 係「最近 20 單」橫跨 08-14~08-18,大部分早過所有新修復。
+- **方向正確嘅部分**(仍值得注意):SL 失血集中度(sl_tp 全部虧損)、SKHX SELL 40% WR 重複、srDist 0-3bps 入場零緩衝、FP thesis 文字過度自信——全部係真實歷史 pattern,P16-P22 正對症。
+- **有力反證**:兩張最新單(post-everything)SKHX buy +10.0% / +10.1% 皆 tp_hit——系統正常收割。trade-audit 需要「deployment-version awareness」先唔會用舊數據告新代碼。
+
+**測試**:+3(PGRST204 fallback / 通用列 / non-PGRST204 唔靜默);全量 2661 pass / 13 pre-existing;tsc clean。
+
+---
+
 ## v2.0.870-P22-attack: P22 攻擊輪——觀測持久化修補 + healer 加固(6 紅測驅動)
 
 **發現（實測，非估）**
