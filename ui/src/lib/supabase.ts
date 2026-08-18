@@ -34,6 +34,8 @@ export interface AssetAnalysisRow {
     momentum15m?: number;
     volumeRatio5m?: number;
     volumeState?: string;
+    /** P27: 4h 名義成交量 USD */
+    volume4hUsd?: number;
   };
   consensus: {
     action: string;

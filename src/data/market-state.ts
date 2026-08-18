@@ -209,6 +209,8 @@ export class MarketStateAggregator {
     const cleanSnap = { ...snap } as import('../analysis/momentum-trend.ts').MomentumSnapshot;
     if (cleanSnap.volumeRatio !== null && !Number.isFinite(cleanSnap.volumeRatio)) cleanSnap.volumeRatio = null;
     if (cleanSnap.vol4hRatio !== null && !Number.isFinite(cleanSnap.vol4hRatio)) cleanSnap.vol4hRatio = null;
+    if (cleanSnap.vol5mSigma !== null && (!Number.isFinite(cleanSnap.vol5mSigma) || cleanSnap.vol5mSigma < 0 || cleanSnap.vol5mSigma >= 1)) cleanSnap.vol5mSigma = null;
+    if (cleanSnap.vol4hNotionalUsd !== null && (!Number.isFinite(cleanSnap.vol4hNotionalUsd) || cleanSnap.vol4hNotionalUsd <= 0)) cleanSnap.vol4hNotionalUsd = null;
     if (!Number.isFinite(ts) || ts <= 0) ts = Date.now();
     // A3: future timestamp 係 TTL 繞過攻擊(永遠新鮮)——clamp 到 now(60s 容差畀 clock skew)
     if (ts > Date.now() + 60_000) ts = Date.now();
@@ -250,7 +252,11 @@ export class MarketStateAggregator {
     const history = this.priceHistory.get(sym) ?? [];
     const tsHistory = this.priceHistoryTs.get(sym) ?? [];
 
-    const volatility = this.calcVolatility(history, tsHistory);
+    // P27: σ 優先用蠟燭 5m 收市 σ(修非 active symbol REST 稀疏 tick 嘅假零);
+    // 冇新鮮動量 → tick σ 降級路徑唔變
+    const _momPeek = this.momentumTrends.get(sym);
+    const _momSigma = (_momPeek && Date.now() - _momPeek.ts <= MarketStateAggregator.MOMENTUM_TTL_MS) ? _momPeek.snap.vol5mSigma : null;
+    const volatility = _momSigma !== null ? _momSigma : this.calcVolatility(history, tsHistory);
     // P26: 有新鮮動量注入 → trend 由本機蠟燭動量驅動;過期/冇 → legacy(24h%≈0 → sideways)
     const momEntry = this.momentumTrends.get(sym);
     const momFresh = momEntry !== undefined && Date.now() - momEntry.ts <= MarketStateAggregator.MOMENTUM_TTL_MS;

@@ -1292,6 +1292,8 @@ export interface AnalysisMarketData {
   momentum15m?: number;
   volumeRatio5m?: number;
   volumeState?: string;
+  /** P27: 4h 名義成交量 USD(k/M 顯示用) */
+  volume4hUsd?: number;
 }
 
 /** Agent consensus snapshot embedded in each analysis row. */

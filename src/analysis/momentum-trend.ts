@@ -35,6 +35,13 @@ export interface MomentumSnapshot {
    *  主神定調:4h 量能係 vol-judge / 市況判斷嘅定量核對來源。
    *  需 ≥97 支 5m 蠟燭(48+48+1 forming),唔夠 → null(唔會亂估)。 */
   vol4hRatio: number | null;
+  /** P27: 5m 收市 log-return σ(≈ per-cycle σ)——取代 tick σ,
+   *  修非 active symbol REST 稀疏抽樣嘅「vol 0.00%」假零。
+   *  需 ≥11 支;逐格 NaN shield(一格污唔會毒晒)。 */
+  vol5mSigma: number | null;
+  /** P27: 最近 4h(48 支收市)名義成交量 USD = Σv × lastClose。
+   *  主神要確切值(k/M)顯示;需 ≥49 支;唔夠 → null。 */
+  vol4hNotionalUsd: number | null;
   /** 有任何一個有效動量窗口 */
   hasData: boolean;
 }
@@ -68,6 +75,7 @@ export function computeMomentum(c5m: CandleLike[] | null, c1h: CandleLike[] | nu
   const snap: MomentumSnapshot = {
     m5m: null, m15m: null, m1h: null, m4h: null,
     volumeRatio: null, volumeState: 'unknown', vol4hRatio: null, hasData: false,
+    vol5mSigma: null, vol4hNotionalUsd: null,
   };
   if (c5m && c5m.length >= 2) {
     snap.m5m = windowMomentum(c5m, 1);
@@ -108,6 +116,35 @@ export function computeMomentum(c5m: CandleLike[] | null, c1h: CandleLike[] | nu
     }
   }
 
+  // P27-A: 5m 收市 σ(只用已收市支——剔除最後 forming 支,佢未收市唔穩定)
+  if (c5m && c5m.length >= 11) {
+    const closed = c5m.slice(0, -1);
+    const rets: number[] = [];
+    for (let i = 1; i < closed.length; i++) {
+      const a = closed[i - 1]!.c, b = closed[i]!.c;
+      if (Number.isFinite(a) && Number.isFinite(b) && a > 0 && b > 0) rets.push(Math.log(b / a));
+    }
+    if (rets.length >= 10) {
+      const mean = rets.reduce((x, y) => x + y, 0) / rets.length;
+      const varSum = rets.reduce((x, r) => x + (r - mean) * (r - mean), 0);
+      const sigma = Math.sqrt(varSum / (rets.length - 1)); // sample σ
+      if (Number.isFinite(sigma) && sigma >= 0 && sigma < 1) snap.vol5mSigma = sigma; // σ≥100% 係壞數據
+    }
+  }
+
+  // P27-B: 4h 名義量 USD
+  if (c5m && c5m.length >= 49) {
+    const last48 = c5m.slice(-49, -1); // 排除 forming
+    const lastClose = c5m[c5m.length - 1]!.c;
+    if (Number.isFinite(lastClose) && lastClose > 0) {
+      const sumV = last48.reduce((a, c) => a + (Number.isFinite(c.v) && c.v > 0 ? c.v : 0), 0);
+      if (sumV > 0) {
+        const usd = sumV * lastClose;
+        if (Number.isFinite(usd) && usd < 1e15) snap.vol4hNotionalUsd = usd;
+      }
+    }
+  }
+
   snap.hasData = snap.m1h !== null || snap.m4h !== null || snap.m15m !== null || snap.m5m !== null;
   return snap;
 }
@@ -129,7 +166,9 @@ export function classifyMomentumTrend(snap: MomentumSnapshot, tau24: number, vol
   const tau4h = Math.min(Math.max(tauAbs / 6, 0.05), tauAbs);
   const tau1h = Math.min(Math.max(tauAbs / 24, 0.03), tauAbs);
 
-  if (volatility > 0.02) return 'volatile'; // 沿用 legacy 高波動覆蓋
+  // P27: snapshot 自帶蠟燭 σ 優先(同源);caller 冇先至用傳入值
+  const volEff = snap.vol5mSigma !== null && Number.isFinite(snap.vol5mSigma) ? snap.vol5mSigma : volatility;
+  if (volEff > 0.02) return 'volatile'; // 沿用 legacy 高波動覆蓋
 
   const { m1h, m4h } = snap;
   if (m4h !== null && m1h !== null) {

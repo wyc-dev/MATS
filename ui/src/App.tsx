@@ -1050,7 +1050,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       </div>
       <div className="smp-matrix-market">
         <span>price <strong>${(ana.market_data?.price ?? 0).toFixed(2)}</strong></span>
-        <span>vol {((ana.market_data?.volatility ?? 0) * 100).toFixed(2)}%</span>
+        <span>σ {((ana.market_data?.volatility ?? 0) * 100).toFixed(2)}%{(ana.market_data?.volume4hUsd ?? 0) > 0 ? ` · 4h $${(ana.market_data!.volume4hUsd! >= 1_000_000 ? (ana.market_data!.volume4hUsd! / 1_000_000).toFixed(1) + 'M' : (ana.market_data!.volume4hUsd! / 1_000).toFixed(0) + 'k')}` : ''}</span>
         <span>regime {ana.market_data?.regime ?? 'unknown'}</span>
         <span>4h {(ana.market_data?.momentum4h ?? ana.market_data?.change24h ?? 0) >= 0 ? '+' : ''}{(ana.market_data?.momentum4h ?? ana.market_data?.change24h ?? 0).toFixed(2)}%</span>
       </div>
