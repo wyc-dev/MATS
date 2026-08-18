@@ -259,7 +259,11 @@ export class MarketStateAggregator {
       const momEntry = this.momentumTrends.get(sym);
       const momFresh = momEntry !== undefined && Date.now() - momEntry.ts <= MarketStateAggregator.MOMENTUM_TTL_MS;
       if (!momFresh && !ticker) return null;
-      const volatility = this.getVolatilityForTrend(sym);
+      // P35-attack A1: σ 口徑必須同 getState 一致——新鮮動量嗰陣優先蠟燭 σ,
+      // 否則 tick σ≈0(REST 稀疏)會睇做 low_volatility,而系統其他層睇做
+      // high_volatility/volatile——gate 乘落「另一個 regime」嘅錯位決策。
+      const _snapSigma = momFresh ? momEntry.snap.vol5mSigma : null;
+      const volatility = (_snapSigma !== null && Number.isFinite(_snapSigma)) ? _snapSigma : this.getVolatilityForTrend(sym);
       const trend = momFresh ? momEntry.trend : this.calcTrend(ticker, volatility);
       const regime = this.calcRegimeForSymbol(sym, trend, volatility);
       return { trend, regime };
