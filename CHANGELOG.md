@@ -4,6 +4,22 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P31: GDELT 429 節奏器(主神報告 cooldown 循環)
+
+**實證根因**(live curl):GDELT doc API 明文硬限 1 req/5s(429 body 原文),MATS 每 cycle 對 6 symbol 近並發打 → 後 5 次必中 429 → breaker 3 連敗 → cooldown-60s 警報無限循環。
+**修法**:`gdeltFetch()` 全域 promise-chain 序列化 + reserve-on-enqueue(5.5s slot 含 buffer);失敗唔斷鏈、slot 唔壓縮(防重試雪崩);breaker 繼續做 backstop。
+**test hooks**:`__test__resetGdeltPacer / setGdeltNow / computeGdeltWait`;+2 紅先測試;blast-radius 跑;tsc clean。
+
+---
+
+## v2.0.870-P29-attack2b: side-word 污染防線 + 化石清理(主神追查 'buy' junk key)
+
+**化石鑑定**:`symbol='buy'` state(episodes=0)由 EXP backfill `normalizeSymbol(rec.symbol)` 餵入;tradeHistory cycles 10706/10799 留 `decision.symbol='buy'` 欄位錯位(舊版已淘汰,全域掃無 live 路徑);`'0g'` = HL 主 dex 合法資產,保留。
+**治本**:`isUsableSymbolKey()`(charset ∧ 唔係 side-word)閘三 runtime 入口 + load 清理閘;數據檔已清(backup /tmp/cycle-history.backup.json)。
+**流程紀律**:blast-radius 揀測試(模組 + 直接消費者 68 綠),全量基線留俾里程碑。
+
+---
+
 ## v2.0.870-P29-attack2: cycle-history xyz: 大寫資產被誤殺(潛伏 bug,主神由啟動 log 發現)
 
 **症狀**:每次啟動 `[cycle-history] dropping corrupted symbol state 'xyz:X' — invalid characters` ×6,只留 4 隻 main。
