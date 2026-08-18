@@ -5097,6 +5097,23 @@ ${recentExamples}
     } catch { return []; }
   }
 
+  /** P29-S2: shadow resolution 用嘅 5m 蠟燭路徑(tick 盲區修補)。
+   *  攞 candleCache 同一池(momentum 層每 cycle 已暖)→ 絕大部分 cycle 零 fetch。
+   *  失敗/掛死 → undefined(engine 降級 legacy tick path,永唔阻塞)。 */
+  private async getShadowCandlePath(sym: string): Promise<Array<{ t: number; h: number; l: number }> | undefined> {
+    try {
+      const candles = await withTimeout(candleCache.getCandles(sym, '5m', 100), 5_000, `shadow-path ${sym}`);
+      if (!candles || candles.length === 0) return undefined;
+      // 只傳判決需要嘅欄位(唔好俾成支蠟燭入 engine——最小介面)
+      const path: Array<{ t: number; h: number; l: number }> = [];
+      for (const c of candles) {
+        if (!c || !Number.isFinite(c.h) || !Number.isFinite(c.l)) continue;
+        path.push({ t: c.t, h: c.h, l: c.l });
+      }
+      return path.length > 0 ? path : undefined;
+    } catch { return undefined; }
+  }
+
   private async updateMomentumTrendsForTradingMarkets(_activeSymbol: string): Promise<void> {
     const markets = this.tradingMarkets ?? [];
     if (markets.length === 0) return;
@@ -7438,7 +7455,9 @@ ${recentExamples}
         // v2.0.205: Pass currentFeatures so OLR trains on resolution-time features, not stale entry-time features
         const activeHL = this.marketState.getHighLow(activeSymbol);
         const activeCurrentFeatures = buildCurrentFeaturesForSymbol(activeSymbol, combinedState);
-        const resolved = this.shadowEngine.checkPositions(activeSymbol, marketPrice, this.totalCycles, activeHL.high, activeHL.low, activeCurrentFeatures);
+        // P29-S2: 蠟燭路徑補 tick 盲區(candleCache 已被 momentum 層暖好——0 額外 fetch)
+        const activeCandlePath = await this.getShadowCandlePath(activeSymbol);
+        const resolved = this.shadowEngine.checkPositions(activeSymbol, marketPrice, this.totalCycles, activeHL.high, activeHL.low, activeCurrentFeatures, activeCandlePath);
         if (resolved > 0) {
           log.info(`🧬 [shadow] ${activeSymbol}: ${resolved} shadow trades resolved (cycle #${this.totalCycles})`);
         }
@@ -7458,7 +7477,9 @@ ${recentExamples}
             const mktHL = this.marketState.getHighLow(mktSym);
             // v2.0.205: Pass currentFeatures so OLR trains on resolution-time features
             const mktCurrentFeatures = buildCurrentFeaturesForSymbol(mktSym, combinedState);
-            const mktResolved = this.shadowEngine.checkPositions(mktSym, mktChkPrice, this.totalCycles, mktHL.high, mktHL.low, mktCurrentFeatures);
+            // P29-S2: 非 active 市場先係重災區(REST 1 tick/cycle,tick path 全盲)
+            const mktCandlePath = await this.getShadowCandlePath(mktSym);
+            const mktResolved = this.shadowEngine.checkPositions(mktSym, mktChkPrice, this.totalCycles, mktHL.high, mktHL.low, mktCurrentFeatures, mktCandlePath);
             if (mktResolved > 0) {
               log.info(`🧬 [shadow] ${mktSym}: ${mktResolved} shadow trades resolved (cycle #${this.totalCycles})`);
             }

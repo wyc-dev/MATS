@@ -169,6 +169,10 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
 
+### v2.0.870-P29-S2: Shadow 判決路徑真實度(tick 盲區修復)
+
+shadow TP/SL 判決由 tick high/low(100 格)升級做 **tick ∪ 5m 蠟燭路徑**(每倉位 `openTimestamp−300s` 窗選;壞支盾;未來時鐘污染拒收;同日穿雙邊維持 SL-first 保守)。非 active 市場(REST 1 tick/cycle)嘅 cycle 內插針由全盲變全覆蓋;單一緩存池零成本。**Label-shift**:shadow 勝率新舊唔直接可比(resolution 修正記賬)。+8 紅先測試。
+
 ### v2.0.870-P28: 真市況 → LLM + 學習層完美接入
 
 主神質詢落地:A=agents context 注入動量/量值 block,每行帶來源聲明(per-symbol 絕對量度,跨 symbol 比較 INVALID);B=`entryMarketFeatures.momentumShort/Long` 死維度(寫死 0)復活——數據源換做蠟燭動量(m15m/m4h→fraction),四條活路接入 + shadow 蠟燭優先/tick 降級;C=vol-judge prompt per-symbol guardrail。副作用紀律:全部行免觀測 `getMomentumSnapshot()`。

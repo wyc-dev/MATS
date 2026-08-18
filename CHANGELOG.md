@@ -4,6 +4,19 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P29-S2: Shadow 判決路徑真實度(「判贏判輸準咗先係一切」)
+
+**根因**:shadow TP/SL resolution 用 tick `getHighLow`(100 格上限)——非 active 市場 REST 每 cycle 先 1 tick,**cycle 內高低位全盲** → 「TP 冇中」可以係假(插穿咗又縮返)→ 學返嘅勝率失真 → 一切下游(OLR 權重、Q-RL reward、direction lean)建立喺假判決上。
+
+**解法**:`checkPositions(..., candlePath?)`——每倉位按 `openTimestamp − 300s` 窗口篩選 5m 蠟燭,與 tick path 取 **∪ 極值**(保守,唔會少判);index.ts `getShadowCandlePath()` 由 candleCache 同一池攞(momentum 層已暖,≈零新 fetch),5s timeout 降級 legacy;壞支盾(NaN/h<l/負價/未來時鐘容差 5s)。
+
+**質量紀律(誠實)**:攻擊輪中發現測試前提錯兩次——(1) 雙向 shadow 下「一支跨站蠟燭」會同時解決 buy+sell,斷言要 per-side;(2) 只改一邊 openTimestamp 會俾另一邊解決。**探頭隔離實驗(tsx)先確認 engine 行為,先改斷言**——唔准為咗通過改代碼。
+**Label-shift 記賬**:蠟燭路徑會令更多真實 TP/SL 命中被判出——新舊 shadow 勝率唔直接可比;呢個係 resolution 修正(而家先係真),唔係策略漂移。
+
++8 紅先測試;全量 2733 pass / 13 pre-existing;tsc clean。
+
+---
+
 ## v2.0.870-P28-attack: P28/P27 刁鑽攻擊輪(6 攻 5 中,全部修復;P27 補刀)
 
 紅測試鐵證:惡意 `volumeState` 字串**直接流入 LLM prompt**(真 prompt injection 通道)。

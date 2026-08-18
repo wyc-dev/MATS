@@ -744,16 +744,38 @@ export class ShadowTradeEngine {
    *                         the correct mapping for predicting trade outcomes.
    * @returns Number of positions resolved this call
    */
-  checkPositions(symbol: string, price: number, cycle: number, cycleHigh?: number, cycleLow?: number, currentFeatures?: Record<string, number>): number {
+  /** P29-S2: tick 盲區修復——除咗 tick path(cycleHigh/Low),接受每 cycle
+   *  嘅 5m 蠟燭路徑(candlePath),按每個倉位嘅 openTimestamp 窗選,
+   *  取 ∪ 極值。非 active 市場(REST 每 cycle 1 tick)以前睇唔到 cycle 內
+   *  嘅插針 → TP/SL 假未中;依家逐 5 分鐘全覆蓋。
+   *  紀律:跨站支(t ≥ open-300s)納入;再早嘅蠟燭唔准用(無追溯);
+   *  NaN/h<l/負價壞支跳過;同日穿雙邊維持 SL-first 保守規則。 */
+  checkPositions(symbol: string, price: number, cycle: number, cycleHigh?: number, cycleLow?: number, currentFeatures?: Record<string, number>, candlePath?: Array<{ t: number; h: number; l: number }>): number {
     if (price <= 0) return 0;
     const sym = symbol.toLowerCase();
     let resolved = 0;
-    const hi = cycleHigh != null && cycleHigh > 0 ? cycleHigh : price;
-    const lo = cycleLow != null && cycleLow > 0 ? cycleLow : price;
+    const tickHi = cycleHigh != null && cycleHigh > 0 && Number.isFinite(cycleHigh) ? cycleHigh : price;
+    const tickLo = cycleLow != null && cycleLow > 0 && Number.isFinite(cycleLow) ? cycleLow : price;
 
     for (const pos of this.positions) {
       if (pos.status !== 'open') continue;
       if (pos.symbol !== sym) continue;
+
+      // P29-S2: 蠟燭窗口極值(每倉位獨立窗——唔准攞人哋倉位嘅時間窗)
+      let hi = tickHi;
+      let lo = tickLo;
+      // 時鐘容差 5s——future 時間戳係污染,唔准用蠟燭
+      if (candlePath && candlePath.length > 0 && Number.isFinite(pos.openTimestamp) && pos.openTimestamp > 0 && pos.openTimestamp <= Date.now() + 5_000) {
+        const windowStart = pos.openTimestamp - 300_000; // 一支 5m 容差(straddle)
+        for (const c of candlePath) {
+          if (!c || c.t < windowStart) continue;
+          if (!Number.isFinite(c.h) || !Number.isFinite(c.l)) continue;      // NaN 支
+          if (c.h <= 0 || c.l <= 0) continue;                                 // 負/零價
+          if (c.h < c.l) continue;                                             // h<l 壞支
+          if (c.h > hi) hi = c.h;
+          if (c.l < lo) lo = c.l;
+        }
+      }
 
       // Update intra-cycle extremes observed since open.
       pos.highSinceOpen = Math.max(pos.highSinceOpen, hi);
