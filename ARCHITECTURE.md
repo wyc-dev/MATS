@@ -169,6 +169,14 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
 
+### v2.0.870-P26-attack: 動量層攻擊硬化(8 向量 6 命中全修)
+
+紅先攻擊輪覆蓋 P26/P26.5:A1 分類器重複防禦(非 finite 窗口歸 null) · A3 future-ts TTL 繞過 clamp · A4 符號長度閘(>64 拒) · A5 vol-judge caller 垃圾 computedVolume 形狀校驗+自計回退 · **A6(HIGH)candle fetch 掛死凍結 trend 層 → per-symbol `withTimeout` 8s** · **A7 觀測者效應:momentum wiring 經 getState() 逐 symbol 多觸發 `calibrator.observe` → 校準分布被測量行為位移 → 免副作用 `getVolatilityForTrend()`**(spy 測試釘死零觸發)· A8/A9 既有盾牌釘回歸。
+
+### v2.0.870-P26.5: vol-judge × 蠟燭量核對(P2/P5 棄用量嘅救贖)
+
+主神洞察:P2/P5 因 REST 量不可靠棄用,今用 candleCache 同源定量量值補返——`MomentumSnapshot.vol4hRatio`(48 支收市量 ÷ 前 48 支,窗口對窗口);**vol-judge 自計保證**(caller 唔傳就自己由同一蠟燭算,唔可能漏);SYSTEM_PROMPT 核對規則(定性 vs 計算,矛盾以計算為準;vol4hRatio>1.5 量能擴張/<0.7 萎縮=假突破風險)。**OHLCV 單一緩存池確認**:P26 嘅 per-cycle momentum 更新即 candleCache pool warmer,LLM kline/ATR/S-R/vol-judge 全部同池 cache-hit,每 cycle 每 symbol+interval 至多 1 fetch。
+
 ### v2.0.870-P26: Local Momentum Trend(趨勢盲修復)
 
 **根因**:WS tick 每 tick 將 `priceChangePercent` 覆蓋做 0 → calcTrend 永遠 sideways → regime 永世 mean_reverting → 「趨勢明顯都開唔到單」+ 慢性 MR 標籤教出 SILVER:sell 逆勢失血桶。
