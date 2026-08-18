@@ -659,6 +659,13 @@ export class APIServer {
         return;
       }
 
+      // v2.0.870-P22-A: close-decision calibrator pipeline 觀測
+      if (pathname === '/api/close-calibration' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify((this.data as { closeCalibration?: unknown } | undefined)?.closeCalibration ?? null));
+        return;
+      }
+
       if (pathname === '/api/portfolio') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(this.data?.portfolio ?? {}));

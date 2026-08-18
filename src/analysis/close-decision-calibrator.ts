@@ -96,7 +96,31 @@ function windowKey(side: 'buy' | 'sell', trend: string, windowIdx: number): stri
 
 // ─── Main ──────────────────────────────────────────────────────────────
 
+/** v2.0.870-P22-A: pipeline 觀測計數(state.pipeline —「飢餓有聲」)。
+ *  分辨「冇輸入(behavioral)」vs「輸入被吞(pipeline bug)」。 */
+export interface CloseCalibPipelineStats {
+  closesSeen: number;        // 到達 calibrator 嘅所有平倉(任何 reason)
+  recorded: number;          // 通過 whitelist 入 pending
+  filteredReason: number;    // closeReason 唔喺白名單
+  invalidInput: number;      // symbol/price 無效
+  deduped: number;           // tradeId 重複
+  verified: number;          // 完成驗證(任何 verdict;neutral 唔入賬但計 verified)
+  droppedNoPrice: number;    // 到期但攞唔到價 → 棄置(唔判 verdict,唔污染統計)
+}
+
+export type CloseCalibState = {
+  pending: Record<string, unknown>;
+  stats: Record<string, unknown>;
+  windowStats: Record<string, unknown>;
+  pendingCloses: Record<string, unknown>;
+  backfillDone: boolean;
+  pipeline?: Partial<CloseCalibPipelineStats>; // P22-A(舊 state 冇 → 自動補零)
+} & Record<string, unknown>;
+
 export class CloseDecisionCalibrator {
+  /** P22-A: tradeId dedup(process 級防線;防雙路徑/重試雙計) */
+  private recordedTradeIds = new Set<string>();
+
   private state: CloseCalibrationState;
   private path: string;
   /** v2.0.868-attack3 (K6):dirty-flag + debounce——recordClose/verifyPending
@@ -119,10 +143,20 @@ export class CloseDecisionCalibrator {
     pnlPct: number;
     closeReason: string;
     trendAtClose: string;
+    tradeId?: string; // P22-A: dedup
   }): string | null {
-    if (!input.symbol || (input.side !== 'buy' && input.side !== 'sell')) return null;
-    if (!Number.isFinite(input.closePrice) || input.closePrice <= 0) return null;
-    if (!CLOSE_REASONS_TO_CALIBRATE.has(input.closeReason)) return null; // 污染防護
+    this.bump('closesSeen');
+    if (!input.symbol || (input.side !== 'buy' && input.side !== 'sell')) { this.bump('invalidInput'); return null; }
+    if (!Number.isFinite(input.closePrice) || input.closePrice <= 0) { this.bump('invalidInput'); return null; }
+    if (typeof input.tradeId === 'string' && input.tradeId) {
+      if (this.recordedTradeIds.has(input.tradeId)) { this.bump('deduped'); return null; }
+      this.recordedTradeIds.add(input.tradeId);
+      if (this.recordedTradeIds.size > 15000) {
+        const first = this.recordedTradeIds.values().next().value;
+        if (first !== undefined) this.recordedTradeIds.delete(first);
+      }
+    }
+    if (!CLOSE_REASONS_TO_CALIBRATE.has(input.closeReason)) { this.bump('filteredReason'); return null; } // 污染防護
     const closeId = `cc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const trend = typeof input.trendAtClose === 'string' && input.trendAtClose ? input.trendAtClose : 'unknown';
     const pnlPct = Number.isFinite(input.pnlPct) ? input.pnlPct : 0;
@@ -141,6 +175,7 @@ export class CloseDecisionCalibrator {
       maxPriceSinceClose: input.closePrice,
     };
     this.capPending();
+    this.bump('recorded');
     this.markDirty(); // v2.0.868-fix1:persist + attack3:debounce(唔同步寫)
     return closeId;
   }
@@ -190,6 +225,13 @@ export class CloseDecisionCalibrator {
       // → premature_high 污染統計——delete 唔計(唔好污染)
       if (!Number.isFinite(rec.closePrice) || rec.closePrice <= 0) {
         delete this.state.pending[id];
+        this.bump('droppedNoPrice'); // 毒 state 棄置(原有語意)
+        continue;
+      }
+      // P22-A: 到期但而家攞唔到 symbol 價 → 棄置但**唔判 neutral**(min=max=closePrice 會製造假 neutral——雖唔入賬,但 verified 計數會誤導健康度)
+      if (price === null) {
+        delete this.state.pending[id];
+        this.bump('droppedNoPrice');
         continue;
       }
       // v2.0.866-fix(主神 edge case):MFE/MAE 淨值判據(路徑感知——單點驗證 miss
@@ -225,6 +267,7 @@ export class CloseDecisionCalibrator {
       if (verdict === 'premature_high' || verdict === 'premature_low') wc.premature += verdict === 'premature_high' ? 1 : 0.5;
       else if (verdict === 'correct') wc.correct += 1;
       this.state.windowStats[wKey] = wc;
+      this.bump('verified');
       delete this.state.pending[id]; // idempotent——驗證一次
     }
     this.markDirty(); // v2.0.868-fix1:驗證結果持久化 + attack3:debounce
@@ -429,6 +472,27 @@ export class CloseDecisionCalibrator {
   // ── Persistence ──────────────────────────────────────────────────────
 
   /** v2.0.868-attack3:dirty-flag——2s debounce 批量寫入(唔阻塞交易流程) */
+  /** P22-A: 觀測累加 —— 舊 state 冇 pipeline 欄位 → 自動補零(load 後第一次 bump 觸發) */
+  private bump(k: keyof CloseCalibPipelineStats): void {
+    const pl = this.pipelineStats();
+    pl[k] = (pl[k] ?? 0) + 1;
+  }
+
+  /** 觀測讀取(apiData → /api/close-calibration) */
+  getPipelineStats(): CloseCalibPipelineStats {
+    const p = this.pipelineStats();
+    return {
+      closesSeen: p.closesSeen ?? 0, recorded: p.recorded ?? 0, filteredReason: p.filteredReason ?? 0,
+      invalidInput: p.invalidInput ?? 0, deduped: p.deduped ?? 0, verified: p.verified ?? 0, droppedNoPrice: p.droppedNoPrice ?? 0,
+    };
+  }
+
+  private pipelineStats(): Partial<CloseCalibPipelineStats> {
+    const st = this.state as CloseCalibState;
+    if (!st.pipeline || typeof st.pipeline !== 'object') st.pipeline = {};
+    return st.pipeline;
+  }
+
   private markDirty(): void {
     if (this.saveTimer) return; // 已有 pending save
     this.saveTimer = setTimeout(() => {
