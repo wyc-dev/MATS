@@ -169,6 +169,14 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
 
+### v2.0.870-P34: 公開層最小化(lite app 私隱架構)
+
+主神洞察:公開 lite app 唔可以見到帳戶倉位/結餘;審計發現 ui_snapshots 帶 public-read policy(任何 anon 讀到 status/portfolio)。Migration 22:ui_snapshots → authenticated-only;`signals_lite` 視圖(security_invoker)係公開 app 唯一讀取面(thesis 剔除);edge_report 列冚冚聲。架構:一張公開表(asset_analyses/signals_lite)+ 內部表(ui_snapshots);backend 零改動(照上載)。
+
+### v2.0.870-P33: xyz 倉位 currentPrice 由 xyz dex allMids 更新
+
+v2.0.869-P2 嘅 allMids 修復只覆蓋主 dex(實證 948 symbol 零 xyz)——xyz 資產 currentPrice 永遠 = entryPx(TG entry=cur 再現 + SL/TP 永不觸發)。修:逐 dex(PERP_DEX_NAMES)攞 allMids 合併。+1 紅先測試。
+
 ### v2.0.870-P31+P32: 新聞源 rate-policy 紀律
 
 P31: GDELT host pacer(全域 promise-chain,1 req/5.5s,reserve-on-enqueue,失敗唔斷鏈)——實證 GDELT IP 級硬限 1 req/5s,6 symbol 並發必中 429 循環 cooldown。**P32(主神裁決):GDELT 預設停運**(`NEWS_GDELT=1` 翻身),news 主力 = google-news + bing RSS;breaker backstop 不變。
