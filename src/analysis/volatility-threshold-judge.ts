@@ -18,6 +18,7 @@
  *  - 保守(唔誤判正常波動)
  */
 import { createLogger } from '../observability/logger.ts';
+import { computeMomentum } from './momentum-trend.ts';
 // v2.0.869-P4(主神 save failed):ESM 環境——require 唔 defined——用 import fs
 import fs from 'node:fs';
 
@@ -112,7 +113,13 @@ const SYSTEM_PROMPT = `你係「波動率 Threshold 判定器」——頂尖量�
    - 唔好令「正常波動」誤判「高波動」
    - 唔確定 → confidence 低——用歷史分布 fallback
 
-5. 輸出校準:
+5. 定量量值核對(v2.0.870-P26.5——computedVolume):
+   - 輸入每個 asset 帶 computedVolume(volumeRatio5m=最新5m量÷前24支中位;vol4hRatio=最近4h量÷之前4h量)
+   - 你嘅定性 volume 判讀必須同計算值一致——若你覺得「高 volume」但 computedVolume.volumeRatio5m < 0.7,以計算值為準修正判讀
+   - vol4hRatio > 1.5 = 量能顯著擴張(趨勢可信);< 0.7 = 量能萎縮(假突破風險)
+   - computedVolume 係「無」→ 用 candle 自行判讀(舊行為)
+
+6. 輸出校準:
    - volLow < volHigh(必須)
    - volLow/volHigh 喺合理範圍(0.0001-0.1)
    - confidence 0-1(低 confidence → 系統用歷史分布 fallback)`;
@@ -173,6 +180,9 @@ export class VolatilityThresholdJudge {
     currentState: { regime: string; trend: string; volatility: number };
     candles?: Array<{ t: number; o: number; h: number; l: number; c: number; v: number }>;
     newsSummary?: string;
+    /** v2.0.870-P26.5(主神:量做核對來源):由同一份蠟燭計出嘅定量量值——
+     *  LLM 定性判讀 vs 計算值互相核對,矛盾以計算為準。 */
+    computedVolume?: { volumeRatio5m?: number | null; volumeState?: string; vol4hRatio?: number | null };
   }>): Promise<Array<VolThreshold | null>> {
     if (!assets || assets.length === 0) return [];
     try {
@@ -184,6 +194,14 @@ export class VolatilityThresholdJudge {
           historicalVolatility: a.histVol,
           currentState: a.currentState,
           candleSummary: a.candles && a.candles.length > 0 ? this.formatCandles(a.candles) : '無 candle 數據',
+          // v2.0.870-P26.5: 定量量值核對——同一蠟燭來源,LLM 定性 vs 計算交叉驗證。
+          // 架構保證:caller 冇傳 → 本層由同一 candles 自計——永遠唔會漏。
+          computedVolume: a.computedVolume ?? (a.candles && a.candles.length >= 6 ? (() => {
+            try {
+              const m = computeMomentum(a.candles!, null);
+              return { volumeRatio5m: m.volumeRatio, volumeState: m.volumeState, vol4hRatio: m.vol4hRatio };
+            } catch { return '計算失敗'; }
+          })() : '無'),
           newsSummary: a.newsSummary ?? '無',
         })),
       })}`;

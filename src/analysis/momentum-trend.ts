@@ -31,6 +31,10 @@ export interface MomentumSnapshot {
   /** 最新收市 5m 支成交量 ÷ 前 24 支中位數;數據唔夠 → null */
   volumeRatio: number | null;
   volumeState: 'strong' | 'normal' | 'thin' | 'unknown';
+  /** v2.0.870-P26.5: 4h 量能核對——最近 48 支收市支量 ÷ 再前 48 支量。
+   *  主神定調:4h 量能係 vol-judge / 市況判斷嘅定量核對來源。
+   *  需 ≥97 支 5m 蠟燭(48+48+1 forming),唔夠 → null(唔會亂估)。 */
+  vol4hRatio: number | null;
   /** 有任何一個有效動量窗口 */
   hasData: boolean;
 }
@@ -63,7 +67,7 @@ function median(xs: number[]): number | null {
 export function computeMomentum(c5m: CandleLike[] | null, c1h: CandleLike[] | null): MomentumSnapshot {
   const snap: MomentumSnapshot = {
     m5m: null, m15m: null, m1h: null, m4h: null,
-    volumeRatio: null, volumeState: 'unknown', hasData: false,
+    volumeRatio: null, volumeState: 'unknown', vol4hRatio: null, hasData: false,
   };
   if (c5m && c5m.length >= 2) {
     snap.m5m = windowMomentum(c5m, 1);
@@ -87,6 +91,20 @@ export function computeMomentum(c5m: CandleLike[] | null, c1h: CandleLike[] | nu
         snap.volumeRatio = ratio;
         snap.volumeState = ratio >= 1.5 ? 'strong' : ratio >= 0.7 ? 'normal' : 'thin';
       }
+    }
+  }
+
+  // P26.5: 4h 量能核對——最近 48 支收市支(剔除最後 forming 支)
+  // ÷ 再之前 48 支。窗口對窗口(same-shape)比 median 更抗離群值;
+  // 需要 97 支(48+48+1 forming)。
+  if (c5m && c5m.length >= 97) {
+    const last48 = c5m.slice(-49, -1);
+    const prior48 = c5m.slice(-97, -49);
+    const sumRecent = last48.reduce((a, c) => a + (Number.isFinite(c.v) && c.v > 0 ? c.v : 0), 0);
+    const sumPrior = prior48.reduce((a, c) => a + (Number.isFinite(c.v) && c.v > 0 ? c.v : 0), 0);
+    if (sumPrior > 0 && Number.isFinite(sumRecent)) {
+      const ratio = sumRecent / sumPrior;
+      if (Number.isFinite(ratio) && ratio < 1000) snap.vol4hRatio = ratio;
     }
   }
 
@@ -133,5 +151,6 @@ export function classifyMomentumTrend(snap: MomentumSnapshot, tau24: number, vol
 export function describeMomentum(snap: MomentumSnapshot): string {
   const f = (x: number | null) => (x === null ? '—' : `${x >= 0 ? '+' : ''}${x.toFixed(2)}%`);
   const vol = snap.volumeRatio === null ? 'vol n/a' : `vol ${snap.volumeRatio.toFixed(1)}×(${snap.volumeState})`;
-  return `5m ${f(snap.m5m)} · 15m ${f(snap.m15m)} · 1h ${f(snap.m1h)} · 4h ${f(snap.m4h)} · ${vol}`;
+  const vol4 = snap.vol4hRatio === null ? '' : ` · 4h量 ${snap.vol4hRatio.toFixed(1)}×`;
+  return `5m ${f(snap.m5m)} · 15m ${f(snap.m15m)} · 1h ${f(snap.m1h)} · 4h ${f(snap.m4h)} · ${vol}${vol4}`;
 }

@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P26.5: vol-judge × 蠟燭量核對(P2/P5 棄用數據嘅救贖)
+
+**主神洞察**:P2/P5 嗰時因 24h/volume REST 數據不可靠,vol-judge 被迫棄用量數據;P26 起有咗 candle-based 定量量值,可以做返 vol-judge 嘅核對來源。
+
+**落地**:
+- `MomentumSnapshot.vol4hRatio`(新):最近 48 支收市 5m 支量 ÷ 再前 48 支(窗口對窗口,抗離群值;需 ≥97 支,唔夠 → null 唔亂估)
+- vol-judge `judgeBatch` **自計保證**:caller 冇傳 computedVolume → 本層由**同一份蠟燭**自計 volumeRatio5m/volumeState/vol4hRatio——架構上唔可能漏
+- SYSTEM_PROMPT 加核對規則:「你覺得高 volume 但 volumeRatio5m < 0.7 → 以計算值為準;vol4hRatio >1.5 = 量能擴張(趨勢可信),<0.7 = 萎縮(假突破風險)」
+- vol-judge candle fetch 50→100 支(vol4h 需要;cache 反正強制 ≥100,零成本)
+- market-state NaN 盾牌覆蓋 vol4hRatio
+
+**架構確認(主神提問)**:OHLCV 單一緩存池已成立——P26 嘅 per-cycle momentum 更新自然就係 pool warmer,LLM chart/ATR/S-R/vol-judge 全部 cache-hit 飲同一啖水,TTL 90s 保證每 cycle 最多 fetch 一次。
+
++5 紅先測試全綠;全量 2690 pass / 13 pre-existing;tsc clean。
+
+---
+
 ## v2.0.870-P26: Local Momentum Trend(趨勢盲修復——「趨勢咁明顯都開唔到單」)
 
 **根因(實證)**:WS tick handler 每 tick 覆蓋 ticker 並將 `priceChangePercent` 寫死 0(主神當年因 HL 24h 統計不可靠刻意 cancel volume,株連埋 trend)→ `calcTrend` 永遠 sideways → `calcRegime` 永遠 mean_reverting → trending_bull/bear 形同死代碼。副作用深遠:慢性 MR 標籤令人工智能傾向「升多咗反手沽」(審計入面 SILVER:sell 25% WR 失血桶嘅根源),而且所有 regime-keyed learners 歷史標籤被污染成 mean_reverting(寫讀同一錯標籤,內部自洽,唔需清洗,新數據自然分叉)。
