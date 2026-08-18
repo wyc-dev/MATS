@@ -490,6 +490,17 @@ export class LLMDirectionVerifier {
             clean.windowStats[k] = sanitizeCounter(v);
           }
         }
+        // P22-attack fix: pipeline 觀測計數 restart 後保留(逐欄 sanitize——
+        // string/object/NaN/負數 → 0,唔可以污染級聯)
+        const rawStats = (raw as { stats?: unknown }).stats;
+        if (rawStats && typeof rawStats === 'object' && !Array.isArray(rawStats)) {
+          for (const [k, v] of Object.entries(rawStats as Record<string, unknown>)) {
+            if (UNSAFE_KEYS.has(k)) continue;
+            if (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1e12) {
+              clean.stats![k as keyof VerifierPipelineStats] = v;
+            }
+          }
+        }
       }
       this.state = clean;
     } catch (err) {

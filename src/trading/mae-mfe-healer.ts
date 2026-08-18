@@ -82,6 +82,8 @@ export function maeMfeNeedsHeal(t: HealableTradeLike): boolean {
   if (!Number.isFinite(t.quantity ?? NaN) || (t.quantity as number) <= 0) return false;
   if (!Number.isFinite(t.investment ?? NaN) || (t.investment as number) <= 0) return false;
   if (!Number.isFinite(t.leverage ?? NaN) || (t.leverage as number) <= 0) return false;
+  // P22-attack fix: side 必須係標準 buy/sell —— 'LONG'/'SHORT'/垃圾會被當 buy 方向性錯寫
+  if (t.side !== 'buy' && t.side !== 'sell') return false;
   if (!Number.isFinite(t.openedAt ?? NaN) || !Number.isFinite(t.closedAt ?? NaN)) return false;
   if ((t.closedAt as number) <= (t.openedAt as number)) return false;
   return true;

@@ -171,6 +171,8 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 
 ### v2.0.870-P22: Close-Calibrator 觀測 + MAE/MFE Healer(審計落地 A & G)
 
+**v2.0.870-P22-attack 加固**:觀測計數器 load-time 還原 + sanitize(verifier `stats` / calibrator `pipeline`——白名單重建會令 restart 計數歸零，污染值可級聯寫落磁碟）;healer 加 `healInFlight` 重入守衛（fire-and-forget per-cycle 觸發，HL 慢時防並發）;`maeMfeNeedsHeal` 加 side ∈ {buy, sell} 驗證（垃圾 side 會被當 buy 方向性錯寫）。
+
 **P22-A**:Close-Decision Calibrator 自 v2.0.866 出世零輸入(可校準 close 全部 pre-deploy)——非壞,係 behavioral。落地「飢餓有聲」觀測:`state.pipeline`(closesSeen/recorded/filteredReason/invalidInput/deduped/verified/droppedNoPrice)+ tradeId dedup + `/api/close-calibration`。`verifyPending` 到期無價 → 棄置而非 fake neutral。
 
 **P22-G**:歷史 realTrades min/maxValueReached 混合量度 + sanitize reset 全毀(`median MAE=−900%` artifact)。Healer 用 HL candleSnapshot 權威價格史按 [openedAt, closedAt] 窗口重算 margin-basis equity value(canonical:v2.0.143 init 語義),每筆標記 `maeMfeHealed`。Batch 8/次 per-cycle fire-and-forget,唔阻塞交易。**自測捉住 sell-side adverse/favorable 方向相反 bug**(sell 的最差價係高價,唔係低價——若上線會寫反 min/max)。

@@ -4,6 +4,22 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P22-attack: P22 攻擊輪——觀測持久化修補 + healer 加固(6 紅測驅動)
+
+**發現（實測，非估）**
+
+| # | 漏洞 | 嚴重性 | 修復 |
+|---|---|---|---|
+| V1a | `llm-direction-verifier` load() 白名單重建**唔抄 `stats`**——pipeline 計數每次 restart 歸零（觀測短命）;同時 bump 用 `?? 0` 唔 coerce，若 stats 被注入 string/object 會產生 `'string'+1` 級聯污染落磁碟 | MED | load() 新增逐欄 sanitize 還原（finite number ≥0 ≤1e12，污染值棄） |
+| V1b | `close-decision-calibrator` 同上(`pipeline` 欄位 load 唔抄） | MED | 同上手法 |
+| V2 | `healMaeMfeOnce` fire-and-forget 無重入守衛——HL candle API 慢時，兩個 healer 並發 → 重複 heal + double persistPortfolio + API 轟炸 2× | MED | `healInFlight` boolean 守衛 + finally 釋放 |
+| V3 | `maeMfeNeedsHeal` 唔驗證 `side`——垃圾值 ('LONG'/'SHORT'/undefined）會被當 **buy** 方向性錯寫 min/max（方向性數據腐敗，比缺失更毒） | HIGH | predicate 加 side ∈ {buy, sell} 驗證 |
+| V4 | per-candle h>=l 一致性未檢查——corrupt candle 理論上可扭曲 extremes；實測 maxPx/minPx 初始化為 entry 令單支 corrupt 影響極有限，但保留為文檔警示 | LOW | （文檔註記，邏輯保持簡單） |
+
+**測試**:6 紅→6 綠(verifier load sanitize / calibrator load sanitize / side 垃圾 / sell-side 方向性 / candle corrupt 有限影響 / marker idempotent);全量 **2658 pass / 13 pre-existing**;tsc clean。
+
+---
+
 ## v2.0.870-P22: 盈利審計落地第一刀 —— A(Close-Calibrator 觀測)+ G(MAE/MFE 歷史清污)
 
 > 背景:`docs/PROFIT-AUDIT-2026-08-18.md`(主神裁決只執行 A & G,其餘暫緩)。
