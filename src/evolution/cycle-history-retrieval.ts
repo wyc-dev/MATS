@@ -328,6 +328,16 @@ function isValidSymbolKey(symbol: string): boolean {
   return /^[a-zA-Z0-9:_-]+$/.test(symbol);
 }
 
+/** side-word 防線(主神追查 'buy' junk state):買賣方向字串永遠唔係資產名,
+ *  係舊版欄位錯位(side 寫入 symbol slot)嘅化石污染途徑。入口層閘死,
+ *  無論 caller 係邊個:load 時 drop、runtime 建 state 時 no-op。
+ *  注意:'0g' 等真資產 ticker 唔受影響。 */
+const SIDE_WORD_KEYS = new Set(['buy', 'sell', 'hold']);
+function isUsableSymbolKey(symbol: string): boolean {
+  if (!isValidSymbolKey(symbol)) return false;
+  return !SIDE_WORD_KEYS.has(symbol.toLowerCase());
+}
+
 // ─── CycleHistoryRetriever ───
 
 export class CycleHistoryRetriever {
@@ -366,6 +376,11 @@ export class CycleHistoryRetriever {
         const canonical = normKey(raw.symbol);
         if (!isValidSymbolKey(canonical)) {
           log.warn(`[cycle-history] dropping corrupted symbol state '${raw.symbol}' — invalid characters`);
+          dropped++;
+          continue;
+        }
+        if (!isUsableSymbolKey(canonical)) { // side-word 化石污染(buy/sell/hold)
+          log.warn(`[cycle-history] dropping side-word polluted state '${raw.symbol}' — never a valid asset`);
           dropped++;
           continue;
         }
@@ -479,6 +494,7 @@ export class CycleHistoryRetriever {
   /** Push a cycle's market features into the rolling history window. */
   pushCycle(symbol: string, features: Record<string, number>, ts: number = Date.now()): void {
     if (!this.cfg.enabled) return;
+    if (!isUsableSymbolKey(normKey(symbol))) { log.warn(`[cycle-history] pushCycle rejecting side-word/invalid symbol '${String(symbol).slice(0, 32)}'`); return; }
     if (!features || typeof features !== 'object') return; // guard: null/non-object
     try {
       const s = this.getState(symbol);
@@ -501,6 +517,7 @@ export class CycleHistoryRetriever {
   /** Capture entry-time features (embedding persistence, v_0). Called at trade open. */
   recordEntry(symbol: string, side: 'buy' | 'sell', entryFeatures: Record<string, number>): void {
     if (!this.cfg.enabled) return;
+    if (!isUsableSymbolKey(normKey(symbol))) { log.warn(`[cycle-history] recordEntry rejecting side-word/invalid symbol '${String(symbol).slice(0, 32)}'`); return; }
     if (!entryFeatures || typeof entryFeatures !== 'object') return; // guard
     try {
       const s = this.getState(symbol);
@@ -761,6 +778,7 @@ export class CycleHistoryRetriever {
    *  No-op if no pending entry or |pnlPct| below noise. */
   updateOnOutcome(symbol: string, side: 'buy' | 'sell', pnlPct: number, closeReason?: string): void {
     if (!this.cfg.enabled) return;
+    if (!isUsableSymbolKey(normKey(symbol))) { log.warn(`[cycle-history] updateOnOutcome rejecting side-word/invalid symbol '${String(symbol).slice(0, 32)}'`); return; }
     try {
       const s = this.getState(symbol);
       const pending = s.pendingEntry;
