@@ -4,6 +4,17 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P29-attack2: cycle-history xyz: 大寫資產被誤殺(潛伏 bug,主神由啟動 log 發現)
+
+**症狀**:每次啟動 `[cycle-history] dropping corrupted symbol state 'xyz:X' — invalid characters` ×6,只留 4 隻 main。
+**根因**:`isValidSymbolKey` regex `^[a-z0-9:_-]+$` 唔收大寫,但 canonical key 係 `xyz:SILVER`(normKey 只細階化冒號前 prefix,與 portfolio.normalizeSymbol 一致)——**validator 自己唔認自家 canonical form**,xyz:6 隻嘅 AttnRes 檢索記憶每次重啟清零。
+**修法**:regex 放行 A-Z(冒號後資產名保留大寫係 canonical 規格);污名 `xyz:SKHX**` 照樣被拒。
+**紅先測試**:fixture 三 key(合法大寫/污名/細階)round-trip;途中再犯一次測試前提錯(config 欄叫 `persistPath`+明示 `load()`,唔係 `stateFile`)——改測試唔改代碼。
+
++1 測試;全量 2747 pass / 13 pre-existing;tsc clean。
+
+---
+
 ## v2.0.870-P29-attack: P29 刁鑽攻擊輪(6 攻 4 中,全部修復)
 
 | # | 攻擊 | 嚴重 | 修復 |
