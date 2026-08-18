@@ -4,6 +4,25 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P35: 順逆勢 soft gate(「點解最近瘋狂蝕錢」嘅答案落碼)
+
+**主神問:「點解最近呢幾個交易都瘋狂蝕錢?」**
+**證據鏈(鐵證)**:近 7 筆實盤輸錢單,逐筆對返開倉嗰刻——SILVER/SP500/GOLD **開倉時 trend 已經 bearish、regime 已經 trending_bear**,系統明知熊市照 BUY(刀口接刀),每筆 -6~-10% 止蝕/強平。同一 cycle 亦見 conf=0.5 嘅弱訊號 buy 喺 trending_bear 連環出現。
+**點解而家先爆**:
+- P33 xyz currentPrice 真化 → SL/TP 恢復觸發(之前 entry=cur bug,止蝕永遠唔行,蝕損收緊喺 unrealized)→ 積壓水下倉一次過兌現
+- P26 真 regime 標籤 → 以前全部假 mean_reverting,系統從未學過尊重趨勢方向
+**修法**:新模組 `trend-alignment-gate.ts`(純函數,鏡像):
+- trending_bear+bearish → sell ×1.2 / buy ×0.5;trending_bull+bullish → buy ×1.2 / sell ×0.5
+- **雙重一致先乘**(trend 同 regime 互證;單一訊號 = 假動作)
+- 其他 regime / unknown / hold → ×1.0 中性唔干擾
+- soft 乘數(唔 hard-block);env `TREND_ALIGN_GATE=false` 回滾
+- `market-state.ts` 加 `getTrendRegimeSnapshot()`(A7 紀律:side-effect-free,唔觸發 calibrator.observe)
+- 插入點:soft-multiplier 堆疊(entry-gate/reopen-guard/mae-pattern/macro-losing 同款),audit log + activeAuditGates 全記錄
+
++9 紅先測試全綠;blast-radius 消費者 88 tests 綠;tsc clean。
+
+---
+
 ## v2.0.870-P34: 公開層最小化 —— ui_snapshots 私有化 + signals_lite 視圖(主神 lite app 私隱洞察)
 
 **主神洞察**:lite app 係公開用戶端,用戶唔可以見到倉位/結餘。審計發現 `ui_snapshots` 帶 `"ui_snapshots public read"` policy(migration 19)——**任何 anon key 持有人已經可以讀晒 status=結餘 + portfolio=倉位明細**。門一直開住。
