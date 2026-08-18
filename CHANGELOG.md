@@ -4,6 +4,20 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P24: Deployment-Version Awareness(trade-audit 時序誤判根除)
+
+**問題**(主神 08-18 發現):trade-audit LLM 控告「Trade #17(SKHX −11.3%)係 P21 fix 之後嘅新發生」——實際上嗰單 close 時間早於 P21 部署 43 分鐘。**根因**:audit prompt 只有「fix 存在」(CHANGELOG)但冇「幾時落地」;dataLine 甚至冇 close 時間戳——LLM 只能估,估必錯。
+
+**解法**(`src/services/deployment-timeline.ts`):
+- `getDeploymentTimeline()`:git log(subject→版本 token → first-landing timestamp);commit time ≈ live time(tsx watch 秒級生效;commit 往往遲幾分鐘 → 判斷方向保守,寧願判 pre-fix);10 min TTL cache,execSync timeout 5s,任何失敗 → 空清單 + prompt 明寫 UNKNOWN(唔阻塞 audit)
+- `parseVersionDeployments` 純函數:多 token/重複攞最早/alias 從主版本前綴剝落(P18-attack2 唔會縮做 attack2)
+- `postFixVersionsFor()`:**預計算**每筆 trade 嘅 postFix 清單——NEW/STALE 判斷 mechanize 咗,LLM 冇得再估
+- audit prompt 注入 DEPLOYMENT TIMELINE + TEMPORAL GROUND RULE:「postFix 清單冇呢個 fix,個 trade 就係 PRE-FIX」;STALE clusters severity 收 cap 做 warning
+
+**測試**:+10;全量 2670 pass / 13 pre-existing;tsc clean;live timeline smoke ✓(346 版本,P21 = 23:41 UTC 精準命中)。
+
+---
+
 ## v2.0.870-P23-fix: Supabase 靜默死局修復 + trade-audit 時序誤判定性(主神追查「DB 0 / awaiting analysis」)
 
 **實證(root cause 係 schema drift,唔係「冇計算」)**
