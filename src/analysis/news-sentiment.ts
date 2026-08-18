@@ -236,10 +236,46 @@ interface GDELTArticle {
   language?: string;
 }
 
+// ─── GDELT host pacer(v2.0.870-P31)──
+// 實證:GDELT doc API 硬限 1 req/5s(429 明文)。每 cycle 6 symbol 近並發
+// 打 → 後 5 次必中 429 → breaker 循環。修:全域 promise chain 序列化 +
+// reserve-on-enqueue,保證相鄰真實 HTTP ≥ 5.5s(含 0.5s buffer)。
+// 就算上一次失敗,slot 都唔會壓縮(防 429 重試雪崩)。
+const GDELT_MIN_INTERVAL_MS = 5_500;
+const gdeltPacer = {
+  nextAllowedAt: 0,
+  chain: Promise.resolve() as Promise<void>,
+  now: () => Date.now(), // test hook 可換
+};
+
+/** 測試專用 hook */
+export function __test__resetGdeltPacer(): void {
+  gdeltPacer.nextAllowedAt = 0;
+  gdeltPacer.chain = Promise.resolve();
+}
+export function __test__setGdeltNow(n: number): void { gdeltPacer.now = () => n; }
+export function __test__computeGdeltWait(): number {
+  const now = gdeltPacer.now();
+  const wait = Math.max(0, gdeltPacer.nextAllowedAt - now);
+  gdeltPacer.nextAllowedAt = Math.max(now, gdeltPacer.nextAllowedAt) + GDELT_MIN_INTERVAL_MS;
+  return wait;
+}
+
+/** 序列化 + 節奏嘅 gdelt HTTP(生產路徑) */
+function gdeltFetch(url: string): Promise<Response> {
+  const run = gdeltPacer.chain.then(async () => {
+    const waitMs = __test__computeGdeltWait();
+    if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
+    return fetch(url, { signal: AbortSignal.timeout(8_000) });
+  });
+  gdeltPacer.chain = run.then(() => undefined, () => undefined); // 失敗唔斷鏈
+  return run;
+}
+
 async function fetchGDELT(query: string, limit = 10): Promise<NewsHeadline[]> {
   // GDELT doc API: mode=ArtList returns { articles: [...] }
   const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(query)}&mode=ArtList&maxrecords=${limit * 2}&format=json&sort=datedesc`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+  const res = await gdeltFetch(url);
   if (!res.ok) throw new Error(`GDELT HTTP ${res.status}`);
   const data = await res.json() as { articles?: GDELTArticle[] };
   const arts = data.articles ?? [];
