@@ -611,19 +611,27 @@ export class HyperliquidEngine implements RealTradingEngine {
       // 舊邏輯 currentPrice = entryPx(冇更新)——TG 顯示 entry=cur 但 PnL≠0(矛盾)
       // 更深層:SL/TP check 用 entryPx——SL/TP 永遠唔觸發——蝕死!
       // allMids 一次過攞所有 symbol 嘅 mid price——批量(慳 API call)
+      // v2.0.870-P33(主神 TG entry=cur 再現調查):allMids 只覆蓋主 dex(948 symbol,
+      // 零 xyz)——xyz 資產 currentPrice 永遠 = entryPx。修:逐 dex 攞 allMids
+      // (主 dex 冇 dex 欄,xyz 傳 dex='xyz')合併,xyz 資產先有真 mid。
       try {
-        const midsRes = await hlRateLimitedFetch(HL_INFO_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type: 'allMids' }),
-        });
-        if (midsRes.ok) {
+        const mergedMids: Record<string, string> = {};
+        for (const dex of HyperliquidEngine.PERP_DEX_NAMES) {
+          const body: Record<string, unknown> = { type: 'allMids' };
+          if (dex) body['dex'] = dex;
+          const midsRes = await hlRateLimitedFetch(HL_INFO_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          if (!midsRes.ok) continue;
           const mids = await midsRes.json() as Record<string, string>;
-          for (const pos of allPositions) {
-            const mid = parseFloat(mids[pos.symbol] ?? '');
-            if (Number.isFinite(mid) && mid > 0) {
-              pos.currentPrice = mid;
-            }
+          Object.assign(mergedMids, mids);
+        }
+        for (const pos of allPositions) {
+          const mid = parseFloat(mergedMids[pos.symbol] ?? '');
+          if (Number.isFinite(mid) && mid > 0) {
+            pos.currentPrice = mid;
           }
         }
       } catch { /* 非致命——用 entryPx fallback */ }
