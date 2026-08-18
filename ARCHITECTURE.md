@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-P20-C
+> **作者**: YC Wong · **版本**: 2.0.870-P24
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~72,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -169,9 +169,27 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
 
-### v2.0.870-P22: Close-Calibrator 觀測 + MAE/MFE Healer(審計落地 A & G)
+### v2.0.870-P24: Deployment-Version Awareness(trade-audit 時序誤判根除)
 
-**v2.0.870-P22-attack 加固**:觀測計數器 load-time 還原 + sanitize(verifier `stats` / calibrator `pipeline`——白名單重建會令 restart 計數歸零，污染值可級聯寫落磁碟）;healer 加 `healInFlight` 重入守衛（fire-and-forget per-cycle 觸發，HL 慢時防並發）;`maeMfeNeedsHeal` 加 side ∈ {buy, sell} 驗證（垃圾 side 會被當 buy 方向性錯寫）。
+**問題**:trade-audit LLM 指「Trade #17(SKHX −11.3%)係 P21 部署後新發生」——實際該單早於 P21 落地 43 分鐘。根因:prompt 只知「fix 存在」唔知「幾時落地」;dataLine 連 close 時間都冇。
+
+**解法**(`src/services/deployment-timeline.ts`):
+- `getDeploymentTimeline()`:git log → 每版本 first-landing 時間(346 版本實測);commit time ≈ live time,滯後方向保守(寧願多判 pre-fix);10min TTL cache;失敗 → UNKNOWN 宣告唔阻塞
+- `postFixVersionsFor()`:每筆 trade 預計算 postFix 清單,注入 dataLine(`closed=<ISO> postFix=[...]`)——**NEW/STALE 判斷從「LLM 估時序」變「讀清單」,結構性唔可能再錯**
+- `alias` 保留完整後綴(P18-attack2 唔縮做 attack2)
+- TEMPORAL GROUND RULE:postFix 清單冇嘅 fix = PRE-FIX by definition;STALE severity cap warning
+
+### v2.0.870-P23-fix: Supabase Schema-Drift 韌性(DB 0 靜默死局修復)
+
+**實測根因**:v2.0.869-P9 嘅 insert 加咗 `edge_report` 欄,但 migration 21 從未喺 live DB 執行 → 每 cycle 撞 `PGRST204 column missing` 全失敗 → `asset_analyses` 長期 0 行 → UI 全部卡回退 placeholder(HOLD 58%)→「awaiting analysis / next cycle」徽章。後台分析其實一直正常,死嘅只有 write 層,而且完全無聲(console-only log)。
+
+**修復**:`writeCycle` 撞 PGRST204 → 剝走缺失列(通則:任何列,唔單止 edge_report)重試一次;`lastWriteError` + `getWriteStatus()` expose 到 `/api/supabase-writer`;PostgrestError 係 plain object 嘅 error-text 陷阱(String(err)='[object Object]')順手修。**上線 1 cycle live 驗證 6 行寫入成功。**
+
+### v2.0.870-P22-attack: P22 攻擊輪(觀測持久化 + healer 加固)
+
+4 實證漏洞全修:verifier/calibrator 觀測計數 load() 白名單重建**唔抄** stats/pipeline(restart 歸零 + 注入 string 可級聯污染磁碟)→ 逐欄 sanitize 還原;healer 加 `healInFlight` 重入守衛;`maeMfeNeedsHeal` 加 side 白名單(垃圾 side 會被當 buy 方向性錯寫)。
+
+### v2.0.870-P22: Close-Calibrator 觀測 + MAE/MFE Healer(審計落地 A & G)
 
 **P22-A**:Close-Decision Calibrator 自 v2.0.866 出世零輸入(可校準 close 全部 pre-deploy)——非壞,係 behavioral。落地「飢餓有聲」觀測:`state.pipeline`(closesSeen/recorded/filteredReason/invalidInput/deduped/verified/droppedNoPrice)+ tradeId dedup + `/api/close-calibration`。`verifyPending` 到期無價 → 棄置而非 fake neutral。
 
