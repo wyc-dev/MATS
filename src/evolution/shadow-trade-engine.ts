@@ -772,6 +772,9 @@ export class ShadowTradeEngine {
           if (!Number.isFinite(c.h) || !Number.isFinite(c.l)) continue;      // NaN 支
           if (c.h <= 0 || c.l <= 0) continue;                                 // 負/零價
           if (c.h < c.l) continue;                                             // h<l 壞支
+          // C-3(attack):巨針盾——5m 極值偏離入場價 ±100%(翻倍/歸零)= 數據異常,
+          // 跳過整支,連 highSinceOpen 都唔准污染(假 TP/SL 命中會教壞學習)
+          if (pos.entryPrice > 0 && (c.h > pos.entryPrice * 2 || c.l < pos.entryPrice / 2)) continue;
           if (c.h > hi) hi = c.h;
           if (c.l < lo) lo = c.l;
         }
@@ -1101,9 +1104,11 @@ export class ShadowTradeEngine {
    *  冇量維度(歷史/舊版)→ 'unknown'(唔准假扮 normal,否則污染正常桶)。 */
   private volumeTagsFromFeatures(f: Record<string, number> | undefined): { volumeState?: 'thin' | 'normal' | 'strong' | 'unknown'; volumeRatio5m?: number } {
     if (!f) return { volumeState: 'unknown' };
-    const vr = Number.isFinite(f['volumeRatio5m']) ? f['volumeRatio5m'] : undefined;
-    const v4 = Number.isFinite(f['vol4hRatio']) ? f['vol4hRatio'] : undefined;
-    if (vr === undefined && v4 === undefined && f['volumeThin'] !== 1 && f['volumeStrong'] !== 1) return { volumeState: 'unknown' };
+    // V-1(attack):中性預設 1.0/1.0 唔代表有量數據——必須 volumeData=1 先算真量
+    if (f['volumeData'] !== 1) return { volumeState: 'unknown' };
+    // V-3(attack):ratio clamp——1e9 級異常值唔准持久化/入學習維度
+    const raw = Number.isFinite(f['volumeRatio5m']) ? f['volumeRatio5m'] : undefined;
+    const vr = raw !== undefined ? Math.min(Math.max(raw, 0), 100) : undefined;
     const state = f['volumeThin'] === 1 ? 'thin' : f['volumeStrong'] === 1 ? 'strong' : 'normal';
     return { volumeState: state, volumeRatio5m: vr };
   }
@@ -1114,7 +1119,10 @@ export class ShadowTradeEngine {
     const buckets = { thin: mk(), normal: mk(), strong: mk(), unknown: mk() };
     for (const r of this.recentResults) {
       if (!r || typeof r !== 'object') continue;
-      const b = buckets[r.volumeState ?? 'unknown'] ?? buckets.unknown;
+      // V-3a(attack):白名單——污改過嘅 volumeState('__proto__'/'constructor')歸 unknown,
+      // 唔准撞上 Object.prototype 屬性令統計 NaN
+      const vs = r.volumeState === 'thin' || r.volumeState === 'normal' || r.volumeState === 'strong' ? r.volumeState : 'unknown';
+      const b = buckets[vs];
       b.resolved++;
       if (r.outcome === 'win') b.wins++;
       if (Number.isFinite(r.pnlPct)) b._pnlSum += r.pnlPct as number;
