@@ -666,6 +666,13 @@ export class APIServer {
         return;
       }
 
+      // v2.0.870-P23-fix: Supabase writer 健康(邊個 cycle 寫入成功/失敗,一眼可見)
+      if (pathname === '/api/supabase-writer' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify((this.data as { supabaseWriter?: unknown } | undefined)?.supabaseWriter ?? null));
+        return;
+      }
+
       if (pathname === '/api/portfolio') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(this.data?.portfolio ?? {}));

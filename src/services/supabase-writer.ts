@@ -58,6 +58,8 @@ export class SupabaseAnalysisWriter {
   private enabled = false;
   private lastWriteAt = 0;
   private lastWriteCount = 0;
+  /** P23-fix: 最後一次寫入錯誤(API expose——DB 0 呢啲沈默失敗要有聲) */
+  private lastWriteError: string | null = null;
   /** v2.0.857-fix2: last SUPABASE_URL we configured with (reconfigure no-op guard). */
   private lastUrl = '';
 
@@ -121,6 +123,16 @@ export class SupabaseAnalysisWriter {
    *  v2.0.823: Retry up to 3 times with exponential backoff (500ms, 1s, 2s)
    *  before giving up. A transient network error or Supabase rate limit
    *  should not cause the analysis to be lost for that cycle. */
+  /** P23-fix: writer 健康觀測(API expose — DB 0 問題一秒可見) */
+  getWriteStatus(): { enabled: boolean; lastWriteAt: number | null; lastWriteCount: number; lastWriteError: string | null } {
+    return {
+      enabled: this.enabled,
+      lastWriteAt: this.lastWriteAt > 0 ? this.lastWriteAt : null,
+      lastWriteCount: this.lastWriteCount,
+      lastWriteError: this.lastWriteError,
+    };
+  }
+
   async writeCycle(analyses: AssetAnalysis[]): Promise<void> {
     if (!this.enabled || !this.client) {
       // Local-only mode: just log a summary so the operator sees the output.
@@ -190,11 +202,29 @@ export class SupabaseAnalysisWriter {
           edge_report: a.edgeReport ?? null,
           metadata: a.metadata,
         }));
-        const { error: insErr } = await (this.client as any).from(TABLE).insert(rows);
+        let { error: insErr } = await (this.client as any).from(TABLE).insert(rows);
+        // v2.0.870-P23-fix: schema drift resilience —— PGRST204(column missing,
+        // e.g. migration 21 edge_report 未喺 live DB 執行)唔可以令成個 matrix
+        // feed 歸零(DB 0 = UI 全部 "awaiting analysis")。剝走缺失列重試一次。
+        if (insErr && (insErr as { code?: string }).code === 'PGRST204') {
+          const msg = (insErr as { message?: string }).message ?? '';
+          const m = msg.match(/Could not find the '([a-z_]+)' column/);
+          const missingCol = m?.[1];
+          if (missingCol && missingCol !== 'edge_report') {
+            this.lastWriteError = `PGRST204 missing '${missingCol}' (not recoverable by strip)`;
+          }
+          if (missingCol) {
+            log.warn(`[supabase-writer] schema drift: column '${missingCol}' missing in DB — inserting without it (run pending migration). UI matrix feed preserved.`);
+            const stripped = rows.map((r: Record<string, unknown>) => { const c = { ...r }; delete c[missingCol as string]; return c; });
+            const retry = await (this.client as any).from(TABLE).insert(stripped);
+            insErr = retry.error as typeof insErr;
+          }
+        }
         if (insErr) throw insErr;
 
         this.lastWriteAt = Date.now();
         this.lastWriteCount = validAnalyses.length;
+        this.lastWriteError = null;
         if (attempt > 0) {
           log.info(`Wrote ${validAnalyses.length} asset analyses to Supabase (cycle #${validAnalyses[0]!.cycleId}) — succeeded on retry ${attempt + 1}`);
         } else {
@@ -202,11 +232,16 @@ export class SupabaseAnalysisWriter {
         }
         return; // Success — exit retry loop.
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        // P23-fix: PostgrestError 係 plain object(唔係 Error)——String(err) 會變 '[object Object]';
+        // 抽 .message 保留真錯誤內容(RLS 拒絕 / schema drift 先睇得明)
+        const msg = err instanceof Error ? err.message
+          : (err && typeof err === 'object' && typeof (err as { message?: unknown }).message === 'string'
+            ? (err as { message: string }).message : String(err));
         if (attempt < MAX_RETRIES - 1) {
           log.warn(`Supabase write attempt ${attempt + 1}/${MAX_RETRIES} failed: ${msg} — retrying in ${BACKOFF_MS[attempt]}ms`);
           await new Promise(resolve => setTimeout(resolve, BACKOFF_MS[attempt]!));
         } else {
+          this.lastWriteError = msg;
           log.error(`Supabase write failed after ${MAX_RETRIES} attempts (non-fatal — cycle continues): ${msg}`);
         }
       }
