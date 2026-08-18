@@ -169,6 +169,10 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
 
+### v2.0.870-P29-attack: P29 攻擊輪(4/6 命中全修)
+
+V-3a 分桶白名單(`__proto__`/`constructor` 歸 unknown);**V-1 假 normal 修復**——`volumeData` 顯式標記,中性預設≠真量數據(V-1 係量條件 edge 可讀性嘅根基);V-3 ratio clamp [0,100];C-3 巨針盾(單支偏離入場價 ±100% 跳過,真 +5% 插針照過——唔 over-block)。歷史 fixture 升級 volumeData 語義。
+
 ### v2.0.870-P29-S1+S3: Shadow 量標籤 + 量條件勝率
 
 S1:量維度(volumeRatio5m/vol4hRatio/thin/strong flags,中性=1.0)經單一 helper 流入 blind/aligned/statistical 三條開倉路徑——記錄唔閘(探索不可被 bias)。S3:判決時量標籤持久化 + `getVolumeConditionedStats()` 四桶觀測,SSE/ui_snapshots 加 `volumeConditioned`。盲影雙向結構性 ~50% WR,aligned 單邊先係訊號。
