@@ -318,10 +318,14 @@ function normKey(symbol: string): string {
   return s.toLowerCase();
 }
 
-/** A valid symbol key contains only [a-z0-9:_-] after normalisation.
- *  Catches corrupted keys like `xyz:SILVER**` (markdown / wildcard leak). */
+/** A valid symbol key contains alphanumerics + : _ - after normalisation.
+ *  Asset part keeps its case (`xyz:SILVER`) — normKey() only lowercases the
+ *  prefix before ':', mirroring portfolio.normalizeSymbol. The regex MUST
+ *  therefore allow A-Z for the asset part; lowercasing everything here would
+ *  corrupt the canonical key. What we reject is genuinely corrupted keys like
+ *  `xyz:SILVER**` (markdown / wildcard leak). */
 function isValidSymbolKey(symbol: string): boolean {
-  return /^[a-z0-9:_-]+$/.test(symbol);
+  return /^[a-zA-Z0-9:_-]+$/.test(symbol);
 }
 
 // ─── CycleHistoryRetriever ───
