@@ -4,6 +4,21 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P27: 蠟燭 σ + 4h 名義量 USD(「vol 0.00%」假零修復)
+
+**根因(主神實問)**:卡上「vol 0.00%」係 volatility σ,原料係 tick 歷史——非 active symbol REST 每 cycle 先 1 tick,tick 間 log-return≈0 → σ 假零(實證:SKHX「4h −0.65%」但「vol 0.00%」)。trend 眼（P26)修咗,vol 眼仲生緊同一個病。
+
+**解法**（同池零成本——P26 反正每 cycle fetch 緊）:
+- `vol5mSigma`:5m 收市 log-return sample σ(≈ per-cycle σ,同工同酬),逐格 NaN shield;`getState().volatility` 新鮮動量在 → 蠟燭 σ 優先,冇 → tick σ 降級唔變;`classifyMomentumTrend` 嘅 volatile 覆蓋亦改用快照 σ(同源一致)
+- `vol4hNotionalUsd`:最近 48 支收市量 × 最新價(4h 名義 USD)
+- 顯示(主神定調「show 確實 value」):卡位 `vol 0.00%` → **`σ 0.12% · 4h量 $1.2M`**;analysis-matrix payload 加 `volume4hUsd`;舊行 fallback
+
++8 紅先測試;全量 2708 pass / 13 pre-existing;tsc/UI tsc clean。
+
+**Live 驗證(cycle 落地後 DB 實測)**:六市場 regime 真多樣(trending_bear ×4 / trending_bull / mean_reverting)—— 100% mean_reverting 假單色爆破;σ 全非零(0.024%–0.472%),與 4h 動量互相咬合(SKHX σ 最高 ↔ 動量最大);4h 名義量分層合理(xyz 細池 $5.9M ↔ BTC $110M)。**適配備注(誠實記錄)**:histVol(tick σ 歷史)與 currentState(蠟燭 σ)尺度混用——每 cycle 重判 + calibrator 自動歸中自癒;假 σ 年代 vol-gate 休眠層可能首次甦醒,屬 intended healing,首 24h 留意。UI label「4h量」改「4h」純英文(主神指正中英混搭戇鳩)。
+
+---
+
 ## v2.0.870-P26-attack: P26/P26.5 刁鑽攻擊輪(8 攻 6 中,全部修復)
 
 **攻擊結果**(A1-A9:A2/A9 本已安全 + 前提修正 1):

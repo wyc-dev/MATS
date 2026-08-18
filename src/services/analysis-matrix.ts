@@ -138,6 +138,7 @@ export function buildAssetAnalysis(
       momentum15m: mom.m15m ?? 0,
       volumeRatio5m: mom.volumeRatio ?? 0,
       volumeState: mom.volumeState ?? 'unknown',
+      volume4hUsd: mom.vol4hNotionalUsd ?? 0,
     } : {}),
   };
 
