@@ -15,6 +15,7 @@ import { computeVectorConditionalWinRate, entryDecisionCondWROptions, formatVect
 import type { NumericEmbedProvider } from './numeric-autoencoder.ts';
 import { isThesisPlaceholder } from '../trading/portfolio.ts';
 import { readFileSync, existsSync } from 'node:fs';
+import { getDeploymentTimeline, formatDeploymentTimeline, postFixVersionsFor } from '../services/deployment-timeline.ts';
 
 const log = createLogger({ phase: 'trade-audit' });
 
@@ -155,6 +156,9 @@ export async function auditTradeRecordsLLM(records: ThesisExperienceRecord[], em
     return { incidents: [], summary: 'No fully-instrumented records to audit (all trades are pre-v2.0.819 legacy or missing OLR/thesis data)', llmAnalysis: '', timestamp };
   }
 
+  // v2.0.870-P24: deployment timeline —— git log first-landing per fix version
+  const auditTimeline = getDeploymentTimeline();
+
   // Build a compact data summary for the LLM
   const dataLines = recent.map((r, i) => {
     const features = r.marketFeatures
@@ -171,7 +175,14 @@ export async function auditTradeRecordsLLM(records: ThesisExperienceRecord[], em
     // quality issue: $0.00 WIN despite invalidation" — but the WIN label is
     // factually correct (pnl > 0); only the close mechanism is non-market.
     const closeKind = r.exitType && SYS_CLOSE_EXIT_TYPES.has(r.exitType) ? ' [SYS-CLOSE: PnL is partial/noisy, not a clean market SL/TP outcome]' : '';
-    return `#${i + 1} ${r.side.toUpperCase()} ${r.symbol} ${r.outcome} pnl=$${r.pnl.toFixed(2)} (${(r.pnlPct * 100).toFixed(1)}%) hold=${r.holdMin}min exit=${r.exitType ?? '?'}${closeKind} regime=${r.regime} ${features} ${olr} ${shadow} | thesis: ${r.entryThesis.slice(0, 120)}`;
+    // v2.0.870-P24: deployment-version awareness —— 每筆 trade 預算「邊啲 fix 已喺佢平倉時上線」。
+    // compare mechanize 咗:LLM 只需要讀 postFix 清單,冇得自己估時序。
+    const closeIso = Number.isFinite(r.ts) && r.ts > 0 ? new Date(r.ts).toISOString() : 'unknown-time';
+    const postFix = Number.isFinite(r.ts) && r.ts > 0
+      ? postFixVersionsFor(auditTimeline, r.ts, 8)
+      : [];
+    const postFixStr = postFix.length > 0 ? postFix.join(',') : '(none of the recent fixes were live yet)';
+    return `#${i + 1} ${r.side.toUpperCase()} ${r.symbol} ${r.outcome} pnl=$${r.pnl.toFixed(2)} (${(r.pnlPct * 100).toFixed(1)}%) hold=${r.holdMin}min exit=${r.exitType ?? '?'}${closeKind} regime=${r.regime} ${features} ${olr} ${shadow} closed=${closeIso} postFix=[${postFixStr}] | thesis: ${r.entryThesis.slice(0, 120)}`;
   });
 
   const userPrompt = `Recent closed trades (${recent.length} of ${records.length} total):
@@ -185,6 +196,12 @@ IMPORTANT: Do NOT accuse the system of "ignoring learning data" based on raw per
 Examine these trade records for ANY suspicious patterns. Detect issues that hardcoded rules would miss.
 
 IMPORTANT: Before reporting an issue, check if it has ALREADY BEEN FIXED in the changelog below. If the fix is already in the changelog, do NOT report it as a new issue — the fix exists but these trades were opened BEFORE the fix was deployed. Only report NEW issues that are NOT addressed in the changelog.
+
+${formatDeploymentTimeline(auditTimeline)}
+
+## TEMPORAL GROUND RULE (mandatory — replaces guessing):
+Every trade line ends with 'closed=<ISO>' and 'postFix=[v...]' markers. A trade is a post-fix occurrence of fix X **only if X's token or alias appears in that trade's postFix list**. If X is absent, the trade is PRE-FIX by definition — it is STALE evidence and CANNOT prove "the fix failed". If a version you want to cite is missing from the timeline entirely, its deploy time is UNKNOWN — state that explicitly.
+Classify every fix-related finding as 'STALE(pre-fix)' or 'NEW(post-fix)' using the postFix lists. STALE clusters: cap severity at warning (they are historical context, not actionable regressions).
 
 ### CHANGELOG (recent fixes — do NOT re-report these as issues):
 ${readChangelogFixes()}
