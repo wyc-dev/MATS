@@ -4,6 +4,21 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P29-attack: P29 刁鑽攻擊輪(6 攻 4 中,全部修復)
+
+| # | 攻擊 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| **V-3a** | recentResults 俾人持久化污染 volumeState=`__proto__`/`constructor` → 分桶撞上 Object.prototype → 統計 NaN/原型污染 | MED | 分桶白名單,異常值歸 unknown |
+| **V-1** | **假 normal**:中性預設 1.0/1.0 無量數據時被判做 `normal` → unknown 污染正常桶,量邊際畀假平均沖淡(盈利量化流失) | **HIGH** | 新增顯式 `volumeData` 標記:只有快照存在且量真算出先 = 1;`volumeTagsFromFeatures` 冇標記一律 unknown |
+| **V-3** | volumeRatio5m=1e9 級異常持久化/入學習維度 | LOW | clamp [0,100](100× = 瘋狂爆量封頂) |
+| **C-3** | **壞蠟燭巨針**(5m h=100×價)→ 假 TP/SL 命中,`highSinceOpen` 被污染教壞學習 | MED | 巨針盾:單支極值偏離入場價 ±100% 跳過整支；+5% 真插針正常通過(唔 over-block) |
+
+「冇數據」同「常態量」從此喺學習系統分家——unknown 桶嘅完整性 = 量條件 edge 嘅可讀性。
+
++6 攻擊測試全綠;全量 2746 pass / 13 pre-existing;tsc clean。
+
+---
+
 ## v2.0.870-P29-S1+S3: Shadow 量標籤(記錄唔閘)+ 量條件勝率觀測
 
 **主神問**:Shadow 加埋 vol 資料會唔會再準啲?**答**:會——但遵守 quant 鐵律:**shadow 係探索層,開倉絕不按量過濾**(過濾 = 分佈 bias,永遠學唔到縮量會點);量只入 **features(標籤)**,由 outcome 學出 volume-conditioned edge。
