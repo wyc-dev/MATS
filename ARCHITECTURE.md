@@ -169,6 +169,14 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
 
+### v2.0.870-P31+P32: 新聞源 rate-policy 紀律
+
+P31: GDELT host pacer(全域 promise-chain,1 req/5.5s,reserve-on-enqueue,失敗唔斷鏈)——實證 GDELT IP 級硬限 1 req/5s,6 symbol 並發必中 429 循環 cooldown。**P32(主神裁決):GDELT 預設停運**(`NEWS_GDELT=1` 翻身),news 主力 = google-news + bing RSS;breaker backstop 不變。
+
+### v2.0.870-P29-attack2: cycle-history key 完整性(validator 認自家 canonical + side-word 閘)
+
+兩層:(1) `isValidSymbolKey` 放行 A-Z——normKey 只細階化冒號前 prefix(canonical 係 `xyz:SILVER`),之前每次啟動誤棄 6 隻 xyz: AttnRes 記憶;(2) `isUsableSymbolKey` = charset ∧ 唔係 side-word(buy/sell/hold),閘三 runtime 入口 + load 清理——欄位錯位化石(`decision.symbol='buy'`,cycles 10706/10799)永久封殺;`'0g'` 合法資產保留。化石檔已清。
+
 ### v2.0.870-P29-attack: P29 攻擊輪(4/6 命中全修)
 
 V-3a 分桶白名單(`__proto__`/`constructor` 歸 unknown);**V-1 假 normal 修復**——`volumeData` 顯式標記,中性預設≠真量數據(V-1 係量條件 edge 可讀性嘅根基);V-3 ratio clamp [0,100];C-3 巨針盾(單支偏離入場價 ±100% 跳過,真 +5% 插針照過——唔 over-block)。歷史 fixture 升級 volumeData 語義。
