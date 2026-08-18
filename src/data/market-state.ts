@@ -195,8 +195,10 @@ export class MarketStateAggregator {
     snap: import('../analysis/momentum-trend.ts').MomentumSnapshot,
     ts = Date.now(),
   ): void {
+    try {
     const sym = String(symbol ?? '').toLowerCase();
     if (!sym || !snap || typeof snap !== 'object') return;
+    if (sym.length > 64) return; // A4: 垃圾注入(萬字符號)拒收
     const validTrends = new Set(['bullish', 'bearish', 'sideways', 'volatile']);
     if (!validTrends.has(trend)) return;
     // NaN 盾牌:任何非 null 欄位必須 finite;volumeRatio 污了只 null 化唔拒收
@@ -208,6 +210,8 @@ export class MarketStateAggregator {
     if (cleanSnap.volumeRatio !== null && !Number.isFinite(cleanSnap.volumeRatio)) cleanSnap.volumeRatio = null;
     if (cleanSnap.vol4hRatio !== null && !Number.isFinite(cleanSnap.vol4hRatio)) cleanSnap.vol4hRatio = null;
     if (!Number.isFinite(ts) || ts <= 0) ts = Date.now();
+    // A3: future timestamp 係 TTL 繞過攻擊(永遠新鮮)——clamp 到 now(60s 容差畀 clock skew)
+    if (ts > Date.now() + 60_000) ts = Date.now();
     this.momentumTrends.set(sym, { trend: trend as Trend, snap: cleanSnap, ts });
     if (this.momentumTrends.size > 40) {
       // bounded:逐出最舊(防長跑 leak)
@@ -216,6 +220,18 @@ export class MarketStateAggregator {
       for (const [k, v] of this.momentumTrends) if (v.ts < oldestTs) { oldestTs = v.ts; oldest = k; }
       if (oldest) this.momentumTrends.delete(oldest);
     }
+    } catch { /* A2: hostile getter / 讀取爆炸 → 拒收,唔准 crash */ }
+  }
+
+  /** P26-attack A7: 免觀測副作用嘅 volatility 讀取。
+   *  getState() 每次都會 calibrator.observe(regime)——momentum wiring 每 cycle
+   *  逐 symbol 再 call 一次 = 觀測量 double count → 校準分布被 wiring 位移。
+   *  呢個 getter 只計 σ,唔觀測。 */
+  getVolatilityForTrend(symbol: string): number {
+    const sym = String(symbol ?? '').toLowerCase();
+    const history = this.priceHistory.get(sym) ?? [];
+    const tsHistory = this.priceHistoryTs.get(sym) ?? [];
+    return this.calcVolatility(history, tsHistory);
   }
 
   /** P26: per-symbol 趨勢閾值(24h 口徑,%)——symbol override 優先,跟手 calibrator global */

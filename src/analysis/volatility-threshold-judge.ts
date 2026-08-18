@@ -196,7 +196,10 @@ export class VolatilityThresholdJudge {
           candleSummary: a.candles && a.candles.length > 0 ? this.formatCandles(a.candles) : '無 candle 數據',
           // v2.0.870-P26.5: 定量量值核對——同一蠟燭來源,LLM 定性 vs 計算交叉驗證。
           // 架構保證:caller 冇傳 → 本層由同一 candles 自計——永遠唔會漏。
-          computedVolume: a.computedVolume ?? (a.candles && a.candles.length >= 6 ? (() => {
+          // A5: caller 傳嘅 computedVolume 都唔信——形狀唔啱(string/垃圾欄位)→ 自計
+          computedVolume: (a.computedVolume !== null && typeof a.computedVolume === 'object' && !Array.isArray(a.computedVolume))
+            ? a.computedVolume
+            : (a.candles && a.candles.length >= 6 ? (() => {
             try {
               const m = computeMomentum(a.candles!, null);
               return { volumeRatio5m: m.volumeRatio, volumeState: m.volumeState, vol4hRatio: m.vol4hRatio };

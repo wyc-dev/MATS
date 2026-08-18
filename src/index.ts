@@ -5079,14 +5079,23 @@ ${recentExamples}
     const { computeMomentum, classifyMomentumTrend } = await import('./analysis/momentum-trend.ts');
     for (const mkt of markets) {
       try {
-        const [c1h, c5m] = await Promise.all([
-          candleCache.getCandles(mkt, '1h', 100),
-          candleCache.getCandles(mkt, '5m', 100),
-        ]);
+        // A6: candle fetch 掛死唔准凍結成個 trend 層——per-symbol 8s 預算
+        // (同 backfill 一致;超時 = 呢個 cycle 呢個 symbol 唔注入,下 cycle 再試)
+        const pair = await withTimeout(
+          Promise.all([
+            candleCache.getCandles(mkt, '1h', 100),
+            candleCache.getCandles(mkt, '5m', 100),
+          ]),
+          8_000,
+          `momentum ${mkt}`,
+        );
+        const c1h = pair?.[0] ?? null;
+        const c5m = pair?.[1] ?? null;
         const snap = computeMomentum(c5m, c1h);
         if (!snap.hasData) continue;
         const tau = this.marketState.getTrendTau(mkt);
-        const vol = this.marketState.getState(mkt)?.volatility ?? 0;
+        // A7: 用免副作用 getter——getState 會觸發 calibrator.observe,觀測量會 double count
+        const vol = this.marketState.getVolatilityForTrend(mkt);
         const trend = classifyMomentumTrend(snap, tau, vol);
         this.marketState.setMomentumTrend(mkt, trend, snap);
       } catch {
