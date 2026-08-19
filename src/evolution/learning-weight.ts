@@ -30,6 +30,10 @@ export function computeLearningWeight(
   // thesis_invalidation closes get full weight 1.0 and the v2.0.226 0.3 discount
   // never applies (the original bug: `if (isWin) return 1.0` ran first).
   switch (closeReason) {
+    case 'reversal_point':
+      // v2.0.870-P78-E1: reversal-point structure exit——即時結構判斷反轉
+      // （ATH/ATL 回落 + 蠟燭形態），系統決策，唔係純市場風險訊號 → 0.3
+      return 0.3;
     case 'consensus_reversal':
       // v2.0.870-P47: 共識反轉離場——系統判斷趨勢反轉,同 thesis_invalidation
       // 一樣係「系統判斷」,唔係純市場風險訊號 → 0.3

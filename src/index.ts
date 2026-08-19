@@ -79,6 +79,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
+import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, type ReversalCandle } from './analysis/reversal-point.ts';
 import { computePrematureClosePenalty } from './evolution/premature-close-guard.ts';
 import { BStocksWallet, PAYMENT_TOKEN_ADDRESSES, checkBStockSwapPreconditions, findBStockTokens, sanitizeBStockTrades } from './services/bstocks-wallet.ts';
 import { BStockData } from './services/bstock-data.ts';
@@ -7125,6 +7126,14 @@ ${recentExamples}
       const lines: string[] = [`=== ${heading} ===`];
       if (positionInfo) lines.push(positionInfo);
 
+      // P78 誠實信心修復: 兩邊都冇 live 樣本（只有 backfill）→ 明確標明唔係 live 訊號。
+      // 根源: SKHX -14.7% 案例 agent 睇到「OLR BUY edge +28pp, conf=high」但實際
+      // pwin=9.16e-09——backfill 樣本被當 live 顯示，誤導 agent 開倉。
+      const liveSamples = olrBuy.effectiveSamples + olrSell.effectiveSamples;
+      if (liveSamples === 0 && (olrBuy.nSamples > 0 || olrSell.nSamples > 0)) {
+        lines.push(`  ⚠️ OLR: NO LIVE DATA (${olrBuy.nSamples + olrSell.nSamples} backfill-only samples — NOT a live signal, do NOT treat as edge)`);
+      }
+
       // ── OLR probabilities with FULL source breakdown (incl. backfill) ──
       lines.push(`OLR (learned from TP-before-SL outcomes — per-side logistic regression):`);
       const sb = (q: OLRQueryResult) => `shadow=${q.sourceBreakdown.shadow} paper=${q.sourceBreakdown.paper} real=${q.sourceBreakdown.real} backfill=${q.sourceBreakdown.backfill}`;
@@ -7173,7 +7182,10 @@ ${recentExamples}
         const sellEdge = olrSell.pWin - fp.breakevenPShort;
         const buySig = buyEdge > 0.10 ? 'FAVOR BUY' : buyEdge < -0.05 ? 'AGAINST BUY' : 'no edge';
         const sellSig = sellEdge > 0.10 ? 'FAVOR SELL' : sellEdge < -0.05 ? 'AGAINST SELL' : 'no edge';
-        lines.push(`OLR EDGE vs breakeven: BUY ${(buyEdge * 100).toFixed(0)}pp (${buySig}) | SELL ${(sellEdge * 100).toFixed(0)}pp (${sellSig})`);
+        // P78-E3 誠實信心延伸: edge 用 backfill pwin 計——liveSamples === 0 時標明
+        // （SKHX 案例「OLR BUY edge +28pp」就係 backfill edge 被當 live 顯示）
+        const edgeSuffix = liveSamples === 0 ? ' (backfill-only — NOT live)' : '';
+        lines.push(`OLR EDGE vs breakeven: BUY ${(buyEdge * 100).toFixed(0)}pp (${buySig})${edgeSuffix} | SELL ${(sellEdge * 100).toFixed(0)}pp (${sellSig})${edgeSuffix}`);
       } catch { /* price history unavailable for this symbol — skip FP + edge */ }
 
       lines.push(`DATA SOURCES: shadow=fixed S/R SL/TP sim, paper=dynamic SL/TP, real=HL exchange (truest), backfill=cold-start prior (weight least). Weight by recency + source reliability.`);
@@ -10809,6 +10821,41 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
           } catch { /* non-critical */ }
         }
 
+        // ── P78-E1: Reversal-Point 離場（持倉中結構判斷——MAE/MFE 原版）──
+        // 主神洞察: MAE/MFE 係「呢筆交易實際行咗幾遠」——per-symbol 即時結果。
+        // 主神裁決: 收窄版（s1 0.9/s2 2.0/連續確認）冇好處——避免少 17% 誤傷一樣 0 → 回滾原版。
+        // 驗證: 200 筆 realTrades——SL 避免 228.1% / 誤傷 0% + TP 改善 25.4% / 錯過 0%
+        // env REVERSAL_POINT_EXIT=false 回滾
+        if (process.env['REVERSAL_POINT_EXIT'] !== 'false') {
+          try {
+            const unrealizedPnlPct = safeNum(pos.unrealizedPnlPct, 0);
+            const holdMin = Number.isFinite(pos.openedAt) ? (Date.now() - pos.openedAt) / 60_000 : 0;
+            if (holdMin >= 15) {
+              // margin-basis excursion（position value = margin + unrealized PnL）
+              const margin = safeNum(pos.quantity, 0) * safeNum(pos.averageEntryPrice, 0) / safeLeverage(pos.leverage);
+              const minV = safeNum(pos.minValueReached, margin);
+              const maxV = safeNum(pos.maxValueReached, margin);
+              const maePct = margin > 0 ? Math.max(0, (margin - minV) / margin) : 0;
+              const mfePct = margin > 0 ? Math.max(0, (maxV - margin) / margin) : 0;
+
+              // E1-TP: 提早鎖利（MFE 已達實質水平 + 回吐 ≥ 30%——「賺咗又返轉頭」）
+              if (shouldLockProfitOnMaeMfe({ unrealizedPnlPct, maePct, mfePct, holdMin })) {
+                log.info(`🟢 [reversal-point-lock] ${psc.symbol}: MFE ${(mfePct * 100).toFixed(1)}% 回吐至 ${(unrealizedPnlPct * 100).toFixed(1)}% — 提早鎖利`);
+                await this.closeTrade(psc.symbol, `Reversal-point lock: MFE ${(mfePct * 100).toFixed(1)}% retraced to ${(unrealizedPnlPct * 100).toFixed(1)}% (≥30% giveback)`, 'reversal_point');
+                continue; // 倉位已 close,skip 成個 loop
+              }
+
+              // E1-SL: 止血（原版——單 cycle 判斷）
+              const maeMfe = shouldExitOnMaeMfeReversal({ unrealizedPnlPct, maePct, mfePct, holdMin });
+              if (maeMfe.exit) {
+                log.warn(`🔻 [reversal-point-exit] ${psc.symbol}: MAE ${(maePct * 100).toFixed(1)}% vs MFE ${(mfePct * 100).toFixed(1)}% — 水下 ${(unrealizedPnlPct * 100).toFixed(1)}% 接近 MAE（結構反轉）`);
+                await this.closeTrade(psc.symbol, `Reversal-point exit: MAE ${(maePct * 100).toFixed(1)}% dominates MFE ${(mfePct * 100).toFixed(1)}%, underwater ${(unrealizedPnlPct * 100).toFixed(1)}% near MAE`, 'reversal_point');
+                continue; // 倉位已 close,skip 成個 loop
+              }
+            }
+          } catch { /* non-critical */ }
+        }
+
         // v2.0.91: Close validation depends on whether the position has an entryThesis.
         // - WITH entryThesis: Meta-Agent → Skeptics validateCloseDecision → execute
         // - WITHOUT entryThesis (legacy): sub-agent voting already handled above,
@@ -11773,6 +11820,38 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             }
           }
         } catch { /* 非致命 */ }
+
+        // ── P78: Reversal-Point soft gate（即時結構——唔係歷史統計）──
+        // 主神裁決: 方案 B「預測反轉點」——用即時市場結構（ATH/ATL 距離、蠟燭形態、
+        // 多時間框架分歧、S/R 距離）判斷「而家呢個位逆向風險高唔高」。
+        // 唔用歷史統計做 gate（方案 A/C 已裁決唔做）。soft 唔閘;REVERSAL_POINT_GATE=false 回滾。
+        // 驗證: SKHX -14.7% 案例 score 0.75 HIGH（×0.5）;誤傷贏單 0/6（20 筆反事實）。
+        try {
+          if (process.env['REVERSAL_POINT_GATE'] !== 'false' && (gateAction === 'buy' || gateAction === 'sell')) {
+            const rpSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+            const entryPx = safeNum(finalDecision.entryPrice, 0);
+            if (entryPx > 0) {
+              const c1h = candleCache.peekCandles(rpSym, '1h');
+              const c5m = candleCache.peekCandles(rpSym, '5m');
+              // S/R 距離: lastSRContext 係 activeSymbol 專屬——gateSym ≠ activeSymbol 就保守唔用
+              const src = rpSym === normalizeSymbol(activeSymbol) ? this.lastSRContext : null;
+              const rp = computeReversalRiskScore({
+                entryPrice: entryPx,
+                candles1h: c1h as ReversalCandle[] | null,
+                candles5m: c5m as ReversalCandle[] | null,
+                side: gateAction as 'buy' | 'sell',
+                distanceToResistanceBps: src?.distanceToResistanceBps ?? null,
+                distanceToSupportBps: src?.distanceToSupportBps ?? null,
+              });
+              if (rp.hasData && rp.score >= 0.3) {
+                const rpMult = reversalRiskMultiplier(rp.level);
+                effectiveConfidence *= rpMult;
+                log.info(`🔻 [reversal-point] ${gateAction.toUpperCase()} ${rpSym}: score ${rp.score.toFixed(2)} (${rp.level.toUpperCase()}) → conviction ×${rpMult} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+                activeAuditGates.push({ gate: 'reversal-point', passed: true, reason: `score ${rp.score.toFixed(2)} (${rp.level}) → ×${rpMult} (soft)` });
+              }
+            }
+          }
+        } catch { /* 非致命——Gate 失敗唔 block */ }
 
         // ── v2.0.868-P2: Entry EV 校準(MAE profile——保守 EV 乘數)──
         // Profile:該 symbol×side 最近 30 日「入場後點走」(rolling window)
