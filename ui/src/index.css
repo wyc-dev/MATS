@@ -1447,6 +1447,28 @@ body {
   opacity: 0.5;
   cursor: not-allowed;
 }
+.bstocks-refresh-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+.bstocks-refresh-btn:hover:not(:disabled) {
+  color: var(--orange, #f0a020);
+  border-color: var(--orange, #f0a020);
+}
+.bstocks-refresh-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 .bstocks-address {
   font-size: var(--fs-sm);
   color: var(--text-secondary);

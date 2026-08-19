@@ -4,6 +4,19 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P60: Wallet TVL refresh + 每 cycle x402 呼叫(3 次後永久停)
+
+**主神指令**:Wallet TVL 右邊加 refresh icon button;每 cycle fetch 1 次 CMC + 1 次 Agent Studio x402 呼叫,3 次後永久停。
+
+**改動**:
+- `ui/src/App.tsx`:Wallet TVL cell 加 refresh button(`RotateCw` icon,`refreshTvl` 函數 fetch `/api/bstocks/balance`);未連接時 disabled
+- `ui/src/index.css`:`.bstocks-refresh-btn` 樣式(hover 橙色)
+- `src/index.ts`:加 `maybeRunX402Calls()`(每 cycle 1 次 CMC `get_global_metrics_latest` + 1 次 Agent Studio `agentStudioAnalyze`;計數持久化喺 `data/bstocks-x402-count.json`;3 次後永久停);hook 入 cycle 尾(fire-and-forget)
+
+tsc clean;vite build 成功。
+
+---
+
 ## v2.0.870-P59: bStock 動態 map(唔再 hardcode,新 symbol 自動 map)
 
 **主神指令**:「你要全部記錄在案啦,有時我想trade新嘢,你要自己識得 map」。

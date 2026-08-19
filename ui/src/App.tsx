@@ -1111,6 +1111,14 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [bStocksBusy, setBStocksBusy] = useState(false)
   const [bStocksMsg, setBStocksMsg] = useState<string | null>(null)
   const [bStockMapVersion, setBStockMapVersion] = useState(0)
+  // v2.0.870-P60: 手動 refresh Wallet TVL
+  const refreshTvl = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/bstocks/balance`)
+      const json = await res.json()
+      if (json.success && typeof json.tvl === 'number') setWalletTvl(json.tvl)
+    } catch { /* ignore */ }
+  }
   // v2.0.870-P57: 重啟後自動檢查 Agent Wallet 連接狀態(baw session 持久化)
   useEffect(() => {
     let cancelled = false
@@ -1439,7 +1447,18 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         </div>
         {/* v2.0.870-P50: Wallet TVL(數值來源之後補上) */}
         <div className="portfolio-cell">
-          <span className="stat-label">Wallet TVL</span>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span className="stat-label">Wallet TVL</span>
+            <button
+              type="button"
+              className="bstocks-refresh-btn"
+              onClick={refreshTvl}
+              disabled={!bStocksConnected}
+              title="Refresh balance"
+            >
+              <RotateCw size={14} />
+            </button>
+          </div>
           <span className="stat-number neutral">{(() => {
             const tvl = (typeof walletTvl === 'number' && Number.isFinite(walletTvl)) ? walletTvl : null
             return tvl === null ? '--' : `$${tvl.toFixed(2)}`
