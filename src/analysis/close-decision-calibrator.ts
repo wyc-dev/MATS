@@ -40,7 +40,7 @@ const STALE_MS = 48 * 3600 * 1000;    // pending 超時棄置
 const MAX_PENDING = 200;
 const DEFAULT_PATH = 'data/evolution/close-decision-calibration.json';
 
-const CLOSE_REASONS_TO_CALIBRATE = new Set(['consensus', 'consensus_reversal', 'thesis_invalidation', 'exit_price_lock']);
+const CLOSE_REASONS_TO_CALIBRATE = new Set(['consensus', 'consensus_reversal', 'thesis_invalidation', 'exit_price_lock', 'reversal_point']);
 
 interface Counter {
   premature: number;  // weighted

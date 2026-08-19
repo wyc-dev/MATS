@@ -157,6 +157,20 @@ export class CandleCache {
     if (oldestKey) this.cache.delete(oldestKey);
   }
 
+  /**
+   * P78: 同步讀取 cache（唔 fetch）——gate 堆疊係同步執行，用 cached candle
+   * 判斷即時結構（momentum 層每 cycle 已 warm cache）。cache miss → null（中性，唔干擾）。
+   * FIX-4（攻擊輪 D1）: copy-on-read——返回深 copy，caller mutate 唔污染 cache
+   * （P28-attack B5 教訓: getMomentumSnapshot 返回內部引用 → 外部 mutate 污染 store）。
+   */
+  peekCandles(symbol: string, interval: '1h' | '5m'): Candle[] | null {
+    if (typeof symbol !== 'string' || symbol.length === 0) return null;
+    const key = `${symbol.toLowerCase()}|${interval}`;
+    const hit = this.cache.get(key);
+    if (!hit || hit.failTs > 0) return null;
+    return hit.candles.length > 0 ? hit.candles.map(c => ({ ...c })) : null;
+  }
+
   /** 統計(cache hit/miss 監察) */
   getStats(): { size: number; keys: string[] } {
     return { size: this.cache.size, keys: [...this.cache.keys()] };

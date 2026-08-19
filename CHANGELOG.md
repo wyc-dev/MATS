@@ -4,6 +4,37 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P78: 方案 B——預測反轉點（Reversal-Point Detection）
+
+**主神裁決**: 方案 A（OLR Gate）& C（SL/TP 配置）**唔做**——「過分由歷史判斷未來」。只做方案 B：用**即時市場結構**判斷入場反轉風險。
+
+**背景（SKHX -14.7% 案例）**: BUY @ $1184.40，thesis 聲稱「OLR BUY edge +28pp, conf=high」但實際 pwin=9.16e-09（backfill 被當 live 顯示）；1h +2.33% 大陽燭後價格已由高位回落（ATH 89bps），agent 喺回落途中追入，38 分鐘 -14.7%。
+
+**設計（`src/analysis/reversal-point.ts` 純函數，經 20 筆 SKHX 反事實驗證）**:
+- 權重: 極值距離 0.35（ATH/ATL 回落 <100bps = 追高/追低失敗）/ EntryTiming 0.25（entry 低過 1h close = 回落途中追入）/ 大陽燭後回落 0.10 / 蠟燭形態 0.10 / 動量減速 0.05 / S/R 0.05 / 15m 分歧 0.05
+- **U 形風險**: 貼近極值回落 = 高風險（追高失敗）；遠離極值 = 低位反彈（安全）——唔誤傷好交易
+- **soft gate**: high ×0.5 / medium ×0.75 / low ×0.9 / neutral ×1.0（唔 hard block）；env `REVERSAL_POINT_GATE` 回滾
+- **誠實信心修復**（方案 B 嘅前提）: `buildOLRBlock` 兩邊都冇 live 樣本 → `⚠️ OLR: NO LIVE DATA (backfill-only — NOT a live signal)`——backfill 唔准再被當 live 顯示
+- `candle-cache.ts` 加 `peekCandles()` sync 讀取（gate 堆疊同步執行用，momentum 層已 warm cache）
+
+**驗證（邏輯實驗，4 輪迭代）**:
+- v1（4 組件）→ SKHX 0.30 LOW ❌；v2（ATH 回落）→ 誤傷 WIN 單 ❌；v3（U 形）→ 誤傷消除但 0.65 未達 HIGH；**v4（加大陽燭後回落）→ SKHX 0.73-0.75 HIGH ✅**
+- 20 筆 SKHX 反事實: 誤傷贏單 **0/6**；入場即水下命中 2/4（追高失敗命中；中間位反轉 miss——設計邊界，誠實記錄）
+
++11 紅先測試（SKHX 案例 / WIN 唔誤傷 / 冷啟動 / 毒輸入 / 乘數 / 格式）;全量 2902 pass + 13 pre-existing;tsc clean。
+
+**P78-E1（反轉點離場——MAE/MFE 原版）**: 主神洞察「用 MAE/MFE 判獨立 symbol 嘅市場結構唔會再準啲咩」——MAE/MFE 係「呢筆交易實際行咗幾遠」（per-symbol 即時結果），比 ATH/ATL 通用閾值準 8 倍。**主神裁決: 收窄版（s1 0.9×mae/s2 2.0×mfe/連續 2 cycle 確認）冇好處——避免少 17%（228.1→190.2）誤傷一樣 0 → 回滾原版**。原版: SL 止血（s1 入場即水下 |unrealizedPnlPct| ≥ 0.8×maePct / s2 逆向主導 maePct > 1.5×mfePct / s3 冇動能 mfePct < 0.1%；離場 = holdMin ≥ 15 全局必要 AND ① AND（② OR ③））+ **TP 提早鎖利**（MFE ≥ 0.5% + 贏緊 + 已回吐 ≥ 30%——驗證 +25.4% / 錯過 0%）。`closeReason='reversal_point'`（learning weight 0.3，全鏈 8 處）。**反事實驗證（200 筆 realTrades）: SL 避免 228.1% / 誤傷 0% + TP 改善 25.4% / 錯過 0%**。env `REVERSAL_POINT_EXIT` 回滾。E1/E2/E3 後全量 2937 pass + 13 pre-existing。
+
+**P78-E2（score 觀測）**: gate 觸發時 score 已記錄到 activeAuditGates + log（觀測數據已有，唔加新 code——避免 scope 蔓延）。
+
+**P78-E3（誠實信心延伸）**: buildOLRBlock edge 行（`OLR EDGE vs breakeven`）——liveSamples === 0 時加 `(backfill-only — NOT live)` 標明（SKHX 案例「OLR BUY edge +28pp」就係 backfill edge 被當 live 顯示）。
+
+**P78-attack（刁鑽攻擊輪）**: 6 漏洞全修——candle null/undefined 元素 crash（入口 filter）/ `reversalRiskMultiplier('garbage')` → undefined → NaN 污染（default → 1.0）/ `formatReversalEvidence` 垃圾 result crash（防禦）/ `peekCandles` 內部引用泄漏（copy-on-read——P28-attack B5 教訓）。+17 攻擊測試全綠。
+
+**P78-attack2（刁鑽攻擊輪 2——E1 MAE/MFE 毒輸入）**: 4 漏洞全修——負數 mfePct 令 s2 誤觸發（maePct > 1.5×負數 = 一定 true）/ -Infinity unrealizedPnlPct 令 s1 誤觸發 / Infinity mfePct 令鎖利誤觸發 / min/maxValueReached 持久化污染（-Infinity/Infinity）流入 maePct/mfePct。修復: 純函數入口 sanitize（maePct/mfePct clamp [0, 10] + **mfeValid guard**——負數/NaN = 無效，唔係「冇順向」，clamp 到 0 會令 s2 誤觸發）。+13 攻擊測試全綠。攻擊輪 2 後全量 2950 pass + 13 pre-existing。
+
+---
+
 ## v2.0.870-P77: SNDK 平倉記錄修復 + Supabase migration 執行 + 本地儲存預設
 
 **主神報告**:SNDK 平倉記錄重啟後唔見咗
