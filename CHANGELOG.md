@@ -4,6 +4,20 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P53: bStocks 自動 swap 執行邏輯 + Wallet TVL + 自動存地址
+
+**主神指令**:接「bStocks switch ON 時自動 swap」;下注 = Wallet TVL × Position Size 10%,Leverage 唔理。
+
+**改動**:
+- `src/services/bstocks-wallet.ts`:加 `swap()`(market-order swap + poll 到 terminal state)、`getBalance()`(TVL)、`saveAddress()`(寫 .env)、`BSTOCK_ADDRESSES`(SPYB/SKHYB/MUB 實證地址)、`PAYMENT_TOKEN_ADDRESSES`(USDT/USDC/BNB/U/USD1)
+- `src/api-server.ts`:`/api/bstocks/balance`(GET)+ `/api/bstocks/swap`(POST)
+- `src/index.ts`:`maybeSwapBStock()`(BUY→swap USDT→bStock;SELL→swap bStock→USDT;下注=TVL×positionSizePct,Leverage 唔理);hook 入 executeTrade(成功後)+ closeTrade(real/paper 平倉後);status handler 自動 saveAddress;env allowlist 加 `BSTOCKS_ENABLED`
+- `ui/src/App.tsx`:連接後 fetch Wallet TVL;toggle 持久化 `BSTOCKS_ENABLED` 到 env
+
+tsc clean;vite build 成功。
+
+---
+
 ## v2.0.870-P52: bStocks 交易機制確認 + UI bStock 標籤
 
 **主神指令**:確認 bStocks 點配合現有系統交易;UI 上 Selected Market Pairs 有相應 bStock 時,喺 symbol 右方顯示橙色 "(SPYB)"。
