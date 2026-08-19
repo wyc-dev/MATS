@@ -4,6 +4,20 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P43-attack: P43 刁鑽攻擊輪(5 攻 3 中,全部修復)
+
+| # | 攻擊 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| **A1** | 組件 1 接線用 `getState()` → 觸發 `calibrator.observe()` → 觀測量 double count → 校準分布位移(A7 紀律違反) | **HIGH** | 改用免觀測 `getTrendRegimeSnapshot()` |
+| **A2** | `reversalOpposedCycles` 計數喺倉位 close 後唔 reset → 重開同方向倉位時 stale 計數即時誤觸發反轉止蝕 | MED | `closeTrade()` 內 `delete(sym)` |
+| **A3** | confidence > 1(污染值)通過信心門檻 | MED | 信心上界 `> 1` 拒收 |
+| A4 | 負數/NaN/惡意字串/大小寫 | 釘 | 既有盾 |
+| A5 | 四條件缺一不可 | 釘 | 組合覆蓋 |
+
++10 攻擊測試全綠;blast-radius 57 tests 綠;tsc clean。
+
+---
+
 ## v2.0.870-P43: 闊 SL + 加強版共識反轉止蝕(主神 SKHX whipsaw 案例)
 
 **主神案例**:SKHX $1106.90→$1089.50(跌 1.57%),方向判 SELL 啱,但 5 次進出 whipsaw 淨蝕 -$1.62(本應 +7.85% margin)。「呢個情況不能接受,真係轉 trend 嘅時候要識得用共識提早止蝕,先係真正智能」。
