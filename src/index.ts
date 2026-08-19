@@ -79,7 +79,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
-import { BStocksWallet } from './services/bstocks-wallet.ts';
+import { BStocksWallet, BSTOCK_ADDRESSES, PAYMENT_TOKEN_ADDRESSES } from './services/bstocks-wallet.ts';
 import { regimeSLWidth } from './analysis/regime-sl-width.ts';
 import { shouldExitOnReversal, isOpposedDirection, normalizePositionSide } from './analysis/consensus-reversal-exit.ts';
 import { evaluateDataQuality } from './analysis/data-quality.ts';
@@ -286,6 +286,37 @@ class MATSSystem {
   private reversalOpposedCycles = new Map<string, number>();
   /** v2.0.870-P51: Binance Agentic Wallet(bStocks)接入 */
   private bStocksWallet = new BStocksWallet();
+
+  /** v2.0.870-P53: bStocks switch ON 時自動 swap(同 Hyperliquid 交易並行)。
+   *  BUY → swap USDT→bStock;SELL → swap bStock→USDT。
+   *  fire-and-forget(唔 block 主交易);env BSTOCKS_ENABLED=true 先啟用。 */
+  private maybeSwapBStock(symbol: string, side: 'buy' | 'sell'): void {
+    try {
+      if (process.env['BSTOCKS_ENABLED'] !== 'true') return;
+      const bStockAddr = BSTOCK_ADDRESSES[normalizeSymbol(symbol)];
+      if (!bStockAddr) return;
+      const usdtAddr = PAYMENT_TOKEN_ADDRESSES['USDT'] ?? '';
+      if (!usdtAddr) return;
+      // 下注 = Wallet TVL × Position Size(10%);Leverage 唔理(bStocks 1:1)
+      const bal = this.bStocksWallet.getBalance();
+      const tvl = bal.success && bal.tvl != null ? bal.tvl : 0;
+      const sizePct = this.marketAgent.getConfig().positionSizePct ?? 0.10;
+      const amount = (tvl * sizePct).toFixed(2);
+      if (tvl <= 0 || parseFloat(amount) <= 0) {
+        log.warn(`[bstocks] TVL=0, skip swap ${symbol}`);
+        return;
+      }
+      if (side === 'buy') {
+        const r = this.bStocksWallet.swap(usdtAddr, bStockAddr, amount);
+        log.info(`🟢 [bstocks] BUY ${symbol} → swap ${amount} USDT → bStock (TVL=${tvl.toFixed(2)} × ${(sizePct * 100).toFixed(0)}%): ${r.success ? 'OK' : (r.error ?? 'failed')}`);
+      } else {
+        const r = this.bStocksWallet.swap(bStockAddr, usdtAddr, amount);
+        log.info(`🔴 [bstocks] SELL ${symbol} → swap bStock → USDT (${amount}): ${r.success ? 'OK' : (r.error ?? 'failed')}`);
+      }
+    } catch (err) {
+      log.warn(`[bstocks] swap failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   // v2.0.835: Q-RL Alpha Discovery
   private qrlTable!: QRLTable;
   /** v2.0.862: PAEL — per-asset exit-price learner (MFE/MAE profiles). */
@@ -2183,7 +2214,14 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       this.apiServer.setBStocksHandlers({
         connect: () => this.bStocksWallet.signIn(),
         verify: (qrCodeId: string) => this.bStocksWallet.verify(qrCodeId),
-        status: () => this.bStocksWallet.getStatus(),
+        status: () => {
+          const st = this.bStocksWallet.getStatus();
+          // v2.0.870-P53: 連接後自動存 BINANCE_AW_ADDRESS 到 .env
+          if (st.connected && st.address) this.bStocksWallet.saveAddress(st.address);
+          return st;
+        },
+        balance: () => this.bStocksWallet.getBalance(),
+        swap: (fromToken: string, toToken: string, qty: string) => this.bStocksWallet.swap(fromToken, toToken, qty),
       });
 
       // v2.0.116: Settings modal — get/update env vars
@@ -2221,7 +2259,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             'OLLAMA_API_KEY', 'MASSIVE_API_KEY', 'OLLAMA_PLAN',
             'TELEGRAM_BOT_API', 'TELEGRAM_CHAT_ID',
             'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY',
-            'BINANCE_AW_ADDRESS',
+            'BINANCE_AW_ADDRESS', 'BSTOCKS_ENABLED',
           ]);
           const envPath = path.join(process.cwd(), '.env');
           let envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
@@ -5710,6 +5748,10 @@ ${recentExamples}
       // v2.0.726: Reset cycles-since-last-trade counter
       this.cyclesSinceLastTrade = 0;
     }
+    // v2.0.870-P53: bStocks switch ON 時自動 swap(同 Hyperliquid 交易並行)
+    if (success) {
+      this.maybeSwapBStock(decision.symbol, decision.action as 'buy' | 'sell');
+    }
     return { success, paperReports: reports };
     } finally {
       // v2.0.213 (#7): Always clear the execution lens after trade execution
@@ -5998,7 +6040,10 @@ ${recentExamples}
 
     if (pos.agentId === 'hyperliquid-real') {
       // Real position: close on HL first, then locally
-      return await this.tradingManager.closePosition(sym, closeReason);
+      const closed = await this.tradingManager.closePosition(sym, closeReason);
+      // v2.0.870-P53: bStocks switch ON 時自動平倉(swap bStock→USDT)
+      if (closed) this.maybeSwapBStock(sym, 'sell');
+      return closed;
     } else {
       // Paper position: close locally
       const state = this.marketState?.getState(sym);
@@ -6008,6 +6053,8 @@ ${recentExamples}
         return false;
       }
       const trade = this.portfolio.closePosition(sym, closePrice, closeReason);
+      // v2.0.870-P53: bStocks switch ON 時自動平倉(swap bStock→USDT)
+      if (trade) this.maybeSwapBStock(sym, 'sell');
       return !!trade;
     }
   }

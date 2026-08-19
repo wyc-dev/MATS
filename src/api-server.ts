@@ -282,6 +282,8 @@ export class APIServer {
   private onBStocksConnect: (() => import('./services/bstocks-wallet.ts').BStocksSignInResult) | null = null;
   private onBStocksVerify: ((qrCodeId: string) => import('./services/bstocks-wallet.ts').BStocksVerifyResult) | null = null;
   private onBStocksStatus: (() => import('./services/bstocks-wallet.ts').BStocksStatusResult) | null = null;
+  private onBStocksBalance: (() => import('./services/bstocks-wallet.ts').BStocksBalanceResult) | null = null;
+  private onBStocksSwap: ((fromToken: string, toToken: string, qty: string) => import('./services/bstocks-wallet.ts').BStocksSwapResult) | null = null;
   /** v2.0.122: Set per-symbol direction restrictions from UI. */
   private onSetDirectionRestrictions: ((restrictions: Record<string, 'buy' | 'sell'>) => void) | null = null;
   /** v2.0.45: Clear drawdown data to relaunch trading after circuit breaker. */
@@ -444,10 +446,14 @@ export class APIServer {
     connect: () => import('./services/bstocks-wallet.ts').BStocksSignInResult;
     verify: (qrCodeId: string) => import('./services/bstocks-wallet.ts').BStocksVerifyResult;
     status: () => import('./services/bstocks-wallet.ts').BStocksStatusResult;
+    balance: () => import('./services/bstocks-wallet.ts').BStocksBalanceResult;
+    swap: (fromToken: string, toToken: string, qty: string) => import('./services/bstocks-wallet.ts').BStocksSwapResult;
   }): void {
     this.onBStocksConnect = handlers.connect;
     this.onBStocksVerify = handlers.verify;
     this.onBStocksStatus = handlers.status;
+    this.onBStocksBalance = handlers.balance;
+    this.onBStocksSwap = handlers.swap;
   }
 
   /** v2.0.116: Register callback for updating env settings */
@@ -1474,6 +1480,35 @@ export class APIServer {
         } else {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: false, message: 'bStocks status handler not registered.' }));
+        }
+        return;
+      }
+      if (pathname === '/api/bstocks/balance' && req.method === 'GET') {
+        if (this.onBStocksBalance) {
+          const result = this.onBStocksBalance();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } else {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'bStocks balance handler not registered.' }));
+        }
+        return;
+      }
+      if (pathname === '/api/bstocks/swap' && req.method === 'POST') {
+        if (this.onBStocksSwap) {
+          let body = '';
+          for await (const chunk of req) body += chunk;
+          let fromToken = ''; let toToken = ''; let qty = '';
+          try {
+            const j = JSON.parse(body || '{}') as { fromToken?: string; toToken?: string; qty?: string };
+            fromToken = j.fromToken ?? ''; toToken = j.toToken ?? ''; qty = j.qty ?? '';
+          } catch { /* keep '' */ }
+          const result = this.onBStocksSwap(fromToken, toToken, qty);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } else {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'bStocks swap handler not registered.' }));
         }
         return;
       }
