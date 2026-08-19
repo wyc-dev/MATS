@@ -80,7 +80,7 @@ import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computePrematureClosePenalty } from './evolution/premature-close-guard.ts';
-import { BStocksWallet, PAYMENT_TOKEN_ADDRESSES, checkBStockSwapPreconditions, findBStockTokens } from './services/bstocks-wallet.ts';
+import { BStocksWallet, PAYMENT_TOKEN_ADDRESSES, checkBStockSwapPreconditions, findBStockTokens, sanitizeBStockTrades } from './services/bstocks-wallet.ts';
 import { BStockData } from './services/bstock-data.ts';
 import { cmcCall, agentStudioAnalyze, agentStudioPoll } from './services/x402-calls.ts';
 import { regimeSLWidth } from './analysis/regime-sl-width.ts';
@@ -292,7 +292,11 @@ class MATSSystem {
   /** v2.0.870-P54: bStock 數據源(Binance spot) */
   private bStockData = new BStockData();
   /** v2.0.870-P56: bStocks 平行交易記錄(symbol → 買入/賣出價) */
+  /** v2.0.870-P75: bStock 平行交易記錄(symbol → 買入/賣出價)——持久化版
+   *  之前係 runtime Map,restart 會清;而家持久化到 data/evolution/bstocks-trades.json,
+   *  restart 後讀返——Trade Incident 顯示 bStock 資料唔會因為 restart 而丟失。 */
   private bStockTrades = new Map<string, { bStockSymbol: string; buyPrice: number | null; sellPrice: number | null }>();
+  private readonly BSTOCK_TRADES_PATH = 'data/evolution/bstocks-trades.json';
 
   /** v2.0.870-P53: bStocks switch ON 時自動 swap(同 Hyperliquid 交易並行)。
    *  BUY → swap USDT→bStock;SELL → swap bStock→USDT。
@@ -355,6 +359,7 @@ class MATSSystem {
             const rec = this.bStockTrades.get(normSym) ?? { bStockSymbol, buyPrice: null, sellPrice: null };
             rec.buyPrice = price;
             this.bStockTrades.set(normSym, rec);
+            this.saveBStockTrades();
           }
         } else {
           const r = this.bStocksWallet.swap(bStockAddr, usdtAddr, amount);
@@ -365,6 +370,7 @@ class MATSSystem {
             const rec = this.bStockTrades.get(normSym) ?? { bStockSymbol, buyPrice: null, sellPrice: null };
             rec.sellPrice = price;
             this.bStockTrades.set(normSym, rec);
+            this.saveBStockTrades();
           }
         }
       } finally {
@@ -376,7 +382,45 @@ class MATSSystem {
   }
 
   /**
-   * v2.0.870-P73: bStocks 倉位同步——每 cycle 核對 HL 倉位同 bStocks 倉位對齊。
+   * v2.0.870-P75: bStock 平行交易記錄——持久化 + 啟動時恢復。
+   * 主神指令:Trade Incident 入面要顯示 bStock 資料(symbol 同 entry price 旁邊),
+   * 即使系統 restart 都要保留。
+   */
+  private saveBStockTrades(): void {
+    try {
+      const obj = Object.fromEntries(this.bStockTrades);
+      fs.writeFileSync(this.BSTOCK_TRADES_PATH, JSON.stringify(obj), 'utf-8');
+    } catch (err) {
+      log.warn(`[bstocks] saveBStockTrades failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** v2.0.870-P75: 啟動時恢復 bStockTrades(持久化) */
+  private loadBStockTrades(): void {
+    try {
+      if (!fs.existsSync(this.BSTOCK_TRADES_PATH)) return;
+      const raw = fs.readFileSync(this.BSTOCK_TRADES_PATH, 'utf-8');
+      const obj = JSON.parse(raw) as unknown;
+      // v2.0.870-P76: sanitize 防污染(buyPrice 垃圾值/__proto__ 注入)
+      this.bStockTrades = sanitizeBStockTrades(obj);
+      if (this.bStockTrades.size > 0) log.info(`[bstocks] loaded ${this.bStockTrades.size} bStock trade records`);
+    } catch (err) {
+      log.warn(`[bstocks] loadBStockTrades failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** v2.0.870-P75: 手動記錄(用於 sync 或者手動 swap 後補記) */
+  private recordBStockTrade(symbol: string, side: 'buy' | 'sell', price: number | null): void {
+    const normSym = normalizeSymbol(symbol);
+    const bStockSymbol = this.bStockTrades.get(normSym)?.bStockSymbol;
+    if (!bStockSymbol) return;
+    const rec = this.bStockTrades.get(normSym) ?? { bStockSymbol, buyPrice: null, sellPrice: null };
+    if (side === 'buy') rec.buyPrice = price; else rec.sellPrice = price;
+    this.bStockTrades.set(normSym, rec);
+    this.saveBStockTrades();
+  }
+
+  /** v2.0.870-P73: bStocks 倉位同步——每 cycle 核對 HL 倉位同 bStocks 倉位對齊。
    * 主神指令:「HL 平倉的話相應嘅 bStocks 都要 swap back to USDT」。
    * 邏輯:
    *   - HL 冇倉位 + bStock 有 → swap bStock → USDT(對齊平倉)
@@ -401,9 +445,17 @@ class MATSSystem {
         const hlSym = this.bStockData.getHLForBStockSymbolSync(b.symbol);
         if (!hlSym) continue;
         if (hlSymbols.has(normalizeSymbol(hlSym))) continue; // HL 有倉位 → 唔郁
-        // HL 冇倉位 + bStock 有 → swap back to USDT(對齊平倉)
-        const r = this.bStocksWallet.swap(b.address, usdtAddr, b.balance);
-        log.info(`🔄 [bstocks-sync] ${b.symbol} → USDT (${qty}): ${r.success ? 'OK' : (r.error ?? 'failed')} — HL 已平,對齊 swap back`);
+        // v2.0.870-P76(W4): 併發 guard——同 maybeSwapBStock 共用,避免重複 swap
+        const normHl = normalizeSymbol(hlSym);
+        if (this.bStockSwapInFlight.has(normHl)) continue;
+        this.bStockSwapInFlight.add(normHl);
+        try {
+          // HL 冇倉位 + bStock 有 → swap back to USDT(對齊平倉)
+          const r = this.bStocksWallet.swap(b.address, usdtAddr, b.balance);
+          log.info(`🔄 [bstocks-sync] ${b.symbol} → USDT (${qty}): ${r.success ? 'OK' : (r.error ?? 'failed')} — HL 已平,對齊 swap back`);
+        } finally {
+          this.bStockSwapInFlight.delete(normHl);
+        }
       }
     } catch (err) {
       log.warn(`[bstocks-sync] failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1269,6 +1321,8 @@ class MATSSystem {
 
       // v2.0.143: Load persisted Root Command Prompt so it survives backend restarts.
       this.loadRootCommandPrompt();
+      // v2.0.870-P75: Load bStock trade records(持久化,restart 後顯示 bStock 資料)
+      this.loadBStockTrades();
 
       // 3.10b: Cold-start OLR backfill helper — defined here, invoked lazily
       // on the first decision cycle with non-empty trading markets (markets

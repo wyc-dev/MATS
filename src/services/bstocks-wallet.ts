@@ -304,3 +304,26 @@ export function findBStockTokens(tokens: Array<{ symbol: string; balance: string
     return sym.endsWith('B') && !PAYMENT_SYMS.has(sym);
   });
 }
+
+/**
+ * v2.0.870-P76: sanitize bStockTrades 持久化數據(load 時防污染)。
+ * 攻擊向量 W1:buyPrice/sellPrice 可能係 string/NaN/Infinity/負數——
+ * 直接入 Map 會污染 Trade Incident 顯示。呢度逐欄 sanitize:
+ *   - bStockSymbol 必須係非空 string
+ *   - buyPrice/sellPrice 必須係 finite 正數,否則 null
+ *   - __proto__/垃圾 record → skip
+ */
+export function sanitizeBStockTrades(raw: unknown): Map<string, { bStockSymbol: string; buyPrice: number | null; sellPrice: number | null }> {
+  const out = new Map<string, { bStockSymbol: string; buyPrice: number | null; sellPrice: number | null }>();
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  const san = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) && x > 0 ? x : null);
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+    if (!v || typeof v !== 'object') continue;
+    const rec = v as Record<string, unknown>;
+    const bStockSymbol = typeof rec['bStockSymbol'] === 'string' ? rec['bStockSymbol'] : '';
+    if (!bStockSymbol) continue;
+    out.set(k, { bStockSymbol, buyPrice: san(rec['buyPrice']), sellPrice: san(rec['sellPrice']) });
+  }
+  return out;
+}
