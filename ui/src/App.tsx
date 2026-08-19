@@ -1443,7 +1443,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                     setBStocksPairingCode(json.pairingCode)
                     setBStocksUrlForWeb(json.urlForWeb ?? null)
                     if (json.urlForWeb) window.open(json.urlForWeb, '_blank')
-                    setBStocksMsg(`Pairing code: ${json.pairingCode} — confirm in Binance App`)
+                    setBStocksMsg(`Pairing code: ${json.pairingCode} — verify it matches in Binance App, tap Confirm there, then click Verify below`)
                   } else {
                     setBStocksMsg(json.error ?? 'Sign-in failed')
                   }
@@ -1481,7 +1481,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       </div>
       {bStocksPairingCode && bStocksQrCodeId && !bStocksConnected && (
         <div className="bstocks-verify-row">
-          <span className="bstocks-toggle-hint">Pairing code: <strong>{bStocksPairingCode}</strong></span>
+          <span className="bstocks-toggle-hint">Pairing code: <strong>{bStocksPairingCode}</strong> — confirm in Binance App first, then click Verify</span>
           <button
             type="button"
             className="bstocks-connect-btn"
