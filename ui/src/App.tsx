@@ -1085,6 +1085,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [cyclePeriod, setCyclePeriod] = useState(config?.cyclePeriodMinutes ?? 5)
   const [closeConfirmSym, setCloseConfirmSym] = useState<string | null>(null)
   const [closingSym, setClosingSym] = useState<string | null>(null)
+  // v2.0.870-P50: Wallet TVL(數值來源之後補上)+ Binance bStocks 開關
+  const [walletTvl, setWalletTvl] = useState<number | null>(null)
+  const [binanceBStocksEnabled, setBinanceBStocksEnabled] = useState(false)
   // Cross-asset-type pair cache: persists volume/price data across Asset Type switches
   // so Selected Market Pairs can show data even when the pair isn't in the current topPairs.
   const pairCacheRef = useRef<Map<string, { volume24h: number; volume5m?: number; price: number; priceChangePercent: number }>>(new Map())
@@ -1373,6 +1376,31 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
             return eq === null ? '--' : `$${eq.toFixed(2)}`
           })()}</span>
         </div>
+        {/* v2.0.870-P50: Wallet TVL(數值來源之後補上) */}
+        <div className="portfolio-cell">
+          <span className="stat-label">Wallet TVL</span>
+          <span className="stat-number neutral">{(() => {
+            const tvl = (typeof walletTvl === 'number' && Number.isFinite(walletTvl)) ? walletTvl : null
+            return tvl === null ? '--' : `$${tvl.toFixed(2)}`
+          })()}</span>
+        </div>
+      </div>
+
+      {/* v2.0.870-P50: Binance bStocks trading 開關 */}
+      <div className="bstocks-toggle-row">
+        <div className="bstocks-toggle-label">
+          <span className="stat-label">Binance (bStocks trading)</span>
+          <span className="bstocks-toggle-hint">bStock PnL 比賽 · 之後接數據源</span>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={binanceBStocksEnabled}
+          className={`toggle-switch ${binanceBStocksEnabled ? 'on' : 'off'}`}
+          onClick={() => setBinanceBStocksEnabled(v => !v)}
+        >
+          <span className="toggle-knob" />
+        </button>
       </div>
 
       {/* Trade Mode + Cycle Period */}

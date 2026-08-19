@@ -4,6 +4,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P50: Trading Terminal UI——Wallet TVL + Binance bStocks 開關
+
+**主神指令**:HACP Prefrontal Trading Terminal 嘅 Genuine Balance/Equity 同 row 加 **Wallet TVL**(數值來源之後補上);下方加 **Binance (bStocks trading) On/Off Switch**。
+
+**改動**:
+- `ui/src/App.tsx`:portfolio-grid 加第三格 Wallet TVL(placeholder `--`,state `walletTvl` 之後接數據源);下方加 bStocks toggle switch(state `binanceBStocksEnabled`,role=switch + aria-checked)
+- `ui/src/index.css`:portfolio-grid 2→3 欄;新增 `.toggle-switch`/`.toggle-knob`/`.bstocks-toggle-row` 樣式
+
+tsc clean;vite build 成功。
+
+---
+
 ## v2.0.870-P49(決策,唔做): 拒絕 re-entry cooldown——判斷準確性先係重點
 
 **主神裁決**:「NO P49,判斷準確性先係重點,加 block 唔係好事」。
