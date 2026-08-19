@@ -159,6 +159,9 @@ export function classifyMomentumTrend(snap: MomentumSnapshot, tau24: number, vol
   // attack-hardened(P26-attack A1):非 finite 窗口歸 null——callers 未必係
   // computeMomentum(防禦深度;setMomentumTrend 都有盾,呢度係最後防線)
   const fin = (x: number | null): number | null => (x !== null && Number.isFinite(x) ? x : null);
+  // V2a-fix: m15m 唔好用 fin() 殺 Infinity——Infinity 係極端反對要阻,
+  // null 只係冇數據唔阻。分開儲:clean 版同 raw 版。
+  const rawM15m = snap.m15m;
   snap = { ...snap, m5m: fin(snap.m5m), m15m: fin(snap.m15m), m1h: fin(snap.m1h), m4h: fin(snap.m4h) };
   if (!Number.isFinite(volatility)) volatility = 0;
   const tauAbs = Number.isFinite(tau24) && tau24 > 0 ? Math.abs(tau24) : 0.5;
@@ -175,11 +178,19 @@ export function classifyMomentumTrend(snap: MomentumSnapshot, tau24: number, vol
   // v2.0.870-P72: 三窗唔阻——4h+1h 定方向,15m 反對 → sideways(唔郁)
   // 主神推論驗證:策略 C(唔阻)SKHX 14日 PnL -56% → +10%,大幅改善。
   // 15m 同向/中立 → 放行;15m 反對 → 唔郁(過濾時機,唔係 hard block)
+  // V2a-fix: ±Infinity 係極端反對(唔係「冇數據」)——要阻;null/NaN → 唔阻
   const tau15m = Math.min(Math.max(tauAbs / 96, 0.01), tauAbs); // 15m 閾值,更細
   const m15Opposes = (trend: 'bullish' | 'bearish' | null): boolean => {
-    if (trend === null || m15m === null) return false; // 冇 15m 數據唔阻
-    if (trend === 'bullish') return m15m < -tau15m;     // 睇多但 15m 跌 → 反對
-    if (trend === 'bearish') return m15m > tau15m;     // 睇淡但 15m 升 → 反對
+    if (trend === null) return false;
+    // 極端值判斷用 raw 值(未經 fin() 殺)→ Infinity 都阻
+    const m15 = rawM15m;
+    if (m15 === null) return false; // 冇數據唔阻
+    if (!Number.isFinite(m15)) {
+      // ±Infinity → 極端反對(阻);NaN → 冇數據(唔阻)
+      return m15 === Infinity || m15 === -Infinity;
+    }
+    if (trend === 'bullish') return m15 < -tau15m;     // 睇多但 15m 跌 → 反對
+    if (trend === 'bearish') return m15 > tau15m;     // 睇淡但 15m 升 → 反對
     return false;
   };
 

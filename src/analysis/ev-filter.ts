@@ -68,6 +68,8 @@ export function computeEV(samples: number[]): { ev: number; pWin: number; avgWin
  *  兩者對稱:正 EV 更有信心開單、負 EV 唔慫恿開單——判斷力,唔係 size 控制
  *  永遠唔 hard block。 */
 export function evToMultiplier(ev: number, n: number): number {
+  // V1b-fix: -Infinity 係「極端負」(唔係「無效」)——唔准中性放行,當災難桶 0.15
+  if (ev === -Infinity) return 0.15;
   if (!Number.isFinite(ev) || n < MIN_SAMPLES) return 1.0;
   if (ev >= 0) {
     // Kelly 式正 EV boost——判斷層(開單信心),唔影響 size(用戶決定)
