@@ -79,6 +79,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
+import { BStocksWallet } from './services/bstocks-wallet.ts';
 import { regimeSLWidth } from './analysis/regime-sl-width.ts';
 import { shouldExitOnReversal, isOpposedDirection, normalizePositionSide } from './analysis/consensus-reversal-exit.ts';
 import { evaluateDataQuality } from './analysis/data-quality.ts';
@@ -283,6 +284,8 @@ class MATSSystem {
   private edgeReportCount = 0;
   /** P43: 共識反轉止蝕——每 symbol 連續反轉 cycle 計數(過濾噪音 flip) */
   private reversalOpposedCycles = new Map<string, number>();
+  /** v2.0.870-P51: Binance Agentic Wallet(bStocks)接入 */
+  private bStocksWallet = new BStocksWallet();
   // v2.0.835: Q-RL Alpha Discovery
   private qrlTable!: QRLTable;
   /** v2.0.862: PAEL — per-asset exit-price learner (MFE/MAE profiles). */
@@ -2176,6 +2179,13 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         setTimeout(() => void this.runDecisionCycle(), 500);
       });
 
+      // v2.0.870-P51: bStocks Agentic Wallet handlers
+      this.apiServer.setBStocksHandlers({
+        connect: () => this.bStocksWallet.signIn(),
+        verify: (qrCodeId: string) => this.bStocksWallet.verify(qrCodeId),
+        status: () => this.bStocksWallet.getStatus(),
+      });
+
       // v2.0.116: Settings modal — get/update env vars
       this.apiServer.setGetEnvSettingsHandler(() => {
         const settings: Record<string, string> = {};
@@ -2211,6 +2221,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             'OLLAMA_API_KEY', 'MASSIVE_API_KEY', 'OLLAMA_PLAN',
             'TELEGRAM_BOT_API', 'TELEGRAM_CHAT_ID',
             'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY',
+            'BINANCE_AW_ADDRESS',
           ]);
           const envPath = path.join(process.cwd(), '.env');
           let envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';

@@ -278,6 +278,10 @@ export class APIServer {
   private onMarketAgentSelectSymbol: ((symbol: string) => void) | null = null;
   /** v2.0.79: Set trading markets list from UI pills. */
   private onSetTradingMarkets: ((markets: string[]) => void) | null = null;
+  /** v2.0.870-P51: bStocks Agentic Wallet sign-in / verify / status. */
+  private onBStocksConnect: (() => import('./services/bstocks-wallet.ts').BStocksSignInResult) | null = null;
+  private onBStocksVerify: ((qrCodeId: string) => import('./services/bstocks-wallet.ts').BStocksVerifyResult) | null = null;
+  private onBStocksStatus: (() => import('./services/bstocks-wallet.ts').BStocksStatusResult) | null = null;
   /** v2.0.122: Set per-symbol direction restrictions from UI. */
   private onSetDirectionRestrictions: ((restrictions: Record<string, 'buy' | 'sell'>) => void) | null = null;
   /** v2.0.45: Clear drawdown data to relaunch trading after circuit breaker. */
@@ -433,6 +437,17 @@ export class APIServer {
   /** v2.0.116: Register callback for getting env settings */
   setGetEnvSettingsHandler(cb: () => Record<string, string>): void {
     this.onGetEnvSettings = cb;
+  }
+
+  /** v2.0.870-P51: Register bStocks Agentic Wallet handlers. */
+  setBStocksHandlers(handlers: {
+    connect: () => import('./services/bstocks-wallet.ts').BStocksSignInResult;
+    verify: (qrCodeId: string) => import('./services/bstocks-wallet.ts').BStocksVerifyResult;
+    status: () => import('./services/bstocks-wallet.ts').BStocksStatusResult;
+  }): void {
+    this.onBStocksConnect = handlers.connect;
+    this.onBStocksVerify = handlers.verify;
+    this.onBStocksStatus = handlers.status;
   }
 
   /** v2.0.116: Register callback for updating env settings */
@@ -1424,6 +1439,45 @@ export class APIServer {
       }
 
       // v2.0.116: GET — get current env settings (masked)
+      // v2.0.870-P51: bStocks Agentic Wallet sign-in / verify / status
+      if (pathname === '/api/bstocks/connect' && req.method === 'POST') {
+        if (this.onBStocksConnect) {
+          const result = this.onBStocksConnect();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, ...result }));
+        } else {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'bStocks connect handler not registered.' }));
+        }
+        return;
+      }
+      if (pathname === '/api/bstocks/verify' && req.method === 'POST') {
+        if (this.onBStocksVerify) {
+          let body = '';
+          for await (const chunk of req) body += chunk;
+          let qrCodeId = '';
+          try { qrCodeId = (JSON.parse(body || '{}') as { qrCodeId?: string }).qrCodeId ?? ''; } catch { /* keep '' */ }
+          const result = this.onBStocksVerify(qrCodeId);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } else {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'bStocks verify handler not registered.' }));
+        }
+        return;
+      }
+      if (pathname === '/api/bstocks/status' && req.method === 'GET') {
+        if (this.onBStocksStatus) {
+          const result = this.onBStocksStatus();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } else {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'bStocks status handler not registered.' }));
+        }
+        return;
+      }
+
       if (pathname === '/api/settings/env' && req.method === 'GET') {
         if (this.onGetEnvSettings) {
           const settings = this.onGetEnvSettings();
