@@ -4,6 +4,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P44-P45: 反轉止蝕精修(P46 驗證死路)
+
+**P44**:反轉止蝕 close reason `'consensus'` → `'thesis_invalidation'`(語義正確——共識反轉 = thesis 被推翻;RIL CloseReasonAggregator 分得清「共識反轉」vs「共識平倉」)。
+
+**P45**:盈利倉位唔俾共識 flip 就離場(贏單要跑)——交俾現有 `regime_reversal_lock`(MFE≥1.5×ATR 先鎖利)處理;`REVERSAL_EXIT_SKIP_PROFITABLE=false` 回滾。反轉止蝕專注「斬蝕」,鎖利交俾 regime_reversal_lock。
+
+**P46(驗證死路,唔做)**:ATR-aware SL `max(2%,1.5×ATR)` vs 固定 2%——127 筆 trending 倉反事實回測:兩者 100% 贏單保留、0% 輸單防住,**零改善**。原因:trending 倉 87% 係贏單(方向啱),固定 2% 已 100% 保留;16 筆輸單係「趨勢真反轉」,闊 SL 都救唔到。
+
++5 紅先測試(hostile side 防線);26 tests 綠;tsc clean。
+
+---
+
 ## v2.0.870-P43-attack: P43 刁鑽攻擊輪(5 攻 3 中,全部修復)
 
 | # | 攻擊 | 嚴重 | 修復 |
