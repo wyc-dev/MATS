@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P47: 反轉止蝕獨立 close reason `consensus_reversal`
+
+**背景**:反轉止蝕重用 `thesis_invalidation`,同 Skeptics 嘅 thesis invalidation 混埋——RIL 分唔到「共識反轉離場」vs「Skeptics 判斷 thesis 破」。
+
+**改動**(全鏈 10 處):
+- closeReason type 加 `consensus_reversal`(types/index.ts ×2 + trade-history.ts)
+- `VALID_CLOSE_REASONS` 白名單(portfolio.ts)
+- `computeLearningWeight` → 0.3(同 thesis_invalidation,系統判斷)
+- `CLOSE_REASONS_TO_CALIBRATE` / `SYSTEM_DECISION_EXIT_TYPES` / `SYS_CLOSE_EXIT_TYPES` / `COARSE_EXIT_TYPES` 全加
+- `marketRiskTrades` filter 排除(唔污染市場條件勝率)
+- 反轉止蝕 closeTrade 改用 `consensus_reversal`
+- **agent prompts**:meta-agent Block 2 + Skeptics pattern WR 加 `consensus_reversal` 解釋(「方向啱但趨勢反轉,離場正確,唔准反轉方向」)
+
++2 紅先測試(learning-weight 0.3);更新 3 個 SYSTEM_DECISION_EXIT_TYPES 斷言;47 tests 綠;tsc clean。
+
+---
+
 ## v2.0.870-P44-P45: 反轉止蝕精修(P46 驗證死路)
 
 **P44**:反轉止蝕 close reason `'consensus'` → `'thesis_invalidation'`(語義正確——共識反轉 = thesis 被推翻;RIL CloseReasonAggregator 分得清「共識反轉」vs「共識平倉」)。

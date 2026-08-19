@@ -245,7 +245,7 @@ export interface VectorConditionalOptions {
  *  `entryDecisionCondWROptions` (below) so the contract is enforced in one
  *  place. Consistent with the conviction-gate exclusion at index.ts
  *  (~'closeReason !== thesis_invalidation'). */
-export const SYSTEM_DECISION_EXIT_TYPES = ['thesis_invalidation'] as const;
+export const SYSTEM_DECISION_EXIT_TYPES = ['thesis_invalidation', 'consensus_reversal'] as const;
 
 /** v2.0.211: Build the standard conditional-WR options for ENTRY-DECISION
  *  contexts (the entry soft gate, Skeptics 1.8b block, Meta-Agent conviction

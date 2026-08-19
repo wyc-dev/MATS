@@ -7352,7 +7352,7 @@ ${recentExamples}
     // market-risk losses (SL hit), not thesis-system force-closes. Otherwise two
     // thesis invalidations → winRate 0% → gate raised to 64% → new strong theses
     // blocked → system stuck in cash → no new wins to lower the gate.
-    const marketRiskTrades = recentTrades.filter(t => t.closeReason !== 'thesis_invalidation');
+    const marketRiskTrades = recentTrades.filter(t => t.closeReason !== 'thesis_invalidation' && t.closeReason !== 'consensus_reversal');
     const recentWinRate = marketRiskTrades.length >= 3
       ? marketRiskTrades.filter(t => (t.realisedPnl ?? t.simulatedPnl ?? 0) > 0).length / marketRiskTrades.length
       : undefined;
@@ -10485,14 +10485,16 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               const skipProfitable = process.env['REVERSAL_EXIT_SKIP_PROFITABLE'] !== 'false';
               if (skipProfitable && isProfitable) {
                 this.reversalOpposedCycles.set(key, 0); // 唔累積(盈利倉唔觸發)
-                continue;
-              }
-              const trSnap = this.marketState?.getTrendRegimeSnapshot(psc.symbol);
-              const trend = trSnap?.trend ?? 'unknown';
-              if (shouldExitOnReversal(posSide, psc.action, psc.confidence, next, trend)) {
-                log.warn(`🔄 [reversal-exit] ${psc.symbol}: consensus flipped to ${String(psc.action).toUpperCase()} (${next} cycles, conf=${(psc.confidence * 100).toFixed(0)}%, trend=${trend}) — exiting ${posSide.toUpperCase()} early (genuine reversal)`);
-                await this.closeTrade(psc.symbol, `Consensus reversal exit: consensus flipped to ${String(psc.action).toUpperCase()} (${next} cycles)`, 'thesis_invalidation');
-                continue;
+                // P44-attack A1:唔准 continue——盈利倉只係唔觸發反轉止蝕,
+                // 但 close 決策(closePosition)必須照常執行(否則共識想平倉都平唔到)
+              } else {
+                const trSnap = this.marketState?.getTrendRegimeSnapshot(psc.symbol);
+                const trend = trSnap?.trend ?? 'unknown';
+                if (shouldExitOnReversal(posSide, psc.action, psc.confidence, next, trend)) {
+                  log.warn(`🔄 [reversal-exit] ${psc.symbol}: consensus flipped to ${String(psc.action).toUpperCase()} (${next} cycles, conf=${(psc.confidence * 100).toFixed(0)}%, trend=${trend}) — exiting ${posSide.toUpperCase()} early (genuine reversal)`);
+                  await this.closeTrade(psc.symbol, `Consensus reversal exit: consensus flipped to ${String(psc.action).toUpperCase()} (${next} cycles)`, 'consensus_reversal');
+                  continue; // 倉位已 close,skip 成個 loop(啱)
+                }
               }
             }
           } catch { /* non-critical */ }

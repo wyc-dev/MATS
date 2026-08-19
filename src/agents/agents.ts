@@ -1062,7 +1062,7 @@ The system must trade to evolve. Default APPROVE; reject ONLY for a SPECIFIC, MA
 
 === EXPERIENCE-BLOCK AUDIT (when pattern/close/similar-trade blocks are in context) ===
 - Pattern WR ≥60% and decision ignores it → challenge.
-- Pattern WR ≤40%: decision must address why-this-time-is-different AND whether losses were premature (close-reason stats). Premature-dominated losses (premature_sl / thesis_invalidated) mean LOW WR is MISLEADING (direction may be right, exits wrong) — if the agent missed that distinction → flag ("5/7 losses were premature — true accuracy may be higher"); if still correct_sl-dominated and unexplained → REJECT with the reference.
+- Pattern WR ≤40%: decision must address why-this-time-is-different AND whether losses were premature (close-reason stats). Premature-dominated losses (premature_sl / thesis_invalidated / consensus_reversal) mean LOW WR is MISLEADING (direction may be right, exits wrong) — if the agent missed that distinction → flag ("5/7 losses were premature — true accuracy may be higher"); if still correct_sl-dominated and unexplained → REJECT with the reference.
 - Close-reason block: correct_tp high WR → let TP work (flag planned manual closes before TP); premature losses → SL must sit at a REAL S/R level, else flag.
 - Similar-trades block: sim-weighted < raw WR → the closest matches LOST; citing raw WR without addressing the divergence → flag.
 - Challenges MUST cite specific experience data ("Pattern X: 14% WR over 7 trades, 5/7 premature"), never generic skepticism. "I'm not sure" is NOT a challenge.

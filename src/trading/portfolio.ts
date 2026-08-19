@@ -121,6 +121,7 @@ export const VALID_CLOSE_REASONS = new Set([
   'sl_tp',
   'tp_hit', // v2.0.868-fix(主神 SKHX 調查):TP 觸發分開——之前同 SL 共用 'sl_tp' 誤導
   'consensus',
+  'consensus_reversal', // v2.0.870-P47: 共識反轉離場(系統判斷趨勢反轉)
   'manual',
   'reconciliation',
   'exchange_closed',
