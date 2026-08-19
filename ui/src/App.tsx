@@ -10,6 +10,17 @@ import { fetchAssetAnalyses, supabaseEnabled, type AssetAnalysisRow } from './li
 const API_BASE = '/api'
 
 /* ── Helpers ── */
+// v2.0.870-P52: xyz: symbol → bStock symbol 對齊(同一個 underlying)
+const BSTOCK_MAP: Record<string, string> = {
+  'xyz:sp500': 'SPYB',
+  'xyz:skhx': 'SKHYB',
+  'xyz:mu': 'MUB',
+}
+function getBStockForSymbol(sym: string): string | null {
+  const key = sym.toLowerCase()
+  return BSTOCK_MAP[key] ?? null
+}
+
 function formatHKTime(ts: number): string {
   return new Date(ts).toLocaleString('en-US', {
     timeZone: 'Asia/Hong_Kong',
@@ -1783,6 +1794,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                 }}>
                   <span className={`smp-side-tag ${side === 'buy' ? 'buy' : 'sell'}`}>{side === 'buy' ? 'BUY' : 'SELL'} {posEntry > 0 ? `$${posEntry.toFixed(2)}` : '—'}</span>
                   <span className="smp-symbol">{(sym.includes(':') ? (sym.split(':').pop() ?? sym) : sym).toUpperCase()}</span>
+                  {getBStockForSymbol(sym) && <span className="smp-bstock-tag">({getBStockForSymbol(sym)})</span>}
                   <span className="smp-data">{posPrice > 0 ? `$${posPrice.toFixed(2)}` : '—'}</span>
                   <span className={`smp-data ${posPnl >= 0 ? 'positive' : 'negative'}`}>
                     {posPnl >= 0 ? '+' : ''}${posPnl.toFixed(2)}
@@ -1868,6 +1880,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                   }}>
                     <span className="smp-side-tag hold">HOLD</span>
                     <span className="smp-symbol">{(sym.includes(':') ? (sym.split(':').pop() ?? sym) : sym).toUpperCase()}</span>
+                  {getBStockForSymbol(sym) && <span className="smp-bstock-tag">({getBStockForSymbol(sym)})</span>}
                     <span className="smp-data">{ana ? `$${(ana.market_data?.price ?? 0).toFixed(2)}` : '—'}</span>
                     <span className="smp-data">{ana ? `${(ana.market_data?.change24h ?? 0) >= 0 ? '+' : ''}${(ana.market_data?.change24h ?? 0).toFixed(2)}%` : '—'}</span>
                     <span className="smp-spacer" />

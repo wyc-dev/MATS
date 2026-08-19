@@ -1856,6 +1856,12 @@ body {
   flex: 1;
   text-align: center;
 }
+.smp-bstock-tag {
+  color: var(--orange, #f0a020);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold, 600);
+  margin-left: 2px;
+}
 
 .smp-data {
   font-size: var(--fs-lg);

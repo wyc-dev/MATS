@@ -114,7 +114,50 @@ Eligible list 可能包含 3X/2X 槓桿 ETF（SOXL/SOXS/TQQQ/KORU）——波動
 
 ---
 
-## 6. 比賽 vs MATS 嘅核心矛盾
+## 6. bStocks 交易機制（同現有系統嘅配合——重要）
+
+### 6.1 bStocks 係 Swap，唔係 Order
+
+**bStocks 冇傳統嘅 Buy/Sell order，只有 Swap**（`baw market-order swap`）：
+
+| 動作 | baw 命令 |
+|---|---|
+| **買 bStock**（long） | `baw market-order swap --fromToken USDT --toToken <bStock地址>` |
+| **賣 bStock**（close long） | `baw market-order swap --fromToken <bStock地址> --toToken USDT` |
+
+### 6.2 冇原生 SL/TP
+
+bStocks 係 swap，**冇原生 SL/TP order**。SL/TP 要：
+- `baw limit-order sell`（限價單，喺目標價賣出 bStock）
+- 或 MATS 自己監控價格，到 SL/TP 價位觸發 swap
+
+### 6.3 Long-only（唔可以 short）
+
+bStocks 係 1:1 背書嘅代幣化美股，**只可以揸（long），唔可以沽空（short）**。
+
+### 6.4 同 MATS 現有系統嘅 mapping
+
+| MATS 訊號 | bStocks 動作 | 備註 |
+|---|---|---|
+| **BUY** | swap USDT → bStock（買入） | 若已揸住就 skip |
+| **SELL** | swap bStock → USDT（賣出/平倉） | 若冇揸住就 skip（唔可以 short） |
+| **SL** | limit-order sell @ SL 價 | 或 MATS 監控觸發 swap |
+| **TP** | limit-order sell @ TP 價 | 或 MATS 監控觸發 swap |
+
+### 6.5 關鍵差異（同 Hyperliquid xyz: 對比）
+
+| 維度 | Hyperliquid xyz: | bStocks |
+|---|---|---|
+| 方向 | long + short | **long only** |
+| SL/TP | 原生 order | **冇原生，要 limit-order 或監控** |
+| 執行 | 交易所 order | **swap（on-chain）** |
+| 槓桿 | 有 | **冇（1:1）** |
+
+> ⚠️ **結論**: bStocks 只係「買入揸住 + 到價賣出」嘅 long-only 模式。MATS 嘅 SELL（short）訊號喺 bStocks 度**唔適用**——只可以「平倉」（賣出已揸嘅 bStock）。SL/TP 要靠 limit-order 或 MATS 監控。
+
+---
+
+## 7. 比賽 vs MATS 嘅核心矛盾
 
 ```
 MATS 設計 = 穩定盈利（soft gate、保守 sizing、TP>>SL）
@@ -125,7 +168,7 @@ MATS 設計 = 穩定盈利（soft gate、保守 sizing、TP>>SL）
 
 ---
 
-## 7. 已完成（P51）
+## 8. 已完成（P51）
 
 - [x] `baw` CLI 安裝（`npm install -g @binance/agentic-wallet`，v1.8.0）
 - [x] 服務層 `src/services/bstocks-wallet.ts`（signIn / verify / getStatus，防禦式 parse + UUID 驗證 + timeout）
@@ -133,7 +176,7 @@ MATS 設計 = 穩定盈利（soft gate、保守 sizing、TP>>SL）
 - [x] UI Connect 按鈕（signin → 顯示 pairingCode + 開 urlForWeb → verify → 顯示地址）
 - [x] env allowlist 加 `BINANCE_AW_ADDRESS`
 
-## 8. 待接（下一步）
+## 9. 待接（下一步）
 
 - [ ] Wallet TVL 數值來源（`baw wallet balance` 或 bStock AUM）
 - [ ] 連接後自動存 `BINANCE_AW_ADDRESS` 到 .env（而家 UI 顯示地址，未自動寫 env）

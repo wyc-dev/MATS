@@ -4,6 +4,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P52: bStocks 交易機制確認 + UI bStock 標籤
+
+**主神指令**:確認 bStocks 點配合現有系統交易;UI 上 Selected Market Pairs 有相應 bStock 時,喺 symbol 右方顯示橙色 "(SPYB)"。
+
+**交易機制確認**(寫入 bStocks_module.md §6):
+- bStocks 係 **swap**(`baw market-order swap`),冇傳統 Buy/Sell order
+- **冇原生 SL/TP**——要 limit-order 或 MATS 監控
+- **Long-only**——唔可以 short;MATS 嘅 SELL 訊號只可以「平倉」(賣出已揸 bStock)
+- mapping:BUY→swap USDT→bStock;SELL→swap bStock→USDT;SL/TP→limit-order
+
+**UI**:
+- `ui/src/App.tsx`:加 `BSTOCK_MAP`(xyz:sp500→SPYB / xyz:skhx→SKHYB / xyz:mu→MUB)+ `getBStockForSymbol()`;position row + HOLD row 兩處 symbol 右方加橙色 `(SPYB)` 標籤
+- `ui/src/index.css`:`.smp-bstock-tag`(橙色)
+
+tsc clean;vite build 成功。
+
+---
+
 ## v2.0.870-P51: bStocks Agentic Wallet 接入(Connect 按鈕 + 服務層 + API)
 
 **主神指令**:喺 "Tokenized US stocks on BSC" div 加 "Connect" 按鈕 → "Sign in Agentic Wallet",重要數據存 env;寫 `bStocks_module.md`;完成 SKILL 接入。
