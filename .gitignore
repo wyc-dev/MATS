@@ -67,6 +67,7 @@ data/evolution/
 data/*.backup.json
 # v2.0.138: EXP thesis-experience memory (local-only, contains trade rationales)
 data/exp/
+data/bstocks-x402-count.json
 data/EXP.md
 
 # ─── Temp files ───
