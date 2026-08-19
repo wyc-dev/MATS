@@ -18,7 +18,43 @@ tsc clean。
 
 ---
 
+## v2.0.870-P77: SNDK 平倉記錄修復 + Supabase migration 執行 + 本地儲存預設
+
+**主神報告**:SNDK 平倉記錄重啟後唔見咗
+
+**根因分析**:
+1. SNDK 係喺 HL 上面開倉/平倉(20:36 open、20:58 close、pnl=+$1.19),但係 MATS 從來冇開返 SNDK 倉位——realPositions 冇、realTrades 冇
+2. Supabase trade_records 表未喺 live DB 執行(migration 20 未跑)→所有 trade 寫入失敗
+3. 還原577筆冇咗嘅歷史交易記錄從 trade_history.csv
+
+**修復**:
+- `src/services/supabase-trade-writer.ts`:加 env `SUPABASE_TRADE_WRITER_ENABLED`(預設 false——本地儲存就夠,唔應該無啦啦上傳)
+- 執行 Supabase migration 20(trade_records 表)+ 21(edge_report 列)——用 database password 直接連接
+- 從 trade_history.csv 還原 577 筆冇咗嘅交易到 portfolio-state.json(总數:200→776)
+
+**驗證**:migration 成功;realTrades=776;Supabase trade_records 表已存在
+
+tsc clean。
+
+---
+
 ## v2.0.870-P66: bStocks live → pause 強制平倉 + 確認 modal 顏色分家
+
+**主神指令**:bStocks switch live → pause 時,如果持有 bStocks,先確認「是否全部平倉」(just like Hyperliquid paper/real switch),確認後全部平倉,先可以 pause;Hyperliquid 確認用 HL 綠色,橙色留俾 Binance live/pause。
+
+**改動**:
+- `src/services/bstocks-wallet.ts`:`findBStockTokens()` 純函數(symbol 以 B 結尾 + 排除 payment tokens USDT/USDC/BNB/U/USD1)+ `closeAll()`(逐個 swap bStock → USDT,串行避免 rate limit,失敗唔中斷)+ `BStocksCloseAllResult` 類型
+- `src/api-server.ts`:`/api/bstocks/close-all` route + `onBStocksCloseAll` handler
+- `src/index.ts`:setBStocksHandlers 加 closeAll
+- `ui/src/App.tsx`:`handleBStocksToggle()`(live → pause 時 check 有冇持有 bStock → 有就顯示確認 modal)+ `confirmBStocksCloseAll()`(call close-all → 完成後先 pause);Hyperliquid mode switch 確認 modal 金色 → **HL 綠色**(var(--accent) #97fce4);bStocks 確認 modal **橙色**(var(--gold) #F5A623)
+
+**量化金融思維**:closeAll 保留 USDT/USDC/BNB(gas token 唔賣走——P64 教訓);串行 swap 避免並發 429;失敗唔中斷。
+
+tsc clean;24 測試全綠。
+
+---
+
+## v2.0.870-P73: bStocks 倉位同步 + P74/P76 攻擊輪修復
 
 **主神指令**:bStocks switch live → pause 時,如果持有 bStocks,先確認「是否全部平倉」(just like Hyperliquid paper/real switch),確認後全部平倉,先可以 pause;Hyperliquid 確認用 HL 綠色,橙色留俾 Binance live/pause。
 
