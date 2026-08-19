@@ -79,6 +79,8 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
+import { regimeSLWidth } from './analysis/regime-sl-width.ts';
+import { shouldExitOnReversal, isOpposedDirection } from './analysis/consensus-reversal-exit.ts';
 import { evaluateDataQuality } from './analysis/data-quality.ts';
 import { computeChartConvictionMultiplier } from './analysis/chart-conviction.ts';
 import { LLMConvictionCalibrator } from './analysis/llm-conviction-calibrator.ts';
@@ -279,6 +281,8 @@ class MATSSystem {
   private edgeExecTracker!: EdgeExecutionTracker;
   private edgeStabilityMonitor!: StabilityMonitor;
   private edgeReportCount = 0;
+  /** P43: 共識反轉止蝕——每 symbol 連續反轉 cycle 計數(過濾噪音 flip) */
+  private reversalOpposedCycles = new Map<string, number>();
   // v2.0.835: Q-RL Alpha Discovery
   private qrlTable!: QRLTable;
   /** v2.0.862: PAEL — per-asset exit-price learner (MFE/MAE profiles). */
@@ -5538,6 +5542,20 @@ ${recentExamples}
           }
           auditGates.push({ gate: 'sl-volatility-gate', passed: true, reason: `SL ${(slPct * 100).toFixed(2)}% ≥ 1.2×ATR ${(minSlPct * 100).toFixed(2)}%` });
         }
+        // v2.0.870-P43 組件 1:regime-aware SL 寬度——trending 情況 SL 地板 2%
+        // (反事實回測:91% 贏單保留、58% 輸單防住;只闊 SL,TP 唔郁)
+        if (process.env['REGIME_SL_WIDTH'] !== 'false') {
+          try {
+            const regime = this.marketState?.getState(sym)?.regime ?? 'unknown';
+            const minSl = regimeSLWidth(regime);
+            const curSl = decision.stopLossPct ?? config.risk.stopLossPct;
+            if (curSl < minSl) {
+              decision = { ...decision, stopLossPct: minSl };
+              log.info(`📐 [regime-sl] ${decision.symbol}: regime=${regime} → SL ${(curSl * 100).toFixed(2)}% → ${(minSl * 100).toFixed(2)}% (trending floor)`);
+              auditGates.push({ gate: 'regime-sl', passed: true, reason: `regime ${regime} → SL floor ${(minSl * 100).toFixed(2)}%` });
+            }
+          } catch { /* non-critical */ }
+        }
       } catch (err) {
         // ATR fetch failed — non-critical, proceed with original SL
         // (the trading-manager's SL floor will still apply)
@@ -10440,6 +10458,32 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
           continue;
         }
         const posDef = pos;
+
+        // ── v2.0.870-P43 組件 2:加強版共識反轉止蝕 ──
+        // 主神 vision:「真係轉 trend 嘅時候識得用共識提早止蝕,先係真正智能」。
+        // 闊 SL 防噪音(假反轉),共識反轉止蝕防真反轉(唔等闊 SL 被打)。
+        // 四條件:①共識方向反轉 ②連續 N cycle 確認 ③信心門檻 ④趨勢互證。
+        // soft 執行(唔 hard-block 其他 close 路徑);env flag 回滾。
+        if (process.env['CONSENSUS_REVERSAL_EXIT'] !== 'false') {
+          try {
+            const posSide = isBuySide(pos.side) ? 'buy' : 'sell';
+            const opposed = isOpposedDirection(posSide, psc.action);
+            const key = normalizeSymbol(psc.symbol);
+            const prev = this.reversalOpposedCycles.get(key) ?? 0;
+            const next = opposed ? prev + 1 : 0;
+            this.reversalOpposedCycles.set(key, next);
+            if (opposed) {
+              const trSnap = this.marketState?.getTrendRegimeSnapshot(psc.symbol);
+              const trend = trSnap?.trend ?? 'unknown';
+              if (shouldExitOnReversal(posSide, psc.action, psc.confidence, next, trend)) {
+                log.warn(`🔄 [reversal-exit] ${psc.symbol}: consensus flipped to ${String(psc.action).toUpperCase()} (${next} cycles, conf=${(psc.confidence * 100).toFixed(0)}%, trend=${trend}) — exiting ${posSide.toUpperCase()} early (genuine reversal)`);
+                await this.closeTrade(psc.symbol, `Consensus reversal exit: consensus flipped to ${String(psc.action).toUpperCase()} (${next} cycles)`, 'consensus');
+                continue;
+              }
+            }
+          } catch { /* non-critical */ }
+        }
+
         // v2.0.91: Close validation depends on whether the position has an entryThesis.
         // - WITH entryThesis: Meta-Agent → Skeptics validateCloseDecision → execute
         // - WITHOUT entryThesis (legacy): sub-agent voting already handled above,

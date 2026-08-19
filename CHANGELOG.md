@@ -4,6 +4,30 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P43: 闊 SL + 加強版共識反轉止蝕(主神 SKHX whipsaw 案例)
+
+**主神案例**:SKHX $1106.90→$1089.50(跌 1.57%),方向判 SELL 啱,但 5 次進出 whipsaw 淨蝕 -$1.62(本應 +7.85% margin)。「呢個情況不能接受,真係轉 trend 嘅時候要識得用共識提早止蝕,先係真正智能」。
+
+**驗證(反事實回測 1986 筆實際交易,重構價格路徑)**:
+- 貼 SL 0.8% = 災難(-1074% naive);闊 SL 2% = 好 12 倍
+- **只闊 SL(TP 唔郁):91% 贏單保留、58% 輸單防住** ← 最優
+- 改 TP 會破壞贏單(86% vs 91%)→ TP 唔郁
+- trailing stop = 死路(-784%~-1470%,trend 太弱)
+- raw trend 反轉 = 太嘈(-88%,誤觸發)→ 反轉訊號必須用共識
+
+**組件 1:Regime-aware SL 寬度**(`regime-sl-width.ts`)
+- trending_bear/bull → SL 地板 2%;其他 → 0.8%;TP 唔郁
+- 插入點:entry-gate ATR 之後;env `REGIME_SL_WIDTH=false` 回滾
+
+**組件 2:加強版共識反轉止蝕**(`consensus-reversal-exit.ts`)
+- 四條件:①共識方向反轉 ②連續 N cycle 確認(過濾噪音)③信心門檻 ④趨勢互證
+- 持倉循環檢查;`reversalOpposedCycles` Map 追蹤連續反轉;env `CONSENSUS_REVERSAL_EXIT=false` 回滾
+- 唔用 raw trend(驗證太嘈),用 HACP 共識(多 agent 辯論)
+
++11 紅先測試;blast-radius 46 tests 綠;tsc clean。
+
+---
+
 ## v2.0.870-P36(研究): 趨勢窗長實證——4h+1h vs 2h+30m(主神短炒窗長質疑)
 
 **主神問**:短炒係咪應該用更短窗(2h+30m)?但倉位可能挨唔到 TP 提早 SL,又唔可以太長。
