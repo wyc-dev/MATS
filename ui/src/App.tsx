@@ -1390,7 +1390,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       <div className="bstocks-toggle-row">
         <div className="bstocks-toggle-label">
           <span className="stat-label">Binance (bStocks trading)</span>
-          <span className="bstocks-toggle-hint">bStock PnL 比賽 · 之後接數據源</span>
+          <span className="bstocks-toggle-hint">Tokenized US stocks on BSC</span>
         </div>
         <button
           type="button"
