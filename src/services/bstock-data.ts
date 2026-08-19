@@ -77,6 +77,36 @@ export class BStockData {
     }
   }
 
+  /** API 4: per-asset 交易狀態(企業行動風險檢查) */
+  async fetchAssetStatus(contractAddress: string): Promise<{ openState: boolean; marketStatus: string; reasonCode: string | null; reasonMsg: string | null } | null> {
+    try {
+      const res = await fetch(
+        `https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/market/token/rwa/asset/market/status/ai?chainId=56&contractAddress=${encodeURIComponent(contractAddress)}`,
+        { headers: { 'Accept-Encoding': 'identity', 'User-Agent': 'binance-web3/1.1 (Skill)' }, signal: AbortSignal.timeout(10_000) },
+      );
+      if (!res.ok) return null;
+      const json = await res.json() as { data?: Record<string, unknown> };
+      const d = json.data ?? {};
+      return {
+        openState: d['openState'] === true,
+        marketStatus: String(d['marketStatus'] ?? ''),
+        reasonCode: typeof d['reasonCode'] === 'string' ? d['reasonCode'] : null,
+        reasonMsg: typeof d['reasonMsg'] === 'string' ? d['reasonMsg'] : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /** 判斷 bStock 係咪可交易(只有 TRADING / openState=true 先可 swap)。
+   *  API 查唔到 → fail-open(放行,但 caller 記 warning)——唔 hard-block。 */
+  async isTradable(contractAddress: string): Promise<{ tradable: boolean; reasonCode: string | null; reasonMsg: string | null }> {
+    const status = await this.fetchAssetStatus(contractAddress);
+    if (!status) return { tradable: true, reasonCode: null, reasonMsg: null };
+    const tradable = status.reasonCode === 'TRADING' || status.openState === true;
+    return { tradable, reasonCode: status.reasonCode, reasonMsg: status.reasonMsg };
+  }
+
   /** 攞所有 bStock 價格(對齊 xyz: symbol) */
   async fetchAllPrices(): Promise<BStockPrice[]> {
     const list = await this.fetchList();
