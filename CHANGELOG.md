@@ -33,6 +33,8 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 **P79-attack（刁鑽攻擊輪——四窗驗證機制）**: 15 攻擊測試全綠——**冇漏洞**（P79 寫嘅時候已有 fin sanitize（Infinity/NaN → null）+ 方向鏡像 + 純函數 + hard block 路徑安全）。驗證覆蓋: Infinity/-Infinity/NaN/零動量/極端值/部分數據缺失/垃圾 side（A1-A7）/ sell 側方向鏡像（B1-B4）/ 純函數性 + block 優先（C1-C2）/ hard block 路徑（0 × anything = 0 唔復活）+ mom helper 垃圾 candle（D1-D2）。盈利提升: 樣本少（每組合 1-9 筆）唔建議加新機制——順勢回調（15m順+5m逆）WR 高但唔穩定——等 live 數據再校準。攻擊輪後全量 2983 pass + 13 pre-existing。
 
+**P79-fix（TradingView chart 每 cycle 全黑修復）**: 主神報告「Trading Terminal 嘅 TradingView chart 每個 Cycle 都會變做全黑色」。**根因**: P65 嘅 guard 有 bug——React useEffect 執行順序係「先 cleanup（舊 effect）→ 再跑新 effect body」——refreshKey（cycles）每 cycle 變 → cleanup 先跑（`chart.remove()`——chart 被 destroy）→ 然後 body guard 檢查（成功過 → return）——**chart 已經冇咗但冇 recreate——全黑**。P65 加 guard 防止「reload」但冇考慮「cleanup 會 destroy chart」。**修復**（`ui/src/TradingViewChart.tsx`）: 清晰架構——create/destroy 同 refresh 分開——Effect 1（create chart）依賴改 `[timeframe, symbol]`（refreshKey 移除——每 cycle 唔 destroy）;新 Effect 2（`[refreshKey]`）——只有 error 時重新 fetch + update data（唔 destroy chart）。vite build 成功。
+
 ---
 
 ## v2.0.870-P78: 方案 B——預測反轉點（Reversal-Point Detection）

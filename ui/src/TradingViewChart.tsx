@@ -104,21 +104,16 @@ export default function TradingViewChart({ symbol, currentPrice, trades, refresh
 
   const tf = TIMEFRAMES.find(t => t.value === timeframe) ?? TIMEFRAMES[0]!
 
-  // Load data when timeframe, symbol, or refreshKey changes.
-  // v2.0.870-P65: refreshKey (cycle number) only triggers a reload when the
-  // previous load FAILED (error) — a successful chart is NOT destroyed and
-  // re-fetched every cycle (that was the slowness). Markers/price-lines still
-  // update via tradesKey below; candle data is cached 30s on the backend.
+  // Load data when timeframe or symbol changes.
+  // v2.0.870-P79-fix: refreshKey REMOVED from deps — it was causing the chart to
+  // go BLACK every cycle: React runs cleanup (chart.remove()) BEFORE the new
+  // effect body, so the P65 guard (success → return) left a destroyed chart
+  // with no recreation. Now create/destroy only on [timeframe, symbol];
+  // refreshKey retry is handled by a separate effect below (no destroy).
   useEffect(() => {
     if (!containerRef.current) return
 
-    // 成功過 + symbol/timeframe 冇變 + 冇 error → refreshKey 變唔 reload
-    const last = lastLoadedRef.current
-    if (last && last.symbol === symbol && last.timeframe === timeframe && !errorRef.current) {
-      return
-    }
-
-    // Destroy previous chart
+    // Destroy previous chart (symbol/timeframe changed)
     if (chartRef.current) {
       chartRef.current.remove()
       chartRef.current = null
@@ -221,7 +216,23 @@ export default function TradingViewChart({ symbol, currentPrice, trades, refresh
       seriesRef.current = null
       priceLinesRef.current = []
     }
-  }, [timeframe, symbol, refreshKey])
+  }, [timeframe, symbol])
+
+  // v2.0.870-P79-fix: refreshKey (cycle) → error retry WITHOUT destroying the
+  // chart. Only refetches + updates data when the previous load FAILED.
+  useEffect(() => {
+    if (!errorRef.current) return
+    if (!seriesRef.current || !chartRef.current) return
+    fetchKlines(symbol, tf.value, tf.limit).then(candles => {
+      if (candles.length > 0 && seriesRef.current) {
+        seriesRef.current.setData(candles)
+        chartRef.current?.timeScale().fitContent()
+        errorRef.current = false
+        setError(null)
+        lastLoadedRef.current = { symbol, timeframe }
+      }
+    }).catch(() => { /* keep error state — retry next cycle */ })
+  }, [refreshKey])
 
   // Update markers + price lines when trades change.
   // v2.0.20: use a JSON-serialized dependency so the effect fires when SL/TP
