@@ -346,6 +346,31 @@ class MATSSystem {
       log.warn(`[bstocks] swap failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
+  /** v2.0.870-P60: 每 cycle 1 次 CMC + Agent Studio x402 呼叫(3 次後永久停)。
+   *  計數持久化喺 data/bstocks-x402-count.json;fire-and-forget 唔 block cycle。 */
+  private async maybeRunX402Calls(): Promise<void> {
+    try {
+      const countPath = path.join(process.cwd(), 'data', 'bstocks-x402-count.json');
+      let count = 0;
+      if (fs.existsSync(countPath)) {
+        try { count = Number(JSON.parse(fs.readFileSync(countPath, 'utf-8')).count ?? 0); } catch { count = 0; }
+      }
+      if (!Number.isFinite(count) || count >= 3) return; // 已用 3 次,永久停
+      // CMC Market Data Call(4 個 designated tools 之一)
+      const cmcResult = await cmcCall('get_global_metrics_latest', {});
+      log.info(`📊 [x402] CMC call ${count + 1}/3: ${cmcResult.success ? 'OK' : (cmcResult.error ?? 'failed')}`);
+      // BNB Chain Stock Analyst Call(用 trading markets 嘅 xyz: symbol)
+      const symbols = this.tradingMarkets.filter(s => s.includes('xyz:')).map(s => s.split(':')[1] ?? '').filter(Boolean).slice(0, 2);
+      const asResult = await agentStudioAnalyze(symbols.length > 0 ? symbols : ['AAPL', 'NVDA']);
+      log.info(`📊 [x402] Agent Studio call ${count + 1}/3: ${asResult.success ? 'OK' : (asResult.error ?? 'failed')}`);
+      // 遞增 + 持久化
+      count++;
+      fs.writeFileSync(countPath, JSON.stringify({ count }));
+    } catch (err) {
+      log.warn(`[x402] call failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   // v2.0.835: Q-RL Alpha Discovery
   private qrlTable!: QRLTable;
   /** v2.0.862: PAEL — per-asset exit-price learner (MFE/MAE profiles). */
@@ -12295,6 +12320,9 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         vetoed: result.consensus.metaAgentOverridden,
         trades: reports.length,
       });
+
+      // v2.0.870-P60: 每 cycle 1 次 CMC + Agent Studio x402 呼叫(3 次後永久停)
+      void this.maybeRunX402Calls();
 
       // 6. Record in trade history (persistent ledger)
       const tradeType: 'real' | 'exploration' | 'simulated' =
