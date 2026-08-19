@@ -29,9 +29,9 @@
   --text-muted: #4a5270;
 
   /* ── Accent (pantha_mats gold #F5A623) ── */
-  --accent: #F5A623;
-  --accent-bg: rgba(245, 166, 35, 0.15);
-  --accent-glow: rgba(245, 166, 35, 0.2);
+  --accent: #97fce4;
+  --accent-bg: rgba(151, 252, 228, 0.15);
+  --accent-glow: rgba(151, 252, 228, 0.2);
   --green: #34d399;
   --green-bg: rgba(52, 211, 153, 0.15);
   --red: #f87171;
@@ -4513,6 +4513,32 @@ body {
   font-size: var(--fs-md);
 }
 
+.slider-bstock {
+  -webkit-appearance: none;
+  appearance: none;
+  background: linear-gradient(to right, #97fce4, #f0a020);
+  height: 4px;
+  border-radius: 2px;
+  outline: none;
+}
+.slider-bstock::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #f0a020;
+  cursor: pointer;
+}
+.slider-bstock::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #f0a020;
+  cursor: pointer;
+}
 .slider-row {
   display: flex;
   gap: var(--space-2);
