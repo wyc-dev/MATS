@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-P26
+> **作者**: YC Wong · **版本**: 2.0.870-P47-fix2
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~72,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -168,6 +168,10 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 統一用 `candleSnapshot` close 價(同 scanDEX18AssetsInBackground 一致——即市 close ≈ mid)
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
+
+### v2.0.870-P44-P47: 反轉止蝕精修 + 獨立 close reason(全鏈)
+
+P44:反轉止蝕 close reason `consensus`→`thesis_invalidation`。P45:盈利倉唔觸發反轉止蝕(贏單要跑,交俾 regime_reversal_lock)。P46(ATR-aware SL)驗證死路——127 筆 trending 倉零改善。P47:反轉止蝕獨立 close reason `consensus_reversal`(全鏈 10 處:type/白名單/learning-weight 0.3/分析集/agent prompts)。P47-fix:digester heuristic 保留 consensus_reversal(唔覆蓋)。P47-fix2:LLM digester 都保留(系統確定嘅 close reason 唔俾 LLM 判斷覆蓋)。P49(決策):拒絕 re-entry cooldown——判斷準確性靠學習系統唔靠 block。
 
 ### v2.0.870-P43: 闊 SL + 加強版共識反轉止蝕
 

@@ -4,6 +4,13 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P49(決策,唔做): 拒絕 re-entry cooldown——判斷準確性先係重點
+
+**主神裁決**:「NO P49,判斷準確性先係重點,加 block 唔係好事」。
+**本座認同**:加 block 係用「限制」掩蓋「判斷唔準」——治標唔治本。真正嘅「改善到」靠**學習系統**學識(唔係靠規則逼佢):P47 已打通 consensus_reversal 嘅學習通道,RIL 可以單獨學「共識反轉離場 = 方向啱、趨勢完結」,判斷準確性隨樣本累積提升。**之後嘅改善 = 觀察 + 校準,唔加 block。**
+
+---
+
 ## v2.0.870-P47-fix2: LLM digester 唔准覆蓋 consensus_reversal(第二斷層)
 
 **攻擊發現**:上一輪修咗 heuristic 保留 consensus_reversal,但 **LLM digester(validateLesson)仲會覆蓋**——LLM 對一個 consensus_reversal 倉返回 `premature_sl`(因為 holdMin 短 + LOSS),就將系統確定嘅 close reason 覆蓋咗。紅測試證實:LLM 返回 premature_sl → exitType 變 premature_sl(唔係 consensus_reversal)。
