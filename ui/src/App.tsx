@@ -1107,6 +1107,18 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [bStocksAddress, setBStocksAddress] = useState<string | null>(null)
   const [bStocksBusy, setBStocksBusy] = useState(false)
   const [bStocksMsg, setBStocksMsg] = useState<string | null>(null)
+  // v2.0.870-P57: 重啟後自動檢查 Agent Wallet 連接狀態(baw session 持久化)
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API_BASE}/bstocks/status`).then(r => r.json()).then(json => {
+      if (cancelled) return
+      if (json.connected) {
+        setBStocksConnected(true)
+        if (json.address) setBStocksAddress(json.address)
+      }
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
   // v2.0.870-P53: 連接後 fetch Wallet TVL(baw wallet balance)
   useEffect(() => {
     if (!bStocksConnected) return
