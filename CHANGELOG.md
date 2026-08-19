@@ -4,6 +4,41 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P79: 四窗驗證機制（4h+1h+15m+5m）——死貓彈/兩窗都逆 hard block
+
+**主神洞察**: 「TP 咗 → 返轉頭入返 → 倒蝕」係典型蝕錢模式——BTC 案例: 21:13 TP +18.4% → 21:53 追高入場 @ $69,747（價格已由 $69,263 升 +0.7%）→ 22:12 E1 平倉 -5.2%。reopen-guard ±0.3% 太窄攔唔到（價格行咗 0.7%）。
+
+**主神設計（四窗結合）**:
+- **4h+1h = 方向 gate**——大方向順先入（由 classifyMomentumTrend 處理）——4h+1h 都逆 → 唔 boost（×1.0 中性，方向 gate 會攔）
+- **15m+5m = 時機確認**——死貓彈（5m順+15m逆）& 兩窗都逆（5m逆+15m逆）→ **直接 hard block**（effectiveConfidence = 0）
+- 兩窗都順 → ×1.1（強勢獎勵）/ 順勢回調（15m順+5m逆）→ ×1.0（回調買入 WR 100%）
+- **方向分清楚**（buy/sell 鏡像）——K1/K2 鏡像測試
+
+**驗證（四窗結合，2 批次重複驗證）**:
+| 組合 | 批次1（0-30） | 批次2（30-50） |
+|:---|:---:|:---:|
+| A 四窗都順 | +3.13% | **+10.72%** |
+| B 大方向順+時機逆（死貓彈/兩窗都逆） | WR 33% | **WR 0% / -1.57%** |
+| C 大方向逆+時機順 | +7.16% | +3.77% |
+| D 四窗都逆 | -10.17% | n=0 |
+
+死貓彈/兩窗都逆（B）兩個批次都差——**hard block 合理**。
+
+**實作**（`reversal-point.ts` 加 `checkFourWindowAlignment` 純函數）:
+- block → effectiveConfidence = 0（hard block——直接 HOLD）;aligned ×1.1 / pullback ×1.0 / neutral ×1.0 / unknown ×1.0
+- index.ts 入場 gate 堆疊——`candleCache.peekCandles` 1h+5m 計 m4h/m1h/m15m/m5m
+- env `MOMENTUM_ALIGN_GATE` 回滾;即時動量係「而家」嘅數據——唔係歷史統計
+
++10 紅先測試（死貓彈/鏡像/兩窗都逆/4h+1h逆中性/順勢回調/冷啟動/毒輸入/純函數性）;全量 2968 pass + 13 pre-existing;tsc clean。
+
+**P79-attack（刁鑽攻擊輪——四窗驗證機制）**: 15 攻擊測試全綠——**冇漏洞**（P79 寫嘅時候已有 fin sanitize（Infinity/NaN → null）+ 方向鏡像 + 純函數 + hard block 路徑安全）。驗證覆蓋: Infinity/-Infinity/NaN/零動量/極端值/部分數據缺失/垃圾 side（A1-A7）/ sell 側方向鏡像（B1-B4）/ 純函數性 + block 優先（C1-C2）/ hard block 路徑（0 × anything = 0 唔復活）+ mom helper 垃圾 candle（D1-D2）。盈利提升: 樣本少（每組合 1-9 筆）唔建議加新機制——順勢回調（15m順+5m逆）WR 高但唔穩定——等 live 數據再校準。攻擊輪後全量 2983 pass + 13 pre-existing。
+
+---
+
+## v2.0.870-P78: 方案 B——預測反轉點（Reversal-Point Detection）
+
+---
+
 ## v2.0.870-P78: 方案 B——預測反轉點（Reversal-Point Detection）
 
 **主神裁決**: 方案 A（OLR Gate）& C（SL/TP 配置）**唔做**——「過分由歷史判斷未來」。只做方案 B：用**即時市場結構**判斷入場反轉風險。
