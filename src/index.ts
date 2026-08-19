@@ -12573,6 +12573,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           free: this.cachedExchangeBalance.free.toFixed(2),
           marginUsed: this.cachedExchangeBalance.marginUsed.toFixed(2),
           positions: this.cachedExchangePositions?.length ?? 0,
+          // v2.0.870-P62: bStocks Wallet 連接咗就 show Wallet 餘額
+          ...(process.env['BINANCE_AW_ADDRESS'] ? { walletTvl: this.bStocksWallet.getBalance().tvl?.toFixed(2) ?? '--' } : {}),
         });
       } else if (this.tradingManager.getTradeMode() === 'real') {
         log.info(`\n📊 ⏳ Real mode: exchange balance not yet fetched`);
@@ -12761,6 +12763,11 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       let portfolioLine: string;
       if (isReal && this.cachedExchangeBalance) {
         portfolioLine = `💰 Balance: $${this.cachedExchangeBalance.total.toFixed(2)} | Free: $${this.cachedExchangeBalance.free.toFixed(2)} | Margin: $${this.cachedExchangeBalance.marginUsed.toFixed(2)}`;
+        // v2.0.870-P62: bStocks Wallet 連接咗就 show Wallet 餘額
+        if (process.env['BINANCE_AW_ADDRESS']) {
+          const wb = this.bStocksWallet.getBalance();
+          if (wb.success && wb.tvl != null) portfolioLine += ` | Wallet: $${wb.tvl.toFixed(2)}`;
+        }
       } else if (isReal) {
         portfolioLine = `💰 Balance: fetching...`;
       } else {

@@ -4,6 +4,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P62: Position Size 漸變 + Wallet 餘額入 console/TG
+
+**主神指令**:Position Size 滑竿做埋漸變;console "Real Portfolio (HL)" 連咗 bStocks 就 show Wallet balance;Telegram msg 每 cycle show Wallet 餘額。
+
+**改動**:
+- `ui/src/App.tsx`:Position Size slider 加 `.slider-bstock`(bStocks connected 時綠→橙漸變)
+- `src/index.ts`:console "Real Portfolio (HL)" log 加 `walletTvl`(BINANCE_AW_ADDRESS 存在時);Telegram portfolioLine 加 `| Wallet: $xxx`(每 cycle)
+
+tsc clean;vite build 成功。
+
+---
+
 ## v2.0.870-P60: Wallet TVL refresh + 每 cycle x402 呼叫(3 次後永久停)
 
 **主神指令**:Wallet TVL 右邊加 refresh icon button;每 cycle fetch 1 次 CMC + 1 次 Agent Studio x402 呼叫,3 次後永久停。
