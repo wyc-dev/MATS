@@ -96,12 +96,27 @@ export default function TradingViewChart({ symbol, currentPrice, trades, refresh
   const [timeframe, setTimeframe] = useState<Timeframe>('1h')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // v2.0.870-P65: 記住上次成功 load 嘅 symbol+timeframe + 有冇 error。
+  // 成功過 → refreshKey(cycle)變唔 reload(避免每 cycle destroy+recreate 成個 chart);
+  // error(例如 No candle data)→ 下個 cycle 自動重試(主神要求)。
+  const lastLoadedRef = useRef<{ symbol: string; timeframe: string } | null>(null)
+  const errorRef = useRef(false)
 
   const tf = TIMEFRAMES.find(t => t.value === timeframe) ?? TIMEFRAMES[0]!
 
-  // Load data when timeframe, symbol, or refreshKey changes (refreshKey = cycle number)
+  // Load data when timeframe, symbol, or refreshKey changes.
+  // v2.0.870-P65: refreshKey (cycle number) only triggers a reload when the
+  // previous load FAILED (error) — a successful chart is NOT destroyed and
+  // re-fetched every cycle (that was the slowness). Markers/price-lines still
+  // update via tradesKey below; candle data is cached 30s on the backend.
   useEffect(() => {
     if (!containerRef.current) return
+
+    // 成功過 + symbol/timeframe 冇變 + 冇 error → refreshKey 變唔 reload
+    const last = lastLoadedRef.current
+    if (last && last.symbol === symbol && last.timeframe === timeframe && !errorRef.current) {
+      return
+    }
 
     // Destroy previous chart
     if (chartRef.current) {
@@ -170,12 +185,18 @@ export default function TradingViewChart({ symbol, currentPrice, trades, refresh
       if (candles.length > 0 && seriesRef.current) {
         seriesRef.current.setData(candles)
         chart.timeScale().fitContent()
+        // v2.0.870-P65: 成功 → 記住,下個 cycle 唔 reload
+        lastLoadedRef.current = { symbol, timeframe }
+        errorRef.current = false
       } else {
+        // v2.0.870-P65: 失敗 → errorRef=true,下個 cycle refreshKey 變會自動重試
+        errorRef.current = true
         setError(`No candle data for ${symbol}`)
         console.warn(`[TradingViewChart] No candles for ${symbol} @ ${tf.value}`)
       }
     }).catch(err => {
       setLoading(false)
+      errorRef.current = true
       setError(`Failed to load ${symbol}`)
       console.error(`[TradingViewChart] Failed to fetch candles for ${symbol}:`, err)
     })

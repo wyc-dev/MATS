@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-P64
+> **作者**: YC Wong · **版本**: 2.0.870-P66
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~72,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -188,6 +188,24 @@ P44:反轉止蝕 close reason `consensus`→`thesis_invalidation`。P45:盈利�
 Binance bStock PnL contest 規則:「Keep BNB for gas: every trade is an on-chain transaction that consumes gas. Do not convert all funds to stablecoins or bStock, or the first transaction will fail for lack of gas」+「Compliant jurisdiction: bStock is only open to permitted-jurisdiction qualified users」。
 
 **落地**:`getBalance()` 加 `bnbBalance`/`bnbValue`(從 tokens 搵 BNB);`maybeSwapBStock` swap 前檢查 BNB ≥ 0.01(≈$6,BSC gas 每次 <$0.1;唔夠 → skip + ⛽ warning)+ 買 bStock 前檢查 USDT > 0;`bStocks_module.md` 5.2 補齊 gas 硬要求 + jurisdiction 規則。實證:Wallet 只有 USDT $99.40、0 BNB——新檢查會 skip 直到主神入 BNB。
+
+### v2.0.870-P65: TradingView 圖表即時顯示(candle cache + SPCX fallback + error 重試 + chart override)
+
+主神報告:撳 symbol 圖表要等好耐(全黑);「No candle data for xyz:SPCX」;select-symbol deferred 時 UI 冇反饋。根因:`/api/candles` 冇 cache(每次撳 + 每 cycle reload 都 fetch HL API);`xyz:SPCX` 唔喺 HL meta(232 coins 冇)→ HL 返回 0 支;前端 refreshKey=cycles 每 cycle destroy+recreate 成個 chart。
+
+**修復**:`/api/candles` 加 30s TTL cache(同一 symbol+interval 即時返);HL 返回 0 支時 fallback 去 Binance spot(bStock cs 交易對,例如 SPCXBUSDT);前端成功後唔再每 cycle reload、error 時下個 cycle 自動重試、撳 symbol 立即本地切換 chart(`chartSymbolOverride`)+ 「⏳ Wait till cycle complete…」badge。實測:SPCX 169 支蠟燭、cache hit 0.0009s。
+
+### v2.0.870-P65-attack: 刁鑽攻擊輪(8 攻全修)+ 盈利提升
+
+**A1(HIGH)** BNB gas null bypass(getBalance 失敗 → 唔 skip → 冇 gas 照 swap)→ `checkBStockSwapPreconditions` fail-closed(null/NaN/負數都 skip)。**A2** BNB NaN fail-closed。**A3** USDT 餘額檢查抽做純函數。**A4** maybeSwapBStock 併發 guard(`bStockSwapInFlight` Set)。**A5** candle cache 上限 200 entries。**A6** candle cache inflight dedup。**A7** SPCX fallback <10 支都 fallback。**A8** eventRisk case-insensitive。
+
+**盈利提升**:E1 OPEX 波動率調整止損(`computeSmartSLTP` 加 `eventRisk` 參數,OPEX 期間 SL 加闊 ×1.5 widen-only cap 5% TP 唔郁——P43 實證:闊 SL 91% 贏單保留);E2 bStock swap 最低下注 $5(避免 gas/手續費侵蝕)。
+
+### v2.0.870-P66: bStocks live → pause 強制平倉 + 確認 modal 顏色分家
+
+主神指令:bStocks switch live → pause 時,如果持有 bStocks,先確認「是否全部平倉」(just like Hyperliquid paper/real switch),確認後全部平倉,先可以 pause。
+
+**落地**:`findBStockTokens()` 純函數(symbol 以 B 結尾 + 排除 payment tokens)+ `closeAll()`(逐個 swap bStock → USDT,串行避免 rate limit,失敗唔中斷,保留 gas token)+ `/api/bstocks/close-all` route + UI 確認 modal(`handleBStocksToggle` → check 有冇持有 bStock → 有就確認 → `confirmBStocksCloseAll` → 完成後先 pause)。顏色分家:HL mode switch 確認用綠色(var(--accent) #97fce4)、Binance live/pause 用橙色(var(--gold) #F5A623)。
 
 ### v2.0.870-P43: 闊 SL + 加強版共識反轉止蝕
 

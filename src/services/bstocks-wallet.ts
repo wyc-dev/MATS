@@ -72,14 +72,54 @@ export interface BStocksSwapResult {
   error?: string;
 }
 
+/** v2.0.870-P66: 全部平倉 bStocks 結果 */
+export interface BStocksCloseAllResult {
+  success: boolean;
+  closed: number;
+  results?: Array<{ symbol: string; success: boolean; error?: string }>;
+  message?: string;
+  error?: string;
+}
+
 export interface BStocksBalanceResult {
   success: boolean;
   tvl: number | null;
   /** v2.0.870-P64: BNB 餘額(gas 保留檢查用)——每次 swap 都係 on-chain tx,冇 BNB gas 會失敗 */
   bnbBalance: number | null;
   bnbValue: number | null;
-  tokens: Array<{ symbol: string; balance: string; value: string }>;
+  tokens: Array<{ symbol: string; balance: string; value: string; address?: string }>;
   error?: string;
+}
+
+/** v2.0.870-P65-attack: BStock swap 前置檢查結果 */
+export interface BStockSwapPrecheck {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * v2.0.870-P65-attack: BStock swap 前置檢查(純函數,可獨立測試)。
+ * fail-closed:唔知 gas 狀態(null/NaN/負數)→ skip,唔好 swap。
+ * 攻擊修復:A1(getBalance 失敗 null bypass)/ A2(BNB NaN)/ A3(USDT 垃圾)。
+ */
+export function checkBStockSwapPreconditions(
+  bal: BStocksBalanceResult,
+  side: 'buy' | 'sell',
+  minBnbGas = 0.01,
+): BStockSwapPrecheck {
+  // BNB gas 檢查:null(唔知)/NaN/負數/< min → fail-closed skip
+  if (bal.bnbBalance == null || !Number.isFinite(bal.bnbBalance) || bal.bnbBalance < minBnbGas) {
+    return { ok: false, reason: `BNB gas 不足 (${bal.bnbBalance} BNB < ${minBnbGas})` };
+  }
+  // 買 bStock 需要 USDT——冇 USDT 或者 balance 垃圾 → skip(唔好將全部資金轉做 bStock)
+  if (side === 'buy') {
+    const usdt = bal.tokens.find((t) => t.symbol === 'USDT');
+    const usdtBal = usdt ? parseFloat(usdt.balance) : 0;
+    if (!Number.isFinite(usdtBal) || usdtBal <= 0) {
+      return { ok: false, reason: `USDT 餘額不足 (${usdtBal})` };
+    }
+  }
+  return { ok: true };
 }
 
 export class BStocksWallet {
@@ -160,7 +200,7 @@ export class BStocksWallet {
     try {
       const out = this.run('baw wallet balance --json', 15_000);
       const parsed = JSON.parse(out);
-      const tokens: Array<{ symbol: string; balance: string; value: string }> = parsed?.data ?? [];
+      const tokens: Array<{ symbol: string; balance: string; value: string; address?: string }> = parsed?.data ?? [];
       const tvl = tokens.reduce((sum, t) => {
         const v = parseFloat(t.value);
         return sum + (Number.isFinite(v) ? v : 0);
@@ -178,6 +218,43 @@ export class BStocksWallet {
       };
     } catch (err) {
       return { success: false, tvl: null, bnbBalance: null, bnbValue: null, tokens: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+
+
+/**
+ * v2.0.870-P66: 全部平倉 bStocks——賣晒所有 bStock token → USDT。
+ * 只平 bStock(symbol 以 B 結尾且唔係 payment token),保留 USDT/USDC/BNB 做 gas。
+ * 逐個 swap(串行,避免 rate limit);失敗唔中斷,繼續平其餘。
+ */
+  closeAll(): BStocksCloseAllResult {
+    try {
+      const bal = this.getBalance();
+      if (!bal.success || !bal.tokens.length) {
+        return { success: true, closed: 0, message: 'no tokens to close' };
+      }
+      const usdtAddr = PAYMENT_TOKEN_ADDRESSES['USDT'] ?? '';
+      if (!usdtAddr) return { success: false, closed: 0, error: 'no USDT address configured' };
+      const bStocks = findBStockTokens(bal.tokens);
+      if (bStocks.length === 0) {
+        return { success: true, closed: 0, message: 'no bStock holdings' };
+      }
+      const results: Array<{ symbol: string; success: boolean; error?: string }> = [];
+      for (const b of bStocks) {
+        const qty = parseFloat(b.balance);
+        if (!Number.isFinite(qty) || qty <= 0) continue;
+        if (!b.address) {
+          results.push({ symbol: b.symbol, success: false, error: 'no token address' });
+          continue;
+        }
+        const r = this.swap(b.address, usdtAddr, b.balance);
+        results.push({ symbol: b.symbol, success: r.success, error: r.error });
+      }
+      const closed = results.filter((r) => r.success).length;
+      return { success: true, closed, results };
+    } catch (err) {
+      return { success: false, closed: 0, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -217,4 +294,13 @@ export class BStocksWallet {
       return { connected: false, address: null, error: err instanceof Error ? err.message : String(err) };
     }
   }
+}
+
+/** v2.0.870-P66: 搵 bStock tokens(symbol 以 B 結尾且唔係 payment token)。純函數,可獨立測試。 */
+export function findBStockTokens(tokens: Array<{ symbol: string; balance: string; value: string; address?: string }>): Array<{ symbol: string; balance: string; value: string; address?: string }> {
+  const PAYMENT_SYMS = new Set(['USDT', 'USDC', 'BNB', 'U', 'USD1']);
+  return tokens.filter((t) => {
+    const sym = String(t.symbol ?? '').toUpperCase();
+    return sym.endsWith('B') && !PAYMENT_SYMS.has(sym);
+  });
 }

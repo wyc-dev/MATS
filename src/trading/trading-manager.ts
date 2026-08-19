@@ -11,6 +11,7 @@ import { HyperliquidEngine } from './hyperliquid-engine.ts';
 import { computeSLTP, safeLeverage } from './position-utils.ts';
 import { getATR, computeATRSLTP, getMomentum } from '../analysis/atr.ts';
 import { computeSmartSLTP, fetchCandleHighLow } from '../analysis/smart-sltp.ts';
+import { getOptionsDataManager } from '../analysis/options-data.ts';
 import { estimateStopSlippageBps } from './execution-tracker.ts';
 import { getMfeCalibration } from '../analysis/mfe-calibrator.ts';
 import type {
@@ -577,6 +578,8 @@ export class TradingManager {
           // v2.0.852: MFE calibration (fail-open — null falls back to defaults).
           // Cached 15 min per symbol so it does not re-fetch every trade.
           mfeCalibration: mfeCal ?? undefined,
+          // v2.0.870-P65-attack(E1 盈利提升): OPEX 期間 SL 加闊 ×1.5(widen-only)
+          eventRisk: getOptionsDataManager().getOptionsContext(decision.symbol).eventRisk,
         });
 
         let slPrice = smartSLTP.sl;

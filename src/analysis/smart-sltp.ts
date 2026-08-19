@@ -81,6 +81,10 @@ export interface SmartSLTPInput {
     tpCapShortPct?: number;
     slFloorShortPct?: number;
   };
+  /** v2.0.870-P65-attack(E1 盈利提升): Options event risk ('opex' | 'earnings' | ...).
+   *  OPEX 期間波動大(IV 高),固定 SL 容易被掃——SL 加闊 ×1.5(widen-only,唔收窄)。
+   *  量化金融:波動率調整止損(P43 實證:闊 SL 91% 贏單保留、58% 輸單防住)。 */
+  eventRisk?: string;
 }
 
 export interface SmartSLTPResult {
@@ -554,6 +558,21 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
     if (slipFloorPct > nowPct + 1e-9) {
       slPrice = isBuy ? entryPrice * (1 - slipFloorPct) : entryPrice * (1 + slipFloorPct);
       logParts.push(`[SL-slip-final] widened to ${(slipFloorPct * 100).toFixed(2)}% (final enforcement)`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // v2.0.870-P65-attack(E1 盈利提升): OPEX 波動率調整止損(widen-only)
+  // OPEX 前後 IV 高,固定 SL 容易被掃——SL 加闊 ×1.5,TP 唔郁。
+  // 量化金融:波動率調整止損(P43 實證:闊 SL 91% 贏單保留、58% 輸單防住)。
+  // 只加闊唔收窄(hard-floor invariant);cap 喺 slCap(5%)內。
+  // ═══════════════════════════════════════════════════════════════
+  if (input.eventRisk === 'opex' && slPrice > 0) {
+    const slPctNow = Math.abs(slPrice - entryPrice) / entryPrice;
+    const opexSlPct = Math.min(slCap, slPctNow * 1.5);
+    if (opexSlPct > slPctNow) {
+      slPrice = isBuy ? entryPrice * (1 - opexSlPct) : entryPrice * (1 + opexSlPct);
+      logParts.push(`[OPEX-SL] widened to ${(opexSlPct * 100).toFixed(2)}% (×1.5 — OPEX volatility)`);
     }
   }
 

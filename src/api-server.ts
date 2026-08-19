@@ -284,6 +284,7 @@ export class APIServer {
   private onBStocksStatus: (() => import('./services/bstocks-wallet.ts').BStocksStatusResult) | null = null;
   private onBStocksBalance: (() => import('./services/bstocks-wallet.ts').BStocksBalanceResult) | null = null;
   private onBStocksSwap: ((fromToken: string, toToken: string, qty: string) => import('./services/bstocks-wallet.ts').BStocksSwapResult) | null = null;
+  private onBStocksCloseAll: (() => import('./services/bstocks-wallet.ts').BStocksCloseAllResult) | null = null;
   private onBStocksPrices: (() => Promise<import('./services/bstock-data.ts').BStockPrice[]>) | null = null;
   private onCmcCall: ((tool: string, args: Record<string, unknown>) => Promise<import('./services/x402-calls.ts').X402CallResult>) | null = null;
   private onAgentStudioAnalyze: ((symbols: string[]) => Promise<import('./services/x402-calls.ts').X402CallResult>) | null = null;
@@ -452,6 +453,7 @@ export class APIServer {
     status: () => import('./services/bstocks-wallet.ts').BStocksStatusResult;
     balance: () => import('./services/bstocks-wallet.ts').BStocksBalanceResult;
     swap: (fromToken: string, toToken: string, qty: string) => import('./services/bstocks-wallet.ts').BStocksSwapResult;
+    closeAll: () => import('./services/bstocks-wallet.ts').BStocksCloseAllResult;
     prices: () => Promise<import('./services/bstock-data.ts').BStockPrice[]>;
     cmcCall: (tool: string, args: Record<string, unknown>) => Promise<import('./services/x402-calls.ts').X402CallResult>;
     agentStudioAnalyze: (symbols: string[]) => Promise<import('./services/x402-calls.ts').X402CallResult>;
@@ -462,6 +464,7 @@ export class APIServer {
     this.onBStocksStatus = handlers.status;
     this.onBStocksBalance = handlers.balance;
     this.onBStocksSwap = handlers.swap;
+    this.onBStocksCloseAll = handlers.closeAll;
     this.onBStocksPrices = handlers.prices;
     this.onCmcCall = handlers.cmcCall;
     this.onAgentStudioAnalyze = handlers.agentStudioAnalyze;
@@ -1582,6 +1585,19 @@ export class APIServer {
         } else {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: false, message: 'bStocks swap handler not registered.' }));
+        }
+        return;
+      }
+
+      // v2.0.870-P66: 全部平倉 bStocks(live → pause 前強制平倉)——賣晒所有 bStock → USDT
+      if (pathname === '/api/bstocks/close-all' && req.method === 'POST') {
+        if (this.onBStocksCloseAll) {
+          const result = this.onBStocksCloseAll();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } else {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'bStocks close-all handler not registered.' }));
         }
         return;
       }

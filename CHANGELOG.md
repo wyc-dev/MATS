@@ -4,6 +4,66 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P66: bStocks live → pause 強制平倉 + 確認 modal 顏色分家
+
+**主神指令**:bStocks switch live → pause 時,如果持有 bStocks,先確認「是否全部平倉」(just like Hyperliquid paper/real switch),確認後全部平倉,先可以 pause;Hyperliquid 確認用 HL 綠色,橙色留俾 Binance live/pause。
+
+**改動**:
+- `src/services/bstocks-wallet.ts`:`findBStockTokens()` 純函數(symbol 以 B 結尾 + 排除 payment tokens USDT/USDC/BNB/U/USD1)+ `closeAll()`(逐個 swap bStock → USDT,串行避免 rate limit,失敗唔中斷)+ `BStocksCloseAllResult` 類型
+- `src/api-server.ts`:`/api/bstocks/close-all` route + `onBStocksCloseAll` handler
+- `src/index.ts`:setBStocksHandlers 加 closeAll
+- `ui/src/App.tsx`:`handleBStocksToggle()`(live → pause 時 check 有冇持有 bStock → 有就顯示確認 modal)+ `confirmBStocksCloseAll()`(call close-all → 完成後先 pause);Hyperliquid mode switch 確認 modal 金色 → **HL 綠色**(var(--accent) #97fce4);bStocks 確認 modal **橙色**(var(--gold) #F5A623)
+
+**量化金融思維**:closeAll 保留 USDT/USDC/BNB(gas token 唔賣走——P64 教訓);串行 swap 避免並發 429;失敗唔中斷。
+
+tsc clean;24 測試全綠。
+
+---
+
+## v2.0.870-P65-attack: 刁鑽攻擊輪(8 攻全修)+ 盈利提升(E1 OPEX SL + E2 最低下注)
+
+**攻擊向量**(紅先測試 14 個):
+
+| # | 漏洞 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| **A1** | **BNB gas null bypass**——getBalance() 失敗返回 bnbBalance=null → 唔 skip → 冇 gas 照 swap | **HIGH** | `checkBStockSwapPreconditions` **fail-closed**(null/NaN/負數都 skip) |
+| **A2** | BNB 餘額 NaN(baw 輸出垃圾)→ NaN < 0.01 = false → 唔 skip | MED | fail-closed |
+| **A3** | USDT 餘額檢查(冇 USDT/balance 垃圾) | MED | 抽做純函數,可獨立測試 |
+| **A4** | **maybeSwapBStock 併發**——兩個 cycle 同時 call 同一 symbol → 重複 swap | MED | `bStockSwapInFlight` Set guard(finally 釋放) |
+| **A5** | candle cache 無限增長——垃圾 symbol 組合 → memory leak | MED | 上限 200 entries,超過清最舊 |
+| **A6** | candle cache 併發——兩個 request 同時 miss → 雙重 fetch 浪費 rate limit | MED | inflight dedup(同一 key 只 fetch 一次) |
+| **A7** | SPCX fallback 部分數據——HL 返回 1 支(唔係 0)→ 唔 fallback | LOW | <10 支都 fallback |
+| **A8** | eventRisk 大小寫——'EARNINGS'(大寫)→ 錯過 earnings 保護 | MED | case-insensitive |
+
+**盈利提升(量化金融分析師思路)**:
+- **E1**:OPEX 波動率調整止損——`computeSmartSLTP` 加 `eventRisk` 參數,OPEX 期間 SL 加闊 ×1.5(widen-only,cap 5%,TP 唔郁);量化金融:波動率調整止損(P43 實證:闊 SL 91% 贏單保留、58% 輸單防住)
+- **E2**:bStock swap 最低下注 $5——gas/手續費侵蝕細額交易,贏粒糖輸間廠
+
+tsc clean;24 測試全綠(14 攻擊 + 5 OPEX SL + 5 findBStockTokens);blast-radius 64 測試全綠。
+
+---
+
+## v2.0.870-P65: TradingView 圖表即時顯示(candle cache + SPCX fallback + error 重試 + chart override)
+
+**主神報告**:撳 symbol 圖表要等好耐(全黑);「No candle data for xyz:SPCX」;select-symbol deferred 時 UI 冇反饋。
+
+**根因**:
+1. `/api/candles` 冇 cache——每次撳 symbol + 每 cycle reload 都直接 fetch HL API
+2. `xyz:SPCX` 唔喺 HL meta(232 coins 冇 SPCX)→ HL 返回 0 支 → No candle data
+3. 前端 refreshKey=cycles 每 cycle destroy+recreate 成個 chart
+4. select-symbol 被 deferred(cycle 進行中)時 UI 冇提示
+
+**改動**:
+- `src/index.ts`:`/api/candles` 加 30s TTL cache(同一 symbol+interval 即時返);HL 返回 0 支時 fallback 去 Binance spot(bStock cs 交易對,例如 SPCXBUSDT)
+- `ui/src/TradingViewChart.tsx`:成功後唔再每 cycle reload;error(No candle data)時下個 cycle 自動重試
+- `ui/src/App.tsx`:撳 symbol 立即本地切換 chart(`chartSymbolOverride`)+ 「⏳ Wait till cycle complete…」黃色 badge(select-symbol deferred 時)
+
+**實測**:SPCX 169 支蠟燭(Binance fallback);cache hit 0.0009s;SKHX 正常。
+
+tsc clean。
+
+---
+
 ## v2.0.870-P64: bStocks BNB gas 保留 + USDT 餘額檢查(比賽規則落地)
 
 **主神指令**:Binance bStock PnL contest 規則——「Keep BNB for gas: every trade is an on-chain transaction that consumes gas. Do not convert all funds to stablecoins or bStock, or the first transaction will fail for lack of gas」+「Compliant jurisdiction: bStock is only open to permitted-jurisdiction qualified users」。
