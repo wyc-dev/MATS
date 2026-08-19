@@ -1447,6 +1447,15 @@ body {
   opacity: 0.5;
   cursor: not-allowed;
 }
+.bstocks-connected-badge {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  color: var(--green);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(52, 211, 153, 0.15);
+  white-space: nowrap;
+}
 .bstocks-refresh-btn {
   display: flex;
   align-items: center;
