@@ -2414,8 +2414,8 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                     </div>
                   )}
                   <IncidentField label="Direction" value={t.side.toUpperCase()} />
-                  <IncidentField label="Entry Price" value={`$${t.entryPrice.toFixed(2)}`} suffix={t.bStockBuyPrice != null ? `bStock $${t.bStockBuyPrice.toFixed(2)}` : undefined} />
-                  <IncidentField label="Exit Price" value={t.exitPrice != null ? `$${t.exitPrice.toFixed(2)}` : '— (still open)'} suffix={t.bStockSellPrice != null ? `bStock $${t.bStockSellPrice.toFixed(2)}` : undefined} />
+                  <IncidentField label="Entry Price" value={`$${t.entryPrice.toFixed(2)}`} suffix={t.bStockBuyPrice != null ? `$${t.bStockBuyPrice.toFixed(2)}` : undefined} />
+                  <IncidentField label="Exit Price" value={t.exitPrice != null ? `$${t.exitPrice.toFixed(2)}` : '— (still open)'} suffix={t.bStockSellPrice != null ? `$${t.bStockSellPrice.toFixed(2)}` : undefined} />
                   <IncidentField label="Min Value Reached" value={t.minValueReached != null ? `$${t.minValueReached.toFixed(2)}` : '— (tracking started after open)'} pending={t.minValueReached == null} />
                   <IncidentField label="Max Value Reached" value={t.maxValueReached != null ? `$${t.maxValueReached.toFixed(2)}` : '— (tracking started after open)'} pending={t.maxValueReached == null} />
                   <IncidentField label="Leverage" value={`${t.leverage}x`} />
