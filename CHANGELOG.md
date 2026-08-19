@@ -16,6 +16,18 @@ tsc clean;vite build 成功。
 
 ---
 
+## v2.0.870-P61: Hyperliquid trading mode indicator + bStocks Live/Pause badge + UI 精簡
+
+**主神指令**:加 "Hyperliquid (Crypto + RWA) / Perpetual Futures on HyperEVM" div(喺 Binance bStocks div 上面),顏色 #97fce4 + gray;switch paper(gray)/real(#97fce4);badge 跟 paper/real;bStocks badge 改 Live/Pause(橙色,跟 switch);switch 狀態 localStorage 持久化;刪 Trade Mode Paper/Real buttons;Cycle Period 霸成條 row;主色改 Hyperliquid green;bStocks connected 時 3 條 slider(Cycle Period/Max Portion/Leverage)綠→橙漸變。
+
+**改動**:
+- `ui/src/App.tsx`:加 `hl-toggle-row`(mode badge Paper/Real + switch 觸發 `handleTradeModeChange`);bStocks badge 改 `Live`/`Pause`(橙色,跟 `binanceBStocksEnabled`);switch 初始值由 localStorage 讀 + toggle 時寫入;移除 Trade Mode buttons 欄;Cycle Period column flex:1(霸成條 row);3 條 slider 加 `.slider-bstock`(bStocks connected 時)
+- `ui/src/index.css`:`--accent` → `#97fce4`(Hyperliquid green);`.hl-toggle-row`(gray)/`.real`(#97fce4 border+glow)/`.hl-switch.on`(#97fce4)/`.hl-mode-badge`(paper/real);`.bstocks-connected-badge` 橙色(live)/dimmer(pause);`.slider-bstock` 綠→橙漸變 track + thumb
+
+tsc clean;vite build 成功。
+
+---
+
 ## v2.0.870-P60: Wallet TVL refresh + 每 cycle x402 呼叫(3 次後永久停)
 
 **主神指令**:Wallet TVL 右邊加 refresh icon button;每 cycle fetch 1 次 CMC + 1 次 Agent Studio x402 呼叫,3 次後永久停。
@@ -39,6 +51,29 @@ tsc clean;vite build 成功。
 - `ui/src/App.tsx`:移除 hardcode `BSTOCK_MAP`;改 module-level `bStockTickerMap`(由 `/api/bstocks/prices` 填充)+ ticker 例外表;`getBStockForSymbol` 動態查找
 
 **原理**:bStock list 有 67 隻,全部由 type=3 API 動態攞;xyz: symbol 嘅 ticker 同 bStock ticker 大部分一致(MU→MU、SPCX→SPCX、SNDK→SNDK),只有 SKHX→SKHY、SP500→SPY 兩個例外。新 symbol 只要 ticker 喺 list 就自動 map。
+
+tsc clean;vite build 成功。
+
+---
+
+## v2.0.870-P58: bStocks connected state——橙色 border + switch 未連接時 disabled
+
+**主神指令**:bStocks 連接咗先顯示橙色 border + 開關可用;未連接時 switch disabled。
+
+**改動**:
+- `ui/src/App.tsx`:`bstocks-toggle-row` 加 `connected` class(bStocksConnected 時);switch `disabled={!bStocksConnected}` + `connected` class
+- `ui/src/index.css`:`.bstocks-toggle-row.connected` 橙色 border;`.toggle-switch.connected` 樣式
+
+tsc clean;vite build 成功。
+
+---
+
+## v2.0.870-P57: Agent Wallet 重啟後自動重連(檢查 status on mount)
+
+**主神指令**:重啟後 UI 自動檢查 Agent Wallet 連接狀態(baw session 持久化喺本地,唔使重新 connect)。
+
+**改動**:
+- `ui/src/App.tsx`:mount 時 `useEffect` fetch `/api/bstocks/status`;`connected=true` → setBStocksConnected + setBStocksAddress;cancelled flag 防 unmount race
 
 tsc clean;vite build 成功。
 
