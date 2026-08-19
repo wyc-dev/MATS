@@ -80,7 +80,7 @@ import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computePrematureClosePenalty } from './evolution/premature-close-guard.ts';
-import { BStocksWallet, PAYMENT_TOKEN_ADDRESSES, checkBStockSwapPreconditions } from './services/bstocks-wallet.ts';
+import { BStocksWallet, PAYMENT_TOKEN_ADDRESSES, checkBStockSwapPreconditions, findBStockTokens } from './services/bstocks-wallet.ts';
 import { BStockData } from './services/bstock-data.ts';
 import { cmcCall, agentStudioAnalyze, agentStudioPoll } from './services/x402-calls.ts';
 import { regimeSLWidth } from './analysis/regime-sl-width.ts';
@@ -372,6 +372,41 @@ class MATSSystem {
       }
     } catch (err) {
       log.warn(`[bstocks] swap failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * v2.0.870-P73: bStocks 倉位同步——每 cycle 核對 HL 倉位同 bStocks 倉位對齊。
+   * 主神指令:「HL 平倉的話相應嘅 bStocks 都要 swap back to USDT」。
+   * 邏輯:
+   *   - HL 冇倉位 + bStock 有 → swap bStock → USDT(對齊平倉)
+   *   - HL 有倉位 → 唔郁(executeTrade 已經 swap 咗)
+   *   - bStock 冇 → 唔郁
+   *   - 垃圾數據(NaN/零餘額)→ skip
+   */
+  private async syncBStockPositions(): Promise<void> {
+    try {
+      if (process.env['BSTOCKS_ENABLED'] !== 'true') return;
+      const bal = this.bStocksWallet.getBalance();
+      if (!bal.success || bal.tokens.length === 0) return;
+      const bStocks = findBStockTokens(bal.tokens);
+      if (bStocks.length === 0) return;
+      const usdtAddr = PAYMENT_TOKEN_ADDRESSES['USDT'] ?? '';
+      if (!usdtAddr) return;
+      const hlSymbols = new Set((this.cachedExchangePositions ?? []).map((p) => normalizeSymbol(p.symbol)));
+      // 搵出「HL 冇倉位但 bStock 有」嘅——要 swap back
+      for (const b of bStocks) {
+        const qty = parseFloat(b.balance);
+        if (!Number.isFinite(qty) || qty <= 0 || !b.address) continue;
+        const hlSym = this.bStockData.getHLForBStockSymbolSync(b.symbol);
+        if (!hlSym) continue;
+        if (hlSymbols.has(normalizeSymbol(hlSym))) continue; // HL 有倉位 → 唔郁
+        // HL 冇倉位 + bStock 有 → swap back to USDT(對齊平倉)
+        const r = this.bStocksWallet.swap(b.address, usdtAddr, b.balance);
+        log.info(`🔄 [bstocks-sync] ${b.symbol} → USDT (${qty}): ${r.success ? 'OK' : (r.error ?? 'failed')} — HL 已平,對齊 swap back`);
+      }
+    } catch (err) {
+      log.warn(`[bstocks-sync] failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
