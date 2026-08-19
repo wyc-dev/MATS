@@ -4,6 +4,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P47-fix2: LLM digester 唔准覆蓋 consensus_reversal(第二斷層)
+
+**攻擊發現**:上一輪修咗 heuristic 保留 consensus_reversal,但 **LLM digester(validateLesson)仲會覆蓋**——LLM 對一個 consensus_reversal 倉返回 `premature_sl`(因為 holdMin 短 + LOSS),就將系統確定嘅 close reason 覆蓋咗。紅測試證實:LLM 返回 premature_sl → exitType 變 premature_sl(唔係 consensus_reversal)。
+
+**修法**:`validateLesson` 加 `finalExit = rec.exitType === 'consensus_reversal' ? 'consensus_reversal' : typedExit`——系統確定嘅 close reason 唔俾 LLM 判斷嘅 exit quality 覆蓋。
+
+**盈利意義**:consensus_reversal 係「系統確定嘅事實」(共識反轉),premature_sl 係「LLM 判斷嘅品質」(SL 太貼)。兩者唔同維度,唔可以互相覆蓋。修好後 RIL 先可以穩定學到 consensus_reversal 嘅 edge。
+
++1 紅先測試(LLM 返回 premature_sl 都保留 consensus_reversal);19 tests 綠;tsc clean。
+
+---
+
 ## v2.0.870-P47-fix: consensus_reversal 真正流到 agents(斷層修復)
 
 **主神實問**:「Agents 確認可以識別到 consensus_reversal?」
