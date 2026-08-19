@@ -4,6 +4,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P54: bStock 數據源 + x402 呼叫(CMC + Agent Studio)
+
+**主神指令**:做 #3(bStock 數據源)+ #5(x402 呼叫)。
+
+**#3 bStock 數據源**:
+- `src/services/bstock-data.ts`(新):type=3 list API(緩存 10min)+ Binance spot price(緩存 30s);`fetchList`/`fetchPrice`/`fetchAllPrices`
+- `/api/bstocks/prices`(GET):返回所有 bStock 價格(對齊 xyz: symbol)
+- 實證:MUBUSDT 喺 Binance spot 有交易對(price 932.08)
+
+**#5 x402 呼叫**:
+- `src/services/x402-calls.ts`(新):通用 x402 流程(402→preview→sign→replay);`cmcCall`(4 個 designated tools)+ `agentStudioAnalyze`(async 兩段式)+ `agentStudioPoll`
+- `/api/bstocks/cmc-call`(POST)+ `/agent-studio`(POST)+ `/agent-studio/poll`(POST)
+- 紀律:sign 前唔 log token;signature 短命即刻 replay;防禦式 parse
+
+tsc clean。
+
+---
+
 ## v2.0.870-P53: bStocks 自動 swap 執行邏輯 + Wallet TVL + 自動存地址
 
 **主神指令**:接「bStocks switch ON 時自動 swap」;下注 = Wallet TVL × Position Size 10%,Leverage 唔理。
