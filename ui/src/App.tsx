@@ -1600,34 +1600,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       )}
       {bStocksMsg && <div className="bstocks-msg">{bStocksMsg}</div>}
 
-      {/* Trade Mode + Cycle Period */}
+      {/* Cycle Period(霸晒成條 row) */}
       <div className="market-control-group">
-        <div className="market-control-col">
-          <div className="market-control-label">Trade Mode</div>
-          <div className="market-agent-selector-btns">
-            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'paper' ? 'active' : ''}`} onClick={() => handleTradeModeChange('paper')} disabled={modeSwitching}>Paper</button>
-            <button className={`year-btn year-btn-wide ${selectedTradeMode === 'real' ? 'active' : ''}`} disabled={modeSwitching} onClick={async () => {
-              // v2.0.117: Check wallet + private key before switching to Real mode
-              try {
-                const res = await fetch(`${API_BASE}/settings/env`)
-                const json = await res.json()
-                if (json.success) {
-                  const settings = json.settings as Record<string, string>
-                  const wallet = settings['HYPERLIQUID_WALLET_ADDRESS'] ?? ''
-                  const privKey = settings['HYPERLIQUID_PRIVATE_KEY'] ?? ''
-                  if (!wallet || !privKey) {
-                    setRealModeWarning('Hyperliquid wallet address and/or private key not configured. Go to Settings to set them before trading in Real mode.')
-                    return
-                  }
-                }
-              } catch { /* ignore — allow switch if fetch fails */ }
-              setRealModeWarning('')
-              handleTradeModeChange('real')
-            }}>Real</button>
-          </div>
-          {realModeWarning && <div className="trade-mode-warning">{realModeWarning}</div>}
-        </div>
-        <div className="market-control-col">
+        <div className="market-control-col" style={{ flex: 1 }}>
           <div className="market-control-label">
             Cycle Period: <strong style={{ color: cyclePeriod <= 4 ? 'var(--red)' : 'var(--green)' }}>{cyclePeriod}m</strong>
             {cyclePeriod <= 4 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--red)', marginLeft: 'var(--space-3)' }}><AlertTriangle size={12} color="var(--red)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />High token cost</span>}
@@ -1636,6 +1611,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           <div className="slider-row">
             <input
               type="range" min="1" max="10" value={cyclePeriod}
+              className={bStocksConnected ? 'slider-bstock' : ''}
               onChange={async (e) => {
                 const m = parseInt(e.target.value)
                 setCyclePeriod(m)
@@ -1688,6 +1664,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           <div className="slider-row">
             <input
               type="range" min="10" max="50" value={Math.round(maxPortionPct * 100)}
+              className={bStocksConnected ? 'slider-bstock' : ''}
               onChange={async (e) => {
                 const pct = parseInt(e.target.value) / 100
                 setMaxPortionPct(pct)
@@ -1710,6 +1687,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           <div className="slider-row">
             <input
               type="range" min="1" max="10" value={leverage}
+              className={bStocksConnected ? 'slider-bstock' : ''}
               onChange={async (e) => {
                 const lev = parseInt(e.target.value)
                 setLeverage(lev)
