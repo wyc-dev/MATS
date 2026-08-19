@@ -5546,7 +5546,8 @@ ${recentExamples}
         // (反事實回測:91% 贏單保留、58% 輸單防住;只闊 SL,TP 唔郁)
         if (process.env['REGIME_SL_WIDTH'] !== 'false') {
           try {
-            const regime = this.marketState?.getState(sym)?.regime ?? 'unknown';
+            // A7 紀律:用免觀測 getter(唔觸發 calibrator.observe)
+            const regime = this.marketState?.getTrendRegimeSnapshot(sym)?.regime ?? 'unknown';
             const minSl = regimeSLWidth(regime);
             const curSl = decision.stopLossPct ?? config.risk.stopLossPct;
             if (curSl < minSl) {
@@ -5955,6 +5956,9 @@ ${recentExamples}
     const sym = normalizeSymbol(symbol);
     const pos = this.portfolio.getPosition(sym);
     if (!pos) return false;
+    // P43-attack A2:倉位 close 後 reset 反轉計數——防重開同方向倉位時
+    // stale 計數(上一倉位嘅連續反轉)即時誤觸發反轉止蝕
+    this.reversalOpposedCycles.delete(sym);
 
     // v2.0.822: Analysis mode — do NOT close positions. The matrix already
     // encodes the close/flip recommendation for the user's client to act on.

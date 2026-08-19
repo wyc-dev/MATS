@@ -54,8 +54,8 @@ export function shouldExitOnReversal(
   if (!isOpposedDirection(positionSide, consensusAction)) return false;
   // ② 確認:連續 N cycle(consecutiveOpposedCycles 由 caller 追蹤)
   if (!Number.isFinite(consecutiveOpposedCycles) || consecutiveOpposedCycles < config.confirmCycles) return false;
-  // ③ 信心門檻(NaN/Infinity 盾)
-  if (!Number.isFinite(consensusConfidence) || consensusConfidence < config.minConfidence) return false;
+  // ③ 信心門檻(NaN/Infinity/污染值 >1 盾——信心必須 0-1)
+  if (!Number.isFinite(consensusConfidence) || consensusConfidence < config.minConfidence || consensusConfidence > 1) return false;
   // ④ 趨勢互證
   if (!isTrendOpposed(positionSide, trend)) return false;
   return true;
