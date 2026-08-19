@@ -1428,7 +1428,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       </div>
 
       {/* v2.0.870-P50: Binance bStocks trading 開關 */}
-      <div className="bstocks-toggle-row">
+      <div className={`bstocks-toggle-row ${bStocksConnected ? 'connected' : ''}`}>
         <div className="bstocks-toggle-label">
           <span className="stat-label">Binance (bStocks trading)</span>
           <span className="bstocks-toggle-hint">Tokenized US stocks on BSC</span>
@@ -1473,8 +1473,10 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
             type="button"
             role="switch"
             aria-checked={binanceBStocksEnabled}
-            className={`toggle-switch ${binanceBStocksEnabled ? 'on' : 'off'}`}
+            disabled={!bStocksConnected}
+            className={`toggle-switch ${binanceBStocksEnabled ? 'on' : 'off'} ${bStocksConnected ? 'connected' : ''}`}
             onClick={async () => {
+              if (!bStocksConnected) return
               const next = !binanceBStocksEnabled
               setBinanceBStocksEnabled(next)
               // v2.0.870-P53: 持久化到 env(後端讀 BSTOCKS_ENABLED 決定自動 swap)

@@ -1416,6 +1416,19 @@ body {
 .toggle-switch.on .toggle-knob {
   transform: translateX(20px);
 }
+/* v2.0.870-P58: Connected 狀態——border + switch 橙色 */
+.bstocks-toggle-row.connected {
+  border-color: var(--orange, #f0a020);
+  box-shadow: 0 0 8px rgba(240, 160, 32, 0.15);
+}
+.toggle-switch.connected {
+  background: var(--orange, #f0a020);
+  border-color: var(--orange, #f0a020);
+}
+.toggle-switch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 .bstocks-toggle-actions {
   display: flex;
   align-items: center;
