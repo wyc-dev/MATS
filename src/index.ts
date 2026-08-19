@@ -402,7 +402,14 @@ class MATSSystem {
       const raw = fs.readFileSync(this.BSTOCK_TRADES_PATH, 'utf-8');
       const obj = JSON.parse(raw) as unknown;
       // v2.0.870-P76: sanitize 防污染(buyPrice 垃圾值/__proto__ 注入)
-      this.bStockTrades = sanitizeBStockTrades(obj);
+      const sanitized = sanitizeBStockTrades(obj);
+      // v2.0.870-P77: normalize key——手動寫入可能係全細階('xyz:skhx'),
+      // 但 normalizeSymbol 保留資產名大寫('xyz:SKHX')。重新 normalize 對齊,
+      // 否則 bStockTrades.get(normalizeSymbol(t.symbol)) 搵唔到。
+      this.bStockTrades = new Map();
+      for (const [k, v] of sanitized) {
+        this.bStockTrades.set(normalizeSymbol(k), v);
+      }
       if (this.bStockTrades.size > 0) log.info(`[bstocks] loaded ${this.bStockTrades.size} bStock trade records`);
     } catch (err) {
       log.warn(`[bstocks] loadBStockTrades failed: ${err instanceof Error ? err.message : String(err)}`);

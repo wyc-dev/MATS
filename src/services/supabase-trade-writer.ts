@@ -87,6 +87,10 @@ export class SupabaseTradeWriter {
   }
 
   isEnabled(): boolean {
+    // v2.0.870-P76(主神裁決): 正常情況下 trades 係本地儲存就夠——
+    // Supabase 寫入預設禁用(env SUPABASE_TRADE_WRITER_ENABLED=true 先啟用)。
+    // 原因:trade_records 表需要 migration 管理,唔應該無啦啦上傳到 DB。
+    if (process.env['SUPABASE_TRADE_WRITER_ENABLED'] !== 'true') return false;
     return this.client !== null;
   }
 
