@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-P66
+> **作者**: YC Wong · **版本**: 2.0.870-P67
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~72,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -206,6 +206,10 @@ Binance bStock PnL contest 規則:「Keep BNB for gas: every trade is an on-chai
 主神指令:bStocks switch live → pause 時,如果持有 bStocks,先確認「是否全部平倉」(just like Hyperliquid paper/real switch),確認後全部平倉,先可以 pause。
 
 **落地**:`findBStockTokens()` 純函數(symbol 以 B 結尾 + 排除 payment tokens)+ `closeAll()`(逐個 swap bStock → USDT,串行避免 rate limit,失敗唔中斷,保留 gas token)+ `/api/bstocks/close-all` route + UI 確認 modal(`handleBStocksToggle` → check 有冇持有 bStock → 有就確認 → `confirmBStocksCloseAll` → 完成後先 pause)。顏色分家:HL mode switch 確認用綠色(var(--accent) #97fce4)、Binance live/pause 用橙色(var(--gold) #F5A623)。
+
+### v2.0.870-P67: BNB price $0 bug 修復(fetchPriceForSymbol 大小寫)
+
+主神報告:八個市場半日冇 trade——檢查發現 BNB price stale($0.00),agents 判斷「Price data is stale」完全唔 trade BNB。根因:`fetchPriceForSymbol` 對 bare symbol 用 `u.name === symbol` 原樣比較——HL universe 係大寫 `'BNB'`,但 tradingMarkets 有 `'bnb'`(細階)→ 搵唔到 → 返回 0。由 v1.9.4 initial commit 就存在(git blame 確認);之前冇爆係因為 dex0CtxsCache 成日 hit(cache 用 `toUpperCase()` 冇問題),cache miss 先會行到有 bug 嘅分支。修復:`u.name === symbol.toUpperCase()`(case-insensitive)。驗證:BNB 而家 agents 見到「Trending bull but price is mid-range (40.5bps above demand)」。
 
 ### v2.0.870-P43: 闊 SL + 加強版共識反轉止蝕
 

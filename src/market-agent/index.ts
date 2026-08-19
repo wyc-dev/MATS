@@ -1101,7 +1101,8 @@ export class MarketAgent {
             { universe: Array<{ name: string }> },
             Array<{ dayNtlVlm: string; markPx: string; prevDayPx: string }>,
           ];
-          const idx = dex0[0]?.universe?.findIndex((u: { name: string }) => u.name === symbol);
+          // v2.0.870-P67: case-insensitive——'bnb'(細階)要搵到 'BNB'(HL universe 係大寫)
+          const idx = dex0[0]?.universe?.findIndex((u: { name: string }) => u.name === symbol.toUpperCase());
           if (idx !== undefined && idx >= 0 && idx < dex0[1]?.length) {
             const ctx = dex0[1][idx]!;
             const price = parseFloat(ctx.markPx) || 0;
