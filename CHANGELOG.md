@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P51: bStocks Agentic Wallet 接入(Connect 按鈕 + 服務層 + API)
+
+**主神指令**:喺 "Tokenized US stocks on BSC" div 加 "Connect" 按鈕 → "Sign in Agentic Wallet",重要數據存 env;寫 `bStocks_module.md`;完成 SKILL 接入。
+
+**改動**:
+- `bStocks_module.md`(新):完整安裝方案 + 認證流程 + 比賽重點事項 + symbol 對齊表
+- `src/services/bstocks-wallet.ts`(新):包裝 `baw` CLI(signIn/verify/getStatus;UUID 驗證 + execSync timeout + 防禦式 parse;唔 log token)
+- `src/api-server.ts`:`/api/bstocks/connect`(POST)/`/verify`(POST)/`/status`(GET)+ setBStocksHandlers
+- `src/index.ts`:BStocksWallet 實例 + handler 註冊 + env allowlist 加 `BINANCE_AW_ADDRESS`
+- `ui/src/App.tsx`:Connect 按鈕 + pairingCode 顯示 + urlForWeb 開窗 + Verify 按鈕 + 地址顯示
+- `ui/src/index.css`:connect-btn/verify-row/address/msg 樣式
+- `baw` CLI 已裝(v1.8.0),live 驗證 signin/status 輸出格式
+
+tsc clean;vite build 成功。
+
+---
+
 ## v2.0.870-P50: Trading Terminal UI——Wallet TVL + Binance bStocks 開關
 
 **主神指令**:HACP Prefrontal Trading Terminal 嘅 Genuine Balance/Equity 同 row 加 **Wallet TVL**(數值來源之後補上);下方加 **Binance (bStocks trading) On/Off Switch**。

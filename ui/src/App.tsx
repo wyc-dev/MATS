@@ -1088,6 +1088,14 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   // v2.0.870-P50: Wallet TVL(數值來源之後補上)+ Binance bStocks 開關
   const [walletTvl, setWalletTvl] = useState<number | null>(null)
   const [binanceBStocksEnabled, setBinanceBStocksEnabled] = useState(false)
+  // v2.0.870-P51: bStocks Agentic Wallet 連接流程
+  const [bStocksPairingCode, setBStocksPairingCode] = useState<string | null>(null)
+  const [bStocksUrlForWeb, setBStocksUrlForWeb] = useState<string | null>(null)
+  const [bStocksQrCodeId, setBStocksQrCodeId] = useState<string | null>(null)
+  const [bStocksConnected, setBStocksConnected] = useState(false)
+  const [bStocksAddress, setBStocksAddress] = useState<string | null>(null)
+  const [bStocksBusy, setBStocksBusy] = useState(false)
+  const [bStocksMsg, setBStocksMsg] = useState<string | null>(null)
   // Cross-asset-type pair cache: persists volume/price data across Asset Type switches
   // so Selected Market Pairs can show data even when the pair isn't in the current topPairs.
   const pairCacheRef = useRef<Map<string, { volume24h: number; volume5m?: number; price: number; priceChangePercent: number }>>(new Map())
@@ -1392,16 +1400,91 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           <span className="stat-label">Binance (bStocks trading)</span>
           <span className="bstocks-toggle-hint">Tokenized US stocks on BSC</span>
         </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={binanceBStocksEnabled}
-          className={`toggle-switch ${binanceBStocksEnabled ? 'on' : 'off'}`}
-          onClick={() => setBinanceBStocksEnabled(v => !v)}
-        >
-          <span className="toggle-knob" />
-        </button>
+        <div className="bstocks-toggle-actions">
+          {bStocksConnected && bStocksAddress ? (
+            <span className="bstocks-address" title={bStocksAddress}>{bStocksAddress.slice(0, 6)}…{bStocksAddress.slice(-4)}</span>
+          ) : (
+            <button
+              type="button"
+              className="bstocks-connect-btn"
+              disabled={bStocksBusy}
+              onClick={async () => {
+                setBStocksBusy(true)
+                setBStocksMsg(null)
+                try {
+                  const res = await fetch(`${API_BASE}/bstocks/connect`, { method: 'POST' })
+                  const json = await res.json()
+                  if (json.alreadyConnected) {
+                    setBStocksConnected(true)
+                    setBStocksMsg('Already connected')
+                  } else if (json.qrCodeId && json.pairingCode) {
+                    setBStocksQrCodeId(json.qrCodeId)
+                    setBStocksPairingCode(json.pairingCode)
+                    setBStocksUrlForWeb(json.urlForWeb ?? null)
+                    if (json.urlForWeb) window.open(json.urlForWeb, '_blank')
+                    setBStocksMsg(`Pairing code: ${json.pairingCode} — confirm in Binance App`)
+                  } else {
+                    setBStocksMsg(json.error ?? 'Sign-in failed')
+                  }
+                } catch (e) {
+                  setBStocksMsg(e instanceof Error ? e.message : 'Connect failed')
+                } finally {
+                  setBStocksBusy(false)
+                }
+              }}
+            >
+              {bStocksBusy ? 'Connecting…' : 'Connect'}
+            </button>
+          )}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={binanceBStocksEnabled}
+            className={`toggle-switch ${binanceBStocksEnabled ? 'on' : 'off'}`}
+            onClick={() => setBinanceBStocksEnabled(v => !v)}
+          >
+            <span className="toggle-knob" />
+          </button>
+        </div>
       </div>
+      {bStocksPairingCode && bStocksQrCodeId && !bStocksConnected && (
+        <div className="bstocks-verify-row">
+          <span className="bstocks-toggle-hint">Pairing code: <strong>{bStocksPairingCode}</strong></span>
+          <button
+            type="button"
+            className="bstocks-connect-btn"
+            disabled={bStocksBusy}
+            onClick={async () => {
+              setBStocksBusy(true)
+              setBStocksMsg('Verifying… (may take up to 5 min)')
+              try {
+                const res = await fetch(`${API_BASE}/bstocks/verify`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ qrCodeId: bStocksQrCodeId }),
+                })
+                const json = await res.json()
+                if (json.success) {
+                  setBStocksConnected(true)
+                  setBStocksPairingCode(null)
+                  setBStocksMsg('Connected')
+                  const st = await fetch(`${API_BASE}/bstocks/status`).then(r => r.json())
+                  if (st.address) setBStocksAddress(st.address)
+                } else {
+                  setBStocksMsg(json.error ?? 'Verification failed')
+                }
+              } catch (e) {
+                setBStocksMsg(e instanceof Error ? e.message : 'Verify failed')
+              } finally {
+                setBStocksBusy(false)
+              }
+            }}
+          >
+            {bStocksBusy ? 'Verifying…' : 'Verify'}
+          </button>
+        </div>
+      )}
+      {bStocksMsg && <div className="bstocks-msg">{bStocksMsg}</div>}
 
       {/* Trade Mode + Cycle Period */}
       <div className="market-control-group">
