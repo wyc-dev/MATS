@@ -176,11 +176,44 @@ MATS 設計 = 穩定盈利（soft gate、保守 sizing、TP>>SL）
 - [x] UI Connect 按鈕（signin → 顯示 pairingCode + 開 urlForWeb → verify → 顯示地址）
 - [x] env allowlist 加 `BINANCE_AW_ADDRESS`
 
-## 9. 待接（下一步）
+## 9. 已完成（P51-P54）
 
-- [ ] Wallet TVL 數值來源（`baw wallet balance` 或 bStock AUM）
-- [ ] 連接後自動存 `BINANCE_AW_ADDRESS` 到 .env（而家 UI 顯示地址，未自動寫 env）
-- [ ] bStock 數據源（Binance 蠟燭，同 xyz: 對齊 symbol）
-- [ ] bStock 交易執行（`baw market-order swap` / `limit-order`）
-- [ ] CMC + Agent Studio x402 呼叫（比賽硬要求）
+- [x] `baw` CLI 安裝（v1.8.0）
+- [x] 服務層 `bstocks-wallet.ts`（signIn/verify/getStatus/swap/getBalance/saveAddress）
+- [x] API 路由 connect/verify/status/balance/swap/prices/cmc-call/agent-studio
+- [x] UI Connect 按鈕 + Wallet TVL + bStocks switch 持久化
+- [x] 自動存 `BINANCE_AW_ADDRESS` 到 .env
+- [x] Wallet TVL（`baw wallet balance`）
+- [x] bStocks 自動 swap（BUY→USDT→bStock；SELL→bStock→USDT；下注=TVL×10%）
+- [x] bStock 數據源（`bstock-data.ts`：type=3 list + Binance spot price）
+- [x] x402 呼叫（`x402-calls.ts`：CMC 4 tools + Agent Studio async）
+
+## 10. binance-tokenized-securities-info skill(有用,已實證)
+
+**來源**: https://github.com/binance/binance-skills-hub/tree/main/skills/binance-web3/binance-tokenized-securities-info
+
+**實證**:API 5(RWA Dynamic V2)對 bStock(MUB)work——on-chain price 930.97、P/E 22.64、divYield 0.05%、52w 113.46-1255.00、status TRADING。
+
+**6 個 API**(全部 public,冇 key,`User-Agent: binance-web3/1.1 (Skill)`):
+
+| API | 功能 | 對 MATS 嘅價值 |
+|---|---|---|
+| 1 Token Symbol List | 列出代幣化股票(type=1 Ondo / type=3 bStock) | 已有(P54) |
+| 2 RWA Meta | 公司資料 + attestation report | 低 |
+| 3 Market Status | 整體市場開/關 | 中 |
+| **4 Asset Market Status** | **per-asset 交易狀態 + 企業行動(earnings/dividend/split/merger)** | **高——swap 前風險檢查** |
+| **5 RWA Dynamic V2** | **on-chain price + 美股基本面(P/E/divYield/52w)** | **高——on-chain 價 + 基本面** |
+| **6 Token K-Line** | **蠟燭圖(on-chain token price)** | **高——bStock 蠟燭** |
+
+**關鍵概念**:`referencePrice = tokenInfo.price ÷ sharesMultiplier`(multiplier 唔係 1,股息累積調整)。
+
+**需要接入**:
+1. **API 4(企業行動風險檢查)**——auto-swap 前 check bStock 係咪 paused(earnings/dividend/split),paused 就 skip swap
+2. **API 5(on-chain price)**——用 on-chain token price 取代 Binance spot price(更準)
+3. **API 6(K-Line)**——用 on-chain 蠟燭取代 Binance spot klines
+
+## 11. 待接（下一步）
+
+- [ ] 接入 API 4(企業行動風險檢查)+ API 5(on-chain price)+ API 6(K-Line)
 - [ ] 比賽模式 sizing（激進，同 MATS 穩定模式分開）
+- [ ] x402 呼叫嘅 UI 觸發按鈕
