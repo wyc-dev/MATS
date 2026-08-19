@@ -1484,11 +1484,14 @@ body {
 .bstocks-connected-badge {
   font-size: var(--fs-sm);
   font-weight: var(--fw-bold);
-  color: var(--green);
+  color: var(--orange, #f0a020);
   padding: 2px 8px;
   border-radius: var(--radius-sm);
-  background: rgba(52, 211, 153, 0.15);
+  background: rgba(240, 160, 32, 0.15);
   white-space: nowrap;
+}
+.bstocks-connected-badge.pause {
+  opacity: 0.6;
 }
 .bstocks-refresh-btn {
   display: flex;

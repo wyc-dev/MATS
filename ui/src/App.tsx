@@ -1101,7 +1101,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [closingSym, setClosingSym] = useState<string | null>(null)
   // v2.0.870-P50: Wallet TVL(數值來源之後補上)+ Binance bStocks 開關
   const [walletTvl, setWalletTvl] = useState<number | null>(null)
-  const [binanceBStocksEnabled, setBinanceBStocksEnabled] = useState(false)
+  const [binanceBStocksEnabled, setBinanceBStocksEnabled] = useState(() => {
+    try { return localStorage.getItem('bstocksEnabled') === 'true' } catch { return false }
+  })
   // v2.0.870-P51: bStocks Agentic Wallet 連接流程
   const [bStocksPairingCode, setBStocksPairingCode] = useState<string | null>(null)
   const [bStocksUrlForWeb, setBStocksUrlForWeb] = useState<string | null>(null)
@@ -1497,7 +1499,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         </div>
         <div className="bstocks-toggle-actions">
           {bStocksConnected && (
-            <span className="bstocks-connected-badge" title={bStocksAddress ?? ''}>Connected</span>
+            <span className={`bstocks-connected-badge ${binanceBStocksEnabled ? 'live' : 'pause'}`} title={bStocksAddress ?? ''}>
+              {binanceBStocksEnabled ? 'Live' : 'Pause'}
+            </span>
           )}
           {!bStocksConnected && (
             <button
@@ -1542,6 +1546,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               if (!bStocksConnected) return
               const next = !binanceBStocksEnabled
               setBinanceBStocksEnabled(next)
+              try { localStorage.setItem('bstocksEnabled', next ? 'true' : 'false') } catch { /* ignore */ }
               // v2.0.870-P53: 持久化到 env(後端讀 BSTOCKS_ENABLED 決定自動 swap)
               try {
                 await fetch(`${API_BASE}/settings/env`, {
