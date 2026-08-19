@@ -79,7 +79,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
-import { BStocksWallet, PAYMENT_TOKEN_ADDRESSES } from './services/bstocks-wallet.ts';
+import { BStocksWallet, PAYMENT_TOKEN_ADDRESSES, checkBStockSwapPreconditions } from './services/bstocks-wallet.ts';
 import { BStockData } from './services/bstock-data.ts';
 import { cmcCall, agentStudioAnalyze, agentStudioPoll } from './services/x402-calls.ts';
 import { regimeSLWidth } from './analysis/regime-sl-width.ts';
@@ -296,67 +296,78 @@ class MATSSystem {
   /** v2.0.870-P53: bStocks switch ON 時自動 swap(同 Hyperliquid 交易並行)。
    *  BUY → swap USDT→bStock;SELL → swap bStock→USDT。
    *  fire-and-forget(唔 block 主交易);env BSTOCKS_ENABLED=true 先啟用。 */
+  /** v2.0.870-P65-attack: bStock swap 併發 guard——同一 symbol 唔可以同時兩個 swap(重複下注) */
+  private bStockSwapInFlight = new Set<string>();
+
   private async maybeSwapBStock(symbol: string, side: 'buy' | 'sell'): Promise<void> {
     try {
       if (process.env['BSTOCKS_ENABLED'] !== 'true') return;
-      // 動態 map(xyz: symbol → bStock)——唔再 hardcode,新 symbol 自動 map
-      const bStock = await this.bStockData.getBStockForXyzSymbol(symbol);
-      if (!bStock) return;
-      const bStockAddr = bStock.contractAddress;
-      const bStockSymbol = bStock.symbol;
-      // API 4: 企業行動風險檢查(paused/limited 就 skip swap)
-      const status = await this.bStockData.isTradable(bStockAddr);
-      if (!status.tradable) {
-        log.warn(`🛑 [bstocks] ${symbol} not tradable (reason=${status.reasonCode}${status.reasonMsg ? ' ' + status.reasonMsg : ''}) — skip swap`);
+      const normSym = normalizeSymbol(symbol);
+      // v2.0.870-P65-attack: 併發 guard——同一 symbol 已有 swap 進行中 → skip(避免重複下注)
+      if (this.bStockSwapInFlight.has(normSym)) {
+        log.warn(`[bstocks] swap in-flight for ${symbol}, skip duplicate`);
         return;
       }
-      const usdtAddr = PAYMENT_TOKEN_ADDRESSES['USDT'] ?? '';
-      if (!usdtAddr) return;
-      // 下注 = Wallet TVL × Position Size(10%);Leverage 唔理(bStocks 1:1)
-      const bal = this.bStocksWallet.getBalance();
-      // v2.0.870-P64: BNB gas 保留檢查——每次 swap 都係 on-chain tx,冇 BNB gas 第一個交易就失敗
-      // (Binance 規則:Do not convert all funds to stablecoins or bStock, or the first transaction will fail for lack of gas)
-      const MIN_BNB_GAS = 0.01; // 最少 0.01 BNB(≈$6,BSC gas 每次 <$0.1,綽綽有餘)
-      if (bal.success && bal.bnbBalance != null && bal.bnbBalance < MIN_BNB_GAS) {
-        log.warn(`⛽ [bstocks] BNB gas 不足 (${bal.bnbBalance} BNB < ${MIN_BNB_GAS}), skip swap ${symbol} — 請入 BNB 做 gas`);
-        return;
-      }
-      // v2.0.870-P64: 買 bStock 需要 USDT——Wallet 冇 USDT 就 skip(唔好將全部資金轉做 bStock)
-      if (side === 'buy') {
-        const usdt = bal.tokens.find((t) => t.symbol === 'USDT');
-        const usdtBal = usdt ? parseFloat(usdt.balance) : 0;
-        if (!Number.isFinite(usdtBal) || usdtBal <= 0) {
-          log.warn(`[bstocks] USDT 餘額不足 (${usdtBal}), skip BUY swap ${symbol} — 需要 USDT 買 bStock`);
+      this.bStockSwapInFlight.add(normSym);
+      try {
+        // 動態 map(xyz: symbol → bStock)——唔再 hardcode,新 symbol 自動 map
+        const bStock = await this.bStockData.getBStockForXyzSymbol(symbol);
+        if (!bStock) return;
+        const bStockAddr = bStock.contractAddress;
+        const bStockSymbol = bStock.symbol;
+        // API 4: 企業行動風險檢查(paused/limited 就 skip swap)
+        const status = await this.bStockData.isTradable(bStockAddr);
+        if (!status.tradable) {
+          log.warn(`🛑 [bstocks] ${symbol} not tradable (reason=${status.reasonCode}${status.reasonMsg ? ' ' + status.reasonMsg : ''}) — skip swap`);
           return;
         }
-      }
-      const tvl = bal.success && bal.tvl != null ? bal.tvl : 0;
-      const sizePct = this.marketAgent.getConfig().positionSizePct ?? 0.10;
-      const amount = (tvl * sizePct).toFixed(2);
-      if (tvl <= 0 || parseFloat(amount) <= 0) {
-        log.warn(`[bstocks] TVL=0, skip swap ${symbol}`);
-        return;
-      }
-      if (side === 'buy') {
-        const r = this.bStocksWallet.swap(usdtAddr, bStockAddr, amount);
-        log.info(`🟢 [bstocks] BUY ${symbol} → swap ${amount} USDT → bStock (TVL=${tvl.toFixed(2)} × ${(sizePct * 100).toFixed(0)}%): ${r.success ? 'OK' : (r.error ?? 'failed')}`);
-        // 記錄買入價(swap 後攞 bStock 價)
-        if (r.success && bStockSymbol) {
-          const price = await this.bStockData.fetchPrice(`${bStockSymbol}USDT`);
-          const rec = this.bStockTrades.get(normalizeSymbol(symbol)) ?? { bStockSymbol, buyPrice: null, sellPrice: null };
-          rec.buyPrice = price;
-          this.bStockTrades.set(normalizeSymbol(symbol), rec);
+        const usdtAddr = PAYMENT_TOKEN_ADDRESSES['USDT'] ?? '';
+        if (!usdtAddr) return;
+        // 下注 = Wallet TVL × Position Size(10%);Leverage 唔理(bStocks 1:1)
+        const bal = this.bStocksWallet.getBalance();
+        // v2.0.870-P65-attack: 前置檢查(純函數)——BNB gas fail-closed(null/NaN/負數都 skip)
+        // + USDT 餘額檢查。修復 A1(getBalance 失敗 null bypass)/ A2(BNB NaN)/ A3(USDT 垃圾)。
+        const pre = checkBStockSwapPreconditions(bal, side);
+        if (!pre.ok) {
+          log.warn(`⛽ [bstocks] ${pre.reason}, skip swap ${symbol}`);
+          return;
         }
-      } else {
-        const r = this.bStocksWallet.swap(bStockAddr, usdtAddr, amount);
-        log.info(`🔴 [bstocks] SELL ${symbol} → swap bStock → USDT (${amount}): ${r.success ? 'OK' : (r.error ?? 'failed')}`);
-        // 記錄賣出價
-        if (r.success && bStockSymbol) {
-          const price = await this.bStockData.fetchPrice(`${bStockSymbol}USDT`);
-          const rec = this.bStockTrades.get(normalizeSymbol(symbol)) ?? { bStockSymbol, buyPrice: null, sellPrice: null };
-          rec.sellPrice = price;
-          this.bStockTrades.set(normalizeSymbol(symbol), rec);
+        const tvl = bal.success && bal.tvl != null ? bal.tvl : 0;
+        const sizePct = this.marketAgent.getConfig().positionSizePct ?? 0.10;
+        const amount = (tvl * sizePct).toFixed(2);
+        if (tvl <= 0 || parseFloat(amount) <= 0) {
+          log.warn(`[bstocks] TVL=0, skip swap ${symbol}`);
+          return;
         }
+        // v2.0.870-P65-attack(E2 盈利提升):最低下注 $5——gas + 手續費侵蝕細額交易,贏粒糖輸間廠
+        const MIN_SWAP_USD = 5;
+        if (parseFloat(amount) < MIN_SWAP_USD) {
+          log.warn(`[bstocks] 下注 $${amount} < $${MIN_SWAP_USD} 最低下注,skip swap ${symbol} — gas/手續費會侵蝕盈利`);
+          return;
+        }
+        if (side === 'buy') {
+          const r = this.bStocksWallet.swap(usdtAddr, bStockAddr, amount);
+          log.info(`🟢 [bstocks] BUY ${symbol} → swap ${amount} USDT → bStock (TVL=${tvl.toFixed(2)} × ${(sizePct * 100).toFixed(0)}%): ${r.success ? 'OK' : (r.error ?? 'failed')}`);
+          // 記錄買入價(swap 後攞 bStock 價)
+          if (r.success && bStockSymbol) {
+            const price = await this.bStockData.fetchPrice(`${bStockSymbol}USDT`);
+            const rec = this.bStockTrades.get(normSym) ?? { bStockSymbol, buyPrice: null, sellPrice: null };
+            rec.buyPrice = price;
+            this.bStockTrades.set(normSym, rec);
+          }
+        } else {
+          const r = this.bStocksWallet.swap(bStockAddr, usdtAddr, amount);
+          log.info(`🔴 [bstocks] SELL ${symbol} → swap bStock → USDT (${amount}): ${r.success ? 'OK' : (r.error ?? 'failed')}`);
+          // 記錄賣出價
+          if (r.success && bStockSymbol) {
+            const price = await this.bStockData.fetchPrice(`${bStockSymbol}USDT`);
+            const rec = this.bStockTrades.get(normSym) ?? { bStockSymbol, buyPrice: null, sellPrice: null };
+            rec.sellPrice = price;
+            this.bStockTrades.set(normSym, rec);
+          }
+        }
+      } finally {
+        this.bStockSwapInFlight.delete(normSym);
       }
     } catch (err) {
       log.warn(`[bstocks] swap failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -2292,6 +2303,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         },
         balance: () => this.bStocksWallet.getBalance(),
         swap: (fromToken: string, toToken: string, qty: string) => this.bStocksWallet.swap(fromToken, toToken, qty),
+        // v2.0.870-P66: 全部平倉 bStocks(live → pause 前強制平倉)
+        closeAll: () => this.bStocksWallet.closeAll(),
         prices: () => this.bStockData.fetchAllPrices(),
         cmcCall: (tool: string, args: Record<string, unknown>) => cmcCall(tool, args),
         agentStudioAnalyze: (symbols: string[]) => agentStudioAnalyze(symbols),
@@ -2563,26 +2576,43 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // v2.0.XX: Use the global rate limiter (hl-global-limiter.ts) instead of
       // a per-proxy lastHLCall gap. This shares the same request budget as
       // MarketAgent, HL real engine, REST polling, S/R detector, and ATR.
+      // v2.0.870-P65: Add TTL cache — UI chart clicks return instantly instead
+      // of re-fetching HL/Binance every time (was: every symbol click + every
+      // cycle reload hit the upstream API).
+      // v2.0.870-P65-attack: bounded cache (A5) + inflight dedup (A6).
+      const candleApiCache = new Map<string, { data: Array<{ time: number; open: number; high: number; low: number; close: number }>; ts: number }>();
+      const CANDLE_API_TTL_MS = 30_000; // 30s — fresh enough for live chart, fast enough for instant clicks
+      const CANDLE_API_MAX_ENTRIES = 200; // 上限——垃圾 symbol 組合唔可以無限增長 memory
+      const candleApiInflight = new Map<string, Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>>>();
       this.apiServer.setCandlesRequestHandler(async (symbol, interval, limit) => {
-        // Route candle requests by symbol format, not by exchange setting:
-        // - symbols containing ":" (xyz:CL, flx:NVDA) → Hyperliquid DEX 1-8
-        // - USDT/USD suffixed → Binance Futures
-        // - bare symbols (BTC, ETH, SOL) → Hyperliquid DEX 0
-        const upper = symbol.toUpperCase();
-        const isColonSymbol = symbol.includes(':');
-        const isBinanceSymbol = upper.endsWith('USDT') || upper.endsWith('USD');
-        if (isBinanceSymbol && !isColonSymbol) {
-          const res = await fetch(`${config.binance.futuresRestUrl}/fapi/v1/klines?symbol=${upper}&interval=${interval}&limit=${limit}`);
-          if (!res.ok) throw new Error(`Binance ${res.status}`);
-          const data = await res.json() as unknown[][];
-          return data.map(k => ({
-            time: Math.floor(Number(k[0]) / 1000),
-            open: parseFloat(k[1] as string),
-            high: parseFloat(k[2] as string),
-            low: parseFloat(k[3] as string),
-            close: parseFloat(k[4] as string),
-          }));
-        } else {
+        const cacheKey = `${symbol}|${interval}|${limit}`;
+        const cached = candleApiCache.get(cacheKey);
+        if (cached && Date.now() - cached.ts < CANDLE_API_TTL_MS) return cached.data;
+        // A6: inflight dedup——同一 key 同時 miss → 只 fetch 一次,其他等同一個 promise
+        const inflight = candleApiInflight.get(cacheKey);
+        if (inflight) return inflight;
+        const p = (async () => {
+          // Route candle requests by symbol format, not by exchange setting:
+          // - symbols containing ":" (xyz:CL, flx:NVDA) → Hyperliquid DEX 1-8
+          // - USDT/USD suffixed → Binance Futures
+          // - bare symbols (BTC, ETH, SOL) → Hyperliquid DEX 0
+          const upper = symbol.toUpperCase();
+          const isColonSymbol = symbol.includes(':');
+          const isBinanceSymbol = upper.endsWith('USDT') || upper.endsWith('USD');
+          if (isBinanceSymbol && !isColonSymbol) {
+            const res = await fetch(`${config.binance.futuresRestUrl}/fapi/v1/klines?symbol=${upper}&interval=${interval}&limit=${limit}`);
+            if (!res.ok) throw new Error(`Binance ${res.status}`);
+            const data = await res.json() as unknown[][];
+            const candles = data.map(k => ({
+              time: Math.floor(Number(k[0]) / 1000),
+              open: parseFloat(k[1] as string),
+              high: parseFloat(k[2] as string),
+              low: parseFloat(k[3] as string),
+              close: parseFloat(k[4] as string),
+            }));
+            candleApiCache.set(cacheKey, { data: candles, ts: Date.now() });
+            return candles;
+          }
           // Hyperliquid candleSnapshot is case-sensitive — DEX 1-8 prefixed
           // symbols need lowercase prefix (xyz:SKHX, not XYZ:SKHX).
           // DEX 0 bare names (BTC, ETH, SOL) need uppercase.
@@ -2605,14 +2635,46 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           // 🐛 FIX: HL returns t in MILLISECONDS, but lightweight-charts expects SECONDS.
           // The old code only divided by 1000 when k.t was a string, but k.t is always
           // a number (ms timestamp). Always divide by 1000.
-          return data.map(k => ({
+          const candles = data.map(k => ({
             time: Math.floor((typeof k.t === 'number' ? k.t : parseInt(String(k.t ?? '0'))) / 1000),
             open: parseFloat(k.o),
             high: parseFloat(k.h),
             low: parseFloat(k.l),
             close: parseFloat(k.c),
           }));
+          // v2.0.870-P65: HL 冇呢個 coin 嘅 candle(例如 xyz:SPCX 唔喺 HL meta,返回 0 支)
+          // → fallback 去 Binance spot(bStock list 嘅 cs 交易對,例如 SPCXBUSDT)
+          // v2.0.870-P65-attack(A7): HL 返回太少支(<10)都 fallback——部分數據圖表冇用
+          if (candles.length < 10 && symbol.includes(':')) {
+            const bStock = await this.bStockData.getBStockForXyzSymbol(symbol);
+            if (bStock?.cs) {
+              const res2 = await fetch(`https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(bStock.cs)}&interval=${interval}&limit=${limit}`);
+              if (res2.ok) {
+                const data2 = await res2.json() as unknown[][];
+                const candles2 = data2.map(k => ({
+                  time: Math.floor(Number(k[0]) / 1000),
+                  open: parseFloat(k[1] as string),
+                  high: parseFloat(k[2] as string),
+                  low: parseFloat(k[3] as string),
+                  close: parseFloat(k[4] as string),
+                }));
+                candleApiCache.set(cacheKey, { data: candles2, ts: Date.now() });
+                return candles2;
+              }
+            }
+          }
+          candleApiCache.set(cacheKey, { data: candles, ts: Date.now() });
+          return candles;
+        })().finally(() => {
+          candleApiInflight.delete(cacheKey);
+        });
+        candleApiInflight.set(cacheKey, p);
+        // A5: bounded cache——超過上限清最舊(先入先出)
+        if (candleApiCache.size > CANDLE_API_MAX_ENTRIES) {
+          const oldestKey = candleApiCache.keys().next().value;
+          if (oldestKey !== undefined) candleApiCache.delete(oldestKey);
         }
+        return p;
       });
 
       this.apiServer.start();

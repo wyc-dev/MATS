@@ -762,7 +762,9 @@ export class OptionsDataManager {
     const isTrending = regime === 'trending' || regime === 'momentum';
     // v2.0.870-P63: OPEX alone no longer vetoes — LLM judges breakout vs failure.
     // Only earnings/FOMC/high event risk triggers Stand Aside (capital preservation).
-    const hasEventRisk = ctx.eventRisk === 'earnings' || ctx.eventRisk === 'fomc' || ctx.eventRisk === 'high';
+    // v2.0.870-P65-attack: case-insensitive — 'EARNINGS'/'FOMC' (uppercase) must also veto.
+    const ev = String(ctx.eventRisk ?? '').toLowerCase();
+    const hasEventRisk = ev === 'earnings' || ev === 'fomc' || ev === 'high';
     const isPositiveGamma = ctx.gammaRegime === 'positive';
     const isNegativeGamma = ctx.gammaRegime === 'negative';
 

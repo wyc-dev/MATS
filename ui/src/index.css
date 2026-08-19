@@ -4616,6 +4616,28 @@ body {
   margin-top: var(--space-4);
 }
 
+/* v2.0.870-P65: select-symbol deferred 提示(cycle 進行中)——用戶知道 chart 會喺 cycle 完成後同步 */
+.chart-pending-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  margin-bottom: 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 193, 7, 0.12);
+  border: 1px solid rgba(255, 193, 7, 0.35);
+  color: #ffc107;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  animation: chart-pending-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes chart-pending-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
 .market-price-row {
   display: flex;
   align-items: flex-start;

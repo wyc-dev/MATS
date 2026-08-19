@@ -1095,6 +1095,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [positionSizePct, setPositionSizePct] = useState(config?.positionSizePct ?? 0.10)
   const [maxPortionPct, setMaxPortionPct] = useState(config?.maxPortionPct ?? 0.20)
   const [leverage, setLeverage] = useState(config?.leverage ?? 10)
+  // v2.0.870-P65: 撳 symbol 立即本地切換 chart(唔等後端 cycle 完成);
+  // 後端 select-symbol 可能被 deferred(cycle 進行中)→ 顯示「Wait till cycle complete」提示
+  const [chartSymbolOverride, setChartSymbolOverride] = useState<string | null>(null)
   const [assetSearch, setAssetSearch] = useState('')
   const [cyclePeriod, setCyclePeriod] = useState(config?.cyclePeriodMinutes ?? 5)
   const [closeConfirmSym, setCloseConfirmSym] = useState<string | null>(null)
@@ -1104,6 +1107,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [binanceBStocksEnabled, setBinanceBStocksEnabled] = useState(() => {
     try { return localStorage.getItem('bstocksEnabled') === 'true' } catch { return false }
   })
+  // v2.0.870-P66: bStocks live → pause 確認(持有 bStocks 時強制全部平倉)
+  const [bstocksCloseConfirm, setBstocksCloseConfirm] = useState(false)
+  const [bstocksClosing, setBstocksClosing] = useState(false)
   // v2.0.870-P51: bStocks Agentic Wallet 連接流程
   const [bStocksPairingCode, setBStocksPairingCode] = useState<string | null>(null)
   const [bStocksUrlForWeb, setBStocksUrlForWeb] = useState<string | null>(null)
@@ -1120,6 +1126,61 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       const json = await res.json()
       if (json.success && typeof json.tvl === 'number') setWalletTvl(json.tvl)
     } catch { /* ignore */ }
+  }
+
+  // v2.0.870-P66: bStocks toggle(live → pause 時,持有 bStocks 先確認 → 全部平倉 → 先可以 pause)
+  const applyBStocksToggle = async (next: boolean) => {
+    setBinanceBStocksEnabled(next)
+    try { localStorage.setItem('bstocksEnabled', next ? 'true' : 'false') } catch { /* ignore */ }
+    // v2.0.870-P53: 持久化到 env(後端讀 BSTOCKS_ENABLED 決定自動 swap)
+    try {
+      await fetch(`${API_BASE}/settings/env`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { BSTOCKS_ENABLED: next ? 'true' : 'false' } }),
+      })
+    } catch { /* ignore */ }
+  }
+
+  const handleBStocksToggle = async () => {
+    if (!bStocksConnected) return
+    const next = !binanceBStocksEnabled
+    if (binanceBStocksEnabled && !next) {
+      // live → pause:check 有冇持有 bStock(有 → 先確認平倉)
+      try {
+        const res = await fetch(`${API_BASE}/bstocks/balance`)
+        const json = await res.json()
+        const tokens: Array<{ symbol?: string }> = json?.tokens ?? []
+        const hasBStock = tokens.some((t) => {
+          const sym = String(t?.symbol ?? '').toUpperCase()
+          return sym.endsWith('B') && !['USDT', 'USDC', 'BNB', 'U', 'USD1'].includes(sym)
+        })
+        if (hasBStock) {
+          setBstocksCloseConfirm(true) // 顯示確認 modal
+          return
+        }
+      } catch { /* 攞唔到 balance → 直接 toggle */ }
+    }
+    await applyBStocksToggle(next)
+  }
+
+  // v2.0.870-P66: 確認全部平倉 → 完成後先 pause
+  const confirmBStocksCloseAll = async () => {
+    setBstocksClosing(true)
+    setBstocksCloseConfirm(false)
+    try {
+      const res = await fetch(`${API_BASE}/bstocks/close-all`, { method: 'POST' })
+      const json = await res.json()
+      if (json.success) {
+        showStatus(`bStocks 已全部平倉 (${json.closed ?? 0} 個)`)
+      } else {
+        showStatus(`bStocks 平倉失敗: ${json.error ?? 'unknown'}`)
+      }
+    } catch {
+      showStatus('bStocks 平倉失敗')
+    }
+    setBstocksClosing(false)
+    await applyBStocksToggle(false) // 平倉完成後先 pause
   }
   // v2.0.870-P57: 重啟後自動檢查 Agent Wallet 連接狀態(baw session 持久化)
   useEffect(() => {
@@ -1347,7 +1408,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
     ...Array.from(positionMap.keys()),
     ...tradingMarkets.filter(sym => !Array.from(positionMap.keys()).some(p => normSym(p) === normSym(sym))),
   ]
-  const chartSymbol = activeSymbol || (allSelectedSyms[0] ?? '')
+  const chartSymbol = chartSymbolOverride ?? (activeSymbol || (allSelectedSyms[0] ?? ''))
   // Use live market state price (updates every cycle) instead of topPairs snapshot
   const livePrice = s?.currentPrice ?? m?.currentPrice ?? 0
   const liveVol24h = m?.volume24h ?? 0
@@ -1540,22 +1601,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
             type="button"
             role="switch"
             aria-checked={binanceBStocksEnabled}
-            disabled={!bStocksConnected}
+            disabled={!bStocksConnected || bstocksClosing}
             className={`toggle-switch ${binanceBStocksEnabled ? 'on' : 'off'} ${bStocksConnected ? 'connected' : ''}`}
-            onClick={async () => {
-              if (!bStocksConnected) return
-              const next = !binanceBStocksEnabled
-              setBinanceBStocksEnabled(next)
-              try { localStorage.setItem('bstocksEnabled', next ? 'true' : 'false') } catch { /* ignore */ }
-              // v2.0.870-P53: 持久化到 env(後端讀 BSTOCKS_ENABLED 決定自動 swap)
-              try {
-                await fetch(`${API_BASE}/settings/env`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ settings: { BSTOCKS_ENABLED: next ? 'true' : 'false' } }),
-                })
-              } catch { /* ignore */ }
-            }}
+            onClick={handleBStocksToggle}
           >
             <span className="toggle-knob" />
           </button>
@@ -1599,6 +1647,31 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         </div>
       )}
       {bStocksMsg && <div className="bstocks-msg">{bStocksMsg}</div>}
+
+      {/* v2.0.870-P66: bStocks live → pause 確認(持有 bStocks 時強制全部平倉) */}
+      {bstocksCloseConfirm && (
+        <div style={{ marginTop: 'var(--space-3)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', border: '1px solid var(--gold)', background: 'rgba(255, 215, 0, 0.08)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--gold)', fontWeight: 'var(--fw-bold)' }}>
+            <AlertTriangle size={14} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '6px' }} />
+            Pause bStocks trading?
+          </div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
+            You are holding bStocks. All bStock positions will be closed (sold back to USDT) before pausing. This action cannot be undone.
+          </div>
+          <div style={{ display: 'flex', gap: 'var(--space-3)', justifyContent: 'flex-end' }}>
+            <button
+              onClick={() => setBstocksCloseConfirm(false)}
+              disabled={bstocksClosing}
+              style={{ padding: '4px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 'var(--fs-sm)' }}
+            >Cancel</button>
+            <button
+              onClick={() => confirmBStocksCloseAll()}
+              disabled={bstocksClosing}
+              style={{ padding: '4px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--gold)', background: 'rgba(255, 215, 0, 0.15)', color: 'var(--gold)', cursor: 'pointer', fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-bold)' }}
+            >{bstocksClosing ? 'Closing…' : 'Confirm & Close All'}</button>
+          </div>
+        </div>
+      )}
 
       {/* Cycle Period(霸晒成條 row) */}
       <div className="market-control-group">
@@ -1714,9 +1787,9 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
 
       {/* v2.0.198: Trade Mode switch confirmation */}
       {modeSwitchConfirm && (
-        <div style={{ marginTop: 'var(--space-3)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', border: '1px solid var(--gold)', background: 'rgba(255, 215, 0, 0.08)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--gold)', fontWeight: 'var(--fw-bold)' }}>
-            <AlertTriangle size={14} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '6px' }} />
+        <div style={{ marginTop: 'var(--space-3)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', border: '1px solid var(--accent)', background: 'var(--accent-bg)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--accent)', fontWeight: 'var(--fw-bold)' }}>
+            <AlertTriangle size={14} color="var(--accent)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '6px' }} />
             Switch to {modeSwitchConfirm === 'real' ? 'Real' : 'Paper'} mode?
           </div>
           <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
@@ -1729,7 +1802,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
             >Cancel</button>
             <button
               onClick={() => confirmModeSwitch()}
-              style={{ padding: '4px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--gold)', background: 'rgba(255, 215, 0, 0.15)', color: 'var(--gold)', cursor: 'pointer', fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-bold)' }}
+              style={{ padding: '4px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--accent)', background: 'var(--accent-bg)', color: 'var(--accent)', cursor: 'pointer', fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-bold)' }}
             >Confirm & Close All</button>
           </div>
         </div>
@@ -1831,6 +1904,10 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       {chartSymbol ? (
         <div className="market-chart-row">
           <div className="market-chart-col">
+            {/* v2.0.870-P65: 本地 override 未同步到後端(select-symbol 被 deferred)→ 提示用戶 */}
+            {chartSymbolOverride && chartSymbolOverride !== activeSymbol && (
+              <div className="chart-pending-badge">⏳ Wait till cycle complete…</div>
+            )}
             <TradingViewChart symbol={chartSymbol} currentPrice={price} trades={mainChartTrades} refreshKey={s?.cycles ?? 0} />
           </div>
         </div>
@@ -1869,6 +1946,8 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
             return (
               <div key={`pos-row-${sym}`} className={`smp-card ${cardColorClass}`}>
                 <div className="smp-card-header" onClick={() => {
+                  // v2.0.870-P65: 立即本地切換 chart(唔等後端 cycle 完成)
+                  setChartSymbolOverride(sym)
                   fetch(`${API_BASE}/market-agent/select-symbol`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ symbol: sym }),
@@ -1955,6 +2034,8 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
               return (
                 <div key={`tm-row-${sym}`} className={`smp-card ${cardColorClass}`}>
                   <div className="smp-card-header" onClick={() => {
+                    // v2.0.870-P65: 立即本地切換 chart(唔等後端 cycle 完成)
+                    setChartSymbolOverride(sym)
                     fetch(`${API_BASE}/market-agent/select-symbol`, {
                       method: 'POST', headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ symbol: sym }),
