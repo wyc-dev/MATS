@@ -1644,6 +1644,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           <div className="slider-row">
             <input
               type="range" min="1" max={Math.round(maxPortionPct * 100)} value={Math.round(positionSizePct * 100)}
+              className={bStocksConnected ? 'slider-bstock' : ''}
               onChange={async (e) => {
                 const pct = parseInt(e.target.value) / 100
                 setPositionSizePct(pct)
