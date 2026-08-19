@@ -235,6 +235,116 @@ export function shouldLockProfitOnMaeMfe(input: MaeMfeReversalInput): boolean {
   return hold >= 15 && mfeValid && mfe >= 0.5 && pnl > 0 && pnl <= 0.7 * mfe;
 }
 
+// ── P79: 即時動量順向入場（防止「TP 後 re-entry 倒蝕」同「追高入場」）──
+// 主神洞察: 「TP 咗 → 返轉頭入返 → 倒蝕」係典型蝕錢模式（BTC 案例: 21:13 TP +18.4%
+// → 21:53 追高入場 → 22:12 E1 平倉 -5.2%）。reopen-guard ±0.3% 太窄攔唔到。
+// 驗證（50 筆 realTrades 反事實）: 兩窗都逆動量 WR 10% / avgPnl -2.50% vs
+// 兩窗都順動量 WR 44% / avgPnl +2.58%——逆動量明顯差（差 34pp / 5.08pp）。
+// 即時動量係「而家」嘅數據——唔係歷史統計（符合主神哲學）。soft gate 唔 hard block。
+
+export interface MomentumAlignmentInput {
+  /** 入場方向 */
+  side: 'buy' | 'sell';
+  /** 5m 動量 %（入場前最近 1 支 vs 前 1 支） */
+  m5m: number | null;
+  /** 15m 動量 %（入場前最近 3 支 vs 前 3 支） */
+  m15m: number | null;
+}
+
+export type MomentumAlignment = 'aligned' | 'pullback' | 'dead_cat' | 'against' | 'unknown';
+
+export interface MomentumAlignmentResult {
+  alignment: MomentumAlignment;
+  /** soft gate 乘數: aligned ×1.1（強勢獎勵）/ pullback ×1.0（順勢回調——WR 54% 最高）/ dead_cat ×0.5（死貓彈——WR 0%）/ against ×0.5 / unknown ×1.0 */
+  multiplier: number;
+}
+
+/** 純函數: 即時動量順向判斷（無 I/O、無 Date.now） */
+export function checkMomentumAlignment(input: MomentumAlignmentInput): MomentumAlignmentResult {
+  const side = input.side === 'sell' ? 'sell' : 'buy';
+  const m5 = Number.isFinite(input.m5m) ? input.m5m : null;
+  const m15 = Number.isFinite(input.m15m) ? input.m15m : null;
+  // 冷啟動: 冇動量數據 → 中性（唔干擾 bootstrap）
+  if (m5 === null && m15 === null) return { alignment: 'unknown', multiplier: 1.0 };
+  // 方向期望: buy 需要動量正, sell 需要動量負
+  const expect = side === 'buy' ? 1 : -1;
+  const m5Aligned = m5 !== null && m5 * expect > 0;
+  const m15Aligned = m15 !== null && m15 * expect > 0;
+  const m5Against = m5 !== null && m5 * expect < 0;
+  const m15Against = m15 !== null && m15 * expect < 0;
+  // 主神洞察（驗證 50 筆）: 15m 係主方向、5m 係短期時機——「混合」要拆開:
+  //   兩窗都順（15m順+5m順）→ ×1.1（avgPnl +2.58% 最高——強勢獎勵）
+  //   順勢回調（15m順+5m逆）→ ×1.0（WR 54% 最高——回調買入係好嘢）
+  //   死貓彈（5m順+15m逆）→ ×0.5（WR 0%——逆勢反彈危險）
+  //   兩窗都逆 → ×0.5（追高/接刀）
+  if (m5Aligned && m15Aligned) return { alignment: 'aligned', multiplier: 1.1 };
+  if (m15Aligned && m5Against) return { alignment: 'pullback', multiplier: 1.0 };
+  if (m5Aligned && m15Against) return { alignment: 'dead_cat', multiplier: 0.5 };
+  return { alignment: 'against', multiplier: 0.5 };
+}
+
+// ── P79-v2: 四窗驗證（4h+1h+15m+5m）——死貓彈/兩窗都逆/大方向錯 hard block ──
+// 主神指令: 將 15m+5m 整合 4h+1h——變成四窗驗證機制;死貓彈（5m順+15m逆）&
+// 兩窗都逆 直接 hard block;方向必須分清楚（buy/sell 鏡像）。
+// 驗證（40 筆反事實）: 死貓彈 WR 0% / 兩窗都逆 WR 13% avgPnl -1.80% /
+// 4h+1h都逆 WR 25% avgPnl -2.07%——全部差 → hard block;
+// 順勢回調 WR 100% avgPnl +7.16%——好 → 唔 block。
+
+export interface FourWindowInput {
+  /** 入場方向 */
+  side: 'buy' | 'sell';
+  /** 4h 動量 % */
+  m4h: number | null;
+  /** 1h 動量 % */
+  m1h: number | null;
+  /** 15m 動量 % */
+  m15m: number | null;
+  /** 5m 動量 % */
+  m5m: number | null;
+}
+
+export type FourWindowAction = 'block' | 'aligned' | 'pullback' | 'neutral' | 'unknown';
+
+export interface FourWindowResult {
+  action: FourWindowAction;
+  /** soft 乘數: aligned ×1.1 / pullback ×1.0 / unknown ×1.0;block → 0（hard block） */
+  multiplier: number;
+  reason: string;
+}
+
+/** 純函數: 四窗驗證（無 I/O、無 Date.now）——方向分清楚（buy/sell 鏡像） */
+export function checkFourWindowAlignment(input: FourWindowInput): FourWindowResult {
+  const side = input.side === 'sell' ? 'sell' : 'buy';
+  const expect = side === 'buy' ? 1 : -1;
+  const fin = (x: number | null): number | null => (x !== null && Number.isFinite(x) ? x : null);
+  const m4 = fin(input.m4h), m1 = fin(input.m1h), m15 = fin(input.m15m), m5 = fin(input.m5m);
+
+  // 冷啟動: 冇 15m/5m 時機數據 → unknown（唔 block——唔干擾 bootstrap）
+  if (m15 === null && m5 === null) return { action: 'unknown', multiplier: 1.0, reason: 'no timing data' };
+
+  const m15Aligned = m15 !== null && m15 * expect > 0;
+  const m5Aligned = m5 !== null && m5 * expect > 0;
+  const m15Against = m15 !== null && m15 * expect < 0;
+  const m5Against = m5 !== null && m5 * expect < 0;
+
+  // HARD BLOCK ①: 死貓彈（5m順 + 15m逆）——15m 逆 = 主方向錯（驗證 WR 0%）
+  if (m5Aligned && m15Against) return { action: 'block', multiplier: 0, reason: 'dead_cat (5m aligned, 15m against)' };
+  // HARD BLOCK ②: 兩窗都逆（5m逆 + 15m逆）——追高/接刀（驗證 WR 13%）
+  if (m5Against && m15Against) return { action: 'block', multiplier: 0, reason: 'both_against (5m+15m against)' };
+
+  // 主神設計: 4h+1h 係「方向 gate」——大方向順先入（由 classifyMomentumTrend 處理）。
+  // 4h+1h 都逆 → 唔 boost（×1.0 中性——大方向逆唔獎勵——方向 gate 會攔）
+  const trendOk = m4 !== null && m1 !== null && m4 * expect > 0 && m1 * expect > 0;
+  if (!trendOk) return { action: 'neutral', multiplier: 1.0, reason: 'trend not confirmed (4h+1h)' };
+
+  // 兩窗都順 → aligned ×1.1（強勢獎勵）
+  if (m5Aligned && m15Aligned) return { action: 'aligned', multiplier: 1.1, reason: 'aligned (5m+15m)' };
+  // 順勢回調（15m順 + 5m逆）→ pullback ×1.0（驗證 WR 100%——回調買入係好嘢）
+  if (m15Aligned && m5Against) return { action: 'pullback', multiplier: 1.0, reason: 'pullback (15m aligned, 5m against)' };
+
+  return { action: 'unknown', multiplier: 1.0, reason: 'insufficient' };
+}
+
 /** Gate 乘數（soft——唔 hard block）: high ×0.5 / medium ×0.75 / low ×0.9 / neutral ×1.0 */
 export function reversalRiskMultiplier(level: ReversalLevel): number {
   switch (level) {

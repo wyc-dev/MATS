@@ -79,7 +79,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
-import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, type ReversalCandle } from './analysis/reversal-point.ts';
+import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
 import { computePrematureClosePenalty } from './evolution/premature-close-guard.ts';
 import { BStocksWallet, PAYMENT_TOKEN_ADDRESSES, checkBStockSwapPreconditions, findBStockTokens, sanitizeBStockTrades } from './services/bstocks-wallet.ts';
 import { BStockData } from './services/bstock-data.ts';
@@ -11848,6 +11848,38 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
                 effectiveConfidence *= rpMult;
                 log.info(`🔻 [reversal-point] ${gateAction.toUpperCase()} ${rpSym}: score ${rp.score.toFixed(2)} (${rp.level.toUpperCase()}) → conviction ×${rpMult} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
                 activeAuditGates.push({ gate: 'reversal-point', passed: true, reason: `score ${rp.score.toFixed(2)} (${rp.level}) → ×${rpMult} (soft)` });
+              }
+            }
+          }
+        } catch { /* 非致命——Gate 失敗唔 block */ }
+
+        // ── P79-v2: 四窗驗證（4h+1h+15m+5m）——死貓彈/兩窗都逆/大方向錯 hard block ──
+        // 主神指令: 將 15m+5m 整合 4h+1h——四窗驗證機制;死貓彈（5m順+15m逆）&
+        // 兩窗都逆 直接 hard block;方向必須分清楚（buy/sell 鏡像）。
+        // 驗證（40 筆反事實）: 死貓彈 WR 0% / 兩窗都逆 WR 13% / 4h+1h都逆 WR 25%——全部差。
+        // 即時動量係「而家」嘅數據——唔係歷史統計。MOMENTUM_ALIGN_GATE=false 回滾。
+        try {
+          if (process.env['MOMENTUM_ALIGN_GATE'] !== 'false' && (gateAction === 'buy' || gateAction === 'sell')) {
+            const maSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+            const c1h = candleCache.peekCandles(maSym, '1h');
+            const c5m = candleCache.peekCandles(maSym, '5m');
+            if (c5m && c5m.length >= 4) {
+              const mom = (arr: ReversalCandle[], i: number, j: number): number | null =>
+                arr[i] && arr[j] && arr[i]!.c > 0 && arr[j]!.c > 0 ? (arr[i]!.c - arr[j]!.c) / arr[j]!.c * 100 : null;
+              const m5m = mom(c5m, c5m.length - 1, c5m.length - 2);
+              const m15m = mom(c5m, c5m.length - 1, c5m.length - 4);
+              const m1h = c1h && c1h.length >= 2 ? mom(c1h, c1h.length - 1, c1h.length - 2) : null;
+              const m4h = c1h && c1h.length >= 5 ? mom(c1h, c1h.length - 1, c1h.length - 5) : null;
+              const fw = checkFourWindowAlignment({ side: gateAction as 'buy' | 'sell', m4h, m1h, m15m, m5m });
+              if (fw.action === 'block') {
+                // HARD BLOCK——直接 HOLD（effectiveConfidence = 0 保證過唔到 gate）
+                effectiveConfidence = 0;
+                log.warn(`🛑 [four-window] ${gateAction.toUpperCase()} ${maSym}: ${fw.reason} — HARD BLOCK (m4h=${m4h?.toFixed(2) ?? 'N/A'}% m1h=${m1h?.toFixed(2) ?? 'N/A'}% m15m=${m15m?.toFixed(2) ?? 'N/A'}% m5m=${m5m?.toFixed(2) ?? 'N/A'}%)`);
+                activeAuditGates.push({ gate: 'four-window', passed: false, reason: `${fw.reason} — HARD BLOCK` });
+              } else if (fw.multiplier !== 1.0) {
+                effectiveConfidence *= fw.multiplier;
+                log.info(`🔻 [four-window] ${gateAction.toUpperCase()} ${maSym}: ${fw.reason} → conviction ×${fw.multiplier} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+                activeAuditGates.push({ gate: 'four-window', passed: true, reason: `${fw.reason} → ×${fw.multiplier} (soft)` });
               }
             }
           }
