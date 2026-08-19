@@ -124,6 +124,35 @@ export class BStockData {
     return bStock ? { symbol: bStock.symbol, contractAddress: bStock.contractAddress, cs: bStock.cs, ticker: bStock.ticker } : null;
   }
 
+  /**
+   * v2.0.870-P73: 反向查 HL symbol(bStock symbol → xyz:symbol)。
+   * 用於倉位同步:bStock 有倉位 → 揾對應嘅 HL symbol → check HL 有冇倉位。
+   * 例如 SPYB → xyz:SP500、SKHYB → xyz:SKHX。
+   */
+  async getHLForBStockSymbol(bStockSymbol: string): Promise<string | null> {
+    const list = await this.fetchList();
+    const bStock = list.find((b) => b.symbol === bStockSymbol);
+    if (!bStock) return null;
+    // ticker 對應返 xyz:symbol(用 TICKER_EXCEPTIONS 反向)
+    const revExceptions: Record<string, string> = Object.fromEntries(Object.entries(TICKER_EXCEPTIONS).map(([k, v]) => [v, k]));
+    const rawTicker = bStock.ticker.toLowerCase();
+    const hlTicker = revExceptions[rawTicker] ?? rawTicker;
+    return `xyz:${hlTicker.toUpperCase()}`;
+  }
+
+  /** v2.0.870-P73: 同步版(用 cache——避免每 cycle 都 fetch) */
+  getHLForBStockSymbolSync(bStockSymbol: string): string | null {
+    // 用現有 listCache(如果冇就 null,下個 cycle 先 fetch)
+    const cached = this.listCache;
+    if (!cached) return null;
+    const bStock = cached.value.find((b) => b.symbol === bStockSymbol);
+    if (!bStock) return null;
+    const revExceptions: Record<string, string> = Object.fromEntries(Object.entries(TICKER_EXCEPTIONS).map(([k, v]) => [v, k]));
+    const rawTicker = bStock.ticker.toLowerCase();
+    const hlTicker = revExceptions[rawTicker] ?? rawTicker;
+    return `xyz:${hlTicker.toUpperCase()}`;
+  }
+
   /** 攞所有 bStock 價格(對齊 xyz: symbol) */
   async fetchAllPrices(): Promise<BStockPrice[]> {
     const list = await this.fetchList();
