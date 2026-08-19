@@ -169,6 +169,10 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 - 3 處修復:`fetchPricesForSymbols` + `fetchPriceForSymbol` + `pollHLRestPrice`
 - 保留 l2Book 嘅地方(非即市 data):order book 深度(SystemGuard)+ 落單 aggressive 價
 
+### v2.0.870-P43: 闊 SL + 加強版共識反轉止蝕
+
+SKHX whipsaw 案例(方向啱但 SL 太貼 → 5 次進出蝕 -$1.62)。反事實回測:只闊 SL(TP 唔郁)= 91% 贏單保留、58% 輸單防住;trailing stop/raw trend 反轉均驗證死路。組件 1 `regimeSLWidth`(trending → SL 2%);組件 2 `shouldExitOnReversal`(四條件:反轉+確認+信心+趨勢互證,用 HACP 共識唔用 raw trend)。兩者 hard code + env 回滾。
+
 ### v2.0.870-P35-attack: 攻擊輪 7 攻 1 中
 
 A1 fixed:`getTrendRegimeSnapshot` σ 口徑統一(candle σ 優先,同 getState)——修 gate 錯位決策風險。其餘 pins:uppercase 中性/污 trend 白名單/惡意 symbol null/TTL 中性/單信號中性/observe-side-effect-free。
