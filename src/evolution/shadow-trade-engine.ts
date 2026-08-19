@@ -1138,6 +1138,44 @@ export class ShadowTradeEngine {
     return out as any;
   }
 
+  /** v2.0.870-P69: EXP backfill 完成 flag——restart 唔重複 feed */
+  private backfillDone = false;
+
+  /** v2.0.870-P69: 有冇做過 EXP backfill */
+  isBackfillDone(): boolean { return this.backfillDone; }
+
+  /**
+   * v2.0.870-P69: EXP history backfill——shadow 只靠 live(每 cycle 開 shadow,
+   * 等 SL/TP hit 或者 12 cycles force-resolve),低波動市場好耐先 resolve,
+   * 導致 0W/0L 冷啟動。用 EXP trades 嘅 outcome 做 cold-start 近似:
+   * WIN → TP-before-SL(win),LOSS → SL-before-TP(loss)。
+   * 只 feed 一次(backfillDone guard);cap 100(同 live resolve 一致)。
+   */
+  backfillFromExpRecords(records: Array<{ symbol: string; side: string; outcome: 'win' | 'loss'; holdCycles: number; pnlPct: number }>): number {
+    if (this.backfillDone) return 0;
+    this.backfillDone = true;
+    let fed = 0;
+    for (const rec of records) {
+      if (!rec.outcome || !rec.symbol) continue;
+      const sym = rec.symbol.toLowerCase(); // 同 openShadowTrades 一致(全細階)
+      this.recentResults.push({
+        id: `backfill-${fed}`,
+        symbol: sym,
+        side: rec.side === 'buy' ? 'buy' : 'sell',
+        outcome: rec.outcome,
+        holdCycles: rec.holdCycles,
+        cycle: 0,
+        shadowType: 'aligned',
+        exitReason: 'sl_tp',
+        pnlPct: rec.pnlPct,
+      });
+      fed++;
+    }
+    if (this.recentResults.length > 100) this.recentResults = this.recentResults.slice(-100);
+    log.info(`[shadow] EXP backfill fed ${fed} records (cold-start W/L stats)`);
+    return fed;
+  }
+
   /**
    * Get per-symbol stats for UI.
    */

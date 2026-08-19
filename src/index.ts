@@ -79,6 +79,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
+import { computePrematureClosePenalty } from './evolution/premature-close-guard.ts';
 import { BStocksWallet, PAYMENT_TOKEN_ADDRESSES, checkBStockSwapPreconditions } from './services/bstocks-wallet.ts';
 import { BStockData } from './services/bstock-data.ts';
 import { cmcCall, agentStudioAnalyze, agentStudioPoll } from './services/x402-calls.ts';
@@ -6889,6 +6890,21 @@ ${recentExamples}
         }
       }
 
+      // v2.0.870-P69: Shadow EXP backfill——shadow 只靠 live(每 cycle 開 shadow,
+      // 等 SL/TP hit 或者 12 cycles force-resolve),低波動市場好耐先 resolve
+      // → 0W/0L 冷啟動。用 EXP outcome 做 cold-start 近似(WIN→TP-before-SL)。
+      try {
+        const shadowBackfillRecs = dedupedRecs.map((rec) => ({
+          symbol: normalizeSymbol(String(rec.symbol ?? '')),
+          side: rec.side === 'buy' ? 'buy' as const : 'sell' as const,
+          outcome: rec.outcome === 'WIN' ? 'win' as const : 'loss' as const,
+          holdCycles: Math.max(1, Math.round(safeNum(rec.holdMin, 0) / (this.marketAgent.getConfig().cyclePeriodMinutes ?? 5))),
+          pnlPct: safeNum(rec.pnlPct, 0),
+        }));
+        const shadowFed = this.shadowEngine.backfillFromExpRecords(shadowBackfillRecs);
+        if (shadowFed > 0) log.info(`[exp-backfill] Shadow fed ${shadowFed} records (cold-start W/L stats)`);
+      } catch { /* non-critical */ }
+
       // v2.0.865-fix2: mark backfill done + persist——restart 唔重複加入
       if (this.evFilter && evFilterConfig.enabled) {
         try { this.evFilter.markBackfillDone(); this.evFilter.save(); } catch { /* best-effort */ }
@@ -11548,6 +11564,34 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
 
         // ── Final effective confidence: consensus × P(win) × penalty × boost ──
         let effectiveConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor * llmDirectionTrust * evMultiplier * shapeMultiplier * convexityMultiplier;
+        // v2.0.870-P71(P3): 短持倉懲罰(安全版)——同一 symbol:side 連續 2 筆
+        // <15min LOSS 且 24h 內 → ×0.3;S/R 邊界入場豁免。主神反問「會唔會永遠開唔
+        // 到倉」——naive 版會,呢個安全版 4 防線。回測:剔走 <15min trades PnL +467%。
+        try {
+          const gateSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+          // S/R 邊界逃生門:價格離最近 support/resistance ≤ 50bps 先算邊界
+          // (mid-range 噪聲係短蝕主因;邊界 trade 有結構支撐)。
+          // lastSRContext 係 activeSymbol 專屬 — gateSym ≠ activeSymbol 就保守唔豁免。
+          const src = gateSym === normalizeSymbol(activeSymbol) ? this.lastSRContext : null;
+          const nearSupport = src && Number.isFinite(src.distanceToSupportBps) && src.distanceToSupportBps <= 50;
+          const nearResistance = src && Number.isFinite(src.distanceToResistanceBps) && src.distanceToResistanceBps <= 50;
+          const isBoundaryEntry = nearSupport || nearResistance === true;
+          const closedReal = this.portfolio?.getClosedRealTrades() ?? [];
+          const recentSymSide = closedReal
+            .filter((t) => normalizeSymbol(t.symbol) === gateSym && normalizeTradeSide(t.side) === gateAction)
+            .map((t) => ({
+              // TradeRecord: openedAt/closedAt(ms)→ holdMin(min);pnlPct>0 → WIN
+              holdMin: Number.isFinite(t.closedAt) && Number.isFinite(t.openedAt) ? (t.closedAt - t.openedAt) / 60_000 : 0,
+              outcome: (t.pnlPct ?? 0) > 0 ? 'WIN' : 'LOSS',
+              ts: t.closedAt ?? 0,
+            }));
+          const prematurePenalty = computePrematureClosePenalty(recentSymSide, Date.now(), isBoundaryEntry === true);
+          if (prematurePenalty < 1.0) {
+            effectiveConfidence *= prematurePenalty;
+            log.info(`🟠 [premature-guard] ${gateAction.toUpperCase()} ${gateSym}: 連續短蝕 → conviction ×${prematurePenalty}`);
+            activeAuditGates.push({ gate: 'premature-close-guard', passed: true, reason: `連續短蝕 → ×${prematurePenalty} (soft)` });
+          }
+        } catch { /* non-critical */ }
 
         // ── v2.0.868-P1: Entry Confirmation Gate(入場確認——負偏度解藥)──
         // 數據:蝕錢 trade 入場後「立即」逆向(MAE -5~-7.7%)——輸贏喺入場嗰刻決定

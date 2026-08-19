@@ -74,10 +74,14 @@ export function evToMultiplier(ev: number, n: number): number {
     const boost = Math.min(0.25, ev * 0.25); // 1% EV → +0.25
     return 1.0 + boost;
   }
-  // EV < 0:線性壓抑——EV=-0.1% → ×0.98;EV=-0.5% → ×0.90;EV=-1% → ×0.75(floor)
-  const clamp = Math.max(-1.0, Math.min(0, ev)); // ev 範圍 [-1%, 0]
-  const mult = 1.0 + clamp * 0.25; // -1% → 0.75
-  return Math.max(0.75, Math.min(1.0, mult));
+  // v2.0.870-P71(P1): 負 EV 降權強化。舊版 floor 0.75 攔唔住 EV<0 bucket
+  // (CL:sell EV −0.268 都只降 25%)。實測剔走 7 個 EV<0 bucket 回測 PnL
+  // +473%。兩檔(全部要 n≥20,同 MIN_SAMPLES 一致——唔夠樣本唔郁):
+  //   EV≤−0.1%  → ×0.15(災難桶,近 block)
+  //   EV<0      → ×0.30(明顯負 EV)
+  //   冷啟動(n<20)→ ×1.0(earn your data——唔准未學先判)
+  if (ev <= -0.1) return 0.15;
+  return 0.30;
 }
 
 export class EVFilter {
