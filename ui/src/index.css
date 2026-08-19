@@ -1400,8 +1400,8 @@ body {
   flex-shrink: 0;
 }
 .toggle-switch.on {
-  background: var(--accent, #5b8def);
-  border-color: var(--accent, #5b8def);
+  background: var(--orange, #f0a020);
+  border-color: var(--orange, #f0a020);
 }
 .toggle-knob {
   position: absolute;
@@ -1420,10 +1420,6 @@ body {
 .bstocks-toggle-row.connected {
   border-color: var(--orange, #f0a020);
   box-shadow: 0 0 8px rgba(240, 160, 32, 0.15);
-}
-.toggle-switch.connected {
-  background: var(--orange, #f0a020);
-  border-color: var(--orange, #f0a020);
 }
 .toggle-switch:disabled {
   opacity: 0.4;

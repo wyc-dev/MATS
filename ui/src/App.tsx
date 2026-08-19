@@ -1454,9 +1454,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           <span className="bstocks-toggle-hint">Tokenized US stocks on BSC</span>
         </div>
         <div className="bstocks-toggle-actions">
-          {bStocksConnected && bStocksAddress ? (
-            <span className="bstocks-address" title={bStocksAddress}>{bStocksAddress.slice(0, 6)}…{bStocksAddress.slice(-4)}</span>
-          ) : (
+          {!bStocksConnected && (
             <button
               type="button"
               className="bstocks-connect-btn"
