@@ -11,14 +11,17 @@ const API_BASE = '/api'
 
 /* ── Helpers ── */
 // v2.0.870-P52: xyz: symbol → bStock symbol 對齊(同一個 underlying)
-const BSTOCK_MAP: Record<string, string> = {
-  'xyz:sp500': 'SPYB',
-  'xyz:skhx': 'SKHYB',
-  'xyz:mu': 'MUB',
+// v2.0.870-P59: 動態 bStock map(ticker → symbol),由 /api/bstocks/prices 填充
+// 唔再 hardcode——新 symbol 只要 ticker 喺 bStock list 就自動 map 到
+let bStockTickerMap: Record<string, string> = {}
+const BSTOCK_TICKER_EXCEPTIONS: Record<string, string> = {
+  'skhx': 'skhy',   // SK Hynix
+  'sp500': 'spy',   // S&P 500
 }
 function getBStockForSymbol(sym: string): string | null {
-  const key = sym.toLowerCase()
-  return BSTOCK_MAP[key] ?? null
+  const rawTicker = sym.includes(':') ? (sym.split(':')[1] ?? '') : sym
+  const ticker = BSTOCK_TICKER_EXCEPTIONS[rawTicker.toLowerCase()] ?? rawTicker.toLowerCase()
+  return bStockTickerMap[ticker] ?? null
 }
 
 function formatHKTime(ts: number): string {
@@ -1107,6 +1110,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [bStocksAddress, setBStocksAddress] = useState<string | null>(null)
   const [bStocksBusy, setBStocksBusy] = useState(false)
   const [bStocksMsg, setBStocksMsg] = useState<string | null>(null)
+  const [bStockMapVersion, setBStockMapVersion] = useState(0)
   // v2.0.870-P57: 重啟後自動檢查 Agent Wallet 連接狀態(baw session 持久化)
   useEffect(() => {
     let cancelled = false
@@ -1115,6 +1119,22 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       if (json.connected) {
         setBStocksConnected(true)
         if (json.address) setBStocksAddress(json.address)
+      }
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+  // v2.0.870-P59: fetch bStock list 填充動態 map(ticker → symbol)
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API_BASE}/bstocks/prices`).then(r => r.json()).then(json => {
+      if (cancelled) return
+      if (json.success && Array.isArray(json.prices)) {
+        const map: Record<string, string> = {}
+        for (const p of json.prices) {
+          if (p.ticker && p.symbol) map[String(p.ticker).toLowerCase()] = p.symbol
+        }
+        bStockTickerMap = map
+        setBStockMapVersion(v => v + 1) // 觸發 re-render(令橙色 tag 更新)
       }
     }).catch(() => {})
     return () => { cancelled = true }

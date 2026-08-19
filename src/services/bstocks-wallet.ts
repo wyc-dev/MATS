@@ -42,6 +42,8 @@ export const BSTOCK_ADDRESSES: Record<string, string> = {
   'xyz:sp500': '0x7138b48df7d98d7e3cc221bfe7192d0a178182d8', // SPYB
   'xyz:skhx': '0xca750ef65f295bbecd685abf54e82caf297bdb61',   // SKHYB
   'xyz:mu': '0xcdf2f3e0fa43c47a6662a91c9e4a7c5f69762699',     // MUB
+  'xyz:spcx': '0xbe9d156892e55e7154bcd3cb0fea677f9d3103e1',   // SPCXB
+  'xyz:sndk': '0x3ee4df61bd4f867e349beae8bfe07bc31b4850fb',   // SNDKB
 };
 
 /** v2.0.870-P56: xyz: symbol → bStock symbol(UI 顯示用) */
@@ -49,6 +51,8 @@ export const BSTOCK_SYMBOLS: Record<string, string> = {
   'xyz:sp500': 'SPYB',
   'xyz:skhx': 'SKHYB',
   'xyz:mu': 'MUB',
+  'xyz:spcx': 'SPCXB',
+  'xyz:sndk': 'SNDKB',
 };
 
 /** 比賽 eligible payment tokens(BSC) */
