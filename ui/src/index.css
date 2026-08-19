@@ -1421,6 +1421,40 @@ body {
   border-color: var(--orange, #f0a020);
   box-shadow: 0 0 8px rgba(240, 160, 32, 0.15);
 }
+/* v2.0.870-P61: Hyperliquid trading mode indicator(#97fce4 + 灰) */
+.hl-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-5) var(--space-7);
+  background: var(--surface-elevated);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  margin-bottom: var(--space-9);
+}
+.hl-toggle-row.real {
+  border-color: #97fce4;
+  box-shadow: 0 0 8px rgba(151, 252, 228, 0.15);
+}
+.hl-switch.on {
+  background: #97fce4;
+  border-color: #97fce4;
+}
+.hl-mode-badge {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+.hl-mode-badge.paper {
+  color: var(--text-secondary);
+  background: rgba(120, 128, 160, 0.15);
+}
+.hl-mode-badge.real {
+  color: #97fce4;
+  background: rgba(151, 252, 228, 0.15);
+}
 .toggle-switch:disabled {
   opacity: 0.4;
   cursor: not-allowed;

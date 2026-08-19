@@ -1466,6 +1466,29 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         </div>
       </div>
 
+      {/* v2.0.870-P61: Hyperliquid trading mode indicator */}
+      <div className={`hl-toggle-row ${selectedTradeMode === 'real' ? 'real' : ''}`}>
+        <div className="bstocks-toggle-label">
+          <span className="stat-label">Hyperliquid (Crypto + RWA)</span>
+          <span className="bstocks-toggle-hint">Perpetual Futures on HyperEVM</span>
+        </div>
+        <div className="bstocks-toggle-actions">
+          <span className={`hl-mode-badge ${selectedTradeMode === 'real' ? 'real' : 'paper'}`}>
+            {selectedTradeMode === 'real' ? 'Real' : 'Paper'}
+          </span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={selectedTradeMode === 'real'}
+            className={`toggle-switch ${selectedTradeMode === 'real' ? 'on' : 'off'} hl-switch`}
+            onClick={() => handleTradeModeChange(selectedTradeMode === 'real' ? 'paper' : 'real')}
+            disabled={modeSwitching}
+          >
+            <span className="toggle-knob" />
+          </button>
+        </div>
+      </div>
+
       {/* v2.0.870-P50: Binance bStocks trading 開關 */}
       <div className={`bstocks-toggle-row ${bStocksConnected ? 'connected' : ''}`}>
         <div className="bstocks-toggle-label">
