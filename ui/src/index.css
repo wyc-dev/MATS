@@ -1324,7 +1324,7 @@ body {
 
 .portfolio-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr; /* v2.0.870-P50: 加 Wallet TVL 第三格 */
   gap: var(--space-3);
   margin-bottom: var(--space-9);
 }
@@ -1365,6 +1365,56 @@ body {
   font-size: var(--fs-xl);
   font-weight: var(--fw-bold);
   line-height: 1.2;
+}
+
+/* v2.0.870-P50: Binance bStocks 開關 */
+.bstocks-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-5) var(--space-7);
+  background: var(--surface-elevated);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  margin-bottom: var(--space-9);
+}
+.bstocks-toggle-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.bstocks-toggle-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.toggle-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
+  background: var(--surface-muted);
+  cursor: pointer;
+  transition: background 0.2s ease;
+  padding: 0;
+  flex-shrink: 0;
+}
+.toggle-switch.on {
+  background: var(--accent, #5b8def);
+  border-color: var(--accent, #5b8def);
+}
+.toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s ease;
+}
+.toggle-switch.on .toggle-knob {
+  transform: translateX(20px);
 }
 
 .portfolio-cell .stat-sub {
