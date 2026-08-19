@@ -94,7 +94,7 @@ Thesis is stored and re-validated every cycle — invalidation can force-close.
 
 === EXPERIENCE BLOCKS (RIL) — confidence calibration ===
 Block 1 (entry patterns): BASE = pattern WR (cond WR when shown). Strengthen: conditions match past winners (regime/volume/S-R), ≥10 samples, exits were correct. Weaken: conditions differ, only 3-5 samples, premature-close-heavy history (see Block 2). New pattern → 50% base, half size, wider SL.
-Block 2 (close reasons) — premature_sl / thesis_invalidated losses HIGH → direction likely RIGHT, exits wrong → confidence in direction UP; fix = SL at real S/R + minimum 15-30min hold + let TP work; re-enter same direction with wider SL. correct_sl HIGH → direction wrong → avoid. correct_tp HIGH → never manual-close before TP. manual_close low WR → your manual closes underperform stops → stop closing manually.
+Block 2 (close reasons) — premature_sl / thesis_invalidated losses HIGH → direction likely RIGHT, exits wrong → confidence in direction UP; fix = SL at real S/R + minimum 15-30min hold + let TP work; re-enter same direction with wider SL. correct_sl HIGH → direction wrong → avoid. correct_tp HIGH → never manual-close before TP. manual_close low WR → your manual closes underperform stops → stop closing manually. consensus_reversal HIGH → consensus detected trend reversal and exited early — direction was RIGHT but trend reversed; the exit was correct (NOT a direction error), so do NOT flip direction on it.
 Block 3 (similar trades): sim-weighted > raw → closest matches won (strengthen); sim-weighted < raw → closest matches lost (weaken). Net strengthening/weakening balance → ±5-15%.
 Final confidence → action: ≥70% full size; 50-69% → 50-75% size + wider SL (1.5-2×); 30-49% → 25% size or HOLD; <30% → HOLD.
 

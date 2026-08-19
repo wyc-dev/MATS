@@ -30,6 +30,10 @@ export function computeLearningWeight(
   // thesis_invalidation closes get full weight 1.0 and the v2.0.226 0.3 discount
   // never applies (the original bug: `if (isWin) return 1.0` ran first).
   switch (closeReason) {
+    case 'consensus_reversal':
+      // v2.0.870-P47: 共識反轉離場——系統判斷趨勢反轉,同 thesis_invalidation
+      // 一樣係「系統判斷」,唔係純市場風險訊號 → 0.3
+      return 0.3;
     case 'thesis_invalidation':
       // System LLM decision — not a pure market-risk outcome. Discount to 0.3
       // whether profitable or not (consistent with v2.0.139 conviction-gate

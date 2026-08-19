@@ -57,7 +57,7 @@ const log = rootLogger;
 
 /** v2.0.720: Coarse exit types — used to check if a record's exitType is
  *  still the original coarse classification (not yet overridden by digester). */
-const COARSE_EXIT_TYPES = new Set(['sl_tp', 'consensus', 'manual', 'thesis_invalidation', 'reconciliation', 'exchange_closed']);
+const COARSE_EXIT_TYPES = new Set(['sl_tp', 'consensus', 'consensus_reversal', 'manual', 'thesis_invalidation', 'reconciliation', 'exchange_closed']);
 
 // ─── LLM caller abstraction (mockable for tests) ───
 
