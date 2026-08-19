@@ -26,6 +26,15 @@ export const DEFAULT_REVERSAL_EXIT_CONFIG: ReversalExitConfig = {
   minConfidence: 0.55,
 };
 
+/** 持倉 side 正規化——hostile side(hold/''/__proto__/數字)返 null,
+ *  唔准被當做 'sell' 誤觸發反轉止蝕(P43-attack2 A2)。 */
+export function normalizePositionSide(side: unknown): 'buy' | 'sell' | null {
+  const s = String(side ?? '').toLowerCase();
+  if (s === 'buy' || s === 'long') return 'buy';
+  if (s === 'sell' || s === 'short') return 'sell';
+  return null;
+}
+
 /** 共識方向係咪同持倉方向相反 */
 export function isOpposedDirection(positionSide: 'buy' | 'sell', consensusAction: string | undefined | null): boolean {
   const a = (consensusAction ?? '').toLowerCase();

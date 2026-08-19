@@ -80,7 +80,7 @@ import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { regimeSLWidth } from './analysis/regime-sl-width.ts';
-import { shouldExitOnReversal, isOpposedDirection } from './analysis/consensus-reversal-exit.ts';
+import { shouldExitOnReversal, isOpposedDirection, normalizePositionSide } from './analysis/consensus-reversal-exit.ts';
 import { evaluateDataQuality } from './analysis/data-quality.ts';
 import { computeChartConvictionMultiplier } from './analysis/chart-conviction.ts';
 import { LLMConvictionCalibrator } from './analysis/llm-conviction-calibrator.ts';
@@ -10470,18 +10470,28 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
         // soft 執行(唔 hard-block 其他 close 路徑);env flag 回滾。
         if (process.env['CONSENSUS_REVERSAL_EXIT'] !== 'false') {
           try {
-            const posSide = isBuySide(pos.side) ? 'buy' : 'sell';
+            // A2:hostile side(hold/''/__proto__)返 null → skip,唔准當 sell 誤觸發
+            const posSide = normalizePositionSide(pos.side);
+            if (!posSide) { this.reversalOpposedCycles.delete(normalizeSymbol(psc.symbol)); continue; }
             const opposed = isOpposedDirection(posSide, psc.action);
             const key = normalizeSymbol(psc.symbol);
             const prev = this.reversalOpposedCycles.get(key) ?? 0;
             const next = opposed ? prev + 1 : 0;
             this.reversalOpposedCycles.set(key, next);
             if (opposed) {
+              // P45:盈利倉位唔俾共識 flip 就離場(贏單要跑)——交俾現有
+              // regime_reversal_lock(MFE≥1.5×ATR 先鎖利)處理;env 回滾
+              const isProfitable = (pos.unrealizedPnlPct ?? 0) > 0;
+              const skipProfitable = process.env['REVERSAL_EXIT_SKIP_PROFITABLE'] !== 'false';
+              if (skipProfitable && isProfitable) {
+                this.reversalOpposedCycles.set(key, 0); // 唔累積(盈利倉唔觸發)
+                continue;
+              }
               const trSnap = this.marketState?.getTrendRegimeSnapshot(psc.symbol);
               const trend = trSnap?.trend ?? 'unknown';
               if (shouldExitOnReversal(posSide, psc.action, psc.confidence, next, trend)) {
                 log.warn(`🔄 [reversal-exit] ${psc.symbol}: consensus flipped to ${String(psc.action).toUpperCase()} (${next} cycles, conf=${(psc.confidence * 100).toFixed(0)}%, trend=${trend}) — exiting ${posSide.toUpperCase()} early (genuine reversal)`);
-                await this.closeTrade(psc.symbol, `Consensus reversal exit: consensus flipped to ${String(psc.action).toUpperCase()} (${next} cycles)`, 'consensus');
+                await this.closeTrade(psc.symbol, `Consensus reversal exit: consensus flipped to ${String(psc.action).toUpperCase()} (${next} cycles)`, 'thesis_invalidation');
                 continue;
               }
             }
