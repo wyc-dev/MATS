@@ -2370,6 +2370,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                   {t.side.toUpperCase()}
                 </span>
                 <span style={{ fontWeight: 'var(--fw-semibold)', fontSize: 'var(--fs-lg)' }}>{(t.symbol.includes(':') ? t.symbol.split(':').pop() : t.symbol).toUpperCase()}</span>
+                {t.bStockSymbol && <span className="smp-bstock-tag">({t.bStockSymbol})</span>}
                 <span style={{
                   padding: '2px 8px',
                   borderRadius: 'var(--radius-sm)',
@@ -2413,8 +2414,8 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                     </div>
                   )}
                   <IncidentField label="Direction" value={t.side.toUpperCase()} />
-                  <IncidentField label="Entry Price" value={`$${t.entryPrice.toFixed(2)}`} />
-                  <IncidentField label="Exit Price" value={t.exitPrice != null ? `$${t.exitPrice.toFixed(2)}` : '— (still open)'} />
+                  <IncidentField label="Entry Price" value={`$${t.entryPrice.toFixed(2)}`} suffix={t.bStockBuyPrice != null ? `bStock $${t.bStockBuyPrice.toFixed(2)}` : undefined} />
+                  <IncidentField label="Exit Price" value={t.exitPrice != null ? `$${t.exitPrice.toFixed(2)}` : '— (still open)'} suffix={t.bStockSellPrice != null ? `bStock $${t.bStockSellPrice.toFixed(2)}` : undefined} />
                   <IncidentField label="Min Value Reached" value={t.minValueReached != null ? `$${t.minValueReached.toFixed(2)}` : '— (tracking started after open)'} pending={t.minValueReached == null} />
                   <IncidentField label="Max Value Reached" value={t.maxValueReached != null ? `$${t.maxValueReached.toFixed(2)}` : '— (tracking started after open)'} pending={t.maxValueReached == null} />
                   <IncidentField label="Leverage" value={`${t.leverage}x`} />
@@ -2577,11 +2578,12 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
   )
 }
 
-function IncidentField({ label, value, pending }: { label: string; value: string; pending?: boolean }) {
+function IncidentField({ label, value, pending, suffix }: { label: string; value: string; pending?: boolean; suffix?: string }) {
   return (
     <div style={{ display: 'flex', gap: 'var(--space-3)', fontSize: 'var(--fs-sm)' }}>
       <span style={{ color: 'var(--text-tertiary)', minWidth: '140px', flexShrink: 0 }}>{label}</span>
       <span style={{ color: pending ? 'var(--text-muted)' : 'var(--text-secondary)', fontStyle: pending ? 'italic' : 'normal' }}>{value}</span>
+      {suffix && <span className="smp-bstock-tag">({suffix})</span>}
     </div>
   )
 }

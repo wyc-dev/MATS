@@ -44,6 +44,13 @@ export const BSTOCK_ADDRESSES: Record<string, string> = {
   'xyz:mu': '0xcdf2f3e0fa43c47a6662a91c9e4a7c5f69762699',     // MUB
 };
 
+/** v2.0.870-P56: xyz: symbol → bStock symbol(UI 顯示用) */
+export const BSTOCK_SYMBOLS: Record<string, string> = {
+  'xyz:sp500': 'SPYB',
+  'xyz:skhx': 'SKHYB',
+  'xyz:mu': 'MUB',
+};
+
 /** 比賽 eligible payment tokens(BSC) */
 export const PAYMENT_TOKEN_ADDRESSES: Record<string, string> = {
   USDT: '0x55d398326f99059fF775485246999027B3197955',

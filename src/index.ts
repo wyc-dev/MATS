@@ -79,7 +79,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
-import { BStocksWallet, BSTOCK_ADDRESSES, PAYMENT_TOKEN_ADDRESSES } from './services/bstocks-wallet.ts';
+import { BStocksWallet, BSTOCK_ADDRESSES, BSTOCK_SYMBOLS, PAYMENT_TOKEN_ADDRESSES } from './services/bstocks-wallet.ts';
 import { BStockData } from './services/bstock-data.ts';
 import { cmcCall, agentStudioAnalyze, agentStudioPoll } from './services/x402-calls.ts';
 import { regimeSLWidth } from './analysis/regime-sl-width.ts';
@@ -290,6 +290,8 @@ class MATSSystem {
   private bStocksWallet = new BStocksWallet();
   /** v2.0.870-P54: bStock 數據源(Binance spot) */
   private bStockData = new BStockData();
+  /** v2.0.870-P56: bStocks 平行交易記錄(symbol → 買入/賣出價) */
+  private bStockTrades = new Map<string, { bStockSymbol: string; buyPrice: number | null; sellPrice: number | null }>();
 
   /** v2.0.870-P53: bStocks switch ON 時自動 swap(同 Hyperliquid 交易並行)。
    *  BUY → swap USDT→bStock;SELL → swap bStock→USDT。
@@ -316,12 +318,27 @@ class MATSSystem {
         log.warn(`[bstocks] TVL=0, skip swap ${symbol}`);
         return;
       }
+      const bStockSymbol = BSTOCK_SYMBOLS[normalizeSymbol(symbol)] ?? '';
       if (side === 'buy') {
         const r = this.bStocksWallet.swap(usdtAddr, bStockAddr, amount);
         log.info(`🟢 [bstocks] BUY ${symbol} → swap ${amount} USDT → bStock (TVL=${tvl.toFixed(2)} × ${(sizePct * 100).toFixed(0)}%): ${r.success ? 'OK' : (r.error ?? 'failed')}`);
+        // 記錄買入價(swap 後攞 bStock 價)
+        if (r.success && bStockSymbol) {
+          const price = await this.bStockData.fetchPrice(`${bStockSymbol}USDT`);
+          const rec = this.bStockTrades.get(normalizeSymbol(symbol)) ?? { bStockSymbol, buyPrice: null, sellPrice: null };
+          rec.buyPrice = price;
+          this.bStockTrades.set(normalizeSymbol(symbol), rec);
+        }
       } else {
         const r = this.bStocksWallet.swap(bStockAddr, usdtAddr, amount);
         log.info(`🔴 [bstocks] SELL ${symbol} → swap bStock → USDT (${amount}): ${r.success ? 'OK' : (r.error ?? 'failed')}`);
+        // 記錄賣出價
+        if (r.success && bStockSymbol) {
+          const price = await this.bStockData.fetchPrice(`${bStockSymbol}USDT`);
+          const rec = this.bStockTrades.get(normalizeSymbol(symbol)) ?? { bStockSymbol, buyPrice: null, sellPrice: null };
+          rec.sellPrice = price;
+          this.bStockTrades.set(normalizeSymbol(symbol), rec);
+        }
       }
     } catch (err) {
       log.warn(`[bstocks] swap failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -14333,6 +14350,10 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             postReview: t.postReview,
             minValueReached: t.minValueReached,
             maxValueReached: t.maxValueReached,
+            ...(() => {
+              const bt = this.bStockTrades.get(normalizeSymbol(t.symbol));
+              return bt ? { bStockSymbol: bt.bStockSymbol, bStockBuyPrice: bt.buyPrice, bStockSellPrice: bt.sellPrice } : {};
+            })(),
           })),
           // Real open positions
           ...this.portfolio.getRealPositions().map(p => ({
