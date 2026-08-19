@@ -103,7 +103,8 @@ saveAddress(address): void  // 寫入 .env
 
 - **只 trade 本週 eligible list 嘅 bStock**（每週更新，`type=3` API 攞地址 + eligible list 確認）
 - **Payment token 只限 5 種**: BNB / USDT / USDC / U / USD1（其他 token 唔計 PnL）
-- **留 BNB 做 gas**（AI 呼叫 gasless，但買賣 bStock 要 BNB gas）
+- **留 BNB 做 gas（硬要求）**：每次 swap 都係 on-chain transaction，消耗 BNB gas。**唔好將全部資金轉做 stablecoin 或 bStock**，否則第一個交易會因為冇 gas 而失敗。MATS 已加檢查（P64）：`maybeSwapBStock` swap 前檢查 BNB 餘額 ≥ 0.01 BNB，唔夠就 skip + log warning；買 bStock 前亦檢查 USDT 餘額 > 0
+- **Compliant jurisdiction（合規司法管轄區）**：bStock 只開放俾 permitted-jurisdiction qualified users——用戶必須確認自己所在司法管轄區合資格先可以 trade（MATS 唔代為判斷，用戶自行負責）
 - **買 bStock（suffix B），唔係 Ondo（suffix on）**——兩個唔同系統
 - **Realized PnL 只計已平倉部分**（FIFO lot-by-lot，唔係平均價）
 - **未平倉 = paper gain ≠ PnL**（結束前唔清倉 = 白做）

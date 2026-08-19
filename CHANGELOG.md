@@ -4,6 +4,39 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P64: bStocks BNB gas 保留 + USDT 餘額檢查(比賽規則落地)
+
+**主神指令**:Binance bStock PnL contest 規則——「Keep BNB for gas: every trade is an on-chain transaction that consumes gas. Do not convert all funds to stablecoins or bStock, or the first transaction will fail for lack of gas」+「Compliant jurisdiction: bStock is only open to permitted-jurisdiction qualified users」。
+
+**改動**:
+- `src/services/bstocks-wallet.ts`:`getBalance()` 加 `bnbBalance`/`bnbValue` 欄位(從 tokens 搵 BNB)
+- `src/index.ts`:`maybeSwapBStock()` swap 前檢查 **BNB ≥ 0.01**(≈$6,BSC gas 每次 <$0.1;唔夠 → skip + ⛽ warning);買 bStock 前檢查 **USDT 餘額 > 0**(唔好將全部資金轉做 bStock)
+- `bStocks_module.md`:5.2 交易規則補齊 gas 硬要求 + compliant jurisdiction 規則(用戶自行確認司法管轄區合資格)
+
+**實證**:Wallet 只有 USDT $99.40、0 BNB——MATS 一 swap 就會因為冇 gas 失敗;新檢查會 skip + warning 直到主神入 BNB。
+
+tsc clean。
+
+---
+
+## v2.0.870-P63: OPEX 唔再一刀切 veto——LLM 判斷突破定突破唔到
+
+**主神指令**:「到期可以照不要veto,LLM 判斷而家到底係突破定還是突破唔到㗎嘛!!!」——OPEX 前 3 日一刀切 veto 令美股盤前搶唔到先機,八個市場半日冇 trade。
+
+**根因**:SPX/SKHX options 2026-08-21 到期 = 2 日後;`daysToExp <= 3 → eventRisk='opex'` → playbook「Stand Aside」→ vetoNewPositions=true → 兩層 block(agents 全部投 HOLD + deterministic veto 強制 HOLD)。
+
+**改動**:
+- `src/analysis/options-data.ts`:`getRegimePlaybook` 嘅 `hasEventRisk` 只計 earnings/fomc/high(OPEX 唔再觸發 Stand Aside veto);`formatForAgentContext` OPEX → 「informational (NOT a veto): LLM judges breakout vs failure」
+- `src/evolution/index.ts`:`eventRiskTolerance` 'none' → 'opex'(agents 知道 OPEX tolerated);prompt 文字改 informational
+- `src/index.ts`:deterministic veto 加 `config.optionsPlaybookVeto`(env `OPTIONS_PLAYBOOK_VETO=false` 可完全關閉)
+- `src/config/index.ts` + `.env.example`:新 env var
+
+**驗證**:新 code 下 SKHX playbook = Standard Directional(vetoNewPositions=false);agents 唔再話「OPEX veto」,改為根據 OLR edge/S-R/momentum 判斷(合理技術分析)。
+
+tsc clean。
+
+---
+
 ## v2.0.870-P62: Position Size 漸變 + Wallet 餘額入 console/TG
 
 **主神指令**:Position Size 滑竿做埋漸變;console "Real Portfolio (HL)" 連咗 bStocks 就 show Wallet balance;Telegram msg 每 cycle show Wallet 餘額。

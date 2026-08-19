@@ -707,7 +707,12 @@ export class OptionsDataManager {
       lines.push(`Skew: ${ctx.skew.toFixed(3)} (${ctx.skew > 0.05 ? 'downside protection demand' : ctx.skew < -0.05 ? 'upside speculation' : 'neutral'})`);
     }
     if (ctx.eventRisk !== 'none') {
-      lines.push(`⚠️ Event Risk: ${ctx.eventRisk.toUpperCase()} (${ctx.daysToExpiration}d to exp)`);
+      if (ctx.eventRisk === 'opex') {
+        // v2.0.870-P63: OPEX is informational, NOT a veto — LLM judges breakout vs failure.
+        lines.push(`OPEX in ${ctx.daysToExpiration}d — informational (NOT a veto): LLM judges breakout vs failure; expect elevated volatility`);
+      } else {
+        lines.push(`⚠️ Event Risk: ${ctx.eventRisk.toUpperCase()} (${ctx.daysToExpiration}d to exp) — capital preservation veto`);
+      }
     } else {
       lines.push(`Days to Exp: ${ctx.daysToExpiration}`);
     }
@@ -755,7 +760,9 @@ export class OptionsDataManager {
     const lowIVRank = ctx.ivRank < 25;
     const isRanging = regime === 'ranging' || regime === 'consolidation' || regime === 'neutral';
     const isTrending = regime === 'trending' || regime === 'momentum';
-    const hasEventRisk = ctx.eventRisk !== 'none';
+    // v2.0.870-P63: OPEX alone no longer vetoes — LLM judges breakout vs failure.
+    // Only earnings/FOMC/high event risk triggers Stand Aside (capital preservation).
+    const hasEventRisk = ctx.eventRisk === 'earnings' || ctx.eventRisk === 'fomc' || ctx.eventRisk === 'high';
     const isPositiveGamma = ctx.gammaRegime === 'positive';
     const isNegativeGamma = ctx.gammaRegime === 'negative';
 

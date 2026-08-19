@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-P62
+> **作者**: YC Wong · **版本**: 2.0.870-P64
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~72,000 行 TypeScript（嚴格模式，零類型錯誤）
@@ -176,6 +176,18 @@ P44:反轉止蝕 close reason `consensus`→`thesis_invalidation`。P45:盈利�
 ### v2.0.870-P50-P62: Binance bStocks 平行交易(Agentic Wallet + 數據源 + x402 + 自動 swap)
 
 **P50**:Trading Terminal UI 加 Wallet TVL cell + Binance bStocks On/Off switch。**P51**:Agentic Wallet 接入(`src/services/bstocks-wallet.ts` 包裝 `baw` CLI——signIn/verify/getStatus;UUID 驗證 + execSync timeout + 防禦式 parse;唔 log token)+ `/api/bstocks/connect|verify|status` + UI Connect 流程 + `bStocks_module.md`。**P52**:交易機制確認(swap 冇 SL/TP、long-only、BUY→swap USDT→bStock)+ UI symbol 右方橙色 bStock 標籤。**P53**:自動 swap 執行(`maybeSwapBStock`——BUY→USDT→bStock / SELL→bStock→USDT,下注 = Wallet TVL × positionSizePct,Leverage 唔理)+ Wallet TVL + 自動存地址 + env `BSTOCKS_ENABLED`。**P54**:bStock 數據源(`src/services/bstock-data.ts`——type=3 list API 緩存 10min + Binance spot price 緩存 30s)+ x402 呼叫(`src/services/x402-calls.ts`——402→preview→sign→replay;CMC 4 designated tools + Agent Studio async 兩段式)。**P55**:企業行動風險檢查(API 4 `isTradable`——TRADING/openState=true 先可 swap;ASSET_PAUSED/LIMITED/MARKET_CLOSED skip;fail-open 唔 hard-block)。**P56**:Trade Incident 顯示 bStocks 平行交易(symbol 右方橙色括弧 + Entry/Exit Price 橙色 bStock 價)。**P57**:重啟後自動檢查 Agent Wallet 連接狀態(mount 時 fetch status)。**P58**:bStocks connected state(橙色 border + switch 未連接時 disabled)。**P59**:動態 bStock map(67 隻由 type=3 API 動態攞,ticker 例外表 SKHX→SKHY / SP500→SPY,新 symbol 自動 map;移除 hardcode)。**P60**:Wallet TVL refresh button + 每 cycle 1 次 CMC + 1 次 Agent Studio x402(3 次後永久停,計數持久化 `data/bstocks-x402-count.json`)。**P61**:Hyperliquid trading mode indicator(#97fce4 + gray,paper/real switch)+ bStocks Live/Pause badge(橙色,localStorage 持久化)+ 移除 Trade Mode buttons + 主色 Hyperliquid green + bStocks connected 時 3 條 slider 綠→橙漸變。**P62**:Position Size slider 漸變 + console/TG 每 cycle show Wallet 餘額。
+
+### v2.0.870-P63: OPEX 唔再一刀切 veto(LLM 判斷突破定突破唔到)
+
+主神裁決:「到期可以照不要veto,LLM 判斷而家到底係突破定還是突破唔到」——OPEX 前 3 日一刀切 veto 令美股盤前搶唔到先機,八個市場半日冇 trade。根因:SPX/SKHX options 2026-08-21 到期 = 2 日後,`daysToExp <= 3 → eventRisk='opex'` → playbook「Stand Aside」→ vetoNewPositions=true → 兩層 block(agents 全部投 HOLD + deterministic veto 強制 HOLD)。
+
+**修復**:`getRegimePlaybook` 嘅 `hasEventRisk` 只計 earnings/fomc/high(OPEX 唔再觸發 Stand Aside veto);`formatForAgentContext` OPEX → 「informational (NOT a veto): LLM judges breakout vs failure」;`eventRiskTolerance` 'none'→'opex';deterministic veto 加 env `OPTIONS_PLAYBOOK_VETO`(false 可完全關閉)。驗證:SKHX playbook = Standard Directional(vetoNewPositions=false),agents 改為根據 OLR edge/S-R/momentum 判斷。
+
+### v2.0.870-P64: bStocks BNB gas 保留 + USDT 餘額檢查(比賽規則落地)
+
+Binance bStock PnL contest 規則:「Keep BNB for gas: every trade is an on-chain transaction that consumes gas. Do not convert all funds to stablecoins or bStock, or the first transaction will fail for lack of gas」+「Compliant jurisdiction: bStock is only open to permitted-jurisdiction qualified users」。
+
+**落地**:`getBalance()` 加 `bnbBalance`/`bnbValue`(從 tokens 搵 BNB);`maybeSwapBStock` swap 前檢查 BNB ≥ 0.01(≈$6,BSC gas 每次 <$0.1;唔夠 → skip + ⛽ warning)+ 買 bStock 前檢查 USDT > 0;`bStocks_module.md` 5.2 補齊 gas 硬要求 + jurisdiction 規則。實證:Wallet 只有 USDT $99.40、0 BNB——新檢查會 skip 直到主神入 BNB。
 
 ### v2.0.870-P43: 闊 SL + 加強版共識反轉止蝕
 
