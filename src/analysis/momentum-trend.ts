@@ -170,11 +170,28 @@ export function classifyMomentumTrend(snap: MomentumSnapshot, tau24: number, vol
   const volEff = snap.vol5mSigma !== null && Number.isFinite(snap.vol5mSigma) ? snap.vol5mSigma : volatility;
   if (volEff > 0.02) return 'volatile'; // 沿用 legacy 高波動覆蓋
 
-  const { m1h, m4h } = snap;
+  const { m1h, m4h, m15m } = snap;
+
+  // v2.0.870-P72: 三窗唔阻——4h+1h 定方向,15m 反對 → sideways(唔郁)
+  // 主神推論驗證:策略 C(唔阻)SKHX 14日 PnL -56% → +10%,大幅改善。
+  // 15m 同向/中立 → 放行;15m 反對 → 唔郁(過濾時機,唔係 hard block)
+  const tau15m = Math.min(Math.max(tauAbs / 96, 0.01), tauAbs); // 15m 閾值,更細
+  const m15Opposes = (trend: 'bullish' | 'bearish' | null): boolean => {
+    if (trend === null || m15m === null) return false; // 冇 15m 數據唔阻
+    if (trend === 'bullish') return m15m < -tau15m;     // 睇多但 15m 跌 → 反對
+    if (trend === 'bearish') return m15m > tau15m;     // 睇淡但 15m 升 → 反對
+    return false;
+  };
+
   if (m4h !== null && m1h !== null) {
     // 主規則:4h 定方向強度,1h 確認時機(任一方「過閾」而另一方同向)
-    if ((m4h >= tau4h && m1h > 0) || (m1h >= tau1h && m4h > 0)) return 'bullish';
-    if ((m4h <= -tau4h && m1h < 0) || (m1h <= -tau1h && m4h < 0)) return 'bearish';
+    // P72: 同向之後,15m 反對 → sideways(唔郁)
+    if ((m4h >= tau4h && m1h > 0) || (m1h >= tau1h && m4h > 0)) {
+      return m15Opposes('bullish') ? 'sideways' : 'bullish';
+    }
+    if ((m4h <= -tau4h && m1h < 0) || (m1h <= -tau1h && m4h < 0)) {
+      return m15Opposes('bearish') ? 'sideways' : 'bearish';
+    }
     return 'sideways';
   }
   if (m1h !== null) {
