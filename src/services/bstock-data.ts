@@ -20,9 +20,16 @@ export interface BStockInfo {
 
 export interface BStockPrice {
   symbol: string;         // SPYB
+  ticker: string;         // SPY(underlying ticker)
   cs: string;             // SPYBUSDT
   price: number | null;
 }
+
+/** xyz: ticker → bStock ticker 例外映射(xyz: 同 bStock 嘅 ticker 唔一致嗰啲) */
+const TICKER_EXCEPTIONS: Record<string, string> = {
+  'skhx': 'skhy',   // SK Hynix(xyz:SKHX → bStock SKHY)
+  'sp500': 'spy',   // S&P 500(xyz:SP500 → bStock SPY)
+};
 
 const LIST_URL = 'https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/market/token/rwa/stock/detail/list/ai?type=3';
 const LIST_TTL_MS = 10 * 60 * 1000; // 10 min
@@ -107,13 +114,23 @@ export class BStockData {
     return { tradable, reasonCode: status.reasonCode, reasonMsg: status.reasonMsg };
   }
 
+  /** 動態 map:xyz: symbol → bStock(ticker 例外 + 全 list 查找)。
+   *  唔再 hardcode——新 symbol 只要 ticker 喺 bStock list 就自動 map 到。 */
+  async getBStockForXyzSymbol(xyzSymbol: string): Promise<{ symbol: string; contractAddress: string; cs: string; ticker: string } | null> {
+    const list = await this.fetchList();
+    const rawTicker = xyzSymbol.includes(':') ? xyzSymbol.split(':')[1] ?? '' : xyzSymbol;
+    const ticker = (TICKER_EXCEPTIONS[rawTicker.toLowerCase()] ?? rawTicker.toLowerCase());
+    const bStock = list.find((b) => b.ticker.toLowerCase() === ticker);
+    return bStock ? { symbol: bStock.symbol, contractAddress: bStock.contractAddress, cs: bStock.cs, ticker: bStock.ticker } : null;
+  }
+
   /** 攞所有 bStock 價格(對齊 xyz: symbol) */
   async fetchAllPrices(): Promise<BStockPrice[]> {
     const list = await this.fetchList();
     const out: BStockPrice[] = [];
     for (const b of list) {
       const price = await this.fetchPrice(b.cs);
-      out.push({ symbol: b.symbol, cs: b.cs, price });
+      out.push({ symbol: b.symbol, ticker: b.ticker, cs: b.cs, price });
     }
     return out;
   }

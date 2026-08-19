@@ -4,6 +4,21 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P59: bStock 動態 map(唔再 hardcode,新 symbol 自動 map)
+
+**主神指令**:「你要全部記錄在案啦,有時我想trade新嘢,你要自己識得 map」。
+
+**改動**:
+- `src/services/bstock-data.ts`:加 `getBStockForXyzSymbol()`(動態 map:xyz: symbol → bStock,用 ticker 例外表 SKHX→SKHY / SP500→SPY + 全 list 查找);`BStockPrice` 加 `ticker` 欄位
+- `src/index.ts`:`maybeSwapBStock` 改用動態 `getBStockForXyzSymbol`(唔再用 hardcode `BSTOCK_ADDRESSES`/`BSTOCK_SYMBOLS`);移除 unused imports
+- `ui/src/App.tsx`:移除 hardcode `BSTOCK_MAP`;改 module-level `bStockTickerMap`(由 `/api/bstocks/prices` 填充)+ ticker 例外表;`getBStockForSymbol` 動態查找
+
+**原理**:bStock list 有 67 隻,全部由 type=3 API 動態攞;xyz: symbol 嘅 ticker 同 bStock ticker 大部分一致(MU→MU、SPCX→SPCX、SNDK→SNDK),只有 SKHX→SKHY、SP500→SPY 兩個例外。新 symbol 只要 ticker 喺 list 就自動 map。
+
+tsc clean;vite build 成功。
+
+---
+
 ## v2.0.870-P56: Trade Incident 顯示 bStocks 平行交易
 
 **主神指令**:Trade Incident 每筆 trade 若有成功 bStocks 平行交易,symbol 右方加橙色括弧 bStock symbol;展開資料嘅 Entry Price & Exit Price 加橙色括弧記錄 bStocks 買入/賣出價。

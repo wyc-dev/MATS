@@ -79,7 +79,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
-import { BStocksWallet, BSTOCK_ADDRESSES, BSTOCK_SYMBOLS, PAYMENT_TOKEN_ADDRESSES } from './services/bstocks-wallet.ts';
+import { BStocksWallet, PAYMENT_TOKEN_ADDRESSES } from './services/bstocks-wallet.ts';
 import { BStockData } from './services/bstock-data.ts';
 import { cmcCall, agentStudioAnalyze, agentStudioPoll } from './services/x402-calls.ts';
 import { regimeSLWidth } from './analysis/regime-sl-width.ts';
@@ -299,8 +299,11 @@ class MATSSystem {
   private async maybeSwapBStock(symbol: string, side: 'buy' | 'sell'): Promise<void> {
     try {
       if (process.env['BSTOCKS_ENABLED'] !== 'true') return;
-      const bStockAddr = BSTOCK_ADDRESSES[normalizeSymbol(symbol)];
-      if (!bStockAddr) return;
+      // 動態 map(xyz: symbol → bStock)——唔再 hardcode,新 symbol 自動 map
+      const bStock = await this.bStockData.getBStockForXyzSymbol(symbol);
+      if (!bStock) return;
+      const bStockAddr = bStock.contractAddress;
+      const bStockSymbol = bStock.symbol;
       // API 4: 企業行動風險檢查(paused/limited 就 skip swap)
       const status = await this.bStockData.isTradable(bStockAddr);
       if (!status.tradable) {
@@ -318,7 +321,6 @@ class MATSSystem {
         log.warn(`[bstocks] TVL=0, skip swap ${symbol}`);
         return;
       }
-      const bStockSymbol = BSTOCK_SYMBOLS[normalizeSymbol(symbol)] ?? '';
       if (side === 'buy') {
         const r = this.bStocksWallet.swap(usdtAddr, bStockAddr, amount);
         log.info(`🟢 [bstocks] BUY ${symbol} → swap ${amount} USDT → bStock (TVL=${tvl.toFixed(2)} × ${(sizePct * 100).toFixed(0)}%): ${r.success ? 'OK' : (r.error ?? 'failed')}`);
