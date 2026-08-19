@@ -4,6 +4,20 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P67: BNB price $0 bug 修復(fetchPriceForSymbol 大小寫)
+
+**主神報告**:八個市場半日冇 trade——檢查發現 BNB price stale($0.00),agents 判斷「Price data is stale」完全唔 trade BNB。
+
+**根因**:`fetchPriceForSymbol` 對 bare symbol 用 `u.name === symbol` 原樣比較——HL universe 係大寫 `'BNB'`,但 tradingMarkets 有 `'bnb'`(細階)→ 搵唔到 → 返回 0。由 **v1.9.4 initial commit** 就存在(git blame 確認);之前冇爆係因為 dex0CtxsCache 成日 hit(cache 用 `toUpperCase()` 冇問題),cache miss 先會行到有 bug 嘅分支。
+
+**修復**:`u.name === symbol.toUpperCase()`(case-insensitive)。
+
+**驗證**:BNB 而家 agents 見到「Trending bull but price is mid-range (40.5bps above demand)」——數據正常。
+
+tsc clean。
+
+---
+
 ## v2.0.870-P66: bStocks live → pause 強制平倉 + 確認 modal 顏色分家
 
 **主神指令**:bStocks switch live → pause 時,如果持有 bStocks,先確認「是否全部平倉」(just like Hyperliquid paper/real switch),確認後全部平倉,先可以 pause;Hyperliquid 確認用 HL 綠色,橙色留俾 Binance live/pause。
