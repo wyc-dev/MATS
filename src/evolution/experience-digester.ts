@@ -209,6 +209,9 @@ export class ExperienceDigester {
     const exitType = (p['exitType'] as string) ?? '';
     const validExitTypes = ['premature_sl', 'premature_tp', 'correct_sl', 'correct_tp', 'thesis_invalidated', 'consensus_reversal'] as const;
     const typedExit = validExitTypes.includes(exitType as typeof validExitTypes[number]) ? exitType as typeof validExitTypes[number] : undefined;
+    // P47-fix2: 保留 consensus_reversal(LLM 唔准用 premature_sl/correct_sl 覆蓋
+    // 呢個係系統確定嘅 close reason,唔係 LLM 判斷嘅 exit quality)
+    const finalExit = rec.exitType === 'consensus_reversal' ? 'consensus_reversal' : typedExit;
     const lesson = typeof p['lesson'] === 'string' && p['lesson'].trim() ? (p['lesson'] as string).trim() : '';
     const cats = Array.isArray(p['categories'])
       ? (p['categories'] as unknown[]).filter((x): x is string => typeof x === 'string').map((c) => normaliseCategory(c))
@@ -218,7 +221,7 @@ export class ExperienceDigester {
       assess: { direction: dir as 'buy' | 'sell', conviction },
       outcome,
       rootCause,
-      exitType: typedExit,
+      exitType: finalExit,
       lesson: lesson || `${outcome} ${rec.side.toUpperCase()} ${rec.symbol} — ${rootCause || rec.entryThesis.slice(0, 80)}`,
       categories: cats.length > 0 ? cats : ['other'],
       regime: rec.regime,
