@@ -284,6 +284,10 @@ export class APIServer {
   private onBStocksStatus: (() => import('./services/bstocks-wallet.ts').BStocksStatusResult) | null = null;
   private onBStocksBalance: (() => import('./services/bstocks-wallet.ts').BStocksBalanceResult) | null = null;
   private onBStocksSwap: ((fromToken: string, toToken: string, qty: string) => import('./services/bstocks-wallet.ts').BStocksSwapResult) | null = null;
+  private onBStocksPrices: (() => Promise<import('./services/bstock-data.ts').BStockPrice[]>) | null = null;
+  private onCmcCall: ((tool: string, args: Record<string, unknown>) => Promise<import('./services/x402-calls.ts').X402CallResult>) | null = null;
+  private onAgentStudioAnalyze: ((symbols: string[]) => Promise<import('./services/x402-calls.ts').X402CallResult>) | null = null;
+  private onAgentStudioPoll: ((jobId: string, jobToken: string) => Promise<import('./services/x402-calls.ts').X402CallResult>) | null = null;
   /** v2.0.122: Set per-symbol direction restrictions from UI. */
   private onSetDirectionRestrictions: ((restrictions: Record<string, 'buy' | 'sell'>) => void) | null = null;
   /** v2.0.45: Clear drawdown data to relaunch trading after circuit breaker. */
@@ -448,12 +452,20 @@ export class APIServer {
     status: () => import('./services/bstocks-wallet.ts').BStocksStatusResult;
     balance: () => import('./services/bstocks-wallet.ts').BStocksBalanceResult;
     swap: (fromToken: string, toToken: string, qty: string) => import('./services/bstocks-wallet.ts').BStocksSwapResult;
+    prices: () => Promise<import('./services/bstock-data.ts').BStockPrice[]>;
+    cmcCall: (tool: string, args: Record<string, unknown>) => Promise<import('./services/x402-calls.ts').X402CallResult>;
+    agentStudioAnalyze: (symbols: string[]) => Promise<import('./services/x402-calls.ts').X402CallResult>;
+    agentStudioPoll: (jobId: string, jobToken: string) => Promise<import('./services/x402-calls.ts').X402CallResult>;
   }): void {
     this.onBStocksConnect = handlers.connect;
     this.onBStocksVerify = handlers.verify;
     this.onBStocksStatus = handlers.status;
     this.onBStocksBalance = handlers.balance;
     this.onBStocksSwap = handlers.swap;
+    this.onBStocksPrices = handlers.prices;
+    this.onCmcCall = handlers.cmcCall;
+    this.onAgentStudioAnalyze = handlers.agentStudioAnalyze;
+    this.onAgentStudioPoll = handlers.agentStudioPoll;
   }
 
   /** v2.0.116: Register callback for updating env settings */
@@ -1491,6 +1503,67 @@ export class APIServer {
         } else {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: false, message: 'bStocks balance handler not registered.' }));
+        }
+        return;
+      }
+      if (pathname === '/api/bstocks/cmc-call' && req.method === 'POST') {
+        if (this.onCmcCall) {
+          let body = '';
+          for await (const chunk of req) body += chunk;
+          let tool = ''; let args: Record<string, unknown> = {};
+          try { const j = JSON.parse(body || '{}') as { tool?: string; args?: Record<string, unknown> }; tool = j.tool ?? ''; args = j.args ?? {}; } catch { /* keep '' */ }
+          const result = await this.onCmcCall(tool, args);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } else {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'CMC call handler not registered.' }));
+        }
+        return;
+      }
+      if (pathname === '/api/bstocks/agent-studio' && req.method === 'POST') {
+        if (this.onAgentStudioAnalyze) {
+          let body = '';
+          for await (const chunk of req) body += chunk;
+          let symbols: string[] = [];
+          try { const j = JSON.parse(body || '{}') as { symbols?: string[] }; symbols = Array.isArray(j.symbols) ? j.symbols : []; } catch { /* keep [] */ }
+          const result = await this.onAgentStudioAnalyze(symbols);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } else {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'Agent Studio handler not registered.' }));
+        }
+        return;
+      }
+      if (pathname === '/api/bstocks/agent-studio/poll' && req.method === 'POST') {
+        if (this.onAgentStudioPoll) {
+          let body = '';
+          for await (const chunk of req) body += chunk;
+          let jobId = ''; let jobToken = '';
+          try { const j = JSON.parse(body || '{}') as { jobId?: string; jobToken?: string }; jobId = j.jobId ?? ''; jobToken = j.jobToken ?? ''; } catch { /* keep '' */ }
+          const result = await this.onAgentStudioPoll(jobId, jobToken);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } else {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'Agent Studio poll handler not registered.' }));
+        }
+        return;
+      }
+      if (pathname === '/api/bstocks/prices' && req.method === 'GET') {
+        if (this.onBStocksPrices) {
+          try {
+            const result = await this.onBStocksPrices();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, prices: result }));
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: err instanceof Error ? err.message : String(err) }));
+          }
+        } else {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'bStocks prices handler not registered.' }));
         }
         return;
       }

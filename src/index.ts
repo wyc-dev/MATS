@@ -80,6 +80,8 @@ import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { BStocksWallet, BSTOCK_ADDRESSES, PAYMENT_TOKEN_ADDRESSES } from './services/bstocks-wallet.ts';
+import { BStockData } from './services/bstock-data.ts';
+import { cmcCall, agentStudioAnalyze, agentStudioPoll } from './services/x402-calls.ts';
 import { regimeSLWidth } from './analysis/regime-sl-width.ts';
 import { shouldExitOnReversal, isOpposedDirection, normalizePositionSide } from './analysis/consensus-reversal-exit.ts';
 import { evaluateDataQuality } from './analysis/data-quality.ts';
@@ -286,6 +288,8 @@ class MATSSystem {
   private reversalOpposedCycles = new Map<string, number>();
   /** v2.0.870-P51: Binance Agentic Wallet(bStocks)接入 */
   private bStocksWallet = new BStocksWallet();
+  /** v2.0.870-P54: bStock 數據源(Binance spot) */
+  private bStockData = new BStockData();
 
   /** v2.0.870-P53: bStocks switch ON 時自動 swap(同 Hyperliquid 交易並行)。
    *  BUY → swap USDT→bStock;SELL → swap bStock→USDT。
@@ -2222,6 +2226,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         },
         balance: () => this.bStocksWallet.getBalance(),
         swap: (fromToken: string, toToken: string, qty: string) => this.bStocksWallet.swap(fromToken, toToken, qty),
+        prices: () => this.bStockData.fetchAllPrices(),
+        cmcCall: (tool: string, args: Record<string, unknown>) => cmcCall(tool, args),
+        agentStudioAnalyze: (symbols: string[]) => agentStudioAnalyze(symbols),
+        agentStudioPoll: (jobId: string, jobToken: string) => agentStudioPoll(jobId, jobToken),
       });
 
       // v2.0.116: Settings modal — get/update env vars
