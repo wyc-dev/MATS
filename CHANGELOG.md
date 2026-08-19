@@ -4,20 +4,6 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
-## v2.0.870-P67: BNB price $0 bug 修復(fetchPriceForSymbol 大小寫)
-
-**主神報告**:八個市場半日冇 trade——檢查發現 BNB price stale($0.00),agents 判斷「Price data is stale」完全唔 trade BNB。
-
-**根因**:`fetchPriceForSymbol` 對 bare symbol 用 `u.name === symbol` 原樣比較——HL universe 係大寫 `'BNB'`,但 tradingMarkets 有 `'bnb'`(細階)→ 搵唔到 → 返回 0。由 **v1.9.4 initial commit** 就存在(git blame 確認);之前冇爆係因為 dex0CtxsCache 成日 hit(cache 用 `toUpperCase()` 冇問題),cache miss 先會行到有 bug 嘅分支。
-
-**修復**:`u.name === symbol.toUpperCase()`(case-insensitive)。
-
-**驗證**:BNB 而家 agents 見到「Trending bull but price is mid-range (40.5bps above demand)」——數據正常。
-
-tsc clean。
-
----
-
 ## v2.0.870-P77: SNDK 平倉記錄修復 + Supabase migration 執行 + 本地儲存預設
 
 **主神報告**:SNDK 平倉記錄重啟後唔見咗
@@ -38,23 +24,76 @@ tsc clean。
 
 ---
 
-## v2.0.870-P66: bStocks live → pause 強制平倉 + 確認 modal 顏色分家
+## v2.0.870-P76: bStocks 攻擊輪修復(持久化 sanitize + 同步併發 guard)
 
-**主神指令**:bStocks switch live → pause 時,如果持有 bStocks,先確認「是否全部平倉」(just like Hyperliquid paper/real switch),確認後全部平倉,先可以 pause;Hyperliquid 確認用 HL 綠色,橙色留俾 Binance live/pause。
+**攻擊向量**(3 攻 3 中,全部修復):
+- **W1**:`loadBStockTrades` 持久化污染——buyPrice 垃圾值(string/NaN/Infinity/負數)直接入 Map → `sanitizeBStockTrades()` 純函數逐欄 sanitize + `__proto__` 防護
+- **W3**:`recordBStockTrade` 冇驗證 price → 共用 sanitize 邏輯
+- **W4**:`syncBStockPositions` 併發——同 `maybeSwapBStock` 同時 swap 同一 symbol → `bStockSwapInFlight` guard(finally 釋放)
 
-**改動**:
-- `src/services/bstocks-wallet.ts`:`findBStockTokens()` 純函數(symbol 以 B 結尾 + 排除 payment tokens USDT/USDC/BNB/U/USD1)+ `closeAll()`(逐個 swap bStock → USDT,串行避免 rate limit,失敗唔中斷)+ `BStocksCloseAllResult` 類型
-- `src/api-server.ts`:`/api/bstocks/close-all` route + `onBStocksCloseAll` handler
-- `src/index.ts`:setBStocksHandlers 加 closeAll
-- `ui/src/App.tsx`:`handleBStocksToggle()`(live → pause 時 check 有冇持有 bStock → 有就顯示確認 modal)+ `confirmBStocksCloseAll()`(call close-all → 完成後先 pause);Hyperliquid mode switch 確認 modal 金色 → **HL 綠色**(var(--accent) #97fce4);bStocks 確認 modal **橙色**(var(--gold) #F5A623)
-
-**量化金融思維**:closeAll 保留 USDT/USDC/BNB(gas token 唔賣走——P64 教訓);串行 swap 避免並發 429;失敗唔中斷。
-
-tsc clean;24 測試全綠。
+14 攻擊測試綠;blast-radius 53 綠;tsc clean
 
 ---
 
-## v2.0.870-P73: bStocks 倉位同步 + P74/P76 攻擊輪修復
+## v2.0.870-P73: bStocks 倉位同步(每 cycle 核對 HL 同 bStocks 對齊)
+
+**主神指令**:「HL 平倉的話相應嘅 bStocks 都要 swap back to USDT」+「每一個 Cycle 對準」
+
+**改動**:
+- `src/index.ts`:加 `syncBStockPositions()`——每 cycle 尾核對;HL 冇倉位 + bStock 有 → swap bStock → USDT(對齊平倉)
+- `src/services/bstock-data.ts`:加 `getHLForBStockSymbol()` / `getHLForBStockSymbolSync()`(反向查 HL symbol——SKHYB → xyz:SKHX)
+
+紅先測試:p73-bstock-sync.test.ts 3 綠;blast-radius 37 綠;tsc clean
+
+---
+
+## v2.0.870-P72: 三窗動量(4h+1h+15m 唔阻)——主神推論驗證落地
+
+**主神推論**(2026-08-19):「4h+1h 拓展為 4h+1h+15min」
+**反事實回測驗證**(SKHX 14日 + 5 symbol):
+- A 4h+1h(而家):WR 51.5% PnL -56.30%
+- C 4h+1h+15m(唔阻——15m 唔反對先郁):WR 51.3% PnL +10.08% ← 大幅改善
+- 逐 symbol:SKHX/MU/DRAM/SNDK/SP500 全部 C 更好
+
+**邏輯**:4h 定方向,1h 確認,15m「唔反對」先郁
+- 15m 同向/中立 → 放行
+- 15m 反對 → sideways(過濾時機,soft gate 唔 hard block)
+
+tsc clean;41 相關測試綠
+
+---
+
+## v2.0.870-P68: P1+P3+P6 盈利提升 + 誤刪 EXP trades 修復
+
+**P1**:EV Filter 強化——`evToMultiplier` 負EV降權由 floor 0.75 → 兩檔(EV≤−0.1% ×0.15 災難桶 / EV<0 ×0.30 明顯負EV)。回測驗證:+473%。
+
+**P3**:短持倉懲罰安全版(`premature-close-guard`)——連續2筆<15min LOSS → ×0.3;4防線:連續2先觸發/24h衰減/S-R邊界豁免(≤50bps)/soft乘數。主神反問「會唔會永遠開唔到倉」—naive版會,安全版唔會。回測驗證:+467%。
+
+**P6**:trend-alignment-gate 逆勢 penalty ×0.5→×0.1——trending_bear WR 11.1%。回測驗證:+253%。
+
+**P68-fix**:誤刪 EXP trades 修復——之前誤判 entry=100 係測試污染,其實 1216/1319 係真實盈利 trades(PnL +343.80)。已還原 trades.jsonl,`recordClose` 只 block 真正無效價(entry≤0/NaN)。
+
+**影響組合(P1+P3+P6)**:回測 PnL +912% (+2.30→+23.31)
+
+56/56 相關測試綠;全量 2854 pass + 13 pre-existing
+
+---
+
+## v2.0.870-P67: BNB price $0 bug 修復(fetchPriceForSymbol 大小寫)
+
+**主神報告**:八個市場半日冇 trade——檢查發現 BNB price stale($0.00),agents 判斷「Price data is stale」完全唔 trade BNB。
+
+**根因**:`fetchPriceForSymbol` 對 bare symbol 用 `u.name === symbol` 原樣比較——HL universe 係大寫 `'BNB'`,但 tradingMarkets 有 `'bnb'`(細階)→ 搵唔到 → 返回 0。由 **v1.9.4 initial commit** 就存在(git blame 確認);之前冇爆係因為 dex0CtxsCache 成日 hit(cache 用 `toUpperCase()` 冇問題),cache miss 先會行到有 bug 嘅分支。
+
+**修復**:`u.name === symbol.toUpperCase()`(case-insensitive)。
+
+**驗證**:BNB 而家 agents 見到「Trending bull but price is mid-range (40.5bps above demand)」——數據正常。
+
+tsc clean。
+
+---
+
+## v2.0.870-P66: bStocks live → pause 強制平倉 + 確認 modal 顏色分家
 
 **主神指令**:bStocks switch live → pause 時,如果持有 bStocks,先確認「是否全部平倉」(just like Hyperliquid paper/real switch),確認後全部平倉,先可以 pause;Hyperliquid 確認用 HL 綠色,橙色留俾 Binance live/pause。
 
