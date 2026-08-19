@@ -1107,6 +1107,16 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
   const [bStocksAddress, setBStocksAddress] = useState<string | null>(null)
   const [bStocksBusy, setBStocksBusy] = useState(false)
   const [bStocksMsg, setBStocksMsg] = useState<string | null>(null)
+  // v2.0.870-P53: 連接後 fetch Wallet TVL(baw wallet balance)
+  useEffect(() => {
+    if (!bStocksConnected) return
+    let cancelled = false
+    fetch(`${API_BASE}/bstocks/balance`).then(r => r.json()).then(json => {
+      if (cancelled) return
+      if (json.success && typeof json.tvl === 'number') setWalletTvl(json.tvl)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [bStocksConnected])
   // Cross-asset-type pair cache: persists volume/price data across Asset Type switches
   // so Selected Market Pairs can show data even when the pair isn't in the current topPairs.
   const pairCacheRef = useRef<Map<string, { volume24h: number; volume5m?: number; price: number; priceChangePercent: number }>>(new Map())
@@ -1452,7 +1462,18 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
             role="switch"
             aria-checked={binanceBStocksEnabled}
             className={`toggle-switch ${binanceBStocksEnabled ? 'on' : 'off'}`}
-            onClick={() => setBinanceBStocksEnabled(v => !v)}
+            onClick={async () => {
+              const next = !binanceBStocksEnabled
+              setBinanceBStocksEnabled(next)
+              // v2.0.870-P53: 持久化到 env(後端讀 BSTOCKS_ENABLED 決定自動 swap)
+              try {
+                await fetch(`${API_BASE}/settings/env`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ settings: { BSTOCKS_ENABLED: next ? 'true' : 'false' } }),
+                })
+              } catch { /* ignore */ }
+            }}
           >
             <span className="toggle-knob" />
           </button>
