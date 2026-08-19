@@ -294,11 +294,17 @@ class MATSSystem {
   /** v2.0.870-P53: bStocks switch ON 時自動 swap(同 Hyperliquid 交易並行)。
    *  BUY → swap USDT→bStock;SELL → swap bStock→USDT。
    *  fire-and-forget(唔 block 主交易);env BSTOCKS_ENABLED=true 先啟用。 */
-  private maybeSwapBStock(symbol: string, side: 'buy' | 'sell'): void {
+  private async maybeSwapBStock(symbol: string, side: 'buy' | 'sell'): Promise<void> {
     try {
       if (process.env['BSTOCKS_ENABLED'] !== 'true') return;
       const bStockAddr = BSTOCK_ADDRESSES[normalizeSymbol(symbol)];
       if (!bStockAddr) return;
+      // API 4: 企業行動風險檢查(paused/limited 就 skip swap)
+      const status = await this.bStockData.isTradable(bStockAddr);
+      if (!status.tradable) {
+        log.warn(`🛑 [bstocks] ${symbol} not tradable (reason=${status.reasonCode}${status.reasonMsg ? ' ' + status.reasonMsg : ''}) — skip swap`);
+        return;
+      }
       const usdtAddr = PAYMENT_TOKEN_ADDRESSES['USDT'] ?? '';
       if (!usdtAddr) return;
       // 下注 = Wallet TVL × Position Size(10%);Leverage 唔理(bStocks 1:1)
@@ -5758,7 +5764,7 @@ ${recentExamples}
     }
     // v2.0.870-P53: bStocks switch ON 時自動 swap(同 Hyperliquid 交易並行)
     if (success) {
-      this.maybeSwapBStock(decision.symbol, decision.action as 'buy' | 'sell');
+      void this.maybeSwapBStock(decision.symbol, decision.action as 'buy' | 'sell');
     }
     return { success, paperReports: reports };
     } finally {
@@ -6050,7 +6056,7 @@ ${recentExamples}
       // Real position: close on HL first, then locally
       const closed = await this.tradingManager.closePosition(sym, closeReason);
       // v2.0.870-P53: bStocks switch ON 時自動平倉(swap bStock→USDT)
-      if (closed) this.maybeSwapBStock(sym, 'sell');
+      if (closed) void this.maybeSwapBStock(sym, 'sell');
       return closed;
     } else {
       // Paper position: close locally
@@ -6062,7 +6068,7 @@ ${recentExamples}
       }
       const trade = this.portfolio.closePosition(sym, closePrice, closeReason);
       // v2.0.870-P53: bStocks switch ON 時自動平倉(swap bStock→USDT)
-      if (trade) this.maybeSwapBStock(sym, 'sell');
+      if (trade) void this.maybeSwapBStock(sym, 'sell');
       return !!trade;
     }
   }

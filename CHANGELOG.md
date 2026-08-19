@@ -4,6 +4,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P55: bStock 企業行動風險檢查(API 4)
+
+**主神指令**:K-Line on-chain 蠟燭唔需要(用 Hyperliquid 做 trade);API 4(企業行動風險檢查)需要 build。
+
+**改動**:
+- `src/services/bstock-data.ts`:加 `fetchAssetStatus()`(API 4)+ `isTradable()`(只有 TRADING/openState=true 先可 swap;ASSET_PAUSED/ASSET_LIMITED/MARKET_CLOSED → skip;API 查唔到 → fail-open 唔 hard-block)
+- `src/index.ts`:`maybeSwapBStock()` 改 async,swap 前加 `isTradable` 檢查(paused/limited 就 skip swap + log warning)
+
++5 紅先測試(TRADING/ASSET_PAUSED/ASSET_LIMITED/MARKET_CLOSED/fail-open);tsc clean。
+
+---
+
 ## v2.0.870-P54: bStock 數據源 + x402 呼叫(CMC + Agent Studio)
 
 **主神指令**:做 #3(bStock 數據源)+ #5(x402 呼叫)。
