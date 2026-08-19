@@ -287,7 +287,7 @@ export class EvolutionaryPressureEngine {
           gammaRegimePreference: 'positive',
           maxImpliedMovePct: 0.05,    // 5% max implied move
           putCallOIThreshold: 1.2,    // P/C > 1.2 = bearish
-          eventRiskTolerance: 'none', // veto on any event risk
+          eventRiskTolerance: 'opex', // v2.0.870-P63: OPEX tolerated — LLM judges breakout vs failure; earnings/FOMC still veto
           targetPOP: 0.55,            // 55% target probability of profit
         },
       },
@@ -794,7 +794,7 @@ export class EvolutionOrchestrator {
         ctx += `  gammaRegimePreference=${op.gammaRegimePreference}  [informational — prefer this gamma regime]\n`;
         ctx += `  maxImpliedMovePct=${(op.maxImpliedMovePct * 100).toFixed(1)}%  [ENFORCED — veto if implied move exceeds this]\n`;
         ctx += `  putCallOIThreshold=${op.putCallOIThreshold.toFixed(2)}  [informational — P/C OI > this = bearish]\n`;
-        ctx += `  eventRiskTolerance=${op.eventRiskTolerance}  [ENFORCED — veto on events not tolerated]\n`;
+        ctx += `  eventRiskTolerance=${op.eventRiskTolerance}  [informational — OPEX tolerated (LLM judges breakout vs failure); earnings/FOMC veto]\n`;
         ctx += `  targetPOP=${(op.targetPOP * 100).toFixed(0)}%  [informational — target probability of profit]\n`;
       }
 

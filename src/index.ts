@@ -314,6 +314,22 @@ class MATSSystem {
       if (!usdtAddr) return;
       // 下注 = Wallet TVL × Position Size(10%);Leverage 唔理(bStocks 1:1)
       const bal = this.bStocksWallet.getBalance();
+      // v2.0.870-P64: BNB gas 保留檢查——每次 swap 都係 on-chain tx,冇 BNB gas 第一個交易就失敗
+      // (Binance 規則:Do not convert all funds to stablecoins or bStock, or the first transaction will fail for lack of gas)
+      const MIN_BNB_GAS = 0.01; // 最少 0.01 BNB(≈$6,BSC gas 每次 <$0.1,綽綽有餘)
+      if (bal.success && bal.bnbBalance != null && bal.bnbBalance < MIN_BNB_GAS) {
+        log.warn(`⛽ [bstocks] BNB gas 不足 (${bal.bnbBalance} BNB < ${MIN_BNB_GAS}), skip swap ${symbol} — 請入 BNB 做 gas`);
+        return;
+      }
+      // v2.0.870-P64: 買 bStock 需要 USDT——Wallet 冇 USDT 就 skip(唔好將全部資金轉做 bStock)
+      if (side === 'buy') {
+        const usdt = bal.tokens.find((t) => t.symbol === 'USDT');
+        const usdtBal = usdt ? parseFloat(usdt.balance) : 0;
+        if (!Number.isFinite(usdtBal) || usdtBal <= 0) {
+          log.warn(`[bstocks] USDT 餘額不足 (${usdtBal}), skip BUY swap ${symbol} — 需要 USDT 買 bStock`);
+          return;
+        }
+      }
       const tvl = bal.success && bal.tvl != null ? bal.tvl : 0;
       const sizePct = this.marketAgent.getConfig().positionSizePct ?? 0.10;
       const amount = (tvl * sizePct).toFixed(2);
@@ -9413,7 +9429,10 @@ ${recentExamples}
       // If the Regime → Playbook says vetoNewPositions (Stand Aside regime),
       // override the consensus decision to HOLD — no new positions allowed.
       // This is a DETERMINISTIC enforcement that overrides LLM voting.
-      if (useOptionsData && (result.consensus.decision.action === 'buy' || result.consensus.decision.action === 'sell')) {
+      // v2.0.870-P63: OPEX alone no longer sets vetoNewPositions (LLM judges
+      // breakout vs failure); this gate now only fires for earnings/FOMC/high.
+      // env OPTIONS_PLAYBOOK_VETO=false disables it entirely.
+      if (useOptionsData && config.optionsPlaybookVeto && (result.consensus.decision.action === 'buy' || result.consensus.decision.action === 'sell')) {
         const pb = this.optionsDataManager.getRegimePlaybook(activeSymbol, combinedState.trend, combinedState.regime);
         if (pb.vetoNewPositions) {
           log.warn(`🛑 [options-playbook] VETO: ${pb.playbook} — ${pb.rationale}. Overriding ${result.consensus.decision.action.toUpperCase()} → HOLD`);

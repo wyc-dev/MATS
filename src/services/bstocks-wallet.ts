@@ -75,6 +75,9 @@ export interface BStocksSwapResult {
 export interface BStocksBalanceResult {
   success: boolean;
   tvl: number | null;
+  /** v2.0.870-P64: BNB 餘額(gas 保留檢查用)——每次 swap 都係 on-chain tx,冇 BNB gas 會失敗 */
+  bnbBalance: number | null;
+  bnbValue: number | null;
   tokens: Array<{ symbol: string; balance: string; value: string }>;
   error?: string;
 }
@@ -152,7 +155,7 @@ export class BStocksWallet {
     }
   }
 
-  /** baw wallet balance → TVL(所有 token value 總和) */
+  /** baw wallet balance → TVL(所有 token value 總和)+ BNB 餘額(gas 保留檢查) */
   getBalance(): BStocksBalanceResult {
     try {
       const out = this.run('baw wallet balance --json', 15_000);
@@ -162,9 +165,19 @@ export class BStocksWallet {
         const v = parseFloat(t.value);
         return sum + (Number.isFinite(v) ? v : 0);
       }, 0);
-      return { success: true, tvl: Number.isFinite(tvl) ? tvl : null, tokens };
+      // v2.0.870-P64: 分開 BNB 餘額——每次 swap 都係 on-chain tx,冇 BNB gas 會失敗
+      const bnb = tokens.find((t) => t.symbol === 'BNB');
+      const bnbBalance = bnb ? parseFloat(bnb.balance) : 0;
+      const bnbValue = bnb ? parseFloat(bnb.value) : 0;
+      return {
+        success: true,
+        tvl: Number.isFinite(tvl) ? tvl : null,
+        bnbBalance: Number.isFinite(bnbBalance) ? bnbBalance : 0,
+        bnbValue: Number.isFinite(bnbValue) ? bnbValue : 0,
+        tokens,
+      };
     } catch (err) {
-      return { success: false, tvl: null, tokens: [], error: err instanceof Error ? err.message : String(err) };
+      return { success: false, tvl: null, bnbBalance: null, bnbValue: null, tokens: [], error: err instanceof Error ? err.message : String(err) };
     }
   }
 

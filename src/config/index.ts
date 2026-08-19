@@ -85,6 +85,12 @@ const envSchema = z.object({
   // v2.0.58: Massive.com Options Data API key for Stocks/RWA options data layer
   MASSIVE_API_KEY: z.string().optional().default(''),
 
+  // v2.0.870-P63: Options Playbook deterministic veto.
+  // true = earnings/FOMC/high event risk still veto new positions (capital preservation);
+  // false = disable the deterministic veto entirely (LLM judges all event risk).
+  // OPEX alone NEVER vetoes since P63 — LLM judges breakout vs failure.
+  OPTIONS_PLAYBOOK_VETO: z.coerce.boolean().default(true),
+
   // Telegram Bot for IM notifications
   TELEGRAM_BOT_API: z.string().optional().default(''),
   TELEGRAM_CHAT_ID: z.string().optional().default(''),
@@ -203,6 +209,8 @@ export const config = {
   },
   // v2.0.58: Massive.com Options Data key
   massiveApiKey: raw.MASSIVE_API_KEY,
+  // v2.0.870-P63: Options Playbook deterministic veto (earnings/FOMC/high only; OPEX never vetoes)
+  optionsPlaybookVeto: raw.OPTIONS_PLAYBOOK_VETO,
   // v2.0.138: EXP thesis-experience vector memory
   exp: {
     enabled: raw.EXP_ENABLED,
