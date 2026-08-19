@@ -3,7 +3,7 @@
 > **作者**: YC Wong · **版本**: 2.0.870-P77
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
-> **代碼量**: ~72,000 行 TypeScript（嚴格模式，零類型錯誤）
+> **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
 
 ---
 
@@ -528,7 +528,7 @@ shadow TP/SL 判決由 tick high/low(100 格)升級做 **tick ∪ 5m 蠟燭路�
 │   • HACP 多模型平行推理（僅關鍵決策點觸發 LLM）                 │
 │   • 6 智能體 + Meta-Agent 仲裁 + Skeptics 邏輯審查             │
 │   • Entry Thesis System + 暗黑心理學 + 結構化辯論 + 加權投票    │
-│   • 認知演化管線（v2.0.860: 15 active + Edge Validation + Q-RL Alpha Discovery + Component Attribution；4 組件已移除；v2.0.857 風險等級 moderate-only）│
+│   • 認知演化管線（v2.0.868-P1P2: 15 active + Edge Validation + Q-RL Alpha Discovery + Component Attribution + PAEL + LLM World-Model + LLM Direction Verifier + EV Filter + Close-Decision Calibrator + Profitability Analyzer + Entry Quality System；4 組件已移除；v2.0.857 風險等級 moderate-only）│
 │   • Plan G Dynamic Threshold [45-55%] + 乘法 Penalty 衰減       │
 │   • SystemGuard（5 層系統級保護）                               │
 ├──────────────────────────────────────────────────────────────┤
@@ -545,7 +545,7 @@ shadow TP/SL 判決由 tick high/low(100 格)升級做 **tick ∪ 5m 蠟燭路�
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**`ANALYSIS_MODE` 環境變數**（`src/index.ts` line ~152）：
+**`ANALYSIS_MODE` 環境變數**（`src/index.ts` line ~255）：
 - `'true'` — 僅計算訊號 + 寫入 Supabase，唔下單（純訊號後端模式）
 - `'dual'` — 同時計算訊號 + 寫入 Supabase + 執行交易（paper/real）
 - `'false'` — 僅執行交易，唔寫入 Supabase（legacy 獨立交易模式）
@@ -611,10 +611,10 @@ src/
 │   ├── stability-monitor.ts  # Task 1C：perturbation + cross-time 穩定性
 │   ├── backtest-validation.ts # Sharpe/Sortino/Calmar/PF/bootstrap/DSR/walk-forward
 ├── api-server.ts            # REST + SSE (:3456) + static UI（legacy）
-└── index.ts                 # 系統 orchestrator（決策循環 + 矩陣寫入 ~line 6478）
+└── index.ts                 # 系統 orchestrator（決策循環 + 矩陣寫入 ~line 9458）
 ui/                          # Legacy React + Vite dashboard（已由 mats_app 取代）
 data/evolution/              # olr-state · shadow-state · patterns · GA state · em-state · na-model · cycle-history · anti-patterns
-tests/                       # vitest（~2,000 tests / 70 suites，gitignored）
+tests/                       # vitest（~2,900 tests / 185 suites，gitignored；2891 pass / 13 pre-existing）
 supabase/migrations/         # 00000000000018_asset_analyses_matrix.sql（v2.0.822）
 ```
 
@@ -648,7 +648,7 @@ moderate     │  baseline（已校準）│  baseline         │  baseline
 
 **`moderate` = 已校準 baseline**：使用 live consensus 機制（conviction gate、OLR blend、combo WR override）。v2.0.857 後 aggressive/conservative placeholder 已移除——`buildProfileCell()` 只輸出 moderate 格，conviction 係 live consensus 原值。
 
-### 寫入路徑（`src/index.ts` ~line 6478）
+### 寫入路徑（`src/index.ts` ~line 9458）
 
 ```
 HACP consensus result
@@ -1010,7 +1010,7 @@ FINAL CONFIDENCE:
 
 ## 自我演化系統
 
-MATS 嘅核心競爭力係**認知演化管線**（v2.0.860: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 Component Attribution）——每筆交易結果都會餵回學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。v2.0.833 移除咗 4 個 0-inference 組件（temporal-attention / cross-symbol / reward-shaping / world-model）同暫停 active-exploration。v2.0.835 新增 Q-RL Alpha Discovery（首個可以發現新 alpha 嘅組件）+ Factor-Tagged Aligned Shadow。**v2.0.857 移除風險等級區別化（moderate-only）**——矩陣 3×3 → 1×3。**v2.0.858 解鎖 cycle 期間市場選擇**。**v2.0.859 移除零消費者組件 + 修復 Q-RL/OLR backfill 重複喂飼 + OLR calibration shrinkage**。**v2.0.860 三因子探索 + adaptive 歸一 + SE operator-conditioned context**（Frontis-MA1/OpenMLE-Evo）。以下逐層詳述：
+MATS 嘅核心競爭力係**認知演化管線**（v2.0.868-P1P2: 15 active + 1 Edge Validation + 1 Q-RL Alpha Discovery + 1 Component Attribution + 1 PAEL Exit-Price Learner + 1 LLM World-Model Layer + 1 LLM Direction Verifier + 1 EV Filter + 1 Close-Decision Calibrator + 1 Profitability Analyzer + 1 Entry Quality System）——每筆交易結果都會餵回學習系統，系統唔係固定規則，而係一個會進化嘅認知引擎。v2.0.833 移除咗 4 個 0-inference 組件（temporal-attention / cross-symbol / reward-shaping / world-model）同暫停 active-exploration。v2.0.835 新增 Q-RL Alpha Discovery（首個可以發現新 alpha 嘅組件）+ Factor-Tagged Aligned Shadow。**v2.0.857 移除風險等級區別化（moderate-only）**——矩陣 3×3 → 1×3。**v2.0.858 解鎖 cycle 期間市場選擇**。**v2.0.859 移除零消費者組件 + 修復 Q-RL/OLR backfill 重複喂飼 + OLR calibration shrinkage**。**v2.0.860 三因子探索 + adaptive 歸一 + SE operator-conditioned context**（Frontis-MA1/OpenMLE-Evo）。**v2.0.870-P16/P17 Hybrid Penalty Decay + Runs Test τ 調製**（三層 OR 混合衰減打斷 death spiral + Wald-Wolfowitz 游程檢定 τ 9–18h 自適應）。**v2.0.870-P50-P77 Binance bStocks 平行交易系列**（Agentic Wallet + 數據源 + x402 + 自動 swap + 企業行動風險 + 動態 map + 倉位同步 + 攻擊硬化 + 本地儲存預設）。以下逐層詳述：
 
 ### OLR — Online Logistic Regression（`olr-engine.ts`）
 
@@ -1035,7 +1035,7 @@ Per-symbol, per-side online logistic regression 從 shadow + paper + real + back
 | `drainRecentResults()` | 學習出口 | index.ts 每次 cycle drain，feed OLR + Q-RL + MetaLearner + CausalReasoner |
 | `pruneStaleSymbols()` | 維護 | 清理已移除 symbol 嘅 stale positions |
 
-**index.ts 整合點（v2.0.855-audit）**：`checkPositions` 喺 active symbol + 每個 trading market 都跑（line ~6029/6049）；`drainRecentResults` 每 cycle feed 去 OLR/Q-RL（line ~6071）；shadow 開倉喺 multi-symbol loop（line ~6289）。**Shadow → OLR → Q-RL 係完整學習管道**。
+**index.ts 整合點（v2.0.855-audit）**：`checkPositions` 喺 active symbol + 每個 trading market 都跑（line ~7804/7826）；`drainRecentResults` 每 cycle feed 去 OLR/Q-RL（line ~7848）；shadow 開倉喺 multi-symbol loop（line ~8093/8114）。**Shadow → OLR → Q-RL 係完整學習管道**。
 
 **v2.0.143 改進**：
 - **MAE/MFE path-risk 追蹤**：每筆 shadow trade 記錄 Maximum Adverse/Favorable Excursion。Agent context 顯示 `avg MFE=3.2% avg MAE=1.8%`，讓 agent 看到「trades 平均先賺 3% 再虧到 SL」= 方向對但 exit timing 有問題。
@@ -1424,7 +1424,7 @@ Plan G（6 小時 idle 後）：
 
 ### 整合
 
-- `DynamicThresholdCalculator` 喺 conviction gate（`index.ts` line ~6803）取代舊嘅 `convictionThreshold + lossStreakPenalty`（加法）路徑
+- `DynamicThresholdCalculator` 喺 conviction gate（`index.ts` line ~11662）取代舊嘅 `convictionThreshold + lossStreakPenalty`（加法）路徑
 - `_lossStreakPenalty`（loss + cond + combo 三 gate 嘅 net penalty）改為傳入 calculator 嘅 `netPenalty`，計算 `penaltyFactor`（乘法）
 - HACP `getCyclesWithoutTrade()` 提供 idle cycle 數
 - Portfolio `currentDrawdownPct` 提供 drawdown
@@ -2120,7 +2120,7 @@ RIL_SUBTLE_DIFF_ENABLED=true
 | Legacy UI | `ui/`（React 18 + Vite — 已由 mats_app 取代，保留作 local dashboard）|
 | Config | Zod schema validation |
 | Logging | Winston（structured + file rotation） |
-| Testing | vitest（~2,000 tests / 70 suites，gitignored；4 attack suites: q-rl-attack, changelog-features-attack, creative-attacks, q-rl-creative-attacks）|
+| Testing | vitest（~2,900 tests / 185 suites，gitignored；2891 pass / 13 pre-existing；4 attack suites: q-rl-attack, changelog-features-attack, creative-attacks, q-rl-creative-attacks）|
 | Crypto | `@noble/curves`（HL phantom agent signing） |
 | Vector Embedding | Transformers.js MiniLM L6 v2（384-dim, in-process, CPU） |
 | Pattern Clustering | Greedy cosine clustering（RIL Reason Intelligence Layer） |
