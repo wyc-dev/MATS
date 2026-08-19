@@ -737,7 +737,7 @@ export interface LessonStatement {
   /** Root cause: WHY this trade won/lost (the actual lesson). */
   rootCause?: string;
   /** v2.0.140: Exit quality classification — was the SL/TP premature? */
-  exitType?: 'premature_sl' | 'premature_tp' | 'correct_sl' | 'correct_tp' | 'thesis_invalidated';
+  exitType?: 'premature_sl' | 'premature_tp' | 'correct_sl' | 'correct_tp' | 'thesis_invalidated' | 'consensus_reversal';
   /** One condensed sentence capturing the entire lesson. */
   lesson: string;
   /** Dominant rationale categories driving this lesson. */
