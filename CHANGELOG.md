@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P47-fix: consensus_reversal 真正流到 agents(斷層修復)
+
+**主神實問**:「Agents 確認可以識別到 consensus_reversal?」
+**答案(修前)**:唔得——closeReason 設咗 `consensus_reversal`,但 digester 嘅 heuristic 用 holdMin+outcome 重新推導 exitType(premature_sl/correct_sl),**覆蓋咗 coarse 嘅 consensus_reversal** → RIL stats 用 exitType → agent prompt 永遠見唔到。
+
+**修法(4 處)**:
+1. `LessonStatement['exitType']` type 加 `consensus_reversal`
+2. `heuristicTradeLesson` 保留 `consensus_reversal`(唔覆蓋)
+3. `validateLesson` validExitTypes 加 `consensus_reversal`
+4. digester prompt exitType enum 加 `consensus_reversal`
+
+**盈利意義**:修好後 RIL 先可以單獨學「共識反轉離場」嘅 edge(勝率/PnL),agent 先可以喺 Block 2 睇到「consensus_reversal 離場係啱嘅,唔准反轉方向」——之前 prompt 文字加咗但數據冇流到 = 空話。
+
++1 紅先測試(heuristic 保留 consensus_reversal);18 tests 綠;tsc clean。
+
+---
+
 ## v2.0.870-P47: 反轉止蝕獨立 close reason `consensus_reversal`
 
 **背景**:反轉止蝕重用 `thesis_invalidation`,同 Skeptics 嘅 thesis invalidation 混埋——RIL 分唔到「共識反轉離場」vs「Skeptics 判斷 thesis 破」。

@@ -154,7 +154,7 @@ export class ExperienceDigester {
               'volatility and thesis? Should the SL have been wider? Should the TP have been further? ' +
               'Was the thesis correct but the exit premature? Was the thesis itself too weak?\n\n' +
               'Respond ONLY with JSON: {"obs":"...","assess":{"direction":"buy|sell","conviction":0.0-1.0},' +
-              '"outcome":"WIN|LOSS","exitType":"premature_sl|premature_tp|correct_sl|correct_tp|thesis_invalidated",' +
+              '"outcome":"WIN|LOSS","exitType":"premature_sl|premature_tp|correct_sl|correct_tp|thesis_invalidated|consensus_reversal",' +
               '"rootCause":"...","lesson":"...","categories":["technical",...],"regime":"...","holdMin":N}.',
           },
           {
@@ -207,7 +207,7 @@ export class ExperienceDigester {
     const outcome: TradeOutcome = (p['outcome'] as string) === 'WIN' ? 'WIN' : 'LOSS';
     const rootCause = typeof p['rootCause'] === 'string' && p['rootCause'].trim() ? (p['rootCause'] as string).trim() : '';
     const exitType = (p['exitType'] as string) ?? '';
-    const validExitTypes = ['premature_sl', 'premature_tp', 'correct_sl', 'correct_tp', 'thesis_invalidated'] as const;
+    const validExitTypes = ['premature_sl', 'premature_tp', 'correct_sl', 'correct_tp', 'thesis_invalidated', 'consensus_reversal'] as const;
     const typedExit = validExitTypes.includes(exitType as typeof validExitTypes[number]) ? exitType as typeof validExitTypes[number] : undefined;
     const lesson = typeof p['lesson'] === 'string' && p['lesson'].trim() ? (p['lesson'] as string).trim() : '';
     const cats = Array.isArray(p['categories'])
@@ -228,6 +228,21 @@ export class ExperienceDigester {
 
   private heuristicTradeLesson(rec: ThesisExperienceRecord): LessonStatement {
     const cats = rec.rationaleCats.slice(0, 3);
+    // P47-fix: 保留 consensus_reversal(共識反轉離場係獨立 close reason,
+    // 唔應該被 premature_sl/correct_sl 覆蓋——否則 RIL/agents 分唔到)
+    if (rec.exitType === 'consensus_reversal') {
+      return {
+        obs: rec.entryThesis.slice(0, 160),
+        assess: { direction: rec.side, conviction: 0.5 },
+        outcome: rec.outcome,
+        exitType: 'consensus_reversal',
+        rootCause: `Consensus detected trend reversal — exited early (direction was ${rec.side.toUpperCase()}, trend reversed)`,
+        lesson: `Consensus reversal exit — ${rec.outcome} ${rec.side.toUpperCase()} ${rec.symbol} (${rec.regime})`,
+        categories: cats.length > 0 ? cats : ['other'],
+        regime: rec.regime,
+        holdMin: rec.holdMin,
+      };
+    }
     const fastClose = rec.holdMin <= 8;
     // Derive exit type from outcome + hold time when LLM is unavailable
     const exitType: LessonStatement['exitType'] = fastClose && rec.outcome === 'LOSS'
