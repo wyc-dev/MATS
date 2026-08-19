@@ -4,6 +4,19 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P56: Trade Incident 顯示 bStocks 平行交易
+
+**主神指令**:Trade Incident 每筆 trade 若有成功 bStocks 平行交易,symbol 右方加橙色括弧 bStock symbol;展開資料嘅 Entry Price & Exit Price 加橙色括弧記錄 bStocks 買入/賣出價。
+
+**改動**:
+- `src/services/bstocks-wallet.ts`:加 `BSTOCK_SYMBOLS`(xyz:sp500→SPYB / xyz:skhx→SKHYB / xyz:mu→MUB)
+- `src/index.ts`:加 `bStockTrades` Map(symbol → 買入/賣出價);`maybeSwapBStock` swap 成功後攞 bStock 價記錄;tradeRecords 加 `bStockSymbol`/`bStockBuyPrice`/`bStockSellPrice`
+- `ui/src/App.tsx`:summary row symbol 右方加橙色 `(SKHYB)`;`IncidentField` 加 `suffix` prop;Entry Price/Exit Price 加橙色 `(bStock $xxx)`
+
+tsc clean;vite build 成功。
+
+---
+
 ## v2.0.870-P55: bStock 企業行動風險檢查(API 4)
 
 **主神指令**:K-Line on-chain 蠟燭唔需要(用 Hyperliquid 做 trade);API 4(企業行動風險檢查)需要 build。
