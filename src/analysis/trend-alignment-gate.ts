@@ -20,9 +20,11 @@ export interface TrendAlignmentVerdict {
   explanation: string;
 }
 
-/** 順勢 boost / 逆勢 penalty(量化定值——0.5 攔一半逆勢弱信號,1.2 俾順勢少少膽) */
+/** 順勢 boost / 逆勢 penalty(量化定值——1.2 俾順勢少少膽)
+ * v2.0.870-P71(P6): 逆勢 penalty 0.5 → 0.1——實測 trending_bear WR 11.1%
+ * EV −0.647(9 筆全蝕),×0.5 攔唔住刀口接刀。逆勢接刀懲罰要重,順勢唔郁。 */
 const ALIGNED_BOOST = 1.2;
-const COUNTER_PENALTY = 0.5;
+const COUNTER_PENALTY = 0.1;
 
 export function trendAlignmentMultiplier(
   action: 'buy' | 'sell' | 'hold' | string,

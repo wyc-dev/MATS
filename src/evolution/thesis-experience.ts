@@ -644,6 +644,35 @@ export class ThesisExperience {
     if (isThesisPlaceholder(input.entryThesis)) return null;
     // breakeven exclude (Master Lord 漏問一)
     if (this.cfg.breakevenIs === 'exclude' && input.pnl === 0) return null;
+    // ═══════════════════════════════════════════════════════════════
+    // v2.0.870-P68+P68-fix: 測試數據防護 + 主神糾正教訓
+    // ─────────────────────────────────────────────────────────────
+    // 背景(2026-08-19,主神一問:「其實測試係咪即係Shadow trade?
+    // 好多測試嘅交易都係賺錢的」):
+    //   我喺 P68 見到 1319 個 entry=100 嘅 EXP trades,誤判為「測試污染」
+    //   一鑊刪晒 → win rate 由 64% 崩到 41%(因為 1216/1319 個其實係
+    //   真實盈利 trades:paper 810 + real 509,total PnL +343.80)。
+    //   只有 103 個係真·假(entry=exit=100,pnl=0)。
+    //   trades.jsonl 已從 backup 還原(/tmp/trades.jsonl.backup)。
+    //
+    // 教訓(寫死喺度,唔好再犯):
+    //   1. entry=100 ≠ 假 trade。placeholder pattern 嘅 thesis 可能係
+    //      真實交易只係冇 thesis("[1h: market win]"都係真嘅 HL/paper 執行)。
+    //   2. 刪數據前必須 check PnL 分佈——有真實 PnL 嘅唔准刪。
+    //   3. 真正嘅假 trade 特徵:entry=exit=100 且 pnl=0(零價格變化)。
+    //      呢啲會被 `breakevenIs='exclude'` 擋(pnl===0),或者由
+    //      isThesisPlaceholder 喺上面擋(thesis pattern)。唔使再寫硬規則。
+    //   4. system-close-handling.test.ts 嘅 fixtures 用 entry=100 做合理
+    //      mock ——如果我改咗「entry=100 → reject」,佢哋會爆。
+    //
+    // 而家只 block 真正無效價:entry<=0 或 NaN。其他全部放行,
+    // 由 isThesisPlaceholder / breakeven-exclude / sanitizeCloseReason
+    // 喺上層處理 quality。
+    // ═══════════════════════════════════════════════════════════════
+    if (!Number.isFinite(input.entry) || input.entry <= 0) {
+      log.warn(`[EXP] recordClose rejected — invalid entry price ${input.entry} (${input.symbol} ${input.side})`);
+      return null;
+    }
     try {
       let outcome: TradeOutcome;
       if (input.pnl === 0) {
