@@ -1,7 +1,12 @@
 # bStocks Module — Binance Agentic Wallet 接入方案
 
-> **版本**: v2.0.870-P51 · **狀態**: 設計 + 骨架（數據源/交易執行待接）
-> **用途**: MATS 接入 Binance Agentic Wallet，交易 bStock（代幣化美股），並完成 bStock AI Trading Competition。
+> **版本**: v2.0.870-P80 · **狀態**: ⚠️ **已暫停（全面隱藏）**——主神裁決 2026-08-20：bStocks 交易機制唔賺錢——交易 Cycle 邏輯已移除 bStocks 呼叫（maybeSwapBStock / syncBStockPositions / x402）——但**服務層保留**（`src/services/bstocks-wallet.ts` / `bstocks-data.ts` / `x402-calls.ts` + 本文件）——之後要裝返容易啲。
+> **裝返步驟**（要重新啟用時）：
+> 1. `.env` 設 `BSTOCKS_ENABLED=true`
+> 2. `src/index.ts` 加返 3 個 maybeSwapBStock call site（入場決策 ~6024 / closeTrade real ~6316 / closeTrade paper ~6328）+ maybeRunX402Calls call site（~12710）
+> 3. 確認 Wallet 有 BNB gas（≥0.01）——swap 先會成功
+> 4. 確認 syncBStockPositions 有 call site（P73 兜底——之前冇接駁——SKHYB 卡住嘅根因之一）
+> **已知問題（暫停前）**: SKHYB 卡住（buyPrice=163.83 sellPrice=null）——onFills 平倉路徑冇 call maybeSwapBStock + syncBStockPositions 冇接駁——裝返時要修。
 
 ---
 
