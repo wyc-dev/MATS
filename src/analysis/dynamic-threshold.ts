@@ -59,8 +59,13 @@ const POINT_WEIGHT = 0.005;
 const MAX_SCORE = 10;
 /** Minimum samples for WR and Sharpe to be scored (else neutral). */
 const MIN_SAMPLES = 10;
-/** Penalty cap: penaltyFactor floor = 1.0 - 0.30 = 0.70. */
-const PENALTY_CAP = 0.30;
+/** Penalty cap: penaltyFactor floor = 1.0 - 0.40 = 0.60.
+ *  P82-combo-ev: 0.30 → 0.40——11 個強負期望值組合（comboPenalty 0.50）被 cap 到 0.30
+ *  效果同 0.30 冇區分（都係 ×0.70）——提高 cap 令「強負期望值」更強壓制
+ *  （conf 0.80 → 0.48 HOLD——之前 0.56 入場——太 soft）。
+ *  極高信心（0.90）仍然入場（0.54）——soft gate 原則保留。
+ *  idle 衰減保護（30 cycles 後 penalty 完全衰減）——唔會 death spiral。 */
+const PENALTY_CAP = 0.40;
 /** Cycles for penalty to fully decay (linear). */
 const PENALTY_DECAY_CYCLES = 30;
 /** P(win) floor: blendFactor never drops below this. */
@@ -421,10 +426,12 @@ export class DynamicThresholdCalculator {
     //    v2.0.228: Uses PER-SYMBOL idle cycles, not the global HACP counter.
     //    This ensures each symbol's penalty decays independently — SKHX trading
     //    does not reset SILVER's penalty decay clock.
-    //    Safe-num all inputs to prevent NaN propagation.
+    // Safe-num all inputs to prevent NaN propagation.
+    // A2: netPenalty clamp 非負——-1e308 污染值令 penaltyFactor 巨大（誤加權——所有 trade 入場）
     const safeIdle = Number.isFinite(input.idleCycles) ? input.idleCycles : 0;
-    const safePenalty = Number.isFinite(input.netPenalty) ? input.netPenalty : 0;
-    let decayMultiplier = Math.max(0, 1 - safeIdle / PENALTY_DECAY_CYCLES);
+    const safePenalty = Number.isFinite(input.netPenalty) ? Math.max(0, input.netPenalty) : 0;
+    // A4: decayMultiplier clamp [0, 1]——idleCycles 負（-5）令 multiplier > 1（penalty 放大）
+    let decayMultiplier = Math.max(0, Math.min(1, 1 - safeIdle / PENALTY_DECAY_CYCLES));
 
     // v2.0.870-P16: Hybrid Penalty Decay — three-channel score (cycle+win 20%
     // / time 40% with spiral-break floor / edge 40% with hard bypass).
