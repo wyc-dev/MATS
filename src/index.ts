@@ -1016,6 +1016,27 @@ class MATSSystem {
    * If a winning pattern is found, apply the boost and SKIP the loss penalty
    * (a winner is a winner, regardless of past losses in other regimes).
    */
+  /**
+   * EMR (v2.0.870-EMR): Select the exploration target — the highest-volume
+   * user-selected market (tradingMarkets + activeSymbol) that currently has
+   * NO open position. Returns null when every selected market has a position.
+   * Volume source: MarketAgent.getTopPairs() 24h USD notional.
+   */
+  private selectExplorationTarget(activeSymbol: string): string | null {
+    const candidates = [...new Set([
+      normalizeSymbol(activeSymbol),
+      ...(this.tradingMarkets ?? []).map((m) => normalizeSymbol(m)),
+    ])];
+    const open = candidates.filter((sym) => !this.portfolio.hasPosition(sym));
+    if (open.length === 0) return null;
+    const volMap = new Map<string, number>();
+    for (const p of this.marketAgent.getTopPairs()) {
+      volMap.set(normalizeSymbol(p.symbol), p.volume24h);
+    }
+    open.sort((a, b) => (volMap.get(b) ?? 0) - (volMap.get(a) ?? 0));
+    return open[0]!;
+  }
+
   private applyLossStreakGateToDecision(
     decision: TradingDecision,
     symbol: string,
@@ -1024,7 +1045,6 @@ class MATSSystem {
   ): TradingDecision {
     // v2.0.770: WINNER-FIRST — check winner pattern FIRST
     const winnerResult = this.checkWinnerPattern(symbol, action);
-
     // v2.0.770: If winner pattern found, apply boost and skip loss penalty
     if (winnerResult.convictionBoost) {
       const winnerBoost = winnerResult.convictionBoost;
@@ -10011,8 +10031,36 @@ ${recentExamples}
           || metaThesisLower.includes('wait until') || metaThesisLower.includes('no trade');
         if (explicitWait) {
           log.info(`🧪 Exploration skipped — Meta-Agent thesis explicitly says to wait: "${originalMetaThesis?.slice(0, 80)}..."`);
-        } else if (!this.portfolio.hasPosition(activeSymbol)) {
+        } else {
+          const exploreTarget = this.selectExplorationTarget(activeSymbol);
+          if (exploreTarget) {
           const maConfig = this.marketAgent.getConfig();
+            // ── EMR (v2.0.870-EMR): per-symbol exploration context ──
+            const exploreTargetUpper = exploreTarget.toUpperCase();
+            const isActiveTarget = normalizeSymbol(exploreTarget) === normalizeSymbol(activeSymbol);
+            const targetState = this.marketState.getState(exploreTarget);
+            let targetPrice = targetState?.price ?? 0;
+            if (targetPrice <= 0) {
+              try {
+                const _sd = await withTimeout(this.marketAgent.fetchPriceForSymbol(exploreTarget), 8_000, `explore ${exploreTarget}`);
+                targetPrice = _sd?.price ?? 0;
+              } catch { /* keep 0 */ }
+            }
+            if (targetPrice > 0) {
+              const expState = {
+                primarySymbol: exploreTargetUpper,
+                price: targetPrice,
+                change24h: safeNum(targetState?.change24h, 0),
+                volume24h: safeNum(targetState?.volume24h, 0),
+                trend: targetState?.trend,
+                volatility: safeNum(targetState?.volatility, 0),
+                regime: targetState?.regime ?? 'unknown',
+                orderBookImbalance: safeNum(targetState?.orderBookImbalance, 0),
+                updatedAt: Date.now(),
+              };
+              const srCtx = isActiveTarget ? this.lastSRContext : null;
+              const fpCtx = isActiveTarget ? this.lastFirstPassage : null;
+              const fundingRate = safeNum(this.hyperliquidWs?.getMarkPriceForSymbol(exploreTarget)?.fundingRate, 0);
           const exploreSize = maConfig.positionSizePct;
           // Use Market Agent's configured leverage directly.
           // The user sets leverage via Market Agent config — agents should NOT
@@ -10067,7 +10115,7 @@ ${recentExamples}
           let direction: string | null = null;
           try {
             const sentimentData = this.sentimentEngine?.getSentiment();
-            const hlPrice = this.hyperliquidWs?.getLatestMarkPrice?.();
+            const hlPrice = this.hyperliquidWs?.getMarkPriceForSymbol(exploreTarget);
             const actualFundingRate = hlPrice?.fundingRate ?? 0;
 
             // v2.0.41: Planck-Chaos direction bias REMOVED from exploration.
@@ -10081,10 +10129,10 @@ ${recentExamples}
             // buildContextString in planck-chaos.ts.
 
             const patternCtx = {
-              regime: combinedState.regime,
-                            volatility: combinedState.volatility ?? 0,
-                            srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
-              obImbalance: combinedState.orderBookImbalance ?? 0,
+              regime: expState.regime,
+                            volatility: expState.volatility ?? 0,
+                            srDistanceBps: srCtx?.distanceToSupportBps ?? 0,
+              obImbalance: expState.orderBookImbalance ?? 0,
               fundingRate: actualFundingRate,
               volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
               signalAgreement: 0.5,
@@ -10097,21 +10145,21 @@ ${recentExamples}
             let olrBlocked = false;
             if (!direction) {
               const olrCtx = {
-                volatility: combinedState.volatility ?? 0,
-                srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
-                obImbalance: combinedState.orderBookImbalance ?? 0,
+                volatility: expState.volatility ?? 0,
+                srDistanceBps: srCtx?.distanceToSupportBps ?? 0,
+                obImbalance: expState.orderBookImbalance ?? 0,
                 fundingRate: actualFundingRate,
                 volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
                 signalAgreement: 0.5,
                 sentiment: sentimentData?.overallSentiment ?? 0,
                 sentimentConviction: sentimentData?.conviction ?? 0.5,
                 // v2.0.721: Regime ordinal (H1)
-                regimeOrdinal: regimeToOrdinal(combinedState.regime),
+                regimeOrdinal: regimeToOrdinal(expState.regime),
                 // v2.0.221 (Fix 1): Hour-of-day
                 hourOfDay: currentHourOfDay(),
               };
-              const olrBuy = this.olrEngine.query(combinedState.primarySymbol, { ...olrCtx }, 'buy', this.totalCycles);
-              const olrSell = this.olrEngine.query(combinedState.primarySymbol, { ...olrCtx }, 'sell', this.totalCycles);
+              const olrBuy = this.olrEngine.query(expState.primarySymbol, { ...olrCtx }, 'buy', this.totalCycles);
+              const olrSell = this.olrEngine.query(expState.primarySymbol, { ...olrCtx }, 'sell', this.totalCycles);
 
               // Use OLR P(win) + first-passage probability combined.
               // H3 fix: thresholds are RR-aware. The old flat 0.6/0.5/0.35
@@ -10119,10 +10167,10 @@ ${recentExamples}
               //   (SL 2% / TP 5%) the random-walk breakeven is a/(a+b)=28.6%,
               //   making the < 0.35 block fire near-constantly. Compare each
               //   side's score to that side's path breakeven instead.
-              const fpLong = this.lastFirstPassage?.longPWin ?? 0.5;
-              const fpShort = this.lastFirstPassage?.shortPWin ?? 0.5;
-              const beLong = this.lastFirstPassage?.breakevenPLong ?? 0.5;
-              const beShort = this.lastFirstPassage?.breakevenPShort ?? 0.5;
+              const fpLong = fpCtx?.longPWin ?? 0.5;
+              const fpShort = fpCtx?.shortPWin ?? 0.5;
+              const beLong = fpCtx?.breakevenPLong ?? 0.5;
+              const beShort = fpCtx?.breakevenPShort ?? 0.5;
               // Combined score: average of OLR and first-passage
               const buyScore = (olrBuy.pWin + fpLong) / 2;
               const sellScore = (olrSell.pWin + fpShort) / 2;
@@ -10154,8 +10202,8 @@ ${recentExamples}
 
             // Priority 1: Pattern data (most reliable, requires >=3 matches with 0.5+PnL)
             if (!direction && this.patternClassifier) {
-              const buyResult = this.patternClassifier.queryEntry(patternCtx, combinedState.primarySymbol, 'buy', combinedState.price);
-              const sellResult = this.patternClassifier.queryEntry(patternCtx, combinedState.primarySymbol, 'sell', combinedState.price);
+              const buyResult = this.patternClassifier.queryEntry(patternCtx, expState.primarySymbol, 'buy', expState.price);
+              const sellResult = this.patternClassifier.queryEntry(patternCtx, expState.primarySymbol, 'sell', expState.price);
               const buyWr = buyResult.totalMatches >= 3 ? buyResult.adjustedWinRate : 0;
               const sellWr = sellResult.totalMatches >= 3 ? sellResult.adjustedWinRate : 0;
               // v2.0.721: Raise direction threshold from >0 to >0.3 with min spread.
@@ -10186,7 +10234,7 @@ ${recentExamples}
             // (sentiment says BUY → actually SELL because price will revert).
             // In trending markets, follow sentiment.
             if (!direction && sentimentData && sentimentData.conviction > 0.6 && Math.abs(sentimentData.overallSentiment) > 0.15) {
-              const isMeanRevert = combinedState.regime === 'mean_reverting' || combinedState.regime === 'low_volatility';
+              const isMeanRevert = expState.regime === 'mean_reverting' || expState.regime === 'low_volatility';
               if (isMeanRevert) {
                 direction = sentimentData.overallSentiment > 0 ? 'sell' : 'buy';
                 log.info(`🧪 Sentiment-guided (mean-revert fade): overall=${(sentimentData.overallSentiment*100).toFixed(0)}% → ${direction.toUpperCase()}`);
@@ -10204,7 +10252,7 @@ ${recentExamples}
               const velocity = this.sentimentEngine.getPriceVelocity();
               const acceleration = this.sentimentEngine.getPriceAcceleration();
               const absVelocity = Math.abs(velocity);
-              const isMeanRevert = combinedState.regime === 'mean_reverting' || combinedState.regime === 'low_volatility';
+              const isMeanRevert = expState.regime === 'mean_reverting' || expState.regime === 'low_volatility';
               if (absVelocity > 0.15) {
                 if (isMeanRevert) {
                   // Mean-revert: fade the move (opposite direction)
@@ -10240,13 +10288,13 @@ ${recentExamples}
             // v2.0.32: In mean-reverting markets, use S/R as REVERSAL points
             // (near resistance → SELL, near support → BUY).
             // In trending markets, use S/R as BREAKOUT points (original logic).
-            if (!direction && this.lastSRContext) {
-              const distToSupport = this.lastSRContext.distanceToSupportBps;
-              const distToResistance = this.lastSRContext.distanceToResistanceBps;
+            if (!direction && srCtx) {
+              const distToSupport = srCtx.distanceToSupportBps;
+              const distToResistance = srCtx.distanceToResistanceBps;
               const totalRange = distToSupport + distToResistance;
               if (totalRange > 0) {
                 const positionInRange = distToSupport / totalRange;
-                const isMeanRevert = combinedState.regime === 'mean_reverting' || combinedState.regime === 'low_volatility';
+                const isMeanRevert = expState.regime === 'mean_reverting' || expState.regime === 'low_volatility';
                 if (isMeanRevert) {
                   // Mean-revert: fade at S/R extremes
                   if (positionInRange > 0.65 && distToResistance < 30) {
@@ -10286,39 +10334,39 @@ ${recentExamples}
             }
 
             // Priority 6: Order book imbalance (positive = bid pressure = buy, negative = sell pressure)
-            if (!direction && combinedState.orderBookImbalance !== undefined && Math.abs(combinedState.orderBookImbalance) > 0.15) {
-              direction = combinedState.orderBookImbalance > 0 ? 'buy' : 'sell';
-              log.info(`🧪 OB-guided: imbalance=${(combinedState.orderBookImbalance*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+            if (!direction && expState.orderBookImbalance !== undefined && Math.abs(expState.orderBookImbalance) > 0.15) {
+              direction = expState.orderBookImbalance > 0 ? 'buy' : 'sell';
+              log.info(`🧪 OB-guided: imbalance=${(expState.orderBookImbalance*100).toFixed(0)}% → ${direction.toUpperCase()}`);
             }
 
             // Priority 7: Regime / Trend + 24h change combined
             // v2.0.32: Regime-aware — in mean-reverting markets, 24h change
             // is a CONTRARIAN signal (big drop → BUY, big rise → SELL).
             if (!direction) {
-              const isMeanRevert = combinedState.regime === 'mean_reverting' || combinedState.regime === 'low_volatility';
-              if (combinedState.regime === 'trending_bull') {
+              const isMeanRevert = expState.regime === 'mean_reverting' || expState.regime === 'low_volatility';
+              if (expState.regime === 'trending_bull') {
                 direction = 'buy';
                 log.info(`🧪 Regime-guided: trending_bull → BUY`);
-              } else if (combinedState.regime === 'trending_bear') {
+              } else if (expState.regime === 'trending_bear') {
                 direction = 'sell';
                 log.info(`🧪 Regime-guided: trending_bear → SELL`);
               } else if (isMeanRevert) {
                 // Mean-revert: buy low, sell high
-                if (combinedState.change24h < -0.5) {
+                if (expState.change24h < -0.5) {
                   direction = 'buy'; // big drop → BUY (revert up)
-                  log.info(`🧪 24h-change (mean-revert): ${combinedState.change24h.toFixed(2)}% → BUY (buy low)`);
-                } else if (combinedState.change24h > 0.5) {
+                  log.info(`🧪 24h-change (mean-revert): ${expState.change24h.toFixed(2)}% → BUY (buy low)`);
+                } else if (expState.change24h > 0.5) {
                   direction = 'sell'; // big rise → SELL (revert down)
-                  log.info(`🧪 24h-change (mean-revert): ${combinedState.change24h.toFixed(2)}% → SELL (sell high)`);
+                  log.info(`🧪 24h-change (mean-revert): ${expState.change24h.toFixed(2)}% → SELL (sell high)`);
                 }
               } else {
                 // Other regimes: original logic
-                if (combinedState.change24h < -0.5) {
+                if (expState.change24h < -0.5) {
                   direction = 'sell';
-                  log.info(`🧪 24h-change-guided: ${combinedState.change24h.toFixed(2)}% → SELL`);
-                } else if (combinedState.change24h > 0.5) {
+                  log.info(`🧪 24h-change-guided: ${expState.change24h.toFixed(2)}% → SELL`);
+                } else if (expState.change24h > 0.5) {
                   direction = 'buy';
-                  log.info(`🧪 24h-change-guided: ${combinedState.change24h.toFixed(2)}% → BUY`);
+                  log.info(`🧪 24h-change-guided: ${expState.change24h.toFixed(2)}% → BUY`);
                 }
               }
             }
@@ -10348,14 +10396,14 @@ ${recentExamples}
             // so the digester can learn from condition-specific outcomes.
             // The old template ("pattern classifier suggests buy") was identical
             // for all exploration trades, making EXP embeddings useless.
-            const expVol = (combinedState.volatility ?? 0).toFixed(4);
-            const expRegime = combinedState.regime ?? 'unknown';
-            const expOB = (combinedState.orderBookImbalance ?? 0).toFixed(2);
-            const expFunding = (this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0).toFixed(5);
-            const expSrDist = this.lastSRContext?.distanceToSupportBps ?? 0;
-            const expSrResist = this.lastSRContext?.distanceToResistanceBps ?? 0;
-            const expChange24h = (combinedState.change24h ?? 0).toFixed(2);
-            const expPrice = combinedState.price?.toFixed(2) ?? '?';
+            const expVol = (expState.volatility ?? 0).toFixed(4);
+            const expRegime = expState.regime ?? 'unknown';
+            const expOB = (expState.orderBookImbalance ?? 0).toFixed(2);
+            const expFunding = (fundingRate ?? 0).toFixed(5);
+            const expSrDist = srCtx?.distanceToSupportBps ?? 0;
+            const expSrResist = srCtx?.distanceToResistanceBps ?? 0;
+            const expChange24h = (expState.change24h ?? 0).toFixed(2);
+            const expPrice = expState.price?.toFixed(2) ?? '?';
             const expSentiment = (this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0).toFixed(2);
             const expVolumeRatio = (this.sentimentEngine?.getVolumeRatio() ?? 1).toFixed(2);
             // OLR + shadow context (if available)
@@ -10364,15 +10412,15 @@ ${recentExamples}
             let expOlrPWin = 0; // v2.0.221 Fix #5: store OLR pWin for edge detection
             try {
               const olrCtx2 = {
-                volatility: combinedState.volatility ?? 0,
-                srDistanceBps: this.lastSRContext?.distanceToSupportBps ?? 0,
-                obImbalance: combinedState.orderBookImbalance ?? 0,
-                fundingRate: this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate ?? 0,
+                volatility: expState.volatility ?? 0,
+                srDistanceBps: srCtx?.distanceToSupportBps ?? 0,
+                obImbalance: expState.orderBookImbalance ?? 0,
+                fundingRate: fundingRate ?? 0,
                 volumeRatio: this.sentimentEngine?.getVolumeRatio() ?? 1,
                 signalAgreement: 0.5,
                 sentiment: this.sentimentEngine?.getSentiment()?.overallSentiment ?? 0,
                 sentimentConviction: this.sentimentEngine?.getSentiment()?.conviction ?? 0.5,
-                regimeOrdinal: regimeToOrdinal(combinedState.regime),
+                regimeOrdinal: regimeToOrdinal(expState.regime),
                 hourOfDay: currentHourOfDay(), // v2.0.221 Fix 1
               };
               const olrQ = this.olrEngine.query(activeSymbol, olrCtx2, direction as 'buy' | 'sell', this.totalCycles);
@@ -10395,18 +10443,18 @@ ${recentExamples}
             // elements required). Exploration is the reason to CONSIDER the
             // trade, not the thesis itself. If we can't find ≥2 real edge
             // elements, we HOLD — no exploration trade without a real thesis.
-            const expFundingNum = safeNum(this.hyperliquidWs?.getLatestMarkPrice()?.fundingRate, 0);
+            const expFundingNum = safeNum(fundingRate, 0);
             const expOlrNum = expOlrPWin;
-            const expOBNum = safeNum(combinedState.orderBookImbalance, 0);
-            const expSrSupport = this.lastSRContext?.nearestSupport ?? null;
-            const expSrResistance = this.lastSRContext?.nearestResistance ?? null;
-            const expSrDistNum = safeNum(this.lastSRContext?.distanceToSupportBps, 0);
-            const expSrResistNum = safeNum(this.lastSRContext?.distanceToResistanceBps, 0);
-            const expFpLong = safeNum(this.lastFirstPassage?.longPWin, 0);
-            const expFpShort = safeNum(this.lastFirstPassage?.shortPWin, 0);
-            const expFpBeLong = safeNum(this.lastFirstPassage?.breakevenPLong, 0.5);
-            const expFpBeShort = safeNum(this.lastFirstPassage?.breakevenPShort, 0.5);
-            const expVolNum = safeNum(combinedState.volatility, 0);
+            const expOBNum = safeNum(expState.orderBookImbalance, 0);
+            const expSrSupport = srCtx?.nearestSupport ?? null;
+            const expSrResistance = srCtx?.nearestResistance ?? null;
+            const expSrDistNum = safeNum(srCtx?.distanceToSupportBps, 0);
+            const expSrResistNum = safeNum(srCtx?.distanceToResistanceBps, 0);
+            const expFpLong = safeNum(fpCtx?.longPWin, 0);
+            const expFpShort = safeNum(fpCtx?.shortPWin, 0);
+            const expFpBeLong = safeNum(fpCtx?.breakevenPLong, 0.5);
+            const expFpBeShort = safeNum(fpCtx?.breakevenPShort, 0.5);
+            const expVolNum = safeNum(expState.volatility, 0);
 
             // Collect edge elements (must find ≥2 for a valid thesis)
             const edgeElements: string[] = [];
@@ -10459,14 +10507,14 @@ ${recentExamples}
             // clusters and produces template-generated theses that the audit
             // flags as "thesis-quality-issue".
             if (edgeElements.length < 2) {
-              log.info(`🧪 Exploration skipped — insufficient edge elements (${edgeElements.length}/2 found: ${edgeElements.join('; ') || 'none'}) for ${direction.toUpperCase()} ${activeSymbolUpper}`);
+              log.info(`🧪 Exploration skipped — insufficient edge elements (${edgeElements.length}/2 found: ${edgeElements.join('; ') || 'none'}) for ${direction.toUpperCase()} ${exploreTargetUpper}`);
               direction = null;
               finalDecision = result.consensus.decision; // keep HOLD
             } else {
               // Build thesis from the top 2-3 edge elements (not all — keep it focused)
               const topEdges = edgeElements.slice(0, 3);
               const entryThesis = [
-                `[1h: ${direction} ${activeSymbolUpper} @ ${expPrice} — ${topEdges.join(', ')}]`,
+                `[1h: ${direction} ${exploreTargetUpper} @ ${expPrice} — ${topEdges.join(', ')}]`,
                 `[1d: exploration trade (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) — ${direction} selected by multi-signal priority chain; OLR=${expOlr}, shadow=${expShadow}]`,
               ].join(' ');
 
@@ -10476,27 +10524,31 @@ ${recentExamples}
             // Now: base 2%/5% scaled by volatility relative to 0.02 (typical).
             // vol=0.02 → scale=1.0 (2%/5%), vol=0.01 → scale=0.5 (1%/2.5%),
             // vol=0.04 → scale=2.0 (4%/10%, capped at 3%/5%).
-            const expVolRaw = combinedState.volatility ?? 0;
+            const expVolRaw = expState.volatility ?? 0;
             const volScale = expVolRaw > 0 ? Math.max(0.5, Math.min(2.0, expVolRaw / 0.02)) : 1.0;
             const expSL = Math.min(0.03, 0.02 * volScale);
             const expTP = Math.min(0.05, 0.05 * volScale);
 
             finalDecision = {
               action: direction as 'buy' | 'sell',
-              symbol: activeSymbolUpper,
-              entryPrice: combinedState.price,
+              symbol: exploreTargetUpper,
+              entryPrice: expState.price,
               positionSizePct: exploreSize,
               stopLossPct: expSL,
               takeProfitPct: expTP,
               leverage: exploreLev,
-              rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${activeSymbolUpper} — regime=${expRegime}, vol=${expVol}, OLR=${expOlr}, shadow=${expShadow}.`,
+              rationale: `Exploratory ${direction} (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) on ${exploreTargetUpper} — regime=${expRegime}, vol=${expVol}, OLR=${expOlr}, shadow=${expShadow}.`,
               urgency: 'immediate',
               // v2.0.722: Rich thesis with actual market data for EXP learning
               entryThesis,
             };
-            log.info(`🧪 Exploration trade triggered: ${direction.toUpperCase()} ${(exploreSize * 100).toFixed(1)}% ${activeSymbolUpper} @ ${exploreLev}x (cycle #${this.totalCycles}) — regime=${expRegime}, OLR=${expOlr}, shadow=${expShadow}, edges=${edgeElements.length}`);
+            log.info(`🧪 Exploration trade triggered: ${direction.toUpperCase()} ${(exploreSize * 100).toFixed(1)}% ${exploreTargetUpper} @ ${exploreLev}x (cycle #${this.totalCycles}) — regime=${expRegime}, OLR=${expOlr}, shadow=${expShadow}, edges=${edgeElements.length}`);
             } // end: edgeElements >= 2 — real thesis built
           } // end: direction !== null — exploration trade executed
+            } else {
+              log.info(`🧪 Exploration skipped — no price for ${exploreTarget}`);
+            }
+          }
         }
       }
 
