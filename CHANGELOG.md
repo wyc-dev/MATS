@@ -4,6 +4,19 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-FINALEXEC: asset_analyses 反映最終執行結果（exploration + gate block）
+
+**主神需求**: 客戶端（mats_app）按 asset_analyses 即時執行交易——但 asset_analyses 只記錄 HACP consensus（HOLD），exploration trade（共識 HOLD 時強制開倉）同 conviction-gate block（consensus BUY 但實際 HOLD）令訊號同執行唔一致。
+
+**實作**:
+- **`SupabaseAnalysisWriter.updateSymbol()`**（新方法）: 單 symbol clean-snapshot 更新（DELETE + INSERT）——同 writeCycle 一致嘅防禦模式（NaN 驗證、PGRST204 schema drift 剝列重試、3 次 retry + backoff）
+- **`index.ts` execResult 之後**: 比較「最終決策 vs consensus」——唔一致（exploration override / gate block）→ 構建 analysis（用最終決策）並 updateSymbol——一致（正常交易）唔重寫（保留完整 consensus matrix）
+- metadata 標記 `source: 'final-execution'`——可追溯
+
+**驗證**: tsc 零錯誤；全量 3172 pass + 13 pre-existing（unrelated）；15 個新測試（updateSymbol 防禦 + 比較邏輯）。
+
+---
+
 ## v2.0.870-EMR: Exploration Market Rotation（exploration trade 覆蓋剩餘市場）
 
 **主神洞察**: exploration trade（共識 HOLD 時強制開倉生成演化數據）只對 active symbol（BTC）開——`!hasPosition(activeSymbol)` 只檢查 BTC，BTC 有倉就唔開、亦唔轉向其他市場 → exploration 集中 BTC，其他市場永遠冇機會。

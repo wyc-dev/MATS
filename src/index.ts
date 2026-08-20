@@ -121,6 +121,7 @@ import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
 import { OLREngine, type OLRQueryResult, regimeToOrdinal, FEATURE_NAMES } from './evolution/olr-engine.ts';
 import { NumericAutoencoder } from './evolution/numeric-autoencoder.ts';
 import { ENTRY_CONDITION_FEATURES, computeVectorConditionalWinRate, entryDecisionCondWROptions, safeNum } from './evolution/evolution-utils.ts';
+import { selectExplorationTargetPure, toHLSymbol } from './evolution/emr-select.ts';
 import { CycleHistoryRetriever } from './evolution/cycle-history-retrieval.ts';
 import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { ReplayBuffer } from './evolution/replay-buffer.ts';
@@ -1023,18 +1024,16 @@ class MATSSystem {
    * Volume source: MarketAgent.getTopPairs() 24h USD notional.
    */
   private selectExplorationTarget(activeSymbol: string): string | null {
-    const candidates = [...new Set([
-      normalizeSymbol(activeSymbol),
-      ...(this.tradingMarkets ?? []).map((m) => normalizeSymbol(m)),
-    ])];
-    const open = candidates.filter((sym) => !this.portfolio.hasPosition(sym));
-    if (open.length === 0) return null;
     const volMap = new Map<string, number>();
     for (const p of this.marketAgent.getTopPairs()) {
       volMap.set(normalizeSymbol(p.symbol), p.volume24h);
     }
-    open.sort((a, b) => (volMap.get(b) ?? 0) - (volMap.get(a) ?? 0));
-    return open[0]!;
+    return selectExplorationTargetPure(
+      activeSymbol,
+      this.tradingMarkets ?? [],
+      (sym) => this.portfolio.hasPosition(sym),
+      volMap,
+    );
   }
 
   private applyLossStreakGateToDecision(
@@ -1295,6 +1294,33 @@ class MATSSystem {
         if (fs.existsSync(shadowPath)) {
           const data = fs.readFileSync(shadowPath, 'utf-8');
           this.shadowEngine.load(data);
+        }
+        // v2.0.870-EMR: shadow backfill 移到 startup——重啟即有消化數據
+        // （之前喺 cycle start 依賴 tradingMarkets 非空 + olrBackfillDone——可能從未執行）
+        try {
+          const expPath = path.join(process.cwd(), 'data/exp/trades.jsonl');
+          if (fs.existsSync(expPath)) {
+            const raw = fs.readFileSync(expPath, 'utf-8');
+            const lines = raw.trim().split('\n').filter(l => l.trim());
+            const shadowRecs: Array<{ symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; pnlPct: number }> = [];
+            for (const line of lines) {
+              try {
+                const rec = JSON.parse(line);
+                if (!rec || typeof rec !== 'object' || !rec.outcome || !rec.symbol) continue;
+                shadowRecs.push({
+                  symbol: normalizeSymbol(String(rec.symbol)),
+                  side: rec.side === 'buy' ? 'buy' : 'sell',
+                  outcome: rec.outcome === 'WIN' ? 'win' : 'loss',
+                  holdCycles: Math.max(1, Math.round(safeNum(rec.holdMin, 0) / (this.marketAgent.getConfig().cyclePeriodMinutes ?? 5))),
+                  pnlPct: safeNum(rec.pnlPct, 0),
+                });
+              } catch { /* skip bad line */ }
+            }
+            const fed = this.shadowEngine.backfillFromExpRecords(shadowRecs);
+            if (fed > 0) log.info(`[shadow] Startup backfill fed ${fed} records (digested stats ready)`);
+          }
+        } catch (err) {
+          log.warn(`[shadow] Startup backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
         }
         // v2.0.219: Load advanced system states
         const loadAdv = (name: string, loadFn: (json: string) => void) => {
@@ -10036,14 +10062,14 @@ ${recentExamples}
           if (exploreTarget) {
           const maConfig = this.marketAgent.getConfig();
             // ── EMR (v2.0.870-EMR): per-symbol exploration context ──
-            const exploreTargetUpper = exploreTarget.toUpperCase();
+            const exploreTargetUpper = toHLSymbol(exploreTarget);
             const isActiveTarget = normalizeSymbol(exploreTarget) === normalizeSymbol(activeSymbol);
             const targetState = this.marketState.getState(exploreTarget);
-            let targetPrice = targetState?.price ?? 0;
+            let targetPrice = safeNum(targetState?.price, 0);
             if (targetPrice <= 0) {
               try {
                 const _sd = await withTimeout(this.marketAgent.fetchPriceForSymbol(exploreTarget), 8_000, `explore ${exploreTarget}`);
-                targetPrice = _sd?.price ?? 0;
+                targetPrice = safeNum(_sd?.price, 0);
               } catch { /* keep 0 */ }
             }
             if (targetPrice > 0) {
@@ -10511,11 +10537,34 @@ ${recentExamples}
               direction = null;
               finalDecision = result.consensus.decision; // keep HOLD
             } else {
+              // ── Shadow 消化數據質量控制（v2.0.870-EMR）──
+              // 用 per-symbol×side shadow 勝率/avgPnl 校準 exploration 大小：
+              //   - 方向支持（shadow 高勝率 + 正 avgPnl）→ 正常大小
+              //   - 方向反對（shadow 低勝率 + 負 avgPnl）→ 半倉（×0.5）
+              //   - 樣本不足（n < 10）→ 中性（不干預）
+              // 量化金融：winRate + avgPnlPct 雙重確認——高 WR 低回報 = 期望值陷阱
+              let shadowSizeMult = 1.0;
+              let shadowQualityNote = '';
+              try {
+                const symStats = this.shadowEngine.getSymbolSideStats(exploreTarget);
+                const targetSide = direction === 'buy' ? symStats.buy : symStats.sell;
+                const oppSide = direction === 'buy' ? symStats.sell : symStats.buy;
+                if (targetSide.n >= 10 && oppSide.n >= 10) {
+                  if (targetSide.winRate > oppSide.winRate + 0.10 && targetSide.avgPnlPct > 0) {
+                    shadowSizeMult = 1.0;
+                    shadowQualityNote = `; shadow ${direction} WR ${(targetSide.winRate * 100).toFixed(0)}% > ${(oppSide.winRate * 100).toFixed(0)}% (n=${targetSide.n}, avgPnl ${(targetSide.avgPnlPct * 100).toFixed(2)}%)`;
+                  } else if (targetSide.winRate < oppSide.winRate - 0.10 && targetSide.avgPnlPct < 0) {
+                    shadowSizeMult = 0.5;
+                    shadowQualityNote = `; shadow ${direction} WR ${(targetSide.winRate * 100).toFixed(0)}% < ${(oppSide.winRate * 100).toFixed(0)}% (n=${targetSide.n}, avgPnl ${(targetSide.avgPnlPct * 100).toFixed(2)}%) — 半倉`;
+                  }
+                }
+              } catch { /* non-fatal */ }
+
               // Build thesis from the top 2-3 edge elements (not all — keep it focused)
               const topEdges = edgeElements.slice(0, 3);
               const entryThesis = [
                 `[1h: ${direction} ${exploreTargetUpper} @ ${expPrice} — ${topEdges.join(', ')}]`,
-                `[1d: exploration trade (${(exploreSize * 100).toFixed(1)}% size, ${exploreLev}x lev) — ${direction} selected by multi-signal priority chain; OLR=${expOlr}, shadow=${expShadow}]`,
+                `[1d: exploration trade (${(exploreSize * shadowSizeMult * 100).toFixed(1)}% size, ${exploreLev}x lev) — ${direction} selected by multi-signal priority chain; OLR=${expOlr}, shadow=${expShadow}${shadowQualityNote}]`,
               ].join(' ');
 
             // v2.0.748: Volatility-scaled SL/TP for exploration trades.
@@ -10533,7 +10582,7 @@ ${recentExamples}
               action: direction as 'buy' | 'sell',
               symbol: exploreTargetUpper,
               entryPrice: expState.price,
-              positionSizePct: exploreSize,
+              positionSizePct: exploreSize * shadowSizeMult,
               stopLossPct: expSL,
               takeProfitPct: expTP,
               leverage: exploreLev,
@@ -12519,6 +12568,56 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       this.precomputedEntryFeatures.delete(`${patchSym}:${patchSide}`);
     }
   }
+
+      // v2.0.870-EMR: 更新 asset_analyses 反映最終執行結果
+      // （exploration override + gate block——客戶端按 asset_analyses 即時執行）
+      // 只有「最終決策同 consensus 唔一致」先需要更新（exploration / gate block）——
+      // 一致嘅（正常交易）已經反映喺 asset_analyses（consensus 就係最終決策）
+      try {
+        const execSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+        const consensusAction = result.consensus.decision.action;
+        const finalAction = execResult.success ? finalDecision.action : 'hold';
+        if (finalAction !== consensusAction) {
+          const ms = this.marketState.getState(execSym);
+          const execPrice = safeNum(finalDecision.entryPrice, ms?.price ?? 0);
+          const execConf = safeNum(result.consensus.confidence, 0.5);
+          const execThesis = finalDecision.entryThesis ?? finalDecision.rationale ?? '';
+          const execAnalysis: AssetAnalysis = {
+            symbol: execSym,
+            cycleId: this.totalCycles,
+            updatedAt: Date.now(),
+            marketData: {
+              price: execPrice,
+              volatility: safeNum(ms?.volatility, 0),
+              regime: ms?.regime ?? 'unknown',
+              change24h: safeNum(ms?.change24h, 0),
+              volume24h: safeNum(ms?.volume24h, 0),
+            },
+            consensus: {
+              action: finalAction,
+              confidence: execConf,
+              thesis: execThesis,
+              pwin: safeNum(entryOlrPWin, 0.5),
+              agentsAligned: 0,
+              agentsTotal: 0,
+              stopLoss: execPrice > 0 ? execPrice * (1 - (finalDecision.stopLossPct ?? 0.02)) : 0,
+              takeProfit: execPrice > 0 ? execPrice * (1 + (finalDecision.takeProfitPct ?? 0.05)) : 0,
+              suggestedLeverage: finalDecision.leverage,
+            },
+            matrix: {
+              moderate: {
+                long: { action: finalAction as 'buy' | 'sell' | 'hold', conviction: execConf, rationale: execThesis, calibrated: true },
+                short: { action: 'hold', conviction: 0.5, rationale: '', calibrated: true },
+                flat: { action: finalAction as 'buy' | 'sell' | 'hold', conviction: execConf, rationale: execThesis, calibrated: true },
+              },
+            },
+            metadata: { source: 'final-execution', consensusAction, executed: execResult.success },
+          };
+          await this.analysisWriter.updateSymbol(execAnalysis);
+        }
+      } catch (err) {
+        log.warn(`[analysis-final-exec] failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
 
       // v2.0.106: Record trade execution for per-asset frequency throttling
       if (execResult.success && (finalDecision.action === 'buy' || finalDecision.action === 'sell')) {
