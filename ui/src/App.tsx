@@ -1182,44 +1182,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
     setBstocksClosing(false)
     await applyBStocksToggle(false) // 平倉完成後先 pause
   }
-  // v2.0.870-P57: 重啟後自動檢查 Agent Wallet 連接狀態(baw session 持久化)
-  useEffect(() => {
-    let cancelled = false
-    fetch(`${API_BASE}/bstocks/status`).then(r => r.json()).then(json => {
-      if (cancelled) return
-      if (json.connected) {
-        setBStocksConnected(true)
-        if (json.address) setBStocksAddress(json.address)
-      }
-    }).catch(() => {})
-    return () => { cancelled = true }
-  }, [])
-  // v2.0.870-P59: fetch bStock list 填充動態 map(ticker → symbol)
-  useEffect(() => {
-    let cancelled = false
-    fetch(`${API_BASE}/bstocks/prices`).then(r => r.json()).then(json => {
-      if (cancelled) return
-      if (json.success && Array.isArray(json.prices)) {
-        const map: Record<string, string> = {}
-        for (const p of json.prices) {
-          if (p.ticker && p.symbol) map[String(p.ticker).toLowerCase()] = p.symbol
-        }
-        bStockTickerMap = map
-        setBStockMapVersion(v => v + 1) // 觸發 re-render(令橙色 tag 更新)
-      }
-    }).catch(() => {})
-    return () => { cancelled = true }
-  }, [])
-  // v2.0.870-P53: 連接後 fetch Wallet TVL(baw wallet balance)
-  useEffect(() => {
-    if (!bStocksConnected) return
-    let cancelled = false
-    fetch(`${API_BASE}/bstocks/balance`).then(r => r.json()).then(json => {
-      if (cancelled) return
-      if (json.success && typeof json.tvl === 'number') setWalletTvl(json.tvl)
-    }).catch(() => {})
-    return () => { cancelled = true }
-  }, [bStocksConnected])
+  // v2.0.870-P80: bStocks 全面隱藏（主神裁決——唔賺錢）——移除 status/prices/balance fetch（唔拖慢）
   // Cross-asset-type pair cache: persists volume/price data across Asset Type switches
   // so Selected Market Pairs can show data even when the pair isn't in the current topPairs.
   const pairCacheRef = useRef<Map<string, { volume24h: number; volume5m?: number; price: number; priceChangePercent: number }>>(new Map())
@@ -1508,25 +1471,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
             return eq === null ? '--' : `$${eq.toFixed(2)}`
           })()}</span>
         </div>
-        {/* v2.0.870-P50: Wallet TVL(數值來源之後補上) */}
-        <div className="portfolio-cell">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span className="stat-label">Wallet TVL</span>
-            <button
-              type="button"
-              className="bstocks-refresh-btn"
-              onClick={refreshTvl}
-              disabled={!bStocksConnected}
-              title="Refresh balance"
-            >
-              <RotateCw size={14} />
-            </button>
-          </div>
-          <span className="stat-number neutral">{(() => {
-            const tvl = (typeof walletTvl === 'number' && Number.isFinite(walletTvl)) ? walletTvl : null
-            return tvl === null ? '--' : `$${tvl.toFixed(2)}`
-          })()}</span>
-        </div>
+        {/* v2.0.870-P80: bStocks 全面隱藏——Wallet TVL cell 已移除（主神裁決——唔賺錢） */}
       </div>
 
       {/* v2.0.870-P61: Hyperliquid trading mode indicator */}
@@ -1552,101 +1497,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         </div>
       </div>
 
-      {/* v2.0.870-P50: Binance bStocks trading 開關 */}
-      <div className={`bstocks-toggle-row ${bStocksConnected ? 'connected' : ''}`}>
-        <div className="bstocks-toggle-label">
-          <span className="stat-label">Binance (bStocks trading)</span>
-          <span className="bstocks-toggle-hint">Tokenized US stocks on BSC</span>
-        </div>
-        <div className="bstocks-toggle-actions">
-          {bStocksConnected && (
-            <span className={`bstocks-connected-badge ${binanceBStocksEnabled ? 'live' : 'pause'}`} title={bStocksAddress ?? ''}>
-              {binanceBStocksEnabled ? 'Live' : 'Pause'}
-            </span>
-          )}
-          {!bStocksConnected && (
-            <button
-              type="button"
-              className="bstocks-connect-btn"
-              disabled={bStocksBusy}
-              onClick={async () => {
-                setBStocksBusy(true)
-                setBStocksMsg(null)
-                try {
-                  const res = await fetch(`${API_BASE}/bstocks/connect`, { method: 'POST' })
-                  const json = await res.json()
-                  if (json.alreadyConnected) {
-                    setBStocksConnected(true)
-                    setBStocksMsg('Already connected')
-                  } else if (json.qrCodeId && json.pairingCode) {
-                    setBStocksQrCodeId(json.qrCodeId)
-                    setBStocksPairingCode(json.pairingCode)
-                    setBStocksUrlForWeb(json.urlForWeb ?? null)
-                    if (json.urlForWeb) window.open(json.urlForWeb, '_blank')
-                    setBStocksMsg(`Pairing code: ${json.pairingCode} — verify it matches in Binance App, tap Confirm there, then click Verify below`)
-                  } else {
-                    setBStocksMsg(json.error ?? 'Sign-in failed')
-                  }
-                } catch (e) {
-                  setBStocksMsg(e instanceof Error ? e.message : 'Connect failed')
-                } finally {
-                  setBStocksBusy(false)
-                }
-              }}
-            >
-              {bStocksBusy ? 'Connecting…' : 'Connect'}
-            </button>
-          )}
-          <button
-            type="button"
-            role="switch"
-            aria-checked={binanceBStocksEnabled}
-            disabled={!bStocksConnected || bstocksClosing}
-            className={`toggle-switch ${binanceBStocksEnabled ? 'on' : 'off'} ${bStocksConnected ? 'connected' : ''}`}
-            onClick={handleBStocksToggle}
-          >
-            <span className="toggle-knob" />
-          </button>
-        </div>
-      </div>
-      {bStocksPairingCode && bStocksQrCodeId && !bStocksConnected && (
-        <div className="bstocks-verify-row">
-          <span className="bstocks-toggle-hint">Pairing code: <strong>{bStocksPairingCode}</strong> — confirm in Binance App first, then click Verify</span>
-          <button
-            type="button"
-            className="bstocks-connect-btn"
-            disabled={bStocksBusy}
-            onClick={async () => {
-              setBStocksBusy(true)
-              setBStocksMsg('Verifying… (may take up to 5 min)')
-              try {
-                const res = await fetch(`${API_BASE}/bstocks/verify`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ qrCodeId: bStocksQrCodeId }),
-                })
-                const json = await res.json()
-                if (json.success) {
-                  setBStocksConnected(true)
-                  setBStocksPairingCode(null)
-                  setBStocksMsg('Connected')
-                  const st = await fetch(`${API_BASE}/bstocks/status`).then(r => r.json())
-                  if (st.address) setBStocksAddress(st.address)
-                } else {
-                  setBStocksMsg(json.error ?? 'Verification failed')
-                }
-              } catch (e) {
-                setBStocksMsg(e instanceof Error ? e.message : 'Verify failed')
-              } finally {
-                setBStocksBusy(false)
-              }
-            }}
-          >
-            {bStocksBusy ? 'Verifying…' : 'Verify'}
-          </button>
-        </div>
-      )}
-      {bStocksMsg && <div className="bstocks-msg">{bStocksMsg}</div>}
+      {/* v2.0.870-P80: bStocks 全面隱藏——Binance bStocks trading 區塊已移除（主神裁決——唔賺錢） */}
 
       {/* v2.0.870-P66: bStocks live → pause 確認(持有 bStocks 時強制全部平倉) */}
       {bstocksCloseConfirm && (
@@ -1955,7 +1806,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                 }}>
                   <span className={`smp-side-tag ${side === 'buy' ? 'buy' : 'sell'}`}>{side === 'buy' ? 'BUY' : 'SELL'} {posEntry > 0 ? `$${posEntry.toFixed(2)}` : '—'}</span>
                   <span className="smp-symbol">{(sym.includes(':') ? (sym.split(':').pop() ?? sym) : sym).toUpperCase()}</span>
-                  {getBStockForSymbol(sym) && <span className="smp-bstock-tag">({getBStockForSymbol(sym)})</span>}
+                  
                   <span className="smp-data">{posPrice > 0 ? `$${posPrice.toFixed(2)}` : '—'}</span>
                   <span className={`smp-data ${posPnl >= 0 ? 'positive' : 'negative'}`}>
                     {posPnl >= 0 ? '+' : ''}${posPnl.toFixed(2)}
@@ -2043,7 +1894,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
                   }}>
                     <span className="smp-side-tag hold">HOLD</span>
                     <span className="smp-symbol">{(sym.includes(':') ? (sym.split(':').pop() ?? sym) : sym).toUpperCase()}</span>
-                  {getBStockForSymbol(sym) && <span className="smp-bstock-tag">({getBStockForSymbol(sym)})</span>}
+                  
                     <span className="smp-data">{ana ? `$${(ana.market_data?.price ?? 0).toFixed(2)}` : '—'}</span>
                     <span className="smp-data">{ana ? `${(ana.market_data?.change24h ?? 0) >= 0 ? '+' : ''}${(ana.market_data?.change24h ?? 0).toFixed(2)}%` : '—'}</span>
                     <span className="smp-spacer" />
@@ -2512,7 +2363,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                   {t.side.toUpperCase()}
                 </span>
                 <span style={{ fontWeight: 'var(--fw-semibold)', fontSize: 'var(--fs-lg)' }}>{(t.symbol.includes(':') ? t.symbol.split(':').pop() : t.symbol).toUpperCase()}</span>
-                {t.bStockSymbol && <span className="smp-bstock-tag">({t.bStockSymbol})</span>}
+                
                 <span style={{
                   padding: '2px 8px',
                   borderRadius: 'var(--radius-sm)',
@@ -2725,7 +2576,7 @@ function IncidentField({ label, value, pending, suffix }: { label: string; value
     <div style={{ display: 'flex', gap: 'var(--space-3)', fontSize: 'var(--fs-sm)' }}>
       <span style={{ color: 'var(--text-tertiary)', minWidth: '140px', flexShrink: 0 }}>{label}</span>
       <span style={{ color: pending ? 'var(--text-muted)' : 'var(--text-secondary)', fontStyle: pending ? 'italic' : 'normal' }}>{value}</span>
-      {suffix && <span className="smp-bstock-tag">({suffix})</span>}
+      
     </div>
   )
 }
