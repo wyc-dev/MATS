@@ -21,6 +21,7 @@
 
 import { createLogger } from '../observability/logger.ts';
 import { OLREngine, FEATURE_NAMES } from './olr-engine.ts';
+import { normalizeSymbol } from '../trading/portfolio.ts';
 
 const log = createLogger({ phase: 'shadow-trade' });
 
@@ -280,6 +281,13 @@ export class ShadowTradeEngine {
    *  v2.0.869-P2(主神 Shadow 升級):加 exitReason + pnlPct——學「邊個離場原因有 edge」
    *  +「贏幾多/蝕幾多」——cap 50 → 100(主神要求「最近 100 個」) */
   private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl'; exitReason?: 'sl_tp' | 'force_resolve' | 'evicted'; pnlPct?: number; volumeState?: 'thin' | 'normal' | 'strong' | 'unknown'; volumeRatio5m?: number }> = [];
+
+  /**
+   * v2.0.870-EMR: 持久化 per-symbol×side 累計統計——唔依賴 recentResults 緩衝區
+   * （drainRecentResults feed OLR 後會清空緩衝區，統計會消失）。
+   * key = `${normalizeSymbol(symbol)}|${side}`。backfill + live resolve 都更新。
+   */
+  private statsBySymbolSide = new Map<string, { wins: number; losses: number; totalPnlPct: number }>();
 
   constructor(olrEngine: OLREngine) {
     this.olrEngine = olrEngine;
@@ -884,6 +892,8 @@ export class ShadowTradeEngine {
 
         this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, ...this.volumeTagsFromFeatures(pos.features) });
         if (this.recentResults.length > 100) this.recentResults.shift();
+        // v2.0.870-EMR: force-resolve 更新持久化統計（pnl 小數，唔 ×100——同 backfill 一致）
+        this.recordStat(sym, pos.side, pos.status, Number.isFinite(pnl) ? pnl : 0);
         resolved++;
         continue;
       }
@@ -951,6 +961,8 @@ export class ShadowTradeEngine {
 
         this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, ...this.volumeTagsFromFeatures(pos.features) });
         if (this.recentResults.length > 100) this.recentResults.shift();
+        // v2.0.870-EMR: sl_tp resolve 更新持久化統計（shadowPnlPct 小數，唔 ×100——同 backfill 一致）
+        this.recordStat(sym, pos.side, outcome, Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0);
 
         resolved++;
       }
@@ -1018,6 +1030,42 @@ export class ShadowTradeEngine {
     return {
       buy: perf.bySide['buy'] ?? { n: 0, winRate: 0, avgPnlPct: 0 },
       sell: perf.bySide['sell'] ?? { n: 0, winRate: 0, avgPnlPct: 0 },
+    };
+  }
+
+  /** 記錄一筆 shadow 結果到持久化統計（backfill + live resolve 都調用）。
+   *  pnlPct 統一為小數（0.0036 = 0.36%）——backfill(EXP 小數) 同 live(price delta 小數) 一致。 */
+  private recordStat(symbol: string, side: 'buy' | 'sell', outcome: 'win' | 'loss', pnlPct: number): void {
+    const norm = normalizeSymbol(symbol).toLowerCase();
+    // 攻擊硬化：空 symbol / 垃圾 side → 唔記錄（避免 key 污染）
+    if (norm.length === 0 || (side !== 'buy' && side !== 'sell')) return;
+    const key = `${norm}|${side}`;
+    const s = this.statsBySymbolSide.get(key) ?? { wins: 0, losses: 0, totalPnlPct: 0 };
+    if (outcome === 'win') s.wins += 1; else s.losses += 1;
+    s.totalPnlPct += Number.isFinite(pnlPct) ? pnlPct : 0;
+    this.statsBySymbolSide.set(key, s);
+  }
+
+  /**
+   * v2.0.870-EMR: per-symbol×side shadow 統計（exploration 質量控制用）。
+   * 讀持久化累計統計——唔受 recentResults 緩衝區 drain 影響。
+   */
+  getSymbolSideStats(symbol: string): {
+    buy: { n: number; winRate: number; avgPnlPct: number };
+    sell: { n: number; winRate: number; avgPnlPct: number };
+  } {
+    const norm = normalizeSymbol(symbol).toLowerCase();
+    const out: Record<string, { n: number; winRate: number; avgPnlPct: number }> = {};
+    for (const side of ['buy', 'sell'] as const) {
+      const s = this.statsBySymbolSide.get(`${norm}|${side}`);
+      if (s && s.wins + s.losses > 0) {
+        const n = s.wins + s.losses;
+        out[side] = { n, winRate: s.wins / n, avgPnlPct: n > 0 ? s.totalPnlPct / n : 0 };
+      }
+    }
+    return {
+      buy: out['buy'] ?? { n: 0, winRate: 0, avgPnlPct: 0 },
+      sell: out['sell'] ?? { n: 0, winRate: 0, avgPnlPct: 0 },
     };
   }
 
@@ -1169,6 +1217,8 @@ export class ShadowTradeEngine {
         exitReason: 'sl_tp',
         pnlPct: rec.pnlPct,
       });
+      // v2.0.870-EMR: backfill 同時更新持久化統計（唔依賴緩衝區）
+      this.recordStat(sym, rec.side === 'buy' ? 'buy' : 'sell', rec.outcome, rec.pnlPct);
       fed++;
     }
     if (this.recentResults.length > 100) this.recentResults = this.recentResults.slice(-100);
@@ -1325,6 +1375,10 @@ export class ShadowTradeEngine {
       positions: this.positions.filter(p => p.status === 'open'),
       recentResults: this.recentResults.slice(-50),
       idCounter: this.idCounter,
+      // v2.0.870-EMR: 持久化累計統計（唔依賴緩衝區）
+      statsBySymbolSide: Object.fromEntries(this.statsBySymbolSide),
+      // v2.0.870-EMR: backfillDone 持久化——重啟後唔重複 backfill（避免統計 double count）
+      backfillDone: this.backfillDone,
     });
   }
 
@@ -1352,7 +1406,30 @@ export class ShadowTradeEngine {
       if (data.idCounter) {
         this.idCounter = data.idCounter;
       }
-      log.info(`Shadow trades loaded: ${this.positions.length} open, ${this.recentResults.length} recent results`);
+      // v2.0.870-EMR: 載入持久化累計統計（防污染：只收合法 key/value）
+      if (data.statsBySymbolSide && typeof data.statsBySymbolSide === 'object') {
+        this.statsBySymbolSide = new Map();
+        for (const [k, v] of Object.entries(data.statsBySymbolSide as Record<string, unknown>)) {
+          // 攻擊硬化：key 必須係「非空 symbol|buy/sell」——'|buy'、'__proto__|buy'、無 '|' 全部過濾
+          if (typeof k !== 'string') continue;
+          const sep = k.indexOf('|');
+          if (sep <= 0 || sep === k.length - 1) continue; // 空 symbol 或空 side
+          const symPart = k.slice(0, sep);
+          const sidePart = k.slice(sep + 1);
+          if (symPart === '__proto__' || symPart === 'constructor' || symPart === 'prototype') continue;
+          if (sidePart !== 'buy' && sidePart !== 'sell') continue;
+          const s = v as { wins?: unknown; losses?: unknown; totalPnlPct?: unknown };
+          const wins = Number.isFinite(s.wins) ? (s.wins as number) : 0;
+          const losses = Number.isFinite(s.losses) ? (s.losses as number) : 0;
+          const totalPnlPct = Number.isFinite(s.totalPnlPct) ? (s.totalPnlPct as number) : 0;
+          if (wins >= 0 && losses >= 0) this.statsBySymbolSide.set(k, { wins, losses, totalPnlPct });
+        }
+      }
+      // v2.0.870-EMR: 載入 backfillDone——重啟後唔重複 backfill
+      if (typeof data.backfillDone === 'boolean') {
+        this.backfillDone = data.backfillDone;
+      }
+      log.info(`Shadow trades loaded: ${this.positions.length} open, ${this.recentResults.length} recent results, ${this.statsBySymbolSide.size} stat cells`);
     } catch {
       log.warn('[shadow load] Failed to parse data, starting fresh');
     }
