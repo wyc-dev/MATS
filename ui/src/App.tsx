@@ -716,7 +716,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
       )}
       {isExpanded && (
         <div className="slide-expand-content">
-          <style>{`@keyframes terminal-breathe { 0%, 100% { box-shadow: inset 0 0 20px rgba(52, 211, 153, 0.05), 0 0 8px rgba(52, 211, 153, 0.1); border-color: rgba(52, 211, 153, 0.3); } 50% { box-shadow: inset 0 0 20px rgba(52, 211, 153, 0.08), 0 0 16px rgba(52, 211, 153, 0.25); border-color: rgba(52, 211, 153, 0.5); } } @keyframes terminal-input-breathe { 0%, 100% { box-shadow: 0 0 8px rgba(167, 139, 250, 0.1); border-color: rgba(167, 139, 250, 0.3); } 50% { box-shadow: 0 0 16px rgba(167, 139, 250, 0.25); border-color: rgba(167, 139, 250, 0.5); } } @keyframes terminal-prompt-breathe { 0%, 100% { box-shadow: 0 0 8px rgba(245, 166, 35, 0.1); border-color: rgba(245, 166, 35, 0.3); } 50% { box-shadow: 0 0 16px rgba(245, 166, 35, 0.25); border-color: rgba(245, 166, 35, 0.5); } }`}</style>
+          <style>{`@keyframes terminal-breathe { 0%, 100% { box-shadow: inset 0 0 20px rgba(52, 211, 153, 0.05), 0 0 8px rgba(52, 211, 153, 0.1); border-color: rgba(52, 211, 153, 0.3); } 50% { box-shadow: inset 0 0 20px rgba(52, 211, 153, 0.08), 0 0 16px rgba(52, 211, 153, 0.25); border-color: rgba(52, 211, 153, 0.5); } } @keyframes terminal-input-breathe { 0%, 100% { box-shadow: 0 0 8px rgba(167, 139, 250, 0.1); border-color: rgba(167, 139, 250, 0.3); } 50% { box-shadow: 0 0 16px rgba(167, 139, 250, 0.25); border-color: rgba(167, 139, 250, 0.5); } } @keyframes terminal-prompt-breathe { 0%, 100% { box-shadow: 0 0 8px rgba(151, 252, 228, 0.1); border-color: rgba(151, 252, 228, 0.3); } 50% { box-shadow: 0 0 16px rgba(151, 252, 228, 0.25); border-color: rgba(151, 252, 228, 0.5); } }`}</style>
 
           {/* Terminal response + input — fused as one unit */}
           <div style={{
@@ -844,7 +844,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
                     onClick={() => setResetConfirm(true)}
                     className="agent-thought-toggle-btn"
                     style={{
-                      border: '1px solid rgba(245, 166, 35, 0.3)',
+                      border: '1px solid rgba(151, 252, 228, 0.3)',
                       background: 'transparent',
                       color: 'var(--text-tertiary)',
                       cursor: 'pointer',
@@ -860,7 +860,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
                   onClick={() => navigator.clipboard.writeText(promptPart)}
                   className="agent-thought-toggle-btn"
                   style={{
-                    border: '1px solid rgba(245, 166, 35, 0.3)',
+                    border: '1px solid rgba(151, 252, 228, 0.3)',
                     background: 'transparent',
                     color: 'var(--text-tertiary)',
                     cursor: 'pointer',
@@ -894,7 +894,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
             <div
               style={{
                 background: 'rgba(0, 0, 0, 0.4)',
-                border: '1px solid rgba(245, 166, 35, 0.3)',
+                border: '1px solid rgba(151, 252, 228, 0.3)',
                 borderRadius: 'var(--radius-md)',
                 padding: 'var(--space-4)',
                 minHeight: '40px',
@@ -910,13 +910,13 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
               className="terminal-prompt-display"
             >
               <style>{`.terminal-prompt-display::-webkit-scrollbar { display: none; }`}</style>
-              <div style={{ textAlign: 'center', color: 'var(--gold)', fontWeight: 'var(--fw-bold)', marginBottom: 'var(--space-3)', paddingBottom: 'var(--space-2)', borderBottom: '1px solid rgba(245, 166, 35, 0.15)' }}>
+              <div style={{ textAlign: 'center', color: 'var(--gold)', fontWeight: 'var(--fw-bold)', marginBottom: 'var(--space-3)', paddingBottom: 'var(--space-2)', borderBottom: '1px solid rgba(151, 252, 228, 0.15)' }}>
                 Root Command Prompt
               </div>
               {promptPart ? (
                 promptPart.split('\n').map((line, i) => (
                   <div key={i} style={{ display: 'flex', gap: 'var(--space-2)', color: 'var(--gold)' }}>
-                    <span style={{ color: 'rgba(245, 166, 35, 0.5)', flexShrink: 0 }}>$</span>
+                    <span style={{ color: 'rgba(151, 252, 228, 0.5)', flexShrink: 0 }}>$</span>
                     <span>{line}</span>
                   </div>
                 ))
@@ -1501,7 +1501,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
 
       {/* v2.0.870-P66: bStocks live → pause 確認(持有 bStocks 時強制全部平倉) */}
       {bstocksCloseConfirm && (
-        <div style={{ marginTop: 'var(--space-3)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', border: '1px solid var(--gold)', background: 'rgba(255, 215, 0, 0.08)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+        <div style={{ marginTop: 'var(--space-3)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', border: '1px solid var(--gold)', background: 'rgba(151, 252, 228, 0.08)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
           <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--gold)', fontWeight: 'var(--fw-bold)' }}>
             <AlertTriangle size={14} color="var(--gold)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '6px' }} />
             Pause bStocks trading?
@@ -1518,7 +1518,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
             <button
               onClick={() => confirmBStocksCloseAll()}
               disabled={bstocksClosing}
-              style={{ padding: '4px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--gold)', background: 'rgba(255, 215, 0, 0.15)', color: 'var(--gold)', cursor: 'pointer', fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-bold)' }}
+              style={{ padding: '4px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--gold)', background: 'rgba(151, 252, 228, 0.15)', color: 'var(--gold)', cursor: 'pointer', fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-bold)' }}
             >{bstocksClosing ? 'Closing…' : 'Confirm & Close All'}</button>
           </div>
         </div>
@@ -2340,15 +2340,15 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                 }).catch(() => {})
               }}
               style={{
-                background: isOpen ? 'rgba(255, 215, 0, 0.04)' : 'var(--surface-elevated)',
-                border: isOpen ? '1px solid rgba(255, 215, 0, 0.2)' : '1px solid var(--glass-border)',
+                background: isOpen ? 'rgba(151, 252, 228, 0.04)' : 'var(--surface-elevated)',
+                border: isOpen ? '1px solid rgba(151, 252, 228, 0.2)' : '1px solid var(--glass-border)',
                 borderRadius: 'var(--radius-md)',
                 padding: 'var(--space-3) var(--space-4)',
                 cursor: 'pointer',
                 transition: 'border-color 0.2s ease, background 0.2s ease',
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = isOpen ? 'rgba(255, 215, 0, 0.4)' : 'var(--glass-border-hover)' }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = isOpen ? 'rgba(255, 215, 0, 0.2)' : 'var(--glass-border)' }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = isOpen ? 'rgba(151, 252, 228, 0.4)' : 'var(--glass-border-hover)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = isOpen ? 'rgba(151, 252, 228, 0.2)' : 'var(--glass-border)' }}
             >
               {/* Summary row */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
@@ -2379,7 +2379,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                   borderRadius: 'var(--radius-sm)',
                   fontSize: 'var(--fs-sm)',
                   fontWeight: 'var(--fw-bold)',
-                  background: isOpen ? 'rgba(255, 215, 0, 0.15)' : 'rgba(255, 255, 255, 0.05)',
+                  background: isOpen ? 'rgba(151, 252, 228, 0.15)' : 'rgba(255, 255, 255, 0.05)',
                   color: isOpen ? 'var(--gold)' : 'var(--text-tertiary)',
                 }}>
                   {isOpen ? 'OPEN' : 'CLOSED'}

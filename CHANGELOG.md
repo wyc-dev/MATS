@@ -21,6 +21,8 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 **P81-fix（System Pause button 修正）**: 主神報告——Header 右方 pause button 按下後冇更換成 Play button。**根因**: UI button 靠 SSE 推送 `systemPaused` 先切換——SSE 可能斷咗——data 唔更新——button 唔切換。**修復**: onClick 後**本地更新 systemPaused**（`setData(prev => ({ ...prev, systemPaused: !isPaused }))`——唔使等 SSE——button 即時切換 Play/Pause）。**澄清「RBC engine continues」**: RBC 已被 OLR+Shadow 取代（log 文字舊名）——實際係「learning engines（OLR/Shadow）continue」——即係學習引擎繼續學市況——**agents/trading 已完全暫停**（`paused=true` 時 cycle 唔跑）——唔係「仲有交易程序行緊」。log 文字已改為更準確。vite build + tsc clean。
 
+**P81-ui-green（UI 橙色全面轉 Hyperliquid 綠色）**: 主神要求——「Ollama Pro」div、「⏳ Wait till cycle complete…」、「HOLD」等好多地方用橙色——全部轉 Hyperliquid 綠色。**做法**: `--gold: #F5A623` → `#97fce4`（所有 `var(--gold)` 自動變綠色——Ollama Pro/HOLD/signal-hold/agent-state.thinking 等）+ 硬編碼金色 rgba（245,166,35 / 251,191,36 / 255,215,0）→ 綠色 rgba（151,252,228）+ `var(--orange, #f0a020)` → `var(--accent, #97fce4)`。vite build 成功。
+
 ---
 
 ## v2.0.870-P80: 成功類型分類（Success Pattern Classification——重複成功 pattern）
