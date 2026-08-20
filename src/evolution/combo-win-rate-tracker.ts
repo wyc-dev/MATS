@@ -119,7 +119,7 @@ const MILD_WR = 0.45;        // WR below this with enough samples → 0.15 penal
 
 // v2.0.862 (方案 A+D): median ring cap + EWMA half-life
 const MEDIAN_RING_CAP = 50;        // per-combo pnlPct buffer (median sample size)
-const EWMA_HALF_LIFE_CYCLES = 500; // ≈ 2 days at 5min/cycle (edge rotation)
+const EWMA_HALF_LIFE_CYCLES = 120; // 主神裁決: 10 個鐘衰減（5min/cycle）——短炒用（原 500 ≈ 2 日太慢）
 
 // ── v2.0.819: WINNER-FIRST combo blend factor ───────────────────────────
 // Stricter than the penalty tiers: a combo may only OVERRIDE the OLR P(win)
@@ -226,7 +226,10 @@ export class ComboWinRateTracker {
       stats.ewmaPnlPct = safePnlPct;
     } else {
       const delta = Math.max(0, safeCycle - (stats.ewmaLastCycle ?? safeCycle));
-      const decay = Math.exp(-delta / EWMA_HALF_LIFE_CYCLES);
+      // 主神裁決: half-life 120 cycles（10 個鐘）——真 half-life 公式
+      // decay = 0.5^(delta/120) = exp(-delta×ln2/120)——120 cycles 後舊樣本影響 50%
+      // （舊 code 用 exp(-delta/120) 係 e-folding——120 cycles 後影響 36.8%——唔係 half-life）
+      const decay = Math.exp(-delta * Math.LN2 / EWMA_HALF_LIFE_CYCLES);
       stats.ewmaPnlPct = (stats.ewmaPnlPct ?? 0) * decay + safePnlPct * (1 - decay);
     }
     stats.ewmaLastCycle = safeCycle;
@@ -364,31 +367,45 @@ export class ComboWinRateTracker {
     if (r.count < MIN_SAMPLES || r.confidence === 'none') {
       return { blocked: false, convictionPenalty: 0, reason: '', comboWR: r.wr, comboCount: r.count };
     }
-    // Use Wilson LB for gate decision (more conservative than raw WR)
-    const lb = r.wilsonLB;
-    if (lb < 0.30 && r.count >= 5) {
+    // 主神指示: avgEwmaPnlPct（avgPnlPct 同 ewmaPnlPct 整合）——正 → 唔降權、負 → 降權。
+    // 量化金融: avgPnlPct 反映整體（等權——被舊數據污染）；ewmaPnlPct 反映最近
+    // （時間衰減 half-life 120 cycles ≈ 10 個鐘——短炒用）。整合 = 0.5/0.5——
+    // 兩者平衡——「整體正但最近轉負」（btc|buy avg +0.94% ewma -8.31%）→ 降權（最近市場轉負）；
+    // 「整體負但最近轉正」（cl|sell avg -2.92% ewma +0.00%）→ 唔降權（最近市場轉正）。
+    // 舊邏輯用 Wilson LB（WR 下界）——誤傷 7 個「低 WR 高回報」組合（實驗 A 確認）。
+    // A2: 拒絕污染值——avg/ewma 超出合理範圍（±100%）→ 當冇數據（fallback 另一指標）。
+    // 1e308 污染值唔應該令 avgEwma 極正/極負（誤降權/誤加權）——clamp 唔夠（-100% 仍然極端）。
+    const avgPnl = Number.isFinite(r.avgPnlPct) && Math.abs(r.avgPnlPct) <= 1 ? r.avgPnlPct : undefined;
+    const ewmaPnl = Number.isFinite(r.ewmaPnlPct) && Math.abs(r.ewmaPnlPct) <= 1 ? r.ewmaPnlPct : undefined;
+    // 整合——兩者都有 → 0.5/0.5；一個污染 → 用另一個；兩個都污染 → 0（中性）
+    const avgEwmaPnlPct = avgPnl !== undefined && ewmaPnl !== undefined
+      ? 0.5 * avgPnl + 0.5 * ewmaPnl
+      : avgPnl !== undefined ? avgPnl
+      : ewmaPnl !== undefined ? ewmaPnl
+      : 0;
+    if (avgEwmaPnlPct < -0.005 && r.count >= 5) {
       return {
         blocked: false,
         convictionPenalty: 0.50,
-        reason: `Combo ${side.toUpperCase()} ${symbol} ${regime}: ${(r.wr * 100).toFixed(0)}% WR (Wilson LB ${(lb * 100).toFixed(0)}%, n=${r.count}, net ${r.netPnl.toFixed(3)}) — this combo loses ${((1 - r.wr) * 100).toFixed(0)}% of the time. Conviction +50% (extremely strong signal required, NOT blocked).`,
+        reason: `Combo ${side.toUpperCase()} ${symbol} ${regime}: avgEwmaPnl ${(avgEwmaPnlPct * 100).toFixed(2)}% (avg ${((avgPnl ?? 0) * 100).toFixed(2)}% / ewma ${((ewmaPnl ?? 0) * 100).toFixed(2)}%, n=${r.count}, WR ${(r.wr * 100).toFixed(0)}%) — 負期望值（最近市場轉負）。Conviction +50% (extremely strong signal required, NOT blocked).`,
         comboWR: r.wr,
         comboCount: r.count,
       };
     }
-    if (lb < 0.40 && r.count >= 5) {
+    if (avgEwmaPnlPct < -0.002 && r.count >= 5) {
       return {
         blocked: false,
         convictionPenalty: 0.30,
-        reason: `Combo ${side.toUpperCase()} ${symbol} ${regime}: ${(r.wr * 100).toFixed(0)}% WR (Wilson LB ${(lb * 100).toFixed(0)}%, n=${r.count}) — losing pattern. Conviction +30%.`,
+        reason: `Combo ${side.toUpperCase()} ${symbol} ${regime}: avgEwmaPnl ${(avgEwmaPnlPct * 100).toFixed(2)}% (avg ${((avgPnl ?? 0) * 100).toFixed(2)}% / ewma ${((ewmaPnl ?? 0) * 100).toFixed(2)}%, n=${r.count}, WR ${(r.wr * 100).toFixed(0)}%) — 負期望值。Conviction +30%.`,
         comboWR: r.wr,
         comboCount: r.count,
       };
     }
-    if (lb < 0.48 && r.count >= 5) {
+    if (avgEwmaPnlPct < 0 && r.count >= 5) {
       return {
         blocked: false,
         convictionPenalty: 0.15,
-        reason: `Combo ${side.toUpperCase()} ${symbol} ${regime}: ${(r.wr * 100).toFixed(0)}% WR (Wilson LB ${(lb * 100).toFixed(0)}%, n=${r.count}) — slightly unfavourable. Conviction +15%.`,
+        reason: `Combo ${side.toUpperCase()} ${symbol} ${regime}: avgEwmaPnl ${(avgEwmaPnlPct * 100).toFixed(2)}% (avg ${((avgPnl ?? 0) * 100).toFixed(2)}% / ewma ${((ewmaPnl ?? 0) * 100).toFixed(2)}%, n=${r.count}, WR ${(r.wr * 100).toFixed(0)}%) — 輕微負期望值。Conviction +15%.`,
         comboWR: r.wr,
         comboCount: r.count,
       };

@@ -247,6 +247,60 @@ export class EntryQuality {
   保守條件 EV ${pct(prof.ev)} margin — ${prof.ev >= 0 ? '正期望(可入場)' : '負期望(等確認/細 size——統計校準,世界模型可 override)'}`;
   }
 
+  /** E2 專用: per-symbol MAE p50（margin-basis）——reversal-point 離場閾值校準。
+   *   n≥5 有效逆向 MAE 就夠（唔用 MIN_SAMPLES=20——離場校準需要覆蓋更多 symbol，
+   *   同 P81 per-symbol 校準先例一致）。冷啟動（n<5）→ null（fallback 固定閾值）。
+   *   E3: rolling window（最近 30 日）——舊數據唔再影響離場閾值（同 getProfile 一致）。
+   *   量化金融: per-symbol 波動特性唔同（BTC MAE p50=4.2% vs GOLD 1.7%）——
+   *   固定閾值對高波動 symbol 太貼（正常波動都止血）——per-symbol 校準令「暫時回調」唔止血。 */
+  getMaeP50ForExit(symbol: string, side: 'buy' | 'sell', windowDays = 30): number | null {
+    const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
+    const key = `${sym}|${side}`;
+    const arr = this.state.profile[key];
+    if (!arr || arr.length === 0) return null;
+    // E3: rolling window——只計最近 windowDays 日
+    const cutoff = Date.now() - windowDays * 24 * 3600 * 1000;
+    // 有效逆向 MAE（負數——MAE 定義係逆向 ≤0；正數 = 數據錯 skip）
+    // C1: 單筆 getter-bomb/垃圾元素 → skip（唔中斷成個 filter）
+    const maes: number[] = [];
+    for (const s of arr) {
+      try {
+        if (s && typeof s === 'object' && Number.isFinite(s.maePct) && s.maePct < 0 &&
+            Number.isFinite(s.closedAt) && s.closedAt >= cutoff) {
+          maes.push(Math.abs(s.maePct));
+        }
+      } catch { /* C1: 單筆失敗 skip */ }
+    }
+    maes.sort((a, b) => a - b);
+    if (maes.length < 5) return null; // 冷啟動——樣本太少唔校準（selectivity is EARNED）
+    const median = maes[Math.floor(maes.length / 2)];
+    return typeof median === 'number' && Number.isFinite(median) ? median : null;
+  }
+
+  /** E2 專用: per-symbol MFE p50（margin-basis）——reversal-point 鎖利閾值校準。
+   *   n≥5 有效順向 MFE 就夠（同 getMaeP50ForExit 一致）。冷啟動（n<5）→ null。
+   *   量化金融: 高波動 symbol（CL mfeP50=1.51%）鎖利目標遠啲（唔會太早鎖利——
+   *   俾 profit 跑）；低波動 symbol（GOLD 0.16%）鎖利目標近啲。 */
+  getMfeP50ForExit(symbol: string, side: 'buy' | 'sell'): number | null {
+    const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
+    const key = `${sym}|${side}`;
+    const arr = this.state.profile[key];
+    if (!arr || arr.length === 0) return null;
+    // 有效順向 MFE（正數——MFE 定義係順向 ≥0；負數 = 數據錯 skip）
+    const mfes: number[] = [];
+    for (const s of arr) {
+      try {
+        if (s && typeof s === 'object' && Number.isFinite(s.mfePct) && s.mfePct >= 0) {
+          mfes.push(s.mfePct);
+        }
+      } catch { /* 單筆失敗 skip */ }
+    }
+    mfes.sort((a, b) => a - b);
+    if (mfes.length < 5) return null; // 冷啟動——樣本太少唔校準
+    const median = mfes[Math.floor(mfes.length / 2)];
+    return typeof median === 'number' && Number.isFinite(median) ? median : null;
+  }
+
   /** v2.0.868-fix:記錄 close 價(PAEL 鎖利 close 時)——re-open 抑制用 */
   /**
    * v2.0.869(主神 SKHX MAE=0 調查):MAE 模式分類——入場後「逆向多定順向多」
