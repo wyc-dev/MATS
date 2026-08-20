@@ -694,7 +694,7 @@ function renderRecords(d) {
       </div>
       <div class="tc-meta">Entry $${Number(t.entryPrice ?? 0).toFixed(2)} → Exit $${Number(t.exitPrice ?? 0).toFixed(2)}${t.leverage ? ' · ' + t.leverage + 'x' : ''}${holdMin !== null ? ' · hold ' + holdMin + 'm' : ''} · ${fmtFull(t.openedAt)} → ${fmtFull(t.closedAt)}</div>
       ${t.entryThesis ? `<div class="tc-thesis"><b>Entry Thesis:</b> ${esc(t.entryThesis)}</div>` : ''}
-      ${t.exitThesis ? `<div class="tc-thesis"><b>Exit Thesis:</b> ${esc(t.exitThesis)}</div>` : ''}
+      ${t.postReview ? `<div class="tc-thesis"><b>Post-Review:</b> ${esc(t.postReview)}</div>` : (t.exitThesis ? `<div class="tc-thesis"><b>Exit Thesis:</b> ${esc(t.exitThesis)}</div>` : '')}
       ${t.closeReason ? `<div class="tc-thesis"><b>Close:</b> ${esc(t.closeReason)}</div>` : ''}
     </div>`;
   }).join('');

@@ -6,6 +6,7 @@ import { createLogger } from '../observability/logger.ts';
 import { getActiveProvider } from '../llm/index.ts';
 import { config } from '../config/index.ts';
 import { parseA2ASignal, formatA2ASignal } from './a2a-utils.ts';
+import { formatSuccessPatternBlock } from '../analysis/success-pattern.ts';
 import { normalizeDecision } from '../trading/decision-utils.ts';
 import { shouldAllowThesisValidation } from './thesis-validation-guard.ts';
 // v2.0.42: Import normalizeSymbol for consistent symbol casing in adjustPositions.
@@ -322,6 +323,17 @@ export class HACPEngine {
     return parts.length > 0 ? `\n${parts.join('\n')}` : '';
   }
 
+  /** P80: 成功類型統計 block——注入 Meta-Agent & Skeptics context（判斷層校準） */
+  private buildSuccessPatternBlock(): string {
+    try {
+      if (!this.successPatternProvider) return '';
+      const stats = this.successPatternProvider();
+      const block = formatSuccessPatternBlock(stats as never);
+      return block ? `\n${block}` : '';
+    } catch { /* 非致命——provider 失敗唔 block */ }
+    return '';
+  }
+
   /** v2.0.143: RIL SimilarTradeRetriever — finds top-N most similar historical
    *  trades to a candidate thesis. Injected by index.ts so HACP can produce
    *  a "SIMILAR TRADES" context block for the Meta-Agent. */
@@ -343,6 +355,13 @@ export class HACPEngine {
   private llmChatFn: ((messages: Array<{ role: string; content: string }>, opts?: { temperature?: number; timeoutMs?: number }) => Promise<string>) | null = null;
   setLLMChatFn(fn: (messages: Array<{ role: string; content: string }>, opts?: { temperature?: number; timeoutMs?: number }) => Promise<string>): void {
     this.llmChatFn = fn;
+  }
+
+  /** P80: 成功類型統計 provider——注入 Meta-Agent & Skeptics context（agent 睇到
+   *  邊種 entry-thesis pattern 有 edge——判斷層校準）。Injected by index.ts。 */
+  private successPatternProvider: (() => Record<string, { n: number; wins: number; pnlSum: number }>) | null = null;
+  setSuccessPatternProvider(fn: () => Record<string, { n: number; wins: number; pnlSum: number }>): void {
+    this.successPatternProvider = fn;
   }
 
   /** v2.0.138: Override the Meta-Agent thought's decision (action / thesis / rationale).
@@ -1565,7 +1584,7 @@ export class HACPEngine {
       } catch { /* non-critical */ }
     }
 
-    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}${executionLensBlock}${explorationBlock}${this.buildSystemEvolutionBlocks()}`;
+    const rilEnhancedMarketDesc = `${marketStateDesc}${rilSimilarTradesBlock ? `\n${rilSimilarTradesBlock}` : ''}${rilSubtleDiffBlock ? `\n${rilSubtleDiffBlock}` : ''}${naConditionalBlock}${failureLessonBlock}${antiPatternBlock}${momentumWarningBlock}${attnResBlock}${executionLensBlock}${explorationBlock}${this.buildSystemEvolutionBlocks()}${this.buildSuccessPatternBlock()}`;
 
     if ((metaAction === 'buy' || metaAction === 'sell') && metaThesis && !hasExistingPosition && !expThesisGated) {
       log.info(`Phase 1.8: Skeptics validating entry thesis for ${metaAction.toUpperCase()} ${metaSymbol}...`);
