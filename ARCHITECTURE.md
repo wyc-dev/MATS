@@ -50,6 +50,17 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 
 ---
 
+### v2.0.870-FINALEXEC-attack: asset_analyses 最終執行結果攻擊輪
+
+**漏洞 + 修復**:
+- A1(HIGH): updatedAt 極大（1e308）→ toISOString RangeError——updateSymbol + writeCycle 加合理範圍檢查（未來 1 年內）
+- A2(MEDIUM): entryPrice 0 → stopLoss=0——execPrice <= 0 唔寫入 SL/TP
+- A3(MEDIUM): stopLossPct 負數 → SL 高過 entry——clamp [0,1]
+
+**驗證**: 20/20 攻擊測試；tsc clean；3177 pass + 13 pre-existing。
+
+---
+
 ### v2.0.870-FINALEXEC: asset_analyses 反映最終執行結果（exploration + gate block）
 
 **主神需求**: 客戶端按 asset_analyses 即時執行——但 asset_analyses 只記錄 consensus，exploration/gate block 令訊號同執行唔一致。
