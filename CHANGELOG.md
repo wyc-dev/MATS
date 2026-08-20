@@ -4,6 +4,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-flipfix: flip bug 修復（pending flip 意圖 + exploration 檢查）
+
+**主神調查**: 「Position flip: closing BUY to open SELL」但從來冇開過 sell——bug！8 筆 flip 中 4 筆係 exploration（50%）——flip 只 close 冇 open——下 cycle 可能開同側（雙重損失：08-03 btc -4.4%、08-21 CL -1.18%）。
+
+**實作**:
+- **方案 A（pending flip 意圖）**: flip close 後記住「原本倉位方向」入 `pendingFlips`（30 分鐘有效）——下 cycle 開倉前檢查——consensus 話同側（原本倉位方向）→ block（防止雙重損失）；話對側 → 允許（實現 flip 意圖）；過期 → 清除
+- **方案 B（exploration 檢查）**: exploration 開倉前檢查 per-symbol consensus——話相反方向 → 跳過（避免開倉即被 flip——4/8 flip 係 exploration）
+
+**驗證**: 10/10 測試（pending flip 邏輯 + exploration 檢查）；tsc 零錯誤；全量 3187 pass + 13 pre-existing（unrelated）。
+
+---
+
 ## v2.0.870-FINALEXEC-attack: asset_analyses 最終執行結果攻擊輪（updatedAt RangeError + SL/TP 防禦）
 
 **主神指令**: 不擇手段用刁鑽攻擊（併發/狀態注入/持久化污染）攻擊 FINALEXEC 代碼及週邊 modules。

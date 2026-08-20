@@ -734,6 +734,14 @@ class MATSSystem {
    *  Cleared when a position actually opens for that symbol.
    *  Map: normalized symbol → { thesis, action, storedAt, cycle } */
   private pendingTheses = new Map<string, { thesis: string; action: 'buy' | 'sell'; storedAt: number; cycle: number }>();
+
+  /**
+   * v2.0.870-flipfix: pending flip 意圖——flip close 後記住「想開對側」。
+   * 防止下 cycle 開同側（雙重損失——08-03 btc -4.4% / 08-21 CL -1.18% 案例）。
+   * key = normalizeSymbol(symbol)；side = 想開嘅對側方向；timestamp = flip close 時間。
+   * 30 分鐘內有效（過期清除——consensus 可能真反轉）。
+   */
+  private pendingFlips = new Map<string, { side: 'buy' | 'sell'; timestamp: number }>();
   /** v2.0.202: Per-symbol-per-direction loss streak guard.
    *  Tracks consecutive losses for each (symbol, direction) pair.
    *  After 3 consecutive losses, the pair is blocked (force HOLD) for 12 cycles (60 min).
@@ -10413,6 +10421,20 @@ ${recentExamples}
             direction = null;
           }
 
+          // v2.0.870-flipfix: 方案 B——exploration 開倉前檢查 per-symbol consensus
+          // 如果 per-symbol consensus 話相反方向 → 跳過 exploration（避免開倉即被 flip——
+          // 8 筆 flip 中 4 筆係 exploration 開倉後被 flip 浪費）
+          if (direction) {
+            const pscForTarget = (result.consensus.perSymbolConsensus ?? []).find(
+              p => normalizeSymbol(p.symbol) === normalizeSymbol(exploreTarget),
+            );
+            if (pscForTarget && (pscForTarget.action === 'buy' || pscForTarget.action === 'sell') && pscForTarget.action !== direction) {
+              log.info(`🧪 Exploration skipped — per-symbol consensus for ${exploreTarget} is ${pscForTarget.action.toUpperCase()} (opposite to exploration ${direction.toUpperCase()}) — would be flipped immediately`);
+              direction = null;
+              finalDecision = result.consensus.decision; // keep HOLD
+            }
+          }
+
           // If all signals neutral, skip — don't default to buy
           if (!direction) {
             log.info(`🧪 All signals neutral — skipping exploration (no edge detected)`);
@@ -11223,7 +11245,10 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
             // TradeRecord records the agent-driven exit (not SL/TP inference).
             const flipCloseSuccess = await this.closeTrade(psc.symbol, `Position flip: closing ${posSide.toUpperCase()} to open ${psc.action.toUpperCase()}`, 'consensus');
             if (flipCloseSuccess) {
-              log.info(`  → Flipped ${psc.symbol}. Position will be re-evaluated next cycle for ${psc.action.toUpperCase()} entry.`);
+              // v2.0.870-flipfix: 記住「原本倉位方向」（close 咗嘅方向）——
+              // 防止下 cycle 再開同側（雙重損失——08-03 btc -4.4% / 08-21 CL -1.18% 案例）
+              this.pendingFlips.set(normalizeSymbol(psc.symbol), { side: posSide, timestamp: Date.now() });
+              log.info(`  → Flipped ${psc.symbol}. Pending flip guard: ${posSide.toUpperCase()} closed — blocking same-side re-entry (30min window)`);
             } else {
               log.error(`  → Failed to close ${psc.symbol} for flip — position remains ${posSide.toUpperCase()}`);
             }
@@ -11818,6 +11843,28 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // reports a low P(win). This implements the owner's WINNER-FIRST
         // directive inside the gate math — previously combo WR could only
         // penalise losers, never boost winners.
+        // v2.0.870-flipfix: 檢查 pending flip——防止開同側（雙重損失）
+        // flip close 後 30 分鐘內，唔應該開同側（違反 flip 意圖——08-03 btc -4.4% / 08-21 CL -1.18% 案例）
+        const pendingFlipSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+        const pendingFlip = this.pendingFlips.get(pendingFlipSym);
+        if (pendingFlip) {
+          if (Date.now() - pendingFlip.timestamp > 30 * 60_000) {
+            this.pendingFlips.delete(pendingFlipSym); // 意圖過期——consensus 可能真反轉
+          } else if (finalDecision.action === pendingFlip.side) {
+            // consensus 話同側（違反 flip 意圖）——唔開（防止雙重損失）
+            log.warn(`🛡️ [flip-guard] ${finalDecision.symbol || activeSymbol}: pending flip intent ${pendingFlip.side.toUpperCase()} (${Math.round((Date.now() - pendingFlip.timestamp) / 60000)}min ago) — blocking same-side ${finalDecision.action.toUpperCase()} re-entry`);
+            finalDecision = {
+              ...finalDecision,
+              action: 'hold',
+              rationale: `[FLIP GUARD] Pending flip intent ${pendingFlip.side.toUpperCase()} — blocking same-side re-entry. Original: ${finalDecision.rationale}`,
+            };
+          } else if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
+            // consensus 話對側——實現 flip 意圖——清除 pending
+            this.pendingFlips.delete(pendingFlipSym);
+            log.info(`🔄 [flip-guard] ${finalDecision.symbol || activeSymbol}: pending flip intent ${pendingFlip.side.toUpperCase()} — opening opposite side as intended`);
+          }
+        }
+
         const gateAction = (finalDecision.action === 'buy' || finalDecision.action === 'sell')
           ? (finalDecision.action as 'buy' | 'sell')
           : 'buy';
