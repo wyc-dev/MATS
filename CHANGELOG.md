@@ -28,6 +28,8 @@ HACP 接駁: buildSuccessPatternBlock() → 注入 Meta-Agent & Skeptics context
 
 **P80-backfill（歷史數據初始化——主神批准）**: 用 200 筆 realTrades 歷史數據初始化 tracker——乘數即刻生效（順勢突破 ×1.1 / 低波動擴張 ×0.7）——唔使等 live 累積。`backfillFromTrades()` idempotent（`backfillDone` flag 持久化——restart 唔會重複）;pnlPct 無效（NaN/Infinity）skip（數據唔可靠唔入統計）。啟動時 index.ts load() 後 backfill。+4 測試（乘數即刻生效 / idempotent / 垃圾數據 skip / 空數組）。全量 3019 pass + 13 pre-existing;tsc clean。
 
+**P80-bstocks-hide（bStocks 全面隱藏——主神裁決）**: 主神裁決 2026-08-20——bStocks 交易機制唔賺錢——**全面隱藏**。**根因查證（SKHYB 卡住）**: ① onFills 平倉路徑冇 call maybeSwapBStock（exchange 平倉經 WS fills 事件——直接 closeExchangePosition——冇 swap bStock back）② syncBStockPositions（P73 兜底）冇接駁（只有定義冇 call site）——兩個問題疊加令 SKHYB 卡住（buyPrice=163.83 sellPrice=null）。**執行**: 移除 4 個交易 Cycle call site（入場決策 maybeSwapBStock ~6024 / closeTrade real ~6316 / closeTrade paper ~6328 / maybeRunX402Calls ~12710）——**服務層保留**（bstocks-wallet.ts / bstock-data.ts / x402-calls.ts + bStocks_module.md 更新「已暫停 + 裝返步驟」）——之後要裝返容易啲。SKHYB 放住（主神指示——暫時唔需要手動 swap back）。
+
 ---
 
 ## v2.0.870-P79: 四窗驗證機制（4h+1h+15m+5m）——死貓彈/兩窗都逆 hard block

@@ -6019,10 +6019,9 @@ ${recentExamples}
       // v2.0.726: Reset cycles-since-last-trade counter
       this.cyclesSinceLastTrade = 0;
     }
-    // v2.0.870-P53: bStocks switch ON 時自動 swap(同 Hyperliquid 交易並行)
-    if (success) {
-      void this.maybeSwapBStock(decision.symbol, decision.action as 'buy' | 'sell');
-    }
+    // v2.0.870-P80: bStocks 交易機制已全面隱藏（主神裁決——唔賺錢）——
+    // 移除 maybeSwapBStock 呼叫。服務層保留（bstocks-wallet.ts/bstock-data.ts）——
+    // 裝返見 bStocks_module.md。
     return { success, paperReports: reports };
     } finally {
       // v2.0.213 (#7): Always clear the execution lens after trade execution
@@ -6312,8 +6311,7 @@ ${recentExamples}
     if (pos.agentId === 'hyperliquid-real') {
       // Real position: close on HL first, then locally
       const closed = await this.tradingManager.closePosition(sym, closeReason);
-      // v2.0.870-P53: bStocks switch ON 時自動平倉(swap bStock→USDT)
-      if (closed) void this.maybeSwapBStock(sym, 'sell');
+      // v2.0.870-P80: bStocks 交易機制已全面隱藏——移除 maybeSwapBStock 呼叫
       return closed;
     } else {
       // Paper position: close locally
@@ -6324,8 +6322,7 @@ ${recentExamples}
         return false;
       }
       const trade = this.portfolio.closePosition(sym, closePrice, closeReason);
-      // v2.0.870-P53: bStocks switch ON 時自動平倉(swap bStock→USDT)
-      if (trade) void this.maybeSwapBStock(sym, 'sell');
+      // v2.0.870-P80: bStocks 交易機制已全面隱藏——移除 maybeSwapBStock 呼叫
       return !!trade;
     }
   }
@@ -12706,8 +12703,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         trades: reports.length,
       });
 
-      // v2.0.870-P60: 每 cycle 1 次 CMC + Agent Studio x402 呼叫(3 次後永久停)
-      void this.maybeRunX402Calls();
+      // v2.0.870-P80: bStocks 交易機制已全面隱藏——移除 x402 呼叫（主神裁決——唔賺錢）
 
       // 6. Record in trade history (persistent ledger)
       const tradeType: 'real' | 'exploration' | 'simulated' =
