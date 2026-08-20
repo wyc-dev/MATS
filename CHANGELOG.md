@@ -4,6 +4,19 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-ADP: Anti-Deadloop Protocol（防死循環協議——全 agent system prompt 注入）
+
+**主神洞察**: 開源模型（DeepSeek v4 Flash）思考容易入死胡同——「測試A→檢測B→查找C→又需要測試A」——根因係開放式任務冇完成標準 + 元思考陷阱 + 冇外部化記憶。解法唔係加協議，係改工作方式：完成標準前置、先產出後優化、信任歷史。
+
+**實作**:
+- **AGENT_PROMPT.md**: UTP 加收斂總則（5 步分析無決策 → 強制輸出最佳答案）+ UTP-1 信任歷史（依賴已存在 → 引用，禁止重算）+ UTP-6 收斂規則（同 Step 重試 ≤2 次）+ 新增 **ADP 章節**（死循環具體定義 + 破解階梯：信任歷史/狀態改變/重試必須不同/升級階梯/收斂預算）+ SELF-VERIFICATION 加 deadloop 檢查
+- **BaseAgent 層級注入**（src/agents/base-agent.ts）: `getAntiDeadloopBlock()`——CONVERGE（分析必須終止於決策，HOLD/APPROVE 係合法終止）/ TRUST CONTEXT（引用 context 數據，禁止重推導）/ NO OSCILLATION（只有新證據先 flip）/ FIRST-TRY OUTPUT（第一次就輸出有效 JSON）——think() + generateDebateStatement() 兩個呼叫點拼接——**5 sub-agents + Meta-Agent 自動覆蓋，未來 agent 自動覆蓋**
+- **Skeptics 手動注入**（src/agents/agents.ts）: 2 個 inline prompt（LOGIC AUDITOR + THESIS VALIDATOR）加 ADP 濃縮塊
+
+**驗證**: tsc --noEmit 零錯誤。純 prompt 附加，零邏輯變更，零行為風險。
+
+---
+
 ## v2.0.870-P82: 盈利提升系列——backfill 修復 + 時間衰減 + per-symbol 校準 + Combo EV Gate
 
 **背景（主神調查）**: 四個 trade（BTC/CL/GOLD/SKHX）全部 reversal_point 止血離場——但係而家價格證明 BTC +2.1%、CL +0.76% 方向啱——「方向啱但蝕住走」。根因鏈: ① P80 success-pattern backfill 假成功（200 筆歷史從未入 stats——vol_expansion 降權未生效）② reversal-point 離場用固定閾值（正常波動都止血）③ PAEL 數據被 shadow 零值污染 ④ Combo WR Gate 用 WR 判定（誤傷低 WR 高回報組合）。

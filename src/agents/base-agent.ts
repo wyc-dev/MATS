@@ -100,6 +100,17 @@ export abstract class BaseAgent {
 
   abstract getSystemPrompt(): string;
 
+  /** Anti-deadloop block appended to every agent's system prompt (v2.0.870-ADP).
+   *  Decision agents must converge: HOLD/APPROVE is a legal terminal state;
+   *  re-deriving the same reasoning is not. */
+  protected getAntiDeadloopBlock(): string {
+    return `\n\n## ANTI-DEADLOOP (ADP)
+- CONVERGE: analysis must end in a decision. Weigh the data once, then commit. If data is genuinely insufficient → output the safe default (HOLD / APPROVE) with the reason. Never re-derive the same reasoning.
+- TRUST CONTEXT: cite data already in context. Do not repeat or re-derive what is already shown.
+- NO OSCILLATION: flip your lean only on NEW evidence, never by re-reading the same data.
+- FIRST-TRY OUTPUT: emit valid output on the first attempt. Identical retries after a parse failure are a deadloop.`;
+  }
+
   /** Build the per-agent JSON format instruction — agents override to customize.
    *  v2.0.870-P18: decision-first(決策排最前,thought 排最尾)——maxTokens 截斷時
    *  決策 JSON 仍然完整,只有尾段分析被切;omit-null + rationale 上限令 output
@@ -166,7 +177,7 @@ RULES:
 
     try {
       const provider = getActiveProvider();
-      const systemPrompt = this.getSystemPrompt();
+      const systemPrompt = this.getSystemPrompt() + this.getAntiDeadloopBlock();
       const posCtx = buildPositionsContext(this.currentPositions);
 
       const response = await provider.chat({
@@ -353,7 +364,7 @@ RULES:
 
       const response = await provider.chat({
         messages: [
-          { role: 'system', content: this.getSystemPrompt() },
+          { role: 'system', content: this.getSystemPrompt() + this.getAntiDeadloopBlock() },
           {
             role: 'user',
             content: `Debate Phase - ${phase.toUpperCase()}:\n\nContext:\n${context}\n${phasePrompt}`,
