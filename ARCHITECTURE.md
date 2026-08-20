@@ -50,6 +50,20 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 
 ---
 
+### v2.0.870-EMR: Exploration Market Rotation（exploration trade 覆蓋剩餘市場）
+
+**主神洞察**: exploration trade 只對 active symbol（BTC）開——BTC 有倉就唔開、亦唔轉向其他市場 → exploration 集中 BTC。
+
+**實作**:
+- `selectExplorationTarget()`: 從用戶 Selected markets（tradingMarkets + activeSymbol）選取「無 position + 最高 24h volume」市場
+- 觸發條件: `!hasPosition(activeSymbol)` → `selectExplorationTarget()` 非空
+- per-symbol context: `expState`（marketState + fetchPriceForSymbol fallback）替換 `combinedState` 39 處；`srCtx`/`fpCtx` 非 active → null 自然跳過；`fundingRate` per-symbol
+- 開倉 symbol → `exploreTargetUpper`
+
+**驗證**: tsc clean；3119 pass + 13 pre-existing。
+
+---
+
 ### v2.0.870-ADP: Anti-Deadloop Protocol（防死循環——全 agent system prompt 注入）
 
 **主神洞察**: 開源模型思考死胡同根因——開放式任務冇完成標準、元思考陷阱、冇外部化記憶。解法唔係加協議，係改工作方式：完成標準前置、先產出後優化、信任歷史。

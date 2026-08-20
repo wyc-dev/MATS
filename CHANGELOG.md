@@ -4,6 +4,20 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-EMR: Exploration Market Rotation（exploration trade 覆蓋剩餘市場）
+
+**主神洞察**: exploration trade（共識 HOLD 時強制開倉生成演化數據）只對 active symbol（BTC）開——`!hasPosition(activeSymbol)` 只檢查 BTC，BTC 有倉就唔開、亦唔轉向其他市場 → exploration 集中 BTC，其他市場永遠冇機會。
+
+**實作**:
+- **`selectExplorationTarget()`**（src/index.ts）: 從 tradingMarkets + activeSymbol（用戶 Selected markets 1-10 個）選取「未有 position + 最高 24h volume」嘅市場——`getTopPairs()` volume 排序
+- **觸發條件改動**: `!hasPosition(activeSymbol)` → `selectExplorationTarget()` 非空——BTC 有倉 → 自動選剩餘市場最高 volume 嘅 assets 做 exploration；BTC 無倉 → 仍選 BTC（volume 最高，向後兼容）
+- **per-symbol context**: `expState`（price/volatility/regime/OB/change24h 由 `marketState.getState(target)` + `fetchPriceForSymbol` fallback 構建）——`combinedState`（active 聚合）39 處引用全部替換；`srCtx`/`fpCtx`（S/R、First-Passage 僅 active 有，非 active → null 自然跳過）；`fundingRate` per-symbol（`getMarkPriceForSymbol`）
+- **開倉 symbol**: `activeSymbolUpper` → `exploreTargetUpper`
+
+**驗證**: tsc --noEmit 零錯誤；全量 3119 pass + 13 pre-existing（v2.0.854-attack2-nan-price，unrelated）；括號平衡驗證。
+
+---
+
 ## v2.0.870-ADP: Anti-Deadloop Protocol（防死循環協議——全 agent system prompt 注入）
 
 **主神洞察**: 開源模型（DeepSeek v4 Flash）思考容易入死胡同——「測試A→檢測B→查找C→又需要測試A」——根因係開放式任務冇完成標準 + 元思考陷阱 + 冇外部化記憶。解法唔係加協議，係改工作方式：完成標準前置、先產出後優化、信任歷史。
