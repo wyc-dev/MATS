@@ -12582,6 +12582,13 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           const execPrice = safeNum(finalDecision.entryPrice, ms?.price ?? 0);
           const execConf = safeNum(result.consensus.confidence, 0.5);
           const execThesis = finalDecision.entryThesis ?? finalDecision.rationale ?? '';
+          // v2.0.870-EMR-attack: 防禦——execPrice <= 0 → 唔寫入 SL/TP（避免 stopLoss=0
+          // 污染客戶端顯示）；stopLossPct/takeProfitPct clamp 到 [0,1]（負數/NaN 垃圾
+          // 唔可以令 SL 高過 entry 或 TP 低過 entry）。
+          const slPct = Math.min(Math.max(safeNum(finalDecision.stopLossPct, 0.02), 0), 1);
+          const tpPct = Math.min(Math.max(safeNum(finalDecision.takeProfitPct, 0.05), 0), 1);
+          const execSL = execPrice > 0 ? execPrice * (1 - slPct) : 0;
+          const execTP = execPrice > 0 ? execPrice * (1 + tpPct) : 0;
           const execAnalysis: AssetAnalysis = {
             symbol: execSym,
             cycleId: this.totalCycles,
@@ -12600,8 +12607,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               pwin: safeNum(entryOlrPWin, 0.5),
               agentsAligned: 0,
               agentsTotal: 0,
-              stopLoss: execPrice > 0 ? execPrice * (1 - (finalDecision.stopLossPct ?? 0.02)) : 0,
-              takeProfit: execPrice > 0 ? execPrice * (1 + (finalDecision.takeProfitPct ?? 0.05)) : 0,
+              stopLoss: execSL,
+              takeProfit: execTP,
               suggestedLeverage: finalDecision.leverage,
             },
             matrix: {

@@ -166,6 +166,9 @@ export class SupabaseAnalysisWriter {
       if (a.consensus.stopLoss != null && !Number.isFinite(a.consensus.stopLoss)) return false;
       if (a.consensus.takeProfit != null && !Number.isFinite(a.consensus.takeProfit)) return false;
       if (!Number.isFinite(a.updatedAt) || a.updatedAt <= 0) return false;
+      // v2.0.870-EMR-attack: updatedAt 極大（1e308）→ toISOString RangeError——
+      // 同 updateSymbol 一致嘅合理範圍檢查（未來 1 年內先接受）
+      if (a.updatedAt > Date.now() + 365 * 86_400_000) return false;
       return true;
     });
     if (validAnalyses.length < analyses.length) {
@@ -331,6 +334,10 @@ export class SupabaseAnalysisWriter {
     if (analysis.consensus.stopLoss != null && !Number.isFinite(analysis.consensus.stopLoss)) return;
     if (analysis.consensus.takeProfit != null && !Number.isFinite(analysis.consensus.takeProfit)) return;
     if (!Number.isFinite(analysis.updatedAt) || analysis.updatedAt <= 0) return;
+    // v2.0.870-EMR-attack: updatedAt 極大（1e308）→ `new Date().toISOString()`
+    // RangeError（Invalid time value）——crash updateSymbol。加合理範圍：
+    // 未來 1 年內先接受（持久化污染嘅 1e308/1e15 會被 reject）。
+    if (analysis.updatedAt > Date.now() + 365 * 86_400_000) return;
 
     const MAX_RETRIES = 3;
     const BACKOFF_MS = [500, 1000, 2000];

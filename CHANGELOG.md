@@ -4,6 +4,21 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-FINALEXEC-attack: asset_analyses 最終執行結果攻擊輪（updatedAt RangeError + SL/TP 防禦）
+
+**主神指令**: 不擇手段用刁鑽攻擊（併發/狀態注入/持久化污染）攻擊 FINALEXEC 代碼及週邊 modules。
+
+**漏洞 + 修復**:
+- **A1(HIGH)**: updatedAt 極大（1e308）→ `new Date().toISOString()` **RangeError**（Invalid time value）——`Number.isFinite` 擋唔住 1e308（finite 且 > 0）——updateSymbol + writeCycle 都受影響——加合理範圍檢查（未來 1 年內先接受，1e308/1e15 被 reject）
+- **A2(MEDIUM)**: entryPrice 0 → stopLoss=0 寫入——客戶端睇到 SL=0（冇 SL）——execPrice <= 0 → 唔寫入 SL/TP
+- **A3(MEDIUM)**: stopLossPct 負數 → SL 高過 entry（`price × (1-(-0.02))`）——clamp 到 [0,1]（負數/NaN 垃圾唔可以令 SL 高過 entry 或 TP 低過 entry）
+
+**已評估但接受**: retry 延遲（Supabase 掛 → 3.5 秒，同 writeCycle 一致）；併發競態（跨 cycle updateSymbol vs writeCycle，低機率，下 cycle 自動修正）。
+
+**驗證**: 20/20 攻擊測試（新增 5 個：updatedAt 極大/未來/正常 + 特殊字元 symbol + 垃圾 action）；tsc 零錯誤；全量 3177 pass + 13 pre-existing（unrelated）。
+
+---
+
 ## v2.0.870-FINALEXEC: asset_analyses 反映最終執行結果（exploration + gate block）
 
 **主神需求**: 客戶端（mats_app）按 asset_analyses 即時執行交易——但 asset_analyses 只記錄 HACP consensus（HOLD），exploration trade（共識 HOLD 時強制開倉）同 conviction-gate block（consensus BUY 但實際 HOLD）令訊號同執行唔一致。
