@@ -2867,6 +2867,15 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           if (isClosingFill && this.portfolio.hasPosition(sym)) {
             const pos = this.portfolio.getPosition(sym);
             if (pos && pos.agentId === 'hyperliquid-real') {
+              // P79-fix: closeTrade 已開始（exitThesis 已設）→ onFills 唔 close。
+              // 否則時序競態: closeTrade 嘅 tradingManager.closePosition（async）未完成，
+              // onFills 先到 → closeExchangePosition 冇傳 closeReason → inferCloseReason
+              // 推斷成 reconciliation——覆蓋 E1/SL/TP/consensus 嘅正確 closeReason。
+              // 等 closeTrade 完成（tradingManager.closePosition 會記錄正確 closeReason）。
+              if (pos.exitThesis && pos.exitThesis.trim().length > 0) {
+                log.info(`📡 HL WS closing fill ${fill.symbol} — exitThesis already set (closeTrade in progress) — skipping onFills close to preserve closeReason`);
+                return;
+              }
               // v2.0.166: Check that the fill's side matches the closing side
               // of this position. A SELL position is closed by a BUY fill, and
               // vice versa. Without this check, a closing fill from a PREVIOUS
