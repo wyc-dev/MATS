@@ -614,7 +614,7 @@ src/
 └── index.ts                 # 系統 orchestrator（決策循環 + 矩陣寫入 ~line 9458）
 ui/                          # Legacy React + Vite dashboard（已由 mats_app 取代）
 data/evolution/              # olr-state · shadow-state · patterns · GA state · em-state · na-model · cycle-history · anti-patterns
-tests/                       # vitest（~2,900 tests / 186 suites，gitignored；3019 pass / 13 pre-existing）
+tests/                       # vitest（~2,900 tests / 186 suites，gitignored；3025 pass / 13 pre-existing）
 supabase/migrations/         # 00000000000018_asset_analyses_matrix.sql（v2.0.822）
 ```
 
@@ -2120,7 +2120,7 @@ RIL_SUBTLE_DIFF_ENABLED=true
 | Legacy UI | `ui/`（React 18 + Vite — 已由 mats_app 取代，保留作 local dashboard）|
 | Config | Zod schema validation |
 | Logging | Winston（structured + file rotation） |
-| Testing | vitest（~2,900 tests / 186 suites，gitignored；3019 pass / 13 pre-existing；4 attack suites: q-rl-attack, changelog-features-attack, creative-attacks, q-rl-creative-attacks）|
+| Testing | vitest（~2,900 tests / 186 suites，gitignored；3025 pass / 13 pre-existing；4 attack suites: q-rl-attack, changelog-features-attack, creative-attacks, q-rl-creative-attacks）|
 | Crypto | `@noble/curves`（HL phantom agent signing） |
 | Vector Embedding | Transformers.js MiniLM L6 v2（384-dim, in-process, CPU） |
 | Pattern Clustering | Greedy cosine clustering（RIL Reason Intelligence Layer） |
