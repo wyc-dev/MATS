@@ -12606,7 +12606,9 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             },
             matrix: {
               moderate: {
-                long: { action: finalAction as 'buy' | 'sell' | 'hold', conviction: execConf, rationale: execThesis, calibrated: true },
+                // 語義修正: flat cell（客戶端冇倉）顯示最終決策——客戶端跟住開倉；
+                // long/short cell（已有倉）保持 hold——exploration 係新開倉，唔影響已有倉位
+                long: { action: 'hold', conviction: 0.5, rationale: '', calibrated: true },
                 short: { action: 'hold', conviction: 0.5, rationale: '', calibrated: true },
                 flat: { action: finalAction as 'buy' | 'sell' | 'hold', conviction: execConf, rationale: execThesis, calibrated: true },
               },
