@@ -4,6 +4,30 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P80: 成功類型分類（Success Pattern Classification——重複成功 pattern）
+
+**主神洞察**: 「認準成功嘅 pattern 會更加有助增大盈利」——成功分類係「進攻」（重複成功 pattern），錯誤分類係「防守」（避免錯誤）——增大盈利靠進攻。
+
+**驗證（200 筆 realTrades）**: 順勢突破 avgPnl +2.92%（正期望值——boost ×1.1）vs 低波動擴張/新聞/動量確認 -1.47% 到 -2.42%（負期望值——降權 ×0.7）——校準後 avgPnl +0.46% → +0.65%（提升 0.19pp，保守估計）。
+
+**完整閉環架構（實際學習 + 用得返出嚟）**:
+```
+學習路徑: 贏單/蝕單 close → onPositionClosedLearning
+  → classifySuccessPattern(entryThesis) → SuccessPatternTracker.record
+  → 統計 WR/avgPnl/n → 持久化 success-patterns.json
+使用路徑: 入場 gate 堆疊 → getMultiplier(pattern)
+  → 順勢突破 ×1.1 / 負期望值 ×0.7 / 中性 ×1.0（soft）
+  → 同 reversal-point / four-window 並排
+HACP 接駁: buildSuccessPatternBlock() → 注入 Meta-Agent & Skeptics context
+  （agent 睇到邊種 pattern 有 edge——判斷層校準）
+```
+
+**實作**: `src/analysis/success-pattern.ts`（classifySuccessPattern / successPatternMultiplier / formatSuccessPatternBlock）+ `src/evolution/success-pattern-tracker.ts`（record/getMultiplier/getStats/save/load——sanitize + 白名單）+ index.ts 接駁（onPositionClosedLearning record + 入場 gate + setSuccessPatternProvider）+ hacp.ts 接駁（setter + buildSuccessPatternBlock 注入 rilEnhancedMarketDesc）。
+
+**P80-attack（刁鑽攻擊輪）**: 3 漏洞全修——pnlSum=Infinity 誤判 boost（sanitize）/ stats[p] 垃圾 string/NaN 顯示 NaN%（形狀驗證）/ 垃圾 pattern 無限 key 增長（白名單）。+13 攻擊測試全綠。全量 3015 pass + 13 pre-existing;tsc clean。
+
+---
+
 ## v2.0.870-P79: 四窗驗證機制（4h+1h+15m+5m）——死貓彈/兩窗都逆 hard block
 
 **主神洞察**: 「TP 咗 → 返轉頭入返 → 倒蝕」係典型蝕錢模式——BTC 案例: 21:13 TP +18.4% → 21:53 追高入場 @ $69,747（價格已由 $69,263 升 +0.7%）→ 22:12 E1 平倉 -5.2%。reopen-guard ±0.3% 太窄攔唔到（價格行咗 0.7%）。

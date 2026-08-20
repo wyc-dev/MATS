@@ -80,6 +80,8 @@ import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
+import { classifySuccessPattern } from './analysis/success-pattern.ts';
+import { SuccessPatternTracker } from './evolution/success-pattern-tracker.ts';
 import { computePrematureClosePenalty } from './evolution/premature-close-guard.ts';
 import { BStocksWallet, PAYMENT_TOKEN_ADDRESSES, checkBStockSwapPreconditions, findBStockTokens, sanitizeBStockTrades } from './services/bstocks-wallet.ts';
 import { BStockData } from './services/bstock-data.ts';
@@ -523,6 +525,8 @@ class MATSSystem {
   private profitabilityAnalyzer!: ProfitabilityAnalyzer;
   /** v2.0.868-P1P2:Entry Quality System——入場確認 Gate + MAE Profile */
   private entryQuality!: EntryQuality;
+  /** P80: 成功類型分類 tracker（實際學習 + 用得返出嚟） */
+  private successPatternTracker!: SuccessPatternTracker;
   /** v2.0.864: 上次記錄判斷時嘅 rationale(block 注入用) */
   private lastJudgeRationale = '';
   /** v2.0.865: 上次判斷嘅 gateAction(block 注入用) */
@@ -1506,6 +1510,9 @@ class MATSSystem {
       }
       // v2.0.868-P1P2: Entry Quality System(入場確認 Gate + MAE Profile)
       this.entryQuality = new EntryQuality();
+      // P80: 成功類型分類 tracker（實際學習 + 用得返出嚟）
+      this.successPatternTracker = new SuccessPatternTracker();
+      this.successPatternTracker.load();
       try {
         this.entryQuality.load();
         const eq = this.entryQuality.getStats();
@@ -3090,6 +3097,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // + subtle differences analysis in its enhanced context.
         this.hacpEngine.setSimilarTradeRetriever(this.similarTradeRetriever);
         this.hacpEngine.setSubtleDiffAnalyzer(this.subtleDiffAnalyzer);
+        // P80: 成功類型統計 provider——注入 Meta-Agent & Skeptics context
+        this.hacpEngine.setSuccessPatternProvider(() => this.successPatternTracker.getStats());
         // v2.0.204: Wire Numeric Autoencoder + candidate-features provider into
         // HACP so Skeptics Phase 1.8b sees the vector-conditional win-rate block
         // (learned market-condition embedding) alongside the RIL similar-trades block.
@@ -4005,6 +4014,16 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       }
       const isWin = trade.pnl >= 0;
       const pnlPct = trade.pnlPct;
+      // P80: 成功類型分類——實際學習（close 後 record，持久化）
+      try {
+        if (this.successPatternTracker && typeof trade.entryThesis === 'string') {
+          this.successPatternTracker.record(
+            classifySuccessPattern(trade.entryThesis),
+            Number.isFinite(pnlPct) ? pnlPct * 100 : 0,
+            isWin,
+          );
+        }
+      } catch { /* 非致命 */ }
       const outcome: 1 | 0 = isWin ? 1 : 0;
       // v2.0.139: Detect thesis-invalidation closes (Option C). The force-close
       // path adds the symbol to thesisInvalidatedCloseSymbols before calling
@@ -11893,6 +11912,22 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             }
           }
         } catch { /* 非致命——Gate 失敗唔 block */ }
+
+        // ── P80: 成功類型校準（soft——重複成功 pattern）──
+        // 主神洞察: 認準成功 pattern 增大盈利——順勢突破 avgPnl +2.92%（boost ×1.1）vs
+        // 低波動擴張/新聞/動量確認 -1.47% 到 -2.42%（降權 ×0.7）。
+        // 完整閉環: close → record → 統計（持久化 success-patterns.json）→ 入場 gate getMultiplier（soft）。
+        try {
+          if ((gateAction === 'buy' || gateAction === 'sell') && this.successPatternTracker) {
+            const sp = classifySuccessPattern(finalDecision.entryThesis);
+            const spMult = this.successPatternTracker.getMultiplier(sp);
+            if (spMult !== 1.0) {
+              effectiveConfidence *= spMult;
+              log.info(`🎯 [success-pattern] ${gateAction.toUpperCase()} ${pwinSym}: pattern=${sp} → conviction ×${spMult} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+              activeAuditGates.push({ gate: 'success-pattern', passed: true, reason: `pattern ${sp} → ×${spMult} (soft)` });
+            }
+          }
+        } catch { /* 非致命 */ }
 
         // ── v2.0.868-P2: Entry EV 校準(MAE profile——保守 EV 乘數)──
         // Profile:該 symbol×side 最近 30 日「入場後點走」(rolling window)
