@@ -85,6 +85,10 @@ export interface SmartSLTPInput {
    *  OPEX 期間波動大(IV 高),固定 SL 容易被掃——SL 加闊 ×1.5(widen-only,唔收窄)。
    *  量化金融:波動率調整止損(P43 實證:闊 SL 91% 贏單保留、58% 輸單防住)。 */
   eventRisk?: string;
+  /** v2.0.870-P81: per-symbol MAE p95 floor（price-basis %——PAEL 分佈）。
+   *  SL floor 用 max(ATR floor, MAE p95)——widen-only（只加闊唔收窄）。
+   *  驗證: SL 噪音止蝕 61%→20%（MAE p95 cap 6%）。冷啟動 null → no-op。 */
+  maeMfeP95?: number;
 }
 
 export interface SmartSLTPResult {
@@ -282,7 +286,10 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
   const atrPct = (Number.isFinite(atr) && atr > 0 && entryPrice > 0)
     ? atr / entryPrice
     : 0;
-  const slFloorPct = Math.max(0.005, Number.isFinite(atrPct) ? atrPct * 1.5 : 0.005);
+  // P81: per-symbol MAE p95 floor（widen-only——只加闊唔收窄）
+  // 驗證: SL 噪音止蝕 61%→20%（MAE p95 cap 6%）。冷啟動 null → no-op。
+  const maeMfeP95 = Number.isFinite(input.maeMfeP95) && input.maeMfeP95! > 0 ? input.maeMfeP95! : 0;
+  const slFloorPct = Math.max(0.005, Number.isFinite(atrPct) ? atrPct * 1.5 : 0.005, maeMfeP95);
 
   // ═══════════════════════════════════════════════════════════════
   // v2.0.852: LEVERAGE-AWARE SL FLOOR (fix #A)

@@ -37,6 +37,12 @@ export interface TradingManagerConfig {
 }
 
 export class TradingManager {
+  /** P81: per-symbol MAE p95 provider（PAEL 分佈——SL floor 校準）。
+   *  Injected by index.ts。冷啟動 null → no-op。 */
+  private maeMfeP95Provider: ((symbol: string) => number | null) | null = null;
+  setMaeMfeP95Provider(fn: (symbol: string) => number | null): void {
+    this.maeMfeP95Provider = fn;
+  }
   private config: TradingManagerConfig;
   private paperEngine: PaperTradingEngine;
   private portfolio: PortfolioTracker;
@@ -580,6 +586,8 @@ export class TradingManager {
           mfeCalibration: mfeCal ?? undefined,
           // v2.0.870-P65-attack(E1 盈利提升): OPEX 期間 SL 加闊 ×1.5(widen-only)
           eventRisk: getOptionsDataManager().getOptionsContext(decision.symbol).eventRisk,
+          // P81: per-symbol MAE p95 floor（widen-only——只加闊唔收窄）
+          maeMfeP95: this.maeMfeP95Provider?.(decision.symbol) ?? undefined,
         });
 
         let slPrice = smartSLTP.sl;

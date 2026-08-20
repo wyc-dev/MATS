@@ -4,6 +4,21 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P81: per-symbol MAE/MFE SL/TP 校準（Shadow + 真實交易）
+
+**主神洞察**: Shadow Trade 主力判斷「S/R + ATR floor + 波動率」——加埋 per-symbol MAE/MFE（PAEL 分佈）必然更準——因為每個 symbol 波動特性完全唔同（SKHX MAE p95 90% vs BTC 8.3%——default 2% SL 對 BTC 合理但對 SKHX 太貼）。
+
+**驗證（200 筆 realTrades）**: SL 噪音止蝕 **61% → 20%**（MAE p95 cap 6%）;TP 可達性 **29% → 57%**（MFE p50×0.8）——per-symbol 校準有效。
+
+**實作**:
+- `src/analysis/mae-mfe-sltp.ts`（新）: `computeMaeMfeSLTP` 純函數——MAE p95（cap 6%）→ SL 距離 / MFE p50 × 0.8 → TP 距離（price-basis——PAEL 已 price-basis）;冷啟動 null → fallback
+- **Shadow 整合**（index.ts openShadowTrades call site）: PAEL `getExitProfile` 有數據 → 用 per-symbol MAE/MFE 校準 SL/TP——冷啟動 fallback S/R/default
+- **真實交易整合**（主神批准——影響所有真實交易 SL/TP）: `computeSmartSLTP` 加 `maeMfeP95` 參數——**SL floor 用 max(ATR floor, MAE p95)——widen-only（只加闊唔收窄——同 P21-B 一致）**;trading-manager 加 `setMaeMfeP95Provider`（index.ts 注入 PAEL）
+
++6 紅先測試（price-basis / cap / 冷啟動 / 毒輸入 / 自訂參數 / 純函數性）;全量 3025 pass + 13 pre-existing;tsc clean。
+
+---
+
 ## v2.0.870-P80: 成功類型分類（Success Pattern Classification——重複成功 pattern）
 
 **主神洞察**: 「認準成功嘅 pattern 會更加有助增大盈利」——成功分類係「進攻」（重複成功 pattern），錯誤分類係「防守」（避免錯誤）——增大盈利靠進攻。
