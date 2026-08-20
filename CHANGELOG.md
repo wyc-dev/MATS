@@ -34,6 +34,10 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 **驗證**: 邏輯實驗——降權「avgPnl 負」組合（WR 31% 低勝率）→ WR 提升 +2.0pp + PnL 提升 +55%；全量 379 pass + 13 pre-existing；tsc clean。
 
+### P82-cap40: Plan G Penalty Cap 0.30 → 0.40（強負期望值更強壓制）
+
+**主神問題**: comboPenalty 0.50 被 Plan G cap 到 0.30——效果同 0.30 冇區分（都係 ×0.70）——11 個強負期望值組合（avgEwmaPnlPct < -0.5%）嘅 0.50 penalty 被浪費。**邏輯實驗驗證**: ① comboPenalty 分佈——0.50×11 + 0.30×2 + 0.15×2 + 0×11；② cap 對比——combo 0.50 單獨：cap 0.30 → ×0.70（conf 0.80 → 0.56 入場——太 soft）、cap 0.40 → ×0.60（conf 0.80 → 0.48 HOLD——強負期望值被攔截）；③ 極高信心（0.90）仍然入場（0.54）——soft gate 原則保留；④ idle 衰減保護（30 cycles 後 penalty 完全衰減）——唔會 death spiral。**實作**: `PENALTY_CAP` 0.30 → 0.40（dynamic-threshold.ts）——penaltyFactor floor 0.70 → 0.60。**攻擊輪 6 修復**: ① netPenalty clamp 非負（-1e308 污染值令 penaltyFactor 巨大——誤加權——所有 trade 入場）；② decayMultiplier clamp [0,1]（idleCycles 負令 multiplier > 1——penalty 放大）。**驗證**: 全量 426 pass + 13 pre-existing；tsc clean。
+
 ---
 
 ## v2.0.870-P81: per-symbol MAE/MFE SL/TP 校準（Shadow + 真實交易）
