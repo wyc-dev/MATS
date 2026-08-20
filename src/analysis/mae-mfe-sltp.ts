@@ -35,7 +35,8 @@ export function computeMaeMfeSLTP(input: MaeMfeSLTPInput): MaeMfeSLTPResult {
   const mae = Number.isFinite(input.maeP95) ? Math.min(Math.max(0, input.maeP95), cap) : 0;
   const mfe = Number.isFinite(input.mfeP50) ? Math.max(0, input.mfeP50) : 0;
   // price-basis（PAEL 已返回 price-basis——唔需要 ÷ leverage）
+  // FIX-1（攻擊輪 A1）: tpPct clamp——mfeP50 極大（1e308）→ tpPct 極大——TP 距離荒謬
   const slPct = mae;
-  const tpPct = mfe * mfeMult;
+  const tpPct = Math.min(mfe * mfeMult, 50); // TP 距離 cap 50%（唔應該超過半倍價格）
   return { slPct, tpPct };
 }
