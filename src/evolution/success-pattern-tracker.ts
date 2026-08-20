@@ -2,7 +2,7 @@
 // 完整閉環: 贏單 close → record() → 統計 → 持久化 success-patterns.json
 //          → 入場 gate getMultiplier() → effectiveConfidence *=（soft）
 import { rootLogger } from '../observability/logger.ts';
-import { SUCCESS_PATTERNS, type SuccessPattern, type SuccessPatternStats } from '../analysis/success-pattern.ts';
+import { SUCCESS_PATTERNS, classifySuccessPattern, type SuccessPattern, type SuccessPatternStats } from '../analysis/success-pattern.ts';
 import { lockedWrite } from '../evolution/persistence.ts';
 import fs from 'fs';
 
@@ -11,6 +11,8 @@ const STATE_FILE = 'data/evolution/success-patterns.json';
 
 interface SuccessPatternState {
   stats: Record<SuccessPattern, SuccessPatternStats>;
+  /** P80-backfill: 已 backfill 歷史數據（idempotent——唔會重複） */
+  backfillDone?: boolean;
 }
 
 function emptyStats(): Record<SuccessPattern, SuccessPatternStats> {
@@ -22,6 +24,7 @@ function emptyStats(): Record<SuccessPattern, SuccessPatternStats> {
 export class SuccessPatternTracker {
   private stats: Record<SuccessPattern, SuccessPatternStats> = emptyStats();
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private backfillDone = false;
 
   /** 記錄一筆交易嘅成功類型（close 後 call） */
   record(pattern: SuccessPattern, pnlPct: number, isWin: boolean): void {
@@ -33,6 +36,25 @@ export class SuccessPatternTracker {
     s.pnlSum += Number.isFinite(pnlPct) ? pnlPct : 0;
     this.stats[pattern] = s;
     this.scheduleSave();
+  }
+
+  /** P80-backfill: 用歷史 realTrades 初始化（idempotent——backfillDone flag） */
+  backfillFromTrades(trades: Array<{ entryThesis?: string | null; pnlPct?: number | null }>): void {
+    if (this.backfillDone) return;
+    if (!Array.isArray(trades) || trades.length === 0) return;
+    let fed = 0;
+    for (const t of trades) {
+      if (typeof t?.entryThesis !== 'string' || t.entryThesis.trim().length === 0) continue;
+      // pnlPct 無效（NaN/Infinity）→ skip（數據唔可靠——唔入統計）
+      if (typeof t.pnlPct !== 'number' || !Number.isFinite(t.pnlPct)) continue;
+      const pnlPct = t.pnlPct * 100;
+      const isWin = pnlPct > 0;
+      this.record(classifySuccessPattern(t.entryThesis), pnlPct, isWin);
+      fed++;
+    }
+    this.backfillDone = true;
+    this.save();
+    log.info(`[success-pattern] Backfilled ${fed} historical trades (idempotent)`);
   }
 
   /** 入場 gate 用——成功類型校準乘數（soft） */
@@ -59,7 +81,7 @@ export class SuccessPatternTracker {
 
   save(): void {
     try {
-      const state: SuccessPatternState = { stats: this.stats };
+      const state: SuccessPatternState = { stats: this.stats, backfillDone: this.backfillDone };
       lockedWrite(STATE_FILE, JSON.stringify(state));
     } catch (err) {
       log.warn(`[success-pattern] save failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -84,7 +106,8 @@ export class SuccessPatternTracker {
         }
       }
       this.stats = loaded;
-      log.info(`[success-pattern] Loaded ${SUCCESS_PATTERNS.reduce((sum, p) => sum + (loaded[p]?.n ?? 0), 0)} samples`);
+      this.backfillDone = raw.backfillDone === true;
+      log.info(`[success-pattern] Loaded ${SUCCESS_PATTERNS.reduce((sum, p) => sum + (loaded[p]?.n ?? 0), 0)} samples (backfillDone=${this.backfillDone})`);
     } catch (err) {
       log.warn(`[success-pattern] load failed (fresh start): ${err instanceof Error ? err.message : String(err)}`);
       this.stats = emptyStats();
