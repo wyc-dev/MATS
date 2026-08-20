@@ -4330,6 +4330,8 @@ export default function App() {
                 // Pause system
                 await fetch(`${API_BASE}/pause`, { method: 'POST' })
               }
+              // P81-fix: 本地更新 systemPaused——唔使等 SSE（SSE 可能斷咗——button 即時切換 Play/Pause）
+              setData(prev => prev ? { ...prev, systemPaused: !isPaused } : prev)
             } catch {}
           }} title={data?.systemPaused ? 'Resume system + run cycle' : 'Pause system (RBC only)'}>
             {data?.systemPaused ? <Play size={21} /> : <Pause size={21} />}

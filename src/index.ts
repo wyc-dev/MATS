@@ -2687,7 +2687,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
 
       this.apiServer.setPauseHandler(() => {
         this.paused = true;
-        log.info('⏸️ System PAUSED — RBC engine continues, all agents/trading halted');
+        // P81-fix: log 文字更準確——RBC 已被 OLR+Shadow 取代——「learning engines continue」
+        // 即係學習引擎（OLR/Shadow）繼續學市況——agents/trading 已完全暫停
+        log.info('⏸️ System PAUSED — learning engines (OLR/Shadow) continue, all agents/trading halted');
         this.pushToAPI();
       });
       this.apiServer.setResumeHandler(() => {

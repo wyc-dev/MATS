@@ -19,6 +19,8 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 **P81-attack（刁鑽攻擊輪——per-symbol MAE/MFE 校準）**: 1 漏洞全修——mfeP50 極大（1e308）→ tpPct 極大（TP 距離荒謬）——tpPct clamp 50%（唔應該超過半倍價格）。驗證覆蓋: mfeP50 極大 / maeP95 極大（cap 安全）/ NaN/Infinity/負數 / capPct/mfeMultiplier 垃圾 / computeSmartSLTP maeMfeP95 極大（SL 唔荒謬）/ provider 垃圾返回 / 純函數性。+10 攻擊測試全綠。全量 3035 pass + 13 pre-existing;tsc clean。
 
+**P81-fix（System Pause button 修正）**: 主神報告——Header 右方 pause button 按下後冇更換成 Play button。**根因**: UI button 靠 SSE 推送 `systemPaused` 先切換——SSE 可能斷咗——data 唔更新——button 唔切換。**修復**: onClick 後**本地更新 systemPaused**（`setData(prev => ({ ...prev, systemPaused: !isPaused }))`——唔使等 SSE——button 即時切換 Play/Pause）。**澄清「RBC engine continues」**: RBC 已被 OLR+Shadow 取代（log 文字舊名）——實際係「learning engines（OLR/Shadow）continue」——即係學習引擎繼續學市況——**agents/trading 已完全暫停**（`paused=true` 時 cycle 唔跑）——唔係「仲有交易程序行緊」。log 文字已改為更準確。vite build + tsc clean。
+
 ---
 
 ## v2.0.870-P80: 成功類型分類（Success Pattern Classification——重複成功 pattern）
