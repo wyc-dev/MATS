@@ -82,6 +82,7 @@ import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
 import { classifySuccessPattern } from './analysis/success-pattern.ts';
 import { SuccessPatternTracker } from './evolution/success-pattern-tracker.ts';
+import { computeMaeMfeSLTP } from './analysis/mae-mfe-sltp.ts';
 import { computePrematureClosePenalty } from './evolution/premature-close-guard.ts';
 import { BStocksWallet, PAYMENT_TOKEN_ADDRESSES, checkBStockSwapPreconditions, findBStockTokens, sanitizeBStockTrades } from './services/bstocks-wallet.ts';
 import { BStockData } from './services/bstock-data.ts';
@@ -1432,6 +1433,15 @@ class MATSSystem {
         this.riskEngine,
         this.paperEngine,
       );
+      // P81: per-symbol MAE p95 provider（PAEL 分佈——SL floor 校準）
+      this.tradingManager.setMaeMfeP95Provider((symbol) => {
+        try {
+          const profile = this.exitPriceLearner?.getExitProfile(symbol, 'buy');
+          if (!profile) return null;
+          const mm = computeMaeMfeSLTP({ maeP95: profile.maeP95, mfeP50: profile.mfeP50 });
+          return mm.slPct;
+        } catch { return null; }
+      });
       log.info('✓ Real Trading Manager ready');
 
       // 5.7 Initialize backtest engine (needs HACPEngine, so after step 5)
@@ -8157,13 +8167,31 @@ ${recentExamples}
             continue;
           }
 
+          // P81: per-symbol MAE/MFE 校準——PAEL 有數據就用（比 S/R/default 更準——
+          // 驗證: SL 噪音止蝕 61%→20% / TP 可達性 29%→57%）。冷啟動 fallback S/R/default。
+          let slLong = srSupport, tpLong = srResistance, slShort = srResistance, tpShort = srSupport;
+          try {
+            if (this.exitPriceLearner) {
+              const profile = this.exitPriceLearner.getExitProfile(mktSym, 'buy');
+              if (profile) {
+                const mm = computeMaeMfeSLTP({ maeP95: profile.maeP95, mfeP50: profile.mfeP50 });
+                if (mm.slPct != null && mm.tpPct != null) {
+                  slLong = mktPrice * (1 - mm.slPct / 100);
+                  tpLong = mktPrice * (1 + mm.tpPct / 100);
+                  slShort = mktPrice * (1 + mm.slPct / 100);
+                  tpShort = mktPrice * (1 - mm.tpPct / 100);
+                }
+              }
+            }
+          } catch { /* 非致命——fallback S/R/default */ }
+
           this.shadowEngine.openShadowTrades(
             mktSym,
             mktPrice,
-            srSupport,
-            srResistance,
-            srResistance,
-            srSupport,
+            slLong,
+            tpLong,
+            slShort,
+            tpShort,
             this.totalCycles,
             mktFeatures,
           );
