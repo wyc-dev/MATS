@@ -50,6 +50,18 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 
 ---
 
+### v2.0.870-flipfix: flip bug 修復（pending flip 意圖 + exploration 檢查）
+
+**主神調查**: 「Position flip」但從來冇開過 sell——bug！8 筆 flip 中 4 筆係 exploration——flip 只 close 冇 open——下 cycle 可能開同側（雙重損失）。
+
+**實作**:
+- 方案 A: `pendingFlips` 記住「原本倉位方向」（30 分鐘）——同側 re-entry block；對側允許；過期清除
+- 方案 B: exploration 開倉前檢查 per-symbol consensus——相反方向 → 跳過
+
+**驗證**: 10/10 測試；tsc clean；3187 pass + 13 pre-existing。
+
+---
+
 ### v2.0.870-FINALEXEC-attack: asset_analyses 最終執行結果攻擊輪
 
 **漏洞 + 修復**:
