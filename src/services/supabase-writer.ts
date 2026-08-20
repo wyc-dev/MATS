@@ -296,4 +296,97 @@ export class SupabaseAnalysisWriter {
       log.warn(`[ui-snapshot] write failed (non-blocking): ${detail}${sbErr?.code ? ` (${sbErr.code})` : ''}`);
     }
   }
+
+  /**
+   * v2.0.870-EMR: 更新單一 symbol 嘅 analysis——反映最終執行結果。
+   *
+   * 背景: asset_analyses 喺 cycle 早期用 HACP consensus 寫入，但 exploration
+   * trade（共識 HOLD 時強制開倉）同 conviction-gate block（consensus BUY 但
+   * 實際 HOLD）會令「訊號」同「最終執行」唔一致。客戶端（mats_app）按
+   * asset_analyses 即時執行——必須反映最終執行結果。
+   *
+   * 語義: clean-snapshot（DELETE 該 symbol 嘅 row + INSERT 新 row）——同
+   * writeCycle 一致，避免 stale row 殘留。
+   *
+   * 設計紀律:
+   * - 同 writeCycle 相同嘅防禦模式（enabled/client 檢查、NaN 驗證、
+   *   PGRST204 schema drift 剝列重試、3 次 retry + backoff）
+   * - 失敗 log.warn（非致命——cycle 繼續）
+   * - 只更新指定 symbol——唔重新構建全量（成本低）
+   */
+  async updateSymbol(analysis: AssetAnalysis): Promise<void> {
+    if (!this.enabled || !this.client) {
+      if (analysis?.symbol) {
+        log.info(`[local-only] Final-execution update: ${analysis.symbol}:${analysis.consensus?.action}`);
+      }
+      return;
+    }
+    // 防禦：同 writeCycle 一致嘅驗證——malformed entry 唔可以 crash 成個更新
+    if (!analysis || typeof analysis !== 'object') return;
+    if (!analysis.symbol || typeof analysis.symbol !== 'string') return;
+    if (!analysis.marketData || typeof analysis.marketData !== 'object') return;
+    if (!analysis.consensus || typeof analysis.consensus !== 'object') return;
+    if (!Number.isFinite(analysis.marketData.price) || analysis.marketData.price < 0) return;
+    if (!Number.isFinite(analysis.consensus.confidence) || analysis.consensus.confidence < 0 || analysis.consensus.confidence > 1) return;
+    if (analysis.consensus.stopLoss != null && !Number.isFinite(analysis.consensus.stopLoss)) return;
+    if (analysis.consensus.takeProfit != null && !Number.isFinite(analysis.consensus.takeProfit)) return;
+    if (!Number.isFinite(analysis.updatedAt) || analysis.updatedAt <= 0) return;
+
+    const MAX_RETRIES = 3;
+    const BACKOFF_MS = [500, 1000, 2000];
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        // 1. 刪除該 symbol 嘅舊 row（clean-snapshot 語義）
+        const { error: delErr } = await (this.client as any)
+          .from(TABLE)
+          .delete()
+          .eq('symbol', analysis.symbol);
+        if (delErr) throw delErr;
+
+        // 2. 插入新 row（同 writeCycle 嘅 row 結構一致）
+        const row = {
+          symbol: analysis.symbol,
+          cycle_id: analysis.cycleId,
+          updated_at: new Date(analysis.updatedAt).toISOString(),
+          market_data: analysis.marketData,
+          consensus: analysis.consensus,
+          matrix: analysis.matrix,
+          edge_report: analysis.edgeReport ?? null,
+          metadata: analysis.metadata,
+        };
+        let { error: insErr } = await (this.client as any).from(TABLE).insert(row);
+        // PGRST204 schema drift 剝列重試（同 writeCycle 一致）
+        if (insErr && (insErr as { code?: string }).code === 'PGRST204') {
+          const msg = (insErr as { message?: string }).message ?? '';
+          const m = msg.match(/Could not find the '([a-z_]+)' column/);
+          const missingCol = m?.[1];
+          if (missingCol) {
+            log.warn(`[supabase-writer] updateSymbol schema drift: column '${missingCol}' missing — inserting without it`);
+            const stripped = { ...row } as Record<string, unknown>;
+            delete stripped[missingCol as string];
+            const retry = await (this.client as any).from(TABLE).insert(stripped);
+            insErr = retry.error as typeof insErr;
+          }
+        }
+        if (insErr) throw insErr;
+
+        this.lastWriteAt = Date.now();
+        this.lastWriteError = null;
+        log.info(`[supabase-writer] Final-execution update: ${analysis.symbol}:${analysis.consensus.action} (cycle #${analysis.cycleId})`);
+        return;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message
+          : (err && typeof err === 'object' && typeof (err as { message?: unknown }).message === 'string'
+            ? (err as { message: string }).message : String(err));
+        if (attempt < MAX_RETRIES - 1) {
+          log.warn(`[supabase-writer] updateSymbol attempt ${attempt + 1}/${MAX_RETRIES} failed: ${msg} — retrying`);
+          await new Promise(resolve => setTimeout(resolve, BACKOFF_MS[attempt]!));
+        } else {
+          this.lastWriteError = msg;
+          log.warn(`[supabase-writer] updateSymbol failed after ${MAX_RETRIES} attempts (non-fatal): ${msg}`);
+        }
+      }
+    }
+  }
 }

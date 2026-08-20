@@ -50,6 +50,19 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 
 ---
 
+### v2.0.870-FINALEXEC: asset_analyses 反映最終執行結果（exploration + gate block）
+
+**主神需求**: 客戶端按 asset_analyses 即時執行——但 asset_analyses 只記錄 consensus，exploration/gate block 令訊號同執行唔一致。
+
+**實作**:
+- `SupabaseAnalysisWriter.updateSymbol()`: 單 symbol clean-snapshot 更新（DELETE + INSERT，同 writeCycle 防禦模式）
+- `index.ts` execResult 後: 比較最終決策 vs consensus——唔一致（exploration/gate block）→ 更新；一致（正常交易）唔重寫
+- metadata `source: 'final-execution'`
+
+**驗證**: tsc clean；3172 pass + 13 pre-existing；15 新測試。
+
+---
+
 ### v2.0.870-EMR: Exploration Market Rotation（exploration trade 覆蓋剩餘市場）
 
 **主神洞察**: exploration trade 只對 active symbol（BTC）開——BTC 有倉就唔開、亦唔轉向其他市場 → exploration 集中 BTC。
