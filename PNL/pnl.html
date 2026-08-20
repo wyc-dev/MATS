@@ -203,8 +203,10 @@
 
 // ═══ State ═══
 let data = null;
-let mode = 'paper';      // paper | real
+let mode = 'real';      // paper | real——v2.0.870-P80: 預設 real（而家主要 real 交易——paper 冇 trade 會顯示「冇資料」）
 let period = 'today';    // today | yesterday(昨日數據一定完整——今日可能未完)
+// v2.0.870-P80: 讀取 localStorage 持久化嘅 mode（用戶上次選擇）
+try { const saved = localStorage.getItem('pnlMode'); if (saved === 'paper' || saved === 'real') mode = saved; } catch { /* non-fatal */ }
 let unit = 'pct';         // usd | pct(% 模式:累計對比本金增長)——預設 %
 
 const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
@@ -528,6 +530,8 @@ function setPeriod(p) {
 
 function setMode(m) {
   mode = m;
+  // v2.0.870-P80: localStorage 持久化——reload 後保持用戶選擇（唔 reset 返 paper）
+  try { localStorage.setItem('pnlMode', m) } catch { /* non-fatal */ }
   document.getElementById('btn-paper').className = `switch-btn${m === 'paper' ? ' active-paper' : ''}`;
   document.getElementById('btn-real').className = `switch-btn${m === 'real' ? ' active-real' : ''}`;
   render();
