@@ -1324,7 +1324,7 @@ body {
 
 .portfolio-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr; /* v2.0.870-P50: 加 Wallet TVL 第三格 */
+  grid-template-columns: 1fr 1fr; /* v2.0.870-P80: bStocks 全面隱藏——Wallet TVL 移除——2 格 */
   gap: var(--space-3);
   margin-bottom: var(--space-9);
 }
