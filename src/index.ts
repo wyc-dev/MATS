@@ -1527,7 +1527,7 @@ class MATSSystem {
       try {
         const histTrades = this.portfolio?.getClosedRealTrades() ?? [];
         if (histTrades.length > 0) {
-          this.successPatternTracker.backfillFromTrades(histTrades as unknown as Array<{ entryThesis?: string | null; pnlPct?: number | null }>);
+          this.successPatternTracker.backfillFromTrades(histTrades as unknown as Array<{ entryThesis?: string | null; pnlPct?: number | null; closedAt?: number | null }>);
         }
       } catch (err) {
         log.warn(`[success-pattern] backfill failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -10902,15 +10902,39 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               const maePct = margin > 0 ? Math.max(0, (margin - minV) / margin) : 0;
               const mfePct = margin > 0 ? Math.max(0, (maxV - margin) / margin) : 0;
 
+              // E1+E2: per-symbol MAE/MFE 閾值（entry-quality——margin-basis，n≥5）
+              // + 趨勢確認（trend/regime 支持方向 → 閾值 ×1.5——暫時回調唔止血）
+              let perSymbolMaeP50: number | undefined;
+              let perSymbolMfeP50: number | undefined;
+              try {
+                const p50 = this.entryQuality?.getMaeP50ForExit(psc.symbol, pos.side);
+                if (typeof p50 === 'number' && Number.isFinite(p50) && p50 > 0) {
+                  perSymbolMaeP50 = p50;
+                }
+                const m50 = this.entryQuality?.getMfeP50ForExit(psc.symbol, pos.side);
+                if (typeof m50 === 'number' && Number.isFinite(m50) && m50 > 0) {
+                  perSymbolMfeP50 = m50;
+                }
+              } catch { /* 非致命——fallback 固定閾值 */ }
+              let trendAligned = false;
+              try {
+                const ms = this.marketState.getState(psc.symbol);
+                const regime = ms?.regime;
+                const trend = ms?.trend;
+                trendAligned = (pos.side === 'buy' && (regime === 'trending_bull' || trend === 'bullish')) ||
+                               (pos.side === 'sell' && (regime === 'trending_bear' || trend === 'bearish'));
+              } catch { /* 非致命 */ }
+
               // E1-TP: 提早鎖利（MFE 已達實質水平 + 回吐 ≥ 30%——「賺咗又返轉頭」）
-              if (shouldLockProfitOnMaeMfe({ unrealizedPnlPct, maePct, mfePct, holdMin })) {
+              // E2: per-symbol MFE 鎖利閾值——高波動 symbol 鎖利目標遠啲（唔會太早鎖利）
+              if (shouldLockProfitOnMaeMfe({ unrealizedPnlPct, maePct, mfePct, holdMin, perSymbolMfeP50 })) {
                 log.info(`🟢 [reversal-point-lock] ${psc.symbol}: MFE ${(mfePct * 100).toFixed(1)}% 回吐至 ${(unrealizedPnlPct * 100).toFixed(1)}% — 提早鎖利`);
                 await this.closeTrade(psc.symbol, `Reversal-point lock: MFE ${(mfePct * 100).toFixed(1)}% retraced to ${(unrealizedPnlPct * 100).toFixed(1)}% (≥30% giveback)`, 'reversal_point');
                 continue; // 倉位已 close,skip 成個 loop
               }
 
               // E1-SL: 止血（原版——單 cycle 判斷）
-              const maeMfe = shouldExitOnMaeMfeReversal({ unrealizedPnlPct, maePct, mfePct, holdMin });
+              const maeMfe = shouldExitOnMaeMfeReversal({ unrealizedPnlPct, maePct, mfePct, holdMin, perSymbolMaeP50, trendAligned });
               if (maeMfe.exit) {
                 log.warn(`🔻 [reversal-point-exit] ${psc.symbol}: MAE ${(maePct * 100).toFixed(1)}% vs MFE ${(mfePct * 100).toFixed(1)}% — 水下 ${(unrealizedPnlPct * 100).toFixed(1)}% 接近 MAE（結構反轉）`);
                 await this.closeTrade(psc.symbol, `Reversal-point exit: MAE ${(maePct * 100).toFixed(1)}% dominates MFE ${(mfePct * 100).toFixed(1)}%, underwater ${(unrealizedPnlPct * 100).toFixed(1)}% near MAE`, 'reversal_point');
@@ -11959,8 +11983,12 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             const spMult = this.successPatternTracker.getMultiplier(sp);
             if (spMult !== 1.0) {
               effectiveConfidence *= spMult;
-              log.info(`🎯 [success-pattern] ${gateAction.toUpperCase()} ${pwinSym}: pattern=${sp} → conviction ×${spMult} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
-              activeAuditGates.push({ gate: 'success-pattern', passed: true, reason: `pattern ${sp} → ×${spMult} (soft)` });
+              // F3: 觀測有聲——log + audit 帶 n/avgPnl（starvation must be LOUD）
+              const spStats = this.successPatternTracker.getStats()[sp];
+              const spN = spStats?.n ?? 0;
+              const spAvg = spN > 0 ? (spStats!.pnlSum / spN).toFixed(2) : 'n/a';
+              log.info(`🎯 [success-pattern] ${gateAction.toUpperCase()} ${pwinSym}: pattern=${sp} → conviction ×${spMult} (n=${spN}, avgPnl=${spAvg}%, effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+              activeAuditGates.push({ gate: 'success-pattern', passed: true, reason: `pattern ${sp} → ×${spMult} (n=${spN}, avgPnl=${spAvg}%, soft)` });
             }
           }
         } catch { /* 非致命 */ }

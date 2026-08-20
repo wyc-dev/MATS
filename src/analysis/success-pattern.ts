@@ -27,6 +27,12 @@ export interface SuccessPatternStats {
   n: number;
   wins: number;
   pnlSum: number;
+  /** E1: 時間衰減——最近樣本 ring（cap 100），每筆 { pnlPct, closedAt }。
+   *   getMultiplier 用 exp(-Δt/τ) 時間加權 avgPnl（τ=24h，同 RegimeWinRateLearner 一致）——
+   *   舊數據（30 日前）唔再同新數據等權。 */
+  recent?: Array<{ pnlPct: number; closedAt: number }>;
+  /** E1: 時間加權 avgPnl（tracker 計算後填入；純函數優先使用） */
+  weightedAvgPnl?: number;
 }
 
 /** 純函數: 成功類型校準乘數（soft——唔 hard block） */
@@ -37,7 +43,9 @@ export function successPatternMultiplier(pattern: SuccessPattern, stats: Success
   const n = Number.isFinite(stats.n) && stats.n > 0 ? stats.n : 0;
   const pnlSum = Number.isFinite(stats.pnlSum) ? stats.pnlSum : 0;
   if (n === 0) return 1.0;
-  const avgPnl = pnlSum / n;
+  // E1: 時間加權 avgPnl 優先（tracker 計算）——否則點估計
+  const wAvg = stats.weightedAvgPnl;
+  const avgPnl = typeof wAvg === 'number' && Number.isFinite(wAvg) ? wAvg : pnlSum / n;
   // 正期望值（avgPnl > 1%）→ ×1.1（boost——多啲做）
   if (avgPnl > 1.0) return 1.1;
   // 負期望值（avgPnl < -0.5%）→ ×0.7（降權——少啲做）

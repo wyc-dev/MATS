@@ -195,6 +195,17 @@ export interface MaeMfeReversalInput {
   mfePct: number;
   /** 持倉分鐘數 */
   holdMin: number;
+  /** E2: per-symbol MAE 中位數（entry-quality 提供，margin %）——s1 閾值用 per-symbol
+   *   （正常波動唔止血——BTC MAE 4% 係 p50 附近，唔應該止血）。冷啟動（冇數據）→ fallback 固定 0.8×maePct。 */
+  perSymbolMaeP50?: number;
+  /** E1: 趨勢支持方向（BUY + trending_bull/bullish、SELL + trending_bear/bearish）——
+   *   閾值 ×1.5（暫時回調唔止血——方向啱嘅 trade 喺反彈前都會有 MAE）。
+   *   唔加「趨勢逆轉 → 止血」——trend 係 lagging indicator（BTC 案例：trending_bear 出現嗰陣已經係底部）。 */
+  trendAligned?: boolean;
+  /** E2: per-symbol MFE 中位數（entry-quality 提供，margin %）——鎖利閾值校準。
+   *   高波動 symbol（CL mfeP50=1.51%）鎖利目標遠啲（唔會太早鎖利——俾 profit 跑）。
+   *   冷啟動（冇數據）→ fallback 固定 0.5%。 */
+  perSymbolMfeP50?: number;
 }
 
 export interface MaeMfeReversalResult {
@@ -214,8 +225,21 @@ export function shouldExitOnMaeMfeReversal(input: MaeMfeReversalInput): MaeMfeRe
   const mfeValid = Number.isFinite(input.mfePct) && input.mfePct >= 0;
   const mfe = mfeValid ? Math.min(input.mfePct, MAX_EXCURSION) : 0;
   const hold = Number.isFinite(input.holdMin) ? input.holdMin : 0;
+  // E2: per-symbol MAE 閾值（p50×2 cap 20%）——有數據用 per-symbol（正常波動唔止血），
+  // 冷啟動（冇數據）→ fallback 固定 0.8×maePct。
+  // 量化金融: per-symbol 波動特性唔同（BTC MAE p50=4% vs SKHX p50=1.9%）——
+  // 固定閾值對高波動 symbol 太貼（正常波動都止血）、對低波動 symbol 太闊。
+  // B1: perSymbolMaeP50 下限 0.5%——太細嘅閾值（1e-9）令 s1 永遠觸發（誤傷）——
+  // 正常波動（<0.5% margin）唔應該止血。
+  const MIN_PER_SYMBOL_MAE = 0.5;
+  const perSymThreshold = Number.isFinite(input.perSymbolMaeP50) && (input.perSymbolMaeP50 ?? 0) >= MIN_PER_SYMBOL_MAE
+    ? Math.min((input.perSymbolMaeP50 ?? 0) * 2, 20)
+    : 0.8 * mae;
+  // E1: 趨勢支持方向 → 閾值 ×1.5（暫時回調唔止血——方向啱嘅 trade 喺反彈前都會有 MAE）
+  const threshold = input.trendAligned === true ? perSymThreshold * 1.5 : perSymThreshold;
   // 原版（主神裁決回滾收窄版）: s1 0.8×mae, s2 1.5×mfe——避免 228.1% / 誤傷 0%
-  const s1 = mae > 0 && pnl < 0 && Math.abs(pnl) >= 0.8 * mae;
+  // E1+E2: s1 用 per-symbol 閾值（正常波動唔止血）——真反轉（超閾值）仍然止血
+  const s1 = mae > 0 && pnl < 0 && Math.abs(pnl) >= threshold;
   const s2 = mfeValid && mae > 1.5 * mfe;
   const s3 = mfeValid && mfe < 0.1;
   // holdMin ≥ 15 係全局必要條件（避免一開倉就離場——H5 攻擊發現 s2 單獨觸發）
@@ -231,8 +255,13 @@ export function shouldLockProfitOnMaeMfe(input: MaeMfeReversalInput): boolean {
   const mfeValid = Number.isFinite(input.mfePct) && input.mfePct >= 0;
   const mfe = mfeValid ? Math.min(input.mfePct, MAX_EXCURSION) : 0;
   const hold = Number.isFinite(input.holdMin) ? input.holdMin : 0;
-  // MFE 已達實質水平（≥ 0.5%）+ 仲贏緊 + 已回吐 ≥ 30%（「賺咗又返轉頭」）
-  return hold >= 15 && mfeValid && mfe >= 0.5 && pnl > 0 && pnl <= 0.7 * mfe;
+  // E2: per-symbol MFE 鎖利閾值——高波動 symbol 鎖利目標遠啲（唔會太早鎖利——俾 profit 跑）。
+  // 冷啟動（冇數據）→ fallback 固定 0.5%。
+  const lockThreshold = Number.isFinite(input.perSymbolMfeP50) && (input.perSymbolMfeP50 ?? 0) > 0
+    ? Math.max(0.5, (input.perSymbolMfeP50 ?? 0) * 0.8)
+    : 0.5;
+  // MFE 已達實質水平（per-symbol 閾值）+ 仲贏緊 + 已回吐 ≥ 30%（「賺咗又返轉頭」）
+  return hold >= 15 && mfeValid && mfe >= lockThreshold && pnl > 0 && pnl <= 0.7 * mfe;
 }
 
 // ── P79: 即時動量順向入場（防止「TP 後 re-entry 倒蝕」同「追高入場」）──

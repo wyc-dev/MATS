@@ -201,11 +201,34 @@ export class ExitPriceLearner {
     const raw = this.records[key];
     if (!raw || raw.length === 0) return null;
     const cutoff = Date.now() - exitPriceLearnerConfig.maxAgeDays * 86_400_000;
-    const arr = raw.filter(r => r.timestamp >= cutoff);
+    // FIX: 只計 real 數據——shadow 數據 MAE=0 污染（shadow 用固定 SL/TP，未觸發就
+    // force-resolve（maxAgeCycles=12）——離場嗰刻價格 = entry 或順向——MAE 記錄唔到
+    // 真實逆向——大量零值拉低 percentile（實測 btc|buy 79/100 shadow 零值）。
+    // 量化金融: percentile 對零值污染敏感——shadow 零值令 MAE p95 偏細 → SL 校準太貼。
+    // A1: 單筆 getter-bomb/垃圾元素 → skip（唔中斷成個 filter）
+    const arr: Array<{ mfePricePct: number; maePricePct: number; weight: number; timestamp: number }> = [];
+    for (const r of raw) {
+      try {
+        if (r && typeof r === 'object' && r.timestamp >= cutoff && r.source === 'real') {
+          arr.push(r as { mfePricePct: number; maePricePct: number; weight: number; timestamp: number });
+        }
+      } catch { /* A1: 單筆失敗 skip */ }
+    }
     if (arr.length < exitPriceLearnerConfig.minSamples) return null;
+    // E1: 時間衰減——舊數據唔再等權（同 success-pattern 一致）。
+    // 量化金融: 等權 percentile 被舊數據污染（實測 SKHX 等權 p95=10.24% vs
+    // 時間加權 2.90%——SKHX 極端逆向係舊數據——最近市場冇咁極端）。
+    // 時間權重 exp(-Δt/τ)，τ=7 日（60 日前權重 ≈ 0——實際用最近 ~2-3 週）。
+    const now = Date.now();
+    const TAU_MS = 7 * 24 * 3600 * 1000;
     const mfe = arr.map(r => r.mfePricePct);
     const mae = arr.map(r => r.maePricePct);
-    const w = arr.map(r => r.weight);
+    const w = arr.map(r => {
+      // A2: weight cap 100——1e308 污染值唔主導 percentile（單筆權重極大 → p95 被污染）
+      const base = Number.isFinite(r.weight) && r.weight > 0 ? Math.min(r.weight, 100) : 1;
+      const dt = Math.max(0, now - r.timestamp);
+      return base * Math.exp(-dt / TAU_MS);
+    });
     return {
       symbol: symbol.toLowerCase(),
       side,

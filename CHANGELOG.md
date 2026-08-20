@@ -4,6 +4,38 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P82: 盈利提升系列——backfill 修復 + 時間衰減 + per-symbol 校準 + Combo EV Gate
+
+**背景（主神調查）**: 四個 trade（BTC/CL/GOLD/SKHX）全部 reversal_point 止血離場——但係而家價格證明 BTC +2.1%、CL +0.76% 方向啱——「方向啱但蝕住走」。根因鏈: ① P80 success-pattern backfill 假成功（200 筆歷史從未入 stats——vol_expansion 降權未生效）② reversal-point 離場用固定閾值（正常波動都止血）③ PAEL 數據被 shadow 零值污染 ④ Combo WR Gate 用 WR 判定（誤傷低 WR 高回報組合）。
+
+### P82-backfill-fix: success-pattern backfill 假成功 bug 修復（數據指紋 + 版本維度）
+
+**根因**: `backfillFromTrades()` 開頭 `if (this.backfillDone) return;`——舊檔 `backfillDone=true` 但 stats 得 5 筆（200 筆歷史從未入）——假成功 bug。**修復**: `backfillFingerprint`（count + latestClosedAt + version）——指紋 match 先 skip；唔 match（包括舊檔冇指紋/版本過期）→ 重新 backfill（全量重算，避免 double count）。**成效**: 系統 restart 後 backfill 200 筆成功——vol_expansion n=15 avgPnl -1.37% → ×0.7 降權即刻生效（BTC/GOLD 呢類「低波動擴張」trade 唔再咁容易入場）。
+
+### P82-time-decay: success-pattern 時間衰減（recent ring + 時間加權中位數）
+
+**主神洞察**: 舊數據（08-03）同新數據（08-20）等權——08-03 嘅 trade 對而家決策參考價值低。**實作**: `recent` ring（cap 100）+ 時間加權中位數（exp(-Δt/τ)，τ=24h）——robust（離群值免疫）。**重大發現**: breakout 點估計 avgPnl +2.37%（→ ×1.1 boost）但時間加權 -2.07%（→ ×0.7 降權）——**最近 breakout 全蝕（CL/SKHX 就係）——時間衰減揭示 breakout edge 已消失**。
+
+### P82-reversal-e1e2: reversal-point 離場校準（per-symbol MAE 閾值 + 趨勢確認）
+
+**主神問題**: 「方向啱但蝕住走」——BTC/CL 方向啱但被 reversal_point 止血。**根因**: `shouldExitOnMaeMfeReversal` 用固定閾值（0.8×maePct）——BTC MAE 4.2% 係正常波動（p50=3.99%）但被止血。**修復**: ① **E2 per-symbol MAE 閾值**——s1 閾值 = `perSymbolMaeP50 × 2`（cap 20%）——entry-quality `getMaeP50ForExit`（margin-basis，n≥5）——正常波動唔止血；② **E1 趨勢確認**——trend/regime 支持方向 → 閾值 ×1.5（暫時回調唔止血——唔加「趨勢逆轉 → 止血」——trend 太 lag，BTC 案例證明）。**成效**: BTC（閾值 8.38% > 3.4%）/SKHX（10.63% > 2.3%）唔再被誤傷——真反轉（SKHX -14.7%）仍然止血。
+
+### P82-pael-real: PAEL 只計 real + 時間衰減（shadow 零值污染消除）
+
+**根因**: PAEL btc|buy 100 筆 = 79 shadow + 21 real——shadow 用固定 SL/TP 未觸發就 force-resolve——MAE=0 記錄唔到真實逆向——76/100 零值拉低 percentile。**修復**: `getExitProfile` 只計 `source === 'real'`——shadow 零值污染消除。**E1 時間衰減**: 時間權重 exp(-Δt/τ)（τ=7 日）——舊數據唔再等權（SKHX 等權 p95=10.24% vs 時間加權 2.90%——極端逆向係舊數據）。**weight cap 100**: 1e308 污染值唔主導 percentile。
+
+### P82-e1e3: per-symbol MFE 鎖利校準 + rolling window
+
+**E2 鎖利校準**: `shouldLockProfitOnMaeMfe` 加 `perSymbolMfeP50`——鎖利閾值 `max(0.5, p50×0.8)`——高波動 symbol（CL mfeP50=1.51%）鎖利目標遠啲（唔會太早鎖利——俾 profit 跑）。**E3 rolling window**: `getMaeP50ForExit` 加 windowDays=30——舊數據唔再影響離場閾值。
+
+### P82-combo-ev: Combo EV Gate（avgEwmaPnlPct——時間衰減 + 正負判定）
+
+**主神指示**: 「avgPnl 正 → 唔降權、負 → 降權」+「用 ewmaPnlPct，half-life 120 cycles（10 個鐘）」。**根因**: 舊 checkComboGate 用 Wilson LB（WR 下界）——誤傷 7 個「低 WR 高回報」組合（skhx|sell WR 36% 但 avgPnl +0.45%——被降權——錯過正回報）。**修復**: ① **EWMA half-life 500 → 120**（10 個鐘——短炒用——真 half-life 公式 `exp(-delta×ln2/120)`——舊 code 用 e-folding 唔係 half-life）；② **checkComboGate 用 avgEwmaPnlPct**（0.5×avgPnlPct + 0.5×ewmaPnlPct）——正 → 唔降權、負 → 降權（-0.5% → ×0.50 / -0.2% → ×0.30 / <0 → ×0.15）；③ **拒絕污染值**——avg/ewma 超出 ±100% → 當冇數據（fallback 另一指標）——1e308 污染值唔影響判定。**成效**: btc|buy avg +0.94%（整體正）但 ewma -8.31%（最近轉負）→ avgEwma -3.68% → 0.50 強降權（時間衰減捕捉最近轉負）；skhx|sell 低 WR 高回報保留；cl|sell 高 WR 低回報（WR 50% 但 avgPnl -2.92%）→ 0.50 強降權。**方向性檢查**: combo vs real 正負方向一致（0 個唔一致）——冇方向性問題。
+
+**驗證**: 邏輯實驗——降權「avgPnl 負」組合（WR 31% 低勝率）→ WR 提升 +2.0pp + PnL 提升 +55%；全量 379 pass + 13 pre-existing；tsc clean。
+
+---
+
 ## v2.0.870-P81: per-symbol MAE/MFE SL/TP 校準（Shadow + 真實交易）
 
 **主神洞察**: Shadow Trade 主力判斷「S/R + ATR floor + 波動率」——加埋 per-symbol MAE/MFE（PAEL 分佈）必然更準——因為每個 symbol 波動特性完全唔同（SKHX MAE p95 90% vs BTC 8.3%——default 2% SL 對 BTC 合理但對 SKHX 太貼）。
@@ -87,10 +119,6 @@ HACP 接駁: buildSuccessPatternBlock() → 注入 Meta-Agent & Skeptics context
 **P79-fix（TradingView chart 每 cycle 全黑修復）**: 主神報告「Trading Terminal 嘅 TradingView chart 每個 Cycle 都會變做全黑色」。**根因**: P65 嘅 guard 有 bug——React useEffect 執行順序係「先 cleanup（舊 effect）→ 再跑新 effect body」——refreshKey（cycles）每 cycle 變 → cleanup 先跑（`chart.remove()`——chart 被 destroy）→ 然後 body guard 檢查（成功過 → return）——**chart 已經冇咗但冇 recreate——全黑**。P65 加 guard 防止「reload」但冇考慮「cleanup 會 destroy chart」。**修復**（`ui/src/TradingViewChart.tsx`）: 清晰架構——create/destroy 同 refresh 分開——Effect 1（create chart）依賴改 `[timeframe, symbol]`（refreshKey 移除——每 cycle 唔 destroy）;新 Effect 2（`[refreshKey]`）——只有 error 時重新 fetch + update data（唔 destroy chart）。vite build 成功。
 
 **P79-fix2（closeReason reconciliation 覆蓋 bug）**: 主神檢討近半日交易發現 closeReason 大部分係 reconciliation（8/10）——E1 reversal-point exit 嘅 exit thesis 話「Reversal-point exit」但 closeReason = reconciliation。**根因（時序競態）**: E1 closeTrade('reversal_point') → 設 exitThesis → `tradingManager.closePosition`（async——HL 平倉需時）→ HL 平倉成功 → **WS fills 事件（onFills）先到**——`hasPosition(sym)` = true（tradingManager 未完成本地 close）→ `closeExchangePosition(sym, fill.price, fill.closedPnl)`——**冇傳 closeReason** → `inferCloseReason` 推斷成 reconciliation → 倉位刪除——E1 嘅 reversal_point 冇記錄到。**修復**（`src/index.ts` onFills 路徑）: close 之前檢查 `pos.exitThesis` 已設（closeTrade 已開始）→ skip onFills close（等 closeTrade 完成——tradingManager.closePosition 會記錄正確 closeReason）。+3 測試（Position.exitThesis 欄位 / setExitThesis 設值 / onFills skip 邏輯）。全量 2986 pass + 13 pre-existing;tsc clean。
-
----
-
-## v2.0.870-P78: 方案 B——預測反轉點（Reversal-Point Detection）
 
 ---
 
