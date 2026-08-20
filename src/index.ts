@@ -1513,6 +1513,15 @@ class MATSSystem {
       // P80: 成功類型分類 tracker（實際學習 + 用得返出嚟）
       this.successPatternTracker = new SuccessPatternTracker();
       this.successPatternTracker.load();
+      // P80-backfill: 用歷史 realTrades 初始化（idempotent——backfillDone flag）
+      try {
+        const histTrades = this.portfolio?.getClosedRealTrades() ?? [];
+        if (histTrades.length > 0) {
+          this.successPatternTracker.backfillFromTrades(histTrades as unknown as Array<{ entryThesis?: string | null; pnlPct?: number | null }>);
+        }
+      } catch (err) {
+        log.warn(`[success-pattern] backfill failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       try {
         this.entryQuality.load();
         const eq = this.entryQuality.getStats();

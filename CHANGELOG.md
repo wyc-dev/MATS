@@ -26,6 +26,8 @@ HACP 接駁: buildSuccessPatternBlock() → 注入 Meta-Agent & Skeptics context
 
 **P80-attack（刁鑽攻擊輪）**: 3 漏洞全修——pnlSum=Infinity 誤判 boost（sanitize）/ stats[p] 垃圾 string/NaN 顯示 NaN%（形狀驗證）/ 垃圾 pattern 無限 key 增長（白名單）。+13 攻擊測試全綠。全量 3015 pass + 13 pre-existing;tsc clean。
 
+**P80-backfill（歷史數據初始化——主神批准）**: 用 200 筆 realTrades 歷史數據初始化 tracker——乘數即刻生效（順勢突破 ×1.1 / 低波動擴張 ×0.7）——唔使等 live 累積。`backfillFromTrades()` idempotent（`backfillDone` flag 持久化——restart 唔會重複）;pnlPct 無效（NaN/Infinity）skip（數據唔可靠唔入統計）。啟動時 index.ts load() 後 backfill。+4 測試（乘數即刻生效 / idempotent / 垃圾數據 skip / 空數組）。全量 3019 pass + 13 pre-existing;tsc clean。
+
 ---
 
 ## v2.0.870-P79: 四窗驗證機制（4h+1h+15m+5m）——死貓彈/兩窗都逆 hard block
