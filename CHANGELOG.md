@@ -35,6 +35,8 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 **P79-fix（TradingView chart 每 cycle 全黑修復）**: 主神報告「Trading Terminal 嘅 TradingView chart 每個 Cycle 都會變做全黑色」。**根因**: P65 嘅 guard 有 bug——React useEffect 執行順序係「先 cleanup（舊 effect）→ 再跑新 effect body」——refreshKey（cycles）每 cycle 變 → cleanup 先跑（`chart.remove()`——chart 被 destroy）→ 然後 body guard 檢查（成功過 → return）——**chart 已經冇咗但冇 recreate——全黑**。P65 加 guard 防止「reload」但冇考慮「cleanup 會 destroy chart」。**修復**（`ui/src/TradingViewChart.tsx`）: 清晰架構——create/destroy 同 refresh 分開——Effect 1（create chart）依賴改 `[timeframe, symbol]`（refreshKey 移除——每 cycle 唔 destroy）;新 Effect 2（`[refreshKey]`）——只有 error 時重新 fetch + update data（唔 destroy chart）。vite build 成功。
 
+**P79-fix2（closeReason reconciliation 覆蓋 bug）**: 主神檢討近半日交易發現 closeReason 大部分係 reconciliation（8/10）——E1 reversal-point exit 嘅 exit thesis 話「Reversal-point exit」但 closeReason = reconciliation。**根因（時序競態）**: E1 closeTrade('reversal_point') → 設 exitThesis → `tradingManager.closePosition`（async——HL 平倉需時）→ HL 平倉成功 → **WS fills 事件（onFills）先到**——`hasPosition(sym)` = true（tradingManager 未完成本地 close）→ `closeExchangePosition(sym, fill.price, fill.closedPnl)`——**冇傳 closeReason** → `inferCloseReason` 推斷成 reconciliation → 倉位刪除——E1 嘅 reversal_point 冇記錄到。**修復**（`src/index.ts` onFills 路徑）: close 之前檢查 `pos.exitThesis` 已設（closeTrade 已開始）→ skip onFills close（等 closeTrade 完成——tradingManager.closePosition 會記錄正確 closeReason）。+3 測試（Position.exitThesis 欄位 / setExitThesis 設值 / onFills skip 邏輯）。全量 2986 pass + 13 pre-existing;tsc clean。
+
 ---
 
 ## v2.0.870-P78: 方案 B——預測反轉點（Reversal-Point Detection）
