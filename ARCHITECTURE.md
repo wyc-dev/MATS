@@ -50,6 +50,19 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 
 ---
 
+### v2.0.870-ADP: Anti-Deadloop Protocol（防死循環——全 agent system prompt 注入）
+
+**主神洞察**: 開源模型思考死胡同根因——開放式任務冇完成標準、元思考陷阱、冇外部化記憶。解法唔係加協議，係改工作方式：完成標準前置、先產出後優化、信任歷史。
+
+**實作**:
+- AGENT_PROMPT.md: UTP 收斂總則 + UTP-1 信任歷史 + UTP-6 收斂規則 + 新增 ADP 章節（死循環定義 + 破解階梯）+ SELF-VERIFICATION deadloop 檢查
+- BaseAgent.getAntiDeadloopBlock()（base-agent.ts）: CONVERGE / TRUST CONTEXT / NO OSCILLATION / FIRST-TRY OUTPUT——think() + generateDebateStatement() 拼接——5 sub-agents + Meta-Agent 自動覆蓋
+- Skeptics 2 個 inline prompt 手動注入（agents.ts）
+
+**驗證**: tsc clean。純 prompt 附加，零邏輯變更。
+
+---
+
 
 ### v2.0.869: MAE 模式升級方案(重開抑制 + MFE 鎖利 + 宏觀 gate)
 
