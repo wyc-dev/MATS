@@ -165,10 +165,10 @@ Dashboard: **http://localhost:5173/** · API: **http://localhost:3456/**
 │  │ SL floor, MFE-calibrated TP target/cap + SL floor                      │  │
 │  │ • closeReason integrity + closeTrade dual-mode guard                   │  │
 │  │ (v2.0.851-853): exit closes never silently skipped                     │  │
-│  │ • Hybrid Penalty Decay + Runs τ (v2.0.870-P16/17): spiral-break +     │  │
-│  │   adaptive decay horizon; Stop-Slippage SL floor + FP regime sanitize │  │
-│  │   (P21); Direction Verifier full symbol coverage (P20-C); MAE/MFE     │  │
-│  │   Healer + learner observability (P22); deployment-aware audit (P24)  │  │
+│  │ • Hybrid Penalty Decay + Runs τ (v2.0.870-P16/17): spiral-break +      │  │
+│  │   adaptive decay horizon; Stop-Slippage SL floor + FP regime sanitize  │  │
+│  │   (P21); Direction Verifier full symbol coverage (P20-C); MAE/MFE      │  │
+│  │   Healer + learner observability (P22); deployment-aware audit (P24)   │  │
 │  │ • Self-Aware Evolution (v2.0.843): Meta-Cognitive Calibrator +         │  │
 │  │ Self-Improver + Causal Reasoner + Meta-Learner                         │  │
 │  │ • RIL Reason Intelligence (pattern clustering + similar trade          │  │
