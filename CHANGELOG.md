@@ -4,6 +4,41 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-tg-review: TG close 訊號格式改為 Post-Review 主體
+
+**主神指示**: TG group 訊息詳細區塊——「📝 reconciliation / 📄 Entry / 📄 Exit」換成 Post-Review 內容(closeReason 對 group 觀眾冇意義、thesis 太長太技術性)。
+
+**實作**:
+- **格式**(src/services/tg-signal.ts `formatCloseSignal`): postReview 存在 → 只顯示 `✅ Review`(取代 📝 reason + 📄 Entry/Exit);缺失 → fallback 舊格式(資訊完整,唔靜默吞)
+- **推送時機**(src/index.ts): close 訊號由「close 事件即時」改為「postReview 生成完成後先推」(新 `pushCloseSignal()` 方法)——生成成功 → Review 格式;LLM 空回覆/失敗 → fallback 舊格式(close 訊號永不消失);dedup 由 pushSignal 嘅 sentTradeIds(tradeId)照常處理
+
+**驗證**: tsc 零錯誤;tg-signal 測試 13/13 全綠(T2 更新為新格式斷言 + 新增 T14 fallback 行為)。
+
+---
+
+## v2.0.870-tg-review-attack: TG 訊號攻擊輪(併發/狀態注入/持久化污染)
+
+**攻擊向量**(12 攻擊測試,5 命中全修 + 周邊 4 漏洞 code-review 修復):
+
+| # | 漏洞 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| **V1** | truncate() 假設 string——postReview/reason/thesis 持久化污染成 number/array → `s.replace` TypeError → close 訊號靜默消失 | **CRITICAL** | truncate type guard + 全 string 字段 `typeof` check |
+| **V9** | formatOpenSignal 用 `trade.symbol.toUpperCase()` 冇 guard——symbol undefined → TypeError crash | **CRITICAL** | String() guard(formatCloseSignal 同步修) |
+| **V2-V6** | 1e308 污染值(investment/minValue/pnlPct/holdMin/leverage/date)→ group 公開顯示「MAE +1e+308%」/「Invalid Date」 | HIGH | 新 `numOrNull()` 統一入口——NaN/Infinity/非 number/超合理範圍 → 唔顯示 |
+| **V7** | pricePct 溢出(entry=1e-9, exit=1000)→ +1e+12% | MED | pricePct clamp ±1000% |
+| **V10** | regime/thesis 垃圾 type/超長 → 顯示垃圾/撐爆訊息 | MED | type guard + truncate |
+| **V12** | MAE/MFE fallback $ 值 1e308 → $1e+308 | MED | 範圍檢查 |
+| **V13** | generatePostReview 無重入 guard——close 事件可被 call 兩次(EXP 重複 bug 已證)→ 重複 LLM 生成 + 覆寫 review | HIGH | postReviewInFlight Set + 已有 postReview skip(仍補推 close 訊號防 push 失敗) |
+| **V14** | margin = entryPrice×quantity 溢出 Infinity → LLM prompt 收到 NaN% 垃圾 | HIGH | finite+>0 guard + MAE/MFE pct clamp ±500% |
+| **V15** | 垃圾 openedAt/closedAt → holdMin = NaN → prompt NaN minutes | MED | finite guard |
+| **V16** | fallback tradeId `close-{closedAt}-{symbol}` 碰撞(同 cycle 平兩倉)→ dedup 誤殺第二筆 | MED | random suffix |
+
+**額外**: userPrompt `side.toUpperCase()` / `entryPrice.toFixed()` 污染 crash → String()/finite guard。
+
+**驗證**: 紅先 5 命中(V1/V2-V6/V9/V10/V12——TypeError crash + 科學記號污染確認)→ 綠後 20/20 全綠(V1-V12 攻擊 + T1-T14 回歸);tsc 零錯誤;pre-existing D4(buildTradeRow)不受影響。
+
+---
+
 ## v2.0.870-pnl-range-attack: 30 日期限 + PNL 頂部修正
 
 **主神指示**: PNL 1 MONTH 只 show 200 個 trade——因為限制咗儲存 200 個——改為 30 日期限（唔用數目限制）；PNL 頁面頂部偏右。
