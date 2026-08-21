@@ -143,9 +143,16 @@ export class TGSignalPusher {
       } finally {
         clearTimeout(timer);
       }
-      const data = await res.json() as { ok?: boolean };
+      const data = await res.json() as { ok?: boolean; description?: string };
       if (!data.ok) {
-        log.warn(`[tg-signal] sendMessage failed (${kind}): ${JSON.stringify(data).slice(0, 200)}`);
+        // v2.0.870-fix:chat not found 係最常見嘅靜默失敗源——測試污染/chatId 錯
+        // 都會令訊號 send 去假 group——清晰警示(唔淨係 400 記錄)
+        const desc = typeof data.description === 'string' ? data.description : '';
+        if (desc.includes('chat not found')) {
+          log.warn(`[tg-signal] sendMessage failed (${kind}): chat not found — chatId=${chatId} 無效(bot 唔喺 group / chatId 錯 / settings 被測試污染——檢查 data/evolution/tg-signal-settings.json 同 env TELEGRAM_CHAT_ID)`);
+        } else {
+          log.warn(`[tg-signal] sendMessage failed (${kind}): ${JSON.stringify(data).slice(0, 200)}`);
+        }
         return false;
       }
       log.info(`[tg-signal] ${kind} signal sent to ${chatId}`);

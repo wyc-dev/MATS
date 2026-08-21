@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-tg-review-attack
+> **作者**: YC Wong · **版本**: 2.0.870-tg-review-fix
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
@@ -47,6 +47,24 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 | **風險等級客戶端選擇** | 後端運算單一 moderate 等級嘅訊號矩陣（v2.0.857 移除 aggressive/conservative）；客戶端按用戶選擇讀取對應格（v2.0.822→857）|
 | **訊號與執行分離** | 後端計算訊號 + 寫入 Supabase；客戶端讀取 + 決定執行（paper/real）。`ANALYSIS_MODE` 控制後端是否同時執行 |
 | **生產級標準** | 完整型別（Zod 驗證）、結構化日誌（Winston）、優雅關閉、指數退避重連 |
+
+---
+
+### v2.0.870-tg-review-fix: TG 訊號「冇發送」修復（chatId 污染 + 訊號等 LLM deadline）
+
+**主神報告**: 盈利平倉訊號冇發送到 group。
+
+**根因（兩層疊加）**:
+1. **測試污染 settings（元兇）**: tests/tg-signal.test.ts T6/T7/T8 用 default path（`data/evolution/tg-signal-settings.json`）→ `updateSettings` save 覆蓋主神真實 chatId（env `TELEGRAM_CHAT_ID` = 5921875209）→ 全部 close 訊號 send 去假 group → 400「chat not found」→ 靜默消失
+2. **訊號等 LLM 嘅設計脆弱性**: close 訊號等 postReview 生成——LLM 掛/慢 → 訊號死
+
+**修復**:
+- settings chatId 還原 + `POST /api/tg-signal` hot-update 運行中 process（唔使 restart）——sendMessage 實測成功
+- 測試 T6/T7/T8 改用獨立 `/tmp` path（default path 唔准再被測試 save）
+- 8s deadline（`generatePostReview`——訊號唔可以無限等 LLM，`signalPushed` guard + clearTimeout）
+- pushSignal「chat not found」清晰警示
+
+**驗證**: tsc 零錯誤；20/20 測試全綠；sendMessage 實測成功。
 
 ---
 
