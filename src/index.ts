@@ -4339,31 +4339,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           supabaseTradeWriter.recordTrade(trade as never, tradeSource === 'real' ? 'real' : 'paper');
         }
 
-        // v2.0.867:TG close 訊號(事後記錄——完整字段商業財務英語點列;非阻塞)
-        // v2.0.867-attack (V11):tradeId dedup——同一 trade 兩次 close 事件只發一次
-        // 主神:輸錢平倉暫時唔推(profitOnlyClose——pnlPct 傳俾 pushSignal 判斷)
-        {
-          const tgPnl = safeNum((trade as { pnlPct?: number }).pnlPct, 0);
-          void tgSignalPusher.pushSignal('close', tgSignalPusher.formatCloseSignal({
-            symbol: normalizeSymbol(trade.symbol || ''),
-            side: trade.side === 'buy' ? 'buy' : 'sell',
-            entryPrice: (trade as { entryPrice?: number }).entryPrice,
-            exitPrice: (trade as { exitPrice?: number }).exitPrice,
-            pnlPct: tgPnl,
-            holdMin: trade.openedAt > 0 && trade.closedAt > 0 ? Math.max(0, Math.round((trade.closedAt - trade.openedAt) / 60000)) : undefined,
-            leverage: (trade as { leverage?: number }).leverage,
-            investment: (trade as { investment?: number }).investment,
-            minValue: (trade as { minValueReached?: number }).minValueReached,
-            maxValue: (trade as { maxValueReached?: number }).maxValueReached,
-            openedAt: (trade as { openedAt?: number }).openedAt,
-            closedAt: (trade as { closedAt?: number }).closedAt,
-            reason: closeReason ?? 'system',
-            source: tradeSource,
-            entryThesis: (trade as { entryThesis?: string }).entryThesis,
-            exitThesis: (trade as { exitThesis?: string }).exitThesis,
-            postReview: (trade as { postReview?: string }).postReview,
-          }), String((trade as { id?: string | number }).id ?? `close-${(trade as { closedAt?: number }).closedAt ?? Date.now()}-${normalizeSymbol(trade.symbol ?? '')}`), tgPnl).catch(() => {});
-        }
+        // v2.0.870(主神):TG close 訊號已移至 generatePostReview 完成後先推
+        // (詳細區塊以 Post-Review 為主體——reason/thesis 由 Review 取代)。
+        // 見 pushCloseSignal()。
 
         // v2.0.866: Close-Decision Calibrator — 只記錄「自主 close」
         // (consensus/thesis_invalidation——SL/PAEL/manual 由 recordClose 內部過濾)
@@ -4913,6 +4891,42 @@ ${currentPrompt || '(empty — this is the first input)'}`;
     }
   }
 
+  /** v2.0.870-attack (V13):postReview 生成重入/重複防護——close 事件可被 call
+   *  兩次(EXP 重複 bug 已證)→ 重複生成浪費 LLM + 覆寫 review。in-flight Set
+   *  防併發;已有 postReview(手動 edit/先前成功)→ skip 生成但照推 close 訊號。 */
+  private postReviewInFlight: Set<string> = new Set();
+
+  /** v2.0.870(主神):TG close 訊號——postReview 生成完成後先推,詳細區塊以
+   *  Post-Review 為主體(closeReason/thesis 由 Review 取代)。postReview 生成失敗
+   *  → fallback 舊格式(reason + theses——資訊完整,唔靜默吞)。非阻塞。
+   *  dedup 由 pushSignal 嘅 sentTradeIds 處理(tradeId)。 */
+  private pushCloseSignal(trade: TradeRecord, closeReason: string): void {
+    try {
+      const tgPnl = safeNum((trade as { pnlPct?: number }).pnlPct, 0);
+      void tgSignalPusher.pushSignal('close', tgSignalPusher.formatCloseSignal({
+        symbol: normalizeSymbol(trade.symbol || ''),
+        side: trade.side === 'buy' ? 'buy' : 'sell',
+        entryPrice: (trade as { entryPrice?: number }).entryPrice,
+        exitPrice: (trade as { exitPrice?: number }).exitPrice,
+        pnlPct: tgPnl,
+        holdMin: trade.openedAt > 0 && trade.closedAt > 0 ? Math.max(0, Math.round((trade.closedAt - trade.openedAt) / 60000)) : undefined,
+        leverage: (trade as { leverage?: number }).leverage,
+        investment: (trade as { investment?: number }).investment,
+        minValue: (trade as { minValueReached?: number }).minValueReached,
+        maxValue: (trade as { maxValueReached?: number }).maxValueReached,
+        openedAt: (trade as { openedAt?: number }).openedAt,
+        closedAt: (trade as { closedAt?: number }).closedAt,
+        reason: closeReason ?? 'system',
+        source: (trade as { agentId?: string }).agentId === 'hyperliquid-real' ? 'real' : 'paper',
+        entryThesis: (trade as { entryThesis?: string }).entryThesis,
+        exitThesis: (trade as { exitThesis?: string }).exitThesis,
+        postReview: (trade as { postReview?: string }).postReview,
+      // v2.0.870-attack (V16):fallback tradeId 加 random suffix——同一 closedAt +
+      // symbol 平兩倉(同 cycle)會碰撞 → dedup 誤殺第二筆訊號。
+      }), String((trade as { id?: string | number }).id ?? `close-${(trade as { closedAt?: number }).closedAt ?? Date.now()}-${normalizeSymbol(trade.symbol ?? '')}-${Math.random().toString(36).slice(2, 8)}`), tgPnl).catch(() => {});
+    } catch { /* non-fatal——TG 訊號唔可以影響 close 路徑 */ }
+  }
+
   /** v2.0.143: Generate an LLM post-trade review for a closed position.
    *  Asks the LLM: "Given this trade (entry/exit/PnL/thesis/MAE/MFE),
    *  how could more profit have been made or less loss incurred?"
@@ -4920,22 +4934,41 @@ ${currentPrompt || '(empty — this is the first input)'}`;
    *  can display it. Non-blocking — failures are logged but never throw.
    *  Uses the Terminal Agent model (fast, cheap — DeepSeek V4 Flash). */
   private async generatePostReview(trade: TradeRecord, closeReason: string): Promise<void> {
+    // v2.0.870-attack (V13):重入/重複防護——close 事件可被 call 兩次(EXP 重複
+    // bug 已證)→ 重複生成浪費 LLM + 覆寫 review。
+    const tradeKey = String((trade as { id?: string | number }).id ?? `${normalizeSymbol(trade.symbol || '')}-${(trade as { closedAt?: number }).closedAt ?? Date.now()}`);
+    if (this.postReviewInFlight.has(tradeKey)) return; // 併發防護——另一 call 生成緊
+    if ((trade as { postReview?: string }).postReview) {
+      // 已有 review(手動 edit/先前成功)→ 唔重生成(防覆寫);但 close 訊號可能
+      // 未推(先前 push 失敗)→ 補推——pushSignal 嘅 dedup 擋重複。
+      this.pushCloseSignal(trade, closeReason);
+      return;
+    }
+    this.postReviewInFlight.add(tradeKey);
     try {
       const provider = getActiveProvider();
       const isWin = trade.pnl >= 0;
-      const holdMin = Math.max(0, Math.round((trade.closedAt - trade.openedAt) / 60_000));
+      // v2.0.870-attack (V15):openedAt/closedAt 垃圾 → holdMin 唔可以 NaN
+      const holdRaw = (trade.closedAt - trade.openedAt) / 60_000;
+      const holdMin = Number.isFinite(holdRaw) ? Math.max(0, Math.round(holdRaw)) : 0;
       // v2.0.167: MAE/MFE are tracked as POSITION VALUE (margin + unrealized PnL),
       // NOT as raw PnL. Convert to actual PnL for the LLM so it doesn't confuse
       // $11.72 position value with $11.72 profit. The margin (capital required
       // to open the position) = entryPrice × quantity / leverage.
-      const margin = (trade.entryPrice * trade.quantity) / safeLeverage(trade.leverage);
-      const maeValue = trade.minValueReached ?? 0;
-      const mfeValue = trade.maxValueReached ?? 0;
-      const maePnl = maeValue - margin; // actual worst PnL dip
-      const mfePnl = mfeValue - margin; // actual best PnL peak
+      // v2.0.870-attack (V14):margin 計算溢出(entryPrice×quantity = Infinity)
+      // → LLM prompt 收到 NaN% 垃圾——finite + > 0 先可用
+      const marginRaw = (trade.entryPrice * trade.quantity) / safeLeverage(trade.leverage);
+      const margin = Number.isFinite(marginRaw) && marginRaw > 0 ? marginRaw : 0;
+      const maeValue = Number.isFinite(trade.minValueReached) && (trade.minValueReached as number) >= 0 ? (trade.minValueReached as number) : null;
+      const mfeValue = Number.isFinite(trade.maxValueReached) && (trade.maxValueReached as number) >= 0 ? (trade.maxValueReached as number) : null;
+      const maePnl = maeValue !== null ? maeValue - margin : -margin; // actual worst PnL dip
+      const mfePnl = mfeValue !== null ? mfeValue - margin : 0; // actual best PnL peak
       // v2.0.870-pnl-range-fix: 主神要求——所有金額用百分比（%）表示（相對 margin）——唔用 $
-      const maePnlPct = margin > 0 ? (maePnl / margin) * 100 : 0;
-      const mfePnlPct = margin > 0 ? (mfePnl / margin) * 100 : 0;
+      // v2.0.870-attack (V14):百分比 clamp ±500——1e308 污染值唔入 prompt
+      const maePnlPctRaw = margin > 0 ? (maePnl / margin) * 100 : 0;
+      const maePnlPct = Number.isFinite(maePnlPctRaw) ? Math.max(-500, Math.min(500, maePnlPctRaw)) : 0;
+      const mfePnlPctRaw = margin > 0 ? (mfePnl / margin) * 100 : 0;
+      const mfePnlPct = Number.isFinite(mfePnlPctRaw) ? Math.max(-500, Math.min(500, mfePnlPctRaw)) : 0;
 
       const systemPrompt = `You are a post-trade review analyst for a multi-agent quant trading system (MATS).
 Your job is to analyse a closed trade and provide a concise, actionable review.
@@ -4968,9 +5001,9 @@ Do NOT use markdown headers or bullet points — just plain text sentences.`;
 
       const userPrompt = `Trade Details:
 - Symbol: ${trade.symbol}
-- Side: ${trade.side.toUpperCase()}
-- Entry Price: ${trade.entryPrice.toFixed(4)}
-- Exit Price: ${trade.exitPrice.toFixed(4)}
+- Side: ${String(trade.side ?? '').toUpperCase()}
+- Entry Price: ${Number.isFinite(trade.entryPrice) ? trade.entryPrice.toFixed(4) : 'N/A'}
+- Exit Price: ${Number.isFinite(trade.exitPrice) ? trade.exitPrice.toFixed(4) : 'N/A'}
 - Quantity: ${trade.quantity}
 - Leverage: ${trade.leverage}x
 - Margin (capital used): ${margin.toFixed(2)}
@@ -4998,6 +5031,8 @@ Provide your post-trade review (all amounts as PERCENTAGES of margin, NEVER doll
       const review = response.content.trim();
       if (!review) {
         log.warn(`[post-review] LLM returned empty response for ${trade.symbol}`);
+        // v2.0.870(主神):postReview 生成失敗 → 照推 close 訊號(fallback 格式——reason + theses)
+        this.pushCloseSignal(trade, closeReason);
         return;
       }
 
@@ -5011,8 +5046,16 @@ Provide your post-trade review (all amounts as PERCENTAGES of margin, NEVER doll
       this.persistPortfolio();
       // Push updated data to the UI so the review appears immediately.
       this.pushToAPI();
+      // v2.0.870(主神):close 訊號喺 postReview 生成完成後先推——詳細區塊 = Review
+      // (取代 closeReason/thesis——group 訊息以事後檢討為主體)
+      this.pushCloseSignal(trade, closeReason);
     } catch (err) {
       log.warn(`[post-review] Generation failed for ${trade.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+      // v2.0.870(主神):postReview 生成失敗 → 照推 close 訊號(fallback——資訊完整)
+      this.pushCloseSignal(trade, closeReason);
+    } finally {
+      // v2.0.870-attack (V13):in-flight 釋放——無論成功/失敗
+      this.postReviewInFlight.delete(tradeKey);
     }
   }
 

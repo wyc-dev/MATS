@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-P82
+> **作者**: YC Wong · **版本**: 2.0.870-tg-review-attack
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
@@ -47,6 +47,19 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 | **風險等級客戶端選擇** | 後端運算單一 moderate 等級嘅訊號矩陣（v2.0.857 移除 aggressive/conservative）；客戶端按用戶選擇讀取對應格（v2.0.822→857）|
 | **訊號與執行分離** | 後端計算訊號 + 寫入 Supabase；客戶端讀取 + 決定執行（paper/real）。`ANALYSIS_MODE` 控制後端是否同時執行 |
 | **生產級標準** | 完整型別（Zod 驗證）、結構化日誌（Winston）、優雅關閉、指數退避重連 |
+
+---
+
+### v2.0.870-tg-review: TG close 訊號格式改為 Post-Review 主體 + 攻擊輪硬化
+
+**主神指示**: TG group 訊息詳細區塊——「📝 reconciliation / 📄 Entry / 📄 Exit」換成 Post-Review 內容（closeReason 對 group 觀眾冇意義、thesis 太長太技術性）。
+
+**實作**:
+- 格式（`src/services/tg-signal.ts`）: postReview 存在 → 只顯示 `✅ Review`（取代 📝 reason + 📄 Entry/Exit）;缺失 → fallback 舊格式（資訊完整）
+- 推送時機（`src/index.ts`）: close 訊號改為 postReview 生成完成後先推（`pushCloseSignal()` 新方法）——生成成功 → Review 格式;LLM 失敗 → fallback（訊號永不消失）;dedup 照常
+- **攻擊輪**（v2.0.870-tg-review-attack）: 5 命中全修——truncate type guard（postReview 持久化污染 → TypeError crash）、formatOpenSignal symbol undefined crash、`numOrNull()` 統一顯示入口（1e308/NaN/Infinity 污染拒絕——唔再公開「MAE +1e+308%」/「Invalid Date」）、pricePct/MAE/MFE clamp、regime/thesis type guard;周邊 4 漏洞——generatePostReview 重入防護（postReviewInFlight + 已有 review skip）、margin 溢出 guard、holdMin NaN guard、fallback tradeId random suffix
+
+**驗證**: 紅先 5 命中 → 綠後 20/20 全綠（V1-V12 攻擊 + T1-T14 回歸）;tsc clean。
 
 ---
 

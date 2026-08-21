@@ -165,17 +165,22 @@ export class TGSignalPusher {
   }): string {
     const lines: string[] = [];
     const side = trade.side === 'sell' ? 'SHORT' : 'LONG';
-    const symbol = String(trade.symbol ?? '');
-    lines.push(`📊 MATS TRADE — ${trade.symbol.toUpperCase()} ${side} (OPEN)`);
+    // v2.0.870-attack (V9):symbol 污染(undefined/null/non-string)→ String() 先
+    const symbol = typeof trade.symbol === 'string' ? trade.symbol : '';
+    lines.push(`📊 MATS TRADE — ${symbol.toUpperCase()} ${side} (OPEN)`);
     lines.push('');
-    if (Number.isFinite(trade.entryPrice) && (trade.entryPrice as number) > 0) lines.push(`Entry $${Number(trade.entryPrice).toFixed(2)}`);
+    const entryNum = this.numOrNull(trade.entryPrice, 1e7);
+    if (entryNum !== null && entryNum > 0) lines.push(`Entry $${entryNum.toFixed(2)}`);
     const stats: string[] = [];
-    if (Number.isFinite(trade.leverage) && (trade.leverage as number) > 0) stats.push(`${trade.leverage}x`);
-    if (Number.isFinite(trade.confidence) && (trade.confidence as number) > 0) stats.push(`Conf ${((trade.confidence as number) * 100).toFixed(0)}%`);
-    if (trade.regime) stats.push(trade.regime);
+    const levNum = this.numOrNull(trade.leverage, 1000);
+    if (levNum !== null && levNum > 0) stats.push(`${levNum}x`);
+    const confNum = this.numOrNull(trade.confidence, 10);
+    if (confNum !== null && confNum > 0) stats.push(`Conf ${(confNum * 100).toFixed(0)}%`);
+    // v2.0.870-attack (V10):regime 垃圾 type/超長 → truncate + type guard
+    if (typeof trade.regime === 'string' && trade.regime.trim()) stats.push(this.truncate(trade.regime, 40));
     if (stats.length > 0) lines.push(stats.join(' · '));
     lines.push('');
-    if (trade.thesis) lines.push(`📝 ${this.truncate(trade.thesis, 350)}`);
+    if (typeof trade.thesis === 'string' && trade.thesis.trim()) lines.push(`📝 ${this.truncate(trade.thesis, 350)}`);
     return lines.join('\n');
   }
 
@@ -190,8 +195,15 @@ export class TGSignalPusher {
   }): string {
     const lines: string[] = [];
     const side = trade.side === 'sell' ? 'SHORT' : 'LONG';
-    const symbol = String(trade.symbol ?? '');
-    const fmtDate = (ts: number) => new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+    // v2.0.870-attack (V9):symbol 污染(undefined/null/non-string)→ String() 先
+    const symbol = typeof trade.symbol === 'string' ? trade.symbol : '';
+    // v2.0.870-attack (V4):fmtDate 對 Invalid Date 防禦——唔顯示 "Invalid Date"
+    const fmtDate = (ts: number) => {
+      const d = new Date(ts);
+      return Number.isFinite(d.getTime())
+        ? d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+        : '';
+    };
 
     // ── 標題一行 ──
     // v2.0.868-fix(主神指正):reconciliation close 前系統已經用 HL fills 驗證
@@ -201,20 +213,28 @@ export class TGSignalPusher {
     lines.push('');
 
     // ── 核心數據(合併相關——每行一個資訊單元)──
-    const entry = Number.isFinite(trade.entryPrice) && (trade.entryPrice as number) > 0 ? `$${Number(trade.entryPrice).toFixed(2)}` : null;
-    const exit = Number.isFinite(trade.exitPrice) && (trade.exitPrice as number) > 0 ? `$${Number(trade.exitPrice).toFixed(2)}` : null;
+    // v2.0.870-attack (V2/V3):全部數字經 numOrNull 範圍檢查——1e308 污染值
+    // (持久化垃圾)唔可以喺 group 公開顯示科學記號荒謬值。
+    const entryNum = this.numOrNull(trade.entryPrice, 1e7);
+    const exitNum = this.numOrNull(trade.exitPrice, 1e7);
+    const entry = entryNum !== null && entryNum > 0 ? `$${entryNum.toFixed(2)}` : null;
+    const exit = exitNum !== null && exitNum > 0 ? `$${exitNum.toFixed(2)}` : null;
     if (entry && exit) lines.push(`Entry ${entry} → Exit ${exit}`);
     else if (entry) lines.push(`Entry ${entry}`);
     else if (exit) lines.push(`Exit ${exit}`);
 
-    const pnl = Number.isFinite(trade.pnlPct) ? (trade.pnlPct as number) * 100 : NaN;
+    // v2.0.870-attack (V6):pnlPct 污染(1e300)→ ±100(±10000%)上限拒絕
+    const pnlNum = this.numOrNull(trade.pnlPct, 100);
+    const pnl = pnlNum !== null ? pnlNum * 100 : NaN;
     if (Number.isFinite(pnl)) {
       const sign = pnl >= 0 ? '+' : '';
       // v2.0.867-fix(A):槓桿後 P&L + 未槓桿價格變化——清楚
-      if (entry && exit && Number.isFinite(trade.entryPrice) && Number.isFinite(trade.exitPrice)) {
-        const pricePctRaw = (((trade.exitPrice as number) - (trade.entryPrice as number)) / (trade.entryPrice as number)) * 100;
-        const pricePct = Number.isFinite(pricePctRaw) ? pricePctRaw : 0;
-        const lev = Number.isFinite(trade.leverage) && (trade.leverage as number) > 0 ? ` (${trade.leverage}x)` : '';
+      // v2.0.870-attack (V7):pricePct 計算溢出(entry 極細)→ ±1000% 上限
+      if (entryNum !== null && exitNum !== null && entryNum > 0) {
+        const pricePctRaw = ((exitNum - entryNum) / entryNum) * 100;
+        const pricePct = this.numOrNull(pricePctRaw, 1000) ?? 0;
+        const levNum = this.numOrNull(trade.leverage, 1000);
+        const lev = levNum !== null && levNum > 0 ? ` (${levNum}x)` : '';
         lines.push(`P&L ${sign}${pnl.toFixed(2)}%${lev} | price ${pricePct >= 0 ? '+' : ''}${pricePct.toFixed(2)}%`);
       } else {
         lines.push(`P&L ${sign}${pnl.toFixed(2)}%`);
@@ -223,45 +243,65 @@ export class TGSignalPusher {
 
     // 合併:Hold + Leverage / MAE% + MFE%(主神:用 -x% & +x%——position value 極端 vs 開倉值)
     const stats: string[] = [];
-    if (Number.isFinite(trade.holdMin)) stats.push(`${Math.round(trade.holdMin as number)}m`);
-    if (Number.isFinite(trade.leverage)) stats.push(`${trade.leverage}x`);
+    const holdNum = this.numOrNull(trade.holdMin, 1e5);
+    if (holdNum !== null) stats.push(`${Math.round(holdNum)}m`);
+    const levNum2 = this.numOrNull(trade.leverage, 1000);
+    if (levNum2 !== null) stats.push(`${levNum2}x`);
     if (stats.length > 0) lines.push(`Hold ${stats.join(' · ')}`);
     const excursions: string[] = [];
     // initial = 開倉時 position value(investment/margin)——計算極端%需要
-    const initial = Number.isFinite(trade.investment) && (trade.investment as number) > 0 ? (trade.investment as number) : null;
-    if (initial && Number.isFinite(trade.minValue) && (trade.minValue as number) > 0) {
-      const maeRaw = ((trade.minValue as number) - initial) / initial * 100;
-      if (Number.isFinite(maeRaw)) {
-        excursions.push(`MAE ${maeRaw <= 0 ? '' : '+'}${maeRaw.toFixed(2)}%`);
+    const initialNum = this.numOrNull(trade.investment, 1e9);
+    const initial = initialNum !== null && initialNum > 0 ? initialNum : null;
+    if (initial !== null) {
+      const minNum = this.numOrNull(trade.minValue, 1e9);
+      if (minNum !== null && minNum > 0) {
+        const maeRaw = ((minNum - initial) / initial) * 100;
+        // v2.0.870-attack (V2):MAE% 超 ±100(污染)→ 唔顯示
+        const maePct = this.numOrNull(maeRaw, 100);
+        if (maePct !== null) excursions.push(`MAE ${maePct <= 0 ? '' : '+'}${maePct.toFixed(2)}%`);
+      }
+      const maxNum = this.numOrNull(trade.maxValue, 1e9);
+      if (maxNum !== null && maxNum > 0) {
+        const mfeRaw = ((maxNum - initial) / initial) * 100;
+        const mfePct = this.numOrNull(mfeRaw, 100);
+        if (mfePct !== null) excursions.push(`MFE ${mfePct >= 0 ? '+' : ''}${mfePct.toFixed(2)}%`);
       }
     }
-    if (initial && Number.isFinite(trade.maxValue) && (trade.maxValue as number) > 0) {
-      const mfeRaw = ((trade.maxValue as number) - initial) / initial * 100;
-      if (Number.isFinite(mfeRaw)) {
-        excursions.push(`MFE ${mfeRaw >= 0 ? '+' : ''}${mfeRaw.toFixed(2)}%`);
-      }
-    }
-    // 冇 initial(數據缺失)→ fallback 顯示價值
+    // 冇 initial(數據缺失)→ fallback 顯示價值(v2.0.870-attack V12:$ 值都要範圍檢查)
     if (excursions.length === 0) {
       const v: string[] = [];
-      if (Number.isFinite(trade.minValue) && (trade.minValue as number) > 0) v.push(`MAE $${Number(trade.minValue).toFixed(2)}`);
-      if (Number.isFinite(trade.maxValue) && (trade.maxValue as number) > 0) v.push(`MFE $${Number(trade.maxValue).toFixed(2)}`);
+      const minNum2 = this.numOrNull(trade.minValue, 1e9);
+      if (minNum2 !== null && minNum2 > 0) v.push(`MAE $${minNum2.toFixed(2)}`);
+      const maxNum2 = this.numOrNull(trade.maxValue, 1e9);
+      if (maxNum2 !== null && maxNum2 > 0) v.push(`MFE $${maxNum2.toFixed(2)}`);
       if (v.length > 0) excursions.push(v.join(' · '));
     }
     if (excursions.length > 0) lines.push(excursions.join(' · '));
-    if (Number.isFinite(trade.openedAt) && (trade.openedAt as number) > 0 && Number.isFinite(trade.closedAt) && (trade.closedAt as number) > 0) {
+    // v2.0.870-attack (V4):openedAt/closedAt 1e308(有限但荒謬)→ 2e12(2033)上限
+    const openedNum = this.numOrNull(trade.openedAt, 2e12);
+    const closedNum = this.numOrNull(trade.closedAt, 2e12);
+    if (openedNum !== null && openedNum > 0 && closedNum !== null && closedNum > 0) {
       // v2.0.867-format6(主神):時間左邊註明時區——避免混淆(本地時區 GMT+8)
-      lines.push(`${this.timezoneLabel()} ${fmtDate(trade.openedAt as number)} → ${fmtDate(trade.closedAt as number)}`);
-    } else if (Number.isFinite(trade.closedAt) && (trade.closedAt as number) > 0) {
-      lines.push(`${this.timezoneLabel()} Closed ${fmtDate(trade.closedAt as number)}`);
+      lines.push(`${this.timezoneLabel()} ${fmtDate(openedNum)} → ${fmtDate(closedNum)}`);
+    } else if (closedNum !== null && closedNum > 0) {
+      lines.push(`${this.timezoneLabel()} Closed ${fmtDate(closedNum)}`);
     }
     lines.push('');
 
     // ── 詳細文字(簡潔——label 用縮寫)──
-    if (trade.reason) lines.push(`📝 ${this.truncate(trade.reason, 220)}`);
-    if (trade.entryThesis) lines.push(`📄 Entry: ${this.truncate(trade.entryThesis, 350)}`);
-    if (trade.exitThesis) lines.push(`📄 Exit: ${this.truncate(trade.exitThesis, 250)}`);
-    if (trade.postReview) lines.push(`✅ Review: ${this.truncate(trade.postReview, 280)}`);
+    // v2.0.870(主神):TG group 詳細區塊以 Post-Review 為主體——closeReason
+    // (reconciliation 等)對 group 觀眾冇意義、thesis 太長太技術性。
+    // postReview 存在 → 只顯示 Review;冇(生成失敗/未有)→ fallback reason + theses
+    // (資訊完整——postReview 缺失時唔靜默吞資訊)。
+    // v2.0.870-attack (V1):全部 string 字段 type guard——持久化污染(JSON 可以
+    // 存 number/array/object)→ 唔 crash(truncate 只收 string)。
+    if (typeof trade.postReview === 'string' && trade.postReview.trim()) {
+      lines.push(`✅ Review: ${this.truncate(trade.postReview, 600)}`);
+    } else {
+      if (typeof trade.reason === 'string' && trade.reason.trim()) lines.push(`📝 ${this.truncate(trade.reason, 220)}`);
+      if (typeof trade.entryThesis === 'string' && trade.entryThesis.trim()) lines.push(`📄 Entry: ${this.truncate(trade.entryThesis, 350)}`);
+      if (typeof trade.exitThesis === 'string' && trade.exitThesis.trim()) lines.push(`📄 Exit: ${this.truncate(trade.exitThesis, 250)}`);
+    }
     return lines.join('\n');
   }
 
@@ -275,8 +315,20 @@ export class TGSignalPusher {
   }
 
   private truncate(s: string, max: number): string {
+    // v2.0.870-attack (V1):type guard——持久化污染(JSON 可以存 number/array/
+    // object)→ 唔 crash。truncate 只收 string。
+    if (typeof s !== 'string' || s.length === 0) return '';
     const clean = s.replace(/\s+/g, ' ').trim();
     return clean.length > max ? clean.slice(0, max) + '…' : clean;
+  }
+
+  /** v2.0.870-attack:顯示數字統一入口——拒絕 NaN/±Infinity/非 number/超出
+   *  合理範圍(持久化污染 1e308 等垃圾)→ null。maxAbs 係絕對值上限。 */
+  private numOrNull(v: unknown, maxAbs: number): number | null {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+    const n = v as number;
+    if (n < -maxAbs || n > maxAbs) return null;
+    return n;
   }
 
   // ── Persistence ─────────────────────────────────────────────────────
