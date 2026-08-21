@@ -2013,9 +2013,18 @@ export class PortfolioTracker {
     } else {
       log.info(`⏭️ closeExchangePosition: duplicate trade record skipped for ${symbol} (same symbol+side+openedAt already exists)`);
     }
-    // Cap at 200 to avoid unbounded memory growth
+    // v2.0.870-pnl-range-fix: 用 30 日期限代替 200 個數目限制——保留 30 日內 trade
+    // （PNL 頁面 1 MONTH 需要完整 30 日數據——200 個限制會截斷）
+    // v2.0.870-pnl-range-fix-attack（攻擊硬化）:
+    //   1. 垃圾時間（NaN/Infinity/負數/0/null）→ 保留（唔刪除——避免數據丟失——
+    //      `NaN >= cutoff` = false 會刪除正常 trade）
+    //   2. 只喺 length > 200 先 filter（效能保護——30 日內 trade 有限——避免每次 close 都掃）
     if (this.closedRealTrades.length > 200) {
-      this.closedRealTrades.splice(0, this.closedRealTrades.length - 200);
+      const cutoff30d = Date.now() - 30 * 24 * 3600 * 1000;
+      this.closedRealTrades = this.closedRealTrades.filter((t) => {
+        const ts = t.closedAt ?? t.openedAt ?? 0;
+        return !Number.isFinite(ts) || ts <= 0 || ts >= cutoff30d;
+      });
     }
     log.info(`Exchange position closed: ${pos.side.toUpperCase()} ${pos.symbol} PnL: ${realizedPnl.toFixed(2)} (real trade, no paper balance/stats impact)`);
 

@@ -39,9 +39,12 @@
     padding: 40px 20px 48px;
   }
 
+  /* ── 頂部區塊：同下面 module（860px）對齊——修復偏右 ── */
+  .top-block { width: 100%; max-width: 860px; }
+
   /* ── Header:quiet, small, centered ── */
   .header { text-align: center; margin-bottom: 28px; }
-  .header h1 { display: flex; align-items: center; justify-content: center; gap: 12px; font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; margin-left: 40px; }
+  .header h1 { display: flex; align-items: center; justify-content: center; gap: 16px; font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; margin: 0 auto; }
   .header h1 svg { width: 1.3rem; height: 1.3rem; color: var(--text); }
   .header h1 .mono { font-family: var(--mono); font-weight: 600; }
   .header .date { font-size: var(--fs-sm); color: var(--muted); margin-top: 4px; font-family: var(--mono); }
@@ -137,6 +140,7 @@
 <body>
 
 <div id="capture-root">
+<div class="top-block">
 <div class="header">
   <h1><img src="MATS_icon.svg" alt="MATS" class="mats-icon" style="width:20px;height:28px;vertical-align:middle;"> <span class="rainbow-text" id="title-text">MATS</span> — <span id="title-sub">Daily</span> Cumulative PnL</h1>
   <div class="date" id="date-label">—</div>
@@ -155,6 +159,7 @@
     <button class="switch-btn" id="btn-yesterday">YESTERDAY</button>
     <button class="switch-btn active-period2" id="btn-today">TODAY</button>
   </div>
+  <div style="flex-basis:100%;height:0;"></div><!-- v2.0.870-pnl-range: 換行——unit/Refresh/Capture 落下一行 -->
   <div class="switch-group" id="unit-switch">
     <button class="switch-btn" id="btn-usd">$</button>
     <button class="switch-btn active-unit2" id="btn-pct">%</button>
@@ -175,6 +180,7 @@
   <div class="stat"><div class="label">Win Rate</div><div class="value" id="stat-winrate">—</div></div>
   <div class="stat"><div class="label">Avg Win / Loss</div><div class="value" id="stat-avg">—</div></div>
 </div>
+</div><!-- /top-block -->
 
 <div class="summary">
   <h2 class="section-title"><i data-lucide="clipboard-list"></i> Daily Trade Summary</h2>
