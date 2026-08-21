@@ -667,9 +667,18 @@ export class APIServer {
       // REST: portfolio
       // v2.0.868:當日累計 PnL(paper/real——PNL dashboard 頁)
       if (pathname === '/api/pnl' && req.method === 'GET') {
+        const emptySeries = { points: [], total: 0, trades: 0, wins: 0, list: [] };
+        const emptyDay = { date: '', paper: emptySeries, real: emptySeries };
         const data = this.dailyPnlProvider
           ? this.dailyPnlProvider()
-          : { today: { date: '', paper: { points: [], total: 0, trades: 0, wins: 0, list: [] }, real: { points: [], total: 0, trades: 0, wins: 0, list: [] } }, yesterday: { date: '', paper: { points: [], total: 0, trades: 0, wins: 0, list: [] }, real: { points: [], total: 0, trades: 0, wins: 0, list: [] } }, weekly: { date: '', paper: { points: [], total: 0, trades: 0, wins: 0, list: [] }, real: { points: [], total: 0, trades: 0, wins: 0, list: [] } } };
+          : {
+              today: { ...emptyDay, principal: { paper: 1000, real: 0 } },
+              yesterday: { ...emptyDay, principal: { paper: 1000, real: 0 } },
+              weekly: { ...emptyDay, principal: { paper: 1000, real: 0 } },
+              // v2.0.870-pnl-range: 2 WEEK + 1 MONTH
+              week2: { ...emptyDay, principal: { paper: 1000, real: 0 } },
+              month1: { ...emptyDay, principal: { paper: 1000, real: 0 } },
+            };
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify(data));
         return;
@@ -1784,13 +1793,15 @@ export class APIServer {
       }
 
       // v2.0.868:PNL dashboard 目錄(獨立頁——當日累計 PnL)
+      // v2.0.870-pnl-range-fix: 只喺「冇副檔名」時 fallback 到 pnl.html——
+      // 唔係所有非 .html（MATS_icon.svg 會被當 HTML 返回）
       if (pathname.startsWith('/PNL/')) {
         const pnlDir = path.join(process.cwd(), 'PNL');
         let fp = path.join(pnlDir, pathname.replace('/PNL/', ''));
-        if (!fp.endsWith('.html')) fp = path.join(pnlDir, 'pnl.html');
+        if (path.extname(fp) === '') fp = path.join(pnlDir, 'pnl.html');
         if (fs.existsSync(fp)) {
           const ext = path.extname(fp);
-          const mime: Record<string, string> = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css' };
+          const mime: Record<string, string> = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
           res.writeHead(200, { 'Content-Type': mime[ext] ?? 'application/octet-stream' });
           res.end(fs.readFileSync(fp));
           return;

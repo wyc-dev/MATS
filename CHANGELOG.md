@@ -4,6 +4,20 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-pnl-range: PNL 頁面時間範圍 + flip 語義 + post-review 百分比
+
+**主神指示**: PNL 頁面「1 WEEK/2 WEEK/1 MONTH」時間範圍選項 + flip 語義（BUY End/SELL End）+ post-review 用百分比表示。
+
+**實作**:
+- **PNL 頁面（PNL/pnl.html）**: WEEKLY → **1 WEEK**；新增 **2 WEEK**/**1 MONTH**（後端 dailyPnl 加 `week2`（14日）/`month1`（30日））；PAPER/REAL 顯示修正（移除 HTML 硬編碼 `active-paper` + 初始化 `setMode(mode)`）；icon 換 **MATS_icon.svg**（api-server mime 加 `.svg`）；標題字體加大（2rem）+ 「Daily」隨 timeframe 改變（Daily/Yesterday/1-Week/2-Week/Monthly）；trade records PnL **淨係顯示 %**
+- **flip 語義**: 「Position flip」→「**BUY End/SELL End**」（BUY End = BUY trend 終結 = close BUY）；asset_analyses metadata 加 `flipEnd`（寫明邊個方向嘅 End）；**flipfix-attack**——pending 清除時機修正（對側開倉成功先清除——防雙重損失）+ 定期清理過期
+- **post-review**: 生成 + 重寫 prompt 規定所有金額用 **%（margin 基準）**——唔用 $
+- **Trade Incident（ui/src/App.tsx）**: PnL 顯示 `$X.XX (X.X%)` → **淨係 X.X%**
+
+**驗證**: tsc 零錯誤；vite build 成功；全量 3188 pass + 13 pre-existing（unrelated）。
+
+---
+
 ## v2.0.870-flipfix: flip bug 修復（pending flip 意圖 + exploration 檢查）
 
 **主神調查**: 「Position flip: closing BUY to open SELL」但從來冇開過 sell——bug！8 筆 flip 中 4 筆係 exploration（50%）——flip 只 close 冇 open——下 cycle 可能開同側（雙重損失：08-03 btc -4.4%、08-21 CL -1.18%）。

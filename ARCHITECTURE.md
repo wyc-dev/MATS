@@ -50,6 +50,18 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 
 ---
 
+### v2.0.870-pnl-range: PNL 頁面時間範圍 + flip 語義 + post-review 百分比
+
+**實作**:
+- PNL 頁面: 1 WEEK/2 WEEK/1 MONTH 時間範圍（後端 week2/month1）；PAPER/REAL 顯示修正；MATS_icon.svg；標題字體 + 「Daily」隨 timeframe；trade records 淨係 %
+- flip 語義: BUY End/SELL End（BUY End = BUY trend 終結）；asset_analyses flipEnd；pending 清除時機修正
+- post-review: prompt 規定用 %（margin 基準）
+- Trade Incident: PnL 淨係 %
+
+**驗證**: tsc clean；vite build 成功；3188 pass + 13 pre-existing。
+
+---
+
 ### v2.0.870-flipfix: flip bug 修復（pending flip 意圖 + exploration 檢查）
 
 **主神調查**: 「Position flip」但從來冇開過 sell——bug！8 筆 flip 中 4 筆係 exploration——flip 只 close 冇 open——下 cycle 可能開同側（雙重損失）。

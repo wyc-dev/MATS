@@ -41,7 +41,7 @@
 
   /* ── Header:quiet, small, centered ── */
   .header { text-align: center; margin-bottom: 28px; }
-  .header h1 { display: flex; align-items: center; justify-content: center; gap: 10px; font-size: var(--fs-xl); font-weight: 600; letter-spacing: -0.01em; }
+  .header h1 { display: flex; align-items: center; justify-content: center; gap: 12px; font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; margin-left: 40px; }
   .header h1 svg { width: 1.3rem; height: 1.3rem; color: var(--text); }
   .header h1 .mono { font-family: var(--mono); font-weight: 600; }
   .header .date { font-size: var(--fs-sm); color: var(--muted); margin-top: 4px; font-family: var(--mono); }
@@ -138,18 +138,20 @@
 
 <div id="capture-root">
 <div class="header">
-  <h1><i data-lucide="bot"></i> <span class="rainbow-text" id="title-text">MATS</span> — Daily Cumulative PnL</h1>
+  <h1><img src="MATS_icon.svg" alt="MATS" class="mats-icon" style="width:20px;height:28px;vertical-align:middle;"> <span class="rainbow-text" id="title-text">MATS</span> — <span id="title-sub">Daily</span> Cumulative PnL</h1>
   <div class="date" id="date-label">—</div>
   <div class="sub">AI-native multi-agent trading system · live cumulative PnL (local time GMT+8)</div>
 </div>
 
 <div class="controls">
   <div class="switch-group" id="mode-switch">
-    <button class="switch-btn active-paper" data-mode="paper" id="btn-paper">PAPER</button>
+    <button class="switch-btn" data-mode="paper" id="btn-paper">PAPER</button>
     <button class="switch-btn" data-mode="real" id="btn-real">REAL</button>
   </div>
   <div class="switch-group" id="period-switch">
-    <button class="switch-btn" id="btn-weekly">WEEKLY</button>
+    <button class="switch-btn" id="btn-month1">1 MONTH</button>
+    <button class="switch-btn" id="btn-week2">2 WEEK</button>
+    <button class="switch-btn" id="btn-weekly">1 WEEK</button>
     <button class="switch-btn" id="btn-yesterday">YESTERDAY</button>
     <button class="switch-btn active-period2" id="btn-today">TODAY</button>
   </div>
@@ -204,9 +206,12 @@
 // ═══ State ═══
 let data = null;
 let mode = 'real';      // paper | real——v2.0.870-P80: 預設 real（而家主要 real 交易——paper 冇 trade 會顯示「冇資料」）
-let period = 'today';    // today | yesterday(昨日數據一定完整——今日可能未完)
+let period = 'today';    // today | yesterday | weekly | week2 | month1——v2.0.870-pnl-range: 2 WEEK + 1 MONTH
 // v2.0.870-P80: 讀取 localStorage 持久化嘅 mode（用戶上次選擇）
 try { const saved = localStorage.getItem('pnlMode'); if (saved === 'paper' || saved === 'real') mode = saved; } catch { /* non-fatal */ }
+// v2.0.870-pnl-range-fix: 初始化時同步按鈕顯示——HTML 硬編碼 active-paper 會令
+// 「一入去就 show PAPER」即使實際 mode 係 real（setMode 更新 class + 唔影響 data 未載入）
+setMode(mode);
 let unit = 'pct';         // usd | pct(% 模式:累計對比本金增長)——預設 %
 
 const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
@@ -230,7 +235,9 @@ async function load() {
 function render() {
   if (!data) return;
   const p = data[period] || { date: '', paper: {}, real: {} };
-  document.getElementById('date-label').textContent = period === 'weekly' ? `LAST 7 DAYS (GMT+8)` : `${p.date} (GMT+8)`;
+  const periodTitles = { weekly: 'LAST 7 DAYS', week2: 'LAST 14 DAYS', month1: 'LAST 30 DAYS' };
+  const periodTitle = periodTitles[period];
+  document.getElementById('date-label').textContent = periodTitle ? `${periodTitle} (GMT+8)` : `${p.date} (GMT+8)`;
   const d = p[mode] || { points: [], total: 0, trades: 0, wins: 0 };
   renderStats(d);
   renderChart(d);
@@ -248,7 +255,8 @@ function renderSummary(d) {
   const avgLoss = losses.length ? losses.reduce((a, b) => a + b, 0) / losses.length : 0;
   const maxWin = wins.length ? Math.max(...wins) : 0;
   const maxLoss = losses.length ? Math.min(...losses) : 0;
-  const periodLabel = period === 'weekly' ? 'WEEKLY' : period === 'today' ? 'TODAY' : 'YESTERDAY';
+  const periodLabelMap = { weekly: '1 WEEK', week2: '2 WEEK', month1: '1 MONTH', today: 'TODAY', yesterday: 'YESTERDAY' };
+  const periodLabel = periodLabelMap[period] || period.toUpperCase();
   const modeLabel = `${mode === 'paper' ? 'PAPER' : 'REAL'} · ${periodLabel}`;
   // % 模式:Avg/Best/Worst 用 pnl/principal(對比本金——主神 v2.0.868 指正)
   const sumPrincipal = getPrincipal();
@@ -405,7 +413,8 @@ function renderChart(d) {
   ctx.fillStyle = '#e4e4e7';
   ctx.font = 'bold 12px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText(period === 'weekly' ? 'LAST 7 DAYS (GMT+8)' : `${periodDate || ''} (GMT+8)`, W / 2, 12);
+  const chartTitles = { weekly: 'LAST 7 DAYS (GMT+8)', week2: 'LAST 14 DAYS (GMT+8)', month1: 'LAST 30 DAYS (GMT+8)' };
+  ctx.fillText(chartTitles[period] || `${periodDate || ''} (GMT+8)`, W / 2, 12);
 
   // peak / trough 標注(最高/最低累計點)——v2.0.868-fix:用 toVal 後值(% 模式顯示百分比)
   const peak = valPts.reduce((a, b) => (b.cum > a.cum ? b : a));
@@ -433,10 +442,13 @@ function renderChart(d) {
     const dt = new Date(t);
     return `${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
   };
-  if (period === 'weekly') {
-    // v2.0.868-fix:WEEKLY 顯示七日標記(每日一個日期——唔係淨係 HH:MM)
+  if (period === 'weekly' || period === 'week2' || period === 'month1') {
+    // v2.0.868-fix:多日範圍顯示日期標記(每日一個日期——唔係淨係 HH:MM)
+    // v2.0.870-pnl-range: 2 WEEK / 1 MONTH 間隔顯示（2 WEEK 每 2 日、1 MONTH 每 5 日）
     const DAY = 24 * 3600 * 1000;
-    for (let i = 0; i < 7; i++) {
+    const days = period === 'weekly' ? 7 : period === 'week2' ? 14 : 30;
+    const stepDays = period === 'weekly' ? 1 : period === 'week2' ? 2 : 5;
+    for (let i = 0; i < days; i += stepDays) {
       const t = tMin + i * DAY;
       if (t > tMax) break;
       const x = X(t);
@@ -506,6 +518,8 @@ function renderChart(d) {
 // ═══ Mode switch ═══
 document.getElementById('btn-paper').addEventListener('click', () => setMode('paper'));
 document.getElementById('btn-real').addEventListener('click', () => setMode('real'));
+document.getElementById('btn-month1').addEventListener('click', () => setPeriod('month1'));
+document.getElementById('btn-week2').addEventListener('click', () => setPeriod('week2'));
 document.getElementById('btn-weekly').addEventListener('click', () => setPeriod('weekly'));
 document.getElementById('btn-yesterday').addEventListener('click', () => setPeriod('yesterday'));
 document.getElementById('btn-today').addEventListener('click', () => setPeriod('today'));
@@ -522,6 +536,11 @@ function setUnit(u) {
 
 function setPeriod(p) {
   period = p;
+  // v2.0.870-pnl-range: 標題「Daily」隨 timeframe 改變（Daily / Yesterday / 1-Week / 2-Week / Monthly）
+  const titleSubMap = { today: 'Daily', yesterday: 'Yesterday', weekly: '1-Week', week2: '2-Week', month1: 'Monthly' };
+  document.getElementById('title-sub').textContent = titleSubMap[p] || 'Daily';
+  document.getElementById('btn-month1').className = `switch-btn${p === 'month1' ? ' active-period' : ''}`;
+  document.getElementById('btn-week2').className = `switch-btn${p === 'week2' ? ' active-period' : ''}`;
   document.getElementById('btn-weekly').className = `switch-btn${p === 'weekly' ? ' active-period' : ''}`;
   document.getElementById('btn-yesterday').className = `switch-btn${p === 'yesterday' ? ' active-period' : ''}`;
   document.getElementById('btn-today').className = `switch-btn${p === 'today' ? ' active-period2' : ''}`;
@@ -687,9 +706,8 @@ function renderRecords(d) {
     const tradePrincipal = getPrincipal();
     const pnlPct = tradePrincipal > 0 ? (pnl / tradePrincipal) * 100 : 0;
     const pnlCls = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-    const pnlTxt = unit === 'pct'
-      ? `${pnlPct >= 0 ? '+' : '-'}${Math.abs(pnlPct).toFixed(2)}%`
-      : `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`;
+    // v2.0.870-pnl-range-fix: 主神要求——所有 $ 轉 %，淨係顯示百分比
+    const pnlTxt = `${pnlPct >= 0 ? '+' : '-'}${Math.abs(pnlPct).toFixed(2)}%`;
     const holdMin = t.openedAt && t.closedAt ? Math.max(0, Math.round((Number(t.closedAt) - Number(t.openedAt)) / 60000)) : null;
     return `<div class="trade-card">
       <div class="tc-head">
