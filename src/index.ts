@@ -742,6 +742,12 @@ class MATSSystem {
    * 30 分鐘內有效（過期清除——consensus 可能真反轉）。
    */
   private pendingFlips = new Map<string, { side: 'buy' | 'sell'; timestamp: number }>();
+
+  /**
+   * v2.0.870-flipfix: 最近一次 flip End 方向（BUY End / SELL End）——
+   * asset_analyses metadata 寫明「邊個方向嘅 End」。
+   */
+  private lastFlipEnd: 'buy' | 'sell' | null = null;
   /** v2.0.202: Per-symbol-per-direction loss streak guard.
    *  Tracks consecutive losses for each (symbol, direction) pair.
    *  After 3 consecutive losses, the pair is blocked (force HOLD) for 12 cycles (60 min).
@@ -1928,7 +1934,8 @@ User instruction: ${instruction}`;
                 content: `You are the System Engineer of MATS, a multi-agent quant trading system. A user has identified an error in a trade record's thesis or post-review. Your job is to rewrite the incorrect fields based on the user's instruction.
 
 You understand the learning system deeply:
-- MAE/MFE are position VALUE (margin + unrealized PnL), NOT PnL. MFE=$11.72 with margin=$9.98 means peak profit was $1.74, not $11.72.
+- MAE/MFE are position VALUE (margin + unrealized PnL), NOT PnL. MFE=+17.4% of margin means peak profit was +17.4% of capital, not the raw position value.
+- v2.0.870-pnl-range-fix（主神規定）: ALL monetary values in Post-Review MUST be PERCENTAGES (% of margin) — NEVER dollar amounts ($). Write "+3.5%" or "-2.1%", never "$2.39" or "dollars".
 - Entry Thesis is the frozen rationale at open. Only rewrite if the user says it's wrong.
 - Exit Thesis is the close rationale. Only rewrite if the user says it's wrong.
 - Post-Review is the LLM-generated post-trade analysis. Rewrite if the user says it contains errors.
@@ -2673,12 +2680,13 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               return { success: false, error: `${sym} already has ${existing.side.toUpperCase()} position` };
             }
             // Flip: close existing first
-            log.warn(`🔄 Manual flip: closing existing ${existing!.side.toUpperCase()} ${sym} first`);
+            // v2.0.870-flipfix: 語義改造——「BUY End」= BUY trend 終結（close BUY）；「SELL End」= SELL trend 終結（close SELL）
+            log.warn(`🔄 Manual ${existing!.side === 'buy' ? 'BUY End' : 'SELL End'}: closing existing ${existing!.side.toUpperCase()} ${sym} first`);
             // v2.0.853-fix2: Tag 'manual' — this is a user-initiated flip, not a
             //   system consensus close. Without this, inferCloseReason may classify
             //   it as 'sl_tp' if the exit price happens to be near SL/TP, polluting
             //   the learning weight (should be 0.5× for manual, not 1.0× for sl_tp).
-            await this.closeTrade(sym, `Manual flip: closing ${existing!.side.toUpperCase()} to open ${action.toUpperCase()}`, 'manual');
+            await this.closeTrade(sym, `${existing!.side === 'buy' ? 'BUY End' : 'SELL End'}: closing ${existing!.side.toUpperCase()} to open ${action.toUpperCase()}`, 'manual');
           }
 
           // Fetch current price
@@ -4925,6 +4933,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       const mfeValue = trade.maxValueReached ?? 0;
       const maePnl = maeValue - margin; // actual worst PnL dip
       const mfePnl = mfeValue - margin; // actual best PnL peak
+      // v2.0.870-pnl-range-fix: 主神要求——所有金額用百分比（%）表示（相對 margin）——唔用 $
+      const maePnlPct = margin > 0 ? (maePnl / margin) * 100 : 0;
+      const mfePnlPct = margin > 0 ? (mfePnl / margin) * 100 : 0;
 
       const systemPrompt = `You are a post-trade review analyst for a multi-agent quant trading system (MATS).
 Your job is to analyse a closed trade and provide a concise, actionable review.
@@ -4932,21 +4943,25 @@ Your job is to analyse a closed trade and provide a concise, actionable review.
 ## GROUND TRUTH RULE
 Before writing the review, you MUST check the actual trade data provided: entry/exit prices, PnL, MAE, MFE, entry/exit thesis, and close reason. NEVER guess trade outcomes or invent numbers — always base your review on the real data shown to you. If data is missing, note it in the review.
 
+## 金額單位（v2.0.870-pnl-range-fix——主神規定）
+ALL monetary values MUST be expressed as PERCENTAGES (% relative to margin) — NEVER use dollar amounts ($).
+PnL, MAE, MFE are all given as percentages of margin (capital used). Write them as plain numbers with a % sign, e.g. "+3.5%" or "-2.1%". NEVER write "$2.39" or "dollars".
+
 Focus on:
 1. How could MORE profit have been made? (e.g. held longer, larger size, better entry timing)
 2. How could LESS loss have been incurred? (e.g. exited earlier, tighter stop, avoided the trade)
 3. What does the MAE/MFE tell us about the trade management?
 
-MAE (Maximum Adverse Excursion) = worst unrealized PnL (dollar loss) during the trade. Negative = position was underwater.
-MFE (Maximum Favorable Excursion) = best unrealized PnL (dollar profit) during the trade. Positive = position was in profit.
+MAE (Maximum Adverse Excursion) = worst unrealized PnL (% of margin) during the trade. Negative = position was underwater.
+MFE (Maximum Favorable Excursion) = best unrealized PnL (% of margin) during the trade. Positive = position was in profit.
 
 If MFE >> final PnL, the trade gave back most of its gains — exit timing was poor.
 If MAE is very negative but the trade still won, the entry was poorly timed but the thesis was right.
 If MAE ≈ final PnL (both negative), the trade never went in our favor — the thesis was wrong from the start.
 
-IMPORTANT: MAE and MFE are actual PnL values (profit/loss in dollars), NOT position value.
-For example, MFE=$1.74 means the position was up $1.74 at its best point. If final PnL=$1.35,
-the trade gave back $0.39 of the $1.74 peak — about 22% giveback, NOT 88%.
+IMPORTANT: MAE and MFE are percentages of margin, NOT dollar amounts and NOT position value.
+For example, MFE=+4.2% means the position was up 4.2% of margin at its best point. If final PnL=+3.5%,
+the trade gave back 0.7pp of the 4.2pp peak — about 17% giveback, NOT 83%.
 
 Respond in 2-4 sentences. Be specific and actionable. No fluff, no hedging.
 Do NOT use markdown headers or bullet points — just plain text sentences.`;
@@ -4954,21 +4969,21 @@ Do NOT use markdown headers or bullet points — just plain text sentences.`;
       const userPrompt = `Trade Details:
 - Symbol: ${trade.symbol}
 - Side: ${trade.side.toUpperCase()}
-- Entry Price: $${trade.entryPrice.toFixed(4)}
-- Exit Price: $${trade.exitPrice.toFixed(4)}
+- Entry Price: ${trade.entryPrice.toFixed(4)}
+- Exit Price: ${trade.exitPrice.toFixed(4)}
 - Quantity: ${trade.quantity}
 - Leverage: ${trade.leverage}x
-- Margin (capital used): $${margin.toFixed(2)}
-- PnL: $${trade.pnl.toFixed(2)} (${(trade.pnlPct * 100).toFixed(1)}%)
+- Margin (capital used): ${margin.toFixed(2)}
+- PnL: ${(trade.pnlPct * 100).toFixed(1)}% (margin ${margin > 0 ? ((trade.pnl / margin) * 100).toFixed(1) : '0'}%)
 - Result: ${isWin ? 'WIN' : 'LOSS'}
 - Hold Duration: ${holdMin} minutes
 - Close Reason: ${closeReason}
 - Entry Thesis: ${trade.entryThesis ?? 'N/A'}
 - Exit Thesis: ${trade.exitThesis ?? 'N/A'}
-- MAE (worst PnL dip): $${maePnl.toFixed(2)}
-- MFE (best PnL peak): $${mfePnl.toFixed(2)}
+- MAE (worst PnL dip): ${maePnlPct.toFixed(1)}% of margin
+- MFE (best PnL peak): ${mfePnlPct.toFixed(1)}% of margin
 
-Provide your post-trade review:`;
+Provide your post-trade review (all amounts as PERCENTAGES of margin, NEVER dollars):`;
 
       const response = await provider.chat({
         messages: [
@@ -4990,7 +5005,7 @@ Provide your post-trade review:`;
       // reference stored in closedRealTrades[] / paperEngine.trades[], so
       // this mutation is visible to the API response without any extra wiring.
       trade.postReview = review;
-      log.info(`[post-review] Generated for ${trade.symbol} (${isWin ? 'WIN' : 'LOSS'} $${trade.pnl.toFixed(2)}): ${review.slice(0, 80)}...`);
+      log.info(`[post-review] Generated for ${trade.symbol} (${isWin ? 'WIN' : 'LOSS'} ${(trade.pnlPct * 100).toFixed(1)}%): ${review.slice(0, 80)}...`);
 
       // v2.0.160: Persist immediately so postReview survives restart
       this.persistPortfolio();
@@ -11240,15 +11255,16 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
             }
 
             // Direction flip: close existing position first
-            log.warn(`🔄 Per-symbol flip: ${psc.symbol} ${posSide.toUpperCase()} → ${psc.action.toUpperCase()}. Closing existing position first.`);
+            log.warn(`🔄 Per-symbol ${posSide === 'buy' ? 'BUY End' : 'SELL End'}: ${psc.symbol} ${posSide.toUpperCase()} → ${psc.action.toUpperCase()}. Closing existing position first.`);
             // v2.0.851: Flip is an agent-consensus close → tag 'consensus' so the
             // TradeRecord records the agent-driven exit (not SL/TP inference).
-            const flipCloseSuccess = await this.closeTrade(psc.symbol, `Position flip: closing ${posSide.toUpperCase()} to open ${psc.action.toUpperCase()}`, 'consensus');
+            const flipCloseSuccess = await this.closeTrade(psc.symbol, `${posSide === 'buy' ? 'BUY End' : 'SELL End'}: closing ${posSide.toUpperCase()} to open ${psc.action.toUpperCase()}`, 'consensus');
             if (flipCloseSuccess) {
               // v2.0.870-flipfix: 記住「原本倉位方向」（close 咗嘅方向）——
               // 防止下 cycle 再開同側（雙重損失——08-03 btc -4.4% / 08-21 CL -1.18% 案例）
               this.pendingFlips.set(normalizeSymbol(psc.symbol), { side: posSide, timestamp: Date.now() });
-              log.info(`  → Flipped ${psc.symbol}. Pending flip guard: ${posSide.toUpperCase()} closed — blocking same-side re-entry (30min window)`);
+              this.lastFlipEnd = posSide; // asset_analyses metadata 寫明「邊個方向嘅 End」
+              log.info(`  → ${posSide === 'buy' ? 'BUY End' : 'SELL End'} executed on ${psc.symbol}. Pending guard: ${posSide.toUpperCase()} closed — blocking same-side re-entry (30min window)`);
             } else {
               log.error(`  → Failed to close ${psc.symbol} for flip — position remains ${posSide.toUpperCase()}`);
             }
@@ -11459,9 +11475,12 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
             // which closes on HL first. portfolio.closePosition() only closes locally.
             // v2.0.143: Route through closeTrade() — handles paper vs real + exitThesis.
             // v2.0.851: Flip is an agent-consensus close → tag 'consensus'.
-            const flipCloseSuccess = await this.closeTrade(activeSym, `Position flip: closing ${existingPos.side.toUpperCase()} to open ${finalDecision.action.toUpperCase()}`, 'consensus');
+            const flipCloseSuccess = await this.closeTrade(activeSym, `${existingPos.side === 'buy' ? 'BUY End' : 'SELL End'}: closing ${existingPos.side.toUpperCase()} to open ${finalDecision.action.toUpperCase()}`, 'consensus');
             if (flipCloseSuccess) {
-              log.info(`  → Flipped ${activeSym}. Proceeding with ${finalDecision.action.toUpperCase()} order.`);
+              this.lastFlipEnd = existingPos.side; // asset_analyses metadata 寫明「邊個方向嘅 End」
+            }
+            if (flipCloseSuccess) {
+              log.info(`  → ${existingPos.side === 'buy' ? 'BUY End' : 'SELL End'} executed on ${activeSym}. Proceeding with ${finalDecision.action.toUpperCase()} order.`);
             } else {
               log.error(`  → Failed to close ${activeSym} for flip — aborting flip`);
               finalDecision = {
@@ -11845,6 +11864,12 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // penalise losers, never boost winners.
         // v2.0.870-flipfix: 檢查 pending flip——防止開同側（雙重損失）
         // flip close 後 30 分鐘內，唔應該開同側（違反 flip 意圖——08-03 btc -4.4% / 08-21 CL -1.18% 案例）
+        // v2.0.870-flipfix-attack: 定期清理過期 pending（防止累積——唔只清理檢查嘅 symbol）
+        if (this.pendingFlips.size > 0) {
+          for (const [sym, p] of this.pendingFlips) {
+            if (Date.now() - p.timestamp > 30 * 60_000) this.pendingFlips.delete(sym);
+          }
+        }
         const pendingFlipSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
         const pendingFlip = this.pendingFlips.get(pendingFlipSym);
         if (pendingFlip) {
@@ -11859,9 +11884,9 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               rationale: `[FLIP GUARD] Pending flip intent ${pendingFlip.side.toUpperCase()} — blocking same-side re-entry. Original: ${finalDecision.rationale}`,
             };
           } else if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
-            // consensus 話對側——實現 flip 意圖——清除 pending
-            this.pendingFlips.delete(pendingFlipSym);
-            log.info(`🔄 [flip-guard] ${finalDecision.symbol || activeSymbol}: pending flip intent ${pendingFlip.side.toUpperCase()} — opening opposite side as intended`);
+            // consensus 話對側——實現 flip 意圖——唔清除 pending（等 executeTrade 成功先清除——
+            // 如果對側開倉失敗（gate block），pending 保留——下次同側仍然 block——防雙重損失）
+            log.info(`🔄 [flip-guard] ${finalDecision.symbol || activeSymbol}: pending flip intent ${pendingFlip.side.toUpperCase()} — opening opposite side (pending cleared on successful execution)`);
           }
         }
 
@@ -12667,12 +12692,30 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
                 flat: { action: finalAction as 'buy' | 'sell' | 'hold', conviction: execConf, rationale: execThesis, calibrated: true },
               },
             },
-            metadata: { source: 'final-execution', consensusAction, executed: execResult.success },
+            metadata: {
+              source: 'final-execution',
+              consensusAction,
+              executed: execResult.success,
+              // v2.0.870-flipfix: 寫明「邊個方向嘅 End」（BUY End / SELL End）——
+              // 如果呢個 cycle 有 flip 發生（close 原倉位）
+              ...(this.lastFlipEnd ? { flipEnd: this.lastFlipEnd === 'buy' ? 'BUY End' : 'SELL End' } : {}),
+            },
           };
           await this.analysisWriter.updateSymbol(execAnalysis);
         }
       } catch (err) {
         log.warn(`[analysis-final-exec] failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // v2.0.870-flipfix-attack: flip 意圖實現——開咗對側先清除 pending
+      // （pending 檢查時唔清除——如果對側開倉失敗，pending 保留——下次同側仍然 block）
+      if (execResult.success && (finalDecision.action === 'buy' || finalDecision.action === 'sell')) {
+        const execSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+        const pendingFlip = this.pendingFlips.get(execSym);
+        if (pendingFlip && finalDecision.action !== pendingFlip.side) {
+          this.pendingFlips.delete(execSym);
+          log.info(`🔄 [flip-guard] ${finalDecision.symbol}: flip intent fulfilled — opened ${finalDecision.action.toUpperCase()} (opposite of closed ${pendingFlip.side.toUpperCase()})`);
+        }
       }
 
       // v2.0.106: Record trade execution for per-asset frequency throttling
@@ -14065,6 +14108,9 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     today: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
     yesterday: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
     weekly: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
+    // v2.0.870-pnl-range: 2 WEEK（14 日）+ 1 MONTH（30 日）
+    week2: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
+    month1: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
   } {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -14132,6 +14178,20 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         principal: { paper: paperPrincipal, real: realPrincipal },
         paper: toSeries(paperAll, todayStart - 6 * DAY, todayStart + DAY),
         real: toSeries(realAll, todayStart - 6 * DAY, todayStart + DAY),
+      },
+      // v2.0.870-pnl-range: 最近 14 日（2 WEEK）
+      week2: {
+        date: fmt(todayStart - 13 * DAY),
+        principal: { paper: paperPrincipal, real: realPrincipal },
+        paper: toSeries(paperAll, todayStart - 13 * DAY, todayStart + DAY),
+        real: toSeries(realAll, todayStart - 13 * DAY, todayStart + DAY),
+      },
+      // v2.0.870-pnl-range: 最近 30 日（1 MONTH）
+      month1: {
+        date: fmt(todayStart - 29 * DAY),
+        principal: { paper: paperPrincipal, real: realPrincipal },
+        paper: toSeries(paperAll, todayStart - 29 * DAY, todayStart + DAY),
+        real: toSeries(realAll, todayStart - 29 * DAY, todayStart + DAY),
       },
     };
   }

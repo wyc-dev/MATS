@@ -2390,7 +2390,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                   color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)',
                   marginLeft: 'auto',
                 }}>
-                  {t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)} ({(t.pnlPct * 100).toFixed(1)}%)
+                  {(t.pnlPct * 100) >= 0 ? '+' : ''}{(t.pnlPct * 100).toFixed(1)}%
                 </span>
                 <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
                   {isExpanded ? '▲' : '▼'}
