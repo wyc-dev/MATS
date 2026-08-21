@@ -16,6 +16,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-tg-review-fix: TG 訊號「冇發送」修復(chatId 污染 + 訊號等 LLM deadline)
+
+**主神報告**: 盈利平倉訊號冇發送到 group。
+
+**根因(兩層疊加)**:
+1. **測試污染 settings(元兇)**: tests/tg-signal.test.ts T6/T7/T8 用 `new TGSignalPusher()`(default path = `data/evolution/tg-signal-settings.json`)→ `updateSettings({ chatId: '-1001234567890' })` → save() 覆蓋主神真實 chatId(env `TELEGRAM_CHAT_ID` = 5921875209)→ 所有 close 訊號 send 去假 group → Telegram 400「chat not found」→ 靜默消失(主神收唔到)
+2. **訊號等 LLM 嘅設計脆弱性**: close 訊號改為 postReview 生成完成後先推——LLM 掛/慢(30s timeout)→ 訊號跟住死
+
+**修復**:
+- **即時**: settings chatId 還原 env 值 + 經 `POST /api/tg-signal` hot-update 運行中 process(唔使 restart)——sendMessage 驗證成功(`close signal sent to 5921875209`)
+- **根治測試污染**: T6/T7/T8 改用獨立 `/tmp` path——default path 唔准再被測試 save 寫入(教訓:測試同生產共用 settings 檔案 = 炸彈)
+- **8s deadline**(src/index.ts `generatePostReview`): close 訊號唔可以無限等 LLM——8s 未完成先推 fallback(訊號保證到);LLM 完成後 trade 記錄照寫入(UI 有 review),訊號已推唔再補推(`signalPushed` guard + clearTimeout)
+- **chat-not-found 清晰警示**(src/services/tg-signal.ts `pushSignal`): Telegram 400「chat not found」→ 明確 log 提示檢查 settings/env(唔再淨係 400 JSON)
+
+**驗證**: tsc 零錯誤;tg-signal 測試 20/20 全綠;sendMessage 實測成功。
+
+---
+
 ## v2.0.870-tg-review-attack: TG 訊號攻擊輪(併發/狀態注入/持久化污染)
 
 **攻擊向量**(12 攻擊測試,5 命中全修 + 周邊 4 漏洞 code-review 修復):

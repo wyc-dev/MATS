@@ -4945,6 +4945,16 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       return;
     }
     this.postReviewInFlight.add(tradeKey);
+    // v2.0.870-fix:close 訊號唔可以無限等 LLM——LLM 掛/慢 → 訊號死(主神實證)。
+    // 8s deadline 先推 fallback(訊號保證到);LLM 完成後 trade 記錄照寫入(UI 有
+    // review)——訊號已推唔再補推(pushSignal dedup 亦擋)。
+    let signalPushed = false;
+    const deadlineTimer = setTimeout(() => {
+      if (!signalPushed) {
+        signalPushed = true;
+        this.pushCloseSignal(trade, closeReason);
+      }
+    }, 8_000);
     try {
       const provider = getActiveProvider();
       const isWin = trade.pnl >= 0;
@@ -5032,7 +5042,10 @@ Provide your post-trade review (all amounts as PERCENTAGES of margin, NEVER doll
       if (!review) {
         log.warn(`[post-review] LLM returned empty response for ${trade.symbol}`);
         // v2.0.870(主神):postReview 生成失敗 → 照推 close 訊號(fallback 格式——reason + theses)
-        this.pushCloseSignal(trade, closeReason);
+        if (!signalPushed) {
+          signalPushed = true;
+          this.pushCloseSignal(trade, closeReason);
+        }
         return;
       }
 
@@ -5048,13 +5061,20 @@ Provide your post-trade review (all amounts as PERCENTAGES of margin, NEVER doll
       this.pushToAPI();
       // v2.0.870(主神):close 訊號喺 postReview 生成完成後先推——詳細區塊 = Review
       // (取代 closeReason/thesis——group 訊息以事後檢討為主體)
-      this.pushCloseSignal(trade, closeReason);
+      if (!signalPushed) {
+        signalPushed = true;
+        this.pushCloseSignal(trade, closeReason);
+      }
     } catch (err) {
       log.warn(`[post-review] Generation failed for ${trade.symbol}: ${err instanceof Error ? err.message : String(err)}`);
       // v2.0.870(主神):postReview 生成失敗 → 照推 close 訊號(fallback——資訊完整)
-      this.pushCloseSignal(trade, closeReason);
+      if (!signalPushed) {
+        signalPushed = true;
+        this.pushCloseSignal(trade, closeReason);
+      }
     } finally {
       // v2.0.870-attack (V13):in-flight 釋放——無論成功/失敗
+      clearTimeout(deadlineTimer);
       this.postReviewInFlight.delete(tradeKey);
     }
   }
