@@ -50,6 +50,16 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 
 ---
 
+### v2.0.870-pnl-range-attack: 30 日期限 + PNL 頂部修正
+
+**實作**:
+- 30 日期限: `closedRealTrades` 200 限制 → 30 日保留——垃圾時間保留 + length>200 先 filter（效能）
+- PNL 頁面: $ % Refresh Capture 換行；頂部偏右修正（top-block 860px 對齊）
+
+**驗證**: 7/7 攻擊測試；tsc clean；3195 pass + 13 pre-existing。
+
+---
+
 ### v2.0.870-pnl-range: PNL 頁面時間範圍 + flip 語義 + post-review 百分比
 
 **實作**:

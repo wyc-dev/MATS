@@ -4,6 +4,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-pnl-range-attack: 30 日期限 + PNL 頂部修正
+
+**主神指示**: PNL 1 MONTH 只 show 200 個 trade——因為限制咗儲存 200 個——改為 30 日期限（唔用數目限制）；PNL 頁面頂部偏右。
+
+**實作**:
+- **30 日期限**（src/trading/portfolio.ts）: `closedRealTrades` 200 個限制 → **30 日保留**（PNL 1 MONTH 完整數據）——**攻擊硬化**: 垃圾時間（NaN/Infinity/負數/0/null）→ 保留（唔刪除——`NaN >= cutoff` = false 會誤刪正常 trade）+ `length > 200` 先 filter（效能保護——避免每次 close 都 O(n)）
+- **PNL 頁面**（PNL/pnl.html）: `$ % Refresh Capture` 換行顯示；**頂部偏右修正**——新增 `.top-block`（860px container）包住 header/controls/stats——同下面 module 對齊
+
+**驗證**: 7/7 攻擊測試（垃圾時間保留 / 30 日前刪除 / length 閾值）；tsc 零錯誤；全量 3195 pass + 13 pre-existing（unrelated）。
+
+---
+
 ## v2.0.870-pnl-range: PNL 頁面時間範圍 + flip 語義 + post-review 百分比
 
 **主神指示**: PNL 頁面「1 WEEK/2 WEEK/1 MONTH」時間範圍選項 + flip 語義（BUY End/SELL End）+ post-review 用百分比表示。
