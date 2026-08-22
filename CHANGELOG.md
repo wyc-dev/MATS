@@ -4,6 +4,85 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-trend-hold-attack: Trend-Hold 攻擊輪 + 閉環校準
+
+**主神指令**: 不擇手段攻擊 Trend-Hold Gate / Gate Outcome Tracker / execution-metadata 周邊，完美修復；量化金融分析師思路提升盈利。
+
+**攻擊輪（紅先 8 命中全修）**:
+- **A1/A6/A7**: momentum 極大（1e308）/ 極細（1e-9）→ 觸發 hold——加合理範圍（±100%）+ 最小閾值（0.05%，噪音唔觸發）
+- **A2**: momentum 0.0001% 噪音觸發 hold——最小閾值
+- **A3/A5**: prematureRate 1e308 / prematureSamples 1e308 → clamp 成「最強證據」（×0.5）——**改為 reject**（垃圾值唔可以變成有效證據）
+- **B2**: record `xyz:GOLD` 但 check `gold` 唔 resolve——symbol normalize（細楷 + 去 xyz: 前綴，record/check 一致）
+- **C1/C4**: 空/空白 gate 名通過 filter——trim 後空 → 過濾
+
+**盈利提升（Trend-Hold 閉環校準）**:
+- trend-hold 攔截後接入 Gate Outcome Tracker——量度攔截 hit rate（價格繼續升 = 攔截啱；跌 = 攔截錯）
+- hit rate 高 → trend-hold 有 edge（可加強）；低 → 太保守（錯過離場）——數據驅動校準
+
+**驗證**: tsc 零錯誤；80/80 相關測試全綠；全量 3263 pass + 13 pre-existing（空測試檔 + v2.0.854-attack2，unrelated）。
+
+---
+
+## v2.0.870-trend-hold: Trend-Hold Gate（避免 whipsaw 多重 OPEN & CLOSE）
+
+**主神報告**: BNB 連續 4 個 BUY trade 反覆 OPEN & CLOSE——$680.48 開到 $707.84 收，一直持有應該賺 +4.02%，中間進出淨係蝕手續費 + 錯過趨勢。Trade 2（+8.6%）agents 全部投 HOLD 但系統 close 咗，close 後價格繼續升 +2.9%——假 close。
+
+**根因**: close-decision-calibrator 只睇「歷史過早率」（≥60% 先 hold），冇睇「即時趨勢」——4h/1h momentum 仍然支持持倉方向時 close = 逆勢操作。
+
+**實作**:
+- `src/analysis/trend-hold-gate.ts`（新）: `shouldHoldForTrend` 純函數——趨勢支持（4h+1h 雙窗確認）+ 盈利 + 冇 SL/thesis 確認退出 → soft hold（×0.5-0.85，過早率分級）；SL/thesis/虧損永遠唔 hold（死揸防禦）；垃圾輸入保守唔 hold
+- `index.ts`: `holdCloseIfCalibrated` 加 trend-hold 分支——**只對 consensus close 生效**（agents 全部 HOLD 但系統 close = 假 close）；tp_hit 鎖利設計唔 hold；exit_price_lock 由 calibrator 處理（過早率 ≥70%）；pending-close 確認機制（下 cycle 再 close = 確認執行；冇再 close = 取消揸住；3 cycle 超時兜底——唔會死揸）
+
+**反事實驗證（BNB 4 trade）**: Trade 2（consensus，趨勢支持）→ HOLD（避免假 close，保留盈利倉）；Trade 1/4（SL hit）→ 照常 close（止血）；Trade 3（tp_hit）→ 照常 close（鎖利設計）
+
+**驗證**: tsc 零錯誤；62/62 測試全綠（trend-hold 12 + execution-metadata-attack 22 + gate-outcome 16 + analysis-matrix 12）。
+
+---
+
+## v2.0.870-execution-attack: execution-metadata 攻擊輪 + Gate Outcome Tracker
+
+**主神指令**: 不擇手段攻擊剛才修葺嘅代碼（併發/狀態注入/持久化污染），完美修復；以量化金融分析師思路提升盈利。
+
+**攻擊輪（紅先 6 命中全修 + 純函數 16 攻擊測試）**:
+- **A1-A8**: `buildAssetAnalysis` execution 參數——string/array/非 boolean blocked/gates 100 個/gate 名 10000 字直接寫入 metadata（持久化污染）
+- **B1-B7**: `sanitizeExecutionReport` 純函數——null/string/number/array → null；blocked 非 boolean → null；gates 垃圾過濾（gate 唔係 string 直接丟）；cap 50；長度 cap（gate 40/reason 500/action 20/blockedBy 40）；有效 report 原樣保留
+- **C1-C6**: `attachExecutionToAnalyses`——垃圾 row/metadata 唔 crash；execSym 匹配；Skeptics 優先；**跨 cycle 洩漏修復**（flush 開頭清空 skeptics blocks——analysisMode=false 時舊 block 唔可以洩漏到下個 cycle）
+
+**修復**:
+- `src/services/execution-metadata.ts`（新）: `sanitizeExecutionReport` + `attachExecutionToAnalyses` 純函數（單一 sanitize 入口，可測）
+- `analysis-matrix.ts` / `supabase-writer.ts` / `index.ts` 三處接駁
+- `flushPendingAnalyses`: activeAuditGates 垃圾 element 防禦（filter + cap）
+
+**盈利提升（Gate Outcome Tracker）**:
+- `src/analysis/gate-outcome-tracker.ts`（新）: 量化金融分析師思路——**每個 gate 係一個策略，量度 hit rate 先知道信唔信**
+- 攔截時記錄（symbol/gate/direction/price/cycle），之後檢查走勢：攔截 BUY 價格跌 = hit（避免損失）/ 升 = miss（錯過盈利）；Skeptics BLOCKED close 持倉繼續賺 = hit
+- per-gate hit rate + avg move，持久化 `data/evolution/gate-outcome.json`（sanitize load）
+- 純觀測層——零決策邏輯改動；hit rate 高嘅 gate 有 edge（可加強），低嘅太保守（錯過盈利）
+
+**驗證**: tsc 零錯誤；50/50 測試全綠（execution-metadata-attack 22 + gate-outcome 16 + analysis-matrix 12）；web `getExecution` 8/8 攻擊驗證 + build 零錯誤。
+
+---
+
+## v2.0.870-execution-metadata: 最終執行結果寫入 asset_analyses（客戶端顯示攔截訊號）
+
+**主神報告**: Skeptics BLOCKED close 等最終攔截 gate 冇顯示喺 mats_web_app——asset_analyses 只記錄 consensus，冇記錄「點解訊號冇執行」——致命（客戶端睇到 CLOSE 訊號但實際被攔截，position remains open）。
+
+**主神第二輪指示（前後腳修正）**: 成個 cycle 完成運算後先一次過上載——唔可以 writeCycle 早 + updateExecutionMetadata 遲（前後腳會令客戶端睇到冇 execution 資訊嘅 row，而且分開寫有失敗風險）。
+
+**實作**（零決策邏輯改動——只加 metadata 寫入層 + 寫入時序重構）:
+- **types**（src/types/index.ts）: `ExecutionGate` + `ExecutionReport`（`metadata.execution` 結構）
+- **analysis-matrix.ts**: `buildAssetAnalysis` 加 optional `execution` 參數 → 寫入 `metadata`（向後兼容，唔傳照舊空 `{}`）
+- **supabase-writer.ts**: 新 `updateExecutionMetadata()`（保留——read→merge→write，防禦 sanitize + retry）
+- **index.ts** 寫入時序重構（**單一原子快照**）:
+  - `writeCycle` 由 cycle 早期（~9666）**延遲到 cycle 尾**——analyses 存 `_pendingAnalyses`
+  - Skeptics BLOCKED close → 記錄 `_skepticsCloseBlocks` map（唔即時寫）
+  - 所有 gate 完成後 → `flushPendingAnalyses()`：attach execution（active symbol gate 堆疊 + Skeptics blocks）到每 row 嘅 `metadata.execution`，**一次過 `writeCycle`**
+  - 失敗非致命——下 cycle clean-snapshot 自癒
+
+**驗證**: tsc 零錯誤；analysis-matrix 12/12 測試綠；web build 零錯誤。
+
+---
+
 ## v2.0.870-tg-review: TG close 訊號格式改為 Post-Review 主體
 
 **主神指示**: TG group 訊息詳細區塊——「📝 reconciliation / 📄 Entry / 📄 Exit」換成 Post-Review 內容(closeReason 對 group 觀眾冇意義、thesis 太長太技術性)。

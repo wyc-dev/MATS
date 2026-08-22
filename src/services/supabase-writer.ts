@@ -16,7 +16,8 @@
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { createLogger } from '../observability/logger.ts';
-import type { AssetAnalysis } from '../types/index.ts';
+import type { AssetAnalysis, ExecutionGate, ExecutionReport } from '../types/index.ts';
+import { sanitizeExecutionReport } from './execution-metadata.ts';
 
 const log = createLogger({ phase: 'analysis-writer' });
 
@@ -392,6 +393,70 @@ export class SupabaseAnalysisWriter {
         } else {
           this.lastWriteError = msg;
           log.warn(`[supabase-writer] updateSymbol failed after ${MAX_RETRIES} attempts (non-fatal): ${msg}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * v2.0.870: Write the final execution outcome (gates + blocks) into a
+   *  symbol's `metadata.execution` — a lightweight UPDATE that merges into
+   *  the existing metadata JSONB without touching the rest of the row.
+   *  This is what lets clients show WHY a signal did not execute
+   *  (Skeptics BLOCKED close, direction-restrict, conviction-gate, ...).
+   *
+   *  Defensive: sanitises every field (persisted pollution must never crash),
+   *  retries with backoff, non-fatal on failure. Zero decision logic here. */
+  async updateExecutionMetadata(symbol: string, execution: ExecutionReport): Promise<void> {
+    if (!this.enabled || !this.client) {
+      log.info(`[local-only] Execution metadata: ${symbol} blocked=${execution?.blocked}`);
+      return;
+    }
+    if (!symbol || typeof symbol !== 'string' || symbol.length > 64) return;
+    // v2.0.870-attack: 統一 sanitise 入口——垃圾輸入唔可以 crash 或污染 DB
+    const safe = sanitizeExecutionReport(execution);
+    if (!safe) return;
+    const payload: Record<string, unknown> = {
+      finalAction: safe.finalAction,
+      blocked: safe.blocked,
+      gates: safe.gates,
+    };
+    if (safe.blockedBy) payload['blockedBy'] = safe.blockedBy;
+    if (safe.blockedReason) payload['blockedReason'] = safe.blockedReason;
+
+    const MAX_RETRIES = 3;
+    const BACKOFF_MS = [500, 1000, 2000];
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        // 讀現有 metadata → merge execution → 寫返（唔 clobber 其他 metadata）
+        const { data: existing, error: readErr } = await (this.client as any)
+          .from(TABLE)
+          .select('metadata')
+          .eq('symbol', symbol)
+          .maybeSingle();
+        if (readErr) throw readErr;
+        const merged = { ...(existing?.metadata ?? {}), execution: payload };
+        const { error: updErr } = await (this.client as any)
+          .from(TABLE)
+          .update({ metadata: merged })
+          .eq('symbol', symbol);
+        if (updErr) throw updErr;
+
+        this.lastWriteAt = Date.now();
+        this.lastWriteError = null;
+        log.info(`[supabase-writer] Execution metadata: ${symbol} blocked=${payload['blocked']} gates=${safe.gates.length}`);
+        return;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message
+          : (err && typeof err === 'object' && typeof (err as { message?: unknown }).message === 'string'
+            ? (err as { message: string }).message : String(err));
+        if (attempt < MAX_RETRIES - 1) {
+          log.warn(`[supabase-writer] updateExecutionMetadata attempt ${attempt + 1}/${MAX_RETRIES} failed: ${msg} — retrying`);
+          await new Promise(resolve => setTimeout(resolve, BACKOFF_MS[attempt]!));
+        } else {
+          this.lastWriteError = msg;
+          log.warn(`[supabase-writer] updateExecutionMetadata failed after ${MAX_RETRIES} attempts (non-fatal): ${msg}`);
         }
       }
     }

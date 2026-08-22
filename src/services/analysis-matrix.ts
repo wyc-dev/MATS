@@ -19,7 +19,9 @@ import type {
   PositionState,
   RiskProfile,
   EdgeReport,
+  ExecutionReport,
 } from '../types/index.ts';
+import { sanitizeExecutionReport } from './execution-metadata.ts';
 import type { PerSymbolConsensus } from '../types/index.ts';
 import type { AggregatedMarketState } from '../data/market-state.ts';
 
@@ -112,6 +114,7 @@ export function buildAssetAnalysis(
   agentsAligned: number,
   agentsTotal: number,
   edgeReport?: EdgeReport,
+  execution?: ExecutionReport,
 ): AssetAnalysis | null {
   // No consensus for this symbol → emit a neutral matrix (all 'hold').
   const rawAction = psc?.action ?? 'hold';
@@ -178,6 +181,9 @@ export function buildAssetAnalysis(
   // deleted — zero decision consumers since v2.0.857).
   const matrix = buildMatrix(rawAction, closePosition, confidence, rationale, edgeReport);
 
+  // v2.0.870-attack: execution 參數必須 sanitise——垃圾輸入（string/array/
+  // 非 boolean blocked/超長字段）唔可以寫入 metadata（持久化污染）。
+  const safeExecution = sanitizeExecutionReport(execution);
   return {
     symbol,
     cycleId,
@@ -185,7 +191,7 @@ export function buildAssetAnalysis(
     marketData,
     consensus,
     matrix,
-    metadata: {},
+    metadata: safeExecution ? { execution: safeExecution } : {},
     edgeReport,
   };
 }
