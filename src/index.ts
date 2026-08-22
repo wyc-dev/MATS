@@ -8,7 +8,10 @@ import { hlRateLimitedFetch } from './utils/hl-global-limiter.ts';
 import { withTimeout } from './utils/with-timeout.ts';
 import { SupabaseAnalysisWriter } from './services/supabase-writer.ts';
 import { buildAssetAnalysis } from './services/analysis-matrix.ts';
-import type { AssetAnalysis, EdgeReport, RiskProfile } from './types/index.ts';
+import { attachExecutionToAnalyses } from './services/execution-metadata.ts';
+import { GateOutcomeTracker } from './analysis/gate-outcome-tracker.ts';
+import { shouldHoldForTrend, type TrendHoldResult } from './analysis/trend-hold-gate.ts';
+import type { AssetAnalysis, EdgeReport, ExecutionReport as AnalysisExecutionReport, RiskProfile } from './types/index.ts';
 import {
   computeEdgeReport, skipEdgeReport, realizedStats,
   ExecutionTracker as EdgeExecutionTracker, StabilityMonitor,
@@ -592,6 +595,15 @@ class MATSSystem {
   private recentVolOutcomes: Array<{ vol: number; win: boolean }> = [];
   /** v2.0.726: Last cycle's gate results — for SE no-trade investigation. */
   private lastGateResults: Array<{ gate: string; passed: boolean; reason: string }> = [];
+  /** v2.0.870: Pending asset_analyses rows — flushed ONCE after the full cycle
+   *  completes (owner directive: never write mid-cycle — front/back-foot is fatal). */
+  private _pendingAnalyses: AssetAnalysis[] | null = null;
+  /** v2.0.870: Skeptics close blocks this cycle — attached to the pending
+   *  analyses at flush time so the write is a single atomic snapshot. */
+  private _skepticsCloseBlocks = new Map<string, { reason: string }>();
+  /** v2.0.870: Gate Outcome Tracker——量度每個 gate 嘅攔截準確率（hit rate），
+   *  量化金融分析師思路：gate 係策略，要量度先知道信唔信。純觀測層。 */
+  private gateOutcomeTracker = new GateOutcomeTracker();
   /** v2.0.726: Recent market conditions — for SE no-trade investigation. */
   private recentMarketConditions: Array<{ cycle: number; regime: string; volatility: number; price: number }> = [];
   private totalCycles = 0;
@@ -9669,9 +9681,12 @@ ${recentExamples}
             );
             if (analysis) analyses.push(analysis);
           }
-          await this.analysisWriter.writeCycle(analyses);
+          // v2.0.870: 延遲寫入——成個 cycle 完成後一次過上載（含最終執行結果）。
+          // 前後腳（writeCycle 早 + updateExecutionMetadata 遲）會令客戶端睇到
+          // 冇 execution 資訊嘅 row——致命。存 pending，cycle 尾 flush。
+          this._pendingAnalyses = analyses;
         } catch (err) {
-          log.warn(`[analysis-write] failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+          log.warn(`[analysis-build] failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
@@ -11184,6 +11199,18 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
             );
             if (!closeValidation.approved) {
               log.warn(`🚫 Skeptics BLOCKED close for ${psc.symbol}: ${closeValidation.rationale} — position remains open`);
+              // v2.0.870: 記錄 block——cycle 尾一次過 attach 到 pending analyses 再寫入
+              // （唔即時寫——避免前後腳，保證單一原子快照）
+              this._skepticsCloseBlocks.set(normalizeSymbol(psc.symbol), { reason: closeValidation.rationale });
+              // v2.0.870: Gate Outcome Tracker——記錄攔截，之後量度 Skeptics 嘅 hit rate
+              this.gateOutcomeTracker.record({
+                symbol: psc.symbol,
+                gate: 'skeptics-close-validation',
+                direction: 'close',
+                side: (pos.side === 'sell' ? 'sell' : 'buy') as 'buy' | 'sell',
+                entryPrice: pos.currentPrice ?? 0,
+                cycle: this.totalCycles,
+              });
               continue;
             }
             log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale} [Skeptics: ✅ ${closeValidation.rationale}]`);
@@ -12827,6 +12854,24 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         this.lastGateResults = [...activeAuditGates];
       }
 
+      // v2.0.870: 成個 cycle 完成後一次過上載 asset_analyses（含最終執行結果）——
+      // 主神指示：唔可以前後腳。所有 gate 已執行完，attach execution 後單一 writeCycle。
+      await this.flushPendingAnalyses(activeAuditGates, finalDecision, activeSymbol);
+
+      // v2.0.870: Gate Outcome Tracker——每 cycle 檢查被攔截訊號嘅後續走勢
+      // （純觀測層：量度每個 gate 嘅 hit rate，唔影響決策）
+      try {
+        const prices = new Map<string, number>();
+        const syms = new Set<string>([normalizeSymbol(activeSymbol), ...(this.tradingMarkets ?? [])]);
+        for (const s of syms) {
+          const st = this.marketState.getState(s);
+          if (st?.price && Number.isFinite(st.price) && st.price > 0) prices.set(s.toLowerCase(), st.price);
+        }
+        this.gateOutcomeTracker.check(prices);
+      } catch (err) {
+        log.warn(`[gate-outcome] check failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+
       // v2.0.122: Pending thesis management for the active symbol.
       // If Meta-Agent output BUY/SELL with a thesis but the trade didn't execute
       // (gates overrode to HOLD, or execution failed), store the thesis as pending
@@ -13816,6 +13861,69 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     log.info(`📋 [audit] Cycle ${this.totalCycles} ${action.toUpperCase()} ${symbol} conf=${(confidence * 100).toFixed(0)}% executed=${executed} gates=[${gateSummary}]`);
   }
 
+  /**
+   * v2.0.870: Flush the pending asset_analyses rows in ONE atomic write at
+   *  the end of the cycle — after ALL gates have run. Attaches the final
+   *  execution outcome (active-symbol gate stack + Skeptics close blocks)
+   *  into each row's metadata.execution so clients see WHY a signal did not
+   *  execute. Owner directive: never write mid-cycle (front/back-foot is fatal).
+   *
+   *  Non-fatal on failure — the next cycle's clean-snapshot self-heals. */
+  private async flushPendingAnalyses(
+    activeAuditGates: Array<{ gate: string; passed: boolean; reason: string }>,
+    finalDecision: { action?: string; symbol?: string },
+    activeSymbol: string,
+  ): Promise<void> {
+    // v2.0.870-attack: 無論 pending 有冇，都要清空 skeptics blocks——
+    // analysisMode=false 時 flush 會 early return，舊 block 唔可以洩漏到下個 cycle
+    const skepticsBlocks = this._skepticsCloseBlocks;
+    this._skepticsCloseBlocks = new Map();
+
+    const pending = this._pendingAnalyses;
+    this._pendingAnalyses = null;
+    if (!pending || pending.length === 0) return;
+
+    // v2.0.870-attack: activeAuditGates 垃圾 element（undefined/null）唔可以 crash
+    const safeGates = Array.isArray(activeAuditGates)
+      ? activeAuditGates
+          .filter((g): g is { gate: string; passed: boolean; reason: string } => !!g && typeof g === 'object' && typeof g.gate === 'string')
+          .map((g) => ({ gate: g.gate.slice(0, 40), passed: g.passed === true, reason: String(g.reason ?? '').slice(0, 500) }))
+      : [];
+    const execSym = normalizeSymbol(finalDecision?.symbol || activeSymbol);
+    const blockedGate = safeGates.find((g) => !g.passed);
+    const execReport: AnalysisExecutionReport = {
+      finalAction: typeof finalDecision?.action === 'string' ? finalDecision.action.slice(0, 20) : 'hold',
+      blocked: Boolean(blockedGate),
+      ...(blockedGate ? { blockedBy: 'gate', blockedReason: blockedGate.reason } : {}),
+      gates: safeGates,
+    };
+
+    // v2.0.870-attack: 純函數 attach——垃圾 row / 垃圾 metadata 唔 crash
+    attachExecutionToAnalyses(pending, execReport, execSym, skepticsBlocks);
+
+    // v2.0.870: Gate Outcome Tracker——記錄被攔截訊號（active symbol gate）
+    for (const a of pending) {
+      const exec = a.metadata?.['execution'] as { blocked?: boolean; blockedBy?: string; finalAction?: string } | undefined;
+      if (!exec?.blocked) continue;
+      const price = a.marketData?.price;
+      if (!Number.isFinite(price) || price <= 0) continue;
+      this.gateOutcomeTracker.record({
+        symbol: a.symbol,
+        gate: exec.blockedBy === 'skeptics' ? 'skeptics-close-validation' : (exec.blockedBy ?? 'gate'),
+        direction: exec.blockedBy === 'skeptics' ? 'close' : (exec.finalAction === 'sell' ? 'sell' : 'buy'),
+        side: null,
+        entryPrice: price,
+        cycle: a.cycleId,
+      });
+    }
+
+    try {
+      await this.analysisWriter.writeCycle(pending);
+    } catch (err) {
+      log.warn(`[analysis-write] failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   /** Serialize portfolio (Map → plain object) for JSON transmission */
   private serializePortfolio(p: Readonly<import('./types/index.ts').Portfolio>): Record<string, unknown> {
     const positions: Record<string, unknown> = {};
@@ -14140,12 +14248,72 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       // v2.0.868-attack12:加 side——buy/sell 過早率分開(主神審計)
       const posSide = this.portfolio.getPosition(symNorm)?.side;
       const holdSide: 'buy' | 'sell' = isSellSide(posSide) ? 'sell' : 'buy';
-      if (!this.closeCalibrator.shouldHoldClose(symNorm, holdSide, wasProfitable, trend, closeReason)) return false;
+      if (!this.closeCalibrator.shouldHoldClose(symNorm, holdSide, wasProfitable, trend, closeReason)) {
+        // v2.0.870: Trend-Hold Gate——趨勢支持 + 盈利 → soft hold（避免 whipsaw
+        // 多重 OPEN & CLOSE 浪費手續費 + 錯過趨勢）。SL/thesis 已喺 call site 過濾。
+        const trendHold = this.checkTrendHold(symNorm, holdSide, wasProfitable, closeReason);
+        if (trendHold.hold) {
+          const rate = this.closeCalibrator.getPrematureRate(symNorm, holdSide, wasProfitable, trend).rate;
+          this.closeCalibrator.registerPendingClose(symNorm, this.totalCycles, Math.max(rate, 0.6));
+          // v2.0.870: Trend-Hold 閉環——記錄攔截，Gate Outcome Tracker 量度 hit rate
+          // （價格繼續升 = 攔截啱；跌 = 攔截錯）——校準 trend-hold 強度
+          const st = this.marketState.getState(symNorm);
+          const price = st?.price;
+          if (Number.isFinite(price) && price > 0) {
+            this.gateOutcomeTracker.record({
+              symbol: symNorm,
+              gate: 'trend-hold',
+              direction: 'close',
+              side: holdSide,
+              entryPrice: price,
+              cycle: this.totalCycles,
+            });
+          }
+          log.warn(`🛑 [trend-hold] ${symNorm} close 被 hold（${trendHold.reason}）——下 cycle 再確認;SL/thesis 仍然立即執行`);
+          return true;
+        }
+        return false;
+      }
       const rate = this.closeCalibrator.getPrematureRate(symNorm, holdSide, wasProfitable, trend).rate;
       this.closeCalibrator.registerPendingClose(symNorm, this.totalCycles, rate);
       log.warn(`🛑 [close-calib] ${symNorm} close 決定被 hold(過早率 ${(rate * 100).toFixed(0)}%)——下 cycle 再確認;SL/thesis/PAEL 仍然立即執行`);
       return true;
     } catch { return false; } // 校準器錯誤 → 唔 hold(照常 close——安全 fallback)
+  }
+
+  /**
+   * v2.0.870: Trend-Hold Gate——量化金融分析師思路：trend-following 第一原則
+   * 係 let winners run。close 訊號出現時，如果 4h/1h momentum 仍然支持持倉
+   * 方向 + 盈利 → soft hold（降低 close 傾向，避免 whipsaw）。
+   * SL/thesis 已喺 call site 過濾（唔會傳入）。純函數 shouldHoldForTrend。
+   */
+  private checkTrendHold(symbol: string, side: 'buy' | 'sell', wasProfitable: boolean, closeReason: string): TrendHoldResult {
+    try {
+      // v2.0.870: 只對「agents 冇明確理由」嘅 close 生效——consensus close
+      // （agents 全部 HOLD 但系統 close = 假 close）。tp_hit 係鎖利設計（唔 hold），
+      // exit_price_lock 由 calibrator 處理（過早率 ≥70%），sl/thesis 已喺 call site 過濾。
+      if (closeReason !== 'consensus') {
+        return { hold: false, multiplier: 1, reason: `reason ${closeReason} not trend-hold eligible` };
+      }
+      const st = this.marketState.getState(symbol);
+      const m4h = st?.momentum?.m4h ?? 0;
+      const m1h = st?.momentum?.m1h ?? 0;
+      const trend = this.lastKlineSummary?.trend1h ?? 'unknown';
+      const pr = this.closeCalibrator.getPrematureRate(symbol, side, wasProfitable, trend);
+      return shouldHoldForTrend({
+        side,
+        momentum4h: m4h,
+        momentum1h: m1h,
+        closeReason,
+        slHit: false,
+        thesisInvalidated: false,
+        wasProfitable,
+        prematureRate: pr.rate,
+        prematureSamples: pr.total,
+      });
+    } catch {
+      return { hold: false, multiplier: 1, reason: 'error' };
+    }
   }
 
   /** v2.0.866 Phase B:每 cycle 處理 pending-close(超時兜底執行) */

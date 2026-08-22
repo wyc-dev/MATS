@@ -1326,6 +1326,26 @@ export interface AssetAnalysis {
   edgeReport?: EdgeReport;
 }
 
+/** One gate check in the execution pipeline (entry/close gates). */
+export interface ExecutionGate {
+  gate: string;
+  passed: boolean;
+  reason: string;
+}
+
+/** Final execution outcome for a symbol — what actually happened after the
+ *  consensus signal, including any hard blocks. Written to
+ *  `metadata.execution` so clients can show WHY a signal did not execute
+ *  (e.g. Skeptics BLOCKED close, direction-restrict, conviction-gate). */
+export interface ExecutionReport {
+  finalAction: string;
+  blocked: boolean;
+  /** 'skeptics' | 'gate' | 'execution-error' */
+  blockedBy?: string;
+  blockedReason?: string;
+  gates: ExecutionGate[];
+}
+
 export interface ExchangeAccountInfo {
   free: number;
   locked: number;
