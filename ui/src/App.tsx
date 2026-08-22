@@ -1038,6 +1038,18 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
       <div className="smp-matrix-title">
         <span>Analysis Matrix</span>
         <span className="smp-matrix-db-badge" title={`Supabase cycle #${ana.cycle_id} · ${ana.updated_at ? new Date(ana.updated_at).toLocaleTimeString() : '—'}`}>DB <Check size={12} style={{ display: 'inline', verticalAlign: 'middle' }} /></span>
+        {/* v2.0.870: 一行搞掂——state:action compact badges 直接放 title 右手邊 */}
+        <span className="smp-matrix-cells">
+          {STATES.map(st => {
+            const cell = ana.matrix?.moderate?.[st]
+            return (
+              <span key={st} className={`smp-matrix-cell ${cell?.action ?? 'hold'}`} title={cell?.rationale}>
+                <span className="smp-matrix-cell-state">{st}</span>
+                <span className="smp-matrix-cell-act">{cell?.action ?? '—'}</span>
+              </span>
+            )
+          })}
+        </span>
         {/* v2.0.870: 信心指數集中顯示——conviction 係訊號級（三個 cell 同一值），
             唔好喺每個 cell 重複；冇數據顯示 — 唔顯示 0% */}
         <span className="smp-matrix-conf" title="HACP consensus confidence">
@@ -1051,19 +1063,6 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
           )}
         </span>
         <span style={{ opacity: 0.6 }}>pwin {((ana.consensus?.pwin ?? 0) * 100).toFixed(0)}% · {ana.consensus?.agentsAligned ?? 0}/{ana.consensus?.agentsTotal ?? 0} agents</span>
-      </div>
-      {/* v2.0.870: 一行搞掂——每個 state 一個 compact badge「state: action」
-          （conviction 已集中喺 title，cell 只顯示 action） */}
-      <div className="smp-matrix-cells">
-        {STATES.map(st => {
-          const cell = ana.matrix?.moderate?.[st]
-          return (
-            <span key={st} className={`smp-matrix-cell ${cell?.action ?? 'hold'}`} title={cell?.rationale}>
-              <span className="smp-matrix-cell-state">{st}</span>
-              <span className="smp-matrix-cell-act">{cell?.action ?? '—'}</span>
-            </span>
-          )
-        })}
       </div>
       <div className="smp-matrix-market">
         <span>price <strong>${(ana.market_data?.price ?? 0).toFixed(2)}</strong></span>
