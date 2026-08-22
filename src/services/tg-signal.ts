@@ -124,39 +124,65 @@ export class TGSignalPusher {
 
       // 主神用緊嘅 bridge 發現:Telegram parse_mode 對未配對特殊字符敏感——
       // 用純文字(唔用 Markdown/HTML)——安全第一
-      // v2.0.867-attack (V3):fetch 加 timeout(10s)——Telegram 唔通時唔好 hang
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10_000);
+      // v2.0.870-fix(主神實證「This operation was aborted」):timeout 10s → 30s——
+      // 主神網絡去 api.telegram.org 好慢(getMe 實測 2.7s),sendMessage 可超過 10s。
+      // 同時加 retry 1 次(transient 網絡失敗常見;400 永久錯誤唔 retry)。
       const body = new URLSearchParams({
         chat_id: chatId,
         text: text.slice(0, 4000),
         disable_web_page_preview: 'true',
       });
-      let res: Response;
-      try {
-        res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: body.toString(),
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timer);
-      }
-      const data = await res.json() as { ok?: boolean; description?: string };
-      if (!data.ok) {
-        // v2.0.870-fix:chat not found 係最常見嘅靜默失敗源——測試污染/chatId 錯
-        // 都會令訊號 send 去假 group——清晰警示(唔淨係 400 記錄)
-        const desc = typeof data.description === 'string' ? data.description : '';
-        if (desc.includes('chat not found')) {
-          log.warn(`[tg-signal] sendMessage failed (${kind}): chat not found — chatId=${chatId} 無效(bot 唔喺 group / chatId 錯 / settings 被測試污染——檢查 data/evolution/tg-signal-settings.json 同 env TELEGRAM_CHAT_ID)`);
-        } else {
-          log.warn(`[tg-signal] sendMessage failed (${kind}): ${JSON.stringify(data).slice(0, 200)}`);
+      const maxAttempts = 2;
+      let lastErr = '';
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 30_000);
+          let res: Response;
+          try {
+            res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: body.toString(),
+              signal: controller.signal,
+            });
+          } finally {
+            clearTimeout(timer);
+          }
+          const data = await res.json() as { ok?: boolean; description?: string };
+          if (data.ok) {
+            log.info(`[tg-signal] ${kind} signal sent to ${chatId}`);
+            return true;
+          }
+          const desc = typeof data.description === 'string' ? data.description : '';
+          // 400 = 永久錯誤(chat not found / bad request)——retry 冇意義 → 即失敗
+          if (res.status === 400) {
+            // v2.0.870-fix:chat not found 係最常見嘅靜默失敗源——測試污染/chatId 錯
+            // 都會令訊號 send 去假 group——清晰警示(唔淨係 400 記錄)
+            if (desc.includes('chat not found')) {
+              log.warn(`[tg-signal] sendMessage failed (${kind}): chat not found — chatId=${chatId} 無效(bot 唔喺 group / chatId 錯 / settings 被測試污染——檢查 data/evolution/tg-signal-settings.json 同 env TELEGRAM_CHAT_ID)`);
+            } else {
+              log.warn(`[tg-signal] sendMessage failed (${kind}): ${JSON.stringify(data).slice(0, 200)}`);
+            }
+            return false;
+          }
+          // 5xx / 其他 → retry
+          lastErr = `${res.status} ${desc.slice(0, 100)}`;
+          if (attempt < maxAttempts) {
+            log.warn(`[tg-signal] sendMessage failed (${kind}) attempt ${attempt}/${maxAttempts} (${lastErr}) — retrying...`);
+            await new Promise(r => setTimeout(r, 1500 * attempt));
+          }
+        } catch (err) {
+          // timeout(abort)/網絡錯誤 → retry(transient 失敗)
+          lastErr = err instanceof Error ? err.message : String(err);
+          if (attempt < maxAttempts) {
+            log.warn(`[tg-signal] sendMessage failed (${kind}) attempt ${attempt}/${maxAttempts} (${lastErr}) — retrying...`);
+            await new Promise(r => setTimeout(r, 1500 * attempt));
+          }
         }
-        return false;
       }
-      log.info(`[tg-signal] ${kind} signal sent to ${chatId}`);
-      return true;
+      log.warn(`[tg-signal] pushSignal failed (${kind}): ${lastErr}`);
+      return false;
     } catch (err) {
       log.warn(`[tg-signal] pushSignal failed (${kind}): ${err instanceof Error ? err.message : String(err)}`);
       return false; // 非阻塞——交易唔受影響
