@@ -54,7 +54,7 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 
 **主神指示**: 財務報表標題「MATS — Daily Cumulative PnL」——Today/Yesterday 顯示「MATS — {21 Aug 2026} Cumulative PnL」(單日);星期/月份顯示「MATS — {15-21 Aug 2026} Cumulative PnL」(時期)。
 
-**實作**（PNL/pnl.html）: 新 `updateTitleDate()` 函數(today/yesterday → 單日;weekly/week2/month1 → 同月「15-21 Aug 2026」/ 跨月「23 Jul - 21 Aug 2026」);`render()` 開頭 call(load 後自動生效);`setPeriod()` 移除固定 label 映射。
+**實作**（PNL/pnl.html）: 新 `updateTitleDate()` 函數(today/yesterday → 單日;weekly/week2/month1 → 同月「15-21 Aug 2026」/ 同年跨月「23 Jul - 21 Aug 2026」/ 跨年「30 Dec 2025 - 5 Jan 2026」（兩邊帶年份——主神裁決）);`render()` 開頭 call(load 後自動生效);`setPeriod()` 移除固定 label 映射。
 
 **驗證**: 日期邏輯 node 驗證(含跨年邊界);JS 語法檢查通過。
 
