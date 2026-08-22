@@ -21,7 +21,7 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 **主神指示**: 財務報表標題「MATS — Daily Cumulative PnL」——選擇 Today/Yesterday 時顯示「MATS — {21 Aug 2026} Cumulative PnL」(單日);選擇星期/月份時顯示「MATS — {15-21 Aug 2026} Cumulative PnL」(時期範圍)。
 
 **實作**（PNL/pnl.html）:
-- 新 `updateTitleDate(p)` 函數——按 period 計算範圍:today/yesterday → 單日「21 Aug 2026」;weekly(7日)/week2(14日)/month1(30日) → 「15-21 Aug 2026」(同月)或「23 Jul - 21 Aug 2026」(跨月/跨年)
+- 新 `updateTitleDate(p)` 函數——按 period 計算範圍:today/yesterday → 單日「21 Aug 2026」;weekly(7日)/week2(14日)/month1(30日) → 同月「15-21 Aug 2026」;同年跨月「23 Jul - 21 Aug 2026」;跨年「30 Dec 2025 - 5 Jan 2026」（兩邊帶年份——主神裁決）
 - `render()` 開頭 call——load 後自動生效(initial 唔再停留「Daily」)
 - `setPeriod()` 移除固定 label 映射(Daily/Yesterday/1-Week/2-Week/Monthly)
 
