@@ -16,6 +16,21 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-tg-timeout: TG 訊號 timeout 修復(10s → 30s + retry)
+
+**主神報告**: BNB close 訊號冇推送到 group——log「pushSignal failed (close): This operation was aborted」。
+
+**根因**: pushSignal 嘅 fetch timeout 10s 太短——主神網絡去 api.telegram.org 好慢(getMe 實測 2.7s),sendMessage(4000 chars body)可超過 10s → AbortController abort → 訊號唔推。
+
+**修復**（src/services/tg-signal.ts pushSignal）:
+- timeout 10s → 30s(俾足緩衝)
+- 失敗 retry 1 次(transient 網絡失敗常見;400 永久錯誤——chat not found/bad request——唔 retry 即失敗)
+- retry log 清晰(attempt 標記)
+
+**驗證**: tsc 零錯誤;20/20 測試全綠;實測 sendMessage 成功(`close signal sent to @mats_trading`)。
+
+---
+
 ## v2.0.870-pnl-title: PNL 標題顯示實際日期/時期範圍
 
 **主神指示**: 財務報表標題「MATS — Daily Cumulative PnL」——選擇 Today/Yesterday 時顯示「MATS — {21 Aug 2026} Cumulative PnL」(單日);選擇星期/月份時顯示「MATS — {15-21 Aug 2026} Cumulative PnL」(時期範圍)。

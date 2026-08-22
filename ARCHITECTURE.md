@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-pnl-title
+> **作者**: YC Wong · **版本**: 2.0.870-tg-timeout
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
@@ -47,6 +47,18 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 | **風險等級客戶端選擇** | 後端運算單一 moderate 等級嘅訊號矩陣（v2.0.857 移除 aggressive/conservative）；客戶端按用戶選擇讀取對應格（v2.0.822→857）|
 | **訊號與執行分離** | 後端計算訊號 + 寫入 Supabase；客戶端讀取 + 決定執行（paper/real）。`ANALYSIS_MODE` 控制後端是否同時執行 |
 | **生產級標準** | 完整型別（Zod 驗證）、結構化日誌（Winston）、優雅關閉、指數退避重連 |
+
+---
+
+### v2.0.870-tg-timeout: TG 訊號 timeout 修復(10s → 30s + retry)
+
+**主神報告**: BNB close 訊號冇推送到 group——「pushSignal failed (close): This operation was aborted」。
+
+**根因**: pushSignal fetch timeout 10s 太短——主神網絡去 api.telegram.org 慢(getMe 實測 2.7s),sendMessage 可超 10s → abort → 訊號唔推。
+
+**修復**（src/services/tg-signal.ts pushSignal）: timeout 10s → 30s;失敗 retry 1 次(400 永久錯誤唔 retry);retry log 清晰。
+
+**驗證**: tsc 零錯誤;20/20 測試全綠;實測 sendMessage 成功。
 
 ---
 
