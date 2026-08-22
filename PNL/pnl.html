@@ -240,6 +240,8 @@ async function load() {
 // ═══ Render ═══
 function render() {
   if (!data) return;
+  // v2.0.870-pnl-title(主神):標題顯示實際日期/時期範圍——render 每次更新
+  updateTitleDate(period);
   const p = data[period] || { date: '', paper: {}, real: {} };
   const periodTitles = { weekly: 'LAST 7 DAYS', week2: 'LAST 14 DAYS', month1: 'LAST 30 DAYS' };
   const periodTitle = periodTitles[period];
@@ -540,11 +542,35 @@ function setUnit(u) {
   render();
 }
 
+// v2.0.870-pnl-title(主神):標題「MATS — {date} Cumulative PnL」顯示實際日期
+//   Today/Yesterday →「21 Aug 2026」(單日)
+//   Weekly/2-Week/1-Month →「15-21 Aug 2026」/「22 Jul - 21 Aug 2026」(時期範圍)
+function updateTitleDate(p) {
+  const now = new Date();
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const fmtFull = (d) => `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+  const fmtDay = (d) => `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // 今日 00:00(本地)
+  let label;
+  if (p === 'today') {
+    label = fmtFull(end);
+  } else if (p === 'yesterday') {
+    const y = new Date(end); y.setDate(y.getDate() - 1);
+    label = fmtFull(y);
+  } else {
+    const days = p === 'weekly' ? 7 : p === 'week2' ? 14 : 30;
+    const start = new Date(end); start.setDate(start.getDate() - (days - 1));
+    label = (start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear())
+      ? `${start.getDate()}-${fmtFull(end)}`
+      : `${fmtDay(start)} - ${fmtFull(end)}`;
+  }
+  document.getElementById('title-sub').textContent = label;
+}
+
 function setPeriod(p) {
   period = p;
-  // v2.0.870-pnl-range: 標題「Daily」隨 timeframe 改變（Daily / Yesterday / 1-Week / 2-Week / Monthly）
-  const titleSubMap = { today: 'Daily', yesterday: 'Yesterday', weekly: '1-Week', week2: '2-Week', month1: 'Monthly' };
-  document.getElementById('title-sub').textContent = titleSubMap[p] || 'Daily';
+  // v2.0.870-pnl-title(主神):標題日期由 updateTitleDate() 處理(render 時更新)——
+  // 唔再用 Daily/Yesterday/1-Week 等固定字
   document.getElementById('btn-month1').className = `switch-btn${p === 'month1' ? ' active-period' : ''}`;
   document.getElementById('btn-week2').className = `switch-btn${p === 'week2' ? ' active-period' : ''}`;
   document.getElementById('btn-weekly').className = `switch-btn${p === 'weekly' ? ' active-period' : ''}`;

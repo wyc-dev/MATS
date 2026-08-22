@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-tg-review-fix
+> **作者**: YC Wong · **版本**: 2.0.870-pnl-title
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
@@ -47,6 +47,16 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 | **風險等級客戶端選擇** | 後端運算單一 moderate 等級嘅訊號矩陣（v2.0.857 移除 aggressive/conservative）；客戶端按用戶選擇讀取對應格（v2.0.822→857）|
 | **訊號與執行分離** | 後端計算訊號 + 寫入 Supabase；客戶端讀取 + 決定執行（paper/real）。`ANALYSIS_MODE` 控制後端是否同時執行 |
 | **生產級標準** | 完整型別（Zod 驗證）、結構化日誌（Winston）、優雅關閉、指數退避重連 |
+
+---
+
+### v2.0.870-pnl-title: PNL 標題顯示實際日期/時期範圍
+
+**主神指示**: 財務報表標題「MATS — Daily Cumulative PnL」——Today/Yesterday 顯示「MATS — {21 Aug 2026} Cumulative PnL」(單日);星期/月份顯示「MATS — {15-21 Aug 2026} Cumulative PnL」(時期)。
+
+**實作**（PNL/pnl.html）: 新 `updateTitleDate()` 函數(today/yesterday → 單日;weekly/week2/month1 → 同月「15-21 Aug 2026」/ 跨月「23 Jul - 21 Aug 2026」);`render()` 開頭 call(load 後自動生效);`setPeriod()` 移除固定 label 映射。
+
+**驗證**: 日期邏輯 node 驗證(含跨年邊界);JS 語法檢查通過。
 
 ---
 
