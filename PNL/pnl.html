@@ -560,9 +560,16 @@ function updateTitleDate(p) {
   } else {
     const days = p === 'weekly' ? 7 : p === 'week2' ? 14 : 30;
     const start = new Date(end); start.setDate(start.getDate() - (days - 1));
-    label = (start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear())
-      ? `${start.getDate()}-${fmtFull(end)}`
-      : `${fmtDay(start)} - ${fmtFull(end)}`;
+    if (start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear()) {
+      // 同月 →「15-21 Aug 2026」
+      label = `${start.getDate()}-${fmtFull(end)}`;
+    } else if (start.getFullYear() === end.getFullYear()) {
+      // 同一年但跨月 →「23 Jul - 21 Aug 2026」
+      label = `${fmtDay(start)} - ${fmtFull(end)}`;
+    } else {
+      // 跨年 →「30 Dec 2025 - 5 Jan 2026」(兩個都帶年份)
+      label = `${fmtFull(start)} - ${fmtFull(end)}`;
+    }
   }
   document.getElementById('title-sub').textContent = label;
 }
