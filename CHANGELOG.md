@@ -4,6 +4,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-ui-lucide: UI emoji 全面換 Lucide icons
+
+**主神指示**: HACP Prefrontal 嘅 Selected Market Pairs 下方 UI 唔好用 emoji，用 lucide.dev/icons 取代。
+
+**實作**（ui/src/App.tsx）:
+- **📊 DB** → `Database` icon（Selected Market Pairs header）
+- **▲▼ accordion chevrons** → `ChevronUp`/`ChevronDown`（agent expand、thought expand、rejection expand、reason toggle、evo-section-toggle、Prev/Next）
+- **✅❌ history log** → `[OK]`/`[FAIL]` 文字標記
+- **✓✗** DB badge → `Check` icon；NA state / action lines → `[ok]`/`[fail]` 文字
+- **🔒 lock badges** → `Lock` icon（PAEL locks、lock @、Exit-Price Lock Gate）
+- **⚙** engineer 角色標記 → `Settings` icon
+- **⚠️ starved / ⚠ premature** → `!` 文字
+- comment/code 邏輯 emoji 保留（解析 LLM 輸出格式，唔可以改）
+
+**驗證**: vite build 成功；tsc 8 個 pre-existing 錯誤（stash 驗證同改動無關）。
+
+---
+
 ## v2.0.870-trend-hold-attack: Trend-Hold 攻擊輪 + 閉環校準
 
 **主神指令**: 不擇手段攻擊 Trend-Hold Gate / Gate Outcome Tracker / execution-metadata 周邊，完美修復；量化金融分析師思路提升盈利。

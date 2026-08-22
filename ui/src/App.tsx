@@ -1,7 +1,7 @@
 import React from 'react'
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import type { AllSymbolEntry } from './types'
-import { Settings, Pause, Play, Power, Ban, StickyNote, Check, X, AlertTriangle, CheckCircle, OctagonX, XCircle, BarChart3, MessagesSquare, Circle, Dna, Scroll, RotateCw, Square, SatelliteDish, MapPin, Lightbulb, TrendingUp, TrendingDown, Save, ChevronDown, ChevronRight, Pencil } from 'lucide-react'
+import { Settings, Pause, Play, Power, Ban, StickyNote, Check, X, AlertTriangle, CheckCircle, OctagonX, XCircle, BarChart3, MessagesSquare, Circle, Dna, Scroll, RotateCw, Square, SatelliteDish, MapPin, Lightbulb, TrendingUp, TrendingDown, Save, ChevronDown, ChevronUp, ChevronRight, Pencil, Database, Lock } from 'lucide-react'
 import type { APIData, AgentModelConfig, ModelDefinition, EMInsightStats } from './types'
 import { AGENT_META, AGENT_ROLES } from './types'
 import TradingViewChart from './TradingViewChart'
@@ -249,7 +249,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
         <span className={`agent-state ${agentState}`}>
           {isLive && liveProgress.status === 'thinking' ? 'thinking' : agentState === 'idle' && latency != null ? `${(latency / 1000).toFixed(1)}s` : agentState}
         </span>
-        <span className="agent-expand-chevron">{isExpanded ? '▲' : '▼'}</span>
+        <span className="agent-expand-chevron">{isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</span>
       </div>
       {/* v2.0.149: Collapsed view shows description only — no footer.
           Latency is in the state badge, model is selectable when expanded. */}
@@ -291,7 +291,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
               onClick={() => setThoughtExpanded(v => !v)}
               title={thoughtExpanded ? 'Collapse' : 'Expand'}
             >
-              {thoughtExpanded ? '▲ Collapse' : '▼ Expand'}
+              {thoughtExpanded ? <><ChevronUp size={12} /> Collapse</> : <><ChevronDown size={12} /> Expand</>}
             </button>
             <button
               className="agent-thought-copy-btn"
@@ -351,7 +351,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                       title={rejExpanded ? 'Collapse rejection' : 'Expand rejection'}
                       aria-expanded={rejExpanded}
                     >
-                      {rejExpanded ? '▲' : '▼'}
+                      {rejExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                     </button>
                   )}
                 </div>
@@ -386,7 +386,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                     title={rejExpanded ? 'Collapse rejection' : 'Expand rejection'}
                     aria-expanded={rejExpanded}
                   >
-                    {rejExpanded ? '▲' : '▼'}
+                    {rejExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                   </button>
                 </div>
                 {rejExpanded && (
@@ -423,7 +423,7 @@ function AgentCard({ role, thought, status, progress, models, assignments, onMod
                           onClick={() => toggleRationale(d.symbol)}
                           title={rExp ? 'Collapse rationale' : 'Expand rationale'}
                         >
-                          {rExp ? '▲' : '▼'} {actionLabel} Reason
+                          {rExp ? <ChevronUp size={12} /> : <ChevronDown size={12} />} {actionLabel} Reason
                         </button>
                       )
                     }
@@ -709,7 +709,7 @@ function TerminalAgentCard({ data, isExpanded, onToggleExpand, models, assignmen
           <div className="agent-symbols">{allSelectedSyms.join(' , ')}</div>
         )}
         <span className="agent-state idle">{processing ? 'processing' : (promptPart ? 'active' : 'idle')}</span>
-        <span className="agent-expand-chevron">{isExpanded ? '▲' : '▼'}</span>
+        <span className="agent-expand-chevron">{isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</span>
       </div>
       {!isExpanded && (
         <div className="agent-description-collapsed">{meta.description}</div>
@@ -1038,7 +1038,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
     <div className="smp-matrix">
       <div className="smp-matrix-title">
         <span>Analysis Matrix</span>
-        <span className="smp-matrix-db-badge" title={`Supabase cycle #${ana.cycle_id} · ${ana.updated_at ? new Date(ana.updated_at).toLocaleTimeString() : '—'}`}>DB ✓</span>
+        <span className="smp-matrix-db-badge" title={`Supabase cycle #${ana.cycle_id} · ${ana.updated_at ? new Date(ana.updated_at).toLocaleTimeString() : '—'}`}>DB <Check size={12} style={{ display: 'inline', verticalAlign: 'middle' }} /></span>
         <span style={{ opacity: 0.6 }}>pwin {((ana.consensus?.pwin ?? 0) * 100).toFixed(0)}% · {ana.consensus?.agentsAligned ?? 0}/{ana.consensus?.agentsTotal ?? 0} agents</span>
       </div>
       <div className="smp-matrix-grid">
@@ -1774,7 +1774,7 @@ function MarketAgentCard({ data }: { data: APIData | null }) {
         <div className="market-pairs-header-label">
           Selected Market Pairs ({(() => { const u = new Set<string>(); for (const s of tradingMarkets) u.add(normSym(s)); for (const s of positionMap.keys()) u.add(normSym(s)); return u.size })()}/10):{' '}
           <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 400, color: supabaseEnabled ? 'var(--green)' : 'var(--text-muted)' }} title={supabaseEnabled ? `Supabase connected · ${assetAnalyses.length} analyses · last ${analysisLastFetch ? new Date(analysisLastFetch).toLocaleTimeString() : '—'}` : 'Supabase not configured'}>
-            {supabaseEnabled ? `📊 DB ${assetAnalyses.length}` : '📊 DB off'}
+            {supabaseEnabled ? <><Database size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />DB {assetAnalyses.length}</> : <><Database size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />DB off</>}
           </span>
         </div>
         <div className="smp-card-list">
@@ -2206,12 +2206,12 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
       if (result.success) {
         const fields = Object.keys(result.correctedFields ?? {})
         const fieldStr = fields.length > 0 ? fields.join(', ') : 'no fields'
-        setCorrectHistory(prev => [...prev, { role: 'engineer', text: `✅ Corrected: ${fieldStr}\n${result.reason ?? ''}` }])
+        setCorrectHistory(prev => [...prev, { role: 'engineer', text: `[OK] Corrected: ${fieldStr}\n${result.reason ?? ''}` }])
       } else {
-        setCorrectHistory(prev => [...prev, { role: 'engineer', text: `❌ ${result.reason ?? result.error ?? 'Failed'}` }])
+        setCorrectHistory(prev => [...prev, { role: 'engineer', text: `[FAIL] ${result.reason ?? result.error ?? 'Failed'}` }])
       }
     } catch (err) {
-      setCorrectHistory(prev => [...prev, { role: 'engineer', text: `❌ ${err instanceof Error ? err.message : String(err)}` }])
+      setCorrectHistory(prev => [...prev, { role: 'engineer', text: `[FAIL] ${err instanceof Error ? err.message : String(err)}` }])
     }
     setCorrecting(false)
   }
@@ -2315,7 +2315,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
           className="agent-thought-toggle-btn"
           style={{ opacity: safePage === 0 ? 0.3 : 1, cursor: safePage === 0 ? 'default' : 'pointer' }}
         >
-          ▲ Prev
+          <ChevronUp size={12} style={{ display: 'inline', verticalAlign: 'middle' }} /> Prev
         </button>
       </div>
 
@@ -2393,7 +2393,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                   {(t.pnlPct * 100) >= 0 ? '+' : ''}{(t.pnlPct * 100).toFixed(1)}%
                 </span>
                 <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
-                  {isExpanded ? '▲' : '▼'}
+                  {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                 </span>
               </div>
 
@@ -2456,7 +2456,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
                             )}
                             {correctHistory.map((msg, i) => (
                               <div key={i} style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-1)', color: msg.role === 'user' ? 'var(--text-secondary)' : 'var(--green)' }}>
-                                <span style={{ color: msg.role === 'user' ? 'var(--text-muted)' : 'rgba(52, 211, 153, 0.5)', flexShrink: 0 }}>{msg.role === 'user' ? '>' : '⚙'}</span>
+                                <span style={{ color: msg.role === 'user' ? 'var(--text-muted)' : 'rgba(52, 211, 153, 0.5)', flexShrink: 0 }}>{msg.role === 'user' ? '>' : <Settings size={12} style={{ display: 'inline', verticalAlign: 'middle' }} />}</span>
                                 <span style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</span>
                               </div>
                             ))}
@@ -2564,7 +2564,7 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
           className="agent-thought-toggle-btn"
           style={{ opacity: safePage >= totalPages - 1 ? 0.3 : 1, cursor: safePage >= totalPages - 1 ? 'default' : 'pointer' }}
         >
-          ▼ Next
+          <ChevronDown size={12} style={{ display: 'inline', verticalAlign: 'middle' }} /> Next
         </button>
       </div>
     </div>
@@ -2713,9 +2713,9 @@ function SystemStatusGrid({ al, olrState, emState, rilState }: {
   const naVal = al?.na?.validation
   let naDetail = `${naSamples} samples`
   let naState: SysState = 'cold'
-  if (naReady) { naState = 'ready'; naDetail += ' ✓' }
+  if (naReady) { naState = 'ready'; naDetail += ' [ok]' }
   else if (naSamples > 0) {
-    if (naVal && !naVal.passed) { naState = 'disabled'; naDetail += `, val ✗ ${naVal.reason?.slice(0, 40) ?? ''}` }
+    if (naVal && !naVal.passed) { naState = 'disabled'; naDetail += `, val [fail] ${naVal.reason?.slice(0, 40) ?? ''}` }
     else { naState = 'training'; naDetail += ` (${naSamples}/${al?.na?.inputDim ?? 200})` }
   }
   systems.push({ name: 'NA', state: naState, detail: naDetail })
@@ -2808,7 +2808,7 @@ function SystemStatusGrid({ al, olrState, emState, rilState }: {
   // ⭐ v2.0.862: PAEL — per-asset exit-price learner + lock gate
   const paelProfiles = al?.pael?.profiles?.length ?? 0
   const paelLocks = al?.pael?.lockCount ?? 0
-  systems.push({ name: 'PAEL', state: paelProfiles > 0 ? 'ready' : 'cold', detail: `${paelProfiles} profiles${paelLocks > 0 ? `, ${paelLocks} locks 🔒` : ''}` })
+  systems.push({ name: 'PAEL', state: paelProfiles > 0 ? 'ready' : 'cold', detail: `${paelProfiles} profiles${paelLocks > 0 ? `, ${paelLocks} locks` : ''}` })
 
   const stateColor = (s: SysState) => s === 'ready' ? 'var(--green)' : s === 'training' ? 'var(--gold)' : s === 'paused' ? 'var(--text-muted)' : s === 'disabled' ? 'var(--text-muted)' : 'var(--red)'
   const stateLabel = (s: SysState) => s === 'ready' ? '●' : s === 'training' ? '◐' : s === 'paused' ? '⏸' : s === 'disabled' ? '○' : '○'
@@ -2863,7 +2863,7 @@ function OLRBayesianSection({ olrState, al, openPositionSymbols, isExpanded, onT
               {al!.qrlDirection!.symbols!.map((q: any) => {
                 const buyColor = (q.buyMedian ?? q.buyQ) > 0 ? 'var(--green)' : (q.buyMedian ?? q.buyQ) < 0 ? 'var(--red)' : 'var(--gold)'
                 const sellColor = (q.sellMedian ?? q.sellQ) > 0 ? 'var(--green)' : (q.sellMedian ?? q.sellQ) < 0 ? 'var(--red)' : 'var(--gold)'
-                const leanLabel = !q.robust ? '⚠️ starved' : q.lean === 'buy' ? '→ BUY' : q.lean === 'sell' ? '→ SELL' : 'neutral'
+                const leanLabel = !q.robust ? '! starved' : q.lean === 'buy' ? '→ BUY' : q.lean === 'sell' ? '→ SELL' : 'neutral'
                 return (
                   <div key={q.symbol} style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '3px', fontSize: '0.7rem', flexWrap: 'wrap' }}>
                     <span style={{ fontWeight: 600 }}>{q.symbol.toUpperCase()}</span>
@@ -3005,9 +3005,9 @@ function ExperienceDigestionSection({ expDigest, expActions, isExpanded, onToggl
     for (const a of expActions) {
       const sideLabel = a.side === 'buy' ? 'LONG' : 'SHORT'
       if (a.verdict === 'FAST_APPROVE' || a.verdict === 'APPROVE_WITH_NOTE' || a.verdict === 'PASS_OPEN_DIRECTLY') {
-        actionLines.push(`✓ ${a.symbol} ${sideLabel} — ${a.reason}`)
+        actionLines.push(`[OK] ${a.symbol} ${sideLabel} — ${a.reason}`)
       } else if (a.verdict === 'REJECT') {
-        actionLines.push(`✗ ${a.symbol} ${sideLabel} — ${a.reason}`)
+        actionLines.push(`[FAIL] ${a.symbol} ${sideLabel} — ${a.reason}`)
       } else if (a.verdict === 'REVERSE_DIRECTION') {
         actionLines.push(`↔ ${a.symbol} — ${a.reason}`)
       }
@@ -3092,7 +3092,7 @@ function ExperienceDigestionSection({ expDigest, expActions, isExpanded, onToggl
                       <span style={{ color: 'var(--text-muted)' }}>{ps.wins}W/{ps.losses}L</span>
                       <span style={{ color: ps.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{ps.netPnl >= 0 ? '+' : ''}{ps.netPnl.toFixed(3)}</span>
                       <span style={{ color: 'var(--text-muted)' }}>{ps.avgHold}min</span>
-                      {ps.isPremature && <span style={{ color: 'var(--gold)' }}>⚠ premature</span>}
+                      {ps.isPremature && <span style={{ color: 'var(--gold)' }}>! premature</span>}
                     </div>
                   ))}
                 </div>
@@ -3350,7 +3350,7 @@ function PAELSection({ pael, isExpanded, onToggleExpand }: {
       <div className="evo-section-header" onClick={onToggleExpand} style={{ cursor: 'pointer' }}>
         <div className="evo-section-accent" />
         <span className="evo-section-title">PAEL Exit-Price</span>
-        {lockCount > 0 && <span className="evo-badge evo-badge-right">🔒 {lockCount} locks</span>}
+        {lockCount > 0 && <span className="evo-badge evo-badge-right"><Lock size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />{lockCount} locks</span>}
         <span className="evo-badge evo-badge-right">{profiles.length} profiles</span>
         <span className="evo-section-toggle">{expanded ? '▲' : '▼'}</span>
       </div>
@@ -3371,13 +3371,13 @@ function PAELSection({ pael, isExpanded, onToggleExpand }: {
                   <span style={{ color: 'var(--gold)' }}>p75 {(p.mfeP75 * 100).toFixed(2)}%</span>
                   <span style={{ color: 'var(--red)' }}>p90 {(p.mfeP90 * 100).toFixed(2)}%</span>
                   <span style={{ color: 'var(--text-muted)' }}>MAE p95 {(p.maeP95 * 100).toFixed(2)}%</span>
-                  <span style={{ color: 'var(--accent, #a78bfa)', fontSize: '0.6rem' }}>🔒 lock @ {(lockAt * 100).toFixed(2)}%</span>
+                  <span style={{ color: 'var(--accent, #a78bfa)', fontSize: '0.6rem' }}><Lock size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />lock @ {(lockAt * 100).toFixed(2)}%</span>
                 </div>
               )
             })}
             {lockCount > 0 && (
               <div style={{ fontSize: '0.65rem', color: 'var(--green)', marginTop: '4px' }}>
-                🔒 Exit-Price Lock Gate 已觸發 {lockCount} 次 — MFE 到達典型盈利區即鎖利離場,SL 永不觸碰
+                <Lock size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />Exit-Price Lock Gate 已觸發 {lockCount} 次 — MFE 到達典型盈利區即鎖利離場,SL 永不觸碰
               </div>
             )}
           </div>
