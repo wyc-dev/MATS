@@ -5899,41 +5899,57 @@ body {
   color: var(--green);
   border: 1px solid rgba(52, 211, 153, 0.3);
 }
-.smp-matrix-grid {
-  display: grid;
-  /* v2.0.857-fix: single moderate row — no row-label column needed, pure 3 state columns */
-  grid-template-columns: repeat(3, 1fr);
-  gap: 2px;
+/* v2.0.870: 信心指數集中顯示——conviction 係訊號級，集中喺 title 一項 */
+.smp-matrix-conf {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+}
+.smp-conf-num {
   font-size: 10px;
-}
-.smp-matrix-hdr {
   font-weight: 700;
-  text-align: center;
-  padding: 2px 4px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  min-width: 30px;
+  text-align: right;
 }
-.smp-matrix-row-label {
-  font-weight: 600;
-  padding: 2px 4px;
-  color: var(--text-muted);
-  text-transform: capitalize;
+.smp-conf-bar {
+  width: 48px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.08));
+  overflow: hidden;
+}
+.smp-conf-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, rgba(52, 211, 153, 0.4), var(--green));
+  transition: width 0.4s ease;
+}
+.smp-matrix-cells {
+  display: flex;
+  gap: 4px;
+  font-size: 10px;
+  flex-wrap: wrap;
 }
 .smp-matrix-cell {
-  padding: 3px 5px;
-  border-radius: 3px;
-  text-align: center;
+  padding: 2px 8px;
+  border-radius: 4px;
   font-weight: 600;
-  display: flex;
-  flex-direction: column;
+  display: inline-flex;
   align-items: center;
-  gap: 1px;
-  min-height: 32px;
-  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
 }
-.smp-matrix-cell-act { font-size: 10px; text-transform: uppercase; }
-.smp-matrix-cell-conv { font-size: 9px; opacity: 0.7; }
+.smp-matrix-cell-state {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  opacity: 0.75;
+}
+.smp-matrix-cell-act { font-size: 10px; text-transform: uppercase; font-weight: 700; }
 .smp-matrix-cell.buy  { background: rgba(52, 211, 153, 0.12); color: var(--green); }
 .smp-matrix-cell.sell { background: rgba(248, 113, 113, 0.12); color: var(--red); }
 .smp-matrix-cell.hold { background: rgba(148, 163, 184, 0.10); color: var(--text-muted); }
