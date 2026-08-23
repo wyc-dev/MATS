@@ -101,6 +101,19 @@ function safeExp(x: number): number {
  * @param volatilityTimestamp Timestamp (ms) when the volatility was last computed. If 0 or undefined,
  *                        freshness check is skipped (assumes fresh).
  */
+/**
+ * v2.0.870-FIX(主神調查 2026-08-23):P cap——永久封殺「100% 必勝」幻覺。
+ * 歷史實證:claimed P≥95% 嘅 23 筆 trade 實際 WR 得 39.1%(接近反指標)——
+ * 100% 輸出係模型錯覺(短窗 drift 高方差),會令 LLM 過度自信盲目 BUY。
+ * cap 85% 保留「高信心」嘅表達力,但唔再容許必勝假象。
+ */
+const FP_P_CAP = 0.85;
+
+function capP(p: number): number {
+  if (!Number.isFinite(p)) return p;
+  return Math.min(FP_P_CAP, Math.max(0, p));
+}
+
 export function calculateFirstPassage(
   volatility: number,
   drift: number,
@@ -183,7 +196,7 @@ export function calculateFirstPassage(
   } else {
     longPWin = (expPos2nuA_long - 1) / denomLong;
   }
-  longPWin = Math.max(0, Math.min(1, longPWin));
+  longPWin = capP(Math.max(0, Math.min(1, longPWin)));
 
   // SHORT: P(hit −b' before +a') = (1 − e^(−2νa'/σ²)) / (e^(2νb'/σ²) − e^(−2νa'/σ²))
   const expNeg2nuA_short = safeExp((-2 * nu * aShort) / volSq);
@@ -195,7 +208,7 @@ export function calculateFirstPassage(
   } else {
     shortPWin = (1 - expNeg2nuA_short) / denomShort;
   }
-  shortPWin = Math.max(0, Math.min(1, shortPWin));
+  shortPWin = capP(Math.max(0, Math.min(1, shortPWin)));
 
   const explanation = buildExplanation(longPWin, shortPWin, nu, vol, aLong, bLong, aShort, bShort, breakevenPLong, breakevenPShort);
 
@@ -266,9 +279,29 @@ function buildExplanation(
  * 環境開關 FP_MR_ZERO_DRIFT=false 即刻還原。
  */
 const FP_MR_ZERO_DRIFT = (process.env['FP_MR_ZERO_DRIFT'] ?? 'true') !== 'false';
-export function sanitizeDriftForRegime(drift: number, regime?: string): number {
+/**
+ * v2.0.870-FIX(主神調查 2026-08-23):drift shrink——GBM 短窗 drift 係 noise。
+ *
+ * 病理:近 35 筆 trade 全部 BUY 嘅元兇——trending_bull 市場 drift 長期為正,
+ * exp(2νa/σ²) 爆大 → LONG P=100% edge +71pp 「必勝幻覺」,但實際 WR 39.1%
+ * (claimed≥95 分桶, n=23)。統計上短窗 EWMA drift 嘅 SE ≈ σ/√20——當
+ * |ν| > 0.5σ 即係 noise 主導,唔係真實 edge。
+ *
+ * 修正:所有 regime(唔淨係 mean_reverting)|ν| > 0.5σ → shrink 到 0.5σ
+ * (drift 唔可以主導 diffusion)。配合 calculateFirstPassage 嘅 P cap 85%,
+ * 永久封殺「P=100% 必勝」幻覺。
+ * 環境開關 FP_DRIFT_SHRINK=false 即刻還原(連同 FP_MR_ZERO_DRIFT)。
+ */
+const FP_DRIFT_SHRINK = (process.env['FP_DRIFT_SHRINK'] ?? 'true') !== 'false';
+export function sanitizeDriftForRegime(drift: number, regime?: string, volatility?: number): number {
   if (!Number.isFinite(drift)) return 0;
   if (FP_MR_ZERO_DRIFT && regime === 'mean_reverting') return 0;
+  if (FP_DRIFT_SHRINK && volatility !== undefined && Number.isFinite(volatility) && volatility > 0 && Math.abs(drift) > 0) {
+    // |ν| > 0.5σ → shrink 到 ±0.5σ——drift 唔可以主導 diffusion(noise 防禦)
+    const maxDrift = 0.5 * volatility;
+    const shrunk = drift * Math.min(1, maxDrift / Math.abs(drift));
+    return shrunk;
+  }
   return drift;
 }
 

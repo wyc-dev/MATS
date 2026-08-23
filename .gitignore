@@ -94,3 +94,6 @@ tests/
 plan-task3-4.md
 investor/Demo.md
 data/evolution/vol-thresholds.json
+
+# Close gate attack plan (ephemeral — validated then removed)
+PLAN_fix-close-gate-attack.md

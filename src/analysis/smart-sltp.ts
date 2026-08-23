@@ -583,6 +583,24 @@ export function computeSmartSLTP(input: SmartSLTPInput): SmartSLTPResult {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // v2.0.870-FIX(主神調查 2026-08-23): SL 絕對 floor——止蝕距離唔可以近過
+  // 合理下限(price-basis)。實證:BNB 10/10 SL hit 全部 -0.74~-0.96% price
+  // (median -0.83%),全部 trade 都曾浮盈但被正常波動掃走——SL 太貼,
+  // 連 ATR 內嘅正常回調都頂唔順。絕對 floor 1.5% 保證任何 symbol 嘅 SL
+  // 至少有 15% margin(@10x)緩衝。widen-only(hard-floor invariant)。
+  // env SL_ABSOLUTE_FLOOR_PCT 可調(0 = 關閉)。
+  // ═══════════════════════════════════════════════════════════════
+  const slAbsFloorRaw = Number(process.env['SL_ABSOLUTE_FLOOR_PCT'] ?? '0.015');
+  const slAbsFloorPct = Number.isFinite(slAbsFloorRaw) && slAbsFloorRaw > 0 && slAbsFloorRaw < slCap ? slAbsFloorRaw : 0;
+  if (slAbsFloorPct > 0) {
+    const nowSlPct = Math.abs(slPrice - entryPrice) / entryPrice;
+    if (nowSlPct < slAbsFloorPct - 1e-9) {
+      slPrice = isBuy ? entryPrice * (1 - slAbsFloorPct) : entryPrice * (1 + slAbsFloorPct);
+      logParts.push(`[SL-abs-floor] widened from ${(nowSlPct * 100).toFixed(2)}% to ${(slAbsFloorPct * 100).toFixed(2)}% (absolute floor — anti noise stop-out)`);
+    }
+  }
+
   const finalSlPct = Math.abs(slPrice - entryPrice) / entryPrice;
   const finalTpPct = Math.abs(tpPrice - entryPrice) / entryPrice;
 

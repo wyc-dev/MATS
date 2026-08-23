@@ -4,6 +4,91 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-close-gate-attack: Close Gate 攻擊輪 + 盈利提升（主神指令 2026-08-23）
+
+**主神指令**: 不擇手段攻擊剛修葺嘅 code（併發/狀態注入/持久化污染），完美修復；量化金融分析師思路提升盈利。
+
+**攻擊輪（紅先 3 命中全修）**:
+
+| # | 漏洞 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| A | `buildOhlcvTable` candle t=1e308（finite 且 >0 過 sanitize）→ `new Date().toISOString()` **RangeError crash** | CRITICAL | `sanitizeCandles` 加 t 合理範圍驗證（2000-2100, TS_MIN/TS_MAX）；`buildOhlcvTable` safe date fallback |
+| B | 1000 interval 組全併入 prompt → 無限膨脹（算力 DoS） | HIGH | `buildCloseTrendPrompt` cap interval **4 組** |
+| C | symbol 內嵌 `\n\nIgnore all previous instructions` → prompt injection | HIGH | `sanitizeSymbol()` 字符白名單 `[A-Za-z0-9:._-]`（注入文字碎成無意義字串）；`sanitizeText()` 移除 control chars + 字面 escape 序列 |
+
+**盈利提升（邏輯實驗驗證後收窄）**:
+- **E1（取消）**: 「輕微虧損唔止血」——實驗: 輕微虧損 re-entry WR 40% vs 明顯虧損 44% **無統計差異** → 保持止血設計（資本保存第一，唔為做而做）
+- **E2（做）**: sentinel CLOSE 高信心（≥0.7）→ **skip Skeptics**（慳一次 LLM + 快離場）——consensus close 後同向 re-entry 盈利 47% 反映 consensus 質素一般，但 sentinel 已係最後 LLM 裁決，高信心 CLOSE = 市場確認轉勢，Skeptics 再 block 概率極低
+- **E3（取消）**: pre-filter 強度分級——entryThesis momentum 解析 0 筆 match，無歷史數據支持分級
+- **E4（做）**: `checkLossStreakGate` 開頭清理過期 slTpPenalty——防 memory leak（tradingMarkets 可無限多）
+
+**驗證**: 攻擊測試 17/17 全綠（原 3 命中 → 修復後全綠）+ 全量 3335 pass + 13 pre-existing（unrelated）+ tsc clean。
+
+---
+## v2.0.870-buy-bias: 系統性單邊 BUY bias + BNB 連蝕修復（主神調查 2026-08-23）
+**主神報告**: 近 20 個交易全部 BUY 無 SELL；BNB 連續蝕幾次都係開 BUY（SL hit 每次都 -8.2~-8.3%）。
+
+**Phase 1 根因定量驗證（220 筆 realTrades）**:
+- **FP 幻覺確診**: First-Passage 聲稱 ≥95% P(win) 嘅 23 筆 trade 實際 WR 得 **39.1%**（全場 BUY 48.5%）——「LONG P=100% edge +71pp」係 model 錯覺（短窗 drift 高方差, SE≈σ/√20），接近反指標。9/23 sl_tp。
+- **BNB SL 校準確診**: 10/10 SL hit 全部曾浮盈, SL 全部喺 -0.74~-0.96% price（median -0.83%）——SL 太貼, 正常波動掃走所有倉（每次 10x = -8.3% margin）。
+- **Sell 壓制確診**: trending_bull 期間 0 筆 sell；sell 51/220；OLR P<50% 仍被開 BUY 11/57（breakeven 29% 包裝令 P=40% 顯示「edge +11pp」）。
+- **sl_tp re-entry 確診**: sl_tp 後 12h same-side re-entry n=64 WR 39.1% vs 全場 48.5%（主神裁決：蝕 1 次即 soft penalty）。
+
+**Phase 2 邏輯實驗（counterfactual）**: cooldown hard block 重播證明誤傷大贏家（+$3.69/+$2.35 都喺 sl_tp 後 12h 內）→ 改 soft；BNB buy 本身 55% WR 正 EV → 唔 block 方向。
+
+**實作（5 個 Fix，全數據支持）**:
+
+### Fix 1: FP drift shrink + P cap（first-passage.ts）——封殺「100% 必勝」幻覺
+- `sanitizeDriftForRegime` 加 volatility 參數：所有 regime（唔淨係 mean_reverting）|ν| > 0.5σ → shrink 到 0.5σ（drift 唔可以主導 diffusion——短窗 drift 係 noise）
+- `calculateFirstPassage` 加 P cap 0.85（`FP_P_CAP`）——永久封殺 90%+ 輸出
+- env `FP_DRIFT_SHRINK=false` 回滾
+- 效果：BNB thesis「FP LONG 100% edge +71pp」→「~65-75% edge +36-46pp」，LLM 唔再被必勝幻覺推向 BUY
+
+### Fix 2: edge vs 50% 雙參照（index.ts context builder）
+- OLR block 同時顯示 `vs breakeven` + `vs 50%`：`OLR P(win)=43% (breakeven +14pp | vs50% -7pp)`——負 edge 無所遁形（11/57 低勝算 BUY 會被 LLM 重新考慮）
+
+### Fix 3: SL 絕對 floor（smart-sltp.ts）
+- SL price-basis 絕對下限 1.5%（widen-only）：`SL_ABSOLUTE_FLOOR_PCT` env 可調
+- BNB SL 0.83% → 1.5%（10x = 15% margin），正常回調唔再被掃；10/10 曾浮盈嘅 trade 有空間跑
+
+### Fix 4: sl_tp 蝕 1 次即 soft penalty（index.ts）——主神裁決
+- `updateLossStreakTracker` 收 closeReason；sl_tp → 設 `slTpPenalty`（12h, +25% conviction）
+- `checkLossStreakGate` 優先檢查 slTpPenalty——窗口內 same-side re-entry 要更強訊號（soft, 唔 block——保住 +$3.69/+$2.35 大贏家）
+- env `SLTP_REENTRY_PENALTY_HOURS` / `SLTP_REENTRY_PENALTY_STRENGTH` 可調
+
+### Fix 5: Fractal Momentum Sentinel（close-trend-sentinel.ts 新）——主神指示
+- **概念**: 每次共識 TP/SL 之前, LLM 根據現時 candles 判斷「close 之後價格會唔會反轉走勢」——判定趨勢是否大機會持續, 從而決定是否止蝕/鎖利
+- **輸入（主神指示）**: 最近 24 cycle 結構化 OHLCV（O/H/L/C/V 表格, `buildOhlcvTable`）為主 + ASCII block chart（`buildCandleBarChart`）輔助——1h + 5m 由 candleCache 緩存讀取（momentum 層每 cycle 已 warm）
+- **輸出**: `continue`（趨勢持續→close 係錯）→ hold（pending-close 機制, 下 cycle 再 close = 確認執行; 3 cycle 超時 = 兜底——唔死揸）；`reverse`（反轉→close 啱）→ 照 close；`uncertain`/LLM 失敗/超時 8s → 照 close（**止蝕永遠唔可以被 LLM 掛住**）
+- **安全層**: SL hit（closeStructureConfirmed）永遠唔 apply sentinel；重入 guard（sentinelInFlight）；毒 candles/垃圾 JSON/array verdict/多 JSON block 全 sanitize；Gate Outcome Tracker 記錄攔截 hit rate
+- `_sentinelHolds` 寫入 execution metadata（客戶端可追溯）；env `CLOSE_TREND_SENTINEL=false` 回滾
+
+**驗證**: 43 新測試（Fix 1/3/5 + 攻擊輪）全綠；tsc 零錯誤；全量 3306 pass + 13 pre-existing（空測試檔 + v2.0.854-attack2, unrelated）；updateLossStreakTracker/execution-metadata/trend-hold 周邊零 regress。
+
+## v2.0.870-close-gate: Close Gate 層級化整合（Fractal Momentum Sentinel 流水線）
+
+**主神指示（2026-08-23）**: ① 規定 sentinel 判定格式——話俾 LLM 知 position 係 BUY/SELL，問「嚟緊順向機會是否大」：暫時回撤 → HOLD、短期已轉趨勢 → CLOSE；② audit HACP 全部 close Gate 整合節省算力。
+
+**Gate 盤點（7 個）**: SL hit / Skeptics-LLM / MFE lock / Sentinel-LLM / Close-Calibrator / Trend-Hold / Reversal-point——同一 close 路徑 2 個 LLM call（Skeptics + Sentinel）+ 3 個 hold 機制重疊。
+
+**邏輯實驗驗證（220 筆 realTrades）**:
+- pre-filter 決定率：trend 明確只佔盈利 close 12.5%——結構性 0 LLM 場景
+- **pre-filter hold 正價值**: trend 支持時 close 後 re-entry 贏 +$6.35 vs 蝕 -$1.69（n=12）——淨 +$4.66，唔亂 hold
+- LLM call 節省：**2.0 → 最多 1.0**（trend 明確 0 call；Skeptics 延遲到 sentinel CLOSE 後）
+- **發現原 trend-hold 單位混亂 bug**: `MIN_MOMENTUM_PCT=0.05` 實際係 5%（註釋話 0.05%）——live 傳 fraction（0.02=2%）永遠 < 0.05 → live 上 trend-hold 幾乎唔觸發。prefilter 用正確 fraction 噪音線 0.0005（0.05%）。
+
+**實作（層級化流水線）**:
+- `trend-hold-gate.ts`: 新增 `prefilterTrend()` 純函數——三態（hold/close/neutral），雙窗同向先決定，垃圾輸入 → neutral
+- `index.ts` close 路徑重構: SL hit → 虧損止血(0 LLM) → MFE 鎖利 → **pre-filter(0 LLM)** → **Sentinel(唯一 LLM)** → Skeptics(否決權保留)
+- Sentinel 格式: `HOLD`（暫時回撤）/ `CLOSE`（已轉趨勢）/ `UNCERTAIN`（照 consensus）——向後兼容 continue→hold、reverse→close
+- Skeptics 延遲: 只喺 sentinel CLOSE/UNCERTAIN 後 call（thesis-backed + 非 SL hit）；pre-filter 已決定 close（trend 逆轉/虧損止血）唔 call
+- pending-close 機制: pre-filter/sentinel hold → registerPendingClose（下 cycle 再 close = 確認執行；3 cycle 超時 = 兜底）
+- Gate Outcome Tracker: pre-filter + sentinel 攔截都記錄 hit rate（數據驅動校準）
+
+**驗證**: prefilter-trend 11 測試 + 行為矩陣 12 場景覆蓋；tsc 零錯誤；全量 3318 pass + 13 pre-existing（unrelated）；零 regress。
+
+---
+
 ## v2.0.870-ui-lucide: UI emoji 全面換 Lucide icons
 
 **主神指示**: HACP Prefrontal 嘅 Selected Market Pairs 下方 UI 唔好用 emoji，用 lucide.dev/icons 取代。

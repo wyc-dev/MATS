@@ -35,6 +35,60 @@ export interface TrendHoldResult {
   reason: string;
 }
 
+// ── v2.0.870-FIX(主神批准 2026-08-23): Pre-filter——層級化 close 流水線嘅
+// 零算力第一層。trend-hold gate 升級: 由「soft hold」變成三態判定:
+//   hold    = 4h+1h 雙窗同向支持持倉方向 → HOLD（唔 call LLM sentinel）
+//   close   = 4h+1h 雙窗同向逆轉持倉方向 → CLOSE（唔 call LLM sentinel）
+//   neutral = 雙窗矛盾/太弱/垃圾輸入 → 交俾 LLM sentinel 最後裁決
+//
+// 量化金融思路: deterministic 零成本, 只有「trend 未明」先值得花 LLM 算力。
+// 垃圾輸入（1e308/NaN/Infinity）→ neutral（唔亂決定——交俾 sentinel/consensus）。
+export type TrendPrefilterVerdict = 'hold' | 'close' | 'neutral';
+
+export interface TrendPrefilterInput {
+  side: 'buy' | 'sell';
+  momentum4h: number;
+  momentum1h: number;
+}
+
+export interface TrendPrefilterResult {
+  verdict: TrendPrefilterVerdict;
+  reason: string;
+}
+
+/** 純函數: 三態 pre-filter——只有雙窗同向先決定, 其餘 neutral（安全）。
+ *  注意: momentum 單位係 fraction（0.02 = 2%）。原 MIN_MOMENTUM_PCT=0.05
+ *  實際係 5%（註釋話 0.05% 但單位錯）——令原 trend-hold live 上幾乎唔觸發
+ *  （live fraction 0.02 < 0.05）。prefilter 用正確 fraction 噪音線 0.0005（0.05%）。 */
+export function prefilterTrend(input: TrendPrefilterInput): TrendPrefilterResult {
+  const { side, momentum4h: m4h, momentum1h: m1h } = input;
+  // 垃圾輸入 → neutral（唔亂決定——交俾 sentinel/consensus）
+  if (!Number.isFinite(m4h) || !Number.isFinite(m1h)) {
+    return { verdict: 'neutral', reason: 'invalid momentum' };
+  }
+  if (Math.abs(m4h) > MAX_MOMENTUM_PCT || Math.abs(m1h) > MAX_MOMENTUM_PCT) {
+    return { verdict: 'neutral', reason: 'momentum out of range' };
+  }
+  if (side !== 'buy' && side !== 'sell') {
+    return { verdict: 'neutral', reason: 'invalid side' };
+  }
+  // 0.05% fraction 噪音線——低過係 noise,唔算趨勢
+  const MIN_TREND_FRAC = 0.0005;
+  const supports = side === 'buy'
+    ? m4h > MIN_TREND_FRAC && m1h > MIN_TREND_FRAC
+    : m4h < -MIN_TREND_FRAC && m1h < -MIN_TREND_FRAC;
+  const reverses = side === 'buy'
+    ? m4h < -MIN_TREND_FRAC && m1h < -MIN_TREND_FRAC
+    : m4h > MIN_TREND_FRAC && m1h > MIN_TREND_FRAC;
+  if (supports) {
+    return { verdict: 'hold', reason: `trend supports ${side.toUpperCase()} (4h ${(m4h * 100).toFixed(2)}%, 1h ${(m1h * 100).toFixed(2)}%)` };
+  }
+  if (reverses) {
+    return { verdict: 'close', reason: `trend reversed against ${side.toUpperCase()} (4h ${(m4h * 100).toFixed(2)}%, 1h ${(m1h * 100).toFixed(2)}%)` };
+  }
+  return { verdict: 'neutral', reason: 'trend mixed/weak — defer to LLM sentinel' };
+}
+
 const MIN_PREMATURE_SAMPLES = 5;
 /** 0.05%——低過係噪音，唔算趨勢支持 */
 const MIN_MOMENTUM_PCT = 0.05;
