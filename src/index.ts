@@ -605,8 +605,9 @@ class MATSSystem {
    *  analyses at flush time so the write is a single atomic snapshot. */
   private _skepticsCloseBlocks = new Map<string, { reason: string }>();
   /** v2.0.870-FIX(主神): Fractal Momentum Sentinel close holds this cycle（共識 close 被
-   *  LLM 趨勢持續性判斷 hold）——寫入 execution metadata 令客戶端可追溯。 */
-  private _sentinelHolds = new Map<string, { reason: string }>();
+   *  LLM 趨勢持續性判斷 hold）——寫入 execution metadata 令客戶端可追溯。
+   *  v2.0.870-FIX-C1: 用 CloseBlock（帶 blockedBy:'sentinel' / gate）——前端準確顯示 TREND HOLD。 */
+  private _sentinelHolds = new Map<string, import('./services/execution-metadata.ts').CloseBlock>();
   /** v2.0.870-FIX(主神): sentinel 重入 guard——同一 symbol 同時只有一個 LLM call。 */
   private sentinelInFlight = new Set<string>();
   /** v2.0.870: Gate Outcome Tracker——量度每個 gate 嘅攔截準確率（hit rate），
@@ -11289,7 +11290,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               const pf = this.prefilterTrendGate(psc.symbol, pos.side);
               if (pf.verdict === 'hold') {
                 log.warn(`🛑 [prefilter] ${psc.symbol} trend 支持持倉方向 → HOLD（${pf.reason}）`);
-                this._sentinelHolds.set(normalizeSymbol(psc.symbol), { reason: `prefilter: ${pf.reason}` });
+                this._sentinelHolds.set(normalizeSymbol(psc.symbol), { reason: `prefilter: ${pf.reason}`, blockedBy: 'sentinel', gate: 'close-trend-sentinel' });
                 if (this.closeCalibrator) this.closeCalibrator.registerPendingClose(psc.symbol, this.totalCycles, 0.6);
                 continue; // pre-filter hold——唔執行(下 cycle 再確認;3 cycle 超時兜底)
               }
@@ -11304,7 +11305,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
                 const sentinel = await this.judgeCloseTrendSentinel(psc.symbol, pos);
                 if (sentinel.hold) {
                   log.warn(`🛰️ [sentinel] ${psc.symbol} consensus close 被 hold — ${sentinel.reason}`);
-                  this._sentinelHolds.set(normalizeSymbol(psc.symbol), { reason: sentinel.reason });
+                  this._sentinelHolds.set(normalizeSymbol(psc.symbol), { reason: sentinel.reason, blockedBy: 'sentinel', gate: 'close-trend-sentinel' });
                   continue; // close 被 sentinel hold——唔執行(下 cycle 再確認)
                 }
                 // FIX-E2(主神批准): sentinel CLOSE 高信心(≥0.7)= 市場已確認轉勢——
@@ -14033,7 +14034,10 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     // v2.0.870-FIX(主神): sentinel holds 一併 attach——客戶端睇到 close 被
     // Fractal Momentum Sentinel hold(趨勢持續性判斷)而非無故唔 close
     if (sentinelHolds.size > 0) {
-      attachExecutionToAnalyses(pending, { ...execReport, blockedBy: 'sentinel', blockedReason: 'trend continuation (close-trend-sentinel)' }, execSym, sentinelHolds);
+      // v2.0.870-FIX-C1: sentinelHolds 係 CloseBlock map（帶 blockedBy:'sentinel' /
+      // gate:'close-trend-sentinel'）——execReport 用 null（唔可以 overwrite active
+      // gate report）——attach 後前端睇到「TREND HOLD」而唔係誤標 skeptics
+      attachExecutionToAnalyses(pending, null, execSym, sentinelHolds);
     }
 
     // v2.0.870: Gate Outcome Tracker——記錄被攔截訊號（active symbol gate）

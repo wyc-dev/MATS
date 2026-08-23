@@ -36,6 +36,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 **驗證**: 25/25 攻擊測試全綠; 全量 3388 pass + 13 pre-existing（unrelated）; tsc clean; 零 regress。
 
 ---
+## v2.0.870-exec-block-type: asset_analyses 適配修復（主神檢查 mats_web_app 2026-08-23）
+
+**主神指示**: 確保修改完美適配 asset_analyses 資料格式, 有效給予前端準確訊號。
+
+**檢查發現（紅先命中）**: `attachExecutionToAnalyses` 第四參數語義係 skepticsBlocks（內部硬編碼 `blockedBy:'skeptics'`）——sentinel/prefilter 嘅 trend hold 傳入會被**誤標成「CLOSE BLOCKED」（Skeptics 樣式）**——前端訊號唔準確。
+
+**Fix C1 — 通用 block map**（`execution-metadata.ts`）:
+- 新 `CloseBlock` interface（`{ reason, blockedBy?, gate? }`）——skeptics default（向後兼容）
+- `attachExecutionToAnalyses` 第四參數 `ReadonlyMap<string, CloseBlock>`——blockedBy/gate 由 block 帶
+- `_sentinelHolds` 存 `{ blockedBy:'sentinel', gate:'close-trend-sentinel' }`——attach 語義正確
+- attach call 改 `execReport: null`（sentinel holds 唔可以 overwrite active gate report）
+
+**Fix C2 — 前端準確顯示**（`mats_web_app` MatrixView.tsx + AssetDrawer.tsx）:
+- `blockedBy === 'sentinel'` → **「TREND HOLD」**（之前會顯示 generic「BLOCKED」）
+
+**驗證**: 紅先 3 測試轉綠（sentinel 標記/向後兼容/overwrite）; 現有 execution-metadata-attack 測試零 regress; 前端 vite build 成功; 後端全量 3391 pass + 13 pre-existing（unrelated）; tsc clean。
+
+---
 ## v2.0.870-fp-multiplier: FP Multiplier 入 Conviction Gate（主神批准 2026-08-23）
 
 **主神問題**: FP shrink + P cap 而家係交由邊個 agent 處理?確定能夠影響開倉條件?
