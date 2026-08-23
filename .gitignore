@@ -97,3 +97,7 @@ data/evolution/vol-thresholds.json
 
 # Close gate attack plan (ephemeral — validated then removed)
 PLAN_fix-close-gate-attack.md
+P23-A-B.md
+PLAN_fix-buy-bias.md
+PLAN_fix-close-gate-integration.md
+bStocks_module.md
