@@ -114,6 +114,19 @@ function capP(p: number): number {
   return Math.min(FP_P_CAP, Math.max(0, p));
 }
 
+/** v2.0.870-FIX(主神批准): FP Multiplier——令 FP shrink 有硬 teeth。
+ *  實證: FP 正 edge 無獨立預測力（edge>0 trade WR 47% ≈ 全場 48.5%）——唔應該 boost;
+ *  以前「FP 100% edge +71pp」靠 LLM 自覺先唔 boost——而家硬性 ×1.0。
+ *  負 edge（FP 明確逆持倉方向）→ 壓制——防逆勢開倉（live 敏感性: SELL edge -41pp
+ *  → ×0.79, conf 60% → 47.4% < threshold 攔截）。
+ *  方向對應: 開 BUY 用 edge=longPWin-breakevenPLong; 開 SELL 用 edge=shortPWin-breakevenPShort。
+ *  純函數可測; env FP_GATE_MULTIPLIER=false 回滾。 */
+export function fpEdgeMultiplier(edge: number): number {
+  if (!Number.isFinite(edge)) return 1.0; // 垃圾/冷啟動 → 中性
+  if (edge >= 0) return 1.0; // 正 edge → 中性（FP 無預測力——唔 boost = shrink 嘅 teeth）
+  return 1 + 0.5 * Math.max(-0.4, edge); // 負 edge → 壓制（×0.8@-0.4, ×0.7@-0.6）
+}
+
 export function calculateFirstPassage(
   volatility: number,
   drift: number,

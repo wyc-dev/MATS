@@ -50,6 +50,23 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 
 ---
 
+### v2.0.870-time-decay: Entry Gate 時間衰減全面化（主神指示 2026-08-23）
+
+「距離越遠嘅交易紀錄影響力應該越少——先公平同靈活」。Audit 發現 EV Filter 連 timestamp 都冇、Conditional WR 全部歷史 trade 等權。**Fix T1 EV Filter τ=1d**（`ev-filter.ts`——`samples: {pnlPct, closedAt}[]`, `computeEV` 加權 `w=exp(-Δt/τ)`, **資格與方向分離**: n 原始樣本數防冷啟動 / EV 加權值校準; migrate 舊 number[] 當最舊; env `EV_TIME_DECAY_HOURS`）——實證 bnb|buy +1.44% → -0.58%（BNB 連蝕根因）、silver|buy +0.48% → -3.53%, 6/11 方向翻轉。**Fix T2 Conditional WR τ=14d**（`evolution-utils.ts` `computeVectorConditionalWinRate`——w = similarity × exp(-Δt/τ), records.ts 已有; options `timeDecayHours`; 全部冇 ts → raw path 精確保留）。
+
+### v2.0.870-time-decay-attack: 時間衰減攻擊輪硬化
+
+4 命中全修: ① `closedAt=1e308`/未來 10 年 → `dt=0` **全權重污染** → `TS_TOLERANCE_MS` 5min 時鐘容忍（超過 now+5min 當最舊）; ② null/string 元素 → NaN 傳播; ③ `pnlPct=Infinity` → EV=Infinity——元素級 sanitize（`typeof number && isFinite` guard）。17 攻擊測試全綠。
+
+### v2.0.870-fp-multiplier: FP Multiplier 入 Conviction Gate
+
+**主神問題**: FP shrink 交由邊個 agent 處理?確定影響開倉條件?——追蹤發現 consensus 主開倉路徑只有 LLM 文字軟影響（conviction gate 冇直接 FP 項）。驗證: FP 正 edge 無預測力（WR 47% ≈ 全場 48.5%）→ **只壓制唔 boost**。`fpEdgeMultiplier(edge)` 純函數（`first-passage.ts`）: edge≥0 → ×1.0 中性（shrink teeth——FP 唔再可推高 confidence）/ edge<0 → ×0.7-0.8 壓制（防逆勢）。接駁 conviction gate（`effectiveConfidence × fpEdgeMultiplier`, 方向對應 BUY→LONG edge / SELL→SHORT edge; env `FP_GATE_MULTIPLIER` 回滾; `[fp-gate]` log + audit 記錄）。live 實證 shrink 後 P≥99% = 0; SELL 逆勢 conf 60% × 0.79 → 47.4% 攔截。同時間衰減 τ=1d 獨立（FP 即時 edge, EWMA drift 內建加權）。
+
+### v2.0.870-fp-multiplier-attack: FP Multiplier 攻擊輪
+
+25 攻擊測試全綠（純函數邊界 + 接駁模擬）。Code Review 修復 1 個真實漏洞: **Symbol 錯位污染**——`finalDecision.symbol` 可由 HACP consensus 指向任何 market, 而 `lastFirstPassage` 係 active symbol 專屬 → 會將 BTC 嘅 FP 壓制 SILVER 開倉——加 `pwinSym === normalizeSymbol(activeSymbol)` guard（非 active → ×1.0 中性）。**已知限制**: per-symbol 開倉冇 FP teeth（per-symbol 冇 lastFirstPassage——同 P20-C asymmetry 一致, 留待日後）。
+
+---
 ### v2.0.870-close-gate-attack: Close Gate 攻擊輪硬化 + 盈利提升
 
 **攻擊輪 3 命中全修**: ① `buildOhlcvTable` t=1e308 → toISOString RangeError（sanitizeCandles 加 t 範圍 2000-2100 驗證 + safe date）；② prompt 無限膨脹（interval cap 4）；③ symbol prompt injection（`sanitizeSymbol` 字符白名單 + `sanitizeText` control chars）。
