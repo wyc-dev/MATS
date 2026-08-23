@@ -31,9 +31,29 @@ const log = createLogger({ phase: 'ev-filter' });
 const MIN_SAMPLES = 20;             // 每 (symbol×side) 最少樣本
 const DEFAULT_PATH = 'data/evolution/ev-filter.json';
 
+// ── v2.0.870-FIX(主神指示 2026-08-23): EV 時間衰減 τ=1d ──
+// 主神洞察:「距離越遠嘅交易紀錄影響力應該越少,先公平同靈活」。
+// 實證:bnb|buy 無衰減 EV +1.44% → τ=1d -0.58%（最近 BNB BUY 負 EV——正正係
+// BNB 連蝕根因）;silver|buy +0.48% → -3.53%;6/11 方向被翻轉——舊數據一直誤導。
+// 設計: n 用原始樣本數（資格門,防冷啟動亂判）;EV 用時間加權值（方向校準）。
+// env EV_TIME_DECAY_HOURS（default 24 = 1d;0 = 關閉 = 舊行為等權）。
+export interface EVSample {
+  pnlPct: number;
+  closedAt: number;
+}
+
+const EV_TIME_DECAY_HOURS = (() => {
+  const h = Number(process.env['EV_TIME_DECAY_HOURS'] ?? '24');
+  return Number.isFinite(h) && h >= 0 ? h : 24;
+})();
+const EV_TIME_DECAY_MS = EV_TIME_DECAY_HOURS * 3_600_000;
+/** v2.0.870-FIX-V1(攻擊輪): 時鐘 skew 容忍——closedAt 超過 now+5min 當「未來垃圾」→ 當最舊
+ *  （1e308 / 未來 10 年嘅污染值唔可以當「最新」有全權重）。 */
+const TS_TOLERANCE_MS = 5 * 60_000;
+
 export interface EVFilterState {
-  /** per (symbol|side) → 最近 pnlPct 樣本 */
-  samples: Record<string, number[]>;
+  /** per (symbol|side) → 最近 pnlPct 樣本（v2.0.870: 含 closedAt——時間衰減 τ=1d） */
+  samples: Record<string, EVSample[]>;
   /** v2.0.865-fix:backfill 完成標記(persisted)——防止 restart 重複 backfill 加入 */
   backfillDone: boolean;
 }
@@ -48,15 +68,35 @@ function emptyState(): EVFilterState {
   return { samples: {}, backfillDone: false };
 }
 
-/** 從樣本計算 EV(分佈思維:median 優先抗 skew) */
-export function computeEV(samples: number[]): { ev: number; pWin: number; avgWin: number; avgLoss: number; n: number } {
-  const wins = samples.filter((p) => p > 0);
-  const losses = samples.filter((p) => p <= 0);
+/** 從樣本計算 EV(分佈思維:median 優先抗 skew)。
+ *  v2.0.870-FIX(主神指示): 時間衰減 τ=1d——w = exp(-Δt/τ),最近嘅 trade 影響力
+ *  大過舊 trade。n 返回原始樣本數（資格門——evToMultiplier 用 n≥20 判斷有冇資格）,
+ *  EV/pWin/avgWin/avgLoss 全部係時間加權值（方向校準——反映最近市況）。
+ *  τ=0（env 關閉）→ 等權 = 舊行為。 */
+export function computeEV(samples: EVSample[], now = Date.now(), tauMs = EV_TIME_DECAY_MS): { ev: number; pWin: number; avgWin: number; avgLoss: number; n: number } {
   const n = samples.length;
   if (n === 0) return { ev: 0, pWin: 0, avgWin: 0, avgLoss: 0, n: 0 };
-  const pWin = wins.length / n;
-  const avgWin = wins.length > 0 ? wins.reduce((a, b) => a + b, 0) / wins.length : 0;
-  const avgLoss = losses.length > 0 ? losses.reduce((a, b) => a + Math.abs(b), 0) / losses.length : 0;
+  let wSum = 0, wWin = 0, wAvgWin = 0, wAvgLoss = 0;
+  for (const s of samples) {
+    // v2.0.870-FIX-V2(攻擊輪): 元素級 sanitize——垃圾元素唔可以污染 EV。
+    //  pnlPct 必須 finite number（Infinity/NaN/string/array 拒——`'1'>0` coerces true,
+    //  `undefined>0` false → NaN 傳播）; closedAt 必須合理（未來/1e308/垃圾 → 當最舊）。
+    if (!s || typeof s !== 'object') continue;
+    const p = (s as { pnlPct?: unknown }).pnlPct;
+    if (typeof p !== 'number' || !Number.isFinite(p)) continue;
+    const ct = (s as { closedAt?: unknown }).closedAt;
+    const dt = (typeof ct === 'number' && Number.isFinite(ct) && ct > 0 && ct <= now + TS_TOLERANCE_MS)
+      ? Math.max(0, now - ct)
+      : Number.MAX_SAFE_INTEGER;
+    const w = tauMs > 0 ? Math.exp(-dt / tauMs) : 1;
+    wSum += w;
+    if (p > 0) { wWin += w; wAvgWin += p * w; }
+    else { wAvgLoss += Math.abs(p) * w; }
+  }
+  if (wSum <= 0) return { ev: 0, pWin: 0, avgWin: 0, avgLoss: 0, n };
+  const pWin = wWin / wSum;
+  const avgWin = wWin > 0 ? wAvgWin / wWin : 0;
+  const avgLoss = (wSum - wWin) > 0 ? wAvgLoss / (wSum - wWin) : 0;
   return { ev: pWin * avgWin - (1 - pWin) * avgLoss, pWin, avgWin, avgLoss, n };
 }
 
@@ -95,13 +135,14 @@ export class EVFilter {
     this.path = path;
   }
 
-  /** 每筆 trade close 時記錄實際 pnlPct(已含手續費) */
-  recordTrade(symbol: string, side: 'buy' | 'sell', pnlPct: number): void {
+  /** 每筆 trade close 時記錄實際 pnlPct(已含手續費)。v2.0.870: 加 closedAt（時間衰減） */
+  recordTrade(symbol: string, side: 'buy' | 'sell', pnlPct: number, closedAt = Date.now()): void {
     if (!symbol || (side !== 'buy' && side !== 'sell')) return;
     if (!Number.isFinite(pnlPct)) return;
     const k = key(symbol.slice(0, 24), side);
     const arr = this.state.samples[k] ?? [];
-    arr.push(pnlPct);
+    const ct = Number(closedAt);
+    arr.push({ pnlPct, closedAt: Number.isFinite(ct) && ct > 0 ? ct : Date.now() });
     if (arr.length > MAX_SAMPLES_PER_KEY) arr.splice(0, arr.length - MAX_SAMPLES_PER_KEY);
     this.state.samples[k] = arr;
   }
@@ -126,7 +167,7 @@ export class EVFilter {
     const k = key(symbol, side);
     const arr = this.state.samples[k];
     if (!arr || arr.length === 0) return 1.0;
-    return shapeToMultiplier(computeDistributionShape(arr));
+    return shapeToMultiplier(computeDistributionShape(arr.map(x => x.pnlPct)));
   }
 
   /** v2.0.869-P8:凸性偵測乘數(Wilson LB 保守 EV)——統計顯著性 */
@@ -134,7 +175,7 @@ export class EVFilter {
     const k = key(symbol, side);
     const arr = this.state.samples[k];
     if (!arr || arr.length === 0) return 1.0;
-    const { conservativeEV, n } = computeConservativeEV(arr);
+    const { conservativeEV, n } = computeConservativeEV(arr.map(x => x.pnlPct));
     return convexityToMultiplier(conservativeEV, n);
   }
 
@@ -143,8 +184,8 @@ export class EVFilter {
     const k = key(symbol, side);
     const arr = this.state.samples[k];
     if (!arr || arr.length < MIN_SHAPE_SAMPLES) return '';
-    const shape = computeDistributionShape(arr);
-    const { conservativeEV, wilsonLB, pWin } = computeConservativeEV(arr);
+    const shape = computeDistributionShape(arr.map(x => x.pnlPct));
+    const { conservativeEV, wilsonLB, pWin } = computeConservativeEV(arr.map(x => x.pnlPct));
     const shapeMult = shapeToMultiplier(shape);
     const convMult = convexityToMultiplier(conservativeEV, arr.length);
     const shapeNote =
@@ -206,10 +247,18 @@ export class EVFilter {
           // v2.0.865-attack: __proto__/constructor/prototype 毒 key 跳過
           if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
           if (!Array.isArray(arr)) continue;
-          const cleanArr = arr
-            .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
-            .slice(-MAX_SAMPLES_PER_KEY);
-          if (cleanArr.length > 0) clean.samples[k] = cleanArr;
+          const cleanArr: EVSample[] = [];
+          for (const v of arr) {
+            if (v && typeof v === 'object' && Number.isFinite((v as EVSample).pnlPct)) {
+              // 新格式 { pnlPct, closedAt }
+              const ct = Number((v as EVSample).closedAt);
+              cleanArr.push({ pnlPct: (v as EVSample).pnlPct, closedAt: Number.isFinite(ct) && ct > 0 ? ct : 0 });
+            } else if (typeof v === 'number' && Number.isFinite(v)) {
+              // 舊格式 number[] → migrate（當最舊——時間衰減後零影響,等新 trade 累積）
+              cleanArr.push({ pnlPct: v, closedAt: 0 });
+            }
+          }
+          if (cleanArr.length > 0) clean.samples[k] = cleanArr.slice(-MAX_SAMPLES_PER_KEY);
         }
       }
       this.state = clean;

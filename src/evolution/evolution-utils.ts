@@ -228,6 +228,11 @@ export interface VectorConditionalOptions {
   /** v2.0.211 (K.md #4): Temperature for softmax-weighted WR (default 0.1).
    *  Lower = sharper (top match dominates), higher = more uniform. */
   softmaxTemperature?: number;
+  /** v2.0.870-FIX(主神指示 2026-08-23): 時間衰減——相似 trade 嘅影響力隨
+   *  時間 fade out（「距離越遠影響力越少,先公平靈活」）。
+   *  w_total = similarity × exp(-Δt/τ)。τ default 336h = 14d;
+   *  0 = 關閉（等權,舊行為）。records 冇 ts → 中性（唔加權）。 */
+  timeDecayHours?: number;
   /** v2.0.211: Exclude records whose exitType is in this set BEFORE computing
    *  the conditional WR. Use to remove system-decision closes (e.g.
    *  ['thesis_invalidation']) so the market-conditional WR only reflects clean
@@ -506,6 +511,8 @@ export function computeVectorConditionalWinRate(
     side: 'buy' | 'sell';
     pnl?: number;
     exitType?: string;
+    /** v2.0.870: close timestamp——時間衰減用（ThesisExperienceRecord.ts） */
+    ts?: number;
   }>,
   options?: VectorConditionalOptions,
 ): VectorConditionalWinRateResult {
@@ -606,14 +613,26 @@ export function computeVectorConditionalWinRate(
   scored.sort((a, b) => b.sim - a.sim);
   const matched = scored.slice(0, topN);
 
-  let wins = 0;
-  let losses = 0;
+  // v2.0.870-FIX(主神指示): 時間衰減——w_total = similarity × exp(-Δt/τ)。
+  // 資格門用原始 matched 數（minSamples 判斷有冇資格）;WR 用時間加權 wins/total
+  // （方向校準——最近嘅相似 trade 影響力大）。Wilson 用 raw count（保守下界）。
+  const timeDecayMs = (options?.timeDecayHours ?? 336) * 3_600_000;
+  const now = Date.now();
+  let rawWins = 0;
+  let rawLosses = 0;
+  let wWins = 0;
+  let wLosses = 0;
   let simSum = 0;
   const matches: VectorConditionalMatch[] = [];
   for (const m of matched) {
     const o = normaliseOutcome(m.rec.outcome)!;
-    if (o === 'win') wins++;
-    else losses++;
+    let tw = 1;
+    const ts = Number((m.rec as { ts?: number }).ts);
+    if (timeDecayMs > 0 && Number.isFinite(ts) && ts > 0) {
+      tw = Math.exp(-Math.max(0, now - ts) / timeDecayMs);
+    }
+    if (o === 'win') { rawWins++; wWins += tw; }
+    else { rawLosses++; wLosses += tw; }
     simSum += m.sim;
     matches.push({
       similarity: m.sim,
@@ -626,14 +645,23 @@ export function computeVectorConditionalWinRate(
 
   const sampleSize = matched.length;
   // v2.0.211 (K.md #4): Softmax-weighted win rate option.
+  // v2.0.870(時間衰減): 只有「真係有 ts 且時間衰減生效」先用加權 WR——
+  // 全部 records 冇 ts 或 timeDecayHours=0 → raw path（精確,舊行為一致）。
+  const hasTs = matched.some(m => {
+    const ts = Number((m.rec as { ts?: number }).ts);
+    return Number.isFinite(ts) && ts > 0;
+  });
   let conditionalWinRate: number;
   if (options?.softmaxWeightedWR && sampleSize > 0) {
     conditionalWinRate = softmaxWeightedWinRate(matches, options.softmaxTemperature ?? 0.1);
     // Wilson still uses raw wins/total for the lower bound (penalises small n).
+  } else if (timeDecayMs > 0 && hasTs && (wWins + wLosses) > 0) {
+    // v2.0.870: 時間加權 WR——最近嘅相似 trade 主導（主神「公平靈活」）
+    conditionalWinRate = wWins / (wWins + wLosses);
   } else {
-    conditionalWinRate = sampleSize > 0 ? wins / sampleSize : 0.5;
+    conditionalWinRate = sampleSize > 0 ? rawWins / sampleSize : 0.5;
   }
-  const wilsonWinRate = wilsonScore(wins, sampleSize);
+  const wilsonWinRate = wilsonScore(rawWins, sampleSize);
   const avgSimilarity = sampleSize > 0 ? simSum / sampleSize : 0;
 
   const confidence: VectorConditionalWinRateResult['confidence'] =
@@ -644,8 +672,8 @@ export function computeVectorConditionalWinRate(
       conditionalWinRate: 0.5,
       wilsonWinRate: 0.5,
       sampleSize,
-      wins,
-      losses,
+      wins: rawWins,
+      losses: rawLosses,
       avgSimilarity,
       confidence: 'none',
       matched: matches,
@@ -654,15 +682,15 @@ export function computeVectorConditionalWinRate(
     };
   }
 
-  const wrLabel = options?.softmaxWeightedWR ? 'softmax-WR' : 'WR';
-  const explanation = `Vector-conditional (${wrLabel}): ${wins}/${sampleSize} won (${(conditionalWinRate * 100).toFixed(0)}%, wilson ${(wilsonWinRate * 100).toFixed(0)}%, avg sim ${(avgSimilarity * 100).toFixed(0)}%, ${confidence} conf, ${usableDims.length}/${names.length} features).`;
+  const wrLabel = options?.softmaxWeightedWR ? 'softmax-WR' : (timeDecayMs > 0 ? 'time-WR' : 'WR');
+  const explanation = `Vector-conditional (${wrLabel}): ${rawWins}/${sampleSize} won (${(conditionalWinRate * 100).toFixed(0)}%, wilson ${(wilsonWinRate * 100).toFixed(0)}%, avg sim ${(avgSimilarity * 100).toFixed(0)}%, ${confidence} conf, ${usableDims.length}/${names.length} features).`;
 
   return {
     conditionalWinRate,
     wilsonWinRate,
     sampleSize,
-    wins,
-    losses,
+    wins: rawWins,
+    losses: rawLosses,
     avgSimilarity,
     confidence,
     matched: matches,
