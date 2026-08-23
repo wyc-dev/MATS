@@ -12,6 +12,18 @@ const MAX_REASON = 500;
 const MAX_ACTION = 20;
 const MAX_BLOCKED_BY = 40;
 
+/** v2.0.870-FIX-C1(主神檢查 mats_web_app 適配): 通用 close block——
+ *  skeptics 同 sentinel 都可以 attach 去 metadata.execution, 帶各自標籤。
+ *  之前第四參數硬編碼 skeptics——sentinel/prefilter hold 被誤標「CLOSE BLOCKED」——
+ *  前端訊號唔準確。blockedBy/gate default 係 skeptics（向後兼容）。 */
+export interface CloseBlock {
+  reason: string;
+  /** 標籤——default 'skeptics'（向後兼容） */
+  blockedBy?: string;
+  /** gate 名——default 'skeptics-close-validation' */
+  gate?: string;
+}
+
 /** Sanitise an unknown execution payload into a valid ExecutionReport.
  *  Returns null when the payload is not a usable object (string / number /
  *  array / null / missing boolean `blocked`). Every field is length-capped
@@ -56,7 +68,7 @@ export function attachExecutionToAnalyses(
   analyses: Array<{ symbol: string; metadata: Record<string, unknown> }>,
   execReport: ExecutionReport | null,
   execSym: string,
-  skepticsBlocks: ReadonlyMap<string, { reason: string }>,
+  blocks: ReadonlyMap<string, CloseBlock>,
 ): void {
   const normExecSym = String(execSym ?? '').toLowerCase();
   for (const a of analyses) {
@@ -68,15 +80,23 @@ export function attachExecutionToAnalyses(
 
     if (execReport && sym === normExecSym) meta['execution'] = execReport;
 
-    const block = skepticsBlocks.get(sym);
+    const block = blocks.get(sym);
     if (block && typeof block.reason === 'string') {
       const reason = block.reason.slice(0, MAX_REASON);
+      // v2.0.870-FIX-C1: blockedBy/gate 由 block 帶（sentinel ≠ skeptics）——
+      // 向後兼容 default skeptics
+      const blockedBy = typeof block.blockedBy === 'string' && block.blockedBy.trim()
+        ? block.blockedBy.trim().slice(0, MAX_BLOCKED_BY)
+        : 'skeptics';
+      const gate = typeof block.gate === 'string' && block.gate.trim()
+        ? block.gate.trim().slice(0, MAX_GATE_NAME)
+        : 'skeptics-close-validation';
       meta['execution'] = {
         finalAction: 'hold',
         blocked: true,
-        blockedBy: 'skeptics',
+        blockedBy,
         blockedReason: reason,
-        gates: [{ gate: 'skeptics-close-validation', passed: false, reason }],
+        gates: [{ gate, passed: false, reason }],
       };
     }
     a.metadata = meta;
