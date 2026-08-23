@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-tg-timeout
+> **作者**: YC Wong · **版本**: 2.0.870-buy-bias
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
@@ -47,6 +47,54 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 | **風險等級客戶端選擇** | 後端運算單一 moderate 等級嘅訊號矩陣（v2.0.857 移除 aggressive/conservative）；客戶端按用戶選擇讀取對應格（v2.0.822→857）|
 | **訊號與執行分離** | 後端計算訊號 + 寫入 Supabase；客戶端讀取 + 決定執行（paper/real）。`ANALYSIS_MODE` 控制後端是否同時執行 |
 | **生產級標準** | 完整型別（Zod 驗證）、結構化日誌（Winston）、優雅關閉、指數退避重連 |
+
+---
+
+### v2.0.870-close-gate-attack: Close Gate 攻擊輪硬化 + 盈利提升
+
+**攻擊輪 3 命中全修**: ① `buildOhlcvTable` t=1e308 → toISOString RangeError（sanitizeCandles 加 t 範圍 2000-2100 驗證 + safe date）；② prompt 無限膨脹（interval cap 4）；③ symbol prompt injection（`sanitizeSymbol` 字符白名單 + `sanitizeText` control chars）。
+
+**盈利提升（數據收窄）**: E2 做——sentinel CLOSE 高信心（≥0.7）skip Skeptics（慳 LLM + 快離場）；E1/E3 取消（實驗無差異/無數據）；E4 做——slTpPenalty 過期清理（防 memory leak）。
+
+---
+### v2.0.870-close-gate: Close Gate 層級化整合（Fractal Momentum Sentinel 流水線）
+
+**層級化 close 流水線**（每 consensus close 嘅 LLM call 由 2 個降到最多 1 個）:
+```
+SL hit → CLOSE（永遠, 0 LLM, market 確認）
+虧損倉 → CLOSE（0 LLM, 止血優先——thesis-validation-guard 已喺 hacp 層保護）
+MFE 鎖利 → CLOSE（0 LLM, 鎖住俾返晒嘅 gain）
+Pre-filter（prefilterTrend 純函數, 4h+1h 雙窗, 0 LLM）:
+  雙窗同向支持 → HOLD（pending-close 3 cycle 兜底）
+  雙窗同向逆轉 → CLOSE
+  中性/垃圾 → Sentinel
+Sentinel LLM（唯一 LLM call, 8s timeout）:
+  HOLD（暫時回撤,順向機會大）→ hold（pending-close）
+  CLOSE（短期已轉趨勢）→ Skeptics 驗證
+  UNCERTAIN / 失敗 → 照 consensus close（安全 fallback）
+Skeptics（否決權保留）→ CLOSE
+```
+
+**Sentinel 判定格式**（主神規定）: 話俾 LLM 知 position 係 BUY/SELL，問「嚟緊順向機會是否大」——暫時回撤 → HOLD；短期已轉趨勢 → CLOSE；判斷唔到 → UNCERTAIN。輸入 = 最近 24 cycle 結構化 OHLCV（主體）+ ASCII chart（輔助），1h/5m 由 candleCache 緩存讀取。
+
+**注意（原 trend-hold 單位 bug）**: `MIN_MOMENTUM_PCT=0.05` 實際係 5%（fraction 單位下）——live momentum（0.02=2%）永遠唔過 → 原 trend-hold live 上形同虛設。prefilter 用正確 fraction 噪音線 0.0005（0.05%）。shouldHoldForTrend 保留（向後兼容測試）。
+
+---
+### v2.0.870-buy-bias: 系統性單邊 BUY bias + BNB 連蝕修復（Fractal Momentum Sentinel）
+
+**主神調查（2026-08-23）**: 近 20 個交易全部 BUY 無 SELL；BNB 連蝕都係 BUY。
+
+**根因（220 筆 realTrades 定量驗證）**: ① First-Passage 短窗 drift 高方差 → trending regime 下 LONG P=100% edge +71pp 幻覺（實際 WR 39.1%）——所有 agent 見「必勝」→ 全投 BUY；② breakeven 29%/71% 不對稱 → P=40% 都顯示「+11pp edge」；③ BNB SL 被校準到 -0.83% price → 10/10 次正常波動掃走；④ sl_tp 後 re-entry WR 39.1%。
+
+**Fix 1 — FP drift shrink + P cap**（`first-passage.ts`）: `sanitizeDriftForRegime(drift, regime, volatility?)` 所有 regime |ν|>0.5σ → shrink（drift 唔可以主導 diffusion）；`calculateFirstPassage` P cap 0.85。
+
+**Fix 2 — edge vs 50% 雙參照**（`index.ts` OLR block）: `P(win)=43% (breakeven +14pp | vs50% -7pp)`——負 edge 無所遁形。
+
+**Fix 3 — SL 絕對 floor 1.5%**（`smart-sltp.ts`）: `SL_ABSOLUTE_FLOOR_PCT`（widen-only）——BNB 0.83% → 1.5%。
+
+**Fix 4 — sl_tp 蝕 1 次即 soft penalty**（`index.ts`）: `slTpPenalty` map（12h, +25% conviction, soft 非 block）——`SLTP_REENTRY_PENALTY_HOURS/STRENGTH`。
+
+**Fix 5 — Fractal Momentum Sentinel**（`close-trend-sentinel.ts` 新）: 共識 TP/SL close 前, LLM 睇最近 24 cycle 結構化 OHLCV（`buildOhlcvTable`）+ ASCII chart（`buildCandleBarChart`）判斷趨勢持續性：`continue` → hold（pending-close 確認, 3 cycle 超時兜底）；`reverse`/`uncertain`/LLM 失敗/超時 8s → 照 close（止蝕永遠唔可以被 LLM 掛住）。SL hit（closeStructureConfirmed）永遠唔 apply；重入 guard；Gate Outcome Tracker 量度 hit rate；`_sentinelHolds` 寫入 execution metadata。
 
 ---
 
@@ -102,7 +150,7 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 
 ---
 
-### v2.0.870-tg-timeout: TG 訊號 timeout 修復(10s → 30s + retry)
+### v2.0.870-buy-bias: TG 訊號 timeout 修復(10s → 30s + retry)
 
 **主神報告**: BNB close 訊號冇推送到 group——「pushSignal failed (close): This operation was aborted」。
 

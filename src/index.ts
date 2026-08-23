@@ -10,7 +10,8 @@ import { SupabaseAnalysisWriter } from './services/supabase-writer.ts';
 import { buildAssetAnalysis } from './services/analysis-matrix.ts';
 import { attachExecutionToAnalyses } from './services/execution-metadata.ts';
 import { GateOutcomeTracker } from './analysis/gate-outcome-tracker.ts';
-import { shouldHoldForTrend, type TrendHoldResult } from './analysis/trend-hold-gate.ts';
+import { shouldHoldForTrend, prefilterTrend, type TrendHoldResult } from './analysis/trend-hold-gate.ts';
+import { judgeCloseTrend, shouldHoldCloseFromSentinel, CLOSE_TREND_SENTINEL_ENABLED } from './analysis/close-trend-sentinel.ts';
 import type { AssetAnalysis, EdgeReport, ExecutionReport as AnalysisExecutionReport, RiskProfile } from './types/index.ts';
 import {
   computeEdgeReport, skipEdgeReport, realizedStats,
@@ -601,6 +602,11 @@ class MATSSystem {
   /** v2.0.870: Skeptics close blocks this cycle — attached to the pending
    *  analyses at flush time so the write is a single atomic snapshot. */
   private _skepticsCloseBlocks = new Map<string, { reason: string }>();
+  /** v2.0.870-FIX(主神): Fractal Momentum Sentinel close holds this cycle（共識 close 被
+   *  LLM 趨勢持續性判斷 hold）——寫入 execution metadata 令客戶端可追溯。 */
+  private _sentinelHolds = new Map<string, { reason: string }>();
+  /** v2.0.870-FIX(主神): sentinel 重入 guard——同一 symbol 同時只有一個 LLM call。 */
+  private sentinelInFlight = new Set<string>();
   /** v2.0.870: Gate Outcome Tracker——量度每個 gate 嘅攔截準確率（hit rate），
    *  量化金融分析師思路：gate 係策略，要量度先知道信唔信。純觀測層。 */
   private gateOutcomeTracker = new GateOutcomeTracker();
@@ -789,6 +795,24 @@ class MATSSystem {
   }>();
 
   /**
+   * v2.0.870-FIX(主神裁決 2026-08-23):sl_tp 蝕 1 次即 soft penalty。
+   * 實證:sl_tp 後 12h 內 same-side re-entry n=64 WR 得 39.1%(vs 全場 48.5%)——
+   * 被止蝕後急住 re-entry 質素明顯差(追返個勢/報復性入場)。但 re-entry 入面
+   * 有 +$3.69/+$2.35 大贏家 → 只可以 SOFT(提高 conviction 門檻),唔可以 hard block。
+   * 每次 sl_tp close → 設 (symbol:side) penalty 窗口:窗口內 same-side entry 加
+   * +25% conviction(要更強訊號先入)。env 可調。
+   */
+  private slTpPenalty = new Map<string, { until: number; strength: number }>();
+  private readonly slTpPenaltyHours = (() => {
+    const h = Number(process.env['SLTP_REENTRY_PENALTY_HOURS'] ?? '12');
+    return Number.isFinite(h) && h >= 0 ? h : 12;
+  })();
+  private readonly slTpPenaltyStrength = (() => {
+    const s = Number(process.env['SLTP_REENTRY_PENALTY_STRENGTH'] ?? '0.25');
+    return Number.isFinite(s) && s >= 0 && s <= 0.5 ? s : 0.25;
+  })();
+
+  /**
    * v2.0.732: Condition-aware SOFT gate for per-symbol-per-direction loss streak.
    *
    * Philosophy: "Past losses don't guarantee future losses" — but if the
@@ -811,6 +835,25 @@ class MATSSystem {
    */
   private checkLossStreakGate(symbol: string, direction: 'buy' | 'sell'): { blocked: boolean; convictionPenalty?: number; reason?: string } {
     const key = `${normalizeSymbol(symbol)}:${direction}`;
+
+    // v2.0.870-FIX-E4(攻擊輪): 清理過期 slTpPenalty——防 memory leak
+    // （tradingMarkets 可無限多,penalty 唔清會無限增長）
+    const now = Date.now();
+    for (const [k, v] of this.slTpPenalty) {
+      if (v.until <= now) this.slTpPenalty.delete(k);
+    }
+
+    // v2.0.870-FIX(主神裁決):sl_tp 蝕 1 次即 soft penalty——窗口內 re-entry 要更強 conviction
+    const slPen = this.slTpPenalty.get(key);
+    if (slPen && slPen.until > Date.now() && slPen.strength > 0) {
+      const hrsLeft = ((slPen.until - Date.now()) / 3_600_000).toFixed(1);
+      return {
+        blocked: false,
+        convictionPenalty: slPen.strength,
+        reason: `sl_tp re-entry penalty: ${direction.toUpperCase()} ${symbol} was stopped out — conviction +${(slPen.strength * 100).toFixed(0)}% for ${hrsLeft}h (stronger signal required, not blocked)`,
+      };
+    }
+
     const entry = this.lossStreakTracker.get(key);
     if (!entry) return { blocked: false };
 
@@ -916,8 +959,19 @@ class MATSSystem {
    * - Loss: increment consecutiveLosses, set blockedUntilCycle if >= 3
    * Always increments totalTrades.
    */
-  private updateLossStreakTracker(symbol: string, direction: 'buy' | 'sell', isWin: boolean, pnl: number = 0): void {
+  private updateLossStreakTracker(symbol: string, direction: 'buy' | 'sell', isWin: boolean, pnl: number = 0, closeReason?: string): void {
     const key = `${normalizeSymbol(symbol)}:${direction}`;
+
+    // v2.0.870-FIX(主神裁決):sl_tp 蝕 1 次即 soft penalty——止蝕後窗口內 re-entry 要更強 conviction。
+    // 唔 reset 其他機制(consecutiveLosses 照計)——penalty 係額外層。
+    if (closeReason === 'sl_tp' && this.slTpPenaltyHours > 0 && this.slTpPenaltyStrength > 0) {
+      this.slTpPenalty.set(key, {
+        until: Date.now() + this.slTpPenaltyHours * 3_600_000,
+        strength: this.slTpPenaltyStrength,
+      });
+      log.warn(`🚦 [sl-tp-penalty] ${symbol} ${direction} stopped out — same-side re-entry conviction +${(this.slTpPenaltyStrength * 100).toFixed(0)}% for ${this.slTpPenaltyHours}h`);
+    }
+
     let entry = this.lossStreakTracker.get(key);
     if (!entry) {
       entry = { consecutiveLosses: 0, blockedUntilCycle: 0, totalTrades: 0, totalWins: 0, totalPnl: 0, regimeStats: new Map() };
@@ -4844,7 +4898,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // v2.0.731: Update loss streak tracker — was defined but never called!
       // This is why BUY SKHX with 31% WR over 32 trades was never blocked.
       try {
-        this.updateLossStreakTracker(symbol, trade.side === 'buy' ? 'buy' : 'sell', isWin, trade.pnl);
+        this.updateLossStreakTracker(symbol, trade.side === 'buy' ? 'buy' : 'sell', isWin, trade.pnl, String(trade.closeReason ?? ''));
       } catch (err) {
         log.warn(`[close-learning] Loss streak tracker update failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -7358,9 +7412,9 @@ ${recentExamples}
       try {
         const priceHistory = this.marketState.getPriceHistory(sym);
         const vol = estimateVolatility(priceHistory, 20);
-        // P21-A: MR regime → drift 歸零(GBM drift 對 MR 係模型錯用)
+        // P21-A: MR regime → drift 歸零;v2.0.870-FIX: 加 vol shrink(所有 regime)
         const symRegime = this.marketState.getState(sym)?.regime;
-        const drift = sanitizeDriftForRegime(estimateDrift(priceHistory, 20), symRegime);
+        const drift = sanitizeDriftForRegime(estimateDrift(priceHistory, 20), symRegime, vol);
         const fp = calculateFirstPassage(vol, drift, dist.slLong, dist.tpLong, dist.slShort, dist.tpShort);
         lines.push(`First-Passage P(TP before SL) — path-risk from vol + drift + S/R SL/TP:`);
         lines.push(`  LONG  P=${(fp.longPWin * 100).toFixed(0)}% (breakeven=${(fp.breakevenPLong * 100).toFixed(0)}% → edge ${((fp.longPWin - fp.breakevenPLong) * 100).toFixed(0)}pp) conf=${fp.confidence}`);
@@ -7370,12 +7424,19 @@ ${recentExamples}
         // OLR-vs-breakeven EDGE — the ready-made decision signal
         const buyEdge = olrBuy.pWin - fp.breakevenPLong;
         const sellEdge = olrSell.pWin - fp.breakevenPShort;
+        // v2.0.870-FIX(主神調查 2026-08-23): 同時顯示 vs50%——breakeven(29%)包裝
+        // 令 P=40% 都顯示「edge +11pp」→ LLM 睇唔到輸面。vs50% 令負 edge 無所遁形。
+        const buyEdge50 = olrBuy.pWin - 0.5;
+        const sellEdge50 = olrSell.pWin - 0.5;
         const buySig = buyEdge > 0.10 ? 'FAVOR BUY' : buyEdge < -0.05 ? 'AGAINST BUY' : 'no edge';
         const sellSig = sellEdge > 0.10 ? 'FAVOR SELL' : sellEdge < -0.05 ? 'AGAINST SELL' : 'no edge';
+        const buySig50 = buyEdge50 > 0.05 ? 'FAVOR BUY' : buyEdge50 < -0.05 ? 'AGAINST BUY' : 'no edge';
+        const sellSig50 = sellEdge50 > 0.05 ? 'FAVOR SELL' : sellEdge50 < -0.05 ? 'AGAINST SELL' : 'no edge';
         // P78-E3 誠實信心延伸: edge 用 backfill pwin 計——liveSamples === 0 時標明
         // （SKHX 案例「OLR BUY edge +28pp」就係 backfill edge 被當 live 顯示）
         const edgeSuffix = liveSamples === 0 ? ' (backfill-only — NOT live)' : '';
         lines.push(`OLR EDGE vs breakeven: BUY ${(buyEdge * 100).toFixed(0)}pp (${buySig})${edgeSuffix} | SELL ${(sellEdge * 100).toFixed(0)}pp (${sellSig})${edgeSuffix}`);
+        lines.push(`OLR P(win) vs 50%: BUY ${(olrBuy.pWin * 100).toFixed(0)}% (${(buyEdge50 * 100).toFixed(0)}pp, ${buySig50})${edgeSuffix} | SELL ${(olrSell.pWin * 100).toFixed(0)}% (${(sellEdge50 * 100).toFixed(0)}pp, ${sellSig50})${edgeSuffix} — 負數 = 勝算低過 50/50,需要其他強訊號支持`);
       } catch { /* price history unavailable for this symbol — skip FP + edge */ }
 
       lines.push(`DATA SOURCES: shadow=fixed S/R SL/TP sim, paper=dynamic SL/TP, real=HL exchange (truest), backfill=cold-start prior (weight least). Weight by recency + source reliability.`);
@@ -8358,8 +8419,8 @@ ${recentExamples}
     try {
       const priceHistory = this.marketState.getPriceHistory(activeSymbol);
       const vol = estimateVolatility(priceHistory, 20);
-      // P21-A: MR regime → drift 歸零
-      const drift = sanitizeDriftForRegime(estimateDrift(priceHistory, 20), this.marketState.getState(activeSymbol)?.regime);
+      // P21-A: MR regime → drift 歸零;v2.0.870-FIX: 加 vol shrink(所有 regime)
+      const drift = sanitizeDriftForRegime(estimateDrift(priceHistory, 20), this.marketState.getState(activeSymbol)?.regime, vol);
       // LONG: SL at support (below), TP at resistance (above)
       const slDistLong = this.lastSRContext?.distanceToSupportBps ? this.lastSRContext.distanceToSupportBps / 10000 : 0.02;
       const tpDistLong = this.lastSRContext?.distanceToResistanceBps ? this.lastSRContext.distanceToResistanceBps / 10000 : 0.05;
@@ -11184,60 +11245,10 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
             if (isSellSide(pos.side) && closeCurrentPrice >= closeSLPrice) closeStructureConfirmed = true;
           }
 
-          if (pos.entryThesis && !closeStructureConfirmed) {
-            // v2.0.90: Validate close decision with Skeptics for thesis-backed positions
-            // v2.0.832: Skip Skeptics validation if SL hit (market confirmed the break)
-            const closeValidation = await this.hacpEngine.getSkeptics().validateCloseDecision(
-              psc.symbol,
-              pos.side as 'buy' | 'sell',
-              pos.averageEntryPrice,
-              pos.currentPrice,
-              pos.unrealizedPnlPct ?? 0,
-              closeRationale,
-              `${marketDesc}\n\n${adjustedEvolutionContext}`,
-              allThoughts,
-            );
-            if (!closeValidation.approved) {
-              log.warn(`🚫 Skeptics BLOCKED close for ${psc.symbol}: ${closeValidation.rationale} — position remains open`);
-              // v2.0.870: 記錄 block——cycle 尾一次過 attach 到 pending analyses 再寫入
-              // （唔即時寫——避免前後腳，保證單一原子快照）
-              this._skepticsCloseBlocks.set(normalizeSymbol(psc.symbol), { reason: closeValidation.rationale });
-              // v2.0.870: Gate Outcome Tracker——記錄攔截，之後量度 Skeptics 嘅 hit rate
-              this.gateOutcomeTracker.record({
-                symbol: psc.symbol,
-                gate: 'skeptics-close-validation',
-                direction: 'close',
-                side: (pos.side === 'sell' ? 'sell' : 'buy') as 'buy' | 'sell',
-                entryPrice: pos.currentPrice ?? 0,
-                cycle: this.totalCycles,
-              });
-              continue;
-            }
-            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale} [Skeptics: ✅ ${closeValidation.rationale}]`);
-          } else if (pos.entryThesis && closeStructureConfirmed) {
-            // v2.0.832: SL hit — market confirmed the break, skip Skeptics validation
-            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — SL hit ($${closeSLPrice.toFixed(2)}), market confirmed break, skipping Skeptics [${psc.rationale}]`);
-          } else {
-            // v2.0.91: Legacy position without entryThesis — close directly
-            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (legacy, no thesis) (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
-          }
-          // v2.0.143: Route through closeTrade() — handles paper vs real
-          // separation + sets exitThesis before closing.
-          // v2.0.851: This is a CONSENSUS close (agents voted CLOSE). Tag it
-          // explicitly so the TradeRecord.closeReason records 'consensus' —
-          // otherwise inferCloseReason would classify it by exit price vs
-          // SL/TP, losing the agent-decision signal.
-          // v2.0.866 Phase B:二次確認 hold gate(consensus close——過早率高 + 盈利)
-          // v2.0.866-phase-b-attack (V14):SL hit 必須永遠立即執行——
-          // 用「結構判斷」closeStructureConfirmed(價格到 SL 價位)而唔係 rationale 文字
-          // (agents 嘅 rationale 可能冇「SL hit」字眼 → 舊 check 會誤 hold SL close = 蝕死!)
-          // closeStructureConfirmed:buy 且 price ≤ SL、sell 且 price ≥ SL——由市場確認
-          //
-          // v2.0.869(主神 SKHX MAE=0 調查):MFE 鎖利——鎖住「俾返晒」嘅 gain
-          // (SKHX 前兩個 trade:MFE 0.18/0.07——但係蝕——成個 gain 俾返晒)
-          // MFE ≥ 2×ATR 且已回吐 ≥ 30% → 鎖利(唔 hold——直接 close)
-          // MFE ≥ 1.5×ATR 且已回吐 ≥ 50% → 鎖利(唔 hold——直接 close)
-          // soft——判斷層——唔 hard block
+          // ── v2.0.870-FIX(主神批准 2026-08-23): 層級化 close 流水線 ──
+          // 目標: 每 consensus close 嘅 LLM call 由 2 個降到最多 1 個。
+          // 順序: SL hit → 虧損止血 → MFE 鎖利 → Pre-filter(0 LLM) → Sentinel(唯一 LLM) → Skeptics(否決權保留)。
+          // mfeLock（鎖利設計——唔 hold）
           let mfeLock = false;
           try {
             if (this.closeCalibrator && pos) {
@@ -11256,7 +11267,93 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               }
             }
           } catch { /* 非致命——MFE 鎖利失敗唔 block */ }
-          if (!closeStructureConfirmed && !mfeLock && this.holdCloseIfCalibrated(psc.symbol, (pos.unrealizedPnlPct ?? 0) > 0, 'consensus')) {
+
+          // 層級化 gate——skipSkeptics=true 表示「層級化已決定 close」（唔需要 Skeptics）
+          let skipSkeptics = false;
+          if (!closeStructureConfirmed && !mfeLock) {
+            const wasProfitable = (pos.unrealizedPnlPct ?? 0) > 0;
+            if (!wasProfitable) {
+              // 止血優先——直接 close（唔 call LLM;thesis-validation-guard 已喺 hacp 層
+              // 保護「蝕<0.5% 永不 close」「<30min 永不 close」等資本保存不變式）
+              log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} — 虧損倉,止血優先(0 LLM)`);
+              skipSkeptics = true;
+            } else {
+              // 4. Pre-filter（0 LLM）——trend-hold 升級: 雙窗同向先決定, 中性先 call LLM
+              const pf = this.prefilterTrendGate(psc.symbol, pos.side);
+              if (pf.verdict === 'hold') {
+                log.warn(`🛑 [prefilter] ${psc.symbol} trend 支持持倉方向 → HOLD（${pf.reason}）`);
+                this._sentinelHolds.set(normalizeSymbol(psc.symbol), { reason: `prefilter: ${pf.reason}` });
+                if (this.closeCalibrator) this.closeCalibrator.registerPendingClose(psc.symbol, this.totalCycles, 0.6);
+                continue; // pre-filter hold——唔執行(下 cycle 再確認;3 cycle 超時兜底)
+              }
+              if (pf.verdict === 'close') {
+                // trend 明確逆轉——deterministic 決定 close（0 LLM）
+                log.warn(`📕 [prefilter] ${psc.symbol} trend 明確逆轉 → CLOSE（0 LLM — ${pf.reason}）`);
+                skipSkeptics = true;
+              } else {
+                // 5. Sentinel LLM 最後裁決（唯一 LLM call）——主神規定格式:
+                // 話俾 LLM 知 position 係 BUY/SELL, 問「嚟緊順向機會是否大」:
+                // 暫時回撤 → HOLD; 短期已轉趨勢 → CLOSE; 判斷唔到 → UNCERTAIN(照 consensus)
+                const sentinel = await this.judgeCloseTrendSentinel(psc.symbol, pos);
+                if (sentinel.hold) {
+                  log.warn(`🛰️ [sentinel] ${psc.symbol} consensus close 被 hold — ${sentinel.reason}`);
+                  this._sentinelHolds.set(normalizeSymbol(psc.symbol), { reason: sentinel.reason });
+                  continue; // close 被 sentinel hold——唔執行(下 cycle 再確認)
+                }
+                // FIX-E2(主神批准): sentinel CLOSE 高信心(≥0.7)= 市場已確認轉勢——
+                // skip Skeptics(慳一次 LLM + 快離場)。低信心 CLOSE / UNCERTAIN 保留 Skeptics。
+                if (sentinel.verdict === 'close' && sentinel.confidence >= 0.7) {
+                  log.info(`⚡ [sentinel] ${psc.symbol} CLOSE 高信心(conf=${(sentinel.confidence * 100).toFixed(0)}%) — skip Skeptics(快離場)`);
+                  skipSkeptics = true;
+                }
+                // sentinel CLOSE 低信心 / UNCERTAIN → 落去 Skeptics 驗證（保留絕對否決權）
+              }
+            }
+          }
+
+          // 6. Skeptics 驗證（thesis-backed + 非 SL hit + 層級化未決定 close）
+          // v2.0.832: STRUCTURAL CONFIRMATION——SL hit 永遠 skip Skeptics（市場確認破位）
+          if (closeStructureConfirmed) {
+            // v2.0.832: SL hit — market confirmed the break, skip Skeptics validation
+            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — SL hit ($${closeSLPrice.toFixed(2)}), market confirmed break, skipping Skeptics [${psc.rationale}]`);
+          } else if (pos.entryThesis && skipSkeptics) {
+            // 層級化已決定 close（虧損止血 / pre-filter trend 逆轉）——唔 call Skeptics
+            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — 層級化決定(0 LLM): ${psc.rationale}`);
+          } else if (pos.entryThesis) {
+            // v2.0.90: Validate close decision with Skeptics for thesis-backed positions
+            const closeValidation = await this.hacpEngine.getSkeptics().validateCloseDecision(
+              psc.symbol,
+              pos.side as 'buy' | 'sell',
+              pos.averageEntryPrice,
+              pos.currentPrice,
+              pos.unrealizedPnlPct ?? 0,
+              closeRationale,
+              `${marketDesc}\n\n${adjustedEvolutionContext}`,
+              allThoughts,
+            );
+            if (!closeValidation.approved) {
+              log.warn(`🚫 Skeptics BLOCKED close for ${psc.symbol}: ${closeValidation.rationale} — position remains open`);
+              // v2.0.870: 記錄 block——cycle 尾一次過 attach 到 pending analyses 再寫入
+              this._skepticsCloseBlocks.set(normalizeSymbol(psc.symbol), { reason: closeValidation.rationale });
+              // v2.0.870: Gate Outcome Tracker——量度 Skeptics 攔截 hit rate
+              this.gateOutcomeTracker.record({
+                symbol: psc.symbol,
+                gate: 'skeptics-close-validation',
+                direction: 'close',
+                side: (pos.side === 'sell' ? 'sell' : 'buy') as 'buy' | 'sell',
+                entryPrice: pos.currentPrice ?? 0,
+                cycle: this.totalCycles,
+              });
+              continue;
+            }
+            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale} [Skeptics: ✅ ${closeValidation.rationale}]`);
+          } else {
+            // v2.0.91: Legacy position without entryThesis — close directly
+            log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (legacy, no thesis) (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
+          }
+          // v2.0.866 Phase B:二次確認 hold gate(過早率)——保留為層級化後嘅安全網
+          //（pre-filter 已處理 trend; 呢度只處理過早率數據——虧損倉/層級化決定 close 唔行）
+          if (!closeStructureConfirmed && !mfeLock && !skipSkeptics && this.holdCloseIfCalibrated(psc.symbol, (pos.unrealizedPnlPct ?? 0) > 0, 'consensus')) {
             continue; // close 被 hold——唔執行(下 cycle 再確認)
           }
           const closeSuccess = await this.closeTrade(psc.symbol, closeRationale, 'consensus');
@@ -13878,6 +13975,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     // analysisMode=false 時 flush 會 early return，舊 block 唔可以洩漏到下個 cycle
     const skepticsBlocks = this._skepticsCloseBlocks;
     this._skepticsCloseBlocks = new Map();
+    const sentinelHolds = this._sentinelHolds;
+    this._sentinelHolds = new Map();
 
     const pending = this._pendingAnalyses;
     this._pendingAnalyses = null;
@@ -13900,6 +13999,11 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
 
     // v2.0.870-attack: 純函數 attach——垃圾 row / 垃圾 metadata 唔 crash
     attachExecutionToAnalyses(pending, execReport, execSym, skepticsBlocks);
+    // v2.0.870-FIX(主神): sentinel holds 一併 attach——客戶端睇到 close 被
+    // Fractal Momentum Sentinel hold(趨勢持續性判斷)而非無故唔 close
+    if (sentinelHolds.size > 0) {
+      attachExecutionToAnalyses(pending, { ...execReport, blockedBy: 'sentinel', blockedReason: 'trend continuation (close-trend-sentinel)' }, execSym, sentinelHolds);
+    }
 
     // v2.0.870: Gate Outcome Tracker——記錄被攔截訊號（active symbol gate）
     for (const a of pending) {
@@ -14279,6 +14383,96 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       log.warn(`🛑 [close-calib] ${symNorm} close 決定被 hold(過早率 ${(rate * 100).toFixed(0)}%)——下 cycle 再確認;SL/thesis/PAEL 仍然立即執行`);
       return true;
     } catch { return false; } // 校準器錯誤 → 唔 hold(照常 close——安全 fallback)
+  }
+
+  /**
+   * v2.0.870-FIX(主神批准): Pre-filter——層級化 close 流水線嘅零算力第一層。
+   * 4h+1h 雙窗同向支持 → HOLD;同向逆轉 → CLOSE;中性/垃圾 → neutral(交俾 sentinel)。
+   * 純函數 prefilterTrend 包裝(marketState momentum 讀取 + 防禦)。
+   */
+  private prefilterTrendGate(symbol: string, side: string): { verdict: 'hold' | 'close' | 'neutral'; reason: string } {
+    try {
+      const st = this.marketState.getState(symbol);
+      return prefilterTrend({
+        side: isSellSide(side) ? 'sell' : 'buy',
+        momentum4h: st?.momentum?.m4h ?? 0,
+        momentum1h: st?.momentum?.m1h ?? 0,
+      });
+    } catch {
+      return { verdict: 'neutral', reason: 'prefilter error' };
+    }
+  }
+
+  /**
+   * v2.0.870-FIX(主神批准 2026-08-23): Fractal Momentum Sentinel——close-time
+   * LLM 趨勢持續性 gate。共識 TP/SL close 之前,LLM 根據 candles 緩存 chart 判斷
+   * 「嚟緊順向機會是否大」:暫時回撤 → HOLD(唔 close);短期已轉趨勢 → CLOSE(照 close);
+   * 判斷唔到 → UNCERTAIN(照 close)。
+   *
+   * 安全層:
+   *  - SL hit(closeStructureConfirmed)喺 call site 已過濾——永遠唔 apply sentinel
+   *  - LLM 失敗/超時/垃圾輸出 → uncertain → 照 close(止蝕永遠唔可以被 LLM 掛住)
+   *  - 重入 guard(sentinelInFlight)——同一 symbol 同時只有一個 LLM call
+   *  - pending-close 機制——hold 後下 cycle 再 close = 確認執行;3 cycle 超時 = 兜底(唔死揸)
+   *  - Gate Outcome Tracker——記錄攔截,量度 sentinel 嘅 hit rate(數據驅動校準)
+   */
+  private async judgeCloseTrendSentinel(symbol: string, pos: { side: string; averageEntryPrice: number; currentPrice: number; stopLossPrice?: number; takeProfitPrice?: number; unrealizedPnlPct?: number }): Promise<{ hold: boolean; reason: string; verdict: string; confidence: number }> {
+    try {
+      if (!CLOSE_TREND_SENTINEL_ENABLED) return { hold: false, reason: 'sentinel disabled', verdict: 'uncertain', confidence: 0 };
+      const symNorm = normalizeSymbol(symbol);
+      if (!symNorm) return { hold: false, reason: 'invalid symbol', verdict: 'uncertain', confidence: 0 };
+      if (this.sentinelInFlight.has(symNorm)) return { hold: false, reason: 'sentinel in flight', verdict: 'uncertain', confidence: 0 };
+      this.sentinelInFlight.add(symNorm);
+      try {
+        // candles 由緩存讀取(sync,唔 fetch)——momentum 層每 cycle 已 warm;
+        // cache miss → 空數組 → LLM 見「數據不足」→ uncertain → 照 close(安全)
+        const c1h = candleCache.peekCandles(symbol, '1h');
+        const c5m = candleCache.peekCandles(symbol, '5m');
+        const result = await judgeCloseTrend({
+          symbol: symNorm,
+          side: isSellSide(pos.side) ? 'sell' : 'buy',
+          entryPrice: pos.averageEntryPrice,
+          currentPrice: pos.currentPrice,
+          stopLossPrice: pos.stopLossPrice,
+          takeProfitPrice: pos.takeProfitPrice,
+          unrealizedPnlPct: pos.unrealizedPnlPct ?? 0,
+          closeReason: 'consensus',
+          candles: [
+            { interval: '1h', candles: c1h ?? [] },
+            { interval: '5m', candles: c5m ?? [] },
+          ],
+        });
+        const decision = shouldHoldCloseFromSentinel(result, (pos.unrealizedPnlPct ?? 0) > 0);
+        // v2.0.870-FIX-E2(主神批准): 回傳 verdict + confidence——call site 判斷
+        // 「sentinel CLOSE 高信心(≥0.7)→ skip Skeptics」——慳一次 LLM + 快離場
+        const resultMeta = {
+          ...decision,
+          verdict: result.verdict,
+          confidence: result.confidence,
+        };
+        if (decision.hold) {
+          // pending-close 確認機制——防死揸(下 cycle 再 close = 確認;3 cycle 超時 = 兜底)
+          if (this.closeCalibrator) this.closeCalibrator.registerPendingClose(symNorm, this.totalCycles, 0.6);
+          // Gate Outcome Tracker——量度 sentinel 攔截 hit rate
+          const price = Number.isFinite(pos.currentPrice) ? pos.currentPrice : 0;
+          if (price > 0) {
+            this.gateOutcomeTracker.record({
+              symbol: symNorm,
+              gate: 'close-trend-sentinel',
+              direction: 'close',
+              side: isSellSide(pos.side) ? 'sell' : 'buy',
+              entryPrice: price,
+              cycle: this.totalCycles,
+            });
+          }
+        }
+        return resultMeta;
+      } finally {
+        this.sentinelInFlight.delete(symNorm);
+      }
+    } catch {
+      return { hold: false, reason: 'sentinel error', verdict: 'uncertain', confidence: 0 };
+    }
   }
 
   /**
