@@ -131,7 +131,7 @@ import { ShadowTradeEngine } from './evolution/shadow-trade-engine.ts';
 import { ReplayBuffer } from './evolution/replay-buffer.ts';
 import { BayesianOLR } from './evolution/bayesian-olr.ts';
 import { ActiveExploration } from './evolution/active-exploration.ts';
-import { calculateFirstPassage, estimateDrift, estimateVolatility, sanitizeDriftForRegime, computeMomentum, type FirstPassageResult } from './evolution/first-passage.ts';
+import { calculateFirstPassage, estimateDrift, estimateVolatility, sanitizeDriftForRegime, computeMomentum, fpEdgeMultiplier, type FirstPassageResult } from './evolution/first-passage.ts';
 import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evolution/olr-backfill.ts';
 import { wilsonScore } from './evolution/evolution-utils.ts';
 import { ComboWinRateTracker, type ComboGateResult } from './evolution/combo-win-rate-tracker.ts';
@@ -164,6 +164,8 @@ const chartConvictionConfig = { enabled: parseBlockBool(process.env['CHART_AWARE
 const llmCalibrationConfig = { enabled: parseBlockBool(process.env['LLM_CONVICTION_CALIBRATION'], true) } as const;
 const llmDirectionConfig = { enabled: parseBlockBool(process.env['LLM_DIRECTION_VERIFIER'], true) } as const;
 const evFilterConfig = { enabled: parseBlockBool(process.env['EV_FILTER'], true) } as const;
+// v2.0.870-FIX(主神批准): FP Multiplier——令 FP shrink 有硬 teeth（正 edge 中性,負 edge 壓制）
+const fpGateConfig = { enabled: parseBlockBool(process.env['FP_GATE_MULTIPLIER'], true) } as const;
 const closeCalibConfig = { enabled: parseBlockBool(process.env['CLOSE_DECISION_CALIBRATION'], true) } as const;
 /** v2.0.863-attack: K-LINE fetch TTL cache — 防 cycle period 縮短/多 call 令
  *  candleSnapshot 頻繁 fetch。5 分鐘 cycle 每 cycle 一次;cycle < TTL 時用 cache。 */
@@ -12160,6 +12162,30 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
 
         // ── Final effective confidence: consensus × P(win) × penalty × boost ──
         let effectiveConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor * llmDirectionTrust * evMultiplier * shapeMultiplier * convexityMultiplier;
+        // v2.0.870-FIX(主神批准): FP Multiplier——令 FP shrink 有硬 teeth。
+        // 方向對應: 開 BUY 用 LONG edge, 開 SELL 用 SHORT edge（lastFirstPassage 係
+        // active symbol 專屬——唔會錯 symbol）。正 edge → ×1.0（FP 無預測力,唔 boost——
+        // 以前「FP +71pp 必勝」靠 LLM 自覺,而家硬性中性）; 負 edge → 壓制（防逆勢）。
+        // 即時 edge 用 shrink 後嘅 FP（drift ≤ 0.5σ）——唔涉歷史統計,同時間衰減 τ=1d 獨立。
+        try {
+          // v2.0.870-FIX-V1(攻擊輪): symbol 匹配 guard——lastFirstPassage 係
+          // active symbol 專屬（v2.0.847）,如果 pwinSym 指向非 active symbol
+          // （finalDecision.symbol 可以係 HACP consensus 指向任何 market）——
+          // 用 active 嘅 FP 壓制其他 symbol 開倉 = 錯位污染。只有匹配先 apply。
+          if (fpGateConfig.enabled && this.lastFirstPassage && (gateAction === 'buy' || gateAction === 'sell')
+              && pwinSym === normalizeSymbol(activeSymbol)) {
+            const fp = this.lastFirstPassage;
+            const edge = gateAction === 'buy' ? fp.longPWin - fp.breakevenPLong : fp.shortPWin - fp.breakevenPShort;
+            const fpMult = fpEdgeMultiplier(edge);
+            if (fpMult < 1.0) {
+              effectiveConfidence *= fpMult;
+              const fpSide = gateAction === 'buy' ? 'LONG' : 'SHORT';
+              const fpP = gateAction === 'buy' ? fp.longPWin : fp.shortPWin;
+              log.info(`🟣 [fp-gate] ${gateAction.toUpperCase()} ${pwinSym}: FP ${fpSide} P=${(fpP * 100).toFixed(0)}% edge=${(edge * 100).toFixed(0)}pp → ×${fpMult.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%) — 逆 FP 方向壓制`);
+              activeAuditGates.push({ gate: 'fp-multiplier', passed: true, reason: `FP ${fpSide} edge ${(edge * 100).toFixed(0)}pp → ×${fpMult.toFixed(3)} (逆勢壓制)` });
+            }
+          }
+        } catch { /* non-critical */ }
         // v2.0.870-P71(P3): 短持倉懲罰(安全版)——同一 symbol:side 連續 2 筆
         // <15min LOSS 且 24h 內 → ×0.3;S/R 邊界入場豁免。主神反問「會唔會永遠開唔
         // 到倉」——naive 版會,呢個安全版 4 防線。回測:剔走 <15min trades PnL +467%。

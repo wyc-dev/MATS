@@ -21,6 +21,42 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 **驗證**: 17 新攻擊測試全綠（4 命中→修復後轉綠）+ 核心時間衰減 11 測試零 regress; 全量 3363 pass + 13 pre-existing（unrelated）; tsc clean。
 
 ---
+## v2.0.870-fp-multiplier-attack: FP Multiplier 攻擊輪（主神指令 2026-08-23）
+
+**主神指令**: 不擇手段攻擊 FP multiplier 接駁及週邊（併發/狀態注入/持久化污染），完美修復。
+
+**攻擊測試（25/25 綠）**: fpEdgeMultiplier 純函數邊界（-0.0/極細 edge/clamp 邊界/全域範圍 [0.6,1.0]/負區間 monotonic/edge≥0 恆 1.0）+ 接駁邏輯模擬（方向對應/冷啟動 null/hold 中性/NaN 字段中性/symbol 匹配）。
+
+**Code Review 發現 1 個真實漏洞（Fix V1）**:
+- **Symbol 錯位污染**: `finalDecision.symbol` 可以由 HACP consensus 指向任何 market（唔一定 activeSymbol），而 `lastFirstPassage` 係 **active symbol 專屬**（v2.0.847）——會將 BTC 嘅 FP 壓制 SILVER 開倉（錯位）。
+- **修復**: 接駁加 `pwinSym === normalizeSymbol(activeSymbol)` guard——只有匹配先 apply FP multiplier；非 active → ×1.0 中性（安全 fallback）。
+
+**已知限制（記錄,唔喺 scope）**: per-symbol 開倉（tradingMarkets 大部分交易量）冇 FP teeth——per-symbol 冇 `lastFirstPassage`，要加 per-symbol FP 計算先可以 apply——大改動，同 P20-C「Known asymmetry」一致，留待日後。
+
+**驗證**: 25/25 攻擊測試全綠; 全量 3388 pass + 13 pre-existing（unrelated）; tsc clean; 零 regress。
+
+---
+## v2.0.870-fp-multiplier: FP Multiplier 入 Conviction Gate（主神批准 2026-08-23）
+
+**主神問題**: FP shrink + P cap 而家係交由邊個 agent 處理?確定能夠影響開倉條件?
+
+**追蹤發現（真實 gap）**: FP shrink/P cap 只喺 3 條路徑影響——① exploration 開倉（OLR+FP-guided 硬影響）② shadow 開倉（computeStatisticalLean）③ **consensus 主開倉路徑只有軟影響（buildOLRBlock 文字注入,靠 LLM 自覺）**——conviction gate（effectiveConfidence）冇直接 FP multiplier——shrink 冇硬 teeth。
+
+**驗證（220 筆 realTrades + live 12 symbol）**:
+- FP 正 edge 無獨立預測力（edge>0 WR 47% ≈ 全場 48.5%）——**唔應該 boost**
+- live 實測: shrink 後 P≥99% = **0 個 symbol**（以前一堆 100%——shrink 全面生效）
+- 敏感性: SELL edge -41pp → ×0.79, conf 60% → 47.4% **< threshold 攔截**——壓制有實際防禦力
+- 方向一致性: live 7/12 symbol drift 負（SHORT P 85%）→ 呢啲開 SELL edge 正 → 唔壓制——**唔係單邊 bias**
+
+**設計（數據驅動——只壓制唔 boost）**: `fpEdgeMultiplier(edge)` 純函數（first-passage.ts）:
+- edge ≥ 0 → ×1.0（中性——FP 無預測力,唔 boost = shrink 嘅 teeth）
+- edge < 0 → ×0.70~×0.80（壓制——防逆勢開倉, clamp 下限 0.8）
+
+**接駁**: conviction gate 堆疊（index.ts `effectiveConfidence × fpEdgeMultiplier`）——**方向對應**（開 BUY 用 LONG edge、開 SELL 用 SHORT edge; lastFirstPassage 係 active symbol 專屬,唔會錯 symbol）; env `FP_GATE_MULTIPLIER` 回滾; 每次壓制 log `[fp-gate]` + activeAuditGates 記錄。**同時間衰減 τ=1d 獨立**——FP 用即時 shrink 後 edge（EWMA drift 內建時間加權）,唔涉歷史統計。
+
+**驗證**: fp-multiplier 11 測試（正 edge 1.0/負 edge 壓制/clamp/NaN/範圍）全綠; 全量 3374 pass + 13 pre-existing（unrelated）; tsc clean; 零 regress。
+
+---
 ## v2.0.870-time-decay: Entry Gate 時間衰減全面化（主神指示 2026-08-23）
 
 **主神洞察**: 「距離越遠嘅交易紀錄影響力應該越少——先公平同靈活」。Audit 發現部分 gate 已有時間衰減（macro-losing τ=6h / success-pattern τ=24h / PAEL τ=7d / MAE rolling 30d / Plan-G time floor），但 **EV Filter 連 timestamp 都冇**、**Conditional WR 全部歷史 trade 等權**——舊 regime 數據誤導今日決策。
