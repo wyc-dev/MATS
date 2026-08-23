@@ -4,6 +4,51 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-time-decay-attack: 時間衰減攻擊輪硬化（主神指令 2026-08-23）
+
+**主神指令**: 不擇手段攻擊時間衰減 Fix T1/T2（併發/狀態注入/持久化污染），完美修復。
+
+**攻擊輪（紅先 4 命中全修）**:
+
+| # | 漏洞 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| A1/A2 | `closedAt=1e308`/未來 10 年 → `dt=max(0,now-ct)=0` → **w=1 全權重**（污染值當最新壓過真實數據） | HIGH | Fix V1: `TS_TOLERANCE_MS` 5min 時鐘容忍——closedAt 超過 now+5min → 當最舊（w→0） |
+| C1 | null/string 元素 → `'1'>0` coerces / `undefined>0` false → **NaN 傳播污染** | CRITICAL | Fix V2: 元素級 sanitize——pnlPct 必須 `typeof number && isFinite`（Infinity/NaN/string 拒） |
+| C2 | pnlPct=Infinity → `Infinity>0=true` → **EV=Infinity** | CRITICAL | Fix V2: 同上——finite guard |
+
+**已防禦確認（13 綠）**: migrate 毒 key / recordTrade skip / cap 300 / env 垃圾 / timeDecayHours 負數（等權 fallback）/ ts 垃圾中性。
+
+**驗證**: 17 新攻擊測試全綠（4 命中→修復後轉綠）+ 核心時間衰減 11 測試零 regress; 全量 3363 pass + 13 pre-existing（unrelated）; tsc clean。
+
+---
+## v2.0.870-time-decay: Entry Gate 時間衰減全面化（主神指示 2026-08-23）
+
+**主神洞察**: 「距離越遠嘅交易紀錄影響力應該越少——先公平同靈活」。Audit 發現部分 gate 已有時間衰減（macro-losing τ=6h / success-pattern τ=24h / PAEL τ=7d / MAE rolling 30d / Plan-G time floor），但 **EV Filter 連 timestamp 都冇**、**Conditional WR 全部歷史 trade 等權**——舊 regime 數據誤導今日決策。
+
+**邏輯實驗驗證（τ=1d，margin-basis %）**——6/11 方向被翻轉：
+| key | 無衰減 EV | τ=1d EV | 意義 |
+|---|---|---|---|
+| bnb\|buy | +1.44% | **-0.58%** 🔄 | 最近 BNB BUY 負 EV——正正係 BNB 連蝕根因 |
+| xyz:SILVER\|buy | +0.48% | **-3.53%** 🔄 | 最近 SILVER BUY 大蝕 |
+| xyz:SKHX\|buy | +1.58% | **-1.66%** 🔄 | 最近 SKHX BUY 蝕 |
+| xyz:GOLD\|buy | +1.43% | **+15.80%** 🔄 | 最近 GOLD BUY 大賺 |
+
+**Fix T1 — EV Filter 時間衰減 τ=1d**（`ev-filter.ts`）:
+- `samples: number[]` → `Array<{ pnlPct, closedAt }>`——`recordTrade` 加 closedAt（live 用 trade.closedAt, backfill 用 rec.ts）
+- `computeEV` 時間加權: `w = exp(-Δt/τ)`, **τ=1d**（主神指示）, env `EV_TIME_DECAY_HOURS`（0=關閉=舊行為）
+- **資格與方向分離**: `n` 用原始樣本數（n≥20 先 apply——防冷啟動亂判）; EV 用時間加權值（方向校準——反映最近市況）
+- **migrate**: 舊 persisted number[] → `{pnlPct, closedAt: 0}`（當最舊→衰減後零影響, 等新 trade 累積）; 毒 key（__proto__/constructor）跳過
+- 毒輸入防禦: closedAt 垃圾（NaN/Infinity/負數）→ 當最舊（唔污染）
+
+**Fix T2 — Conditional WR 時間衰減 τ=14d**（`evolution-utils.ts`）:
+- `computeVectorConditionalWinRate` 聚合加時間權重: `w_total = similarity × exp(-Δt/τ)`（records 已有 ts 字段, 零結構改動）
+- options `timeDecayHours` 可配（default 336 = 14d; 0 = 等權）
+- **raw path 精確保留**: 全部 records 冇 ts 或 τ=0 → 用 raw wins/sampleSize（浮點精確, 舊行為一致——system-close-handling 測試證實）
+- Wilson 保持 raw count（保守下界）; 資格門用原始 matched 數
+
+**驗證**: 11 新測試（時間加權/migrate/τ=0 回滾/毒輸入/冇 ts 中性）全綠; system-close-handling 浮點容差更新; 全量 3346 pass + 13 pre-existing（unrelated）; tsc clean; 零 regress。
+
+---
 ## v2.0.870-close-gate-attack: Close Gate 攻擊輪 + 盈利提升（主神指令 2026-08-23）
 
 **主神指令**: 不擇手段攻擊剛修葺嘅 code（併發/狀態注入/持久化污染），完美修復；量化金融分析師思路提升盈利。

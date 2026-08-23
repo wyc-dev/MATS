@@ -4396,6 +4396,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               normalizeSymbol(trade.symbol || ''),
               trade.side === 'sell' ? 'sell' : 'buy',
               safeNum((trade as { pnlPct?: number }).pnlPct, 0),
+              // v2.0.870-FIX(時間衰減 τ=1d): 傳真實 close 時間——舊 trade 影響力衰減
+              Number((trade as { closedAt?: number }).closedAt) || Date.now(),
             );
           } catch { /* non-fatal */ }
         }
@@ -7022,7 +7024,10 @@ ${recentExamples}
           // persisted backfillDone guard——restart 唔重複加入
           if (this.evFilter && evFilterConfig.enabled && !this.evFilter.isBackfillDone()) {
             try {
-              this.evFilter.recordTrade(normalizeSymbol(String(rec.symbol ?? '')), side, Number.isFinite(pnlPct) ? pnlPct : 0);
+              // v2.0.870-FIX(時間衰減 τ=1d): backfill 傳真實 close 時間（rec.ts）——
+              // 歷史 trade 唔會全部當「今日」（舊 trade 影響力自然衰減）
+              const recTs = Number((rec as { ts?: number }).ts);
+              this.evFilter.recordTrade(normalizeSymbol(String(rec.symbol ?? '')), side, Number.isFinite(pnlPct) ? pnlPct : 0, Number.isFinite(recTs) && recTs > 0 ? recTs : Date.now());
               evFed++;
             } catch { /* non-critical */ }
           }
