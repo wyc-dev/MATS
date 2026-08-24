@@ -2242,6 +2242,8 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
     currentPrice: pos.currentPrice ?? 0,
     stopLossPrice: pos.stopLossPrice ?? null,
     takeProfitPrice: pos.takeProfitPrice ?? null,
+    bStockBuyPrice: pos.bStockBuyPrice ?? null,
+    bStockSellPrice: pos.bStockSellPrice ?? null,
   }))
 
   const closedTrades = tradeRecords.map((t: any) => ({
@@ -2267,6 +2269,8 @@ function TradeIncidentPanel({ data, positions }: { data: APIData | null; positio
     currentPrice: t.currentPrice ?? t.entryPrice ?? 0,
     stopLossPrice: t.stopLossPrice ?? null,
     takeProfitPrice: t.takeProfitPrice ?? null,
+    bStockBuyPrice: t.bStockBuyPrice ?? null,
+    bStockSellPrice: t.bStockSellPrice ?? null,
   }))
 
   // Dedupe: remove closed trades that have matching open positions (same symbol + close timestamp)

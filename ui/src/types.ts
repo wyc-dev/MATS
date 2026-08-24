@@ -235,7 +235,7 @@ export interface APIData {
   hacpThreshold?: number;
   /** v2.0.219: Advanced learning systems state (v2.0.833: 4 dead components removed) */
   advancedLearning?: {
-    na?: { ready: boolean; sampleCount: number; inputDim: number };
+    // v2.0.862-ui-fix: NA validation detail —— 單一 na 定義（下而完整版，含 validation）
     attnres?: { updateCount: number; wNorm: number; temperature: number };
     chr?: { symbols: Record<string, { cycleCount: number }> };
     antiPattern?: { clusterCount: number; ingestedCount: number; totalMembers: number };
