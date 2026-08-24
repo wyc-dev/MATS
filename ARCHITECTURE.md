@@ -1,9 +1,35 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-buy-bias
+> **作者**: YC Wong · **版本**: 2.0.870-sell-decay-attack
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## v2.0.870-sell-decay-attack（2026-08-24）：攻擊輪硬化 + 盈利提升組件
+
+**攻擊輪**: 6 攻 5 命中——未來 ts 凍結（V1 當最舊）、1e308 值污染（V2 cap：n≤1e6、|EV|>1e4→0）、seeded SL/TP Infinity（V3 isFinite）、key 大小寫 miss（V4 細階化）、OLR bins cap。
+
+**G1 Momentum-OLR 衝突 gate**（`momentum-olr-conflict.ts`）：OLR 條件概率對抗 24h 價格分布位置 → 收縮向近期動量（強烈逆勢 ×0.60、強 OLR≥68% ×0.75、中等 ×0.80/×0.90、順勢/噪音 1.0）——DRAM 類「OLR 63% vs 24h -7.3%」被罰，btc 類順勢唔影響。
+
+**G2 Side-Balance Monitor**（`side-balance-monitor.ts`）：最近 20 單 ≥90% 單向且另一側 0 → extreme 警告注入 agent context（20 cycle throttle）——單向失衡 LOUD 化，唔再靜靜 90 單零 SELL 4 日冇人知（真實數據驗證而家即 extreme_buy）。
+
+---
+
+## v2.0.870-sell-decay（2026-08-24）：SELL 24h 時間衰減 + 死亡螺旋解除
+
+**背景**: 近 90 單零 SELL——主神調查發現 sell side 被 all-time 化石統計判死。根因鏈：shadow 訓練數據 10.8:1 BUY:SELL → sell WR 4-17% → OLR sell P(win) 鎖死 8-40% → LLM 唔 lean sell → 冇 sell shadow → 數據餓死（自我強化死循環）。
+
+**四層修復**:
+- **shadow stats 24h exp 衰減**（`shadow-trade-engine.ts`）：`statsBySymbolSide` 加 `lastUpdatedTs`，每次記錄前 `×= exp(-Δt/τ)`（τ=`SHADOW_STAT_DECAY_HOURS`=24h，0=回滾）；migration 舊數據一次過衰減至 4×τ 前
+- **getStats() 數據源切換**：由「positions/recentResults 重建（易被 drain 成 0）」改為持久化 decayed stats——修復 shadow-gate「想 block 但冇 data」嘅架構缺陷
+- **OLR calibration bins 衰減**（`olr-engine.ts`）：feed 前全 bins `×= exp(-Δt/τ)`（`OLR_BIN_DECAY_HOURS`）——SELL P(win) 重獲浮動
+- **DIRECTION HEALTH EWMA 主判**（`index.ts`）：🔴 用近期 EWMA，all-time median 降 🟠
+- **shadow-gate WR+EV 雙條件**：block 需「decayed Wilson LB < 30% **且** decayed net PnL ≤ 0」——低 WR 高 EV（SKHX sell 14d +22%）唔再誤殺；n<20 冷側交 LLM
+- **SELL shadow 播種**（`openSeededShadow()`）：24h 動量 < 0 / trending_bear 時強制開 sell shadow（full OLR weight，24 cycle 限 1）——sell 樣本重新累積
+
+**counterfactual 驗證**: SKHX sell 14d（WR 33% net +22%）新 gate PASS（舊 gate BLOCK）；SILVER/SKHX buy 7d（EV -68%/-26%）被新 gate BLOCK（近期真蝕）；bnb buy（低 WR 高 EV +62%）唔誤殺。
 
 ---
 

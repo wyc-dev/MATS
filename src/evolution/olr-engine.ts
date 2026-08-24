@@ -109,8 +109,13 @@ export interface OLRModel {
   }>;
   /** v2.0.721: 5-bin calibration map — maps raw sigmoid output to empirical
    *  win rate. Each bin tracks [0.0-0.2), [0.2-0.4), [0.4-0.6), [0.6-0.8), [0.8-1.0].
-   *  Falls back to identity (raw pWin) when a bin has < 5 samples. */
+   *  Falls back to identity (raw pWin) when a bin has < 5 samples.
+   *  v2.0.870-sell-decay: bins are exp-decayed per update (τ = OLR_BIN_DECAY_HOURS,
+   *  default 24h) — the raw→empirical map tracks the RECENT market, so SELL P(win)
+   *  can float instead of being locked by fossil all-time shadow losses. */
   calibrationBins?: Array<{ lo: number; hi: number; wins: number; losses: number }>;
+  /** v2.0.870-sell-decay: timestamp of last calibration-bin decay update (drives exp(-Δt/τ)). */
+  calibrationUpdatedAt?: number;
 }
 
 /** v2.0.721: Minimum samples per bin before calibration kicks in. Below this,
@@ -160,6 +165,25 @@ function recordCalibrationSample(
   if (!bin) return;
   if (outcome === 1) bin.wins++;
   else bin.losses++;
+}
+
+/** v2.0.870-sell-decay: exp-decay OLR calibration bins toward the recent window.
+ *  τ = OLR_BIN_DECAY_HOURS (default 24h); 0/NaN/negative → no decay (env rollback).
+ *  Fossil all-time shadow losses were locking SELL P(win) at 8-40% forever; decay
+ *  lets the raw→empirical map re-track the current market as new samples arrive. */
+function decayCalibrationBins(model: OLRModel, ts: number): void {
+  const bins = model.calibrationBins;
+  if (!bins || bins.length === 0) return;
+  const raw = Number(process.env['OLR_BIN_DECAY_HOURS']);
+  const tauH = Number.isFinite(raw) && raw >= 0 ? raw : 24;
+  if (tauH <= 0) { model.calibrationUpdatedAt = ts; return; }
+  const last = model.calibrationUpdatedAt;
+  if (typeof last !== 'number' || !Number.isFinite(last)) { model.calibrationUpdatedAt = ts; return; } // 冷啟動
+  const dt = Math.max(0, ts - last);
+  if (dt <= 0) return; // 同 timestamp 重複 update（backfill 戳）——防重複衰減
+  const f = Math.exp(-dt / (tauH * 3_600_000));
+  for (const b of bins) { b.wins *= f; b.losses *= f; }
+  model.calibrationUpdatedAt = ts;
 }
 
 /** v2.0.721 + v2.0.859: Apply calibration to a raw pWin.
@@ -473,7 +497,9 @@ export class OLREngine {
               const bin = b as { lo?: unknown; hi?: unknown; wins?: unknown; losses?: unknown };
               const num = (v: unknown, def: number): number => {
                 const n = typeof v === 'number' ? v : Number(v);
-                return Number.isFinite(n) ? Math.max(0, n) : def;
+                // ATTACK-HARDENING (v2.0.870-sell-decay-attack A10): cap 1e6——
+                // 1e308 級污染會令 applyCalibration 出 NaN/極端映射
+                return Number.isFinite(n) ? Math.min(1e6, Math.max(0, n)) : def;
               };
               return {
                 lo: num(bin.lo, 0),
@@ -793,7 +819,9 @@ export class OLREngine {
         if (models.short.recentTrades.length > 20) models.short.recentTrades.shift();
       }
       // v2.0.721: Record calibration sample (raw pWin → actual outcome)
+      // v2.0.870-sell-decay: decay bins first so the map tracks the recent market
       if (models.short.calibrationBins) {
+        decayCalibrationBins(models.short, ts);
         recordCalibrationSample(models.short.calibrationBins, rawPWinForCalibration, outcome, source === 'backfill');
       }
     } else {
@@ -813,7 +841,9 @@ export class OLREngine {
         if (models.long.recentTrades.length > 20) models.long.recentTrades.shift();
       }
       // v2.0.721: Record calibration sample (raw pWin → actual outcome)
+      // v2.0.870-sell-decay: decay bins first (long side — see short side above)
       if (models.long.calibrationBins) {
+        decayCalibrationBins(models.long, ts);
         recordCalibrationSample(models.long.calibrationBins, rawPWinForCalibration, outcome, source === 'backfill');
       }
     }

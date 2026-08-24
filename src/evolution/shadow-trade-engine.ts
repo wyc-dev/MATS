@@ -80,7 +80,7 @@ export interface ShadowPosition {
    *  direction computed ONLY from statistical components (OLR P(win) +
    *  First-Passage + Combo WR + Causal uplift), with NO LLM. Used to compare
    *  whether the LLM debate actually adds edge vs pure statistics. */
-  shadowType: 'blind' | 'aligned' | 'statistical' | 'qrl';
+  shadowType: 'blind' | 'aligned' | 'statistical' | 'qrl' | 'seeded';
   /** v2.0.861: Q-RL signal snapshot for 'qrl' shadows (audit + uplift analysis). */
   qrlSignal?: {
     spread: number;
@@ -104,10 +104,17 @@ export interface ShadowTradeStats {
   symbol: string;
   totalOpened: number;
   openCount: number;
+  /** v2.0.870-sell-decay: decayed (24h exp) cumulative win counts — NOT raw lifetime.
+   *  Old sample weight fades exp(-Δt/τ) so the gate reflects recent performance,
+   *  not fossil all-time stats (root cause of the SELL death spiral). */
   longWins: number;
   longLosses: number;
   shortWins: number;
   shortLosses: number;
+  /** v2.0.870-sell-decay: decayed net PnL% sum per side — the EV half of the
+   *  shadow-gate (WR-only gates kill low-WR high-EV edges like SKHX sell). */
+  longSumPnlPct: number;
+  shortSumPnlPct: number;
   longWinRate: number;
   shortWinRate: number;
   avgHoldCycles: number;
@@ -280,14 +287,25 @@ export class ShadowTradeEngine {
    *  MAE/MFE averages from historical results, not just current positions.
    *  v2.0.869-P2(主神 Shadow 升級):加 exitReason + pnlPct——學「邊個離場原因有 edge」
    *  +「贏幾多/蝕幾多」——cap 50 → 100(主神要求「最近 100 個」) */
-  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl'; exitReason?: 'sl_tp' | 'force_resolve' | 'evicted'; pnlPct?: number; volumeState?: 'thin' | 'normal' | 'strong' | 'unknown'; volumeRatio5m?: number }> = [];
+  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl' | 'seeded'; exitReason?: 'sl_tp' | 'force_resolve' | 'evicted'; pnlPct?: number; volumeState?: 'thin' | 'normal' | 'strong' | 'unknown'; volumeRatio5m?: number }> = [];
 
   /**
    * v2.0.870-EMR: 持久化 per-symbol×side 累計統計——唔依賴 recentResults 緩衝區
    * （drainRecentResults feed OLR 後會清空緩衝區，統計會消失）。
    * key = `${normalizeSymbol(symbol)}|${side}`。backfill + live resolve 都更新。
    */
-  private statsBySymbolSide = new Map<string, { wins: number; losses: number; totalPnlPct: number }>();
+  /** v2.0.870-sell-decay: per-symbol×side decayed stats.
+   *  lastUpdatedTs drives exp(-Δt/τ) fade (τ = SHADOW_STAT_DECAY_HOURS, default 24h).
+   *  τ=0 → no decay (old behavior, env rollback). */
+  private statsBySymbolSide = new Map<string, { wins: number; losses: number; totalPnlPct: number; lastUpdatedTs?: number }>();
+
+  /** τ (hours) for shadow stat decay. env SHADOW_STAT_DECAY_HOURS; 0 = 唔衰減
+   *  (回滾), invalid/negative → default 24h. */
+  private static decayTauHours(): number {
+    const raw = Number(process.env['SHADOW_STAT_DECAY_HOURS']);
+    if (!Number.isFinite(raw) || raw < 0) return 24;
+    return raw;
+  }
 
   constructor(olrEngine: OLREngine) {
     this.olrEngine = olrEngine;
@@ -515,6 +533,98 @@ export class ShadowTradeEngine {
       `[shadow] Opened STATISTICAL ${side.toUpperCase()} ${sym} at ${entryPrice.toFixed(2)} ` +
       `(SL=${finalSL.toFixed(2)}, TP=${finalTP.toFixed(2)}) — statScore=${statScore.toFixed(3)}`,
     );
+  }
+
+  /**
+   * v2.0.870-sell-decay Fix E: Open a SEEDED shadow (counter-side seeding).
+   *
+   * Root cause of the SELL death spiral: sell shadows only ever opened when the
+   * LLM leaned sell → in a bull market that never happens → sell sample count
+   * starves → OLR sell P(win) collapses → LLM never leans sell (loop).
+   *
+   * Seeding breaks the loop: when recent momentum is negative (or regime is not
+   * trending-bull), the system PROACTIVELY opens a sell shadow so sell outcomes
+   * accumulate in NORMAL conditions too, not just knife-catching crashes.
+   *
+   * shadowType='seeded' (full OLR weight, same as aligned/statistical — it
+   * follows a real market-condition signal, not blind noise). Frequency-capped:
+   * at most 1 seeded shadow per symbol per 24 cycles (≈96min at 4min/cycle).
+   *
+   * @param symbol      Symbol
+   * @param entryPrice  Current price
+   * @param side        Direction to seed ('sell' — future buy-seeding can reuse)
+   * @param slPrice     SL price (above entry for sell)
+   * @param tpPrice     TP price (below entry for sell)
+   * @param cycle       Current cycle number
+   * @param features    Feature snapshot at entry
+   * @param seedReason  Diagnostic label (momentum/regime)
+   */
+  openSeededShadow(
+    symbol: string,
+    entryPrice: number,
+    side: 'buy' | 'sell',
+    slPrice: number,
+    tpPrice: number,
+    cycle: number,
+    features: Record<string, number>,
+    seedReason: string,
+  ): void {
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
+    if (side !== 'buy' && side !== 'sell') return;
+    const sym = symbol.toLowerCase();
+
+    // Frequency cap: 1 seeded per symbol per 24 cycles（防過度播種——用 openCycle
+    // 判斷而唔係 status：一個 open 嘅 seeded 唔應該永久阻止新播種）
+    const recentSeeded = this.positions.some(
+      p => p.symbol === sym && p.shadowType === 'seeded' && (cycle - p.openCycle) < 24,
+    );
+    if (recentSeeded) return;
+
+    // Limits (share the same pool as other shadows)
+    const symOpen = this.positions.filter(p => p.symbol === sym && p.status === 'open').length;
+    if (symOpen >= SHADOW_CONFIG.maxOpenPerSymbol) return;
+    const totalOpen = this.positions.filter(p => p.status === 'open').length;
+    if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) {
+      if (!this.evictOldestBlindForRoom()) return;
+    }
+
+    const ts = Date.now();
+    const id = `seed_${++this.idCounter}`;
+
+    // Sell: SL above entry, TP below; Buy mirrored. Defaults if not provided.
+    // ATTACK-HARDENING (v2.0.870-sell-decay-attack A4): NaN/Infinity SL/TP → default
+    // （Infinity > 0 係 true，會開出 stopLossPrice=Infinity 污染 resolution）
+    const safeSl = Number.isFinite(slPrice) && slPrice > 0 ? slPrice : 0;
+    const safeTp = Number.isFinite(tpPrice) && tpPrice > 0 ? tpPrice : 0;
+    const finalSL = safeSl > 0
+      ? safeSl
+      : entryPrice * (side === 'sell' ? 1 + SHADOW_CONFIG.defaultSLDistance : 1 - SHADOW_CONFIG.defaultSLDistance);
+    const finalTP = safeTp > 0
+      ? safeTp
+      : entryPrice * (side === 'sell' ? 1 - SHADOW_CONFIG.defaultTPDistance : 1 + SHADOW_CONFIG.defaultTPDistance);
+
+    this.positions.push({
+      id,
+      symbol: sym,
+      side,
+      entryPrice,
+      stopLossPrice: finalSL,
+      takeProfitPrice: finalTP,
+      openCycle: cycle,
+      openTimestamp: ts,
+      features: { ...features },
+      status: 'open',
+      slNarrowed: false,
+      originalSL: finalSL,
+      originalTP: finalTP,
+      highSinceOpen: entryPrice,
+      lowSinceOpen: entryPrice,
+      mfePct: 0,
+      maePct: 0,
+      shadowType: 'seeded',
+    });
+
+    log.debug(`[shadow] Opened SEEDED ${side.toUpperCase()} ${sym} at ${entryPrice.toFixed(2)} (SL=${finalSL.toFixed(2)}, TP=${finalTP.toFixed(2)}) — ${seedReason}`);
   }
 
   /**
@@ -1035,12 +1145,42 @@ export class ShadowTradeEngine {
 
   /** 記錄一筆 shadow 結果到持久化統計（backfill + live resolve 都調用）。
    *  pnlPct 統一為小數（0.0036 = 0.36%）——backfill(EXP 小數) 同 live(price delta 小數) 一致。 */
+  /** v2.0.870-sell-decay: apply exp(-Δt/τ) to an existing stat cell before adding
+   *  a new outcome — old samples fade out so WR/EV reflect the RECENT window.
+   *  ATTACK-HARDENED: 未來 timestamp（> now+5min）視為最舊（4×τ 前衰減）——
+   *  防止攻擊者以未來 ts 凍結 cell 令化石數據永久主導。 */
+  private decayStatCell(s: { wins: number; losses: number; totalPnlPct: number; lastUpdatedTs?: number }): void {
+    const tauH = ShadowTradeEngine.decayTauHours();
+    const now = Date.now();
+    if (tauH <= 0) { s.lastUpdatedTs = now; return; } // τ=0 → 唔衰減（回滾語義）
+    const last = s.lastUpdatedTs;
+    if (typeof last !== 'number' || !Number.isFinite(last) || last > now + 300_000) {
+      // 冷啟動 / 污染(無效 / 未來 5min 以上) → 視為最舊（4×τ 前）——化石淡出
+      const f = Math.exp(-4);
+      s.wins *= f;
+      s.losses *= f;
+      s.totalPnlPct *= f;
+      s.lastUpdatedTs = now;
+      return;
+    }
+    const dt = Math.max(0, now - last);
+    const f = Math.exp(-dt / (tauH * 3_600_000));
+    s.wins *= f;
+    s.losses *= f;
+    s.totalPnlPct *= f;
+    s.lastUpdatedTs = now;
+  }
+
+  /** 記錄一筆 shadow 結果到持久化統計（backfill + live resolve 都調用）。
+   *  pnlPct 統一為小數（0.0036 = 0.36%）——backfill(EXP 小數) 同 live(price delta 小數) 一致。
+   *  v2.0.870-sell-decay: 記錄前先 exp 衰減舊計數——stats 永遠係「近期加權」而唔係 lifetime 化石。 */
   private recordStat(symbol: string, side: 'buy' | 'sell', outcome: 'win' | 'loss', pnlPct: number): void {
     const norm = normalizeSymbol(symbol).toLowerCase();
     // 攻擊硬化：空 symbol / 垃圾 side → 唔記錄（避免 key 污染）
     if (norm.length === 0 || (side !== 'buy' && side !== 'sell')) return;
     const key = `${norm}|${side}`;
     const s = this.statsBySymbolSide.get(key) ?? { wins: 0, losses: 0, totalPnlPct: 0 };
+    this.decayStatCell(s);
     if (outcome === 'win') s.wins += 1; else s.losses += 1;
     s.totalPnlPct += Number.isFinite(pnlPct) ? pnlPct : 0;
     this.statsBySymbolSide.set(key, s);
@@ -1237,18 +1377,10 @@ export class ShadowTradeEngine {
     const getOrCreate = (sym: string): ShadowTradeStats => {
       let s = symbolMap.get(sym);
       if (!s) {
-        s = { symbol: sym, totalOpened: 0, openCount: 0, longWins: 0, longLosses: 0, shortWins: 0, shortLosses: 0, longWinRate: 0, shortWinRate: 0, avgHoldCycles: 0, avgMfePct: 0, avgMaePct: 0 };
+        s = { symbol: sym, totalOpened: 0, openCount: 0, longWins: 0, longLosses: 0, shortWins: 0, shortLosses: 0, longSumPnlPct: 0, shortSumPnlPct: 0, longWinRate: 0, shortWinRate: 0, avgHoldCycles: 0, avgMfePct: 0, avgMaePct: 0 };
         symbolMap.set(sym, s);
       }
       return s;
-    };
-    const applyResolved = (stats: ShadowTradeStats, side: 'buy' | 'sell', outcome: 'win' | 'loss', holdCycles: number, mfePct?: number, maePct?: number) => {
-      stats.totalOpened++;
-      stats.avgHoldCycles = (stats.avgHoldCycles * (stats.totalOpened - 1) + holdCycles) / stats.totalOpened;
-      if (mfePct !== undefined) stats.avgMfePct = (stats.avgMfePct * (stats.totalOpened - 1) + mfePct) / stats.totalOpened;
-      if (maePct !== undefined) stats.avgMaePct = (stats.avgMaePct * (stats.totalOpened - 1) + maePct) / stats.totalOpened;
-      if (side === 'buy') { if (outcome === 'win') stats.longWins++; else stats.longLosses++; }
-      else { if (outcome === 'win') stats.shortWins++; else stats.shortLosses++; }
     };
 
     // 1. Open positions (count as open, not win/loss)
@@ -1259,20 +1391,55 @@ export class ShadowTradeEngine {
       s.openCount++;
     }
 
-    // 2. Resolved positions still in memory
+    // 2. Resolved positions still in memory — v2.0.870-sell-decay: 只貢獻 avg 指標
+    //    （holdCycles/mfe/mae）。win/loss 由持久化 decayed statsBySymbolSide 負責
+    //    （step 4）——避免雙重計算 + 令 WR 反映近期而唔係記憶體殘留。
     for (const pos of this.positions) {
       if (pos.status === 'open') continue;
       const s = getOrCreate(pos.symbol);
-      applyResolved(s, pos.side, pos.status, (pos.resolvedCycle ?? pos.openCycle) - pos.openCycle, pos.mfePct, pos.maePct);
+      const holdCycles = (pos.resolvedCycle ?? pos.openCycle) - pos.openCycle;
+      s.totalOpened++;
+      s.avgHoldCycles = (s.avgHoldCycles * (s.totalOpened - 1) + holdCycles) / s.totalOpened;
+      if (pos.mfePct !== undefined) s.avgMfePct = (s.avgMfePct * (s.totalOpened - 1) + pos.mfePct) / s.totalOpened;
+      if (pos.maePct !== undefined) s.avgMaePct = (s.avgMaePct * (s.totalOpened - 1) + pos.maePct) / s.totalOpened;
     }
 
-    // 3. Recent results (survives restart) — skip if already counted in positions
+    // 3. Recent results (survives restart) — avg-only, same rationale as step 2
     for (const r of this.recentResults) {
       // v2.0.869-P2(主神 刁鑽攻擊):null/非物件樣本 skip——唔 crash
       if (!r || typeof r !== 'object') continue;
-      if (this.positions.some(p => p.id === r.id && p.status !== 'open')) continue;
       const s = getOrCreate(r.symbol);
-      applyResolved(s, r.side, r.outcome, r.holdCycles, r.mfePct, r.maePct);
+      s.totalOpened++;
+      s.avgHoldCycles = (s.avgHoldCycles * (s.totalOpened - 1) + r.holdCycles) / s.totalOpened;
+      if (r.mfePct !== undefined) s.avgMfePct = (s.avgMfePct * (s.totalOpened - 1) + r.mfePct) / s.totalOpened;
+      if (r.maePct !== undefined) s.avgMaePct = (s.avgMaePct * (s.totalOpened - 1) + r.maePct) / s.totalOpened;
+    }
+
+    // 4. v2.0.870-sell-decay: DECAYED persistent stats — the authoritative win/loss
+    //    source. Old all-time counts fade exp(-Δt/τ) so WR here reflects the recent
+    //    window. This also FIXES the architectural hole where getStats() returned
+    //    all zeros when positions/recentResults were drained (gate saw no data).
+    //    ATTACK-HARDENING: 值 cap——1e308 污染值會令 wilson NaN / EV Infinity,
+    //    gate 被免疫。真實上限: n ≤ ~1e5, |EV| ≤ ~1e4%.
+    for (const [key, cell] of this.statsBySymbolSide) {
+      const sep = key.indexOf('|');
+      if (sep <= 0 || sep === key.length - 1) continue;
+      const stats = getOrCreate(key.slice(0, sep));
+      const rawWins = Number.isFinite(cell.wins) ? cell.wins : 0;
+      const rawLosses = Number.isFinite(cell.losses) ? cell.losses : 0;
+      const rawPnl = Number.isFinite(cell.totalPnlPct) ? cell.totalPnlPct : 0;
+      const wins = Math.min(Math.max(rawWins, 0), 1e6);
+      const losses = Math.min(Math.max(rawLosses, 0), 1e6);
+      const sumPnl = Math.abs(rawPnl) > 1e4 ? 0 : rawPnl;
+      if (key.slice(sep + 1) === 'buy') {
+        stats.longWins = Math.round(wins * 10000) / 10000;
+        stats.longLosses = Math.round(losses * 10000) / 10000;
+        stats.longSumPnlPct = Math.round(sumPnl * 10000) / 10000;
+      } else if (key.slice(sep + 1) === 'sell') {
+        stats.shortWins = Math.round(wins * 10000) / 10000;
+        stats.shortLosses = Math.round(losses * 10000) / 10000;
+        stats.shortSumPnlPct = Math.round(sumPnl * 10000) / 10000;
+      }
     }
 
     for (const stats of symbolMap.values()) {
@@ -1305,7 +1472,7 @@ export class ShadowTradeEngine {
     id: string; symbol: string; side: 'buy' | 'sell';
     outcome: 'win' | 'loss'; holdCycles: number; cycle: number;
     mfePct: number; maePct: number; pnlPct: number;
-    shadowType: 'blind' | 'aligned' | 'statistical' | 'qrl';
+    shadowType: 'blind' | 'aligned' | 'statistical' | 'qrl' | 'seeded';
   }> {
     if (this.recentResults.length === 0) return [];
     const drained = this.recentResults.map(r => ({
@@ -1418,11 +1585,38 @@ export class ShadowTradeEngine {
           const sidePart = k.slice(sep + 1);
           if (symPart === '__proto__' || symPart === 'constructor' || symPart === 'prototype') continue;
           if (sidePart !== 'buy' && sidePart !== 'sell') continue;
-          const s = v as { wins?: unknown; losses?: unknown; totalPnlPct?: unknown };
+          const s = v as { wins?: unknown; losses?: unknown; totalPnlPct?: unknown; lastUpdatedTs?: unknown };
           const wins = Number.isFinite(s.wins) ? (s.wins as number) : 0;
           const losses = Number.isFinite(s.losses) ? (s.losses as number) : 0;
           const totalPnlPct = Number.isFinite(s.totalPnlPct) ? (s.totalPnlPct as number) : 0;
-          if (wins >= 0 && losses >= 0) this.statsBySymbolSide.set(k, { wins, losses, totalPnlPct });
+          const lastUpdatedTs = Number.isFinite(s.lastUpdatedTs) ? (s.lastUpdatedTs as number) : undefined;
+          if (wins >= 0 && losses >= 0) {
+            // ATTACK-HARDENING (v2.0.870-sell-decay-attack): 值 cap——1e308 級
+            // 污染值會令 wilson NaN / EV Infinity, gate 被免疫。真實上限:
+            // n ≤ ~1e5（16k cycles × 每 cycle 幾個 shadow）; EV ≤ ~1e4%。
+            const capWins = Math.min(wins, 1e6);
+            const capLosses = Math.min(losses, 1e6);
+            const capPnl = Math.abs(totalPnlPct) > 1e4 ? 0 : totalPnlPct; // 污染 EV 當 0
+            if (lastUpdatedTs === undefined || !Number.isFinite(lastUpdatedTs) || lastUpdatedTs > Date.now() + 300_000) {
+              // v2.0.870-sell-decay migration/attack: 舊格式（lifetime 累計,無時間戳）
+              // 或未來 ts（凍結攻擊）→ 一次過衰減至「4 個 τ 前」狀態——化石統計唔可以
+              // 繼續支配 gate。τ=0 時唔衰減（回滾）。
+              const tauH = ShadowTradeEngine.decayTauHours();
+              if (tauH > 0) {
+                const f = Math.exp(-4); // 4×τ 前
+                const legacyKey = `${k.slice(0, sep).toLowerCase()}|${sidePart}`;
+                this.statsBySymbolSide.set(legacyKey, { wins: capWins * f, losses: capLosses * f, totalPnlPct: capPnl * f, lastUpdatedTs: Date.now() });
+              } else {
+                const legacyKey = `${k.slice(0, sep).toLowerCase()}|${sidePart}`;
+                this.statsBySymbolSide.set(legacyKey, { wins: capWins, losses: capLosses, totalPnlPct: capPnl, lastUpdatedTs: Date.now() });
+              }
+            } else {
+              // ATTACK-HARDENING: key 細階化（'BTC|buy' → 'btc|buy'）——recordStat
+              // 用 normalizeSymbol().toLowerCase(),load 都必須一致,否則 gate 統計 miss。
+              const normKey = `${k.slice(0, sep).toLowerCase()}|${sidePart}`;
+              this.statsBySymbolSide.set(normKey, { wins: capWins, losses: capLosses, totalPnlPct: capPnl, lastUpdatedTs });
+            }
+          }
         }
       }
       // v2.0.870-EMR: 載入 backfillDone——重啟後唔重複 backfill

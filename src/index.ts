@@ -84,6 +84,8 @@ import { candleCache } from './data/candle-cache.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
+import { momentumOlrConflictMultiplier } from './analysis/momentum-olr-conflict.ts';
+import { analyzeSideBalance } from './analysis/side-balance-monitor.ts';
 import { classifySuccessPattern } from './analysis/success-pattern.ts';
 import { SuccessPatternTracker } from './evolution/success-pattern-tracker.ts';
 import { computeMaeMfeSLTP } from './analysis/mae-mfe-sltp.ts';
@@ -601,6 +603,8 @@ class MATSSystem {
   /** v2.0.870: Pending asset_analyses rows — flushed ONCE after the full cycle
    *  completes (owner directive: never write mid-cycle — front/back-foot is fatal). */
   private _pendingAnalyses: AssetAnalysis[] | null = null;
+  /** v2.0.870-sell-decay-attack G2: side-balance warning throttle（每 20 cycle 一次） */
+  private _lastSideBalanceCheckCycle = -20;
   /** v2.0.870: Skeptics close blocks this cycle — attached to the pending
    *  analyses at flush time so the write is a single atomic snapshot. */
   private _skepticsCloseBlocks = new Map<string, { reason: string }>();
@@ -5200,6 +5204,19 @@ ${recentExamples}
     } catch { return ''; }
   }
 
+  /** v2.0.870-sell-decay Fix E: 24h 動量（candleCache 1h 蠟燭, 由現時閉市價 vs ~24 支前）。
+   *  用作 sell shadow 播種條件——數據不足時回 null（唔會誤觸發）。 */
+  private compute24hMomentumPct(sym: string): number | null {
+    try {
+      const c1h = candleCache.peekCandles(sym, '1h');
+      if (!c1h || c1h.length < 2) return null;
+      const last = c1h[c1h.length - 1];
+      const ref = c1h[Math.max(0, c1h.length - 25)]; // ~24h (1h 蠟燊)
+      if (!last || !ref || !(last.c > 0) || !(ref.c > 0)) return null;
+      return ((last.c - ref.c) / ref.c) * 100;
+    } catch { return null; }
+  }
+
   /**
    * v2.0.862: DIRECTION HEALTH BLOCK — per-symbol 壓倒性負面數據注入.
    *
@@ -5214,8 +5231,31 @@ ${recentExamples}
    * (23% WR, n=66, -10 USD) had NO warning in their decision context, so the
    * LLM opened on OLR's overconfident P=100% output.
    */
-  private buildDirectionHealthBlock(): string {
+  /** v2.0.870-sell-decay-attack G2: side-balance 警告（每 20 cycle throttle）。
+   *  最近 20 單 ≥90% 單向且另一側 0 → 回傳警告 block（注入 agent context）。
+   *  單向失衡要 LOUD——但唔強制開另一側（單邊市逆勢 = 接刀）。 */
+  private checkSideBalanceWarning(): string {
     try {
+      if (this.totalCycles - this._lastSideBalanceCheckCycle < 20) return '';
+      this._lastSideBalanceCheckCycle = this.totalCycles;
+      const closed = this.portfolio?.getClosedRealTrades() ?? [];
+      const snap = analyzeSideBalance(
+        closed.slice(-20).map(t => ({ side: normalizeTradeSide(t.side) === 'sell' ? 'sell' : 'buy' })),
+      );
+      if (snap.state === 'extreme_buy' || snap.state === 'extreme_sell') {
+        const minoritySide = snap.state === 'extreme_buy' ? 'sell' : 'buy';
+        const minorityTrades = closed.filter(t => normalizeTradeSide(t.side) === minoritySide);
+        const lastTs = minorityTrades.length > 0
+          ? Math.max(...minorityTrades.map(t => Number.isFinite(t.closedAt) ? (t.closedAt ?? 0) : 0))
+          : 0;
+        const silenceH = lastTs > 0 ? ((Date.now() - lastTs) / 3_600_000).toFixed(1) : 'never';
+        return `⚠️ [SIDE-BALANCE] 極端 ${snap.state === 'extreme_buy' ? 'BUY' : 'SELL'} 失衡: 最近 ${snap.windowN} 單 ${(snap.buyShare * 100).toFixed(0)}% BUY / ${((1 - snap.buyShare) * 100).toFixed(0)}% SELL,${minoritySide.toUpperCase()} 0 單。最後一次 ${minoritySide.toUpperCase()} 嘗試: ${silenceH} 小時前。SELL shadow 播種: ${process.env['SELL_SHADOW_SEEDING'] === 'false' ? '關閉' : '開啟'}。單向市場唔可以靜靜咁持續——若另一側有明確 edge 而樣本餓死,應容許佢自然浮現。`;
+      }
+      return '';
+    } catch { return ''; }
+  }
+
+  private buildDirectionHealthBlock(): string {    try {
       const syms = new Set<string>([normalizeSymbol(this.marketAgent.getSelectedSymbol() ?? '')]);
       for (const m of (this.tradingMarkets ?? [])) syms.add(normalizeSymbol(m));
       const blocks: string[] = [];
@@ -5253,21 +5293,25 @@ ${recentExamples}
       //    can hide a losing median — the SKEW trap). WR<25%+netPnl<0 is kept
       //    as a secondary signal. EWMA (方案 D) is shown so the LLM sees the
       //    RECENT (time-decayed) expectancy, not the lifetime average.
+      // v2.0.870-sell-decay (主神 2026-08-24): REVERSED — EWMA (recent) is now the
+      //    🔴 primary signal; all-time median demoted to 🟠. Fossil lifetime stats
+      //    were locking SELL to death (sell WR 4-17% all-time while recent SKHX
+      //    sell is +22%); EWMA reflects what the market is doing NOW.
       const warnings: string[] = [];
       for (const side of ['buy', 'sell'] as const) {
         const sideCombos = combos.filter(c => c.side === side);
         for (const c of sideCombos) {
           const r = c.result;
-          const medianNeg = r.count >= 10 && (r.medianPnlPct ?? 0) < -0.0015;
-          const wrNeg = r.count >= 10 && r.wr < 0.25 && r.wilsonLB < 0.15 && r.netPnl < 0;
-          if (medianNeg || wrNeg) {
+          const redEwma = r.count >= 10 && (r.ewmaPnlPct ?? 0) < -0.0015;
+          const redWr = r.count >= 10 && r.wr < 0.25 && r.wilsonLB < 0.15 && r.netPnl < 0 && (r.ewmaPnlPct ?? 0) < 0;
+          if (redEwma || redWr) {
             const medStr = (r.medianPnlPct * 100).toFixed(2);
             const ewmaStr = (r.ewmaPnlPct * 100).toFixed(2);
             const avgStr = (r.avgPnlPct * 100).toFixed(2);
             const skewTag = r.medianPnlPct < 0 && r.avgPnlPct > 0 ? ' ⚠️ SKEW(avg正但median負——靠少數大贏,脆弱)' : '';
-            warnings.push(`🔴 ${side.toUpperCase()} ${sym} (${c.regime}): 歷史 ${r.count} 筆 median 每筆 ${medStr}%(ewma ${ewmaStr}%, avg ${avgStr}%)${skewTag} — 壓倒性負期望值。除非有 NEW catalyst 明確改變呢個歷史統計,否則唔應該開 ${side.toUpperCase()}。若 OLR 顯示高 P(win),可能 overfit——以 per-symbol 歷史 combo(median)為準。`);
-          } else if (r.count >= 10 && (r.ewmaPnlPct ?? 0) < -0.0015) {
-            warnings.push(`🟠 ${side.toUpperCase()} ${sym} (${c.regime}): 時序衰減期望值(ewma)每筆 ${(r.ewmaPnlPct * 100).toFixed(2)}% — 近期表現差,需要額外證據先好開。`);
+            warnings.push(`🔴 ${side.toUpperCase()} ${sym} (${c.regime}): 近期(ewma)每筆 ${ewmaStr}%(median ${medStr}%, avg ${avgStr}%)${skewTag} — 近期壓倒性負期望值。除非有 NEW catalyst 明確改變呢個近期統計,否則唔應該開 ${side.toUpperCase()}。若 OLR 顯示高 P(win),可能 overfit——以 per-symbol 近期 EWMA 為準。`);
+          } else if (r.count >= 10 && (r.medianPnlPct ?? 0) < -0.0015) {
+            warnings.push(`🟠 ${side.toUpperCase()} ${sym} (${c.regime}): 歷史中位數每筆 ${(r.medianPnlPct * 100).toFixed(2)}% — 長期表現差(但近期 EWMA ${(r.ewmaPnlPct ?? 0) * 100 > 0 ? '改善' : '仍差'}), 需要額外證據先好開。`);
           }
         }
         const rs = perSide[side];
@@ -8810,6 +8854,13 @@ ${recentExamples}
         marketDesc += `\n${directionHealthBlock}`;
       }
 
+      // v2.0.870-sell-decay-attack G2: Side-Balance 警告（每 20 cycle throttle）——
+      // 單向失衡（如 90 單零 SELL）要 LOUD,唔可以靜靜咁持續。
+      const sideBalanceWarning = this.checkSideBalanceWarning();
+      if (sideBalanceWarning) {
+        marketDesc += `\n${sideBalanceWarning}`;
+      }
+
       // v2.0.863 規限①: LLM CONVICTION CALIBRATION block(校準 LLM 自報 conviction)
       try {
         const calBlock = this.llmCalibrator?.getCalibrationBlock();
@@ -9884,6 +9935,29 @@ ${recentExamples}
                 this.totalCycles, features, statLean.score,
               );
               log.info(`[shadow] A/B: statistical lean ${statLean.side.toUpperCase()} ${sym} (score=${statLean.score.toFixed(3)}) vs LLM ${rlAction.toUpperCase()} — both tracked for edge attribution`);
+            }
+
+            // ── v2.0.870-sell-decay Fix E: SELL shadow 播種 ──────────────
+            // 死亡螺旋根源: sell shadow 只喺 LLM lean sell 先開 → 牛市 0 sell 樣本
+            // → OLR sell P(win) 餓死 → LLM 唔 lean sell（loop）。當近期動量負 /
+            // regime 係 trending_bear 時強制開 1 個 sell shadow——sell 樣本重新
+            // 累積喺「正常向下行情」而唔係淨係 crash 接飛刀。
+            // 限頻: engine 內每 symbol 每 24 cycle 1 個; env SELL_SHADOW_SEEDING=false 回退。
+            if (process.env['SELL_SHADOW_SEEDING'] !== 'false') {
+              try {
+                const mom24h = this.compute24hMomentumPct(sym);
+                const seedRegime = ms?.regime ?? 'unknown';
+                const bearish = (mom24h !== null && mom24h < 0) || seedRegime === 'trending_bear';
+                if (bearish && rlAction !== 'sell') {
+                  const sellSl = entryPrice * (1 + slPct);
+                  const sellTp = entryPrice * (1 - tpPct);
+                  this.shadowEngine.openSeededShadow(
+                    sym, entryPrice, 'sell', sellSl, sellTp,
+                    this.totalCycles, features,
+                    `mom24h=${mom24h !== null ? mom24h.toFixed(2) + '%' : 'n/a'}, regime=${seedRegime}`,
+                  );
+                }
+              } catch { /* non-fatal */ }
             }
           }
         }
@@ -12365,6 +12439,26 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           }
         } catch { /* 非致命——Gate 失敗唔 block */ }
 
+        // ── v2.0.870-sell-decay-attack G1: Momentum-OLR 衝突 soft gate ──
+        // 分佈約束: OLR 條件概率 E[win|features] 對抗 24h 大勢（價格分佈位置）時
+        // 收縮向近期動量——DRAM 案例（OLR BUY 63% vs 24h -7.3%）就係衝突。
+        // soft ×0.60-0.90, 順勢唔懲罰。env MOMENTUM_OLR_CONFLICT_GATE=false 回退。
+        try {
+          if (process.env['MOMENTUM_OLR_CONFLICT_GATE'] !== 'false' && (gateAction === 'buy' || gateAction === 'sell')) {
+            const g1Sym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+            const g1Mom = this.compute24hMomentumPct(g1Sym);
+            const g1Ctx = this.lastCycleShadowContexts.get(g1Sym);
+            const g1Feats = g1Ctx?.features ?? {};
+            const g1OlrP = this.olrEngine.query(g1Sym, g1Feats, gateAction as 'buy' | 'sell', this.totalCycles).pWin;
+            const g1Mult = momentumOlrConflictMultiplier(gateAction as 'buy' | 'sell', g1Mom, g1OlrP);
+            if (g1Mult < 1.0) {
+              effectiveConfidence *= g1Mult;
+              log.info(`🔻 [momentum-olr-conflict] ${gateAction.toUpperCase()} ${g1Sym}: mom24h=${g1Mom?.toFixed(2) ?? 'n/a'}% 逆勢 vs OLR ${(g1OlrP * 100).toFixed(0)}% → conviction ×${g1Mult} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+              activeAuditGates.push({ gate: 'momentum-olr-conflict', passed: true, reason: `mom24h=${g1Mom?.toFixed(2) ?? 'n/a'}% 逆勢 OLR ${(g1OlrP * 100).toFixed(0)}% → ×${g1Mult} (soft)` });
+            }
+          }
+        } catch { /* non-fatal */ }
+
         // ── P80: 成功類型校準（soft——重複成功 pattern）──
         // 主神洞察: 認準成功 pattern 增大盈利——順勢突破 avgPnl +2.92%（boost ×1.1）vs
         // 低波動擴張/新聞/動量確認 -1.47% 到 -2.42%（降權 ×0.7）。
@@ -12499,40 +12593,45 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       // This is a SOFT gate — only blocks when the evidence is overwhelming.
       // v2.0.721: Use Wilson 95% lower bound instead of raw WR for gating,
       // and add symmetric boost (position size ×1.2) when shadow WR is high.
+      // v2.0.870-sell-decay (主神 2026-08-24): WR-only gate killed low-WR high-EV
+      // edges (SKHX sell 14d: WR 33%, net +22% — was hard-blocked). Now blocks ONLY
+      // when BOTH decayed WR Wilson LB < 30% AND decayed net PnL <= 0 (EV-confirmed
+      // losers). Sample-starved (decayed total < 20) is never blocked — the LLM
+      // decides. Decayed stats come from the 24h exp-decay (Fix A).
       if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
         const shadowSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
         const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === shadowSym);
         if (shadowStats) {
           const shadowWR = finalDecision.action === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
           const shadowWins = finalDecision.action === 'buy' ? shadowStats.longWins : shadowStats.shortWins;
-          const shadowTotal = finalDecision.action === 'buy'
-            ? shadowStats.longWins + shadowStats.longLosses
-            : shadowStats.shortWins + shadowStats.shortLosses;
+          const shadowLosses = finalDecision.action === 'buy' ? shadowStats.longLosses : shadowStats.shortLosses;
+          const shadowSumPnl = finalDecision.action === 'buy' ? shadowStats.longSumPnlPct : shadowStats.shortSumPnlPct;
+          const shadowTotal = shadowWins + shadowLosses;
           // v2.0.721: Wilson 95% lower bound — more conservative than raw WR.
           // Requires >= 20 samples for gate to fire (was 10).
           const shadowWilsonLB = wilsonScore(shadowWins, shadowTotal);
-          if (shadowTotal >= 20 && shadowWilsonLB < 0.30) {
-            log.warn(`🛑 [shadow-gate] ${finalDecision.action.toUpperCase()} ${shadowSym}: shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowWins}W/${shadowTotal} samples) < 30% — overriding → HOLD`);
-            activeAuditGates.push({ gate: 'shadow-gate', passed: false, reason: `shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% < 30% (${shadowTotal} samples)` });
+          if (shadowTotal >= 20 && shadowWilsonLB < 0.30 && (shadowSumPnl ?? 0) <= 0) {
+            log.warn(`🛑 [shadow-gate] ${finalDecision.action.toUpperCase()} ${shadowSym}: decayed shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowWins.toFixed(1)}W/${shadowTotal.toFixed(1)}) AND net EV ${(shadowSumPnl * 100).toFixed(2)}% <= 0 — overriding → HOLD`);
+            activeAuditGates.push({ gate: 'shadow-gate', passed: false, reason: `decayed Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% < 30% + EV ${(shadowSumPnl * 100).toFixed(2)}% <= 0 (${shadowTotal.toFixed(1)} samples)` });
             finalDecision = {
               ...finalDecision,
               action: 'hold',
               positionSizePct: 0,
-              rationale: `[SHADOW GATE] ${finalDecision.action.toUpperCase()} ${shadowSym} shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowTotal} samples) < 30% — direction fundamentally wrong. HOLD. Original: ${finalDecision.rationale}`,
+              rationale: `[SHADOW GATE] ${finalDecision.action.toUpperCase()} ${shadowSym} decayed shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowTotal.toFixed(1)} samples) < 30% AND net EV ${(shadowSumPnl * 100).toFixed(2)}% <= 0 — direction fundamentally wrong recently. HOLD. Original: ${finalDecision.rationale}`,
             };
-          } else if (shadowTotal >= 20 && shadowWilsonLB > 0.65) {
-            // v2.0.721: Symmetric boost — high shadow WR means direction is
+          } else if (shadowTotal >= 20 && shadowWilsonLB > 0.65 && (shadowSumPnl ?? 0) > 0) {
+            // v2.0.721: Symmetric boost — high shadow WR + positive EV means direction is
             // statistically strong. Boost position size (not conviction threshold)
             // to avoid feedback loops with the adaptive filter.
             const boostedSize = Math.min(0.20, (finalDecision.positionSizePct ?? 0) * 1.2);
-            log.info(`🟢 [shadow-boost] ${finalDecision.action.toUpperCase()} ${shadowSym}: shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowTotal} samples) > 65% — boosting size ${((finalDecision.positionSizePct ?? 0) * 100).toFixed(0)}% → ${(boostedSize * 100).toFixed(0)}%`);
-            activeAuditGates.push({ gate: 'shadow-gate', passed: true, reason: `shadow WR ${(shadowWR * 100).toFixed(0)}% (Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}%, ${shadowTotal} samples) → size boost` });
+            log.info(`🟢 [shadow-boost] ${finalDecision.action.toUpperCase()} ${shadowSym}: decayed shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowTotal.toFixed(1)} samples) > 65% + EV +${(shadowSumPnl * 100).toFixed(2)}% — boosting size ${((finalDecision.positionSizePct ?? 0) * 100).toFixed(0)}% → ${(boostedSize * 100).toFixed(0)}%`);
+            activeAuditGates.push({ gate: 'shadow-gate', passed: true, reason: `shadow WR ${(shadowWR * 100).toFixed(0)}% (Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}%, ${shadowTotal.toFixed(1)} samples, EV +${(shadowSumPnl * 100).toFixed(2)}%) → size boost` });
             finalDecision = {
               ...finalDecision,
               positionSizePct: boostedSize,
             };
           } else {
-            activeAuditGates.push({ gate: 'shadow-gate', passed: true, reason: shadowTotal >= 20 ? `shadow WR ${(shadowWR * 100).toFixed(0)}% (Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}%, ${shadowTotal} samples)` : `insufficient samples (${shadowTotal} < 20)` });
+            activeAuditGates.push({ gate: 'shadow-gate', passed: true, reason: shadowTotal >= 20 ? `decayed shadow WR ${(shadowWR * 100).toFixed(0)}% (Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}%, ${shadowTotal.toFixed(1)} samples, EV ${(shadowSumPnl * 100).toFixed(2)}%)` : `insufficient samples (${shadowTotal.toFixed(1)} < 20)` });
           }
         }
       }

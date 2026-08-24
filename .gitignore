@@ -101,3 +101,7 @@ P23-A-B.md
 PLAN_fix-buy-bias.md
 PLAN_fix-close-gate-integration.md
 bStocks_module.md
+
+# v2.0.870-sell-decay 內部計劃（主神 2026-08-24——驗證完成後 gitignore）
+PLAN_fix-sell-decay.md
+PLAN_fix-sell-decay-attack.md
