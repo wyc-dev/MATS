@@ -4,6 +4,60 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-sell-decay-attack: 攻擊輪 + 盈利提升（主神指令 2026-08-24）
+
+**主神指令**: 不擇手段以「併發/狀態注入/持久化污染」攻擊 sell-decay 系列修復及週邊,完美修復;並以量化金融分析師思路創建盈利提升組件,避免單向問題、保持趨勢敏感。
+
+**攻擊輪（6 攻 5 命中）**:
+
+| # | 漏洞 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| A1 | `lastUpdatedTs=now+1e6`（未來）→ `dt=0` → **decay 失效,化石數據永久凍結主導** | HIGH | V1: 無效/未來 ts（>now+5min）→ 當最舊（4×τ 前衰減） |
+| A2 | `totalPnlPct=1e308` → `sumPnl=Infinity` → **gate EV 檢查被免疫（誤放行）** | CRITICAL | V2: load/getStats 值 cap——n≤1e6, |EV|>1e4 → 0 |
+| A3 | `wins=1e308` → wilson **NaN → gate 免疫** | CRITICAL | V2: 同上 |
+| A4 | seeded SL/TP=Infinity → `Infinity>0` true → **stopLossPrice=Infinity 污染 resolution** | HIGH | V3: `isFinite(x) && x>0` 先接受,否則 default |
+| A7 | key 大小寫污染（`BTC|buy` vs `btc|buy`）→ **gate 統計 miss** | HIGH | V4: load 時 key 細階化（同 recordStat 一致） |
+| A10 | OLR bins 1e308 | MED | bins cap 1e6 |
+
+**盈利提升組件（量化思路）**:
+- **G1 Momentum-OLR 衝突 gate**（`momentum-olr-conflict.ts` 新）: OLR 條件概率對抗 24h 大勢（價格分布位置）時 Bayes 收縮向近期動量——強烈逆勢 ×0.60/×0.75(強 OLR≥68%)、中等 ×0.80/×0.90、順勢/噪音 唔懲罰; DRAM 案例（OLR 63% vs -7.3%）被 ×0.60 懲罰; env `MOMENTUM_OLR_CONFLICT_GATE=false` 回退
+- **G2 Side-Balance Monitor**: `side-balance-monitor.ts` 新——最近 20 單 ≥90% 單向且另一側 0 → `extreme_buy/sell` 警告入 agent context（每 20 cycle throttle）;唔強制逆勢開另一側,但失衡 LOUD（而家 20/20 BUY 即偵測）
+
+**驗證**: 16 新測試（decay 11 + 攻擊 6 + G1 5 + G2 5）全绿;全量 3418 pass + 13 pre-existing（同 baseline 一致,零新增）; tsc clean。
+
+---
+
+## v2.0.870-sell-decay: SELL 24h 時間衰減 + SELL 死亡螺旋解除（主神調查 2026-08-24）
+
+**主神報告**: 近 90 個交易全部 BUY 零 SELL——「即使大牛市都冇可能」；並指出「要有 24h 衰減機制」先會令 SELL open position 大增。
+
+**Phase 0 事實鏈（code + 持久化數據驗證）**:
+- 最後 SELL 2026-08-20 07:39 UTC，其後 90 單 100% BUY（trades.jsonl）
+- shadow 訓練數據 **BUY 8,444 vs SELL 785（10.8:1）**;sell shadow WR 4-17%（dram 2/53、skhx 11/145）
+- **shadow-gate 數據源已空**：`getStats()` 靠 positions/recentResults 重建，而兩者已被 drain（positions 60 個全 open、recentResults 0）→ gate 形同虛設（架構缺陷）
+- **sell combos 其實有正 EV**：skhx MR sell +9.89、btc +3.11、silver MR +4.05（WR 僅 33-45%——低 WR 高 EV 型）
+- **real sell 近 14d：SKHX sell +22.11%（n=24）係唯一正 EV**;近 7d 反而係 btc buy +975% 撐住全場，SILVER/SKHX/SNDK buy 全負（gate 連買嘅近期表現都睇唔到）
+- 三層無衰減：shadow stats 純計數器（無 ts）、OLR bins 淨 `++`、DIRECTION HEALTH 🔴 用 all-time median
+
+**Fix A — shadow stats 24h exp 衰減（shadow-trade-engine.ts）**: `statsBySymbolSide` 加 `lastUpdatedTs`，每次記錄前 `wins/losses/totalPnlPct ×= exp(-Δt/τ)`（τ=`SHADOW_STAT_DECAY_HOURS` 預設 24h，0 = 回滾）；migration 舊格式（無 ts）→ 一次過衰減至 4×τ 前（化石統計淡出）；**`getStats()` 數據源切換為持久化 decayed stats**——修復「gate 想 block 但冇 data」嘅架構缺陷 + WR/EV 反映近期。
+
+**Phase B — OLR calibration bins 衰減（olr-engine.ts）**: `decayCalibrationBins()` 每次 feed 前全 bins `×= exp(-Δt/τ)`（`OLR_BIN_DECAY_HOURS`，0 = 回滾）——raw→empirical 校準映射隨市場重新追蹤，SELL P(win) 唔再鎖死 8-40%。
+
+**Fix C — DIRECTION HEALTH 主判反轉（index.ts）**: 🔴 由 all-time median 改為 **EWMA（近期）** 主判，all-time median 降為 🟠——skhx sell EWMA +11.09% 自動解除警告。
+
+**Fix D — shadow-gate WR+EV 雙條件（index.ts）**: block 需要同時 `decayed Wilson LB < 30%` 且 `decayed net PnL <= 0`——誤殺低 WR 高 EV（skhx sell 14d WR 33% net +22% 而家放行）；decayed n < 20 唔再一票否決（交 LLM）；boost 亦加 EV 條件。
+
+**Fix E — SELL shadow 播種（index.ts + engine）**: 新 `openSeededShadow()`（shadowType='seeded'，OLR full weight，每 symbol 24 cycle 限 1）——當 `24h 動量 < 0` 或 regime=trending_bear 而 LLM 冇 lean sell 時強制開 sell shadow，sell 樣本重新累積喺正常向下行情（唔再只喺 crash 接飛刀）。env `SELL_SHADOW_SEEDING=false` 回滾。
+
+**Counterfactual 驗證（Phase 3，真實數據）**:
+
+- L4 SELL 側 14d：SKHX sell（WR 18% wilson / net +22%）新 gate PASS（舊 gate BLOCK）✅；其他 symbol n<20 → sample-starved 交 LLM（唔再無限否決）
+- L3 BUY 側 7d：SILVER（EV -68%）/SKHX buy（-26%）被新 gate BLOCK（近期真蝕）✅；btc/DRAM/GOLD/bnb（低 WR 高 EV +62%）唔誤殺 ✅
+
+**驗證**: 11 新測試（decay math / migration / τ=0 回滾 / 毒 ts / OLR bins decay / seeded 開倉 + 頻率 cap）全綠；相關 shadow/olr 111 全綠；全量 3402 pass + 13 pre-existing（unrelated，與 baseline 一致）；tsc clean。
+
+---
+
 ## v2.0.870-time-decay-attack: 時間衰減攻擊輪硬化（主神指令 2026-08-23）
 
 **主神指令**: 不擇手段攻擊時間衰減 Fix T1/T2（併發/狀態注入/持久化污染），完美修復。
