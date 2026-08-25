@@ -568,15 +568,19 @@ export class ShadowTradeEngine {
     cycle: number,
     features: Record<string, number>,
     seedReason: string,
+    /** v2.0.870-sell-seed-accel S1: cooldown cycles（跌勢 6 / 非跌勢 24）——
+     *  跌勢期間 sell 樣本回流快 4 倍, 非跌勢保持保守。 */
+    cooldownCycles: number = 24,
   ): void {
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
     if (side !== 'buy' && side !== 'sell') return;
     const sym = symbol.toLowerCase();
 
-    // Frequency cap: 1 seeded per symbol per 24 cycles（防過度播種——用 openCycle
+    // Frequency cap: 1 seeded per symbol per cooldownCycles（防過度播種——用 openCycle
     // 判斷而唔係 status：一個 open 嘅 seeded 唔應該永久阻止新播種）
+    const cool = Number.isFinite(cooldownCycles) && cooldownCycles >= 1 ? Math.floor(cooldownCycles) : 24;
     const recentSeeded = this.positions.some(
-      p => p.symbol === sym && p.shadowType === 'seeded' && (cycle - p.openCycle) < 24,
+      p => p.symbol === sym && p.shadowType === 'seeded' && (cycle - p.openCycle) < cool,
     );
     if (recentSeeded) return;
 

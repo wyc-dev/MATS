@@ -7,6 +7,16 @@
 
 ---
 
+## v2.0.870-sell-seed-accel（2026-08-25）：SELL 樣本加速 + 統一執行路徑完整化
+
+**根因**: SNDK/DRAM/SKHX 連續五筆跌勢開 BUY——shadow-gate 只喺 active path（雙重標準）、F1 對 xyz 動量 mute、LLM 冇 sell 誘因。
+
+- **S0 統一執行路徑完整化**: `applyEntryConvictionGates()` = F1 動量偏置 + shadow-gate（WR+EV block/boost）——active 同所有 trading market 都行同一套（消除「active 先有防禦」）
+- **S1 seeding cooldown 參數化**: 跌勢 6 cycle / 非跌勢 24（sell 樣本回流快 4 倍）
+- **S2 seeding 條件 +4h 動量**: 短線跌勢都播種（5 支 1h candle）
+- **S3 SELL-SEED 提示**: DIRECTION HEALTH 跌勢時顯示「順勢 SELL 播種中」——LLM 有 lean 依據
+
+---
 ## v2.0.870-momentum-direction-attack（2026-08-25）：攻擊輪硬化 + robust 動量
 
 - **V1/V2 攻擊硬化**: side 參數污染 → 中性;|mom|>100% 污染值 → 中性（1e308 唔可以操控 gate 方向）

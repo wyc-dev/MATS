@@ -4,6 +4,21 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-sell-seed-accel: SELL 樣本加速 + 統一執行路徑完整化（主神指令 2026-08-25）
+
+**主神報告**: SNDK -5.8% / DRAM -2.4% / SNDK -1.9% / SNDK -0.8% / SKHX -0.8% 連續五筆跌勢開 BUY——「我追求 100% win rate」。
+
+**根因（精確）**: ① 五筆全部喺 sell-decay 之後但 SNDK/DRAM/SKHX 非 active——**shadow-gate（WR+EV）只喺 active path**,佢哋行嘅路冇 block（SNDK buy decayed WR 23% + EV -20% 理應 block 但冇 apply）;② F1 對 xyz symbol 可能 mute（1h candle 唔足 → 24h/4h 動量 null）;③ LLM 冇 sell 誘因（sell real 樣本 = 0 + OLR sell P 低）。
+
+**修復（統一執行路徑完整化——冇雙重標準）**:
+- **S0**: shadow-gate（WR+EV block + size boost）併入共用 `applyEntryConvictionGates()`——active + 所有 trading market 開倉都行同一套完整 gates（F1 動量偏置 + shadow-gate）;移除 active path 原有 shadow-gate 重複區塊
+- **S1**: seeding cooldown 參數化——跌勢 6 cycle（24 分鐘）/ 非跌勢 24——sell 樣本回流 OLR 快 4 倍
+- **S2**: seeding 條件加 4h 動量（candle 5 支就夠）——短線跌勢都播種
+- **S3**: DIRECTION HEALTH 加「⚡ [SELL-SEED]」提示——LLM 喺跌勢見到順勢 sell 樣本播種中,有顯性數據 lean sell（而唔止「BUY 打折」）
+
+**驗證**: 52 測試全绿（+3 cooldown 測試）;全量 3443 pass + 13 pre-existing（零新增）;tsc clean。
+
+---
 ## v2.0.870-momentum-direction-attack: 攻擊輪硬化 + robust 動量（主神指令 2026-08-25）
 
 **攻擊輪（13 攻 3 命中全修）**:
