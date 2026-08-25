@@ -65,6 +65,11 @@ export function computeLearningWeight(
       // DID confirm the direction (profit existed), but the exit was a system
       // decision — treat as 0.5, never full weight.
       return 0.5;
+    case 'profit_lock':
+      // v2.0.870-exit-price-lock L3: trailing profit lock — live MFE(price) ≥0.5%
+      // and ≥50% giveback from peak → lock ~half the profit. System decision,
+      // same class as exit_price_lock — 0.5, never full weight.
+      return 0.5;
   }
   // Wins from clean market closes (sl_tp / reconciliation / exchange_closed)
   // always get full weight — the market confirmed the entry thesis, and that

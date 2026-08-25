@@ -4,6 +4,56 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-exit-price-lock-confirm: 確認式鎖掛（大 winner 唔誤鎖，主神指令 2026-08-25）
+
+**主神問題**: 原 L3「回吐 ≥50% 即鎖」會唔會令 >19% 大 winner 賺少好多？
+
+**驗證（40 單 5m 粒度重放）**: 原即鎖版誤鎖大贏 **6 單**（損失 63.1pp）——GOLD +19.71 鎖成 3.47、bnb +20.85 鎖成 13.79。大 winner 嘅特徵係「進二退一」——回吐 50% 好常見，之後再創新高。
+
+**修復（確認式鎖掛）**: 回吐 ≥50% → **pending（唔即鎖）**；pending 期間創新高（1h window peak 更新）→ **取消**（趨勢有效——大 winner 唔誤鎖）；**確認窗口 12 cycle≈60min** 冇新高 → 鎖利（真回吐）。
+
+**Counterfactual 掃 N ∈ {1,2,3,6,12,24}**: N=12 最優——誤鎖大贏 6→**1 單**（損失 63→8.6pp）、總 PnL 悲觀 1.96→**86.0%** / 樂觀 118.7%（N=24 太遲——蝕→正得 5 單；N=6 誤鎖仍 5 單）。
+
+**逐單驗證（N=12）**: 6/7 大 winner（+19~20%）**全部保住**（bnb 20.0/20.8/20.5、btc 19.4/20.0）✅；唯一誤鎖 GOLD +19.7→7.7（peak 僅 0.69% 但最終爆——邊界 case，仍大賺）；蝕單 10 單蝕→正（btc -16.9→+9.7、SILVER -8.7→+7.9、GOLD -8.4→+3.8、DRAM -2.4→+9.8）。
+
+**實作**: `lib/live-mfe.ts` 加 `PendingTrailingLock` + `shouldCancelPendingLock`（創新高→取消）/ `shouldConfirmTrailingLock`（屆滿→鎖）純函數；index.ts `_pendingTrailingLocks` map（開頭清理殘留 position + 鎖後/取消後 delete）——L3 改確認式。
+
+**驗證**: 新測試 6（cancel/confirm 純函數 + 毒值保守）全綠；全量 3495 pass + 13 pre-existing（同 baseline 一致）;tsc clean。
+
+---
+## v2.0.870-exit-price-lock-attack: Exit-Price Lock 攻擊輪 + 硬性止盈保衛（主神指令 2026-08-25）
+
+**主神調查**: 最近 40 單大部分「本身賺到錢（MFE 0.5-2%）但全數回吐成蝕」——止盈機制（PAEL exit-price-lock）live 失效。
+
+**根因鏈（雙層）**:
+- **R1 live MFE 低估**: `trackMAEMFE` 靠每 cycle currentPrice 抽查（非 active symbol 盤中 peak 錯過）;`healMaeMfeOnce` 只補 `status==='closed'` 單 → live gate 睇唔到真 MFE → PAEL lock 唔觸發 → 全數回吐 → 關倉後先補返（太遲）
+- **R2 共識止盈被 4 層蓋過**: consensus CLOSE + 盈利會被 pre-filter HOLD → sentinel HOLD → Skeptics block → calibrator/trend-hold hold → 下 cycle 唔再 close → 揸到回吐成蝕
+
+**修復（三層主動鎖利 + 一層被動保衛）**:
+- **L1 cold-start fallback**: `getExitProfile` 無 data → 唔 skip——live MFE ≥0.5%(price) + 盈利 → `profit_lock` close（樣本疏 symbol 都有鎖利）
+- **L2 live MFE candle 補正**: 新 `src/lib/live-mfe.ts` 純函數 `computeLiveMfePricePct`——持倉窗口內 1h candles 極值（BUY=max high / SELL=min low——**side-aware**, 舊 bug 無視 side 用 high 計 sell 錯方向）→ PAEL lock / reversal 睇到真 MFE
+- **L3 trailing profit lock**: `shouldTrailingLock`——live MFE ≥0.5% 且由峰值回吐 ≥50%(margin-basis) → `profit_lock` close（鎖實 ~50% 盈利;winners 持續升唔回吐 → 唔誤鎖）
+- **L4 共識止盈唔俾任何嘢蓋過（主神裁決）**: ① per-symbol consensus CLOSE + 盈利 → 直接執行（skip pre-filter / sentinel / Skeptics）② `holdCloseIfCalibrated` 開頭 `wasProfitable → 清除 pending + return false`（calibrator / trend-hold 對止盈失效）
+- `profit_lock` closeReason: 白名單 + learning weight 0.5（同 exit_price_lock 同級系統決策）
+
+**Counterfactual 驗證（40 單真實重放, 1h candles 逐支模擬, 保守下限）**: 實際 +41.55% → **修復後 +65.63%（Δ+24.08%）**;鎖利觸發 16/40 單;正數單 12/40 → **23/40**。代表改善: btc -16.87%→+0.59% / bnb -8.27%→+3.29% / DRAM -2.39%→+2.88% / SNDK -5.78%→+1.63%。tp_hit 大贏單（+20%）全部唔誤鎖（winners 唔回吐）✓。
+
+**攻擊輪（18 攻 12 命中全修, 紅先實測）**:
+| # | 漏洞 | 修復 |
+|---|------|------|
+| A1 | candle `h=1e308`（finite 過 sanitize）→ liveMfe 爆炸 → L2/L3/cold-start 假鎖 | `MAX_LIVE_MFE_PCT=50` clamp（同 `convertToPriceExtremes` maxExcursionPct 對稱——舊 code 有 clamp 新 code 無 = 對稱漏洞）——超 50% → null |
+| A2 | side 持久化污染（'hold'/NaN/undefined）→ sell 倉用 high 計 MFE（錯方向）| `side !== 'buy'&&'sell' → null` |
+| A3 | candle `t=1e308`（future）→ window 誤收 | `t > 1e15` → 排除 |
+| A4 | `h=entry×1000`（超物理但 finite）→ MFE 巨大化 | `h/l > entry×1e4` → 整批 null + MFE clamp 50% |
+| A5 | `shouldTrailingLock(1e308)` → `0.5×Infinity` 恆 true → 全倉假鎖 | `liveMfe>50 / pnl>1e6 / lev>1000 → false` |
+| A6 | `openedAt=1e308`（future ts）→ 全部 candle 誤收 | `openedAt > 1e15 → null` |
+| A8 | cold-start fallback 被 1e308 假鎖 | `shouldColdStartLock` 加 cap |
+| A7 | candles null/垃圾 element | null element 排除; h/l 值腐敗 → 整批 null（唔用殘餘數據）|
+
+**驗證**: 新測試 18 攻擊 + 14 主 + 3 contract = 35 全綠;全量 3489 pass + 13 pre-existing（同 baseline 一致, 零新增）;tsc clean。
+
+---
+
 ## v2.0.870-sell-seed-accel-attack: 攻擊輪硬化（主神指令 2026-08-25）
 
 **攻擊輪（11 攻 1 CRITICAL 命中）**:
