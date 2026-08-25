@@ -220,12 +220,15 @@ export function applyCalibration(
   const calUpdatedAt = (typeof updatedAt === 'number' && Number.isFinite(updatedAt) && updatedAt > 0 && updatedAt <= nowT + 300_000) ? updatedAt : undefined;
   let f = 1;
   if (calUpdatedAt !== undefined) {
+    // v2.0.870-decay-sweep-attack: env clamp——極細 tau/cutoff（1e-300/1e-9）
+    // 會令 bins 全滅（DoS）。同 shadow engine clamp 一致: tau < 0.01h → 24h;
+    // cutoff < 1h → 24h。
     const rawTau = Number(process.env['OLR_BIN_DECAY_HOURS']);
-    const tauH = Number.isFinite(rawTau) && rawTau >= 0 ? rawTau : 24;
+    const tauH = (Number.isFinite(rawTau) && rawTau >= 0) ? (rawTau > 0 && rawTau < 0.01 ? 24 : rawTau) : 24;
     if (tauH > 0) {
       const dt = Math.max(0, nowT - calUpdatedAt);
       const cutoffRaw = Number(process.env['OLR_BIN_CUTOFF_HOURS']);
-      const cutoffH = Number.isFinite(cutoffRaw) && cutoffRaw >= 0 ? cutoffRaw : 24;
+      const cutoffH = (Number.isFinite(cutoffRaw) && cutoffRaw >= 0) ? (cutoffRaw > 0 && cutoffRaw < 1 ? 24 : cutoffRaw) : 24;
       // 主神裁決 2026-08-25: 24h 後完全冇影響力——hard cutoff（唔係無限 exp 尾巴）
       f = cutoffH > 0 && dt >= cutoffH * 3_600_000 ? 0 : Math.exp(-dt / (tauH * 3_600_000));
     }
@@ -553,8 +556,11 @@ export class OLREngine {
           try { const bb = b as { wins?: unknown; losses?: unknown }; return Number(bb.wins) + Number(bb.losses) > 0; } catch { return false; }
         });
         if (!hasData) return undefined;
+        // v2.0.870-decay-sweep-attack: clamp 同 applyCalibration 一致——
+        // 極細 tau（1e-300）會令 4×τ 前 = now - 極細 → bins 當「而家」→ 唔 fade（凍結）;
+        // 極大 tau 會令 4×τ 前 = 負數 → ts 無效 → 唔 fade。clamp: <0.01h → 24h。
         const rawTau = Number(process.env['OLR_BIN_DECAY_HOURS']);
-        const tauH = Number.isFinite(rawTau) && rawTau >= 0 ? rawTau : 24;
+        const tauH = (Number.isFinite(rawTau) && rawTau >= 0) ? (rawTau > 0 && rawTau < 0.01 ? 24 : rawTau) : 24;
         return tauH > 0 ? Date.now() - 4 * tauH * 3_600_000 : undefined;
       })(),
     };

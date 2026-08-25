@@ -300,10 +300,14 @@ export class ShadowTradeEngine {
   private statsBySymbolSide = new Map<string, { wins: number; losses: number; totalPnlPct: number; lastUpdatedTs?: number }>();
 
   /** τ (hours) for shadow stat decay. env SHADOW_STAT_DECAY_HOURS; 0 = 唔衰減
-   *  (回滾), invalid/negative → default 24h. */
+   *  (回滾), invalid/negative → default 24h.
+   *  v2.0.870-decay-sweep-attack: 極細值（1e-300 denormal）會令 exp(-dt/τ)
+   *  分母爆炸 → 所有 cell 讀取全滅（DoS——healthy 都被殺）。clamp: < 0.01h
+   *  （36 秒以下）視為無效 → 24h。 */
   private static decayTauHours(): number {
     const raw = Number(process.env['SHADOW_STAT_DECAY_HOURS']);
     if (!Number.isFinite(raw) || raw < 0) return 24;
+    if (raw > 0 && raw < 0.01) return 24; // ATTACK-HARDEN: denormal/極細 → default
     return raw;
   }
 
@@ -311,10 +315,13 @@ export class ShadowTradeEngine {
    *  is older than this has ZERO influence (removed on sweep, effective 0 on read).
    *  主神裁決 2026-08-25: 24h 後完全冇影響力——cutoff 保證呢個語義, 而唔係
    *  exp decay 無限尾巴 (exp(-1)=0.37 喺 24h 仍然有影響——違背主神意圖).
-   *  env SHADOW_STAT_CUTOFF_HOURS; 0 = 唔切 (純 exp decay, 舊語義); invalid → 24h. */
+   *  env SHADOW_STAT_CUTOFF_HOURS; 0 = 唔切 (純 exp decay, 舊語義); invalid → 24h.
+   *  v2.0.870-decay-sweep-attack: 極細 cutoff（1e-9h）→ 所有 dt>=cutoff → healthy
+   *  全滅（DoS）——clamp: < 1h 視為無效 → 24h（cutoff 語義冇可能 < 1h）。 */
   private static decayCutoffHours(): number {
     const raw = Number(process.env['SHADOW_STAT_CUTOFF_HOURS']);
     if (!Number.isFinite(raw) || raw < 0) return 24;
+    if (raw > 0 && raw < 1) return 24; // ATTACK-HARDEN: 極細 cutoff → default
     return raw;
   }
 
@@ -338,21 +345,29 @@ export class ShadowTradeEngine {
   /** v2.0.870-decay-sweep: 每 cycle 主動結算——移除超過 cutoff 嘅 stat cell
    *  （主神 2026-08-25: 「每個 Cycle 都可以結算/移除24h外的 shadow trade」）。
    *  返回移除數（>0 時 caller 應 persist）。唔會改動 healthy cell——只
-   *  刪除「最後更新超過 cutoff」嘅化石（影響力已為 0）。τ=0 → 唔執行（回滾）。 */
+   *  刪除「最後更新超過 cutoff」嘅化石（影響力已為 0）。τ=0 → 唔執行（回滾）。
+   *  v2.0.870-decay-sweep-attack: 未來/無效 ts（1e308 凍結防刪除）必須照清——
+   *  無效 ts 喺 effectiveDecayFactor 已經當「最舊」（fade 至 exp(-4)≈0），
+   *  冇理由留喺 map 永久。統一出入口: 用 effectiveDecayFactor === 0（超 cutoff
+   *  或無效化石）判定刪除——唔再自己重複 dt 比較（防邏輯分叉）。 */
   sweepExpiredStats(now = Date.now()): number {
     const tauH = ShadowTradeEngine.decayTauHours();
     if (tauH <= 0) return 0;
     const cutoffH = ShadowTradeEngine.decayCutoffHours();
     if (cutoffH <= 0) return 0;
+    const nowS = Number.isFinite(now) && now > 0 ? now : Date.now(); // ATTACK: 垃圾 now → fallback
     let removed = 0;
     for (const [key, cell] of this.statsBySymbolSide) {
-      if (typeof cell.lastUpdatedTs === 'number' && Number.isFinite(cell.lastUpdatedTs)
-          && now - cell.lastUpdatedTs >= cutoffH * 3_600_000) {
+      // 唔同類判定: 有效且未超 cutoff 先保留；其餘（無效 ts / 未來 ts / 超 cutoff）一律清
+      const ts = cell.lastUpdatedTs;
+      const validTs = typeof ts === 'number' && Number.isFinite(ts) && ts > 0 && ts <= nowS + 300_000;
+      const stale = validTs && (nowS - ts >= cutoffH * 3_600_000);
+      if (!validTs || stale) {
         this.statsBySymbolSide.delete(key);
         removed++;
       }
     }
-    if (removed > 0) log.warn(`🧹 [decay-sweep] ${removed} 個超 cutoff 嘅 shadow stat cell 結算移除（影響力已為 0）`);
+    if (removed > 0) log.warn(`🧹 [decay-sweep] ${removed} 個超 cutoff / 無效 ts 嘅 shadow stat cell 結算移除（影響力已為 0）`);
     return removed;
   }
 
