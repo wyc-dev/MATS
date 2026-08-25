@@ -83,6 +83,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldTrailingLock, shouldColdStartLock, shouldCancelPendingLock, shouldConfirmTrailingLock, type PendingTrailingLock } from './lib/live-mfe.ts';
 import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
+import { shouldBlockFromRecentLoss, isInCooldown } from './lib/recent-loss-gate.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
@@ -5279,6 +5280,10 @@ ${recentExamples}
   private persistenceUpdatedAt = 0;
   private persistenceUpdating = false; // 併發 guard——fetch 慢時下個 cycle 唔重複跑
 
+  /** v2.0.870-recent-loss-gate: per-symbol real 連蝕 cooldown（主神 2026-08-25
+   *  DRAM 5 單全蝕照開）——symbol → block sinceTs（24h）。 */
+  private recentLossCooldowns = new Map<string, number>();
+
   private async updatePersistenceScores(): Promise<void> {
     if (this.persistenceUpdating) return; // 併入防護（A2）
     try {
@@ -5325,6 +5330,24 @@ ${recentExamples}
     sizePct: number,
   ): { confidence: number; blocked: boolean; reason: string | null; size: number } {
     try {
+      // v2.0.870-recent-loss-gate（主神 2026-08-25 DRAM 5 單全蝕照開）: per-symbol
+      // real 最近 5 單全蝕且合計 ≤-3% → 24h 冷卻 block（唔准再開）。
+      if (process.env['RECENT_LOSS_GATE'] !== 'false') {
+        const rlSym = normalizeSymbol(sym);
+        const since = this.recentLossCooldowns.get(rlSym);
+        const now = Date.now();
+        if (since !== undefined && isInCooldown(since, now, 24 * 3600_000)) {
+          return { confidence: 0, blocked: true, reason: `recent-loss-cooldown: ${rlSym} 近 24h 連蝕——24h 冷卻中`, size: 0 };
+        }
+        if (since !== undefined && !isInCooldown(since, now, 24 * 3600_000)) this.recentLossCooldowns.delete(rlSym);
+        const rlTrades = (this.portfolio?.getClosedRealTrades?.() ?? [])
+          .filter((t) => normalizeSymbol(String(t?.symbol ?? '')) === rlSym)
+          .map((t) => ({ symbol: rlSym, pnlPct: Number(t?.pnlPct ?? 0) }));
+        if (shouldBlockFromRecentLoss(rlTrades)) {
+          this.recentLossCooldowns.set(rlSym, now);
+          return { confidence: 0, blocked: true, reason: `recent-loss-gate: ${rlSym} 近 ${Math.min(5, rlTrades.length)} 單全蝕（合計 ${rlTrades.slice(-5).reduce((a, t) => a + t.pnlPct, 0).toFixed(1)}%）→ 24h 冷卻`, size: 0 };
+        }
+      }
       // OLR 硬門（v2.0.870-olr-hard-gate, 主神 2026-08-25）: P(win) < 35% 且
       // live 樣本 ≥20 → 唔准開（buy/sell 雙向）。bnb case——thesis 自認
       // 「OLR P(win)=29% is against」照開（LLM 用 momentum 說服自己）——
