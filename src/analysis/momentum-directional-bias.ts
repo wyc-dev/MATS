@@ -73,3 +73,11 @@ export function robustMomentumPct(closes: Array<{ c: number } | null | undefined
   const pct = med * n * 100;
   return Math.max(-100, Math.min(100, pct));
 }
+
+/** v2.0.870-sell-seed-accel-attack A1: shadow-boost size sanitize。
+ *  原 bug: Math.min(0.20, sizePct*1.2)——sizePct=NaN → NaN size;負 → 負 size
+ *  （污染值可以直接製造負數持倉）。修復: 非 finite / ≤0 / 非 number → 0。 */
+export function shadowBoostSize(sizePct: number): number {
+  if (typeof sizePct !== 'number' || !Number.isFinite(sizePct) || sizePct <= 0) return 0;
+  return Math.min(0.20, sizePct * 1.2);
+}

@@ -85,7 +85,7 @@ import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analy
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
 import { momentumOlrConflictMultiplier } from './analysis/momentum-olr-conflict.ts';
-import { momentumDirectionalBias, robustMomentumPct } from './analysis/momentum-directional-bias.ts';
+import { momentumDirectionalBias, robustMomentumPct, shadowBoostSize } from './analysis/momentum-directional-bias.ts';
 import { analyzeSideBalance } from './analysis/side-balance-monitor.ts';
 import { classifySuccessPattern } from './analysis/success-pattern.ts';
 import { SuccessPatternTracker } from './evolution/success-pattern-tracker.ts';
@@ -5261,7 +5261,7 @@ ${recentExamples}
         return { confidence: 0, blocked: true, reason: `shadow-gate: decayed WR ${(wlb * 100).toFixed(0)}% <30% + EV ${(sumPnl * 100).toFixed(2)}% ≤0`, size: 0 };
       }
       if (total >= 20 && wlb > 0.65 && (sumPnl ?? 0) > 0) {
-        return { confidence, blocked: false, reason: `shadow-boost: WR ${(wlb * 100).toFixed(0)}% + EV +${(sumPnl * 100).toFixed(2)}%`, size: Math.min(0.20, sizePct * 1.2) };
+        return { confidence, blocked: false, reason: `shadow-boost: WR ${(wlb * 100).toFixed(0)}% + EV +${(sumPnl * 100).toFixed(2)}%`, size: shadowBoostSize(sizePct) };
       }
       return { confidence, blocked: false, reason: null, size: sizePct };
     } catch { return { confidence, blocked: false, reason: null, size: sizePct }; }
