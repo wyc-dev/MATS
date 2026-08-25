@@ -307,6 +307,55 @@ export class ShadowTradeEngine {
     return raw;
   }
 
+  /** v2.0.870-decay-sweep: hard cutoff (hours) — a stat cell whose last update
+   *  is older than this has ZERO influence (removed on sweep, effective 0 on read).
+   *  主神裁決 2026-08-25: 24h 後完全冇影響力——cutoff 保證呢個語義, 而唔係
+   *  exp decay 無限尾巴 (exp(-1)=0.37 喺 24h 仍然有影響——違背主神意圖).
+   *  env SHADOW_STAT_CUTOFF_HOURS; 0 = 唔切 (純 exp decay, 舊語義); invalid → 24h. */
+  private static decayCutoffHours(): number {
+    const raw = Number(process.env['SHADOW_STAT_CUTOFF_HOURS']);
+    if (!Number.isFinite(raw) || raw < 0) return 24;
+    return raw;
+  }
+
+  /** v2.0.870-decay-sweep: 讀取時 effective 衰減 factor——唔變更任何狀態。
+   *  - lastUpdatedTs 無效 / 未來(> now+5min) → 視為最舊（4×τ 前, exp(-4)）——化石淡出
+   *  - dt >= cutoff (default 24h) → 0（完全冇影響力——主神裁決）
+   *  - 否則 exp(-dt/τ)。τ=0 → 1（唔衰減回滾）。 */
+  private static effectiveDecayFactor(lastUpdatedTs: number | undefined, now: number): number {
+    const tauH = ShadowTradeEngine.decayTauHours();
+    if (tauH <= 0) return 1;
+    if (typeof lastUpdatedTs !== 'number' || !Number.isFinite(lastUpdatedTs) || lastUpdatedTs > now + 300_000) {
+      // 冷啟動 / 污染(無效 / 未來 5min 以上) → 視為最舊（4×τ 前）——化石淡出
+      return Math.exp(-4);
+    }
+    const dt = Math.max(0, now - lastUpdatedTs);
+    const cutoffH = ShadowTradeEngine.decayCutoffHours();
+    if (cutoffH > 0 && dt >= cutoffH * 3_600_000) return 0;
+    return Math.exp(-dt / (tauH * 3_600_000));
+  }
+
+  /** v2.0.870-decay-sweep: 每 cycle 主動結算——移除超過 cutoff 嘅 stat cell
+   *  （主神 2026-08-25: 「每個 Cycle 都可以結算/移除24h外的 shadow trade」）。
+   *  返回移除數（>0 時 caller 應 persist）。唔會改動 healthy cell——只
+   *  刪除「最後更新超過 cutoff」嘅化石（影響力已為 0）。τ=0 → 唔執行（回滾）。 */
+  sweepExpiredStats(now = Date.now()): number {
+    const tauH = ShadowTradeEngine.decayTauHours();
+    if (tauH <= 0) return 0;
+    const cutoffH = ShadowTradeEngine.decayCutoffHours();
+    if (cutoffH <= 0) return 0;
+    let removed = 0;
+    for (const [key, cell] of this.statsBySymbolSide) {
+      if (typeof cell.lastUpdatedTs === 'number' && Number.isFinite(cell.lastUpdatedTs)
+          && now - cell.lastUpdatedTs >= cutoffH * 3_600_000) {
+        this.statsBySymbolSide.delete(key);
+        removed++;
+      }
+    }
+    if (removed > 0) log.warn(`🧹 [decay-sweep] ${removed} 個超 cutoff 嘅 shadow stat cell 結算移除（影響力已為 0）`);
+    return removed;
+  }
+
   constructor(olrEngine: OLREngine) {
     this.olrEngine = olrEngine;
   }
@@ -1200,11 +1249,20 @@ export class ShadowTradeEngine {
   } {
     const norm = normalizeSymbol(symbol).toLowerCase();
     const out: Record<string, { n: number; winRate: number; avgPnlPct: number }> = {};
+    // v2.0.870-decay-sweep: READ-TIME effective decay（同 getStats() 一致）——
+    // 靜止污染 cell 讀取時自動 fade（唔等新記錄觸發）。零 mutate。
+    const nowRead = Date.now();
     for (const side of ['buy', 'sell'] as const) {
       const s = this.statsBySymbolSide.get(`${norm}|${side}`);
-      if (s && s.wins + s.losses > 0) {
-        const n = s.wins + s.losses;
-        out[side] = { n, winRate: s.wins / n, avgPnlPct: n > 0 ? s.totalPnlPct / n : 0 };
+      if (s) {
+        const f = ShadowTradeEngine.effectiveDecayFactor(s.lastUpdatedTs, nowRead);
+        const effWins = s.wins * f;
+        const effLosses = s.losses * f;
+        const effPnl = s.totalPnlPct * f;
+        if (effWins + effLosses > 0) {
+          const n = effWins + effLosses;
+          out[side] = { n, winRate: effWins / n, avgPnlPct: n > 0 ? effPnl / n : 0 };
+        }
       }
     }
     return {
@@ -1423,18 +1481,24 @@ export class ShadowTradeEngine {
     //    source. Old all-time counts fade exp(-Δt/τ) so WR here reflects the recent
     //    window. This also FIXES the architectural hole where getStats() returned
     //    all zeros when positions/recentResults were drained (gate saw no data).
+    //    v2.0.870-decay-sweep: READ-TIME effective decay——即使 cell 冇新記錄（靜止
+    //    sell 污染樣本唔再流入），每次讀取都按 lastUpdatedTs 現場衰減（有效影響力
+    //    隨時間自動 fade，唔再需要等下一次 recordStat 先觸發）——斬斷「sell 無樣本
+    //    → 無觸發 decay → 毒化凍結」死循環。零 mutate（idempotent——多個 caller 唔會 double-decay）。
     //    ATTACK-HARDENING: 值 cap——1e308 污染值會令 wilson NaN / EV Infinity,
     //    gate 被免疫。真實上限: n ≤ ~1e5, |EV| ≤ ~1e4%.
+    const nowRead = Date.now();
     for (const [key, cell] of this.statsBySymbolSide) {
       const sep = key.indexOf('|');
       if (sep <= 0 || sep === key.length - 1) continue;
       const stats = getOrCreate(key.slice(0, sep));
+      const f = ShadowTradeEngine.effectiveDecayFactor(cell.lastUpdatedTs, nowRead);
       const rawWins = Number.isFinite(cell.wins) ? cell.wins : 0;
       const rawLosses = Number.isFinite(cell.losses) ? cell.losses : 0;
       const rawPnl = Number.isFinite(cell.totalPnlPct) ? cell.totalPnlPct : 0;
-      const wins = Math.min(Math.max(rawWins, 0), 1e6);
-      const losses = Math.min(Math.max(rawLosses, 0), 1e6);
-      const sumPnl = Math.abs(rawPnl) > 1e4 ? 0 : rawPnl;
+      const wins = Math.min(Math.max(rawWins * f, 0), 1e6);
+      const losses = Math.min(Math.max(rawLosses * f, 0), 1e6);
+      const sumPnl = Math.abs(rawPnl * f) > 1e4 ? 0 : rawPnl * f;
       if (key.slice(sep + 1) === 'buy') {
         stats.longWins = Math.round(wins * 10000) / 10000;
         stats.longLosses = Math.round(losses * 10000) / 10000;
