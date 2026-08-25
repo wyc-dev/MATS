@@ -115,3 +115,5 @@ PLAN_fix-exit-price-lock.md
 
 # 訊號資料契約（主神 2026-08-25——gitignore）
 asset_analyses.md
+scripts/trend-aware-counter.ts
+PLAN_exploration-dual.md
