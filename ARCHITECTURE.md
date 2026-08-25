@@ -1,9 +1,19 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-sell-decay-attack
+> **作者**: YC Wong · **版本**: 2.0.870-momentum-direction
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## v2.0.870-momentum-direction（2026-08-25）：動量方向偏置 + 統一執行路徑
+
+**主神指令**: SNDK 24h -8.3% 照開 BUY——「嗰啲時刻其實應該要 Sell」;「multi-symbol path 唔應該存在」——每個 symbol 第一公民。
+
+- **F1 動量方向偏置**（`momentum-directional-bias.ts` 純函數）: 順勢 ×1.05/×1.15、逆勢 ×0.85/×0.70/×0.45、**|24h 動量|≥8% 同向相反 → HARD BLOCK**——counterfactual: SNDK -8.3% 兩單直接封殺、順勢 SKHX 唔誤傷、BUY trending_bear -163% 可避 ~+125~160% EV
+- **統一執行路徑**: `applyDirectionalBiasGate()` 共用 helper——active + 所有 trading market 開倉行同一個 F1（per-symbol 各自動量,股票/黃金獨立）——取代「multi-symbol path 補 gate」方案（主神裁決取消）
+- **F3 24h→4h fallback**: 1h candle 唔足 25 支時 fallback 4h 動量——數據盲區消除
 
 ---
 
