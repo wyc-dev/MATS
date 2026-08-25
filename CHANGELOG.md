@@ -4,6 +4,26 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-decay-sweep-attack: 時間驅動衰減攻擊輪（主神指令 2026-08-25）
+
+**主神指令**: 不擇手段攻擊啱啱修葺嘅 decay-sweep code（併發/狀態注入/持久化污染/環境變數注入），完美修復；量化金融分析師思維提升盈利。
+
+**攻擊輪（紅先實測 5 攻全命中全修）**:
+| # | 漏洞 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| A1 | **未來 ts（1e308）凍結防刪除**——runtime 注入 `lastUpdatedTs=1e308` → sweep 判定「未超 cutoff」→ 污染 cell 永久留喺 shadow-state | HIGH | `sweepExpiredStats` 改用「有效 ts 判定」——無效/未來/超 cutoff 一律清（統一出入口, 唔再自己重複 dt 比較防邏輯分叉）; 垃圾 now（NaN/Infinity/負數）→ fallback Date.now() |
+| A2 | **env cutoff=1e-9h → healthy 全滅**（環境注入 DoS）——極細 cutoff 令所有 `dt>=cutoff` → 全部 cell 讀取歸零 | CRITICAL | `decayCutoffHours` clamp：cutoff < 1h → 24h（cutoff 語義冇可能 < 1h） |
+| A3 | **env tau=1e-300（denormal）→ exp(-dt/τ) 分母爆炸 → 全滅** | CRITICAL | `decayTauHours` clamp：tau < 0.01h → 24h（同 OLR 一致） |
+| A4 | **OLR_BIN_CUTOFF_HOURS=1e-9 → bins 誤滅** | HIGH | `applyCalibration` 同 clamp（<1h → 24h） |
+| A5 | **OLR_BIN_DECAY_HOURS=1e-300 → bins 全滅** | CRITICAL | `applyCalibration` + `migrateModel` 同 clamp（<0.01h → 24h） |
+
+**已防禦確認（7 綠）**: sweep(now=NaN/Infinity/負) 唔 crash、undefined/NaN/Infinity ts 唔 crash + 影響力極低、getStats 垃圾 cell 值（string/Infinity/負數）唔 NaN 唔爆炸、getSymbolSideStats garbage 唔 crash、applyCalibration(updatedAt=NaN/Infinity/未來/負) 保守唔 fade、migrate garbage calibrationUpdatedAt 唔 crash 唔爆炸、idempotent（多 caller 唔 double-decay）。
+
+**盈利提升（量化思路——decay 修正內建）**: ① sell 統計解凍 → `getStats()`/`getSymbolSideStats()` 返回 effective（decayed）值 → shadow-gate（WR+EV block/boost）同 exploration sell 訊號即刻反映近期而非化石——sell 唔再俾 2-6% 鎖死 ② OLR calibration read-time decay → sell P(win) 由 8-40% 鎖死變浮動——LLM 唔再被假 low-prob 勸退 ③ 24h sweep 結算 → disk 時間窗語義兌現（主神裁決）——架構正確性即盈利（唔為做而做）。
+
+**驗證**: 新攻擊測試 12 全綠（紅先 5 命中 → 修復後全綠 + 已防禦 7）；新 decay-sweep 測試 15 零 regress；全量 3578 pass + 13 pre-existing（同 baseline，零新增）；tsc clean。
+
+---
 ## v2.0.870-decay-sweep: 時間驅動衰減（shadow stats + OLR bins 結算制，主神裁決 2026-08-25）
 
 **主神洞察**: 「shadow trade 記錄已設定 24h 後冇影響力, 咁每個 Cycle 都可以結算/移除 24h 外嘅 shadow trade；而 shadow-state 並冇隨之更新——係 shadow-state 嘅問題？」
