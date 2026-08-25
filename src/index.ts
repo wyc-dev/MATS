@@ -83,6 +83,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldTrailingLock, shouldColdStartLock, shouldCancelPendingLock, shouldConfirmTrailingLock, type PendingTrailingLock } from './lib/live-mfe.ts';
 import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
+import { buildCooldownEntry, shouldBlockReentry, type ReentryCooldownState } from './lib/reentry-cooldown.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
@@ -3899,6 +3900,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
                 this._pendingTrailingLocks.delete(symNorm);
                 const okT = await this.closeTrade(sym, `[TRAILING LOCK] ${sym} ${pos.side.toUpperCase()}: MFE(price) ${liveMfe.toFixed(2)}% 回吐 ≥50% 確認(60min 冇新高) → 鎖利`, 'profit_lock');
                 if (okT) {
+                  const rcT = buildCooldownEntry(pos.side, Date.now(), Number(process.env['REENTRY_COOLDOWN_MIN'] ?? '60') * 60_000);
+                  if (rcT) this.lockReentryCooldowns.set(normalizeSymbol(sym), rcT);
                   log.info(`🔒 [trailing-lock] CLOSED ${sym} ${pos.side.toUpperCase()} @ 確認鎖利 — profit locked`);
                   continue;
                 }
@@ -3914,6 +3917,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const exitThesis = `[EXIT-PRICE LOCK] ${sym} ${pos.side.toUpperCase()}: MFE ${(mfePricePct * 100).toFixed(2)}% ≥ ${isTrending ? 'p90' : 'p75×0.8'} (${(threshold * 100).toFixed(2)}%) in ${regime} (${profile.samples} samples). Locking profit — SL untouched.`;
         const ok = await this.closeTrade(sym, exitThesis, 'exit_price_lock');
         if (ok) {
+          // v2.0.870-reentry-cooldown: 鎖利 close 後 1h 唔准 re-entry 同一方向
+          const rcEntry = buildCooldownEntry(pos.side, Date.now(), Number(process.env['REENTRY_COOLDOWN_MIN'] ?? '60') * 60_000);
+          if (rcEntry) this.lockReentryCooldowns.set(normalizeSymbol(sym), rcEntry);
           this.exitPriceLockCount++;
           log.info(`🔒 [exit-price-lock] CLOSED ${sym} ${pos.side.toUpperCase()} @ MFE ${(converted.mfePricePct * 100).toFixed(2)}% (threshold ${(threshold * 100).toFixed(2)}%, samples=${profile.samples}) — profit locked (total=${this.exitPriceLockCount})`);
         } else {
@@ -5279,6 +5285,10 @@ ${recentExamples}
   private persistenceUpdatedAt = 0;
   private persistenceUpdating = false; // 併發 guard——fetch 慢時下個 cycle 唔重複跑
 
+  /** v2.0.870-reentry-cooldown（主神 2026-08-25）: PAEL/profit_lock close 後
+   *  1h 唔准開同一方向——斬斷「鎖完又追」loop（DRAM 鎖 3.0% → 追高 → SL -7.3%）。 */
+  private lockReentryCooldowns = new Map<string, ReentryCooldownState>();
+
 
   private async updatePersistenceScores(): Promise<void> {
     if (this.persistenceUpdating) return; // 併入防護（A2）
@@ -5326,6 +5336,17 @@ ${recentExamples}
     sizePct: number,
   ): { confidence: number; blocked: boolean; reason: string | null; size: number } {
     try {
+      // v2.0.870-reentry-cooldown（主神 2026-08-25）: PAEL/profit_lock close 後
+      // 1h 內唔准開同一方向——斬斷「鎖完又追」loop（DRAM 鎖 3.0% → 追高 56.44
+      // → SL -7.3%）。env REENTRY_COOLDOWN_MIN=0 關閉。
+      if (process.env['REENTRY_COOLDOWN_MIN'] !== '0') {
+        const rcSym = normalizeSymbol(sym);
+        const rc = this.lockReentryCooldowns.get(rcSym);
+        if (rc && shouldBlockReentry(rc, action, Date.now())) {
+          return { confidence: 0, blocked: true, reason: `reentry-cooldown: ${rcSym} ${action} 鎖利後 1h 冷卻中（防「鎖完又追」）`, size: 0 };
+        }
+        if (rc && !shouldBlockReentry(rc, action, Date.now())) this.lockReentryCooldowns.delete(rcSym);
+      }
       // OLR 硬門（v2.0.870-olr-hard-gate, 主神 2026-08-25）: P(win) < 35% 且
       // live 樣本 ≥20 → 唔准開（buy/sell 雙向）。bnb case——thesis 自認
       // 「OLR P(win)=29% is against」照開（LLM 用 momentum 說服自己）——
