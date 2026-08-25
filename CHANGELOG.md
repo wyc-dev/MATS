@@ -4,6 +4,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-sell-seed-accel-attack: 攻擊輪硬化（主神指令 2026-08-25）
+
+**攻擊輪（11 攻 1 CRITICAL 命中）**:
+| # | 漏洞 | 修復 |
+|---|------|------|
+| A1 | **shadow-boost size 污染**: `Math.min(0.20, sizePct*1.2)`——sizePct=NaN → **NaN size**;負 → **負數持倉**（污染值可以直接製造垃圾 positionSize）| V1: `shadowBoostSize()` 純函數——non-finite/≤0/非 number → 0（`applyShadowGate` 接入）|
+
+A2 cooldown 毒值 / A3 robust 垃圾 candle / A4 階級 bounded —— 全部未命中（已有 guard）。
+
+**驗證**: 11 新攻擊測試全绿（size 6 + cooldown 1 + robust 4）;全量 3454 pass + 13 pre-existing（零新增）;tsc clean。
+
+---
 ## v2.0.870-sell-seed-accel: SELL 樣本加速 + 統一執行路徑完整化（主神指令 2026-08-25）
 
 **主神報告**: SNDK -5.8% / DRAM -2.4% / SNDK -1.9% / SNDK -0.8% / SKHX -0.8% 連續五筆跌勢開 BUY——「我追求 100% win rate」。

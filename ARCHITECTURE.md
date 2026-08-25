@@ -7,6 +7,11 @@
 
 ---
 
+## v2.0.870-sell-seed-accel-attack（2026-08-25）：攻擊輪硬化
+
+- **V1 shadowBoostSize()**: size boost sanitize——NaN/負/Infinity/字串 → 0（原 `Math.min(0.20, size*1.2)` 可出 NaN/負數持倉,CRITICAL）;正常 → min(0.20, ×1.2)
+
+---
 ## v2.0.870-sell-seed-accel（2026-08-25）：SELL 樣本加速 + 統一執行路徑完整化
 
 **根因**: SNDK/DRAM/SKHX 連續五筆跌勢開 BUY——shadow-gate 只喺 active path（雙重標準）、F1 對 xyz 動量 mute、LLM 冇 sell 誘因。
