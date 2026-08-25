@@ -87,14 +87,6 @@ export function momentumDirectionalBiasPersistence(
 ): number {
   if (side !== 'buy' && side !== 'sell') return 1.0;
   if (momPct === null || !Number.isFinite(momPct) || Math.abs(momPct) > 100) return 1.0;
-  // v2.0.870-sell-architecture-fix2（主神 2026-08-25 DRAM 死猫弹案例）: persistent_bear
-  // 型 BUY 需要 mom24h 明顯轉正先允许——DRAM mom24h=0.00%（打和）+ 4h 急弹 +3.7%
-  // （死猫弹）開咗 BUY——F1 只 block mom<0 擋唔住「打和/微正」嘅追高。E1:
-  // 续跌型 symbol 跌市反彈後多數續跌——mom24h < 1.5% 一律 block（唔等負）。
-  // 放噪音 return 之前——mom=0 打和都要 block。
-  if (side === 'buy' && persistence === 'persistent_bear') {
-    if (momPct < 1.5) return 0;
-  }
   const mag = Math.abs(momPct);
   if (mag < 1.5) return 1.0; // 噪音——唔影響
   const bullish = momPct > 0;
