@@ -4,6 +4,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-momentum-direction-attack: 攻擊輪硬化 + robust 動量（主神指令 2026-08-25）
+
+**攻擊輪（13 攻 3 命中全修）**:
+| # | 漏洞 | 修復 |
+|---|------|------|
+| A1 | side 參數污染（'hold'）→ 被當逆勢 **HARD BLOCK**（誤殺）| V1: side guard → 中性 1.0 |
+| A2 | mom=1e308 溢出 → 誤當強順勢 ×1.15 / -1e308 誤 hard block（**污染值操控 gate**）| V2: |mom|>100 → 中性 1.0 |
+| G3 | 單支 +15% spike 扭爆 24h 動量（raw ratio -5% → +10% 誤判順勢）| robustMomentumPct(): median per-candle return × 窗口數,clamp ±100——單支 outlier 唔再扭爆方向判決 |
+
+**驗證**: 13 新攻擊測試全绿 + 9 原測試 = 22;全量 3440 pass + 13 pre-existing（同 baseline,零新增）;tsc clean。
+
+---
 ## v2.0.870-momentum-direction: 動量方向偏置 + 統一執行路徑（主神指令 2026-08-25）
 
 **主神報告**: SNDK 24h -8.3% 照開 BUY（蝕）——「嗰啲時刻其實應該要 Sell,唔止係唔應該 Buy」;並指出「multi-symbol path 唔應該存在,股票同黃金一定唔同方向」——每個 symbol 第一公民。

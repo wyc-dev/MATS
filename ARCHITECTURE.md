@@ -7,6 +7,12 @@
 
 ---
 
+## v2.0.870-momentum-direction-attack（2026-08-25）：攻擊輪硬化 + robust 動量
+
+- **V1/V2 攻擊硬化**: side 參數污染 → 中性;|mom|>100% 污染值 → 中性（1e308 唔可以操控 gate 方向）
+- **G3 robust 動量**（`robustMomentumPct()`）: median per-candle return × 窗口數（24h=25 支 / 4h fallback=5 支）——單支 outlier spike 唔再扭爆方向判決（raw ratio 會被 1 支 +15% 由 -5% 扭成 +10%）;clamp ±100 防污染
+
+---
 ## v2.0.870-momentum-direction（2026-08-25）：動量方向偏置 + 統一執行路徑
 
 **主神指令**: SNDK 24h -8.3% 照開 BUY——「嗰啲時刻其實應該要 Sell」;「multi-symbol path 唔應該存在」——每個 symbol 第一公民。
