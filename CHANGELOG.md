@@ -4,6 +4,22 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-decay-sweep-attack2-fix: settle 語義修正（主神質疑 2026-08-25——「A3 settle 係一次性 fade？」）
+
+**主神質疑**: A3 settle 嘅 fade 語義——「一次性 fade」描述唔正確, 且需驗證連續 settle 唔會令「24h 完全冇影響」失效。
+
+**實測確診（2 個發現）**:
+- 原實作每次 settle 都 `fade + set calibrationUpdatedAt = now` → **掩蓋「真正 feed 時間」**——cutoff 永遠只量度「自上次 settle」嘅幾分鐘（每 cycle 4min）→ 24h 後 cutoff 永唔觸發 → 剩 exp(-1)=0.37, 唔係 0——「24h 完全冇影響力」語義失效
+- settle 唔應該自己做 fade——fade 已由 `applyCalibration`（read-time）按真正 feed ts 連續計算（每次 query 現場 fade, 零 mutate, 正確）
+
+**修正**:
+- `settleCalibrationDecay` 改為**只做「超 cutoff → bins 清零」**——唔 fade、唔更新 `calibrationUpdatedAt`（除非清零）——與 shadow `sweepExpiredStats` 架構一致（只結算窗口, 衰減交讀取路徑）
+- 未超 cutoff 嘅 bins 原封不動（ts 保留 feed 時間）——read-time fade 按原 ts 連續計算, 數學上等價一次性 exp(-Δt/τ)
+- 超 cutoff（24h）→ bins 清零 + set ts（結算完成標記）
+
+**驗證（實測證明語義兌現）**: 每 6h settle ×4（24h 內 4 次）→ 第 4 次（24h）cutoff 清零 ✓; 12h 內 2 次 settle → ts 保留 feed 時間 + bins 原值 ✓; 全量 3588 pass + 13 pre-existing（零新增）; tsc clean。
+
+---
 ## v2.0.870-decay-sweep-attack2: 攻擊輪二——垃圾 key / 未來 now / cutoff 極大 / OLR settle（主神指令 2026-08-25）
 
 **主神指令**: 更刁钻攻擊（併發/狀態注入/持久化污染）——第一輪遺漏嘅面。
