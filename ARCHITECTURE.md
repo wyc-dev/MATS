@@ -1947,6 +1947,7 @@ Adversarial audit（v2.0.855 系列）對照真實持久化狀態（`shadow-stat
 - **L4 共識止盈唔俾任何嘢蓋過（主神裁決）**：per-symbol consensus CLOSE + 盈利 → 直接執行（skip pre-filter / sentinel / Skeptics）；`holdCloseIfCalibrated` 開頭 `wasProfitable → 清除 pending + return false`（calibrator / trend-hold 對止盈失效）
 - `profit_lock` closeReason：白名單 + learning weight 0.5（同 exit_price_lock 同級系統決策）
 - **Counterfactual（40 單 1h candle 重放，保守下限）**：實際 +41.55% → 修復後 +65.63%（Δ+24.08%）；鎖利 16/40；正數單 12→23；tp_hit 大贏單（+20%）全部唔誤鎖
+- **Sell 架構（v2.0.870-sell-architecture）**：E1 邏輯實驗——反彈型（BTC/BNB/GOLD）sell 無 edge（bnb sell n=38 WR 0.7% 毒化 OLR）vs 續跌型（SNDK/SKHX/DRAM）sell 4h edge 52-71%——`src/analysis/momentum-persistence.ts` 動態續延性分類（persistent_bear ≥0.55）→ F1 persistence-aware HARD BLOCK（persistent_bear + BUY + mom<0）+ sell seed 只喺 persistent_bear——真實數據驗證 SNDK/SKHX/DRAM = persistent_bear
 - **攻擊輪硬化（v2.0.870-exit-price-lock-attack，18 攻 12 中全修）**：`MAX_LIVE_MFE_PCT=50` clamp（同 `convertToPriceExtremes` maxExcursionPct 對稱）；side 非 buy/sell → null；candle t>1e15 排除；h/l>entry×1e4 → 整批 null；`shouldTrailingLock` 溢出（liveMfe>50 / pnl>1e6 / lev>1000）→ false；openedAt>1e15 → null
 - **大小資金兼顧**：閾值 + per-symbol×side 實測滑點（avgSlippageBps）——大資金喺薄 book fill 差自動保守；MFE% 係 scale-invariant（百分比同資金無關）
 - **SL 永不觸碰**——gate 只 close（鎖利），唔會收緊止損
