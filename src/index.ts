@@ -83,7 +83,6 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldTrailingLock, shouldColdStartLock, shouldCancelPendingLock, shouldConfirmTrailingLock, type PendingTrailingLock } from './lib/live-mfe.ts';
 import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
-import { shouldBlockFromRecentLoss, isInCooldown } from './lib/recent-loss-gate.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
@@ -5280,9 +5279,6 @@ ${recentExamples}
   private persistenceUpdatedAt = 0;
   private persistenceUpdating = false; // 併發 guard——fetch 慢時下個 cycle 唔重複跑
 
-  /** v2.0.870-recent-loss-gate: per-symbol real 連蝕 cooldown（主神 2026-08-25
-   *  DRAM 5 單全蝕照開）——symbol → block sinceTs（24h）。 */
-  private recentLossCooldowns = new Map<string, number>();
 
   private async updatePersistenceScores(): Promise<void> {
     if (this.persistenceUpdating) return; // 併入防護（A2）
@@ -5330,24 +5326,6 @@ ${recentExamples}
     sizePct: number,
   ): { confidence: number; blocked: boolean; reason: string | null; size: number } {
     try {
-      // v2.0.870-recent-loss-gate（主神 2026-08-25 DRAM 5 單全蝕照開）: per-symbol
-      // real 最近 5 單全蝕且合計 ≤-3% → 24h 冷卻 block（唔准再開）。
-      if (process.env['RECENT_LOSS_GATE'] !== 'false') {
-        const rlSym = normalizeSymbol(sym);
-        const since = this.recentLossCooldowns.get(rlSym);
-        const now = Date.now();
-        if (since !== undefined && isInCooldown(since, now, 24 * 3600_000)) {
-          return { confidence: 0, blocked: true, reason: `recent-loss-cooldown: ${rlSym} 近 24h 連蝕——24h 冷卻中`, size: 0 };
-        }
-        if (since !== undefined && !isInCooldown(since, now, 24 * 3600_000)) this.recentLossCooldowns.delete(rlSym);
-        const rlTrades = (this.portfolio?.getClosedRealTrades?.() ?? [])
-          .filter((t) => normalizeSymbol(String(t?.symbol ?? '')) === rlSym)
-          .map((t) => ({ symbol: rlSym, pnlPct: Number(t?.pnlPct ?? 0) }));
-        if (shouldBlockFromRecentLoss(rlTrades)) {
-          this.recentLossCooldowns.set(rlSym, now);
-          return { confidence: 0, blocked: true, reason: `recent-loss-gate: ${rlSym} 近 ${Math.min(5, rlTrades.length)} 單全蝕（合計 ${rlTrades.slice(-5).reduce((a, t) => a + t.pnlPct, 0).toFixed(1)}%）→ 24h 冷卻`, size: 0 };
-        }
-      }
       // OLR 硬門（v2.0.870-olr-hard-gate, 主神 2026-08-25）: P(win) < 35% 且
       // live 樣本 ≥20 → 唔准開（buy/sell 雙向）。bnb case——thesis 自認
       // 「OLR P(win)=29% is against」照開（LLM 用 momentum 說服自己）——
@@ -5361,7 +5339,30 @@ ${recentExamples}
           return { confidence: 0, blocked: true, reason: `OLR P(win) ${(olrQ.pWin * 100).toFixed(0)}% <35% (n=${olrQ.effectiveSamples}) → HARD BLOCK`, size: 0 };
         }
       }
-      // F1: 動量方向偏置（順勢 boost / 逆勢逐級 / ≥8% hard block）
+      // v2.0.870-fourwindow-unified（主神 2026-08-25）: 四窗死貓彈防禦接入統一
+      // 執行路徑——原 P79 四窗只喺 active 主路徑行——per-symbol（DRAM/SNDK 等）
+      // 開倉冇四窗 → 回調震盪時「5m順+15m逆」死貓彈照買。呢度補返（同 active
+      // 一致——m4h/m1h/m15m/m5m 由 candleCache 計）。
+      if (process.env['MOMENTUM_ALIGN_GATE'] !== 'false') {
+        try {
+          const c1hU = candleCache.peekCandles(sym, '1h');
+          const c5mU = candleCache.peekCandles(sym, '5m');
+          if (c5mU && c5mU.length >= 4) {
+            const wmom = (arr: ReversalCandle[], i: number, j: number): number | null =>
+              arr[i] && arr[j] && arr[i]!.c > 0 && arr[j]!.c > 0 ? (arr[i]!.c - arr[j]!.c) / arr[j]!.c * 100 : null;
+            const w5m = wmom(c5mU, c5mU.length - 1, c5mU.length - 2);
+            const w15m = wmom(c5mU, c5mU.length - 1, c5mU.length - 4);
+            const w1h = c1hU && c1hU.length >= 2 ? wmom(c1hU, c1hU.length - 1, c1hU.length - 2) : null;
+            const w4h = c1hU && c1hU.length >= 5 ? wmom(c1hU, c1hU.length - 1, c1hU.length - 5) : null;
+            const fwU = checkFourWindowAlignment({ side: action, m4h: w4h, m1h: w1h, m15m: w15m, m5m: w5m });
+            if (fwU.action === 'block') {
+              return { confidence: 0, blocked: true, reason: `four-window: ${fwU.reason} — HARD BLOCK`, size: 0 };
+            }
+            if (fwU.multiplier !== 1.0) confidence *= fwU.multiplier;
+          }
+        } catch { /* 非致命——四窗失敗唔 block */ }
+      }
+      // F1: 動量方向偏置（順勢 boost / 逆勢逐段 / ≥8% hard block）
       if (process.env['MOMENTUM_DIRECTION_GATE'] !== 'false') {
         const mom = this.compute24hMomentumPct(sym);
         // v2.0.870-sell-architecture: persistence-aware 閾值——E1 實證 persistent_bear
