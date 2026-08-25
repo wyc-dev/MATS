@@ -81,6 +81,8 @@ import { getSRZones } from './analysis/support-resistance.ts';
 import { setExecutionLensProvider, prepareExecutionLens, clearExecutionLens, type ExecutionLensData, getATR } from './analysis/atr.ts';
 import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
+import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldTrailingLock, shouldColdStartLock, shouldCancelPendingLock, shouldConfirmTrailingLock, type PendingTrailingLock } from './lib/live-mfe.ts';
+import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
@@ -613,6 +615,9 @@ class MATSSystem {
    *  LLM 趨勢持續性判斷 hold）——寫入 execution metadata 令客戶端可追溯。
    *  v2.0.870-FIX-C1: 用 CloseBlock（帶 blockedBy:'sentinel' / gate）——前端準確顯示 TREND HOLD。 */
   private _sentinelHolds = new Map<string, import('./services/execution-metadata.ts').CloseBlock>();
+  /** v2.0.870-exit-price-lock-confirm: pending trailing lock——回吐 ≥50% 後
+   *  確認窗口（12 cycle=60min）內冇創新高先鎖（大 winner 創新高 → 取消）。 */
+  private _pendingTrailingLocks = new Map<string, PendingTrailingLock>();
   /** v2.0.870-FIX(主神): sentinel 重入 guard——同一 symbol 同時只有一個 LLM call。 */
   private sentinelInFlight = new Set<string>();
   /** v2.0.870: Gate Outcome Tracker——量度每個 gate 嘅攔截準確率（hit rate），
@@ -3796,12 +3801,25 @@ ${currentPrompt || '(empty — this is the first input)'}`;
   private async runExitPriceLockGate(): Promise<void> {
     if (!exitPriceLockConfig.enabled || !this.exitPriceLearner) return;
     try {
+      // pending trailing lock 清理：position 已不存在（任何原因 close）→ 清除殘留
+      for (const k of this._pendingTrailingLocks.keys()) {
+        if (!this.portfolio.getPosition(k)) this._pendingTrailingLocks.delete(k);
+      }
       for (const sym of this.portfolio.getOpenSymbols()) {
         const pos = this.portfolio.getPosition(sym);
         if (!pos) continue; // getOpenSymbols() only returns open positions
         const side = isSellSide(pos.side) ? 'sell' : 'buy';
         const profile = this.exitPriceLearner.getExitProfile(normalizeSymbol(sym), side);
-        if (!profile) continue; // cold-start: no profile → existing behaviour
+        // L1 (v2.0.870-exit-price-lock): PAEL profile 冷啟動 → 唔 skip——用 universal
+        // 0.5%(price MFE) fallback threshold——樣本疏 symbol 都有鎖利機會。
+        if (!profile) {
+          const liveMfeP = this.computeLiveMfePricePct(sym, isSellSide(pos.side) ? 'sell' : 'buy', pos.averageEntryPrice, pos.openedAt ?? 0);
+          if (shouldColdStartLock(liveMfeP, pos.unrealizedPnl)) {
+            await this.closeTrade(sym, `[PAEL-FALLBACK LOCK] ${sym}: cold-start profile, live MFE ${liveMfeP!.toFixed(2)}% ≥0.5% → 鎖利`, 'profit_lock');
+            log.info(`🔒 [pael-fallback] CLOSED ${sym} @ live MFE ${liveMfeP!.toFixed(2)}% (no profile)`);
+          }
+          continue;
+        }
 
         const converted = convertToPriceExtremes({
           entryPrice: pos.averageEntryPrice,
@@ -3811,6 +3829,12 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           maxValueReached: pos.maxValueReached ?? 0,
         });
         if (!converted || converted.mfePricePct <= 0) continue;
+
+        // L2 (v2.0.870-exit-price-lock): live MFE 用 candle high 補正——非 active symbol
+        // 盤中 peak 由 trackMAEMFE(每 cycle currentPrice 抽查)錯過 → PAEL 鎖利同 reversal
+        // 睇唔到真 MFE → 回吐先補(太遲)。而家用 1h candle high 計即時 price MFE。
+        const liveMfe = this.computeLiveMfePricePct(sym, pos.side, pos.averageEntryPrice, pos.openedAt ?? 0);
+        const mfePricePct = Math.max(converted.mfePricePct, liveMfe ?? 0);
 
         const regime = this.marketState.getState(normalizeSymbol(sym))?.regime ?? 'unknown';
         const isTrending = regime.includes('trending');
@@ -3844,7 +3868,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             }
           } catch { /* non-fatal */ }
         }
-        if (converted.mfePricePct < threshold) continue;
+        if (mfePricePct < threshold) continue;
 
         const pnlNow = pos.unrealizedPnl ?? 0;
         if (!Number.isFinite(pnlNow) || pnlNow <= 0) continue;
@@ -3852,7 +3876,41 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const holdMin = (Date.now() - (pos.openedAt ?? 0)) / 60000;
         if (holdMin < exitPriceLockConfig.minHoldMinutes) continue;
 
-        const exitThesis = `[EXIT-PRICE LOCK] ${sym} ${pos.side.toUpperCase()}: MFE ${(converted.mfePricePct * 100).toFixed(2)}% ≥ ${isTrending ? 'p90' : 'p75×0.8'} (${(threshold * 100).toFixed(2)}%) in ${regime} (${profile.samples} samples). Locking profit — SL untouched.`;
+        // L3 (v2.0.870-exit-price-lock-confirm): TRAILING profit lock（確認式）——
+        // 回吐 ≥50% → pending（唔即鎖）; pending 期間創新高 → 取消（趨勢有效——
+        // 大 winner 唔誤鎖——counterfactual 40 單: 誤鎖大贏 6→1 單、總 PnL 悲觀
+        // 1.96→86.0% / 樂觀 118.7%）; 確認窗口（12 cycle≈60min）冇新高 → 鎖利。
+        try {
+          if (liveMfe !== null && liveMfe >= 0.5 && pnlNow > 0) {
+            const margin = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
+            const pnlPctNow = margin > 0 ? (pnlNow / margin) : 0;
+            const symNorm = normalizeSymbol(sym);
+            // 由 liveMfe(price%) 反推 peak price（創新高比較基準）
+            const peakPrice = isSellSide(pos.side)
+              ? pos.averageEntryPrice * (1 - liveMfe / 100)
+              : pos.averageEntryPrice * (1 + liveMfe / 100);
+            const existing = this._pendingTrailingLocks.get(symNorm);
+            if (existing) {
+              if (shouldCancelPendingLock(existing.peakPrice, peakPrice)) {
+                this._pendingTrailingLocks.delete(symNorm);
+                log.info(`🔓 [trailing-pending] ${sym} 創新高 → 取消 pending（趨勢繼續，唔誤鎖 winner）`);
+              } else if (shouldConfirmTrailingLock(existing, this.totalCycles, 12)) {
+                this._pendingTrailingLocks.delete(symNorm);
+                const okT = await this.closeTrade(sym, `[TRAILING LOCK] ${sym} ${pos.side.toUpperCase()}: MFE(price) ${liveMfe.toFixed(2)}% 回吐 ≥50% 確認(60min 冇新高) → 鎖利`, 'profit_lock');
+                if (okT) {
+                  log.info(`🔒 [trailing-lock] CLOSED ${sym} ${pos.side.toUpperCase()} @ 確認鎖利 — profit locked`);
+                  continue;
+                }
+              }
+              // 未屆滿 → 繼續等（唔鎖）
+            } else if (shouldTrailingLock(liveMfe, pnlPctNow * 100, pos.leverage ?? 1) && pnlPctNow > 0 && pnlPctNow <= 0.5 * (liveMfe * Math.max(1, pos.leverage ?? 1))) {
+              this._pendingTrailingLocks.set(symNorm, { peakPrice, sinceCycle: this.totalCycles });
+              log.info(`🔒 [trailing-pending] ${sym} MFE(price) ${liveMfe.toFixed(2)}% 回吐 ≥50% → pending 確認（60min 冇新高先鎖）`);
+            }
+          }
+        } catch { /* non-fatal */ }
+
+        const exitThesis = `[EXIT-PRICE LOCK] ${sym} ${pos.side.toUpperCase()}: MFE ${(mfePricePct * 100).toFixed(2)}% ≥ ${isTrending ? 'p90' : 'p75×0.8'} (${(threshold * 100).toFixed(2)}%) in ${regime} (${profile.samples} samples). Locking profit — SL untouched.`;
         const ok = await this.closeTrade(sym, exitThesis, 'exit_price_lock');
         if (ok) {
           this.exitPriceLockCount++;
@@ -5220,6 +5278,19 @@ ${recentExamples}
     sizePct: number,
   ): { confidence: number; blocked: boolean; reason: string | null; size: number } {
     try {
+      // OLR 硬門（v2.0.870-olr-hard-gate, 主神 2026-08-25）: P(win) < 35% 且
+      // live 樣本 ≥20 → 唔准開（buy/sell 雙向）。bnb case——thesis 自認
+      // 「OLR P(win)=29% is against」照開（LLM 用 momentum 說服自己）——
+      // soft gate（×0.75）擋唔住——需要硬防護。冷啟動（n<20）交 LLM。
+      if (process.env['OLR_HARD_GATE'] !== 'false') {
+        const symNorm = normalizeSymbol(sym);
+        const ctx = this.lastCycleShadowContexts.get(symNorm);
+        const feats = ctx?.features ?? {};
+        const olrQ = this.olrEngine.query(symNorm, feats, action, this.totalCycles);
+        if (olrQ && shouldOlrHardBlock({ pWin: olrQ.pWin, samples: olrQ.effectiveSamples })) {
+          return { confidence: 0, blocked: true, reason: `OLR P(win) ${(olrQ.pWin * 100).toFixed(0)}% <35% (n=${olrQ.effectiveSamples}) → HARD BLOCK`, size: 0 };
+        }
+      }
       // F1: 動量方向偏置（順勢 boost / 逆勢逐級 / ≥8% hard block）
       if (process.env['MOMENTUM_DIRECTION_GATE'] !== 'false') {
         const mom = this.compute24hMomentumPct(sym);
@@ -5256,9 +5327,13 @@ ${recentExamples}
       const losses = action === 'buy' ? sgStats.longLosses : sgStats.shortLosses;
       const sumPnl = action === 'buy' ? sgStats.longSumPnlPct : sgStats.shortSumPnlPct;
       const total = wins + losses;
+      const rawWr = total > 0 ? wins / total : 0;
       const wlb = wilsonScore(wins, total);
-      if (total >= 20 && wlb < 0.30 && (sumPnl ?? 0) <= 0) {
-        return { confidence: 0, blocked: true, reason: `shadow-gate: decayed WR ${(wlb * 100).toFixed(0)}% <30% + EV ${(sumPnl * 100).toFixed(2)}% ≤0`, size: 0 };
+      // v2.0.870-sell-seed-accel-fix: WR-only(30%) gate miss「WR 中但 EV 負」——
+      // GOLD buy WR 52% EV -7.78% 照開（少數大贏掩蓋多數小輸）。counterfactual
+      // （近 7d 真實）: WR<55%+EV≤0 block 避開 -205.9% EV、pass 組合全正（誤殺 0）。
+      if (total >= 20 && rawWr < 0.55 && (sumPnl ?? 0) <= 0) {
+        return { confidence: 0, blocked: true, reason: `shadow-gate: decayed WR ${(rawWr * 100).toFixed(0)}% <55% + EV ${(sumPnl * 100).toFixed(2)}% ≤0`, size: 0 };
       }
       if (total >= 20 && wlb > 0.65 && (sumPnl ?? 0) > 0) {
         return { confidence, blocked: false, reason: `shadow-boost: WR ${(wlb * 100).toFixed(0)}% + EV +${(sumPnl * 100).toFixed(2)}%`, size: shadowBoostSize(sizePct) };
@@ -5278,6 +5353,18 @@ ${recentExamples}
     } catch { return null; }
   }
 
+  /** v2.0.870-exit-price-lock L2: live price MFE——持倉窗口內 1h candles 極值
+   *  （BUY=max high / SELL=min low，純函數 lib/live-mfe.ts）——非 active symbol
+   *  盤中 peak 由 trackMAEMFE 錯過（每 cycle currentPrice 抽查）→ PAEL lock /
+   *  reversal 睇唔到真 MFE。candle 極值係該 interval 真實範圍。 */
+  private computeLiveMfePricePct(sym: string, side: 'buy' | 'sell', entryPrice: number, openedAt: number): number | null {
+    try {
+      const c1h = candleCache.peekCandles(sym, '1h');
+      if (!c1h || c1h.length === 0) return null;
+      return computeLiveMfePricePctFn(side, entryPrice, openedAt, c1h);
+    } catch { return null; }
+  }
+
   /** v2.0.870-sell-decay Fix E + v2.0.870-momentum-direction F3: 24h 動量（1h candle ≥25 支）
    *  + 4h fallback（≥5 支 1h）——消除 xyz REST 下 1h candle 唔足導致嘅數據盲區
    *  （SNDK thesis 有「4h -1.13%」但 24h 唔足）。返回 null = 數據不足（唔誤傷）。 */
@@ -5288,16 +5375,22 @@ ${recentExamples}
       const last = c1h[c1h.length - 1];
       if (!last || !(last.c > 0)) return null;
       // G3 (v2.0.870-momentum-direction-attack): ROBUST median 動量——單支 outlier
-      // spike 唔可以扭爆方向判決。24h 窗口 median per-candle return × 24;
-      // 唔足 25 支 fallback 4h（median over 5 支）。
+      // spike 唔可以扭爆方向判決。
+      // v2.0.870-sell-seed-accel-fix: 24h 同 4h 兩者都計到時取「較低」——防
+      // 「24h 正但 4h 已轉跌」嘅假順勢（GOLD case: 24h 正 + 4h 跌 → 照開 BUY
+      // 之後 -8.4%）。短線轉向比長線趨勢更新鮮——保守取 4h。
+      let mom24: number | null = null;
+      let mom4: number | null = null;
       if (c1h.length >= 25) {
-        const mom = robustMomentumPct(c1h.slice(-25));
-        if (mom !== null && Math.abs(mom) > 1e-9) return mom;
+        mom24 = robustMomentumPct(c1h.slice(-25));
       }
       if (c1h.length >= 5) {
-        const mom4 = robustMomentumPct(c1h.slice(-5));
-        if (mom4 !== null && Math.abs(mom4) > 1e-9) return mom4;
+        mom4 = robustMomentumPct(c1h.slice(-5));
       }
+      if (mom4 !== null && Math.abs(mom4) > 1e-9) {
+        if (mom24 === null || mom4 < mom24) return mom4; // 取較保守（更負/更唔正）
+      }
+      if (mom24 !== null && Math.abs(mom24) > 1e-9) return mom24;
       return null;
     } catch { return null; }
   }
@@ -10046,9 +10139,15 @@ ${recentExamples}
                 const mom24h = this.compute24hMomentumPct(sym);
                 const mom4h = this.compute4hMomentumPct(sym);
                 const seedRegime = ms?.regime ?? 'unknown';
-                const bearish = (mom24h !== null && mom24h < 0)
-                  || (mom4h !== null && mom4h < 0)
-                  || seedRegime === 'trending_bear';
+                // P2 (v2.0.870-olr-hard-gate, 主神 2026-08-25): sell seed 質素收緊——
+                // ① mean_reverting 環境唔 seed（sell 喺 MR 反彈輸——實證 sell shadow
+                //    WR 0.7% 全輸——MR 低吸先啱, 強制 sell = 送數據毒化 OLR sell 統計）
+                // ② 雙確認: 24h 負 **且** (4h 負 或 trending_bear)——單一 4h 微跌係
+                //    短暫回調（之後反彈）——正正係垃圾 sell 源頭。
+                const mrEnv = typeof seedRegime === 'string' && seedRegime.includes('mean_reverting');
+                const bearish = !mrEnv
+                  && (mom24h !== null && mom24h < 0)
+                  && ((mom4h !== null && mom4h < 0) || seedRegime === 'trending_bear');
                 if (bearish && rlAction !== 'sell') {
                   const sellSl = entryPrice * (1 + slPct);
                   const sellTp = entryPrice * (1 - tpPct);
@@ -11489,36 +11588,12 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} — 虧損倉,止血優先(0 LLM)`);
               skipSkeptics = true;
             } else {
-              // 4. Pre-filter（0 LLM）——trend-hold 升級: 雙窗同向先決定, 中性先 call LLM
-              const pf = this.prefilterTrendGate(psc.symbol, pos.side);
-              if (pf.verdict === 'hold') {
-                log.warn(`🛑 [prefilter] ${psc.symbol} trend 支持持倉方向 → HOLD（${pf.reason}）`);
-                this._sentinelHolds.set(normalizeSymbol(psc.symbol), { reason: `prefilter: ${pf.reason}`, blockedBy: 'sentinel', gate: 'close-trend-sentinel' });
-                if (this.closeCalibrator) this.closeCalibrator.registerPendingClose(psc.symbol, this.totalCycles, 0.6);
-                continue; // pre-filter hold——唔執行(下 cycle 再確認;3 cycle 超時兜底)
-              }
-              if (pf.verdict === 'close') {
-                // trend 明確逆轉——deterministic 決定 close（0 LLM）
-                log.warn(`📕 [prefilter] ${psc.symbol} trend 明確逆轉 → CLOSE（0 LLM — ${pf.reason}）`);
-                skipSkeptics = true;
-              } else {
-                // 5. Sentinel LLM 最後裁決（唯一 LLM call）——主神規定格式:
-                // 話俾 LLM 知 position 係 BUY/SELL, 問「嚟緊順向機會是否大」:
-                // 暫時回撤 → HOLD; 短期已轉趨勢 → CLOSE; 判斷唔到 → UNCERTAIN(照 consensus)
-                const sentinel = await this.judgeCloseTrendSentinel(psc.symbol, pos);
-                if (sentinel.hold) {
-                  log.warn(`🛰️ [sentinel] ${psc.symbol} consensus close 被 hold — ${sentinel.reason}`);
-                  this._sentinelHolds.set(normalizeSymbol(psc.symbol), { reason: sentinel.reason, blockedBy: 'sentinel', gate: 'close-trend-sentinel' });
-                  continue; // close 被 sentinel hold——唔執行(下 cycle 再確認)
-                }
-                // FIX-E2(主神批准): sentinel CLOSE 高信心(≥0.7)= 市場已確認轉勢——
-                // skip Skeptics(慳一次 LLM + 快離場)。低信心 CLOSE / UNCERTAIN 保留 Skeptics。
-                if (sentinel.verdict === 'close' && sentinel.confidence >= 0.7) {
-                  log.info(`⚡ [sentinel] ${psc.symbol} CLOSE 高信心(conf=${(sentinel.confidence * 100).toFixed(0)}%) — skip Skeptics(快離場)`);
-                  skipSkeptics = true;
-                }
-                // sentinel CLOSE 低信心 / UNCERTAIN → 落去 Skeptics 驗證（保留絕對否決權）
-              }
+              // v2.0.870-exit-price-lock(主神 2026-08-25): 共識止盈唔可以俾任何嘢蓋過——
+              // consensus CLOSE + 盈利 → 直接執行,唔行 pre-filter / sentinel / Skeptics /
+              // calibrator hold。40 單實證(MFE 0.5-2% 全部回吐成蝕): hold 止盈 = 送錢俾
+              // 回吐。鎖利職責交俾 PAEL/Live-MFE(L1-L3,自發層)——呢度係被動保護層。
+              log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} — 盈利倉,共識止盈直接執行(唔 hold)`);
+              skipSkeptics = true;
             }
           }
 
@@ -14582,6 +14657,15 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     try {
       if (!this.closeCalibrator || !closeCalibConfig.enabled) return false;
       const symNorm = normalizeSymbol(symbol);
+      // v2.0.870-exit-price-lock(主神 2026-08-25): 共識止盈唔可以俾任何嘢蓋過——
+      // consensus CLOSE + 盈利(profit) → 直接執行,唔行 calibrator 過早率 hold /
+      // trend-hold / pending-close。40 單實證:hold 咗之後價格回吐 → 止盈變止蝕。
+      // (鎖利職責已交還 PAEL / L1-L3 live-MFE——嗰啲先係自發鎖利層)
+      if (wasProfitable) {
+        if (this.closeCalibrator.isPendingClose(symNorm)) this.closeCalibrator.removePendingClose(symNorm);
+        log.info(`🔓 [close-calib] ${symNorm} 共識止盈 — 直接執行(唔 hold)`);
+        return false;
+      }
       // pending-close 確認:上 cycle hold 咗 + 今 cycle 又 close 決定 → 執行(唔再 hold)
       if (this.closeCalibrator.isPendingClose(symNorm)) {
         log.info(`🔓 [close-calib] ${symNorm} pending-close 確認(再次 close 決定)→ 執行`);

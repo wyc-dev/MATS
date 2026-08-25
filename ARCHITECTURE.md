@@ -1938,6 +1938,16 @@ Adversarial audit（v2.0.855 系列）對照真實持久化狀態（`shadow-stat
 **Phase C — Exit-Price Lock Gate**（`src/index.ts`，TP-side one-vote exit）：
 - **主神指令**：TP 側一票通過離場（鎖利），SL 保留噪音震動空間
 - `runExitPriceLockGate()`（deterministic，每 cycle 喺 thesis-invalidation 前）：MFE price% ≥ 閾值（非 trending p75×0.8；trending p90 保守）AND 當前 profit > 0 AND 持倉 ≥ 15min → `closeTrade('exit_price_lock')`
+
+**Phase D — Live MFE 補正 + Trailing 鎖利 + 共識止盈保衛（v2.0.870-exit-price-lock，主神調查 2026-08-25 40 單 9 成蝕）**:
+- **根因**：① live MFE 低估——`trackMAEMFE` 靠每 cycle currentPrice 抽查（非 active symbol 盤中 peak 錯過）+ `healMaeMfeOnce` 只補 `status==='closed'` → PAEL lock 睇唔到真 MFE → 全數回吐先補（太遲）；② 共識止盈被 4 層蓋過（pre-filter HOLD → sentinel HOLD → Skeptics block → calibrator/trend-hold hold → 下 cycle 唔再 close → 回吐成蝕）
+- **L1 cold-start fallback**：無 PAEL profile → 唔 skip——live MFE ≥0.5%(price) + 盈利 → `profit_lock` close
+- **L2 live MFE candle 補正**：`src/lib/live-mfe.ts` 純函數 `computeLiveMfePricePct`——持倉窗口內 1h candles 極值（BUY=max high / SELL=min low，**side-aware**）；`Math.max(converted.mfePricePct, liveMfe)` 入 PAEL threshold 判斷
+- **L3 trailing profit lock（確認式 v2）**：`shouldTrailingLock`（觸發條件 MFE ≥0.5% + 回吐 ≥50%）→ **pending 確認**（`shouldCancelPendingLock`/`shouldConfirmTrailingLock`——創新高 → 取消；12 cycle≈60min 冇新高 → `closeTrade('profit_lock')`）——大 winner 進二退一唔誤鎖（counterfactual: 誤鎖 6→1 單、悲觀 1.96→86.0% / 樂觀 118.7%）
+- **L4 共識止盈唔俾任何嘢蓋過（主神裁決）**：per-symbol consensus CLOSE + 盈利 → 直接執行（skip pre-filter / sentinel / Skeptics）；`holdCloseIfCalibrated` 開頭 `wasProfitable → 清除 pending + return false`（calibrator / trend-hold 對止盈失效）
+- `profit_lock` closeReason：白名單 + learning weight 0.5（同 exit_price_lock 同級系統決策）
+- **Counterfactual（40 單 1h candle 重放，保守下限）**：實際 +41.55% → 修復後 +65.63%（Δ+24.08%）；鎖利 16/40；正數單 12→23；tp_hit 大贏單（+20%）全部唔誤鎖
+- **攻擊輪硬化（v2.0.870-exit-price-lock-attack，18 攻 12 中全修）**：`MAX_LIVE_MFE_PCT=50` clamp（同 `convertToPriceExtremes` maxExcursionPct 對稱）；side 非 buy/sell → null；candle t>1e15 排除；h/l>entry×1e4 → 整批 null；`shouldTrailingLock` 溢出（liveMfe>50 / pnl>1e6 / lev>1000）→ false；openedAt>1e15 → null
 - **大小資金兼顧**：閾值 + per-symbol×side 實測滑點（avgSlippageBps）——大資金喺薄 book fill 差自動保守；MFE% 係 scale-invariant（百分比同資金無關）
 - **SL 永不觸碰**——gate 只 close（鎖利），唔會收緊止損
 - closeReason `exit_price_lock`：白名單 + learning weight 0.5（系統決策）
