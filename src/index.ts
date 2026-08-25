@@ -5207,27 +5207,75 @@ ${recentExamples}
 
   /** v2.0.870-sell-decay Fix E: 24h 動量（candleCache 1h 蠟燭, 由現時閉市價 vs ~24 支前）。
    *  用作 sell shadow 播種條件——數據不足時回 null（唔會誤觸發）。 */
-  /** v2.0.870-momentum-direction: 統一執行路徑——任何 symbol（active 或 trading market）
-   *  開倉都行同一個 F1 動量方向偏置 gate（per-symbol 各自 24h/4h 動量,股票同黃金
-   *  自然獨立判斷）。冇「multi-symbol path」概念——每個 symbol 第一公民。
-   *  返回 { confidence, blocked, reason }——blocked=true = 極端反勢 hard block。 */
-  private applyDirectionalBiasGate(
+  /** v2.0.870-momentum-direction + v2.0.870-sell-seed-accel: 統一執行路徑——任何 symbol
+   *  （active 或 trading market）開倉都行同一套完整 conviction gates（F1 動量方向偏置
+   *  + shadow-gate WR+EV）。每個 symbol 第一公民——冇「active 先有防禦」嘅雙重標準
+   *  （主神 2026-08-25: SNDK/DRAM 非 active 連續五筆跌勢開 BUY 就係 shadow-gate 只
+   *  喺 active path 造成）。
+   *  返回 { confidence, blocked, reason, size }——blocked=true = 極端反勢 / shadow 確認輸。 */
+  private applyEntryConvictionGates(
     sym: string,
     action: 'buy' | 'sell',
     confidence: number,
-  ): { confidence: number; blocked: boolean; reason: string | null } {
+    sizePct: number,
+  ): { confidence: number; blocked: boolean; reason: string | null; size: number } {
     try {
-      if (process.env['MOMENTUM_DIRECTION_GATE'] === 'false') return { confidence, blocked: false, reason: null };
-      const mom = this.compute24hMomentumPct(sym);
-      const mult = momentumDirectionalBias(action, mom);
-      if (mult === 0) {
-        return { confidence: 0, blocked: true, reason: `mom=${mom?.toFixed(2) ?? 'n/a'}% 極端反勢 ≥8% → HARD BLOCK` };
+      // F1: 動量方向偏置（順勢 boost / 逆勢逐級 / ≥8% hard block）
+      if (process.env['MOMENTUM_DIRECTION_GATE'] !== 'false') {
+        const mom = this.compute24hMomentumPct(sym);
+        const mult = momentumDirectionalBias(action, mom);
+        if (mult === 0) {
+          return { confidence: 0, blocked: true, reason: `mom=${mom?.toFixed(2) ?? 'n/a'}% 極端反勢 ≥8% → HARD BLOCK`, size: 0 };
+        }
+        if (mult !== 1.0) {
+          confidence *= mult;
+          const r = `mom=${mom?.toFixed(2) ?? 'n/a'}% → ×${mult}`;
+          // 繼續落 shadow-gate（唔 return——兩層都行）
+          const sg = this.applyShadowGate(sym, action, confidence, sizePct);
+          return { confidence: sg.confidence, blocked: sg.blocked, reason: sg.reason ?? r, size: sg.size };
+        }
       }
-      if (mult !== 1.0) {
-        return { confidence: confidence * mult, blocked: false, reason: `mom=${mom?.toFixed(2) ?? 'n/a'}% → ×${mult}` };
+      // shadow-gate WR+EV（統一——所有 symbol 都行,唔再淨係 active）
+      return this.applyShadowGate(sym, action, confidence, sizePct);
+    } catch { return { confidence, blocked: false, reason: null, size: sizePct }; }
+  }
+
+  /** shadow-gate: decayed WR Wilson LB <30% + EV ≤0 → block;WR >65% + EV >0 → size boost。
+   *  統一供 active 同所有 trading market 使用（v2.0.870-sell-seed-accel）。 */
+  private applyShadowGate(
+    sym: string,
+    action: 'buy' | 'sell',
+    confidence: number,
+    sizePct: number,
+  ): { confidence: number; blocked: boolean; reason: string | null; size: number } {
+    try {
+      if (confidence <= 0) return { confidence: 0, blocked: false, reason: null, size: 0 };
+      const sgStats = this.shadowEngine.getStats().find(s => s.symbol === sym);
+      if (!sgStats) return { confidence, blocked: false, reason: null, size: sizePct };
+      const wins = action === 'buy' ? sgStats.longWins : sgStats.shortWins;
+      const losses = action === 'buy' ? sgStats.longLosses : sgStats.shortLosses;
+      const sumPnl = action === 'buy' ? sgStats.longSumPnlPct : sgStats.shortSumPnlPct;
+      const total = wins + losses;
+      const wlb = wilsonScore(wins, total);
+      if (total >= 20 && wlb < 0.30 && (sumPnl ?? 0) <= 0) {
+        return { confidence: 0, blocked: true, reason: `shadow-gate: decayed WR ${(wlb * 100).toFixed(0)}% <30% + EV ${(sumPnl * 100).toFixed(2)}% ≤0`, size: 0 };
       }
-      return { confidence, blocked: false, reason: null };
-    } catch { return { confidence, blocked: false, reason: null }; }
+      if (total >= 20 && wlb > 0.65 && (sumPnl ?? 0) > 0) {
+        return { confidence, blocked: false, reason: `shadow-boost: WR ${(wlb * 100).toFixed(0)}% + EV +${(sumPnl * 100).toFixed(2)}%`, size: Math.min(0.20, sizePct * 1.2) };
+      }
+      return { confidence, blocked: false, reason: null, size: sizePct };
+    } catch { return { confidence, blocked: false, reason: null, size: sizePct }; }
+  }
+
+
+  /** v2.0.870-sell-seed-accel S2: 4h 動量（5 支 1h candle, robust median）——
+   *  短線跌勢判據（SNDK「4h -1.13%」類）。candle 唔足 → null。 */
+  private compute4hMomentumPct(sym: string): number | null {
+    try {
+      const c1h = candleCache.peekCandles(sym, '1h');
+      if (!c1h || c1h.length < 5) return null;
+      return robustMomentumPct(c1h.slice(-5));
+    } catch { return null; }
   }
 
   /** v2.0.870-sell-decay Fix E + v2.0.870-momentum-direction F3: 24h 動量（1h candle ≥25 支）
@@ -5358,6 +5406,18 @@ ${recentExamples}
           warnings.push(`⚠️ ${side.toUpperCase()} ${sym}: 最近 7 日 ${rs.n} 筆 real 只有 ${(rs.wins / rs.n * 100).toFixed(0)}% 勝率, 平均 ${avgPnl} USD — 近期實際表現差, 需要額外證據先好開。`);
         }
       }
+      // v2.0.870-sell-seed-accel S3: 跌勢 SELL-SEED 提示——LLM 喺跌勢見到「順勢
+      // sell 樣本播種中」嘅顯性數據（而家只有「BUY 打折」冇「SELL 有樣本」）。
+      try {
+        const mom24hS = this.compute24hMomentumPct(sym);
+        const mom4hS = this.compute4hMomentumPct(sym);
+        const bearMom = (mom24hS !== null && mom24hS < -1.5)
+          || (mom4hS !== null && mom4hS < -1.5);
+        if (bearMom) {
+          warnings.push(`⚡ [SELL-SEED] ${sym}: 動量負（24h=${mom24hS !== null ? mom24hS.toFixed(2) + '%' : 'n/a'} / 4h=${mom4hS !== null ? mom4hS.toFixed(2) + '%' : 'n/a'}）——順勢 SELL shadow 播種中,LLM 可考慮順勢 short（而唔係逆勢 long）。`);
+        }
+      } catch { /* non-fatal */ }
+
       if (warnings.length === 0) return '';
       return `=== DIRECTION HEALTH for ${sym} ===\n${warnings.join('\n')}`;
     } catch { return ''; }
@@ -9974,24 +10034,29 @@ ${recentExamples}
               log.info(`[shadow] A/B: statistical lean ${statLean.side.toUpperCase()} ${sym} (score=${statLean.score.toFixed(3)}) vs LLM ${rlAction.toUpperCase()} — both tracked for edge attribution`);
             }
 
-            // ── v2.0.870-sell-decay Fix E: SELL shadow 播種 ──────────────
+            // ── v2.0.870-sell-decay Fix E + v2.0.870-sell-seed-accel S2: SELL shadow 播種──
             // 死亡螺旋根源: sell shadow 只喺 LLM lean sell 先開 → 牛市 0 sell 樣本
             // → OLR sell P(win) 餓死 → LLM 唔 lean sell（loop）。當近期動量負 /
-            // regime 係 trending_bear 時強制開 1 個 sell shadow——sell 樣本重新
-            // 累積喺「正常向下行情」而唔係淨係 crash 接飛刀。
-            // 限頻: engine 內每 symbol 每 24 cycle 1 個; env SELL_SHADOW_SEEDING=false 回退。
+            // regime 係 trending_bear 時強制開 1 個 sell shadow。
+            // S2: 加 4h 動量條件（candle 5 支就夠）——短線跌勢都播種,唔等 24h 確認。
+            // S1: 跌勢 cooldown 6 cycle（24 分鐘）——樣本回流快 4 倍。
+            // env SELL_SHADOW_SEEDING=false 回退。
             if (process.env['SELL_SHADOW_SEEDING'] !== 'false') {
               try {
                 const mom24h = this.compute24hMomentumPct(sym);
+                const mom4h = this.compute4hMomentumPct(sym);
                 const seedRegime = ms?.regime ?? 'unknown';
-                const bearish = (mom24h !== null && mom24h < 0) || seedRegime === 'trending_bear';
+                const bearish = (mom24h !== null && mom24h < 0)
+                  || (mom4h !== null && mom4h < 0)
+                  || seedRegime === 'trending_bear';
                 if (bearish && rlAction !== 'sell') {
                   const sellSl = entryPrice * (1 + slPct);
                   const sellTp = entryPrice * (1 - tpPct);
                   this.shadowEngine.openSeededShadow(
                     sym, entryPrice, 'sell', sellSl, sellTp,
                     this.totalCycles, features,
-                    `mom24h=${mom24h !== null ? mom24h.toFixed(2) + '%' : 'n/a'}, regime=${seedRegime}`,
+                    `mom24h=${mom24h !== null ? mom24h.toFixed(2) + '%' : 'n/a'}, mom4h=${mom4h !== null ? mom4h.toFixed(2) + '%' : 'n/a'}, regime=${seedRegime}`,
+                    6, // S1: 跌勢 cooldown 6 cycle（樣本回流快 4 倍）
                   );
                 }
               } catch { /* non-fatal */ }
@@ -11058,17 +11123,22 @@ ${recentExamples}
             try {
               if (psc.action === 'buy' || psc.action === 'sell') {
                 const f2Sym = normalizeSymbol(psc.symbol);
-                const f2 = this.applyDirectionalBiasGate(f2Sym, psc.action as 'buy' | 'sell', psc.confidence);
+                const f2 = this.applyEntryConvictionGates(f2Sym, psc.action as 'buy' | 'sell', psc.confidence, psc.positionSizePct ?? 0);
                 if (f2.blocked) {
-                  log.warn(`🛑 [momentum-direction] ${psc.action.toUpperCase()} ${f2Sym}: ${f2.reason}`);
-                  auditGates.push({ gate: 'momentum-direction', passed: false, reason: f2.reason ?? 'HARD BLOCK' });
+                  log.warn(`🛑 [entry-gate] ${psc.action.toUpperCase()} ${f2Sym}: ${f2.reason}`);
+                  auditGates.push({ gate: 'entry-gates', passed: false, reason: f2.reason ?? 'HARD BLOCK' });
                   this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
                   continue;
                 }
                 if (f2.reason) {
                   psc.confidence = f2.confidence;
-                  log.info(`[momentum-direction] ${psc.action.toUpperCase()} ${f2Sym}: ${f2.reason}`);
-                  auditGates.push({ gate: 'momentum-direction', passed: true, reason: f2.reason });
+                  if (f2.size !== (psc.positionSizePct ?? 0)) {
+                    psc.positionSizePct = f2.size;
+                    log.info(`[entry-gate] ${psc.action.toUpperCase()} ${f2Sym}: ${f2.reason} (size ${((psc.positionSizePct ?? 0) * 100).toFixed(0)}%)`);
+                  } else {
+                    log.info(`[entry-gate] ${psc.action.toUpperCase()} ${f2Sym}: ${f2.reason}`);
+                  }
+                  auditGates.push({ gate: 'entry-gates', passed: true, reason: f2.reason });
                 }
               }
             } catch { /* non-fatal——F1 gate 失敗唔 crash */ }
@@ -12518,21 +12588,26 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           }
         } catch { /* non-fatal */ }
 
-        // ── v2.0.870-momentum-direction: 統一執行路徑——active symbol 同 trading
-        // market 都行同一個 F1 動量方向偏置 gate（共用 helper applyDirectionalBiasGate）。
-        // 主神 2026-08-25:「嗰啲時刻其實應該要 Sell」——順勢 boost + 極端反勢 hard block。
+        // ── v2.0.870-momentum-direction + v2.0.870-sell-seed-accel: 統一執行路徑──
+        // active symbol 同所有 trading market 都行同一套完整 conviction gates
+        // （F1 動量方向偏置 + shadow-gate WR+EV）——冇「active 先有防禦」雙重標準。
         try {
           if (gateAction === 'buy' || gateAction === 'sell') {
             const f1Sym = normalizeSymbol(finalDecision.symbol || activeSymbol);
-            const f1 = this.applyDirectionalBiasGate(f1Sym, gateAction as 'buy' | 'sell', effectiveConfidence);
+            const f1 = this.applyEntryConvictionGates(f1Sym, gateAction as 'buy' | 'sell', effectiveConfidence, finalDecision.positionSizePct ?? 0);
             if (f1.blocked) {
               effectiveConfidence = 0;
-              log.warn(`🛑 [momentum-direction] ${gateAction.toUpperCase()} ${f1Sym}: ${f1.reason}`);
-              activeAuditGates.push({ gate: 'momentum-direction', passed: false, reason: f1.reason ?? 'HARD BLOCK' });
+              log.warn(`🛑 [entry-gate] ${gateAction.toUpperCase()} ${f1Sym}: ${f1.reason}`);
+              activeAuditGates.push({ gate: 'entry-gates', passed: false, reason: f1.reason ?? 'HARD BLOCK' });
             } else if (f1.reason) {
               effectiveConfidence = f1.confidence;
-              log.info(`🔻 [momentum-direction] ${gateAction.toUpperCase()} ${f1Sym}: ${f1.reason} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
-              activeAuditGates.push({ gate: 'momentum-direction', passed: true, reason: f1.reason });
+              if (f1.size !== (finalDecision.positionSizePct ?? 0)) {
+                finalDecision = { ...finalDecision, positionSizePct: f1.size };
+                log.info(`🟢 [entry-gate] ${gateAction.toUpperCase()} ${f1Sym}: ${f1.reason} (size ${((finalDecision.positionSizePct ?? 0) * 100).toFixed(0)}%)`);
+              } else {
+                log.info(`🔻 [entry-gate] ${gateAction.toUpperCase()} ${f1Sym}: ${f1.reason} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+              }
+              activeAuditGates.push({ gate: 'entry-gates', passed: true, reason: f1.reason });
             }
           }
         } catch { /* non-fatal */ }
@@ -12664,55 +12739,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         }
       }
 
-      // v2.0.143: Shadow trade soft gate — if shadow trades for this symbol+side
-      // have a very low win rate (< 25%) with sufficient samples (≥ 10), override
-      // to HOLD. Shadow trades use fixed S/R SL/TP (not narrowed), so a low shadow
-      // win rate means the direction is fundamentally wrong in current conditions.
-      // This is a SOFT gate — only blocks when the evidence is overwhelming.
-      // v2.0.721: Use Wilson 95% lower bound instead of raw WR for gating,
-      // and add symmetric boost (position size ×1.2) when shadow WR is high.
-      // v2.0.870-sell-decay (主神 2026-08-24): WR-only gate killed low-WR high-EV
-      // edges (SKHX sell 14d: WR 33%, net +22% — was hard-blocked). Now blocks ONLY
-      // when BOTH decayed WR Wilson LB < 30% AND decayed net PnL <= 0 (EV-confirmed
-      // losers). Sample-starved (decayed total < 20) is never blocked — the LLM
-      // decides. Decayed stats come from the 24h exp-decay (Fix A).
-      if (finalDecision.action === 'buy' || finalDecision.action === 'sell') {
-        const shadowSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
-        const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === shadowSym);
-        if (shadowStats) {
-          const shadowWR = finalDecision.action === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
-          const shadowWins = finalDecision.action === 'buy' ? shadowStats.longWins : shadowStats.shortWins;
-          const shadowLosses = finalDecision.action === 'buy' ? shadowStats.longLosses : shadowStats.shortLosses;
-          const shadowSumPnl = finalDecision.action === 'buy' ? shadowStats.longSumPnlPct : shadowStats.shortSumPnlPct;
-          const shadowTotal = shadowWins + shadowLosses;
-          // v2.0.721: Wilson 95% lower bound — more conservative than raw WR.
-          // Requires >= 20 samples for gate to fire (was 10).
-          const shadowWilsonLB = wilsonScore(shadowWins, shadowTotal);
-          if (shadowTotal >= 20 && shadowWilsonLB < 0.30 && (shadowSumPnl ?? 0) <= 0) {
-            log.warn(`🛑 [shadow-gate] ${finalDecision.action.toUpperCase()} ${shadowSym}: decayed shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowWins.toFixed(1)}W/${shadowTotal.toFixed(1)}) AND net EV ${(shadowSumPnl * 100).toFixed(2)}% <= 0 — overriding → HOLD`);
-            activeAuditGates.push({ gate: 'shadow-gate', passed: false, reason: `decayed Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% < 30% + EV ${(shadowSumPnl * 100).toFixed(2)}% <= 0 (${shadowTotal.toFixed(1)} samples)` });
-            finalDecision = {
-              ...finalDecision,
-              action: 'hold',
-              positionSizePct: 0,
-              rationale: `[SHADOW GATE] ${finalDecision.action.toUpperCase()} ${shadowSym} decayed shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowTotal.toFixed(1)} samples) < 30% AND net EV ${(shadowSumPnl * 100).toFixed(2)}% <= 0 — direction fundamentally wrong recently. HOLD. Original: ${finalDecision.rationale}`,
-            };
-          } else if (shadowTotal >= 20 && shadowWilsonLB > 0.65 && (shadowSumPnl ?? 0) > 0) {
-            // v2.0.721: Symmetric boost — high shadow WR + positive EV means direction is
-            // statistically strong. Boost position size (not conviction threshold)
-            // to avoid feedback loops with the adaptive filter.
-            const boostedSize = Math.min(0.20, (finalDecision.positionSizePct ?? 0) * 1.2);
-            log.info(`🟢 [shadow-boost] ${finalDecision.action.toUpperCase()} ${shadowSym}: decayed shadow Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}% (${shadowTotal.toFixed(1)} samples) > 65% + EV +${(shadowSumPnl * 100).toFixed(2)}% — boosting size ${((finalDecision.positionSizePct ?? 0) * 100).toFixed(0)}% → ${(boostedSize * 100).toFixed(0)}%`);
-            activeAuditGates.push({ gate: 'shadow-gate', passed: true, reason: `shadow WR ${(shadowWR * 100).toFixed(0)}% (Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}%, ${shadowTotal.toFixed(1)} samples, EV +${(shadowSumPnl * 100).toFixed(2)}%) → size boost` });
-            finalDecision = {
-              ...finalDecision,
-              positionSizePct: boostedSize,
-            };
-          } else {
-            activeAuditGates.push({ gate: 'shadow-gate', passed: true, reason: shadowTotal >= 20 ? `decayed shadow WR ${(shadowWR * 100).toFixed(0)}% (Wilson LB ${(shadowWilsonLB * 100).toFixed(0)}%, ${shadowTotal.toFixed(1)} samples, EV ${(shadowSumPnl * 100).toFixed(2)}%)` : `insufficient samples (${shadowTotal.toFixed(1)} < 20)` });
-          }
-        }
-      }
+      // v2.0.870-sell-seed-accel: shadow-gate（WR+EV）已統一入 applyEntryConvictionGates——
+      // active + 所有 trading market 開倉都行（主神 2026-08-25: 雙重標準懲罰）。
 
       // v2.0.720: Trade Record Audit Gate — LLM-powered direction audit.
       // Runs every 2 cycles (non-blocking, async). If the cached audit result
