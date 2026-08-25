@@ -4,7 +4,26 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
-## v2.0.870-sell-architecture: 動量延續性架構（「不 SELL」第三次 fix 根因修正，主神指令 2026-08-25）
+## v2.0.870-sell-architecture-attack: 攻擊輪 + sell 訊號升級（主神指令 2026-08-25）
+
+**攻擊輪（9 攻 2 命中全修 + 3 已防禦證實）**:
+| # | 漏洞 | 修復 |
+|---|------|------|
+| A1 | **range（反彈型）+ SELL + mom<0 → 「假順勢」boost 1.05/1.15**——E1 實證反彈性 sell 全輸（bnb n=38 WR 0.7%）,boost 幫倒忙 | `momentumDirectionalBiasPersistence` aligned 分支加 range 判斷——反彈性 sell 用逆勢懲罰（×0.85/0.70/0.45/0） |
+| A2 | `updatePersistenceScores` 無併發 guard——fetch 慢時下個 cycle 重複 fetch（成本/重入） | `persistenceUpdating` in-flight flag + finally 釋放 |
+| A3-A5 | persistence 垃圾參數 / lookback/forward 極端 / closes 垃圾 element | 已防護（non-finite→default 24/4、超大→null、垃圾 skip）——測試證實 |
+
+**盈利提升（量化思路——sell 誘因層）**:
+- **SELL 提示升級 persistence-aware 雙向**（DIRECTION HEALTH）:
+  - `persistent_bear` → **⚡ [SELL-SIGNAL]**（強——E1 續跌性 short 4h edge WR 52-71%——優先順 short, 短線離場）
+  - `range` → **🚫 [SELL-NOT]**（明確話 LLM「唔好逆勢 short——低吸 only」——防止反彈性開 sell）
+  - `neutral` → 原 SELL-SEED（冷啟動保守）
+- 原 S3 對反彈性（BTC/BNB/GOLD）誤導 LLM 開 short——而家明確反向訊號
+
+**驗證**: 新攻擊測試 9（假順勢 boost / 垃圾參數 / lookback/forward 極端 / closes 垃圾 / 邊界）全綠;全量 3526 pass + 13 pre-existing（零新增）;tsc clean。
+
+---
+## v2.0.870-sell-architecture: 動量延續性架構（「S3」三次修正根因，主神指令 2026-08-25）
 
 **主神質疑**: 「不 SELL」問題 CHANGELOG 已修三次（sell-decay → sell-seed → sell-seed-accel），點解 40 單仍 100% BUY？
 
