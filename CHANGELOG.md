@@ -4,6 +4,25 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-decay-sweep-attack2: 攻擊輪二——垃圾 key / 未來 now / cutoff 極大 / OLR settle（主神指令 2026-08-25）
+
+**主神指令**: 更刁钻攻擊（併發/狀態注入/持久化污染）——第一輪遺漏嘅面。
+
+**攻擊輪（紅先實測 4 攻全命中全修）**:
+| # | 漏洞 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| A1 | **runtime 注入垃圾 key**（`a\|b\|c` / `\|sell` / `__proto__\|sell` / 無 `\|`）——sweep 只清「超時」cell, 垃圾 key 若 ts 有效 → 永存 + save round-trip 污染 | HIGH | `sweepExpiredStats` 加 key 格式驗證（`symbol\|buy/sell` + 非 __proto__/constructor/prototype）——無效 key 一律清 |
+| A2 | **sweep(now=未來 1e15) → healthy 全滅**——`now > 0` 檢查唔夠, 未來 now 令 `now-ts` 全大 | CRITICAL | now 必須 `<= 真實時間+5min` 否則 fallback 真實時間（同 shadow/OLR 一致防禦） |
+| A3 | **OLR calibration bins 每 cycle 唔結算**——shadow sweep 做咗, OLR bins 喺 olr-state.json 永久留毒化（restart 後 migrate 保留舊值） | HIGH | 新 `settleCalibrationDecay()`——每 cycle 結算: 超 cutoff bins 清零 / 未超 exp fade / 無效 ts set now——index.ts 接駁（disk 同步兌現「24h 完全冇」） |
+| A6 | **env cutoff=1e308/1e300 → hard cutoff 永久失效**——`dt >= Infinity` 永 false（「24h 完全冇」語義被閹割） | HIGH | cutoff clamp 上限 8760h（1 年）——超過 → 24h（shadow + OLR 一致） |
+
+**已防禦確認（4 綠）**: sweep(now=0/負) fallback、垃圾 key save/load round-trip 唔復活、A3/A3b settle 邊界（25h 清零 / 1h 保留）、applyCalibration 垃圾 updatedAt 保守。
+
+**盈利提升（量化思路）**: ① OLR bins disk 層結算——sell 毒化 bins 唔再喺 restart 後復活（migrate 保留舊值問題根治）② garbage key 清除——stats 乾淨 → gate 統計唔被假 key 稀釋 ③ cutoff 語義硬化——「24h 完全冇」喺 shadow + OLR 全鏈兌現（架構正確性即盈利——sell 訊號浮動權完全解鎖）。
+
+**驗證**: 新攻擊測試 8 全綠（紅先 4 命中 → 修復後全綠 + 防禦 4）；全量 3586 pass + 13 pre-existing（同 baseline，零新增）；tsc clean。
+
+---
 ## v2.0.870-decay-sweep-attack: 時間驅動衰減攻擊輪（主神指令 2026-08-25）
 
 **主神指令**: 不擇手段攻擊啱啱修葺嘅 decay-sweep code（併發/狀態注入/持久化污染/環境變數注入），完美修復；量化金融分析師思維提升盈利。
