@@ -4,6 +4,27 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-four-window-unified + no-profit: 四窗統一 + exit thesis 百分比化（主神指令 2026-08-25）
+
+**主神調查（balance 114→108）**: 「回調震盪 keep BUY」——DRAM 24h 內 5 單 BUY 全蝕（-16.4%）系統照開。
+
+**根因**: P79 四窗死貓彈防禦（`checkFourWindowAlignment`——5m順+15m逆 → HARD BLOCK）只喺 active symbol 主路徑行——per-symbol（DRAM/SNDK 等）開倉冇四窗 → 回調震盪反彈（1h/5m 急彈但 15m 未轉）照開 BUY。
+
+**修復**:
+- **四窗接入統一執行路徑**（`applyEntryConvictionGates`——active + 所有 trading market 同一套）——死貓彈/兩窗都逆 → HARD BLOCK——per-symbol 開倉都有
+- **Exit thesis 全面改用百分比**（主神裁決——唔提實際金額）: SL/TP/close 用 % from entry + margin-basis 盈虧 %（同 PNL 報表一致）; SL/TP 變動都改 % 表示——exit thesis 一個 $ 金額都冇
+- **閘門回原（主神裁決）**: Recent-loss gate 取消（刪除）· OLR 硬閘回 0.35 · 死貓彈額外閘（mom<1.5%）移除——threshold 保持 0.50 動態原設定——問題根因係四窗 coverage 唔係閘門強度
+
+**攻擊輪（4 攻 1 真實命中）**:
+| # | 漏洞 | 修復 |
+|---|------|------|
+| A4 | exit thesis 區塊 2 用 `pos.side === 'buy'`——大寫 'BUY'/'Long' 唔 match → 方向計算反轉（portfolio.ts 註釋曾修過——本座改動時迴歸）| 改返 `isBuySide()`（大小寫硬化）|
+| A3 | exit % 公式垃圾價（NaN entry/exit/leverage）→ 顯示 'NaN%' | `Number.isFinite` guard → 垃圾 → 0 |
+| A1/A2 | 四窗 NaN/Infinity/string c 動量 | `fin()` guard + candleCache Number() coerce（測試確認）|
+
+**驗證**: 新攻擊測試 8（四窗 dead_cat/鏡像/NaN 安全）+ exit thesis % 全清; 全量 3534 pass + 13 pre-existing（零新增）; tsc clean。
+
+---
 ## v2.0.870-sell-architecture-attack: 攻擊輪 + sell 訊號升級（主神指令 2026-08-25）
 
 **攻擊輪（9 攻 2 命中全修 + 3 已防禦證實）**:
