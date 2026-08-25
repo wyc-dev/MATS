@@ -317,11 +317,15 @@ export class ShadowTradeEngine {
    *  exp decay 無限尾巴 (exp(-1)=0.37 喺 24h 仍然有影響——違背主神意圖).
    *  env SHADOW_STAT_CUTOFF_HOURS; 0 = 唔切 (純 exp decay, 舊語義); invalid → 24h.
    *  v2.0.870-decay-sweep-attack: 極細 cutoff（1e-9h）→ 所有 dt>=cutoff → healthy
-   *  全滅（DoS）——clamp: < 1h 視為無效 → 24h（cutoff 語義冇可能 < 1h）。 */
+   *  全滅（DoS）——clamp: < 1h 視為無效 → 24h（cutoff 語義冇可能 < 1h）。
+   *  v2.0.870-decay-sweep-attack2: 極大 cutoff（1e308）→ dt >= Infinity 永 false
+   *  → hard cutoff 失效（攻擊者令「24h 完全冇」語義失效）——clamp: > 8760h
+   *  （一年）視為無意義 → 24h。 */
   private static decayCutoffHours(): number {
     const raw = Number(process.env['SHADOW_STAT_CUTOFF_HOURS']);
     if (!Number.isFinite(raw) || raw < 0) return 24;
-    if (raw > 0 && raw < 1) return 24; // ATTACK-HARDEN: 極細 cutoff → default
+    if (raw > 0 && raw < 1) return 24;   // ATTACK-HARDEN: 極細 cutoff → default
+    if (raw > 8760) return 24;            // ATTACK-HARDEN: 極大 cutoff（>1 年）→ default
     return raw;
   }
 
@@ -355,9 +359,24 @@ export class ShadowTradeEngine {
     if (tauH <= 0) return 0;
     const cutoffH = ShadowTradeEngine.decayCutoffHours();
     if (cutoffH <= 0) return 0;
-    const nowS = Number.isFinite(now) && now > 0 ? now : Date.now(); // ATTACK: 垃圾 now → fallback
+    // v2.0.870-decay-sweep-attack2: now 必須合理——未來（> 真實+5min）或
+    // 無效 → fallback 真實時間（否則 attacker 傳 1e15 令 now-ts 全大 → healthy 全滅）
+    const realNow = Date.now();
+    const nowS = (typeof now === 'number' && Number.isFinite(now) && now > 0 && now <= realNow + 300_000) ? now : realNow;
     let removed = 0;
     for (const [key, cell] of this.statsBySymbolSide) {
+      // v2.0.870-decay-sweep-attack2: key 格式驗證——只保留「合法 symbol|buy/sell」
+      // （runtime 注入垃圾 key: 無 '|' / 空 symbol / 非 buy-sell side / __proto__）
+      // 一律清走——唔可以留喺 map 污染 save round-trip。
+      const sep = key.indexOf('|');
+      const validKey = sep > 0 && sep < key.length - 1
+        && key.slice(0, sep) !== '__proto__' && key.slice(0, sep) !== 'constructor' && key.slice(0, sep) !== 'prototype'
+        && (key.slice(sep + 1) === 'buy' || key.slice(sep + 1) === 'sell');
+      if (!validKey) {
+        this.statsBySymbolSide.delete(key);
+        removed++;
+        continue;
+      }
       // 唔同類判定: 有效且未超 cutoff 先保留；其餘（無效 ts / 未來 ts / 超 cutoff）一律清
       const ts = cell.lastUpdatedTs;
       const validTs = typeof ts === 'number' && Number.isFinite(ts) && ts > 0 && ts <= nowS + 300_000;
@@ -367,7 +386,7 @@ export class ShadowTradeEngine {
         removed++;
       }
     }
-    if (removed > 0) log.warn(`🧹 [decay-sweep] ${removed} 個超 cutoff / 無效 ts 嘅 shadow stat cell 結算移除（影響力已為 0）`);
+    if (removed > 0) log.warn(`🧹 [decay-sweep] ${removed} 個超 cutoff / 無效 key / 無效 ts 嘅 shadow stat cell 結算移除（影響力已為 0）`);
     return removed;
   }
 

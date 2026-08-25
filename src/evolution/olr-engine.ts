@@ -228,7 +228,9 @@ export function applyCalibration(
     if (tauH > 0) {
       const dt = Math.max(0, nowT - calUpdatedAt);
       const cutoffRaw = Number(process.env['OLR_BIN_CUTOFF_HOURS']);
-      const cutoffH = (Number.isFinite(cutoffRaw) && cutoffRaw >= 0) ? (cutoffRaw > 0 && cutoffRaw < 1 ? 24 : cutoffRaw) : 24;
+      // v2.0.870-decay-sweep-attack2: cutoff 極大（1e308）→ dt >= Infinity 永
+      // false → hard cutoff 失效（「24h 完全冇」語義被閹割）——clamp 上限 8760h（1 年）。
+      const cutoffH = (Number.isFinite(cutoffRaw) && cutoffRaw >= 0) ? (cutoffRaw > 0 && cutoffRaw < 1 ? 24 : cutoffRaw > 8760 ? 24 : cutoffRaw) : 24;
       // 主神裁決 2026-08-25: 24h 後完全冇影響力——hard cutoff（唔係無限 exp 尾巴）
       f = cutoffH > 0 && dt >= cutoffH * 3_600_000 ? 0 : Math.exp(-dt / (tauH * 3_600_000));
     }
@@ -572,6 +574,56 @@ export class OLREngine {
       obj[sym] = { long: models.long, short: models.short };
     }
     return JSON.stringify({ olrSymbols: obj, backfillDone: this.backfillDone }); // v2.0.859
+  }
+
+  /** v2.0.870-decay-sweep-attack2: 每 cycle 結算 OLR calibration bins——
+   *  disk 同步時間窗（主神「每個 Cycle 都可以結算/移除24h外」語義兌現 OLR 側）。
+   *  shadow sweep 已做, OLR bins 唔可以得 read-time decay——bins 值喺 disk
+   *  永遠唔 fade（除非 feed）→ restart 後 migrate 保留舊值 → 毒化 bins 永久
+   *  留喺 olr-state.json。
+   *
+   *  settle 語義: 對每個 model 嘅 calibration bins——
+   *    - 有效 ts + dt >= cutoff（24h）→ bins 清零（影響力完全冇——主神裁決）
+   *    - 有效 ts + dt < cutoff → exp(-Δt/τ) fade（record 時同款）
+   *    - 無效/未來 ts → set ts = now（冷啟動——首次 settle 唔 fade, 之後先 fade）
+   *  返回被清零嘅 model 數。τ=0 / cutoff=0 → 唔執行（回滾語義）。
+   *  防禦: now 垃圾/未來 → fallback 真實時間（同 shadow sweep 一致）。 */
+  settleCalibrationDecay(now = Date.now()): number {
+    const realNow = Date.now();
+    const nowS = (typeof now === 'number' && Number.isFinite(now) && now > 0 && now <= realNow + 300_000) ? now : realNow;
+    const rawTau = Number(process.env['OLR_BIN_DECAY_HOURS']);
+    const tauH = (Number.isFinite(rawTau) && rawTau >= 0) ? (rawTau > 0 && rawTau < 0.01 ? 24 : rawTau) : 24;
+    if (tauH <= 0) return 0; // τ=0 → 唔衰減（回滾）
+    const cutoffRaw = Number(process.env['OLR_BIN_CUTOFF_HOURS']);
+    const cutoffH = (Number.isFinite(cutoffRaw) && cutoffRaw >= 0) ? (cutoffRaw > 0 && cutoffRaw < 1 ? 24 : cutoffRaw > 8760 ? 24 : cutoffRaw) : 24;
+    let zeroed = 0;
+    for (const [, models] of this.symbols) {
+      for (const model of [models.long, models.short]) {
+        const bins = model.calibrationBins;
+        if (!bins || bins.length === 0) continue;
+        const last = model.calibrationUpdatedAt;
+        const validLast = typeof last === 'number' && Number.isFinite(last) && last > 0 && last <= nowS + 300_000;
+        if (!validLast) {
+          model.calibrationUpdatedAt = nowS; // 冷啟動/無效 ts → 由而家開始計時
+          continue;
+        }
+        const dt = Math.max(0, nowS - last);
+        if (cutoffH > 0 && dt >= cutoffH * 3_600_000) {
+          // 超 cutoff → bins 清零——「24h 後完全冇影響力」喺 disk 上兌現
+          for (const b of bins) { b.wins = 0; b.losses = 0; }
+          model.calibrationUpdatedAt = nowS;
+          zeroed++;
+        } else {
+          const f = Math.exp(-dt / (tauH * 3_600_000));
+          if (Number.isFinite(f) && f < 1) {
+            for (const b of bins) { b.wins *= f; b.losses *= f; }
+          }
+          model.calibrationUpdatedAt = nowS;
+        }
+      }
+    }
+    if (zeroed > 0) log.warn(`🧹 [olr-cal-settle] ${zeroed} 個 OLR calibration model 超 cutoff 清零（影響力完全歸零——主神「24h 完全冇」）`);
+    return zeroed;
   }
 
   private getOrCreate(symbol: string): { long: OLRModel; short: OLRModel } {

@@ -13854,11 +13854,18 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       // v2.0.870-decay-sweep: 每 cycle 主動結算 shadow stats——移除超過 cutoff
       // （24h）嘅 stat cell（主神裁決: 24h 後完全冇影響力——exp decay 無限尾巴
       // 違背呢個語義）。移除後 persist——disk 同 memory 同步反映時間窗。
+      // v2.0.870-decay-sweep-attack2: shadowEngine/olrEngine 可能喺 startup
+      //  競態下未 init（防 undefined crash）——optional chain + guard。
       try {
-        const sweptShadow = this.shadowEngine.sweepExpiredStats();
-        if (sweptShadow > 0) log.info(`[decay-sweep] cycle 結算: 移除 ${sweptShadow} 個 shadow stat cell（超 24h cutoff——影響力歸零）`);
+        const sweptShadow = this.shadowEngine?.sweepExpiredStats?.() ?? 0;
+        if (sweptShadow > 0) log.info(`[decay-sweep] cycle 結算: 移除 ${sweptShadow} 個 shadow stat cell（超 24h cutoff / 無效 key——影響力歸零）`);
+        // v2.0.870-decay-sweep-attack2: OLR calibration bins 每 cycle 結算——
+        // disk 同步（bins 值唔可以喺 olr-state.json 永久留低毒化——只靠 read-time
+        // 唔夠: restart 後 migrate 保留舊值）。
+        const zeroedOlr = this.olrEngine?.settleCalibrationDecay?.() ?? 0;
+        if (zeroedOlr > 0) log.info(`[olr-cal-settle] cycle 結算: ${zeroedOlr} 個 OLR calibration model 超 cutoff 清零`);
       } catch (err: unknown) {
-        log.warn(`[decay-sweep] shadow sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn(`[decay-sweep] settle failed: ${err instanceof Error ? err.message : String(err)}`);
       }
       this.evolution.persistState();
       this.patternClassifier?.persist();
