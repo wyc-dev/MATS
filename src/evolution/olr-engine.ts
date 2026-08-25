@@ -576,16 +576,22 @@ export class OLREngine {
     return JSON.stringify({ olrSymbols: obj, backfillDone: this.backfillDone }); // v2.0.859
   }
 
-  /** v2.0.870-decay-sweep-attack2: 每 cycle 結算 OLR calibration bins——
-   *  disk 同步時間窗（主神「每個 Cycle 都可以結算/移除24h外」語義兌現 OLR 側）。
-   *  shadow sweep 已做, OLR bins 唔可以得 read-time decay——bins 值喺 disk
-   *  永遠唔 fade（除非 feed）→ restart 後 migrate 保留舊值 → 毒化 bins 永久
-   *  留喺 olr-state.json。
+  /** v2.0.870-decay-sweep-attack2-fix（主神質疑 2026-08-25）: 每 cycle 結算
+   *  OLR calibration bins——disk 同步時間窗。
    *
-   *  settle 語義: 對每個 model 嘅 calibration bins——
-   *    - 有效 ts + dt >= cutoff（24h）→ bins 清零（影響力完全冇——主神裁決）
-   *    - 有效 ts + dt < cutoff → exp(-Δt/τ) fade（record 時同款）
-   *    - 無效/未來 ts → set ts = now（冷啟動——首次 settle 唔 fade, 之後先 fade）
+   *  ⚠️ 設計修正: settle 只做「超 cutoff → bins 清零」, 唔 fade、唔更新
+   *  calibrationUpdatedAt（除清零外）。原因（實測確診）:
+   *    - fade 由 applyCalibration（read-time）負責——每次 query 按「真正最後
+   *      feed 時間」計 exp(-Δt/τ), 連續且正確
+   *    - 若 settle 每次 fade + set ts=now, 會掩蓋「真正 feed 時間」→ cutoff
+   *      永遠只量度「自上次 settle」嘅 4 分鐘 → 24h 後 cutoff 永唔觸發（剩
+   *      exp(-1)=0.37, 唔係 0）→ 「24h 完全冇影響力」語義失效
+   *    - 同 shadow sweepExpiredStats 架構一致: 只結算窗口, 衰減交讀取路徑
+   *
+   *  settle 語義:
+   *    - 有效 ts + dt >= cutoff（24h）→ bins 清零 + set ts（結算完成）
+   *    - 有效 ts + dt < cutoff → 唔郁（read-time fade 會按原 ts 連續計）
+   *    - 無效/未來 ts → set ts = now（冷啟動——由而家開始計時）
    *  返回被清零嘅 model 數。τ=0 / cutoff=0 → 唔執行（回滾語義）。
    *  防禦: now 垃圾/未來 → fallback 真實時間（同 shadow sweep 一致）。 */
   settleCalibrationDecay(now = Date.now()): number {
@@ -613,13 +619,9 @@ export class OLREngine {
           for (const b of bins) { b.wins = 0; b.losses = 0; }
           model.calibrationUpdatedAt = nowS;
           zeroed++;
-        } else {
-          const f = Math.exp(-dt / (tauH * 3_600_000));
-          if (Number.isFinite(f) && f < 1) {
-            for (const b of bins) { b.wins *= f; b.losses *= f; }
-          }
-          model.calibrationUpdatedAt = nowS;
         }
+        // 未超 cutoff → 唔 fade 唔 update ts——exp fade 由 applyCalibration
+        // （read-time）以「真正 feed ts」為基準連續計算（set ts 會掩埋 feed 時間）
       }
     }
     if (zeroed > 0) log.warn(`🧹 [olr-cal-settle] ${zeroed} 個 OLR calibration model 超 cutoff 清零（影響力完全歸零——主神「24h 完全冇」）`);
