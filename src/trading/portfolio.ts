@@ -1669,18 +1669,32 @@ export class PortfolioTracker {
       // SL/TP change detection
       let slChange = '';
       if (pos.originalStopLossPrice !== undefined && pos.stopLossPrice !== undefined && pos.originalStopLossPrice !== pos.stopLossPrice) {
-        slChange = ` SL: $${pos.originalStopLossPrice.toFixed(2)}→$${safeNum(pos.stopLossPrice, 0).toFixed(2)}.`;
+        slChange = pos.averageEntryPrice > 0
+          ? ` SL: ${(((pos.originalStopLossPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * 100).toFixed(1)}%→${(((safeNum(pos.stopLossPrice, 0) - pos.averageEntryPrice) / pos.averageEntryPrice) * 100).toFixed(1)}% from entry.`
+          : '';
       }
       let tpChange = '';
       if (pos.originalTakeProfitPrice !== undefined && pos.takeProfitPrice !== undefined && pos.originalTakeProfitPrice !== pos.takeProfitPrice) {
-        tpChange = ` TP: $${pos.originalTakeProfitPrice.toFixed(2)}→$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}.`;
+        tpChange = pos.averageEntryPrice > 0
+          ? ` TP: ${(((pos.originalTakeProfitPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * 100).toFixed(1)}%→${(((safeNum(pos.takeProfitPrice, 0) - pos.averageEntryPrice) / pos.averageEntryPrice) * 100).toFixed(1)}% from entry.`
+          : '';
       }
+      // v2.0.870-no-dollar（主神 2026-08-25）: exit thesis 唔提實際金額——全用 %。
+      const exitPnlPct = pos.averageEntryPrice > 0
+        ? ((exitPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * 100 * (pos.leverage ?? 1) * (isBuySide(pos.side) ? 1 : -1)
+        : 0;
+      const slDistPctC = pos.averageEntryPrice > 0 && pos.stopLossPrice !== undefined
+        ? Math.abs((pos.stopLossPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * 100
+        : 0;
+      const tpDistPctC = pos.averageEntryPrice > 0 && pos.takeProfitPrice !== undefined
+        ? Math.abs((pos.takeProfitPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * 100
+        : 0;
       if (pos.stopLossPrice && ((isBuySide(pos.side) && exitPrice <= pos.stopLossPrice) || (!isBuySide(pos.side) && exitPrice >= pos.stopLossPrice))) {
-        pos.exitThesis = `Stop-loss triggered @ $${exitPrice.toFixed(2)} (SL=$${safeNum(pos.stopLossPrice, 0).toFixed(2)}).${slChange}${gapNote}`;
+        pos.exitThesis = `Stop-loss triggered (SL -${slDistPctC.toFixed(1)}% from entry).${slChange}${gapNote}`;
       } else if (pos.takeProfitPrice && ((isBuySide(pos.side) && exitPrice >= pos.takeProfitPrice) || (!isBuySide(pos.side) && exitPrice <= pos.takeProfitPrice))) {
-        pos.exitThesis = `Take-profit triggered @ $${exitPrice.toFixed(2)} (TP=$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}).${tpChange}${gapNote}`;
+        pos.exitThesis = `Take-profit triggered (TP +${tpDistPctC.toFixed(1)}% from entry).${tpChange}${gapNote}`;
       } else {
-        pos.exitThesis = `Position closed @ $${exitPrice.toFixed(2)} (${isWin ? 'profit' : 'loss'} $${realizedPnl.toFixed(2)}).${slChange}${tpChange}${gapNote}`;
+        pos.exitThesis = `Position closed (${isWin ? 'profit' : 'loss'} ${Math.abs(exitPnlPct).toFixed(2)}%).${slChange}${tpChange}${gapNote}`;
       }
     }
 
@@ -1914,20 +1928,28 @@ export class PortfolioTracker {
       }
       let slChange = '';
       if (pos.originalStopLossPrice !== undefined && pos.stopLossPrice !== undefined && pos.originalStopLossPrice !== pos.stopLossPrice) {
-        slChange = ` SL: $${pos.originalStopLossPrice.toFixed(2)}→$${safeNum(pos.stopLossPrice, 0).toFixed(2)}.`;
+        slChange = pos.averageEntryPrice > 0
+          ? ` SL: ${(((pos.originalStopLossPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * 100).toFixed(1)}%→${(((safeNum(pos.stopLossPrice, 0) - pos.averageEntryPrice) / pos.averageEntryPrice) * 100).toFixed(1)}% from entry.`
+          : '';
       }
       let tpChange = '';
       if (pos.originalTakeProfitPrice !== undefined && pos.takeProfitPrice !== undefined && pos.originalTakeProfitPrice !== pos.takeProfitPrice) {
-        tpChange = ` TP: $${pos.originalTakeProfitPrice.toFixed(2)}→$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}.`;
+        tpChange = pos.averageEntryPrice > 0
+          ? ` TP: ${(((pos.originalTakeProfitPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * 100).toFixed(1)}%→${(((safeNum(pos.takeProfitPrice, 0) - pos.averageEntryPrice) / pos.averageEntryPrice) * 100).toFixed(1)}% from entry.`
+          : '';
       }
+      // v2.0.870-no-profit:exit thesis 唔提實際金額——全用 %（同區塊 1 一致）。
+      const exitPnlPct2 = pos.averageEntryPrice > 0
+        ? ((exitPrice - pos.averageEntryPrice) / pos.averageEntryPrice) * 100 * (pos.leverage ?? 1) * (isBuySide(pos.side) ? 1 : -1)
+        : 0;
       if (hlRealizedPnl !== undefined) {
-        pos.exitThesis = `Exchange close @ $${exitPrice.toFixed(2)} (${isWin ? 'profit' : 'loss'} $${realizedPnl.toFixed(2)}).${slChange}${tpChange}${gapNote}`;
-      } else if (pos.stopLossPrice && ((isBuySide(pos.side) && exitPrice <= pos.stopLossPrice) || (!isBuySide(pos.side) && exitPrice >= pos.stopLossPrice))) {
-        pos.exitThesis = `Stop-loss triggered @ $${exitPrice.toFixed(2)} (SL=$${safeNum(pos.stopLossPrice, 0).toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChange}${gapNote}`;
-      } else if (pos.takeProfitPrice && ((isBuySide(pos.side) && exitPrice >= pos.takeProfitPrice) || (!isBuySide(pos.side) && exitPrice <= pos.takeProfitPrice))) {
-        pos.exitThesis = `Take-profit triggered @ $${exitPrice.toFixed(2)} (TP=$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}, ${(tpDistPct * 100).toFixed(1)}% from entry).${tpChange}${gapNote}`;
+        pos.exitThesis = `Exchange close (${isWin ? 'profit' : 'loss'} ${Math.abs(exitPnlPct2).toFixed(2)}%).${slChange}${tpChange}${gapNote}`;
+      } else if (pos.stopLossPrice && ((pos.side === 'buy' && exitPrice <= pos.stopLossPrice) || (pos.side !== 'buy' && exitPrice >= pos.stopLossPrice))) {
+        pos.exitThesis = `Stop-loss triggered (SL -${(slDistPct * 100).toFixed(1)}% from entry).${slChange}${gapNote}`;
+      } else if (pos.takeProfitPrice && ((pos.side === 'buy' && exitPrice >= pos.takeProfitPrice) || (pos.side !== 'buy' && exitPrice <= pos.takeProfitPrice))) {
+        pos.exitThesis = `Take-profit triggered (TP +${(tpDistPct * 100).toFixed(1)}% from entry).${tpChange}${gapNote}`;
       } else {
-        pos.exitThesis = `Exchange position closed @ $${exitPrice.toFixed(2)} (${isWin ? 'profit' : 'loss'} $${realizedPnl.toFixed(2)}).${slChange}${tpChange}${gapNote}`;
+        pos.exitThesis = `Exchange position closed (${isWin ? 'profit' : 'loss'} ${Math.abs(exitPnlPct2).toFixed(2)}%).${slChange}${tpChange}${gapNote}`;
       }
     }
 
@@ -2120,26 +2142,26 @@ export class PortfolioTracker {
     if (isBuySide(pos.side)) {
       if (pos.stopLossPrice && pos.currentPrice <= pos.stopLossPrice) {
         log.warn(`Stop-loss triggered for ${pos.symbol} @ ${pos.currentPrice}`);
-        pos.exitThesis = `Stop-loss triggered @ $${safeNum(pos.currentPrice, 0).toFixed(2)} (SL=$${safeNum(pos.stopLossPrice, 0).toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChangeNote}${gapNote}`;
+        pos.exitThesis = `Stop-loss triggered (SL -${(slDistPct * 100).toFixed(1)}% from entry).${slChangeNote}${gapNote}`;
         this.closePosition(pos.symbol, pos.currentPrice);
         return;
       }
       if (pos.takeProfitPrice && pos.currentPrice >= pos.takeProfitPrice) {
         log.info(`Take-profit triggered for ${pos.symbol} @ ${pos.currentPrice}`);
-        pos.exitThesis = `Take-profit triggered @ $${safeNum(pos.currentPrice, 0).toFixed(2)} (TP=$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}, ${(tpDistPct * 100).toFixed(1)}% from entry).${tpChangeNote}${gapNote}`;
+        pos.exitThesis = `Take-profit triggered (TP +${(tpDistPct * 100).toFixed(1)}% from entry).${tpChangeNote}${gapNote}`;
         this.closePosition(pos.symbol, pos.currentPrice);
         return;
       }
     } else {
       if (pos.stopLossPrice && pos.currentPrice >= pos.stopLossPrice) {
         log.warn(`Stop-loss triggered for ${pos.symbol} @ ${pos.currentPrice}`);
-        pos.exitThesis = `Stop-loss triggered @ $${safeNum(pos.currentPrice, 0).toFixed(2)} (SL=$${safeNum(pos.stopLossPrice, 0).toFixed(2)}, ${(slDistPct * 100).toFixed(1)}% from entry).${slChangeNote}${gapNote}`;
+        pos.exitThesis = `Stop-loss triggered (SL -${(slDistPct * 100).toFixed(1)}% from entry).${slChangeNote}${gapNote}`;
         this.closePosition(pos.symbol, pos.currentPrice);
         return;
       }
       if (pos.takeProfitPrice && pos.currentPrice <= pos.takeProfitPrice) {
         log.info(`Take-profit triggered for ${pos.symbol} @ ${pos.currentPrice}`);
-        pos.exitThesis = `Take-profit triggered @ $${safeNum(pos.currentPrice, 0).toFixed(2)} (TP=$${safeNum(pos.takeProfitPrice, 0).toFixed(2)}, ${(tpDistPct * 100).toFixed(1)}% from entry).${tpChangeNote}${gapNote}`;
+        pos.exitThesis = `Take-profit triggered (TP +${(tpDistPct * 100).toFixed(1)}% from entry).${tpChangeNote}${gapNote}`;
         this.closePosition(pos.symbol, pos.currentPrice);
         return;
       }
