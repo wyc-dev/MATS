@@ -93,6 +93,15 @@ export function momentumDirectionalBiasPersistence(
   const aligned = (side === 'buy' && bullish) || (side === 'sell' && !bullish);
   if (!aligned && persistence === 'persistent_bear' && mag >= 1.5) return 0; // 核心: 跌市唔買
   if (aligned) {
+    // v2.0.870-sell-architecture-attack A1: range（反彈型）+ SELL + mom<0 係
+    // 「假順勢」——E1 實證反彈型 sell 全輸（bnb n=38 WR 0.7%）——mom<0 後 4h
+    // 反彈。唔可以當順勢 boost（幫倒忙）——用逆勢懲罰（反彈型 sell 無 edge）。
+    if (side === 'sell' && persistence === 'range') {
+      if (mag >= 8.0) return 0;
+      if (mag >= 6.0) return 0.45;
+      if (mag >= 4.0) return 0.70;
+      return 0.85;
+    }
     return mag >= 4.0 ? 1.15 : 1.05;
   }
   // 非 persistent_bear 嘅逆勢——原 F1 逐級

@@ -5277,10 +5277,13 @@ ${recentExamples}
    *  2.5h throttle 更新（每 symbol 1 次 1h fetch——唔拖慢 cycle）。 */
   private persistenceCache = new Map<string, { score: number; n: number; updatedAt: number }>();
   private persistenceUpdatedAt = 0;
+  private persistenceUpdating = false; // 併發 guard——fetch 慢時下個 cycle 唔重複跑
 
   private async updatePersistenceScores(): Promise<void> {
+    if (this.persistenceUpdating) return; // 併入防護（A2）
     try {
       if (Date.now() - this.persistenceUpdatedAt < 2.5 * 3600_000) return;
+      this.persistenceUpdating = true;
       const syms = new Set<string>();
       for (const s of this.portfolio.getOpenSymbols()) syms.add(s);
       if (Array.isArray(this.tradingMarkets)) for (const m of this.tradingMarkets) syms.add(String(m));
@@ -5304,6 +5307,8 @@ ${recentExamples}
       log.info(`📊 [persistence] 更新完成: ${[...this.persistenceCache.entries()].map(([k, v]) => `${k}=${classifyPersistence(v.score, v.n)}(${v.score.toFixed(2)},n${v.n})`).join(' ')}`);
     } catch (err) {
       log.warn(`[persistence] update failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.persistenceUpdating = false; // 釋放併入 guard
     }
   }
 
@@ -5545,15 +5550,26 @@ ${recentExamples}
           warnings.push(`⚠️ ${side.toUpperCase()} ${sym}: 最近 7 日 ${rs.n} 筆 real 只有 ${(rs.wins / rs.n * 100).toFixed(0)}% 勝率, 平均 ${avgPnl} USD — 近期實際表現差, 需要額外證據先好開。`);
         }
       }
-      // v2.0.870-sell-seed-accel S3: 跌勢 SELL-SEED 提示——LLM 喺跌勢見到「順勢
-      // sell 樣本播種中」嘅顯性數據（而家只有「BUY 打折」冇「SELL 有樣本」）。
+      // v2.0.870-sell-architecture-attack E1(盈利提升): SELL 提示升級——persistence-aware
+      // 雙向訊號。原 SELL-SEED（mom<0 即提示）會喺反彈型（BTC/BNB/GOLD）誤導 LLM 開
+      // short（E1 實證反彈性 sell 全輸）。而家:
+      //   persistent_bear → ⚡ [SELL-SIGNAL]（強——續跌性 sell 4h edge WR 52-71%）
+      //   range          → 🚫 [SELL-NOT]（反彈性——唔好逆勢 short, 低吸 only）
+      //   neutral        → 原 SELL-SEED（冷啟動保守提示）
       try {
         const mom24hS = this.compute24hMomentumPct(sym);
         const mom4hS = this.compute4hMomentumPct(sym);
         const bearMom = (mom24hS !== null && mom24hS < -1.5)
           || (mom4hS !== null && mom4hS < -1.5);
         if (bearMom) {
-          warnings.push(`⚡ [SELL-SEED] ${sym}: 動量負（24h=${mom24hS !== null ? mom24hS.toFixed(2) + '%' : 'n/a'} / 4h=${mom4hS !== null ? mom4hS.toFixed(2) + '%' : 'n/a'}）——順勢 SELL shadow 播種中,LLM 可考慮順勢 short（而唔係逆勢 long）。`);
+          const persS = this.getPersistence(sym);
+          if (persS === 'persistent_bear') {
+            warnings.push(`⚡ [SELL-SIGNAL] ${sym}: ${persS} 續跌（24h=${mom24hS !== null ? mom24hS.toFixed(2) + '%' : 'n/a'} / 4h=${mom4hS !== null ? mom4hS.toFixed(2) + '%' : 'n/a'}）——E1 實測續跌性 short 4h edge（WR 52-71%）——優先順 short, 短線離場。`);
+          } else if (persS === 'range') {
+            warnings.push(`🚫 [SELL-NOT] ${sym}: 動量跌但反彈性（mom<0 後 4h 通常反彈）——唔好逆勢 short（低吸 only, 唔追跌）。`);
+          } else {
+            warnings.push(`⚡ [SELL-SEED] ${sym}: 動量負（24h=${mom24hS !== null ? mom24hS.toFixed(2) + '%' : 'n/a'} / 4h=${mom4hS !== null ? mom4hS.toFixed(2) + '%' : 'n/a'}）——順勢 SELL shadow 播種中,LLM 可考慮順勢 short（而唔係逆勢 long）。`);
+          }
         }
       } catch { /* non-fatal */ }
 
