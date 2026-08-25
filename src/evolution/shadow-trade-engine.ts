@@ -1627,6 +1627,22 @@ export class ShadowTradeEngine {
       if (typeof data.backfillDone === 'boolean') {
         this.backfillDone = data.backfillDone;
       }
+      // v2.0.870-exploration-dual（主神 2026-08-25）: 垃圾 sell 樣本清理——
+      // WR<10% 且 n>10 嘅 sell stats 重置（OLR sell 毒化源——bnb n=89 WR 1%/
+      // skhx n=49 WR 7%/sndk n=39 WR 2%——令 exploration 永遠選 BUY）。
+      // 只清垃圾質素——healthy（gold/silver 30-35%）保留。env SELL_STATS_CLEANUP=false 回退。
+      if (process.env['SELL_STATS_CLEANUP'] !== 'false') {
+        let cleaned = 0;
+        for (const [k, v] of this.statsBySymbolSide) {
+          if (!k.endsWith('|sell')) continue;
+          const n = (v?.wins ?? 0) + (v?.losses ?? 0);
+          if (n > 10 && (v?.wins ?? 0) / n < 0.10) {
+            this.statsBySymbolSide.set(k, { wins: 0, losses: 0, totalPnlPct: 0, lastUpdatedTs: Date.now() });
+            cleaned++;
+          }
+        }
+        if (cleaned > 0) log.warn(`🧹 [sell-stats-cleanup] ${cleaned} 個垃圾 sell 樣本重置（WR<10%——毒化源清除, OLR sell 脫毒化）`);
+      }
       log.info(`Shadow trades loaded: ${this.positions.length} open, ${this.recentResults.length} recent results, ${this.statsBySymbolSide.size} stat cells`);
     } catch {
       log.warn('[shadow load] Failed to parse data, starting fresh');

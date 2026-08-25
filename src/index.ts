@@ -83,6 +83,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldTrailingLock, shouldColdStartLock, shouldCancelPendingLock, shouldConfirmTrailingLock, type PendingTrailingLock } from './lib/live-mfe.ts';
 import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
+import { shouldExploreSell, shouldSuppressExploreBuy, resolveExplorationDirection } from './lib/exploration-direction.ts';
 import { buildCooldownEntry, shouldBlockReentry, type ReentryCooldownState } from './lib/reentry-cooldown.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
@@ -10258,7 +10259,7 @@ ${recentExamples}
                 const pers = this.getPersistence(sym);
                 const bearish = shouldSeedSell(pers)
                   && (mom24h !== null && mom24h < 0)
-                  && ((mom4h !== null && mom4h < 0) || seedRegime === 'trending_bear');
+                  && (mom4h !== null && mom4h < 0); // v2.0.870-exploration-dual: 嚴格雙確認——E1 實證呢個條件 sell 先有 edge
                 if (bearish && rlAction !== 'sell') {
                   const sellSl = entryPrice * (1 + slPct);
                   const sellTp = entryPrice * (1 - tpPct);
@@ -10967,6 +10968,25 @@ ${recentExamples}
           } else if (direction === 'sell' && trendFilterBlocksSell) {
             log.warn(`🧪 Trend filter gate: BLOCKED SELL — price rising over last ${recentHistory.length} cycles`);
             direction = null;
+          }
+
+          // v2.0.870-exploration-dual（主神 2026-08-25）: sell 結構性訊號最高優先級——
+          // persistent_bear（續跌型）+ 持續跌勢雙確認 → 探索 SELL（E1 實證 sell 4h
+          // edge WR 55-68%——覆蓋 OLR sell 毒化同 trending_bull→BUY bias）;
+          // 續跌型跌市 buy candidate 抑制（追跌 = 送死）。NO ENTRY 由「neutral → skip」
+          // 機制保留（兩邊都冇訊號唔開）。
+          if (direction !== null || true) {
+            const expPers = this.getPersistence(exploreTarget);
+            const expMom24 = this.compute24hMomentumPct(exploreTarget);
+            const expMom4 = this.compute4hMomentumPct(exploreTarget);
+            const expSellSig = { persistence: expPers, mom24hPct: expMom24, mom4hPct: expMom4 };
+            const resolved = resolveExplorationDirection(expSellSig, (direction === 'buy' || direction === 'sell') ? direction : null);
+            if (shouldExploreSell(expSellSig)) {
+              log.info(`🧪 [sell-signal] ${exploreTarget} persistent_bear + 持續跌勢(mom24=${expMom24?.toFixed(2)}% mom4=${expMom4?.toFixed(2)}%) → 探索 SELL（E1: sell 4h edge）`);
+            } else if (direction === 'buy' && shouldSuppressExploreBuy(expSellSig)) {
+              log.info(`🧪 [buy-suppress] ${exploreTarget} persistent_bear 跌市 → BUY 探索被抑制（追跌）`);
+            }
+            direction = resolved;
           }
 
           // v2.0.870-flipfix: 方案 B——exploration 開倉前檢查 per-symbol consensus
