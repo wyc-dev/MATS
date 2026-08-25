@@ -13851,6 +13851,15 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       }
 
       // 9.6 Persist evolution state + portfolio + debate history + patterns + OLR + pattern tags to disk
+      // v2.0.870-decay-sweep: 每 cycle 主動結算 shadow stats——移除超過 cutoff
+      // （24h）嘅 stat cell（主神裁決: 24h 後完全冇影響力——exp decay 無限尾巴
+      // 違背呢個語義）。移除後 persist——disk 同 memory 同步反映時間窗。
+      try {
+        const sweptShadow = this.shadowEngine.sweepExpiredStats();
+        if (sweptShadow > 0) log.info(`[decay-sweep] cycle 結算: 移除 ${sweptShadow} 個 shadow stat cell（超 24h cutoff——影響力歸零）`);
+      } catch (err: unknown) {
+        log.warn(`[decay-sweep] shadow sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       this.evolution.persistState();
       this.patternClassifier?.persist();
       this.patternTagTracker?.persist();

@@ -203,12 +203,33 @@ function decayCalibrationBins(model: OLRModel, ts: number): void {
 export function applyCalibration(
   bins: Array<{ lo: number; hi: number; wins: number; losses: number }> | undefined,
   rawPWin: number,
+  updatedAt?: number,
+  now?: number,
 ): number {
   // v2.0.859-attack: non-finite rawPWin must never propagate. NaN would
   // flow through binIdx → bins[NaN] → undefined → raw NaN returned, poisoning
   // the conviction gate (NaN < threshold = false → pass all trades).
   if (!Number.isFinite(rawPWin)) return 0.5;
   if (!bins || bins.length === 0) return rawPWin;
+  // v2.0.870-decay-sweep: READ-TIME effective decay——bins 即使冇新樣本 feed
+  // （sell 死循環下 sell bins 凍結毒化），讀取時按 calibrationUpdatedAt 現場
+  // 衰減——影響力隨時間自動 fade（斬斷「無 feed → 無觸發 → 凍結」死循環）。
+  // 零 mutate（idempotent）。冷啟動（無 ts）→ 唔 fade（保守——healthy bins
+  // 唔誤傷; 首次 recordOutcome 會 set ts, 之後先 fade）。
+  const nowT = typeof now === 'number' && Number.isFinite(now) ? now : Date.now();
+  const calUpdatedAt = (typeof updatedAt === 'number' && Number.isFinite(updatedAt) && updatedAt > 0 && updatedAt <= nowT + 300_000) ? updatedAt : undefined;
+  let f = 1;
+  if (calUpdatedAt !== undefined) {
+    const rawTau = Number(process.env['OLR_BIN_DECAY_HOURS']);
+    const tauH = Number.isFinite(rawTau) && rawTau >= 0 ? rawTau : 24;
+    if (tauH > 0) {
+      const dt = Math.max(0, nowT - calUpdatedAt);
+      const cutoffRaw = Number(process.env['OLR_BIN_CUTOFF_HOURS']);
+      const cutoffH = Number.isFinite(cutoffRaw) && cutoffRaw >= 0 ? cutoffRaw : 24;
+      // 主神裁決 2026-08-25: 24h 後完全冇影響力——hard cutoff（唔係無限 exp 尾巴）
+      f = cutoffH > 0 && dt >= cutoffH * 3_600_000 ? 0 : Math.exp(-dt / (tauH * 3_600_000));
+    }
+  }
   const clamped = Math.max(0, Math.min(0.9999, rawPWin));
   const binIdx = Math.floor(clamped * CALIBRATION_NUM_BINS);
   // v2.0.859-attack: a Proxy bin whose getters THROW (or a corrupt entry)
@@ -229,15 +250,18 @@ export function applyCalibration(
     // getter bomb / Proxy throw → honest neutral
     return 0.5;
   }
-  const count = wins + losses;
+  // v2.0.870-decay-sweep: effective counts（read-time fade——唔 mutate bins）
+  const effWins = wins * f;
+  const effLosses = losses * f;
+  const count = effWins + effLosses;
   // v2.0.859 (intentional): EMPTY bin → 0.5 (conservative neutral — "the
   // overconfidence kill"). No calibration evidence → never trust the raw
   // prediction (which could be overconfident); return neutral 0.5 instead.
-  const empiricalWR = count > 0 ? wins / count : 0.5;
+  const empiricalWR = count > 0 ? effWins / count : 0.5;
   if (!Number.isFinite(empiricalWR)) return rawPWin;
   const shrink = count / (count + CALIBRATION_SHRINK_K);
   const calibrated = 0.5 + (empiricalWR - 0.5) * shrink;
-  log.debug(`[OLR calibration] raw=${(rawPWin * 100).toFixed(0)}% → calibrated=${(calibrated * 100).toFixed(0)}% (bin ${binIdx}, ${count} samples, shrink=${shrink.toFixed(2)})`);
+  log.debug(`[OLR calibration] raw=${(rawPWin * 100).toFixed(0)}% → calibrated=${(calibrated * 100).toFixed(0)}% (bin ${binIdx}, ${count} samples, shrink=${shrink.toFixed(2)}${f < 1 ? `, read-decay ×${f.toFixed(3)}` : ''})`);
   return calibrated;
 }
 
@@ -512,6 +536,27 @@ export class OLREngine {
             }
           })
         : makeEmptyCalibrationBins()),
+      // v2.0.870-decay-sweep: 保留 calibrationUpdatedAt——舊 migrateModel 唔保留
+      // 呢個字段 → 每次 restart 都丟失 ts → bins 變冷啟動 → decay 永遠唔觸發
+      // （「無 ts」凍結——實驗 2b 確診 8/13 symbol 嘅 SELL bins 冇 ts）。
+      // 有數據但無有效 ts（化石 bins）→ 當最舊（4×τ 前）——read-time decay
+      // 即刻 fade 至 exp(-4)≈1.8%（化石淡出——毒化 sell bins 變中性 0.5,
+      // healthy 冇受影響——佢哋有新 feed 自然保留）；空 bins（冷啟動）→ undefined。
+      calibrationUpdatedAt: (() => {
+        const rawTs = m.calibrationUpdatedAt;
+        if (typeof rawTs === 'number' && Number.isFinite(rawTs) && rawTs > 0 && rawTs <= Date.now() + 300_000) {
+          return rawTs;
+        }
+        // 冇有效 ts——檢查 bins 有冇數據（化石 bins 應 fade-out）
+        const bins = Array.isArray(m.calibrationBins) && m.calibrationBins.length === CALIBRATION_NUM_BINS ? m.calibrationBins : [];
+        const hasData = bins.some((b: unknown) => {
+          try { const bb = b as { wins?: unknown; losses?: unknown }; return Number(bb.wins) + Number(bb.losses) > 0; } catch { return false; }
+        });
+        if (!hasData) return undefined;
+        const rawTau = Number(process.env['OLR_BIN_DECAY_HOURS']);
+        const tauH = Number.isFinite(rawTau) && rawTau >= 0 ? rawTau : 24;
+        return tauH > 0 ? Date.now() - 4 * tauH * 3_600_000 : undefined;
+      })(),
     };
   }
 
@@ -1106,7 +1151,9 @@ export class OLREngine {
     // v2.0.721: Apply 5-bin calibration map. If the corresponding bin has
     // enough samples (>= 5), replace raw sigmoid with empirical win rate.
     // Falls back to raw pWin when bins are empty or insufficient (identity).
-    const pWinCalibrated = applyCalibration(model.calibrationBins, pWinRaw);
+    // v2.0.870-decay-sweep: 傳 calibrationUpdatedAt——read-time effective decay
+    // （bins 冇新 feed 都按時間 fade——sell 死循環下 sell bins 唔再凍結毒化）。
+    const pWinCalibrated = applyCalibration(model.calibrationBins, pWinRaw, model.calibrationUpdatedAt, Date.now());
     // v2.0.740: Apply confidence penalty to the calibrated pWin. This pulls
     // predictions toward 0.5 when the model has insufficient evidence (nSamples < 50),
     // preventing extreme values (0% or 100%) from overriding safety gates.

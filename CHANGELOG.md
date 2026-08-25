@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-decay-sweep: 時間驅動衰減（shadow stats + OLR bins 結算制，主神裁決 2026-08-25）
+
+**主神洞察**: 「shadow trade 記錄已設定 24h 後冇影響力, 咁每個 Cycle 都可以結算/移除 24h 外嘅 shadow trade；而 shadow-state 並冇隨之更新——係 shadow-state 嘅問題？」
+
+**根因（實驗 2b 確診）**: 全系統 9 個時間衰減組件中, **只有 shadow stats + OLR calibration bins 兩處係「lazy write-time decay」**——衰減只喺「新記錄/新 feed」時觸發, 讀取路徑零衰減。sell 死循環下 sell 樣本停止流入 → 冇觸發 → 毒化 cell/bins 永久凍結 → OLR sell 永遠被化石統計判死 → 永遠無 sell——閉環。其餘 7 個組件（ev-filter / regime-win-rate / profitability / success-pattern / exit-price / conditional-WR）全部係 read-time（讀取時現場計 weight）——正確。
+
+**第二 bug（實驗 2b 確診）**: OLR `migrateModel` 冇保留 `calibrationUpdatedAt`——每次 restart 都重置冷啟動 → bins 變「無 ts」→ decay 永唔觸發。真實數據: 8/13 symbol 嘅 SELL bins 冇 ts（sndk WR 2.2% L=64、dram WR 0% L=35、sp500 WR 6.3%）。
+
+**修復（時間驅動, 三層）**:
+- **shadow stats READ-TIME effective decay**（`getStats()`/`getSymbolSideStats()`）: 讀取時按 `lastUpdatedTs` 現場 exp(-Δt/τ) 衰減 + **24h hard cutoff**（`SHADOW_STAT_CUTOFF_HOURS`, 0=唔切）——靜止污染 cell 唔再需要等新記錄先 fade, 24h 後完全冇影響力（主神裁決語義, 唔係 exp 無限尾巴）; 零 mutate（idempotent——多 caller 唔會 double-decay）
+- **B. 每 cycle 結算**（`sweepExpiredStats()`, index.ts 9.6 persist 前）——移除超 cutoff 嘅 cell, disk 同步反映時間窗（主神「shadow-state 隨之更新」）
+- **C. OLR migrate 保留 ts** + 無 ts 但有數據嘅 bins → 當最舊（4×τ 前, 即刻 fade 至 exp(-4)≈1.8%）——冷啟動凍結解除
+- **D. OLR `applyCalibration` READ-TIME decay**（optional 參數 updatedAt/now, 向後兼容）——sell bins 冇新 feed 都按時間 fade, 24h cutoff 後影響力歸零（bins 空 → neutral 0.5, 唔再鎖死 8-40%）
+
+**驗證**: 新測試 15（read-time fade / idempotent / hard cutoff / sweep 移除 / healthy 保留 / τ=0 回滾 / cutoff=0 回滾 / OLR ts 持久化 / 化石 bins fade-out / applyCalibration 衰減 / cutoff / 冷啟動 / 毒值）全綠; 全量 3566 pass + 13 pre-existing（同 baseline, 零新增）; tsc clean。
+
+---
 ## v2.0.870-four-window-unified + no-profit: 四窗統一 + exit thesis 百分比化（主神指令 2026-08-25）
 
 **主神調查（balance 114→108）**: 「回調震盪 keep BUY」——DRAM 24h 內 5 單 BUY 全蝕（-16.4%）系統照開。
