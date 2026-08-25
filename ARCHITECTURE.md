@@ -1,9 +1,28 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-sell-seed-accel-attack
+> **作者**: YC Wong · **版本**: 2.0.870-decay-sweep-attack2-fix
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## v2.0.870-decay-sweep 系列（2026-08-25）：時間驅動衰減——shadow stats + OLR bins 結算制
+
+**主神裁決**: 「shadow trade 記錄已設定 24h 後冇影響力, 咁每個 Cycle 都可以結算/移除 24h 外嘅 shadow trade；而 shadow-state 並冇隨之更新——係 shadow-state 嘅問題？」
+
+**根因（實驗 2b 確診）**: 全系統 9 個時間衰減組件中, 只有 **shadow stats + OLR calibration bins** 兩處係「lazy write-time decay」——衰減只喺新記錄/新 feed 時觸發, 讀取路徑零衰減。sell 死循環下 sell 樣本停止流入 → 冇觸發 → 毒化 cell/bins 永久凍結 → OLR sell 永遠被化石統計判死（bnb|sell WR 1% n=89 一直毒化）→ 永遠無 sell——閉環。另 **OLR `migrateModel` 冇保留 `calibrationUpdatedAt`**——restart 重置冷啟動（8/13 symbol SELL bins 無 ts: sndk WR 2.2% / dram 0% / sp500 6.3%）。
+
+**修復（時間驅動四層）**:
+- **read-time effective decay**（`shadow-trade-engine.ts` `effectiveDecayFactor` + `getStats()`/`getSymbolSideStats()`）: 讀取時按 `lastUpdatedTs` 現場 exp(-Δt/τ) + 24h hard cutoff（`SHADOW_STAT_CUTOFF_HOURS`, 0=唔切）——靜止污染 cell 讀取時自動 fade, 唔再等新記錄觸發; 零 mutate（idempotent）
+- **每 cycle 結算**（`sweepExpiredStats()`, index.ts 9.6 persist 前）: 移除超 cutoff cell + 無效/垃圾 key——disk 同步時間窗
+- **OLR `migrateModel` 保留 ts** + 無 ts 但有數據 bins → 當 4×τ 前（即刻 fade 至 exp(-4)≈1.8%）——冷啟動凍結解除
+- **`applyCalibration` read-time decay**（optional updatedAt/now, 向後兼容）: sell bins 冇新 feed 都 fade, cutoff 後影響力歸零 → bins 空 → neutral 0.5
+- **`settleCalibrationDecay()` 每 cycle 結算 OLR bins**（attack2-fix 語義）: 只做「超 cutoff → bins 清零」——唔 fade、唔 update ts（衰減交 read-time 按真正 feed ts 連續計算——set ts 會掩埋 feed 時間, 令 cutoff 失效——主神質疑後修正）
+
+**防禦（兩輪攻擊輪硬化）**: 未來 ts（1e308）runtime 注入照清、垃圾 key 格式驗證（`symbol|buy/sell` + 防 prototype pollution）、env 注入 clamp（tau <0.01h / cutoff <1h 或 >8760h → default 24h）、now 垃圾/未來 fallback、denormal（1e-300）分母爆炸 clamp。
+
+**驗證**: 新測試 37（decay-sweep 15 + attack 12 + attack2 10）全綠; 全量 3588 pass + 13 pre-existing（零新增）; tsc clean。
 
 ---
 
