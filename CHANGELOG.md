@@ -4,6 +4,27 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-momentum-direction: 動量方向偏置 + 統一執行路徑（主神指令 2026-08-25）
+
+**主神報告**: SNDK 24h -8.3% 照開 BUY（蝕）——「嗰啲時刻其實應該要 Sell,唔止係唔應該 Buy」;並指出「multi-symbol path 唔應該存在,股票同黃金一定唔同方向」——每個 symbol 第一公民。
+
+**根因驗證**:
+- CHANGELOG 確認從未做過相關修正（最接近嘅 P35 trend-align active-only;G1 只有逆勢打折無順勢 boost / hard block）
+- BUY trending_bear n=36 WR 11% EV **-163%**（median -3.27%,僅 4 單贏）——逆勢買單災難
+- 順勢 BUY（bull +86% / low_vol +78%）唔應誤傷;SELL real 樣本全部 symbol = 0（sell 模型從未有 real 數據）
+
+**F1 — 動量方向偏置**（`momentum-directional-bias.ts` 純函數）: 24h/4h 動量 vs 方向完整鏡像——順勢（buy+mom正 / sell+mom負）×1.05/×1.15(cap); 逆勢 ∈[1.5,4)% ×0.85 / ≥4% ×0.70 / ≥6% ×0.45 / **≥8% HARD BLOCK（0）**。
+
+**Counterfactual 驗證（真實數據）**: SNDK 22:35Z（24h -8.3%）→ HARD BLOCK（嗰單 -0.81% 唔會開）;SNDK 22:59Z（24h -8.3% 環境）→ HARD BLOCK（-1.89% 唔會開）;SKHX（+0.68% 順勢）×1.0 唔誤傷;BUY trending_bear 36 單 -163% → 擋住最差 50-70% 可避 **+125% ~ +160% EV**。
+
+**F2 — 取消「multi-symbol path」概念（主神裁決: 戇鳩）**: 改為**統一執行路徑**——`applyDirectionalBiasGate()` 共用 helper,active symbol 同所有 trading market 開倉都行同一個 F1（per-symbol 各自 24h/4h 動量——股票/黃金自然獨立判斷）。
+
+**F3 — 24h 動量 fallback**: `compute24hMomentumPct` 1h candle ≥25 支計 24h;唔足 fallback 4h（≥5 支）——消除 xyz REST 下 candle 唔足導致嘅數據盲區（SNDK thesis 有「4h -1.13%」但 24h 攞唔到）。
+
+**驗證**: 9 新測試（順勢 boost / 逆勢各級 / hard block / 毒輸入 / 鏡像對稱）全绿;全量 3427 pass + 13 pre-existing（同 baseline 一致,零新增）;tsc clean。
+
+---
+
 ## v2.0.870-sell-decay-attack: 攻擊輪 + 盈利提升（主神指令 2026-08-24）
 
 **主神指令**: 不擇手段以「併發/狀態注入/持久化污染」攻擊 sell-decay 系列修復及週邊,完美修復;並以量化金融分析師思路創建盈利提升組件,避免單向問題、保持趨勢敏感。

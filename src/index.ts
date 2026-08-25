@@ -85,6 +85,7 @@ import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analy
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
 import { momentumOlrConflictMultiplier } from './analysis/momentum-olr-conflict.ts';
+import { momentumDirectionalBias } from './analysis/momentum-directional-bias.ts';
 import { analyzeSideBalance } from './analysis/side-balance-monitor.ts';
 import { classifySuccessPattern } from './analysis/success-pattern.ts';
 import { SuccessPatternTracker } from './evolution/success-pattern-tracker.ts';
@@ -5206,14 +5207,47 @@ ${recentExamples}
 
   /** v2.0.870-sell-decay Fix E: 24h 動量（candleCache 1h 蠟燭, 由現時閉市價 vs ~24 支前）。
    *  用作 sell shadow 播種條件——數據不足時回 null（唔會誤觸發）。 */
+  /** v2.0.870-momentum-direction: 統一執行路徑——任何 symbol（active 或 trading market）
+   *  開倉都行同一個 F1 動量方向偏置 gate（per-symbol 各自 24h/4h 動量,股票同黃金
+   *  自然獨立判斷）。冇「multi-symbol path」概念——每個 symbol 第一公民。
+   *  返回 { confidence, blocked, reason }——blocked=true = 極端反勢 hard block。 */
+  private applyDirectionalBiasGate(
+    sym: string,
+    action: 'buy' | 'sell',
+    confidence: number,
+  ): { confidence: number; blocked: boolean; reason: string | null } {
+    try {
+      if (process.env['MOMENTUM_DIRECTION_GATE'] === 'false') return { confidence, blocked: false, reason: null };
+      const mom = this.compute24hMomentumPct(sym);
+      const mult = momentumDirectionalBias(action, mom);
+      if (mult === 0) {
+        return { confidence: 0, blocked: true, reason: `mom=${mom?.toFixed(2) ?? 'n/a'}% 極端反勢 ≥8% → HARD BLOCK` };
+      }
+      if (mult !== 1.0) {
+        return { confidence: confidence * mult, blocked: false, reason: `mom=${mom?.toFixed(2) ?? 'n/a'}% → ×${mult}` };
+      }
+      return { confidence, blocked: false, reason: null };
+    } catch { return { confidence, blocked: false, reason: null }; }
+  }
+
+  /** v2.0.870-sell-decay Fix E + v2.0.870-momentum-direction F3: 24h 動量（1h candle ≥25 支）
+   *  + 4h fallback（≥5 支 1h）——消除 xyz REST 下 1h candle 唔足導致嘅數據盲區
+   *  （SNDK thesis 有「4h -1.13%」但 24h 唔足）。返回 null = 數據不足（唔誤傷）。 */
   private compute24hMomentumPct(sym: string): number | null {
     try {
       const c1h = candleCache.peekCandles(sym, '1h');
       if (!c1h || c1h.length < 2) return null;
       const last = c1h[c1h.length - 1];
-      const ref = c1h[Math.max(0, c1h.length - 25)]; // ~24h (1h 蠟燊)
-      if (!last || !ref || !(last.c > 0) || !(ref.c > 0)) return null;
-      return ((last.c - ref.c) / ref.c) * 100;
+      if (!last || !(last.c > 0)) return null;
+      if (c1h.length >= 25) {
+        const ref = c1h[c1h.length - 25]; // ~24h (1h 蠟燊)
+        if (ref && ref.c > 0) return ((last.c - ref.c) / ref.c) * 100;
+      }
+      if (c1h.length >= 5) {
+        const ref4 = c1h[c1h.length - 5]; // ~4h fallback
+        if (ref4 && ref4.c > 0) return ((last.c - ref4.c) / ref4.c) * 100;
+      }
+      return null;
     } catch { return null; }
   }
 
@@ -11014,6 +11048,28 @@ ${recentExamples}
             }
             auditGates.push({ gate: 'direction-restrict', passed: true, reason: 'allowed' });
 
+            // ── v2.0.870-momentum-direction: 統一執行路徑──
+            // 每個 symbol 第一公民（股票/黃金各自 24h 動量獨立判斷）——F1 動量方向
+            // 偏置 gate 由共用 helper 管,任何 symbol 開倉都行同一個（冇「multi-symbol
+            // path」概念）。極端反勢（|mom|≥8%）hard block;順勢 boost。env 回滾。
+            try {
+              if (psc.action === 'buy' || psc.action === 'sell') {
+                const f2Sym = normalizeSymbol(psc.symbol);
+                const f2 = this.applyDirectionalBiasGate(f2Sym, psc.action as 'buy' | 'sell', psc.confidence);
+                if (f2.blocked) {
+                  log.warn(`🛑 [momentum-direction] ${psc.action.toUpperCase()} ${f2Sym}: ${f2.reason}`);
+                  auditGates.push({ gate: 'momentum-direction', passed: false, reason: f2.reason ?? 'HARD BLOCK' });
+                  this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
+                  continue;
+                }
+                if (f2.reason) {
+                  psc.confidence = f2.confidence;
+                  log.info(`[momentum-direction] ${psc.action.toUpperCase()} ${f2Sym}: ${f2.reason}`);
+                  auditGates.push({ gate: 'momentum-direction', passed: true, reason: f2.reason });
+                }
+              }
+            } catch { /* non-fatal——F1 gate 失敗唔 crash */ }
+
             // v2.0.764 → v2.0.820: Dynamic minimum volatility gate (multi-symbol) — SOFTENED.
             // vol === 0 → hard skip (feed broken, can't trade on phantom prices).
             // 0 < vol < threshold → soft: proportional confidence penalty so a
@@ -12455,6 +12511,25 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               effectiveConfidence *= g1Mult;
               log.info(`🔻 [momentum-olr-conflict] ${gateAction.toUpperCase()} ${g1Sym}: mom24h=${g1Mom?.toFixed(2) ?? 'n/a'}% 逆勢 vs OLR ${(g1OlrP * 100).toFixed(0)}% → conviction ×${g1Mult} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
               activeAuditGates.push({ gate: 'momentum-olr-conflict', passed: true, reason: `mom24h=${g1Mom?.toFixed(2) ?? 'n/a'}% 逆勢 OLR ${(g1OlrP * 100).toFixed(0)}% → ×${g1Mult} (soft)` });
+            }
+          }
+        } catch { /* non-fatal */ }
+
+        // ── v2.0.870-momentum-direction: 統一執行路徑——active symbol 同 trading
+        // market 都行同一個 F1 動量方向偏置 gate（共用 helper applyDirectionalBiasGate）。
+        // 主神 2026-08-25:「嗰啲時刻其實應該要 Sell」——順勢 boost + 極端反勢 hard block。
+        try {
+          if (gateAction === 'buy' || gateAction === 'sell') {
+            const f1Sym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+            const f1 = this.applyDirectionalBiasGate(f1Sym, gateAction as 'buy' | 'sell', effectiveConfidence);
+            if (f1.blocked) {
+              effectiveConfidence = 0;
+              log.warn(`🛑 [momentum-direction] ${gateAction.toUpperCase()} ${f1Sym}: ${f1.reason}`);
+              activeAuditGates.push({ gate: 'momentum-direction', passed: false, reason: f1.reason ?? 'HARD BLOCK' });
+            } else if (f1.reason) {
+              effectiveConfidence = f1.confidence;
+              log.info(`🔻 [momentum-direction] ${gateAction.toUpperCase()} ${f1Sym}: ${f1.reason} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
+              activeAuditGates.push({ gate: 'momentum-direction', passed: true, reason: f1.reason });
             }
           }
         } catch { /* non-fatal */ }
