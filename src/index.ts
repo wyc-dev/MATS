@@ -88,6 +88,7 @@ import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
 import { momentumOlrConflictMultiplier } from './analysis/momentum-olr-conflict.ts';
 import { momentumDirectionalBias, robustMomentumPct, shadowBoostSize } from './analysis/momentum-directional-bias.ts';
+import { computePersistenceScore, classifyPersistence, momentumDirectionalBiasPersistence, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
 import { analyzeSideBalance } from './analysis/side-balance-monitor.ts';
 import { classifySuccessPattern } from './analysis/success-pattern.ts';
 import { SuccessPatternTracker } from './evolution/success-pattern-tracker.ts';
@@ -5271,6 +5272,47 @@ ${recentExamples}
    *  （主神 2026-08-25: SNDK/DRAM 非 active 連續五筆跌勢開 BUY 就係 shadow-gate 只
    *  喺 active path 造成）。
    *  返回 { confidence, blocked, reason, size }——blocked=true = 極端反勢 / shadow 確認輸。 */
+  /** v2.0.870-sell-architecture: per-symbol 動量延續性（E1 數據驅動分類）——
+   *  persistent_bear（續跌型）/ range（反彈型）/ neutral（冷啟動）。
+   *  2.5h throttle 更新（每 symbol 1 次 1h fetch——唔拖慢 cycle）。 */
+  private persistenceCache = new Map<string, { score: number; n: number; updatedAt: number }>();
+  private persistenceUpdatedAt = 0;
+
+  private async updatePersistenceScores(): Promise<void> {
+    try {
+      if (Date.now() - this.persistenceUpdatedAt < 2.5 * 3600_000) return;
+      const syms = new Set<string>();
+      for (const s of this.portfolio.getOpenSymbols()) syms.add(s);
+      if (Array.isArray(this.tradingMarkets)) for (const m of this.tradingMarkets) syms.add(String(m));
+      for (const sym of syms) {
+        const norm = normalizeSymbol(sym);
+        const coin = sym.includes(':') ? sym : sym.toUpperCase();
+        const end = Date.now();
+        const start = end - 120 * 3600_000;
+        let candles: Array<{ c: number }> = [];
+        const { MarketAgent } = await import('./market-agent/index.ts');
+        for (const name of [coin.includes(':') ? coin : `xyz:${coin}`, coin]) {
+          try {
+            const d = await MarketAgent.hlFetch({ type: 'candleSnapshot', req: { coin: name, interval: '1h', startTime: start, endTime: end } }) as Array<{ c: number }> | null;
+            if (Array.isArray(d) && d.length > 30) { candles = d; break; }
+          } catch { /* next */ }
+        }
+        const res = computePersistenceScore(candles);
+        if (res) this.persistenceCache.set(norm, { score: res.score, n: res.n, updatedAt: Date.now() });
+      }
+      this.persistenceUpdatedAt = Date.now();
+      log.info(`📊 [persistence] 更新完成: ${[...this.persistenceCache.entries()].map(([k, v]) => `${k}=${classifyPersistence(v.score, v.n)}(${v.score.toFixed(2)},n${v.n})`).join(' ')}`);
+    } catch (err) {
+      log.warn(`[persistence] update failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private getPersistence(sym: string): Persistence {
+    const e = this.persistenceCache.get(normalizeSymbol(sym));
+    if (!e) return 'neutral';
+    return classifyPersistence(e.score, e.n);
+  }
+
   private applyEntryConvictionGates(
     sym: string,
     action: 'buy' | 'sell',
@@ -5294,9 +5336,13 @@ ${recentExamples}
       // F1: 動量方向偏置（順勢 boost / 逆勢逐級 / ≥8% hard block）
       if (process.env['MOMENTUM_DIRECTION_GATE'] !== 'false') {
         const mom = this.compute24hMomentumPct(sym);
-        const mult = momentumDirectionalBias(action, mom);
+        // v2.0.870-sell-architecture: persistence-aware 閾值——E1 實證 persistent_bear
+        // （SNDK/SKHX/DRAM 類）mom<0 後 4h 續跌（WR 52-71%）——BUY 喺 mom<0 → HARD BLOCK
+        // （唔等 8%——歷史 SNDK mom -1~-4% 照開 BUY 全蝕, 原 8% 閾值太高）。
+        const persistence = this.getPersistence(sym);
+        const mult = momentumDirectionalBiasPersistence(action, mom, persistence);
         if (mult === 0) {
-          return { confidence: 0, blocked: true, reason: `mom=${mom?.toFixed(2) ?? 'n/a'}% 極端反勢 ≥8% → HARD BLOCK`, size: 0 };
+          return { confidence: 0, blocked: true, reason: `mom=${mom?.toFixed(2) ?? 'n/a'}% ${persistence} 逆勢 → HARD BLOCK`, size: 0 };
         }
         if (mult !== 1.0) {
           confidence *= mult;
@@ -10053,6 +10099,10 @@ ${recentExamples}
           for (const m of (this.tradingMarkets ?? [])) allSyms.add(normalizeSymbol(m));
           for (const psc of pscList) allSyms.add(normalizeSymbol(psc.symbol));
 
+          // v2.0.870-sell-architecture: 動量延續性分類更新（2.5h throttle 內部——
+          // 每 cycle call 成本近零）——persistence 驅動 F1 閾值 + sell seed 資格。
+          void this.updatePersistenceScores().catch(() => {});
+
           for (const sym of allSyms) {
             const psc = pscList.find(p => normalizeSymbol(p.symbol) === sym);
             // Use per-symbol consensus action if available, else global lean
@@ -10139,13 +10189,13 @@ ${recentExamples}
                 const mom24h = this.compute24hMomentumPct(sym);
                 const mom4h = this.compute4hMomentumPct(sym);
                 const seedRegime = ms?.regime ?? 'unknown';
-                // P2 (v2.0.870-olr-hard-gate, 主神 2026-08-25): sell seed 質素收緊——
-                // ① mean_reverting 環境唔 seed（sell 喺 MR 反彈輸——實證 sell shadow
-                //    WR 0.7% 全輸——MR 低吸先啱, 強制 sell = 送數據毒化 OLR sell 統計）
-                // ② 雙確認: 24h 負 **且** (4h 負 或 trending_bear)——單一 4h 微跌係
-                //    短暫回調（之後反彈）——正正係垃圾 sell 源頭。
-                const mrEnv = typeof seedRegime === 'string' && seedRegime.includes('mean_reverting');
-                const bearish = !mrEnv
+                // v2.0.870-sell-architecture: persistence-aware seed——E1 實證
+                // 反彈型（BTC/BNB/GOLD）sell 全輸（bnb n=38 WR 0.7%→OLR 毒化）;
+                // 續跌型（SNDK/SKHX/DRAM）sell 4h edge 52-71%。所以 seed 資格 =
+                // persistent_bear（shouldSeedSell）——range 唔 seed。加 24h/4h 雙確認
+                // （單一 4h 微跌係短暫回調——正正係垃圾 sell 源頭）。
+                const pers = this.getPersistence(sym);
+                const bearish = shouldSeedSell(pers)
                   && (mom24h !== null && mom24h < 0)
                   && ((mom4h !== null && mom4h < 0) || seedRegime === 'trending_bear');
                 if (bearish && rlAction !== 'sell') {

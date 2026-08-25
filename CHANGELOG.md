@@ -4,7 +4,31 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
-## v2.0.870-exit-price-lock-confirm: 確認式鎖掛（大 winner 唔誤鎖，主神指令 2026-08-25）
+## v2.0.870-sell-architecture: 動量延續性架構（「不 SELL」第三次 fix 根因修正，主神指令 2026-08-25）
+
+**主神質疑**: 「不 SELL」問題 CHANGELOG 已修三次（sell-decay → sell-seed → sell-seed-accel），點解 40 單仍 100% BUY？
+
+**邏輯實驗 E1（真實 200 支 1h candles × 7 symbol）——三次 fix 架構失效根因**:
+- **BTC/BNB/GOLD（加密+貴金屬）= 反彈型**——mom24h<0 後 4h **反彈**（WR跌 11-40%）——sell 冇 edge
+- **SNDK/SKHX/DRAM（股票類）= 續跌型**——mom24h<0 後 4h **續跌**（WR跌 52-71%）——sell 4h 有 edge
+- 根因①: sell-seed 喺反彈型（BTC/BNB/GOLD）開 sell → **全輸（bnb|sell n=38 WR 0.7%）→ 毒化 OLR sell 統計 → 連應該 sell 嘅續跌型都冇 sell 訊號**——樣本「有開」但「開錯地方」
+- 根因②: F1 hard block 閾值 8% 太高——SNDK mom -1~-4% 唔到 8% → 只 ×0.85 → LLM 照開 BUY 全蝕
+- 根因③: sell 冇短持倉概念——SKHX sell 4h edge 71% 但 24h 反彈 +1.26%
+
+**架構（per-symbol 動態延續性分類——數據驅動, 唔 hardcode）**:
+- `src/analysis/momentum-persistence.ts`（新純函數）: `computePersistenceScore`（量度 mom<0 後續 4h 續跌比例）+ `classifyPersistence`（≥0.55 persistent_bear / ≤0.45 range / neutral 冷啟動）
+- **F1 persistence-aware**（`momentumDirectionalBiasPersistence`）: persistent_bear + BUY + mom<0 → **HARD BLOCK**（唔等 8%——SNDK 案例直接封）;range 沿用原 F1（低吸唔過度 block）;sell 順勢照 boost
+- **sell seed 資格**（`shouldSeedSell`）: 只有 persistent_bear 先 seed（反彈型唔再送數據毒化 OLR）
+- index.ts: `persistenceCache` + 2.5h throttle 更新（每 symbol 1 次 120 支 1h fetch）+ getPersistence
+
+**真實數據驗證（最近 120 支 candles）**: BTC 0.30 / BNB 0.15 / GOLD 0.24 / SILVER 0.39 → **range**;SNDK 0.56 / SKHX 0.64 / DRAM 0.56 → **persistent_bear**——分類器自動復現 E1 實驗結論。
+
+**Counterfactual 成效**: 40 單中 SNDK -5.78% / DRAM -2.39% / -3.72% / -3.45% / SNDK -1.89% / SKHX -0.77%（全部 persistent_bear symbol 嘅跌市 BUY）→ 新 gate **HARD BLOCK**（慳 ~18pp + sell 潛在正 EV——SKHX 4h WR 71%）。sell seed 只喺續跌型 → OLR sell 統計唔再毒化 → sell P 反映真環境。
+
+**驗證**: 新測試 15（persistence 計算/分類/F1 閾值/seed 資格/毒值）全綠;全量 3517 pass + 13 pre-existing（零新增）;tsc clean。
+
+---
+## v2.0.870-exit-price-lock-confirm: 確認式鎖定（大修復唔誤鎖，主神指令 2026-08-25）
 
 **主神問題**: 原 L3「回吐 ≥50% 即鎖」會唔會令 >19% 大 winner 賺少好多？
 
