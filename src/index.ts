@@ -85,7 +85,7 @@ import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analy
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
 import { momentumOlrConflictMultiplier } from './analysis/momentum-olr-conflict.ts';
-import { momentumDirectionalBias } from './analysis/momentum-directional-bias.ts';
+import { momentumDirectionalBias, robustMomentumPct } from './analysis/momentum-directional-bias.ts';
 import { analyzeSideBalance } from './analysis/side-balance-monitor.ts';
 import { classifySuccessPattern } from './analysis/success-pattern.ts';
 import { SuccessPatternTracker } from './evolution/success-pattern-tracker.ts';
@@ -5239,13 +5239,16 @@ ${recentExamples}
       if (!c1h || c1h.length < 2) return null;
       const last = c1h[c1h.length - 1];
       if (!last || !(last.c > 0)) return null;
+      // G3 (v2.0.870-momentum-direction-attack): ROBUST median 動量——單支 outlier
+      // spike 唔可以扭爆方向判決。24h 窗口 median per-candle return × 24;
+      // 唔足 25 支 fallback 4h（median over 5 支）。
       if (c1h.length >= 25) {
-        const ref = c1h[c1h.length - 25]; // ~24h (1h 蠟燊)
-        if (ref && ref.c > 0) return ((last.c - ref.c) / ref.c) * 100;
+        const mom = robustMomentumPct(c1h.slice(-25));
+        if (mom !== null && Math.abs(mom) > 1e-9) return mom;
       }
       if (c1h.length >= 5) {
-        const ref4 = c1h[c1h.length - 5]; // ~4h fallback
-        if (ref4 && ref4.c > 0) return ((last.c - ref4.c) / ref4.c) * 100;
+        const mom4 = robustMomentumPct(c1h.slice(-5));
+        if (mom4 !== null && Math.abs(mom4) > 1e-9) return mom4;
       }
       return null;
     } catch { return null; }
