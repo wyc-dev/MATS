@@ -23,7 +23,11 @@ const log = createLogger({ phase: 'llm-calib' });
 
 const NUM_BINS = 5;
 const BIN_SHRINK_K = 5;          // shrink = count/(count+K)——冷啟動唔過度校準
-const MIN_SAMPLES = 20;          // 每 bin 最少樣本先校準
+// v2.0.870-P1: MIN_SAMPLES 由 20 降到 5——治本關鍵。實證 40 單分桶後每桶
+// n=3-9,MIN_SAMPLES=20 令 calibrator 出世至今零校準(空腹死碼)。shrink 因子
+// count/(count+K) 已內建冷啟動保護(小樣本 → 強收縮向 0.5),唔需要再疊一個
+// 高 MIN_SAMPLES 硬閘。n=5 時 shrink=0.5(prior 同數據等權),係合理冷啟動。
+const MIN_SAMPLES = 5;           // 每 bin 最少樣本先校準(5 = Wilson CI 下限)
 const KLINE_READ_WINDOW = 20;    // 讀圖一致率窗口
 const DEFAULT_PATH = 'data/evolution/llm-conviction-calibration.json';
 
@@ -52,8 +56,11 @@ function binOf(conviction: number): number {
  *  empirical 負 → 校準負數);非 finite raw → 0.5 中性。 */
 export function calibrateBin(wins: number, losses: number, raw: number): number {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return 0.5;
-  const w = Math.max(0, wins);
-  const l = Math.max(0, losses);
+  // v2.0.870-P3-attack: Math.max(0, NaN) = NaN——毒 state 注入 NaN wins/losses
+  // 會令 empirical/shrink 全 NaN → 校準返 NaN 污染 gate。Number.isFinite guard
+  // 先 reject 非 finite,再 clamp 負數。
+  const w = Number.isFinite(wins) ? Math.max(0, wins) : 0;
+  const l = Number.isFinite(losses) ? Math.max(0, losses) : 0;
   const count = w + l;
   if (count <= 0) return raw; // 空 bin → identity(唔校準)
   const empirical = w / count;

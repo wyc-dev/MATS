@@ -29,6 +29,10 @@ import {
 const log = createLogger({ phase: 'ev-filter' });
 
 const MIN_SAMPLES = 20;             // 每 (symbol×side) 最少樣本
+// v2.0.870-P2: EV 硬閘最少樣本——低過軟閘 MIN_SAMPLES(20)。硬閘用點估計
+// EV(唔係 Wilson LB——Wilson LB 喺 n=10 時太保守,WR 50% 嘅 CI 下界得 27%,
+// 會誤殺「點 EV 正但樣本噪聲」嘅方向)。n≥10 時點估計 EV 符號已穩定。
+const EV_HARD_BLOCK_MIN_SAMPLES = 10;
 const DEFAULT_PATH = 'data/evolution/ev-filter.json';
 
 // ── v2.0.870-FIX(主神指示 2026-08-23): EV 時間衰減 τ=1d ──
@@ -61,7 +65,11 @@ export interface EVFilterState {
 const MAX_SAMPLES_PER_KEY = 300;
 
 function key(symbol: string, side: 'buy' | 'sell'): string {
-  return `${symbol}|${side}`;
+  // v2.0.870-P3-attack: 統一 truncate 到 24 chars——recordTrade 曾用
+  // symbol.slice(0,24) 但 getters 用 full symbol → symbol > 24 chars 時
+  // 存/取 key 唔一致 → 樣本靜默 miss(硬閘失效)。truncate 喺 key() 內部做,
+  // 所有 caller 自動一致。
+  return `${symbol.slice(0, 24)}|${side}`;
 }
 
 function emptyState(): EVFilterState {
@@ -139,7 +147,7 @@ export class EVFilter {
   recordTrade(symbol: string, side: 'buy' | 'sell', pnlPct: number, closedAt = Date.now()): void {
     if (!symbol || (side !== 'buy' && side !== 'sell')) return;
     if (!Number.isFinite(pnlPct)) return;
-    const k = key(symbol.slice(0, 24), side);
+    const k = key(symbol, side);
     const arr = this.state.samples[k] ?? [];
     const ct = Number(closedAt);
     arr.push({ pnlPct, closedAt: Number.isFinite(ct) && ct > 0 ? ct : Date.now() });
@@ -153,6 +161,44 @@ export class EVFilter {
     const arr = this.state.samples[k];
     if (!arr || arr.length === 0) return { ev: 0, pWin: 0, avgWin: 0, avgLoss: 0, n: 0 };
     return computeEV(arr);
+  }
+
+  /** v2.0.870-P2: 保守 EV(Wilson LB win rate)——硬閘用。點估計 EV 喺小樣本
+   *  下噪聲大,Wilson LB 係 95% CI 下界,保守估計「真實 EV 至少幾多」。
+   *  硬閘(不可逆 block)必須用保守估計,避免誤殺「真係正 EV 但樣本噪聲」嘅方向。
+   *  ⚠️ v2.0.870-P3-attack: 已改用點估計(shouldBlockNegativeEV)——Wilson LB 喺
+   *  n=10 時太保守(WR 50% CI 下界得 27%,誤殺正 EV)。此方法保留供未來
+   *  需要更保守硬閘時用。 */
+  getConservativeEVStats(symbol: string, side: 'buy' | 'sell'): { conservativeEV: number; wilsonLB: number; pWin: number; avgWin: number; avgLoss: number; n: number } {
+    const k = key(symbol, side);
+    const arr = this.state.samples[k];
+    if (!arr || arr.length === 0) return { conservativeEV: 0, wilsonLB: 0, pWin: 0, avgWin: 0, avgLoss: 0, n: 0 };
+    return computeConservativeEV(arr.map(x => x.pnlPct));
+  }
+
+  /** v2.0.870-P2: EV 硬閘——歷史負 EV(symbol×side)直接 block,唔係軟懲罰。
+   *  治本核心:系統喺最蝕嘅 symbol(bnb|buy WR 9%、SILVER|buy WR 0%)交易最多,
+   *  喺最賺嘅 symbol(btc|buy WR 100%)交易最少——反選擇。硬閘封殺「驗證過嘅
+   *  負 EV 方向」,令系統只喺「有歷史數據支持」嘅方向開倉。
+   *
+   *  設計(量化金融):
+   *    - n ≥ 10 先有資格(冷啟動唔 block——earn your data)
+   *    - 用點估計 EV(唔用 Wilson LB——Wilson LB 喺 n=10 時太保守,WR 50%
+   *      嘅 CI 下界得 27%,會誤殺「點 EV 正但樣本噪聲」嘅方向)
+   *    - EV < 0 → block(歷史蝕錢方向)
+   *    - EV ≥ 0 → 放行(即使樣本噪聲,點 EV 正 = 唔夠證據 block)
+   *
+   *  同 WINNER-FIRST 一致:唔 block <10 樣本(冷啟動),只 block「驗證過嘅負 EV」。 */
+  shouldBlockNegativeEV(symbol: string, side: 'buy' | 'sell'): { blocked: boolean; reason?: string } {
+    const { ev, n } = this.getEVStats(symbol, side);
+    if (n < EV_HARD_BLOCK_MIN_SAMPLES) return { blocked: false };
+    if (ev < 0) {
+      return {
+        blocked: true,
+        reason: `negative EV: ${symbol} ${side} EV=${(ev * 100).toFixed(2)}% (n=${n}) — 歷史蝕錢方向,block`,
+      };
+    }
+    return { blocked: false };
   }
 
   /** gate 乘數 ×[0.75, 1.25]——判斷層:正 EV boost(開單信心),負 EV 軟性降——

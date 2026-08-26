@@ -153,6 +153,10 @@ export interface DynamicThresholdInput {
    *  / time 40% with floor / edge 40% with hard bypass). When absent, the
    *  legacy idle-only path runs unchanged (zero-risk rollback). */
   hybridDecay?: HybridDecayInput;
+  /** v2.0.870-P4: 校準感知閾值——ECE(Expected Calibration Error)反映系統信心
+   *  有幾「老實」。ECE 高 = 過度自信(conf 0.6 實際 WR 10%)→ 收緊閾值(更選擇性);
+   *  ECE 低 = 校準良好 → 放鬆閾值(更多交易)。冷啟動(null/undefined)→ 中性。 */
+  calibrationECE?: number | null;
 }
 
 // ─── Hysteresis Scoring ────────────────────────────────────────────────────
@@ -342,6 +346,21 @@ function scoreRegime(
   }
 }
 
+/** v2.0.870-P4: 校準感知閾值——ECE(Expected Calibration Error)反映系統信心
+ *  有幾「老實」。ECE 高 = 過度自信(conf 0.6 實際 WR 10%)→ 收緊閾值(更選擇性);
+ *  ECE 低 = 校準良好 → 放鬆閾值(更多交易)。冷啟動(null/NaN)→ 中性。
+ *
+ *  量化金融:呢個係「治本」嘅第 6 因子——閾值反映系統實際準確率,唔係固定
+ *  [45-55%]。當 calibrator 話「你嘅信心有水份」(ECE>0.3),閾值自動升 1%
+ *  (totalScore +2 × 0.5%),令系統更選擇性;當校準良好(ECE<0.1),閾值降 1%,
+ *  令系統更進取。無 hysteresis(ECE 係慢變量,唔會邊界跳動)。 */
+export function scoreCalibrationECE(ece: number | null | undefined): number {
+  if (typeof ece !== 'number' || !Number.isFinite(ece)) return 0;
+  if (ece > 0.3) return 2;   // 過度自信 → 收緊
+  if (ece < 0.1) return -2;  // 校準良好 → 放鬆
+  return 0;
+}
+
 // ─── Calculator ────────────────────────────────────────────────────────────
 
 /**
@@ -415,7 +434,10 @@ export class DynamicThresholdCalculator {
     this.regimeScore = regimeRes.score;
 
     // 2. Sum and cap
-    const rawScore = this.wrScore + idleRes.score + this.drawdownScore + this.sharpeScore + this.regimeScore;
+    // v2.0.870-P4: 校準感知因子——ECE 反映系統信心有幾老實。過度自信(ECE>0.3)
+    // → +2 收緊;校準良好(ECE<0.1)→ -2 放鬆。冷啟動(null)→ 0 中性。
+    const calibScore = scoreCalibrationECE(input.calibrationECE);
+    const rawScore = this.wrScore + idleRes.score + this.drawdownScore + this.sharpeScore + this.regimeScore + calibScore;
     const totalScore = Math.max(-MAX_SCORE, Math.min(MAX_SCORE, rawScore));
 
     // 3. Map to threshold

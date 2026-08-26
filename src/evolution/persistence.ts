@@ -351,6 +351,15 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       // v2.0.143: Persist original SL/TP for exitThesis narrowing analysis
       originalStopLossPrice: (p as any).originalStopLossPrice,
       originalTakeProfitPrice: (p as any).originalTakeProfitPrice,
+      // v2.0.870-P1: Persist entry-time data pipeline fields so the
+      // LLMConvictionCalibrator + OLR/EXP/RIL entry-context survive restart.
+      // (P19' fixed the RESTORE path; this fixes the SAVE path — the allowlist
+      // rebuild was silently evaporating these fields on every save.)
+      entryConsensusConfidence: (p as any).entryConsensusConfidence,
+      entryOlrPWin: (p as any).entryOlrPWin,
+      entryShadowWinRate: (p as any).entryShadowWinRate,
+      regime: (p as any).regime,
+      entryMarketFeatures: (p as any).entryMarketFeatures,
     }));
 
     const serializedTrades = trades ? Array.from(trades).map(t => ({
@@ -377,6 +386,12 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       // v2.0.851: Persist HOW the position closed so it survives restart.
       closeReason: (t as any).closeReason,
       exitType: (t as any).exitType,
+      // v2.0.870-P1: Persist entry-time data pipeline fields (see positions above).
+      entryConsensusConfidence: (t as any).entryConsensusConfidence,
+      entryOlrPWin: (t as any).entryOlrPWin,
+      entryShadowWinRate: (t as any).entryShadowWinRate,
+      regime: (t as any).regime,
+      entryMarketFeatures: (t as any).entryMarketFeatures,
     })) : undefined;
 
     // v2.0.38: Serialize real (exchange) trades separately so they survive
@@ -405,6 +420,12 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       // v2.0.851: Persist HOW the position closed so it survives restart.
       closeReason: (t as any).closeReason,
       exitType: (t as any).exitType,
+      // v2.0.870-P1: Persist entry-time data pipeline fields (see positions above).
+      entryConsensusConfidence: (t as any).entryConsensusConfidence,
+      entryOlrPWin: (t as any).entryOlrPWin,
+      entryShadowWinRate: (t as any).entryShadowWinRate,
+      regime: (t as any).regime,
+      entryMarketFeatures: (t as any).entryMarketFeatures,
     })) : undefined;
 
     // v2.0.160: Serialize real positions so they survive restart with thesis + MAE/MFE
@@ -431,6 +452,12 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       maxValueReached: (p as any).maxValueReached,
       originalStopLossPrice: (p as any).originalStopLossPrice,
       originalTakeProfitPrice: (p as any).originalTakeProfitPrice,
+      // v2.0.870-P1: Persist entry-time data pipeline fields (see positions above).
+      entryConsensusConfidence: (p as any).entryConsensusConfidence,
+      entryOlrPWin: (p as any).entryOlrPWin,
+      entryShadowWinRate: (p as any).entryShadowWinRate,
+      regime: (p as any).regime,
+      entryMarketFeatures: (p as any).entryMarketFeatures,
     })) : undefined;
 
     const snapshot: PortfolioSnapshot = {

@@ -4,6 +4,89 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P3-attack + P4-calib-threshold: 攻擊輪硬化 + 校準感知閾值（主神 2026-08-26）
+
+**主神指令**: 「不擇手段使用任何出其不意的更刁鑽(併發/狀態注入/持久化污染)的攻擊方案…並以完美的方式修復漏洞…思考任何可以令系統提升盈利機會」。
+
+**攻擊輪（3 漏洞全修）**:
+| # | 漏洞 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| A1 | **key() truncate 不一致**——`recordTrade` 用 `symbol.slice(0,24)` 但 getters 用 full symbol → symbol > 24 chars 時存/取 key 唔一致 → 樣本靜默 miss（硬閘失效） | HIGH | `key()` 內部 truncate 到 24 chars——所有 caller 自動一致 |
+| A2 | **calibrateBin NaN 污染**——`Math.max(0, NaN) = NaN` → 毒 state 注入 NaN wins/losses → 校準返 NaN 污染 gate | MEDIUM | `Number.isFinite` guard 先 reject 非 finite 再 clamp 負數 |
+| A3 | `getConservativeEVStats` 死碼（Wilson LB 已改用點估計） | LOW | 保留 + 註釋標明供未來更保守硬閘用 |
+
+**已防禦確認（9 攻擊測試全綠）**: symbol > 24 chars key 一致 / calibrateBin NaN 唔返 NaN / shouldBlockNegativeEV 空 symbol + 含 `|` symbol 唔 crash / shouldForceSellOnImbalance null/NaN/Infinity/大小寫污染保守 / recordTrade closedAt=1e308 當最舊 / EVFilter load 毒 state（__proto__/NaN/非數值）sanitize。
+
+**盈利提升（P4 校準感知閾值——治本第 6 因子）**:
+- **`scoreCalibrationECE`**（`dynamic-threshold.ts`）: ECE（Expected Calibration Error）反映系統信心有幾老實。ECE > 0.3（過度自信，conf 0.6 實際 WR 10%）→ +2 收緊閾值（更選擇性）;ECE < 0.1（校準良好）→ -2 放鬆（更多交易）;冷啟動（null/NaN）→ 0 中性。
+- **接駁**（`index.ts`）: `calibrationECE: this.llmCalibrator?.getCalibrationReport()?.ece ?? null` 傳入 Plan G `compute()`——閾值反映系統實際準確率，唔係固定 [45-55%]。
+- **量化金融邏輯**: 當 calibrator 話「你嘅信心有水份」（ECE>0.3），閾值自動升 1%（totalScore +2 × 0.5%），令系統更選擇性;當校準良好（ECE<0.1），閾值降 1%，令系統更進取。呢個係「治本」嘅閉環——校準器唔只 shrink 信心，仲調校閾值。
+
+**驗證**: 新測試 13（攻擊 9 + P4 4）全綠;全量 3628 pass + 13 pre-existing（零新增）;tsc clean。
+
+**部署前事項（已完成）**: ① `scripts/rebackfill-ev-filter.ts`——重跑 EV Filter backfill 修復 bnb|buy 缺數據（EXP records 更新前 backfill 令 bnb 靜默缺失）;dedup 用 `(symbol|side|closedAt 秒)`（EXP 同 live 嘅 id 唔同）+ `normalizeSymbol`（唔用 toLowerCase——xyz: 名大細楷）。實證 bnb|buy n=82 EV+1.01%（近期 trade 轉贏 = Phase 1/2/3 生效）、SILVER|buy n=81 EV-6.02% BLOCK、MU|buy n=32 EV-0.73% BLOCK。② 單進程確認——tsx watch 已 kill stale 進程,只剩 1 個 backend 進程。
+
+---
+
+## v2.0.870-P3-side-balance: Side-Balance 硬性 SELL 探索（治本第三層——主神 2026-08-26）
+
+**主神指令**: 「phase3…必須同時 tune 好 exploration trade 部份」——治本第三層:斬斷 100% BUY 死循環。
+
+**根因（死循環鐵證）**: 40 單 100% BUY 零 SELL。`shouldExploreSell` 只喺 `persistent_bear`（SNDK/SKHX/DRAM）觸發，range symbol（BTC/BNB/GOLD）永遠唔探索 SELL → sell 樣本零回流 → OLR sell P(win) 鎖死 8-40% → LLM 唔 lean sell → 死循環。Side-Balance Monitor（G2）只 warn 唔行動。
+
+**修復（分布層對沖，唔係 signal 層強制）**:
+1. **`shouldForceSellOnImbalance`**（`side-balance-monitor.ts`）: extreme_buy（最近 20 單 ≥90% BUY 且 0 SELL）+ range 市場（mean_reverting/low_volatility）+ 近阻力位（positionInRange > 0.65）→ 強制 SELL。三個條件保證「唔逆勢接刀」——只喺有均值回歸 edge 嘅 range 市場阻力位 sell，trending_bull 追漲市場照 BUY。
+2. **Exploration 路徑接駁**（`index.ts`）: direction === 'buy' 時檢查 side-balance——extreme_buy + range + 近阻力 → 強制 direction = 'sell'。補 SELL 樣本回 OLR（每 cycle 每 range symbol 1 個），sell P(win) 重獲浮動，死循環斬斷。
+
+**驗證（邏輯實驗）**:
+- 新測試 9（`p3-side-balance-sell.test.ts`）: extreme_buy 偵測 / 強制 SELL 觸發 / trending_bull 唔觸發 / 近支撐唔觸發 / 垃圾輸入保守 / 邊界。
+- Backtest（`scripts/p3-side-balance-backtest.ts`）: 40 單 100% BUY → extreme_buy（buyShare=100%）;btc/bnb/GOLD @ mean_reverting/low_volatility @ 近阻力 → 強制 SELL ✅;trending_bull → 唔觸發 ✅。
+- 全量 3615 pass + 13 pre-existing（零新增）;tsc clean。
+
+**⚠️ 已知限制（主神知曉）**: ① force SELL 係分布層對沖（補樣本），唔係即時盈利——成效要 live 驗證 20 cycle 睇 sell 樣本有冇回流;② 只喺 range 市場觸發——trending_bull 照 100% BUY（但 trending_bull BUY 本身有 edge）;③ positionInRange 依賴 S/R 數據——S/R 缺失時唔觸發（保守）。
+
+---
+
+## v2.0.870-P2-ev-gate: Symbol×side EV 硬閘 + exploration 調校（治本第二層——主神 2026-08-26）
+
+**主神指令**: 「Fix phase2…必須同時 tune 好 exploration trade 部份」——治本第二層:封殺「驗證過嘅負 EV 方向」。
+
+**根因（反選擇鐵證）**: 40 單中 bnb|buy WR 9% 交易最多（11 單）、btc|buy WR 100% 交易最少（2 單）——系統喺最蝕嘅 symbol 交易最多、最賺嘅 symbol 交易最少。EV Filter（v2.0.865）只係軟乘數（×0.15-1.25），負 EV 只降權唔 block。
+
+**修復（三層）**:
+1. **`shouldBlockNegativeEV`**（`ev-filter.ts`）: n≥10 + 點估計 EV<0 → hard block（唔係軟懲罰）。用點估計唔用 Wilson LB（Wilson LB 喺 n=10 時太保守——WR 50% 嘅 CI 下界得 27%，會誤殺「點 EV 正但樣本噪聲」嘅方向）。冷啟動（n<10）唔 block（earn your data——同 WINNER-FIRST 一致）。
+2. **三條 entry 路徑接 EV 硬閘**（`index.ts`）: active symbol（conviction gate 前）+ per-symbol consensus（loss-streak 後）+ exploration（flipfix 後）——全部 block 負 EV 方向。
+3. **Exploration 調校**: ① EV 硬閘——exploration 唔探索「驗證過嘅負 EV 方向」（bnb|buy WR 9% 唔再送錢入去）;② SL 絕對 floor 1.5%——`expSL = max(0.015, min(0.03, 0.02×volScale))`（低波動時原本 1% → floor 1.5%，10x 槓桿下 1% price = 10% margin 正常波動就掃走）。
+
+**驗證（邏輯實驗）**:
+- 新測試 8（`p2-ev-hard-gate.test.ts`）: 負 EV block / 正 EV 放行 / 冷啟動唔 block / 分邊統計 / 邊界保守 / exploration SL floor。
+- Backtest（`scripts/p2-ev-gate-backtest.ts`，backfill 種子 + walk-forward 零 look-ahead）: 實際 40 單 -30.5% margin → EV 硬閘後 block 35 單（-63.5%）、keep 5 單（WR 80%，+33.1%）——改善 +63.5% margin。
+- 全量 3606 pass + 13 pre-existing（零新增）;tsc clean。
+
+**⚠️ 已知限制（主神知曉）**: ① backfill 種子令 EV 硬閘 block 87.5% 單（35/40）——「少交易、交易好」嘅選擇性 tradeoff，系統會幾乎只 trade btc（正 EV）;② bnb|buy 喺 production ev-filter.json 缺數據（backfill 時 EXP records 未更新）——需重跑 backfill 或等 live 累積;③ 點估計 EV 喺 n=10 時仍有噪聲——n 累積後更準。
+
+---
+
+## v2.0.870-P1-calibration: Ground-truth 校準管道修復（治本——主神 2026-08-26）
+
+**主神質疑**: 「你嘅修復方法真係治本嗎？我要嘅係每一個交易嘅準確性」——本座上一輪 fix（SL floor / cooldown / breakout 確認）係止血帶，唔係治本。
+
+**根因（40 單實證）**: 系統信心「反校準」——conf 0.6 實際 WR 10%、conf 0.7 實際 WR 25%（信心越高勝率越低）；bnb|buy n=11 WR 9% 交易最多、btc|buy n=2 WR 100% 交易最少（反選擇）。`LLMConvictionCalibrator`（v2.0.863）出世至今空腹死碼——`llm-conviction-calibration.json` 得 96 bytes（bins 空）。
+
+**三層修復（治本 = 校準 + 選擇性）**:
+1. **SAVE 路徑修復**（`persistence.ts`）: P19' 只修咗 RESTORE 路徑（spread-first），SAVE 路徑 `savePortfolio` 仍係 allowlist rebuild——`entryConsensusConfidence`/`entryOlrPWin`/`entryShadowWinRate`/`regime`/`entryMarketFeatures` 每次 save 靜默蒸發（實證 0/257 realTrades 有呢啲欄位）。四處 serialization（positions/serializedTrades/serializedRealTrades/serializedRealPositions）補返 5 欄位。
+2. **Backfill**（`index.ts` `backfillFromExpRecords`）: 用 `olrPWinAtEntry` 做 conviction proxy 餵 calibrator（consensus confidence 已喺 EXP records 遺失）——5-bin shrinkage 由第一個 cycle 就有 ground-truth 數據，唔使等 N 單 live trade。
+3. **MIN_SAMPLES 20→5**（`llm-conviction-calibrator.ts`）: 實證 40 單分桶後每桶 n=3-9，MIN_SAMPLES=20 令 calibrator 零校準。shrink 因子 `count/(count+K)` 已內建冷啟動保護（小樣本 → 強收縮向 0.5），唔需要再疊高 MIN_SAMPLES 硬閘。
+
+**驗證（邏輯實驗）**:
+- 新測試 6（`p1-calibration-backfill.test.ts`）: 過度自信 shrink 到現實 / 分邊統計 / 冷啟動 identity / save 路徑 round-trip 保留 5 欄位。
+- Backtest（`scripts/p1-calibration-backtest.ts`，40 單）: ECE=0.396（嚴重過度自信）；conf 0.6（WR 11%）→ 校準 0.26、conf 0.7（WR 29%）→ 0.26；counterfactual gate 50% 下 block 24 單（-18.0% margin）、keep 3 單（+18.1% margin）——實際 40 單 -45.45%。
+- 全量 3598 pass + 13 pre-existing（零新增）；tsc clean。
+
+**⚠️ 已知限制（主神知曉）**: ① 樣本少（27 單有 conviction 數據）——counterfactual 唔係統計結論，需 live 驗證 20 cycle；② 5-bin 粒度會混 conf 0.4（WR 25%）同 0.5（WR 67%）——細 bin 需更多樣本；③ backfill 用 olrPWinAtEntry 做 proxy（consensus confidence 已遺失）——live 累積 entryConsensusConfidence 後自動校正。
+
+---
+
 ## v2.0.870-gatedir-fix: gateAction 方向修正 + 四窗顯示標方向（主神 2026-08-25）
 
 **主神質問**: 「Hard Block 你有無分 BUY / SELL 架？」——SNDK trending_bear 跌市顯示 `four-window: both_against — HARD BLOCK` 但 Majority HOLD。
