@@ -46,3 +46,27 @@ export function analyzeSideBalance(
   }
   return { windowN: n, buyCount, sellCount, buyShare, state: 'balanced' };
 }
+
+/** v2.0.870-P3: 硬性 SELL 探索——extreme_buy 失衡時,range(均值回歸)市場
+ *  近阻力位 → 強制 SELL(分布層對沖)。
+ *
+ *  量化金融設計(避免「強制 = 逆勢接刀」嘅 G2 原限制):
+ *    - 只喺 extreme_buy(最近 20 單 ≥90% BUY 且 0 SELL)時觸發——斬斷 100% BUY 死循環
+ *    - 只喺 range 市場(mean_reverting / low_volatility)——均值回歸有 edge,
+ *      唔係 trending_bull(追漲市場逆勢 sell = 送死)
+ *    - 只喺近阻力位(positionInRange > 0.65)——均值回歸話「阻力位回落」,
+ *      唔係喺 support 位追跌
+ *
+ *  呢個係分布層對沖(補 sell 樣本回 OLR),唔係 signal 層強制——只適用於
+ *  有均值回歸 edge 嘅 range 市場,trending_bull 照樣 BUY。垃圾輸入保守(唔觸發)。 */
+export function shouldForceSellOnImbalance(
+  sideBalance: SideBalanceSnapshot | null | undefined,
+  regime: string | null | undefined,
+  positionInRange: number,
+): boolean {
+  if (!sideBalance || sideBalance.state !== 'extreme_buy') return false;
+  const isRange = regime === 'mean_reverting' || regime === 'low_volatility';
+  if (!isRange) return false;
+  if (typeof positionInRange !== 'number' || !Number.isFinite(positionInRange)) return false;
+  return positionInRange > 0.65;
+}

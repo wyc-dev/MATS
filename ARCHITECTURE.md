@@ -1,9 +1,30 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-gatedir-fix
+> **作者**: YC Wong · **版本**: 2.0.870-P4-calib-threshold
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## v2.0.870-P1~P4 治本四層（2026-08-26）：校準 + 選擇性 + 對沖 + 閉環
+
+**主神質疑**: 「你嘅修復方法真係治本嗎？我要嘅係每一個交易嘅準確性」——本座上一輪 fix（SL floor / cooldown / breakout 確認）係止血帶，唔係治本。40 單實證：信心反校準（conf 0.6 實際 WR 10%）、反選擇（bnb|buy WR 9% 交易最多、btc|buy WR 100% 交易最少）、100% BUY 死循環。
+
+**四層治本架構**：
+
+| 層 | 組件 | 機制 | 成效 |
+|:---|:-----|:-----|:-----|
+| **P1 校準** | `LLMConvictionCalibrator`（MIN_SAMPLES 20→5）+ `savePortfolio` entry-time 欄位 + `backfillFromExpRecords` 種子 | 信心反校準 → shrink 到現實 | conf 0.6（WR 11%）→ 0.26，gate block |
+| **P2 選擇性** | `EVFilter.shouldBlockNegativeEV()`（n≥10 + 點估計 EV<0 → hard block）三路徑接駁 | 負 EV 方向 block | 封殺 bnb/dram/sndk/silver/gold/sp500，只留 btc |
+| **P3 對沖** | `shouldForceSellOnImbalance()`（extreme_buy + range + 近阻力 → 強制 SELL） | 分布層對沖，補 sell 樣本回 OLR | 斬斷 100% BUY 死循環 |
+| **P4 閉環** | `scoreCalibrationECE()`（ECE>0.3 → +2 收緊、ECE<0.1 → -2 放鬆）Plan G 第 6 因子 | 閾值反映實際準確率 | ECE=0.396 → 收緊閾值 |
+
+**攻擊輪硬化（3 漏洞全修）**: ① `key()` truncate 一致（symbol > 24 chars 存/取 key 唔一致 → 樣本靜默 miss）;② `calibrateBin` NaN guard（`Math.max(0, NaN) = NaN` 污染 gate）;③ `getConservativeEVStats` 死碼標註。9 攻擊測試全綠。
+
+**部署前事項（已完成）**: `scripts/rebackfill-ev-filter.ts` 重跑 EV Filter backfill（bnb|buy 缺數據修復，dedup 用 `(symbol|side|closedAt 秒)` + `normalizeSymbol`）;單進程確認（tsx watch 已 kill stale 進程）。
+
+**驗證**: 全量 3628 pass + 13 pre-existing（零新增）;tsc clean。Backtest：P1 conf 0.6→0.26、P2 40 單 -30.5% → +33.1%（改善 +63.5%）、P3 40 單 100% BUY → extreme_buy 強制 SELL、P4 ECE=0.396 收緊。
 
 ---
 

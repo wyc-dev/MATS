@@ -91,7 +91,7 @@ import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidenc
 import { momentumOlrConflictMultiplier } from './analysis/momentum-olr-conflict.ts';
 import { momentumDirectionalBias, robustMomentumPct, shadowBoostSize } from './analysis/momentum-directional-bias.ts';
 import { computePersistenceScore, classifyPersistence, momentumDirectionalBiasPersistence, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
-import { analyzeSideBalance } from './analysis/side-balance-monitor.ts';
+import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
 import { classifySuccessPattern } from './analysis/success-pattern.ts';
 import { SuccessPatternTracker } from './evolution/success-pattern-tracker.ts';
 import { computeMaeMfeSLTP } from './analysis/mae-mfe-sltp.ts';
@@ -7265,6 +7265,7 @@ ${recentExamples}
       let qrlFed = 0; // v2.0.855-fix: Q-RL Alpha Discovery backfill count
       let evFed = 0; // v2.0.865-fix: EV Filter backfill
       let dirFed = 0; // v2.0.865-fix: Direction Verifier outcome backfill
+      let calibFed = 0; // v2.0.870-P1: LLM Conviction Calibrator backfill
       let skipped = 0;
 
       // v2.0.865-fix6(主神要求——資料完整性):
@@ -7471,6 +7472,23 @@ ${recentExamples}
           comboFed++;
         } catch { /* non-critical */ }
 
+        // v2.0.870-P1: LLM Conviction Calibrator backfill — feed with
+        // olrPWinAtEntry as conviction proxy (consensus confidence was never
+        // persisted in EXP records). Gives the calibrator immediate ground-truth
+        // data so the 5-bin shrinkage can start shrinking overconfident
+        // predictions from the first cycle, instead of starving until N live
+        // trades accumulate entryConsensusConfidence.
+        if (this.llmCalibrator && Number.isFinite(rec.olrPWinAtEntry)) {
+          try {
+            this.llmCalibrator.recordDecision(
+              side,
+              safeNum(rec.olrPWinAtEntry, 0.5),
+              outcome === 1 ? 'win' : 'loss',
+            );
+            calibFed++;
+          } catch { /* non-critical */ }
+        }
+
         // v2.0.841: Backfill evolution components (Self-Improver, Causal, Meta-Learner)
         // from existing EXP records. 1038 records have marketFeatures + regime + pnlPct.
         if (mf && typeof mf === 'object' && Object.keys(mf).length > 0) {
@@ -7618,7 +7636,7 @@ ${recentExamples}
       if (this.llmDirectionVerifier && llmDirectionConfig.enabled) {
         try { this.llmDirectionVerifier.markBackfillDone(); this.llmDirectionVerifier.save(); } catch { /* best-effort */ }
       }
-      log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, Combo=${comboFed}, Attr=${attrFed}, QRL=${qrlFed}, EV=${evFed}, DIR=${dirFed}, skipped=${skipped}`);
+      log.info(`[exp-backfill] Replayed ${lines.length} EXP records: OLR=${olrFed}, NA=${naFed}, AttnRes=${attnresFed}, Cluster=${clusterFed}, CHR=${chrFed}, Advanced=${advancedFed}, Combo=${comboFed}, Attr=${attrFed}, QRL=${qrlFed}, EV=${evFed}, DIR=${dirFed}, Calib=${calibFed}, skipped=${skipped}`);
 
       // v2.0.859: Persist OLR backfill completion (same idempotency contract
       // as Q-RL). Mark only when records were actually fed (olrFed > 0) — if
@@ -11003,6 +11021,37 @@ ${recentExamples}
             }
           }
 
+          // v2.0.870-P2: EV 硬閘——exploration 唔探索「驗證過嘅負 EV 方向」。
+          // 治本:exploration 係「探索未知」,唔係「重複已知蝕錢方向」。
+          // bnb|buy WR 9% 呢啲方向,exploration 唔應該再送錢入去。
+          if (direction && this.evFilter && evFilterConfig.enabled) {
+            const evGate = this.evFilter.shouldBlockNegativeEV(normalizeSymbol(exploreTarget), direction as 'buy' | 'sell');
+            if (evGate.blocked) {
+              log.warn(`🧪 [ev-hard-gate] Exploration ${direction.toUpperCase()} ${exploreTarget}: ${evGate.reason}`);
+              direction = null;
+              finalDecision = result.consensus.decision; // keep HOLD
+            }
+          }
+
+          // v2.0.870-P3: Side-Balance 硬性 SELL 探索——extreme_buy 失衡 + range 市場
+          // 近阻力位 → 強制 SELL(分布層對沖)。斬斷 100% BUY 死循環。
+          // 量化金融:只喺 range(均值回歸)市場近阻力位 sell——有均值回歸 edge,
+          // 唔係 trending_bull 追漲市場逆勢接刀。
+          if (direction === 'buy' && srCtx) {
+            const sbDistSupport = srCtx.distanceToSupportBps;
+            const sbDistResist = srCtx.distanceToResistanceBps;
+            const sbTotal = sbDistSupport + sbDistResist;
+            const sbPositionInRange = sbTotal > 0 ? sbDistSupport / sbTotal : 0.5;
+            const sbClosed = this.portfolio?.getClosedRealTrades() ?? [];
+            const sbSnap = analyzeSideBalance(
+              sbClosed.slice(-20).map(t => ({ side: normalizeTradeSide(t.side) === 'sell' ? 'sell' : 'buy' })),
+            );
+            if (shouldForceSellOnImbalance(sbSnap, expState.regime, sbPositionInRange)) {
+              direction = 'sell';
+              log.info(`🧪 [side-balance] extreme_buy + range(${expState.regime}) + 近阻力(${(sbPositionInRange * 100).toFixed(0)}%) → 強制 SELL（分布層對沖，斬斷 100% BUY 死循環）`);
+            }
+          }
+
           // If all signals neutral, skip — don't default to buy
           if (!direction) {
             log.info(`🧪 All signals neutral — skipping exploration (no edge detected)`);
@@ -11165,7 +11214,11 @@ ${recentExamples}
             // vol=0.04 → scale=2.0 (4%/10%, capped at 3%/5%).
             const expVolRaw = expState.volatility ?? 0;
             const volScale = expVolRaw > 0 ? Math.max(0.5, Math.min(2.0, expVolRaw / 0.02)) : 1.0;
-            const expSL = Math.min(0.03, 0.02 * volScale);
+            // v2.0.870-P2: SL 絕對 floor 1.5%——exploration 都唔可以開太貼嘅 SL
+            // (10x 槓桿下 1% price = 10% margin,正常波動就掃走)。computeSmartSLTP
+            // 會再 apply floor,但呢度 belt-and-suspenders 確保 decision.stopLossPct
+            // 本身唔低過 1.5%。
+            const expSL = Math.max(0.015, Math.min(0.03, 0.02 * volScale));
             const expTP = Math.min(0.05, 0.05 * volScale);
 
             finalDecision = {
@@ -11438,6 +11491,21 @@ ${recentExamples}
               auditGates.push({ gate: 'loss-streak', passed: true, reason: `soft: conviction +${(lossStreakResult.convictionPenalty * 100).toFixed(0)}%` });
             } else {
               auditGates.push({ gate: 'loss-streak', passed: true, reason: 'no penalty' });
+            }
+
+            // v2.0.870-P2: EV 硬閘——歷史負 EV(symbol×side)直接 block(治本)。
+            // 反選擇根因:bnb|buy WR 9% 交易最多、btc|buy WR 100% 交易最少。
+            // 硬閘封殺「驗證過嘅負 EV 方向」(n≥10 + 點估計 EV<0),
+            // 令系統只喺「有歷史數據支持」嘅方向開倉。冷啟動(n<10)唔 block。
+            if (this.evFilter && evFilterConfig.enabled && (psc.action === 'buy' || psc.action === 'sell')) {
+              const evGate = this.evFilter.shouldBlockNegativeEV(normalizeSymbol(psc.symbol), psc.action as 'buy' | 'sell');
+              if (evGate.blocked) {
+                log.warn(`🛑 [ev-hard-gate] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol}: ${evGate.reason}`);
+                auditGates.push({ gate: 'ev-hard-gate', passed: false, reason: evGate.reason ?? 'negative EV' });
+                this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
+                continue;
+              }
+              auditGates.push({ gate: 'ev-hard-gate', passed: true, reason: 'EV OK (or cold-start)' });
             }
 
             // v2.0.106: Check per-asset filter gate
@@ -12404,6 +12472,9 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
           // into the Plan G multiplicative boostFactor. Previously this value
           // was stored as a negative _lossStreakPenalty and clipped to 0 here.
           winnerBoost: Math.max(0, safeNum(this._winnerBoost, 0)),
+          // v2.0.870-P4: 校準感知閾值——ECE 反映系統信心有幾老實。過度自信
+          // (ECE>0.3)→ 收緊閾值;校準良好(ECE<0.1)→ 放鬆。冷啟動(null)→ 中性。
+          calibrationECE: this.llmCalibrator?.getCalibrationReport()?.ece ?? null,
         };
         const dtcResult = this.dynamicThresholdCalc.compute(dtcInput, gateSymbol);
         const effectiveThreshold = dtcResult.threshold;
@@ -12491,6 +12562,22 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             // consensus 話對側——實現 flip 意圖——唔清除 pending（等 executeTrade 成功先清除——
             // 如果對側開倉失敗（gate block），pending 保留——下次同側仍然 block——防雙重損失）
             log.info(`🔄 [flip-guard] ${finalDecision.symbol || activeSymbol}: pending flip intent ${pendingFlip.side.toUpperCase()} — opening opposite side (pending cleared on successful execution)`);
+          }
+        }
+
+        // v2.0.870-P2: EV 硬閘——active symbol 都唔可以開「驗證過嘅負 EV 方向」。
+        // 治本:反選擇根因(bnb|buy WR 9% 交易最多、btc|buy WR 100% 交易最少)。
+        // 硬閘封殺 n≥10 + 點估計 EV<0 嘅方向,令系統只喺「有歷史
+        // 數據支持」嘅方向開倉。冷啟動(n<10)唔 block。
+        if ((finalDecision.action === 'buy' || finalDecision.action === 'sell') && this.evFilter && evFilterConfig.enabled) {
+          const evGate = this.evFilter.shouldBlockNegativeEV(normalizeSymbol(finalDecision.symbol || activeSymbol), finalDecision.action as 'buy' | 'sell');
+          if (evGate.blocked) {
+            log.warn(`🛑 [ev-hard-gate] Active ${finalDecision.action.toUpperCase()} ${finalDecision.symbol || activeSymbol}: ${evGate.reason}`);
+            finalDecision = {
+              ...finalDecision,
+              action: 'hold',
+              rationale: `[EV HARD GATE] ${evGate.reason}`,
+            };
           }
         }
 
