@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-decay-sweep-attack2-fix
+> **作者**: YC Wong · **版本**: 2.0.870-gatedir-fix
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
@@ -23,6 +23,31 @@
 **防禦（兩輪攻擊輪硬化）**: 未來 ts（1e308）runtime 注入照清、垃圾 key 格式驗證（`symbol|buy/sell` + 防 prototype pollution）、env 注入 clamp（tau <0.01h / cutoff <1h 或 >8760h → default 24h）、now 垃圾/未來 fallback、denormal（1e-300）分母爆炸 clamp。
 
 **驗證**: 新測試 37（decay-sweep 15 + attack 12 + attack2 10）全綠; 全量 3588 pass + 13 pre-existing（零新增）; tsc clean。
+
+---
+
+## v2.0.870-gatedir-fix（2026-08-25）：gateAction 方向修正——HOLD 唔再 fallback BUY
+
+**主神質問**: 「Hard Block 你有無分 BUY / SELL 架？」——SNDK trending_bear 跌市顯示 `four-window: both_against — HARD BLOCK` 但 Majority HOLD。
+
+**診斷**: 函式層一直有分方向——`checkFourWindowAlignment`（reversal-point.ts）用 `expect = side === 'buy' ? 1 : -1` 鏡像：BUY 兩窗逆 → block；同一數據 SELL 係順勢 → aligned。**執行層 bug**: `gateAction`（index.ts）喺 `finalDecision.action` 唔係 buy/sell（HOLD/CLOSE）時 fallback 去 `'buy'`——成條 entry gate chain 用 BUY 角度跑。
+
+**5 連環 bug（全源於 fallback）**:
+1. 四窗/全部 entry gates 用 BUY 檢查——HOLD 都 block（SNDK 跌市 5m/15m 對 BUY 兩窗都逆）
+2. `recordJudgment` 誤記 BUY——毒化 direction verifier 統計（HOLD 判斷被記成 BUY 方向）
+3. `trendAlignmentMultiplier` 誤計（函式接受 hold → neutral，但 fallback 令佢用 BUY 計算）
+4. calibratedConsensus / evFilter(3) / comboBlend / causal / qrl / chart 全部誤用 BUY 方向
+5. 顯示冇方向——主神無法分辨
+
+**修復（零 gate 強度改變——純方向語義修正）**:
+- `gateAction: 'buy' | 'sell' | 'hold'`——保留真方向（HOLD → 'hold'），唔再 fallback
+- 現有 `gateAction === 'buy' || 'sell'` guard 全部自動 skip hold（HOLD 冇 entry 意圖——唔應該行 entry gates）
+- 10 個裸用點加 hold guard：`calibratedConsensus`（HOLD 唔校準→consensus 原值）、`recordJudgment`（HOLD 唔記錄——內部 reject 非 buy/sell）、`evFilter.getEVMultiplier/getShapeMultiplier/getConvexityMultiplier`（HOLD → 1.0）、`comboBlend`（HOLD → null）、`computeCausalConvictionMultiplier/computeQRLExpectancyMultiplier/computeChartConviction`（HOLD → 1.0）
+- Plan-G threshold override 加 `gateAction !== 'hold'`——HOLD 唔行 threshold 比較（唔會 override HOLD → HOLD 製造假 log）
+- `lastJudgeGateAction` field 型別含 'hold'（9188/9195 consumer 加 hold guard）
+- **顯示**: 四窗 + conviction-gate audit reason 帶 `[BUY]/[SELL]` 標記（`four-window[BUY]: both_against — HARD BLOCK`）
+
+**驗證（新鏡像測試 4，全綠）**: 主神案例（SNDK 跌勢 m15m=-0.3 m5m=-0.2）BUY → both_against block / SELL → aligned ×1.1（順勢）; 升勢鏡像對稱; 死儩彈鏡像（5m順+15m逆 → BUY dead_cat block / SELL pullback ×1.0）。全量 3592 pass + 13 pre-existing; tsc clean。
 
 ---
 
