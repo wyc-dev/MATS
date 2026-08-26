@@ -545,8 +545,8 @@ class MATSSystem {
   private successPatternTracker!: SuccessPatternTracker;
   /** v2.0.864: 上次記錄判斷時嘅 rationale(block 注入用) */
   private lastJudgeRationale = '';
-  /** v2.0.865: 上次判斷嘅 gateAction(block 注入用) */
-  private lastJudgeGateAction: 'buy' | 'sell' = 'buy';
+  /** v2.0.865: 上次判斷嘅 gateAction(block 注入用) — v2.0.870-gatedir-fix: 含 hold */
+  private lastJudgeGateAction: 'buy' | 'sell' | 'hold' = 'hold';
   /** v2.0.865-fix3: 今次決策嘅 consensus confidence(開倉傳遞用——
    *  舊用 lastHACPResult = 上 cycle,錯配——Conviction Calibrator/Meta-Calibrator 全錯) */
   private lastCycleConsensusConfidence = 0.5;
@@ -9184,14 +9184,14 @@ ${recentExamples}
       } catch { /* non-fatal */ }
       // v2.0.868-P1P2: ENTRY QUALITY block(入場確認統計——負偏度解藥)
       try {
-        if (this.entryQuality && activeSymbol) {
-          const entryAdv = this.entryQuality.getAdvice(normalizeSymbol(activeSymbol), this.lastJudgeGateAction ?? 'buy');
+        if (this.entryQuality && activeSymbol && this.lastJudgeGateAction !== 'hold') {
+          const entryAdv = this.entryQuality.getAdvice(normalizeSymbol(activeSymbol), this.lastJudgeGateAction);
           if (entryAdv) marketDesc += `\n${entryAdv}`;
         }
       } catch { /* non-fatal */ }
       // v2.0.865: EV FILTER block(期望值——正 EV 先值得開)
       try {
-        if (this.evFilter && evFilterConfig.enabled && activeSymbol) {
+        if (this.evFilter && evFilterConfig.enabled && activeSymbol && this.lastJudgeGateAction !== 'hold') {
           const evBlock = this.evFilter.getEVBlock(normalizeSymbol(activeSymbol), this.lastJudgeGateAction);
           if (evBlock) marketDesc += `\n${evBlock}`;
         }
@@ -12494,14 +12494,22 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           }
         }
 
-        const gateAction = (finalDecision.action === 'buy' || finalDecision.action === 'sell')
+        // v2.0.870-gatedir-fix（主神 2026-08-25）: gateAction 唔可以 fallback 去
+        // 'buy'——HOLD/CLOSE 時成條 entry gate chain 會用 BUY 角度跑（誤記
+        // verifier / trend-alignment / 誤 block）。保留真方向; 所有現有
+        // `gateAction === 'buy' || gateAction === 'sell'` guard 自動 skip
+        // hold（HOLD 冇 entry 意圖——唔應該行 entry gates）。
+        const hasEntryIntent = finalDecision.action === 'buy' || finalDecision.action === 'sell';
+        const gateAction: 'buy' | 'sell' | 'hold' = hasEntryIntent
           ? (finalDecision.action as 'buy' | 'sell')
-          : 'buy';
+          : 'hold';
 
         // ── v2.0.863 規限①: LLM conviction 校準——LLM 自報 conviction 受歷史 bin 校準
         // (LLM 話 0.85 但 bin 實際 40% → 用 40%)。冷啟動(樣本<20)→ 中性。
-        const calibratedConsensus = this.llmCalibrator && llmCalibrationConfig.enabled
-          ? this.llmCalibrator.getCalibratedConviction(gateAction, consensusConfidence)
+        // v2.0.870-gatedir-fix: HOLD 冇方向 → 唔校準（直接 consensus 原值）——
+        // 唔可以用 fallback buy 誤校準。
+        const calibratedConsensus = (gateAction !== 'hold' && this.llmCalibrator && llmCalibrationConfig.enabled)
+          ? this.llmCalibrator.getCalibratedConviction(gateAction as 'buy' | 'sell', consensusConfidence)
           : consensusConfidence;
         // ── v2.0.864: LLM Direction Verifier——每 cycle 記錄 LLM 方向判斷(包括 HOLD/冇落單)
         // 判斷時 price 凍結——下個 cycle 用現價驗證 B 方向預測;平倉時記錄 C 終極結果
@@ -12510,13 +12518,18 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             const judgeSymbol = normalizeSymbol(finalDecision.symbol || activeSymbol);
             // P20-C: strict price——fallback 返嚟嘅另一 symbol 價會毒化錨點
             const judgePrice = this.getMarkPriceStrict(judgeSymbol);
-            this.llmDirectionVerifier.recordJudgment(
-              judgeSymbol,
-              gateAction,
-              this.extractTrendType(finalDecision.rationale),
-              this.totalCycles,
-              judgePrice ?? undefined,
-            );
+            // v2.0.870-gatedir-fix: HOLD 時 recordJudgment 內部會 reject
+            // （direction !== buy/sell → return null）——唔好 fallback 誤記 BUY
+            // （毒化 direction verifier 統計）。真方向先記錄。
+            if (gateAction !== 'hold') {
+              this.llmDirectionVerifier.recordJudgment(
+                judgeSymbol,
+                gateAction as 'buy' | 'sell',
+                this.extractTrendType(finalDecision.rationale),
+                this.totalCycles,
+                judgePrice ?? undefined,
+              );
+            }
             this.lastJudgeRationale = typeof finalDecision.rationale === 'string' ? finalDecision.rationale : '';
             this.lastJudgeGateAction = gateAction;
           } catch { /* non-fatal */ }
@@ -12528,23 +12541,26 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             )
           : 1.0;
         // v2.0.865: EV Filter 乘數——負 EV(手續費都搵唔返)軟性降
-        const evMultiplier = this.evFilter && evFilterConfig.enabled
+        // v2.0.870-gatedir-fix: HOLD 冇方向 → ×1.0（唔 fallback buy 誤計 EV）
+        const evMultiplier = (this.evFilter && evFilterConfig.enabled && gateAction !== 'hold')
           ? this.evFilter.getEVMultiplier(
               normalizeSymbol(finalDecision.symbol || activeSymbol),
-              gateAction,
+              gateAction as 'buy' | 'sell',
             )
           : 1.0;
         // v2.0.869-P8: Distribution Shape Gate(偏度/峰度)+ Convexity Detector(Wilson LB)
-        const shapeMultiplier = this.evFilter && evFilterConfig.enabled
+        // v2.0.870-gatedir-fix: HOLD → 唔計 shape（fallback 誤判肥尾）
+        const shapeMultiplier = (this.evFilter && evFilterConfig.enabled && gateAction !== 'hold')
           ? this.evFilter.getShapeMultiplier(
               normalizeSymbol(finalDecision.symbol || activeSymbol),
-              gateAction,
+              gateAction as 'buy' | 'sell',
             )
           : 1.0;
-        const convexityMultiplier = this.evFilter && evFilterConfig.enabled
+        // v2.0.870-gatedir-fix: HOLD → 1.0（唔 fallback 誤計 convexity）
+        const convexityMultiplier = (this.evFilter && evFilterConfig.enabled && gateAction !== 'hold')
           ? this.evFilter.getConvexityMultiplier(
               normalizeSymbol(finalDecision.symbol || activeSymbol),
-              gateAction,
+              gateAction as 'buy' | 'sell',
             )
           : 1.0;
         if (shapeMultiplier < 1.0 || convexityMultiplier < 1.0) {
@@ -12561,7 +12577,10 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             }
           }
         } catch { /* non-fatal */ }
-        const comboBlend = this.comboTracker.getComboBlendFactor(pwinSym, gateAction, regime);
+        // v2.0.870-gatedir-fix: HOLD 冇方向 → 唔查 combo（fallback 誤 override blend）
+        const comboBlend = gateAction !== 'hold'
+          ? this.comboTracker.getComboBlendFactor(pwinSym, gateAction as 'buy' | 'sell', regime)
+          : null;
         let pwinBlendFactor = olrBlendFactor;
         let comboBlendUsed: { blendFactor: number; reason: string } | null = null;
         if (comboBlend && comboBlend.blendFactor > olrBlendFactor) {
@@ -12764,11 +12783,12 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
                 // HARD BLOCK——直接 HOLD（effectiveConfidence = 0 保證過唔到 gate）
                 effectiveConfidence = 0;
                 log.warn(`🛑 [four-window] ${gateAction.toUpperCase()} ${maSym}: ${fw.reason} — HARD BLOCK (m4h=${m4h?.toFixed(2) ?? 'N/A'}% m1h=${m1h?.toFixed(2) ?? 'N/A'}% m15m=${m15m?.toFixed(2) ?? 'N/A'}% m5m=${m5m?.toFixed(2) ?? 'N/A'}%)`);
-                activeAuditGates.push({ gate: 'four-window', passed: false, reason: `${fw.reason} — HARD BLOCK` });
+                // v2.0.870-gatedir-fix: 顯示層標明方向——主神「有無分 BUY/SELL」
+                activeAuditGates.push({ gate: 'four-window', passed: false, reason: `[${gateAction.toUpperCase()}] ${fw.reason} — HARD BLOCK` });
               } else if (fw.multiplier !== 1.0) {
                 effectiveConfidence *= fw.multiplier;
                 log.info(`🔻 [four-window] ${gateAction.toUpperCase()} ${maSym}: ${fw.reason} → conviction ×${fw.multiplier} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
-                activeAuditGates.push({ gate: 'four-window', passed: true, reason: `${fw.reason} → ×${fw.multiplier} (soft)` });
+                activeAuditGates.push({ gate: 'four-window', passed: true, reason: `[${gateAction.toUpperCase()}] ${fw.reason} → ×${fw.multiplier} (soft)` });
               }
             }
           }
@@ -12857,9 +12877,12 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // POSITIVE causal uplift (trading adds alpha, not just follows the market).
         // Soft gate: negative uplift → multiplicative conviction discount, never a
         // hard block (preserves operation space — owner directive P1).
-        const causalMultiplier = this.computeCausalConvictionMultiplier(
-          pwinSym, gateAction, regime,
-        );
+        // v2.0.870-gatedir-fix: HOLD → 1.0（唔 fallback buy 誤算 causal）
+        const causalMultiplier = gateAction !== 'hold'
+          ? this.computeCausalConvictionMultiplier(
+              pwinSym, gateAction as 'buy' | 'sell', regime,
+            )
+          : 1.0;
         if (causalMultiplier < 1.0) {
           effectiveConfidence *= causalMultiplier;
           log.info(`🟠 [causal-gate] ${gateAction.toUpperCase()} ${pwinSym}: negative causal uplift → conviction ×${causalMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
@@ -12873,7 +12896,10 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // conviction multiplicatively. Sample-guarded (regime-starved buckets
         // never fire) and non-symmetric (positive boost off by default).
         // This is the quantitative counterweight to stale OLR sell edges.
-        const qrlMultiplier = this.computeQRLExpectancyMultiplier(pwinSym, gateAction);
+        // v2.0.870-gatedir-fix: HOLD → 1.0（唔 fallback 誤算 Q-RL）
+        const qrlMultiplier = gateAction !== 'hold'
+          ? this.computeQRLExpectancyMultiplier(pwinSym, gateAction as 'buy' | 'sell')
+          : 1.0;
         if (qrlMultiplier < 1.0) {
           effectiveConfidence *= qrlMultiplier;
           log.info(`🟣 [qrl-expectancy] ${gateAction.toUpperCase()} ${pwinSym}: negative expectancy → conviction ×${qrlMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
@@ -12888,7 +12914,10 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // K-LINE 趨勢 vs LLM 方向一致性 + DATA QUALITY 校準。
         // LLM 有 catalyst 可以逆圖表(×1.0);無理由逆圖表 → ×0.75;
         // 數據不可靠 → ×0.85。唔再係淨注入——code 層面硬性校準。
-        const chartMultiplier = this.computeChartConviction(gateAction, finalDecision.rationale);
+        // v2.0.870-gatedir-fix: HOLD → 1.0
+        const chartMultiplier = gateAction !== 'hold'
+          ? this.computeChartConviction(gateAction as 'buy' | 'sell', finalDecision.rationale)
+          : 1.0;
         if (chartMultiplier < 1.0) {
           effectiveConfidence *= chartMultiplier;
           log.info(`📊 [chart-aware] ${gateAction.toUpperCase()} ${pwinSym}: K-LINE 反向/數據異常 → conviction ×${chartMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
@@ -12907,11 +12936,14 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         }
 
         // ── Gate decision ─────────────────────────────────────────────────
+        // v2.0.870-gatedir-fix（主神 2026-08-25）: HOLD 冇 entry 意圖——唔行
+        // Plan-G threshold override（唔會 override HOLD → HOLD 製造假 log）。
+        // 只有真 buy/sell 先比較 threshold。
         // v2.0.832: Use <= instead of < to avoid floating-point boundary issues.
         // When effective confidence is exactly at the threshold (e.g. 0.49 == 0.49),
         // floating-point arithmetic may produce 0.48999... < 0.49 → HOLD by 0.001%.
         // At exactly the threshold, the signal is strong enough to trade.
-        if (effectiveConfidence <= adjustedThreshold - 0.001) {
+        if (gateAction !== 'hold' && effectiveConfidence <= adjustedThreshold - 0.001) {
           const blendStr = comboBlendUsed
             ? ` blend=${pwinBlendFactor.toFixed(3)} (combo override: ${comboBlendUsed.reason.slice(0, 80)})`
             : ` blend=${pwinBlendFactor.toFixed(3)}`;
@@ -12920,7 +12952,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             : ` (consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} × dirTrust=${llmDirectionTrust.toFixed(2)} × ev=${evMultiplier.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%, OLR cold-start)`;
           const factorStr = dtcResult.factors.map(f => `${f.factor}=${f.score > 0 ? '+' : ''}${f.score}`).join(' ');
           log.warn(`🛑 [Plan-G] Conviction gate [${finalDecision.symbol || activeSymbol}]: effective ${(effectiveConfidence * 100).toFixed(0)}% < threshold ${(adjustedThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, penalty=${penaltyFactor.toFixed(2)}, boost=${boostFactor.toFixed(2)}, risk=${riskProfile})${pwinStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD`);
-          activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `${(effectiveConfidence * 100).toFixed(0)}% < ${(adjustedThreshold * 100).toFixed(1)}%${pwinStr} [${factorStr}] [risk=${riskProfile}]` });
+          activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `[${gateAction.toUpperCase()}] ${(effectiveConfidence * 100).toFixed(0)}% < ${(adjustedThreshold * 100).toFixed(1)}%${pwinStr} [${factorStr}] [risk=${riskProfile}]` });
           finalDecision = {
             ...finalDecision,
             action: 'hold',

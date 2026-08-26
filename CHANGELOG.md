@@ -4,6 +4,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-gatedir-fix: gateAction 方向修正 + 四窗顯示標方向（主神 2026-08-25）
+
+**主神質問**: 「Hard Block 你有無分 BUY / SELL 架？」——SNDK trending_bear 跌市顯示 `four-window: both_against — HARD BLOCK` 但 Majority HOLD。
+
+**函式層確認**: `checkFourWindowAlignment` 一直有分方向（`expect = buy ? 1 : -1` 鏡像）——同一跌市數據 BUY block / SELL aligned。
+
+**執行層 bug（5 連環）確診——源於一個 fallback**: `gateAction = finalDecision.action 唔係 buy/sell → fallback 'buy'`——HOLD/CLOSE 時成條 entry gate chain 用 BUY 角度跑:
+1. **四窗/全部 entry gates 用 BUY 鏡像檢查**——SNDK 跌市 5m/15m 跌 → both_against → HARD BLOCK 0%（HOLD 冇人要買都 block）
+2. **`recordJudgment` 誤記 BUY**——毒化 direction verifier（HOLD 判斷被記成 BUY 方向）
+3. **`trendAlignmentMultiplier` 誤計**（接受 hold → neutral, 但 fallback 令佢用 BUY 計算）
+4. **calibratedConsensus / ev / shape / convexity / combo / causal / qrl / chart 全部誤用 BUY**
+5. **顯示冇方向**——主神無法分辦
+
+**修復（top-tier, 零 gate 強度改變）**: `gateAction: 'buy' | 'sell' | 'hold'`——保留真方向（HOLD → 'hold'）。現有 `gateAction === 'buy' || 'sell'` guard 全部自動 skip hold（HOLD 冇 entry 意圖——唔應該行 entry gates）; 10 個裸用點加 hold guard（calibratedConsensus/recordJudgment/evFilter×3/comboBlend/causal/qrl/chart → HOLD 時 neutral 1.0 或唔記錄）; Plan-G threshold override 加 `gateAction !== 'hold'`; `lastJudgeGateAction` 型別含 hold; 四窗 + conviction-gate audit reason 帶 `[BUY]/[SELL]` 標記。
+
+**驗證**: 新鏡像測試 4（主神案例: 同一跌市 BUY block / SELL aligned + 升市鏡像 + 死雈彈鏡像）全綠; 全量 3592 pass + 13 pre-existing（零新增）; tsc clean。
+
+---
 ## v2.0.870-decay-sweep-attack2-fix: settle 語義修正（主神質疑 2026-08-25——「A3 settle 係一次性 fade？」）
 
 **主神質疑**: A3 settle 嘅 fade 語義——「一次性 fade」描述唔正確, 且需驗證連續 settle 唔會令「24h 完全冇影響」失效。
