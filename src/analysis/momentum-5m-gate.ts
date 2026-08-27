@@ -58,11 +58,19 @@ export interface FiveMinGateResult {
 }
 
 /** 窗口斜率（bps）:first→last total return × 10000。
- *  非有限/非正數靜默剔除；有效 < minCandles 或斜率非有限（1e308 垃圾）→ null。 */
+ *  非有限/非正數靜默剔除；有效 < minCandles 或斜率非有限（1e308 垃圾）→ null。
+ *  v2.0.872-P8-attack: minCandles sanity fallback——範圍外（負數/0/>50）→ 用預設 6。
+ *  clamp 語義唔安全:clamp 到 2 = 噪音判決、clamp 到 200 = 樣本永遠不足 = 閘失效
+ *  （攻擊實錄 V1）。只有 [2,50] 內嘅值先係「意圖內配置」。 */
+const MIN_CANDLES_HARD_FLOOR = 2;
+const MIN_CANDLES_HARD_CAP = 50;
 export function compute5mSlopeBps(closes: number[], minCandles = DEFAULT_GATE_5M_CANDLES): number | null {
   if (!Array.isArray(closes)) return null;
+  const mc = Number.isFinite(minCandles) && minCandles >= MIN_CANDLES_HARD_FLOOR && minCandles <= MIN_CANDLES_HARD_CAP
+    ? Math.floor(minCandles)
+    : DEFAULT_GATE_5M_CANDLES;
   const valid = closes.filter((c) => typeof c === 'number' && Number.isFinite(c) && c > 0);
-  if (valid.length < minCandles) return null;
+  if (valid.length < mc) return null;
   const first = valid[0]!;
   const last = valid[valid.length - 1]!;
   if (!(first > 0)) return null;
@@ -107,7 +115,10 @@ export function compute5mThresholdBps(
   const fl = Number.isFinite(floorBps) && floorBps >= 0 ? floorBps : DEFAULT_GATE_5M_FLOOR_BPS;
   const cp = Number.isFinite(capBps) && capBps >= fl ? capBps : DEFAULT_GATE_5M_CAP_BPS;
   const ks = Number.isFinite(kSigma) && kSigma > 0 ? kSigma : DEFAULT_GATE_5M_KSIGMA;
-  const t = Math.min(cp, Math.max(fl, ks * sigma * Math.sqrt(Math.max(1, n - 1))));
+  // v2.0.872-P8-attack: floor 唔准低過 1bps——floor=0 + 死成交 tape（σ=0）
+  // → threshold=0 → 一格微跌 tick 全擋 BUY = 交易 DoS（攻擊實錄 V2）
+  const floorSafe = Math.max(1, fl);
+  const t = Math.min(cp, Math.max(floorSafe, ks * sigma * Math.sqrt(Math.max(1, n - 1))));
   return Number.isFinite(t) ? t : null;
 }
 

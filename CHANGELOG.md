@@ -4,6 +4,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.872-P8-attack: 攻擊輪——3 漏洞全修（主神 2026-08-27）
+
+**攻擊方案**（`scripts/p8-attack.ts`:env 注入 / 毒 candle 注入 / 原型污染 / 10k 燭算力 DoS / 500 序列鏡像不變式 fuzz）:
+
+| # | 漏洞 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| V1a | `minCandles` 負數 → clamp 到 2 → 2 支燭噪音判決（gate 品質降級） | MED | sanity fallback:範圍外（負/0/>50）→ 用預設 6 |
+| V1b | `GATE_5M_CANDLES=1e308` → 樣本永遠不足 → **閘靜默失效**（只有 warn） | HIGH | 同上 fallback 6 → DRAM 連跌重放照 BLOCK ✓ |
+| V2 | `GATE_5M_FLOOR_BPS=0` + 死成交 tape（σ_robust=0）→ threshold=0 → 一格微跌 tick 全擋 BUY = **交易 DoS** | HIGH | `floorSafe = max(1, floor)`——floor 唔准低過 1bps |
+
+**已防禦確認（10 攻）**: 1e±300 混合 underflow/overflow、全同值 flat、-0 close、10k 燭 3ms O(n)、Array.prototype 猴補丁、kSigma=-2/1e-300/NaN、cap<floor 倒邏輯、500 序列零不變式違反（BUY/SELL 唔同時 block、block 必 |slope|≥threshold）。
+
+**量化金融視角（robust σ 設計）**: 門檻用 MAD×1.4826 而非 std——單支崩盤燭同時製造斜率同膨脹 std（自己掩護自己，threshold 被拉高放行真跌）；MAD 對離群值免疫。攻擊測試捉到此缺陷後改用 robust σ，單支崩盤唔再可以綁架門檻。
+
+**驗證**: vitest 20/20（3 漏洞復測 + 原有 ground truth）；全量 3678 pass + 13 pre-existing（零新增）；tsc clean。
+
+---
+
 ## v2.0.872-P8: 5m 動量方向硬閘 + 統一閘補完 + OLR 單一真相源（主神 2026-08-27）
 
 **主神指令**: 「DRAM BUY 4h -3.47% 跌市 10 分鐘 -4.3%——我明明講咗最近 5 分鐘跌就絕對唔應該開 BUY，WHY？同樣 5min 升就絕對唔開 SELL」+「唔可以有個 function 動態計算每個獨立 asset 嘅 falling?」
