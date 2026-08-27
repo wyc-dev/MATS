@@ -29,6 +29,30 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.871-P7-audit: P1-P7 全量審計（主神 2026-08-27「檢查多次 CHANGELOG 當中最近幾日嘅改動是否正確修正」）
+
+**審計方法**: 唔信文件信 code——逐項驗證 CHANGELOG 宣稱嘅修正喺實際 code 存在且邏輯正確。
+
+**驗證結果（8/8 項宣稱屬實）**:
+| 項目 | Code 證據 | 判定 |
+|:-----|:---------|:----:|
+| P1 calibrator | `MIN_SAMPLES = 5`（line 31）+ entry-time persist（781/818） | ✅ |
+| P2 EV 硬閘 | 三路徑齊：11110 / 11595 / 12675 | ✅ |
+| P3 force SELL | 三條件正確（extreme_buy + range + >0.65），trending_bull 唔觸發，垃圾輸入保守 | ✅ |
+| P4 ECE 因子 | `>0.3→+2 / <0.1→−2 / null→0` + 接駁 12571→439 | ✅ |
+| P5 decay+cutoff | τ=24h、cutoff=24h、clamp、`safeDt` 未來時鐘容忍 | ✅ |
+| P6-attack atomic | 4 組件 atomicWriteSync + persist cycle 14100-14103 | ✅ |
+| P6-fix 5m fallback | 同分先 fallback、`last.c >= prev.c` 判向、冇數據保守 BUY | ✅ |
+| P7 Lyapunov | Rosenstein slope + per-symbol Map，12/12 測試 | ✅ |
+
+**全量測試**: 3658 pass（3646 + P7 新 12）+ 13 fail 全部 pre-existing（12 × v2.0.854-attack2 + 1 × v2.0.868-attack，P1 之前已存在）——「零新增」宣稱屬實。
+
+**搵到 2 個問題（主神裁決：兩個都暫時唔使理）**:
+1. **OLR hard gate 2/3 接駁缺口**: `checkOLRHardGate` 只有 exploration（11098）+ per-symbol（11580），**active finalDecision 主路徑（~12675）只有 EV gate 冇 OLR gate**。影響：主路徑可以繞過「OLR P(win)<30% 不開倉」——但主路徑仍有 conviction 校準 + verifier + threshold 多層保護，實際風險低。同「三路徑同一套 gate」意圖有偏差，主神裁決暫唔修。
+2. **10 個 legacy test file 噪音源**: 9 個用 `node:test` 格式（v2.0.85x-868 時代）vitest 收集唔到（「No test suite found」file-level FAIL）+ 1 個（recent-loss-gate）測緊已剷嘅 `src/lib/recent-loss-gate.ts`。測嘅係舊代碼舊行為，同組件已有新 vitest 攻擊測試全面覆蓋（p2/p3/p5/p6 系列）——零覆蓋損失、零 runtime 影響（tests/ 本身 gitignore），純開發噪音。主神裁決唔使理。
+
+---
+
 ## v2.0.870-P6-fix: EM-guided 方向 bias 修復 + live 監控（主神 2026-08-27）
 
 **主神質疑**: 「exploration trade 仍然淨係分析『是否應該 BUY』？之前叫你無論乜嘢情況都 BUY & SELL 分析晒」。
