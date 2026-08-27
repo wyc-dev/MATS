@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P5-attack + P6-entry-quality: 攻擊輪硬化 + 三方法入場質素（主神 2026-08-26）
+
+**主神指令**: 「不擇手段攻擊 P5 代碼…並以完美方式修復漏洞…思考任何可以令系統提升盈利機會」。
+
+**P5-attack（8 漏洞全修）**: env 注入 clamp——`EV_CUTOFF_HOURS`/`CALIB_CUTOFF_HOURS` clamp [1h, 8760h]、`EV_TIME_DECAY_HOURS`/`CALIB_DECAY_HOURS` clamp [0.01h, 8760h]（1e-9 令 cutoff ~0 → 硬閘失效、1e308 令 cutoff Infinity → 永久鎖死、1e-300 denormal 令 exp 分母爆炸全滅）;`lastUpdatedTs` 未來（1e308）→ `safeDt()` 時鐘容忍（未來 → now，dt≥0，防 decay Infinity → NaN 污染 gate）。5 攻擊測試全綠。
+
+**P6 三方法入場質素（45 單 counterfactual 驗證——零贏單受影響）**:
+| 方法 | 修復 | 命中 | 成效 |
+|:-----|:-----|:-----|:-----|
+| **SL Floor** | `RISK_STOP_LOSS_PCT` 0.008 → 0.015（.env） | #38 bnb -8.16%（SL -1.0%→-0.8%，MAE -0.77% price 未達 1.5%） | 唔會被噪音掃走 |
+| **Breakout 確認** | `shouldSkipBreakoutEntry`（`breakout-confirmation.ts`）——BUY 喺阻力位下方 < 50bps → skip | #38 bnb -8.16%（「breakout or rejection」） | block 擲銀仔入場 |
+| **OLR 硬閘** | `checkOLRHardGate`——OLR P(win) < 30% → block（`OLR_HARD_FLOOR`） | #22 bnb -3.38%（OLR 29%） | block 對抗 OLR 入場 |
+
+**驗證**: 45 單基線 WR 40% -12.06% margin;三方法合併避免 +11.54%（2 個獨特 trade）→ counterfactual -0.52%（近打和）;**零贏單受影響**（贏單 OLR 最低 41%，OLR 30% 唔誤傷）。新測試 7 全綠;全量 3646 pass + 13 pre-existing（零新增）;tsc clean。
+
+---
+
 ## v2.0.870-P5-time-decay: 24h 時間衰減 + hard cutoff（防永久鎖死——主神 2026-08-26）
 
 **主神質疑**: 「P1/P2/P4 都應該有 24h 衰減制度…如果舊交易永續影響開倉新交易,便會永久鎖死不交易」。
