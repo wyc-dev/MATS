@@ -4,6 +4,31 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.871-P7: Lyapunov estimator 重寫 + per-symbol 隔離（主神 2026-08-27）
+
+**主神指令**: 「調查點解 BTC 一直 chaotic（λ=0.15 係咪 momentum-trend 層嘅問題）」。
+
+**調查結果（根因唔係市場,係 estimator 本身）**:
+1. **λ estimator 對任何價格序列都輸出「chaotic」**: 舊 `estimateLyapunov()` 喺原始價格水平上做 nearest-neighbor divergence（k=20），冇 time-delay embedding、冇用 log-returns。呢個方法量度嘅係**擴散而唔係混沌**——Monte Carlo 實測（20 seeds × 4 種市況）：random walk / OU mean-reverting / 趨勢 / sine 全部 λ≈0.2-0.3 >> 0.05 門檻，20/20 誤判 chaotic。任何 symbol、任何市況都會「🔴 CHAOTIC」→ agent context 永遠「λ>0 chaotic → no direction trades」→ BTC 永遠 HOLD、BNB BUY 被壓信心、系統長期 idle。
+2. **單一 global buffer**: `planckChaos` 係一個 engine，WS 只訂閱 active symbol，但 `feedPrice()` 唔分 symbol、切 symbol 後 buffer 混埋兩個 symbol 嘅價格（$80,000 BTC 混 $710 BNB），nearest-neighbor 完全垃圾。
+
+**先驗證後實作**（`scripts/p7-lyapunov-experiment.ts`，8 項 ground truth × 20 seeds）:
+- 候選 E2（Rosenstein + shuffle-surrogate）首輪 FAIL——Lorenz 同 sine 被壓到同一段（per-pair ln(dk/d0) 受 nearest-neighbor selection bias 污染）。
+- 參數掃描後鎖定**標準 Rosenstein slope 法**: S(k)=⟨ln d(k)⟩ 對 k∈[1,5] 擬合斜率（m=3, τ=3, Theiler window m·τ），log-returns + delay embedding，λ 換算 per minute（median interval robust）。
+- 驗證矩陣 8/8 全過: RW 0.0028 / OU 0.0004 / 趨勢 0.0028 / sine 0.0249 / 厚尾 0.0002 / sine+10x噪 0.0316（全部遠低於 0.05 門檻，唔判 chaotic）；Lorenz 真混沌 0.1777（20/20 判 chaotic，3.5× 門檻）；Lorenz @1min tick 0.0889（20/20）。
+- 已知弱點（保守方向，可接受）: Lorenz+10x 噪音誤判唔 chaotic——真實市場高維嘈雜，低維混沌偵測非主要用途；失敗方向＝少開倉＝安全。
+
+**實作**:
+- `planck-chaos.ts`: `estimateLyapunov()` 重寫為 Rosenstein slope 法（λ per MINUTE）；per-symbol `Map<symbol, {priceBuffer, timeBuffer, lastResult}>`——切 symbol 零污染；攻擊加固（NaN/Infinity/負數價格靜默忽略、零方差唔 crash、重複 timestamp median robust、閃崩 jump 唔產生 NaN、<50 樣本返回 null 冷啟動安全）。
+- `index.ts`: `feedPrice(data.symbol, ...)` + `analyze(combinedState.primarySymbol, ...)`。
+- 分類門檻不變（laminar < −0.01 / chaotic > 0.05）——P7 實驗已驗證新 λ 分佈對此門檻正確分離。
+
+**連鎖影響**: chaosRegime 唔再永遠 chaotic → S/R 層唔再被連坐 degrade → Meta-Agent「λ>0 chaotic → no direction trades」指引恢復真實意義 → BTC/BNB 方向交易喺有 edge 時可以正常執行。
+
+**驗證**: 實驗矩陣 8/8；vitest 12/12（ground truth + per-symbol 隔離 + 6 項攻擊加固）；tsc clean。
+
+---
+
 ## v2.0.870-P6-fix: EM-guided 方向 bias 修復 + live 監控（主神 2026-08-27）
 
 **主神質疑**: 「exploration trade 仍然淨係分析『是否應該 BUY』？之前叫你無論乜嘢情況都 BUY & SELL 分析晒」。
