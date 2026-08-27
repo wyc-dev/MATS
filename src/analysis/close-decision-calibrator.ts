@@ -23,6 +23,7 @@
 // Phase A 輸出:per-context 過早率統計(Phase B 先注入 Meta-Agent + gate)
 
 import { createLogger } from '../observability/logger.ts';
+import { atomicWriteSync } from '../evolution/persistence.ts';
 import * as fs from 'node:fs';
 
 const log = createLogger({ phase: 'close-calib' });
@@ -514,7 +515,7 @@ export class CloseDecisionCalibrator {
 
   save(): void {
     try {
-      fs.writeFileSync(this.path, JSON.stringify({ version: 1, savedAt: Date.now(), ...this.state }), 'utf-8');
+      atomicWriteSync(this.path, JSON.stringify({ version: 1, savedAt: Date.now(), ...this.state }));
     } catch (err) {
       log.warn(`[close-calib] save failed: ${err instanceof Error ? err.message : String(err)}`);
     }

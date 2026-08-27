@@ -15,6 +15,7 @@
 // 三層 fallback:symbol×trend-type → trend-type 全局 → 中性(新市場參考其他走勢)
 
 import { createLogger } from '../observability/logger.ts';
+import { atomicWriteSync } from '../evolution/persistence.ts';
 import * as fs from 'node:fs';
 
 const log = createLogger({ phase: 'dir-verifier' });
@@ -427,7 +428,7 @@ export class LLMDirectionVerifier {
 
   save(): void {
     try {
-      fs.writeFileSync(this.path, JSON.stringify({ version: 1, savedAt: Date.now(), ...this.state }), 'utf-8');
+      atomicWriteSync(this.path, JSON.stringify({ version: 1, savedAt: Date.now(), ...this.state }));
     } catch (err) {
       log.warn(`[dir-verifier] save failed: ${err instanceof Error ? err.message : String(err)}`);
     }

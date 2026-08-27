@@ -17,6 +17,7 @@
 // 對應主神「提高判斷力,唔好 hard block」原則——soft conviction multiplier。
 
 import { createLogger } from '../observability/logger.ts';
+import { atomicWriteSync } from '../evolution/persistence.ts';
 import * as fs from 'node:fs';
 import {
   computeDistributionShape,
@@ -301,7 +302,7 @@ export class EVFilter {
 
   save(): void {
     try {
-      fs.writeFileSync(this.path, JSON.stringify({ version: 1, savedAt: Date.now(), ...this.state }), 'utf-8');
+      atomicWriteSync(this.path, JSON.stringify({ version: 1, savedAt: Date.now(), ...this.state }));
     } catch (err) {
       log.warn(`[ev-filter] save failed: ${err instanceof Error ? err.message : String(err)}`);
     }
