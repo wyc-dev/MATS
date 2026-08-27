@@ -979,7 +979,7 @@ src/
 │   │   # v2.0.833 REMOVED + v2.0.862 DELETED: temporal-attention.ts, cross-symbol-backbone.ts, reward-shaping.ts, world-model.ts
 │   ├── direction-audit.ts   # LLM 交易記錄審計（v2.0.180）
 │   └── system-engineer.ts   # 自主代碼工程師 Agent（v2.0.182）
-├── analysis/                # sentiment · S/R · ATR（momentum-adaptive SL v2.0.207 #C）· planck-chaos（v2.0.871-P7: Rosenstein slope λ/min + per-symbol buffer）· momentum-5m-gate（v2.0.872-P8: 主神 5m 方向硬閘，robust σ 自適應門檻）· options · news
+├── analysis/                # sentiment · S/R · ATR（momentum-adaptive SL v2.0.207 #C）· planck-chaos（v2.0.871-P7: Rosenstein slope λ/min + per-symbol buffer）· momentum-5m-gate（v2.0.872-P8: 主神 5m 方向硬閘，robust σ 自適應門檻；P8-profit 重放否決速度鎖利/半倉試探——大 winner 需要回吐空間，reconciliation wins 學習權重 0.5）· options · news
 ├── market-agent/            # 自動 pair 選擇（9 DEX, 416 assets, 類別過濾）
 ├── data/                    # Hyperliquid + Binance WebSocket
 ├── services/                # v2.0.822: Analysis Matrix + Supabase writer

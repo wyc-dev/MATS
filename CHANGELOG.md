@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.872-P8-session-sync: P8 系列總結（主神 2026-08-27）
+
+**P8 全景**（今日 5 個 commit:9e91b6e → eff8706）:
+
+| 組件 | 內容 | 狀態 |
+|:-----|:-----|:-----|
+| 分佈掃描 | 266 喺全景分佈（closeReason/symbol×side/持倉時間/OLR 校準/連蝕/小時）+ 4 項 counterfactual | `scripts/p8-distribution-scan*.ts` / `p8-counterfactual.ts` |
+| 5m 方向硬閘 | 主神規則:5m 跌禁 BUY / 5m 升禁 SELL——robust σ（MAD×1.4826）自適應門檻，三路徑一套 | ✅ 實施（17+3 測試） |
+| 統一閘補完 | exploration 接入 `applyEntryConvictionGates`（DRAM 窿封死）+ OLR query 修復 + LOUD 靜默放行 | ✅ |
+| 攻擊輪 | 3 漏洞全修（minCandles fallback / floor≥1bps 防交易 DoS / robust σ 防綁架） | ✅（10 攻防住） |
+| 重放裁決 | 速度鎖利 12 組合全負 / 半倉試探兩變體負——**否決並防重複提案** | ❌（重放 script 保留） |
+| 標籤修復 | reconciliation wins 學習權重 1.0→0.5（41% 噪聲） | ✅ |
+
+**測試基線**: 3,695 total / 3,682 pass / 13 pre-existing（零新增）/ tsc clean。
+
+---
+
 ## v2.0.872-P8-profit: 重放裁決——2 提案否決 + 標籤修復實施（主神 2026-08-27）
 
 **主神指令**: 「制定謹慎詳盡計劃，驗證絕對成效，之後先 fix」。
