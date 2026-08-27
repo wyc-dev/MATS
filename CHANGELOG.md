@@ -21,6 +21,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.872-P8-heal-v3: interval fallback 鏈 + 毒值清理（主神 2026-08-28）
+
+**詳盡驗證捉到第三層根因**: 7 月舊短持倉（7.8min）→ `pickInterval` 揀 '5m' → **5m candles 過 retention**（July 數據 0 支，實測）→ 5 次失敗 → `no-candle-data` 永久標記，而舊單位毒值（min=−0.55 負權益）照樣落下游。8 喺受影響。
+
+**修復（兩層）**:
+1. **interval fallback 鏈**（`healMaeMfeBatch`）: 5m 空 → 15m → 1h。coarse candle 嘅 h/l 極值**完全涵蓋** fine candle（wick 包含性）→ min/max 等價 → fallback 嚴格正確零損失。
+2. **terminal 毒值清理**: 給 up 前（attempts 耗盡）驗證**exit 權益不變式**——`exit權益 = investment×(1+pnl%)` 必須落 [min,max] 區間；違反（負值/凍結/舊單位垃圾）→ 重置中性 `[investment, investment]`，唔好俾毒落 PAEL。
+
+**驗證**: vitest 28/28（fallback 5m→15m heal 成功、5 次×3 interval 全空 → terminal+清理、正常單唔誤傷、舊契約回歸）；全量 3697 pass + 13 pre-existing（零新增）；tsc clean。8 喺 error 記錄已 reset——live healer 以 fallback 鏈重試。
+
+---
+
 ## v2.0.872-P8-heal-unit-fix: healer 單位 bug——重放驗證捉到（主神 2026-08-28）
 
 **驗證絕對成效時捉到嘅最嚴重 bug**: `healMaeMfeBatch` 用 `margin = investment/leverage`——但呢個系統嘅 `investment` **本身就係 margin**（DRAM:7.33×10x=73.3 notional 實證；`trackMAEMFE`:margin=entry×qty/lev=investment ✓）。healer 將 margin 再除槓桿 → **healed min/max 細槓桿倍**（SKHX 實證:應 27.44/28.57,heal 出 4.80/5.93 → 下游 MAE% 膨脹 ×槓桿 = 災難性學習污染）。

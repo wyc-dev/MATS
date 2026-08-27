@@ -37,6 +37,8 @@ export interface HealableTradeLike {
   maeMfeHealError?: string;
   /** v2.0.872-P8-heal-v2: 瞬時失敗重試計數——達上限先 terminal（防永久污染 + 防 API spam） */
   maeMfeHealAttempts?: number;
+  /** v2.0.872-P8-heal-v3: 實現 PnL（margin 分數）——exit 權益不變式清理用 */
+  pnlPct?: number;
 }
 
 /** candle bar shape(HL candleSnapshot) */
@@ -163,9 +165,20 @@ export async function healMaeMfeBatch(
     const attempts = typeof t.maeMfeHealAttempts === 'number' && Number.isFinite(t.maeMfeHealAttempts) ? t.maeMfeHealAttempts : 0;
     try {
       const holdMs = (t.closedAt as number) - (t.openedAt as number);
-      const interval = pickInterval(holdMs);
-      // 窗口前後留 buffer:open 前一支 candle(捕捉開倉價滑價) → close 後 0
-      const candles = await fetchCandles(sym, interval, (t.openedAt as number) - 5 * 60_000, t.closedAt as number);
+      const primary = pickInterval(holdMs);
+      // v2.0.872-P8-heal-v3（live 驗證捉到）: 5m candles 有 retention 限制——
+      // 7 月舊短持倉 5m 數據已過期（0 支），但 15m/1h 數據存在。coarse candle
+      // 嘅 h/l 極值完全涵蓋 fine candle（wick 包含性）→ min/max 等價 →
+      // fallback 鏈 5m→15m→1h 嚴格正確，唔會損失準確性。
+      const intervals: string[] = primary === '5m' ? ['5m', '15m', '1h']
+        : primary === '15m' ? ['15m', '1h'] : ['1h'];
+      let candles: CandleLike[] = [];
+      for (const iv of intervals) {
+        // 窗口前後留 buffer:open 前一支 candle(捕捉開倉價滑價) → close 後 0
+        candles = await fetchCandles(sym, iv, (t.openedAt as number) - 5 * 60_000, t.closedAt as number);
+        if (candles.length > 0) break;
+        if (iv !== intervals[intervals.length - 1]) await sleep(HEAL_FETCH_DELAY_MS);
+      }
       // v2.0.872-P8-heal-unit-fix（重放驗證捉到嘅單位 bug）: investment 本身就係
       // margin（DRAM:7.33×10x = notional 73.3 ✓;trackMAEMFE:margin=entry×qty/lev=investment ✓）。
       // 舊代碼 `investment/leverage` 將 margin 再除槓桿 → healed min/max 細 5.66 倍
@@ -193,6 +206,17 @@ export async function healMaeMfeBatch(
         failed++;
         t.maeMfeHealAttempts = attempts + 1;
         if (t.maeMfeHealAttempts >= DEFAULT_HEAL_MAX_ATTEMPTS) {
+          // v2.0.872-P8-heal-v3: terminal 放棄前清理毒值——舊單位垃圾
+          // （min=−0.55 負權益 / 凍結 min=max=investment）唔可以落下游 PAEL。
+          // 不變式:exit 權益 = investment×(1+pnl%) 必須落 [min,max] 區間，
+          // 違反 → 重置為中性 [investment, investment]（「無數據」而非毒）。
+          const inv = t.investment as number;
+          const exitEq = inv * (1 + ((typeof t.pnlPct === 'number' && Number.isFinite(t.pnlPct)) ? t.pnlPct : 0));
+          const bad = !Number.isFinite(t.minValueReached) || !Number.isFinite(t.maxValueReached)
+            || (t.minValueReached as number) < 0
+            || (exitEq as number) < (t.minValueReached as number) - 1e-6
+            || (exitEq as number) > (t.maxValueReached as number) + 1e-6;
+          if (bad) { t.minValueReached = inv; t.maxValueReached = inv; }
           t.maeMfeHealed = true;
           t.maeMfeHealError = 'no-candle-data';
         } else {
