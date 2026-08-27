@@ -14067,6 +14067,13 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       this.persistOLR();
       // v2.0.862: PAEL exit-price learner persists alongside the rest.
       this.persistExitPriceLearner();
+      // v2.0.870-P6-fix: 校準器/EV Filter/Direction Verifier/Close Calibrator 每 cycle
+      // 持久化——之前只喺 stop() 保存,tsx watch restart 唔觸發 stop() → 狀態靜默丟失
+      // (calibrator 出世至今空腹死碼嘅根因——savedAt 停留 Aug 17)。
+      this.persistLLMCalibrator();
+      this.persistEVFilter();
+      this.persistLLMDirectionVerifier();
+      this.persistCloseCalibrator();
 
       // v2.0.219: Replay buffer epoch — re-feed high-priority trades to OLR
       // to break temporal correlations. Runs every 5 cycles (enough buffer
