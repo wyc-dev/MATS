@@ -16395,9 +16395,25 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     if (this.healInFlight) return;
     this.healInFlight = true;
     try {
-      const trades = (this.portfolio as { trades?: Array<Record<string, unknown>> }).trades ?? [];
-      const rt = (this.portfolio as { realTrades?: Array<Record<string, unknown>> }).realTrades ?? [];
-      const all = [...trades, ...rt] as unknown as import('./trading/mae-mfe-healer.ts').HealableTradeLike[];
+      // v2.0.872-P8-fix（主神 SKHX MAE/MFE 凍結調查）: 舊代碼讀 portfolio.trades /
+      // portfolio.realTrades——兩個屬性喺 PortfolioTracker 上根本唔存在（正確係
+      // getClosedRealTrades() / paperEngine.trades）→ all=[] → todo=0 → 每 cycle
+      // 靜默 return——healer 由 P22-G 出世至今 heal 咗 0/284 喺（死代碼）。
+      // 修復：用真實 accessor + 缺數據時 LOUD warn（唔准再靜默）。
+      const pAny = this.portfolio as unknown as {
+        getClosedRealTrades?: () => unknown[];
+        trades?: unknown[];
+        realTrades?: unknown[];
+      };
+      const closedReal = typeof pAny.getClosedRealTrades === 'function'
+        ? (pAny.getClosedRealTrades() as unknown[])
+        : (pAny.realTrades ?? []);
+      const paperTrades = ((this.paperEngine as unknown as { trades?: unknown[] })?.trades ?? []) as unknown[];
+      const all = [...paperTrades, ...closedReal] as unknown as import('./trading/mae-mfe-healer.ts').HealableTradeLike[];
+      if (all.length === 0) {
+        log.warn(`⚠️ [P22-G heal] portfolio 冇暴露任何 closed trades（getClosedRealTrades/paperEngine.trades 都空）——healer 無事可做（LOUD）`);
+        return;
+      }
       const todo = all.filter((t) => t.maeMfeHealed !== true && t.status === 'closed').length;
       if (todo === 0) return;
       const { MarketAgent } = await import('./market-agent/index.ts');

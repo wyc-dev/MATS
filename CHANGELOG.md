@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.872-P8-mae-fix: MAE/MFE healer 復活——靜默死代碼 0/284（主神 2026-08-28）
+
+**主神質疑**: 「SKHX Min=Max=$28.30=Investment 但蝕 -2.7%——點解唔啱？」
+
+**三層答案**:
+1. **PnL 係對嘅**——-2.7% 由真實成交價計（1241.21→1235.10 × 5x）
+2. **Min/Max 凍結 = 零取樣**——MAE/MFE tracker 只由價格 feed 驅動；WS 只訂閱 active symbol，SKHX 嗰 64 分鐘唔係 active symbol → `softUpdatePosition` 從未被調用 → min/max 凍結喺開倉權益（全庫 284 喺入面 3 喂凍結，全部 SKHX）
+3. **healer 本應補救但係死代碼**——`healMaeMfeOnce` 讀 `portfolio.trades`/`.realTrades`——兩個屬性喺 PortfolioTracker 上**唔存在**（正確係 `getClosedRealTrades()` / `paperEngine.trades`）→ `all=[]` → `todo=0` → **每 cycle 靜默 return，healer 出世至今 heal 咗 0/284 喺**
+
+**修復**: 用真實 accessor（`getClosedRealTrades()` + `paperEngine.trades`）+ 缺數據時 LOUD warn（唔准再靜默）。
+
+**預期效果**: 下個 cycle 起 healer 開始 8 筆/batch 追落後——284 喺 ≈ 36 cycles 補完，歷史 MAE/MFE 數據全面修復（PAEL/success-pattern/exit-price-lock 學習質量直接受益）。live 驗證:留意 `[P22-G heal] processed=...` log。
+
+**驗證**: tsc clean；全量 3682 pass + 13 pre-existing（零新增）。
+
+---
+
 ## v2.0.872-P8-session-sync: P8 系列總結（主神 2026-08-27）
 
 **P8 全景**（今日 5 個 commit:9e91b6e → eff8706）:
