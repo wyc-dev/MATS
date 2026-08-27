@@ -13,6 +13,21 @@
  * 3. Hidden resonances (dominant frequencies) in price action reveal when the
  *    market is "in sync" with a repeating pattern — these windows are tradeable.
  *
+ * v2.0.871-P7(主神 BTC 永遠 chaotic 調查):estimator 重寫 + per-symbol 隔離
+ * ── 舊 estimator(level-space nearest-neighbor, k=20)有兩個致命缺陷:
+ *   1. 對「原始價格水平」做 nearest-neighbor,量度嘅係擴散唔係混沌:
+ *      Monte Carlo 證實 random walk / OU / 趨勢 / sine 全部 20/20 誤判
+ *      chaotic(λ≈0.2-0.3 >> 0.05 門檻)→ BTC 永遠「🔴 CHAOTIC」→ 永遠 HOLD。
+ *   2. 單一 global buffer:WS 只訂閱 active symbol,但切 symbol 後 buffer
+ *      混埋兩個 symbol 嘅價格,nearest-neighbor 完全垃圾。
+ * 新 estimator:標準 Rosenstein slope 法(Rosenstein et al. 1993):
+ *   - log-returns + time-delay embedding(m=3, τ=3, Theiler window m·τ)
+ *   - S(k) = ⟨ln d_i(k)⟩(mean log divergence curve)
+ *   - λ = least-squares slope of S(k) over k∈[1,5],per tick → 換算 per minute
+ *   - iid 序列 S(k) 平坦 → λ≈0;真混沌指數發散 → λ>0;OU 收斂 → λ<0
+ *   - 驗證:scripts/p7-lyapunov-experiment.ts 8/8 ground truth 全過
+ *     (RW/OU/趨勢/sine/厚尾 → 唔判 chaotic;Lorenz → 判 chaotic)
+ *
  * @module planck-chaos
  */
 
@@ -23,7 +38,7 @@ const log = createLogger({ phase: 'planck-chaos' });
 // ─── Types ───
 
 export interface LyapunovEstimate {
-  /** Lyapunov exponent λ — positive = chaotic, negative = stable/converging */
+  /** Lyapunov exponent λ (per MINUTE) — positive = chaotic, negative = stable/converging */
   lambda: number;
   /** Predictability horizon in minutes (time for error to grow 2x) */
   predictabilityHorizonMin: number;
@@ -83,64 +98,81 @@ export interface PlanckChaosResult {
 
 // ─── Constants ───
 
-/** Minimum number of price samples needed for analysis */
+/** Minimum number of price samples needed for analysis (per symbol) */
 const MIN_SAMPLES = 50;
-/** Maximum samples to keep in the price buffer */
+/** Maximum samples to keep in the price buffer (per symbol) */
 const MAX_SAMPLES = 500;
-/** Lyapunov estimation window (number of samples to compare) */
-const LYAPUNOV_WINDOW = 20;
+/** Embedding dimension (Rosenstein method, m=3 validated by P7 experiment) */
+const EMBED_DIM = 3;
+/** Time-delay embedding lag in samples (τ=3 validated by P7 experiment) */
+const EMBED_TAU = 3;
+/** Slope fit window: λ estimated from S(k) over k ∈ [K1, K2] (P7 validated) */
+const SLOPE_K1 = 1;
+const SLOPE_K2 = 5;
+/** Minimum embedded vectors required for a meaningful estimate */
+const MIN_EMBEDDED = 20;
 /** FFT-like frequency detection: number of periods to check */
 const FREQUENCY_PERIODS = [15, 30, 60, 120, 240, 480]; // minutes
 
 // ─── PlanckChaosEngine ───
 
+interface SymbolChaosState {
+  priceBuffer: number[];
+  timeBuffer: number[];
+  lastResult: PlanckChaosResult | null;
+}
+
 export class PlanckChaosEngine {
-  private priceBuffer: number[] = [];
-  private timeBuffer: number[] = [];
-  private lastResult: PlanckChaosResult | null = null;
+  // v2.0.871-P7: per-symbol state — 切 symbol 唔會污染 buffer
+  private states = new Map<string, SymbolChaosState>();
+
+  private getState(symbol: string): SymbolChaosState {
+    const key = String(symbol ?? '').toLowerCase();
+    let st = this.states.get(key);
+    if (!st) {
+      st = { priceBuffer: [], timeBuffer: [], lastResult: null };
+      this.states.set(key, st);
+    }
+    return st;
+  }
 
   /**
-   * Feed a new price tick into the engine.
-   * Prices should be at regular intervals (e.g. every 30s from REST polling).
+   * Feed a new price tick into the engine (per symbol).
+   * Prices should be at regular intervals (e.g. every 30s from WS marks).
+   * Non-finite / non-positive prices are silently ignored (attack hardening).
    */
-  feedPrice(price: number, timestamp: number): void {
-    this.priceBuffer.push(price);
-    this.timeBuffer.push(timestamp);
-    if (this.priceBuffer.length > MAX_SAMPLES) {
-      this.priceBuffer.shift();
-      this.timeBuffer.shift();
+  feedPrice(symbol: string, price: number, timestamp: number): void {
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(timestamp)) return;
+    const st = this.getState(symbol);
+    st.priceBuffer.push(price);
+    st.timeBuffer.push(timestamp);
+    if (st.priceBuffer.length > MAX_SAMPLES) {
+      st.priceBuffer.shift();
+      st.timeBuffer.shift();
     }
   }
 
   /**
-   * Run the full Planck-Chaos analysis on the current price buffer.
-   * Returns null if insufficient data.
+   * Run the full Planck-Chaos analysis for one symbol's price buffer.
+   * Returns null if that symbol has insufficient data.
    */
-  analyze(currentPrice: number, volatility: number): PlanckChaosResult | null {
-    if (this.priceBuffer.length < MIN_SAMPLES) {
-      log.info(`[planck-chaos] Insufficient data: ${this.priceBuffer.length}/${MIN_SAMPLES} samples`);
+  analyze(symbol: string, currentPrice: number, volatility: number): PlanckChaosResult | null {
+    const st = this.getState(symbol);
+    if (st.priceBuffer.length < MIN_SAMPLES) {
+      log.info(`[planck-chaos] ${symbol}: insufficient data: ${st.priceBuffer.length}/${MIN_SAMPLES} samples`);
       return null;
     }
 
-    const prices = this.priceBuffer;
-    const n = prices.length;
+    const prices = st.priceBuffer;
+    const times = st.timeBuffer;
 
-    // ── 1. Lyapunov Exponent Estimation ──
-    // Estimate λ by measuring how quickly nearby trajectories diverge.
-    // We use the "nearest neighbor divergence" method:
-    // For each point i, find the nearest neighbor j, measure |x[i+k] - x[j+k]| / |x[i] - x[j]|
-    // The growth rate of this ratio gives λ.
-    const lyapunov = this.estimateLyapunov(prices);
+    // ── 1. Lyapunov Exponent Estimation (Rosenstein slope, per minute) ──
+    const lyapunov = this.estimateLyapunov(prices, times);
 
     // ── 2. Resonance Frequency Detection ──
-    // Detect dominant cycle periods using autocorrelation.
-    // This is a simplified FFT — we check specific periods and measure
-    // how well the price correlates with itself at that lag.
-    const resonances = this.detectResonances(prices, this.timeBuffer, currentPrice);
+    const resonances = this.detectResonances(prices, times, currentPrice);
 
-    // ── 3. Amplitude Window Prediction ──
-    // Using diffusion model: Amplitude ≈ √(2Dt) where D = σ²/2
-    // This gives the EXPECTED range, not the exact price.
+    // ── 3. Amplitude Window Prediction (diffusion model) ──
     const amplitudeWindows = this.predictAmplitudeWindows(currentPrice, volatility);
 
     // ── 4. Chaos Regime Classification ──
@@ -149,12 +181,7 @@ export class PlanckChaosEngine {
     // ── 5. Resonance Strength ──
     const resonanceStrength = this.calculateResonanceStrength(resonances);
 
-    // v2.0.41: directionBias REMOVED — regime-aware mean-reversion in
-    // index.ts already handles direction. Planck-Chaos now focuses on
-    // predictability (Lyapunov) + amplitude (diffusion model) only.
-    // Resonance is kept as informational context for agents.
-
-    // ── 6. Build context string ──
+    // ── 4/6. Build context string ──
     const contextString = this.buildContextString(
       lyapunov, resonances, amplitudeWindows, chaosRegime, resonanceStrength
     );
@@ -169,56 +196,108 @@ export class PlanckChaosEngine {
       timestamp: Date.now(),
     };
 
-    this.lastResult = result;
+    st.lastResult = result;
     return result;
   }
 
   /**
-   * Estimate the Lyapunov exponent using nearest-neighbor divergence.
-   * λ > 0 → chaotic (unpredictable beyond horizon)
-   * λ ≈ 0 → edge of chaos (marginally predictable)
-   * λ < 0 → laminar/stable (predictable)
+   * v2.0.871-P7: Estimate the largest Lyapunov exponent with the standard
+   * Rosenstein slope method on log-returns with time-delay embedding.
+   *
+   *   1. r[t] = ln(p[t]/p[t-1])            (stationary increments)
+   *   2. embed: v_i = (r[i], r[i+τ], r[i+2τ]), m=3, τ=3
+   *   3. for each i: nearest neighbour j (|i−j| > m·τ, Theiler exclusion)
+   *   4. S(k) = ⟨ln d_i(k)⟩  where d_i(k) = ‖v_i(k) − v_j(k)‖ (embedded, k steps ahead)
+   *   5. λ_per_tick = least-squares slope of S(k) over k ∈ [1,5]
+   *   6. λ_per_min = λ_per_tick / median_tick_interval_min
+   *
+   * Slope (not ratio-to-d0) is unbiased: iid series have flat S(k) → λ≈0,
+   * chaotic attractors diverge exponentially → λ>0, converging processes → λ<0.
+   * Validated against 8 ground-truth synthetic markets (scripts/p7-lyapunov-experiment.ts).
    */
-  private estimateLyapunov(prices: number[]): LyapunovEstimate {
-    const n = prices.length;
-    const k = LYAPUNOV_WINDOW; // steps ahead to measure divergence
-    let totalLogDivergence = 0;
-    let pairs = 0;
-
-    for (let i = 0; i < n - k - 1; i++) {
-      // Find nearest neighbor (smallest |price[i] - price[j]| for j != i)
-      let minDist = Infinity;
-      let nearestJ = -1;
-      for (let j = 0; j < n - k - 1; j++) {
-        if (j === i) continue;
-        const dist = Math.abs(prices[i]! - prices[j]!);
-        if (dist < minDist && dist > 0) {
-          minDist = dist;
-          nearestJ = j;
-        }
-      }
-      if (nearestJ < 0) continue;
-
-      // Measure divergence after k steps
-      const initialDist = Math.abs(prices[i]! - prices[nearestJ]!);
-      const finalDist = Math.abs(prices[i + k]! - prices[nearestJ + k]!);
-      if (initialDist > 0 && finalDist > 0) {
-        totalLogDivergence += Math.log(finalDist / initialDist);
-        pairs++;
+  private estimateLyapunov(prices: number[], times: number[]): LyapunovEstimate {
+    const K = SLOPE_K2;
+    // ── 1. log returns (skip non-finite / non-positive defensively) ──
+    const returns: number[] = [];
+    for (let i = 1; i < prices.length; i++) {
+      const prev = prices[i - 1]!, cur = prices[i]!;
+      if (Number.isFinite(prev) && Number.isFinite(cur) && prev > 0 && cur > 0) {
+        returns.push(Math.log(cur / prev));
       }
     }
+    const n = returns.length;
+    const nEmb = n - (EMBED_DIM - 1) * EMBED_TAU - K;
+    if (nEmb < MIN_EMBEDDED) {
+      return { lambda: 0, predictabilityHorizonMin: Infinity, confidence: 0 };
+    }
 
-    const lambda = pairs > 0 ? totalLogDivergence / (pairs * k) : 0;
+    const excl = EMBED_DIM * EMBED_TAU; // Theiler window — exclude temporal neighbours
+    const sumLog = new Array<number>(K + 1).fill(0);
+    let count = 0;
+
+    for (let i = 0; i < nEmb; i++) {
+      // Nearest neighbour in embedded space (Theiler-excluded)
+      let bestJ = -1, bestD2 = Infinity;
+      for (let j = 0; j < nEmb; j++) {
+        if (Math.abs(i - j) <= excl) continue;
+        let d2 = 0;
+        for (let d = 0; d < EMBED_DIM; d++) {
+          const diff = returns[i + d * EMBED_TAU]! - returns[j + d * EMBED_TAU]!;
+          d2 += diff * diff;
+        }
+        if (d2 < bestD2) { bestD2 = d2; bestJ = j; }
+      }
+      if (bestJ < 0 || bestD2 <= 0) continue;
+
+      // Divergence curve d_i(k) for k = 0..K
+      for (let k = 0; k <= K; k++) {
+        let d2k = 0;
+        for (let d = 0; d < EMBED_DIM; d++) {
+          const a = returns[i + d * EMBED_TAU + k]!;
+          const b = returns[bestJ + d * EMBED_TAU + k]!;
+          d2k += (a - b) * (a - b);
+        }
+        if (d2k > 0) sumLog[k]! += 0.5 * Math.log(d2k);
+      }
+      count++;
+    }
+
+    if (count === 0) {
+      return { lambda: 0, predictabilityHorizonMin: Infinity, confidence: 0 };
+    }
+    const S = sumLog.map(v => v / count);
+
+    // Least-squares slope over k ∈ [K1, K2]
+    let num = 0, den = 0;
+    const kmid = (SLOPE_K1 + SLOPE_K2) / 2;
+    for (let k = SLOPE_K1; k <= SLOPE_K2; k++) {
+      num += (k - kmid) * S[k]!;
+      den += (k - kmid) * (k - kmid);
+    }
+    const lambdaPerTick = den > 0 ? num / den : 0;
+
+    // Convert to per-minute using the MEDIAN tick interval (robust to bursts/gaps)
+    const intervalMin = this.medianIntervalMin(times);
+    const lambdaPerMin = intervalMin > 0 ? lambdaPerTick / intervalMin : lambdaPerTick;
+
     // Predictability horizon: time for error to double = ln(2) / λ
-    const predictabilityHorizonMin = lambda > 0
-      ? (Math.LN2 / lambda) * (this.timeBuffer.length > 1
-          ? (this.timeBuffer[1]! - this.timeBuffer[0]!) / 1000 / 60  // interval in minutes
-          : 0.5) // default 30s = 0.5 min
-      : Infinity;
+    const predictabilityHorizonMin = lambdaPerMin > 0 ? Math.LN2 / lambdaPerMin : Infinity;
+    const confidence = Math.min(1, count / 100);
 
-    const confidence = Math.min(1, pairs / 100);
+    return { lambda: lambdaPerMin, predictabilityHorizonMin, confidence };
+  }
 
-    return { lambda, predictabilityHorizonMin, confidence };
+  /** Median inter-sample interval in minutes (fallback 0.5 = 30s ticks). */
+  private medianIntervalMin(times: number[]): number {
+    if (times.length < 2) return 0.5;
+    const gaps: number[] = [];
+    for (let i = 1; i < times.length; i++) {
+      const dt = (times[i]! - times[i - 1]!) / 1000 / 60;
+      if (Number.isFinite(dt) && dt > 0) gaps.push(dt);
+    }
+    if (gaps.length === 0) return 0.5;
+    gaps.sort((a, b) => a - b);
+    return gaps[Math.floor(gaps.length / 2)]!;
   }
 
   /**
@@ -232,6 +311,7 @@ export class PlanckChaosEngine {
 
     // Calculate average interval between samples (in minutes)
     const avgInterval = (times[n - 1]! - times[0]!) / (n - 1) / 1000 / 60;
+    if (!Number.isFinite(avgInterval) || avgInterval <= 0) return [];
 
     const results: ResonanceFrequency[] = [];
 
@@ -306,12 +386,15 @@ export class PlanckChaosEngine {
   }
 
   /**
-   * Classify the chaos regime based on Lyapunov exponent and resonances.
+   * Classify the chaos regime based on the per-minute Lyapunov exponent and resonances.
+   * Thresholds unchanged from pre-P7 — P7 experiment validated the NEW λ distribution
+   * against them: RW/OU/trend ≈ 0.00 (predictable), sine ≈ 0.025 (edge via resonance),
+   * Lorenz ≈ 0.18 (chaotic).
    */
-  private classifyChaosRegime(lambda: number, resonances: ResonanceFrequency[]): PlanckChaosResult['chaosRegime'] {
-    if (lambda < -0.01) return 'laminar';
-    if (lambda > 0.05) return 'chaotic';
-    if (Math.abs(lambda) <= 0.05 && resonances.length > 0 && resonances[0]!.strength > 0.3) {
+  private classifyChaosRegime(lambdaPerMin: number, resonances: ResonanceFrequency[]): PlanckChaosResult['chaosRegime'] {
+    if (lambdaPerMin < -0.01) return 'laminar';
+    if (lambdaPerMin > 0.05) return 'chaotic';
+    if (Math.abs(lambdaPerMin) <= 0.05 && resonances.length > 0 && resonances[0]!.strength > 0.3) {
       return 'edge_of_chaos';
     }
     return 'predictable';
@@ -359,8 +442,8 @@ export class PlanckChaosEngine {
     }[chaosRegime];
     lines.push(`Regime: ${regimeLabel}`);
 
-    // Lyapunov
-    lines.push(`Lyapunov λ=${lyapunov.lambda.toFixed(4)} | Horizon=${lyapunov.predictabilityHorizonMin < 9999 ? lyapunov.predictabilityHorizonMin.toFixed(0) + 'min' : '∞'} | Conf=${(lyapunov.confidence * 100).toFixed(0)}%`);
+    // Lyapunov (per minute)
+    lines.push(`Lyapunov λ=${lyapunov.lambda.toFixed(4)}/min | Horizon=${lyapunov.predictabilityHorizonMin < 9999 ? lyapunov.predictabilityHorizonMin.toFixed(0) + 'min' : '∞'} | Conf=${(lyapunov.confidence * 100).toFixed(0)}%`);
 
     // Resonances
     if (resonances.length > 0) {
@@ -383,13 +466,13 @@ export class PlanckChaosEngine {
     return lines.join('\n');
   }
 
-  /** Get the last analysis result (cached) */
-  getLastResult(): PlanckChaosResult | null {
-    return this.lastResult;
+  /** Get the last analysis result for a symbol (cached) */
+  getLastResult(symbol: string): PlanckChaosResult | null {
+    return this.getState(symbol).lastResult;
   }
 
-  /** Get formatted context for agent injection (cached) */
-  getContextString(): string {
-    return this.lastResult?.contextString ?? '';
+  /** Get formatted context for agent injection for a symbol (cached) */
+  getContextString(symbol: string): string {
+    return this.getState(symbol).lastResult?.contextString ?? '';
   }
 }

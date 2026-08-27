@@ -3146,7 +3146,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         this.paperEngine.updatePrice(data.symbol, data.price);
         this.sentimentEngine.updatePrice(data.price);
         // v2.0.32: Feed price into Planck-Chaos Resonance Engine
-        this.planckChaos.feedPrice(data.price, Date.now());
+        // v2.0.871-P7: per-symbol buffer — 傳 symbol 防止切 symbol 污染
+        this.planckChaos.feedPrice(data.symbol, data.price, Date.now());
         if (data.fundingRate !== undefined) {
           this.sentimentEngine.updateFundingRate(data.fundingRate);
         }
@@ -9054,7 +9055,12 @@ ${recentExamples}
       // validation) + resonance (informational context).
       let planckChaosContext = '';
       try {
-        const chaosResult = this.planckChaos.analyze(combinedState.price, combinedState.volatility ?? 0);
+        // v2.0.871-P7: per-symbol analysis — 用 primarySymbol 對應嘅 buffer
+        const chaosResult = this.planckChaos.analyze(
+          combinedState.primarySymbol,
+          combinedState.price,
+          combinedState.volatility ?? 0,
+        );
         if (chaosResult) {
           planckChaosContext = '\n' + chaosResult.contextString;
           log.info(`🌌 [planck-chaos] Regime=${chaosResult.chaosRegime} λ=${chaosResult.lyapunov.lambda.toFixed(4)} resonance=${(chaosResult.resonanceStrength * 100).toFixed(0)}%`);
