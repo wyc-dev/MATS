@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.871-P7-audit
+> **作者**: YC Wong · **版本**: 2.0.872-P8
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **測試狀態（v2.0.871-P7-audit 審計）**: vitest 3658 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——主神裁決暫唔修
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
@@ -979,7 +979,7 @@ src/
 │   │   # v2.0.833 REMOVED + v2.0.862 DELETED: temporal-attention.ts, cross-symbol-backbone.ts, reward-shaping.ts, world-model.ts
 │   ├── direction-audit.ts   # LLM 交易記錄審計（v2.0.180）
 │   └── system-engineer.ts   # 自主代碼工程師 Agent（v2.0.182）
-├── analysis/                # sentiment · S/R · ATR（momentum-adaptive SL v2.0.207 #C）· planck-chaos（v2.0.871-P7: Rosenstein slope λ/min + per-symbol buffer）· options · news
+├── analysis/                # sentiment · S/R · ATR（momentum-adaptive SL v2.0.207 #C）· planck-chaos（v2.0.871-P7: Rosenstein slope λ/min + per-symbol buffer）· momentum-5m-gate（v2.0.872-P8: 主神 5m 方向硬閘，robust σ 自適應門檻）· options · news
 ├── market-agent/            # 自動 pair 選擇（9 DEX, 416 assets, 類別過濾）
 ├── data/                    # Hyperliquid + Binance WebSocket
 ├── services/                # v2.0.822: Analysis Matrix + Supabase writer

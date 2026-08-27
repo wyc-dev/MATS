@@ -93,6 +93,7 @@ import { momentumDirectionalBias, robustMomentumPct, shadowBoostSize } from './a
 import { computePersistenceScore, classifyPersistence, momentumDirectionalBiasPersistence, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
 import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
 import { shouldSkipBreakoutEntry } from './analysis/breakout-confirmation.ts';
+import { shouldBlock5mDirection, DEFAULT_GATE_5M_KSIGMA, DEFAULT_GATE_5M_FLOOR_BPS, DEFAULT_GATE_5M_CAP_BPS, DEFAULT_GATE_5M_CANDLES } from './analysis/momentum-5m-gate.ts';
 import { classifySuccessPattern } from './analysis/success-pattern.ts';
 import { SuccessPatternTracker } from './evolution/success-pattern-tracker.ts';
 import { computeMaeMfeSLTP } from './analysis/mae-mfe-sltp.ts';
@@ -929,7 +930,11 @@ class MATSSystem {
       const olr = this.olrEngine.query(sym, ctx.features, side, this.totalCycles);
       const nSamples = safeNum((olr as { nSamples?: number })?.nSamples, 0);
       const confidence = (olr as { confidence?: string })?.confidence ?? 'low';
-      if (nSamples < 10 || confidence === 'low') return { blocked: false };
+      if (nSamples < 10 || confidence === 'low') {
+        // v2.0.872-P8: 靜默放行改 LOUD——DRAM 案:gate 冇聲出咗放行，事後無法審計
+        log.info(`🔓 [olr-gate] ${sym} ${side}: 靜默放行（n=${nSamples}, conf=${confidence}）——樣本不足唔定罪（LOUD 記錄）`);
+        return { blocked: false };
+      }
       if (!Number.isFinite(olr.pWin) || olr.pWin < 0 || olr.pWin > 1) return { blocked: false };
       if (olr.pWin < OLR_HARD_FLOOR) {
         return { blocked: true, reason: `OLR P(win)=${(olr.pWin * 100).toFixed(0)}% < ${(OLR_HARD_FLOOR * 100).toFixed(0)}% (n=${nSamples})` };
@@ -5430,6 +5435,34 @@ ${recentExamples}
           }
         } catch { /* 非致命——四窗失敗唔 block */ }
       }
+      // v2.0.872-P8（主神指令 2026-08-27）: 5m 動量方向硬閘——鏡像對稱 + 波動率自適應。
+      // 「5m 跌絕對唔開 BUY；5m 升絕對唔開 SELL」。DRAM 案例:4h -3.47% 跌市
+      // 單支 5m +0.24% 死貓彈就開 BUY，10 分鐘 -4.3%（MFE 0.0%）。
+      // P8b（主神質疑「唔可以動態計算每個 asset 嘅 falling？」）:門檻用每個
+      // asset 自己嘅 5m 燉 σ 動態計算（BTC 噪音 ≠ SP500 噪音），唔係硬編碼 bps。
+      // env MOMENTUM_5M_GATE=false 回滾；GATE_5M_KSIGMA / GATE_5M_FLOOR_BPS /
+      // GATE_5M_CAP_BPS / GATE_5M_CANDLES 可調。
+      if (process.env['MOMENTUM_5M_GATE'] !== 'false') {
+        try {
+          const c5mGate = candleCache.peekCandles(sym, '5m');
+          const gate5m = shouldBlock5mDirection({
+            side: action,
+            closes: (c5mGate ?? []).map((c) => c.c),
+            kSigma: Number(process.env['GATE_5M_KSIGMA'] ?? DEFAULT_GATE_5M_KSIGMA) || DEFAULT_GATE_5M_KSIGMA,
+            floorBps: Number(process.env['GATE_5M_FLOOR_BPS'] ?? DEFAULT_GATE_5M_FLOOR_BPS),
+            capBps: Number(process.env['GATE_5M_CAP_BPS'] ?? DEFAULT_GATE_5M_CAP_BPS),
+            minCandles: Number(process.env['GATE_5M_CANDLES'] ?? DEFAULT_GATE_5M_CANDLES) || DEFAULT_GATE_5M_CANDLES,
+          });
+          if (gate5m.blocked) {
+            return { confidence: 0, blocked: true, reason: `5m-direction: ${gate5m.reason} — HARD BLOCK`, size: 0 };
+          }
+          if (gate5m.slopeBps === null) {
+            log.warn(`⚠️ [5m-gate] ${sym} ${action}: 5m 數據不足（${(c5mGate ?? []).length} 支）— 閘靜默放行（LOUD 記錄）`);
+          }
+        } catch (e) {
+          log.warn(`⚠️ [5m-gate] ${sym} 查詢失敗: ${e instanceof Error ? e.message : String(e)} — 放行（唔 block 冇數據）`);
+        }
+      }
       // F1: 動量方向偏置（順勢 boost / 逆勢逐段 / ≥8% hard block）
       if (process.env['MOMENTUM_DIRECTION_GATE'] !== 'false') {
         const mom = this.compute24hMomentumPct(sym);
@@ -6253,7 +6286,9 @@ ${recentExamples}
         sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
         sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
         signalAgreement: safeNum(this.lastHACPResult?.consensus?.confidence, 0.5),
-        regimeOrdinal: regimeToOrdinal(state?.regime),
+        // v2.0.872-P8(DRAM 案): per-symbol regime——之前用 active symbol 嘅 regime
+        // 查 per-symbol OLR（跨 symbol 特徵污染——thesis 67% vs 實際 12.2% 嘅根源之一）
+        regimeOrdinal: regimeToOrdinal(symState?.regime ?? state?.regime),
         hourOfDay: currentHourOfDay(),
         // P28-B: 蠟燭動量(m15m/m4h→fraction)取代寫死 0
         ...this.candleMomentumFeatures(sym),
@@ -11139,6 +11174,24 @@ ${recentExamples}
             log.info(`🧪 All signals neutral — skipping exploration (no edge detected)`);
             finalDecision = result.consensus.decision; // keep HOLD
           } else {
+            // v2.0.872-P8（DRAM 案修復）: exploration 接入統一 conviction gates。
+            // 原窿:exploration 繞過 applyEntryConvictionGates（四窗/F1/OLR<35%
+            // /reentry-cooldown/shadow-gate 全部冇行）→ 4h -3.47% 跌市開 BUY
+            // 10 分鐘 -4.3%。同主神「統一執行路徑」意圖一致——所有入場同一套閘。
+            // env 控制沿用各閘自身 env（MOMENTUM_ALIGN_GATE 等）。
+            const unifyGate = this.applyEntryConvictionGates(
+              exploreTarget,
+              direction as 'buy' | 'sell',
+              0.5,
+              0.05,
+            );
+            if (unifyGate.blocked) {
+              log.warn(`🧪 [unified-gate] Exploration ${direction!.toUpperCase()} ${exploreTarget}: ${unifyGate.reason} — skip（統一執行路徑）`);
+              direction = null;
+              finalDecision = result.consensus.decision; // keep HOLD
+            }
+          }
+          if (direction) {
             // v2.0.722: Rich exploration thesis — includes actual market data
             // so the digester can learn from condition-specific outcomes.
             // The old template ("pattern classifier suggests buy") was identical
@@ -11170,7 +11223,7 @@ ${recentExamples}
                 regimeOrdinal: regimeToOrdinal(expState.regime),
                 hourOfDay: currentHourOfDay(), // v2.0.221 Fix 1
               };
-              const olrQ = this.olrEngine.query(activeSymbol, olrCtx2, direction as 'buy' | 'sell', this.totalCycles);
+              const olrQ = this.olrEngine.query(exploreTarget, olrCtx2, direction as 'buy' | 'sell', this.totalCycles);
               expOlrPWin = safeNum(olrQ.pWin, 0);
               expOlr = `${(olrQ.pWin * 100).toFixed(0)}% (${olrQ.nSamples} samples)`;
               const shadowSym = normalizeSymbol(activeSymbol);
