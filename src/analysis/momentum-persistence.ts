@@ -26,7 +26,7 @@ export interface PersistenceResult {
   n: number;
 }
 
-export type Persistence = 'persistent_bear' | 'range' | 'neutral';
+export type Persistence = 'persistent_bear' | 'persistent_bull' | 'range' | 'neutral';
 
 /** 量度「mom24<0 → 後續 4h 係咪續跌」。純函數。
  *  closes: 1h 閉市價（升序）。垃圾元素 skip。唔足 lookback+forward+1 → null。
@@ -91,8 +91,13 @@ export function momentumDirectionalBiasPersistence(
   if (mag < 1.5) return 1.0; // 噪音——唔影響
   const bullish = momPct > 0;
   const aligned = (side === 'buy' && bullish) || (side === 'sell' && !bullish);
-  if (!aligned && persistence === 'persistent_bear' && mag >= 1.5) return 0; // 核心: 跌市唔買
+  if (!aligned && persistence === 'persistent_bear' && mag >= 1.5) return 0; // 核心: 跌市唔買（重放:36 喺 −57.3pp，硬閘保留）
   if (aligned) {
+    // v2.0.872-P8-persist-v3（重放實證 269 喺）:
+    //  - persistent_bull + 順勢 BUY → ×1.1（18 喺 +20.5pp 56% 實證）
+    //  - persistent_bear + 順勢 SELL → ×1.0（10 喺 −9.7pp 30%——boost 唔獲支持，廢除）
+    if (persistence === 'persistent_bull') return 1.1;
+    if (persistence === 'persistent_bear') return 1.0;
     // v2.0.870-sell-architecture-attack A1: range（反彈型）+ SELL + mom<0 係
     // 「假順勢」——E1 實證反彈型 sell 全輸（bnb n=38 WR 0.7%）——mom<0 後 4h
     // 反彈。唔可以當順勢 boost（幫倒忙）——用逆勢懲罰（反彈型 sell 無 edge）。
@@ -115,4 +120,92 @@ export function momentumDirectionalBiasPersistence(
  *  → bnb n=38 WR 0.7%; 續跌型 sell 4h WR 52-71%）。range/neutral 唔 seed。 */
 export function shouldSeedSell(persistence: Persistence): boolean {
   return persistence === 'persistent_bear';
+}
+
+// ─── v2.0.872-P8-persist-v3: 衰減 + cutoff + 鏡像分類（主神 2026-08-28）───
+
+export interface PersistenceDual {
+  /** 續跌分數:跌市時刻 4h 後續跌比例（exp 衰減加權） */
+  score: number;
+  /** 續升分類:升市時刻 4h 後續升比例（對稱） */
+  bullScore: number;
+  /** 衰減後有效樣本數 */
+  n: number;
+  nBull: number;
+}
+
+/** 計算 dual persistence（每個 down/up-moment 證據按證據年齡 exp 衰減 + 24h hard cutoff）。
+ *  v2.0.872-P8-heal-v3 四件套之一:coarse 120h 等權窗口 → 證據年齡加權，
+ *  短炒語義精確對齊「最近 24h 嘅續跌/續升結構」。 */
+export function computePersistenceDual(
+  candles: Array<{ t: number; c: number }> | null | undefined,
+  opts: { lookback?: number; forward?: number; decayHours?: number; cutoffHours?: number; now?: number } = {},
+): PersistenceDual | null {
+  if (!Array.isArray(candles) || candles.length === 0) return null;
+  const lb = Number.isFinite(opts.lookback) && (opts.lookback ?? 0) > 0 ? Math.floor(opts.lookback!) : 24;
+  const fw = Number.isFinite(opts.forward) && (opts.forward ?? 0) > 0 ? Math.floor(opts.forward!) : 4;
+  const now = Number.isFinite(opts.now) && (opts.now ?? 0) > 0 ? opts.now! : Date.now();
+  const tau = clampH(opts.decayHours, 24) * 3600_000;
+  const cut = clampH(opts.cutoffHours, 24) * 3600_000;
+  const cs: Array<{ t: number; c: number }> = [];
+  for (const c of candles) {
+    const tv = Number(c?.t);
+    const cv = Number(c?.c);
+    if (Number.isFinite(tv) && Number.isFinite(cv) && cv > 0) cs.push({ t: tv, c: cv });
+  }
+  if (cs.length < lb + fw + 1) return null;
+  let down = 0, dn = 0, up = 0, upn = 0;
+  let cntDown = 0, cntUp = 0; // unweighted 計數——冷啟動判定用（加權和會被 decay 縮到 <5 誤判樣本不足）
+  for (let i = lb; i < cs.length - fw; i++) {
+    const evT = cs[i + fw]!.t;
+    const age = now - evT;
+    if (age > cut || age < 0) continue; // hard cutoff / 未來垃圾
+    const w = Math.exp(-age / tau);
+    const bearMom = ((cs[i]!.c - cs[i - lb]!.c) / cs[i - lb]!.c) * 100;
+    const bullMom = ((cs[i + fw]!.c - cs[i]!.c) / cs[i]!.c) * 100;
+    const fwd = ((cs[i + fw]!.c - cs[i]!.c) / cs[i]!.c) * 100;
+    if (bearMom < 0) { // 跌市時刻——sell 環境
+      dn += w; if (fwd < 0) down += w; cntDown++;
+    }
+    if (bullMom > 0) { // 升市時刻——buy 環境（鏡像）
+      upn += w; if (fwd > 0) up += w; cntUp++;
+    }
+  }
+  if (cntDown < 5 && cntUp < 5) return null; // 冷啟動——unweighted 計數（加權和會被 decay 縮細誤判）
+  return { score: dn > 0 ? down / dn : 0, bullScore: upn > 0 ? up / upn : 0, n: cntDown, nBull: cntUp };
+}
+
+function clampH(v: number | undefined, fallback: number): number {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(8760, Math.max(1, n)); // floor 1h——防 denormal env（tau→0 → 0/0）
+}
+
+/** v2.0.872-P8-heal-v3 分類:dual score → 四分類（垃圾/冷啟動 → neutral）。 */
+export function classifyPersistenceDual(
+  dual: PersistenceDual | null | undefined,
+  bearThreshold = 0.55,
+  bullThreshold = 0.55,
+): 'persistent_bear' | 'persistent_bull' | 'range' | 'neutral' {
+  if (!dual || !Number.isFinite(dual.score) || !Number.isFinite(dual.bullScore)) return 'neutral';
+  const bt = Number.isFinite(bearThreshold) ? bearThreshold : 0.55;
+  if (dual.n >= 5 && dual.score >= bt) return 'persistent_bear';
+  if (dual.nBull >= 5 && dual.bullScore >= bt) return 'persistent_bull';
+  if (dual.n >= 5 && dual.score >= 0.45) return 'range';
+  return 'neutral';
+}
+
+/** staleness 純函數——cache 過期唔准用（fetch 失敗化石唔准做 HARD BLOCK）。 */
+export function isStaleCache(updatedAt: number | undefined, now: number, maxHours: number): boolean {
+  if (typeof updatedAt !== 'number' || !Number.isFinite(updatedAt) || updatedAt <= 0) return true;
+  return now - updatedAt > maxHours * 3600_000;
+}
+
+/** v2.0.872-P8-heal-v3 persistence 順勢權重（重放實證）:
+ *  - persistent_bull + 順勢 BUY → ×1.1（重放:18 喺 +20.5pp 56% 實證）
+ *  - persistent_bear + 順勢 SELL → ×1.0（重放:10 喺 −9.7pp 30%——boost 唔獲支持）
+ *  - persistent_bear + 逆勢 BUY → 0（硬閘保留——重放:36 喺 −57.3pp，硬閘救場） */
+export function persistenceAlignedWeight(action: 'buy' | 'sell', persistence: Persistence): number {
+  if (persistence === 'persistent_bull' && action === 'buy') return 1.1;
+  return 1.0;
 }

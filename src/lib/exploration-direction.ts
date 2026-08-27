@@ -5,7 +5,7 @@
 // 持續跌勢（mom24<0 且 mom4<0）sell 4h edge WR 55-68%——覆蓋 OLR sell 毒化。
 // 純函數零依賴——可測。毒值保守（唔觸發）。
 
-export type Persistence = 'persistent_bear' | 'range' | 'neutral';
+export type Persistence = 'persistent_bear' | 'persistent_bull' | 'range' | 'neutral';
 
 export interface SellSignalInput {
   persistence: Persistence | string | null | undefined;
