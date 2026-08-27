@@ -21,6 +21,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.872-P8-heal-attack: 攻擊輪——wick 溢出毒 candle 防禦（主神 2026-08-28）
+
+**攻擊方案**（`scripts/p8-heal-attack.ts`:env 注入 / attempts 毒注入 / 數值溢出 / 併發 heal / 持久化污染）——14 攻 1 中：
+
+| # | 漏洞 | 嚴重 | 修復 |
+|---|------|:--:|------|
+| C2 | candle wick 1e308 → max=1e305 寫入 trade record → 下游 PAEL/成功 pattern 污染 | MED | **candle 層 sanity 過濾**——價格超出 entry [5%, 2000%] 嘅燭剔除（10× 移動物理上唔可能，清算都只係 -100%）；混合燭：毒燭剔、sane 燭照 heal；全垃圾 → null → 走重試路徑 |
+| A1 | `MAE_MFE_HEAL_BATCH` env | ✅ 已有 clamp [1,100] | — |
+| B1-B4 | attempts 負數/NaN/字串、healed 字串 | ✅ 防住 | — |
+| D1 | 併發 heal 同一 trade | ✅ 數據一致 | — |
+| E1 | healed=true + 毒 min/max | ✅ idempotent 契約 | — |
+
+**設計教訓**: 第一版用 `3×margin` batch-level clamp——對 investment≠notional/lev 嘅不一致 fixture 太緊（誤殺合法 heal）。改為 **candle 層過濾**（剔除毒燭、保留 sane 燭）——統計上更精確：壞燭剔除、好燭保留，而唔係一票否決。
+
+**驗證**: vitest 49/49（溢出防禦 5 + heal-v2 重試 8 + p22 修訂 13 + 5m 閘回歸）；全量 3694 pass + 13 pre-existing（零新增）；tsc clean。
+
+---
+
 ## v2.0.872-P8-heal-v2: healer 生產級加固——重試語義 + 節流 + 持久化（主神 2026-08-28）
 
 **主神指令**: 「fix 風險披露——rate limit + no-candle-data 永久放棄」。
