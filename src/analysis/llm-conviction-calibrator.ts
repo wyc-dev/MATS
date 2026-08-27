@@ -33,14 +33,37 @@ const MIN_SAMPLES = 5;           // 每 bin 最少樣本先校準(5 = Wilson CI 
 // env CALIB_DECAY_HOURS / CALIB_CUTOFF_HOURS(0 = 關閉 = 舊行為)。
 const CALIB_DECAY_HOURS = (() => {
   const h = Number(process.env['CALIB_DECAY_HOURS'] ?? '24');
-  return Number.isFinite(h) && h >= 0 ? h : 24;
+  // v2.0.870-P5-attack: clamp——1e-300(denormal)令 exp 分母爆炸全滅、1e308 令
+  // 衰減失效(永久鎖死)。0 = 回滾(無衰減);[0.01, 8760] = 有效範圍。
+  if (!Number.isFinite(h)) return 24;
+  if (h === 0) return 0;
+  if (h < 0.01) return 24;
+  if (h > 8760) return 24;
+  return h;
 })();
 const CALIB_DECAY_MS = CALIB_DECAY_HOURS * 3_600_000;
 const CALIB_CUTOFF_HOURS = (() => {
   const h = Number(process.env['CALIB_CUTOFF_HOURS'] ?? '24');
-  return Number.isFinite(h) && h >= 0 ? h : 24;
+  // v2.0.870-P5-attack: clamp——1e-9 令 cutoff ~0(bins 永遠過期 → 校準失效)、
+  // 1e308 令 cutoff Infinity(永久鎖死)。0 = 回滾(無 cutoff);[1, 8760] = 有效。
+  if (!Number.isFinite(h)) return 24;
+  if (h === 0) return 0;
+  if (h < 1) return 24;
+  if (h > 8760) return 24;
+  return h;
 })();
 const CALIB_CUTOFF_MS = CALIB_CUTOFF_HOURS * 3_600_000;
+// v2.0.870-P5-attack: 時鐘容忍——lastUpdatedTs 超過 now+5min 當「未來垃圾」→
+// 當 now(唔可以令 dt 負 → decay Infinity → NaN 污染 gate)。
+const TS_TOLERANCE_MS = 5 * 60_000;
+
+/** v2.0.870-P5-attack: 安全 dt——未來/NaN/負數 lastUpdatedTs 保守處理。
+ *  未來 ts → 當 now(dt=0);NaN/非 finite → 當 now;負數 → dt 大(當最舊)。 */
+function safeDt(now: number, ts: number | undefined): number {
+  const raw = Number.isFinite(ts) ? (ts ?? now) : now;
+  const clamped = raw > now + TS_TOLERANCE_MS ? now : raw;
+  return Math.max(0, now - clamped);
+}
 const KLINE_READ_WINDOW = 20;    // 讀圖一致率窗口
 const DEFAULT_PATH = 'data/evolution/llm-conviction-calibration.json';
 
@@ -100,7 +123,7 @@ export class LLMConvictionCalibrator {
     const now = Date.now();
     const bin = this.state.bins[key] ?? { wins: 0, losses: 0, lastUpdatedTs: now };
     // v2.0.870-P5: write-time decay——記錄前先按時間衰減(同 shadow stats 一致)。
-    const dt = now - (Number.isFinite(bin.lastUpdatedTs) ? (bin.lastUpdatedTs ?? now) : now);
+    const dt = safeDt(now, bin.lastUpdatedTs);
     const decay = CALIB_DECAY_MS > 0 ? Math.exp(-dt / CALIB_DECAY_MS) : 1;
     bin.wins = (Number.isFinite(bin.wins) ? bin.wins : 0) * decay;
     bin.losses = (Number.isFinite(bin.losses) ? bin.losses : 0) * decay;
@@ -116,7 +139,7 @@ export class LLMConvictionCalibrator {
     const bin = this.state.bins[binKey(side, binIdx)];
     if (!bin) return null;
     const now = Date.now();
-    const dt = now - (Number.isFinite(bin.lastUpdatedTs) ? (bin.lastUpdatedTs ?? now) : now);
+    const dt = safeDt(now, bin.lastUpdatedTs);
     if (CALIB_CUTOFF_MS > 0 && dt > CALIB_CUTOFF_MS) return null; // hard cutoff——bin 過期
     const decay = CALIB_DECAY_MS > 0 ? Math.exp(-dt / CALIB_DECAY_MS) : 1;
     return {

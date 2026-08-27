@@ -48,7 +48,13 @@ export interface EVSample {
 
 const EV_TIME_DECAY_HOURS = (() => {
   const h = Number(process.env['EV_TIME_DECAY_HOURS'] ?? '24');
-  return Number.isFinite(h) && h >= 0 ? h : 24;
+  // v2.0.870-P5-attack: clamp——1e-9(denormal)令 exp 分母爆炸全滅、1e308 令
+  // 衰減失效(永久鎖死)。0 = 回滾(等權);[0.01, 8760] = 有效範圍。
+  if (!Number.isFinite(h)) return 24;
+  if (h === 0) return 0;
+  if (h < 0.01) return 24;
+  if (h > 8760) return 24;
+  return h;
 })();
 const EV_TIME_DECAY_MS = EV_TIME_DECAY_HOURS * 3_600_000;
 // v2.0.870-P5: EV hard cutoff——超過 cutoff 嘅 trade 零權重(唔係指數衰減嘅
@@ -58,7 +64,13 @@ const EV_TIME_DECAY_MS = EV_TIME_DECAY_HOURS * 3_600_000;
 // SHADOW_STAT_CUTOFF_HOURS 一致。env EV_CUTOFF_HOURS(0 = 關閉 = 舊行為)。
 const EV_CUTOFF_HOURS = (() => {
   const h = Number(process.env['EV_CUTOFF_HOURS'] ?? '24');
-  return Number.isFinite(h) && h >= 0 ? h : 24;
+  // v2.0.870-P5-attack: clamp——1e-9 令 cutoff ~0(全部 trade 過期 → 硬閘失效)、
+  // 1e308 令 cutoff Infinity(永久鎖死)。0 = 回滾(無 cutoff);[1, 8760] = 有效。
+  if (!Number.isFinite(h)) return 24;
+  if (h === 0) return 0;
+  if (h < 1) return 24;
+  if (h > 8760) return 24;
+  return h;
 })();
 const EV_CUTOFF_MS = EV_CUTOFF_HOURS * 3_600_000;
 /** v2.0.870-FIX-V1(攻擊輪): 時鐘 skew 容忍——closedAt 超過 now+5min 當「未來垃圾」→ 當最舊

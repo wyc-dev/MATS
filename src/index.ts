@@ -92,6 +92,7 @@ import { momentumOlrConflictMultiplier } from './analysis/momentum-olr-conflict.
 import { momentumDirectionalBias, robustMomentumPct, shadowBoostSize } from './analysis/momentum-directional-bias.ts';
 import { computePersistenceScore, classifyPersistence, momentumDirectionalBiasPersistence, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
 import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
+import { shouldSkipBreakoutEntry } from './analysis/breakout-confirmation.ts';
 import { classifySuccessPattern } from './analysis/success-pattern.ts';
 import { SuccessPatternTracker } from './evolution/success-pattern-tracker.ts';
 import { computeMaeMfeSLTP } from './analysis/mae-mfe-sltp.ts';
@@ -172,6 +173,15 @@ const chartConvictionConfig = { enabled: parseBlockBool(process.env['CHART_AWARE
 const llmCalibrationConfig = { enabled: parseBlockBool(process.env['LLM_CONVICTION_CALIBRATION'], true) } as const;
 const llmDirectionConfig = { enabled: parseBlockBool(process.env['LLM_DIRECTION_VERIFIER'], true) } as const;
 const evFilterConfig = { enabled: parseBlockBool(process.env['EV_FILTER'], true) } as const;
+// v2.0.870-P6: OLR 硬閘——OLR P(win) < 30% → block（LLM 唔可以 override 統計信號）。
+// 40 單實證 trade 35(bnb -3.4%)thesis「OLR BUY P(win)=29% is against, but...」照入。
+// threshold 30% 只 block 29%,唔誤傷 41% 贏單（#30/#39）。env OLR_HARD_FLOOR 可調。
+const OLR_HARD_FLOOR = (() => {
+  const v = Number(process.env['OLR_HARD_FLOOR'] ?? '0.30');
+  return Number.isFinite(v) && v > 0 && v < 1 ? v : 0.30;
+})();
+// v2.0.870-P6: Breakout 確認——未突破就買/賣 → skip（時機層）。
+const breakoutGateConfig = { enabled: parseBlockBool(process.env['BREAKOUT_CONFIRMATION'], true) } as const;
 // v2.0.870-FIX(主神批准): FP Multiplier——令 FP shrink 有硬 teeth（正 edge 中性,負 edge 壓制）
 const fpGateConfig = { enabled: parseBlockBool(process.env['FP_GATE_MULTIPLIER'], true) } as const;
 const closeCalibConfig = { enabled: parseBlockBool(process.env['CLOSE_DECISION_CALIBRATION'], true) } as const;
@@ -905,6 +915,27 @@ class MATSSystem {
     }
 
     return { blocked: false };
+  }
+
+  /** v2.0.870-P6: OLR 硬閘——OLR P(win) < 30% → block（LLM 唔可以 override 統計信號）。
+   *  40 單實證 trade 35(bnb -3.4%)thesis「OLR BUY P(win)=29% is against, but 1h
+   *  momentum +1.20%...」照入——LLM 對抗 OLR 統計信號。threshold 30% 只 block 29%,
+   *  唔誤傷 41% 贏單（#30/#39）。冷啟動(n<10 / confidence low)→ 唔 block。 */
+  private checkOLRHardGate(symbol: string, side: 'buy' | 'sell'): { blocked: boolean; reason?: string } {
+    try {
+      const sym = normalizeSymbol(symbol);
+      const ctx = this.lastCycleShadowContexts.get(sym);
+      if (!ctx?.features || Object.keys(ctx.features).length === 0) return { blocked: false };
+      const olr = this.olrEngine.query(sym, ctx.features, side, this.totalCycles);
+      const nSamples = safeNum((olr as { nSamples?: number })?.nSamples, 0);
+      const confidence = (olr as { confidence?: string })?.confidence ?? 'low';
+      if (nSamples < 10 || confidence === 'low') return { blocked: false };
+      if (!Number.isFinite(olr.pWin) || olr.pWin < 0 || olr.pWin > 1) return { blocked: false };
+      if (olr.pWin < OLR_HARD_FLOOR) {
+        return { blocked: true, reason: `OLR P(win)=${(olr.pWin * 100).toFixed(0)}% < ${(OLR_HARD_FLOOR * 100).toFixed(0)}% (n=${nSamples})` };
+      }
+      return { blocked: false };
+    } catch { return { blocked: false }; }
   }
 
   /**
@@ -11021,6 +11052,30 @@ ${recentExamples}
             }
           }
 
+          // v2.0.870-P6: Breakout 確認——未突破就買/賣 → skip（時機層）。
+          if (direction && breakoutGateConfig.enabled && srCtx) {
+            const skip = shouldSkipBreakoutEntry({
+              direction: direction as 'buy' | 'sell',
+              distanceToResistanceBps: srCtx.distanceToResistanceBps,
+              distanceToSupportBps: srCtx.distanceToSupportBps,
+            });
+            if (skip) {
+              log.warn(`🧪 [breakout-gate] Exploration ${direction.toUpperCase()} ${exploreTarget}: 未突破就入場 — skip`);
+              direction = null;
+              finalDecision = result.consensus.decision; // keep HOLD
+            }
+          }
+
+          // v2.0.870-P6: OLR 硬閘——OLR P(win) < 30% → block（LLM 唔可以 override 統計信號）。
+          if (direction) {
+            const olrGate = this.checkOLRHardGate(exploreTarget, direction as 'buy' | 'sell');
+            if (olrGate.blocked) {
+              log.warn(`🧪 [olr-hard-gate] Exploration ${direction.toUpperCase()} ${exploreTarget}: ${olrGate.reason}`);
+              direction = null;
+              finalDecision = result.consensus.decision; // keep HOLD
+            }
+          }
+
           // v2.0.870-P2: EV 硬閘——exploration 唔探索「驗證過嘅負 EV 方向」。
           // 治本:exploration 係「探索未知」,唔係「重複已知蝕錢方向」。
           // bnb|buy WR 9% 呢啲方向,exploration 唔應該再送錢入去。
@@ -11491,6 +11546,18 @@ ${recentExamples}
               auditGates.push({ gate: 'loss-streak', passed: true, reason: `soft: conviction +${(lossStreakResult.convictionPenalty * 100).toFixed(0)}%` });
             } else {
               auditGates.push({ gate: 'loss-streak', passed: true, reason: 'no penalty' });
+            }
+
+            // v2.0.870-P6: OLR 硬閘——OLR P(win) < 30% → block（LLM 唔可以 override 統計信號）。
+            if (psc.action === 'buy' || psc.action === 'sell') {
+              const olrGate = this.checkOLRHardGate(psc.symbol, psc.action as 'buy' | 'sell');
+              if (olrGate.blocked) {
+                log.warn(`🛑 [olr-hard-gate] Multi-symbol ${psc.action.toUpperCase()} ${psc.symbol}: ${olrGate.reason}`);
+                auditGates.push({ gate: 'olr-hard-gate', passed: false, reason: olrGate.reason ?? 'OLR P(win) too low' });
+                this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
+                continue;
+              }
+              auditGates.push({ gate: 'olr-hard-gate', passed: true, reason: 'OLR OK (or cold-start)' });
             }
 
             // v2.0.870-P2: EV 硬閘——歷史負 EV(symbol×side)直接 block(治本)。
@@ -12527,6 +12594,14 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         const olrBlendFactor = olrHasData
           ? DynamicThresholdCalculator.pwinBlendFactor(olrPWin)
           : 1.0;
+
+        // v2.0.870-P6: OLR 硬閘——OLR P(win) < 30% → block（LLM 唔可以 override 統計信號）。
+        // 40 單實證 trade 35(bnb -3.4%)thesis「OLR BUY P(win)=29% is against, but...」照入。
+        // threshold 30% 只 block 29%,唔誤傷 41% 贏單（#30/#39）。
+        if (olrHasData && olrPWin < OLR_HARD_FLOOR && (finalDecision.action === 'buy' || finalDecision.action === 'sell')) {
+          log.warn(`🛑 [olr-hard-gate] ${finalDecision.action.toUpperCase()} ${pwinSym}: OLR P(win)=${(olrPWin * 100).toFixed(0)}% < ${(OLR_HARD_FLOOR * 100).toFixed(0)}% — block`);
+          finalDecision = { ...finalDecision, action: 'hold', rationale: `[OLR HARD GATE] OLR P(win)=${(olrPWin * 100).toFixed(0)}% < ${(OLR_HARD_FLOOR * 100).toFixed(0)}%` };
+        }
 
         // ── v2.0.819: WINNER-FIRST combo blend override ───────────────────
         // The combo WR tracker stores per-(symbol×side×regime) win rates that
