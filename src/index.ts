@@ -90,7 +90,7 @@ import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
 import { momentumOlrConflictMultiplier } from './analysis/momentum-olr-conflict.ts';
 import { momentumDirectionalBias, robustMomentumPct, shadowBoostSize } from './analysis/momentum-directional-bias.ts';
-import { computePersistenceScore, classifyPersistence, momentumDirectionalBiasPersistence, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
+import { computePersistenceScore, computePersistenceDual, classifyPersistenceDual, isStaleCache, classifyPersistence, momentumDirectionalBiasPersistence, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
 import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
 import { shouldSkipBreakoutEntry } from './analysis/breakout-confirmation.ts';
 import { shouldBlock5mDirection, DEFAULT_GATE_5M_KSIGMA, DEFAULT_GATE_5M_FLOOR_BPS, DEFAULT_GATE_5M_CAP_BPS, DEFAULT_GATE_5M_CANDLES } from './analysis/momentum-5m-gate.ts';
@@ -5333,9 +5333,10 @@ ${recentExamples}
   /** v2.0.870-sell-architecture: per-symbol 動量延續性（E1 數據驅動分類）——
    *  persistent_bear（續跌型）/ range（反彈型）/ neutral（冷啟動）。
    *  2.5h throttle 更新（每 symbol 1 次 1h fetch——唔拖慢 cycle）。 */
-  private persistenceCache = new Map<string, { score: number; n: number; updatedAt: number }>();
+  private persistenceCache = new Map<string, { score: number; n: number; bullScore?: number; nBull?: number; updatedAt: number }>();
   private persistenceUpdatedAt = 0;
   private persistenceUpdating = false; // 併發 guard——fetch 慢時下個 cycle 唔重複跑
+  private persistenceStaleWarned = new Set<string>(); // LOUD once per symbol
 
   /** v2.0.870-reentry-cooldown（主神 2026-08-25）: PAEL/profit_lock close 後
    *  1h 唔准開同一方向——斬斷「鎖完又追」loop（DRAM 鎖 3.0% → 追高 → SL -7.3%）。 */
@@ -5363,8 +5364,8 @@ ${recentExamples}
             if (Array.isArray(d) && d.length > 30) { candles = d; break; }
           } catch { /* next */ }
         }
-        const res = computePersistenceScore(candles);
-        if (res) this.persistenceCache.set(norm, { score: res.score, n: res.n, updatedAt: Date.now() });
+        const res = computePersistenceDual(candles as Array<{ t: number; c: number }>, { now: Date.now() });
+        if (res) this.persistenceCache.set(norm, { score: res.score, n: res.n, bullScore: res.bullScore, nBull: res.nBull, updatedAt: Date.now() });
       }
       this.persistenceUpdatedAt = Date.now();
       log.info(`📊 [persistence] 更新完成: ${[...this.persistenceCache.entries()].map(([k, v]) => `${k}=${classifyPersistence(v.score, v.n)}(${v.score.toFixed(2)},n${v.n})`).join(' ')}`);
@@ -5378,7 +5379,18 @@ ${recentExamples}
   private getPersistence(sym: string): Persistence {
     const e = this.persistenceCache.get(normalizeSymbol(sym));
     if (!e) return 'neutral';
-    return classifyPersistence(e.score, e.n);
+    // v2.0.872-P8-persist-v3: staleness guard——cache > 6h（fetch 失敗化石）
+    // 唔准用做 F1 HARD BLOCK 依據，回退 neutral（LOUD 一次）。
+    if (isStaleCache(e.updatedAt, Date.now(), Number(process.env['PERSIST_STALE_HOURS'] ?? 6) || 6)) {
+      const norm = normalizeSymbol(sym);
+    if (!this.persistenceStaleWarned.has(norm)) {
+        log.warn(`⚠️ [persistence] ${sym} cache stale（updatedAt=${new Date(e.updatedAt).toISOString()}）→ neutral（唔准用化石做決定）`);
+        this.persistenceStaleWarned.add(norm);
+      }
+      return 'neutral';
+    }
+    const dual = { score: e.score, bullScore: e.bullScore ?? 0, n: e.n, nBull: e.nBull ?? 0 };
+    return classifyPersistenceDual(dual);
   }
 
   private applyEntryConvictionGates(
