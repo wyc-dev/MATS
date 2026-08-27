@@ -4,6 +4,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P6-attack: 非原子寫入修復 + calibrator 空腹根因（主神 2026-08-26）
+
+**主神指令**: 「不擇手段攻擊剛才修葺嘅代碼…並以完美的方式修復漏洞」。
+
+**攻擊輪（1 個系統性漏洞全修）**: 4 個組件嘅 `save()` 用 `fs.writeFileSync`（非原子）——crash mid-write 會寫入 partial JSON，令狀態靜默丟失。修復：導出 `atomicWriteSync`（write-to-temp + `renameSync`，同 filesystem 原子）——`llm-conviction-calibrator`/`ev-filter`/`llm-direction-verifier`/`close-decision-calibrator` 全部改用。
+
+**Calibrator 空腹根因（live 監控發現）**: `persistLLMCalibrator`/`persistEVFilter`/`persistLLMDirectionVerifier`/`persistCloseCalibrator` 只喺 `stop()`（graceful shutdown）調用，而 `tsx watch` restart 係 SIGKILL 唔觸發 `stop()` → 狀態靜默丟失（calibrator savedAt 停留 Aug 17，出世至今空腹死碼）。修復：4 個 persist 調用加入主 persist cycle（每 cycle 保存，同 `persistOLR` 一致）。
+
+**驗證**: tsc clean;67 個相關測試全綠（零 regress）。
+
+---
+
 ## v2.0.870-P5-attack + P6-entry-quality: 攻擊輪硬化 + 三方法入場質素（主神 2026-08-26）
 
 **主神指令**: 「不擇手段攻擊 P5 代碼…並以完美方式修復漏洞…思考任何可以令系統提升盈利機會」。

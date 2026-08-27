@@ -32,7 +32,10 @@ export function lockedWrite(filePath: string, data: string): void {
 // ─── Atomic File Write ───
 // Writes to .tmp first, then atomic rename to target.
 // If process crashes mid-write, .tmp is discarded and original file is intact.
-function atomicWriteSync(filePath: string, data: string): void {
+/** v2.0.870-P6-attack: 導出 atomic write——各 analysis 組件嘅 save() 曾用
+ *  fs.writeFileSync(非原子),crash mid-write 會 corrupt 檔案(partial JSON)。
+ *  改用 write-to-temp + renameSync(同 filesystem 原子)。 */
+export function atomicWriteSync(filePath: string, data: string): void {
   const tmpPath = filePath + '.tmp';
   fs.writeFileSync(tmpPath, data, 'utf-8');
   fs.renameSync(tmpPath, filePath);

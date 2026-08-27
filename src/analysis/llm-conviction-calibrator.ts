@@ -15,6 +15,7 @@
 // 純函數 + 持久化,可單元測試。malformed input → 中性(唔 crash)。
 
 import { createLogger } from '../observability/logger.ts';
+import { atomicWriteSync } from '../evolution/persistence.ts';
 import fs from 'node:fs';
 
 const log = createLogger({ phase: 'llm-calib' });
@@ -206,7 +207,7 @@ export class LLMConvictionCalibrator {
 
   save(): void {
     try {
-      fs.writeFileSync(this.path, JSON.stringify({ version: 1, savedAt: Date.now(), ...this.state }), 'utf-8');
+      atomicWriteSync(this.path, JSON.stringify({ version: 1, savedAt: Date.now(), ...this.state }));
     } catch (err) {
       log.warn(`[llm-calib] save failed: ${err instanceof Error ? err.message : String(err)}`);
     }
