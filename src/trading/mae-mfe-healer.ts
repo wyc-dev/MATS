@@ -118,13 +118,18 @@ export function computeValueExtremes(
 ): { min: number; max: number } | null {
   if (!Array.isArray(candles) || candles.length === 0) return null;
   let minPx = o.entry, maxPx = o.entry;
+  // v2.0.872-P8-heal-attack: candle 層 sanity——價格超出 entry [5%, 2000%] 嘅
+  // wick（1e308 毒值）剔除該燭，唔好拒絕成單；全垃圾 → 無效燭 → null。
+  // 10× 價格移動喺一個持倉窗口入面物理上唔可能（清算都只係 -100%）。
+  const lo = o.entry * 0.05, hi = o.entry * 20;
+  let kept = 0;
   for (const c of candles) {
     const h = Number(c.h);
     const l = Number(c.l);
-    if (Number.isFinite(h) && h > 0) { if (h > maxPx) maxPx = h; }
-    if (Number.isFinite(l) && l > 0) { if (l < minPx) minPx = l; }
+    if (Number.isFinite(h) && h > 0 && h >= lo && h <= hi) { if (h > maxPx) maxPx = h; ++kept; }
+    if (Number.isFinite(l) && l > 0 && l >= lo && l <= hi) { if (l < minPx) minPx = l; }
   }
-  if (maxPx < minPx) return null; // 毒 candle 數據
+  if (kept === 0 || maxPx < minPx) return null; // 全垃圾/毒 candle 數據
   // side-aware adverse/favorable 分離:buy 最差 = 低價;sell 最差 = 高價
   const adversePx = o.side === 'sell' ? maxPx : minPx;
   const favorablePx = o.side === 'sell' ? minPx : maxPx;
@@ -162,6 +167,20 @@ export async function healMaeMfeBatch(
       const margin = (t.investment as number) / (t.leverage as number);
       const side = t.side === 'sell' ? 'sell' : 'buy';
       const ex = computeValueExtremes(candles, { margin, entry: t.entryPrice as number, qty: t.quantity as number, side });
+      // v2.0.872-P8-heal-attack: 非有限值防線（candle 層 sanity 已喺 computeValueExtremes
+      // 內過濾 1e308 wick——超出 entry [5%,2000%] 嘅燭被剔除）。
+      if (ex && (!Number.isFinite(ex.min) || !Number.isFinite(ex.max))) {
+        failed++;
+        t.maeMfeHealAttempts = attempts + 1;
+        if (t.maeMfeHealAttempts >= DEFAULT_HEAL_MAX_ATTEMPTS) {
+          t.maeMfeHealed = true;
+          t.maeMfeHealError = 'insane-extremes';
+        } else {
+          t.maeMfeHealError = 'insane-extremes';
+          retried++;
+        }
+        continue;
+      }
       if (!ex) {
         // v2.0.872-P8-heal-v2: 空數據唔再一次過永久放棄——attempts++，
         // 達到上限先 terminal（防 API hiccup 被誤判成「冇數據」永久污染）。
