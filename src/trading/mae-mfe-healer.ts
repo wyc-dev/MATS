@@ -35,6 +35,8 @@ export interface HealableTradeLike {
   status?: string;
   maeMfeHealed?: boolean;
   maeMfeHealError?: string;
+  /** v2.0.872-P8-heal-v2: 瞬時失敗重試計數——達上限先 terminal（防永久污染 + 防 API spam） */
+  maeMfeHealAttempts?: number;
 }
 
 /** candle bar shape(HL candleSnapshot) */
@@ -46,6 +48,15 @@ export interface HealConfig {
 }
 
 const DEFAULT_BATCH = 8;
+
+/** v2.0.872-P8-heal-v2: 瞬時失敗重試上限——超過先 terminal 放棄 */
+export const DEFAULT_HEAL_MAX_ATTEMPTS = 5;
+/** v2.0.872-P8-heal-v2: batch 內每個 candle fetch 之間嘅節流（防 burst 打爆 API） */
+export const HEAL_FETCH_DELAY_MS = 300;
+
+export function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, Math.max(0, ms)));
+}
 
 export function getHealConfig(): HealConfig {
   const env = (typeof process !== 'undefined' ? process.env : {}) as Record<string, string | undefined>;
@@ -78,6 +89,10 @@ export function pickInterval(holdMs: number): '5m' | '15m' | '1h' {
  */
 export function maeMfeNeedsHeal(t: HealableTradeLike): boolean {
   if (t.maeMfeHealed === true) return false;
+  // v2.0.872-P8-heal-v2: 重試上限——attempts 耗盡嘅單由 batch loop 標記 terminal，
+  // 呢度唔再納入候選（防永不收斂 API spam）。
+  const attempts = typeof t.maeMfeHealAttempts === 'number' && Number.isFinite(t.maeMfeHealAttempts) ? t.maeMfeHealAttempts : 0;
+  if (attempts >= DEFAULT_HEAL_MAX_ATTEMPTS) return false;
   if (!Number.isFinite(t.entryPrice ?? NaN) || (t.entryPrice as number) <= 0) return false;
   if (!Number.isFinite(t.quantity ?? NaN) || (t.quantity as number) <= 0) return false;
   if (!Number.isFinite(t.investment ?? NaN) || (t.investment as number) <= 0) return false;
@@ -128,12 +143,17 @@ export async function healMaeMfeBatch(
   trades: HealableTradeLike[],
   fetchCandles: (sym: string, interval: string, startMs: number, endMs: number) => Promise<CandleLike[]>,
   batchSize: number,
-): Promise<{ healed: number; skipped: number; failed: number; processed: number }> {
-  let healed = 0, failed = 0, processed = 0;
+): Promise<{ healed: number; skipped: number; failed: number; processed: number; retried: number }> {
+  let healed = 0, failed = 0, processed = 0, retried = 0;
   const candidates = trades.filter(maeMfeNeedsHeal).slice(0, batchSize);
-  for (const t of candidates) {
+  for (let ci = 0; ci < candidates.length; ci++) {
+    const t = candidates[ci]!;
+    // v2.0.872-P8-heal-v2: batch 內節流——除咗最後一個，每個 fetch 之間隔 300ms，
+    // 防止 8 連發 burst 打爆 HL/xyz rate limit（追落後 284 喺時尤其重要）。
+    if (ci > 0 && HEAL_FETCH_DELAY_MS > 0) await sleep(HEAL_FETCH_DELAY_MS);
     processed++;
     const sym = t.symbol as string;
+    const attempts = typeof t.maeMfeHealAttempts === 'number' && Number.isFinite(t.maeMfeHealAttempts) ? t.maeMfeHealAttempts : 0;
     try {
       const holdMs = (t.closedAt as number) - (t.openedAt as number);
       const interval = pickInterval(holdMs);
@@ -143,20 +163,37 @@ export async function healMaeMfeBatch(
       const side = t.side === 'sell' ? 'sell' : 'buy';
       const ex = computeValueExtremes(candles, { margin, entry: t.entryPrice as number, qty: t.quantity as number, side });
       if (!ex) {
+        // v2.0.872-P8-heal-v2: 空數據唔再一次過永久放棄——attempts++，
+        // 達到上限先 terminal（防 API hiccup 被誤判成「冇數據」永久污染）。
         failed++;
-        t.maeMfeHealed = true; // 資料不可得 → 標記唔再試(唔 spam API)
-        t.maeMfeHealError = 'no-candle-data';
+        t.maeMfeHealAttempts = attempts + 1;
+        if (t.maeMfeHealAttempts >= DEFAULT_HEAL_MAX_ATTEMPTS) {
+          t.maeMfeHealed = true;
+          t.maeMfeHealError = 'no-candle-data';
+        } else {
+          retried++;
+        }
         continue;
       }
       t.minValueReached = Math.max(0, ex.min);
       t.maxValueReached = Math.max(0, ex.max);
       t.maeMfeHealed = true;
+      t.maeMfeHealError = undefined;
       healed++;
     } catch (err) {
+      // v2.0.872-P8-heal-v2: throw（網絡瞬時失敗）→ 唔好一次過永久放棄——
+      // attempts++ 留畀下個 batch 重試；達上限先 terminal。
       failed++;
-      t.maeMfeHealed = true; // fail 一次唔再 retry(下次 candle 可得情況極少)
-      t.maeMfeHealError = err instanceof Error ? err.message.slice(0, 120) : 'unknown';
+      t.maeMfeHealAttempts = attempts + 1;
+      if (t.maeMfeHealAttempts >= DEFAULT_HEAL_MAX_ATTEMPTS) {
+        t.maeMfeHealed = true;
+        t.maeMfeHealError = 'fetch-error';
+      } else {
+        t.maeMfeHealError = err instanceof Error ? err.message.slice(0, 120) : 'unknown';
+        retried++;
+      }
+      continue;
     }
   }
-  return { healed, skipped: 0, failed, processed };
+  return { healed, skipped: 0, failed, processed, retried };
 }

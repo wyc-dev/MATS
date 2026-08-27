@@ -395,6 +395,11 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       entryShadowWinRate: (t as any).entryShadowWinRate,
       regime: (t as any).regime,
       entryMarketFeatures: (t as any).entryMarketFeatures,
+      // v2.0.872-P8-heal-v2: heal 狀態持久化——之前白名單剝咗 maeMfeHealed，
+      // heal 完嘅單 restart 後 flag 消失 → 無限重新 heal（API spam）。
+      maeMfeHealed: (t as any).maeMfeHealed,
+      maeMfeHealError: (t as any).maeMfeHealError,
+      maeMfeHealAttempts: (t as any).maeMfeHealAttempts,
     })) : undefined;
 
     // v2.0.38: Serialize real (exchange) trades separately so they survive
@@ -429,6 +434,11 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       entryShadowWinRate: (t as any).entryShadowWinRate,
       regime: (t as any).regime,
       entryMarketFeatures: (t as any).entryMarketFeatures,
+      // v2.0.872-P8-heal-v2: heal 狀態持久化——之前白名單剝咗 maeMfeHealed，
+      // heal 完嘅單 restart 後 flag 消失 → 無限重新 heal（API spam）。
+      maeMfeHealed: (t as any).maeMfeHealed,
+      maeMfeHealError: (t as any).maeMfeHealError,
+      maeMfeHealAttempts: (t as any).maeMfeHealAttempts,
     })) : undefined;
 
     // v2.0.160: Serialize real positions so they survive restart with thesis + MAE/MFE

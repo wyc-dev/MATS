@@ -21,6 +21,25 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.872-P8-heal-v2: healer 生產級加固——重試語義 + 節流 + 持久化（主神 2026-08-28）
+
+**主神指令**: 「fix 風險披露——rate limit + no-candle-data 永久放棄」。
+
+**調查發現第三個炸彈**: `serializedRealTrades` 白名單**冇 `maeMfeHealed`**——就算 heal 喺 in-memory 成功，restart 後 flag 消失 → 284 喺全部重新 heal → 無限 API spam。完整死因鏈：①property 名錯（已修）②flag 唔持久（本輪修）③無節流（本輪修）④單次失敗永久放棄（本輪修）。
+
+**修復（三層）**:
+| # | 修復 | 語義 |
+|---|------|------|
+| 1 | **重試語義**（`mae-mfe-healer.ts`）: throw（網絡瞬時）→ `attempts++` 唔標 healed；空 candles 同樣；**達 5 次先 terminal**（`healed=true` + error flag）——API hiccup 唔可以誤判成「冇數據」永久污染 |
+| 2 | **batch 內節流**: 每個 candle fetch 之間 `sleep(300ms)`——防 8 連發 burst 打爆 HL/xyz rate limit（8 單 batch ≈ 2.1s 實測） |
+| 3 | **持久化**: `serializedRealTrades` 白名單補 `maeMfeHealed`/`maeMfeHealError`/`maeMfeHealAttempts`——restart 唔重置 |
+
+**驗證**: vitest 8/8 新測試 + 13/13 p22 修訂；全量 3690 pass + 13 pre-existing（零新增）；tsc clean。
+
+**收斂保證**: 每單最多 5 次 API 消耗；284 喺落後 ≈ 36 cycles 收斂；耗盡嘅單永久退出候選。
+
+---
+
 ## v2.0.872-P8-session-sync: P8 系列總結（主神 2026-08-27）
 
 **P8 全景**（今日 5 個 commit:9e91b6e → eff8706）:
