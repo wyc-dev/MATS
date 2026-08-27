@@ -938,6 +938,20 @@ class MATSSystem {
     } catch { return { blocked: false }; }
   }
 
+  /** v2.0.870-P6-fix: 最近 5m candle 方向——兩邊分數相同時嘅 fallback。
+   *  5m 升(close ≥ prev close)→ BUY,5m 跌 → SELL。冇數據 → null(caller 保守)。
+   *  主神指示: 兩邊同分時唔好 fallback BUY(方向 bias),用最近 5m 升跌做 fallback。 */
+  private getRecent5mDirection(symbol: string): 'buy' | 'sell' | null {
+    try {
+      const candles = candleCache.peekCandles(normalizeSymbol(symbol), '5m');
+      if (!candles || candles.length < 2) return null;
+      const last = candles[candles.length - 1];
+      const prev = candles[candles.length - 2];
+      if (!last || !prev || !Number.isFinite(last.c) || !Number.isFinite(prev.c)) return null;
+      return last.c >= prev.c ? 'buy' : 'sell';
+    } catch { return null; }
+  }
+
   /**
    * v2.0.209: Conditional-WR soft gate — the VECTOR-CONDITIONAL win rate is the
    * TRUE edge signal (not raw per-symbol WR). When the conditional WR for the
@@ -10855,8 +10869,15 @@ ${recentExamples}
                 const sellEMWr = sellEM.weightedWinRate;
                 if (buyEM.dominantCluster >= 0 && sellEM.dominantCluster >= 0 &&
                     (Math.abs(buyEMWr - 0.5) > 0.1 || Math.abs(sellEMWr - 0.5) > 0.1)) {
-                  direction = sellEMWr > buyEMWr ? 'sell' : 'buy';
-                  log.info(`🧪 EM-guided: BUY EMwr=${(buyEMWr*100).toFixed(0)}% SELL EMwr=${(sellEMWr*100).toFixed(0)}% → ${direction.toUpperCase()}`);
+                  if (buyEMWr === sellEMWr) {
+                    // v2.0.870-P6-fix: 兩邊同分 → 用最近 5m 升跌做 fallback（主神指示：唔好 fallback BUY）
+                    const fallback = this.getRecent5mDirection(exploreTarget);
+                    direction = fallback ?? 'buy';
+                    log.info(`🧪 EM-guided: BUY EMwr=${(buyEMWr * 100).toFixed(0)}% SELL EMwr=${(sellEMWr * 100).toFixed(0)}% 同分 → 5m fallback ${direction.toUpperCase()}`);
+                  } else {
+                    direction = sellEMWr > buyEMWr ? 'sell' : 'buy';
+                    log.info(`🧪 EM-guided: BUY EMwr=${(buyEMWr * 100).toFixed(0)}% SELL EMwr=${(sellEMWr * 100).toFixed(0)}% → ${direction.toUpperCase()}`);
+                  }
                 }
               }
             }

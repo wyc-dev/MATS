@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-P6-attack
+> **作者**: YC Wong · **版本**: 2.0.870-P6-fix
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
@@ -28,7 +28,7 @@
 
 **v2.0.870-P5 時間衰減 + hard cutoff（防永久鎖死）**: 主神質疑「舊交易永續影響 → 永久鎖死」。實驗證實半衰期（3h-96h）唔改變 block 數（最近一筆 trade 永遠主導加權平均），真正解鎖靠 **hard cutoff**。修復：① `EVFilter.computeEV` 加 `EV_CUTOFF_HOURS=24h`（超過 24h 零權重 → EV 歸零 → 硬閘解鎖）;② `LLMConvictionCalibrator` 加 `CALIB_DECAY_HOURS=24h` + `CALIB_CUTOFF_HOURS=24h`（bins 加 `lastUpdatedTs`,write-time + read-time decay + hard cutoff）;③ ECE 從 decayed bins 計算。實證 hard cutoff 24h 後 block 數由 10 → 1（只 SNDK|buy 仍 block）。
 
-**v2.0.870-P6 三方法入場質素 + 攻擊輪**: ① SL Floor（`RISK_STOP_LOSS_PCT` 0.008→0.015）;② Breakout 確認（`shouldSkipBreakoutEntry`——BUY 喺阻力位下方 < 50bps → skip）;③ OLR 硬閘（`checkOLRHardGate`——OLR P(win) < 30% → block）。45 單 counterfactual 零贏單受影響，合併避免 +11.54% → -0.52% margin。攻擊輪：非原子寫入修復（4 組件 `save()` 改 `atomicWriteSync`）+ calibrator 空腹根因（4 個 persist 調用加入主 persist cycle）。
+**v2.0.870-P6 三方法入場質素 + 攻擊輪**: ① SL Floor（`RISK_STOP_LOSS_PCT` 0.008→0.015）;② Breakout 確認（`shouldSkipBreakoutEntry`——BUY 喺阻力位下方 < 50bps → skip）;③ OLR 硬閘（`checkOLRHardGate`——OLR P(win) < 30% → block）。45 單 counterfactual 零贏單受影響，合併避免 +11.54% → -0.52% margin。攻擊輪：非原子寫入修復（4 組件 `save()` 改 `atomicWriteSync`）+ calibrator 空腹根因（4 個 persist 調用加入主 persist cycle）。**P6-fix**：EM-guided 方向 bias 修復——兩邊同分時用最近 5m candle 升跌做 fallback（`getRecent5mDirection`），唔再 fallback BUY。
 
 ---
 

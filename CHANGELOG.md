@@ -4,6 +4,20 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P6-fix: EM-guided 方向 bias 修復 + live 監控（主神 2026-08-27）
+
+**主神質疑**: 「exploration trade 仍然淨係分析『是否應該 BUY』？之前叫你無論乜嘢情況都 BUY & SELL 分析晒」。
+
+**調查結果**: 系統分兩層——① Shadow（模擬）已雙向開 LONG+SHORT（`openShadowTrades` 每 cycle 開兩邊）;② Exploration（真實）priority chain 確實計算 BUY/SELL 兩邊分數，但最後只揀一個方向落真實單（同 symbol 唔可以同時 BUY+SELL）。
+
+**方向 bias 修復**: EM-guided 喺兩邊同分（`buyEMWr === sellEMWr`）時 `sellEMWr > buyEMWr ? 'sell' : 'buy'` 永遠 fallback BUY——「100% BUY 死循環」嘅隱藏根源。修復：兩邊同分時用**最近 5m candle 升跌**做 fallback（`getRecent5mDirection`——5m 升→BUY、跌→SELL、冇數據→BUY 保守）。
+
+**Live 監控**: `scripts/live-monitor-compact.ts`（1 行 compact 輸出）+ `scripts/live-monitor-loop.sh`（每 80 分鐘 append 到 `logs/live-monitor.log`）——追蹤 WR/PnL/SELL/bins/ECE/blocked。
+
+**驗證**: tsc clean。
+
+---
+
 ## v2.0.870-P6-attack: 非原子寫入修復 + calibrator 空腹根因（主神 2026-08-26）
 
 **主神指令**: 「不擇手段攻擊剛才修葺嘅代碼…並以完美的方式修復漏洞」。
