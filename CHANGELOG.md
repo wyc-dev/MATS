@@ -4,6 +4,26 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.872-P8-profit: 重放裁決——2 提案否決 + 標籤修復實施（主神 2026-08-27）
+
+**主神指令**: 「制定謹慎詳盡計劃，驗證絕對成效，之後先 fix」。
+
+**重放驗證（無 look-ahead，真實 15m candles × 266 喺前向模擬）**:
+
+| 提案 | 重放結果 | 裁決 |
+|------|---------|------|
+| 速度鎖利（MFE≥8% → 確認窗 12→3 cycles） | **12 參數組合全負**（-5.1~-61.9pp） | ❌ 否決 |
+| 半倉試探（<15min 生存確認） | 變體 A -43.5pp / B -47.4pp | ❌ 否決 |
+| reconciliation 標籤修復 | 標籤質量（單元測試可驗證） | ✅ 實施 |
+
+**否決理由（量化金融）**: 上限 +106pp 係 look-ahead 幻覺——path 重放證明大 winner 需要回吐空間（GOLD +19.71 誤鎖教訓嘅反面）；606pp 嘅 MFE 回吐係 414pp tp_hit 引擎嘅**結構性成本**——修剪尾部等於修剪引擎。贏單頭 15 分鐘往往最肥（MU -1.5→-5.4），快蝕單救回 168pp 抵不過贏單損失 212pp。
+
+**P8-3 實施**: `computeLearningWeight` reconciliation **wins** 1.0 → 0.5（losses 維持 1.0——可能係清算）。證據:recon 佔 110/266（41%）學習樣本，WR 57% vs 決策出場 38%——系統推斷標籤膨脹 success-pattern/digester/conditional-WR 嘅「贏」統計。降權 0.5 保留訊號斬半噪聲。
+
+**驗證**: vitest 24+94 全綠（2 個鎖舊契約嘅測試同步修訂並註明原因）；全量 3682 pass + 13 pre-existing（零新增）；tsc clean。重放 script 保留（`p8-velocity-lock-replay.ts` / `p8-half-probe-replay.ts`）供第日參數重掃。
+
+---
+
 ## v2.0.872-P8-attack: 攻擊輪——3 漏洞全修（主神 2026-08-27）
 
 **攻擊方案**（`scripts/p8-attack.ts`:env 注入 / 毒 candle 注入 / 原型污染 / 10k 燭算力 DoS / 500 序列鏡像不變式 fuzz）:
