@@ -4,6 +4,31 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.872-P8: 5m 動量方向硬閘 + 統一閘補完 + OLR 單一真相源（主神 2026-08-27）
+
+**主神指令**: 「DRAM BUY 4h -3.47% 跌市 10 分鐘 -4.3%——我明明講咗最近 5 分鐘跌就絕對唔應該開 BUY，WHY？同樣 5min 升就絕對唔開 SELL」+「唔可以有個 function 動態計算每個獨立 asset 嘅 falling?」
+
+**WHY 審判（DRAM 案解剖——四個架構窿）**:
+1. **主神 5m 規則從未係 hard gate**——P6-fix 只做咗 exploration EM 同分 tie-break fallback，DRAM 呢單唔經嗰條路，規則零機會觸發。
+2. **exploration 繞過統一閘**——`applyEntryConvictionGates`（四窗/F1/OLR<35%/reentry-cooldown）只有 2 個 call site（per-symbol 11491 + active 13012），exploration 完全冇行 → DRAM 4h -3.47% + persistent_bear 本應被 3 個閘擋住。
+3. **OLR 兩個源打架**——thesis 講 67%（exploration thesis query 用咗 `query(activeSymbol, ...)`——攞 DRAM 嘅 features 查 **active symbol 嘅 OLR 模型**），entry 記錄 12.2%（DRAM 自己嘅模型）。
+4. **precomputeEntryFeatures 跨 symbol 污染**——`regimeOrdinal` 用 active symbol 嘅 regime。
+
+**修復（5 處）**:
+| # | 修復 | 位置 |
+|---|------|------|
+| 1 | **新組件 `momentum-5m-gate.ts`**——主神 5m 方向硬閘，鏡像對稱（跌禁 BUY / 升禁 SELL），接接入 `applyEntryConvictionGates` → active + per-symbol + exploration 三路徑一套 | 新 file + index.ts |
+| 2 | **波動率自適應門檻**（主神質疑「唔可以動態計算每個 asset 嘅 falling?」）——門檻 = `min(cap, max(floor, kSigma×robust_σ×√(n-1)))`，每個 asset 用自己最近 5m 燉嘅 **robust σ（MAD×1.4826）** 動態計算「幾大先算跌/升」——BTC 噪音 ≠ SP500 噪音。robust σ 唔用 std:單支崩盤燭會同時製造斜率同膨脹 std（自己掩護自己）——MAD 對離群值免疫 | momentum-5m-gate.ts |
+| 3 | **exploration 接入統一閘**——`applyEntryConvictionGates(exploreTarget, ...)` 加入 exploration 鏈（DRAM 窿封死） | index.ts ~11139 |
+| 4 | **exploration OLR query 修復**——`query(activeSymbol, ...)` → `query(exploreTarget, ...)`（67% 假訊號根源） | index.ts ~11177 |
+| 5 | **precomputeEntryFeatures per-symbol regime** + **checkOLRHardGate 靜默放行 → LOUD log** | index.ts 6281 / 930 |
+
+**驗證**: vitest 17/17（DRAM 案重放:5m 連跌 BUY 必擋/SELL 必放行、低波動 0.5% 跌 block vs 高波動同跌幅 pass、死貓彈單支反彈唔扭轉判決、1e308 Infinity slope → 數據無效、kSigma=0 垃圾 fallback、floor 兜底防一格 tick）；全量 3675 pass + 13 pre-existing（零新增）；tsc clean。
+
+**已知限制**: ① 門檻參數（kSigma=2/floor=10bps/cap=500bps/6 燉）未經歷史 5m 燉數據校準（trades 無 5m path 記錄，唔可以 counterfactual）——依賴 gate-outcome tracker live 校準；② 無 5m 數據時 LOUD 放行（唔 block 冇數據）；③ counterfactual 實驗證實 4h/15m 長窗逆勢禁入會摧毀均值回歸 edge（-175pp）——本閘只限 5m 戰術時機，唔做趨勢過濾。
+
+---
+
 ## v2.0.871-P7: Lyapunov estimator 重寫 + per-symbol 隔離（主神 2026-08-27）
 
 **主神指令**: 「調查點解 BTC 一直 chaotic（λ=0.15 係咪 momentum-trend 層嘅問題）」。
