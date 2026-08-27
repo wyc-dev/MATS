@@ -21,6 +21,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.872-P8-heal-unit-fix: healer 單位 bug——重放驗證捉到（主神 2026-08-28）
+
+**驗證絕對成效時捉到嘅最嚴重 bug**: `healMaeMfeBatch` 用 `margin = investment/leverage`——但呢個系統嘅 `investment` **本身就係 margin**（DRAM:7.33×10x=73.3 notional 實證；`trackMAEMFE`:margin=entry×qty/lev=investment ✓）。healer 將 margin 再除槓桿 → **healed min/max 細槓桿倍**（SKHX 實證:應 27.44/28.57,heal 出 4.80/5.93 → 下游 MAE% 膨脹 ×槓桿 = 災難性學習污染）。
+
+**呢個 bug 喺 healer 死代碼時代從未爆過**（heal 咗 0 喺）——P8-mae-fix 復活 healer 後先會開始大規模寫入錯值。重放驗證喺第一單 heal 後立即捉到，及時阻止 284 喺污染。
+
+**修復**:
+1. `margin = investment`（唔再除槓桿）——與 `trackMAEMFE` 單位一致
+2. `computeValueExtremes` candle 層 sanity（上輪）已就位
+3. DB 內 1 喺被舊單位污染嘅 SILVER（07-14）已 reset flag——live 系統以正確單位重新 heal
+
+**重驗證（真實 5m candles）**: 3 喺凍結 SKHX 全部重算 sane 值——主神投訴嗰單:min=27.44/max=28.57（原凍結 28.30，MAE −3.0%/MFE +0.96%）；**一致性檢查:exit 權益全部落喺 [min,max] 區間內 ✓**
+
+**驗證**: vitest 49/49（單位修正期望重寫:p22 fixture investment=1000/lev=10 → margin=1000，max=1010/min=990；sell side l>entry → max=margin）；全量 3694 pass + 13 pre-existing（零新增）；tsc clean。
+
+---
+
 ## v2.0.872-P8-heal-attack: 攻擊輪——wick 溢出毒 candle 防禦（主神 2026-08-28）
 
 **攻擊方案**（`scripts/p8-heal-attack.ts`:env 注入 / attempts 毒注入 / 數值溢出 / 併發 heal / 持久化污染）——14 攻 1 中：
