@@ -71,10 +71,14 @@ export function computeLearningWeight(
       // same class as exit_price_lock — 0.5, never full weight.
       return 0.5;
   }
-  // Wins from clean market closes (sl_tp / reconciliation / exchange_closed)
-  // always get full weight — the market confirmed the entry thesis, and that
-  // positive signal should not be discounted.
-  if (isWin) return 1.0;
+  // v2.0.872-P8-3(主神審計 2026-08-27): reconciliation wins 降權 1.0 → 0.5。
+  // 證據（scripts/p8-distribution-scan.ts）:reconciliation 佔歷史 110/266（41%）
+  // 學習樣本，WR 57% vs 決策出場 38%——標籤係系統推斷而非決策，成功 pattern /
+  // digester / conditional-WR 全部食緊呢啲膨脹嘅「贏」標籤。降權 0.5 保留訊號
+  // 同時斬半噪聲。losses 維持 1.0——可能係清算（極端市場訊號，原意保留）。
+  if (isWin) {
+    return closeReason === 'reconciliation' ? 0.5 : 1.0;
+  }
   // Losses: weight depends on whether the loss was caused by the market
   // (real signal) or by execution decisions (contaminated signal).
   switch (closeReason) {
