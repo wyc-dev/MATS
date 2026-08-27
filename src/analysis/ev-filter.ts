@@ -51,6 +51,16 @@ const EV_TIME_DECAY_HOURS = (() => {
   return Number.isFinite(h) && h >= 0 ? h : 24;
 })();
 const EV_TIME_DECAY_MS = EV_TIME_DECAY_HOURS * 3_600_000;
+// v2.0.870-P5: EV hard cutoff——超過 cutoff 嘅 trade 零權重(唔係指數衰減嘅
+// 無限尾巴)。主神質疑「舊交易永續影響 → 永久鎖死」——實驗證實半衰期(3h-96h)
+// 唔改變 block 數(最近一筆 trade 永遠主導加權平均),真正解鎖靠 hard cutoff:
+// 24h 後舊 trade 零權重 → EV 歸零 → 硬閘自動解鎖。同 shadow stats
+// SHADOW_STAT_CUTOFF_HOURS 一致。env EV_CUTOFF_HOURS(0 = 關閉 = 舊行為)。
+const EV_CUTOFF_HOURS = (() => {
+  const h = Number(process.env['EV_CUTOFF_HOURS'] ?? '24');
+  return Number.isFinite(h) && h >= 0 ? h : 24;
+})();
+const EV_CUTOFF_MS = EV_CUTOFF_HOURS * 3_600_000;
 /** v2.0.870-FIX-V1(攻擊輪): 時鐘 skew 容忍——closedAt 超過 now+5min 當「未來垃圾」→ 當最舊
  *  （1e308 / 未來 10 年嘅污染值唔可以當「最新」有全權重）。 */
 const TS_TOLERANCE_MS = 5 * 60_000;
@@ -96,6 +106,11 @@ export function computeEV(samples: EVSample[], now = Date.now(), tauMs = EV_TIME
     const dt = (typeof ct === 'number' && Number.isFinite(ct) && ct > 0 && ct <= now + TS_TOLERANCE_MS)
       ? Math.max(0, now - ct)
       : Number.MAX_SAFE_INTEGER;
+    // v2.0.870-P5: hard cutoff——超過 cutoff 嘅 trade 零權重(唔係 exp 無限尾巴)。
+    // 主神質疑「舊交易永續影響 → 永久鎖死」——24h 後舊 trade 零權重 → EV 歸零
+    // → 硬閘自動解鎖。垃圾/未來 ts 已喺上面當最舊(dt=MAX_SAFE_INTEGER)→ 零權重。
+    // ⚠️ τ=0(等權回滾)時 hard cutoff 都關閉——τ=0 係「舊行為」,唔應該有 cutoff。
+    if (tauMs > 0 && EV_CUTOFF_MS > 0 && dt > EV_CUTOFF_MS) continue;
     const w = tauMs > 0 ? Math.exp(-dt / tauMs) : 1;
     wSum += w;
     if (p > 0) { wWin += w; wAvgWin += p * w; }

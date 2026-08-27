@@ -28,12 +28,25 @@ const BIN_SHRINK_K = 5;          // shrink = count/(count+K)——冷啟動唔�
 // count/(count+K) 已內建冷啟動保護(小樣本 → 強收縮向 0.5),唔需要再疊一個
 // 高 MIN_SAMPLES 硬閘。n=5 時 shrink=0.5(prior 同數據等權),係合理冷啟動。
 const MIN_SAMPLES = 5;           // 每 bin 最少樣本先校準(5 = Wilson CI 下限)
+// v2.0.870-P5: 時間衰減 + hard cutoff——主神質疑「舊交易永續影響 → 永久鎖死」。
+// bins 隨時間衰減(τ=24h),24h 後零影響(hard cutoff)。同 shadow stats 一致。
+// env CALIB_DECAY_HOURS / CALIB_CUTOFF_HOURS(0 = 關閉 = 舊行為)。
+const CALIB_DECAY_HOURS = (() => {
+  const h = Number(process.env['CALIB_DECAY_HOURS'] ?? '24');
+  return Number.isFinite(h) && h >= 0 ? h : 24;
+})();
+const CALIB_DECAY_MS = CALIB_DECAY_HOURS * 3_600_000;
+const CALIB_CUTOFF_HOURS = (() => {
+  const h = Number(process.env['CALIB_CUTOFF_HOURS'] ?? '24');
+  return Number.isFinite(h) && h >= 0 ? h : 24;
+})();
+const CALIB_CUTOFF_MS = CALIB_CUTOFF_HOURS * 3_600_000;
 const KLINE_READ_WINDOW = 20;    // 讀圖一致率窗口
 const DEFAULT_PATH = 'data/evolution/llm-conviction-calibration.json';
 
 export interface LLMCalibrationState {
-  /** per (side × bin): wins/losses */
-  bins: Record<string, { wins: number; losses: number }>;
+  /** per (side × bin): wins/losses + lastUpdatedTs(時間衰減) */
+  bins: Record<string, { wins: number; losses: number; lastUpdatedTs?: number }>;
   /** K-LINE 讀圖記錄:{ correct, total } */
   klineReads: { correct: number; total: number; recent: boolean[] };
 }
@@ -84,10 +97,32 @@ export class LLMConvictionCalibrator {
     if (side !== 'buy' && side !== 'sell') return;
     const c = Number.isFinite(conviction) ? conviction : 0.5;
     const key = binKey(side, binOf(c));
-    const bin = this.state.bins[key] ?? { wins: 0, losses: 0 };
+    const now = Date.now();
+    const bin = this.state.bins[key] ?? { wins: 0, losses: 0, lastUpdatedTs: now };
+    // v2.0.870-P5: write-time decay——記錄前先按時間衰減(同 shadow stats 一致)。
+    const dt = now - (Number.isFinite(bin.lastUpdatedTs) ? (bin.lastUpdatedTs ?? now) : now);
+    const decay = CALIB_DECAY_MS > 0 ? Math.exp(-dt / CALIB_DECAY_MS) : 1;
+    bin.wins = (Number.isFinite(bin.wins) ? bin.wins : 0) * decay;
+    bin.losses = (Number.isFinite(bin.losses) ? bin.losses : 0) * decay;
     if (outcome === 'win') bin.wins++;
     else bin.losses++;
+    bin.lastUpdatedTs = now;
     this.state.bins[key] = bin;
+  }
+
+  /** v2.0.870-P5: 讀取時 decayed bin——read-time decay + hard cutoff。
+   *  超過 cutoff 嘅 bin → null(零影響,identity 唔校準)。 */
+  private getDecayedBin(side: 'buy' | 'sell', binIdx: number): { wins: number; losses: number } | null {
+    const bin = this.state.bins[binKey(side, binIdx)];
+    if (!bin) return null;
+    const now = Date.now();
+    const dt = now - (Number.isFinite(bin.lastUpdatedTs) ? (bin.lastUpdatedTs ?? now) : now);
+    if (CALIB_CUTOFF_MS > 0 && dt > CALIB_CUTOFF_MS) return null; // hard cutoff——bin 過期
+    const decay = CALIB_DECAY_MS > 0 ? Math.exp(-dt / CALIB_DECAY_MS) : 1;
+    return {
+      wins: (Number.isFinite(bin.wins) ? bin.wins : 0) * decay,
+      losses: (Number.isFinite(bin.losses) ? bin.losses : 0) * decay,
+    };
   }
 
   /** 校準一筆 conviction——LLM 話 0.85 → bin 實際 WR。
@@ -95,9 +130,8 @@ export class LLMConvictionCalibrator {
    *  NaN/Infinity/undefined 唔可以傳播返 gate(會污染 effectiveConfidence)。 */
   getCalibratedConviction(side: 'buy' | 'sell', conviction: number): number {
     if (typeof conviction !== 'number' || !Number.isFinite(conviction)) return 0.5;
-    const key = binKey(side, binOf(conviction));
-    const bin = this.state.bins[key];
-    if (!bin || bin.wins + bin.losses < MIN_SAMPLES) return conviction; // 冷啟動中性
+    const bin = this.getDecayedBin(side, binOf(conviction));
+    if (!bin || bin.wins + bin.losses < MIN_SAMPLES) return conviction; // 冷啟動/過期中性
     return calibrateBin(bin.wins, bin.losses, conviction);
   }
 
@@ -129,11 +163,11 @@ export class LLMConvictionCalibrator {
     for (const side of ['buy', 'sell'] as const) {
       const parts: string[] = [];
       for (let i = 0; i < NUM_BINS; i++) {
-        const bin = this.state.bins[binKey(side, i)];
+        const bin = this.getDecayedBin(side, i);
         if (!bin || bin.wins + bin.losses < MIN_SAMPLES) continue;
         const lo = i / NUM_BINS, hi = (i + 1) / NUM_BINS;
         const emp = bin.wins / (bin.wins + bin.losses);
-        parts.push(`[${(lo * 100).toFixed(0)}-${(hi * 100).toFixed(0)}%: 實際 ${(emp * 100).toFixed(0)}%(${bin.wins}W/${bin.losses}L)]`);
+        parts.push(`[${(lo * 100).toFixed(0)}-${(hi * 100).toFixed(0)}%: 實際 ${(emp * 100).toFixed(0)}%(${bin.wins.toFixed(1)}W/${bin.losses.toFixed(1)}L)]`);
       }
       if (parts.length > 0) lines.push(`  ${side.toUpperCase()} conviction 校準: ${parts.join(' ')}`);
     }
@@ -168,6 +202,8 @@ export class LLMConvictionCalibrator {
               clean.bins[k] = {
                 wins: Number.isFinite((v as { wins?: number }).wins) ? Math.max(0, (v as { wins?: number }).wins ?? 0) : 0,
                 losses: Number.isFinite((v as { losses?: number }).losses) ? Math.max(0, (v as { losses?: number }).losses ?? 0) : 0,
+                // v2.0.870-P5: 保留 lastUpdatedTs(時間衰減)——舊 state 無 ts → 0(當最舊)
+                lastUpdatedTs: Number.isFinite((v as { lastUpdatedTs?: number }).lastUpdatedTs) ? (v as { lastUpdatedTs?: number }).lastUpdatedTs : 0,
               };
             }
           }
@@ -207,14 +243,18 @@ export class LLMConvictionCalibrator {
     const rows: Array<{ key: string; binMid: number; wins: number; losses: number; empiricalWR: number; samples: number; calibrated: number; gap: number }> = [];
     let totalN = 0;
     let eceSum = 0;
-    for (const [key, bin] of Object.entries(this.state.bins)) {
-      const w = Math.max(0, bin.wins ?? 0);
-      const l = Math.max(0, bin.losses ?? 0);
-      const n = w + l;
-      if (n <= 0) continue;
+    for (const [key] of Object.entries(this.state.bins)) {
       // key = "side|binIdx" → binIdx → 中點 conviction = (idx+0.5)/NUM_BINS
       const idx = Number(key.split('|')[1] ?? 0);
       if (!Number.isInteger(idx) || idx < 0 || idx >= NUM_BINS) continue; // 毒 key 防護
+      const side = key.split('|')[0] as 'buy' | 'sell';
+      // v2.0.870-P5: 用 decayed bin(時間衰減 + hard cutoff)——ECE 反映近期校準
+      const decayed = this.getDecayedBin(side, idx);
+      if (!decayed) continue; // 過期 bin → 零影響
+      const w = Math.max(0, decayed.wins);
+      const l = Math.max(0, decayed.losses);
+      const n = w + l;
+      if (n <= 0) continue;
       const binMid = (idx + 0.5) / NUM_BINS;
       const empiricalWR = w / n;
       const calibrated = calibrateBin(w, l, binMid);
