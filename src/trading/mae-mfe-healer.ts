@@ -106,7 +106,9 @@ export function maeMfeNeedsHeal(t: HealableTradeLike): boolean {
 
 /**
  * ★核心純函數:由 candle 極端價算 margin-basis equity excursion。
- * margin = investment / leverage。
+ * margin = investment（v2.0.872-P8-heal-unit-fix:investment 本身就係 margin，
+ * 唔好再除槓桿——DRAM 7.33×10x=73.3 notional 實證；舊 `investment/leverage`
+ * 令 healed 值細槓桿倍 → 下游 MAE% 膨脹 ×槓桿）。
  * side-aware:buy → price 跌得越深 value 越低;sell → price 升得越高 value 越低。
  *   value = margin + qty × (px − entry) × sideSign
  * sideSign:buy=+1,sell=−1。
@@ -164,7 +166,11 @@ export async function healMaeMfeBatch(
       const interval = pickInterval(holdMs);
       // 窗口前後留 buffer:open 前一支 candle(捕捉開倉價滑價) → close 後 0
       const candles = await fetchCandles(sym, interval, (t.openedAt as number) - 5 * 60_000, t.closedAt as number);
-      const margin = (t.investment as number) / (t.leverage as number);
+      // v2.0.872-P8-heal-unit-fix（重放驗證捉到嘅單位 bug）: investment 本身就係
+      // margin（DRAM:7.33×10x = notional 73.3 ✓;trackMAEMFE:margin=entry×qty/lev=investment ✓）。
+      // 舊代碼 `investment/leverage` 將 margin 再除槓桿 → healed min/max 細 5.66 倍
+      // （SKHX 實證:應 27.4/28.5,heal 出 4.80/5.93 → 下游 MAE% 膨脹 ×槓桿 = 災難性污染）。
+      const margin = t.investment as number;
       const side = t.side === 'sell' ? 'sell' : 'buy';
       const ex = computeValueExtremes(candles, { margin, entry: t.entryPrice as number, qty: t.quantity as number, side });
       // v2.0.872-P8-heal-attack: 非有限值防線（candle 層 sanity 已喺 computeValueExtremes
