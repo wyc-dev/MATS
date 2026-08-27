@@ -4,6 +4,21 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.870-P5-time-decay: 24h 時間衰減 + hard cutoff（防永久鎖死——主神 2026-08-26）
+
+**主神質疑**: 「P1/P2/P4 都應該有 24h 衰減制度…如果舊交易永續影響開倉新交易,便會永久鎖死不交易」。
+
+**邏輯實驗（半衰期 vs hard cutoff）**: 半衰期（3h-96h）唔改變 block 數（10 個）——指數衰減令「最近一筆 trade」永遠主導加權平均,而最近一筆係蝕單。真正解鎖靠 **hard cutoff**: cutoff=6h → 0 blocked、12h/24h → 1 blocked（SNDK|buy）、48h → 3 blocked。
+
+**修復（三層）**:
+1. **P2 EV Filter hard cutoff**（`ev-filter.ts`）: `EV_CUTOFF_HOURS=24h`——超過 24h 嘅 trade 零權重（唔係 exp 無限尾巴）→ EV 歸零 → 硬閘自動解鎖。τ=0（等權回滾）時 cutoff 都關閉。
+2. **P1 Calibrator 時間衰減 + hard cutoff**（`llm-conviction-calibrator.ts`）: `CALIB_DECAY_HOURS=24h` + `CALIB_CUTOFF_HOURS=24h`——bins 加 `lastUpdatedTs`,write-time decay + read-time decay + hard cutoff（過期 bin → identity 唔校準）。
+3. **P4 ECE 從 decayed bins 計算**（自動）: `getCalibrationReport`/`getCalibrationBlock` 改用 `getDecayedBin`——校準感知閾值反映近期校準。
+
+**驗證**: 新測試 6（`p5-time-decay.test.ts`）全綠;全量 3634 pass + 13 pre-existing（零新增）;tsc clean。實證 hard cutoff 24h 後 block 數由 10 → 1（只 SNDK|buy 仍 block,其餘 9 個解鎖）。
+
+---
+
 ## v2.0.870-P3-attack + P4-calib-threshold: 攻擊輪硬化 + 校準感知閾值（主神 2026-08-26）
 
 **主神指令**: 「不擇手段使用任何出其不意的更刁鑽(併發/狀態注入/持久化污染)的攻擊方案…並以完美的方式修復漏洞…思考任何可以令系統提升盈利機會」。

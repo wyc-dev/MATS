@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.870-P4-calib-threshold
+> **作者**: YC Wong · **版本**: 2.0.870-P5-time-decay
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
@@ -24,7 +24,9 @@
 
 **部署前事項（已完成）**: `scripts/rebackfill-ev-filter.ts` 重跑 EV Filter backfill（bnb|buy 缺數據修復，dedup 用 `(symbol|side|closedAt 秒)` + `normalizeSymbol`）;單進程確認（tsx watch 已 kill stale 進程）。
 
-**驗證**: 全量 3628 pass + 13 pre-existing（零新增）;tsc clean。Backtest：P1 conf 0.6→0.26、P2 40 單 -30.5% → +33.1%（改善 +63.5%）、P3 40 單 100% BUY → extreme_buy 強制 SELL、P4 ECE=0.396 收緊。
+**驗證**: 全量 3634 pass + 13 pre-existing（零新增）;tsc clean。Backtest：P1 conf 0.6→0.26、P2 40 單 -30.5% → +33.1%（改善 +63.5%）、P3 40 單 100% BUY → extreme_buy 強制 SELL、P4 ECE=0.396 收緊。
+
+**v2.0.870-P5 時間衰減 + hard cutoff（防永久鎖死）**: 主神質疑「舊交易永續影響 → 永久鎖死」。實驗證實半衰期（3h-96h）唔改變 block 數（最近一筆 trade 永遠主導加權平均），真正解鎖靠 **hard cutoff**。修復：① `EVFilter.computeEV` 加 `EV_CUTOFF_HOURS=24h`（超過 24h 零權重 → EV 歸零 → 硬閘解鎖）;② `LLMConvictionCalibrator` 加 `CALIB_DECAY_HOURS=24h` + `CALIB_CUTOFF_HOURS=24h`（bins 加 `lastUpdatedTs`,write-time + read-time decay + hard cutoff）;③ ECE 從 decayed bins 計算。實證 hard cutoff 24h 後 block 數由 10 → 1（只 SNDK|buy 仍 block）。
 
 ---
 
