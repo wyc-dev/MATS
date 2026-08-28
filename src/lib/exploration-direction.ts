@@ -50,7 +50,9 @@ export function resolveExplorationDirection(
   return candidate;
 }
 
-// ─── v2.0.872-P9: Dip-Reversion 對稱信號（主神 2026-08-28）──────────
+// ─── v2.0.872-P9-fine-tune: Strength/TIP 信號（主神 2026-08-28）──────────
+// 語義真相（四組合 × era 重放 269 喺）:唯一跨時代穩健 edge = buy-tip（買強勢）。
+// buy-dip 時代依賴（9-13 贏 73% → 14-27 蝕 25%）；sell-dip/sell-tip 冇穩健 edge。
 // 9-13 SKHX 實證:低波動 range + 極端 sell 壓力（obImb −0.36）買 dip → +74.9pp/5日。
 // 對稱設計:dip-buy（sell 壓力 dip）有 edge ✓；dip-sell（buy 壓力 rip）數據否定
 // （−21.7pp）——信號只產生 dip-BUY（主神批准範圍:組件 2a）。
@@ -65,10 +67,10 @@ export interface DipSignalInput {
   rangePosition?: number | null;
 }
 
-/** Dip-buy 環境判定（純函數，重放實證 208 喂 +177.1pp）:
+/** TIP-BUY 環境判定（純函數，重放實證 buy-tip 兩時代 +23.2/+124.0pp）:
  *  - regime ∈ range 類（mean_reverting / low_volatility / unknown——vol 門檻兜底）
  *  - σ ≤ 0.3%（平靜——9-13 實測 0.20%）
- *  - obImb ≤ −0.2（極端 sell 壓力 = 價格喺 dip）
+ *  - obImb ≤ −0.2（賣壓被吸收——強勢延續環境）
  *  垃圾/唔符合 → null。對稱 sell 分支:range 高位 + 壓力 → SELL（17 喺 +7.3pp 實證）。 */
 export function dipReversionSignal(input: DipSignalInput, opts: { maxVol?: number; minImb?: number } = {}): { direction: 'buy' | 'sell'; strength: number } | null {
   const maxVol = opts.maxVol ?? 0.003;
