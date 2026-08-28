@@ -4,6 +4,38 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-olr-audit: OLR 硬閘剷除——統計驗證證實噪音（主神 2026-08-28）
+
+**主神質疑**: 「你講過 WR & 信心指數唔準確，特意開驗證系統驗證——我懷疑 OLR 嘅實際成效。」
+
+**統計驗證（269 喺，entryOlrPWin 全量）**:
+```
+Spearman ρ(OLR pWin, 實際PnL) = +0.02   ← 零相關（噪音）
+Spearman ρ(OLR pWin, 勝負)    = −0.16   ← 輕微反預測（越樂觀越差）
+十等分檢定: 預測曲線崩壞（pWin 14% 桶實際 58%；pWin 49% 桶實際 23%）
+OLR<0.35 block 歷史效果不穩定: 全史 +56.3pp（blocking 趕盈利）vs 最近50 −77.2pp（救錢）
+——兩個樣本完全相反 = 噪音定義
+```
+
+**毒源**: ①41% 訓練標籤係 reconciliation 推斷（WR 57% vs 決策 38%）②特徵管線跨 symbol 污染（active regime/S/R 查 per-symbol 模型——P8 單一源修復只保未來）③35%/30% 門檻 in-sample fit 同一批噪音。
+
+**實施（方案 2）**:
+| OLR 閘位 | 舊 | 新 |
+|:---------|:---|:---|
+| `applyEntryConvictionGates` OLR<35% 閘 | 默認 ON | **默認 OFF**（env `OLR_HARD_GATE='true'` 可逆） |
+| `checkOLRHardGate`（exploration + per-symbol） | 默認 ON | **默認 OFF**（同上） |
+| OLR pWin 軟乘數 + agent context 注入 | 保留 | 保留（資訊性——唔做決定） |
+
+**保留已驗證防線**: shadow-gate（新鮮 24h EV/WR——BNB −8.55% 實證）/ EV 硬閘（已實現結果）/ 四窗（SELL 擋 −13.3pp 實證）/ 5m 方向閘（DRAM/SKHX）/ consensus close 確認（+9.7pp）。
+
+**收斂路線**: P8-3 標籤修復後乾淨重訓 → live Spearman > 0.2 → env `OLR_HARD_GATE='true'` 恢復閘資格。DRAM 防線改由 5m 閘承擔（OLR 12% 係噪音值）。
+
+**驗證**: tsc clean；全量 3727 pass + 13 pre-existing（零新增）；olr-hard-gate 純函數測試保留通過。
+
+---
+
+## v2.0.872-P8-transparency
+
 ## v2.0.873-P9: 震盪市盈利頻率恢復——dip-BUY exploration + consensus close 確認（主神 2026-08-28）
 
 **主神指令**: 「實施組件 1（consensus close 確認）+ 組件 2a（dip-BUY 加分）……需要確實真係開到單。」

@@ -924,6 +924,9 @@ class MATSSystem {
    *  momentum +1.20%...」照入——LLM 對抗 OLR 統計信號。threshold 30% 只 block 29%,
    *  唔誤傷 41% 贏單（#30/#39）。冷啟動(n<10 / confidence low)→ 唔 block。 */
   private checkOLRHardGate(symbol: string, side: 'buy' | 'sell'): { blocked: boolean; reason?: string } {
+    // v2.0.872-P8-olr-audit: 默認 OFF——Spearman ρ≈0（噪音），噪音唔准做決定。
+    // env OLR_HARD_GATE='true' 可逆（OLR 乾淨重訓 + live 檢定通過後）。
+    if (process.env['OLR_HARD_GATE'] !== 'true') return { blocked: false };
     try {
       const sym = normalizeSymbol(symbol);
       const ctx = this.lastCycleShadowContexts.get(sym);
@@ -5414,11 +5417,12 @@ ${recentExamples}
         }
         if (rc && !shouldBlockReentry(rc, action, Date.now())) this.lockReentryCooldowns.delete(rcSym);
       }
-      // OLR 硬門（v2.0.870-olr-hard-gate, 主神 2026-08-25）: P(win) < 35% 且
-      // live 樣本 ≥20 → 唔准開（buy/sell 雙向）。bnb case——thesis 自認
-      // 「OLR P(win)=29% is against」照開（LLM 用 momentum 說服自己）——
-      // soft gate（×0.75）擋唔住——需要硬防護。冷啟動（n<20）交 LLM。
-      if (process.env['OLR_HARD_GATE'] !== 'false') {
+      // OLR 硬門（v2.0.870-olr-hard-gate）——v2.0.872-P8-olr-audit 默認關閉：
+      // Spearman ρ(pWin,PnL)=+0.02（269 喺統計噪音）/ ρ(pWin,WIN)=−0.16（反預測）——
+      // OLR pWin 冇預測力，噪音唔可以做決定性 HARD BLOCK（主神 2026-08-28 裁決）。
+      // 保留已驗證防線：shadow-gate（新鮮 EV/WR）/ EV 硬閘（已實現）/ 四窗 / 5m / consensus close 確認。
+      // 重訓路線：P8-3 標籤修復後乾淨重訓，live Spearman>0.2 先恢復（env OLR_HARD_GATE='true'）。
+      if (process.env['OLR_HARD_GATE'] === 'true') {
         const symNorm = normalizeSymbol(sym);
         const ctx = this.lastCycleShadowContexts.get(symNorm);
         const feats = ctx?.features ?? {};
