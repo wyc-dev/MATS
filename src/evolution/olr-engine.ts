@@ -418,6 +418,9 @@ function makeEmptyModel(): OLRModel {
 // ─── OLR Engine ───
 
 export class OLREngine {
+  /** v2.0.872-P8-OLR-removal（主神 2026-08-28 裁決:靜默禁用——Spearman 0.02 嘅數據支持）*/
+  static readonly DISABLED = true;
+
   private symbols = new Map<string, { long: OLRModel; short: OLRModel }>();
   /** v2.0.859: Persisted EXP-backfill completion flag. Same bug class as Q-RL:
    *  the per-process `expBackfillDone` instance flag in index.ts reset on every
