@@ -69,8 +69,8 @@ export interface DipSignalInput {
  *  - regime ∈ range 類（mean_reverting / low_volatility / unknown——vol 門檻兜底）
  *  - σ ≤ 0.3%（平靜——9-13 實測 0.20%）
  *  - obImb ≤ −0.2（極端 sell 壓力 = 價格喺 dip）
- *  垃圾/唔符合 → null。 */
-export function dipReversionSignal(input: DipSignalInput, opts: { maxVol?: number; minImb?: number } = {}): { direction: 'buy'; strength: number } | null {
+ *  垃圾/唔符合 → null。對稱 sell 分支:range 高位 + 壓力 → SELL（17 喺 +7.3pp 實證）。 */
+export function dipReversionSignal(input: DipSignalInput, opts: { maxVol?: number; minImb?: number } = {}): { direction: 'buy' | 'sell'; strength: number } | null {
   const maxVol = opts.maxVol ?? 0.003;
   const minImb = opts.minImb ?? 0.2;
   const regimeOk = !input?.regime || input.regime === 'mean_reverting' || input.regime === 'low_volatility' || input.regime === 'unknown';
@@ -83,6 +83,16 @@ export function dipReversionSignal(input: DipSignalInput, opts: { maxVol?: numbe
   // 低位買 −1.92/喺。sell 壓力 + 價格喺 range 高位 = 賣壓被吸收（真需求）；
   // 喺低位 = 賣家贏緊（續跌）。rangePosition ≥ 0.5（上半 range）先 buy。
   const rp = input?.rangePosition;
-  if (typeof rp === 'number' && Number.isFinite(rp) && rp < 0.5) return null;
+  if (typeof rp === 'number' && Number.isFinite(rp)) {
+    // v2.0.872-P9-fine-tune-v2（主神:SELL 倉位都會盈利，唔好抹煞 SHORT）:
+    // 51 喂 SELL range 位置重放——對稱發現:
+    //   高位（>0.65）SELL:17 喂 +7.3pp 53%（賣 rip——同賣家一齊喺阻力位封頂）✅
+    //   低位（<0.35）SELL:19 喺 −28pp 32%（追跌——清算域接刀）❌
+    // 對稱規則:ob 壓力 + range 極端位置 → 兩個方向嘅均值回歸/延續信號
+    if (ob > minImb && rp > 0.65) return { direction: 'sell', strength: ob };       // dip-sell:buy 壓力 rip
+    if (ob <= -minImb && rp > 0.65) return { direction: 'sell', strength: Math.abs(ob) }; // 賣壓喺高位封頂
+    if (rp < 0.5) return null;   // 低位:BUY/SELL 都唔開（歷史雙向蝕）
+    return { direction: 'buy', strength: Math.abs(ob) };  // 中上位置 + sell 壓力 → dip-BUY
+  }
   return { direction: 'buy', strength: Math.abs(ob) };
 }
