@@ -39,6 +39,7 @@ const log = createLogger({ phase: 'component-attribution' });
 // ─── Types ───
 
 export type ComponentId =
+  | `gate:${string}`
   | 'olr'
   | 'shadow'
   | 'first-passage'
