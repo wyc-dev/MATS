@@ -11057,12 +11057,21 @@ ${recentExamples}
             // Priority 6.5: Dip-Reversion（v2.0.872-P9 主神組件2a——Dip-BUY 加分）
             // 9-13 SKHX 實證:低波動 range + 極端 sell 壓力（obImb −0.36）買 dip → +74.9pp。
             // 喺 ≥0.2 極端壓力先 firing——Priority 6 順勢只處理 0.15-0.2 弱壓力。
+            // P9-fine-tune（14-27 重放）:高位買 +1.77/喺 vs 低位買 −1.92/喺——
+            // 加 rangePosition ≥0.5 過濾（sell 壓力被吸收喺高位=真需求；低位=賣家贏）。
             if (!direction) {
-              const dip = dipReversionSignal({ regime: expState.regime, volatility: expState.volatility, obImbalance: expState.orderBookImbalance });
+              const ph9 = this.marketState?.getPriceHistory(exploreTarget) ?? [];
+              const recent9 = ph9.slice(-25);
+              let rangePosition9: number | null = null;
+              if (recent9.length >= 10 && expState.price > 0) {
+                const hi9 = Math.max(...recent9), lo9 = Math.min(...recent9);
+                if (hi9 - lo9 > 0) rangePosition9 = (expState.price - lo9) / (hi9 - lo9);
+              }
+              const dip = dipReversionSignal({ regime: expState.regime, volatility: expState.volatility, obImbalance: expState.orderBookImbalance, rangePosition: rangePosition9 });
               if (dip) {
                 direction = dip.direction;
                 dipReversionBoost = true;
-                log.info(`🧪 [dip-reversion] ${expState.regime} σ=${((expState.volatility ?? 0) * 100).toFixed(2)}% obImb=${(expState.orderBookImbalance * 100).toFixed(0)}% → DIP-BUY（重放實證 +0.85/喺）`);
+                log.info(`🧪 [dip-reversion] ${expState.regime} σ=${((expState.volatility ?? 0) * 100).toFixed(2)}% obImb=${(expState.orderBookImbalance * 100).toFixed(0)}% rangePos=${rangePosition9 !== null ? (rangePosition9 * 100).toFixed(0) + '%' : 'n/a'} → DIP-BUY（14-27 重放:高位買 +1.77/喺）`);
               }
             }
 
