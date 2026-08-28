@@ -76,7 +76,7 @@ export function dipReversionSignal(input: DipSignalInput, opts: { maxVol?: numbe
   const regimeOk = !input?.regime || input.regime === 'mean_reverting' || input.regime === 'low_volatility' || input.regime === 'unknown';
   if (!regimeOk) return null;
   const vol = input?.volatility;
-  if (typeof vol !== 'number' || !Number.isFinite(vol) || vol > maxVol) return null;
+  if (typeof vol !== 'number' || !Number.isFinite(vol) || vol < 0 || vol > maxVol) return null;
   const ob = input?.obImbalance;
   if (typeof ob !== 'number' || !Number.isFinite(ob) || ob > -minImb) return null;
   // v2.0.872-P9-fine-tune: range 位置過濾——14-27 重放實證:高位買 +1.77/喺 vs

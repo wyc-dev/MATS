@@ -11944,6 +11944,22 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
             const floating = unrealizedPct >= 0.01;
             if (floating && deferrals < 2 && pos) {
               this.consensusCloseDeferrals.set(ccKey, deferrals + 1);
+              // v2.0.872-P9-attack V1 修復: 同步 patch _pendingAnalyses——deferred 嘅
+              // consensus.action='close' 無 execution.blocked 會令客戶端 AutoTrade
+              // 執行 close 而後端揸住 = 指令分裂（split-brain）。
+              const pendingPatch = this._pendingAnalyses?.find((a: any) => normalizeSymbol(a.symbol) === normalizeSymbol(psc.symbol));
+              if (pendingPatch) {
+                pendingPatch.consensus.action = 'hold';
+                pendingPatch.metadata = {
+                  execution: {
+                    finalAction: 'hold',
+                    blocked: true,
+                    blockedBy: 'gate',
+                    blockedReason: `consensus-close deferred — floating profit ${(unrealizedPct * 100).toFixed(2)}% ≥1% (P9 confirm ${deferrals + 1}/2)`,
+                    gates: [{ gate: 'p9-consensus-close-confirm', passed: false, reason: 'floating profit ≥1% → defer' }],
+                  },
+                } as any;
+              }
               log.info(`⏳ [P9-consensus-close] ${psc.symbol}: 浮盈 ${(unrealizedPct * 100).toFixed(2)}% ≥1% → 延遲確認（${deferrals + 1}/2）——9-13 實證:持有到 tp_hit（重放 +9.7pp）`);
               continue; // 跳過呢個 symbol 嘅 close——下個 cycle 再驗證
             }
