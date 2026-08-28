@@ -4,6 +4,28 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-qrl-audit: Q-RL expectancy gate 默認關閉——同款噪音裁決（主神 2026-08-28）
+
+**主神質疑**: 「Q-RL 係咪一個真正有效嘅交易質量驗證插件？」
+
+**統計驗證（269 喺，entry 特徵重構 Q-cell lookup）**:
+```
+Spearman ρ(Q-RL expectancy, 實際PnL) = +0.0064  ← 零預測力（比 OLR +0.02 更差）
+Q>0 cells: 214 喂 +174.6pp | Q<0 cells: 55 喺 −22.0pp
+——bucket 差異係「時代混淆」（Q>0 = 早期盈利時代 cells），唔係 Q 值預測力
+```
+
+**三層結構缺陷**:
+1. **momentum bin 單位錯配**（bug）: `binMom` 門檻 ±0.5 設計畀 % 單位，但收到 `momentumShort` fraction（~0.0002）→ **momentum 維度 100% 死亡**（永遠 'flat'）
+2. **訓練數據 = shadow 回填**: 單 cell n=13659（模擬成交；10.8:1 BUY 偏差 + MAE=0 污染時代）——Q 值係模擬期望唔係真實 edge
+3. **24/270 cells 探索**: 狀態空間近乎未觸及
+
+**實施**: `QRL_EXPECTANCY_GATE` 默認 **false**（env `'true'` 可逆）——修復路線：binMom 單位修正 + 真實成交重訓 + live Spearman>0.2。Q-RL 發現機制（alpha discovery scan）保留（純觀察，唔影響交易）。
+
+**驗證**: tsc clean；全量 3727 pass + 13 pre-existing（零新增）。
+
+---
+
 ## v2.0.873-P9-olr-audit: OLR 硬閘剷除——統計驗證證實噪音（主神 2026-08-28）
 
 **主神質疑**: 「你講過 WR & 信心指數唔準確，特意開驗證系統驗證——我懷疑 OLR 嘅實際成效。」

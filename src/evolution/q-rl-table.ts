@@ -931,7 +931,14 @@ export const qrlDirectionConfig = {
   /** 1.1: inject Q-RL expectancy block into Meta-Agent context */
   leanEnabled: parseBoolEnv(process.env['QRL_DIRECTION_LEAN_ENABLED'], true),
   /** 1.2: apply Q-RL expectancy conviction multiplier in the gate */
-  gateEnabled: parseBoolEnv(process.env['QRL_EXPECTANCY_GATE'], true),
+  // v2.0.872-P9-olr-audit: 默認 OFF——Spearman ρ(Q-RL expectancy, 實際PnL)=+0.0064
+  // （269 喺實證零預測力，同 OLR 同款噪音）。三層結構缺陷：
+  //  ① momentum bin 單位錯配——binMom 門檻 ±0.5 設計畀 % 但收到 fraction（~0.0002）
+  //     → momentum 維度 100% 死亡（永遠 'flat'）
+  //  ② 訓練數據 = shadow 回填（單 cell n=13659——模擬成交，10.8:1 BUY 偏差 + MAE=0 污染時代）
+  //  ③ 24/270 cells 探索——狀態空間近乎未觸及
+  // 修復路線：binMom 單位修正 + 真實成交重訓 + live Spearman>0.2 → env 恢復。
+  gateEnabled: parseBoolEnv(process.env['QRL_EXPECTANCY_GATE'], false),
   /** 1.2: minimum visits on the action's cell before dampening may fire */
   minSamples: Math.max(5, Math.floor(parseNumEnv(process.env['QRL_MIN_SAMPLES'], 20))),
   /** 1.2: Q below this (fraction) counts as negative expectancy */
