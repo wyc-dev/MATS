@@ -98,3 +98,15 @@ export function dipReversionSignal(input: DipSignalInput, opts: { maxVol?: numbe
   }
   return { direction: 'buy', strength: Math.abs(ob) };
 }
+
+// ─── v2.0.873-P9-amplify: 確定有效信號放大（主神 2026-08-28 指令——幻覺修正同時放大確定有效信號）──
+// 只有通過統計審計、有實證 edge 嘅信號先可以放大:
+//   - TIP-BUY（高位買強勢）:buy-tip 兩時代重放 +23.2pp 63% / +124.0pp 42%——唯一跨時代穩健 edge → ×1.5
+//   - SELL-rip（高位 >0.65 賣）:17 喺 +7.3pp 53%（+0.43/喺）——樣本較細 → ×1.25
+// 已證偽源（OLR/Q-RL/FP）唔喺放大範圍——佢哋照舊唔做決定。
+export function dipAmplifyMultiplier(direction: 'buy' | 'sell' | string | null, enabled = true): number {
+  if (!enabled || !direction) return 1.0;
+  if (direction === 'buy') return 1.5;
+  if (direction === 'sell') return 1.25;
+  return 1.0;
+}

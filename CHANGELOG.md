@@ -4,6 +4,138 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-lock-pipeline: 鎖利管道 margin-basis 校準——前向重放驗證 + 單位錯配修復（主神 2026-08-28）
+
+**主神指令**: 「驗證現時是否能夠把先前的 269 個 trade 都盡可能做到盈利;增加盈利頻率;先驗證絕對成效,之後先 fix with top tier production grade logic」
+
+**驗證（三層邏輯實驗,先證後改）**:
+1. **數據解剖（269 喺 realTrades, 08-04→08-28）**: WR 46.1%（124 贏/145 蝕）但總 PnL **+1.53%（正期望值）**;蝕單平均蝕幅僅 −0.047%;**145 蝕單中 110 個（76%）曾經浮盈 ≥0.3% margin 但最終蝕**——即係大部分蝕單係「離場問題」唔係「入場問題」。最近 50 單更極端:**30/30 蝕單全部可救（0 單入場即錯）**
+2. **保守可達分析（零 look-ahead 鎖利點）**: θ=0.5% margin → WR 85.5%（230/269）、PnL +1.53% → +38.36%（Δ+36.84%）
+3. **前向 candle 重放（`scripts/p9-lock-pipeline-replay.ts`, 15m 燭逐支模擬, 完全無 look-ahead, 269/269 全覆蓋, 零誤鎖大 winner）**: θ=0.5% margin → **WR 46.1%→72.9%、PnL +1.53%→+54.74%（Δ+53.21%）**;誤鎖大 winner（MFE≥15%）0 單
+
+**根因（單位錯配——本座搵到嘅真兇）**: 鎖利門檻用 **price-basis 0.5%**（`shouldColdStartLock` `liveMfe < 0.5` + L3 trailing 前置 `liveMfe >= 0.5`）——0.5% price × 10x = **margin 5% 先觸發**;但 110 個可救單 margin MFE 中位數只有 2.68% → **71/110（65%）因為門檻太高而漏走**——浮盈 1-3% 未到 5% 門檻就回吐晒。
+
+**修復（production grade）**: 門檻改 **margin-basis**——`liveMfe(price%) × leverage ≥ PROFIT_LOCK_MARGIN_THRESHOLD_PCT`（預設 0.5% margin, env 可調, clamp [0.01, 5]）;`shouldColdStartLock` 加 `leverage` 參數（向後兼容: 唔傳/垃圾 → 1）;L3 trailing 前置 gate 同改 margin-basis;A8 cap（price >50% 拒）保留 + lev 溢出/NaN/負數當 1 攻擊輪防禦。
+
+**幻覺修正不變式**: 只改離場鎖利門檻單位——入場閘門（OLR/Q-RL/FP）零改動;SL 永遠唔收窄;確認式鎖掛（60min 冇新高先鎖）保留——大 winner 誤鎖審計 0 單。
+
+**驗證**: vitest 34/34（live-mfe +attack 更新, 含 margin-basis 新測試 + lev 攻擊輪）;全量 3737 pass + 13 pre-existing（零新增）;tsc clean;重放 script 可重跑。
+
+---
+
+## v2.0.873-P9-amplify: 確定有效信號放大——幻覺修正同時增加盈利入場頻率（主神 2026-08-28）
+
+**主神指令**: 「確保幻覺修正的同時，能夠增加現在盈利入場的頻率——把確定有效的機制信號放大」
+
+**原則**: 只有通過統計審計、有實證 edge 嘅信號先可以放大；已證偽源（OLR/Q-RL/FP）照舊唔做決定——幻覺修正零改動。
+
+**瓶頸診斷（有信號但開唔到單嘅根因）**: ① `dipReversionSignal` 觸發方向後，`edgeElements` 仍需 ≥2 個 edge 先開單——但 OLR/FP 已證偽（唔應該做 edge），該 symbol 若冇 OB/vol/S-R edge，**確定有效嘅 TIP-BUY 信號會被 `edgeElements < 2` 卡死 skip**；② `dipReversionBoost` 只用作 `skipShadowGate`，對倉位 size 零放大。
+
+**兩層放大（全部 env 可回滾）**:
+1. **edge element 資格**: `dipReversionBoost` 觸發時，確定有效信號本身成為 edge element（`TIP-BUY 確定有效信號（buy-tip 兩時代實證 +23.2/+124.0pp）` / `SELL-rip 確定有效信號（高位封頂 17 喺 +7.3pp 53%）`）——解開「被已證偽源卡住」嘅開單瓶頸 → **直接增加盈利入場頻率**
+2. **size 放大**: `dipAmplifyMultiplier()` 純函數——TIP-BUY ×1.5（兩時代唯一跨時代穩健 edge）/ SELL-rip ×1.25（樣本較細保守），乘入 `shadowSizeMult`（cap 2.0）；env `DIP_AMPLIFY_SIZE_BOOST=false` 回滾
+
+**幻覺修正不變式（測試強制）**: 放大唔改變 `dipReversionSignal` 信號本身——低位唔開（歷史雙向蝕）、高波動 null、trending_bear 唔接刀——閘門邏輯零改動。
+
+**驗證**: vitest 15/15（p9-dip-reversion +5 新測試）；全量 3735 pass + 13 pre-existing（零新增）；tsc clean。
+
+---
+
+## v2.0.873-P9-sell-range-gate: OLR engine 靜默禁用 flag（主神 2026-08-28）
+
+**commit message 聲稱**: 「SELL at range 低位（追跌）大蝕 -1.47/喺 → 加 range 高位先賣（+0.43/喺）」——range 位置 SELL 分析（同 P9-sell-tune 數據一致）。
+
+**實際 diff（src/evolution/olr-engine.ts，+3 行）**: 只加咗 `static readonly DISABLED = true` + comment「v2.0.872-P8-OLR-removal（主神 2026-08-28 裁決:靜默禁用——Spearman 0.02 嘅數據支持）」。
+
+**⚠️ 死代碼發現**: `DISABLED` flag 喺 src/ 全樹**冇任何引用點**（grep 零命中）——宣告但從未讀取，不影響運行。實際 OLR 硬閘位由 P9-olr-audit 嘅 env `OLR_HARD_GATE` 控制（默認 OFF）。commit message 描述嘅 range 高位先賣規則其實已由 P9-sell-tune 喺 `dipReversionSignal` 實施（rp>0.65 對稱規則）。
+
+**建議**: 刪除未接駁嘅 `DISABLED` flag，或若意圖係完全禁用 OLR 引擎，需接駁到 query/feedTrade 入口（目前唔會觸發）。
+
+---
+
+## v2.0.873-P9-attrib: 歸因管道擴展——閘乘數歸因註冊 2→19 站位（主神 2026-08-28）
+
+**主神指令**: 「歸因管道點樣擴展先有盈利」
+
+**三層**:
+1. **convLedger → 開倉 stash**: 決策方法 19 個乘數站位（convLedger）→ `lastConvLedger` → 開倉時 `gateLedgerCache.set(sym, ledger)`
+2. **close 時消費 ledger**: → `componentAttribution.recordAttribution`，`componentId='gate:<名>'`——歸因覆蓋由 2 站位擴展到 **19 站位**
+3. **scripts/p9-attrib-validate.ts**: per-gate 乘數 vs 實際 PnL Spearman——`|ρ|<0.1` → **NOISE-FLAG LOUD**（同 OLR/Q-RL audit 同一統計門檻）
+
+**盈利鏈**: 失效閘（隨機壓制盈利倉）可被發現停用 → 盈利倉流動性↑。本 session 實證: −22.4pp（consensus close 切走贏單）/ −13.3pp（四窗 SELL 擋盈利）都係靠呢類歸因先發現。
+
+**驗證**: tsc clean；全量 3730 pass + 13 pre-existing（零新增）。
+
+---
+
+## v2.0.873-P9-tip-fix: 信號語義修正——buy-tip 唔係 buy-dip（主神 2026-08-28）
+
+**主神質疑**: 「LONG 點解用 buy-dip 判斷？唔係應該 buy-tip 咩？」
+
+**四組合 × era 重放（269 喺）**: 
+```
+buy-tip（高位買強勢）: 9-13 +23.2pp 63% / 14-27 +124.0pp 42%  ✅ 唯一跨時代穩健 edge
+buy-dip（低位買）:   9-13 +23.4pp 73% → 14-27 −40.7pp 25%     dip edge 已隨市場結構死亡（時代依賴）
+sell-tip / sell-dip: 冇穩健 edge
+```
+
+**修復**: log 標籤 `DIP-BUY` → `TIP-BUY`（買強勢）；函數註釋語義修正；**信號邏輯不變**（rp≥0.5 buy + rp>0.65 sell 已經係兩個最優組合）。
+
+**驗證**: vitest 通過；tsc clean。
+
+---
+
+## v2.0.873-P9-attack: 攻擊輪——split-brain 炸彈（deferred close 指令分裂）+ 負 vol 防禦（主神 2026-08-28）
+
+**V1（HIGH）**: consensus close defer 嗰個 cycle，`_pendingAnalyses` 仲係 `consensus.action='close'` 無 execution metadata → **客戶端 AutoTrade 執行 close 而後端揸住 = 指令分裂（split-brain）**。
+
+**修復**: defer 時同步 patch pendingAnalyses（consensus→hold + `metadata.execution{blocked:true, blockedBy:'gate', P9 confirm reason}`）——客戶端同後端指令一致，signal-only 模式安全。
+
+**B4**: 負 volatility 通過 vol 閘 → `vol<0 → null`（一行防禦，`dipReversionSignal`）。
+
+**D1**: deferrals 模擬迭代修訂（語義正確: 浮盈持續 → 反覆延遲持有 = 9-13 行為）。
+
+**驗證**: 攻擊矩陣 16 攻 1 中；vitest 10/10；全量 3730 pass + 13 pre-existing（零新增）；tsc clean。
+
+---
+
+## v2.0.873-P9-sell-tune: Dip-SELL 對稱實施——賣 rip 唔追跌（主神 2026-08-28）
+
+**主神指令**: 「Sell 倉位都會盈利，唔好抹煞 SHORT」
+
+**邏輯實驗（51 喺 SELL × range 位置 × regime 重放）**: 
+```
+高位（>0.65）SELL: 17 喺 +7.3pp 53%（+0.43/喺）——賣 rip 有 edge
+低位（<0.35）SELL: 19 喺 −28pp 32%（−1.47/喺）——追跌大蝕
+17 喺高位 SELL 全部 obImb<0（賣壓）+ vol≤0.3%
+```
+
+**實施（對稱規則，`dipReversionSignal`）**: 
+- `ob≥+0.2 + rp>0.65` → dip-SELL（buy 壓力 rip）
+- `ob≤−0.2 + rp>0.65` → dip-SELL（賣壓高位封頂，17 喺實證）
+- `rp<0.5` → null（低位雙向唔開）
+
+**驗證**: vitest 10/10；全量 3730 pass + 13 pre-existing（零新增）；tsc clean。
+
+---
+
+## v2.0.873-P9-fine-tune: Dip-BUY range 位置過濾——買強勢唔接刀（主神 2026-08-28）
+
+**邏輯實驗（209 喂 dip-BUY × 25×15m range 位置重放）**: 
+```
+range 高位（>0.65）: 118 喺 +133pp（+1.13/喺）
+range 低位（<0.35）: 43 喺 −9.2pp（−0.21/喺）
+Era 複檢: 14-27 高位 +1.77/喺 vs 低位 −1.92/喺（9-13 兩者都贏——舊結構）
+```
+
+**發現**: obImb 常數 −0.36 下，dip-BUY 嘅 edge 喺「賣壓被吸收喺高位」（強勢買入），唔係「接低位刀」（續跌市接刀 = 送死）。
+
+**實施**: `dipReversionSignal` 加 `rangePosition ≥ 0.5` 過濾（`marketState` priceHistory 計算，非 active symbol 都有 backfill；數據不足 → 保守放行，vol+obImb 閘照把關）。
+
+**驗證**: vitest 10/10；全量 3730 pass + 13 pre-existing（零新增）；tsc clean。
+
+---
+
 ## v2.0.873-P9-qrl-audit: Q-RL expectancy gate 默認關閉——同款噪音裁決（主神 2026-08-28）
 
 **主神質疑**: 「Q-RL 係咪一個真正有效嘅交易質量驗證插件？」
@@ -56,8 +188,6 @@ OLR<0.35 block 歷史效果不穩定: 全史 +56.3pp（blocking 趕盈利）vs �
 
 ---
 
-## v2.0.872-P8-transparency
-
 ## v2.0.873-P9: 震盪市盈利頻率恢復——dip-BUY exploration + consensus close 確認（主神 2026-08-28）
 
 **主神指令**: 「實施組件 1（consensus close 確認）+ 組件 2a（dip-BUY 加分）……需要確實真係開到單。」
@@ -79,8 +209,6 @@ OLR<0.35 block 歷史效果不穩定: 全史 +56.3pp（blocking 趕盈利）vs �
 **驗證**: vitest 7/7（dip 信號）+ 全量 3727 pass + 13 pre-existing（零新增）；tsc clean。
 
 ---
-
-## v2.0.872-P8-transparency
 
 ## v2.0.872-P8-transparency: conviction 乘數總帳 + asset_analyses 決策欄位補全（主神 2026-08-28）
 

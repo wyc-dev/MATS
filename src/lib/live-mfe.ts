@@ -27,6 +27,14 @@
  *  1h candle 內單支 >50% move 係腐敗數據（真實：波動極端都 <10%）。 */
 export const MAX_LIVE_MFE_PCT = 50;
 
+/** P9-lock-pipeline 前向重放（2026-08-28，269 喺）最優參數：margin-basis 0.5% 門檻。
+ *  θ=0.5% margin → WR 46.1%→72.9%、PnL Δ+53.21%、誤鎖大 winner 0。
+ *  env PROFIT_LOCK_MARGIN_THRESHOLD_PCT 可調（回滾用）。 */
+export const PROFIT_LOCK_MARGIN_THRESHOLD_PCT = (() => {
+  const raw = Number(process.env['PROFIT_LOCK_MARGIN_THRESHOLD_PCT']);
+  return Number.isFinite(raw) && raw > 0 && raw <= 5 ? raw : 0.5;
+})();
+
 /** candle open time 合理上限（ms）——1e15 ≈ 公元 33658 年；1e308 科幻未來直接拒。 */
 const MAX_TS_MS = 1e15;
 
@@ -99,14 +107,26 @@ export function shouldTrailingLock(
   return pnlPctNow <= 0.5 * peakMargin;
 }
 
-/** L1 cold-start fallback 判定：live MFE ≥ 0.5%(price) 且當前盈利 → 鎖利。
- *  超 cap（>50%）→ false（A8：1e308 唔可以假鎖）。 */
+/** L1 cold-start fallback 判定（margin-basis——P9-lock-pipeline 前向重放驗證）:
+ *  實時 MFE(price%) × leverage ≥ PROFIT_LOCK_MARGIN_THRESHOLD_PCT(預設 0.5% margin)
+ *  且當前盈利 → 鎖利。
+ *  舊版用 price-basis 0.5% 硬門檻——10x 槓桿下 = margin 5% 先觸發，
+ *  令 110/145 蝕單(浮盈 1-3% margin)全部漏走——單位錯配已修正。
+ *  超 cap（>50% price）→ false（A8：1e308 唔可以假鎖）。
+ *  向後兼容：leverage 唔傳/垃圾 → 1（即 price 0.5% = margin 0.5%，舊測試語義保留）。 */
 export function shouldColdStartLock(
   liveMfePricePct: number | null,
   unrealizedPnl: number | null | undefined,
+  leverage?: number | null,
+  opts: { thresholdMarginPct?: number } = {},
 ): boolean {
   if (liveMfePricePct === null || !Number.isFinite(liveMfePricePct)) return false;
-  if (liveMfePricePct < 0.5 || liveMfePricePct > MAX_LIVE_MFE_PCT) return false; // A8
+  if (liveMfePricePct <= 0 || liveMfePricePct > MAX_LIVE_MFE_PCT) return false; // A8
+  const lev = Number.isFinite(leverage) && (leverage as number) > 0 && (leverage as number) <= 1000 ? (leverage as number) : 1; // A5c: lev 溢出 → 1
+  const threshold = Number.isFinite(opts.thresholdMarginPct) && (opts.thresholdMarginPct as number) > 0
+    ? (opts.thresholdMarginPct as number)
+    : PROFIT_LOCK_MARGIN_THRESHOLD_PCT;
+  if (liveMfePricePct * lev < threshold) return false;
   return typeof unrealizedPnl === 'number' && Number.isFinite(unrealizedPnl) && unrealizedPnl > 0;
 }
 
