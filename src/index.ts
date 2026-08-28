@@ -574,6 +574,9 @@ class MATSSystem {
   private metaLearner!: MetaLearner;
   // v2.0.844: Component Attribution Store — per-component edge attribution
   private componentAttribution!: ComponentAttributionStore;
+  // v2.0.872-P9-attrib: 閘乘數歸因——每單 trade 嘅全部閘乘數（gate 名 × mult）
+  private gateLedgerCache = new Map<string, Array<{ gate: string; mult: number }>>();
+  private lastConvLedger: Array<{ gate: string; mult: number }> | null = null;
   private sentimentEngine!: SentimentEngine;
   /** v2.0.105: Adaptive noise filter — sigmoid+EMA with per-cycle auto-tuning */
   private adaptiveFilter!: AdaptiveNoiseFilter;
@@ -4961,8 +4964,32 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           // missed (e.g. position opened before v2.0.210). Fixes the audit
           // 'thesis-contradicts-action' false positive.
           olrPWinAtEntry: (() => {
+            const sym = normalizeSymbol(symbol);
+            // v2.0.872-P9-attrib: 閘乘數歸因——close 時記錄每個閘嘅 mult + 結果
             try {
-              const sym = normalizeSymbol(symbol);
+              const ledger = this.gateLedgerCache.get(sym);
+              if (ledger && ledger.length > 0) {
+                this.gateLedgerCache.delete(sym);
+                for (const l of ledger) {
+                  this.componentAttribution.recordAttribution({
+                    componentId: `gate:${l.gate}`,
+                    tradeId: trade.id ?? `${sym}|${trade.side}|${trade.openedAt}`,
+                    symbol,
+                    side: trade.side === 'buy' ? 'buy' : 'sell',
+                    cycleId: this.totalCycles,
+                    signal: Math.max(0, Math.min(1, l.mult)),
+                    pnlPct: trade.pnlPct ?? 0,
+                    labelCleanliness: 1,
+                    regime: (trade as any).regime ?? 'unknown',
+                    timestamp: trade.closedAt ?? Date.now(),
+                    riskProfile: 'moderate' as const,
+                  });
+                }
+              }
+            } catch { /* 非致命——歸因失敗唔影響平倉 */ }
+            try {
+              const sym2 = normalizeSymbol(symbol);
+              void sym2;
               const cached = this.entryOlrPWinCache.get(sym);
               if (cached !== undefined) {
                 this.entryOlrPWinCache.delete(sym);
@@ -6319,6 +6346,11 @@ ${recentExamples}
         ...this.candleMomentumFeatures(sym),
       };
       
+      // v2.0.872-P9-attrib: 閘乘數歸因——開倉時 stash 每單嘅全部閘乘數
+      if (this.lastConvLedger && this.lastConvLedger.length > 0) {
+        this.gateLedgerCache.set(sym, this.lastConvLedger);
+        this.lastConvLedger = null;
+      }
       // Query OLR P(win) at entry time
       let olrPWin: number | undefined;
       try {
@@ -13291,6 +13323,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // floating-point arithmetic may produce 0.48999... < 0.49 → HOLD by 0.001%.
         // At exactly the threshold, the signal is strong enough to trade.
         if (gateAction !== 'hold' && effectiveConfidence <= adjustedThreshold - 0.001) {
+          this.lastConvLedger = convLedger;
           const blendStr = comboBlendUsed
             ? ` blend=${pwinBlendFactor.toFixed(3)} (combo override: ${comboBlendUsed.reason.slice(0, 80)})`
             : ` blend=${pwinBlendFactor.toFixed(3)}`;
