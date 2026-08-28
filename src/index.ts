@@ -81,7 +81,7 @@ import { getSRZones } from './analysis/support-resistance.ts';
 import { setExecutionLensProvider, prepareExecutionLens, clearExecutionLens, type ExecutionLensData, getATR } from './analysis/atr.ts';
 import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
-import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldTrailingLock, shouldColdStartLock, shouldCancelPendingLock, shouldConfirmTrailingLock, type PendingTrailingLock } from './lib/live-mfe.ts';
+import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldTrailingLock, shouldColdStartLock, shouldCancelPendingLock, shouldConfirmTrailingLock, PROFIT_LOCK_MARGIN_THRESHOLD_PCT, type PendingTrailingLock } from './lib/live-mfe.ts';
 import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
 import { shouldExploreSell, shouldSuppressExploreBuy, resolveExplorationDirection } from './lib/exploration-direction.ts';
 import { buildCooldownEntry, shouldBlockReentry, type ReentryCooldownState } from './lib/reentry-cooldown.ts';
@@ -92,7 +92,7 @@ import { momentumOlrConflictMultiplier } from './analysis/momentum-olr-conflict.
 import { momentumDirectionalBias, robustMomentumPct, shadowBoostSize } from './analysis/momentum-directional-bias.ts';
 import { computePersistenceScore, computePersistenceDual, classifyPersistenceDual, isStaleCache, classifyPersistence, momentumDirectionalBiasPersistence, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
 import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
-import { dipReversionSignal } from './lib/exploration-direction.ts';
+import { dipReversionSignal, dipAmplifyMultiplier } from './lib/exploration-direction.ts';
 import { shouldSkipBreakoutEntry } from './analysis/breakout-confirmation.ts';
 import { shouldBlock5mDirection, DEFAULT_GATE_5M_KSIGMA, DEFAULT_GATE_5M_FLOOR_BPS, DEFAULT_GATE_5M_CAP_BPS, DEFAULT_GATE_5M_CANDLES } from './analysis/momentum-5m-gate.ts';
 import { classifySuccessPattern } from './analysis/success-pattern.ts';
@@ -3872,11 +3872,12 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const side = isSellSide(pos.side) ? 'sell' : 'buy';
         const profile = this.exitPriceLearner.getExitProfile(normalizeSymbol(sym), side);
         // L1 (v2.0.870-exit-price-lock): PAEL profile 冷啟動 → 唔 skip——用 universal
-        // 0.5%(price MFE) fallback threshold——樣本疏 symbol 都有鎖利機會。
+        // margin-basis 0.5% fallback threshold（P9-lock-pipeline 驗證——舊 price-basis
+        // 0.5% 喺 10x 下 = margin 5% 先觸發,令浮盈 1-3% 蝕單全部漏走）——樣本疏 symbol 都有鎖利機會。
         if (!profile) {
           const liveMfeP = this.computeLiveMfePricePct(sym, isSellSide(pos.side) ? 'sell' : 'buy', pos.averageEntryPrice, pos.openedAt ?? 0);
-          if (shouldColdStartLock(liveMfeP, pos.unrealizedPnl)) {
-            await this.closeTrade(sym, `[PAEL-FALLBACK LOCK] ${sym}: cold-start profile, live MFE ${liveMfeP!.toFixed(2)}% ≥0.5% → 鎖利`, 'profit_lock');
+          if (shouldColdStartLock(liveMfeP, pos.unrealizedPnl, pos.leverage)) {
+            await this.closeTrade(sym, `[PAEL-FALLBACK LOCK] ${sym}: cold-start profile, live MFE ${liveMfeP!.toFixed(2)}%(price) × ${safeLeverage(pos.leverage)}x ≥ 0.5% margin → 鎖利`, 'profit_lock');
             log.info(`🔒 [pael-fallback] CLOSED ${sym} @ live MFE ${liveMfeP!.toFixed(2)}% (no profile)`);
           }
           continue;
@@ -3941,8 +3942,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // 回吐 ≥50% → pending（唔即鎖）; pending 期間創新高 → 取消（趨勢有效——
         // 大 winner 唔誤鎖——counterfactual 40 單: 誤鎖大贏 6→1 單、總 PnL 悲觀
         // 1.96→86.0% / 樂觀 118.7%）; 確認窗口（12 cycle≈60min）冇新高 → 鎖利。
+        // P9-lock-pipeline（2026-08-28）: 前置 gate 由 price-basis 0.5% 改 margin-basis——
+        // liveMfe(price%) × lev ≥ 0.5% margin 先開始考慮（舊版 10x 下 = margin 5%,漏走大量浮盈蝕單）。
         try {
-          if (liveMfe !== null && liveMfe >= 0.5 && pnlNow > 0) {
+          if (liveMfe !== null && liveMfe * Math.max(1, safeLeverage(pos.leverage)) >= PROFIT_LOCK_MARGIN_THRESHOLD_PCT && pnlNow > 0) {
             const margin = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
             const pnlPctNow = margin > 0 ? (pnlNow / margin) : 0;
             const symNorm = normalizeSymbol(sym);
@@ -11382,6 +11385,17 @@ ${recentExamples}
               edgeElements.push(`ATR compression to ${(expVolNum * 100).toFixed(2)}% (low vol → expansion expected)`);
             }
 
+            // Edge 7: v2.0.873-P9-amplify 確定有效信號（主神 2026-08-28 指令——幻覺修正同時放大）
+            // 只有通過統計審計嘅信號先算 edge: TIP-BUY（buy-tip 兩時代 +23.2/+124.0pp 唯一跨時代
+            // 穩健 edge）/ SELL-rip（17 喺 +7.3pp 53%）——唔需要等已證偽源（OLR/FP）同意先開到單。
+            if (dipReversionBoost && direction) {
+              edgeElements.push(
+                direction === 'buy'
+                  ? `TIP-BUY 確定有效信號（buy-tip 兩時代實證 +23.2/+124.0pp——唯一跨時代穩健 edge）`
+                  : `SELL-rip 確定有效信號（高位封頂 17 喺 +7.3pp 53%）`,
+              );
+            }
+
             // v2.0.221 (Fix #5): If we can't find ≥2 real edge elements, HOLD.
             // An exploration trade without a real thesis is worse than no
             // trade — it pollutes the EXP learning system with meaningless
@@ -11414,6 +11428,17 @@ ${recentExamples}
                   }
                 }
               } catch { /* non-fatal */ }
+
+              // ── v2.0.873-P9-amplify: 確定有效信號 size 放大（主神 2026-08-28 指令）──
+              // dipReversionBoost 觸發 = 確定有效信號（TIP-BUY/SELL-rip 實證 edge）→ 加大倉位。
+              // 幻覺修正保持: OLR/Q-RL/FP 已證偽源唔參與放大。env DIP_AMPLIFY_SIZE_BOOST=false 回滾。
+              if (dipReversionBoost) {
+                const ampMult = dipAmplifyMultiplier(direction, parseBlockBool(process.env['DIP_AMPLIFY_SIZE_BOOST'], true));
+                if (ampMult > 1.0) {
+                  shadowSizeMult = Math.min(2.0, shadowSizeMult * ampMult);
+                  shadowQualityNote += `; ⚡ 確定有效信號放大 ×${ampMult}（P9-amplify 實證 edge）`;
+                }
+              }
 
               // Build thesis from the top 2-3 edge elements (not all — keep it focused)
               const topEdges = edgeElements.slice(0, 3);
