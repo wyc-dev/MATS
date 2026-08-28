@@ -49,12 +49,12 @@ interface CacheEntry {
 }
 
 /** HL candleSnapshot fetch(經 MarketAgent.hlFetch——global rate limiter) */
-async function fetchCandles(symbol: string, interval: '1h' | '5m', count: number): Promise<Candle[] | null> {
+async function fetchCandles(symbol: string, interval: '1h' | '5m' | '15m', count: number): Promise<Candle[] | null> {
   try {
     const { MarketAgent } = await import('../market-agent/index.ts');
     const coin = symbol.includes(':') ? symbol : symbol.toUpperCase();
     const endTime = Date.now();
-    const intervalMs = interval === '1h' ? 3_600_000 : 300_000;
+    const intervalMs = interval === '1h' ? 3_600_000 : interval === '5m' ? 300_000 : 900_000; // 15m = 900s
     // v2.0.863-cache-attack (V1): fetch 至少 100 支——cache 冇 count 維度,
     // 細 count 請求(getMomentum 7支)先 fill 會令大 count 消費者(getATR 30支)
     // 攞唔夠支 → computeATR 唔夠 period+1 → ATR=0 → SL 冇 ATR 保護。
@@ -97,9 +97,9 @@ export class CandleCache {
   private inflight = new Map<string, Promise<Candle[] | null>>();
   private config: CandleCacheConfig;
   /** v2.0.863-cache-attack: 依賴注入——測試可傳 mock fetchFn(默認真實 HL) */
-  private fetchFn: (symbol: string, interval: '1h' | '5m', count: number) => Promise<Candle[] | null>;
+  private fetchFn: (symbol: string, interval: '1h' | '5m' | '15m', count: number) => Promise<Candle[] | null>;
 
-  constructor(config?: Partial<CandleCacheConfig>, fetchFn?: (symbol: string, interval: '1h' | '5m', count: number) => Promise<Candle[] | null>) {
+  constructor(config?: Partial<CandleCacheConfig>, fetchFn?: (symbol: string, interval: '1h' | '5m' | '15m', count: number) => Promise<Candle[] | null>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.fetchFn = fetchFn ?? fetchCandles;
   }
@@ -109,7 +109,7 @@ export class CandleCache {
    * TTL 內重用;fetch 失敗有 fail cooldown(唔會每 call 都 retry)。
    * malformed input → null(唔 crash)。
    */
-  async getCandles(symbol: string, interval: '1h' | '5m', count = 100): Promise<Candle[] | null> {
+  async getCandles(symbol: string, interval: '1h' | '5m' | '15m', count = 100): Promise<Candle[] | null> {
     if (typeof symbol !== 'string' || symbol.length === 0) return null;
     const key = `${symbol.toLowerCase()}|${interval}`;
     const now = Date.now();
@@ -163,7 +163,7 @@ export class CandleCache {
    * FIX-4（攻擊輪 D1）: copy-on-read——返回深 copy，caller mutate 唔污染 cache
    * （P28-attack B5 教訓: getMomentumSnapshot 返回內部引用 → 外部 mutate 污染 store）。
    */
-  peekCandles(symbol: string, interval: '1h' | '5m'): Candle[] | null {
+  peekCandles(symbol: string, interval: '1h' | '5m' | '15m'): Candle[] | null {
     if (typeof symbol !== 'string' || symbol.length === 0) return null;
     const key = `${symbol.toLowerCase()}|${interval}`;
     const hit = this.cache.get(key);

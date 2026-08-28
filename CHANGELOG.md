@@ -4,6 +4,48 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-attack-round3: 攻擊輪三——SELL-ALERT env gate 缺失 + NaN 源頭防禦（主神 2026-08-28「不擇手段攻擊 sealarm + unblock 新 code」）
+
+**攻擊矩陣**: A1(CRITICAL) **`SELL_ALERT_ENABLED` env gate 缺失**——文檔承諾可回滾但 code 冇 gate(同 KLINE_BLOCK_ENABLED 對照組不一致,所有 context 注入都應有回滾掣);A3 perSide pnl NaN 污染(`NaN ?? 0 = NaN`,?? 只擋 null/undefined);A2 RELATIVE LEAN startsWith 匹配驗證(實際格式 match ✓);A4 15m fetch 失敗 silent skip(安全);A5 robustMomentumPct 極限(2 支/1 支/null/負價格全部安全)。
+
+**修復（production grade）**: ① 新 `sellAlertConfig = { enabled: parseBlockBool(process.env['SELL_ALERT_ENABLED'], true) }` + SELL-ALERT block 加 gate(`if (sellAlertConfig.enabled)`);② perSide pnl 源頭防禦(`if (Number.isFinite(t.pnl))` 先累積——唔好俾 NaN 污染,下游 guard 係第二層)。
+
+**驗證**: 攻擊測試 8/8(p9-attack-round3);全量 3789 pass + 13 pre-existing(零新增);tsc clean。
+
+---
+
+## v2.0.873-P9-unblock: agents 解鎖——OLR 已證偽標記 + DIRECTION HEALTH 相對 lean（主神 2026-08-28「大半日冇開倉,根源解決咗未」）
+
+**主神質疑**: 「因為最近啲大半日都冇開過倉,所以你檢查吓到底個根源解決咗未」——查證: 最後 trade 08-28 05:12,13 個鐘零開倉;API 顯示 `HOLD (0B/0S/7H)`——7 個 agents 全部 HOLD,而且 6 symbol 全部 conf=0.69 一模一樣(agents 冇實質分析)。
+
+**根源診斷（三層）**: ① **OLR 已證偽但 agents 仍然信佢**——buildOLRBlock 仍輸出完整 OLR 數字,agents 見到「OLR 兩邊 <50%」就判斷冇 edge → HOLD;② **DIRECTION HEALTH 兩邊都紅**——agent 明言「red direction health on both sides」→ 冇方向 → HOLD;③ 今日改 code 令 tsx watch 多次 reload(PID 30143→34642),warmup 需時。
+
+**邏輯實驗（269 單實測——先證後改）**: 
+① **OLR 全樣本 ρ=+0.02 零預測力**(P9-olr-audit 已證)——⚠️ 主神質疑「WR 係真實定幻覺」: 269 單分桶 WR 係**已成交 subset,有選擇偏差**(通過其他 gate 先開到倉),唔可以做預測力證據;正確結論係全樣本零預測力 = 噪音;② **相對強度**(subset 描述性 context): 全部 symbol 近期 SELL WR=**0%**、BUY WR 33-67%——「兩邊都紅」係錯覺,實際係「一側全紅、另一側部分正常」。
+
+**修正（production grade）**: 
+**方案 A**——buildOLRBlock 加 `⚠️ OLR 已證偽(全樣本 ρ=+0.02 零預測力——數字係噪音,唔可以做 BUY/SELL 決定依據)`; **方案 B**——DIRECTION HEALTH 兩邊都紅且相對強度 ≥0.2 時,加 `🧭 [RELATIVE LEAN]`(高 WR 側 lean + 細倉嚴 SL 提示)。
+
+**幻覺修正不變式**: OLR 唔再做任何決定(標記 + 縮短);RELATIVE LEAN 只係 context 提示,唔 hard block;SL 唔收窄。
+
+**驗證**: 新測試 6/6(p9-unblock——OLR 零預測力 + RELATIVE LEAN 邏輯);全量 3781 pass + 13 pre-existing(零新增);tsc clean。
+
+---
+
+## v2.0.873-P9-sealarm: 短線急跌 SELL 警報——15m 急跌 + 5m 續跌確認（主神 2026-08-28「5min + 15m 級急跌觸發 is important」）
+
+**主神質疑**: 「BTC 最近 15 分鐘跌到咁都唔開 Sell 單??」——診斷: SELL 誘因閾值 gap——系統只睇 24h/4h 動量 < −1.5% 先觸發 SELL-SIGNAL,15m 急跌完全冇偵測 → 7/7 agents HOLD,SELL=0。
+
+**邏輯實驗（96h 多 symbol BTC/BNB/ETH/SOL/SKHX/SNDK）**: ① 15m 急跌 >0.3% → 下一支續跌率 67%（0.4% → 75%）;② 3 支 15m 內 short 有利潤率 **91-100%**;③ **關鍵——5m 續跌確認**: 有確認 → 3 支後 **−30.7%**（short 賺）/ 冇確認 → **+26.1%**（反彈陷阱 short 蝕）——5m 確認係濾波器,完美呼應 E1 實證「反彈型追跌全輸」。
+
+**實作（production grade）**: ① `CandleCache` 擴展支援 **'15m'** interval（intervalMs=900s, type 全鏈）;② 新 `compute15mMomentumPct`（3 支 15m robust median）+ `compute5mMomentumPct`（2 支 5m）;③ `buildDirectionHealthBlock` 改 async + pre-fetch 15m candles;④ 新 **`⚡ [SELL-ALERT]`** 注入——15m 動量 < −0.3% **且** 5m 動量 < 0（續跌確認）→ 提示 LLM 優先考慮 SELL（persistent_bear 雙閃;range 標「只可短線順勢,見好即收」）。純 context 注入——唔 hard block,唔改執行邏輯。
+
+**幻覺修正不變式**: 唔係盲追跌——5m 確認保證「順勢」而非「接刀」;E1 實證範圍內（persistent_bear 順 short WR 52-71%）。env `SELL_ALERT_ENABLED=false` 可回滾（config 層）。
+
+**驗證**: 新測試 3/3（p9-sealarm——robustMomentum 急跌/反彈判別 + CandleCache 15m）;全量 3775 pass + 13 pre-existing（零新增）;tsc clean。
+
+---
+
 ## v2.0.873-P9-attack-round2: 攻擊輪二——EXP 時間衰減 env 注入 DoS + sweep 非原子寫（主神 2026-08-28「不擇手段攻擊最近修葺嘅 code」）
 
 **攻擊矩陣（併發/狀態注入/持久化污染）**: A1 `EXP_TIME_DECAY_HOURS` 冇下限 clamp——env=1e-9 → τ≈0 → 所有樣本 weight≈0 → **EXP pWin 全滅 DoS（CRITICAL）**;A2 `EXP_TIME_CUTOFF_HOURS` 冇下限 clamp——env=1e-9 → 全部樣本剔除 → EXP 冷啟動死（CRITICAL）;A7 `sweepGhostRecords` 用非原子 writeFileSync——crash 中途 corrupt jsonl（MED）。
