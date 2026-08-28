@@ -59,6 +59,10 @@ export interface DipSignalInput {
   regime: string | null | undefined;
   volatility: number | null | undefined;
   obImbalance: number | null | undefined;
+  /** v2.0.872-P9-fine-tune: entry 價喺近期 range 嘅位置（0=低位,1=高位）。
+   *  14-27 重放實證:高位買 +1.77/喺 vs 低位買 −1.92/喺——賣壓吸收喺高位先有 edge。
+   *  undefined = 數據不足 → 唔過濾（保守放行，vol+obImb 閘照把關）。 */
+  rangePosition?: number | null;
 }
 
 /** Dip-buy 環境判定（純函數，重放實證 208 喂 +177.1pp）:
@@ -75,5 +79,10 @@ export function dipReversionSignal(input: DipSignalInput, opts: { maxVol?: numbe
   if (typeof vol !== 'number' || !Number.isFinite(vol) || vol > maxVol) return null;
   const ob = input?.obImbalance;
   if (typeof ob !== 'number' || !Number.isFinite(ob) || ob > -minImb) return null;
+  // v2.0.872-P9-fine-tune: range 位置過濾——14-27 重放實證:高位買 +1.77/喺 vs
+  // 低位買 −1.92/喺。sell 壓力 + 價格喺 range 高位 = 賣壓被吸收（真需求）；
+  // 喺低位 = 賣家贏緊（續跌）。rangePosition ≥ 0.5（上半 range）先 buy。
+  const rp = input?.rangePosition;
+  if (typeof rp === 'number' && Number.isFinite(rp) && rp < 0.5) return null;
   return { direction: 'buy', strength: Math.abs(ob) };
 }
