@@ -174,6 +174,9 @@ export function buildAssetAnalysis(
     stopLoss: stopLoss > 0 ? Math.round(stopLoss * 100) / 100 : undefined,
     takeProfit: takeProfit > 0 ? Math.round(takeProfit * 100) / 100 : undefined,
     suggestedLeverage,
+    // v2.0.872-P8-transparency: 客戶端落單決策必需——倉位大小 + 平倉指令
+    positionSizePct: psc?.positionSizePct,
+    closePosition: psc?.closePosition,
   };
 
   // v2.0.857: moderate-only matrix — pass the risk-neutral edge report.
