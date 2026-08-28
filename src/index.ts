@@ -185,7 +185,11 @@ const OLR_HARD_FLOOR = (() => {
 // v2.0.870-P6: Breakout 確認——未突破就買/賣 → skip（時機層）。
 const breakoutGateConfig = { enabled: parseBlockBool(process.env['BREAKOUT_CONFIRMATION'], true) } as const;
 // v2.0.870-FIX(主神批准): FP Multiplier——令 FP shrink 有硬 teeth（正 edge 中性,負 edge 壓制）
-const fpGateConfig = { enabled: parseBlockBool(process.env['FP_GATE_MULTIPLIER'], true) } as const;
+const fpGateConfig = { enabled: parseBlockBool(process.env['FP_GATE_MULTIPLIER'], false) } as const;
+// v2.0.873-P9-deadweight（主神 2026-08-28 方案 A）: momentum-olr-conflict 停用——
+// counterfactual 269 單驗證 0 觸發(從未實際影響決策) + 依賴已證偽 OLR(ρ=+0.02)。
+// env MOMENTUM_OLR_CONFLICT_GATE=true 可逆(保留 code 供回滾)。
+const momentumOlrConflictConfig = { enabled: parseBlockBool(process.env['MOMENTUM_OLR_CONFLICT_GATE'], false) } as const;
 const closeCalibConfig = { enabled: parseBlockBool(process.env['CLOSE_DECISION_CALIBRATION'], true) } as const;
 /** v2.0.873-P9-lock-pipeline（方案 C, 2026-08-28）: consensus close 浮盈延遲門檻
  *  1% → 0.5%（margin-basis）——數據支持: consensus 蝕單 30 個中 25 個（83%）
@@ -4948,6 +4952,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const holdMin = Math.max(0, Math.round((trade.closedAt - trade.openedAt) / 60_000));
         const expSource: 'paper' | 'real' = trade.agentId === 'hyperliquid-real' ? 'real' : 'paper';
         void this.expMemory?.recordClose({
+          // v2.0.873-E5: 傳 tradeId——幽靈樣本 dedup（主神 2026-08-28「每個 Cycle 自動清理」）
+          tradeId: (trade as { id?: string }).id ?? undefined,
           // v2.0.865-fix:normalize symbol——EXP 記錄曾分裂 'BTC'(1319)vs 'btc'(79)
           // → OLR/EXP/Q-RL/EV Filter 樣本分散 + 互相污染(正 EV 數據被隔離)
           symbol: normalizeSymbol(symbol),
@@ -9028,6 +9034,14 @@ ${recentExamples}
 
     // v2.0.110: cycleInProgress was already set at the top of runDecisionCycle()
     this.totalCycles++;
+    // v2.0.873-E5（主神 2026-08-28「每個 Cycle 都要自動清理幽靈樣本」）:
+    // 每 cycle 自動 sweep 幽靈樣本（同 tradeId/同指紋重複）——幽靈樣本污染 EXP
+    // 學習 + 阻住新開倉（BTC 4 日冇開倉就係因為 335 條幽靈假 WIN 撐起假 pWin）。
+    try {
+      this.expMemory?.sweepGhostRecords();
+    } catch (err) {
+      log.warn(`[EXP-E5] sweepGhostRecords failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+    }
     // v2.0.228: Initialize per-symbol traded set for idle tracking
     this._symbolsTradedThisCycle = new Set();
     // v2.0.727: Update Market Agent cycle counter for direction restriction auto-expiry
@@ -13210,7 +13224,9 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // 收縮向近期動量——DRAM 案例（OLR BUY 63% vs 24h -7.3%）就係衝突。
         // soft ×0.60-0.90, 順勢唔懲罰。env MOMENTUM_OLR_CONFLICT_GATE=false 回退。
         try {
-          if (process.env['MOMENTUM_OLR_CONFLICT_GATE'] !== 'false' && (gateAction === 'buy' || gateAction === 'sell')) {
+          // v2.0.873-P9-deadweight: momentum-olr-conflict 停用(默認 false)——
+        // counterfactual 269 單 0 觸發 + 依賴已證偽 OLR。env 可逆。
+        if (momentumOlrConflictConfig.enabled && (gateAction === 'buy' || gateAction === 'sell')) {
             const g1Sym = normalizeSymbol(finalDecision.symbol || activeSymbol);
             const g1Mom = this.compute24hMomentumPct(g1Sym);
             const g1Ctx = this.lastCycleShadowContexts.get(g1Sym);

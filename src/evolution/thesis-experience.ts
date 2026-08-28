@@ -30,7 +30,8 @@ import { dirname } from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config/index.ts';
 import { rootLogger } from '../observability/logger.ts';
-import { isThesisPlaceholder } from '../trading/portfolio.ts';
+import { isThesisPlaceholder, normalizeSymbol as normalizeExpSymbol } from '../trading/portfolio.ts';
+import { atomicWriteSync } from './persistence.ts';
 import {
   type AssetCategory,
   type DecisionOrigin,
@@ -108,6 +109,9 @@ export interface ExpRuntimeConfig {
   allowReverse: boolean;
   breakevenIs: 'win' | 'loss' | 'exclude';
   similarityMode: 'asymmetric' | 'symmetric';
+  // v2.0.873-E1: 樣本時間衰減（近期樣本主導——同 shadow/OLR decay 一脈相承）
+  timeDecayHours: number;
+  timeCutoffHours: number;
   jsonlPath: string;
   expMdPath: string;
   incidentsPath: string;
@@ -132,6 +136,8 @@ function defaultCfg(): ExpRuntimeConfig {
     allowReverse: e.allowReverse,
     breakevenIs: e.breakevenIs,
     similarityMode: e.similarityMode,
+    timeDecayHours: e.timeDecayHours,
+    timeCutoffHours: e.timeCutoffHours,
     jsonlPath: e.jsonlPath,
     expMdPath: e.expMdPath,
     incidentsPath: e.incidentsPath,
@@ -183,7 +189,20 @@ function heuristicSplit(thesis: string): RationaleItem[] {
 
 // ─── Core class ───
 
+
+/** v2.0.873-E5: 幽靈樣本指紋（冇 tradeId 時 fallback）——必須夠精準分辨「真 trade」
+ *  （thesis 通常唔同）vs「幽靈」（335 條 btc buy WIN +5% 10min thesis 一字不差）。
+ *  包含: symbol|side|pnlPct|holdMin|entryThesis 前 40 字符（hash 化縮短）。 */
+function expFingerprint(rec: { symbol: string; side: string; pnlPct?: number; holdMin?: number; entryThesis?: string }): string {
+  const thesis = (rec.entryThesis ?? '').replace(/\s+/g, ' ').trim().slice(0, 40);
+  return `fp:${normalizeExpSymbol(rec.symbol)}|${rec.side}|${(rec.pnlPct ?? 0).toFixed(6)}|${Math.round(rec.holdMin ?? 0)}|t:${thesis}`;
+}
+
 export interface RecordCloseInput {
+  /** v2.0.873-E5: 真實 trade id——recordClose dedup 用。同一 trade 被反覆 close
+   *  記錄（幽靈樣本 335 條 btc buy WIN 同指紋）會污染 EXP——有 tradeId 先可以
+   *  精準去重。向後兼容：冇 tradeId 嘅舊 call site 用指紋 fallback。 */
+  tradeId?: string;
   symbol: string;
   side: 'buy' | 'sell';
   source: 'paper' | 'real';
@@ -246,6 +265,10 @@ export class ThesisExperience {
    *  to feed SimilarTradeRetriever without re-embedding the candidate thesis. */
   private lastCandidateVectors: number[][] = [];
   private records: ThesisExperienceRecord[] = [];
+  /** v2.0.873-E5: 幽靈樣本 dedup 指紋集合（主神 2026-08-28「每個 Cycle 自動清理」）
+   *  同一 trade 被反覆 close 記錄會污染 EXP——recordClose 前查重。
+   *  load() 時由 disk records 重建（歷史幽靈都要入 set,先唔會再 dup）。 */
+  private _recordedFingerprints = new Set<string>();
   private cfg: ExpRuntimeConfig;
   private readonly embed: EmbedProvider;
   private readonly llm: ExpLLMCaller;
@@ -422,6 +445,13 @@ export class ThesisExperience {
       }
       // Rolling cap — keep most recent
       this.records = deduped.slice(-this.cfg.maxRecords);
+      // v2.0.873-E5: 重建 dedup 指紋 set——歷史幽靈（同 tradeId/同指紋）都要入 set,
+      // 先可以確保 recordClose 唔會再 dup（主神 2026-08-28「每個 Cycle 自動清理」）。
+      this._recordedFingerprints.clear();
+      for (const rec of this.records) {
+        const fp = rec.tradeId ? `id:${rec.tradeId}` : expFingerprint(rec);
+        this._recordedFingerprints.add(fp);
+      }
       this.loaded = true;
       log.info(`[EXP] loaded ${this.records.length} records from ${this.cfg.jsonlPath}`);
       // v2.0.843: Build ANN index from loaded records. Each record's
@@ -645,6 +675,20 @@ export class ThesisExperience {
     // breakeven exclude (Master Lord 漏問一)
     if (this.cfg.breakevenIs === 'exclude' && input.pnl === 0) return null;
     // ═══════════════════════════════════════════════════════════════
+    // v2.0.873-E5: 幽靈樣本 dedup guard（主神 2026-08-28「每個 Cycle 都要自動
+    // 清理幽靈樣本」）——同一 trade 被反覆 close 記錄（335 條 btc buy WIN 同指紋
+    // +5.00% 10min）會污染 EXP 學習 + 阻住新開倉（BTC 4 日冇開倉）。
+    // 用 tradeId（最精準）或指紋 fallback（symbol|side|pnlPct|holdMin±1）。
+    // ─────────────────────────────────────────────────────────────
+    const fingerprint = input.tradeId
+      ? `id:${input.tradeId}`
+      : expFingerprint({ symbol: input.symbol, side: input.side, pnlPct: input.pnlPct, holdMin: input.holdMin, entryThesis: input.entryThesis });
+    if (this._recordedFingerprints.has(fingerprint)) {
+      log.info(`[EXP-E5] dedup: skip duplicate record ${input.symbol} ${input.side} pnlPct=${input.pnlPct.toFixed(4)}% hold=${input.holdMin}min (fingerprint=${fingerprint.slice(0, 60)})`);
+      return null;
+    }
+    this._recordedFingerprints.add(fingerprint);
+    // ═══════════════════════════════════════════════════════════════
     // v2.0.870-P68+P68-fix: 測試數據防護 + 主神糾正教訓
     // ─────────────────────────────────────────────────────────────
     // 背景(2026-08-19,主神一問:「其實測試係咪即係Shadow trade?
@@ -694,6 +738,8 @@ export class ThesisExperience {
 
       const record: ThesisExperienceRecord = {
         id: `exp-${uuidv4()}`,
+        // v2.0.873-E5: 存 tradeId——幽靈樣本 dedup + 同 realTrades 對齊用
+        tradeId: input.tradeId,
         ts: Date.now(),
         symbol: input.symbol,
         side: input.side,
@@ -1004,18 +1050,44 @@ export class ThesisExperience {
     // weight, cross-category get 0.8×. This reduces cross-asset pollution
     // (BTC thesis matching XAU records) without hard-filtering (which would
     // return empty for small categories).
+    // v2.0.873-E1: 樣本時間衰減——近期樣本主導（同 shadow/OLR decay 一脈相承）。
+    // 8 月初盈利時代樣本（BTC buy 76% WIN）同近期蝕錢時代等權 = 舊數據綁架決策。
+    // τ=timeDecayHours(7日) 加權 + hard cutoff timeCutoffHours(14日) 零權重。
     const SAME_CAT_WEIGHT = 1.2;
     const CROSS_CAT_WEIGHT = 0.8;
+    const nowMs = Date.now();
+    // 攻擊輪（2026-08-28 A1/A2 CRITICAL 修復）: runtime 雙重 clamp——config 已 min 1h/24h,
+    // 但呢度再保底: 確保 cutoff ≥ decay×2(唔可以 cutoff 早過 fade 開始——矛盾 config 會
+    // 令衰減形同虛設) + τ≥1h(防 env 注入 1e-9 令全部樣本 fade 至 0)。
+    const tauMs = Math.max(3600_000, (this.cfg.timeDecayHours ?? 168) * 3600_000);
+    const cutoffMs = Math.max(2 * tauMs, (this.cfg.timeCutoffHours ?? 336) * 3600_000);
     let totalW = 0;
     let winW = 0;
+    let recentWinN = 0;
+    let recentTotalN = 0;
     for (const m of pWinMatches) {
+      // E1 時間權重: 樣本越新權重越高; 超過 cutoff 零權重(直接剔除)
+      const recTs = typeof m.rec.ts === 'number' && Number.isFinite(m.rec.ts) && m.rec.ts > 0 ? m.rec.ts : 0;
+      let timeWeight = 1;
+      if (recTs > 0) {
+        const age = nowMs - recTs;
+        if (age > cutoffMs) continue;        // 化石樣本(>14日)——剔除
+        if (age > 0) timeWeight = Math.exp(-age / tauMs);
+      }
       const isSameCat = m.rec.assetCategory === candCategory;
       const catWeight = isSameCat ? SAME_CAT_WEIGHT : CROSS_CAT_WEIGHT;
-      const weightedSim = m.sim * catWeight;
+      const weightedSim = m.sim * catWeight * timeWeight;
       totalW += weightedSim;
       if (m.rec.outcome === 'WIN') winW += weightedSim;
+      // Wilson 用「近期樣本」count——唔可以俾舊樣本撐起假信心
+      recentTotalN++;
+      if (m.rec.outcome === 'WIN') recentWinN++;
     }
     const rawPWin = totalW > 0 ? winW / totalW : 0.5;
+    // E1: Wilson 改用時間窗內樣本(唔受化石污染)
+    const pWinWins = recentWinN;
+    const pWinTotal = recentTotalN;
+    const pWinWilsonLB = wilsonScore(pWinWins, pWinTotal);
 
     // v2.0.722: Use Wilson score lower bound for pWin, not raw winRate.
     // The raw pWin (similarity-weighted win rate) is still computed for logging
@@ -1024,15 +1096,13 @@ export class ThesisExperience {
     // This prevents small-sample overconfidence: 2/3 matches (raw 66.7%) has
     // Wilson LB ~0.12 — far below any threshold, so the system will fall through
     // to the delta check instead of emitting a false positive FAST_APPROVE.
-    const pWinWins = pWinMatches.filter((m) => m.rec.outcome === 'WIN').length;
-    const pWinTotal = pWinMatches.length;
-    const pWinWilsonLB = wilsonScore(pWinWins, pWinTotal);
-
-    // v2.0.722: Use Wilson LB as the primary pWin for verdict decisions.
-    // The raw pWin is still returned for logging/analytics but the verdict
-    // thresholds are applied to the Wilson LB, which is always <= raw pWin
-    // and penalizes small samples naturally.
+    // v2.0.873-E1: pWinWins/pWinTotal 已改用時間窗內樣本（上方計算）。
     const verdictPWin = pWinWilsonLB;
+    // v2.0.873-E2: gate 落實——唔准 silent pass。任何 match 結果都 log（含 0 match
+    // 嘅 PASS_OPEN_DIRECTLY），令 EXP gate 有可觀測性（之前 log 零輸出 = gate 形同虛設）。
+    log.info(
+      `[EXP gate] ${input.side.toUpperCase()} ${input.symbol}: ${recentTotalN} recent matches (${recentWinN}W, rawPWin=${rawPWin.toFixed(2)}, WilsonLB=${pWinWilsonLB.toFixed(2)}, decay τ=${(this.cfg.timeDecayHours ?? 168)}h cutoff=${(this.cfg.timeCutoffHours ?? 336)}h)`,
+    );
 
     // v2.0.175: Log the direction-specific stats for debugging
     if (effectiveSameDir.length > 0) {
@@ -1524,6 +1594,50 @@ export class ThesisExperience {
 
   getRecords(): ThesisExperienceRecord[] {
     return [...this.records];
+  }
+
+  /** v2.0.873-E5（主神 2026-08-28「每個 Cycle 都要自動清理幽靈樣本」）:
+   *  清理幽靈樣本（同 tradeId/同指紋重複）——每 cycle 由 index.ts 調用。
+   *  幽靈樣本（如 335 條 btc buy WIN +5.00% 10min）會污染 EXP 學習
+   *  同阻住新開倉（BTC 4 日冇開倉）——唔係只有衰減,係每 cycle 硬清理。
+   *  返回清理數量。 */
+  sweepGhostRecords(): number {
+    if (this.records.length === 0) return 0;
+    const seen = new Set<string>();
+    const kept: ThesisExperienceRecord[] = [];
+    let removed = 0;
+    for (const rec of this.records) {
+      // 優先 tradeId;舊樣本用指紋（同 load 一致）
+      const fp = rec.tradeId ? `id:${rec.tradeId}` : expFingerprint(rec);
+      if (seen.has(fp)) {
+        removed++;
+        continue; // 幽靈——丟棄
+      }
+      seen.add(fp);
+      kept.push(rec);
+    }
+    if (removed > 0) {
+      this.records = kept;
+      // 同步指紋 set（唔可以再 dup 入新記錄）
+      this._recordedFingerprints.clear();
+      for (const rec of this.records) {
+        const fp = rec.tradeId ? `id:${rec.tradeId}` : expFingerprint(rec);
+        this._recordedFingerprints.add(fp);
+      }
+      log.info(`[EXP-E5] sweepGhostRecords: removed ${removed} ghost record(s) — ${this.records.length} kept`);
+      // 重新寫 disk（淨化持久化）
+      try {
+        const lines = this.records.map((r) => JSON.stringify(r));
+        // 攻擊輪（2026-08-28 A7 MED 修復）: 原子寫——write-to-temp + rename。
+        // 非原子 writeFileSync 喺 crash 中途會 corrupt jsonl(讀到半行)。
+        atomicWriteSync(this.cfg.jsonlPath, lines.join('\n') + '\n');
+      } catch (err) {
+        log.warn(`[EXP-E5] sweepGhostRecords disk write failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // ANN index 都要重建（移除幽靈向量）
+      this.buildANNFromRecords();
+    }
+    return removed;
   }
 
   _records(): ThesisExperienceRecord[] {
