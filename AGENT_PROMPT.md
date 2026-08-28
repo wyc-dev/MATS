@@ -58,6 +58,10 @@ Version archaeology lives in CHANGELOG.md. What follows is ONLY the current work
 effectiveConfidence = calibratedConsensus(P19') × OLR-P(win) × causal × Q-RL-expectancy
   × chart × llmDirectionTrust × calibrationTrust × shape × convexity
   × MAE-pattern × macro × penaltyFactor(Plan G hybrid decay)
+⚠️ **已停用/已證偽項（v2.0.873 現狀）**: OLR-P(win) 硬閘已 OFF（ρ=+0.02 噪音，軟乘數保留）、
+Q-RL-expectancy gate 默認 OFF（ρ=+0.0064，`QRL_EXPECTANCY_GATE`）、First-Passage multiplier
+已停用（`FP_GATE_MULTIPLIER=false`，P9-deadweight counterfactual 無分辨力）、
+Momentum-OLR conflict 已停用（`MOMENTUM_OLR_CONFLICT_GATE=false`，0 觸發）。
 vs dynamicThreshold  — 5-factor hysteresis (rollingWR/idle/drawdown/Sharpe/regime), hard-capped [45%, 55%]
 ```
 ⚠️ Known asymmetry (P20-C found, deferred): the perSymbolConsensus gate path applies only a subset of these multipliers (dirTrust now covered; OLR blend / boost / some calibrators still activeSymbol-only).
@@ -72,7 +76,7 @@ vs dynamicThreshold  — 5-factor hysteresis (rollingWR/idle/drawdown/Sharpe/reg
 **Entry-gate multipliers (all soft, ×1.0 when cold)**
 - `analysis/dynamic-threshold.ts` — Plan G: 5-factor hysteresis + hybrid penalty decay (P16: `score = max(idle floor, time floor, 0.2·dCW+0.4·dTime+0.4·dEdge)`; pure weighting provably regresses) + runs-test τ modulation 9–18h (P17). Hard bypass is evidence-gated: wilsonLB≥0.70 + n∈[25,5000] + fresh edge ≤1000 cycles.
 - Conditional WR soft gate — +25% conviction penalty for low conditional WR, never blocks.
-- Causal attribution (×[0.5,1.0]), calibration trust (Brier ×[0.5,1.5]), EV Filter (per symbol×side real PnL distribution, ×[0.75,1.25]), Distribution Shape/Convexity (skew/kurtosis + Wilson-LB conservative EV), Q-RL expectancy (dampen-only ×0.5, floor 0.3), chart conviction (1h K-line conflict ×0.75), llmDirectionTrust (×[0.80,1.05], per symbol×trend accuracy; **全 symbol 覆蓋 + strict 錨價 since P20-C**), MAE-pattern reopen suppression (×0.5/0.85/1.0), Macro gate (time-weighted loss τ=6h, ×0.45–0.85).
+- Causal attribution (×[0.5,1.0]), calibration trust (Brier ×[0.5,1.5]), EV Filter (per symbol×side real PnL distribution, ×[0.75,1.25]), Distribution Shape/Convexity (skew/kurtosis + Wilson-LB conservative EV), Q-RL expectancy (dampen-only ×0.5, floor 0.3; ⚠️ gate 已停用 P9-qrl-audit——`QRL_EXPECTANCY_GATE=false`, ρ=+0.0064), chart conviction (1h K-line conflict ×0.75), llmDirectionTrust (×[0.80,1.05], per symbol×trend accuracy; **全 symbol 覆蓋 + strict 錨價 since P20-C**), MAE-pattern reopen suppression (×0.5/0.85/1.0), Macro gate (time-weighted loss τ=6h, ×0.45–0.85).
 - LLM World-Model (`analysis/kline-structure.ts` + `data-quality.ts` + `chart-conviction.ts` + `thesis-catalyst.ts`, `data/candle-cache.ts`): 1h×30 + 5m×60 shared candles → trend/structure/breakout/volume summary + data reliability + thesis catalyst classification.
 - `analysis/llm-conviction-calibrator.ts` — conviction calibration: 5-bin shrinkage remap `0.5 + (empiricalWR−0.5)·shrink` once ≥20 samples/bin; pipeline fixed P19' (payload always built + spread-first restore).
 
@@ -82,7 +86,7 @@ vs dynamicThreshold  — 5-factor hysteresis (rollingWR/idle/drawdown/Sharpe/reg
 - MFE lock (v2.0.869): MFE ≥1.5–2×ATR + 30–50% retrace → lock.
 - Close-decision calibrator (`analysis/close-decision-calibrator.ts`): post-close path-aware MFE/MAE net → premature_high/low/correct verdicts; Phase B hold gate — ONLY pure-consensus closes can be deferred (SL/thesis/PAEL/manual never held).
 - Regime-reversal profit lock + RegimeWinRateLearner (`analysis/regime-win-rate-learner.ts`): blended win-rate 80% symbol / 20% cross, τ=24h.
-- First-passage P(TP) (`evolution/first-passage.ts`): **P21-A** — mean_reverting regime ⇒ drift sanitized to 0 (zero-drift limit P=a/(a+b)); GBM drift in MR = model misspecification mirage.
+- First-passage P(TP) (`evolution/first-passage.ts`): **P21-A** — mean_reverting regime ⇒ drift sanitized to 0 (zero-drift limit P=a/(a+b)); GBM drift in MR = model misspecification mirage. ⚠️ **FP multiplier 已停用（v2.0.873-P9-deadweight）**——FP 已證偽（claimed≥95% 實際 WR 39.1%）, counterfactual 269 單壓制無分辨力; `FP_GATE_MULTIPLIER=false`。
 
 **Learning infra**
 - AttnRes cycle-history (`cycle-history-retrieval.ts`): 80-cycle dual pseudo-query (wDecision on all closes / wExecution sl_tp only).

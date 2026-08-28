@@ -112,7 +112,7 @@
 
 **攻擊輪**: 6 攻 5 命中——未來 ts 凍結（V1 當最舊）、1e308 值污染（V2 cap：n≤1e6、|EV|>1e4→0）、seeded SL/TP Infinity（V3 isFinite）、key 大小寫 miss（V4 細階化）、OLR bins cap。
 
-**G1 Momentum-OLR 衝突 gate**（`momentum-olr-conflict.ts`）：OLR 條件概率對抗 24h 價格分布位置 → 收縮向近期動量（強烈逆勢 ×0.60、強 OLR≥68% ×0.75、中等 ×0.80/×0.90、順勢/噪音 1.0）——DRAM 類「OLR 63% vs 24h -7.3%」被罰，btc 類順勢唔影響。
+**G1 Momentum-OLR 衝突 gate**（`momentum-olr-conflict.ts`）：OLR 條件概率對抗 24h 價格分布位置 → 收縮向近期動量（強烈逆勢 ×0.60、強 OLR≥68% ×0.75、中等 ×0.80/×0.90、順勢/噪音 1.0）——DRAM 類「OLR 63% vs 24h -7.3%」被罰，btc 類順勢唔影響。⚠️ **已停用（v2.0.873-P9-deadweight）**——counterfactual 269 單 0 觸發（從未影響決策）+ 依賴已證偽 OLR（ρ=+0.02）; env `MOMENTUM_OLR_CONFLICT_GATE=true` 可逆。
 
 **G2 Side-Balance Monitor**（`side-balance-monitor.ts`）：最近 20 單 ≥90% 單向且另一側 0 → extreme 警告注入 agent context（20 cycle throttle）——單向失衡 LOUD 化，唔再靜靜 90 單零 SELL 4 日冇人知（真實數據驗證而家即 extreme_buy）。
 
@@ -185,7 +185,7 @@ MATS 有兩個客戶端，都係「訊號消費者」——後端係唯一嘅訊
 
 4 命中全修: ① `closedAt=1e308`/未來 10 年 → `dt=0` **全權重污染** → `TS_TOLERANCE_MS` 5min 時鐘容忍（超過 now+5min 當最舊）; ② null/string 元素 → NaN 傳播; ③ `pnlPct=Infinity` → EV=Infinity——元素級 sanitize（`typeof number && isFinite` guard）。17 攻擊測試全綠。
 
-### v2.0.870-fp-multiplier: FP Multiplier 入 Conviction Gate
+### v2.0.870-fp-multiplier: FP Multiplier 入 Conviction Gate ⚠️ 已停用（v2.0.873-P9-deadweight）
 
 **主神問題**: FP shrink 交由邊個 agent 處理?確定影響開倉條件?——追蹤發現 consensus 主開倉路徑只有 LLM 文字軟影響（conviction gate 冇直接 FP 項）。驗證: FP 正 edge 無預測力（WR 47% ≈ 全場 48.5%）→ **只壓制唔 boost**。`fpEdgeMultiplier(edge)` 純函數（`first-passage.ts`）: edge≥0 → ×1.0 中性（shrink teeth——FP 唔再可推高 confidence）/ edge<0 → ×0.7-0.8 壓制（防逆勢）。接駁 conviction gate（`effectiveConfidence × fpEdgeMultiplier`, 方向對應 BUY→LONG edge / SELL→SHORT edge; env `FP_GATE_MULTIPLIER` 回滾; `[fp-gate]` log + audit 記錄）。live 實證 shrink 後 P≥99% = 0; SELL 逆勢 conf 60% × 0.79 → 47.4% 攔截。同時間衰減 τ=1d 獨立（FP 即時 edge, EWMA drift 內建加權）。
 
