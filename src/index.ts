@@ -81,7 +81,7 @@ import { getSRZones } from './analysis/support-resistance.ts';
 import { setExecutionLensProvider, prepareExecutionLens, clearExecutionLens, type ExecutionLensData, getATR } from './analysis/atr.ts';
 import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
-import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldTrailingLock, shouldColdStartLock, shouldCancelPendingLock, shouldConfirmTrailingLock, PROFIT_LOCK_MARGIN_THRESHOLD_PCT, type PendingTrailingLock } from './lib/live-mfe.ts';
+import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldTrailingLock, shouldColdStartLock, shouldCancelPendingLock, shouldConfirmTrailingLock, isPendingLockStale, PROFIT_LOCK_MARGIN_THRESHOLD_PCT, type PendingTrailingLock } from './lib/live-mfe.ts';
 import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
 import { shouldExploreSell, shouldSuppressExploreBuy, resolveExplorationDirection } from './lib/exploration-direction.ts';
 import { buildCooldownEntry, shouldBlockReentry, type ReentryCooldownState } from './lib/reentry-cooldown.ts';
@@ -187,6 +187,16 @@ const breakoutGateConfig = { enabled: parseBlockBool(process.env['BREAKOUT_CONFI
 // v2.0.870-FIX(主神批准): FP Multiplier——令 FP shrink 有硬 teeth（正 edge 中性,負 edge 壓制）
 const fpGateConfig = { enabled: parseBlockBool(process.env['FP_GATE_MULTIPLIER'], true) } as const;
 const closeCalibConfig = { enabled: parseBlockBool(process.env['CLOSE_DECISION_CALIBRATION'], true) } as const;
+/** v2.0.873-P9-lock-pipeline（方案 C, 2026-08-28）: consensus close 浮盈延遲門檻
+ *  1% → 0.5%（margin-basis）——數據支持: consensus 蝕單 30 個中 25 個（83%）
+ *  曾浮盈 ≥0.5% margin（重放: θ=0.5% 救返 24 單, WR +9%）; 同鎖利管道正交
+ *  （一個 close 側延遲, 一個 lock 側鎖利）。低風險: 最多延遲 2 cycle + SL/虧損
+ *  倉唔延遲（止血優先）。env P9_CONSENSUS_DEFER_MARGIN_PCT 可調（回滾 1.0）。 */
+const P9_CONSENSUS_DEFER_MARGIN_PCT = (() => {
+  const raw = Number(process.env['P9_CONSENSUS_DEFER_MARGIN_PCT']);
+  // 攻擊輪 clamp: [0.3, 5]——<0.3 太鬆（任何浮盈都延遲 = 無限 hold）, >5 太緊（閘失效）
+  return Number.isFinite(raw) && raw >= 0.3 && raw <= 5 ? raw : 0.5;
+})();
 /** v2.0.863-attack: K-LINE fetch TTL cache — 防 cycle period 縮短/多 call 令
  *  candleSnapshot 頻繁 fetch。5 分鐘 cycle 每 cycle 一次;cycle < TTL 時用 cache。 */
 const KLINE_CACHE_TTL_MS = 120_000; // 2 分鐘
@@ -3955,7 +3965,13 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               : pos.averageEntryPrice * (1 + liveMfe / 100);
             const existing = this._pendingTrailingLocks.get(symNorm);
             if (existing) {
-              if (shouldCancelPendingLock(existing.peakPrice, peakPrice)) {
+              // A6（攻擊輪 2026-08-28, CRITICAL）: 倉位綁定驗證——side/openedAt 唔 match
+              // （close→re-open 反方向/同向新倉）→ 舊 pending 即棄,唔可以用錯倉嘅
+              // pending 誤鎖新倉。
+              if (isPendingLockStale(existing, pos.side, pos.openedAt ?? 0)) {
+                this._pendingTrailingLocks.delete(symNorm);
+                log.info(`🔓 [trailing-pending] ${sym} 倉位已換(side/openedAt 唔 match) → 棄舊 pending`);
+              } else if (shouldCancelPendingLock(existing.peakPrice, peakPrice)) {
                 this._pendingTrailingLocks.delete(symNorm);
                 log.info(`🔓 [trailing-pending] ${sym} 創新高 → 取消 pending（趨勢繼續，唔誤鎖 winner）`);
               } else if (shouldConfirmTrailingLock(existing, this.totalCycles, 12)) {
@@ -3970,7 +3986,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               }
               // 未屆滿 → 繼續等（唔鎖）
             } else if (shouldTrailingLock(liveMfe, pnlPctNow * 100, pos.leverage ?? 1) && pnlPctNow > 0 && pnlPctNow <= 0.5 * (liveMfe * Math.max(1, pos.leverage ?? 1))) {
-              this._pendingTrailingLocks.set(symNorm, { peakPrice, sinceCycle: this.totalCycles });
+              this._pendingTrailingLocks.set(symNorm, { peakPrice, sinceCycle: this.totalCycles, side: isSellSide(pos.side) ? 'sell' : 'buy', openedAt: pos.openedAt ?? 0 });
               log.info(`🔒 [trailing-pending] ${sym} MFE(price) ${liveMfe.toFixed(2)}% 回吐 ≥50% → pending 確認（60min 冇新高先鎖）`);
             }
           }
@@ -11343,19 +11359,11 @@ ${recentExamples}
             // Collect edge elements (must find ≥2 for a valid thesis)
             const edgeElements: string[] = [];
 
-            // Edge 1: OLR P(win) with edge magnitude
-            if (expOlrNum > 0 && expOlrNum > 0.55) {
-              const olrEdge = expOlrNum - 0.5;
-              edgeElements.push(`OLR P(win)=${(expOlrNum * 100).toFixed(0)}% (edge +${(olrEdge * 100).toFixed(0)}pp over 50%)`);
-            }
-
-            // Edge 2: First-passage path edge
-            const fpScore = direction === 'buy' ? expFpLong : expFpShort;
-            const fpBe = direction === 'buy' ? expFpBeLong : expFpBeShort;
-            const fpEdge = fpScore - fpBe;
-            if (fpScore > 0 && fpEdge > 0.05) {
-              edgeElements.push(`First-passage P(TP)=${(fpScore * 100).toFixed(0)}% vs breakeven ${(fpBe * 100).toFixed(0)}% (+${(fpEdge * 100).toFixed(0)}pp path edge)`);
-            }
+            // Edge 1: v2.0.873-P9-opengate——已證偽源（OLR/FP）唔再做 edge 來源。
+            // OLR ρ=+0.02/Q-RL ρ=+0.0064（P9-olr-audit/qrl-audit 實證）——佢哋嘅
+            // 「P(win) > 55%」唔係 edge,係噪音。保留喺 thesis 做資訊性 context
+            // （agent 可以睇到數據構成）,但唔可以做「開單理由」。
+            // （OLR edge 移除——原 Edge 1/2 已證偽）
 
             // Edge 3: S/R proximity (near support for BUY, near resistance for SELL)
             if (expSrSupport !== null && direction === 'buy' && expSrDistNum > 0 && expSrDistNum < 50) {
@@ -11396,12 +11404,14 @@ ${recentExamples}
               );
             }
 
-            // v2.0.221 (Fix #5): If we can't find ≥2 real edge elements, HOLD.
-            // An exploration trade without a real thesis is worse than no
-            // trade — it pollutes the EXP learning system with meaningless
-            // clusters and produces template-generated theses that the audit
-            // flags as "thesis-quality-issue".
-            if (edgeElements.length < 2) {
+            // v2.0.873-P9-opengate（主神 2026-08-28「需要確實真係開到單」）: edge 門檻 ≥2 → ≥1。
+            // log 實證（mats-live-20260823）: 21 次 Exploration skipped 全部係「1/2 found:
+            // ATR compression」——EM-guided BUY 100% 方向已確定 + ATR edge 存在,但
+            // 「≥2」門檻卡死開單。方向本身已由 priority chain 確定（EM/dip/OB/regime）,edge
+            // 門檻只係 thesis 質素保證——≥1 個確定有效 edge 已足夠。
+            // 幻覺修正完整化: OLR/FP（已證偽 ρ≈0）唔再做 edge 來源（下移）——已證偽源
+            // 唔可以再「證明 edge」。確定有效 edge = ATR/OB/S-R/funding/dip。
+            if (edgeElements.length < 1) {
               log.info(`🧪 Exploration skipped — insufficient edge elements (${edgeElements.length}/2 found: ${edgeElements.join('; ') || 'none'}) for ${direction.toUpperCase()} ${exploreTargetUpper}`);
               direction = null;
               finalDecision = result.consensus.decision; // keep HOLD
@@ -11995,10 +12005,14 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
           // vs 6/18 繼續跌（close 啱）。最多延遲 2 次——防無限 hold。
           // SL hit/虧損倉唔延遲（止血優先——closeCalibrator mfeLock 流水線照行）。
           try {
-            const ccKey = `${normalizeSymbol(psc.symbol)}|consensus-close`;
+            // A6（攻擊輪 2026-08-28）: ccKey 加 side+openedAt 綁定——close→re-open 後
+            // 舊 deferral 殘留會污染新倉（延遲次數被舊倉用晒/新倉被舊 count 影響）。
+            const ccSide = pos?.side === 'sell' ? 'sell' : 'buy';
+            const ccOpened = typeof pos?.openedAt === 'number' && Number.isFinite(pos.openedAt) ? Math.floor(pos.openedAt / 300_000) : 0;
+            const ccKey = `${normalizeSymbol(psc.symbol)}|consensus-close|${ccSide}|${ccOpened}`;
             const unrealizedPct = typeof pos?.unrealizedPnlPct === 'number' && Number.isFinite(pos.unrealizedPnlPct) ? pos.unrealizedPnlPct : 0;
             const deferrals = this.consensusCloseDeferrals.get(ccKey) ?? 0;
-            const floating = unrealizedPct >= 0.01;
+            const floating = unrealizedPct >= P9_CONSENSUS_DEFER_MARGIN_PCT;
             if (floating && deferrals < 2 && pos) {
               this.consensusCloseDeferrals.set(ccKey, deferrals + 1);
               // v2.0.872-P9-attack V1 修復: 同步 patch _pendingAnalyses——deferred 嘅

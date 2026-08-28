@@ -4,6 +4,43 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-opengate: 開單頻率修正——edge 門檻 ≥2→≥1 + 已證偽源移離 edge 資格（主神 2026-08-28「需要確實真係開到單」）
+
+**主神核心訴求**: 「我希望真係可以達致之前嘅盈利頻率,而唔好俾太多嘢阻住呢個實施嘅決策,需要確實真係開到單。」
+
+**log 鐵證（mats-live-20260823）**: 21 次 `Exploration skipped — insufficient edge elements (1/2 found: ATR compression)`——**全部係「EM-guided BUY 100% 方向已確定 + ATR edge 存在,但 `≥2` 門檻卡死」**。方向已由 priority chain 確定（EM/dip/OB/regime）,edge 門檻只係 thesis 質素保證——「≥2」過度卡單。
+
+**幻覺殘留發現**: edgeElements 收集入面 OLR（ρ=+0.02）/FP（claimed≥95% 實際 39.1%）係**已證偽源,竟然仲做緊 edge 資格**——佢哋嘅「P(win)>55%」唔係 edge,係噪音。
+
+**修正（兩層）**:
+1. **edge 門檻 ≥2 → ≥1**: 方向確定後,≥1 個確定有效 edge（ATR/OB/S-R/funding/dip）已足夠開單——直接解除 21 次卡單
+2. **OLR/FP 移離 edge 資格**: 已證偽源唔可以再「證明 edge」——保留喺 thesis 做資訊性 context（agent 睇到數據構成）,但唔做開單理由
+
+**驗證（數據支持）**: ① ATR compression 觸發率 94%（254/269）,實際 WR 48% PnL +1.77%（確定有效 edge）;② 非 OLR 驅動單（entryOlrPWin<0.5, 213 單）WR 49% PnL +1.18%——證明唔靠已證偽源開單都有正期望值;③ 卡死機會成本 = 若 ATR+方向 單全部開出,對應 PnL +1.77% 唔會再被卡走。
+
+**幻覺修正不變式**: OLR/Q-RL/FP 照舊唔做決定;SL 唔收窄;鎖利管道（P9-lock-pipeline）完整保留。
+
+**驗證**: 全量 3752 pass + 13 pre-existing（零新增）;tsc clean。
+
+---
+
+## v2.0.873-P9-lock-attack: 攻擊輪修復——門檻下限 clamp + pending 倉位綁定 + consensus defer 門檻降低（主神 2026-08-28「不擇手段攻擊啱啱修葺嘅 code」）
+
+**攻擊矩陣（10 攻 2 中）**: 併發/狀態注入/持久化污染全譜——A1 threshold 極細（1e-9 → 任何浮盈即鎖 = 過度鎖利 DoS）/ A2 env 極大 / A3 opts 垃圾值 / A4 peakMargin 溢出 / A5 極細 liveMfe / **A6 `_pendingTrailingLocks` 冇 side/openedAt 綁定（close→re-open 撞舊 pending: 反方向倉語義錯配 + 同向新倉開倉即誤鎖）** / A7 毒 candle。
+
+**三修復（production grade）**:
+1. **Fix A1（CRITICAL）**: `PROFIT_LOCK_MARGIN_THRESHOLD_PCT` + `opts.thresholdMarginPct` 下限 clamp **0.1%**（[0.1, 5]）——1e-9 env/opts 一律 reject → 0.5 預設;防止「任何浮盈即鎖」破壞大 winner 回吐空間
+2. **Fix A6（CRITICAL）**: `PendingTrailingLock` 加 `side` + `openedAt` 綁定 + 新 `isPendingLockStale()` 純函數（side/openedAt 唔 match → 即棄, openedAt 容差 5min）;index.ts set 時記錄綁定、檢查時驗證、gate 開頭清理——三層防線;`consensusCloseDeferrals` key 同步加 side+openedAt 綁定（同款漏洞）
+3. **Fix A4（LOW）**: `shouldTrailingLock` margin peak cap 1000%——極端 liveMfe×lev 組合唔可以過度觸發
+
+**盈利提升（方案 C——量化金融思路）**: consensus close 浮盈延遲門檻 1% → **0.5% margin**（`P9_CONSENSUS_DEFER_MARGIN_PCT` env 可調, clamp [0.3, 5]）——數據支持: consensus 蝕單 30 個中 25 個（83%）曾浮盈 ≥0.5%（重放 θ=0.5% 救返 24 單, WR +9%）; 同鎖利管道正交（close 側延遲 vs lock 側鎖利）; 低風險（最多延遲 2 cycle + SL/虧損倉唔延遲）
+
+**幻覺修正不變式**: 入場閘門零改動;SL 唔收窄;確認式鎖掛保留。
+
+**驗證**: 攻擊測試 15/15（p9-lock-pipeline-attack）+ 相關 64/64;全量 3752 pass + 13 pre-existing（零新增）;tsc clean;前向重放成效不變（θ=0.5% → WR 72.9%、Δ+53.21%）。
+
+---
+
 ## v2.0.873-P9-lock-pipeline: 鎖利管道 margin-basis 校準——前向重放驗證 + 單位錯配修復（主神 2026-08-28）
 
 **主神指令**: 「驗證現時是否能夠把先前的 269 個 trade 都盡可能做到盈利;增加盈利頻率;先驗證絕對成效,之後先 fix with top tier production grade logic」
