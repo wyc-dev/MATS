@@ -5506,7 +5506,7 @@ ${recentExamples}
       // OLR/四窗/5m/momentum 閘照擋——只豁免 shadow WR+EV（新鮮 EV 反對 dip-buy 係
       // 樣本生成嘅本質:逆住近期劣績買 dip）。size 唔變（exploration 細倉）。
       if (opts?.skipShadowGate) {
-        return { confidence, blocked: false, reason: 'dip-reversion exploration（shadow-gate 豁免——樣本生成）', size: sizePct };
+        return { confidence, blocked: false, reason: 'strength-buy exploration（shadow-gate 豁免——樣本生成）', size: sizePct };
       }
       return this.applyShadowGate(sym, action, confidence, sizePct);
     } catch { return { confidence, blocked: false, reason: null, size: sizePct }; }
@@ -11071,7 +11071,7 @@ ${recentExamples}
               if (dip) {
                 direction = dip.direction;
                 dipReversionBoost = true;
-                log.info(`🧪 [dip-reversion] ${expState.regime} σ=${((expState.volatility ?? 0) * 100).toFixed(2)}% obImb=${(expState.orderBookImbalance * 100).toFixed(0)}% rangePos=${rangePosition9 !== null ? (rangePosition9 * 100).toFixed(0) + '%' : 'n/a'} → DIP-BUY（14-27 重放:高位買 +1.77/喺）`);
+                log.info(`🧪 [strength-buy] ${expState.regime} σ=${((expState.volatility ?? 0) * 100).toFixed(2)}% obImb=${(expState.orderBookImbalance * 100).toFixed(0)}% rangePos=${rangePosition9 !== null ? (rangePosition9 * 100).toFixed(0) + '%' : 'n/a'} → TIP-BUY（buy-tip 兩時代實證 +1.02/喺）`);
               }
             }
 
