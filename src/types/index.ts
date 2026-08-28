@@ -641,6 +641,9 @@ export type ExitType =
 /** One closed trade = one record in the EXP memory (data/exp/trades.jsonl). */
 export interface ThesisExperienceRecord {
   id: string;
+  /** v2.0.873-E5: 對應嘅真實 trade id（幽靈樣本 dedup + 同 realTrades 對齊）。
+   *  舊樣本冇——用指紋 fallback。 */
+  tradeId?: string;
   ts: number;                    // close timestamp
   symbol: string;
   side: 'buy' | 'sell';

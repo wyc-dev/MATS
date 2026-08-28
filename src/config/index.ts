@@ -105,9 +105,15 @@ const envSchema = z.object({
   // = ~30k vectors. IVF with K=64 centroids + Nprobe=8 scans ~3.7k vectors per
   // query (~12% of brute-force) at >95% recall@10. Memory: ~46 MB for vectors.
   EXP_MAX_RECORDS: z.coerce.number().int().positive().default(10_000),
-  EXP_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.55),
+  EXP_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.4), // v2.0.873-E2: 0.55→0.40（留一驗證: 0.40 → 98% 樣本有 ≥3 同向 match, 0.55 → 93%——降低 silent pass）
   EXP_WIN_PROB_THRESHOLD: z.coerce.number().min(0).max(1).default(0.6),
   EXP_LOSS_PROB_THRESHOLD: z.coerce.number().min(0).max(1).default(0.4),
+  // v2.0.873-E1: 樣本時間衰減——近期樣本主導（同 shadow/OLR decay 一脈相承）
+  // τ=168h(7日) 加權 + 硬 cutoff 336h(14日)——舊樣本 fade,唔再被 8 月初盈利時代綁架
+  // 攻擊輪（2026-08-28 A1/A2 CRITICAL）: 下限 clamp——env=1e-9 → τ≈0 → 所有樣本
+  // weight≈0 → EXP pWin 全滅 DoS。decay ≥1h、cutoff ≥24h 且 cutoff ≥ decay×2。
+  EXP_TIME_DECAY_HOURS: z.coerce.number().min(1).max(24 * 30).default(168),
+  EXP_TIME_CUTOFF_HOURS: z.coerce.number().min(24).max(24 * 60).default(336),
   EXP_DELTA_THRESHOLD: z.coerce.number().min(0).max(1).default(0.55),
   EXP_MIN_DELTA_SAMPLES: z.coerce.number().int().positive().default(2),
   EXP_DELTA_WIN_RATE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.6),
@@ -220,6 +226,9 @@ export const config = {
     matchThreshold: raw.EXP_MATCH_THRESHOLD,
     winProbThreshold: raw.EXP_WIN_PROB_THRESHOLD,
     lossProbThreshold: raw.EXP_LOSS_PROB_THRESHOLD,
+    // v2.0.873-E1: 時間衰減（同 shadow/OLR 一脈相承）
+    timeDecayHours: raw.EXP_TIME_DECAY_HOURS,
+    timeCutoffHours: raw.EXP_TIME_CUTOFF_HOURS,
     deltaThreshold: raw.EXP_DELTA_THRESHOLD,
     minDeltaSamples: raw.EXP_MIN_DELTA_SAMPLES,
     deltaWinRateThreshold: raw.EXP_DELTA_WIN_RATE_THRESHOLD,
