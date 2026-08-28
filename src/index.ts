@@ -12845,6 +12845,11 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
 
         // ── Final effective confidence: consensus × P(win) × penalty × boost ──
         let effectiveConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor * llmDirectionTrust * evMultiplier * shapeMultiplier * convexityMultiplier;
+        // v2.0.872-P8-transparency: conviction 乘數總帳——每一個乘數都入帳，
+        // Plan-G 顯示同 asset_analyses metadata 全鏈透明（主神:睇到 15% vs 0% 矛盾）。
+        const convLedger: Array<{ gate: string; mult: number }> = [
+          { gate: 'base(consensus×pwin×blend×penalty×boost×dirTrust×ev×shape×convexity)', mult: effectiveConfidence },
+        ];
         // v2.0.870-FIX(主神批准): FP Multiplier——令 FP shrink 有硬 teeth。
         // 方向對應: 開 BUY 用 LONG edge, 開 SELL 用 SHORT edge（lastFirstPassage 係
         // active symbol 專屬——唔會錯 symbol）。正 edge → ×1.0（FP 無預測力,唔 boost——
@@ -12862,6 +12867,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             const fpMult = fpEdgeMultiplier(edge);
             if (fpMult < 1.0) {
               effectiveConfidence *= fpMult;
+          convLedger.push({ gate: 'fp-gate', mult: fpMult });
               const fpSide = gateAction === 'buy' ? 'LONG' : 'SHORT';
               const fpP = gateAction === 'buy' ? fp.longPWin : fp.shortPWin;
               log.info(`🟣 [fp-gate] ${gateAction.toUpperCase()} ${pwinSym}: FP ${fpSide} P=${(fpP * 100).toFixed(0)}% edge=${(edge * 100).toFixed(0)}pp → ×${fpMult.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%) — 逆 FP 方向壓制`);
@@ -12893,6 +12899,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           const prematurePenalty = computePrematureClosePenalty(recentSymSide, Date.now(), isBoundaryEntry === true);
           if (prematurePenalty < 1.0) {
             effectiveConfidence *= prematurePenalty;
+          convLedger.push({ gate: 'premature-close', mult: prematurePenalty });
             log.info(`🟠 [premature-guard] ${gateAction.toUpperCase()} ${gateSym}: 連續短蝕 → conviction ×${prematurePenalty}`);
             activeAuditGates.push({ gate: 'premature-close-guard', passed: true, reason: `連續短蝕 → ×${prematurePenalty} (soft)` });
           }
@@ -12921,6 +12928,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               });
               if (eqResult.multiplier < 1.0) {
                 effectiveConfidence *= eqResult.multiplier;
+          convLedger.push({ gate: 'equilibrium', mult: eqResult.multiplier });
                 log.info(`🟡 [entry-gate] ${gateAction.toUpperCase()} ${pwinSym}: 確認 ${eqResult.confirmedCount}/3 (price=${eqResult.signals.pricePosition ? '✓' : '✗'} mom=${eqResult.signals.momentum ? '✓' : '✗'} noise=${eqResult.signals.noise ? '✓' : '✗'}) → conviction ×${eqResult.multiplier} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
                 activeAuditGates.push({ gate: 'entry-gate', passed: true, reason: `confirmation ${eqResult.confirmedCount}/3 → ×${eqResult.multiplier} (soft)` });
               }
@@ -12929,6 +12937,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               const reopenMult = this.entryQuality.getReopenMultiplier(pwinSym, eqEntry);
               if (reopenMult < 1.0) {
                 effectiveConfidence *= reopenMult;
+          convLedger.push({ gate: 'reopen-guard', mult: reopenMult });
                 log.info(`🟠 [reopen-guard] ${gateAction.toUpperCase()} ${pwinSym}: price 未離開最近 close 價 ±0.3%——重開 = 同位置再入 → conviction ×${reopenMult}`);
                 activeAuditGates.push({ gate: 'reopen-guard', passed: true, reason: `price within ±0.3% of recent close → ×${reopenMult} (soft)` });
               }
@@ -12942,6 +12951,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
                 const maeMult = this.entryQuality.getMaePatternMultiplier(pwinSym, gateAction as 'buy' | 'sell');
                 if (maeMult < 1.0) {
                   effectiveConfidence *= maeMult;
+          convLedger.push({ gate: 'mae-pattern', mult: maeMult });
                   const pat = this.entryQuality.getMaePattern(pwinSym, gateAction as 'buy' | 'sell');
                   log.info(`🔴 [mae-pattern] ${gateAction.toUpperCase()} ${pwinSym}: MAE 模式=${pat?.pattern ?? '?'} (ratio=${pat?.ratio?.toFixed(2) ?? '?'}, n=${pat?.n ?? 0})——入場後逆向多過順向 → conviction ×${maeMult} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
                   activeAuditGates.push({ gate: 'mae-pattern', passed: true, reason: `MAE pattern ${pat?.pattern ?? '?'} (ratio ${pat?.ratio?.toFixed(2) ?? '?'}, n=${pat?.n ?? 0}) → ×${maeMult} (soft)` });
@@ -12956,6 +12966,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
                 const macroMult = this.profitabilityAnalyzer.getLosingMultiplier(pwinSym, gateAction as 'buy' | 'sell');
                 if (macroMult < 1.0) {
                   effectiveConfidence *= macroMult;
+          convLedger.push({ gate: 'macro', mult: macroMult });
                   log.info(`🟣 [macro-losing] ${gateAction.toUpperCase()} ${pwinSym}: 時間加權蝕錢率高(τ=6h)——最近蝕錢主導 → conviction ×${macroMult} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
                   activeAuditGates.push({ gate: 'macro-losing', passed: true, reason: `time-weighted loss rate high (τ=6h) → ×${macroMult} (soft)` });
                 }
@@ -12976,6 +12987,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               const ta = trendAlignmentMultiplier(gateAction, trSnap.trend, trSnap.regime);
               if (ta.multiplier !== 1.0) {
                 effectiveConfidence *= ta.multiplier;
+          convLedger.push({ gate: 'trend-alignment', mult: ta.multiplier });
                 log.info(`${ta.label === 'aligned' ? '🟢' : '🔺'} [trend-align] ${gateAction.toUpperCase()} ${pwinSym}: ${ta.explanation} → conviction ×${ta.multiplier} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
                 activeAuditGates.push({ gate: 'trend-align', passed: true, reason: `${ta.explanation} → ×${ta.multiplier} (soft)` });
               }
@@ -13008,6 +13020,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               if (rp.hasData && rp.score >= 0.3) {
                 const rpMult = reversalRiskMultiplier(rp.level);
                 effectiveConfidence *= rpMult;
+          convLedger.push({ gate: 'reversal-point', mult: rpMult });
                 log.info(`🔻 [reversal-point] ${gateAction.toUpperCase()} ${rpSym}: score ${rp.score.toFixed(2)} (${rp.level.toUpperCase()}) → conviction ×${rpMult} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
                 activeAuditGates.push({ gate: 'reversal-point', passed: true, reason: `score ${rp.score.toFixed(2)} (${rp.level}) → ×${rpMult} (soft)` });
               }
@@ -13036,11 +13049,14 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               if (fw.action === 'block') {
                 // HARD BLOCK——直接 HOLD（effectiveConfidence = 0 保證過唔到 gate）
                 effectiveConfidence = 0;
+              convLedger.push({ gate: 'momentum-8pct-hard', mult: 0 });
+                convLedger.push({ gate: 'four-window-hard', mult: 0 });
                 log.warn(`🛑 [four-window] ${gateAction.toUpperCase()} ${maSym}: ${fw.reason} — HARD BLOCK (m4h=${m4h?.toFixed(2) ?? 'N/A'}% m1h=${m1h?.toFixed(2) ?? 'N/A'}% m15m=${m15m?.toFixed(2) ?? 'N/A'}% m5m=${m5m?.toFixed(2) ?? 'N/A'}%)`);
                 // v2.0.870-gatedir-fix: 顯示層標明方向——主神「有無分 BUY/SELL」
                 activeAuditGates.push({ gate: 'four-window', passed: false, reason: `[${gateAction.toUpperCase()}] ${fw.reason} — HARD BLOCK` });
               } else if (fw.multiplier !== 1.0) {
                 effectiveConfidence *= fw.multiplier;
+          convLedger.push({ gate: 'four-window', mult: fw.multiplier });
                 log.info(`🔻 [four-window] ${gateAction.toUpperCase()} ${maSym}: ${fw.reason} → conviction ×${fw.multiplier} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
                 activeAuditGates.push({ gate: 'four-window', passed: true, reason: `[${gateAction.toUpperCase()}] ${fw.reason} → ×${fw.multiplier} (soft)` });
               }
@@ -13062,6 +13078,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             const g1Mult = momentumOlrConflictMultiplier(gateAction as 'buy' | 'sell', g1Mom, g1OlrP);
             if (g1Mult < 1.0) {
               effectiveConfidence *= g1Mult;
+          convLedger.push({ gate: 'momentum-olr', mult: g1Mult });
               log.info(`🔻 [momentum-olr-conflict] ${gateAction.toUpperCase()} ${g1Sym}: mom24h=${g1Mom?.toFixed(2) ?? 'n/a'}% 逆勢 vs OLR ${(g1OlrP * 100).toFixed(0)}% → conviction ×${g1Mult} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
               activeAuditGates.push({ gate: 'momentum-olr-conflict', passed: true, reason: `mom24h=${g1Mom?.toFixed(2) ?? 'n/a'}% 逆勢 OLR ${(g1OlrP * 100).toFixed(0)}% → ×${g1Mult} (soft)` });
             }
@@ -13102,6 +13119,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             const spMult = this.successPatternTracker.getMultiplier(sp);
             if (spMult !== 1.0) {
               effectiveConfidence *= spMult;
+          convLedger.push({ gate: 'success-pattern', mult: spMult });
               // F3: 觀測有聲——log + audit 帶 n/avgPnl（starvation must be LOUD）
               const spStats = this.successPatternTracker.getStats()[sp];
               const spN = spStats?.n ?? 0;
@@ -13120,6 +13138,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             const eqProf = this.entryQuality.getProfile(pwinSym, gateAction);
             if (eqProf && eqProf.evMultiplier < 1.0) {
               effectiveConfidence *= eqProf.evMultiplier;
+          convLedger.push({ gate: 'eq-ev', mult: eqProf.evMultiplier });
               log.info(`🟠 [entry-ev] ${gateAction.toUpperCase()} ${pwinSym}: 保守 EV ${eqProf.ev.toFixed(2)}% margin (n=${eqProf.n}, winLB ${(eqProf.wilsonLB * 100).toFixed(0)}%) → conviction ×${eqProf.evMultiplier}`);
               activeAuditGates.push({ gate: 'entry-ev', passed: true, reason: `conservative EV ${eqProf.ev.toFixed(2)}% → ×${eqProf.evMultiplier} (soft)` });
             }
@@ -13139,6 +13158,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           : 1.0;
         if (causalMultiplier < 1.0) {
           effectiveConfidence *= causalMultiplier;
+          convLedger.push({ gate: 'causal', mult: causalMultiplier });
           log.info(`🟠 [causal-gate] ${gateAction.toUpperCase()} ${pwinSym}: negative causal uplift → conviction ×${causalMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
           activeAuditGates.push({ gate: 'causal-gate', passed: true, reason: `negative uplift → ×${causalMultiplier.toFixed(3)} (soft)` });
         }
@@ -13156,6 +13176,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           : 1.0;
         if (qrlMultiplier < 1.0) {
           effectiveConfidence *= qrlMultiplier;
+          convLedger.push({ gate: 'qrl-expectancy', mult: qrlMultiplier });
           log.info(`🟣 [qrl-expectancy] ${gateAction.toUpperCase()} ${pwinSym}: negative expectancy → conviction ×${qrlMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
           activeAuditGates.push({ gate: 'qrl-expectancy', passed: true, reason: `negative Q-RL expectancy → ×${qrlMultiplier.toFixed(3)} (soft)` });
         } else if (qrlMultiplier > 1.0) {
@@ -13174,6 +13195,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           : 1.0;
         if (chartMultiplier < 1.0) {
           effectiveConfidence *= chartMultiplier;
+          convLedger.push({ gate: 'chart-aware', mult: chartMultiplier });
           log.info(`📊 [chart-aware] ${gateAction.toUpperCase()} ${pwinSym}: K-LINE 反向/數據異常 → conviction ×${chartMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
           activeAuditGates.push({ gate: 'chart-aware', passed: true, reason: `K-LINE/DATA-QUALITY 校準 → ×${chartMultiplier.toFixed(3)} (soft)` });
         }
@@ -13185,6 +13207,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         const calibrationTrust = this.computeCalibrationTrustMultiplier(regime);
         if (calibrationTrust !== 1.0) {
           effectiveConfidence *= calibrationTrust;
+          convLedger.push({ gate: 'cal-trust', mult: calibrationTrust });
           log.info(`🔵 [cal-trust] ${gateAction.toUpperCase()} ${pwinSym} regime=${regime}: Brier-calibrated trust ×${calibrationTrust.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
           activeAuditGates.push({ gate: 'calibration-trust', passed: true, reason: `regime trust ×${calibrationTrust.toFixed(3)}` });
         }
@@ -13206,12 +13229,12 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             : ` (consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} × dirTrust=${llmDirectionTrust.toFixed(2)} × ev=${evMultiplier.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%, OLR cold-start)`;
           const factorStr = dtcResult.factors.map(f => `${f.factor}=${f.score > 0 ? '+' : ''}${f.score}`).join(' ');
           log.warn(`🛑 [Plan-G] Conviction gate [${finalDecision.symbol || activeSymbol}]: effective ${(effectiveConfidence * 100).toFixed(0)}% < threshold ${(adjustedThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, penalty=${penaltyFactor.toFixed(2)}, boost=${boostFactor.toFixed(2)}, risk=${riskProfile})${pwinStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD`);
-          activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `[${gateAction.toUpperCase()}] ${(effectiveConfidence * 100).toFixed(0)}% < ${(adjustedThreshold * 100).toFixed(1)}%${pwinStr} [${factorStr}] [risk=${riskProfile}]` });
+          activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `[${gateAction.toUpperCase()}] ${(effectiveConfidence * 100).toFixed(0)}% < ${(adjustedThreshold * 100).toFixed(1)}%${pwinStr} [${factorStr}] [risk=${riskProfile}] [ledger: ${convLedger.map((l) => `${l.gate}×${l.mult.toFixed(2)}`).join(' ')}]` });
           finalDecision = {
             ...finalDecision,
             action: 'hold',
             positionSizePct: 0,
-            rationale: `[Plan-G ${finalDecision.symbol || activeSymbol}] Effective confidence ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × blend=${pwinBlendFactor.toFixed(3)} × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)}) below dynamic threshold ${(adjustedThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, risk=${riskProfile}). HOLD. Original: ${finalDecision.rationale}`,
+            rationale: `[Plan-G ${finalDecision.symbol || activeSymbol}] Effective confidence ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × blend=${pwinBlendFactor.toFixed(3)} × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)}) below dynamic threshold ${(adjustedThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, risk=${riskProfile}). HOLD. 乘數總帳: ${convLedger.map((l) => `${l.gate}×${l.mult.toFixed(2)}`).join(' ')} = ${(effectiveConfidence * 100).toFixed(0)}%. Original: ${finalDecision.rationale}`,
           };
         } else if (symFilter.isTradeFrequencyLimited()) {
           log.warn(`🛑 [adaptive-filter] Trade frequency throttle [${finalDecision.symbol || activeSymbol}]: limit reached — overriding ${finalDecision.action.toUpperCase()} → HOLD (over-trading prevention)`);

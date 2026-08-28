@@ -1310,6 +1310,10 @@ export interface AnalysisConsensus {
   takeProfit?: number;
   /** Suggested leverage for this signal (1-10x). */
   suggestedLeverage?: number;
+  /** v2.0.872-P8-transparency: 倉位大小（% of balance）——客戶端落單必需 */
+  positionSizePct?: number;
+  /** v2.0.872-P8-transparency: 系統要求即刻平倉（per-symbol consensus close） */
+  closePosition?: boolean;
 }
 
 /** One analysis row per asset — the unit written to the `asset_analyses` table. */

@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.872-P8-transparency: conviction 乘數總帳 + asset_analyses 決策欄位補全（主神 2026-08-28）
+
+**主神質疑**: 「conviction 顯示 41%×0.749×52%×0.95 ≈ 15%，但 effective=0%——有隱形歸零唔喺顯示度。」
+
+**根因**: Plan-G 顯示只列**部分**乘數（OLR/blend/consensus/penalty/boost/dirTrust/ev），但 `effectiveConfidence` 係**全鏈 19 個乘數站位**累積（fp-gate/four-window/mae-pattern/macro/trend-alignment/reversal-point/momentum-olr/success-pattern/eq-ev/causal/qrl/chart/cal-trust...）——其中一個 ×0（如 MAE-pattern 懲罰）歸零全鏈，顯示訊息誤導。
+
+**修復**:
+1. **conviction 乘數總帳**（`convLedger`）: 19 個 `effectiveConfidence *=` 站位全部入帳（gate 名 × 乘數值），Plan-G HOLD rationale + audit gates reason 包含**完整鏈**（`乘數總帳: base×0.15 fp-gate×1.00 ...`）——逐項可審計，唔會再有隱形歸零
+2. **asset_analyses 決策欄位補全**（`AnalysisConsensus`）: 補 `positionSizePct`（倉位大小——AutoTrade 落單必需）+ `closePosition`（平倉指令）——之前 `PerSymbolConsensus` 有但寫入 asset_analyses 時被剝掉，客戶端無法正確 sizing
+3. **mats_web_app types mirror 同步**
+
+**驗證**: tsc clean；全量 3720 pass + 13 pre-existing（零新增）。
+
+---
+
+## v2.0.872-P8-heal-v3
+
 ## v2.0.872-P8-mae-fix: MAE/MFE healer 復活——靜默死代碼 0/284（主神 2026-08-28）
 
 **主神質疑**: 「SKHX Min=Max=$28.30=Investment 但蝕 -2.7%——點解唔啱？」
