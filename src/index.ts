@@ -92,6 +92,7 @@ import { momentumOlrConflictMultiplier } from './analysis/momentum-olr-conflict.
 import { momentumDirectionalBias, robustMomentumPct, shadowBoostSize } from './analysis/momentum-directional-bias.ts';
 import { computePersistenceScore, computePersistenceDual, classifyPersistenceDual, isStaleCache, classifyPersistence, momentumDirectionalBiasPersistence, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
 import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
+import { dipReversionSignal } from './lib/exploration-direction.ts';
 import { shouldSkipBreakoutEntry } from './analysis/breakout-confirmation.ts';
 import { shouldBlock5mDirection, DEFAULT_GATE_5M_KSIGMA, DEFAULT_GATE_5M_FLOOR_BPS, DEFAULT_GATE_5M_CAP_BPS, DEFAULT_GATE_5M_CANDLES } from './analysis/momentum-5m-gate.ts';
 import { classifySuccessPattern } from './analysis/success-pattern.ts';
@@ -5337,6 +5338,7 @@ ${recentExamples}
   private persistenceUpdatedAt = 0;
   private persistenceUpdating = false; // 併發 guard——fetch 慢時下個 cycle 唔重複跑
   private persistenceStaleWarned = new Set<string>(); // LOUD once per symbol
+  private consensusCloseDeferrals = new Map<string, number>(); // v2.0.872-P9 組件1: consensus close 延遲計數
 
   /** v2.0.870-reentry-cooldown（主神 2026-08-25）: PAEL/profit_lock close 後
    *  1h 唔准開同一方向——斬斷「鎖完又追」loop（DRAM 鎖 3.0% → 追高 → SL -7.3%）。 */
@@ -5398,6 +5400,7 @@ ${recentExamples}
     action: 'buy' | 'sell',
     confidence: number,
     sizePct: number,
+    opts?: { skipShadowGate?: boolean },
   ): { confidence: number; blocked: boolean; reason: string | null; size: number } {
     try {
       // v2.0.870-reentry-cooldown（主神 2026-08-25）: PAEL/profit_lock close 後
@@ -5495,6 +5498,12 @@ ${recentExamples}
         }
       }
       // shadow-gate WR+EV（統一——所有 symbol 都行,唔再淨係 active）
+      // v2.0.872-P9: dip-BUY exploration 豁免——細倉樣本生成（主神:需要確實開到單）。
+      // OLR/四窗/5m/momentum 閘照擋——只豁免 shadow WR+EV（新鮮 EV 反對 dip-buy 係
+      // 樣本生成嘅本質:逆住近期劣績買 dip）。size 唔變（exploration 細倉）。
+      if (opts?.skipShadowGate) {
+        return { confidence, blocked: false, reason: 'dip-reversion exploration（shadow-gate 豁免——樣本生成）', size: sizePct };
+      }
       return this.applyShadowGate(sym, action, confidence, sizePct);
     } catch { return { confidence, blocked: false, reason: null, size: sizePct }; }
   }
@@ -10812,6 +10821,8 @@ ${recentExamples}
           // Use Pattern Classifier to pick direction — compare BUY vs SELL win rates.
           // Fallback to technical signals when pattern data is insufficient.
           let direction: string | null = null;
+          // v2.0.872-P9: Dip-Reversion boost flag（同 direction 同 scope——try 內外都見到）
+          let dipReversionBoost = false;
           try {
             const sentimentData = this.sentimentEngine?.getSentiment();
             const hlPrice = this.hyperliquidWs?.getMarkPriceForSymbol(exploreTarget);
@@ -11039,6 +11050,18 @@ ${recentExamples}
               }
             }
 
+            // Priority 6.5: Dip-Reversion（v2.0.872-P9 主神組件2a——Dip-BUY 加分）
+            // 9-13 SKHX 實證:低波動 range + 極端 sell 壓力（obImb −0.36）買 dip → +74.9pp。
+            // 喺 ≥0.2 極端壓力先 firing——Priority 6 順勢只處理 0.15-0.2 弱壓力。
+            if (!direction) {
+              const dip = dipReversionSignal({ regime: expState.regime, volatility: expState.volatility, obImbalance: expState.orderBookImbalance });
+              if (dip) {
+                direction = dip.direction;
+                dipReversionBoost = true;
+                log.info(`🧪 [dip-reversion] ${expState.regime} σ=${((expState.volatility ?? 0) * 100).toFixed(2)}% obImb=${(expState.orderBookImbalance * 100).toFixed(0)}% → DIP-BUY（重放實證 +0.85/喺）`);
+              }
+            }
+
             // Priority 6: Order book imbalance (positive = bid pressure = buy, negative = sell pressure)
             if (!direction && expState.orderBookImbalance !== undefined && Math.abs(expState.orderBookImbalance) > 0.15) {
               direction = expState.orderBookImbalance > 0 ? 'buy' : 'sell';
@@ -11196,6 +11219,7 @@ ${recentExamples}
               direction as 'buy' | 'sell',
               0.5,
               0.05,
+              dipReversionBoost ? { skipShadowGate: true } : undefined,
             );
             if (unifyGate.blocked) {
               log.warn(`🧪 [unified-gate] Exploration ${direction!.toUpperCase()} ${exploreTarget}: ${unifyGate.reason} — skip（統一執行路徑）`);
@@ -11895,6 +11919,23 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
         //   but if consensus also says close, execute directly (legacy positions
         //   don't need Skeptics validation since they predate the thesis system)
         if (psc.closePosition) {
+          // ── v2.0.872-P9 組件1: consensus close 浮盈延遲確認（重放 +9.7pp）──
+          // 浮盈 ≥1%（margin）嘅倉位，consensus close 延遲一個 cycle 再驗證：
+          // 24-27 實證 12/18 consensus close 後價格反彈（+25.9pp 被切走）
+          // vs 6/18 繼續跌（close 啱）。最多延遲 2 次——防無限 hold。
+          // SL hit/虧損倉唔延遲（止血優先——closeCalibrator mfeLock 流水線照行）。
+          try {
+            const ccKey = `${normalizeSymbol(psc.symbol)}|consensus-close`;
+            const unrealizedPct = typeof pos?.unrealizedPnlPct === 'number' && Number.isFinite(pos.unrealizedPnlPct) ? pos.unrealizedPnlPct : 0;
+            const deferrals = this.consensusCloseDeferrals.get(ccKey) ?? 0;
+            const floating = unrealizedPct >= 0.01;
+            if (floating && deferrals < 2 && pos) {
+              this.consensusCloseDeferrals.set(ccKey, deferrals + 1);
+              log.info(`⏳ [P9-consensus-close] ${psc.symbol}: 浮盈 ${(unrealizedPct * 100).toFixed(2)}% ≥1% → 延遲確認（${deferrals + 1}/2）——9-13 實證:持有到 tp_hit（重放 +9.7pp）`);
+              continue; // 跳過呢個 symbol 嘅 close——下個 cycle 再驗證
+            }
+            if (deferrals > 0) this.consensusCloseDeferrals.delete(ccKey);
+          } catch { /* 非致命——close 照行 */ }
           // v2.0.143: Capture the close rationale as exitThesis BEFORE closing.
           // This must happen before closePosition()/closeExchangePosition()
           // because those methods delete the position from the map.

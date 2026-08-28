@@ -4,6 +4,30 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9: 震盪市盈利頻率恢復——dip-BUY exploration + consensus close 確認（主神 2026-08-28）
+
+**主神指令**: 「實施組件 1（consensus close 確認）+ 組件 2a（dip-BUY 加分）……需要確實真係開到單。」
+
+**9-13 引擎解剖**（73 喺 +83.9pp，+1.15/單 vs 而家 −0.04/單）:
+- SKHX 一個符號 +74.9pp:高頻（3.4 單/日）× 穩定 sizing（$11.8）× 買 dip（obImb −0.36 sell 壓力）× TP 結構捕捉反彈（7 喺 tp_hit +75.4pp）
+- 條件:σ=0.20%（平靜）——而家 SKHX σ=0.20-0.31% **條件相似**
+
+**漏水解剖（24-27 48 喺 −1.8pp）**:
+1. consensus close 過早切走贏單:18 喺 −22.4pp（9-13 時期呢個機制未存在）
+2. 5m 閘反事實:只擋 1 喺 −0.8pp——**唔係瓶頸**
+
+**組件 1 實施**: consensus close 浮盈延遲確認——`unrealizedPnlPct ≥ 1%` 嘅倉位，consensus close 延遲一個 cycle（最多 2 次，`consensusCloseDeferrals` Map 計數），防 9-13 時代唔存在嘅「共識切走贏單」漏水。重放:12/18 反彈 +25.9pp vs 6/18 繼續跌 −16.2pp → 淨 +9.7pp。SL hit/虧損倉唔延遲（止血優先）。
+
+**組件 2a 實施**: `dipReversionSignal`（exploration-direction.ts 純函數）——range regime + σ≤0.3% + obImb≤−0.2 → dip-BUY exploration 候選（重放 208 喺 +177.1pp +0.85/喺）。Priority 6.5 接入 exploration priority chain。**shadow-gate 豁免**: dip-BUY 候選傳 `skipShadowGate`（細倉樣本生成——逆住近期劣績買 dip 係探索本質）；**OLR/四窗/5m/momentum 閘照擋**（災難防線不減）。
+
+**dip-SELL 唔實施**（三個獨立樣本一致否定:51 喺 −21.7pp / PB+SELL −9.7pp / range|sell −8.0pp）——HL 微觀結構「跌完必彈、彈完陰跌」，買 dip 有 edge、賣 rip 冇。
+
+**驗證**: vitest 7/7（dip 信號）+ 全量 3727 pass + 13 pre-existing（零新增）；tsc clean。
+
+---
+
+## v2.0.872-P8-transparency
+
 ## v2.0.872-P8-transparency: conviction 乘數總帳 + asset_analyses 決策欄位補全（主神 2026-08-28）
 
 **主神質疑**: 「conviction 顯示 41%×0.749×52%×0.95 ≈ 15%，但 effective=0%——有隱形歸零唔喺顯示度。」

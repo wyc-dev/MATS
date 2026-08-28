@@ -49,3 +49,31 @@ export function resolveExplorationDirection(
   if (candidate === 'buy' && shouldSuppressExploreBuy(input)) return null;
   return candidate;
 }
+
+// ─── v2.0.872-P9: Dip-Reversion 對稱信號（主神 2026-08-28）──────────
+// 9-13 SKHX 實證:低波動 range + 極端 sell 壓力（obImb −0.36）買 dip → +74.9pp/5日。
+// 對稱設計:dip-buy（sell 壓力 dip）有 edge ✓；dip-sell（buy 壓力 rip）數據否定
+// （−21.7pp）——信號只產生 dip-BUY（主神批准範圍:組件 2a）。
+
+export interface DipSignalInput {
+  regime: string | null | undefined;
+  volatility: number | null | undefined;
+  obImbalance: number | null | undefined;
+}
+
+/** Dip-buy 環境判定（純函數，重放實證 208 喂 +177.1pp）:
+ *  - regime ∈ range 類（mean_reverting / low_volatility / unknown——vol 門檻兜底）
+ *  - σ ≤ 0.3%（平靜——9-13 實測 0.20%）
+ *  - obImb ≤ −0.2（極端 sell 壓力 = 價格喺 dip）
+ *  垃圾/唔符合 → null。 */
+export function dipReversionSignal(input: DipSignalInput, opts: { maxVol?: number; minImb?: number } = {}): { direction: 'buy'; strength: number } | null {
+  const maxVol = opts.maxVol ?? 0.003;
+  const minImb = opts.minImb ?? 0.2;
+  const regimeOk = !input?.regime || input.regime === 'mean_reverting' || input.regime === 'low_volatility' || input.regime === 'unknown';
+  if (!regimeOk) return null;
+  const vol = input?.volatility;
+  if (typeof vol !== 'number' || !Number.isFinite(vol) || vol > maxVol) return null;
+  const ob = input?.obImbalance;
+  if (typeof ob !== 'number' || !Number.isFinite(ob) || ob > -minImb) return null;
+  return { direction: 'buy', strength: Math.abs(ob) };
+}
