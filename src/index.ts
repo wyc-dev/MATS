@@ -170,6 +170,10 @@ function parseBlockBool(v: string | undefined, def: boolean): boolean {
   return def;
 }
 const klineBlockConfig = { enabled: parseBlockBool(process.env['KLINE_BLOCK_ENABLED'], true) } as const;
+// v2.0.873-P9-attack-round3（主神 2026-08-28 攻擊輪）: SELL-ALERT env gate——
+// 文檔承諾 `SELL_ALERT_ENABLED=false` 可回滾但 code 冇 gate = 漏洞。
+// 同 KLINE_BLOCK_ENABLED 對照組一致: 所有 context 注入都有 env 回滾掣。
+const sellAlertConfig = { enabled: parseBlockBool(process.env['SELL_ALERT_ENABLED'], true) } as const;
 const dataQualityConfig = { enabled: parseBlockBool(process.env['DATA_QUALITY_BLOCK_ENABLED'], true) } as const;
 const chartConvictionConfig = { enabled: parseBlockBool(process.env['CHART_AWARE_CONVICTION'], true) } as const;
 const llmCalibrationConfig = { enabled: parseBlockBool(process.env['LLM_CONVICTION_CALIBRATION'], true) } as const;
@@ -5606,6 +5610,26 @@ ${recentExamples}
     } catch { return null; }
   }
 
+  /** v2.0.873-P9-sealarm（主神 2026-08-28「5min + 15m 級急跌觸發 is important」）:
+   *  15m 動量——candleCache '15m'（新支援）。用 robust median（單支 outlier 唔扭爆）。
+   *  返回 null = 數據不足（唔誤傷）。 */
+  private compute15mMomentumPct(sym: string): number | null {
+    try {
+      const c15 = candleCache.peekCandles(sym, '15m');
+      if (!c15 || c15.length < 3) return null;
+      return robustMomentumPct(c15.slice(-3)); // 最近 3 支 15m（45min）
+    } catch { return null; }
+  }
+
+  /** v2.0.873-P9-sealarm: 5m 動量——最近 2 支 5m（10min）。 */
+  private compute5mMomentumPct(sym: string): number | null {
+    try {
+      const c5 = candleCache.peekCandles(sym, '5m');
+      if (!c5 || c5.length < 2) return null;
+      return robustMomentumPct(c5.slice(-2));
+    } catch { return null; }
+  }
+
   /** v2.0.870-exit-price-lock L2: live price MFE——持倉窗口內 1h candles 極值
    *  （BUY=max high / SELL=min low，純函數 lib/live-mfe.ts）——非 active symbol
    *  盤中 peak 由 trackMAEMFE 錯過（每 cycle currentPrice 抽查）→ PAEL lock /
@@ -5686,11 +5710,14 @@ ${recentExamples}
     } catch { return ''; }
   }
 
-  private buildDirectionHealthBlock(): string {    try {
+  private async buildDirectionHealthBlock(): Promise<string> {    try {
       const syms = new Set<string>([normalizeSymbol(this.marketAgent.getSelectedSymbol() ?? '')]);
       for (const m of (this.tradingMarkets ?? [])) syms.add(normalizeSymbol(m));
       const blocks: string[] = [];
       for (const sym of syms) {
+        // v2.0.873-P9-sealarm: 確保 15m candles 已 fetch（peek 唔會 fetch）——
+        // 急跌 SELL-ALERT 需要 15m 數據。5m/1h 已有其他 consumer fetch。
+        try { await candleCache.getCandles(sym, '15m', 60); } catch { /* 非致命 */ }
         const b = this.buildDirectionHealthForSymbol(sym);
         if (b) blocks.push(b);
       }
@@ -5713,8 +5740,11 @@ ${recentExamples}
         const side = t.side === 'sell' ? 'sell' : 'buy';
         perSide[side] = perSide[side] ?? { n: 0, wins: 0, pnl: 0 };
         perSide[side].n++;
+        // v2.0.873-P9-attack-round3: NaN 源頭防禦——t.pnl NaN 會污染 pnl 累積
+        // （NaN ?? 0 = NaN, ?? 只擋 null/undefined）。下游有 Number.isFinite guard,
+        // 但源頭乾淨先唔會累積污染。
+        if (Number.isFinite(t.pnl)) perSide[side].pnl += (t.pnl ?? 0);
         if ((t.pnl ?? 0) > 0) perSide[side].wins++;
-        perSide[side].pnl += (t.pnl ?? 0);
       }
 
       // 3. Strong warnings for overwhelmingly-negative sides (no hard block —
@@ -5771,6 +5801,51 @@ ${recentExamples}
             warnings.push(`🚫 [SELL-NOT] ${sym}: 動量跌但反彈性（mom<0 後 4h 通常反彈）——唔好逆勢 short（低吸 only, 唔追跌）。`);
           } else {
             warnings.push(`⚡ [SELL-SEED] ${sym}: 動量負（24h=${mom24hS !== null ? mom24hS.toFixed(2) + '%' : 'n/a'} / 4h=${mom4hS !== null ? mom4hS.toFixed(2) + '%' : 'n/a'}）——順勢 SELL shadow 播種中,LLM 可考慮順勢 short（而唔係逆勢 long）。`);
+          }
+        }
+      } catch { /* non-fatal */ }
+
+      // ── v2.0.873-P9-sealarm（主神 2026-08-28「5min + 15m 級急跌觸發 is important」）──
+      // 短線急跌 SELL 警報——邏輯實驗（96h 多 symbol）: 15m 急跌 >0.3% 後 3 支 15m 內
+      // short 有利潤率 91-100%; 關鍵係「5m 續跌確認」——有確認 → 3 支後 −30.7%(short 賺),
+      // 冇確認 → +26.1%(反彈陷阱 short 蝕)。即係 5m 確認係濾波器,完美呼應 E1 實證
+      // 「反彈型追跌全輸」——唔可以淨係 15m 急跌就 short。
+      // 觸發: 15m 動量 < −0.3%（急跌）且 5m 動量 < 0（續跌確認——未反彈）→ ⚡ [SELL-ALERT]。
+      // v2.0.873-P9-attack-round3: env gate（SELL_ALERT_ENABLED=false 可停用——同
+      // KLINE_BLOCK_ENABLED 對照組一致, 所有 context 注入都有回滾掣）。
+      if (sellAlertConfig.enabled) {
+      try {
+        const mom15S = this.compute15mMomentumPct(sym);
+        const mom5S = this.compute5mMomentumPct(sym);
+        if (mom15S !== null && mom15S < -0.3 && mom5S !== null && mom5S < 0) {
+          const persS = this.getPersistence(sym);
+          const tag = persS === 'persistent_bear' ? '⚡⚡' : persS === 'range' ? '⚡' : '⚡';
+          warnings.push(
+            `${tag} [SELL-ALERT] ${sym}: 短線急跌（15m=${mom15S.toFixed(2)}% < −0.3%, 5m=${mom5S.toFixed(2)}% 續跌確認）——邏輯實驗: 15m 急跌 + 5m 確認後 3 支 15m 內 short 有利潤（BTC/BNB/ETH/SOL/SKHX/SNDK 91-100%）${persS === 'range' ? '；但係反彈型（range）——只可以短線順勢 short, 見好即收, 唔好追深' : ''}。優先考慮 SELL。`,
+          );
+        }
+      } catch { /* non-fatal */ }
+      } // sellAlertConfig.enabled
+
+      // ── v2.0.873-P9-unblock（主神 2026-08-28「大半日冇開倉,根源解決咗未」）──
+      // 方案 B: 兩邊都紅時提供「相對 lean」——269 單實測全部 symbol 近期 SELL WR=0%、
+      // BUY WR 33-67%——「兩邊都紅」係錯覺,實際係「一側全紅、另一側部分正常」。
+      // agents 見到兩邊都紅就 HOLD,浪費正常側嘅開倉機會。
+      // 呢度用 perSide 7d 數據提供相對方向: 高 WR/高 PnL 側 = 相對 lean。
+      try {
+        const buyS = perSide['buy'];
+        const sellS = perSide['sell'];
+        if (buyS && sellS && buyS.n >= 3 && sellS.n >= 3) {
+          const buyWr = buyS.wins / buyS.n;
+          const sellWr = sellS.wins / sellS.n;
+          const diff = buyWr - sellWr;
+          const hasRedBuy = warnings.some(w => w.startsWith('🔴 BUY'));
+          const hasRedSell = warnings.some(w => w.startsWith('🔴 SELL'));
+          if (hasRedBuy && hasRedSell && Math.abs(diff) >= 0.2) {
+            const lean = diff > 0 ? 'BUY' : 'SELL';
+            const leanWr = (diff > 0 ? buyWr : sellWr) * 100;
+            const otherWr = (diff > 0 ? sellWr : buyWr) * 100;
+            warnings.push(`🧭 [RELATIVE LEAN] ${sym}: 兩邊歷史都差,但近期相對強度明顯偏 ${lean}（${lean} WR ${leanWr.toFixed(0)}% vs 另一側 ${otherWr.toFixed(0)}%, 7d n=${diff > 0 ? buyS.n : sellS.n}/${diff > 0 ? sellS.n : buyS.n}）——若無新 catalyst 逆轉,傾向 ${lean}（但保持細倉/嚴 SL）。`);
           }
         }
       } catch { /* non-fatal */ }
@@ -7901,6 +7976,13 @@ ${recentExamples}
       const lines: string[] = [`=== ${heading} ===`];
       if (positionInfo) lines.push(positionInfo);
 
+      // v2.0.873-P9-unblock（主神 2026-08-28「大半日冇開倉,根源解決咗未」）:
+      // OLR 已證偽(P9-olr-audit 全樣本 Spearman ρ=+0.02 零預測力)——數字係噪音,
+      // agents 見到「OLR 兩邊 <50%」就 HOLD 係被噪音誤導。
+      // ⚠️ 注意: 「分桶 WR」唔可以當預測力證據——269 單係已成交 subset(通過晒
+      // 其他 gate 先開到倉),有選擇偏差;正確結論係全樣本 ρ=+0.02 零預測力。
+      lines.push(`⚠️ OLR 已證偽(全樣本 ρ=+0.02 零預測力——數字係噪音,唔可以做 BUY/SELL 決定依據)。`);
+
       // P78 誠實信心修復: 兩邊都冇 live 樣本（只有 backfill）→ 明確標明唔係 live 訊號。
       // 根源: SKHX -14.7% 案例 agent 睇到「OLR BUY edge +28pp, conf=high」但實際
       // pwin=9.16e-09——backfill 樣本被當 live 顯示，誤導 agent 開倉。
@@ -9341,7 +9423,7 @@ ${recentExamples}
 
       // v2.0.862: Direction Health Block — per-symbol overwhelming-negative
       // stats injected for EVERY trading symbol (owner: 提高判斷力, 唔 hard block).
-      const directionHealthBlock = this.buildDirectionHealthBlock();
+      const directionHealthBlock = await this.buildDirectionHealthBlock();
       if (directionHealthBlock) {
         marketDesc += `\n${directionHealthBlock}`;
       }
