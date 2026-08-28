@@ -29,10 +29,12 @@ export const MAX_LIVE_MFE_PCT = 50;
 
 /** P9-lock-pipeline 前向重放（2026-08-28，269 喺）最優參數：margin-basis 0.5% 門檻。
  *  θ=0.5% margin → WR 46.1%→72.9%、PnL Δ+53.21%、誤鎖大 winner 0。
- *  env PROFIT_LOCK_MARGIN_THRESHOLD_PCT 可調（回滾用）。 */
+ *  env PROFIT_LOCK_MARGIN_THRESHOLD_PCT 可調（回滾用）。
+ *  攻擊輪（2026-08-28，A1 CRITICAL）: 下限 clamp 0.1%——env=1e-9 令門檻近乎 0、
+ *  任何微細浮盈即鎖 = 過度鎖利 DoS（破壞大 winner 回吐空間）。clamp [0.1, 5]。 */
 export const PROFIT_LOCK_MARGIN_THRESHOLD_PCT = (() => {
   const raw = Number(process.env['PROFIT_LOCK_MARGIN_THRESHOLD_PCT']);
-  return Number.isFinite(raw) && raw > 0 && raw <= 5 ? raw : 0.5;
+  return Number.isFinite(raw) && raw >= 0.1 && raw <= 5 ? raw : 0.5;
 })();
 
 /** candle open time 合理上限（ms）——1e15 ≈ 公元 33658 年；1e308 科幻未來直接拒。 */
@@ -104,6 +106,10 @@ export function shouldTrailingLock(
   const lev = Number.isFinite(leverage) && leverage > 0 && leverage <= 1000 ? leverage : 1; // A5c: lev 溢出 → 1
   const peakMargin = liveMfePricePct * lev;
   if (!Number.isFinite(peakMargin) || peakMargin <= 0) return false;
+  // A4（攻擊輪 2026-08-28）: margin peak cap 1000%——liveMfe(price%)×lev 極端組合
+  // （如 50%×1000x）唔可以令任何微細 pnl 都誤判「回吐 50%」→ 過度鎖利。
+  // 真實倉 margin peak >1000% 唔可能（清算線 ~-100% 封頂）——cap 係安全網。
+  if (peakMargin > 1000) return false;
   return pnlPctNow <= 0.5 * peakMargin;
 }
 
@@ -123,7 +129,9 @@ export function shouldColdStartLock(
   if (liveMfePricePct === null || !Number.isFinite(liveMfePricePct)) return false;
   if (liveMfePricePct <= 0 || liveMfePricePct > MAX_LIVE_MFE_PCT) return false; // A8
   const lev = Number.isFinite(leverage) && (leverage as number) > 0 && (leverage as number) <= 1000 ? (leverage as number) : 1; // A5c: lev 溢出 → 1
-  const threshold = Number.isFinite(opts.thresholdMarginPct) && (opts.thresholdMarginPct as number) > 0
+  // A1（攻擊輪 2026-08-28, CRITICAL）: threshold 下限 clamp 0.1%——1e-9 令任何浮盈即鎖
+  // = 過度鎖利 DoS（破壞大 winner 回吐空間）。垃圾值（NaN/負/0/<0.1）→ 預設 0.5。
+  const threshold = Number.isFinite(opts.thresholdMarginPct) && (opts.thresholdMarginPct as number) >= 0.1 && (opts.thresholdMarginPct as number) <= 5
     ? (opts.thresholdMarginPct as number)
     : PROFIT_LOCK_MARGIN_THRESHOLD_PCT;
   if (liveMfePricePct * lev < threshold) return false;
@@ -143,6 +151,24 @@ export interface PendingTrailingLock {
   peakPrice: number;
   /** 觸發 pending 嘅 cycle 數 */
   sinceCycle: number;
+  /** A6（攻擊輪 2026-08-28, CRITICAL）: 倉位綁定——防止 close→re-open 撞舊 pending:
+   *  反方向倉（BUY pending 影響 SELL 新倉）/ 同向新倉（舊 pending 開倉即誤鎖）。
+   *  任何一項唔 match → 舊 pending 即棄（倉位已換）。 */
+  side: 'buy' | 'sell';
+  openedAt: number;
+}
+
+/** A6: 驗證 pending 綁定嘅倉位仍然係當前倉位。side/openedAt 唔 match（倉位已換）→ 即棄。
+ *  毒值 → false（保守棄——唔可以用錯倉嘅 pending 鎖新倉）。 */
+export function isPendingLockStale(pending: PendingTrailingLock | null | undefined, side: string | null | undefined, openedAt: number | null | undefined): boolean {
+  if (!pending || typeof pending !== 'object') return true;
+  if (pending.side !== 'buy' && pending.side !== 'sell') return true;
+  if (side !== 'buy' && side !== 'sell') return true;
+  if (pending.side !== side) return true;
+  if (!Number.isFinite(pending.openedAt) || pending.openedAt <= 0) return true;
+  if (!Number.isFinite(openedAt) || (openedAt as number) <= 0) return true;
+  // 開倉時間 tolerance 5min——重啟後 openedAt 保留（persist 唔影響綁定）
+  return Math.abs(pending.openedAt - (openedAt as number)) > 5 * 60_000;
 }
 
 /** pending 期間創新高（currentPeak > pendingPeak）→ 取消（趨勢繼續）。
